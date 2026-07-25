@@ -1,0 +1,78 @@
+"""
+抓取加權指數(TAIEX)與櫃買指數(TPEx)的每日資料，寫入 market_index 資料表。
+用於大盤環境判斷（四線多排/空排、是否跌破月線季線等）。
+
+用法：
+    python scrapers/fetch_market_index.py --period 2y
+"""
+import sys
+import os
+import sqlite3
+import argparse
+
+import yfinance as yf
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DB_PATH
+
+INDEX_TICKERS = {
+    "TAIEX": "^TWII",   # 台灣加權指數
+    "TPEx": "^TWOII",   # 櫃買指數
+}
+
+
+def fetch_and_save(index_code: str, ticker: str, period: str = None, start=None, end=None):
+    t = yf.Ticker(ticker)
+    if start and end:
+        hist = t.history(start=start, end=end, auto_adjust=False)
+    else:
+        hist = t.history(period=period or "5d", auto_adjust=False)
+
+    if hist.empty:
+        print(f"{index_code}: 無資料")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    rows = []
+    for idx, row in hist.iterrows():
+        trade_date = idx.strftime("%Y-%m-%d")
+        rows.append((
+            index_code, trade_date,
+            float(row["Open"]) if pd.notna(row["Open"]) else None,
+            float(row["High"]) if pd.notna(row["High"]) else None,
+            float(row["Low"]) if pd.notna(row["Low"]) else None,
+            float(row["Close"]) if pd.notna(row["Close"]) else None,
+            int(row["Volume"]) if pd.notna(row["Volume"]) else None,
+        ))
+    cur.executemany(
+        """
+        INSERT INTO market_index (index_code, trade_date, open, high, low, close, volume)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(index_code, trade_date) DO UPDATE SET
+            open=excluded.open, high=excluded.high, low=excluded.low,
+            close=excluded.close, volume=excluded.volume
+        """,
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    print(f"{index_code}: 已寫入 {len(rows)} 筆")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--period", type=str, default=None)
+    parser.add_argument("--start", type=str, default=None)
+    parser.add_argument("--end", type=str, default=None)
+    args = parser.parse_args()
+    if not args.period and not (args.start and args.end):
+        args.period = "5d"
+
+    for code, ticker in INDEX_TICKERS.items():
+        fetch_and_save(code, ticker, period=args.period, start=args.start, end=args.end)
+
+
+if __name__ == "__main__":
+    main()
