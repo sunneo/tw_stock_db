@@ -51,8 +51,8 @@ python run_daily_update.py
 ```
 
 這個腳本會依序執行：更新股票清單 → 抓大盤指數 → 抓個股近5天OHLCV（增量+補漏）→
-重算技術指標 → 產生每日文字報告。建議排程在**台灣時間每個交易日下午 2:30 之後**執行
-（此時當日收盤資料在 Yahoo Finance 上通常已經可以抓到）。
+重算技術指標 → 產生每日文字報告 → 同步到 GitHub。建議排程在**台灣時間每個交易日
+下午 2:30 之後**執行（此時當日收盤資料在 Yahoo Finance 上通常已經可以抓到）。
 
 ### 每日報告（供分享給其他 Claude 對話）
 
@@ -72,6 +72,32 @@ python analysis/generate_daily_report.py
 
 訊號篩選條件都定義在 [analysis/generate_daily_report.py](analysis/generate_daily_report.py) 裡，
 可依需求調整門檻或新增訊號。
+
+### 同步到 GitHub（sunneo/tw_stock_db）
+
+`run_daily_update.py` 最後一步會呼叫 [sync/sync_to_github.py](sync/sync_to_github.py)，
+把資料推到獨立的 [sunneo/tw_stock_db](https://github.com/sunneo/tw_stock_db) repo，讓其他
+機器/其他 Claude 對話不需要重新爬資料就能取得：
+
+- **每天**：把當天新增的資料匯出成小型 CSV（[sync/export_daily_delta.py](sync/export_daily_delta.py)），
+  推到 `main` 分支的 `daily/YYYY-MM-DD/`，一般 commit，保留逐日歷史。
+- **每月第一次執行時**：把完整 `tw_stock.db`（300MB+，超過 GitHub 100MB 單檔上限）用
+  [sync/db_parts.py](sync/db_parts.py) 切成每份 64MB 以內的 part 檔（**不用 Git LFS**，
+  避免 LFS 免費額度——每月1GB儲存/頻寬——被吃光），推到 `db-snapshot` 分支，用
+  orphan commit + force push 整個覆蓋，只保留最新一份快照。合併回完整 db 的方法
+  （`merge_db.py`，附帶 sha256 checksum 驗證）寫在該分支的 README.md 與
+  [sunneo/tw_stock_db 的 SKILL.md](https://github.com/sunneo/tw_stock_db/blob/main/SKILL.md) 裡。
+
+需要在本機先手動 clone 好兩個獨立的 working copy（各自固定在自己的分支，避免每月
+覆蓋 db-snapshot 時動到 main 分支的逐日歷史）：
+
+```bash
+git clone https://github.com/sunneo/tw_stock_db.git <GITHUB_SYNC_MAIN_REPO路徑>
+git clone https://github.com/sunneo/tw_stock_db.git <GITHUB_SYNC_SNAPSHOT_REPO路徑>
+```
+
+路徑設定在 [config.py](config.py) 的 `GITHUB_SYNC_MAIN_REPO` / `GITHUB_SYNC_SNAPSHOT_REPO`，
+上次成功推送的月份記錄在 `.sync_state.json`（已加入 .gitignore，不會被提交）。
 
 ### 排程設定範例
 

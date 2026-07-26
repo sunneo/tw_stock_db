@@ -31,9 +31,9 @@ def main():
     run_step("Step 1: 更新股票基本清單",
               ["scrapers/get_stock_list.py"])
     run_step("Step 2: 抓取大盤指數",
-              ["scrapers/fetch_market_index.py", "--period", "5d"])
-    run_step("Step 3: 抓取個股日K（增量，近5天）",
-              ["scrapers/fetch_daily_prices.py", "--period", "5d"])
+              ["scrapers/fetch_market_index.py", "--period", "1d"])
+    run_step("Step 3: 抓取個股日K（增量，近1天）",
+              ["scrapers/fetch_daily_prices.py", "--period", "1d"])
     run_step("Step 4: 計算技術指標（近期有更新的股票）",
               ["analysis/compute_indicators.py"])
     run_step("Step 5: 產生每日報告（reports/latest.md）",
