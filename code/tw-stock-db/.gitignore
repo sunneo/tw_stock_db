@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+venv/
+tw_stock.db
+logs/*.log
+.sync_state.json

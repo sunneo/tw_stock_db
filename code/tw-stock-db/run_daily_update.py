@@ -4,6 +4,8 @@
 2. 抓取大盤指數最近資料
 3. 抓取全部個股最近5天的OHLCV（增量更新，含補漏）
 4. 重算最近有更新資料的股票的技術指標
+5. 產生每日文字報告 reports/latest.md（供分享給其他 Claude 對話讀取）
+6. 同步資料到 GitHub sunneo/tw_stock_db（每日增量 + 每月一次完整快照）
 
 建議排程：每個交易日收盤後（例如台灣時間 14:30 之後）執行一次。
 用法：
@@ -34,6 +36,10 @@ def main():
               ["scrapers/fetch_daily_prices.py", "--period", "5d"])
     run_step("Step 4: 計算技術指標（近期有更新的股票）",
               ["analysis/compute_indicators.py"])
+    run_step("Step 5: 產生每日報告（reports/latest.md）",
+              ["analysis/generate_daily_report.py"])
+    run_step("Step 6: 同步資料到 GitHub（sunneo/tw_stock_db）",
+              ["sync/sync_to_github.py"])
     print("\n每日更新流程完成。")
 
 

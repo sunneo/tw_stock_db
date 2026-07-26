@@ -51,8 +51,27 @@ python run_daily_update.py
 ```
 
 這個腳本會依序執行：更新股票清單 → 抓大盤指數 → 抓個股近5天OHLCV（增量+補漏）→
-重算技術指標。建議排程在**台灣時間每個交易日下午 2:30 之後**執行（此時當日收盤資料
-在 Yahoo Finance 上通常已經可以抓到）。
+重算技術指標 → 產生每日文字報告。建議排程在**台灣時間每個交易日下午 2:30 之後**執行
+（此時當日收盤資料在 Yahoo Finance 上通常已經可以抓到）。
+
+### 每日報告（供分享給其他 Claude 對話）
+
+每次 `run_daily_update.py` 跑完，最後一步會產生：
+
+- `reports/latest.md`：**固定路徑**，每次覆蓋，內容為大盤環境摘要 + 幾種技術訊號
+  （四線多排+KD黃金交叉、MACD翻多、RSI低檔黃金交叉、貼近布林下軌反彈、均線轉空排警示、
+  乖離率過熱警示）篩選出的個股清單。
+- `reports/daily/YYYY-MM-DD.md`：當日存檔，不覆蓋，方便回顧歷史。
+
+這是純文字/Markdown 檔，不需要重新查資料庫；只要開一個新的 Claude 對話、工作目錄指到
+這個專案，就可以直接請它讀取 `reports/latest.md` 取得最新收盤後的市場摘要。也可以單獨執行：
+
+```bash
+python analysis/generate_daily_report.py
+```
+
+訊號篩選條件都定義在 [analysis/generate_daily_report.py](analysis/generate_daily_report.py) 裡，
+可依需求調整門檻或新增訊號。
 
 ### 排程設定範例
 

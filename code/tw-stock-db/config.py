@@ -19,3 +19,10 @@ RSI_PERIODS = [6, 12]
 BB_PERIOD = 20
 BB_STD = 2
 BIAS_PERIOD = 20
+
+# GitHub 同步設定（sync/sync_to_github.py 使用）
+# 兩個獨立 clone，各自固定在自己的分支上，避免每月覆蓋 db-snapshot 時
+# 不小心動到 main 分支的逐日歷史記錄。路徑依你自己電腦調整。
+GITHUB_SYNC_MAIN_REPO = r"D:\Downloads\tw_stock_db_repo"                # main 分支：daily/ 逐日增量 CSV
+GITHUB_SYNC_SNAPSHOT_REPO = r"D:\Downloads\tw_stock_db_repo_snapshot"   # db-snapshot 分支：完整 tw_stock.db
+SYNC_STATE_PATH = os.path.join(BASE_DIR, ".sync_state.json")
