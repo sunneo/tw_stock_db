@@ -23,8 +23,12 @@ tw-stock-db/
 │   ├── fetch_intraday_quotes.py   # 抓盤中即時快照（平行抓取）
 │   └── fetch_market_index.py      # 抓取加權指數/櫃買指數
 ├── analysis/
-│   ├── compute_indicators.py      # 計算 MA/KD/MACD/RSI/布林/乖離/均線排列
-│   └── generate_daily_report.py   # 產生每日文字報告
+│   ├── compute_indicators.py      # 計算 MA/KD/MACD/RSI/布林/乖離/均線排列/RS值(相對強度)
+│   ├── generate_daily_report.py   # 產生每日文字報告
+│   ├── signals.py                 # 共用訊號評分邏輯（型態訊號評分＋XQ原則RS值篩選）
+│   ├── screen_strong_stocks.py    # 強勢股(N檔)篩選：--method current|xq
+│   ├── generate_watchlist.py      # 產生鎖股名單：--method current|xq
+│   └── generate_holdings_report.py # 持股分析報告（P/L、停損停利、續抱/減碼/出場建議）
 └── sync/
     └── sync_to_github.py          # 同步到 GitHub（sunneo/tw_stock_db）
 ```
@@ -134,11 +138,18 @@ python capture_intraday.py --watchlist 鎖股名單.json --no-sync
 
 ```bash
 python run_daily_update.py
+python run_daily_update.py --weekly                             # + 週報（強勢股/鎖股名單，目前+XQ原則）
+python run_daily_update.py --holdings 鎖股名單.json                # + 持股分析報告
+python run_daily_update.py --weekly --holdings 鎖股名單.json
 ```
 
-這個腳本會依序執行：更新股票清單 → 抓大盤指數 → 抓個股近5天OHLCV（增量+補漏）→
-重算技術指標 → 產生每日文字報告 → 同步到 GitHub。建議排程在**台灣時間每個交易日
-下午 2:30 之後**執行（此時當日收盤資料在 Yahoo Finance 上通常已經可以抓到）。
+基本流程會依序執行：更新股票清單 → 抓大盤指數 → 抓個股近5天OHLCV（增量+補漏）→
+重算技術指標(含RS值) → 產生每日文字報告 → 同步到 GitHub。建議排程在**台灣時間每個
+交易日下午 2:30 之後**執行（此時當日收盤資料在 Yahoo Finance 上通常已經可以抓到）。
+
+`--weekly` / `--holdings` 是額外的可選流程（見上方「強勢股/鎖股名單/持股分析」段落），
+預設不執行，避免每天都跑成本較高的全市場篩選；適合排一個**每週**額外執行 `--weekly`
+的排程，或想更新持股追蹤時手動加 `--holdings`。
 
 ### 每日報告（供分享給其他 Claude 對話）
 
@@ -202,10 +213,46 @@ crontab -e
 
 Claude 本身無法在背景常駐執行排程任務，這一段需要使用者自行在自己的電腦或伺服器上設定。
 
+## 強勢股 / 鎖股名單 / 持股分析（常用工作流程）
+
+這三支腳本把「選股/鎖股/持股追蹤」的判斷邏輯固定成程式碼，跑一次幾秒鐘就有結果，
+取代過去每次都要靠 Claude 手動下 SQL＋人工判斷再手刻 JSON 的做法（省時間也省 token）。
+共用的評分邏輯在 [analysis/signals.py](analysis/signals.py)，分成兩套獨立原則：
+
+- **`--method current`（目前原則）**：對應 SKILL.md 方法論（朱家紅老師／林穎老師型態學），
+  比對 KD黃金/死亡交叉、MACD多空、紅柱/綠柱由縮轉長、放量紅/黑K、回後買上漲/彈後空下跌
+  這5組型態訊號，比對到幾個就是「綜合分數」，做多/做空由哪邊分數高決定。
+- **`--method xq`（XQ原則）**：以 `technical_indicators.rs_rating`（RS值/相對強度，
+  1-99分，仿XQ全球贏家／IBD RS Rating，近3/6/9/12個月漲幅加權排名，見
+  `compute_indicators.py` 的 `update_rs_ratings()`）為核心，篩選條件是
+  RS值高、站穩季線、量能未萎縮、貼近波段高點，只挑做多方向。
+
+```bash
+# 強勢股（N檔）
+python analysis/screen_strong_stocks.py --method current --top 30
+python analysis/screen_strong_stocks.py --method xq --top 30
+
+# 鎖股名單（做多+做空）／下週鎖股名單（XQ原則）
+python analysis/generate_watchlist.py --method current --out 鎖股名單.json
+python analysis/generate_watchlist.py --method xq --out 下週鎖股名單_XQ.json
+
+# 持股分析（讀取既有鎖股清單，算P/L、停損停利、續抱/減碼/出場建議）
+python analysis/generate_holdings_report.py 鎖股名單.json --out report.md --compare-new
+```
+
+三支腳本都支援 `--format table|json|csv|md`（screen_strong_stocks.py）或
+`--format json|csv`（generate_watchlist.py），詳細參數見各檔案開頭的 docstring。
+
+`run_daily_update.py` 也整合了這些流程：`--weekly` 一次產生四份週報（強勢股/鎖股名單
+的目前原則+XQ原則）到 `reports/weekly/{日期}/`；`--holdings <檔案>` 額外產生持股分析
+報告到 `reports/holdings/{日期}.md`（自動帶 `--compare-new`）。
+
 ## 資料表用途對照 SKILL 方法論
 
 - `daily_prices`：原始OHLCV，用於型態辨識（頭肩底、W底等）與量價關係判斷。
 - `technical_indicators.ma_alignment`：對應「四線多排/空排」判斷。
+- `technical_indicators.rs_rating`：RS值（相對強度，1-99），對應「XQ原則」強勢股篩選，
+  見上方「強勢股/鎖股名單/持股分析」段落。
 - `technical_indicators.kd_k/kd_d`, `macd_dif/macd_macd/macd_osc`, `rsi6/rsi12`：
   對應選股守則09-11指標系列，用於背離判斷。
 - `technical_indicators.bb_upper/bb_mid/bb_lower`：對應布林通道操作邏輯。

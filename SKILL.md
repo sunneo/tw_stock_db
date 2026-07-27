@@ -125,20 +125,25 @@ GitHub repo 的 `main` 分支每個交易日收盤後會新增一份 `daily/{日
   1. 檢查 `daily/{今天日期}/` 是否已存在（GitHub 更新通常在台股收盤 13:30 之後才會出現，
      盤中查詢請改用 claude-in-chrome 抓 `tw.stock.yahoo.com` 即時報價，不要空等 daily 更新）。
   2. 只拉當天的 4 個 CSV，upsert 進本地資料庫（不需要整包重下載或重 clone `db-snapshot`）。
-  3. 重新計算前一批鎖股/強勢股名單中每一檔的最新分數與漲跌，做「存活／跌出名單／新進榜」
-     三分類比較（即「每日追蹤複查」），而不是每次都从零重新篩選整個市場。
-  4. 若某檔觸及停損/停利門檻（entry_exit_rules.md 的規則），需明確點名提醒。
+  3. 直接執行 `python analysis/generate_holdings_report.py <鎖股清單.json> --compare-new`
+     （見下方「常用工作流程」），重新計算前一批鎖股/強勢股名單中每一檔的最新分數與漲跌，
+     自動產出「存活／跌出名單／新進榜」三分類比較，而不是每次都从零重新篩選整個市場、
+     也不要手動下SQL逐檔重算（腳本已經把這套邏輯固定下來，跑一次幾秒鐘）。
+  4. 若某檔觸及停損/停利門檻（entry_exit_rules.md 的規則，腳本已內建百分比/趨勢/K線
+     三種停損判斷），報告會直接標註「出場」建議，需明確點名提醒。
 - 輸出形式：文字摘要即可，除非使用者要求圖表/檔案。
 
 **每週節奏（完整重新篩選＋報表）**
 - 觸發時機：使用者說「這週的鎖股名單」「幫我做週報」「重新選股」等週期性/全市場用語，
   或該週尚未產生過完整篩選結果時。
 - 流程：
-  1. 用整個近20個交易日窗口（`daily/` 累積或 `db-snapshot`）對全市場（約1985檔）重新跑一次
-     `references/entry_exit_rules.md` ＋ `references/stock_selection_series.md` 的篩選條件
-     （四線多排/空排、站上/跌破月線、回後買上漲/彈後空下跌等）。
-  2. 產出完整的做多/做空鎖股名單、強勢股排行等，並依使用者需求輸出成表格圖片、PPTX、PDF、
-     CSV/JSON。
+  1. 直接執行 `analysis/generate_watchlist.py` / `analysis/screen_strong_stocks.py`
+     （見下方「常用工作流程」），對全市場（約1985檔）套用固定好的篩選邏輯（四線多排/空排、
+     站上/跌破月線、回後買上漲/彈後空下跌等，對應 `references/entry_exit_rules.md` ＋
+     `references/stock_selection_series.md`），不要重新手動下SQL逐檔分析——腳本邏輯已經
+     跟這兩份 reference 對齊，手動重新分析容易產生跟腳本不一致的結果。
+  2. 產出完整的做多/做空鎖股名單、強勢股排行等（腳本已支援 json/csv/md 輸出），
+     依使用者需求再轉成表格圖片、PPTX、PDF。
   3. 同步更新大盤環境判讀（多空排列、資金部位建議）。
 - 輸出形式：使用者通常會需要正式報表（圖片/PPTX/PDF/CSV/JSON），依 SKILL.md 使用情境 C 的
   流程處理。
@@ -152,6 +157,57 @@ GitHub repo 的 `main` 分支每個交易日收盤後會新增一份 `daily/{日
 - `db-snapshot` 分支每月被 force push 覆蓋，不要依賴其 commit 歷史，只信任最新一次 commit。
 - 少數股票（例如 6174、8111）因公司名稱含 Big5/CP950 無法解碼的罕見字，`stock_name`
   會顯示亂碼字元，屬 TWSE 資料源本身限制，非本系統錯誤。
+
+## 常用工作流程（優先用腳本產生，不要重新手動分析）
+
+`tw-stock-db` 專案（本repo `code/tw-stock-db/`）已經把最常用的五種輸出固定成
+`analysis/` 下的程式腳本。**收到以下需求時，優先在 `code/tw-stock-db` 目錄下執行對應
+指令產生結果，讀取輸出檔案後再回覆使用者，不要重新手動下 SQL、逐檔分析全市場**——
+那樣既慢又浪費大量 token，而且每次人工分析的判斷邏輯可能有微妙落差，跟腳本結果對不上。
+
+執行前提（「本週＋完整資料庫＋當日資料」）：先確認資料庫是最新狀態——本機
+`tw_stock.db` 已經跑過當天的 `run_daily_update.py`，或至少 GitHub `main` 分支
+`daily/{今天日期}/` 已同步；資料不是最新時，先執行 `python run_daily_update.py`
+（會自動更新股票清單/大盤/個股OHLCV/技術指標含RS值/每日報告），再跑下面的腳本。
+
+| 使用者需求 | 指令 | 說明 |
+|---|---|---|
+| 鎖股名單 | `python analysis/generate_watchlist.py --method current --out 鎖股名單.json` | 目前原則(型態訊號評分)，做多+做空雙向 |
+| 持股分析 | `python analysis/generate_holdings_report.py 鎖股名單.json --out report.md --compare-new` | 讀取既有鎖股清單，算P/L、停損停利、續抱/減碼/出場建議 |
+| 強勢股（目前原則） | `python analysis/screen_strong_stocks.py --method current --top 30` | 型態訊號評分排行，5組訊號（KD交叉/MACD多空/紅綠柱由縮轉長/放量K/回後買上漲彈後空下跌）比對到幾個就是分數 |
+| 強勢股（XQ原則） | `python analysis/screen_strong_stocks.py --method xq --top 30` | RS值(相對強度)動能排行，見下方「XQ原則的具體定義」 |
+| 下週鎖股名單（XQ原則） | `python analysis/generate_watchlist.py --method xq --out 下週鎖股名單_XQ.json` | RS值動能篩選，只做多（RS值本質是動能排行榜，不適合套同一套邏輯挑放空標的） |
+
+也可以一次跑齊前四種（週報）：`python run_daily_update.py --weekly`，輸出到
+`reports/weekly/{今天日期}/`；想順便更新持股分析可加 `--holdings 鎖股名單.json`，
+輸出到 `reports/holdings/{今天日期}.md`。所有腳本都接受 `--top`/門檻類參數調整，
+細節見各檔案開頭的 docstring 或 `analysis/signals.py`（兩套評分邏輯的共用實作）。
+
+### XQ原則的具體定義（RS值/相對強度）
+
+使用者要求「參考XQ全球贏家的強勢股原則」時，依據的方法論來源是
+[sysjust-xq/XQStrategy](https://github.com/sysjust-xq/XQStrategy)。**重要澄清**：
+這個 repo 實際上是 XQ「選股中心」的通用選股條件腳本庫（依成交量/價格/量能/籌碼/
+基本面/財務/事件分類、上百個 `.xs` 條件檔案，用 XQ 自己的 XS 語言寫成，
+例如「收盤價距離N期高點在X%以內」「近N期至少M期成交量都大於X」這類可自由組合的
+building blocks），**沒有單一「強勢股」標準公式**可以直接照搬。因此 `tw-stock-db`
+採用業界最常見、也最貼近「RS值」精神的具體實作：
+
+- **RS值**（`technical_indicators.rs_rating`，1-99分）：仿 XQ全球贏家／IBD（Investor's
+  Business Daily）的「RS Rating」精神，以個股近3/6/9/12個月漲幅，用 40/20/20/20
+  加權平均出原始動能分數，再對「當天全市場」做百分位排名（99=全市場最強）。由
+  `compute_indicators.py` 的 `update_rs_ratings()` 計算，每次跑 `run_daily_update.py`
+  （或手動跑 `compute_indicators.py`）都會更新最新交易日的排名。
+- **XQ原則強勢股篩選條件**（`screen_strong_stocks.py --method xq` /
+  `generate_watchlist.py --method xq`，門檻皆可用 CLI 參數調整）：
+  RS值 >= 90（預設，約當前全市場最強的10%）、站穩季線（收盤價>=MA60 且 MA20>=MA60，
+  代表中期趨勢向上）、量能未明顯萎縮（今日成交量>=5日均量*0.8）、價格貼近近60個交易日
+  高點（15%以內，代表籌碼安定、隨時可能創新高，而非已經噴出一大段的末端）。
+
+如果之後你在 XQStrategy repo 或其他管道找到更貼近原意的具體門檻/公式，直接調整
+`code/tw-stock-db/analysis/signals.py` 裡 `xq_strong_stock_filter()` 的參數或邏輯即可，
+不需要動其他腳本（`screen_strong_stocks.py` / `generate_watchlist.py` 都是呼叫這支
+共用函式，改一處全部生效）。
 
 ## 使用情境與工作流程
 

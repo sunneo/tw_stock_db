@@ -59,11 +59,17 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
     bb_lower     REAL,           -- 布林下軌 (MA20 - 2*STD)
     bias20       REAL,           -- 20日乖離率 (%)
     ma_alignment TEXT,           -- '多排' / '空排' / '交叉混雜'（5/10/20/60四線排列狀態）
+    rs_rating    REAL,           -- RS值（相對強度評分，1-99），對應 XQ全球贏家/IBD「RS Rating」：
+                                  -- 以近3/6/9/12個月漲幅加權(40/20/20/20)算原始動能分數，
+                                  -- 再對「當天全市場」做百分位排名。數字越高＝相對全市場動能越強，
+                                  -- 由 analysis/compute_indicators.py 的 update_rs_ratings() 算出，
+                                  -- 見 analysis/screen_strong_stocks.py --method xq 用法。
     PRIMARY KEY (stock_code, trade_date),
     FOREIGN KEY (stock_code) REFERENCES stocks(stock_code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_ti_date ON technical_indicators(trade_date);
+CREATE INDEX IF NOT EXISTS idx_ti_date_rs ON technical_indicators(trade_date, rs_rating);
 
 -- 大盤指數（加權指數，作為大盤環境判斷基準）
 CREATE TABLE IF NOT EXISTS market_index (
