@@ -14,7 +14,7 @@ import yfinance as yf
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DB_PATH
+from config import DB_PATH, get_connection
 
 INDEX_TICKERS = {
     "TAIEX": "^TWII",   # 台灣加權指數
@@ -33,7 +33,7 @@ def fetch_and_save(index_code: str, ticker: str, period: str = None, start=None,
         print(f"{index_code}: 無資料")
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     cur = conn.cursor()
     rows = []
     for idx, row in hist.iterrows():

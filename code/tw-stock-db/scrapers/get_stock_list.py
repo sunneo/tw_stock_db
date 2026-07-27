@@ -14,7 +14,7 @@ import pandas as pd
 from io import StringIO
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DB_PATH
+from config import DB_PATH, get_connection
 
 ISIN_URLS = {
     "TWSE": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",  # 上市
@@ -58,7 +58,7 @@ def fetch_stock_list(market: str) -> pd.DataFrame:
 
 
 def save_to_db(df: pd.DataFrame):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     cur = conn.cursor()
     try:
         for _, row in df.iterrows():

@@ -7,18 +7,26 @@
 
 ```
 tw-stock-db/
-├── config.py                      # 共用設定（DB路徑、參數）
+├── config.py                      # 共用設定（DB路徑、參數、DB連線）
+├── watchlist.py                   # 讀取鎖股清單（.json/.csv），多支腳本共用
 ├── requirements.txt
-├── run_daily_update.py            # 每日更新主流程（一鍵跑完整套）
+├── run_daily_update.py            # 每日更新主流程（一鍵跑完整套：全市場）
+├── update_stock.py                # 只更新單一股票（抓OHLCV+算指標）
+├── update_watchlist.py            # 只更新鎖股清單裡的股票（抓OHLCV+算指標+同步GitHub）
+├── capture_intraday.py            # 盤中擷取（例如中午跑一次，見下方說明）
 ├── db/
 │   ├── schema.sql                 # 資料表定義
 │   └── init_db.py                 # 建立資料庫
 ├── scrapers/
 │   ├── get_stock_list.py          # 抓取全部股票代碼/名稱清單
-│   ├── fetch_daily_prices.py      # 抓取個股日K（Yahoo Finance）
+│   ├── fetch_daily_prices.py      # 抓取個股日K（Yahoo Finance，平行抓取）
+│   ├── fetch_intraday_quotes.py   # 抓盤中即時快照（平行抓取）
 │   └── fetch_market_index.py      # 抓取加權指數/櫃買指數
-└── analysis/
-    └── compute_indicators.py      # 計算 MA/KD/MACD/RSI/布林/乖離/均線排列
+├── analysis/
+│   ├── compute_indicators.py      # 計算 MA/KD/MACD/RSI/布林/乖離/均線排列
+│   └── generate_daily_report.py   # 產生每日文字報告
+└── sync/
+    └── sync_to_github.py          # 同步到 GitHub（sunneo/tw_stock_db）
 ```
 
 ## 安裝
@@ -40,9 +48,87 @@ python scrapers/fetch_daily_prices.py --period 2y     # 約1700檔，會需要�
 python analysis/compute_indicators.py --all
 ```
 
-`fetch_daily_prices.py --period 2y` 會逐檔呼叫 Yahoo Finance，1700檔 × 0.5秒延遲，
-粗估至少需要 15-20 分鐘以上，實際依網路狀況與 Yahoo 回應速度而定。如果中途失敗的股票，
-可以查詢 `fetch_log` 資料表找出 `status='failed'` 的代碼，針對性重跑。
+`fetch_daily_prices.py` 用多執行緒平行抓取（預設平行度 = CPU核心數，可用 `--workers`
+覆蓋），比逐檔序列抓取快上數倍；每個執行緒仍保留 `REQUEST_DELAY_SEC` 的請求間隔，
+避免對 Yahoo Finance 太密集。DB 寫入固定在主執行緒序列化執行，避免 SQLite 併發寫入問題。
+如果中途失敗的股票，可以查詢 `fetch_log` 資料表找出 `status='failed'` 的代碼，針對性重跑。
+
+## 只更新單一股票
+
+不用跑全市場的每日更新，只想抓/補某一支股票的資料時：
+
+```bash
+python update_stock.py 2330                  # 預設抓最近5天（增量）
+python update_stock.py 2330 --period 2y      # 抓完整2年歷史
+python update_stock.py 2330 --start 2024-01-01 --end 2024-12-31
+```
+
+會依序抓該股票的OHLCV、寫入 `daily_prices`，然後只重算這支股票的技術指標
+（`technical_indicators`）。如果代碼還不在 `stocks` 資料表裡（例如剛上市的新股、
+或被 `get_stock_list.py` 過濾掉的ETF），會自動用 Yahoo Finance 判斷是上市(.TW)
+還是上櫃(.TWO)，並自動註冊進 `stocks` 表，不需要手動維護清單。
+
+底層也可以分開單獨呼叫：
+
+```bash
+python scrapers/fetch_daily_prices.py --code 2330 --period 2y
+python analysis/compute_indicators.py --code 2330
+```
+
+## 更新「鎖股清單」裡的股票
+
+鎖股清單是 `stock-pattern-analysis` Skill 選股結果的清單檔案（例如週選股報表匯出的
+`鎖股名單.json` / `鎖股名單.csv`），只想針對這份清單裡的股票抓資料、算指標、同步到
+GitHub，不用跑全市場：
+
+```bash
+python update_watchlist.py 鎖股名單.json
+python update_watchlist.py 鎖股名單.csv --period 2y
+python update_watchlist.py 鎖股名單.json --no-sync     # 只更新DB，不推到GitHub
+```
+
+會平行抓取清單內所有股票的OHLCV（平行度同樣預設為CPU核心數）、只重算這些股票的
+技術指標、最後同步到 GitHub（見下方「同步到 GitHub」）。
+
+**支援的清單格式**（見 [watchlist.py](watchlist.py) 完整說明）：
+
+- JSON：`["2330", "2317"]`、`[{"code": "2330"}]`，或 Skill 選股結果原生格式
+  `{"鎖股名單": [{"代碼": "2330", "名稱": "台積電", ...}, ...]}`
+- CSV：有 header 且欄名包含 `code` / `stock_code` / `代碼` / `股票代碼` 其中之一，
+  或沒有 header 時每行第一欄當代碼。
+
+底層也可以分開單獨呼叫（跟 `--code` 用法一致，只是換成 `--watchlist`）：
+
+```bash
+python scrapers/fetch_daily_prices.py --watchlist 鎖股名單.json --period 2y
+python analysis/compute_indicators.py --watchlist 鎖股名單.json
+```
+
+## 盤中擷取（例如每天中午跑一次）
+
+`daily_prices` 只在收盤後才有完整意義的OHLCV；如果想在**交易時間內**（例如中午
+12:00）就看一下鎖股清單目前半場表現，不用等到收盤，用 `capture_intraday.py`：
+
+```bash
+python capture_intraday.py --watchlist 鎖股名單.json
+python capture_intraday.py --code 2330
+python capture_intraday.py --all              # 全市場，量大，建議只在真的需要時用
+python capture_intraday.py --watchlist 鎖股名單.json --no-sync
+```
+
+資料來源是 Yahoo Finance 當天的1分鐘K棒（`period=1d, interval=1m`），彙整出「當日
+截至擷取當下」的開盤/最高/最低/最新成交價/累計成交量，寫入獨立的 `intraday_quotes`
+資料表（跟 `daily_prices` 分開存放，兩者不會互相污染，也**不會**觸發技術指標重算）。
+盤前或非交易日執行會抓不到資料（記錄為 `no_data`，不算失敗）。
+
+會同步匯出到 GitHub 的 `daily/<今天日期>/intraday_quotes.csv`（只有真的擷取過才會
+產生這個檔案）。
+
+**Windows工作排程器設定**（跟每日更新分開排一個新工作）：
+1. 觸發條件：每天，時間設 12:00，僅限週一至週五
+2. 動作：啟動程式 `C:\path\to\venv\Scripts\python.exe`，
+   引數 `capture_intraday.py --watchlist 鎖股名單.json`，
+   啟動位置設為 `C:\path\to\tw-stock-db`
 
 ## 每日更新（排程用）
 

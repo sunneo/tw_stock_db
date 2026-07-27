@@ -22,7 +22,7 @@ def run_step(description: str, args: list[str]):
     print(f"\n{'='*50}\n{description}\n{'='*50}")
     result = subprocess.run([sys.executable] + args, cwd=BASE_DIR)
     if result.returncode != 0:
-        print(f"⚠️  步驟失敗：{description}（結束代碼 {result.returncode}），繼續下一步")
+        print(f"[警告] 步驟失敗：{description}（結束代碼 {result.returncode}），繼續下一步")
 
 
 def main():

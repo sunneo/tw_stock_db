@@ -85,3 +85,19 @@ CREATE TABLE IF NOT EXISTS fetch_log (
     status      TEXT NOT NULL,   -- 'success' / 'failed' / 'no_data'
     message     TEXT
 );
+
+-- 盤中即時快照（例如中午擷取一次當天交易到目前為止的狀況），
+-- 跟 daily_prices（收盤後才算數的完整OHLCV）分開存，避免互相污染。
+CREATE TABLE IF NOT EXISTS intraday_quotes (
+    stock_code   TEXT NOT NULL,
+    snapshot_at  TEXT NOT NULL,   -- 'YYYY-MM-DD HH:MM:SS'，擷取當下的時間戳記
+    price        REAL,           -- 擷取當下的最新成交價
+    open         REAL,           -- 當日開盤價
+    high         REAL,           -- 當日至擷取當下的最高價
+    low          REAL,           -- 當日至擷取當下的最低價
+    volume       INTEGER,        -- 當日至擷取當下的累計成交股數
+    PRIMARY KEY (stock_code, snapshot_at),
+    FOREIGN KEY (stock_code) REFERENCES stocks(stock_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_intraday_snapshot ON intraday_quotes(snapshot_at);

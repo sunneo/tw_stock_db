@@ -7,14 +7,14 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DB_PATH, SCHEMA_PATH
+from config import DB_PATH, SCHEMA_PATH, get_connection
 
 
 def init_db():
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         schema_sql = f.read()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     try:
         conn.executescript(schema_sql)
         conn.commit()

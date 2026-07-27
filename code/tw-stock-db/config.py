@@ -7,6 +7,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "tw_stock.db")
 SCHEMA_PATH = os.path.join(BASE_DIR, "db", "schema.sql")
 
+DB_BUSY_TIMEOUT_SEC = 60  # SQLite 同時只能有一個寫入者；多個更新腳本同時跑時，
+                          # 用這個 timeout 讓後來者等待重試，而不是直接拋出 database is locked
+
+
+def get_connection():
+    """
+    所有腳本共用：帶 busy timeout 的 DB 連線，並開啟 WAL 模式，避免多個更新流程
+    （例如每日更新、鎖股清單更新、盤中擷取）同時跑時互相鎖死。WAL 模式允許一個
+    寫入者 + 多個讀取者同時進行，比預設的 rollback journal 模式更能承受併發。
+    """
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SEC)
+    try:
+        # 切換 journal mode 本身需要短暫的獨占鎖；如果剛好有其他連線在跑，
+        # 這裡會立刻失敗（不會等 busy timeout）。失敗就算了，不影響本次連線可用，
+        # 下次沒有併發時會自動切換成功（WAL 模式的設定是存在資料庫檔案裡的）。
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    return conn
+
 # 爬蟲設定
 REQUEST_DELAY_SEC = 0.5     # 每檔股票之間的延遲，避免請求過於密集
 BATCH_SIZE = 50              # 每批次寫入DB的筆數

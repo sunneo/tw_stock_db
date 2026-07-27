@@ -19,7 +19,7 @@ import sqlite3
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DB_PATH
+from config import DB_PATH, get_connection
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -143,7 +143,7 @@ def render_signal_section(title: str, df: pd.DataFrame) -> str:
 
 
 def generate() -> str:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     try:
         today_date, prev_date = get_two_latest_dates(conn)
         today_df = load_indicator_snapshot(conn, today_date)

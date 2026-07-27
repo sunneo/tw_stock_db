@@ -27,6 +27,7 @@ import os
 import sys
 import json
 import subprocess
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
@@ -34,6 +35,7 @@ from config import (
     GITHUB_SYNC_MAIN_REPO,
     GITHUB_SYNC_SNAPSHOT_REPO,
     SYNC_STATE_PATH,
+    get_connection,
 )
 from sync.export_daily_delta import export_delta
 from sync.db_parts import split_file, PART_SIZE_BYTES
@@ -55,7 +57,7 @@ def run(args, cwd, check=True):
 
 
 def get_latest_trade_date() -> str:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT MAX(trade_date) FROM technical_indicators")
@@ -65,6 +67,19 @@ def get_latest_trade_date() -> str:
         return date_str
     finally:
         conn.close()
+
+
+def get_sync_target_date() -> str:
+    """
+    決定要同步哪一天的資料夾。平常（收盤後跑）technical_indicators 的最新日期
+    就是今天，兩者相同。但如果是中午盤中擷取（capture_intraday.py）先跑、
+    當天的 daily_prices/technical_indicators 還沒產生，technical_indicators
+    最新日期會停在「昨天」，這時候要用「今天」的實際日期，盤中快照才會被
+    匯出到正確的 daily/<今天> 資料夾，而不是被歸到昨天。
+    """
+    latest_in_db = get_latest_trade_date()
+    today = date.today().isoformat()
+    return max(latest_in_db, today)
 
 
 def load_state() -> dict:
@@ -163,7 +178,7 @@ def sync_full_snapshot(month_label: str):
 
 
 def main():
-    trade_date = get_latest_trade_date()
+    trade_date = get_sync_target_date()
     month_label = trade_date[:7]  # YYYY-MM
 
     sync_daily_delta(trade_date)
