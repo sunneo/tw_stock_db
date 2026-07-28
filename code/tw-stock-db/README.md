@@ -21,7 +21,7 @@ tw-stock-db/
 │   ├── get_stock_list.py          # 抓取全部股票代碼/名稱清單
 │   ├── fetch_daily_prices.py      # 抓取個股日K（Yahoo Finance，平行抓取）
 │   ├── fetch_intraday_quotes.py   # 抓盤中即時快照（平行抓取）
-│   └── fetch_market_index.py      # 抓取加權指數/櫃買指數 + 美股觀察指標(SOX/SPX/NASDAQ)
+│   └── fetch_market_index.py      # 抓取加權指數/櫃買指數 + 美股觀察指標(SOX/SPX/NASDAQ/DJI)
 ├── analysis/
 │   ├── compute_indicators.py      # 計算 MA/KD/MACD/RSI/布林/乖離/均線排列/RS值(相對強度)
 │   ├── generate_daily_report.py   # 產生每日文字報告
@@ -258,8 +258,9 @@ python analysis/generate_holdings_report.py 鎖股名單.json --out report.md --
 - `technical_indicators.bb_upper/bb_mid/bb_lower`：對應布林通道操作邏輯。
 - `technical_indicators.bias20`：對應乖離率判斷（葛蘭碧第4/8買賣點）。
 - `market_index`：大盤指數資料，用於「大盤決定積極度」原則的環境判斷。`index_code` 包含
-  `TAIEX`/`TPEx`（台股）與 `SOX`/`SPX`/`NASDAQ`（美股觀察指標：費城半導體/標普500/那斯達克
-  綜合），美股連動判讀規則見 `SKILL_claude_desktop_home.md`「美股觀察指標與台股連動判讀」。
+  `TAIEX`/`TPEx`（台股）與 `SOX`/`SPX`/`NASDAQ`/`DJI`（美股觀察指標：費城半導體/標普500/
+  那斯達克綜合/道瓊工業指數），美股連動判讀規則見 `SKILL_claude_desktop_home.md`
+  「美股觀察指標與台股連動判讀」。
 
 ## 已知限制
 

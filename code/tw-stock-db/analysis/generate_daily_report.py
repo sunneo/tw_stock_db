@@ -86,7 +86,7 @@ def market_summary(conn) -> str:
         lines.append(_index_line(conn, index_code, label))
     lines.append("")
     lines.append("### 美股觀察指標（隔夜，領先參考用，見 SKILL 美股連動判讀規則）")
-    for index_code, label in [("SOX", "費城半導體"), ("SPX", "標普500"), ("NASDAQ", "那斯達克綜合")]:
+    for index_code, label in [("SOX", "費城半導體"), ("SPX", "標普500"), ("NASDAQ", "那斯達克綜合"), ("DJI", "道瓊工業指數")]:
         lines.append(_index_line(conn, index_code, label))
     lines.append("")
     return "\n".join(lines)
