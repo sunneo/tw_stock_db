@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_ti_date_rs ON technical_indicators(trade_date, rs
 
 -- 大盤指數（加權指數，作為大盤環境判斷基準）
 CREATE TABLE IF NOT EXISTS market_index (
-    index_code  TEXT NOT NULL,    -- 'TAIEX' 或 'TPEx'
+    index_code  TEXT NOT NULL,    -- 'TAIEX'/'TPEx'（台股）或 'SOX'/'SPX'/'NASDAQ'（美股觀察指標）
     trade_date  TEXT NOT NULL,
     open        REAL,
     high        REAL,

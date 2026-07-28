@@ -57,30 +57,37 @@ def load_indicator_snapshot(conn, trade_date: str) -> pd.DataFrame:
     )
 
 
+def _index_line(conn, index_code: str, label: str) -> str:
+    df = pd.read_sql(
+        "SELECT trade_date, close FROM market_index WHERE index_code = ? ORDER BY trade_date",
+        conn, params=(index_code,),
+    )
+    if len(df) < 21:
+        return f"- {label}：資料不足，略過"
+    df["ma20"] = df["close"].rolling(20).mean()
+    df["ma60"] = df["close"].rolling(60).mean() if len(df) >= 60 else None
+    last, prev = df.iloc[-1], df.iloc[-6] if len(df) >= 6 else df.iloc[0]
+    chg1 = (df.iloc[-1]["close"] / df.iloc[-2]["close"] - 1) * 100
+    chg5 = (last["close"] / prev["close"] - 1) * 100
+    pos_ma20 = "站上" if last["close"] >= last["ma20"] else "跌破"
+    ma60_txt = ""
+    if last["ma60"] is not None and pd.notna(last["ma60"]):
+        pos_ma60 = "站上" if last["close"] >= last["ma60"] else "跌破"
+        ma60_txt = f"，{pos_ma60}季線(MA60)"
+    return (
+        f"- {label}（{df.iloc[-1]['trade_date']}）：收 {last['close']:.2f}，"
+        f"單日 {chg1:+.2f}%，近5日 {chg5:+.2f}%，{pos_ma20}月線(MA20){ma60_txt}"
+    )
+
+
 def market_summary(conn) -> str:
-    lines = ["## 大盤環境", ""]
+    lines = ["## 大盤環境", "", "### 台股"]
     for index_code, label in [("TAIEX", "加權指數"), ("TPEx", "櫃買指數")]:
-        df = pd.read_sql(
-            "SELECT trade_date, close FROM market_index WHERE index_code = ? ORDER BY trade_date",
-            conn, params=(index_code,),
-        )
-        if len(df) < 21:
-            lines.append(f"- {label}：資料不足，略過")
-            continue
-        df["ma20"] = df["close"].rolling(20).mean()
-        df["ma60"] = df["close"].rolling(60).mean() if len(df) >= 60 else None
-        last, prev = df.iloc[-1], df.iloc[-6] if len(df) >= 6 else df.iloc[0]
-        chg1 = (df.iloc[-1]["close"] / df.iloc[-2]["close"] - 1) * 100
-        chg5 = (last["close"] / prev["close"] - 1) * 100
-        pos_ma20 = "站上" if last["close"] >= last["ma20"] else "跌破"
-        ma60_txt = ""
-        if last["ma60"] is not None and pd.notna(last["ma60"]):
-            pos_ma60 = "站上" if last["close"] >= last["ma60"] else "跌破"
-            ma60_txt = f"，{pos_ma60}季線(MA60)"
-        lines.append(
-            f"- {label}（{df.iloc[-1]['trade_date']}）：收 {last['close']:.2f}，"
-            f"單日 {chg1:+.2f}%，近5日 {chg5:+.2f}%，{pos_ma20}月線(MA20){ma60_txt}"
-        )
+        lines.append(_index_line(conn, index_code, label))
+    lines.append("")
+    lines.append("### 美股觀察指標（隔夜，領先參考用，見 SKILL 美股連動判讀規則）")
+    for index_code, label in [("SOX", "費城半導體"), ("SPX", "標普500"), ("NASDAQ", "那斯達克綜合")]:
+        lines.append(_index_line(conn, index_code, label))
     lines.append("")
     return "\n".join(lines)
 
