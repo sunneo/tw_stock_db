@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="zh-TW" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>台股追蹤</title>
+<style>
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+
+/* ── Theme tokens ── */
+:root {
+  --bg0: #f8f9fa;
+  --bg1: #ffffff;
+  --bg2: #f0f1f3;
+  --bg3: #e4e6ea;
+  --txt0: #1a1a2e;
+  --txt1: #374151;
+  --txt2: #6b7280;
+  --bdr:  #d1d5db;
+  --acc:  #2563eb;
+  --acc2: #dbeafe;
+  --up:   #dc2626;   /* 漲 = 紅 */
+  --dn:   #16a34a;   /* 跌 = 綠 */
+  --shd:  0 2px 8px rgba(0,0,0,.10);
+  --shd2: 0 4px 16px rgba(0,0,0,.14);
+  --sel:  #dbeafe;
+}
+[data-theme="dark"] {
+  --bg0: #0d1117;
+  --bg1: #161b22;
+  --bg2: #21262d;
+  --bg3: #30363d;
+  --txt0: #e6edf3;
+  --txt1: #c9d1d9;
+  --txt2: #8b949e;
+  --bdr:  #30363d;
+  --acc:  #58a6ff;
+  --acc2: #1a3a5e;
+  --up:   #f87171;
+  --dn:   #4ade80;
+  --shd:  0 2px 8px rgba(0,0,0,.40);
+  --shd2: 0 4px 16px rgba(0,0,0,.55);
+  --sel:  #1a3a5e;
+}
+
+/* ── Layout ── */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
+  background: var(--bg0);
+  color: var(--txt0);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Navbar ── */
+#navbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--bdr);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 200;
+  height: 44px;
+}
+.brand { font-weight: 700; font-size: 15px; color: var(--acc); white-space: nowrap; }
+.spacer { flex: 1; }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt0);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg3); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.icon { padding: 4px 8px; }
+.btn.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
+.btn.primary:hover { opacity: .88; }
+
+/* ── Menu dropdown ── */
+.menu-wrap { position: relative; }
+#menu-drop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 140px;
+  background: var(--bg1);
+  border: 1px solid var(--bdr);
+  border-radius: 8px;
+  box-shadow: var(--shd2);
+  overflow: hidden;
+  z-index: 999;
+}
+#menu-drop.hidden { display: none; }
+.menu-item {
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--txt0);
+  transition: background .12s;
+}
+.menu-item:hover { background: var(--bg3); }
+
+/* ── Main container ── */
+#main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ── */
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  min-width: 220px;
+  max-width: 380px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--bdr);
+  background: var(--bg1);
+  overflow: hidden;
+}
+#sidebar-top {
+  padding: 8px;
+  border-bottom: 1px solid var(--bdr);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+select {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt0);
+  font-size: 13px;
+  cursor: pointer;
+}
+select:focus { outline: 2px solid var(--acc); }
+
+/* watchlist controls */
+#wl-bar { display: flex; gap: 4px; }
+#wl-input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt0);
+  font-size: 13px;
+}
+#wl-input:focus { outline: 2px solid var(--acc); }
+
+/* ── Stock list ── */
+#stock-list-wrap {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#stock-list-wrap::-webkit-scrollbar { width: 5px; }
+#stock-list-wrap::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 3px; }
+#stock-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+#stock-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg2);
+  color: var(--txt2);
+  font-weight: 600;
+  padding: 5px 4px;
+  text-align: right;
+  border-bottom: 1px solid var(--bdr);
+  white-space: nowrap;
+}
+#stock-table thead th:first-child { text-align: left; }
+#stock-table tbody tr {
+  border-bottom: 1px solid var(--bdr);
+  cursor: pointer;
+  transition: background .1s;
+}
+#stock-table tbody tr:hover { background: var(--bg2); }
+#stock-table tbody tr.selected { background: var(--sel); }
+#stock-table tbody tr.drag-over { border-top: 2px solid var(--acc); }
+#stock-table td {
+  padding: 5px 4px;
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+#stock-table td:first-child { text-align: left; }
+.td-code { font-weight: 600; color: var(--acc); }
+.td-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; text-align: left; color: var(--txt1); }
+.td-up { color: var(--up); }
+.td-dn { color: var(--dn); }
+.td-flat { color: var(--txt2); }
+.td-spark { text-align: center; }
+.del-btn {
+  padding: 1px 5px;
+  font-size: 11px;
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--txt2);
+  cursor: pointer;
+}
+.del-btn:hover { background: #fee2e2; color: #dc2626; border-color: #dc2626; }
+
+/* empty state */
+.empty-hint {
+  padding: 24px;
+  text-align: center;
+  color: var(--txt2);
+  font-size: 13px;
+}
+
+/* ── Paginator ── */
+#paginator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-top: 1px solid var(--bdr);
+  flex-shrink: 0;
+  gap: 6px;
+}
+#page-info { font-size: 12px; color: var(--txt2); white-space: nowrap; }
+
+/* ── Chart area ── */
+#chart-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg0);
+}
+#chart-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bdr);
+  background: var(--bg1);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+}
+#chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
+#chart-info  { font-size: 12px; color: var(--txt2); }
+#chart-wrap  { flex: 1; position: relative; overflow: hidden; }
+#main-chart  { display: block; cursor: crosshair; }
+
+/* ── Loading overlay ── */
+#loading {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+#loading.hidden { display: none; }
+#loading-box {
+  background: var(--bg1);
+  border-radius: 12px;
+  padding: 28px 32px;
+  width: 380px;
+  max-width: 92vw;
+  box-shadow: var(--shd2);
+}
+#loading-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; color: var(--txt0); }
+#loading-msg   { font-size: 13px; color: var(--txt1); margin-bottom: 10px; min-height: 18px; }
+#loading-bar-wrap {
+  height: 8px;
+  background: var(--bg3);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+#loading-bar { height: 100%; background: var(--acc); border-radius: 4px; transition: width .2s; width: 0%; }
+#loading-sub  { font-size: 11px; color: var(--txt2); min-height: 16px; }
+#loading-err  { font-size: 12px; color: #dc2626; margin-top: 8px; display: none; }
+#loading-retry { margin-top: 12px; display: none; }
+
+/* ── Resize handle ── */
+#resize-handle {
+  width: 4px;
+  background: transparent;
+  cursor: col-resize;
+  flex-shrink: 0;
+  transition: background .15s;
+}
+#resize-handle:hover, #resize-handle.dragging { background: var(--acc); }
+
+/* ── Scrollbar global ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 3px; }
+
+/* ── Hidden utility ── */
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ══ NAVBAR ══ -->
+<nav id="navbar">
+  <div class="menu-wrap">
+    <button class="btn icon" id="menu-btn" title="選單">☰</button>
+    <div id="menu-drop" class="hidden">
+      <div class="menu-item" data-act="new">📄 新增設定</div>
+      <div class="menu-item" data-act="open">📂 開啟設定</div>
+      <div class="menu-item" data-act="export">💾 匯出設定</div>
+      <div class="menu-item" data-act="save">✅ 儲存設定</div>
+    </div>
+  </div>
+  <span class="brand">📊 台股追蹤</span>
+  <div class="spacer"></div>
+  <button class="btn" id="sync-btn" title="更新資料">🔄 更新</button>
+  <button class="btn icon" id="theme-btn" title="切換主題">🌙</button>
+</nav>
+
+<!-- ══ MAIN ══ -->
+<div id="main">
+
+  <!-- sidebar -->
+  <aside id="sidebar">
+    <div id="sidebar-top">
+      <select id="view-sel">
+        <option value="sector">類股</option>
+        <option value="top100">強勢股 100 檔</option>
+        <option value="watchlist">自選股</option>
+      </select>
+      <select id="sector-sel" class="hidden"></select>
+      <div id="wl-bar" class="hidden">
+        <input id="wl-input" type="text" placeholder="輸入股票代號，按 Enter 新增">
+        <button class="btn primary" id="wl-add">+</button>
+      </div>
+    </div>
+    <div id="stock-list-wrap">
+      <table id="stock-table">
+        <thead>
+          <tr>
+            <th>代號</th>
+            <th>名稱</th>
+            <th>開</th>
+            <th>高</th>
+            <th>低</th>
+            <th>收</th>
+            <th>趨勢</th>
+          </tr>
+        </thead>
+        <tbody id="stock-tbody"></tbody>
+      </table>
+    </div>
+    <div id="paginator">
+      <button class="btn icon" id="prev-btn">◀</button>
+      <span id="page-info">— / —</span>
+      <button class="btn icon" id="next-btn">▶</button>
+    </div>
+  </aside>
+
+  <!-- resize handle -->
+  <div id="resize-handle"></div>
+
+  <!-- chart -->
+  <div id="chart-area">
+    <div id="chart-header">
+      <span id="chart-title">請從左側選擇股票</span>
+      <span id="chart-info"></span>
+    </div>
+    <div id="chart-wrap">
+      <canvas id="main-chart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ══ LOADING OVERLAY ══ -->
+<div id="loading">
+  <div id="loading-box">
+    <div id="loading-title">📥 初始化資料庫</div>
+    <div id="loading-msg">請稍候…</div>
+    <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+    <div id="loading-sub"></div>
+    <div id="loading-err"></div>
+    <div id="loading-retry"><button class="btn primary" id="retry-btn">重試</button></div>
+  </div>
+</div>
+
+<!-- hidden file input -->
+<input id="file-input" type="file" accept=".json" style="display:none">
+
+<!-- sql.js CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"
+        crossorigin="anonymous"></script>
+
+<script>
+'use strict';
+
+/* ════════════════════════════════════════
+   CONSTANTS
+   ════════════════════════════════════════ */
+const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
+const MANIFEST_URL = RAW + '/db-snapshot/tw_stock.db.manifest.json';
+
+const SECTOR_NAMES = {
+  1:'水泥工業', 2:'食品工業', 3:'塑膠工業', 4:'紡織纖維',
+  5:'電機機械', 6:'電器電纜', 7:'化學工業', 8:'玻璃陶瓷',
+  9:'鋼鐵工業', 10:'橡膠工業', 11:'汽車工業', 12:'半導體業',
+  13:'電腦及週邊設備業', 14:'光電業', 15:'通信網路業',
+  16:'電子零組件業', 17:'電子通路業', 18:'資訊服務業',
+  19:'其他電子業', 20:'建材營造業', 21:'航運業',
+  22:'觀光餐旅業', 23:'金融保險業', 24:'貿易百貨業',
+  25:'油電燃氣業', 26:'其他業',
+};
+
+const PAGE_SIZE = 20;
+
+/* ════════════════════════════════════════
+   CANVAS HELPER — rounded rect (always resets path)
+   ════════════════════════════════════════ */
+function rrect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+/* ════════════════════════════════════════
+   SETTINGS  (localStorage)
+   ════════════════════════════════════════ */
+const Settings = (() => {
+  const KEY = 'tw_stock_cfg';
+  let d = {};
+
+  function defaults() {
+    return { theme:'light', view:'sector', sectorId:null,
+             selectedStock:null, watchlist:[], lastDailyDate:null };
+  }
+  function load() {
+    try { d = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
+    catch { d = defaults(); }
+  }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} }
+  function get(k) { return d[k]; }
+  function set(k, v) { d[k] = v; save(); }
+  function reset() { d = defaults(); save(); }
+  function exportSettings() {
+    const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tw_stock_settings.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  async function importFile(file) {
+    const txt = await file.text();
+    const src = JSON.parse(txt);
+    if (Array.isArray(src.watchlist)) d.watchlist = src.watchlist;
+    if (src.theme) d.theme = src.theme;
+    save();
+  }
+
+  load();
+  return { get, set, reset, save, exportSettings, importFile };
+})();
+
+/* ════════════════════════════════════════
+   IDB STORAGE
+   ════════════════════════════════════════ */
+const IDB = (() => {
+  let _db = null;
+  const DB_NAME = 'tw_stock_idb';
+  const DB_VER  = 1;
+
+  async function open() {
+    if (_db) return _db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VER);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('blobs')) db.createObjectStore('blobs', { keyPath:'k' });
+        if (!db.objectStoreNames.contains('meta'))  db.createObjectStore('meta',  { keyPath:'k' });
+      };
+      req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+      req.onerror   = e => reject(e.target.error);
+    });
+  }
+
+  async function set(store, k, v) {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).put({ k, v });
+      tx.oncomplete = res;
+      tx.onerror = e => rej(e.target.error);
+    });
+  }
+
+  async function get(store, k) {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx  = db.transaction(store, 'readonly');
+      const req = tx.objectStore(store).get(k);
+      req.onsuccess = e => res(e.target.result?.v);
+      req.onerror   = e => rej(e.target.error);
+    });
+  }
+
+  return { set, get };
+})();
+
+/* ════════════════════════════════════════
+   DB MANAGER
+   ════════════════════════════════════════ */
+const DBMgr = (() => {
+  let SQL = null;
+  let db  = null;
+
+  /* ── helpers ── */
+  function query(sql, params = []) {
+    if (!db) return [];
+    try {
+      const res = db.exec(sql, params);
+      if (!res.length) return [];
+      const { columns, values } = res[0];
+      return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+    } catch (e) { console.warn('SQL error:', e.message, '\n', sql); return []; }
+  }
+
+  function run(sql, params = []) {
+    if (!db) return;
+    try { db.run(sql, params); } catch (e) { console.warn('SQL run error:', e.message); }
+  }
+
+  /* ── SHA-256 via SubtleCrypto ── */
+  async function sha256hex(buf) {
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /* ── Persist current db back to IDB ── */
+  async function persist() {
+    if (!db) return;
+    const data = db.export();
+    await IDB.set('blobs', 'sqlite', data.buffer);
+  }
+
+  /* ── Init: try to load from IDB ── */
+  async function init(onProgress) {
+    onProgress('載入 sql.js…', 3);
+    SQL = await initSqlJs({
+      locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}`
+    });
+
+    const bytes  = await IDB.get('blobs', 'sqlite');
+    const dbMeta = await IDB.get('meta',  'dbmeta');
+
+    if (bytes && dbMeta) {
+      const now = new Date();
+      const label = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+      if (dbMeta.monthLabel === label) {
+        onProgress('從本地存儲載入資料庫…', 95);
+        db = new SQL.Database(new Uint8Array(bytes));
+        onProgress('就緒', 100);
+        return false; // no full download needed
+      }
+    }
+    return true; // need download
+  }
+
+  /* ── Download & assemble db-snapshot ── */
+  async function download(onProgress) {
+    onProgress('下載 manifest…', 2);
+    const mRes = await fetch(MANIFEST_URL);
+    if (!mRes.ok) throw new Error('無法取得 manifest: ' + mRes.status);
+    const manifest = await mRes.json();
+
+    const parts  = manifest.parts;
+    const total  = manifest.original_size_bytes;
+    const merged = new Uint8Array(total);
+    let offset   = 0;
+
+    for (let i = 0; i < parts.length; i++) {
+      const pct = 5 + Math.round((i / parts.length) * 65);
+      onProgress(`下載 ${parts[i]} (${i+1}/${parts.length})…`, pct);
+      const url  = `${RAW}/db-snapshot/${parts[i]}`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`無法下載 ${parts[i]}: ${resp.status}`);
+      const buf  = await resp.arrayBuffer();
+      merged.set(new Uint8Array(buf), offset);
+      offset += buf.byteLength;
+    }
+
+    onProgress('驗證 SHA-256…', 72);
+    const hex = await sha256hex(merged.buffer);
+    if (hex !== manifest.sha256) throw new Error('SHA-256 驗證失敗，請重試');
+
+    onProgress('儲存至本地…', 80);
+    await IDB.set('blobs', 'sqlite', merged.buffer);
+    const now = new Date();
+    await IDB.set('meta', 'dbmeta', {
+      monthLabel: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`,
+      sha256: manifest.sha256,
+      storedAt: now.toISOString(),
+    });
+
+    onProgress('開啟資料庫…', 90);
+    db = new SQL.Database(merged);
+  }
+
+  /* ── CSV helpers ── */
+  function parseCSV(text) {
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return { headers: [], rows: [] };
+    const headers = lines[0].trim().split(',');
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cells = splitCSVLine(lines[i]);
+      if (cells.length === headers.length) rows.push(cells);
+    }
+    return { headers, rows };
+  }
+
+  function splitCSVLine(line) {
+    const res = []; let field = ''; let q = false;
+    for (const c of line) {
+      if (c === '"') { q = !q; }
+      else if (c === ',' && !q) { res.push(field.trim()); field = ''; }
+      else { field += c; }
+    }
+    res.push(field.trim());
+    return res;
+  }
+
+  const NUM_COLS = new Set([
+    'open','high','low','close','volume','sector_id','is_active',
+    'ma5','ma10','ma20','ma60','vol_ma5','kd_k','kd_d',
+    'macd_dif','macd_macd','macd_osc','rsi6','rsi12',
+    'bb_upper','bb_mid','bb_lower','bias20','rs_rating',
+  ]);
+
+  function coerce(col, val) {
+    if (val === '' || val === null || val === undefined) return null;
+    return NUM_COLS.has(col) ? (parseFloat(val) || null) : val;
+  }
+
+  function upsertCSV(tableName, text) {
+    if (!db) return;
+    const { headers, rows } = parseCSV(text);
+    if (!headers.length) return;
+    const cols = headers.join(', ');
+    const ph   = headers.map(() => '?').join(', ');
+    const stmt = `INSERT OR REPLACE INTO ${tableName} (${cols}) VALUES (${ph})`;
+    for (const row of rows) {
+      try { db.run(stmt, headers.map((h, i) => coerce(h, row[i]))); }
+      catch { /* skip bad rows */ }
+    }
+  }
+
+  /* ── Fetch & apply one daily folder ── */
+  async function applyDaily(date, onProgress) {
+    const base  = `${RAW}/main/daily/${date}`;
+    const files = [
+      ['stocks',               'stocks'],
+      ['daily_prices',         'daily_prices'],
+      ['technical_indicators', 'technical_indicators'],
+      ['market_index',         'market_index'],
+    ];
+    for (const [name, table] of files) {
+      onProgress?.(`套用 ${name}.csv (${date})`);
+      try {
+        const r = await fetch(`${base}/${name}.csv`);
+        if (r.ok) upsertCSV(table, await r.text());
+      } catch { /* skip */ }
+    }
+  }
+
+  /* ── Sync missing daily dates ── */
+  async function syncDaily(onProgress, forced = false) {
+    const lastStored = Settings.get('lastDailyDate');
+    const today = new Date();
+    const todayStr = fmtDate(today);
+
+    if (!forced && lastStored === todayStr) return; // already up-to-date
+
+    // Build list of trading day candidates since last stored date
+    const from = lastStored
+      ? new Date(new Date(lastStored).getTime() + 86400000)
+      : new Date(today.getTime() - 14 * 86400000);
+
+    const dates = [];
+    for (let d = new Date(from); d <= today; d.setDate(d.getDate() + 1)) {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) dates.push(fmtDate(d));
+    }
+
+    for (const date of dates) {
+      onProgress?.(`更新日資料: ${date}`, 97);
+      await applyDaily(date, onProgress);
+      Settings.set('lastDailyDate', date);
+    }
+
+    if (dates.length) await persist();
+  }
+
+  function fmtDate(d) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  /* ── Public query helpers ── */
+  function getLatestDate() {
+    return query('SELECT MAX(trade_date) AS d FROM daily_prices')[0]?.d || null;
+  }
+
+  function getSectors() {
+    return query('SELECT DISTINCT CAST(sector_id AS INTEGER) AS sid FROM stocks WHERE is_active=1 ORDER BY sid');
+  }
+
+  function getStocksBySector(sectorId) {
+    return query('SELECT stock_code, stock_name FROM stocks WHERE CAST(sector_id AS INTEGER)=? AND is_active=1 ORDER BY stock_code', [sectorId]);
+  }
+
+  function getTop100() {
+    /* Use latest date that has BOTH price and technical data */
+    const d = query(`
+      SELECT MAX(t.trade_date) AS d
+      FROM technical_indicators t
+      JOIN daily_prices p ON t.stock_code=p.stock_code AND t.trade_date=p.trade_date
+    `)[0]?.d;
+    if (!d) return [];
+    return query(`
+      SELECT s.stock_code, s.stock_name,
+             p.open, p.high, p.low, p.close,
+             t.rs_rating
+      FROM stocks s
+      JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
+      JOIN technical_indicators t ON s.stock_code=t.stock_code AND t.trade_date=?
+      WHERE s.is_active=1
+      ORDER BY t.rs_rating DESC
+      LIMIT 100
+    `, [d, d]);
+  }
+
+  function getWatchlistStocks(codes) {
+    if (!codes.length) return [];
+    const d  = getLatestDate();
+    const ph = codes.map(() => '?').join(',');
+    return query(`
+      SELECT s.stock_code, s.stock_name,
+             p.open, p.high, p.low, p.close
+      FROM stocks s
+      LEFT JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
+      WHERE s.stock_code IN (${ph})
+    `, [d, ...codes]);
+  }
+
+  function getStockInfo(code) {
+    return query('SELECT stock_code, stock_name FROM stocks WHERE stock_code=?', [code])[0] || null;
+  }
+
+  function getPriceHistory(code, limit = 250) {
+    return query(
+      'SELECT trade_date, open, high, low, close, volume FROM daily_prices WHERE stock_code=? ORDER BY trade_date DESC LIMIT ?',
+      [code, limit]
+    ).reverse();
+  }
+
+  function getBatchSparklines(codes, days = 20) {
+    if (!codes.length) return {};
+    const ph      = codes.map(() => '?').join(',');
+    /* Limit to last ~60 calendar days to keep the query fast */
+    const cutoff  = query('SELECT DATE(MAX(trade_date), \'-60 days\') AS d FROM daily_prices')[0]?.d || '2000-01-01';
+    const rows    = query(`
+      SELECT stock_code, trade_date, close
+      FROM daily_prices
+      WHERE stock_code IN (${ph}) AND trade_date >= ?
+      ORDER BY stock_code, trade_date DESC
+    `, [...codes, cutoff]);
+
+    const map = {};
+    for (const r of rows) {
+      if (!map[r.stock_code]) map[r.stock_code] = [];
+      if (map[r.stock_code].length < days) map[r.stock_code].unshift(r.close);
+    }
+    return map;
+  }
+
+  return {
+    init, download, syncDaily,
+    getSectors, getStocksBySector, getTop100, getWatchlistStocks,
+    getStockInfo, getPriceHistory, getBatchSparklines,
+    getLatestDate,
+    isReady: () => !!db,
+  };
+})();
+
+/* ════════════════════════════════════════
+   CHART MANAGER  (Canvas)
+   ════════════════════════════════════════ */
+const Chart = (() => {
+  const canvas = document.getElementById('main-chart');
+  const ctx    = canvas.getContext('2d');
+  let data     = [];
+  let cross    = null;  // {x, y} mouse position
+  let locked   = false;
+
+  function isDark() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
+
+  function tok(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function resize() {
+    const wrap = document.getElementById('chart-wrap');
+    canvas.width  = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+    draw();
+  }
+
+  function setData(rows) {
+    data   = rows;
+    cross  = null;
+    locked = false;
+    draw();
+  }
+
+  function fmtVol(v) {
+    if (!v && v !== 0) return '-';
+    if (v >= 1e8) return (v / 1e8).toFixed(1) + '億';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e4) return (v / 1e4).toFixed(0) + '萬';
+    return v.toLocaleString();
+  }
+
+  function draw() {
+    const W = canvas.width, H = canvas.height;
+    if (!W || !H) return;
+
+    const dark    = isDark();
+    const bgCol   = tok('--bg1');
+    const txtCol  = tok('--txt0');
+    const txt2Col = tok('--txt2');
+    const gridCol = dark ? '#1e2530' : '#f3f4f6';
+    const bdrCol  = tok('--bdr');
+    const upCol   = tok('--up');
+    const dnCol   = tok('--dn');
+    const accCol  = tok('--acc');
+
+    ctx.fillStyle = bgCol;
+    ctx.fillRect(0, 0, W, H);
+
+    if (!data.length) {
+      ctx.fillStyle = txt2Col;
+      ctx.font      = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('請從左側點選股票', W / 2, H / 2);
+      return;
+    }
+
+    /* layout */
+    const PAD_L   = 8;
+    const PAD_R   = 62;
+    const PAD_TOP = 12;
+    const PAD_BOT = 22;
+    const SEP     = Math.floor(H * 0.67);   // candlestick / volume separator
+    const PRICE_H = SEP - PAD_TOP;
+    const VOL_H   = H - SEP - PAD_BOT - 4;
+    const drawW   = W - PAD_L - PAD_R;
+    const N       = data.length;
+    const step    = drawW / N;
+    const candleW = Math.max(1, Math.floor(step * 0.7));
+
+    /* price range */
+    let minP = Infinity, maxP = -Infinity;
+    for (const d of data) {
+      if (d.high < minP) minP = d.high;  // shouldn't happen
+      if (d.high > maxP) maxP = d.high;
+      if (d.low  < minP) minP = d.low;
+    }
+    const pPad = (maxP - minP) * 0.06 || 1;
+    minP -= pPad; maxP += pPad;
+
+    /* volume range */
+    let maxV = 0;
+    for (const d of data) if ((d.volume || 0) > maxV) maxV = d.volume;
+
+    const pY = p => PAD_TOP + ((maxP - p) / (maxP - minP)) * PRICE_H;
+    const vY = v => SEP + 4 + (1 - (v / maxV)) * VOL_H;
+
+    /* grid */
+    ctx.strokeStyle = gridCol;
+    ctx.lineWidth   = 1;
+    const ticks = 5;
+    for (let i = 0; i <= ticks; i++) {
+      const p = minP + (maxP - minP) * i / ticks;
+      const y = pY(p);
+      ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+      ctx.fillStyle  = txt2Col;
+      ctx.font       = '10px monospace';
+      ctx.textAlign  = 'right';
+      ctx.fillText(p.toFixed(2), W - 2, y + 3);
+    }
+
+    /* separator */
+    ctx.strokeStyle = bdrCol; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD_L, SEP); ctx.lineTo(W, SEP); ctx.stroke();
+
+    /* vol label */
+    ctx.fillStyle = txt2Col; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(fmtVol(maxV), W - 2, SEP + 14);
+
+    /* candles & volume */
+    for (let i = 0; i < N; i++) {
+      const d  = data[i];
+      const cx = PAD_L + (i + 0.5) * step;
+      const up = d.close >= d.open;
+      const col = up ? upCol : dnCol;
+
+      /* wick */
+      ctx.strokeStyle = col; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, pY(d.high));
+      ctx.lineTo(cx, pY(d.low));
+      ctx.stroke();
+
+      /* body */
+      const y1 = pY(Math.max(d.open, d.close));
+      const y2 = pY(Math.min(d.open, d.close));
+      const bh = Math.max(1, y2 - y1);
+      ctx.fillStyle = up ? upCol : 'transparent';
+      ctx.strokeStyle = col; ctx.lineWidth = 1;
+      ctx.fillRect(cx - candleW / 2, y1, candleW, bh);
+      ctx.strokeRect(cx - candleW / 2, y1, candleW, bh);
+
+      /* volume bar */
+      const vTop  = vY(d.volume || 0);
+      const vBot  = H - PAD_BOT;
+      ctx.fillStyle   = col;
+      ctx.globalAlpha = 0.65;
+      ctx.fillRect(cx - candleW / 2, vTop, candleW, vBot - vTop);
+      ctx.globalAlpha = 1;
+
+      /* date axis (sparse) */
+      const interval = Math.max(1, Math.floor(N / 8));
+      if (i % interval === 0) {
+        ctx.fillStyle  = txt2Col;
+        ctx.font       = '10px sans-serif';
+        ctx.textAlign  = 'center';
+        ctx.fillText((d.trade_date || '').slice(5), cx, H - 5);
+      }
+    }
+
+    /* ── crosshair ── */
+    if (cross) {
+      const { x, y } = cross;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = dark ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.35)';
+      ctx.lineWidth   = 1;
+      ctx.beginPath(); ctx.moveTo(x, 0);   ctx.lineTo(x, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y);   ctx.lineTo(W, y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      /* nearest candle index */
+      const idx = Math.min(N - 1, Math.max(0, Math.round((x - PAD_L) / step - 0.5)));
+      const d   = data[idx];
+
+      /* price tag on Y axis */
+      if (y > PAD_TOP && y < SEP) {
+        const price = maxP - (y - PAD_TOP) / PRICE_H * (maxP - minP);
+        ctx.fillStyle   = tok('--acc2');
+        ctx.strokeStyle = accCol;
+        ctx.lineWidth   = 1;
+        rrect(ctx, W - PAD_R, y - 9, PAD_R, 18, 3);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle  = accCol;
+        ctx.font       = '10px monospace';
+        ctx.textAlign  = 'center';
+        ctx.fillText(price.toFixed(2), W - PAD_R / 2, y + 4);
+      }
+
+      /* tooltip box */
+      const lines = [
+        d.trade_date || '',
+        `開 ${(d.open  || 0).toFixed(2)}`,
+        `高 ${(d.high  || 0).toFixed(2)}`,
+        `低 ${(d.low   || 0).toFixed(2)}`,
+        `收 ${(d.close || 0).toFixed(2)}`,
+        `量 ${fmtVol(d.volume)}`,
+      ];
+      const TW = 116, TH = lines.length * 16 + 10;
+      const tx = x + 12 + TW > W ? x - TW - 12 : x + 12;
+      const ty = y + TH + 8 > H ? y - TH - 8 : y + 8;
+
+      ctx.fillStyle   = dark ? 'rgba(22,27,34,.93)' : 'rgba(255,255,255,.95)';
+      ctx.strokeStyle = bdrCol;
+      ctx.lineWidth   = 1;
+      rrect(ctx, tx, ty, TW, TH, 6);
+      ctx.fill(); ctx.stroke();
+
+      ctx.font      = '11px monospace';
+      ctx.textAlign = 'left';
+      const upDown  = (d.close >= d.open) ? upCol : dnCol;
+      lines.forEach((ln, i) => {
+        ctx.fillStyle = i === 0 ? txt2Col : (i >= 1 && i <= 5 ? txtCol : txt2Col);
+        if (i >= 1) ctx.fillStyle = upDown;
+        if (i === 0) ctx.fillStyle = txt2Col;
+        ctx.fillText(ln, tx + 8, ty + 14 + i * 16);
+      });
+
+      /* locked indicator */
+      if (locked) {
+        ctx.fillStyle  = txt2Col;
+        ctx.font       = '10px sans-serif';
+        ctx.textAlign  = 'left';
+        ctx.fillText('🔒', tx + TW - 18, ty + 13);
+      }
+    }
+  }
+
+  /* events */
+  canvas.addEventListener('mousemove', e => {
+    if (locked) return;
+    const r = canvas.getBoundingClientRect();
+    cross   = { x: e.clientX - r.left, y: e.clientY - r.top };
+    draw();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (!locked) { cross = null; draw(); }
+  });
+  canvas.addEventListener('click', () => {
+    if (!data.length) return;
+    if (!locked && !cross) return;
+    locked = !locked;
+    draw();
+  });
+
+  return { setData, resize };
+})();
+
+/* ════════════════════════════════════════
+   SVG SPARKLINE
+   ════════════════════════════════════════ */
+function sparkline(closes, w = 60, h = 20) {
+  if (!closes || closes.length < 2) return '<svg width="60" height="20"></svg>';
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const rng = max - min || 1;
+  const step = w / (closes.length - 1);
+  const pts  = closes.map((c, i) => {
+    const x = +(i * step).toFixed(1);
+    const y = +(h - 1 - ((c - min) / rng) * (h - 2)).toFixed(1);
+    return `${x},${y}`;
+  }).join(' ');
+  const dark  = document.documentElement.getAttribute('data-theme') === 'dark';
+  const isUp  = closes.at(-1) >= closes[0];
+  const color = isUp ? (dark ? '#f87171' : '#dc2626') : (dark ? '#4ade80' : '#16a34a');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="overflow:visible">` +
+    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>` +
+    `</svg>`;
+}
+
+/* ════════════════════════════════════════
+   APP STATE
+   ════════════════════════════════════════ */
+const State = {
+  stocks: [],   // current list (all pages)
+  page:   0,
+};
+
+/* ════════════════════════════════════════
+   DOM REFS
+   ════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+const R = {
+  loading:     $('loading'),
+  lMsg:        $('loading-msg'),
+  lBar:        $('loading-bar'),
+  lSub:        $('loading-sub'),
+  lErr:        $('loading-err'),
+  lRetry:      $('loading-retry'),
+  retryBtn:    $('retry-btn'),
+  menuBtn:     $('menu-btn'),
+  menuDrop:    $('menu-drop'),
+  themeBtn:    $('theme-btn'),
+  syncBtn:     $('sync-btn'),
+  viewSel:     $('view-sel'),
+  sectorSel:   $('sector-sel'),
+  wlBar:       $('wl-bar'),
+  wlInput:     $('wl-input'),
+  wlAdd:       $('wl-add'),
+  stockTbody:  $('stock-tbody'),
+  prevBtn:     $('prev-btn'),
+  nextBtn:     $('next-btn'),
+  pageInfo:    $('page-info'),
+  chartTitle:  $('chart-title'),
+  chartInfo:   $('chart-info'),
+  fileInput:   $('file-input'),
+  sidebar:     $('sidebar'),
+  resizeHandle:$('resize-handle'),
+};
+
+/* ════════════════════════════════════════
+   LOADING HELPERS
+   ════════════════════════════════════════ */
+function showLoading(show) { R.loading.classList.toggle('hidden', !show); }
+function setProgress(msg, pct, sub) {
+  R.lMsg.textContent = msg || '';
+  if (pct >= 0) R.lBar.style.width = Math.min(100, pct) + '%';
+  if (sub !== undefined) R.lSub.textContent = sub || '';
+}
+function showError(msg) {
+  R.lErr.textContent = msg;
+  R.lErr.style.display = 'block';
+  R.lRetry.style.display = 'block';
+  R.lBar.style.background = '#dc2626';
+}
+
+/* ════════════════════════════════════════
+   RENDER STOCK LIST
+   ════════════════════════════════════════ */
+function renderPage() {
+  const { stocks, page } = State;
+  const total      = stocks.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const start      = page * PAGE_SIZE;
+  const pageItems  = stocks.slice(start, start + PAGE_SIZE);
+
+  R.pageInfo.textContent = `${page + 1} / ${totalPages}`;
+  R.prevBtn.disabled = page === 0;
+  R.nextBtn.disabled = page >= totalPages - 1;
+
+  if (!pageItems.length) {
+    R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">無資料</td></tr>';
+    return;
+  }
+
+  const selCode  = Settings.get('selectedStock');
+  const isWL     = R.viewSel.value === 'watchlist';
+  const codes    = pageItems.map(s => s.stock_code);
+  const sparkMap = DBMgr.getBatchSparklines(codes, 20);
+
+  const rows = pageItems.map(s => {
+    const closes  = sparkMap[s.stock_code] || [];
+    const svg     = sparkline(closes);
+    const open    = s.open,  close = s.close;
+    const high    = s.high,  low   = s.low;
+    const cls     = (close == null || open == null) ? 'td-flat'
+                  : close > open ? 'td-up'
+                  : close < open ? 'td-dn' : 'td-flat';
+    const isSel   = s.stock_code === selCode;
+
+    return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
+               draggable="${isWL ? 'true' : 'false'}">
+      <td class="td-code">${s.stock_code}</td>
+      <td class="td-name" title="${s.stock_name || ''}">${s.stock_name || ''}</td>
+      <td>${open   != null ? open.toFixed(2)  : '-'}</td>
+      <td>${high   != null ? high.toFixed(2)  : '-'}</td>
+      <td>${low    != null ? low.toFixed(2)   : '-'}</td>
+      <td class="${cls}">${close != null ? close.toFixed(2) : '-'}</td>
+      <td class="td-spark">${svg}</td>
+      ${isWL ? `<td><button class="del-btn" data-code="${s.stock_code}">✕</button></td>` : ''}
+    </tr>`;
+  });
+
+  R.stockTbody.innerHTML = rows.join('');
+
+  /* row click → select stock */
+  R.stockTbody.querySelectorAll('tr[data-code]').forEach(tr => {
+    tr.addEventListener('click', e => {
+      if (e.target.classList.contains('del-btn')) return;
+      selectStock(tr.dataset.code);
+    });
+  });
+
+  /* delete from watchlist */
+  R.stockTbody.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      removeFromWatchlist(btn.dataset.code);
+    });
+  });
+
+  /* drag-and-drop reorder (watchlist) */
+  if (isWL) setupDragDrop(R.stockTbody);
+}
+
+/* ════════════════════════════════════════
+   DRAG & DROP (watchlist reorder)
+   ════════════════════════════════════════ */
+function setupDragDrop(tbody) {
+  let dragging = null;
+
+  tbody.querySelectorAll('tr[draggable="true"]').forEach(tr => {
+    tr.addEventListener('dragstart', () => {
+      dragging = tr.dataset.code;
+      tr.style.opacity = '0.4';
+    });
+    tr.addEventListener('dragend', () => {
+      tr.style.opacity = '';
+      tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
+    });
+    tr.addEventListener('dragover', e => {
+      e.preventDefault();
+      tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
+      tr.classList.add('drag-over');
+    });
+    tr.addEventListener('drop', e => {
+      e.preventDefault();
+      if (!dragging || dragging === tr.dataset.code) return;
+      const wl  = Settings.get('watchlist') || [];
+      const fi  = wl.indexOf(dragging);
+      const ti  = wl.indexOf(tr.dataset.code);
+      if (fi >= 0 && ti >= 0) {
+        wl.splice(fi, 1);
+        wl.splice(ti, 0, dragging);
+        Settings.set('watchlist', wl);
+        loadWatchlist();
+      }
+    });
+  });
+}
+
+/* ════════════════════════════════════════
+   VIEW LOADERS
+   ════════════════════════════════════════ */
+function loadSector(sectorId) {
+  if (!sectorId) { State.stocks = []; State.page = 0; renderPage(); return; }
+  State.stocks = DBMgr.getStocksBySector(sectorId);
+  State.page   = 0;
+  renderPage();
+}
+
+function loadTop100() {
+  State.stocks = DBMgr.getTop100();
+  State.page   = 0;
+  renderPage();
+}
+
+function loadWatchlist() {
+  const wl     = Settings.get('watchlist') || [];
+  const rows   = DBMgr.getWatchlistStocks(wl);
+  // preserve watchlist order
+  const idxMap = Object.fromEntries(wl.map((c, i) => [c, i]));
+  rows.sort((a, b) => (idxMap[a.stock_code] ?? 999) - (idxMap[b.stock_code] ?? 999));
+  State.stocks = rows;
+  State.page   = 0;
+  renderPage();
+}
+
+function switchView(view) {
+  R.sectorSel.classList.toggle('hidden', view !== 'sector');
+  R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
+
+  const thead = document.querySelector('#stock-table thead tr');
+  if (view === 'watchlist') {
+    if (!thead.querySelector('.del-col')) {
+      const th = document.createElement('th');
+      th.className = 'del-col'; th.textContent = '';
+      thead.appendChild(th);
+    }
+  } else {
+    const dc = thead.querySelector('.del-col');
+    if (dc) dc.remove();
+  }
+
+  if (view === 'top100')   loadTop100();
+  else if (view === 'watchlist') loadWatchlist();
+  else {
+    const sid = R.sectorSel.value;
+    if (sid) loadSector(sid);
+    else { State.stocks = []; State.page = 0; renderPage(); }
+  }
+}
+
+/* ════════════════════════════════════════
+   STOCK SELECT → CHART
+   ════════════════════════════════════════ */
+function selectStock(code) {
+  Settings.set('selectedStock', code);
+
+  R.stockTbody.querySelectorAll('tr').forEach(tr =>
+    tr.classList.toggle('selected', tr.dataset.code === code)
+  );
+
+  const info = DBMgr.getStockInfo(code);
+  R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
+
+  const history = DBMgr.getPriceHistory(code, 250);
+  Chart.setData(history);
+
+  if (history.length) {
+    const last = history.at(-1);
+    const prev = history.at(-2);
+    const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
+    const sign  = chg > 0 ? '+' : '';
+    R.chartInfo.textContent = chg != null
+      ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
+      : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
+  } else {
+    R.chartInfo.textContent = '';
+  }
+}
+
+/* ════════════════════════════════════════
+   WATCHLIST HELPERS
+   ════════════════════════════════════════ */
+function addToWatchlist() {
+  const code = R.wlInput.value.trim().toUpperCase();
+  if (!code) return;
+  const wl = Settings.get('watchlist') || [];
+  if (!wl.includes(code)) { wl.push(code); Settings.set('watchlist', wl); }
+  R.wlInput.value = '';
+  loadWatchlist();
+}
+
+function removeFromWatchlist(code) {
+  const wl  = Settings.get('watchlist') || [];
+  const idx = wl.indexOf(code);
+  if (idx >= 0) { wl.splice(idx, 1); Settings.set('watchlist', wl); loadWatchlist(); }
+}
+
+/* ════════════════════════════════════════
+   THEME
+   ════════════════════════════════════════ */
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  R.themeBtn.textContent = t === 'light' ? '🌙' : '☀️';
+  Chart.resize();
+}
+
+/* ════════════════════════════════════════
+   INIT DB + DAILY SYNC
+   ════════════════════════════════════════ */
+async function initDB() {
+  const progress = (msg, pct, sub) => setProgress(msg, pct, sub);
+
+  const needDownload = await DBMgr.init(progress);
+  if (needDownload) await DBMgr.download(progress);
+
+  setProgress('同步每日資料…', 96, '');
+  await DBMgr.syncDaily(progress, false);
+}
+
+async function handleSync() {
+  showLoading(true);
+  R.lErr.style.display  = 'none';
+  R.lRetry.style.display= 'none';
+  R.lBar.style.background = '';
+  R.lBar.style.width      = '0%';
+
+  try {
+    setProgress('檢查 manifest…', 5);
+    const mRes = await fetch(MANIFEST_URL);
+    const manifest = await mRes.json();
+    const dbMeta   = await IDB.get('meta', 'dbmeta');
+
+    if (!dbMeta || dbMeta.monthLabel !== manifest.month_label) {
+      await DBMgr.download(setProgress);
+    }
+    setProgress('同步每日資料…', 96);
+    await DBMgr.syncDaily(setProgress, true);
+    setProgress('更新完成！', 100);
+    setTimeout(() => { showLoading(false); refreshCurrentView(); }, 800);
+  } catch (e) {
+    showError('更新失敗：' + e.message);
+  }
+}
+
+function refreshCurrentView() {
+  const v = R.viewSel.value;
+  if (v === 'top100')     loadTop100();
+  else if (v === 'watchlist') loadWatchlist();
+  else loadSector(R.sectorSel.value);
+
+  const sel = Settings.get('selectedStock');
+  if (sel) selectStock(sel);
+}
+
+/* ════════════════════════════════════════
+   POPULATE SECTORS DROPDOWN
+   ════════════════════════════════════════ */
+function populateSectors() {
+  const sectors = DBMgr.getSectors();
+  R.sectorSel.innerHTML = '<option value="">── 選擇類股 ──</option>';
+  sectors.forEach(({ sid }) => {
+    const id   = parseInt(sid);
+    const name = SECTOR_NAMES[id] || `類股 ${id}`;
+    const opt  = document.createElement('option');
+    opt.value       = id;
+    opt.textContent = name;
+    R.sectorSel.appendChild(opt);
+  });
+
+  const saved = Settings.get('sectorId');
+  if (saved) {
+    R.sectorSel.value = saved;
+    if (R.sectorSel.value) loadSector(saved);
+  }
+}
+
+/* ════════════════════════════════════════
+   SIDEBAR RESIZE
+   ════════════════════════════════════════ */
+(function setupResize() {
+  let dragging = false, startX = 0, startW = 0;
+  R.resizeHandle.addEventListener('mousedown', e => {
+    dragging = true;
+    startX   = e.clientX;
+    startW   = R.sidebar.offsetWidth;
+    R.resizeHandle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(480, Math.max(200, startW + e.clientX - startX));
+    R.sidebar.style.width = w + 'px';
+    Chart.resize();
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    R.resizeHandle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+/* ════════════════════════════════════════
+   EVENT BINDINGS
+   ════════════════════════════════════════ */
+function bindEvents() {
+  /* menu toggle */
+  R.menuBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    R.menuDrop.classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => R.menuDrop.classList.add('hidden'));
+  R.menuDrop.addEventListener('click', e => {
+    const act = e.target.dataset.act;
+    if (act === 'new')    { if (confirm('清除所有設定？')) { Settings.reset(); location.reload(); } }
+    if (act === 'open')   R.fileInput.click();
+    if (act === 'export') Settings.exportSettings();
+    if (act === 'save')   { Settings.save(); alert('設定已儲存'); }
+  });
+  R.fileInput.addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (f) { await Settings.importFile(f); alert('設定已匯入'); refreshCurrentView(); }
+    e.target.value = '';
+  });
+
+  /* theme */
+  R.themeBtn.addEventListener('click', () => {
+    const t = Settings.get('theme') === 'light' ? 'dark' : 'light';
+    Settings.set('theme', t);
+    applyTheme(t);
+  });
+
+  /* sync */
+  R.syncBtn.addEventListener('click', handleSync);
+
+  /* view select */
+  R.viewSel.addEventListener('change', () => {
+    Settings.set('view', R.viewSel.value);
+    switchView(R.viewSel.value);
+  });
+
+  /* sector select */
+  R.sectorSel.addEventListener('change', () => {
+    Settings.set('sectorId', R.sectorSel.value);
+    loadSector(R.sectorSel.value);
+  });
+
+  /* watchlist add */
+  R.wlAdd.addEventListener('click', addToWatchlist);
+  R.wlInput.addEventListener('keydown', e => { if (e.key === 'Enter') addToWatchlist(); });
+
+  /* paginator */
+  R.prevBtn.addEventListener('click', () => { if (State.page > 0) { State.page--; renderPage(); } });
+  R.nextBtn.addEventListener('click', () => {
+    const max = Math.max(0, Math.ceil(State.stocks.length / PAGE_SIZE) - 1);
+    if (State.page < max) { State.page++; renderPage(); }
+  });
+
+  /* retry */
+  R.retryBtn.addEventListener('click', () => location.reload());
+
+  /* resize */
+  window.addEventListener('resize', () => Chart.resize());
+}
+
+/* ════════════════════════════════════════
+   BOOTSTRAP
+   ════════════════════════════════════════ */
+async function main() {
+  bindEvents();
+
+  /* restore theme */
+  applyTheme(Settings.get('theme') || 'light');
+
+  /* restore view selector */
+  const savedView = Settings.get('view') || 'sector';
+  R.viewSel.value = savedView;
+
+  showLoading(true);
+  try {
+    await initDB();
+    showLoading(false);
+  } catch (e) {
+    console.error(e);
+    showError(e.message || String(e));
+    return;
+  }
+
+  /* populate sectors */
+  populateSectors();
+
+  /* restore / init view */
+  switchView(savedView);
+
+  /* restore selected stock */
+  const sel = Settings.get('selectedStock');
+  if (sel && DBMgr.isReady()) selectStock(sel);
+
+  /* initial chart resize */
+  setTimeout(() => Chart.resize(), 50);
+}
+
+main().catch(e => console.error('App crash:', e));
+</script>
+</body>
+</html>
