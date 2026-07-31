@@ -81,9 +81,13 @@ body {
   position: relative;
   z-index: 200;
   height: 44px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
+#navbar > * { flex-shrink: 0; }
 .brand { font-weight: 700; font-size: 15px; color: var(--acc); white-space: nowrap; }
-.spacer { flex: 1; }
+.spacer { flex: 1; min-width: 8px; }
 
 /* ── Buttons ── */
 .btn {
@@ -279,9 +283,33 @@ select:focus { outline: 2px solid var(--acc); }
 }
 #chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
 #chart-info  { font-size: 12px; color: var(--txt2); }
-#chart-fetch-hint { font-size: 11px; color: var(--acc); font-style: italic; }
+
+/* ── Fixed chart info bar (replaces the old floating tooltip) ── */
+#chart-info-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 5px 12px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--bdr);
+  font-size: 12px;
+  font-family: monospace;
+  flex-shrink: 0;
+  min-height: 20px;
+}
+#chart-info-bar .info-item { color: var(--txt2); white-space: nowrap; }
+#chart-info-bar .info-item b { font-weight: 700; }
+#chart-info-bar .ma-s b { color: #f59e0b; }
+#chart-info-bar .ma-m b { color: #3b82f6; }
+#chart-info-bar .ma-l b { color: #a855f7; }
+#chart-info-bar .kd-k b { color: #3b82f6; }
+#chart-info-bar .kd-d b { color: #f59e0b; }
+#chart-info-bar .kd-j b { color: #ec4899; }
+#chart-info-bar .macd-dif b { color: #3b82f6; }
+#chart-info-bar .macd-macd b { color: #f59e0b; }
+#chart-info-bar .rsv b { color: var(--acc); }
 #chart-wrap  { flex: 1; position: relative; overflow: hidden; }
-#main-chart  { display: block; cursor: crosshair; }
+#main-chart  { display: block; cursor: grab; touch-action: pan-y; }
 
 /* ── Loading overlay ── */
 #loading {
@@ -421,6 +449,20 @@ select:focus { outline: 2px solid var(--acc); }
   font-size: 13px;
   text-align: right;
 }
+.modal-pane label.modal-check-row {
+  justify-content: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.modal-pane label.modal-check-row input[type="checkbox"] {
+  width: 16px; height: 16px; accent-color: var(--acc); cursor: pointer;
+}
+.modal-hint {
+  font-size: 11px;
+  color: var(--txt2);
+  line-height: 1.5;
+  margin: -4px 0 10px;
+}
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -438,9 +480,9 @@ select:focus { outline: 2px solid var(--acc); }
 #mobile-tabbar { display: none; }
 .mtab-btn {
   flex: 1;
-  padding: 10px 4px;
+  padding: 5px 4px;
   text-align: center;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--txt2);
   background: var(--bg1);
@@ -530,6 +572,10 @@ select:focus { outline: 2px solid var(--acc); }
   <span class="brand">📊 台股追蹤</span>
   <div class="spacer"></div>
   <button class="btn" id="sync-btn" title="更新資料">🔄 更新</button>
+  <button class="btn icon" id="zoom-in-btn" title="放大（範圍拉近）">🔍+</button>
+  <button class="btn icon" id="zoom-out-btn" title="縮小（範圍拉遠）">🔍-</button>
+  <button class="btn icon" id="zoom-reset-btn" title="還原全部範圍">⤢</button>
+  <button class="btn icon" id="chart-settings-btn" title="圖表設定">⚙</button>
   <button class="btn icon" id="theme-btn" title="切換主題">🌙</button>
 </nav>
 
@@ -552,6 +598,7 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="sector">類股</option>
         <option value="strong">強勢股</option>
         <option value="watchlist">自選股</option>
+        <option value="usmarket">美股</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
       <div id="strong-bar" class="hidden">
@@ -599,20 +646,23 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
-      <span id="chart-fetch-hint" class="hidden"></span>
       <div class="chart-toolbar">
-        <div class="seg-group" id="subpanel-toggle">
-          <button class="seg-btn active" data-panel="volume">成交量</button>
-          <button class="seg-btn" data-panel="macd">MACD</button>
-          <button class="seg-btn" data-panel="kd">KD</button>
-          <button class="seg-btn" data-panel="rsv">RSV</button>
+        <div class="seg-group" id="period-toggle">
+          <button class="seg-btn active" data-period="day">日線</button>
+          <button class="seg-btn" data-period="week">週線</button>
+          <button class="seg-btn" data-period="month">月線</button>
+          <button class="seg-btn" data-period="quarter">季線</button>
         </div>
-        <button class="btn icon" id="zoom-in-btn" title="放大（範圍拉近）">🔍+</button>
-        <button class="btn icon" id="zoom-out-btn" title="縮小（範圍拉遠）">🔍-</button>
-        <button class="btn icon" id="zoom-reset-btn" title="還原全部範圍">⤢</button>
-        <button class="btn icon" id="chart-settings-btn" title="圖表設定">⚙</button>
+        <div class="seg-group" id="indicator-toggle">
+          <button class="seg-btn active" data-indicator="kd">KD</button>
+          <button class="seg-btn" data-indicator="macd">MACD</button>
+          <button class="seg-btn" data-indicator="rsv">RSV</button>
+        </div>
       </div>
     </div>
+    <!-- 固定資訊列：日期/開高低收量 + 均線 + 指標數值，取代浮動提示框；
+         點擊K線圖只會顯示十字線，數值一律顯示在這裡（見 renderInfoBar） -->
+    <div id="chart-info-bar"></div>
     <div id="chart-wrap">
       <canvas id="main-chart"></canvas>
     </div>
@@ -630,6 +680,7 @@ select:focus { outline: 2px solid var(--acc); }
       <div class="modal-sidebar">
         <div class="modal-cat active" data-cat="ma">均線週期</div>
         <div class="modal-cat" data-cat="strong">強勢股門檻</div>
+        <div class="modal-cat" data-cat="display">顯示設定</div>
       </div>
       <div class="modal-content">
         <div class="modal-pane" data-pane="ma">
@@ -645,6 +696,11 @@ select:focus { outline: 2px solid var(--acc); }
           <label>RS值門檻 <input type="number" id="strong-rs-th" min="1" max="99"></label>
           <label>量比門檻 <input type="number" id="strong-vol-ratio" min="0" step="0.1"></label>
           <label>距60日高點(%) <input type="number" id="strong-near-high" min="0" max="100"></label>
+        </div>
+        <div class="modal-pane hidden" data-pane="display">
+          <h3>游標十字線</h3>
+          <label class="modal-check-row"><input type="checkbox" id="follow-mouse-toggle"> 跟著滑鼠顯示</label>
+          <p class="modal-hint">預設關閉：滑鼠移動不會一直跳出十字線擋住線圖，改成點一下圖表才顯示/再點一下關閉；開啟後會恢復成滑鼠移到哪裡就跟到哪裡。所有數值一律顯示在圖表上方的固定資訊列，不會浮動遮住K線。</p>
         </div>
       </div>
     </div>
@@ -787,7 +843,9 @@ const Settings = (() => {
     return { theme:'light', view:'sector', sectorId:null,
              selectedStock:null, watchlist:[], lastDailyDate:null,
              maPeriods: { short:5, mid:20, long:60 },
-             chartSubPanel: 'volume',
+             chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' — the single switchable bottom panel
+             followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
+             chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              strongMethod: 'current',
              strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 } };
   }
@@ -964,8 +1022,43 @@ const DBMgr = (() => {
       tmp.close();
     }
   }
-  const mergeCoreBytes    = buf => mergeTables(buf, ['sectors', 'stocks']);
-  const mergeMonthlyBytes = buf => mergeTables(buf, ['daily_prices', 'technical_indicators', 'market_index']);
+  const mergeCoreBytes      = buf => mergeTables(buf, ['sectors', 'stocks']);
+  const mergeMonthlyBytes   = buf => mergeTables(buf, ['daily_prices', 'technical_indicators', 'market_index']);
+  const mergeStockMonthBytes = buf => mergeTables(buf, ['daily_prices', 'technical_indicators']);
+
+  /* 個股是否已經在本地有該月份的資料——這就是「要不要抓」的唯一依據
+     （本地整份 sqlite 的結構完全不變，只是決定要不要多合併一點資料進來）。 */
+  function hasStockMonthLocally(code, label) {
+    const row = query(
+      "SELECT COUNT(*) c FROM daily_prices WHERE stock_code=? AND trade_date LIKE ?",
+      [code, `${label}-%`]
+    )[0];
+    return (row?.c || 0) > 0;
+  }
+
+  /* 個股網頁優化快照：db/by-id/<代碼前2碼>/<yyyy-mm>.db（見
+     sync/by_id_snapshot.py）。用代碼前2碼分桶（不是每支股票一個檔案）是因為
+     實測「每支股票一個檔案」在一般機器上光是開檔寫入就要 ~0.7秒/檔，2000檔
+     股票單一個月要20分鐘以上，完全不可行；分桶後約69個檔案、每桶平均29檔
+     股票，一個月只要約1分鐘。使用者下載到的是「同代碼開頭的一小群股票」，
+     不是單一個股，但仍然只有全市場資料量的 ~3%，比抓整個月的全市場 monthly
+     快照小很多。只保留最近幾個月，抓不到（例如超出保留範圍、尚未涵蓋、或
+     404）就退回抓整個月的全市場 monthly 快照——這裡不重試（404 是正常情況，
+     不是暫時性錯誤，重試沒有意義，直接退回即可）。 */
+  async function ensureStockMonthLoaded(code, label) {
+    if (hasStockMonthLocally(code, label)) return;
+    const bucket = code.slice(0, 2);
+    try {
+      const resp = await fetch(`${RAW}/db-snapshot/db/by-id/${bucket}/${label}.db`);
+      if (resp.ok) {
+        const buf = await resp.arrayBuffer();
+        mergeStockMonthBytes(buf);
+        await persist();
+        return;
+      }
+    } catch (e) { /* 網路錯誤也一樣退回 monthly，不特別處理 */ }
+    await ensureMonthsLoaded([label]);
+  }
 
   /* ── Web manifest (db/monthly/manifest.json): core.db + list of monthly files ── */
   async function fetchWebManifest() {
@@ -1355,6 +1448,22 @@ const DBMgr = (() => {
     ).reverse();
   }
 
+  /* 美股觀察指標（DJI/SPX/NASDAQ/SOX）— 跟個股共用同一份 monthly 快照/每日增量，
+     不需要另外抓資料，只是換一張表查詢。 */
+  function getMarketIndexHistory(indexCode, limit = 250) {
+    return query(
+      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? ORDER BY trade_date DESC LIMIT ?',
+      [indexCode, limit]
+    ).reverse();
+  }
+
+  function getMarketIndexLatest(indexCode) {
+    return query(
+      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? ORDER BY trade_date DESC LIMIT 1',
+      [indexCode]
+    )[0] || null;
+  }
+
   function getBatchSparklines(codes, days = 20) {
     if (!codes.length) return {};
     const ph      = codes.map(() => '?').join(',');
@@ -1377,11 +1486,12 @@ const DBMgr = (() => {
 
   return {
     init, bootstrapFresh, syncDaily,
-    fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths,
+    fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getWatchlistStocks,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
+    getMarketIndexHistory, getMarketIndexLatest,
     getLatestDate,
     isReady: () => !!db,
   };
@@ -1452,19 +1562,30 @@ function computeKD(highs, lows, closes, period = 9) {
 const Chart = (() => {
   const canvas = document.getElementById('main-chart');
   const ctx    = canvas.getContext('2d');
-  let fullData = [];   // full price history for current stock
-  let ind      = { maS: [], maM: [], maL: [], macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], rsv: [] };
-  let maPeriods = { short: 5, mid: 20, long: 60 };
-  let subPanel  = 'volume';   // 'volume' | 'macd' | 'kd' | 'rsv'
-  let visibleCount = null;    // zoom level (candle count); null = compute 30-day default on first load
-  let cross    = null;  // {x, y} mouse position
-  let locked   = false;
-  let onZoomChangeCb = null;  // app-level hook: fires after zoom changes, so more history can be fetched on demand
 
-  /* default zoom = most recent ~30 calendar days (not a fixed candle count,
-     since trading-day density varies with holidays) */
+  let fullData   = [];   // raw daily price history for current stock/index (from DBMgr)
+  let periodData = [];   // fullData aggregated into the active period (day/week/month/quarter)
+  let period     = 'day';
+  let ind = { maS: [], maM: [], maL: [], macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], kdJ: [], rsv: [] };
+  let maPeriods  = { short: 5, mid: 20, long: 60 };
+  let indicator  = 'kd';     // 'kd' | 'macd' | 'rsv' — single switchable bottom panel (K線+成交量 always shown)
+  let visibleCount = null;   // zoom level (candle count in periodData units); null = compute default
+  let viewEnd    = null;     // index into periodData of the rightmost visible candle; null = anchor to latest
+  let cross      = null;     // {x, y} — crosshair position (click/tap only; no floating tooltip box)
+  let locked     = false;
+  let followMouse = false;   // if false (default), crosshair only shows/hides on click/tap
+  let moreHistoryAvailable = true; // app sets this from DBMgr.hasOlderMonthAvailable()
+  let onZoomChangeCb = null; // app-level hook: fires after zoom/pan changes, so more history can be fetched on demand
+  let onInfoChangeCb = null; // app-level hook: fires with the referenced candle's data for the fixed info bar
+  let lastStep   = 1;        // px-per-candle from the most recent draw(), used to convert drag distance to candle count
+
+  const WEIGHT = { kline: 3, volume: 1.2, indicator: 1.5 };
+
+  /* default zoom = most recent ~30 calendar days for daily; for week/month/quarter
+     there are naturally few candles, so default to showing everything available */
   function defaultVisibleCount(rows) {
     if (!rows.length) return 0;
+    if (period !== 'day') return rows.length;
     const cutoff = new Date(rows.at(-1).trade_date).getTime() - 30 * 86400000;
     let count = 0;
     for (let i = rows.length - 1; i >= 0; i--) {
@@ -1475,10 +1596,7 @@ const Chart = (() => {
   }
 
   function isDark() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
-
-  function tok(name) {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  }
+  function tok(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
   function resize() {
     const wrap = document.getElementById('chart-wrap');
@@ -1487,10 +1605,46 @@ const Chart = (() => {
     draw();
   }
 
+  /* ── period aggregation ── */
+  function periodKeyOf(dateStr) {
+    if (period === 'day') return dateStr;
+    const d = new Date(dateStr + 'T00:00:00');
+    if (period === 'week') {
+      const dow = (d.getDay() + 6) % 7; // Mon=0..Sun=6
+      d.setDate(d.getDate() - dow);
+      return d.toISOString().slice(0, 10);
+    }
+    if (period === 'month') return dateStr.slice(0, 7);
+    const y = d.getFullYear(), q = Math.floor(d.getMonth() / 3) + 1; // quarter
+    return `${y}-Q${q}`;
+  }
+
+  function aggregate() {
+    if (period === 'day' || !fullData.length) { periodData = fullData.slice(); return; }
+    const out = [];
+    let cur = null, curKey = null;
+    for (const r of fullData) {
+      const k = periodKeyOf(r.trade_date);
+      if (k !== curKey) {
+        if (cur) out.push(cur);
+        cur = { trade_date: r.trade_date, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume || 0 };
+        curKey = k;
+      } else {
+        if (r.high > cur.high) cur.high = r.high;
+        if (r.low  < cur.low)  cur.low  = r.low;
+        cur.close = r.close;
+        cur.trade_date = r.trade_date;
+        cur.volume += (r.volume || 0);
+      }
+    }
+    if (cur) out.push(cur);
+    periodData = out;
+  }
+
   function recompute() {
-    const closes = fullData.map(d => d.close);
-    const highs  = fullData.map(d => d.high);
-    const lows   = fullData.map(d => d.low);
+    const closes = periodData.map(d => d.close);
+    const highs  = periodData.map(d => d.high);
+    const lows   = periodData.map(d => d.low);
     ind.maS = computeSMA(closes, maPeriods.short);
     ind.maM = computeSMA(closes, maPeriods.mid);
     ind.maL = computeSMA(closes, maPeriods.long);
@@ -1498,15 +1652,47 @@ const Chart = (() => {
     ind.macdDif = m.dif; ind.macdMacd = m.macd; ind.macdOsc = m.osc;
     const kd = computeKD(highs, lows, closes, 9);
     ind.kdK = kd.k; ind.kdD = kd.d; ind.rsv = kd.rsv;
+    ind.kdJ = kd.k.map((k, i) => (k != null && kd.d[i] != null) ? 3 * k - 2 * kd.d[i] : null);
   }
 
-  function setData(rows) {
+  /* ── visible-window helpers ── */
+  function getVisibleCount() { return visibleCount || 0; }
+  function getFullDataLength() { return periodData.length; }
+  function setMoreHistoryAvailable(v) { moreHistoryAvailable = !!v; draw(); }
+
+  /* startIdx MAY be negative — that represents time earlier than what's loaded;
+     draw() renders those columns as a "loading" placeholder instead of clamping
+     the view (so panning/zooming never feels blocked — see task description). */
+  function getVisibleStartIndex() {
+    const NFull = periodData.length;
+    const vcount = visibleCount || NFull || 1;
+    const end = viewEnd == null ? NFull - 1 : viewEnd;
+    return end - vcount + 1;
+  }
+
+  function getVisibleStartDate() {
+    const idx = getVisibleStartIndex();
+    return periodData[Math.max(0, idx)]?.trade_date || null;
+  }
+
+  /* the earliest date across ALL loaded data for the current stock/index
+     (not just the visible window) — used to figure out which calendar month
+     to fetch next when the view needs more history. */
+  function getOldestLoadedDate() { return fullData[0]?.trade_date || null; }
+
+  /* true once the visible window's left edge has reached (or passed) the oldest
+     loaded candle — i.e. more history should be fetched in the background */
+  function needsMoreHistory() { return periodData.length > 0 && getVisibleStartIndex() <= 0; }
+
+  function setData(rows, opts = {}) {
     fullData = rows;
+    aggregate();
     recompute();
-    if (visibleCount == null) visibleCount = defaultVisibleCount(fullData);
-    visibleCount = Math.min(visibleCount, fullData.length) || fullData.length;
-    cross  = null;
-    locked = false;
+    if (!opts.preserveView) {
+      visibleCount = defaultVisibleCount(periodData);
+      viewEnd = null;
+    }
+    cross = null; locked = false;
     draw();
   }
 
@@ -1516,28 +1702,57 @@ const Chart = (() => {
     draw();
   }
 
-  function setSubPanel(p) { subPanel = p; draw(); }
+  function setIndicator(k) { indicator = k; draw(); }
+
+  function setFollowMouse(v) {
+    followMouse = !!v;
+    cross = null; locked = false;
+    draw();
+  }
+
+  function setPeriod(p) {
+    if (period === p) return;
+    period = p;
+    aggregate();
+    recompute();
+    visibleCount = defaultVisibleCount(periodData);
+    viewEnd = null;
+    cross = null; locked = false;
+    draw();
+  }
+
   function setOnZoomChange(fn) { onZoomChangeCb = fn; }
-  function getVisibleCount()   { return visibleCount || 0; }
-  function getFullDataLength() { return fullData.length; }
+  function setOnInfoChange(fn) { onInfoChangeCb = fn; }
+
+  function clampGrowth(v) {
+    // once we know there's nothing more to fetch, stop letting the view grow
+    // past what's actually loaded (no point showing endless "沒有更多資料" space)
+    return moreHistoryAvailable ? v : Math.min(v, periodData.length);
+  }
 
   function zoomIn() {
-    if (!fullData.length) return;
-    visibleCount = Math.max(20, Math.round(visibleCount * 0.7));
+    if (!periodData.length) return;
+    visibleCount = Math.max(10, Math.round(visibleCount * 0.7));
     draw();
     onZoomChangeCb?.();
   }
   function zoomOut() {
-    if (!fullData.length) return;
-    visibleCount = Math.round(visibleCount / 0.7) || fullData.length;
+    if (!periodData.length) return;
+    visibleCount = clampGrowth(Math.round(visibleCount / 0.7) || periodData.length);
     draw();
     onZoomChangeCb?.();
   }
   function zoomReset() {
-    if (!fullData.length) return;
-    visibleCount = fullData.length;
+    if (!periodData.length) return;
+    visibleCount = periodData.length;
+    viewEnd = null;
     draw();
     onZoomChangeCb?.();
+  }
+  function zoomTo(newVisibleCount) {
+    if (!periodData.length) return;
+    visibleCount = clampGrowth(Math.max(10, Math.round(newVisibleCount)));
+    draw();
   }
 
   function fmtVol(v) {
@@ -1548,11 +1763,21 @@ const Chart = (() => {
     return v.toLocaleString();
   }
 
+  function axisLabel(dateStr) {
+    if (period === 'month')   return (dateStr || '').slice(0, 7);
+    if (period === 'quarter') {
+      const [y, m] = (dateStr || '').split('-').map(Number);
+      return `${y}Q${Math.floor((m - 1) / 3) + 1}`;
+    }
+    return (dateStr || '').slice(5);
+  }
+
   const MA_S_COL = '#f59e0b'; // amber
   const MA_M_COL = '#3b82f6'; // blue
   const MA_L_COL = '#a855f7'; // purple
+  const J_COL    = '#ec4899'; // pink, for KD's J line
 
-  function drawLine(points, getY, xOf, color) {
+  function drawLine(points, getY, xOf, color, offset) {
     ctx.strokeStyle = color;
     ctx.lineWidth   = 1.4;
     ctx.beginPath();
@@ -1560,11 +1785,32 @@ const Chart = (() => {
     for (let i = 0; i < points.length; i++) {
       const v = points[i];
       if (v == null) { started = false; continue; }
-      const x = xOf(i), y = getY(v);
+      const x = xOf(i + offset), y = getY(v);
       if (!started) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
+  }
+
+  /* ── build the info payload for the fixed HTML info bar (see app-level renderInfoBar) ── */
+  function buildInfo(idx) {
+    if (idx == null || idx < 0 || idx >= periodData.length) return null;
+    const d = periodData[idx];
+    return {
+      trade_date: d.trade_date, open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume,
+      maPeriods: { ...maPeriods },
+      ma: { short: ind.maS[idx], mid: ind.maM[idx], long: ind.maL[idx] },
+      indicator,
+      kd:   { k: ind.kdK[idx], d: ind.kdD[idx], j: ind.kdJ[idx] },
+      macd: { dif: ind.macdDif[idx], macd: ind.macdMacd[idx], osc: ind.macdOsc[idx] },
+      rsv:  ind.rsv[idx],
+    };
+  }
+
+  function emitInfo(crosshairIdx) {
+    if (!onInfoChangeCb) return;
+    const idx = crosshairIdx != null ? crosshairIdx : periodData.length - 1;
+    onInfoChangeCb(buildInfo(idx));
   }
 
   function draw() {
@@ -1573,7 +1819,6 @@ const Chart = (() => {
 
     const dark    = isDark();
     const bgCol   = tok('--bg1');
-    const txtCol  = tok('--txt0');
     const txt2Col = tok('--txt2');
     const gridCol = dark ? '#1e2530' : '#f3f4f6';
     const bdrCol  = tok('--bdr');
@@ -1584,305 +1829,311 @@ const Chart = (() => {
     ctx.fillStyle = bgCol;
     ctx.fillRect(0, 0, W, H);
 
-    if (!fullData.length) {
+    if (!periodData.length) {
       ctx.fillStyle = txt2Col;
       ctx.font      = '14px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('請從左側點選股票', W / 2, H / 2);
+      emitInfo(null);
       return;
     }
 
-    /* visible window slice (zoom): compute indicators over full history, render only the tail */
-    const NFull    = fullData.length;
-    const vcount   = Math.min(visibleCount || NFull, NFull);
-    const startIdx = NFull - vcount;
-    const data     = fullData.slice(startIdx);
-    const maS      = ind.maS.slice(startIdx);
-    const maM      = ind.maM.slice(startIdx);
-    const maL      = ind.maL.slice(startIdx);
-    const mDif     = ind.macdDif.slice(startIdx);
-    const mMacd    = ind.macdMacd.slice(startIdx);
-    const mOsc     = ind.macdOsc.slice(startIdx);
-    const kdK      = ind.kdK.slice(startIdx);
-    const kdD      = ind.kdD.slice(startIdx);
-    const rsv      = ind.rsv.slice(startIdx);
+    const NFull    = periodData.length;
+    const vcount   = visibleCount || NFull;
+    const startIdx = getVisibleStartIndex();      // may be negative (placeholder region)
+    const placeholderCols = Math.max(0, -startIdx);
+    const realStart = Math.max(0, startIdx);
+    const realCount = Math.min(vcount - placeholderCols, NFull - realStart);
 
-    const hasIndicatorPane = subPanel !== 'volume';
-
-    /* layout */
-    const PAD_L   = 8;
-    const PAD_R   = 62;
-    const PAD_TOP = 16;
-    const PAD_BOT = 22;
+    const PAD_L = 8, PAD_R = 62, PAD_TOP = 16, PAD_BOT = 22;
     const usableH = H - PAD_TOP - PAD_BOT;
-
-    let priceH, volH, indH;
-    if (hasIndicatorPane) {
-      priceH = usableH * 0.50;
-      volH   = usableH * 0.16;
-      indH   = usableH * 0.34 - 12;
-    } else {
-      priceH = usableH * 0.72;
-      volH   = usableH * 0.28 - 4;
-      indH   = 0;
-    }
-    const priceTop = PAD_TOP, priceBot = priceTop + priceH;
-    const volTop   = priceBot + 6, volBot = volTop + volH;
-    const indTop   = volBot + 6, indBot  = indTop + Math.max(0, indH);
-
     const drawW   = W - PAD_L - PAD_R;
-    const N       = data.length;
+    const N       = vcount;
     const step    = drawW / N;
+    lastStep      = step;
     const candleW = Math.max(1, Math.floor(step * 0.7));
-    const xOf     = i => PAD_L + (i + 0.5) * step;
+    const xOf     = i => PAD_L + (i + 0.5) * step; // i is a 0-based slot within the whole visible window (placeholders included)
 
-    /* price range (include visible MA lines so they never clip) */
+    const data  = periodData.slice(realStart, realStart + Math.max(0, realCount));
+    const maS   = ind.maS.slice(realStart, realStart + Math.max(0, realCount));
+    const maM   = ind.maM.slice(realStart, realStart + Math.max(0, realCount));
+    const maL   = ind.maL.slice(realStart, realStart + Math.max(0, realCount));
+    const mDif  = ind.macdDif.slice(realStart, realStart + Math.max(0, realCount));
+    const mMacd = ind.macdMacd.slice(realStart, realStart + Math.max(0, realCount));
+    const mOsc  = ind.macdOsc.slice(realStart, realStart + Math.max(0, realCount));
+    const kdK   = ind.kdK.slice(realStart, realStart + Math.max(0, realCount));
+    const kdD   = ind.kdD.slice(realStart, realStart + Math.max(0, realCount));
+    const kdJ   = ind.kdJ.slice(realStart, realStart + Math.max(0, realCount));
+    const rsv   = ind.rsv.slice(realStart, realStart + Math.max(0, realCount));
+    const realOffset = placeholderCols; // real data's slot-index starts here within the window
+
+    /* allocate 3 fixed vertical regions: K線 / 成交量 / indicator */
+    const GAP = 6;
+    const totalWeight = WEIGHT.kline + WEIGHT.volume + WEIGHT.indicator;
+    const totalGap = GAP * 2;
+    const klineH = (usableH - totalGap) * (WEIGHT.kline / totalWeight);
+    const volH   = (usableH - totalGap) * (WEIGHT.volume / totalWeight);
+    const indH   = (usableH - totalGap) * (WEIGHT.indicator / totalWeight);
+    const priceTop = PAD_TOP, priceBot = priceTop + klineH;
+    const volTop   = priceBot + GAP, volBot = volTop + volH;
+    const indTop   = volBot + GAP, indBot = indTop + indH;
+
+    ctx.strokeStyle = bdrCol; ctx.lineWidth = 1;
+    [priceBot, volBot].forEach(sepY => {
+      ctx.beginPath(); ctx.moveTo(PAD_L, sepY + GAP / 2); ctx.lineTo(W, sepY + GAP / 2); ctx.stroke();
+    });
+
+    /* price scale (include visible MA lines so they never clip) */
     let minP = Infinity, maxP = -Infinity;
-    for (const d of data) {
-      if (d.high > maxP) maxP = d.high;
-      if (d.low  < minP) minP = d.low;
-    }
-    for (const arr of [maS, maM, maL]) {
-      for (const v of arr) { if (v == null) continue; if (v > maxP) maxP = v; if (v < minP) minP = v; }
-    }
+    for (const d of data) { if (d.high > maxP) maxP = d.high; if (d.low < minP) minP = d.low; }
+    for (const arr of [maS, maM, maL]) for (const v of arr) { if (v == null) continue; if (v > maxP) maxP = v; if (v < minP) minP = v; }
+    if (!Number.isFinite(minP)) { minP = 0; maxP = 1; }
     const pPad = (maxP - minP) * 0.06 || 1;
     minP -= pPad; maxP += pPad;
+    const pY = p => priceTop + ((maxP - p) / (maxP - minP)) * klineH;
 
-    /* volume range */
-    let maxV = 0;
-    for (const d of data) if ((d.volume || 0) > maxV) maxV = d.volume;
-
-    const pY = p => priceTop + ((maxP - p) / (maxP - minP)) * priceH;
-    const vY = v => volTop + (1 - (v / maxV)) * volH;
-
-    /* price grid */
-    ctx.strokeStyle = gridCol;
-    ctx.lineWidth   = 1;
-    const ticks = 5;
-    for (let i = 0; i <= ticks; i++) {
-      const p = minP + (maxP - minP) * i / ticks;
-      const y = pY(p);
-      ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
-      ctx.fillStyle  = txt2Col;
-      ctx.font       = '10px monospace';
-      ctx.textAlign  = 'right';
-      ctx.fillText(p.toFixed(2), W - 2, y + 3);
+    /* price grid + axis labels */
+    ctx.strokeStyle = gridCol; ctx.lineWidth = 1;
+    for (let i = 0; i <= 5; i++) {
+      const p = minP + (maxP - minP) * i / 5;
+      const yy = pY(p);
+      ctx.beginPath(); ctx.moveTo(PAD_L, yy); ctx.lineTo(W - PAD_R, yy); ctx.stroke();
+      ctx.fillStyle = txt2Col; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(p.toFixed(2), W - 2, yy + 3);
     }
 
-    /* separators */
-    ctx.strokeStyle = bdrCol; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(PAD_L, priceBot + 3); ctx.lineTo(W, priceBot + 3); ctx.stroke();
-    if (hasIndicatorPane) {
-      ctx.beginPath(); ctx.moveTo(PAD_L, volBot + 3); ctx.lineTo(W, volBot + 3); ctx.stroke();
-    }
-
-    /* vol label */
-    ctx.fillStyle = txt2Col; ctx.font = '10px monospace'; ctx.textAlign = 'right';
-    ctx.fillText(fmtVol(maxV), W - 2, volTop + 11);
-
-    /* candles & volume */
-    for (let i = 0; i < N; i++) {
-      const d  = data[i];
-      const cx = xOf(i);
+    /* candles */
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i], cx = xOf(i + realOffset);
       const up = d.close >= d.open;
       const col = up ? upCol : dnCol;
-
-      /* wick */
       ctx.strokeStyle = col; ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx, pY(d.high));
-      ctx.lineTo(cx, pY(d.low));
-      ctx.stroke();
-
-      /* body */
-      const y1 = pY(Math.max(d.open, d.close));
-      const y2 = pY(Math.min(d.open, d.close));
+      ctx.beginPath(); ctx.moveTo(cx, pY(d.high)); ctx.lineTo(cx, pY(d.low)); ctx.stroke();
+      const y1 = pY(Math.max(d.open, d.close)), y2 = pY(Math.min(d.open, d.close));
       const bh = Math.max(1, y2 - y1);
       ctx.fillStyle = up ? upCol : 'transparent';
       ctx.strokeStyle = col; ctx.lineWidth = 1;
       ctx.fillRect(cx - candleW / 2, y1, candleW, bh);
       ctx.strokeRect(cx - candleW / 2, y1, candleW, bh);
 
-      /* volume bar */
+      const interval = Math.max(1, Math.floor(N / 8));
+      const globalI = i + realOffset;
+      if (globalI % interval === 0) {
+        ctx.fillStyle = txt2Col; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(axisLabel(d.trade_date), cx, H - 5);
+      }
+    }
+    drawLine(maS, pY, xOf, MA_S_COL, realOffset);
+    drawLine(maM, pY, xOf, MA_M_COL, realOffset);
+    drawLine(maL, pY, xOf, MA_L_COL, realOffset);
+
+    /* 成交量 panel */
+    let maxV = 0;
+    for (const d of data) if ((d.volume || 0) > maxV) maxV = d.volume;
+    const vY = v => volTop + (1 - (v / (maxV || 1))) * volH;
+    ctx.fillStyle = txt2Col; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(fmtVol(maxV), W - 2, volTop + 11);
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i], cx = xOf(i + realOffset);
+      const col = d.close >= d.open ? upCol : dnCol;
       const vTop2 = vY(d.volume || 0);
-      ctx.fillStyle   = col;
-      ctx.globalAlpha = 0.65;
+      ctx.fillStyle = col; ctx.globalAlpha = 0.65;
       ctx.fillRect(cx - candleW / 2, vTop2, candleW, volBot - vTop2);
       ctx.globalAlpha = 1;
+    }
 
-      /* date axis (sparse) */
-      const interval = Math.max(1, Math.floor(N / 8));
-      if (i % interval === 0) {
-        ctx.fillStyle  = txt2Col;
-        ctx.font       = '10px sans-serif';
-        ctx.textAlign  = 'center';
-        ctx.fillText((d.trade_date || '').slice(5), cx, H - 5);
+    /* indicator panel (single switchable: KD+J / MACD / RSV) */
+    if (indicator === 'macd') {
+      let lo = 0, hi = 0;
+      for (const arr of [mDif, mMacd, mOsc]) for (const v of arr) { if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+      const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+      const iY = v => indTop + (1 - (v - lo) / (hi - lo)) * indH;
+      ctx.strokeStyle = gridCol; ctx.beginPath(); ctx.moveTo(PAD_L, iY(0)); ctx.lineTo(W - PAD_R, iY(0)); ctx.stroke();
+      for (let i = 0; i < data.length; i++) {
+        const v = mOsc[i]; if (v == null) continue;
+        const cx = xOf(i + realOffset);
+        const y0 = iY(0), y1 = iY(v);
+        ctx.fillStyle = v >= 0 ? upCol : dnCol; ctx.globalAlpha = 0.65;
+        ctx.fillRect(cx - candleW / 2, Math.min(y0, y1), candleW, Math.abs(y1 - y0) || 1);
+        ctx.globalAlpha = 1;
       }
+      drawLine(mDif, iY, xOf, MA_M_COL, realOffset);
+      drawLine(mMacd, iY, xOf, MA_S_COL, realOffset);
+    } else if (indicator === 'kd') {
+      const iY = v => indTop + (1 - v / 100) * indH;
+      ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
+      [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
+      ctx.setLineDash([]);
+      drawLine(kdK, iY, xOf, MA_M_COL, realOffset);
+      drawLine(kdD, iY, xOf, MA_S_COL, realOffset);
+      drawLine(kdJ, iY, xOf, J_COL, realOffset);
+    } else if (indicator === 'rsv') {
+      const iY = v => indTop + (1 - v / 100) * indH;
+      ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
+      [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
+      ctx.setLineDash([]);
+      drawLine(rsv, iY, xOf, accCol, realOffset);
     }
 
-    /* MA overlay lines on price pane */
-    drawLine(maS, pY, xOf, MA_S_COL);
-    drawLine(maM, pY, xOf, MA_M_COL);
-    drawLine(maL, pY, xOf, MA_L_COL);
-
-    /* MA legend (top-left of price pane) */
-    const lastS = maS.at(-1), lastM = maM.at(-1), lastL = maL.at(-1);
-    ctx.font = '10px monospace'; ctx.textAlign = 'left';
-    let lx = PAD_L + 4;
-    const legendY = priceTop + 10;
-    const legend = [
-      [`MA${maPeriods.short}`, lastS, MA_S_COL],
-      [`MA${maPeriods.mid}`,  lastM, MA_M_COL],
-      [`MA${maPeriods.long}`, lastL, MA_L_COL],
-    ];
-    for (const [label, val, color] of legend) {
-      const txt = val != null ? `${label} ${val.toFixed(2)}` : `${label} -`;
-      ctx.fillStyle = color;
-      ctx.fillText(txt, lx, legendY);
-      lx += ctx.measureText(txt).width + 12;
+    /* ── "loading" placeholder for the not-yet-loaded portion of the window
+       (Google Maps style: keep the interaction smooth, fill in once ready) ── */
+    if (placeholderCols > 0) {
+      const phRight = xOf(placeholderCols) - step / 2;
+      ctx.save();
+      ctx.strokeStyle = accCol; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+      ctx.strokeRect(PAD_L, PAD_TOP, phRight - PAD_L, usableH);
+      ctx.setLineDash([]);
+      ctx.fillStyle = dark ? 'rgba(88,166,255,.08)' : 'rgba(37,99,235,.06)';
+      ctx.fillRect(PAD_L, PAD_TOP, phRight - PAD_L, usableH);
+      ctx.fillStyle = accCol;
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      const label = moreHistoryAvailable ? '載入中…' : '沒有更多歷史資料';
+      ctx.fillText(label, Math.max(PAD_L + 30, phRight / 2 + PAD_L / 2), priceTop + klineH / 2);
+      ctx.restore();
     }
 
-    /* sub-indicator pane (MACD / KD / RSV) */
-    if (hasIndicatorPane) {
-      ctx.font = '10px monospace'; ctx.textAlign = 'left';
-      if (subPanel === 'macd') {
-        let lo = 0, hi = 0;
-        for (const arr of [mDif, mMacd, mOsc]) for (const v of arr) { if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
-        const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
-        const iY = v => indTop + (1 - (v - lo) / (hi - lo)) * indH;
-        /* zero line */
-        ctx.strokeStyle = gridCol; ctx.beginPath(); ctx.moveTo(PAD_L, iY(0)); ctx.lineTo(W - PAD_R, iY(0)); ctx.stroke();
-        /* histogram */
-        for (let i = 0; i < N; i++) {
-          const v = mOsc[i]; if (v == null) continue;
-          const cx = xOf(i);
-          const y0 = iY(0), y1 = iY(v);
-          ctx.fillStyle = v >= 0 ? upCol : dnCol;
-          ctx.globalAlpha = 0.65;
-          ctx.fillRect(cx - candleW / 2, Math.min(y0, y1), candleW, Math.abs(y1 - y0) || 1);
-          ctx.globalAlpha = 1;
-        }
-        drawLine(mDif, iY, xOf, MA_M_COL);
-        drawLine(mMacd, iY, xOf, MA_S_COL);
-        ctx.fillStyle = MA_M_COL; ctx.fillText('DIF', PAD_L + 4, indTop + 10);
-        ctx.fillStyle = MA_S_COL; ctx.fillText('MACD', PAD_L + 40, indTop + 10);
-      } else if (subPanel === 'kd') {
-        const iY = v => indTop + (1 - v / 100) * indH;
-        ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
-        [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
-        ctx.setLineDash([]);
-        drawLine(kdK, iY, xOf, MA_M_COL);
-        drawLine(kdD, iY, xOf, MA_S_COL);
-        ctx.fillStyle = MA_M_COL; ctx.fillText('K', PAD_L + 4, indTop + 10);
-        ctx.fillStyle = MA_S_COL; ctx.fillText('D', PAD_L + 24, indTop + 10);
-      } else if (subPanel === 'rsv') {
-        const iY = v => indTop + (1 - v / 100) * indH;
-        ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
-        [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
-        ctx.setLineDash([]);
-        drawLine(rsv, iY, xOf, accCol);
-        ctx.fillStyle = accCol; ctx.fillText('RSV(9)', PAD_L + 4, indTop + 10);
-      }
-    }
-
-    /* ── crosshair ── */
+    /* ── crosshair (click/tap only — no floating tooltip box; see fixed info bar) ── */
+    let crosshairIdx = null;
     if (cross) {
       const { x, y } = cross;
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = dark ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.35)';
       ctx.lineWidth   = 1;
-      ctx.beginPath(); ctx.moveTo(x, 0);   ctx.lineTo(x, H); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, y);   ctx.lineTo(W, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
       ctx.setLineDash([]);
 
-      /* nearest candle index */
-      const idx = Math.min(N - 1, Math.max(0, Math.round((x - PAD_L) / step - 0.5)));
-      const d   = data[idx];
+      const slot = Math.min(N - 1, Math.max(0, Math.round((x - PAD_L) / step - 0.5)));
+      if (slot >= placeholderCols) {
+        crosshairIdx = realStart + (slot - placeholderCols);
+        if (crosshairIdx >= NFull) crosshairIdx = null;
+      }
 
-      /* price tag on Y axis */
       if (y > priceTop && y < priceBot) {
-        const price = maxP - (y - priceTop) / priceH * (maxP - minP);
+        const price = maxP - (y - priceTop) / klineH * (maxP - minP);
         ctx.fillStyle   = tok('--acc2');
-        ctx.strokeStyle = accCol;
-        ctx.lineWidth   = 1;
+        ctx.strokeStyle = accCol; ctx.lineWidth = 1;
         rrect(ctx, W - PAD_R, y - 9, PAD_R, 18, 3);
         ctx.fill(); ctx.stroke();
-        ctx.fillStyle  = accCol;
-        ctx.font       = '10px monospace';
-        ctx.textAlign  = 'center';
+        ctx.fillStyle  = accCol; ctx.font = '10px monospace'; ctx.textAlign = 'center';
         ctx.fillText(price.toFixed(2), W - PAD_R / 2, y + 4);
       }
-
-      /* tooltip box */
-      const lines = [
-        d.trade_date || '',
-        `開 ${(d.open  || 0).toFixed(2)}`,
-        `高 ${(d.high  || 0).toFixed(2)}`,
-        `低 ${(d.low   || 0).toFixed(2)}`,
-        `收 ${(d.close || 0).toFixed(2)}`,
-        `量 ${fmtVol(d.volume)}`,
-      ];
-      const nInfoLines = lines.length;
-      if (maS[idx] != null) lines.push(`MA${maPeriods.short} ${maS[idx].toFixed(2)}`);
-      if (maM[idx] != null) lines.push(`MA${maPeriods.mid} ${maM[idx].toFixed(2)}`);
-      if (maL[idx] != null) lines.push(`MA${maPeriods.long} ${maL[idx].toFixed(2)}`);
-      if (subPanel === 'macd' && mOsc[idx] != null) lines.push(`OSC ${mOsc[idx].toFixed(2)}`);
-      if (subPanel === 'kd' && kdK[idx] != null) lines.push(`K ${kdK[idx].toFixed(1)}  D ${kdD[idx].toFixed(1)}`);
-      if (subPanel === 'rsv' && rsv[idx] != null) lines.push(`RSV ${rsv[idx].toFixed(1)}`);
-
-      const TW = 128, TH = lines.length * 16 + 10;
-      const tx = x + 12 + TW > W ? x - TW - 12 : x + 12;
-      const ty = y + TH + 8 > H ? y - TH - 8 : y + 8;
-
-      ctx.fillStyle   = dark ? 'rgba(22,27,34,.93)' : 'rgba(255,255,255,.95)';
-      ctx.strokeStyle = bdrCol;
-      ctx.lineWidth   = 1;
-      rrect(ctx, tx, ty, TW, TH, 6);
-      ctx.fill(); ctx.stroke();
-
-      ctx.font      = '11px monospace';
-      ctx.textAlign = 'left';
-      const upDown  = (d.close >= d.open) ? upCol : dnCol;
-      lines.forEach((ln, i) => {
-        ctx.fillStyle = (i >= 1 && i <= nInfoLines - 1) ? upDown : txt2Col;
-        ctx.fillText(ln, tx + 8, ty + 14 + i * 16);
-      });
-
-      /* locked indicator */
-      if (locked) {
-        ctx.fillStyle  = txt2Col;
-        ctx.font       = '10px sans-serif';
-        ctx.textAlign  = 'left';
-        ctx.fillText('🔒', tx + TW - 18, ty + 13);
-      }
     }
+    emitInfo(crosshairIdx);
   }
 
-  /* events */
-  canvas.addEventListener('mousemove', e => {
-    if (locked) return;
+  /* ── pointer events: drag-to-pan, pinch-to-zoom (touch), click/tap-to-show crosshair ── */
+  function localPos(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
-    cross   = { x: e.clientX - r.left, y: e.clientY - r.top };
-    draw();
+    return { x: clientX - r.left, y: clientY - r.top };
+  }
+
+  let dragging = false, dragMoved = false, dragStartX = 0, dragStartViewEnd = 0;
+
+  function dragStart(clientX) {
+    if (!periodData.length) return;
+    dragging = true; dragMoved = false;
+    dragStartX = clientX;
+    dragStartViewEnd = viewEnd == null ? periodData.length - 1 : viewEnd;
+    canvas.style.cursor = 'grabbing';
+  }
+  function dragMove(clientX) {
+    if (!dragging) return;
+    const deltaX = clientX - dragStartX;
+    if (Math.abs(deltaX) > 3) dragMoved = true;
+    if (!dragMoved) return;
+    const deltaCandles = Math.round(deltaX / (lastStep || 1));
+    const NFull  = periodData.length;
+    const vcount = visibleCount || NFull;
+    // dragging right (deltaX>0) pulls older data into view, like sliding a strip of paper
+    let newEnd = dragStartViewEnd - deltaCandles;
+    newEnd = Math.min(NFull - 1, newEnd);
+    if (!moreHistoryAvailable) newEnd = Math.max(vcount - 1, newEnd); // nothing more to load — don't pan into empty space
+    if (newEnd !== (viewEnd == null ? NFull - 1 : viewEnd)) {
+      viewEnd = newEnd;
+      cross = null;
+      draw();
+    }
+  }
+  function dragEnd() {
+    if (!dragging) return;
+    dragging = false;
+    canvas.style.cursor = 'grab';
+    if (dragMoved) onZoomChangeCb?.();
+  }
+
+  canvas.addEventListener('mousedown', e => dragStart(e.clientX));
+  window.addEventListener('mousemove', e => {
+    if (dragging) dragMove(e.clientX);
+    else if (followMouse && !locked) { cross = localPos(e.clientX, e.clientY); draw(); }
   });
+  window.addEventListener('mouseup', dragEnd);
   canvas.addEventListener('mouseleave', () => {
-    if (!locked) { cross = null; draw(); }
+    if (!dragging && followMouse && !locked) { cross = null; draw(); }
   });
-  canvas.addEventListener('click', () => {
-    if (!fullData.length) return;
-    if (!locked && !cross) return;
-    locked = !locked;
+  canvas.addEventListener('click', e => {
+    if (!periodData.length) return;
+    if (dragMoved) { dragMoved = false; return; } // a drag just ended — don't also toggle the crosshair
+    if (followMouse) {
+      if (!locked && !cross) return;
+      locked = !locked;
+    } else {
+      if (locked) { locked = false; cross = null; }
+      else { locked = true; cross = localPos(e.clientX, e.clientY); }
+    }
     draw();
   });
+
+  /* touch: 1 finger = drag-to-pan / tap-to-show; 2 fingers = pinch-to-zoom */
+  let pinchStartDist = 0, pinchStartCount = 0;
+  function touchDist(t0, t1) { return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY); }
+
+  canvas.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      dragging = false;
+      pinchStartDist = touchDist(e.touches[0], e.touches[1]);
+      pinchStartCount = visibleCount || periodData.length;
+    } else if (e.touches.length === 1) {
+      dragStart(e.touches[0].clientX);
+    }
+  }, { passive: true });
+  canvas.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
+      const d = touchDist(e.touches[0], e.touches[1]);
+      const ratio = pinchStartDist / (d || 1); // fingers spreading apart (d grows) -> zoom in -> fewer candles
+      zoomTo(pinchStartCount * ratio);
+      e.preventDefault();
+    } else if (e.touches.length === 1) {
+      dragMove(e.touches[0].clientX);
+      e.preventDefault();
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchend', e => {
+    if (e.touches.length === 0) {
+      const wasDrag = dragMoved;
+      const wasPinch = pinchStartDist > 0;
+      dragEnd();
+      pinchStartDist = 0;
+      if (wasPinch) onZoomChangeCb?.();
+      else if (!wasDrag) {
+        // plain tap: touch has no hover, so always click-mode here
+        if (locked) { locked = false; cross = null; } else { locked = true; }
+        draw();
+      }
+    }
+  });
+
   canvas.addEventListener('wheel', e => {
-    if (!fullData.length) return;
+    if (!periodData.length) return;
     e.preventDefault();
     if (e.deltaY < 0) zoomIn(); else if (e.deltaY > 0) zoomOut();
   }, { passive: false });
 
   return {
-    setData, resize, setMAPeriods, setSubPanel, zoomIn, zoomOut, zoomReset,
-    setOnZoomChange, getVisibleCount, getFullDataLength,
+    setData, resize, setMAPeriods, setIndicator, setPeriod, setFollowMouse, setMoreHistoryAvailable,
+    zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange,
+    getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
 })();
 
@@ -1948,7 +2199,7 @@ const R = {
   pageInfo:    $('page-info'),
   chartTitle:  $('chart-title'),
   chartInfo:   $('chart-info'),
-  chartFetchHint: $('chart-fetch-hint'),
+  chartInfoBar:$('chart-info-bar'),
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
   resizeHandle:$('resize-handle'),
@@ -1958,7 +2209,8 @@ const R = {
   mtabChart:       $('mtab-chart'),
   drawerToggleBtn: $('drawer-toggle-btn'),
   drawerOverlay:   $('drawer-overlay'),
-  subpanelToggle:  $('subpanel-toggle'),
+  periodToggle:    $('period-toggle'),
+  indicatorToggle: $('indicator-toggle'),
   zoomInBtn:       $('zoom-in-btn'),
   zoomOutBtn:      $('zoom-out-btn'),
   zoomResetBtn:    $('zoom-reset-btn'),
@@ -1974,6 +2226,7 @@ const R = {
   strongRsThInput:     $('strong-rs-th'),
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
+  followMouseChk:  $('follow-mouse-toggle'),
 };
 
 /* ════════════════════════════════════════
@@ -2053,11 +2306,13 @@ function renderPage() {
 
   R.stockTbody.innerHTML = rows.join('');
 
-  /* row click → select stock */
+  /* row click → select stock (or US index, in the 美股 view) */
+  const isUsMarket = R.viewSel.value === 'usmarket';
   R.stockTbody.querySelectorAll('tr[data-code]').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.classList.contains('del-btn')) return;
-      selectStock(tr.dataset.code);
+      if (isUsMarket) selectMarketIndex(tr.dataset.code);
+      else selectStock(tr.dataset.code);
     });
   });
 
@@ -2213,6 +2468,7 @@ function switchView(view) {
     }
   }
   else if (view === 'watchlist') loadWatchlist();
+  else if (view === 'usmarket') loadUsMarket();
   else {
     const sid = R.sectorSel.value;
     if (sid) loadSector(sid);
@@ -2221,10 +2477,64 @@ function switchView(view) {
 }
 
 /* ════════════════════════════════════════
+   美股（大盤觀察指標：DJI/SPX/NASDAQ/SOX）
+   資料已隨既有的 monthly 快照/每日增量一起同步，這裡只是換一張表查詢，不需要另外抓資料。
+   個股層級的美股追蹤（例如任意輸入 AAPL）目前還沒有爬蟲支援，之後再加。
+   ════════════════════════════════════════ */
+const US_INDEX_LIST = [
+  { code: 'DJI',     name: '道瓊工業指數' },
+  { code: 'SPX',     name: '標普500' },
+  { code: 'NASDAQ',  name: '那斯達克' },
+  { code: 'SOX',     name: '費城半導體' },
+];
+
+function loadUsMarket() {
+  State.stocks = US_INDEX_LIST.map(({ code, name }) => {
+    const latest = DBMgr.getMarketIndexLatest(code) || {};
+    return { stock_code: code, stock_name: name, open: latest.open, high: latest.high, low: latest.low, close: latest.close };
+  });
+  State.page = 0;
+  renderPage();
+}
+
+function selectMarketIndex(code) {
+  currentChartSource = { type: 'index', code };
+  sourceExhausted = false;
+
+  R.stockTbody.querySelectorAll('tr').forEach(tr =>
+    tr.classList.toggle('selected', tr.dataset.code === code)
+  );
+
+  const entry = US_INDEX_LIST.find(x => x.code === code);
+  R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
+
+  Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
+  const history = DBMgr.getMarketIndexHistory(code, 250);
+  Chart.setData(history);
+
+  if (history.length) {
+    const last = history.at(-1);
+    const prev = history.at(-2);
+    const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
+    const sign = chg > 0 ? '+' : '';
+    R.chartInfo.textContent = chg != null
+      ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
+      : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
+  } else {
+    R.chartInfo.textContent = '';
+  }
+
+  switchMobileTab('chart');
+  setDrawerOpen(false);
+}
+
+/* ════════════════════════════════════════
    STOCK SELECT → CHART
    ════════════════════════════════════════ */
 function selectStock(code) {
   Settings.set('selectedStock', code);
+  currentChartSource = { type: 'stock', code };
+  sourceExhausted = false;
 
   R.stockTbody.querySelectorAll('tr').forEach(tr =>
     tr.classList.toggle('selected', tr.dataset.code === code)
@@ -2233,6 +2543,7 @@ function selectStock(code) {
   const info = DBMgr.getStockInfo(code);
   R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
 
+  Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = DBMgr.getPriceHistory(code, 250);
   Chart.setData(history);
 
@@ -2326,29 +2637,56 @@ async function handleSync() {
 /* ════════════════════════════════════════
    ON-DEMAND HISTORY (zoom out beyond loaded months)
    ════════════════════════════════════════ */
-let expandingHistory = false;
+let expandingHistory   = false;
+let currentChartSource = null; // { type: 'stock'|'index', code } — whatever Chart is currently showing
+let sourceExhausted    = false; // true once we've confirmed there's nothing older left for currentChartSource
+
+/* Non-blocking, Google-Maps-style loading: Chart already renders a dashed
+   "載入中" placeholder for any not-yet-loaded portion of the visible window
+   and never blocks panning/zooming while this runs in the background.
+
+   個股（type:'stock'）優先抓 db/by-id/<code>/<月份>.db（只有這支股票，通常
+   幾KB），抓不到才退回抓整個月的全市場 db/monthly 快照——見
+   DBMgr.ensureStockMonthLoaded()。美股指數（type:'index'）沒有 by-id 這個
+   概念，一律用 monthly 快照（跟個股共用同一份，本來就都已經同步過了）。 */
 async function maybeExpandHistory() {
-  if (expandingHistory) return;
-  const code = Settings.get('selectedStock');
-  if (!code) return;
-  const need = Chart.getVisibleCount();
-  const have = Chart.getFullDataLength();
-  if (need <= have) return;              // 目前已載入的資料已經夠顯示這個 zoom 範圍
-  if (!DBMgr.hasOlderMonthAvailable()) return; // 已經是最早可用的月份，沒有更多資料了
+  if (expandingHistory || sourceExhausted) return;
+  if (!currentChartSource) return;
+  // needsMoreHistory() covers both "zoomed out to see everything loaded" and
+  // "dragged/panned the view back to the oldest loaded candle" — either way,
+  // the visible window's left edge has reached what we currently have.
+  if (!Chart.needsMoreHistory()) return;
 
   expandingHistory = true;
-  R.chartFetchHint.textContent = '載入更早歷史資料中…';
-  R.chartFetchHint.classList.remove('hidden');
   try {
-    const older = DBMgr.oneOlderMonthLabel();
-    await DBMgr.ensureMonthsLoaded([older]);
-    const history = DBMgr.getPriceHistory(code, Math.max(need + 60, 400));
-    Chart.setData(history);
+    const before = Chart.getFullDataLength();
+
+    if (currentChartSource.type === 'stock') {
+      const oldestDate  = Chart.getOldestLoadedDate();
+      const floorMonth  = DBMgr.getAvailableMonths()[0] || null;
+      const targetMonth = oldestDate ? shiftMonthLabel(oldestDate.slice(0, 7), -1) : null;
+      if (targetMonth && (!floorMonth || targetMonth >= floorMonth)) {
+        await DBMgr.ensureStockMonthLoaded(currentChartSource.code, targetMonth);
+        Chart.setData(DBMgr.getPriceHistory(currentChartSource.code, 3000), { preserveView: true });
+      }
+    } else if (DBMgr.hasOlderMonthAvailable()) {
+      const older = DBMgr.oneOlderMonthLabel();
+      await DBMgr.ensureMonthsLoaded([older]);
+      Chart.setData(DBMgr.getMarketIndexHistory(currentChartSource.code, 3000), { preserveView: true });
+    }
+
+    if (Chart.getFullDataLength() === before) {
+      // the fetch didn't actually extend the history — nothing older exists
+      sourceExhausted = true;
+      Chart.setMoreHistoryAvailable(false);
+    }
   } catch (e) {
     console.warn('補齊更早歷史資料失敗：', e.message);
+    sourceExhausted = true;
+    Chart.setMoreHistoryAvailable(false);
   } finally {
     expandingHistory = false;
-    R.chartFetchHint.classList.add('hidden');
+    if (!sourceExhausted && Chart.needsMoreHistory()) maybeExpandHistory();
   }
 }
 
@@ -2356,10 +2694,14 @@ function refreshCurrentView() {
   const v = R.viewSel.value;
   if (v === 'strong') switchView('strong'); // keep cached results / hint; user re-runs the filter manually
   else if (v === 'watchlist') loadWatchlist();
+  else if (v === 'usmarket') loadUsMarket();
   else loadSector(R.sectorSel.value);
 
-  const sel = Settings.get('selectedStock');
-  if (sel) selectStock(sel);
+  if (currentChartSource?.type === 'index') selectMarketIndex(currentChartSource.code);
+  else {
+    const sel = Settings.get('selectedStock');
+    if (sel) selectStock(sel);
+  }
 }
 
 /* ════════════════════════════════════════
@@ -2424,6 +2766,61 @@ function switchMobileTab(tab) {
 function setDrawerOpen(open) {
   R.main.classList.toggle('drawer-open', open);
   if (!open) setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
+}
+
+/* ════════════════════════════════════════
+   INDICATOR TOGGLE + PERIOD SELECTOR
+   ════════════════════════════════════════ */
+function applyIndicator(kind) {
+  Settings.set('chartIndicator', kind);
+  R.indicatorToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.indicator === kind));
+  Chart.setIndicator(kind);
+}
+
+function applyPeriod(p) {
+  Settings.set('chartPeriod', p);
+  R.periodToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.period === p));
+  Chart.setPeriod(p);
+}
+
+/* ════════════════════════════════════════
+   FIXED CHART INFO BAR (replaces the old floating tooltip — see Chart.setOnInfoChange)
+   ════════════════════════════════════════ */
+function fmtVolShort(v) {
+  if (v == null) return '-';
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '億';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e4) return (v / 1e4).toFixed(0) + '萬';
+  return v.toLocaleString();
+}
+function fmt2(v) { return v == null ? '-' : v.toFixed(2); }
+function fmt1(v) { return v == null ? '-' : v.toFixed(1); }
+
+function renderInfoBar(info) {
+  if (!info) { R.chartInfoBar.innerHTML = ''; return; }
+  const upDown = info.close >= info.open ? 'td-up' : 'td-dn';
+  let html =
+    `<span class="info-item">${info.trade_date}</span>` +
+    `<span class="info-item">開 <b class="${upDown}">${fmt2(info.open)}</b></span>` +
+    `<span class="info-item">高 <b class="${upDown}">${fmt2(info.high)}</b></span>` +
+    `<span class="info-item">低 <b class="${upDown}">${fmt2(info.low)}</b></span>` +
+    `<span class="info-item">收 <b class="${upDown}">${fmt2(info.close)}</b></span>` +
+    `<span class="info-item">量 <b class="${upDown}">${fmtVolShort(info.volume)}</b></span>` +
+    `<span class="info-item ma-s">MA${info.maPeriods.short} <b>${fmt2(info.ma.short)}</b></span>` +
+    `<span class="info-item ma-m">MA${info.maPeriods.mid} <b>${fmt2(info.ma.mid)}</b></span>` +
+    `<span class="info-item ma-l">MA${info.maPeriods.long} <b>${fmt2(info.ma.long)}</b></span>`;
+  if (info.indicator === 'kd') {
+    html += `<span class="info-item kd-k">K <b>${fmt1(info.kd.k)}</b></span>` +
+            `<span class="info-item kd-d">D <b>${fmt1(info.kd.d)}</b></span>` +
+            `<span class="info-item kd-j">J <b>${fmt1(info.kd.j)}</b></span>`;
+  } else if (info.indicator === 'macd') {
+    html += `<span class="info-item macd-dif">DIF <b>${fmt2(info.macd.dif)}</b></span>` +
+            `<span class="info-item macd-macd">MACD <b>${fmt2(info.macd.macd)}</b></span>` +
+            `<span class="info-item">OSC <b class="${(info.macd.osc||0)>=0?'td-up':'td-dn'}">${fmt2(info.macd.osc)}</b></span>`;
+  } else if (info.indicator === 'rsv') {
+    html += `<span class="info-item rsv">RSV <b>${fmt1(info.rsv)}</b></span>`;
+  }
+  R.chartInfoBar.innerHTML = html;
 }
 
 /* ════════════════════════════════════════
@@ -2500,14 +2897,18 @@ function bindEvents() {
   /* retry */
   R.retryBtn.addEventListener('click', () => location.reload());
 
-  /* chart sub-panel toggle */
-  R.subpanelToggle.addEventListener('click', e => {
+  /* chart indicator toggle (KD / MACD / RSV) */
+  R.indicatorToggle.addEventListener('click', e => {
     const btn = e.target.closest('.seg-btn');
     if (!btn) return;
-    R.subpanelToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b === btn));
-    const panel = btn.dataset.panel;
-    Settings.set('chartSubPanel', panel);
-    Chart.setSubPanel(panel);
+    applyIndicator(btn.dataset.indicator);
+  });
+
+  /* chart period (日/週/月/季線) */
+  R.periodToggle.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    applyPeriod(btn.dataset.period);
   });
 
   /* chart zoom */
@@ -2549,6 +2950,8 @@ function openSettingsModal() {
   R.strongVolRatioInput.value = sp.minVolRatio ?? 0.8;
   R.strongNearHighInput.value = sp.nearHighPct ?? 15;
 
+  R.followMouseChk.checked = !!Settings.get('followMouseTooltip');
+
   R.settingsModal.classList.remove('hidden');
 }
 
@@ -2576,6 +2979,10 @@ function saveSettingsModal() {
   };
   Settings.set('strongParams', strongParams);
 
+  const followMouse = R.followMouseChk.checked;
+  Settings.set('followMouseTooltip', followMouse);
+  Chart.setFollowMouse(followMouse);
+
   closeSettingsModal();
 }
 
@@ -2585,17 +2992,16 @@ function saveSettingsModal() {
 async function main() {
   bindEvents();
   Chart.setOnZoomChange(maybeExpandHistory);
+  Chart.setOnInfoChange(renderInfoBar);
 
   /* restore theme */
   applyTheme(Settings.get('theme') || 'light');
 
   /* restore chart prefs */
   Chart.setMAPeriods(Settings.get('maPeriods') || { short:5, mid:20, long:60 });
-  const savedPanel = Settings.get('chartSubPanel') || 'volume';
-  Chart.setSubPanel(savedPanel);
-  R.subpanelToggle.querySelectorAll('.seg-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.panel === savedPanel)
-  );
+  applyIndicator(Settings.get('chartIndicator') || 'kd');
+  applyPeriod(Settings.get('chartPeriod') || 'day');
+  Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
 
   /* restore view selector (migrate old 'top100' value from earlier versions) */
