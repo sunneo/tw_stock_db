@@ -2,12 +2,26 @@
 <html lang="zh-TW" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>台股追蹤</title>
+
+<!-- PWA / 加到主畫面後可全螢幕（無網址列）啟動，見 manifest.webmanifest -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="台股追蹤">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+
 <style>
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; }
+/* 100dvh（dynamic viewport height）會隨手機瀏覽器網址列顯示/隱藏即時調整，
+   比 100vh 在手機上更不會被網址列擋住或留白；不支援的舊瀏覽器自動退回 100%。 */
+html, body { height: 100%; height: 100dvh; overflow: hidden; }
 
 /* ── Theme tokens ── */
 :root {
@@ -417,6 +431,87 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Hidden utility ── */
 .hidden { display: none !important; }
+
+/* ════════════════════════════════════════
+   MOBILE TAB BAR (portrait compact only — see media query below)
+   ════════════════════════════════════════ */
+#mobile-tabbar { display: none; }
+.mtab-btn {
+  flex: 1;
+  padding: 10px 4px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--txt2);
+  background: var(--bg1);
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.mtab-btn.active { color: var(--acc); border-bottom-color: var(--acc); }
+
+/* ── Drawer (landscape compact only) ── */
+#drawer-toggle-btn { display: none; }
+#drawer-overlay { display: none; }
+
+/* ════════════════════════════════════════
+   RESPONSIVE — compact PORTRAIT (phone/tablet, <1024px, portrait):
+   list ⇄ chart become tab-switched full-screen panels, one at a time.
+   ════════════════════════════════════════ */
+@media (max-width: 1023px) and (orientation: portrait) {
+  #mobile-tabbar { display: flex; flex-shrink: 0; border-bottom: 1px solid var(--bdr); }
+  #resize-handle { display: none; }
+
+  #main { flex-direction: column; }
+  #sidebar {
+    width: 100% !important; max-width: none; min-width: 0;
+    border-right: none;
+  }
+  #sidebar, #chart-area { display: none; }
+  #main.show-list #sidebar { display: flex; flex: 1; }
+  #main.show-chart #chart-area { display: flex; flex: 1; }
+
+  /* larger tap targets on touch screens */
+  .btn, select, #stock-table tbody tr, .seg-btn { min-height: 34px; }
+  #stock-table td, #stock-table th { padding: 8px 6px; }
+}
+
+/* ════════════════════════════════════════
+   RESPONSIVE — compact LANDSCAPE (phone/tablet, <1024px, landscape):
+   chart takes the full screen; the stock list becomes an off-canvas drawer.
+   ════════════════════════════════════════ */
+@media (max-width: 1023px) and (orientation: landscape) {
+  #resize-handle { display: none; }
+  #drawer-toggle-btn { display: inline-flex; }
+
+  #sidebar {
+    position: fixed;
+    top: 44px; left: 0; bottom: 0;
+    width: min(78vw, 320px); max-width: none; min-width: 0;
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+    box-shadow: var(--shd2);
+  }
+  #main.drawer-open #sidebar { transform: translateX(0); }
+
+  #drawer-overlay {
+    position: fixed;
+    top: 44px; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.4);
+    z-index: 290;
+  }
+  #main.drawer-open #drawer-overlay { display: block; }
+
+  .btn, select, #stock-table tbody tr, .seg-btn { min-height: 34px; }
+}
+
+/* very small phones: trim some padding/gaps so the chart toolbar still fits */
+@media (max-width: 380px) {
+  .chart-toolbar { gap: 4px; }
+  .seg-btn { padding: 4px 6px; font-size: 11px; }
+  #chart-title { font-size: 13px; }
+}
 </style>
 </head>
 <body>
@@ -438,8 +533,17 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="btn icon" id="theme-btn" title="切換主題">🌙</button>
 </nav>
 
+<!-- ══ MOBILE TAB BAR (portrait 手機/平板才顯示：清單/圖表 分頁切換) ══ -->
+<div id="mobile-tabbar">
+  <button class="mtab-btn active" id="mtab-list" data-tab="list">📋 清單</button>
+  <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 圖表</button>
+</div>
+
 <!-- ══ MAIN ══ -->
-<div id="main">
+<div id="main" class="show-list">
+
+  <!-- drawer overlay (landscape 手機/平板才顯示：點擊關閉側邊抽屜) -->
+  <div id="drawer-overlay"></div>
 
   <!-- sidebar -->
   <aside id="sidebar">
@@ -492,6 +596,7 @@ select:focus { outline: 2px solid var(--acc); }
   <!-- chart -->
   <div id="chart-area">
     <div id="chart-header">
+      <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
       <span id="chart-fetch-hint" class="hidden"></span>
@@ -1850,6 +1955,12 @@ const R = {
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
   resizeHandle:$('resize-handle'),
+  main:            $('main'),
+  mobileTabbar:    $('mobile-tabbar'),
+  mtabList:        $('mtab-list'),
+  mtabChart:       $('mtab-chart'),
+  drawerToggleBtn: $('drawer-toggle-btn'),
+  drawerOverlay:   $('drawer-overlay'),
   subpanelToggle:  $('subpanel-toggle'),
   zoomInBtn:       $('zoom-in-btn'),
   zoomOutBtn:      $('zoom-out-btn'),
@@ -2139,6 +2250,12 @@ function selectStock(code) {
   } else {
     R.chartInfo.textContent = '';
   }
+
+  /* mobile: picking a stock naturally means "now show me the chart" —
+     switch tab (portrait) / close the drawer (landscape). No-op on desktop
+     since these classes only affect layout inside the compact media queries. */
+  switchMobileTab('chart');
+  setDrawerOpen(false);
 }
 
 /* ════════════════════════════════════════
@@ -2299,6 +2416,22 @@ function populateSectors() {
 })();
 
 /* ════════════════════════════════════════
+   MOBILE LAYOUT — portrait tab-switch (list ⇄ chart) + landscape drawer
+   ════════════════════════════════════════ */
+function switchMobileTab(tab) {
+  R.main.classList.toggle('show-list', tab === 'list');
+  R.main.classList.toggle('show-chart', tab === 'chart');
+  R.mtabList.classList.toggle('active', tab === 'list');
+  R.mtabChart.classList.toggle('active', tab === 'chart');
+  if (tab === 'chart') setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
+}
+
+function setDrawerOpen(open) {
+  R.main.classList.toggle('drawer-open', open);
+  if (!open) setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
+}
+
+/* ════════════════════════════════════════
    EVENT BINDINGS
    ════════════════════════════════════════ */
 function bindEvents() {
@@ -2330,6 +2463,17 @@ function bindEvents() {
 
   /* sync */
   R.syncBtn.addEventListener('click', handleSync);
+
+  /* mobile portrait tab-switch (list ⇄ chart) */
+  R.mtabList.addEventListener('click', () => switchMobileTab('list'));
+  R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
+
+  /* mobile landscape drawer (sidebar slide-out) */
+  R.drawerToggleBtn.addEventListener('click', () => setDrawerOpen(!R.main.classList.contains('drawer-open')));
+  R.drawerOverlay.addEventListener('click', () => setDrawerOpen(false));
+
+  /* orientation/viewport changes can affect which layout mode is active */
+  window.addEventListener('orientationchange', () => setTimeout(() => Chart.resize(), 250));
 
   /* view select */
   R.viewSel.addEventListener('change', () => {
