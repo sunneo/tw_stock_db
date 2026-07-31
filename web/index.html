@@ -316,6 +316,104 @@ select:focus { outline: 2px solid var(--acc); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 3px; }
 
+/* ── Strong-stock filter bar ── */
+#strong-bar { display: flex; flex-direction: column; gap: 6px; }
+#strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; }
+
+/* ── Chart toolbar ── */
+.chart-toolbar { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.seg-group { display: flex; border: 1px solid var(--bdr); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  background: var(--bg2);
+  border: none;
+  border-right: 1px solid var(--bdr);
+  cursor: pointer;
+  color: var(--txt1);
+}
+.seg-btn:last-child { border-right: none; }
+.seg-btn.active { background: var(--acc); color: #fff; }
+.seg-btn:hover:not(.active) { background: var(--bg3); }
+
+/* ── Settings modal (Eclipse-style categorized preferences) ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+.modal-overlay.hidden { display: none; }
+.modal-box {
+  width: 480px;
+  max-width: 92vw;
+  background: var(--bg1);
+  border-radius: 10px;
+  box-shadow: var(--shd2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bdr);
+  font-weight: 700;
+  font-size: 14px;
+}
+.modal-body { display: flex; height: 280px; }
+.modal-sidebar {
+  width: 150px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--bdr);
+  background: var(--bg2);
+  overflow-y: auto;
+}
+.modal-cat {
+  padding: 10px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--txt1);
+  border-left: 3px solid transparent;
+}
+.modal-cat:hover { background: var(--bg3); }
+.modal-cat.active { background: var(--sel); border-left-color: var(--acc); color: var(--txt0); font-weight: 600; }
+.modal-content { flex: 1; padding: 14px 16px; overflow-y: auto; }
+.modal-pane.hidden { display: none; }
+.modal-pane h3 { font-size: 12px; color: var(--txt2); margin: 12px 0 8px; }
+.modal-pane h3:first-child { margin-top: 0; }
+.modal-pane label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--txt1);
+  margin-bottom: 10px;
+}
+.modal-pane input[type="number"] {
+  width: 90px;
+  padding: 4px 6px;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt0);
+  font-size: 13px;
+  text-align: right;
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--bdr);
+}
+
 /* ── Hidden utility ── */
 .hidden { display: none !important; }
 </style>
@@ -347,10 +445,18 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="sidebar-top">
       <select id="view-sel">
         <option value="sector">類股</option>
-        <option value="top100">強勢股 100 檔</option>
+        <option value="strong">強勢股</option>
         <option value="watchlist">自選股</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
+      <div id="strong-bar" class="hidden">
+        <select id="strong-method-sel">
+          <option value="current">目前原則(型態訊號)</option>
+          <option value="xq">XQ原則(RS值動能)</option>
+        </select>
+        <button class="btn primary" id="strong-filter-btn">🔍 過濾強勢股</button>
+        <div id="strong-status"></div>
+      </div>
       <div id="wl-bar" class="hidden">
         <input id="wl-input" type="text" placeholder="輸入股票代號，按 Enter 新增">
         <button class="btn primary" id="wl-add">+</button>
@@ -387,9 +493,57 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-header">
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
+      <div class="chart-toolbar">
+        <div class="seg-group" id="subpanel-toggle">
+          <button class="seg-btn active" data-panel="volume">成交量</button>
+          <button class="seg-btn" data-panel="macd">MACD</button>
+          <button class="seg-btn" data-panel="kd">KD</button>
+          <button class="seg-btn" data-panel="rsv">RSV</button>
+        </div>
+        <button class="btn icon" id="zoom-in-btn" title="放大（範圍拉近）">🔍+</button>
+        <button class="btn icon" id="zoom-out-btn" title="縮小（範圍拉遠）">🔍-</button>
+        <button class="btn icon" id="zoom-reset-btn" title="還原全部範圍">⤢</button>
+        <button class="btn icon" id="chart-settings-btn" title="圖表設定">⚙</button>
+      </div>
     </div>
     <div id="chart-wrap">
       <canvas id="main-chart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SETTINGS MODAL ══ -->
+<div id="settings-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>⚙ 圖表設定</span>
+      <button class="btn icon" id="settings-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-sidebar">
+        <div class="modal-cat active" data-cat="ma">均線週期</div>
+        <div class="modal-cat" data-cat="strong">強勢股門檻</div>
+      </div>
+      <div class="modal-content">
+        <div class="modal-pane" data-pane="ma">
+          <h3>均線週期（短均 / 中均 / 長均）</h3>
+          <label>短期 MA <input type="number" id="ma-short" min="1" max="250"></label>
+          <label>中期 MA <input type="number" id="ma-mid" min="1" max="250"></label>
+          <label>長期 MA <input type="number" id="ma-long" min="1" max="250"></label>
+        </div>
+        <div class="modal-pane hidden" data-pane="strong">
+          <h3>目前原則（型態訊號評分）</h3>
+          <label>最低綜合分數 <input type="number" id="strong-min-score" min="0" max="5"></label>
+          <h3>XQ原則（RS值動能）</h3>
+          <label>RS值門檻 <input type="number" id="strong-rs-th" min="1" max="99"></label>
+          <label>量比門檻 <input type="number" id="strong-vol-ratio" min="0" step="0.1"></label>
+          <label>距60日高點(%) <input type="number" id="strong-near-high" min="0" max="100"></label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="settings-cancel">取消</button>
+      <button class="btn primary" id="settings-save">儲存</button>
     </div>
   </div>
 </div>
@@ -462,7 +616,11 @@ const Settings = (() => {
 
   function defaults() {
     return { theme:'light', view:'sector', sectorId:null,
-             selectedStock:null, watchlist:[], lastDailyDate:null };
+             selectedStock:null, watchlist:[], lastDailyDate:null,
+             maPeriods: { short:5, mid:20, long:60 },
+             chartSubPanel: 'volume',
+             strongMethod: 'current',
+             strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 } };
   }
   function load() {
     try { d = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
@@ -573,6 +731,25 @@ const DBMgr = (() => {
     await IDB.set('blobs', 'sqlite', data.buffer);
   }
 
+  /* ── Client-side schema migration: published db-snapshot may predate newer columns
+     (e.g. rs_rating), mirroring db/init_db.py's MIGRATIONS on the Python side.
+     Without this, any query referencing a missing column throws and silently
+     returns [] — this was the root cause of 強勢股 always coming back empty. ── */
+  function ensureSchemaMigrations() {
+    if (!db) return;
+    const MIGRATIONS = [
+      ['technical_indicators', 'rs_rating', 'REAL'],
+    ];
+    for (const [table, column, type] of MIGRATIONS) {
+      try {
+        const cols = query(`PRAGMA table_info(${table})`).map(c => c.name);
+        if (cols.length && !cols.includes(column)) {
+          run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        }
+      } catch (e) { console.warn('schema migration failed:', table, column, e.message); }
+    }
+  }
+
   /* ── Init: try to load from IDB ── */
   async function init(onProgress) {
     onProgress('載入 sql.js…', 3);
@@ -589,6 +766,7 @@ const DBMgr = (() => {
       if (dbMeta.monthLabel === label) {
         onProgress('從本地存儲載入資料庫…', 95);
         db = new SQL.Database(new Uint8Array(bytes));
+        ensureSchemaMigrations();
         onProgress('就緒', 100);
         return false; // no full download needed
       }
@@ -596,28 +774,44 @@ const DBMgr = (() => {
     return true; // need download
   }
 
-  /* ── Download & assemble db-snapshot ── */
+  /* ── Download & assemble db-snapshot (parts fetched in parallel, placed by known offset) ── */
   async function download(onProgress) {
     onProgress('下載 manifest…', 2);
     const mRes = await fetch(MANIFEST_URL);
     if (!mRes.ok) throw new Error('無法取得 manifest: ' + mRes.status);
     const manifest = await mRes.json();
 
-    const parts  = manifest.parts;
-    const total  = manifest.original_size_bytes;
-    const merged = new Uint8Array(total);
-    let offset   = 0;
+    const parts    = manifest.parts;
+    const total    = manifest.original_size_bytes;
+    const partSize = manifest.part_size_bytes;
+    const merged   = new Uint8Array(total);
 
-    for (let i = 0; i < parts.length; i++) {
-      const pct = 5 + Math.round((i / parts.length) * 65);
-      onProgress(`下載 ${parts[i]} (${i+1}/${parts.length})…`, pct);
-      const url  = `${RAW}/db-snapshot/${parts[i]}`;
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`無法下載 ${parts[i]}: ${resp.status}`);
-      const buf  = await resp.arrayBuffer();
-      merged.set(new Uint8Array(buf), offset);
-      offset += buf.byteLength;
+    const PART_CONCURRENCY = 6;
+    let nextIdx = 0, doneBytes = 0, doneParts = 0;
+
+    async function worker() {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= parts.length) return;
+        const url  = `${RAW}/db-snapshot/${parts[i]}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`無法下載 ${parts[i]}: ${resp.status}`);
+        const buf  = await resp.arrayBuffer();
+        merged.set(new Uint8Array(buf), i * partSize);
+        doneBytes += buf.byteLength;
+        doneParts += 1;
+        const pct = 5 + Math.round((doneBytes / total) * 65);
+        onProgress(
+          `下載中… (${doneParts}/${parts.length})`,
+          pct,
+          `${(doneBytes / 1e6).toFixed(1)}MB / ${(total / 1e6).toFixed(1)}MB`
+        );
+      }
     }
+
+    await Promise.all(
+      Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, () => worker())
+    );
 
     onProgress('驗證 SHA-256…', 72);
     const hex = await sha256hex(merged.buffer);
@@ -634,6 +828,7 @@ const DBMgr = (() => {
 
     onProgress('開啟資料庫…', 90);
     db = new SQL.Database(merged);
+    ensureSchemaMigrations();
   }
 
   /* ── CSV helpers ── */
@@ -685,7 +880,7 @@ const DBMgr = (() => {
     }
   }
 
-  /* ── Fetch & apply one daily folder ── */
+  /* ── Fetch & apply one daily folder (4 files in parallel) ── */
   async function applyDaily(date, onProgress) {
     const base  = `${RAW}/main/daily/${date}`;
     const files = [
@@ -694,16 +889,16 @@ const DBMgr = (() => {
       ['technical_indicators', 'technical_indicators'],
       ['market_index',         'market_index'],
     ];
-    for (const [name, table] of files) {
+    await Promise.all(files.map(async ([name, table]) => {
       onProgress?.(`套用 ${name}.csv (${date})`);
       try {
         const r = await fetch(`${base}/${name}.csv`);
         if (r.ok) upsertCSV(table, await r.text());
       } catch { /* skip */ }
-    }
+    }));
   }
 
-  /* ── Sync missing daily dates ── */
+  /* ── Sync missing daily dates (dates processed with limited concurrency) ── */
   async function syncDaily(onProgress, forced = false) {
     const lastStored = Settings.get('lastDailyDate');
     const today = new Date();
@@ -711,24 +906,45 @@ const DBMgr = (() => {
 
     if (!forced && lastStored === todayStr) return; // already up-to-date
 
-    // Build list of trading day candidates since last stored date
-    const from = lastStored
+    // Build list of trading day candidates since last stored date.
+    // Always re-verify at least the last few days too (re-applying a day is a
+    // harmless INSERT OR REPLACE): a day can be marked "synced" even when a
+    // write into it silently failed (e.g. a column missing until a schema
+    // migration runs), which would otherwise permanently skip that date.
+    const REVERIFY_DAYS = 4;
+    const incrementalFrom = lastStored
       ? new Date(new Date(lastStored).getTime() + 86400000)
       : new Date(today.getTime() - 14 * 86400000);
+    const reverifyFrom = new Date(today.getTime() - REVERIFY_DAYS * 86400000);
+    const from = new Date(Math.min(incrementalFrom.getTime(), reverifyFrom.getTime()));
 
     const dates = [];
     for (let d = new Date(from); d <= today; d.setDate(d.getDate() + 1)) {
       const dow = d.getDay();
       if (dow !== 0 && dow !== 6) dates.push(fmtDate(d));
     }
+    if (!dates.length) return;
 
-    for (const date of dates) {
-      onProgress?.(`更新日資料: ${date}`, 97);
-      await applyDaily(date, onProgress);
-      Settings.set('lastDailyDate', date);
+    const DATE_CONCURRENCY = 4;
+    let nextIdx = 0, doneCount = 0;
+
+    async function worker() {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= dates.length) return;
+        const date = dates[i];
+        onProgress?.(`更新日資料: ${date} (${doneCount + 1}/${dates.length})`, 97);
+        await applyDaily(date, onProgress);
+        doneCount += 1;
+      }
     }
 
-    if (dates.length) await persist();
+    await Promise.all(
+      Array.from({ length: Math.min(DATE_CONCURRENCY, dates.length) }, () => worker())
+    );
+
+    Settings.set('lastDailyDate', dates[dates.length - 1]);
+    await persist();
   }
 
   function fmtDate(d) {
@@ -748,25 +964,117 @@ const DBMgr = (() => {
     return query('SELECT stock_code, stock_name FROM stocks WHERE CAST(sector_id AS INTEGER)=? AND is_active=1 ORDER BY stock_code', [sectorId]);
   }
 
-  function getTop100() {
-    /* Use latest date that has BOTH price and technical data */
-    const d = query(`
-      SELECT MAX(t.trade_date) AS d
-      FROM technical_indicators t
-      JOIN daily_prices p ON t.stock_code=p.stock_code AND t.trade_date=p.trade_date
-    `)[0]?.d;
-    if (!d) return [];
+  /* ── 強勢股 snapshot: daily_prices + technical_indicators for last N days, all active stocks ── */
+  function getSnapshot(lookbackDays) {
     return query(`
-      SELECT s.stock_code, s.stock_name,
-             p.open, p.high, p.low, p.close,
-             t.rs_rating
-      FROM stocks s
-      JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
-      JOIN technical_indicators t ON s.stock_code=t.stock_code AND t.trade_date=?
-      WHERE s.is_active=1
-      ORDER BY t.rs_rating DESC
-      LIMIT 100
-    `, [d, d]);
+      SELECT dp.stock_code, s.stock_name, dp.trade_date,
+             dp.open, dp.high, dp.low, dp.close, dp.volume,
+             ti.ma5, ti.ma20, ti.ma60, ti.vol_ma5,
+             ti.kd_k, ti.kd_d, ti.macd_dif, ti.macd_macd, ti.macd_osc,
+             ti.bias20, ti.rs_rating
+      FROM daily_prices dp
+      JOIN stocks s ON s.stock_code = dp.stock_code
+      LEFT JOIN technical_indicators ti
+        ON ti.stock_code = dp.stock_code AND ti.trade_date = dp.trade_date
+      WHERE dp.trade_date >= (SELECT date(MAX(trade_date), ?) FROM daily_prices)
+        AND s.is_active = 1
+      ORDER BY dp.stock_code, dp.trade_date
+    `, [`-${lookbackDays} day`]);
+  }
+
+  function groupRowsByCode(rows) {
+    const map = new Map();
+    for (const r of rows) {
+      let arr = map.get(r.stock_code);
+      if (!arr) { arr = []; map.set(r.stock_code, arr); }
+      arr.push(r);
+    }
+    return map;
+  }
+
+  /* ── 「目前原則」型態訊號評分，對應 analysis/signals.py::_score_group() ── */
+  function scoreCurrent(g) {
+    const n = g.length;
+    if (n < 3) return null;
+    const t = g[n - 1], y = g[n - 2], z = g[n - 3];
+    if (t.kd_k == null || t.macd_osc == null || t.ma5 == null || t.vol_ma5 == null) return null;
+
+    const bull = [], bear = [];
+    if (t.kd_k > t.kd_d && y.kd_k <= y.kd_d && t.kd_d < 80) bull.push('KD黃金交叉');
+    if (t.kd_k < t.kd_d && y.kd_k >= y.kd_d && t.kd_d > 20) bear.push('KD死亡交叉');
+
+    if (t.macd_dif > t.macd_macd && t.macd_dif > 0) bull.push('MACD多頭');
+    if (t.macd_dif < t.macd_macd && t.macd_dif < 0) bear.push('MACD空頭');
+
+    if (t.macd_osc > 0 && t.macd_osc > y.macd_osc && y.macd_osc <= z.macd_osc) bull.push('紅柱由縮轉長');
+    if (t.macd_osc < 0 && t.macd_osc < y.macd_osc && y.macd_osc >= z.macd_osc) bear.push('綠柱由縮轉長');
+
+    if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close > t.open) bull.push('放量紅K');
+    if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close < t.open) bear.push('放量黑K');
+
+    const recent = g.slice(Math.max(0, n - 6), n - 1);
+    if (recent.length >= 3) {
+      const recentLow  = Math.min(...recent.map(r => r.low));
+      const recentHigh = Math.max(...recent.map(r => r.high));
+      if (t.close > t.open && t.close >= t.ma5 && y.close < y.ma5 && t.low >= recentLow) bull.push('回後買上漲');
+      if (t.close < t.open && t.close <= t.ma5 && y.close > y.ma5 && t.high <= recentHigh) bear.push('彈後空下跌');
+    }
+
+    let chg5 = null;
+    if (n >= 6) {
+      const base = g[n - 6].close;
+      if (base) chg5 = (t.close / base - 1) * 100;
+    }
+    const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
+
+    return {
+      stock_code: t.stock_code, stock_name: t.stock_name, trade_date: t.trade_date,
+      open: t.open, high: t.high, low: t.low, close: t.close,
+      kd_k: t.kd_k, kd_d: t.kd_d, bias20: t.bias20, rs_rating: t.rs_rating,
+      chg5, vol_ratio: volRatio,
+      bull_signals: bull, bear_signals: bear,
+      bull_score: bull.length, bear_score: bear.length,
+    };
+  }
+
+  function computeStrongCurrent(topN, minScore) {
+    const rows   = getSnapshot(20);
+    const groups = groupRowsByCode(rows);
+    const scored = [];
+    for (const g of groups.values()) {
+      const s = scoreCurrent(g);
+      if (s && s.bull_score >= minScore) scored.push(s);
+    }
+    scored.sort((a, b) => (b.bull_score - a.bull_score) || ((b.vol_ratio || 0) - (a.vol_ratio || 0)));
+    return scored.slice(0, topN);
+  }
+
+  /* ── 「XQ原則」RS值動能篩選，對應 analysis/signals.py::xq_strong_stock_filter() ── */
+  function computeStrongXQ(topN, rsThreshold, minVolRatio, nearHighPct) {
+    const rows       = getSnapshot(100);
+    const latestDate = getLatestDate();
+    const groups     = groupRowsByCode(rows);
+    const results    = [];
+
+    for (const g of groups.values()) {
+      const t = g[g.length - 1];
+      if (!t || t.trade_date !== latestDate) continue;
+      if (t.rs_rating == null || t.ma20 == null || t.ma60 == null || t.vol_ma5 == null) continue;
+
+      const tail   = g.slice(Math.max(0, g.length - 60));
+      const high60 = Math.max(...tail.map(r => r.high));
+      const distPct  = high60 ? (high60 - t.close) / high60 * 100 : null;
+      const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
+
+      if (t.rs_rating >= rsThreshold &&
+          t.close >= t.ma60 && t.ma20 >= t.ma60 &&
+          volRatio != null && volRatio >= minVolRatio &&
+          distPct != null && distPct <= nearHighPct) {
+        results.push({ ...t, high60, dist_from_high60_pct: distPct, vol_ratio: volRatio });
+      }
+    }
+    results.sort((a, b) => b.rs_rating - a.rs_rating);
+    return results.slice(0, topN);
   }
 
   function getWatchlistStocks(codes) {
@@ -815,7 +1123,8 @@ const DBMgr = (() => {
 
   return {
     init, download, syncDaily,
-    getSectors, getStocksBySector, getTop100, getWatchlistStocks,
+    getSectors, getStocksBySector, getWatchlistStocks,
+    computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
     getLatestDate,
     isReady: () => !!db,
@@ -823,12 +1132,75 @@ const DBMgr = (() => {
 })();
 
 /* ════════════════════════════════════════
+   INDICATOR MATH  (mirrors analysis/compute_indicators.py)
+   ════════════════════════════════════════ */
+function computeSMA(values, period) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0, count = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i]; count++;
+    if (i >= period) { sum -= values[i - period]; count--; }
+    if (count >= period) out[i] = sum / period;
+  }
+  return out;
+}
+
+function computeEMA(values, period) {
+  const alpha = 2 / (period + 1);
+  const out = new Array(values.length).fill(null);
+  let prev = null;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] == null) { out[i] = prev; continue; }
+    prev = prev == null ? values[i] : alpha * values[i] + (1 - alpha) * prev;
+    out[i] = prev;
+  }
+  return out;
+}
+
+function computeEMAalpha(values, alpha) {
+  const out = new Array(values.length).fill(null);
+  let prev = null;
+  for (let i = 0; i < values.length; i++) {
+    prev = prev == null ? values[i] : alpha * values[i] + (1 - alpha) * prev;
+    out[i] = prev;
+  }
+  return out;
+}
+
+function computeMACD(closes) {
+  const ema12 = computeEMA(closes, 12);
+  const ema26 = computeEMA(closes, 26);
+  const dif = closes.map((_, i) => (ema12[i] != null && ema26[i] != null) ? ema12[i] - ema26[i] : null);
+  const macd = computeEMAalpha(dif, 2 / 10); // span=9 -> alpha = 2/(9+1)
+  const osc = dif.map((v, i) => (v != null && macd[i] != null) ? v - macd[i] : null);
+  return { dif, macd, osc };
+}
+
+function computeKD(highs, lows, closes, period = 9) {
+  const n = closes.length;
+  const rsv = new Array(n).fill(50);
+  for (let i = 0; i < n; i++) {
+    if (i < period - 1) { rsv[i] = 50; continue; }
+    const hi = Math.max(...highs.slice(i - period + 1, i + 1));
+    const lo = Math.min(...lows.slice(i - period + 1, i + 1));
+    rsv[i] = (hi === lo) ? 50 : (closes[i] - lo) / (hi - lo) * 100;
+  }
+  const k = computeEMAalpha(rsv, 1 / 3);
+  const d = computeEMAalpha(k, 1 / 3);
+  return { rsv, k, d };
+}
+
+/* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
    ════════════════════════════════════════ */
 const Chart = (() => {
   const canvas = document.getElementById('main-chart');
   const ctx    = canvas.getContext('2d');
-  let data     = [];
+  let fullData = [];   // full price history for current stock
+  let ind      = { maS: [], maM: [], maL: [], macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], rsv: [] };
+  let maPeriods = { short: 5, mid: 20, long: 60 };
+  let subPanel  = 'volume';   // 'volume' | 'macd' | 'kd' | 'rsv'
+  let visibleCount = 120;     // zoom level: number of visible candles
   let cross    = null;  // {x, y} mouse position
   let locked   = false;
 
@@ -845,10 +1217,50 @@ const Chart = (() => {
     draw();
   }
 
+  function recompute() {
+    const closes = fullData.map(d => d.close);
+    const highs  = fullData.map(d => d.high);
+    const lows   = fullData.map(d => d.low);
+    ind.maS = computeSMA(closes, maPeriods.short);
+    ind.maM = computeSMA(closes, maPeriods.mid);
+    ind.maL = computeSMA(closes, maPeriods.long);
+    const m = computeMACD(closes);
+    ind.macdDif = m.dif; ind.macdMacd = m.macd; ind.macdOsc = m.osc;
+    const kd = computeKD(highs, lows, closes, 9);
+    ind.kdK = kd.k; ind.kdD = kd.d; ind.rsv = kd.rsv;
+  }
+
   function setData(rows) {
-    data   = rows;
+    fullData = rows;
+    recompute();
+    if (!visibleCount || !fullData.length) visibleCount = fullData.length;
+    visibleCount = Math.min(visibleCount, fullData.length) || fullData.length;
     cross  = null;
     locked = false;
+    draw();
+  }
+
+  function setMAPeriods(p) {
+    maPeriods = { ...p };
+    if (fullData.length) recompute();
+    draw();
+  }
+
+  function setSubPanel(p) { subPanel = p; draw(); }
+
+  function zoomIn() {
+    if (!fullData.length) return;
+    visibleCount = Math.max(20, Math.round(visibleCount * 0.7));
+    draw();
+  }
+  function zoomOut() {
+    if (!fullData.length) return;
+    visibleCount = Math.min(fullData.length, Math.round(visibleCount / 0.7) || fullData.length);
+    draw();
+  }
+  function zoomReset() {
+    if (!fullData.length) return;
+    visibleCount = fullData.length;
     draw();
   }
 
@@ -858,6 +1270,25 @@ const Chart = (() => {
     if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
     if (v >= 1e4) return (v / 1e4).toFixed(0) + '萬';
     return v.toLocaleString();
+  }
+
+  const MA_S_COL = '#f59e0b'; // amber
+  const MA_M_COL = '#3b82f6'; // blue
+  const MA_L_COL = '#a855f7'; // purple
+
+  function drawLine(points, getY, xOf, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.4;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < points.length; i++) {
+      const v = points[i];
+      if (v == null) { started = false; continue; }
+      const x = xOf(i), y = getY(v);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
   }
 
   function draw() {
@@ -877,7 +1308,7 @@ const Chart = (() => {
     ctx.fillStyle = bgCol;
     ctx.fillRect(0, 0, W, H);
 
-    if (!data.length) {
+    if (!fullData.length) {
       ctx.fillStyle = txt2Col;
       ctx.font      = '14px sans-serif';
       ctx.textAlign = 'center';
@@ -885,25 +1316,58 @@ const Chart = (() => {
       return;
     }
 
+    /* visible window slice (zoom): compute indicators over full history, render only the tail */
+    const NFull    = fullData.length;
+    const vcount   = Math.min(visibleCount || NFull, NFull);
+    const startIdx = NFull - vcount;
+    const data     = fullData.slice(startIdx);
+    const maS      = ind.maS.slice(startIdx);
+    const maM      = ind.maM.slice(startIdx);
+    const maL      = ind.maL.slice(startIdx);
+    const mDif     = ind.macdDif.slice(startIdx);
+    const mMacd    = ind.macdMacd.slice(startIdx);
+    const mOsc     = ind.macdOsc.slice(startIdx);
+    const kdK      = ind.kdK.slice(startIdx);
+    const kdD      = ind.kdD.slice(startIdx);
+    const rsv      = ind.rsv.slice(startIdx);
+
+    const hasIndicatorPane = subPanel !== 'volume';
+
     /* layout */
     const PAD_L   = 8;
     const PAD_R   = 62;
-    const PAD_TOP = 12;
+    const PAD_TOP = 16;
     const PAD_BOT = 22;
-    const SEP     = Math.floor(H * 0.67);   // candlestick / volume separator
-    const PRICE_H = SEP - PAD_TOP;
-    const VOL_H   = H - SEP - PAD_BOT - 4;
+    const usableH = H - PAD_TOP - PAD_BOT;
+
+    let priceH, volH, indH;
+    if (hasIndicatorPane) {
+      priceH = usableH * 0.50;
+      volH   = usableH * 0.16;
+      indH   = usableH * 0.34 - 12;
+    } else {
+      priceH = usableH * 0.72;
+      volH   = usableH * 0.28 - 4;
+      indH   = 0;
+    }
+    const priceTop = PAD_TOP, priceBot = priceTop + priceH;
+    const volTop   = priceBot + 6, volBot = volTop + volH;
+    const indTop   = volBot + 6, indBot  = indTop + Math.max(0, indH);
+
     const drawW   = W - PAD_L - PAD_R;
     const N       = data.length;
     const step    = drawW / N;
     const candleW = Math.max(1, Math.floor(step * 0.7));
+    const xOf     = i => PAD_L + (i + 0.5) * step;
 
-    /* price range */
+    /* price range (include visible MA lines so they never clip) */
     let minP = Infinity, maxP = -Infinity;
     for (const d of data) {
-      if (d.high < minP) minP = d.high;  // shouldn't happen
       if (d.high > maxP) maxP = d.high;
       if (d.low  < minP) minP = d.low;
+    }
+    for (const arr of [maS, maM, maL]) {
+      for (const v of arr) { if (v == null) continue; if (v > maxP) maxP = v; if (v < minP) minP = v; }
     }
     const pPad = (maxP - minP) * 0.06 || 1;
     minP -= pPad; maxP += pPad;
@@ -912,10 +1376,10 @@ const Chart = (() => {
     let maxV = 0;
     for (const d of data) if ((d.volume || 0) > maxV) maxV = d.volume;
 
-    const pY = p => PAD_TOP + ((maxP - p) / (maxP - minP)) * PRICE_H;
-    const vY = v => SEP + 4 + (1 - (v / maxV)) * VOL_H;
+    const pY = p => priceTop + ((maxP - p) / (maxP - minP)) * priceH;
+    const vY = v => volTop + (1 - (v / maxV)) * volH;
 
-    /* grid */
+    /* price grid */
     ctx.strokeStyle = gridCol;
     ctx.lineWidth   = 1;
     const ticks = 5;
@@ -929,18 +1393,21 @@ const Chart = (() => {
       ctx.fillText(p.toFixed(2), W - 2, y + 3);
     }
 
-    /* separator */
+    /* separators */
     ctx.strokeStyle = bdrCol; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(PAD_L, SEP); ctx.lineTo(W, SEP); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD_L, priceBot + 3); ctx.lineTo(W, priceBot + 3); ctx.stroke();
+    if (hasIndicatorPane) {
+      ctx.beginPath(); ctx.moveTo(PAD_L, volBot + 3); ctx.lineTo(W, volBot + 3); ctx.stroke();
+    }
 
     /* vol label */
     ctx.fillStyle = txt2Col; ctx.font = '10px monospace'; ctx.textAlign = 'right';
-    ctx.fillText(fmtVol(maxV), W - 2, SEP + 14);
+    ctx.fillText(fmtVol(maxV), W - 2, volTop + 11);
 
     /* candles & volume */
     for (let i = 0; i < N; i++) {
       const d  = data[i];
-      const cx = PAD_L + (i + 0.5) * step;
+      const cx = xOf(i);
       const up = d.close >= d.open;
       const col = up ? upCol : dnCol;
 
@@ -961,11 +1428,10 @@ const Chart = (() => {
       ctx.strokeRect(cx - candleW / 2, y1, candleW, bh);
 
       /* volume bar */
-      const vTop  = vY(d.volume || 0);
-      const vBot  = H - PAD_BOT;
+      const vTop2 = vY(d.volume || 0);
       ctx.fillStyle   = col;
       ctx.globalAlpha = 0.65;
-      ctx.fillRect(cx - candleW / 2, vTop, candleW, vBot - vTop);
+      ctx.fillRect(cx - candleW / 2, vTop2, candleW, volBot - vTop2);
       ctx.globalAlpha = 1;
 
       /* date axis (sparse) */
@@ -975,6 +1441,71 @@ const Chart = (() => {
         ctx.font       = '10px sans-serif';
         ctx.textAlign  = 'center';
         ctx.fillText((d.trade_date || '').slice(5), cx, H - 5);
+      }
+    }
+
+    /* MA overlay lines on price pane */
+    drawLine(maS, pY, xOf, MA_S_COL);
+    drawLine(maM, pY, xOf, MA_M_COL);
+    drawLine(maL, pY, xOf, MA_L_COL);
+
+    /* MA legend (top-left of price pane) */
+    const lastS = maS.at(-1), lastM = maM.at(-1), lastL = maL.at(-1);
+    ctx.font = '10px monospace'; ctx.textAlign = 'left';
+    let lx = PAD_L + 4;
+    const legendY = priceTop + 10;
+    const legend = [
+      [`MA${maPeriods.short}`, lastS, MA_S_COL],
+      [`MA${maPeriods.mid}`,  lastM, MA_M_COL],
+      [`MA${maPeriods.long}`, lastL, MA_L_COL],
+    ];
+    for (const [label, val, color] of legend) {
+      const txt = val != null ? `${label} ${val.toFixed(2)}` : `${label} -`;
+      ctx.fillStyle = color;
+      ctx.fillText(txt, lx, legendY);
+      lx += ctx.measureText(txt).width + 12;
+    }
+
+    /* sub-indicator pane (MACD / KD / RSV) */
+    if (hasIndicatorPane) {
+      ctx.font = '10px monospace'; ctx.textAlign = 'left';
+      if (subPanel === 'macd') {
+        let lo = 0, hi = 0;
+        for (const arr of [mDif, mMacd, mOsc]) for (const v of arr) { if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+        const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+        const iY = v => indTop + (1 - (v - lo) / (hi - lo)) * indH;
+        /* zero line */
+        ctx.strokeStyle = gridCol; ctx.beginPath(); ctx.moveTo(PAD_L, iY(0)); ctx.lineTo(W - PAD_R, iY(0)); ctx.stroke();
+        /* histogram */
+        for (let i = 0; i < N; i++) {
+          const v = mOsc[i]; if (v == null) continue;
+          const cx = xOf(i);
+          const y0 = iY(0), y1 = iY(v);
+          ctx.fillStyle = v >= 0 ? upCol : dnCol;
+          ctx.globalAlpha = 0.65;
+          ctx.fillRect(cx - candleW / 2, Math.min(y0, y1), candleW, Math.abs(y1 - y0) || 1);
+          ctx.globalAlpha = 1;
+        }
+        drawLine(mDif, iY, xOf, MA_M_COL);
+        drawLine(mMacd, iY, xOf, MA_S_COL);
+        ctx.fillStyle = MA_M_COL; ctx.fillText('DIF', PAD_L + 4, indTop + 10);
+        ctx.fillStyle = MA_S_COL; ctx.fillText('MACD', PAD_L + 40, indTop + 10);
+      } else if (subPanel === 'kd') {
+        const iY = v => indTop + (1 - v / 100) * indH;
+        ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
+        [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
+        ctx.setLineDash([]);
+        drawLine(kdK, iY, xOf, MA_M_COL);
+        drawLine(kdD, iY, xOf, MA_S_COL);
+        ctx.fillStyle = MA_M_COL; ctx.fillText('K', PAD_L + 4, indTop + 10);
+        ctx.fillStyle = MA_S_COL; ctx.fillText('D', PAD_L + 24, indTop + 10);
+      } else if (subPanel === 'rsv') {
+        const iY = v => indTop + (1 - v / 100) * indH;
+        ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
+        [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
+        ctx.setLineDash([]);
+        drawLine(rsv, iY, xOf, accCol);
+        ctx.fillStyle = accCol; ctx.fillText('RSV(9)', PAD_L + 4, indTop + 10);
       }
     }
 
@@ -993,8 +1524,8 @@ const Chart = (() => {
       const d   = data[idx];
 
       /* price tag on Y axis */
-      if (y > PAD_TOP && y < SEP) {
-        const price = maxP - (y - PAD_TOP) / PRICE_H * (maxP - minP);
+      if (y > priceTop && y < priceBot) {
+        const price = maxP - (y - priceTop) / priceH * (maxP - minP);
         ctx.fillStyle   = tok('--acc2');
         ctx.strokeStyle = accCol;
         ctx.lineWidth   = 1;
@@ -1015,7 +1546,15 @@ const Chart = (() => {
         `收 ${(d.close || 0).toFixed(2)}`,
         `量 ${fmtVol(d.volume)}`,
       ];
-      const TW = 116, TH = lines.length * 16 + 10;
+      const nInfoLines = lines.length;
+      if (maS[idx] != null) lines.push(`MA${maPeriods.short} ${maS[idx].toFixed(2)}`);
+      if (maM[idx] != null) lines.push(`MA${maPeriods.mid} ${maM[idx].toFixed(2)}`);
+      if (maL[idx] != null) lines.push(`MA${maPeriods.long} ${maL[idx].toFixed(2)}`);
+      if (subPanel === 'macd' && mOsc[idx] != null) lines.push(`OSC ${mOsc[idx].toFixed(2)}`);
+      if (subPanel === 'kd' && kdK[idx] != null) lines.push(`K ${kdK[idx].toFixed(1)}  D ${kdD[idx].toFixed(1)}`);
+      if (subPanel === 'rsv' && rsv[idx] != null) lines.push(`RSV ${rsv[idx].toFixed(1)}`);
+
+      const TW = 128, TH = lines.length * 16 + 10;
       const tx = x + 12 + TW > W ? x - TW - 12 : x + 12;
       const ty = y + TH + 8 > H ? y - TH - 8 : y + 8;
 
@@ -1029,9 +1568,7 @@ const Chart = (() => {
       ctx.textAlign = 'left';
       const upDown  = (d.close >= d.open) ? upCol : dnCol;
       lines.forEach((ln, i) => {
-        ctx.fillStyle = i === 0 ? txt2Col : (i >= 1 && i <= 5 ? txtCol : txt2Col);
-        if (i >= 1) ctx.fillStyle = upDown;
-        if (i === 0) ctx.fillStyle = txt2Col;
+        ctx.fillStyle = (i >= 1 && i <= nInfoLines - 1) ? upDown : txt2Col;
         ctx.fillText(ln, tx + 8, ty + 14 + i * 16);
       });
 
@@ -1056,13 +1593,18 @@ const Chart = (() => {
     if (!locked) { cross = null; draw(); }
   });
   canvas.addEventListener('click', () => {
-    if (!data.length) return;
+    if (!fullData.length) return;
     if (!locked && !cross) return;
     locked = !locked;
     draw();
   });
+  canvas.addEventListener('wheel', e => {
+    if (!fullData.length) return;
+    e.preventDefault();
+    if (e.deltaY < 0) zoomIn(); else if (e.deltaY > 0) zoomOut();
+  }, { passive: false });
 
-  return { setData, resize };
+  return { setData, resize, setMAPeriods, setSubPanel, zoomIn, zoomOut, zoomReset };
 })();
 
 /* ════════════════════════════════════════
@@ -1092,6 +1634,8 @@ function sparkline(closes, w = 60, h = 20) {
 const State = {
   stocks: [],   // current list (all pages)
   page:   0,
+  strongCache: null,       // { method, results } — last 強勢股 filter result
+  strongMethodUsed: null,  // method used for the currently-loaded strong-stock list
 };
 
 /* ════════════════════════════════════════
@@ -1115,6 +1659,10 @@ const R = {
   wlBar:       $('wl-bar'),
   wlInput:     $('wl-input'),
   wlAdd:       $('wl-add'),
+  strongBar:       $('strong-bar'),
+  strongMethodSel: $('strong-method-sel'),
+  strongFilterBtn: $('strong-filter-btn'),
+  strongStatus:    $('strong-status'),
   stockTbody:  $('stock-tbody'),
   prevBtn:     $('prev-btn'),
   nextBtn:     $('next-btn'),
@@ -1124,6 +1672,22 @@ const R = {
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
   resizeHandle:$('resize-handle'),
+  subpanelToggle:  $('subpanel-toggle'),
+  zoomInBtn:       $('zoom-in-btn'),
+  zoomOutBtn:      $('zoom-out-btn'),
+  zoomResetBtn:    $('zoom-reset-btn'),
+  chartSettingsBtn:$('chart-settings-btn'),
+  settingsModal:   $('settings-modal'),
+  settingsClose:   $('settings-close'),
+  settingsCancel:  $('settings-cancel'),
+  settingsSave:    $('settings-save'),
+  maShortInput:    $('ma-short'),
+  maMidInput:      $('ma-mid'),
+  maLongInput:     $('ma-long'),
+  strongMinScoreInput: $('strong-min-score'),
+  strongRsThInput:     $('strong-rs-th'),
+  strongVolRatioInput: $('strong-vol-ratio'),
+  strongNearHighInput: $('strong-near-high'),
 };
 
 /* ════════════════════════════════════════
@@ -1162,7 +1726,9 @@ function renderPage() {
   }
 
   const selCode  = Settings.get('selectedStock');
-  const isWL     = R.viewSel.value === 'watchlist';
+  const view     = R.viewSel.value;
+  const isWL     = view === 'watchlist';
+  const isStrong = view === 'strong';
   const codes    = pageItems.map(s => s.stock_code);
   const sparkMap = DBMgr.getBatchSparklines(codes, 20);
 
@@ -1176,6 +1742,16 @@ function renderPage() {
                   : close < open ? 'td-dn' : 'td-flat';
     const isSel   = s.stock_code === selCode;
 
+    let extraTd = '';
+    if (isWL) {
+      extraTd = `<td><button class="del-btn" data-code="${s.stock_code}">✕</button></td>`;
+    } else if (isStrong) {
+      const txt = State.strongMethodUsed === 'xq'
+        ? (s.rs_rating != null ? Math.round(s.rs_rating) : '-')
+        : (s.bull_score != null ? `${s.bull_score}分` : '-');
+      extraTd = `<td>${txt}</td>`;
+    }
+
     return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
                draggable="${isWL ? 'true' : 'false'}">
       <td class="td-code">${s.stock_code}</td>
@@ -1185,7 +1761,7 @@ function renderPage() {
       <td>${low    != null ? low.toFixed(2)   : '-'}</td>
       <td class="${cls}">${close != null ? close.toFixed(2) : '-'}</td>
       <td class="td-spark">${svg}</td>
-      ${isWL ? `<td><button class="del-btn" data-code="${s.stock_code}">✕</button></td>` : ''}
+      ${extraTd}
     </tr>`;
   });
 
@@ -1257,10 +1833,51 @@ function loadSector(sectorId) {
   renderPage();
 }
 
-function loadTop100() {
-  State.stocks = DBMgr.getTop100();
+/* 強勢股: expensive to compute, so only run when the user presses [過濾強勢股] */
+function updateExtraColumn(view) {
+  const thead = document.querySelector('#stock-table thead tr');
+  const existing = thead.querySelector('.extra-col');
+  if (existing) existing.remove();
+  if (view === 'watchlist' || view === 'strong') {
+    const th = document.createElement('th');
+    th.className = 'extra-col';
+    th.textContent = view === 'strong'
+      ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
+      : '';
+    thead.appendChild(th);
+  }
+}
+
+async function runStrongFilter() {
+  const method = R.strongMethodSel.value;
+  Settings.set('strongMethod', method);
+  R.strongFilterBtn.disabled = true;
+  R.strongStatus.textContent = '運算中…（掃描全市場，請稍候）';
+  await new Promise(r => setTimeout(r, 20)); // let the status text paint before the heavy query
+
+  const params = Settings.get('strongParams') || {};
+  const t0 = performance.now();
+  let results = [];
+  try {
+    results = method === 'xq'
+      ? DBMgr.computeStrongXQ(100, params.rsThreshold ?? 90, params.minVolRatio ?? 0.8, params.nearHighPct ?? 15)
+      : DBMgr.computeStrongCurrent(100, params.minScore ?? 2);
+  } catch (e) {
+    console.error(e);
+    R.strongStatus.textContent = '篩選失敗：' + e.message;
+    R.strongFilterBtn.disabled = false;
+    return;
+  }
+  const dt = ((performance.now() - t0) / 1000).toFixed(1);
+
+  State.strongMethodUsed = method;
+  State.strongCache = { method, results };
+  State.stocks = results;
   State.page   = 0;
+  updateExtraColumn('strong');
   renderPage();
+  R.strongStatus.textContent = `共 ${results.length} 檔（耗時 ${dt}s）`;
+  R.strongFilterBtn.disabled = false;
 }
 
 function loadWatchlist() {
@@ -1277,20 +1894,28 @@ function loadWatchlist() {
 function switchView(view) {
   R.sectorSel.classList.toggle('hidden', view !== 'sector');
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
+  R.strongBar.classList.toggle('hidden', view !== 'strong');
 
-  const thead = document.querySelector('#stock-table thead tr');
-  if (view === 'watchlist') {
-    if (!thead.querySelector('.del-col')) {
-      const th = document.createElement('th');
-      th.className = 'del-col'; th.textContent = '';
-      thead.appendChild(th);
+  updateExtraColumn(view);
+
+  if (view === 'strong') {
+    if (State.strongCache) {
+      State.strongMethodUsed = State.strongCache.method;
+      State.stocks = State.strongCache.results;
+      R.strongMethodSel.value = State.strongCache.method;
+      updateExtraColumn(view);
+    } else {
+      State.stocks = [];
     }
-  } else {
-    const dc = thead.querySelector('.del-col');
-    if (dc) dc.remove();
+    State.page = 0;
+    if (!State.stocks.length) {
+      R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
+      R.pageInfo.textContent = '— / —';
+      R.prevBtn.disabled = true; R.nextBtn.disabled = true;
+    } else {
+      renderPage();
+    }
   }
-
-  if (view === 'top100')   loadTop100();
   else if (view === 'watchlist') loadWatchlist();
   else {
     const sid = R.sectorSel.value;
@@ -1395,7 +2020,7 @@ async function handleSync() {
 
 function refreshCurrentView() {
   const v = R.viewSel.value;
-  if (v === 'top100')     loadTop100();
+  if (v === 'strong') switchView('strong'); // keep cached results / hint; user re-runs the filter manually
   else if (v === 'watchlist') loadWatchlist();
   else loadSector(R.sectorSel.value);
 
@@ -1502,6 +2127,10 @@ function bindEvents() {
   R.wlAdd.addEventListener('click', addToWatchlist);
   R.wlInput.addEventListener('keydown', e => { if (e.key === 'Enter') addToWatchlist(); });
 
+  /* 強勢股 filter */
+  R.strongMethodSel.addEventListener('change', () => Settings.set('strongMethod', R.strongMethodSel.value));
+  R.strongFilterBtn.addEventListener('click', runStrongFilter);
+
   /* paginator */
   R.prevBtn.addEventListener('click', () => { if (State.page > 0) { State.page--; renderPage(); } });
   R.nextBtn.addEventListener('click', () => {
@@ -1512,8 +2141,83 @@ function bindEvents() {
   /* retry */
   R.retryBtn.addEventListener('click', () => location.reload());
 
+  /* chart sub-panel toggle */
+  R.subpanelToggle.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    R.subpanelToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+    const panel = btn.dataset.panel;
+    Settings.set('chartSubPanel', panel);
+    Chart.setSubPanel(panel);
+  });
+
+  /* chart zoom */
+  R.zoomInBtn.addEventListener('click', () => Chart.zoomIn());
+  R.zoomOutBtn.addEventListener('click', () => Chart.zoomOut());
+  R.zoomResetBtn.addEventListener('click', () => Chart.zoomReset());
+
+  /* chart settings modal */
+  R.chartSettingsBtn.addEventListener('click', openSettingsModal);
+  R.settingsClose.addEventListener('click', closeSettingsModal);
+  R.settingsCancel.addEventListener('click', closeSettingsModal);
+  R.settingsModal.addEventListener('click', e => { if (e.target === R.settingsModal) closeSettingsModal(); });
+  R.settingsModal.querySelectorAll('.modal-cat').forEach(cat => {
+    cat.addEventListener('click', () => {
+      R.settingsModal.querySelectorAll('.modal-cat').forEach(c => c.classList.toggle('active', c === cat));
+      R.settingsModal.querySelectorAll('.modal-pane').forEach(p =>
+        p.classList.toggle('hidden', p.dataset.pane !== cat.dataset.cat)
+      );
+    });
+  });
+  R.settingsSave.addEventListener('click', saveSettingsModal);
+
   /* resize */
   window.addEventListener('resize', () => Chart.resize());
+}
+
+/* ════════════════════════════════════════
+   SETTINGS MODAL (Eclipse-like categorized preferences)
+   ════════════════════════════════════════ */
+function openSettingsModal() {
+  const ma = Settings.get('maPeriods') || { short:5, mid:20, long:60 };
+  R.maShortInput.value = ma.short;
+  R.maMidInput.value   = ma.mid;
+  R.maLongInput.value  = ma.long;
+
+  const sp = Settings.get('strongParams') || {};
+  R.strongMinScoreInput.value = sp.minScore ?? 2;
+  R.strongRsThInput.value     = sp.rsThreshold ?? 90;
+  R.strongVolRatioInput.value = sp.minVolRatio ?? 0.8;
+  R.strongNearHighInput.value = sp.nearHighPct ?? 15;
+
+  R.settingsModal.classList.remove('hidden');
+}
+
+function closeSettingsModal() {
+  R.settingsModal.classList.add('hidden');
+}
+
+function saveSettingsModal() {
+  const short = parseInt(R.maShortInput.value, 10);
+  const mid   = parseInt(R.maMidInput.value, 10);
+  const long  = parseInt(R.maLongInput.value, 10);
+  if ([short, mid, long].some(v => !Number.isFinite(v) || v < 1)) {
+    alert('均線週期必須是正整數');
+    return;
+  }
+  const maPeriods = { short, mid, long };
+  Settings.set('maPeriods', maPeriods);
+  Chart.setMAPeriods(maPeriods);
+
+  const strongParams = {
+    minScore:    parseInt(R.strongMinScoreInput.value, 10) || 0,
+    rsThreshold: parseInt(R.strongRsThInput.value, 10) || 90,
+    minVolRatio: parseFloat(R.strongVolRatioInput.value) || 0,
+    nearHighPct: parseFloat(R.strongNearHighInput.value) || 15,
+  };
+  Settings.set('strongParams', strongParams);
+
+  closeSettingsModal();
 }
 
 /* ════════════════════════════════════════
@@ -1525,8 +2229,18 @@ async function main() {
   /* restore theme */
   applyTheme(Settings.get('theme') || 'light');
 
-  /* restore view selector */
-  const savedView = Settings.get('view') || 'sector';
+  /* restore chart prefs */
+  Chart.setMAPeriods(Settings.get('maPeriods') || { short:5, mid:20, long:60 });
+  const savedPanel = Settings.get('chartSubPanel') || 'volume';
+  Chart.setSubPanel(savedPanel);
+  R.subpanelToggle.querySelectorAll('.seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.panel === savedPanel)
+  );
+  R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
+
+  /* restore view selector (migrate old 'top100' value from earlier versions) */
+  let savedView = Settings.get('view') || 'sector';
+  if (savedView === 'top100') savedView = 'strong';
   R.viewSel.value = savedView;
 
   showLoading(true);
