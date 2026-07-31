@@ -265,6 +265,7 @@ select:focus { outline: 2px solid var(--acc); }
 }
 #chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
 #chart-info  { font-size: 12px; color: var(--txt2); }
+#chart-fetch-hint { font-size: 11px; color: var(--acc); font-style: italic; }
 #chart-wrap  { flex: 1; position: relative; overflow: hidden; }
 #main-chart  { display: block; cursor: crosshair; }
 
@@ -493,6 +494,7 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-header">
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
+      <span id="chart-fetch-hint" class="hidden"></span>
       <div class="chart-toolbar">
         <div class="seg-group" id="subpanel-toggle">
           <button class="seg-btn active" data-panel="volume">成交量</button>
@@ -574,7 +576,80 @@ select:focus { outline: 2px solid var(--acc); }
    CONSTANTS
    ════════════════════════════════════════ */
 const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
-const MANIFEST_URL = RAW + '/db-snapshot/tw_stock.db.manifest.json';
+/* 網頁優化用的小型快照：db/core.db（股票清單，很小）+ db/monthly/<yyyy>/<mm>.db
+   （逐月資料，過去月份封存後不再變動），取代整份 300MB+ tw_stock.db 的下載方式。
+   見 tw-stock-db/sync/monthly_snapshot.py。 */
+const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
+
+/* ── 月份字串工具（'YYYY-MM'），供 lazy-load 月份資料使用 ── */
+function monthLabel(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+function shiftMonthLabel(label, delta) {
+  const [y, m] = label.split('-').map(Number);
+  return monthLabel(new Date(y, m - 1 + delta, 1));
+}
+
+/* ── Client-side schema (mirrors db/schema.sql for the tables the web app needs) ── */
+const CREATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS sectors (
+    sector_id   INTEGER PRIMARY KEY,
+    sector_name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS stocks (
+    stock_code  TEXT PRIMARY KEY,
+    stock_name  TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    sector_id   INTEGER,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stocks_sector ON stocks(sector_id);
+CREATE TABLE IF NOT EXISTS daily_prices (
+    stock_code  TEXT NOT NULL,
+    trade_date  TEXT NOT NULL,
+    open        REAL,
+    high        REAL,
+    low         REAL,
+    close       REAL,
+    volume      INTEGER,
+    PRIMARY KEY (stock_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_prices_date ON daily_prices(trade_date);
+CREATE TABLE IF NOT EXISTS technical_indicators (
+    stock_code   TEXT NOT NULL,
+    trade_date   TEXT NOT NULL,
+    ma5          REAL,
+    ma10         REAL,
+    ma20         REAL,
+    ma60         REAL,
+    vol_ma5      REAL,
+    kd_k         REAL,
+    kd_d         REAL,
+    macd_dif     REAL,
+    macd_macd    REAL,
+    macd_osc     REAL,
+    rsi6         REAL,
+    rsi12        REAL,
+    bb_upper     REAL,
+    bb_mid       REAL,
+    bb_lower     REAL,
+    bias20       REAL,
+    ma_alignment TEXT,
+    rs_rating    REAL,
+    PRIMARY KEY (stock_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ti_date ON technical_indicators(trade_date);
+CREATE INDEX IF NOT EXISTS idx_ti_date_rs ON technical_indicators(trade_date, rs_rating);
+CREATE TABLE IF NOT EXISTS market_index (
+    index_code  TEXT NOT NULL,
+    trade_date  TEXT NOT NULL,
+    open        REAL,
+    high        REAL,
+    low         REAL,
+    close       REAL,
+    volume      INTEGER,
+    PRIMARY KEY (index_code, trade_date)
+);
+`;
 
 const SECTOR_NAMES = {
   1:'水泥工業', 2:'食品工業', 3:'塑膠工業', 4:'紡織纖維',
@@ -701,6 +776,8 @@ const IDB = (() => {
 const DBMgr = (() => {
   let SQL = null;
   let db  = null;
+  let webManifest  = null;         // db/monthly/manifest.json (core + months list)
+  let loadedMonths = new Set();    // 'YYYY-MM' labels already merged into `db`
 
   /* ── helpers ── */
   function query(sql, params = []) {
@@ -724,17 +801,21 @@ const DBMgr = (() => {
     return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  /* ── Persist current db back to IDB ── */
+  /* ── Persist current db + which months are merged back to IDB ── */
   async function persist() {
     if (!db) return;
     const data = db.export();
-    await IDB.set('blobs', 'sqlite', data.buffer);
+    await IDB.set('blobs', 'sqlite_v2', data.buffer);
+    await IDB.set('meta', 'dbmeta_v2', {
+      coreSha256: webManifest?.core?.sha256 || null,
+      loadedMonths: [...loadedMonths],
+      storedAt: new Date().toISOString(),
+    });
   }
 
-  /* ── Client-side schema migration: published db-snapshot may predate newer columns
-     (e.g. rs_rating), mirroring db/init_db.py's MIGRATIONS on the Python side.
-     Without this, any query referencing a missing column throws and silently
-     returns [] — this was the root cause of 強勢股 always coming back empty. ── */
+  /* ── Client-side schema migration safety net: a cached db from an older version
+     of this web app may predate a newly-added column. Without this, any query
+     referencing a missing column throws and silently returns []. ── */
   function ensureSchemaMigrations() {
     if (!db) return;
     const MIGRATIONS = [
@@ -750,85 +831,156 @@ const DBMgr = (() => {
     }
   }
 
-  /* ── Init: try to load from IDB ── */
+  /* ── Fetch one file with per-file retry (never forces the caller to re-fetch
+     files that already succeeded — see ensureMonthsLoaded) ── */
+  async function fetchBytesWithRetry(url, expectedSha256, maxRetries = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+        if (expectedSha256) {
+          const hex = await sha256hex(buf);
+          if (hex !== expectedSha256) throw new Error('sha256 驗證不符');
+        }
+        return buf;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 400 * attempt));
+      }
+    }
+    throw new Error(`下載失敗（已重試 ${maxRetries} 次）：${url}（${lastErr?.message || lastErr}）`);
+  }
+
+  /* ── Merge an independent sqlite file's rows into the live `db` ── */
+  function mergeTables(buf, tableNames) {
+    const tmp = new SQL.Database(new Uint8Array(buf));
+    try {
+      for (const table of tableNames) {
+        const res = tmp.exec(`SELECT * FROM ${table}`);
+        if (!res.length) continue;
+        const { columns, values } = res[0];
+        const placeholders = columns.map(() => '?').join(',');
+        const stmt = db.prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`);
+        for (const row of values) stmt.run(row);
+        stmt.free();
+      }
+    } finally {
+      tmp.close();
+    }
+  }
+  const mergeCoreBytes    = buf => mergeTables(buf, ['sectors', 'stocks']);
+  const mergeMonthlyBytes = buf => mergeTables(buf, ['daily_prices', 'technical_indicators', 'market_index']);
+
+  /* ── Web manifest (db/monthly/manifest.json): core.db + list of monthly files ── */
+  async function fetchWebManifest() {
+    const res = await fetch(WEB_MANIFEST_URL);
+    if (!res.ok) throw new Error('無法取得 manifest: ' + res.status);
+    webManifest = await res.json();
+    return webManifest;
+  }
+
+  async function ensureCoreLoaded(onProgress) {
+    if (!webManifest) await fetchWebManifest();
+    onProgress?.('下載股票清單…', 8);
+    const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${webManifest.core.path}`, webManifest.core.sha256);
+    mergeCoreBytes(buf);
+  }
+
+  /* ── Load specific months (skips ones already loaded); a failed month is only
+     retried on its own next time — already-merged months are never re-fetched ── */
+  async function ensureMonthsLoaded(labels, onProgress) {
+    if (!webManifest) await fetchWebManifest();
+    const errors = [];
+    for (const label of labels) {
+      if (loadedMonths.has(label)) continue;
+      const entry = (webManifest.months || []).find(m => m.label === label);
+      if (!entry) continue; // not published yet (e.g. brand-new current month)
+      try {
+        onProgress?.(`下載 ${label} 月資料…`);
+        const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${entry.path}`, entry.sha256);
+        mergeMonthlyBytes(buf);
+        loadedMonths.add(label);
+        await persist();
+      } catch (e) {
+        console.warn(`月份 ${label} 下載/合併失敗：`, e.message);
+        errors.push({ label, message: e.message });
+      }
+    }
+    if (errors.length) {
+      const err = new Error(`部分月份資料下載失敗：${errors.map(e => e.label).join(', ')}`);
+      err.partialErrors = errors;
+      throw err;
+    }
+  }
+
+  function getLoadedMonths()  { return [...loadedMonths].sort(); }
+  function getAvailableMonths() { return (webManifest?.months || []).map(m => m.label).sort(); }
+  function oldestLoadedMonth() { const m = getLoadedMonths(); return m.length ? m[0] : null; }
+  function hasOlderMonthAvailable() {
+    const oldest = oldestLoadedMonth();
+    const avail  = getAvailableMonths();
+    return !!oldest && avail.length > 0 && avail[0] < oldest;
+  }
+  function oneOlderMonthLabel() {
+    const oldest = oldestLoadedMonth();
+    return oldest ? shiftMonthLabel(oldest, -1) : null;
+  }
+
+  /* ── Init: try to load the already-merged db from IDB ── */
   async function init(onProgress) {
     onProgress('載入 sql.js…', 3);
     SQL = await initSqlJs({
       locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}`
     });
 
-    const bytes  = await IDB.get('blobs', 'sqlite');
-    const dbMeta = await IDB.get('meta',  'dbmeta');
+    const bytes = await IDB.get('blobs', 'sqlite_v2');
+    const meta  = await IDB.get('meta',  'dbmeta_v2');
 
-    if (bytes && dbMeta) {
-      const now = new Date();
-      const label = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-      if (dbMeta.monthLabel === label) {
-        onProgress('從本地存儲載入資料庫…', 95);
-        db = new SQL.Database(new Uint8Array(bytes));
-        ensureSchemaMigrations();
-        onProgress('就緒', 100);
-        return false; // no full download needed
-      }
+    if (bytes && meta) {
+      onProgress('從本地存儲載入資料庫…', 60);
+      db = new SQL.Database(new Uint8Array(bytes));
+      loadedMonths = new Set(meta.loadedMonths || []);
+      ensureSchemaMigrations();
+      onProgress('就緒', 100);
+      return { needBootstrap: false };
     }
-    return true; // need download
+    return { needBootstrap: true };
   }
 
-  /* ── Download & assemble db-snapshot (parts fetched in parallel, placed by known offset) ── */
-  async function download(onProgress) {
-    onProgress('下載 manifest…', 2);
-    const mRes = await fetch(MANIFEST_URL);
-    if (!mRes.ok) throw new Error('無法取得 manifest: ' + mRes.status);
-    const manifest = await mRes.json();
+  /* ── Fresh install: empty schema + core.db + most recent few months
+     (enough calendar days of lookback for MA60/60-day-high to compute cleanly
+     across the default 30-day view — see Chart's default zoom). ── */
+  async function bootstrapFresh(onProgress) {
+    db = new SQL.Database();
+    db.run(CREATE_SCHEMA_SQL);
 
-    const parts    = manifest.parts;
-    const total    = manifest.original_size_bytes;
-    const partSize = manifest.part_size_bytes;
-    const merged   = new Uint8Array(total);
+    onProgress('下載 manifest…', 5);
+    await fetchWebManifest();
 
-    const PART_CONCURRENCY = 6;
-    let nextIdx = 0, doneBytes = 0, doneParts = 0;
+    await ensureCoreLoaded(onProgress);
 
-    async function worker() {
-      while (true) {
-        const i = nextIdx++;
-        if (i >= parts.length) return;
-        const url  = `${RAW}/db-snapshot/${parts[i]}`;
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`無法下載 ${parts[i]}: ${resp.status}`);
-        const buf  = await resp.arrayBuffer();
-        merged.set(new Uint8Array(buf), i * partSize);
-        doneBytes += buf.byteLength;
-        doneParts += 1;
-        const pct = 5 + Math.round((doneBytes / total) * 65);
-        onProgress(
-          `下載中… (${doneParts}/${parts.length})`,
-          pct,
-          `${(doneBytes / 1e6).toFixed(1)}MB / ${(total / 1e6).toFixed(1)}MB`
-        );
-      }
+    const today = monthLabel(new Date());
+    const initialMonths = [
+      shiftMonthLabel(today, -2), shiftMonthLabel(today, -1), today,
+    ];
+    onProgress('下載最近月份資料…', 20);
+    try {
+      await ensureMonthsLoaded(initialMonths, onProgress);
+    } catch (e) {
+      console.warn('部分月份初始下載失敗，稍後可由每日增量資料或縮放時補齊：', e.message);
     }
+    await persist();
+  }
 
-    await Promise.all(
-      Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, () => worker())
-    );
-
-    onProgress('驗證 SHA-256…', 72);
-    const hex = await sha256hex(merged.buffer);
-    if (hex !== manifest.sha256) throw new Error('SHA-256 驗證失敗，請重試');
-
-    onProgress('儲存至本地…', 80);
-    await IDB.set('blobs', 'sqlite', merged.buffer);
-    const now = new Date();
-    await IDB.set('meta', 'dbmeta', {
-      monthLabel: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`,
-      sha256: manifest.sha256,
-      storedAt: now.toISOString(),
-    });
-
-    onProgress('開啟資料庫…', 90);
-    db = new SQL.Database(merged);
-    ensureSchemaMigrations();
+  /* ── Ensure at least `count` most-recent published months are loaded
+     (used before 強勢股 XQ filtering, which needs ~100 天 lookback for 60日高點) ── */
+  async function ensureRecentMonths(count, onProgress) {
+    const today = monthLabel(new Date());
+    const labels = [];
+    for (let i = count - 1; i >= 0; i--) labels.push(shiftMonthLabel(today, -i));
+    await ensureMonthsLoaded(labels, onProgress);
   }
 
   /* ── CSV helpers ── */
@@ -1122,7 +1274,9 @@ const DBMgr = (() => {
   }
 
   return {
-    init, download, syncDaily,
+    init, bootstrapFresh, syncDaily,
+    fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths,
+    getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getWatchlistStocks,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
@@ -1200,9 +1354,23 @@ const Chart = (() => {
   let ind      = { maS: [], maM: [], maL: [], macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], rsv: [] };
   let maPeriods = { short: 5, mid: 20, long: 60 };
   let subPanel  = 'volume';   // 'volume' | 'macd' | 'kd' | 'rsv'
-  let visibleCount = 120;     // zoom level: number of visible candles
+  let visibleCount = null;    // zoom level (candle count); null = compute 30-day default on first load
   let cross    = null;  // {x, y} mouse position
   let locked   = false;
+  let onZoomChangeCb = null;  // app-level hook: fires after zoom changes, so more history can be fetched on demand
+
+  /* default zoom = most recent ~30 calendar days (not a fixed candle count,
+     since trading-day density varies with holidays) */
+  function defaultVisibleCount(rows) {
+    if (!rows.length) return 0;
+    const cutoff = new Date(rows.at(-1).trade_date).getTime() - 30 * 86400000;
+    let count = 0;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (new Date(rows[i].trade_date).getTime() < cutoff) break;
+      count++;
+    }
+    return Math.max(10, count);
+  }
 
   function isDark() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
 
@@ -1233,7 +1401,7 @@ const Chart = (() => {
   function setData(rows) {
     fullData = rows;
     recompute();
-    if (!visibleCount || !fullData.length) visibleCount = fullData.length;
+    if (visibleCount == null) visibleCount = defaultVisibleCount(fullData);
     visibleCount = Math.min(visibleCount, fullData.length) || fullData.length;
     cross  = null;
     locked = false;
@@ -1247,21 +1415,27 @@ const Chart = (() => {
   }
 
   function setSubPanel(p) { subPanel = p; draw(); }
+  function setOnZoomChange(fn) { onZoomChangeCb = fn; }
+  function getVisibleCount()   { return visibleCount || 0; }
+  function getFullDataLength() { return fullData.length; }
 
   function zoomIn() {
     if (!fullData.length) return;
     visibleCount = Math.max(20, Math.round(visibleCount * 0.7));
     draw();
+    onZoomChangeCb?.();
   }
   function zoomOut() {
     if (!fullData.length) return;
-    visibleCount = Math.min(fullData.length, Math.round(visibleCount / 0.7) || fullData.length);
+    visibleCount = Math.round(visibleCount / 0.7) || fullData.length;
     draw();
+    onZoomChangeCb?.();
   }
   function zoomReset() {
     if (!fullData.length) return;
     visibleCount = fullData.length;
     draw();
+    onZoomChangeCb?.();
   }
 
   function fmtVol(v) {
@@ -1604,7 +1778,10 @@ const Chart = (() => {
     if (e.deltaY < 0) zoomIn(); else if (e.deltaY > 0) zoomOut();
   }, { passive: false });
 
-  return { setData, resize, setMAPeriods, setSubPanel, zoomIn, zoomOut, zoomReset };
+  return {
+    setData, resize, setMAPeriods, setSubPanel, zoomIn, zoomOut, zoomReset,
+    setOnZoomChange, getVisibleCount, getFullDataLength,
+  };
 })();
 
 /* ════════════════════════════════════════
@@ -1669,6 +1846,7 @@ const R = {
   pageInfo:    $('page-info'),
   chartTitle:  $('chart-title'),
   chartInfo:   $('chart-info'),
+  chartFetchHint: $('chart-fetch-hint'),
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
   resizeHandle:$('resize-handle'),
@@ -1852,6 +2030,16 @@ async function runStrongFilter() {
   const method = R.strongMethodSel.value;
   Settings.set('strongMethod', method);
   R.strongFilterBtn.disabled = true;
+
+  /* XQ 原則需要約100天(距60日高點)的歷史，目前原則只需要約20天；
+     按需先確保月度資料已載入夠用的範圍，不夠時才去抓（計算需要的範圍再開始抓）。 */
+  R.strongStatus.textContent = '確認歷史資料範圍…';
+  try {
+    await DBMgr.ensureRecentMonths(method === 'xq' ? 4 : 2);
+  } catch (e) {
+    console.warn('補齊歷史月份時部分失敗，仍嘗試以目前已有資料篩選：', e.message);
+  }
+
   R.strongStatus.textContent = '運算中…（掃描全市場，請稍候）';
   await new Promise(r => setTimeout(r, 20)); // let the status text paint before the heavy query
 
@@ -1986,9 +2174,18 @@ function applyTheme(t) {
 async function initDB() {
   const progress = (msg, pct, sub) => setProgress(msg, pct, sub);
 
-  const needDownload = await DBMgr.init(progress);
-  if (needDownload) await DBMgr.download(progress);
+  const { needBootstrap } = await DBMgr.init(progress);
+  if (needBootstrap) {
+    /* 首次安裝／快取失效：只下載 core.db + 最近幾個月（小），不下載整份 300MB+ 的
+       完整 tw_stock.db — 這正是「網頁下載超級花時間」要解決的地方。 */
+    await DBMgr.bootstrapFresh(progress);
+  } else {
+    /* 已從本地存儲載入；仍取一次 manifest，供之後 zoom out 時查詢可用月份 */
+    await DBMgr.fetchWebManifest().catch(e => console.warn('取得 manifest 失敗（zoom out 時會再重試）：', e.message));
+  }
 
+  /* 目前月份的 db/monthly 快照只在每月初重建一次，中間的每日資料一律靠這裡的
+     每日增量 CSV 補齊（沿用既有的 syncDaily，已支援平行下載 + 自我修復重驗證）。 */
   setProgress('同步每日資料…', 96, '');
   await DBMgr.syncDaily(progress, false);
 }
@@ -2001,20 +2198,43 @@ async function handleSync() {
   R.lBar.style.width      = '0%';
 
   try {
-    setProgress('檢查 manifest…', 5);
-    const mRes = await fetch(MANIFEST_URL);
-    const manifest = await mRes.json();
-    const dbMeta   = await IDB.get('meta', 'dbmeta');
-
-    if (!dbMeta || dbMeta.monthLabel !== manifest.month_label) {
-      await DBMgr.download(setProgress);
-    }
-    setProgress('同步每日資料…', 96);
+    setProgress('檢查更新…', 10);
+    await DBMgr.fetchWebManifest().catch(() => {});
+    setProgress('同步每日資料…', 50);
     await DBMgr.syncDaily(setProgress, true);
     setProgress('更新完成！', 100);
     setTimeout(() => { showLoading(false); refreshCurrentView(); }, 800);
   } catch (e) {
     showError('更新失敗：' + e.message);
+  }
+}
+
+/* ════════════════════════════════════════
+   ON-DEMAND HISTORY (zoom out beyond loaded months)
+   ════════════════════════════════════════ */
+let expandingHistory = false;
+async function maybeExpandHistory() {
+  if (expandingHistory) return;
+  const code = Settings.get('selectedStock');
+  if (!code) return;
+  const need = Chart.getVisibleCount();
+  const have = Chart.getFullDataLength();
+  if (need <= have) return;              // 目前已載入的資料已經夠顯示這個 zoom 範圍
+  if (!DBMgr.hasOlderMonthAvailable()) return; // 已經是最早可用的月份，沒有更多資料了
+
+  expandingHistory = true;
+  R.chartFetchHint.textContent = '載入更早歷史資料中…';
+  R.chartFetchHint.classList.remove('hidden');
+  try {
+    const older = DBMgr.oneOlderMonthLabel();
+    await DBMgr.ensureMonthsLoaded([older]);
+    const history = DBMgr.getPriceHistory(code, Math.max(need + 60, 400));
+    Chart.setData(history);
+  } catch (e) {
+    console.warn('補齊更早歷史資料失敗：', e.message);
+  } finally {
+    expandingHistory = false;
+    R.chartFetchHint.classList.add('hidden');
   }
 }
 
@@ -2225,6 +2445,7 @@ function saveSettingsModal() {
    ════════════════════════════════════════ */
 async function main() {
   bindEvents();
+  Chart.setOnZoomChange(maybeExpandHistory);
 
   /* restore theme */
   applyTheme(Settings.get('theme') || 'light');
