@@ -756,17 +756,6 @@ CREATE TABLE IF NOT EXISTS market_index (
 );
 `;
 
-const SECTOR_NAMES = {
-  1:'水泥工業', 2:'食品工業', 3:'塑膠工業', 4:'紡織纖維',
-  5:'電機機械', 6:'電器電纜', 7:'化學工業', 8:'玻璃陶瓷',
-  9:'鋼鐵工業', 10:'橡膠工業', 11:'汽車工業', 12:'半導體業',
-  13:'電腦及週邊設備業', 14:'光電業', 15:'通信網路業',
-  16:'電子零組件業', 17:'電子通路業', 18:'資訊服務業',
-  19:'其他電子業', 20:'建材營造業', 21:'航運業',
-  22:'觀光餐旅業', 23:'金融保險業', 24:'貿易百貨業',
-  25:'油電燃氣業', 26:'其他業',
-};
-
 const PAGE_SIZE = 20;
 
 /* ════════════════════════════════════════
@@ -1214,7 +1203,15 @@ const DBMgr = (() => {
   }
 
   function getSectors() {
-    return query('SELECT DISTINCT CAST(sector_id AS INTEGER) AS sid FROM stocks WHERE is_active=1 ORDER BY sid');
+    /* 真正的類股名稱存在 sectors 表（隨 core.db 一起下載），sector_id 是 TWSE
+       官方產業代碼（不是 1..26 連號），不能用寫死的對照表猜——見 db/schema.sql。 */
+    return query(`
+      SELECT DISTINCT s.sector_id AS sid, sec.sector_name AS name
+      FROM stocks s
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
+      WHERE s.is_active=1 AND s.sector_id IS NOT NULL
+      ORDER BY sec.sector_name
+    `);
   }
 
   function getStocksBySector(sectorId) {
@@ -2371,12 +2368,10 @@ function refreshCurrentView() {
 function populateSectors() {
   const sectors = DBMgr.getSectors();
   R.sectorSel.innerHTML = '<option value="">── 選擇類股 ──</option>';
-  sectors.forEach(({ sid }) => {
-    const id   = parseInt(sid);
-    const name = SECTOR_NAMES[id] || `類股 ${id}`;
-    const opt  = document.createElement('option');
-    opt.value       = id;
-    opt.textContent = name;
+  sectors.forEach(({ sid, name }) => {
+    const opt = document.createElement('option');
+    opt.value       = sid;
+    opt.textContent = name || `類股 ${sid}`;
     R.sectorSel.appendChild(opt);
   });
 
