@@ -953,7 +953,13 @@ const DBMgr = (() => {
     return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  /* ── Persist current db + which months are merged back to IDB ── */
+  /* ── Persist current db + which months are merged back to IDB ──
+     db.export() re-serializes the ENTIRE in-memory database (not just what
+     changed), so its cost grows with total DB size — calling it synchronously
+     right after every single on-demand fetch is what was freezing the page
+     the moment new data finished loading. schedulePersist() defers it to an
+     idle moment and coalesces bursts of merges (e.g. catching up several
+     months) into a single export instead of one per merge. ── */
   async function persist() {
     if (!db) return;
     const data = db.export();
@@ -964,6 +970,24 @@ const DBMgr = (() => {
       storedAt: new Date().toISOString(),
     });
   }
+
+  let persistScheduled = false;
+  function schedulePersist() {
+    if (persistScheduled) return;
+    persistScheduled = true;
+    const run = () => { persistScheduled = false; persist(); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 3000 });
+    else setTimeout(run, 1200);
+  }
+  function flushPersist() {
+    if (!persistScheduled) return;
+    persistScheduled = false;
+    persist();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPersist();
+  });
+  window.addEventListener('beforeunload', flushPersist);
 
   /* ── Client-side schema migration safety net: a cached db from an older version
      of this web app may predate a newly-added column. Without this, any query
@@ -1005,8 +1029,15 @@ const DBMgr = (() => {
     throw new Error(`下載失敗（已重試 ${maxRetries} 次）：${url}（${lastErr?.message || lastErr}）`);
   }
 
-  /* ── Merge an independent sqlite file's rows into the live `db` ── */
-  function mergeTables(buf, tableNames) {
+  /* ── Merge an independent sqlite file's rows into the live `db` ──
+     A full monthly-fallback bundle can be ~90,000 rows across both tables;
+     running that many prepared-statement calls in one synchronous tick was
+     the other half of the "freezes right as it finishes loading" problem
+     (see persist() above for the other half). Yielding every CHUNK rows lets
+     the browser paint/handle input between batches instead of locking up for
+     the whole merge — each chunk itself only takes a few ms either way. ── */
+  const MERGE_CHUNK = 2000;
+  async function mergeTables(buf, tableNames) {
     const tmp = new SQL.Database(new Uint8Array(buf));
     try {
       for (const table of tableNames) {
@@ -1015,7 +1046,10 @@ const DBMgr = (() => {
         const { columns, values } = res[0];
         const placeholders = columns.map(() => '?').join(',');
         const stmt = db.prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`);
-        for (const row of values) stmt.run(row);
+        for (let i = 0; i < values.length; i++) {
+          stmt.run(values[i]);
+          if (i % MERGE_CHUNK === MERGE_CHUNK - 1) await new Promise(r => setTimeout(r, 0));
+        }
         stmt.free();
       }
     } finally {
@@ -1052,8 +1086,8 @@ const DBMgr = (() => {
       const resp = await fetch(`${RAW}/db-snapshot/db/by-id/${bucket}/${label}.db`);
       if (resp.ok) {
         const buf = await resp.arrayBuffer();
-        mergeStockMonthBytes(buf);
-        await persist();
+        await mergeStockMonthBytes(buf);
+        schedulePersist();
         return;
       }
     } catch (e) { /* 網路錯誤也一樣退回 monthly，不特別處理 */ }
@@ -1072,7 +1106,7 @@ const DBMgr = (() => {
     if (!webManifest) await fetchWebManifest();
     onProgress?.('下載股票清單…', 8);
     const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${webManifest.core.path}`, webManifest.core.sha256);
-    mergeCoreBytes(buf);
+    await mergeCoreBytes(buf);
   }
 
   /* ── Load specific months (skips ones already loaded); a failed month is only
@@ -1087,9 +1121,9 @@ const DBMgr = (() => {
       try {
         onProgress?.(`下載 ${label} 月資料…`);
         const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${entry.path}`, entry.sha256);
-        mergeMonthlyBytes(buf);
+        await mergeMonthlyBytes(buf);
         loadedMonths.add(label);
-        await persist();
+        schedulePersist();
       } catch (e) {
         console.warn(`月份 ${label} 下載/合併失敗：`, e.message);
         errors.push({ label, message: e.message });
