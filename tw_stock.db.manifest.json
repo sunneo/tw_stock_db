@@ -1,0 +1,18 @@
+{
+  "original_filename": "tw_stock.db",
+  "original_size_bytes": 370778112,
+  "sha256": "81c16f4534f1ea767ed15feac0af44bc0109f400435f518c1dcc828c2fadaef6",
+  "part_size_bytes": 50331648,
+  "num_parts": 8,
+  "parts": [
+    "tw_stock.db.part000",
+    "tw_stock.db.part001",
+    "tw_stock.db.part002",
+    "tw_stock.db.part003",
+    "tw_stock.db.part004",
+    "tw_stock.db.part005",
+    "tw_stock.db.part006",
+    "tw_stock.db.part007"
+  ],
+  "month_label": "2026-08"
+}
