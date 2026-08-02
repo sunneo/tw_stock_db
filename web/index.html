@@ -231,8 +231,10 @@ select:focus { outline: 2px solid var(--acc); }
 }
 #stock-table td:first-child { text-align: left; }
 .td-code { font-weight: 600; color: var(--acc); }
-.td-name { max-width: 60px; text-align: left; color: var(--txt1); display: flex; align-items: center; }
-.td-name .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--txt1); }
+#stock-table th.th-memo, #stock-table td.td-memo {
+  width: 20px; padding-left: 2px; padding-right: 2px; text-align: center;
+}
 .td-up { color: var(--up); }
 .td-dn { color: var(--dn); }
 .td-flat { color: var(--txt2); }
@@ -495,7 +497,7 @@ select:focus { outline: 2px solid var(--acc); }
 /* ── Memo icon buttons (list rows + chart header) ── */
 .memo-btn {
   flex-shrink: 0; border: none; background: transparent; cursor: pointer;
-  font-size: 11px; line-height: 1; padding: 0; margin-left: 2px;
+  font-size: 11px; line-height: 1; padding: 0;
   opacity: .35; filter: grayscale(1);
 }
 .memo-btn:hover { opacity: .7; }
@@ -653,6 +655,7 @@ select:focus { outline: 2px solid var(--acc); }
           <tr>
             <th>代號</th>
             <th>名稱</th>
+            <th class="th-memo"></th>
             <th>開</th>
             <th>高</th>
             <th>低</th>
@@ -2427,7 +2430,7 @@ function renderPage() {
   R.nextBtn.disabled = page >= totalPages - 1;
 
   if (!pageItems.length) {
-    R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">無資料</td></tr>';
+    R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">無資料</td></tr>';
     return;
   }
 
@@ -2465,10 +2468,8 @@ function renderPage() {
     return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
                draggable="${isWL ? 'true' : 'false'}">
       <td class="td-code">${s.stock_code}</td>
-      <td class="td-name" title="${s.stock_name || ''}">
-        <span class="name-text">${s.stock_name || ''}</span>
-        <button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button>
-      </td>
+      <td class="td-name" title="${s.stock_name || ''}">${s.stock_name || ''}</td>
+      <td class="td-memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
       <td>${open   != null ? open.toFixed(2)  : '-'}</td>
       <td>${high   != null ? high.toFixed(2)  : '-'}</td>
       <td>${low    != null ? low.toFixed(2)   : '-'}</td>
@@ -2629,7 +2630,7 @@ function loadWatchlist() {
    run_generate_watchlist.py），跟使用者自己維護的「自選股」是兩回事，此處唯讀。 */
 async function loadLockList(direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
-  R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">載入鎖股名單中…</td></tr>';
+  R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">載入鎖股名單中…</td></tr>';
   await LockList.ensureLoaded();
   const recs  = LockList.getByDirection(dirZh);
   const codes = recs.map(r => r.stock_code);
@@ -2668,7 +2669,7 @@ function switchView(view) {
     }
     State.page = 0;
     if (!State.stocks.length) {
-      R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
+      R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
       R.pageInfo.textContent = '— / —';
       R.prevBtn.disabled = true; R.nextBtn.disabled = true;
     } else {
