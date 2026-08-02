@@ -227,7 +227,8 @@ select:focus { outline: 2px solid var(--acc); }
 }
 #stock-table td:first-child { text-align: left; }
 .td-code { font-weight: 600; color: var(--acc); }
-.td-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; text-align: left; color: var(--txt1); }
+.td-name { max-width: 60px; text-align: left; color: var(--txt1); display: flex; align-items: center; }
+.td-name .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-up { color: var(--up); }
 .td-dn { color: var(--dn); }
 .td-flat { color: var(--txt2); }
@@ -471,6 +472,32 @@ select:focus { outline: 2px solid var(--acc); }
   border-top: 1px solid var(--bdr);
 }
 
+/* ── Memo modal (no sidebar — plain scrollable body) ── */
+#memo-modal .modal-body { display: block; height: auto; max-height: 60vh; padding: 14px 16px; overflow-y: auto; }
+#memo-readonly-wrap { margin-bottom: 14px; }
+#memo-readonly-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
+#memo-readonly-note {
+  font-size: 13px; line-height: 1.6; color: var(--txt1);
+  background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
+  padding: 8px 10px; white-space: pre-wrap;
+}
+#memo-textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: inherit; font-size: 13px; color: var(--txt0);
+  background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
+  padding: 8px 10px;
+}
+
+/* ── Memo icon buttons (list rows + chart header) ── */
+.memo-btn {
+  flex-shrink: 0; border: none; background: transparent; cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 0; margin-left: 2px;
+  opacity: .35; filter: grayscale(1);
+}
+.memo-btn:hover { opacity: .7; }
+.memo-btn.memo-on { opacity: 1; filter: none; }
+#memo-chart-btn { font-size: 14px; }
+
 /* ── Hidden utility ── */
 .hidden { display: none !important; }
 
@@ -598,6 +625,8 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="sector">類股</option>
         <option value="strong">強勢股</option>
         <option value="watchlist">自選股</option>
+        <option value="lock_long">鎖股名單-鎖做多</option>
+        <option value="lock_short">鎖股名單-鎖做空</option>
         <option value="usmarket">美股</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
@@ -644,6 +673,7 @@ select:focus { outline: 2px solid var(--acc); }
   <div id="chart-area">
     <div id="chart-header">
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
+      <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
       <div class="chart-toolbar">
@@ -707,6 +737,28 @@ select:focus { outline: 2px solid var(--acc); }
     <div class="modal-footer">
       <button class="btn" id="settings-cancel">取消</button>
       <button class="btn primary" id="settings-save">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MEMO MODAL ══ -->
+<div id="memo-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span id="memo-modal-title">📝 備忘錄</span>
+      <button class="btn icon" id="memo-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="memo-readonly-wrap" class="hidden">
+        <h3>鎖股名單訊號（機器判讀，唯讀）</h3>
+        <div id="memo-readonly-note"></div>
+      </div>
+      <h3>我的備忘錄</h3>
+      <textarea id="memo-textarea" rows="8" placeholder="輸入這檔股票的備忘錄…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="memo-cancel">取消</button>
+      <button class="btn primary" id="memo-save">儲存</button>
     </div>
   </div>
 </div>
@@ -847,7 +899,8 @@ const Settings = (() => {
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              strongMethod: 'current',
-             strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 } };
+             strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 },
+             memos: {} };  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
   }
   function load() {
     try { d = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
@@ -870,6 +923,7 @@ const Settings = (() => {
     const src = JSON.parse(txt);
     if (Array.isArray(src.watchlist)) d.watchlist = src.watchlist;
     if (src.theme) d.theme = src.theme;
+    if (src.memos && typeof src.memos === 'object') d.memos = src.memos;
     save();
   }
 
@@ -920,6 +974,70 @@ const IDB = (() => {
   }
 
   return { set, get };
+})();
+
+/* ════════════════════════════════════════
+   MEMO STORE  (persisted in Settings/localStorage → 自動隨既有的
+   設定匯出/匯入一起存檔，不需要另外的匯出/匯入介面)
+   ════════════════════════════════════════ */
+const MemoStore = (() => {
+  function getText(code) {
+    const memos = Settings.get('memos') || {};
+    return memos[code]?.text || '';
+  }
+  function hasMemo(code) {
+    return !!getText(code).trim();
+  }
+  function setText(code, text) {
+    const memos = Object.assign({}, Settings.get('memos') || {});
+    if (text && text.trim()) memos[code] = { text, updatedAt: Date.now() };
+    else delete memos[code];
+    Settings.set('memos', memos);
+  }
+  return { getText, hasMemo, setText };
+})();
+
+/* ════════════════════════════════════════
+   LOCK LIST  (watchlist/watchlist.json — 排程產生的做多/做空鎖股名單，
+   見 tw-stock-db/run_generate_watchlist.py。與使用者自己的「自選股」無關。)
+   ════════════════════════════════════════ */
+const LockList = (() => {
+  const URL_PATH = RAW + '/main/watchlist/watchlist.json';
+  const CACHE_KEY = 'lockdata_v1';
+  let data = null;
+  let byCode = new Map();
+
+  function indexByCode(d) {
+    byCode = new Map();
+    for (const rec of d?.watchlist || []) byCode.set(rec.stock_code, rec);
+  }
+
+  async function ensureLoaded() {
+    if (data) return data;
+    let cached = null;
+    try { cached = await IDB.get('meta', CACHE_KEY); } catch {}
+    try {
+      const res = await fetch(URL_PATH, { cache: 'no-store' });
+      if (res.ok) {
+        data = await res.json();
+        IDB.set('meta', CACHE_KEY, data).catch(() => {});
+      } else {
+        data = cached || { as_of_date: null, watchlist: [] };
+      }
+    } catch {
+      data = cached || { as_of_date: null, watchlist: [] };
+    }
+    indexByCode(data);
+    return data;
+  }
+
+  function getInfo(code) { return byCode.get(code) || null; }
+  function getByDirection(directionZh) {
+    return (data?.watchlist || []).filter(r => r.direction === directionZh);
+  }
+  function getAsOfDate() { return data?.as_of_date || null; }
+
+  return { ensureLoaded, getInfo, getByDirection, getAsOfDate };
 })();
 
 /* ════════════════════════════════════════
@@ -2202,6 +2320,8 @@ const State = {
   strongMethodUsed: null,  // method used for the currently-loaded strong-stock list
 };
 
+let memoModalCode = null;  // stock/index code the memo modal is currently open for
+
 /* ════════════════════════════════════════
    DOM REFS
    ════════════════════════════════════════ */
@@ -2261,6 +2381,15 @@ const R = {
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
   followMouseChk:  $('follow-mouse-toggle'),
+  memoChartBtn:    $('memo-chart-btn'),
+  memoModal:       $('memo-modal'),
+  memoModalTitle:  $('memo-modal-title'),
+  memoClose:       $('memo-close'),
+  memoCancel:      $('memo-cancel'),
+  memoSave:        $('memo-save'),
+  memoTextarea:    $('memo-textarea'),
+  memoReadonlyWrap:$('memo-readonly-wrap'),
+  memoReadonlyNote:$('memo-readonly-note'),
 };
 
 /* ════════════════════════════════════════
@@ -2302,6 +2431,7 @@ function renderPage() {
   const view     = R.viewSel.value;
   const isWL     = view === 'watchlist';
   const isStrong = view === 'strong';
+  const isLock   = view === 'lock_long' || view === 'lock_short';
   const codes    = pageItems.map(s => s.stock_code);
   const sparkMap = DBMgr.getBatchSparklines(codes, 20);
 
@@ -2314,6 +2444,7 @@ function renderPage() {
                   : close > open ? 'td-up'
                   : close < open ? 'td-dn' : 'td-flat';
     const isSel   = s.stock_code === selCode;
+    const memoOn  = MemoStore.hasMemo(s.stock_code);
 
     let extraTd = '';
     if (isWL) {
@@ -2323,12 +2454,17 @@ function renderPage() {
         ? (s.rs_rating != null ? Math.round(s.rs_rating) : '-')
         : (s.bull_score != null ? `${s.bull_score}分` : '-');
       extraTd = `<td>${txt}</td>`;
+    } else if (isLock) {
+      extraTd = `<td>${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
     }
 
     return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
                draggable="${isWL ? 'true' : 'false'}">
       <td class="td-code">${s.stock_code}</td>
-      <td class="td-name" title="${s.stock_name || ''}">${s.stock_name || ''}</td>
+      <td class="td-name" title="${s.stock_name || ''}">
+        <span class="name-text">${s.stock_name || ''}</span>
+        <button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button>
+      </td>
       <td>${open   != null ? open.toFixed(2)  : '-'}</td>
       <td>${high   != null ? high.toFixed(2)  : '-'}</td>
       <td>${low    != null ? low.toFixed(2)   : '-'}</td>
@@ -2344,9 +2480,17 @@ function renderPage() {
   const isUsMarket = R.viewSel.value === 'usmarket';
   R.stockTbody.querySelectorAll('tr[data-code]').forEach(tr => {
     tr.addEventListener('click', e => {
-      if (e.target.classList.contains('del-btn')) return;
+      if (e.target.classList.contains('del-btn') || e.target.classList.contains('memo-btn')) return;
       if (isUsMarket) selectMarketIndex(tr.dataset.code);
       else selectStock(tr.dataset.code);
+    });
+  });
+
+  /* memo icon → open memo modal without selecting the row's stock */
+  R.stockTbody.querySelectorAll('.memo-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openMemoModal(btn.dataset.code);
     });
   });
 
@@ -2413,11 +2557,12 @@ function updateExtraColumn(view) {
   const thead = document.querySelector('#stock-table thead tr');
   const existing = thead.querySelector('.extra-col');
   if (existing) existing.remove();
-  if (view === 'watchlist' || view === 'strong') {
+  if (view === 'watchlist' || view === 'strong' || view === 'lock_long' || view === 'lock_short') {
     const th = document.createElement('th');
     th.className = 'extra-col';
     th.textContent = view === 'strong'
       ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
+      : (view === 'lock_long' || view === 'lock_short') ? '分數'
       : '';
     thead.appendChild(th);
   }
@@ -2476,6 +2621,31 @@ function loadWatchlist() {
   renderPage();
 }
 
+/* 鎖股名單-鎖做多/鎖做空：來自排程產生的 watchlist/watchlist.json（見
+   run_generate_watchlist.py），跟使用者自己維護的「自選股」是兩回事，此處唯讀。 */
+async function loadLockList(direction) {
+  const dirZh = direction === 'long' ? '做多' : '做空';
+  R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">載入鎖股名單中…</td></tr>';
+  await LockList.ensureLoaded();
+  const recs  = LockList.getByDirection(dirZh);
+  const codes = recs.map(r => r.stock_code);
+  const priceRows = DBMgr.getWatchlistStocks(codes);
+  const priceMap  = Object.fromEntries(priceRows.map(r => [r.stock_code, r]));
+  State.stocks = recs.map(r => {
+    const p = priceMap[r.stock_code];
+    return {
+      stock_code: r.stock_code,
+      stock_name: r.stock_name,
+      open: p?.open, high: p?.high, low: p?.low,
+      close: p?.close ?? r.close,
+      lock_score: r.score,
+    };
+  });
+  State.page = 0;
+  updateExtraColumn(direction === 'long' ? 'lock_long' : 'lock_short');
+  renderPage();
+}
+
 function switchView(view) {
   R.sectorSel.classList.toggle('hidden', view !== 'sector');
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
@@ -2502,6 +2672,8 @@ function switchView(view) {
     }
   }
   else if (view === 'watchlist') loadWatchlist();
+  else if (view === 'lock_long') loadLockList('long');
+  else if (view === 'lock_short') loadLockList('short');
   else if (view === 'usmarket') loadUsMarket();
   else {
     const sid = R.sectorSel.value;
@@ -2541,6 +2713,7 @@ function selectMarketIndex(code) {
 
   const entry = US_INDEX_LIST.find(x => x.code === code);
   R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
+  showMemoChartBtn(code);
 
   Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = DBMgr.getMarketIndexHistory(code, 250);
@@ -2576,6 +2749,7 @@ function selectStock(code) {
 
   const info = DBMgr.getStockInfo(code);
   R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
+  showMemoChartBtn(code);
 
   Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = DBMgr.getPriceHistory(code, 250);
@@ -2598,6 +2772,50 @@ function selectStock(code) {
      since these classes only affect layout inside the compact media queries. */
   switchMobileTab('chart');
   setDrawerOpen(false);
+}
+
+/* ════════════════════════════════════════
+   MEMO MODAL
+   ════════════════════════════════════════ */
+function showMemoChartBtn(code) {
+  R.memoChartBtn.classList.remove('hidden');
+  R.memoChartBtn.dataset.code = code;
+  R.memoChartBtn.classList.toggle('memo-on', MemoStore.hasMemo(code));
+}
+
+function openMemoModal(code) {
+  memoModalCode = code;
+  const info = DBMgr.getStockInfo(code);
+  R.memoModalTitle.textContent = `📝 備忘錄 — ${code}${info ? ' ' + info.stock_name : ''}`;
+  R.memoTextarea.value = MemoStore.getText(code);
+
+  const lock = LockList.getInfo(code);
+  if (lock) {
+    const asOf = LockList.getAsOfDate();
+    R.memoReadonlyNote.textContent =
+      `鎖${lock.direction}（分數 ${lock.score}${asOf ? '，資料日期 ' + asOf : ''}）\n` +
+      (lock.reasons || []).map(r => '‧ ' + r).join('\n');
+    R.memoReadonlyWrap.classList.remove('hidden');
+  } else {
+    R.memoReadonlyWrap.classList.add('hidden');
+  }
+
+  R.memoModal.classList.remove('hidden');
+}
+
+function closeMemoModal() {
+  R.memoModal.classList.add('hidden');
+  memoModalCode = null;
+}
+
+function saveMemoModal() {
+  if (!memoModalCode) return;
+  MemoStore.setText(memoModalCode, R.memoTextarea.value);
+  if (R.memoChartBtn.dataset.code === memoModalCode) {
+    R.memoChartBtn.classList.toggle('memo-on', MemoStore.hasMemo(memoModalCode));
+  }
+  closeMemoModal();
+  renderPage(); // refresh list row memo icon color
 }
 
 /* ════════════════════════════════════════
@@ -2728,6 +2946,8 @@ function refreshCurrentView() {
   const v = R.viewSel.value;
   if (v === 'strong') switchView('strong'); // keep cached results / hint; user re-runs the filter manually
   else if (v === 'watchlist') loadWatchlist();
+  else if (v === 'lock_long') loadLockList('long');
+  else if (v === 'lock_short') loadLockList('short');
   else if (v === 'usmarket') loadUsMarket();
   else loadSector(R.sectorSel.value);
 
@@ -2965,6 +3185,13 @@ function bindEvents() {
   });
   R.settingsSave.addEventListener('click', saveSettingsModal);
 
+  /* memo modal */
+  R.memoChartBtn.addEventListener('click', () => openMemoModal(R.memoChartBtn.dataset.code));
+  R.memoClose.addEventListener('click', closeMemoModal);
+  R.memoCancel.addEventListener('click', closeMemoModal);
+  R.memoModal.addEventListener('click', e => { if (e.target === R.memoModal) closeMemoModal(); });
+  R.memoSave.addEventListener('click', saveMemoModal);
+
   /* resize */
   window.addEventListener('resize', () => Chart.resize());
 }
@@ -3052,6 +3279,10 @@ async function main() {
     showError(e.message || String(e));
     return;
   }
+
+  /* preload lock-list (watchlist.json) in the background; not required for
+     the DB itself so it must not block the loading overlay */
+  LockList.ensureLoaded().catch(e => console.warn('鎖股名單載入失敗：', e.message));
 
   /* populate sectors */
   populateSectors();
