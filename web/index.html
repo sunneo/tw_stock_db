@@ -801,11 +801,50 @@ const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
    見 tw-stock-db/sync/monthly_snapshot.py。 */
 const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
 
+/* 證交所的即時行情/休市日曆兩個來源都不回傳 CORS header，瀏覽器端無法直接
+   fetch()（實測過，見 web/cloudflare-worker/README.md），透過共用的
+   Cloudflare Worker 代理轉發（該 Worker 同時也代理別的服務，/realtime
+   /holiday 是專門加給這個網頁用的兩個路由）。留空會讓即時擷取功能
+   （LiveFeed/TradingCalendar）整個自動關閉，不影響其他功能。 */
+const TWSE_PROXY_BASE = 'https://dawn-disk-778c.sunneo529.workers.dev';
+const LIVE_POLL_MS      = 20000;      // 即時報價 refresh 間隔（毫秒）
+const MARKET_OPEN_MIN   = 9 * 60;     // 09:00（台北時間，分鐘數）
+const MARKET_CLOSE_MIN  = 13 * 60 + 30; // 13:30
+
 /* ── 月份字串工具（'YYYY-MM'），供 lazy-load 月份資料使用 ── */
 function monthLabel(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
 function shiftMonthLabel(label, delta) {
   const [y, m] = label.split('-').map(Number);
   return monthLabel(new Date(y, m - 1 + delta, 1));
+}
+
+/* ── 台北時區時間工具：用 Intl 而不是手動加減 offset，不受使用者瀏覽器
+   所在時區影響，同時也不用處理夏令時間（台灣沒有）。 ── */
+function taipeiParts(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short',
+  });
+  const p = Object.fromEntries(fmt.formatToParts(date).map(x => [x.type, x.value]));
+  return p;
+}
+function taipeiDateStr(date = new Date()) {
+  const p = taipeiParts(date);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function taipeiMinutesOfDay(date = new Date()) {
+  const p = taipeiParts(date);
+  return (+p.hour) * 60 + (+p.minute);
+}
+function taipeiIsWeekend(dateStr) {
+  // 只需要「這個西元日期是星期幾」這個跟時區無關的行事曆事實，直接用
+  // Date.UTC 把 Y-M-D 三個數字當成日期本身算星期幾即可，不要再套用
+  // +08:00 offset —— 那樣算的是「台北午夜那個瞬間」的 UTC 日期，午夜
+  // 前後會因為時差差一天，算出來的星期也會整個錯位。
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return dow === 0 || dow === 6;
 }
 
 /* ── Client-side schema (mirrors db/schema.sql for the tables the web app needs) ── */
@@ -1045,6 +1084,76 @@ const LockList = (() => {
   function getAsOfDate() { return data?.as_of_date || null; }
 
   return { ensureLoaded, getInfo, getByDirection, getAsOfDate };
+})();
+
+/* ════════════════════════════════════════
+   TRADING CALENDAR  (是否為台灣證交所交易日)
+   透過 Cloudflare Worker 代理抓 TWSE 休市日曆（openapi.twse.com.tw 本身沒有
+   CORS header，見 TWSE_PROXY_BASE 註解），快取 IndexedDB 20 小時。抓不到時
+   退回「只排除週六日」的保守判斷 —— 這只是「要不要嘗試即時擷取」的前置
+   篩選，真正的資料正確性另外由 LiveFeed 檢查證交所回應裡的日期欄位把關，
+   所以就算日曆偶爾誤判也不影響資料正確性，只是白跑一次無害的查詢。
+   ════════════════════════════════════════ */
+const TradingCalendar = (() => {
+  const CACHE_KEY = 'holiday_v1';
+  const CACHE_TTL_MS = 20 * 3600 * 1000; // 20小時，一天最多重抓一次
+  let holidaySet = new Set();      // 'YYYY-MM-DD' 明確為休市日
+  let extraTradingSet = new Set(); // 'YYYY-MM-DD' 明確標示「有交易」的日子（例如補行情）
+  let loaded = false;
+
+  function rocToIso(rocDateStr) {
+    // TWSE 休市日曆用民國年，例如 '1150101' -> 民國115年 -> 西元2026年
+    const y = parseInt(rocDateStr.slice(0, 3), 10) + 1911;
+    return `${y}-${rocDateStr.slice(3, 5)}-${rocDateStr.slice(5, 7)}`;
+  }
+
+  function isNonTradingEntry(item) {
+    const text = (item.Name || '') + (item.Description || '');
+    if (/開始交易|最後交易/.test(text)) return false; // 敘述雖然提到假期，但這天本身仍正常交易
+    return true; // 休市日曆裡其餘項目一律視為非交易日（保守判斷）
+  }
+
+  function applyList(list) {
+    holidaySet = new Set();
+    extraTradingSet = new Set();
+    for (const item of list || []) {
+      if (!item.Date) continue;
+      const iso = rocToIso(item.Date);
+      if (isNonTradingEntry(item)) holidaySet.add(iso);
+      else extraTradingSet.add(iso);
+    }
+  }
+
+  async function ensureLoaded() {
+    if (loaded || !TWSE_PROXY_BASE) return;
+    let cached = null;
+    try { cached = await IDB.get('meta', CACHE_KEY); } catch {}
+    if (cached && cached.fetchedAt && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) {
+      applyList(cached.list);
+      loaded = true;
+      return;
+    }
+    try {
+      const res = await fetch(TWSE_PROXY_BASE + '/holiday', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const list = await res.json();
+      applyList(list);
+      IDB.set('meta', CACHE_KEY, { list, fetchedAt: Date.now() }).catch(() => {});
+    } catch (e) {
+      console.warn('休市日曆載入失敗，改用「只排除週末」的保守判斷：', e.message);
+      if (cached) applyList(cached.list); // 舊快取也比完全沒有好
+    }
+    loaded = true;
+  }
+
+  function isTradingDay(dateStr) {
+    if (extraTradingSet.has(dateStr)) return true;
+    if (taipeiIsWeekend(dateStr)) return false;
+    if (holidaySet.has(dateStr)) return false;
+    return true;
+  }
+
+  return { ensureLoaded, isTradingDay };
 })();
 
 /* ════════════════════════════════════════
@@ -1597,7 +1706,21 @@ const DBMgr = (() => {
   }
 
   function getStockInfo(code) {
-    return query('SELECT stock_code, stock_name FROM stocks WHERE stock_code=?', [code])[0] || null;
+    return query('SELECT stock_code, stock_name, market FROM stocks WHERE stock_code=?', [code])[0] || null;
+  }
+
+  /* ── LiveFeed 用：本地是否已有某股某日的資料，以及把即時報價寫回同一張
+     daily_prices 表（跟每日排程寫入的表/PK完全一樣，官方資料到了會自然
+     REPLACE 掉這裡寫的暫時值，見 web/cloudflare-worker/README.md 的說明）。 ── */
+  function hasDailyRow(code, dateStr) {
+    return query('SELECT 1 FROM daily_prices WHERE stock_code=? AND trade_date=? LIMIT 1', [code, dateStr]).length > 0;
+  }
+  function upsertLiveDailyRow(code, row) {
+    run(
+      'INSERT OR REPLACE INTO daily_prices (stock_code, trade_date, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?)',
+      [code, row.trade_date, row.open, row.high, row.low, row.close, row.volume]
+    );
+    schedulePersist();
   }
 
   function getPriceHistory(code, limit = 250) {
@@ -1651,9 +1774,121 @@ const DBMgr = (() => {
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
     getMarketIndexHistory, getMarketIndexLatest,
-    getLatestDate,
+    getLatestDate, hasDailyRow, upsertLiveDailyRow,
     isReady: () => !!db,
   };
+})();
+
+/* ════════════════════════════════════════
+   LIVE FEED  (盤中即時擷取，補齊本地還沒有的當天資料)
+   在每次排程的官方資料落地之間（例如每日12:10的daily github更新）、收盤
+   前，如果使用者正在看的這檔股票本地還沒有今天的資料，就直接向證交所
+   （透過 Cloudflare Worker 代理）要當下報價，寫進跟官方資料完全一樣的
+   daily_prices 表／PK。對網頁來說，證交所即時行情是一份「runtime feed」，
+   排程管線是「long-term feed」，兩者寫入的目標一致（同一張表、同一組
+   PK），官方資料落地後會用 INSERT OR REPLACE 自然覆蓋掉這裡寫的暫時值，
+   不需要額外的「這筆是不是即時資料」欄位或遷移。
+
+   只在下列條件「全部成立」時才會嘗試：
+     - 已設定 TWSE_PROXY_BASE（沒設就整個功能關閉，見該常數註解）
+     - 台北時間在開盤時段內（09:00–13:30，見 MARKET_OPEN_MIN/CLOSE_MIN）
+     - TradingCalendar 判斷今天是交易日
+     - 本地還沒有這檔股票今天的資料，或者「今天的資料是 LiveFeed 自己
+       剛寫的」（liveWrittenKeys 追蹤，只存在記憶體，不影響本地DB結構）
+   ════════════════════════════════════════ */
+const LiveFeed = (() => {
+  let timer = null;
+  let activeCode = null;
+  let onLiveUpdateCb = null;
+  const liveWrittenKeys = new Set(); // `${code}|${date}` — 這個 code+日期是 LiveFeed 自己寫進去的
+
+  function marketOpenNow() {
+    const mins = taipeiMinutesOfDay();
+    return mins >= MARKET_OPEN_MIN && mins <= MARKET_CLOSE_MIN;
+  }
+
+  function eligible(code) {
+    if (!TWSE_PROXY_BASE || !code) return false;
+    if (!marketOpenNow()) return false;
+    const today = taipeiDateStr();
+    if (!TradingCalendar.isTradingDay(today)) return false;
+    if (!DBMgr.hasDailyRow(code, today)) return true;
+    return liveWrittenKeys.has(code + '|' + today);
+  }
+
+  function num(v) {
+    const n = (v == null || v === '' || v === '-') ? NaN : parseFloat(v);
+    return isNaN(n) ? null : n;
+  }
+
+  /* 解析 MIS 即時行情回應（見 web/cloudflare-worker/README.md 的欄位說明）。
+     非開盤時段查詢會拿到「上一個交易日收盤時的最後報價」而不是空值，
+     所以一定要檢查回應裡的日期欄位(d)是不是今天，不是的話視為沒有資料。 */
+  async function fetchQuote(code, market) {
+    const prefix = market === 'TPEx' ? 'otc' : 'tse';
+    const url = `${TWSE_PROXY_BASE}/realtime?ex_ch=${prefix}_${code}.tw`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const item = data.msgArray && data.msgArray[0];
+    if (!item) return null;
+
+    const d = item.d;
+    const iso = (d && d.length === 8) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null;
+    if (iso !== taipeiDateStr()) return null;
+
+    const open = num(item.o), close = num(item.z) ?? num(item.oz);
+    if (open == null || close == null) return null;
+    const high = num(item.h), low = num(item.l);
+    const volume = num(item.v); // 單位是「張」(1000股)，跟本地 daily_prices.volume 的單位（股）換算
+
+    return {
+      trade_date: iso, open, close,
+      high: high != null ? Math.max(high, open, close) : Math.max(open, close),
+      low:  low  != null ? Math.min(low,  open, close) : Math.min(open, close),
+      volume: volume != null ? Math.round(volume * 1000) : 0,
+    };
+  }
+
+  async function refresh(code, market) {
+    try {
+      const row = await fetchQuote(code, market);
+      if (!row) return false;
+      DBMgr.upsertLiveDailyRow(code, row);
+      liveWrittenKeys.add(code + '|' + row.trade_date);
+      return true;
+    } catch (e) {
+      console.warn('即時報價擷取失敗：', e.message);
+      return false;
+    }
+  }
+
+  function start(code, market) {
+    stop();
+    if (!eligible(code)) return;
+    activeCode = code;
+    const tick = async () => {
+      if (activeCode !== code) return;
+      if (document.visibilityState !== 'hidden') {
+        const got = await refresh(code, market);
+        if (got && activeCode === code) onLiveUpdateCb?.(code, taipeiDateStr());
+      }
+      if (activeCode !== code || !eligible(code)) { if (activeCode === code) stop(); return; }
+      timer = setTimeout(tick, LIVE_POLL_MS);
+    };
+    tick();
+  }
+
+  function stop() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    activeCode = null;
+  }
+
+  function isActive(code) { return activeCode === code; }
+  function setOnLiveUpdate(cb) { onLiveUpdateCb = cb; }
+
+  return { start, stop, eligible, isActive, setOnLiveUpdate };
 })();
 
 /* ════════════════════════════════════════
@@ -1737,6 +1972,7 @@ const Chart = (() => {
   let onZoomChangeCb = null; // app-level hook: fires after zoom/pan changes, so more history can be fetched on demand
   let onInfoChangeCb = null; // app-level hook: fires with the referenced candle's data for the fixed info bar
   let lastStep   = 1;        // px-per-candle from the most recent draw(), used to convert drag distance to candle count
+  let liveDate   = null;     // trade_date of the still-forming "today" candle (LiveFeed), or null
 
   const WEIGHT = { kline: 3, volume: 1.2, indicator: 1.5 };
 
@@ -1845,6 +2081,7 @@ const Chart = (() => {
 
   function setData(rows, opts = {}) {
     fullData = rows;
+    liveDate = opts.liveDate || null;
     aggregate();
     recompute();
     if (!opts.preserveView) {
@@ -2074,6 +2311,17 @@ const Chart = (() => {
       ctx.strokeStyle = col; ctx.lineWidth = 1;
       ctx.fillRect(cx - candleW / 2, y1, candleW, bh);
       ctx.strokeRect(cx - candleW / 2, y1, candleW, bh);
+
+      /* 即時擷取、還在成形中的「今天」K棒：用虛線外框標示，避免使用者
+         誤以為是官方收盤後的正式資料（見 LiveFeed 模組）。 */
+      if (liveDate && d.trade_date === liveDate) {
+        ctx.save();
+        ctx.setLineDash([3, 2]);
+        ctx.strokeStyle = tok('--acc');
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(cx - candleW / 2 - 1, y1 - 1, candleW + 2, bh + 2);
+        ctx.restore();
+      }
 
       const interval = Math.max(1, Math.floor(N / 8));
       const globalI = i + realOffset;
@@ -2708,9 +2956,24 @@ function loadUsMarket() {
   renderPage();
 }
 
+/* liveBadge: true 的時候在資訊列後面加上「🔴即時」提示，表示這筆資料是
+   LiveFeed 剛從證交所抓回來的當天即時報價，還不是官方收盤後的正式資料。 */
+function renderChartInfoLine(history, liveBadge) {
+  if (!history.length) { R.chartInfo.textContent = ''; return; }
+  const last = history.at(-1);
+  const prev = history.at(-2);
+  const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
+  const sign = chg > 0 ? '+' : '';
+  const base = chg != null
+    ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
+    : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
+  R.chartInfo.textContent = base + (liveBadge ? '　🔴即時' : '');
+}
+
 function selectMarketIndex(code) {
   currentChartSource = { type: 'index', code };
   sourceExhausted = false;
+  LiveFeed.stop(); // 即時擷取目前只支援個股，不支援大盤指數
 
   R.stockTbody.querySelectorAll('tr').forEach(tr =>
     tr.classList.toggle('selected', tr.dataset.code === code)
@@ -2723,18 +2986,7 @@ function selectMarketIndex(code) {
   Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = DBMgr.getMarketIndexHistory(code, 250);
   Chart.setData(history);
-
-  if (history.length) {
-    const last = history.at(-1);
-    const prev = history.at(-2);
-    const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
-    const sign = chg > 0 ? '+' : '';
-    R.chartInfo.textContent = chg != null
-      ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
-      : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
-  } else {
-    R.chartInfo.textContent = '';
-  }
+  renderChartInfoLine(history, false);
 
   switchMobileTab('chart');
   setDrawerOpen(false);
@@ -2759,18 +3011,11 @@ function selectStock(code) {
   Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = DBMgr.getPriceHistory(code, 250);
   Chart.setData(history);
+  renderChartInfoLine(history, false);
 
-  if (history.length) {
-    const last = history.at(-1);
-    const prev = history.at(-2);
-    const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
-    const sign  = chg > 0 ? '+' : '';
-    R.chartInfo.textContent = chg != null
-      ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
-      : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
-  } else {
-    R.chartInfo.textContent = '';
-  }
+  /* 收盤前，如果本地還沒有這檔股票今天的資料，就試著即時向證交所要
+     （見 LiveFeed 註解）；抓到會透過 setOnLiveUpdate 回呼重繪圖表。 */
+  LiveFeed.start(code, info?.market);
 
   /* mobile: picking a stock naturally means "now show me the chart" —
      switch tab (portrait) / close the drawer (landscape). No-op on desktop
@@ -3266,6 +3511,18 @@ async function main() {
   bindEvents();
   Chart.setOnZoomChange(maybeExpandHistory);
   Chart.setOnInfoChange(renderInfoBar);
+
+  /* 即時擷取：抓到新的即時報價就重繪圖表（見 LiveFeed 模組註解）。
+     TradingCalendar 提早開始載入休市日曆，不用等，反正 LiveFeed 真正
+     決定要不要寫入資料還是看證交所回應裡的日期欄位，日曆只是前置篩選。 */
+  LiveFeed.setOnLiveUpdate((code, dateStr) => {
+    if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return;
+    const history = DBMgr.getPriceHistory(code, 250);
+    Chart.setData(history, { preserveView: true, liveDate: dateStr });
+    renderChartInfoLine(history, true);
+    renderPage();
+  });
+  TradingCalendar.ensureLoaded().catch(() => {});
 
   /* restore theme */
   applyTheme(Settings.get('theme') || 'light');
