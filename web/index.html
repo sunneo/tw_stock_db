@@ -291,6 +291,24 @@ select:focus { outline: 2px solid var(--acc); }
 #chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
 #chart-info  { font-size: 12px; color: var(--txt2); }
 
+/* ── 桌面版 技術分析/走勢圖 分頁（手機版改用 #mobile-tabbar，見下方 media query） ── */
+#chart-mode-tabs {
+  display: flex; flex-shrink: 0;
+  border-bottom: 1px solid var(--bdr);
+  background: var(--bg1);
+}
+.chart-mode-tab {
+  padding: 7px 16px;
+  font-size: 13px; font-weight: 600;
+  color: var(--txt2);
+  background: transparent;
+  border: none; border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.chart-mode-tab.active { color: var(--acc); border-bottom-color: var(--acc); }
+.chart-mode-tab:hover:not(.active):not(.disabled) { background: var(--bg3); }
+.chart-mode-tab.disabled { color: var(--txt2); opacity: .4; cursor: default; }
+
 /* ── Fixed chart info bar (replaces the old floating tooltip) ── */
 #chart-info-bar {
   display: flex;
@@ -307,6 +325,7 @@ select:focus { outline: 2px solid var(--acc); }
 #chart-info-bar .info-item { color: var(--txt2); white-space: nowrap; }
 #chart-info-bar .info-item b { font-weight: 700; }
 #chart-info-bar .ma-s b { color: #f59e0b; }
+#chart-info-bar .ma-sm b { color: #10b981; }
 #chart-info-bar .ma-m b { color: #3b82f6; }
 #chart-info-bar .ma-l b { color: #a855f7; }
 #chart-info-bar .kd-k b { color: #3b82f6; }
@@ -315,6 +334,8 @@ select:focus { outline: 2px solid var(--acc); }
 #chart-info-bar .macd-dif b { color: #3b82f6; }
 #chart-info-bar .macd-macd b { color: #f59e0b; }
 #chart-info-bar .rsv b { color: var(--acc); }
+#chart-info-bar .rsi-fast b { color: #14b8a6; }
+#chart-info-bar .rsi-slow b { color: #f97316; }
 #chart-wrap  { flex: 1; position: relative; overflow: hidden; }
 #main-chart  { display: block; cursor: grab; touch-action: pan-y; }
 
@@ -535,6 +556,7 @@ select:focus { outline: 2px solid var(--acc); }
    ════════════════════════════════════════ */
 @media (max-width: 1023px) and (orientation: portrait) {
   #mobile-tabbar { display: flex; flex-shrink: 0; border-bottom: 1px solid var(--bdr); }
+  #chart-mode-tabs { display: none; } /* 手機版分頁已經在 #mobile-tabbar（清單/技術分析/走勢圖）*/
   #resize-handle { display: none; }
 
   #main { flex-direction: column; }
@@ -615,7 +637,8 @@ select:focus { outline: 2px solid var(--acc); }
 <!-- ══ MOBILE TAB BAR (portrait 手機/平板才顯示：清單/圖表 分頁切換) ══ -->
 <div id="mobile-tabbar">
   <button class="mtab-btn active" id="mtab-list" data-tab="list">📋 清單</button>
-  <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 圖表</button>
+  <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 技術分析</button>
+  <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -678,6 +701,12 @@ select:focus { outline: 2px solid var(--acc); }
 
   <!-- chart -->
   <div id="chart-area">
+    <!-- 桌面版分頁：技術分析(日K為主的圖表) / 走勢圖(當日5/20/60分K，見 IntradayFeed)。
+         手機版改用 #mobile-tabbar 的三個分頁，這排在手機版隱藏，見 CSS。 -->
+    <div id="chart-mode-tabs">
+      <button class="chart-mode-tab active" id="mode-tab-daily" data-mode="daily">技術分析</button>
+      <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
+    </div>
     <div id="chart-header">
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
@@ -690,10 +719,12 @@ select:focus { outline: 2px solid var(--acc); }
           <button class="seg-btn" data-period="month">月線</button>
           <button class="seg-btn" data-period="quarter">季線</button>
         </div>
+        <div class="seg-group hidden" id="intraday-period-toggle"></div>
         <div class="seg-group" id="indicator-toggle">
           <button class="seg-btn active" data-indicator="kd">KD</button>
           <button class="seg-btn" data-indicator="macd">MACD</button>
           <button class="seg-btn" data-indicator="rsv">RSV</button>
+          <button class="seg-btn" data-indicator="rsi">RSI</button>
         </div>
       </div>
     </div>
@@ -716,15 +747,38 @@ select:focus { outline: 2px solid var(--acc); }
     <div class="modal-body">
       <div class="modal-sidebar">
         <div class="modal-cat active" data-cat="ma">均線週期</div>
+        <div class="modal-cat" data-cat="indicators">指標參數</div>
+        <div class="modal-cat" data-cat="intraday">走勢圖</div>
         <div class="modal-cat" data-cat="strong">強勢股門檻</div>
         <div class="modal-cat" data-cat="display">顯示設定</div>
       </div>
       <div class="modal-content">
         <div class="modal-pane" data-pane="ma">
-          <h3>均線週期（短均 / 中均 / 長均）</h3>
-          <label>短期 MA <input type="number" id="ma-short" min="1" max="250"></label>
-          <label>中期 MA <input type="number" id="ma-mid" min="1" max="250"></label>
-          <label>長期 MA <input type="number" id="ma-long" min="1" max="250"></label>
+          <h3>均線週期（短期 / 短中期 / 中期 / 長期）</h3>
+          <label>短期 <input type="number" id="ma-short" min="1" max="250"></label>
+          <label>短中期 <input type="number" id="ma-shortmid" min="1" max="250"></label>
+          <label>中期 <input type="number" id="ma-mid" min="1" max="250"></label>
+          <label>長期 <input type="number" id="ma-long" min="1" max="250"></label>
+        </div>
+        <div class="modal-pane hidden" data-pane="indicators">
+          <h3>KD</h3>
+          <label>RSV天數 <input type="number" id="kd-rsv-days" min="1" max="100"></label>
+          <label>K值平滑係數 <input type="number" id="kd-k-smooth" min="1" max="20"></label>
+          <label>D值平滑係數 <input type="number" id="kd-d-smooth" min="1" max="20"></label>
+          <h3>MACD</h3>
+          <label>短期EMA <input type="number" id="macd-ema-short" min="1" max="100"></label>
+          <label>長期EMA <input type="number" id="macd-ema-long" min="1" max="200"></label>
+          <label>DIF平滑天數 <input type="number" id="macd-dif-period" min="1" max="100"></label>
+          <h3>RSI</h3>
+          <label>快線（短線趨勢） <input type="number" id="rsi-fast" min="1" max="100"></label>
+          <label>慢線（短線支撐） <input type="number" id="rsi-slow" min="1" max="100"></label>
+        </div>
+        <div class="modal-pane hidden" data-pane="intraday">
+          <h3>走勢圖級距（分鐘）</h3>
+          <label>第一檔 <input type="number" id="intraday-min-1" min="1" max="240"></label>
+          <label>第二檔 <input type="number" id="intraday-min-2" min="1" max="240"></label>
+          <label>第三檔 <input type="number" id="intraday-min-3" min="1" max="240"></label>
+          <p class="modal-hint">走勢圖只累積「本次開啟網頁後」證交所回傳的即時報價，不是官方逐筆歷史，所以剛切換過去、或剛開盤時可能還沒有資料，屬於正常現象。</p>
         </div>
         <div class="modal-pane hidden" data-pane="strong">
           <h3>目前原則（型態訊號評分）</h3>
@@ -940,17 +994,38 @@ const Settings = (() => {
   function defaults() {
     return { theme:'light', view:'sector', sectorId:null,
              selectedStock:null, watchlist:[], lastDailyDate:null,
-             maPeriods: { short:5, mid:20, long:60 },
-             chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' — the single switchable bottom panel
+             maPeriods: { short:5, shortMid:10, mid:20, long:60 },
+             kdParams:   { rsvDays:5, kSmooth:3, dSmooth:3 },
+             macdParams: { emaShort:10, emaLong:20, difPeriod:10 },
+             rsiParams:  { fast:3, slow:6 },
+             chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' | 'rsi' — the single switchable bottom panel
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
+             chartMode: 'daily',     // 'daily'（技術分析）| 'intraday'（走勢圖）
+             intradayIntervals: [5, 20, 60], // 走勢圖分頁的三個級距（分鐘），可在設定裡調整
+             intradayPeriod: 5,      // 走勢圖目前選的級距（分鐘）
              strongMethod: 'current',
              strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 },
              memos: {} };  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
   }
   function load() {
-    try { d = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
-    catch { d = defaults(); }
+    try {
+      const def = defaults();
+      const stored = JSON.parse(localStorage.getItem(KEY) || '{}');
+      /* Object.assign(target, ...) 會就地修改並回傳 target，target 不能是 def
+         本身——不然下面幾行想拿「乾淨的預設巢狀物件」來補欄位時，def.maPeriods
+         其實已經被上面這行改成 stored.maPeriods 了，白補。target 用一個全新的
+         {} 才能讓 def 保持原樣，後面的逐欄位合併才補得到東西。 */
+      d = Object.assign({}, def, stored);
+      /* Object.assign 對巢狀物件是整包覆蓋、不是遞迴合併：舊資料裡的 maPeriods
+         沒有 shortMid 之類新增欄位時，整個 maPeriods 會被舊資料整包蓋掉，新欄位
+         就消失變成 undefined。這裡針對會巢狀存放參數的欄位個別補回預設值。 */
+      d.maPeriods    = Object.assign({}, def.maPeriods,    stored.maPeriods);
+      d.kdParams     = Object.assign({}, def.kdParams,     stored.kdParams);
+      d.macdParams   = Object.assign({}, def.macdParams,   stored.macdParams);
+      d.rsiParams    = Object.assign({}, def.rsiParams,    stored.rsiParams);
+      d.strongParams = Object.assign({}, def.strongParams, stored.strongParams);
+    } catch { d = defaults(); }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} }
   function get(k) { return d[k]; }
@@ -1821,29 +1896,33 @@ const LiveFeed = (() => {
     return isNaN(n) ? null : n;
   }
 
-  /* 解析 MIS 即時行情回應（見 web/cloudflare-worker/README.md 的欄位說明）。
-     非開盤時段查詢會拿到「上一個交易日收盤時的最後報價」而不是空值，
-     所以一定要檢查回應裡的日期欄位(d)是不是今天，不是的話視為沒有資料。 */
-  async function fetchQuote(code, market) {
+  /* 抓 MIS 即時行情原始回應（見 web/cloudflare-worker/README.md 的欄位說明）。
+     只抓一次、原始 item 同時餵給「今天的日K」跟「走勢圖的逐筆」兩邊用，
+     不用因為兩種用途各打一次證交所。 */
+  async function fetchRawItem(code, market) {
     const prefix = market === 'TPEx' ? 'otc' : 'tse';
     const url = `${TWSE_PROXY_BASE}/realtime?ex_ch=${prefix}_${code}.tw`;
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    const item = data.msgArray && data.msgArray[0];
-    if (!item) return null;
+    return data.msgArray && data.msgArray[0];
+  }
 
+  /* 非開盤時段查詢會拿到「上一個交易日收盤時的最後報價」而不是空值，所以
+     一定要檢查回應裡的日期欄位(d)是不是今天，不是的話視為沒有資料。 */
+  function itemDateIso(item) {
     const d = item.d;
-    const iso = (d && d.length === 8) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null;
-    if (iso !== taipeiDateStr()) return null;
+    return (d && d.length === 8) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null;
+  }
 
+  function parseDailyRow(item) {
+    if (itemDateIso(item) !== taipeiDateStr()) return null;
     const open = num(item.o), close = num(item.z) ?? num(item.oz);
     if (open == null || close == null) return null;
     const high = num(item.h), low = num(item.l);
     const volume = num(item.v); // 單位是「張」(1000股)，跟本地 daily_prices.volume 的單位（股）換算
-
     return {
-      trade_date: iso, open, close,
+      trade_date: itemDateIso(item), open, close,
       high: high != null ? Math.max(high, open, close) : Math.max(open, close),
       low:  low  != null ? Math.min(low,  open, close) : Math.min(open, close),
       volume: volume != null ? Math.round(volume * 1000) : 0,
@@ -1852,11 +1931,21 @@ const LiveFeed = (() => {
 
   async function refresh(code, market) {
     try {
-      const row = await fetchQuote(code, market);
-      if (!row) return false;
-      DBMgr.upsertLiveDailyRow(code, row);
-      liveWrittenKeys.add(code + '|' + row.trade_date);
-      return true;
+      const item = await fetchRawItem(code, market);
+      if (!item) return false;
+      let updated = false;
+
+      const row = parseDailyRow(item);
+      if (row) {
+        DBMgr.upsertLiveDailyRow(code, row);
+        liveWrittenKeys.add(code + '|' + row.trade_date);
+        updated = true;
+      }
+      if (itemDateIso(item) === taipeiDateStr()) {
+        IntradayFeed.record(code, item);
+        updated = true;
+      }
+      return updated;
     } catch (e) {
       console.warn('即時報價擷取失敗：', e.message);
       return false;
@@ -1889,6 +1978,89 @@ const LiveFeed = (() => {
   function setOnLiveUpdate(cb) { onLiveUpdateCb = cb; }
 
   return { start, stop, eligible, isActive, setOnLiveUpdate };
+})();
+
+/* ════════════════════════════════════════
+   INTRADAY FEED  (走勢圖分頁：把 LiveFeed 既有的輪詢原始回應順便累積成
+   當天的逐筆走勢，分桶成 5/20/60分K)
+
+   證交所沒有公開的個股歷史分K API（見 web/cloudflare-worker/README.md 的
+   CORS調查），這裡能畫出來的走勢圖，就只是「這次打開網頁之後、LiveFeed
+   實際輪詢到的那些取樣點」，不是官方逐筆資料，開盤後才打開網頁的話，
+   之前那段時間本來就沒有資料可補，這是先天限制，不是bug。
+   ════════════════════════════════════════ */
+const IntradayFeed = (() => {
+  let ticksByCode = {}; // { [code]: [{t:'HH:MM:SS', price, volCum}, ...] } —— 只保留「今天」
+  let recordedDate = null;
+
+  function resetIfNewDay(dateStr) {
+    if (recordedDate !== dateStr) { ticksByCode = {}; recordedDate = dateStr; }
+  }
+
+  function record(code, item) {
+    const today = taipeiDateStr();
+    resetIfNewDay(today);
+    const t = item.t; // 最近成交時間 'HH:MM:SS'
+    if (!t) return;
+    const price = parseFloat(item.z);
+    if (isNaN(price)) return;
+    const volCumRaw = parseFloat(item.v); // 累計成交量（張）
+    const volCum = isNaN(volCumRaw) ? null : volCumRaw;
+
+    if (!ticksByCode[code]) ticksByCode[code] = [];
+    const arr = ticksByCode[code];
+    const last = arr[arr.length - 1];
+    if (last && last.t === t) {
+      last.price = price;
+      if (volCum != null) last.volCum = volCum;
+    } else {
+      arr.push({ t, price, volCum: volCum != null ? volCum : (last ? last.volCum : 0) });
+    }
+    IDB.set('meta', 'intraday_' + code + '_' + today, arr).catch(() => {});
+  }
+
+  /* 切到走勢圖分頁/選股時呼叫：把今天已經記錄過的 tick（可能是稍早這個分頁
+     開過、或重新整理過頁面）從 IndexedDB 撈回來，避免每次都要重新累積。 */
+  async function ensureLoadedFor(code) {
+    const today = taipeiDateStr();
+    resetIfNewDay(today);
+    if (ticksByCode[code]) return;
+    try {
+      const cached = await IDB.get('meta', 'intraday_' + code + '_' + today);
+      if (cached) ticksByCode[code] = cached;
+    } catch {}
+  }
+
+  /* 回傳「每一筆輪詢取樣」對應的最細單位 pseudo-candle（trade_date 帶完整
+     時分秒），交給 Chart 自己的 aggregate()/periodKeyOf('intraday') 依
+     intradayMinutes 分桶成 5/20/60分K —— 跟日K交給 Chart 自己分週/月/季線
+     是同一套機制，換級距不用重新處理這裡的資料，Chart.setIntradayMinutes()
+     會直接對同一份 fullData 重新分桶。
+
+     第一筆 tick 的成交量不算 delta（沒有前一筆基準，硬算會把「開始記錄前
+     已經成交的量」全部灌到第一筆，量會爆量失真），從第二筆開始才用累計
+     量的差值當該筆的成交量。 */
+  function getTickRows(code) {
+    const arr = ticksByCode[code] || [];
+    if (!arr.length) return [];
+    const today = recordedDate;
+    const rows = [];
+    let prevVol = null;
+    for (const tick of arr) {
+      const deltaVol = prevVol == null ? 0 : Math.max(0, (tick.volCum || 0) - prevVol);
+      prevVol = tick.volCum != null ? tick.volCum : prevVol;
+      rows.push({
+        trade_date: `${today}T${tick.t}`,
+        open: tick.price, high: tick.price, low: tick.price, close: tick.price,
+        volume: deltaVol * 1000, // 張 -> 股，跟其他地方的成交量單位一致
+      });
+    }
+    return rows;
+  }
+
+  function hasData(code) { return (ticksByCode[code] || []).length > 0; }
+
+  return { record, ensureLoadedFor, getTickRows, hasData };
 })();
 
 /* ════════════════════════════════════════
@@ -1927,27 +2099,50 @@ function computeEMAalpha(values, alpha) {
   return out;
 }
 
-function computeMACD(closes) {
-  const ema12 = computeEMA(closes, 12);
-  const ema26 = computeEMA(closes, 26);
-  const dif = closes.map((_, i) => (ema12[i] != null && ema26[i] != null) ? ema12[i] - ema26[i] : null);
-  const macd = computeEMAalpha(dif, 2 / 10); // span=9 -> alpha = 2/(9+1)
+function computeMACD(closes, emaShort = 12, emaLong = 26, difPeriod = 9) {
+  const emaS = computeEMA(closes, emaShort);
+  const emaL = computeEMA(closes, emaLong);
+  const dif = closes.map((_, i) => (emaS[i] != null && emaL[i] != null) ? emaS[i] - emaL[i] : null);
+  const macd = computeEMAalpha(dif, 2 / (difPeriod + 1));
   const osc = dif.map((v, i) => (v != null && macd[i] != null) ? v - macd[i] : null);
   return { dif, macd, osc };
 }
 
-function computeKD(highs, lows, closes, period = 9) {
+function computeKD(highs, lows, closes, rsvDays = 9, kSmooth = 3, dSmooth = 3) {
   const n = closes.length;
   const rsv = new Array(n).fill(50);
   for (let i = 0; i < n; i++) {
-    if (i < period - 1) { rsv[i] = 50; continue; }
-    const hi = Math.max(...highs.slice(i - period + 1, i + 1));
-    const lo = Math.min(...lows.slice(i - period + 1, i + 1));
+    if (i < rsvDays - 1) { rsv[i] = 50; continue; }
+    const hi = Math.max(...highs.slice(i - rsvDays + 1, i + 1));
+    const lo = Math.min(...lows.slice(i - rsvDays + 1, i + 1));
     rsv[i] = (hi === lo) ? 50 : (closes[i] - lo) / (hi - lo) * 100;
   }
-  const k = computeEMAalpha(rsv, 1 / 3);
-  const d = computeEMAalpha(k, 1 / 3);
+  const k = computeEMAalpha(rsv, 1 / kSmooth);
+  const d = computeEMAalpha(k, 1 / dSmooth);
   return { rsv, k, d };
+}
+
+/* mirrors analysis/compute_indicators.py::compute_rsi (Wilder smoothing, alpha=1/period).
+   index 0 有意留 null（跟 pandas 版一樣，diff() 在第一筆沒有前一筆可比較），
+   computeEMAalpha 會把 null 當成「還沒開始」處理，直到第一筆真正的漲跌出現。 */
+function computeRSI(closes, period) {
+  const n = closes.length;
+  const gains = new Array(n).fill(null), losses = new Array(n).fill(null);
+  for (let i = 1; i < n; i++) {
+    const delta = closes[i] - closes[i - 1];
+    gains[i]  = Math.max(delta, 0);
+    losses[i] = Math.max(-delta, 0);
+  }
+  const avgGain = computeEMAalpha(gains, 1 / period);
+  const avgLoss = computeEMAalpha(losses, 1 / period);
+  const out = new Array(n).fill(50);
+  for (let i = 0; i < n; i++) {
+    if (avgGain[i] == null || avgLoss[i] == null) { out[i] = 50; continue; }
+    if (avgLoss[i] === 0) { out[i] = avgGain[i] === 0 ? 50 : 100; continue; }
+    const rs = avgGain[i] / avgLoss[i];
+    out[i] = 100 - 100 / (1 + rs);
+  }
+  return out;
 }
 
 /* ════════════════════════════════════════
@@ -1958,11 +2153,17 @@ const Chart = (() => {
   const ctx    = canvas.getContext('2d');
 
   let fullData   = [];   // raw daily price history for current stock/index (from DBMgr)
-  let periodData = [];   // fullData aggregated into the active period (day/week/month/quarter)
+  let periodData = [];   // fullData aggregated into the active period (day/week/month/quarter/intraday)
   let period     = 'day';
-  let ind = { maS: [], maM: [], maL: [], macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], kdJ: [], rsv: [] };
-  let maPeriods  = { short: 5, mid: 20, long: 60 };
-  let indicator  = 'kd';     // 'kd' | 'macd' | 'rsv' — single switchable bottom panel (K線+成交量 always shown)
+  let intradayMinutes = 5; // used when period === 'intraday'（見走勢圖分頁）
+  let ind = { maS: [], maSM: [], maM: [], maL: [],
+              macdDif: [], macdMacd: [], macdOsc: [], kdK: [], kdD: [], kdJ: [], rsv: [],
+              rsiFast: [], rsiSlow: [] };
+  let maPeriods   = { short: 5, shortMid: 10, mid: 20, long: 60 };
+  let kdParams    = { rsvDays: 5, kSmooth: 3, dSmooth: 3 };
+  let macdParams  = { emaShort: 10, emaLong: 20, difPeriod: 10 };
+  let rsiParams   = { fast: 3, slow: 6 };
+  let indicator  = 'kd';     // 'kd' | 'macd' | 'rsv' | 'rsi' — single switchable bottom panel (K線+成交量 always shown)
   let visibleCount = null;   // zoom level (candle count in periodData units); null = compute default
   let viewEnd    = null;     // index into periodData of the rightmost visible candle; null = anchor to latest
   let cross      = null;     // {x, y} — crosshair position (click/tap only; no floating tooltip box)
@@ -2003,6 +2204,16 @@ const Chart = (() => {
   /* ── period aggregation ── */
   function periodKeyOf(dateStr) {
     if (period === 'day') return dateStr;
+    if (period === 'intraday') {
+      // dateStr 是完整 ISO 時間戳（見 IntradayFeed.getBars），依「一天中的第幾分鐘」
+      // 分桶，不是依日曆日——走勢圖只會有同一天的資料，這樣分桶剛好對。
+      const t = new Date(dateStr);
+      const totalMin = t.getHours() * 60 + t.getMinutes();
+      const bucketMin = Math.floor(totalMin / intradayMinutes) * intradayMinutes;
+      const bh = String(Math.floor(bucketMin / 60)).padStart(2, '0');
+      const bm = String(bucketMin % 60).padStart(2, '0');
+      return `${dateStr.slice(0, 10)}T${bh}:${bm}`;
+    }
     const d = new Date(dateStr + 'T00:00:00');
     if (period === 'week') {
       const dow = (d.getDay() + 6) % 7; // Mon=0..Sun=6
@@ -2040,14 +2251,17 @@ const Chart = (() => {
     const closes = periodData.map(d => d.close);
     const highs  = periodData.map(d => d.high);
     const lows   = periodData.map(d => d.low);
-    ind.maS = computeSMA(closes, maPeriods.short);
-    ind.maM = computeSMA(closes, maPeriods.mid);
-    ind.maL = computeSMA(closes, maPeriods.long);
-    const m = computeMACD(closes);
+    ind.maS  = computeSMA(closes, maPeriods.short);
+    ind.maSM = computeSMA(closes, maPeriods.shortMid);
+    ind.maM  = computeSMA(closes, maPeriods.mid);
+    ind.maL  = computeSMA(closes, maPeriods.long);
+    const m = computeMACD(closes, macdParams.emaShort, macdParams.emaLong, macdParams.difPeriod);
     ind.macdDif = m.dif; ind.macdMacd = m.macd; ind.macdOsc = m.osc;
-    const kd = computeKD(highs, lows, closes, 9);
+    const kd = computeKD(highs, lows, closes, kdParams.rsvDays, kdParams.kSmooth, kdParams.dSmooth);
     ind.kdK = kd.k; ind.kdD = kd.d; ind.rsv = kd.rsv;
     ind.kdJ = kd.k.map((k, i) => (k != null && kd.d[i] != null) ? 3 * k - 2 * kd.d[i] : null);
+    ind.rsiFast = computeRSI(closes, rsiParams.fast);
+    ind.rsiSlow = computeRSI(closes, rsiParams.slow);
   }
 
   /* ── visible-window helpers ── */
@@ -2080,6 +2294,8 @@ const Chart = (() => {
   function needsMoreHistory() { return periodData.length > 0 && getVisibleStartIndex() <= 0; }
 
   function setData(rows, opts = {}) {
+    if (opts.period) period = opts.period;
+    if (opts.intradayMinutes) intradayMinutes = opts.intradayMinutes;
     fullData = rows;
     liveDate = opts.liveDate || null;
     aggregate();
@@ -2097,8 +2313,37 @@ const Chart = (() => {
     if (fullData.length) recompute();
     draw();
   }
+  function setKDParams(p) {
+    kdParams = { ...p };
+    if (fullData.length) recompute();
+    draw();
+  }
+  function setMACDParams(p) {
+    macdParams = { ...p };
+    if (fullData.length) recompute();
+    draw();
+  }
+  function setRSIParams(p) {
+    rsiParams = { ...p };
+    if (fullData.length) recompute();
+    draw();
+  }
 
   function setIndicator(k) { indicator = k; draw(); }
+
+  /* 走勢圖分頁用：切換 5/20/60 分鐘級距（period 本身不變，還是 'intraday'，
+     只是重新分桶），跟 setPeriod 分開是因為 setPeriod 對「period 沒變」會
+     直接 no-op，但這裡即使 period 一樣、intradayMinutes 變了還是要重繪。 */
+  function setIntradayMinutes(n) {
+    intradayMinutes = n;
+    if (period === 'intraday') {
+      aggregate();
+      recompute();
+      visibleCount = defaultVisibleCount(periodData);
+      viewEnd = null;
+      draw();
+    }
+  }
 
   function setFollowMouse(v) {
     followMouse = !!v;
@@ -2160,6 +2405,7 @@ const Chart = (() => {
   }
 
   function axisLabel(dateStr) {
+    if (period === 'intraday') return (dateStr || '').slice(11, 16); // 'YYYY-MM-DDTHH:MM...' -> 'HH:MM'
     if (period === 'month')   return (dateStr || '').slice(0, 7);
     if (period === 'quarter') {
       const [y, m] = (dateStr || '').split('-').map(Number);
@@ -2168,10 +2414,13 @@ const Chart = (() => {
     return (dateStr || '').slice(5);
   }
 
-  const MA_S_COL = '#f59e0b'; // amber
-  const MA_M_COL = '#3b82f6'; // blue
-  const MA_L_COL = '#a855f7'; // purple
-  const J_COL    = '#ec4899'; // pink, for KD's J line
+  const MA_S_COL  = '#f59e0b'; // amber
+  const MA_SM_COL = '#10b981'; // green, for the 短中期 MA
+  const MA_M_COL  = '#3b82f6'; // blue
+  const MA_L_COL  = '#a855f7'; // purple
+  const J_COL     = '#ec4899'; // pink, for KD's J line
+  const RSI_FAST_COL = '#14b8a6'; // teal
+  const RSI_SLOW_COL = '#f97316'; // orange
 
   function drawLine(points, getY, xOf, color, offset) {
     ctx.strokeStyle = color;
@@ -2195,11 +2444,13 @@ const Chart = (() => {
     return {
       trade_date: d.trade_date, open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume,
       maPeriods: { ...maPeriods },
-      ma: { short: ind.maS[idx], mid: ind.maM[idx], long: ind.maL[idx] },
+      ma: { short: ind.maS[idx], shortMid: ind.maSM[idx], mid: ind.maM[idx], long: ind.maL[idx] },
       indicator,
       kd:   { k: ind.kdK[idx], d: ind.kdD[idx], j: ind.kdJ[idx] },
       macd: { dif: ind.macdDif[idx], macd: ind.macdMacd[idx], osc: ind.macdOsc[idx] },
       rsv:  ind.rsv[idx],
+      rsi:  { fast: ind.rsiFast[idx], slow: ind.rsiSlow[idx] },
+      rsiParams: { ...rsiParams },
     };
   }
 
@@ -2252,6 +2503,7 @@ const Chart = (() => {
 
     const data  = periodData.slice(realStart, realStart + Math.max(0, realCount));
     const maS   = ind.maS.slice(realStart, realStart + Math.max(0, realCount));
+    const maSM  = ind.maSM.slice(realStart, realStart + Math.max(0, realCount));
     const maM   = ind.maM.slice(realStart, realStart + Math.max(0, realCount));
     const maL   = ind.maL.slice(realStart, realStart + Math.max(0, realCount));
     const mDif  = ind.macdDif.slice(realStart, realStart + Math.max(0, realCount));
@@ -2261,6 +2513,8 @@ const Chart = (() => {
     const kdD   = ind.kdD.slice(realStart, realStart + Math.max(0, realCount));
     const kdJ   = ind.kdJ.slice(realStart, realStart + Math.max(0, realCount));
     const rsv   = ind.rsv.slice(realStart, realStart + Math.max(0, realCount));
+    const rsiF  = ind.rsiFast.slice(realStart, realStart + Math.max(0, realCount));
+    const rsiS  = ind.rsiSlow.slice(realStart, realStart + Math.max(0, realCount));
     const realOffset = placeholderCols; // real data's slot-index starts here within the window
 
     /* allocate 3 fixed vertical regions: K線 / 成交量 / indicator */
@@ -2282,7 +2536,7 @@ const Chart = (() => {
     /* price scale (include visible MA lines so they never clip) */
     let minP = Infinity, maxP = -Infinity;
     for (const d of data) { if (d.high > maxP) maxP = d.high; if (d.low < minP) minP = d.low; }
-    for (const arr of [maS, maM, maL]) for (const v of arr) { if (v == null) continue; if (v > maxP) maxP = v; if (v < minP) minP = v; }
+    for (const arr of [maS, maSM, maM, maL]) for (const v of arr) { if (v == null) continue; if (v > maxP) maxP = v; if (v < minP) minP = v; }
     if (!Number.isFinite(minP)) { minP = 0; maxP = 1; }
     const pPad = (maxP - minP) * 0.06 || 1;
     minP -= pPad; maxP += pPad;
@@ -2331,6 +2585,7 @@ const Chart = (() => {
       }
     }
     drawLine(maS, pY, xOf, MA_S_COL, realOffset);
+    drawLine(maSM, pY, xOf, MA_SM_COL, realOffset);
     drawLine(maM, pY, xOf, MA_M_COL, realOffset);
     drawLine(maL, pY, xOf, MA_L_COL, realOffset);
 
@@ -2380,6 +2635,13 @@ const Chart = (() => {
       [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
       ctx.setLineDash([]);
       drawLine(rsv, iY, xOf, accCol, realOffset);
+    } else if (indicator === 'rsi') {
+      const iY = v => indTop + (1 - v / 100) * indH;
+      ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
+      [30, 70].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
+      ctx.setLineDash([]);
+      drawLine(rsiF, iY, xOf, RSI_FAST_COL, realOffset);
+      drawLine(rsiS, iY, xOf, RSI_SLOW_COL, realOffset);
     }
 
     /* ── "loading" placeholder for the not-yet-loaded portion of the window
@@ -2538,7 +2800,8 @@ const Chart = (() => {
   }, { passive: false });
 
   return {
-    setData, resize, setMAPeriods, setIndicator, setPeriod, setFollowMouse, setMoreHistoryAvailable,
+    setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
+    setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
@@ -2616,6 +2879,11 @@ const R = {
   mobileTabbar:    $('mobile-tabbar'),
   mtabList:        $('mtab-list'),
   mtabChart:       $('mtab-chart'),
+  mtabTrend:       $('mtab-trend'),
+  chartModeTabs:      $('chart-mode-tabs'),
+  modeTabDaily:       $('mode-tab-daily'),
+  modeTabIntraday:    $('mode-tab-intraday'),
+  intradayPeriodToggle: $('intraday-period-toggle'),
   drawerToggleBtn: $('drawer-toggle-btn'),
   drawerOverlay:   $('drawer-overlay'),
   periodToggle:    $('period-toggle'),
@@ -2629,8 +2897,20 @@ const R = {
   settingsCancel:  $('settings-cancel'),
   settingsSave:    $('settings-save'),
   maShortInput:    $('ma-short'),
+  maShortMidInput: $('ma-shortmid'),
   maMidInput:      $('ma-mid'),
   maLongInput:     $('ma-long'),
+  kdRsvDaysInput:  $('kd-rsv-days'),
+  kdKSmoothInput:  $('kd-k-smooth'),
+  kdDSmoothInput:  $('kd-d-smooth'),
+  macdEmaShortInput: $('macd-ema-short'),
+  macdEmaLongInput:  $('macd-ema-long'),
+  macdDifPeriodInput:$('macd-dif-period'),
+  rsiFastInput:    $('rsi-fast'),
+  rsiSlowInput:    $('rsi-slow'),
+  intradayMin1Input: $('intraday-min-1'),
+  intradayMin2Input: $('intraday-min-2'),
+  intradayMin3Input: $('intraday-min-3'),
   strongMinScoreInput: $('strong-min-score'),
   strongRsThInput:     $('strong-rs-th'),
   strongVolRatioInput: $('strong-vol-ratio'),
@@ -2970,6 +3250,86 @@ function renderChartInfoLine(history, liveBadge) {
   R.chartInfo.textContent = base + (liveBadge ? '　🔴即時' : '');
 }
 
+function renderIntradayInfoLine(rows) {
+  if (!rows.length) {
+    R.chartInfo.textContent = '走勢圖：尚未收集到今日即時資料（開盤期間打開本頁才會開始累積，見設定的說明）';
+    return;
+  }
+  const last = rows.at(-1);
+  const t = (last.trade_date.split('T')[1] || '').slice(0, 8);
+  R.chartInfo.textContent = `最後 ${t}  收 ${last.close?.toFixed(2)}　累積 ${rows.length} 筆　🔴即時`;
+}
+
+/* 技術分析（日線為主）分頁的實際繪製，個股/大盤指數共用。preserveView 給
+   LiveFeed 的即時回呼用：使用者可能正縮放/平移在看歷史某一段，每20秒
+   一次的即時更新不該把畫面跳回預設的最近範圍。 */
+function renderDailySourceChart(opts = {}) {
+  const { type, code } = currentChartSource;
+  Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
+  const history = type === 'index' ? DBMgr.getMarketIndexHistory(code, 250) : DBMgr.getPriceHistory(code, 250);
+  const isLive  = type === 'stock' && LiveFeed.isActive(code);
+  Chart.setData(history, {
+    period: Settings.get('chartPeriod') || 'day',
+    liveDate: isLive ? taipeiDateStr() : null,
+    preserveView: !!opts.preserveView,
+  });
+  renderChartInfoLine(history, isLive);
+}
+
+/* 走勢圖分頁：只支援個股（見 IntradayFeed 註解，跟 LiveFeed 範圍一致）。 */
+async function renderIntradaySourceChart() {
+  const code = currentChartSource.code;
+  await IntradayFeed.ensureLoadedFor(code);
+  if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return; // 使用者可能已經切走了
+  const rows = IntradayFeed.getTickRows(code);
+  const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
+  Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: false });
+  renderIntradayInfoLine(rows);
+}
+
+/* 依目前 currentChartSource + chartMode 畫出對應的圖表；selectStock/
+   selectMarketIndex/applyChartMode/LiveFeed 的即時回呼都共用這個進入點，
+   避免同一份邏輯散落在好幾個地方各寫一次。 */
+function renderCurrentSourceChart(opts = {}) {
+  if (!currentChartSource) return;
+  if (currentChartSource.type === 'index' || chartMode !== 'intraday') renderDailySourceChart(opts);
+  else renderIntradaySourceChart();
+}
+
+/* 設定 chartMode 相關的 UI 狀態（分頁 active、顯示哪一組級距切換鈕），
+   不含重繪——updateChartModeAvailability 需要在「不觸發重繪」的情況下
+   把不支援走勢圖的來源（大盤指數）強制切回技術分析。 */
+function setChartModeUI(mode) {
+  chartMode = mode;
+  Settings.set('chartMode', mode);
+  R.modeTabDaily.classList.toggle('active', mode === 'daily');
+  R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
+  R.periodToggle.classList.toggle('hidden', mode === 'intraday');
+  R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
+}
+
+function applyChartMode(mode) {
+  if (currentChartSource?.type === 'index' && mode === 'intraday') return; // 大盤指數不支援走勢圖
+  setChartModeUI(mode);
+  renderCurrentSourceChart();
+}
+
+function updateChartModeAvailability() {
+  const isIndex = currentChartSource?.type === 'index';
+  R.modeTabIntraday.classList.toggle('disabled', isIndex);
+  R.mtabTrend.classList.toggle('disabled', isIndex);
+  if (isIndex && chartMode === 'intraday') setChartModeUI('daily');
+}
+
+function rebuildIntradayPeriodToggle() {
+  const intervals = Settings.get('intradayIntervals') || [5, 20, 60];
+  let current = Settings.get('intradayPeriod') || intervals[0];
+  if (!intervals.includes(current)) current = intervals[0];
+  R.intradayPeriodToggle.innerHTML = intervals.map(m =>
+    `<button class="seg-btn${m === current ? ' active' : ''}" data-minutes="${m}">${m}分</button>`
+  ).join('');
+}
+
 function selectMarketIndex(code) {
   currentChartSource = { type: 'index', code };
   sourceExhausted = false;
@@ -2982,12 +3342,10 @@ function selectMarketIndex(code) {
   const entry = US_INDEX_LIST.find(x => x.code === code);
   R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
   showMemoChartBtn(code);
+  updateChartModeAvailability();
 
-  Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
-  const history = DBMgr.getMarketIndexHistory(code, 250);
-  Chart.setData(history);
-  renderChartInfoLine(history, false);
-
+  /* switchMobileTab('chart') 會透過 applyChartMode 觸發實際重繪，這裡不用
+     再另外呼叫 renderCurrentSourceChart，避免同一次選股重繪兩次。 */
   switchMobileTab('chart');
   setDrawerOpen(false);
 }
@@ -3007,20 +3365,19 @@ function selectStock(code) {
   const info = DBMgr.getStockInfo(code);
   R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
   showMemoChartBtn(code);
-
-  Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
-  const history = DBMgr.getPriceHistory(code, 250);
-  Chart.setData(history);
-  renderChartInfoLine(history, false);
+  updateChartModeAvailability();
 
   /* 收盤前，如果本地還沒有這檔股票今天的資料，就試著即時向證交所要
-     （見 LiveFeed 註解）；抓到會透過 setOnLiveUpdate 回呼重繪圖表。 */
+     （見 LiveFeed 註解）；抓到會透過 setOnLiveUpdate 回呼重繪圖表，
+     技術分析/走勢圖兩邊都靠同一份輪詢結果更新。 */
   LiveFeed.start(code, info?.market);
 
   /* mobile: picking a stock naturally means "now show me the chart" —
-     switch tab (portrait) / close the drawer (landscape). No-op on desktop
-     since these classes only affect layout inside the compact media queries. */
-  switchMobileTab('chart');
+     switch tab (portrait) / close the drawer (landscape), respecting
+     whichever of 技術分析/走勢圖 是目前開著的。switchMobileTab 會透過
+     applyChartMode 觸發實際重繪，desktop 版也一樣（那些 CSS class 只在
+     手機直向 media query 下才有視覺效果，但這裡的呼叫本身不分裝置）。 */
+  switchMobileTab(chartMode === 'intraday' ? 'trend' : 'chart');
   setDrawerOpen(false);
 }
 
@@ -3142,6 +3499,7 @@ async function handleSync() {
 let expandingHistory   = false;
 let currentChartSource = null; // { type: 'stock'|'index', code } — whatever Chart is currently showing
 let sourceExhausted    = false; // true once we've confirmed there's nothing older left for currentChartSource
+let chartMode = 'daily'; // 'daily'（技術分析）| 'intraday'（走勢圖，只支援個股，見 applyChartMode）
 
 /* Non-blocking, Google-Maps-style loading: Chart already renders a dashed
    "載入中" placeholder for any not-yet-loaded portion of the visible window
@@ -3260,11 +3618,15 @@ function populateSectors() {
    MOBILE LAYOUT — portrait tab-switch (list ⇄ chart) + landscape drawer
    ════════════════════════════════════════ */
 function switchMobileTab(tab) {
+  const showChart = (tab === 'chart' || tab === 'trend'); // 技術分析/走勢圖共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
-  R.main.classList.toggle('show-chart', tab === 'chart');
+  R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
   R.mtabChart.classList.toggle('active', tab === 'chart');
-  if (tab === 'chart') setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
+  R.mtabTrend.classList.toggle('active', tab === 'trend');
+  if (tab === 'chart') applyChartMode('daily');
+  else if (tab === 'trend') applyChartMode('intraday');
+  if (showChart) setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
 }
 
 function setDrawerOpen(open) {
@@ -3311,6 +3673,7 @@ function renderInfoBar(info) {
     `<span class="info-item">收 <b class="${upDown}">${fmt2(info.close)}</b></span>` +
     `<span class="info-item">量 <b class="${upDown}">${fmtVolShort(info.volume)}</b></span>` +
     `<span class="info-item ma-s">MA${info.maPeriods.short} <b>${fmt2(info.ma.short)}</b></span>` +
+    `<span class="info-item ma-sm">MA${info.maPeriods.shortMid} <b>${fmt2(info.ma.shortMid)}</b></span>` +
     `<span class="info-item ma-m">MA${info.maPeriods.mid} <b>${fmt2(info.ma.mid)}</b></span>` +
     `<span class="info-item ma-l">MA${info.maPeriods.long} <b>${fmt2(info.ma.long)}</b></span>`;
   if (info.indicator === 'kd') {
@@ -3323,6 +3686,9 @@ function renderInfoBar(info) {
             `<span class="info-item">OSC <b class="${(info.macd.osc||0)>=0?'td-up':'td-dn'}">${fmt2(info.macd.osc)}</b></span>`;
   } else if (info.indicator === 'rsv') {
     html += `<span class="info-item rsv">RSV <b>${fmt1(info.rsv)}</b></span>`;
+  } else if (info.indicator === 'rsi') {
+    html += `<span class="info-item rsi-fast">RSI${info.rsiParams.fast} <b>${fmt1(info.rsi.fast)}</b></span>` +
+            `<span class="info-item rsi-slow">RSI${info.rsiParams.slow} <b>${fmt1(info.rsi.slow)}</b></span>`;
   }
   R.chartInfoBar.innerHTML = html;
 }
@@ -3367,9 +3733,30 @@ function bindEvents() {
   /* sync */
   R.syncBtn.addEventListener('click', handleSync);
 
-  /* mobile portrait tab-switch (list ⇄ chart) */
+  /* mobile portrait tab-switch (清單 ⇄ 技術分析 ⇄ 走勢圖) */
   R.mtabList.addEventListener('click', () => switchMobileTab('list'));
   R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
+  R.mtabTrend.addEventListener('click', () => {
+    if (R.mtabTrend.classList.contains('disabled')) return; // 大盤指數不支援走勢圖
+    switchMobileTab('trend');
+  });
+
+  /* 桌面版 技術分析/走勢圖 分頁 */
+  R.chartModeTabs.addEventListener('click', e => {
+    const btn = e.target.closest('.chart-mode-tab');
+    if (!btn || btn.classList.contains('disabled')) return;
+    applyChartMode(btn.dataset.mode);
+  });
+
+  /* 走勢圖級距切換（5/20/60分，實際數值來自設定，見 rebuildIntradayPeriodToggle） */
+  R.intradayPeriodToggle.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    const mins = parseInt(btn.dataset.minutes, 10);
+    Settings.set('intradayPeriod', mins);
+    R.intradayPeriodToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b === btn));
+    Chart.setIntradayMinutes(mins);
+  });
 
   /* mobile landscape drawer (sidebar slide-out) */
   R.drawerToggleBtn.addEventListener('click', () => setDrawerOpen(!R.main.classList.contains('drawer-open')));
@@ -3457,10 +3844,30 @@ function bindEvents() {
    SETTINGS MODAL (Eclipse-like categorized preferences)
    ════════════════════════════════════════ */
 function openSettingsModal() {
-  const ma = Settings.get('maPeriods') || { short:5, mid:20, long:60 };
-  R.maShortInput.value = ma.short;
-  R.maMidInput.value   = ma.mid;
-  R.maLongInput.value  = ma.long;
+  const ma = Settings.get('maPeriods') || { short:5, shortMid:10, mid:20, long:60 };
+  R.maShortInput.value    = ma.short;
+  R.maShortMidInput.value = ma.shortMid;
+  R.maMidInput.value      = ma.mid;
+  R.maLongInput.value     = ma.long;
+
+  const kd = Settings.get('kdParams') || { rsvDays:5, kSmooth:3, dSmooth:3 };
+  R.kdRsvDaysInput.value = kd.rsvDays;
+  R.kdKSmoothInput.value = kd.kSmooth;
+  R.kdDSmoothInput.value = kd.dSmooth;
+
+  const macd = Settings.get('macdParams') || { emaShort:10, emaLong:20, difPeriod:10 };
+  R.macdEmaShortInput.value  = macd.emaShort;
+  R.macdEmaLongInput.value   = macd.emaLong;
+  R.macdDifPeriodInput.value = macd.difPeriod;
+
+  const rsi = Settings.get('rsiParams') || { fast:3, slow:6 };
+  R.rsiFastInput.value = rsi.fast;
+  R.rsiSlowInput.value = rsi.slow;
+
+  const intervals = Settings.get('intradayIntervals') || [5, 20, 60];
+  R.intradayMin1Input.value = intervals[0];
+  R.intradayMin2Input.value = intervals[1];
+  R.intradayMin3Input.value = intervals[2];
 
   const sp = Settings.get('strongParams') || {};
   R.strongMinScoreInput.value = sp.minScore ?? 2;
@@ -3479,15 +3886,58 @@ function closeSettingsModal() {
 
 function saveSettingsModal() {
   const short = parseInt(R.maShortInput.value, 10);
+  const shortMid = parseInt(R.maShortMidInput.value, 10);
   const mid   = parseInt(R.maMidInput.value, 10);
   const long  = parseInt(R.maLongInput.value, 10);
-  if ([short, mid, long].some(v => !Number.isFinite(v) || v < 1)) {
+  if ([short, shortMid, mid, long].some(v => !Number.isFinite(v) || v < 1)) {
     alert('均線週期必須是正整數');
     return;
   }
-  const maPeriods = { short, mid, long };
+  const maPeriods = { short, shortMid, mid, long };
   Settings.set('maPeriods', maPeriods);
   Chart.setMAPeriods(maPeriods);
+
+  const rsvDays = parseInt(R.kdRsvDaysInput.value, 10);
+  const kSmooth = parseInt(R.kdKSmoothInput.value, 10);
+  const dSmooth = parseInt(R.kdDSmoothInput.value, 10);
+  if ([rsvDays, kSmooth, dSmooth].some(v => !Number.isFinite(v) || v < 1)) {
+    alert('KD 參數必須是正整數');
+    return;
+  }
+  const kdParams = { rsvDays, kSmooth, dSmooth };
+  Settings.set('kdParams', kdParams);
+  Chart.setKDParams(kdParams);
+
+  const emaShort = parseInt(R.macdEmaShortInput.value, 10);
+  const emaLong  = parseInt(R.macdEmaLongInput.value, 10);
+  const difPeriod = parseInt(R.macdDifPeriodInput.value, 10);
+  if ([emaShort, emaLong, difPeriod].some(v => !Number.isFinite(v) || v < 1)) {
+    alert('MACD 參數必須是正整數');
+    return;
+  }
+  const macdParams = { emaShort, emaLong, difPeriod };
+  Settings.set('macdParams', macdParams);
+  Chart.setMACDParams(macdParams);
+
+  const rsiFast = parseInt(R.rsiFastInput.value, 10);
+  const rsiSlow = parseInt(R.rsiSlowInput.value, 10);
+  if ([rsiFast, rsiSlow].some(v => !Number.isFinite(v) || v < 1)) {
+    alert('RSI 參數必須是正整數');
+    return;
+  }
+  const rsiParams = { fast: rsiFast, slow: rsiSlow };
+  Settings.set('rsiParams', rsiParams);
+  Chart.setRSIParams(rsiParams);
+
+  const min1 = parseInt(R.intradayMin1Input.value, 10);
+  const min2 = parseInt(R.intradayMin2Input.value, 10);
+  const min3 = parseInt(R.intradayMin3Input.value, 10);
+  if ([min1, min2, min3].some(v => !Number.isFinite(v) || v < 1)) {
+    alert('走勢圖級距必須是正整數（分鐘）');
+    return;
+  }
+  Settings.set('intradayIntervals', [min1, min2, min3]);
+  rebuildIntradayPeriodToggle();
 
   const strongParams = {
     minScore:    parseInt(R.strongMinScoreInput.value, 10) || 0,
@@ -3515,11 +3965,9 @@ async function main() {
   /* 即時擷取：抓到新的即時報價就重繪圖表（見 LiveFeed 模組註解）。
      TradingCalendar 提早開始載入休市日曆，不用等，反正 LiveFeed 真正
      決定要不要寫入資料還是看證交所回應裡的日期欄位，日曆只是前置篩選。 */
-  LiveFeed.setOnLiveUpdate((code, dateStr) => {
+  LiveFeed.setOnLiveUpdate(code => {
     if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return;
-    const history = DBMgr.getPriceHistory(code, 250);
-    Chart.setData(history, { preserveView: true, liveDate: dateStr });
-    renderChartInfoLine(history, true);
+    renderCurrentSourceChart({ preserveView: true });
     renderPage();
   });
   TradingCalendar.ensureLoaded().catch(() => {});
@@ -3528,11 +3976,19 @@ async function main() {
   applyTheme(Settings.get('theme') || 'light');
 
   /* restore chart prefs */
-  Chart.setMAPeriods(Settings.get('maPeriods') || { short:5, mid:20, long:60 });
+  Chart.setMAPeriods(Settings.get('maPeriods') || { short:5, shortMid:10, mid:20, long:60 });
+  Chart.setKDParams(Settings.get('kdParams') || { rsvDays:5, kSmooth:3, dSmooth:3 });
+  Chart.setMACDParams(Settings.get('macdParams') || { emaShort:10, emaLong:20, difPeriod:10 });
+  Chart.setRSIParams(Settings.get('rsiParams') || { fast:3, slow:6 });
   applyIndicator(Settings.get('chartIndicator') || 'kd');
   applyPeriod(Settings.get('chartPeriod') || 'day');
   Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
+
+  /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
+     觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
+  rebuildIntradayPeriodToggle();
+  setChartModeUI(Settings.get('chartMode') || 'daily');
 
   /* restore view selector (migrate old 'top100' value from earlier versions) */
   let savedView = Settings.get('view') || 'sector';
