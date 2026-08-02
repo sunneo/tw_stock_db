@@ -110,12 +110,16 @@ body {
 .btn.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
 .btn.primary:hover { opacity: .88; }
 
-/* ── Menu dropdown ── */
+/* ── Menu dropdown ──
+   #navbar has overflow-y:hidden (needed so the toolbar buttons can scroll
+   horizontally on narrow screens, see #navbar rules above). A dropdown
+   positioned absolute inside it would render below the 44px-tall clipped
+   box and be invisible even though it "opened" — use position:fixed
+   (escapes the ancestor's overflow clip) with its top/left set from
+   menu-btn's bounding rect right before it's shown (see openMenuDropdown). */
 .menu-wrap { position: relative; }
 #menu-drop {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  position: fixed;
   min-width: 140px;
   background: var(--bg1);
   border: 1px solid var(--bdr);
@@ -3081,9 +3085,16 @@ function renderInfoBar(info) {
    EVENT BINDINGS
    ════════════════════════════════════════ */
 function bindEvents() {
-  /* menu toggle */
+  /* menu toggle (see #menu-drop CSS comment: position:fixed, so we need to
+     place it under the button ourselves each time it opens) */
   R.menuBtn.addEventListener('click', e => {
     e.stopPropagation();
+    const wasHidden = R.menuDrop.classList.contains('hidden');
+    if (wasHidden) {
+      const rect = R.menuBtn.getBoundingClientRect();
+      R.menuDrop.style.top  = (rect.bottom + 4) + 'px';
+      R.menuDrop.style.left = rect.left + 'px';
+    }
     R.menuDrop.classList.toggle('hidden');
   });
   document.addEventListener('click', () => R.menuDrop.classList.add('hidden'));
