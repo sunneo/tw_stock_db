@@ -1,0 +1,14 @@
+name = "dawn-disk-778c"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# NVAPI_KEY 是密鑰，不放在這個檔案裡（這個檔案會進公開 repo）。
+# 用下面其中一種方式設定：
+#   npx wrangler secret put NVAPI_KEY
+# 或 Cloudflare Dashboard → Workers & Pages → 這個 Worker → Settings →
+#   Variables and Secrets → 新增 Secret「NVAPI_KEY」
+#
+# 這個 Worker 目前是用 Cloudflare Dashboard 的線上編輯器維護的（不是用
+# wrangler CLI 部署），這個 wrangler.toml 只是備用：如果你之後想改用
+# 本機 wrangler 部署，`name` 要改成你 Worker 實際的名稱（目前部署在
+# https://dawn-disk-778c.sunneo529.workers.dev/，所以這裡先填一樣的）。
