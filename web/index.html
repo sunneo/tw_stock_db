@@ -318,17 +318,27 @@ select:focus { outline: 2px solid var(--acc); }
   flex-shrink: 0;
 }
 #report-status { font-size: 12px; color: var(--txt2); }
+#report-view-mode-sel { margin-left: auto; }
 #report-slide-wrap { flex: 1; overflow-y: auto; padding: 20px; }
-#report-slide {
+#report-slide, .rs-card {
   max-width: 720px; margin: 0 auto;
   background: var(--bg1); border: 1px solid var(--bdr); border-radius: 10px;
   box-shadow: var(--shd); padding: 28px 32px; min-height: 320px;
+}
+#report-slide.hidden { display: none; }
+#report-slide-continuous { display: flex; flex-direction: column; gap: 18px; }
+#report-slide-continuous.hidden { display: none; }
+.rs-card + .rs-card { margin-top: 0; }
+.rs-card-index {
+  max-width: 720px; margin: 0 auto 4px; font-size: 12px; font-weight: 700;
+  color: var(--txt2);
 }
 #report-pager {
   display: flex; align-items: center; justify-content: center; gap: 14px;
   padding: 8px 12px; border-top: 1px solid var(--bdr); background: var(--bg1);
   flex-shrink: 0;
 }
+#report-pager.hidden { display: none; }
 #report-page-info { font-size: 13px; color: var(--txt2); min-width: 60px; text-align: center; }
 
 /* slide 內容樣式 */
@@ -810,9 +820,14 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="holdings_intraday">盤中持股分析</option>
         </select>
         <span id="report-status"></span>
+        <select id="report-view-mode-sel">
+          <option value="paged">分頁瀏覽</option>
+          <option value="continuous">連續瀏覽</option>
+        </select>
       </div>
       <div id="report-slide-wrap">
         <div id="report-slide"></div>
+        <div id="report-slide-continuous" class="hidden"></div>
       </div>
       <div id="report-pager">
         <button class="btn" id="report-prev">‹ 上一頁</button>
@@ -3344,11 +3359,14 @@ const R = {
   reportPanel:     $('report-panel'),
   reportTypeSel:   $('report-type-sel'),
   reportStatus:    $('report-status'),
+  reportViewModeSel: $('report-view-mode-sel'),
   reportSlideWrap: $('report-slide-wrap'),
   reportSlide:     $('report-slide'),
+  reportSlideContinuous: $('report-slide-continuous'),
   reportPrev:      $('report-prev'),
   reportNext:      $('report-next'),
   reportPageInfo:  $('report-page-info'),
+  reportPager:     $('report-pager'),
   drawerToggleBtn: $('drawer-toggle-btn'),
   drawerOverlay:   $('drawer-overlay'),
   periodToggle:    $('period-toggle'),
@@ -3885,11 +3903,21 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function getReportViewMode() {
+  return Settings.get('reportViewMode') || 'paged';
+}
+
+function showReportNotice(html) {
+  // 分頁/連續兩種容器都寫入同一段提示，切換模式時才不會看到舊內容殘留。
+  R.reportSlide.innerHTML = html;
+  R.reportSlideContinuous.innerHTML = html;
+  R.reportPageInfo.textContent = '— / —';
+}
+
 async function loadCurrentReport() {
   const type = R.reportTypeSel.value;
   R.reportStatus.textContent = '載入中…';
-  R.reportSlide.innerHTML = '';
-  R.reportPageInfo.textContent = '— / —';
+  showReportNotice('');
   currentReportData = null;
   currentReportSlideIdx = 0;
 
@@ -3898,7 +3926,7 @@ async function loadCurrentReport() {
 
   if (!data || !data.slides || !data.slides.length) {
     R.reportStatus.textContent = '目前沒有這份報告（尚未產生，或抓不到檔案）';
-    R.reportSlide.innerHTML = '<div class="rs-notice">目前沒有可顯示的報告內容，可能是這個時段本來就不會產生這份報告（見設定裡的說明），或排程還沒跑過。</div>';
+    showReportNotice('<div class="rs-notice">目前沒有可顯示的報告內容，可能是這個時段本來就不會產生這份報告（見設定裡的說明），或排程還沒跑過。</div>');
     return;
   }
   currentReportData = data;
@@ -3909,6 +3937,19 @@ async function loadCurrentReport() {
 function renderReportSlide() {
   const slides = currentReportData?.slides || [];
   if (!slides.length) return;
+  const mode = getReportViewMode();
+  R.reportSlide.classList.toggle('hidden', mode !== 'paged');
+  R.reportSlideContinuous.classList.toggle('hidden', mode !== 'continuous');
+  R.reportPager.classList.toggle('hidden', mode !== 'paged');
+
+  if (mode === 'continuous') {
+    R.reportSlideContinuous.innerHTML = slides.map((s, i) =>
+      `<div class="rs-card-index">${i + 1} / ${slides.length}</div><div class="rs-card">${renderSlideHtml(s)}</div>`
+    ).join('');
+    R.reportSlideWrap.scrollTop = 0;
+    return;
+  }
+
   const idx = Math.max(0, Math.min(currentReportSlideIdx, slides.length - 1));
   currentReportSlideIdx = idx;
   R.reportSlide.innerHTML = renderSlideHtml(slides[idx]);
@@ -4465,6 +4506,10 @@ function bindEvents() {
     Settings.set('reportType', R.reportTypeSel.value);
     loadCurrentReport();
   });
+  R.reportViewModeSel.addEventListener('change', () => {
+    Settings.set('reportViewMode', R.reportViewModeSel.value);
+    renderReportSlide();
+  });
   R.reportPrev.addEventListener('click', () => { currentReportSlideIdx--; renderReportSlide(); });
   R.reportNext.addEventListener('click', () => { currentReportSlideIdx++; renderReportSlide(); });
 
@@ -4716,6 +4761,7 @@ async function main() {
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
   rebuildIntradayPeriodToggle();
   R.reportTypeSel.value = Settings.get('reportType') || 'premarket';
+  R.reportViewModeSel.value = getReportViewMode();
   setChartModeUI(Settings.get('chartMode') || 'daily');
   // 分析分頁不用等選股才重繪（本來就不綁定選中的股票），這裡直接載入一次；
   // daily/intraday 則跟原本一樣，等下面選股/選大盤指數的流程觸發即可。
