@@ -778,7 +778,7 @@ select:focus { outline: 2px solid var(--acc); }
           <label>第一檔 <input type="number" id="intraday-min-1" min="1" max="240"></label>
           <label>第二檔 <input type="number" id="intraday-min-2" min="1" max="240"></label>
           <label>第三檔 <input type="number" id="intraday-min-3" min="1" max="240"></label>
-          <p class="modal-hint">走勢圖只累積「本次開啟網頁後」證交所回傳的即時報價，不是官方逐筆歷史，所以剛切換過去、或剛開盤時可能還沒有資料，屬於正常現象。</p>
+          <p class="modal-hint">進走勢圖時會先用 Yahoo 股市的資料墊一份「開盤到現在」的概略1分K（非官方，只是輪廓），之後的即時更新則靠證交所輪詢累積，兩者不是官方逐筆歷史，剛開盤或兩邊資料源都連不上時可能還沒有資料，屬於正常現象。</p>
         </div>
         <div class="modal-pane hidden" data-pane="strong">
           <h3>目前原則（型態訊號評分）</h3>
@@ -878,7 +878,7 @@ function taipeiParts(date = new Date()) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Taipei', hour12: false,
     year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short',
   });
   const p = Object.fromEntries(fmt.formatToParts(date).map(x => [x.type, x.value]));
   return p;
@@ -890,6 +890,10 @@ function taipeiDateStr(date = new Date()) {
 function taipeiMinutesOfDay(date = new Date()) {
   const p = taipeiParts(date);
   return (+p.hour) * 60 + (+p.minute);
+}
+function taipeiTimeStr(date = new Date()) {
+  const p = taipeiParts(date);
+  return `${p.hour}:${p.minute}:${p.second}`;
 }
 function taipeiIsWeekend(dateStr) {
   // 只需要「這個西元日期是星期幾」這個跟時區無關的行事曆事實，直接用
@@ -2002,16 +2006,52 @@ const LiveFeed = (() => {
    當天的逐筆走勢，分桶成 5/20/60分K)
 
    證交所沒有公開的個股歷史分K API（見 web/cloudflare-worker/README.md 的
-   CORS調查），這裡能畫出來的走勢圖，就只是「這次打開網頁之後、LiveFeed
-   實際輪詢到的那些取樣點」，不是官方逐筆資料，開盤後才打開網頁的話，
-   之前那段時間本來就沒有資料可補，這是先天限制，不是bug。
+   CORS調查），單靠「這次打開網頁之後、LiveFeed 實際輪詢到的那些取樣點」，
+   開盤後才打開網頁的話，之前那段時間本來就沒有資料可補。所以進走勢圖時
+   另外用 Yahoo 股市的圖表 API（見 fetchYahooBackfill）補一份開盤到現在的
+   概略 1分K 當墊底，之後的即時更新還是靠 LiveFeed 對證交所的輪詢
+   （record()）——backfill 只在進走勢圖那一刻打一次，不是官方資料、只是
+   輪廓，兩份資料在 getTickRows() 接起來。
    ════════════════════════════════════════ */
 const IntradayFeed = (() => {
-  let ticksByCode = {}; // { [code]: [{t:'HH:MM:SS', price, volCum}, ...] } —— 只保留「今天」
+  let ticksByCode = {};    // { [code]: [{t:'HH:MM:SS', price, volCum}, ...] } —— 只保留「今天」
+  let backfillByCode = {}; // { [code]: 最細粒度 row[] }，來自 fetchYahooBackfill，同一天同一檔只抓一次
   let recordedDate = null;
 
   function resetIfNewDay(dateStr) {
-    if (recordedDate !== dateStr) { ticksByCode = {}; recordedDate = dateStr; }
+    if (recordedDate !== dateStr) { ticksByCode = {}; backfillByCode = {}; recordedDate = dateStr; }
+  }
+
+  /* 進走勢圖分頁/選股時呼叫一次：用 Yahoo 的「今日1分K」墊開盤到現在這段
+     證交所自己補不回來的空白（見模組註解、web/cloudflare-worker/README.md）。
+     同一檔股票同一天只打一次，避免每次切分頁/切級距都重打這個非官方來源。
+     失敗（額度、網路問題）不影響既有的即時輪詢，只是backfill那段留空。 */
+  async function fetchYahooBackfill(code, market) {
+    if (!TWSE_PROXY_BASE || backfillByCode[code]) return;
+    const today = taipeiDateStr();
+    const symbol = code + (market === 'TPEx' ? '.TWO' : '.TW');
+    try {
+      const res = await fetch(`${TWSE_PROXY_BASE}/yahoo-intraday?symbol=${symbol}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const result = data?.chart?.result?.[0];
+      const ts = result?.timestamp || [];
+      const q = result?.indicators?.quote?.[0] || {};
+      const rows = [];
+      for (let i = 0; i < ts.length; i++) {
+        const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
+        if (o == null || h == null || l == null || c == null) continue; // 還在成形中的那一分鐘，欄位是 null
+        const v = q.volume?.[i];
+        rows.push({
+          trade_date: `${today}T${taipeiTimeStr(new Date(ts[i] * 1000))}`,
+          open: o, high: h, low: l, close: c,
+          volume: v != null ? Math.round(v) : 0,
+        });
+      }
+      backfillByCode[code] = rows;
+    } catch (e) {
+      console.warn('Yahoo 走勢圖 backfill 失敗（不影響證交所即時輪詢）：', e.message);
+    }
   }
 
   function record(code, item) {
@@ -2038,15 +2078,19 @@ const IntradayFeed = (() => {
   }
 
   /* 切到走勢圖分頁/選股時呼叫：把今天已經記錄過的 tick（可能是稍早這個分頁
-     開過、或重新整理過頁面）從 IndexedDB 撈回來，避免每次都要重新累積。 */
-  async function ensureLoadedFor(code) {
+     開過、或重新整理過頁面）從 IndexedDB 撈回來，避免每次都要重新累積；
+     同時觸發 Yahoo backfill 補開盤到現在那段空白（market 用來判斷上市/上櫃
+     對應的 Yahoo 代號後綴，見 fetchYahooBackfill）。 */
+  async function ensureLoadedFor(code, market) {
     const today = taipeiDateStr();
     resetIfNewDay(today);
-    if (ticksByCode[code]) return;
-    try {
-      const cached = await IDB.get('meta', 'intraday_' + code + '_' + today);
-      if (cached) ticksByCode[code] = cached;
-    } catch {}
+    if (!ticksByCode[code]) {
+      try {
+        const cached = await IDB.get('meta', 'intraday_' + code + '_' + today);
+        if (cached) ticksByCode[code] = cached;
+      } catch {}
+    }
+    await fetchYahooBackfill(code, market);
   }
 
   /* 回傳「每一筆輪詢取樣」對應的最細單位 pseudo-candle（trade_date 帶完整
@@ -2055,14 +2099,21 @@ const IntradayFeed = (() => {
      是同一套機制，換級距不用重新處理這裡的資料，Chart.setIntradayMinutes()
      會直接對同一份 fullData 重新分桶。
 
-     第一筆 tick 的成交量不算 delta（沒有前一筆基準，硬算會把「開始記錄前
-     已經成交的量」全部灌到第一筆，量會爆量失真），從第二筆開始才用累計
-     量的差值當該筆的成交量。 */
+     Yahoo backfill 只補「比第一筆自己輪詢到的 tick 更早」的部分，兩份資料
+     用時間銜接、不重疊；backfill 早已是完整 OHLCV 的分K，不用再算量的
+     delta。第一筆真正輪詢到的 tick 的成交量不算 delta（沒有前一筆基準，
+     硬算會把「開始記錄前已經成交的量」全部灌到第一筆，量會爆量失真），
+     從第二筆開始才用累計量的差值當該筆的成交量。 */
   function getTickRows(code) {
+    const backfill = backfillByCode[code] || [];
     const arr = ticksByCode[code] || [];
-    if (!arr.length) return [];
+    if (!backfill.length && !arr.length) return [];
     const today = recordedDate;
-    const rows = [];
+    const firstTickTime = arr.length ? arr[0].t : null;
+    const rows = backfill.filter(row => {
+      const t = row.trade_date.split('T')[1];
+      return firstTickTime == null || t < firstTickTime;
+    });
     let prevVol = null;
     for (const tick of arr) {
       const deltaVol = prevVol == null ? 0 : Math.max(0, (tick.volCum || 0) - prevVol);
@@ -2076,7 +2127,9 @@ const IntradayFeed = (() => {
     return rows;
   }
 
-  function hasData(code) { return (ticksByCode[code] || []).length > 0; }
+  function hasData(code) {
+    return (ticksByCode[code] || []).length > 0 || (backfillByCode[code] || []).length > 0;
+  }
 
   return { record, ensureLoadedFor, getTickRows, hasData };
 })();
@@ -3299,7 +3352,8 @@ function renderDailySourceChart(opts = {}) {
 /* 走勢圖分頁：只支援個股（見 IntradayFeed 註解，跟 LiveFeed 範圍一致）。 */
 async function renderIntradaySourceChart() {
   const code = currentChartSource.code;
-  await IntradayFeed.ensureLoadedFor(code);
+  const market = DBMgr.getStockInfo(code)?.market;
+  await IntradayFeed.ensureLoadedFor(code, market);
   if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return; // 使用者可能已經切走了
   const rows = IntradayFeed.getTickRows(code);
   const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
