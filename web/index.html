@@ -778,7 +778,7 @@ select:focus { outline: 2px solid var(--acc); }
           <label>第一檔 <input type="number" id="intraday-min-1" min="1" max="240"></label>
           <label>第二檔 <input type="number" id="intraday-min-2" min="1" max="240"></label>
           <label>第三檔 <input type="number" id="intraday-min-3" min="1" max="240"></label>
-          <p class="modal-hint">進走勢圖時會先用 Yahoo 股市的資料墊一份「開盤到現在」的概略1分K（非官方，只是輪廓），之後的即時更新則靠證交所輪詢累積，兩者不是官方逐筆歷史，剛開盤或兩邊資料源都連不上時可能還沒有資料，屬於正常現象。</p>
+          <p class="modal-hint">進走勢圖時會先用 Yahoo 股市的資料墊一份近5個交易日的概略1分K（非官方，只是輪廓，縮小(zoom out)可以看到前幾天），之後的即時更新則靠證交所輪詢累積，兩者不是官方逐筆歷史，剛開盤或兩邊資料源都連不上時可能還沒有資料，屬於正常現象。</p>
         </div>
         <div class="modal-pane hidden" data-pane="strong">
           <h3>目前原則（型態訊號評分）</h3>
@@ -2007,10 +2007,10 @@ const LiveFeed = (() => {
 
    證交所沒有公開的個股歷史分K API（見 web/cloudflare-worker/README.md 的
    CORS調查），單靠「這次打開網頁之後、LiveFeed 實際輪詢到的那些取樣點」，
-   開盤後才打開網頁的話，之前那段時間本來就沒有資料可補。所以進走勢圖時
-   另外用 Yahoo 股市的圖表 API（見 fetchYahooBackfill）補一份開盤到現在的
-   概略 1分K 當墊底，之後的即時更新還是靠 LiveFeed 對證交所的輪詢
-   （record()）——backfill 每次進走勢圖時最多每5分鐘重抓一次（見
+   開盤後才打開網頁的話、或縮小(zoom out)想看前幾天，都沒資料可補。所以
+   進走勢圖時另外用 Yahoo 股市的圖表 API（見 fetchYahooBackfill）補一份
+   近5個交易日的概略1分K 當墊底，之後的即時更新還是靠 LiveFeed 對證交所
+   的輪詢（record()）——backfill 每次進走勢圖時最多每5分鐘重抓一次（見
    BACKFILL_REFRESH_MS），補上使用者切走又切回來時中間沒被輪詢到的空窗，
    不是官方資料、只是輪廓，兩份資料在 getTickRows() 接起來。
    ════════════════════════════════════════ */
@@ -2025,8 +2025,14 @@ const IntradayFeed = (() => {
     if (recordedDate !== dateStr) { ticksByCode = {}; backfillByCode = {}; backfillFetchedAt = {}; recordedDate = dateStr; }
   }
 
-  /* 進走勢圖分頁/選股時呼叫：用 Yahoo 的「今日1分K」墊開盤到現在這段證交所
-     自己補不回來的空白（見模組註解、web/cloudflare-worker/README.md）。
+  /* 進走勢圖分頁/選股時呼叫：用 Yahoo 的分K墊開盤到現在這段證交所自己補
+     不回來的空白（見模組註解、web/cloudflare-worker/README.md）。抓近5個
+     交易日的1分K（而不是只有今天），縮小(zoom out)超出今天範圍時才能看到
+     前幾天的走勢，不用整個限制在當天——反正 Chart 的分桶邏輯本來就是用
+     完整日期+時間當 key（periodKeyOf('intraday')），跨日資料本來就不會
+     互相混桶，多天資料直接餵給既有的 zoom/pan 就能動，不用另外處理。
+     range=5d 是 Yahoo 這個公開端點對 1分K 實際能給的資料量上限，更早的
+     歷史就沒有分鐘級細節了——這種情況下建議去看「技術分析」分頁的日線。
 
      LiveFeed 同一時間只主動輪詢「目前選取的那一檔」（見 LiveFeed 模組註解），
      所以使用者切去看別檔、過一陣子再切回來時，中間那段沒被輪詢到的空窗
@@ -2038,10 +2044,10 @@ const IntradayFeed = (() => {
     if (!TWSE_PROXY_BASE) return;
     const last = backfillFetchedAt[code];
     if (last != null && Date.now() - last < BACKFILL_REFRESH_MS) return;
-    const today = taipeiDateStr();
     const symbol = code + (market === 'TPEx' ? '.TWO' : '.TW');
     try {
-      const res = await fetch(`${TWSE_PROXY_BASE}/yahoo-intraday?symbol=${symbol}`, { cache: 'no-store' });
+      const url = `${TWSE_PROXY_BASE}/yahoo-intraday?symbol=${symbol}&range=5d&interval=1m`;
+      const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       const result = data?.chart?.result?.[0];
@@ -2052,8 +2058,9 @@ const IntradayFeed = (() => {
         const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
         if (o == null || h == null || l == null || c == null) continue; // 還在成形中的那一分鐘，欄位是 null
         const v = q.volume?.[i];
+        const d = new Date(ts[i] * 1000);
         rows.push({
-          trade_date: `${today}T${taipeiTimeStr(new Date(ts[i] * 1000))}`,
+          trade_date: `${taipeiDateStr(d)}T${taipeiTimeStr(d)}`,
           open: o, high: h, low: l, close: c,
           volume: v != null ? Math.round(v) : 0,
         });
@@ -2114,8 +2121,15 @@ const IntradayFeed = (() => {
      的 5 分鐘節流），所以要用 backfill 自己「最後一筆」的時間當分界，取
      backfill 裡結尾之前的所有tick——不能用「第一筆自己輪詢到的tick」當
      分界，那樣使用者切走又切回來、backfill 重新抓過一次涵蓋更晚的時間
-     時，反而會把新抓到、原本用來補空窗的那段 backfill 資料濾掉。第一筆
-     真正輪詢到的 tick 的成交量不算 delta（沒有前一筆基準，硬算會把
+     時，反而會把新抓到、原本用來補空窗的那段 backfill 資料濾掉。
+
+     backfill 現在涵蓋近5個交易日，最後一筆不一定是「今天」——例如今天
+     還沒開盤、Yahoo 還沒發布今天第一根K棒時，backfill 最後一筆會是前一
+     交易日的收盤——這種情況下分界時間跟今天的 tick 時分秒比較沒有意義
+     （會誤判成「今天一早的tick都已經被涵蓋」），所以只有 backfill 最後
+     一筆確實是「今天」時才套用分界，否則今天的 tick 全部照舊附加上去。
+
+     第一筆真正輪詢到的 tick 的成交量不算 delta（沒有前一筆基準，硬算會把
      backfill 分界之前已經成交的量全部灌到第一筆，量會爆量失真），從
      第二筆開始才用累計量的差值當該筆的成交量。 */
   function getTickRows(code) {
@@ -2123,7 +2137,10 @@ const IntradayFeed = (() => {
     const arr = ticksByCode[code] || [];
     if (!backfill.length && !arr.length) return [];
     const today = recordedDate;
-    const backfillEndTime = backfill.length ? backfill[backfill.length - 1].trade_date.split('T')[1] : null;
+    const lastBackfillRow = backfill.length ? backfill[backfill.length - 1] : null;
+    const backfillEndTime = (lastBackfillRow && lastBackfillRow.trade_date.slice(0, 10) === today)
+      ? lastBackfillRow.trade_date.split('T')[1]
+      : null;
     const rows = backfill.slice();
     let prevVol = null;
     for (const tick of arr) {
