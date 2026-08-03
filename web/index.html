@@ -318,10 +318,11 @@ select:focus { outline: 2px solid var(--acc); }
   flex-shrink: 0;
 }
 #report-status { font-size: 12px; color: var(--txt2); }
-#report-view-mode-sel { margin-left: auto; }
+#report-view-mode-btn { margin-left: auto; color: var(--txt1); }
+#report-view-mode-btn svg { display: block; }
 #report-slide-wrap { flex: 1; overflow-y: auto; padding: 20px; }
 #report-slide, .rs-card {
-  max-width: 720px; margin: 0 auto;
+  width: 100%; box-sizing: border-box;
   background: var(--bg1); border: 1px solid var(--bdr); border-radius: 10px;
   box-shadow: var(--shd); padding: 28px 32px; min-height: 320px;
 }
@@ -330,7 +331,7 @@ select:focus { outline: 2px solid var(--acc); }
 #report-slide-continuous.hidden { display: none; }
 .rs-card + .rs-card { margin-top: 0; }
 .rs-card-index {
-  max-width: 720px; margin: 0 auto 4px; font-size: 12px; font-weight: 700;
+  font-size: 12px; font-weight: 700;
   color: var(--txt2);
 }
 #report-pager {
@@ -820,10 +821,7 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="holdings_intraday">盤中持股分析</option>
         </select>
         <span id="report-status"></span>
-        <select id="report-view-mode-sel">
-          <option value="paged">分頁瀏覽</option>
-          <option value="continuous">連續瀏覽</option>
-        </select>
+        <button class="btn icon" id="report-view-mode-btn" title="切換顯示模式"></button>
       </div>
       <div id="report-slide-wrap">
         <div id="report-slide"></div>
@@ -3359,7 +3357,7 @@ const R = {
   reportPanel:     $('report-panel'),
   reportTypeSel:   $('report-type-sel'),
   reportStatus:    $('report-status'),
-  reportViewModeSel: $('report-view-mode-sel'),
+  reportViewModeBtn: $('report-view-mode-btn'),
   reportSlideWrap: $('report-slide-wrap'),
   reportSlide:     $('report-slide'),
   reportSlideContinuous: $('report-slide-continuous'),
@@ -3905,6 +3903,28 @@ function esc(s) {
 
 function getReportViewMode() {
   return Settings.get('reportViewMode') || 'paged';
+}
+
+// 分頁瀏覽圖示：左右兩個半格帶箭頭（‹ ›），代表「一次一頁、可翻頁」；
+// 連續瀏覽圖示：上下兩個堆疊方塊，代表「全部投影片垂直捲動」。
+const REPORT_VIEW_ICONS = {
+  paged: { svg: `<svg width="22" height="16" viewBox="0 0 22 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0.5" y="0.5" width="5" height="15" rx="1.5" stroke="currentColor"/>
+      <path d="M4.2 4.5L2 8l2.2 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <rect x="7" y="0.5" width="8" height="15" rx="1.5" stroke="currentColor"/>
+      <rect x="16.5" y="0.5" width="5" height="15" rx="1.5" stroke="currentColor"/>
+      <path d="M17.8 4.5L20 8l-2.2 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </svg>`, title: '目前為分頁瀏覽（點擊切換為連續瀏覽）' },
+  continuous: { svg: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0.5" y="0.5" width="15" height="6.5" rx="1.5" stroke="currentColor"/>
+      <rect x="0.5" y="9" width="15" height="6.5" rx="1.5" stroke="currentColor"/>
+    </svg>`, title: '目前為連續瀏覽（點擊切換為分頁瀏覽）' },
+};
+
+function updateReportViewModeBtn() {
+  const icon = REPORT_VIEW_ICONS[getReportViewMode()];
+  R.reportViewModeBtn.innerHTML = icon.svg;
+  R.reportViewModeBtn.title = icon.title;
 }
 
 function showReportNotice(html) {
@@ -4506,8 +4526,10 @@ function bindEvents() {
     Settings.set('reportType', R.reportTypeSel.value);
     loadCurrentReport();
   });
-  R.reportViewModeSel.addEventListener('change', () => {
-    Settings.set('reportViewMode', R.reportViewModeSel.value);
+  R.reportViewModeBtn.addEventListener('click', () => {
+    const next = getReportViewMode() === 'paged' ? 'continuous' : 'paged';
+    Settings.set('reportViewMode', next);
+    updateReportViewModeBtn();
     renderReportSlide();
   });
   R.reportPrev.addEventListener('click', () => { currentReportSlideIdx--; renderReportSlide(); });
@@ -4761,7 +4783,7 @@ async function main() {
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
   rebuildIntradayPeriodToggle();
   R.reportTypeSel.value = Settings.get('reportType') || 'premarket';
-  R.reportViewModeSel.value = getReportViewMode();
+  updateReportViewModeBtn();
   setChartModeUI(Settings.get('chartMode') || 'daily');
   // 分析分頁不用等選股才重繪（本來就不綁定選中的股票），這裡直接載入一次；
   // daily/intraday 則跟原本一樣，等下面選股/選大盤指數的流程觸發即可。
