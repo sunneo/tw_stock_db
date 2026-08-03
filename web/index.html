@@ -1854,6 +1854,23 @@ const DBMgr = (() => {
   };
 })();
 
+/* 證交所即時行情裡的成交價欄位 z 實測常回傳 "-"（即使累積成交量 v 同時在漲，
+   代表確實有成交，只是這個欄位沒填——直接 curl mis.twse.com.tw 驗證過，換
+   Referer/cookie 都一樣，不是我們 proxy 的問題，應該是官方端的欄位特性）。
+   但五檔委買委賣 (a/b) 幾乎每次輪詢都有值，所以 z 缺漏時退回買賣中間價當
+   即時參考價，避免K棒/走勢圖因為 z 常態性缺漏而長時間收不到任何更新。 */
+function bidAskMidPrice(item) {
+  const parseLevel = (str) => {
+    if (!str) return null;
+    const first = str.split('_')[0];
+    const n = parseFloat(first);
+    return (first === '-' || isNaN(n)) ? null : n;
+  };
+  const ask = parseLevel(item.a), bid = parseLevel(item.b);
+  if (ask != null && bid != null) return (ask + bid) / 2;
+  return ask != null ? ask : bid;
+}
+
 /* ════════════════════════════════════════
    LIVE FEED  (盤中即時擷取，補齊本地還沒有的當天資料)
    在每次排程的官方資料落地之間（例如每日12:10的daily github更新）、收盤
@@ -1917,7 +1934,7 @@ const LiveFeed = (() => {
 
   function parseDailyRow(item) {
     if (itemDateIso(item) !== taipeiDateStr()) return null;
-    const open = num(item.o), close = num(item.z) ?? num(item.oz);
+    const open = num(item.o), close = num(item.z) ?? num(item.oz) ?? bidAskMidPrice(item);
     if (open == null || close == null) return null;
     const high = num(item.h), low = num(item.l);
     const volume = num(item.v); // 單位是「張」(1000股)，跟本地 daily_prices.volume 的單位（股）換算
@@ -2002,8 +2019,9 @@ const IntradayFeed = (() => {
     resetIfNewDay(today);
     const t = item.t; // 最近成交時間 'HH:MM:SS'
     if (!t) return;
-    const price = parseFloat(item.z);
-    if (isNaN(price)) return;
+    let price = parseFloat(item.z);
+    if (isNaN(price)) price = bidAskMidPrice(item); // z 常缺漏，見 bidAskMidPrice 註解
+    if (price == null || isNaN(price)) return;
     const volCumRaw = parseFloat(item.v); // 累計成交量（張）
     const volCum = isNaN(volCumRaw) ? null : volCumRaw;
 
@@ -2480,7 +2498,9 @@ const Chart = (() => {
       ctx.fillStyle = txt2Col;
       ctx.font      = '14px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('請從左側點選股票', W / 2, H / 2);
+      /* 走勢圖已經選了股票、只是還沒累積到任何 tick 時，資訊列（renderIntradayInfoLine）
+         已經講清楚原因了，這裡不該再顯示「請從左側點選股票」跟它互相矛盾。 */
+      ctx.fillText(period === 'intraday' ? '尚無走勢圖資料' : '請從左側點選股票', W / 2, H / 2);
       emitInfo(null);
       return;
     }
