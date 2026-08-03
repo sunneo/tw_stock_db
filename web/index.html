@@ -313,12 +313,14 @@ select:focus { outline: 2px solid var(--acc); }
 #report-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #report-panel.hidden { display: none; }
 #report-toolbar {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 8px 12px; border-bottom: 1px solid var(--bdr); background: var(--bg1);
   flex-shrink: 0;
 }
+#report-toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#report-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
 #report-status { font-size: 12px; color: var(--txt2); }
-#report-view-mode-btn { margin-left: auto; color: var(--txt1); }
+#report-view-mode-btn { color: var(--txt1); }
 #report-view-mode-btn svg { display: block; }
 #report-slide-wrap { flex: 1; overflow-y: auto; padding: 20px; }
 #report-slide, .rs-card {
@@ -705,7 +707,6 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="mtab-btn active" id="mtab-list" data-tab="list">📋 清單</button>
   <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 技術分析</button>
   <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
-  <button class="mtab-btn" id="mtab-analysis" data-tab="analysis">📰 分析</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -728,6 +729,7 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="lock_week_long">鎖做多-本週</option>
         <option value="lock_week_short">鎖做空-本週</option>
         <option value="usmarket">美股</option>
+        <option value="analysis">分析</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
       <div id="strong-bar" class="hidden">
@@ -773,11 +775,13 @@ select:focus { outline: 2px solid var(--acc); }
   <!-- chart -->
   <div id="chart-area">
     <!-- 桌面版分頁：技術分析(日K為主的圖表) / 走勢圖(當日5/20/60分K，見 IntradayFeed)。
-         手機版改用 #mobile-tabbar 的三個分頁，這排在手機版隱藏，見 CSS。 -->
+         個股、美股指數共用同一組分頁（見 renderIntradaySourceChart）。手機版
+         改用 #mobile-tabbar 的分頁，這排在手機版隱藏，見 CSS。「分析」報告
+         不是某支股票的顯示模式，改成左側 view-sel 的一個獨立分類，見
+         loadAnalysisView/selectReportType。 -->
     <div id="chart-mode-tabs">
       <button class="chart-mode-tab active" id="mode-tab-daily" data-mode="daily">技術分析</button>
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
-      <button class="chart-mode-tab" id="mode-tab-analysis" data-mode="analysis">分析</button>
     </div>
     <div id="chart-header">
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
@@ -807,21 +811,17 @@ select:focus { outline: 2px solid var(--acc); }
       <canvas id="main-chart"></canvas>
     </div>
     <!-- ══ 分析報告面板（公式化產生，見 run_daily_update.py Step 8 / report_builder.py）══
-         不綁定「目前選中的股票」，本身是全市場/清單性質的文件，跟技術分析/走勢圖
-         互斥顯示（見 applyChartMode）。內容完全由 run_daily_update.py 公式化產生，
-         沒有呼叫任何LLM/Claude。 -->
+         報告種類的選擇搬到左側 view-sel 的「分析」分類（見 loadAnalysisView/
+         selectReportType），這裡只負責顯示目前選到的那一份報告，跟技術分析/
+         走勢圖互斥顯示（見 showReportPanel/hideReportPanel）。內容完全由
+         run_daily_update.py 公式化產生，沒有呼叫任何LLM/Claude。 -->
     <div id="report-panel" class="hidden">
       <div id="report-toolbar">
-        <select id="report-type-sel">
-          <option value="premarket">盤前分析</option>
-          <option value="market">大盤分析</option>
-          <option value="market_intraday">盤中大盤分析</option>
-          <option value="holdings_week">本週持股分析</option>
-          <option value="holdings_nextday">隔日持股分析</option>
-          <option value="holdings_intraday">盤中持股分析</option>
-        </select>
+        <div id="report-toolbar-row">
+          <span id="report-title"></span>
+          <button class="btn icon" id="report-view-mode-btn" title="切換顯示模式"></button>
+        </div>
         <span id="report-status"></span>
-        <button class="btn icon" id="report-view-mode-btn" title="切換顯示模式"></button>
       </div>
       <div id="report-slide-wrap">
         <div id="report-slide"></div>
@@ -2400,11 +2400,10 @@ const IntradayFeed = (() => {
      離開前那一刻的舊畫面。用 5 分鐘節流（同一檔 5 分鐘內重進不重打）取
      兩者的平衡：夠短，回來時補得上空窗；夠長，不會跟著 20 秒的即時輪詢
      一起頻繁打這個非官方來源。 */
-  async function fetchYahooBackfill(code, market) {
+  async function fetchYahooBackfill(code, symbol) {
     if (!TWSE_PROXY_BASE) return;
     const last = backfillFetchedAt[code];
     if (last != null && Date.now() - last < BACKFILL_REFRESH_MS) return;
-    const symbol = code + (market === 'TPEx' ? '.TWO' : '.TW');
     try {
       const url = `${TWSE_PROXY_BASE}/yahoo-intraday?symbol=${symbol}&range=5d&interval=1m`;
       const res = await fetch(url, { cache: 'no-store' });
@@ -2457,9 +2456,12 @@ const IntradayFeed = (() => {
 
   /* 切到走勢圖分頁/選股時呼叫：把今天已經記錄過的 tick（可能是稍早這個分頁
      開過、或重新整理過頁面）從 IndexedDB 撈回來，避免每次都要重新累積；
-     同時觸發 Yahoo backfill 補開盤到現在那段空白（market 用來判斷上市/上櫃
-     對應的 Yahoo 代號後綴，見 fetchYahooBackfill）。 */
-  async function ensureLoadedFor(code, market) {
+     同時觸發 Yahoo backfill 補開盤到現在那段空白。yahooSymbol 由呼叫端解析
+     好完整代號傳進來（個股：代號+.TW/.TWO；美股指數：US_INDEX_LIST 裡的
+     yahoo 欄位，例如 ^DJI），這裡不用再判斷來源類型。個股沒有 LiveFeed
+     即時輪詢時（例如美股指數，本來就不支援），走勢圖就完全只靠這份
+     backfill，同樣可以正常顯示、只是不會有「還在成形中」的當下那一分鐘。 */
+  async function ensureLoadedFor(code, yahooSymbol) {
     const today = taipeiDateStr();
     resetIfNewDay(today);
     if (!ticksByCode[code]) {
@@ -2468,7 +2470,7 @@ const IntradayFeed = (() => {
         if (cached) ticksByCode[code] = cached;
       } catch {}
     }
-    await fetchYahooBackfill(code, market);
+    await fetchYahooBackfill(code, yahooSymbol);
   }
 
   /* 回傳「每一筆輪詢取樣」對應的最細單位 pseudo-candle（trade_date 帶完整
@@ -3027,7 +3029,7 @@ const Chart = (() => {
       ctx.beginPath(); ctx.moveTo(cx, pY(d.high)); ctx.lineTo(cx, pY(d.low)); ctx.stroke();
       const y1 = pY(Math.max(d.open, d.close)), y2 = pY(Math.min(d.open, d.close));
       const bh = Math.max(1, y2 - y1);
-      ctx.fillStyle = up ? upCol : 'transparent';
+      ctx.fillStyle = col;
       ctx.strokeStyle = col; ctx.lineWidth = 1;
       ctx.fillRect(cx - candleW / 2, y1, candleW, bh);
       ctx.strokeRect(cx - candleW / 2, y1, candleW, bh);
@@ -3348,14 +3350,12 @@ const R = {
   mtabList:        $('mtab-list'),
   mtabChart:       $('mtab-chart'),
   mtabTrend:       $('mtab-trend'),
-  mtabAnalysis:    $('mtab-analysis'),
   chartModeTabs:      $('chart-mode-tabs'),
   modeTabDaily:       $('mode-tab-daily'),
   modeTabIntraday:    $('mode-tab-intraday'),
-  modeTabAnalysis:    $('mode-tab-analysis'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
-  reportTypeSel:   $('report-type-sel'),
+  reportTitle:     $('report-title'),
   reportStatus:    $('report-status'),
   reportViewModeBtn: $('report-view-mode-btn'),
   reportSlideWrap: $('report-slide-wrap'),
@@ -3492,12 +3492,14 @@ function renderPage() {
 
   R.stockTbody.innerHTML = rows.join('');
 
-  /* row click → select stock (or US index, in the 美股 view) */
-  const isUsMarket = R.viewSel.value === 'usmarket';
+  /* row click → select stock（或 美股 分頁的指數、分析 分頁的報告種類） */
+  const isUsMarket  = R.viewSel.value === 'usmarket';
+  const isAnalysisView = R.viewSel.value === 'analysis';
   R.stockTbody.querySelectorAll('tr[data-code]').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.classList.contains('del-btn') || e.target.classList.contains('memo-btn')) return;
-      if (isUsMarket) selectMarketIndex(tr.dataset.code);
+      if (isAnalysisView) selectReportType(tr.dataset.code);
+      else if (isUsMarket) selectMarketIndex(tr.dataset.code);
       else selectStock(tr.dataset.code);
     });
   });
@@ -3767,6 +3769,7 @@ function switchView(view) {
   else if (view === 'watchlist') loadWatchlist();
   else if (parseLockView(view)) { const [, src, dir] = parseLockView(view); loadLockList(src, dir); }
   else if (view === 'usmarket') loadUsMarket();
+  else if (view === 'analysis') loadAnalysisView();
   else {
     const sid = R.sectorSel.value;
     if (sid) loadSector(sid);
@@ -3779,11 +3782,14 @@ function switchView(view) {
    資料已隨既有的 monthly 快照/每日增量一起同步，這裡只是換一張表查詢，不需要另外抓資料。
    個股層級的美股追蹤（例如任意輸入 AAPL）目前還沒有爬蟲支援，之後再加。
    ════════════════════════════════════════ */
+// yahoo：走勢圖用 Yahoo 股市圖表 API 補資料時要打的代號（見 IntradayFeed.
+// fetchYahooBackfill），跟 DBMgr.getMarketIndexHistory 查表用的 code 是
+// 兩套不同代號、故意分開存，避免混用。
 const US_INDEX_LIST = [
-  { code: 'DJI',     name: '道瓊工業指數' },
-  { code: 'SPX',     name: '標普500' },
-  { code: 'NASDAQ',  name: '那斯達克' },
-  { code: 'SOX',     name: '費城半導體' },
+  { code: 'DJI',     name: '道瓊工業指數', yahoo: '^DJI' },
+  { code: 'SPX',     name: '標普500',      yahoo: '^GSPC' },
+  { code: 'NASDAQ',  name: '那斯達克',      yahoo: '^IXIC' },
+  { code: 'SOX',     name: '費城半導體',    yahoo: '^SOX' },
 ];
 
 function loadUsMarket() {
@@ -3793,6 +3799,44 @@ function loadUsMarket() {
   });
   State.page = 0;
   renderPage();
+}
+
+/* 左側 view-sel 選到「分析」時：借用既有的 #stock-table 清單UI 把 6 種報告
+   種類當「股票列」列出來（開高低收欄位沒有意義，renderPage 對 open/close
+   為 null 的列自動顯示「-」，沒有另外處理）。跟 loadUsMarket 同一種模式，
+   只是點列之後呼叫 selectReportType 而不是 selectStock/selectMarketIndex
+   （見 renderPage 裡的 row click 判斷）。 */
+function loadAnalysisView() {
+  State.stocks = ANALYSIS_TYPE_LIST.map(({ code, name }) => ({ stock_code: code, stock_name: name }));
+  State.page = 0;
+  renderPage();
+}
+
+/* 點選左側「分析」清單裡的某一種報告：顯示分析報告面板（蓋掉技術分析/
+   走勢圖圖表，見 showReportPanel/hideReportPanel），並把該份報告載入。跟
+   selectStock/selectMarketIndex 是同一層級的「選擇目前要顯示什麼」入口，
+   只是這裡選的不是個股/指數，而是一份公式化報告。 */
+function selectReportType(type) {
+  currentAnalysisType = type;
+  Settings.set('reportType', type);
+  R.stockTbody.querySelectorAll('tr').forEach(tr =>
+    tr.classList.toggle('selected', tr.dataset.code === type)
+  );
+  showReportPanel();
+  loadCurrentReport();
+  focusChartArea();
+}
+
+/* selectStock/selectMarketIndex 收尾都呼叫 switchMobileTab(...)，順便觸發
+   applyChartMode 重繪圖表；分析報告面板不是圖表，不需要 applyChartMode，
+   但手機直向版面一樣要從「清單」分頁切到「圖表區」分頁才看得到，這裡只
+   做版面切換那一半。 */
+function focusChartArea() {
+  R.main.classList.remove('show-list');
+  R.main.classList.add('show-chart');
+  R.mtabList.classList.remove('active');
+  R.mtabChart.classList.remove('active');
+  R.mtabTrend.classList.remove('active');
 }
 
 /* liveBadge: true 的時候在資訊列後面加上「🔴即時」提示，表示這筆資料是
@@ -3809,14 +3853,17 @@ function renderChartInfoLine(history, liveBadge) {
   R.chartInfo.textContent = base + (liveBadge ? '　🔴即時' : '');
 }
 
-function renderIntradayInfoLine(rows) {
+function renderIntradayInfoLine(rows, isIndex) {
   if (!rows.length) {
-    R.chartInfo.textContent = '走勢圖：尚未收集到今日即時資料（開盤期間打開本頁才會開始累積，見設定的說明）';
+    R.chartInfo.textContent = isIndex
+      ? '走勢圖：目前抓不到 Yahoo 的美股分線資料（可能還在抓取中，或美股當時休市）'
+      : '走勢圖：尚未收集到今日即時資料（開盤期間打開本頁才會開始累積，見設定的說明）';
     return;
   }
   const last = rows.at(-1);
   const t = (last.trade_date.split('T')[1] || '').slice(0, 8);
-  R.chartInfo.textContent = `最後 ${t}  收 ${last.close?.toFixed(2)}　累積 ${rows.length} 筆　🔴即時`;
+  const badge = isIndex ? '' : '　🔴即時'; // 美股指數走勢圖純靠 Yahoo backfill，沒有 LiveFeed 即時輪詢
+  R.chartInfo.textContent = `最後 ${t}  收 ${last.close?.toFixed(2)}　累積 ${rows.length} 筆${badge}`;
 }
 
 /* 技術分析（日線為主）分頁的實際繪製，個股/大盤指數共用。preserveView 給
@@ -3835,12 +3882,18 @@ function renderDailySourceChart(opts = {}) {
   renderChartInfoLine(history, isLive);
 }
 
-/* 走勢圖分頁：只支援個股（見 IntradayFeed 註解，跟 LiveFeed 範圍一致）。 */
+/* 走勢圖分頁：個股靠 LiveFeed 即時輪詢 + Yahoo backfill；美股指數（見
+   US_INDEX_LIST）沒有 LiveFeed 這種即時輪詢來源，純靠 Yahoo backfill——
+   兩者都交給 IntradayFeed 同一套機制處理，差別只在丟進去的 yahooSymbol
+   跟有沒有後續的即時 tick 而已（見 IntradayFeed.ensureLoadedFor 註解）。 */
 async function renderIntradaySourceChart() {
-  const code = currentChartSource.code;
-  const market = DBMgr.getStockInfo(code)?.market;
-  await IntradayFeed.ensureLoadedFor(code, market);
-  if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return; // 使用者可能已經切走了
+  const { type, code } = currentChartSource;
+  const isIndex = type === 'index';
+  const yahooSymbol = isIndex
+    ? (US_INDEX_LIST.find(x => x.code === code)?.yahoo || code)
+    : (code + (DBMgr.getStockInfo(code)?.market === 'TPEx' ? '.TWO' : '.TW'));
+  await IntradayFeed.ensureLoadedFor(code, yahooSymbol);
+  if (currentChartSource?.type !== type || currentChartSource.code !== code) return; // 使用者可能已經切走了
   const rows = IntradayFeed.getTickRows(code);
   const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
   /* 走勢圖沒有技術分析那種「按月份漸進擴充」的更早資料可以補——backfill
@@ -3851,7 +3904,7 @@ async function renderIntradaySourceChart() {
      guard 說明）。 */
   Chart.setMoreHistoryAvailable(false);
   Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: false });
-  renderIntradayInfoLine(rows);
+  renderIntradayInfoLine(rows, isIndex);
 }
 
 /* 依目前 currentChartSource + chartMode 畫出對應的圖表；selectStock/
@@ -3859,42 +3912,64 @@ async function renderIntradaySourceChart() {
    避免同一份邏輯散落在好幾個地方各寫一次。 */
 function renderCurrentSourceChart(opts = {}) {
   if (!currentChartSource) return;
-  if (currentChartSource.type === 'index' || chartMode !== 'intraday') renderDailySourceChart(opts);
+  // 個股、美股指數（見 US_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
+  // 決定要畫哪一種，不再依 currentChartSource.type 特別把指數鎖在日線。
+  if (chartMode !== 'intraday') renderDailySourceChart(opts);
   else renderIntradaySourceChart();
 }
 
-/* 設定 chartMode 相關的 UI 狀態（分頁 active、顯示哪一組級距切換鈕），
-   不含重繪——updateChartModeAvailability 需要在「不觸發重繪」的情況下
-   把不支援走勢圖的來源（大盤指數）強制切回技術分析。 */
+/* 分析報告面板跟技術分析/走勢圖圖表互斥顯示（同一塊 #chart-area），但「分析」
+   現在是左側 view-sel 的獨立分類（見 selectReportType），不是 chartMode 的
+   一個值——setChartModeUI 只要負責「技術分析/走勢圖」這兩種圖表模式，並且
+   一律把報告面板蓋掉即可（使用者點技術分析/走勢圖分頁，等於是要看圖表）。 */
 function setChartModeUI(mode) {
   chartMode = mode;
   Settings.set('chartMode', mode);
   R.modeTabDaily.classList.toggle('active', mode === 'daily');
   R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
-  R.modeTabAnalysis.classList.toggle('active', mode === 'analysis');
   R.periodToggle.classList.toggle('hidden', mode !== 'daily');
   R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
-  // 分析分頁不是圖表——不綁定目前選中的股票，整組 chart-header/info-bar/canvas
-  // 換成報告面板（見 report-panel 的 HTML 註解）。
-  const isAnalysis = mode === 'analysis';
-  R.chartHeader.classList.toggle('hidden', isAnalysis);
-  R.chartInfoBar.classList.toggle('hidden', isAnalysis);
-  R.chartWrap.classList.toggle('hidden', isAnalysis);
-  R.reportPanel.classList.toggle('hidden', !isAnalysis);
+  hideReportPanel();
 }
 
 function applyChartMode(mode) {
-  if (currentChartSource?.type === 'index' && mode === 'intraday') return; // 大盤指數不支援走勢圖
   setChartModeUI(mode);
-  if (mode === 'analysis') loadCurrentReport();
-  else renderCurrentSourceChart();
+  renderCurrentSourceChart();
+}
+
+/* 技術分析/走勢圖圖表 vs 分析報告面板的顯示切換，見上面 setChartModeUI 的
+   說明、以及 selectReportType（報告面板顯示的另一側入口）。 */
+function hideReportPanel() {
+  R.chartHeader.classList.remove('hidden');
+  R.chartInfoBar.classList.remove('hidden');
+  R.chartWrap.classList.remove('hidden');
+  R.reportPanel.classList.add('hidden');
+}
+
+function showReportPanel() {
+  R.chartHeader.classList.add('hidden');
+  R.chartInfoBar.classList.add('hidden');
+  R.chartWrap.classList.add('hidden');
+  R.reportPanel.classList.remove('hidden');
 }
 
 /* ════════════════════════════════════════
    分析報告面板：載入 + 投影片渲染（YAML → HTML，見 ReportStore/YamlLite）
    ════════════════════════════════════════ */
+// 6 種報告的代號/中文名稱，對應 run_daily_update.py 的 REPORT_LABELS；
+// 左側 view-sel 選到「分析」時，loadAnalysisView() 拿這份清單當「股票清單」
+// 塞進既有的 #stock-table（借用同一套清單UI，見該函式註解）。
+const ANALYSIS_TYPE_LIST = [
+  { code: 'premarket',         name: '盤前分析' },
+  { code: 'market',            name: '大盤分析' },
+  { code: 'market_intraday',   name: '盤中大盤分析' },
+  { code: 'holdings_week',     name: '本週持股分析' },
+  { code: 'holdings_nextday',  name: '隔日持股分析' },
+  { code: 'holdings_intraday', name: '盤中持股分析' },
+];
 let currentReportData = null;
 let currentReportSlideIdx = 0;
+let currentAnalysisType = null; // 目前顯示中的報告種類代號，null 代表報告面板沒在顯示
 
 function esc(s) {
   if (s == null) return '';
@@ -3935,14 +4010,16 @@ function showReportNotice(html) {
 }
 
 async function loadCurrentReport() {
-  const type = R.reportTypeSel.value;
+  const type = currentAnalysisType;
+  if (!type) return;
+  R.reportTitle.textContent = ANALYSIS_TYPE_LIST.find(x => x.code === type)?.name || type;
   R.reportStatus.textContent = '載入中…';
   showReportNotice('');
   currentReportData = null;
   currentReportSlideIdx = 0;
 
   const data = await ReportStore.fetchReport(type);
-  if (chartMode !== 'analysis' || R.reportTypeSel.value !== type) return; // 使用者可能已經切走了
+  if (currentAnalysisType !== type) return; // 使用者可能已經切走了
 
   if (!data || !data.slides || !data.slides.length) {
     R.reportStatus.textContent = '目前沒有這份報告（尚未產生，或抓不到檔案）';
@@ -3950,7 +4027,7 @@ async function loadCurrentReport() {
     return;
   }
   currentReportData = data;
-  R.reportStatus.textContent = `${data.title || ''}　產生時間：${data.generated_at || '-'}`;
+  R.reportStatus.textContent = `產生時間：${data.generated_at || '-'}`;
   renderReportSlide();
 }
 
@@ -4069,11 +4146,11 @@ function renderStockDiagnosisHtml(d) {
   `;
 }
 
+/* 現在個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖了，這裡保留下來只是
+   防呆：確保切換股票/指數時清掉舊的 disabled 視覺殘留（理論上不會再被設上）。*/
 function updateChartModeAvailability() {
-  const isIndex = currentChartSource?.type === 'index';
-  R.modeTabIntraday.classList.toggle('disabled', isIndex);
-  R.mtabTrend.classList.toggle('disabled', isIndex);
-  if (isIndex && chartMode === 'intraday') setChartModeUI('daily');
+  R.modeTabIntraday.classList.remove('disabled');
+  R.mtabTrend.classList.remove('disabled');
 }
 
 function rebuildIntradayPeriodToggle() {
@@ -4086,6 +4163,7 @@ function rebuildIntradayPeriodToggle() {
 }
 
 function selectMarketIndex(code) {
+  currentAnalysisType = null;
   currentChartSource = { type: 'index', code };
   sourceExhausted = false;
   LiveFeed.stop(); // 即時擷取目前只支援個股，不支援大盤指數
@@ -4099,9 +4177,12 @@ function selectMarketIndex(code) {
   showMemoChartBtn(code);
   updateChartModeAvailability();
 
-  /* switchMobileTab('chart') 會透過 applyChartMode 觸發實際重繪，這裡不用
-     再另外呼叫 renderCurrentSourceChart，避免同一次選股重繪兩次。 */
-  switchMobileTab('chart');
+  /* 美股指數現在也支援走勢圖了（見 renderIntradaySourceChart），跟
+     selectStock 一樣要尊重目前開著的是技術分析還是走勢圖分頁，不能每次
+     選指數都強制跳回技術分析。switchMobileTab 會透過 applyChartMode
+     觸發實際重繪，這裡不用再另外呼叫 renderCurrentSourceChart，避免同一次
+     選股重繪兩次。 */
+  switchMobileTab(chartMode === 'intraday' ? 'trend' : 'chart');
   setDrawerOpen(false);
 }
 
@@ -4109,6 +4190,7 @@ function selectMarketIndex(code) {
    STOCK SELECT → CHART
    ════════════════════════════════════════ */
 function selectStock(code) {
+  currentAnalysisType = null;
   Settings.set('selectedStock', code);
   currentChartSource = { type: 'stock', code };
   sourceExhausted = false;
@@ -4334,9 +4416,11 @@ function refreshCurrentView() {
   else if (v === 'watchlist') loadWatchlist();
   else if (parseLockView(v)) { const [, src, dir] = parseLockView(v); loadLockList(src, dir); }
   else if (v === 'usmarket') loadUsMarket();
+  else if (v === 'analysis') loadAnalysisView();
   else loadSector(R.sectorSel.value);
 
-  if (currentChartSource?.type === 'index') selectMarketIndex(currentChartSource.code);
+  if (currentAnalysisType) selectReportType(currentAnalysisType);
+  else if (currentChartSource?.type === 'index') selectMarketIndex(currentChartSource.code);
   else {
     const sel = Settings.get('selectedStock');
     if (sel) selectStock(sel);
@@ -4395,17 +4479,15 @@ function populateSectors() {
    MOBILE LAYOUT — portrait tab-switch (list ⇄ chart) + landscape drawer
    ════════════════════════════════════════ */
 function switchMobileTab(tab) {
-  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'analysis'); // 三者共用同一個 #chart-area
+  const showChart = (tab === 'chart' || tab === 'trend'); // 兩者共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
   R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
   R.mtabChart.classList.toggle('active', tab === 'chart');
   R.mtabTrend.classList.toggle('active', tab === 'trend');
-  R.mtabAnalysis.classList.toggle('active', tab === 'analysis');
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
-  else if (tab === 'analysis') applyChartMode('analysis');
-  if (tab === 'chart' || tab === 'trend') setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
+  if (showChart) setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
 }
 
 function setDrawerOpen(open) {
@@ -4515,17 +4597,10 @@ function bindEvents() {
   /* mobile portrait tab-switch (清單 ⇄ 技術分析 ⇄ 走勢圖) */
   R.mtabList.addEventListener('click', () => switchMobileTab('list'));
   R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
-  R.mtabTrend.addEventListener('click', () => {
-    if (R.mtabTrend.classList.contains('disabled')) return; // 大盤指數不支援走勢圖
-    switchMobileTab('trend');
-  });
-  R.mtabAnalysis.addEventListener('click', () => switchMobileTab('analysis'));
+  R.mtabTrend.addEventListener('click', () => switchMobileTab('trend'));
 
-  /* 分析報告面板：選報告種類、上一頁/下一頁 */
-  R.reportTypeSel.addEventListener('change', () => {
-    Settings.set('reportType', R.reportTypeSel.value);
-    loadCurrentReport();
-  });
+  /* 分析報告面板：報告種類改由左側 view-sel「分析」清單選（見 selectReportType），
+     這裡只剩顯示模式（分頁/連續）跟上一頁/下一頁。 */
   R.reportViewModeBtn.addEventListener('click', () => {
     const next = getReportViewMode() === 'paged' ? 'continuous' : 'paged';
     Settings.set('reportViewMode', next);
@@ -4782,12 +4857,8 @@ async function main() {
   /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
   rebuildIntradayPeriodToggle();
-  R.reportTypeSel.value = Settings.get('reportType') || 'premarket';
   updateReportViewModeBtn();
   setChartModeUI(Settings.get('chartMode') || 'daily');
-  // 分析分頁不用等選股才重繪（本來就不綁定選中的股票），這裡直接載入一次；
-  // daily/intraday 則跟原本一樣，等下面選股/選大盤指數的流程觸發即可。
-  if (chartMode === 'analysis') loadCurrentReport();
 
   /* restore view selector (migrate old values from earlier版本的 schema) */
   let savedView = Settings.get('view') || 'sector';
@@ -4823,6 +4894,11 @@ async function main() {
   /* restore selected stock */
   const sel = Settings.get('selectedStock');
   if (sel && DBMgr.isReady()) selectStock(sel);
+
+  /* 如果上次結束時是在看「分析」報告，這裡要蓋過上面 selectStock 的重繪
+     ——兩者都會各自搶著決定右側要顯示圖表還是報告面板，最後呼叫的贏，
+     所以刻意放在 selectStock 之後。 */
+  if (savedView === 'analysis') selectReportType(Settings.get('reportType') || 'premarket');
 
   /* initial chart resize */
   setTimeout(() => Chart.resize(), 50);

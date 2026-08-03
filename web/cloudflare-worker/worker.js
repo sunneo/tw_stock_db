@@ -59,8 +59,9 @@ const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
 // 白名單而非黑名單，避免這個路由被當成任意網址的通用代理。
 const EX_CH_PATTERN = /^[a-z]+_[A-Za-z0-9]+\.tw(\|[a-z]+_[A-Za-z0-9]+\.tw)*$/;
 
-// Yahoo 股票代號只允許「數字代號.TW」（上市）或「數字代號.TWO」（上櫃）。
-const YAHOO_SYMBOL_PATTERN = /^[A-Za-z0-9]+\.(TW|TWO)$/;
+// Yahoo 股票代號只允許「數字代號.TW」（上市）、「數字代號.TWO」（上櫃），
+// 或「^開頭的美股指數代號」（例如 ^DJI/^GSPC/^IXIC/^SOX，見 US_INDEX_LIST）。
+const YAHOO_SYMBOL_PATTERN = /^(\^[A-Za-z0-9]{1,10}|[A-Za-z0-9]+\.(TW|TWO))$/;
 
 // 走勢圖縮小(zoom out)超出當天範圍時，用比較長的 range 補前幾個交易日的分K
 // （見 README「為什麼多一個 Yahoo 來源」）；白名單住 Yahoo 實際支援的組合，
