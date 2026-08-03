@@ -49,7 +49,7 @@ NVIDIA 那邊把它註銷、重發一組新的**，然後照下面步驟把新�
 |---|---|---|
 | `GET /realtime?ex_ch=tse_2330.tw` | MIS 即時行情 API | 單一個股即時報價；上市代號用 `tse_` 開頭，上櫃用 `otc_` 開頭。可用 `\|` 分隔一次查多檔，例如 `tse_2330.tw\|otc_6488.tw` |
 | `GET /holiday` | OpenAPI 休市日曆 | 用來判斷今天是不是交易日；這個路由在 Cloudflare 邊緣快取 24 小時，減少對證交所的請求量 |
-| `GET /yahoo-intraday?symbol=2330.TW` | Yahoo 股市圖表 API | 今日 1 分K（開盤到現在），上市用 `.TW`、上櫃用 `.TWO` 結尾。切到「走勢圖」分頁時打，同一檔股票 5 分鐘內重進不重打，用來墊補開盤到現在之間、證交所自己補不回來的那段空白，也順便補使用者切走又切回來時中間的空窗（見下方「為什麼多一個 Yahoo 來源」） |
+| `GET /yahoo-intraday?symbol=2330.TW&range=5d&interval=1m` | Yahoo 股市圖表 API | 近5個交易日的分K（預設 `range=1d&interval=1m`），上市用 `.TW`、上櫃用 `.TWO` 結尾。`range` 只接受 `1d\|5d\|1mo`，`interval` 只接受 `1m\|2m\|5m\|15m\|30m`（白名單，其他值回 400）。切到「走勢圖」分頁時打，同一檔股票 5 分鐘內重進不重打，用來墊補開盤到現在之間、證交所自己補不回來的那段空白，縮小(zoom out)時也能看到前幾個交易日，也順便補使用者切走又切回來時中間的空窗（見下方「為什麼多一個 Yahoo 來源」） |
 
 原本的 `/api`、`/chat/completions` 兩個路由完全不受影響。
 
@@ -62,12 +62,16 @@ NVIDIA 那邊把它註銷、重發一組新的**，然後照下面步驟把新�
 `getStockInfo.jsp` 只給「這一瞬間」的快照，`MI_5MINS` 這類彙總資料又只在
 收盤後才發布前一個交易日的內容（實測過，見上面 CORS 調查那節），所以
 走勢圖如果純粹靠輪詢 `/realtime` 累積，使用者收盤前才打開網頁的話，
-開盤到打開網頁那段時間永遠是空的、原理上補不回來。
+開盤到打開網頁那段時間永遠是空的、縮小想看前幾天更是完全沒有，原理上
+補不回來。
 
 Yahoo 股市的公開圖表 API（`query1.finance.yahoo.com/v8/finance/chart/...`，
-同樣沒有 CORS header）剛好有「當日 1 分K」這份資料，拿來墊這段空白的大致
-輪廓——這不是官方資料，只在切到走勢圖分頁那一刻打一次，之後的即時更新
-還是靠 `/realtime` 輪詢，不會每 20 秒重打 Yahoo。
+同樣沒有 CORS header）剛好有這份資料，而且不只當天——實測 `range=5d`
+配 `interval=1m` 可以拿到近5個交易日、分鐘級的資料（更早的話 Yahoo 這個
+端點就沒有分鐘級細節了，只能退回看「技術分析」分頁的日線），拿來墊這段
+空白的大致輪廓——這不是官方資料，之後的即時更新還是靠 `/realtime`
+輪詢，不會每 20 秒重打 Yahoo（見前端 `IntradayFeed.BACKFILL_REFRESH_MS`
+的節流）。
 
 ## 部署（更新既有的 Worker）
 
@@ -109,8 +113,8 @@ curl "https://dawn-disk-778c.sunneo529.workers.dev/realtime?ex_ch=tse_2330.tw"
 # 休市日曆
 curl "https://dawn-disk-778c.sunneo529.workers.dev/holiday"
 
-# 今日1分K backfill（上市用 .TW、上櫃用 .TWO）
-curl "https://dawn-disk-778c.sunneo529.workers.dev/yahoo-intraday?symbol=2330.TW"
+# 近5個交易日1分K backfill（上市用 .TW、上櫃用 .TWO）
+curl "https://dawn-disk-778c.sunneo529.workers.dev/yahoo-intraday?symbol=2330.TW&range=5d&interval=1m"
 
 # 確認原本的 NVIDIA 代理沒被動到
 curl -X POST "https://dawn-disk-778c.sunneo529.workers.dev/api" \

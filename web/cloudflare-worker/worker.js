@@ -22,12 +22,14 @@
  * 證交所自己完全沒有「個股當日已發生的分時/逐筆歷史」這種公開 API（只有
  * 這一瞬間的快照，或收盤後才發布的前一日彙總，見 README.md 的測試紀錄），
  * 所以走勢圖如果只靠 /realtime 輪詢，使用者收盤前才打開網頁的話，開盤到
- * 打開網頁那段時間永遠是空的、補不回來。Yahoo 股市的公開圖表 API
- * （query1.finance.yahoo.com/v8/finance/chart/...）剛好有這份資料
- * （range=1d&interval=1m），拿來補這段空白的輪廓；跟 /realtime 一樣沒有
- * CORS header，一樣需要代理。這不是官方資料、只當作進走勢圖那一刻的
- * 一次性墊底，之後的即時更新還是靠 /realtime 輪詢，不會每 20 秒重打
- * Yahoo（避免對這個非正式資料源造成不必要負擔）。
+ * 打開網頁那段時間永遠是空的、補不回來；縮小(zoom out)想看前幾個交易日
+ * 也一樣沒資料。Yahoo 股市的公開圖表 API
+ * （query1.finance.yahoo.com/v8/finance/chart/...）剛好有這份資料，支援
+ * range/interval 參數（例如 range=5d&interval=1m 可以拿到近5個交易日的
+ * 1分K），拿來補這段空白的輪廓；跟 /realtime 一樣沒有 CORS header，一樣
+ * 需要代理。這不是官方資料，之後的即時更新還是靠 /realtime 輪詢，不會
+ * 每 20 秒重打 Yahoo（避免對這個非正式資料源造成不必要負擔，見前端
+ * IntradayFeed.BACKFILL_REFRESH_MS 的節流）。
  *
  * ── 關於 NVAPI_KEY ──
  * 原本的程式碼把 API key 直接寫死在原始碼字串裡。這個檔案會被放進
@@ -60,6 +62,12 @@ const EX_CH_PATTERN = /^[a-z]+_[A-Za-z0-9]+\.tw(\|[a-z]+_[A-Za-z0-9]+\.tw)*$/;
 // Yahoo 股票代號只允許「數字代號.TW」（上市）或「數字代號.TWO」（上櫃）。
 const YAHOO_SYMBOL_PATTERN = /^[A-Za-z0-9]+\.(TW|TWO)$/;
 
+// 走勢圖縮小(zoom out)超出當天範圍時，用比較長的 range 補前幾個交易日的分K
+// （見 README「為什麼多一個 Yahoo 來源」）；白名單住 Yahoo 實際支援的組合，
+// 避免這個路由被當成任意參數的通用代理。
+const YAHOO_RANGE_PATTERN = /^(1d|5d|1mo)$/;
+const YAHOO_INTERVAL_PATTERN = /^(1m|2m|5m|15m|30m)$/;
+
 function jsonResponse(body, status, extraHeaders = {}) {
   return new Response(body, {
     status,
@@ -90,9 +98,14 @@ async function handleYahooIntraday(url) {
   if (!YAHOO_SYMBOL_PATTERN.test(symbol)) {
     return jsonResponse(JSON.stringify({ error: "invalid symbol" }), 400);
   }
+  const range = url.searchParams.get("range") || "1d";
+  const interval = url.searchParams.get("interval") || "1m";
+  if (!YAHOO_RANGE_PATTERN.test(range) || !YAHOO_INTERVAL_PATTERN.test(interval)) {
+    return jsonResponse(JSON.stringify({ error: "invalid range/interval" }), 400);
+  }
   const upstream = new URL(`${YAHOO_CHART_BASE}/${symbol}`);
-  upstream.searchParams.set("range", "1d");
-  upstream.searchParams.set("interval", "1m");
+  upstream.searchParams.set("range", range);
+  upstream.searchParams.set("interval", interval);
 
   const resp = await fetch(upstream.toString(), {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; tw-stock-tracker-proxy/1.0)" },
