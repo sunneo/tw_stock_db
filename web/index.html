@@ -309,6 +309,61 @@ select:focus { outline: 2px solid var(--acc); }
 .chart-mode-tab:hover:not(.active):not(.disabled) { background: var(--bg3); }
 .chart-mode-tab.disabled { color: var(--txt2); opacity: .4; cursor: default; }
 
+/* ── 分析報告面板（YAML→投影片渲染，見 renderReportSlides） ── */
+#report-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#report-panel.hidden { display: none; }
+#report-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-bottom: 1px solid var(--bdr); background: var(--bg1);
+  flex-shrink: 0;
+}
+#report-status { font-size: 12px; color: var(--txt2); }
+#report-slide-wrap { flex: 1; overflow-y: auto; padding: 20px; }
+#report-slide {
+  max-width: 720px; margin: 0 auto;
+  background: var(--bg1); border: 1px solid var(--bdr); border-radius: 10px;
+  box-shadow: var(--shd); padding: 28px 32px; min-height: 320px;
+}
+#report-pager {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 8px 12px; border-top: 1px solid var(--bdr); background: var(--bg1);
+  flex-shrink: 0;
+}
+#report-page-info { font-size: 13px; color: var(--txt2); min-width: 60px; text-align: center; }
+
+/* slide 內容樣式 */
+.rs-title { font-size: 22px; font-weight: 700; color: var(--txt0); margin-bottom: 6px; }
+.rs-subtitle { font-size: 13px; color: var(--txt2); }
+.rs-heading { font-size: 15px; font-weight: 700; color: var(--txt0); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--bdr); }
+.rs-metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.rs-metric-tile { background: var(--bg2); border-radius: 8px; padding: 10px 12px; }
+.rs-metric-label { font-size: 12px; color: var(--txt2); margin-bottom: 4px; }
+.rs-metric-value { font-size: 18px; font-weight: 700; color: var(--txt0); }
+.rs-metric-change.up { color: var(--up); }
+.rs-metric-change.down { color: var(--dn); }
+.rs-metric-change.flat { color: var(--txt2); }
+.rs-text-body { font-size: 14px; line-height: 1.8; color: var(--txt1); white-space: pre-wrap; }
+.rs-notice {
+  background: var(--acc2); border: 1px solid var(--acc); border-radius: 8px;
+  padding: 12px 14px; font-size: 13px; color: var(--txt1); line-height: 1.6;
+}
+.rs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rs-table th, .rs-table td { padding: 6px 8px; border-bottom: 1px solid var(--bdr); text-align: left; }
+.rs-table th { color: var(--txt2); font-weight: 600; }
+
+.rs-diag-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.rs-diag-code { font-size: 18px; font-weight: 700; color: var(--txt0); }
+.rs-diag-name { font-size: 14px; color: var(--txt1); }
+.rs-diag-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.rs-diag-badge.long { background: var(--bg3); color: var(--up); }
+.rs-diag-badge.short { background: var(--bg3); color: var(--dn); }
+.rs-diag-section { margin-top: 14px; }
+.rs-diag-section-title { font-size: 12px; font-weight: 700; color: var(--acc); margin-bottom: 4px; }
+.rs-diag-section-body { font-size: 13px; line-height: 1.7; color: var(--txt1); }
+.rs-diag-pass { color: var(--dn); font-weight: 600; }
+.rs-diag-fail { color: var(--up); font-weight: 600; }
+.rs-diag-risk { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--bdr); font-size: 12px; color: var(--txt2); line-height: 1.6; }
+
 /* ── Fixed chart info bar (replaces the old floating tooltip) ── */
 #chart-info-bar {
   display: flex;
@@ -639,6 +694,7 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="mtab-btn active" id="mtab-list" data-tab="list">📋 清單</button>
   <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 技術分析</button>
   <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
+  <button class="mtab-btn" id="mtab-analysis" data-tab="analysis">📰 分析</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -710,6 +766,7 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-mode-tabs">
       <button class="chart-mode-tab active" id="mode-tab-daily" data-mode="daily">技術分析</button>
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
+      <button class="chart-mode-tab" id="mode-tab-analysis" data-mode="analysis">分析</button>
     </div>
     <div id="chart-header">
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
@@ -737,6 +794,31 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-info-bar"></div>
     <div id="chart-wrap">
       <canvas id="main-chart"></canvas>
+    </div>
+    <!-- ══ 分析報告面板（公式化產生，見 run_daily_update.py Step 8 / report_builder.py）══
+         不綁定「目前選中的股票」，本身是全市場/清單性質的文件，跟技術分析/走勢圖
+         互斥顯示（見 applyChartMode）。內容完全由 run_daily_update.py 公式化產生，
+         沒有呼叫任何LLM/Claude。 -->
+    <div id="report-panel" class="hidden">
+      <div id="report-toolbar">
+        <select id="report-type-sel">
+          <option value="premarket">盤前分析</option>
+          <option value="market">大盤分析</option>
+          <option value="market_intraday">盤中大盤分析</option>
+          <option value="holdings_week">本週持股分析</option>
+          <option value="holdings_nextday">隔日持股分析</option>
+          <option value="holdings_intraday">盤中持股分析</option>
+        </select>
+        <span id="report-status"></span>
+      </div>
+      <div id="report-slide-wrap">
+        <div id="report-slide"></div>
+      </div>
+      <div id="report-pager">
+        <button class="btn" id="report-prev">‹ 上一頁</button>
+        <span id="report-page-info">— / —</span>
+        <button class="btn" id="report-next">下一頁 ›</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1209,6 +1291,165 @@ const LockList = (() => {
   function getAsOfDate(source) { return state[source]?.data?.as_of_date || null; }
 
   return { ensureLoaded, getInfo, getByDirection, getAsOfDate };
+})();
+
+/* ════════════════════════════════════════
+   YAML LITE  (手刻的最小 YAML parser，給「分析」分頁的報告用)
+
+   只需要吃 tw-stock-db/analysis/report_builder.py::to_yaml() 這個emitter
+   產生出來的子集，不是完整 YAML 1.2 規格的實作：
+     - 字串一律雙引號包起來（emitter端已經統一處理跳脫），不支援不加引號的
+       裸字串純量
+     - 縮排固定2個空格一層
+     - 多行文字用跳脫過的 \n 塞在雙引號字串裡，不支援 block scalar（| 或 >）
+     - list 項目是純量(- "x") 或 dict（- key: value，後續key縮排對齊第一個
+       key），不支援 list 裡面直接巢狀 list
+   這些限制都跟 to_yaml() 的實際輸出行為一一對應，報告產生端跟這裡是配套
+   設計，不需要處理任意外部 YAML 檔案。
+   ════════════════════════════════════════ */
+const YamlLite = (() => {
+  function indentOf(line) {
+    let n = 0;
+    while (line[n] === ' ') n++;
+    return n;
+  }
+
+  function parseScalar(s) {
+    s = s.trim();
+    if (s === 'null' || s === '') return null;
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+    if (s.startsWith('"') && s.endsWith('"')) {
+      return s.slice(1, -1)
+        .replace(/\\n/g, '\n')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    }
+    const n = Number(s);
+    return isNaN(n) ? s : n;
+  }
+
+  /* lines: 完整行陣列（未trim）；pos: {i} 游標，會被就地推進。 */
+  function parseBlock(lines, pos, indent) {
+    if (pos.i >= lines.length) return null;
+    if (indentOf(lines[pos.i]) < indent) return null;
+    const rest = lines[pos.i].slice(indent);
+    return (rest.startsWith('- ') || rest === '-') ? parseList(lines, pos, indent) : parseDict(lines, pos, indent);
+  }
+
+  function parseList(lines, pos, indent) {
+    const arr = [];
+    while (pos.i < lines.length) {
+      const line = lines[pos.i];
+      if (line.trim() === '') { pos.i++; continue; }
+      if (indentOf(line) !== indent) break;
+      const rest = line.slice(indent);
+      if (!rest.startsWith('-')) break;
+      const afterDash = rest.slice(1).replace(/^ /, '');
+
+      if (afterDash === '') { // '-' 單獨一行，巢狀區塊在下一行、更深縮排
+        pos.i++;
+        arr.push(pos.i < lines.length ? parseBlock(lines, pos, indentOf(lines[pos.i])) : null);
+        continue;
+      }
+      const m = afterDash.match(/^([^:]+):\s?(.*)$/);
+      if (m) {
+        // dict item：第一個 key 內嵌在 '- ' 後面，其餘 key 縮排對齊(indent+2)
+        const key = m[1], valuePart = m[2];
+        pos.i++;
+        const obj = {};
+        if (valuePart === '') {
+          if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent + 2) {
+            obj[key] = parseBlock(lines, pos, indentOf(lines[pos.i]));
+          } else {
+            obj[key] = null;
+          }
+        } else if (valuePart === '{}') { obj[key] = {}; }
+        else if (valuePart === '[]') { obj[key] = []; }
+        else { obj[key] = parseScalar(valuePart); }
+        parseDict(lines, pos, indent + 2, obj); // 繼續吃同一個item剩下的key，合併進同一個obj
+        arr.push(obj);
+        continue;
+      }
+      arr.push(parseScalar(afterDash));
+      pos.i++;
+    }
+    return arr;
+  }
+
+  function parseDict(lines, pos, indent, seed) {
+    const obj = seed || {};
+    while (pos.i < lines.length) {
+      const line = lines[pos.i];
+      if (line.trim() === '') { pos.i++; continue; }
+      if (indentOf(line) !== indent) break;
+      const rest = line.slice(indent);
+      if (rest.startsWith('-')) break;
+      const idx = rest.indexOf(':');
+      if (idx === -1) { pos.i++; continue; }
+      const key = rest.slice(0, idx).trim();
+      const valuePart = rest.slice(idx + 1).trim();
+      pos.i++;
+      if (valuePart === '') {
+        if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent) {
+          obj[key] = parseBlock(lines, pos, indentOf(lines[pos.i]));
+        } else {
+          obj[key] = null;
+        }
+      } else if (valuePart === '{}') { obj[key] = {}; }
+      else if (valuePart === '[]') { obj[key] = []; }
+      else { obj[key] = parseScalar(valuePart); }
+    }
+    return obj;
+  }
+
+  function parse(text) {
+    // 防禦性正規化：JS regex 的 `.`/`$`（沒有/s、/m旗標時）都不吃 \r，CRLF
+    // 換行的檔案會讓每一行都比對失敗——report_builder.py 那邊已經用
+    // newline="" 避免 Windows 寫出 CRLF，這裡多一層防護，不管來源是什麼
+    // 換行風格都能正確解析。
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    const pos = { i: 0 };
+    while (pos.i < lines.length && lines[pos.i].trim() === '') pos.i++;
+    if (pos.i >= lines.length) return null;
+    return parseBlock(lines, pos, indentOf(lines[pos.i]));
+  }
+
+  return { parse };
+})();
+
+/* ════════════════════════════════════════
+   REPORT STORE  (reports/{type}/latest.yaml — run_daily_update.py Step 8
+   公式化產生的「分析」報告，見 report_builder.py。跟 LockList 一樣的
+   fetch/cache 模式，只是內容是 YAML(用 YamlLite.parse 轉成物件)不是 JSON。)
+   ════════════════════════════════════════ */
+const ReportStore = (() => {
+  const cache = {}; // { [type]: 解析後的物件（或 null 代表確定沒有資料）}
+
+  async function fetchReport(type) {
+    if (type in cache) return cache[type];
+    const path = `reports/${type}/latest.yaml`;
+    const cacheKey = 'report_' + type + '_v1';
+    let cached = null;
+    try { cached = await IDB.get('meta', cacheKey); } catch {}
+    let data = null;
+    try {
+      const res = await fetch(RAW + '/main/' + path, { cache: 'no-store' });
+      if (res.ok) {
+        const text = await res.text();
+        data = YamlLite.parse(text);
+        IDB.set('meta', cacheKey, data).catch(() => {});
+      } else {
+        data = cached;
+      }
+    } catch {
+      data = cached;
+    }
+    cache[type] = data;
+    return data;
+  }
+
+  return { fetchReport };
 })();
 
 /* ════════════════════════════════════════
@@ -3084,6 +3325,8 @@ const R = {
   chartTitle:  $('chart-title'),
   chartInfo:   $('chart-info'),
   chartInfoBar:$('chart-info-bar'),
+  chartHeader: $('chart-header'),
+  chartWrap:   $('chart-wrap'),
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
   resizeHandle:$('resize-handle'),
@@ -3092,10 +3335,20 @@ const R = {
   mtabList:        $('mtab-list'),
   mtabChart:       $('mtab-chart'),
   mtabTrend:       $('mtab-trend'),
+  mtabAnalysis:    $('mtab-analysis'),
   chartModeTabs:      $('chart-mode-tabs'),
   modeTabDaily:       $('mode-tab-daily'),
   modeTabIntraday:    $('mode-tab-intraday'),
+  modeTabAnalysis:    $('mode-tab-analysis'),
   intradayPeriodToggle: $('intraday-period-toggle'),
+  reportPanel:     $('report-panel'),
+  reportTypeSel:   $('report-type-sel'),
+  reportStatus:    $('report-status'),
+  reportSlideWrap: $('report-slide-wrap'),
+  reportSlide:     $('report-slide'),
+  reportPrev:      $('report-prev'),
+  reportNext:      $('report-next'),
+  reportPageInfo:  $('report-page-info'),
   drawerToggleBtn: $('drawer-toggle-btn'),
   drawerOverlay:   $('drawer-overlay'),
   periodToggle:    $('period-toggle'),
@@ -3602,14 +3855,157 @@ function setChartModeUI(mode) {
   Settings.set('chartMode', mode);
   R.modeTabDaily.classList.toggle('active', mode === 'daily');
   R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
-  R.periodToggle.classList.toggle('hidden', mode === 'intraday');
+  R.modeTabAnalysis.classList.toggle('active', mode === 'analysis');
+  R.periodToggle.classList.toggle('hidden', mode !== 'daily');
   R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
+  // 分析分頁不是圖表——不綁定目前選中的股票，整組 chart-header/info-bar/canvas
+  // 換成報告面板（見 report-panel 的 HTML 註解）。
+  const isAnalysis = mode === 'analysis';
+  R.chartHeader.classList.toggle('hidden', isAnalysis);
+  R.chartInfoBar.classList.toggle('hidden', isAnalysis);
+  R.chartWrap.classList.toggle('hidden', isAnalysis);
+  R.reportPanel.classList.toggle('hidden', !isAnalysis);
 }
 
 function applyChartMode(mode) {
   if (currentChartSource?.type === 'index' && mode === 'intraday') return; // 大盤指數不支援走勢圖
   setChartModeUI(mode);
-  renderCurrentSourceChart();
+  if (mode === 'analysis') loadCurrentReport();
+  else renderCurrentSourceChart();
+}
+
+/* ════════════════════════════════════════
+   分析報告面板：載入 + 投影片渲染（YAML → HTML，見 ReportStore/YamlLite）
+   ════════════════════════════════════════ */
+let currentReportData = null;
+let currentReportSlideIdx = 0;
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function loadCurrentReport() {
+  const type = R.reportTypeSel.value;
+  R.reportStatus.textContent = '載入中…';
+  R.reportSlide.innerHTML = '';
+  R.reportPageInfo.textContent = '— / —';
+  currentReportData = null;
+  currentReportSlideIdx = 0;
+
+  const data = await ReportStore.fetchReport(type);
+  if (chartMode !== 'analysis' || R.reportTypeSel.value !== type) return; // 使用者可能已經切走了
+
+  if (!data || !data.slides || !data.slides.length) {
+    R.reportStatus.textContent = '目前沒有這份報告（尚未產生，或抓不到檔案）';
+    R.reportSlide.innerHTML = '<div class="rs-notice">目前沒有可顯示的報告內容，可能是這個時段本來就不會產生這份報告（見設定裡的說明），或排程還沒跑過。</div>';
+    return;
+  }
+  currentReportData = data;
+  R.reportStatus.textContent = `${data.title || ''}　產生時間：${data.generated_at || '-'}`;
+  renderReportSlide();
+}
+
+function renderReportSlide() {
+  const slides = currentReportData?.slides || [];
+  if (!slides.length) return;
+  const idx = Math.max(0, Math.min(currentReportSlideIdx, slides.length - 1));
+  currentReportSlideIdx = idx;
+  R.reportSlide.innerHTML = renderSlideHtml(slides[idx]);
+  R.reportPageInfo.textContent = `${idx + 1} / ${slides.length}`;
+  R.reportPrev.disabled = idx === 0;
+  R.reportNext.disabled = idx === slides.length - 1;
+  R.reportSlideWrap.scrollTop = 0;
+}
+
+function renderSlideHtml(slide) {
+  if (!slide) return '';
+  switch (slide.type) {
+    case 'title':
+      return `<div class="rs-title">${esc(slide.title)}</div>` +
+             (slide.subtitle ? `<div class="rs-subtitle">${esc(slide.subtitle)}</div>` : '');
+    case 'metrics':
+      return `<div class="rs-heading">${esc(slide.heading)}</div>` +
+        `<div class="rs-metrics-grid">${(slide.items || []).map(it => `
+          <div class="rs-metric-tile">
+            <div class="rs-metric-label">${esc(it.label)}</div>
+            <div class="rs-metric-value">${esc(it.value)}</div>
+            ${it.change_pct ? `<div class="rs-metric-change ${esc(it.direction || 'flat')}">${esc(it.change_pct)}</div>` : ''}
+          </div>`).join('')}</div>`;
+    case 'text':
+      return `<div class="rs-heading">${esc(slide.heading)}</div><div class="rs-text-body">${esc(slide.body)}</div>`;
+    case 'notice':
+      return `<div class="rs-notice">${esc(slide.text)}</div>`;
+    case 'table':
+      return `<div class="rs-heading">${esc(slide.heading)}</div>` +
+        `<table class="rs-table"><thead><tr>${(slide.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>` +
+        `<tbody>${(slide.rows || []).map(r => `<tr>${(r || []).map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    case 'stock_diagnosis':
+      return renderStockDiagnosisHtml(slide);
+    default:
+      return `<div class="rs-notice">未知的投影片類型：${esc(slide.type)}</div>`;
+  }
+}
+
+function renderStockDiagnosisHtml(d) {
+  if (!d.available) {
+    return `<div class="rs-diag-header"><span class="rs-diag-code">${esc(d.stock_code)}</span>
+              <span class="rs-diag-name">${esc(d.stock_name)}</span></div>
+            <div class="rs-notice">${esc(d.reason || '資料不足')}</div>`;
+  }
+  const badgeCls = d.lock_direction === '做空' ? 'short' : 'long';
+  const kbar = d.kbar_quality || {};
+  const kbarVerdict = kbar.passes
+    ? '<span class="rs-diag-pass">通過</span>'
+    : `<span class="rs-diag-fail">未通過</span>${kbar.reason ? '：' + esc(kbar.reason) : ''}`;
+  const ma = d.position?.ma || {};
+  const maText = ['5', '10', '20', '60'].map(p => `MA${p} ${ma[p] != null ? ma[p] : '-'}`).join('　');
+
+  return `
+    <div class="rs-diag-header">
+      <span class="rs-diag-code">${esc(d.stock_code)}</span>
+      <span class="rs-diag-name">${esc(d.stock_name)}</span>
+      ${d.lock_direction ? `<span class="rs-diag-badge ${badgeCls}">${esc(d.lock_direction)}${d.lock_score != null ? ' ' + esc(d.lock_score) + '分' : ''}</span>` : ''}
+    </div>
+    <div class="rs-subtitle">資料日期：${esc(d.as_of_date)}</div>
+
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">目前位置</div>
+      <div class="rs-diag-section-body">收盤 ${esc(d.position?.close)}，${maText}<br>
+        ${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${esc(d.position?.ma_alignment || '資料不足')}</div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">趨勢判斷</div>
+      <div class="rs-diag-section-body">${esc(d.trend?.label)}
+        （近期高低 ${esc(d.trend?.recent_high)}/${esc(d.trend?.recent_low)}，
+        前段高低 ${esc(d.trend?.prior_high)}/${esc(d.trend?.prior_low)}）</div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">型態辨識</div>
+      <div class="rs-diag-section-body">${esc(d.pattern?.note)}</div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">K棒品質判讀鐵律</div>
+      <div class="rs-diag-section-body">實體 ${esc(kbar.body_pct)}%，${kbar.is_red ? '收紅' : '收黑'}，
+        上影線占全長 ${esc(kbar.upper_wick_pct_of_range)}%　${kbarVerdict}</div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">量價關係</div>
+      <div class="rs-diag-section-body">${esc(d.volume_price?.label)}（量比 ${esc(d.volume_price?.vol_ratio)}）</div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">大盤連動</div>
+      <div class="rs-diag-section-body">${esc(d.market_linkage?.sox)}<br>${esc(d.market_linkage?.dji)}<br>
+        <span style="color:var(--txt2);font-size:12px">${esc(d.market_linkage?.note)}</span></div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">進出場建議</div>
+      <div class="rs-diag-section-body">${esc(d.entry_exit?.trend_stop)}<br>
+        百分比停損：${esc(d.entry_exit?.pct_stop_range)}<br>
+        <span style="color:var(--txt2);font-size:12px">${esc(d.entry_exit?.target_price_note)}</span></div>
+    </div>
+    <div class="rs-diag-risk">${esc(d.risk_note)}</div>
+  `;
 }
 
 function updateChartModeAvailability() {
@@ -3938,15 +4334,17 @@ function populateSectors() {
    MOBILE LAYOUT — portrait tab-switch (list ⇄ chart) + landscape drawer
    ════════════════════════════════════════ */
 function switchMobileTab(tab) {
-  const showChart = (tab === 'chart' || tab === 'trend'); // 技術分析/走勢圖共用同一個 #chart-area
+  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'analysis'); // 三者共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
   R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
   R.mtabChart.classList.toggle('active', tab === 'chart');
   R.mtabTrend.classList.toggle('active', tab === 'trend');
+  R.mtabAnalysis.classList.toggle('active', tab === 'analysis');
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
-  if (showChart) setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
+  else if (tab === 'analysis') applyChartMode('analysis');
+  if (tab === 'chart' || tab === 'trend') setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
 }
 
 function setDrawerOpen(open) {
@@ -4060,6 +4458,15 @@ function bindEvents() {
     if (R.mtabTrend.classList.contains('disabled')) return; // 大盤指數不支援走勢圖
     switchMobileTab('trend');
   });
+  R.mtabAnalysis.addEventListener('click', () => switchMobileTab('analysis'));
+
+  /* 分析報告面板：選報告種類、上一頁/下一頁 */
+  R.reportTypeSel.addEventListener('change', () => {
+    Settings.set('reportType', R.reportTypeSel.value);
+    loadCurrentReport();
+  });
+  R.reportPrev.addEventListener('click', () => { currentReportSlideIdx--; renderReportSlide(); });
+  R.reportNext.addEventListener('click', () => { currentReportSlideIdx++; renderReportSlide(); });
 
   /* 桌面版 技術分析/走勢圖 分頁 */
   R.chartModeTabs.addEventListener('click', e => {
@@ -4308,7 +4715,11 @@ async function main() {
   /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
   rebuildIntradayPeriodToggle();
+  R.reportTypeSel.value = Settings.get('reportType') || 'premarket';
   setChartModeUI(Settings.get('chartMode') || 'daily');
+  // 分析分頁不用等選股才重繪（本來就不綁定選中的股票），這裡直接載入一次；
+  // daily/intraday 則跟原本一樣，等下面選股/選大盤指數的流程觸發即可。
+  if (chartMode === 'analysis') loadCurrentReport();
 
   /* restore view selector (migrate old values from earlier版本的 schema) */
   let savedView = Settings.get('view') || 'sector';
