@@ -389,7 +389,7 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Strong-stock filter bar ── */
 #strong-bar { display: flex; flex-direction: column; gap: 6px; }
-#strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; }
+#strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; white-space: pre-line; line-height: 1.6; }
 
 /* ── Chart toolbar ── */
 .chart-toolbar { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
@@ -1663,6 +1663,18 @@ const DBMgr = (() => {
     return query('SELECT MAX(trade_date) AS d FROM daily_prices')[0]?.d || null;
   }
 
+  /* XQ原則篩選要用的「最新日期」不能用上面那個——LiveFeed 會幫使用者正在看
+     的那一檔股票即時寫一筆今天的 daily_prices（見 LiveFeed 模組），但技術
+     指標(technical_indicators)是排程批次算的，今天還沒跑到。如果拿
+     getLatestDate() 當基準，只要使用者今天看過任何一檔股票，MAX(trade_date)
+     就會被那一筆「有價格、沒指標」的暫存列拉到今天，導致全市場幾乎沒有
+     股票的最後一筆資料日期對得上、篩選結果直接歸零（實測遇到過：掃描
+     1987 檔、可評估 0 檔）。改成抓 technical_indicators 表自己的最新日期，
+     只反映「真的算出指標」的那天，不受 LiveFeed 的暫存列影響。 */
+  function getLatestIndicatorDate() {
+    return query('SELECT MAX(trade_date) AS d FROM technical_indicators')[0]?.d || null;
+  }
+
   function getSectors() {
     /* 真正的類股名稱存在 sectors 表（隨 core.db 一起下載），sector_id 是 TWSE
        官方產業代碼（不是 1..26 連號），不能用寫死的對照表猜——見 db/schema.sql。 */
@@ -1752,44 +1764,92 @@ const DBMgr = (() => {
     };
   }
 
+  /* diagnostics 是給使用者看「這次計算期間到底觀察到什麼」用的（見
+     runStrongFilter 怎麼把它組成可讀文字）——不是篩選邏輯本身，只是把
+     過程中已經算出來的中間值順便記下來，方便判斷篩不到的時候到底是
+     「資料不足」還是「門檻太嚴」還是別的原因，也方便事後調整門檻。 */
   function computeStrongCurrent(topN, minScore) {
     const rows   = getSnapshot(20);
     const groups = groupRowsByCode(rows);
     const scored = [];
+    let insufficientHistory = 0;
+    const scoreHistogram = {};
     for (const g of groups.values()) {
       const s = scoreCurrent(g);
-      if (s && s.bull_score >= minScore) scored.push(s);
+      if (!s) { insufficientHistory++; continue; }
+      scoreHistogram[s.bull_score] = (scoreHistogram[s.bull_score] || 0) + 1;
+      if (s.bull_score >= minScore) scored.push(s);
     }
     scored.sort((a, b) => (b.bull_score - a.bull_score) || ((b.vol_ratio || 0) - (a.vol_ratio || 0)));
-    return scored.slice(0, topN);
+    const results = scored.slice(0, topN);
+    return {
+      results,
+      diagnostics: {
+        totalGroups: groups.size,
+        insufficientHistory,        // 天數不夠(<3天)或當天指標還沒算出來，沒能評分的檔數
+        evaluated: groups.size - insufficientHistory,
+        scoreHistogram,             // { 分數: 檔數 }，minScore 門檻卡在哪一格一看就知道
+        minScore,
+        passed: results.length,
+      },
+    };
   }
 
   /* ── 「XQ原則」RS值動能篩選，對應 analysis/signals.py::xq_strong_stock_filter() ── */
   function computeStrongXQ(topN, rsThreshold, minVolRatio, nearHighPct) {
     const rows       = getSnapshot(100);
-    const latestDate = getLatestDate();
+    const latestDate = getLatestIndicatorDate();
     const groups     = groupRowsByCode(rows);
     const results    = [];
 
+    let notAtLatestDate = 0, missingIndicators = 0;
+    let passRS = 0, passMa = 0, passVol = 0, passDist = 0;
+    const nearMiss = []; // 只差一項門檻沒過的候選，方便判斷哪個門檻是主要瓶頸
+
     for (const g of groups.values()) {
       const t = g[g.length - 1];
-      if (!t || t.trade_date !== latestDate) continue;
-      if (t.rs_rating == null || t.ma20 == null || t.ma60 == null || t.vol_ma5 == null) continue;
+      if (!t || t.trade_date !== latestDate) { notAtLatestDate++; continue; }
+      if (t.rs_rating == null || t.ma20 == null || t.ma60 == null || t.vol_ma5 == null) { missingIndicators++; continue; }
 
       const tail   = g.slice(Math.max(0, g.length - 60));
       const high60 = Math.max(...tail.map(r => r.high));
       const distPct  = high60 ? (high60 - t.close) / high60 * 100 : null;
       const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
 
-      if (t.rs_rating >= rsThreshold &&
-          t.close >= t.ma60 && t.ma20 >= t.ma60 &&
-          volRatio != null && volRatio >= minVolRatio &&
-          distPct != null && distPct <= nearHighPct) {
+      const okRS   = t.rs_rating >= rsThreshold;
+      const okMa   = t.close >= t.ma60 && t.ma20 >= t.ma60;
+      const okVol  = volRatio != null && volRatio >= minVolRatio;
+      const okDist = distPct != null && distPct <= nearHighPct;
+      if (okRS) passRS++;
+      if (okMa) passMa++;
+      if (okVol) passVol++;
+      if (okDist) passDist++;
+
+      if (okRS && okMa && okVol && okDist) {
         results.push({ ...t, high60, dist_from_high60_pct: distPct, vol_ratio: volRatio });
+      } else {
+        const failCount = [okRS, okMa, okVol, okDist].filter(x => !x).length;
+        if (failCount === 1) {
+          const failedWhich = !okRS ? `RS值 ${t.rs_rating?.toFixed(1)} < ${rsThreshold}`
+            : !okMa   ? `未站穩多頭排列（收盤${t.close?.toFixed(2)}/MA60 ${t.ma60?.toFixed(2)}、MA20 ${t.ma20?.toFixed(2)}）`
+            : !okVol  ? `量比 ${volRatio?.toFixed(2)} < ${minVolRatio}`
+            : `距60日高點 ${distPct?.toFixed(1)}% > ${nearHighPct}%`;
+          nearMiss.push({ stock_code: t.stock_code, stock_name: t.stock_name, reason: failedWhich });
+        }
       }
     }
     results.sort((a, b) => b.rs_rating - a.rs_rating);
-    return results.slice(0, topN);
+    return {
+      results: results.slice(0, topN),
+      diagnostics: {
+        totalGroups: groups.size, notAtLatestDate, missingIndicators,
+        evaluated: groups.size - notAtLatestDate - missingIndicators,
+        passRS, passMa, passVol, passDist,
+        latestDate, rsThreshold, minVolRatio, nearHighPct,
+        passed: results.length,
+        nearMiss: nearMiss.slice(0, 5),
+      },
+    };
   }
 
   function getWatchlistStocks(codes) {
@@ -3236,12 +3296,17 @@ async function runStrongFilter() {
   R.strongFilterBtn.disabled = true;
 
   /* XQ 原則需要約100天(距60日高點)的歷史，目前原則只需要約20天；
-     按需先確保月度資料已載入夠用的範圍，不夠時才去抓（計算需要的範圍再開始抓）。 */
+     按需先確保月度資料已載入夠用的範圍，不夠時才去抓（計算需要的範圍再開始抓）。
+     這裡以前只有 console.warn，使用者在畫面上完全看不到「其實是月份資料
+     沒載完整」——篩不到的時候只會覺得莫名其妙，所以現在留一份文字紀錄，
+     跟下面的篩選過程診斷一起顯示在狀態列。 */
   R.strongStatus.textContent = '確認歷史資料範圍…';
+  let monthLoadWarning = '';
   try {
     await DBMgr.ensureRecentMonths(method === 'xq' ? 4 : 2);
   } catch (e) {
     console.warn('補齊歷史月份時部分失敗，仍嘗試以目前已有資料篩選：', e.message);
+    monthLoadWarning = `⚠ ${e.message}，以現有資料篩選（可按「更新資料」重試）`;
   }
 
   R.strongStatus.textContent = '運算中…（掃描全市場，請稍候）';
@@ -3249,11 +3314,13 @@ async function runStrongFilter() {
 
   const params = Settings.get('strongParams') || {};
   const t0 = performance.now();
-  let results = [];
+  let results = [], diagnostics = null;
   try {
-    results = method === 'xq'
+    const out = method === 'xq'
       ? DBMgr.computeStrongXQ(100, params.rsThreshold ?? 90, params.minVolRatio ?? 0.8, params.nearHighPct ?? 15)
       : DBMgr.computeStrongCurrent(100, params.minScore ?? 2);
+    results = out.results;
+    diagnostics = out.diagnostics;
   } catch (e) {
     console.error(e);
     R.strongStatus.textContent = '篩選失敗：' + e.message;
@@ -3262,6 +3329,7 @@ async function runStrongFilter() {
   }
   const dt = ((performance.now() - t0) / 1000).toFixed(1);
   recordStrongAiNotes(method, results, params);
+  console.log('強勢股篩選診斷：', diagnostics);
 
   State.strongMethodUsed = method;
   State.strongCache = { method, results };
@@ -3269,8 +3337,35 @@ async function runStrongFilter() {
   State.page   = 0;
   updateExtraColumn('strong');
   renderPage();
-  R.strongStatus.textContent = `共 ${results.length} 檔（耗時 ${dt}s）`;
+  R.strongStatus.textContent = buildStrongStatusText(method, results, diagnostics, dt, monthLoadWarning);
   R.strongFilterBtn.disabled = false;
+}
+
+/* 把這次篩選觀察到的中間過程組成可讀文字，讓使用者看得到「掃了多少檔、
+   多少檔資料不完整、每個門檻各自卡掉多少檔」，篩不到的時候才有線索判斷
+   是資料問題還是門檻太嚴——不用開 devtools（console 也印了完整版方便深挖）。 */
+function buildStrongStatusText(method, results, diagnostics, dt, monthLoadWarning) {
+  const lines = [`共 ${results.length} 檔（耗時 ${dt}s）`];
+  if (monthLoadWarning) lines.push(monthLoadWarning);
+  if (!diagnostics) return lines.join('\n');
+
+  if (method === 'xq') {
+    lines.push(`資料日期 ${diagnostics.latestDate}；掃描 ${diagnostics.totalGroups} 檔，可評估 ${diagnostics.evaluated} 檔` +
+      `（${diagnostics.missingIndicators} 檔缺指標、${diagnostics.notAtLatestDate} 檔非最新交易日）`);
+    lines.push(`各門檻通過檔數：RS值≥${diagnostics.rsThreshold} → ${diagnostics.passRS}　` +
+      `多頭排列 → ${diagnostics.passMa}　量比≥${diagnostics.minVolRatio} → ${diagnostics.passVol}　` +
+      `距高點≤${diagnostics.nearHighPct}% → ${diagnostics.passDist}`);
+    if (diagnostics.nearMiss.length) {
+      lines.push('只差一項門檻：' + diagnostics.nearMiss.map(n => `${n.stock_code}${n.stock_name}（${n.reason}）`).join('、'));
+    }
+  } else {
+    const hist = Object.entries(diagnostics.scoreHistogram)
+      .sort((a, b) => (+b[0]) - (+a[0]))
+      .map(([score, n]) => `${score}分×${n}`).join('　');
+    lines.push(`掃描 ${diagnostics.totalGroups} 檔，可評分 ${diagnostics.evaluated} 檔（${diagnostics.insufficientHistory} 檔資料不足）`);
+    lines.push(`分數分布（門檻 ≥${diagnostics.minScore}）：${hist || '（無）'}`);
+  }
+  return lines.join('\n');
 }
 
 /* 把「這次篩選為什麼選中這檔股票」寫進 MemoStore 的 AI唯讀筆記（見備忘錄
