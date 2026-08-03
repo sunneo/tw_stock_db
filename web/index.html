@@ -501,9 +501,9 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Memo modal (no sidebar — plain scrollable body) ── */
 #memo-modal .modal-body { display: block; height: auto; max-height: 60vh; padding: 14px 16px; overflow-y: auto; }
-#memo-readonly-wrap { margin-bottom: 14px; }
-#memo-readonly-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
-#memo-readonly-note {
+#memo-readonly-wrap, #memo-ai-wrap { margin-bottom: 14px; }
+#memo-readonly-wrap h3, #memo-ai-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
+#memo-readonly-note, #memo-ai-note {
   font-size: 13px; line-height: 1.6; color: var(--txt1);
   background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
   padding: 8px 10px; white-space: pre-wrap;
@@ -814,6 +814,10 @@ select:focus { outline: 2px solid var(--acc); }
         <h3>鎖股名單訊號（機器判讀，唯讀）</h3>
         <div id="memo-readonly-note"></div>
       </div>
+      <div id="memo-ai-wrap" class="hidden">
+        <h3>強勢股訊號（AI判讀，唯讀）</h3>
+        <div id="memo-ai-note"></div>
+      </div>
       <h3>我的備忘錄</h3>
       <textarea id="memo-textarea" rows="8" placeholder="輸入這檔股票的備忘錄…"></textarea>
     </div>
@@ -1115,11 +1119,28 @@ const MemoStore = (() => {
   }
   function setText(code, text) {
     const memos = Object.assign({}, Settings.get('memos') || {});
-    if (text && text.trim()) memos[code] = { text, updatedAt: Date.now() };
+    const existing = memos[code];
+    if (text && text.trim()) memos[code] = { ...existing, text, updatedAt: Date.now() };
+    else if (existing?.aiNote) memos[code] = { aiNote: existing.aiNote }; // 清空使用者備忘錄，AI唯讀筆記保留
     else delete memos[code];
     Settings.set('memos', memos);
   }
-  return { getText, hasMemo, setText };
+
+  /* AI唯讀筆記：目前只有「強勢股」篩選會寫入，記錄選中當下觀察到的原因
+     （見 runStrongFilter），跟使用者自己輸入的 text 分開存、互不覆蓋——
+     使用者清空自己的備忘錄文字時，這個唯讀筆記不會跟著被刪掉。 */
+  function getAiNote(code) {
+    const memos = Settings.get('memos') || {};
+    return memos[code]?.aiNote || null;
+  }
+  function setAiNote(code, note) {
+    const memos = Object.assign({}, Settings.get('memos') || {});
+    const existing = memos[code];
+    memos[code] = { ...existing, aiNote: { ...note, updatedAt: Date.now() } };
+    Settings.set('memos', memos);
+  }
+
+  return { getText, hasMemo, setText, getAiNote, setAiNote };
 })();
 
 /* ════════════════════════════════════════
@@ -3031,6 +3052,8 @@ const R = {
   memoTextarea:    $('memo-textarea'),
   memoReadonlyWrap:$('memo-readonly-wrap'),
   memoReadonlyNote:$('memo-readonly-note'),
+  memoAiWrap:      $('memo-ai-wrap'),
+  memoAiNote:      $('memo-ai-note'),
 };
 
 /* ════════════════════════════════════════
@@ -3238,6 +3261,7 @@ async function runStrongFilter() {
     return;
   }
   const dt = ((performance.now() - t0) / 1000).toFixed(1);
+  recordStrongAiNotes(method, results, params);
 
   State.strongMethodUsed = method;
   State.strongCache = { method, results };
@@ -3247,6 +3271,34 @@ async function runStrongFilter() {
   renderPage();
   R.strongStatus.textContent = `共 ${results.length} 檔（耗時 ${dt}s）`;
   R.strongFilterBtn.disabled = false;
+}
+
+/* 把「這次篩選為什麼選中這檔股票」寫進 MemoStore 的 AI唯讀筆記（見備忘錄
+   modal 的「強勢股訊號」區塊），這樣使用者事後點開備忘錄還能看到當初是
+   為什麼被抓出來，不用回頭重跑一次篩選、也不受篩選門檻之後被調整影響。
+   目前原則已經有現成的訊號字串(bull_signals)；XQ原則本身是門檻式篩選、
+   沒有現成的訊號清單，用實際觀察到的數值反推成人看得懂的原因。 */
+function recordStrongAiNotes(method, results, params) {
+  for (const r of results) {
+    if (method === 'xq') {
+      const reasons = [
+        `RS值 ${r.rs_rating?.toFixed(1)}（門檻 ≥ ${params.rsThreshold ?? 90}）`,
+        `收盤 ${r.close?.toFixed(2)} 站上季線 MA60 ${r.ma60?.toFixed(2)}`,
+        `MA20 ${r.ma20?.toFixed(2)} ≥ MA60（站上多頭排列）`,
+        `量比 ${r.vol_ratio?.toFixed(2)}（門檻 ≥ ${params.minVolRatio ?? 0.8}）`,
+        `距60日高點 ${r.dist_from_high60_pct?.toFixed(1)}%（門檻 ≤ ${params.nearHighPct ?? 15}%）`,
+      ];
+      MemoStore.setAiNote(r.stock_code, {
+        summary: `強勢股篩選（XQ原則，RS值 ${r.rs_rating?.toFixed(1)}，資料日期 ${r.trade_date}）`,
+        reasons,
+      });
+    } else {
+      MemoStore.setAiNote(r.stock_code, {
+        summary: `強勢股篩選（目前原則，分數 ${r.bull_score}，資料日期 ${r.trade_date}）`,
+        reasons: r.bull_signals && r.bull_signals.length ? r.bull_signals : ['（無具體訊號，僅達最低分數門檻）'],
+      });
+    }
+  }
 }
 
 function loadWatchlist() {
@@ -3519,6 +3571,18 @@ function openMemoModal(code) {
     R.memoReadonlyWrap.classList.remove('hidden');
   } else {
     R.memoReadonlyWrap.classList.add('hidden');
+  }
+
+  const aiNote = MemoStore.getAiNote(code);
+  if (aiNote) {
+    const t = new Date(aiNote.updatedAt);
+    R.memoAiNote.textContent =
+      `${aiNote.summary}\n` +
+      (aiNote.reasons || []).map(r => '‧ ' + r).join('\n') +
+      `\n（${taipeiDateStr(t)} ${taipeiTimeStr(t)} 篩選時記錄）`;
+    R.memoAiWrap.classList.remove('hidden');
+  } else {
+    R.memoAiWrap.classList.add('hidden');
   }
 
   R.memoModal.classList.remove('hidden');
