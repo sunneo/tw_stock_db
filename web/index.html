@@ -654,8 +654,12 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="sector">類股</option>
         <option value="strong">強勢股</option>
         <option value="watchlist">自選股</option>
-        <option value="lock_long">鎖股名單-鎖做多</option>
-        <option value="lock_short">鎖股名單-鎖做空</option>
+        <option value="lock_intraday_long" id="opt-lock-intraday-long">鎖做多-盤中</option>
+        <option value="lock_intraday_short" id="opt-lock-intraday-short">鎖做空-盤中</option>
+        <option value="lock_nextday_long" id="opt-lock-nextday-long">鎖做多-隔日</option>
+        <option value="lock_nextday_short" id="opt-lock-nextday-short">鎖做空-隔日</option>
+        <option value="lock_week_long">鎖做多-本週</option>
+        <option value="lock_week_short">鎖做空-本週</option>
         <option value="usmarket">美股</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
@@ -1144,44 +1148,65 @@ const MemoStore = (() => {
 })();
 
 /* ════════════════════════════════════════
-   LOCK LIST  (watchlist/watchlist.json — 排程產生的做多/做空鎖股名單，
-   見 tw-stock-db/run_generate_watchlist.py。與使用者自己的「自選股」無關。)
+   LOCK LIST  (watchlist/*.json — 排程產生的做多/做空鎖股名單，見
+   tw-stock-db/run_daily_update.py 的 Step 7。跟使用者自己的「自選股」無關。
+
+   三種來源，依產生時間點各自對應一個檔案（見 run_daily_update.py 開頭
+   docstring 的規則說明）：
+     week     watchlist/watchlist.json              週末產生的「下週」名單
+     intraday watchlist/watchlist-intermediate.json 平日中午產生的「盤中」名單
+     nextday  watchlist/watchlist-nextday.json      平日收盤後產生的「隔日」名單
    ════════════════════════════════════════ */
 const LockList = (() => {
-  const URL_PATH = RAW + '/main/watchlist/watchlist.json';
-  const CACHE_KEY = 'lockdata_v1';
-  let data = null;
-  let byCode = new Map();
+  const SOURCES = {
+    week:     { path: 'watchlist/watchlist.json',              cacheKey: 'lockdata_week_v1' },
+    intraday: { path: 'watchlist/watchlist-intermediate.json', cacheKey: 'lockdata_intraday_v1' },
+    nextday:  { path: 'watchlist/watchlist-nextday.json',       cacheKey: 'lockdata_nextday_v1' },
+  };
+  const state = {}; // { [source]: { data, byCode } }
 
   function indexByCode(d) {
-    byCode = new Map();
+    const byCode = new Map();
     for (const rec of d?.watchlist || []) byCode.set(rec.stock_code, rec);
+    return byCode;
   }
 
-  async function ensureLoaded() {
-    if (data) return data;
+  async function ensureLoaded(source) {
+    if (state[source]) return state[source].data;
+    const { path, cacheKey } = SOURCES[source];
     let cached = null;
-    try { cached = await IDB.get('meta', CACHE_KEY); } catch {}
+    try { cached = await IDB.get('meta', cacheKey); } catch {}
+    let data;
     try {
-      const res = await fetch(URL_PATH, { cache: 'no-store' });
+      const res = await fetch(RAW + '/main/' + path, { cache: 'no-store' });
       if (res.ok) {
         data = await res.json();
-        IDB.set('meta', CACHE_KEY, data).catch(() => {});
+        IDB.set('meta', cacheKey, data).catch(() => {});
       } else {
         data = cached || { as_of_date: null, watchlist: [] };
       }
     } catch {
       data = cached || { as_of_date: null, watchlist: [] };
     }
-    indexByCode(data);
+    state[source] = { data, byCode: indexByCode(data) };
     return data;
   }
 
-  function getInfo(code) { return byCode.get(code) || null; }
-  function getByDirection(directionZh) {
-    return (data?.watchlist || []).filter(r => r.direction === directionZh);
+  /* 備忘錄唯讀區塊用：一檔股票可能同時出現在好幾個來源（例如盤中+隔日都
+     入選），依「越即時的來源優先」的順序回傳第一個命中的，並附上是哪個
+     來源，讓 UI 標示清楚。只回傳一筆是刻意簡化——大部分情況下不同來源
+     结果本來就高度重疊，不需要同時列出全部。 */
+  function getInfo(code) {
+    for (const source of ['intraday', 'nextday', 'week']) {
+      const byCode = state[source]?.byCode;
+      if (byCode?.has(code)) return { ...byCode.get(code), source };
+    }
+    return null;
   }
-  function getAsOfDate() { return data?.as_of_date || null; }
+  function getByDirection(source, directionZh) {
+    return (state[source]?.data?.watchlist || []).filter(r => r.direction === directionZh);
+  }
+  function getAsOfDate(source) { return state[source]?.data?.as_of_date || null; }
 
   return { ensureLoaded, getInfo, getByDirection, getAsOfDate };
 })();
@@ -3155,7 +3180,7 @@ function renderPage() {
   const view     = R.viewSel.value;
   const isWL     = view === 'watchlist';
   const isStrong = view === 'strong';
-  const isLock   = view === 'lock_long' || view === 'lock_short';
+  const isLock   = view.startsWith('lock_');
   const codes    = pageItems.map(s => s.stock_code);
   const sparkMap = DBMgr.getBatchSparklines(codes, 20);
 
@@ -3279,12 +3304,12 @@ function updateExtraColumn(view) {
   const thead = document.querySelector('#stock-table thead tr');
   const existing = thead.querySelector('.extra-col');
   if (existing) existing.remove();
-  if (view === 'watchlist' || view === 'strong' || view === 'lock_long' || view === 'lock_short') {
+  if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_')) {
     const th = document.createElement('th');
     th.className = 'extra-col';
     th.textContent = view === 'strong'
       ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
-      : (view === 'lock_long' || view === 'lock_short') ? '分數'
+      : view.startsWith('lock_') ? '分數'
       : '';
     thead.appendChild(th);
   }
@@ -3392,13 +3417,41 @@ function loadWatchlist() {
   renderPage();
 }
 
-/* 鎖股名單-鎖做多/鎖做空：來自排程產生的 watchlist/watchlist.json（見
-   run_generate_watchlist.py），跟使用者自己維護的「自選股」是兩回事，此處唯讀。 */
-async function loadLockList(direction) {
+/* 側邊欄選單「鎖做多-盤中(日期)」「鎖做多-隔日(日期)」的日期部分是動態的，
+   每天都不一樣，寫死在HTML裡沒意義，開頁時算一次填進去。「隔日」用下一個
+   還沒到的交易日（只跳過六日，不查國定假日——這裡只是選單標籤，不影響
+   實際資料，多一次非同步的休市日曆查詢不划算）。 */
+function updateLockListOptionLabels() {
+  const today = taipeiDateStr();
+  let next = new Date();
+  next.setDate(next.getDate() + 1);
+  let nextStr = taipeiDateStr(next);
+  while (taipeiIsWeekend(nextStr)) {
+    next.setDate(next.getDate() + 1);
+    nextStr = taipeiDateStr(next);
+  }
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  set('opt-lock-intraday-long',  `鎖做多-盤中(${today})`);
+  set('opt-lock-intraday-short', `鎖做空-盤中(${today})`);
+  set('opt-lock-nextday-long',   `鎖做多-隔日(${nextStr})`);
+  set('opt-lock-nextday-short',  `鎖做空-隔日(${nextStr})`);
+}
+
+/* 'lock_<source>_<direction>' → [match, source, direction]，source 是
+   'week'|'intraday'|'nextday'，direction 是 'long'|'short'；不是鎖股名單
+   view 的話回傳 null。 */
+function parseLockView(view) {
+  return view.match(/^lock_(week|intraday|nextday)_(long|short)$/);
+}
+
+/* 鎖股名單-鎖做多/鎖做空：來自排程產生的 watchlist/*.json（見
+   run_daily_update.py 的 Step 7），跟使用者自己維護的「自選股」是兩回事，
+   此處唯讀。source 是 'week'|'intraday'|'nextday'，見 LockList 模組註解。 */
+async function loadLockList(source, direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
   R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">載入鎖股名單中…</td></tr>';
-  await LockList.ensureLoaded();
-  const recs  = LockList.getByDirection(dirZh);
+  await LockList.ensureLoaded(source);
+  const recs  = LockList.getByDirection(source, dirZh);
   const codes = recs.map(r => r.stock_code);
   const priceRows = DBMgr.getWatchlistStocks(codes);
   const priceMap  = Object.fromEntries(priceRows.map(r => [r.stock_code, r]));
@@ -3413,7 +3466,7 @@ async function loadLockList(direction) {
     };
   });
   State.page = 0;
-  updateExtraColumn(direction === 'long' ? 'lock_long' : 'lock_short');
+  updateExtraColumn(`lock_${source}_${direction}`);
   renderPage();
 }
 
@@ -3443,8 +3496,7 @@ function switchView(view) {
     }
   }
   else if (view === 'watchlist') loadWatchlist();
-  else if (view === 'lock_long') loadLockList('long');
-  else if (view === 'lock_short') loadLockList('short');
+  else if (parseLockView(view)) { const [, src, dir] = parseLockView(view); loadLockList(src, dir); }
   else if (view === 'usmarket') loadUsMarket();
   else {
     const sid = R.sectorSel.value;
@@ -3644,9 +3696,10 @@ function openMemoModal(code) {
 
   const lock = LockList.getInfo(code);
   if (lock) {
-    const asOf = LockList.getAsOfDate();
+    const asOf = LockList.getAsOfDate(lock.source);
+    const sourceZh = { week: '本週', intraday: '盤中', nextday: '隔日' }[lock.source] || lock.source;
     R.memoReadonlyNote.textContent =
-      `鎖${lock.direction}（分數 ${lock.score}${asOf ? '，資料日期 ' + asOf : ''}）\n` +
+      `鎖${lock.direction}-${sourceZh}（分數 ${lock.score}${asOf ? '，資料日期 ' + asOf : ''}）\n` +
       (lock.reasons || []).map(r => '‧ ' + r).join('\n');
     R.memoReadonlyWrap.classList.remove('hidden');
   } else {
@@ -3822,8 +3875,7 @@ function refreshCurrentView() {
   const v = R.viewSel.value;
   if (v === 'strong') switchView('strong'); // keep cached results / hint; user re-runs the filter manually
   else if (v === 'watchlist') loadWatchlist();
-  else if (v === 'lock_long') loadLockList('long');
-  else if (v === 'lock_short') loadLockList('short');
+  else if (parseLockView(v)) { const [, src, dir] = parseLockView(v); loadLockList(src, dir); }
   else if (v === 'usmarket') loadUsMarket();
   else loadSector(R.sectorSel.value);
 
@@ -4258,9 +4310,11 @@ async function main() {
   rebuildIntradayPeriodToggle();
   setChartModeUI(Settings.get('chartMode') || 'daily');
 
-  /* restore view selector (migrate old 'top100' value from earlier versions) */
+  /* restore view selector (migrate old values from earlier版本的 schema) */
   let savedView = Settings.get('view') || 'sector';
   if (savedView === 'top100') savedView = 'strong';
+  if (savedView === 'lock_long') savedView = 'lock_week_long';
+  if (savedView === 'lock_short') savedView = 'lock_week_short';
   R.viewSel.value = savedView;
 
   showLoading(true);
@@ -4273,9 +4327,13 @@ async function main() {
     return;
   }
 
-  /* preload lock-list (watchlist.json) in the background; not required for
-     the DB itself so it must not block the loading overlay */
-  LockList.ensureLoaded().catch(e => console.warn('鎖股名單載入失敗：', e.message));
+  /* preload所有三種鎖股名單來源（見 LockList 模組註解）；不影響DB本身的載入，
+     不能擋住 loading overlay。全部都要預先載入，備忘錄的唯讀區塊(openMemoModal)
+     才能在使用者還沒切去看鎖股名單分頁之前，就先知道某檔股票有沒有入選。 */
+  for (const source of ['week', 'intraday', 'nextday']) {
+    LockList.ensureLoaded(source).catch(e => console.warn(`鎖股名單(${source})載入失敗：`, e.message));
+  }
+  updateLockListOptionLabels();
 
   /* populate sectors */
   populateSectors();
