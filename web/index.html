@@ -3390,6 +3390,13 @@ async function renderIntradaySourceChart() {
   if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return; // 使用者可能已經切走了
   const rows = IntradayFeed.getTickRows(code);
   const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
+  /* 走勢圖沒有技術分析那種「按月份漸進擴充」的更早資料可以補——backfill
+     已經一次抓了 Yahoo 能給的上限（近5個交易日），縮小/平移到底就是真的
+     沒有更多了。moreHistoryAvailable 是 Chart 內部共用同一顆畫布的單一
+     旗標，不設的話會沿用技術分析那邊留下的舊值，誤顯示「載入中」提示，
+     也會讓平移多滑進一段空白（見 needsMoreHistory/maybeExpandHistory 的
+     guard 說明）。 */
+  Chart.setMoreHistoryAvailable(false);
   Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: false });
   renderIntradayInfoLine(rows);
 }
@@ -3617,6 +3624,16 @@ let chartMode = 'daily'; // 'daily'（技術分析）| 'intraday'（走勢圖，
    DBMgr.ensureStockMonthLoaded()。美股指數（type:'index'）沒有 by-id 這個
    概念，一律用 monthly 快照（跟個股共用同一份，本來就都已經同步過了）。 */
 async function maybeExpandHistory() {
+  // 這是「技術分析」分頁按月份擴充歷史資料的邏輯，Chart.setOnZoomChange 是
+  // 兩個分頁共用同一顆畫布的通用縮放/平移事件，不分 period——走勢圖縮小/
+  // 平移到底時如果沒擋在這裡，會誤把整份日K資料(DBMgr.getPriceHistory)灌進
+  // 目前還設定成 period:'intraday' 的圖表，導致分桶邏輯讀到不對的資料格式、
+  // needsMoreHistory() 持續判斷為真，觸發下面 finally 裡的遞迴重試沒完沒了
+  // （畫面卡住，而且每次遞迴都重新讀 currentChartSource.code，使用者這段
+  // 期間切換股票的話，遞迴會接著在別檔股票上繼續跑，看起來像畫面自己亂跳
+  // 到別檔的線圖）。走勢圖本身的「補更早資料」已經是 fetchYahooBackfill
+  // 一次抓5個交易日，沒有月份式的漸進擴充，所以直接跳過即可。
+  if (chartMode !== 'daily') return;
   if (expandingHistory || sourceExhausted) return;
   if (!currentChartSource) return;
   // needsMoreHistory() covers both "zoomed out to see everything loaded" and
