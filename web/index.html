@@ -297,6 +297,7 @@ select:focus { outline: 2px solid var(--acc); }
   border-bottom: 1px solid var(--bdr);
   background: var(--bg1);
 }
+#chart-mode-tabs.hidden { display: none; }
 .chart-mode-tab {
   padding: 7px 16px;
   font-size: 13px; font-weight: 600;
@@ -613,6 +614,7 @@ select:focus { outline: 2px solid var(--acc); }
   cursor: pointer;
 }
 .mtab-btn.active { color: var(--acc); border-bottom-color: var(--acc); }
+.mtab-btn.hidden { display: none; }
 
 /* ── Drawer (landscape compact only) ── */
 #drawer-toggle-btn { display: none; }
@@ -3450,6 +3452,7 @@ function renderPage() {
   const isWL     = view === 'watchlist';
   const isStrong = view === 'strong';
   const isLock   = view.startsWith('lock_');
+  const isAnalysisView = view === 'analysis';
   const codes    = pageItems.map(s => s.stock_code);
   const sparkMap = DBMgr.getBatchSparklines(codes, 20);
 
@@ -3476,10 +3479,16 @@ function renderPage() {
       extraTd = `<td>${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
     }
 
+    // 分析 分頁的「代號」欄位改顯示中文報告名稱（premarket/holdings_week這些
+    // 內部代號只用在 data-code 屬性給 selectReportType 對應檔案路徑，不適合
+    // 直接顯示給人看）；「名稱」欄位改顯示產生時機，比重複秀一次中文名有用。
+    const codeCell = isAnalysisView ? (s.stock_name || s.stock_code) : s.stock_code;
+    const nameCell = isAnalysisView ? (s.timing || '') : (s.stock_name || '');
+
     return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
                draggable="${isWL ? 'true' : 'false'}">
-      <td class="td-code">${s.stock_code}</td>
-      <td class="td-name" title="${s.stock_name || ''}">${s.stock_name || ''}</td>
+      <td class="td-code">${codeCell}</td>
+      <td class="td-name" title="${s.stock_name || ''}">${nameCell}</td>
       <td class="td-memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
       <td>${open   != null ? open.toFixed(2)  : '-'}</td>
       <td>${high   != null ? high.toFixed(2)  : '-'}</td>
@@ -3494,7 +3503,6 @@ function renderPage() {
 
   /* row click → select stock（或 美股 分頁的指數、分析 分頁的報告種類） */
   const isUsMarket  = R.viewSel.value === 'usmarket';
-  const isAnalysisView = R.viewSel.value === 'analysis';
   R.stockTbody.querySelectorAll('tr[data-code]').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.classList.contains('del-btn') || e.target.classList.contains('memo-btn')) return;
@@ -3746,6 +3754,15 @@ function switchView(view) {
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
   R.strongBar.classList.toggle('hidden', view !== 'strong');
 
+  /* 「分析」清單選的是報告，不是個股/指數——技術分析/走勢圖這兩個分頁對
+     它沒有意義，切進「分析」時整組藏起來；離開「分析」時要清掉報告狀態、
+     把技術分析/走勢圖圖表區域換回來（見 showReportPanel/hideReportPanel）。*/
+  const isAnalysis = view === 'analysis';
+  R.chartModeTabs.classList.toggle('hidden', isAnalysis);
+  R.mtabChart.classList.toggle('hidden', isAnalysis);
+  R.mtabTrend.classList.toggle('hidden', isAnalysis);
+  if (!isAnalysis) { currentAnalysisType = null; hideReportPanel(); }
+
   updateExtraColumn(view);
 
   if (view === 'strong') {
@@ -3807,9 +3824,10 @@ function loadUsMarket() {
    只是點列之後呼叫 selectReportType 而不是 selectStock/selectMarketIndex
    （見 renderPage 裡的 row click 判斷）。 */
 function loadAnalysisView() {
-  State.stocks = ANALYSIS_TYPE_LIST.map(({ code, name }) => ({ stock_code: code, stock_name: name }));
+  State.stocks = ANALYSIS_TYPE_LIST.map(({ code, name, timing }) => ({ stock_code: code, stock_name: name, timing }));
   State.page = 0;
   renderPage();
+  if (!currentAnalysisType) showReportPlaceholder(); // 剛切進來、還沒點過報告種類
 }
 
 /* 點選左側「分析」清單裡的某一種報告：顯示分析報告面板（蓋掉技術分析/
@@ -3960,12 +3978,12 @@ function showReportPanel() {
 // 左側 view-sel 選到「分析」時，loadAnalysisView() 拿這份清單當「股票清單」
 // 塞進既有的 #stock-table（借用同一套清單UI，見該函式註解）。
 const ANALYSIS_TYPE_LIST = [
-  { code: 'premarket',         name: '盤前分析' },
-  { code: 'market',            name: '大盤分析' },
-  { code: 'market_intraday',   name: '盤中大盤分析' },
-  { code: 'holdings_week',     name: '本週持股分析' },
-  { code: 'holdings_nextday',  name: '隔日持股分析' },
-  { code: 'holdings_intraday', name: '盤中持股分析' },
+  { code: 'premarket',         name: '盤前分析',     timing: '平常日 08:00 前' },
+  { code: 'market',            name: '大盤分析',     timing: '平常日 14:00 後' },
+  { code: 'market_intraday',   name: '盤中大盤分析', timing: '平常日 12:00–14:00' },
+  { code: 'holdings_week',     name: '本週持股分析', timing: '平常日 14:00 後' },
+  { code: 'holdings_nextday',  name: '隔日持股分析', timing: '平常日 14:00 後' },
+  { code: 'holdings_intraday', name: '盤中持股分析', timing: '平常日 12:00–14:00' },
 ];
 let currentReportData = null;
 let currentReportSlideIdx = 0;
@@ -4007,6 +4025,15 @@ function showReportNotice(html) {
   R.reportSlide.innerHTML = html;
   R.reportSlideContinuous.innerHTML = html;
   R.reportPageInfo.textContent = '— / —';
+}
+
+/* 剛切進「分析」view，還沒點過左側任何一種報告時顯示的提示——避免右側
+   留著切換分類前殘留的舊圖表或舊報告內容。 */
+function showReportPlaceholder() {
+  showReportPanel();
+  R.reportTitle.textContent = '';
+  R.reportStatus.textContent = '';
+  showReportNotice('<div class="rs-notice">請從左側清單選擇要查看的報告種類。</div>');
 }
 
 async function loadCurrentReport() {
