@@ -3345,26 +3345,11 @@ async function runStrongFilter() {
    多少檔資料不完整、每個門檻各自卡掉多少檔」，篩不到的時候才有線索判斷
    是資料問題還是門檻太嚴——不用開 devtools（console 也印了完整版方便深挖）。 */
 function buildStrongStatusText(method, results, diagnostics, dt, monthLoadWarning) {
+  // 詳細診斷（各門檻通過檔數、只差一項門檻的候選…）改成只印在 console，
+  // 主畫面的狀態列太像debug訊息、不適合塞這麼多行；devtools 打開就看得到
+  // 完整版（見 runStrongFilter 裡的 console.log('強勢股篩選診斷：', ...)）。
   const lines = [`共 ${results.length} 檔（耗時 ${dt}s）`];
   if (monthLoadWarning) lines.push(monthLoadWarning);
-  if (!diagnostics) return lines.join('\n');
-
-  if (method === 'xq') {
-    lines.push(`資料日期 ${diagnostics.latestDate}；掃描 ${diagnostics.totalGroups} 檔，可評估 ${diagnostics.evaluated} 檔` +
-      `（${diagnostics.missingIndicators} 檔缺指標、${diagnostics.notAtLatestDate} 檔非最新交易日）`);
-    lines.push(`各門檻通過檔數：RS值≥${diagnostics.rsThreshold} → ${diagnostics.passRS}　` +
-      `多頭排列 → ${diagnostics.passMa}　量比≥${diagnostics.minVolRatio} → ${diagnostics.passVol}　` +
-      `距高點≤${diagnostics.nearHighPct}% → ${diagnostics.passDist}`);
-    if (diagnostics.nearMiss.length) {
-      lines.push('只差一項門檻：' + diagnostics.nearMiss.map(n => `${n.stock_code}${n.stock_name}（${n.reason}）`).join('、'));
-    }
-  } else {
-    const hist = Object.entries(diagnostics.scoreHistogram)
-      .sort((a, b) => (+b[0]) - (+a[0]))
-      .map(([score, n]) => `${score}分×${n}`).join('　');
-    lines.push(`掃描 ${diagnostics.totalGroups} 檔，可評分 ${diagnostics.evaluated} 檔（${diagnostics.insufficientHistory} 檔資料不足）`);
-    lines.push(`分數分布（門檻 ≥${diagnostics.minScore}）：${hist || '（無）'}`);
-  }
   return lines.join('\n');
 }
 
