@@ -15,7 +15,19 @@
  * 路由：
  *   GET /realtime?ex_ch=tse_2330.tw   單一個股即時行情（上市 tse_、上櫃 otc_ 開頭）
  *   GET /holiday                      休市日曆（Cloudflare 邊緣快取24小時）
+ *   GET /yahoo-intraday?symbol=2330.TW  今日 1分K（開盤到現在），見下方說明
  *   POST /api 或 /chat/completions    既有的 NVIDIA chat completions 代理（不變）
+ *
+ * ── 為什麼多一個 /yahoo-intraday ──
+ * 證交所自己完全沒有「個股當日已發生的分時/逐筆歷史」這種公開 API（只有
+ * 這一瞬間的快照，或收盤後才發布的前一日彙總，見 README.md 的測試紀錄），
+ * 所以走勢圖如果只靠 /realtime 輪詢，使用者收盤前才打開網頁的話，開盤到
+ * 打開網頁那段時間永遠是空的、補不回來。Yahoo 股市的公開圖表 API
+ * （query1.finance.yahoo.com/v8/finance/chart/...）剛好有這份資料
+ * （range=1d&interval=1m），拿來補這段空白的輪廓；跟 /realtime 一樣沒有
+ * CORS header，一樣需要代理。這不是官方資料、只當作進走勢圖那一刻的
+ * 一次性墊底，之後的即時更新還是靠 /realtime 輪詢，不會每 20 秒重打
+ * Yahoo（避免對這個非正式資料源造成不必要負擔）。
  *
  * ── 關於 NVAPI_KEY ──
  * 原本的程式碼把 API key 直接寫死在原始碼字串裡。這個檔案會被放進
@@ -39,10 +51,14 @@ const corsHeaders = {
 
 const MIS_BASE = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp";
 const HOLIDAY_URL = "https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule";
+const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 // ex_ch 只允許「交易所前綴_股票代號.tw」這種形式的字元，多檔用 | 分隔。
 // 白名單而非黑名單，避免這個路由被當成任意網址的通用代理。
 const EX_CH_PATTERN = /^[a-z]+_[A-Za-z0-9]+\.tw(\|[a-z]+_[A-Za-z0-9]+\.tw)*$/;
+
+// Yahoo 股票代號只允許「數字代號.TW」（上市）或「數字代號.TWO」（上櫃）。
+const YAHOO_SYMBOL_PATTERN = /^[A-Za-z0-9]+\.(TW|TWO)$/;
 
 function jsonResponse(body, status, extraHeaders = {}) {
   return new Response(body, {
@@ -66,6 +82,23 @@ async function handleRealtime(url) {
   });
   const body = await resp.text();
   // 即時行情不快取（每次都要最新報價），只加 CORS header 原樣轉發。
+  return jsonResponse(body, resp.status, { "Cache-Control": "no-store" });
+}
+
+async function handleYahooIntraday(url) {
+  const symbol = url.searchParams.get("symbol") || "";
+  if (!YAHOO_SYMBOL_PATTERN.test(symbol)) {
+    return jsonResponse(JSON.stringify({ error: "invalid symbol" }), 400);
+  }
+  const upstream = new URL(`${YAHOO_CHART_BASE}/${symbol}`);
+  upstream.searchParams.set("range", "1d");
+  upstream.searchParams.set("interval", "1m");
+
+  const resp = await fetch(upstream.toString(), {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; tw-stock-tracker-proxy/1.0)" },
+  });
+  const body = await resp.text();
+  // 只當進走勢圖那一刻的一次性 backfill，不快取（每次抓都要當下最新的分K）。
   return jsonResponse(body, resp.status, { "Cache-Control": "no-store" });
 }
 
@@ -136,6 +169,7 @@ export default {
       // ── 台股即時行情 / 休市日曆（tw_stock_db 網頁用）──
       if (sanitizedPath === "/realtime") return await handleRealtime(url);
       if (sanitizedPath === "/holiday") return await handleHoliday(request, ctx);
+      if (sanitizedPath === "/yahoo-intraday") return await handleYahooIntraday(url);
 
       // ── 既有的 NVIDIA chat completions 代理 ──
       if (sanitizedPath === "/api" || sanitizedPath === "/chat/completions") {
