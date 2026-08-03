@@ -2010,24 +2010,34 @@ const LiveFeed = (() => {
    開盤後才打開網頁的話，之前那段時間本來就沒有資料可補。所以進走勢圖時
    另外用 Yahoo 股市的圖表 API（見 fetchYahooBackfill）補一份開盤到現在的
    概略 1分K 當墊底，之後的即時更新還是靠 LiveFeed 對證交所的輪詢
-   （record()）——backfill 只在進走勢圖那一刻打一次，不是官方資料、只是
-   輪廓，兩份資料在 getTickRows() 接起來。
+   （record()）——backfill 每次進走勢圖時最多每5分鐘重抓一次（見
+   BACKFILL_REFRESH_MS），補上使用者切走又切回來時中間沒被輪詢到的空窗，
+   不是官方資料、只是輪廓，兩份資料在 getTickRows() 接起來。
    ════════════════════════════════════════ */
 const IntradayFeed = (() => {
-  let ticksByCode = {};    // { [code]: [{t:'HH:MM:SS', price, volCum}, ...] } —— 只保留「今天」
-  let backfillByCode = {}; // { [code]: 最細粒度 row[] }，來自 fetchYahooBackfill，同一天同一檔只抓一次
+  let ticksByCode = {};        // { [code]: [{t:'HH:MM:SS', price, volCum}, ...] } —— 只保留「今天」
+  let backfillByCode = {};     // { [code]: 最細粒度 row[] }，來自 fetchYahooBackfill
+  let backfillFetchedAt = {};  // { [code]: 上次成功抓 backfill 的 Date.now() }，見 fetchYahooBackfill 的節流說明
   let recordedDate = null;
+  const BACKFILL_REFRESH_MS = 5 * 60 * 1000; // 5分鐘
 
   function resetIfNewDay(dateStr) {
-    if (recordedDate !== dateStr) { ticksByCode = {}; backfillByCode = {}; recordedDate = dateStr; }
+    if (recordedDate !== dateStr) { ticksByCode = {}; backfillByCode = {}; backfillFetchedAt = {}; recordedDate = dateStr; }
   }
 
-  /* 進走勢圖分頁/選股時呼叫一次：用 Yahoo 的「今日1分K」墊開盤到現在這段
-     證交所自己補不回來的空白（見模組註解、web/cloudflare-worker/README.md）。
-     同一檔股票同一天只打一次，避免每次切分頁/切級距都重打這個非官方來源。
-     失敗（額度、網路問題）不影響既有的即時輪詢，只是backfill那段留空。 */
+  /* 進走勢圖分頁/選股時呼叫：用 Yahoo 的「今日1分K」墊開盤到現在這段證交所
+     自己補不回來的空白（見模組註解、web/cloudflare-worker/README.md）。
+
+     LiveFeed 同一時間只主動輪詢「目前選取的那一檔」（見 LiveFeed 模組註解），
+     所以使用者切去看別檔、過一陣子再切回來時，中間那段沒被輪詢到的空窗
+     也需要補——不能只抓一次就永遠不再抓，不然「離開很久再回來」看到的還是
+     離開前那一刻的舊畫面。用 5 分鐘節流（同一檔 5 分鐘內重進不重打）取
+     兩者的平衡：夠短，回來時補得上空窗；夠長，不會跟著 20 秒的即時輪詢
+     一起頻繁打這個非官方來源。 */
   async function fetchYahooBackfill(code, market) {
-    if (!TWSE_PROXY_BASE || backfillByCode[code]) return;
+    if (!TWSE_PROXY_BASE) return;
+    const last = backfillFetchedAt[code];
+    if (last != null && Date.now() - last < BACKFILL_REFRESH_MS) return;
     const today = taipeiDateStr();
     const symbol = code + (market === 'TPEx' ? '.TWO' : '.TW');
     try {
@@ -2049,6 +2059,7 @@ const IntradayFeed = (() => {
         });
       }
       backfillByCode[code] = rows;
+      backfillFetchedAt[code] = Date.now();
     } catch (e) {
       console.warn('Yahoo 走勢圖 backfill 失敗（不影響證交所即時輪詢）：', e.message);
     }
@@ -2099,25 +2110,26 @@ const IntradayFeed = (() => {
      是同一套機制，換級距不用重新處理這裡的資料，Chart.setIntradayMinutes()
      會直接對同一份 fullData 重新分桶。
 
-     Yahoo backfill 只補「比第一筆自己輪詢到的 tick 更早」的部分，兩份資料
-     用時間銜接、不重疊；backfill 早已是完整 OHLCV 的分K，不用再算量的
-     delta。第一筆真正輪詢到的 tick 的成交量不算 delta（沒有前一筆基準，
-     硬算會把「開始記錄前已經成交的量」全部灌到第一筆，量會爆量失真），
-     從第二筆開始才用累計量的差值當該筆的成交量。 */
+     backfill 每次都覆蓋「開盤到抓取當下」的完整範圍（見 fetchYahooBackfill
+     的 5 分鐘節流），所以要用 backfill 自己「最後一筆」的時間當分界，取
+     backfill 裡結尾之前的所有tick——不能用「第一筆自己輪詢到的tick」當
+     分界，那樣使用者切走又切回來、backfill 重新抓過一次涵蓋更晚的時間
+     時，反而會把新抓到、原本用來補空窗的那段 backfill 資料濾掉。第一筆
+     真正輪詢到的 tick 的成交量不算 delta（沒有前一筆基準，硬算會把
+     backfill 分界之前已經成交的量全部灌到第一筆，量會爆量失真），從
+     第二筆開始才用累計量的差值當該筆的成交量。 */
   function getTickRows(code) {
     const backfill = backfillByCode[code] || [];
     const arr = ticksByCode[code] || [];
     if (!backfill.length && !arr.length) return [];
     const today = recordedDate;
-    const firstTickTime = arr.length ? arr[0].t : null;
-    const rows = backfill.filter(row => {
-      const t = row.trade_date.split('T')[1];
-      return firstTickTime == null || t < firstTickTime;
-    });
+    const backfillEndTime = backfill.length ? backfill[backfill.length - 1].trade_date.split('T')[1] : null;
+    const rows = backfill.slice();
     let prevVol = null;
     for (const tick of arr) {
       const deltaVol = prevVol == null ? 0 : Math.max(0, (tick.volCum || 0) - prevVol);
       prevVol = tick.volCum != null ? tick.volCum : prevVol;
+      if (backfillEndTime != null && tick.t <= backfillEndTime) continue; // 已經被 backfill 涵蓋
       rows.push({
         trade_date: `${today}T${tick.t}`,
         open: tick.price, high: tick.price, low: tick.price, close: tick.price,
@@ -2304,13 +2316,17 @@ const Chart = (() => {
       const k = periodKeyOf(r.trade_date);
       if (k !== curKey) {
         if (cur) out.push(cur);
-        cur = { trade_date: r.trade_date, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume || 0 };
+        /* 走勢圖的 X 軸要對齊乾淨的分桶起點（09:00/09:05/09:10...），不能用
+           某一筆原始資料剛好落在哪個時間點——那樣同一桶裡最後一筆tick的
+           秒數隨機晃動，軸標籤就會一格一格對不齊。week/month/quarter 維持
+           原本「標最後一天」的既有行為，不動它。 */
+        cur = { trade_date: period === 'intraday' ? k : r.trade_date, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume || 0 };
         curKey = k;
       } else {
         if (r.high > cur.high) cur.high = r.high;
         if (r.low  < cur.low)  cur.low  = r.low;
         cur.close = r.close;
-        cur.trade_date = r.trade_date;
+        if (period !== 'intraday') cur.trade_date = r.trade_date;
         cur.volume += (r.volume || 0);
       }
     }
