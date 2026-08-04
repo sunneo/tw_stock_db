@@ -364,6 +364,14 @@ select:focus { outline: 2px solid var(--acc); }
 .rs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rs-table th, .rs-table td { padding: 6px 8px; border-bottom: 1px solid var(--bdr); text-align: left; }
 .rs-table th { color: var(--txt2); font-weight: 600; }
+.rs-news-list { display: flex; flex-direction: column; gap: 2px; }
+.rs-news-item {
+  display: block; padding: 10px 4px; border-bottom: 1px solid var(--bdr);
+  text-decoration: none; color: inherit;
+}
+.rs-news-item:hover .rs-news-title { color: var(--acc); }
+.rs-news-title { font-size: 14px; color: var(--txt0); }
+.rs-news-date { font-size: 11px; color: var(--txt2); margin-top: 2px; }
 
 .rs-diag-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .rs-diag-code { font-size: 18px; font-weight: 700; color: var(--txt0); }
@@ -4105,6 +4113,13 @@ function renderSlideHtml(slide) {
       return `<div class="rs-heading">${esc(slide.heading)}</div>` +
         `<table class="rs-table"><thead><tr>${(slide.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>` +
         `<tbody>${(slide.rows || []).map(r => `<tr>${(r || []).map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    case 'news':
+      return `<div class="rs-heading">${esc(slide.heading)}</div>` +
+        `<div class="rs-news-list">${(slide.items || []).map(it => `
+          <a class="rs-news-item" href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">
+            <div class="rs-news-title">${esc(it.title)}</div>
+            <div class="rs-news-date">${esc(it.published_at)}</div>
+          </a>`).join('')}</div>`;
     case 'stock_diagnosis':
       return renderStockDiagnosisHtml(slide);
     default:
@@ -4162,6 +4177,15 @@ function renderStockDiagnosisHtml(d) {
       <div class="rs-diag-section-title">大盤連動</div>
       <div class="rs-diag-section-body">${esc(d.market_linkage?.sox)}<br>${esc(d.market_linkage?.dji)}<br>
         <span style="color:var(--txt2);font-size:12px">${esc(d.market_linkage?.note)}</span></div>
+    </div>
+    <div class="rs-diag-section">
+      <div class="rs-diag-section-title">月營收</div>
+      <div class="rs-diag-section-body">${d.monthly_revenue ? `
+        ${esc(d.monthly_revenue.data_month)} 營收 ${d.monthly_revenue.revenue_this_month != null ? esc(Math.round(d.monthly_revenue.revenue_this_month).toLocaleString()) + ' 千元' : '-'}，
+        月增 ${d.monthly_revenue.mom_pct != null ? esc(d.monthly_revenue.mom_pct) + '%' : '-'}，
+        年增 ${d.monthly_revenue.yoy_pct != null ? esc(d.monthly_revenue.yoy_pct) + '%' : '-'}，
+        累計年增 ${d.monthly_revenue.cum_pct != null ? esc(d.monthly_revenue.cum_pct) + '%' : '-'}
+      ` : '查無月營收資料（可能剛上市，或本次未抓到）'}</div>
     </div>
     <div class="rs-diag-section">
       <div class="rs-diag-section-title">進出場建議</div>
