@@ -4127,6 +4127,19 @@ function renderSlideHtml(slide) {
   }
 }
 
+/* 等幅測量法/N字測量法(AB=CD) 目標價估算，見 report_builder.py::
+   measured_move_targets。not-available 時顯示原因，不留空白。 */
+function renderMeasuredMoveHtml(mm) {
+  if (!mm) return '';
+  if (!mm.available) {
+    return `<br><span style="color:var(--txt2);font-size:12px">目標價測量法：${esc(mm.reason || '資料不足')}</span>`;
+  }
+  const parts = [];
+  if (mm.n_measure) parts.push(`<br>N字測量法(AB=CD，${esc(mm.n_measure.direction)})：${esc(mm.n_measure.note)}`);
+  if (mm.equal_measure) parts.push(`<br>等幅測量法：${esc(mm.equal_measure.note)}`);
+  return parts.join('');
+}
+
 function renderStockDiagnosisHtml(d) {
   if (!d.available) {
     return `<div class="rs-diag-header"><span class="rs-diag-code">${esc(d.stock_code)}</span>
@@ -4190,7 +4203,8 @@ function renderStockDiagnosisHtml(d) {
     <div class="rs-diag-section">
       <div class="rs-diag-section-title">進出場建議</div>
       <div class="rs-diag-section-body">${esc(d.entry_exit?.trend_stop)}<br>
-        百分比停損：${esc(d.entry_exit?.pct_stop_range)}<br>
+        百分比停損：${esc(d.entry_exit?.pct_stop_range)}
+        ${renderMeasuredMoveHtml(d.entry_exit?.measured_move)}<br>
         <span style="color:var(--txt2);font-size:12px">${esc(d.entry_exit?.target_price_note)}</span></div>
     </div>
     <div class="rs-diag-risk">${esc(d.risk_note)}</div>
