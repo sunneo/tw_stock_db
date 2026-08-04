@@ -625,6 +625,21 @@ select:focus { outline: 2px solid var(--acc); }
   padding: 8px 10px;
 }
 
+/* ── 盤後資訊 modal（三大法人/股權分布/強制集保） ── */
+#chip-modal .modal-box { width: min(560px, 92vw); }
+#chip-modal .modal-body { display: block; height: auto; max-height: 68vh; padding: 14px 16px; overflow-y: auto; }
+#chip-loading, .chip-empty { font-size: 13px; color: var(--txt2); padding: 4px 0; }
+.chip-section { margin-bottom: 18px; }
+.chip-section:last-child { margin-bottom: 0; }
+.chip-section h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
+.chip-hint { font-size: 11px; color: var(--txt2); margin-top: 6px; line-height: 1.5; }
+.chip-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.chip-table th, .chip-table td { padding: 4px 6px; text-align: right; white-space: nowrap; }
+.chip-table th:first-child, .chip-table td:first-child { text-align: left; }
+.chip-table thead th { color: var(--txt2); font-weight: 600; border-bottom: 1px solid var(--bdr); }
+.chip-table tbody tr:nth-child(odd) { background: var(--bg2); }
+.chip-spark-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+
 /* ── Memo icon buttons (list rows + chart header) ── */
 .memo-btn {
   flex-shrink: 0; border: none; background: transparent; cursor: pointer;
@@ -838,6 +853,7 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
+      <button class="btn icon hidden" id="chip-info-btn" title="盤後資訊（三大法人/股權分布/強制集保）">📊</button>
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
       <div class="chart-toolbar">
@@ -982,6 +998,25 @@ select:focus { outline: 2px solid var(--acc); }
     <div class="modal-footer">
       <button class="btn" id="memo-cancel">取消</button>
       <button class="btn primary" id="memo-save">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 盤後資訊 MODAL（三大法人/股權分布/強制集保，見 ChipStore）══
+     這份資料唯一的載入時機是點開這個modal那一刻（見 chip-info-btn 的click
+     handler），平常選股/看K線圖都不會觸發任何跟這裡有關的下載。 -->
+<div id="chip-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span id="chip-modal-title">📊 盤後資訊</span>
+      <button class="btn icon" id="chip-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="chip-loading">載入中…</div>
+      <div id="chip-content" class="hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="chip-close2">關閉</button>
     </div>
   </div>
 </div>
@@ -3403,6 +3438,163 @@ function sparkline(closes, w = 60, h = 20) {
 }
 
 /* ════════════════════════════════════════
+   CHIP STORE（盤後資訊：三大法人個股別買賣超/股權分布/強制集保股數）
+
+   刻意完全獨立於 DBMgr 的持久化資料庫之外，不併入那個會存進 IndexedDB、
+   每次開頁面就自動載入的主資料庫——這份資料使用者明確要求「唯一的載入時機
+   是點開盤後資訊面板那一刻」，平常選股/看K線圖/切換分頁都不能連帶下載到。
+   資料來源見 tw-stock-db/sync/chip_snapshot.py（db/monthly-chip，全市場、
+   一個月一個檔案）+ export_chip_delta（daily-chip/<日期>，補齊當月快照可能
+   還沒收進去的最新一天）。只在記憶體裡做session層級cache（開過的月份不用
+   重複下載，但重新整理頁面就會清空）——這是刻意的取捨：多數使用者可能根本
+   不會點開這個功能，不值得為此多負擔一份持久化storage的空間與初始化成本。
+   ════════════════════════════════════════ */
+const ChipStore = (() => {
+  const CHIP_MANIFEST_URL = RAW + '/db-snapshot/db/monthly-chip/manifest.json';
+  const RECENT_MONTHS = 6; // 抓最近幾個月當作預設的趨勢觀察範圍
+  const NUM_FIELDS = new Set([
+    'foreign_net', 'foreign_dealer_net', 'trust_net', 'dealer_net', 'total_net',
+    'tier', 'holders', 'shares', 'pct',
+    'custody_common', 'custody_special', 'custody_total', 'issued_shares_k',
+  ]);
+
+  let sqlLib = null;
+  let manifest = null;
+  const monthCache = new Map(); // label -> {institutional, shareholding, custody} 三個陣列（全市場，未過濾）
+
+  async function ensureSqlLib() {
+    if (!sqlLib) {
+      sqlLib = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}` });
+    }
+    return sqlLib;
+  }
+
+  async function sha256hex(buf) {
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function fetchBytes(url, expectedSha256) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = await resp.arrayBuffer();
+    if (expectedSha256) {
+      const hex = await sha256hex(buf);
+      if (hex !== expectedSha256) throw new Error('sha256 驗證不符');
+    }
+    return buf;
+  }
+
+  async function ensureManifest() {
+    if (!manifest) {
+      const res = await fetch(CHIP_MANIFEST_URL);
+      if (!res.ok) throw new Error('無法取得盤後資訊 manifest: ' + res.status);
+      manifest = await res.json();
+    }
+    return manifest;
+  }
+
+  function queryAll(sqlDb, sql) {
+    const res = sqlDb.exec(sql);
+    if (!res.length) return [];
+    const { columns, values } = res[0];
+    return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+  }
+
+  async function loadMonth(label) {
+    if (monthCache.has(label)) return monthCache.get(label);
+    await ensureManifest();
+    const entry = (manifest.months || []).find(m => m.label === label);
+    if (!entry) { monthCache.set(label, null); return null; }
+    await ensureSqlLib();
+    const buf = await fetchBytes(`${RAW}/db-snapshot/${entry.path}`, entry.sha256);
+    const tmp = new sqlLib.Database(new Uint8Array(buf));
+    let data;
+    try {
+      data = {
+        institutional: queryAll(tmp, 'SELECT * FROM institutional_by_stock'),
+        shareholding: queryAll(tmp, 'SELECT * FROM shareholding_distribution'),
+        custody: queryAll(tmp, 'SELECT * FROM mandatory_custody'),
+      };
+    } finally {
+      tmp.close();
+    }
+    monthCache.set(label, data);
+    return data;
+  }
+
+  function coerceCsvRow(row) {
+    const out = {};
+    for (const k in row) out[k] = (NUM_FIELDS.has(k) && row[k] !== '') ? Number(row[k]) : row[k];
+    return out;
+  }
+
+  /* 補齊「當月快照」可能還沒收進去的今天資料（見模組說明的 daily-chip）；
+     抓不到（還沒收盤、還沒同步、或今天剛好沒有任何一項資料）就當作沒有，
+     不影響其餘已經抓到的月份資料。 */
+  async function loadTodayCsv(tableFile) {
+    const today = taipeiDateStr();
+    try {
+      const res = await fetch(`${RAW}/main/daily-chip/${today}/${tableFile}`, { cache: 'no-store' });
+      if (!res.ok) return [];
+      const text = await res.text();
+      const lines = text.trim().split('\n');
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',');
+      return lines.slice(1).filter(Boolean).map(line => {
+        const cells = line.split(',');
+        return coerceCsvRow(Object.fromEntries(headers.map((h, i) => [h, cells[i]])));
+      });
+    } catch { return []; }
+  }
+
+  /* 撈某檔股票最近 RECENT_MONTHS 個月的三張表資料，回傳依日期排序、只含該
+     股票的 {institutional, shareholding, custody, partialErrors} */
+  async function loadForStock(code) {
+    await ensureManifest();
+    const months = (manifest.months || []).map(m => m.label).sort().slice(-RECENT_MONTHS);
+    const institutional = [], shareholding = [], custody = [];
+    const partialErrors = [];
+
+    for (const label of months) {
+      try {
+        const data = await loadMonth(label);
+        if (!data) continue;
+        institutional.push(...data.institutional.filter(r => r.stock_code === code));
+        shareholding.push(...data.shareholding.filter(r => r.stock_code === code));
+        custody.push(...data.custody.filter(r => r.stock_code === code));
+      } catch (e) {
+        console.warn(`盤後資訊 ${label} 下載/解析失敗：`, e.message);
+        partialErrors.push(label);
+      }
+    }
+
+    const [todayInst, todayShr, todayCus] = await Promise.all([
+      loadTodayCsv('institutional_by_stock.csv'),
+      loadTodayCsv('shareholding_distribution.csv'),
+      loadTodayCsv('mandatory_custody.csv'),
+    ]);
+    for (const r of todayInst.filter(r => r.stock_code === code)) {
+      if (!institutional.some(x => x.trade_date === r.trade_date)) institutional.push(r);
+    }
+    for (const r of todayShr.filter(r => r.stock_code === code)) {
+      if (!shareholding.some(x => x.data_date === r.data_date && x.tier === r.tier)) shareholding.push(r);
+    }
+    for (const r of todayCus.filter(r => r.stock_code === code)) {
+      if (!custody.some(x => x.data_date === r.data_date)) custody.push(r);
+    }
+
+    institutional.sort((a, b) => a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0);
+    custody.sort((a, b) => a.data_date < b.data_date ? -1 : a.data_date > b.data_date ? 1 : 0);
+    shareholding.sort((a, b) => a.data_date !== b.data_date ? (a.data_date < b.data_date ? -1 : 1) : a.tier - b.tier);
+
+    return { institutional, shareholding, custody, partialErrors };
+  }
+
+  return { loadForStock };
+})();
+
+/* ════════════════════════════════════════
    APP STATE
    ════════════════════════════════════════ */
 const State = {
@@ -3512,6 +3704,13 @@ const R = {
   indicatorShowRsv:  $('indicator-show-rsv'),
   indicatorShowRsi:  $('indicator-show-rsi'),
   memoChartBtn:    $('memo-chart-btn'),
+  chipInfoBtn:   $('chip-info-btn'),
+  chipModal:     $('chip-modal'),
+  chipModalTitle:$('chip-modal-title'),
+  chipClose:     $('chip-close'),
+  chipClose2:    $('chip-close2'),
+  chipLoading:   $('chip-loading'),
+  chipContent:   $('chip-content'),
   memoModal:       $('memo-modal'),
   memoModalTitle:  $('memo-modal-title'),
   memoClose:       $('memo-close'),
@@ -4344,6 +4543,7 @@ function selectMarketIndex(code) {
   const entry = US_INDEX_LIST.find(x => x.code === code);
   R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
   showMemoChartBtn(code);
+  hideChipInfoBtn(); // 盤後籌碼資料是台股特有的揭露資訊，美股指數沒有這些欄位
   updateChartModeAvailability();
 
   /* 美股指數現在也支援走勢圖了（見 renderIntradaySourceChart），跟
@@ -4371,6 +4571,7 @@ function selectStock(code) {
   const info = DBMgr.getStockInfo(code);
   R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
   showMemoChartBtn(code);
+  showChipInfoBtn(code);
   updateChartModeAvailability();
 
   /* 收盤前，如果本地還沒有這檔股票今天的資料，就試著即時向證交所要
@@ -4452,6 +4653,124 @@ function openMemoModal(code) {
 function closeMemoModal() {
   R.memoModal.classList.add('hidden');
   memoModalCode = null;
+}
+
+/* ════════════════════════════════════════
+   盤後資訊 MODAL（見 ChipStore 模組說明：唯一的載入時機就是這裡）
+   ════════════════════════════════════════ */
+function showChipInfoBtn(code) {
+  R.chipInfoBtn.classList.remove('hidden');
+  R.chipInfoBtn.dataset.code = code;
+}
+function hideChipInfoBtn() {
+  R.chipInfoBtn.classList.add('hidden');
+  delete R.chipInfoBtn.dataset.code;
+}
+
+function fmtLots(shares) {
+  if (shares == null || isNaN(shares)) return '-';
+  return Math.round(shares / 1000).toLocaleString() + '張';
+}
+function fmtSignedLots(shares) {
+  if (shares == null || isNaN(shares)) return '-';
+  const lots = Math.round(shares / 1000);
+  const cls = lots > 0 ? 'td-up' : lots < 0 ? 'td-dn' : '';
+  const sign = lots > 0 ? '+' : '';
+  return `<b class="${cls}">${sign}${lots.toLocaleString()}</b>`;
+}
+
+function renderInstitutionalSection(rows) {
+  if (!rows.length) return '<div class="chip-empty">近期沒有三大法人買賣超資料。</div>';
+  const recent = rows.slice(-10).reverse(); // 最新在最上面
+  const spark = sparkline(rows.map(r => r.total_net ?? 0), 140, 28);
+  const rowsHtml = recent.map(r => `
+    <tr>
+      <td>${r.trade_date}</td>
+      <td>${fmtSignedLots(r.foreign_net)}</td>
+      <td>${fmtSignedLots(r.trust_net)}</td>
+      <td>${fmtSignedLots(r.dealer_net)}</td>
+      <td>${fmtSignedLots(r.total_net)}</td>
+    </tr>`).join('');
+  return `
+    <div class="chip-spark-row">${spark}<span class="chip-hint">三大法人合計買賣超趨勢（近${rows.length}個交易日）</span></div>
+    <div style="overflow-x:auto">
+      <table class="chip-table">
+        <thead><tr><th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p class="chip-hint">單位：張（買賣超股數換算，正值為買超、負值為賣超）。</p>`;
+}
+
+function renderShareholdingSection(rows) {
+  if (!rows.length) return '<div class="chip-empty">目前沒有股權分布資料，可能是資料才剛開始累積（官方每週更新一次）。</div>';
+  const latestDate = rows.at(-1).data_date;
+  const latest = rows.filter(r => r.data_date === latestDate).sort((a, b) => a.tier - b.tier);
+  const rowsHtml = latest.map(r => `
+    <tr>
+      <td>第${r.tier}級</td>
+      <td>${r.holders != null ? r.holders.toLocaleString() : '-'}</td>
+      <td>${fmtLots(r.shares)}</td>
+      <td>${r.pct != null ? r.pct.toFixed(2) + '%' : '-'}</td>
+    </tr>`).join('');
+  return `
+    <div style="overflow-x:auto">
+      <table class="chip-table">
+        <thead><tr><th>持股分級</th><th>人數</th><th>股數</th><th>占比</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p class="chip-hint">資料日期：${latestDate}（集保結算所股權分散表，級距數字越大代表持股張數越多，官方介面只提供最新一期，無法回溯歷史）。</p>`;
+}
+
+function renderCustodySection(rows) {
+  if (!rows.length) return '<div class="chip-empty">目前沒有強制集保資料（多數個股本來就沒有董監/大股東強制集保股數）。</div>';
+  const recent = rows.slice(-10).reverse();
+  const spark = sparkline(rows.map(r => r.custody_total ?? 0), 140, 28);
+  const rowsHtml = recent.map(r => `
+    <tr>
+      <td>${r.data_date}</td>
+      <td>${fmtLots(r.custody_common)}</td>
+      <td>${fmtLots(r.custody_special)}</td>
+      <td>${fmtLots(r.custody_total)}</td>
+    </tr>`).join('');
+  return `
+    <div class="chip-spark-row">${spark}<span class="chip-hint">強制集保總股數趨勢（近${rows.length}筆）</span></div>
+    <div style="overflow-x:auto">
+      <table class="chip-table">
+        <thead><tr><th>日期</th><th>分戶保管</th><th>特定保管</th><th>集保總股數</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p class="chip-hint">董監事/經理人/持股逾10%大股東依法強制集中保管的股數，數字減少代表有股份解除集保、具備轉讓能力，可作為觀察大股東持股變動的參考指標，但不是正式的股權轉讓申報本身。</p>`;
+}
+
+async function openChipModal(code) {
+  const info = DBMgr.getStockInfo(code);
+  R.chipModalTitle.textContent = `📊 盤後資訊 — ${code}${info ? ' ' + info.stock_name : ''}`;
+  R.chipModal.classList.remove('hidden');
+  R.chipLoading.classList.remove('hidden');
+  R.chipContent.classList.add('hidden');
+  R.chipLoading.textContent = '載入中…';
+
+  try {
+    const data = await ChipStore.loadForStock(code);
+    const warn = data.partialErrors.length
+      ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${data.partialErrors.join('、')}</p>` : '';
+    R.chipContent.innerHTML =
+      `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(data.institutional)}</div>` +
+      `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(data.shareholding)}</div>` +
+      `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(data.custody)}</div>` +
+      warn;
+    R.chipLoading.classList.add('hidden');
+    R.chipContent.classList.remove('hidden');
+  } catch (e) {
+    R.chipLoading.textContent = '載入失敗：' + e.message;
+  }
+}
+
+function closeChipModal() {
+  R.chipModal.classList.add('hidden');
 }
 
 function saveMemoModal() {
@@ -4919,6 +5238,12 @@ function bindEvents() {
   R.memoCancel.addEventListener('click', closeMemoModal);
   R.memoModal.addEventListener('click', e => { if (e.target === R.memoModal) closeMemoModal(); });
   R.memoSave.addEventListener('click', saveMemoModal);
+
+  /* 盤後資訊（見 ChipStore：點下去才會觸發下載） */
+  R.chipInfoBtn.addEventListener('click', () => openChipModal(R.chipInfoBtn.dataset.code));
+  R.chipClose.addEventListener('click', closeChipModal);
+  R.chipClose2.addEventListener('click', closeChipModal);
+  R.chipModal.addEventListener('click', e => { if (e.target === R.chipModal) closeChipModal(); });
 
   /* resize */
   window.addEventListener('resize', () => Chart.resize());
