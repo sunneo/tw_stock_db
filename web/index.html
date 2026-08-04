@@ -3912,7 +3912,7 @@ function renderDailySourceChart(opts = {}) {
    US_INDEX_LIST）沒有 LiveFeed 這種即時輪詢來源，純靠 Yahoo backfill——
    兩者都交給 IntradayFeed 同一套機制處理，差別只在丟進去的 yahooSymbol
    跟有沒有後續的即時 tick 而已（見 IntradayFeed.ensureLoadedFor 註解）。 */
-async function renderIntradaySourceChart() {
+async function renderIntradaySourceChart(opts = {}) {
   const { type, code } = currentChartSource;
   const isIndex = type === 'index';
   const yahooSymbol = isIndex
@@ -3929,7 +3929,7 @@ async function renderIntradaySourceChart() {
      也會讓平移多滑進一段空白（見 needsMoreHistory/maybeExpandHistory 的
      guard 說明）。 */
   Chart.setMoreHistoryAvailable(false);
-  Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: false });
+  Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: !!opts.preserveView });
   renderIntradayInfoLine(rows, isIndex);
 }
 
@@ -3941,7 +3941,7 @@ function renderCurrentSourceChart(opts = {}) {
   // 個股、美股指數（見 US_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
   // 決定要畫哪一種，不再依 currentChartSource.type 特別把指數鎖在日線。
   if (chartMode !== 'intraday') renderDailySourceChart(opts);
-  else renderIntradaySourceChart();
+  else renderIntradaySourceChart(opts);
 }
 
 /* 分析報告面板跟技術分析/走勢圖圖表互斥顯示（同一塊 #chart-area），但「分析」
