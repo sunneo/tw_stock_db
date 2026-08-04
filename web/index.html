@@ -321,6 +321,7 @@ select:focus { outline: 2px solid var(--acc); }
   min-height: 38px;
 }
 #chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
+#prev-stock-btn, #next-stock-btn { font-size: 18px; font-weight: 700; line-height: 1; flex-shrink: 0; }
 #chart-info  { font-size: 12px; color: var(--txt2); }
 
 /* ── 桌面版 技術分析/走勢圖 分頁（手機版改用 #mobile-tabbar，見下方 media query） ── */
@@ -834,6 +835,7 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
     </div>
     <div id="chart-header">
+      <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
       <span id="chart-title">請從左側選擇股票</span>
@@ -853,6 +855,7 @@ select:focus { outline: 2px solid var(--acc); }
           <button class="seg-btn" data-indicator="rsi">RSI</button>
         </div>
       </div>
+      <button class="btn icon" id="next-stock-btn" title="下一檔">›</button>
     </div>
     <!-- 固定資訊列：日期/開高低收量 + 均線 + 指標數值，取代浮動提示框；
          點擊K線圖只會顯示十字線，數值一律顯示在這裡（見 renderInfoBar） -->
@@ -938,6 +941,12 @@ select:focus { outline: 2px solid var(--acc); }
           <label>距60日高點(%) <input type="number" id="strong-near-high" min="0" max="100"></label>
         </div>
         <div class="modal-pane hidden" data-pane="display">
+          <h3>圖表指標按鈕</h3>
+          <label class="modal-check-row"><input type="checkbox" id="indicator-show-kd"> KD</label>
+          <label class="modal-check-row"><input type="checkbox" id="indicator-show-macd"> MACD</label>
+          <label class="modal-check-row"><input type="checkbox" id="indicator-show-rsv"> RSV</label>
+          <label class="modal-check-row"><input type="checkbox" id="indicator-show-rsi"> RSI</label>
+          <p class="modal-hint">決定技術分析圖表工具列要出現哪些指標切換鈕，畫面空間有限，沒勾選的不會出現按鈕、也不會顯示數值（預設關閉RSV）。</p>
           <h3>游標十字線</h3>
           <label class="modal-check-row"><input type="checkbox" id="follow-mouse-toggle"> 跟著滑鼠顯示</label>
           <p class="modal-hint">預設關閉：滑鼠移動不會一直跳出十字線擋住線圖，改成點一下圖表才顯示/再點一下關閉；開啟後會恢復成滑鼠移到哪裡就跟到哪裡。所有數值一律顯示在圖表上方的固定資訊列，不會浮動遮住K線。</p>
@@ -1156,6 +1165,7 @@ const Settings = (() => {
              macdParams: { emaShort:10, emaLong:20, difPeriod:10 },
              rsiParams:  { fast:3, slow:6 },
              chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' | 'rsi' — the single switchable bottom panel
+             enabledIndicators: { kd:true, macd:true, rsv:false, rsi:true }, // 哪些指標按鈕要出現在圖表工具列（畫面空間有限，RSV預設關閉）
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              chartMode: 'daily',     // 'daily'（技術分析）| 'intraday'（走勢圖）
@@ -1182,6 +1192,7 @@ const Settings = (() => {
       d.macdParams   = Object.assign({}, def.macdParams,   stored.macdParams);
       d.rsiParams    = Object.assign({}, def.rsiParams,    stored.rsiParams);
       d.strongParams = Object.assign({}, def.strongParams, stored.strongParams);
+      d.enabledIndicators = Object.assign({}, def.enabledIndicators, stored.enabledIndicators);
     } catch { d = defaults(); }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} }
@@ -3438,6 +3449,8 @@ const R = {
   chartInfo:   $('chart-info'),
   chartInfoBar:$('chart-info-bar'),
   chartHeader: $('chart-header'),
+  prevStockBtn: $('prev-stock-btn'),
+  nextStockBtn: $('next-stock-btn'),
   chartWrap:   $('chart-wrap'),
   fileInput:   $('file-input'),
   sidebar:     $('sidebar'),
@@ -3494,6 +3507,10 @@ const R = {
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
   followMouseChk:  $('follow-mouse-toggle'),
+  indicatorShowKd:   $('indicator-show-kd'),
+  indicatorShowMacd: $('indicator-show-macd'),
+  indicatorShowRsv:  $('indicator-show-rsv'),
+  indicatorShowRsi:  $('indicator-show-rsi'),
   memoChartBtn:    $('memo-chart-btn'),
   memoModal:       $('memo-modal'),
   memoModalTitle:  $('memo-modal-title'),
@@ -4370,6 +4387,26 @@ function selectStock(code) {
   setDrawerOpen(false);
 }
 
+/* 手機版抱怨：想看下一檔都要跳回清單分頁才能點。這裡在圖表header的最左/最右
+   放上一檔/下一檔箭頭，直接沿用目前清單（State.stocks，尊重目前的
+   分類/篩選/排序）裡的順序前後移動，不用離開圖表。「分析」分頁清單放的是
+   報告種類不是股票，箭頭沒意義，但反正那個view底下#chart-header本來就整個
+   隱藏（見 showReportPanel），不用特別擋。 */
+function selectAdjacentStock(delta) {
+  if (!currentChartSource) return;
+  const list = State.stocks;
+  if (!list.length) return;
+  const isUsMarket = R.viewSel.value === 'usmarket';
+  let idx = list.findIndex(s => s.stock_code === currentChartSource.code);
+  idx = idx === -1 ? 0 : (idx + delta + list.length) % list.length;
+  const target = list[idx];
+  if (!target) return;
+  State.page = Math.floor(idx / PAGE_SIZE);
+  if (isUsMarket) selectMarketIndex(target.stock_code);
+  else selectStock(target.stock_code);
+  renderPage();
+}
+
 /* ════════════════════════════════════════
    MEMO MODAL
    ════════════════════════════════════════ */
@@ -4656,6 +4693,22 @@ function applyIndicator(kind) {
   Chart.setIndicator(kind);
 }
 
+/* 畫面空間有限，哪些指標按鈕要出現由設定決定（見設定modal「顯示設定」分頁）；
+   沒勾選的按鈕直接隱藏，資訊列本來就只顯示目前作用中指標的數值（見
+   renderInfoBar），所以只要目前作用中指標剛好被取消勾選、換成第一個還勾著
+   的指標，就不會再顯示被關掉的指標的數值。 */
+function applyIndicatorVisibility() {
+  const en = Settings.get('enabledIndicators') || { kd:true, macd:true, rsv:false, rsi:true };
+  R.indicatorToggle.querySelectorAll('.seg-btn').forEach(b => {
+    b.classList.toggle('hidden', !en[b.dataset.indicator]);
+  });
+  const current = Settings.get('chartIndicator') || 'kd';
+  if (!en[current]) {
+    const fallback = ['kd', 'macd', 'rsi', 'rsv'].find(k => en[k]) || 'kd';
+    applyIndicator(fallback);
+  }
+}
+
 function applyPeriod(p) {
   Settings.set('chartPeriod', p);
   R.periodToggle.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.period === p));
@@ -4822,6 +4875,10 @@ function bindEvents() {
   /* retry */
   R.retryBtn.addEventListener('click', () => location.reload());
 
+  /* 上一檔/下一檔（見 selectAdjacentStock 註解） */
+  R.prevStockBtn.addEventListener('click', () => selectAdjacentStock(-1));
+  R.nextStockBtn.addEventListener('click', () => selectAdjacentStock(1));
+
   /* chart indicator toggle (KD / MACD / RSV) */
   R.indicatorToggle.addEventListener('click', e => {
     const btn = e.target.closest('.seg-btn');
@@ -4904,6 +4961,12 @@ function openSettingsModal() {
 
   R.followMouseChk.checked = !!Settings.get('followMouseTooltip');
 
+  const en = Settings.get('enabledIndicators') || { kd:true, macd:true, rsv:false, rsi:true };
+  R.indicatorShowKd.checked   = !!en.kd;
+  R.indicatorShowMacd.checked = !!en.macd;
+  R.indicatorShowRsv.checked  = !!en.rsv;
+  R.indicatorShowRsi.checked  = !!en.rsi;
+
   R.settingsModal.classList.remove('hidden');
 }
 
@@ -4978,6 +5041,19 @@ function saveSettingsModal() {
   Settings.set('followMouseTooltip', followMouse);
   Chart.setFollowMouse(followMouse);
 
+  const enabledIndicators = {
+    kd:   R.indicatorShowKd.checked,
+    macd: R.indicatorShowMacd.checked,
+    rsv:  R.indicatorShowRsv.checked,
+    rsi:  R.indicatorShowRsi.checked,
+  };
+  if (!Object.values(enabledIndicators).some(Boolean)) {
+    alert('至少需勾選一個指標按鈕');
+    return;
+  }
+  Settings.set('enabledIndicators', enabledIndicators);
+  applyIndicatorVisibility();
+
   closeSettingsModal();
 }
 
@@ -5028,6 +5104,7 @@ async function main() {
   Chart.setMACDParams(Settings.get('macdParams') || { emaShort:10, emaLong:20, difPeriod:10 });
   Chart.setRSIParams(Settings.get('rsiParams') || { fast:3, slow:6 });
   applyIndicator(Settings.get('chartIndicator') || 'kd');
+  applyIndicatorVisibility();
   applyPeriod(Settings.get('chartPeriod') || 'day');
   Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
