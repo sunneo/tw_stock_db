@@ -16,6 +16,14 @@
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
 
+<!-- 避免行動裝置瀏覽器（尤其部分App內建瀏覽器）快取住舊版頁面版面；主要靠這個
+     擋掉「改版後使用者看到的還是舊畫面」的問題，注意 meta 版的 Cache-Control
+     只對「瀏覽器決定要不要重新打這次請求」有參考效果，GitHub Pages 本身仍會
+     回傳固定的 HTTP headers，兩者疊加才最保險。 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+
 <style>
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -88,6 +96,30 @@ body {
 #navbar > * { flex-shrink: 0; }
 .brand { font-weight: 700; font-size: 15px; color: var(--acc); white-space: nowrap; }
 .spacer { flex: 1; min-width: 8px; }
+
+/* ── App內建瀏覽器（iOS+LINE等）提示 ── */
+#ios-inapp-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--acc2);
+  color: var(--txt0);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--bdr);
+  flex-shrink: 0;
+}
+#ios-inapp-hint span { flex: 1; }
+#ios-inapp-hint button {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--txt2);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
 
 /* ── Buttons ── */
 .btn {
@@ -711,6 +743,14 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="btn icon" id="chart-settings-btn" title="圖表設定">⚙</button>
   <button class="btn icon" id="theme-btn" title="切換主題">🌙</button>
 </nav>
+
+<!-- iOS 上用 LINE 等App內建瀏覽器開啟時顯示：這類瀏覽器不支援「加入主畫面」
+     全螢幕能力，是平台限制而非本頁的bug，用一個可關閉的提示告訴使用者怎麼
+     改用 Safari 開啟才能加到主畫面（見 #ios-inapp-hint 相關JS偵測邏輯）。 -->
+<div id="ios-inapp-hint" class="hidden">
+  <span>偵測到您透過App內建瀏覽器開啟：iOS上無法直接「加入主畫面」全螢幕使用，請點右上角「⋯」或分享圖示選擇「在瀏覽器中開啟」，再用 Safari 的分享選單加入主畫面。</span>
+  <button id="ios-inapp-hint-close" title="關閉提示">✕</button>
+</div>
 
 <!-- ══ MOBILE TAB BAR (portrait 手機/平板才顯示：清單/圖表 分頁切換) ══ -->
 <div id="mobile-tabbar">
@@ -2265,7 +2305,10 @@ function bidAskMidPrice(item) {
 const LiveFeed = (() => {
   let timer = null;
   let activeCode = null;
+  let activeMarket = null;
   let onLiveUpdateCb = null;
+  let lastTickAt = 0;   // 上次成功打過一次輪詢的時間戳，見 poke()
+  let inFlight = false; // 避免 poke() 跟排程中的 tick() 同時各打一次
   const liveWrittenKeys = new Set(); // `${code}|${date}` — 這個 code+日期是 LiveFeed 自己寫進去的
 
   function marketOpenNow() {
@@ -2343,16 +2386,33 @@ const LiveFeed = (() => {
     }
   }
 
+  /* 部分App內建瀏覽器（例如 LINE 的頁內瀏覽器）觀察到：手動點擊/觸控手勢
+     觸發的JS都正常運作，但這個setTimeout自我排程的輪詢鏈會在背景被該
+     webview節流甚至整條停擺、且不一定會透過 visibilitychange 事件反映出來
+     （之前用 document.visibilityState 擋一層，反而可能讓「該環境一直誤報
+     hidden」變成永遠不輪詢，所以拿掉，改交給 eligible() 判斷是否該打）。
+     真正的補救不是猜測節流成因，而是拿使用者「確實會發生」的互動事件
+     （觸控/捲動/回到前景）當作補打一次的觸發點，見下面 poke()。 */
+  async function doTick(code, market) {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      lastTickAt = Date.now();
+      const got = await refresh(code, market);
+      if (got && activeCode === code) onLiveUpdateCb?.(code, taipeiDateStr());
+    } finally {
+      inFlight = false;
+    }
+  }
+
   function start(code, market) {
     stop();
     if (!eligible(code)) return;
     activeCode = code;
+    activeMarket = market;
     const tick = async () => {
       if (activeCode !== code) return;
-      if (document.visibilityState !== 'hidden') {
-        const got = await refresh(code, market);
-        if (got && activeCode === code) onLiveUpdateCb?.(code, taipeiDateStr());
-      }
+      await doTick(code, market);
       if (activeCode !== code || !eligible(code)) { if (activeCode === code) stop(); return; }
       timer = setTimeout(tick, LIVE_POLL_MS);
     };
@@ -2363,13 +2423,35 @@ const LiveFeed = (() => {
     if (timer) clearTimeout(timer);
     timer = null;
     activeCode = null;
+    activeMarket = null;
+  }
+
+  /* 使用者互動（觸控/捲動/分頁切回前景）時呼叫：如果距上次真的打過輪詢
+     已經超過一個間隔，立刻補打一次，不用等被節流的 setTimeout 鏈醒過來。
+     這是專門補救「背景計時器被webview節流、但使用者互動仍正常」這種情況
+     的保險，跟原本的排程鏈並存，不衝突（inFlight 避免重複打）。 */
+  function poke() {
+    if (!activeCode || !eligible(activeCode)) return;
+    if (Date.now() - lastTickAt < LIVE_POLL_MS) return;
+    doTick(activeCode, activeMarket);
   }
 
   function isActive(code) { return activeCode === code; }
   function setOnLiveUpdate(cb) { onLiveUpdateCb = cb; }
 
-  return { start, stop, eligible, isActive, setOnLiveUpdate };
+  return { start, stop, eligible, isActive, setOnLiveUpdate, poke };
 })();
+
+/* 某些App內建瀏覽器（LINE等）背景時會讓 LiveFeed 內部的 setTimeout 輪詢鏈
+   停擺，但手動觸控/捲動/回到前景都正常——用這些「確定會發生」的互動事件
+   當保險，補打一次逾期的輪詢（見 LiveFeed.poke() 註解）。passive:true 避免
+   影響捲動效能；就算目前沒有 LiveFeed 在跑，poke() 內部也會直接跳過。 */
+['touchstart', 'scroll', 'focus', 'pageshow'].forEach(evt => {
+  window.addEventListener(evt, () => LiveFeed.poke(), { passive: true });
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') LiveFeed.poke();
+});
 
 /* ════════════════════════════════════════
    INTRADAY FEED  (走勢圖分頁：把 LiveFeed 既有的輪詢原始回應順便累積成
@@ -3334,6 +3416,8 @@ const R = {
   menuDrop:    $('menu-drop'),
   themeBtn:    $('theme-btn'),
   syncBtn:     $('sync-btn'),
+  iosHint:      $('ios-inapp-hint'),
+  iosHintClose: $('ios-inapp-hint-close'),
   viewSel:     $('view-sel'),
   sectorSel:   $('sector-sel'),
   wlBar:       $('wl-bar'),
@@ -4659,6 +4743,12 @@ function bindEvents() {
   /* sync */
   R.syncBtn.addEventListener('click', handleSync);
 
+  /* App內建瀏覽器（iOS）提示關閉：記住關過，下次不再顯示 */
+  R.iosHintClose.addEventListener('click', () => {
+    R.iosHint.classList.add('hidden');
+    try { localStorage.setItem('iosInappHintDismissed', '1'); } catch {}
+  });
+
   /* mobile portrait tab-switch (清單 ⇄ 技術分析 ⇄ 走勢圖) */
   R.mtabList.addEventListener('click', () => switchMobileTab('list'));
   R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
@@ -4891,8 +4981,28 @@ function saveSettingsModal() {
 /* ════════════════════════════════════════
    BOOTSTRAP
    ════════════════════════════════════════ */
+/* iOS + App內建瀏覽器（LINE等）偵測：這類webview不支援「加入主畫面」，
+   使用者只能透過內建選單「在瀏覽器中開啟」後改用Safari才能加到主畫面全螢幕，
+   這是平台限制，不是本頁能力所及，這裡只負責提示怎麼做，不試圖繞過。
+   navigator.standalone 是Safari獨有欄位，已經是「加到主畫面後開啟」時才會是
+   true，這種情況不需要提示。UA判斷用常見App內建瀏覽器留下的token，涵蓋不了
+   所有App，抓漏就算了、不影響其他功能。 */
+function checkIosInappBrowser() {
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPhone|iPad|iPod/.test(ua);
+  const isStandalone = window.navigator.standalone === true ||
+    window.matchMedia?.('(display-mode: standalone)').matches;
+  const isInApp = /\bLine\//i.test(ua) || /FBAN|FBAV|Instagram|MicroMessenger/i.test(ua);
+  if (!isIOS || isStandalone || !isInApp) return;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('iosInappHintDismissed') === '1'; } catch {}
+  if (dismissed) return;
+  R.iosHint.classList.remove('hidden');
+}
+
 async function main() {
   bindEvents();
+  checkIosInappBrowser();
   Chart.setOnZoomChange(maybeExpandHistory);
   Chart.setOnInfoChange(renderInfoBar);
 
