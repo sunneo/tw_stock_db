@@ -2299,9 +2299,16 @@ function bidAskMidPrice(item) {
      - 已設定 TWSE_PROXY_BASE（沒設就整個功能關閉，見該常數註解）
      - 台北時間在開盤時段內（09:00–13:30，見 MARKET_OPEN_MIN/CLOSE_MIN）
      - TradingCalendar 判斷今天是交易日
-     - 本地還沒有這檔股票今天的資料，或者「今天的資料是 LiveFeed 自己
-       剛寫的」（liveWrittenKeys 追蹤，只存在記憶體，不影響本地DB結構）
-   ════════════════════════════════════════ */
+
+   原本這裡還有一條「本地已經有今天的資料就不再輪詢，除非是LiveFeed自己
+   寫的」的判斷，是為了避免收盤後官方資料落地了還被雜訊般的即時報價蓋掉。
+   但這個判斷會被伺服器端排程誤打（例如排程時間沒抓準，在還沒收盤時就跑了
+   當日增量更新）給坑：只要 daily_prices 已經有「今天」這筆列（不管是誰寫的、
+   是不是真的收盤價），就會被誤判成「已經有今天資料了」而永遠不再輪詢，
+   使用者看到的價格從此卡住不動，走勢圖那邊因為是另一條資料路徑（Yahoo
+   backfill）才沒事。既然已經先檢查過 marketOpenNow()===true，這個時間點上
+   「今天」的任何一筆資料本來就不可能是正式收盤價，一律當作可以/該持續即時
+   更新即可，不需要再細分是誰寫的。 */
 const LiveFeed = (() => {
   let timer = null;
   let activeCode = null;
@@ -2309,7 +2316,6 @@ const LiveFeed = (() => {
   let onLiveUpdateCb = null;
   let lastTickAt = 0;   // 上次成功打過一次輪詢的時間戳，見 poke()
   let inFlight = false; // 避免 poke() 跟排程中的 tick() 同時各打一次
-  const liveWrittenKeys = new Set(); // `${code}|${date}` — 這個 code+日期是 LiveFeed 自己寫進去的
 
   function marketOpenNow() {
     const mins = taipeiMinutesOfDay();
@@ -2320,9 +2326,7 @@ const LiveFeed = (() => {
     if (!TWSE_PROXY_BASE || !code) return false;
     if (!marketOpenNow()) return false;
     const today = taipeiDateStr();
-    if (!TradingCalendar.isTradingDay(today)) return false;
-    if (!DBMgr.hasDailyRow(code, today)) return true;
-    return liveWrittenKeys.has(code + '|' + today);
+    return TradingCalendar.isTradingDay(today);
   }
 
   function num(v) {
@@ -2372,7 +2376,6 @@ const LiveFeed = (() => {
       const row = parseDailyRow(item);
       if (row) {
         DBMgr.upsertLiveDailyRow(code, row);
-        liveWrittenKeys.add(code + '|' + row.trade_date);
         updated = true;
       }
       if (itemDateIso(item) === taipeiDateStr()) {
