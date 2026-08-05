@@ -625,10 +625,10 @@ select:focus { outline: 2px solid var(--acc); }
   padding: 8px 10px;
 }
 
-/* ── 盤後資訊 modal（三大法人/股權分布/強制集保） ── */
-#chip-modal .modal-box { width: min(560px, 92vw); }
-#chip-modal .modal-body { display: block; height: auto; max-height: 68vh; padding: 14px 16px; overflow-y: auto; }
-#chip-loading, .chip-empty { font-size: 13px; color: var(--txt2); padding: 4px 0; }
+/* ── 盤後面板（三大法人/股權分布/強制集保，屬於個股的第三個分頁，見 #chart-mode-tabs） ── */
+#chip-panel { flex: 1; overflow-y: auto; padding: 14px 16px; }
+#chip-panel.hidden { display: none; }
+.chip-loading, .chip-empty { font-size: 13px; color: var(--txt2); padding: 4px 0; }
 .chip-section { margin-bottom: 18px; }
 .chip-section:last-child { margin-bottom: 0; }
 .chip-section h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
@@ -671,6 +671,7 @@ select:focus { outline: 2px solid var(--acc); }
 }
 .mtab-btn.active { color: var(--acc); border-bottom-color: var(--acc); }
 .mtab-btn.hidden { display: none; }
+.mtab-btn.disabled { color: var(--txt2); opacity: .4; cursor: default; }
 
 /* ── Drawer (landscape compact only) ── */
 #drawer-toggle-btn { display: none; }
@@ -773,6 +774,7 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="mtab-btn active" id="mtab-list" data-tab="list">📋 清單</button>
   <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 技術分析</button>
   <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
+  <button class="mtab-btn" id="mtab-chip" data-tab="chip">📊 盤後</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -848,12 +850,12 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-mode-tabs">
       <button class="chart-mode-tab active" id="mode-tab-daily" data-mode="daily">技術分析</button>
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
+      <button class="chart-mode-tab" id="mode-tab-chip" data-mode="chip">盤後</button>
     </div>
     <div id="chart-header">
       <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
       <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
       <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
-      <button class="btn icon hidden" id="chip-info-btn" title="盤後資訊（三大法人/股權分布/強制集保）">📊</button>
       <span id="chart-title">請從左側選擇股票</span>
       <span id="chart-info"></span>
       <div class="chart-toolbar">
@@ -879,6 +881,12 @@ select:focus { outline: 2px solid var(--acc); }
     <div id="chart-wrap">
       <canvas id="main-chart"></canvas>
     </div>
+    <!-- ══ 盤後面板（三大法人/股權分布/強制集保，見 ChipStore）══
+         「盤後」分頁屬於個股（跟技術分析/走勢圖同一排tab，三選一互斥顯示），
+         不是獨立按鈕/彈窗——這樣手機版header才不會擠。資料的唯一載入時機是
+         點到這個分頁那一刻（見 renderChipSourceChart），平常在技術分析/走勢圖
+         分頁瀏覽/切股票都不會觸發任何下載。 -->
+    <div id="chip-panel" class="hidden"></div>
     <!-- ══ 分析報告面板（公式化產生，見 run_daily_update.py Step 8 / report_builder.py）══
          報告種類的選擇搬到左側 view-sel 的「分析」分類（見 loadAnalysisView/
          selectReportType），這裡只負責顯示目前選到的那一份報告，跟技術分析/
@@ -998,25 +1006,6 @@ select:focus { outline: 2px solid var(--acc); }
     <div class="modal-footer">
       <button class="btn" id="memo-cancel">取消</button>
       <button class="btn primary" id="memo-save">儲存</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══ 盤後資訊 MODAL（三大法人/股權分布/強制集保，見 ChipStore）══
-     這份資料唯一的載入時機是點開這個modal那一刻（見 chip-info-btn 的click
-     handler），平常選股/看K線圖都不會觸發任何跟這裡有關的下載。 -->
-<div id="chip-modal" class="modal-overlay hidden">
-  <div class="modal-box">
-    <div class="modal-header">
-      <span id="chip-modal-title">📊 盤後資訊</span>
-      <button class="btn icon" id="chip-close">✕</button>
-    </div>
-    <div class="modal-body">
-      <div id="chip-loading">載入中…</div>
-      <div id="chip-content" class="hidden"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn" id="chip-close2">關閉</button>
     </div>
   </div>
 </div>
@@ -3652,9 +3641,11 @@ const R = {
   mtabList:        $('mtab-list'),
   mtabChart:       $('mtab-chart'),
   mtabTrend:       $('mtab-trend'),
+  mtabChip:        $('mtab-chip'),
   chartModeTabs:      $('chart-mode-tabs'),
   modeTabDaily:       $('mode-tab-daily'),
   modeTabIntraday:    $('mode-tab-intraday'),
+  modeTabChip:        $('mode-tab-chip'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
   reportTitle:     $('report-title'),
@@ -3704,13 +3695,7 @@ const R = {
   indicatorShowRsv:  $('indicator-show-rsv'),
   indicatorShowRsi:  $('indicator-show-rsi'),
   memoChartBtn:    $('memo-chart-btn'),
-  chipInfoBtn:   $('chip-info-btn'),
-  chipModal:     $('chip-modal'),
-  chipModalTitle:$('chip-modal-title'),
-  chipClose:     $('chip-close'),
-  chipClose2:    $('chip-close2'),
-  chipLoading:   $('chip-loading'),
-  chipContent:   $('chip-content'),
+  chipPanel:     $('chip-panel'),
   memoModal:       $('memo-modal'),
   memoModalTitle:  $('memo-modal-title'),
   memoClose:       $('memo-close'),
@@ -4243,22 +4228,33 @@ function renderCurrentSourceChart(opts = {}) {
   if (!currentChartSource) return;
   // 個股、美股指數（見 US_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
   // 決定要畫哪一種，不再依 currentChartSource.type 特別把指數鎖在日線。
-  if (chartMode !== 'intraday') renderDailySourceChart(opts);
-  else renderIntradaySourceChart(opts);
+  // 「盤後」分頁美股指數不支援，見 renderChipSourceChart 自己的判斷。
+  if (chartMode === 'intraday') renderIntradaySourceChart(opts);
+  else if (chartMode === 'chip') renderChipSourceChart();
+  else renderDailySourceChart(opts);
 }
 
-/* 分析報告面板跟技術分析/走勢圖圖表互斥顯示（同一塊 #chart-area），但「分析」
-   現在是左側 view-sel 的獨立分類（見 selectReportType），不是 chartMode 的
-   一個值——setChartModeUI 只要負責「技術分析/走勢圖」這兩種圖表模式，並且
-   一律把報告面板蓋掉即可（使用者點技術分析/走勢圖分頁，等於是要看圖表）。 */
+/* 分析報告面板跟技術分析/走勢圖/盤後圖表互斥顯示（同一塊 #chart-area），但
+   「分析」現在是左側 view-sel 的獨立分類（見 selectReportType），不是
+   chartMode 的一個值——setChartModeUI 只要負責這三種圖表模式，並且
+   一律把報告面板蓋掉即可（使用者點這幾個分頁，等於是要看圖表）。 */
 function setChartModeUI(mode) {
   chartMode = mode;
   Settings.set('chartMode', mode);
+  // 先重置成「圖表區域殼」的baseline（chartHeader/chartInfoBar/chartWrap全部
+  // 可見、報告面板隱藏），再依目前mode覆蓋細節，順序不能反過來，否則
+  // hideReportPanel() 會把下面針對盤後分頁刻意隱藏的 chartInfoBar/chartWrap
+  // 又蓋回可見。
+  hideReportPanel();
   R.modeTabDaily.classList.toggle('active', mode === 'daily');
   R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
+  R.modeTabChip.classList.toggle('active', mode === 'chip');
   R.periodToggle.classList.toggle('hidden', mode !== 'daily');
   R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
-  hideReportPanel();
+  R.indicatorToggle.classList.toggle('hidden', mode === 'chip');
+  R.chartInfoBar.classList.toggle('hidden', mode === 'chip');
+  R.chartWrap.classList.toggle('hidden', mode === 'chip');
+  R.chipPanel.classList.toggle('hidden', mode !== 'chip');
 }
 
 function applyChartMode(mode) {
@@ -4279,6 +4275,7 @@ function showReportPanel() {
   R.chartHeader.classList.add('hidden');
   R.chartInfoBar.classList.add('hidden');
   R.chartWrap.classList.add('hidden');
+  R.chipPanel.classList.add('hidden');
   R.reportPanel.classList.remove('hidden');
 }
 
@@ -4514,11 +4511,16 @@ function renderStockDiagnosisHtml(d) {
   `;
 }
 
-/* 現在個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖了，這裡保留下來只是
-   防呆：確保切換股票/指數時清掉舊的 disabled 視覺殘留（理論上不會再被設上）。*/
+/* 個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖，但「盤後」分頁（三大法人/
+   股權分布/強制集保）是台股特有的揭露資訊，美股指數沒有，切到指數時要
+   disable 掉，並且如果目前正在看盤後分頁，要退回技術分析（見
+   selectMarketIndex 呼叫端）。 */
 function updateChartModeAvailability() {
   R.modeTabIntraday.classList.remove('disabled');
   R.mtabTrend.classList.remove('disabled');
+  const isIndex = currentChartSource?.type === 'index';
+  R.modeTabChip.classList.toggle('disabled', isIndex);
+  R.mtabChip.classList.toggle('disabled', isIndex);
 }
 
 function rebuildIntradayPeriodToggle() {
@@ -4543,15 +4545,17 @@ function selectMarketIndex(code) {
   const entry = US_INDEX_LIST.find(x => x.code === code);
   R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
   showMemoChartBtn(code);
-  hideChipInfoBtn(); // 盤後籌碼資料是台股特有的揭露資訊，美股指數沒有這些欄位
   updateChartModeAvailability();
 
   /* 美股指數現在也支援走勢圖了（見 renderIntradaySourceChart），跟
      selectStock 一樣要尊重目前開著的是技術分析還是走勢圖分頁，不能每次
      選指數都強制跳回技術分析。switchMobileTab 會透過 applyChartMode
      觸發實際重繪，這裡不用再另外呼叫 renderCurrentSourceChart，避免同一次
-     選股重繪兩次。 */
-  switchMobileTab(chartMode === 'intraday' ? 'trend' : 'chart');
+     選股重繪兩次。「盤後」分頁不支援指數（見 updateChartModeAvailability），
+     如果原本停留在盤後分頁又點了指數，要退回技術分析，不能讓已經disabled
+     的分頁繼續掛在「目前選中」狀態。 */
+  const targetMode = chartMode === 'chip' ? 'daily' : chartMode;
+  switchMobileTab(targetMode === 'intraday' ? 'trend' : targetMode === 'chip' ? 'chip' : 'chart');
   setDrawerOpen(false);
 }
 
@@ -4571,7 +4575,6 @@ function selectStock(code) {
   const info = DBMgr.getStockInfo(code);
   R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
   showMemoChartBtn(code);
-  showChipInfoBtn(code);
   updateChartModeAvailability();
 
   /* 收盤前，如果本地還沒有這檔股票今天的資料，就試著即時向證交所要
@@ -4581,10 +4584,10 @@ function selectStock(code) {
 
   /* mobile: picking a stock naturally means "now show me the chart" —
      switch tab (portrait) / close the drawer (landscape), respecting
-     whichever of 技術分析/走勢圖 是目前開著的。switchMobileTab 會透過
+     whichever of 技術分析/走勢圖/盤後 是目前開著的。switchMobileTab 會透過
      applyChartMode 觸發實際重繪，desktop 版也一樣（那些 CSS class 只在
      手機直向 media query 下才有視覺效果，但這裡的呼叫本身不分裝置）。 */
-  switchMobileTab(chartMode === 'intraday' ? 'trend' : 'chart');
+  switchMobileTab(chartMode === 'intraday' ? 'trend' : chartMode === 'chip' ? 'chip' : 'chart');
   setDrawerOpen(false);
 }
 
@@ -4656,17 +4659,8 @@ function closeMemoModal() {
 }
 
 /* ════════════════════════════════════════
-   盤後資訊 MODAL（見 ChipStore 模組說明：唯一的載入時機就是這裡）
+   盤後面板（見 ChipStore 模組說明：唯一的載入時機是切到「盤後」這個分頁）
    ════════════════════════════════════════ */
-function showChipInfoBtn(code) {
-  R.chipInfoBtn.classList.remove('hidden');
-  R.chipInfoBtn.dataset.code = code;
-}
-function hideChipInfoBtn() {
-  R.chipInfoBtn.classList.add('hidden');
-  delete R.chipInfoBtn.dataset.code;
-}
-
 function fmtLots(shares) {
   if (shares == null || isNaN(shares)) return '-';
   return Math.round(shares / 1000).toLocaleString() + '張';
@@ -4745,32 +4739,32 @@ function renderCustodySection(rows) {
     <p class="chip-hint">董監事/經理人/持股逾10%大股東依法強制集中保管的股數，數字減少代表有股份解除集保、具備轉讓能力，可作為觀察大股東持股變動的參考指標，但不是正式的股權轉讓申報本身。</p>`;
 }
 
-async function openChipModal(code) {
-  const info = DBMgr.getStockInfo(code);
-  R.chipModalTitle.textContent = `📊 盤後資訊 — ${code}${info ? ' ' + info.stock_name : ''}`;
-  R.chipModal.classList.remove('hidden');
-  R.chipLoading.classList.remove('hidden');
-  R.chipContent.classList.add('hidden');
-  R.chipLoading.textContent = '載入中…';
+/* 「盤後」分頁屬於個股，美股指數沒有這些揭露資料，切到這個分頁時如果目前
+   選的是指數就顯示提示，不嘗試下載（見 renderCurrentSourceChart 的
+   dispatch）。非同步下載期間使用者可能已經切走分頁/切了別檔股票，回來後
+   要重新檢查目前狀態，避免蓋掉使用者已經在看的別的東西。 */
+async function renderChipSourceChart() {
+  if (!currentChartSource || currentChartSource.type !== 'stock') {
+    R.chipPanel.innerHTML = '<div class="chip-empty">美股指數沒有三大法人／股權分布／強制集保等籌碼資料，這些是台股特有的揭露資訊。</div>';
+    return;
+  }
+  const code = currentChartSource.code;
+  R.chipPanel.innerHTML = '<div class="chip-loading">載入中…</div>';
 
   try {
     const data = await ChipStore.loadForStock(code);
+    if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
     const warn = data.partialErrors.length
       ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${data.partialErrors.join('、')}</p>` : '';
-    R.chipContent.innerHTML =
+    R.chipPanel.innerHTML =
       `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(data.institutional)}</div>` +
       `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(data.shareholding)}</div>` +
       `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(data.custody)}</div>` +
       warn;
-    R.chipLoading.classList.add('hidden');
-    R.chipContent.classList.remove('hidden');
   } catch (e) {
-    R.chipLoading.textContent = '載入失敗：' + e.message;
+    if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
+    R.chipPanel.innerHTML = `<div class="chip-empty">載入失敗：${esc(e.message)}</div>`;
   }
-}
-
-function closeChipModal() {
-  R.chipModal.classList.add('hidden');
 }
 
 function saveMemoModal() {
@@ -4987,14 +4981,17 @@ function populateSectors() {
    MOBILE LAYOUT — portrait tab-switch (list ⇄ chart) + landscape drawer
    ════════════════════════════════════════ */
 function switchMobileTab(tab) {
-  const showChart = (tab === 'chart' || tab === 'trend'); // 兩者共用同一個 #chart-area
+  if (tab === 'chip' && R.mtabChip.classList.contains('disabled')) tab = 'chart'; // 美股指數沒有盤後資料
+  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'chip'); // 三者共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
   R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
   R.mtabChart.classList.toggle('active', tab === 'chart');
   R.mtabTrend.classList.toggle('active', tab === 'trend');
+  R.mtabChip.classList.toggle('active', tab === 'chip');
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
+  else if (tab === 'chip') applyChartMode('chip');
   if (showChart) setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
 }
 
@@ -5128,6 +5125,7 @@ function bindEvents() {
   R.mtabList.addEventListener('click', () => switchMobileTab('list'));
   R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
   R.mtabTrend.addEventListener('click', () => switchMobileTab('trend'));
+  R.mtabChip.addEventListener('click', () => switchMobileTab('chip'));
 
   /* 分析報告面板：報告種類改由左側 view-sel「分析」清單選（見 selectReportType），
      這裡只剩顯示模式（分頁/連續）跟上一頁/下一頁。 */
@@ -5238,12 +5236,6 @@ function bindEvents() {
   R.memoCancel.addEventListener('click', closeMemoModal);
   R.memoModal.addEventListener('click', e => { if (e.target === R.memoModal) closeMemoModal(); });
   R.memoSave.addEventListener('click', saveMemoModal);
-
-  /* 盤後資訊（見 ChipStore：點下去才會觸發下載） */
-  R.chipInfoBtn.addEventListener('click', () => openChipModal(R.chipInfoBtn.dataset.code));
-  R.chipClose.addEventListener('click', closeChipModal);
-  R.chipClose2.addEventListener('click', closeChipModal);
-  R.chipModal.addEventListener('click', e => { if (e.target === R.chipModal) closeChipModal(); });
 
   /* resize */
   window.addEventListener('resize', () => Chart.resize());
