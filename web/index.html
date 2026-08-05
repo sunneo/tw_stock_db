@@ -639,6 +639,9 @@ select:focus { outline: 2px solid var(--acc); }
 .chip-table thead th { color: var(--txt2); font-weight: 600; border-bottom: 1px solid var(--bdr); }
 .chip-table tbody tr:nth-child(odd) { background: var(--bg2); }
 .chip-spark-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.chip-date-row { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.chip-date-row label { font-size: 12px; color: var(--txt2); }
+.chip-date-row select { font-size: 13px; padding: 3px 6px; }
 
 /* ── Memo icon buttons (list rows + chart header) ── */
 .memo-btn {
@@ -4742,29 +4745,81 @@ function renderCustodySection(rows) {
 /* 「盤後」分頁屬於個股，美股指數沒有這些揭露資料，切到這個分頁時如果目前
    選的是指數就顯示提示，不嘗試下載（見 renderCurrentSourceChart 的
    dispatch）。非同步下載期間使用者可能已經切走分頁/切了別檔股票，回來後
-   要重新檢查目前狀態，避免蓋掉使用者已經在看的別的東西。 */
+   要重新檢查目前狀態，避免蓋掉使用者已經在看的別的東西。
+
+   chipRenderedForCode：記錄目前面板顯示的是哪一檔的資料。LiveFeed 每20秒
+   會呼叫 renderCurrentSourceChart() 更新即時報價，但盤後籌碼資料本來就是
+   靜態的（三大法人一天一筆、股權分布/強制集保一週才更新一次），跟著即時
+   報價一起重繪只會白白把整塊面板重新整個換掉、把使用者往下捲動的scrollbar
+   位置彈回頂端，完全沒有必要——所以同一檔股票只在真正第一次切進這個分頁
+   時抓資料、畫一次，之後LiveFeed的回呼會被這裡直接跳過。使用者用下面的
+   日期選擇器切換查詢日期是另一條路徑（changeChipDate），不受這個guard影響。 */
+let chipRenderedForCode = null;
+let chipData = null;          // {institutional, shareholding, custody, partialErrors}，目前這檔的完整資料
+let chipAvailableDates = [];  // 三張表 date 欄位的聯集，由舊到新排序
+let chipSelectedDate = null;
+
 async function renderChipSourceChart() {
   if (!currentChartSource || currentChartSource.type !== 'stock') {
+    chipRenderedForCode = null;
+    chipData = null;
     R.chipPanel.innerHTML = '<div class="chip-empty">美股指數沒有三大法人／股權分布／強制集保等籌碼資料，這些是台股特有的揭露資訊。</div>';
     return;
   }
   const code = currentChartSource.code;
-  R.chipPanel.innerHTML = '<div class="chip-loading">載入中…</div>';
+  if (chipRenderedForCode === code) return; // 已經顯示過這檔，見上方說明
 
+  R.chipPanel.innerHTML = '<div class="chip-loading">載入中…</div>';
   try {
     const data = await ChipStore.loadForStock(code);
     if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
-    const warn = data.partialErrors.length
-      ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${data.partialErrors.join('、')}</p>` : '';
-    R.chipPanel.innerHTML =
-      `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(data.institutional)}</div>` +
-      `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(data.shareholding)}</div>` +
-      `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(data.custody)}</div>` +
-      warn;
+    chipData = data;
+    chipRenderedForCode = code;
+
+    const dateSet = new Set();
+    data.institutional.forEach(r => dateSet.add(r.trade_date));
+    data.shareholding.forEach(r => dateSet.add(r.data_date));
+    data.custody.forEach(r => dateSet.add(r.data_date));
+    chipAvailableDates = [...dateSet].sort();
+    chipSelectedDate = chipAvailableDates.at(-1) || null;
+
+    renderChipPanelBody();
   } catch (e) {
     if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
+    chipRenderedForCode = null;
     R.chipPanel.innerHTML = `<div class="chip-empty">載入失敗：${esc(e.message)}</div>`;
   }
+}
+
+/* 日期選擇器只列出「三張表至少一張有資料」的日期，等於「有資料的enable、
+   沒資料的disable」——沒資料的日期根本不出現在清單裡可以選，比用原生
+   input[type=date]再手動擋掉個別日期簡單可靠很多。選定日期後，三個區塊都
+   只顯示「該日期（含）以前」的資料，三大法人/強制集保沿用原本「近10筆」
+   trailing window的畫法、只是終點改成選定日期；股權分布本來就是取
+   「不晚於該日期」最近一期，邏輯不用改，篩選陣列時自然成立。 */
+function renderChipPanelBody() {
+  if (!chipData || !chipSelectedDate) return;
+  const warn = chipData.partialErrors.length
+    ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${chipData.partialErrors.join('、')}</p>` : '';
+  const dateOptions = chipAvailableDates.map(d =>
+    `<option value="${d}"${d === chipSelectedDate ? ' selected' : ''}>${d}</option>`
+  ).join('');
+  const instUpTo = chipData.institutional.filter(r => r.trade_date <= chipSelectedDate);
+  const shrUpTo  = chipData.shareholding.filter(r => r.data_date <= chipSelectedDate);
+  const cusUpTo  = chipData.custody.filter(r => r.data_date <= chipSelectedDate);
+
+  R.chipPanel.innerHTML =
+    `<div class="chip-date-row"><label for="chip-date-select">查詢日期（僅列出有資料的日期）</label>` +
+    `<select id="chip-date-select">${dateOptions}</select></div>` +
+    `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(instUpTo)}</div>` +
+    `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(shrUpTo)}</div>` +
+    `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(cusUpTo)}</div>` +
+    warn;
+
+  document.getElementById('chip-date-select').addEventListener('change', e => {
+    chipSelectedDate = e.target.value;
+    renderChipPanelBody();
+  });
 }
 
 function saveMemoModal() {
