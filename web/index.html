@@ -978,6 +978,11 @@ select:focus { outline: 2px solid var(--acc); }
           <h3>游標十字線</h3>
           <label class="modal-check-row"><input type="checkbox" id="follow-mouse-toggle"> 跟著滑鼠顯示</label>
           <p class="modal-hint">預設關閉：滑鼠移動不會一直跳出十字線擋住線圖，改成點一下圖表才顯示/再點一下關閉；開啟後會恢復成滑鼠移到哪裡就跟到哪裡。所有數值一律顯示在圖表上方的固定資訊列，不會浮動遮住K線。</p>
+          <h3>圖表版面比例（K線／成交量／指標）</h3>
+          <label>K線 <input type="number" id="panel-weight-kline" min="1" max="1000"></label>
+          <label>成交量 <input type="number" id="panel-weight-volume" min="1" max="1000"></label>
+          <label>指標(KD/MACD/RSI) <input type="number" id="panel-weight-indicator" min="1" max="1000"></label>
+          <p class="modal-hint">三個數字只是比例權重，不是像素，例如 304:76:64 代表K線占的高度是成交量的4倍、是指標區的4.75倍，數字可以隨意調整，系統會自動依總和正規化。手機版螢幕較窄，通常會想把K線的比例拉高、壓縮指標區。</p>
         </div>
       </div>
     </div>
@@ -1194,6 +1199,7 @@ const Settings = (() => {
              rsiParams:  { fast:3, slow:6 },
              chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' | 'rsi' — the single switchable bottom panel
              enabledIndicators: { kd:true, macd:true, rsv:false, rsi:true }, // 哪些指標按鈕要出現在圖表工具列（畫面空間有限，RSV預設關閉）
+             chartPanelWeights: { kline: 304, volume: 76, indicator: 64 }, // K線/成交量/指標(KD·MACD·RSI) 三塊面板的高度比例，見 Chart.setPanelWeights
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              chartMode: 'daily',     // 'daily'（技術分析）| 'intraday'（走勢圖）
@@ -1221,6 +1227,7 @@ const Settings = (() => {
       d.rsiParams    = Object.assign({}, def.rsiParams,    stored.rsiParams);
       d.strongParams = Object.assign({}, def.strongParams, stored.strongParams);
       d.enabledIndicators = Object.assign({}, def.enabledIndicators, stored.enabledIndicators);
+      d.chartPanelWeights = Object.assign({}, def.chartPanelWeights, stored.chartPanelWeights);
     } catch { d = defaults(); }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} }
@@ -2771,7 +2778,7 @@ const Chart = (() => {
   let lastStep   = 1;        // px-per-candle from the most recent draw(), used to convert drag distance to candle count
   let liveDate   = null;     // trade_date of the still-forming "today" candle (LiveFeed), or null
 
-  const WEIGHT = { kline: 3, volume: 1.2, indicator: 1.5 };
+  const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
   /* default zoom = most recent ~30 calendar days for daily; for week/month/quarter
      there are naturally few candles, so default to showing everything available */
@@ -2930,6 +2937,18 @@ const Chart = (() => {
   }
 
   function setIndicator(k) { indicator = k; draw(); }
+
+  /* K線/成交量/指標(KD·MACD·RSI) 三塊面板的高度比例，見 draw() 裡的
+     WEIGHT.kline/volume/indicator 怎麼用；可從設定modal調整，手機版尤其
+     需要放大K線比例、壓縮指標面板。只是換掉 WEIGHT 物件裡的數值（不是
+     重新assign整個const物件），數字本身是「比例權重」不是絕對像素，隨便
+     給多大的整數都會被 draw() 裡的 totalWeight 正規化，不用是特定範圍。 */
+  function setPanelWeights(w) {
+    WEIGHT.kline = w.kline;
+    WEIGHT.volume = w.volume;
+    WEIGHT.indicator = w.indicator;
+    draw();
+  }
 
   /* 走勢圖分頁用：切換 5/20/60 分鐘級距（period 本身不變，還是 'intraday'，
      只是重新分桶），跟 setPeriod 分開是因為 setPeriod 對「period 沒變」會
@@ -3404,6 +3423,7 @@ const Chart = (() => {
   return {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
+    setPanelWeights,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
@@ -3777,6 +3797,9 @@ const R = {
   indicatorShowMacd: $('indicator-show-macd'),
   indicatorShowRsv:  $('indicator-show-rsv'),
   indicatorShowRsi:  $('indicator-show-rsi'),
+  panelWeightKline:     $('panel-weight-kline'),
+  panelWeightVolume:    $('panel-weight-volume'),
+  panelWeightIndicator: $('panel-weight-indicator'),
   memoChartBtn:    $('memo-chart-btn'),
   chipPanel:     $('chip-panel'),
   memoModal:       $('memo-modal'),
@@ -5479,6 +5502,11 @@ function openSettingsModal() {
   R.indicatorShowRsv.checked  = !!en.rsv;
   R.indicatorShowRsi.checked  = !!en.rsi;
 
+  const pw = Settings.get('chartPanelWeights') || { kline: 304, volume: 76, indicator: 64 };
+  R.panelWeightKline.value     = pw.kline;
+  R.panelWeightVolume.value    = pw.volume;
+  R.panelWeightIndicator.value = pw.indicator;
+
   R.settingsModal.classList.remove('hidden');
 }
 
@@ -5566,6 +5594,17 @@ function saveSettingsModal() {
   Settings.set('enabledIndicators', enabledIndicators);
   applyIndicatorVisibility();
 
+  const klineW = parseFloat(R.panelWeightKline.value);
+  const volumeW = parseFloat(R.panelWeightVolume.value);
+  const indicatorW = parseFloat(R.panelWeightIndicator.value);
+  if ([klineW, volumeW, indicatorW].some(v => !Number.isFinite(v) || v <= 0)) {
+    alert('圖表版面比例必須是正數');
+    return;
+  }
+  const chartPanelWeights = { kline: klineW, volume: volumeW, indicator: indicatorW };
+  Settings.set('chartPanelWeights', chartPanelWeights);
+  Chart.setPanelWeights(chartPanelWeights);
+
   closeSettingsModal();
 }
 
@@ -5615,6 +5654,7 @@ async function main() {
   Chart.setKDParams(Settings.get('kdParams') || { rsvDays:5, kSmooth:3, dSmooth:3 });
   Chart.setMACDParams(Settings.get('macdParams') || { emaShort:10, emaLong:20, difPeriod:10 });
   Chart.setRSIParams(Settings.get('rsiParams') || { fast:3, slow:6 });
+  Chart.setPanelWeights(Settings.get('chartPanelWeights') || { kline: 304, volume: 76, indicator: 64 });
   applyIndicator(Settings.get('chartIndicator') || 'kd');
   applyIndicatorVisibility();
   applyPeriod(Settings.get('chartPeriod') || 'day');
