@@ -3437,14 +3437,24 @@ function sparkline(closes, w = 60, h = 20) {
    每次開頁面就自動載入的主資料庫——這份資料使用者明確要求「唯一的載入時機
    是點開盤後資訊面板那一刻」，平常選股/看K線圖/切換分頁都不能連帶下載到。
    資料來源見 tw-stock-db/sync/chip_snapshot.py（db/monthly-chip，全市場、
-   一個月一個檔案）+ export_chip_delta（daily-chip/<日期>，補齊當月快照可能
-   還沒收進去的最新一天）。只在記憶體裡做session層級cache（開過的月份不用
-   重複下載，但重新整理頁面就會清空）——這是刻意的取捨：多數使用者可能根本
-   不會點開這個功能，不值得為此多負擔一份持久化storage的空間與初始化成本。
+   一個月一個檔案，內含實際數字）+ export_chip_delta（daily-chip/<日期>，
+   補齊當月快照可能還沒收進去的最新一天）。只在記憶體裡做session層級cache
+   （開過的月份不用重複下載，但重新整理頁面就會清空）——這是刻意的取捨：
+   多數使用者可能根本不會點開這個功能，不值得為此多負擔一份持久化storage
+   的空間與初始化成本。
+
+   兩層式設計，支援「往前追溯很久以前」不用整批下載：
+   1. getAvailableDates()：只抓 db/monthly-chip/availability/<年份>.json
+      （幾KB等級，只記錄「哪些日期有資料」，不含實際數字），用來畫日期
+      選擇器的可選範圍——即使要往前看兩三年前的資料，這一步也很便宜。
+   2. loadDataForDate()：使用者實際切到某個日期時，才依那個日期精準抓
+      對應月份的完整 db/monthly-chip/<yyyy>/<mm>.db（見該函式註解如何決定
+      要抓哪幾個月），只在真的要看數字時才付這筆流量。
    ════════════════════════════════════════ */
 const ChipStore = (() => {
   const CHIP_MANIFEST_URL = RAW + '/db-snapshot/db/monthly-chip/manifest.json';
-  const RECENT_MONTHS = 6; // 抓最近幾個月當作預設的趨勢觀察範圍
+  const AVAIL_INDEX_URL = RAW + '/db-snapshot/db/monthly-chip/availability/index.json';
+  const AVAIL_YEAR_URL = year => `${RAW}/db-snapshot/db/monthly-chip/availability/${year}.json`;
   const NUM_FIELDS = new Set([
     'foreign_net', 'foreign_dealer_net', 'trust_net', 'dealer_net', 'total_net',
     'tier', 'holders', 'shares', 'pct',
@@ -3453,7 +3463,9 @@ const ChipStore = (() => {
 
   let sqlLib = null;
   let manifest = null;
-  const monthCache = new Map(); // label -> {institutional, shareholding, custody} 三個陣列（全市場，未過濾）
+  let availIndex = null;
+  const availByYear = new Map(); // 年份字串 -> {institutional_dates, shareholding_dates, custody_by_stock} 或 null
+  const monthCache = new Map();  // label -> {institutional, shareholding, custody} 三個陣列（全市場，未過濾）
 
   async function ensureSqlLib() {
     if (!sqlLib) {
@@ -3541,40 +3553,107 @@ const ChipStore = (() => {
     } catch { return []; }
   }
 
-  /* 撈某檔股票最近 RECENT_MONTHS 個月的三張表資料，回傳依日期排序、只含該
-     股票的 {institutional, shareholding, custody, partialErrors} */
-  async function loadForStock(code) {
-    await ensureManifest();
-    const months = (manifest.months || []).map(m => m.label).sort().slice(-RECENT_MONTHS);
+  async function ensureAvailIndex() {
+    if (!availIndex) {
+      const res = await fetch(AVAIL_INDEX_URL);
+      if (!res.ok) throw new Error('無法取得盤後資料可用年份索引: ' + res.status);
+      availIndex = await res.json();
+    }
+    return availIndex;
+  }
+
+  /* 今年的可用性狀態會持續變動（今天的資料隨時可能新增），每次都重新抓最新
+     版本、不用session cache鎖住舊狀態；過去年份的資料已經凍結，抓過一次
+     之後全部用cache，不用每次都重抓。 */
+  async function ensureYearAvail(year) {
+    const isCurrentYear = String(year) === String(new Date().getFullYear());
+    if (!isCurrentYear && availByYear.has(year)) return availByYear.get(year);
+    try {
+      const res = await fetch(AVAIL_YEAR_URL(year), isCurrentYear ? { cache: 'no-store' } : {});
+      if (!res.ok) { availByYear.set(year, null); return null; }
+      const data = await res.json();
+      availByYear.set(year, data);
+      return data;
+    } catch { availByYear.set(year, null); return null; }
+  }
+
+  /* 只抓「有沒有資料」的狀態（見 tw-stock-db/sync/chip_snapshot.py 的
+     availability manifest 說明），完全不下載任何實際數字，用來畫日期選擇器
+     的可選範圍——即使要往前追溯兩三年前的資料，這一步也只要幾KB，不需要
+     為了畫個日期選擇器就先把好幾年份的完整月度db都抓下來。 */
+  async function getAvailableDates(code) {
+    const idx = await ensureAvailIndex();
+    const years = idx.years || [];
+    const perYear = await Promise.all(years.map(y => ensureYearAvail(y)));
+    const instSet = new Set(), shrSet = new Set(), cusSet = new Set();
+    perYear.forEach(y => {
+      if (!y) return;
+      (y.institutional_dates || []).forEach(d => instSet.add(d));
+      (y.shareholding_dates || []).forEach(d => shrSet.add(d));
+      (y.custody_by_stock?.[code] || []).forEach(d => cusSet.add(d));
+    });
+    return {
+      institutionalDates: [...instSet].sort(),
+      shareholdingDates: [...shrSet].sort(),
+      custodyDates: [...cusSet].sort(),
+      allDates: [...new Set([...instSet, ...shrSet, ...cusSet])].sort(),
+    };
+  }
+
+  function monthLabelOf(dateStr) { return dateStr.slice(0, 7); }
+  function prevMonthLabel(label) {
+    const [y, m] = label.split('-').map(Number);
+    const d = new Date(y, m - 2, 1); // m 是1-based月份，Date建構子吃0-based，-1才是上個月
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  /* 撈「某個錨點日期附近」該檔股票的實際資料（不是整份歷史），用來畫近期
+     趨勢表格：預設抓錨點日期所在月份 + 前一個月，兩個月份量足夠涵蓋三大
+     法人近10筆trailing window的查找；股權分布/強制集保是稀疏資料，「不晚於
+     錨點」最近一期可能落在這兩個月之外，這裡用 getAvailableDates() 已經
+     免費抓到的可用性清單（avail 參數）精準補上那個月份，不用整段月份地毯式
+     亂猜、也不用因為抓不準而多下載好幾個月份。只在使用者真的切到某個日期
+     時才呼叫，不是一進分頁就抓好幾個月。 */
+  async function loadDataForDate(code, anchorDate, avail) {
+    const label = monthLabelOf(anchorDate);
+    const labelSet = new Set([prevMonthLabel(label), label]);
+    const nearestShr = [...(avail?.shareholdingDates || [])].reverse().find(d => d <= anchorDate);
+    if (nearestShr) labelSet.add(monthLabelOf(nearestShr));
+    const nearestCus = [...(avail?.custodyDates || [])].reverse().find(d => d <= anchorDate);
+    if (nearestCus) labelSet.add(monthLabelOf(nearestCus));
+
     const institutional = [], shareholding = [], custody = [];
     const partialErrors = [];
-
-    for (const label of months) {
+    for (const l of labelSet) {
       try {
-        const data = await loadMonth(label);
+        const data = await loadMonth(l);
         if (!data) continue;
         institutional.push(...data.institutional.filter(r => r.stock_code === code));
         shareholding.push(...data.shareholding.filter(r => r.stock_code === code));
         custody.push(...data.custody.filter(r => r.stock_code === code));
       } catch (e) {
-        console.warn(`盤後資訊 ${label} 下載/解析失敗：`, e.message);
-        partialErrors.push(label);
+        console.warn(`盤後資訊 ${l} 下載/解析失敗：`, e.message);
+        partialErrors.push(l);
       }
     }
 
-    const [todayInst, todayShr, todayCus] = await Promise.all([
-      loadTodayCsv('institutional_by_stock.csv'),
-      loadTodayCsv('shareholding_distribution.csv'),
-      loadTodayCsv('mandatory_custody.csv'),
-    ]);
-    for (const r of todayInst.filter(r => r.stock_code === code)) {
-      if (!institutional.some(x => x.trade_date === r.trade_date)) institutional.push(r);
-    }
-    for (const r of todayShr.filter(r => r.stock_code === code)) {
-      if (!shareholding.some(x => x.data_date === r.data_date && x.tier === r.tier)) shareholding.push(r);
-    }
-    for (const r of todayCus.filter(r => r.stock_code === code)) {
-      if (!custody.some(x => x.data_date === r.data_date)) custody.push(r);
+    // 補齊今天的daily-chip只有在錨點日期真的是「今天」時才有意義（否則
+    // 使用者在瀏覽很久以前的資料，補今天的資料沒有意義也是浪費一次請求）。
+    if (anchorDate === taipeiDateStr()) {
+      const [todayInst, todayShr, todayCus] = await Promise.all([
+        loadTodayCsv('institutional_by_stock.csv'),
+        loadTodayCsv('shareholding_distribution.csv'),
+        loadTodayCsv('mandatory_custody.csv'),
+      ]);
+      for (const r of todayInst.filter(r => r.stock_code === code)) {
+        if (!institutional.some(x => x.trade_date === r.trade_date)) institutional.push(r);
+      }
+      for (const r of todayShr.filter(r => r.stock_code === code)) {
+        if (!shareholding.some(x => x.data_date === r.data_date && x.tier === r.tier)) shareholding.push(r);
+      }
+      for (const r of todayCus.filter(r => r.stock_code === code)) {
+        if (!custody.some(x => x.data_date === r.data_date)) custody.push(r);
+      }
     }
 
     institutional.sort((a, b) => a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0);
@@ -3584,7 +3663,7 @@ const ChipStore = (() => {
     return { institutional, shareholding, custody, partialErrors };
   }
 
-  return { loadForStock };
+  return { getAvailableDates, loadDataForDate };
 })();
 
 /* ════════════════════════════════════════
@@ -4756,14 +4835,14 @@ function renderCustodySection(rows) {
    時抓資料、畫一次，之後LiveFeed的回呼會被這裡直接跳過。使用者用下面的
    日期選擇器切換查詢日期是另一條路徑（changeChipDate），不受這個guard影響。 */
 let chipRenderedForCode = null;
-let chipData = null;          // {institutional, shareholding, custody, partialErrors}，目前這檔的完整資料
-let chipAvailableDates = [];  // 三張表 date 欄位的聯集，由舊到新排序
+let chipAvail = null;         // {institutionalDates, shareholdingDates, custodyDates, allDates}，很小，見 ChipStore.getAvailableDates
+let chipAvailableDates = [];  // = chipAvail.allDates，日期選擇器實際用這份
 let chipSelectedDate = null;
+let chipRenderData = null;    // {institutional, shareholding, custody, partialErrors}，「錨點日期附近」實際數字，見 ChipStore.loadDataForDate
 
 async function renderChipSourceChart() {
   if (!currentChartSource || currentChartSource.type !== 'stock') {
     chipRenderedForCode = null;
-    chipData = null;
     R.chipPanel.innerHTML = '<div class="chip-empty">美股指數沒有三大法人／股權分布／強制集保等籌碼資料，這些是台股特有的揭露資訊。</div>';
     return;
   }
@@ -4772,22 +4851,38 @@ async function renderChipSourceChart() {
 
   R.chipPanel.innerHTML = '<div class="chip-loading">載入中…</div>';
   try {
-    const data = await ChipStore.loadForStock(code);
+    // 先只抓「有沒有資料」的可用性狀態（幾KB），畫出日期選擇器的可選範圍；
+    // 實際數字要等下面選定日期後才抓對應月份，見 loadAndRenderChipDate。
+    chipAvail = await ChipStore.getAvailableDates(code);
     if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
-    chipData = data;
+    chipAvailableDates = chipAvail.allDates;
+    if (!chipAvailableDates.length) {
+      chipRenderedForCode = code;
+      R.chipPanel.innerHTML = '<div class="chip-empty">目前沒有這檔股票的盤後籌碼資料。</div>';
+      return;
+    }
+    chipSelectedDate = chipAvailableDates.at(-1);
     chipRenderedForCode = code;
-
-    const dateSet = new Set();
-    data.institutional.forEach(r => dateSet.add(r.trade_date));
-    data.shareholding.forEach(r => dateSet.add(r.data_date));
-    data.custody.forEach(r => dateSet.add(r.data_date));
-    chipAvailableDates = [...dateSet].sort();
-    chipSelectedDate = chipAvailableDates.at(-1) || null;
-
-    renderChipPanelBody();
+    await loadAndRenderChipDate(code);
   } catch (e) {
     if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
     chipRenderedForCode = null;
+    R.chipPanel.innerHTML = `<div class="chip-empty">載入失敗：${esc(e.message)}</div>`;
+  }
+}
+
+/* 依 chipSelectedDate 精準抓對應月份的實際數字（見 ChipStore.loadDataForDate），
+   選日期／上一個/下一個日期都會呼叫這裡重新抓——已經抓過的月份有
+   ChipStore 內部的 monthCache 擋著，不會重複下載。 */
+async function loadAndRenderChipDate(code) {
+  R.chipPanel.innerHTML = '<div class="chip-loading">載入中…</div>';
+  try {
+    const data = await ChipStore.loadDataForDate(code, chipSelectedDate, chipAvail);
+    if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
+    chipRenderData = data;
+    renderChipPanelBody();
+  } catch (e) {
+    if (chartMode !== 'chip' || currentChartSource?.code !== code) return;
     R.chipPanel.innerHTML = `<div class="chip-empty">載入失敗：${esc(e.message)}</div>`;
   }
 }
@@ -4797,8 +4892,9 @@ async function renderChipSourceChart() {
    input[type=date]再手動擋掉個別日期簡單可靠很多。選定日期後，三個區塊都
    只顯示「該日期（含）以前」的資料，三大法人/強制集保沿用原本「近10筆」
    trailing window的畫法、只是終點改成選定日期；股權分布本來就是取
-   「不晚於該日期」最近一期，邏輯不用改，篩選陣列時自然成立。 */
-/* chipAvailableDates 是排序過的「有資料日期」陣列。原生 input[type=date] 沒有
+   「不晚於該日期」最近一期，邏輯不用改，篩選陣列時自然成立。
+
+   chipAvailableDates 是排序過的「有資料日期」陣列。原生 input[type=date] 沒有
    辦法逐日disable（只支援min/max整段區間），所以改用「選到的日期自動對齊到
    最接近的有資料日期」來達到同樣效果：選了非交易日/沒資料的日期，一樣會
    自動吸附到最近的一天，不會出現空白表格。優先找「不晚於target」的最近一天
@@ -4816,16 +4912,16 @@ function stepChipDate(delta) {
   const idx = chipAvailableDates.indexOf(chipSelectedDate);
   const newIdx = Math.min(chipAvailableDates.length - 1, Math.max(0, idx + delta));
   chipSelectedDate = chipAvailableDates[newIdx];
-  renderChipPanelBody();
+  loadAndRenderChipDate(currentChartSource.code);
 }
 
 function renderChipPanelBody() {
-  if (!chipData || !chipSelectedDate) return;
-  const warn = chipData.partialErrors.length
-    ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${chipData.partialErrors.join('、')}</p>` : '';
-  const instUpTo = chipData.institutional.filter(r => r.trade_date <= chipSelectedDate);
-  const shrUpTo  = chipData.shareholding.filter(r => r.data_date <= chipSelectedDate);
-  const cusUpTo  = chipData.custody.filter(r => r.data_date <= chipSelectedDate);
+  if (!chipRenderData || !chipSelectedDate) return;
+  const warn = chipRenderData.partialErrors.length
+    ? `<p class="chip-hint">⚠ 部分月份資料下載失敗：${chipRenderData.partialErrors.join('、')}</p>` : '';
+  const instUpTo = chipRenderData.institutional.filter(r => r.trade_date <= chipSelectedDate);
+  const shrUpTo  = chipRenderData.shareholding.filter(r => r.data_date <= chipSelectedDate);
+  const cusUpTo  = chipRenderData.custody.filter(r => r.data_date <= chipSelectedDate);
   const idx = chipAvailableDates.indexOf(chipSelectedDate);
 
   R.chipPanel.innerHTML =
@@ -4844,7 +4940,7 @@ function renderChipPanelBody() {
   document.getElementById('chip-date-next').addEventListener('click', () => stepChipDate(1));
   document.getElementById('chip-date-input').addEventListener('change', e => {
     chipSelectedDate = nearestAvailableDate(e.target.value);
-    renderChipPanelBody();
+    loadAndRenderChipDate(currentChartSource.code);
   });
 }
 
