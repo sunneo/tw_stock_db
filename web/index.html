@@ -282,7 +282,9 @@ select:focus { outline: 2px solid var(--acc); }
   cursor: col-resize;
   z-index: 5;
   touch-action: none;
+  background: rgba(64, 64, 64, .3); /* 前景色的反色，讓把手平常也看得到，不用hover才浮現 */
 }
+[data-theme="dark"] .col-resizer { background: rgba(224, 224, 224, .3); }
 .col-resizer:hover, .col-resizer.dragging { background: var(--acc); opacity: .5; }
 .td-up { color: var(--up); }
 .td-dn { color: var(--dn); }
