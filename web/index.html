@@ -639,9 +639,10 @@ select:focus { outline: 2px solid var(--acc); }
 .chip-table thead th { color: var(--txt2); font-weight: 600; border-bottom: 1px solid var(--bdr); }
 .chip-table tbody tr:nth-child(odd) { background: var(--bg2); }
 .chip-spark-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.chip-date-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.chip-date-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .chip-date-row #chip-date-prev, .chip-date-row #chip-date-next { font-size: 16px; font-weight: 700; line-height: 1; }
-.chip-date-row #chip-date-input { font-size: 13px; padding: 3px 6px; }
+.chip-date-row #chip-date-input { font-size: 13px; padding: 5px 6px; }
+.chip-date-hint { margin: 0 0 20px; }
 
 /* ── Memo icon buttons (list rows + chart header) ── */
 .memo-btn {
@@ -4833,7 +4834,7 @@ function renderChipPanelBody() {
       `<input type="date" id="chip-date-input" value="${chipSelectedDate}" min="${chipAvailableDates[0]}" max="${chipAvailableDates.at(-1)}">` +
       `<button class="btn icon" id="chip-date-next" title="下一個有資料的日期"${idx >= chipAvailableDates.length - 1 ? ' disabled' : ''}>›</button>` +
     `</div>` +
-    `<p class="chip-hint" style="margin:-10px 0 16px">選到非交易日/沒有資料的日期會自動對齊到最接近的一天。</p>` +
+    `<p class="chip-hint chip-date-hint">選到非交易日/沒有資料的日期會自動對齊到最接近的一天。</p>` +
     `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(instUpTo)}</div>` +
     `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(shrUpTo)}</div>` +
     `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(cusUpTo)}</div>` +
