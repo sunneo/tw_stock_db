@@ -824,10 +824,7 @@ select:focus { outline: 2px solid var(--acc); }
             <th>代號</th>
             <th>名稱</th>
             <th class="th-memo"></th>
-            <th>開</th>
-            <th>高</th>
-            <th>低</th>
-            <th>收</th>
+            <th>現價</th>
             <th>趨勢</th>
           </tr>
         </thead>
@@ -3845,7 +3842,7 @@ function renderPage() {
   R.nextBtn.disabled = page >= totalPages - 1;
 
   if (!pageItems.length) {
-    R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">無資料</td></tr>';
+    R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">無資料</td></tr>';
     return;
   }
 
@@ -3862,7 +3859,6 @@ function renderPage() {
     const closes  = sparkMap[s.stock_code] || [];
     const svg     = sparkline(closes);
     const open    = s.open,  close = s.close;
-    const high    = s.high,  low   = s.low;
     const cls     = (close == null || open == null) ? 'td-flat'
                   : close > open ? 'td-up'
                   : close < open ? 'td-dn' : 'td-flat';
@@ -3892,9 +3888,6 @@ function renderPage() {
       <td class="td-code">${codeCell}</td>
       <td class="td-name" title="${s.stock_name || ''}">${nameCell}</td>
       <td class="td-memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
-      <td>${open   != null ? open.toFixed(2)  : '-'}</td>
-      <td>${high   != null ? high.toFixed(2)  : '-'}</td>
-      <td>${low    != null ? low.toFixed(2)   : '-'}</td>
       <td class="${cls}">${close != null ? close.toFixed(2) : '-'}</td>
       <td class="td-spark">${svg}</td>
       ${extraTd}
@@ -4130,7 +4123,7 @@ function parseLockView(view) {
    此處唯讀。source 是 'week'|'intraday'|'nextday'，見 LockList 模組註解。 */
 async function loadLockList(source, direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
-  R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">載入鎖股名單中…</td></tr>';
+  R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">載入鎖股名單中…</td></tr>';
   await LockList.ensureLoaded(source);
   const recs  = LockList.getByDirection(source, dirZh);
   const codes = recs.map(r => r.stock_code);
@@ -4178,7 +4171,7 @@ function switchView(view) {
     }
     State.page = 0;
     if (!State.stocks.length) {
-      R.stockTbody.innerHTML = '<tr><td colspan="9" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
+      R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
       R.pageInfo.textContent = '— / —';
       R.prevBtn.disabled = true; R.nextBtn.disabled = true;
     } else {
@@ -4221,8 +4214,8 @@ function loadUsMarket() {
 }
 
 /* 左側 view-sel 選到「分析」時：借用既有的 #stock-table 清單UI 把 6 種報告
-   種類當「股票列」列出來（開高低收欄位沒有意義，renderPage 對 open/close
-   為 null 的列自動顯示「-」，沒有另外處理）。跟 loadUsMarket 同一種模式，
+   種類當「股票列」列出來（現價欄位沒有意義，renderPage 對 close 為 null 的
+   列自動顯示「-」，沒有另外處理）。跟 loadUsMarket 同一種模式，
    只是點列之後呼叫 selectReportType 而不是 selectStock/selectMarketIndex
    （見 renderPage 裡的 row click 判斷）。 */
 function loadAnalysisView() {
