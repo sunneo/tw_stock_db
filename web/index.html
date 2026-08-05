@@ -4343,6 +4343,17 @@ function setChartModeUI(mode) {
 function applyChartMode(mode) {
   setChartModeUI(mode);
   renderCurrentSourceChart();
+  // 「盤後」分頁跟分析報告面板都會把 #chart-wrap 設成 display:none，這時候
+  // canvas.clientWidth/clientHeight 讀出來是0；Chart.resize()（見Chart模組）
+  // 會直接把 canvas.width/height 設成那個0，corrupt掉canvas尺寸。從盤後切回
+  // 技術分析/走勢圖時，如果沒有在這裡重新resize一次，canvas會維持corrupt
+  // 的0x0狀態變成一片灰色，且沒有其他地方會自動修好——除非使用者剛好又從
+  // 清單重新選一次股票（那條路徑另外會觸發resize）。這裡在切回真的需要畫
+  // canvas的模式時統一補一次resize，从根本解決，不用依賴使用者自己重選股票
+  // 才能修好。setTimeout是因為display:none→block的layout要等一個tick才會
+  // 反映在clientWidth/clientHeight上（同樣的手法沿用switchMobileTab原本的
+  // 註解）。
+  if (mode !== 'chip') setTimeout(() => Chart.resize(), 50);
 }
 
 /* 技術分析/走勢圖圖表 vs 分析報告面板的顯示切換，見上面 setChartModeUI 的
@@ -4978,7 +4989,9 @@ function removeFromWatchlist(code) {
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   R.themeBtn.textContent = t === 'light' ? '🌙' : '☀️';
-  Chart.resize();
+  // 「盤後」分頁時 #chart-wrap 是 display:none，resize()會把canvas corrupt成
+  // 0x0（見 applyChartMode 的說明），這裡跳過。
+  if (chartMode !== 'chip') Chart.resize();
 }
 
 /* ════════════════════════════════════════
@@ -5143,7 +5156,7 @@ function populateSectors() {
     if (!dragging) return;
     const w = Math.min(480, Math.max(200, startW + e.clientX - startX));
     R.sidebar.style.width = w + 'px';
-    Chart.resize();
+    if (chartMode !== 'chip') Chart.resize(); // canvas隱藏時resize會把它corrupt成0x0，見 applyChartMode 的說明
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
@@ -5166,15 +5179,18 @@ function switchMobileTab(tab) {
   R.mtabChart.classList.toggle('active', tab === 'chart');
   R.mtabTrend.classList.toggle('active', tab === 'trend');
   R.mtabChip.classList.toggle('active', tab === 'chip');
+  // resize（如果需要）交給 applyChartMode 自己處理，見該函式註解——「盤後」
+  // 分頁不該resize canvas（canvas根本沒顯示），這裡不能再無條件補一次。
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
   else if (tab === 'chip') applyChartMode('chip');
-  if (showChart) setTimeout(() => Chart.resize(), 50); // was display:none, needs a resize once visible
 }
 
 function setDrawerOpen(open) {
   R.main.classList.toggle('drawer-open', open);
-  if (!open) setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
+  // chartMode==='chip' 時 #chart-wrap 是 display:none，resize()會把canvas
+  // corrupt成0x0（見 applyChartMode 的說明），這裡跳過。
+  if (!open && chartMode !== 'chip') setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
 }
 
 /* ════════════════════════════════════════
@@ -5336,8 +5352,9 @@ function bindEvents() {
   R.drawerToggleBtn.addEventListener('click', () => setDrawerOpen(!R.main.classList.contains('drawer-open')));
   R.drawerOverlay.addEventListener('click', () => setDrawerOpen(false));
 
-  /* orientation/viewport changes can affect which layout mode is active */
-  window.addEventListener('orientationchange', () => setTimeout(() => Chart.resize(), 250));
+  /* orientation/viewport changes can affect which layout mode is active。
+     canvas隱藏（「盤後」分頁）時resize會把它corrupt成0x0，見 applyChartMode 的說明。 */
+  window.addEventListener('orientationchange', () => setTimeout(() => { if (chartMode !== 'chip') Chart.resize(); }, 250));
 
   /* view select */
   R.viewSel.addEventListener('change', () => {
@@ -5415,7 +5432,8 @@ function bindEvents() {
   R.memoSave.addEventListener('click', saveMemoModal);
 
   /* resize */
-  window.addEventListener('resize', () => Chart.resize());
+  // canvas隱藏（「盤後」分頁）時resize會把它corrupt成0x0，見 applyChartMode 的說明。
+  window.addEventListener('resize', () => { if (chartMode !== 'chip') Chart.resize(); });
 }
 
 /* ════════════════════════════════════════
@@ -5649,8 +5667,8 @@ async function main() {
      所以刻意放在 selectStock 之後。 */
   if (savedView === 'analysis') selectReportType(Settings.get('reportType') || 'premarket');
 
-  /* initial chart resize */
-  setTimeout(() => Chart.resize(), 50);
+  /* initial chart resize（canvas隱藏時跳過，見 applyChartMode 的說明） */
+  setTimeout(() => { if (chartMode !== 'chip') Chart.resize(); }, 50);
 }
 
 main().catch(e => console.error('App crash:', e));
