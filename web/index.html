@@ -234,6 +234,7 @@ select:focus { outline: 2px solid var(--acc); }
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed; /* 讓 <colgroup> 的欄寬設定生效，是可拖拉調整欄寬的前提 */
 }
 #stock-table thead th {
   position: sticky;
@@ -245,6 +246,8 @@ select:focus { outline: 2px solid var(--acc); }
   text-align: right;
   border-bottom: 1px solid var(--bdr);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #stock-table thead th:first-child { text-align: left; }
 #stock-table tbody tr {
@@ -260,13 +263,27 @@ select:focus { outline: 2px solid var(--acc); }
   text-align: right;
   white-space: nowrap;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #stock-table td:first-child { text-align: left; }
 .td-code { font-weight: 600; color: var(--acc); }
-.td-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--txt1); }
+.td-name { text-align: left; color: var(--txt1); }
 #stock-table th.th-memo, #stock-table td.td-memo {
-  width: 20px; padding-left: 2px; padding-right: 2px; text-align: center;
+  padding-left: 2px; padding-right: 2px; text-align: center;
 }
+
+/* ── 欄寬可拖拉調整（見 initColumnResize/fitColumnToContent） ── */
+#stock-table thead th { position: sticky; } /* 已有 position:sticky，resizer 用 absolute 定位在其內 */
+.col-resizer {
+  position: absolute;
+  top: 0; right: -3px; bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+.col-resizer:hover, .col-resizer.dragging { background: var(--acc); opacity: .5; }
 .td-up { color: var(--up); }
 .td-dn { color: var(--dn); }
 .td-flat { color: var(--txt2); }
@@ -819,13 +836,20 @@ select:focus { outline: 2px solid var(--acc); }
     </div>
     <div id="stock-list-wrap">
       <table id="stock-table">
+        <colgroup>
+          <col data-col="code">
+          <col data-col="name">
+          <col data-col="memo">
+          <col data-col="price">
+          <col data-col="trend">
+        </colgroup>
         <thead>
           <tr>
-            <th>代號</th>
-            <th>名稱</th>
-            <th class="th-memo"></th>
-            <th>現價</th>
-            <th>趨勢</th>
+            <th data-col="code">代號</th>
+            <th data-col="name">名稱</th>
+            <th class="th-memo" data-col="memo"></th>
+            <th data-col="price">現價</th>
+            <th data-col="trend">趨勢</th>
           </tr>
         </thead>
         <tbody id="stock-tbody"></tbody>
@@ -1197,6 +1221,7 @@ const Settings = (() => {
              chartIndicator: 'kd',   // 'kd' | 'macd' | 'rsv' | 'rsi' — the single switchable bottom panel
              enabledIndicators: { kd:true, macd:true, rsv:false, rsi:true }, // 哪些指標按鈕要出現在圖表工具列（畫面空間有限，RSV預設關閉）
              chartPanelWeights: { kline: 304, volume: 76, indicator: 64 }, // K線/成交量/指標(KD·MACD·RSI) 三塊面板的高度比例，見 Chart.setPanelWeights
+             listColumnWidths: {}, // 清單欄寬（拖拉調整/雙擊fit content後記錄），key是code/name/price/trend/extra，見 setColumnWidth
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              chartMode: 'daily',     // 'daily'（技術分析）| 'intraday'（走勢圖）
@@ -3722,6 +3747,7 @@ const R = {
   strongMethodSel: $('strong-method-sel'),
   strongFilterBtn: $('strong-filter-btn'),
   strongStatus:    $('strong-status'),
+  stockTable:  $('stock-table'),
   stockTbody:  $('stock-tbody'),
   prevBtn:     $('prev-btn'),
   nextBtn:     $('next-btn'),
@@ -3867,14 +3893,14 @@ function renderPage() {
 
     let extraTd = '';
     if (isWL) {
-      extraTd = `<td><button class="del-btn" data-code="${s.stock_code}">✕</button></td>`;
+      extraTd = `<td data-col="extra"><button class="del-btn" data-code="${s.stock_code}">✕</button></td>`;
     } else if (isStrong) {
       const txt = State.strongMethodUsed === 'xq'
         ? (s.rs_rating != null ? Math.round(s.rs_rating) : '-')
         : (s.bull_score != null ? `${s.bull_score}分` : '-');
-      extraTd = `<td>${txt}</td>`;
+      extraTd = `<td data-col="extra">${txt}</td>`;
     } else if (isLock) {
-      extraTd = `<td>${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
+      extraTd = `<td data-col="extra">${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
     }
 
     // 分析 分頁的「代號」欄位改顯示中文報告名稱（premarket/holdings_week這些
@@ -3885,11 +3911,11 @@ function renderPage() {
 
     return `<tr data-code="${s.stock_code}" class="${isSel ? 'selected' : ''}"
                draggable="${isWL ? 'true' : 'false'}">
-      <td class="td-code">${codeCell}</td>
-      <td class="td-name" title="${s.stock_name || ''}">${nameCell}</td>
-      <td class="td-memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
-      <td class="${cls}">${close != null ? close.toFixed(2) : '-'}</td>
-      <td class="td-spark">${svg}</td>
+      <td class="td-code" data-col="code">${codeCell}</td>
+      <td class="td-name" data-col="name" title="${s.stock_name || ''}">${nameCell}</td>
+      <td class="td-memo" data-col="memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
+      <td class="${cls}" data-col="price">${close != null ? close.toFixed(2) : '-'}</td>
+      <td class="td-spark" data-col="trend">${svg}</td>
       ${extraTd}
     </tr>`;
   });
@@ -3981,12 +4007,129 @@ function updateExtraColumn(view) {
   if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_')) {
     const th = document.createElement('th');
     th.className = 'extra-col';
+    th.dataset.col = 'extra';
     th.textContent = view === 'strong'
       ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
       : view.startsWith('lock_') ? '分數'
       : '';
     thead.appendChild(th);
+    th.appendChild(makeColResizer('extra'));
   }
+  syncColumnGroup();
+}
+
+/* ════════════════════════════════════════
+   清單欄寬可拖拉調整（見 #stock-table 的 <colgroup>）＋雙擊resizer=fit content
+   ════════════════════════════════════════ */
+const COL_DEFAULT_WIDTH = { code: 60, name: 76, memo: 28, price: 68, trend: 68, extra: 52 };
+let __measureCtx = null;
+
+function measureTextWidth(text, font) {
+  if (!__measureCtx) __measureCtx = document.createElement('canvas').getContext('2d');
+  __measureCtx.font = font;
+  return __measureCtx.measureText(text || '').width;
+}
+
+function getColEl(key) {
+  const ths = [...R.stockTable.querySelectorAll('thead th')];
+  const idx = ths.findIndex(th => th.dataset.col === key);
+  if (idx < 0) return null;
+  return R.stockTable.querySelectorAll(':scope > colgroup > col')[idx] || null;
+}
+
+function setColumnWidth(key, px) {
+  const col = getColEl(key);
+  if (!col) return;
+  const clamped = Math.max(20, Math.round(px));
+  col.style.width = clamped + 'px';
+  if (key !== 'memo') { // memo是固定的icon欄，不需要記使用者自訂寬度
+    const widths = Settings.get('listColumnWidths') || {};
+    widths[key] = clamped;
+    Settings.set('listColumnWidths', widths);
+  }
+}
+
+/* colgroup 的 <col> 數量要跟目前 thead 的 <th> 數量同步（extra-col 會動態
+   加入/移除，見 updateExtraColumn）；新出現的欄位先套用使用者上次存的寬度，
+   沒存過就用預設值，已經有寬度的欄位不動（保留使用者拖拉過的結果）。 */
+function syncColumnGroup() {
+  const table = R.stockTable;
+  const colgroup = table.querySelector('colgroup');
+  const ths = [...table.querySelectorAll('thead th')];
+  const cols = [...colgroup.querySelectorAll('col')];
+  while (cols.length < ths.length) {
+    const col = document.createElement('col');
+    colgroup.appendChild(col);
+    cols.push(col);
+  }
+  while (cols.length > ths.length) {
+    colgroup.removeChild(cols.pop());
+  }
+  const saved = Settings.get('listColumnWidths') || {};
+  ths.forEach((th, i) => {
+    const col = cols[i];
+    const key = th.dataset.col;
+    if (col.style.width) return; // 已經設定過，不要覆蓋掉使用者拖拉的結果
+    col.style.width = (saved[key] || COL_DEFAULT_WIDTH[key] || 60) + 'px';
+  });
+}
+
+/* 雙擊resizer＝該欄fit content：量表頭文字＋目前畫面上這一欄所有儲存格
+   內容的自然寬度（用canvas量文字寬度，比量DOM scrollWidth快、也不用擔心
+   目前欄寬已經比內容窄而量不準）。trend欄放的是固定60px寬的sparkline
+   svg、memo欄放的是圖示按鈕，兩者都不是文字，直接給固定值不用量測。 */
+function fitColumnToContent(key) {
+  const table = R.stockTable;
+  const th = table.querySelector(`thead th[data-col="${key}"]`);
+  if (!th) return;
+  if (key === 'trend') { setColumnWidth(key, 60 + 10); return; }
+  if (key === 'memo')  { setColumnWidth(key, COL_DEFAULT_WIDTH.memo); return; }
+
+  const font = getComputedStyle(th).font;
+  let max = measureTextWidth(th.textContent.trim(), font);
+  table.querySelectorAll(`tbody td[data-col="${key}"]`).forEach(td => {
+    max = Math.max(max, measureTextWidth(td.textContent.trim(), getComputedStyle(td).font));
+  });
+  setColumnWidth(key, max + 16); // 16px ≈ 左右 padding + 一點餘裕
+}
+
+function makeColResizer(key) {
+  const div = document.createElement('div');
+  div.className = 'col-resizer';
+  div.title = '拖曳調整欄寬，雙擊自動符合內容寬度';
+  let dragging = false, startX = 0, startW = 0;
+
+  div.addEventListener('pointerdown', e => {
+    dragging = true;
+    startX = e.clientX;
+    startW = getColEl(key)?.getBoundingClientRect().width || COL_DEFAULT_WIDTH[key] || 60;
+    div.setPointerCapture(e.pointerId);
+    div.classList.add('dragging');
+    e.preventDefault();
+    e.stopPropagation(); // 不要讓拖曳誤觸發表頭/表格其他點擊行為
+  });
+  div.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    setColumnWidth(key, startW + (e.clientX - startX));
+  });
+  const endDrag = () => { dragging = false; div.classList.remove('dragging'); };
+  div.addEventListener('pointerup', endDrag);
+  div.addEventListener('pointercancel', endDrag);
+  div.addEventListener('dblclick', e => { e.stopPropagation(); fitColumnToContent(key); });
+  div.addEventListener('click', e => e.stopPropagation()); // 避免點到resizer時誤觸發其他表頭行為
+
+  return div;
+}
+
+/* 開頁只需要跑一次：幫4個固定欄位（代號/名稱/現價/趨勢，memo欄不給拖拉，
+   固定icon寬度）各自加上resizer把手；extra-col是動態欄位，resizer在
+   updateExtraColumn 裡另外加。 */
+function initColumnResize() {
+  ['code', 'name', 'price', 'trend'].forEach(key => {
+    const th = R.stockTable.querySelector(`thead th[data-col="${key}"]`);
+    if (th && !th.querySelector('.col-resizer')) th.appendChild(makeColResizer(key));
+  });
+  syncColumnGroup();
 }
 
 async function runStrongFilter() {
@@ -5626,6 +5769,7 @@ function checkIosInappBrowser() {
 async function main() {
   bindEvents();
   checkIosInappBrowser();
+  initColumnResize();
   Chart.setOnZoomChange(maybeExpandHistory);
   Chart.setOnInfoChange(renderInfoBar);
 
