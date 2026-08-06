@@ -210,7 +210,7 @@ select {
 select:focus { outline: 2px solid var(--acc); }
 
 /* watchlist controls */
-#wl-bar { display: flex; gap: 4px; }
+#wl-bar { display: flex; gap: 4px; position: relative; }
 #wl-input {
   flex: 1;
   padding: 5px 8px;
@@ -221,6 +221,36 @@ select:focus { outline: 2px solid var(--acc); }
   font-size: 13px;
 }
 #wl-input:focus { outline: 2px solid var(--acc); }
+
+#wl-suggest {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 32px;
+  margin-top: 2px;
+  background: var(--bg1);
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.25);
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 60;
+}
+#wl-suggest.hidden { display: none; }
+.wl-suggest-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 1px solid var(--bdr);
+}
+.wl-suggest-item:last-child { border-bottom: none; }
+.wl-suggest-item:hover, .wl-suggest-item.active { background: var(--bg2); }
+.wl-suggest-code { color: var(--acc); font-weight: 600; min-width: 44px; }
+.wl-suggest-name { color: var(--txt1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-suggest-empty { padding: 8px 10px; font-size: 12px; color: var(--txt1); }
 
 /* ── Stock list ── */
 #stock-list-wrap {
@@ -832,8 +862,9 @@ select:focus { outline: 2px solid var(--acc); }
         <div id="strong-status"></div>
       </div>
       <div id="wl-bar" class="hidden">
-        <input id="wl-input" type="text" placeholder="輸入股票代號，按 Enter 新增">
+        <input id="wl-input" type="text" placeholder="輸入代號或名稱，按 Enter 或 + 新增" autocomplete="off">
         <button class="btn primary" id="wl-add">+</button>
+        <div id="wl-suggest" class="hidden"></div>
       </div>
     </div>
     <div id="stock-list-wrap">
@@ -2090,6 +2121,26 @@ const DBMgr = (() => {
     return query('SELECT stock_code, stock_name FROM stocks WHERE CAST(sector_id AS INTEGER)=? AND is_active=1 ORDER BY stock_code', [sectorId]);
   }
 
+  /* ── 代號/名稱部分匹配搜尋（自選股新增用） ── */
+  function searchStocks(term, limit) {
+    limit = limit || 20;
+    const t = (term || '').trim();
+    if (!t) return [];
+    const upper = t.toUpperCase();
+    const prefixLike = `${t}%`;
+    const containsLike = `%${t}%`;
+    return query(`
+      SELECT stock_code, stock_name FROM stocks
+      WHERE is_active=1 AND (stock_code LIKE ? OR stock_name LIKE ?)
+      ORDER BY (CASE
+        WHEN UPPER(stock_code) = ? THEN 0
+        WHEN stock_code LIKE ? THEN 1
+        ELSE 2
+      END), stock_code
+      LIMIT ?
+    `, [prefixLike, containsLike, upper, prefixLike, limit]);
+  }
+
   /* ── 強勢股 snapshot: daily_prices + technical_indicators for last N days, all active stocks ── */
   function getSnapshot(lookbackDays) {
     return query(`
@@ -2329,7 +2380,7 @@ const DBMgr = (() => {
     init, bootstrapFresh, syncDaily,
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
-    getSectors, getStocksBySector, getWatchlistStocks,
+    getSectors, getStocksBySector, getWatchlistStocks, searchStocks,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
     getMarketIndexHistory, getMarketIndexLatest,
@@ -3745,6 +3796,7 @@ const R = {
   wlBar:       $('wl-bar'),
   wlInput:     $('wl-input'),
   wlAdd:       $('wl-add'),
+  wlSuggest:   $('wl-suggest'),
   strongBar:       $('strong-bar'),
   strongMethodSel: $('strong-method-sel'),
   strongFilterBtn: $('strong-filter-btn'),
@@ -5129,13 +5181,60 @@ function saveMemoModal() {
 /* ════════════════════════════════════════
    WATCHLIST HELPERS
    ════════════════════════════════════════ */
+let wlSuggestActiveIdx = -1;
+
+/* 輸入代號或名稱後按 + / Enter：唯一匹配直接加入，多筆匹配則彈出下拉選單讓使用者選 */
 function addToWatchlist() {
-  const code = R.wlInput.value.trim().toUpperCase();
-  if (!code) return;
+  const raw = R.wlInput.value.trim();
+  if (!raw) return;
+  if (!DBMgr.isReady()) { commitToWatchlist(raw.toUpperCase()); return; }
+
+  const matches = DBMgr.searchStocks(raw, 20);
+  const upper = raw.toUpperCase();
+  const exact = matches.find(r => r.stock_code.toUpperCase() === upper);
+  if (exact) { commitToWatchlist(exact.stock_code); return; }
+
+  if (matches.length === 0) {
+    hideWlSuggest();
+    alert(`查無符合「${raw}」的股票`);
+  } else if (matches.length === 1) {
+    commitToWatchlist(matches[0].stock_code);
+  } else {
+    showWlSuggest(matches);
+  }
+}
+
+function commitToWatchlist(code) {
   const wl = Settings.get('watchlist') || [];
   if (!wl.includes(code)) { wl.push(code); Settings.set('watchlist', wl); }
   R.wlInput.value = '';
+  hideWlSuggest();
   loadWatchlist();
+}
+
+function showWlSuggest(matches) {
+  wlSuggestActiveIdx = -1;
+  R.wlSuggest.innerHTML = matches.map((r, i) =>
+    `<div class="wl-suggest-item" data-idx="${i}" data-code="${esc(r.stock_code)}">` +
+      `<span class="wl-suggest-code">${esc(r.stock_code)}</span>` +
+      `<span class="wl-suggest-name">${esc(r.stock_name)}</span>` +
+    `</div>`
+  ).join('');
+  R.wlSuggest.classList.remove('hidden');
+}
+
+function hideWlSuggest() {
+  R.wlSuggest.classList.add('hidden');
+  R.wlSuggest.innerHTML = '';
+  wlSuggestActiveIdx = -1;
+}
+
+function wlSuggestSetActive(idx) {
+  const items = R.wlSuggest.querySelectorAll('.wl-suggest-item');
+  if (!items.length) return;
+  wlSuggestActiveIdx = (idx + items.length) % items.length;
+  items.forEach((el, i) => el.classList.toggle('active', i === wlSuggestActiveIdx));
+  items[wlSuggestActiveIdx].scrollIntoView({ block: 'nearest' });
 }
 
 function removeFromWatchlist(code) {
@@ -5529,9 +5628,35 @@ function bindEvents() {
     loadSector(R.sectorSel.value);
   });
 
-  /* watchlist add */
+  /* watchlist add：輸入代號/名稱部分匹配，多筆時用下拉選單挑選 */
   R.wlAdd.addEventListener('click', addToWatchlist);
-  R.wlInput.addEventListener('keydown', e => { if (e.key === 'Enter') addToWatchlist(); });
+  R.wlInput.addEventListener('input', () => {
+    const raw = R.wlInput.value.trim();
+    if (!raw || !DBMgr.isReady()) { hideWlSuggest(); return; }
+    const matches = DBMgr.searchStocks(raw, 20);
+    if (matches.length > 1) showWlSuggest(matches); else hideWlSuggest();
+  });
+  R.wlInput.addEventListener('keydown', e => {
+    const itemCount = R.wlSuggest.querySelectorAll('.wl-suggest-item').length;
+    if (e.key === 'ArrowDown' && itemCount) { e.preventDefault(); wlSuggestSetActive(wlSuggestActiveIdx + 1); return; }
+    if (e.key === 'ArrowUp' && itemCount) { e.preventDefault(); wlSuggestSetActive(wlSuggestActiveIdx - 1); return; }
+    if (e.key === 'Escape' && itemCount) { hideWlSuggest(); return; }
+    if (e.key === 'Enter') {
+      if (itemCount && wlSuggestActiveIdx >= 0) {
+        const active = R.wlSuggest.querySelectorAll('.wl-suggest-item')[wlSuggestActiveIdx];
+        commitToWatchlist(active.dataset.code);
+      } else {
+        addToWatchlist();
+      }
+    }
+  });
+  R.wlSuggest.addEventListener('click', e => {
+    const item = e.target.closest('.wl-suggest-item');
+    if (item) commitToWatchlist(item.dataset.code);
+  });
+  document.addEventListener('click', e => {
+    if (!R.wlSuggest.classList.contains('hidden') && !R.wlBar.contains(e.target)) hideWlSuggest();
+  });
 
   /* 強勢股 filter */
   R.strongMethodSel.addEventListener('change', () => Settings.set('strongMethod', R.strongMethodSel.value));
