@@ -2393,15 +2393,25 @@ const DBMgr = (() => {
    代表確實有成交，只是這個欄位沒填——直接 curl mis.twse.com.tw 驗證過，換
    Referer/cookie 都一樣，不是我們 proxy 的問題，應該是官方端的欄位特性）。
    但五檔委買委賣 (a/b) 幾乎每次輪詢都有值，所以 z 缺漏時退回買賣中間價當
-   即時參考價，避免K棒/走勢圖因為 z 常態性缺漏而長時間收不到任何更新。 */
+   即時參考價，避免K棒/走勢圖因為 z 常態性缺漏而長時間收不到任何更新。
+
+   實測發現另一個官方端欄位特性（以日馳1526鎖漲停19.15為例，實際 curl 驗證）：
+   股票鎖漲停/跌停時，b（委買5檔）的第0檔會是 "0.0000" 這種佔位值，真正的
+   最佳委買價在第1檔，例如 "0.0000_19.1500_19.1000_19.0000_18.9500_"；同時
+   a（委賣5檔）整組是 "-"（沒人掛賣）。原本只取第0檔字串，會把這個佔位的
+   0.0000 誤判成「委買價是0元」，害K棒/走勢圖顯示現價0。改成掃描該檔位全部
+   5個價位，取第一個大於0的有效值，股價本來就不可能是0，用這個當過濾條件
+   即可跳過佔位值、抓到後面真正的價位。 */
 function bidAskMidPrice(item) {
-  const parseLevel = (str) => {
+  const bestLevel = (str) => {
     if (!str) return null;
-    const first = str.split('_')[0];
-    const n = parseFloat(first);
-    return (first === '-' || isNaN(n)) ? null : n;
+    for (const part of str.split('_')) {
+      const n = parseFloat(part);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return null;
   };
-  const ask = parseLevel(item.a), bid = parseLevel(item.b);
+  const ask = bestLevel(item.a), bid = bestLevel(item.b);
   if (ask != null && bid != null) return (ask + bid) / 2;
   return ask != null ? ask : bid;
 }
