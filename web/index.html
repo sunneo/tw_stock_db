@@ -319,6 +319,20 @@ select:focus { outline: 2px solid var(--acc); }
 .td-up { color: var(--up); }
 .td-dn { color: var(--dn); }
 .td-flat { color: var(--txt2); }
+/* 漲停/跌停亮燈：用原本的漲跌文字色當填滿背景，白字，一眼跟一般漲跌區分開。
+   不加 td/b 元素限定，同時給清單的 <td> 現價欄跟走勢圖/技術分析資訊列的
+   <b> 收盤價徽章共用（見 renderPage 的 limitCls、renderInfoBar 的 limitCls）。 */
+.td-limit-up, .td-limit-dn {
+  color: #fff !important;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.td-limit-up { background: var(--up); }
+.td-limit-dn { background: var(--dn); }
+/* 還沒有今天資料、用昨收頂著顯示時，用比較淡的顏色跟斜體跟「真的是今天
+   現價」的一般顯示區分開，滑鼠移上去（title屬性）會提示這其實是昨收。 */
+.td-stale { color: var(--txt2); opacity: .6; font-style: italic; }
 .td-spark { text-align: center; }
 .del-btn {
   padding: 1px 5px;
@@ -2118,7 +2132,18 @@ const DBMgr = (() => {
   }
 
   function getStocksBySector(sectorId) {
-    return query('SELECT stock_code, stock_name FROM stocks WHERE CAST(sector_id AS INTEGER)=? AND is_active=1 ORDER BY stock_code', [sectorId]);
+    const d = getLatestDate();
+    return query(`
+      SELECT s.stock_code, s.stock_name, s.market,
+             p.open, p.high, p.low, p.close,
+             (SELECT p2.close FROM daily_prices p2
+                WHERE p2.stock_code = s.stock_code AND p2.trade_date < ?
+                ORDER BY p2.trade_date DESC LIMIT 1) AS prev_close
+      FROM stocks s
+      LEFT JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
+      WHERE CAST(s.sector_id AS INTEGER)=? AND s.is_active=1
+      ORDER BY s.stock_code
+    `, [d, d, sectorId]);
   }
 
   /* ── 代號/名稱部分匹配搜尋（自選股新增用） ── */
@@ -2144,7 +2169,7 @@ const DBMgr = (() => {
   /* ── 強勢股 snapshot: daily_prices + technical_indicators for last N days, all active stocks ── */
   function getSnapshot(lookbackDays) {
     return query(`
-      SELECT dp.stock_code, s.stock_name, dp.trade_date,
+      SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
              dp.open, dp.high, dp.low, dp.close, dp.volume,
              ti.ma5, ti.ma20, ti.ma60, ti.vol_ma5,
              ti.kd_k, ti.kd_d, ti.macd_dif, ti.macd_macd, ti.macd_osc,
@@ -2205,8 +2230,8 @@ const DBMgr = (() => {
     const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
 
     return {
-      stock_code: t.stock_code, stock_name: t.stock_name, trade_date: t.trade_date,
-      open: t.open, high: t.high, low: t.low, close: t.close,
+      stock_code: t.stock_code, stock_name: t.stock_name, market: t.market, trade_date: t.trade_date,
+      open: t.open, high: t.high, low: t.low, close: t.close, prev_close: y.close,
       kd_k: t.kd_k, kd_d: t.kd_d, bias20: t.bias20, rs_rating: t.rs_rating,
       chg5, vol_ratio: volRatio,
       bull_signals: bull, bear_signals: bear,
@@ -2276,7 +2301,8 @@ const DBMgr = (() => {
       if (okDist) passDist++;
 
       if (okRS && okMa && okVol && okDist) {
-        results.push({ ...t, high60, dist_from_high60_pct: distPct, vol_ratio: volRatio });
+        const prevRow = g[g.length - 2];
+        results.push({ ...t, high60, dist_from_high60_pct: distPct, vol_ratio: volRatio, prev_close: prevRow ? prevRow.close : null });
       } else {
         const failCount = [okRS, okMa, okVol, okDist].filter(x => !x).length;
         if (failCount === 1) {
@@ -2307,16 +2333,28 @@ const DBMgr = (() => {
     const d  = getLatestDate();
     const ph = codes.map(() => '?').join(',');
     return query(`
-      SELECT s.stock_code, s.stock_name,
-             p.open, p.high, p.low, p.close
+      SELECT s.stock_code, s.stock_name, s.market,
+             p.open, p.high, p.low, p.close,
+             (SELECT p2.close FROM daily_prices p2
+                WHERE p2.stock_code = s.stock_code AND p2.trade_date < ?
+                ORDER BY p2.trade_date DESC LIMIT 1) AS prev_close
       FROM stocks s
       LEFT JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
       WHERE s.stock_code IN (${ph})
-    `, [d, ...codes]);
+    `, [d, d, ...codes]);
   }
 
   function getStockInfo(code) {
     return query('SELECT stock_code, stock_name, market FROM stocks WHERE stock_code=?', [code])[0] || null;
+  }
+
+  /* ── 漲跌停判斷用：某股在 dateStr 之前最近一個交易日的收盤價 ── */
+  function getPrevClose(code, dateStr) {
+    const rows = query(
+      'SELECT close FROM daily_prices WHERE stock_code=? AND trade_date<? ORDER BY trade_date DESC LIMIT 1',
+      [code, dateStr]
+    );
+    return rows.length ? rows[0].close : null;
   }
 
   /* ── LiveFeed 用：本地是否已有某股某日的資料，以及把即時報價寫回同一張
@@ -2380,7 +2418,7 @@ const DBMgr = (() => {
     init, bootstrapFresh, syncDaily,
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
-    getSectors, getStocksBySector, getWatchlistStocks, searchStocks,
+    getSectors, getStocksBySector, getWatchlistStocks, searchStocks, getPrevClose,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines,
     getMarketIndexHistory, getMarketIndexLatest,
@@ -2453,11 +2491,17 @@ const LiveFeed = (() => {
     return mins >= MARKET_OPEN_MIN && mins <= MARKET_CLOSE_MIN;
   }
 
-  function eligible(code) {
-    if (!TWSE_PROXY_BASE || !code) return false;
+  /* 跟股票代號無關的通用時機檢查（開盤時段＋交易日＋proxy有設定），給
+     ListLiveFeed（清單批次輪詢，不特定單一股票）共用，避免重複邏輯。 */
+  function marketEligibleNow() {
+    if (!TWSE_PROXY_BASE) return false;
     if (!marketOpenNow()) return false;
     const today = taipeiDateStr();
     return TradingCalendar.isTradingDay(today);
+  }
+
+  function eligible(code) {
+    return !!code && marketEligibleNow();
   }
 
   function num(v) {
@@ -2496,6 +2540,18 @@ const LiveFeed = (() => {
       low:  low  != null ? Math.min(low,  open, close) : Math.min(open, close),
       volume: volume != null ? Math.round(volume * 1000) : 0,
     };
+  }
+
+  /* 只把一筆原始 MIS item 寫進 daily_prices，不碰 IntradayFeed（那是給走勢圖
+     逐筆用的，清單批次輪詢不需要、也不該幫使用者根本沒開過走勢圖的股票
+     累積逐筆歷史）。ListLiveFeed（清單批次輪詢多檔）跟這裡的 refresh()
+     （單檔，給目前選中的圖表用）共用同一份 parseDailyRow 解析邏輯。 */
+  function applyDailyItem(item) {
+    if (!item) return false;
+    const row = parseDailyRow(item);
+    if (!row) return false;
+    DBMgr.upsertLiveDailyRow(item.c, row);
+    return true;
   }
 
   async function refresh(code, market) {
@@ -2573,7 +2629,91 @@ const LiveFeed = (() => {
   function isActive(code) { return activeCode === code; }
   function setOnLiveUpdate(cb) { onLiveUpdateCb = cb; }
 
-  return { start, stop, eligible, isActive, setOnLiveUpdate, poke };
+  return { start, stop, eligible, marketEligibleNow, applyDailyItem, isActive, setOnLiveUpdate, poke };
+})();
+
+/* ════════════════════════════════════════
+   LIST LIVE FEED  (清單目前這一頁的股票，批次即時報價)
+   LiveFeed 一次只主動輪詢「目前選中圖表的那一檔」，避免整個網頁背景一直
+   狂打報價（見 LiveFeed 模組註解）；但使用者反應自選股清單裡其他沒點開的
+   股票，現價完全不會動，要等下一次官方排程同步（可能是好幾小時後）才會
+   更新，不夠即時。
+
+   證交所 MIS 即時行情其實支援一次查多檔（ex_ch 用 `|` 分隔，見
+   web/cloudflare-worker/README.md），所以這裡改成：清單目前這一頁顯示的
+   股票（不管是自選股、鎖股名單、類股、還是強勢股結果——只要是「一頁股票」
+   都算），每 LIVE_POLL_MS 合併成一次請求問一次即時報價，跟 LiveFeed 完全
+   獨立、不衝突（兩邊都是 INSERT OR REPLACE 進同一張表/PK，就算剛好都在
+   輪詢同一檔也只是多打一次，不會寫壞資料）。目標清單會隨著換頁/切換視圖
+   一直變動，所以用「跟上次目標是否相同」的比較跳過不必要的重啟，避免每次
+   renderPage() 都打斷原本正在倒數的輪詢週期。 */
+const ListLiveFeed = (() => {
+  let timer = null;
+  let items = []; // [{code, market}]
+  let targetKey = '';
+  let running = false; // true throughout the whole poll loop's lifetime, unlike `timer`
+                        // which is transiently null while a tick() is in flight — using
+                        // `timer` itself as the "already polling" check (an earlier bug)
+                        // let every renderPage() that landed mid-tick see a null timer and
+                        // spawn a brand new parallel loop, multiplying requests over time.
+  let onUpdateCb = null;
+  let inFlight = false;
+
+  function keyOf(list) {
+    return list.map(it => it.code + ':' + (it.market || '')).sort().join(',');
+  }
+
+  function stop() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    items = [];
+    targetKey = '';
+    running = false;
+  }
+
+  async function tick() {
+    if (inFlight || !items.length || !LiveFeed.marketEligibleNow()) return;
+    inFlight = true;
+    try {
+      const exCh = items.map(({ code, market }) => `${market === 'TPEx' ? 'otc' : 'tse'}_${code}.tw`).join('|');
+      const res = await fetch(`${TWSE_PROXY_BASE}/realtime?ex_ch=${exCh}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      let any = false;
+      for (const item of (data.msgArray || [])) {
+        if (LiveFeed.applyDailyItem(item)) any = true;
+      }
+      if (any) onUpdateCb?.();
+    } catch (e) {
+      console.warn('清單即時報價批次擷取失敗：', e.message);
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  /* 目標不變（同一頁、同一批代號）且輪詢鏈已經在跑，就不重啟，只有真的
+     換頁/換清單才重新排程，這樣才不會被頻繁的 renderPage() 一直打斷倒數
+     （判斷「是否已經在跑」要用 running，不能用 timer 是否為 null——tick()
+     awaiting網路請求的當下 timer 本來就還沒設回去，見上面 running 註解）。 */
+  function setTargets(nextItems) {
+    const list = nextItems || [];
+    if (!list.length) { stop(); return; }
+    const nextKey = keyOf(list);
+    items = list; // 就算 key 相同也要換成最新物件參考，內容理論上一致，不影響輪詢
+    if (nextKey === targetKey && running) return;
+    if (timer) clearTimeout(timer);
+    targetKey = nextKey;
+    running = true;
+    const loop = async () => {
+      await tick();
+      if (running) timer = setTimeout(loop, LIVE_POLL_MS);
+    };
+    loop();
+  }
+
+  function setOnUpdate(cb) { onUpdateCb = cb; }
+
+  return { setTargets, stop, setOnUpdate };
 })();
 
 /* 某些App內建瀏覽器（LINE等）背景時會讓 LiveFeed 內部的 setTimeout 輪詢鏈
@@ -3068,6 +3208,7 @@ const Chart = (() => {
 
   function setOnZoomChange(fn) { onZoomChangeCb = fn; }
   function setOnInfoChange(fn) { onInfoChangeCb = fn; }
+  function getPeriod() { return period; }
 
   function clampGrowth(v) {
     // once we know there's nothing more to fetch, stop letting the view grow
@@ -3509,7 +3650,7 @@ const Chart = (() => {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
     setPanelWeights,
-    zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange,
+    zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
 })();
@@ -3920,6 +4061,19 @@ function showError(msg) {
 /* ════════════════════════════════════════
    RENDER STOCK LIST
    ════════════════════════════════════════ */
+/* 台股漲跌停是前一交易日收盤價±10%（依股價級距取價位到最接近的檔位，官方
+   實際鎖定價可能落在9.x%~10.0%之間，不會超過10%），所以用9.5%當門檻已經
+   足夠篩出「鎖漲停/鎖跌停」而不會誤判一般強勢/弱勢股的正常波動（那些正常
+   波動不可能超過10%）。 */
+const LIMIT_PCT_THRESHOLD = 9.5;
+function limitStateClass(close, prevClose) {
+  if (close == null || prevClose == null || !prevClose) return '';
+  const pct = (close - prevClose) / prevClose * 100;
+  if (pct >= LIMIT_PCT_THRESHOLD) return 'td-limit-up';
+  if (pct <= -LIMIT_PCT_THRESHOLD) return 'td-limit-dn';
+  return '';
+}
+
 function renderPage() {
   const { stocks, page } = State;
   const total      = stocks.length;
@@ -3948,10 +4102,16 @@ function renderPage() {
   const rows = pageItems.map(s => {
     const closes  = sparkMap[s.stock_code] || [];
     const svg     = sparkline(closes);
-    const open    = s.open,  close = s.close;
-    const cls     = (close == null || open == null) ? 'td-flat'
+    const open    = s.open;
+    // 還沒有今天的資料（官方排程還沒落地、ListLiveFeed也還沒抓到）時，用
+    // 昨收頂著顯示，比空白/'-'有用，但要跟「真的是今天現價」的顏色區分開，
+    // 所以額外標 td-stale（見CSS，較淡的顏色＋標題提示這其實是昨收）。
+    const isStale = s.close == null && s.prev_close != null;
+    const close   = s.close != null ? s.close : (isStale ? s.prev_close : null);
+    const cls     = (close == null || open == null || isStale) ? 'td-flat'
                   : close > open ? 'td-up'
                   : close < open ? 'td-dn' : 'td-flat';
+    const limitCls = isStale ? '' : limitStateClass(close, s.prev_close);
     const isSel   = s.stock_code === selCode;
     const memoOn  = MemoStore.hasMemo(s.stock_code);
 
@@ -3978,13 +4138,25 @@ function renderPage() {
       <td class="td-code" data-col="code">${codeCell}</td>
       <td class="td-name" data-col="name" title="${s.stock_name || ''}">${nameCell}</td>
       <td class="td-memo" data-col="memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
-      <td class="${cls}" data-col="price">${close != null ? close.toFixed(2) : '-'}</td>
+      <td class="${cls} ${limitCls} ${isStale ? 'td-stale' : ''}" data-col="price"${isStale ? ' title="昨收（尚未取得當日資料）"' : ''}>${close != null ? close.toFixed(2) : '-'}</td>
       <td class="td-spark" data-col="trend">${svg}</td>
       ${extraTd}
     </tr>`;
   });
 
   R.stockTbody.innerHTML = rows.join('');
+
+  /* 目前這一頁顯示的股票，交給 ListLiveFeed 每20秒批次問一次即時報價（見
+     該模組註解）；美股指數／分析報告不是個股，沒有 market 欄位可組
+     ex_ch，直接跳過。 */
+  if (!isAnalysisView && view !== 'usmarket') {
+    const liveTargets = pageItems
+      .filter(s => s.market !== undefined)
+      .map(s => ({ code: s.stock_code, market: s.market }));
+    ListLiveFeed.setTargets(liveTargets);
+  } else {
+    ListLiveFeed.stop();
+  }
 
   /* row click → select stock（或 美股 分頁的指數、分析 分頁的報告種類） */
   const isUsMarket  = R.viewSel.value === 'usmarket';
@@ -4341,8 +4513,10 @@ async function loadLockList(source, direction) {
     return {
       stock_code: r.stock_code,
       stock_name: r.stock_name,
+      market: p?.market,
       open: p?.open, high: p?.high, low: p?.low,
       close: p?.close ?? r.close,
+      prev_close: p?.prev_close,
       lock_score: r.score,
     };
   });
@@ -4352,6 +4526,11 @@ async function loadLockList(source, direction) {
 }
 
 function switchView(view) {
+  // 換視圖一律先停掉舊清單的批次即時輪詢，交給各分支自己視需要透過
+  // renderPage() 用新的目標清單重新啟動（見 ListLiveFeed 模組註解），
+  // 避免切到「強勢股」但還沒篩選過（不會呼叫renderPage）之類的分支時，
+  // 殘留舊視圖的輪詢繼續打。
+  ListLiveFeed.stop();
   R.sectorSel.classList.toggle('hidden', view !== 'sector');
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
   R.strongBar.classList.toggle('hidden', view !== 'strong');
@@ -5510,12 +5689,27 @@ function fmt1(v) { return v == null ? '-' : v.toFixed(1); }
 function renderInfoBar(info) {
   if (!info) { R.chartInfoBar.innerHTML = ''; return; }
   const upDown = info.close >= info.open ? 'td-up' : 'td-dn';
+  // 技術分析（day period）跟走勢圖（intraday period）的「收」也要漲跌停亮燈，
+  // 跟清單的現價欄位（見 renderPage/limitStateClass）用同一套規則跟CSS。
+  // 週/月/季K是聚合過的區間漲跌，跟官方單日±10%漲跌停無關，不適用，跳過。
+  let limitCls = '';
+  const code = Settings.get('selectedStock');
+  if (code && info.close != null) {
+    const period = Chart.getPeriod();
+    let prevClose = null;
+    if (period === 'day') {
+      prevClose = DBMgr.getPrevClose(code, info.trade_date);
+    } else if (period === 'intraday') {
+      prevClose = DBMgr.getPrevClose(code, (info.trade_date || '').slice(0, 10));
+    }
+    limitCls = limitStateClass(info.close, prevClose);
+  }
   let html =
     `<span class="info-item">${info.trade_date}</span>` +
     `<span class="info-item">開 <b class="${upDown}">${fmt2(info.open)}</b></span>` +
     `<span class="info-item">高 <b class="${upDown}">${fmt2(info.high)}</b></span>` +
     `<span class="info-item">低 <b class="${upDown}">${fmt2(info.low)}</b></span>` +
-    `<span class="info-item">收 <b class="${upDown}">${fmt2(info.close)}</b></span>` +
+    `<span class="info-item">收 <b class="${upDown} ${limitCls}">${fmt2(info.close)}</b></span>` +
     `<span class="info-item">量 <b class="${upDown}">${fmtVolShort(info.volume)}</b></span>` +
     `<span class="info-item ma-s">MA${info.maPeriods.short} <b>${fmt2(info.ma.short)}</b></span>` +
     `<span class="info-item ma-sm">MA${info.maPeriods.shortMid} <b>${fmt2(info.ma.shortMid)}</b></span>` +
@@ -5918,6 +6112,11 @@ async function main() {
     renderCurrentSourceChart({ preserveView: true });
     renderPage();
   });
+  /* 清單目前這一頁的批次即時報價（見 ListLiveFeed 模組註解）：抓到任何一檔
+     有變動就整頁重繪，讓自選股/鎖股/類股清單的現價不用等使用者手動點開
+     圖表才會動。renderPage() 本身會用目前頁面重新設定 ListLiveFeed 的目標，
+     形成一個自我維持的輪詢迴圈，不需要另外再排程。 */
+  ListLiveFeed.setOnUpdate(() => renderPage());
   TradingCalendar.ensureLoaded().catch(() => {});
 
   /* restore theme */
