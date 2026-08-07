@@ -4304,6 +4304,45 @@ function setColumnWidth(key, px) {
   }
 }
 
+/* #stock-table 是 width:100%+ table-layout:fixed，這代表瀏覽器會把所有
+   <col> 的寬度「依比例縮放」湊回100%——如果只改一欄的寬度，總和跟100%對
+   不起來，瀏覽器就會偷偷把落差分攤到其他欄位，使用者會看到「我明明拖的是
+   趨勢欄，現價欄卻跟著變大」這種莫名其妙的連動（欄寬總和沒有真的維持在
+   100%所以被硬拉回去）。修法是每次改一欄寬度時，同時反向調整「下一個可
+   調整寬度的欄位」（找不到就找上一個），寬度總和永遠不變，瀏覽器就不需要
+   再插手重新分配，行為才會跟使用者以為的「這欄變寬、隔壁欄跟著變窄」一致。
+   memo（icon固定欄）不算在可調整欄位裡，找partner時直接跳過。 */
+const RESIZABLE_COLS = ['code', 'name', 'price', 'trend', 'extra'];
+function resizablePartnerKey(key) {
+  const presentKeys = [...R.stockTable.querySelectorAll('thead th')]
+    .map(th => th.dataset.col)
+    .filter(k => RESIZABLE_COLS.includes(k));
+  const idx = presentKeys.indexOf(key);
+  if (idx < 0) return null;
+  if (idx + 1 < presentKeys.length) return presentKeys[idx + 1];
+  if (idx - 1 >= 0) return presentKeys[idx - 1];
+  return null;
+}
+
+/* 所有「使用者主動改欄寬」的入口（拖曳、雙擊fit content）都要走這裡，不能
+   直接呼叫 setColumnWidth，否則總寬度會跑掉（見上面註解）。targetWidth 是
+   key欄想要的新寬度；partner欄則反向承接差額，兩欄各自還是有 20px 下限。 */
+function setColumnWidthPaired(key, targetWidth) {
+  const keyCol = getColEl(key);
+  if (!keyCol) return;
+  const MIN = 20;
+  const curW = keyCol.getBoundingClientRect().width;
+  const partnerKey = resizablePartnerKey(key);
+  if (!partnerKey) { setColumnWidth(key, targetWidth); return; }
+  const partnerCol = getColEl(partnerKey);
+  const partnerW = partnerCol?.getBoundingClientRect().width ?? (COL_DEFAULT_WIDTH[partnerKey] || 60);
+  let delta = Math.max(MIN, Math.round(targetWidth)) - curW;
+  if (partnerW - delta < MIN) delta = partnerW - MIN; // partner不能被擠到小於下限
+  if (curW + delta < MIN) delta = MIN - curW;          // key欄自己也不能小於下限
+  setColumnWidth(key, curW + delta);
+  setColumnWidth(partnerKey, partnerW - delta);
+}
+
 /* colgroup 的 <col> 數量要跟目前 thead 的 <th> 數量同步（extra-col 會動態
    加入/移除，見 updateExtraColumn）；新出現的欄位先套用使用者上次存的寬度，
    沒存過就用預設值，已經有寬度的欄位不動（保留使用者拖拉過的結果）。 */
@@ -4337,7 +4376,7 @@ function fitColumnToContent(key) {
   const table = R.stockTable;
   const th = table.querySelector(`thead th[data-col="${key}"]`);
   if (!th) return;
-  if (key === 'trend') { setColumnWidth(key, 60 + 10); return; }
+  if (key === 'trend') { setColumnWidthPaired(key, 60 + 10); return; }
   if (key === 'memo')  { setColumnWidth(key, COL_DEFAULT_WIDTH.memo); return; }
 
   const font = getComputedStyle(th).font;
@@ -4345,13 +4384,13 @@ function fitColumnToContent(key) {
   table.querySelectorAll(`tbody td[data-col="${key}"]`).forEach(td => {
     max = Math.max(max, measureTextWidth(td.textContent.trim(), getComputedStyle(td).font));
   });
-  setColumnWidth(key, max + 16); // 16px ≈ 左右 padding + 一點餘裕
+  setColumnWidthPaired(key, max + 16); // 16px ≈ 左右 padding + 一點餘裕
 }
 
 function makeColResizer(key) {
   const div = document.createElement('div');
   div.className = 'col-resizer';
-  div.title = '拖曳調整欄寬，雙擊自動符合內容寬度';
+  div.title = '拖曳調整欄寬（會跟旁邊可調整的欄位互相增減，總寬度不變），雙擊自動符合內容寬度';
   let dragging = false, startX = 0, startW = 0;
 
   div.addEventListener('pointerdown', e => {
@@ -4365,7 +4404,7 @@ function makeColResizer(key) {
   });
   div.addEventListener('pointermove', e => {
     if (!dragging) return;
-    setColumnWidth(key, startW + (e.clientX - startX));
+    setColumnWidthPaired(key, startW + (e.clientX - startX));
   });
   const endDrag = () => { dragging = false; div.classList.remove('dragging'); };
   div.addEventListener('pointerup', endDrag);
