@@ -256,15 +256,15 @@ select:focus { outline: 2px solid var(--acc); }
 #stock-list-wrap {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto; /* 欄位總寬可能被使用者拖到超過容器寬度，見 syncTableWidth() 註解 */
 }
-#stock-list-wrap::-webkit-scrollbar { width: 5px; }
+#stock-list-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
 #stock-list-wrap::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 3px; }
 #stock-table {
-  width: 100%;
   border-collapse: collapse;
   font-size: 12px;
-  table-layout: fixed; /* 讓 <colgroup> 的欄寬設定生效，是可拖拉調整欄寬的前提 */
+  table-layout: fixed; /* 讓 <colgroup> 的欄寬設定生效，是可拖拉調整欄寬的前提；
+                          寬度本身故意不設 width:100%，見 syncTableWidth() 註解 */
 }
 #stock-table thead th {
   position: sticky;
@@ -886,6 +886,7 @@ select:focus { outline: 2px solid var(--acc); }
         <colgroup>
           <col data-col="code">
           <col data-col="name">
+          <col data-col="sector">
           <col data-col="memo">
           <col data-col="price">
           <col data-col="trend">
@@ -894,6 +895,7 @@ select:focus { outline: 2px solid var(--acc); }
           <tr>
             <th data-col="code">代號</th>
             <th data-col="name">名稱</th>
+            <th data-col="sector">產業</th>
             <th class="th-memo" data-col="memo"></th>
             <th data-col="price">現價</th>
             <th data-col="trend">趨勢</th>
@@ -2147,13 +2149,14 @@ const DBMgr = (() => {
   function getStocksBySector(sectorId) {
     const d = getLatestDate();
     return query(`
-      SELECT s.stock_code, s.stock_name, s.market,
+      SELECT s.stock_code, s.stock_name, s.market, sec.sector_name,
              p.open, p.high, p.low, p.close,
              (SELECT p2.close FROM daily_prices p2
                 WHERE p2.stock_code = s.stock_code AND p2.trade_date < ?
                 ORDER BY p2.trade_date DESC LIMIT 1) AS prev_close
       FROM stocks s
       LEFT JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
       WHERE CAST(s.sector_id AS INTEGER)=? AND s.is_active=1
       ORDER BY s.stock_code
     `, [d, d, sectorId]);
@@ -2182,13 +2185,14 @@ const DBMgr = (() => {
   /* ── 強勢股 snapshot: daily_prices + technical_indicators for last N days, all active stocks ── */
   function getSnapshot(lookbackDays) {
     return query(`
-      SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
+      SELECT dp.stock_code, s.stock_name, s.market, sec.sector_name, dp.trade_date,
              dp.open, dp.high, dp.low, dp.close, dp.volume,
              ti.ma5, ti.ma20, ti.ma60, ti.vol_ma5,
              ti.kd_k, ti.kd_d, ti.macd_dif, ti.macd_macd, ti.macd_osc,
              ti.bias20, ti.rs_rating
       FROM daily_prices dp
       JOIN stocks s ON s.stock_code = dp.stock_code
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
       LEFT JOIN technical_indicators ti
         ON ti.stock_code = dp.stock_code AND ti.trade_date = dp.trade_date
       WHERE dp.trade_date >= (SELECT date(MAX(trade_date), ?) FROM daily_prices)
@@ -2263,7 +2267,7 @@ const DBMgr = (() => {
     const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
 
     return {
-      stock_code: t.stock_code, stock_name: t.stock_name, market: t.market, trade_date: t.trade_date,
+      stock_code: t.stock_code, stock_name: t.stock_name, market: t.market, sector_name: t.sector_name, trade_date: t.trade_date,
       open: t.open, high: t.high, low: t.low, close: t.close, prev_close: y.close,
       kd_k: t.kd_k, kd_d: t.kd_d, bias20: t.bias20, rs_rating: t.rs_rating,
       chg5, vol_ratio: volRatio,
@@ -2366,13 +2370,14 @@ const DBMgr = (() => {
     const d  = getLatestDate();
     const ph = codes.map(() => '?').join(',');
     return query(`
-      SELECT s.stock_code, s.stock_name, s.market,
+      SELECT s.stock_code, s.stock_name, s.market, sec.sector_name,
              p.open, p.high, p.low, p.close,
              (SELECT p2.close FROM daily_prices p2
                 WHERE p2.stock_code = s.stock_code AND p2.trade_date < ?
                 ORDER BY p2.trade_date DESC LIMIT 1) AS prev_close
       FROM stocks s
       LEFT JOIN daily_prices p ON s.stock_code=p.stock_code AND p.trade_date=?
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
       WHERE s.stock_code IN (${ph})
     `, [d, d, ...codes]);
   }
@@ -4178,7 +4183,7 @@ function renderPage() {
   R.nextBtn.disabled = page >= totalPages - 1;
 
   if (!pageItems.length) {
-    R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">無資料</td></tr>';
+    R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">無資料</td></tr>';
     return;
   }
 
@@ -4229,6 +4234,7 @@ function renderPage() {
                draggable="${isWL ? 'true' : 'false'}">
       <td class="td-code" data-col="code">${codeCell}</td>
       <td class="td-name" data-col="name" title="${s.stock_name || ''}">${nameCell}</td>
+      <td class="td-sector" data-col="sector" title="${esc(s.sector_name || '')}">${isAnalysisView ? '' : esc(s.sector_name || '')}</td>
       <td class="td-memo" data-col="memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
       <td class="${cls} ${limitCls} ${isStale ? 'td-stale' : ''}" data-col="price"${isStale ? ' title="昨收（尚未取得當日資料）"' : ''}>${close != null ? close.toFixed(2) : '-'}</td>
       <td class="td-spark" data-col="trend">${svg}</td>
@@ -4353,7 +4359,7 @@ function updateExtraColumn(view) {
 /* ════════════════════════════════════════
    清單欄寬可拖拉調整（見 #stock-table 的 <colgroup>）＋雙擊resizer=fit content
    ════════════════════════════════════════ */
-const COL_DEFAULT_WIDTH = { code: 60, name: 76, memo: 28, price: 68, trend: 68, extra: 52 };
+const COL_DEFAULT_WIDTH = { code: 60, name: 76, sector: 70, memo: 28, price: 68, trend: 68, extra: 52 };
 let __measureCtx = null;
 
 function measureTextWidth(text, font) {
@@ -4379,45 +4385,37 @@ function setColumnWidth(key, px) {
     widths[key] = clamped;
     Settings.set('listColumnWidths', widths);
   }
+  syncTableWidth();
 }
 
-/* #stock-table 是 width:100%+ table-layout:fixed，這代表瀏覽器會把所有
-   <col> 的寬度「依比例縮放」湊回100%——如果只改一欄的寬度，總和跟100%對
-   不起來，瀏覽器就會偷偷把落差分攤到其他欄位，使用者會看到「我明明拖的是
-   趨勢欄，現價欄卻跟著變大」這種莫名其妙的連動（欄寬總和沒有真的維持在
-   100%所以被硬拉回去）。修法是每次改一欄寬度時，同時反向調整「下一個可
-   調整寬度的欄位」（找不到就找上一個），寬度總和永遠不變，瀏覽器就不需要
-   再插手重新分配，行為才會跟使用者以為的「這欄變寬、隔壁欄跟著變窄」一致。
-   memo（icon固定欄）不算在可調整欄位裡，找partner時直接跳過。 */
-const RESIZABLE_COLS = ['code', 'name', 'price', 'trend', 'extra'];
-function resizablePartnerKey(key) {
-  const presentKeys = [...R.stockTable.querySelectorAll('thead th')]
-    .map(th => th.dataset.col)
-    .filter(k => RESIZABLE_COLS.includes(k));
-  const idx = presentKeys.indexOf(key);
-  if (idx < 0) return null;
-  if (idx + 1 < presentKeys.length) return presentKeys[idx + 1];
-  if (idx - 1 >= 0) return presentKeys[idx - 1];
-  return null;
-}
+/* #stock-table 曾經是 width:100%+table-layout:fixed：只要宣告的欄寬總和
+   跟容器實際寬度對不上（幾乎每次都對不上，因為 COL_DEFAULT_WIDTH 只是隨便
+   估的，跟視窗寬度沒有必然關係），瀏覽器就會把每一欄的「宣告寬度」當成
+   比例，硬把畫面上的實際寬度按比例縮放湊回100%——使用者拖趨勢欄，畫面上
+   卻連code/name/memo這些完全沒被動到的欄位也一起跟著變寬變窄，就是這樣
+   來的（曾經想用「跟鄰欄互相增減、總和不變」來繞過，但只要宣告總和本來就
+   跟容器寬度不同，即使我自己不去動它，瀏覽器還是照樣會比例縮放，那個修法
+   治標不治本）。
 
-/* 所有「使用者主動改欄寬」的入口（拖曳、雙擊fit content）都要走這裡，不能
-   直接呼叫 setColumnWidth，否則總寬度會跑掉（見上面註解）。targetWidth 是
-   key欄想要的新寬度；partner欄則反向承接差額，兩欄各自還是有 20px 下限。 */
-function setColumnWidthPaired(key, targetWidth) {
-  const keyCol = getColEl(key);
-  if (!keyCol) return;
-  const MIN = 20;
-  const curW = keyCol.getBoundingClientRect().width;
-  const partnerKey = resizablePartnerKey(key);
-  if (!partnerKey) { setColumnWidth(key, targetWidth); return; }
-  const partnerCol = getColEl(partnerKey);
-  const partnerW = partnerCol?.getBoundingClientRect().width ?? (COL_DEFAULT_WIDTH[partnerKey] || 60);
-  let delta = Math.max(MIN, Math.round(targetWidth)) - curW;
-  if (partnerW - delta < MIN) delta = partnerW - MIN; // partner不能被擠到小於下限
-  if (curW + delta < MIN) delta = MIN - curW;          // key欄自己也不能小於下限
-  setColumnWidth(key, curW + delta);
-  setColumnWidth(partnerKey, partnerW - delta);
+   正確做法：table 本身不設 width（不再是100%），改成每次欄寬有變動時，
+   由這裡動態把 table.style.width 設成「所有欄位宣告寬度的總和，一分不
+   多一分不少」。這樣 table-layout:fixed 看到的「宣告寬度」永遠等於「實際
+   要畫出來的寬度」，瀏覽器不需要、也不會再插手重新分配——拖哪一欄，就
+   真的只有那一欄的寬度改變，其餘完全不動。
+
+   這裡故意不取 max(total, 容器寬度)：一旦拿容器寬度墊底，只要欄位預設
+   總和比容器窄（幾乎每次都是），table.style.width 就會被撐大到容器寬度，
+   table-layout:fixed 又得把「不足容器寬度的宣告總和」按比例拉伸填滿，
+   distortion 原封不動地重演一次（這個踩雷版本已經實測到，看似修好、實際
+   上換了個誘因繼續錯）。欄位總和比容器窄時，寧可讓 table 比容器窄、右側
+   留一小段空白，也不要犧牲「每一欄寬度都精確等於宣告值」這個前提——空白
+   純粹是外觀上的小落差，使用者可以自己把欄位拉寬填滿；但欄寬互相亂連動
+   是真正的功能性bug，優先度更高。 */
+function syncTableWidth() {
+  const table = R.stockTable;
+  const cols = [...table.querySelectorAll(':scope > colgroup > col')];
+  const total = cols.reduce((sum, c) => sum + (parseFloat(c.style.width) || 0), 0);
+  table.style.width = total + 'px';
 }
 
 /* colgroup 的 <col> 數量要跟目前 thead 的 <th> 數量同步（extra-col 會動態
@@ -4443,6 +4441,7 @@ function syncColumnGroup() {
     if (col.style.width) return; // 已經設定過，不要覆蓋掉使用者拖拉的結果
     col.style.width = (saved[key] || COL_DEFAULT_WIDTH[key] || 60) + 'px';
   });
+  syncTableWidth();
 }
 
 /* 雙擊resizer＝該欄fit content：量表頭文字＋目前畫面上這一欄所有儲存格
@@ -4453,7 +4452,7 @@ function fitColumnToContent(key) {
   const table = R.stockTable;
   const th = table.querySelector(`thead th[data-col="${key}"]`);
   if (!th) return;
-  if (key === 'trend') { setColumnWidthPaired(key, 60 + 10); return; }
+  if (key === 'trend') { setColumnWidth(key, 60 + 10); return; }
   if (key === 'memo')  { setColumnWidth(key, COL_DEFAULT_WIDTH.memo); return; }
 
   const font = getComputedStyle(th).font;
@@ -4461,13 +4460,13 @@ function fitColumnToContent(key) {
   table.querySelectorAll(`tbody td[data-col="${key}"]`).forEach(td => {
     max = Math.max(max, measureTextWidth(td.textContent.trim(), getComputedStyle(td).font));
   });
-  setColumnWidthPaired(key, max + 16); // 16px ≈ 左右 padding + 一點餘裕
+  setColumnWidth(key, max + 16); // 16px ≈ 左右 padding + 一點餘裕
 }
 
 function makeColResizer(key) {
   const div = document.createElement('div');
   div.className = 'col-resizer';
-  div.title = '拖曳調整欄寬（會跟旁邊可調整的欄位互相增減，總寬度不變），雙擊自動符合內容寬度';
+  div.title = '拖曳調整欄寬，雙擊自動符合內容寬度';
   let dragging = false, startX = 0, startW = 0;
 
   div.addEventListener('pointerdown', e => {
@@ -4481,7 +4480,7 @@ function makeColResizer(key) {
   });
   div.addEventListener('pointermove', e => {
     if (!dragging) return;
-    setColumnWidthPaired(key, startW + (e.clientX - startX));
+    setColumnWidth(key, startW + (e.clientX - startX));
   });
   const endDrag = () => { dragging = false; div.classList.remove('dragging'); };
   div.addEventListener('pointerup', endDrag);
@@ -4496,7 +4495,7 @@ function makeColResizer(key) {
    固定icon寬度）各自加上resizer把手；extra-col是動態欄位，resizer在
    updateExtraColumn 裡另外加。 */
 function initColumnResize() {
-  ['code', 'name', 'price', 'trend'].forEach(key => {
+  ['code', 'name', 'sector', 'price', 'trend'].forEach(key => {
     const th = R.stockTable.querySelector(`thead th[data-col="${key}"]`);
     if (th && !th.querySelector('.col-resizer')) th.appendChild(makeColResizer(key));
   });
@@ -4637,7 +4636,7 @@ function parseLockView(view) {
    此處唯讀。source 是 'week'|'intraday'|'nextday'，見 LockList 模組註解。 */
 async function loadLockList(source, direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
-  R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">載入鎖股名單中…</td></tr>';
+  R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">載入鎖股名單中…</td></tr>';
   await LockList.ensureLoaded(source);
   const recs  = LockList.getByDirection(source, dirZh);
   const codes = recs.map(r => r.stock_code);
@@ -4649,6 +4648,7 @@ async function loadLockList(source, direction) {
       stock_code: r.stock_code,
       stock_name: r.stock_name,
       market: p?.market,
+      sector_name: p?.sector_name,
       open: p?.open, high: p?.high, low: p?.low,
       close: p?.close ?? r.close,
       prev_close: p?.prev_close,
@@ -4692,7 +4692,7 @@ function switchView(view) {
     }
     State.page = 0;
     if (!State.stocks.length) {
-      R.stockTbody.innerHTML = '<tr><td colspan="6" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
+      R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
       R.pageInfo.textContent = '— / —';
       R.prevBtn.disabled = true; R.nextBtn.disabled = true;
     } else {
@@ -6064,7 +6064,10 @@ function bindEvents() {
 
   /* resize */
   // canvas隱藏（「盤後」分頁）時resize會把它corrupt成0x0，見 applyChartMode 的說明。
-  window.addEventListener('resize', () => { if (chartMode !== 'chip') Chart.resize(); });
+  window.addEventListener('resize', () => {
+    if (chartMode !== 'chip') Chart.resize();
+    syncTableWidth(); // 視窗/側邊欄寬度變了，清單table也要重新撐滿容器，見該函式註解
+  });
 }
 
 /* ════════════════════════════════════════
