@@ -497,10 +497,10 @@ select:focus { outline: 2px solid var(--acc); }
 }
 #chart-info-bar .info-item { color: var(--txt2); white-space: nowrap; }
 #chart-info-bar .info-item b { font-weight: 700; }
-#chart-info-bar .ma-s b { color: #f59e0b; }
-#chart-info-bar .ma-sm b { color: #10b981; }
-#chart-info-bar .ma-m b { color: #3b82f6; }
-#chart-info-bar .ma-l b { color: #a855f7; }
+#chart-info-bar .ma-s b { color: #f97316; }
+#chart-info-bar .ma-sm b { color: #38bdf8; }
+#chart-info-bar .ma-m b { color: #22c55e; }
+#chart-info-bar .ma-l b { color: #eab308; }
 #chart-info-bar .kd-k b { color: #3b82f6; }
 #chart-info-bar .kd-d b { color: #f59e0b; }
 #chart-info-bar .kd-j b { color: #ec4899; }
@@ -1030,7 +1030,14 @@ select:focus { outline: 2px solid var(--acc); }
         </div>
         <div class="modal-pane hidden" data-pane="strong">
           <h3>目前原則（型態訊號評分）</h3>
-          <label>最低綜合分數 <input type="number" id="strong-min-score" min="0" max="5"></label>
+          <label>最低綜合分數 <input type="number" id="strong-min-score" min="0" max="6"></label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-kdCross"> KD黃金/死亡交叉</label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-macd"> MACD多空</label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-oscGrow"> MACD柱由縮轉長</label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-volSpike"> 放量紅/黑K</label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-pullback"> 回後買上漲/彈後空下跌</label>
+          <label class="modal-check-row"><input type="checkbox" id="strong-rule-risingMa20"> 站上月線且月線上揚</label>
+          <p class="modal-hint">上面幾條規則都是加分項，符合幾條就算幾分，「最低綜合分數」是要達到的門檻。規則勾越少，同一支股票能拿到的最高分也越低——如果加了新規則後突然篩不太到股票，先檢查是不是規則太多、或最低分數設太高。</p>
           <h3>XQ原則（RS值動能）</h3>
           <label>RS值門檻 <input type="number" id="strong-rs-th" min="1" max="99"></label>
           <label>量比門檻 <input type="number" id="strong-vol-ratio" min="0" step="0.1"></label>
@@ -1276,6 +1283,11 @@ const Settings = (() => {
              intradayPeriod: 5,      // 走勢圖目前選的級距（分鐘）
              strongMethod: 'current',
              strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 },
+             // 目前原則（型態訊號評分）用哪幾條規則計分，見 DBMgr.scoreCurrent；
+             // 全部預設 true，之後想加新規則就多加一個key，舊使用者存的設定裡
+             // 沒有這個新key時，scoreCurrent 讀取時用 `!== false` 判斷，缺key
+             // 一樣視為enable，不會因為忘記migrate舊設定而悄悄被關掉。
+             strongCurrentRules: { kdCross:true, macd:true, oscGrow:true, volSpike:true, pullback:true, risingMa20:true },
              memos: {} };  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
   }
   function load() {
@@ -1297,6 +1309,7 @@ const Settings = (() => {
       d.strongParams = Object.assign({}, def.strongParams, stored.strongParams);
       d.enabledIndicators = Object.assign({}, def.enabledIndicators, stored.enabledIndicators);
       d.chartPanelWeights = Object.assign({}, def.chartPanelWeights, stored.chartPanelWeights);
+      d.strongCurrentRules = Object.assign({}, def.strongCurrentRules, stored.strongCurrentRules);
     } catch { d = defaults(); }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} }
@@ -2194,32 +2207,52 @@ const DBMgr = (() => {
     return map;
   }
 
-  /* ── 「目前原則」型態訊號評分，對應 analysis/signals.py::_score_group() ── */
-  function scoreCurrent(g) {
+  /* ── 「目前原則」型態訊號評分，對應 analysis/signals.py::_score_group() ──
+     rules：每條規則是否納入計分，見 Settings.defaults() 的 strongCurrentRules
+     說明；用 `rules?.xxx !== false` 判斷，缺key/沒傳rules都視為enable，這樣
+     使用者在設定齒輪裡關掉某條規則，才不會影響其他還沒設定過的裝置/舊資料。 */
+  function scoreCurrent(g, rules) {
     const n = g.length;
     if (n < 3) return null;
     const t = g[n - 1], y = g[n - 2], z = g[n - 3];
     if (t.kd_k == null || t.macd_osc == null || t.ma5 == null || t.vol_ma5 == null) return null;
 
     const bull = [], bear = [];
-    if (t.kd_k > t.kd_d && y.kd_k <= y.kd_d && t.kd_d < 80) bull.push('KD黃金交叉');
-    if (t.kd_k < t.kd_d && y.kd_k >= y.kd_d && t.kd_d > 20) bear.push('KD死亡交叉');
+    if (rules?.kdCross !== false) {
+      if (t.kd_k > t.kd_d && y.kd_k <= y.kd_d && t.kd_d < 80) bull.push('KD黃金交叉');
+      if (t.kd_k < t.kd_d && y.kd_k >= y.kd_d && t.kd_d > 20) bear.push('KD死亡交叉');
+    }
 
-    if (t.macd_dif > t.macd_macd && t.macd_dif > 0) bull.push('MACD多頭');
-    if (t.macd_dif < t.macd_macd && t.macd_dif < 0) bear.push('MACD空頭');
+    if (rules?.macd !== false) {
+      if (t.macd_dif > t.macd_macd && t.macd_dif > 0) bull.push('MACD多頭');
+      if (t.macd_dif < t.macd_macd && t.macd_dif < 0) bear.push('MACD空頭');
+    }
 
-    if (t.macd_osc > 0 && t.macd_osc > y.macd_osc && y.macd_osc <= z.macd_osc) bull.push('紅柱由縮轉長');
-    if (t.macd_osc < 0 && t.macd_osc < y.macd_osc && y.macd_osc >= z.macd_osc) bear.push('綠柱由縮轉長');
+    if (rules?.oscGrow !== false) {
+      if (t.macd_osc > 0 && t.macd_osc > y.macd_osc && y.macd_osc <= z.macd_osc) bull.push('紅柱由縮轉長');
+      if (t.macd_osc < 0 && t.macd_osc < y.macd_osc && y.macd_osc >= z.macd_osc) bear.push('綠柱由縮轉長');
+    }
 
-    if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close > t.open) bull.push('放量紅K');
-    if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close < t.open) bear.push('放量黑K');
+    if (rules?.volSpike !== false) {
+      if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close > t.open) bull.push('放量紅K');
+      if (t.vol_ma5 > 0 && t.volume > t.vol_ma5 * 1.2 && t.close < t.open) bear.push('放量黑K');
+    }
 
-    const recent = g.slice(Math.max(0, n - 6), n - 1);
-    if (recent.length >= 3) {
-      const recentLow  = Math.min(...recent.map(r => r.low));
-      const recentHigh = Math.max(...recent.map(r => r.high));
-      if (t.close > t.open && t.close >= t.ma5 && y.close < y.ma5 && t.low >= recentLow) bull.push('回後買上漲');
-      if (t.close < t.open && t.close <= t.ma5 && y.close > y.ma5 && t.high <= recentHigh) bear.push('彈後空下跌');
+    if (rules?.pullback !== false) {
+      const recent = g.slice(Math.max(0, n - 6), n - 1);
+      if (recent.length >= 3) {
+        const recentLow  = Math.min(...recent.map(r => r.low));
+        const recentHigh = Math.max(...recent.map(r => r.high));
+        if (t.close > t.open && t.close >= t.ma5 && y.close < y.ma5 && t.low >= recentLow) bull.push('回後買上漲');
+        if (t.close < t.open && t.close <= t.ma5 && y.close > y.ma5 && t.high <= recentHigh) bear.push('彈後空下跌');
+      }
+    }
+
+    /* 使用者新增規則：站上月線(MA20)且月線本身也在上揚（不是只看站上，
+       避免月線走平/下彎時的假訊號），跌破+下彎則是對稱的空方訊號。 */
+    if (rules?.risingMa20 !== false && t.ma20 != null && y.ma20 != null) {
+      if (t.close > t.ma20 && t.ma20 > y.ma20) bull.push('站上月線且月線上揚');
+      if (t.close < t.ma20 && t.ma20 < y.ma20) bear.push('跌破月線且月線下彎');
     }
 
     let chg5 = null;
@@ -2243,14 +2276,14 @@ const DBMgr = (() => {
      runStrongFilter 怎麼把它組成可讀文字）——不是篩選邏輯本身，只是把
      過程中已經算出來的中間值順便記下來，方便判斷篩不到的時候到底是
      「資料不足」還是「門檻太嚴」還是別的原因，也方便事後調整門檻。 */
-  function computeStrongCurrent(topN, minScore) {
+  function computeStrongCurrent(topN, minScore, rules) {
     const rows   = getSnapshot(20);
     const groups = groupRowsByCode(rows);
     const scored = [];
     let insufficientHistory = 0;
     const scoreHistogram = {};
     for (const g of groups.values()) {
-      const s = scoreCurrent(g);
+      const s = scoreCurrent(g, rules);
       if (!s) { insufficientHistory++; continue; }
       scoreHistogram[s.bull_score] = (scoreHistogram[s.bull_score] || 0) + 1;
       if (s.bull_score >= minScore) scored.push(s);
@@ -3037,10 +3070,25 @@ const Chart = (() => {
   function isDark() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
   function tok(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
+  /* 原本 canvas.width 直接設成 CSS 像素寬高，在高解析度螢幕（手機/retina）
+     上，瀏覽器實際顯示面積是 CSS 像素的 devicePixelRatio 倍，畫布內部緩衝
+     卻只有 CSS 像素那麼多真實像素可畫，等於被瀏覽器放大顯示、整張圖模糊，
+     這是「解析度比較差」最主要的技術原因。修法：內部緩衝(canvas.width/
+     height)按 devicePixelRatio 放大，畫面實際佔用大小(canvas.style.width/
+     height)維持 CSS 像素不變，再用 ctx 的座標轉換把 devicePixelRatio 吃掉，
+     這樣 draw() 其餘所有畫圖座標完全不用改，仍然照 CSS 像素邏輯計算，只是
+     最後輸出到緩衝時已經是原生解析度，不會被瀏覽器插值放大變模糊。
+     用 setTransform（不是 scale）是因為 resize() 可能被重複呼叫，scale()
+     會疊加，setTransform 每次都是從單位矩陣重新設定，不會累積出錯。 */
   function resize() {
     const wrap = document.getElementById('chart-wrap');
-    canvas.width  = wrap.clientWidth;
-    canvas.height = wrap.clientHeight;
+    const cw = wrap.clientWidth, ch = wrap.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+    canvas.style.width  = cw + 'px';
+    canvas.style.height = ch + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     draw();
   }
 
@@ -3274,10 +3322,16 @@ const Chart = (() => {
     return (dateStr || '').slice(5);
   }
 
-  const MA_S_COL  = '#f59e0b'; // amber
-  const MA_SM_COL = '#10b981'; // green, for the 短中期 MA
-  const MA_M_COL  = '#3b82f6'; // blue
-  const MA_L_COL  = '#a855f7'; // purple
+  const MA_S_COL  = '#f97316'; // MA5：橘色
+  const MA_SM_COL = '#38bdf8'; // MA10：天空藍
+  const MA_M_COL  = '#22c55e'; // MA20：綠色
+  const MA_L_COL  = '#eab308'; // MA60：黃色
+  // KD/MACD 的線原本直接借用 MA_M_COL/MA_S_COL（藍/琥珀），跟 #chart-info-bar
+  // 的 .kd-k/.macd-dif/.kd-d/.macd-macd CSS 顏色對應；上面 MA 線改成使用者
+  // 指定的新配色後，KD/MACD 不該被拖著一起變，所以拆成獨立常數，維持原本
+  // 的藍/琥珀不動。
+  const IND_LINE1_COL = '#3b82f6'; // KD-K / MACD-DIF
+  const IND_LINE2_COL = '#f59e0b'; // KD-D / MACD-MACD
   const J_COL     = '#ec4899'; // pink, for KD's J line
   const RSI_FAST_COL = '#14b8a6'; // teal
   const RSI_SLOW_COL = '#f97316'; // orange
@@ -3321,7 +3375,10 @@ const Chart = (() => {
   }
 
   function draw() {
-    const W = canvas.width, H = canvas.height;
+    // 用 clientWidth/Height（CSS邏輯像素），不是 canvas.width/height（實際緩衝的
+    // 裝置像素，見 resize() 註解）——ctx 已經用 setTransform 把 devicePixelRatio
+    // 吃掉了，這裡如果改用裝置像素，所有座標會被再乘一次 dpr，圖會整個跑版。
+    const W = canvas.clientWidth, H = canvas.clientHeight;
     if (!W || !H) return;
 
     const dark    = isDark();
@@ -3332,6 +3389,11 @@ const Chart = (() => {
     const upCol   = tok('--up');
     const dnCol   = tok('--dn');
     const accCol  = tok('--acc');
+    // 黑K（陰線）在暗色主題改用白色實心，比原本的綠色在黑底畫面上更好辨識
+    // （使用者要求，比對XQ的畫法）；只影響K棒本體的顏色，量能panel跟其他
+    // 用到 --dn 的地方（清單漲跌字色、跌停燈號背景等）維持不變，淺色主題
+    // 也維持原本的 --dn，白色K棒在白底上會整個消失看不見。
+    const candleDnCol = dark ? '#ffffff' : dnCol;
 
     ctx.fillStyle = bgCol;
     ctx.fillRect(0, 0, W, H);
@@ -3418,7 +3480,7 @@ const Chart = (() => {
     for (let i = 0; i < data.length; i++) {
       const d = data[i], cx = xOf(i + realOffset);
       const up = d.close >= d.open;
-      const col = up ? upCol : dnCol;
+      const col = up ? upCol : candleDnCol;
       ctx.strokeStyle = col; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(cx, pY(d.high)); ctx.lineTo(cx, pY(d.low)); ctx.stroke();
       const y1 = pY(Math.max(d.open, d.close)), y2 = pY(Math.min(d.open, d.close));
@@ -3461,9 +3523,14 @@ const Chart = (() => {
       const d = data[i], cx = xOf(i + realOffset);
       const col = d.close >= d.open ? upCol : dnCol;
       const vTop2 = vY(d.volume || 0);
+      const vBarH = volBot - vTop2;
+      // 填滿用透明度壓低（避免整個成交量panel顏色太搶眼蓋過K線），外框用
+      // 全不透明同色當高對比邊界，讓每根柱子輪廓清楚（比對XQ的畫法）。
       ctx.fillStyle = col; ctx.globalAlpha = 0.65;
-      ctx.fillRect(cx - candleW / 2, vTop2, candleW, volBot - vTop2);
+      ctx.fillRect(cx - candleW / 2, vTop2, candleW, vBarH);
       ctx.globalAlpha = 1;
+      ctx.strokeStyle = col; ctx.lineWidth = 1;
+      ctx.strokeRect(cx - candleW / 2, vTop2, candleW, vBarH);
     }
 
     /* indicator panel (single switchable: KD+J / MACD / RSV) */
@@ -3477,19 +3544,23 @@ const Chart = (() => {
         const v = mOsc[i]; if (v == null) continue;
         const cx = xOf(i + realOffset);
         const y0 = iY(0), y1 = iY(v);
-        ctx.fillStyle = v >= 0 ? upCol : dnCol; ctx.globalAlpha = 0.65;
-        ctx.fillRect(cx - candleW / 2, Math.min(y0, y1), candleW, Math.abs(y1 - y0) || 1);
+        const barY = Math.min(y0, y1), barH = Math.abs(y1 - y0) || 1;
+        const oscCol = v >= 0 ? upCol : dnCol;
+        ctx.fillStyle = oscCol; ctx.globalAlpha = 0.65;
+        ctx.fillRect(cx - candleW / 2, barY, candleW, barH);
         ctx.globalAlpha = 1;
+        ctx.strokeStyle = oscCol; ctx.lineWidth = 1;
+        ctx.strokeRect(cx - candleW / 2, barY, candleW, barH);
       }
-      drawLine(mDif, iY, xOf, MA_M_COL, realOffset);
-      drawLine(mMacd, iY, xOf, MA_S_COL, realOffset);
+      drawLine(mDif, iY, xOf, IND_LINE1_COL, realOffset);
+      drawLine(mMacd, iY, xOf, IND_LINE2_COL, realOffset);
     } else if (indicator === 'kd') {
       const iY = v => indTop + (1 - v / 100) * indH;
       ctx.strokeStyle = gridCol; ctx.setLineDash([3, 3]);
       [20, 80].forEach(v => { ctx.beginPath(); ctx.moveTo(PAD_L, iY(v)); ctx.lineTo(W - PAD_R, iY(v)); ctx.stroke(); });
       ctx.setLineDash([]);
-      drawLine(kdK, iY, xOf, MA_M_COL, realOffset);
-      drawLine(kdD, iY, xOf, MA_S_COL, realOffset);
+      drawLine(kdK, iY, xOf, IND_LINE1_COL, realOffset);
+      drawLine(kdD, iY, xOf, IND_LINE2_COL, realOffset);
       drawLine(kdJ, iY, xOf, J_COL, realOffset);
     } else if (indicator === 'rsv') {
       const iY = v => indTop + (1 - v / 100) * indH;
@@ -4032,6 +4103,12 @@ const R = {
   intradayMin2Input: $('intraday-min-2'),
   intradayMin3Input: $('intraday-min-3'),
   strongMinScoreInput: $('strong-min-score'),
+  strongRuleKdCross:    $('strong-rule-kdCross'),
+  strongRuleMacd:       $('strong-rule-macd'),
+  strongRuleOscGrow:    $('strong-rule-oscGrow'),
+  strongRuleVolSpike:   $('strong-rule-volSpike'),
+  strongRulePullback:   $('strong-rule-pullback'),
+  strongRuleRisingMa20: $('strong-rule-risingMa20'),
   strongRsThInput:     $('strong-rs-th'),
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
@@ -4454,7 +4531,7 @@ async function runStrongFilter() {
   try {
     const out = method === 'xq'
       ? DBMgr.computeStrongXQ(100, params.rsThreshold ?? 90, params.minVolRatio ?? 0.8, params.nearHighPct ?? 15)
-      : DBMgr.computeStrongCurrent(100, params.minScore ?? 2);
+      : DBMgr.computeStrongCurrent(100, params.minScore ?? 2, Settings.get('strongCurrentRules'));
     results = out.results;
     diagnostics = out.diagnostics;
   } catch (e) {
@@ -6025,6 +6102,14 @@ function openSettingsModal() {
   R.strongVolRatioInput.value = sp.minVolRatio ?? 0.8;
   R.strongNearHighInput.value = sp.nearHighPct ?? 15;
 
+  const scr = Settings.get('strongCurrentRules') || {};
+  R.strongRuleKdCross.checked    = scr.kdCross    !== false;
+  R.strongRuleMacd.checked       = scr.macd       !== false;
+  R.strongRuleOscGrow.checked    = scr.oscGrow    !== false;
+  R.strongRuleVolSpike.checked   = scr.volSpike   !== false;
+  R.strongRulePullback.checked   = scr.pullback   !== false;
+  R.strongRuleRisingMa20.checked = scr.risingMa20 !== false;
+
   R.followMouseChk.checked = !!Settings.get('followMouseTooltip');
 
   const en = Settings.get('enabledIndicators') || { kd:true, macd:true, rsv:false, rsi:true };
@@ -6107,6 +6192,14 @@ function saveSettingsModal() {
     nearHighPct: parseFloat(R.strongNearHighInput.value) || 15,
   };
   Settings.set('strongParams', strongParams);
+  Settings.set('strongCurrentRules', {
+    kdCross:    R.strongRuleKdCross.checked,
+    macd:       R.strongRuleMacd.checked,
+    oscGrow:    R.strongRuleOscGrow.checked,
+    volSpike:   R.strongRuleVolSpike.checked,
+    pullback:   R.strongRulePullback.checked,
+    risingMa20: R.strongRuleRisingMa20.checked,
+  });
 
   const followMouse = R.followMouseChk.checked;
   Settings.set('followMouseTooltip', followMouse);
