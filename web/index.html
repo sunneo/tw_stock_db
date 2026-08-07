@@ -1467,23 +1467,24 @@ const LockList = (() => {
     return data;
   }
 
-  /* 備忘錄唯讀區塊用：一檔股票可能同時出現在好幾個來源（例如盤中+隔日都
-     入選），依「越即時的來源優先」的順序回傳第一個命中的，並附上是哪個
-     來源，讓 UI 標示清楚。只回傳一筆是刻意簡化——大部分情況下不同來源
-     结果本來就高度重疊，不需要同時列出全部。 */
-  function getInfo(code) {
+  /* 備忘錄唯讀區塊用：一檔股票可能同時出現在好幾個來源（例如盤中+本週都
+     入選）——原本只回傳「越即時的來源優先」命中的第一筆，等於本週的理由
+     會被盤中的直接蓋掉，使用者看不到本週為什麼也鎖了這檔。改成回傳全部
+     命中的來源（一樣依越即時越前面排序），UI端逐筆疊著顯示，不互相覆蓋。 */
+  function getAllInfo(code) {
+    const results = [];
     for (const source of ['intraday', 'nextday', 'week']) {
       const byCode = state[source]?.byCode;
-      if (byCode?.has(code)) return { ...byCode.get(code), source };
+      if (byCode?.has(code)) results.push({ ...byCode.get(code), source });
     }
-    return null;
+    return results;
   }
   function getByDirection(source, directionZh) {
     return (state[source]?.data?.watchlist || []).filter(r => r.direction === directionZh);
   }
   function getAsOfDate(source) { return state[source]?.data?.as_of_date || null; }
 
-  return { ensureLoaded, getInfo, getByDirection, getAsOfDate };
+  return { ensureLoaded, getAllInfo, getByDirection, getAsOfDate };
 })();
 
 /* ════════════════════════════════════════
@@ -5263,13 +5264,15 @@ function openMemoModal(code) {
   R.memoModalTitle.textContent = `📝 備忘錄 — ${code}${info ? ' ' + info.stock_name : ''}`;
   R.memoTextarea.value = MemoStore.getText(code);
 
-  const lock = LockList.getInfo(code);
-  if (lock) {
-    const asOf = LockList.getAsOfDate(lock.source);
-    const sourceZh = { week: '本週', intraday: '盤中', nextday: '隔日' }[lock.source] || lock.source;
-    R.memoReadonlyNote.textContent =
-      `鎖${lock.direction}-${sourceZh}（分數 ${lock.score}${asOf ? '，資料日期 ' + asOf : ''}）\n` +
-      (lock.reasons || []).map(r => '‧ ' + r).join('\n');
+  const locks = LockList.getAllInfo(code);
+  if (locks.length) {
+    const sourceZhMap = { week: '本週', intraday: '盤中', nextday: '隔日' };
+    R.memoReadonlyNote.textContent = locks.map(lock => {
+      const asOf = LockList.getAsOfDate(lock.source);
+      const sourceZh = sourceZhMap[lock.source] || lock.source;
+      return `鎖${lock.direction}-${sourceZh}（分數 ${lock.score}${asOf ? '，資料日期 ' + asOf : ''}）\n` +
+        (lock.reasons || []).map(r => '‧ ' + r).join('\n');
+    }).join('\n\n');
     R.memoReadonlyWrap.classList.remove('hidden');
   } else {
     R.memoReadonlyWrap.classList.add('hidden');
