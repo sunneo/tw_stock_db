@@ -889,6 +889,7 @@ select:focus { outline: 2px solid var(--acc); }
           <col data-col="sector">
           <col data-col="memo">
           <col data-col="price">
+          <col data-col="changePct">
           <col data-col="trend">
         </colgroup>
         <thead>
@@ -898,6 +899,7 @@ select:focus { outline: 2px solid var(--acc); }
             <th data-col="sector">產業</th>
             <th class="th-memo" data-col="memo"></th>
             <th data-col="price">現價</th>
+            <th data-col="changePct">漲跌%</th>
             <th data-col="trend">趨勢</th>
           </tr>
         </thead>
@@ -4184,7 +4186,7 @@ function renderPage() {
   R.nextBtn.disabled = page >= totalPages - 1;
 
   if (!pageItems.length) {
-    R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">無資料</td></tr>';
+    R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">無資料</td></tr>';
     return;
   }
 
@@ -4210,6 +4212,10 @@ function renderPage() {
                   : close > open ? 'td-up'
                   : close < open ? 'td-dn' : 'td-flat';
     const limitCls = isStale ? '' : limitStateClass(close, s.prev_close);
+    // isStale時close是拿昨收頂著顯示（跟s.prev_close相等），算出來的漲跌%
+    // 永遠是0，那是假的，不是真的「今天平盤」，所以isStale時不顯示數字。
+    const changePct = (!isStale && close != null && s.prev_close) ? (close - s.prev_close) / s.prev_close * 100 : null;
+    const changePctText = changePct != null ? (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%' : '-';
     const isSel   = s.stock_code === selCode;
     const memoOn  = MemoStore.hasMemo(s.stock_code);
 
@@ -4238,6 +4244,7 @@ function renderPage() {
       <td class="td-sector" data-col="sector" title="${esc(s.sector_name || '')}">${isAnalysisView ? '' : esc(s.sector_name || '')}</td>
       <td class="td-memo" data-col="memo"><button class="memo-btn ${memoOn ? 'memo-on' : ''}" data-code="${s.stock_code}" title="備忘錄">📝</button></td>
       <td class="${cls} ${limitCls} ${isStale ? 'td-stale' : ''}" data-col="price"${isStale ? ' title="昨收（尚未取得當日資料）"' : ''}>${close != null ? close.toFixed(2) : '-'}</td>
+      <td class="${cls} ${limitCls}" data-col="changePct">${changePctText}</td>
       <td class="td-spark" data-col="trend">${svg}</td>
       ${extraTd}
     </tr>`;
@@ -4360,7 +4367,7 @@ function updateExtraColumn(view) {
 /* ════════════════════════════════════════
    清單欄寬可拖拉調整（見 #stock-table 的 <colgroup>）＋雙擊resizer=fit content
    ════════════════════════════════════════ */
-const COL_DEFAULT_WIDTH = { code: 60, name: 76, sector: 70, memo: 28, price: 68, trend: 68, extra: 52 };
+const COL_DEFAULT_WIDTH = { code: 60, name: 76, sector: 70, memo: 28, price: 68, changePct: 64, trend: 68, extra: 52 };
 let __measureCtx = null;
 
 function measureTextWidth(text, font) {
@@ -4496,7 +4503,7 @@ function makeColResizer(key) {
    固定icon寬度）各自加上resizer把手；extra-col是動態欄位，resizer在
    updateExtraColumn 裡另外加。 */
 function initColumnResize() {
-  ['code', 'name', 'sector', 'price', 'trend'].forEach(key => {
+  ['code', 'name', 'sector', 'price', 'changePct', 'trend'].forEach(key => {
     const th = R.stockTable.querySelector(`thead th[data-col="${key}"]`);
     if (th && !th.querySelector('.col-resizer')) th.appendChild(makeColResizer(key));
   });
@@ -4637,7 +4644,7 @@ function parseLockView(view) {
    此處唯讀。source 是 'week'|'intraday'|'nextday'，見 LockList 模組註解。 */
 async function loadLockList(source, direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
-  R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">載入鎖股名單中…</td></tr>';
+  R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">載入鎖股名單中…</td></tr>';
   await LockList.ensureLoaded(source);
   const recs  = LockList.getByDirection(source, dirZh);
   const codes = recs.map(r => r.stock_code);
@@ -4693,7 +4700,7 @@ function switchView(view) {
     }
     State.page = 0;
     if (!State.stocks.length) {
-      R.stockTbody.innerHTML = '<tr><td colspan="7" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
+      R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">請按下「過濾強勢股」開始篩選</td></tr>';
       R.pageInfo.textContent = '— / —';
       R.prevBtn.disabled = true; R.nextBtn.disabled = true;
     } else {
