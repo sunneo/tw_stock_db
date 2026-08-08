@@ -2087,10 +2087,18 @@ const DBMgr = (() => {
     const reverifyFrom = new Date(today.getTime() - REVERIFY_DAYS * 86400000);
     const from = new Date(Math.min(incrementalFrom.getTime(), reverifyFrom.getTime()));
 
+    // 原本這裡會跳過週六日（假設週末TWSE不交易，daily/資料夾一定不存在，
+    // 不用浪費請求去試）。但後端 run_daily_update.py 只要「腳本執行當下」
+    // 是週六日就會照樣建立 daily/{today}/ 資料夾（放最近一個交易日的資料，
+    // 例如用來補產生下週鎖股名單），這個假設其實不成立——實測發現週六建立
+    // 的 daily/ 資料夾因為被這裡濾掉，client端永遠不會去抓，裡面即使有比
+    // 本地資料庫更新的內容（例如美股指數）也永遠拿不到。改成全部日期都試，
+    // applyDaily() 對不存在的資料夾本來就會靜默略過（fetch 404 直接跳過，
+    // 不會報錯），多打幾次沒有資料的請求成本很低，換來的是不會漏掉週末仍
+    // 有資料夾產生的情況。 */
     const dates = [];
     for (let d = new Date(from); d <= today; d.setDate(d.getDate() + 1)) {
-      const dow = d.getDay();
-      if (dow !== 0 && dow !== 6) dates.push(fmtDate(d));
+      dates.push(fmtDate(d));
     }
     if (!dates.length) return;
 
