@@ -5892,9 +5892,16 @@ function renderInfoBar(info) {
   // 技術分析（day period）跟走勢圖（intraday period）的「收」也要漲跌停亮燈，
   // 跟清單的現價欄位（見 renderPage/limitStateClass）用同一套規則跟CSS。
   // 週/月/季K是聚合過的區間漲跌，跟官方單日±10%漲跌停無關，不適用，跳過。
+  // 只有「個股」才有漲跌停限制，大盤/櫃買指數、美股四個觀察指標都沒有這
+  // 個規則，一律跳過（見 currentChartSource.type==='stock' 判斷）——原本這裡
+  // 錯用 Settings.get('selectedStock')（只有選個股時才會更新，選指數時不會
+  // 跟著換），使用者從個股切去看美股指數時，會拿舊個股代號在 daily_prices
+  // 查出完全不相干的價位當prevClose，跟指數本身動輒上萬點的數字一比，百
+  // 分比多半爆表，就會誤亮漲停燈號。改成直接看 currentChartSource，才是
+  // 目前圖表真正顯示的是誰。 */
   let limitCls = '';
-  const code = Settings.get('selectedStock');
-  if (code && info.close != null) {
+  if (currentChartSource?.type === 'stock' && info.close != null) {
+    const code = currentChartSource.code;
     const period = Chart.getPeriod();
     let prevClose = null;
     if (period === 'day') {
