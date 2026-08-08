@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-08T14:56:37.212031+00:00",
+  "generated_at": "2026-08-08T22:08:17.264625+00:00",
   "core": {
     "path": "db/core.db",
-    "sha256": "0f8899cd0f06e499b8bb8d4bb182d0d35cff491c6ee565aa67707c0465998de5",
+    "sha256": "765be754b8be225679c84a31a2131e8339f23065c2a3c2676e565c5736c32812",
     "size_bytes": 147456
   },
   "months": [
