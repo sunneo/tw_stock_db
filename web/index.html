@@ -816,6 +816,7 @@ select:focus { outline: 2px solid var(--acc); }
       <div class="menu-item" data-act="open">📂 開啟設定</div>
       <div class="menu-item" data-act="export">💾 匯出設定</div>
       <div class="menu-item" data-act="save">✅ 儲存設定</div>
+      <div class="menu-item" data-act="reset-db" title="清掉本機下載的股價資料庫，重新整理頁面會重新下載最新的一份。個人設定（自選股、備忘錄等）不受影響">🔄 重新下載股價資料庫</div>
     </div>
   </div>
   <span class="brand">📊 台股追蹤</span>
@@ -2076,16 +2077,23 @@ const DBMgr = (() => {
     if (!forced && lastStored === todayStr) return; // already up-to-date
 
     // Build list of trading day candidates since last stored date.
-    // Always re-verify at least the last few days too (re-applying a day is a
-    // harmless INSERT OR REPLACE): a day can be marked "synced" even when a
-    // write into it silently failed (e.g. a column missing until a schema
-    // migration runs), which would otherwise permanently skip that date.
-    const REVERIFY_DAYS = 4;
+    // Always re-verify the whole current month too (re-applying a day is a
+    // harmless INSERT OR REPLACE): a day can be marked "synced" from a run
+    // that silently wrote incomplete data (e.g. the market_index trade_date
+    // mismatch bug — daily/2026-08-01~07 sat on GitHub with US indices
+    // missing for days after the client had already "synced" them, and a
+    // fixed-4-day reverify window meant those dates aged out of range and
+    // stayed stuck on the incomplete data forever, even after the source
+    // CSVs were corrected). The current month's daily/ folders are exactly
+    // the ones that can still receive this kind of after-the-fact backend
+    // correction (older months are frozen into a monthly snapshot instead),
+    // so reverifying the full month — not just a trailing few days — is what
+    // actually guarantees corrections propagate on the next sync.
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const incrementalFrom = lastStored
       ? new Date(new Date(lastStored).getTime() + 86400000)
       : new Date(today.getTime() - 14 * 86400000);
-    const reverifyFrom = new Date(today.getTime() - REVERIFY_DAYS * 86400000);
-    const from = new Date(Math.min(incrementalFrom.getTime(), reverifyFrom.getTime()));
+    const from = new Date(Math.min(incrementalFrom.getTime(), monthStart.getTime()));
 
     // 原本這裡會跳過週六日（假設週末TWSE不交易，daily/資料夾一定不存在，
     // 不用浪費請求去試）。但後端 run_daily_update.py 只要「腳本執行當下」
@@ -2121,7 +2129,40 @@ const DBMgr = (() => {
     );
 
     Settings.set('lastDailyDate', dates[dates.length - 1]);
+    await detectAndFillDateGaps(onProgress);
     await persist();
+  }
+
+  /* 使用者不可能自己判斷「資料是不是有洞」，更不可能自己開 devtools 修——
+     所以每次 syncDaily() 跑完，順便直接比對「本地實際有資料的交易日」跟
+     「這段期間應該要有資料的工作日」，抓出中間漏掉的日期就自動重抓那幾天
+     的 daily/ 資料夾。不管缺口是什麼原因造成的（後端曾經匯出過不完整的
+     CSV、client某次同步中途失敗、schema遷移前寫入失敗…），只要實際比對
+     出「有洞」就會自己補起來，不需要使用者清快取或動手做任何事。
+     用 TAIEX 當比對基準：market_index 裡唯一保證「每個交易日一定有資料、
+     且日期一定跟台北日曆對齊」的代號（美股四個指數的 trade_date 天生就
+     跟台北日期差一天，拿來當基準會誤判）。 */
+  async function detectAndFillDateGaps(onProgress) {
+    const rows = query(
+      `SELECT DISTINCT trade_date FROM market_index WHERE index_code='TAIEX' AND trade_date >= date('now','-45 day') ORDER BY trade_date`
+    );
+    if (rows.length < 2) return;
+    const present = new Set(rows.map(r => r.trade_date));
+    const first = new Date(rows[0].trade_date);
+    const last  = new Date(rows[rows.length - 1].trade_date);
+    const missing = [];
+    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
+      const dow = d.getDay();
+      if (dow === 0 || dow === 6) continue; // 週末台股本來就不交易，不是缺口
+      const label = fmtDate(d);
+      if (!present.has(label)) missing.push(label);
+    }
+    if (!missing.length) return;
+    console.warn('[DBMgr] 偵測到日期資料缺口，自動補抓：', missing);
+    for (const date of missing) {
+      onProgress?.(`偵測到缺口，補齊 ${date}…`);
+      await applyDaily(date, onProgress);
+    }
   }
 
   function fmtDate(d) {
@@ -5914,6 +5955,18 @@ function bindEvents() {
     if (act === 'open')   R.fileInput.click();
     if (act === 'export') Settings.exportSettings();
     if (act === 'save')   { Settings.save(); alert('設定已儲存'); }
+    /* 個股/大盤/美股的價格資料庫存在 IndexedDB（跟瀏覽器一般講的「快取」
+       是不同的儲存空間，清瀏覽器快取通常清不到這裡），資料如果卡在不完整
+       的舊版本（例如過去某天抓到的資料本身有缺漏，後端修正/補齊後本機
+       這份還是舊的），一般使用者不可能知道要開發者工具下指令清除。這裡
+       直接刪掉 IndexedDB 資料庫再重新整理，等同「當成全新裝置重新下載」，
+       自選股/備忘錄/顯示設定都存在 localStorage，不受影響。 */
+    if (act === 'reset-db') {
+      if (confirm('將清除本機下載的股價資料庫，重新整理後會重新下載最新版本（自選股、備忘錄、顯示設定不受影響）。確定要繼續嗎？')) {
+        indexedDB.deleteDatabase('tw_stock_idb');
+        location.reload();
+      }
+    }
   });
   R.fileInput.addEventListener('change', async e => {
     const f = e.target.files[0];
