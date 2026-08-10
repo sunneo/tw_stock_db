@@ -4592,8 +4592,18 @@ const Chart = (() => {
 /* ════════════════════════════════════════
    SVG SPARKLINE
    ════════════════════════════════════════ */
-function sparkline(closes, w = 60, h = 20) {
-  if (!closes || closes.length < 2) return '<svg width="60" height="20"></svg>';
+/* responsive=true時，svg的width屬性設成"100%"（height仍固定，避免跟列高
+   互相依賴造成塌陷），內部座標系統仍是固定的 viewBox="0 0 w h"，靠
+   preserveAspectRatio="none" 讓瀏覽器把整張圖依實際容器寬度等比縮放——
+   容器（清單的趨勢欄）被使用者拖窄時，會是整張趨勢線一起縮小（「縮圖」），
+   不會是 fixed-width 的svg被td的overflow:hidden裁切掉一部份（「砍圖」）。
+   後者的問題是使用者反映的：欄位變窄時只看得到趨勢線的某一段（通常是
+   左半段，最新的右側反而被裁掉），會讓人誤判趨勢方向。盤後面板的三大法人/
+   集保走勢圖不會被使用者拖動欄寬，維持原本的 fixed-width 呼叫方式即可，
+   不用改成 responsive。 */
+function sparkline(closes, w = 60, h = 20, responsive = false) {
+  const svgWidth = responsive ? '100%' : w;
+  if (!closes || closes.length < 2) return `<svg width="${svgWidth}" height="${h}" viewBox="0 0 ${w} ${h}"></svg>`;
   const min = Math.min(...closes), max = Math.max(...closes);
   const rng = max - min || 1;
   const step = w / (closes.length - 1);
@@ -4605,7 +4615,7 @@ function sparkline(closes, w = 60, h = 20) {
   const dark  = document.documentElement.getAttribute('data-theme') === 'dark';
   const isUp  = closes.at(-1) >= closes[0];
   const color = isUp ? (dark ? '#f87171' : '#dc2626') : (dark ? '#4ade80' : '#16a34a');
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="overflow:visible">` +
+  return `<svg width="${svgWidth}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="overflow:visible">` +
     `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>` +
     `</svg>`;
 }
@@ -5045,7 +5055,7 @@ function renderPage() {
 
   const rows = pageItems.map(s => {
     const closes  = sparkMap[s.stock_code] || [];
-    const svg     = sparkline(closes);
+    const svg     = sparkline(closes, 60, 20, true); // responsive：欄寬被拖窄時整張圖縮小，不裁切（見 sparkline 註解）
     const open    = s.open;
     // 還沒有今天的資料（官方排程還沒落地、ListLiveFeed也還沒抓到）時，用
     // 昨收頂著顯示，比空白/'-'有用，但要跟「真的是今天現價」的顏色區分開，
