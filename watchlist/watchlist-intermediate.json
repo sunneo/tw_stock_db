@@ -1,5 +1,5 @@
 {
-  "as_of_date": "2026-08-10 12:09:32",
+  "as_of_date": "2026-08-10 13:43:46",
   "generated_by": "generate_watchlist_with_reason.py --mode partial",
   "disclaimer": "技術面框架推演，非投資建議",
   "reason_code_reference": {
@@ -88,17 +88,44 @@
       "direction": "short"
     }
   },
-  "long_count": 24,
-  "short_count": 10,
+  "long_count": 30,
+  "short_count": 8,
   "watchlist": [
     {
-      "stock_code": "2615",
-      "stock_name": "萬海",
+      "stock_code": "5515",
+      "stock_name": "建國",
       "market": "TWSE",
       "direction": "做多",
-      "close": 87.7,
+      "close": 44.2,
+      "score": 8,
+      "today_pct": 2.2,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "KD_GOLDEN_CROSS",
+        "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
+        "PULLBACK_REBOUND",
+        "RS_STRONG"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "KD黃金交叉且未過熱（K<80）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
+        "回後買上漲（拉回不破前低，站回5日均線）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
+      ]
+    },
+    {
+      "stock_code": "6603",
+      "stock_name": "富強鑫",
+      "market": "TPEx",
+      "direction": "做多",
+      "close": 26.95,
       "score": 7,
-      "today_pct": 3.3,
+      "today_pct": 3.65,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -117,18 +144,19 @@
       ]
     },
     {
-      "stock_code": "2332",
-      "stock_name": "友訊",
+      "stock_code": "2615",
+      "stock_name": "萬海",
       "market": "TWSE",
       "direction": "做多",
-      "close": 23.15,
-      "score": 6,
-      "today_pct": 4.51,
+      "close": 87.5,
+      "score": 7,
+      "today_pct": 3.06,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
         "KD_GOLDEN_CROSS",
         "MACD_HIST_REGROW",
+        "VOLUME_BREAKOUT_RED",
         "PULLBACK_REBOUND"
       ],
       "reasons": [
@@ -136,29 +164,32 @@
         "股價站上月線（20日均線）",
         "KD黃金交叉且未過熱（K<80）",
         "MACD紅柱由縮轉長（動能重新加溫）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
         "回後買上漲（拉回不破前低，站回5日均線）"
       ]
     },
     {
-      "stock_code": "6603",
-      "stock_name": "富強鑫",
-      "market": "TPEx",
+      "stock_code": "2002",
+      "stock_name": "中鋼",
+      "market": "TWSE",
       "direction": "做多",
-      "close": 27.0,
-      "score": 6,
-      "today_pct": 3.85,
+      "close": 19.6,
+      "score": 7,
+      "today_pct": 2.89,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
         "KD_GOLDEN_CROSS",
-        "MACD_HIST_REGROW",
+        "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
         "PULLBACK_REBOUND"
       ],
       "reasons": [
         "四線多排（5>10>20>60日均線向上排列）",
         "股價站上月線（20日均線）",
         "KD黃金交叉且未過熱（K<80）",
-        "MACD紅柱由縮轉長（動能重新加溫）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
         "回後買上漲（拉回不破前低，站回5日均線）"
       ]
     },
@@ -167,14 +198,15 @@
       "stock_name": "潤泰全",
       "market": "TWSE",
       "direction": "做多",
-      "close": 53.1,
-      "score": 6,
-      "today_pct": 2.31,
+      "close": 53.4,
+      "score": 7,
+      "today_pct": 2.89,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
         "KD_GOLDEN_CROSS",
         "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
         "PULLBACK_REBOUND"
       ],
       "reasons": [
@@ -182,7 +214,100 @@
         "股價站上月線（20日均線）",
         "KD黃金交叉且未過熱（K<80）",
         "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
         "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "2332",
+      "stock_name": "友訊",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 23.55,
+      "score": 6,
+      "today_pct": 6.32,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "KD_GOLDEN_CROSS",
+        "MACD_HIST_REGROW",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "KD黃金交叉且未過熱（K<80）",
+        "MACD紅柱由縮轉長（動能重新加溫）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "9935",
+      "stock_name": "慶豐富",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 20.85,
+      "score": 6,
+      "today_pct": 3.73,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "3362",
+      "stock_name": "先進光",
+      "market": "TPEx",
+      "direction": "做多",
+      "close": 178.0,
+      "score": 6,
+      "today_pct": 2.59,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_HIST_REGROW",
+        "PULLBACK_REBOUND",
+        "RS_STRONG"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD紅柱由縮轉長（動能重新加溫）",
+        "回後買上漲（拉回不破前低，站回5日均線）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
+      ]
+    },
+    {
+      "stock_code": "1590",
+      "stock_name": "亞德客-KY",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 1575.0,
+      "score": 6,
+      "today_pct": 1.94,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "PULLBACK_REBOUND",
+        "RS_STRONG"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "回後買上漲（拉回不破前低，站回5日均線）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
       ]
     },
     {
@@ -190,9 +315,9 @@
       "stock_name": "宏致",
       "market": "TWSE",
       "direction": "做多",
-      "close": 109.0,
+      "close": 109.5,
       "score": 6,
-      "today_pct": 1.4,
+      "today_pct": 1.86,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -213,9 +338,9 @@
       "stock_name": "潤泰新",
       "market": "TWSE",
       "direction": "做多",
-      "close": 27.05,
+      "close": 27.2,
       "score": 6,
-      "today_pct": 1.12,
+      "today_pct": 1.68,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -232,26 +357,26 @@
       ]
     },
     {
-      "stock_code": "1590",
-      "stock_name": "亞德客-KY",
+      "stock_code": "1808",
+      "stock_name": "潤隆",
       "market": "TWSE",
       "direction": "做多",
-      "close": 1555.0,
+      "close": 33.25,
       "score": 6,
-      "today_pct": 0.65,
+      "today_pct": 0.61,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
+        "KD_GOLDEN_CROSS",
         "MACD_BULLISH",
-        "PULLBACK_REBOUND",
-        "RS_STRONG"
+        "PULLBACK_REBOUND"
       ],
       "reasons": [
         "四線多排（5>10>20>60日均線向上排列）",
         "股價站上月線（20日均線）",
+        "KD黃金交叉且未過熱（K<80）",
         "MACD多頭（DIF>MACD 且 DIF>0）",
-        "回後買上漲（拉回不破前低，站回5日均線）",
-        "RS轉強（相對大盤走勢轉強，領先大盤）"
+        "回後買上漲（拉回不破前低，站回5日均線）"
       ]
     },
     {
@@ -259,9 +384,9 @@
       "stock_name": "達欣工",
       "market": "TWSE",
       "direction": "做多",
-      "close": 90.4,
+      "close": 90.6,
       "score": 6,
-      "today_pct": 0.33,
+      "today_pct": 0.55,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -278,34 +403,13 @@
       ]
     },
     {
-      "stock_code": "2395",
-      "stock_name": "研華",
+      "stock_code": "6919",
+      "stock_name": "康霈*",
       "market": "TWSE",
       "direction": "做多",
-      "close": 676.0,
+      "close": 111.5,
       "score": 5,
-      "today_pct": 6.62,
-      "reason_codes": [
-        "MA_BULLISH",
-        "ABOVE_MA20",
-        "MACD_BULLISH",
-        "PULLBACK_REBOUND"
-      ],
-      "reasons": [
-        "四線多排（5>10>20>60日均線向上排列）",
-        "股價站上月線（20日均線）",
-        "MACD多頭（DIF>MACD 且 DIF>0）",
-        "回後買上漲（拉回不破前低，站回5日均線）"
-      ]
-    },
-    {
-      "stock_code": "3702",
-      "stock_name": "大聯大",
-      "market": "TWSE",
-      "direction": "做多",
-      "close": 128.5,
-      "score": 5,
-      "today_pct": 4.9,
+      "today_pct": 6.19,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -320,13 +424,55 @@
       ]
     },
     {
+      "stock_code": "3702",
+      "stock_name": "大聯大",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 129.5,
+      "score": 5,
+      "today_pct": 5.71,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_HIST_REGROW",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD紅柱由縮轉長（動能重新加溫）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "2395",
+      "stock_name": "研華",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 669.0,
+      "score": 5,
+      "today_pct": 5.52,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
       "stock_code": "3231",
       "stock_name": "緯創",
       "market": "TWSE",
       "direction": "做多",
-      "close": 192.0,
+      "close": 192.5,
       "score": 5,
-      "today_pct": 4.63,
+      "today_pct": 4.9,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -345,9 +491,9 @@
       "stock_name": "新光鋼",
       "market": "TWSE",
       "direction": "做多",
-      "close": 46.25,
+      "close": 46.2,
       "score": 5,
-      "today_pct": 2.78,
+      "today_pct": 2.67,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -368,9 +514,9 @@
       "stock_name": "中磊",
       "market": "TWSE",
       "direction": "做多",
-      "close": 93.9,
+      "close": 93.6,
       "score": 5,
-      "today_pct": 2.74,
+      "today_pct": 2.41,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -385,45 +531,26 @@
       ]
     },
     {
-      "stock_code": "2885",
-      "stock_name": "元大金",
+      "stock_code": "2605",
+      "stock_name": "新興",
       "market": "TWSE",
       "direction": "做多",
-      "close": 68.8,
+      "close": 33.2,
       "score": 5,
-      "today_pct": 1.62,
+      "today_pct": 2.0,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
-        "MACD_HIST_REGROW",
-        "PULLBACK_REBOUND"
+        "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
+        "RS_STRONG"
       ],
       "reasons": [
         "四線多排（5>10>20>60日均線向上排列）",
         "股價站上月線（20日均線）",
-        "MACD紅柱由縮轉長（動能重新加溫）",
-        "回後買上漲（拉回不破前低，站回5日均線）"
-      ]
-    },
-    {
-      "stock_code": "2881",
-      "stock_name": "富邦金",
-      "market": "TWSE",
-      "direction": "做多",
-      "close": 129.0,
-      "score": 5,
-      "today_pct": 1.57,
-      "reason_codes": [
-        "MA_BULLISH",
-        "ABOVE_MA20",
-        "MACD_HIST_REGROW",
-        "PULLBACK_REBOUND"
-      ],
-      "reasons": [
-        "四線多排（5>10>20>60日均線向上排列）",
-        "股價站上月線（20日均線）",
-        "MACD紅柱由縮轉長（動能重新加溫）",
-        "回後買上漲（拉回不破前低，站回5日均線）"
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
       ]
     },
     {
@@ -431,9 +558,9 @@
       "stock_name": "國泰金",
       "market": "TWSE",
       "direction": "做多",
-      "close": 100.5,
+      "close": 101.0,
       "score": 5,
-      "today_pct": 1.11,
+      "today_pct": 1.61,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -469,57 +596,13 @@
       ]
     },
     {
-      "stock_code": "4123",
-      "stock_name": "晟德",
-      "market": "TPEx",
-      "direction": "做多",
-      "close": 39.25,
-      "score": 5,
-      "today_pct": 0.38,
-      "reason_codes": [
-        "MA_BULLISH",
-        "ABOVE_MA20",
-        "MACD_BULLISH",
-        "PULLBACK_REBOUND"
-      ],
-      "reasons": [
-        "四線多排（5>10>20>60日均線向上排列）",
-        "股價站上月線（20日均線）",
-        "MACD多頭（DIF>MACD 且 DIF>0）",
-        "回後買上漲（拉回不破前低，站回5日均線）"
-      ]
-    },
-    {
-      "stock_code": "2880",
-      "stock_name": "華南金",
+      "stock_code": "6491",
+      "stock_name": "晶碩",
       "market": "TWSE",
       "direction": "做多",
-      "close": 43.6,
+      "close": 376.0,
       "score": 5,
-      "today_pct": -1.8,
-      "reason_codes": [
-        "MA_BULLISH",
-        "ABOVE_MA20",
-        "KD_GOLDEN_CROSS",
-        "MACD_BULLISH",
-        "RS_STRONG"
-      ],
-      "reasons": [
-        "四線多排（5>10>20>60日均線向上排列）",
-        "股價站上月線（20日均線）",
-        "KD黃金交叉且未過熱（K<80）",
-        "MACD多頭（DIF>MACD 且 DIF>0）",
-        "RS轉強（相對大盤走勢轉強，領先大盤）"
-      ]
-    },
-    {
-      "stock_code": "2542",
-      "stock_name": "興富發",
-      "market": "TWSE",
-      "direction": "做多",
-      "close": 44.3,
-      "score": 5,
-      "today_pct": 0.0,
+      "today_pct": 0.8,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -538,9 +621,9 @@
       "stock_name": "高端疫苗",
       "market": "TPEx",
       "direction": "做多",
-      "close": 51.6,
+      "close": 51.9,
       "score": 5,
-      "today_pct": 0.0,
+      "today_pct": 0.58,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -555,13 +638,101 @@
       ]
     },
     {
+      "stock_code": "4123",
+      "stock_name": "晟德",
+      "market": "TPEx",
+      "direction": "做多",
+      "close": 39.3,
+      "score": 5,
+      "today_pct": 0.51,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "2542",
+      "stock_name": "興富發",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 44.25,
+      "score": 5,
+      "today_pct": -0.11,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "PULLBACK_REBOUND"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "回後買上漲（拉回不破前低，站回5日均線）"
+      ]
+    },
+    {
+      "stock_code": "2880",
+      "stock_name": "華南金",
+      "market": "TWSE",
+      "direction": "做多",
+      "close": 44.15,
+      "score": 5,
+      "today_pct": -0.56,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "KD_GOLDEN_CROSS",
+        "MACD_BULLISH",
+        "RS_STRONG"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "KD黃金交叉且未過熱（K<80）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
+      ]
+    },
+    {
+      "stock_code": "8050",
+      "stock_name": "廣積",
+      "market": "TPEx",
+      "direction": "做多",
+      "close": 68.3,
+      "score": 5,
+      "today_pct": -1.01,
+      "reason_codes": [
+        "MA_BULLISH",
+        "ABOVE_MA20",
+        "MACD_BULLISH",
+        "VOLUME_BREAKOUT_RED",
+        "RS_STRONG"
+      ],
+      "reasons": [
+        "四線多排（5>10>20>60日均線向上排列）",
+        "股價站上月線（20日均線）",
+        "MACD多頭（DIF>MACD 且 DIF>0）",
+        "放量紅K（量>1.2倍5日均量，收紅）",
+        "RS轉強（相對大盤走勢轉強，領先大盤）"
+      ]
+    },
+    {
       "stock_code": "6589",
       "stock_name": "台康生技",
       "market": "TWSE",
       "direction": "做多",
-      "close": 51.0,
+      "close": 50.7,
       "score": 4,
-      "today_pct": 5.81,
+      "today_pct": 5.19,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
@@ -576,68 +747,22 @@
       ]
     },
     {
-      "stock_code": "2002",
-      "stock_name": "中鋼",
+      "stock_code": "2881",
+      "stock_name": "富邦金",
       "market": "TWSE",
       "direction": "做多",
-      "close": 19.25,
-      "score": 4,
-      "today_pct": 1.05,
+      "close": 128.0,
+      "score": 3,
+      "today_pct": 0.79,
       "reason_codes": [
         "MA_BULLISH",
         "ABOVE_MA20",
-        "KD_GOLDEN_CROSS",
-        "MACD_BULLISH"
+        "MACD_HIST_REGROW"
       ],
       "reasons": [
         "四線多排（5>10>20>60日均線向上排列）",
         "股價站上月線（20日均線）",
-        "KD黃金交叉且未過熱（K<80）",
-        "MACD多頭（DIF>MACD 且 DIF>0）"
-      ]
-    },
-    {
-      "stock_code": "1808",
-      "stock_name": "潤隆",
-      "market": "TWSE",
-      "direction": "做多",
-      "close": 32.9,
-      "score": 4,
-      "today_pct": -0.45,
-      "reason_codes": [
-        "MA_BULLISH",
-        "ABOVE_MA20",
-        "KD_GOLDEN_CROSS",
-        "MACD_BULLISH"
-      ],
-      "reasons": [
-        "四線多排（5>10>20>60日均線向上排列）",
-        "股價站上月線（20日均線）",
-        "KD黃金交叉且未過熱（K<80）",
-        "MACD多頭（DIF>MACD 且 DIF>0）"
-      ]
-    },
-    {
-      "stock_code": "1789",
-      "stock_name": "神隆",
-      "market": "TWSE",
-      "direction": "做空",
-      "close": 18.5,
-      "score": 6,
-      "today_pct": -2.12,
-      "reason_codes": [
-        "MA_BEARISH",
-        "BELOW_MA20",
-        "KD_DEAD_CROSS",
-        "MACD_HIST_REGROW_DOWN",
-        "BOUNCE_REJECTION"
-      ],
-      "reasons": [
-        "四線空排（5<10<20<60日均線向下排列）",
-        "股價跌破月線（20日均線）",
-        "KD死亡交叉且未過冷（K>20）",
-        "MACD綠柱由縮轉長（空方動能重新加溫）",
-        "彈後空下跌（反彈不破前高，跌破5日均線）"
+        "MACD紅柱由縮轉長（動能重新加溫）"
       ]
     },
     {
@@ -645,9 +770,9 @@
       "stock_name": "雙鍵",
       "market": "TWSE",
       "direction": "做空",
-      "close": 232.5,
+      "close": 232.0,
       "score": 6,
-      "today_pct": -1.69,
+      "today_pct": -1.9,
       "reason_codes": [
         "MA_BEARISH",
         "BELOW_MA20",
@@ -668,9 +793,9 @@
       "stock_name": "華固",
       "market": "TWSE",
       "direction": "做空",
-      "close": 93.9,
+      "close": 94.0,
       "score": 6,
-      "today_pct": -0.53,
+      "today_pct": -0.42,
       "reason_codes": [
         "MA_BEARISH",
         "BELOW_MA20",
@@ -684,6 +809,29 @@
         "MACD空頭（DIF<MACD 且 DIF<0）",
         "彈後空下跌（反彈不破前高，跌破5日均線）",
         "RS轉弱（相對大盤走勢轉弱，落後大盤）"
+      ]
+    },
+    {
+      "stock_code": "2838",
+      "stock_name": "聯邦銀",
+      "market": "TWSE",
+      "direction": "做空",
+      "close": 20.1,
+      "score": 5,
+      "today_pct": -2.43,
+      "reason_codes": [
+        "MA_BEARISH",
+        "BELOW_MA20",
+        "KD_DEAD_CROSS",
+        "MACD_HIST_REGROW_DOWN",
+        "VOLUME_BREAKDOWN_BLACK"
+      ],
+      "reasons": [
+        "四線空排（5<10<20<60日均線向下排列）",
+        "股價跌破月線（20日均線）",
+        "KD死亡交叉且未過冷（K>20）",
+        "MACD綠柱由縮轉長（空方動能重新加溫）",
+        "放量黑K（量>1.2倍5日均量，收黑）"
       ]
     },
     {
@@ -708,43 +856,45 @@
       ]
     },
     {
-      "stock_code": "2838",
-      "stock_name": "聯邦銀",
+      "stock_code": "2820",
+      "stock_name": "華票",
       "market": "TWSE",
       "direction": "做空",
-      "close": 20.15,
-      "score": 4,
-      "today_pct": -2.18,
+      "close": 16.3,
+      "score": 5,
+      "today_pct": -0.31,
       "reason_codes": [
         "MA_BEARISH",
         "BELOW_MA20",
-        "KD_DEAD_CROSS",
-        "MACD_HIST_REGROW_DOWN"
-      ],
-      "reasons": [
-        "四線空排（5<10<20<60日均線向下排列）",
-        "股價跌破月線（20日均線）",
-        "KD死亡交叉且未過冷（K>20）",
-        "MACD綠柱由縮轉長（空方動能重新加溫）"
-      ]
-    },
-    {
-      "stock_code": "6550",
-      "stock_name": "北極星藥業-KY",
-      "market": "TWSE",
-      "direction": "做空",
-      "close": 11.15,
-      "score": 4,
-      "today_pct": 0.45,
-      "reason_codes": [
-        "MA_BEARISH",
-        "BELOW_MA20",
+        "MACD_BEARISH",
         "BOUNCE_REJECTION"
       ],
       "reasons": [
         "四線空排（5<10<20<60日均線向下排列）",
         "股價跌破月線（20日均線）",
+        "MACD空頭（DIF<MACD 且 DIF<0）",
         "彈後空下跌（反彈不破前高，跌破5日均線）"
+      ]
+    },
+    {
+      "stock_code": "3703",
+      "stock_name": "欣陸",
+      "market": "TWSE",
+      "direction": "做空",
+      "close": 20.15,
+      "score": 4,
+      "today_pct": -1.23,
+      "reason_codes": [
+        "MA_BEARISH",
+        "BELOW_MA20",
+        "MACD_HIST_REGROW_DOWN",
+        "VOLUME_BREAKDOWN_BLACK"
+      ],
+      "reasons": [
+        "四線空排（5<10<20<60日均線向下排列）",
+        "股價跌破月線（20日均線）",
+        "MACD綠柱由縮轉長（空方動能重新加溫）",
+        "放量黑K（量>1.2倍5日均量，收黑）"
       ]
     },
     {
@@ -752,9 +902,9 @@
       "stock_name": "義隆",
       "market": "TWSE",
       "direction": "做空",
-      "close": 144.5,
+      "close": 145.0,
       "score": 4,
-      "today_pct": 2.12,
+      "today_pct": 2.47,
       "reason_codes": [
         "MA_BEARISH",
         "BELOW_MA20",
@@ -787,44 +937,6 @@
         "股價跌破月線（20日均線）",
         "KD死亡交叉且未過冷（K>20）",
         "MACD空頭（DIF<MACD 且 DIF<0）"
-      ]
-    },
-    {
-      "stock_code": "2501",
-      "stock_name": "國建",
-      "market": "TWSE",
-      "direction": "做空",
-      "close": 22.05,
-      "score": 4,
-      "today_pct": 0.0,
-      "reason_codes": [
-        "MA_BEARISH",
-        "BELOW_MA20",
-        "BOUNCE_REJECTION"
-      ],
-      "reasons": [
-        "四線空排（5<10<20<60日均線向下排列）",
-        "股價跌破月線（20日均線）",
-        "彈後空下跌（反彈不破前高，跌破5日均線）"
-      ]
-    },
-    {
-      "stock_code": "3703",
-      "stock_name": "欣陸",
-      "market": "TWSE",
-      "direction": "做空",
-      "close": 20.15,
-      "score": 3,
-      "today_pct": -1.23,
-      "reason_codes": [
-        "MA_BEARISH",
-        "BELOW_MA20",
-        "MACD_HIST_REGROW_DOWN"
-      ],
-      "reasons": [
-        "四線空排（5<10<20<60日均線向下排列）",
-        "股價跌破月線（20日均線）",
-        "MACD綠柱由縮轉長（空方動能重新加溫）"
       ]
     }
   ]
