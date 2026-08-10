@@ -6094,7 +6094,7 @@ function renderDiagnosisSourceChart(opts = {}) {
    N字測量/等幅測量/型態本身各自的目標價都畫），趨勢停損只有一條（月線）。 */
 function applyDiagnosisAnnotations(diag) {
   if (!diag.available) { Chart.setAnnotations(null); return; }
-  const points = [];
+  const rawPoints = [];
   const necklines = [];
   const targets = [];
   const swingLabel = { H: '轉折高', L: '轉折低' };
@@ -6102,21 +6102,37 @@ function applyDiagnosisAnnotations(diag) {
   const mm = diag.entry_exit?.measured_move;
   if (mm?.available) {
     for (const s of (mm.swing_points_used || [])) {
-      points.push({ date: s.date, price: s.price, label: swingLabel[s.type] || '轉折點' });
+      rawPoints.push({ date: s.date, price: s.price, label: swingLabel[s.type] || '轉折點' });
     }
     if (mm.n_measure) targets.push({ price: mm.n_measure.target, label: 'N字測量目標價' });
     if (mm.equal_measure) targets.push({ price: mm.equal_measure.target, label: '等幅測量目標價' });
   }
 
   for (const p of (diag.pattern?.detected || [])) {
-    for (const pt of p.points) points.push({ date: pt.date, price: pt.price, label: pt.label });
+    for (const pt of p.points) rawPoints.push({ date: pt.date, price: pt.price, label: pt.label });
     if (p.neckline) necklines.push(p.neckline);
     if (p.target != null) targets.push({ price: p.target, label: `${p.label}目標價` });
   }
 
+  // 測量法（measured_move）跟型態辨識（pattern）常常各自獨立算出同一個轉折點
+  // （例如W底的「底1」同時也是測量法用到的「轉折低」），兩邊都往points塞
+  // 一筆的話，畫在K線圖上會是同一個位置疊兩個圓點+標籤框，文字整個疊在一起
+  // 看不出寫什麼——這裡用「日期+價格」當key合併，同一個點只留一個，標籤用
+  // ／串起來（例如「底1／轉折低」），避免視覺上完全重疊。
+  const merged = new Map();
+  for (const pt of rawPoints) {
+    const key = `${pt.date}|${pt.price}`;
+    const existing = merged.get(key);
+    if (existing) {
+      if (!existing.label.split('／').includes(pt.label)) existing.label += '／' + pt.label;
+    } else {
+      merged.set(key, { ...pt });
+    }
+  }
+
   Chart.setAnnotations({
     trendStopPrice: diag.entry_exit?.trend_stop_price ?? null,
-    targets, points, necklines,
+    targets, points: [...merged.values()], necklines,
   });
 }
 
