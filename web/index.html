@@ -938,7 +938,7 @@ select:focus { outline: 2px solid var(--acc); }
             <th data-col="sector">產業</th>
             <th class="th-memo" data-col="memo"></th>
             <th data-col="price">現價</th>
-            <th data-col="changePct">漲跌%</th>
+            <th data-col="changePct">漲跌</th>
             <th data-col="trend">趨勢</th>
           </tr>
         </thead>
@@ -3166,6 +3166,38 @@ const WEDGE_LOOKBACK_DAYS = 60;       // 楔型：只看最近60個交易日的�
 const WEDGE_MIN_SWINGS_EACH = 2;      // 楔型：上緣、下緣各至少要2個轉折點才能定義一條線
 const WEDGE_MIN_CONVERGENCE_PCT = 30; // 楔型：右端通道寬度比左端至少要收斂30%，才算「收斂型通道」
 
+// ── 反轉型態（M頭/頭肩頂/W底/頭肩底）的「位置」前提條件 ──
+// 使用者實戰覆盤反饋：型態辨識不能只看轉折點的幾何形狀，M頭只會出現在「多頭
+// 已經走到高檔、做頭之後」，不是任何兩個差不多高的波峰之間夾一個波谷就算數
+// ——盤整區間裡隨機出現的雙峰，形狀再像也不是真正的M頭。W底/頭肩底同理，
+// 必須是「空頭已經走到低檔」才有意義。所以這4個型態偵測器在幾何條件都
+// 滿足之後，還要多驗證一關：型態的第一個轉折點（左肩/頭1/底1）之前，
+// 確實走過一段夠份量的原趨勢（多頭噴出段 或 空頭破壞段），不是型態本身
+// 的一部分，是型態成立的「背景」條件。
+const REVERSAL_PRIOR_TREND_LOOKBACK = 40; // 往前抓多少根K棒檢查原趨勢
+const REVERSAL_PRIOR_TREND_MIN_PCT = 15;  // 原趨勢的漲跌幅至少要達到這個百分比，才算「真的走到高檔/低檔」
+
+/* 型態第一個轉折點(uptoIdx)之前，往前 lookback 根K棒的最低點，到 uptoIdx
+   當天高點的漲幅——用來驗證「這個高點是不是真的從低檔漲上來的」，不是
+   直接抓型態本體用的轉折點群，避免跟型態本體的計算混在一起。 */
+function priorRunupPct(bars, uptoIdx, lookback) {
+  const start = Math.max(0, uptoIdx - lookback);
+  const window = bars.slice(start, uptoIdx + 1);
+  if (window.length < 2) return 0;
+  const lo = Math.min(...window.map(b => b.low));
+  const hi = bars[uptoIdx].high;
+  return lo > 0 ? (hi - lo) / lo * 100 : 0;
+}
+/* priorRunupPct 的鏡射版本，驗證型態第一個轉折點之前是不是真的從高檔跌下來。 */
+function priorDeclinePct(bars, uptoIdx, lookback) {
+  const start = Math.max(0, uptoIdx - lookback);
+  const window = bars.slice(start, uptoIdx + 1);
+  if (window.length < 2) return 0;
+  const hi = Math.max(...window.map(b => b.high));
+  const lo = bars[uptoIdx].low;
+  return hi > 0 ? (hi - lo) / hi * 100 : 0;
+}
+
 function round2(v) { return v == null ? null : Math.round(v * 100) / 100; }
 function average(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
 
@@ -3298,6 +3330,12 @@ function detectHeadShoulders(bars, swings) {
   const minShoulderPrice = C.price + H / 2;
   if (A.price < minShoulderPrice || B.price < minShoulderPrice) return null; // 肩低點跌破頭頸距離一半，型態失敗
 
+  // 頭肩底是底部反轉型態，左肩(A)之前要先走過一段夠份量的空頭破壞段，才算
+  // 「真的跌到低檔」——盤整區間裡隨機出現的三個低點，形狀再像也不是真正
+  // 的頭肩底（見上方 REVERSAL_PRIOR_TREND_* 常數的說明）。
+  const declinePct = priorDeclinePct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  if (declinePct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
+
   const target = round2(necklineAtHead + H);
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
   return {
@@ -3305,7 +3343,7 @@ function detectHeadShoulders(bars, swings) {
     points: [pt(A, '左肩'), pt(E, '反彈高'), pt(C, '頭'), pt(F, '反彈高'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）低於兩肩較低者（${round2(lowerShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
+    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），確實走到空頭低檔才做底；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）低於兩肩較低者（${round2(lowerShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3326,6 +3364,12 @@ function detectHeadShouldersTop(bars, swings) {
   const maxShoulderPrice = C.price - H / 2;
   if (A.price > maxShoulderPrice || B.price > maxShoulderPrice) return null; // 肩高點突破頭頸距離一半，型態失敗
 
+  // 頭肩頂是頭部反轉型態，左肩(A)之前要先走過一段夠份量的多頭噴出段，才算
+  // 「真的走到多頭高檔」——這是使用者實戰覆盤反饋的重點：型態不能只看
+  // 轉折點幾何形狀，要先確認位置背景（見上方 REVERSAL_PRIOR_TREND_* 常數）。
+  const runupPct = priorRunupPct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  if (runupPct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
+
   const target = round2(necklineAtHead - H);
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
   return {
@@ -3333,7 +3377,7 @@ function detectHeadShouldersTop(bars, swings) {
     points: [pt(A, '左肩'), pt(E, '回檔低'), pt(C, '頭'), pt(F, '回檔低'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）高於兩肩較高者（${round2(higherShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
+    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），確實走到多頭高檔才做頭；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）高於兩肩較高者（${round2(higherShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3345,6 +3389,13 @@ function detectDoubleBottom(bars, swings) {
   if (last3.map(s => s.type).join('') !== 'LHL') return null;
   const [A, E, B] = last3;
   if (B.price < A.price * (1 - WBOTTOM_TOLERANCE)) return null; // 第二腳跌破第一腳，型態失敗
+
+  // W底是底部反轉型態，第一腳(A)之前要先走過一段夠份量的空頭破壞段，才算
+  // 「真的跌到低檔」，不是盤整區間裡隨機出現的兩個低點（見上方
+  // REVERSAL_PRIOR_TREND_* 常數的說明）。
+  const declinePct = priorDeclinePct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  if (declinePct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
+
   const lowest = Math.min(A.price, B.price);
   const target = round2(E.price + (E.price - lowest));
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
@@ -3353,7 +3404,7 @@ function detectDoubleBottom(bars, swings) {
     points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2')],
     necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
     target,
-    basis: `第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
+    basis: `第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），確實走到空頭低檔才打底；第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3365,6 +3416,14 @@ function detectDoubleTop(bars, swings) {
   if (last3.map(s => s.type).join('') !== 'HLH') return null;
   const [A, E, B] = last3;
   if (B.price > A.price * (1 + WBOTTOM_TOLERANCE)) return null; // 第二頭創新高，型態失敗
+
+  // M頭是頭部反轉型態，第一個頭(A)之前要先走過一段夠份量的多頭噴出段，才算
+  // 「真的走到多頭高檔做頭」——這是使用者實戰覆盤反饋的重點：M頭不是任何
+  // 兩個差不多高的波峰夾一個波谷就算數，盤整區間裡隨機出現的雙峰，形狀
+  // 再像也不是真正的M頭（見上方 REVERSAL_PRIOR_TREND_* 常數的說明）。
+  const runupPct = priorRunupPct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  if (runupPct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
+
   const highest = Math.max(A.price, B.price);
   const target = round2(E.price - (highest - E.price));
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
@@ -3373,7 +3432,7 @@ function detectDoubleTop(bars, swings) {
     points: [pt(A, '頭1'), pt(E, '頸線低點'), pt(B, '頭2')],
     necklines: [{ points: [pt(E, '頸線')] }],
     target,
-    basis: `第二個頭（${round2(B.price)}，${dateOf(bars, B.idx)}）未超過第一個頭（${round2(A.price)}，${dateOf(bars, A.idx)}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${round2(E.price)}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${round2(E.price)} － (${round2(highest)} － ${round2(E.price)}) = ${target}`,
+    basis: `第一個頭（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），確實走到多頭高檔才做頭；第二個頭（${round2(B.price)}，${dateOf(bars, B.idx)}）未超過第一個頭逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${round2(E.price)}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${round2(E.price)} － (${round2(highest)} － ${round2(E.price)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -5070,8 +5129,12 @@ function renderPage() {
     const limitCls = isStale ? '' : limitStateClass(close, s.prev_close);
     // isStale時close是拿昨收頂著顯示（跟s.prev_close相等），算出來的漲跌%
     // 永遠是0，那是假的，不是真的「今天平盤」，所以isStale時不顯示數字。
-    const changePct = (!isStale && close != null && s.prev_close) ? (close - s.prev_close) / s.prev_close * 100 : null;
-    const changePctText = changePct != null ? (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%' : '-';
+    const changeAmt = (!isStale && close != null && s.prev_close) ? close - s.prev_close : null;
+    const changePct = changeAmt != null ? changeAmt / s.prev_close * 100 : null;
+    // 只顯示%的話看不出實際漲跌了多少錢，使用者要求兩個一起顯示。
+    const changePctText = changePct != null
+      ? `${changeAmt >= 0 ? '+' : ''}${changeAmt.toFixed(2)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%)`
+      : '-';
     const isSel   = s.stock_code === selCode;
     const memoOn  = MemoStore.hasMemo(s.stock_code);
 
@@ -5223,7 +5286,7 @@ function updateExtraColumn(view) {
 /* ════════════════════════════════════════
    清單欄寬可拖拉調整（見 #stock-table 的 <colgroup>）＋雙擊resizer=fit content
    ════════════════════════════════════════ */
-const COL_DEFAULT_WIDTH = { code: 60, name: 76, sector: 70, memo: 28, price: 68, changePct: 64, trend: 68, extra: 52 };
+const COL_DEFAULT_WIDTH = { code: 60, name: 76, sector: 70, memo: 28, price: 68, changePct: 108, trend: 68, extra: 52 };
 let __measureCtx = null;
 
 function measureTextWidth(text, font) {
