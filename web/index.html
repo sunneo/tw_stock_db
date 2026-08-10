@@ -183,7 +183,9 @@ body {
   flex-direction: column;
   width: 280px;
   min-width: 220px;
-  max-width: 380px;
+  /* 拖拉側邊欄（見 #resize-handle 的 setupResize）故意不設 max-width——使用者
+     反映desktop版清單拉寬時被卡住，希望能拉多寬就多寬，交給使用者自己
+     判斷，不再由這裡的CSS上限擋住。 */
   flex-shrink: 0;
   border-right: 1px solid var(--bdr);
   background: var(--bg1);
@@ -3303,7 +3305,7 @@ function detectHeadShoulders(bars, swings) {
     points: [pt(A, '左肩'), pt(E, '反彈高'), pt(C, '頭'), pt(F, '反彈高'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `頭部（${C.price}，${C.date}）低於兩肩較低者（${lowerShoulder}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${E.price}／${F.price}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${A.price}／${B.price}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
+    basis: `頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）低於兩肩較低者（${round2(lowerShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3331,7 +3333,7 @@ function detectHeadShouldersTop(bars, swings) {
     points: [pt(A, '左肩'), pt(E, '回檔低'), pt(C, '頭'), pt(F, '回檔低'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `頭部（${C.price}，${C.date}）高於兩肩較高者（${higherShoulder}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${E.price}／${F.price}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${A.price}／${B.price}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
+    basis: `頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）高於兩肩較高者（${round2(higherShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3351,7 +3353,7 @@ function detectDoubleBottom(bars, swings) {
     points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2')],
     necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
     target,
-    basis: `第二腳（${B.price}，${B.date}）未跌破第一腳（${A.price}，${A.date}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${E.price}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${E.price} ＋ (${E.price} － ${lowest}) = ${target}`,
+    basis: `第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3371,7 +3373,7 @@ function detectDoubleTop(bars, swings) {
     points: [pt(A, '頭1'), pt(E, '頸線低點'), pt(B, '頭2')],
     necklines: [{ points: [pt(E, '頸線')] }],
     target,
-    basis: `第二個頭（${B.price}，${B.date}）未超過第一個頭（${A.price}，${A.date}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${E.price}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${E.price} － (${highest} － ${E.price}) = ${target}`,
+    basis: `第二個頭（${round2(B.price)}，${dateOf(bars, B.idx)}）未超過第一個頭（${round2(A.price)}，${dateOf(bars, A.idx)}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${round2(E.price)}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${round2(E.price)} － (${round2(highest)} － ${round2(E.price)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -6833,7 +6835,9 @@ function populateSectors() {
   });
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
-    const w = Math.min(480, Math.max(200, startW + e.clientX - startX));
+    // 拿掉原本480px的上限（見 #sidebar CSS 的說明），只保留最小寬度200px，
+    // 使用者要拉多寬自己決定，這裡不再擋。
+    const w = Math.max(200, startW + e.clientX - startX);
     R.sidebar.style.width = w + 'px';
     if (chartMode !== 'chip') Chart.resize(); // canvas隱藏時resize會把它corrupt成0x0，見 applyChartMode 的說明
   });
