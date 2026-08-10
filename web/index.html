@@ -728,11 +728,17 @@ select:focus { outline: 2px solid var(--acc); }
    （台股慣例紅漲綠跌）語意無關，故用固定顏色，不借用價格漲跌色系。 */
 .diag-fail { color: #ef4444; }
 .diag-pass { color: #22c55e; }
+.diag-pattern-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .diag-pattern-card {
+  display: flex; gap: 10px;
   border: 1px solid var(--bdr); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px;
   background: var(--bg2); font-size: 12.5px; line-height: 1.6;
 }
 .diag-pattern-card:last-child { margin-bottom: 0; }
+.diag-pattern-svg { width: 72px; height: 34px; flex-shrink: 0; color: var(--acc); }
+.diag-pattern-svg svg { width: 100%; height: 100%; display: block; }
+.diag-pattern-body { flex: 1; min-width: 0; }
+.diag-pattern-basis { font-size: 11.5px; color: var(--txt2); line-height: 1.6; margin-top: 4px; }
 .diag-empty { font-size: 13px; color: var(--txt2); }
 .diag-risk { font-size: 11px; color: var(--txt2); line-height: 1.6; margin-top: 4px; }
 
@@ -3138,6 +3144,26 @@ const PATTERN_LOOKBACK_DAYS = 150;    // 型態偵測只看最近150個交易日
 const MEASURED_MOVE_LOOKBACK_DAYS = 120; // 測量法目標價找轉折點的回看天數（同 report_builder.py 預設值）
 const DIAGNOSIS_HISTORY_DAYS = 250;   // 持股診斷抓的K棒天數，跟技術分析分頁預設載入量一致
 
+// ── 以下是 M頭/頭肩頂/V型反轉/圓弧底/旗型/楔型 新增偵測器用的門檻常數，
+//    延續上面的原則：都是這次自訂的經驗值，不是課程逐字數字，寫在這裡
+//    集中管理，方便之後覆盤調整。
+const V_MIN_DROP_PCT = 8;             // V型反轉：下跌段至少要有8%跌幅，才算「有意義的探底」而不是雜訊震盪
+const V_MAX_LEG_BARS = 12;            // V型反轉：下跌段、反彈段個別都不能超過12根K棒（急跌急漲的時間定義）
+const V_MIN_RECOVERY_RATIO = 0.5;     // V型反轉：反彈幅度至少要回到跌幅的50%，太少代表還沒真正止跌反轉
+const V_SEARCH_WINDOW = 30;           // V型反轉：在最近30根K棒裡找左高點/最低點/右高點
+const ARC_LOOKBACK_BARS = 40;         // 圓弧底：對最近40根K棒的收盤價做二次曲線迴歸抓弧形
+const ARC_MIN_R2 = 0.5;               // 圓弧底：二次曲線配適度(R²)至少要0.5，太低代表資料雜亂不成形
+const ARC_VERTEX_CENTER_BAND = 0.6;   // 圓弧底：拋物線最低點必須落在視窗中段60%範圍內，太靠兩端比較像單邊趨勢
+const FLAG_POLE_MIN_PCT = 15;         // 旗型：旗桿段至少要有15%的價格變動，才算「有意義的噴出段」
+const FLAG_POLE_MAX_BARS = 10;        // 旗型：旗桿必須在10根K棒內完成（急漲/急跌）
+const FLAG_CONSOL_MIN_BARS = 4;       // 旗型：旗面（整理段）至少要有4根K棒
+const FLAG_CONSOL_MAX_BARS = 15;      // 旗型：旗面最多15根K棒，太久就不是「短暫整理」
+const FLAG_MAX_RANGE_RATIO = 0.5;     // 旗型：旗面高低差不能超過旗桿漲跌幅的50%（否則不夠「窄」）
+const FLAG_MAX_RETRACE_RATIO = 0.5;   // 旗型：旗面不能拉回/反彈旗桿漲跌幅的50%以上
+const WEDGE_LOOKBACK_DAYS = 60;       // 楔型：只看最近60個交易日的轉折高低點
+const WEDGE_MIN_SWINGS_EACH = 2;      // 楔型：上緣、下緣各至少要2個轉折點才能定義一條線
+const WEDGE_MIN_CONVERGENCE_PCT = 30; // 楔型：右端通道寬度比左端至少要收斂30%，才算「收斂型通道」
+
 function round2(v) { return v == null ? null : Math.round(v * 100) / 100; }
 function average(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
 
@@ -3275,8 +3301,37 @@ function detectHeadShoulders(bars, swings) {
   return {
     type: 'head_shoulders_bottom', label: '頭肩底',
     points: [pt(A, '左肩'), pt(E, '反彈高'), pt(C, '頭'), pt(F, '反彈高'), pt(B, '右肩')],
-    neckline: { points: [pt(E, '頸線'), pt(F, '頸線')] },
+    necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
+    basis: `頭部（${C.price}，${C.date}）低於兩肩較低者（${lowerShoulder}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${E.price}／${F.price}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${A.price}／${B.price}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
+    note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── 頭肩頂：頭肩底的鏡射版本，右肩/左肩高點不可突破「頭部到頸線距離的
+   一半」，否則型態失敗。 ── */
+function detectHeadShouldersTop(bars, swings) {
+  if (swings.length < 5) return null;
+  const last5 = swings.slice(-5);
+  if (last5.map(s => s.type).join('') !== 'HLHLH') return null;
+  const [A, E, C, F, B] = last5; // A左肩,E回檔低,C頭,F回檔低,B右肩
+  const higherShoulder = Math.max(A.price, B.price);
+  if (!(C.price > higherShoulder * (1 + HS_HEAD_TOLERANCE))) return null; // 頭部不夠高，不算頭肩頂
+
+  const necklineAtHead = necklineYAt(E, F, C.idx);
+  const H = C.price - necklineAtHead;
+  if (H <= 0) return null; // 頭部比頸線還低，資料異常，跳過
+  const maxShoulderPrice = C.price - H / 2;
+  if (A.price > maxShoulderPrice || B.price > maxShoulderPrice) return null; // 肩高點突破頭頸距離一半，型態失敗
+
+  const target = round2(necklineAtHead - H);
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  return {
+    type: 'head_shoulders_top', label: '頭肩頂',
+    points: [pt(A, '左肩'), pt(E, '回檔低'), pt(C, '頭'), pt(F, '回檔低'), pt(B, '右肩')],
+    necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
+    target,
+    basis: `頭部（${C.price}，${C.date}）高於兩肩較高者（${higherShoulder}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${E.price}／${F.price}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${A.price}／${B.price}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3294,8 +3349,29 @@ function detectDoubleBottom(bars, swings) {
   return {
     type: 'double_bottom', label: 'W底',
     points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2')],
-    neckline: { points: [pt(E, '頸線')] }, // 只有單點：畫成貫穿整個可視範圍的水平線
+    necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
     target,
+    basis: `第二腳（${B.price}，${B.date}）未跌破第一腳（${A.price}，${A.date}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${E.price}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${E.price} ＋ (${E.price} － ${lowest}) = ${target}`,
+    note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── M頭：W底的鏡射版本，第2個頭不可突破第1個頭（不創新高），否則型態失敗。 ── */
+function detectDoubleTop(bars, swings) {
+  if (swings.length < 3) return null;
+  const last3 = swings.slice(-3);
+  if (last3.map(s => s.type).join('') !== 'HLH') return null;
+  const [A, E, B] = last3;
+  if (B.price > A.price * (1 + WBOTTOM_TOLERANCE)) return null; // 第二頭創新高，型態失敗
+  const highest = Math.max(A.price, B.price);
+  const target = round2(E.price - (highest - E.price));
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  return {
+    type: 'double_top', label: 'M頭',
+    points: [pt(A, '頭1'), pt(E, '頸線低點'), pt(B, '頭2')],
+    necklines: [{ points: [pt(E, '頸線')] }],
+    target,
+    basis: `第二個頭（${B.price}，${B.date}）未超過第一個頭（${A.price}，${A.date}）逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${E.price}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${E.price} － (${highest} － ${E.price}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3328,10 +3404,215 @@ function detectBox(bars) {
   ].sort((a, b) => a.idx - b.idx); // 依時間先後排序，方便對照K線圖閱讀
   return {
     type: 'box', label: '箱型整理', points,
-    neckline: { resistance, support, fromIdx: 0, toIdx: bars.length - 1,
-                fromDate: dateOf(bars, 0), toDate: dateOf(bars, bars.length - 1) },
+    necklines: [{ resistance, support, fromIdx: 0, toIdx: bars.length - 1,
+                  fromDate: dateOf(bars, 0), toDate: dateOf(bars, bars.length - 1) }],
     target,
+    basis: `近期高點群聚在 ${resistance} 附近（容忍值${(BOX_TOLERANCE * 100).toFixed(0)}%，共${resistancePts.length}個觸及點），低點群聚在 ${support} 附近（共${supportPts.length}個觸及點），區間價差${rangePct.toFixed(1)}%（門檻${BOX_MAX_RANGE_PCT}%）；突破壓力後，目標價＝壓力＋(壓力－支撐) = ${resistance} ＋ (${resistance} － ${support}) = ${target}`,
     note: '機械式偵測（依觸及點群聚套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── V型反轉：急跌後急漲，兩段時間都要短（V_MAX_LEG_BARS內），跌幅、
+   反彈幅都要達到門檻，否則只是普通震盪，不算V型反轉。 ── */
+function detectVReversal(bars) {
+  const window = bars.slice(-V_SEARCH_WINDOW);
+  if (window.length < 10) return null;
+  let vLocalIdx = 0;
+  for (let i = 1; i < window.length; i++) if (window[i].low < window[vLocalIdx].low) vLocalIdx = i;
+
+  const leftStart = Math.max(0, vLocalIdx - V_MAX_LEG_BARS);
+  if (leftStart === vLocalIdx) return null; // 最低點在視窗最左邊，沒有下跌段可看
+  let leftLocalIdx = leftStart;
+  for (let i = leftStart; i < vLocalIdx; i++) if (window[i].high > window[leftLocalIdx].high) leftLocalIdx = i;
+
+  const rightEnd = Math.min(window.length - 1, vLocalIdx + V_MAX_LEG_BARS);
+  if (rightEnd === vLocalIdx) return null; // 最低點是視窗最後一根，還沒有反彈段可驗證
+  let rightLocalIdx = vLocalIdx + 1;
+  for (let i = vLocalIdx + 1; i <= rightEnd; i++) if (window[i].high > window[rightLocalIdx].high) rightLocalIdx = i;
+
+  const vBar = window[vLocalIdx], leftBar = window[leftLocalIdx], rightBar = window[rightLocalIdx];
+  const drop = leftBar.high - vBar.low;
+  const dropPct = drop / leftBar.high * 100;
+  if (dropPct < V_MIN_DROP_PCT) return null;
+  const recovery = rightBar.high - vBar.low;
+  if (recovery < drop * V_MIN_RECOVERY_RATIO) return null;
+
+  const offset = bars.length - window.length;
+  const pt = (localIdx, price, label) => ({ idx: offset + localIdx, price: round2(price), date: dateOf(bars, offset + localIdx), label });
+  const target = round2(vBar.low + drop); // 等幅測量：反彈目標＝低點＋跌幅
+  return {
+    type: 'v_reversal', label: 'V型反轉',
+    points: [pt(leftLocalIdx, leftBar.high, '下跌起點'), pt(vLocalIdx, vBar.low, 'V底'), pt(rightLocalIdx, rightBar.high, '反彈高點')],
+    necklines: [],
+    target,
+    basis: `下跌段（${dateOf(bars, offset + leftLocalIdx)}高點${round2(leftBar.high)} → ${dateOf(bars, offset + vLocalIdx)}低點${round2(vBar.low)}）共${vLocalIdx - leftLocalIdx}根K棒、跌幅${dropPct.toFixed(1)}%（門檻${V_MIN_DROP_PCT}%）；反彈段（→ ${dateOf(bars, offset + rightLocalIdx)}高點${round2(rightBar.high)}）共${rightLocalIdx - vLocalIdx}根K棒、回幅達跌幅的${(recovery / drop * 100).toFixed(0)}%（門檻${(V_MIN_RECOVERY_RATIO * 100).toFixed(0)}%），兩段都在${V_MAX_LEG_BARS}根K棒以內，符合「急跌急漲」的時間定義；目標價（等幅測量）＝V底＋跌幅 = ${vBar.low.toFixed(2)} ＋ ${drop.toFixed(2)} = ${target}`,
+    note: '機械式偵測（依急跌急漲的價格/時間比例套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── 最小平方法解二次迴歸 y=ax²+bx+c，用於圓弧底的弧形配適。 ── */
+function solve3x3(A, B) {
+  const det = m => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                  - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                  + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  const D = det(A);
+  if (Math.abs(D) < 1e-9) return null;
+  const replace = col => A.map((row, i) => row.map((v, j) => (j === col ? B[i] : v)));
+  return [det(replace(0)) / D, det(replace(1)) / D, det(replace(2)) / D]; // [c, b, a]
+}
+
+function quadraticFit(ys) {
+  const n = ys.length;
+  let Sx = 0, Sx2 = 0, Sx3 = 0, Sx4 = 0, Sy = 0, Sxy = 0, Sx2y = 0;
+  for (let i = 0; i < n; i++) {
+    const x = i, y = ys[i];
+    Sx += x; Sx2 += x * x; Sx3 += x * x * x; Sx4 += x * x * x * x;
+    Sy += y; Sxy += x * y; Sx2y += x * x * y;
+  }
+  const sol = solve3x3([[n, Sx, Sx2], [Sx, Sx2, Sx3], [Sx2, Sx3, Sx4]], [Sy, Sxy, Sx2y]);
+  if (!sol) return null;
+  const [c, b, a] = sol;
+  let ssRes = 0, ssTot = 0;
+  const meanY = Sy / n;
+  for (let i = 0; i < n; i++) {
+    const yhat = a * i * i + b * i + c;
+    ssRes += (ys[i] - yhat) ** 2;
+    ssTot += (ys[i] - meanY) ** 2;
+  }
+  return { a, b, c, r2: ssTot > 0 ? 1 - ssRes / ssTot : 0 };
+}
+
+/* ── 圓弧底：對收盤價做二次曲線迴歸，要求開口向上、配適度夠高、最低點
+   落在視窗中段——這是跟V型反轉（急跌急漲）互斥的判斷，圓弧底要求的是
+   平滑、漸進的U型走勢。 ── */
+function detectRoundingBottom(bars) {
+  const window = bars.slice(-ARC_LOOKBACK_BARS);
+  if (window.length < 20) return null;
+  const closes = window.map(b => b.close);
+  const fit = quadraticFit(closes);
+  if (!fit || fit.a <= 0) return null; // a<=0代表不是開口向上的U形
+  if (fit.r2 < ARC_MIN_R2) return null;
+  const n = window.length;
+  const vertexX = -fit.b / (2 * fit.a);
+  const bandLo = n * (1 - ARC_VERTEX_CENTER_BAND) / 2, bandHi = n - bandLo;
+  if (vertexX < bandLo || vertexX > bandHi) return null; // 頂點不在視窗中段，比較像單邊趨勢不是圓弧
+  const vertexIdxLocal = Math.round(Math.max(0, Math.min(n - 1, vertexX)));
+  const offset = bars.length - window.length;
+  const vertexPrice = round2(fit.a * vertexX * vertexX + fit.b * vertexX + fit.c);
+  const startPrice = round2(closes[0]);
+  const lastPrice = round2(closes[n - 1]);
+  const target = round2(lastPrice + (startPrice - vertexPrice)); // 粗略等幅估計
+  const pt = (localIdx, price, label) => ({ idx: offset + localIdx, price, date: dateOf(bars, offset + localIdx), label });
+  return {
+    type: 'rounding_bottom', label: '圓弧底',
+    points: [pt(0, startPrice, '弧形左緣'), pt(vertexIdxLocal, vertexPrice, '弧形最低點'), pt(n - 1, lastPrice, '弧形右緣(目前)')],
+    necklines: [],
+    target,
+    basis: `對最近${n}根K棒的收盤價做二次曲線迴歸配適，曲線開口向上（二次項係數${fit.a.toFixed(4)}>0）且配適度R²=${fit.r2.toFixed(2)}（門檻${ARC_MIN_R2}），最低點落在第${vertexIdxLocal + 1}根（視窗中段${(ARC_VERTEX_CENTER_BAND * 100).toFixed(0)}%範圍內），形狀符合平滑U型；目標價（粗略估計）＝目前價＋(左緣價－最低點價) = ${lastPrice} ＋ (${startPrice} － ${vertexPrice}) = ${target}`,
+    note: '機械式偵測（對收盤價做二次曲線迴歸判斷弧形是否成立），型態本體是否成立仍需人工覆核K線圖；此為粗略估計目標價，準確度低於頸線明確的型態',
+  };
+}
+
+/* ── 旗型：找一段急漲/急跌的「旗桿」，後面接一段窄幅整理的「旗面」。依序
+   嘗試由短到長的旗面長度、由短到長的旗桿長度，找到第一組同時滿足旗桿
+   漲跌幅門檻、旗面窄幅門檻、回吐幅度門檻的組合就回傳。 ── */
+function detectFlag(bars) {
+  const n = bars.length;
+  for (let consolLen = FLAG_CONSOL_MIN_BARS; consolLen <= FLAG_CONSOL_MAX_BARS; consolLen++) {
+    if (n < consolLen + 3) continue;
+    const consolStart = n - consolLen;
+    const consolBars = bars.slice(consolStart);
+    const consolHigh = Math.max(...consolBars.map(b => b.high));
+    const consolLow = Math.min(...consolBars.map(b => b.low));
+    const consolRange = consolHigh - consolLow;
+    for (let poleLen = 3; poleLen <= FLAG_POLE_MAX_BARS; poleLen++) {
+      const poleStart = consolStart - poleLen;
+      if (poleStart < 0) break;
+      const poleBars = bars.slice(poleStart, consolStart);
+      const poleOpen = poleBars[0].open, poleClose = poleBars[poleBars.length - 1].close;
+      const poleMove = poleClose - poleOpen;
+      const poleMovePct = Math.abs(poleMove) / poleOpen * 100;
+      if (poleMovePct < FLAG_POLE_MIN_PCT) continue;
+      if (consolRange > Math.abs(poleMove) * FLAG_MAX_RANGE_RATIO) continue;
+      const direction = poleMove > 0 ? 'up' : 'down';
+      const retrace = direction === 'up' ? (poleClose - consolLow) : (consolHigh - poleClose);
+      if (retrace > Math.abs(poleMove) * FLAG_MAX_RETRACE_RATIO) continue;
+
+      const target = direction === 'up' ? round2(poleClose + Math.abs(poleMove)) : round2(poleClose - Math.abs(poleMove));
+      const pt = (idx, price, label) => ({ idx, price: round2(price), date: dateOf(bars, idx), label });
+      return {
+        type: 'flag', label: direction === 'up' ? '上升旗形' : '下降旗形',
+        points: [
+          pt(poleStart, poleOpen, '旗桿起點'),
+          pt(consolStart - 1, poleClose, '旗桿終點／旗面起點'),
+          pt(n - 1, bars[n - 1].close, '旗面目前'),
+        ],
+        necklines: [{ resistance: round2(consolHigh), support: round2(consolLow), fromIdx: consolStart, toIdx: n - 1,
+                      fromDate: dateOf(bars, consolStart), toDate: dateOf(bars, n - 1) }],
+        target,
+        basis: `旗桿：${dateOf(bars, poleStart)}(${round2(poleOpen)}) → ${dateOf(bars, consolStart - 1)}(${round2(poleClose)})，共${poleLen}根K棒、${direction === 'up' ? '漲' : '跌'}幅${poleMovePct.toFixed(1)}%（門檻${FLAG_POLE_MIN_PCT}%）；旗面：其後${consolLen}根K棒整理，區間高低差${consolRange.toFixed(2)}未超過旗桿漲跌幅的${(FLAG_MAX_RANGE_RATIO * 100).toFixed(0)}%，回吐/反彈幅度${retrace.toFixed(2)}未超過旗桿的${(FLAG_MAX_RETRACE_RATIO * 100).toFixed(0)}%；目標價（旗桿等長）＝旗面起點${direction === 'up' ? '＋' : '－'}旗桿漲跌幅 = ${poleClose.toFixed(2)} ${direction === 'up' ? '＋' : '－'} ${Math.abs(poleMove).toFixed(2)} = ${target}`,
+        note: '機械式偵測（依旗桿漲跌幅與旗面整理區間比例判斷），型態本體是否成立仍需人工覆核K線圖',
+      };
+    }
+  }
+  return null;
+}
+
+function linearFit(points) {
+  const n = points.length;
+  if (n < 2) return null;
+  let Sx = 0, Sy = 0, Sxy = 0, Sx2 = 0;
+  for (const p of points) { Sx += p.x; Sy += p.y; Sxy += p.x * p.y; Sx2 += p.x * p.x; }
+  const denom = n * Sx2 - Sx * Sx;
+  if (Math.abs(denom) < 1e-9) return null;
+  const slope = (n * Sxy - Sx * Sy) / denom;
+  const intercept = (Sy - slope * Sx) / n;
+  return { slope, intercept };
+}
+
+/* ── 楔型：對轉折高點、轉折低點分別做線性迴歸畫出上緣/下緣，要求兩線
+   斜率同向（同升或同降，才是楔型；反向是對稱三角形，不算）且從視窗左端
+   到右端明顯收斂。上升楔形常見向下跌破、下降楔形常見向上突破，目標價
+   用通道寬度做等寬估算。 ── */
+function detectWedge(bars) {
+  const window = bars.slice(-WEDGE_LOOKBACK_DAYS);
+  if (window.length < 20) return null;
+  const highs = window.map(b => b.high), lows = window.map(b => b.low);
+  const swings = mergeAlternatingSwings(findSwingPoints(highs, lows, 3));
+  const highSwings = swings.filter(s => s.type === 'H');
+  const lowSwings = swings.filter(s => s.type === 'L');
+  if (highSwings.length < WEDGE_MIN_SWINGS_EACH || lowSwings.length < WEDGE_MIN_SWINGS_EACH) return null;
+  const upperFit = linearFit(highSwings.map(s => ({ x: s.idx, y: s.price })));
+  const lowerFit = linearFit(lowSwings.map(s => ({ x: s.idx, y: s.price })));
+  if (!upperFit || !lowerFit) return null;
+  if (upperFit.slope * lowerFit.slope <= 0) return null; // 斜率正負號要一致，才是楔型不是三角形
+
+  const n = window.length;
+  const leftGap = upperFit.intercept - lowerFit.intercept;
+  const rightGap = (upperFit.slope * (n - 1) + upperFit.intercept) - (lowerFit.slope * (n - 1) + lowerFit.intercept);
+  if (leftGap <= 0 || rightGap <= 0) return null; // 上緣必須全程在下緣之上，不然不是有效通道
+  const convergencePct = (leftGap - rightGap) / leftGap * 100;
+  if (convergencePct < WEDGE_MIN_CONVERGENCE_PCT) return null;
+
+  const direction = upperFit.slope > 0 ? 'rising' : 'falling';
+  const offset = bars.length - window.length;
+  const upperAtStart = round2(upperFit.intercept), upperAtEnd = round2(upperFit.slope * (n - 1) + upperFit.intercept);
+  const lowerAtStart = round2(lowerFit.intercept), lowerAtEnd = round2(lowerFit.slope * (n - 1) + lowerFit.intercept);
+  const channelWidth = round2(upperAtEnd - lowerAtEnd);
+  const target = direction === 'rising' ? round2(lowerAtEnd - channelWidth) : round2(upperAtEnd + channelWidth);
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  return {
+    type: 'wedge', label: direction === 'rising' ? '上升楔形' : '下降楔形',
+    points: [...highSwings.map(s => pt(s, '上緣觸及點')), ...lowSwings.map(s => pt(s, '下緣觸及點'))].sort((a, b) => a.idx - b.idx),
+    necklines: [
+      { points: [{ idx: offset, price: upperAtStart, date: dateOf(bars, offset), label: '上緣' },
+                 { idx: offset + n - 1, price: upperAtEnd, date: dateOf(bars, offset + n - 1), label: '上緣' }] },
+      { points: [{ idx: offset, price: lowerAtStart, date: dateOf(bars, offset), label: '下緣' },
+                 { idx: offset + n - 1, price: lowerAtEnd, date: dateOf(bars, offset + n - 1), label: '下緣' }] },
+    ],
+    target,
+    basis: `上緣（連接${highSwings.length}個高點轉折做線性迴歸）與下緣（連接${lowSwings.length}個低點轉折）斜率同向（${direction === 'rising' ? '皆向上' : '皆向下'}）；視窗左端通道寬度${leftGap.toFixed(2)}，右端收斂到${rightGap.toFixed(2)}（收斂${convergencePct.toFixed(0)}%，門檻${WEDGE_MIN_CONVERGENCE_PCT}%）；${direction === 'rising' ? '上升楔形常見向下跌破下緣' : '下降楔形常見向上突破上緣'}，目標價（等寬估算）＝${direction === 'rising' ? `下緣末端(${lowerAtEnd})－通道寬(${channelWidth})` : `上緣末端(${upperAtEnd})＋通道寬(${channelWidth})`} = ${target}`,
+    note: '機械式偵測（對轉折高低點做線性迴歸判斷通道收斂方向），型態本體是否成立仍需人工覆核K線圖',
   };
 }
 
@@ -3340,10 +3621,22 @@ function detectPatterns(bars) {
   if (window.length < 20) return [];
   const highs = window.map(b => b.high), lows = window.map(b => b.low);
   const swings = mergeAlternatingSwings(findSwingPoints(highs, lows, 3));
+  const detectors = [
+    () => detectHeadShoulders(window, swings),
+    () => detectHeadShouldersTop(window, swings),
+    () => detectDoubleBottom(window, swings),
+    () => detectDoubleTop(window, swings),
+    () => detectBox(window),
+    () => detectVReversal(window),
+    () => detectRoundingBottom(window),
+    () => detectFlag(window),
+    () => detectWedge(window),
+  ];
   const detected = [];
-  const hs = detectHeadShoulders(window, swings); if (hs) detected.push(hs);
-  const db = detectDoubleBottom(window, swings); if (db) detected.push(db);
-  const box = detectBox(window); if (box) detected.push(box);
+  for (const run of detectors) {
+    const result = run();
+    if (result) detected.push(result);
+  }
   return detected;
 }
 
@@ -3495,6 +3788,9 @@ const Chart = (() => {
                               // 中的 periodData 切片；畫的時候才在當前可視窗口的 data 裡查日期對應的
                               // slot，查不到（滑出可視範圍）就直接跳過那個點，不報錯。
   function setAnnotations(spec) { annotations = spec || null; }
+  let highlightPattern = false;  // 「強調型態」開關，見 drawAnnotationsOverlay 的 patternTraces 繪製區塊
+  function setHighlightPattern(v) { highlightPattern = !!v; draw(); }
+  function getHighlightPattern() { return highlightPattern; }
 
   const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
@@ -3781,8 +4077,10 @@ const Chart = (() => {
   const RSI_FAST_COL = '#14b8a6'; // teal
   const RSI_SLOW_COL = '#f97316'; // orange
   // 持股診斷疊加標記的配色，刻意跟上面MA/KD/MACD既有色系區隔，避免使用者
-  // 混淆「這是均線」還是「這是型態標記」。
-  const PATTERN_COL = '#a855f7'; // 轉折點/頸線：紫色
+  // 混淆「這是均線」還是「這是型態標記」。轉折/型態標記色（紫）在深色主題
+  // 背景下對比太差、使用者反映「太難看」，改成依主題動態選色（不能用固定
+  // const，深/淺主題切換時要即時反映，所以做成函式在每次draw()時重新算）。
+  function patternColor() { return isDark() ? '#22d3ee' : '#9333ea'; } // 深色主題：青色；淺色主題：深紫
   const TARGET_COL  = '#ec4899'; // 目標價：洋紅（跟 J_COL 撞色但用途情境不會同時出現在同一份說明中，暫不特別處理）
   const STOP_COL    = '#ef4444'; // 趨勢停損：紅色（風險警戒，跟K棒漲跌色無關）
 
@@ -3824,7 +4122,7 @@ const Chart = (() => {
     }
 
     for (const nl of (annotations.necklines || [])) {
-      ctx.strokeStyle = PATTERN_COL; ctx.lineWidth = 1.3; ctx.setLineDash([6, 3]);
+      ctx.strokeStyle = patternColor(); ctx.lineWidth = 1.3; ctx.setLineDash([6, 3]);
       if (nl.points && nl.points.length === 2) {
         const [p1, p2] = nl.points;
         const x1 = findX(p1.date), x2 = findX(p2.date);
@@ -3857,11 +4155,29 @@ const Chart = (() => {
       ctx.fillText(`${t.label || '目標價'} ${t.price.toFixed(2)}`, PAD_L + 4, y - 3);
     }
 
+    // 「強調型態」：把同一個型態的轉折點依序連成一條線，讓使用者一眼看出
+    // 型態的形狀輪廓（不是必要資訊，預設關閉，使用者按下面板上的「強調
+    // 型態」按鈕才畫，見 setHighlightPattern）。畫在點位圓點之前，讓圓點
+    // 蓋在連線上面，視覺上更清楚。
+    if (highlightPattern) {
+      for (const trace of (annotations.patternTraces || [])) {
+        const pts = trace.points.map(p => ({ x: findX(p.date), y: pY(p.price) })).filter(p => p.x != null);
+        if (pts.length < 2) continue;
+        ctx.strokeStyle = patternColor(); ctx.lineWidth = 2; ctx.setLineDash([]);
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        pts.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
     for (const pt of (annotations.points || [])) {
       const x = findX(pt.date);
       if (x == null) continue; // 滑出目前可視範圍，直接略過，不報錯
       const y = pY(pt.price);
-      ctx.fillStyle = PATTERN_COL;
+      const pCol = patternColor();
+      ctx.fillStyle = pCol;
       ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = isDark() ? '#000' : '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
       if (pt.label) {
@@ -3872,8 +4188,8 @@ const Chart = (() => {
         const boxY = Math.max(2, y - 8 - boxH);
         ctx.fillStyle = isDark() ? 'rgba(30,30,40,0.85)' : 'rgba(255,255,255,0.9)';
         rrect(ctx, boxX, boxY, boxW, boxH, 3); ctx.fill();
-        ctx.strokeStyle = PATTERN_COL; ctx.lineWidth = 1; rrect(ctx, boxX, boxY, boxW, boxH, 3); ctx.stroke();
-        ctx.fillStyle = PATTERN_COL; ctx.textAlign = 'center';
+        ctx.strokeStyle = pCol; ctx.lineWidth = 1; rrect(ctx, boxX, boxY, boxW, boxH, 3); ctx.stroke();
+        ctx.fillStyle = pCol; ctx.textAlign = 'center';
         ctx.fillText(pt.label, boxX + boxW / 2, boxY + boxH - 4);
       }
     }
@@ -4267,7 +4583,7 @@ const Chart = (() => {
   return {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
-    setPanelWeights, setAnnotations,
+    setPanelWeights, setAnnotations, setHighlightPattern, getHighlightPattern,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
@@ -6117,10 +6433,18 @@ function applyDiagnosisAnnotations(diag) {
     if (mm.equal_measure) targets.push({ price: mm.equal_measure.target, label: '等幅測量目標價' });
   }
 
+  const patternTraces = [];
   for (const p of (diag.pattern?.detected || [])) {
     for (const pt of p.points) rawPoints.push({ date: pt.date, price: pt.price, label: pt.label });
-    if (p.neckline) necklines.push(p.neckline);
+    necklines.push(...(p.necklines || []));
     if (p.target != null) targets.push({ price: p.target, label: `${p.label}目標價` });
+    // 「強調型態」：同一個型態的點依序連成一條線，讓使用者一眼看出形狀
+    // 輪廓（見 Chart.setHighlightPattern）。楔型的points是上緣/下緣兩組
+    // 各自的觸及點，混在一起連線沒有意義，跳過（楔型本身已經用兩條
+    // necklines畫出上下緣，不需要再連點）。
+    if (p.points.length >= 2 && p.type !== 'wedge') {
+      patternTraces.push({ label: p.label, points: p.points.map(pt => ({ date: pt.date, price: pt.price })) });
+    }
   }
 
   // 測量法（measured_move）跟型態辨識（pattern）常常各自獨立算出同一個轉折點
@@ -6141,9 +6465,24 @@ function applyDiagnosisAnnotations(diag) {
 
   Chart.setAnnotations({
     trendStopPrice: diag.entry_exit?.trend_stop_price ?? null,
-    targets, points: [...merged.values()], necklines,
+    targets, points: [...merged.values()], necklines, patternTraces,
   });
 }
+
+/* ── 每種型態的簡易示意圖（教學用途，畫的是「理想化的標準形狀」，不是這
+   檔股票實際的K線；實際的轉折點位置以上方K線圖疊加的標記為準）。用
+   currentColor 讓顏色跟隨 .diag-pattern-svg 的 CSS 顏色（主題自適應）。 ── */
+const PATTERN_SCHEMATIC_SVG = {
+  double_bottom: `<svg viewBox="0 0 120 50"><polyline points="5,15 25,40 45,22 65,40 100,10" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="8" y1="24" x2="97" y2="24" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
+  double_top: `<svg viewBox="0 0 120 50"><polyline points="5,35 25,10 45,28 65,10 100,40" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="8" y1="26" x2="97" y2="26" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
+  head_shoulders_bottom: `<svg viewBox="0 0 120 50"><polyline points="5,20 20,38 35,22 50,45 65,22 80,38 110,18" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="30" y1="23" x2="85" y2="21" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
+  head_shoulders_top: `<svg viewBox="0 0 120 50"><polyline points="5,30 20,12 35,28 50,5 65,28 80,12 110,32" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="30" y1="27" x2="85" y2="29" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
+  box: `<svg viewBox="0 0 120 50"><line x1="5" y1="12" x2="115" y2="12" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/><line x1="5" y1="38" x2="115" y2="38" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/><polyline points="5,25 22,13 40,37 58,14 76,36 94,13 115,25" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`,
+  v_reversal: `<svg viewBox="0 0 120 50"><polyline points="10,10 55,45 100,10" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/></svg>`,
+  rounding_bottom: `<svg viewBox="0 0 120 50"><path d="M8,15 Q60,52 112,15" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>`,
+  flag: `<svg viewBox="0 0 120 50"><polyline points="10,45 42,8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><line x1="42" y1="10" x2="90" y2="20" stroke="currentColor" stroke-width="2" opacity=".7"/><line x1="42" y1="22" x2="90" y2="30" stroke="currentColor" stroke-width="2" opacity=".7"/><polyline points="90,25 112,6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3,3" opacity=".55"/></svg>`,
+  wedge: `<svg viewBox="0 0 120 50"><line x1="8" y1="8" x2="112" y2="26" stroke="currentColor" stroke-width="2.5"/><line x1="8" y1="44" x2="112" y2="30" stroke="currentColor" stroke-width="2.5"/></svg>`,
+};
 
 function renderDiagnosisPanelBody(diag) {
   if (!diag.available) {
@@ -6185,10 +6524,19 @@ function renderDiagnosisPanelBody(diag) {
   if (!pat.detected.length) {
     patternHtml = `<div class="diag-empty">${esc(pat.note)}</div>`;
   } else {
+    const hlOn = Chart.getHighlightPattern();
     patternHtml = `<div class="diag-banner">⚠ 以下型態為機械式偵測（依轉折點/觸及點座標套公式判斷），型態本體是否成立請自行覆核上方K線圖，不代表系統已完成人工圖形驗證。</div>` +
+      `<div class="diag-pattern-toolbar"><button class="btn" id="diag-highlight-pattern-btn">${hlOn ? '✓ 強調型態（已連線）' : '強調型態'}</button></div>` +
       pat.detected.map(pp => {
         const ptLine = pp.points.map(x => `${esc(x.label)} ${x.price}（${esc(x.date || '')}）`).join('　');
-        return `<div class="diag-pattern-card"><b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}</div>`;
+        const svg = PATTERN_SCHEMATIC_SVG[pp.type] || '';
+        return `<div class="diag-pattern-card">` +
+          `<div class="diag-pattern-svg">${svg}</div>` +
+          `<div class="diag-pattern-body">` +
+            `<b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}` +
+            (pp.basis ? `<div class="diag-pattern-basis">依據：${esc(pp.basis)}</div>` : '') +
+          `</div>` +
+        `</div>`;
       }).join('');
   }
 
@@ -6214,6 +6562,18 @@ function renderDiagnosisPanelBody(diag) {
     `<div class="diag-section"><h3>大盤連動</h3>${mlHtml}</div>` +
     `<div class="diag-section"><h3>進出場建議</h3>${eeHtml}</div>` +
     `<div class="diag-risk">${esc(diag.risk_note)}</div>`;
+
+  // 「強調型態」按鈕只在有偵測到型態時才存在（見上方patternHtml的組裝邏輯）。
+  // 點擊只是切換Chart內部的highlightPattern旗標＋重繪canvas，不需要重算
+  // diag（annotations早就算好了，見 applyDiagnosisAnnotations 的 patternTraces），
+  // 重新呼叫這個函式只是為了讓按鈕文字反映最新的開關狀態。
+  const hlBtn = document.getElementById('diag-highlight-pattern-btn');
+  if (hlBtn) {
+    hlBtn.addEventListener('click', () => {
+      Chart.setHighlightPattern(!Chart.getHighlightPattern());
+      renderDiagnosisPanelBody(diag);
+    });
+  }
 }
 
 function saveMemoModal() {
