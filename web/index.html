@@ -707,6 +707,35 @@ select:focus { outline: 2px solid var(--acc); }
 .chip-date-row #chip-date-input { font-size: 13px; padding: 5px 6px; }
 .chip-date-hint { margin: 0 0 20px; }
 
+/* ── 持股診斷面板（K線疊加標記 + 文字診斷，見 #diagnosis-panel / StockDiagnosis） ──
+   跟盤後不同，這個模式下 #chart-wrap 不隱藏，改成縮成上半部固定比例，診斷
+   文字佔剩餘空間，兩塊各自可獨立滾動（K線本身不會超過視窗高度需要滾動，
+   但診斷文字內容較長，需要 overflow-y:auto）。 */
+#chart-area.diagnosis-mode #chart-wrap { flex: 0 0 45%; }
+#diagnosis-panel { flex: 1; overflow-y: auto; padding: 14px 16px; }
+#diagnosis-panel.hidden { display: none; }
+.diag-banner {
+  font-size: 12px; font-weight: 600; color: var(--acc);
+  background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 14px; line-height: 1.5;
+}
+.diag-section { margin-bottom: 16px; }
+.diag-section:last-child { margin-bottom: 0; }
+.diag-section h3 { font-size: 12px; color: var(--txt2); margin: 0 0 6px; }
+.diag-row { font-size: 13px; color: var(--txt1); line-height: 1.7; }
+.diag-row b { color: var(--txt0); }
+/* 這裡的 fail/pass 是「K棒品質鐵律檢查結果」的通過/未通過，跟 --up/--dn
+   （台股慣例紅漲綠跌）語意無關，故用固定顏色，不借用價格漲跌色系。 */
+.diag-fail { color: #ef4444; }
+.diag-pass { color: #22c55e; }
+.diag-pattern-card {
+  border: 1px solid var(--bdr); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px;
+  background: var(--bg2); font-size: 12.5px; line-height: 1.6;
+}
+.diag-pattern-card:last-child { margin-bottom: 0; }
+.diag-empty { font-size: 13px; color: var(--txt2); }
+.diag-risk { font-size: 11px; color: var(--txt2); line-height: 1.6; margin-top: 4px; }
+
 /* ── Memo icon buttons (list rows + chart header) ── */
 .memo-btn {
   flex-shrink: 0; border: none; background: transparent; cursor: pointer;
@@ -843,6 +872,7 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="mtab-btn" id="mtab-chart" data-tab="chart">📈 技術分析</button>
   <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
   <button class="mtab-btn" id="mtab-chip" data-tab="chip">📊 盤後</button>
+  <button class="mtab-btn" id="mtab-diagnosis" data-tab="diagnosis">🩺 診斷</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -928,6 +958,7 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="chart-mode-tab active" id="mode-tab-daily" data-mode="daily">技術分析</button>
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
       <button class="chart-mode-tab" id="mode-tab-chip" data-mode="chip">盤後</button>
+      <button class="chart-mode-tab" id="mode-tab-diagnosis" data-mode="diagnosis">持股診斷</button>
     </div>
     <div id="chart-header">
       <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
@@ -964,6 +995,12 @@ select:focus { outline: 2px solid var(--acc); }
          點到這個分頁那一刻（見 renderChipSourceChart），平常在技術分析/走勢圖
          分頁瀏覽/切股票都不會觸發任何下載。 -->
     <div id="chip-panel" class="hidden"></div>
+    <!-- ══ 持股診斷面板（K線圖疊加趨勢/型態標記 + 文字診斷，見 StockDiagnosis）══
+         跟「盤後」不同，這個分頁不隱藏 #chart-wrap——診斷需要K線可見才能疊加
+         標記，見 setChartModeUI 的 diagnosis-mode class（讓 #chart-wrap 縮成
+         上半部、這裡佔下半部，各自可滾動/操作）。資料同樣是點到分頁那一刻才算
+         （見 renderDiagnosisSourceChart 的 diagnosisRenderedForCode 快取guard）。 -->
+    <div id="diagnosis-panel" class="hidden"></div>
     <!-- ══ 分析報告面板（公式化產生，見 run_daily_update.py Step 8 / report_builder.py）══
          報告種類的選擇搬到左側 view-sel 的「分析」分類（見 loadAnalysisView/
          selectReportType），這裡只負責顯示目前選到的那一份報告，跟技術分析/
@@ -3079,6 +3116,349 @@ function computeRSI(closes, period) {
 }
 
 /* ════════════════════════════════════════
+   STOCK DIAGNOSIS  (持股診斷，鏡射 analysis/report_builder.py::stock_diagnosis()
+   的邏輯，但這裡是給「自選股」用的——鎖股名單才有伺服器排程算好的YAML報告，
+   自選股是使用者本機維護的清單，沒有對應報告，所以在這裡對本機已同步好的
+   daily_prices 現算，不經網路/YAML。
+
+   型態形狀辨識（頭肩底/W底/箱型）是這裡新寫的，Python端沒有——Python端的
+   pattern欄位明講「尚未自動化，需人工覆核」。這裡改成：用確定性規則（不是
+   LLM、不是瞎掰）做機械式偵測，但每個偵測結果都附上明確的容忍值/門檻（都
+   在下面用常數列出，是這次自己訂的、不是課程逐字數字）跟「機械式偵測、
+   型態本體是否成立仍需人工覆核」的提醒——不假裝機器判斷等於型態確實成立，
+   只是把「有沒有東西可以看」這一步做出來，最終判斷還是留給使用者自己看圖。
+   ════════════════════════════════════════ */
+const KBAR_BODY_MIN_PCT = 2.0;        // K棒品質判讀鐵律：實體漲跌幅門檻
+const KBAR_UPPER_WICK_MAX_PCT = 40.0; // 上影線占K棒全長比例上限
+const HS_HEAD_TOLERANCE = 0.02;       // 頭肩底：頭部須比兩肩低點的較低者再低至少2%，才算「明顯低於雙肩」
+const WBOTTOM_TOLERANCE = 0.005;      // W底：第二腳容許比第一腳低點再低0.5%以內，仍視為「未跌破」（雜訊容忍）
+const BOX_TOLERANCE = 0.03;           // 箱型：高點/低點群聚容忍值，同一群視為「價位相近」
+const BOX_MAX_RANGE_PCT = 25;         // 箱型：上下頸線價差超過此比例，不像整理區間，不判定為箱型
+const PATTERN_LOOKBACK_DAYS = 150;    // 型態偵測只看最近150個交易日，太久遠的轉折點對「現在」意義不大
+const MEASURED_MOVE_LOOKBACK_DAYS = 120; // 測量法目標價找轉折點的回看天數（同 report_builder.py 預設值）
+const DIAGNOSIS_HISTORY_DAYS = 250;   // 持股診斷抓的K棒天數，跟技術分析分頁預設載入量一致
+
+function round2(v) { return v == null ? null : Math.round(v * 100) / 100; }
+function average(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+
+/* ── K棒品質判讀鐵律：直接對照 report_builder.py::kbar_quality() ── */
+function kbarQuality(open, high, low, close) {
+  if (open == null || high == null || low == null || close == null || open === 0) {
+    return { body_pct: null, is_red: null, upper_wick_pct_of_range: null, upper_wick_exceeds_body: null, passes: false, reason: '資料不完整，無法判讀' };
+  }
+  const body = Math.abs(close - open);
+  const bodyPct = body / open * 100;
+  const isRed = close > open;
+  const fullRange = high - low;
+  const upperWick = high - Math.max(open, close);
+  const upperWickPctOfRange = fullRange > 0 ? upperWick / fullRange * 100 : 0;
+  const upperWickExceedsBody = body > 0 ? upperWick > body : upperWick > 0;
+  const base = {
+    body_pct: round2(bodyPct), is_red: isRed,
+    upper_wick_pct_of_range: Math.round(upperWickPctOfRange * 10) / 10,
+    upper_wick_exceeds_body: upperWickExceedsBody,
+  };
+  if (bodyPct < KBAR_BODY_MIN_PCT) {
+    return { ...base, passes: false, reason: `實體僅 ${bodyPct.toFixed(2)}%，未達${KBAR_BODY_MIN_PCT.toFixed(0)}%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）` };
+  }
+  if (upperWickExceedsBody || upperWickPctOfRange > KBAR_UPPER_WICK_MAX_PCT) {
+    return { ...base, passes: false, reason: '上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破' };
+  }
+  return { ...base, passes: true, reason: null };
+}
+
+/* ── 轉折點偵測：對稱N-bar分形，鏡射 report_builder.py::_find_swing_points /
+   _merge_alternating_swings。這是機械式近似，不是真正的型態辨識，Python端
+   也承認這點。 ── */
+function findSwingPoints(highs, lows, window = 3) {
+  const n = highs.length;
+  const swings = [];
+  for (let i = window; i < n - window; i++) {
+    const segH = highs.slice(i - window, i + window + 1);
+    if (highs[i] === Math.max(...segH)) swings.push({ idx: i, price: highs[i], type: 'H' });
+    const segL = lows.slice(i - window, i + window + 1);
+    if (lows[i] === Math.min(...segL)) swings.push({ idx: i, price: lows[i], type: 'L' });
+  }
+  swings.sort((a, b) => a.idx - b.idx);
+  return swings;
+}
+
+function mergeAlternatingSwings(swings) {
+  if (!swings.length) return [];
+  const merged = [swings[0]];
+  for (let i = 1; i < swings.length; i++) {
+    const pt = swings[i];
+    const last = merged[merged.length - 1];
+    if (pt.type === last.type) {
+      const moreExtreme = (pt.type === 'H' && pt.price > last.price) || (pt.type === 'L' && pt.price < last.price);
+      if (moreExtreme) merged[merged.length - 1] = pt;
+    } else {
+      merged.push(pt);
+    }
+  }
+  return merged;
+}
+
+function dateOf(bars, idx) { return bars[idx] ? bars[idx].trade_date : null; }
+
+/* ── 測量法目標價：鏡射 report_builder.py::measured_move_targets()。bars 是
+   完整（未截斷）的漲跌歷史，函式內部自己依 lookbackDays 取尾段。 ── */
+function measuredMoveTargets(bars, lookbackDays = MEASURED_MOVE_LOOKBACK_DAYS, window = 3) {
+  const df = bars.slice(-lookbackDays);
+  if (df.length < window * 2 + 10) {
+    return { available: false, reason: '資料不足，無法計算轉折點' };
+  }
+  const highs = df.map(b => b.high), lows = df.map(b => b.low);
+  const rawSwings = mergeAlternatingSwings(findSwingPoints(highs, lows, window));
+  if (rawSwings.length < 3) {
+    return { available: false, reason: '近期轉折點不足3個，無法套用測量法公式' };
+  }
+  const swings = rawSwings.map(s => ({ idx: s.idx, price: round2(s.price), type: s.type, date: dateOf(df, s.idx) }));
+  const [A, B, C] = swings.slice(-3);
+  const close = df[df.length - 1].close;
+  const result = { available: true, swing_points_used: [A, B, C] };
+
+  if (A.type === C.type && A.type !== B.type) {
+    if (A.type === 'L' && B.type === 'H') {
+      const amplitude = round2(B.price - A.price);
+      result.n_measure = { amplitude, target: round2(C.price + amplitude), from: A, via: B, to: C, direction: 'up' };
+    } else if (A.type === 'H' && B.type === 'L') {
+      const amplitude = round2(A.price - B.price);
+      result.n_measure = { amplitude, target: round2(C.price - amplitude), from: A, via: B, to: C, direction: 'down' };
+    }
+  }
+
+  const last3 = [A, B, C];
+  const hiPts = last3.filter(p => p.type === 'H');
+  const loPts = last3.filter(p => p.type === 'L');
+  if (hiPts.length && loPts.length) {
+    const recentH = hiPts.reduce((a, b) => (b.idx > a.idx ? b : a));
+    const recentL = loPts.reduce((a, b) => (b.idx > a.idx ? b : a));
+    if (recentH.price > recentL.price) {
+      const amplitude = round2(recentH.price - recentL.price);
+      const breakoutRef = Math.max(recentH.price, close);
+      result.equal_measure = { amplitude, target: round2(breakoutRef + amplitude), high: recentH, low: recentL, direction: 'up' };
+    }
+  }
+
+  if (!result.n_measure && !result.equal_measure) {
+    return { available: false, reason: '近期轉折點排列不是交替的高低點序列，無法套用測量法公式' };
+  }
+  return result;
+}
+
+/* ── 頸線上某個x位置的高度（線性內插），頭肩底頸線通常有斜度，不是水平線 ── */
+function necklineYAt(p1, p2, idx) {
+  if (p2.idx === p1.idx) return p1.price;
+  return p1.price + (p2.price - p1.price) * (idx - p1.idx) / (p2.idx - p1.idx);
+}
+
+/* ── 頭肩底：SKILL.md附錄A的精確規則——右肩/左肩低點不可跌破「頭部到頸線
+   距離的一半」，否則型態失敗。bars 是已經依 PATTERN_LOOKBACK_DAYS 截斷過
+   的陣列，swings 的 idx 相對於這個 bars。 ── */
+function detectHeadShoulders(bars, swings) {
+  if (swings.length < 5) return null;
+  const last5 = swings.slice(-5);
+  if (last5.map(s => s.type).join('') !== 'LHLHL') return null;
+  const [A, E, C, F, B] = last5;
+  const lowerShoulder = Math.min(A.price, B.price);
+  if (!(C.price < lowerShoulder * (1 - HS_HEAD_TOLERANCE))) return null; // 頭部不夠低，不算頭肩底
+
+  const necklineAtHead = necklineYAt(E, F, C.idx);
+  const H = necklineAtHead - C.price;
+  if (H <= 0) return null; // 頭部比頸線還高，資料異常，跳過
+  const minShoulderPrice = C.price + H / 2;
+  if (A.price < minShoulderPrice || B.price < minShoulderPrice) return null; // 肩低點跌破頭頸距離一半，型態失敗
+
+  const target = round2(necklineAtHead + H);
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  return {
+    type: 'head_shoulders_bottom', label: '頭肩底',
+    points: [pt(A, '左肩'), pt(E, '反彈高'), pt(C, '頭'), pt(F, '反彈高'), pt(B, '右肩')],
+    neckline: { points: [pt(E, '頸線'), pt(F, '頸線')] },
+    target,
+    note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── W底（雙重底）：第2支腳不可跌破第1支腳最低點，否則打底失敗。 ── */
+function detectDoubleBottom(bars, swings) {
+  if (swings.length < 3) return null;
+  const last3 = swings.slice(-3);
+  if (last3.map(s => s.type).join('') !== 'LHL') return null;
+  const [A, E, B] = last3;
+  if (B.price < A.price * (1 - WBOTTOM_TOLERANCE)) return null; // 第二腳跌破第一腳，型態失敗
+  const lowest = Math.min(A.price, B.price);
+  const target = round2(E.price + (E.price - lowest));
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  return {
+    type: 'double_bottom', label: 'W底',
+    points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2')],
+    neckline: { points: [pt(E, '頸線')] }, // 只有單點：畫成貫穿整個可視範圍的水平線
+    target,
+    note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── 箱型整理：找出價位相近的高點群/低點群（用 BOX_TOLERANCE 分群），畫出
+   上下兩條近似水平頸線。跟頭肩底/W底不同，不是靠轉折點序列比對，是直接
+   在整段回看範圍內找「群聚」。 ── */
+function detectBox(bars) {
+  if (bars.length < 20) return null;
+  const highs = bars.map((b, idx) => ({ idx, price: b.high }));
+  const lows  = bars.map((b, idx) => ({ idx, price: b.low }));
+  const maxHigh = Math.max(...highs.map(h => h.price));
+  const minLow  = Math.min(...lows.map(l => l.price));
+  const resistancePts = highs.filter(h => h.price >= maxHigh * (1 - BOX_TOLERANCE));
+  const supportPts    = lows.filter(l => l.price <= minLow * (1 + BOX_TOLERANCE));
+  if (resistancePts.length < 2 || supportPts.length < 2) return null; // 上下頸線至少各要2個觸及點
+  const resistance = round2(average(resistancePts.map(p => p.price)));
+  const support = round2(average(supportPts.map(p => p.price)));
+  if (resistance <= support) return null;
+  const rangePct = (resistance - support) / support * 100;
+  if (rangePct > BOX_MAX_RANGE_PCT) return null; // 差距太大不像整理區間
+  const target = round2(resistance + (resistance - support));
+  // 標籤要看「這個點原本是從 highs 群聚（壓力）還是 lows 群聚（支撐）篩出來
+  // 的」，不能拿價格去跟算好的 resistance 平均值重新比大小——resistancePts
+  // 裡價格較低的觸及點可能低於 resistance 平均，若用「>= resistance才算壓力」
+  // 這種二次判斷，會被誤標成支撐，把當天的最高價說成支撐，語意是錯的。
+  const points = [
+    ...resistancePts.map(p => ({ idx: p.idx, price: round2(p.price), date: dateOf(bars, p.idx), label: '壓力觸及點' })),
+    ...supportPts.map(p => ({ idx: p.idx, price: round2(p.price), date: dateOf(bars, p.idx), label: '支撐觸及點' })),
+  ].sort((a, b) => a.idx - b.idx); // 依時間先後排序，方便對照K線圖閱讀
+  return {
+    type: 'box', label: '箱型整理', points,
+    neckline: { resistance, support, fromIdx: 0, toIdx: bars.length - 1,
+                fromDate: dateOf(bars, 0), toDate: dateOf(bars, bars.length - 1) },
+    target,
+    note: '機械式偵測（依觸及點群聚套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+function detectPatterns(bars) {
+  const window = bars.slice(-PATTERN_LOOKBACK_DAYS);
+  if (window.length < 20) return [];
+  const highs = window.map(b => b.high), lows = window.map(b => b.low);
+  const swings = mergeAlternatingSwings(findSwingPoints(highs, lows, 3));
+  const detected = [];
+  const hs = detectHeadShoulders(window, swings); if (hs) detected.push(hs);
+  const db = detectDoubleBottom(window, swings); if (db) detected.push(db);
+  const box = detectBox(window); if (box) detected.push(box);
+  return detected;
+}
+
+/* ── SOX/DJI 大盤連動摘要：跟 report_builder.py::index_metric() 對應的簡化版
+   （只取最新一筆漲跌%跟是否站上MA20，不做完整的verdict判斷——那是給大盤
+   分析報告用的，個股診斷不需要那麼完整）。 ── */
+function indexBrief(indexCode, label) {
+  const hist = DBMgr.getMarketIndexHistory(indexCode, 90);
+  if (!hist || hist.length < 21) return { available: false, label };
+  const closes = hist.map(r => r.close);
+  const ma20 = computeSMA(closes, 20);
+  const lastIdx = hist.length - 1;
+  const last = hist[lastIdx], prev = hist[lastIdx - 1];
+  const chg1Pct = (prev && prev.close) ? (last.close / prev.close - 1) * 100 : null;
+  const aboveMa20 = ma20[lastIdx] != null ? last.close >= ma20[lastIdx] : null;
+  return {
+    available: true, label, trade_date: last.trade_date, close: round2(last.close),
+    chg1_pct: chg1Pct != null ? round2(chg1Pct) : null, above_ma20: aboveMa20,
+  };
+}
+
+/* ── 主要入口：鏡射 report_builder.py::stock_diagnosis()，資料來源全部是
+   DBMgr 本機已同步好的資料，不經網路/YAML。 ── */
+function diagnoseStock(code) {
+  const info = DBMgr.getStockInfo(code);
+  const bars = DBMgr.getPriceHistory(code, DIAGNOSIS_HISTORY_DAYS);
+  if (!bars || bars.length < 20) {
+    return { available: false, reason: '歷史資料不足20天，無法完整診斷', stock_code: code, stock_name: info?.stock_name };
+  }
+  const n = bars.length;
+  const closes = bars.map(b => b.close);
+  const volumes = bars.map(b => b.volume || 0);
+  const maArr = { 5: computeSMA(closes, 5), 10: computeSMA(closes, 10), 20: computeSMA(closes, 20), 60: computeSMA(closes, 60) };
+  const volMa5Arr = computeSMA(volumes, 5);
+  const last = bars[n - 1];
+
+  // 1. 目前位置
+  const maVals = { 5: maArr[5][n-1], 10: maArr[10][n-1], 20: maArr[20][n-1], 60: maArr[60][n-1] };
+  const aboveMa20 = maVals[20] != null && last.close >= maVals[20];
+  let alignment = null;
+  if (maVals[5] != null && maVals[10] != null && maVals[20] != null && maVals[60] != null) {
+    if (maVals[5] > maVals[10] && maVals[10] > maVals[20] && maVals[20] > maVals[60]) alignment = '多排';
+    else if (maVals[5] < maVals[10] && maVals[10] < maVals[20] && maVals[20] < maVals[60]) alignment = '空排';
+    else alignment = '交叉混雜';
+  }
+  const position = {
+    close: round2(last.close),
+    ma: { 5: round2(maVals[5]), 10: round2(maVals[10]), 20: round2(maVals[20]), 60: round2(maVals[60]) },
+    above_ma20: aboveMa20, ma_alignment: alignment,
+  };
+
+  // 2. 趨勢判斷（簡化版頭頭高/底底高，滾動高低點比較，非型態辨識）
+  const recent = bars.slice(-10);
+  const recentHigh = round2(Math.max(...recent.map(b => b.high)));
+  const recentLow  = round2(Math.min(...recent.map(b => b.low)));
+  let trendLabel = '資料不足', priorHigh = null, priorLow = null;
+  if (n >= 30) {
+    const prior = bars.slice(-30, -10);
+    priorHigh = round2(Math.max(...prior.map(b => b.high)));
+    priorLow  = round2(Math.min(...prior.map(b => b.low)));
+    if (recentHigh > priorHigh && recentLow > priorLow) trendLabel = '頭頭高底底高（多頭）';
+    else if (recentHigh < priorHigh && recentLow < priorLow) trendLabel = '頭頭低底底低（空頭）';
+    else trendLabel = '盤整/不明確';
+  }
+  const trend = { label: trendLabel, recent_high: recentHigh, recent_low: recentLow, prior_high: priorHigh, prior_low: priorLow };
+
+  // 3. 型態辨識（機械式偵測，見上方 detectPatterns 註解）
+  const detected = detectPatterns(bars);
+
+  // 4. K棒品質判讀鐵律（最近一根）
+  const kbar = kbarQuality(last.open, last.high, last.low, last.close);
+
+  // 5. 量價關係
+  const vMa5 = volMa5Arr[n - 1];
+  const volRatio = vMa5 ? last.volume / vMa5 : null;
+  let vpLabel;
+  if (volRatio == null) vpLabel = '資料不足';
+  else if (volRatio >= 1.2) vpLabel = `達攻擊量標準（${volRatio.toFixed(2)}倍基本量，>=1.2倍門檻）`;
+  else vpLabel = `未達攻擊量標準（${volRatio.toFixed(2)}倍基本量）`;
+  const volumePrice = {
+    volume: last.volume, vol_ma5: vMa5 != null ? Math.round(vMa5) : null,
+    vol_ratio: volRatio != null ? round2(volRatio) : null, label: vpLabel,
+  };
+
+  // 6. 大盤連動
+  const marketLinkage = {
+    sox: indexBrief('SOX', '費城半導體'), dji: indexBrief('DJI', '道瓊工業指數'),
+    note: '半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI',
+  };
+
+  // 7. 進出場建議
+  const targets = measuredMoveTargets(bars);
+  const entryExit = {
+    trend_stop: maVals[20] != null ? `跌破月線(MA20=${round2(maVals[20])})視為趨勢停損，不論盈虧應出場` : null,
+    trend_stop_price: maVals[20] != null ? round2(maVals[20]) : null,
+    pct_stop_range: '5%-7%（百分比停損）',
+    measured_move: targets,
+  };
+
+  return {
+    available: true, stock_code: code, stock_name: info?.stock_name, market: info?.market,
+    as_of_date: last.trade_date,
+    position, trend,
+    pattern: {
+      detected,
+      note: detected.length ? null : '近期無法辨識出已定義的型態（頭肩底/W底/箱型），不代表沒有型態，只是不在偵測規則範圍內',
+    },
+    kbar_quality: kbar, volume_price: volumePrice, market_linkage: marketLinkage, entry_exit: entryExit,
+    risk_note: '以上為技術面框架推演，非投資建議；型態偵測為機械式規則比對，非人工圖形驗證，最終進出場決策仍須自行覆核K線圖。',
+  };
+}
+
+const StockDiagnosis = { diagnose: diagnoseStock };
+
+/* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
    ════════════════════════════════════════ */
 const Chart = (() => {
@@ -3107,6 +3487,14 @@ const Chart = (() => {
   let onInfoChangeCb = null; // app-level hook: fires with the referenced candle's data for the fixed info bar
   let lastStep   = 1;        // px-per-candle from the most recent draw(), used to convert drag distance to candle count
   let liveDate   = null;     // trade_date of the still-forming "today" candle (LiveFeed), or null
+  let annotations = null;    // 持股診斷疊加標記，見 StockDiagnosis + setAnnotations()：
+                              // { trendStopPrice, targets:[{price,label}], points:[{date,price,label}],
+                              //   necklines:[{points:[{date,price}]} | {resistance,support}] }
+                              // 用日期而非periodData的index存點位，因為呼叫端(renderDiagnosisSourceChart)
+                              // 算annotation時用的是自己抓的完整 daily_prices 陣列，不是Chart目前縮放
+                              // 中的 periodData 切片；畫的時候才在當前可視窗口的 data 裡查日期對應的
+                              // slot，查不到（滑出可視範圍）就直接跳過那個點，不報錯。
+  function setAnnotations(spec) { annotations = spec || null; }
 
   const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
@@ -3392,6 +3780,11 @@ const Chart = (() => {
   const J_COL     = '#ec4899'; // pink, for KD's J line
   const RSI_FAST_COL = '#14b8a6'; // teal
   const RSI_SLOW_COL = '#f97316'; // orange
+  // 持股診斷疊加標記的配色，刻意跟上面MA/KD/MACD既有色系區隔，避免使用者
+  // 混淆「這是均線」還是「這是型態標記」。
+  const PATTERN_COL = '#a855f7'; // 轉折點/頸線：紫色
+  const TARGET_COL  = '#ec4899'; // 目標價：洋紅（跟 J_COL 撞色但用途情境不會同時出現在同一份說明中，暫不特別處理）
+  const STOP_COL    = '#ef4444'; // 趨勢停損：紅色（風險警戒，跟K棒漲跌色無關）
 
   function drawLine(points, getY, xOf, color, offset) {
     ctx.strokeStyle = color;
@@ -3406,6 +3799,86 @@ const Chart = (() => {
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
+  }
+
+  /* ── 持股診斷疊加繪製：見上方 annotations 狀態欄位的格式說明。畫在MA線
+     之後、成交量panel之前，順序上蓋在K棒/均線上方，但不擋成交量/副圖指標。 ── */
+  function drawAnnotationsOverlay(data, pY, xOf, realOffset, PAD_L, W, PAD_R) {
+    if (!annotations) return;
+    const dateToSlot = new Map();
+    for (let i = 0; i < data.length; i++) dateToSlot.set(data[i].trade_date, i);
+    const findX = date => {
+      const i = dateToSlot.get(date);
+      return i == null ? null : xOf(i + realOffset);
+    };
+
+    ctx.save();
+
+    if (annotations.trendStopPrice != null) {
+      const y = pY(annotations.trendStopPrice);
+      ctx.strokeStyle = STOP_COL; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = STOP_COL; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText(`趨勢停損 ${annotations.trendStopPrice.toFixed(2)}`, PAD_L + 4, y - 3);
+    }
+
+    for (const nl of (annotations.necklines || [])) {
+      ctx.strokeStyle = PATTERN_COL; ctx.lineWidth = 1.3; ctx.setLineDash([6, 3]);
+      if (nl.points && nl.points.length === 2) {
+        const [p1, p2] = nl.points;
+        const x1 = findX(p1.date), x2 = findX(p2.date);
+        if (x1 != null && x2 != null) {
+          ctx.beginPath(); ctx.moveTo(x1, pY(p1.price)); ctx.lineTo(x2, pY(p2.price)); ctx.stroke();
+        } else if (x1 != null || x2 != null) {
+          // 其中一個端點已滑出可視範圍：退化畫成水平線，取還在畫面上的那個價位
+          const p = x1 != null ? p1 : p2;
+          const y = pY(p.price);
+          ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+        }
+      } else if (nl.points && nl.points.length === 1) {
+        const y = pY(nl.points[0].price);
+        ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+      } else if (nl.resistance != null && nl.support != null) {
+        const yR = pY(nl.resistance), yS = pY(nl.support);
+        ctx.beginPath(); ctx.moveTo(PAD_L, yR); ctx.lineTo(W - PAD_R, yR); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(PAD_L, yS); ctx.lineTo(W - PAD_R, yS); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    for (const t of (annotations.targets || [])) {
+      if (t.price == null) continue;
+      const y = pY(t.price);
+      ctx.strokeStyle = TARGET_COL; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+      ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = TARGET_COL; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText(`${t.label || '目標價'} ${t.price.toFixed(2)}`, PAD_L + 4, y - 3);
+    }
+
+    for (const pt of (annotations.points || [])) {
+      const x = findX(pt.date);
+      if (x == null) continue; // 滑出目前可視範圍，直接略過，不報錯
+      const y = pY(pt.price);
+      ctx.fillStyle = PATTERN_COL;
+      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = isDark() ? '#000' : '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+      if (pt.label) {
+        ctx.font = '10px sans-serif';
+        const textW = ctx.measureText(pt.label).width;
+        const boxW = textW + 8, boxH = 15;
+        const boxX = Math.min(Math.max(x - boxW / 2, PAD_L), W - PAD_R - boxW);
+        const boxY = Math.max(2, y - 8 - boxH);
+        ctx.fillStyle = isDark() ? 'rgba(30,30,40,0.85)' : 'rgba(255,255,255,0.9)';
+        rrect(ctx, boxX, boxY, boxW, boxH, 3); ctx.fill();
+        ctx.strokeStyle = PATTERN_COL; ctx.lineWidth = 1; rrect(ctx, boxX, boxY, boxW, boxH, 3); ctx.stroke();
+        ctx.fillStyle = PATTERN_COL; ctx.textAlign = 'center';
+        ctx.fillText(pt.label, boxX + boxW / 2, boxY + boxH - 4);
+      }
+    }
+
+    ctx.restore();
   }
 
   /* ── build the info payload for the fixed HTML info bar (see app-level renderInfoBar) ── */
@@ -3569,6 +4042,8 @@ const Chart = (() => {
     drawLine(maSM, pY, xOf, MA_SM_COL, realOffset);
     drawLine(maM, pY, xOf, MA_M_COL, realOffset);
     drawLine(maL, pY, xOf, MA_L_COL, realOffset);
+
+    drawAnnotationsOverlay(data, pY, xOf, realOffset, PAD_L, W, PAD_R);
 
     /* 成交量 panel */
     let maxV = 0;
@@ -3792,7 +4267,7 @@ const Chart = (() => {
   return {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
-    setPanelWeights,
+    setPanelWeights, setAnnotations,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
   };
@@ -4116,10 +4591,13 @@ const R = {
   mtabChart:       $('mtab-chart'),
   mtabTrend:       $('mtab-trend'),
   mtabChip:        $('mtab-chip'),
+  mtabDiagnosis:   $('mtab-diagnosis'),
+  chartArea:          $('chart-area'),
   chartModeTabs:      $('chart-mode-tabs'),
   modeTabDaily:       $('mode-tab-daily'),
   modeTabIntraday:    $('mode-tab-intraday'),
   modeTabChip:        $('mode-tab-chip'),
+  modeTabDiagnosis:   $('mode-tab-diagnosis'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
   reportTitle:     $('report-title'),
@@ -4179,6 +4657,7 @@ const R = {
   panelWeightIndicator: $('panel-weight-indicator'),
   memoChartBtn:    $('memo-chart-btn'),
   chipPanel:     $('chip-panel'),
+  diagnosisPanel: $('diagnosis-panel'),
   memoModal:       $('memo-modal'),
   memoModalTitle:  $('memo-modal-title'),
   memoClose:       $('memo-close'),
@@ -4914,6 +5393,7 @@ function renderCurrentSourceChart(opts = {}) {
   // 「盤後」分頁美股指數不支援，見 renderChipSourceChart 自己的判斷。
   if (chartMode === 'intraday') renderIntradaySourceChart(opts);
   else if (chartMode === 'chip') renderChipSourceChart();
+  else if (chartMode === 'diagnosis') renderDiagnosisSourceChart(opts);
   else renderDailySourceChart(opts);
 }
 
@@ -4932,12 +5412,21 @@ function setChartModeUI(mode) {
   R.modeTabDaily.classList.toggle('active', mode === 'daily');
   R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
   R.modeTabChip.classList.toggle('active', mode === 'chip');
-  R.periodToggle.classList.toggle('hidden', mode !== 'daily');
+  R.modeTabDiagnosis.classList.toggle('active', mode === 'diagnosis');
+  R.periodToggle.classList.toggle('hidden', mode !== 'daily' && mode !== 'diagnosis');
   R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
   R.indicatorToggle.classList.toggle('hidden', mode === 'chip');
   R.chartInfoBar.classList.toggle('hidden', mode === 'chip');
   R.chartWrap.classList.toggle('hidden', mode === 'chip');
   R.chipPanel.classList.toggle('hidden', mode !== 'chip');
+  // 持股診斷跟盤後不同：#chart-wrap 保持可見（型態標記要疊在K線上），只是
+  // 縮成上半部固定比例讓下面的診斷文字有空間，見 .diagnosis-mode CSS。
+  R.chartArea.classList.toggle('diagnosis-mode', mode === 'diagnosis');
+  R.diagnosisPanel.classList.toggle('hidden', mode !== 'diagnosis');
+  // 疊加標記只屬於持股診斷分頁；離開這個分頁時要清掉，否則切回技術分析/
+  // 走勢圖時，Chart.draw() 仍會繼續畫上一次算好的轉折點/頸線/目標價（Chart
+  // 模組不知道目前是哪個chartMode，annotations是獨立於chartMode的狀態）。
+  if (mode !== 'diagnosis') Chart.setAnnotations(null);
 }
 
 function applyChartMode(mode) {
@@ -4952,7 +5441,9 @@ function applyChartMode(mode) {
   // canvas的模式時統一補一次resize，从根本解決，不用依賴使用者自己重選股票
   // 才能修好。setTimeout是因為display:none→block的layout要等一個tick才會
   // 反映在clientWidth/clientHeight上（同樣的手法沿用switchMobileTab原本的
-  // 註解）。
+  // 註解）。持股診斷模式下 #chart-wrap 從沒被隱藏過，但高度會被
+  // .diagnosis-mode 的 flex:0 0 45% 改變，同樣需要補一次resize讓canvas內部
+  // 緩衝跟著新高度重算，否則會沿用切換前的舊尺寸。
   if (mode !== 'chip') setTimeout(() => Chart.resize(), 50);
 }
 
@@ -5208,13 +5699,17 @@ function renderStockDiagnosisHtml(d) {
 /* 個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖，但「盤後」分頁（三大法人/
    股權分布/強制集保）是台股特有的揭露資訊，美股指數沒有，切到指數時要
    disable 掉，並且如果目前正在看盤後分頁，要退回技術分析（見
-   selectMarketIndex 呼叫端）。 */
+   selectMarketIndex 呼叫端）。持股診斷同理，指數沒有個股型態可診斷。 */
 function updateChartModeAvailability() {
   R.modeTabIntraday.classList.remove('disabled');
   R.mtabTrend.classList.remove('disabled');
   const isIndex = currentChartSource?.type === 'index';
   R.modeTabChip.classList.toggle('disabled', isIndex);
   R.mtabChip.classList.toggle('disabled', isIndex);
+  // 持股診斷是個股型態/趨勢的機械式判讀，大盤/美股指數沒有意義，比照盤後
+  // 分頁一起 disable。
+  R.modeTabDiagnosis.classList.toggle('disabled', isIndex);
+  R.mtabDiagnosis.classList.toggle('disabled', isIndex);
 }
 
 function rebuildIntradayPeriodToggle() {
@@ -5248,7 +5743,7 @@ function selectMarketIndex(code) {
      選股重繪兩次。「盤後」分頁不支援指數（見 updateChartModeAvailability），
      如果原本停留在盤後分頁又點了指數，要退回技術分析，不能讓已經disabled
      的分頁繼續掛在「目前選中」狀態。 */
-  const targetMode = chartMode === 'chip' ? 'daily' : chartMode;
+  const targetMode = (chartMode === 'chip' || chartMode === 'diagnosis') ? 'daily' : chartMode;
   switchMobileTab(targetMode === 'intraday' ? 'trend' : targetMode === 'chip' ? 'chip' : 'chart');
   setDrawerOpen(false);
 }
@@ -5281,7 +5776,7 @@ function selectStock(code) {
      whichever of 技術分析/走勢圖/盤後 是目前開著的。switchMobileTab 會透過
      applyChartMode 觸發實際重繪，desktop 版也一樣（那些 CSS class 只在
      手機直向 media query 下才有視覺效果，但這裡的呼叫本身不分裝置）。 */
-  switchMobileTab(chartMode === 'intraday' ? 'trend' : chartMode === 'chip' ? 'chip' : 'chart');
+  switchMobileTab(chartMode === 'intraday' ? 'trend' : chartMode === 'chip' ? 'chip' : chartMode === 'diagnosis' ? 'diagnosis' : 'chart');
   setDrawerOpen(false);
 }
 
@@ -5557,6 +6052,145 @@ function renderChipPanelBody() {
   });
 }
 
+/* ════════════════════════════════════════
+   持股診斷分頁（K線疊加標記 + 文字診斷，見 StockDiagnosis 模組）
+   跟盤後分頁不同之處：全部是本機同步好的 daily_prices/market_index 現算，
+   完全同步、不用 await，所以不需要 renderChipSourceChart 那種
+   loading/error/race-condition guard；diagnosisRenderedForCode 只是避免
+   LiveFeed 每20秒的即時回呼重複重算診斷文字（K線本身仍會照常用最新資料
+   重繪，只是診斷文字/疊加標記不會跟著每次重算，避免使用者往下捲動看文字
+   時被彈回頂端——這點跟 chipRenderedForCode 的理由一樣）。
+   ════════════════════════════════════════ */
+let diagnosisRenderedForCode = null;
+let diagnosisCache = null; // 上次算好的 diag 物件；setChartModeUI 離開分頁時會清掉Chart的annotations
+                            // （見該函式註解），切回同一檔時要靠這份cache重新套用，不能只看
+                            // diagnosisRenderedForCode就跳過，否則annotations會維持null畫不出東西。
+
+function renderDiagnosisSourceChart(opts = {}) {
+  if (!currentChartSource || currentChartSource.type !== 'stock') {
+    diagnosisRenderedForCode = null;
+    diagnosisCache = null;
+    Chart.setAnnotations(null);
+    R.diagnosisPanel.innerHTML = '<div class="diag-empty">大盤/美股指數沒有個股型態可診斷，這是台股個股專屬功能。</div>';
+    return;
+  }
+  const code = currentChartSource.code;
+  const history = DBMgr.getPriceHistory(code, DIAGNOSIS_HISTORY_DAYS);
+  Chart.setData(history, { period: 'day', preserveView: !!opts.preserveView });
+  if (diagnosisRenderedForCode === code && diagnosisCache) {
+    applyDiagnosisAnnotations(diagnosisCache);
+    return;
+  }
+  const diag = diagnoseStock(code);
+  diagnosisRenderedForCode = code;
+  diagnosisCache = diag;
+  applyDiagnosisAnnotations(diag);
+  renderDiagnosisPanelBody(diag);
+}
+
+/* 把 diagnoseStock() 回傳的診斷結果，轉成 Chart.setAnnotations() 要的疊加
+   規格（見 Chart 模組內 annotations 狀態欄位的格式說明）——測量法用到的
+   轉折點跟型態辨識用到的轉折點都畫出來，型態頸線、目標價（可能不只一個：
+   N字測量/等幅測量/型態本身各自的目標價都畫），趨勢停損只有一條（月線）。 */
+function applyDiagnosisAnnotations(diag) {
+  if (!diag.available) { Chart.setAnnotations(null); return; }
+  const points = [];
+  const necklines = [];
+  const targets = [];
+  const swingLabel = { H: '轉折高', L: '轉折低' };
+
+  const mm = diag.entry_exit?.measured_move;
+  if (mm?.available) {
+    for (const s of (mm.swing_points_used || [])) {
+      points.push({ date: s.date, price: s.price, label: swingLabel[s.type] || '轉折點' });
+    }
+    if (mm.n_measure) targets.push({ price: mm.n_measure.target, label: 'N字測量目標價' });
+    if (mm.equal_measure) targets.push({ price: mm.equal_measure.target, label: '等幅測量目標價' });
+  }
+
+  for (const p of (diag.pattern?.detected || [])) {
+    for (const pt of p.points) points.push({ date: pt.date, price: pt.price, label: pt.label });
+    if (p.neckline) necklines.push(p.neckline);
+    if (p.target != null) targets.push({ price: p.target, label: `${p.label}目標價` });
+  }
+
+  Chart.setAnnotations({
+    trendStopPrice: diag.entry_exit?.trend_stop_price ?? null,
+    targets, points, necklines,
+  });
+}
+
+function renderDiagnosisPanelBody(diag) {
+  if (!diag.available) {
+    R.diagnosisPanel.innerHTML = `<div class="diag-empty">${esc(diag.reason || '資料不足，無法診斷')}</div>`;
+    return;
+  }
+  const p = diag.position, t = diag.trend, kb = diag.kbar_quality, vp = diag.volume_price;
+  const ml = diag.market_linkage, ee = diag.entry_exit, pat = diag.pattern;
+
+  const maLine = ['5', '10', '20', '60'].map(k => `MA${k} ${p.ma[k] != null ? p.ma[k].toFixed(2) : '-'}`).join('　');
+  const positionHtml =
+    `<div class="diag-row">收盤 <b>${p.close.toFixed(2)}</b>　${p.above_ma20 ? '站上月線' : '跌破月線'}　均線排列：<b>${esc(p.ma_alignment || '資料不足')}</b></div>` +
+    `<div class="diag-row">${maLine}</div>`;
+
+  const trendHtml =
+    `<div class="diag-row">趨勢判斷：<b>${esc(t.label)}</b></div>` +
+    (t.prior_high != null
+      ? `<div class="diag-row">近10日高低 ${t.recent_high} / ${t.recent_low}　前10-30日高低 ${t.prior_high} / ${t.prior_low}</div>`
+      : `<div class="diag-row">近10日高低 ${t.recent_high} / ${t.recent_low}（資料不足30日，未比對前波高低點）</div>`);
+
+  const kbCls = kb.passes ? 'diag-pass' : 'diag-fail';
+  const kbHtml =
+    `<div class="diag-row">最近一根K棒：實體 ${kb.body_pct != null ? kb.body_pct.toFixed(2) : '-'}%　上影線占比 ${kb.upper_wick_pct_of_range != null ? kb.upper_wick_pct_of_range.toFixed(1) : '-'}%</div>` +
+    `<div class="diag-row ${kbCls}">${kb.passes ? '✓ 通過K棒品質判讀鐵律' : `✗ 未通過：${esc(kb.reason || '')}`}</div>`;
+
+  const vpHtml =
+    `<div class="diag-row">量 ${vp.volume ?? '-'}　5日均量 ${vp.vol_ma5 ?? '-'}　量比 ${vp.vol_ratio != null ? vp.vol_ratio.toFixed(2) : '-'}</div>` +
+    `<div class="diag-row">${esc(vp.label)}</div>`;
+
+  const idxLine = (i, name) => i.available
+    ? `${name} ${i.close}（${i.chg1_pct != null ? (i.chg1_pct >= 0 ? '+' : '') + i.chg1_pct.toFixed(2) : '-'}%，${i.trade_date}）${i.above_ma20 ? '站上MA20' : '跌破MA20'}`
+    : `${name}：資料不足`;
+  const mlHtml =
+    `<div class="diag-row">${idxLine(ml.sox, 'SOX 費城半導體')}</div>` +
+    `<div class="diag-row">${idxLine(ml.dji, 'DJI 道瓊工業')}</div>` +
+    `<div class="diag-risk">${esc(ml.note)}</div>`;
+
+  let patternHtml;
+  if (!pat.detected.length) {
+    patternHtml = `<div class="diag-empty">${esc(pat.note)}</div>`;
+  } else {
+    patternHtml = `<div class="diag-banner">⚠ 以下型態為機械式偵測（依轉折點/觸及點座標套公式判斷），型態本體是否成立請自行覆核上方K線圖，不代表系統已完成人工圖形驗證。</div>` +
+      pat.detected.map(pp => {
+        const ptLine = pp.points.map(x => `${esc(x.label)} ${x.price}（${esc(x.date || '')}）`).join('　');
+        return `<div class="diag-pattern-card"><b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}</div>`;
+      }).join('');
+  }
+
+  const mmHtml = (() => {
+    const mm = ee.measured_move;
+    if (!mm?.available) return `<div class="diag-row">${esc(mm?.reason || '轉折點不足，無法計算測量法目標價')}</div>`;
+    const lines = [];
+    if (mm.n_measure) lines.push(`N字測量：振幅 ${mm.n_measure.amplitude} → 目標價 <b>${mm.n_measure.target}</b>`);
+    if (mm.equal_measure) lines.push(`等幅測量：振幅 ${mm.equal_measure.amplitude} → 目標價 <b>${mm.equal_measure.target}</b>`);
+    return lines.map(l => `<div class="diag-row">${l}</div>`).join('');
+  })();
+  const eeHtml =
+    `<div class="diag-row">${ee.trend_stop ? esc(ee.trend_stop) : '月線資料不足，無法給出趨勢停損價'}</div>` +
+    `<div class="diag-row">百分比停損：${esc(ee.pct_stop_range)}</div>` +
+    mmHtml;
+
+  R.diagnosisPanel.innerHTML =
+    `<div class="diag-section"><h3>目前位置</h3>${positionHtml}</div>` +
+    `<div class="diag-section"><h3>趨勢判斷</h3>${trendHtml}</div>` +
+    `<div class="diag-section"><h3>型態辨識</h3>${patternHtml}</div>` +
+    `<div class="diag-section"><h3>K棒品質判讀鐵律</h3>${kbHtml}</div>` +
+    `<div class="diag-section"><h3>量價關係</h3>${vpHtml}</div>` +
+    `<div class="diag-section"><h3>大盤連動</h3>${mlHtml}</div>` +
+    `<div class="diag-section"><h3>進出場建議</h3>${eeHtml}</div>` +
+    `<div class="diag-risk">${esc(diag.risk_note)}</div>`;
+}
+
 function saveMemoModal() {
   if (!memoModalCode) return;
   MemoStore.setText(memoModalCode, R.memoTextarea.value);
@@ -5691,6 +6325,7 @@ let expandingHistory   = false;
 let currentChartSource = null; // { type: 'stock'|'index', code } — whatever Chart is currently showing
 let sourceExhausted    = false; // true once we've confirmed there's nothing older left for currentChartSource
 let chartMode = 'daily'; // 'daily'（技術分析）| 'intraday'（走勢圖，只支援個股，見 applyChartMode）
+                          // | 'chip'（盤後）| 'diagnosis'（持股診斷，只支援個股，見 renderDiagnosisSourceChart）
 
 /* Non-blocking, Google-Maps-style loading: Chart already renders a dashed
    "載入中" placeholder for any not-yet-loaded portion of the visible window
@@ -5821,18 +6456,21 @@ function populateSectors() {
    ════════════════════════════════════════ */
 function switchMobileTab(tab) {
   if (tab === 'chip' && R.mtabChip.classList.contains('disabled')) tab = 'chart'; // 美股指數沒有盤後資料
-  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'chip'); // 三者共用同一個 #chart-area
+  if (tab === 'diagnosis' && R.mtabDiagnosis.classList.contains('disabled')) tab = 'chart'; // 美股指數沒有持股診斷
+  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'chip' || tab === 'diagnosis'); // 四者共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
   R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
   R.mtabChart.classList.toggle('active', tab === 'chart');
   R.mtabTrend.classList.toggle('active', tab === 'trend');
   R.mtabChip.classList.toggle('active', tab === 'chip');
+  R.mtabDiagnosis.classList.toggle('active', tab === 'diagnosis');
   // resize（如果需要）交給 applyChartMode 自己處理，見該函式註解——「盤後」
   // 分頁不該resize canvas（canvas根本沒顯示），這裡不能再無條件補一次。
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
   else if (tab === 'chip') applyChartMode('chip');
+  else if (tab === 'diagnosis') applyChartMode('diagnosis');
 }
 
 function setDrawerOpen(open) {
@@ -6002,6 +6640,7 @@ function bindEvents() {
   R.mtabChart.addEventListener('click', () => switchMobileTab('chart'));
   R.mtabTrend.addEventListener('click', () => switchMobileTab('trend'));
   R.mtabChip.addEventListener('click', () => switchMobileTab('chip'));
+  R.mtabDiagnosis.addEventListener('click', () => switchMobileTab('diagnosis'));
 
   /* 分析報告面板：報告種類改由左側 view-sel「分析」清單選（見 selectReportType），
      這裡只剩顯示模式（分頁/連續）跟上一頁/下一頁。 */
