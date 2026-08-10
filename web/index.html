@@ -6071,12 +6071,21 @@ function renderDiagnosisSourceChart(opts = {}) {
     diagnosisRenderedForCode = null;
     diagnosisCache = null;
     Chart.setAnnotations(null);
+    R.chartInfo.textContent = '';
     R.diagnosisPanel.innerHTML = '<div class="diag-empty">大盤/美股指數沒有個股型態可診斷，這是台股個股專屬功能。</div>';
     return;
   }
   const code = currentChartSource.code;
   const history = DBMgr.getPriceHistory(code, DIAGNOSIS_HISTORY_DAYS);
-  Chart.setData(history, { period: 'day', preserveView: !!opts.preserveView });
+  const isLive  = LiveFeed.isActive(code);
+  Chart.setData(history, { period: 'day', preserveView: !!opts.preserveView, liveDate: isLive ? taipeiDateStr() : null });
+  // renderChartInfoLine 一定要在這裡呼叫，不能只靠切股票時殘留的舊文字——
+  // 之前漏掉這行，導致header那一行（#chart-info）停留在使用者「上一次」
+  // 真正呼叫過 renderChartInfoLine/renderIntradayInfoLine 時的舊內容（例如
+  // 走勢圖分頁留下的「累積N筆」文字），切股票、切分頁都不會更新它，只有
+  // chart-title（股票名稱）是每次選股都會更新，兩者對不上就會出現「標題是
+  // 新股票，但收盤價/文字卻是舊股票」的錯亂畫面。
+  renderChartInfoLine(history, isLive);
   if (diagnosisRenderedForCode === code && diagnosisCache) {
     applyDiagnosisAnnotations(diagnosisCache);
     return;
