@@ -385,9 +385,20 @@ select:focus { outline: 2px solid var(--acc); }
   gap: 12px;
   min-height: 38px;
 }
-#chart-title { font-size: 14px; font-weight: 700; color: var(--txt0); }
+#chart-nav-left { display: contents; }
+#chart-code { font-size: 12px; font-weight: 600; color: var(--txt2); }
+#chart-name { font-size: 14px; font-weight: 700; color: var(--txt0); }
 #prev-stock-btn, #next-stock-btn { font-size: 18px; font-weight: 700; line-height: 1; flex-shrink: 0; }
-#chart-info  { font-size: 12px; color: var(--txt2); }
+/* 漲跌/現價要「大大的」醒目顯示、且跟股票代號/上下一檔放同一行（見手機版
+   media query 的 grid 排版），最後一筆資料時間只是提醒用，字體縮小
+   （見#chart-info-meta）。漲跌金額(-amt)/百分比(-pct)分開兩個元素，
+   手機版排成上下兩格（見手機版 grid-template）。 */
+#chart-info-amt { font-size: 15px; font-weight: 700; color: var(--txt1); }
+#chart-info-pct { font-size: 13px; font-weight: 700; color: var(--txt1); }
+#chart-info-amt.up, #chart-info-pct.up { color: var(--up); }
+#chart-info-amt.dn, #chart-info-pct.dn { color: var(--dn); }
+#chart-info-price { font-size: 15px; font-weight: 700; color: var(--txt0); }
+#chart-info-meta { font-size: 10px; font-weight: 400; color: var(--txt2); }
 
 /* ── 桌面版 技術分析/走勢圖 分頁（手機版改用 #mobile-tabbar，見下方 media query） ── */
 #chart-mode-tabs {
@@ -795,6 +806,48 @@ select:focus { outline: 2px solid var(--acc); }
 #drawer-overlay { display: none; }
 
 /* ════════════════════════════════════════
+   RESPONSIVE — compact (phone/tablet, <1024px, both orientations):
+   縮放按鈕（+/-/還原）在手機上佔用navbar空間又難點準，拿掉；日/週/月/季
+   跟KD/MACD/RSV/RSI移到chart-header底下自己獨立一整排、高度只跟著文字走
+   （不套用下面.btn的34px觸控高度）。header改用CSS grid排成固定格線：
+     ┌────┬──────┬────────┬──────────┬────┐
+     │    │ 代號  │ 現價    │ 漲跌金額  │    │
+     │ ‹  ├──────┼────────┼──────────┤ ›  │
+     │    │ 名稱  │ 最後時間 │ 漲跌%    │    │
+     └────┴──────┴────────┴──────────┴────┘
+     │        日/週/月/季線＋KD/MACD/RSI       │（獨立一整排）
+     └─────────────────────────────────────┘
+   上一檔/下一檔用 grid-row: span 2 佔滿左右兩欄整個高度。
+   ════════════════════════════════════════ */
+@media (max-width: 1023px) {
+  #zoom-in-btn, #zoom-out-btn, #zoom-reset-btn { display: none; }
+
+  #chart-header {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 0;
+  }
+  #chart-nav-left { display: flex; align-items: center; gap: 2px; grid-column: 1; grid-row: 1 / span 2; }
+  #chart-code       { grid-column: 2; grid-row: 1; }
+  #chart-name       { grid-column: 2; grid-row: 2; }
+  #chart-info-price { grid-column: 3; grid-row: 1; }
+  #chart-info-meta  { grid-column: 3; grid-row: 2; }
+  #chart-info-amt   { grid-column: 4; grid-row: 1; text-align: right; }
+  #chart-info-pct   { grid-column: 4; grid-row: 2; text-align: right; }
+  #next-stock-btn   { grid-column: 5; grid-row: 1 / span 2; }
+  #chart-header .chart-toolbar {
+    grid-column: 1 / -1;
+    justify-content: center;
+    padding-top: 4px;
+    margin-top: 4px;
+    border-top: 1px solid var(--bdr);
+  }
+  .chart-toolbar .seg-btn { min-height: 0; }
+}
+
+/* ════════════════════════════════════════
    RESPONSIVE — compact PORTRAIT (phone/tablet, <1024px, portrait):
    list ⇄ chart become tab-switched full-screen panels, one at a time.
    ════════════════════════════════════════ */
@@ -851,7 +904,7 @@ select:focus { outline: 2px solid var(--acc); }
 @media (max-width: 380px) {
   .chart-toolbar { gap: 4px; }
   .seg-btn { padding: 4px 6px; font-size: 11px; }
-  #chart-title { font-size: 13px; }
+  #chart-name { font-size: 13px; }
 }
 </style>
 </head>
@@ -982,11 +1035,17 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="chart-mode-tab" id="mode-tab-diagnosis" data-mode="diagnosis">持股診斷</button>
     </div>
     <div id="chart-header">
-      <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
-      <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
-      <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
-      <span id="chart-title">請從左側選擇股票</span>
-      <span id="chart-info"></span>
+      <div id="chart-nav-left">
+        <button class="btn icon" id="prev-stock-btn" title="上一檔">‹</button>
+        <button class="btn icon" id="drawer-toggle-btn" title="開啟股票清單">📋</button>
+        <button class="btn icon memo-btn hidden" id="memo-chart-btn" title="備忘錄">📝</button>
+      </div>
+      <span id="chart-code"></span>
+      <span id="chart-name">請從左側選擇股票</span>
+      <span id="chart-info-price"></span>
+      <span id="chart-info-meta"></span>
+      <span id="chart-info-amt"></span>
+      <span id="chart-info-pct"></span>
       <div class="chart-toolbar">
         <div class="seg-group" id="period-toggle">
           <button class="seg-btn active" data-period="day">日線</button>
@@ -5114,8 +5173,12 @@ const R = {
   prevBtn:     $('prev-btn'),
   nextBtn:     $('next-btn'),
   pageInfo:    $('page-info'),
-  chartTitle:  $('chart-title'),
-  chartInfo:   $('chart-info'),
+  chartCode:   $('chart-code'),
+  chartName:   $('chart-name'),
+  chartInfoAmt:  $('chart-info-amt'),
+  chartInfoPct:  $('chart-info-pct'),
+  chartInfoPrice: $('chart-info-price'),
+  chartInfoMeta:  $('chart-info-meta'),
   chartInfoBar:$('chart-info-bar'),
   chartHeader: $('chart-header'),
   prevStockBtn: $('prev-stock-btn'),
@@ -5853,31 +5916,66 @@ function focusChartArea() {
   R.mtabTrend.classList.remove('active');
 }
 
-/* liveBadge: true 的時候在資訊列後面加上「🔴即時」提示，表示這筆資料是
-   LiveFeed 剛從證交所抓回來的當天即時報價，還不是官方收盤後的正式資料。 */
+/* 清空漲跌金額/百分比/現價/最後時間四個子欄位，取代舊版單純
+   R.chartInfo.textContent=''——現在是4個獨立元素，不能只清容器。 */
+function clearChartInfoLine() {
+  R.chartInfoAmt.textContent = ''; R.chartInfoAmt.className = '';
+  R.chartInfoPct.textContent = ''; R.chartInfoPct.className = '';
+  R.chartInfoPrice.textContent = '';
+  R.chartInfoMeta.textContent = '';
+}
+
+/* amt/pct 為 null 代表沒有前一筆可比較（例如資料只有1筆），這時只清空
+   漲跌欄，不強行顯示0.00%誤導使用者「平盤」。手機版排版把漲跌金額跟
+   百分比拆成上下兩格（見手機版 media query 的 grid），所以這裡分開設
+   兩個元素，而不是像桌面版舊做法合併成一個字串。 */
+function setChartInfoChange(amt, pct) {
+  if (amt == null) {
+    R.chartInfoAmt.textContent = ''; R.chartInfoAmt.className = '';
+    R.chartInfoPct.textContent = ''; R.chartInfoPct.className = '';
+    return;
+  }
+  const sign = amt >= 0 ? '+' : '';
+  const cls = amt > 0 ? 'up' : amt < 0 ? 'dn' : '';
+  R.chartInfoAmt.textContent = `${sign}${amt.toFixed(2)}`;
+  R.chartInfoAmt.className = cls;
+  R.chartInfoPct.textContent = pct != null ? `(${sign}${pct.toFixed(2)}%)` : '';
+  R.chartInfoPct.className = cls;
+}
+
+/* liveBadge: true 的時候在最後時間後面加上「🔴即時」提示，表示這筆資料是
+   LiveFeed 剛從證交所抓回來的當天即時報價，還不是官方收盤後的正式資料。
+   漲跌/現價刻意做成大字體（見CSS #chart-info-amt/-pct/-price），
+   最後一筆資料時間只是提醒用途、字體縮小，不佔太多版面（見#chart-info-meta，
+   對應使用者要求：漲跌跟現價要「大大的」，時間資訊字體可以很小）。 */
 function renderChartInfoLine(history, liveBadge) {
-  if (!history.length) { R.chartInfo.textContent = ''; return; }
+  if (!history.length) { clearChartInfoLine(); return; }
   const last = history.at(-1);
   const prev = history.at(-2);
-  const chg  = prev ? (((last.close - prev.close) / prev.close) * 100).toFixed(2) : null;
-  const sign = chg > 0 ? '+' : '';
-  const base = chg != null
-    ? `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}  (${sign}${chg}%)`
-    : `最後 ${last.trade_date}  收 ${last.close?.toFixed(2)}`;
-  R.chartInfo.textContent = base + (liveBadge ? '　🔴即時' : '');
+  const changeAmt = (prev && prev.close != null && last.close != null) ? +(last.close - prev.close).toFixed(2) : null;
+  const changePct = (changeAmt != null && prev.close) ? (changeAmt / prev.close * 100) : null;
+  setChartInfoChange(changeAmt, changePct);
+  R.chartInfoPrice.textContent = last.close != null ? `現價 ${last.close.toFixed(2)}` : '';
+  R.chartInfoMeta.textContent = `最後 ${last.trade_date}` + (liveBadge ? '　🔴即時' : '');
 }
 
 function renderIntradayInfoLine(rows, isIndex) {
   if (!rows.length) {
-    R.chartInfo.textContent = isIndex
+    clearChartInfoLine();
+    R.chartInfoPrice.textContent = isIndex
       ? '走勢圖：目前抓不到 Yahoo 的美股分線資料（可能還在抓取中，或美股當時休市）'
       : '走勢圖：尚未收集到今日即時資料（開盤期間打開本頁才會開始累積，見設定的說明）';
     return;
   }
   const last = rows.at(-1);
+  const first = rows[0];
   const t = (last.trade_date.split('T')[1] || '').slice(0, 8);
   const badge = isIndex ? '' : '　🔴即時'; // 美股指數走勢圖純靠 Yahoo backfill，沒有 LiveFeed 即時輪詢
-  R.chartInfo.textContent = `最後 ${t}  收 ${last.close?.toFixed(2)}　累積 ${rows.length} 筆${badge}`;
+  const changeAmt = (first && first.close != null && last.close != null) ? +(last.close - first.close).toFixed(2) : null;
+  const changePct = (changeAmt != null && first.close) ? (changeAmt / first.close * 100) : null;
+  setChartInfoChange(changeAmt, changePct);
+  R.chartInfoPrice.textContent = last.close != null ? `現價 ${last.close.toFixed(2)}` : '';
+  R.chartInfoMeta.textContent = `最後 ${t}　累積 ${rows.length} 筆${badge}`;
 }
 
 /* 技術分析（日線為主）分頁的實際繪製，個股/大盤指數共用。preserveView 給
@@ -6270,7 +6368,8 @@ function selectMarketIndex(code) {
   );
 
   const entry = US_INDEX_LIST.find(x => x.code === code);
-  R.chartTitle.textContent = entry ? `${entry.name} (${code})` : code;
+  R.chartCode.textContent = code;
+  R.chartName.textContent = entry ? entry.name : '';
   showMemoChartBtn(code);
   updateChartModeAvailability();
 
@@ -6300,7 +6399,8 @@ function selectStock(code) {
   );
 
   const info = DBMgr.getStockInfo(code);
-  R.chartTitle.textContent = info ? `${code}  ${info.stock_name}` : code;
+  R.chartCode.textContent = code;
+  R.chartName.textContent = info ? info.stock_name : '';
   showMemoChartBtn(code);
   updateChartModeAvailability();
 
@@ -6609,7 +6709,7 @@ function renderDiagnosisSourceChart(opts = {}) {
     diagnosisRenderedForCode = null;
     diagnosisCache = null;
     Chart.setAnnotations(null);
-    R.chartInfo.textContent = '';
+    clearChartInfoLine();
     R.diagnosisPanel.innerHTML = '<div class="diag-empty">大盤/美股指數沒有個股型態可診斷，這是台股個股專屬功能。</div>';
     return;
   }
