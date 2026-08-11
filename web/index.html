@@ -741,6 +741,19 @@ select:focus { outline: 2px solid var(--acc); }
 .diag-pattern-svg svg { width: 100%; height: 100%; display: block; }
 .diag-pattern-body { flex: 1; min-width: 0; }
 .diag-pattern-basis { font-size: 11.5px; color: var(--txt2); line-height: 1.6; margin-top: 4px; }
+/* 多層次巢狀型態分析的尺度標籤（見 detectPatterns/diagnosisPatternScales）：
+   短型態(近期、較敏感)／中型態(使用者設定的主要天數)／大型態(半年以上格局)，
+   顏色只是視覺區分不同尺度，跟漲跌/型態類別的既有色系無關。 */
+.diag-scale-badge {
+  display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px;
+  border-radius: 3px; margin-right: 6px; vertical-align: middle;
+}
+.diag-scale-small  { background: rgba(34,211,238,.18); color: #0891b2; }
+.diag-scale-medium { background: rgba(147,51,234,.18); color: #7e22ce; }
+.diag-scale-large  { background: rgba(234,88,12,.18);  color: #c2410c; }
+:root[data-theme="dark"] .diag-scale-small  { color: #67e8f9; }
+:root[data-theme="dark"] .diag-scale-medium { color: #d8b4fe; }
+:root[data-theme="dark"] .diag-scale-large  { color: #fdba74; }
 .diag-empty { font-size: 13px; color: var(--txt2); }
 .diag-risk { font-size: 11px; color: var(--txt2); line-height: 1.6; margin-top: 4px; }
 
@@ -1048,6 +1061,7 @@ select:focus { outline: 2px solid var(--acc); }
         <div class="modal-cat" data-cat="indicators">指標參數</div>
         <div class="modal-cat" data-cat="intraday">走勢圖</div>
         <div class="modal-cat" data-cat="strong">強勢股門檻</div>
+        <div class="modal-cat" data-cat="diagnosis">持股診斷</div>
         <div class="modal-cat" data-cat="display">顯示設定</div>
       </div>
       <div class="modal-content">
@@ -1092,6 +1106,11 @@ select:focus { outline: 2px solid var(--acc); }
           <label>RS值門檻 <input type="number" id="strong-rs-th" min="1" max="99"></label>
           <label>量比門檻 <input type="number" id="strong-vol-ratio" min="0" step="0.1"></label>
           <label>距60日高點(%) <input type="number" id="strong-near-high" min="0" max="100"></label>
+        </div>
+        <div class="modal-pane hidden" data-pane="diagnosis">
+          <h3>型態分析K棒數</h3>
+          <label>K棒數量 <input type="number" id="diagnosis-lookback-days" min="30" max="500"></label>
+          <p class="modal-hint">持股診斷分頁的型態辨識（W底/M頭/頭肩底/頭肩頂/箱型/V型反轉/圓弧底/旗型/楔型）用這個數字當「中型態」的分析範圍，預設150天（約半年）。系統會自動再衍生出「短型態」（這個數字的一半，較敏感、容易抓到近期的小型態）跟「大型態」（這個數字的1.6倍，較嚴謹、只認半年以上格局的大型態）一起分析，畫面上會用色塊標示每個型態是在哪個尺度偵測到的。數字改小＝分析更敏感但誤判機率也higher；改大＝更嚴謹保守，但門檻（尤其是長期相對高低點驗證）會變嚴格，原本看得到的型態可能反而消失，可以自行拿捏。</p>
         </div>
         <div class="modal-pane hidden" data-pane="display">
           <h3>圖表指標按鈕</h3>
@@ -3142,9 +3161,31 @@ const HS_HEAD_TOLERANCE = 0.02;       // 頭肩底：頭部須比兩肩低點的
 const WBOTTOM_TOLERANCE = 0.005;      // W底：第二腳容許比第一腳低點再低0.5%以內，仍視為「未跌破」（雜訊容忍）
 const BOX_TOLERANCE = 0.03;           // 箱型：高點/低點群聚容忍值，同一群視為「價位相近」
 const BOX_MAX_RANGE_PCT = 25;         // 箱型：上下頸線價差超過此比例，不像整理區間，不判定為箱型
-const PATTERN_LOOKBACK_DAYS = 150;    // 型態偵測只看最近150個交易日，太久遠的轉折點對「現在」意義不大
+const PATTERN_LOOKBACK_DAYS_REF = 150; // 型態偵測窗口的「參考基準」天數：使用者可在持股診斷設定調整
+                                        // 實際窗口大小（見 getDiagnosisLookbackDays），這裡是拿來當比例
+                                        // 基準——REVERSAL_PRIOR_TREND_LOOKBACK/REVERSAL_POSITION_LOOKBACK
+                                        // 兩個回看窗口都是照這個基準訂出比例，多層次分析在不同尺度時會照
+                                        // 同樣比例縮放，不是每個尺度都套用同一組寫死的天數。
 const MEASURED_MOVE_LOOKBACK_DAYS = 120; // 測量法目標價找轉折點的回看天數（同 report_builder.py 預設值）
-const DIAGNOSIS_HISTORY_DAYS = 250;   // 持股診斷抓的K棒天數，跟技術分析分頁預設載入量一致
+const DIAGNOSIS_HISTORY_DAYS_FALLBACK = 250; // K棒抓取天數的下限，確保「大型態」尺度(見diagnosisPatternScales)
+                                              // 一定有足夠歷史可看，即使使用者把型態分析K棒數調得很小
+
+/* ── 持股診斷設定：使用者可在「⚙ 圖表設定→持股診斷」調整型態分析用的K棒
+   數量（見 #settings-modal 的「持股診斷」分頁），預設150天(約半年)。改小
+   會讓分析更敏感（容易抓到近期的小型態，但誤判機率也higher）；改大會
+   更嚴謹（需要更長的歷史才能確認型態，但也更保守、有些型態會消失不見——
+   這是使用者實測後反饋的取捨，做成設定值讓使用者自己決定要多敏感）。 ── */
+function getDiagnosisLookbackDays() {
+  const v = Settings.get('diagnosisLookbackDays');
+  return (typeof v === 'number' && Number.isFinite(v) && v >= 30 && v <= 500) ? Math.round(v) : PATTERN_LOOKBACK_DAYS_REF;
+}
+/* 實際要向DBMgr抓多少天K棒——一定要蓋過「大型態」尺度(mainDays*1.6)再加一段
+   緩衝，讓大型態尺度自己的長期相對高低點檢查(REVERSAL_POSITION_LOOKBACK)
+   也有足夠歷史可看，不會因為抓的資料不夠長而被裁短失真。 ── */
+function diagnosisHistoryDaysFor(mainDays) {
+  const largeScaleDays = Math.round(mainDays * 1.6);
+  return Math.max(DIAGNOSIS_HISTORY_DAYS_FALLBACK, largeScaleDays + 60);
+}
 
 // ── 以下是 M頭/頭肩頂/V型反轉/圓弧底/旗型/楔型 新增偵測器用的門檻常數，
 //    延續上面的原則：都是這次自訂的經驗值，不是課程逐字數字，寫在這裡
@@ -3337,9 +3378,9 @@ function necklineYAt(p1, p2, idx) {
 }
 
 /* ── 頭肩底：SKILL.md附錄A的精確規則——右肩/左肩低點不可跌破「頭部到頸線
-   距離的一半」，否則型態失敗。bars 是已經依 PATTERN_LOOKBACK_DAYS 截斷過
-   的陣列，swings 的 idx 相對於這個 bars。 ── */
-function detectHeadShoulders(bars, swings, fullBars = bars, offset = 0) {
+   距離的一半」，否則型態失敗。bars 是已經依當前分析尺度截斷過的陣列，
+   swings 的 idx 相對於這個 bars（見 detectPatternsAtScale）。 ── */
+function detectHeadShoulders(bars, swings, fullBars = bars, offset = 0, priorTrendLookback = REVERSAL_PRIOR_TREND_LOOKBACK, positionLookback = REVERSAL_POSITION_LOOKBACK) {
   if (swings.length < 5) return null;
   const last5 = swings.slice(-5);
   if (last5.map(s => s.type).join('') !== 'LHLHL') return null;
@@ -3355,14 +3396,16 @@ function detectHeadShoulders(bars, swings, fullBars = bars, offset = 0) {
 
   // 頭肩底是底部反轉型態，左肩(A)之前要先走過一段夠份量的空頭破壞段，才算
   // 「真的跌到低檔」——盤整區間裡隨機出現的三個低點，形狀再像也不是真正
-  // 的頭肩底（見上方 REVERSAL_PRIOR_TREND_* 常數的說明）。
-  const declinePct = priorDeclinePct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  // 的頭肩底（見上方 REVERSAL_PRIOR_TREND_* 常數的說明）。priorTrendLookback/
+  // positionLookback 兩個參數讓多層次分析（見 detectPatternsAtScale）可以
+  // 依所在尺度等比例縮放這兩個回看窗口，不是每個尺度都套用同一組固定天數。
+  const declinePct = priorDeclinePct(bars, A.idx, priorTrendLookback);
   if (declinePct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
   // 光看「近期跌了多少%」還不夠——如果這段跌幅只是更早、更深一次崩跌後的
   // 反彈拉回，短窗口看起來很像破壞段，但左肩本身不是真正的長期低點，只是
   // 半山腰。這裡再驗證左肩是不是長期回看窗口裡真正的相對低點（見上方
   // REVERSAL_POSITION_* 常數的說明）。
-  if (!isNearRelativeLow(fullBars, offset + A.idx, REVERSAL_POSITION_LOOKBACK, REVERSAL_POSITION_TOLERANCE)) return null;
+  if (!isNearRelativeLow(fullBars, offset + A.idx, positionLookback, REVERSAL_POSITION_TOLERANCE)) return null;
 
   const target = round2(necklineAtHead + H);
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
@@ -3371,14 +3414,14 @@ function detectHeadShoulders(bars, swings, fullBars = bars, offset = 0) {
     points: [pt(A, '左肩'), pt(E, '反彈高'), pt(C, '頭'), pt(F, '反彈高'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且左肩本身是近${REVERSAL_POSITION_LOOKBACK}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）低於兩肩較低者（${round2(lowerShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
+    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且左肩本身是近${positionLookback}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）低於兩肩較低者（${round2(lowerShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次反彈高點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未跌破「頭部到頸線距離一半」的門檻（${round2(minShoulderPrice)}）；突破頸線後，目標價＝頸線＋(頸線－頭) = ${round2(necklineAtHead)} ＋ ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
 
 /* ── 頭肩頂：頭肩底的鏡射版本，右肩/左肩高點不可突破「頭部到頸線距離的
    一半」，否則型態失敗。 ── */
-function detectHeadShouldersTop(bars, swings, fullBars = bars, offset = 0) {
+function detectHeadShouldersTop(bars, swings, fullBars = bars, offset = 0, priorTrendLookback = REVERSAL_PRIOR_TREND_LOOKBACK, positionLookback = REVERSAL_POSITION_LOOKBACK) {
   if (swings.length < 5) return null;
   const last5 = swings.slice(-5);
   if (last5.map(s => s.type).join('') !== 'HLHLH') return null;
@@ -3395,13 +3438,13 @@ function detectHeadShouldersTop(bars, swings, fullBars = bars, offset = 0) {
   // 頭肩頂是頭部反轉型態，左肩(A)之前要先走過一段夠份量的多頭噴出段，才算
   // 「真的走到多頭高檔」——這是使用者實戰覆盤反饋的重點：型態不能只看
   // 轉折點幾何形狀，要先確認位置背景（見上方 REVERSAL_PRIOR_TREND_* 常數）。
-  const runupPct = priorRunupPct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  const runupPct = priorRunupPct(bars, A.idx, priorTrendLookback);
   if (runupPct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
   // 光看「近期漲了多少%」還不夠——如果這段漲幅只是更早、更深一次崩跌後的
   // 第一波反彈，短窗口看起來很像噴出段，但左肩根本還沒回到崩跌前的舊高，
   // 不是「多頭已經走到高檔」。這裡再驗證左肩是不是長期回看窗口裡真正的
   // 相對高點（見上方 REVERSAL_POSITION_* 常數的說明）。
-  if (!isNearRelativeHigh(fullBars, offset + A.idx, REVERSAL_POSITION_LOOKBACK, REVERSAL_POSITION_TOLERANCE)) return null;
+  if (!isNearRelativeHigh(fullBars, offset + A.idx, positionLookback, REVERSAL_POSITION_TOLERANCE)) return null;
 
   const target = round2(necklineAtHead - H);
   const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
@@ -3410,13 +3453,13 @@ function detectHeadShouldersTop(bars, swings, fullBars = bars, offset = 0) {
     points: [pt(A, '左肩'), pt(E, '回檔低'), pt(C, '頭'), pt(F, '回檔低'), pt(B, '右肩')],
     necklines: [{ points: [pt(E, '頸線'), pt(F, '頸線')] }],
     target,
-    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且左肩本身是近${REVERSAL_POSITION_LOOKBACK}根K棒的相對高點（貼近這段期間最高點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是多頭高檔而非反彈半山腰；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）高於兩肩較高者（${round2(higherShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
+    basis: `左肩（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且左肩本身是近${positionLookback}根K棒的相對高點（貼近這段期間最高點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是多頭高檔而非反彈半山腰；頭部（${round2(C.price)}，${dateOf(bars, C.idx)}）高於兩肩較高者（${round2(higherShoulder)}）逾${(HS_HEAD_TOLERANCE * 100).toFixed(0)}%；頸線＝連接兩次回檔低點（${round2(E.price)}／${round2(F.price)}）的線，頭部對應位置的頸線高度約${round2(necklineAtHead)}；左右肩（${round2(A.price)}／${round2(B.price)}）都未突破「頭部到頸線距離一半」的門檻（${round2(maxShoulderPrice)}）；跌破頸線後，目標價＝頸線－(頭－頸線) = ${round2(necklineAtHead)} － ${round2(H)} = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
 
 /* ── W底（雙重底）：第2支腳不可跌破第1支腳最低點，否則打底失敗。 ── */
-function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0) {
+function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0, priorTrendLookback = REVERSAL_PRIOR_TREND_LOOKBACK, positionLookback = REVERSAL_POSITION_LOOKBACK) {
   if (swings.length < 3) return null;
   const last3 = swings.slice(-3);
   if (last3.map(s => s.type).join('') !== 'LHL') return null;
@@ -3426,12 +3469,12 @@ function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0) {
   // W底是底部反轉型態，第一腳(A)之前要先走過一段夠份量的空頭破壞段，才算
   // 「真的跌到低檔」，不是盤整區間裡隨機出現的兩個低點（見上方
   // REVERSAL_PRIOR_TREND_* 常數的說明）。
-  const declinePct = priorDeclinePct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  const declinePct = priorDeclinePct(bars, A.idx, priorTrendLookback);
   if (declinePct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
   // 光看「近期跌了多少%」還不夠，第一腳本身還要是長期回看窗口裡真正的
   // 相對低點，不是深崩之後反彈拉回途中的假象（見上方 REVERSAL_POSITION_*
   // 常數的說明）。
-  if (!isNearRelativeLow(fullBars, offset + A.idx, REVERSAL_POSITION_LOOKBACK, REVERSAL_POSITION_TOLERANCE)) return null;
+  if (!isNearRelativeLow(fullBars, offset + A.idx, positionLookback, REVERSAL_POSITION_TOLERANCE)) return null;
 
   const lowest = Math.min(A.price, B.price);
   const target = round2(E.price + (E.price - lowest));
@@ -3441,13 +3484,13 @@ function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0) {
     points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2')],
     necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
     target,
-    basis: `第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一腳本身是近${REVERSAL_POSITION_LOOKBACK}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
+    basis: `第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一腳本身是近${positionLookback}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
 
 /* ── M頭：W底的鏡射版本，第2個頭不可突破第1個頭（不創新高），否則型態失敗。 ── */
-function detectDoubleTop(bars, swings, fullBars = bars, offset = 0) {
+function detectDoubleTop(bars, swings, fullBars = bars, offset = 0, priorTrendLookback = REVERSAL_PRIOR_TREND_LOOKBACK, positionLookback = REVERSAL_POSITION_LOOKBACK) {
   if (swings.length < 3) return null;
   const last3 = swings.slice(-3);
   if (last3.map(s => s.type).join('') !== 'HLH') return null;
@@ -3458,7 +3501,7 @@ function detectDoubleTop(bars, swings, fullBars = bars, offset = 0) {
   // 「真的走到多頭高檔做頭」——這是使用者實戰覆盤反饋的重點：M頭不是任何
   // 兩個差不多高的波峰夾一個波谷就算數，盤整區間裡隨機出現的雙峰，形狀
   // 再像也不是真正的M頭（見上方 REVERSAL_PRIOR_TREND_* 常數的說明）。
-  const runupPct = priorRunupPct(bars, A.idx, REVERSAL_PRIOR_TREND_LOOKBACK);
+  const runupPct = priorRunupPct(bars, A.idx, priorTrendLookback);
   if (runupPct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
   // 使用者第二輪覆盤反饋（實際案例：潤泰全2915）：光看「近期漲了多少%」還
   // 不夠——如果這段漲幅只是更早、更深一次崩跌後的第一波反彈（例如從55跌到
@@ -3466,7 +3509,7 @@ function detectDoubleTop(bars, swings, fullBars = bars, offset = 0) {
   // 舊高，只是空頭築底後的第一波反彈，不是「多頭已經走到高檔」。這裡再驗證
   // 第一個頭是不是長期回看窗口裡真正的相對高點（見上方 REVERSAL_POSITION_*
   // 常數的說明）。
-  if (!isNearRelativeHigh(fullBars, offset + A.idx, REVERSAL_POSITION_LOOKBACK, REVERSAL_POSITION_TOLERANCE)) return null;
+  if (!isNearRelativeHigh(fullBars, offset + A.idx, positionLookback, REVERSAL_POSITION_TOLERANCE)) return null;
 
   const highest = Math.max(A.price, B.price);
   const target = round2(E.price - (highest - E.price));
@@ -3476,7 +3519,7 @@ function detectDoubleTop(bars, swings, fullBars = bars, offset = 0) {
     points: [pt(A, '頭1'), pt(E, '頸線低點'), pt(B, '頭2')],
     necklines: [{ points: [pt(E, '頸線')] }],
     target,
-    basis: `第一個頭（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${REVERSAL_PRIOR_TREND_LOOKBACK}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一個頭本身是近${REVERSAL_POSITION_LOOKBACK}根K棒的相對高點（貼近這段期間最高點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是多頭高檔而非反彈半山腰；第二個頭（${round2(B.price)}，${dateOf(bars, B.idx)}）未超過第一個頭逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${round2(E.price)}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${round2(E.price)} － (${round2(highest)} － ${round2(E.price)}) = ${target}`,
+    basis: `第一個頭（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從低點上漲${runupPct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一個頭本身是近${positionLookback}根K棒的相對高點（貼近這段期間最高點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是多頭高檔而非反彈半山腰；第二個頭（${round2(B.price)}，${dateOf(bars, B.idx)}）未超過第一個頭逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%（未創新高）；頸線＝中間拉回低點 ${round2(E.price)}；跌破頸線後，目標價＝頸線－(頭部高點－頸線) = ${round2(E.price)} － (${round2(highest)} － ${round2(E.price)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -3721,21 +3764,31 @@ function detectWedge(bars) {
   };
 }
 
-function detectPatterns(bars) {
-  const window = bars.slice(-PATTERN_LOOKBACK_DAYS);
+/* ── 在單一固定尺度(lookbackDays根K棒)裡跑完整的9種型態偵測。多層次分析
+   （見下面的 detectPatterns）用不同的 lookbackDays 重複呼叫這個函式，
+   每個尺度各自獨立判斷，不會互相干擾。priorTrendLookback/positionLookback
+   兩個回看窗口依 lookbackDays 相對於 PATTERN_LOOKBACK_DAYS_REF 的比例
+   等比例縮放，維持跟150天基準時同樣的「相對嚴謹程度」，不是每個尺度都
+   套用同一組寫死的天數（尺度縮小、但驗證的天數沒跟著縮小，會變成太嚴格
+   而幾乎抓不到任何型態）。 ── */
+function detectPatternsAtScale(bars, lookbackDays) {
+  const window = bars.slice(-lookbackDays);
   if (window.length < 20) return [];
   const highs = window.map(b => b.high), lows = window.map(b => b.low);
   const swings = mergeAlternatingSwings(findSwingPoints(highs, lows, 3));
   // offset：window在完整bars陣列裡的起始位置，讓4個反轉型態偵測器能把
-  // window內的相對idx換算回bars的絕對idx，藉此用比型態偵測窗口(150天)更
-  // 長的完整歷史(bars最多250天)去驗證「是不是真的位於長期相對高檔/低檔」
-  // （見 REVERSAL_POSITION_* 常數與 isNearRelativeHigh/Low 的說明）。
+  // window內的相對idx換算回bars的絕對idx，藉此用比目前尺度更長的完整歷史
+  // 去驗證「是不是真的位於長期相對高檔/低檔」（見 REVERSAL_POSITION_* 常數
+  // 與 isNearRelativeHigh/Low 的說明）。
   const offset = bars.length - window.length;
+  const ratio = lookbackDays / PATTERN_LOOKBACK_DAYS_REF;
+  const priorTrendLookback = Math.max(10, Math.round(REVERSAL_PRIOR_TREND_LOOKBACK * ratio));
+  const positionLookback = Math.max(lookbackDays, Math.round(REVERSAL_POSITION_LOOKBACK * ratio));
   const detectors = [
-    () => detectHeadShoulders(window, swings, bars, offset),
-    () => detectHeadShouldersTop(window, swings, bars, offset),
-    () => detectDoubleBottom(window, swings, bars, offset),
-    () => detectDoubleTop(window, swings, bars, offset),
+    () => detectHeadShoulders(window, swings, bars, offset, priorTrendLookback, positionLookback),
+    () => detectHeadShouldersTop(window, swings, bars, offset, priorTrendLookback, positionLookback),
+    () => detectDoubleBottom(window, swings, bars, offset, priorTrendLookback, positionLookback),
+    () => detectDoubleTop(window, swings, bars, offset, priorTrendLookback, positionLookback),
     () => detectBox(window),
     () => detectVReversal(window),
     () => detectRoundingBottom(window),
@@ -3746,6 +3799,49 @@ function detectPatterns(bars) {
   for (const run of detectors) {
     const result = run();
     if (result) detected.push(result);
+  }
+  return detected;
+}
+
+/* ── 多層次巢狀型態分析：使用者反饋「大型態中應該還有小型態」——同一檔
+   股票在不同時間尺度上可能同時存在不同的型態（例如半年線圖是一個大箱型
+   整理，箱型裡面的最近一段走勢又自成一個W底），只用單一固定窗口分析會
+   看不到這種巢狀結構，而且窗口一放大，門檻(尤其是長期相對高低點驗證)會
+   變嚴格，反而讓原本看得到的中短期型態消失（使用者在上一輪反饋中提到的
+   「改大範圍後很多型態就看不到了」）。
+
+   做法：以使用者可調整的 mainDays（見 getDiagnosisLookbackDays，預設150天/
+   約半年）為「中型態」基準，另外自動衍生「短型態」(mainDays的一半，較敏感、
+   抓近期的小型態) 跟「大型態」(mainDays的1.6倍，較嚴謹、抓半年以上格局的
+   大型態) 兩個尺度，3個尺度各自完整跑一次 detectPatternsAtScale，型態物件
+   附上 scale/scaleLabel/scaleLookbackDays 標記是在哪個尺度偵測到的。
+   同一種型態如果在不同尺度都被偵測到（例如中型態15天窗口跟短型態75天
+   窗口剛好抓到同一組轉折點），用「型態種類+最後一個點的日期」當key去重，
+   只保留先出現的那個（尺度由小到大依序跑，小尺度通常更精準對應到「現在」
+   的位置，優先保留），避免畫面上同一個型態重複顯示兩次。 ── */
+function diagnosisPatternScales(mainDays) {
+  return [
+    { key: 'small',  label: '短型態', lookbackDays: Math.max(30, Math.round(mainDays * 0.5)) },
+    { key: 'medium', label: '中型態', lookbackDays: mainDays },
+    { key: 'large',  label: '大型態', lookbackDays: Math.round(mainDays * 1.6) },
+  ];
+}
+
+function detectPatterns(bars, mainDays = PATTERN_LOOKBACK_DAYS_REF) {
+  const scales = diagnosisPatternScales(mainDays);
+  const detected = [];
+  const seen = new Set();
+  for (const scale of scales) {
+    const lookbackDays = Math.min(scale.lookbackDays, bars.length);
+    if (lookbackDays < 20) continue;
+    const patterns = detectPatternsAtScale(bars, lookbackDays);
+    for (const p of patterns) {
+      const lastPt = p.points[p.points.length - 1];
+      const key = `${p.type}|${lastPt ? lastPt.date : ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      detected.push({ ...p, scale: scale.key, scaleLabel: scale.label, scaleLookbackDays: lookbackDays });
+    }
   }
   return detected;
 }
@@ -3772,7 +3868,8 @@ function indexBrief(indexCode, label) {
    DBMgr 本機已同步好的資料，不經網路/YAML。 ── */
 function diagnoseStock(code) {
   const info = DBMgr.getStockInfo(code);
-  const bars = DBMgr.getPriceHistory(code, DIAGNOSIS_HISTORY_DAYS);
+  const mainDays = getDiagnosisLookbackDays();
+  const bars = DBMgr.getPriceHistory(code, diagnosisHistoryDaysFor(mainDays));
   if (!bars || bars.length < 20) {
     return { available: false, reason: '歷史資料不足20天，無法完整診斷', stock_code: code, stock_name: info?.stock_name };
   }
@@ -3813,8 +3910,8 @@ function diagnoseStock(code) {
   }
   const trend = { label: trendLabel, recent_high: recentHigh, recent_low: recentLow, prior_high: priorHigh, prior_low: priorLow };
 
-  // 3. 型態辨識（機械式偵測，見上方 detectPatterns 註解）
-  const detected = detectPatterns(bars);
+  // 3. 型態辨識（機械式偵測、多層次巢狀分析，見上方 detectPatterns 註解）
+  const detected = detectPatterns(bars, mainDays);
 
   // 4. K棒品質判讀鐵律（最近一根）
   const kbar = kbarQuality(last.open, last.high, last.low, last.close);
@@ -5083,6 +5180,7 @@ const R = {
   strongRsThInput:     $('strong-rs-th'),
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
+  diagnosisLookbackDaysInput: $('diagnosis-lookback-days'),
   followMouseChk:  $('follow-mouse-toggle'),
   indicatorShowKd:   $('indicator-show-kd'),
   indicatorShowMacd: $('indicator-show-macd'),
@@ -6516,7 +6614,7 @@ function renderDiagnosisSourceChart(opts = {}) {
     return;
   }
   const code = currentChartSource.code;
-  const history = DBMgr.getPriceHistory(code, DIAGNOSIS_HISTORY_DAYS);
+  const history = DBMgr.getPriceHistory(code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
   const isLive  = LiveFeed.isActive(code);
   Chart.setData(history, { period: 'day', preserveView: !!opts.preserveView, liveDate: isLive ? taipeiDateStr() : null });
   // renderChartInfoLine 一定要在這裡呼叫，不能只靠切股票時殘留的舊文字——
@@ -6654,10 +6752,13 @@ function renderDiagnosisPanelBody(diag) {
       pat.detected.map(pp => {
         const ptLine = pp.points.map(x => `${esc(x.label)} ${x.price}（${esc(x.date || '')}）`).join('　');
         const svg = PATTERN_SCHEMATIC_SVG[pp.type] || '';
+        const scaleBadge = pp.scaleLabel
+          ? `<span class="diag-scale-badge diag-scale-${esc(pp.scale)}">${esc(pp.scaleLabel)}${pp.scaleLookbackDays ? `・近${pp.scaleLookbackDays}天` : ''}</span>`
+          : '';
         return `<div class="diag-pattern-card">` +
           `<div class="diag-pattern-svg">${svg}</div>` +
           `<div class="diag-pattern-body">` +
-            `<b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}` +
+            `${scaleBadge}<b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}` +
             (pp.basis ? `<div class="diag-pattern-basis">依據：${esc(pp.basis)}</div>` : '') +
           `</div>` +
         `</div>`;
@@ -7333,6 +7434,8 @@ function openSettingsModal() {
   R.strongVolRatioInput.value = sp.minVolRatio ?? 0.8;
   R.strongNearHighInput.value = sp.nearHighPct ?? 15;
 
+  R.diagnosisLookbackDaysInput.value = getDiagnosisLookbackDays();
+
   const scr = Settings.get('strongCurrentRules') || {};
   R.strongRuleKdCross.checked    = scr.kdCross    !== false;
   R.strongRuleMacd.checked       = scr.macd       !== false;
@@ -7431,6 +7534,22 @@ function saveSettingsModal() {
     pullback:   R.strongRulePullback.checked,
     risingMa20: R.strongRuleRisingMa20.checked,
   });
+
+  const diagnosisLookbackDays = parseInt(R.diagnosisLookbackDaysInput.value, 10);
+  if (!Number.isFinite(diagnosisLookbackDays) || diagnosisLookbackDays < 30 || diagnosisLookbackDays > 500) {
+    alert('型態分析K棒數必須是30~500之間的整數');
+    return;
+  }
+  const diagnosisLookbackChanged = diagnosisLookbackDays !== getDiagnosisLookbackDays();
+  Settings.set('diagnosisLookbackDays', diagnosisLookbackDays);
+  if (diagnosisLookbackChanged) {
+    // 分析範圍變了，之前算好的診斷結果（含疊加標記）都不能沿用，清掉cache
+    // 強制下次進持股診斷分頁時重算；如果現在就開著這個分頁，直接重繪一次
+    // 讓改動立即生效，不用使用者自己切分頁才看得到。
+    diagnosisRenderedForCode = null;
+    diagnosisCache = null;
+    if (chartMode === 'diagnosis') renderCurrentSourceChart();
+  }
 
   const followMouse = R.followMouseChk.checked;
   Settings.set('followMouseTooltip', followMouse);
