@@ -1832,17 +1832,37 @@ const DBMgr = (() => {
     });
   }
 
+  /* db.export() 序列化整個 WASM SQLite（成本跟目前已載入的資料庫總大小成
+     正比，不是跟這次改了幾列成正比），是貨真價實會卡住主執行緒的同步運算。
+     交易時間 LiveFeed（目前選中那一檔，每20秒一次）跟 ListLiveFeed（清單
+     這一頁所有股票，也是每20秒一次，但起始時間點沒對齊）都會呼叫
+     upsertLiveDailyRow → schedulePersist，如果只用「同一時間只允許一個
+     排程中的persist」這種粗略去重（原本的做法），兩條輪詢鏈交錯下來，
+     幾乎每次任一邊的tick一到就會馬上排一次新的persist，等於背景真的在
+     跑db.export()的頻率遠比LIVE_POLL_MS（20秒）密——使用者反映的「每10秒
+     卡一下」就是這樣來的。改成真正的節流：距離上一次「真的執行過」
+     persist()不到 PERSIST_MIN_INTERVAL_MS 的話，這次排程會延後到那個
+     時間點才觸發，不會提早搶跑。使用者切背景/關頁籤時 flushPersist()
+     還是會立刻補存，不會因為節流而真的遺失資料。 ── */
+  const PERSIST_MIN_INTERVAL_MS = 30000;
   let persistScheduled = false;
+  let lastPersistAt = 0;
   function schedulePersist() {
     if (persistScheduled) return;
     persistScheduled = true;
-    const run = () => { persistScheduled = false; persist(); };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 3000 });
-    else setTimeout(run, 1200);
+    const fire = () => { persistScheduled = false; lastPersistAt = Date.now(); persist(); };
+    const runIdle = () => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(fire, { timeout: 3000 });
+      else fire();
+    };
+    const wait = Math.max(0, PERSIST_MIN_INTERVAL_MS - (Date.now() - lastPersistAt));
+    if (wait > 0) setTimeout(runIdle, wait);
+    else runIdle();
   }
   function flushPersist() {
     if (!persistScheduled) return;
     persistScheduled = false;
+    lastPersistAt = Date.now();
     persist();
   }
   document.addEventListener('visibilitychange', () => {
@@ -2711,12 +2731,10 @@ const LiveFeed = (() => {
   async function refresh(code, market) {
     try {
       const item = await fetchRawItem(code, market);
-      console.log('[LiveFeed] raw item', code, item);
-      if (!item) { console.log('[LiveFeed] refresh: 回應沒有 msgArray[0]，視為沒資料', code); return false; }
+      if (!item) return false;
       let updated = false;
 
       const row = parseDailyRow(item);
-      console.log('[LiveFeed] parsed daily row', code, row, '(row===null 通常是日期欄位(d)對不上今天，或o/z/委買委賣都解不出價格)');
       if (row) {
         DBMgr.upsertLiveDailyRow(code, row);
         updated = true;
@@ -2725,7 +2743,6 @@ const LiveFeed = (() => {
         IntradayFeed.record(code, item);
         updated = true;
       }
-      console.log('[LiveFeed] refresh done', code, { updated });
       return updated;
     } catch (e) {
       console.warn('即時報價擷取失敗：', e.message);
@@ -2741,14 +2758,12 @@ const LiveFeed = (() => {
      真正的補救不是猜測節流成因，而是拿使用者「確實會發生」的互動事件
      （觸控/捲動/回到前景）當作補打一次的觸發點，見下面 poke()。 */
   async function doTick(code, market) {
-    if (inFlight) { console.log('[LiveFeed] doTick skipped：上一次還在跑(inFlight)', code); return; }
+    if (inFlight) return;
     inFlight = true;
     try {
       lastTickAt = Date.now();
       const got = await refresh(code, market);
       const willCallback = got && activeCode === code;
-      console.log('[LiveFeed] doTick result', { code, got, activeCode, willCallback,
-        note: !got ? '沒抓到新資料，不會觸發回呼' : activeCode !== code ? '抓到資料了，但這段期間使用者已經切走了(activeCode變了)，不觸發回呼' : '會觸發 onLiveUpdateCb → 檢查 main() 裡的 currentChartSource 是否還對得上' });
       if (willCallback) onLiveUpdateCb?.(code, taipeiDateStr());
     } finally {
       inFlight = false;
@@ -2832,25 +2847,17 @@ const ListLiveFeed = (() => {
   }
 
   async function tick() {
-    if (inFlight || !items.length || !LiveFeed.marketEligibleNow()) {
-      console.log('[ListLiveFeed] tick skipped', { inFlight, itemCount: items.length, marketEligible: LiveFeed.marketEligibleNow() });
-      return;
-    }
+    if (inFlight || !items.length || !LiveFeed.marketEligibleNow()) return;
     inFlight = true;
     try {
       const exCh = items.map(({ code, market }) => `${market === 'TPEx' ? 'otc' : 'tse'}_${code}.tw`).join('|');
-      console.log('[ListLiveFeed] fetching batch', exCh);
       const res = await fetch(`${TWSE_PROXY_BASE}/realtime?ex_ch=${exCh}`, { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      console.log('[ListLiveFeed] got', data.msgArray?.length ?? 0, 'items back');
       let any = false;
       for (const item of (data.msgArray || [])) {
-        const applied = LiveFeed.applyDailyItem(item);
-        console.log('[ListLiveFeed] applyDailyItem', item.c, applied ? '寫入了新的一列' : '沒有可用的價格(z/委買委賣都解不出)，跳過');
-        if (applied) any = true;
+        if (LiveFeed.applyDailyItem(item)) any = true;
       }
-      console.log('[ListLiveFeed] tick 完成，any(有任何一檔更新)=', any, any ? '→ 觸發 onUpdateCb (renderPage)' : '→ 不觸發重繪');
       if (any) onUpdateCb?.();
     } catch (e) {
       console.warn('清單即時報價批次擷取失敗：', e.message);
@@ -2865,14 +2872,13 @@ const ListLiveFeed = (() => {
      awaiting網路請求的當下 timer 本來就還沒設回去，見上面 running 註解）。 */
   function setTargets(nextItems) {
     const list = nextItems || [];
-    if (!list.length) { console.log('[ListLiveFeed] setTargets：目標清單是空的，停止輪詢'); stop(); return; }
+    if (!list.length) { stop(); return; }
     const nextKey = keyOf(list);
     items = list; // 就算 key 相同也要換成最新物件參考，內容理論上一致，不影響輪詢
-    if (nextKey === targetKey && running) { console.log('[ListLiveFeed] setTargets：跟目前輪詢中的目標相同，不重啟', nextKey); return; }
+    if (nextKey === targetKey && running) return;
     if (timer) clearTimeout(timer);
     targetKey = nextKey;
     running = true;
-    console.log('[ListLiveFeed] setTargets：(重新)啟動輪詢', nextKey);
     const loop = async () => {
       await tick();
       if (running) timer = setTimeout(loop, LIVE_POLL_MS);
@@ -5882,11 +5888,6 @@ function renderDailySourceChart(opts = {}) {
   Chart.setMoreHistoryAvailable(DBMgr.hasOlderMonthAvailable());
   const history = type === 'index' ? DBMgr.getMarketIndexHistory(code, 250) : DBMgr.getPriceHistory(code, 250);
   const isLive  = type === 'stock' && LiveFeed.isActive(code);
-  console.log('[chart] renderDailySourceChart', code, {
-    isLive, rows: history.length,
-    lastRow: history[history.length - 1],
-    note: 'isLive只代表LiveFeed現在有沒有在輪詢這一檔(見isActive)，不代表這次輪詢真的抓到新資料——要看上面[LiveFeed]的log',
-  });
   Chart.setData(history, {
     period: Settings.get('chartPeriod') || 'day',
     liveDate: isLive ? taipeiDateStr() : null,
@@ -5908,7 +5909,6 @@ async function renderIntradaySourceChart(opts = {}) {
   await IntradayFeed.ensureLoadedFor(code, yahooSymbol);
   if (currentChartSource?.type !== type || currentChartSource.code !== code) return; // 使用者可能已經切走了
   const rows = IntradayFeed.getTickRows(code);
-  console.log('[chart] renderIntradaySourceChart', code, { ticks: rows.length, lastTick: rows[rows.length - 1] });
   const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
   /* 走勢圖沒有技術分析那種「按月份漸進擴充」的更早資料可以補——backfill
      已經一次抓了 Yahoo 能給的上限（近5個交易日），縮小/平移到底就是真的
@@ -7615,12 +7615,7 @@ async function main() {
      TradingCalendar 提早開始載入休市日曆，不用等，反正 LiveFeed 真正
      決定要不要寫入資料還是看證交所回應裡的日期欄位，日曆只是前置篩選。 */
   LiveFeed.setOnLiveUpdate(code => {
-    console.log('[main] LiveFeed onLiveUpdate 觸發', { code, currentChartSource: currentChartSource ? { ...currentChartSource } : null });
-    if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) {
-      console.log('[main] → 跳過圖表重繪：currentChartSource 對不上目前抓到資料的股票（使用者可能已經切走了）', currentChartSource, '!==', code);
-      return;
-    }
-    console.log('[main] → 重繪圖表 + 清單', code);
+    if (currentChartSource?.type !== 'stock' || currentChartSource.code !== code) return;
     renderCurrentSourceChart({ preserveView: true });
     renderPage();
   });
@@ -7629,7 +7624,6 @@ async function main() {
      圖表才會動。renderPage() 本身會用目前頁面重新設定 ListLiveFeed 的目標，
      形成一個自我維持的輪詢迴圈，不需要另外再排程。 */
   ListLiveFeed.setOnUpdate(() => {
-    console.log('[main] ListLiveFeed onUpdate 觸發，重繪清單（不會動到圖表）');
     renderPage();
   });
   TradingCalendar.ensureLoaded().catch(() => {});
