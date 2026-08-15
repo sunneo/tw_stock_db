@@ -1377,6 +1377,13 @@ CREATE TABLE IF NOT EXISTS intraday_quotes (
 );
 `;
 
+/* 客戶端 schema 版本號——每次改動 CREATE_SCHEMA_SQL（新增表/索引）或
+   DBMgr.COLUMN_MIGRATIONS（既有表新增欄位）時要跟著 +1。跟 IndexedDB
+   存的 dbmeta_v2.schemaVersion 比對，不一致才觸發 DBMgr 的
+   applySchemaMigrations()（見該函式），一致就跳過整套檢查，不用每次
+   開頁面都重新對一次 PRAGMA table_info。 */
+const SCHEMA_VERSION = 2;
+
 const PAGE_SIZE = 20;
 
 /* ════════════════════════════════════════
@@ -1898,6 +1905,7 @@ const DBMgr = (() => {
     await IDB.set('meta', 'dbmeta_v2', {
       coreSha256: webManifest?.core?.sha256 || null,
       loadedMonths: [...loadedMonths],
+      schemaVersion: SCHEMA_VERSION,
       storedAt: new Date().toISOString(),
     });
   }
@@ -1940,21 +1948,34 @@ const DBMgr = (() => {
   });
   window.addEventListener('beforeunload', flushPersist);
 
-  /* ── Client-side schema migration safety net: a cached db from an older version
-     of this web app may predate a newly-added column. Without this, any query
-     referencing a missing column throws and silently returns []. ── */
-  function ensureSchemaMigrations() {
+  /* ── Client-side schema migration：一份從IndexedDB載回來的舊db，結構可能
+     停留在使用者上次開這個網頁那個版本，跟目前程式碼期待的schema對不上——
+     輕則查詢缺欄位/缺表靜默回傳[]，重則整個功能（例如清單趨勢欄要讀的
+     intraday_quotes表）完全用不了，卻不需要因此強迫使用者整個報價資料庫
+     重新下載（bootstrapFresh，數十MB）。用 SCHEMA_VERSION（見檔案開頭）
+     當「目標」，跟IndexedDB meta存的schemaVersion（「來源」）比對，不一致
+     才執行下面兩步遷移，一致就整套跳過（見 init() 的呼叫端判斷）：
+
+     1. 新增的表/索引：CREATE_SCHEMA_SQL 裡每一句都是 IF NOT EXISTS，對
+        已存在的db重新整份執行永遠安全、不會動到既有資料，缺什麼表就自動
+        補上，不用像下面欄位那樣一條一條手動列。
+     2. 新增到「既有表」的欄位（IF NOT EXISTS的CREATE TABLE補不了這種），
+        才需要下面 COLUMN_MIGRATIONS 手動列出、逐條檢查+ALTER TABLE補上
+        ──跟 db/init_db.py 的 Python端 MIGRATIONS 是同一套邏輯的JS版本，
+        兩邊只要新增欄位都要記得各自加一條，這裡沒辦法自動同步。 */
+  const COLUMN_MIGRATIONS = [
+    ['technical_indicators', 'rs_rating', 'REAL'],
+  ];
+  function applySchemaMigrations() {
     if (!db) return;
-    const MIGRATIONS = [
-      ['technical_indicators', 'rs_rating', 'REAL'],
-    ];
-    for (const [table, column, type] of MIGRATIONS) {
+    try { db.run(CREATE_SCHEMA_SQL); } catch (e) { console.warn('schema migration (tables) failed:', e.message); }
+    for (const [table, column, type] of COLUMN_MIGRATIONS) {
       try {
         const cols = query(`PRAGMA table_info(${table})`).map(c => c.name);
         if (cols.length && !cols.includes(column)) {
           run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
         }
-      } catch (e) { console.warn('schema migration failed:', table, column, e.message); }
+      } catch (e) { console.warn('schema migration (column) failed:', table, column, e.message); }
     }
   }
 
@@ -2114,7 +2135,14 @@ const DBMgr = (() => {
       onProgress('從本地存儲載入資料庫…', 60);
       db = new SQL.Database(new Uint8Array(bytes));
       loadedMonths = new Set(meta.loadedMonths || []);
-      ensureSchemaMigrations();
+      // schema「來源」(meta.schemaVersion，舊版client可能整個欄位都沒有=
+      // undefined) 跟「目標」(SCHEMA_VERSION) 不一致才跑遷移——一致的話
+      // 每次開頁面都重新做一次PRAGMA table_info檢查是浪費的。遷移完
+      // schedulePersist() 把新版本號寫回IDB，下次載入才不會又跑一次。
+      if (meta.schemaVersion !== SCHEMA_VERSION) {
+        applySchemaMigrations();
+        schedulePersist();
+      }
       onProgress('就緒', 100);
       return { needBootstrap: false };
     }
