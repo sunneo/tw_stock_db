@@ -1149,6 +1149,7 @@ select:focus { outline: 2px solid var(--acc); }
           <label>第一檔 <input type="number" id="intraday-min-1" min="1" max="240"></label>
           <label>第二檔 <input type="number" id="intraday-min-2" min="1" max="240"></label>
           <label>第三檔 <input type="number" id="intraday-min-3" min="1" max="240"></label>
+          <label>第四檔 <input type="number" id="intraday-min-4" min="1" max="240"></label>
           <p class="modal-hint">進走勢圖時會先用 Yahoo 股市的資料墊一份近5個交易日的概略1分K（非官方，只是輪廓，縮小(zoom out)可以看到前幾天），之後的即時更新則靠證交所輪詢累積，兩者不是官方逐筆歷史，剛開盤或兩邊資料源都連不上時可能還沒有資料，屬於正常現象。</p>
         </div>
         <div class="modal-pane hidden" data-pane="strong">
@@ -1425,7 +1426,7 @@ const Settings = (() => {
              followMouseTooltip: false, // 預設關閉：十字線不跟著滑鼠亂跳，避免擋住線圖
              chartPeriod: 'day',     // 'day' | 'week' | 'month' | 'quarter'
              chartMode: 'daily',     // 'daily'（技術分析）| 'intraday'（走勢圖）
-             intradayIntervals: [5, 20, 60], // 走勢圖分頁的三個級距（分鐘），可在設定裡調整
+             intradayIntervals: [1, 5, 20, 60], // 走勢圖分頁的四個級距（分鐘），可在設定裡調整；1分才看得出漲跌停鎖住後有沒有開關過
              intradayPeriod: 5,      // 走勢圖目前選的級距（分鐘）
              strongMethod: 'current',
              strongParams: { minScore:2, rsThreshold:90, minVolRatio:0.8, nearHighPct:15 },
@@ -3315,6 +3316,17 @@ const DIAGNOSIS_HISTORY_DAYS_FALLBACK = 250; // K棒抓取天數的下限，確�
    會讓分析更敏感（容易抓到近期的小型態，但誤判機率也higher）；改大會
    更嚴謹（需要更長的歷史才能確認型態，但也更保守、有些型態會消失不見——
    這是使用者實測後反饋的取捨，做成設定值讓使用者自己決定要多敏感）。 ── */
+/* 走勢圖級距清單：預設4檔(1/5/20/60分)，1分才看得出漲跌停鎖住後有沒有
+   開關過。舊版只存過3檔(沒有1分)的使用者，設定裡儲存的陣列會是3個元素
+   ——這裡自動把1分補到最前面，保留使用者原本自訂的其他檔位，不會把
+   自訂值蓋掉，也不用使用者自己重新設定過一次。 */
+function getIntradayIntervals() {
+  let intervals = Settings.get('intradayIntervals');
+  if (!Array.isArray(intervals) || !intervals.length) return [1, 5, 20, 60];
+  if (!intervals.includes(1)) intervals = [1, ...intervals];
+  return intervals;
+}
+
 function getDiagnosisLookbackDays() {
   const v = Settings.get('diagnosisLookbackDays');
   return (typeof v === 'number' && Number.isFinite(v) && v >= 30 && v <= 500) ? Math.round(v) : PATTERN_LOOKBACK_DAYS_REF;
@@ -5314,6 +5326,7 @@ const R = {
   intradayMin1Input: $('intraday-min-1'),
   intradayMin2Input: $('intraday-min-2'),
   intradayMin3Input: $('intraday-min-3'),
+  intradayMin4Input: $('intraday-min-4'),
   strongMinScoreInput: $('strong-min-score'),
   strongRuleKdCross:    $('strong-rule-kdCross'),
   strongRuleMacd:       $('strong-rule-macd'),
@@ -6086,7 +6099,7 @@ async function renderIntradaySourceChart(opts = {}) {
   await IntradayFeed.ensureLoadedFor(code, yahooSymbol);
   if (currentChartSource?.type !== type || currentChartSource.code !== code) return; // 使用者可能已經切走了
   const rows = IntradayFeed.getTickRows(code);
-  const mins = Settings.get('intradayPeriod') || (Settings.get('intradayIntervals') || [5, 20, 60])[0];
+  const mins = Settings.get('intradayPeriod') || getIntradayIntervals()[0];
   /* 走勢圖沒有技術分析那種「按月份漸進擴充」的更早資料可以補——backfill
      已經一次抓了 Yahoo 能給的上限（近5個交易日），縮小/平移到底就是真的
      沒有更多了。moreHistoryAvailable 是 Chart 內部共用同一顆畫布的單一
@@ -6428,7 +6441,7 @@ function updateChartModeAvailability() {
 }
 
 function rebuildIntradayPeriodToggle() {
-  const intervals = Settings.get('intradayIntervals') || [5, 20, 60];
+  const intervals = getIntradayIntervals();
   let current = Settings.get('intradayPeriod') || intervals[0];
   if (!intervals.includes(current)) current = intervals[0];
   R.intradayPeriodToggle.innerHTML = intervals.map(m =>
@@ -7599,10 +7612,11 @@ function openSettingsModal() {
   R.rsiFastInput.value = rsi.fast;
   R.rsiSlowInput.value = rsi.slow;
 
-  const intervals = Settings.get('intradayIntervals') || [5, 20, 60];
+  const intervals = getIntradayIntervals();
   R.intradayMin1Input.value = intervals[0];
   R.intradayMin2Input.value = intervals[1];
   R.intradayMin3Input.value = intervals[2];
+  R.intradayMin4Input.value = intervals[3];
 
   const sp = Settings.get('strongParams') || {};
   R.strongMinScoreInput.value = sp.minScore ?? 2;
@@ -7688,11 +7702,12 @@ function saveSettingsModal() {
   const min1 = parseInt(R.intradayMin1Input.value, 10);
   const min2 = parseInt(R.intradayMin2Input.value, 10);
   const min3 = parseInt(R.intradayMin3Input.value, 10);
-  if ([min1, min2, min3].some(v => !Number.isFinite(v) || v < 1)) {
+  const min4 = parseInt(R.intradayMin4Input.value, 10);
+  if ([min1, min2, min3, min4].some(v => !Number.isFinite(v) || v < 1)) {
     alert('走勢圖級距必須是正整數（分鐘）');
     return;
   }
-  Settings.set('intradayIntervals', [min1, min2, min3]);
+  Settings.set('intradayIntervals', [min1, min2, min3, min4]);
   rebuildIntradayPeriodToggle();
 
   const strongParams = {
