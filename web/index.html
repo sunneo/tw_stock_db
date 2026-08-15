@@ -1364,6 +1364,17 @@ CREATE TABLE IF NOT EXISTS market_index (
     volume      INTEGER,
     PRIMARY KEY (index_code, trade_date)
 );
+CREATE TABLE IF NOT EXISTS intraday_quotes (
+    stock_code   TEXT NOT NULL,
+    snapshot_at  TEXT NOT NULL,
+    price        REAL,
+    open         REAL,
+    high         REAL,
+    low          REAL,
+    volume       INTEGER,
+    series_json  TEXT,
+    PRIMARY KEY (stock_code, snapshot_at)
+);
 `;
 
 const PAGE_SIZE = 20;
@@ -2172,7 +2183,7 @@ const DBMgr = (() => {
     'open','high','low','close','volume','sector_id','is_active',
     'ma5','ma10','ma20','ma60','vol_ma5','kd_k','kd_d',
     'macd_dif','macd_macd','macd_osc','rsi6','rsi12',
-    'bb_upper','bb_mid','bb_lower','bias20','rs_rating',
+    'bb_upper','bb_mid','bb_lower','bias20','rs_rating','price',
   ]);
 
   function coerce(col, val) {
@@ -2201,6 +2212,10 @@ const DBMgr = (() => {
       ['daily_prices',         'daily_prices'],
       ['technical_indicators', 'technical_indicators'],
       ['market_index',         'market_index'],
+      // 只有當天真的有跑過盤中擷取才會有這個檔案（見 export_daily_delta.py），
+      // 404 時 upsertCSV 就不會被呼叫，清單趨勢欄自然退回日線sparkline
+      // （見 DBMgr.getBatchIntradaySeries 的呼叫端判斷）。
+      ['intraday_quotes',      'intraday_quotes'],
     ];
     await Promise.all(files.map(async ([name, table]) => {
       onProgress?.(`套用 ${name}.csv (${date})`);
@@ -2647,13 +2662,45 @@ const DBMgr = (() => {
     return map;
   }
 
+  /* 清單「趨勢」欄用：優先顯示今天盤中每分鐘走勢（取代多日日線），資料來源是
+     run_daily_update.py 中午那次盤中擷取降採樣後存的 series_json（見
+     scrapers/fetch_intraday_quotes.py），透過 daily/{date}/intraday_quotes.csv
+     同步進來，不用逐檔即時打Yahoo。只認「今天」的快照——只要不是今天的資料
+     （例如尚未跑過今天的盤中擷取、非交易日），就不回傳該檔的序列，讓呼叫端
+     自然退回 getBatchSparklines 的多日日線（見 renderPage 的呼叫順序）。 */
+  function getBatchIntradaySeries(codes) {
+    if (!codes.length) return {};
+    const ph    = codes.map(() => '?').join(',');
+    const today = taipeiDateStr();
+    const rows  = query(`
+      SELECT iq.stock_code, iq.series_json
+      FROM intraday_quotes iq
+      INNER JOIN (
+        SELECT stock_code, MAX(snapshot_at) AS max_at
+        FROM intraday_quotes
+        WHERE stock_code IN (${ph}) AND DATE(snapshot_at) = ?
+        GROUP BY stock_code
+      ) latest ON latest.stock_code = iq.stock_code AND latest.max_at = iq.snapshot_at
+    `, [...codes, today]);
+
+    const map = {};
+    for (const r of rows) {
+      if (!r.series_json) continue;
+      try {
+        const arr = JSON.parse(r.series_json);
+        if (Array.isArray(arr) && arr.length >= 2) map[r.stock_code] = arr;
+      } catch { /* 壞資料跳過，退回日線 */ }
+    }
+    return map;
+  }
+
   return {
     init, bootstrapFresh, syncDaily,
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getWatchlistStocks, searchStocks, getPrevClose,
     computeStrongCurrent, computeStrongXQ,
-    getStockInfo, getPriceHistory, getBatchSparklines,
+    getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
     isReady: () => !!db,
@@ -5327,11 +5374,15 @@ function renderPage() {
   const isStrong = view === 'strong';
   const isLock   = view.startsWith('lock_');
   const isAnalysisView = view === 'analysis';
-  const codes    = pageItems.map(s => s.stock_code);
-  const sparkMap = DBMgr.getBatchSparklines(codes, 20);
+  const codes       = pageItems.map(s => s.stock_code);
+  const sparkMap    = DBMgr.getBatchSparklines(codes, 20);
+  // 趨勢欄優先顯示「今天盤中每分鐘走勢」，只有這檔今天沒有盤中快照可用時
+  // （例如還沒到中午、非交易日、或這檔剛好抓失敗）才退回多日日線
+  // （見 DBMgr.getBatchIntradaySeries 的「只認今天」判斷）。
+  const intradayMap = DBMgr.getBatchIntradaySeries(codes);
 
   const rows = pageItems.map(s => {
-    const closes  = sparkMap[s.stock_code] || [];
+    const closes  = intradayMap[s.stock_code] || sparkMap[s.stock_code] || [];
     const svg     = sparkline(closes, 60, 20, true); // responsive：欄寬被拖窄時整張圖縮小，不裁切（見 sparkline 註解）
     const open    = s.open;
     // 還沒有今天的資料（官方排程還沒落地、ListLiveFeed也還沒抓到）時，用
@@ -6505,7 +6556,6 @@ function fmtSignedLots(shares) {
 function renderInstitutionalSection(rows) {
   if (!rows.length) return '<div class="chip-empty">近期沒有三大法人買賣超資料。</div>';
   const recent = rows.slice(-10).reverse(); // 最新在最上面
-  const spark = sparkline(rows.map(r => r.total_net ?? 0), 140, 28);
   const rowsHtml = recent.map(r => `
     <tr>
       <td>${r.trade_date}</td>
@@ -6515,7 +6565,6 @@ function renderInstitutionalSection(rows) {
       <td>${fmtSignedLots(r.total_net)}</td>
     </tr>`).join('');
   return `
-    <div class="chip-spark-row">${spark}<span class="chip-hint">三大法人合計買賣超趨勢（近${rows.length}個交易日）</span></div>
     <div style="overflow-x:auto">
       <table class="chip-table">
         <thead><tr><th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr></thead>
@@ -6678,7 +6727,6 @@ function renderChipPanelBody() {
     `</div>` +
     `<p class="chip-hint chip-date-hint">選到非交易日/沒有資料的日期會自動對齊到最接近的一天。</p>` +
     `<div class="chip-section"><h3>三大法人買賣超</h3>${renderInstitutionalSection(instUpTo)}</div>` +
-    `<div class="chip-section"><h3>股權分布</h3>${renderShareholdingSection(shrUpTo)}</div>` +
     `<div class="chip-section"><h3>強制集保股數</h3>${renderCustodySection(cusUpTo)}</div>` +
     warn;
 
