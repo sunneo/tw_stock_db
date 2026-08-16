@@ -11,6 +11,9 @@
 //   3. .skill (zip) 匯入/匯出（_importSkillZip/_exportSkillZip，需要
 //      JSZip；只有使用者實際按下匯入/匯出按鈕時才動態注入CDN script
 //      標籤，見 _ensureJSZipLoaded()，不使用這功能的人不用背這個依賴）。
+//   4. 淺色/深色主題偵測改讀 <html data-theme>（_isLightTheme()、主題
+//      MutationObserver），跟這個專案實際的主題切換機制對齊（原始函式庫
+//      預設看 body 的 'light-theme' class，這個網頁從來不會加這個class）。
 // ============================================================
 
 // ============================================================
@@ -1293,8 +1296,13 @@ ${sourceTool.handlerScript}
         return this._tryParseJsonPayload(rawText, depth);
     }
 
+    // tw_stock_db客製: 原始函式庫預設看 document.body 是否帶 'light-theme'
+    // class 來判斷淺色/深色，但這個專案的主題切換是設在 <html> 標籤的
+    // data-theme屬性（"light"/"dark"，見 web/index.html 的 isDark()），
+    // 從來不會加 body class，導致這裡永遠判斷成深色。改成直接讀同一個
+    // data-theme屬性，讓AI助理視窗跟著網頁本身的主題走。
     _isLightTheme() {
-        return document.body.classList.contains('light-theme');
+        return document.documentElement.getAttribute('data-theme') !== 'dark';
     }
 
     _getThemePalette() {
@@ -3477,11 +3485,14 @@ ${existingNodeSummaries}
         this._applyThemeStyles();
         this._syncStopButton();
 
+        // tw_stock_db客製: 跟上面 _isLightTheme() 同一個原因，主題切換觀察的
+        // 目標/屬性也要改成 <html> 的 data-theme，不然使用者在網頁上切換
+        // 淺色/深色時，AI視窗不會跟著即時更新（要重新整理頁面才會生效）。
         const themeObserver = new MutationObserver(() => {
             this._applyThemeStyles();
             this._renderMessageHistory();
         });
-        themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
         document.getElementById('ai-btn-close').onclick = () => this.toggleWindow();
         document.getElementById('ai-btn-config').onclick = () => {
