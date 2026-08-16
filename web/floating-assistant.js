@@ -1855,6 +1855,8 @@ ${sourceTool.handlerScript}
             }
             .ai-markdown-body a { color: #3182ce; text-decoration: underline; }
             .ai-markdown-body hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 10px 0; }
+            .ai-markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; margin: 8px 0; }
+            .ai-markdown-body .katex { font-size: 1.05em; }
         `;
         document.head.appendChild(style);
     }
@@ -1874,18 +1876,64 @@ ${sourceTool.handlerScript}
             s.onerror = () => reject(new Error('載入失敗: ' + src));
             document.head.appendChild(s);
         });
+        const loadStyle = (href) => new Promise((resolve, reject) => {
+            const l = document.createElement('link');
+            l.rel = 'stylesheet';
+            l.href = href;
+            l.onload = () => resolve();
+            l.onerror = () => reject(new Error('載入失敗: ' + href));
+            document.head.appendChild(l);
+        });
+        // tw_stock_db客製: KaTeX用來把AI回覆裡的LaTeX數學語法（$...$/$$...$$）
+        // 排版成正式的數學符號，見_renderMarkdownWithMath()。跟marked/
+        // DOMPurify一樣是輕量單檔CDN函式庫，一起在mount時背景預載。
         this._markdownLibsPromise = Promise.all([
             typeof marked === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js') : Promise.resolve(),
             typeof DOMPurify === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js') : Promise.resolve(),
+            typeof katex === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js') : Promise.resolve(),
+            document.getElementById('ai-katex-style') ? Promise.resolve() : loadStyle('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css').then(() => {
+                const link = document.querySelector('link[href*="katex.min.css"]');
+                if (link) link.id = 'ai-katex-style';
+            }),
         ]).then(() => {
             if (typeof marked !== 'undefined' && marked.setOptions) {
                 marked.setOptions({ gfm: true, breaks: true });
             }
         }).catch(err => {
-            console.warn('Markdown函式庫載入失敗，AI回覆將以純文字顯示:', err);
+            console.warn('Markdown/KaTeX函式庫載入失敗，AI回覆將以純文字顯示:', err);
             this._markdownLibsPromise = null; // 允許之後（例如網路恢復）重試
         });
         return this._markdownLibsPromise;
+    }
+
+    // tw_stock_db客製: marked.js本身不懂LaTeX語法，直接丟給它解析$...$只會
+    // 被當成普通文字（或被裡面的_/*等符號誤判成粗體/斜體，排版更亂）。這裡
+    // 在跑markdown解析「之前」，先把$$...$$（區塊公式）跟$...$（行內公式）
+    // 抽出來，用katex.renderToString()各自轉成純HTML（output:'html'，不產生
+    // MathML，避免後面DOMPurify消毒時要另外處理MathML標籤的相容性問題），
+    // 暫時用不會被markdown語法誤判的佔位字串取代，跑完marked.parse()以後再
+    // 把佔位字串換回真正的KaTeX HTML。任何一段LaTeX解析失敗（模型輸出的
+    // 語法有誤）不影響其他段落，失敗的那一段原樣保留文字，不會讓整則訊息
+    // 都不能顯示。
+    _renderMarkdownWithMath(text) {
+        if (typeof katex === 'undefined') return marked.parse(text);
+        const mathHtmlList = [];
+        const stash = (expr, displayMode) => {
+            let html;
+            try {
+                html = katex.renderToString(expr, { throwOnError: false, displayMode, output: 'html' });
+            } catch (err) {
+                html = displayMode ? `$$${expr}$$` : `$${expr}$`;
+            }
+            mathHtmlList.push(html);
+            return `@@TWSTOCKDB_MATH_${mathHtmlList.length - 1}@@`;
+        };
+        let withPlaceholders = text
+            .replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => stash(expr, true))
+            .replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, expr) => stash(expr, false));
+        let html = marked.parse(withPlaceholders);
+        html = html.replace(/@@TWSTOCKDB_MATH_(\d+)@@/g, (_, idx) => mathHtmlList[Number(idx)] || '');
+        return html;
     }
 
     _buildCodeEditorHtml(id, minHeight = 220) {
@@ -3950,7 +3998,7 @@ ${existingNodeSummaries}
                 const mdDiv = document.createElement('div');
                 mdDiv.className = 'ai-markdown-body';
                 try {
-                    mdDiv.innerHTML = DOMPurify.sanitize(marked.parse(answerText));
+                    mdDiv.innerHTML = DOMPurify.sanitize(this._renderMarkdownWithMath(answerText));
                 } catch (_) {
                     mdDiv.textContent = answerText;
                 }
