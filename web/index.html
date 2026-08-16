@@ -5,6 +5,73 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>台股追蹤</title>
 
+<!--
+═══════════════════════════════════════════════════════════════════════════
+AI-READABLE SKILL MANIFEST（給Claude、Gemini等直接閱讀本頁原始碼/DOM的AI看）
+AI-readable capability manifest for external AI agents (Claude, Gemini, etc.)
+reading this page's source/DOM directly.
+═══════════════════════════════════════════════════════════════════════════
+
+【這是什麼 / What this is】
+「台股追蹤」是一個純前端單機的台股（台灣證券交易所）追蹤網頁，本機用 sql.js
+（WASM SQLite）存資料，資料由背景排程每天更新、同步到GitHub，網頁載入時自動
+下載到瀏覽器本機（IndexedDB），之後大多數操作都不需要再連網。
+This is a client-only Taiwan-stock-market tracker. All data lives in an
+in-browser sql.js (WASM SQLite) database, synced daily from GitHub. Most
+reads happen locally without further network calls once loaded.
+
+【怎麼跟這個頁面互動 / How an AI can interact with this page】
+1. 【建議路徑】本頁內建一個AI對話分頁（設定裡預設關閉，使用者可以自己開啟，
+   分頁列會出現「AI」），裡面已經註冊好下方列出的全部能力當作tool-calling
+   工具，直接對話即可觸發查詢/操作——如果你是被使用者要求「幫我在這個網頁上
+   操作」的AI，優先引導使用者開啟這個內建AI分頁，會比你自己讀DOM/猜CSS
+   selector更可靠。
+   (Recommended) The page has a built-in AI chat tab (opt-in via Settings →
+   AI助理) with all capabilities below pre-registered as callable tools.
+2. 【直接呼叫】所有能力也直接掛在 `window.AI_CAPABILITIES`（一個陣列，每項
+   {name, category, description, params}），可以透過瀏覽器console或任何能
+   執行JS的agent直接呼叫，例如：
+   `window.AI_CAPABILITIES.find(c => c.name === 'get_price_history').handler({code:'2330', limit:60})`
+   handler是同步或async函式，拿到「已解析的參數物件」，回傳plain value
+   （不是JSON字串）。完整機器可讀版本（不含handler函式本體）也提供在下面的
+   `<script type="application/ld+json" id="ai-skill-manifest">` 區塊。
+   Every capability is also directly callable via `window.AI_CAPABILITIES`
+   (array of {name, category, description, params, handler}); see the
+   JSON-LD block below for a machine-parseable copy (without handler code).
+
+【能力分類清單 / Capability categories】（完整參數/說明見 AI_CAPABILITIES 陣列本身，
+ 這裡只列類別跟工具名稱，避免跟陣列內容重複維護出現分歧——如果需要新增/修改
+ 一項能力，AI_CAPABILITIES 陣列跟這段註解都要一起改）：
+  - 技術分析K棒／走勢圖K棒：get_price_history, get_intraday_series
+  - 大盤/美股指數：get_market_index_history, get_market_index_latest
+  - 個股資訊：search_stocks, get_stock_info, get_sectors, get_stocks_by_sector
+  - 選股：screen_strong_stocks
+  - 備忘錄：get_memo, set_memo（會修改使用者資料）
+  - 盤後籌碼：get_chip_available_dates, get_chip_data
+  - 鎖股名單：get_lock_list, get_stock_lock_status
+  - 自選股：get_watchlist, add_to_watchlist（會修改）, remove_from_watchlist（會修改）
+  - 持股診斷：diagnose_stock（型態辨識/進出場建議的唯一正確來源，不要自己現算）
+  - 資料庫：ensure_data_loaded（會觸發網路下載）
+  - UI操作：select_stock, select_market_index, switch_tab, set_chart_period,
+    set_chart_indicator, get_current_selection
+  - 設定：get_settings
+  - 圖表截圖：get_chart_snapshot（回傳 {type:'image', dataUrl}，可以直接當
+    <img src> 顯示技術分析圖表當下的樣子）
+
+【重要限制 / Important constraints】
+- 所有股價/指標/型態判斷都必須來自上述工具的回傳結果，不可以自己編造或用
+  訓練知識猜測台股個股的即時價格。All price/indicator/pattern data MUST
+  come from calling the capabilities above — never fabricate Taiwan stock
+  prices from training knowledge.
+- diagnose_stock 的型態辨識（pattern.detected）是機械式規則比對、非人工圖形
+  驗證，引用時要保留這個保留態度。Pattern detection in diagnose_stock is
+  rule-based, not human-verified — convey that uncertainty when citing it.
+- 這是技術面框架推演工具，不構成投資建議。This is a technical-analysis
+  framework, not financial advice.
+═══════════════════════════════════════════════════════════════════════════
+-->
+<script type="application/ld+json" id="ai-skill-manifest"></script>
+
 <!-- PWA / 加到主畫面後可全螢幕（無網址列）啟動，見 manifest.webmanifest -->
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -703,6 +770,7 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── 盤後面板（三大法人/股權分布/強制集保，屬於個股的第三個分頁，見 #chart-mode-tabs） ── */
 #chip-panel { flex: 1; overflow-y: auto; padding: 14px 16px; }
+#ai-tab-panel { flex: 1; overflow: hidden; padding: 10px; display: flex; flex-direction: column; }
 #chip-panel.hidden { display: none; }
 .chip-loading, .chip-empty { font-size: 13px; color: var(--txt2); padding: 4px 0; }
 .chip-section { margin-bottom: 18px; }
@@ -947,6 +1015,7 @@ select:focus { outline: 2px solid var(--acc); }
   <button class="mtab-btn" id="mtab-trend" data-tab="trend">📉 走勢圖</button>
   <button class="mtab-btn" id="mtab-chip" data-tab="chip">📊 盤後</button>
   <button class="mtab-btn" id="mtab-diagnosis" data-tab="diagnosis">🩺 診斷</button>
+  <button class="mtab-btn hidden" id="mtab-ai" data-tab="ai">🤖 AI</button>
 </div>
 
 <!-- ══ MAIN ══ -->
@@ -1033,6 +1102,7 @@ select:focus { outline: 2px solid var(--acc); }
       <button class="chart-mode-tab" id="mode-tab-intraday" data-mode="intraday">走勢圖</button>
       <button class="chart-mode-tab" id="mode-tab-chip" data-mode="chip">盤後</button>
       <button class="chart-mode-tab" id="mode-tab-diagnosis" data-mode="diagnosis">持股診斷</button>
+      <button class="chart-mode-tab hidden" id="mode-tab-ai" data-mode="ai">AI</button>
     </div>
     <div id="chart-header">
       <div id="chart-nav-left">
@@ -1081,6 +1151,15 @@ select:focus { outline: 2px solid var(--acc); }
          上半部、這裡佔下半部，各自可滾動/操作）。資料同樣是點到分頁那一刻才算
          （見 renderDiagnosisSourceChart 的 diagnosisRenderedForCode 快取guard）。 -->
     <div id="diagnosis-panel" class="hidden"></div>
+    <!-- ══ AI助理面板（見 floating-assistant.js + renderAiTab）══
+         跟「盤後」一樣把 #chart-wrap 隱藏（AI對話不需要K線常駐可見，需要看
+         圖時AI會呼叫 get_chart_snapshot 工具、以圖片形式嵌進對話框，見
+         AI_CAPABILITIES）。跟其他分頁不同的是：AI助理不綁定特定個股/指數，
+         選大盤或美股指數時這個分頁也不disable，因為AI本身是通用助理，只是
+         它能呼叫的部分工具剛好需要「目前選中的股票」這個參數。設定裡預設
+         關閉（Settings.get('aiAssistantEnabled')===false），分頁按鈕本身也
+         預設 hidden，見 updateAiTabVisibility。 -->
+    <div id="ai-tab-panel" class="hidden"></div>
     <!-- ══ 分析報告面板（公式化產生，見 run_daily_update.py Step 8 / report_builder.py）══
          報告種類的選擇搬到左側 view-sel 的「分析」分類（見 loadAnalysisView/
          selectReportType），這裡只負責顯示目前選到的那一份報告，跟技術分析/
@@ -1122,6 +1201,7 @@ select:focus { outline: 2px solid var(--acc); }
         <div class="modal-cat" data-cat="strong">強勢股門檻</div>
         <div class="modal-cat" data-cat="diagnosis">持股診斷</div>
         <div class="modal-cat" data-cat="display">顯示設定</div>
+        <div class="modal-cat" data-cat="ai">AI助理</div>
       </div>
       <div class="modal-content">
         <div class="modal-pane" data-pane="ma">
@@ -1188,6 +1268,11 @@ select:focus { outline: 2px solid var(--acc); }
           <label>指標(KD/MACD/RSI) <input type="number" id="panel-weight-indicator" min="1" max="1000"></label>
           <p class="modal-hint">三個數字只是比例權重，不是像素，例如 304:76:64 代表K線占的高度是成交量的4倍、是指標區的4.75倍，數字可以隨意調整，系統會自動依總和正規化。手機版螢幕較窄，通常會想把K線的比例拉高、壓縮指標區。</p>
         </div>
+        <div class="modal-pane hidden" data-pane="ai">
+          <h3>AI助理</h3>
+          <label class="modal-check-row"><input type="checkbox" id="ai-assistant-enabled-toggle"> 啟用AI助理分頁</label>
+          <p class="modal-hint">開啟後，分頁列會多一個「AI」分頁，可以直接跟AI對話，AI能查詢清單/備忘錄/盤後籌碼/鎖股名單/走勢圖K棒/技術分析K棒/持股診斷等資料，也能操作選股/切分頁等介面。LLM的API金鑰/網址/模型名稱、Skill/RULES.md等進階設定，都在AI分頁裡自己的「⚙」圖示裡設定，不在這裡——沒有自己填金鑰的話，會使用內建的共用金鑰（透過Cloudflare Worker代理隱藏，見AI分頁裡的說明）。</p>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1241,6 +1326,11 @@ select:focus { outline: 2px solid var(--acc); }
 <!-- sql.js CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"
         crossorigin="anonymous"></script>
+
+<!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
+     載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
+     才會 new FloatingAssistant()，見 renderAiTab 的一次性初始化guard。 -->
+<script src="floating-assistant.js"></script>
 
 <script>
 'use strict';
@@ -1435,7 +1525,8 @@ const Settings = (() => {
              // 沒有這個新key時，scoreCurrent 讀取時用 `!== false` 判斷，缺key
              // 一樣視為enable，不會因為忘記migrate舊設定而悄悄被關掉。
              strongCurrentRules: { kdCross:true, macd:true, oscGrow:true, volSpike:true, pullback:true, risingMa20:true },
-             memos: {} };  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
+             memos: {},  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
+             aiAssistantEnabled: false }; // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
   }
   function load() {
     try {
@@ -4111,6 +4202,281 @@ function diagnoseStock(code) {
 const StockDiagnosis = { diagnose: diagnoseStock };
 
 /* ════════════════════════════════════════
+   AI CAPABILITIES（給內嵌AI助理tool-calling用，也是給外部AI（Claude/Gemini
+   等直接讀這份原始碼的AI）看的機器可讀能力清單，見 <head> 附近的
+   AI-READABLE SKILL MANIFEST 註解區塊——兩邊要手動保持同步，新增/修改一項
+   能力時，這裡跟上面那段註解都要改。
+
+   每項 {name, category, description, params, mutates, handler}：
+     - handler(a) 拿到的是「已經解析過的參數物件」（不是原始字串），回傳
+       plain value（物件/陣列/字串都可以），不用自己處理JSON.stringify/
+       try-catch——外層 aiToolHandler() 統一處理跟 floating-assistant.js的
+       字串傳參協定轉換，見下面。
+     - mutates:true 代表這個能力會修改使用者資料（備忘錄/自選股）或觸發
+       網路下載，description會自動加註提醒。
+   ════════════════════════════════════════ */
+const AI_CAPABILITIES = [
+  {
+    name: 'get_price_history', category: '技術分析K棒',
+    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。',
+    params: { code: '股票代號，例如 2330', limit: '選填，天數，預設250' },
+    handler: (a) => DBMgr.getPriceHistory(a.code, a.limit ? Number(a.limit) : 250),
+  },
+  {
+    name: 'get_intraday_series', category: '走勢圖K棒',
+    description: '取得多檔股票「今天」盤中的分鐘級走勢（清單趨勢欄小圖用的同一份資料，來自中午/收盤後排程抓的盤中快照），只有排程有跑過才有資料，沒有的股票不會出現在回傳結果裡。',
+    params: { codes: '股票代號陣列，例如 ["2330","2317"]' },
+    handler: (a) => DBMgr.getBatchIntradaySeries(Array.isArray(a.codes) ? a.codes : [a.codes]),
+  },
+  {
+    name: 'get_market_index_history', category: '大盤/美股指數',
+    description: '取得大盤或美股觀察指標近N天的OHLCV，指數代號：TAIEX(加權指數)、TPEx(櫃買指數)、SOX(費城半導體)、SPX(標普500)、NASDAQ、DJI(道瓊)。',
+    params: { indexCode: '例如 TAIEX / SOX / DJI', limit: '選填，天數，預設250' },
+    handler: (a) => DBMgr.getMarketIndexHistory(a.indexCode, a.limit ? Number(a.limit) : 250),
+  },
+  {
+    name: 'get_market_index_latest', category: '大盤/美股指數',
+    description: '取得某個大盤/美股指數最新一筆OHLCV。',
+    params: { indexCode: '例如 TAIEX / SOX / DJI' },
+    handler: (a) => DBMgr.getMarketIndexLatest(a.indexCode),
+  },
+  {
+    name: 'search_stocks', category: '個股資訊',
+    description: '用代號或名稱關鍵字搜尋股票（部分比對，依精確/前綴/包含排序）。',
+    params: { term: '搜尋關鍵字', limit: '選填，最多回傳幾筆，預設20' },
+    handler: (a) => DBMgr.searchStocks(a.term, a.limit ? Number(a.limit) : 20),
+  },
+  {
+    name: 'get_stock_info', category: '個股資訊',
+    description: '取得單一股票的基本資料（名稱、上市/上櫃別）。',
+    params: { code: '股票代號' },
+    handler: (a) => DBMgr.getStockInfo(a.code) || { available: false, reason: '查無此股票代號' },
+  },
+  {
+    name: 'get_sectors', category: '個股資訊',
+    description: '取得目前有股票的所有產業類股清單（sid/name），對應清單左側「類股」下拉選單。',
+    params: {},
+    handler: () => DBMgr.getSectors(),
+  },
+  {
+    name: 'get_stocks_by_sector', category: '個股資訊',
+    description: '取得某個產業類股底下所有股票的最新價格（含漲跌所需的前收盤價），sectorId 用 get_sectors 查。',
+    params: { sectorId: '產業代碼(數字)' },
+    handler: (a) => DBMgr.getStocksBySector(Number(a.sectorId)),
+  },
+  {
+    name: 'screen_strong_stocks', category: '選股',
+    description: '執行強勢股篩選，method="current"是「目前原則」(型態訊號評分，門檻可在設定裡調)，method="xq"是「XQ原則」(RS值動能)，回傳{results, diagnostics}。',
+    params: { method: "'current' 或 'xq'，預設 'current'", topN: '選填，最多回傳幾檔，預設30' },
+    handler: (a) => {
+      const topN = a.topN ? Number(a.topN) : 30;
+      if (a.method === 'xq') {
+        const sp = Settings.get('strongParams') || {};
+        return DBMgr.computeStrongXQ(topN, sp.rsThreshold ?? 90, sp.minVolRatio ?? 0.8, sp.nearHighPct ?? 15);
+      }
+      const sp = Settings.get('strongParams') || {};
+      return DBMgr.computeStrongCurrent(topN, sp.minScore ?? 2, Settings.get('strongCurrentRules') || {});
+    },
+  },
+  {
+    name: 'get_memo', category: '備忘錄',
+    description: '讀取某檔股票的使用者備忘錄文字，以及（如果有的話）強勢股篩選寫入的AI唯讀筆記。',
+    params: { code: '股票代號' },
+    handler: (a) => ({ text: MemoStore.getText(a.code), hasMemo: MemoStore.hasMemo(a.code), aiNote: MemoStore.getAiNote(a.code) }),
+  },
+  {
+    name: 'set_memo', category: '備忘錄', mutates: true,
+    description: '【會修改使用者資料】設定/覆蓋某檔股票的備忘錄文字（傳空字串等於清空）。',
+    params: { code: '股票代號', text: '備忘錄內容' },
+    handler: (a) => { MemoStore.setText(a.code, a.text || ''); return { ok: true }; },
+  },
+  {
+    name: 'get_chip_available_dates', category: '盤後籌碼',
+    description: '查詢某檔股票有哪些日期可以查三大法人/股權分布/強制集保資料。',
+    params: { code: '股票代號' },
+    handler: async (a) => ChipStore.getAvailableDates(a.code),
+  },
+  {
+    name: 'get_chip_data', category: '盤後籌碼',
+    description: '取得某檔股票在指定日期附近的三大法人買賣超/股權分布/強制集保資料（自動對齊到最接近的有資料日期）。',
+    params: { code: '股票代號', date: '選填，YYYY-MM-DD，預設今天' },
+    handler: async (a) => {
+      const avail = await ChipStore.getAvailableDates(a.code);
+      const anchor = a.date || taipeiDateStr();
+      return ChipStore.loadDataForDate(a.code, anchor, avail);
+    },
+  },
+  {
+    name: 'get_lock_list', category: '鎖股名單',
+    description: '取得某一份鎖股名單（做多/做空清單）。source="intraday"是盤中鎖股、"nextday"是隔日鎖股、"week"是下週鎖股；direction不填就回傳整份含方向欄位。',
+    params: { source: "'intraday' | 'nextday' | 'week'", direction: "選填，'做多' 或 '做空'" },
+    handler: async (a) => {
+      await LockList.ensureLoaded(a.source);
+      return a.direction ? LockList.getByDirection(a.source, a.direction) : LockList.getByDirection(a.source, '做多').concat(LockList.getByDirection(a.source, '做空'));
+    },
+  },
+  {
+    name: 'get_stock_lock_status', category: '鎖股名單',
+    description: '查詢單一股票目前在哪些鎖股名單上（盤中/隔日/下週，各自的方向與評分），不在任何名單上就回傳空物件。',
+    params: { code: '股票代號' },
+    handler: async (a) => {
+      await Promise.all(['intraday', 'nextday', 'week'].map(s => LockList.ensureLoaded(s)));
+      return LockList.getAllInfo(a.code);
+    },
+  },
+  {
+    name: 'get_watchlist', category: '自選股',
+    description: '取得使用者自選股清單（含最新價格）。',
+    params: {},
+    handler: () => { const wl = Settings.get('watchlist') || []; return DBMgr.getWatchlistStocks(wl); },
+  },
+  {
+    name: 'add_to_watchlist', category: '自選股', mutates: true,
+    description: '【會修改使用者資料】把股票加入自選股清單。',
+    params: { code: '股票代號' },
+    handler: (a) => { commitToWatchlist(a.code); return { ok: true }; },
+  },
+  {
+    name: 'remove_from_watchlist', category: '自選股', mutates: true,
+    description: '【會修改使用者資料】把股票從自選股清單移除。',
+    params: { code: '股票代號' },
+    handler: (a) => { removeFromWatchlist(a.code); return { ok: true }; },
+  },
+  {
+    name: 'diagnose_stock', category: '持股診斷',
+    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。',
+    params: { code: '股票代號' },
+    handler: (a) => StockDiagnosis.diagnose(a.code),
+  },
+  {
+    name: 'ensure_data_loaded', category: '資料庫',
+    mutates: true,
+    description: '【會觸發網路下載】確保本機資料庫是最新的（抓取尚未同步的每日增量資料），資料量小時很快，第一次執行或很久沒開網頁時可能要幾秒到幾十秒。',
+    params: {},
+    handler: async () => { await DBMgr.syncDaily(() => {}, false); return { ok: true, latestDate: DBMgr.getLatestDate() }; },
+  },
+  {
+    name: 'select_stock', category: 'UI操作',
+    description: '在網頁上選取某檔股票（等同使用者從清單點選），會連動更新圖表/持股診斷等分頁內容。',
+    params: { code: '股票代號' },
+    handler: (a) => { selectStock(a.code); return { ok: true }; },
+  },
+  {
+    name: 'select_market_index', category: 'UI操作',
+    description: '在網頁上選取大盤或美股指數（等同使用者從「美股」清單點選）。',
+    params: { code: '指數代號，例如 TAIEX / SOX / DJI' },
+    handler: (a) => { selectMarketIndex(a.code); return { ok: true }; },
+  },
+  {
+    name: 'switch_tab', category: 'UI操作',
+    description: '切換目前顯示的分頁。',
+    params: { tab: "'chart'(技術分析) | 'trend'(走勢圖) | 'chip'(盤後) | 'diagnosis'(持股診斷) | 'ai'(AI助理，需已啟用) | 'list'(清單)" },
+    handler: (a) => { switchMobileTab(a.tab); return { ok: true, chartMode }; },
+  },
+  {
+    name: 'set_chart_period', category: 'UI操作',
+    description: '切換技術分析圖表的K棒週期。',
+    params: { period: "'day' | 'week' | 'month' | 'quarter'" },
+    handler: (a) => { applyPeriod(a.period); return { ok: true }; },
+  },
+  {
+    name: 'set_chart_indicator', category: 'UI操作',
+    description: '切換技術分析圖表下方的副圖指標。',
+    params: { indicator: "'kd' | 'macd' | 'rsv' | 'rsi'" },
+    handler: (a) => { applyIndicator(a.indicator); return { ok: true }; },
+  },
+  {
+    name: 'get_current_selection', category: 'UI操作',
+    description: '查詢目前網頁選取的股票/指數，以及目前顯示中的分頁模式。',
+    params: {},
+    handler: () => ({ currentChartSource, chartMode }),
+  },
+  {
+    name: 'get_settings', category: '設定',
+    description: '讀取目前的圖表/選股相關設定（均線/KD/MACD/RSI參數、走勢圖級距、強勢股門檻、持股診斷K棒數等），不含備忘錄/自選股內容（那些用專門的工具查）。',
+    params: {},
+    handler: () => ({
+      maPeriods: Settings.get('maPeriods'), kdParams: Settings.get('kdParams'),
+      macdParams: Settings.get('macdParams'), rsiParams: Settings.get('rsiParams'),
+      chartPeriod: Settings.get('chartPeriod'), intradayIntervals: Settings.get('intradayIntervals'),
+      strongMethod: Settings.get('strongMethod'), strongParams: Settings.get('strongParams'),
+      diagnosisLookbackDays: getDiagnosisLookbackDays(),
+    }),
+  },
+  {
+    name: 'get_chart_snapshot', category: '圖表截圖',
+    description: '把目前技術分析圖表（K線+均線+成交量+副圖指標）截成一張圖片，回傳可以直接顯示在對話框裡；只有目前顯示的是技術分析/走勢圖/持股診斷分頁時才截得到有意義的內容（其他分頁K線是隱藏的，截圖會是空的）。',
+    params: {},
+    handler: () => ({ type: 'image', dataUrl: Chart.getSnapshotDataUrl() }),
+  },
+];
+// const 頂層宣告不會自動變成 window 的屬性（跟var/function宣告不同）；
+// <head>那段AI-READABLE SKILL MANIFEST註解明講外部AI可以透過
+// window.AI_CAPABILITIES直接呼叫，這裡補上明確綁定，不然那份文件是錯的。
+window.AI_CAPABILITIES = AI_CAPABILITIES;
+
+/* 把 AI_CAPABILITIES 的 handler（拿到解析過的物件、回傳plain value）轉成
+   floating-assistant.js 的 register_openai_tool 需要的協定：callback拿到
+   的是「原始參數字串」（模型輸出的JSON字串，或退化情況下的裸字串），要
+   回傳字串。這裡統一處理parse/stringify/錯誤攔截，AI_CAPABILITIES本身
+   不用管這些協定細節，也方便直接在console手動呼叫 c.handler({...}) 測試。 */
+function aiToolHandler(fn) {
+  return async (rawArgs) => {
+    let a;
+    if (rawArgs == null || rawArgs === '') a = {};
+    else {
+      try { a = JSON.parse(rawArgs); }
+      catch { a = { value: String(rawArgs) }; } // 模型可能直接傳一個裸字串當唯一參數
+    }
+    try {
+      const result = await fn(a);
+      return typeof result === 'string' ? result : JSON.stringify(result);
+    } catch (e) {
+      return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
+    }
+  };
+}
+
+function registerAiCapabilities(ai) {
+  AI_CAPABILITIES.forEach(c => {
+    const paramKeys = Object.keys(c.params || {});
+    const paramsDesc = paramKeys.length
+      ? ` 參數（JSON物件字串）：${JSON.stringify(c.params)}`
+      : '（不需要參數）';
+    const mutateNote = c.mutates ? '' : ''; // description本身已經在需要時內含【會修改使用者資料】等提醒
+    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler));
+  });
+}
+
+// 把 AI_CAPABILITIES 灌進 <head> 那段 JSON-LD（給只解析結構化資料、不解析
+// HTML註解的外部AI用），不含 handler 函式本體（函式無法序列化，且外部AI
+// 本來就該透過內嵌AI分頁或 window.AI_CAPABILITIES 呼叫，不是自己反序列化
+// 函式執行）。這裡是top-level statement，執行時 <head> 裡的
+// #ai-skill-manifest 已經存在於DOM（在這段inline script之前就解析過了），
+// 不用等 DOMContentLoaded。
+(() => {
+  const el = document.getElementById('ai-skill-manifest');
+  if (el) {
+    el.textContent = JSON.stringify(AI_CAPABILITIES.map(
+      ({ name, category, description, params, mutates }) => ({ name, category, description, params, mutates: !!mutates })
+    ));
+  }
+})();
+
+const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服務對象是正在使用這個網頁的使用者。
+這個網頁是純前端單機應用（sql.js本機資料庫），資料每天由背景排程更新、同步到GitHub，網頁
+載入時自動下載到使用者瀏覽器本機。你透過已註冊的工具讀取/操作這些本機資料，不能自己編造
+股價、指標數字、或型態判斷——任何具體數字都必須來自工具回傳的結果。
+持股診斷（均線/趨勢/K棒品質/量價/大盤連動/型態辨識/進出場建議）一律呼叫 diagnose_stock
+工具取得公式化結果，不要自己用對話內容裡看到的數字現算技術分析或型態，diagnose_stock回傳
+的 pattern.detected 型態是機械式規則比對、非人工圖形驗證，回答時要保留這個保留態度，不要
+講得比工具回傳的結論更肯定。
+會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
+用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
+回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是
+投資建議，需要的話要提醒使用者。`;
+
+/* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
    ════════════════════════════════════════ */
 const Chart = (() => {
@@ -4939,12 +5305,20 @@ const Chart = (() => {
     if (e.deltaY < 0) zoomIn(); else if (e.deltaY > 0) zoomOut();
   }, { passive: false });
 
+  // 給AI助理的get_chart_snapshot工具用（見AI_CAPABILITIES）：把目前畫面上
+  // 的K線+均線+成交量+副圖指標整張canvas截成PNG data URL，不需要额外重繪，
+  // canvas本來就已經是目前看到的樣子。
+  function getSnapshotDataUrl() {
+    return canvas.toDataURL('image/png');
+  }
+
   return {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
     setPanelWeights, setAnnotations, setHighlightPattern, getHighlightPattern,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
+    getSnapshotDataUrl,
   };
 })();
 
@@ -5281,12 +5655,14 @@ const R = {
   mtabTrend:       $('mtab-trend'),
   mtabChip:        $('mtab-chip'),
   mtabDiagnosis:   $('mtab-diagnosis'),
+  mtabAi:          $('mtab-ai'),
   chartArea:          $('chart-area'),
   chartModeTabs:      $('chart-mode-tabs'),
   modeTabDaily:       $('mode-tab-daily'),
   modeTabIntraday:    $('mode-tab-intraday'),
   modeTabChip:        $('mode-tab-chip'),
   modeTabDiagnosis:   $('mode-tab-diagnosis'),
+  modeTabAi:          $('mode-tab-ai'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
   reportTitle:     $('report-title'),
@@ -5338,6 +5714,7 @@ const R = {
   strongVolRatioInput: $('strong-vol-ratio'),
   strongNearHighInput: $('strong-near-high'),
   diagnosisLookbackDaysInput: $('diagnosis-lookback-days'),
+  aiAssistantEnabledToggle: $('ai-assistant-enabled-toggle'),
   followMouseChk:  $('follow-mouse-toggle'),
   indicatorShowKd:   $('indicator-show-kd'),
   indicatorShowMacd: $('indicator-show-macd'),
@@ -5349,6 +5726,7 @@ const R = {
   memoChartBtn:    $('memo-chart-btn'),
   chipPanel:     $('chip-panel'),
   diagnosisPanel: $('diagnosis-panel'),
+  aiTabPanel:    $('ai-tab-panel'),
   memoModal:       $('memo-modal'),
   memoModalTitle:  $('memo-modal-title'),
   memoClose:       $('memo-close'),
@@ -6115,6 +6493,10 @@ async function renderIntradaySourceChart(opts = {}) {
    selectMarketIndex/applyChartMode/LiveFeed 的即時回呼都共用這個進入點，
    避免同一份邏輯散落在好幾個地方各寫一次。 */
 function renderCurrentSourceChart(opts = {}) {
+  // AI助理不綁定「目前選中的股票/指數」，就算使用者還沒選過任何股票（
+  // currentChartSource是null）也要能打開AI分頁對話，所以這個判斷要放在
+  // 下面 !currentChartSource 的guard之前，其餘分頁不受影響。
+  if (chartMode === 'ai') { renderAiTab(); return; }
   if (!currentChartSource) return;
   // 個股、美股指數（見 US_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
   // 決定要畫哪一種，不再依 currentChartSource.type 特別把指數鎖在日線。
@@ -6141,16 +6523,20 @@ function setChartModeUI(mode) {
   R.modeTabIntraday.classList.toggle('active', mode === 'intraday');
   R.modeTabChip.classList.toggle('active', mode === 'chip');
   R.modeTabDiagnosis.classList.toggle('active', mode === 'diagnosis');
+  R.modeTabAi.classList.toggle('active', mode === 'ai');
   R.periodToggle.classList.toggle('hidden', mode !== 'daily' && mode !== 'diagnosis');
   R.intradayPeriodToggle.classList.toggle('hidden', mode !== 'intraday');
-  R.indicatorToggle.classList.toggle('hidden', mode === 'chip');
-  R.chartInfoBar.classList.toggle('hidden', mode === 'chip');
-  R.chartWrap.classList.toggle('hidden', mode === 'chip');
+  R.indicatorToggle.classList.toggle('hidden', mode === 'chip' || mode === 'ai');
+  R.chartInfoBar.classList.toggle('hidden', mode === 'chip' || mode === 'ai');
+  R.chartWrap.classList.toggle('hidden', mode === 'chip' || mode === 'ai');
   R.chipPanel.classList.toggle('hidden', mode !== 'chip');
   // 持股診斷跟盤後不同：#chart-wrap 保持可見（型態標記要疊在K線上），只是
   // 縮成上半部固定比例讓下面的診斷文字有空間，見 .diagnosis-mode CSS。
   R.chartArea.classList.toggle('diagnosis-mode', mode === 'diagnosis');
   R.diagnosisPanel.classList.toggle('hidden', mode !== 'diagnosis');
+  // AI助理跟盤後一樣把K線canvas藏起來（不需要常駐可見，需要看圖時AI會用
+  // get_chart_snapshot工具把截圖嵌進對話框，見 AI_CAPABILITIES）。
+  R.aiTabPanel.classList.toggle('hidden', mode !== 'ai');
   // 疊加標記只屬於持股診斷分頁；離開這個分頁時要清掉，否則切回技術分析/
   // 走勢圖時，Chart.draw() 仍會繼續畫上一次算好的轉折點/頸線/目標價（Chart
   // 模組不知道目前是哪個chartMode，annotations是獨立於chartMode的狀態）。
@@ -6172,7 +6558,7 @@ function applyChartMode(mode) {
   // 註解）。持股診斷模式下 #chart-wrap 從沒被隱藏過，但高度會被
   // .diagnosis-mode 的 flex:0 0 45% 改變，同樣需要補一次resize讓canvas內部
   // 緩衝跟著新高度重算，否則會沿用切換前的舊尺寸。
-  if (mode !== 'chip') setTimeout(() => Chart.resize(), 50);
+  if (mode !== 'chip' && mode !== 'ai') setTimeout(() => Chart.resize(), 50);
 }
 
 /* 技術分析/走勢圖圖表 vs 分析報告面板的顯示切換，見上面 setChartModeUI 的
@@ -6438,6 +6824,19 @@ function updateChartModeAvailability() {
   // 分頁一起 disable。
   R.modeTabDiagnosis.classList.toggle('disabled', isIndex);
   R.mtabDiagnosis.classList.toggle('disabled', isIndex);
+}
+
+/* AI助理分頁按鈕本身是否顯示（不是disable，是整個藏起來），跟目前選的是
+   股票還是指數無關——AI是通用助理，不因為選了大盤/美股指數就不能用（只是
+   它能呼叫的部分工具剛好需要目前選中的個股）。設定存檔（saveSettingsModal）
+   跟頁面初始化都要呼叫這個，讓分頁按鈕跟著 Settings.get('aiAssistantEnabled')
+   即時反映。使用者若正停留在AI分頁時把它關掉，順便退回技術分析，避免停留
+   在一個已經看不到分頁按鈕、卻還顯示著內容的畫面。 */
+function updateAiTabVisibility() {
+  const enabled = !!Settings.get('aiAssistantEnabled');
+  R.modeTabAi.classList.toggle('hidden', !enabled);
+  R.mtabAi.classList.toggle('hidden', !enabled);
+  if (!enabled && chartMode === 'ai') applyChartMode('daily');
 }
 
 function rebuildIntradayPeriodToggle() {
@@ -6822,6 +7221,46 @@ function renderDiagnosisSourceChart(opts = {}) {
   diagnosisCache = diag;
   applyDiagnosisAnnotations(diag);
   renderDiagnosisPanelBody(diag);
+}
+
+/* ════════════════════════════════════════
+   AI助理分頁（見 floating-assistant.js + AI_CAPABILITIES）
+   ════════════════════════════════════════ */
+let aiConsoleInstance = null; // FloatingAssistant 只初始化一次，之後切分頁進出都沿用同一個實例
+                               // （它自己管理對話歷史/RAG/IndexedDB，重新new會遺失對話紀錄）。
+function renderAiTab() {
+  if (!Settings.get('aiAssistantEnabled')) {
+    R.aiTabPanel.innerHTML = '<div class="diag-empty">AI助理尚未啟用，請到設定裡的「AI助理」分頁勾選啟用。</div>';
+    return;
+  }
+  if (aiConsoleInstance) return; // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建
+  // 使用者若還沒在AI設定面板自己填過API Key，預先塞一組
+  // tw_stock_db_api:{sessionid} 假金鑰，讓Cloudflare Worker認得這個格式、
+  // 改用worker端藏著的真金鑰代打（見 web/cloudflare-worker/worker.js 的
+  // TW_STOCK_DB_KEY_PREFIX），使用者不用自己申請金鑰就能用。sessionid存在
+  // localStorage重複使用，不是每次對話都換一個。使用者自己填過別的值就
+  // 完全不動，尊重使用者的選擇。
+  if (!localStorage.getItem('floating_ai_api_key')) {
+    let sessionId = localStorage.getItem('tw_stock_db_ai_session_id');
+    if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      localStorage.setItem('tw_stock_db_ai_session_id', sessionId);
+    }
+    localStorage.setItem('floating_ai_api_key', `tw_stock_db_api:${sessionId}`);
+  }
+  // floating-assistant.js的「anchored」模式預設只在容器裡放一顆小按鈕，
+  // 對話視窗要點按鈕才會展開、而且是絕對定位疊在按鈕下方一小塊——這裡用
+  // windowStyle蓋掉預設的position/width/height，讓對話視窗直接撐滿整個
+  // #ai-tab-panel（比較像「這個分頁本身就是對話介面」，而不是一個要另外
+  // 點開的小工具），並且mount完立刻呼叫toggleWindow()自動展開，使用者
+  // 一進AI分頁就直接看到對話框，不用自己點按鈕。
+  aiConsoleInstance = new FloatingAssistant({
+    mountSelector: '#ai-tab-panel',
+    buttonText: '🤖 AI助理（點擊收合/展開）',
+    windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:8px;',
+  }).setSystemPrompt(AI_SYSTEM_PROMPT);
+  registerAiCapabilities(aiConsoleInstance);
+  aiConsoleInstance.toggleWindow();
 }
 
 /* 把 diagnoseStock() 回傳的診斷結果，轉成 Chart.setAnnotations() 要的疊加
@@ -7258,7 +7697,8 @@ function populateSectors() {
 function switchMobileTab(tab) {
   if (tab === 'chip' && R.mtabChip.classList.contains('disabled')) tab = 'chart'; // 美股指數沒有盤後資料
   if (tab === 'diagnosis' && R.mtabDiagnosis.classList.contains('disabled')) tab = 'chart'; // 美股指數沒有持股診斷
-  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'chip' || tab === 'diagnosis'); // 四者共用同一個 #chart-area
+  if (tab === 'ai' && R.mtabAi.classList.contains('hidden')) tab = 'chart'; // AI助理設定裡關閉時分頁按鈕本來就不會出現，這裡防呆
+  const showChart = (tab === 'chart' || tab === 'trend' || tab === 'chip' || tab === 'diagnosis' || tab === 'ai'); // 五者共用同一個 #chart-area
   R.main.classList.toggle('show-list', tab === 'list');
   R.main.classList.toggle('show-chart', showChart);
   R.mtabList.classList.toggle('active', tab === 'list');
@@ -7266,19 +7706,21 @@ function switchMobileTab(tab) {
   R.mtabTrend.classList.toggle('active', tab === 'trend');
   R.mtabChip.classList.toggle('active', tab === 'chip');
   R.mtabDiagnosis.classList.toggle('active', tab === 'diagnosis');
+  R.mtabAi.classList.toggle('active', tab === 'ai');
   // resize（如果需要）交給 applyChartMode 自己處理，見該函式註解——「盤後」
   // 分頁不該resize canvas（canvas根本沒顯示），這裡不能再無條件補一次。
   if (tab === 'chart') applyChartMode('daily');
   else if (tab === 'trend') applyChartMode('intraday');
   else if (tab === 'chip') applyChartMode('chip');
   else if (tab === 'diagnosis') applyChartMode('diagnosis');
+  else if (tab === 'ai') applyChartMode('ai');
 }
 
 function setDrawerOpen(open) {
   R.main.classList.toggle('drawer-open', open);
-  // chartMode==='chip' 時 #chart-wrap 是 display:none，resize()會把canvas
-  // corrupt成0x0（見 applyChartMode 的說明），這裡跳過。
-  if (!open && chartMode !== 'chip') setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
+  // chartMode==='chip'/'ai' 時 #chart-wrap 是 display:none，resize()會把
+  // canvas corrupt成0x0（見 applyChartMode 的說明），這裡跳過。
+  if (!open && chartMode !== 'chip' && chartMode !== 'ai') setTimeout(() => Chart.resize(), 250); // match the CSS transition duration
 }
 
 /* ════════════════════════════════════════
@@ -7442,6 +7884,7 @@ function bindEvents() {
   R.mtabTrend.addEventListener('click', () => switchMobileTab('trend'));
   R.mtabChip.addEventListener('click', () => switchMobileTab('chip'));
   R.mtabDiagnosis.addEventListener('click', () => switchMobileTab('diagnosis'));
+  R.mtabAi.addEventListener('click', () => switchMobileTab('ai'));
 
   /* 分析報告面板：報告種類改由左側 view-sel「分析」清單選（見 selectReportType），
      這裡只剩顯示模式（分頁/連續）跟上一頁/下一頁。 */
@@ -7626,6 +8069,8 @@ function openSettingsModal() {
 
   R.diagnosisLookbackDaysInput.value = getDiagnosisLookbackDays();
 
+  R.aiAssistantEnabledToggle.checked = !!Settings.get('aiAssistantEnabled');
+
   const scr = Settings.get('strongCurrentRules') || {};
   R.strongRuleKdCross.checked    = scr.kdCross    !== false;
   R.strongRuleMacd.checked       = scr.macd       !== false;
@@ -7742,6 +8187,9 @@ function saveSettingsModal() {
     if (chartMode === 'diagnosis') renderCurrentSourceChart();
   }
 
+  Settings.set('aiAssistantEnabled', R.aiAssistantEnabledToggle.checked);
+  updateAiTabVisibility();
+
   const followMouse = R.followMouseChk.checked;
   Settings.set('followMouseTooltip', followMouse);
   Chart.setFollowMouse(followMouse);
@@ -7838,6 +8286,7 @@ async function main() {
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
   rebuildIntradayPeriodToggle();
   updateReportViewModeBtn();
+  updateAiTabVisibility();
   setChartModeUI(Settings.get('chartMode') || 'daily');
 
   /* restore view selector (migrate old values from earlier版本的 schema) */
