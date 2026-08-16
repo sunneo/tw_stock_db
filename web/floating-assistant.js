@@ -318,6 +318,15 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
     /^deepseek-/i,
 ];
 
+// tw_stock_db客製: 這四個是唯一會被UI暴露、可以送進chat completions
+// request body的取樣/重複懲罰參數鍵名（frequency_penalty/presence_penalty
+// 是OpenAI標準欄位；repetition_penalty/length_penalty是vLLM/HF
+// text-generation-inference常見但非標準的擴充欄位，不是每個OpenAI相容端點
+// 都認得）。集中定義成常數，是因為_buildSamplingParamsBody()、
+// _detectRejectedSamplingParam()、設定面板UI三處都要用同一份清單，避免
+// 三邊各自硬寫一份、改一個忘了改另一個。
+const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
+
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
@@ -426,8 +435,152 @@ class FloatingAssistant {
             customFunctions: '',
             customTools: [],
             aiCustomFunctions: {},
-            toolCallMode: 'auto' // tw_stock_db客製: 'auto' | 'native' | 'text'
+            toolCallMode: 'auto', // tw_stock_db客製: 'auto' | 'native' | 'text'
+            generation: this._createDefaultGenerationSettings(),
         };
+    }
+
+    // tw_stock_db客製: 使用者可調的生成/取樣參數。
+    // - contextWindowTokens/maxOutputTokens：純粹是本地用來「主動」在真的
+    //   送出請求前估算會不會爆掉上下文的參考值（見executeChat()裡
+    //   proactive prune的判斷），maxOutputTokens同時也會真的送進request
+    //   body的max_tokens欄位，替模型的輸出長度設一個硬上限——就算重複迴圈
+    //   偵測沒抓到，模型也不可能無止盡輸出到把整個對話拖垮。
+    // - samplingParams：value為null代表「沒特別設定，不送這個欄位」；
+    //   disabled:true代表這個參數曾經被目標端點拒絕過(見
+    //   _detectRejectedSamplingParam)，之後的請求都不會再帶，直到使用者
+    //   自己在設定面板手動重新啟用。
+    _createDefaultGenerationSettings() {
+        return {
+            contextWindowTokens: 8192,
+            maxOutputTokens: 1024,
+            samplingParams: {
+                frequency_penalty: { value: 0.3, disabled: false },
+                presence_penalty: { value: 0.3, disabled: false },
+                repetition_penalty: { value: null, disabled: false },
+                length_penalty: { value: null, disabled: false },
+            },
+        };
+    }
+
+    _normalizeGenerationSettings(raw) {
+        const defaults = this._createDefaultGenerationSettings();
+        if (!raw || typeof raw !== 'object') return defaults;
+        const toPositiveIntOr = (v, fallback) => {
+            const n = Number(v);
+            return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+        };
+        const rawSp = (raw.samplingParams && typeof raw.samplingParams === 'object') ? raw.samplingParams : {};
+        const samplingParams = {};
+        for (const key of SAMPLING_PARAM_KEYS) {
+            const entry = rawSp[key];
+            const num = entry && entry.value != null && entry.value !== '' ? Number(entry.value) : null;
+            samplingParams[key] = {
+                value: Number.isFinite(num) ? num : null,
+                disabled: !!(entry && entry.disabled),
+            };
+        }
+        return {
+            contextWindowTokens: toPositiveIntOr(raw.contextWindowTokens, defaults.contextWindowTokens),
+            maxOutputTokens: toPositiveIntOr(raw.maxOutputTokens, defaults.maxOutputTokens),
+            samplingParams,
+        };
+    }
+
+    _getGenerationSettings() {
+        if (!this.advancedSettings.generation) {
+            this.advancedSettings.generation = this._createDefaultGenerationSettings();
+        }
+        return this.advancedSettings.generation;
+    }
+
+    // tw_stock_db客製: 只把「使用者有填值、且沒被標記為已拒絕」的取樣參數
+    // 組進request body，其餘一律不送（不送=沿用端點自己的預設值，比送一個
+    // 猜錯的值安全）。
+    _buildSamplingParamsBody() {
+        const sp = this._getGenerationSettings().samplingParams || {};
+        const body = {};
+        for (const key of SAMPLING_PARAM_KEYS) {
+            const entry = sp[key];
+            if (entry && !entry.disabled && entry.value != null) body[key] = entry.value;
+        }
+        return body;
+    }
+
+    // tw_stock_db客製: 400/413不一定真的是「上下文太長」——也可能是端點根本
+    // 不認得我們送的某個取樣參數（例如某些NVIDIA NIM模型不接受
+    // repetition_penalty/length_penalty，甚至某些端點連frequency_penalty/
+    // presence_penalty都不支援）。如果對這種情況一律當成「上下文太長」去做
+    // pruneContext，會發生「壓縮完還是同一個錯誤→一直壓縮，但訊息量根本
+    // 沒有真的太長」的無效迴圈（實測過：已經壓縮到只剩system+摘要兩則還是
+    // 400，代表400的成因跟訊息長度無關）。這裡用簡單的關鍵字比對從錯誤
+    // 訊息本文猜是哪個參數被拒絕——沒有統一標準的provider錯誤格式，只能
+    // 盡力而為，抓不到就照舊當成上下文問題處理（後面仍有retryLimit兜底，
+    // 不會真的卡死）。
+    _detectRejectedSamplingParam(errText) {
+        if (!errText) return null;
+        const lower = String(errText).toLowerCase();
+        const rejectionHints = [
+            'unrecognized', 'not supported', 'unsupported', 'unknown parameter',
+            'unknown field', 'invalid parameter', 'extra fields not permitted',
+            'unexpected keyword argument', 'not a valid', 'invalid request',
+            'does not support', "isn't supported", 'not allowed'
+        ];
+        if (!rejectionHints.some(h => lower.includes(h))) return null;
+        for (const key of SAMPLING_PARAM_KEYS) {
+            if (lower.includes(key)) return key;
+        }
+        return null;
+    }
+
+    // tw_stock_db客製: 把某個取樣參數標記為「這個端點不支援」，之後所有
+    // 請求都不會再帶（直到使用者自己在設定面板手動重新啟用），並在對話裡
+    // 留一則使用者看得到的記錄，說明發生了什麼事、以後不會再重複發生。
+    _disableRejectedSamplingParam(key, errText) {
+        const sp = this._getGenerationSettings().samplingParams;
+        if (!sp[key] || sp[key].disabled) return false; // 已經停用過，不要重複記錄/避免無窮遞迴
+        sp[key].disabled = true;
+        this._saveAdvancedSettings();
+        this.messages.push({
+            role: 'system',
+            content: `[Steering] 偵測到目前模型/端點不支援 "${key}" 參數，已自動排除、之後的請求不會再帶這個欄位（可以到設定面板手動重新啟用）。伺服器回應片段：${String(errText || '').slice(0, 300)}`
+        });
+        this._renderMessageHistory();
+        this._renderGenerationSettingsUI();
+        return true;
+    }
+
+    // tw_stock_db客製: 部分模型在temperature=0（本專案固定貪婪解碼）+
+    // 缺少足夠的重複懲罰時，容易卡進「同一段文字不斷重複輸出」的退化狀態
+    // （實測nemotron系列模型針對同一支股票的[CALL: get_price_history(...)]
+    // 連續重複十幾次，直到把整個回應的token額度耗光）。這裡在串流過程中
+    // 邊收邊檢查，一偵測到就立刻截斷連線，不用等模型自己耗盡額度。
+    _hasRepeatingTail(text, minLineLen = 15, minRepeats = 3) {
+        const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length < minRepeats) return false;
+        const tail = lines.slice(-minRepeats);
+        const first = tail[0];
+        if (first.length < minLineLen) return false;
+        return tail.every(l => l === first);
+    }
+
+    // 把偵測到的重複片段裁掉，只留第一次出現的那一份，避免下面的[CALL:...]
+    // 解析邏輯把同一個工具重複執行十幾次（那樣只會讓對話歷史不必要地暴增，
+    // 又繞回前面修的「上下文爆掉」問題）。
+    _dedupeRepeatingTail(text) {
+        const lines = String(text || '').split('\n');
+        const nonEmptyIdx = [];
+        lines.forEach((l, i) => { if (l.trim()) nonEmptyIdx.push(i); });
+        if (nonEmptyIdx.length < 2) return text;
+        const lastIdx = nonEmptyIdx[nonEmptyIdx.length - 1];
+        const lastLine = lines[lastIdx].trim();
+        let firstDupIdx = lastIdx;
+        for (let k = nonEmptyIdx.length - 1; k >= 0; k--) {
+            const idx = nonEmptyIdx[k];
+            if (lines[idx].trim() === lastLine) firstDupIdx = idx;
+            else break;
+        }
+        return lines.slice(0, firstDupIdx + 1).join('\n').trimEnd();
     }
 
     _normalizeCustomTool(tool, fallbackName) {
@@ -467,7 +620,8 @@ class FloatingAssistant {
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
             aiCustomFunctions,
-            toolCallMode
+            toolCallMode,
+            generation: this._normalizeGenerationSettings(raw.generation),
         };
     }
 
@@ -1813,7 +1967,31 @@ ${sourceTool.handlerScript}
         if (functionsInput) functionsInput.value = this.advancedSettings.customFunctions || '';
         this._renderCustomToolList();
         this._renderAiFnList();
+        this._renderGenerationSettingsUI();
         this._syncAllCodeEditors();
+    }
+
+    // tw_stock_db客製: 把 advancedSettings.generation 目前的值同步進設定
+    // 面板的輸入框，並顯示哪些取樣參數已經因為被端點拒絕而自動排除
+    // （見 _disableRejectedSamplingParam）。
+    _renderGenerationSettingsUI() {
+        const gen = this._getGenerationSettings();
+        const ctxInput = document.getElementById('ai-gen-context-window');
+        if (ctxInput) ctxInput.value = gen.contextWindowTokens;
+        const maxOutInput = document.getElementById('ai-gen-max-output');
+        if (maxOutInput) maxOutInput.value = gen.maxOutputTokens;
+        const disabledKeys = [];
+        SAMPLING_PARAM_KEYS.forEach(key => {
+            const input = document.getElementById(`ai-param-${key}`);
+            const entry = gen.samplingParams[key];
+            if (input) {
+                input.value = entry.value != null ? entry.value : '';
+                input.title = entry.disabled ? '此端點曾拒絕這個參數，已自動排除；重新輸入值會再試一次' : '';
+            }
+            if (entry.disabled) disabledKeys.push(key);
+        });
+        const note = document.getElementById('ai-param-disabled-note');
+        if (note) note.textContent = disabledKeys.length ? `⚠️ 已自動排除（端點不支援）：${disabledKeys.join('、')}` : '';
     }
 
     _renderAiFnList() {
@@ -2702,6 +2880,20 @@ ${existingNodeSummaries}
             this.messages.push({ role: "system", content: this._getFinalSystemPrompt() });
         }
 
+        // tw_stock_db客製: 主動式上下文預算檢查——在真的送出請求「之前」就
+        // 先粗估token數，超過使用者設定的contextWindowTokens（扣掉
+        // maxOutputTokens留給模型回覆的空間）就先壓縮一次，不用等真的被
+        // 端點用400/413拒絕才補救。這樣「對話輪數不多、但某一則工具結果
+        // 特別大」的情境也能提前處理。粗略估算用字元數除以2.2（中英文混合
+        // 內容夠用，不追求精確——真正精確的tokenizer太重，不值得為了估算
+        // 而引入）。
+        const gen = this._getGenerationSettings();
+        const roughTokenEstimate = Math.ceil((JSON.stringify(this.messages).length + userText.length) / 2.2);
+        const contextBudget = Math.max(512, gen.contextWindowTokens - gen.maxOutputTokens);
+        if (roughTokenEstimate > contextBudget) {
+            await this.pruneContext(`Proactive context budget check (~${roughTokenEstimate} > ${contextBudget} tokens)`);
+        }
+
         this.responseElapsedMs = 0;
         this._setRespondingState(true);
 
@@ -2807,11 +2999,30 @@ ${existingNodeSummaries}
                     model: apiModel,
                     messages: this.messages,
                     temperature: 0,
+                    // tw_stock_db客製: 只送使用者有設定、且沒被目標端點拒絕過的
+                    // 取樣參數（見_buildSamplingParamsBody），加上max_tokens替
+                    // 輸出長度設硬上限——temperature=0的貪婪解碼在某些模型上
+                    // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
+                    // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
+                    ...this._buildSamplingParamsBody(),
+                    max_tokens: this._getGenerationSettings().maxOutputTokens,
                     stream: true
                 })
             });
 
             if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                // tw_stock_db客製: 400不一定是上下文太長——先檢查是不是某個
+                // 取樣參數被端點拒絕，是的話標記排除、重新送一次（不算進
+                // retryAttempt，因為這不是「內容太長」的重試，是「這次的
+                // request body本身就有問題」，兩者要分開計數，否則正常的
+                // 內容瘦身重試次數會被參數排除吃掉）。_disableRejectedSamplingParam
+                // 對同一個key只會生效一次，不會無窮遞迴。
+                const rejectedParam = this._detectRejectedSamplingParam(errText);
+                if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
+                    streamDiv.remove();
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
+                }
                 if (response.status === 400 || response.status === 413) {
                     streamDiv.remove();
                     // tw_stock_db客製: 原本這裡遞迴時永遠寫死傳1，等於這條路徑
@@ -2822,19 +3033,20 @@ ${existingNodeSummaries}
                     // retryAttempt計數並設上限，超過就跟一般錯誤一樣放棄並
                     // 記錄，不再無條件遞迴。
                     if (retryAttempt >= this.retryLimit) {
-                        this._log("❌ 已達重試上限，仍超過模型可用的上下文長度（可能是單一工具結果過大），請點「清除對話」或換一個上下文較長的模型。");
+                        this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
                         return "";
                     }
                     await this.pruneContext("Context Window Exception (Token Limit)");
                     return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
                 }
-                throw new Error("HTTP " + response.status);
+                throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
             }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let buffer = '';
             let fullContent = '';
+            let repetitionCut = false;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -2856,7 +3068,19 @@ ${existingNodeSummaries}
                         } catch (_) {}
                     }
                 }
+
+                // tw_stock_db客製: 邊收邊偵測退化重複輸出（見_hasRepeatingTail
+                // 說明），一偵測到就中斷連線、裁掉重複片段，不用等模型自己
+                // 耗盡max_tokens額度才停下來。
+                if (this._hasRepeatingTail(fullContent)) {
+                    fullContent = this._dedupeRepeatingTail(fullContent);
+                    this._log('⚠️ 偵測到模型輸出重複迴圈，已提前中斷並移除重複內容。');
+                    repetitionCut = true;
+                    controller.abort();
+                    break;
+                }
             }
+            if (repetitionCut) textSpan.innerText = fullContent;
 
             this.messages.push({ role: "assistant", content: fullContent });
 
@@ -2951,6 +3175,9 @@ ${existingNodeSummaries}
                     model: apiModel,
                     messages: this.messages,
                     temperature: 0,
+                    // tw_stock_db客製: 跟 _loopFetch 同樣的理由，見那邊的說明。
+                    ...this._buildSamplingParamsBody(),
+                    max_tokens: this._getGenerationSettings().maxOutputTokens,
                     stream: false,
                     tools: this._buildNativeToolsSchema(),
                     tool_choice: 'auto'
@@ -2958,17 +3185,24 @@ ${existingNodeSummaries}
             });
 
             if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                // tw_stock_db客製: 跟 _loopFetch 同樣的理由，先排除「取樣參數被
+                // 拒絕」這個可能性，見那邊的說明。
+                const rejectedParam = this._detectRejectedSamplingParam(errText);
+                if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
+                }
                 if (response.status === 400 || response.status === 413) {
                     // tw_stock_db客製: 跟 _loopFetch 同樣的理由，不能無條件遞迴
                     // （原本寫死傳1），見那邊的說明。
                     if (retryAttempt >= this.retryLimit) {
-                        this._log("❌ 已達重試上限，仍超過模型可用的上下文長度（可能是單一工具結果過大），請點「清除對話」或換一個上下文較長的模型。");
+                        this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
                         return "";
                     }
                     await this.pruneContext("Context Window Exception (Token Limit)");
                     return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
                 }
-                throw new Error("HTTP " + response.status);
+                throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
             }
 
             const data = await response.json();
@@ -3122,7 +3356,27 @@ ${existingNodeSummaries}
                 <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
                 <input type="text" id="ai-model-name" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='meta/llama-3.1-8b-instruct'>
-                
+
+                <details style="margin-top:8px;">
+                    <summary style="font-size:12px; font-weight:bold; cursor:pointer; user-select:none; color:${palette.detailText};">生成／取樣參數（點擊展開）</summary>
+                    <div style="margin-top:6px; padding:8px; background:${palette.detailBg}; border-radius:6px;">
+                        <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
+                        <input type="number" min="512" step="512" id="ai-gen-context-window" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px; margin-bottom:6px;">
+                        <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-max-output">單次回覆上限（max_tokens）</label>
+                        <input type="number" min="64" step="64" id="ai-gen-max-output" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px; margin-bottom:6px;">
+                        <div style="font-size:11px; margin-bottom:2px;">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
+                            ${SAMPLING_PARAM_KEYS.map(key => `
+                                <div>
+                                    <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
+                                    <input type="number" step="0.1" id="ai-param-${key}" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;">
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div id="ai-param-disabled-note" style="font-size:10px; color:#dd6b20; margin-top:6px;"></div>
+                    </div>
+                </details>
+
                 <div style="margin-top:8px; display:flex; align-items:center; gap:6px;">
                     <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">
                     <label for="ai-hermes-evolve-chk" style="font-size:12px; font-weight:bold; color:#8b5cf6; cursor:pointer; user-select:none;">開啟 RAG 本地條件圖譜自我演化</label>
@@ -3643,6 +3897,39 @@ ${existingNodeSummaries}
         });
         inputModelName.addEventListener('input', () => {
             localStorage.setItem(this.LLM_MODEL_NAME_KEY, inputModelName.value.trim());
+        });
+
+        // tw_stock_db客製: 生成/取樣參數設定，跟上面API Key/URL/Model一樣採
+        // 輸入即存的方式，不用另外按儲存鍵。
+        const genContextWindowInput = document.getElementById('ai-gen-context-window');
+        const genMaxOutputInput = document.getElementById('ai-gen-max-output');
+        if (genContextWindowInput) {
+            genContextWindowInput.addEventListener('input', () => {
+                const n = Number(genContextWindowInput.value);
+                if (Number.isFinite(n) && n > 0) this._getGenerationSettings().contextWindowTokens = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        if (genMaxOutputInput) {
+            genMaxOutputInput.addEventListener('input', () => {
+                const n = Number(genMaxOutputInput.value);
+                if (Number.isFinite(n) && n > 0) this._getGenerationSettings().maxOutputTokens = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        SAMPLING_PARAM_KEYS.forEach(key => {
+            const input = document.getElementById(`ai-param-${key}`);
+            if (!input) return;
+            input.addEventListener('input', () => {
+                const raw = input.value.trim();
+                const entry = this._getGenerationSettings().samplingParams[key];
+                entry.value = raw === '' ? null : Number(raw);
+                // 使用者自己重新輸入值，代表想再試一次，即使之前被伺服器拒絕過
+                // 也重新啟用——不然使用者改了值卻永遠送不出去會很困惑。
+                entry.disabled = false;
+                this._saveAdvancedSettings();
+                this._renderGenerationSettingsUI();
+            });
         });
         rulesInput.addEventListener('input', () => {
             this.advancedSettings.rulesMd = rulesInput.value;
