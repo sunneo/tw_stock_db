@@ -9,7 +9,8 @@
 //      _shouldUseNativeToolCalls、_buildNativeToolsSchema、executeChat
 //      的原生路徑分支）。
 //   3. .skill (zip) 匯入/匯出（_importSkillZip/_exportSkillZip，需要
-//      JSZip，由 web/index.html 動態載入後才會啟用這兩個方法）。
+//      JSZip；只有使用者實際按下匯入/匯出按鈕時才動態注入CDN script
+//      標籤，見 _ensureJSZipLoaded()，不使用這功能的人不用背這個依賴）。
 // ============================================================
 
 // ============================================================
@@ -2147,6 +2148,133 @@ ${sourceTool.handlerScript}
         reader.readAsText(file);
     }
 
+    // tw_stock_db客製: .skill (zip) 匯出/匯入。格式是這個專案自訂的（沒有
+    // 業界標準可循）：zip內含 SKILL.md（純文字，匯入時附加進rulesMd）+
+    // 選填的 tools/*.js（每個檔案代表一個customTool，開頭兩行用
+    // "// name: xxx"/"// description: xxx" 宣告中繼資料，其餘內容是
+    // handlerScript本體），跟 advancedSettings.customTools 現有的
+    // {name, description, handlerScript} 結構直接對應。需要JSZip（由
+    // web/index.html動態載入CDN版本），沒載入的話兩個方法都會提示使用者。
+    // tw_stock_db客製: JSZip只有使用者真的按了匯入/匯出.skill才需要，平常
+    // 不會用到這個功能的使用者不用多背這個CDN依賴，所以用得到才動態注入
+    // <script>標籤，而不是像sql.js那樣一開始就無條件載入。載入結果快取在
+    // this._jszipLoadPromise，避免使用者連續點兩次按鈕重複注入。
+    _ensureJSZipLoaded() {
+        if (typeof JSZip !== 'undefined') return Promise.resolve();
+        if (this._jszipLoadPromise) return this._jszipLoadPromise;
+        this._jszipLoadPromise = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+            script.onload = () => resolve();
+            script.onerror = () => {
+                this._jszipLoadPromise = null;
+                reject(new Error('JSZip 載入失敗（可能是網路問題）'));
+            };
+            document.head.appendChild(script);
+        });
+        return this._jszipLoadPromise;
+    }
+
+    async _exportSkillZip() {
+        try {
+            await this._ensureJSZipLoaded();
+        } catch (err) {
+            alert('.skill 匯出功能需要 JSZip 函式庫：' + (err.message || err));
+            return;
+        }
+        try {
+            const zip = new JSZip();
+            const rulesMd = String(this.advancedSettings.rulesMd || '').trim();
+            zip.file('SKILL.md', rulesMd || '# SKILL.md\n\n（尚未填寫 RULES.md 內容）\n');
+            const toolsFolder = zip.folder('tools');
+            this.advancedSettings.customTools.forEach(tool => {
+                const safeName = String(tool.name || 'tool').replace(/[^a-zA-Z0-9_\-]/g, '_') || 'tool';
+                const description = String(tool.description || '').replace(/\r?\n/g, ' ');
+                const content = `// name: ${tool.name}\n// description: ${description}\n${tool.handlerScript || ''}\n`;
+                toolsFolder.file(`${safeName}.js`, content);
+            });
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'tw-stock-db-assistant.skill';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            alert('.skill 匯出失敗: ' + (err.message || err));
+        }
+    }
+
+    async _importSkillZip(file) {
+        if (!file) return;
+        try {
+            await this._ensureJSZipLoaded();
+        } catch (err) {
+            alert('.skill 匯入功能需要 JSZip 函式庫：' + (err.message || err));
+            return;
+        }
+        try {
+            const zip = await JSZip.loadAsync(file);
+            const skillMdEntry = zip.file('SKILL.md');
+            let skillMdImported = false;
+            if (skillMdEntry) {
+                const skillMdText = (await skillMdEntry.async('string')).trim();
+                if (skillMdText) {
+                    const existing = String(this.advancedSettings.rulesMd || '').trim();
+                    this.advancedSettings.rulesMd = existing
+                        ? `${existing}\n\n---\n[來自匯入的 .skill: ${file.name}]\n${skillMdText}`
+                        : skillMdText;
+                    skillMdImported = true;
+                }
+            }
+
+            const toolFiles = zip.file(/^tools\/.+\.js$/i);
+            let importedToolCount = 0;
+            let skippedBuiltinCount = 0;
+            for (const entry of toolFiles) {
+                const text = await entry.async('string');
+                const nameMatch = text.match(/^\s*\/\/\s*name:\s*(.+)$/mi);
+                const descMatch = text.match(/^\s*\/\/\s*description:\s*(.+)$/mi);
+                const fallbackName = entry.name.replace(/^tools\//i, '').replace(/\.js$/i, '');
+                const name = (nameMatch ? nameMatch[1] : fallbackName).trim();
+                const description = descMatch ? descMatch[1].trim() : '';
+                const handlerScript = text
+                    .replace(/^\s*\/\/\s*name:.*$/mi, '')
+                    .replace(/^\s*\/\/\s*description:.*$/mi, '')
+                    .trim();
+                const normalized = this._normalizeCustomTool({ name, description, handlerScript });
+                if (!normalized) continue;
+
+                if (Object.prototype.hasOwnProperty.call(this.tools, normalized.name)) {
+                    console.warn(`.skill匯入略過: "${normalized.name}" 與內建工具同名，不可覆蓋。`);
+                    skippedBuiltinCount++;
+                    continue;
+                }
+                const existingIndex = this.advancedSettings.customTools.findIndex(t => t.name === normalized.name);
+                if (existingIndex > -1) {
+                    if (!confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
+                    this.advancedSettings.customTools.splice(existingIndex, 1, normalized);
+                } else {
+                    this.advancedSettings.customTools.push(normalized);
+                }
+                importedToolCount++;
+            }
+
+            this._saveAdvancedSettings();
+            this._renderAdvancedSettings();
+            this._syncFromAI();
+            const parts = [];
+            if (skillMdImported) parts.push('SKILL.md 已附加到 RULES.md');
+            parts.push(`匯入/更新 ${importedToolCount} 個 Skill 工具`);
+            if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
+            alert('.skill 匯入完成：' + parts.join('，'));
+        } catch (err) {
+            alert('.skill 匯入失敗: ' + (err.message || err));
+        }
+    }
+
     _formatElapsedTime(ms) {
         const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
         const seconds = String(totalSeconds % 60).padStart(2, '0');
@@ -2970,8 +3098,12 @@ ${existingNodeSummaries}
                     </div>
                     <div class="ai-advanced-stack">
                         <div class="ai-advanced-tools-header">
-                            <div class="ai-advanced-label" style="margin:0;">Custom Tools</div>
-                            <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Tool</button>
+                            <div class="ai-advanced-label" style="margin:0;">Skill（自訂工具 / Custom Tools）</div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Skill</button>
+                                <button type="button" id="ai-skill-export-btn" class="ai-advanced-btn">匯出 .skill</button>
+                                <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入 .skill<input type="file" id="ai-skill-import-input" accept=".skill,.zip" style="display:none;"></label>
+                            </div>
                         </div>
                         <div id="ai-custom-tool-list" class="ai-tool-list"></div>
                     </div>
@@ -3000,7 +3132,7 @@ ${existingNodeSummaries}
             <div id="ai-tool-editor-modal" class="ai-advanced-overlay">
                 <div class="ai-advanced-dialog" style="width:min(860px, 94vw);">
                     <div class="ai-advanced-row">
-                        <h3 style="margin:0; color:#76b900;">編輯 Custom Tool</h3>
+                        <h3 style="margin:0; color:#76b900;">編輯 Skill（Custom Tool）</h3>
                         <button type="button" id="ai-tool-editor-close" class="ai-advanced-btn">關閉</button>
                     </div>
                     <div class="ai-advanced-stack">
@@ -3360,6 +3492,12 @@ ${existingNodeSummaries}
         document.getElementById('ai-advanced-close').onclick = () => this._closeAdvancedModal();
         document.getElementById('ai-advanced-done').onclick = () => this._closeAdvancedModal();
         document.getElementById('ai-tool-add-btn').onclick = () => this._openToolEditor(-1);
+        document.getElementById('ai-skill-export-btn').onclick = () => this._exportSkillZip();
+        document.getElementById('ai-skill-import-input').addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (file) this._importSkillZip(file);
+            e.target.value = '';
+        });
         document.getElementById('ai-tool-editor-close').onclick = () => this._closeToolEditor();
         document.getElementById('ai-tool-editor-cancel').onclick = () => this._closeToolEditor();
         document.getElementById('ai-fn-manage-btn').onclick = () => this._openAiFnModal();
