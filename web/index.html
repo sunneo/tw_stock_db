@@ -771,6 +771,13 @@ select:focus { outline: 2px solid var(--acc); }
 /* ── 盤後面板（三大法人/股權分布/強制集保，屬於個股的第三個分頁，見 #chart-mode-tabs） ── */
 #chip-panel { flex: 1; overflow-y: auto; padding: 14px 16px; }
 #ai-tab-panel { flex: 1; overflow: hidden; padding: 10px; display: flex; flex-direction: column; }
+/* AI助理分頁是內嵌的、永遠展開的對話介面，不是可收合的浮動小工具，視窗
+   header裡的❌關閉鍵在這個情境下沒有意義、還會誤導使用者以為可以收合，
+   所以隱藏起來（外層的小藥丸收合/展開按鈕改用 renderAiTab() 傳入的
+   buttonStyle:'display:none;' 蓋掉，因為那顆按鈕的display是inline style
+   設定的，這裡的stylesheet規則蓋不過去）。見 renderAiTab() 呼叫
+   toggleWindow() 讓視窗一開始就是展開的。 */
+#ai-tab-panel #ai-btn-close { display: none; }
 #chip-panel.hidden { display: none; }
 .chip-loading, .chip-empty { font-size: 13px; color: var(--txt2); padding: 4px 0; }
 .chip-section { margin-bottom: 18px; }
@@ -7249,15 +7256,22 @@ function renderAiTab() {
     localStorage.setItem('floating_ai_api_key', `tw_stock_db_api:${sessionId}`);
   }
   // floating-assistant.js的「anchored」模式預設只在容器裡放一顆小按鈕，
-  // 對話視窗要點按鈕才會展開、而且是絕對定位疊在按鈕下方一小塊——這裡用
-  // windowStyle蓋掉預設的position/width/height，讓對話視窗直接撐滿整個
-  // #ai-tab-panel（比較像「這個分頁本身就是對話介面」，而不是一個要另外
-  // 點開的小工具），並且mount完立刻呼叫toggleWindow()自動展開，使用者
-  // 一進AI分頁就直接看到對話框，不用自己點按鈕。
+  // 對話視窗要點按鈕才會展開、而且是絕對定位疊在按鈕下方一小塊，z-index
+  // 也是給「蓋在整個網頁最上層」的浮動小工具情境設計的(999999)——這裡用
+  // windowStyle蓋掉預設的position/width/height/z-index，讓對話視窗直接
+  // 撐滿整個#ai-tab-panel（比較像「這個分頁本身就是對話介面」，而不是
+  // 另外浮在網頁上的小工具），z-index降到比網頁自己的settings modal(500)
+  // 還低，這樣使用者在AI分頁開著的狀態下，另外打開設定/備忘錄等網頁自己
+  // 的modal時才不會被AI視窗蓋住。收合/展開的小藥丸按鈕用buttonStyle蓋掉
+  // display（它的display是inline style設定的，一般stylesheet規則蓋不過
+  // 去，只能用同一顆元素的inline style覆蓋），視窗內建的❌關閉鍵改用CSS
+  // 隱藏（見 #ai-tab-panel #ai-btn-close 規則）——這個分頁本來就該一直
+  // 展開，不需要使用者自己收合。mount完立刻呼叫toggleWindow()展開。
   aiConsoleInstance = new FloatingAssistant({
     mountSelector: '#ai-tab-panel',
-    buttonText: '🤖 AI助理（點擊收合/展開）',
-    windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:8px;',
+    buttonText: '🤖 AI助理',
+    buttonStyle: 'display:none;',
+    windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:8px; z-index:1;',
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   aiConsoleInstance.toggleWindow();
