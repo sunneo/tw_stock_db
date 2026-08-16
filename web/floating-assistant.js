@@ -348,6 +348,11 @@ class FloatingAssistant {
         this.tools = {};
         this.FromAI = {};
         this.messages = [];
+        // tw_stock_db客製: pruneContext()壓縮上下文時被移出this.messages的原始
+        // 訊息，純粹留著給畫面顯示用（見_renderMessageHistory()），不會被
+        // 重新送回API，所以還是有真正縮減context的效果，只是使用者還能點開
+        // 回顧，不會覺得對話「憑空消失」。
+        this.archivedDisplayBlocks = [];
         this.activeToolEditIndex = -1;
         
         this.commandHistory = JSON.parse(localStorage.getItem(this.HISTORY_KEY)) || [];
@@ -830,7 +835,18 @@ ${fnData.code}
             toolSections.push([
                 '[TOOL CALL PROTOCOL]',
                 'If you need to use a tool, you MUST output the call format strictly as:',
-                '[CALL: tool_name("arguments")]',
+                '[CALL: tool_name(ARGUMENTS_AS_JSON_OBJECT)]',
+                // tw_stock_db客製: 原本這裡只給抽象模板([CALL: tool_name("arguments")])，
+                // 沒有具體示範"arguments"該長什麼樣子，模型（尤其較小的模型）很
+                // 容易誤以為是一個裸值而不是物件，例如寫成
+                // diagnose_stock("9945")而不是diagnose_stock({"code":"9945"})，
+                // 導致handler拿到的參數對不上宣告的鍵名。這裡明講ARGUMENTS必須
+                // 是JSON物件、鍵名要對應工具描述裡列出的參數名稱，並給一個具體
+                // 範例，降低模型猜錯的機率（後端aiToolHandler仍然有針對單一參數
+                // 工具的容錯，這裡是雙重保險，不是取代）。
+                'ARGUMENTS_AS_JSON_OBJECT means a JSON object whose keys match the parameter names listed in that tool\'s description — NEVER a bare value. For example, if a tool\'s params are {"code": "stock code"}, call it as:',
+                '[CALL: diagnose_stock({"code": "2330"})]',
+                'and NOT as [CALL: diagnose_stock("2330")] or [CALL: diagnose_stock(2330)].',
                 'Do not output anything else in that turn. Once the user provides the [TOOL RESULT], you will continue answering.'
             ].join('\n'));
             sections.push(toolSections.join('\n\n'));
@@ -927,7 +943,12 @@ ${fnData.code}
         if (typeof result === 'string') return result;
         if (typeof result === 'undefined') return `[Tool 回傳成功] ${toolName} 執行完成`;
         try {
-            return JSON.stringify(result, null, 2);
+            // tw_stock_db客製: 原本用 JSON.stringify(result, null, 2) 美化縮排，
+            // 但這段文字是直接塞進送給模型的訊息內容，縮排/換行對LLM閱讀沒有
+            // 幫助，純粹浪費token（實測同一份300筆OHLCV資料，美化版比壓縮版
+            // 多耗費約23%字元數）。畫面上的<details>區塊本身就是等寬字型+
+            // 自動換行，壓縮後照樣可讀。
+            return JSON.stringify(result);
         } catch (err) {
             return String(result);
         }
@@ -2433,10 +2454,15 @@ ${sourceTool.handlerScript}
             const data = await response.json();
             const summaryResult = data.choices[0]?.message?.content || "（對話已壓縮）";
 
+            // tw_stock_db客製: 被壓縮掉的原始訊息不是直接丟棄，存進
+            // archivedDisplayBlocks給畫面用（見_renderMessageHistory()），
+            // this.messages（真正送進API的內容）還是換成精簡版，兩者脫鉤。
+            this.archivedDisplayBlocks.push({ reason, messages: chatToCompress });
+
             this.messages = [{ role: "system", content: this._getFinalSystemPrompt() }];
             this.messages.push({ role: "system", content: `[歷史對話摘要(300 tokens 內)]: ${summaryResult}` });
 
-            this._log("✅ 歷史對話壓縮完成！已釋放 Context 空間。");
+            this._log("✅ 歷史對話壓縮完成！已釋放 Context 空間，原始內容仍可在上方封存區塊回顧。");
             this._renderMessageHistory();
 
         } catch (err) {
@@ -2445,6 +2471,12 @@ ${sourceTool.handlerScript}
                 return;
             }
             this._log("❌ 壓縮失敗: " + err.message);
+            // 摘要請求本身失敗時 this.messages 保持原樣不動（沒有東西被砍掉、
+            // 也沒有封存）——呼叫端（_loopFetch/_loopFetchNative 的 400/413
+            // 分支）不能因此就無條件遞迴重試，否則「壓縮沒解決問題→立刻重試
+            // →又觸發同一個400/413→又壓縮→又失敗」會無窮迴圈，畫面上就是
+            // 使用者反映的「不停閃動/一直被洗掉」，見那兩處呼叫改用有上限的
+            // retryAttempt 計數，不再寫死傳1。
         }
     }
 
@@ -2782,8 +2814,19 @@ ${existingNodeSummaries}
             if (!response.ok) {
                 if (response.status === 400 || response.status === 413) {
                     streamDiv.remove();
+                    // tw_stock_db客製: 原本這裡遞迴時永遠寫死傳1，等於這條路徑
+                    // 沒有重試上限——如果壓縮沒有真正解決400/413的成因（例如
+                    // 單一則過大的tool結果，不是對話輪數太多），就會「壓縮→
+                    // 還是太大→再觸發400/413→再壓縮」無窮迴圈，也是使用者
+                    // 反映「不停閃動/一直被洗掉」的成因之一。改成沿用同一個
+                    // retryAttempt計數並設上限，超過就跟一般錯誤一樣放棄並
+                    // 記錄，不再無條件遞迴。
+                    if (retryAttempt >= this.retryLimit) {
+                        this._log("❌ 已達重試上限，仍超過模型可用的上下文長度（可能是單一工具結果過大），請點「清除對話」或換一個上下文較長的模型。");
+                        return "";
+                    }
                     await this.pruneContext("Context Window Exception (Token Limit)");
-                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1);
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
                 }
                 throw new Error("HTTP " + response.status);
             }
@@ -2916,8 +2959,14 @@ ${existingNodeSummaries}
 
             if (!response.ok) {
                 if (response.status === 400 || response.status === 413) {
+                    // tw_stock_db客製: 跟 _loopFetch 同樣的理由，不能無條件遞迴
+                    // （原本寫死傳1），見那邊的說明。
+                    if (retryAttempt >= this.retryLimit) {
+                        this._log("❌ 已達重試上限，仍超過模型可用的上下文長度（可能是單一工具結果過大），請點「清除對話」或換一個上下文較長的模型。");
+                        return "";
+                    }
                     await this.pruneContext("Context Window Exception (Token Limit)");
-                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1);
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
                 }
                 throw new Error("HTTP " + response.status);
             }
@@ -3319,142 +3368,167 @@ ${existingNodeSummaries}
         const palette = this._getThemePalette();
         this._applyThemeStyles();
         chatBody.innerHTML = '';
-        this.messages.forEach(msg => {
-            // 隱藏最基礎無關的 System Prompt，避免畫面雜亂
-            if (
-                msg.role === 'system' &&
-                !msg.content.startsWith('[歷史對話摘要') &&
-                !msg.content.startsWith('[Topic Transition Summary') &&
-                !msg.content.startsWith('[Steering]')
-            ) return; 
-            
-            // 💡 tw_stock_db客製：原生tool-call模式下，assistant訊息本身沒有
-            // [CALL:...]文字（呼叫資訊在msg.tool_calls結構化欄位），比照文字
-            // 模式的摺疊呈現方式，避免畫面出現一個空白的AI回覆泡泡。
-            if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
-                const detailEl = document.createElement('details');
-                detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
-                const callsText = msg.tool_calls.map(tc => `${tc.function?.name}(${tc.function?.arguments || ''})`).join('\n');
-                detailEl.innerHTML = `
-                    <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫（原生function call，點擊展開）</summary>
-                    <div style="margin-top: 6px; white-space: pre-wrap; font-family: monospace; background: #fff; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">${callsText}</div>
-                `;
-                chatBody.appendChild(detailEl);
-                return;
-            }
 
-            // 💡 情況一：如果訊息是 AI 輸出的 Tool 呼叫指令，例如 [CALL: xxx(...)]
-            if (msg.role === 'assistant' && msg.content.trim().startsWith('[CALL:')) {
-                const detailEl = document.createElement('details');
-                detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
-                detailEl.innerHTML = `
-                    <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫 (點擊展開)</summary>
-                    <div style="margin-top: 6px; white-space: pre-wrap; font-family: monospace; background: #fff; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">${msg.content}</div>
-                `;
-                chatBody.appendChild(detailEl);
-                return;
-            }
-
-            // 💡 tw_stock_db客製擴充：Tool結果如果是 {type:'image', dataUrl}
-            // 的JSON（例如get_chart_snapshot截圖），直接渲染成<img>，不要
-            // 走下面情況二那種「摺疊起來的純文字」渲染——data URL通常是幾十
-            // KB的base64字串，塞進純文字區塊只會很長一串看不出是圖片。
-            if (msg.role === 'tool') {
-                let imagePayload = null;
-                try {
-                    const parsed = JSON.parse(msg.content);
-                    if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') imagePayload = parsed;
-                } catch (_) { /* 不是JSON，走下面一般文字流程 */ }
-                if (imagePayload) {
-                    const imgWrap = document.createElement('div');
-                    imgWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
-                    imgWrap.innerHTML = `
-                        <div style="font-size: 12px; font-weight: bold; color: #319795; margin-bottom: 4px;">🖼️ 圖表截圖</div>
-                        <img src="${imagePayload.dataUrl}" style="max-width: 100%; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);">
-                    `;
-                    chatBody.appendChild(imgWrap);
-                    return;
-                }
-            }
-
-            // 💡 情況二：如果是 Tool 的執行回傳結果，或者 Topic 轉移的背景摘要
-            if (
-                msg.role === 'tool' ||
-                (
-                    msg.role === 'system' &&
-                    (
-                        msg.content.startsWith('[歷史對話摘要') ||
-                        msg.content.startsWith('[Topic Transition Summary') ||
-                        msg.content.startsWith('[Steering]')
-                    )
-                )
-            ) {
-                let title = "ℹ️ 系統內部上下文";
-                let bgColor = "#feebc8"; // 預設黃色
-                let borderCol = "#dd6b20";
-                let textColor = "#c05621";
-
-                if (msg.role === 'tool') {
-                    title = "🛠️ 工具執行結果回傳";
-                    bgColor = "#e6fffa"; // 綠色調
-                    borderCol = "#319795";
-                    textColor = "#234e52";
-                } else if (msg.content.startsWith('[Topic Transition Summary')) {
-                    title = "🔀 話題轉移/過渡背景摘要";
-                    bgColor = "#feebc8"; // 橘色調
-                    borderCol = "#dd6b20";
-                    textColor = "#c05621";
-                } else if (msg.content.startsWith('[歷史對話摘要')) {
-                    title = "🧠 歷史對話壓縮快照 (Prune)";
-                    bgColor = "#edf2f7"; 
-                    borderCol = "#718096";
-                    textColor = "#2d3748";
-                } else if (msg.content.startsWith('[Steering]')) {
-                    title = "🧭 Steering 指令";
-                    bgColor = "#ede9fe";
-                    borderCol = "#7c3aed";
-                    textColor = "#5b21b6";
-                }
-
-                const detailEl = document.createElement('details');
-                detailEl.style = `margin-bottom: 12px; font-size: 12px; background: ${bgColor}; border-left: 4px solid ${borderCol}; border-radius: 6px; padding: 6px 10px; color: ${textColor}; max-width: 95%; cursor: pointer;`;
-                detailEl.innerHTML = `
-                    <summary style="font-weight: bold; outline: none; user-select: none;">${title} (點擊展開)</summary>
-                    <div style="margin-top: 6px; white-space: pre-wrap; background: rgba(255,255,255,0.7); padding: 8px; border-radius: 4px;">${msg.content}</div>
-                `;
-                chatBody.appendChild(detailEl);
-                return;
-            }
-
-            // 💡 情況三：標準的 User 與 Assistant 對話節點（維持原樣，不折疊）
-            const div = document.createElement('div');
-            div.className = `ai-msg ai-${msg.role}`;
-            div.style = `margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; max-width: 85%; word-break: break-all; line-height:1.4; font-size: 14px;`;
-            
-            if (msg.role === 'user') {
-                div.style.cssText += `background: ${palette.userBg}; color: ${palette.userText}; margin-left: auto; border-right: 4px solid #3182ce;`;
-                div.innerHTML = `<b>You:</b> ${msg.content}`;
-            } else {
-                const thinking = this._extractThinkingContent(msg.content);
-                if (thinking.thinking) {
-                    const detailEl = document.createElement('details');
-                    detailEl.style = `margin-bottom: 8px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #6366f1; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
-                    detailEl.innerHTML = `<summary style="font-weight: bold; outline: none; user-select: none;">🧠 思考過程 (點擊展開)</summary>`;
-                    const thinkDiv = document.createElement('div');
-                    thinkDiv.style.cssText = 'margin-top: 6px; white-space: pre-wrap; background: rgba(255,255,255,0.08); padding: 8px; border-radius: 4px;';
-                    thinkDiv.textContent = thinking.thinking;
-                    detailEl.appendChild(thinkDiv);
-                    chatBody.appendChild(detailEl);
-                }
-                div.style.cssText += `background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
-                const label = document.createElement('b');
-                label.textContent = '🤖 AI:';
-                div.appendChild(label);
-                div.appendChild(document.createTextNode(` ${thinking.answer || '（已輸出思考內容）'}`));
-            }
-            chatBody.appendChild(div);
+        // tw_stock_db客製: pruneContext()壓縮上下文時，被移出this.messages
+        // 的原始訊息存在archivedDisplayBlocks裡（純粹給畫面用，不會回頭餵
+        // 給API），這裡先依序把每一批封存訊息包成一個摺疊區塊放在最上面，
+        // 使用者還是找得到完整的舊對話，不會覺得「一直被洗掉」。
+        (this.archivedDisplayBlocks || []).forEach((block, idx) => {
+            const archiveEl = document.createElement('details');
+            archiveEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
+            const summaryEl = document.createElement('summary');
+            summaryEl.style.cssText = 'font-weight: bold; outline: none; user-select: none; cursor: pointer;';
+            summaryEl.textContent = `📦 已封存對話 #${idx + 1}（原因：${block.reason}，共${block.messages.length}則，點擊展開）`;
+            archiveEl.appendChild(summaryEl);
+            const inner = document.createElement('div');
+            inner.style.cssText = 'margin-top: 6px;';
+            block.messages.forEach(m => this._renderSingleMessage(m, inner, palette));
+            archiveEl.appendChild(inner);
+            chatBody.appendChild(archiveEl);
         });
+
+        this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
         chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    // tw_stock_db客製: 從 _renderMessageHistory() 拆出來的單則訊息渲染邏輯
+    // （原本就是一個 forEach 內的大函式體，只是把 chatBody 換成參數化的
+    // container），這樣同一套渲染規則可以重複用在「目前的訊息列表」跟
+    // 「被封存起來的舊訊息」兩種情境，不用維護兩份重複邏輯。
+    _renderSingleMessage(msg, container, palette) {
+        // 隱藏最基礎無關的 System Prompt，避免畫面雜亂
+        if (
+            msg.role === 'system' &&
+            !msg.content.startsWith('[歷史對話摘要') &&
+            !msg.content.startsWith('[Topic Transition Summary') &&
+            !msg.content.startsWith('[Steering]')
+        ) return;
+
+        // 💡 tw_stock_db客製：原生tool-call模式下，assistant訊息本身沒有
+        // [CALL:...]文字（呼叫資訊在msg.tool_calls結構化欄位），比照文字
+        // 模式的摺疊呈現方式，避免畫面出現一個空白的AI回覆泡泡。
+        if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+            const detailEl = document.createElement('details');
+            detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
+            const callsText = msg.tool_calls.map(tc => `${tc.function?.name}(${tc.function?.arguments || ''})`).join('\n');
+            detailEl.innerHTML = `
+                <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫（原生function call，點擊展開）</summary>
+                <div style="margin-top: 6px; white-space: pre-wrap; font-family: monospace; background: #fff; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">${callsText}</div>
+            `;
+            container.appendChild(detailEl);
+            return;
+        }
+
+        // 💡 情況一：如果訊息是 AI 輸出的 Tool 呼叫指令，例如 [CALL: xxx(...)]
+        if (msg.role === 'assistant' && msg.content.trim().startsWith('[CALL:')) {
+            const detailEl = document.createElement('details');
+            detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
+            detailEl.innerHTML = `
+                <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫 (點擊展開)</summary>
+                <div style="margin-top: 6px; white-space: pre-wrap; font-family: monospace; background: #fff; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">${msg.content}</div>
+            `;
+            container.appendChild(detailEl);
+            return;
+        }
+
+        // 💡 tw_stock_db客製擴充：Tool結果如果是 {type:'image', dataUrl}
+        // 的JSON（例如get_chart_snapshot截圖），直接渲染成<img>，不要
+        // 走下面情況二那種「摺疊起來的純文字」渲染——data URL通常是幾十
+        // KB的base64字串，塞進純文字區塊只會很長一串看不出是圖片。
+        if (msg.role === 'tool') {
+            let imagePayload = null;
+            try {
+                const parsed = JSON.parse(msg.content);
+                if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') imagePayload = parsed;
+            } catch (_) { /* 不是JSON，走下面一般文字流程 */ }
+            if (imagePayload) {
+                const imgWrap = document.createElement('div');
+                imgWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                imgWrap.innerHTML = `
+                    <div style="font-size: 12px; font-weight: bold; color: #319795; margin-bottom: 4px;">🖼️ 圖表截圖</div>
+                    <img src="${imagePayload.dataUrl}" style="max-width: 100%; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);">
+                `;
+                container.appendChild(imgWrap);
+                return;
+            }
+        }
+
+        // 💡 情況二：如果是 Tool 的執行回傳結果，或者 Topic 轉移的背景摘要
+        if (
+            msg.role === 'tool' ||
+            (
+                msg.role === 'system' &&
+                (
+                    msg.content.startsWith('[歷史對話摘要') ||
+                    msg.content.startsWith('[Topic Transition Summary') ||
+                    msg.content.startsWith('[Steering]')
+                )
+            )
+        ) {
+            let title = "ℹ️ 系統內部上下文";
+            let bgColor = "#feebc8"; // 預設黃色
+            let borderCol = "#dd6b20";
+            let textColor = "#c05621";
+
+            if (msg.role === 'tool') {
+                title = "🛠️ 工具執行結果回傳";
+                bgColor = "#e6fffa"; // 綠色調
+                borderCol = "#319795";
+                textColor = "#234e52";
+            } else if (msg.content.startsWith('[Topic Transition Summary')) {
+                title = "🔀 話題轉移/過渡背景摘要";
+                bgColor = "#feebc8"; // 橘色調
+                borderCol = "#dd6b20";
+                textColor = "#c05621";
+            } else if (msg.content.startsWith('[歷史對話摘要')) {
+                title = "🧠 歷史對話壓縮快照 (Prune)";
+                bgColor = "#edf2f7";
+                borderCol = "#718096";
+                textColor = "#2d3748";
+            } else if (msg.content.startsWith('[Steering]')) {
+                title = "🧭 Steering 指令";
+                bgColor = "#ede9fe";
+                borderCol = "#7c3aed";
+                textColor = "#5b21b6";
+            }
+
+            const detailEl = document.createElement('details');
+            detailEl.style = `margin-bottom: 12px; font-size: 12px; background: ${bgColor}; border-left: 4px solid ${borderCol}; border-radius: 6px; padding: 6px 10px; color: ${textColor}; max-width: 95%; cursor: pointer;`;
+            detailEl.innerHTML = `
+                <summary style="font-weight: bold; outline: none; user-select: none;">${title} (點擊展開)</summary>
+                <div style="margin-top: 6px; white-space: pre-wrap; background: rgba(255,255,255,0.7); padding: 8px; border-radius: 4px;">${msg.content}</div>
+            `;
+            container.appendChild(detailEl);
+            return;
+        }
+
+        // 💡 情況三：標準的 User 與 Assistant 對話節點（維持原樣，不折疊）
+        const div = document.createElement('div');
+        div.className = `ai-msg ai-${msg.role}`;
+        div.style = `margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; max-width: 85%; word-break: break-all; line-height:1.4; font-size: 14px;`;
+
+        if (msg.role === 'user') {
+            div.style.cssText += `background: ${palette.userBg}; color: ${palette.userText}; margin-left: auto; border-right: 4px solid #3182ce;`;
+            div.innerHTML = `<b>You:</b> ${msg.content}`;
+        } else {
+            const thinking = this._extractThinkingContent(msg.content);
+            if (thinking.thinking) {
+                const detailEl = document.createElement('details');
+                detailEl.style = `margin-bottom: 8px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #6366f1; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
+                detailEl.innerHTML = `<summary style="font-weight: bold; outline: none; user-select: none;">🧠 思考過程 (點擊展開)</summary>`;
+                const thinkDiv = document.createElement('div');
+                thinkDiv.style.cssText = 'margin-top: 6px; white-space: pre-wrap; background: rgba(255,255,255,0.08); padding: 8px; border-radius: 4px;';
+                thinkDiv.textContent = thinking.thinking;
+                detailEl.appendChild(thinkDiv);
+                container.appendChild(detailEl);
+            }
+            div.style.cssText += `background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
+            const label = document.createElement('b');
+            label.textContent = '🤖 AI:';
+            div.appendChild(label);
+            div.appendChild(document.createTextNode(` ${thinking.answer || '（已輸出思考內容）'}`));
+        }
+        container.appendChild(div);
     }
 
     _initEventListeners() {
