@@ -327,6 +327,22 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
 // 三邊各自硬寫一份、改一個忘了改另一個。
 const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
 
+// tw_stock_db客製: 內建的NVIDIA NIM模型清單，實測過都能正常回應（見下方
+// 各自的實測結果，2026-08確認），給MODEL NAME欄位的<datalist>下拉選單用。
+// 使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的捷徑，
+// 不是限制。
+//   - google/gemma-4-31b-it：預設值，實測~2秒回應、中文輸出正常。
+//   - meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱。
+//   - meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)。
+//   - nvidia/nemotron-3-super-120b-a12b：能力最強，但實測容易在
+//     temperature=0時卡進重複輸出迴圈，靠_hasRepeatingTail()兜底。
+const PRESET_MODEL_OPTIONS = [
+    'google/gemma-4-31b-it',
+    'meta/llama-3.1-8b-instruct',
+    'meta/llama-3.3-70b-instruct',
+    'nvidia/nemotron-3-super-120b-a12b',
+];
+
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
@@ -353,7 +369,11 @@ class FloatingAssistant {
         this.HISTORY_KEY = "floating_ai_cmd_history";
         this.ADVANCED_SETTINGS_KEY = "floating_ai_advanced_settings";
         this.HERMES_AUTO_EVOLVE_KEY = "floating_ai_hermes_auto_evolve"; // 自我進化開關
-        
+        // tw_stock_db客製: this.messages原本純粹是記憶體內狀態，重新整理
+        // 頁面（或AI分頁重新初始化）對話就整個消失——見_persistChatHistory()/
+        // _loadPersistedChatHistory()，跟advancedSettings一樣存進localStorage。
+        this.CHAT_HISTORY_KEY = "floating_ai_chat_history";
+
         this.tools = {};
         this.FromAI = {};
         this.messages = [];
@@ -362,6 +382,7 @@ class FloatingAssistant {
         // 重新送回API，所以還是有真正縮減context的效果，只是使用者還能點開
         // 回顧，不會覺得對話「憑空消失」。
         this.archivedDisplayBlocks = [];
+        this._loadPersistedChatHistory();
         this.activeToolEditIndex = -1;
         
         this.commandHistory = JSON.parse(localStorage.getItem(this.HISTORY_KEY)) || [];
@@ -1016,8 +1037,9 @@ ${fnData.code}
         // 上會整個請求卡住、永遠不回應（實測90秒仍無回應，不是慢，是完全不
         // 回），導致沒自己設定模型的使用者(=大多數人，因為AI分頁預設用假
         // 金鑰+這個預設模型)問任何問題都會卡住/最終fetch失敗。改用實測穩定
-        // 快速回應(<1秒)且中文輸出正常的 'meta/llama-3.1-8b-instruct'。
-        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'meta/llama-3.1-8b-instruct';
+        // 快速回應且中文輸出正常的 'google/gemma-4-31b-it'（實測~2秒回應，
+        // 見PRESET_MODEL_OPTIONS上方的各選項實測註記）。
+        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'google/gemma-4-31b-it';
         return { apiKey, apiUrl, apiModel };
     }
 
@@ -1787,6 +1809,83 @@ ${sourceTool.handlerScript}
             }
         `;
         document.head.appendChild(style);
+    }
+
+    // tw_stock_db客製: AI回覆原本是用document.createTextNode塞純文字，模型
+    // 輸出的markdown（表格、清單、粗體等）完全沒有被解析，可讀性很差。這裡
+    // 加一組通用的markdown內容排版樣式，給marked.parse()產生的HTML用
+    // （見_renderSingleMessage裡的.ai-markdown-body）。
+    _ensureMarkdownStyles() {
+        if (document.getElementById('ai-markdown-style')) return;
+        const style = document.createElement('style');
+        style.id = 'ai-markdown-style';
+        style.textContent = `
+            .ai-markdown-body { line-height: 1.6; }
+            .ai-markdown-body p { margin: 0 0 8px; }
+            .ai-markdown-body p:last-child { margin-bottom: 0; }
+            .ai-markdown-body ul, .ai-markdown-body ol { margin: 4px 0 8px; padding-left: 22px; }
+            .ai-markdown-body li { margin-bottom: 2px; }
+            .ai-markdown-body h1, .ai-markdown-body h2, .ai-markdown-body h3,
+            .ai-markdown-body h4, .ai-markdown-body h5, .ai-markdown-body h6 {
+                margin: 10px 0 6px; font-weight: bold; line-height: 1.3;
+            }
+            .ai-markdown-body h1 { font-size: 1.25em; }
+            .ai-markdown-body h2 { font-size: 1.15em; }
+            .ai-markdown-body h3 { font-size: 1.05em; }
+            .ai-markdown-body table {
+                border-collapse: collapse; margin: 8px 0; font-size: 0.95em;
+                max-width: 100%; display: block; overflow-x: auto;
+            }
+            .ai-markdown-body th, .ai-markdown-body td {
+                border: 1px solid rgba(128,128,128,0.4); padding: 4px 8px; text-align: left;
+            }
+            .ai-markdown-body th { background: rgba(128,128,128,0.15); font-weight: bold; }
+            .ai-markdown-body code {
+                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                background: rgba(128,128,128,0.15); padding: 1px 5px; border-radius: 4px; font-size: 0.9em;
+            }
+            .ai-markdown-body pre {
+                background: rgba(128,128,128,0.15); padding: 8px 10px; border-radius: 6px;
+                overflow-x: auto; margin: 6px 0;
+            }
+            .ai-markdown-body pre code { background: none; padding: 0; }
+            .ai-markdown-body blockquote {
+                border-left: 3px solid rgba(128,128,128,0.5); margin: 6px 0; padding: 2px 10px;
+                color: inherit; opacity: 0.85;
+            }
+            .ai-markdown-body a { color: #3182ce; text-decoration: underline; }
+            .ai-markdown-body hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 10px 0; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // tw_stock_db客製: 用marked.js把assistant的markdown文字轉成HTML、再用
+    // DOMPurify消毒過濾掉<script>/on*事件屬性等，避免模型輸出（或被工具結果
+    // 間接帶進來的內容）挾帶惡意HTML造成XSS。兩個都是輕量單檔CDN函式庫，第
+    // 一次用到才載入（見_initUI()裡mount時就先背景觸發，不用等第一則訊息才
+    // 開始載入）。載入失敗（離線等情況）會靜默跳過，畫面退回純文字顯示，不
+    // 影響其他功能。
+    _ensureMarkdownLibsLoaded() {
+        if (this._markdownLibsPromise) return this._markdownLibsPromise;
+        const loadScript = (src) => new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error('載入失敗: ' + src));
+            document.head.appendChild(s);
+        });
+        this._markdownLibsPromise = Promise.all([
+            typeof marked === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js') : Promise.resolve(),
+            typeof DOMPurify === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js') : Promise.resolve(),
+        ]).then(() => {
+            if (typeof marked !== 'undefined' && marked.setOptions) {
+                marked.setOptions({ gfm: true, breaks: true });
+            }
+        }).catch(err => {
+            console.warn('Markdown函式庫載入失敗，AI回覆將以純文字顯示:', err);
+            this._markdownLibsPromise = null; // 允許之後（例如網路恢復）重試
+        });
+        return this._markdownLibsPromise;
     }
 
     _buildCodeEditorHtml(id, minHeight = 220) {
@@ -3294,6 +3393,13 @@ ${existingNodeSummaries}
         const customRender = typeof this.options.render === 'function';
         const palette = this._getThemePalette();
         this._ensureAdvancedStyles();
+        this._ensureMarkdownStyles();
+        // tw_stock_db客製: 提早（mount時就）背景載入markdown函式庫，不等第一次
+        // 有assistant訊息要渲染才開始載入——LLM回覆通常要等好幾秒，載入這兩個
+        // 小型CDN檔案的時間差不多會被那段等待「吃掉」，使用者體感上幾乎不會
+        // 注意到有額外延遲。不用await，失敗也不影響其他功能（見
+        // _ensureMarkdownLibsLoaded內的容錯）。
+        this._ensureMarkdownLibsLoaded();
 
         let btn, win;
 
@@ -3345,6 +3451,7 @@ ${existingNodeSummaries}
             <div id="ai-window-header" style="background: ${palette.headerBg}; color: ${palette.headerText}; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-weight: bold; color: #76b900;">AI Assistant <span style="font-size:10px; background:#8b5cf6; color:#fff; padding:1px 5px; border-radius:999px; font-weight:normal; margin-left:4px;">Graph RAG</span></span>
                 <div>
+                    <span id="ai-btn-clear-chat" title="清除對話" style="cursor:pointer; margin-right: 10px;">🗑️</span>
                     <span id="ai-btn-config" style="cursor:pointer; margin-right: 10px;">⚙️</span>
                     <span id="ai-btn-close" style="cursor:pointer;">❌</span>
                 </div>
@@ -3355,7 +3462,10 @@ ${existingNodeSummaries}
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
                 <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='meta/llama-3.1-8b-instruct'>
+                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='google/gemma-4-31b-it'>
+                <datalist id="ai-model-datalist">
+                    ${PRESET_MODEL_OPTIONS.map(m => `<option value="${m}"></option>`).join('')}
+                </datalist>
 
                 <details style="margin-top:8px;">
                     <summary style="font-size:12px; font-weight:bold; cursor:pointer; user-select:none; color:${palette.detailText};">生成／取樣參數（點擊展開）</summary>
@@ -3616,7 +3726,47 @@ ${existingNodeSummaries}
         const el = document.getElementById('ai-status-log');
         if (el) el.innerText = msg;
     }
-    
+
+    // tw_stock_db客製: 對話紀錄（含已封存的舊訊息）存進localStorage，讓
+    // 重新整理頁面／關掉分頁再回來都還在，不用每次都從零開始。存的時機是
+    // _renderMessageHistory()結尾——這個函式本來就是「訊息有變動」的唯一
+    // 進入點，掛在這裡不用在一堆呼叫端各自補一次存檔邏輯。localStorage
+    // 容量有限（~5-10MB），失敗（例如單一使用者對話量真的異常大）只記警告、
+    // 不影響其他功能，畫面上的內容還是完整的，只是下次重新整理會遺失。
+    _persistChatHistory() {
+        try {
+            localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
+                messages: this.messages,
+                archivedDisplayBlocks: this.archivedDisplayBlocks,
+            }));
+        } catch (err) {
+            console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
+        }
+    }
+
+    _loadPersistedChatHistory() {
+        try {
+            const raw = localStorage.getItem(this.CHAT_HISTORY_KEY);
+            if (!raw) return;
+            const data = JSON.parse(raw);
+            if (Array.isArray(data.messages)) this.messages = data.messages;
+            if (Array.isArray(data.archivedDisplayBlocks)) this.archivedDisplayBlocks = data.archivedDisplayBlocks;
+        } catch (err) {
+            console.warn('對話紀錄讀取失敗，改用空白對話:', err);
+        }
+    }
+
+    // tw_stock_db客製: 使用者手動清除對話（🗑️按鈕，見_initEventListeners）
+    // ，也是_loopFetch/_loopFetchNative在真的沒辦法解決400/413時建議使用者
+    // 採取的動作（見那兩處錯誤訊息）。
+    _clearChatHistory() {
+        this.messages = [];
+        this.archivedDisplayBlocks = [];
+        localStorage.removeItem(this.CHAT_HISTORY_KEY);
+        this._renderMessageHistory();
+        this._log('🗑️ 對話已清除');
+    }
+
     _renderMessageHistory() {
         const chatBody = document.getElementById('ai-chat-body');
         const palette = this._getThemePalette();
@@ -3643,6 +3793,7 @@ ${existingNodeSummaries}
 
         this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
         chatBody.scrollTop = chatBody.scrollHeight;
+        this._persistChatHistory();
     }
 
     // tw_stock_db客製: 從 _renderMessageHistory() 拆出來的單則訊息渲染邏輯
@@ -3777,10 +3928,33 @@ ${existingNodeSummaries}
                 container.appendChild(detailEl);
             }
             div.style.cssText += `background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
-            const label = document.createElement('b');
-            label.textContent = '🤖 AI:';
+            const label = document.createElement('div');
+            label.style.cssText = 'margin-bottom: 4px;';
+            label.innerHTML = '<b>🤖 AI:</b>';
             div.appendChild(label);
-            div.appendChild(document.createTextNode(` ${thinking.answer || '（已輸出思考內容）'}`));
+            const answerText = thinking.answer || '（已輸出思考內容）';
+            // tw_stock_db客製: markdown函式庫載入完成前，先用純文字顯示（不
+            // 讓使用者等），載入完成後這則訊息會在下一次_renderMessageHistory()
+            // 重新整批渲染時自動變成排版過的版本（見下面的排程重繪邏輯）。
+            if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+                const mdDiv = document.createElement('div');
+                mdDiv.className = 'ai-markdown-body';
+                try {
+                    mdDiv.innerHTML = DOMPurify.sanitize(marked.parse(answerText));
+                } catch (_) {
+                    mdDiv.textContent = answerText;
+                }
+                div.appendChild(mdDiv);
+            } else {
+                div.appendChild(document.createTextNode(answerText));
+                if (!this._markdownRerenderScheduled) {
+                    this._markdownRerenderScheduled = true;
+                    this._ensureMarkdownLibsLoaded().then(() => {
+                        this._markdownRerenderScheduled = false;
+                        this._renderMessageHistory();
+                    });
+                }
+            }
         }
         container.appendChild(div);
     }
@@ -3828,6 +4002,10 @@ ${existingNodeSummaries}
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
         document.getElementById('ai-btn-close').onclick = () => this.toggleWindow();
+        document.getElementById('ai-btn-clear-chat').onclick = () => {
+            if (!this.messages.length && !(this.archivedDisplayBlocks || []).length) return;
+            if (confirm('確定要清除目前的對話紀錄嗎？這個動作無法復原。')) this._clearChatHistory();
+        };
         document.getElementById('ai-btn-config').onclick = () => {
             configPanel.style.display = configPanel.style.display === 'none' ? 'block' : 'none';
         };
