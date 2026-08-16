@@ -842,7 +842,12 @@ ${fnData.code}
     _getApiConfig() {
         const apiKey = localStorage.getItem(this.STORAGE_KEY);
         let apiUrl = localStorage.getItem(this.LLM_BASE_URL_KEY) || 'https://integrate.api.nvidia.com/v1';
-        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'openai/gpt-oss-120b';
+        // tw_stock_db客製: 原本預設的 'openai/gpt-oss-120b' 在NVIDIA的NIM端點
+        // 上會整個請求卡住、永遠不回應（實測90秒仍無回應，不是慢，是完全不
+        // 回），導致沒自己設定模型的使用者(=大多數人，因為AI分頁預設用假
+        // 金鑰+這個預設模型)問任何問題都會卡住/最終fetch失敗。改用實測穩定
+        // 快速回應(<1秒)且中文輸出正常的 'meta/llama-3.1-8b-instruct'。
+        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'meta/llama-3.1-8b-instruct';
         return { apiKey, apiUrl, apiModel };
     }
 
@@ -3067,7 +3072,7 @@ ${existingNodeSummaries}
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
                 <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='openai/gpt-oss-120b'>
+                <input type="text" id="ai-model-name" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='meta/llama-3.1-8b-instruct'>
                 
                 <div style="margin-top:8px; display:flex; align-items:center; gap:6px;">
                     <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">

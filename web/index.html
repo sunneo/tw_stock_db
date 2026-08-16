@@ -7247,6 +7247,13 @@ function renderAiTab() {
   // TW_STOCK_DB_KEY_PREFIX），使用者不用自己申請金鑰就能用。sessionid存在
   // localStorage重複使用，不是每次對話都換一個。使用者自己填過別的值就
   // 完全不動，尊重使用者的選擇。
+  //
+  // 重要：假金鑰只有真的送去我們自己的Worker才有意義——floating-assistant.js
+  // 沒填Base URL時預設是直接打NVIDIA官方端點（見_getApiConfig()），那個
+  // 端點既不認得這個假金鑰格式、也沒有開CORS給瀏覽器直接呼叫，會整個
+  // fetch()直接失敗（TypeError: Failed to fetch），不是回傳可讀的錯誤訊息。
+  // 所以這裡假金鑰、Base URL兩個要一起自動預填，同一組「有沒有自己填過」
+  // 的判斷式，缺一個都會壞掉。
   if (!localStorage.getItem('floating_ai_api_key')) {
     let sessionId = localStorage.getItem('tw_stock_db_ai_session_id');
     if (!sessionId) {
@@ -7254,6 +7261,9 @@ function renderAiTab() {
       localStorage.setItem('tw_stock_db_ai_session_id', sessionId);
     }
     localStorage.setItem('floating_ai_api_key', `tw_stock_db_api:${sessionId}`);
+  }
+  if (!localStorage.getItem('floating_ai_base_url_key')) {
+    localStorage.setItem('floating_ai_base_url_key', TWSE_PROXY_BASE);
   }
   // floating-assistant.js的「anchored」模式預設只在容器裡放一顆小按鈕，
   // 對話視窗要點按鈕才會展開、而且是絕對定位疊在按鈕下方一小塊，z-index
