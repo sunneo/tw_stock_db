@@ -300,6 +300,20 @@ class IndexedDBRAGSystem {
     }
 }
 
+// tw_stock_db客製：已知支援OpenAI相容原生 tools/tool_calls 參數的模型名稱
+// pattern（用於 toolCallMode==='auto' 時猜測），對不到的模型一律退回文字式
+// [CALL: ...] 慣例（走既有路徑，最保險）。
+const NATIVE_TOOLCALL_MODEL_PATTERNS = [
+    /^gpt-/i, /^o[1-9]/i, /^chatgpt/i,
+    /^claude-/i,
+    /^gemini-/i,
+    /^grok-/i,
+    /^llama-3\.[1-9]/i, /^meta-llama\/llama-3\.[1-9]/i,
+    /^mistral-/i, /^mixtral-/i,
+    /^qwen2\.5/i, /^qwen-/i,
+    /^deepseek-/i,
+];
+
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
@@ -402,7 +416,8 @@ class FloatingAssistant {
             rulesMd: '',
             customFunctions: '',
             customTools: [],
-            aiCustomFunctions: {}
+            aiCustomFunctions: {},
+            toolCallMode: 'auto' // tw_stock_db客製: 'auto' | 'native' | 'text'
         };
     }
 
@@ -437,11 +452,13 @@ class FloatingAssistant {
                     }])
             )
             : {};
+        const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
         return {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
-            aiCustomFunctions
+            aiCustomFunctions,
+            toolCallMode
         };
     }
 
@@ -787,7 +804,12 @@ ${fnData.code}
         if (rulesMd) sections.push(rulesMd);
         if (basePrompt) sections.push(basePrompt);
 
-        if (predefinedTools.length || customTools.length) {
+        // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
+        // 結構化傳給模型，不需要再用文字重複描述一次工具清單、更不需要
+        // [TOOL CALL PROTOCOL]這段文字慣例(那是給不支援原生function call的
+        // 模型用的)，所以這裡整段跳過。
+        const { apiModel } = this._getApiConfig();
+        if (!this._shouldUseNativeToolCalls(apiModel) && (predefinedTools.length || customTools.length)) {
             const toolSections = [];
             if (predefinedTools.length) {
                 toolSections.push([
@@ -818,6 +840,34 @@ ${fnData.code}
         let apiUrl = localStorage.getItem(this.LLM_BASE_URL_KEY) || 'https://integrate.api.nvidia.com/v1';
         let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'openai/gpt-oss-120b';
         return { apiKey, apiUrl, apiModel };
+    }
+
+    // tw_stock_db客製: 判斷目前要不要用原生 tools/tool_calls API格式，而不是
+    // [CALL: ...]文字慣例。advancedSettings.toolCallMode三態: 'native'/'text'
+    // 直接照使用者指定；'auto'(預設)則依模型名稱pattern猜測。
+    _shouldUseNativeToolCalls(apiModel) {
+        const mode = this.advancedSettings.toolCallMode || 'auto';
+        if (mode === 'native') return true;
+        if (mode === 'text') return false;
+        const name = String(apiModel || '');
+        return NATIVE_TOOLCALL_MODEL_PATTERNS.some(re => re.test(name));
+    }
+
+    // tw_stock_db客製: 把 this.tools（預定義）+ advancedSettings.customTools
+    // （使用者自訂）轉成OpenAI相容的原生 tools schema。目前工具的參數只有
+    // 自由文字描述（沒有結構化per-參數型別），所以這裡用寬鬆的
+    // {type:'object'}（不逐一定義每個參數型別），效果比嚴格schema差一點，
+    // 但仍然比純文字[CALL:...]可靠，模型看得到工具名稱/描述並能正確產生
+    // 呼叫。
+    _buildNativeToolsSchema() {
+        return this._getCombinedToolEntries().map(([name, tool]) => ({
+            type: 'function',
+            function: {
+                name,
+                description: String(tool.description || ''),
+                parameters: { type: 'object', properties: {}, additionalProperties: true }
+            }
+        }));
     }
 
     _extractJsonErrorPosition(err) {
@@ -2546,6 +2596,12 @@ ${existingNodeSummaries}
             this._log('🛑 已停止 AI 回應');
             return "";
         }
+        // tw_stock_db客製: 原生tool-call路徑跟既有的文字式[CALL:...]串流路徑
+        // 是完全獨立的兩條邏輯（原生路徑需要非串流請求才能拿到完整的
+        // tool_calls陣列），這裡分流。
+        if (this._shouldUseNativeToolCalls(apiModel)) {
+            return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
+        }
         const chatBody = document.getElementById('ai-chat-body');
         const palette = this._getThemePalette();
         const streamDiv = document.createElement('div');
@@ -2681,6 +2737,91 @@ ${existingNodeSummaries}
             if (retryAttempt < this.retryLimit) {
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
                 return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
+            }
+            this._log("錯誤: " + err.message);
+            return "";
+        }
+    }
+
+    // tw_stock_db客製: 原生 tools/tool_calls 路徑。跟上面 _loopFetch 的文字式
+    // [CALL:...]路徑是分開的實作——原生路徑用非串流請求（stream:false），
+    // 才能一次拿到完整的 message.tool_calls 陣列（串流時tool_calls是逐段
+    // index累加的delta，重組複雜度高，這裡先用非串流換取正確性，使用者
+    // 體感差異只是「這一輪沒有逐字跳出」，仍然有基本的loading等待感由
+    // _setRespondingState負責）。
+    async _loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt = 1) {
+        if (this.stopRequested) {
+            this._log('🛑 已停止 AI 回應');
+            return "";
+        }
+        try {
+            const controller = this._createAbortController();
+            const response = await fetch(`${apiUrl}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                signal: controller.signal,
+                body: JSON.stringify({
+                    model: apiModel,
+                    messages: this.messages,
+                    temperature: 0,
+                    stream: false,
+                    tools: this._buildNativeToolsSchema(),
+                    tool_choice: 'auto'
+                })
+            });
+
+            if (!response.ok) {
+                if (response.status === 400 || response.status === 413) {
+                    await this.pruneContext("Context Window Exception (Token Limit)");
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1);
+                }
+                throw new Error("HTTP " + response.status);
+            }
+
+            const data = await response.json();
+            const message = data.choices && data.choices[0] && data.choices[0].message;
+            if (!message) throw new Error("回應格式異常，缺少 choices[0].message");
+
+            const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+            this.messages.push(Object.assign(
+                { role: 'assistant', content: message.content || '' },
+                toolCalls.length ? { tool_calls: toolCalls } : {}
+            ));
+
+            if (!toolCalls.length) {
+                this._renderMessageHistory();
+                return message.content || '';
+            }
+
+            this._renderMessageHistory();
+            for (const tc of toolCalls) {
+                const fnName = tc.function && tc.function.name;
+                const rawArgs = (tc.function && tc.function.arguments) || '{}';
+                let toolResultContent;
+                try {
+                    const toolDefinition = this._getToolDefinition(fnName);
+                    if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
+                    this._log(`執行工具（原生）: ${fnName}`);
+                    const result = await Promise.resolve(toolDefinition.callback(rawArgs));
+                    toolResultContent = this._formatToolResult(result, fnName);
+                } catch (err) {
+                    console.error(`執行 ${fnName} 失敗:`, err);
+                    toolResultContent = JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                this.messages.push({ role: 'tool', tool_call_id: tc.id, content: toolResultContent });
+                this._renderMessageHistory();
+            }
+
+            return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1);
+
+        } catch (err) {
+            if (err.name === 'AbortError' || this.stopRequested) return "";
+            if (retryAttempt < this.retryLimit) {
+                await this._sleep(this.retryBaseDelayMs * retryAttempt);
+                return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
             }
             this._log("錯誤: " + err.message);
             return "";
@@ -3042,6 +3183,21 @@ ${existingNodeSummaries}
                 !msg.content.startsWith('[Steering]')
             ) return; 
             
+            // 💡 tw_stock_db客製：原生tool-call模式下，assistant訊息本身沒有
+            // [CALL:...]文字（呼叫資訊在msg.tool_calls結構化欄位），比照文字
+            // 模式的摺疊呈現方式，避免畫面出現一個空白的AI回覆泡泡。
+            if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+                const detailEl = document.createElement('details');
+                detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
+                const callsText = msg.tool_calls.map(tc => `${tc.function?.name}(${tc.function?.arguments || ''})`).join('\n');
+                detailEl.innerHTML = `
+                    <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫（原生function call，點擊展開）</summary>
+                    <div style="margin-top: 6px; white-space: pre-wrap; font-family: monospace; background: #fff; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">${callsText}</div>
+                `;
+                chatBody.appendChild(detailEl);
+                return;
+            }
+
             // 💡 情況一：如果訊息是 AI 輸出的 Tool 呼叫指令，例如 [CALL: xxx(...)]
             if (msg.role === 'assistant' && msg.content.trim().startsWith('[CALL:')) {
                 const detailEl = document.createElement('details');
