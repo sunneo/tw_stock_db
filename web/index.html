@@ -4245,10 +4245,10 @@ async function ensureStockHistoryLoadedForAi(code, neededDays) {
 const AI_CAPABILITIES = [
   {
     name: 'get_price_history', category: '技術分析K棒',
-    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。',
-    params: { code: '股票代號，例如 2330', limit: '選填，天數，預設250' },
+    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️回傳的是逐日原始K棒陣列，天數越多佔用的對話上下文越多，一般分析問題請優先呼叫diagnose_stock（回傳的是均線/趨勢/型態等統計結果，遠比原始K棒精簡），只有使用者明確要看「逐日數字」或需要自己計算diagnose_stock沒提供的指標時才用這個工具，且limit盡量給小一點（預設60天已經涵蓋約3個月）。',
+    params: { code: '股票代號，例如 2330', limit: '選填，天數，預設60，非必要不要超過120' },
     handler: async (a) => {
-      const limit = a.limit ? Number(a.limit) : 250;
+      const limit = a.limit ? Number(a.limit) : 60;
       await ensureStockHistoryLoadedForAi(a.code, limit);
       return DBMgr.getPriceHistory(a.code, limit);
     },
@@ -4454,13 +4454,22 @@ window.AI_CAPABILITIES = AI_CAPABILITIES;
    的是「原始參數字串」（模型輸出的JSON字串，或退化情況下的裸字串），要
    回傳字串。這裡統一處理parse/stringify/錯誤攔截，AI_CAPABILITIES本身
    不用管這些協定細節，也方便直接在console手動呼叫 c.handler({...}) 測試。 */
-function aiToolHandler(fn) {
+function aiToolHandler(fn, paramKeys = []) {
   return async (rawArgs) => {
     let a;
     if (rawArgs == null || rawArgs === '') a = {};
     else {
       try { a = JSON.parse(rawArgs); }
-      catch { a = { value: String(rawArgs) }; } // 模型可能直接傳一個裸字串當唯一參數
+      catch { a = String(rawArgs); } // 不是合法JSON，當作一個裸值，下面統一決定怎麼包
+    }
+    // 模型（尤其較小的模型）常常直接傳一個裸值當唯一參數，例如
+    // diagnose_stock("9945") 解析結果是JSON字串 "9945" 而不是物件
+    // {"code":"9945"}——這裡只要這個工具剛好只宣告一個參數，就自動包成
+    // {那個參數名: 裸值}（例如 {code:"9945"}），避免handler裡對undefined
+    // 呼叫.slice()之類的方法炸掉；多參數的工具沒辦法用這招猜對應到哪個key，
+    // 包成 {value: 裸值} 讓handler自己因缺參數報出好懂的錯誤。
+    if (a === null || typeof a !== 'object' || Array.isArray(a)) {
+      a = paramKeys.length === 1 ? { [paramKeys[0]]: a } : { value: a };
     }
     try {
       const result = await fn(a);
@@ -4478,7 +4487,7 @@ function registerAiCapabilities(ai) {
       ? ` 參數（JSON物件字串）：${JSON.stringify(c.params)}`
       : '（不需要參數）';
     const mutateNote = c.mutates ? '' : ''; // description本身已經在需要時內含【會修改使用者資料】等提醒
-    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler));
+    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys));
   });
 }
 
