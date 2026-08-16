@@ -4208,6 +4208,26 @@ function diagnoseStock(code) {
 
 const StockDiagnosis = { diagnose: diagnoseStock };
 
+/* AI能力如果直接讀某檔股票的K棒（get_price_history/diagnose_stock），跟
+   使用者手動點選那檔股票不一樣——手動點選會透過技術分析/持股診斷分頁的
+   normal rendering path帶出目前已載入的本地快取，但AI是憑對話內容裡的
+   代號直接查，使用者很可能「這個session還沒點過這檔股票」，本地DBMgr
+   對這檔股票完全沒有資料（尤其冷門股或使用者剛換瀏覽器/清過快取），會
+   誤判成「資料不足」。這裡比照 maybeExpandHistory() 用的
+   DBMgr.ensureStockMonthLoaded() 機制，AI查詢前先確保回溯所需的月份都
+   已經下載到本地，跟使用者真的點開那檔股票、再手動往回滾動歷史的效果
+   一樣，只是這裡一次做完不用使用者自己滾。 */
+async function ensureStockHistoryLoadedForAi(code, neededDays) {
+  const neededMonths = Math.max(1, Math.ceil(neededDays / 28) + 1); // 28=保守值(含假日/非交易日)，多抓一個月當緩衝
+  const floorMonth = DBMgr.getAvailableMonths()[0] || null; // 資料庫實際發布的最早月份，超過就不用再往回抓
+  let label = monthLabel(new Date());
+  for (let i = 0; i < neededMonths; i++) {
+    if (floorMonth && label < floorMonth) break;
+    await DBMgr.ensureStockMonthLoaded(code, label);
+    label = shiftMonthLabel(label, -1);
+  }
+}
+
 /* ════════════════════════════════════════
    AI CAPABILITIES（給內嵌AI助理tool-calling用，也是給外部AI（Claude/Gemini
    等直接讀這份原始碼的AI）看的機器可讀能力清單，見 <head> 附近的
@@ -4225,9 +4245,13 @@ const StockDiagnosis = { diagnose: diagnoseStock };
 const AI_CAPABILITIES = [
   {
     name: 'get_price_history', category: '技術分析K棒',
-    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。',
+    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。',
     params: { code: '股票代號，例如 2330', limit: '選填，天數，預設250' },
-    handler: (a) => DBMgr.getPriceHistory(a.code, a.limit ? Number(a.limit) : 250),
+    handler: async (a) => {
+      const limit = a.limit ? Number(a.limit) : 250;
+      await ensureStockHistoryLoadedForAi(a.code, limit);
+      return DBMgr.getPriceHistory(a.code, limit);
+    },
   },
   {
     name: 'get_intraday_series', category: '走勢圖K棒',
@@ -4351,9 +4375,12 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'diagnose_stock', category: '持股診斷',
-    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。',
+    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。',
     params: { code: '股票代號' },
-    handler: (a) => StockDiagnosis.diagnose(a.code),
+    handler: async (a) => {
+      await ensureStockHistoryLoadedForAi(a.code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
+      return StockDiagnosis.diagnose(a.code);
+    },
   },
   {
     name: 'ensure_data_loaded', category: '資料庫',
