@@ -744,6 +744,24 @@ select:focus { outline: 2px solid var(--acc); }
   line-height: 1.5;
   margin: -4px 0 10px;
 }
+/* AI助理設定用：文字/密碼欄位跟數字欄位（見上面 .modal-pane input[type=number]）
+   不同，要撐滿寬度、標籤在上面而不是左右並排（URL/模型名稱這種內容太長，
+   左右並排會被擠壓到看不清楚）。 */
+.modal-field { display: block; margin-bottom: 10px; }
+.modal-field > span { display: block; font-size: 12px; color: var(--txt1); margin-bottom: 4px; }
+.modal-pane input[type="text"], .modal-pane input[type="password"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt0);
+  font-size: 13px;
+}
+.ai-param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-bottom: 6px; }
+.ai-param-grid label { display: block; font-size: 11px; color: var(--txt2); margin-bottom: 2px; justify-content: flex-start; }
+.ai-param-grid input[type="number"] { width: 100%; box-sizing: border-box; text-align: left; }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -1278,7 +1296,33 @@ select:focus { outline: 2px solid var(--acc); }
         <div class="modal-pane hidden" data-pane="ai">
           <h3>AI助理</h3>
           <label class="modal-check-row"><input type="checkbox" id="ai-assistant-enabled-toggle"> 啟用AI助理分頁</label>
-          <p class="modal-hint">開啟後，分頁列會多一個「AI」分頁，可以直接跟AI對話，AI能查詢清單/備忘錄/盤後籌碼/鎖股名單/走勢圖K棒/技術分析K棒/持股診斷等資料，也能操作選股/切分頁等介面。LLM的API金鑰/網址/模型名稱、Skill/RULES.md等進階設定，都在AI分頁裡自己的「⚙」圖示裡設定，不在這裡——沒有自己填金鑰的話，會使用內建的共用金鑰（透過Cloudflare Worker代理隱藏，見AI分頁裡的說明）。</p>
+          <p class="modal-hint">開啟後，分頁列會多一個「AI」分頁，可以直接跟AI對話，AI能查詢清單/備忘錄/盤後籌碼/鎖股名單/走勢圖K棒/技術分析K棒/持股診斷等資料，也能操作選股/切分頁等介面。沒有自己填金鑰的話，會使用內建的共用金鑰（透過Cloudflare Worker代理隱藏）。</p>
+
+          <h3>LLM 連線設定</h3>
+          <label class="modal-field"><span>API 金鑰</span><input type="password" id="ai-cfg-api-key" placeholder="留空使用內建共用金鑰"></label>
+          <label class="modal-field"><span>API 網址</span><input type="text" id="ai-cfg-api-url" placeholder="https://integrate.api.nvidia.com/v1"></label>
+          <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="google/gemma-4-31b-it"></label>
+          <datalist id="ai-cfg-model-datalist">
+            <option value="google/gemma-4-31b-it"></option>
+            <option value="meta/llama-3.1-8b-instruct"></option>
+            <option value="meta/llama-3.3-70b-instruct"></option>
+            <option value="nvidia/nemotron-3-super-120b-a12b"></option>
+          </datalist>
+          <p class="modal-hint">模型名稱可以直接輸入，也可以點輸入框叫出下拉選單快速選常用選項；清單以外的模型名稱一樣可以直接打字輸入。</p>
+
+          <h3>生成／取樣參數</h3>
+          <label>模型上下文視窗（tokens） <input type="number" id="ai-cfg-context-window" min="512" step="512"></label>
+          <label>單次回覆上限（max_tokens） <input type="number" id="ai-cfg-max-output" min="64" step="64"></label>
+          <p class="modal-hint">取樣/重複懲罰參數，留空代表不送這個欄位；如果被伺服器拒絕（該模型不支援），會自動排除並在AI對話裡記錄一則說明，之後也不會再帶（在這裡重新輸入值可以再試一次）：</p>
+          <div class="ai-param-grid">
+            <label>frequency_penalty <input type="number" step="0.1" id="ai-cfg-param-frequency_penalty"></label>
+            <label>presence_penalty <input type="number" step="0.1" id="ai-cfg-param-presence_penalty"></label>
+            <label>repetition_penalty <input type="number" step="0.1" id="ai-cfg-param-repetition_penalty"></label>
+            <label>length_penalty <input type="number" step="0.1" id="ai-cfg-param-length_penalty"></label>
+          </div>
+          <p class="modal-hint" id="ai-cfg-param-disabled-note" style="color:#dd6b20;"></p>
+
+          <p class="modal-hint">Skill（自訂工具）、RULES.md等進階設定，在AI分頁本身的「⚙」→「Advance」設定面板裡設定。</p>
         </div>
       </div>
     </div>
@@ -5758,6 +5802,16 @@ const R = {
   strongNearHighInput: $('strong-near-high'),
   diagnosisLookbackDaysInput: $('diagnosis-lookback-days'),
   aiAssistantEnabledToggle: $('ai-assistant-enabled-toggle'),
+  aiCfgApiKey: $('ai-cfg-api-key'),
+  aiCfgApiUrl: $('ai-cfg-api-url'),
+  aiCfgModelName: $('ai-cfg-model-name'),
+  aiCfgContextWindow: $('ai-cfg-context-window'),
+  aiCfgMaxOutput: $('ai-cfg-max-output'),
+  aiCfgParamFreq: $('ai-cfg-param-frequency_penalty'),
+  aiCfgParamPresence: $('ai-cfg-param-presence_penalty'),
+  aiCfgParamRepetition: $('ai-cfg-param-repetition_penalty'),
+  aiCfgParamLength: $('ai-cfg-param-length_penalty'),
+  aiCfgParamDisabledNote: $('ai-cfg-param-disabled-note'),
   followMouseChk:  $('follow-mouse-toggle'),
   indicatorShowKd:   $('indicator-show-kd'),
   indicatorShowMacd: $('indicator-show-macd'),
@@ -8066,6 +8120,7 @@ function bindEvents() {
   R.settingsClose.addEventListener('click', closeSettingsModal);
   R.settingsCancel.addEventListener('click', closeSettingsModal);
   R.settingsModal.addEventListener('click', e => { if (e.target === R.settingsModal) closeSettingsModal(); });
+  initAiConnectionSettingsListeners();
   R.settingsModal.querySelectorAll('.modal-cat').forEach(cat => {
     cat.addEventListener('click', () => {
       R.settingsModal.querySelectorAll('.modal-cat').forEach(c => c.classList.toggle('active', c === cat));
@@ -8088,6 +8143,117 @@ function bindEvents() {
   window.addEventListener('resize', () => {
     if (chartMode !== 'chip') Chart.resize();
     syncTableWidth(); // 視窗/側邊欄寬度變了，清單table也要重新撐滿容器，見該函式註解
+  });
+}
+
+/* ════════════════════════════════════════
+   AI助理連線/生成參數設定（在圖表設定→AI助理分頁裡設定，而不是要求使用者
+   自己跑去AI分頁本身的⚙圖示才找得到）——直接讀寫floating-assistant.js
+   自己用的同一組localStorage key（字串常數見該檔案建構子裡的
+   LLM_BASE_URL_KEY/LLM_MODEL_NAME_KEY/STORAGE_KEY/ADVANCED_SETTINGS_KEY，
+   這裡沿用同樣的字面值），格式跟它自己的_normalizeAdvancedSettings()保持
+   一致，這樣不管AI分頁有沒有真的初始化過，設定都能先存好、之後floating-
+   assistant.js自己讀localStorage就會套用；如果AI分頁已經開著，順便同步
+   更新記憶體內的advancedSettings跟畫面，兩邊UI不會顯示不一致的值。
+   ════════════════════════════════════════ */
+const FLOATING_AI_KEYS = {
+  apiKey: 'floating_ai_api_key',
+  baseUrl: 'floating_ai_base_url_key',
+  modelName: 'floating_ai_model_name_key',
+  advancedSettings: 'floating_ai_advanced_settings',
+};
+const AI_SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
+const AI_SAMPLING_PARAM_INPUTS = {
+  get frequency_penalty() { return R.aiCfgParamFreq; },
+  get presence_penalty() { return R.aiCfgParamPresence; },
+  get repetition_penalty() { return R.aiCfgParamRepetition; },
+  get length_penalty() { return R.aiCfgParamLength; },
+};
+
+function loadAiConnectionSettingsIntoModal() {
+  R.aiCfgApiKey.value = localStorage.getItem(FLOATING_AI_KEYS.apiKey) || '';
+  R.aiCfgApiUrl.value = localStorage.getItem(FLOATING_AI_KEYS.baseUrl) || '';
+  R.aiCfgModelName.value = localStorage.getItem(FLOATING_AI_KEYS.modelName) || '';
+
+  let gen = { contextWindowTokens: 8192, maxOutputTokens: 1024, samplingParams: {} };
+  try {
+    const raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}');
+    if (raw.generation) gen = raw.generation;
+  } catch (_) { /* 壞掉的JSON當作沒設定過，用預設值 */ }
+  R.aiCfgContextWindow.value = gen.contextWindowTokens || 8192;
+  R.aiCfgMaxOutput.value = gen.maxOutputTokens || 1024;
+
+  const disabledKeys = [];
+  AI_SAMPLING_PARAM_KEYS.forEach(key => {
+    const entry = (gen.samplingParams && gen.samplingParams[key]) || {};
+    const input = AI_SAMPLING_PARAM_INPUTS[key];
+    if (input) input.value = entry.value != null ? entry.value : '';
+    if (entry.disabled) disabledKeys.push(key);
+  });
+  R.aiCfgParamDisabledNote.textContent = disabledKeys.length
+    ? `⚠️ 已自動排除（端點不支援）：${disabledKeys.join('、')}`
+    : '';
+}
+
+// 讀取→修改→寫回 floating_ai_advanced_settings 這個JSON blob裡的
+// generation欄位，並在AI分頁已經初始化過的情況下同步進記憶體內的實例，
+// 避免使用者以為存了但AI分頁還是用著舊的值（要等重新整理頁面才生效）。
+function updateFloatingAiGeneration(mutator) {
+  let raw = {};
+  try { raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}'); } catch (_) {}
+  if (!raw.generation) raw.generation = { contextWindowTokens: 8192, maxOutputTokens: 1024, samplingParams: {} };
+  if (!raw.generation.samplingParams) raw.generation.samplingParams = {};
+  AI_SAMPLING_PARAM_KEYS.forEach(k => {
+    if (!raw.generation.samplingParams[k]) raw.generation.samplingParams[k] = { value: null, disabled: false };
+  });
+  mutator(raw.generation);
+  localStorage.setItem(FLOATING_AI_KEYS.advancedSettings, JSON.stringify(raw));
+  if (typeof aiConsoleInstance !== 'undefined' && aiConsoleInstance) {
+    aiConsoleInstance.advancedSettings = aiConsoleInstance._normalizeAdvancedSettings(raw);
+    aiConsoleInstance._saveAdvancedSettings();
+    aiConsoleInstance._renderGenerationSettingsUI();
+  }
+}
+
+function initAiConnectionSettingsListeners() {
+  // API金鑰/網址/模型名稱：跟floating-assistant.js自己的面板一樣，輸入即存
+  // （不用等按「儲存」），並在AI分頁已經開著時同步更新那邊的輸入框。
+  R.aiCfgApiKey.addEventListener('input', () => {
+    localStorage.setItem(FLOATING_AI_KEYS.apiKey, R.aiCfgApiKey.value.trim());
+    const live = document.getElementById('ai-input-key');
+    if (live) live.value = R.aiCfgApiKey.value.trim();
+  });
+  R.aiCfgApiUrl.addEventListener('input', () => {
+    localStorage.setItem(FLOATING_AI_KEYS.baseUrl, R.aiCfgApiUrl.value.trim());
+    const live = document.getElementById('ai-url');
+    if (live) live.value = R.aiCfgApiUrl.value.trim();
+  });
+  R.aiCfgModelName.addEventListener('input', () => {
+    localStorage.setItem(FLOATING_AI_KEYS.modelName, R.aiCfgModelName.value.trim());
+    const live = document.getElementById('ai-model-name');
+    if (live) live.value = R.aiCfgModelName.value.trim();
+  });
+  R.aiCfgContextWindow.addEventListener('input', () => {
+    const n = parseInt(R.aiCfgContextWindow.value, 10);
+    if (Number.isFinite(n) && n > 0) updateFloatingAiGeneration(gen => { gen.contextWindowTokens = n; });
+  });
+  R.aiCfgMaxOutput.addEventListener('input', () => {
+    const n = parseInt(R.aiCfgMaxOutput.value, 10);
+    if (Number.isFinite(n) && n > 0) updateFloatingAiGeneration(gen => { gen.maxOutputTokens = n; });
+  });
+  AI_SAMPLING_PARAM_KEYS.forEach(key => {
+    const input = AI_SAMPLING_PARAM_INPUTS[key];
+    if (!input) return;
+    input.addEventListener('input', () => {
+      const rawVal = input.value.trim();
+      // 使用者自己重新輸入值，代表想再試一次，即使之前被伺服器拒絕過也
+      // 重新啟用——不然改了值卻永遠送不出去會很困惑（跟floating-assistant.js
+      // 自己面板的行為一致）。
+      updateFloatingAiGeneration(gen => {
+        gen.samplingParams[key] = { value: rawVal === '' ? null : Number(rawVal), disabled: false };
+      });
+      R.aiCfgParamDisabledNote.textContent = '';
+    });
   });
 }
 
@@ -8130,6 +8296,7 @@ function openSettingsModal() {
   R.diagnosisLookbackDaysInput.value = getDiagnosisLookbackDays();
 
   R.aiAssistantEnabledToggle.checked = !!Settings.get('aiAssistantEnabled');
+  loadAiConnectionSettingsIntoModal();
 
   const scr = Settings.get('strongCurrentRules') || {};
   R.strongRuleKdCross.checked    = scr.kdCross    !== false;
