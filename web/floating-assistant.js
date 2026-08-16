@@ -3236,6 +3236,16 @@ ${existingNodeSummaries}
                 }
             }
 
+            // tw_stock_db客製: 串流過程中畫面顯示的textSpan.innerText是刻意的
+            // 純文字（串流到一半的markdown沒辦法正確渲染，例如表格/程式碼區塊
+            // 只打了一半），但回應完成、沒有觸發工具呼叫的情況下（最常見的
+            // 純文字回答），原本這裡直接return，從沒有機會把畫面從那個純
+            // 文字的streamDiv換成_renderMessageHistory()產生的、有markdown
+            // 排版的正式版本——使用者會看到回應「永遠」停在未轉換的原始
+            // markdown文字，要等到送出下一則訊息、整批重繪時才會補上格式，
+            // 造成「markdown完全沒作用」的錯覺。這裡在確定沒有後續工具呼叫
+            // 要處理時，主動補一次重繪，讓格式化立刻生效。
+            this._renderMessageHistory();
             return fullContent;
 
         } catch (err) {
