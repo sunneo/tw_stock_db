@@ -4273,6 +4273,228 @@ async function ensureStockHistoryLoadedForAi(code, neededDays) {
 }
 
 /* ════════════════════════════════════════
+   AI繪圖引擎：讓AI直接聲明式描述「要畫什麼」（哪檔股票、多長時間、Y軸範圍、
+   要疊哪些標記/線），畫在一個全新的離線canvas上，不依賴/不截取使用者目前
+   畫面上正在看的技術分析圖表——原本的get_chart_snapshot()是截取使用者
+   當下畫面的canvas，AI呼叫select_stock/switch_tab切換完馬上截圖時，畫面
+   還沒重繪完成就會截到錯的內容或直接失敗，而且截到的畫面完全取決於使用者
+   當下的縮放/指標設定，AI沒辦法精準控制要呈現的時間範圍、要標哪個轉折點。
+   這裡改成AI自己描述「意圖」（時間範圍、Y軸scale、要疊的標記/線及顏色），
+   引擎照著畫，不受使用者畫面狀態影響，也不用等任何UI動畫/非同步重繪。
+   ════════════════════════════════════════ */
+const AI_CHART_UP_COLOR = '#dc2626';   // 漲=紅，跟主圖表 --up 一致（見<style>裡的CSS變數定義）
+const AI_CHART_DOWN_COLOR = '#16a34a'; // 跌=綠，跟主圖表 --dn 一致
+
+// 找出離某個日期最近（且不晚於它）的K棒索引，找不到就退而求其次找最近的
+// 任一根——AI給的日期不一定剛好是交易日（可能是假日/週末），用這個容錯。
+function _aiChartNearestBarIndex(bars, dateStr) {
+  if (!dateStr) return -1;
+  let bestIdx = -1;
+  for (let i = 0; i < bars.length; i++) {
+    if (bars[i].trade_date <= dateStr) bestIdx = i;
+    else break;
+  }
+  if (bestIdx === -1) bestIdx = 0; // 給的日期比全部資料都早，退回第一根
+  return bestIdx;
+}
+
+// 核心繪圖函式：bars（已經篩選好時間範圍的K棒陣列）+ opts（scale/markers/lines/
+// 標題文字），回傳 canvas.toDataURL 的PNG data URL。跟主圖表模組（Chart）完全
+// 獨立，沒有共用任何互動狀態，純粹是「資料進、圖片出」的無副作用函式。
+function _renderAiStockChartCanvas(bars, opts) {
+  const width = 900, height = 500;
+  const marginLeft = 64, marginRight = 24, marginTop = 46, marginBottom = 44;
+  const plotW = width - marginLeft - marginRight;
+  const plotH = height - marginTop - marginBottom;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const bg = dark ? '#1b1f24' : '#ffffff';
+  const gridColor = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+  const textColor = dark ? '#e6edf3' : '#1f2328';
+  const subTextColor = dark ? '#93a4b7' : '#6b7280';
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  const n = bars.length;
+  const barSpacing = plotW / n;
+  const xOf = (i) => marginLeft + i * barSpacing;
+
+  let minPrice, maxPrice;
+  if (opts.scale && Number.isFinite(opts.scale.min) && Number.isFinite(opts.scale.max) && opts.scale.max > opts.scale.min) {
+    minPrice = opts.scale.min;
+    maxPrice = opts.scale.max;
+  } else {
+    minPrice = Math.min(...bars.map(b => b.low));
+    maxPrice = Math.max(...bars.map(b => b.high));
+    const pad = (maxPrice - minPrice) * 0.08 || maxPrice * 0.02 || 1;
+    minPrice -= pad;
+    maxPrice += pad;
+  }
+  const yOf = (price) => marginTop + (maxPrice - price) / (maxPrice - minPrice) * plotH;
+
+  // Y軸網格線 + 價位標籤（5條）
+  ctx.strokeStyle = gridColor;
+  ctx.fillStyle = subTextColor;
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const gridSteps = 5;
+  for (let g = 0; g <= gridSteps; g++) {
+    const price = minPrice + (maxPrice - minPrice) * (g / gridSteps);
+    const y = yOf(price);
+    ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(width - marginRight, y); ctx.stroke();
+    ctx.fillText(price.toFixed(2), marginLeft - 8, y);
+  }
+
+  // X軸日期標籤（最多6個，均勻取樣，避免文字互相重疊）
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const xLabelCount = Math.min(6, n);
+  for (let k = 0; k < xLabelCount; k++) {
+    const idx = Math.round((n - 1) * (k / Math.max(1, xLabelCount - 1)));
+    const x = xOf(idx) + barSpacing / 2;
+    ctx.fillText(bars[idx].trade_date.slice(5), x, height - marginBottom + 8);
+  }
+
+  // K棒本體（紅漲綠跌，跟主圖表配色一致）
+  const bodyWidth = Math.max(1, barSpacing * 0.6);
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    const cx = xOf(i) + barSpacing / 2;
+    const up = b.close >= b.open;
+    const col = up ? AI_CHART_UP_COLOR : AI_CHART_DOWN_COLOR;
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, yOf(b.high)); ctx.lineTo(cx, yOf(b.low)); ctx.stroke();
+    const yOpen = yOf(b.open), yClose = yOf(b.close);
+    const bodyTop = Math.min(yOpen, yClose), bodyH = Math.max(1, Math.abs(yClose - yOpen));
+    ctx.fillRect(cx - bodyWidth / 2, bodyTop, bodyWidth, bodyH);
+  }
+
+  // AI指定的線（水平/垂直/趨勢線），畫在K棒之上、標記之下
+  (opts.lines || []).forEach(line => {
+    const color = line.color || '#3182ce';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash(line.dash ? [5, 4] : []);
+    ctx.beginPath();
+    if (line.type === 'horizontal' && Number.isFinite(line.price)) {
+      const y = yOf(line.price);
+      ctx.moveTo(marginLeft, y); ctx.lineTo(width - marginRight, y);
+    } else if (line.type === 'vertical' && line.date) {
+      const idx = _aiChartNearestBarIndex(bars, line.date);
+      const x = xOf(idx) + barSpacing / 2;
+      ctx.moveTo(x, marginTop); ctx.lineTo(x, height - marginBottom);
+    } else if (line.type === 'trend' && line.from && line.to) {
+      const idxFrom = _aiChartNearestBarIndex(bars, line.from.date);
+      const idxTo = _aiChartNearestBarIndex(bars, line.to.date);
+      ctx.moveTo(xOf(idxFrom) + barSpacing / 2, yOf(line.from.price));
+      ctx.lineTo(xOf(idxTo) + barSpacing / 2, yOf(line.to.price));
+    } else {
+      return; // 型態不明或缺必要欄位，略過這條線，不讓整張圖失敗
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (line.label) {
+      ctx.fillStyle = color;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      const labelY = line.type === 'horizontal' ? yOf(line.price) - 3
+        : line.type === 'vertical' ? marginTop + 12
+        : yOf(line.to.price) - 3;
+      const labelX = line.type === 'vertical' ? xOf(_aiChartNearestBarIndex(bars, line.date)) + barSpacing / 2 + 4
+        : width - marginRight - ctx.measureText(line.label).width - 4;
+      ctx.fillText(line.label, labelX, labelY);
+    }
+  });
+
+  // AI指定的標記點：有date就吸附到那根K棒的時間軸位置（followsTimeAxis）；
+  // 沒有date、改給x/y（0~1之間的比例座標）就是自由放置、不跟著時間軸。
+  (opts.markers || []).forEach(marker => {
+    const color = marker.color || '#f59e0b';
+    let cx, cy;
+    if (marker.date) {
+      const idx = _aiChartNearestBarIndex(bars, marker.date);
+      cx = xOf(idx) + barSpacing / 2;
+      cy = Number.isFinite(marker.price) ? yOf(marker.price) : yOf(bars[idx].high) - 10;
+    } else if (Number.isFinite(marker.x) && Number.isFinite(marker.y)) {
+      cx = marginLeft + Math.min(1, Math.max(0, marker.x)) * plotW;
+      cy = marginTop + Math.min(1, Math.max(0, marker.y)) * plotH;
+    } else {
+      return; // 沒給date也沒給x/y，沒辦法定位，略過
+    }
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    if (marker.label) {
+      ctx.font = 'bold 11px sans-serif';
+      const textW = ctx.measureText(marker.label).width;
+      const boxX = Math.min(width - marginRight - textW - 8, cx + 6);
+      const boxY = cy - 20;
+      ctx.fillStyle = dark ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.85)';
+      ctx.fillRect(boxX - 3, boxY - 2, textW + 6, 16);
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(marker.label, boxX, boxY);
+    }
+  });
+
+  // 標題
+  ctx.fillStyle = textColor;
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(opts.title || '', marginLeft, 12);
+
+  return canvas.toDataURL('image/png');
+}
+
+// AI_CAPABILITIES的render_stock_chart工具入口：解析AI給的參數、抓資料、篩
+// 時間範圍，交給_renderAiStockChartCanvas畫圖。跟其他AI能力一致的錯誤處理
+// 慣例——查無資料/範圍內沒有K棒都回傳{available:false, reason}，不丟例外。
+async function renderAiStockChart(params) {
+  const code = String(params.code || '').trim();
+  if (!code) return { available: false, reason: '缺少股票代號(code)' };
+
+  const range = params.range || {};
+  const days = Number.isFinite(Number(range.days)) ? Number(range.days) : 60;
+  const lookbackDays = Math.max(days + 30, 90);
+  await ensureStockHistoryLoadedForAi(code, lookbackDays);
+
+  let bars = DBMgr.getPriceHistory(code, lookbackDays + 60);
+  if (!bars || !bars.length) return { available: false, reason: '本機沒有這檔股票的資料（代號可能有誤）' };
+
+  if (range.startDate) bars = bars.filter(b => b.trade_date >= range.startDate);
+  if (range.endDate) bars = bars.filter(b => b.trade_date <= range.endDate);
+  if (!range.startDate && !range.endDate) bars = bars.slice(-days);
+  if (!bars.length) return { available: false, reason: '指定的時間範圍內沒有K棒資料' };
+
+  const info = DBMgr.getStockInfo(code);
+  const title = `${code} ${info ? info.stock_name : ''}　${bars[0].trade_date} ~ ${bars[bars.length - 1].trade_date}`;
+
+  let dataUrl;
+  try {
+    dataUrl = _renderAiStockChartCanvas(bars, {
+      scale: params.scale,
+      markers: Array.isArray(params.markers) ? params.markers : [],
+      lines: Array.isArray(params.lines) ? params.lines : [],
+      title,
+    });
+  } catch (err) {
+    return { available: false, reason: '繪圖時發生錯誤: ' + (err.message || err) };
+  }
+  return { type: 'image', dataUrl };
+}
+
+/* ════════════════════════════════════════
    AI CAPABILITIES（給內嵌AI助理tool-calling用，也是給外部AI（Claude/Gemini
    等直接讀這份原始碼的AI）看的機器可讀能力清單，見 <head> 附近的
    AI-READABLE SKILL MANIFEST 註解區塊——兩邊要手動保持同步，新增/修改一項
@@ -4483,9 +4705,21 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_chart_snapshot', category: '圖表截圖',
-    description: '把目前技術分析圖表（K線+均線+成交量+副圖指標）截成一張圖片，回傳可以直接顯示在對話框裡；只有目前顯示的是技術分析/走勢圖/持股診斷分頁時才截得到有意義的內容（其他分頁K線是隱藏的，截圖會是空的）。',
+    description: '把目前技術分析圖表（K線+均線+成交量+副圖指標）截成一張圖片，回傳可以直接顯示在對話框裡；只有目前顯示的是技術分析/走勢圖/持股診斷分頁時才截得到有意義的內容（其他分頁K線是隱藏的，截圖會是空的）。⚠️這是截取使用者「目前畫面」，不受你控制，畫面剛切換股票/分頁時可能還沒重繪完成而截到空白或錯誤內容；如果你想要主動畫一張帶特定標記/線段的圖來輔助說明分析，改用render_stock_chart，不用依賴/等待使用者畫面狀態。',
     params: {},
     handler: () => ({ type: 'image', dataUrl: Chart.getSnapshotDataUrl() }),
+  },
+  {
+    name: 'render_stock_chart', category: '圖表截圖',
+    description: '自己畫一張指定股票的日K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天）。回傳的圖片會直接顯示在對話框裡。',
+    params: {
+      code: '股票代號（必填）',
+      range: '選填物件 {days: 天數(預設60)} 或 {startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD"}，決定顯示多長的時間範圍',
+      scale: '選填物件 {min, max}，指定Y軸價格範圍；不填則自動依資料的最高最低價計算',
+      markers: '選填陣列，每個標記 {date:"YYYY-MM-DD"(選填，有給就會吸附到該日K棒、跟著時間軸；不給則用x/y自由定位), price(選填，配合date標在特定價位，不給就標在當天最高點附近), x, y(選填，0~1之間的比例座標，date沒給時才用這個自由定位、不跟著時間軸), label(標籤文字), color(顏色，例如"#f59e0b")}',
+      lines: '選填陣列，每條線 {type:"horizontal"(水平線,配合price)|"vertical"(垂直線,配合date)|"trend"(趨勢線,配合from:{date,price}跟to:{date,price}), price, date, from, to, color, label, dash(選填true畫虛線)}',
+    },
+    handler: (a) => renderAiStockChart(a),
   },
 ];
 // const 頂層宣告不會自動變成 window 的屬性（跟var/function宣告不同）；
@@ -4564,7 +4798,11 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 投資建議，需要的話要提醒使用者。
 格式規則：支援一般Markdown（標題、粗體、清單、表格）跟LaTeX數學語法（行內用單一$包住，
 例如 $50.2 \rightarrow 53.2$，區塊公式用$$包住），畫面會正確把LaTeX排版成數學符號，可以
-放心使用。`;
+放心使用。
+視覺化圖表：如果分析裡提到轉折點、頸線、支撐壓力、爆量的某一天等需要「畫出來」才容易理解
+的內容，優先呼叫 render_stock_chart 自己畫一張帶標記/線段的圖（可以指定時間範圍、Y軸範圍、
+每個標記/線的顏色與位置），不要用get_chart_snapshot（那個是截使用者當下畫面，你沒辦法控制
+內容，切股票/切分頁後立刻截圖容易截到還沒重繪完成的畫面）。`;
 
 /* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
