@@ -1132,6 +1132,38 @@ ${fnData.code}
         }
     }
 
+    // tw_stock_db客製: 圖片類工具結果（例如render_stock_chart/get_chart_snapshot
+    // 回傳的{type:'image', dataUrl}）的base64內容常常是幾十KB的文字，塞進送給
+    // LLM的訊息內容裡完全是浪費——這裡串接的是純文字模型（不是走OpenAI vision
+    // API的圖片content block格式），模型看到的只會是一坨看不懂的base64亂碼，
+    // 沒有任何幫助，卻會大量佔用上下文預算（單張圖動輒兩三萬token），是「已
+    // 封存對話」跳出來太頻繁的主因之一。這裡統一由這個helper決定怎麼push
+    // tool結果訊息：圖片類的話，送進this.messages（會被JSON.stringify進
+    // request body、也會被拿去估算token預算）的content只留一句提示文字，
+    // 真正的圖片資料改存在不可枚舉的_displayDataUrl屬性上，只給
+    // _renderSingleMessage()渲染畫面用，JSON.stringify不會序列化到它（送出的
+    // request body、prune的token估算、甚至存進localStorage都不會含圖片內容——
+    // 圖片改由_persistChatHistory()額外用imageMap存，見那邊的說明）。
+    _pushToolResultMessage(fnName, result, extra) {
+        let imageDataUrl = null;
+        try {
+            const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+            if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
+                imageDataUrl = parsed.dataUrl;
+            }
+        } catch (_) { /* 不是圖片payload，走下面一般文字流程 */ }
+
+        const msg = Object.assign({ role: 'tool' }, extra || {});
+        if (imageDataUrl) {
+            msg.content = `[Tool ${fnName} 已產生一張圖表圖片，已直接顯示給使用者看，圖片二進位內容不列入對話上下文]`;
+            Object.defineProperty(msg, '_displayDataUrl', { value: imageDataUrl, enumerable: false, configurable: true });
+        } else {
+            msg.content = this._formatToolResult(result, fnName);
+        }
+        this.messages.push(msg);
+        return msg;
+    }
+
     async _executeCustomTool(tool, rawArgs) {
         const sourceTool = this._normalizeCustomTool(tool, tool && tool.name);
         if (!sourceTool) {
@@ -2751,7 +2783,17 @@ ${sourceTool.handlerScript}
     // 🧠 核心對話與 AI 自動壓縮 (Prune) 與主題檢測機制
     // ============================================================
     
-    async pruneContext(reason = "Limit Exceeded") {
+    // tw_stock_db客製: archive參數決定要不要把被壓縮掉的原始訊息存進
+    // archivedDisplayBlocks（畫面上會出現一張「已封存對話」摺疊卡片）——
+    // 預設false，因為這個函式主要是被400/413反應式重試路徑呼叫的「例行」
+    // 壓縮（真正超過模型可用上下文才會觸發，見_loopFetch/_loopFetchNative），
+    // 使用者反映這種例行壓縮跳出一整張大卡片太干擾，這裡改成安靜處理——
+    // 送進API的內容照樣換成精簡版本，但畫面上不留大卡片，只留下面既有的
+    // 小型[歷史對話摘要]摺疊區塊當作「已經整理過上下文」的輕量提示（性質
+    // 上更接近使用者建議的「thinking/自我消化」，不是逐字保留）。只有
+    // 「話題轉移」（見_checkTopicTransition）這種使用者主動切換到完全不同
+    // 討論方向的情境才傳archive:true，明確留一份可回顧的封存紀錄。
+    async pruneContext(reason = "Limit Exceeded", { archive = false } = {}) {
         this._log("⚠️ 觸發訊息壓縮機制 (原因: " + reason + ")...");
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
 
@@ -2781,15 +2823,18 @@ ${sourceTool.handlerScript}
             const data = await response.json();
             const summaryResult = data.choices[0]?.message?.content || "（對話已壓縮）";
 
-            // tw_stock_db客製: 被壓縮掉的原始訊息不是直接丟棄，存進
-            // archivedDisplayBlocks給畫面用（見_renderMessageHistory()），
-            // this.messages（真正送進API的內容）還是換成精簡版，兩者脫鉤。
-            this.archivedDisplayBlocks.push({ reason, messages: chatToCompress });
+            // tw_stock_db客製: 只有明確要求archive:true（話題轉移）才留一張
+            // 可回顧的「已封存對話」卡片；例行的token-limit壓縮不留，見上面
+            // 函式簽名處的說明。this.messages（真正送進API的內容）兩種情況
+            // 都會換成精簡版。
+            if (archive) this.archivedDisplayBlocks.push({ reason, messages: chatToCompress });
 
             this.messages = [{ role: "system", content: this._getFinalSystemPrompt() }];
             this.messages.push({ role: "system", content: `[歷史對話摘要(300 tokens 內)]: ${summaryResult}` });
 
-            this._log("✅ 歷史對話壓縮完成！已釋放 Context 空間，原始內容仍可在上方封存區塊回顧。");
+            this._log(archive
+                ? "✅ 歷史對話壓縮完成！已釋放 Context 空間，原始內容仍可在上方封存區塊回顧。"
+                : "✅ 已整理對話上下文，釋放部分 Context 空間。");
             this._renderMessageHistory();
 
         } catch (err) {
@@ -2888,6 +2933,14 @@ ${sourceTool.handlerScript}
                 if (summaryResponse.ok) {
                     const sData = await summaryResponse.json();
                     const transitionText = sData.choices[0]?.message?.content || "使用者已轉移議題。";
+
+                    // tw_stock_db客製: 使用者明確要求「封存只應該在轉移話題才
+                    // 做」——這裡是唯一真正代表「使用者主動切換到完全不同討論
+                    // 方向」的情境（跟pruneContext()的例行token-limit壓縮不同），
+                    // 所以在整批換成過渡摘要之前，先把被取代的原始訊息存進
+                    // archivedDisplayBlocks，畫面上留一張可回顧的「已封存對話」
+                    // 卡片。
+                    this.archivedDisplayBlocks.push({ reason: `話題轉移：${this.topicData.currentTopic} → ${result.newTopicSummary || newUserPrompt}`, messages: fullHistoryWithoutSystem });
 
                     this.messages = [
                         { role: "system", content: this._getFinalSystemPrompt() },
@@ -3049,19 +3102,16 @@ ${existingNodeSummaries}
             }
         }
 
-        // tw_stock_db客製: 主動式上下文預算檢查——在真的送出請求「之前」就
-        // 先粗估token數，超過使用者設定的contextWindowTokens（扣掉
-        // maxOutputTokens留給模型回覆的空間）就先壓縮一次，不用等真的被
-        // 端點用400/413拒絕才補救。這樣「對話輪數不多、但某一則工具結果
-        // 特別大」的情境也能提前處理。粗略估算用字元數除以2.2（中英文混合
-        // 內容夠用，不追求精確——真正精確的tokenizer太重，不值得為了估算
-        // 而引入）。
-        const gen = this._getGenerationSettings();
-        const roughTokenEstimate = Math.ceil((JSON.stringify(this.messages).length + userText.length) / 2.2);
-        const contextBudget = Math.max(512, gen.contextWindowTokens - gen.maxOutputTokens);
-        if (roughTokenEstimate > contextBudget) {
-            await this.pruneContext(`Proactive context budget check (~${roughTokenEstimate} > ${contextBudget} tokens)`);
-        }
+        // tw_stock_db客製: 原本這裡有一個「主動式」預算檢查，在送出請求前
+        // 用粗估token數跟contextWindowTokens比較，超過就先壓縮一次。改成
+        // 只信任「真的」被端點用400/413拒絕才觸發壓縮（見_loopFetch/
+        // _loopFetchNative的400/413分支），不再用我們自己不精確的粗估
+        // 主動出手——粗估容易高估（尤其修好圖片token bloat之前，幾乎每輪
+        // 都會被觸發），導致「已封存對話」摺疊卡片跳出來的頻率遠高於實際
+        // 需要，使用者感受上很干擾。真正的上下文爆掉現在已經很少見（見
+        // _pushToolResultMessage()：圖片類工具結果不再把base64塞進送給
+        // LLM的內容），交給reactive路徑處理已經足夠、也更準確（伺服器
+        // 自己知道真正的token限制是多少，不用我們用字元數瞎猜）。
 
         this.responseElapsedMs = 0;
         this._setRespondingState(true);
@@ -3290,8 +3340,8 @@ ${existingNodeSummaries}
                         this._log(`執行工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                         const result = await Promise.resolve(toolDefinition.callback(JSON.stringify(parsedArgs)));
-                        
-                        this.messages.push({ role: "tool", content: this._formatToolResult(result, task.fnName) });
+
+                        this._pushToolResultMessage(task.fnName, result);
                         this._renderMessageHistory();
                         invokedCount++;
                     } catch (err) {
@@ -3403,18 +3453,16 @@ ${existingNodeSummaries}
             for (const tc of toolCalls) {
                 const fnName = tc.function && tc.function.name;
                 const rawArgs = (tc.function && tc.function.arguments) || '{}';
-                let toolResultContent;
                 try {
                     const toolDefinition = this._getToolDefinition(fnName);
                     if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
                     this._log(`執行工具（原生）: ${fnName}`);
                     const result = await Promise.resolve(toolDefinition.callback(rawArgs));
-                    toolResultContent = this._formatToolResult(result, fnName);
+                    this._pushToolResultMessage(fnName, result, { tool_call_id: tc.id });
                 } catch (err) {
                     console.error(`執行 ${fnName} 失敗:`, err);
-                    toolResultContent = JSON.stringify({ ok: false, error: String(err.message || err) });
+                    this._pushToolResultMessage(fnName, JSON.stringify({ ok: false, error: String(err.message || err) }), { tool_call_id: tc.id });
                 }
-                this.messages.push({ role: 'tool', tool_call_id: tc.id, content: toolResultContent });
                 this._renderMessageHistory();
             }
 
@@ -3815,9 +3863,17 @@ ${existingNodeSummaries}
     // 不影響其他功能，畫面上的內容還是完整的，只是下次重新整理會遺失。
     _persistChatHistory() {
         try {
+            // tw_stock_db客製: _displayDataUrl是特意設成不可枚舉的屬性（見
+            // _pushToolResultMessage()），JSON.stringify(this.messages)不會
+            // 序列化到它——這裡額外把圖片資料存進一個獨立的imageMap（用訊息
+            // 在陣列裡的索引當key），讓圖片還是能在重新整理頁面後正確還原
+            // 顯示，同時維持「圖片不佔用送給LLM的內容/token估算」這個優化。
+            const imageMap = {};
+            this.messages.forEach((m, i) => { if (m._displayDataUrl) imageMap[i] = m._displayDataUrl; });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
                 messages: this.messages,
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
+                imageMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -3831,6 +3887,12 @@ ${existingNodeSummaries}
             const data = JSON.parse(raw);
             if (Array.isArray(data.messages)) this.messages = data.messages;
             if (Array.isArray(data.archivedDisplayBlocks)) this.archivedDisplayBlocks = data.archivedDisplayBlocks;
+            if (data.imageMap) {
+                Object.entries(data.imageMap).forEach(([idx, dataUrl]) => {
+                    const msg = this.messages[Number(idx)];
+                    if (msg) Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true });
+                });
+            }
         } catch (err) {
             console.warn('對話紀錄讀取失敗，改用空白對話:', err);
         }
@@ -3922,10 +3984,19 @@ ${existingNodeSummaries}
         // KB的base64字串，塞進純文字區塊只會很長一串看不出是圖片。
         if (msg.role === 'tool') {
             let imagePayload = null;
-            try {
-                const parsed = JSON.parse(msg.content);
-                if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') imagePayload = parsed;
-            } catch (_) { /* 不是JSON，走下面一般文字流程 */ }
+            // tw_stock_db客製: 優先看不可枚舉的_displayDataUrl（見
+            // _pushToolResultMessage()的說明——msg.content現在只留提示文字，
+            // 真正的圖片資料存在這個屬性上，不會被序列化進送給LLM的內容）；
+            // 沒有的話才退回舊路徑嘗試解析msg.content本身是不是圖片JSON
+            // （相容舊格式/其他呼叫路徑）。
+            if (msg._displayDataUrl) {
+                imagePayload = { type: 'image', dataUrl: msg._displayDataUrl };
+            } else {
+                try {
+                    const parsed = JSON.parse(msg.content);
+                    if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') imagePayload = parsed;
+                } catch (_) { /* 不是JSON，走下面一般文字流程 */ }
+            }
             if (imagePayload) {
                 const imgWrap = document.createElement('div');
                 imgWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
