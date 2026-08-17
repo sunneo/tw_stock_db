@@ -2875,6 +2875,18 @@ ${sourceTool.handlerScript}
             this.messages = [{ role: "system", content: this._getFinalSystemPrompt() }];
             this.messages.push({ role: "system", content: `[歷史對話摘要(300 tokens 內)]: ${summaryResult}` });
 
+            // tw_stock_db客製: 摘要本身是旁白式描述「之前發生了什麼」，不是
+            // 一個可以直接回答的問題——實測發現如果就這樣結束，緊接著的續答
+            // 請求收到的上下文只有這段敘述性摘要，模型很容易把摘要內容原文
+            // 複誦/改寫一遍當成最終答案，而不是真的針對使用者原本的問題給
+            // 結論（例如使用者問「幫我分析並畫走勢圖」，工具都執行完了、圖也
+            // 畫好了，結果因為中途觸發這裡的壓縮，模型最後吐出來的是一段
+            // 「使用者想要...助理已經...」的摘要文字，不是真正的分析結論）。
+            // 這裡把使用者最後一則真正的提問原樣接在摘要後面，讓模型清楚
+            // 知道「現在真正要回答的問題是什麼」，而不是去描述摘要本身。
+            const lastUserMsg = [...chatToCompress].reverse().find(m => m.role === 'user');
+            if (lastUserMsg) this.messages.push(lastUserMsg);
+
             this._log(archive
                 ? "✅ 歷史對話壓縮完成！已釋放 Context 空間，原始內容仍可在上方封存區塊回顧。"
                 : "✅ 已整理對話上下文，釋放部分 Context 空間。");
