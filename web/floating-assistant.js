@@ -483,6 +483,12 @@ class FloatingAssistant {
             aiCustomFunctions: {},
             toolCallMode: 'auto', // tw_stock_db客製: 'auto' | 'native' | 'text'
             generation: this._createDefaultGenerationSettings(),
+            // tw_stock_db客製: batch_analyze_stocks工具（見runBatchSubAgents）
+            // 同時開幾個子任務並行執行——太小沒有平行效益，太大容易一次炸開
+            // 太多併發請求（共用金鑰的NVIDIA端點/Cloudflare Worker流量控管
+            // 都可能吃不消，見worker.js的checkAndIncrementRateLimit），使用者
+            // 可以在設定面板調整，_getBatchConcurrency()會夾在1~8之間。
+            batchConcurrency: 4,
         };
     }
 
@@ -670,6 +676,7 @@ class FloatingAssistant {
             )
             : {};
         const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
+        const batchConcurrencyNum = Number(raw.batchConcurrency);
         return {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
@@ -677,7 +684,16 @@ class FloatingAssistant {
             aiCustomFunctions,
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
+            batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
         };
+    }
+
+    // tw_stock_db客製: 統一的併發數存取入口，夾在1~8之間——上限8是保守值，
+    // 避免使用者調太大時一次炸出過多併發請求（見_createDefaultAdvancedSettings
+    // 裡batchConcurrency的說明）。
+    _getBatchConcurrency() {
+        const n = Number(this.advancedSettings.batchConcurrency);
+        return Number.isFinite(n) && n > 0 ? Math.min(8, Math.round(n)) : 4;
     }
 
     _loadAdvancedSettings() {
@@ -1197,7 +1213,11 @@ ${fnData.code}
         return msg;
     }
 
-    _pushToolResultMessage(fnName, result, extra) {
+    // tw_stock_db客製: 把「工具執行結果」組成訊息物件的邏輯，跟「push進
+    // this.messages」拆開——runBatchSubAgents()的子任務有自己獨立、用完即丟
+    // 的本地訊息陣列（不是this.messages），需要同一套圖片/meta處理規則，
+    // 但不能push進主對話。
+    _buildToolResultMessage(fnName, result, extra) {
         let imageDataUrl = null;
         let imageMeta = null;
         try {
@@ -1215,6 +1235,27 @@ ${fnData.code}
         } catch (_) { /* 不是圖片payload，走下面一般文字流程 */ }
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
+        // tw_stock_db客製: 實測發現這個NVIDIA相容端點無論是不是走原生
+        // tools/tool_calls，只要訊息陣列裡出現role:'tool'就一律要求要有
+        // tool_call_id欄位，缺了就直接回400「missing field tool_call_id」
+        // ——用curl/最小化對話重現、確認加上這個欄位後同一個請求就變成
+        // 200。文字式[CALL:...]慣例（非原生路徑）原本完全不會帶這個欄位，
+        // 因為它不是走API的原生tool_calls機制、沒有「真正」的id可用。
+        //
+        // 這是這次session一直反覆出現的「AI一直撞到context limit又觸發
+        // 壓縮、壓縮完還是同樣狀況」的真正根因之一：_loopFetch的400/413
+        // 處理原本看到任何400就無條件當成「Context Window Exception」去
+        // 壓縮，從來沒有真的檢查過errText內容——壓縮把this.messages換成
+        // [system, summary]後，因為暫時沒有role:'tool'訊息，下一次請求
+        // 就會成功，看起來像是「修好了」，但只要對話裡再出現任何一次工具
+        // 呼叫，同一個400就會再發生一次，形成表面上看起來像「一直撞到
+        // context limit」、實際上是同一個schema驗證錯誤反覆觸發的假象。
+        // 這裡幫每一則沒有帶tool_call_id的role:'tool'訊息補一個自己產生
+        // 的合成id（原生路徑呼叫時extra已經帶了API給的真正tool_call_id，
+        // 不會被這裡覆蓋，見_loopFetchNative/_runSubAgentTask原生分支）。
+        if (msg.role === 'tool' && !msg.tool_call_id) {
+            msg.tool_call_id = `call_text_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        }
         if (imageDataUrl) {
             msg.content = `[Tool ${fnName} 已產生一張圖表圖片，已直接顯示給使用者看，圖片二進位內容不列入對話上下文]`
                 + (imageMeta ? ` 圖表實際資料摘要（如需精準標記請以此為準，不要自行估計）：${this._stripInlineBase64(JSON.stringify(imageMeta))}` : '');
@@ -1222,6 +1263,11 @@ ${fnData.code}
         } else {
             msg.content = this._formatToolResult(result, fnName);
         }
+        return msg;
+    }
+
+    _pushToolResultMessage(fnName, result, extra) {
+        const msg = this._buildToolResultMessage(fnName, result, extra);
         this.messages.push(msg);
         return msg;
     }
@@ -3782,6 +3828,180 @@ ${existingNodeSummaries}
             this._log("錯誤: " + err.message);
             return "";
         }
+    }
+
+    // ============================================================
+    // 🧩 批次子任務（multi-agent-style parallel batch analysis）
+    // ============================================================
+    // tw_stock_db客製: 解決「AI要逐一分析一份清單（例如鎖股名單）裡的每一
+    // 檔股票、篩出符合條件的」這種filter型任務時，實測會不停撞到context
+    // limit又觸發壓縮的問題（見這次session稍早修的一連串context膨脹問題）
+    // ——根本原因是這種任務本來就不需要「同時看到全部股票」才能下結論，
+    // 每一檔的判斷是獨立的，卻被塞進同一個持續累積的主對話context裡，
+    // 逐檔疊加reasoning/工具呼叫，當然愈滾愈大。
+    //
+    // 這裡的做法：每一檔股票各自開一個「用完即丟」的獨立子任務（跟主對話
+    // 共用同一組API設定/已註冊工具，但訊息歷史完全隔離，不會互相汙染），
+    // 只留一段精簡的最終結論流回主對話——不管清單有幾十檔，主對話的
+    // context增量都是「筆數 × 一句話結論」，不會隨著逐檔分析的過程細節
+    // （工具呼叫、模型的內部推理）線性膨脹。多個子任務用簡單的worker-pool
+    // 平行執行（併發數見_getBatchConcurrency()，使用者可調），近似
+    // multi-agent的效果，同時控制成本/流量。
+    //
+    // 這個機制只適合「篩選/獨立判斷型」任務，不適合「一定要同時看到全部
+    // 項目才能下結論」的統整型任務（例如「這20檔裡最強的是哪一檔」需要
+    // 互相比較，拆開各自獨立判斷就沒有意義）——AI_SYSTEM_PROMPT裡有教
+    // 這個判斷原則，交給AI自己先分類問題類型再決定要不要用這個工具。
+
+    // tw_stock_db客製: 單一子任務的執行迴圈——跟主對話的_loopFetch/
+    // _loopFetchNative是同樣的「送出請求→解析工具呼叫→執行→餵回結果→
+    // 再送出」邏輯，但簡化成非串流、固定輪數上限、訊息歷史用區域變數
+    // （不動this.messages），沒有streaming UI更新、沒有pruneContext（子
+    // 任務本來就是短命、用完即丟，正常不會累積到需要壓縮；真的異常時
+    // maxRounds上限會擋住，不會無限迴圈）。
+    async _runSubAgentTask(userPrompt, maxRounds = 6) {
+        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+        const useNative = this._shouldUseNativeToolCalls(apiModel);
+        let messages = [
+            { role: 'system', content: this._getFinalSystemPrompt() },
+            { role: 'user', content: userPrompt },
+        ];
+
+        for (let round = 0; round < maxRounds; round++) {
+            const body = {
+                model: apiModel,
+                messages,
+                temperature: 0,
+                ...this._buildSamplingParamsBody(),
+                max_tokens: this._getGenerationSettings().maxOutputTokens,
+                stream: false,
+            };
+            if (useNative) {
+                body.tools = this._buildNativeToolsSchema();
+                body.tool_choice = 'auto';
+            }
+
+            let response;
+            try {
+                response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            } catch (err) {
+                return `[子任務網路錯誤: ${err.message}]`;
+            }
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                // 子任務故意不接pruneContext/重試機制——訊息歷史本來就很短
+                // （系統prompt+單一問題+少數工具往返），真的撞到400/413多半
+                // 代表這個端點/模型本身有問題，重試對子任務的成本效益不划算，
+                // 直接回報失敗讓上層知道即可。
+                return `[子任務失敗: HTTP ${response.status}${errText ? ' ' + errText.slice(0, 150) : ''}]`;
+            }
+
+            const data = await response.json();
+            const message = data.choices && data.choices[0] && data.choices[0].message;
+            if (!message) return '[子任務失敗: 回應格式異常]';
+
+            const rawContent = message.content || '';
+            const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+            if (useNative && toolCalls.length) {
+                messages.push(Object.assign({ role: 'assistant', content: this._stripInlineBase64(rawContent) }, { tool_calls: toolCalls }));
+                for (const tc of toolCalls) {
+                    const fnName = tc.function && tc.function.name;
+                    const rawArgs = (tc.function && tc.function.arguments) || '{}';
+                    try {
+                        const toolDef = this._getToolDefinition(fnName);
+                        if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
+                        const result = await Promise.resolve(toolDef.callback(rawArgs));
+                        messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
+                    } catch (err) {
+                        messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ ok: false, error: String(err.message || err) }) });
+                    }
+                }
+                continue;
+            }
+
+            // tw_stock_db客製: 文字式[CALL:...]慣例，跟_loopFetch同樣的解析
+            // 規則（含截斷模型自己編造的假工具結果，見_loopFetch裡
+            // lastMatchEnd的詳細說明），這裡簡化重寫一份而不是共用同一個
+            // helper，是因為子任務訊息陣列是區域變數，跟_loopFetch操作
+            // this.messages/fullContent的方式不同，硬要共用反而更複雜。
+            const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
+            let match;
+            const toolTasks = [];
+            let lastMatchEnd = -1;
+            while ((match = regex.exec(rawContent)) !== null) {
+                toolTasks.push({ fnName: match[1], fnArgsRaw: match[2].trim() });
+                lastMatchEnd = match.index + match[0].length;
+            }
+
+            if (!toolTasks.length) {
+                const finalText = this._stripInlineBase64(rawContent).trim();
+                return finalText || '（子任務無回應）';
+            }
+
+            let truncated = rawContent;
+            if (lastMatchEnd > -1) {
+                let end = lastMatchEnd;
+                if (rawContent[end] === ']') end += 1;
+                truncated = rawContent.slice(0, end);
+            }
+            messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
+
+            for (const task of toolTasks) {
+                try {
+                    const toolDef = this._getToolDefinition(task.fnName);
+                    if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
+                    const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
+                    const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                    messages.push(this._buildToolResultMessage(task.fnName, result));
+                } catch (err) {
+                    messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
+                }
+            }
+            // 迴圈繼續下一輪，讓模型看到工具結果後給出最終結論
+        }
+        return '[子任務超過最大回合數仍未給出結論]';
+    }
+
+    // tw_stock_db客製: batch_analyze_stocks工具的實作入口（見web/index.html
+    // 的AI_CAPABILITIES註冊），把一份股票代號清單拆成N個一組平行執行的
+    // 子任務，每個子任務只回傳一段精簡結論，彙整成陣列回傳給主對話。
+    async runBatchSubAgents(codes, instruction, concurrency) {
+        const list = (Array.isArray(codes) ? codes : [codes]).map(c => String(c || '').trim()).filter(Boolean);
+        if (!list.length) return { ok: false, error: '沒有提供任何股票代號' };
+        const n = Math.min(list.length, Number.isFinite(Number(concurrency)) && Number(concurrency) > 0
+            ? Math.min(8, Math.round(Number(concurrency)))
+            : this._getBatchConcurrency());
+
+        const results = new Array(list.length);
+        let nextIdx = 0;
+        let doneCount = 0;
+        this._log(`↻ 批次分析開始：共${list.length}檔，同時執行${n}個子任務…`);
+
+        const worker = async () => {
+            while (nextIdx < list.length) {
+                const myIdx = nextIdx++;
+                const code = list[myIdx];
+                const prompt = `${instruction}\n\n這次只需要分析這一檔股票，代號：${code}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
+                let verdict;
+                try {
+                    verdict = await this._runSubAgentTask(prompt);
+                } catch (err) {
+                    verdict = `[子任務例外: ${err.message}]`;
+                }
+                results[myIdx] = { code, verdict };
+                doneCount++;
+                this._log(`↻ 批次分析進度：${doneCount}/${list.length}（${code} 完成）`);
+            }
+        };
+
+        await Promise.all(Array.from({ length: n }, () => worker()));
+        this._log(`✅ 批次分析完成，共${list.length}檔。`);
+        return results;
     }
 
     _resolveMountElement() {

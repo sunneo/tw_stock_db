@@ -1322,6 +1322,10 @@ select:focus { outline: 2px solid var(--acc); }
           </div>
           <p class="modal-hint" id="ai-cfg-param-disabled-note" style="color:#dd6b20;"></p>
 
+          <h3>批次分析</h3>
+          <label>批次分析並行數 <input type="number" id="ai-cfg-batch-concurrency" min="1" max="8" step="1"></label>
+          <p class="modal-hint">AI用「batch_analyze_stocks」工具篩選一整份股票清單時（例如從鎖股名單挑出符合某型態的股票），同時開幾個獨立子任務平行分析——調高會比較快，但也會同時打出更多次API請求，共用金鑰的使用者可能比較容易撞到流量限制，範圍1~8，預設4。</p>
+
           <p class="modal-hint">Skill（自訂工具）、RULES.md等進階設定，在AI分頁本身的「⚙」→「Advance」設定面板裡設定。</p>
         </div>
       </div>
@@ -4838,6 +4842,16 @@ const AI_CAPABILITIES = [
     },
   },
   {
+    name: 'batch_analyze_stocks', category: '批次分析',
+    description: '把一份股票代號清單拆成多個獨立子任務、平行分析——每個子任務用跟主對話一樣的工具/系統設定，但對話歷史是獨立、用完即丟的，只會回傳一段精簡結論流回主對話，不會佔用主對話的上下文。⚠️適用時機：先判斷使用者的問題是「篩選型」還是「統整型」——篩選型是指每一檔股票的判斷彼此獨立、不需要互相比較就能下結論（例如「從鎖股名單挑出符合回後買上漲的」「這些股票裡哪幾檔K棒品質不合格」），這種務必用這個工具，不要自己在主對話裡一檔接一檔手動呼叫diagnose_stock分析，那樣逐檔累加對話上下文，清單一長就會不斷觸發context壓縮甚至跑不完；統整型是指「需要同時看到全部股票才能下結論」（例如「這20檔裡今天漲幅最大的是哪幾檔」「幫我排名」），這種不適合拆開成獨立子任務，仍然用get_price_history/diagnose_stock等工具直接在主對話處理。',
+    params: {
+      codes: '股票代號陣列（不吃公司名稱，請先用get_lock_list/search_stocks等工具取得代號清單）',
+      instruction: '要對每一檔股票做的分析指示，會套用到每一個子任務，要講清楚判斷條件與希望的回答格式，例如："請用diagnose_stock分析這檔股票，判斷是否符合回後買上漲型態（回檔不破前低、且收紅K站回5日均線），符合請在結論開頭寫MATCH，不符合請寫NO_MATCH"',
+      concurrency: '選填，同時執行幾個子任務，預設使用者在設定裡調的值（預設4），最多8',
+    },
+    handler: (a) => aiConsoleInstance.runBatchSubAgents(Array.isArray(a.codes) ? a.codes : [a.codes], String(a.instruction || ''), a.concurrency),
+  },
+  {
     name: 'get_watchlist', category: '自選股',
     description: '取得使用者自選股清單（含最新價格）。',
     params: {},
@@ -5033,6 +5047,16 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 關鍵點之前，先呼叫 get_analysis_principles 了解本專案的型態判定邏輯與門檻（這個工具平常
 不會自動出現在對話裡，需要時才主動呼叫），畫線/標記請對應diagnose_stock回傳的
 pattern.necklines/points實際數字，不要自己另外估價位。
+批次分析（一次要處理一整份股票清單，例如鎖股名單/自選股/篩選結果）：先判斷這是「篩選型」
+還是「統整型」問題。篩選型是每一檔股票的判斷彼此獨立、不需要互相比較（例如「從本週鎖做多
+名單挑出符合回後買上漲的」「這些股票裡哪幾檔K棒品質不合格」），這種一律呼叫
+batch_analyze_stocks，把清單拆成獨立子任務平行處理，不要自己在對話裡一檔接一檔手動呼叫
+diagnose_stock——那樣逐檔analysis過程都會累加進對話上下文，清單稍長就會不斷觸發context
+壓縮、甚至跑不完，這正是batch_analyze_stocks存在的理由。統整型是必須同時看到全部股票才能
+下結論（例如「這清單裡漲幅最大的是哪幾檔」「幫我排名」），這種不適合拆開，仍然直接在對話
+裡用get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruction參數
+要把篩選條件寫清楚、並要求每個子任務用固定格式回答（例如「結論開頭寫MATCH或NO_MATCH」），
+拿到結果陣列後自己彙整、只列出符合條件的股票給使用者，不用把每一則子任務原始回覆都貼出來。
 會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
 用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
 回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是
@@ -6308,6 +6332,7 @@ const R = {
   aiCfgModelName: $('ai-cfg-model-name'),
   aiCfgContextWindow: $('ai-cfg-context-window'),
   aiCfgMaxOutput: $('ai-cfg-max-output'),
+  aiCfgBatchConcurrency: $('ai-cfg-batch-concurrency'),
   aiCfgParamFreq: $('ai-cfg-param-frequency_penalty'),
   aiCfgParamPresence: $('ai-cfg-param-presence_penalty'),
   aiCfgParamRepetition: $('ai-cfg-param-repetition_penalty'),
@@ -8767,6 +8792,13 @@ function loadAiConnectionSettingsIntoModal() {
   R.aiCfgContextWindow.value = gen.contextWindowTokens || 8192;
   R.aiCfgMaxOutput.value = gen.maxOutputTokens || 1024;
 
+  let batchConcurrency = 4;
+  try {
+    const raw2 = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}');
+    if (Number.isFinite(Number(raw2.batchConcurrency)) && Number(raw2.batchConcurrency) > 0) batchConcurrency = Number(raw2.batchConcurrency);
+  } catch (_) {}
+  R.aiCfgBatchConcurrency.value = batchConcurrency;
+
   const disabledKeys = [];
   AI_SAMPLING_PARAM_KEYS.forEach(key => {
     const entry = (gen.samplingParams && gen.samplingParams[key]) || {};
@@ -8799,6 +8831,22 @@ function updateFloatingAiGeneration(mutator) {
   }
 }
 
+// tw_stock_db客製: batchConcurrency（batch_analyze_stocks的並行子任務數，見
+// runBatchSubAgents）是advancedSettings的頂層欄位、不是generation的一部分
+// （不是送進API request body的取樣參數，是純client端的併發控制），跟
+// updateFloatingAiGeneration()走同一個localStorage blob但拆開成獨立函式，
+// 語意比較清楚。
+function updateFloatingAiBatchConcurrency(n) {
+  let raw = {};
+  try { raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}'); } catch (_) {}
+  raw.batchConcurrency = n;
+  localStorage.setItem(FLOATING_AI_KEYS.advancedSettings, JSON.stringify(raw));
+  if (typeof aiConsoleInstance !== 'undefined' && aiConsoleInstance) {
+    aiConsoleInstance.advancedSettings = aiConsoleInstance._normalizeAdvancedSettings(raw);
+    aiConsoleInstance._saveAdvancedSettings();
+  }
+}
+
 function initAiConnectionSettingsListeners() {
   // API金鑰/網址/模型名稱：跟floating-assistant.js自己的面板一樣，輸入即存
   // （不用等按「儲存」），並在AI分頁已經開著時同步更新那邊的輸入框。
@@ -8824,6 +8872,10 @@ function initAiConnectionSettingsListeners() {
   R.aiCfgMaxOutput.addEventListener('input', () => {
     const n = parseInt(R.aiCfgMaxOutput.value, 10);
     if (Number.isFinite(n) && n > 0) updateFloatingAiGeneration(gen => { gen.maxOutputTokens = n; });
+  });
+  R.aiCfgBatchConcurrency.addEventListener('input', () => {
+    const n = parseInt(R.aiCfgBatchConcurrency.value, 10);
+    if (Number.isFinite(n) && n > 0) updateFloatingAiBatchConcurrency(Math.min(8, n));
   });
   AI_SAMPLING_PARAM_KEYS.forEach(key => {
     const input = AI_SAMPLING_PARAM_INPUTS[key];
