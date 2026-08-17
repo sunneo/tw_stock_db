@@ -6811,6 +6811,55 @@ function renderIntradayInfoLine(rows, isIndex) {
   R.chartInfoMeta.textContent = `最後 ${t}　累積 ${rows.length} 筆${badge}`;
 }
 
+/* tw_stock_db客製: 個股K棒資料在「已經載入的最舊跟最新之間」出現整月缺口
+   的補洞機制。既有的縮放式漸進擴充（見maybeExpandHistory）只會往「比目前
+   最舊還更舊」的方向補一個月一個月往回抓，沒有任何邏輯會回頭檢查「已經
+   載入的資料中間是不是有洞」——如果本機在某次連線不穩時漏抓了中間某個
+   月份（例如1月跟4月都有資料，但2月3月完全沒有，這種情況一旦發生就永遠
+   不會被目前的機制注意到，因為往回擴充的判斷只看「最舊的邊界」，中間的洞
+   跟最舊邊界無關），這個洞會一直存在，直到使用者清掉整個本機資料庫重新
+   下載——但這正是使用者明確不希望的處理方式（"不要強迫使用者重新抓db"）。
+   這裡改成每次畫日線圖時順便掃一次目前查到的資料列，抓出「相鄰兩列日期
+   差距明顯超過合理範圍（例如農曆年連假最長約9天，這裡抓10天當門檻，
+   排除掉正常假期）」的地方，把缺口跨過的每個月份個別抓一次（用跟縮放
+   擴充同一支ensureStockMonthLoaded，只下載該月份的小型個股快照，不是
+   整包資料庫），成功補到資料就重繪一次。每個(股票代號,月份)組合這個分頁
+   session只會嘗試補一次，避免月份真的沒有資料（例如尚未公告）時無限重試。 */
+const dailyGapFillAttempted = new Set();
+async function fillDailyPriceGaps(code, rows) {
+  if (!rows || rows.length < 2) return false;
+  const GAP_THRESHOLD_DAYS = 10;
+  const missingMonths = new Set();
+  for (let i = 1; i < rows.length; i++) {
+    const prev = Date.UTC(...rows[i - 1].trade_date.split('-').map(Number));
+    const cur  = Date.UTC(...rows[i].trade_date.split('-').map(Number));
+    const gapDays = Math.round((cur - prev) / 86400000);
+    if (gapDays <= GAP_THRESHOLD_DAYS) continue;
+    let label = shiftMonthLabel(rows[i - 1].trade_date.slice(0, 7), 1);
+    // endLabel不含rows[i]那個月本身——那個月已經有rows[i]這筆資料證明不是
+    // 空的，只有prev跟cur之間「完全夾在中間」的月份才是真正缺資料。
+    const endLabel = shiftMonthLabel(rows[i].trade_date.slice(0, 7), -1);
+    while (label <= endLabel) {
+      missingMonths.add(label);
+      label = shiftMonthLabel(label, 1);
+    }
+  }
+  if (!missingMonths.size) return false;
+  let filledAny = false;
+  for (const label of missingMonths) {
+    const key = `${code}:${label}`;
+    if (dailyGapFillAttempted.has(key)) continue;
+    dailyGapFillAttempted.add(key);
+    try {
+      await DBMgr.ensureStockMonthLoaded(code, label);
+      filledAny = true;
+    } catch (e) {
+      console.warn(`補齊 ${code} ${label} 缺口資料失敗：`, e.message);
+    }
+  }
+  return filledAny;
+}
+
 /* 技術分析（日線為主）分頁的實際繪製，個股/大盤指數共用。preserveView 給
    LiveFeed 的即時回呼用：使用者可能正縮放/平移在看歷史某一段，每20秒
    一次的即時更新不該把畫面跳回預設的最近範圍。 */
@@ -6825,6 +6874,16 @@ function renderDailySourceChart(opts = {}) {
     preserveView: !!opts.preserveView,
   });
   renderChartInfoLine(history, isLive);
+
+  if (type === 'stock') {
+    fillDailyPriceGaps(code, history).then(filled => {
+      // 補資料是背景非同步進行，補完之前使用者可能已經切走股票/分頁，
+      // 這裡要重新確認目前顯示的還是同一檔，不然畫面會突然跳回別檔的圖。
+      if (filled && chartMode === 'daily' && currentChartSource?.type === 'stock' && currentChartSource.code === code) {
+        renderDailySourceChart({ preserveView: true });
+      }
+    });
+  }
 }
 
 /* 走勢圖分頁：個股靠 LiveFeed 即時輪詢 + Yahoo backfill；美股指數（見
