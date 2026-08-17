@@ -1384,8 +1384,15 @@ select:focus { outline: 2px solid var(--acc); }
 
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
      載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
-     才會 new FloatingAssistant()，見 renderAiTab 的一次性初始化guard。 -->
-<script src="floating-assistant.js"></script>
+     才會 new FloatingAssistant()，見 renderAiTab 的一次性初始化guard。
+     tw_stock_db客製: 這裡刻意加了?v=版本號做cache-busting——瀏覽器/CDN對
+     這種沒有內建版本查詢字串的<script src>常常會積極快取，之前這個
+     AI助理密集修過好幾輪bug，每次修完都要靠使用者自己記得手動強制重新
+     整理才會真的載到新版，很容易誤以為「同一個bug還沒修好」，實際上是
+     還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
+     手動把這個版本號往上調（沒有build流程可以自動處理），格式用
+     YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
+<script src="floating-assistant.js?v=20260818-1"></script>
 
 <script>
 'use strict';

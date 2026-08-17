@@ -3626,7 +3626,14 @@ ${existingNodeSummaries}
                         // 計數器擋住，超過就明確放棄並告知使用者原因，而不是
                         // 無聲一直重試下去。
                         if (this._turnPruneCount >= this.maxPruneRetriesPerTurn) {
-                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制，可能是單次要處理的資料量太大（例如查詢的時間範圍太長）。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。`);
+                            // tw_stock_db客製: 附上最後一次的原始errText（不再只講
+                            // 「可能是資料量太大」這種猜測）——這個上限原本是為了
+                            // 擋「壓縮沒有真正解決400/413成因」的無窮迴圈設計的，
+                            // 但過去這裡的訊息完全沒有透露「成因」到底是什麼，
+                            // 使用者沒辦法判斷這次觸發的原因跟上次是不是同一個
+                            // （例如同一個schema驗證錯誤又發生了、還是真的換了個
+                            // 新原因），把原始錯誤內容印出來才能真正協助排查。
+                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。最後一次的原始錯誤：HTTP ${response.status} ${errText.slice(0, 300)}`);
                             return "";
                         }
                         this._turnPruneCount++;
@@ -3904,7 +3911,8 @@ ${existingNodeSummaries}
                         // tw_stock_db客製: 跟_loopFetch同樣的理由，見那邊
                         // _turnPruneCount的說明。
                         if (this._turnPruneCount >= this.maxPruneRetriesPerTurn) {
-                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制，可能是單次要處理的資料量太大（例如查詢的時間範圍太長）。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。`);
+                            // tw_stock_db客製: 跟_loopFetch同樣的理由，附上原始errText。
+                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。最後一次的原始錯誤：HTTP ${response.status} ${errText.slice(0, 300)}`);
                             return "";
                         }
                         this._turnPruneCount++;
