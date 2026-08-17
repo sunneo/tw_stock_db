@@ -1199,16 +1199,25 @@ ${fnData.code}
 
     _pushToolResultMessage(fnName, result, extra) {
         let imageDataUrl = null;
+        let imageMeta = null;
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
             if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
                 imageDataUrl = parsed.dataUrl;
+                // tw_stock_db客製: 圖片本身不列入對話上下文（見下面），但如果
+                // 工具額外附了一個輕量的meta摘要（例如render_stock_chart回傳
+                // 實際畫出來的高低點價位/時間），這個摘要要照樣送進模型看得到
+                // 的content，不能被「圖片=整包隱藏」的規則一起吃掉——不然模型
+                // 完全沒有真實數字可以用來下精準的標記/線段，只能瞎猜（實測
+                // 遇到的真實案例：標記位置對不齊K棒）。
+                if (parsed.meta && typeof parsed.meta === 'object') imageMeta = parsed.meta;
             }
         } catch (_) { /* 不是圖片payload，走下面一般文字流程 */ }
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
         if (imageDataUrl) {
-            msg.content = `[Tool ${fnName} 已產生一張圖表圖片，已直接顯示給使用者看，圖片二進位內容不列入對話上下文]`;
+            msg.content = `[Tool ${fnName} 已產生一張圖表圖片，已直接顯示給使用者看，圖片二進位內容不列入對話上下文]`
+                + (imageMeta ? ` 圖表實際資料摘要（如需精準標記請以此為準，不要自行估計）：${this._stripInlineBase64(JSON.stringify(imageMeta))}` : '');
             Object.defineProperty(msg, '_displayDataUrl', { value: imageDataUrl, enumerable: false, configurable: true });
         } else {
             msg.content = this._formatToolResult(result, fnName);
@@ -3329,8 +3338,12 @@ ${existingNodeSummaries}
             </div>
             <span class="ai-stream-content"></span>
         `;
+        // tw_stock_db客製: 只有使用者原本就在（接近）畫面底部時，才在新增
+        // 這則streamDiv後自動捲到底——如果使用者正往上拉看歷史訊息，不該
+        // 因為AI開始回覆就被強制拉回底部。見_isNearBottom()的說明。
+        const wasNearBottomBeforeStream = this._isNearBottom(chatBody);
         chatBody.appendChild(streamDiv);
-        chatBody.scrollTop = chatBody.scrollHeight;
+        if (wasNearBottomBeforeStream) chatBody.scrollTop = chatBody.scrollHeight;
 
         const streamStopBtn = streamDiv.querySelector('.ai-inline-stop-btn');
         if (streamStopBtn) streamStopBtn.onclick = () => this._requestStopResponse();
@@ -3460,8 +3473,14 @@ ${existingNodeSummaries}
                                 fullContent += delta.content || '';
                                 // 純思考、還沒有正式內容時，用一個輕量提示取代空白，
                                 // 讓使用者知道AI正在思考、不是卡住沒反應。
+                                // tw_stock_db客製: 同上，每個chunk進來前先檢查
+                                // 使用者「當下」是不是還在底部附近，不是只看
+                                // 串流剛開始那一刻——使用者隨時可能在串流過程
+                                // 中自己往上拉走，這裡要能即時偵測到並停止
+                                // 繼續自動捲動。
+                                const wasNearBottomChunk = this._isNearBottom(chatBody);
                                 textSpan.innerText = fullContent || (reasoningContent ? '🧠 思考中…' : '');
-                                chatBody.scrollTop = chatBody.scrollHeight;
+                                if (wasNearBottomChunk) chatBody.scrollTop = chatBody.scrollHeight;
                             } catch (_) {}
                         }
                     }
@@ -4141,6 +4160,17 @@ ${existingNodeSummaries}
         if (el) el.innerText = msg;
     }
 
+    // tw_stock_db客製: 判斷聊天視窗目前的捲動位置是不是「已經在底部附近」
+    // （容許80px誤差，含捲軸慣性/次像素捲動的誤差空間）。這是「要不要自動
+    // 捲到底」的唯一依據——使用者自己往上拉看歷史訊息時，新內容進來(串流
+    // /新訊息/重繪)不應該把畫面拉走；只有使用者本來就守在底部看最新內容
+    // 時，才維持「自動貼底」的行為，這是一般聊天介面（Slack/ChatGPT等）
+    // 慣用的「stick to bottom」模式。
+    _isNearBottom(el) {
+        if (!el) return true;
+        return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    }
+
     // tw_stock_db客製: 對話紀錄（含已封存的舊訊息）存進localStorage，讓
     // 重新整理頁面／關掉分頁再回來都還在，不用每次都從零開始。存的時機是
     // _renderMessageHistory()結尾——這個函式本來就是「訊息有變動」的唯一
@@ -4236,6 +4266,14 @@ ${existingNodeSummaries}
         const chatBody = document.getElementById('ai-chat-body');
         const palette = this._getThemePalette();
         this._applyThemeStyles();
+        // tw_stock_db客製: 這個函式會整個清空chatBody重繪（innerHTML=''），
+        // 捲動位置在清空的瞬間就會歸零，一定要在清空「之前」先記住使用者
+        // 目前的捲動狀態，重繪完才知道該還原成什麼樣子——只有原本就在底部
+        // 附近才自動捲到新的底部，不然就照原本的絕對scrollTop還原（重繪
+        // 通常只在最後追加內容，前面內容高度不變，同一個scrollTop數值
+        // 對應的畫面內容不會變，見_isNearBottom()的說明）。
+        const wasNearBottomForRerender = this._isNearBottom(chatBody);
+        const prevScrollTopForRerender = chatBody.scrollTop;
         chatBody.innerHTML = '';
 
         // tw_stock_db客製: pruneContext()壓縮上下文時，被移出this.messages
@@ -4264,7 +4302,7 @@ ${existingNodeSummaries}
         });
 
         this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
-        chatBody.scrollTop = chatBody.scrollHeight;
+        chatBody.scrollTop = wasNearBottomForRerender ? chatBody.scrollHeight : prevScrollTopForRerender;
         this._persistChatHistory();
     }
 
