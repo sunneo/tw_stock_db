@@ -401,7 +401,6 @@ class FloatingAssistant {
         
         this.commandHistory = JSON.parse(localStorage.getItem(this.HISTORY_KEY)) || [];
         this.historyIndex = -1;
-        this.maxMessagesLimit = 20; 
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -2861,11 +2860,17 @@ ${sourceTool.handlerScript}
             const data = await response.json();
             const summaryResult = data.choices[0]?.message?.content || "（對話已壓縮）";
 
-            // tw_stock_db客製: 只有明確要求archive:true（話題轉移）才留一張
-            // 可回顧的「已封存對話」卡片；例行的token-limit壓縮不留，見上面
-            // 函式簽名處的說明。this.messages（真正送進API的內容）兩種情況
-            // 都會換成精簡版。
-            if (archive) this.archivedDisplayBlocks.push({ reason, messages: chatToCompress });
+            // tw_stock_db客製: 不管是不是話題轉移，被壓縮掉的原始訊息一律
+            // 留著、不再真的丟棄——差別只在畫面呈現方式：archive:true（話題
+            // 轉移）包成一張可摺疊的「已封存對話」卡片；archive:false（例行
+            // token-limit壓縮）標記silent:true，_renderMessageHistory()會
+            // 直接原樣攤開顯示，畫面上看起來像完全沒發生過壓縮。這是修正
+            // 實測遇到的真實案例：使用者請AI畫走勢圖、圖表剛畫好顯示在畫面
+            // 上，緊接著同一輪對話觸發例行壓縮，因為舊版這裡archive:false
+            // 時完全不保留，圖表訊息物件（含圖片資料）就直接從記憶體跟畫面
+            // 上一起消失，使用者反映「圖被刪掉了」。this.messages（真正送進
+            // API的內容）兩種情況都一樣會換成精簡版，只有畫面顯示邏輯不同。
+            this.archivedDisplayBlocks.push({ reason, messages: chatToCompress, silent: !archive });
 
             this.messages = [{ role: "system", content: this._getFinalSystemPrompt() }];
             this.messages.push({ role: "system", content: `[歷史對話摘要(300 tokens 內)]: ${summaryResult}` });
@@ -3112,10 +3117,17 @@ ${existingNodeSummaries}
             return;
         }
 
-        if (this.messages.length > this.maxMessagesLimit) {
-            await this.pruneContext("Max count reached (>20)");
-        }
-
+        // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
+        // proactive檢查——這跟先前被移除的token估算式proactive檢查是同一類
+        // 問題：訊息「則數」也只是粗糙的代理指標（20則可能都是短文字、也
+        // 可能其中幾則是剛畫好的走勢圖圖表），一旦誤觸發，pruneContext()會
+        // 立刻把this.messages換成精簡摘要並重繪畫面，實測遇到真實案例：
+        // 使用者請AI分析並畫走勢圖，圖表剛顯示出來，緊接著這個檢查在下一輪
+        // 對話開始時觸發，畫面上剛貼的內容跟剛畫好的圖表就憑空消失（即使
+        // pruneContext本身已經修正成不會真的遺失資料，也不該讓使用者平白
+        // 多等一次不必要的摘要API呼叫）。改成完全信任_loopFetch/
+        // _loopFetchNative在真正收到伺服器400/413時才反應式壓縮，不再用
+        // 則數這種不準的指標搶先出手。
         if (this.messages.length === 0) {
             this.messages.push({ role: "system", content: this._getFinalSystemPrompt() });
         }
@@ -4014,8 +4026,19 @@ ${existingNodeSummaries}
             // 序列化到它——這裡額外把圖片資料存進一個獨立的imageMap（用訊息
             // 在陣列裡的索引當key），讓圖片還是能在重新整理頁面後正確還原
             // 顯示，同時維持「圖片不佔用送給LLM的內容/token估算」這個優化。
+            // archivedDisplayBlocks（pruneContext壓縮後被移出this.messages的
+            // 舊訊息，見那邊的說明）裡的訊息物件是同一個參考、同樣可能帶
+            // _displayDataUrl，這裡也要一併掃到，不然圖表被例行壓縮移進
+            // archivedDisplayBlocks後，當下畫面雖然還看得到（物件參考還在），
+            // 但重新整理頁面後圖片就會不見——key用"blockIdx:msgIdx"跟
+            // this.messages的純數字index區分開。
             const imageMap = {};
             this.messages.forEach((m, i) => { if (m._displayDataUrl) imageMap[i] = m._displayDataUrl; });
+            (this.archivedDisplayBlocks || []).forEach((block, bi) => {
+                (block.messages || []).forEach((m, mi) => {
+                    if (m._displayDataUrl) imageMap[`${bi}:${mi}`] = m._displayDataUrl;
+                });
+            });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
                 messages: this.messages,
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
@@ -4034,8 +4057,17 @@ ${existingNodeSummaries}
             if (Array.isArray(data.messages)) this.messages = data.messages;
             if (Array.isArray(data.archivedDisplayBlocks)) this.archivedDisplayBlocks = data.archivedDisplayBlocks;
             if (data.imageMap) {
-                Object.entries(data.imageMap).forEach(([idx, dataUrl]) => {
-                    const msg = this.messages[Number(idx)];
+                // tw_stock_db客製: key是純數字代表this.messages裡的index；
+                // "bi:mi"格式代表archivedDisplayBlocks[bi].messages[mi]，見
+                // _persistChatHistory()存檔時的說明。
+                Object.entries(data.imageMap).forEach(([key, dataUrl]) => {
+                    let msg;
+                    if (key.includes(':')) {
+                        const [bi, mi] = key.split(':').map(Number);
+                        msg = this.archivedDisplayBlocks[bi] && this.archivedDisplayBlocks[bi].messages[mi];
+                    } else {
+                        msg = this.messages[Number(key)];
+                    }
                     if (msg) Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true });
                 });
             }
@@ -4063,9 +4095,16 @@ ${existingNodeSummaries}
 
         // tw_stock_db客製: pruneContext()壓縮上下文時，被移出this.messages
         // 的原始訊息存在archivedDisplayBlocks裡（純粹給畫面用，不會回頭餵
-        // 給API），這裡先依序把每一批封存訊息包成一個摺疊區塊放在最上面，
-        // 使用者還是找得到完整的舊對話，不會覺得「一直被洗掉」。
+        // 給API）。block.silent===true（例行token-limit壓縮，見
+        // pruneContext）的區塊直接原樣攤開渲染、不包摺疊卡片，畫面上跟沒
+        // 被壓縮過一樣；只有block.silent!==true（話題轉移，使用者主動切換
+        // 討論方向）才包成一張可摺疊的「已封存對話」卡片，明確提示這是
+        // 一次話題轉場。
         (this.archivedDisplayBlocks || []).forEach((block, idx) => {
+            if (block.silent) {
+                block.messages.forEach(m => this._renderSingleMessage(m, chatBody, palette));
+                return;
+            }
             const archiveEl = document.createElement('details');
             archiveEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
             const summaryEl = document.createElement('summary');
