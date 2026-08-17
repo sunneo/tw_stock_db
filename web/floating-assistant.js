@@ -331,16 +331,18 @@ const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetitio
 // 各自的實測結果，2026-08確認），給MODEL NAME欄位的<datalist>下拉選單用。
 // 使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的捷徑，
 // 不是限制。
-//   - google/gemma-4-31b-it：預設值，實測~2秒回應、中文輸出正常。
+//   - nvidia/nemotron-3-super-120b-a12b：預設值，回應速度快、能力也最強，
+//     早期實測在temperature=0時容易卡進重複輸出迴圈，現在有兩層防護：
+//     _hasRepeatingTail()串流中偵測並截斷，加上預設repetition_penalty=1/
+//     length_penalty=0.3的取樣參數（2026-08調整）。
+//   - google/gemma-4-31b-it：實測~2秒回應、中文輸出正常。
 //   - meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱。
 //   - meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)。
-//   - nvidia/nemotron-3-super-120b-a12b：能力最強，但實測容易在
-//     temperature=0時卡進重複輸出迴圈，靠_hasRepeatingTail()兜底。
 const PRESET_MODEL_OPTIONS = [
+    'nvidia/nemotron-3-super-120b-a12b',
     'google/gemma-4-31b-it',
     'meta/llama-3.1-8b-instruct',
     'meta/llama-3.3-70b-instruct',
-    'nvidia/nemotron-3-super-120b-a12b',
 ];
 
 // ============================================================
@@ -476,10 +478,10 @@ class FloatingAssistant {
             contextWindowTokens: 8192,
             maxOutputTokens: 1024,
             samplingParams: {
-                frequency_penalty: { value: 0.3, disabled: false },
-                presence_penalty: { value: 0.3, disabled: false },
-                repetition_penalty: { value: null, disabled: false },
-                length_penalty: { value: null, disabled: false },
+                frequency_penalty: { value: 0, disabled: false },
+                presence_penalty: { value: 0, disabled: false },
+                repetition_penalty: { value: 1, disabled: false },
+                length_penalty: { value: 0.3, disabled: false },
             },
         };
     }
@@ -1036,10 +1038,10 @@ ${fnData.code}
         // tw_stock_db客製: 原本預設的 'openai/gpt-oss-120b' 在NVIDIA的NIM端點
         // 上會整個請求卡住、永遠不回應（實測90秒仍無回應，不是慢，是完全不
         // 回），導致沒自己設定模型的使用者(=大多數人，因為AI分頁預設用假
-        // 金鑰+這個預設模型)問任何問題都會卡住/最終fetch失敗。改用實測穩定
-        // 快速回應且中文輸出正常的 'google/gemma-4-31b-it'（實測~2秒回應，
+        // 金鑰+這個預設模型)問任何問題都會卡住/最終fetch失敗。改用回應速度
+        // 快、能力也最強的 'nvidia/nemotron-3-super-120b-a12b'（2026-08調整，
         // 見PRESET_MODEL_OPTIONS上方的各選項實測註記）。
-        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'google/gemma-4-31b-it';
+        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'nvidia/nemotron-3-super-120b-a12b';
         return { apiKey, apiUrl, apiModel };
     }
 
@@ -3027,6 +3029,26 @@ ${existingNodeSummaries}
             this.messages.push({ role: "system", content: this._getFinalSystemPrompt() });
         }
 
+        // tw_stock_db客製: system prompt只在對話第一則訊息時建立一次（見上面
+        // this.messages.length===0那段），對一個會被存檔、重新整理也不會清空
+        // 的長對話來說，裡面塞的「現在幾點」「使用者目前在看哪一檔股票」這種
+        // 動態資訊只要過了第一輪就整個過期。如果外部有透過options.contextProvider
+        // 註冊一個取得「即時上下文」的函式（見web/index.html的renderAiTab()），
+        // 這裡每一輪對話開始前都重新呼叫一次、取代掉上一輪留下的舊版本（用
+        // 前綴比對過濾+splice重新插入，不是每輪都疊加一則新訊息，避免對話
+        // 歷史被一堆過期的舊上下文塞爆）。
+        if (typeof this.options.contextProvider === 'function') {
+            try {
+                const liveContext = this.options.contextProvider();
+                this.messages = this.messages.filter(m => !(m.role === 'system' && m.content.startsWith('[Live Context]')));
+                if (liveContext) {
+                    this.messages.splice(1, 0, { role: 'system', content: `[Live Context] ${liveContext}` });
+                }
+            } catch (err) {
+                console.warn('contextProvider執行失敗:', err);
+            }
+        }
+
         // tw_stock_db客製: 主動式上下文預算檢查——在真的送出請求「之前」就
         // 先粗估token數，超過使用者設定的contextWindowTokens（扣掉
         // maxOutputTokens留給模型回覆的空間）就先壓縮一次，不用等真的被
@@ -3520,7 +3542,7 @@ ${existingNodeSummaries}
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
                 <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='google/gemma-4-31b-it'>
+                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='nvidia/nemotron-3-super-120b-a12b'>
                 <datalist id="ai-model-datalist">
                     ${PRESET_MODEL_OPTIONS.map(m => `<option value="${m}"></option>`).join('')}
                 </datalist>

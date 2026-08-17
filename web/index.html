@@ -1301,12 +1301,12 @@ select:focus { outline: 2px solid var(--acc); }
           <h3>LLM 連線設定</h3>
           <label class="modal-field"><span>API 金鑰</span><input type="password" id="ai-cfg-api-key" placeholder="留空使用內建共用金鑰"></label>
           <label class="modal-field"><span>API 網址</span><input type="text" id="ai-cfg-api-url" placeholder="https://integrate.api.nvidia.com/v1"></label>
-          <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="google/gemma-4-31b-it"></label>
+          <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="nvidia/nemotron-3-super-120b-a12b"></label>
           <datalist id="ai-cfg-model-datalist">
+            <option value="nvidia/nemotron-3-super-120b-a12b"></option>
             <option value="google/gemma-4-31b-it"></option>
             <option value="meta/llama-3.1-8b-instruct"></option>
             <option value="meta/llama-3.3-70b-instruct"></option>
-            <option value="nvidia/nemotron-3-super-120b-a12b"></option>
           </datalist>
           <p class="modal-hint">模型名稱可以直接輸入，也可以點輸入框叫出下拉選單快速選常用選項；清單以外的模型名稱一樣可以直接打字輸入。</p>
 
@@ -4687,9 +4687,24 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_current_selection', category: 'UI操作',
-    description: '查詢目前網頁選取的股票/指數，以及目前顯示中的分頁模式。',
+    description: '查詢目前網頁選取的股票/指數，以及目前顯示中的分頁模式。（提醒：這項資訊已經自動包含在每輪對話開頭的[Live Context]裡，通常不需要特地呼叫這個工具，除非要在對話中途重新確認使用者有沒有換股票。）',
     params: {},
     handler: () => ({ currentChartSource, chartMode }),
+  },
+  {
+    name: 'get_current_datetime', category: '系統',
+    description: '取得目前的真實日期與時間（台北時區）。使用者問「今天」「現在」「這禮拜」等相對時間的問題時，用這個工具確認實際日期，不要憑對話內容自己猜測或使用訓練資料裡的舊日期。（提醒：這項資訊也已經自動包含在每輪對話開頭的[Live Context]裡。）',
+    params: {},
+    handler: () => {
+      const p = taipeiParts();
+      const weekdayMap = { Mon: '一', Tue: '二', Wed: '三', Thu: '四', Fri: '五', Sat: '六', Sun: '日' };
+      return {
+        date: `${p.year}-${p.month}-${p.day}`,
+        time: `${p.hour}:${p.minute}:${p.second}`,
+        weekday: weekdayMap[p.weekday] || p.weekday,
+        timezone: 'Asia/Taipei (UTC+8)',
+      };
+    },
   },
   {
     name: 'get_settings', category: '設定',
@@ -4802,7 +4817,17 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 視覺化圖表：如果分析裡提到轉折點、頸線、支撐壓力、爆量的某一天等需要「畫出來」才容易理解
 的內容，優先呼叫 render_stock_chart 自己畫一張帶標記/線段的圖（可以指定時間範圍、Y軸範圍、
 每個標記/線的顏色與位置），不要用get_chart_snapshot（那個是截使用者當下畫面，你沒辦法控制
-內容，切股票/切分頁後立刻截圖容易截到還沒重繪完成的畫面）。`;
+內容，切股票/切分頁後立刻截圖容易截到還沒重繪完成的畫面）。
+即時上下文：每一輪對話開頭都會有一則[Live Context]系統訊息，內容是「現在真實的日期時間」
+跟「使用者目前網頁上選定的股票/指數」，這是真實、即時的資訊，回答「今天」「現在」「這禮拜」
+等相對時間問題、或使用者說「這檔」「目前這支」卻沒有明講代號時，都要以這則訊息為準，不要
+自己用訓練資料裡的舊日期猜測、也不要要求使用者重複講一次已經在Live Context裡的資訊。
+股票代號解析：使用者常常只講公司名稱（例如「大成鋼」「台積電」）而不是代號，遇到這種情況
+先呼叫 search_stocks 用名稱查出正確代號，再用查到的代號呼叫其他工具（get_price_history/
+get_intraday_series/diagnose_stock/render_stock_chart等一律吃代號，不吃公司名稱），不要
+自己憑印象猜代號。詢問「今天/當下走勢圖」這類問題，用查到的代號呼叫 get_intraday_series，
+但要注意那份資料來自中午/收盤後排程快照、不是逐秒即時更新，如果排程還沒跑過那檔股票會查
+不到資料，遇到查無資料要老實告知使用者，不要假裝有資料。`;
 
 /* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
@@ -7613,9 +7638,33 @@ function renderAiTab() {
     buttonText: '🤖 AI助理',
     buttonStyle: 'display:none;',
     windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:8px; z-index:1;',
+    contextProvider: buildAiLiveContext,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   aiConsoleInstance.toggleWindow();
+}
+
+// tw_stock_db客製: 每一輪對話開始前都會被floating-assistant.js的executeChat()
+// 重新呼叫一次（見那邊的contextProvider說明），取代掉上一輪留下的舊版本，
+// 讓「現在幾點」「使用者目前在看哪一檔股票」這類會隨時間/操作改變的資訊
+// 永遠是最新的，不用等使用者自己想到要呼叫get_current_selection/
+// get_current_datetime工具、也不會因為對話存檔+重新整理後停留在很久以前
+// 開啟AI分頁時的那個舊狀態。
+function buildAiLiveContext() {
+  const p = taipeiParts();
+  const weekdayMap = { Mon: '一', Tue: '二', Wed: '三', Thu: '四', Fri: '五', Sat: '六', Sun: '日' };
+  const lines = [
+    `目前日期時間：${p.year}-${p.month}-${p.day}（星期${weekdayMap[p.weekday] || p.weekday}） ${p.hour}:${p.minute}（台北時區）`,
+  ];
+  if (currentChartSource && currentChartSource.type === 'stock') {
+    const info = DBMgr.getStockInfo(currentChartSource.code);
+    lines.push(`使用者目前正在看的股票：${currentChartSource.code} ${info ? info.stock_name : ''}（目前分頁模式：${chartMode}）`);
+  } else if (currentChartSource && currentChartSource.type === 'index') {
+    lines.push(`使用者目前正在看的指數：${currentChartSource.code}（目前分頁模式：${chartMode}）`);
+  } else {
+    lines.push('使用者目前沒有選定任何股票/指數。');
+  }
+  return lines.join('\n');
 }
 
 /* 把 diagnoseStock() 回傳的診斷結果，轉成 Chart.setAnnotations() 要的疊加
