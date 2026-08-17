@@ -404,6 +404,18 @@ class FloatingAssistant {
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
+        // tw_stock_db客製: retryLimit/retryAttempt原本是設計來擋「連續」
+        // 400/413重試的，但工具呼叫成功後_loopFetch/_loopFetchNative都會把
+        // retryAttempt重設回1（見那兩處的呼叫），代表只要中間穿插過一次
+        // 成功的工具呼叫，retryLimit就形同虛設——實測遇到「壓縮→模型把整個
+        // 任務重做一遍（重新呼叫工具）→context又被填滿→再壓縮」的迴圈，
+        // 每一輪都有工具呼叫成功，retryAttempt每次都被重設，永遠不會撞到
+        // retryLimit，導致這個迴圈實質上無限迴圈。_turnPruneCount是獨立於
+        // retryAttempt之外、真正計算「這一輪使用者對話總共觸發過幾次
+        // pruneContext」的計數器，不會被工具呼叫成功重設，只在executeChat()
+        // 每次真正開始新一輪對話時歸零，才能確實擋住這種迴圈。
+        this.maxPruneRetriesPerTurn = 3;
+        this._turnPruneCount = 0;
         this.isResponding = false;
         this.stopRequested = false;
         this.currentAbortController = null;
@@ -2837,7 +2849,13 @@ ${sourceTool.handlerScript}
         const chatToCompress = this.messages.filter(m => m.role !== 'system');
         if (chatToCompress.length === 0) return;
 
-        const summaryPrompt = `請將以下對話內容進行深度摘要與壓縮，字數限制在 300 個 Token 內。請保留重要的上下文、用戶意圖以及之前的關鍵結論：\n\n${JSON.stringify(chatToCompress)}`;
+        // tw_stock_db客製: 明確要求摘要列出「已經呼叫過哪些工具、取得了什麼
+        // 結果」，而不是只籠統講「使用者想要X、助理做了Y」——實測發現太
+        // 籠統的摘要會讓下一輪的模型分不清楚哪些步驟已經做過，傾向整個
+        // 任務重新來一遍（重新呼叫同樣的工具），反而更快又把新context填滿、
+        // 再次觸發壓縮，形成「一直撞到限制→重做」的迴圈（見下面重新接回
+        // 使用者提問時的說明，兩處是同一個問題的兩面）。
+        const summaryPrompt = `請將以下對話內容進行深度摘要與壓縮，字數限制在 300 個 Token 內。請保留：(1)使用者的原始意圖與具體需求 (2)已經呼叫過哪些工具、傳了什麼參數、取得了什麼關鍵結果（例如已經查到的股票代號、已經產生的圖表）(3)目前任務進行到哪個階段、還缺什麼才能給出最終答案。這份摘要會被當成「已完成的工作記錄」交給下一輪繼續，重點是讓下一輪不需要重新呼叫已經呼叫過的工具：\n\n${JSON.stringify(chatToCompress)}`;
 
         try {
             const controller = this._createAbortController();
@@ -2879,13 +2897,23 @@ ${sourceTool.handlerScript}
             // 一個可以直接回答的問題——實測發現如果就這樣結束，緊接著的續答
             // 請求收到的上下文只有這段敘述性摘要，模型很容易把摘要內容原文
             // 複誦/改寫一遍當成最終答案，而不是真的針對使用者原本的問題給
-            // 結論（例如使用者問「幫我分析並畫走勢圖」，工具都執行完了、圖也
-            // 畫好了，結果因為中途觸發這裡的壓縮，模型最後吐出來的是一段
-            // 「使用者想要...助理已經...」的摘要文字，不是真正的分析結論）。
-            // 這裡把使用者最後一則真正的提問原樣接在摘要後面，讓模型清楚
-            // 知道「現在真正要回答的問題是什麼」，而不是去描述摘要本身。
+            // 結論。這裡把使用者最後一則真正的提問接在摘要後面，但**不能
+            // 原樣裸接**——早期版本試過原樣接回去，結果模型把這當成一個
+            // 全新的請求，把摘要裡已經記錄過的工具呼叫全部重做一遍（重新
+            // search_stocks/get_intraday_series/render_stock_chart...），
+            // 重做的結果又把新context填滿、立刻再次觸發這裡的壓縮，變成
+            // 「一直撞到限制→重做→又撞到限制」的迴圈（實測遇到的真實案例）。
+            // 這裡明確加一句「不要重複已完成的工具呼叫」的提示包住原始問題，
+            // 讓模型把摘要當成「已完成的工作記錄」而不是「跟這件事無關、
+            // 重新開始」。真正兜底防止迴圈失控的是下面_loopFetch/
+            // _loopFetchNative對同一輪對話的壓縮次數上限（maxPruneRetriesPerTurn）。
             const lastUserMsg = [...chatToCompress].reverse().find(m => m.role === 'user');
-            if (lastUserMsg) this.messages.push(lastUserMsg);
+            if (lastUserMsg) {
+                this.messages.push({
+                    role: 'user',
+                    content: `[系統提示：以上摘要已經記錄了目前為止呼叫過的工具與取得的結果，請不要重複呼叫已經執行過的工具、也不要把這當成新任務重新開始，直接依照摘要中已有的資料繼續完成任務，缺什麼資料再呼叫對應的工具補齊，資料齊全就直接給出最終回答]\n\n我的原始問題：${lastUserMsg.content}`
+                });
+            }
 
             this._log(archive
                 ? "✅ 歷史對話壓縮完成！已釋放 Context 空間，原始內容仍可在上方封存區塊回顧。"
@@ -3129,6 +3157,11 @@ ${existingNodeSummaries}
             return;
         }
 
+        // tw_stock_db客製: 每次真正開始新一輪對話才歸零，見_turnPruneCount
+        // 在建構子裡的說明——這樣同一輪對話裡不管中間穿插幾次成功的工具
+        // 呼叫，壓縮次數上限都不會被誤重設。
+        this._turnPruneCount = 0;
+
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
         // proactive檢查——這跟先前被移除的token估算式proactive檢查是同一類
         // 問題：訊息「則數」也只是粗糙的代理指標（20則可能都是短文字、也
@@ -3337,6 +3370,17 @@ ${existingNodeSummaries}
                             this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
                             return "";
                         }
+                        // tw_stock_db客製: 見_turnPruneCount在建構子裡的說明——
+                        // retryAttempt在每次工具呼叫成功後都會被重設回1，沒辦法
+                        // 真正擋住「壓縮→模型把任務整個重做一遍→又填滿context→
+                        // 再壓縮」這種迴圈，這裡用不受工具呼叫成功影響的獨立
+                        // 計數器擋住，超過就明確放棄並告知使用者原因，而不是
+                        // 無聲一直重試下去。
+                        if (this._turnPruneCount >= this.maxPruneRetriesPerTurn) {
+                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制，可能是單次要處理的資料量太大（例如查詢的時間範圍太長）。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。`);
+                            return "";
+                        }
+                        this._turnPruneCount++;
                         await this.pruneContext("Context Window Exception (Token Limit)");
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
                     }
@@ -3418,14 +3462,22 @@ ${existingNodeSummaries}
                 fullContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
             }
 
-            // tw_stock_db客製: 把累積的reasoning_content包成<think>標籤接在
-            // 正式內容前面，交給既有的_extractThinkingContent()/「🧠 思考過程」
-            // 摺疊區塊機制處理，見上面串流迴圈裡的說明。
+            // tw_stock_db客製: reasoningContent只存進非可枚舉的_reasoningDisplay
+            // 屬性，不接進msg.content——早期版本是接成<think>標籤直接混進
+            // content，這樣雖然「🧠 思考過程」摺疊區塊看得到，但content同時是
+            // 真正送進API的欄位，等於是把模型自己的內部推理草稿（實測動輒
+            // 6000~8000字，遠大於工具結果本身）永久疊進對話歷史，下一輪
+            // 對話又整段送回去，是造成「一直撞到context limit、又觸發壓縮」
+            // 的主因之一（推理愈長，context長得愈快，形成惡性循環）。跟圖片
+            // 用_displayDataUrl把「畫面顯示」跟「送進API的內容」分開是同一個
+            // 道理，見_pushToolResultMessage()。_renderSingleMessage()會優先
+            // 讀這個屬性；沒有的話（例如舊資料、或模型把推理直接混進content
+            // 沒有走獨立欄位）才退回原本的<think>/[THINKING]標籤解析。
+            const assistantMsg = { role: "assistant", content: fullContent };
             if (reasoningContent) {
-                fullContent = `<think>${reasoningContent}</think>${fullContent}`;
+                Object.defineProperty(assistantMsg, '_reasoningDisplay', { value: reasoningContent, enumerable: false, configurable: true });
             }
-
-            this.messages.push({ role: "assistant", content: fullContent });
+            this.messages.push(assistantMsg);
 
             // --- 容錯偵測與解析機制 ---
             const callStart = fullContent.lastIndexOf('[CALL:');
@@ -3571,6 +3623,13 @@ ${existingNodeSummaries}
                             this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
                             return "";
                         }
+                        // tw_stock_db客製: 跟_loopFetch同樣的理由，見那邊
+                        // _turnPruneCount的說明。
+                        if (this._turnPruneCount >= this.maxPruneRetriesPerTurn) {
+                            this._log(`❌ 這一輪對話已經反覆壓縮 ${this.maxPruneRetriesPerTurn} 次仍超過上下文限制，可能是單次要處理的資料量太大（例如查詢的時間範圍太長）。已停止繼續嘗試，建議縮小範圍再問一次，或換一個上下文較大的模型。`);
+                            return "";
+                        }
+                        this._turnPruneCount++;
                         await this.pruneContext("Context Window Exception (Token Limit)");
                         return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
                     }
@@ -3599,9 +3658,10 @@ ${existingNodeSummaries}
                 this._log(`↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
             }
 
-            if (reasoningAccum) {
-                finalContent = `<think>${reasoningAccum}</think>${finalContent}`;
-            }
+            // tw_stock_db客製: 跟_loopFetch串流路徑同樣的理由（見那邊的詳細
+            // 說明）——reasoningAccum只存進非可枚舉的_reasoningDisplay屬性，
+            // 不接進finalContent/msg.content，避免模型的內部推理草稿被永久
+            // 疊進送給API的對話歷史、造成context愈滾愈大。
             // tw_stock_db客製: 只有觸及安全上限仍未寫完才提醒使用者，正常情況
             // 下自動接續機制會無聲把內容拼完整，見_loopFetch串流路徑同樣的
             // 說明。
@@ -3609,10 +3669,14 @@ ${existingNodeSummaries}
                 finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
             }
 
-            this.messages.push(Object.assign(
+            const assistantMsg = Object.assign(
                 { role: 'assistant', content: finalContent },
                 toolCalls.length ? { tool_calls: toolCalls } : {}
-            ));
+            );
+            if (reasoningAccum) {
+                Object.defineProperty(assistantMsg, '_reasoningDisplay', { value: reasoningAccum, enumerable: false, configurable: true });
+            }
+            this.messages.push(assistantMsg);
 
             if (!toolCalls.length) {
                 this._renderMessageHistory();
@@ -4044,17 +4108,26 @@ ${existingNodeSummaries}
             // archivedDisplayBlocks後，當下畫面雖然還看得到（物件參考還在），
             // 但重新整理頁面後圖片就會不見——key用"blockIdx:msgIdx"跟
             // this.messages的純數字index區分開。
+            // tw_stock_db客製: _reasoningDisplay跟_displayDataUrl是同一個
+            // 道理，同樣是刻意不可枚舉、同樣需要獨立存一份才能撐過reload，
+            // 見_loopFetch/_loopFetchNative的說明。
             const imageMap = {};
-            this.messages.forEach((m, i) => { if (m._displayDataUrl) imageMap[i] = m._displayDataUrl; });
+            const reasoningMap = {};
+            this.messages.forEach((m, i) => {
+                if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
+                if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
+            });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
                     if (m._displayDataUrl) imageMap[`${bi}:${mi}`] = m._displayDataUrl;
+                    if (m._reasoningDisplay) reasoningMap[`${bi}:${mi}`] = m._reasoningDisplay;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
                 messages: this.messages,
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
                 imageMap,
+                reasoningMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -4068,19 +4141,27 @@ ${existingNodeSummaries}
             const data = JSON.parse(raw);
             if (Array.isArray(data.messages)) this.messages = data.messages;
             if (Array.isArray(data.archivedDisplayBlocks)) this.archivedDisplayBlocks = data.archivedDisplayBlocks;
+            // tw_stock_db客製: key是純數字代表this.messages裡的index；
+            // "bi:mi"格式代表archivedDisplayBlocks[bi].messages[mi]，見
+            // _persistChatHistory()存檔時的說明。imageMap/reasoningMap兩者
+            // key格式相同，共用同一個解析邏輯。
+            const resolveMsg = (key) => {
+                if (key.includes(':')) {
+                    const [bi, mi] = key.split(':').map(Number);
+                    return this.archivedDisplayBlocks[bi] && this.archivedDisplayBlocks[bi].messages[mi];
+                }
+                return this.messages[Number(key)];
+            };
             if (data.imageMap) {
-                // tw_stock_db客製: key是純數字代表this.messages裡的index；
-                // "bi:mi"格式代表archivedDisplayBlocks[bi].messages[mi]，見
-                // _persistChatHistory()存檔時的說明。
                 Object.entries(data.imageMap).forEach(([key, dataUrl]) => {
-                    let msg;
-                    if (key.includes(':')) {
-                        const [bi, mi] = key.split(':').map(Number);
-                        msg = this.archivedDisplayBlocks[bi] && this.archivedDisplayBlocks[bi].messages[mi];
-                    } else {
-                        msg = this.messages[Number(key)];
-                    }
+                    const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true });
+                });
+            }
+            if (data.reasoningMap) {
+                Object.entries(data.reasoningMap).forEach(([key, reasoningText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_reasoningDisplay', { value: reasoningText, enumerable: false, configurable: true });
                 });
             }
         } catch (err) {
@@ -4264,7 +4345,14 @@ ${existingNodeSummaries}
             div.style.cssText += `background: ${palette.userBg}; color: ${palette.userText}; margin-left: auto; border-right: 4px solid #3182ce;`;
             div.innerHTML = `<b>You:</b> ${msg.content}`;
         } else {
-            const thinking = this._extractThinkingContent(msg.content);
+            // tw_stock_db客製: 優先讀非可枚舉的_reasoningDisplay屬性（見
+            // _loopFetch/_loopFetchNative的說明，這樣msg.content本身是乾淨
+            // 的答案文字，不含推理草稿）；沒有這個屬性時（例如舊版資料、或
+            // 模型沒有走獨立reasoning_content欄位、直接把推理混進content）
+            // 才退回原本的<think>/[THINKING]標籤解析，維持向下相容。
+            const thinking = msg._reasoningDisplay
+                ? { thinking: msg._reasoningDisplay, answer: msg.content }
+                : this._extractThinkingContent(msg.content);
             if (thinking.thinking) {
                 const detailEl = document.createElement('details');
                 detailEl.style = `margin-bottom: 8px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #6366f1; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
