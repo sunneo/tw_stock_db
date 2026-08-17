@@ -327,6 +327,18 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
 // 三邊各自硬寫一份、改一個忘了改另一個。
 const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
 
+// tw_stock_db客製: max_tokens的本質是「這一次API呼叫最多產生多少token」，
+// 跟「這一輪對話總共能回覆多長」是兩件事——就算使用者把它調到很小
+// （例如128），只要每次卡到上限就自動用同樣的上下文再送一次「請接續」，
+// 理論上還是能拼出很長的完整回覆，不需要為了怕被截斷而被迫調大
+// max_tokens（那樣反而更容易一次燒光推理模型的思考預算）。這裡是那個
+// 自動接續機制：finish_reason==='length'時不是直接顯示警告了事，而是
+// 自動重送一次「接續上一段」的請求並把內容接在後面，最多接續
+// MAX_AUTO_CONTINUE_ROUNDS次（純粹是防止端點異常/模型跳針導致無限迴圈
+// 燒費用的安全上限，不是真正的長度限制）。
+const MAX_AUTO_CONTINUE_ROUNDS = 40;
+const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
+
 // tw_stock_db客製: 內建的NVIDIA NIM模型清單，實測過都能正常回應（見下方
 // 各自的實測結果，2026-08確認），給MODEL NAME欄位的<datalist>下拉選單用。
 // 使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的捷徑，
@@ -464,11 +476,20 @@ class FloatingAssistant {
     }
 
     // tw_stock_db客製: 使用者可調的生成/取樣參數。
-    // - contextWindowTokens/maxOutputTokens：純粹是本地用來「主動」在真的
-    //   送出請求前估算會不會爆掉上下文的參考值（見executeChat()裡
-    //   proactive prune的判斷），maxOutputTokens同時也會真的送進request
-    //   body的max_tokens欄位，替模型的輸出長度設一個硬上限——就算重複迴圈
-    //   偵測沒抓到，模型也不可能無止盡輸出到把整個對話拖垮。
+    // - contextWindowTokens：使用者自己參考用（顯示在設定面板），目前沒有
+    //   任何程式邏輯會主動拿它去做預算判斷——原本有一個「主動式」預算檢查
+    //   會在送出請求前用這個值跟粗估的token數比較，但那個機制估算不準、
+    //   常常在還沒真的超過限制時就誤觸發，已經移除（見executeChat()裡的
+    //   說明），改成只信任伺服器真正回傳的400/413。
+    // - maxOutputTokens：會真的送進request body的max_tokens欄位，替「單一次
+    //   API呼叫」的輸出長度設一個硬上限——這不是「這一輪回覆的總長度」，兩者
+    //   是分開的概念。就算把這個值調得很小，_loopFetch/_loopFetchNative也會
+    //   在收到finish_reason==='length'（代表被這個上限攔腰截斷，不是真的
+    //   講完）時自動重送「請接續」把內容拼起來（見MAX_AUTO_CONTINUE_ROUNDS），
+    //   所以不需要為了怕截斷而刻意調大這個值。預設值(4096)只是給一般情況
+    //   一個不錯的起點：推理模型（例如nemotron系列）會先輸出一大段內部思考
+    //   過程才給最終答案，太小的值會讓每一輪都要多繞一次自動接續，稍微拖慢
+    //   總時間，不是「調小就會截斷答案」。
     // - samplingParams：value為null代表「沒特別設定，不送這個欄位」；
     //   disabled:true代表這個參數曾經被目標端點拒絕過(見
     //   _detectRejectedSamplingParam)，之後的請求都不會再帶，直到使用者
@@ -476,7 +497,7 @@ class FloatingAssistant {
     _createDefaultGenerationSettings() {
         return {
             contextWindowTokens: 8192,
-            maxOutputTokens: 1024,
+            maxOutputTokens: 4096,
             samplingParams: {
                 frequency_penalty: { value: 0, disabled: false },
                 presence_penalty: { value: 0, disabled: false },
@@ -1601,7 +1622,24 @@ ${sourceTool.handlerScript}
         header.style.background = palette.headerBg;
         header.style.color = palette.headerText;
         configPanel.style.background = palette.chatBg;
+        configPanel.style.color = palette.chatText;
         configPanel.style.borderBottomColor = palette.windowBorder;
+        // tw_stock_db客製: API KEY/URL/MODEL NAME + 生成/取樣參數這幾個輸入框
+        // 是在_initUI()組innerHTML時用當下的palette寫死背景/文字色——如果
+        // 使用者是先開了AI視窗、之後才切換網頁的淺/深色主題，這裡不主動
+        // 同步的話，這幾個欄位的顏色會停留在視窗剛建立時的舊主題，跟其他
+        // 已經正確跟隨主題的元素（例如下面的inputText）不一致，看起來像是
+        // 顏色跑掉/讀不清楚。
+        const genDetailBox = configPanel.querySelector('#ai-gen-context-window')?.closest('div');
+        if (genDetailBox) {
+            genDetailBox.style.background = palette.detailBg;
+            genDetailBox.style.color = palette.detailText;
+        }
+        configPanel.querySelectorAll('#ai-input-key, #ai-url, #ai-model-name, #ai-gen-context-window, #ai-gen-max-output, [id^="ai-param-"]').forEach(el => {
+            el.style.background = palette.inputBg;
+            el.style.color = palette.inputText;
+            el.style.borderColor = palette.inputBorder;
+        });
         chatBody.style.background = palette.chatBg;
         chatBody.style.color = palette.chatText;
         if (autocomplete) {
@@ -3206,100 +3244,162 @@ ${existingNodeSummaries}
         const textSpan = streamDiv.querySelector('.ai-stream-content');
 
         try {
-            const controller = this._createAbortController();
-            const response = await fetch(`${apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                },
-                signal: controller.signal,
-                body: JSON.stringify({
-                    model: apiModel,
-                    messages: this.messages,
-                    temperature: 0,
-                    // tw_stock_db客製: 只送使用者有設定、且沒被目標端點拒絕過的
-                    // 取樣參數（見_buildSamplingParamsBody），加上max_tokens替
-                    // 輸出長度設硬上限——temperature=0的貪婪解碼在某些模型上
-                    // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
-                    // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
-                    ...this._buildSamplingParamsBody(),
-                    max_tokens: this._getGenerationSettings().maxOutputTokens,
-                    stream: true
-                })
-            });
-
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                // tw_stock_db客製: 400不一定是上下文太長——先檢查是不是某個
-                // 取樣參數被端點拒絕，是的話標記排除、重新送一次（不算進
-                // retryAttempt，因為這不是「內容太長」的重試，是「這次的
-                // request body本身就有問題」，兩者要分開計數，否則正常的
-                // 內容瘦身重試次數會被參數排除吃掉）。_disableRejectedSamplingParam
-                // 對同一個key只會生效一次，不會無窮遞迴。
-                const rejectedParam = this._detectRejectedSamplingParam(errText);
-                if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
-                    streamDiv.remove();
-                    return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
-                }
-                if (response.status === 400 || response.status === 413) {
-                    streamDiv.remove();
-                    // tw_stock_db客製: 原本這裡遞迴時永遠寫死傳1，等於這條路徑
-                    // 沒有重試上限——如果壓縮沒有真正解決400/413的成因（例如
-                    // 單一則過大的tool結果，不是對話輪數太多），就會「壓縮→
-                    // 還是太大→再觸發400/413→再壓縮」無窮迴圈，也是使用者
-                    // 反映「不停閃動/一直被洗掉」的成因之一。改成沿用同一個
-                    // retryAttempt計數並設上限，超過就跟一般錯誤一樣放棄並
-                    // 記錄，不再無條件遞迴。
-                    if (retryAttempt >= this.retryLimit) {
-                        this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
-                        return "";
-                    }
-                    await this.pruneContext("Context Window Exception (Token Limit)");
-                    return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
-                }
-                throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
             let fullContent = '';
+            let reasoningContent = ''; // tw_stock_db客製: 見下方說明
+            let finishReason = null; // tw_stock_db客製: 見下方truncation偵測說明
             let repetitionCut = false;
+            let autoContinueRounds = 0; // tw_stock_db客製: 見MAX_AUTO_CONTINUE_ROUNDS說明
 
+            // tw_stock_db客製: 外層迴圈＝自動接續。第一輪送使用者真正的對話
+            // 歷史；若這一輪在還沒講完時就被max_tokens截斷
+            // (finish_reason==='length')，之後每一輪改送「原對話歷史 + 目前
+            // 已經拼到的內容 + 請AI直接接續」，重複直到收到非length的
+            // finish_reason，或觸及安全上限。this.messages本身不會被中間輪
+            // 汙染，只有全部接續完成後才把最終合併結果push進去一則。
             while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
+                const requestMessages = autoContinueRounds === 0
+                    ? this.messages
+                    : this.messages.concat([
+                        { role: 'assistant', content: fullContent },
+                        { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
+                    ]);
 
-                for (const line of lines) {
-                    const cleaned = line.trim();
-                    if (!cleaned || cleaned === 'data: [DONE]') continue;
-                    if (cleaned.startsWith('data: ')) {
-                        try {
-                            const parsed = JSON.parse(cleaned.slice(6));
-                            const chunk = parsed.choices[0]?.delta?.content || '';
-                            fullContent += chunk;
-                            textSpan.innerText = fullContent;
-                            chatBody.scrollTop = chatBody.scrollHeight;
-                        } catch (_) {}
+                const controller = this._createAbortController();
+                const response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: requestMessages,
+                        temperature: 0,
+                        // tw_stock_db客製: 只送使用者有設定、且沒被目標端點拒絕過的
+                        // 取樣參數（見_buildSamplingParamsBody），加上max_tokens替
+                        // 輸出長度設硬上限——temperature=0的貪婪解碼在某些模型上
+                        // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
+                        // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
+                        ...this._buildSamplingParamsBody(),
+                        max_tokens: this._getGenerationSettings().maxOutputTokens,
+                        stream: true
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    // tw_stock_db客製: 400不一定是上下文太長——先檢查是不是某個
+                    // 取樣參數被端點拒絕，是的話標記排除、重新送一次（不算進
+                    // retryAttempt，因為這不是「內容太長」的重試，是「這次的
+                    // request body本身就有問題」，兩者要分開計數，否則正常的
+                    // 內容瘦身重試次數會被參數排除吃掉）。_disableRejectedSamplingParam
+                    // 對同一個key只會生效一次，不會無窮遞迴。
+                    const rejectedParam = this._detectRejectedSamplingParam(errText);
+                    if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
+                        streamDiv.remove();
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
+                    }
+                    if (response.status === 400 || response.status === 413) {
+                        streamDiv.remove();
+                        // tw_stock_db客製: 原本這裡遞迴時永遠寫死傳1，等於這條路徑
+                        // 沒有重試上限——如果壓縮沒有真正解決400/413的成因（例如
+                        // 單一則過大的tool結果，不是對話輪數太多），就會「壓縮→
+                        // 還是太大→再觸發400/413→再壓縮」無窮迴圈，也是使用者
+                        // 反映「不停閃動/一直被洗掉」的成因之一。改成沿用同一個
+                        // retryAttempt計數並設上限，超過就跟一般錯誤一樣放棄並
+                        // 記錄，不再無條件遞迴。
+                        if (retryAttempt >= this.retryLimit) {
+                            this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
+                            return "";
+                        }
+                        await this.pruneContext("Context Window Exception (Token Limit)");
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                    }
+                    throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                let roundFinishReason = null;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        const cleaned = line.trim();
+                        if (!cleaned || cleaned === 'data: [DONE]') continue;
+                        if (cleaned.startsWith('data: ')) {
+                            try {
+                                const parsed = JSON.parse(cleaned.slice(6));
+                                const delta = parsed.choices[0]?.delta || {};
+                                if (parsed.choices[0]?.finish_reason) roundFinishReason = parsed.choices[0].finish_reason;
+                                // tw_stock_db客製: NVIDIA的推理模型（例如nemotron系列）
+                                // 用跟DeepSeek-R1同樣的慣例，把「思考過程」放在獨立的
+                                // delta.reasoning_content欄位，跟真正要顯示的
+                                // delta.content分開送——原本這裡只讀content，完全沒讀
+                                // reasoning_content，導致這個欄位被無聲丟棄；某些對話
+                                // 情境下（尤其工具呼叫後的接續回覆）模型的思考過程沒有
+                                // 走這個獨立欄位、直接混進content裡，使用者就會在最終
+                                // 回覆裡看到一大段「We need to...」這種內部推理文字，
+                                // 而不是預期的簡短結論。這裡把reasoning_content累積
+                                // 起來，串流結束後包成<think>...</think>接在fullContent
+                                // 前面，讓已經存在的_extractThinkingContent()/「🧠 思考
+                                // 過程」摺疊區塊機制自動處理，不用另外刻一套新的顯示
+                                // 邏輯。
+                                reasoningContent += delta.reasoning_content || '';
+                                fullContent += delta.content || '';
+                                // 純思考、還沒有正式內容時，用一個輕量提示取代空白，
+                                // 讓使用者知道AI正在思考、不是卡住沒反應。
+                                textSpan.innerText = fullContent || (reasoningContent ? '🧠 思考中…' : '');
+                                chatBody.scrollTop = chatBody.scrollHeight;
+                            } catch (_) {}
+                        }
+                    }
+
+                    // tw_stock_db客製: 邊收邊偵測退化重複輸出（見_hasRepeatingTail
+                    // 說明），一偵測到就中斷連線、裁掉重複片段，不用等模型自己
+                    // 耗盡max_tokens額度才停下來。
+                    if (this._hasRepeatingTail(fullContent)) {
+                        fullContent = this._dedupeRepeatingTail(fullContent);
+                        this._log('⚠️ 偵測到模型輸出重複迴圈，已提前中斷並移除重複內容。');
+                        repetitionCut = true;
+                        controller.abort();
+                        break;
                     }
                 }
 
-                // tw_stock_db客製: 邊收邊偵測退化重複輸出（見_hasRepeatingTail
-                // 說明），一偵測到就中斷連線、裁掉重複片段，不用等模型自己
-                // 耗盡max_tokens額度才停下來。
-                if (this._hasRepeatingTail(fullContent)) {
-                    fullContent = this._dedupeRepeatingTail(fullContent);
-                    this._log('⚠️ 偵測到模型輸出重複迴圈，已提前中斷並移除重複內容。');
-                    repetitionCut = true;
-                    controller.abort();
-                    break;
-                }
+                finishReason = roundFinishReason;
+                if (repetitionCut || finishReason !== 'length') break;
+
+                // tw_stock_db客製: 這一輪被max_tokens截斷——不是內容有問題，
+                // 是「這一次API呼叫」的長度上限到了，自動用「請接續」重送一次，
+                // 讓使用者不用手動追問。安全上限見MAX_AUTO_CONTINUE_ROUNDS。
+                autoContinueRounds++;
+                if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) break;
+                this._log(`↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
             }
             if (repetitionCut) textSpan.innerText = fullContent;
+
+            // tw_stock_db客製: 走到這裡如果finishReason還是'length'，代表已經
+            // 自動接續到MAX_AUTO_CONTINUE_ROUNDS上限仍未寫完（極端情況，例如
+            // 端點異常或模型卡在某種輸出模式），才需要提醒使用者——正常情況
+            // 下自動接續機制會在使用者沒感覺到的狀況下把內容拼完整。
+            if (finishReason === 'length' && !repetitionCut) {
+                fullContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
+            }
+
+            // tw_stock_db客製: 把累積的reasoning_content包成<think>標籤接在
+            // 正式內容前面，交給既有的_extractThinkingContent()/「🧠 思考過程」
+            // 摺疊區塊機制處理，見上面串流迴圈裡的說明。
+            if (reasoningContent) {
+                fullContent = `<think>${reasoningContent}</think>${fullContent}`;
+            }
 
             this.messages.push({ role: "assistant", content: fullContent });
 
@@ -3392,61 +3492,107 @@ ${existingNodeSummaries}
             return "";
         }
         try {
-            const controller = this._createAbortController();
-            const response = await fetch(`${apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                },
-                signal: controller.signal,
-                body: JSON.stringify({
-                    model: apiModel,
-                    messages: this.messages,
-                    temperature: 0,
-                    // tw_stock_db客製: 跟 _loopFetch 同樣的理由，見那邊的說明。
-                    ...this._buildSamplingParamsBody(),
-                    max_tokens: this._getGenerationSettings().maxOutputTokens,
-                    stream: false,
-                    tools: this._buildNativeToolsSchema(),
-                    tool_choice: 'auto'
-                })
-            });
+            let finalContent = '';
+            let reasoningAccum = '';
+            let autoContinueRounds = 0; // tw_stock_db客製: 見MAX_AUTO_CONTINUE_ROUNDS說明
+            let hitContinueCap = false;
+            let toolCalls = [];
 
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                // tw_stock_db客製: 跟 _loopFetch 同樣的理由，先排除「取樣參數被
-                // 拒絕」這個可能性，見那邊的說明。
-                const rejectedParam = this._detectRejectedSamplingParam(errText);
-                if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
-                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
-                }
-                if (response.status === 400 || response.status === 413) {
-                    // tw_stock_db客製: 跟 _loopFetch 同樣的理由，不能無條件遞迴
-                    // （原本寫死傳1），見那邊的說明。
-                    if (retryAttempt >= this.retryLimit) {
-                        this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
-                        return "";
+            // tw_stock_db客製: 跟_loopFetch串流路徑同樣的自動接續機制（見那邊
+            // 詳細說明）——finish_reason==='length'代表這一次API呼叫被max_tokens
+            // 截斷，不是內容真的講完了，這裡自動用「請接續」重送，直到收到
+            // 非length的finish_reason或觸及安全上限，而不是每次都直接顯示
+            // 截斷警告要求使用者手動追問。
+            while (true) {
+                const requestMessages = autoContinueRounds === 0
+                    ? this.messages
+                    : this.messages.concat([
+                        { role: 'assistant', content: finalContent },
+                        { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
+                    ]);
+
+                const controller = this._createAbortController();
+                const response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: requestMessages,
+                        temperature: 0,
+                        // tw_stock_db客製: 跟 _loopFetch 同樣的理由，見那邊的說明。
+                        ...this._buildSamplingParamsBody(),
+                        max_tokens: this._getGenerationSettings().maxOutputTokens,
+                        stream: false,
+                        tools: this._buildNativeToolsSchema(),
+                        tool_choice: 'auto'
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    // tw_stock_db客製: 跟 _loopFetch 同樣的理由，先排除「取樣參數被
+                    // 拒絕」這個可能性，見那邊的說明。
+                    const rejectedParam = this._detectRejectedSamplingParam(errText);
+                    if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
+                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
                     }
-                    await this.pruneContext("Context Window Exception (Token Limit)");
-                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                    if (response.status === 400 || response.status === 413) {
+                        // tw_stock_db客製: 跟 _loopFetch 同樣的理由，不能無條件遞迴
+                        // （原本寫死傳1），見那邊的說明。
+                        if (retryAttempt >= this.retryLimit) {
+                            this._log("❌ 已達重試上限，仍收到 400/413（可能不是上下文太長，而是這個端點不接受目前的請求格式），請點「清除對話」或換一個模型。錯誤訊息：" + errText.slice(0, 200));
+                            return "";
+                        }
+                        await this.pruneContext("Context Window Exception (Token Limit)");
+                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                    }
+                    throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
                 }
-                throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
+
+                const data = await response.json();
+                const message = data.choices && data.choices[0] && data.choices[0].message;
+                if (!message) throw new Error("回應格式異常，缺少 choices[0].message");
+
+                // tw_stock_db客製: 推理模型的reasoning_content是獨立欄位，見
+                // _loopFetch串流路徑的詳細說明，這裡累積、最後一起包成
+                // <think>標籤。
+                if (message.reasoning_content) reasoningAccum += message.reasoning_content;
+                finalContent += message.content || '';
+                toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+                const roundFinishReason = data.choices[0].finish_reason;
+                // tool_calls跟finish_reason==='length'實務上不會同時發生（模型
+                // 若要呼叫工具，不會被裁在講到一半），這裡只在「純文字被截斷、
+                // 沒有工具呼叫」時才自動接續。
+                if (toolCalls.length || roundFinishReason !== 'length') break;
+
+                autoContinueRounds++;
+                if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) { hitContinueCap = true; break; }
+                this._log(`↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
             }
 
-            const data = await response.json();
-            const message = data.choices && data.choices[0] && data.choices[0].message;
-            if (!message) throw new Error("回應格式異常，缺少 choices[0].message");
+            if (reasoningAccum) {
+                finalContent = `<think>${reasoningAccum}</think>${finalContent}`;
+            }
+            // tw_stock_db客製: 只有觸及安全上限仍未寫完才提醒使用者，正常情況
+            // 下自動接續機制會無聲把內容拼完整，見_loopFetch串流路徑同樣的
+            // 說明。
+            if (hitContinueCap) {
+                finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
+            }
 
-            const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
             this.messages.push(Object.assign(
-                { role: 'assistant', content: message.content || '' },
+                { role: 'assistant', content: finalContent },
                 toolCalls.length ? { tool_calls: toolCalls } : {}
             ));
 
             if (!toolCalls.length) {
                 this._renderMessageHistory();
-                return message.content || '';
+                return finalContent;
             }
 
             this._renderMessageHistory();
@@ -3584,30 +3730,30 @@ ${existingNodeSummaries}
                     <span id="ai-btn-close" style="cursor:pointer;">❌</span>
                 </div>
             </div>
-            <div id="ai-config-panel" style="display:none; background: ${palette.chatBg}; padding: 10px; border-bottom: 1px solid ${palette.windowBorder};">
+            <div id="ai-config-panel" style="display:none; background: ${palette.chatBg}; color: ${palette.chatText}; padding: 10px; border-bottom: 1px solid ${palette.windowBorder};">
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API KEY:</label>
-                <input type="password" id="ai-input-key" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;">
+                <input type="password" id="ai-input-key" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};">
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
-                <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='https://integrate.api.nvidia.com/v1'>
+                <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;" placeholder='nvidia/nemotron-3-super-120b-a12b'>
+                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='nvidia/nemotron-3-super-120b-a12b'>
                 <datalist id="ai-model-datalist">
                     ${PRESET_MODEL_OPTIONS.map(m => `<option value="${m}"></option>`).join('')}
                 </datalist>
 
                 <details style="margin-top:8px;">
                     <summary style="font-size:12px; font-weight:bold; cursor:pointer; user-select:none; color:${palette.detailText};">生成／取樣參數（點擊展開）</summary>
-                    <div style="margin-top:6px; padding:8px; background:${palette.detailBg}; border-radius:6px;">
+                    <div style="margin-top:6px; padding:8px; background:${palette.detailBg}; color:${palette.detailText}; border-radius:6px;">
                         <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
-                        <input type="number" min="512" step="512" id="ai-gen-context-window" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px; margin-bottom:6px;">
+                        <input type="number" min="512" step="512" id="ai-gen-context-window" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; margin-bottom:6px; background:${palette.inputBg}; color:${palette.inputText};">
                         <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-max-output">單次回覆上限（max_tokens）</label>
-                        <input type="number" min="64" step="64" id="ai-gen-max-output" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px; margin-bottom:6px;">
+                        <input type="number" min="64" step="64" id="ai-gen-max-output" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; margin-bottom:6px; background:${palette.inputBg}; color:${palette.inputText};">
                         <div style="font-size:11px; margin-bottom:2px;">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
                             ${SAMPLING_PARAM_KEYS.map(key => `
                                 <div>
                                     <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
-                                    <input type="number" step="0.1" id="ai-param-${key}" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;">
+                                    <input type="number" step="0.1" id="ai-param-${key}" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};">
                                 </div>
                             `).join('')}
                         </div>
