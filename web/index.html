@@ -4593,8 +4593,100 @@ async function renderAiStockChart(params) {
   } catch (err) {
     return { available: false, reason: '繪圖時發生錯誤: ' + (err.message || err) };
   }
-  return { type: 'image', dataUrl };
+
+  // tw_stock_db客製: 圖片的二進位內容不會回傳給模型看（見
+  // _pushToolResultMessage），但AI在呼叫這個工具「之前」也沒有機會先知道
+  // 這批bars實際的高低點在哪——如果同一次呼叫又想加標記(markers)標最高/
+  // 最低點，等於是在憑空猜價位，猜的數字自然對不上真正畫出來的K棒位置
+  // （實測遇到的真實案例：標記位置跟K棒對不齊）。這裡把實際畫出來的高低點
+  // （價位+對應時間）跟頭尾價位算成一個輕量摘要一起回傳，模型看到這份
+  // meta後，如果想要精準標記，可以再呼叫一次這個工具、把markers的date/
+  // price改成meta裡的highAt/high、lowAt/low，不用自己瞎猜。刻意只回傳
+  // 摘要、不回傳完整bars陣列——完整陣列上下文成本太高，且get_price_history/
+  // get_intraday_series已經有工具可以查逐筆數字。
+  let highBar = bars[0], lowBar = bars[0];
+  for (const b of bars) {
+    if (b.high > highBar.high) highBar = b;
+    if (b.low < lowBar.low) lowBar = b;
+  }
+  const meta = {
+    barCount: bars.length,
+    from: bars[0].trade_date,
+    to: bars[bars.length - 1].trade_date,
+    open: bars[0].open,
+    close: bars[bars.length - 1].close,
+    high: highBar.high,
+    highAt: highBar.trade_date,
+    low: lowBar.low,
+    lowAt: lowBar.trade_date,
+  };
+  return { type: 'image', dataUrl, meta };
 }
+
+// tw_stock_db客製: 輕量的TOON風格編碼器（Token-Oriented Object Notation的
+// 精神：陣列裡每個物件欄位一模一樣時，欄位名稱只需要出現一次，不用像JSON
+// 一樣每個物件都重複一次{"trade_date":...,"open":...}——這在OHLCV這種
+// 大量同結構物件的陣列上，可以省下可觀的token（欄位名稱本身不用逐筆重複，
+// 標點符號也少很多）。格式：`[筆數]{欄位1,欄位2,...}:` 開頭，接著每筆資料
+// 一行、值用逗號分隔，字串值若含逗號/換行/雙引號才用JSON.stringify包起來
+// （保留可還原性，正常數字/日期字串完全不需要引號）。只在陣列「每個元素
+// 都是物件、且欄位集合完全一致」時才用這個格式，否則直接退回標準
+// JSON.stringify——正確性優先於精簡，寧可不省token也不要因為格式猜錯導致
+// AI讀錯資料。這不是給我們自己的程式解析用的（沒有對應的parser），純粹是
+// 給LLM讀的緊湊格式，LLM本身有能力讀懂這種簡單的表格式資料。
+function toToonArray(arr) {
+  if (!Array.isArray(arr) || !arr.length) return JSON.stringify(arr);
+  const keys = Object.keys(arr[0] || {});
+  const uniform = keys.length > 0 && arr.every(o =>
+    o && typeof o === 'object' && !Array.isArray(o) &&
+    Object.keys(o).length === keys.length && keys.every(k => Object.prototype.hasOwnProperty.call(o, k))
+  );
+  if (!uniform) return JSON.stringify(arr);
+  const encodeCell = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'string') return /[,\n"]/.test(v) ? JSON.stringify(v) : v;
+    if (typeof v === 'object') return JSON.stringify(v); // 巢狀物件/陣列少見，保守用JSON包住整格
+    return String(v);
+  };
+  const header = `[${arr.length}]{${keys.join(',')}}:`;
+  const rows = arr.map(o => keys.map(k => encodeCell(o[k])).join(','));
+  return header + '\n' + rows.join('\n');
+}
+
+// tw_stock_db客製: 給AI用的「型態辨識/技術分析原則」動態筆記，類似SKILL.md
+// 但故意不放進system prompt（system prompt每一輪對話都會重送，內容愈大
+// 愈快撐爆context——這是本次session修過好幾次的context膨脹問題的同一個
+// 教訓），改成一個獨立的AI工具（get_analysis_principles），只有真的要做
+// 型態判讀/需要理解diagnose_stock回傳結果時才由AI自己主動呼叫讀取，用完
+// 即丟，不會每輪對話都疊加。
+//
+// 內容純粹是「本專案自己寫的9個型態偵測器（見detectPatternsAtScale附近的
+// detectHeadShoulders/detectDoubleBottom/detectBox/detectVReversal/
+// detectRoundingBottom/detectFlag/detectWedge等函式）跟kbarQuality()各自
+// 用了哪些數字門檻」的忠實文件化——這是這個專案自己的程式邏輯（我們自己的
+// IP），不是逐字轉錄任何課程教材；讓AI知道diagnose_stock的pattern/
+// kbar_quality/entry_exit欄位背後的判定邏輯是什麼，才不會憑對話內容自己
+// 重新（且更粗略地）判斷型態，也才知道畫線/標記時該對應哪些關鍵點。
+// 刻意壓縮成條列格式、不用完整句子，省token。
+const AI_ANALYSIS_PRINCIPLES = `【本專案型態辨識判定邏輯摘要（對應diagnose_stock回傳欄位，畫線/標記請以diagnose_stock的pattern.necklines/points為準，不要自己另外估價位）】
+
+K棒品質(kbar_quality)：body_pct=|close-open|/open*100，≥2%才算實心K棒；上影線長度>實體、或>整根K棒40%，視為力竭/假突破警訊，不能當有效訊號用。
+
+型態偵測共同前提：反轉型態都要求突破前有≥15%既有趨勢、轉折起點落在近期相對高/低點5%範圍內，否則不成立。
+
+- 頭肩底/頭肩頂(head_shoulders_bottom/top)：5轉折點(肩-頸-頭-頸-肩)，頭部比兩肩極值多跌/漲≥2%，頸線=兩頸點連線，兩肩不可跌破/突破頭部到頸線中點，目標價=頸線±(頸線-頭部)。
+- W底/M頭(double_bottom/top)：3轉折點(低-高-低)，第二隻腳跟第一隻誤差≤0.5%，頸線=中間高/低點，目標價=頸線±(頸線-低/高點)。
+- 箱型(box)：≥20根K棒，壓力/支撐各由≥2次觸碰均值算出，箱高≤支撐25%，目標價=壓力+箱高。
+- V型反轉(v_reversal)：30根內找最低點，左跌右漲各≤12根，跌幅≥8%，反彈須達跌幅50%以上。
+- 圓弧底(rounding_bottom)：40根收盤價二次回歸，開口向上、R²≥0.5、最低點落在區間中段60%。
+- 旗形(flag)：噴出段3-10根漲跌≥15%，接盤整4-15根，盤整區間/回檔各≤噴出段一半，目標價=噴出段等幅測量。
+- 楔形(wedge)：60根內上下切線同向收斂，收斂幅度≥30%，目標價=等寬測量。
+
+量價：成交量達5日均量1.2倍以上才算有效放量，價漲量縮/價跌量增要提高警覺（換手失敗風險）。
+
+進出場(entry_exit)：跌破關鍵均線視為趨勢停損，或用5%-7%百分比停損；目標價一律用等幅測量法(關鍵價差往上/下加計)。
+
+尺度(scale)：diagnose_stock可能同時偵測到小/中/大型態，對應回看K棒數=主要天數的0.5/1/1.6倍，同一檔股票不同尺度可能有不同型態同時成立，判讀時要講清楚是哪個尺度。`;
 
 /* ════════════════════════════════════════
    AI CAPABILITIES（給內嵌AI助理tool-calling用，也是給外部AI（Claude/Gemini
@@ -4612,15 +4704,21 @@ async function renderAiStockChart(params) {
    ════════════════════════════════════════ */
 const AI_CAPABILITIES = [
   {
+    name: 'get_analysis_principles', category: '型態學/技術分析原則',
+    description: '取得本專案內建的型態辨識判定邏輯與交易紀律核心原則（diagnose_stock回傳的pattern/kbar_quality/entry_exit等欄位背後依據的規則跟數字門檻），做型態判讀、解讀diagnose_stock結果、或要畫線/標記型態關鍵點之前，建議先呼叫這個，內容經過壓縮，以條列原則為主。不會每輪對話自動附加，只有需要時才呼叫。',
+    params: {},
+    handler: () => AI_ANALYSIS_PRINCIPLES,
+  },
+  {
     name: 'get_price_history', category: '技術分析K棒',
-    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️回傳的是逐日原始K棒陣列，天數越多佔用的對話上下文越多，一般分析問題請優先呼叫diagnose_stock（回傳的是均線/趨勢/型態等統計結果，遠比原始K棒精簡），只有使用者明確要看「逐日數字」或需要自己計算diagnose_stock沒提供的指標時才用這個工具，且limit盡量給小一點（預設60天已經涵蓋約3個月）。',
+    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️回傳的是逐日原始K棒，天數越多佔用的對話上下文越多，一般分析問題請優先呼叫diagnose_stock（回傳的是均線/趨勢/型態等統計結果，遠比原始K棒精簡），只有使用者明確要看「逐日數字」或需要自己計算diagnose_stock沒提供的指標時才用這個工具，且limit盡量給小一點（預設60天已經涵蓋約3個月）。回傳格式是精簡的表格式文字，不是JSON陣列：第一行`[筆數]{欄位1,欄位2,...}:`宣告總筆數跟欄位順序，之後每行是一筆資料、值依欄位順序用逗號分隔（例如`[2]{trade_date,open,high,low,close,volume}:`接著兩行`2026-08-17,45.0,46.2,44.8,45.9,12000`），直接照欄位順序對應解讀即可。',
     params: { code: '股票代號或公司名稱，例如 2330 或 台積電（名稱會自動解析成代號，唯一命中才會自動採用）', limit: '選填，天數，預設60，非必要不要超過120' },
     handler: async (a) => {
       const code = resolveAiStockCode(a.code);
       if (!code) return aiStockCodeNotFoundError(a.code);
       const limit = a.limit ? Number(a.limit) : 60;
       await ensureStockHistoryLoadedForAi(code, limit);
-      return DBMgr.getPriceHistory(code, limit);
+      return toToonArray(DBMgr.getPriceHistory(code, limit));
     },
   },
   {
@@ -4851,7 +4949,7 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'render_stock_chart', category: '圖表截圖',
-    description: '自己畫一張指定股票的K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天）。回傳的圖片會直接顯示在對話框裡。⚠️預設畫的是日K：如果使用者要的是「今天/當下/現在」的走勢圖（分鐘級），range一定要加 intraday:true（或給minutes），不要只給startDate=endDate=今天當成日K範圍去畫——那樣日K資料整天只有一根、只會畫出一根K棒，不是真正的分鐘走勢圖。',
+    description: '自己畫一張指定股票的K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天）。回傳的圖片會直接顯示在對話框裡。⚠️預設畫的是日K：如果使用者要的是「今天/當下/現在」的走勢圖（分鐘級），range一定要加 intraday:true（或給minutes），不要只給startDate=endDate=今天當成日K範圍去畫——那樣日K資料整天只有一根、只會畫出一根K棒，不是真正的分鐘走勢圖。⚠️你在呼叫這個工具「之前」不會知道實際的高低點價位/時間，如果第一次呼叫時markers/lines是憑印象或憑對話內容猜的價位，標記位置很可能對不齊實際畫出來的K棒——每次呼叫回傳的meta欄位（高低點價位+對應時間、頭尾價位）就是這批K棒的真實數字，如果第一次沒帶精準標記、或想確認標記位置對不對，可以看meta後再呼叫一次、把markers的date/price換成meta裡對應的highAt/high、lowAt/low，不要自己憑印象填數字。',
     params: {
       code: '股票代號或公司名稱（名稱會自動解析成代號，唯一命中才會自動採用；解析不出來會回傳明確的錯誤，請改用search_stocks查正確代號後重試，不要憑印象猜）',
       range: '選填物件。日K模式：{days: 天數(預設60)} 或 {startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD"}。盤中分鐘K模式（畫「今天」的走勢圖時用）：{intraday:true, minutes: 分K級距(預設1，可用1/5/20/60), date:"YYYY-MM-DD"(選填，預設今天，資料來源只保留近5個交易日), startTime:"HH:MM"(選填), endTime:"HH:MM"(選填)}，資料來源是即時輪詢+Yahoo backfill。',
@@ -4931,7 +5029,10 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 持股診斷（均線/趨勢/K棒品質/量價/大盤連動/型態辨識/進出場建議）一律呼叫 diagnose_stock
 工具取得公式化結果，不要自己用對話內容裡看到的數字現算技術分析或型態，diagnose_stock回傳
 的 pattern.detected 型態是機械式規則比對、非人工圖形驗證，回答時要保留這個保留態度，不要
-講得比工具回傳的結論更肯定。
+講得比工具回傳的結論更肯定。要解讀diagnose_stock的結果、或要幫使用者做型態判讀/畫線標記
+關鍵點之前，先呼叫 get_analysis_principles 了解本專案的型態判定邏輯與門檻（這個工具平常
+不會自動出現在對話裡，需要時才主動呼叫），畫線/標記請對應diagnose_stock回傳的
+pattern.necklines/points實際數字，不要自己另外估價位。
 會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
 用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
 回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是
