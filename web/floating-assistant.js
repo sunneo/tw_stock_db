@@ -1150,7 +1150,13 @@ ${fnData.code}
     }
 
     _formatToolResult(result, toolName) {
-        if (typeof result === 'string') return result;
+        // tw_stock_db客製: _pushToolResultMessage()已經專門處理過
+        // {type:'image',dataUrl}這個結構化圖片payload了，這裡是走到這個函式
+        // 代表沒被判定成圖片——但如果那份JSON.parse因為某種原因失敗（例如
+        // 內容剛好不是嚴格合法JSON），或工具直接回傳了帶base64的字串，還是
+        // 可能有大段base64混在裡面，用_stripInlineBase64()兜底清掉，避免
+        // 意外塞進送給模型的訊息內容裡（見那個函式的說明）。
+        if (typeof result === 'string') return this._stripInlineBase64(result);
         if (typeof result === 'undefined') return `[Tool 回傳成功] ${toolName} 執行完成`;
         try {
             // tw_stock_db客製: 原本用 JSON.stringify(result, null, 2) 美化縮排，
@@ -1158,9 +1164,9 @@ ${fnData.code}
             // 幫助，純粹浪費token（實測同一份300筆OHLCV資料，美化版比壓縮版
             // 多耗費約23%字元數）。畫面上的<details>區塊本身就是等寬字型+
             // 自動換行，壓縮後照樣可讀。
-            return JSON.stringify(result);
+            return this._stripInlineBase64(JSON.stringify(result));
         } catch (err) {
-            return String(result);
+            return this._stripInlineBase64(String(result));
         }
     }
 
@@ -1176,6 +1182,21 @@ ${fnData.code}
     // _renderSingleMessage()渲染畫面用，JSON.stringify不會序列化到它（送出的
     // request body、prune的token估算、甚至存進localStorage都不會含圖片內容——
     // 圖片改由_persistChatHistory()額外用imageMap存，見那邊的說明）。
+    // tw_stock_db客製: 把assistant訊息push進this.messages的共用邏輯，統一
+    // 套用_stripInlineBase64（防模型自己生成的文字混進base64，見那個函式
+    // 的說明）跟_reasoningDisplay的非可枚舉存放方式（防reasoning_content
+    // 被重複送進API，見_loopFetch/_loopFetchNative頂端的說明）。_loopFetch
+    // 的文字式CALL路徑跟_loopFetchNative的原生路徑都改用這個，避免兩處各自
+    // 維護一份同樣邏輯、容易改一邊忘了改另一邊。
+    _pushAssistantMessage(content, reasoning, extra) {
+        const msg = Object.assign({ role: 'assistant', content: this._stripInlineBase64(content) }, extra || {});
+        if (reasoning) {
+            Object.defineProperty(msg, '_reasoningDisplay', { value: this._stripInlineBase64(reasoning), enumerable: false, configurable: true });
+        }
+        this.messages.push(msg);
+        return msg;
+    }
+
     _pushToolResultMessage(fnName, result, extra) {
         let imageDataUrl = null;
         try {
@@ -2824,6 +2845,21 @@ ${sourceTool.handlerScript}
         return { thinking: '', answer: text };
     }
 
+    // tw_stock_db客製: 保險措施——不管base64圖片資料是怎麼跑進模型自己生成
+    // 的文字裡的（例如較弱的模型在文字裡「模擬」了一個假的工具結果、複誦
+    // 前面看到的東西、或其他非預期行為，都實際發生過），只要偵測到一段
+    // 疑似data:image;base64,...的長字串（門檻200字元，正常文字不會這麼長
+    // 一整段沒有空白/換行的亂碼），就換成一句提示文字，不讓它真的塞進
+    // this.messages佔用/放大context——這是跟_reasoningDisplay/
+    // _displayDataUrl同樣性質的防護，那兩個只保護「我們自己產生、知道
+    // 結構」的圖片/推理資料，這裡多一層兜底，防的是「模型自己生成的文字
+    // 裡意外混進去的」，來源不可控、沒辦法用結構化判斷排除，只能用樣式
+    // 偵測。
+    _stripInlineBase64(text) {
+        if (!text) return text;
+        return text.replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{200,}/g, '[圖片資料已省略，不列入對話內容]');
+    }
+
     _sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -3473,25 +3509,42 @@ ${existingNodeSummaries}
             // 道理，見_pushToolResultMessage()。_renderSingleMessage()會優先
             // 讀這個屬性；沒有的話（例如舊資料、或模型把推理直接混進content
             // 沒有走獨立欄位）才退回原本的<think>/[THINKING]標籤解析。
-            const assistantMsg = { role: "assistant", content: fullContent };
-            if (reasoningContent) {
-                Object.defineProperty(assistantMsg, '_reasoningDisplay', { value: reasoningContent, enumerable: false, configurable: true });
-            }
-            this.messages.push(assistantMsg);
-
             // --- 容錯偵測與解析機制 ---
             const callStart = fullContent.lastIndexOf('[CALL:');
+            // tw_stock_db客製: contentForMessage是真正存進this.messages（畫面
+            // 顯示+送進API）的內容，預設等於fullContent，只有偵測到真正的
+            // [CALL:...)]呼叫時才會被截斷，見下面lastMatchEnd的說明。
+            let contentForMessage = fullContent;
             if (callStart > -1) {
                 // --- 強化版多工具解析機制 ---
                 let invokedCount = 0;
-                
+
                 // 方案 A: 使用進階 Regex 嘗試批次抓取
                 const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
                 let match;
                 const toolTasks = [];
+                let lastMatchEnd = -1;
 
                 while ((match = regex.exec(fullContent)) !== null) {
                     toolTasks.push({ fnName: match[1], fnArgsRaw: match[2].trim() });
+                    lastMatchEnd = match.index + match[0].length;
+                }
+
+                // tw_stock_db客製: 有些模型發出真正的[CALL:...)]之後不會停下來
+                // 等真正的工具結果，反而自己接著在後面「模擬」一段假的工具
+                // 回傳內容繼續往下寫（實測遇過模型自己編造[TOOL_RESULT]標籤、
+                // 虛構整段OHLCV數字，甚至編造看起來像的base64圖片資料）——
+                // 這些內容從沒有真的執行過工具，混進this.messages會(1)汙染
+                // context讓對話愈滾愈大(2)跟後面_pushToolResultMessage()附加
+                // 的「真正」工具結果混在一起，畫面上真假交錯非常混亂。這裡
+                // 把要存進this.messages的內容截斷在最後一個真正解析到的
+                // [CALL:...)]結尾，丟掉模型自己接著編造的任何內容——真正的
+                // 工具結果會由下面的執行迴圈另外用tool角色訊息附加上去，
+                // 不需要模型自己寫的那段假內容。
+                if (lastMatchEnd > -1) {
+                    let truncateAt = lastMatchEnd;
+                    if (fullContent[truncateAt] === ']') truncateAt += 1;
+                    contentForMessage = fullContent.slice(0, truncateAt);
                 }
 
                 // 方案 B: 若 Regex 沒抓到，嘗試傳統最後搜尋法 (備援路徑)
@@ -3506,6 +3559,8 @@ ${existingNodeSummaries}
                         }
                     }
                 }
+
+                this._pushAssistantMessage(contentForMessage, reasoningContent);
 
                 // 統一執行工具邏輯
                 for (const task of toolTasks) {
@@ -3530,6 +3585,10 @@ ${existingNodeSummaries}
                 if (invokedCount > 0) {
                     return await this._loopFetch(apiKey, apiUrl, apiModel, 1);
                 }
+            } else {
+                // 完全沒有[CALL:的純文字回答，contentForMessage就是fullContent本身，
+                // 不需要截斷。
+                this._pushAssistantMessage(contentForMessage, reasoningContent);
             }
 
             // tw_stock_db客製: 串流過程中畫面顯示的textSpan.innerText是刻意的
@@ -3669,14 +3728,7 @@ ${existingNodeSummaries}
                 finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
             }
 
-            const assistantMsg = Object.assign(
-                { role: 'assistant', content: finalContent },
-                toolCalls.length ? { tool_calls: toolCalls } : {}
-            );
-            if (reasoningAccum) {
-                Object.defineProperty(assistantMsg, '_reasoningDisplay', { value: reasoningAccum, enumerable: false, configurable: true });
-            }
-            this.messages.push(assistantMsg);
+            this._pushAssistantMessage(finalContent, reasoningAccum, toolCalls.length ? { tool_calls: toolCalls } : {});
 
             if (!toolCalls.length) {
                 this._renderMessageHistory();

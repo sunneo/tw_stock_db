@@ -4261,6 +4261,36 @@ const StockDiagnosis = { diagnose: diagnoseStock };
    DBMgr.ensureStockMonthLoaded() 機制，AI查詢前先確保回溯所需的月份都
    已經下載到本地，跟使用者真的點開那檔股票、再手動往回滾動歷史的效果
    一樣，只是這裡一次做完不用使用者自己滾。 */
+// tw_stock_db客製: 統一的股票代號解析，給所有吃code參數的AI工具共用。過去
+// 每個工具各自直接把AI給的code丟進DB查詢，遇到兩種常見情況都沒有妥善處理：
+// (1) AI直接傳公司名稱而不是代號（雖然system prompt有教規則，但沒辦法保證
+//     模型每次都照做，尤其在對話被壓縮過、或模型比較小的情況下）
+// (2) AI傳了一個打錯字/根本不存在的代號——DB查詢對不存在的代號就是安靜
+//     回傳空結果（[]或空物件），跟「這檔真的沒有資料」在回傳格式上完全
+//     無法區分，AI分不出兩者差異，常常就拿著空資料繼續掰分析、或誤以為
+//     「這檔股票沒有資料」而不是「代號打錯了」（實測發生過的真實案例）。
+// 這裡集中處理成三段：(a)本來就是有效代號，直接用 (b)不是有效代號，當
+// 公司名稱模糊搜尋，只有「唯一命中」才自動採用（同名/模糊搜尋命中多筆時
+// 不猜，避免用錯股票）(c)兩者都失敗回傳null，讓呼叫端統一用
+// aiStockCodeNotFoundError()回覆一句清楚的錯誤，AI才知道要去呼叫
+// search_stocks而不是憑印象亂猜或假裝有資料。
+function resolveAiStockCode(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  if (DBMgr.getStockInfo(raw)) return raw;
+  const matches = DBMgr.searchStocks(raw, 5);
+  if (matches.length === 1) return matches[0].stock_code;
+  const exact = matches.find(m => m.stock_name === raw || m.stock_code.toUpperCase() === raw.toUpperCase());
+  if (exact) return exact.stock_code;
+  return null;
+}
+function aiStockCodeNotFoundError(input) {
+  return {
+    ok: false,
+    error: `找不到股票代號或名稱「${input}」，可能是代號打錯、名稱不夠精確（同名/模糊搜尋命中多筆，無法自動判斷是哪一檔）、或這檔股票不存在/未上市櫃。請改用 search_stocks 工具用關鍵字查詢正確的代號後再重試，不要憑印象猜代號。`,
+  };
+}
+
 async function ensureStockHistoryLoadedForAi(code, neededDays) {
   const neededMonths = Math.max(1, Math.ceil(neededDays / 28) + 1); // 28=保守值(含假日/非交易日)，多抓一個月當緩衝
   const floorMonth = DBMgr.getAvailableMonths()[0] || null; // 資料庫實際發布的最早月份，超過就不用再往回抓
@@ -4289,13 +4319,51 @@ const AI_CHART_DOWN_COLOR = '#16a34a'; // 跌=綠，跟主圖表 --dn 一致
 // 任一根——AI給的日期不一定剛好是交易日（可能是假日/週末），用這個容錯。
 function _aiChartNearestBarIndex(bars, dateStr) {
   if (!dateStr) return -1;
+  // tw_stock_db客製: 盤中(intraday)K棒的trade_date格式是「YYYY-MM-DDTHH:MM」，
+  // AI標記/畫線時常常只給時間（例如"09:30"）、沒有日期——純字串比較的話
+  // "09:30"這種開頭是數字的字串會排在"2026-..."開頭的字串「之前」，永遠
+  // 找不到對應K棒、只能退回第一根。這裡偵測到裸時間格式時，自動補上
+  // bars[0]的日期（同一張圖只會有一天的盤中資料）再比較。
+  let target = dateStr;
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(dateStr) && bars.length && bars[0].trade_date.includes('T')) {
+    target = `${bars[0].trade_date.slice(0, 10)}T${dateStr.length === 4 ? '0' + dateStr : dateStr}`.slice(0, 16);
+  }
   let bestIdx = -1;
   for (let i = 0; i < bars.length; i++) {
-    if (bars[i].trade_date <= dateStr) bestIdx = i;
+    if (bars[i].trade_date <= target) bestIdx = i;
     else break;
   }
   if (bestIdx === -1) bestIdx = 0; // 給的日期比全部資料都早，退回第一根
   return bestIdx;
+}
+
+// tw_stock_db客製: 把IntradayFeed.getTickRows()回傳的「每筆輪詢取樣」細粒度
+// 資料，依指定分鐘數分桶成OHLCV K棒，給render_stock_chart的盤中模式用。
+// 跟Chart模組自己的aggregate()是各自獨立的實作（AI繪圖引擎刻意不依賴主
+// 圖表模組的內部狀態，見_renderAiStockChartCanvas的說明），邏輯很單純：
+// 同一個N分鐘桶內第一筆的open、最後一筆的close、期間最高/最低、成交量加總。
+function aggregateIntradayBars(rows, minutes) {
+  if (!rows || !rows.length) return [];
+  const m = Math.max(1, Number(minutes) || 1);
+  const buckets = new Map();
+  for (const r of rows) {
+    const [datePart, timePart] = r.trade_date.split('T');
+    const [hh, mm] = timePart.split(':').map(Number);
+    const bucketMin = Math.floor((hh * 60 + mm) / m) * m;
+    const bh = String(Math.floor(bucketMin / 60)).padStart(2, '0');
+    const bm = String(bucketMin % 60).padStart(2, '0');
+    const key = `${datePart}T${bh}:${bm}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { trade_date: key, open: r.open, high: r.high, low: r.low, close: r.close, volume: 0 };
+      buckets.set(key, bucket);
+    }
+    bucket.high = Math.max(bucket.high, r.high);
+    bucket.low = Math.min(bucket.low, r.low);
+    bucket.close = r.close;
+    bucket.volume += (r.volume || 0);
+  }
+  return [...buckets.values()].sort((a, b) => a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0);
 }
 
 // 核心繪圖函式：bars（已經篩選好時間範圍的K棒陣列）+ opts（scale/markers/lines/
@@ -4352,14 +4420,17 @@ function _renderAiStockChartCanvas(bars, opts) {
     ctx.fillText(price.toFixed(2), marginLeft - 8, y);
   }
 
-  // X軸日期標籤（最多6個，均勻取樣，避免文字互相重疊）
+  // X軸日期/時間標籤（最多6個，均勻取樣，避免文字互相重疊）——盤中模式
+  // trade_date是「YYYY-MM-DDTHH:MM」，顯示時間比顯示日期有意義（同一張圖
+  // 只會有一天，日期不會變化）；日K模式維持原本的MM-DD。
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   const xLabelCount = Math.min(6, n);
   for (let k = 0; k < xLabelCount; k++) {
     const idx = Math.round((n - 1) * (k / Math.max(1, xLabelCount - 1)));
     const x = xOf(idx) + barSpacing / 2;
-    ctx.fillText(bars[idx].trade_date.slice(5), x, height - marginBottom + 8);
+    const label = opts.isIntraday ? bars[idx].trade_date.slice(11, 16) : bars[idx].trade_date.slice(5);
+    ctx.fillText(label, x, height - marginBottom + 8);
   }
 
   // K棒本體（紅漲綠跌，跟主圖表配色一致）
@@ -4461,24 +4532,54 @@ function _renderAiStockChartCanvas(bars, opts) {
 // 時間範圍，交給_renderAiStockChartCanvas畫圖。跟其他AI能力一致的錯誤處理
 // 慣例——查無資料/範圍內沒有K棒都回傳{available:false, reason}，不丟例外。
 async function renderAiStockChart(params) {
-  const code = String(params.code || '').trim();
-  if (!code) return { available: false, reason: '缺少股票代號(code)' };
+  const rawCode = String(params.code || '').trim();
+  if (!rawCode) return { available: false, reason: '缺少股票代號(code)' };
+  const code = resolveAiStockCode(rawCode);
+  if (!code) return aiStockCodeNotFoundError(rawCode);
 
   const range = params.range || {};
-  const days = Number.isFinite(Number(range.days)) ? Number(range.days) : 60;
-  const lookbackDays = Math.max(days + 30, 90);
-  await ensureStockHistoryLoadedForAi(code, lookbackDays);
-
-  let bars = DBMgr.getPriceHistory(code, lookbackDays + 60);
-  if (!bars || !bars.length) return { available: false, reason: '本機沒有這檔股票的資料（代號可能有誤）' };
-
-  if (range.startDate) bars = bars.filter(b => b.trade_date >= range.startDate);
-  if (range.endDate) bars = bars.filter(b => b.trade_date <= range.endDate);
-  if (!range.startDate && !range.endDate) bars = bars.slice(-days);
-  if (!bars.length) return { available: false, reason: '指定的時間範圍內沒有K棒資料' };
-
+  // tw_stock_db客製: range.intraday===true（或有給range.minutes）代表AI
+  // 要的是「今天」的分鐘級走勢圖，不是日K——資料來源改成IntradayFeed
+  // （跟人類使用者「走勢圖」分頁看到的同一份即時輪詢+Yahoo backfill資料，
+  // 見IntradayFeed模組），不是get_intraday_series用的中午/收盤後快照（那份
+  // 資料太粗、而且原本的日K路徑對「同一天」的date range只會篩出當天那唯一
+  // 一根日K，畫出來就是使用者反映的「一根K棒的走勢圖」）。
+  const isIntraday = range.intraday === true || Number.isFinite(Number(range.minutes));
   const info = DBMgr.getStockInfo(code);
-  const title = `${code} ${info ? info.stock_name : ''}　${bars[0].trade_date} ~ ${bars[bars.length - 1].trade_date}`;
+  let bars, title;
+
+  if (isIntraday) {
+    const yahooSymbol = code + (info?.market === 'TPEx' ? '.TWO' : '.TW');
+    await IntradayFeed.ensureLoadedFor(code, yahooSymbol);
+    const tickRows = IntradayFeed.getTickRows(code);
+    if (!tickRows.length) return { available: false, reason: '目前沒有這檔股票的盤中即時資料（可能還沒開盤、今天非交易日、或這個分頁還沒被打開過而沒開始累積tick）' };
+    const minutes = Number.isFinite(Number(range.minutes)) ? Math.max(1, Number(range.minutes)) : 1;
+    bars = aggregateIntradayBars(tickRows, minutes);
+    // tw_stock_db客製: IntradayFeed的backfill涵蓋近5個交易日（見模組註解），
+    // 不是只有今天——使用者問「今天/當下」走勢圖時預設應該只看今天，不然
+    // 多天資料混在同一張圖上，x軸只顯示時分、看起來會像同一天內時間倒退。
+    // 只有AI明確給了range.date才畫指定的那一天，都沒給就用today；如果真的
+    // 要畫多天，AI可以自己傳一個不在資料範圍內的date觸發「查無資料」再
+    // 調整，或這裡保守起見不提供「跨天」選項——多天比較的需求本來就該用
+    // 日K的render_stock_chart（不加intraday），不是分鐘K疊在一起看。
+    const targetDate = range.date || taipeiDateStr();
+    bars = bars.filter(b => b.trade_date.startsWith(targetDate));
+    if (range.startTime) bars = bars.filter(b => b.trade_date.split('T')[1] >= range.startTime);
+    if (range.endTime) bars = bars.filter(b => b.trade_date.split('T')[1] <= range.endTime);
+    if (!bars.length) return { available: false, reason: `指定的時間範圍內沒有盤中K棒資料（查詢日期：${targetDate}，若不是今天請確認日期是否正確，盤中資料只保留近5個交易日）` };
+    title = `${code} ${info ? info.stock_name : ''}　${bars[0].trade_date.replace('T', ' ')} ~ ${bars[bars.length - 1].trade_date.replace('T', ' ')}（${minutes}分K）`;
+  } else {
+    const days = Number.isFinite(Number(range.days)) ? Number(range.days) : 60;
+    const lookbackDays = Math.max(days + 30, 90);
+    await ensureStockHistoryLoadedForAi(code, lookbackDays);
+    bars = DBMgr.getPriceHistory(code, lookbackDays + 60);
+    if (!bars || !bars.length) return { available: false, reason: '本機沒有這檔股票的資料' };
+    if (range.startDate) bars = bars.filter(b => b.trade_date >= range.startDate);
+    if (range.endDate) bars = bars.filter(b => b.trade_date <= range.endDate);
+    if (!range.startDate && !range.endDate) bars = bars.slice(-days);
+    if (!bars.length) return { available: false, reason: '指定的時間範圍內沒有K棒資料' };
+    title = `${code} ${info ? info.stock_name : ''}　${bars[0].trade_date} ~ ${bars[bars.length - 1].trade_date}`;
+  }
 
   let dataUrl;
   try {
@@ -4487,6 +4588,7 @@ async function renderAiStockChart(params) {
       markers: Array.isArray(params.markers) ? params.markers : [],
       lines: Array.isArray(params.lines) ? params.lines : [],
       title,
+      isIntraday,
     });
   } catch (err) {
     return { available: false, reason: '繪圖時發生錯誤: ' + (err.message || err) };
@@ -4512,18 +4614,31 @@ const AI_CAPABILITIES = [
   {
     name: 'get_price_history', category: '技術分析K棒',
     description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️回傳的是逐日原始K棒陣列，天數越多佔用的對話上下文越多，一般分析問題請優先呼叫diagnose_stock（回傳的是均線/趨勢/型態等統計結果，遠比原始K棒精簡），只有使用者明確要看「逐日數字」或需要自己計算diagnose_stock沒提供的指標時才用這個工具，且limit盡量給小一點（預設60天已經涵蓋約3個月）。',
-    params: { code: '股票代號，例如 2330', limit: '選填，天數，預設60，非必要不要超過120' },
+    params: { code: '股票代號或公司名稱，例如 2330 或 台積電（名稱會自動解析成代號，唯一命中才會自動採用）', limit: '選填，天數，預設60，非必要不要超過120' },
     handler: async (a) => {
+      const code = resolveAiStockCode(a.code);
+      if (!code) return aiStockCodeNotFoundError(a.code);
       const limit = a.limit ? Number(a.limit) : 60;
-      await ensureStockHistoryLoadedForAi(a.code, limit);
-      return DBMgr.getPriceHistory(a.code, limit);
+      await ensureStockHistoryLoadedForAi(code, limit);
+      return DBMgr.getPriceHistory(code, limit);
     },
   },
   {
     name: 'get_intraday_series', category: '走勢圖K棒',
-    description: '取得多檔股票「今天」盤中的分鐘級走勢（清單趨勢欄小圖用的同一份資料，來自中午/收盤後排程抓的盤中快照），只有排程有跑過才有資料，沒有的股票不會出現在回傳結果裡。',
-    params: { codes: '股票代號陣列，例如 ["2330","2317"]' },
-    handler: (a) => DBMgr.getBatchIntradaySeries(Array.isArray(a.codes) ? a.codes : [a.codes]),
+    description: '取得多檔股票「今天」盤中的分鐘級走勢（清單趨勢欄小圖用的同一份資料，來自中午/收盤後排程抓的盤中快照，粒度較粗、不是逐秒即時，只是輔助判斷用的原始數字）。⚠️如果是要「畫一張帶標記的今日走勢圖」給使用者看，改用render_stock_chart並在range裡加intraday:true（會用即時輪詢+Yahoo backfill的資料源畫出真正的分鐘K線圖，不是這個工具），這個工具只適合要看原始數字時用。查無資料的代號不會出現在回傳結果裡，代號完全解析不出來（打錯字/不存在）會在回傳裡的_errors欄位標出來。',
+    params: { codes: '股票代號或公司名稱陣列，例如 ["2330","2317"]（名稱會自動解析成代號）' },
+    handler: (a) => {
+      const inputs = Array.isArray(a.codes) ? a.codes : [a.codes];
+      const errors = [];
+      const codes = [];
+      inputs.forEach(input => {
+        const code = resolveAiStockCode(input);
+        if (code) codes.push(code); else errors.push(aiStockCodeNotFoundError(input).error);
+      });
+      const result = DBMgr.getBatchIntradaySeries(codes);
+      if (errors.length) result._errors = errors;
+      return result;
+    },
   },
   {
     name: 'get_market_index_history', category: '大盤/美股指數',
@@ -4546,8 +4661,11 @@ const AI_CAPABILITIES = [
   {
     name: 'get_stock_info', category: '個股資訊',
     description: '取得單一股票的基本資料（名稱、上市/上櫃別）。',
-    params: { code: '股票代號' },
-    handler: (a) => DBMgr.getStockInfo(a.code) || { available: false, reason: '查無此股票代號' },
+    params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
+    handler: (a) => {
+      const code = resolveAiStockCode(a.code);
+      return code ? DBMgr.getStockInfo(code) : aiStockCodeNotFoundError(a.code);
+    },
   },
   {
     name: 'get_sectors', category: '個股資訊',
@@ -4642,10 +4760,12 @@ const AI_CAPABILITIES = [
   {
     name: 'diagnose_stock', category: '持股診斷',
     description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。',
-    params: { code: '股票代號' },
+    params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
     handler: async (a) => {
-      await ensureStockHistoryLoadedForAi(a.code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
-      return StockDiagnosis.diagnose(a.code);
+      const code = resolveAiStockCode(a.code);
+      if (!code) return aiStockCodeNotFoundError(a.code);
+      await ensureStockHistoryLoadedForAi(code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
+      return StockDiagnosis.diagnose(code);
     },
   },
   {
@@ -4658,8 +4778,13 @@ const AI_CAPABILITIES = [
   {
     name: 'select_stock', category: 'UI操作',
     description: '在網頁上選取某檔股票（等同使用者從清單點選），會連動更新圖表/持股診斷等分頁內容。',
-    params: { code: '股票代號' },
-    handler: (a) => { selectStock(a.code); return { ok: true }; },
+    params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
+    handler: (a) => {
+      const code = resolveAiStockCode(a.code);
+      if (!code) return aiStockCodeNotFoundError(a.code);
+      selectStock(code);
+      return { ok: true, code };
+    },
   },
   {
     name: 'select_market_index', category: 'UI操作',
@@ -4726,13 +4851,13 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'render_stock_chart', category: '圖表截圖',
-    description: '自己畫一張指定股票的日K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天）。回傳的圖片會直接顯示在對話框裡。',
+    description: '自己畫一張指定股票的K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天）。回傳的圖片會直接顯示在對話框裡。⚠️預設畫的是日K：如果使用者要的是「今天/當下/現在」的走勢圖（分鐘級），range一定要加 intraday:true（或給minutes），不要只給startDate=endDate=今天當成日K範圍去畫——那樣日K資料整天只有一根、只會畫出一根K棒，不是真正的分鐘走勢圖。',
     params: {
-      code: '股票代號（必填）',
-      range: '選填物件 {days: 天數(預設60)} 或 {startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD"}，決定顯示多長的時間範圍',
+      code: '股票代號或公司名稱（名稱會自動解析成代號，唯一命中才會自動採用；解析不出來會回傳明確的錯誤，請改用search_stocks查正確代號後重試，不要憑印象猜）',
+      range: '選填物件。日K模式：{days: 天數(預設60)} 或 {startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD"}。盤中分鐘K模式（畫「今天」的走勢圖時用）：{intraday:true, minutes: 分K級距(預設1，可用1/5/20/60), date:"YYYY-MM-DD"(選填，預設今天，資料來源只保留近5個交易日), startTime:"HH:MM"(選填), endTime:"HH:MM"(選填)}，資料來源是即時輪詢+Yahoo backfill。',
       scale: '選填物件 {min, max}，指定Y軸價格範圍；不填則自動依資料的最高最低價計算',
-      markers: '選填陣列，每個標記 {date:"YYYY-MM-DD"(選填，有給就會吸附到該日K棒、跟著時間軸；不給則用x/y自由定位), price(選填，配合date標在特定價位，不給就標在當天最高點附近), x, y(選填，0~1之間的比例座標，date沒給時才用這個自由定位、不跟著時間軸), label(標籤文字), color(顏色，例如"#f59e0b")}',
-      lines: '選填陣列，每條線 {type:"horizontal"(水平線,配合price)|"vertical"(垂直線,配合date)|"trend"(趨勢線,配合from:{date,price}跟to:{date,price}), price, date, from, to, color, label, dash(選填true畫虛線)}',
+      markers: '選填陣列，每個標記 {date(選填，有給就會吸附到該根K棒、跟著時間軸；日K模式用"YYYY-MM-DD"，盤中模式可以只給"HH:MM"，會自動套用當天日期；不給則用x/y自由定位), price(選填，配合date標在特定價位，不給就標在該根K棒最高點附近), x, y(選填，0~1之間的比例座標，date沒給時才用這個自由定位、不跟著時間軸), label(標籤文字), color(顏色，例如"#f59e0b")}',
+      lines: '選填陣列，每條線 {type:"horizontal"(水平線,配合price)|"vertical"(垂直線,配合date，盤中模式可以只給"HH:MM")|"trend"(趨勢線,配合from:{date,price}跟to:{date,price}), price, date, from, to, color, label, dash(選填true畫虛線)}',
     },
     handler: (a) => renderAiStockChart(a),
   },
@@ -4817,17 +4942,26 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 視覺化圖表：如果分析裡提到轉折點、頸線、支撐壓力、爆量的某一天等需要「畫出來」才容易理解
 的內容，優先呼叫 render_stock_chart 自己畫一張帶標記/線段的圖（可以指定時間範圍、Y軸範圍、
 每個標記/線的顏色與位置），不要用get_chart_snapshot（那個是截使用者當下畫面，你沒辦法控制
-內容，切股票/切分頁後立刻截圖容易截到還沒重繪完成的畫面）。
+內容，切股票/切分頁後立刻截圖容易截到還沒重繪完成的畫面）。使用者要的是「今天/當下/現在」
+的走勢圖時，render_stock_chart的range一定要加intraday:true（可再加minutes指定分K級距，
+預設1分K），這樣才會畫出真正的分鐘K線；不要只給當天日期當日K的時間範圍，日K資料一天只有
+一根，那樣只會畫出一根K棒，不是走勢圖。
 即時上下文：每一輪對話開頭都會有一則[Live Context]系統訊息，內容是「現在真實的日期時間」
 跟「使用者目前網頁上選定的股票/指數」，這是真實、即時的資訊，回答「今天」「現在」「這禮拜」
 等相對時間問題、或使用者說「這檔」「目前這支」卻沒有明講代號時，都要以這則訊息為準，不要
 自己用訓練資料裡的舊日期猜測、也不要要求使用者重複講一次已經在Live Context裡的資訊。
-股票代號解析：使用者常常只講公司名稱（例如「大成鋼」「台積電」）而不是代號，遇到這種情況
-先呼叫 search_stocks 用名稱查出正確代號，再用查到的代號呼叫其他工具（get_price_history/
-get_intraday_series/diagnose_stock/render_stock_chart等一律吃代號，不吃公司名稱），不要
-自己憑印象猜代號。詢問「今天/當下走勢圖」這類問題，用查到的代號呼叫 get_intraday_series，
-但要注意那份資料來自中午/收盤後排程快照、不是逐秒即時更新，如果排程還沒跑過那檔股票會查
-不到資料，遇到查無資料要老實告知使用者，不要假裝有資料。`;
+股票代號解析：使用者常常只講公司名稱（例如「大成鋼」「台積電」）而不是代號，所有吃code
+參數的工具（get_price_history/get_intraday_series/diagnose_stock/render_stock_chart/
+select_stock/get_stock_info）現在都會自動把公司名稱解析成代號（唯一命中才會自動採用），
+不必每次都先手動呼叫search_stocks——但如果工具回傳{ok:false, error:"找不到股票代號或
+名稱..."}，代表自動解析失敗（可能是名稱不夠精確、同名多筆、或代號真的打錯/不存在），這時
+才呼叫search_stocks用關鍵字查詢確認正確代號，不要重複用同一個錯的代號再試一次、也不要
+憑印象瞎猜一個代號硬套。工具回傳查無資料時要照實告知使用者查無資料，不要假裝有資料或
+用其他股票的數字頂替。
+禁止事項：絕對不要自己編造或在回覆文字裡貼出圖片的base64/data URL內容——render_stock_chart
+等工具產生的圖片會由系統自動顯示給使用者看，你完全不需要、也沒有能力在文字裡「重現」圖片
+資料，這樣做只會製造大量沒有意義的亂碼文字、拖垮對話。呼叫工具後要停下來等真正的工具執行
+結果，不要自己在回覆裡憑空模擬/杜撰一個假的工具回傳內容。`;
 
 /* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
