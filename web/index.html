@@ -2844,26 +2844,30 @@ const DBMgr = (() => {
     return map;
   }
 
-  /* 清單「趨勢」欄用：優先顯示今天盤中每分鐘走勢（取代多日日線），資料來源是
-     run_daily_update.py 中午那次盤中擷取降採樣後存的 series_json（見
-     scrapers/fetch_intraday_quotes.py），透過 daily/{date}/intraday_quotes.csv
-     同步進來，不用逐檔即時打Yahoo。只認「今天」的快照——只要不是今天的資料
-     （例如尚未跑過今天的盤中擷取、非交易日），就不回傳該檔的序列，讓呼叫端
-     自然退回 getBatchSparklines 的多日日線（見 renderPage 的呼叫順序）。 */
+  /* 清單「趨勢」欄用：不論哪個分類（自選股/鎖股/強勢股…），一律顯示跟「走勢圖」
+     分頁同樣來源的1分鐘走勢（取代多日日線），資料來源是 run_daily_update.py
+     擷取降採樣後存的 series_json（見 scrapers/fetch_intraday_quotes.py），透過
+     daily/{date}/intraday_quotes.csv 同步進來，不用逐檔即時打Yahoo。
+     取每檔股票「最新一筆」快照，不限定一定要是今天——今天的盤中擷取還沒跑
+     過（例如剛開盤沒多久、或非交易日）時，沿用上一個交易日收盤時擷取到的
+     完整一天1分K走勢，仍然是分鐘級的形狀，比退回多日日線更貼近「走勢圖」
+     分頁看到的樣子（使用者明確要求：不論哪個分類都要用1分K，不要退回日線）。
+     只有這檔股票從來沒有任何一筆 intraday_quotes 紀錄時（例如新股、剛加入
+     資料庫）才完全查不到，由呼叫端退回 getBatchSparklines 的多日日線
+     （見 renderPage 的呼叫順序）。 */
   function getBatchIntradaySeries(codes) {
     if (!codes.length) return {};
     const ph    = codes.map(() => '?').join(',');
-    const today = taipeiDateStr();
     const rows  = query(`
       SELECT iq.stock_code, iq.series_json
       FROM intraday_quotes iq
       INNER JOIN (
         SELECT stock_code, MAX(snapshot_at) AS max_at
         FROM intraday_quotes
-        WHERE stock_code IN (${ph}) AND DATE(snapshot_at) = ?
+        WHERE stock_code IN (${ph})
         GROUP BY stock_code
       ) latest ON latest.stock_code = iq.stock_code AND latest.max_at = iq.snapshot_at
-    `, [...codes, today]);
+    `, [...codes]);
 
     const map = {};
     for (const r of rows) {
@@ -6433,9 +6437,9 @@ function renderPage() {
   const isAnalysisView = view === 'analysis';
   const codes       = pageItems.map(s => s.stock_code);
   const sparkMap    = DBMgr.getBatchSparklines(codes, 20);
-  // 趨勢欄優先顯示「今天盤中每分鐘走勢」，只有這檔今天沒有盤中快照可用時
-  // （例如還沒到中午、非交易日、或這檔剛好抓失敗）才退回多日日線
-  // （見 DBMgr.getBatchIntradaySeries 的「只認今天」判斷）。
+  // 趨勢欄一律顯示分鐘級走勢（跟走勢圖分頁同一份資料來源），只有這檔股票
+  // 完全沒有任何一筆盤中快照紀錄時（例如新股、這檔從未被擷取過）才退回
+  // 多日日線（見 DBMgr.getBatchIntradaySeries）。
   const intradayMap = DBMgr.getBatchIntradaySeries(codes);
 
   const rows = pageItems.map(s => {
