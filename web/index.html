@@ -6443,14 +6443,26 @@ function renderPage() {
   const intradayMap = DBMgr.getBatchIntradaySeries(codes);
 
   const rows = pageItems.map(s => {
-    const closes  = intradayMap[s.stock_code] || sparkMap[s.stock_code] || [];
-    const svg     = sparkline(closes, 60, 20, true); // responsive：欄寬被拖窄時整張圖縮小，不裁切（見 sparkline 註解）
     const open    = s.open;
     // 還沒有今天的資料（官方排程還沒落地、ListLiveFeed也還沒抓到）時，用
     // 昨收頂著顯示，比空白/'-'有用，但要跟「真的是今天現價」的顏色區分開，
     // 所以額外標 td-stale（見CSS，較淡的顏色＋標題提示這其實是昨收）。
     const isStale = s.close == null && s.prev_close != null;
     const close   = s.close != null ? s.close : (isStale ? s.prev_close : null);
+    // intraday_quotes 的series_json是「擷取當下那一刻」的降採樣快照，擷取
+    // 之後盤中價格還會繼續變動（例如中午擷取一次，收盤前又漲了一段），series
+    // 最後一筆不一定等於現在真正的現價/收盤價——直接照原樣畫，會出現「趨勢欄
+    // 看起來收在低點，但現價欄其實是漲的」這種視覺上互相矛盾的狀況（使用者
+    // 實際回報過的案例）。這裡把已知最新、最準確的現價/收盤價（close，跟
+    // 「現價」欄同一個值）補成序列最後一點，讓趨勢線至少「收尾」跟現價一致，
+    // 中段幾筆仍是擷取當下的真實走勢、只是不到最新一刻而已。
+    let closes = intradayMap[s.stock_code];
+    const isIntradaySpark = Array.isArray(closes) && closes.length > 0;
+    if (!isIntradaySpark) closes = sparkMap[s.stock_code] || [];
+    if (isIntradaySpark && !isStale && close != null && closes[closes.length - 1] !== close) {
+      closes = closes.concat([close]);
+    }
+    const svg     = sparkline(closes, 60, 20, true); // responsive：欄寬被拖窄時整張圖縮小，不裁切（見 sparkline 註解）
     const cls     = (close == null || open == null || isStale) ? 'td-flat'
                   : close > open ? 'td-up'
                   : close < open ? 'td-dn' : 'td-flat';
