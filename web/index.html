@@ -4843,13 +4843,20 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'batch_analyze_stocks', category: '批次分析',
-    description: '把一份股票代號清單拆成多個獨立子任務、平行分析——每個子任務用跟主對話一樣的工具/系統設定，但對話歷史是獨立、用完即丟的，只會回傳一段精簡結論流回主對話，不會佔用主對話的上下文。⚠️適用時機：先判斷使用者的問題是「篩選型」還是「統整型」——篩選型是指每一檔股票的判斷彼此獨立、不需要互相比較就能下結論（例如「從鎖股名單挑出符合回後買上漲的」「這些股票裡哪幾檔K棒品質不合格」），這種務必用這個工具，不要自己在主對話裡一檔接一檔手動呼叫diagnose_stock分析，那樣逐檔累加對話上下文，清單一長就會不斷觸發context壓縮甚至跑不完；統整型是指「需要同時看到全部股票才能下結論」（例如「這20檔裡今天漲幅最大的是哪幾檔」「幫我排名」），這種不適合拆開成獨立子任務，仍然用get_price_history/diagnose_stock等工具直接在主對話處理。',
+    description: '【觸發規則，非常重要，請照字面execute】只要你手上已經有一份多檔股票代號的清單（不管是剛用get_lock_list/get_watchlist/search_stocks/get_stocks_by_sector等任何工具拿到的、還是使用者直接列出來的），而且需要的是「對清單裡每一檔股票各自獨立判斷」（例如篩選、逐檔檢查某個條件），下一步就必須直接呼叫這個工具，不要自己接著寫迴圈、一檔接一檔手動呼叫diagnose_stock/get_price_history分析——那樣逐檔的分析過程會不斷疊加進主對話的上下文，股票一多幾乎必定會反覆觸發context壓縮甚至整個任務跑不完（這是實測發生過的真實故障模式）。這個工具會把清單拆成多個獨立子任務、平行分析，每個子任務用跟主對話一樣的工具/系統設定，但對話歷史是獨立、用完即丟的，只會回傳一段精簡結論流回主對話，主對話的上下文增量只等於「筆數×一句話」，不會隨清單長度或分析過程膨脹。唯一不適用的情況是「統整型」問題——需要同時看到全部項目互相比較才能下結論（例如「這20檔裡今天漲幅最大的是哪幾檔」「幫我排名」），這種不要拆開，仍然用get_price_history/diagnose_stock等工具直接在主對話處理。',
     params: {
       codes: '股票代號陣列（不吃公司名稱，請先用get_lock_list/search_stocks等工具取得代號清單）',
       instruction: '要對每一檔股票做的分析指示，會套用到每一個子任務，要講清楚判斷條件與希望的回答格式，例如："請用diagnose_stock分析這檔股票，判斷是否符合回後買上漲型態（回檔不破前低、且收紅K站回5日均線），符合請在結論開頭寫MATCH，不符合請寫NO_MATCH"',
       concurrency: '選填，同時執行幾個子任務，預設使用者在設定裡調的值（預設4），最多8',
     },
-    handler: (a) => aiConsoleInstance.runBatchSubAgents(Array.isArray(a.codes) ? a.codes : [a.codes], String(a.instruction || ''), a.concurrency),
+    handler: async (a) => {
+      const results = await aiConsoleInstance.runBatchSubAgents(Array.isArray(a.codes) ? a.codes : [a.codes], String(a.instruction || ''), a.concurrency);
+      // tw_stock_db客製: runBatchSubAgents()是通用引擎，回傳的鍵名是中性的
+      // item（見floating-assistant.js裡的說明），這裡轉回這個工具對外
+      // 承諾的code鍵名，維持batch_analyze_stocks本身「吃股票代號」的
+      // 語意，呼叫端不用知道底層引擎其實跟股票無關。
+      return Array.isArray(results) ? results.map(r => ({ code: r.item, verdict: r.verdict })) : results;
+    },
   },
   {
     name: 'get_watchlist', category: '自選股',
@@ -5047,16 +5054,17 @@ const AI_SYSTEM_PROMPT = `你是「台股追蹤」網頁內建的AI助理，服�
 關鍵點之前，先呼叫 get_analysis_principles 了解本專案的型態判定邏輯與門檻（這個工具平常
 不會自動出現在對話裡，需要時才主動呼叫），畫線/標記請對應diagnose_stock回傳的
 pattern.necklines/points實際數字，不要自己另外估價位。
-批次分析（一次要處理一整份股票清單，例如鎖股名單/自選股/篩選結果）：先判斷這是「篩選型」
-還是「統整型」問題。篩選型是每一檔股票的判斷彼此獨立、不需要互相比較（例如「從本週鎖做多
-名單挑出符合回後買上漲的」「這些股票裡哪幾檔K棒品質不合格」），這種一律呼叫
-batch_analyze_stocks，把清單拆成獨立子任務平行處理，不要自己在對話裡一檔接一檔手動呼叫
-diagnose_stock——那樣逐檔analysis過程都會累加進對話上下文，清單稍長就會不斷觸發context
-壓縮、甚至跑不完，這正是batch_analyze_stocks存在的理由。統整型是必須同時看到全部股票才能
-下結論（例如「這清單裡漲幅最大的是哪幾檔」「幫我排名」），這種不適合拆開，仍然直接在對話
-裡用get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruction參數
-要把篩選條件寫清楚、並要求每個子任務用固定格式回答（例如「結論開頭寫MATCH或NO_MATCH」），
-拿到結果陣列後自己彙整、只列出符合條件的股票給使用者，不用把每一則子任務原始回覆都貼出來。
+批次分析（強制規則，不是建議）：只要你剛用get_lock_list/get_watchlist/search_stocks/
+get_stocks_by_sector等任何工具拿到一份「多檔股票代號清單」，而使用者要的是對清單裡每一檔
+股票各自獨立判斷（篩選/逐檔檢查條件，例如「從本週鎖做多名單挑出符合回後買上漲的」「這些
+股票裡哪幾檔K棒品質不合格」），你的下一步必須是呼叫batch_analyze_stocks，絕對不要自己接著
+在對話裡一檔接一檔手動呼叫diagnose_stock/get_price_history分析——那樣逐檔的分析過程會不斷
+累加進對話上下文，清單稍長就會反覆觸發context壓縮、甚至整個任務跑不完，這是實測發生過的
+真實故障模式，不是理論上的風險。唯一的例外是「統整型」問題：需要同時看到全部股票互相比較
+才能下結論（例如「這清單裡漲幅最大的是哪幾檔」「幫我排名」），這種才不拆開，直接在對話裡用
+get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruction參數要把篩選
+條件寫清楚、並要求每個子任務用固定格式回答（例如「結論開頭寫MATCH或NO_MATCH」），拿到結果
+陣列後自己彙整、只列出符合條件的股票給使用者，不用把每一則子任務原始回覆都貼出來。
 會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
 用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
 回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是

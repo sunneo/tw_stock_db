@@ -1,19 +1,56 @@
 // ============================================================
 // 這是外部通用函式庫（原始檔案：ref-web-ai/floating-assistant.js），
 // 給任何網頁掛載一個可mount/可浮動的AI聊天widget，支援tool-calling、
-// RAG、自訂工具編輯器。tw_stock_db專案在這份副本上做了幾處客製擴充，
-// 每處都有明確標記「tw_stock_db客製」，方便日後對照/同步上游新版：
+// RAG、自訂工具編輯器、批次/multi-agent分析。
+//
+// 【設計原則：這個檔案本身刻意不依賴任何特定應用領域】
+// FloatingAssistant類別完全不知道「股票」「台股」是什麼——它只認得：
+// 已註冊的工具（register_openai_tool，name+description+callback）、
+// 系統prompt（setSystemPrompt，純文字）、API設定（localStorage的
+// floating_ai_api_key/base_url/model_name）。所有跟這個專案（tw_stock_db）
+// 有關的東西——AI_CAPABILITIES工具清單、DBMgr/StockDiagnosis等資料存取、
+// 股票代號解析、AI_SYSTEM_PROMPT文字——全部留在web/index.html，透過
+// register_openai_tool()/setSystemPrompt()這組公開介面注入，不會反過來
+// 出現在這個檔案裡。換一個應用場景（例如客服系統、文件審查工具），只要
+// 把index.html那層換掉、重新註冊一組工具，這個檔案完全不用改一行就能
+// 直接沿用，包含下面第5點的批次/multi-agent引擎在內——runBatchSubAgents()
+// 拿到的只是中性的字串陣列(items)跟一段指示文字(instruction)，不假設
+// items是股票代號，用在任何「一份清單、每項獨立判斷」的場景都成立。
+//
+// tw_stock_db專案在這份副本上做了幾處客製擴充，每處都有明確標記
+// 「tw_stock_db客製」，方便日後對照/同步上游新版：
 //   1. _renderMessageHistory()：tool結果若是 {type:'image', dataUrl}
-//      的JSON，額外渲染<img>（持股走勢圖截圖用）。
-//   2. 原生 tool/function call 偵測與切換（NATIVE_TOOLCALL_MODEL_PATTERNS、
-//      _shouldUseNativeToolCalls、_buildNativeToolsSchema、executeChat
-//      的原生路徑分支）。
+//      的JSON，額外渲染<img>（這是通用的圖片payload慣例，不是股票專屬——
+//      任何工具想回傳圖片都可以用這個形狀，本專案的走勢圖截圖只是第一個
+//      使用案例）。
+//   2. 原生 tool/function call 偵測與切換（NATIVE_TOOLCALL_MODEL_PATTERNS
+//      當退回預設值、_shouldUseNativeToolCalls、_buildNativeToolsSchema、
+//      executeChat的原生路徑分支），加上主動探測機制
+//      （_probeNativeToolSupport/_ensureNativeToolSupportProbed）：與其
+//      只靠模型名稱pattern猜測支不支援原生tools/tool_choice，實際送一個
+//      極小的探測請求問端點，探測結果快取進localStorage，換一個新模型
+//      也能自動判斷正確，不用等pattern清單更新。
 //   3. .skill (zip) 匯入/匯出（_importSkillZip/_exportSkillZip，需要
 //      JSZip；只有使用者實際按下匯入/匯出按鈕時才動態注入CDN script
 //      標籤，見 _ensureJSZipLoaded()，不使用這功能的人不用背這個依賴）。
 //   4. 淺色/深色主題偵測改讀 <html data-theme>（_isLightTheme()、主題
 //      MutationObserver），跟這個專案實際的主題切換機制對齊（原始函式庫
-//      預設看 body 的 'light-theme' class，這個網頁從來不會加這個class）。
+//      預設看 body 的 'light-theme' class，這個網頁從來不會加這個class）
+//      ——這是唯一真的假設了host頁面慣例的地方，換一個不用data-theme
+//      屬性的host頁面時需要調整這一小段，其餘都是全域通用邏輯。
+//   5. 批次/multi-agent分析引擎（runBatchSubAgents/_runSubAgentTask，見
+//      該函式群組上方的說明）：把一份清單拆成N個獨立、用完即丟的子對話
+//      平行處理，只留精簡結論流回主對話，不會讓主對話context隨清單長度
+//      線性膨脹。這是通用能力，不是股票專屬——index.html把它包成一個叫
+//      batch_analyze_stocks的工具，是「應用層怎麼用」，不是這個引擎的
+//      設計本身。
+//   6. 對話上下文膨脹的一系列防護（reasoning_content用非可枚舉屬性跟
+//      msg.content分開存、_stripInlineBase64()防模型自己生成的文字混入
+//      大段base64、pruneContext()壓縮時不再真的遺失已顯示內容、
+//      _turnPruneCount限制同一輪對話的壓縮重試次數、_buildToolResultMessage
+//      幫文字式[CALL:...]慣例的role:'tool'訊息補上這個NVIDIA相容端點
+//      強制要求的tool_call_id）：這些全部是通用的聊天核心穩定性修正，
+//      跟股票資料完全無關，任何用這個檔案的應用都會受益。
 // ============================================================
 
 // ============================================================
@@ -387,6 +424,13 @@ class FloatingAssistant {
         // 頁面（或AI分頁重新初始化）對話就整個消失——見_persistChatHistory()/
         // _loadPersistedChatHistory()，跟advancedSettings一樣存進localStorage。
         this.CHAT_HISTORY_KEY = "floating_ai_chat_history";
+        // tw_stock_db客製: 見_ensureNativeToolSupportProbed()——用一個小探測
+        // 請求實測「這個apiUrl+apiModel組合是不是真的支援原生tools/
+        // tool_calls」，取代原本只靠模型名稱pattern猜測的作法（換一個新
+        // 模型、pattern沒收錄到就一律被誤判成不支援）。探測結果確認完成後
+        // 才寫進這個key，不會把「還沒測過」或「測到一半」的狀態存進去。
+        this.NATIVE_TOOL_SUPPORT_CACHE_KEY = "floating_ai_native_tool_support_cache";
+        this._nativeToolSupportCache = null; // lazy load，見_ensureNativeToolSupportProbed()
 
         this.tools = {};
         this.FromAI = {};
@@ -1100,8 +1144,109 @@ ${fnData.code}
         const mode = this.advancedSettings.toolCallMode || 'auto';
         if (mode === 'native') return true;
         if (mode === 'text') return false;
+        // tw_stock_db客製: auto模式優先信任_ensureNativeToolSupportProbed()
+        // 實測過的結果（見那邊的說明——用一個小探測請求直接問端點支不支援
+        // tools/tool_choice，而不是靠模型名稱pattern猜）；還沒探測過、或
+        // 探測還在進行中時，才退回舊的pattern比對當暫時預設，確保第一次
+        // 呼叫（探測結果還沒回來）仍然有個可用的判斷依據。
+        const { apiUrl } = this._getApiConfig();
+        const key = this._nativeProbeCacheKey(apiUrl, apiModel);
+        if (this._nativeToolSupportCache && Object.prototype.hasOwnProperty.call(this._nativeToolSupportCache, key)) {
+            return this._nativeToolSupportCache[key];
+        }
         const name = String(apiModel || '');
         return NATIVE_TOOLCALL_MODEL_PATTERNS.some(re => re.test(name));
+    }
+
+    _nativeProbeCacheKey(apiUrl, apiModel) {
+        return `${apiUrl}::${apiModel}`;
+    }
+
+    // tw_stock_db客製: 送一個極小的探測請求，直接問這個apiUrl+apiModel組合
+    // 「你真的支援tools/tool_choice嗎」，用回應內容判斷——比起僅靠模型
+    // 名稱pattern猜測可靠得多（使用者換一個新模型，pattern清單沒收錄到
+    // 就會一律被誤判成不支援，被迫走容易出錯的文字式[CALL:...]慣例）。
+    // 刻意用tool_choice:'auto'+ 強烈措辭的提示（而不是'required'）——部分
+    // 較舊的OpenAI相容端點可能不支援'required'這個值本身，用'auto'搭配
+    // 明確指示風險較低，不會把「端點不支援tool_choice:required」誤判成
+    // 「端點完全不支援原生tool_calls」。任何錯誤（網路、逾時、端點拒絕
+    // tools欄位等）都當作「不支援」處理，安全退回文字式慣例，不影響對話
+    // 能不能繼續進行。
+    async _probeNativeToolSupport(apiKey, apiUrl, apiModel) {
+        try {
+            const controller = this._createAbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            let response;
+            try {
+                response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: [
+                            { role: 'system', content: 'You are a capability test harness.' },
+                            { role: 'user', content: 'You MUST call the "ping" function now with no arguments. Do not respond with any text, only call the function.' },
+                        ],
+                        temperature: 0,
+                        max_tokens: 50,
+                        stream: false,
+                        tools: [{
+                            type: 'function',
+                            function: {
+                                name: 'ping',
+                                description: 'A no-op test tool used only to verify native tool-calling support. Call this now.',
+                                parameters: { type: 'object', properties: {}, additionalProperties: false },
+                            },
+                        }],
+                        tool_choice: 'auto',
+                    }),
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+            if (!response.ok) return false;
+            const data = await response.json();
+            const message = data.choices && data.choices[0] && data.choices[0].message;
+            return !!(message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    // tw_stock_db客製: 探測結果的快取入口——同一個apiUrl+apiModel組合只會
+    //真的送一次探測請求，之後都直接讀快取（記憶體+localStorage雙層，見
+    // NATIVE_TOOL_SUPPORT_CACHE_KEY的說明），不會每一輪對話都重新打一次。
+    // 「確認完畢才寫進persistent storage」：_probeNativeToolSupport()完全
+    // resolve、拿到明確的true/false之後才呼叫_saveNativeToolSupportCache()，
+    // 探測進行中的狀態不會被提前存下來。
+    async _ensureNativeToolSupportProbed(apiKey, apiUrl, apiModel) {
+        if (!this._nativeToolSupportCache) this._nativeToolSupportCache = this._loadNativeToolSupportCache();
+        const key = this._nativeProbeCacheKey(apiUrl, apiModel);
+        if (Object.prototype.hasOwnProperty.call(this._nativeToolSupportCache, key)) {
+            return this._nativeToolSupportCache[key];
+        }
+        const supported = await this._probeNativeToolSupport(apiKey, apiUrl, apiModel);
+        this._nativeToolSupportCache[key] = supported;
+        this._saveNativeToolSupportCache();
+        this._log(supported
+            ? `✅ 已探測確認 ${apiModel} 支援原生 tool_calls，之後對話改用原生模式。`
+            : `ℹ️ ${apiModel} 不支援（或探測失敗/逾時）原生 tool_calls，使用文字式 [CALL:...] 慣例。`);
+        return supported;
+    }
+
+    _loadNativeToolSupportCache() {
+        try {
+            return JSON.parse(localStorage.getItem(this.NATIVE_TOOL_SUPPORT_CACHE_KEY) || '{}');
+        } catch (_) {
+            return {};
+        }
+    }
+
+    _saveNativeToolSupportCache() {
+        try {
+            localStorage.setItem(this.NATIVE_TOOL_SUPPORT_CACHE_KEY, JSON.stringify(this._nativeToolSupportCache || {}));
+        } catch (_) { /* localStorage滿了頂多下次重新探測，不影響功能 */ }
     }
 
     // tw_stock_db客製: 把 this.tools（預定義）+ advancedSettings.customTools
@@ -3248,6 +3393,15 @@ ${existingNodeSummaries}
             return;
         }
 
+        // tw_stock_db客製: toolCallMode==='auto'時，先確保這個apiUrl+apiModel
+        // 組合已經探測過是否支援原生tool_calls（見_ensureNativeToolSupportProbed
+        // 的說明）——只有第一次真的會打一次探測請求，之後都是讀快取，不會
+        // 每輪對話都多一次網路往返。'native'/'text'手動模式不需要探測，
+        // 直接跳過。
+        if ((this.advancedSettings.toolCallMode || 'auto') === 'auto') {
+            await this._ensureNativeToolSupportProbed(apiKey, apiUrl, apiModel);
+        }
+
         // tw_stock_db客製: 每次真正開始新一輪對話才歸零，見_turnPruneCount
         // 在建構子裡的說明——這樣同一輪對話裡不管中間穿插幾次成功的工具
         // 呼叫，壓縮次數上限都不會被誤重設。
@@ -3968,11 +4122,17 @@ ${existingNodeSummaries}
     }
 
     // tw_stock_db客製: batch_analyze_stocks工具的實作入口（見web/index.html
-    // 的AI_CAPABILITIES註冊），把一份股票代號清單拆成N個一組平行執行的
-    // 子任務，每個子任務只回傳一段精簡結論，彙整成陣列回傳給主對話。
-    async runBatchSubAgents(codes, instruction, concurrency) {
-        const list = (Array.isArray(codes) ? codes : [codes]).map(c => String(c || '').trim()).filter(Boolean);
-        if (!list.length) return { ok: false, error: '沒有提供任何股票代號' };
+    // 的AI_CAPABILITIES註冊），把一份項目清單拆成N個一組平行執行的子任務，
+    // 每個子任務只回傳一段精簡結論，彙整成陣列回傳給主對話。這個引擎本身
+    // 刻意跟「股票」無關（不假設items是什麼、instruction要問什麼）——是
+    // web/index.html的AI_CAPABILITIES把它包成一個叫batch_analyze_stocks、
+    // items填股票代號的工具，這裡拿到的只是通用的字串陣列，換成別的應用
+    // （例如「批次審查一批文件」「批次檢查一批網址」）items填別的東西一樣
+    // 能用，見這次session稍早的說明：floating-assistant.js整份檔案不應該
+    // 依賴任何股票/這個app特有的模組，所有領域邏輯都應該留在index.html。
+    async runBatchSubAgents(items, instruction, concurrency) {
+        const list = (Array.isArray(items) ? items : [items]).map(c => String(c || '').trim()).filter(Boolean);
+        if (!list.length) return { ok: false, error: '沒有提供任何項目' };
         const n = Math.min(list.length, Number.isFinite(Number(concurrency)) && Number(concurrency) > 0
             ? Math.min(8, Math.round(Number(concurrency)))
             : this._getBatchConcurrency());
@@ -3980,27 +4140,27 @@ ${existingNodeSummaries}
         const results = new Array(list.length);
         let nextIdx = 0;
         let doneCount = 0;
-        this._log(`↻ 批次分析開始：共${list.length}檔，同時執行${n}個子任務…`);
+        this._log(`↻ 批次分析開始：共${list.length}項，同時執行${n}個子任務…`);
 
         const worker = async () => {
             while (nextIdx < list.length) {
                 const myIdx = nextIdx++;
-                const code = list[myIdx];
-                const prompt = `${instruction}\n\n這次只需要分析這一檔股票，代號：${code}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
+                const item = list[myIdx];
+                const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
                     verdict = await this._runSubAgentTask(prompt);
                 } catch (err) {
                     verdict = `[子任務例外: ${err.message}]`;
                 }
-                results[myIdx] = { code, verdict };
+                results[myIdx] = { item, verdict };
                 doneCount++;
-                this._log(`↻ 批次分析進度：${doneCount}/${list.length}（${code} 完成）`);
+                this._log(`↻ 批次分析進度：${doneCount}/${list.length}（${item} 完成）`);
             }
         };
 
         await Promise.all(Array.from({ length: n }, () => worker()));
-        this._log(`✅ 批次分析完成，共${list.length}檔。`);
+        this._log(`✅ 批次分析完成，共${list.length}項。`);
         return results;
     }
 
