@@ -2386,7 +2386,11 @@ const DBMgr = (() => {
     }
   }
 
-  /* ── Fetch & apply one daily folder (4 files in parallel) ── */
+  /* ── Fetch & apply one daily folder (4 files in parallel) ──
+     回傳這一天是不是「真的抓到資料」（daily_prices.csv 有成功 200），給
+     syncDaily 判斷 lastDailyDate 該記到哪一天為止（見 syncDaily 的說明，
+     不能無條件記到「今天」，否則今天稍早資料還沒上架時同步過一次，
+     晚上資料真的上架了也不會再抓）。 */
   async function applyDaily(date, onProgress) {
     const base  = `${RAW}/main/daily/${date}`;
     const files = [
@@ -2399,13 +2403,18 @@ const DBMgr = (() => {
       // （見 DBMgr.getBatchIntradaySeries 的呼叫端判斷）。
       ['intraday_quotes',      'intraday_quotes'],
     ];
+    let gotData = false;
     await Promise.all(files.map(async ([name, table]) => {
       onProgress?.(`套用 ${name}.csv (${date})`);
       try {
         const r = await fetch(`${base}/${name}.csv`);
-        if (r.ok) upsertCSV(table, await r.text());
+        if (r.ok) {
+          upsertCSV(table, await r.text());
+          if (name === 'daily_prices') gotData = true;
+        }
       } catch { /* skip */ }
     }));
+    return gotData;
   }
 
   /* ── Sync missing daily dates (dates processed with limited concurrency) ── */
@@ -2452,6 +2461,7 @@ const DBMgr = (() => {
 
     const DATE_CONCURRENCY = 4;
     let nextIdx = 0, doneCount = 0;
+    const succeeded = new Array(dates.length).fill(false);
 
     async function worker() {
       while (true) {
@@ -2459,7 +2469,7 @@ const DBMgr = (() => {
         if (i >= dates.length) return;
         const date = dates[i];
         onProgress?.(`更新日資料: ${date} (${doneCount + 1}/${dates.length})`, 97);
-        await applyDaily(date, onProgress);
+        succeeded[i] = await applyDaily(date, onProgress);
         doneCount += 1;
       }
     }
@@ -2468,7 +2478,23 @@ const DBMgr = (() => {
       Array.from({ length: Math.min(DATE_CONCURRENCY, dates.length) }, () => worker())
     );
 
-    Settings.set('lastDailyDate', dates[dates.length - 1]);
+    // tw_stock_db客製: 不能無條件把 lastDailyDate 記成「今天」——今天稍早
+    // （例如一早、或後端還沒跑完當天的 run_daily_update.py）daily/{今天}/
+    // 在 GitHub 上根本還不存在，applyDaily() 對每個檔案都是 404、靜默跳過，
+    // gotData 是 false。原本這裡不管有沒有真的抓到都直接寫死記到「今天」，
+    // 造成「今天已經同步過」這個標記提早卡住：使用者晚一點（例如晚上，
+    // 後端資料真的上架後）重新整理頁面，非強制模式（forced=false，見上面
+    // initDB 呼叫）看到 lastStored===todayStr 就直接跳過、完全不會再抓一次，
+    // 一定要手動按「更新」（forced=true，繞過這個判斷）才抓得到——這是
+    // 使用者實際回報的案例。改成只把 lastDailyDate 記到「這批日期裡最新
+    // 一個真的成功抓到 daily_prices 資料的日期」，抓不到今天的資料時就
+    // 維持在最後一個成功的日期，下次非強制同步（例如重新整理頁面）自然會
+    // 從那天繼續往後試，直到今天的資料真的上架為止。 */
+    let lastSuccessDate = lastStored;
+    for (let i = 0; i < dates.length; i++) {
+      if (succeeded[i]) lastSuccessDate = dates[i];
+    }
+    if (lastSuccessDate) Settings.set('lastDailyDate', lastSuccessDate);
     await detectAndFillDateGaps(onProgress);
     await persist();
   }
@@ -4462,7 +4488,12 @@ function _renderAiStockChartCanvas(bars, opts) {
     ctx.fillRect(cx - bodyWidth / 2, bodyTop, bodyWidth, bodyH);
   }
 
-  // AI指定的線（水平/垂直/趨勢線），畫在K棒之上、標記之下
+  // AI指定的線（水平/垂直/趨勢線），畫在K棒之上、標記之下。線本身（位置由
+  // yOf(line.price)/xOf(...)算，正確）在這一段就直接畫；標籤延後到下面
+  // 集中處理（見 pendingHLabels），因為水平線（開高低收常見的用法）的標籤
+  // 需要互相比較位置才能避免重疊/超出畫布，不能在畫每條線的當下各自獨立
+  // 決定，見下方說明。
+  const pendingHLabels = []; // 水平線的標籤：{ y: yOf(price), text, color }
   (opts.lines || []).forEach(line => {
     const color = line.color || '#3182ce';
     ctx.strokeStyle = color;
@@ -4486,19 +4517,61 @@ function _renderAiStockChartCanvas(bars, opts) {
     }
     ctx.stroke();
     ctx.setLineDash([]);
-    if (line.label) {
-      ctx.fillStyle = color;
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'bottom';
-      const labelY = line.type === 'horizontal' ? yOf(line.price) - 3
-        : line.type === 'vertical' ? marginTop + 12
-        : yOf(line.to.price) - 3;
-      const labelX = line.type === 'vertical' ? xOf(_aiChartNearestBarIndex(bars, line.date)) + barSpacing / 2 + 4
-        : width - marginRight - ctx.measureText(line.label).width - 4;
-      ctx.fillText(line.label, labelX, labelY);
+    if (!line.label) return;
+    if (line.type === 'horizontal') {
+      // 原本這裡直接用 yOf(line.price)-3 當標籤Y座標——當這條線本身很靠近
+      // 圖表頂部（例如「高」）或多條水平線價位很接近（例如開/收價差很小）
+      // 時，標籤會被畫到繪圖區域外面（被上面的標題文字蓋住/裁切）、或好幾
+      // 條線的標籤疊在一起看不清楚，使用者實際反映「橫線位置對，標籤位置
+      // 不太對」就是這個狀況。改成先收集起來，畫完所有線之後統一做「夾在
+      // 繪圖區域內 + 互相碰撞就往下擠開」的排版，而不是每條線各自獨立決定。
+      pendingHLabels.push({ y: yOf(line.price), text: line.label, color });
+      return;
     }
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    const labelY = line.type === 'vertical' ? marginTop + 12 : yOf(line.to.price) - 3;
+    const labelX = line.type === 'vertical'
+      ? xOf(_aiChartNearestBarIndex(bars, line.date)) + barSpacing / 2 + 4
+      : width - marginRight - ctx.measureText(line.label).width - 4;
+    ctx.fillText(line.label, labelX, labelY);
   });
+
+  // 水平線標籤統一排版：先照Y座標排序，由上而下掃描，只要跟前一個標籤的
+  // 間距小於一行文字高度（12px）就直接往下推開，確保彼此不重疊；最後整批
+  // 一起夾在繪圖區域[marginTop+10, height-marginBottom-2]之內，不會超出
+  // 畫布或蓋到標題文字。
+  if (pendingHLabels.length) {
+    const LABEL_LINE_H = 12;
+    const minY = marginTop + 10, maxY = height - marginBottom - 2;
+    pendingHLabels.sort((a, b) => a.y - b.y);
+    let prevY = -Infinity;
+    for (const item of pendingHLabels) {
+      let y = Math.max(item.y, prevY + LABEL_LINE_H);
+      item.drawY = y;
+      prevY = y;
+    }
+    // 由下而上再修一輪：如果整批被前面那輪往下推到超出maxY，改成從最後一個
+    // 往上收，確保仍然彼此不重疊、也不超出下邊界。
+    if (pendingHLabels.at(-1).drawY > maxY) {
+      let nextY = maxY;
+      for (let i = pendingHLabels.length - 1; i >= 0; i--) {
+        nextY = Math.min(nextY, pendingHLabels[i].drawY);
+        pendingHLabels[i].drawY = nextY;
+        nextY -= LABEL_LINE_H;
+      }
+    }
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    for (const item of pendingHLabels) {
+      const y = Math.min(maxY, Math.max(minY, item.drawY));
+      ctx.fillStyle = item.color;
+      ctx.fillText(item.text, width - marginRight - ctx.measureText(item.text).width - 4, y);
+    }
+  }
 
   // AI指定的標記點：有date就吸附到那根K棒的時間軸位置（followsTimeAxis）；
   // 沒有date、改給x/y（0~1之間的比例座標）就是自由放置、不跟著時間軸。
@@ -5150,10 +5223,28 @@ const Chart = (() => {
 
   const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
-  /* default zoom = most recent ~30 calendar days for daily; for week/month/quarter
-     there are naturally few candles, so default to showing everything available */
+  /* default zoom = most recent ~30 calendar days for daily; week/month/quarter
+     本來候選K棒就少，直接顯示全部即可。
+     intraday（走勢圖分頁）另外處理：IntradayFeed 的 backfill 涵蓋近5個交易日
+     （見 IntradayFeed 模組註解），rows（這裡收到的其實是aggregate()算好的
+     periodData，每筆的trade_date已經是bucket key字串）因此天生就是「多天
+     串接」，如果default顯示全部，使用者一打開走勢圖看到的就是好幾個交易日
+     的K棒擠在一起（軸標籤只印HH:MM、跨天邊界看起來像時間跳來跳去），跟
+     台股單一交易日9:00-13:30的盤中節奏對不起來（使用者實際回報的案例）。
+     改成預設只顯示「最後一個交易日」（= periodData最後一筆trade_date的
+     日期部分）的K棒，使用者仍可以照舊用縮小(zoom out)看到之前幾天的
+     backfill——資料本來就都已經載入在periodData裡，只是預設視窗窄一點。 */
   function defaultVisibleCount(rows) {
     if (!rows.length) return 0;
+    if (period === 'intraday') {
+      const lastDay = (rows.at(-1).trade_date || '').slice(0, 10);
+      let count = 0;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if ((rows[i].trade_date || '').slice(0, 10) !== lastDay) break;
+        count++;
+      }
+      return Math.max(10, count);
+    }
     if (period !== 'day') return rows.length;
     const cutoff = new Date(rows.at(-1).trade_date).getTime() - 30 * 86400000;
     let count = 0;
