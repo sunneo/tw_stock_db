@@ -1405,6 +1405,13 @@ const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
    （逐月資料，過去月份封存後不再變動），取代整份 300MB+ tw_stock.db 的下載方式。
    見 tw-stock-db/sync/monthly_snapshot.py。 */
 const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
+/* daily/ 逐日增量CSV（main分支）的md5清單，每個日期每個檔案一筆，見
+   tw-stock-db/sync/sync_to_github.py::update_daily_manifest()。DBMgr.syncDaily
+   每次同步都要把當月從1號開始重新掃過一遍（見該函式說明），沒有這份manifest
+   的話「重新掃過」等於「重新下載當月每一天的每個檔案」，即使內容根本沒變—
+   —用這份manifest比對md5，內容沒變就完全跳過下載，只有真的被後端修正過的
+   日期才會重抓（見 applyDaily 的 manifestDates 參數）。 */
+const DAILY_MANIFEST_URL = RAW + '/main/daily/manifest.json';
 
 /* 證交所的即時行情/休市日曆兩個來源都不回傳 CORS header，瀏覽器端無法直接
    fetch()（實測過，見 web/cloudflare-worker/README.md），透過共用的
@@ -2386,12 +2393,40 @@ const DBMgr = (() => {
     }
   }
 
+  /* ── daily/manifest.json（見 tw-stock-db/sync/sync_to_github.py 的
+     update_daily_manifest()）+ 本機已套用過的md5快取，讓 applyDaily() 能
+     跳過「內容根本沒變」的檔案，不用每次同步都整個重新下載。syncDaily 每次
+     同步都要把當月從1號開始重新掃過一遍（見該函式說明其原因），沒有這個
+     md5比對機制的話，代價就是使用者反映的「每次打開都要重抓8/4~今天」
+     ——同一批intraday_quotes.csv等檔案，內容沒變也照樣整個重新下載。 */
+  const DAILY_CHECKSUM_IDB_KEY = 'dailyFileChecksums';
+  let dailyChecksumCache = null; // lazy-loaded：{ [date]: { [file]: md5 } }
+
+  async function loadDailyChecksumCache() {
+    if (dailyChecksumCache) return dailyChecksumCache;
+    try { dailyChecksumCache = (await IDB.get('meta', DAILY_CHECKSUM_IDB_KEY)) || {}; }
+    catch { dailyChecksumCache = {}; }
+    return dailyChecksumCache;
+  }
+
+  async function fetchDailyManifest() {
+    try {
+      const res = await fetch(DAILY_MANIFEST_URL, { cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.dates || null;
+    } catch { return null; }
+  }
+
   /* ── Fetch & apply one daily folder (4 files in parallel) ──
-     回傳這一天是不是「真的抓到資料」（daily_prices.csv 有成功 200），給
-     syncDaily 判斷 lastDailyDate 該記到哪一天為止（見 syncDaily 的說明，
-     不能無條件記到「今天」，否則今天稍早資料還沒上架時同步過一次，
-     晚上資料真的上架了也不會再抓）。 */
-  async function applyDaily(date, onProgress) {
+     manifestDates/checksumCache 都選填（呼叫端拿不到manifest時傳null，
+     退回「每次都下載」的舊行為，不影響正確性、只影響有沒有省到流量）。
+     回傳這一天是不是「真的抓到資料」（daily_prices.csv 這次下載成功、或
+     md5比對後確認本機已經有跟遠端一致的內容），給 syncDaily 判斷
+     lastDailyDate 該記到哪一天為止（見 syncDaily 的說明，不能無條件記到
+     「今天」，否則今天稍早資料還沒上架時同步過一次，晚上資料真的上架了
+     也不會再抓）。 */
+  async function applyDaily(date, onProgress, manifestDates, checksumCache) {
     const base  = `${RAW}/main/daily/${date}`;
     const files = [
       ['stocks',               'stocks'],
@@ -2403,14 +2438,26 @@ const DBMgr = (() => {
       // （見 DBMgr.getBatchIntradaySeries 的呼叫端判斷）。
       ['intraday_quotes',      'intraday_quotes'],
     ];
+    const remoteEntry = manifestDates?.[date] || null;
+    const localEntry  = checksumCache?.[date] || null;
     let gotData = false;
     await Promise.all(files.map(async ([name, table]) => {
+      const remoteMd5 = remoteEntry?.[name];
+      if (remoteMd5 && localEntry?.[name] === remoteMd5) {
+        // manifest說內容跟上次套用過的一模一樣，完全不用打這個檔案的請求。
+        if (name === 'daily_prices') gotData = true;
+        return;
+      }
       onProgress?.(`套用 ${name}.csv (${date})`);
       try {
         const r = await fetch(`${base}/${name}.csv`);
         if (r.ok) {
           upsertCSV(table, await r.text());
           if (name === 'daily_prices') gotData = true;
+          if (remoteMd5 && checksumCache) {
+            if (!checksumCache[date]) checksumCache[date] = {};
+            checksumCache[date][name] = remoteMd5;
+          }
         }
       } catch { /* skip */ }
     }));
@@ -2459,6 +2506,13 @@ const DBMgr = (() => {
     }
     if (!dates.length) return;
 
+    // manifest抓不到（離線、GitHub暫時打不到）就傳null，applyDaily會自動退回
+    // 「每個檔案都下載」的舊行為——只是省不到流量，正確性不受影響。
+    const [manifestDates, checksumCache] = await Promise.all([
+      fetchDailyManifest(),
+      loadDailyChecksumCache(),
+    ]);
+
     const DATE_CONCURRENCY = 4;
     let nextIdx = 0, doneCount = 0;
     const succeeded = new Array(dates.length).fill(false);
@@ -2469,7 +2523,7 @@ const DBMgr = (() => {
         if (i >= dates.length) return;
         const date = dates[i];
         onProgress?.(`更新日資料: ${date} (${doneCount + 1}/${dates.length})`, 97);
-        succeeded[i] = await applyDaily(date, onProgress);
+        succeeded[i] = await applyDaily(date, onProgress, manifestDates, checksumCache);
         doneCount += 1;
       }
     }
@@ -2477,6 +2531,10 @@ const DBMgr = (() => {
     await Promise.all(
       Array.from({ length: Math.min(DATE_CONCURRENCY, dates.length) }, () => worker())
     );
+
+    // checksumCache在迴圈中被各個applyDaily()呼叫直接mutate（同一個物件參照），
+    // 這裡一次寫回IDB就好，不用每個檔案下載完都各自寫一次。
+    IDB.set('meta', DAILY_CHECKSUM_IDB_KEY, dailyChecksumCache).catch(() => {});
 
     // tw_stock_db客製: 不能無條件把 lastDailyDate 記成「今天」——今天稍早
     // （例如一早、或後端還沒跑完當天的 run_daily_update.py）daily/{今天}/
