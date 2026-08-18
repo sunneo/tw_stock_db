@@ -460,6 +460,10 @@ class FloatingAssistant {
         // 每次真正開始新一輪對話時歸零，才能確實擋住這種迴圈。
         this.maxPruneRetriesPerTurn = 3;
         this._turnPruneCount = 0;
+        // tw_stock_db客製: 這一輪對話使用者真正打的原始文字，executeChat()
+        // 一開始就存進來，pruneContext()重新接回問題時固定用這個，不會
+        // 因為連續壓縮而巢狀疊加（見executeChat()跟pruneContext()兩處說明）。
+        this._currentTurnUserText = null;
         this.isResponding = false;
         this.stopRequested = false;
         this.currentAbortController = null;
@@ -3143,11 +3147,22 @@ ${sourceTool.handlerScript}
             // 讓模型把摘要當成「已完成的工作記錄」而不是「跟這件事無關、
             // 重新開始」。真正兜底防止迴圈失控的是下面_loopFetch/
             // _loopFetchNative對同一輪對話的壓縮次數上限（maxPruneRetriesPerTurn）。
-            const lastUserMsg = [...chatToCompress].reverse().find(m => m.role === 'user');
-            if (lastUserMsg) {
+            //
+            // tw_stock_db客製: 固定用executeChat()一開始存下的
+            // this._currentTurnUserText（這一輪對話「使用者真正打的原始
+            // 文字」），不要從chatToCompress裡找「最後一則user訊息」——同一輪
+            // 對話連續壓縮第二次以後，訊息陣列裡最後一則user訊息已經是上一次
+            // 壓縮包裝過的版本，再包一層會巢狀疊加、每壓縮一次文字量倍增，
+            // 反而更快撞到下一次上下文上限（實測案例：只問一句話卻疊出好幾層
+            // 「[系統提示]我的原始問題：[系統提示]我的原始問題：...」）。找不到
+            // this._currentTurnUserText時（理論上不會發生，防禦性寫法）才退回
+            // 舊的掃描方式。
+            const originalUserText = this._currentTurnUserText
+                ?? [...chatToCompress].reverse().find(m => m.role === 'user')?.content;
+            if (originalUserText) {
                 this.messages.push({
                     role: 'user',
-                    content: `[系統提示：以上摘要已經記錄了目前為止呼叫過的工具與取得的結果，請不要重複呼叫已經執行過的工具、也不要把這當成新任務重新開始，直接依照摘要中已有的資料繼續完成任務，缺什麼資料再呼叫對應的工具補齊，資料齊全就直接給出最終回答]\n\n我的原始問題：${lastUserMsg.content}`
+                    content: `[系統提示：以上摘要已經記錄了目前為止呼叫過的工具與取得的結果，請不要重複呼叫已經執行過的工具、也不要把這當成新任務重新開始，直接依照摘要中已有的資料繼續完成任務，缺什麼資料再呼叫對應的工具補齊，資料齊全就直接給出最終回答]\n\n我的原始問題：${originalUserText}`
                 });
             }
 
@@ -3406,6 +3421,20 @@ ${existingNodeSummaries}
         // 在建構子裡的說明——這樣同一輪對話裡不管中間穿插幾次成功的工具
         // 呼叫，壓縮次數上限都不會被誤重設。
         this._turnPruneCount = 0;
+
+        // tw_stock_db客製: 記住「這一輪對話使用者真正打的原始文字」，給
+        // pruneContext()重新接回問題時用（見該函式內的說明）。不能讓
+        // pruneContext自己從this.messages裡找「最後一則user訊息」來代替——
+        // 同一輪對話裡如果連續壓縮兩次以上，第一次壓縮後push進去的user訊息
+        // 已經是包了「[系統提示：...] 我的原始問題：xxx」這層包裝的訊息，
+        // 第二次壓縮再去找「最後一則user」會抓到這則包裝過的訊息，把它當成
+        // 「原始問題」再包一層，變成「[系統提示]我的原始問題：[系統提示]
+        // 我的原始問題：xxx」，每壓縮一次疊一層、文字量疊加成長，反而
+        // 加速撞到下一次的上下文上限（實測遇到的真實案例：使用者只問一句
+        // 「大成鋼適合進場嗎」，畫面上卻疊出好幾層巢狀的系統提示文字）。
+        // 固定用這裡存的原始文字，不管壓縮幾次，重新接回去的內容永遠只有
+        // 一層包裝。
+        this._currentTurnUserText = userText;
 
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
         // proactive檢查——這跟先前被移除的token估算式proactive檢查是同一類
