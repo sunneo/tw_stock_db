@@ -134,6 +134,67 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; }
   --sel:  #1a3a5e;
 }
 
+/* ── 「朱老師App版面」skin：使用者提供選股高手App的截圖要求仿造的暖褐/米色
+   配色，透過 Settings.appSkin==='zhu' 套用（見 applySkin()、設定Modal的
+   「顯示設定」分頁）。故意用獨立的 data-skin 屬性、不是 data-theme 的第三個
+   值——這樣使用者原本的亮/暗主題選擇不會被這個skin覆蓋掉整套邏輯，只是
+   skin本身的配色是暖色系，跟亮/暗切換的藍色系是兩件事，selector寫在
+   [data-theme="dark"]規則之後，等特異度都是單一屬性選擇器時靠後者優先
+   （CSS層疊順序）蓋過亮/暗兩種情境，不需要 !important。
+   絕大多數元件顏色已經是透過上面這些CSS變數套用，改這裡的值就能連動整個
+   介面；只有navbar/分頁列這幾處視覺上有明顯結構差異（漸層/膠囊分頁）才
+   額外寫針對性規則，見下面 #navbar / .chart-mode-tab / .mtab-btn 區塊。 ── */
+html[data-skin="zhu"] {
+  --bg0: #f3ead8;
+  --bg1: #faf5ea;
+  --bg2: #ecdfc4;
+  --bg3: #ddc9a0;
+  --txt0: #3b2a1a;
+  --txt1: #5a4530;
+  --txt2: #8a7355;
+  --bdr:  #c9b48a;
+  --acc:  #8b5a2b;
+  --acc2: #e8d5b0;
+  --sel:  #e8d5b0;
+  /* --up/--dn（紅漲綠跌）刻意不覆蓋，維持跟原本一致的台股慣例配色。 */
+}
+html[data-skin="zhu"] #navbar {
+  background: linear-gradient(135deg, #3d2817, #6b4423 55%, #3d2817);
+  border-bottom: 2px solid #8b5a2b;
+}
+html[data-skin="zhu"] #navbar .brand { color: #f0dcb8; }
+html[data-skin="zhu"] #navbar .btn {
+  background: rgba(240, 220, 184, .14);
+  color: #f0dcb8;
+  border-color: rgba(240, 220, 184, .35);
+}
+html[data-skin="zhu"] #navbar .btn:hover { background: rgba(240, 220, 184, .26); }
+html[data-skin="zhu"] #navbar .btn.primary { background: #8b5a2b; border-color: #8b5a2b; color: #fff8ec; }
+/* 分頁列改成膠囊式分頁（比對參考截圖的「波段／長抱／盤中排行」分頁條），
+   跟原本的底線式分頁在結構上不同，是這個skin少數需要蓋掉版面（不只換色）
+   的地方。 */
+html[data-skin="zhu"] #chart-mode-tabs,
+html[data-skin="zhu"] #mobile-tabbar {
+  background: #ddc9a0;
+  gap: 4px;
+  padding: 4px 6px;
+}
+html[data-skin="zhu"] .chart-mode-tab,
+html[data-skin="zhu"] .mtab-btn {
+  border-radius: 6px;
+  border-bottom: none !important;
+  background: #ecdfc4;
+  color: #5a4530;
+  margin: 2px 0;
+}
+html[data-skin="zhu"] .chart-mode-tab.active,
+html[data-skin="zhu"] .mtab-btn.active {
+  background: #6b4423;
+  color: #fff8ec;
+}
+html[data-skin="zhu"] .chart-mode-tab:hover:not(.active):not(.disabled),
+html[data-skin="zhu"] .mtab-btn:hover:not(.active):not(.disabled) { background: #ddc9a0; }
+
 /* ── Layout ── */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
@@ -1278,6 +1339,9 @@ select:focus { outline: 2px solid var(--acc); }
           <p class="modal-hint">持股診斷分頁的型態辨識（W底/M頭/頭肩底/頭肩頂/箱型/V型反轉/圓弧底/旗型/楔型）用這個數字當「中型態」的分析範圍，預設150天（約半年）。系統會自動再衍生出「短型態」（這個數字的一半，較敏感、容易抓到近期的小型態）跟「大型態」（這個數字的1.6倍，較嚴謹、只認半年以上格局的大型態）一起分析，畫面上會用色塊標示每個型態是在哪個尺度偵測到的。數字改小＝分析更敏感但誤判機率也higher；改大＝更嚴謹保守，但門檻（尤其是長期相對高低點驗證）會變嚴格，原本看得到的型態可能反而消失，可以自行拿捏。</p>
         </div>
         <div class="modal-pane hidden" data-pane="display">
+          <h3>外觀主題</h3>
+          <label class="modal-check-row"><input type="checkbox" id="zhu-skin-toggle"> 套用朱老師App版面</label>
+          <p class="modal-hint">套用後導覽列/分頁列會改成暖褐米色的膠囊式分頁，模仿使用者提供的選股高手App截圖配色；取消勾選則恢復原本的預設外觀。跟亮/暗主題切換是各自獨立的設定，可以同時使用。</p>
           <h3>圖表指標按鈕</h3>
           <label class="modal-check-row"><input type="checkbox" id="indicator-show-kd"> KD</label>
           <label class="modal-check-row"><input type="checkbox" id="indicator-show-macd"> MACD</label>
@@ -1595,7 +1659,8 @@ const Settings = (() => {
              // 一樣視為enable，不會因為忘記migrate舊設定而悄悄被關掉。
              strongCurrentRules: { kdCross:true, macd:true, oscGrow:true, volSpike:true, pullback:true, risingMa20:true },
              memos: {},  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
-             aiAssistantEnabled: false }; // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
+             aiAssistantEnabled: false, // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
+             appSkin: 'default' }; // 'default' | 'zhu'（朱老師App版面，見 applySkin()）
   }
   function load() {
     try {
@@ -6506,6 +6571,7 @@ const R = {
   aiCfgParamRepetition: $('ai-cfg-param-repetition_penalty'),
   aiCfgParamLength: $('ai-cfg-param-length_penalty'),
   aiCfgParamDisabledNote: $('ai-cfg-param-disabled-note'),
+  zhuSkinToggle: $('zhu-skin-toggle'),
   followMouseChk:  $('follow-mouse-toggle'),
   indicatorShowKd:   $('indicator-show-kd'),
   indicatorShowMacd: $('indicator-show-macd'),
@@ -8418,6 +8484,16 @@ function applyTheme(t) {
   if (chartMode !== 'chip') Chart.resize();
 }
 
+/* 「朱老師App版面」skin（見設定Modal「顯示設定」分頁的 zhu-skin-toggle）：
+   獨立於亮/暗主題之外的另一個attribute，見CSS裡 html[data-skin="zhu"] 那組
+   規則的說明。skin==='default'時整個移除屬性，而不是設成空字串，避免
+   `html[data-skin=""]`這種邊界情況意外命中選擇器。 */
+function applySkin(skin) {
+  if (skin === 'zhu') document.documentElement.setAttribute('data-skin', 'zhu');
+  else document.documentElement.removeAttribute('data-skin');
+  if (chartMode !== 'chip') Chart.resize();
+}
+
 /* ════════════════════════════════════════
    INIT DB + DAILY SYNC
    ════════════════════════════════════════ */
@@ -9122,6 +9198,8 @@ function openSettingsModal() {
   R.strongRulePullback.checked   = scr.pullback   !== false;
   R.strongRuleRisingMa20.checked = scr.risingMa20 !== false;
 
+  R.zhuSkinToggle.checked = Settings.get('appSkin') === 'zhu';
+
   R.followMouseChk.checked = !!Settings.get('followMouseTooltip');
 
   const en = Settings.get('enabledIndicators') || { kd:true, macd:true, rsv:false, rsi:true };
@@ -9233,6 +9311,10 @@ function saveSettingsModal() {
   Settings.set('aiAssistantEnabled', R.aiAssistantEnabledToggle.checked);
   updateAiTabVisibility();
 
+  const appSkin = R.zhuSkinToggle.checked ? 'zhu' : 'default';
+  Settings.set('appSkin', appSkin);
+  applySkin(appSkin);
+
   const followMouse = R.followMouseChk.checked;
   Settings.set('followMouseTooltip', followMouse);
   Chart.setFollowMouse(followMouse);
@@ -9312,6 +9394,7 @@ async function main() {
 
   /* restore theme */
   applyTheme(Settings.get('theme') || 'light');
+  applySkin(Settings.get('appSkin') || 'default');
 
   /* restore chart prefs */
   Chart.setMAPeriods(Settings.get('maPeriods') || { short:5, shortMid:10, mid:20, long:60 });
