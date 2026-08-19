@@ -195,6 +195,38 @@ html[data-skin="zhu"] .mtab-btn.active {
 html[data-skin="zhu"] .chart-mode-tab:hover:not(.active):not(.disabled),
 html[data-skin="zhu"] .mtab-btn:hover:not(.active):not(.disabled) { background: #ddc9a0; }
 
+/* 股票資訊列（開高低收量+均線+指標）比對參考截圖改成卡片式、字體加大，
+   而不是原本樸素的等寬字小字流水帳（見 #chart-info-bar 原本的規則）。 */
+html[data-skin="zhu"] #chart-info-bar {
+  background: #faf5ea;
+  border-bottom: 2px solid #c9b48a;
+  font-size: 13px;
+  padding: 8px 12px;
+  gap: 6px 20px;
+}
+html[data-skin="zhu"] #chart-info-bar .info-item b { font-size: 14px; }
+html[data-skin="zhu"] #chart-info-price { font-size: 20px; }
+
+/* 疊加標記快速勾選列（操盤/趨勢、頭/底、轉折、壓力/支撐，見 zhu-overlay-toggles
+   相關JS）。只在套用skin時才可能顯示，是否顯示還要另外看目前是不是「技術
+   分析」分頁＋選中的是個股（見 updateZhuOverlayVisibility），純CSS類別
+   沒辦法表達這個條件，所以用JS切換 .hidden，這裡只負責樣式。 */
+#zhu-overlay-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+#zhu-overlay-toggles.hidden { display: none; }
+html[data-skin="zhu"] #zhu-overlay-toggles {
+  background: #ecdfc4;
+  border-bottom: 1px solid #c9b48a;
+  color: #3b2a1a;
+}
+#zhu-overlay-toggles label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+#zhu-overlay-toggles input[type="checkbox"] { accent-color: #8b5a2b; cursor: pointer; }
+
 /* ── Layout ── */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
@@ -1222,6 +1254,16 @@ select:focus { outline: 2px solid var(--acc); }
     <!-- 固定資訊列：日期/開高低收量 + 均線 + 指標數值，取代浮動提示框；
          點擊K線圖只會顯示十字線，數值一律顯示在這裡（見 renderInfoBar） -->
     <div id="chart-info-bar"></div>
+    <!-- 朱老師App版面專屬：K線圖疊加標記快速勾選列，只有套用skin＋在「技術
+         分析」分頁看個股時才顯示（見 updateZhuOverlayVisibility）。操盤/趨勢
+         對應均線顯示；頭/底、轉折、壓力/支撐重用 StockDiagnosis 型態診斷的
+         疊加標記（見 maybeApplyZhuOverlay），不是另外重新實作一套型態判讀。 -->
+    <div id="zhu-overlay-toggles" class="hidden">
+      <label><input type="checkbox" id="zhu-toggle-ma" checked> 操盤、趨勢</label>
+      <label><input type="checkbox" id="zhu-toggle-points"> 頭、底</label>
+      <label><input type="checkbox" id="zhu-toggle-trace"> 轉折</label>
+      <label><input type="checkbox" id="zhu-toggle-support"> 壓力、支撐</label>
+    </div>
     <div id="chart-wrap">
       <canvas id="main-chart"></canvas>
     </div>
@@ -5339,10 +5381,22 @@ const Chart = (() => {
                               // 算annotation時用的是自己抓的完整 daily_prices 陣列，不是Chart目前縮放
                               // 中的 periodData 切片；畫的時候才在當前可視窗口的 data 裡查日期對應的
                               // slot，查不到（滑出可視範圍）就直接跳過那個點，不報錯。
-  function setAnnotations(spec) { annotations = spec || null; }
+  function setAnnotations(spec) { annotations = spec || null; draw(); }
   let highlightPattern = false;  // 「強調型態」開關，見 drawAnnotationsOverlay 的 patternTraces 繪製區塊
   function setHighlightPattern(v) { highlightPattern = !!v; draw(); }
   function getHighlightPattern() { return highlightPattern; }
+
+  /* 「朱老師App版面」K線圖疊加勾選列（見 #zhu-overlay-toggles）：操盤/趨勢
+     控制均線是否畫出（showMA）；頭/底控制annotations.points的圓點+標籤
+     （showPoints）；壓力/支撐控制annotations.necklines+targets（showNeck）。
+     「轉折」沿用既有的highlightPattern（見上面）不另外加狀態，patternTraces
+     本來就是轉折點依序連線的視覺意義，一樣的東西。三個都預設true（除了
+     showMA也是true），跟原本沒套用這個skin時的既有行為一致（沒套用時這幾個
+     checkbox整排都不會顯示，狀態變數不影響其他地方）。 */
+  let showMA = true, showPoints = true, showNeck = true;
+  function setShowMA(v) { showMA = !!v; draw(); }
+  function setShowPoints(v) { showPoints = !!v; draw(); }
+  function setShowNeck(v) { showNeck = !!v; draw(); }
 
   const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
@@ -5691,7 +5745,11 @@ const Chart = (() => {
       ctx.fillText(`趨勢停損 ${annotations.trendStopPrice.toFixed(2)}`, PAD_L + 4, y - 3);
     }
 
-    for (const nl of (annotations.necklines || [])) {
+    // showNeck對應「朱老師App版面」的「壓力、支撐」勾選（見Chart模組頂端
+    // 說明）；沒套用skin時showNeck恆為true，不影響原本的持股診斷分頁行為。
+    // 目標價（等幅/N字測量）本質上也是預測出的壓力/支撐價位，一起收在這個
+    // 開關底下，不另外拆一個勾選項。
+    for (const nl of (showNeck ? (annotations.necklines || []) : [])) {
       ctx.strokeStyle = patternColor(); ctx.lineWidth = 1.3; ctx.setLineDash([6, 3]);
       if (nl.points && nl.points.length === 2) {
         const [p1, p2] = nl.points;
@@ -5715,7 +5773,7 @@ const Chart = (() => {
       ctx.setLineDash([]);
     }
 
-    for (const t of (annotations.targets || [])) {
+    for (const t of (showNeck ? (annotations.targets || []) : [])) {
       if (t.price == null) continue;
       const y = pY(t.price);
       ctx.strokeStyle = TARGET_COL; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
@@ -5742,7 +5800,9 @@ const Chart = (() => {
       }
     }
 
-    for (const pt of (annotations.points || [])) {
+    // showPoints對應「朱老師App版面」的「頭、底」勾選；沒套用skin時恆為
+    // true，行為跟原本一樣。
+    for (const pt of (showPoints ? (annotations.points || []) : [])) {
       const x = findX(pt.date);
       if (x == null) continue; // 滑出目前可視範圍，直接略過，不報錯
       const y = pY(pt.price);
@@ -5765,6 +5825,49 @@ const Chart = (() => {
     }
 
     ctx.restore();
+  }
+
+  /* 「朱老師App版面」專屬：K線圖高/低點價格標籤牌 + 現價牌（比對使用者提供
+     的參考截圖，K線圖上高低點旁會有色塊圓角矩形標出實際價格）。只在
+     draw() 判斷 data-skin==="zhu" 時才會被呼叫，其他外觀不受影響。只標「目前
+     可視範圍內」的最高/最低（不是整份資料的最高最低——使用者縮放/平移
+     看不同區間時，標籤應該跟著換成當下畫面看得到的高低點，這樣才有意義）。 */
+  function drawZhuPriceFlags(data, pY, xOf, realOffset, W, PAD_R, priceTop, priceBot) {
+    if (!data.length) return;
+    let hi = -Infinity, hiIdx = -1, lo = Infinity, loIdx = -1;
+    data.forEach((d, i) => {
+      if (d.high > hi) { hi = d.high; hiIdx = i; }
+      if (d.low < lo) { lo = d.low; loIdx = i; }
+    });
+    const drawFlag = (idx, price, color) => {
+      const x = xOf(idx + realOffset), y = pY(price);
+      const text = price.toFixed(2);
+      ctx.font = 'bold 10px sans-serif';
+      const textW = ctx.measureText(text).width;
+      const boxW = textW + 10, boxH = 16;
+      const boxX = Math.min(Math.max(x - boxW / 2, 2), W - PAD_R - boxW - 2);
+      const boxY = price === hi ? Math.max(2, y - boxH - 4) : Math.min(priceBot - boxH - 2, y + 4);
+      ctx.fillStyle = color;
+      rrect(ctx, boxX, boxY, boxW, boxH, 8); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, boxX + boxW / 2, boxY + boxH / 2 + 1);
+      ctx.textBaseline = 'alphabetic';
+    };
+    if (hiIdx >= 0) drawFlag(hiIdx, hi, tok('--up'));
+    if (loIdx >= 0 && loIdx !== hiIdx) drawFlag(loIdx, lo, tok('--dn'));
+
+    // 現價牌：釘在最後一根K棒的右側、Y軸價格刻度旁，永遠顯示（不需要像
+    // crosshair那樣點擊才出現），紅漲綠跌配色跟清單/資訊列一致。
+    const last = data.at(-1);
+    if (last && last.close != null) {
+      const y = Math.min(priceBot - 9, Math.max(priceTop + 9, pY(last.close)));
+      const up = last.close >= last.open;
+      ctx.fillStyle = up ? tok('--up') : tok('--dn');
+      rrect(ctx, W - PAD_R, y - 9, PAD_R, 18, 3); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(last.close.toFixed(2), W - PAD_R / 2, y + 1);
+      ctx.textBaseline = 'alphabetic';
+    }
   }
 
   /* ── build the info payload for the fixed HTML info bar (see app-level renderInfoBar) ── */
@@ -5924,12 +6027,17 @@ const Chart = (() => {
         ctx.fillText(axisLabel(d.trade_date), cx, H - 5);
       }
     }
-    drawLine(maS, pY, xOf, MA_S_COL, realOffset);
-    drawLine(maSM, pY, xOf, MA_SM_COL, realOffset);
-    drawLine(maM, pY, xOf, MA_M_COL, realOffset);
-    drawLine(maL, pY, xOf, MA_L_COL, realOffset);
+    if (showMA) {
+      drawLine(maS, pY, xOf, MA_S_COL, realOffset);
+      drawLine(maSM, pY, xOf, MA_SM_COL, realOffset);
+      drawLine(maM, pY, xOf, MA_M_COL, realOffset);
+      drawLine(maL, pY, xOf, MA_L_COL, realOffset);
+    }
 
     drawAnnotationsOverlay(data, pY, xOf, realOffset, PAD_L, W, PAD_R);
+    if (document.documentElement.getAttribute('data-skin') === 'zhu') {
+      drawZhuPriceFlags(data, pY, xOf, realOffset, W, PAD_R, priceTop, priceBot);
+    }
 
     /* 成交量 panel */
     let maxV = 0;
@@ -6161,6 +6269,7 @@ const Chart = (() => {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
     setPanelWeights, setAnnotations, setHighlightPattern, getHighlightPattern,
+    setShowMA, setShowPoints, setShowNeck,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
     getSnapshotDataUrl,
@@ -6508,6 +6617,11 @@ const R = {
   modeTabChip:        $('mode-tab-chip'),
   modeTabDiagnosis:   $('mode-tab-diagnosis'),
   modeTabAi:          $('mode-tab-ai'),
+  zhuOverlayToggles: $('zhu-overlay-toggles'),
+  zhuToggleMa:       $('zhu-toggle-ma'),
+  zhuTogglePoints:   $('zhu-toggle-points'),
+  zhuToggleTrace:    $('zhu-toggle-trace'),
+  zhuToggleSupport:  $('zhu-toggle-support'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
   reportTitle:     $('report-title'),
@@ -7390,6 +7504,43 @@ function renderDailySourceChart(opts = {}) {
       }
     });
   }
+  maybeApplyZhuOverlay();
+}
+
+/* 「朱老師App版面」K線圖疊加勾選列（見 #zhu-overlay-toggles）的顯示/隱藏：
+   只在套用skin＋目前是「技術分析」分頁＋選中的是個股（不是大盤/美股指數，
+   型態診斷是個股專屬功能，見 renderDiagnosisSourceChart 同樣的判斷）時才
+   顯示這排勾選框。從 setChartModeUI（切分頁）、applySkin（開關skin）兩處
+   呼叫，確保狀態一致。 */
+function updateZhuOverlayVisibility() {
+  const show = Settings.get('appSkin') === 'zhu' && chartMode === 'daily'
+    && currentChartSource?.type === 'stock';
+  R.zhuOverlayToggles.classList.toggle('hidden', !show);
+}
+
+/* 依目前勾選列的狀態，決定要不要把「頭、底／轉折／壓力、支撐」對應的型態
+   診斷疊加標記套到K線圖上（操盤/趨勢是均線開關，不需要跑診斷，見
+   Chart.setShowMA，checkbox的change handler直接呼叫）。三個都沒勾就完全
+   不用跑診斷、annotations清空，跟原本沒套用這個skin時的行為一致（省效能，
+   不會每次切股票都白跑一次型態偵測）。刻意重用 diagnosisCache/
+   diagnosisRenderedForCode（見「持股診斷」分頁 renderDiagnosisSourceChart
+   的說明）——同一檔股票不管是先在持股診斷分頁看過、還是先在這裡套用過，
+   兩邊互相都不用重算。 */
+function maybeApplyZhuOverlay() {
+  updateZhuOverlayVisibility();
+  if (Settings.get('appSkin') !== 'zhu' || chartMode !== 'daily') return;
+  if (!currentChartSource || currentChartSource.type !== 'stock') { Chart.setAnnotations(null); return; }
+  const anyOn = R.zhuTogglePoints.checked || R.zhuToggleTrace.checked || R.zhuToggleSupport.checked;
+  if (!anyOn) { Chart.setAnnotations(null); return; }
+  const code = currentChartSource.code;
+  if (diagnosisRenderedForCode === code && diagnosisCache) {
+    applyDiagnosisAnnotations(diagnosisCache);
+    return;
+  }
+  const diag = diagnoseStock(code);
+  diagnosisRenderedForCode = code;
+  diagnosisCache = diag;
+  applyDiagnosisAnnotations(diag);
 }
 
 /* 走勢圖分頁：個股靠 LiveFeed 即時輪詢 + Yahoo backfill；美股指數（見
@@ -7465,10 +7616,13 @@ function setChartModeUI(mode) {
   // AI助理跟盤後一樣把K線canvas藏起來（不需要常駐可見，需要看圖時AI會用
   // get_chart_snapshot工具把截圖嵌進對話框，見 AI_CAPABILITIES）。
   R.aiTabPanel.classList.toggle('hidden', mode !== 'ai');
-  // 疊加標記只屬於持股診斷分頁；離開這個分頁時要清掉，否則切回技術分析/
-  // 走勢圖時，Chart.draw() 仍會繼續畫上一次算好的轉折點/頸線/目標價（Chart
-  // 模組不知道目前是哪個chartMode，annotations是獨立於chartMode的狀態）。
+  // 疊加標記只屬於持股診斷分頁／「朱老師App版面」的技術分析勾選列；離開
+  // 這兩者時要清掉，否則切到其他分頁時，Chart.draw() 仍會繼續畫上一次算好
+  // 的轉折點/頸線/目標價（Chart模組不知道目前是哪個chartMode，annotations
+  // 是獨立於chartMode的狀態）。daily模式進來時交給renderDailySourceChart→
+  // maybeApplyZhuOverlay決定要不要重新套用，這裡先無條件清掉即可。
   if (mode !== 'diagnosis') Chart.setAnnotations(null);
+  updateZhuOverlayVisibility();
 }
 
 function applyChartMode(mode) {
@@ -8488,9 +8642,49 @@ function applyTheme(t) {
    獨立於亮/暗主題之外的另一個attribute，見CSS裡 html[data-skin="zhu"] 那組
    規則的說明。skin==='default'時整個移除屬性，而不是設成空字串，避免
    `html[data-skin=""]`這種邊界情況意外命中選擇器。 */
+// 分頁標籤：套用「朱老師App版面」時只換顯示文字（模仿參考截圖用的詞彙：
+// 即時/分析/法人…），底下對應的功能完全不變——技術分析分頁本來就是「分析」
+// K線圖、走勢圖本來就是「即時」報價、盤後本來就同時含三大法人跟集保（大戶）
+// 資料、持股診斷是針對單一個股的「速覽」總結，語意上都對應得起來，不是
+// 隨便亂改字。沒套用skin時完全維持原本的字，見下面 applyZhuTabLabels。
+const ZHU_TAB_LABELS = {
+  daily:     { desktop: '分析',   mobile: '📈 分析' },
+  intraday:  { desktop: '即時',   mobile: '📉 即時' },
+  chip:      { desktop: '法人/大戶', mobile: '📊 法人/大戶' },
+  diagnosis: { desktop: '速覽',   mobile: '🩺 速覽' },
+};
+const DEFAULT_TAB_LABELS = {
+  daily:     { desktop: '技術分析', mobile: '📈 技術分析' },
+  intraday:  { desktop: '走勢圖',   mobile: '📉 走勢圖' },
+  chip:      { desktop: '盤後',     mobile: '📊 盤後' },
+  diagnosis: { desktop: '持股診斷', mobile: '🩺 診斷' },
+};
+function applyZhuTabLabels(active) {
+  const labels = active ? ZHU_TAB_LABELS : DEFAULT_TAB_LABELS;
+  R.modeTabDaily.textContent     = labels.daily.desktop;
+  R.modeTabIntraday.textContent  = labels.intraday.desktop;
+  R.modeTabChip.textContent      = labels.chip.desktop;
+  R.modeTabDiagnosis.textContent = labels.diagnosis.desktop;
+  $('mtab-chart').textContent      = labels.daily.mobile;
+  $('mtab-trend').textContent      = labels.intraday.mobile;
+  $('mtab-chip').textContent       = labels.chip.mobile;
+  $('mtab-diagnosis').textContent  = labels.diagnosis.mobile;
+}
+
 function applySkin(skin) {
   if (skin === 'zhu') document.documentElement.setAttribute('data-skin', 'zhu');
   else document.documentElement.removeAttribute('data-skin');
+  applyZhuTabLabels(skin === 'zhu');
+  updateZhuOverlayVisibility();
+  // 關閉skin時，技術分析分頁如果套用過型態診斷疊加標記（頭/底、轉折、
+  // 壓力支撐勾選過），maybeApplyZhuOverlay()一開始就會因為
+  // appSkin!=='zhu'直接return，不會清掉annotations——不明確清空的話，
+  // 疊加標記會留在畫面上，變成「明明沒套用skin了，K線圖卻還畫著型態
+  // 標記」的殘留狀態。
+  if (chartMode === 'daily') {
+    if (skin === 'zhu') maybeApplyZhuOverlay();
+    else Chart.setAnnotations(null);
+  }
   if (chartMode !== 'chip') Chart.resize();
 }
 
@@ -8803,6 +8997,15 @@ function renderInfoBar(info) {
    EVENT BINDINGS
    ════════════════════════════════════════ */
 function bindEvents() {
+  /* 「朱老師App版面」K線圖疊加勾選列——這排勾選框不在設定Modal裡，是直接
+     顯示在圖表上方的即時控制項，勾選當下就要生效，不用等使用者按「儲存」，
+     所以在這裡個別綁change，不是跟其他設定一起集中在saveSettingsModal()裡
+     讀值（那些是Modal關閉才生效的設定，跟這裡的即時互動性質不同）。 */
+  R.zhuToggleMa.addEventListener('change', () => Chart.setShowMA(R.zhuToggleMa.checked));
+  R.zhuTogglePoints.addEventListener('change', () => { Chart.setShowPoints(R.zhuTogglePoints.checked); maybeApplyZhuOverlay(); });
+  R.zhuToggleTrace.addEventListener('change', () => { Chart.setHighlightPattern(R.zhuToggleTrace.checked); maybeApplyZhuOverlay(); });
+  R.zhuToggleSupport.addEventListener('change', () => { Chart.setShowNeck(R.zhuToggleSupport.checked); maybeApplyZhuOverlay(); });
+
   /* menu toggle (see #menu-drop CSS comment: position:fixed, so we need to
      place it under the button ourselves each time it opens) */
   R.menuBtn.addEventListener('click', e => {
