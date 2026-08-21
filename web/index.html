@@ -55,8 +55,17 @@ reads happen locally without further network calls once loaded.
   - UI操作：select_stock, select_market_index, switch_tab, set_chart_period,
     set_chart_indicator, get_current_selection
   - 設定：get_settings
-  - 圖表截圖：get_chart_snapshot（回傳 {type:'image', dataUrl}，可以直接當
-    <img src> 顯示技術分析圖表當下的樣子）
+  - 圖表截圖／繪圖：get_chart_snapshot（截取使用者當下畫面）、render_stock_chart
+    （自己畫一張指定股票的K線圖，可自訂時間範圍/標記/線段，不受使用者畫面狀態
+    影響）——兩者都回傳 {type:'image', dataUrl, meta:{image_ref}}，dataUrl本身
+    不會送進AI的對話內容（太大），image_ref是給AI記住、之後可以填進
+    export_document的image投影片裡的短編號。
+  - 匯出：export_document（把分析內容匯出成PDF/PPTX/Markdown，內容是跟本頁
+    「分析」報告頁同一套YAML slides schema，支援title/metrics/text/table/news/
+    notice/image/stock_diagnosis八種投影片型別）、get_report_style_guide
+    （完整分析報告的段落建議與投影片排版原則）
+  - 批次分析：batch_analyze_stocks（多檔股票各自獨立判斷時用，避免逐檔手動
+    分析撐爆對話上下文）
 
 【重要限制 / Important constraints】
 - 所有股價/指標/型態判斷都必須來自上述工具的回傳結果，不可以自己編造或用
@@ -1980,6 +1989,52 @@ const YamlLite = (() => {
     return n;
   }
 
+  // tw_stock_db客製: 依逗號切割flow-style（單行[]/{}）內容，但要避開字串
+  // 內、巢狀[]/{}內的逗號（例如 [a, {x: "1,2"}, b] 裡第二個逗號不能切）。
+  function splitFlowItems(s) {
+    const items = [];
+    let depth = 0, inStr = null, cur = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        cur += c;
+        if (c === inStr && s[i - 1] !== '\\') inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { inStr = c; cur += c; continue; }
+      if (c === '[' || c === '{') { depth++; cur += c; continue; }
+      if (c === ']' || c === '}') { depth--; cur += c; continue; }
+      if (c === ',' && depth === 0) { items.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim() !== '') items.push(cur);
+    return items.map(x => x.trim()).filter(x => x !== '');
+  }
+
+  // tw_stock_db客製: AI生成YAML時很自然會用單行flow-style寫短陣列/物件
+  // （例如 columns: [代號, 收盤, 型態] 或 - {label: 收盤, value: "2400"}），
+  // 原本的parser只認得多行block-style（每行一個 "- item"），遇到flow-style
+  // 只會把整段方括號/大括號當成一串原始字串塞進欄位，後續程式碼對著這個
+  // 字串呼叫.map()就直接炸掉（實測案例：table投影片的columns用flow-style
+  // 寫，匯出時噴"cols.map is not a function"）。這裡補上遞迴的flow-style
+  // 解析，[]/{} 可以巢狀、值本身也可以再是flow-style。
+  function parseFlowValue(s) {
+    s = s.trim();
+    if (s.startsWith('[') && s.endsWith(']')) {
+      return splitFlowItems(s.slice(1, -1)).map(parseFlowValue);
+    }
+    if (s.startsWith('{') && s.endsWith('}')) {
+      const obj = {};
+      for (const part of splitFlowItems(s.slice(1, -1))) {
+        const idx = part.indexOf(':');
+        if (idx === -1) continue;
+        obj[part.slice(0, idx).trim()] = parseFlowValue(part.slice(idx + 1).trim());
+      }
+      return obj;
+    }
+    return parseScalar(s);
+  }
+
   function parseScalar(s) {
     s = s.trim();
     if (s === 'null' || s === '') return null;
@@ -1991,8 +2046,84 @@ const YamlLite = (() => {
         .replace(/\\"/g, '"')
         .replace(/\\\\/g, '\\');
     }
+    if ((s.startsWith('[') && s.endsWith(']')) || (s.startsWith('{') && s.endsWith('}'))) {
+      return parseFlowValue(s);
+    }
     const n = Number(s);
     return isNaN(n) ? s : n;
+  }
+
+  // tw_stock_db客製: 這個parser原本只吃「每個key的值都在同一行」的簡單YAML
+  // （report_builder.py自己產生的報告本來就是這樣寫的），但後來開放AI助理的
+  // export_document工具直接吃AI自己生成的YAML字串後，實測發現AI（尤其較弱的
+  // 模型）很自然會寫出標準YAML常見、但這個lite parser完全不支援的寫法：
+  //   body: |
+  //     第一段落文字…
+  //     第二段落文字…
+  // 或甚至更常見的疏漏：
+  //   body:
+  //     一段沒有用|標記、直接縮排寫的長文字
+  // 這兩種情況原本的parseDict/parseList遇到縮排的下一行時，會呼叫parseBlock
+  // 把它當成巢狀dict/list解析，而純文字段落裡通常沒有「key: value」結構、
+  // 也不是「- 項目」，於是parseDict逐行找不到冒號就直接跳過整行——結果整段
+  // AI辛苦寫的分析文字被靜默丟棄，PDF/PPTX對應的投影片就變成標題後面完全空白
+  // （這正是使用者實測回報的「pptx跟pdf都沒有說明文字」的根因）。
+  // 這裡新增 looksLikeStructuredLine 判斷：indent更深的下一行如果不像
+  // 「- 項目」也不像「key: value」，就整段當成純文字(多行用\n接起來)吃掉，
+  // 而不是誤判成空dict。不影響原本report_builder.py產生的、本來就是單行值
+  // 的YAML（那些每個縮排下一行如果存在，必定符合dict/list結構，這個判斷會
+  // 照舊放行給parseDict/parseList處理）。
+  function looksLikeStructuredLine(rest) {
+    if (rest.startsWith('- ') || rest === '-') return true;
+    const idx = rest.indexOf(':');
+    if (idx === -1) return false;
+    const key = rest.slice(0, idx).trim();
+    const afterColon = rest[idx + 1];
+    // "key: value" 的冒號後面一定是空白或行尾；"http://..." 這類值裡的冒號
+    // 後面緊接著非空白字元，不是key/value分隔符
+    if (afterColon !== undefined && afterColon !== ' ') return false;
+    // 中文全形標點通常只會出現在敘述文字裡，不會是YAML key的一部分
+    return key.length > 0 && key.length < 40 && !/[。，、；！？、]/.test(key);
+  }
+
+  // 把「key:」後面缺了|、但接著整段縮排純文字」的情況，當成多行字串整段吃掉，
+  // 回傳{text, consumed:true}；如果第一行看起來像結構化內容（list/dict），
+  // 回傳{consumed:false}交回原本的parseBlock流程處理。
+  function tryParsePlainTextBlock(lines, pos, parentIndent) {
+    if (pos.i >= lines.length) return { consumed: false };
+    const firstLineIndent = indentOf(lines[pos.i]);
+    if (firstLineIndent <= parentIndent) return { consumed: false };
+    if (looksLikeStructuredLine(lines[pos.i].slice(firstLineIndent))) return { consumed: false };
+    const bodyLines = [];
+    let blockIndent = firstLineIndent;
+    while (pos.i < lines.length) {
+      const line = lines[pos.i];
+      if (line.trim() === '') { bodyLines.push(''); pos.i++; continue; }
+      const ind = indentOf(line);
+      if (ind <= parentIndent) break;
+      bodyLines.push(line.slice(Math.min(ind, blockIndent)));
+      pos.i++;
+    }
+    while (bodyLines.length && bodyLines[bodyLines.length - 1] === '') bodyLines.pop();
+    return { consumed: true, text: bodyLines.join('\n') };
+  }
+
+  // 明確的YAML區塊純量標記(| 保留換行 / > 折疊成空白，選填的+/-控制結尾換行，
+  // 這裡不細分chomping語意，統一去掉結尾多餘空行即可，對這個用途已經足夠)。
+  function parseBlockScalarValue(lines, pos, parentIndent, indicator) {
+    const bodyLines = [];
+    let blockIndent = null;
+    while (pos.i < lines.length) {
+      const line = lines[pos.i];
+      if (line.trim() === '') { bodyLines.push(''); pos.i++; continue; }
+      const ind = indentOf(line);
+      if (ind <= parentIndent) break;
+      if (blockIndent === null) blockIndent = ind;
+      bodyLines.push(line.slice(blockIndent));
+      pos.i++;
+    }
+    while (bodyLines.length && bodyLines[bodyLines.length - 1] === '') bodyLines.pop();
+    return indicator[0] === '>' ? bodyLines.join(' ') : bodyLines.join('\n');
   }
 
   /* lines: 完整行陣列（未trim）；pos: {i} 游標，會被就地推進。 */
@@ -2018,14 +2149,26 @@ const YamlLite = (() => {
         arr.push(pos.i < lines.length ? parseBlock(lines, pos, indentOf(lines[pos.i])) : null);
         continue;
       }
+      // flow-style list item（例如 - {label: 收盤, value: "2400"} 或
+      // - [1, 2, 3]）：先擋在下面的「key: value」正則之前，不然開頭的
+      // "{label" 會被誤判成一個叫"{label"的key（見parseFlowValue說明）。
+      if (afterDash.startsWith('{') || afterDash.startsWith('[')) {
+        arr.push(parseFlowValue(afterDash));
+        pos.i++;
+        continue;
+      }
       const m = afterDash.match(/^([^:]+):\s?(.*)$/);
       if (m) {
         // dict item：第一個 key 內嵌在 '- ' 後面，其餘 key 縮排對齊(indent+2)
         const key = m[1], valuePart = m[2];
         pos.i++;
         const obj = {};
-        if (valuePart === '') {
-          if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent + 2) {
+        if (/^[|>][+-]?\d*$/.test(valuePart)) {
+          obj[key] = parseBlockScalarValue(lines, pos, indent + 2, valuePart);
+        } else if (valuePart === '') {
+          const plain = tryParsePlainTextBlock(lines, pos, indent + 2);
+          if (plain.consumed) obj[key] = plain.text;
+          else if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent + 2) {
             obj[key] = parseBlock(lines, pos, indentOf(lines[pos.i]));
           } else {
             obj[key] = null;
@@ -2056,8 +2199,12 @@ const YamlLite = (() => {
       const key = rest.slice(0, idx).trim();
       const valuePart = rest.slice(idx + 1).trim();
       pos.i++;
-      if (valuePart === '') {
-        if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent) {
+      if (/^[|>][+-]?\d*$/.test(valuePart)) {
+        obj[key] = parseBlockScalarValue(lines, pos, indent, valuePart);
+      } else if (valuePart === '') {
+        const plain = tryParsePlainTextBlock(lines, pos, indent);
+        if (plain.consumed) obj[key] = plain.text;
+        else if (pos.i < lines.length && lines[pos.i].trim() !== '' && indentOf(lines[pos.i]) > indent) {
           obj[key] = parseBlock(lines, pos, indentOf(lines[pos.i]));
         } else {
           obj[key] = null;
@@ -4569,6 +4716,35 @@ async function ensureStockHistoryLoadedForAi(code, neededDays) {
 }
 
 /* ════════════════════════════════════════
+   AI圖片參照登記表：render_stock_chart/get_chart_snapshot畫出來的圖片，
+   二進位內容(dataUrl)刻意不會送進AI看得到的對話內容（見floating-assistant.js
+   的_buildToolResultMessage說明——單張圖動輒兩三萬token，塞進文字只會拖垮
+   對話），只存在訊息物件不可枚舉的_displayDataUrl屬性上給畫面渲染用。這代表
+   AI事後沒有任何管道把「剛才畫的那張圖」原封不動貼進export_document的
+   content_yaml裡——AI既看不到base64內容，也不該被要求手動重新輸入幾萬字元
+   的亂碼（就算真的輸出了，複製錯一個字元整張圖就壞掉）。
+   解法：每張畫出來的圖額外登記一個短ID（image_ref），這個ID很小、可以放心
+   讓AI看到、記住、原樣抄進YAML；export_document看到slides裡的
+   {type:'image', image_ref:'...'} 時，自己從這個登記表換回真正的dataUrl。
+   只在單一分頁的記憶體內（reload就清空，不用持久化——這些圖片本來就是
+   單次對話的暫時性產物，不是使用者資料）；上限30張、超過淘汰最舊的，避免
+   一個很長的對話裡不斷畫圖、記憶體無限增長。
+   ════════════════════════════════════════ */
+const AiImageRegistry = (() => {
+  const MAX_ENTRIES = 30;
+  const store = new Map(); // id -> dataUrl，Map保留插入順序，天然就是FIFO
+  let seq = 0;
+  function put(dataUrl) {
+    const id = `img_${++seq}`;
+    store.set(id, dataUrl);
+    while (store.size > MAX_ENTRIES) store.delete(store.keys().next().value);
+    return id;
+  }
+  function get(id) { return store.get(id) || null; }
+  return { put, get };
+})();
+
+/* ════════════════════════════════════════
    AI繪圖引擎：讓AI直接聲明式描述「要畫什麼」（哪檔股票、多長時間、Y軸範圍、
    要疊哪些標記/線），畫在一個全新的離線canvas上，不依賴/不截取使用者目前
    畫面上正在看的技術分析圖表——原本的get_chart_snapshot()是截取使用者
@@ -4932,6 +5108,11 @@ async function renderAiStockChart(params) {
     highAt: highBar.trade_date,
     low: lowBar.low,
     lowAt: lowBar.trade_date,
+    // tw_stock_db客製: image_ref是這張圖在AiImageRegistry裡的登記編號，
+    // 是唯一會送進AI看得到的對話內容的圖片相關欄位（dataUrl本身不會，見
+    // AiImageRegistry說明）——AI如果要把這張圖放進export_document的PDF/PPTX，
+    // 就是把這個編號原樣抄進slides陣列的image_ref欄位，不要嘗試自己填dataUrl。
+    image_ref: AiImageRegistry.put(dataUrl),
   };
   return { type: 'image', dataUrl, meta };
 }
@@ -5000,6 +5181,67 @@ K棒品質(kbar_quality)：body_pct=|close-open|/open*100，≥2%才算實心K�
 進出場(entry_exit)：跌破關鍵均線視為趨勢停損，或用5%-7%百分比停損；目標價一律用等幅測量法(關鍵價差往上/下加計)。
 
 尺度(scale)：diagnose_stock可能同時偵測到小/中/大型態，對應回看K棒數=主要天數的0.5/1/1.6倍，同一檔股票不同尺度可能有不同型態同時成立，判讀時要講清楚是哪個尺度。`;
+
+// tw_stock_db客製: 使用者明確要求「AI產生的持股分析PDF/PPTX要像Claude自己
+// 產出報告一樣，AI要懂得插入圖片/分析結果/表格」——這份指南同樣故意不放進
+// AI_SYSTEM_PROMPT（避免每輪對話都重送、撐大context，見AI_ANALYSIS_PRINCIPLES
+// 的同一個理由），只有真的要做完整簡報/口頭報告時才由AI主動呼叫。內容分兩塊：
+// (1) 口頭報告該涵蓋的段落，跟這個網頁的diagnose_stock回傳欄位一一對應；
+// (2) export_document的slides陣列該怎麼排版才不會變成「一頁塞滿文字」的
+// 醜報告，呼應pptxgenjs簡報美學skill裡「每頁都要有視覺變化」的精神，但完全
+// 針對這個網頁自己的slide type（title/metrics/text/table/news/notice/image/
+// stock_diagnosis）重寫，不是逐字照抄。
+const AI_REPORT_STYLE_GUIDE = `【完整分析報告／口頭報告寫作指南】
+
+一、口頭報告（在對話裡直接講給使用者聽，不是塞進檔案）建議依序涵蓋：
+1. 目前位置：收盤價相對均線位置、均線排列（多排/空排/糾結），附實際數字。
+2. 趨勢判斷：多頭(頭頭高底底高)/空頭(頭頭低底底低)/盤整，附近期高低點價位與日期。
+3. 型態辨識結論：明講是什麼型態（或「尚未成型，屬於觀察階段」），附頸線/關鍵價位。
+4. K棒品質檢查：關鍵K棒實體%、上影線是否過長，通過/未通過。
+5. 量價關係：量比是否達有效放量標準。
+6. 大盤連動：大盤/SOX等美股觀察指標是否構成加分或扣分。
+7. 進出場建議：停損價位、目標價估算（附算法，不是只給結論數字）。
+8. 風險提示：一律提醒這是技術面框架推演、非投資建議。
+以上八項對應diagnose_stock回傳的position/trend/pattern/kbar_quality/volume_price/
+market_linkage/entry_exit欄位，逐項用工具回傳的真實數字講，不要只給模糊結論
+（例如「還不錯」「感覺可以」這種話不要出現，一律換成具體數字/型態術語）。
+使用者如果同時要求「產生檔案」跟「口頭報告」，兩者都要做到——呼叫完
+export_document、畫面出現下載連結後，不代表這則回覆的任務結束，仍要在
+同一則回覆的文字裡把上面八項實際內容講出來，不能只回覆「已產生檔案」。
+
+二、export_document的slides陣列排版建議（避免整份都是text投影片，比照
+Claude自己產出簡報的水準——每頁都要有明確的視覺變化，不是純文字堆疊）：
+- 單一股票的完整分析：title(封面) → metrics(收盤/漲跌%/型態一句話等關鍵數字)
+  → image(呼叫render_stock_chart畫帶標記的走勢圖，把回傳的image_ref填進來)
+  → stock_diagnosis(如果手上是diagnose_stock的原始回傳物件，直接整包放進
+  一個type:stock_diagnosis投影片，不用自己拆文字) 或分段text投影片。
+- 多檔股票的批次分析：title → table(每檔一列，欄位例如股票/收盤/漲跌%/型態/
+  建議動作，方便一眼比較) → 針對「值得特別說明」的少數幾檔（不用每檔都展開，
+  太多頁反而稀釋重點）各自補一組image+text/stock_diagnosis投影片深入說明
+  → notice(免責聲明，或直接用doc.disclaimer欄位，不用另外開一頁)。
+- 每個image投影片的image_ref一定要是render_stock_chart/get_chart_snapshot
+  剛剛回傳的meta.image_ref，不要沿用其他次呼叫的舊編號、也不要編造。
+- 不確定某段資訊怎麼呈現最合適時，優先順序：有明確數字→metrics；多筆同結構
+  資料要比較→table；需要視覺輔助理解→image；其餘敘述性內容→text。`;
+
+// tw_stock_db客製: export_document用來擋掉「幾乎空白」的匯出（見該工具handler
+// 的說明），只累加slides裡實際的字串「值」長度（不含key名稱/JSON標點），
+// title投影片跟image投影片的圖片本身不計入字數（它們的資訊量不是用字數衡量）。
+function sumStringLeafLengths(node) {
+  if (node == null) return 0;
+  if (typeof node === 'string') return node.length;
+  if (Array.isArray(node)) return node.reduce((s, v) => s + sumStringLeafLengths(v), 0);
+  if (typeof node === 'object') return Object.values(node).reduce((s, v) => s + sumStringLeafLengths(v), 0);
+  return 0;
+}
+function docContentRichness(doc) {
+  let total = 0;
+  for (const slide of (doc.slides || [])) {
+    if (!slide || slide.type === 'title' || slide.type === 'image') continue;
+    total += sumStringLeafLengths(slide);
+  }
+  return total;
+}
 
 /* ════════════════════════════════════════
    AI CAPABILITIES（給內嵌AI助理tool-calling用，也是給外部AI（Claude/Gemini
@@ -5186,7 +5428,17 @@ const AI_CAPABILITIES = [
       '- {type: table, heading, columns: [欄位名...], rows: [[儲存格...], ...]} —— 表格\n' +
       '- {type: news, heading, items: [{title, link, published_at}]} —— 新聞/連結清單\n' +
       '- {type: notice, text} —— 單純的提示文字\n' +
-      '不要自己發明其他type，不確定該怎麼呈現某段資訊時優先用text或metrics。呼叫這個工具之前，你已經拿到的原始資料（例如diagnose_stock、get_price_history等工具的回傳值）要自己先整理、摘要成上面的slides結構，不要整包塞進單一個text投影片。',
+      '- {type: image, image_ref, heading(選填), caption(選填)} —— 一張圖表圖片。image_ref必須是render_stock_chart或\n' +
+      '  get_chart_snapshot工具回傳結果裡meta.image_ref的原始值（一個很短的編號字串，例如"img_3"），這裡會自動\n' +
+      '  換回真正的圖片內容；絕對不要自己生成、憑印象編造、或用其他字串頂替image_ref，也不要嘗試自己填dataUrl\n' +
+      '  欄位（你根本看不到圖片的二進位內容，硬填只會產生一段沒有意義的亂碼、匯出時解析失敗）。\n' +
+      '不要自己發明其他type，不確定該怎麼呈現某段資訊時優先用text或metrics。呼叫這個工具之前，你已經拿到的原始資料（例如diagnose_stock、get_price_history等工具的回傳值）要自己先整理、摘要成上面的slides結構，不要整包塞進單一個text投影片。\n' +
+      '簡報美觀原則（比照Claude自己產出報告的水準）：每張投影片都要有明確的視覺變化，不要從頭到尾只用text——\n' +
+      '關鍵數字用metrics、多檔/多期間比較用table、有轉折點或型態需要「畫出來」才講得清楚時先呼叫render_stock_chart\n' +
+      '拿到image_ref再用image投影片放進來、單純提醒或免責聲明用notice。一份完整的個股或多股分析簡報建議依序：\n' +
+      '封面(title) → 總覽數字(metrics，例如收盤/漲跌/型態一句話) → 走勢圖(image) → 詳細判讀(stock_diagnosis，\n' +
+      '如果是用diagnose_stock的原始回傳物件) 或分段text(目前位置/趨勢判斷/型態辨識/量價關係/進出場建議)。\n' +
+      '需要更完整的簡報結構與口頭報告寫作建議時，可以先呼叫get_report_style_guide。',
     params: {
       content_yaml: '要匯出的內容，YAML格式字串，符合上述schema',
       format: '匯出格式，只能是 "pdf"、"pptx"、"markdown" 三選一',
@@ -5201,6 +5453,30 @@ const AI_CAPABILITIES = [
       }
       if (!doc || !Array.isArray(doc.slides) || !doc.slides.length) {
         return { ok: false, error: '內容格式不正確：解析後沒有非空的slides陣列，請確認YAML縮排/結構符合schema說明' };
+      }
+      // tw_stock_db客製: 實測發現較弱的模型（例如nemotron）在口頭回覆裡會寫
+      // 出很詳細的分析，但呼叫export_document時給的content_yaml卻只有標題、
+      // 幾乎沒有實質內容——匯出的PDF/PPTX因此變成幾乎空白（使用者實測回報
+      // 的「pptx跟pdf都沒有說明文字跟圖」）。這裡用一個很寬鬆的字數門檻擋掉
+      // 明顯過薄的內容，強迫AI把已經分析出來的東西實際寫進slides裡再重試，
+      // 而不是讓一份空殼投影片靜默匯出成功——門檻刻意設得很低（60字），只擋
+      // 真的接近空白的情況，不影響本來就內容精簡的合理匯出。
+      const richness = docContentRichness(doc);
+      if (richness < 60) {
+        return { ok: false, error: `內容太薄弱（除了封面/圖片以外，實質文字內容只有約${richness}個字），匯出的PDF/PPTX幾乎會是空白的。請把你已經拿到的分析結果（例如diagnose_stock回傳的各項判讀、K棒品質、進出場建議等）具體寫進text/metrics/table/stock_diagnosis投影片裡再重新呼叫，不要只放標題或空殼結構；不確定該怎麼排版可以先呼叫get_report_style_guide。` };
+      }
+      // tw_stock_db客製: image投影片的image_ref是AiImageRegistry登記編號（見
+      // AiImageRegistry說明），這裡換回真正的dataUrl再交給ReportExport——
+      // 找不到就直接失敗並報清楚原因，不要靜默跳過那張圖（AI才知道要重新
+      // 呼叫render_stock_chart拿新編號，而不是誤以為圖片已經匯出成功）。
+      for (const slide of doc.slides) {
+        if (slide && slide.type === 'image' && !slide.dataUrl) {
+          const resolved = slide.image_ref ? AiImageRegistry.get(String(slide.image_ref)) : null;
+          if (!resolved) {
+            return { ok: false, error: `image_ref "${slide.image_ref || ''}" 找不到對應圖片（可能已過期、拼錯、或根本沒呼叫過render_stock_chart/get_chart_snapshot）。請重新呼叫render_stock_chart或get_chart_snapshot取得新的image_ref後再試一次，不要自己編造image_ref或dataUrl。` };
+          }
+          slide.dataUrl = resolved;
+        }
       }
       const format = String(a.format || '').toLowerCase();
       if (!['pdf', 'pptx', 'markdown'].includes(format)) {
@@ -5220,11 +5496,19 @@ const AI_CAPABILITIES = [
           mimeType = blob.type; ext = 'pdf';
         }
         const result = await aiConsoleInstance.generateAndDeliverFile(blob, `${filenameBase}.${ext}`, mimeType);
-        return { ok: true, filename: result.filename, sizeBytes: blob.size, note: '已在對話裡插入下載連結，不需要再重複告知使用者檔案內容細節。' };
+        return { ok: true, filename: result.filename, sizeBytes: blob.size, note: '已在對話裡插入下載連結，不用再重複貼一次「檔案裡有哪些投影片」這種清單式描述；但如果使用者原本要的是完整分析內容/口頭報告，仍要在這則回覆裡把分析結論實際講出來，不能只回覆下載連結。' };
       } catch (e) {
         return { ok: false, error: `匯出失敗：${e.message}` };
       }
     },
+  },
+  {
+    name: 'get_report_style_guide', category: '匯出',
+    description: '取得「完整分析報告／口頭報告寫作指南」——使用者要求完整的個股或多股分析（尤其同時要求產生PDF/PPTX檔案\n' +
+      '又要口頭報告時）之前，建議先呼叫這個，內容包含：口頭報告該涵蓋哪八個段落（對應diagnose_stock的欄位）、\n' +
+      'export_document的slides陣列該怎麼排版才不會變成整份都是文字的醜報告。不會每輪對話自動附加，只有需要時才呼叫。',
+    params: {},
+    handler: () => AI_REPORT_STYLE_GUIDE,
   },
   {
     name: 'get_watchlist', category: '自選股',
@@ -5334,7 +5618,10 @@ const AI_CAPABILITIES = [
     name: 'get_chart_snapshot', category: '圖表截圖',
     description: '把目前技術分析圖表（K線+均線+成交量+副圖指標）截成一張圖片，回傳可以直接顯示在對話框裡；只有目前顯示的是技術分析/走勢圖/持股診斷分頁時才截得到有意義的內容（其他分頁K線是隱藏的，截圖會是空的）。⚠️這是截取使用者「目前畫面」，不受你控制，畫面剛切換股票/分頁時可能還沒重繪完成而截到空白或錯誤內容；如果你想要主動畫一張帶特定標記/線段的圖來輔助說明分析，改用render_stock_chart，不用依賴/等待使用者畫面狀態。',
     params: {},
-    handler: () => ({ type: 'image', dataUrl: Chart.getSnapshotDataUrl() }),
+    handler: () => {
+      const dataUrl = Chart.getSnapshotDataUrl();
+      return { type: 'image', dataUrl, meta: { image_ref: AiImageRegistry.put(dataUrl) } };
+    },
   },
   {
     name: 'render_stock_chart', category: '圖表截圖',
@@ -5438,9 +5725,18 @@ get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruc
 匯出檔案：使用者要求把分析結果存成PDF/PPTX/Markdown檔案時，呼叫 export_document（詳細
 schema見該工具description）。這個網頁「分析」報告頁本身（盤前分析/大盤分析等）的內容就是
 用同一套YAML slides格式儲存與呈現，你產出的內容要對齊同一個schema，不要自己發明別的格式；
-把手上已經拿到的資料整理成slides陣列（title/metrics/text/table/news/notice六種型別），
-不要把整段原始文字塞進單一個text投影片了事。工具成功後畫面會自動出現下載連結，不用再另外
-描述檔案裡有什麼內容。
+把手上已經拿到的資料整理成slides陣列（title/metrics/text/table/news/notice/image/
+stock_diagnosis八種型別，每種的欄位見export_document的description），不要把整段原始文字
+塞進單一個text投影片了事。內容裡如果有轉折點/型態/走勢適合「畫出來」講解，先呼叫
+render_stock_chart拿到meta.image_ref，再用一個{type:image, image_ref:...}投影片放進去
+——image_ref是唯一你看得到、可以安全複製的圖片相關欄位，不要試圖自己填dataUrl（那個是
+幾萬字元的base64，你看不到內容，硬填只會產生亂碼讓匯出失敗）。工具成功後畫面會自動出現
+下載連結，不用再用清單方式重複列一次「檔案裡有哪幾頁」，但如果使用者原本要的是完整分析
+內容或口頭報告（不只是「幫我存個檔」），呼叫export_document之後仍要在同一則回覆裡把分析
+結論實際講出來，不能只回一句「已產生檔案」就結束——這兩件事不互斥，檔案是給使用者下載
+留存的，口頭報告是講給使用者聽的，使用者兩個都要就兩個都要給。要完整分析＋簡報＋口頭報告
+（尤其牽涉多檔股票、或使用者用「持股分析」「幫我做個簡報」這類措辭）時，建議先呼叫
+get_report_style_guide了解建議的報告段落與投影片排版方式，避免簡報整份都是純文字堆疊。
 回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是
 投資建議，需要的話要提醒使用者。
 格式規則：支援一般Markdown（標題、粗體、清單、表格）跟LaTeX數學語法（行內用單一$包住，
