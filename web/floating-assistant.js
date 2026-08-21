@@ -3654,17 +3654,331 @@ ${existingNodeSummaries}
 
     // tw_stock_db客製: 從輸入框取字、清空、觸發executeChat的共用邏輯，被
     // Enter鍵送出跟「送出」按鈕共用，確保兩條路徑行為完全一致（見上面
-    // bindEvents()裡兩處的呼叫端）。
+    // bindEvents()裡兩處的呼叫端）。/benchmark-model指令刻意在這裡攔截、
+    // 不進executeChat/LLM——這是本地端function call直接觸發的工具指令，
+    // 不需要也不應該讓AI自己「決定」要不要跑基準測試。
     _submitChatInput(inputText, suggestBar) {
         const textToSend = inputText.value.trim();
         if (!textToSend) return;
 
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
+
+        if (/^\/benchmark-model\b/i.test(textToSend)) {
+            this._handleBenchmarkModelCommand(textToSend.replace(/^\/benchmark-model\s*/i, ''));
+            return;
+        }
+
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }
         this.executeChat(textToSend);
+    }
+
+    // ============================================================
+    // tw_stock_db客製: /benchmark-model 指令——見使用者要求記錄的評估準則
+    // （簡易回應速度／單一工具呼叫／完整多步驟請求跑2次，各自評分、算
+    // 加權總分），做成可以直接在對話框打指令觸發的本地function call，
+    // 完全不經過LLM（不是AI工具，是聊天輸入框自己識別的指令，跟
+    // [CALL:...]是兩回事）。用法：
+    //   /benchmark-model <model> [<api base url>] [<api key>]
+    // 後兩個參數選填，沒填就沿用目前設定面板裡的API URL/Key——這樣可以
+    // 在不動使用者目前實際在用的模型設定的前提下，臨時測一個新模型（甚至
+    // 測別的API端點），測完不影響原本的對話或設定。
+    // ============================================================
+
+    _benchmarkSpeedScore(ms, tiers) {
+        for (const [maxMs, score] of tiers) {
+            if (ms <= maxMs) return score;
+        }
+        return 0;
+    }
+
+    // 掃一輪測試自己獨立的本地messages陣列（不是this.messages，見
+    // _benchmarkRunTurn的說明），抓正確性訊號：
+    // - toolCount：真的執行過幾次工具
+    // - hasProtocolConfusion：模型有沒有把系統提示裡的呼叫格式範例文字
+    //   （例如"tool_name("、"ARGUMENTS_AS_JSON_OBJECT"）誤當成真實呼叫寫
+    //   出來——這是實測抓到的真實失敗模式。
+    // - hasEmptyFinal / finalText：最後一則assistant訊息是否為空、內容
+    //   是什麼。
+    _benchmarkAnalyzeMessages(msgs) {
+        const toolCount = msgs.filter(m => m.role === 'tool').length;
+        const hasProtocolConfusion = msgs.some(m => m.role === 'assistant' && typeof m.content === 'string' &&
+            /tool_name\s*\(|ARGUMENTS_AS_JSON_OBJECT/i.test(m.content));
+        const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant');
+        const finalText = lastAssistant && typeof lastAssistant.content === 'string' ? lastAssistant.content : '';
+        const hasEmptyFinal = !!lastAssistant && finalText.trim() === '';
+        return { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText };
+    }
+
+    // tw_stock_db客製: 跑一輪完全獨立的對話（自己的messages陣列，不是
+    // this.messages），刻意不重用executeChat/_loopFetch/_loopFetchNative
+    // ——那三個是為了「使用者看得到的即時串流對話視窗」設計的（stream:
+    // true、邊收邊更新DOM、操作this.messages），基準測試要的是「跑完就好，
+    // 不要動使用者真正的對話視窗、也不要被牽動UI狀態」，用非串流請求＋
+    // 區域變數乾淨很多。跟_runSubAgentTask的精神一樣（那個也是獨立
+    // messages陣列），差別是這裡允許呼叫端傳入自訂apiKey/apiUrl/apiModel
+    // （測別的端點/模型時不能依賴this._getApiConfig()目前設定的值）。
+    async _benchmarkRunTurn(apiKey, apiUrl, apiModel, useNative, prompt, maxRounds, timeoutMs) {
+        const t0 = Date.now();
+        const messages = [
+            { role: 'system', content: this._getFinalSystemPrompt() },
+            { role: 'user', content: prompt },
+        ];
+        let timedOut = false;
+        try {
+            for (let round = 0; round < maxRounds; round++) {
+                const remaining = timeoutMs - (Date.now() - t0);
+                if (remaining <= 0) { timedOut = true; break; }
+
+                const body = {
+                    model: apiModel,
+                    messages,
+                    temperature: 0,
+                    ...this._buildSamplingParamsBody(),
+                    max_tokens: this._getGenerationSettings().maxOutputTokens,
+                    stream: false,
+                };
+                if (useNative) {
+                    body.tools = this._buildNativeToolsSchema();
+                    body.tool_choice = 'auto';
+                } else {
+                    Object.assign(body, this._buildStopParamBody());
+                }
+
+                const controller = this._createAbortController();
+                const timeoutId = setTimeout(() => controller.abort(), Math.max(5000, remaining));
+                let response;
+                try {
+                    response = await fetch(`${apiUrl}/chat/completions`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                        signal: controller.signal,
+                        body: JSON.stringify(body),
+                    });
+                } catch (err) {
+                    messages.push({ role: 'assistant', content: `[網路錯誤] ${String(err.message || err)}` });
+                    break;
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    if (!useNative && this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
+                        round--;
+                        continue;
+                    }
+                    messages.push({ role: 'assistant', content: `[HTTP ${response.status}] ${errText.slice(0, 200)}` });
+                    break;
+                }
+
+                const data = await response.json();
+                const message = data.choices && data.choices[0] && data.choices[0].message;
+                if (!message) { messages.push({ role: 'assistant', content: '[回應格式異常]' }); break; }
+
+                const rawContent = message.content || '';
+                const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+                if (useNative && toolCalls.length) {
+                    messages.push(Object.assign({ role: 'assistant', content: this._stripInlineBase64(rawContent) }, { tool_calls: toolCalls }));
+                    for (const tc of toolCalls) {
+                        const fnName = tc.function && tc.function.name;
+                        const rawArgs = (tc.function && tc.function.arguments) || '{}';
+                        try {
+                            const toolDef = this._getToolDefinition(fnName);
+                            if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
+                            const result = await Promise.resolve(toolDef.callback(rawArgs));
+                            messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
+                        } catch (err) {
+                            messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ ok: false, error: String(err.message || err) }) });
+                        }
+                    }
+                    continue;
+                }
+
+                // 文字式[CALL:...]慣例，跟_loopFetch的救援路徑同一套邏輯（見
+                // _extractBalancedCallArgs的說明）。
+                const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
+                let match; const toolTasks = []; let lastMatchEnd = -1;
+                while ((match = regex.exec(rawContent)) !== null) {
+                    toolTasks.push({ fnName: match[1], fnArgsRaw: match[2].trim() });
+                    lastMatchEnd = match.index + match[0].length;
+                }
+                let truncated = rawContent;
+                if (lastMatchEnd > -1) {
+                    let end = lastMatchEnd;
+                    if (rawContent[end] === ']') end += 1;
+                    truncated = rawContent.slice(0, end);
+                } else {
+                    const callStart = rawContent.indexOf('[CALL:');
+                    if (callStart > -1) {
+                        const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                        if (nameMatch) {
+                            const openParenIdx = callStart + nameMatch[0].length - 1;
+                            const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
+                            toolTasks.push({ fnName: nameMatch[1], fnArgsRaw: content.trim() });
+                            let end = endIndex;
+                            if (rawContent[end] === ']') end += 1;
+                            truncated = rawContent.slice(0, end);
+                        }
+                    }
+                }
+                messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
+                if (!toolTasks.length) break; // 純文字回答，這一輪結束，視為對話完成
+
+                for (const task of toolTasks) {
+                    try {
+                        const toolDef = this._getToolDefinition(task.fnName);
+                        if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
+                        const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
+                        const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                        messages.push(this._buildToolResultMessage(task.fnName, result));
+                    } catch (err) {
+                        messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
+                    }
+                }
+            }
+        } catch (err) {
+            messages.push({ role: 'assistant', content: `[錯誤] ${String(err.message || err)}` });
+        }
+        return { messages, elapsedMs: Date.now() - t0, timedOut };
+    }
+
+    async _benchmarkTest1(apiKey, apiUrl, apiModel, useNative) {
+        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '請直接回覆兩個字：測試', 3, 60000);
+        const { hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
+        const correct = !timedOut && !hasEmptyFinal && finalText.includes('測試');
+        const speedScore = timedOut ? 0 : this._benchmarkSpeedScore(elapsedMs, [[10000, 100], [20000, 85], [40000, 60], [60000, 30], [Infinity, 0]]);
+        return { name: '①簡易回應速度', timedOut, elapsedMs, correct, score: correct ? speedScore : 0 };
+    }
+
+    async _benchmarkTest2(apiKey, apiUrl, apiModel, useNative) {
+        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '幫我查一下2330現在的價格跟簡短技術面判斷，一兩句話就好', 6, 90000);
+        const { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
+        if (timedOut) return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, score: 0 };
+        let correctness = 0;
+        if (toolCount >= 1) correctness += 40;
+        if (!hasEmptyFinal && finalText.length > 10) correctness += 40;
+        if (!hasProtocolConfusion) correctness += 20;
+        const speedScore = this._benchmarkSpeedScore(elapsedMs, [[15000, 100], [30000, 85], [60000, 60], [90000, 30], [Infinity, 0]]);
+        const score = Math.round(correctness * 0.7 + speedScore * 0.3);
+        return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, correctness, speedScore, score };
+    }
+
+    // 完整多步驟請求單次嘗試——呼叫端負責跑兩次取平均（見runModelBenchmarkCommand）。
+    // exportedFileSizeBytes由呼叫端透過暫時attach的_benchmarkCapturedExport
+    // 傳進來（見generateAndDeliverFile的monkey-patch說明），不用掃訊息內容
+    // 猜測，直接讀真正的匯出結果最可靠。
+    async _benchmarkTest3Attempt(apiKey, apiUrl, apiModel, useNative) {
+        this._benchmarkCapturedExport = null;
+        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '幫2330做一個完整持股分析，產生pptx，也要口頭報告給我', 10, 240000);
+        const { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
+        const exportedFile = this._benchmarkCapturedExport;
+        if (timedOut) return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, exportedFile, score: 0 };
+        let correctness = 0;
+        // 檔案是不是真的產生（不是模型自己宣稱「已產生檔案」卻沒真的呼叫
+        // export_document）——20000 bytes是保守的「非空殼」門檻。
+        if (exportedFile && exportedFile.sizeBytes > 20000) correctness += 50;
+        if (!hasEmptyFinal && finalText.length > 200) correctness += 30;
+        if (!hasProtocolConfusion) correctness += 20;
+        const speedScore = this._benchmarkSpeedScore(elapsedMs, [[60000, 100], [120000, 80], [180000, 60], [240000, 30], [Infinity, 0]]);
+        const score = Math.round(correctness * 0.8 + speedScore * 0.2);
+        return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, exportedFile, correctness, speedScore, score };
+    }
+
+    // 主入口：解析/benchmark-model的參數、依序跑三項測試、算加權總分、
+    // 把報告卡直接插進聊天視窗DOM（不進this.messages，不會被送進之後的
+    // API request、也不會被存進對話歷史——這是本地指令的輸出，不是對話
+    // 內容）。export_document會呼叫的generateAndDeliverFile在測試期間
+    // 暫時被換成一個只記錄結果、不真的推訊息/存檔案到使用者真實對話的
+    // 版本，測完準確還原，確保跑基準測試不會弄髒使用者真正的聊天記錄
+    // 跟檔案快取。
+    async _handleBenchmarkModelCommand(argsText) {
+        const parts = argsText.trim().split(/\s+/).filter(Boolean);
+        const model = parts[0];
+        const chatBody = document.getElementById('ai-chat-body');
+        if (!model) {
+            if (chatBody) chatBody.insertAdjacentHTML('beforeend',
+                `<div style="margin:8px 0; padding:8px 10px; border:1px solid #dd6b20; border-radius:6px; font-size:12px; color:#dd6b20;">用法：/benchmark-model &lt;model&gt; [&lt;api base url&gt;] [&lt;api key&gt;]</div>`);
+            return;
+        }
+        const base = this._getApiConfig();
+        const apiUrl = parts[1] || base.apiUrl;
+        const apiKey = parts[2] || base.apiKey;
+
+        const originalGenerateAndDeliverFile = this.generateAndDeliverFile;
+        this.generateAndDeliverFile = async (blob) => {
+            this._benchmarkCapturedExport = { sizeBytes: blob.size };
+            return { id: 'benchmark-temp', filename: 'benchmark-temp' };
+        };
+
+        const progressId = `bench-progress-${Date.now()}`;
+        if (chatBody) {
+            chatBody.insertAdjacentHTML('beforeend', `<div id="${progressId}" style="margin:8px 0; padding:8px 10px; border:1px solid ${this._getThemePalette().windowBorder}; border-radius:6px; font-size:12px;">🧪 正在對 <b>${this._escapeHtml(model)}</b> 執行基準測試…</div>`);
+        }
+        const progressEl = document.getElementById(progressId);
+        const setProgress = (msg) => { this._log(msg); if (progressEl) progressEl.innerHTML = `🧪 <b>${this._escapeHtml(model)}</b>：${this._escapeHtml(msg)}`; };
+
+        let report;
+        try {
+            const useNative = await this._ensureNativeToolSupportProbed(apiKey, apiUrl, model);
+            setProgress('①測試簡易回應速度…');
+            const test1 = await this._benchmarkTest1(apiKey, apiUrl, model, useNative);
+            setProgress(`①完成：${test1.score}分`);
+
+            setProgress('②測試單一工具呼叫…');
+            const test2 = await this._benchmarkTest2(apiKey, apiUrl, model, useNative);
+            setProgress(`②完成：${test2.score}分`);
+
+            setProgress('③-1測試完整多步驟請求（第1次）…');
+            const attempt1 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative);
+            setProgress(`③-1完成：${attempt1.score}分`);
+
+            setProgress('③-2測試完整多步驟請求（第2次）…');
+            const attempt2 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative);
+            setProgress(`③-2完成：${attempt2.score}分`);
+
+            const test3avg = Math.round((attempt1.score + attempt2.score) / 2);
+            const overallScore = Math.round(test1.score * 0.15 + test2.score * 0.30 + test3avg * 0.55);
+            const verdict = overallScore >= 80 ? '✅ 建議加入'
+                : overallScore >= 50 ? '⚠️ 可用但不穩定，建議人工複核'
+                : '❌ 不建議加入';
+            report = { model, apiUrl, useNative, test1, test2, attempt1, attempt2, test3avg, overallScore, verdict };
+        } catch (err) {
+            report = { model, apiUrl, error: String(err.message || err) };
+        } finally {
+            this.generateAndDeliverFile = originalGenerateAndDeliverFile;
+            this._benchmarkCapturedExport = null;
+            this._log('✅ 已完成');
+        }
+
+        if (progressEl) progressEl.remove();
+        if (chatBody) chatBody.insertAdjacentHTML('beforeend', this._renderBenchmarkReportHtml(report));
+        if (this._isNearBottom(chatBody)) chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    _renderBenchmarkReportHtml(r) {
+        const palette = this._getThemePalette();
+        if (r.error) {
+            return `<div style="margin:8px 0; padding:10px 12px; border:1px solid #e53e3e; border-radius:8px; font-size:12px; color:#e53e3e;">🧪 <b>${this._escapeHtml(r.model)}</b> 基準測試失敗：${this._escapeHtml(r.error)}</div>`;
+        }
+        const row = (label, t) => `<tr><td style="padding:3px 8px 3px 0; white-space:nowrap;">${label}</td><td style="padding:3px 8px;">${t.score}分</td><td style="padding:3px 8px; color:${palette.detailText};">${(t.elapsedMs / 1000).toFixed(1)}秒${t.timedOut ? '（逾時）' : ''}</td></tr>`;
+        return `<div style="margin:8px 0; padding:10px 12px; border:1px solid ${palette.windowBorder}; border-radius:8px; font-size:12px;">
+            <div style="font-weight:bold; margin-bottom:6px;">🧪 模型基準測試報告 — ${this._escapeHtml(r.model)}</div>
+            <div style="font-size:11px; color:${palette.detailText}; margin-bottom:6px;">端點：${this._escapeHtml(r.apiUrl)}　協定：${r.useNative ? '原生tool_calls' : '文字式[CALL:...]'}</div>
+            <table style="border-collapse:collapse; font-size:12px;">
+                ${row('①簡易回應速度', r.test1)}
+                ${row('②單一工具呼叫', r.test2)}
+                ${row('③-1完整多步驟請求', r.attempt1)}
+                ${row('③-2完整多步驟請求', r.attempt2)}
+            </table>
+            <div style="margin-top:8px; font-size:13px;">總分：<b>${r.overallScore}</b>／100　${r.verdict}</div>
+        </div>`;
     }
 
     /**
@@ -5252,7 +5566,14 @@ ${existingNodeSummaries}
             label.style.cssText = 'margin-bottom: 4px;';
             label.innerHTML = '<b>🤖 AI:</b>';
             div.appendChild(label);
-            const answerText = thinking.answer || '（已輸出思考內容）';
+            // tw_stock_db客製: 使用者反映偶爾會看到這則佔位文字直接顯示成
+            // 好像是AI的正式回覆——實際情況是模型這一輪只寫了思考過程
+            // （_reasoningDisplay有內容），真正的答案欄位(content)卻是空的
+            // （常見成因：單次回覆上限提前用完，模型還在「思考」階段就被
+            // 截斷，沒機會寫出最終答案）。改成講清楚發生了什麼、建議怎麼
+            // 處理，不要只留一句容易被誤會成「這就是回覆內容」的短語。
+            const answerText = thinking.answer ||
+                '⚠️ 這一輪模型只輸出了思考過程，沒有產生最終文字回覆（可能是單次回覆上限提前用完）。可以點上面「🧠 思考過程」查看，或直接追問一次；如果常發生，建議到「圖表設定→AI助理」把「單次回覆上限」調高。';
             // tw_stock_db客製: markdown函式庫載入完成前，先用純文字顯示（不
             // 讓使用者等），載入完成後這則訊息會在下一次_renderMessageHistory()
             // 重新整批渲染時自動變成排版過的版本（見下面的排程重繪邏輯）。
