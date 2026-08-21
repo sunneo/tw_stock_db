@@ -1482,7 +1482,6 @@ select:focus { outline: 2px solid var(--acc); }
 
           <h3>生成／取樣參數</h3>
           <label>模型上下文視窗（tokens） <input type="number" id="ai-cfg-context-window" min="512" step="512"></label>
-          <label>單次回覆上限（max_tokens） <input type="number" id="ai-cfg-max-output" min="64" step="64"></label>
           <p class="modal-hint">取樣/重複懲罰參數，留空代表不送這個欄位；如果被伺服器拒絕（該模型不支援），會自動排除並在AI對話裡記錄一則說明，之後也不會再帶（在這裡重新輸入值可以再試一次）：</p>
           <div class="ai-param-grid">
             <label>frequency_penalty <input type="number" step="0.1" id="ai-cfg-param-frequency_penalty"></label>
@@ -7137,7 +7136,6 @@ const R = {
   aiCfgApiUrl: $('ai-cfg-api-url'),
   aiCfgModelName: $('ai-cfg-model-name'),
   aiCfgContextWindow: $('ai-cfg-context-window'),
-  aiCfgMaxOutput: $('ai-cfg-max-output'),
   aiCfgBatchConcurrency: $('ai-cfg-batch-concurrency'),
   aiCfgFileCacheLimit: $('ai-cfg-file-cache-limit'),
   aiCfgParamFreq: $('ai-cfg-param-frequency_penalty'),
@@ -10605,13 +10603,12 @@ function loadAiConnectionSettingsIntoModal() {
   R.aiCfgApiUrl.value = localStorage.getItem(FLOATING_AI_KEYS.baseUrl) || '';
   R.aiCfgModelName.value = localStorage.getItem(FLOATING_AI_KEYS.modelName) || '';
 
-  let gen = { contextWindowTokens: 8192, maxOutputTokens: 1024, samplingParams: {} };
+  let gen = { contextWindowTokens: 8192, maxOutputTokens: 16384, samplingParams: {} };
   try {
     const raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}');
     if (raw.generation) gen = raw.generation;
   } catch (_) { /* 壞掉的JSON當作沒設定過，用預設值 */ }
   R.aiCfgContextWindow.value = gen.contextWindowTokens || 8192;
-  R.aiCfgMaxOutput.value = gen.maxOutputTokens || 1024;
 
   let batchConcurrency = 4;
   try {
@@ -10645,7 +10642,7 @@ function loadAiConnectionSettingsIntoModal() {
 function updateFloatingAiGeneration(mutator) {
   let raw = {};
   try { raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}'); } catch (_) {}
-  if (!raw.generation) raw.generation = { contextWindowTokens: 8192, maxOutputTokens: 1024, samplingParams: {} };
+  if (!raw.generation) raw.generation = { contextWindowTokens: 8192, maxOutputTokens: 16384, samplingParams: {} };
   if (!raw.generation.samplingParams) raw.generation.samplingParams = {};
   AI_SAMPLING_PARAM_KEYS.forEach(k => {
     if (!raw.generation.samplingParams[k]) raw.generation.samplingParams[k] = { value: null, disabled: false };
@@ -10711,10 +10708,6 @@ function initAiConnectionSettingsListeners() {
   R.aiCfgContextWindow.addEventListener('input', () => {
     const n = parseInt(R.aiCfgContextWindow.value, 10);
     if (Number.isFinite(n) && n > 0) updateFloatingAiGeneration(gen => { gen.contextWindowTokens = n; });
-  });
-  R.aiCfgMaxOutput.addEventListener('input', () => {
-    const n = parseInt(R.aiCfgMaxOutput.value, 10);
-    if (Number.isFinite(n) && n > 0) updateFloatingAiGeneration(gen => { gen.maxOutputTokens = n; });
   });
   R.aiCfgBatchConcurrency.addEventListener('input', () => {
     const n = parseInt(R.aiCfgBatchConcurrency.value, 10);
