@@ -227,6 +227,20 @@ html[data-skin="zhu"] #zhu-overlay-toggles {
 #zhu-overlay-toggles label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
 #zhu-overlay-toggles input[type="checkbox"] { accent-color: #8b5a2b; cursor: pointer; }
 
+/* 持股診斷/盤後頁面的「匯出」小工具列，見 wireExportDropdown。只在對應
+   分頁時顯示（JS toggle .hidden，見 setChartModeUI），跟報告頁的匯出
+   按鈕共用同一份 ReportExport 轉換器，只是各自的資料要先轉成同一份
+   slides 格式（diagnosisToDoc/chipToDoc）。 */
+#chip-export-bar, #diagnosis-export-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bdr);
+  background: var(--bg1);
+  flex-shrink: 0;
+}
+#chip-export-bar.hidden, #diagnosis-export-bar.hidden { display: none; }
+
 /* ── Layout ── */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
@@ -1286,12 +1300,32 @@ select:focus { outline: 2px solid var(--acc); }
          不是獨立按鈕/彈窗——這樣手機版header才不會擠。資料的唯一載入時機是
          點到這個分頁那一刻（見 renderChipSourceChart），平常在技術分析/走勢圖
          分頁瀏覽/切股票都不會觸發任何下載。 -->
+    <div id="chip-export-bar" class="hidden">
+      <div class="menu-wrap">
+        <button class="btn icon" id="chip-export-btn" title="匯出盤後籌碼">⬇ 匯出</button>
+        <div id="chip-export-drop" class="export-drop hidden">
+          <div class="menu-item" data-format="pdf">📄 匯出 PDF</div>
+          <div class="menu-item" data-format="pptx">📊 匯出 PPTX</div>
+          <div class="menu-item" data-format="markdown">📝 匯出 Markdown</div>
+        </div>
+      </div>
+    </div>
     <div id="chip-panel" class="hidden"></div>
     <!-- ══ 持股診斷面板（K線圖疊加趨勢/型態標記 + 文字診斷，見 StockDiagnosis）══
          跟「盤後」不同，這個分頁不隱藏 #chart-wrap——診斷需要K線可見才能疊加
          標記，見 setChartModeUI 的 diagnosis-mode class（讓 #chart-wrap 縮成
          上半部、這裡佔下半部，各自可滾動/操作）。資料同樣是點到分頁那一刻才算
          （見 renderDiagnosisSourceChart 的 diagnosisRenderedForCode 快取guard）。 -->
+    <div id="diagnosis-export-bar" class="hidden">
+      <div class="menu-wrap">
+        <button class="btn icon" id="diagnosis-export-btn" title="匯出持股診斷">⬇ 匯出</button>
+        <div id="diagnosis-export-drop" class="export-drop hidden">
+          <div class="menu-item" data-format="pdf">📄 匯出 PDF</div>
+          <div class="menu-item" data-format="pptx">📊 匯出 PPTX</div>
+          <div class="menu-item" data-format="markdown">📝 匯出 Markdown</div>
+        </div>
+      </div>
+    </div>
     <div id="diagnosis-panel" class="hidden"></div>
     <!-- ══ AI助理面板（見 floating-assistant.js + renderAiTab）══
          跟「盤後」一樣把 #chart-wrap 隱藏（AI對話不需要K線常駐可見，需要看
@@ -6651,6 +6685,12 @@ const R = {
   reportViewModeBtn: $('report-view-mode-btn'),
   reportExportBtn: $('report-export-btn'),
   reportExportDrop: $('report-export-drop'),
+  diagnosisExportBar: $('diagnosis-export-bar'),
+  diagnosisExportBtn: $('diagnosis-export-btn'),
+  diagnosisExportDrop: $('diagnosis-export-drop'),
+  chipExportBar: $('chip-export-bar'),
+  chipExportBtn: $('chip-export-btn'),
+  chipExportDrop: $('chip-export-drop'),
   reportSlideWrap: $('report-slide-wrap'),
   reportSlide:     $('report-slide'),
   reportSlideContinuous: $('report-slide-continuous'),
@@ -7633,10 +7673,12 @@ function setChartModeUI(mode) {
   R.chartInfoBar.classList.toggle('hidden', mode === 'chip' || mode === 'ai');
   R.chartWrap.classList.toggle('hidden', mode === 'chip' || mode === 'ai');
   R.chipPanel.classList.toggle('hidden', mode !== 'chip');
+  R.chipExportBar.classList.toggle('hidden', mode !== 'chip');
   // 持股診斷跟盤後不同：#chart-wrap 保持可見（型態標記要疊在K線上），只是
   // 縮成上半部固定比例讓下面的診斷文字有空間，見 .diagnosis-mode CSS。
   R.chartArea.classList.toggle('diagnosis-mode', mode === 'diagnosis');
   R.diagnosisPanel.classList.toggle('hidden', mode !== 'diagnosis');
+  R.diagnosisExportBar.classList.toggle('hidden', mode !== 'diagnosis');
   // AI助理跟盤後一樣把K線canvas藏起來（不需要常駐可見，需要看圖時AI會用
   // get_chart_snapshot工具把截圖嵌進對話框，見 AI_CAPABILITIES）。
   R.aiTabPanel.classList.toggle('hidden', mode !== 'ai');
@@ -7832,6 +7874,28 @@ function renderSlideHtml(slide) {
   }
 }
 
+/* market_linkage.sox/.dji 跟 entry_exit.measured_move.n_measure/equal_measure
+   都是 StockDiagnosis 回傳的巢狀物件（不是可以直接印的字串/數字），下面兩個
+   格式化函式是唯一的正確轉換方式——原本 renderStockDiagnosisHtml/
+   renderMeasuredMoveHtml 直接把這幾個物件丟給esc()，String(物件)只會印出
+   「[object Object]」（sox/dji）或undefined（n_measure/equal_measure其實
+   沒有.note這個欄位），持股診斷分頁跟報告YAML裡的stock_diagnosis投影片
+   因此一直顯示壞掉的內容，是在做匯出功能時比對真實資料結構才發現的既有
+   bug。這兩個函式在最上層（不是ReportExport模組內部）定義，這樣HTML渲染
+   （renderStockDiagnosisHtml/renderMeasuredMoveHtml）跟匯出轉換器（Markdown/
+   PPTX/PDF）才能共用同一份正確邏輯，不會各自重複寫、又各自壞掉一次。 */
+function fmtMarketLinkageIndex(idx) {
+  if (!idx || !idx.available) return '資料不足';
+  const chg = idx.chg1_pct != null ? `${idx.chg1_pct >= 0 ? '+' : ''}${idx.chg1_pct}%` : '-';
+  return `${idx.label || ''}（${idx.trade_date || '-'}）${idx.close ?? '-'} (${chg})　${idx.above_ma20 ? '站上' : '跌破'}月線`;
+}
+function fmtMeasuredMoveLeg(leg, kind) {
+  if (!leg) return '';
+  const dirLabel = leg.direction === 'up' ? '向上' : leg.direction === 'down' ? '向下' : '';
+  const methodLabel = kind === 'n' ? 'N字測量法(AB=CD)' : '等幅測量法';
+  return `${methodLabel}：目標價 ${leg.target ?? '-'}（${dirLabel}，幅度 ${leg.amplitude ?? '-'}）`;
+}
+
 /* 等幅測量法/N字測量法(AB=CD) 目標價估算，見 report_builder.py::
    measured_move_targets。not-available 時顯示原因，不留空白。 */
 function renderMeasuredMoveHtml(mm) {
@@ -7840,8 +7904,8 @@ function renderMeasuredMoveHtml(mm) {
     return `<br><span style="color:var(--txt2);font-size:12px">目標價測量法：${esc(mm.reason || '資料不足')}</span>`;
   }
   const parts = [];
-  if (mm.n_measure) parts.push(`<br>N字測量法(AB=CD，${esc(mm.n_measure.direction)})：${esc(mm.n_measure.note)}`);
-  if (mm.equal_measure) parts.push(`<br>等幅測量法：${esc(mm.equal_measure.note)}`);
+  if (mm.n_measure) parts.push(`<br>${esc(fmtMeasuredMoveLeg(mm.n_measure, 'n'))}`);
+  if (mm.equal_measure) parts.push(`<br>${esc(fmtMeasuredMoveLeg(mm.equal_measure, 'equal'))}`);
   return parts.join('');
 }
 
@@ -7893,7 +7957,7 @@ function renderStockDiagnosisHtml(d) {
     </div>
     <div class="rs-diag-section">
       <div class="rs-diag-section-title">大盤連動</div>
-      <div class="rs-diag-section-body">${esc(d.market_linkage?.sox)}<br>${esc(d.market_linkage?.dji)}<br>
+      <div class="rs-diag-section-body">${esc(fmtMarketLinkageIndex(d.market_linkage?.sox))}<br>${esc(fmtMarketLinkageIndex(d.market_linkage?.dji))}<br>
         <span style="color:var(--txt2);font-size:12px">${esc(d.market_linkage?.note)}</span></div>
     </div>
     <div class="rs-diag-section">
@@ -7950,6 +8014,48 @@ function renderStockDiagnosisHtml(d) {
    數值本身（漲跌badge、涨跌方向）才出現，不是整份文件的主色。標題頁深色
    背景、內容頁淺色背景（sandwich結構）。避免用色條/底線當裝飾（AI生成
    簡報的常見敗筆），改用留白跟卡片背景色區隔區塊。 */
+/* 持股診斷/盤後頁面的資料轉接（adapter）：把各自的原始資料轉成跟報告頁
+   同一份 {report_type,title,generated_at,slides:[...]} 格式，交給下面
+   ReportExport 模組同一套 docToMarkdown/docToPPTX/docToPDF 轉換器，不用
+   為這兩個頁面另外寫一套匯出邏輯（見 ReportExport 模組開頭的設計說明）。 */
+function diagnosisToDoc(diag) {
+  if (!diag) return null;
+  const title = `${diag.stock_code || ''} ${diag.stock_name || ''} 持股診斷`.trim();
+  return {
+    report_type: 'holdings_diagnosis',
+    title,
+    generated_at: new Date().toISOString(),
+    slides: [
+      { type: 'title', title, subtitle: diag.as_of_date ? `資料日期：${diag.as_of_date}` : '' },
+      { type: 'stock_diagnosis', ...diag },
+    ],
+    disclaimer: '技術面框架推演，非投資建議',
+  };
+}
+
+function chipToDoc(data, selectedDate, source) {
+  if (!data || !selectedDate) return null;
+  const code = source?.code || '';
+  const instUpTo = data.institutional.filter(r => r.trade_date <= selectedDate).slice(-10).reverse();
+  const cusUpTo = data.custody.filter(r => r.data_date <= selectedDate).slice(-10).reverse();
+  const title = `${code} 盤後籌碼`.trim();
+  const slides = [{ type: 'title', title, subtitle: `資料日期：${selectedDate}` }];
+  slides.push(instUpTo.length ? {
+    type: 'table', heading: '三大法人買賣超（單位：張，正值買超/負值賣超）',
+    columns: ['日期', '外資', '投信', '自營商', '合計'],
+    rows: instUpTo.map(r => [r.trade_date, fmtSignedLotsPlain(r.foreign_net), fmtSignedLotsPlain(r.trust_net), fmtSignedLotsPlain(r.dealer_net), fmtSignedLotsPlain(r.total_net)]),
+  } : { type: 'notice', text: '近期沒有三大法人買賣超資料。' });
+  slides.push(cusUpTo.length ? {
+    type: 'table', heading: '強制集保股數',
+    columns: ['日期', '分戶保管', '特定保管', '集保總股數'],
+    rows: cusUpTo.map(r => [r.data_date, fmtLots(r.custody_common), fmtLots(r.custody_special), fmtLots(r.custody_total)]),
+  } : { type: 'notice', text: '目前沒有強制集保資料（多數個股本來就沒有董監/大股東強制集保股數）。' });
+  return {
+    report_type: 'chip', title, generated_at: new Date().toISOString(), slides,
+    disclaimer: '資料來源：集保結算所/證交所公開資訊，僅供參考，非投資建議',
+  };
+}
+
 const ReportExport = (() => {
   const PPTXGENJS_URL = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
   const PDFMAKE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js';
@@ -8006,8 +8112,8 @@ const ReportExport = (() => {
     if (mm) {
       if (!mm.available) mmText = `\n\n目標價測量法：${mm.reason || '資料不足'}`;
       else {
-        if (mm.n_measure) mmText += `\n\nN字測量法(AB=CD，${mm.n_measure.direction})：${mm.n_measure.note}`;
-        if (mm.equal_measure) mmText += `\n\n等幅測量法：${mm.equal_measure.note}`;
+        if (mm.n_measure) mmText += `\n\n${fmtMeasuredMoveLeg(mm.n_measure, 'n')}`;
+        if (mm.equal_measure) mmText += `\n\n${fmtMeasuredMoveLeg(mm.equal_measure, 'equal')}`;
       }
     }
     const mr = d.monthly_revenue;
@@ -8030,7 +8136,7 @@ const ReportExport = (() => {
       '',
       `**量價關係**：${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`,
       '',
-      `**大盤連動**：${d.market_linkage?.sox ?? ''}／${d.market_linkage?.dji ?? ''}${d.market_linkage?.note ? '\n\n_' + d.market_linkage.note + '_' : ''}`,
+      `**大盤連動**：${fmtMarketLinkageIndex(d.market_linkage?.sox)}／${fmtMarketLinkageIndex(d.market_linkage?.dji)}${d.market_linkage?.note ? '\n\n_' + d.market_linkage.note + '_' : ''}`,
       '',
       `**月營收**：${mrText}`,
       '',
@@ -8213,8 +8319,8 @@ const ReportExport = (() => {
     if (mm) {
       if (!mm.available) mmText = `目標價測量法：${mm.reason || '資料不足'}`;
       else {
-        if (mm.n_measure) mmText += `N字測量法：${mm.n_measure.note}\n`;
-        if (mm.equal_measure) mmText += `等幅測量法：${mm.equal_measure.note}`;
+        if (mm.n_measure) mmText += `${fmtMeasuredMoveLeg(mm.n_measure, 'n')}\n`;
+        if (mm.equal_measure) mmText += fmtMeasuredMoveLeg(mm.equal_measure, 'equal');
       }
     }
     const mr = d.monthly_revenue;
@@ -8230,7 +8336,7 @@ const ReportExport = (() => {
     ];
     const sectionsB = [
       { label: '量價關係', body: `${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）` },
-      { label: '大盤連動', body: `${d.market_linkage?.sox ?? ''}\n${d.market_linkage?.dji ?? ''}` },
+      { label: '大盤連動', body: `${fmtMarketLinkageIndex(d.market_linkage?.sox)}\n${fmtMarketLinkageIndex(d.market_linkage?.dji)}` },
       { label: '月營收', body: mrText },
       { label: '進出場建議', body: `${d.entry_exit?.trend_stop ?? ''}\n百分比停損：${d.entry_exit?.pct_stop_range ?? ''}\n${mmText}` },
     ];
@@ -8321,8 +8427,8 @@ const ReportExport = (() => {
     if (mm) {
       if (!mm.available) mmLines.push(`目標價測量法：${mm.reason || '資料不足'}`);
       else {
-        if (mm.n_measure) mmLines.push(`N字測量法(AB=CD，${mm.n_measure.direction})：${mm.n_measure.note}`);
-        if (mm.equal_measure) mmLines.push(`等幅測量法：${mm.equal_measure.note}`);
+        if (mm.n_measure) mmLines.push(fmtMeasuredMoveLeg(mm.n_measure, 'n'));
+        if (mm.equal_measure) mmLines.push(fmtMeasuredMoveLeg(mm.equal_measure, 'equal'));
       }
     }
     const mr = d.monthly_revenue;
@@ -8354,7 +8460,7 @@ const ReportExport = (() => {
       section('型態辨識', [d.pattern?.note]),
       section('K棒品質判讀鐵律', [`實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}，上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}`]),
       section('量價關係', [`${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`]),
-      section('大盤連動', [d.market_linkage?.sox, d.market_linkage?.dji, d.market_linkage?.note]),
+      section('大盤連動', [fmtMarketLinkageIndex(d.market_linkage?.sox), fmtMarketLinkageIndex(d.market_linkage?.dji), d.market_linkage?.note]),
       section('月營收', [mrText]),
       section('進出場建議', [d.entry_exit?.trend_stop, `百分比停損：${d.entry_exit?.pct_stop_range ?? ''}`, ...mmLines, d.entry_exit?.target_price_note]),
       { text: `⚠ ${d.risk_note || ''}`, style: 'caption', italics: true, margin: [0, 4, 0, 0] },
@@ -8433,9 +8539,61 @@ const ReportExport = (() => {
     }
   }
 
+  // pdfmake 內建的 vfs_fonts.js 只有 Roboto（純拉丁字型，完全沒有中文字
+  // 圖）——使用者實測回報「產生的中文都是無法顯示的字體」（豆腐字/缺字），
+  // 就是這個問題：docDefinition 裡任何中文字都因為找不到對應字圖，
+  // pdfmake退回顯示空白/方塊。改成額外載入一套繁體中文字型（Noto Sans TC
+  // 的「chinese-traditional」子集，透過 jsDelivr 的 fontsource 鏡像取得
+  // TTF，只涵蓋繁體中文常用範圍，regular+bold兩個字重合計約4.3MB，比完整
+  // Noto Sans TC（涵蓋全部CJK統一表意文字，動辄10MB+）小很多），註冊成
+  // pdfMake.vfs/pdfMake.fonts 裡的新字型家族，docDefinition改用這個字型
+  // 當defaultStyle。這個字型沒有真正的斜體/粗斜體版本，斜體/粗斜體兩個
+  // 欄位直接借用正體/粗體頂替——中文本來就很少人會真的做「斜體強調」，
+  // 借用不影響可讀性，只是不會真的傾斜，比起完全不註冊、渲染直接壞掉好
+  // 太多。惰性載入+cache Promise，同一頁只會真的下載一次。 */
+  const CJK_FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-400-normal.ttf';
+  const CJK_FONT_BOLD_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-700-normal.ttf';
+  let cjkFontPromise = null;
+
+  function arrayBufferToBase64(buf) {
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000; // 32KB一塊，避免String.fromCharCode.apply一次吃進太多引數爆呼叫堆疊
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  async function ensureCjkFontRegistered() {
+    if (cjkFontPromise) return cjkFontPromise;
+    cjkFontPromise = (async () => {
+      const pdfMake = window.pdfMake;
+      const [regularBuf, boldBuf] = await Promise.all([
+        fetch(CJK_FONT_REGULAR_URL).then(r => { if (!r.ok) throw new Error('中文字型下載失敗'); return r.arrayBuffer(); }),
+        fetch(CJK_FONT_BOLD_URL).then(r => { if (!r.ok) throw new Error('中文字型(粗體)下載失敗'); return r.arrayBuffer(); }),
+      ]);
+      const regularB64 = arrayBufferToBase64(regularBuf);
+      const boldB64 = arrayBufferToBase64(boldBuf);
+      pdfMake.vfs = pdfMake.vfs || {};
+      pdfMake.vfs['NotoSansTC-Regular.ttf'] = regularB64;
+      pdfMake.vfs['NotoSansTC-Bold.ttf'] = boldB64;
+      pdfMake.fonts = Object.assign({}, pdfMake.fonts, {
+        NotoSansTC: {
+          normal: 'NotoSansTC-Regular.ttf',
+          bold: 'NotoSansTC-Bold.ttf',
+          italics: 'NotoSansTC-Regular.ttf',
+          bolditalics: 'NotoSansTC-Bold.ttf',
+        },
+      });
+    })();
+    return cjkFontPromise;
+  }
+
   async function docToPDF(doc) {
     await loadScriptOnce(PDFMAKE_URL);
     await loadScriptOnce(PDFMAKE_FONTS_URL);
+    await ensureCjkFontRegistered();
     const pdfMake = window.pdfMake;
 
     const content = [
@@ -8480,7 +8638,7 @@ const ReportExport = (() => {
         sectionLabel: { fontSize: 11, bold: true, color: PALETTE_PDF.navy, margin: [0, 0, 0, 2] },
         badge: { fontSize: 10, bold: true, color: '#FFFFFF', margin: [8, 3, 8, 3] },
       },
-      defaultStyle: { font: 'Roboto' },
+      defaultStyle: { font: 'NotoSansTC' },
     };
 
     return new Promise((resolve, reject) => {
@@ -8708,6 +8866,16 @@ function fmtSignedLots(shares) {
   const cls = lots > 0 ? 'td-up' : lots < 0 ? 'td-dn' : '';
   const sign = lots > 0 ? '+' : '';
   return `<b class="${cls}">${sign}${lots.toLocaleString()}</b>`;
+}
+// fmtSignedLots() 回傳的是帶HTML標籤的字串（給 renderInstitutionalSection
+// 那種直接塞進innerHTML的地方用），匯出成Markdown/PPTX/PDF的表格儲存格
+// 不會解讀HTML，會直接把<b class="td-up">這種標籤字面印出來——chipToDoc
+// （見 ReportExport 模組前面的轉接函式）改用這個純文字版本，不帶任何標籤。
+function fmtSignedLotsPlain(shares) {
+  if (shares == null || isNaN(shares)) return '-';
+  const lots = Math.round(shares / 1000);
+  const sign = lots > 0 ? '+' : '';
+  return `${sign}${lots.toLocaleString()}`;
 }
 
 function renderInstitutionalSection(rows) {
@@ -9641,36 +9809,56 @@ function bindEvents() {
   R.zhuToggleTrace.addEventListener('change', () => { Chart.setHighlightPattern(R.zhuToggleTrace.checked); maybeApplyZhuOverlay(); });
   R.zhuToggleSupport.addEventListener('change', () => { Chart.setShowNeck(R.zhuToggleSupport.checked); maybeApplyZhuOverlay(); });
 
+  /* 通用的「匯出」下拉選單接線，跟 #menu-drop 同一套 position:fixed 動態
+     定位手法——報告頁/持股診斷/盤後三處共用，見各自呼叫端傳入的
+     getDoc()（現算出當下要匯出的 {report_type,title,slides:[...]} 文件、
+     以及檔名），不在這裡重複寫三次一樣的定位/loading狀態邏輯。 */
+  function wireExportDropdown(btn, drop, getDoc) {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const wasHidden = drop.classList.contains('hidden');
+      if (wasHidden) {
+        const rect = btn.getBoundingClientRect();
+        drop.style.top = (rect.bottom + 4) + 'px';
+        drop.style.left = rect.left + 'px';
+      }
+      drop.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => drop.classList.add('hidden'));
+    drop.addEventListener('click', async e => {
+      const format = e.target.dataset.format;
+      if (!format) return;
+      drop.classList.add('hidden');
+      const { doc, filename } = getDoc() || {};
+      if (!doc) { alert('目前沒有可匯出的內容'); return; }
+      const original = btn.textContent;
+      btn.disabled = true; btn.textContent = '⏳';
+      try {
+        await ReportExport.exportDoc(doc, format, filename);
+      } catch (err) {
+        alert(`匯出失敗：${err.message}`);
+      } finally {
+        btn.disabled = false; btn.textContent = original;
+      }
+    });
+  }
+
   /* 「分析」報告頁（盤前分析/大盤分析/盤中大盤分析/隔日持股分析/本週持股
-     分析/盤中持股分析…）匯出成 PDF/PPTX/Markdown，見 ReportExport 模組。
-     跟 #menu-drop 同一套 position:fixed 動態定位 dropdown 手法。 */
-  R.reportExportBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    const wasHidden = R.reportExportDrop.classList.contains('hidden');
-    if (wasHidden) {
-      const rect = R.reportExportBtn.getBoundingClientRect();
-      R.reportExportDrop.style.top = (rect.bottom + 4) + 'px';
-      R.reportExportDrop.style.left = rect.left + 'px';
-    }
-    R.reportExportDrop.classList.toggle('hidden');
+     分析/盤中持股分析…）匯出成 PDF/PPTX/Markdown，見 ReportExport 模組。 */
+  wireExportDropdown(R.reportExportBtn, R.reportExportDrop, () => ({
+    doc: currentReportData,
+    filename: ANALYSIS_TYPE_LIST.find(x => x.code === currentAnalysisType)?.name || currentReportData?.title || currentReportData?.report_type,
+  }));
+
+  /* 持股診斷/盤後頁面的匯出，見下方 diagnosisToDoc/chipToDoc 轉接函式
+     （把各自的資料轉成跟報告頁同一份 slides 陣列格式，重用同一套轉換器）。 */
+  wireExportDropdown(R.diagnosisExportBtn, R.diagnosisExportDrop, () => {
+    const doc = diagnosisToDoc(diagnosisCache);
+    return { doc, filename: doc ? doc.title : null };
   });
-  document.addEventListener('click', () => R.reportExportDrop.classList.add('hidden'));
-  R.reportExportDrop.addEventListener('click', async e => {
-    const format = e.target.dataset.format;
-    if (!format) return;
-    R.reportExportDrop.classList.add('hidden');
-    if (!currentReportData) { alert('目前沒有可匯出的報告內容'); return; }
-    const btn = R.reportExportBtn;
-    const original = btn.textContent;
-    btn.disabled = true; btn.textContent = '⏳';
-    try {
-      const label = ANALYSIS_TYPE_LIST.find(x => x.code === currentAnalysisType)?.name || currentReportData.title || currentReportData.report_type;
-      await ReportExport.exportDoc(currentReportData, format, label);
-    } catch (err) {
-      alert(`匯出失敗：${err.message}`);
-    } finally {
-      btn.disabled = false; btn.textContent = original;
-    }
+  wireExportDropdown(R.chipExportBtn, R.chipExportDrop, () => {
+    const doc = chipToDoc(chipRenderData, chipSelectedDate, currentChartSource);
+    return { doc, filename: doc ? doc.title : null };
   });
 
   /* menu toggle (see #menu-drop CSS comment: position:fixed, so we need to
