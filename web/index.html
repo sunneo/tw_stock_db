@@ -8162,6 +8162,32 @@ const ReportExport = (() => {
     return doc.generated_at ? String(doc.generated_at) : '';
   }
 
+  /* 使用者實測回報「持股診斷匯出PDF後，向上向下箭頭變成無法顯示的x」——
+     PDF惰性載入的中文字型（見下方 ensureCjkFontRegistered）是Noto Sans TC
+     的「繁體中文」子集，只涵蓋CJK統一表意文字+基本標點+拉丁字母數字，不
+     包含▲▼⚠★這類「幾何圖形/雜項符號」區塊的字元——這些符號不在字型的
+     glyph表裡，pdfmake（沒有自動字型後備機制，跟瀏覽器不一樣）就會印出
+     缺字方框，肉眼看起來像亂碼或"x"。來源可能是StockDiagnosis後端產生的
+     文字欄位本身（例如某些型態/趨勢描述），也可能是這裡自己寫的⚠提示符號
+     ——不管來源，統一在文字進pdfmake/pptxgenjs之前做一次替換，把這類符號
+     換成字型一定涵蓋的純中文/ASCII等效字，才是treat根本原因（而不是逐一
+     去猜StockDiagnosis可能吐出哪些符號再一一排除）。PPTX（pptxgenjs指定的
+     Calibri字型）理論上PowerPoint開啟時有系統字型後備機制、風險較低，但
+     為了兩邊呈現一致、且無法保證使用者的PowerPoint一定有裝對應字型，一併
+     套用同一份替換規則。 */
+  function sanitizeExportText(s) {
+    if (s == null) return s;
+    return String(s)
+      .replace(/⚠️|⚠/g, '【注意】')
+      .replace(/[▲△⬆⇧↑↗➚]/g, '(漲)')
+      .replace(/[▼▽⬇⇩↓↘➘]/g, '(跌)')
+      .replace(/[★☆]/g, '*')
+      .replace(/[●○◎]/g, '‧')
+      .replace(/[■□]/g, '‧')
+      .replace(/[→⇒➡]/g, '->')
+      .replace(/[←⇐⬅]/g, '<-');
+  }
+
   /* ────────────────────────────────────────
      Markdown 轉換：純字串組裝，不需要任何外部函式庫。
      ──────────────────────────────────────── */
@@ -8267,8 +8293,20 @@ const ReportExport = (() => {
      PPTX 轉換：pptxgenjs，每個slide type對應一種版面（見模組說明的設計
      語言）。惰性載入函式庫，第一次呼叫才會真的去抓CDN。
      ──────────────────────────────────────── */
-  function addTitleSlide(pres, slide, doc) {
+  // pres.addSlide()統一走這裡（取代直接呼叫），順便把s.addText包一層
+  // sanitizeExportText——PPTX指定的字型(Calibri)理論上PowerPoint開啟時有
+  // 系統字型後備機制，風險比PDF低，但為了兩種格式呈現一致、且無法保證
+  // 使用者電腦一定裝了涵蓋這些符號的後備字型，一律套用同一份符號替換規則
+  // （見 sanitizeExportText 說明），不用在每個addText呼叫點各自記得處理。
+  function newSlide(pres) {
     const s = pres.addSlide();
+    const rawAddText = s.addText.bind(s);
+    s.addText = (text, opts) => rawAddText(sanitizeExportText(text), opts);
+    return s;
+  }
+
+  function addTitleSlide(pres, slide, doc) {
+    const s = newSlide(pres);
     s.background = { color: PALETTE_PPTX.navy };
     s.addText(slide.title || doc.title || '', {
       x: 0.8, y: 2.3, w: 11.7, h: 1.6, fontFace: 'Calibri', fontSize: 40, bold: true,
@@ -8290,7 +8328,7 @@ const ReportExport = (() => {
   }
 
   function addHeadingSlideBase(pres, heading) {
-    const s = pres.addSlide();
+    const s = newSlide(pres);
     s.background = { color: PALETTE_PPTX.white };
     s.addText(heading || '', {
       x: 0.6, y: 0.4, w: 12.1, h: 0.7, fontFace: 'Calibri', fontSize: 24, bold: true,
@@ -8331,7 +8369,7 @@ const ReportExport = (() => {
   }
 
   function addNoticeSlide(pres, slide) {
-    const s = pres.addSlide();
+    const s = newSlide(pres);
     s.background = { color: PALETTE_PPTX.white };
     s.addText(String(slide.text || ''), {
       x: 1.2, y: 2.8, w: 10.9, h: 2, fontFace: 'Calibri', fontSize: 18,
@@ -8372,7 +8410,7 @@ const ReportExport = (() => {
   // 的版面密度降低風險）。
   function addStockDiagnosisSlides(pres, d) {
     if (!d.available) {
-      const s = pres.addSlide();
+      const s = newSlide(pres);
       s.background = { color: PALETTE_PPTX.white };
       s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
         x: 0.6, y: 0.5, w: 12.1, h: 0.6, fontFace: 'Calibri', fontSize: 22, bold: true, color: PALETTE_PPTX.navy,
@@ -8413,7 +8451,7 @@ const ReportExport = (() => {
 
     const badgeCol = d.lock_direction === '做空' ? PALETTE_PPTX.down : PALETTE_PPTX.up;
     [sectionsA, sectionsB].forEach((sections, pageIdx) => {
-      const s = pres.addSlide();
+      const s = newSlide(pres);
       s.background = { color: PALETTE_PPTX.white };
       s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
         x: 0.6, y: 0.35, w: 8, h: 0.5, fontFace: 'Calibri', fontSize: 22, bold: true, color: PALETTE_PPTX.navy,
@@ -8467,7 +8505,7 @@ const ReportExport = (() => {
       }
     }
     if (doc.disclaimer) {
-      const s = pres.addSlide();
+      const s = newSlide(pres);
       s.background = { color: PALETTE_PPTX.navy };
       s.addText(doc.disclaimer, {
         x: 1.2, y: 3.1, w: 10.9, h: 1.3, fontFace: 'Calibri', fontSize: 14, italic: true,
@@ -8687,6 +8725,20 @@ const ReportExport = (() => {
     if (doc.disclaimer) {
       content.push({ text: doc.disclaimer, style: 'disclaimer', margin: [0, 12, 0, 0] });
     }
+
+    // 一次性深度掃過整個content樹，把pdfmake的CJK字型不涵蓋的符號換成安全
+    // 等效字（見 sanitizeExportText 說明）——所有text節點統一在這裡處理，
+    // 不用在slideToPdfContent/stockDiagnosisToPdfContent每個組字串的地方
+    // 各自記得呼叫一次。
+    (function deepSanitize(node) {
+      if (Array.isArray(node)) { node.forEach(deepSanitize); return; }
+      if (!node || typeof node !== 'object') return;
+      if (typeof node.text === 'string') node.text = sanitizeExportText(node.text);
+      else if (Array.isArray(node.text)) deepSanitize(node.text);
+      for (const v of Object.values(node)) {
+        if (Array.isArray(v) || (v && typeof v === 'object')) deepSanitize(v);
+      }
+    })(content);
 
     const docDefinition = {
       pageSize: 'A4',
