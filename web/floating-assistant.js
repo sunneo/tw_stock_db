@@ -1936,6 +1936,38 @@ ${sourceTool.handlerScript}
         };
     }
 
+    // tw_stock_db客製: 文字式[CALL: name(args)]慣例的「找出這個呼叫自己的
+    // 參數邊界」共用邏輯，被_loopFetch跟runBatchSubAgents各自的fallback
+    // 解析路徑共用（見下面呼叫端的說明）。從緊接在函式名稱後面的那個 '('
+    // 開始，逐字元掃描、正確跳過字串內容（單/雙引號、反斜線跳脫）跟巢狀的
+    // ()/{}/[]，找到跟這個 '(' 真正配對的那個 ')'——不管字串裡剩下的內容
+    // 是乾淨的下一輪對話、還是模型自己接著編造的假[TOOL RESULT]/推理文字/
+    // 甚至又寫了另一個[CALL:...]，都不會被誤吞進這個呼叫的參數裡。掃到
+    // 字串結尾都還沒配對成功（模型真的沒把這次呼叫寫完）就回傳掃到底的
+    // 內容當最佳猜測，並把endIndex設成text.length。
+    _extractBalancedCallArgs(text, openParenIndex) {
+        let depth = 0, inStr = null;
+        let i = openParenIndex;
+        for (; i < text.length; i++) {
+            const c = text[i];
+            if (inStr) {
+                if (c === '\\') { i++; continue; } // 跳過跳脫字元本身+它跳脫的那個字元
+                if (c === inStr) inStr = null;
+                continue;
+            }
+            if (c === '"' || c === "'") { inStr = c; continue; }
+            if (c === '(' || c === '{' || c === '[') { depth++; continue; }
+            if (c === ')' || c === '}' || c === ']') {
+                depth--;
+                if (depth === 0 && c === ')') {
+                    return { content: text.slice(openParenIndex + 1, i), endIndex: i + 1 };
+                }
+            }
+        }
+        // 沒找到配對的')'：掃到底，回傳目前為止的內容當最佳猜測。
+        return { content: text.slice(openParenIndex + 1), endIndex: text.length };
+    }
+
     async repairJsonPayload(rawText) {
         const direct = this._tryParseParseJsonPayload(rawText);
         if (direct.ok) return direct.value;
@@ -3565,6 +3597,21 @@ ${existingNodeSummaries}
         }
     }
 
+    // tw_stock_db客製: 從輸入框取字、清空、觸發executeChat的共用邏輯，被
+    // Enter鍵送出跟「送出」按鈕共用，確保兩條路徑行為完全一致（見上面
+    // bindEvents()裡兩處的呼叫端）。
+    _submitChatInput(inputText, suggestBar) {
+        const textToSend = inputText.value.trim();
+        if (!textToSend) return;
+
+        inputText.value = '';
+        if (suggestBar) suggestBar.style.display = 'none';
+        if (this.isResponding) {
+            this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
+        }
+        this.executeChat(textToSend);
+    }
+
     /**
      * 執行 Stream 對話循環
      */
@@ -3932,7 +3979,7 @@ ${existingNodeSummaries}
             // 讀這個屬性；沒有的話（例如舊資料、或模型把推理直接混進content
             // 沒有走獨立欄位）才退回原本的<think>/[THINKING]標籤解析。
             // --- 容錯偵測與解析機制 ---
-            const callStart = fullContent.lastIndexOf('[CALL:');
+            const callStart = fullContent.indexOf('[CALL:');
             // tw_stock_db客製: contentForMessage是真正存進this.messages（畫面
             // 顯示+送進API）的內容，預設等於fullContent，只有偵測到真正的
             // [CALL:...)]呼叫時才會被截斷，見下面lastMatchEnd的說明。
@@ -3941,7 +3988,9 @@ ${existingNodeSummaries}
                 // --- 強化版多工具解析機制 ---
                 let invokedCount = 0;
 
-                // 方案 A: 使用進階 Regex 嘗試批次抓取
+                // 方案 A: 使用進階 Regex 嘗試批次抓取（只有模型每個[CALL:...]都
+                // 有乖乖用')]'正確收尾時才抓得到——這是行為良好的模型的正常
+                // 多工具呼叫路徑）
                 const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
                 let match;
                 const toolTasks = [];
@@ -3952,33 +4001,46 @@ ${existingNodeSummaries}
                     lastMatchEnd = match.index + match[0].length;
                 }
 
-                // tw_stock_db客製: 有些模型發出真正的[CALL:...)]之後不會停下來
-                // 等真正的工具結果，反而自己接著在後面「模擬」一段假的工具
-                // 回傳內容繼續往下寫（實測遇過模型自己編造[TOOL_RESULT]標籤、
-                // 虛構整段OHLCV數字，甚至編造看起來像的base64圖片資料）——
-                // 這些內容從沒有真的執行過工具，混進this.messages會(1)汙染
-                // context讓對話愈滾愈大(2)跟後面_pushToolResultMessage()附加
-                // 的「真正」工具結果混在一起，畫面上真假交錯非常混亂。這裡
-                // 把要存進this.messages的內容截斷在最後一個真正解析到的
-                // [CALL:...)]結尾，丟掉模型自己接著編造的任何內容——真正的
-                // 工具結果會由下面的執行迴圈另外用tool角色訊息附加上去，
-                // 不需要模型自己寫的那段假內容。
+                // tw_stock_db客製: 有些模型（實測nemotron系列）發出第一個真正
+                // 的[CALL:...]之後完全不會停下來等真正的工具結果，反而自己
+                // 接著在後面「模擬」一整段假的工具回傳內容、假裝在推理、甚至
+                // 自己接著再寫一個[CALL:...]（但同樣沒有正確收尾），全部黏在
+                // 同一次回覆裡——這種情況下面的方案A regex找不到任何一個
+                // 以')]'正確收尾的呼叫（lookahead永遠不成立），toolTasks會是
+                // 空陣列，需要退回下面的方案B救援路徑。
+                //
+                // 方案A成功找到呼叫時，才用它算出的lastMatchEnd截斷訊息內容
+                // （丟掉模型自己接著編造的任何內容，只留到最後一個「真的」
+                // 呼叫結尾——這種情況代表模型每個呼叫都有正確收尾，值得信任
+                // 全部執行）。方案B的截斷邏輯是分開算的，見下面。
                 if (lastMatchEnd > -1) {
                     let truncateAt = lastMatchEnd;
                     if (fullContent[truncateAt] === ']') truncateAt += 1;
                     contentForMessage = fullContent.slice(0, truncateAt);
                 }
 
-                // 方案 B: 若 Regex 沒抓到，嘗試傳統最後搜尋法 (備援路徑)
+                // 方案 B: 方案A完全沒抓到任何正確收尾的呼叫時的救援路徑。
+                // 這裡不能沿用舊版「找fullContent裡最後一個[CALL:，把它到
+                // 字串結尾的全部內容當參數」的做法——模型不停下來時，最後
+                // 一個[CALL:往往才是模型自己憑空接著編的（可能引用它自己前面
+                // 虛構的假資料，例如假造一個圖片編號），而且參數會被字串
+                // 結尾前所有後續文字（假TOOL RESULT、推理草稿、甚至下一個
+                // 使用者看不到的[CALL:...]）污染。改成鎖定fullContent裡「第
+                // 一個」[CALL:——那才是模型最初真正想呼叫、最可信的意圖——
+                // 再用_extractBalancedCallArgs()正確算出這個呼叫自己的參數
+                // 邊界（考慮巢狀括號/字串，不管模型有沒有乖乖收尾都能正確
+                // 停在對的位置），確保只執行、只顯示這一個呼叫，把模型自己
+                // 接著編造的所有內容整段丟棄，讓下一輪對話基於真正的工具
+                // 結果重新產生，而不是順著一整串自我幻想的假資料繼續編。
                 if (toolTasks.length === 0) {
-                    const callStart = fullContent.lastIndexOf('[CALL:');
-                    if (callStart > -1) {
-                        const fallbackMatch = fullContent.slice(callStart).match(/\[CALL:\s*([^\(\s]+)\s*\(([\s\S]*)/);
-                        if (fallbackMatch) {
-                            let rawArgs = fallbackMatch[2].trim();
-                            if (!rawArgs.endsWith(')]')) rawArgs = rawArgs.replace(/\)]?$/, '').replace(/\n/g, '') + ')]';
-                            toolTasks.push({ fnName: fallbackMatch[1], fnArgsRaw: rawArgs.slice(0, -2) });
-                        }
+                    const nameMatch = fullContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                    if (nameMatch) {
+                        const openParenIdx = callStart + nameMatch[0].length - 1;
+                        const { content, endIndex } = this._extractBalancedCallArgs(fullContent, openParenIdx);
+                        toolTasks.push({ fnName: nameMatch[1], fnArgsRaw: content.trim() });
+                        let truncateAt = endIndex;
+                        if (fullContent[truncateAt] === ']') truncateAt += 1;
+                        contentForMessage = fullContent.slice(0, truncateAt);
                     }
                 }
 
@@ -4283,8 +4345,10 @@ ${existingNodeSummaries}
             }
 
             // tw_stock_db客製: 文字式[CALL:...]慣例，跟_loopFetch同樣的解析
-            // 規則（含截斷模型自己編造的假工具結果，見_loopFetch裡
-            // lastMatchEnd的詳細說明），這裡簡化重寫一份而不是共用同一個
+            // 規則（含救援路徑，見_loopFetch裡_extractBalancedCallArgs呼叫端
+            // 的詳細說明——模型沒有正確用')]'收尾時，鎖定第一個[CALL:、用
+            // 括號配對正確算出參數邊界，不要被模型自己接著編造的假TOOL
+            // RESULT/推理文字/後續呼叫污染），這裡簡化重寫一份而不是共用同一個
             // helper，是因為子任務訊息陣列是區域變數，跟_loopFetch操作
             // this.messages/fullContent的方式不同，硬要共用反而更複雜。
             const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
@@ -4296,17 +4360,31 @@ ${existingNodeSummaries}
                 lastMatchEnd = match.index + match[0].length;
             }
 
-            if (!toolTasks.length) {
-                const finalText = this._stripInlineBase64(rawContent).trim();
-                return finalText || '（子任務無回應）';
-            }
-
             let truncated = rawContent;
             if (lastMatchEnd > -1) {
                 let end = lastMatchEnd;
                 if (rawContent[end] === ']') end += 1;
                 truncated = rawContent.slice(0, end);
+            } else {
+                const callStart = rawContent.indexOf('[CALL:');
+                if (callStart > -1) {
+                    const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                    if (nameMatch) {
+                        const openParenIdx = callStart + nameMatch[0].length - 1;
+                        const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
+                        toolTasks.push({ fnName: nameMatch[1], fnArgsRaw: content.trim() });
+                        let end = endIndex;
+                        if (rawContent[end] === ']') end += 1;
+                        truncated = rawContent.slice(0, end);
+                    }
+                }
             }
+
+            if (!toolTasks.length) {
+                const finalText = this._stripInlineBase64(rawContent).trim();
+                return finalText || '（子任務無回應）';
+            }
+
             messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
 
             for (const task of toolTasks) {
@@ -4518,7 +4596,10 @@ ${existingNodeSummaries}
                 💡 按 <kbd style="background:#fff;padding:1px 3px;border:1px solid #ccc;border-radius:3px;">Tab</kbd> 自動補全: <span id="ai-suggest-text"></span>
             </div>
             <div id="ai-input-wrap" style="padding:10px; background:${palette.windowBg}; border-top:1px solid ${palette.windowBorder};">
-                <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="width:100%; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
+                <div style="display:flex; align-items:stretch; gap:6px;">
+                    <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="flex:1; min-width:0; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
+                    <button id="ai-send-btn" type="button" title="送出 (Enter)" style="flex:0 0 auto; padding:0 14px; border:none; border-radius:6px; background:#76b900; color:#fff; font-size:13px; font-weight:bold; cursor:pointer;">送出</button>
+                </div>
                 <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
                     <button id="ai-stop-response-btn" type="button" style="padding:2px 8px; border:1px solid ${palette.inputBorder}; border-radius:999px; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; line-height:1.4;">⏹ Stop</button>
                     <div id="ai-response-indicator" style="font-size:11px; color:${palette.detailText};">✅ 已完成</div>
@@ -5473,21 +5554,22 @@ ${existingNodeSummaries}
 
             if (e.key === 'Enter') {
                 if (e.shiftKey || e.ctrlKey) {
-                    return; 
+                    return;
                 }
-                
-                e.preventDefault();
-                const textToSend = currentVal.trim();
-                if (!textToSend) return;
 
-                inputText.value = '';
-                suggestBar.style.display = 'none';
-                if (this.isResponding) {
-                    this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
-                }
-                this.executeChat(textToSend);
+                e.preventDefault();
+                this._submitChatInput(inputText, suggestBar);
             }
         });
+
+        // tw_stock_db客製: 使用者反映自動化/部分環境下對textarea送出的Enter
+        // keydown事件有時不會被觸發（例如某些瀏覽器自動化工具模擬按鍵的方式
+        // 跟真人打字產生的事件不完全一致），加一個實體的送出按鈕當備援，
+        // 兩條路徑共用同一個_submitChatInput()，行為完全一致。
+        const sendBtn = document.getElementById('ai-send-btn');
+        if (sendBtn) {
+            sendBtn.addEventListener('click', () => this._submitChatInput(inputText, suggestBar));
+        }
 
         inputText.addEventListener('input', () => {
             if (inputText.value !== '') {
