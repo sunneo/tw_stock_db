@@ -341,6 +341,119 @@ class IndexedDBRAGSystem {
     }
 }
 
+// ============================================================
+// FileCache — AI助理產生的檔案（PDF/PPTX/Markdown等匯出結果）的持久化LRU
+// 快取。使用者明確要求：AI助理也要能產生檔案並提供下載，下載連結要能在
+// 重新整理頁面後依然有效，所以真正的檔案位元組要存在IndexedDB（不是
+// localStorage——那個容量只有5-10MB，一個PPTX/PDF隨便就會超過），並且
+// 有容量上限（可在Advanced Settings設定，見 fileCacheLimitMB），超過上限
+// 時比照 IndexedDBRAGSystem 同一套「刪最久沒被存取的」LRU邏輯淘汰。
+// 訊息本身只存一個很小的 {id,filename,mimeType,sizeBytes} 參照（見
+// FloatingAssistant.generateAndDeliverFile/_persistChatHistory的
+// fileRefMap），不是把整個檔案位元組塞進聊天紀錄的JSON裡。
+// ============================================================
+class FileCache {
+    constructor(dbName = 'FloatingAssistantFiles', maxBytes = 256 * 1024 * 1024) { // 預設 256MB
+        this.dbName = dbName;
+        this.storeName = 'files';
+        this.maxBytes = maxBytes;
+        this.db = null;
+        this._ready = this._init();
+    }
+
+    _init() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.dbName, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    const store = db.createObjectStore(this.storeName, { keyPath: 'id' });
+                    store.createIndex('lastAccessedAt', 'lastAccessedAt', { unique: false });
+                }
+            };
+            req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async _tx(mode, fn) {
+        await this._ready;
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(this.storeName, mode);
+            const store = tx.objectStore(this.storeName);
+            const req = fn(store);
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    setMaxBytes(maxBytes) {
+        if (Number.isFinite(maxBytes) && maxBytes > 0) this.maxBytes = maxBytes;
+    }
+
+    /* 存一個新檔案（blob直接存進IndexedDB，瀏覽器原生支援存Blob，不需要
+       先轉base64——轉base64只會白白多佔1/3空間又浪費CPU）。存進去之後
+       立刻檢查是否超過容量上限，超過就從「最久沒被存取」的開始刪，直到
+       低於上限的95%（留一點緩衝，避免每次都卡在上限邊緣頻繁觸發淘汰）。
+       回傳存進去的id，供訊息物件的_downloadFile參照使用。 */
+    async put(filename, mimeType, blob) {
+        const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+        const record = {
+            id, filename, mimeType, blob,
+            sizeBytes: blob.size,
+            createdAt: Date.now(),
+            lastAccessedAt: Date.now(),
+        };
+        await this._tx('readwrite', s => s.put(record));
+        await this._evictToLimit();
+        return id;
+    }
+
+    async _evictToLimit() {
+        const all = await this.getAll();
+        let total = all.reduce((sum, r) => sum + (r.sizeBytes || 0), 0);
+        if (total <= this.maxBytes) return;
+        all.sort((a, b) => (a.lastAccessedAt || 0) - (b.lastAccessedAt || 0)); // 最久沒被存取的排最前面
+        const target = this.maxBytes * 0.95;
+        const idsToDelete = [];
+        for (const r of all) {
+            if (total <= target) break;
+            idsToDelete.push(r.id);
+            total -= (r.sizeBytes || 0);
+        }
+        if (idsToDelete.length) await this.deleteMany(idsToDelete);
+    }
+
+    /* 取回一個檔案（連同blob本身），順便把lastAccessedAt洗新——LRU淘汰
+       是看「最久沒被存取」，使用者重新整理頁面後只要訊息還顯示著、有去
+       點開下載連結，這個檔案就該被視為「還在用」，不該被優先淘汰掉。 */
+    async get(id) {
+        const record = await this._tx('readonly', s => s.get(id));
+        if (record) {
+            record.lastAccessedAt = Date.now();
+            await this._tx('readwrite', s => s.put(record)).catch(() => {});
+        }
+        return record;
+    }
+
+    async getAll() {
+        return this._tx('readonly', s => s.getAll());
+    }
+
+    async delete(id) {
+        return this._tx('readwrite', s => s.delete(id));
+    }
+
+    async deleteMany(ids) {
+        await Promise.all(ids.map(id => this.delete(id)));
+    }
+
+    async totalBytes() {
+        const all = await this.getAll();
+        return all.reduce((sum, r) => sum + (r.sizeBytes || 0), 0);
+    }
+}
+
 // tw_stock_db客製：已知支援OpenAI相容原生 tools/tool_calls 參數的模型名稱
 // pattern（用於 toolCallMode==='auto' 時猜測），對不到的模型一律退回文字式
 // [CALL: ...] 慣例（走既有路徑，最保險）。
@@ -495,6 +608,11 @@ class FloatingAssistant {
         // 初始化具備 Graph-RAG 特性的 RAG 系統
         this.ragSystem = new IndexedDBRAGSystem('FloatingAssistantRAG_' + ragDbSuffix);
         this.activeRagEditId = null;
+        // tw_stock_db客製: AI助理產生的檔案（PDF/PPTX/Markdown匯出結果）持久化
+        // LRU快取，見 FileCache 類別的說明、generateAndDeliverFile()。跟RAG
+        // 系統一樣依mount實例分開資料庫，避免同一頁掛多個AI助理實例時互相
+        // 干擾彼此的檔案快取。
+        this.fileCache = new FileCache('FloatingAssistantFiles_' + ragDbSuffix, this._getFileCacheLimitBytes());
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
@@ -537,7 +655,19 @@ class FloatingAssistant {
             // 都可能吃不消，見worker.js的checkAndIncrementRateLimit），使用者
             // 可以在設定面板調整，_getBatchConcurrency()會夾在1~8之間。
             batchConcurrency: 4,
+            // tw_stock_db客製: AI助理產生檔案（PDF/PPTX/Markdown）的持久化LRU
+            // 快取容量上限，見 FileCache/generateAndDeliverFile()。超過上限
+            // 時自動刪掉最久沒被存取的檔案，使用者可在Advanced Settings調整。
+            fileCacheLimitMB: 256,
         };
+    }
+
+    // fileCacheLimitMB 夾在 1~2048（MB）之間，防禦性寫法避免使用者填0/負數/
+    // 超大數字把IndexedDB塞爆或讓FileCache邏輯除零。
+    _getFileCacheLimitBytes() {
+        const mb = Number(this.advancedSettings?.fileCacheLimitMB);
+        const clamped = Number.isFinite(mb) && mb > 0 ? Math.min(2048, Math.max(1, mb)) : 256;
+        return clamped * 1024 * 1024;
     }
 
     // tw_stock_db客製: 使用者可調的生成/取樣參數。
@@ -725,6 +855,7 @@ class FloatingAssistant {
             : {};
         const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
         const batchConcurrencyNum = Number(raw.batchConcurrency);
+        const fileCacheLimitMBNum = Number(raw.fileCacheLimitMB);
         return {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
@@ -733,6 +864,7 @@ class FloatingAssistant {
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
+            fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
         };
     }
 
@@ -762,6 +894,10 @@ class FloatingAssistant {
             console.error('Advanced settings save failed:', err);
             alert('儲存 Advanced 設定失敗，請確認 localStorage 空間是否足夠。');
         }
+        // tw_stock_db客製: 使用者調整檔案快取容量上限後要立即生效，不用重新
+        // 整理頁面——下一次saveGeneratedFile()觸發LRU淘汰檢查時就會照新的
+        // 上限計算，這裡只是同步this.fileCache.maxBytes這個數字本身。
+        if (this.fileCache) this.fileCache.setMaxBytes(this._getFileCacheLimitBytes());
         this._refreshSystemPromptMessage();
     }
 
@@ -1360,6 +1496,37 @@ ${fnData.code}
         }
         this.messages.push(msg);
         return msg;
+    }
+
+    // tw_stock_db客製: 通用能力——讓AI助理（或host app透過register_openai_tool
+    // 註冊的工具）可以直接產生一個檔案（PDF/PPTX/Markdown/任何Blob）並在對話
+    // 裡提供下載連結。設計上跟圖片（_displayDataUrl）同一個原則：訊息的
+    // content只留一句給LLM看的確認文字，真正的檔案位元組不進content（不會
+    // 被送進下一輪API request、也不佔token估算），改存進this.fileCache這個
+    // 獨立的IndexedDB LRU快取（見FileCache類別），訊息上只掛一個很小的
+    // _downloadFile參照（非可枚舉，跟_displayDataUrl一樣的理由）。
+    //
+    // 使用者明確要求的行為：
+    // 1. 暫存在persistent storage（IndexedDB，不是localStorage）
+    // 2. LRU淘汰、容量上限可在設定調整（見fileCacheLimitMB）
+    // 3. 產生下載連結嵌入對話（見_renderSingleMessage的_downloadFile分支）
+    // 4. 下載連結重新整理頁面後依然有效（每次渲染時從IndexedDB重新取出
+    //    blob、用URL.createObjectURL()現生一個物件URL，不依賴瀏覽器分頁
+    //    存活期間才有效的舊URL字串——效果等同data URL可以持久使用，但
+    //    不需要真的把整個檔案base64編碼存進聊天紀錄JSON裡，省空間也省
+    //    CPU）。
+    async generateAndDeliverFile(blob, filename, mimeType) {
+        if (!(blob instanceof Blob)) throw new Error('generateAndDeliverFile 需要一個 Blob');
+        const id = await this.fileCache.put(filename, mimeType || blob.type || 'application/octet-stream', blob);
+        const sizeLabel = blob.size >= 1024 * 1024 ? `${(blob.size / 1024 / 1024).toFixed(2)} MB` : `${(blob.size / 1024).toFixed(1)} KB`;
+        const msg = this._pushAssistantMessage(`📎 已產生檔案：${filename}（${sizeLabel}），請點下方連結下載。`, null);
+        Object.defineProperty(msg, '_downloadFile', {
+            value: { id, filename, mimeType: mimeType || blob.type, sizeBytes: blob.size },
+            enumerable: false, configurable: true,
+        });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+        return { id, filename };
     }
 
     // tw_stock_db客製: 把「工具執行結果」組成訊息物件的邏輯，跟「push進
@@ -4610,16 +4777,25 @@ ${existingNodeSummaries}
             // tw_stock_db客製: _reasoningDisplay跟_displayDataUrl是同一個
             // 道理，同樣是刻意不可枚舉、同樣需要獨立存一份才能撐過reload，
             // 見_loopFetch/_loopFetchNative的說明。
+            // tw_stock_db客製: _downloadFile（見generateAndDeliverFile）也是
+            // 同一套「非可枚舉屬性額外存一份」的作法，但跟imageMap/reasoningMap
+            // 不同的是：fileMap只存{id,filename,mimeType,sizeBytes}這種小
+            // 參照，真正的檔案位元組本來就已經在FileCache（IndexedDB）裡，
+            // 不需要、也不應該把整個檔案再塞進localStorage一次（那樣既浪費
+            // 空間又違背「用IndexedDB存大檔案」的原始理由）。
             const imageMap = {};
             const reasoningMap = {};
+            const fileMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
+                if (m._downloadFile) fileMap[i] = m._downloadFile;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
                     if (m._displayDataUrl) imageMap[`${bi}:${mi}`] = m._displayDataUrl;
                     if (m._reasoningDisplay) reasoningMap[`${bi}:${mi}`] = m._reasoningDisplay;
+                    if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -4627,6 +4803,7 @@ ${existingNodeSummaries}
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
                 imageMap,
                 reasoningMap,
+                fileMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -4661,6 +4838,12 @@ ${existingNodeSummaries}
                 Object.entries(data.reasoningMap).forEach(([key, reasoningText]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_reasoningDisplay', { value: reasoningText, enumerable: false, configurable: true });
+                });
+            }
+            if (data.fileMap) {
+                Object.entries(data.fileMap).forEach(([key, fileRef]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_downloadFile', { value: fileRef, enumerable: false, configurable: true });
                 });
             }
         } catch (err) {
@@ -4735,6 +4918,39 @@ ${existingNodeSummaries}
             !msg.content.startsWith('[Topic Transition Summary') &&
             !msg.content.startsWith('[Steering]')
         ) return;
+
+        // 💡 tw_stock_db客製：AI助理產生的檔案下載連結（見
+        // generateAndDeliverFile()）。跟圖片訊息（見下面role==='tool'那段）
+        // 同一個設計原則——真正的檔案位元組不在msg.content/DOM屬性裡，而是
+        // 非同步從this.fileCache（IndexedDB）取回；blob: URL只在目前這個
+        // 分頁存活期間有效，所以每次渲染（含重新整理頁面後）都要重新產生，
+        // 不能直接把URL字串存起來重用。
+        if (msg._downloadFile) {
+            const { id, filename, sizeBytes } = msg._downloadFile;
+            const fileWrap = document.createElement('div');
+            fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
+            const sizeLabel = sizeBytes != null
+                ? (sizeBytes >= 1024 * 1024 ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB` : `${(sizeBytes / 1024).toFixed(1)} KB`)
+                : '';
+            fileWrap.innerHTML = `
+                <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
+                <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
+            `;
+            container.appendChild(fileWrap);
+            const linkEl = fileWrap.querySelector('.ai-file-download-link');
+            this.fileCache.get(id).then(record => {
+                if (!record) throw new Error('not found');
+                const url = URL.createObjectURL(record.blob);
+                linkEl.href = url;
+                linkEl.setAttribute('download', record.filename);
+                linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
+            }).catch(() => {
+                linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
+                linkEl.style.background = palette.detailBg || '#999';
+                linkEl.style.cursor = 'default';
+            });
+            return;
+        }
 
         // 💡 tw_stock_db客製：原生tool-call模式下，assistant訊息本身沒有
         // [CALL:...]文字（呼叫資訊在msg.tool_calls結構化欄位），比照文字

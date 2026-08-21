@@ -1488,6 +1488,10 @@ select:focus { outline: 2px solid var(--acc); }
           <label>批次分析並行數 <input type="number" id="ai-cfg-batch-concurrency" min="1" max="8" step="1"></label>
           <p class="modal-hint">AI用「batch_analyze_stocks」工具篩選一整份股票清單時（例如從鎖股名單挑出符合某型態的股票），同時開幾個獨立子任務平行分析——調高會比較快，但也會同時打出更多次API請求，共用金鑰的使用者可能比較容易撞到流量限制，範圍1~8，預設4。</p>
 
+          <h3>檔案匯出快取</h3>
+          <label>快取容量上限(MB) <input type="number" id="ai-cfg-file-cache-limit" min="1" max="2048" step="1"></label>
+          <p class="modal-hint">AI助理產生的檔案（PDF/PPTX/Markdown）會存在瀏覽器本機（IndexedDB），提供對話裡的下載連結重新整理頁面後仍然有效。超過這個容量上限時，會自動刪除最久沒被下載/存取過的舊檔案（LRU），預設256MB。</p>
+
           <p class="modal-hint">Skill（自訂工具）、RULES.md等進階設定，在AI分頁本身的「⚙」→「Advance」設定面板裡設定。</p>
         </div>
       </div>
@@ -1554,7 +1558,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260818-2"></script>
+<script src="floating-assistant.js?v=20260821-1"></script>
 
 <script>
 'use strict';
@@ -5164,6 +5168,65 @@ const AI_CAPABILITIES = [
     },
   },
   {
+    // tw_stock_db客製: 使用者明確要求AI助理也要能產生PDF/PPTX/Markdown檔案
+    // 並在對話裡提供下載連結。內容格式刻意跟網頁「分析」報告頁本來就在用
+    // 的YAML slides schema（見ReportStore/renderSlideHtml）對齊——這樣同一
+    // 份 ReportExport.docToMarkdown/docToPPTX/docToPDF 轉換器可以重複使用，
+    // AI只需要學會產出這一種schema的YAML，不需要為「AI匯出」另外設計一套
+    // 格式。下載連結透過aiConsoleInstance.generateAndDeliverFile()交給
+    // floating-assistant.js的FileCache（IndexedDB LRU持久化快取）處理，見
+    // 該函式的說明。
+    name: 'export_document', category: '匯出',
+    description: '把一份分析內容匯出成 PDF / PPTX / Markdown 檔案，並在對話裡插入下載連結（重新整理頁面後連結依然有效）。內容必須是YAML格式字串，結構是網頁「分析」報告頁本來就在用的同一套schema：\n' +
+      '{ report_type, title, generated_at(選填), disclaimer(選填), slides: [投影片陣列] }\n' +
+      '每個投影片物件用type欄位決定其餘欄位，可用型別：\n' +
+      '- {type: title, title, subtitle(選填)} —— 封面投影片\n' +
+      '- {type: metrics, heading, items: [{label, value, change_pct(選填如"+1.2%"), direction(選填"up"|"down"|"flat")}]} —— 一組數字/指標卡片\n' +
+      '- {type: text, heading, body} —— 一段敘述文字\n' +
+      '- {type: table, heading, columns: [欄位名...], rows: [[儲存格...], ...]} —— 表格\n' +
+      '- {type: news, heading, items: [{title, link, published_at}]} —— 新聞/連結清單\n' +
+      '- {type: notice, text} —— 單純的提示文字\n' +
+      '不要自己發明其他type，不確定該怎麼呈現某段資訊時優先用text或metrics。呼叫這個工具之前，你已經拿到的原始資料（例如diagnose_stock、get_price_history等工具的回傳值）要自己先整理、摘要成上面的slides結構，不要整包塞進單一個text投影片。',
+    params: {
+      content_yaml: '要匯出的內容，YAML格式字串，符合上述schema',
+      format: '匯出格式，只能是 "pdf"、"pptx"、"markdown" 三選一',
+      filename: '選填，檔名（不含副檔名），沒給的話用YAML裡的title',
+    },
+    handler: async (a) => {
+      let doc;
+      try {
+        doc = YamlLite.parse(String(a.content_yaml || ''));
+      } catch (e) {
+        return { ok: false, error: `YAML解析失敗：${e.message}` };
+      }
+      if (!doc || !Array.isArray(doc.slides) || !doc.slides.length) {
+        return { ok: false, error: '內容格式不正確：解析後沒有非空的slides陣列，請確認YAML縮排/結構符合schema說明' };
+      }
+      const format = String(a.format || '').toLowerCase();
+      if (!['pdf', 'pptx', 'markdown'].includes(format)) {
+        return { ok: false, error: 'format必須是 pdf、pptx 或 markdown 三選一' };
+      }
+      const filenameBase = String(a.filename || doc.title || doc.report_type || 'export').replace(/[\\/:*?"<>|]/g, '_');
+      try {
+        let blob, mimeType, ext;
+        if (format === 'markdown') {
+          blob = new Blob([ReportExport.docToMarkdown(doc)], { type: 'text/markdown;charset=utf-8' });
+          mimeType = 'text/markdown'; ext = 'md';
+        } else if (format === 'pptx') {
+          blob = await ReportExport.docToPPTX(doc);
+          mimeType = blob.type; ext = 'pptx';
+        } else {
+          blob = await ReportExport.docToPDF(doc);
+          mimeType = blob.type; ext = 'pdf';
+        }
+        const result = await aiConsoleInstance.generateAndDeliverFile(blob, `${filenameBase}.${ext}`, mimeType);
+        return { ok: true, filename: result.filename, sizeBytes: blob.size, note: '已在對話裡插入下載連結，不需要再重複告知使用者檔案內容細節。' };
+      } catch (e) {
+        return { ok: false, error: `匯出失敗：${e.message}` };
+      }
+    },
+  },
+  {
     name: 'get_watchlist', category: '自選股',
     description: '取得使用者自選股清單（含最新價格）。',
     params: {},
@@ -5372,6 +5435,12 @@ get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruc
 陣列後自己彙整、只列出符合條件的股票給使用者，不用把每一則子任務原始回覆都貼出來。
 會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
 用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
+匯出檔案：使用者要求把分析結果存成PDF/PPTX/Markdown檔案時，呼叫 export_document（詳細
+schema見該工具description）。這個網頁「分析」報告頁本身（盤前分析/大盤分析等）的內容就是
+用同一套YAML slides格式儲存與呈現，你產出的內容要對齊同一個schema，不要自己發明別的格式；
+把手上已經拿到的資料整理成slides陣列（title/metrics/text/table/news/notice六種型別），
+不要把整段原始文字塞進單一個text投影片了事。工具成功後畫面會自動出現下載連結，不用再另外
+描述檔案裡有什麼內容。
 回答時使用台灣繁體中文，語氣像專業分析師對客戶做技術簡報，但這只是技術面框架推演，不是
 投資建議，需要的話要提醒使用者。
 格式規則：支援一般Markdown（標題、粗體、清單、表格）跟LaTeX數學語法（行內用單一$包住，
@@ -6744,6 +6813,7 @@ const R = {
   aiCfgContextWindow: $('ai-cfg-context-window'),
   aiCfgMaxOutput: $('ai-cfg-max-output'),
   aiCfgBatchConcurrency: $('ai-cfg-batch-concurrency'),
+  aiCfgFileCacheLimit: $('ai-cfg-file-cache-limit'),
   aiCfgParamFreq: $('ai-cfg-param-frequency_penalty'),
   aiCfgParamPresence: $('ai-cfg-param-presence_penalty'),
   aiCfgParamRepetition: $('ai-cfg-param-repetition_penalty'),
@@ -10113,6 +10183,13 @@ function loadAiConnectionSettingsIntoModal() {
   } catch (_) {}
   R.aiCfgBatchConcurrency.value = batchConcurrency;
 
+  let fileCacheLimitMB = 256;
+  try {
+    const raw3 = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}');
+    if (Number.isFinite(Number(raw3.fileCacheLimitMB)) && Number(raw3.fileCacheLimitMB) > 0) fileCacheLimitMB = Number(raw3.fileCacheLimitMB);
+  } catch (_) {}
+  R.aiCfgFileCacheLimit.value = fileCacheLimitMB;
+
   const disabledKeys = [];
   AI_SAMPLING_PARAM_KEYS.forEach(key => {
     const entry = (gen.samplingParams && gen.samplingParams[key]) || {};
@@ -10161,6 +10238,21 @@ function updateFloatingAiBatchConcurrency(n) {
   }
 }
 
+// tw_stock_db客製: fileCacheLimitMB（AI助理產生檔案的IndexedDB LRU快取
+// 容量上限，見 floating-assistant.js 的 FileCache/generateAndDeliverFile）
+// 跟batchConcurrency同一個道理——純client端設定，不是送進API的取樣參數，
+// 走同一個localStorage blob但拆開成獨立函式。
+function updateFloatingAiFileCacheLimit(mb) {
+  let raw = {};
+  try { raw = JSON.parse(localStorage.getItem(FLOATING_AI_KEYS.advancedSettings) || '{}'); } catch (_) {}
+  raw.fileCacheLimitMB = mb;
+  localStorage.setItem(FLOATING_AI_KEYS.advancedSettings, JSON.stringify(raw));
+  if (typeof aiConsoleInstance !== 'undefined' && aiConsoleInstance) {
+    aiConsoleInstance.advancedSettings = aiConsoleInstance._normalizeAdvancedSettings(raw);
+    aiConsoleInstance._saveAdvancedSettings();
+  }
+}
+
 function initAiConnectionSettingsListeners() {
   // API金鑰/網址/模型名稱：跟floating-assistant.js自己的面板一樣，輸入即存
   // （不用等按「儲存」），並在AI分頁已經開著時同步更新那邊的輸入框。
@@ -10190,6 +10282,10 @@ function initAiConnectionSettingsListeners() {
   R.aiCfgBatchConcurrency.addEventListener('input', () => {
     const n = parseInt(R.aiCfgBatchConcurrency.value, 10);
     if (Number.isFinite(n) && n > 0) updateFloatingAiBatchConcurrency(Math.min(8, n));
+  });
+  R.aiCfgFileCacheLimit.addEventListener('input', () => {
+    const n = parseInt(R.aiCfgFileCacheLimit.value, 10);
+    if (Number.isFinite(n) && n > 0) updateFloatingAiFileCacheLimit(Math.min(2048, n));
   });
   AI_SAMPLING_PARAM_KEYS.forEach(key => {
     const input = AI_SAMPLING_PARAM_INPUTS[key];
