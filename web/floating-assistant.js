@@ -477,6 +477,25 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
 // 三邊各自硬寫一份、改一個忘了改另一個。
 const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
 
+// tw_stock_db客製: 端點回報「這個參數不認得」時常見的錯誤訊息關鍵字，
+// _detectRejectedSamplingParam()跟_isStopParamRejected()共用同一份清單
+// （沒有統一標準的provider錯誤格式，只能盡力而為關鍵字比對）。
+const PARAM_REJECTION_HINTS = [
+    'unrecognized', 'not supported', 'unsupported', 'unknown parameter',
+    'unknown field', 'invalid parameter', 'extra fields not permitted',
+    'unexpected keyword argument', 'not a valid', 'invalid request',
+    'does not support', "isn't supported", 'not allowed'
+];
+
+// tw_stock_db客製: 文字式[CALL: name(args)]慣例專用的stop sequence——
+// 呼叫格式固定是"...)]"結尾，模型只要正確收尾，伺服器端就會在生成到這裡
+// 時直接截斷輸出，不用等模型自己（可能）繼續往下編一段假的[TOOL RESULT]
+// 才由用戶端事後丟棄（見_extractBalancedCallArgs的說明）——省下那些被
+// 丟棄的token，也從源頭降低「模型不停下來」造成的各種解析錯誤機率。只
+// 用在文字式協定（見_loopFetch/_runSubAgentTask的useNative分支判斷），
+// 原生tool_calls協定由API自己控制呼叫邊界，不需要也不應該加這個。
+const CALL_STOP_SEQUENCE = ')]';
+
 // tw_stock_db客製: max_tokens的本質是「這一次API呼叫最多產生多少token」，
 // 跟「這一輪對話總共能回覆多長」是兩件事——就算使用者把它調到很小
 // （例如128），只要每次卡到上限就自動用同樣的上下文再送一次「請接續」，
@@ -496,13 +515,19 @@ const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸�
 //   - nvidia/nemotron-3-super-120b-a12b：預設值，回應速度快、能力也最強，
 //     早期實測在temperature=0時容易卡進重複輸出迴圈，現在有兩層防護：
 //     _hasRepeatingTail()串流中偵測並截斷，加上預設repetition_penalty=1/
-//     length_penalty=0.3的取樣參數（2026-08調整）。
-//   - google/gemma-4-31b-it：實測~2秒回應、中文輸出正常。
+//     length_penalty=0.3的取樣參數（2026-08調整）。2026-08加上
+//     CALL_STOP_SEQUENCE後實測：工具呼叫正確停在收尾處、不再自己編造假
+//     TOOL RESULT，端點正常接受stop參數。
 //   - meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱。
 //   - meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)。
+//   - google/gemma-4-31b-it：2026-08實測移除——即使完全不涉及工具呼叫的
+//     單句提示（"請直接回覆兩個字：測試"）都卡了20秒以上沒有任何回應，
+//     跟這裡的CALL_STOP_SEQUENCE改動無關（第一個工具呼叫階段其實有正常
+//     運作，是後續產生最終文字回覆時卡住），研判是NVIDIA官方端點對這個
+//     模型本身反應太慢/不穩定，先移出內建清單，需要的話使用者仍可以自己
+//     在MODEL NAME欄位手動輸入這個模型名稱。
 const PRESET_MODEL_OPTIONS = [
     'nvidia/nemotron-3-super-120b-a12b',
-    'google/gemma-4-31b-it',
     'meta/llama-3.1-8b-instruct',
     'meta/llama-3.3-70b-instruct',
 ];
@@ -699,6 +724,10 @@ class FloatingAssistant {
                 repetition_penalty: { value: 1, disabled: false },
                 length_penalty: { value: 0.3, disabled: false },
             },
+            // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——只用在文字式[CALL:...]
+            // 協定，被目標端點拒絕過(偵測到400+關鍵字)就記住，之後不再送這個
+            // 欄位，跟samplingParams的disabled是同一套設計理念。
+            stopSequenceDisabled: false,
         };
     }
 
@@ -723,6 +752,7 @@ class FloatingAssistant {
             contextWindowTokens: toPositiveIntOr(raw.contextWindowTokens, defaults.contextWindowTokens),
             maxOutputTokens: toPositiveIntOr(raw.maxOutputTokens, defaults.maxOutputTokens),
             samplingParams,
+            stopSequenceDisabled: !!raw.stopSequenceDisabled,
         };
     }
 
@@ -759,17 +789,41 @@ class FloatingAssistant {
     _detectRejectedSamplingParam(errText) {
         if (!errText) return null;
         const lower = String(errText).toLowerCase();
-        const rejectionHints = [
-            'unrecognized', 'not supported', 'unsupported', 'unknown parameter',
-            'unknown field', 'invalid parameter', 'extra fields not permitted',
-            'unexpected keyword argument', 'not a valid', 'invalid request',
-            'does not support', "isn't supported", 'not allowed'
-        ];
-        if (!rejectionHints.some(h => lower.includes(h))) return null;
+        if (!PARAM_REJECTION_HINTS.some(h => lower.includes(h))) return null;
         for (const key of SAMPLING_PARAM_KEYS) {
             if (lower.includes(key)) return key;
         }
         return null;
+    }
+
+    // tw_stock_db客製: 只有文字式[CALL:...]協定的請求才會呼叫這個——把
+    // CALL_STOP_SEQUENCE組進body.stop，除非這個端點之前已經拒絕過（見
+    // _disableStopParam）。用陣列包起來是OpenAI相容API的標準stop參數格式
+    // （單一字串也大多能接受，但陣列相容性更好）。
+    _buildStopParamBody() {
+        if (this._getGenerationSettings().stopSequenceDisabled) return {};
+        return { stop: [CALL_STOP_SEQUENCE] };
+    }
+
+    _isStopParamRejected(errText) {
+        if (!errText) return false;
+        const lower = String(errText).toLowerCase();
+        return PARAM_REJECTION_HINTS.some(h => lower.includes(h)) && lower.includes('stop');
+    }
+
+    // tw_stock_db客製: 跟_disableRejectedSamplingParam同樣的設計——標記後
+    // 之後所有請求都不會再帶stop欄位，並留一則使用者看得到的記錄。
+    _disableStopParam(errText) {
+        const gs = this._getGenerationSettings();
+        if (gs.stopSequenceDisabled) return false;
+        gs.stopSequenceDisabled = true;
+        this._saveAdvancedSettings();
+        this.messages.push({
+            role: 'system',
+            content: `[Steering] 偵測到目前模型/端點不支援 "stop" 參數，已自動排除、之後的請求不會再帶這個欄位（可以到設定面板手動重新啟用）。伺服器回應片段：${String(errText || '').slice(0, 300)}`
+        });
+        this._renderMessageHistory();
+        return true;
     }
 
     // tw_stock_db客製: 把某個取樣參數標記為「這個端點不支援」，之後所有
@@ -2644,6 +2698,7 @@ ${sourceTool.handlerScript}
             }
             if (entry.disabled) disabledKeys.push(key);
         });
+        if (gen.stopSequenceDisabled) disabledKeys.push('stop');
         const note = document.getElementById('ai-param-disabled-note');
         if (note) note.textContent = disabledKeys.length ? `⚠️ 已自動排除（端點不支援）：${disabledKeys.join('、')}` : '';
     }
@@ -3831,6 +3886,11 @@ ${existingNodeSummaries}
                         // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
                         // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
                         ...this._buildSamplingParamsBody(),
+                        // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——這裡一定是文字式
+                        // [CALL:...]協定（函式最上面已經把原生tool_calls模型導去
+                        // _loopFetchNative了），讓端點在模型正確收尾的當下就直接
+                        // 截斷生成，不用等模型自己繼續往下編一段假的[TOOL RESULT]。
+                        ...this._buildStopParamBody(),
                         max_tokens: this._getGenerationSettings().maxOutputTokens,
                         stream: true
                     })
@@ -3846,6 +3906,10 @@ ${existingNodeSummaries}
                     // 對同一個key只會生效一次，不會無窮遞迴。
                     const rejectedParam = this._detectRejectedSamplingParam(errText);
                     if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
+                        streamDiv.remove();
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
+                    }
+                    if (this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
                         streamDiv.remove();
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
                     }
@@ -4299,6 +4363,10 @@ ${existingNodeSummaries}
             if (useNative) {
                 body.tools = this._buildNativeToolsSchema();
                 body.tool_choice = 'auto';
+            } else {
+                // tw_stock_db客製: 見_loopFetch裡CALL_STOP_SEQUENCE的說明，子任務
+                // 用的是同一份判斷（只在文字式協定加，原生tool_calls不用）。
+                Object.assign(body, this._buildStopParamBody());
             }
 
             let response;
@@ -4313,6 +4381,16 @@ ${existingNodeSummaries}
             }
             if (!response.ok) {
                 const errText = await response.text().catch(() => '');
+                // tw_stock_db客製: 子任務故意不接pruneContext/一般重試機制（見下面
+                // 的原有說明），但stop參數被拒絕是「這次request body本身有問題」
+                // 而不是內容太長，值得單獨處理——不然只要stop一被拒絕，整批
+                // batch_analyze_stocks的每一個子任務都會全部失敗。偵測到就標記
+                // 停用、重跑同一輪（不消耗maxRounds），_disableStopParam對同一個
+                // session只會成功一次，不會無窮重試。
+                if (!useNative && this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
+                    round--;
+                    continue;
+                }
                 // 子任務故意不接pruneContext/重試機制——訊息歷史本來就很短
                 // （系統prompt+單一問題+少數工具往返），真的撞到400/413多半
                 // 代表這個端點/模型本身有問題，重試對子任務的成本效益不划算，
@@ -4595,8 +4673,10 @@ ${existingNodeSummaries}
             <div id="ai-autocomplete-bar" style="background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; padding:4px 12px; display:none; border-top:1px solid ${palette.windowBorder};">
                 💡 按 <kbd style="background:#fff;padding:1px 3px;border:1px solid #ccc;border-radius:3px;">Tab</kbd> 自動補全: <span id="ai-suggest-text"></span>
             </div>
-            <div id="ai-input-wrap" style="padding:10px; background:${palette.windowBg}; border-top:1px solid ${palette.windowBorder};">
+            <div id="ai-input-wrap" style="padding:10px; background:${palette.windowBg}; border-top:1px solid ${palette.windowBorder}; position:relative;">
+                <div id="ai-history-panel" style="display:none; position:absolute; left:10px; right:10px; bottom:100%; margin-bottom:6px; max-height:45vh; overflow-y:auto; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:20;"></div>
                 <div style="display:flex; align-items:stretch; gap:6px;">
+                    <button id="ai-history-btn" type="button" title="歷史訊息（手機沒有上下鍵時可以用這個瀏覽/挑選之前輸入過的內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">🕘</button>
                     <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="flex:1; min-width:0; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
                     <button id="ai-send-btn" type="button" title="送出 (Enter)" style="flex:0 0 auto; padding:0 14px; border:none; border-radius:6px; background:#76b900; color:#fff; font-size:13px; font-weight:bold; cursor:pointer;">送出</button>
                 </div>
@@ -5569,6 +5649,45 @@ ${existingNodeSummaries}
         const sendBtn = document.getElementById('ai-send-btn');
         if (sendBtn) {
             sendBtn.addEventListener('click', () => this._submitChatInput(inputText, suggestBar));
+        }
+
+        // tw_stock_db客製: 手機上沒有實體上/下鍵，原本的ArrowUp/ArrowDown
+        // 瀏覽歷史指令沒辦法用——加一個🕘按鈕，點開一份可以直接點選的歷史
+        // 清單（this.commandHistory，跟Arrow鍵共用同一份資料），點哪一則
+        // 就把內容填回輸入框（不自動送出，讓使用者可以先看/改再送），手機
+        // 桌機都適用。
+        const historyBtn = document.getElementById('ai-history-btn');
+        const historyPanel = document.getElementById('ai-history-panel');
+        if (historyBtn && historyPanel) {
+            const closeHistoryPanel = () => { historyPanel.style.display = 'none'; };
+            historyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (historyPanel.style.display === 'block') { closeHistoryPanel(); return; }
+                const palette = this._getThemePalette();
+                if (!this.commandHistory.length) {
+                    historyPanel.innerHTML = `<div style="padding:12px; font-size:12px; color:${palette.detailText}; text-align:center;">目前沒有歷史訊息</div>`;
+                } else {
+                    historyPanel.innerHTML = this.commandHistory.map((cmd, i) => `
+                        <div class="ai-history-row" data-history-idx="${i}" style="padding:9px 12px; font-size:13px; border-bottom:1px solid ${palette.inputBorder}; cursor:pointer; white-space:pre-wrap; word-break:break-word;">${this._escapeHtml(cmd)}</div>
+                    `).join('');
+                }
+                historyPanel.style.display = 'block';
+            });
+            historyPanel.addEventListener('click', (e) => {
+                const row = e.target.closest('[data-history-idx]');
+                if (!row) return;
+                const cmd = this.commandHistory[Number(row.dataset.historyIdx)];
+                if (cmd != null) {
+                    inputText.value = cmd;
+                    inputText.focus();
+                }
+                closeHistoryPanel();
+            });
+            document.addEventListener('click', (e) => {
+                if (historyPanel.style.display === 'block' && !historyPanel.contains(e.target) && e.target !== historyBtn) {
+                    closeHistoryPanel();
+                }
+            });
         }
 
         inputText.addEventListener('input', () => {

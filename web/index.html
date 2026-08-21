@@ -1475,7 +1475,6 @@ select:focus { outline: 2px solid var(--acc); }
           <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="nvidia/nemotron-3-super-120b-a12b"></label>
           <datalist id="ai-cfg-model-datalist">
             <option value="nvidia/nemotron-3-super-120b-a12b"></option>
-            <option value="google/gemma-4-31b-it"></option>
             <option value="meta/llama-3.1-8b-instruct"></option>
             <option value="meta/llama-3.3-70b-instruct"></option>
           </datalist>
@@ -1567,7 +1566,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260821-2"></script>
+<script src="floating-assistant.js?v=20260821-3"></script>
 
 <script>
 'use strict';
@@ -5219,10 +5218,21 @@ Claude自己產出簡報的水準——每頁都要有明確的視覺變化，�
   建議動作，方便一眼比較) → 針對「值得特別說明」的少數幾檔（不用每檔都展開，
   太多頁反而稀釋重點）各自補一組image+text/stock_diagnosis投影片深入說明
   → notice(免責聲明，或直接用doc.disclaimer欄位，不用另外開一頁)。
+  ⚠️批次分析走batch_analyze_stocks時，子任務是獨立、用完即丟的對話，你在
+  主對話收到的只有每檔一行的精簡結論，並不會自動拿到走勢圖——想幫「值得
+  特別說明」的那幾檔附上走勢圖，要在拿到batch_analyze_stocks的結果之後，
+  自己在主對話裡對那幾檔分別呼叫render_stock_chart取得image_ref，不要假設
+  子任務會幫你生成或留下圖片編號。
 - 每個image投影片的image_ref一定要是render_stock_chart/get_chart_snapshot
   剛剛回傳的meta.image_ref，不要沿用其他次呼叫的舊編號、也不要編造。
 - 不確定某段資訊怎麼呈現最合適時，優先順序：有明確數字→metrics；多筆同結構
-  資料要比較→table；需要視覺輔助理解→image；其餘敘述性內容→text。`;
+  資料要比較→table；需要視覺輔助理解→image；其餘敘述性內容→text。
+- ⚠️絕對不要為了排版整齊，放一個只有{available: false}、沒有stock_code/
+  stock_name/reason的空殼type:stock_diagnosis投影片進去——這樣匯出後會是
+  一整頁幾乎空白、只顯示「資料不足」四個字的醜頁面（實測發生過的真實案例）。
+  某檔股票如果還沒有完整的diagnose_stock結果：要嘛先呼叫diagnose_stock補齊
+  再放進去，要嘛乾脆不要為那一檔開一整張投影片（在table裡用一行標註「資料
+  不足」即可），不要用一整頁只講四個字。`;
 
 // tw_stock_db客製: export_document用來擋掉「幾乎空白」的匯出（見該工具handler
 // 的說明），只累加slides裡實際的字串「值」長度（不含key名稱/JSON標點），
@@ -5447,7 +5457,21 @@ const AI_CAPABILITIES = [
     handler: async (a) => {
       let doc;
       try {
-        doc = YamlLite.parse(String(a.content_yaml || ''));
+        let yamlText = String(a.content_yaml || '');
+        // tw_stock_db客製: 實測發現較弱的模型手動組JSON字串時，偶爾會把
+        // 代表換行的正確跳脫序列（JSON裡的\n，兩個字元：反斜線+n）又多
+        // 逃脫一層寫成\\n——JSON.parse之後content_yaml這個字串裡實際上是
+        // 「反斜線+n」兩個字面字元，不是真正的換行字元，YamlLite.parse()
+        // 靠真正的換行字元切分每一行，整份YAML會被當成一整行、完全解析
+        // 不出slides結構（這正是使用者實測回報的「沒有非空的slides陣列」
+        // 真實案例之一）。啟發式偵測：字串裡幾乎沒有真正換行、但有兩個以
+        // 上「反斜線接著n」的字面序列，判斷是這種雙重跳脫，直接還原成
+        // 真正的換行字元再解析——這個網頁自產的YAML(report_builder.py)
+        // 不會踩到這個判斷（本來就是正常多行文字，不會觸發這個條件）。
+        if (!/\n/.test(yamlText) && (yamlText.match(/\\n/g) || []).length >= 2) {
+          yamlText = yamlText.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+        }
+        doc = YamlLite.parse(yamlText);
       } catch (e) {
         return { ok: false, error: `YAML解析失敗：${e.message}` };
       }
@@ -5764,7 +5788,13 @@ select_stock/get_stock_info）現在都會自動把公司名稱解析成代號�
 禁止事項：絕對不要自己編造或在回覆文字裡貼出圖片的base64/data URL內容——render_stock_chart
 等工具產生的圖片會由系統自動顯示給使用者看，你完全不需要、也沒有能力在文字裡「重現」圖片
 資料，這樣做只會製造大量沒有意義的亂碼文字、拖垮對話。呼叫工具後要停下來等真正的工具執行
-結果，不要自己在回覆裡憑空模擬/杜撰一個假的工具回傳內容。`;
+結果，不要自己在回覆裡憑空模擬/杜撰一個假的工具回傳內容。這條規則同樣適用於「宣稱已完成
+但其實沒做」的情況（實測發生過的真實案例：使用者要求產生PPTX，你只顧著寫長篇口頭報告，
+最後在文字結尾寫「分析報告已匯出為PPTX，可於對話中取得下載連結」，但你根本沒有呼叫過
+export_document）——只要使用者的訊息裡出現「產生檔案/PDF/PPTX/簡報/存檔/匯出」這類字眼，
+你在整則回覆結束前，一定要先真的呼叫export_document並看到它回傳ok:true（畫面會自動出現
+下載連結），才可以在文字裡提到檔案已完成；沒有真的呼叫、或呼叫失敗還沒重試成功，就絕對
+不能寫出「已產生」「可以下載」這類字句，這跟編造工具結果是同一種錯誤，一樣不可以發生。`;
 
 /* ════════════════════════════════════════
    CHART MANAGER  (Canvas)
@@ -8493,7 +8523,8 @@ const ReportExport = (() => {
 
   function stockDiagnosisToMarkdown(d) {
     if (!d.available) {
-      return `## ${d.stock_code || ''} ${d.stock_name || ''}\n\n${d.reason || '資料不足'}\n`;
+      const label = (d.stock_code || d.stock_name) ? `${d.stock_code || ''} ${d.stock_name || ''}`.trim() : '個股診斷';
+      return `## ${label}\n\n無法提供完整診斷：${d.reason || '資料不足（可能尚未查詢這檔股票的持股診斷，或本機歷史資料不足）'}\n`;
     }
     const ma = d.position?.ma || {};
     const maText = ['5', '10', '20', '60'].map(p => `MA${p} ${ma[p] ?? '-'}`).join('　');
@@ -8729,12 +8760,15 @@ const ReportExport = (() => {
   // 的版面密度降低風險）。
   function addStockDiagnosisSlides(pres, d) {
     if (!d.available) {
+      const label = (d.stock_code || d.stock_name) ? `${d.stock_code || ''} ${d.stock_name || ''}`.trim() : '個股診斷';
       const s = newSlide(pres);
       s.background = { color: PALETTE_PPTX.white };
-      s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
+      s.addText(label, {
         x: 0.6, y: 0.5, w: 12.1, h: 0.6, fontFace: 'Calibri', fontSize: 22, bold: true, color: PALETTE_PPTX.navy,
       });
-      s.addText(d.reason || '資料不足', { x: 0.6, y: 1.4, w: 12.1, h: 1, fontFace: 'Calibri', fontSize: 14, color: PALETTE_PPTX.muted });
+      s.addText(`無法提供完整診斷：${d.reason || '資料不足（可能尚未查詢這檔股票的持股診斷，或本機歷史資料不足）'}`, {
+        x: 0.6, y: 1.4, w: 12.1, h: 1, fontFace: 'Calibri', fontSize: 14, color: PALETTE_PPTX.muted,
+      });
       return;
     }
     const ma = d.position?.ma || {};
@@ -8851,9 +8885,10 @@ const ReportExport = (() => {
      ──────────────────────────────────────── */
   function stockDiagnosisToPdfContent(d) {
     if (!d.available) {
+      const label = (d.stock_code || d.stock_name) ? `${d.stock_code || ''} ${d.stock_name || ''}`.trim() : '個股診斷';
       return [
-        { text: `${d.stock_code || ''} ${d.stock_name || ''}`, style: 'h2' },
-        { text: d.reason || '資料不足', style: 'body', margin: [0, 4, 0, 0] },
+        { text: label, style: 'h2' },
+        { text: `無法提供完整診斷：${d.reason || '資料不足（可能尚未查詢這檔股票的持股診斷，或本機歷史資料不足）'}`, style: 'body', margin: [0, 4, 0, 0] },
       ];
     }
     const ma = d.position?.ma || {};
