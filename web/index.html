@@ -330,6 +330,20 @@ body {
 }
 .menu-item:hover { background: var(--bg3); }
 
+/* 「匯出」下拉選單（報告/持股診斷/盤後頁面共用同一套樣式，見
+   openExportDropdown），跟 #menu-drop 同樣position:fixed動態定位的理由。 */
+#report-export-drop, .export-drop {
+  position: fixed;
+  min-width: 150px;
+  background: var(--bg1);
+  border: 1px solid var(--bdr);
+  border-radius: 8px;
+  box-shadow: var(--shd2);
+  overflow: hidden;
+  z-index: 999;
+}
+#report-export-drop.hidden, .export-drop.hidden { display: none; }
+
 /* ── Main container ── */
 #main {
   display: flex;
@@ -1297,6 +1311,14 @@ select:focus { outline: 2px solid var(--acc); }
       <div id="report-toolbar">
         <div id="report-toolbar-row">
           <span id="report-title"></span>
+          <div class="menu-wrap">
+            <button class="btn icon" id="report-export-btn" title="匯出報告">⬇</button>
+            <div id="report-export-drop" class="hidden">
+              <div class="menu-item" data-format="pdf">📄 匯出 PDF</div>
+              <div class="menu-item" data-format="pptx">📊 匯出 PPTX</div>
+              <div class="menu-item" data-format="markdown">📝 匯出 Markdown</div>
+            </div>
+          </div>
           <button class="btn icon" id="report-view-mode-btn" title="切換顯示模式"></button>
         </div>
         <span id="report-status"></span>
@@ -6627,6 +6649,8 @@ const R = {
   reportTitle:     $('report-title'),
   reportStatus:    $('report-status'),
   reportViewModeBtn: $('report-view-mode-btn'),
+  reportExportBtn: $('report-export-btn'),
+  reportExportDrop: $('report-export-drop'),
   reportSlideWrap: $('report-slide-wrap'),
   reportSlide:     $('report-slide'),
   reportSlideContinuous: $('report-slide-continuous'),
@@ -7892,6 +7916,617 @@ function renderStockDiagnosisHtml(d) {
   `;
 }
 
+/* ════════════════════════════════════════
+   REPORT EXPORT（匯出成 PDF / PPTX / Markdown）
+   ════════════════════════════════════════
+   使用者明確要求：AI助理、持股診斷、盤後、以及所有「分析」分類的報告頁面
+   （盤前分析/大盤分析/盤中大盤分析/隔日持股分析/本週持股分析/盤中持股分析…）
+   都要能匯出成這三種格式，畫面美觀度要接近 Claude 用pptx/docx skill產出的
+   報告品質（版面/配色/字體）。
+
+   核心設計決定（跟使用者對話中確認過）：
+   1. 這個網站是純前端 static 網頁（GitHub Pages，沒有後端伺服器），所以不
+      走「後端API用python-pptx/LibreOffice真正產檔」那條路——沒有能跑
+      Python/LibreOffice的主機。改用瀏覽器端直接產生真正的 .pptx（OOXML
+      zip）/.pdf 檔案，PPTX/PDF本身是公開格式規格，可以用純JS函式庫組出
+      合法檔案，不需要Office/LibreOffice本身介入轉檔。
+      - PPTX：pptxgenjs（透過CDN載入，惰性載入，只有真的要匯出PPTX時才拉）
+      - PDF：pdfmake（同上，惰性載入）
+      - Markdown：純字串組裝，不需要任何函式庫
+   2. 「大盤分析」等報告頁面本來就是從 YAML 格式的 slides 陣列 render 出來的
+      （見 ReportStore.fetchReport / renderSlideHtml），這份 slides schema
+      （{report_type,title,generated_at,disclaimer,slides:[{type,...}]}）
+      就是這裡採用的「通用文件格式」——不只是既有報告頁面直接可以用，未來
+      使用者上傳的檔案、AI助理產生的分析內容，都要對齊/輸出同一份schema，
+      這樣同一套 docToMarkdown/docToPPTX/docToPDF 轉換器可以重複使用，不用
+      每種內容各自寫一套匯出邏輯。目前只有「分析」報告頁面直接餵這個
+      schema；持股診斷/盤後/AI助理則是各自的資料另外寫一層轉接（adapter），
+      轉成同一份 slides 陣列後再交給同一套轉換器——這是後續階段要補的部分，
+      這裡先把核心轉換器 + 分析報告頁面的匯出打通。
+
+   設計語言（跟隨 anthropic-skills:pptx 提供的簡報設計原則，套用在財經報告
+   情境）：主色系「Midnight Executive」（深藍 #1E2761 為主、冰藍 #CADCFC
+   為輔、白色點綴），紅漲綠跌（--up/--dn）維持跟網頁本身一致的配色，只在
+   數值本身（漲跌badge、涨跌方向）才出現，不是整份文件的主色。標題頁深色
+   背景、內容頁淺色背景（sandwich結構）。避免用色條/底線當裝飾（AI生成
+   簡報的常見敗筆），改用留白跟卡片背景色區隔區塊。 */
+const ReportExport = (() => {
+  const PPTXGENJS_URL = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+  const PDFMAKE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js';
+  const PDFMAKE_FONTS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/vfs_fonts.js';
+
+  const loadedScripts = new Map(); // url -> Promise，避免同一個url被載入兩次
+  function loadScriptOnce(url) {
+    if (loadedScripts.has(url)) return loadedScripts.get(url);
+    const p = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`載入失敗：${url}`));
+      document.head.appendChild(s);
+    });
+    loadedScripts.set(url, p);
+    return p;
+  }
+
+  // 財經報告配色（見上方模組說明）。PPTX(pptxgenjs)用不帶#的hex，
+  // PDF(pdfmake)用標準CSS hex（帶#），分開存兩份避免每次呼叫都要轉換。
+  const PALETTE_PPTX = {
+    navy: '1E2761', ice: 'CADCFC', white: 'FFFFFF',
+    txt: '333333', muted: '6B7280', border: 'E2E8F0',
+    up: 'DC2626', down: '16A34A', tileGray: 'F7F8FA',
+  };
+  const PALETTE_PDF = {
+    navy: '#1E2761', ice: '#CADCFC',
+    txt: '#333333', muted: '#6B7280', border: '#E2E8F0',
+    up: '#DC2626', down: '#16A34A', tileGray: '#F7F8FA',
+  };
+
+  function fmtGeneratedAt(doc) {
+    return doc.generated_at ? String(doc.generated_at) : '';
+  }
+
+  /* ────────────────────────────────────────
+     Markdown 轉換：純字串組裝，不需要任何外部函式庫。
+     ──────────────────────────────────────── */
+  function mdEscapeCell(v) {
+    return String(v ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  }
+
+  function stockDiagnosisToMarkdown(d) {
+    if (!d.available) {
+      return `## ${d.stock_code || ''} ${d.stock_name || ''}\n\n${d.reason || '資料不足'}\n`;
+    }
+    const ma = d.position?.ma || {};
+    const maText = ['5', '10', '20', '60'].map(p => `MA${p} ${ma[p] ?? '-'}`).join('　');
+    const kbar = d.kbar_quality || {};
+    const kbarVerdict = kbar.passes ? '通過' : `未通過${kbar.reason ? '：' + kbar.reason : ''}`;
+    const mm = d.entry_exit?.measured_move;
+    let mmText = '';
+    if (mm) {
+      if (!mm.available) mmText = `\n\n目標價測量法：${mm.reason || '資料不足'}`;
+      else {
+        if (mm.n_measure) mmText += `\n\nN字測量法(AB=CD，${mm.n_measure.direction})：${mm.n_measure.note}`;
+        if (mm.equal_measure) mmText += `\n\n等幅測量法：${mm.equal_measure.note}`;
+      }
+    }
+    const mr = d.monthly_revenue;
+    const mrText = mr
+      ? `${mr.data_month} 營收 ${mr.revenue_this_month != null ? Math.round(mr.revenue_this_month).toLocaleString() + ' 千元' : '-'}，月增 ${mr.mom_pct ?? '-'}%，年增 ${mr.yoy_pct ?? '-'}%，累計年增 ${mr.cum_pct ?? '-'}%`
+      : '查無月營收資料（可能剛上市，或本次未抓到）';
+    const header = `## ${d.stock_code || ''} ${d.stock_name || ''}` +
+      (d.lock_direction ? `（${d.lock_direction}${d.lock_score != null ? ' ' + d.lock_score + '分' : ''}）` : '');
+    return [
+      header,
+      `資料日期：${d.as_of_date || '-'}`,
+      '',
+      `**目前位置**：收盤 ${d.position?.close ?? '-'}，${maText}　${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${d.position?.ma_alignment || '資料不足'}`,
+      '',
+      `**趨勢判斷**：${d.trend?.label ?? ''}（近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}）`,
+      '',
+      `**型態辨識**：${d.pattern?.note ?? ''}`,
+      '',
+      `**K棒品質判讀鐵律**：實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}，上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}`,
+      '',
+      `**量價關係**：${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`,
+      '',
+      `**大盤連動**：${d.market_linkage?.sox ?? ''}／${d.market_linkage?.dji ?? ''}${d.market_linkage?.note ? '\n\n_' + d.market_linkage.note + '_' : ''}`,
+      '',
+      `**月營收**：${mrText}`,
+      '',
+      `**進出場建議**：${d.entry_exit?.trend_stop ?? ''}\n\n百分比停損：${d.entry_exit?.pct_stop_range ?? ''}${mmText}${d.entry_exit?.target_price_note ? '\n\n_' + d.entry_exit.target_price_note + '_' : ''}`,
+      '',
+      `> ⚠️ ${d.risk_note || ''}`,
+      '',
+    ].join('\n');
+  }
+
+  function slideToMarkdown(slide) {
+    if (!slide) return '';
+    switch (slide.type) {
+      case 'title':
+        return `# ${slide.title || ''}\n` + (slide.subtitle ? `\n*${slide.subtitle}*\n` : '');
+      case 'metrics': {
+        const rows = (slide.items || []).map(it => {
+          const chg = it.change_pct ? ` (${it.change_pct})` : '';
+          return `- **${it.label}**：${it.value}${chg}`;
+        }).join('\n');
+        return `## ${slide.heading || ''}\n\n${rows}\n`;
+      }
+      case 'text':
+        return `## ${slide.heading || ''}\n\n${slide.body || ''}\n`;
+      case 'notice':
+        return `> ${slide.text || ''}\n`;
+      case 'table': {
+        const cols = slide.columns || [];
+        const header = `| ${cols.map(mdEscapeCell).join(' | ')} |`;
+        const sep = `| ${cols.map(() => '---').join(' | ')} |`;
+        const rows = (slide.rows || []).map(r => `| ${(r || []).map(mdEscapeCell).join(' | ')} |`).join('\n');
+        return `## ${slide.heading || ''}\n\n${header}\n${sep}\n${rows}\n`;
+      }
+      case 'news': {
+        const items = (slide.items || []).map(it => `- [${it.title}](${it.link})　${it.published_at || ''}`).join('\n');
+        return `## ${slide.heading || ''}\n\n${items}\n`;
+      }
+      case 'stock_diagnosis':
+        return stockDiagnosisToMarkdown(slide);
+      default:
+        return '';
+    }
+  }
+
+  function docToMarkdown(doc) {
+    const lines = [`# ${doc.title || doc.report_type || '報告'}`];
+    if (fmtGeneratedAt(doc)) lines.push(`*產生時間：${fmtGeneratedAt(doc)}*`);
+    lines.push('');
+    for (const slide of (doc.slides || [])) {
+      lines.push(slideToMarkdown(slide));
+      lines.push('');
+    }
+    if (doc.disclaimer) lines.push('---', doc.disclaimer);
+    return lines.join('\n');
+  }
+
+  /* ────────────────────────────────────────
+     PPTX 轉換：pptxgenjs，每個slide type對應一種版面（見模組說明的設計
+     語言）。惰性載入函式庫，第一次呼叫才會真的去抓CDN。
+     ──────────────────────────────────────── */
+  function addTitleSlide(pres, slide, doc) {
+    const s = pres.addSlide();
+    s.background = { color: PALETTE_PPTX.navy };
+    s.addText(slide.title || doc.title || '', {
+      x: 0.8, y: 2.3, w: 11.7, h: 1.6, fontFace: 'Calibri', fontSize: 40, bold: true,
+      color: PALETTE_PPTX.white, align: 'left', valign: 'middle',
+    });
+    if (slide.subtitle) {
+      s.addText(slide.subtitle, {
+        x: 0.8, y: 3.9, w: 11.7, h: 0.7, fontFace: 'Calibri', fontSize: 18,
+        color: PALETTE_PPTX.ice, align: 'left',
+      });
+    }
+    if (fmtGeneratedAt(doc)) {
+      s.addText(`產生時間：${fmtGeneratedAt(doc)}`, {
+        x: 0.8, y: 6.7, w: 11.7, h: 0.4, fontFace: 'Calibri', fontSize: 11,
+        color: PALETTE_PPTX.ice, align: 'left',
+      });
+    }
+    return s;
+  }
+
+  function addHeadingSlideBase(pres, heading) {
+    const s = pres.addSlide();
+    s.background = { color: PALETTE_PPTX.white };
+    s.addText(heading || '', {
+      x: 0.6, y: 0.4, w: 12.1, h: 0.7, fontFace: 'Calibri', fontSize: 24, bold: true,
+      color: PALETTE_PPTX.navy, align: 'left',
+    });
+    return s;
+  }
+
+  function addMetricsSlide(pres, slide) {
+    const s = addHeadingSlideBase(pres, slide.heading);
+    const items = slide.items || [];
+    const cols = items.length > 6 ? 4 : (items.length > 3 ? 3 : Math.max(1, items.length));
+    const gap = 0.3;
+    const totalW = 12.1;
+    const tileW = (totalW - gap * (cols - 1)) / cols;
+    const tileH = 1.5;
+    items.forEach((it, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const x = 0.6 + col * (tileW + gap), y = 1.4 + row * (tileH + gap);
+      s.addShape('roundRect', { x, y, w: tileW, h: tileH, rectRadius: 0.06, fill: { color: PALETTE_PPTX.tileGray }, line: { type: 'none' } });
+      s.addText(String(it.label || ''), { x: x + 0.15, y: y + 0.1, w: tileW - 0.3, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: PALETTE_PPTX.muted });
+      s.addText(String(it.value ?? ''), { x: x + 0.15, y: y + 0.4, w: tileW - 0.3, h: 0.6, fontFace: 'Calibri', fontSize: 26, bold: true, color: PALETTE_PPTX.navy });
+      if (it.change_pct) {
+        const col2 = it.direction === 'up' ? PALETTE_PPTX.up : it.direction === 'down' ? PALETTE_PPTX.down : PALETTE_PPTX.muted;
+        s.addText(String(it.change_pct), { x: x + 0.15, y: y + 1.02, w: tileW - 0.3, h: 0.35, fontFace: 'Calibri', fontSize: 13, bold: true, color: col2 });
+      }
+    });
+    return s;
+  }
+
+  function addTextSlide(pres, slide) {
+    const s = addHeadingSlideBase(pres, slide.heading);
+    s.addText(String(slide.body || ''), {
+      x: 0.6, y: 1.4, w: 12.1, h: 5.6, fontFace: 'Calibri', fontSize: 15,
+      color: PALETTE_PPTX.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3,
+    });
+    return s;
+  }
+
+  function addNoticeSlide(pres, slide) {
+    const s = pres.addSlide();
+    s.background = { color: PALETTE_PPTX.white };
+    s.addText(String(slide.text || ''), {
+      x: 1.2, y: 2.8, w: 10.9, h: 2, fontFace: 'Calibri', fontSize: 18,
+      color: PALETTE_PPTX.muted, align: 'center', valign: 'middle',
+    });
+    return s;
+  }
+
+  function addTableSlide(pres, slide) {
+    const s = addHeadingSlideBase(pres, slide.heading);
+    const cols = slide.columns || [];
+    const rows = slide.rows || [];
+    const headerRow = cols.map(c => ({ text: String(c ?? ''), options: { bold: true, color: PALETTE_PPTX.white, fill: { color: PALETTE_PPTX.navy }, fontSize: 12 } }));
+    const bodyRows = rows.map((r, ri) => (r || []).map(c => ({
+      text: String(c ?? ''),
+      options: { color: PALETTE_PPTX.txt, fontSize: 11, fill: { color: ri % 2 === 0 ? PALETTE_PPTX.white : PALETTE_PPTX.tileGray } },
+    })));
+    s.addTable([headerRow, ...bodyRows], { x: 0.6, y: 1.4, w: 12.1, autoPage: false, border: { type: 'solid', color: PALETTE_PPTX.border, pt: 0.5 } });
+    return s;
+  }
+
+  function addNewsSlide(pres, slide) {
+    const s = addHeadingSlideBase(pres, slide.heading);
+    const items = (slide.items || []).slice(0, 8);
+    const rowH = 0.65;
+    items.forEach((it, i) => {
+      const y = 1.5 + i * rowH;
+      s.addShape('ellipse', { x: 0.6, y: y + 0.08, w: 0.12, h: 0.12, fill: { color: PALETTE_PPTX.navy }, line: { type: 'none' } });
+      s.addText(String(it.title || ''), { x: 0.9, y, w: 10.6, h: 0.32, fontFace: 'Calibri', fontSize: 13, bold: true, color: PALETTE_PPTX.txt });
+      s.addText(String(it.published_at || ''), { x: 0.9, y: y + 0.3, w: 10.6, h: 0.28, fontFace: 'Calibri', fontSize: 10, color: PALETTE_PPTX.muted });
+    });
+    return s;
+  }
+
+  // stock_diagnosis 內容較多（8個小節），拆成兩張投影片各放4個小節（2x2
+  // 卡片網格），避免塞在同一張造成文字重疊/溢出（見模組頂端說明：瀏覽器
+  // 端產生的檔案沒有辦法像skill那樣render成圖片逐張QA，用比較保守/寬鬆
+  // 的版面密度降低風險）。
+  function addStockDiagnosisSlides(pres, d) {
+    if (!d.available) {
+      const s = pres.addSlide();
+      s.background = { color: PALETTE_PPTX.white };
+      s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
+        x: 0.6, y: 0.5, w: 12.1, h: 0.6, fontFace: 'Calibri', fontSize: 22, bold: true, color: PALETTE_PPTX.navy,
+      });
+      s.addText(d.reason || '資料不足', { x: 0.6, y: 1.4, w: 12.1, h: 1, fontFace: 'Calibri', fontSize: 14, color: PALETTE_PPTX.muted });
+      return;
+    }
+    const ma = d.position?.ma || {};
+    const maText = ['5', '10', '20', '60'].map(p => `MA${p} ${ma[p] ?? '-'}`).join('　');
+    const kbar = d.kbar_quality || {};
+    const kbarVerdict = kbar.passes ? '通過' : `未通過${kbar.reason ? '：' + kbar.reason : ''}`;
+    const mm = d.entry_exit?.measured_move;
+    let mmText = '';
+    if (mm) {
+      if (!mm.available) mmText = `目標價測量法：${mm.reason || '資料不足'}`;
+      else {
+        if (mm.n_measure) mmText += `N字測量法：${mm.n_measure.note}\n`;
+        if (mm.equal_measure) mmText += `等幅測量法：${mm.equal_measure.note}`;
+      }
+    }
+    const mr = d.monthly_revenue;
+    const mrText = mr
+      ? `${mr.data_month} 營收 ${mr.revenue_this_month != null ? Math.round(mr.revenue_this_month).toLocaleString() + ' 千元' : '-'}，月增 ${mr.mom_pct ?? '-'}%，年增 ${mr.yoy_pct ?? '-'}%`
+      : '查無月營收資料';
+
+    const sectionsA = [
+      { label: '目前位置', body: `收盤 ${d.position?.close ?? '-'}，${maText}\n${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${d.position?.ma_alignment || '資料不足'}` },
+      { label: '趨勢判斷', body: `${d.trend?.label ?? ''}\n近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}` },
+      { label: '型態辨識', body: d.pattern?.note ?? '' },
+      { label: 'K棒品質判讀鐵律', body: `實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}\n上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}` },
+    ];
+    const sectionsB = [
+      { label: '量價關係', body: `${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）` },
+      { label: '大盤連動', body: `${d.market_linkage?.sox ?? ''}\n${d.market_linkage?.dji ?? ''}` },
+      { label: '月營收', body: mrText },
+      { label: '進出場建議', body: `${d.entry_exit?.trend_stop ?? ''}\n百分比停損：${d.entry_exit?.pct_stop_range ?? ''}\n${mmText}` },
+    ];
+
+    const badgeCol = d.lock_direction === '做空' ? PALETTE_PPTX.down : PALETTE_PPTX.up;
+    [sectionsA, sectionsB].forEach((sections, pageIdx) => {
+      const s = pres.addSlide();
+      s.background = { color: PALETTE_PPTX.white };
+      s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
+        x: 0.6, y: 0.35, w: 8, h: 0.5, fontFace: 'Calibri', fontSize: 22, bold: true, color: PALETTE_PPTX.navy,
+      });
+      if (d.lock_direction) {
+        s.addShape('roundRect', { x: 8.8, y: 0.4, w: 1.9, h: 0.4, rectRadius: 0.08, fill: { color: badgeCol }, line: { type: 'none' } });
+        s.addText(`${d.lock_direction}${d.lock_score != null ? ' ' + d.lock_score + '分' : ''}`, {
+          x: 8.8, y: 0.4, w: 1.9, h: 0.4, fontFace: 'Calibri', fontSize: 12, bold: true, color: PALETTE_PPTX.white, align: 'center', valign: 'middle',
+        });
+      }
+      s.addText(`資料日期：${d.as_of_date || '-'}${pageIdx === 0 ? '' : '（續）'}`, {
+        x: 0.6, y: 0.82, w: 8, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: PALETTE_PPTX.muted,
+      });
+      const gap = 0.3, cardW = (12.1 - gap) / 2, cardH = 2.55;
+      sections.forEach((sec, i) => {
+        const col = i % 2, row = Math.floor(i / 2);
+        const x = 0.6 + col * (cardW + gap), y = 1.35 + row * (cardH + gap);
+        s.addShape('roundRect', { x, y, w: cardW, h: cardH, rectRadius: 0.06, fill: { color: PALETTE_PPTX.tileGray }, line: { type: 'none' } });
+        s.addText(sec.label, { x: x + 0.2, y: y + 0.15, w: cardW - 0.4, h: 0.35, fontFace: 'Calibri', fontSize: 13, bold: true, color: PALETTE_PPTX.navy });
+        s.addText(sec.body || '', { x: x + 0.2, y: y + 0.55, w: cardW - 0.4, h: cardH - 0.75, fontFace: 'Calibri', fontSize: 11, color: PALETTE_PPTX.txt, valign: 'top', lineSpacingMultiple: 1.2 });
+      });
+      if (pageIdx === 1 && d.risk_note) {
+        s.addText(`⚠ ${d.risk_note}`, { x: 0.6, y: 6.95, w: 12.1, h: 0.4, fontFace: 'Calibri', fontSize: 10, italic: true, color: PALETTE_PPTX.muted });
+      }
+    });
+  }
+
+  async function docToPPTX(doc) {
+    await loadScriptOnce(PPTXGENJS_URL);
+    const PptxGenJS = window.PptxGenJS;
+    const pres = new PptxGenJS();
+    pres.layout = 'LAYOUT_WIDE'; // 13.3" x 7.5"，見skill的gotcha：預設是10"寬的16x9，要先設過再addSlide
+    pres.title = doc.title || doc.report_type || '報告';
+
+    const slides = doc.slides || [];
+    // 第一張投影片如果不是title類型，補一張自動標題頁，確保匯出的PPTX
+    // 一律有一張像樣的封面（深色背景+大標題），跟Claude產出的簡報習慣一致。
+    if (!slides.length || slides[0].type !== 'title') {
+      addTitleSlide(pres, { title: doc.title || doc.report_type }, doc);
+    }
+    for (const slide of slides) {
+      switch (slide.type) {
+        case 'title': addTitleSlide(pres, slide, doc); break;
+        case 'metrics': addMetricsSlide(pres, slide); break;
+        case 'text': addTextSlide(pres, slide); break;
+        case 'notice': addNoticeSlide(pres, slide); break;
+        case 'table': addTableSlide(pres, slide); break;
+        case 'news': addNewsSlide(pres, slide); break;
+        case 'stock_diagnosis': addStockDiagnosisSlides(pres, slide); break;
+        default: break;
+      }
+    }
+    if (doc.disclaimer) {
+      const s = pres.addSlide();
+      s.background = { color: PALETTE_PPTX.navy };
+      s.addText(doc.disclaimer, {
+        x: 1.2, y: 3.1, w: 10.9, h: 1.3, fontFace: 'Calibri', fontSize: 14, italic: true,
+        color: PALETTE_PPTX.ice, align: 'center', valign: 'middle',
+      });
+    }
+    return pres.write({ outputType: 'blob' });
+  }
+
+  /* ────────────────────────────────────────
+     PDF 轉換：pdfmake，宣告式content陣列，會自動分頁/換行，比PPTX的固定
+     版面更適合長度不固定的內容（尤其持股診斷的大段文字）。惰性載入。
+     ──────────────────────────────────────── */
+  function stockDiagnosisToPdfContent(d) {
+    if (!d.available) {
+      return [
+        { text: `${d.stock_code || ''} ${d.stock_name || ''}`, style: 'h2' },
+        { text: d.reason || '資料不足', style: 'body', margin: [0, 4, 0, 0] },
+      ];
+    }
+    const ma = d.position?.ma || {};
+    const maText = ['5', '10', '20', '60'].map(p => `MA${p} ${ma[p] ?? '-'}`).join('　');
+    const kbar = d.kbar_quality || {};
+    const kbarVerdict = kbar.passes ? '通過' : `未通過${kbar.reason ? '：' + kbar.reason : ''}`;
+    const mm = d.entry_exit?.measured_move;
+    const mmLines = [];
+    if (mm) {
+      if (!mm.available) mmLines.push(`目標價測量法：${mm.reason || '資料不足'}`);
+      else {
+        if (mm.n_measure) mmLines.push(`N字測量法(AB=CD，${mm.n_measure.direction})：${mm.n_measure.note}`);
+        if (mm.equal_measure) mmLines.push(`等幅測量法：${mm.equal_measure.note}`);
+      }
+    }
+    const mr = d.monthly_revenue;
+    const mrText = mr
+      ? `${mr.data_month} 營收 ${mr.revenue_this_month != null ? Math.round(mr.revenue_this_month).toLocaleString() + ' 千元' : '-'}，月增 ${mr.mom_pct ?? '-'}%，年增 ${mr.yoy_pct ?? '-'}%，累計年增 ${mr.cum_pct ?? '-'}%`
+      : '查無月營收資料（可能剛上市，或本次未抓到）';
+
+    const section = (label, bodyLines) => ({
+      stack: [
+        { text: label, style: 'sectionLabel' },
+        { text: Array.isArray(bodyLines) ? bodyLines.filter(Boolean).join('\n') : (bodyLines || ''), style: 'body' },
+      ],
+      margin: [0, 0, 0, 10],
+    });
+
+    return [
+      {
+        columns: [
+          { text: `${d.stock_code || ''} ${d.stock_name || ''}`, style: 'h2', width: '*' },
+          d.lock_direction
+            ? { text: `${d.lock_direction}${d.lock_score != null ? ' ' + d.lock_score + '分' : ''}`, style: 'badge', width: 'auto',
+                background: d.lock_direction === '做空' ? PALETTE_PDF.down : PALETTE_PDF.up }
+            : { text: '', width: 'auto' },
+        ],
+      },
+      { text: `資料日期：${d.as_of_date || '-'}`, style: 'caption', margin: [0, 2, 0, 10] },
+      section('目前位置', [`收盤 ${d.position?.close ?? '-'}，${maText}`, `${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${d.position?.ma_alignment || '資料不足'}`]),
+      section('趨勢判斷', [`${d.trend?.label ?? ''}（近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}）`]),
+      section('型態辨識', [d.pattern?.note]),
+      section('K棒品質判讀鐵律', [`實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}，上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}`]),
+      section('量價關係', [`${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`]),
+      section('大盤連動', [d.market_linkage?.sox, d.market_linkage?.dji, d.market_linkage?.note]),
+      section('月營收', [mrText]),
+      section('進出場建議', [d.entry_exit?.trend_stop, `百分比停損：${d.entry_exit?.pct_stop_range ?? ''}`, ...mmLines, d.entry_exit?.target_price_note]),
+      { text: `⚠ ${d.risk_note || ''}`, style: 'caption', italics: true, margin: [0, 4, 0, 0] },
+    ];
+  }
+
+  function slideToPdfContent(slide) {
+    if (!slide) return [];
+    switch (slide.type) {
+      case 'title':
+        return [
+          { text: slide.title || '', style: 'h1', margin: [0, 0, 0, 4] },
+          slide.subtitle ? { text: slide.subtitle, style: 'subtitle' } : null,
+        ].filter(Boolean);
+      case 'metrics': {
+        const items = slide.items || [];
+        const perRow = 3;
+        const tables = [];
+        for (let i = 0; i < items.length; i += perRow) {
+          const chunk = items.slice(i, i + perRow);
+          tables.push({
+            columns: chunk.map(it => ({
+              width: '*',
+              stack: [
+                { text: it.label || '', style: 'metricLabel' },
+                { text: String(it.value ?? ''), style: 'metricValue' },
+                it.change_pct ? { text: it.change_pct, style: it.direction === 'up' ? 'metricUp' : it.direction === 'down' ? 'metricDown' : 'metricFlat' } : null,
+              ].filter(Boolean),
+              margin: [0, 0, 8, 8],
+            })),
+          });
+        }
+        return [{ text: slide.heading || '', style: 'h2' }, ...tables];
+      }
+      case 'text':
+        return [{ text: slide.heading || '', style: 'h2' }, { text: slide.body || '', style: 'body' }];
+      case 'notice':
+        return [{ text: slide.text || '', style: 'notice' }];
+      case 'table': {
+        const cols = slide.columns || [];
+        const rows = slide.rows || [];
+        return [
+          { text: slide.heading || '', style: 'h2' },
+          {
+            table: {
+              headerRows: 1,
+              widths: cols.map(() => '*'),
+              body: [
+                cols.map(c => ({ text: String(c ?? ''), style: 'tableHeader' })),
+                ...rows.map(r => (r || []).map(c => ({ text: String(c ?? ''), style: 'tableCell' }))),
+              ],
+            },
+            layout: {
+              fillColor: (rowIdx) => (rowIdx === 0 ? PALETTE_PDF.navy : (rowIdx % 2 === 0 ? PALETTE_PDF.tileGray : null)),
+              hLineColor: () => PALETTE_PDF.border, vLineColor: () => PALETTE_PDF.border,
+              hLineWidth: () => 0.5, vLineWidth: () => 0.5,
+            },
+          },
+        ];
+      }
+      case 'news':
+        return [
+          { text: slide.heading || '', style: 'h2' },
+          ...(slide.items || []).map(it => ({
+            stack: [
+              { text: it.title || '', style: 'newsTitle' },
+              { text: it.published_at || '', style: 'caption' },
+            ],
+            margin: [0, 0, 0, 8],
+          })),
+        ];
+      case 'stock_diagnosis':
+        return [{ text: ' ', margin: [0, 6, 0, 0] }, ...stockDiagnosisToPdfContent(slide)];
+      default:
+        return [];
+    }
+  }
+
+  async function docToPDF(doc) {
+    await loadScriptOnce(PDFMAKE_URL);
+    await loadScriptOnce(PDFMAKE_FONTS_URL);
+    const pdfMake = window.pdfMake;
+
+    const content = [
+      { text: doc.title || doc.report_type || '報告', style: 'h1' },
+      fmtGeneratedAt(doc) ? { text: `產生時間：${fmtGeneratedAt(doc)}`, style: 'caption', margin: [0, 2, 0, 16] } : { text: '', margin: [0, 0, 0, 12] },
+    ];
+    for (const slide of (doc.slides || [])) {
+      content.push(...slideToPdfContent(slide));
+      content.push({ text: '', margin: [0, 4, 0, 4] });
+    }
+    if (doc.disclaimer) {
+      content.push({ text: doc.disclaimer, style: 'disclaimer', margin: [0, 12, 0, 0] });
+    }
+
+    const docDefinition = {
+      pageSize: 'A4',
+      pageMargins: [48, 56, 48, 56],
+      header: {
+        text: doc.title || doc.report_type || '',
+        alignment: 'right', margin: [0, 20, 48, 0], fontSize: 8, color: PALETTE_PDF.muted,
+      },
+      footer: (currentPage, pageCount) => ({
+        text: `第 ${currentPage} / ${pageCount} 頁`, alignment: 'center', fontSize: 8, color: PALETTE_PDF.muted, margin: [0, 8, 0, 0],
+      }),
+      content,
+      styles: {
+        h1: { fontSize: 26, bold: true, color: PALETTE_PDF.navy, margin: [0, 0, 0, 4] },
+        h2: { fontSize: 15, bold: true, color: PALETTE_PDF.navy, margin: [0, 10, 0, 6] },
+        subtitle: { fontSize: 12, color: PALETTE_PDF.muted, italics: true },
+        body: { fontSize: 10.5, color: PALETTE_PDF.txt, lineHeight: 1.35 },
+        caption: { fontSize: 8.5, color: PALETTE_PDF.muted },
+        notice: { fontSize: 10.5, color: PALETTE_PDF.muted, italics: true },
+        disclaimer: { fontSize: 8.5, color: PALETTE_PDF.muted, italics: true },
+        metricLabel: { fontSize: 9, color: PALETTE_PDF.muted },
+        metricValue: { fontSize: 18, bold: true, color: PALETTE_PDF.navy, margin: [0, 2, 0, 2] },
+        metricUp: { fontSize: 10, bold: true, color: PALETTE_PDF.up },
+        metricDown: { fontSize: 10, bold: true, color: PALETTE_PDF.down },
+        metricFlat: { fontSize: 10, bold: true, color: PALETTE_PDF.muted },
+        tableHeader: { fontSize: 10, bold: true, color: '#FFFFFF', fillColor: PALETTE_PDF.navy, margin: [4, 4, 4, 4] },
+        tableCell: { fontSize: 9.5, color: PALETTE_PDF.txt, margin: [4, 4, 4, 4] },
+        newsTitle: { fontSize: 11, bold: true, color: PALETTE_PDF.txt },
+        sectionLabel: { fontSize: 11, bold: true, color: PALETTE_PDF.navy, margin: [0, 0, 0, 2] },
+        badge: { fontSize: 10, bold: true, color: '#FFFFFF', margin: [8, 3, 8, 3] },
+      },
+      defaultStyle: { font: 'Roboto' },
+    };
+
+    return new Promise((resolve, reject) => {
+      try {
+        pdfMake.createPdf(docDefinition).getBlob(resolve);
+      } catch (e) { reject(e); }
+    });
+  }
+
+  /* ────────────────────────────────────────
+     觸發下載：一般使用者點「匯出」按鈕時用的最簡單路徑（直接產生blob URL
+     觸發瀏覽器下載，不經過AI助理的LRU檔案快取——那套機制是給AI助理在對話
+     裡回傳檔案下載連結用的，見 floating-assistant.js 的
+     saveGeneratedFile/FileCache，這裡是使用者主動點擊，不需要持久化）。
+     ──────────────────────────────────────── */
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  async function exportDoc(doc, format, filenameBase) {
+    const base = (filenameBase || doc.title || doc.report_type || 'report').replace(/[\\/:*?"<>|]/g, '_');
+    if (format === 'markdown') {
+      const md = docToMarkdown(doc);
+      triggerBlobDownload(new Blob([md], { type: 'text/markdown;charset=utf-8' }), `${base}.md`);
+      return;
+    }
+    if (format === 'pptx') {
+      const blob = await docToPPTX(doc);
+      triggerBlobDownload(blob, `${base}.pptx`);
+      return;
+    }
+    if (format === 'pdf') {
+      const blob = await docToPDF(doc);
+      triggerBlobDownload(blob, `${base}.pdf`);
+      return;
+    }
+    throw new Error(`未知的匯出格式：${format}`);
+  }
+
+  return { docToMarkdown, docToPPTX, docToPDF, exportDoc };
+})();
+
 /* 個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖，但「盤後」分頁（三大法人/
    股權分布/強制集保）是台股特有的揭露資訊，美股指數沒有，切到指數時要
    disable 掉，並且如果目前正在看盤後分頁，要退回技術分析（見
@@ -9005,6 +9640,38 @@ function bindEvents() {
   R.zhuTogglePoints.addEventListener('change', () => { Chart.setShowPoints(R.zhuTogglePoints.checked); maybeApplyZhuOverlay(); });
   R.zhuToggleTrace.addEventListener('change', () => { Chart.setHighlightPattern(R.zhuToggleTrace.checked); maybeApplyZhuOverlay(); });
   R.zhuToggleSupport.addEventListener('change', () => { Chart.setShowNeck(R.zhuToggleSupport.checked); maybeApplyZhuOverlay(); });
+
+  /* 「分析」報告頁（盤前分析/大盤分析/盤中大盤分析/隔日持股分析/本週持股
+     分析/盤中持股分析…）匯出成 PDF/PPTX/Markdown，見 ReportExport 模組。
+     跟 #menu-drop 同一套 position:fixed 動態定位 dropdown 手法。 */
+  R.reportExportBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const wasHidden = R.reportExportDrop.classList.contains('hidden');
+    if (wasHidden) {
+      const rect = R.reportExportBtn.getBoundingClientRect();
+      R.reportExportDrop.style.top = (rect.bottom + 4) + 'px';
+      R.reportExportDrop.style.left = rect.left + 'px';
+    }
+    R.reportExportDrop.classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => R.reportExportDrop.classList.add('hidden'));
+  R.reportExportDrop.addEventListener('click', async e => {
+    const format = e.target.dataset.format;
+    if (!format) return;
+    R.reportExportDrop.classList.add('hidden');
+    if (!currentReportData) { alert('目前沒有可匯出的報告內容'); return; }
+    const btn = R.reportExportBtn;
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳';
+    try {
+      const label = ANALYSIS_TYPE_LIST.find(x => x.code === currentAnalysisType)?.name || currentReportData.title || currentReportData.report_type;
+      await ReportExport.exportDoc(currentReportData, format, label);
+    } catch (err) {
+      alert(`匯出失敗：${err.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = original;
+    }
+  });
 
   /* menu toggle (see #menu-drop CSS comment: position:fixed, so we need to
      place it under the button ourselves each time it opens) */
