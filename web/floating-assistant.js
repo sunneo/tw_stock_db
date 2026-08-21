@@ -705,11 +705,16 @@ class FloatingAssistant {
     //   API呼叫」的輸出長度設一個硬上限——這不是「這一輪回覆的總長度」，兩者
     //   是分開的概念。就算把這個值調得很小，_loopFetch/_loopFetchNative也會
     //   在收到finish_reason==='length'（代表被這個上限攔腰截斷，不是真的
-    //   講完）時自動重送「請接續」把內容拼起來（見MAX_AUTO_CONTINUE_ROUNDS），
-    //   所以不需要為了怕截斷而刻意調大這個值。預設值(4096)只是給一般情況
-    //   一個不錯的起點：推理模型（例如nemotron系列）會先輸出一大段內部思考
-    //   過程才給最終答案，太小的值會讓每一輪都要多繞一次自動接續，稍微拖慢
-    //   總時間，不是「調小就會截斷答案」。
+    //   講完）時自動重送「請接續」把內容拼起來（見MAX_AUTO_CONTINUE_ROUNDS）。
+    //   2026-08調高預設值到16384並移除設定面板裡的手動輸入框——使用者反映
+    //   不該讓人去調這種偏底層的參數：在有串流+自動接續機制兜底的前提下，
+    //   max_tokens理論上只是「單次API呼叫的形式上限」，調太小才是真正會讓
+    //   使用者「感覺到」截斷的原因（推理模型會先輸出一大段內部思考過程才給
+    //   最終答案，值太小時常常整段max_tokens都花在思考階段、還沒寫到最終
+    //   答案就被截斷，續接請求裡卻沒有辦法帶回被截斷的思考內容，容易讓模型
+    //   在接續時又重新想一輪、一樣生不出答案——見_loopFetch/_loopFetchNative
+    //   接續請求组裝處的說明）。調大預設值直接從根本上降低這種情況的機率，
+    //   不需要靠使用者自己發現「怎麼回覆都是空的」再回頭調參數。
     // - samplingParams：value為null代表「沒特別設定，不送這個欄位」；
     //   disabled:true代表這個參數曾經被目標端點拒絕過(見
     //   _detectRejectedSamplingParam)，之後的請求都不會再帶，直到使用者
@@ -717,7 +722,7 @@ class FloatingAssistant {
     _createDefaultGenerationSettings() {
         return {
             contextWindowTokens: 8192,
-            maxOutputTokens: 4096,
+            maxOutputTokens: 16384,
             samplingParams: {
                 frequency_penalty: { value: 0, disabled: false },
                 presence_penalty: { value: 0, disabled: false },
@@ -750,7 +755,11 @@ class FloatingAssistant {
         }
         return {
             contextWindowTokens: toPositiveIntOr(raw.contextWindowTokens, defaults.contextWindowTokens),
-            maxOutputTokens: toPositiveIntOr(raw.maxOutputTokens, defaults.maxOutputTokens),
+            // tw_stock_db客製: 故意不讀raw.maxOutputTokens——這個值不再是使用者
+            // 可調的設定（見_createDefaultGenerationSettings的說明），一律用
+            // 目前的預設值，這樣舊使用者localStorage裡殘留的舊版低預設值
+            // （例如4096）也會自動套用新的16384，不需要額外的settings遷移邏輯。
+            maxOutputTokens: defaults.maxOutputTokens,
             samplingParams,
             stopSequenceDisabled: !!raw.stopSequenceDisabled,
         };
@@ -2686,8 +2695,6 @@ ${sourceTool.handlerScript}
         const gen = this._getGenerationSettings();
         const ctxInput = document.getElementById('ai-gen-context-window');
         if (ctxInput) ctxInput.value = gen.contextWindowTokens;
-        const maxOutInput = document.getElementById('ai-gen-max-output');
-        if (maxOutInput) maxOutInput.value = gen.maxOutputTokens;
         const disabledKeys = [];
         SAMPLING_PARAM_KEYS.forEach(key => {
             const input = document.getElementById(`ai-param-${key}`);
@@ -3720,17 +3727,30 @@ ${existingNodeSummaries}
     // 區域變數乾淨很多。跟_runSubAgentTask的精神一樣（那個也是獨立
     // messages陣列），差別是這裡允許呼叫端傳入自訂apiKey/apiUrl/apiModel
     // （測別的端點/模型時不能依賴this._getApiConfig()目前設定的值）。
-    async _benchmarkRunTurn(apiKey, apiUrl, apiModel, useNative, prompt, maxRounds, timeoutMs) {
+    async _benchmarkRunTurn(apiKey, apiUrl, apiModel, useNative, prompt, maxRounds, timeoutMs, onProgress) {
         const t0 = Date.now();
+        const report = (msg) => { if (onProgress) onProgress(msg); };
         const messages = [
             { role: 'system', content: this._getFinalSystemPrompt() },
             { role: 'user', content: prompt },
         ];
         let timedOut = false;
+        // tw_stock_db客製: 使用者要求benchmark也要摸索「max_tokens調大會不會
+        // 讓模型吐垃圾」——早期實測nemotron在temperature=0時容易卡進「同一段
+        // 輸出不斷重複」的退化狀態（見_hasRepeatingTail的說明），真實對話走
+        // 串流可以邊收邊偵測、提前截斷，但這裡是非串流(stream:false)，只能
+        // 等一輪完整回來後事後檢查。hitLengthLimit記錄「有沒有任何一輪把
+        // max_tokens整個用完」（finish_reason==='length'）——即使沒有出現
+        // 字面重複，簡單問題卻用光完整輸出上限本身就是可疑訊號；
+        // repetitionDetected記錄「有沒有偵測到真正的重複輸出退化」，兩者
+        // 都會回傳給呼叫端，用來調整正確性評分、並在報告卡上明講。
+        let hitLengthLimit = false;
+        let repetitionDetected = false;
         try {
             for (let round = 0; round < maxRounds; round++) {
                 const remaining = timeoutMs - (Date.now() - t0);
                 if (remaining <= 0) { timedOut = true; break; }
+                report(`第${round + 1}輪：送出請求…（已耗時${Math.round((Date.now() - t0) / 1000)}秒）`);
 
                 const body = {
                     model: apiModel,
@@ -3738,7 +3758,18 @@ ${existingNodeSummaries}
                     temperature: 0,
                     ...this._buildSamplingParamsBody(),
                     max_tokens: this._getGenerationSettings().maxOutputTokens,
-                    stream: false,
+                    // tw_stock_db客製: 只有原生tool_calls走非串流——真實app的
+                    // _loopFetchNative本來就是stream:false（tool_calls的增量
+                    // JSON片段跨chunk組裝很麻煩，真實app都沒做，這裡跟著真實
+                    // 行為一致，不用另外發明一套benchmark專屬的複雜度）。文字式
+                    // [CALL:...]慣例則跟真實app的_loopFetch一樣走stream:true，
+                    // 這樣才能重用同一套「邊收邊偵測重複輸出、一偵測到就提前
+                    // 中斷連線」的機制（見下面的說明），不用整輪max_tokens吐完
+                    // 垃圾才知道——這正是使用者要benchmark去「摸索max_tokens
+                    // 調大會不會讓模型吐垃圾」的關鍵：提前中斷才量得出「這個
+                    // 模型/端點在這個max_tokens下到底安不安全」，而不是浪費
+                    // 時間等它吐完整段垃圾。
+                    stream: !useNative,
                 };
                 if (useNative) {
                     body.tools = this._buildNativeToolsSchema();
@@ -3758,13 +3789,13 @@ ${existingNodeSummaries}
                         body: JSON.stringify(body),
                     });
                 } catch (err) {
+                    clearTimeout(timeoutId);
                     messages.push({ role: 'assistant', content: `[網路錯誤] ${String(err.message || err)}` });
                     break;
-                } finally {
-                    clearTimeout(timeoutId);
                 }
 
                 if (!response.ok) {
+                    clearTimeout(timeoutId);
                     const errText = await response.text().catch(() => '');
                     if (!useNative && this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
                         round--;
@@ -3774,15 +3805,64 @@ ${existingNodeSummaries}
                     break;
                 }
 
-                const data = await response.json();
-                const message = data.choices && data.choices[0] && data.choices[0].message;
-                if (!message) { messages.push({ role: 'assistant', content: '[回應格式異常]' }); break; }
+                let rawContent = '';
+                let toolCalls = [];
+                let roundFinishReason = null;
 
-                const rawContent = message.content || '';
-                const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+                if (useNative) {
+                    clearTimeout(timeoutId);
+                    const data = await response.json();
+                    const choice = data.choices && data.choices[0];
+                    const message = choice && choice.message;
+                    if (!message) { messages.push({ role: 'assistant', content: '[回應格式異常]' }); break; }
+                    roundFinishReason = choice.finish_reason;
+                    rawContent = message.content || '';
+                    toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+                } else {
+                    // 跟_loopFetch同一套串流解析＋邊收邊偵測重複輸出退化的邏輯
+                    // （見_hasRepeatingTail），差別只是這裡沒有即時DOM顯示。
+                    try {
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder('utf-8');
+                        let buffer = '';
+                        streamLoop: while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split('\n');
+                            buffer = lines.pop();
+                            for (const line of lines) {
+                                const cleaned = line.trim();
+                                if (!cleaned || cleaned === 'data: [DONE]') continue;
+                                if (!cleaned.startsWith('data: ')) continue;
+                                try {
+                                    const parsed = JSON.parse(cleaned.slice(6));
+                                    const delta = parsed.choices[0]?.delta || {};
+                                    if (parsed.choices[0]?.finish_reason) roundFinishReason = parsed.choices[0].finish_reason;
+                                    rawContent += delta.content || '';
+                                } catch (_) {}
+                            }
+                            if (this._hasRepeatingTail(rawContent)) {
+                                repetitionDetected = true;
+                                rawContent = this._dedupeRepeatingTail(rawContent);
+                                controller.abort();
+                                break streamLoop;
+                            }
+                        }
+                    } finally {
+                        clearTimeout(timeoutId);
+                    }
+                }
+
+                if (roundFinishReason === 'length') hitLengthLimit = true;
+                if (!repetitionDetected && this._hasRepeatingTail(rawContent)) {
+                    repetitionDetected = true;
+                    rawContent = this._dedupeRepeatingTail(rawContent);
+                }
 
                 if (useNative && toolCalls.length) {
                     messages.push(Object.assign({ role: 'assistant', content: this._stripInlineBase64(rawContent) }, { tool_calls: toolCalls }));
+                    report(`第${round + 1}輪：呼叫 ${toolCalls.map(tc => tc.function && tc.function.name).join('、')}…`);
                     for (const tc of toolCalls) {
                         const fnName = tc.function && tc.function.name;
                         const rawArgs = (tc.function && tc.function.arguments) || '{}';
@@ -3826,8 +3906,9 @@ ${existingNodeSummaries}
                     }
                 }
                 messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
-                if (!toolTasks.length) break; // 純文字回答，這一輪結束，視為對話完成
+                if (!toolTasks.length) { report(`第${round + 1}輪：已取得最終回覆`); break; } // 純文字回答，這一輪結束，視為對話完成
 
+                report(`第${round + 1}輪：呼叫 ${toolTasks.map(t => t.fnName).join('、')}…`);
                 for (const task of toolTasks) {
                     try {
                         const toolDef = this._getToolDefinition(task.fnName);
@@ -3843,52 +3924,68 @@ ${existingNodeSummaries}
         } catch (err) {
             messages.push({ role: 'assistant', content: `[錯誤] ${String(err.message || err)}` });
         }
-        return { messages, elapsedMs: Date.now() - t0, timedOut };
+        return { messages, elapsedMs: Date.now() - t0, timedOut, hitLengthLimit, repetitionDetected };
     }
 
-    async _benchmarkTest1(apiKey, apiUrl, apiModel, useNative) {
-        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
-            apiKey, apiUrl, apiModel, useNative, '請直接回覆兩個字：測試', 3, 60000);
+    async _benchmarkTest1(apiKey, apiUrl, apiModel, useNative, onProgress) {
+        const { messages, elapsedMs, timedOut, hitLengthLimit, repetitionDetected } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '請直接回覆兩個字：測試', 3, 60000, onProgress);
         const { hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
-        const correct = !timedOut && !hasEmptyFinal && finalText.includes('測試');
+        // tw_stock_db客製: 這題只需要兩個字，正常模型用不到幾十個token就能
+        // 答完——如果這一輪用光了完整的max_tokens上限，或偵測到重複輸出
+        // 退化（見_hasRepeatingTail），代表這個模型/端點在目前的max_tokens
+        // 設定下不安全，直接判不合格，不管答案本身對不對。
+        const correct = !timedOut && !hasEmptyFinal && finalText.includes('測試') && !hitLengthLimit && !repetitionDetected;
         const speedScore = timedOut ? 0 : this._benchmarkSpeedScore(elapsedMs, [[10000, 100], [20000, 85], [40000, 60], [60000, 30], [Infinity, 0]]);
-        return { name: '①簡易回應速度', timedOut, elapsedMs, correct, score: correct ? speedScore : 0 };
+        return { name: '①簡易回應速度', timedOut, elapsedMs, correct, hitLengthLimit, repetitionDetected, score: correct ? speedScore : 0 };
     }
 
-    async _benchmarkTest2(apiKey, apiUrl, apiModel, useNative) {
-        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
-            apiKey, apiUrl, apiModel, useNative, '幫我查一下2330現在的價格跟簡短技術面判斷，一兩句話就好', 6, 90000);
+    async _benchmarkTest2(apiKey, apiUrl, apiModel, useNative, onProgress) {
+        const { messages, elapsedMs, timedOut, hitLengthLimit, repetitionDetected } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '幫我查一下2330現在的價格跟簡短技術面判斷，一兩句話就好', 6, 90000, onProgress);
         const { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
-        if (timedOut) return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, score: 0 };
+        if (timedOut) return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, score: 0 };
+        // tw_stock_db客製: repetitionDetected直接把正確性歸零——輸出內容本身
+        // 已經退化成垃圾，其餘檢查項目（有沒有真的呼叫工具等）就算通過也沒
+        // 意義。hitLengthLimit扣分但不歸零（一句技術面判斷偶爾用完額度不算
+        // 太離譜，只是效率差，見③測項更寬鬆的門檻）。
         let correctness = 0;
-        if (toolCount >= 1) correctness += 40;
-        if (!hasEmptyFinal && finalText.length > 10) correctness += 40;
-        if (!hasProtocolConfusion) correctness += 20;
+        if (!repetitionDetected) {
+            if (toolCount >= 1) correctness += 40;
+            if (!hasEmptyFinal && finalText.length > 10) correctness += 40;
+            if (!hasProtocolConfusion) correctness += 20;
+            if (hitLengthLimit) correctness = Math.max(0, correctness - 20);
+        }
         const speedScore = this._benchmarkSpeedScore(elapsedMs, [[15000, 100], [30000, 85], [60000, 60], [90000, 30], [Infinity, 0]]);
         const score = Math.round(correctness * 0.7 + speedScore * 0.3);
-        return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, correctness, speedScore, score };
+        return { name: '②單一工具呼叫', timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, correctness, speedScore, score };
     }
 
     // 完整多步驟請求單次嘗試——呼叫端負責跑兩次取平均（見runModelBenchmarkCommand）。
     // exportedFileSizeBytes由呼叫端透過暫時attach的_benchmarkCapturedExport
     // 傳進來（見generateAndDeliverFile的monkey-patch說明），不用掃訊息內容
     // 猜測，直接讀真正的匯出結果最可靠。
-    async _benchmarkTest3Attempt(apiKey, apiUrl, apiModel, useNative) {
+    async _benchmarkTest3Attempt(apiKey, apiUrl, apiModel, useNative, onProgress) {
         this._benchmarkCapturedExport = null;
-        const { messages, elapsedMs, timedOut } = await this._benchmarkRunTurn(
-            apiKey, apiUrl, apiModel, useNative, '幫2330做一個完整持股分析，產生pptx，也要口頭報告給我', 10, 240000);
+        const { messages, elapsedMs, timedOut, hitLengthLimit, repetitionDetected } = await this._benchmarkRunTurn(
+            apiKey, apiUrl, apiModel, useNative, '幫2330做一個完整持股分析，產生pptx，也要口頭報告給我', 10, 240000, onProgress);
         const { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
         const exportedFile = this._benchmarkCapturedExport;
-        if (timedOut) return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, exportedFile, score: 0 };
+        if (timedOut) return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, score: 0 };
         let correctness = 0;
-        // 檔案是不是真的產生（不是模型自己宣稱「已產生檔案」卻沒真的呼叫
-        // export_document）——20000 bytes是保守的「非空殼」門檻。
-        if (exportedFile && exportedFile.sizeBytes > 20000) correctness += 50;
-        if (!hasEmptyFinal && finalText.length > 200) correctness += 30;
-        if (!hasProtocolConfusion) correctness += 20;
+        if (!repetitionDetected) {
+            // 檔案是不是真的產生（不是模型自己宣稱「已產生檔案」卻沒真的呼叫
+            // export_document）——20000 bytes是保守的「非空殼」門檻。
+            if (exportedFile && exportedFile.sizeBytes > 20000) correctness += 50;
+            if (!hasEmptyFinal && finalText.length > 200) correctness += 30;
+            if (!hasProtocolConfusion) correctness += 20;
+            // 完整報告本來就可能用不少token，單純用完額度不算太意外，扣分
+            // 比②單一工具呼叫寬鬆一些。
+            if (hitLengthLimit) correctness = Math.max(0, correctness - 10);
+        }
         const speedScore = this._benchmarkSpeedScore(elapsedMs, [[60000, 100], [120000, 80], [180000, 60], [240000, 30], [Infinity, 0]]);
         const score = Math.round(correctness * 0.8 + speedScore * 0.2);
-        return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, exportedFile, correctness, speedScore, score };
+        return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, correctness, speedScore, score };
     }
 
     // 主入口：解析/benchmark-model的參數、依序跑三項測試、算加權總分、
@@ -3923,24 +4020,29 @@ ${existingNodeSummaries}
         }
         const progressEl = document.getElementById(progressId);
         const setProgress = (msg) => { this._log(msg); if (progressEl) progressEl.innerHTML = `🧪 <b>${this._escapeHtml(model)}</b>：${this._escapeHtml(msg)}`; };
+        // tw_stock_db客製: 使用者反映完整多步驟請求那幾項一等就是1-2分鐘，
+        // 中途只看到一句沒變過的「測試中」文字，感覺像卡住——把
+        // _benchmarkRunTurn每一輪實際在做什麼（送出請求／呼叫哪個工具／
+        // 拿到最終回覆）即時印出來，讓使用者看得到「還在動」，不是真的卡死。
+        const subProgress = (label) => (detail) => setProgress(`${label}：${detail}`);
 
         let report;
         try {
             const useNative = await this._ensureNativeToolSupportProbed(apiKey, apiUrl, model);
             setProgress('①測試簡易回應速度…');
-            const test1 = await this._benchmarkTest1(apiKey, apiUrl, model, useNative);
+            const test1 = await this._benchmarkTest1(apiKey, apiUrl, model, useNative, subProgress('①'));
             setProgress(`①完成：${test1.score}分`);
 
             setProgress('②測試單一工具呼叫…');
-            const test2 = await this._benchmarkTest2(apiKey, apiUrl, model, useNative);
+            const test2 = await this._benchmarkTest2(apiKey, apiUrl, model, useNative, subProgress('②'));
             setProgress(`②完成：${test2.score}分`);
 
             setProgress('③-1測試完整多步驟請求（第1次）…');
-            const attempt1 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative);
+            const attempt1 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative, subProgress('③-1'));
             setProgress(`③-1完成：${attempt1.score}分`);
 
             setProgress('③-2測試完整多步驟請求（第2次）…');
-            const attempt2 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative);
+            const attempt2 = await this._benchmarkTest3Attempt(apiKey, apiUrl, model, useNative, subProgress('③-2'));
             setProgress(`③-2完成：${attempt2.score}分`);
 
             const test3avg = Math.round((attempt1.score + attempt2.score) / 2);
@@ -3958,8 +4060,23 @@ ${existingNodeSummaries}
         }
 
         if (progressEl) progressEl.remove();
-        if (chatBody) chatBody.insertAdjacentHTML('beforeend', this._renderBenchmarkReportHtml(report));
-        if (this._isNearBottom(chatBody)) chatBody.scrollTop = chatBody.scrollHeight;
+        // tw_stock_db客製: 使用者反映報告卡在切換主題時會消失——原因是它
+        // 原本用insertAdjacentHTML直接插進chatBody，完全不在this.messages
+        // 裡；切換主題／收到新訊息都會呼叫_renderMessageHistory()整個清空
+        // chatBody重繪（見那個函式的說明），純DOM插入的東西自然就被清掉了。
+        // 改成比照generateAndDeliverFile()的_downloadFile做法：把報告存成
+        // this.messages裡一則真正的訊息（content是精簡摘要，安全給未來的
+        // API request重播；完整報告物件存在非可枚舉的_benchmarkReport屬性，
+        // 只用來畫面渲染，見_renderSingleMessage），這樣就會跟著正常的
+        // 訊息陣列存活過重繪，也順便可以被匯出/持久化。
+        const summary = report.error
+            ? `🧪 ${report.model} 基準測試失敗：${report.error}`
+            : `🧪 ${report.model} 基準測試完成，總分 ${report.overallScore}/100（${report.verdict}）`;
+        const msg = { role: 'assistant', content: summary };
+        Object.defineProperty(msg, '_benchmarkReport', { value: report, enumerable: false, configurable: true });
+        this.messages.push(msg);
+        this._persistChatHistory();
+        this._renderMessageHistory();
     }
 
     _renderBenchmarkReportHtml(r) {
@@ -3967,10 +4084,25 @@ ${existingNodeSummaries}
         if (r.error) {
             return `<div style="margin:8px 0; padding:10px 12px; border:1px solid #e53e3e; border-radius:8px; font-size:12px; color:#e53e3e;">🧪 <b>${this._escapeHtml(r.model)}</b> 基準測試失敗：${this._escapeHtml(r.error)}</div>`;
         }
-        const row = (label, t) => `<tr><td style="padding:3px 8px 3px 0; white-space:nowrap;">${label}</td><td style="padding:3px 8px;">${t.score}分</td><td style="padding:3px 8px; color:${palette.detailText};">${(t.elapsedMs / 1000).toFixed(1)}秒${t.timedOut ? '（逾時）' : ''}</td></tr>`;
+        const flagNote = (t) => {
+            const flags = [];
+            if (t.repetitionDetected) flags.push('⚠️偵測到重複輸出退化');
+            if (t.hitLengthLimit) flags.push('⚠️用完max_tokens上限');
+            return flags.length ? `<div style="color:#dd6b20; font-size:10px;">${flags.join('　')}</div>` : '';
+        };
+        const row = (label, t) => `<tr><td style="padding:3px 8px 3px 0; white-space:nowrap; vertical-align:top;">${label}</td><td style="padding:3px 8px; vertical-align:top;">${t.score}分</td><td style="padding:3px 8px; color:${palette.detailText}; vertical-align:top;">${(t.elapsedMs / 1000).toFixed(1)}秒${t.timedOut ? '（逾時）' : ''}${flagNote(t)}</td></tr>`;
+        // tw_stock_db客製: 使用者要求benchmark順便摸索「max_tokens調大會不會
+        // 讓模型吐垃圾」——只要四項測試裡任何一項偵測到重複輸出退化，就在
+        // 報告卡最上面用明顯的警語提醒，不要讓使用者得自己逐行找表格裡的
+        // 小字才會發現。
+        const anyRepetition = [r.test1, r.test2, r.attempt1, r.attempt2].some(t => t && t.repetitionDetected);
+        const repetitionBanner = anyRepetition
+            ? `<div style="margin-bottom:6px; padding:6px 8px; background:#fed7aa; color:#7c2d12; border-radius:4px; font-size:11px;">⚠️ 這個模型在目前的max_tokens設定下，至少一次測試出現輸出重複退化的現象——不建議用大的max_tokens，或這個端點/模型本身不適合。</div>`
+            : '';
         return `<div style="margin:8px 0; padding:10px 12px; border:1px solid ${palette.windowBorder}; border-radius:8px; font-size:12px;">
             <div style="font-weight:bold; margin-bottom:6px;">🧪 模型基準測試報告 — ${this._escapeHtml(r.model)}</div>
-            <div style="font-size:11px; color:${palette.detailText}; margin-bottom:6px;">端點：${this._escapeHtml(r.apiUrl)}　協定：${r.useNative ? '原生tool_calls' : '文字式[CALL:...]'}</div>
+            <div style="font-size:11px; color:${palette.detailText}; margin-bottom:6px;">端點：${this._escapeHtml(r.apiUrl)}　協定：${r.useNative ? '原生tool_calls' : '文字式[CALL:...]'}　max_tokens：${this._getGenerationSettings().maxOutputTokens}</div>
+            ${repetitionBanner}
             <table style="border-collapse:collapse; font-size:12px;">
                 ${row('①簡易回應速度', r.test1)}
                 ${row('②單一工具呼叫', r.test2)}
@@ -4342,7 +4474,7 @@ ${existingNodeSummaries}
             // 端點異常或模型卡在某種輸出模式），才需要提醒使用者——正常情況
             // 下自動接續機制會在使用者沒感覺到的狀況下把內容拼完整。
             if (finishReason === 'length' && !repetitionCut) {
-                fullContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
+                fullContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
             // tw_stock_db客製: reasoningContent只存進非可枚舉的_reasoningDisplay
@@ -4588,7 +4720,7 @@ ${existingNodeSummaries}
             // 下自動接續機制會無聲把內容拼完整，見_loopFetch串流路徑同樣的
             // 說明。
             if (hitContinueCap) {
-                finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」，或到「圖表設定→AI助理」把「單次回覆上限」調高。';
+                finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
             this._pushAssistantMessage(finalContent, reasoningAccum, toolCalls.length ? { tool_calls: toolCalls } : {});
@@ -4959,8 +5091,6 @@ ${existingNodeSummaries}
                     <div style="margin-top:6px; padding:8px; background:${palette.detailBg}; color:${palette.detailText}; border-radius:6px;">
                         <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
                         <input type="number" min="512" step="512" id="ai-gen-context-window" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; margin-bottom:6px; background:${palette.inputBg}; color:${palette.inputText};">
-                        <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-max-output">單次回覆上限（max_tokens）</label>
-                        <input type="number" min="64" step="64" id="ai-gen-max-output" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; margin-bottom:6px; background:${palette.inputBg}; color:${palette.inputText};">
                         <div style="font-size:11px; margin-bottom:2px;">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
                             ${SAMPLING_PARAM_KEYS.map(key => `
@@ -5261,16 +5391,23 @@ ${existingNodeSummaries}
             const imageMap = {};
             const reasoningMap = {};
             const fileMap = {};
+            // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
+            // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
+            // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
+            // localStorage沒有fileMap那種「大檔案不該重複存」的顧慮。
+            const benchmarkReportMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
                 if (m._downloadFile) fileMap[i] = m._downloadFile;
+                if (m._benchmarkReport) benchmarkReportMap[i] = m._benchmarkReport;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
                     if (m._displayDataUrl) imageMap[`${bi}:${mi}`] = m._displayDataUrl;
                     if (m._reasoningDisplay) reasoningMap[`${bi}:${mi}`] = m._reasoningDisplay;
                     if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
+                    if (m._benchmarkReport) benchmarkReportMap[`${bi}:${mi}`] = m._benchmarkReport;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -5279,6 +5416,7 @@ ${existingNodeSummaries}
                 imageMap,
                 reasoningMap,
                 fileMap,
+                benchmarkReportMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -5319,6 +5457,12 @@ ${existingNodeSummaries}
                 Object.entries(data.fileMap).forEach(([key, fileRef]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_downloadFile', { value: fileRef, enumerable: false, configurable: true });
+                });
+            }
+            if (data.benchmarkReportMap) {
+                Object.entries(data.benchmarkReportMap).forEach(([key, report]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_benchmarkReport', { value: report, enumerable: false, configurable: true });
                 });
             }
         } catch (err) {
@@ -5393,6 +5537,17 @@ ${existingNodeSummaries}
             !msg.content.startsWith('[Topic Transition Summary') &&
             !msg.content.startsWith('[Steering]')
         ) return;
+
+        // tw_stock_db客製: /benchmark-model的報告卡，見_handleBenchmarkModelCommand
+        // 的說明——存在this.messages裡才會跟著正常訊息陣列存活過
+        // _renderMessageHistory()整個重繪（例如切換主題），純DOM插入的版本
+        // 會在那種情況下憑空消失（使用者實測回報過）。
+        if (msg._benchmarkReport) {
+            const wrap = document.createElement('div');
+            wrap.innerHTML = this._renderBenchmarkReportHtml(msg._benchmarkReport);
+            container.appendChild(wrap.firstElementChild);
+            return;
+        }
 
         // 💡 tw_stock_db客製：AI助理產生的檔案下載連結（見
         // generateAndDeliverFile()）。跟圖片訊息（見下面role==='tool'那段）
@@ -5573,7 +5728,7 @@ ${existingNodeSummaries}
             // 截斷，沒機會寫出最終答案）。改成講清楚發生了什麼、建議怎麼
             // 處理，不要只留一句容易被誤會成「這就是回覆內容」的短語。
             const answerText = thinking.answer ||
-                '⚠️ 這一輪模型只輸出了思考過程，沒有產生最終文字回覆（可能是單次回覆上限提前用完）。可以點上面「🧠 思考過程」查看，或直接追問一次；如果常發生，建議到「圖表設定→AI助理」把「單次回覆上限」調高。';
+                '⚠️ 這一輪模型只輸出了思考過程，沒有產生最終文字回覆（可能是單次回覆上限提前用完，或端點異常）。可以點上面「🧠 思考過程」查看，或直接追問一次。';
             // tw_stock_db客製: markdown函式庫載入完成前，先用純文字顯示（不
             // 讓使用者等），載入完成後這則訊息會在下一次_renderMessageHistory()
             // 重新整批渲染時自動變成排版過的版本（見下面的排程重繪邏輯）。
@@ -5721,18 +5876,10 @@ ${existingNodeSummaries}
         // tw_stock_db客製: 生成/取樣參數設定，跟上面API Key/URL/Model一樣採
         // 輸入即存的方式，不用另外按儲存鍵。
         const genContextWindowInput = document.getElementById('ai-gen-context-window');
-        const genMaxOutputInput = document.getElementById('ai-gen-max-output');
         if (genContextWindowInput) {
             genContextWindowInput.addEventListener('input', () => {
                 const n = Number(genContextWindowInput.value);
                 if (Number.isFinite(n) && n > 0) this._getGenerationSettings().contextWindowTokens = Math.round(n);
-                this._saveAdvancedSettings();
-            });
-        }
-        if (genMaxOutputInput) {
-            genMaxOutputInput.addEventListener('input', () => {
-                const n = Number(genMaxOutputInput.value);
-                if (Number.isFinite(n) && n > 0) this._getGenerationSettings().maxOutputTokens = Math.round(n);
                 this._saveAdvancedSettings();
             });
         }
