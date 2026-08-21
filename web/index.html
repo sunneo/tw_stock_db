@@ -1565,7 +1565,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260821-5"></script>
+<script src="floating-assistant.js?v=20260821-6"></script>
 
 <script>
 'use strict';
@@ -5231,7 +5231,56 @@ Claude自己產出簡報的水準——每頁都要有明確的視覺變化，�
   一整頁幾乎空白、只顯示「資料不足」四個字的醜頁面（實測發生過的真實案例）。
   某檔股票如果還沒有完整的diagnose_stock結果：要嘛先呼叫diagnose_stock補齊
   再放進去，要嘛乾脆不要為那一檔開一整張投影片（在table裡用一行標註「資料
-  不足」即可），不要用一整頁只講四個字。`;
+  不足」即可），不要用一整頁只講四個字。
+
+三、文字內容的兩條硬性規範（export_document的description裡也有，這裡再重申一次，
+   因為實測發現這是最容易被忽略的細節）：
+1. 數字不加引號：價格、百分比、分數、日期數字等，一律直接寫阿拉伯數字本身，
+   不要包一層單引號或雙引號（例如「收盤價2400」「進場價2380」，不要寫成
+   「收盤價'2400'」）。這通常是把工具回傳的JSON原封不動照抄造成的習慣，工具
+   回傳的JSON是給你讀的資料格式，不是給使用者看的最終文字，讀進來之後要轉換
+   成自然語言再輸出，不要把JSON的字串引號也一起搬過去。
+2. 不出現程式內部代號：任何工具回傳裡看起來像程式變數/enum的欄位（全大寫加
+   底線，例如reason_codes裡的"MA_BULLISH"、"KD_GOLDEN_CROSS"這種），只是程式
+   內部用來對照規則用的代號，不是給使用者看的——同一筆資料通常會有對應的中文
+   欄位（例如reasons）已經是翻譯好的說明，一律引用中文欄位，絕對不要把英文
+   代號原封不動寫進投影片內容或口頭回覆。
+
+四、text投影片的markdown與自動分頁（呼應export_document的type:text說明）：
+body欄位可以直接寫口語化的markdown——#/##/###標題、**粗體**、-或*開頭的條列、
+1.開頭的編號清單都支援，系統匯出時會自動轉成正式排版（HTML版轉成真正的段落/
+清單/粗體，PPTX/PDF版拿掉markdown符號、條列轉成•符號），不用自己手動處理。
+更重要的是**分頁**：如果body內容涵蓋多個子主題，直接在裡面用##各自標一個小
+標題分段——系統會自動把每個標題拆成獨立的投影片；如果某個標題底下的內容還是
+太長（超過約900字），系統會再依段落邊界自動切成多頁，並在標題後面補上
+「標題（1/3）」「標題（2/3）」「標題（3/3）」這樣的分頁記號讓使用者知道這是
+同一個主題的延伸。這代表你可以放心把口頭分析原封不動、完整地寫進一個text
+投影片的body裡（用##分好子主題），不用擔心内容太長會爆版、也不用自己手動拆
+成一堆零碎的text投影片——寫清楚的##標題比手動分頁更重要，因為標題就是分頁
+後每一頁的名稱。
+
+五、視覺設計判斷力（比照Claude自己產出簡報時的職業水準，但完全針對這個網頁
+   自己的固定版型slide type，不是自由排版——這裡的「設計」主要是內容結構的
+   判斷，不是選色彩選字型，版面配色/字型已經是程式內建好的固定樣式，你不用
+   也不能自己指定）：
+1. 先問「這段資訊最適合哪種slide type」，不要每段都無腦丟給text：有明確
+   數字/可以濃縮成幾個關鍵指標→metrics；多筆同結構資料要並排比較→table；
+   需要看圖才講得清楚（型態、轉折點、走勢）→image；純敘述、需要完整句子
+   才講得清楚的分析邏輯→text。一份好報告裡metrics/table/image的張數通常
+   不會少於text，纯文字投影片佔比過高就是警訊。
+2. 一張投影片只講一件事：不要把「目前位置」跟「趨勢判斷」硬塞進同一個text
+   投影片的body裡再分段，這種情況應該拆成兩個text投影片各自有自己的##標題
+   （或乾脆分兩次呼叫，各自有清楚的heading），比依賴分頁機制去猜你的段落
+   邊界更可靠、標題也更精確。
+3. metrics的items不要塞超過4-6個：關鍵數字（收盤/漲跌%/型態一句話/評分）
+   優先，次要數字放進text投影片的敘述裡帶過就好，metrics格子太多反而稀釋
+   重點、使用者抓不到真正該看哪個數字。
+4. table的欄位數控制在5-7欄以內、rows不要超過15列：欄位太多會被壓縮到看不
+   清楚，列數太多使用者根本不會逐列讀完，多股批次分析如果超過15檔，只列出
+   評分最高的15檔、其餘用一句text說明「還有N檔資料在附件」或乾脆不列。
+5. 不要用空泛語句充版面：「還不錯」「感覺可以」「值得留意」這類沒有具體
+   依據的話不要單獨成一個bullet，每個結論都要附著實際數字或型態術語（呼應
+   本指南第一節的口頭報告寫作原則）。`;
 
 // tw_stock_db客製: export_document用來擋掉「幾乎空白」的匯出（見該工具handler
 // 的說明），只累加slides裡實際的字串「值」長度（不含key名稱/JSON標點），
@@ -5266,6 +5315,16 @@ function docContentRichness(doc) {
      - mutates:true 代表這個能力會修改使用者資料（備忘錄/自選股）或觸發
        網路下載，description會自動加註提醒。
    ════════════════════════════════════════ */
+// tw_stock_db客製: 鎖股名單記錄同時有reason_codes（程式內部enum，例如
+// "MA_BULLISH"，給REASON_CODES查表用）跟reasons（已翻譯好的中文說明）——
+// 如果直接把整筆record丟給AI，AI很容易在回覆裡照抄reason_codes這種非使用者
+// 語言的代號（實測發生過的案例）。這裡在回傳給AI之前統一濾掉reason_codes，
+// 只留reasons，從源頭杜絕而不是只靠系統提示勸阻。
+function stripReasonCodes(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const { reason_codes, ...rest } = rec;
+  return rest;
+}
 const AI_CAPABILITIES = [
   {
     name: 'get_analysis_principles', category: '型態學/技術分析原則',
@@ -5385,20 +5444,21 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_lock_list', category: '鎖股名單',
-    description: '取得某一份鎖股名單（做多/做空清單）。source="intraday"是盤中鎖股、"nextday"是隔日鎖股、"week"是下週鎖股；direction不填就回傳整份含方向欄位。',
+    description: '取得某一份鎖股名單（做多/做空清單）。source="intraday"是盤中鎖股、"nextday"是隔日鎖股、"week"是下週鎖股；direction不填就回傳整份含方向欄位。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。',
     params: { source: "'intraday' | 'nextday' | 'week'", direction: "選填，'做多' 或 '做空'" },
     handler: async (a) => {
       await LockList.ensureLoaded(a.source);
-      return a.direction ? LockList.getByDirection(a.source, a.direction) : LockList.getByDirection(a.source, '做多').concat(LockList.getByDirection(a.source, '做空'));
+      const recs = a.direction ? LockList.getByDirection(a.source, a.direction) : LockList.getByDirection(a.source, '做多').concat(LockList.getByDirection(a.source, '做空'));
+      return recs.map(stripReasonCodes);
     },
   },
   {
     name: 'get_stock_lock_status', category: '鎖股名單',
-    description: '查詢單一股票目前在哪些鎖股名單上（盤中/隔日/下週，各自的方向與評分），不在任何名單上就回傳空物件。',
+    description: '查詢單一股票目前在哪些鎖股名單上（盤中/隔日/下週，各自的方向與評分），不在任何名單上就回傳空物件。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。',
     params: { code: '股票代號' },
     handler: async (a) => {
       await Promise.all(['intraday', 'nextday', 'week'].map(s => LockList.ensureLoaded(s)));
-      return LockList.getAllInfo(a.code);
+      return LockList.getAllInfo(a.code).map(stripReasonCodes);
     },
   },
   {
@@ -5433,7 +5493,9 @@ const AI_CAPABILITIES = [
       '每個投影片物件用type欄位決定其餘欄位，可用型別：\n' +
       '- {type: title, title, subtitle(選填)} —— 封面投影片\n' +
       '- {type: metrics, heading, items: [{label, value, change_pct(選填如"+1.2%"), direction(選填"up"|"down"|"flat")}]} —— 一組數字/指標卡片\n' +
-      '- {type: text, heading, body} —— 一段敘述文字\n' +
+      '- {type: text, heading, body} —— 一段敘述文字，body可以寫成口語化的markdown（#/##標題、**粗體**、-條列都支援），\n' +
+      '  如果內容涵蓋好幾個子主題，直接在body裡用##標一個個小標題分段就好，系統會自動依標題拆成好幾張投影片、\n' +
+      '  單一標題內容太長時也會自動再分頁成「標題（1/2）」「標題（2/2）」，不用自己手動拆成好幾個text投影片。\n' +
       '- {type: table, heading, columns: [欄位名...], rows: [[儲存格...], ...]} —— 表格\n' +
       '- {type: news, heading, items: [{title, link, published_at}]} —— 新聞/連結清單\n' +
       '- {type: notice, text} —— 單純的提示文字\n' +
@@ -5447,7 +5509,13 @@ const AI_CAPABILITIES = [
       '拿到image_ref再用image投影片放進來、單純提醒或免責聲明用notice。一份完整的個股或多股分析簡報建議依序：\n' +
       '封面(title) → 總覽數字(metrics，例如收盤/漲跌/型態一句話) → 走勢圖(image) → 詳細判讀(stock_diagnosis，\n' +
       '如果是用diagnose_stock的原始回傳物件) 或分段text(目前位置/趨勢判斷/型態辨識/量價關係/進出場建議)。\n' +
-      '需要更完整的簡報結構與口頭報告寫作建議時，可以先呼叫get_report_style_guide。',
+      '兩條硬性文字規範（不管簡不簡潔都要遵守）：① 數字（價格/百分比/分數等）一律寫成原始阿拉伯數字，不要加\n' +
+      '任何引號（單引號雙引號都不行），例如寫「收盤價2400」不要寫「收盤價\'2400\'」；② 絕對不要把程式內部代號\n' +
+      '（例如工具回傳的reason_codes、或任何全大寫加底線的enum字串）原封不動寫進投影片或口頭回覆，一律改用同一筆\n' +
+      '資料裡對應的中文欄位（例如reasons）或自己的白話說明。\n' +
+      '需要更完整的簡報結構、內容分頁邏輯、跟口頭報告寫作建議時，可以先呼叫get_report_style_guide——內容較長，\n' +
+      '上下文空間充足、想把報告做得更好時建議呼叫；context有限時不呼叫也能做出及格的報告，上面兩條硬性規範跟\n' +
+      '基本排版建議已經是最低限度的要求。',
     params: {
       content_yaml: '要匯出的內容，YAML格式字串，符合上述schema',
       format: '匯出格式，只能是 "pdf"、"pptx"、"markdown" 三選一',
@@ -5477,6 +5545,10 @@ const AI_CAPABILITIES = [
       if (!doc || !Array.isArray(doc.slides) || !doc.slides.length) {
         return { ok: false, error: '內容格式不正確：解析後沒有非空的slides陣列，請確認YAML縮排/結構符合schema說明' };
       }
+      // tw_stock_db客製: text投影片的body如果是長篇markdown（AI常常直接把
+      // 口頭分析原封不動塞進單一text投影片），自動依#/##/###標題切成多張、
+      // 過長的段落再依字數分頁成「標題（i/N）」——見paginateTextSlide說明。
+      doc.slides = doc.slides.flatMap(s => (s && s.type === 'text') ? paginateTextSlide(s) : [s]);
       // tw_stock_db客製: 實測發現較弱的模型（例如nemotron）在口頭回覆裡會寫
       // 出很詳細的分析，但呼叫export_document時給的content_yaml卻只有標題、
       // 幾乎沒有實質內容——匯出的PDF/PPTX因此變成幾乎空白（使用者實測回報
@@ -5527,9 +5599,13 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_report_style_guide', category: '匯出',
-    description: '取得「完整分析報告／口頭報告寫作指南」——使用者要求完整的個股或多股分析（尤其同時要求產生PDF/PPTX檔案\n' +
-      '又要口頭報告時）之前，建議先呼叫這個，內容包含：口頭報告該涵蓋哪八個段落（對應diagnose_stock的欄位）、\n' +
-      'export_document的slides陣列該怎麼排版才不會變成整份都是文字的醜報告。不會每輪對話自動附加，只有需要時才呼叫。',
+    description: '取得「完整分析報告／口頭報告寫作指南」（完整版，比export_document description裡的精簡規範詳細很多）——\n' +
+      '使用者要求完整的個股或多股分析（尤其同時要求產生PDF/PPTX檔案又要口頭報告時）之前，建議先呼叫這個，內容包含：\n' +
+      '口頭報告該涵蓋哪八個段落（對應diagnose_stock的欄位）、export_document的slides陣列該怎麼排版才不會變成整份\n' +
+      '都是文字的醜報告、text投影片的markdown寫法與自動分頁規則、以及slide type的選擇判斷力（什麼內容適合metrics/\n' +
+      'table/image而不是無腦丟給text）。這是選讀內容，不會每輪對話自動附加：如果你的上下文空間充足、想把報告做得\n' +
+      '更精緻，呼叫這個能大幅提升排版與內容品質；如果上下文吃緊或只需要做出堪用的報告，不呼叫也沒關係，\n' +
+      'export_document的description裡已經有最低限度的硬性規範（數字不加引號、不能出現程式代號）。',
     params: {},
     handler: () => AI_REPORT_STYLE_GUIDE,
   },
@@ -7135,6 +7211,7 @@ const R = {
   aiCfgApiKey: $('ai-cfg-api-key'),
   aiCfgApiUrl: $('ai-cfg-api-url'),
   aiCfgModelName: $('ai-cfg-model-name'),
+  aiCfgModelDatalist: $('ai-cfg-model-datalist'),
   aiCfgContextWindow: $('ai-cfg-context-window'),
   aiCfgBatchConcurrency: $('ai-cfg-batch-concurrency'),
   aiCfgFileCacheLimit: $('ai-cfg-file-cache-limit'),
@@ -8143,6 +8220,98 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* ────────────────────────────────────────
+   MARKDOWN-LITE（給export_document的type:text投影片用，AI常常寫出口語化、
+   帶#標題、粗體、-條列的markdown敘述文字，但這個網頁沒有載入完整的marked
+   函式庫在index.html這個作用域（那份只有floating-assistant.js的AI對話泡泡
+   會用到），這裡刻意手刻一個輕量子集，只吃得動AI實際會寫的樣式：
+   #/##/### 標題、**粗體**、*斜體*、- 或 * 開頭的條列、空行分段落。
+   splitMarkdownSections()同時是分頁功能（見paginateTextSlide）的基礎——
+   依標題切段，每段可能再依字數切成多頁。
+   ──────────────────────────────────────── */
+function splitMarkdownSections(text) {
+  const lines = String(text || '').split('\n');
+  const sections = [];
+  let cur = { title: null, body: [] };
+  for (const line of lines) {
+    const m = /^#{1,3}\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      if (cur.title !== null || cur.body.some(l => l.trim() !== '')) sections.push(cur);
+      cur = { title: m[1], body: [] };
+    } else {
+      cur.body.push(line);
+    }
+  }
+  if (cur.title !== null || cur.body.some(l => l.trim() !== '')) sections.push(cur);
+  return sections.map(s => ({ title: s.title, body: s.body.join('\n').trim() }));
+}
+
+function mdLiteInlineHtml(text) {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '<i>$1</i>');
+}
+
+// tw_stock_db客製: 只轉換body內文（標題已經被splitMarkdownSections/
+// paginateTextSlide拆成投影片的heading，這裡不用再處理#開頭的行）。
+function mdLiteToHtml(text) {
+  const lines = String(text || '').split('\n');
+  const htmlParts = [];
+  let listBuf = [], listTag = null, paraBuf = [];
+  const flushList = () => { if (listBuf.length) { htmlParts.push(`<${listTag}>${listBuf.map(li => `<li>${mdLiteInlineHtml(li)}</li>`).join('')}</${listTag}>`); listBuf = []; listTag = null; } };
+  const flushPara = () => { if (paraBuf.length) { htmlParts.push(`<p>${paraBuf.map(mdLiteInlineHtml).join('<br>')}</p>`); paraBuf = []; } };
+  for (const line of lines) {
+    const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+    const numbered = /^\s*\d+\.\s+(.+)$/.exec(line);
+    if (bullet) { flushPara(); if (listTag !== 'ul') flushList(); listTag = 'ul'; listBuf.push(bullet[1]); continue; }
+    if (numbered) { flushPara(); if (listTag !== 'ol') flushList(); listTag = 'ol'; listBuf.push(numbered[1]); continue; }
+    flushList();
+    if (line.trim() === '') { flushPara(); continue; }
+    paraBuf.push(line);
+  }
+  flushList(); flushPara();
+  return htmlParts.join('');
+}
+
+// 給PPTX/PDF這種不吃HTML的純文字版面用：拿掉markdown語法符號，條列改用
+// 純文字項目符號，維持可讀性但不留下裸露的 **/- 符號。
+function mdLiteToPlainText(text) {
+  return String(text || '')
+    .split('\n')
+    .map(line => {
+      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+      if (bullet) return '• ' + bullet[1].replace(/\*\*(.+?)\*\*/g, '$1').replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '$1');
+      return line.replace(/\*\*(.+?)\*\*/g, '$1').replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '$1');
+    })
+    .join('\n');
+}
+
+// tw_stock_db客製: 使用者要求AI寫的長篇口語markdown內容要能自動分頁——
+// 以markdown標題（#/##/###）為題，同一個標題底下的內容太長時再依段落邊界
+// 切成多頁，標題後補上「（i/N）」；標題沒有多頁就不加註記。N=1（沒有#標題、
+// 內容也不長）時原樣回傳單一投影片，不影響原本就精簡的報告。
+function paginateTextSlide(slide, maxChars = 900) {
+  const sections = splitMarkdownSections(slide.body);
+  if (!sections.length) return [slide];
+  const outSlides = [];
+  for (const sec of sections) {
+    const title = sec.title || slide.heading || '';
+    const paras = sec.body.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    const chunks = [];
+    let cur = '', curLen = 0;
+    for (const p of paras) {
+      if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
+      cur += (cur ? '\n\n' : '') + p; curLen += p.length;
+    }
+    if (cur || !chunks.length) chunks.push(cur);
+    const n = chunks.length;
+    chunks.forEach((body, i) => {
+      outSlides.push({ ...slide, heading: n > 1 ? `${title}（${i + 1}/${n}）` : title, body });
+    });
+  }
+  return outSlides.length ? outSlides : [slide];
+}
+
 function getReportViewMode() {
   return Settings.get('reportViewMode') || 'paged';
 }
@@ -8247,7 +8416,7 @@ function renderSlideHtml(slide) {
             ${it.change_pct ? `<div class="rs-metric-change ${esc(it.direction || 'flat')}">${esc(it.change_pct)}</div>` : ''}
           </div>`).join('')}</div>`;
     case 'text':
-      return `<div class="rs-heading">${esc(slide.heading)}</div><div class="rs-text-body">${esc(slide.body)}</div>`;
+      return `<div class="rs-heading">${esc(slide.heading)}</div><div class="rs-text-body">${mdLiteToHtml(slide.body)}</div>`;
     case 'notice':
       return `<div class="rs-notice">${esc(slide.text)}</div>`;
     case 'table':
@@ -8691,7 +8860,7 @@ const ReportExport = (() => {
 
   function addTextSlide(pres, slide) {
     const s = addHeadingSlideBase(pres, slide.heading);
-    s.addText(String(slide.body || ''), {
+    s.addText(mdLiteToPlainText(slide.body), {
       x: 0.6, y: 1.4, w: 12.1, h: 5.6, fontFace: 'Calibri', fontSize: 15,
       color: PALETTE_PPTX.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3,
     });
@@ -8967,7 +9136,7 @@ const ReportExport = (() => {
         return [{ text: slide.heading || '', style: 'h2' }, ...tables];
       }
       case 'text':
-        return [{ text: slide.heading || '', style: 'h2' }, { text: slide.body || '', style: 'body' }];
+        return [{ text: slide.heading || '', style: 'h2' }, { text: mdLiteToPlainText(slide.body), style: 'body' }];
       case 'notice':
         return [{ text: slide.text || '', style: 'notice' }];
       case 'table': {
@@ -10598,7 +10767,27 @@ const AI_SAMPLING_PARAM_INPUTS = {
   get length_penalty() { return R.aiCfgParamLength; },
 };
 
+// tw_stock_db客製: 「經過/benchmark-model測試過的模型，給它一個model card」
+// ——卡片本身是floating-assistant.js的_saveModelCard()寫的（同一個
+// localStorage，key見floating_ai_model_cards），這裡只是把測過的模型也
+// 併進這份獨立的（index.html自己的）model datalist，附上分數/日期當提示，
+// 不用等改PRESET_MODEL_OPTIONS陣列才看得到測試紀錄。
+function refreshAiCfgModelDatalist() {
+  let cards = {};
+  try { cards = JSON.parse(localStorage.getItem('floating_ai_model_cards') || '{}'); } catch (_) {}
+  const presetNames = ['nvidia/nemotron-3-super-120b-a12b', 'meta/llama-3.1-8b-instruct', 'meta/llama-3.3-70b-instruct'];
+  const names = [...new Set([...presetNames, ...Object.keys(cards)])];
+  R.aiCfgModelDatalist.innerHTML = names.map(m => {
+    const c = cards[m];
+    if (!c) return `<option value="${esc(m)}"></option>`;
+    const badge = c.verdict.startsWith('✅') ? '✅' : c.verdict.startsWith('⚠️') ? '⚠️' : '❌';
+    const dateStr = c.testedAt ? c.testedAt.slice(0, 10) : '';
+    return `<option value="${esc(m)}">${badge} ${c.overallScore}/100（${dateStr}）</option>`;
+  }).join('');
+}
+
 function loadAiConnectionSettingsIntoModal() {
+  refreshAiCfgModelDatalist();
   R.aiCfgApiKey.value = localStorage.getItem(FLOATING_AI_KEYS.apiKey) || '';
   R.aiCfgApiUrl.value = localStorage.getItem(FLOATING_AI_KEYS.baseUrl) || '';
   R.aiCfgModelName.value = localStorage.getItem(FLOATING_AI_KEYS.modelName) || '';
