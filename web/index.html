@@ -1472,13 +1472,9 @@ select:focus { outline: 2px solid var(--acc); }
           <h3>LLM 連線設定</h3>
           <label class="modal-field"><span>API 金鑰</span><input type="password" id="ai-cfg-api-key" placeholder="留空使用內建共用金鑰"></label>
           <label class="modal-field"><span>API 網址</span><input type="text" id="ai-cfg-api-url" placeholder="https://integrate.api.nvidia.com/v1"></label>
-          <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="nvidia/nemotron-3-super-120b-a12b"></label>
-          <datalist id="ai-cfg-model-datalist">
-            <option value="nvidia/nemotron-3-super-120b-a12b"></option>
-            <option value="meta/llama-3.1-8b-instruct"></option>
-            <option value="meta/llama-3.3-70b-instruct"></option>
-          </datalist>
-          <p class="modal-hint">模型名稱可以直接輸入，也可以點輸入框叫出下拉選單快速選常用選項；清單以外的模型名稱一樣可以直接打字輸入。</p>
+          <label class="modal-field"><span>模型名稱</span><input type="text" id="ai-cfg-model-name" list="ai-cfg-model-datalist" placeholder="留空＝依內建清單順序自動fallback"></label>
+          <datalist id="ai-cfg-model-datalist"></datalist>
+          <p class="modal-hint">模型名稱可以直接輸入，也可以點輸入框叫出下拉選單快速選常用選項（測過的模型會附上/benchmark-model分數提示）；清單以外的模型名稱一樣可以直接打字輸入。<b>留空</b>則每次對話都從內建清單第一個開始依序嘗試，遇到暫時404下線的模型會自動改用下一個、不會固定卡住；AI分頁視窗標題右側的小字會顯示目前實際使用的模型。</p>
 
           <h3>生成／取樣參數</h3>
           <label>模型上下文視窗（tokens） <input type="number" id="ai-cfg-context-window" min="512" step="512"></label>
@@ -1565,7 +1561,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260821-6"></script>
+<script src="floating-assistant.js?v=20260821-7"></script>
 
 <script>
 'use strict';
@@ -10771,11 +10767,14 @@ const AI_SAMPLING_PARAM_INPUTS = {
 // ——卡片本身是floating-assistant.js的_saveModelCard()寫的（同一個
 // localStorage，key見floating_ai_model_cards），這裡只是把測過的模型也
 // 併進這份獨立的（index.html自己的）model datalist，附上分數/日期當提示，
-// 不用等改PRESET_MODEL_OPTIONS陣列才看得到測試紀錄。
+// 不用等改PRESET_MODEL_OPTIONS陣列才看得到測試紀錄。PRESET_MODEL_OPTIONS
+// 本身直接讀floating-assistant.js宣告的同名頂層const——它用<script src>
+// （非module）載入且順序在這支inline script之前，兩者共用同一個全域
+// script作用域，不用另外複製一份清單、也不會有兩邊清單漏同步的風險。
 function refreshAiCfgModelDatalist() {
   let cards = {};
   try { cards = JSON.parse(localStorage.getItem('floating_ai_model_cards') || '{}'); } catch (_) {}
-  const presetNames = ['nvidia/nemotron-3-super-120b-a12b', 'meta/llama-3.1-8b-instruct', 'meta/llama-3.3-70b-instruct'];
+  const presetNames = typeof PRESET_MODEL_OPTIONS !== 'undefined' ? PRESET_MODEL_OPTIONS : [];
   const names = [...new Set([...presetNames, ...Object.keys(cards)])];
   R.aiCfgModelDatalist.innerHTML = names.map(m => {
     const c = cards[m];
