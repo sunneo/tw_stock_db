@@ -562,6 +562,14 @@ class FloatingAssistant {
         // 頁面（或AI分頁重新初始化）對話就整個消失——見_persistChatHistory()/
         // _loadPersistedChatHistory()，跟advancedSettings一樣存進localStorage。
         this.CHAT_HISTORY_KEY = "floating_ai_chat_history";
+        // tw_stock_db客製: 使用者要求「經過/benchmark-model並被加入的模型，
+        // 就給它一個model card」——每次/benchmark-model跑完（不管通過與否）
+        // 都會把摘要結果存進這個key（見_saveModelCard/_getModelCards），
+        // MODEL NAME輸入框的下拉選單（見_modelDatalistOptionsHtml）會把
+        // 已經測過的模型也列進去、附上分數/結論當提示文字，不用等真的改
+        // PRESET_MODEL_OPTIONS陣列（改陣列還是保留給「確定要長期內建」的
+        // 模型），一般測試/曾經測過的模型也能在下拉選單裡看到歷史結果。
+        this.MODEL_CARDS_KEY = "floating_ai_model_cards";
         // tw_stock_db客製: 見_ensureNativeToolSupportProbed()——用一個小探測
         // 請求實測「這個apiUrl+apiModel組合是不是真的支援原生tools/
         // tool_calls」，取代原本只靠模型名稱pattern猜測的作法（換一個新
@@ -3746,6 +3754,13 @@ ${existingNodeSummaries}
         // 都會回傳給呼叫端，用來調整正確性評分、並在報告卡上明講。
         let hitLengthLimit = false;
         let repetitionDetected = false;
+        // tw_stock_db客製: 使用者要求把「AI寫的報告有沒有遵守文字規範（數字
+        // 不加引號、不能出現程式代號、不要整份都是text投影片）」也做成一個
+        // benchmark項目——這裡直接在呼叫export_document的當下把它的
+        // content_yaml參數截下來（不管走native tool_calls還是文字式[CALL:...]
+        // 協定），比事後從messages裡用正則反推更準確，交給
+        // _benchmarkAnalyzeDesignCompliance()評分（見該函式）。
+        let exportedYaml = '';
         try {
             for (let round = 0; round < maxRounds; round++) {
                 const remaining = timeoutMs - (Date.now() - t0);
@@ -3866,6 +3881,9 @@ ${existingNodeSummaries}
                     for (const tc of toolCalls) {
                         const fnName = tc.function && tc.function.name;
                         const rawArgs = (tc.function && tc.function.arguments) || '{}';
+                        if (fnName === 'export_document') {
+                            try { exportedYaml += (JSON.parse(rawArgs).content_yaml || '') + '\n\n'; } catch (_) {}
+                        }
                         try {
                             const toolDef = this._getToolDefinition(fnName);
                             if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
@@ -3914,6 +3932,9 @@ ${existingNodeSummaries}
                         const toolDef = this._getToolDefinition(task.fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
+                        if (task.fnName === 'export_document' && parsedArgs && typeof parsedArgs === 'object') {
+                            exportedYaml += (parsedArgs.content_yaml || '') + '\n\n';
+                        }
                         const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
                         messages.push(this._buildToolResultMessage(task.fnName, result));
                     } catch (err) {
@@ -3924,7 +3945,33 @@ ${existingNodeSummaries}
         } catch (err) {
             messages.push({ role: 'assistant', content: `[錯誤] ${String(err.message || err)}` });
         }
-        return { messages, elapsedMs: Date.now() - t0, timedOut, hitLengthLimit, repetitionDetected };
+        return { messages, elapsedMs: Date.now() - t0, timedOut, hitLengthLimit, repetitionDetected, exportedYaml };
+    }
+
+    // tw_stock_db客製: 檢查AI寫的content_yaml（如果有呼叫export_document的話）
+    // 跟口頭回覆有沒有遵守AI_REPORT_STYLE_GUIDE/export_document description
+    // 裡的兩條硬性文字規範，加上「是不是整份都是text投影片」的排版判斷——
+    // 三種都是實測真的發生過的瑕疵（見那兩處description的說明），量化成
+    // 一個違規計數，給_benchmarkTest3Attempt拿去扣分、也讓報告卡列出具體
+    // 是哪裡不合規，不是只給一個模糊的分數。
+    _benchmarkAnalyzeDesignCompliance(exportedYaml, finalText) {
+        const corpus = `${exportedYaml}\n${finalText}`;
+        const quotedNumberMatches = corpus.match(/['"]\d[\d,.]*['"]/g) || [];
+        const enumCandidates = corpus.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
+        const enumWhitelist = new Set(['CALL', 'TODO', 'JSON', 'YAML', 'HTML', 'PDF', 'PPTX', 'API', 'URL', 'OK', 'ID']);
+        const rawEnumCodes = [...new Set(enumCandidates.filter(s => !enumWhitelist.has(s)))];
+        const slideTypeMatches = exportedYaml.match(/^\s*-?\s*type:\s*(\w+)/gm) || [];
+        const totalSlides = slideTypeMatches.length;
+        const textTypeCount = slideTypeMatches.filter(s => /type:\s*text\b/.test(s)).length;
+        const isWallOfText = totalSlides >= 3 && textTypeCount === totalSlides;
+        const violationCount = (quotedNumberMatches.length > 0 ? 1 : 0) + (rawEnumCodes.length > 0 ? 1 : 0) + (isWallOfText ? 1 : 0);
+        return {
+            hasExport: exportedYaml.trim().length > 0,
+            quotedNumberCount: quotedNumberMatches.length,
+            rawEnumCodeSamples: rawEnumCodes.slice(0, 3),
+            totalSlides, textTypeCount, isWallOfText,
+            violationCount,
+        };
     }
 
     async _benchmarkTest1(apiKey, apiUrl, apiModel, useNative, onProgress) {
@@ -3967,11 +4014,12 @@ ${existingNodeSummaries}
     // 猜測，直接讀真正的匯出結果最可靠。
     async _benchmarkTest3Attempt(apiKey, apiUrl, apiModel, useNative, onProgress) {
         this._benchmarkCapturedExport = null;
-        const { messages, elapsedMs, timedOut, hitLengthLimit, repetitionDetected } = await this._benchmarkRunTurn(
+        const { messages, elapsedMs, timedOut, hitLengthLimit, repetitionDetected, exportedYaml } = await this._benchmarkRunTurn(
             apiKey, apiUrl, apiModel, useNative, '幫2330做一個完整持股分析，產生pptx，也要口頭報告給我', 10, 240000, onProgress);
         const { toolCount, hasProtocolConfusion, hasEmptyFinal, finalText } = this._benchmarkAnalyzeMessages(messages);
         const exportedFile = this._benchmarkCapturedExport;
-        if (timedOut) return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, score: 0 };
+        const designCompliance = this._benchmarkAnalyzeDesignCompliance(exportedYaml, finalText);
+        if (timedOut) return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, designCompliance, score: 0 };
         let correctness = 0;
         if (!repetitionDetected) {
             // 檔案是不是真的產生（不是模型自己宣稱「已產生檔案」卻沒真的呼叫
@@ -3982,10 +4030,14 @@ ${existingNodeSummaries}
             // 完整報告本來就可能用不少token，單純用完額度不算太意外，扣分
             // 比②單一工具呼叫寬鬆一些。
             if (hitLengthLimit) correctness = Math.max(0, correctness - 10);
+            // tw_stock_db客製: 報告寫作規範違規（數字加引號/程式代號外露/整份
+            // 都是text投影片）——每種違規扣8分、最多扣24分，比檔案有沒有真的
+            // 產生這種硬性條件寬鬆，避免文字規範沒完全遵守就整個歸零。
+            if (designCompliance.hasExport) correctness = Math.max(0, correctness - designCompliance.violationCount * 8);
         }
         const speedScore = this._benchmarkSpeedScore(elapsedMs, [[60000, 100], [120000, 80], [180000, 60], [240000, 30], [Infinity, 0]]);
         const score = Math.round(correctness * 0.8 + speedScore * 0.2);
-        return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, correctness, speedScore, score };
+        return { timedOut, elapsedMs, toolCount, hasProtocolConfusion, hasEmptyFinal, hitLengthLimit, repetitionDetected, exportedFile, designCompliance, correctness, speedScore, score };
     }
 
     // 主入口：解析/benchmark-model的參數、依序跑三項測試、算加權總分、
@@ -4077,6 +4129,47 @@ ${existingNodeSummaries}
         this.messages.push(msg);
         this._persistChatHistory();
         this._renderMessageHistory();
+        if (!report.error) this._saveModelCard(report);
+    }
+
+    // tw_stock_db客製: 見this.MODEL_CARDS_KEY的說明——每次/benchmark-model
+    // 跑完（不管結果好壞）都存一張卡，同一個模型重測會覆蓋舊卡（只保留
+    // 最新一次結果，避免歷史結果互相矛盾）。
+    _getModelCards() {
+        try { return JSON.parse(localStorage.getItem(this.MODEL_CARDS_KEY) || '{}'); }
+        catch (_) { return {}; }
+    }
+
+    _saveModelCard(report) {
+        const cards = this._getModelCards();
+        cards[report.model] = {
+            model: report.model,
+            apiUrl: report.apiUrl,
+            useNative: report.useNative,
+            overallScore: report.overallScore,
+            verdict: report.verdict,
+            test1Score: report.test1 && report.test1.score,
+            test2Score: report.test2 && report.test2.score,
+            test3avgScore: report.test3avg,
+            testedAt: new Date().toISOString(),
+        };
+        try { localStorage.setItem(this.MODEL_CARDS_KEY, JSON.stringify(cards)); } catch (_) {}
+    }
+
+    // 給MODEL NAME輸入框的<datalist>用：PRESET_MODEL_OPTIONS(內建三個)
+    // ∪ 所有測過的模型（即使沒有正式收進PRESET_MODEL_OPTIONS），有卡片的
+    // 附上分數/結論當option文字（多數瀏覽器的datalist會把它當提示顯示在
+    // value旁邊）。
+    _modelDatalistOptionsHtml() {
+        const cards = this._getModelCards();
+        const names = [...new Set([...PRESET_MODEL_OPTIONS, ...Object.keys(cards)])];
+        return names.map(m => {
+            const c = cards[m];
+            if (!c) return `<option value="${this._escapeAttr(m)}"></option>`;
+            const badge = c.verdict.startsWith('✅') ? '✅' : c.verdict.startsWith('⚠️') ? '⚠️' : '❌';
+            const dateStr = c.testedAt ? c.testedAt.slice(0, 10) : '';
+            return `<option value="${this._escapeAttr(m)}">${badge} ${c.overallScore}/100（${dateStr}）</option>`;
+        }).join('');
     }
 
     _renderBenchmarkReportHtml(r) {
@@ -4088,6 +4181,12 @@ ${existingNodeSummaries}
             const flags = [];
             if (t.repetitionDetected) flags.push('⚠️偵測到重複輸出退化');
             if (t.hitLengthLimit) flags.push('⚠️用完max_tokens上限');
+            const dc = t.designCompliance;
+            if (dc && dc.hasExport) {
+                if (dc.quotedNumberCount > 0) flags.push(`⚠️數字被加引號×${dc.quotedNumberCount}`);
+                if (dc.rawEnumCodeSamples.length) flags.push(`⚠️出現程式代號（如${this._escapeHtml(dc.rawEnumCodeSamples[0])}）`);
+                if (dc.isWallOfText) flags.push(`⚠️整份都是text投影片（${dc.totalSlides}張）`);
+            }
             return flags.length ? `<div style="color:#dd6b20; font-size:10px;">${flags.join('　')}</div>` : '';
         };
         const row = (label, t) => `<tr><td style="padding:3px 8px 3px 0; white-space:nowrap; vertical-align:top;">${label}</td><td style="padding:3px 8px; vertical-align:top;">${t.score}分</td><td style="padding:3px 8px; color:${palette.detailText}; vertical-align:top;">${(t.elapsedMs / 1000).toFixed(1)}秒${t.timedOut ? '（逾時）' : ''}${flagNote(t)}</td></tr>`;
@@ -5083,7 +5182,7 @@ ${existingNodeSummaries}
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
                 <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='nvidia/nemotron-3-super-120b-a12b'>
                 <datalist id="ai-model-datalist">
-                    ${PRESET_MODEL_OPTIONS.map(m => `<option value="${m}"></option>`).join('')}
+                    ${this._modelDatalistOptionsHtml()}
                 </datalist>
 
                 <details style="margin-top:8px;">
