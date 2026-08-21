@@ -508,29 +508,70 @@ const CALL_STOP_SEQUENCE = ')]';
 const MAX_AUTO_CONTINUE_ROUNDS = 40;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
 
-// tw_stock_db客製: 內建的NVIDIA NIM模型清單，實測過都能正常回應（見下方
-// 各自的實測結果，2026-08確認），給MODEL NAME欄位的<datalist>下拉選單用。
-// 使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的捷徑，
-// 不是限制。
-//   - nvidia/nemotron-3-super-120b-a12b：預設值，回應速度快、能力也最強，
-//     早期實測在temperature=0時容易卡進重複輸出迴圈，現在有兩層防護：
-//     _hasRepeatingTail()串流中偵測並截斷，加上預設repetition_penalty=1/
-//     length_penalty=0.3的取樣參數（2026-08調整）。2026-08加上
-//     CALL_STOP_SEQUENCE後實測：工具呼叫正確停在收尾處、不再自己編造假
-//     TOOL RESULT，端點正常接受stop參數。
-//   - meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱。
-//   - meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)。
-//   - google/gemma-4-31b-it：2026-08實測移除——即使完全不涉及工具呼叫的
-//     單句提示（"請直接回覆兩個字：測試"）都卡了20秒以上沒有任何回應，
-//     跟這裡的CALL_STOP_SEQUENCE改動無關（第一個工具呼叫階段其實有正常
-//     運作，是後續產生最終文字回覆時卡住），研判是NVIDIA官方端點對這個
-//     模型本身反應太慢/不穩定，先移出內建清單，需要的話使用者仍可以自己
-//     在MODEL NAME欄位手動輸入這個模型名稱。
+// tw_stock_db客製: 內建的模型清單，給MODEL NAME欄位的<datalist>下拉選單、
+// 以及「MODEL NAME留空時自動fallback」機制（見_resolveAutoFallbackModel）
+// 共用。使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的
+// 捷徑，不是限制。
+//
+// 2026-08-21使用者明確要求：順序依「參數量＋穩定度優先」排列，這是fallback
+// 嘗試的順序，不是憑印象排的：
+//   1. nvidia/nemotron-3-super-120b-a12b：能力最強，平常最穩，但使用者
+//      2026-08-21回報「今天很不穩，偶爾404消失，過一段時間又恢復」——
+//      研判是NVIDIA NIM那端的機器狀況，不是這個模型本身的問題，加入
+//      fallback清單就是為了防這種暫時性下線。
+//   2. nvidia/nemotron-3.5-lightning-30b-a3b：2026-08-21用/benchmark-model
+//      實測過，完整多步驟報告流程會遇到「This model only supports
+//      single tool-calls at once!」的伺服器錯誤，當時決定不內建——這次
+//      使用者明確要求連同其他3個一起排入fallback清單，接受這個風險
+//      （只有輪到它、剛好又觸發這個錯誤模式時才會影響那一次對話）。
+//   3. nvidia/nemotron-3-nano-omni-30b-a3b-reasoning：同上，2026-08-21
+//      實測簡單問題快，但完整報告流程會卡到近5分鐘沒回應——注意：
+//      4xx/404以外的「掛住不回應」不在_resolveAutoFallbackModel處理的
+//      404-only條件內，真的卡住時fallback機制不會自動跳下一個，需要
+//      使用者手動按Stop再重送。
+//   4. nvidia/nemotron-3-nano-30b-a3b：同上，實測過完整流程兩次都失敗
+//      （一次誤把系統提示範例文字當真呼叫、一次直接空白回應），跟上面
+//      兩個模型同樣的已知風險。
+//   5. meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)，實測穩定。
+//   6. openai/gpt-oss-120b：早期（見_getApiConfig()的說明）實測在NVIDIA
+//      NIM端點上完整對話會整個卡住90秒以上沒有任何回應；2026-08-21用
+//      _probeNativeToolSupport()重新探測時反而秒回，研判是端點狀況不
+//      穩定、不是模型本身必然有問題，但仍保留這個已知風險紀錄。
+//   7. openai/gpt-oss-20b：2026-08-21探測回應快（<1秒）。
+//   8. meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱，排在
+//      清單最後，是最後的安全網。
 const PRESET_MODEL_OPTIONS = [
     'nvidia/nemotron-3-super-120b-a12b',
-    'meta/llama-3.1-8b-instruct',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+    'nvidia/nemotron-3-nano-30b-a3b',
     'meta/llama-3.3-70b-instruct',
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'meta/llama-3.1-8b-instruct',
 ];
+
+// tw_stock_db客製: 使用者要求「內建模型就提前把model card的支援tool call
+// 建表紀錄，因為這個屬性是固定的」——用_probeNativeToolSupport()對真實
+// 端點逐一探測過的結果（2026-08-21，透過使用者自己設定的Cloudflare Worker
+// 端點測試），直接寫死在這裡，_shouldUseNativeToolCalls()/
+// _ensureNativeToolSupportProbed()會優先查這份表，命中就直接用、不再對
+// 這8個內建模型另外打探測請求——省下每個使用者自己在瀏覽器裡各測一次的
+// 重複網路成本。meta/llama-3.3-70b-instruct探測時5次都在15秒逾時上限
+// 精準卡住（可能是這個模型回應本來就慢、加上tools欄位更慢，探測用的
+// 15秒逾時不夠長），沒辦法確認是否真的支援，保守寫false（退回文字式
+// [CALL:...]協定，這也是本來就實測穩定能用的路徑）。使用者自訂的模型
+// （不在這份表裡）不受影響，一樣照原本的邏輯即時探測。
+const PRESET_MODEL_TOOLCALL_SUPPORT = {
+    'nvidia/nemotron-3-super-120b-a12b': false,
+    'nvidia/nemotron-3.5-lightning-30b-a3b': true,
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
+    'nvidia/nemotron-3-nano-30b-a3b': false,
+    'meta/llama-3.3-70b-instruct': false, // 探測逾時、無法確認，保守值
+    'openai/gpt-oss-120b': false,
+    'openai/gpt-oss-20b': true,
+    'meta/llama-3.1-8b-instruct': true,
+};
 
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
@@ -577,6 +618,11 @@ class FloatingAssistant {
         // 才寫進這個key，不會把「還沒測過」或「測到一半」的狀態存進去。
         this.NATIVE_TOOL_SUPPORT_CACHE_KEY = "floating_ai_native_tool_support_cache";
         this._nativeToolSupportCache = null; // lazy load，見_ensureNativeToolSupportProbed()
+        // tw_stock_db客製: MODEL NAME留空時的自動fallback狀態，見
+        // executeChat()/_nextAutoFallbackModel()的說明，每輪新對話開始時
+        // 由executeChat()重新設定。
+        this._autoFallbackActive = false;
+        this._autoFallbackIndex = 0;
 
         this.tools = {};
         this.FromAI = {};
@@ -1348,6 +1394,40 @@ ${fnData.code}
         return { apiKey, apiUrl, apiModel };
     }
 
+    // tw_stock_db客製: 給「MODEL NAME留空時自動fallback」機制用——跟
+    // _getApiConfig()分開，是因為_getApiConfig()本來就會把空白欄位預設成
+    // 固定的第一個模型（給benchmark工具、原生探測等其他呼叫端用，維持
+    // 既有行為不變），這裡要看的是「使用者真的完全沒填」這個原始狀態，
+    // 才能判斷該不該啟動fallback，而不是每次都直接固定用第一個模型。
+    _isModelFieldBlank() {
+        return !(localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '').trim();
+    }
+
+    // tw_stock_db客製: 只有this._autoFallbackActive（本輪對話一開始MODEL
+    // NAME留空）且status===404時才回傳下一個候選模型名稱，否則回傳null
+    // （呼叫端不換模型，照原本的邏輯處理這次錯誤）。this._autoFallbackIndex
+    // 是實例狀態，同一輪對話裡不管中途重試幾次都會往前推進、不會回頭，
+    // 直到清單用完或成功一次；下一次executeChat()才會重新從0開始（見
+    // executeChat()裡的說明）。
+    _nextAutoFallbackModel(status, currentModel) {
+        if (status !== 404 || !this._autoFallbackActive) return null;
+        if (this._autoFallbackIndex >= PRESET_MODEL_OPTIONS.length - 1) return null;
+        this._autoFallbackIndex++;
+        return PRESET_MODEL_OPTIONS[this._autoFallbackIndex];
+    }
+
+    // tw_stock_db客製: 使用者要求「在AI Assistant (Graph RAG)右邊顯示model
+    // name，用小字體」——isFallback為true時額外標註「自動」，讓使用者知道
+    // 目前這個模型是MODEL NAME留空時系統自動選的，不是自己指定的。
+    _updateHeaderModelName(apiModel, isFallback) {
+        const el = document.getElementById('ai-header-model-name');
+        if (!el) return;
+        el.textContent = isFallback ? `${apiModel}（自動）` : apiModel;
+        el.title = isFallback
+            ? `MODEL NAME欄位留空，系統依內建清單順序自動選用；若目前這個模型無法使用(404)會自動改下一個。`
+            : '';
+    }
+
     // tw_stock_db客製: 判斷目前要不要用原生 tools/tool_calls API格式，而不是
     // [CALL: ...]文字慣例。advancedSettings.toolCallMode三態: 'native'/'text'
     // 直接照使用者指定；'auto'(預設)則依模型名稱pattern猜測。
@@ -1364,6 +1444,12 @@ ${fnData.code}
         const key = this._nativeProbeCacheKey(apiUrl, apiModel);
         if (this._nativeToolSupportCache && Object.prototype.hasOwnProperty.call(this._nativeToolSupportCache, key)) {
             return this._nativeToolSupportCache[key];
+        }
+        // tw_stock_db客製: 內建模型清單已經預先探測建表（見
+        // PRESET_MODEL_TOOLCALL_SUPPORT說明），優先查這份表，比name pattern
+        // 猜測準確，也不用等第一次對話才臨時打探測請求。
+        if (Object.prototype.hasOwnProperty.call(PRESET_MODEL_TOOLCALL_SUPPORT, apiModel)) {
+            return PRESET_MODEL_TOOLCALL_SUPPORT[apiModel];
         }
         const name = String(apiModel || '');
         return NATIVE_TOOLCALL_MODEL_PATTERNS.some(re => re.test(name));
@@ -1436,6 +1522,14 @@ ${fnData.code}
         const key = this._nativeProbeCacheKey(apiUrl, apiModel);
         if (Object.prototype.hasOwnProperty.call(this._nativeToolSupportCache, key)) {
             return this._nativeToolSupportCache[key];
+        }
+        // tw_stock_db客製: 內建模型已經預先探測好（見PRESET_MODEL_TOOLCALL_SUPPORT
+        // 說明），直接用固定值寫進快取，省下這次網路探測請求。
+        if (Object.prototype.hasOwnProperty.call(PRESET_MODEL_TOOLCALL_SUPPORT, apiModel)) {
+            const preset = PRESET_MODEL_TOOLCALL_SUPPORT[apiModel];
+            this._nativeToolSupportCache[key] = preset;
+            this._saveNativeToolSupportCache();
+            return preset;
         }
         const supported = await this._probeNativeToolSupport(apiKey, apiUrl, apiModel);
         this._nativeToolSupportCache[key] = supported;
@@ -4216,11 +4310,27 @@ ${existingNodeSummaries}
      * 執行 Stream 對話循環
      */
     async executeChat(userText) {
-        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+        const { apiKey, apiUrl } = this._getApiConfig();
+        let apiModel = this._getApiConfig().apiModel;
         if (this.isResponding) {
             this._addSteeringMessage(userText);
             return;
         }
+
+        // tw_stock_db客製: MODEL NAME留空時的自動fallback——見PRESET_MODEL_OPTIONS
+        // 上方各模型的實測風險註記。每次使用者主動送出新訊息（這裡，不是
+        // 對話中途的重試）都重新從PRESET_MODEL_OPTIONS[0]開始，不接續上一輪
+        // fallback到的模型——呼應使用者「不要因為找到一個成功的就固定住」
+        // 的要求：主力模型如果只是暫時404、後來恢復了，下一則新訊息會自動
+        // 先試回主力模型。_loopFetch/_loopFetchNative遇到404時會依
+        // this._autoFallbackIndex往下試下一個（見那兩處的說明），只有MODEL
+        // NAME真的留空時才啟動，使用者自己指定了模型就完全不受影響。
+        this._autoFallbackActive = this._isModelFieldBlank();
+        if (this._autoFallbackActive) {
+            this._autoFallbackIndex = 0;
+            apiModel = PRESET_MODEL_OPTIONS[0];
+        }
+        this._updateHeaderModelName(apiModel, this._autoFallbackActive);
 
         // tw_stock_db客製: toolCallMode==='auto'時，先確保這個apiUrl+apiModel
         // 組合已經探測過是否支援原生tool_calls（見_ensureNativeToolSupportProbed
@@ -4442,6 +4552,17 @@ ${existingNodeSummaries}
                 });
 
                 if (!response.ok) {
+                    // tw_stock_db客製: MODEL NAME留空時的自動fallback——見
+                    // executeChat()裡this._autoFallbackActive的說明。只處理404
+                    // （模型/端點暫時下線），不處理其他4xx/5xx（那些通常是請求
+                    // 本身有問題，換模型也不會解決，交給下面既有的邏輯處理）。
+                    const nextFallbackModel = this._nextAutoFallbackModel(response.status, apiModel);
+                    if (nextFallbackModel) {
+                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallbackModel}`);
+                        streamDiv.remove();
+                        this._updateHeaderModelName(nextFallbackModel, true);
+                        return await this._loopFetch(apiKey, apiUrl, nextFallbackModel, retryAttempt);
+                    }
                     const errText = await response.text().catch(() => '');
                     // tw_stock_db客製: 400不一定是上下文太長——先檢查是不是某個
                     // 取樣參數被端點拒絕，是的話標記排除、重新送一次（不算進
@@ -4761,6 +4882,14 @@ ${existingNodeSummaries}
                 });
 
                 if (!response.ok) {
+                    // tw_stock_db客製: 跟_loopFetch同樣的MODEL NAME留空自動fallback，
+                    // 見executeChat()/_nextAutoFallbackModel()的說明。
+                    const nextFallbackModel = this._nextAutoFallbackModel(response.status, apiModel);
+                    if (nextFallbackModel) {
+                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallbackModel}`);
+                        this._updateHeaderModelName(nextFallbackModel, true);
+                        return await this._loopFetchNative(apiKey, apiUrl, nextFallbackModel, retryAttempt);
+                    }
                     const errText = await response.text().catch(() => '');
                     // tw_stock_db客製: 跟 _loopFetch 同樣的理由，先排除「取樣參數被
                     // 拒絕」這個可能性，見那邊的說明。
@@ -5167,7 +5296,7 @@ ${existingNodeSummaries}
 
         win.innerHTML = `
             <div id="ai-window-header" style="background: ${palette.headerBg}; color: ${palette.headerText}; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: bold; color: #76b900;">AI Assistant <span style="font-size:10px; background:#8b5cf6; color:#fff; padding:1px 5px; border-radius:999px; font-weight:normal; margin-left:4px;">Graph RAG</span></span>
+                <span style="font-weight: bold; color: #76b900;">AI Assistant <span style="font-size:10px; background:#8b5cf6; color:#fff; padding:1px 5px; border-radius:999px; font-weight:normal; margin-left:4px;">Graph RAG</span><span id="ai-header-model-name" style="font-size:10px; font-weight:normal; color:${palette.detailText}; margin-left:6px;"></span></span>
                 <div>
                     <span id="ai-btn-clear-chat" title="清除對話" style="cursor:pointer; margin-right: 10px;">🗑️</span>
                     <span id="ai-btn-config" style="cursor:pointer; margin-right: 10px;">⚙️</span>
@@ -5180,7 +5309,7 @@ ${existingNodeSummaries}
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
                 <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='https://integrate.api.nvidia.com/v1'>
                 <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='nvidia/nemotron-3-super-120b-a12b'>
+                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='留空＝依內建清單順序自動fallback'>
                 <datalist id="ai-model-datalist">
                     ${this._modelDatalistOptionsHtml()}
                 </datalist>
@@ -5970,7 +6099,14 @@ ${existingNodeSummaries}
         });
         inputModelName.addEventListener('input', () => {
             localStorage.setItem(this.LLM_MODEL_NAME_KEY, inputModelName.value.trim());
+            // tw_stock_db客製: 使用者手動打字時即時更新header小字提示，留空時
+            // 顯示「自動fallback候選清單第一個」而不是誤導成「已經固定用某個
+            // 模型」——真正選中哪個要等executeChat()送出下一輪對話才知道。
+            const trimmed = inputModelName.value.trim();
+            this._updateHeaderModelName(trimmed || `${PRESET_MODEL_OPTIONS[0]}起`, !trimmed);
         });
+        // tw_stock_db客製: 面板剛開啟時的初始值，邏輯跟上面input監聽器一致。
+        this._updateHeaderModelName(inputModelName.value.trim() || `${PRESET_MODEL_OPTIONS[0]}起`, !inputModelName.value.trim());
 
         // tw_stock_db客製: 生成/取樣參數設定，跟上面API Key/URL/Model一樣採
         // 輸入即存的方式，不用另外按儲存鍵。
