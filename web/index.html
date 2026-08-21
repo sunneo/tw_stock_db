@@ -8474,7 +8474,17 @@ const ReportExport = (() => {
         color: PALETTE_PPTX.ice, align: 'center', valign: 'middle',
       });
     }
-    return pres.write({ outputType: 'blob' });
+    const rawBlob = await pres.write({ outputType: 'blob' });
+    // tw_stock_db客製: pptxgenjs產生的blob，其.type是"application/zip"
+    // （.pptx技術上就是一個zip容器，pptxgenjs沒有特別標成OOXML的正式
+    // MIME type）——桌機瀏覽器大多會尊重<a download>的檔名副檔名，看不太
+    // 出問題，但使用者實測手機下載時，部分瀏覽器/系統下載管理器會依照
+    // blob的MIME type（而不是download屬性裡的副檔名）判斷副檔名，
+    // application/zip這種泛用型別就容易被存成「xxx.pptx.zip」或直接顯示
+    // 成zip檔。改成用正確的OOXML簡報MIME type重新包一層blob（內容完全
+    // 不變，只是換掉MIME type標籤），從源頭修正，所有呼叫端（匯出按鈕、
+    // AI助理的export_document工具）都不用各自處理。
+    return new Blob([rawBlob], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
   }
 
   /* ────────────────────────────────────────
