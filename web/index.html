@@ -1561,7 +1561,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260821-7"></script>
+<script src="floating-assistant.js?v=20260822-1"></script>
 
 <script>
 'use strict';
@@ -2862,6 +2862,7 @@ const DBMgr = (() => {
     }
     if (lastSuccessDate) Settings.set('lastDailyDate', lastSuccessDate);
     await detectAndFillDateGaps(onProgress);
+    await detectAndFillPartialDays(onProgress);
     await persist();
   }
 
@@ -2895,6 +2896,51 @@ const DBMgr = (() => {
       onProgress?.(`偵測到缺口，補齊 ${date}…`);
       await applyDaily(date, onProgress);
     }
+  }
+
+  // tw_stock_db客製: 2026-08-22使用者實測回報「按了更新資料，特定個股
+  // (6505)走勢圖還是卡在好幾天前」——查證後發現鎖股名單的評分邏輯完全
+  // 正確（6505在2026-08-21確實收盤75.8、站上月線71.22），問題出在上面
+  // detectAndFillDateGaps()只用大盤(TAIEX，來自market_index.csv)當「這天
+  // 資料完不完整」的判斷基準；daily_prices.csv/technical_indicators.csv
+  // 是完全不同的檔案，如果套用時只有部分股票的列真的落地（例如IndexedDB
+  // 持久化寫入沒完全成功、或upsertCSV逐列try/catch吞掉了某些列的錯誤），
+  // 大盤本身沒事，這種「同一天、同一個檔案、只有少數股票缺資料」的缺口
+  // 完全不會被舊邏輯偵測到——checksum快取又已經記成「這個檔案內容沒變、
+  // 已經套用過」，之後不管按幾次「更新資料」（forced=true）都會被checksum
+  // 比對擋下來，永遠不會真的重新下載。
+  //
+  // 這裡新增一層獨立驗證：分別統計daily_prices／technical_indicators近14天
+  // 「每個交易日有資料的相異股票數」，跟鄰近交易日的中位數比較，明顯偏少
+  // （<80%）就代表那天大機率只套用了部分資料——不需要知道確切成因，只要
+  // 實際比對出「股票數異常偏少」就清掉那天的checksum快取紀錄、繞過
+  // checksum比對強制重抓（呼叫applyDaily時不帶manifestDates/checksumCache
+  // 兩個參數，跟既有的缺口補齊邏輯一致），確保下次同步真的會重新下載，
+  // 不會被一個「內容沒變」的錯誤前提永久卡住。
+  async function detectAndFillPartialDays(onProgress) {
+    const staleDates = new Set();
+    for (const table of ['daily_prices', 'technical_indicators']) {
+      const rows = query(
+        `SELECT trade_date, COUNT(DISTINCT stock_code) AS n FROM ${table}
+         WHERE trade_date >= date('now','-14 day') GROUP BY trade_date ORDER BY trade_date`
+      );
+      if (rows.length < 3) continue;
+      // 排除最後一天（今天）：今天的資料本來就可能還沒完整上架，不算異常。
+      const counts = rows.slice(0, -1).map(r => r.n).sort((a, b) => a - b);
+      const baseline = counts[Math.floor(counts.length / 2)]; // 中位數
+      if (!baseline) continue;
+      rows.forEach((r, i) => {
+        if (i < rows.length - 1 && r.n < baseline * 0.8) staleDates.add(r.trade_date);
+      });
+    }
+    if (!staleDates.size) return;
+    console.warn('[DBMgr] 偵測到部分交易日資料不完整（股票數明顯偏少於鄰近交易日），清除快取並重抓：', [...staleDates]);
+    for (const date of staleDates) {
+      if (dailyChecksumCache && dailyChecksumCache[date]) delete dailyChecksumCache[date];
+      onProgress?.(`偵測到 ${date} 資料不完整，重新抓取…`);
+      await applyDaily(date, onProgress);
+    }
+    IDB.set('meta', DAILY_CHECKSUM_IDB_KEY, dailyChecksumCache).catch(() => {});
   }
 
   function fmtDate(d) {
