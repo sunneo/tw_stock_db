@@ -5886,10 +5886,18 @@ const AI_CAPABILITIES = [
       }
       let body;
       try { body = await resp.json(); } catch { body = null; }
-      if (!body || typeof body.body !== 'string') {
+      // tw_stock_db客製: body===null代表這個回應根本不是JSON（例如worker
+      // 沒有/webfetch這條路由，落到catch-all回傳純文字"Worker運作正常。"）
+      // ——這種情況才是「目前端點可能沒部署這個功能」；如果body成功解析成
+      // JSON但沒有body.body欄位（例如403白名單拒絕只會有error欄位、沒有
+      // body），那是worker正常運作、只是這次請求被合法拒絕，不能混為一談
+      // （實測發生過的真實案例：403被誤判成「worker沒部署」）。
+      if (body === null) {
         return { ok: false, status: resp.status, error: `回應不是預期的JSON格式，目前的API網址可能沒有部署支援/webfetch路由的worker（見這個工具description的說明）` };
       }
-      if (!resp.ok) return { ok: false, status: resp.status, error: body.error || `HTTP ${resp.status}` };
+      if (!resp.ok || typeof body.body !== 'string') {
+        return { ok: false, status: resp.status, error: body.error || `HTTP ${resp.status}` };
+      }
       return { ok: true, ...body };
     },
   },
