@@ -43,9 +43,11 @@ reads happen locally without further network calls once loaded.
  這裡只列類別跟工具名稱，避免跟陣列內容重複維護出現分歧——如果需要新增/修改
  一項能力，AI_CAPABILITIES 陣列跟這段註解都要一起改）：
   - 技術分析K棒／走勢圖K棒：get_price_history, get_intraday_series
-  - 大盤/美股指數：get_market_index_history, get_market_index_latest
+  - 大盤/美股指數：get_market_index_history, get_market_index_latest, diagnose_market
+    （大盤/類股積極度判斷＋SOX/SPX/NASDAQ/DJI連動，不綁定特定個股）
   - 個股資訊：search_stocks, get_stock_info, get_sectors, get_stocks_by_sector
-  - 選股：screen_strong_stocks
+  - 選股：screen_strong_stocks（全市場挑個股）、scan_sector_rotation（全市場依
+    類股分組比較整體漲跌，回答「資金往哪個類股輪動」）
   - 備忘錄：get_memo, set_memo（會修改使用者資料）
   - 盤後籌碼：get_chip_available_dates, get_chip_data
   - 鎖股名單：get_lock_list, get_stock_lock_status
@@ -66,6 +68,8 @@ reads happen locally without further network calls once loaded.
     （完整分析報告的段落建議與投影片排版原則）
   - 批次分析：batch_analyze_stocks（多檔股票各自獨立判斷時用，避免逐檔手動
     分析撐爆對話上下文）
+  - 網路查詢：fetch_web_page（透過worker代理抓取白名單網域，目前只開放證交所/
+    櫃買中心/公開資訊觀測站等官方公開資料來源，不含商業新聞網站）
 
 【重要限制 / Important constraints】
 - 所有股價/指標/型態判斷都必須來自上述工具的回傳結果，不可以自己編造或用
@@ -1561,7 +1565,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=20260822-1"></script>
+<script src="floating-assistant.js?v=81561384e9"></script>
 
 <script>
 'use strict';
@@ -2992,6 +2996,37 @@ const DBMgr = (() => {
     `, [d, d, sectorId]);
   }
 
+  // tw_stock_db客製: 「類股輪動」掃描——跟computeStrongCurrent/computeStrongXQ
+  // 是不同層級的分析：那兩個是在全市場裡挑「個股」，這個是把全市場依
+  // sector_id分組後比較「哪些類股整體漲、哪些整體跌」，用來回答「今天資金
+  // 往哪個類股輪動」而不是「哪一檔股票最強」。用一次JOIN取代對每個sector
+  // 各自呼叫一次getStocksBySector（避免N+1次查詢），每個類股至少要有3檔
+  // 股票才納入排名（太少檔的類股平均值容易被單一個股影響、參考性低）。
+  function getSectorRotation() {
+    const d = getLatestDate();
+    if (!d) return [];
+    return query(`
+      SELECT sec.sector_name AS name, s.sector_id AS sid,
+             COUNT(*) AS stock_count,
+             AVG((p.close - p2.close) / p2.close * 100) AS avg_pct,
+             SUM(CASE WHEN p.close > p2.close THEN 1 ELSE 0 END) AS up_count,
+             SUM(CASE WHEN p.close < p2.close THEN 1 ELSE 0 END) AS down_count
+      FROM stocks s
+      JOIN daily_prices p ON s.stock_code = p.stock_code AND p.trade_date = ?
+      JOIN (
+        SELECT p1.stock_code, p1.close
+        FROM daily_prices p1
+        JOIN (SELECT stock_code, MAX(trade_date) AS d2 FROM daily_prices WHERE trade_date < ? GROUP BY stock_code) m
+          ON m.stock_code = p1.stock_code AND m.d2 = p1.trade_date
+      ) p2 ON p2.stock_code = s.stock_code
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
+      WHERE s.is_active = 1 AND s.sector_id IS NOT NULL AND p2.close > 0
+      GROUP BY s.sector_id
+      HAVING stock_count >= 3
+      ORDER BY avg_pct DESC
+    `, [d, d]).map(r => ({ ...r, avg_pct: r.avg_pct != null ? Math.round(r.avg_pct * 100) / 100 : null }));
+  }
+
   /* ── 代號/名稱部分匹配搜尋（自選股新增用） ── */
   function searchStocks(term, limit) {
     limit = limit || 20;
@@ -3322,7 +3357,7 @@ const DBMgr = (() => {
     init, bootstrapFresh, syncDaily,
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
-    getSectors, getStocksBySector, getWatchlistStocks, searchStocks, getPrevClose,
+    getSectors, getStocksBySector, getSectorRotation, getWatchlistStocks, searchStocks, getPrevClose,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
@@ -4611,6 +4646,54 @@ function indexBrief(indexCode, label) {
   };
 }
 
+// tw_stock_db客製: 給diagnoseMarket()用的「大盤本身」四線多排/空排判斷——
+// 跟diagnoseStock()裡對個股K棒算ma_alignment的邏輯完全一樣，只是資料源換成
+// getMarketIndexHistory()（大盤/美股指數），不是getPriceHistory()（個股）。
+// 呼應stock-pattern-analysis skill「大盤決定積極度」的核心哲學：個股操作
+// 積極度看大盤位置決定，這裡讓AI可以直接查「大盤現在是什麼位置」，不用
+// 每次都先隨便診斷一檔股票才能間接拿到大盤資訊。
+function indexAlignment(indexCode, label) {
+  const hist = DBMgr.getMarketIndexHistory(indexCode, 90);
+  if (!hist || hist.length < 61) return { available: false, label };
+  const closes = hist.map(r => r.close);
+  const maArr = { 5: computeSMA(closes, 5), 10: computeSMA(closes, 10), 20: computeSMA(closes, 20), 60: computeSMA(closes, 60) };
+  const n = hist.length - 1;
+  const last = hist[n];
+  const maVals = { 5: maArr[5][n], 10: maArr[10][n], 20: maArr[20][n], 60: maArr[60][n] };
+  let alignment = null;
+  if (maVals[5] != null && maVals[10] != null && maVals[20] != null && maVals[60] != null) {
+    if (maVals[5] > maVals[10] && maVals[10] > maVals[20] && maVals[20] > maVals[60]) alignment = '多排';
+    else if (maVals[5] < maVals[10] && maVals[10] < maVals[20] && maVals[20] < maVals[60]) alignment = '空排';
+    else alignment = '交叉混雜';
+  }
+  return {
+    available: true, label, trade_date: last.trade_date, close: round2(last.close),
+    ma: { 5: round2(maVals[5]), 10: round2(maVals[10]), 20: round2(maVals[20]), 60: round2(maVals[60]) },
+    above_ma20: maVals[20] != null ? last.close >= maVals[20] : null,
+    ma_alignment: alignment,
+  };
+}
+
+// tw_stock_db客製: 使用者要求AI能直接做「大盤/類股積極度判斷」跟「隨SOX/
+// SPX/NASDAQ/DJI連動判讀」，不用綁定在某一檔個股的diagnose_stock底下才能
+// 拿到（原本market_linkage欄位只掛在個股診斷結果裡）。回傳台股大盤(加權/
+// 櫃買)本身的均線位置排列，加上四個美股觀察指標的簡briefing，判讀規則
+// 見get_analysis_principles/大盤連動小節，這裡只負責回傳原始數字，判讀
+// 邏輯交給AI自己依規則詮釋。
+function diagnoseMarket() {
+  return {
+    taiex: indexAlignment('TAIEX', '加權指數'),
+    tpex: indexAlignment('TPEx', '櫃買指數'),
+    us_indices: {
+      sox: indexBrief('SOX', '費城半導體'),
+      spx: indexBrief('SPX', '標普500'),
+      nasdaq: indexBrief('NASDAQ', '那斯達克'),
+      dji: indexBrief('DJI', '道瓊工業'),
+    },
+    note: '半導體/電子供應鏈個股優先參考SOX/NASDAQ走勢；傳產/金融/塑化/原物料類股優先參考DJI走勢；隔夜美股收盤是台股開盤前的領先訊號而非同步資料，判讀時注意台美交易時區換算（美股收盤約對應台北時間隔日凌晨）。',
+  };
+}
+
 /* ── 主要入口：鏡射 report_builder.py::stock_diagnosis()，資料來源全部是
    DBMgr 本機已同步好的資料，不經網路/YAML。 ── */
 function diagnoseStock(code) {
@@ -5416,6 +5499,18 @@ const AI_CAPABILITIES = [
     handler: (a) => DBMgr.getMarketIndexLatest(a.indexCode),
   },
   {
+    name: 'diagnose_market', category: '大盤/美股指數',
+    description: '判斷「現在大盤積極度」——回傳台股加權指數(TAIEX)、櫃買指數(TPEx)各自的均線位置與多排/空排/交叉混雜排列，加上SOX/SPX/NASDAQ/DJI四個美股觀察指標的收盤/漲跌%/是否站上月線。不綁定任何一檔個股，做整體大盤/類股積極度判斷、或要決定操作積極度該提高還是降低時，優先呼叫這個，不用先隨便診斷一檔股票才能間接拿到大盤資訊。判讀規則（例如美股同步收紅時積極度該不該提高）建議搭配get_analysis_principles一起看。',
+    params: {},
+    handler: () => diagnoseMarket(),
+  },
+  {
+    name: 'scan_sector_rotation', category: '選股',
+    description: '掃描全市場，依產業類股分組比較「哪些類股整體上漲、哪些整體下跌」（類股輪動），依平均漲跌%由高到低排序，每個回傳項目包含類股名稱、成分股數、平均漲跌%、上漲/下跌檔數。跟screen_strong_stocks不同：screen_strong_stocks是在全市場裡挑「個股」，這個是比較「類股」整體表現，回答「今天資金往哪個類股輪動」這類問題用這個。少於3檔股票的類股不列入（樣本太少，平均值容易被單一個股影響）。',
+    params: {},
+    handler: () => DBMgr.getSectorRotation(),
+  },
+  {
     name: 'search_stocks', category: '個股資訊',
     description: '用代號或名稱關鍵字搜尋股票（部分比對，依精確/前綴/包含排序）。',
     params: { term: '搜尋關鍵字', limit: '選填，最多回傳幾筆，預設20' },
@@ -5775,6 +5870,28 @@ const AI_CAPABILITIES = [
       lines: '選填陣列，每條線 {type:"horizontal"(水平線,配合price)|"vertical"(垂直線,配合date，盤中模式可以只給"HH:MM")|"trend"(趨勢線,配合from:{date,price}跟to:{date,price}), price, date, from, to, color, label, dash(選填true畫虛線)}',
     },
     handler: (a) => renderAiStockChart(a),
+  },
+  {
+    name: 'fetch_web_page', category: '網路查詢',
+    description: '透過worker代理抓取「白名單網域」的網頁內容，繞過瀏覽器的CORS限制。目前只開放官方公開資料網域：www.twse.com.tw（證交所）、www.tpex.org.tw（櫃買中心）、mops.twse.com.tw（公開資訊觀測站）、openapi.twse.com.tw（證交所OpenAPI）、data.gov.tw（政府資料開放平台）——刻意不含任何商業新聞網站（爬取新聞內容牽涉版權/使用條款，需要使用者先明確指定要用哪個來源才會另外評估加入白名單，不要自己嘗試繞過去抓白名單以外的網域，一定會被擋掉並回傳403）。回傳的是原始HTML/JSON文字（可能很長，超過約20萬字會被截斷），不會幫你解析成結構化資料，適合查詢官方公告/財報/資料集，不是通用網頁瀏覽器。⚠️這個功能依賴目前設定的API網址背後是有部署/webfetch路由的那個worker，如果使用的是別的API端點（例如直接打NVIDIA官方網址）會收到404，不代表這個能力本身壞掉。',
+    params: { url: '完整的https網址，網域必須在白名單內，否則會回傳403' },
+    handler: async (a) => {
+      const { apiUrl } = aiConsoleInstance._getApiConfig();
+      const target = `${apiUrl}/webfetch?url=${encodeURIComponent(a.url)}`;
+      let resp;
+      try {
+        resp = await fetch(target);
+      } catch (e) {
+        return { ok: false, error: `連線失敗：${e.message}` };
+      }
+      let body;
+      try { body = await resp.json(); } catch { body = null; }
+      if (!body || typeof body.body !== 'string') {
+        return { ok: false, status: resp.status, error: `回應不是預期的JSON格式，目前的API網址可能沒有部署支援/webfetch路由的worker（見這個工具description的說明）` };
+      }
+      if (!resp.ok) return { ok: false, status: resp.status, error: body.error || `HTTP ${resp.status}` };
+      return { ok: true, ...body };
+    },
   },
 ];
 // const 頂層宣告不會自動變成 window 的屬性（跟var/function宣告不同）；

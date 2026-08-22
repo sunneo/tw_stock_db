@@ -1,0 +1,13 @@
+#!/bin/sh
+# 自動同步 web/index.html 裡 floating-assistant.js 的 ?v= 版號（見
+# web/tools/bump-asset-version.js 的說明）——只要這次commit有動到
+# web/floating-assistant.js，就先跑一次版號同步，並把因此更新的
+# index.html一併加進這次commit，不需要使用者自己記得手動改版號。
+#
+# 啟用方式（每台機器/每個clone只需要設定一次）：
+#   git config core.hooksPath .githooks
+
+if git diff --cached --name-only | grep -q '^web/floating-assistant\.js$'; then
+  node web/tools/bump-asset-version.js || exit 1
+  git add web/index.html
+fi
