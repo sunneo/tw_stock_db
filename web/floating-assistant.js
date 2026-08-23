@@ -51,6 +51,19 @@
 //      幫文字式[CALL:...]慣例的role:'tool'訊息補上這個NVIDIA相容端點
 //      強制要求的tool_call_id）：這些全部是通用的聊天核心穩定性修正，
 //      跟股票資料完全無關，任何用這個檔案的應用都會受益。
+//   7. AI回覆訊息內建「匯出Markdown/PPTX/PDF」按鈕（_appendMarkdownExportButton
+//      + 下面的faMarkdownTo*系列函式）：2026-08-23使用者要求這個功能要
+//      內建在本檔案裡，不要像chipsProvider/onTableRendered那樣委派給
+//      host頁面——這跟前面幾點的判斷標準一致：「把一段AI寫的口語化
+//      markdown（#標題/**粗體**/-條列/|表格|）轉成投影片」是純粹的聊天
+//      widget能力，不涉及任何tw_stock_db業務邏輯，所以直接內建、預設
+//      就能用；PPTX用pptxgenjs、PDF用pdfmake（都是動態注入的CDN
+//      script，只有使用者實際按下匯出才會載入，比照第3點.skill匯入的
+//      作法，不使用這功能的人不用背這個依賴）。options.onExportMarkdown
+//      仍然保留作為選用的覆寫掛勾——host頁面如果想要自己的版型/報告
+//      結構（例如tw_stock_db自己的ReportExport，支援更多股票專屬的
+//      投影片類型），提供這個callback就會優先使用；沒提供時退回這裡
+//      的內建通用版本，而不是像之前那樣直接停用按鈕。
 // ============================================================
 
 // ============================================================
@@ -572,6 +585,299 @@ const PRESET_MODEL_TOOLCALL_SUPPORT = {
     'openai/gpt-oss-20b': true,
     'meta/llama-3.1-8b-instruct': true,
 };
+
+// ============================================================
+// AI回覆匯出PPTX/PDF——見檔案開頭說明第7點。只處理泛用的markdown（#標題、
+// **粗體**、-條列、|表格|）轉投影片，不含任何應用領域專屬的投影片類型
+// （那些屬於host頁面自己的報告系統，例如tw_stock_db的ReportExport，
+// 透過options.onExportMarkdown覆寫時會用host頁面那一套，不會經過這裡）。
+// ============================================================
+const FA_PPTXGENJS_URL = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+const FA_PDFMAKE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js';
+const FA_PDFMAKE_FONTS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/vfs_fonts.js';
+// Noto Sans TC「繁體中文」子集，透過jsDelivr的fontsource鏡像取得TTF——
+// pdfmake內建字型（Roboto）完全沒有中文字圖，不額外載入的話中文會整段
+// 變成豆腐字方塊。
+const FA_CJK_FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-400-normal.ttf';
+const FA_CJK_FONT_BOLD_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-700-normal.ttf';
+const FA_EXPORT_PALETTE = { navy: '1E2761', txt: '333333', muted: '888888', border: 'DDDDDD', tileGray: 'F5F6FA', white: 'FFFFFF' };
+
+const _faExportScriptCache = new Map();
+function _faLoadScriptOnce(url) {
+    if (_faExportScriptCache.has(url)) return _faExportScriptCache.get(url);
+    const p = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = url;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`匯出功能所需的外部程式庫載入失敗：${url}`));
+        document.head.appendChild(s);
+    });
+    _faExportScriptCache.set(url, p);
+    return p;
+}
+
+function _faArrayBufferToBase64(buf) {
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000; // 32KB一塊，避免String.fromCharCode.apply一次吃進太多引數爆呼叫堆疊
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+}
+
+let _faCjkFontPromise = null;
+async function _faEnsureCjkFontRegistered() {
+    if (_faCjkFontPromise) return _faCjkFontPromise;
+    _faCjkFontPromise = (async () => {
+        const pdfMake = window.pdfMake;
+        const [regularBuf, boldBuf] = await Promise.all([
+            fetch(FA_CJK_FONT_REGULAR_URL).then(r => { if (!r.ok) throw new Error('中文字型下載失敗'); return r.arrayBuffer(); }),
+            fetch(FA_CJK_FONT_BOLD_URL).then(r => { if (!r.ok) throw new Error('中文字型(粗體)下載失敗'); return r.arrayBuffer(); }),
+        ]);
+        pdfMake.vfs = pdfMake.vfs || {};
+        pdfMake.vfs['NotoSansTC-Regular.ttf'] = _faArrayBufferToBase64(regularBuf);
+        pdfMake.vfs['NotoSansTC-Bold.ttf'] = _faArrayBufferToBase64(boldBuf);
+        pdfMake.fonts = Object.assign({}, pdfMake.fonts, {
+            NotoSansTC: {
+                normal: 'NotoSansTC-Regular.ttf', bold: 'NotoSansTC-Bold.ttf',
+                italics: 'NotoSansTC-Regular.ttf', bolditalics: 'NotoSansTC-Bold.ttf',
+            },
+        });
+    })();
+    return _faCjkFontPromise;
+}
+
+// 上面載入的Noto Sans TC「chinese-traditional」子集字型經opentype.js實測
+// charToGlyphIndex()確認缺這10個全形標點的字圖（.notdef），pdfmake找不到
+// 字圖時畫出豆腐字方塊，轉成對應半形符號保證能顯示；其餘全形標點
+// （。、「」『』【】—）這個子集有涵蓋，不轉換。
+const FA_PDF_MISSING_PUNCT = { '！': '!', '％': '%', '（': '(', '）': ')', '－': '-', '：': ':', '；': ';', '？': '?', '～': '~', '，': ',' };
+function _faSanitizePdfText(s) {
+    if (s == null) return s;
+    return String(s).replace(/[！％（）－：；？～，]/g, ch => FA_PDF_MISSING_PUNCT[ch] || ch);
+}
+
+function _faSplitMarkdownSections(text) {
+    const lines = String(text || '').split('\n');
+    const sections = [];
+    let cur = { title: null, body: [] };
+    for (const line of lines) {
+        const m = /^#{1,3}\s+(.+?)\s*$/.exec(line);
+        if (m) {
+            if (cur.title !== null || cur.body.some(l => l.trim() !== '')) sections.push(cur);
+            cur = { title: m[1], body: [] };
+        } else {
+            cur.body.push(line);
+        }
+    }
+    if (cur.title !== null || cur.body.some(l => l.trim() !== '')) sections.push(cur);
+    return sections.map(s => ({ title: s.title, body: s.body.join('\n').trim() }));
+}
+
+function _faChunkTextByLength(body, maxChars) {
+    const paras = String(body || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    const chunks = [];
+    let cur = '', curLen = 0;
+    for (const p of paras) {
+        if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
+        cur += (cur ? '\n\n' : '') + p; curLen += p.length;
+    }
+    if (cur || !chunks.length) chunks.push(cur);
+    return chunks;
+}
+
+// 偵測markdown pipe table（表頭列 + |---|---|分隔列），AI寫的表格內容
+// 原本會被當純文字整段印出來（"| a | b |"原始語法），這裡解析成
+// {columns, rows}丟給下面的faMarkdownToPptxBlob/faMarkdownToPdfBlob畫成
+// 真正的表格。cell內容偶爾會塞"<br>"當作cell內分行（markdown表格語法
+// 本身不能有真正的換行），順便轉成"\n"實際換行。
+function _faIsTableSeparatorLine(line) {
+    return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
+}
+function _faIsTableRowLine(line) {
+    return line.includes('|') && line.trim() !== '';
+}
+function _faParseTableCell(v) {
+    return String(v ?? '').trim().replace(/<br\s*\/?>/gi, '\n');
+}
+function _faParseTableRow(line) {
+    let t = line.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split('|').map(_faParseTableCell);
+}
+function _faSplitMarkdownBlocks(text) {
+    const lines = String(text || '').split('\n');
+    const blocks = [];
+    let textBuf = [];
+    const flushText = () => {
+        const body = textBuf.join('\n').trim();
+        if (body) blocks.push({ type: 'text', body });
+        textBuf = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (_faIsTableRowLine(line) && i + 1 < lines.length && _faIsTableSeparatorLine(lines[i + 1])) {
+            flushText();
+            const columns = _faParseTableRow(line);
+            let j = i + 2;
+            const rows = [];
+            while (j < lines.length && _faIsTableRowLine(lines[j])) { rows.push(_faParseTableRow(lines[j])); j++; }
+            blocks.push({ type: 'table', columns, rows });
+            i = j - 1;
+        } else {
+            textBuf.push(line);
+        }
+    }
+    flushText();
+    return blocks;
+}
+
+// 給PPTX/PDF這種不吃markdown語法的純文字版面用：拿掉**/-符號，條列改用
+// 純文字項目符號。
+function _faMdLiteToPlainText(text) {
+    return String(text || '')
+        .split('\n')
+        .map(line => {
+            const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+            if (bullet) return '• ' + bullet[1].replace(/\*\*(.+?)\*\*/g, '$1').replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '$1');
+            return line.replace(/\*\*(.+?)\*\*/g, '$1').replace(/(?<!\*)\*(?!\*)(.+?)\*(?!\*)/g, '$1');
+        })
+        .join('\n');
+}
+
+// 把一段AI寫的markdown拆成{type:'text'|'table', heading, body|columns/rows}
+// 陣列——依#/##/###標題分段、每段再依表格邊界拆block、單一text block過長
+// （>900字）再依段落邊界分頁，PPTX跟PDF共用同一份轉換結果。
+function _faMarkdownToSlides(markdownText, heading) {
+    const sections = _faSplitMarkdownSections(markdownText);
+    const secList = sections.length ? sections : [{ title: null, body: markdownText }];
+    const slides = [];
+    secList.forEach(sec => {
+        const secTitle = sec.title || heading;
+        _faSplitMarkdownBlocks(sec.body).forEach(block => {
+            if (block.type === 'table') {
+                slides.push({ type: 'table', heading: secTitle, columns: block.columns, rows: block.rows });
+            } else {
+                const chunks = _faChunkTextByLength(block.body, 900);
+                const n = chunks.length;
+                chunks.forEach((body, i) => {
+                    slides.push({ type: 'text', heading: n > 1 ? `${secTitle}（${i + 1}/${n}）` : secTitle, body });
+                });
+            }
+        });
+    });
+    return slides;
+}
+
+async function _faMarkdownToPptxBlob(markdownText, heading) {
+    await _faLoadScriptOnce(FA_PPTXGENJS_URL);
+    const PptxGenJS = window.PptxGenJS;
+    const pres = new PptxGenJS();
+    pres.layout = 'LAYOUT_WIDE'; // 13.3"x7.5"，預設是10"寬的16x9，要先設過再addSlide
+    pres.title = heading;
+
+    const titleSlide = pres.addSlide();
+    titleSlide.background = { color: FA_EXPORT_PALETTE.navy };
+    titleSlide.addText(heading, { x: 0.8, y: 2.6, w: 11.7, h: 1.2, fontFace: 'Calibri', fontSize: 32, bold: true, color: FA_EXPORT_PALETTE.white, align: 'center' });
+    titleSlide.addText(new Date().toLocaleDateString('zh-TW'), { x: 0.8, y: 3.8, w: 11.7, h: 0.5, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.white, align: 'center' });
+
+    const addHeadingSlideBase = (slideHeading) => {
+        const s = pres.addSlide();
+        s.background = { color: FA_EXPORT_PALETTE.white };
+        s.addText(slideHeading || '', { x: 0.6, y: 0.4, w: 12.1, h: 0.6, fontFace: 'Calibri', fontSize: 22, bold: true, color: FA_EXPORT_PALETTE.navy });
+        return s;
+    };
+
+    _faMarkdownToSlides(markdownText, heading).forEach((slide) => {
+        const s = addHeadingSlideBase(slide.heading);
+        if (slide.type === 'table') {
+            const headerRow = (slide.columns || []).map(c => ({ text: String(c ?? ''), options: { bold: true, color: FA_EXPORT_PALETTE.white, fill: { color: FA_EXPORT_PALETTE.navy }, fontSize: 12 } }));
+            const bodyRows = (slide.rows || []).map((r, ri) => (r || []).map(c => ({
+                text: String(c ?? ''),
+                options: { color: FA_EXPORT_PALETTE.txt, fontSize: 11, fill: { color: ri % 2 === 0 ? FA_EXPORT_PALETTE.white : FA_EXPORT_PALETTE.tileGray } },
+            })));
+            s.addTable([headerRow, ...bodyRows], { x: 0.6, y: 1.3, w: 12.1, autoPage: false, border: { type: 'solid', color: FA_EXPORT_PALETTE.border, pt: 0.5 } });
+        } else {
+            s.addText(_faMdLiteToPlainText(slide.body), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 15, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3 });
+        }
+    });
+
+    return pres.write({ outputType: 'blob' });
+}
+
+async function _faMarkdownToPdfBlob(markdownText, heading) {
+    await _faLoadScriptOnce(FA_PDFMAKE_URL);
+    await _faLoadScriptOnce(FA_PDFMAKE_FONTS_URL);
+    await _faEnsureCjkFontRegistered();
+    const pdfMake = window.pdfMake;
+
+    const content = [
+        { text: heading, style: 'h1' },
+        { text: new Date().toLocaleDateString('zh-TW'), style: 'subtitle', margin: [0, 2, 0, 16] },
+    ];
+    _faMarkdownToSlides(markdownText, heading).forEach((slide) => {
+        content.push({ text: slide.heading || '', style: 'h2' });
+        if (slide.type === 'table') {
+            const cols = slide.columns || [];
+            const rows = slide.rows || [];
+            content.push({
+                table: {
+                    headerRows: 1,
+                    widths: cols.map(() => '*'),
+                    body: [
+                        cols.map(c => ({ text: String(c ?? ''), style: 'tableHeader' })),
+                        ...rows.map(r => (r || []).map(c => ({ text: String(c ?? ''), style: 'tableCell' }))),
+                    ],
+                },
+                layout: {
+                    fillColor: (rowIdx) => (rowIdx === 0 ? FA_EXPORT_PALETTE.navy : (rowIdx % 2 === 0 ? FA_EXPORT_PALETTE.tileGray : null)),
+                    hLineColor: () => FA_EXPORT_PALETTE.border, vLineColor: () => FA_EXPORT_PALETTE.border,
+                    hLineWidth: () => 0.5, vLineWidth: () => 0.5,
+                },
+            });
+        } else {
+            content.push({ text: _faMdLiteToPlainText(slide.body), style: 'body' });
+        }
+        content.push({ text: '', margin: [0, 4, 0, 4] });
+    });
+
+    // 深度掃過整個content樹，把pdfmake載入的CJK字型不涵蓋的全形標點換成
+    // 安全等效字（見_faSanitizePdfText說明），所有text節點統一在這裡
+    // 處理一次，不用在上面組字串的地方各自記得呼叫。
+    (function deepSanitize(node) {
+        if (Array.isArray(node)) { node.forEach(deepSanitize); return; }
+        if (!node || typeof node !== 'object') return;
+        if (typeof node.text === 'string') node.text = _faSanitizePdfText(node.text);
+        else if (Array.isArray(node.text)) deepSanitize(node.text);
+        for (const v of Object.values(node)) {
+            if (Array.isArray(v) || (v && typeof v === 'object')) deepSanitize(v);
+        }
+    })(content);
+
+    const docDefinition = {
+        pageSize: 'A4',
+        pageMargins: [48, 56, 48, 56],
+        footer: (currentPage, pageCount) => ({
+            text: `第 ${currentPage} / ${pageCount} 頁`, alignment: 'center', fontSize: 8, color: FA_EXPORT_PALETTE.muted, margin: [0, 8, 0, 0],
+        }),
+        content,
+        styles: {
+            h1: { fontSize: 22, bold: true, color: FA_EXPORT_PALETTE.navy, margin: [0, 0, 0, 4] },
+            h2: { fontSize: 14, bold: true, color: FA_EXPORT_PALETTE.navy, margin: [0, 10, 0, 6] },
+            subtitle: { fontSize: 11, color: FA_EXPORT_PALETTE.muted, italics: true },
+            body: { fontSize: 10.5, color: FA_EXPORT_PALETTE.txt, lineHeight: 1.35 },
+            tableHeader: { fontSize: 10, bold: true, color: '#FFFFFF', fillColor: FA_EXPORT_PALETTE.navy, margin: [4, 4, 4, 4] },
+            tableCell: { fontSize: 9.5, color: FA_EXPORT_PALETTE.txt, margin: [4, 4, 4, 4] },
+        },
+        defaultStyle: { font: 'NotoSansTC' },
+    };
+
+    return new Promise((resolve, reject) => {
+        try { pdfMake.createPdf(docDefinition).getBlob(resolve); } catch (e) { reject(e); }
+    });
+}
 
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
@@ -3777,14 +4083,14 @@ ${existingNodeSummaries}
     }
 
     // tw_stock_db客製: 2026-08-23使用者要求「AI回應的markdown內容右下角有
-    // 一個小按鈕可以匯出markdown/pptx/pdf」。Markdown本身是純文字，
-    // floating-assistant.js自己就能做（不需要任何外部轉檔能力），直接用
-    // 既有的generateAndDeliverFile()。PPTX/PDF需要把markdown轉成投影片
-    // 結構、套用這個網站自己的版型（ReportExport），floating-assistant.js
-    // 不認識這些，一樣透過options.onExportMarkdown(markdownText, format)
-    // 這個callback交給index.html處理（跟chipsProvider/onTableRendered同一種
-    // 模式）——沒有提供這個callback時，PPTX/PDF按鈕會停用並提示原因，
-    // Markdown永遠可用。
+    // 一個小按鈕可以匯出markdown/pptx/pdf」，且這個功能要內建在本檔案裡
+    // （見檔案開頭說明第7點）。Markdown直接用既有的generateAndDeliverFile()；
+    // PPTX/PDF預設呼叫下面內建的_faMarkdownToPptxBlob/_faMarkdownToPdfBlob
+    // （任何AI的回覆習慣都是markdown，這是通用能力，不需要host頁面幫忙）。
+    // options.onExportMarkdown仍保留為選用覆寫——host頁面如果想用自己的
+    // 報告版型/投影片類型（例如tw_stock_db的ReportExport支援股票診斷卡片
+    // 等專屬版面），提供這個callback就會優先使用；沒提供時一律用內建版本，
+    // 不會像之前那樣停用按鈕。
     _appendMarkdownExportButton(container, markdownText, palette) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:absolute; bottom:4px; right:6px;';
@@ -3799,14 +4105,13 @@ ${existingNodeSummaries}
 
         const menu = document.createElement('div');
         menu.style.cssText = `display:none; position:absolute; bottom:100%; right:0; margin-bottom:4px; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.25); z-index:5; min-width:120px;`;
-        const canExportSlides = typeof this.options.onExportMarkdown === 'function';
         const items = [
-            { fmt: 'markdown', label: '📝 Markdown', enabled: true },
-            { fmt: 'pptx', label: '📊 PPTX', enabled: canExportSlides },
-            { fmt: 'pdf', label: '📄 PDF', enabled: canExportSlides },
+            { fmt: 'markdown', label: '📝 Markdown' },
+            { fmt: 'pptx', label: '📊 PPTX' },
+            { fmt: 'pdf', label: '📄 PDF' },
         ];
         menu.innerHTML = items.map((it) => `
-            <div class="ai-export-item" data-fmt="${it.fmt}" style="padding:6px 12px; font-size:12px; cursor:${it.enabled ? 'pointer' : 'not-allowed'}; color:${it.enabled ? palette.detailText : '#888'};" title="${it.enabled ? '' : '這個聊天視窗沒有提供PPTX/PDF匯出功能'}">${it.label}</div>
+            <div class="ai-export-item" data-fmt="${it.fmt}" style="padding:6px 12px; font-size:12px; cursor:pointer; color:${palette.detailText};">${it.label}</div>
         `).join('');
         wrap.appendChild(menu);
         container.appendChild(wrap);
@@ -3822,15 +4127,21 @@ ${existingNodeSummaries}
                 e.stopPropagation();
                 menu.style.display = 'none';
                 const fmt = item.dataset.fmt;
-                if (fmt !== 'markdown' && !canExportSlides) return;
                 const originalText = btn.textContent;
                 btn.textContent = '⏳';
                 try {
+                    const heading = 'AI回覆';
                     if (fmt === 'markdown') {
                         const blob = new Blob([markdownText], { type: 'text/markdown;charset=utf-8' });
                         await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.md`, 'text/markdown');
-                    } else {
+                    } else if (typeof this.options.onExportMarkdown === 'function') {
                         await this.options.onExportMarkdown(markdownText, fmt);
+                    } else if (fmt === 'pptx') {
+                        const blob = await _faMarkdownToPptxBlob(markdownText, heading);
+                        await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.pptx`, blob.type);
+                    } else if (fmt === 'pdf') {
+                        const blob = await _faMarkdownToPdfBlob(markdownText, heading);
+                        await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.pdf`, blob.type);
                     }
                 } catch (err) {
                     this._log(`❌ 匯出失敗（${fmt}）：${err.message || err}`);
