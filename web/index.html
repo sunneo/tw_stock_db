@@ -1413,6 +1413,7 @@ select:focus { outline: 2px solid var(--acc); }
         <div class="modal-cat" data-cat="diagnosis">持股診斷</div>
         <div class="modal-cat" data-cat="display">顯示設定</div>
         <div class="modal-cat" data-cat="ai">AI助理</div>
+        <div class="modal-cat" data-cat="cloudsync">雲端同步</div>
       </div>
       <div class="modal-content">
         <div class="modal-pane" data-pane="ma">
@@ -1514,6 +1515,27 @@ select:focus { outline: 2px solid var(--acc); }
           <p class="modal-hint">AI助理產生的檔案（PDF/PPTX/Markdown）會存在瀏覽器本機（IndexedDB），提供對話裡的下載連結重新整理頁面後仍然有效。超過這個容量上限時，會自動刪除最久沒被下載/存取過的舊檔案（LRU），預設256MB。</p>
 
           <p class="modal-hint">Skill（自訂工具）、RULES.md等進階設定，在AI分頁本身的「⚙」→「Advance」設定面板裡設定。</p>
+        </div>
+        <div class="modal-pane hidden" data-pane="cloudsync">
+          <div id="cloudsync-unlinked">
+            <h3>建立新的雲端設定</h3>
+            <label class="modal-field"><span>識別名稱</span><input type="text" id="cloudsync-name-input" placeholder="例如：我的桌機"></label>
+            <button class="btn" id="cloudsync-create-btn">產生Token並上傳目前設定</button>
+            <h3>使用現有Token連接</h3>
+            <label class="modal-field"><span>Token</span><input type="text" id="cloudsync-token-input" placeholder="貼上其他裝置的token"></label>
+            <button class="btn" id="cloudsync-link-btn">連接並拉取設定</button>
+            <p class="modal-hint">「連接」會用貼上的token向雲端查詢，找到的話會完全覆蓋本機目前的設定（自選股、備忘錄、圖表偏好等全部換成雲端那份），請先確認本機沒有還沒上傳的重要變更。</p>
+            <p class="modal-hint" id="cloudsync-status"></p>
+          </div>
+          <div id="cloudsync-linked" class="hidden">
+            <h3>雲端同步</h3>
+            <p>目前Token：<code id="cloudsync-token-display"></code> <button class="btn icon" id="cloudsync-copy-btn" title="複製">📋</button></p>
+            <label class="modal-check-row"><input type="checkbox" id="cloudsync-auto-toggle"> 自動跨裝置sync</label>
+            <p class="modal-hint">開啟後，每次打開網頁會自動向雲端確認有沒有其他裝置上傳的設定，有的話會自動拉回來覆蓋本機設定（完全覆蓋，不會詢問，因為就是要做到「打開就是最新」的效果）。你在本機儲存設定時，只要有連接Token，一律會自動把目前設定上傳雲端（不受這個開關影響）。</p>
+            <button class="btn" id="cloudsync-sync-now-btn">立即同步（從雲端拉取）</button>
+            <button class="btn" id="cloudsync-unlink-btn">取消連結</button>
+            <p class="modal-hint" id="cloudsync-linked-status"></p>
+          </div>
         </div>
       </div>
     </div>
@@ -1787,7 +1809,9 @@ const Settings = (() => {
              strongCurrentRules: { kdCross:true, macd:true, oscGrow:true, volSpike:true, pullback:true, risingMa20:true },
              memos: {},  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
              aiAssistantEnabled: false, // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
-             appSkin: 'default' }; // 'default' | 'zhu'（朱老師App版面，見 applySkin()）
+             appSkin: 'default', // 'default' | 'zhu'（朱老師App版面，見 applySkin()）
+             cloudSyncToken: null, // 雲端同步設定（Google Sheet後端）目前連接的token，見 CloudSync 模組
+             cloudSyncAutoEnabled: false }; // 開啟後，每次打開頁面自動從雲端拉取並覆蓋本機設定
   }
   function load() {
     try {
@@ -1832,8 +1856,20 @@ const Settings = (() => {
     save();
   }
 
+  // tw_stock_db客製: 2026-08-23使用者要求的雲端同步設定功能用——getAll()給
+  // CloudSync.push()讀出整包設定上傳；replaceAll()給拉回來時完全覆蓋用。
+  // 刻意跟上面的importFile()分開：importFile是「使用者主動挑選要不要信任
+  // 這份外部檔案，所以只還原白名單欄位（watchlist/theme/memos）」，雲端
+  // 同步是「使用者自己在別的裝置存的自己的設定，應該完全信任、完全還原」，
+  // 兩者語意不同，不能共用同一個函式。
+  function getAll() { return { ...d }; }
+  function replaceAll(newSettings) {
+    d = Object.assign({}, defaults(), newSettings || {});
+    save();
+  }
+
   load();
-  return { get, set, reset, save, exportSettings, importFile };
+  return { get, set, reset, save, exportSettings, importFile, getAll, replaceAll };
 })();
 
 /* ════════════════════════════════════════
@@ -1879,6 +1915,65 @@ const IDB = (() => {
   }
 
   return { set, get };
+})();
+
+/* ════════════════════════════════════════
+   CLOUD SYNC（雲端同步設定）——2026-08-23使用者要求，把整包 Settings
+   同步到使用者自己架的 Google Apps Script + Google Sheet 後端，跨裝置
+   共用同一份設定（自選股/備忘錄/圖表偏好等）。實際的讀寫請求都經過
+   Cloudflare Worker 的 /sheet-sync 路由中繼（見 code/cloudflare-worker/
+   worker.js 的 handleSheetSync），瀏覽器端完全不知道、也不需要知道
+   Apps Script的真實網址或任何加解密金鑰——那些細節都在Worker/Apps
+   Script那一層，這裡純粹組請求/解析回應。
+   ════════════════════════════════════════ */
+const CloudSync = (() => {
+  const WORKER_SYNC_URL = `${TWSE_PROXY_BASE}/sheet-sync`;
+  const DEVICE_ID_KEY = 'tw_stock_db_sync_device_id';
+
+  // 跟AI助理分頁用的session id（tw_stock_db_ai_session_id）刻意分開存一組
+  // 獨立的localStorage key，兩個功能語意不相關，混用同一個id會讓日後除錯
+  // 搞不清楚是哪個功能在用。
+  function getDeviceId() {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem(DEVICE_ID_KEY, id); }
+    return id;
+  }
+
+  // token = sha256(裝置id + '|' + 使用者輸入的識別名稱) 取前20個hex字元——
+  // 純英數字，同時滿足Google Sheet分頁名稱的字元限制、跟Apps Script的
+  // <30字元token長度限制；同一台裝置對同一個名稱永遠產生同一個token，換一
+  // 台裝置要接續同一份雲端設定的話，不能靠「輸入同樣名稱」重新產生（deviceId
+  // 不一樣，算出來的token也會不一樣），要直接把token本身複製過去貼上
+  // （見下方的「使用現有Token連接」）。
+  async function generateToken(name) {
+    const input = `${getDeviceId()}|${name}`;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 20);
+  }
+
+  async function push(token) {
+    const res = await fetch(WORKER_SYNC_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_config', token, settings: Settings.getAll() }),
+    });
+    const data = await res.json();
+    if (data.status !== 'success') throw new Error(data.message || '上傳失敗');
+  }
+
+  // 回傳解析後的settings物件；找不到這個token對應的雲端資料時回傳null
+  // （不是例外——「還沒有資料」是正常情況，例如第一次用某個token查詢）。
+  async function pull(token) {
+    const res = await fetch(WORKER_SYNC_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'get_config', token }),
+    });
+    const data = await res.json();
+    if (data.status === 'error') throw new Error(data.message || '下載失敗');
+    if (!data.data || !data.data.length || !data.data[0]) return null;
+    try { return JSON.parse(data.data[0]); } catch { throw new Error('雲端資料格式錯誤，無法解析'); }
+  }
+
+  return { getDeviceId, generateToken, push, pull };
 })();
 
 /* ════════════════════════════════════════
@@ -7728,6 +7823,19 @@ const R = {
   aiCfgParamDisabledNote: $('ai-cfg-param-disabled-note'),
   zhuSkinToggle: $('zhu-skin-toggle'),
   followMouseChk:  $('follow-mouse-toggle'),
+  cloudSyncUnlinked: $('cloudsync-unlinked'),
+  cloudSyncLinked: $('cloudsync-linked'),
+  cloudSyncNameInput: $('cloudsync-name-input'),
+  cloudSyncCreateBtn: $('cloudsync-create-btn'),
+  cloudSyncTokenInput: $('cloudsync-token-input'),
+  cloudSyncLinkBtn: $('cloudsync-link-btn'),
+  cloudSyncStatus: $('cloudsync-status'),
+  cloudSyncTokenDisplay: $('cloudsync-token-display'),
+  cloudSyncCopyBtn: $('cloudsync-copy-btn'),
+  cloudSyncAutoToggle: $('cloudsync-auto-toggle'),
+  cloudSyncSyncNowBtn: $('cloudsync-sync-now-btn'),
+  cloudSyncUnlinkBtn: $('cloudsync-unlink-btn'),
+  cloudSyncLinkedStatus: $('cloudsync-linked-status'),
   indicatorShowKd:   $('indicator-show-kd'),
   indicatorShowMacd: $('indicator-show-macd'),
   indicatorShowRsv:  $('indicator-show-rsv'),
@@ -11530,6 +11638,11 @@ function bindEvents() {
     });
   });
   R.settingsSave.addEventListener('click', saveSettingsModal);
+  R.cloudSyncCreateBtn.addEventListener('click', handleCloudSyncCreate);
+  R.cloudSyncLinkBtn.addEventListener('click', handleCloudSyncLink);
+  R.cloudSyncSyncNowBtn.addEventListener('click', handleCloudSyncSyncNow);
+  R.cloudSyncUnlinkBtn.addEventListener('click', handleCloudSyncUnlink);
+  R.cloudSyncCopyBtn.addEventListener('click', handleCloudSyncCopy);
 
   /* memo modal */
   R.memoChartBtn.addEventListener('click', () => openMemoModal(R.memoChartBtn.dataset.code));
@@ -11781,6 +11894,8 @@ function openSettingsModal() {
 
   R.followMouseChk.checked = !!Settings.get('followMouseTooltip');
 
+  renderCloudSyncPane();
+
   const en = Settings.get('enabledIndicators') || { kd:true, macd:true, rsv:false, rsi:true };
   R.indicatorShowKd.checked   = !!en.kd;
   R.indicatorShowMacd.checked = !!en.macd;
@@ -11922,7 +12037,132 @@ function saveSettingsModal() {
   Settings.set('chartPanelWeights', chartPanelWeights);
   Chart.setPanelWeights(chartPanelWeights);
 
+  // 雲端同步：只在已連結分頁裡有「自動跨裝置sync」開關可以存，未連結狀態
+  // 下沒有這個checkbox（不在DOM上），跳過。有連接Token時，不管這個開關
+  // 是on/off都一律在儲存設定時上傳（見雲端同步分頁的說明文字），這是唯一
+  // 的push時機——push失敗只記log，不要因為網路問題擋住使用者最基本的
+  // 「儲存設定」操作。
+  const cloudToken = Settings.get('cloudSyncToken');
+  if (cloudToken && !R.cloudSyncLinked.classList.contains('hidden')) {
+    Settings.set('cloudSyncAutoEnabled', R.cloudSyncAutoToggle.checked);
+  }
+  if (cloudToken) {
+    CloudSync.push(cloudToken).catch(e => console.warn('雲端同步上傳失敗：', e.message));
+  }
+
   closeSettingsModal();
+}
+
+// tw_stock_db客製: 2026-08-23使用者要求的雲端同步設定功能——切換未連結/
+// 已連結兩種畫面狀態，openSettingsModal()每次打開modal都呼叫一次。
+function renderCloudSyncPane() {
+  const token = Settings.get('cloudSyncToken');
+  R.cloudSyncUnlinked.classList.toggle('hidden', !!token);
+  R.cloudSyncLinked.classList.toggle('hidden', !token);
+  if (token) {
+    R.cloudSyncTokenDisplay.textContent = token;
+    R.cloudSyncAutoToggle.checked = !!Settings.get('cloudSyncAutoEnabled');
+    R.cloudSyncLinkedStatus.textContent = '';
+  } else {
+    R.cloudSyncNameInput.value = '';
+    R.cloudSyncTokenInput.value = '';
+    R.cloudSyncStatus.textContent = '';
+  }
+}
+
+async function handleCloudSyncCreate() {
+  const name = (R.cloudSyncNameInput.value || '').trim();
+  if (!name) { alert('請輸入識別名稱'); return; }
+  R.cloudSyncCreateBtn.disabled = true;
+  R.cloudSyncStatus.textContent = '產生Token並上傳中…';
+  try {
+    const token = await CloudSync.generateToken(name);
+    await CloudSync.push(token);
+    Settings.set('cloudSyncToken', token);
+    renderCloudSyncPane();
+  } catch (e) {
+    R.cloudSyncStatus.textContent = `失敗：${e.message}`;
+  } finally {
+    R.cloudSyncCreateBtn.disabled = false;
+  }
+}
+
+async function handleCloudSyncLink() {
+  const token = (R.cloudSyncTokenInput.value || '').trim();
+  if (!token) { alert('請輸入Token'); return; }
+  if (!confirm('連接後會用雲端資料完全覆蓋本機目前的設定（自選股、備忘錄、圖表偏好等），確定要繼續嗎？')) return;
+  R.cloudSyncLinkBtn.disabled = true;
+  R.cloudSyncStatus.textContent = '查詢中…';
+  try {
+    const pulled = await CloudSync.pull(token);
+    if (!pulled) {
+      R.cloudSyncStatus.textContent = '找不到這個Token對應的雲端設定';
+      return;
+    }
+    Settings.replaceAll(pulled);
+    Settings.set('cloudSyncToken', token);
+    location.reload();
+  } catch (e) {
+    R.cloudSyncStatus.textContent = `失敗：${e.message}`;
+  } finally {
+    R.cloudSyncLinkBtn.disabled = false;
+  }
+}
+
+async function handleCloudSyncSyncNow() {
+  const token = Settings.get('cloudSyncToken');
+  if (!token) return;
+  R.cloudSyncSyncNowBtn.disabled = true;
+  R.cloudSyncLinkedStatus.textContent = '同步中…';
+  try {
+    const pulled = await CloudSync.pull(token);
+    if (!pulled) {
+      R.cloudSyncLinkedStatus.textContent = '雲端目前沒有資料';
+      return;
+    }
+    R.cloudSyncLinkedStatus.textContent = '已從雲端同步最新設定，重新整理中…';
+    Settings.replaceAll(pulled);
+    Settings.set('cloudSyncToken', token); // 確保本機連結的token不會被雲端那份資料的欄位意外蓋掉
+    setTimeout(() => location.reload(), 600);
+  } catch (e) {
+    R.cloudSyncLinkedStatus.textContent = `失敗：${e.message}`;
+    R.cloudSyncSyncNowBtn.disabled = false;
+  }
+}
+
+function handleCloudSyncUnlink() {
+  if (!confirm('取消連結後，本機就不會再跟這個Token同步了（雲端上的資料不會被刪除，之後可以再用同一個Token重新連接）。確定要取消連結嗎？')) return;
+  Settings.set('cloudSyncToken', null);
+  Settings.set('cloudSyncAutoEnabled', false);
+  renderCloudSyncPane();
+}
+
+function handleCloudSyncCopy() {
+  const token = Settings.get('cloudSyncToken');
+  if (!token || !navigator.clipboard) return;
+  navigator.clipboard.writeText(token)
+    .then(() => { R.cloudSyncLinkedStatus.textContent = '已複製到剪貼簿'; })
+    .catch(() => { R.cloudSyncLinkedStatus.textContent = '複製失敗，請手動選取複製'; });
+}
+
+// 頁面載入完成後，如果使用者開啟了「自動跨裝置sync」，背景確認雲端有沒有
+// 資料、有的話比對是否跟本機不同，不同才reload套用（避免每次開頁都無意義
+// 重新整理）。全程無聲、不打斷使用者操作——這是使用者主動勾選啟用的行為，
+// 預期就是這樣；手動觸發（見handleCloudSyncSyncNow）才會顯示明確回饋。
+async function maybeAutoCloudSync() {
+  const token = Settings.get('cloudSyncToken');
+  if (!token || !Settings.get('cloudSyncAutoEnabled')) return;
+  try {
+    const pulled = await CloudSync.pull(token);
+    if (!pulled) return;
+    const current = Settings.getAll();
+    if (JSON.stringify(pulled) === JSON.stringify(current)) return;
+    Settings.replaceAll(pulled);
+    Settings.set('cloudSyncToken', token);
+    location.reload();
+  } catch (e) {
+    console.warn('自動雲端同步失敗：', e.message);
+  }
 }
 
 /* ════════════════════════════════════════
@@ -12037,6 +12277,10 @@ async function main() {
 
   /* initial chart resize（canvas隱藏時跳過，見 applyChartMode 的說明） */
   setTimeout(() => { if (chartMode !== 'chip') Chart.resize(); }, 50);
+
+  /* 雲端同步：整個bootstrap流程跑完、畫面已經正常顯示後才背景檢查，不卡
+     載入畫面等這個網路請求（見 maybeAutoCloudSync 的說明）。 */
+  maybeAutoCloudSync();
 }
 
 main().catch(e => console.error('App crash:', e));
