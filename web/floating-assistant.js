@@ -2592,6 +2592,34 @@ ${sourceTool.handlerScript}
             autocomplete.style.color = palette.detailText;
             autocomplete.style.borderTopColor = palette.windowBorder;
         }
+        // tw_stock_db客製: 建議chip列（見refreshSuggestionChips()）跟歷史
+        // 訊息按鈕/面板同樣是_initUI()組innerHTML時用當下palette寫死顏色，
+        // 跟上面genDetailBox同一種問題——使用者實測回報這兩個元件切換主題
+        // 後顏色沒跟著變，停留在視窗剛建立時的深色（因為視窗一開始mount時
+        // data-theme還沒確定成light）。chip按鈕本身的顏色會在下次
+        // refreshSuggestionChips()呼叫時自然修正，但容器背景跟歷史按鈕/
+        // 面板沒有其他自動刷新的機會，這裡一併同步。
+        const suggestionChips = document.getElementById('ai-suggestion-chips');
+        if (suggestionChips) {
+            suggestionChips.style.background = palette.chatBg;
+            suggestionChips.style.borderTopColor = palette.windowBorder;
+            suggestionChips.querySelectorAll('.ai-suggestion-chip').forEach(chip => {
+                chip.style.borderColor = palette.inputBorder;
+                chip.style.background = palette.detailBg;
+                chip.style.color = palette.detailText;
+            });
+        }
+        const historyBtn = document.getElementById('ai-history-btn');
+        if (historyBtn) {
+            historyBtn.style.borderColor = palette.inputBorder;
+            historyBtn.style.background = palette.detailBg;
+            historyBtn.style.color = palette.detailText;
+        }
+        const historyPanel = document.getElementById('ai-history-panel');
+        if (historyPanel) {
+            historyPanel.style.background = palette.windowBg;
+            historyPanel.style.borderColor = palette.inputBorder;
+        }
         inputWrap.style.background = palette.windowBg;
         inputWrap.style.borderTopColor = palette.windowBorder;
         inputText.style.background = palette.inputBg;
