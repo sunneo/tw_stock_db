@@ -68,6 +68,20 @@
 //      結構（例如tw_stock_db自己的ReportExport，支援更多股票專屬的
 //      投影片類型），提供這個callback就會優先使用；沒提供時退回這裡
 //      的內建通用版本，而不是像之前那樣直接停用按鈕。
+//   8. 工具/函式名稱支援非ASCII（例如中文）：2026-08-24使用者指出，沒有
+//      資工背景的使用者透過Skill編輯器或add_ai_function讓AI建立自訂
+//      函式時，很自然會用自己看得懂的中文命名，但原生tool-calling
+//      API（OpenAI相容端點）規定function.name只能是
+//      ^[a-zA-Z0-9_-]{1,64}$，中文名稱直接送出去輕則該工具被拒絕、重則
+//      整批tools參數格式不合法讓當輪原生tool-calling整個失敗；文字式
+//      [CALL: name(args)]慣例原本到處用[a-zA-Z0-9_]+解析呼叫名稱，同樣
+//      抓不到中文。新增_sanitizeToolNameForNativeApi()：純ASCII名稱完全
+//      不受影響（絕大多數內建工具都是這種情況），只有不符合API規定格式
+//      的名稱才會產生一個穩定的短雜湊別名送給原生API，_getToolDefinition
+//      同時接受原始名稱或別名反查；所有[CALL:...]解析regex加上Unicode
+//      屬性字元類（\p{L}\p{N}_ + u旗標）取代原本的[a-zA-Z0-9_]，讓文字式
+//      慣例也能正確解析中文函式名稱。這是通用的聊天widget穩定性修正，
+//      跟股票資料無關。
 // ============================================================
 
 // ============================================================
@@ -1641,8 +1655,33 @@ ${fnData.code}
         return entries;
     }
 
+    // tw_stock_db客製: 2026-08-24使用者要求——沒有資工背景的人透過自訂
+    // 工具編輯器或add_ai_function讓AI建立函式時，很自然會用自己看得懂的
+    // 中文命名（例如「計算持股獲利」），但原生tool-calling API（OpenAI相容
+    // 端點）規定function.name只能是 ^[a-zA-Z0-9_-]{1,64}$（不能有中文/
+    // 空白），中文名稱直接塞進tools參數送出去，輕則這個工具被API拒絕，
+    // 重則整批tools參數格式不合法、當輪對話的原生tool-calling整個失敗
+    // （不是只有這個工具受影響）。這裡加一層「原生API安全別名」：只有
+    // 名稱本身不符合API規定格式時才會產生別名（純ASCII名稱完全不受
+    // 影響、行為不變，這是絕大多數內建工具的情況），別名是原始名稱算出
+    // 的短雜湊，同一個名稱每次都算出同一個別名（同一個對話/重新整理都
+    // 穩定），_getToolDefinition同時接受原始名稱或別名查詢，讓文字式
+    // [CALL:...]用中文原名（regex已經放寬到能吃中文，見上面幾處
+    // \p{L}\p{N}_的修改）照樣能解析執行，原生tool_calls回傳的別名也能
+    // 正確對應回同一個工具。
+    _sanitizeToolNameForNativeApi(name) {
+        if (/^[a-zA-Z0-9_-]{1,64}$/.test(name)) return name;
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+        return 'tool_' + hash.toString(36);
+    }
+
     _getToolDefinition(name) {
-        return this._getCombinedToolEntries().find(([toolName]) => toolName === name)?.[1] || null;
+        const entries = this._getCombinedToolEntries();
+        const direct = entries.find(([toolName]) => toolName === name);
+        if (direct) return direct[1];
+        const byAlias = entries.find(([toolName]) => this._sanitizeToolNameForNativeApi(toolName) === name);
+        return byAlias ? byAlias[1] : null;
     }
 
     _isToolNameDuplicate(name, excludeIndex = -1) {
@@ -1889,7 +1928,7 @@ ${fnData.code}
         return this._getCombinedToolEntries().map(([name, tool]) => ({
             type: 'function',
             function: {
-                name,
+                name: this._sanitizeToolNameForNativeApi(name),
                 description: String(tool.description || ''),
                 parameters: { type: 'object', properties: {}, additionalProperties: true }
             }
@@ -4462,7 +4501,7 @@ ${existingNodeSummaries}
 
                 // 文字式[CALL:...]慣例，跟_loopFetch的救援路徑同一套邏輯（見
                 // _extractBalancedCallArgs的說明）。
-                const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
+                const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
                 let match; const toolTasks = []; let lastMatchEnd = -1;
                 while ((match = regex.exec(rawContent)) !== null) {
                     toolTasks.push({ fnName: match[1], fnArgsRaw: match[2].trim() });
@@ -4476,7 +4515,7 @@ ${existingNodeSummaries}
                 } else {
                     const callStart = rawContent.indexOf('[CALL:');
                     if (callStart > -1) {
-                        const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                        const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
                         if (nameMatch) {
                             const openParenIdx = callStart + nameMatch[0].length - 1;
                             const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
@@ -5191,7 +5230,7 @@ ${existingNodeSummaries}
                 // 方案 A: 使用進階 Regex 嘗試批次抓取（只有模型每個[CALL:...]都
                 // 有乖乖用')]'正確收尾時才抓得到——這是行為良好的模型的正常
                 // 多工具呼叫路徑）
-                const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
+                const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
                 let match;
                 const toolTasks = [];
                 let lastMatchEnd = -1;
@@ -5233,7 +5272,7 @@ ${existingNodeSummaries}
                 // 接著編造的所有內容整段丟棄，讓下一輪對話基於真正的工具
                 // 結果重新產生，而不是順著一整串自我幻想的假資料繼續編。
                 if (toolTasks.length === 0) {
-                    const nameMatch = fullContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                    const nameMatch = fullContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
                     if (nameMatch) {
                         const openParenIdx = callStart + nameMatch[0].length - 1;
                         const { content, endIndex } = this._extractBalancedCallArgs(fullContent, openParenIdx);
@@ -5573,7 +5612,7 @@ ${existingNodeSummaries}
             // RESULT/推理文字/後續呼叫污染），這裡簡化重寫一份而不是共用同一個
             // helper，是因為子任務訊息陣列是區域變數，跟_loopFetch操作
             // this.messages/fullContent的方式不同，硬要共用反而更複雜。
-            const regex = /\[CALL:\s*([a-zA-Z0-9_]+)\(([\s\S]*?)\)(?=\]|$)/g;
+            const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
             let match;
             const toolTasks = [];
             let lastMatchEnd = -1;
@@ -5590,7 +5629,7 @@ ${existingNodeSummaries}
             } else {
                 const callStart = rawContent.indexOf('[CALL:');
                 if (callStart > -1) {
-                    const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([a-zA-Z0-9_]+)\s*\(/);
+                    const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
                     if (nameMatch) {
                         const openParenIdx = callStart + nameMatch[0].length - 1;
                         const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
