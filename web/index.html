@@ -776,6 +776,8 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Strong-stock filter bar ── */
 #strong-bar { display: flex; flex-direction: column; gap: 6px; }
+#volrank-bar { display: flex; flex-direction: column; gap: 6px; }
+#volrank-status { color: var(--txt2); font-size: 11px; }
 #strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; white-space: pre-line; line-height: 1.6; }
 
 /* ── Chart toolbar ── */
@@ -1198,6 +1200,7 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="lock_week_short">鎖做空-本週</option>
         <option value="usmarket">美股</option>
         <option value="analysis">分析</option>
+        <option value="volrank">量排行</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
       <div id="strong-bar" class="hidden">
@@ -1207,6 +1210,15 @@ select:focus { outline: 2px solid var(--acc); }
         </select>
         <button class="btn primary" id="strong-filter-btn">🔍 過濾強勢股</button>
         <div id="strong-status"></div>
+      </div>
+      <div id="volrank-bar" class="hidden">
+        <select id="volrank-sub-sel">
+          <option value="vol_long">量排行-多</option>
+          <option value="vol_short">量排行-空</option>
+          <option value="big_vol_up">大量位置在上漲</option>
+          <option value="big_vol_down">大量位置在下跌</option>
+        </select>
+        <div id="volrank-status" class="modal-hint"></div>
       </div>
       <div id="wl-bar" class="hidden">
         <input id="wl-input" type="text" placeholder="輸入代號或名稱，按 Enter 或 + 新增" autocomplete="off">
@@ -1964,6 +1976,82 @@ const LockList = (() => {
   function getAsOfDate(source) { return state[source]?.data?.as_of_date || null; }
 
   return { ensureLoaded, getAllInfo, getByDirection, getAsOfDate };
+})();
+
+/* ════════════════════════════════════════
+   VOLUME RANKING（量排行）——資料源是rpi/高頻收集器（Raspberry Pi常駐
+   daemon，見code/tw-stock-db/rpi/README.md）寫的daily/{日期}/hf_intraday.jsonl
+   （append-only，每行一筆{code, ts, price, open, high, low, volume}快照，
+   同一檔股票同一天可能有很多行，最後一行=目前為止最新的累計快照），只取
+   「今天」這份檔案。跟本機已有的vol_ma5（DBMgr.getVolumeRankingReference）
+   在client端合併算量比／股價在當日高低區間的位置百分比，四種子篩選見
+   rank()：量排行-多/空是「量比高＋今天上漲/下跌方向」，大量位置在上漲/
+   下跌是量價關係九宮格概念的簡化版（放量≥1.2倍基本量＋價格貼近當日高/
+   低點）。收集器在8:30前/14:00後或還沒部署完成時，這個檔案可能不存在，
+   ensureLoaded()對404一律當成「今天還沒有高頻資料」處理，不拋例外。
+   ════════════════════════════════════════ */
+const VolumeRanking = (() => {
+  let cache = null; // { dateStr, byCode: Map<code, {code, ts, price, open, high, low, volume}> }
+
+  async function ensureLoaded(forceRefresh = false) {
+    const dateStr = taipeiDateStr();
+    if (cache && cache.dateStr === dateStr && !forceRefresh) return cache;
+    const byCode = new Map();
+    try {
+      const res = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+      if (res.ok) {
+        const text = await res.text();
+        for (const line of text.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const rec = JSON.parse(line);
+            if (rec && rec.code) byCode.set(rec.code, rec); // 依檔案裡的順序覆蓋，保留每檔最後（最新）一筆
+          } catch { /* 壞掉的單行跳過，不影響其他列 */ }
+        }
+      }
+    } catch { /* 網路/404都當作「今天還沒有高頻資料」，回傳空Map */ }
+    cache = { dateStr, byCode };
+    return cache;
+  }
+
+  // sub: 'vol_long'（量排行-多）| 'vol_short'（量排行-空）|
+  //      'big_vol_up'（大量位置在上漲）| 'big_vol_down'（大量位置在下跌）
+  async function rank(sub, topN = 100) {
+    const { byCode } = await ensureLoaded();
+    const codes = [...byCode.keys()];
+    const refMap = DBMgr.getVolumeRankingReference(codes);
+    const rows = [];
+    for (const [code, snap] of byCode) {
+      const ref = refMap.get(code);
+      if (!ref) continue; // 本機還沒有這檔的基本資料（例如新股），跳過
+      const volRatio = ref.vol_ma5 ? snap.volume / ref.vol_ma5 : null;
+      const range = (snap.high != null && snap.low != null) ? snap.high - snap.low : null;
+      const posInRange = (range != null && range > 0) ? (snap.price - snap.low) / range : null;
+      rows.push({
+        stock_code: code, stock_name: ref.stock_name, market: ref.market, sector_name: ref.sector_name,
+        close: snap.price, open: snap.open, prev_close: ref.prev_close,
+        vol_ratio: volRatio, pos_in_range: posInRange,
+      });
+    }
+
+    let filtered;
+    if (sub === 'vol_long') {
+      filtered = rows.filter((r) => r.close != null && r.open != null && r.close > r.open);
+      filtered.sort((a, b) => (b.vol_ratio || 0) - (a.vol_ratio || 0));
+    } else if (sub === 'vol_short') {
+      filtered = rows.filter((r) => r.close != null && r.open != null && r.close < r.open);
+      filtered.sort((a, b) => (b.vol_ratio || 0) - (a.vol_ratio || 0));
+    } else if (sub === 'big_vol_up') {
+      filtered = rows.filter((r) => r.vol_ratio != null && r.vol_ratio >= 1.2 && r.pos_in_range != null && r.pos_in_range >= 0.8);
+      filtered.sort((a, b) => b.vol_ratio - a.vol_ratio);
+    } else { // big_vol_down
+      filtered = rows.filter((r) => r.vol_ratio != null && r.vol_ratio >= 1.2 && r.pos_in_range != null && r.pos_in_range <= 0.2);
+      filtered.sort((a, b) => b.vol_ratio - a.vol_ratio);
+    }
+    return filtered.slice(0, topN);
+  }
+
+  return { ensureLoaded, rank };
 })();
 
 /* ════════════════════════════════════════
@@ -3027,6 +3115,32 @@ const DBMgr = (() => {
     `, [d, d]).map(r => ({ ...r, avg_pct: r.avg_pct != null ? Math.round(r.avg_pct * 100) / 100 : null }));
   }
 
+  // tw_stock_db客製: 「量排行」分頁用——批次查詢一批股票代號「最新一個交易
+  // 日」的vol_ma5（基本量，量排行的1.2倍門檻依據）、昨收（算漲跌%用）、
+  // 名稱/市場（畫表格用）。量排行的即時價量來自rpi/高頻收集器寫的
+  // hf_intraday.jsonl（見web端VolumeRanking模組），不是本機sqlite，這裡只
+  // 負責補「本機已經有的、算量比要用的技術指標」，兩份資料在client端合併。
+  function getVolumeRankingReference(codes) {
+    const result = new Map();
+    if (!codes || !codes.length) return result;
+    const d = getLatestDate();
+    if (!d) return result;
+    const placeholders = codes.map(() => '?').join(',');
+    const rows = query(`
+      SELECT s.stock_code, s.stock_name, s.market, sec.sector_name,
+             ti.vol_ma5,
+             (SELECT p2.close FROM daily_prices p2
+                WHERE p2.stock_code = s.stock_code AND p2.trade_date < ?
+                ORDER BY p2.trade_date DESC LIMIT 1) AS prev_close
+      FROM stocks s
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
+      LEFT JOIN technical_indicators ti ON ti.stock_code = s.stock_code AND ti.trade_date = ?
+      WHERE s.stock_code IN (${placeholders})
+    `, [d, d, ...codes]);
+    for (const r of rows) result.set(r.stock_code, r);
+    return result;
+  }
+
   /* ── 代號/名稱部分匹配搜尋（自選股新增用） ── */
   function searchStocks(term, limit) {
     limit = limit || 20;
@@ -3357,7 +3471,7 @@ const DBMgr = (() => {
     init, bootstrapFresh, syncDaily,
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
-    getSectors, getStocksBySector, getSectorRotation, getWatchlistStocks, searchStocks, getPrevClose,
+    getSectors, getStocksBySector, getSectorRotation, getVolumeRankingReference, getWatchlistStocks, searchStocks, getPrevClose,
     computeStrongCurrent, computeStrongXQ,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
@@ -7276,6 +7390,9 @@ const R = {
   strongMethodSel: $('strong-method-sel'),
   strongFilterBtn: $('strong-filter-btn'),
   strongStatus:    $('strong-status'),
+  volrankBar:      $('volrank-bar'),
+  volrankSubSel:   $('volrank-sub-sel'),
+  volrankStatus:   $('volrank-status'),
   stockTable:  $('stock-table'),
   stockTbody:  $('stock-tbody'),
   prevBtn:     $('prev-btn'),
@@ -7465,6 +7582,7 @@ function renderPage() {
   const isWL     = view === 'watchlist';
   const isStrong = view === 'strong';
   const isLock   = view.startsWith('lock_');
+  const isVolRank = view === 'volrank';
   const isAnalysisView = view === 'analysis';
   const codes       = pageItems.map(s => s.stock_code);
   const sparkMap    = DBMgr.getBatchSparklines(codes, 20);
@@ -7519,6 +7637,8 @@ function renderPage() {
       extraTd = `<td data-col="extra">${txt}</td>`;
     } else if (isLock) {
       extraTd = `<td data-col="extra">${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
+    } else if (isVolRank) {
+      extraTd = `<td data-col="extra">${s.vol_ratio != null ? s.vol_ratio.toFixed(2) + '倍' : '-'}</td>`;
     }
 
     // 分析 分頁的「代號」欄位改顯示中文報告名稱（premarket/holdings_week這些
@@ -7640,13 +7760,14 @@ function updateExtraColumn(view) {
   const thead = document.querySelector('#stock-table thead tr');
   const existing = thead.querySelector('.extra-col');
   if (existing) existing.remove();
-  if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_')) {
+  if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_') || view === 'volrank') {
     const th = document.createElement('th');
     th.className = 'extra-col';
     th.dataset.col = 'extra';
     th.textContent = view === 'strong'
       ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
       : view.startsWith('lock_') ? '分數'
+      : view === 'volrank' ? '量比'
       : '';
     thead.appendChild(th);
     th.appendChild(makeColResizer('extra'));
@@ -7967,6 +8088,7 @@ function switchView(view) {
   R.sectorSel.classList.toggle('hidden', view !== 'sector');
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
   R.strongBar.classList.toggle('hidden', view !== 'strong');
+  R.volrankBar.classList.toggle('hidden', view !== 'volrank');
 
   /* 「分析」清單選的是報告，不是個股/指數——技術分析/走勢圖這兩個分頁對
      它沒有意義，切進「分析」時整組藏起來；離開「分析」時要清掉報告狀態、
@@ -8001,6 +8123,7 @@ function switchView(view) {
   else if (parseLockView(view)) { const [, src, dir] = parseLockView(view); loadLockList(src, dir); }
   else if (view === 'usmarket') loadUsMarket();
   else if (view === 'analysis') loadAnalysisView();
+  else if (view === 'volrank') loadVolRank();
   else {
     const sid = R.sectorSel.value;
     if (sid) loadSector(sid);
@@ -8030,6 +8153,29 @@ function loadUsMarket() {
   });
   State.page = 0;
   renderPage();
+}
+
+// tw_stock_db客製: 量排行分頁——資料源見VolumeRanking模組說明。四種子篩選
+// 對應R.volrankSubSel的值，切換子篩選（不用重新選view）也會呼叫這個函式
+// 重新排序，見下方volrankSubSel的change監聽。
+async function loadVolRank() {
+  const sub = R.volrankSubSel.value;
+  R.volrankStatus.textContent = '讀取高頻資料中…';
+  State.stocks = [];
+  State.page = 0;
+  renderPage();
+  try {
+    const rows = await VolumeRanking.rank(sub, 100);
+    if (R.viewSel.value !== 'volrank') return; // 讀取期間使用者已經切走，結果丟棄
+    State.stocks = rows;
+    State.page = 0;
+    renderPage();
+    R.volrankStatus.textContent = rows.length
+      ? `共 ${rows.length} 檔（資料來源：Raspberry Pi高頻收集器，${taipeiDateStr()}）`
+      : '目前沒有符合條件的股票，或今天的高頻資料還沒開始收集（平常日08:30-14:00才會有資料）';
+  } catch (e) {
+    R.volrankStatus.textContent = '讀取失敗：' + e.message;
+  }
 }
 
 /* 左側 view-sel 選到「分析」時：借用既有的 #stock-table 清單UI 把 6 種報告
@@ -10846,6 +10992,9 @@ function bindEvents() {
   R.strongMethodSel.addEventListener('change', () => Settings.set('strongMethod', R.strongMethodSel.value));
   R.strongFilterBtn.addEventListener('click', runStrongFilter);
 
+  /* 量排行子篩選 */
+  R.volrankSubSel.addEventListener('change', () => { Settings.set('volrankSub', R.volrankSubSel.value); loadVolRank(); });
+
   /* paginator */
   R.prevBtn.addEventListener('click', () => { if (State.page > 0) { State.page--; renderPage(); } });
   R.nextBtn.addEventListener('click', () => {
@@ -11350,6 +11499,7 @@ async function main() {
   applyPeriod(Settings.get('chartPeriod') || 'day');
   Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
+  R.volrankSubSel.value = Settings.get('volrankSub') || 'vol_long';
 
   /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
