@@ -33,11 +33,15 @@
 //   3. .skill (zip) 匯入/匯出（_importSkillZip/_exportSkillZip，需要
 //      JSZip；只有使用者實際按下匯入/匯出按鈕時才動態注入CDN script
 //      標籤，見 _ensureJSZipLoaded()，不使用這功能的人不用背這個依賴）。
-//   4. 淺色/深色主題偵測改讀 <html data-theme>（_isLightTheme()、主題
+//   4. 淺色/深色主題偵測預設改讀 <html data-theme>（_isLightTheme()、主題
 //      MutationObserver），跟這個專案實際的主題切換機制對齊（原始函式庫
-//      預設看 body 的 'light-theme' class，這個網頁從來不會加這個class）
-//      ——這是唯一真的假設了host頁面慣例的地方，換一個不用data-theme
-//      屬性的host頁面時需要調整這一小段，其餘都是全域通用邏輯。
+//      預設看 body 的 'light-theme' class，這個網頁從來不會加這個class）。
+//      2026-08-23使用者把這份檔案複製到另一個沿用不同主題慣例的專案
+//      合併時發現這裡原本寫死，改成可覆寫：host頁面可以提供
+//      options.isLightTheme（回傳boolean的函式）自訂偵測邏輯，用自己的
+//      訊號切換主題時另外呼叫公開方法refreshTheme()通知即時更新，兩者
+//      都沒提供時才退回這裡的data-theme預設值——不再是唯一假設host頁面
+//      慣例的地方了。
 //   5. 批次/multi-agent分析引擎（runBatchSubAgents/_runSubAgentTask，見
 //      該函式群組上方的說明）：把一份清單拆成N個獨立、用完即丟的子對話
 //      平行處理，只留精簡結論流回主對話，不會讓主對話context隨清單長度
@@ -2474,13 +2478,33 @@ ${sourceTool.handlerScript}
         return this._tryParseJsonPayload(rawText, depth);
     }
 
-    // tw_stock_db客製: 原始函式庫預設看 document.body 是否帶 'light-theme'
-    // class 來判斷淺色/深色，但這個專案的主題切換是設在 <html> 標籤的
-    // data-theme屬性（"light"/"dark"，見 web/index.html 的 isDark()），
-    // 從來不會加 body class，導致這裡永遠判斷成深色。改成直接讀同一個
-    // data-theme屬性，讓AI助理視窗跟著網頁本身的主題走。
+    // 不同host頁面標示淺色/深色主題的慣例不一致（body class、html
+    // data-theme屬性、或其他自訂機制皆有可能），這裡不假設任何一種為
+    // 通用預設：優先讓host頁面透過options.isLightTheme（回傳boolean的
+    // 函式）自行提供偵測邏輯，沒有提供時才退回本函式庫的預設慣例（讀
+    // <html data-theme>，tw_stock_db本身就是用這個屬性，見
+    // web/index.html的isDark()）。2026-08-23使用者把這個檔案複製到另一個
+    // 專案（沿用不同的主題慣例）合併時發現原本寫死讀data-theme，改成這樣
+    // 才符合「floating-assistant.js本身不假設任何host頁面慣例」的設計
+    // 原則（見檔案開頭說明）。
     _isLightTheme() {
+        if (typeof this.options.isLightTheme === 'function') {
+            try {
+                return !!this.options.isLightTheme();
+            } catch (e) {
+                console.error('options.isLightTheme 執行失敗，改用預設主題偵測:', e);
+            }
+        }
         return document.documentElement.getAttribute('data-theme') !== 'dark';
+    }
+
+    // 公開方法，讓host頁面在自己切換主題的地方主動呼叫，強制AI視窗重新
+    // 套用主題（見上面bindEvents()裡themeObserver的說明：預設的
+    // MutationObserver只認得<html data-theme>，host頁面若用其他訊號
+    // 標示主題就用不到那個observer，改呼叫這個方法即可）。
+    refreshTheme() {
+        this._applyThemeStyles();
+        this._renderMessageHistory();
     }
 
     _getThemePalette() {
@@ -6542,13 +6566,12 @@ ${existingNodeSummaries}
         this._applyThemeStyles();
         this._syncStopButton();
 
-        // tw_stock_db客製: 跟上面 _isLightTheme() 同一個原因，主題切換觀察的
-        // 目標/屬性也要改成 <html> 的 data-theme，不然使用者在網頁上切換
-        // 淺色/深色時，AI視窗不會跟著即時更新（要重新整理頁面才會生效）。
-        const themeObserver = new MutationObserver(() => {
-            this._applyThemeStyles();
-            this._renderMessageHistory();
-        });
+        // 預設的主題切換觸發機制：觀察 <html data-theme> 屬性變化（跟
+        // _isLightTheme()預設慣例一致）。提供了options.isLightTheme但host
+        // 頁面用的是完全不同的訊號（例如body class、自訂事件）時，這個
+        // observer不會觸發，host頁面應該在自己切換主題的地方直接呼叫下面
+        // 公開的refreshTheme()，不用等這裡猜對觀察目標。
+        const themeObserver = new MutationObserver(() => this.refreshTheme());
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
         document.getElementById('ai-btn-close').onclick = () => this.toggleWindow();
