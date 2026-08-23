@@ -8706,6 +8706,65 @@ function splitMarkdownSections(text) {
   return sections.map(s => ({ title: s.title, body: s.body.join('\n').trim() }));
 }
 
+// tw_stock_db客製: 2026-08-23使用者回報AI回覆匯出PPTX/PDF時，表格內容
+// 沒有被辨識成表格，整段 "| a | b |" markdown原始語法被當純文字印出來
+// （見mdLiteToPlainText/mdLiteToHtml，兩者原本都不認得表格語法）。這裡
+// 補一個輕量偵測：抓「表頭列 + 分隔列（|---|---|）」的pipe table樣式，
+// 解析成{columns, rows}丟給ReportExport既有的type:'table'投影片渲染器
+// （addTableSlide/PDF table content，本來就有，只是markdownToExportDoc
+// 從沒有機會用到）。AI寫的表格cell內容偶爾會塞"<br>"當作cell內分行
+// （markdown表格語法本身不能有真正的換行），這裡順便轉成"\n"實際換行，
+// pptxgenjs/pdfmake的text欄位都吃"\n"當強制換行（addStockDiagnosisSlides
+// 已經這樣用過），不用另外分別處理兩種格式。
+function isMarkdownTableSeparatorLine(line) {
+  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function isMarkdownTableRowLine(line) {
+  return line.includes('|') && line.trim() !== '';
+}
+
+function parseMarkdownTableCell(v) {
+  return String(v ?? '').trim().replace(/<br\s*\/?>/gi, '\n');
+}
+
+function parseMarkdownTableRow(line) {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').map(parseMarkdownTableCell);
+}
+
+// 把一段markdown body切成交錯的text/table區塊——表格前後的文字各自獨立
+// 成text區塊，表格本身獨立成table區塊，呼叫端（markdownToExportDoc）再
+// 各自決定要不要分頁。
+function splitMarkdownBlocks(text) {
+  const lines = String(text || '').split('\n');
+  const blocks = [];
+  let textBuf = [];
+  const flushText = () => {
+    const body = textBuf.join('\n').trim();
+    if (body) blocks.push({ type: 'text', body });
+    textBuf = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isMarkdownTableRowLine(line) && i + 1 < lines.length && isMarkdownTableSeparatorLine(lines[i + 1])) {
+      flushText();
+      const columns = parseMarkdownTableRow(line);
+      let j = i + 2;
+      const rows = [];
+      while (j < lines.length && isMarkdownTableRowLine(lines[j])) { rows.push(parseMarkdownTableRow(lines[j])); j++; }
+      blocks.push({ type: 'table', columns, rows });
+      i = j - 1;
+    } else {
+      textBuf.push(line);
+    }
+  }
+  flushText();
+  return blocks;
+}
+
 function mdLiteInlineHtml(text) {
   return esc(text)
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
@@ -8750,20 +8809,29 @@ function mdLiteToPlainText(text) {
 // 以markdown標題（#/##/###）為題，同一個標題底下的內容太長時再依段落邊界
 // 切成多頁，標題後補上「（i/N）」；標題沒有多頁就不加註記。N=1（沒有#標題、
 // 內容也不長）時原樣回傳單一投影片，不影響原本就精簡的報告。
+// 依段落邊界（空行分隔）把一段文字切成不超過maxChars的chunk陣列——
+// paginateTextSlide跟markdownToExportDoc都需要這個純粹的「切段落」邏輯
+// （後者是逐個text區塊各自分頁，不能整段落標題一起處理，見下方說明），
+// 抽出來共用一份，不要各寫一次容易漏改。
+function chunkTextByLength(body, maxChars) {
+  const paras = String(body || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const chunks = [];
+  let cur = '', curLen = 0;
+  for (const p of paras) {
+    if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
+    cur += (cur ? '\n\n' : '') + p; curLen += p.length;
+  }
+  if (cur || !chunks.length) chunks.push(cur);
+  return chunks;
+}
+
 function paginateTextSlide(slide, maxChars = 900) {
   const sections = splitMarkdownSections(slide.body);
   if (!sections.length) return [slide];
   const outSlides = [];
   for (const sec of sections) {
     const title = sec.title || slide.heading || '';
-    const paras = sec.body.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-    const chunks = [];
-    let cur = '', curLen = 0;
-    for (const p of paras) {
-      if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
-      cur += (cur ? '\n\n' : '') + p; curLen += p.length;
-    }
-    if (cur || !chunks.length) chunks.push(cur);
+    const chunks = chunkTextByLength(sec.body, maxChars);
     const n = chunks.length;
     chunks.forEach((body, i) => {
       outSlides.push({ ...slide, heading: n > 1 ? `${title}（${i + 1}/${n}）` : title, body });
@@ -8786,9 +8854,29 @@ function paginateTextSlide(slide, maxChars = 900) {
 // 的呼叫端 handleAiMarkdownExport()）。
 function markdownToExportDoc(markdownText, title) {
   const heading = title || 'AI回覆';
+  const sections = splitMarkdownSections(markdownText);
+  const secList = sections.length ? sections : [{ title: null, body: markdownText }];
+  const bodySlides = [];
+  secList.forEach(sec => {
+    const secTitle = sec.title || heading;
+    // 每個標題段落底下可能穿插表格（見splitMarkdownBlocks），文字block各自
+    // 沿用chunkTextByLength分頁，表格block不分頁（表格切成兩張投影片會讓
+    // 使用者看不出是同一張表，寧可讓ReportExport自己的表格版面去處理）。
+    splitMarkdownBlocks(sec.body).forEach(block => {
+      if (block.type === 'table') {
+        bodySlides.push({ type: 'table', heading: secTitle, columns: block.columns, rows: block.rows });
+      } else {
+        const chunks = chunkTextByLength(block.body, 900);
+        const n = chunks.length;
+        chunks.forEach((body, i) => {
+          bodySlides.push({ type: 'text', heading: n > 1 ? `${secTitle}（${i + 1}/${n}）` : secTitle, body });
+        });
+      }
+    });
+  });
   const slides = [
     { type: 'title', title: heading, subtitle: taipeiDateStr() },
-    ...paginateTextSlide({ type: 'text', heading, body: markdownText }, 900),
+    ...bodySlides,
   ];
   return {
     report_type: 'ai_markdown_export', title: heading,
@@ -9165,6 +9253,13 @@ const ReportExport = (() => {
      Calibri字型）理論上PowerPoint開啟時有系統字型後備機制、風險較低，但
      為了兩邊呈現一致、且無法保證使用者的PowerPoint一定有裝對應字型，一併
      套用同一份替換規則。 */
+  // 全形標點→半形對照表：用opentype.js實測載入的NotoSansTC「chinese-
+  // traditional」子集字型（見ensureCjkFontRegistered），charToGlyphIndex()
+  // 對這10個全形符號回傳0（.notdef，即字圖不存在），pdfmake找不到字圖時
+  // 畫出豆腐字方塊——使用者回報PDF匯出的AI回覆內容裡出現大量方塊字，就是
+  // 這個字型子集缺字，不是程式邏輯錯誤。其餘全形標點（。、「」『』【】—）
+  // 這個子集有涵蓋，維持原樣不轉換，避免不必要地改變排版慣例。
+  const PDF_MISSING_FULLWIDTH_PUNCT = { '！': '!', '％': '%', '（': '(', '）': ')', '－': '-', '：': ':', '；': ';', '？': '?', '～': '~', '，': ',' };
   function sanitizeExportText(s) {
     if (s == null) return s;
     return String(s)
@@ -9175,7 +9270,8 @@ const ReportExport = (() => {
       .replace(/[●○◎]/g, '‧')
       .replace(/[■□]/g, '‧')
       .replace(/[→⇒➡]/g, '->')
-      .replace(/[←⇐⬅]/g, '<-');
+      .replace(/[←⇐⬅]/g, '<-')
+      .replace(/[！％（）－：；？～，]/g, ch => PDF_MISSING_FULLWIDTH_PUNCT[ch] || ch);
   }
 
   /* ────────────────────────────────────────
