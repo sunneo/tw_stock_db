@@ -1578,7 +1578,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=5542e9104e"></script>
+<script src="floating-assistant.js?v=bb67d11c1e"></script>
 
 <script>
 'use strict';
@@ -8706,65 +8706,6 @@ function splitMarkdownSections(text) {
   return sections.map(s => ({ title: s.title, body: s.body.join('\n').trim() }));
 }
 
-// tw_stock_db客製: 2026-08-23使用者回報AI回覆匯出PPTX/PDF時，表格內容
-// 沒有被辨識成表格，整段 "| a | b |" markdown原始語法被當純文字印出來
-// （見mdLiteToPlainText/mdLiteToHtml，兩者原本都不認得表格語法）。這裡
-// 補一個輕量偵測：抓「表頭列 + 分隔列（|---|---|）」的pipe table樣式，
-// 解析成{columns, rows}丟給ReportExport既有的type:'table'投影片渲染器
-// （addTableSlide/PDF table content，本來就有，只是markdownToExportDoc
-// 從沒有機會用到）。AI寫的表格cell內容偶爾會塞"<br>"當作cell內分行
-// （markdown表格語法本身不能有真正的換行），這裡順便轉成"\n"實際換行，
-// pptxgenjs/pdfmake的text欄位都吃"\n"當強制換行（addStockDiagnosisSlides
-// 已經這樣用過），不用另外分別處理兩種格式。
-function isMarkdownTableSeparatorLine(line) {
-  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
-}
-
-function isMarkdownTableRowLine(line) {
-  return line.includes('|') && line.trim() !== '';
-}
-
-function parseMarkdownTableCell(v) {
-  return String(v ?? '').trim().replace(/<br\s*\/?>/gi, '\n');
-}
-
-function parseMarkdownTableRow(line) {
-  let t = line.trim();
-  if (t.startsWith('|')) t = t.slice(1);
-  if (t.endsWith('|')) t = t.slice(0, -1);
-  return t.split('|').map(parseMarkdownTableCell);
-}
-
-// 把一段markdown body切成交錯的text/table區塊——表格前後的文字各自獨立
-// 成text區塊，表格本身獨立成table區塊，呼叫端（markdownToExportDoc）再
-// 各自決定要不要分頁。
-function splitMarkdownBlocks(text) {
-  const lines = String(text || '').split('\n');
-  const blocks = [];
-  let textBuf = [];
-  const flushText = () => {
-    const body = textBuf.join('\n').trim();
-    if (body) blocks.push({ type: 'text', body });
-    textBuf = [];
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (isMarkdownTableRowLine(line) && i + 1 < lines.length && isMarkdownTableSeparatorLine(lines[i + 1])) {
-      flushText();
-      const columns = parseMarkdownTableRow(line);
-      let j = i + 2;
-      const rows = [];
-      while (j < lines.length && isMarkdownTableRowLine(lines[j])) { rows.push(parseMarkdownTableRow(lines[j])); j++; }
-      blocks.push({ type: 'table', columns, rows });
-      i = j - 1;
-    } else {
-      textBuf.push(line);
-    }
-  }
-  flushText();
-  return blocks;
-}
-
 function mdLiteInlineHtml(text) {
   return esc(text)
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
@@ -8809,10 +8750,8 @@ function mdLiteToPlainText(text) {
 // 以markdown標題（#/##/###）為題，同一個標題底下的內容太長時再依段落邊界
 // 切成多頁，標題後補上「（i/N）」；標題沒有多頁就不加註記。N=1（沒有#標題、
 // 內容也不長）時原樣回傳單一投影片，不影響原本就精簡的報告。
-// 依段落邊界（空行分隔）把一段文字切成不超過maxChars的chunk陣列——
-// paginateTextSlide跟markdownToExportDoc都需要這個純粹的「切段落」邏輯
-// （後者是逐個text區塊各自分頁，不能整段落標題一起處理，見下方說明），
-// 抽出來共用一份，不要各寫一次容易漏改。
+// 依段落邊界（空行分隔）把一段文字切成不超過maxChars的chunk陣列，
+// paginateTextSlide用這個做「單一段落過長再分頁」。
 function chunkTextByLength(body, maxChars) {
   const paras = String(body || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
   const chunks = [];
@@ -8838,63 +8777,6 @@ function paginateTextSlide(slide, maxChars = 900) {
     });
   }
   return outSlides.length ? outSlides : [slide];
-}
-
-// tw_stock_db客製: 2026-08-23使用者要求「AI回覆的markdown內容可以匯出
-// pptx/pdf」——把AI自己寫的口語化markdown（不是export_document那種結構化
-// YAML）轉成ReportExport.docToPPTX/docToPDF吃的doc結構，直接沿用
-// paginateTextSlide()既有的「依#/##/###標題拆投影片、單一段落過長再分頁」
-// 邏輯（跟export_document的text投影片是同一套規則），不用另外寫一套markdown
-// 解析。使用者刻意要求PDF走「markdown→pptx→pdf」的概念（跟PPTX共用同一份
-// 轉換邏輯，畫面/版型一致），瀏覽器裡沒有辦法真的把pptx二進位檔轉成pdf
-// （那需要LibreOffice之類的伺服器端能力），這裡用「兩種格式都從同一份
-// markdown→doc轉換出發、各自呼叫ReportExport既有的docToPPTX/docToPDF」
-// 達到同樣的實質效果（內容/結構一致），已經在floating-assistant.js那邊的
-// 匯出按鈕UI裡跟使用者說明過這個技術限制（見_appendMarkdownExportButton
-// 的呼叫端 handleAiMarkdownExport()）。
-function markdownToExportDoc(markdownText, title) {
-  const heading = title || 'AI回覆';
-  const sections = splitMarkdownSections(markdownText);
-  const secList = sections.length ? sections : [{ title: null, body: markdownText }];
-  const bodySlides = [];
-  secList.forEach(sec => {
-    const secTitle = sec.title || heading;
-    // 每個標題段落底下可能穿插表格（見splitMarkdownBlocks），文字block各自
-    // 沿用chunkTextByLength分頁，表格block不分頁（表格切成兩張投影片會讓
-    // 使用者看不出是同一張表，寧可讓ReportExport自己的表格版面去處理）。
-    splitMarkdownBlocks(sec.body).forEach(block => {
-      if (block.type === 'table') {
-        bodySlides.push({ type: 'table', heading: secTitle, columns: block.columns, rows: block.rows });
-      } else {
-        const chunks = chunkTextByLength(block.body, 900);
-        const n = chunks.length;
-        chunks.forEach((body, i) => {
-          bodySlides.push({ type: 'text', heading: n > 1 ? `${secTitle}（${i + 1}/${n}）` : secTitle, body });
-        });
-      }
-    });
-  });
-  const slides = [
-    { type: 'title', title: heading, subtitle: taipeiDateStr() },
-    ...bodySlides,
-  ];
-  return {
-    report_type: 'ai_markdown_export', title: heading,
-    generated_at: new Date().toISOString(),
-    disclaimer: 'AI對話回覆內容匯出，非正式報告，請自行核實內容正確性。',
-    slides,
-  };
-}
-
-// options.onExportMarkdown的實作——見floating-assistant.js
-// _appendMarkdownExportButton()的呼叫方式：fmt是'pptx'或'pdf'（'markdown'
-// 由floating-assistant.js自己處理，不會呼叫到這裡）。
-async function handleAiMarkdownExport(markdownText, fmt) {
-  const doc = markdownToExportDoc(markdownText);
-  const blob = fmt === 'pptx' ? await ReportExport.docToPPTX(doc) : await ReportExport.docToPDF(doc);
-  const ext = fmt === 'pptx' ? 'pptx' : 'pdf';
-  const mimeType = blob.type;
-  await aiConsoleInstance.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.${ext}`, mimeType);
 }
 
 function getReportViewMode() {
@@ -10419,7 +10301,6 @@ function renderAiTab() {
     contextProvider: buildAiLiveContext,
     chipsProvider: buildAiSuggestionChips,
     onTableRendered: linkifyStockTableCells,
-    onExportMarkdown: handleAiMarkdownExport,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
