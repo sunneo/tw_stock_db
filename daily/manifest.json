@@ -151,11 +151,11 @@
     },
     "2026-08-23": {
       "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
-      "intraday_quotes": "4dd507da1eae47f2be19cfd33806ed2e",
+      "intraday_quotes": "baa8b39c078175b2802d1298f5a50817",
       "market_index": "12f85b19dd72e6a4a3f17afd6d358958",
       "stocks": "568ef7a8265de22be408ca1f880684ff",
       "technical_indicators": "383f3f042cd058d755637d800823b815"
     }
   },
-  "generated_at": "2026-08-23T05:47:58.982189+00:00"
+  "generated_at": "2026-08-23T10:13:20.729205+00:00"
 }
