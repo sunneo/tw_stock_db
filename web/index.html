@@ -1578,7 +1578,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=a9b1a54e2d"></script>
+<script src="floating-assistant.js?v=5542e9104e"></script>
 
 <script>
 'use strict';
@@ -8772,6 +8772,43 @@ function paginateTextSlide(slide, maxChars = 900) {
   return outSlides.length ? outSlides : [slide];
 }
 
+// tw_stock_db客製: 2026-08-23使用者要求「AI回覆的markdown內容可以匯出
+// pptx/pdf」——把AI自己寫的口語化markdown（不是export_document那種結構化
+// YAML）轉成ReportExport.docToPPTX/docToPDF吃的doc結構，直接沿用
+// paginateTextSlide()既有的「依#/##/###標題拆投影片、單一段落過長再分頁」
+// 邏輯（跟export_document的text投影片是同一套規則），不用另外寫一套markdown
+// 解析。使用者刻意要求PDF走「markdown→pptx→pdf」的概念（跟PPTX共用同一份
+// 轉換邏輯，畫面/版型一致），瀏覽器裡沒有辦法真的把pptx二進位檔轉成pdf
+// （那需要LibreOffice之類的伺服器端能力），這裡用「兩種格式都從同一份
+// markdown→doc轉換出發、各自呼叫ReportExport既有的docToPPTX/docToPDF」
+// 達到同樣的實質效果（內容/結構一致），已經在floating-assistant.js那邊的
+// 匯出按鈕UI裡跟使用者說明過這個技術限制（見_appendMarkdownExportButton
+// 的呼叫端 handleAiMarkdownExport()）。
+function markdownToExportDoc(markdownText, title) {
+  const heading = title || 'AI回覆';
+  const slides = [
+    { type: 'title', title: heading, subtitle: taipeiDateStr() },
+    ...paginateTextSlide({ type: 'text', heading, body: markdownText }, 900),
+  ];
+  return {
+    report_type: 'ai_markdown_export', title: heading,
+    generated_at: new Date().toISOString(),
+    disclaimer: 'AI對話回覆內容匯出，非正式報告，請自行核實內容正確性。',
+    slides,
+  };
+}
+
+// options.onExportMarkdown的實作——見floating-assistant.js
+// _appendMarkdownExportButton()的呼叫方式：fmt是'pptx'或'pdf'（'markdown'
+// 由floating-assistant.js自己處理，不會呼叫到這裡）。
+async function handleAiMarkdownExport(markdownText, fmt) {
+  const doc = markdownToExportDoc(markdownText);
+  const blob = fmt === 'pptx' ? await ReportExport.docToPPTX(doc) : await ReportExport.docToPDF(doc);
+  const ext = fmt === 'pptx' ? 'pptx' : 'pdf';
+  const mimeType = blob.type;
+  await aiConsoleInstance.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.${ext}`, mimeType);
+}
+
 function getReportViewMode() {
   return Settings.get('reportViewMode') || 'paged';
 }
@@ -10286,6 +10323,7 @@ function renderAiTab() {
     contextProvider: buildAiLiveContext,
     chipsProvider: buildAiSuggestionChips,
     onTableRendered: linkifyStockTableCells,
+    onExportMarkdown: handleAiMarkdownExport,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
@@ -10378,16 +10416,29 @@ function buildAiSuggestionChips() {
 // 出現的數字/詞誤判成股票代號；代號要求4~6位數字且真的存在於本機股票
 // 清單，名稱要求精確等於某檔股票的stock_name，兩者都用DBMgr現有的查詢
 // （不重新發明比對邏輯），沒命中就完全不動那個儲存格。
+//
+// tw_stock_db客製: 2026-08-23使用者實測回報「貿聯-KY」這種名稱沒有長出
+// 連結——查證發現AI在表格裡把ASCII連字號「-」寫成別的破折號變體（en dash
+// 「–」/em dash「—」/全形破折號「－」/減號「−」，LLM生成文字時常見的
+// 「排版美化」替換），跟資料庫裡實際存的標準ASCII連字號不是同一個unicode
+// 字元，逐字比對(===)自然對不上。這裡在比對前先把常見破折號變體正規化成
+// 標準連字號，只影響「拿去查詢/比對用」的字串，畫面上顯示的連結文字仍然
+// 保留AI原本寫的字元，不會偷偷幫使用者改字。
+function normalizeDashVariants(s) {
+  return s.replace(/[‐-―－−]/g, '-');
+}
+
 function linkifyStockTableCells(table) {
   table.querySelectorAll('td, th').forEach((cell) => {
     if (cell.querySelector('a, button')) return; // 已經處理過、或本來就有連結
     const text = cell.textContent.trim();
     if (!text) return;
+    const normalized = normalizeDashVariants(text);
     let code = null;
-    if (/^\d{4,6}$/.test(text) && DBMgr.getStockInfo(text)) {
-      code = text;
+    if (/^\d{4,6}$/.test(normalized) && DBMgr.getStockInfo(normalized)) {
+      code = normalized;
     } else {
-      const found = DBMgr.searchStocks(text, 5).find((s) => s.stock_name === text);
+      const found = DBMgr.searchStocks(normalized, 5).find((s) => normalizeDashVariants(s.stock_name) === normalized);
       if (found) code = found.stock_code;
     }
     if (!code) return;
