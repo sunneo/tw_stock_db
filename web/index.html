@@ -1316,6 +1316,7 @@ select:focus { outline: 2px solid var(--acc); }
       <label><input type="checkbox" id="zhu-toggle-ma" checked> 操盤、趨勢</label>
       <label><input type="checkbox" id="zhu-toggle-points"> 頭、底</label>
       <label><input type="checkbox" id="zhu-toggle-trace"> 轉折</label>
+      <label><input type="checkbox" id="zhu-toggle-target"> 型態、目標價</label>
       <label><input type="checkbox" id="zhu-toggle-support"> 壓力、支撐</label>
     </div>
     <div id="chart-wrap">
@@ -2110,6 +2111,82 @@ const VolumeRanking = (() => {
 
   return { ensureLoaded, rank, mergeSnapshots };
 })();
+
+/* ════════════════════════════════════════
+   TOUCH LOG（觸及紀錄）——2026-08-23使用者要求，每檔股票記錄「訊號被觸發
+   過的歷史」，兩種事件類型都是既有邏輯的延伸，不是新演算法：
+     head_high_bottom_high（頭高底高）：diagnoseStock()既有的趨勢判斷（見
+       computeTrendLabelAt）從非多頭轉為多頭的那一天，日線層級，一天最多
+       一筆。
+     intraday_weak（盤中弱勢）：盤中價格從昨收之上跌破到昨收之下的那一刻，
+       分鐘層級（讀VolumeRanking同一份hf_intraday.jsonl，但這裡要整天的
+       序列而不是只留最後一筆，見fetchIntradayTicksForStock），一天可能
+       多筆（邊緣觸發，不會每分鐘重複記）。
+   運算全部在瀏覽器端即時算、算完存進TouchLogStore（IndexedDB，見下方），
+   不動Pi/PC後端。
+   ════════════════════════════════════════ */
+
+// 逐日重算computeTrendLabelAt()，標籤從非多頭轉為多頭的那一天記一筆事件
+// （同一段多頭趨勢期間只在剛轉入時記錄，不會每天重複，對應截圖裡「頭高
+// 底高」只出現一次的呈現方式）。O(n)：每次computeTrendLabelAt只看最多30筆
+// 窗口，不會隨bars長度變成O(n^2)。
+function scanTrendFlipEvents(bars) {
+  const events = [];
+  const BULL_LABEL = '頭頭高底底高（多頭）';
+  let prevLabel = null;
+  for (let i = 0; i < bars.length; i++) {
+    const { label } = computeTrendLabelAt(bars, i);
+    if (label === BULL_LABEL && prevLabel !== BULL_LABEL) {
+      events.push({ date: bars[i].trade_date, type: 'head_high_bottom_high', label: '頭高底高', price: bars[i].close });
+    }
+    prevLabel = label;
+  }
+  return events;
+}
+
+// 抓單一股票整天的分鐘序列——跟上面VolumeRanking.fetchDay()讀同一份檔案，
+// 但fetchDay()只保留每檔最後一筆（給量排行用，不需要歷史序列），這裡要的
+// 是整天的序列，各自獨立實作、互不影響，也不影響VolumeRanking既有行為。
+async function fetchIntradayTicksForStock(dateStr, code) {
+  try {
+    const res = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const ticks = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line);
+        if (rec && rec.code === code && rec.ts && rec.price != null) ticks.push({ ts: rec.ts, price: rec.price });
+      } catch { /* 壞掉的單行跳過 */ }
+    }
+    ticks.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+    return ticks.length ? ticks : null;
+  } catch { return null; }
+}
+
+// 邊緣觸發：只在價格從「昨收之上」變成「昨收之下」的那一刻記一筆，持續在
+// 昨收之下不重複記錄，之後彈回昨收之上、再度跌破才會產生下一筆。選昨收
+// 當基準線是因為這是資料庫本來就有的固定值（DBMgr.getPrevClose），不用
+// 新增門檻設定。
+function scanWeaknessEvents(ticks, prevClose, dateStr) {
+  if (!ticks || !ticks.length || prevClose == null) return [];
+  const events = [];
+  let wasAbove = ticks[0].price >= prevClose;
+  for (let i = 1; i < ticks.length; i++) {
+    const isAbove = ticks[i].price >= prevClose;
+    if (wasAbove && !isAbove) {
+      const t = ticks[i];
+      const time = (t.ts || '').slice(11, 16); // "YYYY-MM-DD HH:MM:SS" → "HH:MM"
+      events.push({
+        date: dateStr, time, type: 'intraday_weak', label: '盤中弱勢',
+        price: t.price, pctChg: round2((t.price - prevClose) / prevClose * 100),
+      });
+    }
+    wasAbove = isAbove;
+  }
+  return events;
+}
 
 /* ════════════════════════════════════════
    YAML LITE  (手刻的最小 YAML parser，給「分析」分頁的報告用)
@@ -4927,6 +5004,31 @@ function diagnoseMarket() {
 
 /* ── 主要入口：鏡射 report_builder.py::stock_diagnosis()，資料來源全部是
    DBMgr 本機已同步好的資料，不經網路/YAML。 ── */
+
+// tw_stock_db客製: 2026-08-23使用者要求的「觸及紀錄」頭高底高事件需要對
+// 歷史上每一天分別重算這段趨勢判斷（不只是最新一天），把diagnoseStock()
+// 原本內嵌的邏輯抽成純函式，diagnoseStock()跟新的scanTrendFlipEvents()
+// 共用，行為完全不變（單純換一種寫法，用bars.slice(0,asOfIndex+1)取出
+// 「當時看得到」的資料窗口，再套用原本一模一樣的slice(-10)/slice(-30,-10)
+// 判斷，不會用到asOfIndex之後的未來資料）。
+function computeTrendLabelAt(bars, asOfIndex) {
+  const windowBars = bars.slice(0, asOfIndex + 1);
+  const n = windowBars.length;
+  const recent = windowBars.slice(-10);
+  const recentHigh = round2(Math.max(...recent.map(b => b.high)));
+  const recentLow  = round2(Math.min(...recent.map(b => b.low)));
+  let label = '資料不足', priorHigh = null, priorLow = null;
+  if (n >= 30) {
+    const prior = windowBars.slice(-30, -10);
+    priorHigh = round2(Math.max(...prior.map(b => b.high)));
+    priorLow  = round2(Math.min(...prior.map(b => b.low)));
+    if (recentHigh > priorHigh && recentLow > priorLow) label = '頭頭高底底高（多頭）';
+    else if (recentHigh < priorHigh && recentLow < priorLow) label = '頭頭低底底低（空頭）';
+    else label = '盤整/不明確';
+  }
+  return { label, recent_high: recentHigh, recent_low: recentLow, prior_high: priorHigh, prior_low: priorLow };
+}
+
 function diagnoseStock(code) {
   const info = DBMgr.getStockInfo(code);
   const mainDays = getDiagnosisLookbackDays();
@@ -4956,20 +5058,9 @@ function diagnoseStock(code) {
     above_ma20: aboveMa20, ma_alignment: alignment,
   };
 
-  // 2. 趨勢判斷（簡化版頭頭高/底底高，滾動高低點比較，非型態辨識）
-  const recent = bars.slice(-10);
-  const recentHigh = round2(Math.max(...recent.map(b => b.high)));
-  const recentLow  = round2(Math.min(...recent.map(b => b.low)));
-  let trendLabel = '資料不足', priorHigh = null, priorLow = null;
-  if (n >= 30) {
-    const prior = bars.slice(-30, -10);
-    priorHigh = round2(Math.max(...prior.map(b => b.high)));
-    priorLow  = round2(Math.min(...prior.map(b => b.low)));
-    if (recentHigh > priorHigh && recentLow > priorLow) trendLabel = '頭頭高底底高（多頭）';
-    else if (recentHigh < priorHigh && recentLow < priorLow) trendLabel = '頭頭低底底低（空頭）';
-    else trendLabel = '盤整/不明確';
-  }
-  const trend = { label: trendLabel, recent_high: recentHigh, recent_low: recentLow, prior_high: priorHigh, prior_low: priorLow };
+  // 2. 趨勢判斷（簡化版頭頭高/底底高，滾動高低點比較，非型態辨識）——
+  // 抽出成computeTrendLabelAt()共用，見該函式上方的說明。
+  const trend = computeTrendLabelAt(bars, n - 1);
 
   // 3. 型態辨識（機械式偵測、多層次巢狀分析，見上方 detectPatterns 註解）
   const detected = detectPatterns(bars, mainDays);
@@ -6321,15 +6412,19 @@ const Chart = (() => {
 
   /* 「朱老師App版面」K線圖疊加勾選列（見 #zhu-overlay-toggles）：操盤/趨勢
      控制均線是否畫出（showMA）；頭/底控制annotations.points的圓點+標籤
-     （showPoints）；壓力/支撐控制annotations.necklines+targets（showNeck）。
-     「轉折」沿用既有的highlightPattern（見上面）不另外加狀態，patternTraces
-     本來就是轉折點依序連線的視覺意義，一樣的東西。三個都預設true（除了
-     showMA也是true），跟原本沒套用這個skin時的既有行為一致（沒套用時這幾個
-     checkbox整排都不會顯示，狀態變數不影響其他地方）。 */
-  let showMA = true, showPoints = true, showNeck = true;
+     （showPoints）；壓力/支撐控制annotations.necklines（showNeck）；型態/
+     目標價控制annotations.targets（showTargets）。「轉折」沿用既有的
+     highlightPattern（見上面）不另外加狀態，patternTraces本來就是轉折點
+     依序連線的視覺意義，一樣的東西。全部預設true，跟原本沒套用這個skin時
+     的既有行為一致（沒套用時這幾個checkbox整排都不會顯示，狀態變數不影響
+     其他地方）。2026-08-23使用者要求「目標價」跟「壓力/支撐」拆成各自獨立
+     的開關（原本兩者共用showNeck，見drawAnnotationsOverlay()的說明），
+     這裡新增showTargets單獨控制targets。 */
+  let showMA = true, showPoints = true, showNeck = true, showTargets = true;
   function setShowMA(v) { showMA = !!v; draw(); }
   function setShowPoints(v) { showPoints = !!v; draw(); }
   function setShowNeck(v) { showNeck = !!v; draw(); }
+  function setShowTargets(v) { showTargets = !!v; draw(); }
 
   const WEIGHT = { kline: 304, volume: 76, indicator: 64 }; // 預設比例，可在設定modal調整（見 setPanelWeights）
 
@@ -6680,8 +6775,6 @@ const Chart = (() => {
 
     // showNeck對應「朱老師App版面」的「壓力、支撐」勾選（見Chart模組頂端
     // 說明）；沒套用skin時showNeck恆為true，不影響原本的持股診斷分頁行為。
-    // 目標價（等幅/N字測量）本質上也是預測出的壓力/支撐價位，一起收在這個
-    // 開關底下，不另外拆一個勾選項。
     for (const nl of (showNeck ? (annotations.necklines || []) : [])) {
       ctx.strokeStyle = patternColor(); ctx.lineWidth = 1.3; ctx.setLineDash([6, 3]);
       if (nl.points && nl.points.length === 2) {
@@ -6706,7 +6799,9 @@ const Chart = (() => {
       ctx.setLineDash([]);
     }
 
-    for (const t of (showNeck ? (annotations.targets || []) : [])) {
+    // showTargets對應「朱老師App版面」的「型態、目標價」勾選，跟壓力/支撐
+    // （showNeck）各自獨立——2026-08-23使用者要求拆開，原本兩者共用showNeck。
+    for (const t of (showTargets ? (annotations.targets || []) : [])) {
       if (t.price == null) continue;
       const y = pY(t.price);
       ctx.strokeStyle = TARGET_COL; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
@@ -7202,7 +7297,7 @@ const Chart = (() => {
     setData, resize, setMAPeriods, setKDParams, setMACDParams, setRSIParams,
     setIndicator, setPeriod, setIntradayMinutes, setFollowMouse, setMoreHistoryAvailable,
     setPanelWeights, setAnnotations, setHighlightPattern, getHighlightPattern,
-    setShowMA, setShowPoints, setShowNeck,
+    setShowMA, setShowPoints, setShowNeck, setShowTargets,
     zoomIn, zoomOut, zoomReset, setOnZoomChange, setOnInfoChange, getPeriod,
     getVisibleCount, getFullDataLength, needsMoreHistory, getVisibleStartDate, getOldestLoadedDate,
     getSnapshotDataUrl,
@@ -7557,6 +7652,7 @@ const R = {
   zhuToggleMa:       $('zhu-toggle-ma'),
   zhuTogglePoints:   $('zhu-toggle-points'),
   zhuToggleTrace:    $('zhu-toggle-trace'),
+  zhuToggleTarget:   $('zhu-toggle-target'),
   zhuToggleSupport:  $('zhu-toggle-support'),
   intradayPeriodToggle: $('intraday-period-toggle'),
   reportPanel:     $('report-panel'),
@@ -8591,7 +8687,7 @@ function maybeApplyZhuOverlay() {
   updateZhuOverlayVisibility();
   if (Settings.get('appSkin') !== 'zhu' || chartMode !== 'daily') return;
   if (!currentChartSource || currentChartSource.type !== 'stock') { Chart.setAnnotations(null); return; }
-  const anyOn = R.zhuTogglePoints.checked || R.zhuToggleTrace.checked || R.zhuToggleSupport.checked;
+  const anyOn = R.zhuTogglePoints.checked || R.zhuToggleTrace.checked || R.zhuToggleTarget.checked || R.zhuToggleSupport.checked;
   if (!anyOn) { Chart.setAnnotations(null); return; }
   const code = currentChartSource.code;
   if (diagnosisRenderedForCode === code && diagnosisCache) {
@@ -11170,6 +11266,7 @@ function bindEvents() {
   R.zhuToggleMa.addEventListener('change', () => Chart.setShowMA(R.zhuToggleMa.checked));
   R.zhuTogglePoints.addEventListener('change', () => { Chart.setShowPoints(R.zhuTogglePoints.checked); maybeApplyZhuOverlay(); });
   R.zhuToggleTrace.addEventListener('change', () => { Chart.setHighlightPattern(R.zhuToggleTrace.checked); maybeApplyZhuOverlay(); });
+  R.zhuToggleTarget.addEventListener('change', () => { Chart.setShowTargets(R.zhuToggleTarget.checked); maybeApplyZhuOverlay(); });
   R.zhuToggleSupport.addEventListener('change', () => { Chart.setShowNeck(R.zhuToggleSupport.checked); maybeApplyZhuOverlay(); });
 
   /* 通用的「匯出」下拉選單接線，跟 #menu-drop 同一套 position:fixed 動態
