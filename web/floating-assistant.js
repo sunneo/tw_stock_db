@@ -970,6 +970,17 @@ class FloatingAssistant {
             '對指定模型跑三項基準測試（簡易回應/單一工具呼叫/完整多步驟報告），算加權總分評估要不要內建',
             (argsText) => this._handleBenchmarkModelCommand(argsText)
         );
+        // tw_stock_db客製: 2026-08-24使用者要求的「主動要求建議操作」入口
+        // ——跟建構子/清空對話時的自動插入（見insertSuggestionChipsMessage）
+        // 共用同一個方法，這裡只是讓使用者隨時能重新叫出來，不用等對話清空。
+        // 屬於「聊天widget本身」的通用指令（實際建議內容仍然來自
+        // options.chipsProvider，不涉及任何tw_stock_db業務邏輯），所以是
+        // 內建指令，不用像/collect-volrank那樣從index.html掛進來。
+        this.register_slash_command(
+            '/suggest', '',
+            '重新顯示建議操作（例如換了股票之後想看新的建議）',
+            () => this.insertSuggestionChipsMessage()
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -1028,7 +1039,12 @@ class FloatingAssistant {
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
-        this.refreshSuggestionChips();
+        // tw_stock_db客製: 只在「完全沒有對話紀錄」時（全新安裝、或上次
+        // 結束時剛好是空的）主動插入一次建議操作訊息，不要每次mount都插入
+        // ——this.messages在上面_loadPersistedChatHistory()已經還原過，這裡
+        // 看到的長度就是使用者實際的對話狀態。見insertSuggestionChipsMessage()
+        // 的說明。
+        if (!this.messages.length) this.insertSuggestionChipsMessage();
     }
 
     setSystemPrompt(prompt) {
@@ -2631,23 +2647,13 @@ ${sourceTool.handlerScript}
             autocomplete.style.color = palette.detailText;
             autocomplete.style.borderTopColor = palette.windowBorder;
         }
-        // tw_stock_db客製: 建議chip列（見refreshSuggestionChips()）跟歷史
-        // 訊息按鈕/面板同樣是_initUI()組innerHTML時用當下palette寫死顏色，
-        // 跟上面genDetailBox同一種問題——使用者實測回報這兩個元件切換主題
-        // 後顏色沒跟著變，停留在視窗剛建立時的深色（因為視窗一開始mount時
-        // data-theme還沒確定成light）。chip按鈕本身的顏色會在下次
-        // refreshSuggestionChips()呼叫時自然修正，但容器背景跟歷史按鈕/
-        // 面板沒有其他自動刷新的機會，這裡一併同步。
-        const suggestionChips = document.getElementById('ai-suggestion-chips');
-        if (suggestionChips) {
-            suggestionChips.style.background = palette.chatBg;
-            suggestionChips.style.borderTopColor = palette.windowBorder;
-            suggestionChips.querySelectorAll('.ai-suggestion-chip').forEach(chip => {
-                chip.style.borderColor = palette.inputBorder;
-                chip.style.background = palette.detailBg;
-                chip.style.color = palette.detailText;
-            });
-        }
+        // tw_stock_db客製: 歷史訊息按鈕/面板是_initUI()組innerHTML時用當下
+        // palette寫死顏色，跟上面genDetailBox同一種問題——使用者實測回報
+        // 這兩個元件切換主題後顏色沒跟著變，停留在視窗剛建立時的深色（因為
+        // 視窗一開始mount時data-theme還沒確定成light），沒有其他自動刷新的
+        // 機會，這裡一併同步。（建議操作chip列已經改成插入對話訊息裡顯示，
+        // 見insertSuggestionChipsMessage()，每次隨訊息重繪自然套用當下
+        // palette，不用再像這裡額外同步。）
         const historyBtn = document.getElementById('ai-history-btn');
         if (historyBtn) {
             historyBtn.style.borderColor = palette.inputBorder;
@@ -5855,7 +5861,6 @@ ${existingNodeSummaries}
                 </div>
             </div>
             <div id="ai-chat-body" style="flex:1; padding:15px; overflow-y:auto; background: ${palette.chatBg}; color: ${palette.chatText}; font-size: 14px;"></div>
-            <div id="ai-suggestion-chips" style="display:none; flex-wrap:wrap; gap:6px; padding:8px 12px; background:${palette.chatBg}; border-top:1px solid ${palette.windowBorder};"></div>
             <div id="ai-autocomplete-bar" style="background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; padding:4px 12px; display:none; border-top:1px solid ${palette.windowBorder};">
                 💡 按 <kbd style="background:#fff;padding:1px 3px;border:1px solid #ccc;border-radius:3px;">Tab</kbd> 自動補全: <span id="ai-suggest-text"></span>
             </div>
@@ -6139,11 +6144,16 @@ ${existingNodeSummaries}
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
             // localStorage沒有fileMap那種「大檔案不該重複存」的顧慮。
             const benchmarkReportMap = {};
+            // tw_stock_db客製: insertSuggestionChipsMessage()的建議操作訊息
+            // 也是同一套「非可枚舉屬性額外存一份」作法，跟benchmarkReportMap
+            // 同樣理由（chips陣列很小，沒有大檔案顧慮）。
+            const chipsMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
                 if (m._downloadFile) fileMap[i] = m._downloadFile;
                 if (m._benchmarkReport) benchmarkReportMap[i] = m._benchmarkReport;
+                if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -6151,6 +6161,7 @@ ${existingNodeSummaries}
                     if (m._reasoningDisplay) reasoningMap[`${bi}:${mi}`] = m._reasoningDisplay;
                     if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
                     if (m._benchmarkReport) benchmarkReportMap[`${bi}:${mi}`] = m._benchmarkReport;
+                    if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -6160,6 +6171,7 @@ ${existingNodeSummaries}
                 reasoningMap,
                 fileMap,
                 benchmarkReportMap,
+                chipsMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -6208,6 +6220,12 @@ ${existingNodeSummaries}
                     if (msg) Object.defineProperty(msg, '_benchmarkReport', { value: report, enumerable: false, configurable: true });
                 });
             }
+            if (data.chipsMap) {
+                Object.entries(data.chipsMap).forEach(([key, chips]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_suggestionChips', { value: chips, enumerable: false, configurable: true });
+                });
+            }
         } catch (err) {
             console.warn('對話紀錄讀取失敗，改用空白對話:', err);
         }
@@ -6215,12 +6233,21 @@ ${existingNodeSummaries}
 
     // tw_stock_db客製: 使用者手動清除對話（🗑️按鈕，見_initEventListeners）
     // ，也是_loopFetch/_loopFetchNative在真的沒辦法解決400/413時建議使用者
-    // 採取的動作（見那兩處錯誤訊息）。
+    // 採取的動作（見那兩處錯誤訊息）。2026-08-24使用者要求清空對話後要
+    // 重新插入一次建議操作訊息（見insertSuggestionChipsMessage()），跟
+    // 建構子裡「完全沒有對話時才插入」是同一個原則——清空後的對話狀態
+    // 等同「完全沒有對話」。
     _clearChatHistory() {
         this.messages = [];
         this.archivedDisplayBlocks = [];
         localStorage.removeItem(this.CHAT_HISTORY_KEY);
-        this._renderMessageHistory();
+        // insertSuggestionChipsMessage()在chipsProvider沒回傳任何建議時會
+        // 直接return、不會呼叫_renderMessageHistory()——這裡不能依賴它一定
+        // 會重繪，得自己確保清空後的畫面（不管有沒有插入建議訊息）一定會
+        // 更新，不然畫面會停留在清空前的舊內容。
+        const beforeLength = this.messages.length;
+        this.insertSuggestionChipsMessage();
+        if (this.messages.length === beforeLength) this._renderMessageHistory();
         this._log('🗑️ 對話已清除');
     }
 
@@ -6280,6 +6307,36 @@ ${existingNodeSummaries}
             !msg.content.startsWith('[Topic Transition Summary') &&
             !msg.content.startsWith('[Steering]')
         ) return;
+
+        // tw_stock_db客製: 見insertSuggestionChipsMessage()的說明——建議操作
+        // 訊息用一般的文字內容當fallback（給沒有跑這段特殊渲染分支的情境，
+        // 例如未來忘記處理的地方），這裡疊加真正的可點擊chip按鈕，點擊只
+        // 填入輸入框、不自動送出。
+        if (msg._suggestionChips && msg._suggestionChips.length) {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 90%; background: ${palette.assistantBg}; color: ${palette.assistantText};`;
+            const intro = document.createElement('div');
+            intro.style.cssText = 'margin-bottom:8px; font-size:13px;';
+            intro.textContent = '💡 建議操作（點擊可以快速填入輸入框）：';
+            wrap.appendChild(intro);
+            const chipRow = document.createElement('div');
+            chipRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px;';
+            msg._suggestionChips.forEach((c) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'ai-suggestion-chip';
+                btn.style.cssText = `padding:4px 10px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:12px; cursor:pointer;`;
+                btn.textContent = c.label || c.text;
+                btn.addEventListener('click', () => {
+                    const inputEl = document.getElementById('ai-input-text');
+                    if (inputEl) { inputEl.value = c.text; inputEl.focus(); }
+                });
+                chipRow.appendChild(btn);
+            });
+            wrap.appendChild(chipRow);
+            container.appendChild(wrap);
+            return;
+        }
 
         // tw_stock_db客製: /benchmark-model的報告卡，見_handleBenchmarkModelCommand
         // 的說明——存在this.messages裡才會跟著正常訊息陣列存活過
@@ -6564,32 +6621,32 @@ ${existingNodeSummaries}
     }
 
     // tw_stock_db客製: 2026-08-23使用者要求「使用者切到AI的時候，貼幾個
-    // breadcrumb讓使用者按下去當推薦詢問」——跟register_slash_command()同一
-    // 種「floating-assistant.js只提供機制、tw_stock_db自己的內容從
-    // index.html掛進來」設計，這裡不寫死任何跟股票/tw_stock_db有關的文字，
-    // 只提供options.chipsProvider這個callback（建構子傳入，跟既有的
-    // contextProvider是同一種模式）跟這個公開的refresh方法。index.html會在
-    // 使用者切到AI分頁、或切換選中的股票時呼叫這個方法重新產生（例如把
-    // 目前選中的股票代號/名稱代入模板文字）。點擊chip只會把文字填進輸入框
-    // （不自動送出），讓使用者可以先看一眼/改字再送，比較不會誤觸發要花
-    // token或會產生檔案的動作（例如「口頭+pptx」）。
-    refreshSuggestionChips() {
-        const container = document.getElementById('ai-suggestion-chips');
-        if (!container) return;
+    // breadcrumb讓使用者按下去當推薦詢問」，2026-08-24使用者回報這個常駐
+    // 在輸入框上方的chip列在手機上會換成好幾行、很佔畫面空間，改成不再是
+    // 常駐bar，只在「完全沒有對話」或「使用者輸入/suggest主動要求」時，
+    // 把建議插入成對話裡的一則訊息（見下面insertSuggestionChipsMessage，
+    // 在_renderSingleMessage()裡有對應的_suggestionChips渲染分支），平常
+    // 捲動離開後不佔任何固定UI空間。跟register_slash_command()同一種
+    // 「floating-assistant.js只提供機制、tw_stock_db自己的內容從index.html
+    // 掛進來」設計，這裡不寫死任何跟股票/tw_stock_db有關的文字，只透過
+    // options.chipsProvider這個callback（建構子傳入，跟既有的
+    // contextProvider是同一種模式）取得建議內容。點擊chip只會把文字填進
+    // 輸入框（不自動送出），讓使用者可以先看一眼/改字再送，比較不會誤觸發
+    // 要花token或會產生檔案的動作（例如「口頭+pptx」）。
+    insertSuggestionChipsMessage() {
         const chips = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
-        if (!chips.length) { container.style.display = 'none'; container.innerHTML = ''; return; }
-        const palette = this._getThemePalette();
-        container.innerHTML = chips.map((c, i) => `
-            <button type="button" class="ai-suggestion-chip" data-idx="${i}" style="padding:4px 10px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; cursor:pointer; white-space:nowrap;">${this._escapeHtml(c.label || c.text)}</button>
-        `).join('');
-        container.style.display = 'flex';
-        container.querySelectorAll('.ai-suggestion-chip').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const chip = chips[Number(btn.dataset.idx)];
-                const inputEl = document.getElementById('ai-input-text');
-                if (inputEl && chip) { inputEl.value = chip.text; inputEl.focus(); }
-            });
-        });
+        if (!chips.length) return;
+        const content = '💡 建議操作（點擊可以快速填入輸入框）：\n' + chips.map(c => `- ${c.label || c.text}`).join('\n');
+        const msg = { role: 'assistant', content };
+        // 非可枚舉：跟_downloadFile/_benchmarkReport同一套作法（見
+        // _persistChatHistory的chipsMap），不會被送進實際的LLM API request
+        // body裡的訊息結構混淆——不過content本身是正常的可讀文字，就算哪個
+        // call site忘了排除也不會出問題，這個屬性純粹是額外的互動式渲染
+        // 提示。
+        Object.defineProperty(msg, '_suggestionChips', { value: chips, enumerable: false, configurable: true });
+        this.messages.push(msg);
+        this._persistChatHistory();
+        this._renderMessageHistory();
     }
 
     _initEventListeners() {
