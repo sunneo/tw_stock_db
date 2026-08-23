@@ -909,9 +909,9 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Memo modal (no sidebar — plain scrollable body) ── */
 #memo-modal .modal-body { display: block; height: auto; max-height: 60vh; padding: 14px 16px; overflow-y: auto; }
-#memo-readonly-wrap, #memo-ai-wrap { margin-bottom: 14px; }
-#memo-readonly-wrap h3, #memo-ai-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
-#memo-readonly-note, #memo-ai-note {
+#memo-readonly-wrap, #memo-ai-wrap, #memo-live-wrap { margin-bottom: 14px; }
+#memo-readonly-wrap h3, #memo-ai-wrap h3, #memo-live-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
+#memo-readonly-note, #memo-ai-note, #memo-live-note {
   font-size: 13px; line-height: 1.6; color: var(--txt1);
   background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
   padding: 8px 10px; white-space: pre-wrap;
@@ -1538,6 +1538,10 @@ select:focus { outline: 2px solid var(--acc); }
       <div id="memo-ai-wrap" class="hidden">
         <h3>強勢股訊號（AI判讀，唯讀）</h3>
         <div id="memo-ai-note"></div>
+      </div>
+      <div id="memo-live-wrap" class="hidden">
+        <h3>強勢股/鎖股訊號即時評估（尚未跑過篩選，僅供參考）</h3>
+        <div id="memo-live-note"></div>
       </div>
       <h3>我的備忘錄</h3>
       <textarea id="memo-textarea" rows="8" placeholder="輸入這檔股票的備忘錄…"></textarea>
@@ -3397,6 +3401,66 @@ const DBMgr = (() => {
     };
   }
 
+  /* tw_stock_db客製: 2026-08-23使用者要求——使用者自己手動加進自選股的
+     股票，不一定跑過「篩選強勢股」，MemoStore不會有recordStrongAiNotes()
+     寫的AI唯讀筆記可以顯示，備忘錄modal開起來就完全看不到強勢股/鎖股
+     訊號評估，使用者操作上也不一定會先想到要去點篩選。這裡針對單一股票
+     即時算一次「現行原則」（沿用scoreCurrent，本來就是吃單一股票的
+     row group，不用改）跟「XQ原則」（沿用computeStrongXQ同一套門檻判斷，
+     但只查一檔而不是全市場排名，所以在這裡重新寫一次針對單檔的版本，
+     不去改computeStrongXQ本身——那是已經上線在跑、全市場排名用的函式，
+     這裡的用途單純是「顯示評估說明」，兩者職責不同，硬共用反而讓兩邊都
+     難懂），讓openMemoModal能在沒有現成aiNote時，主動顯示這檔股票現在
+     符不符合強勢股/值得鎖股的條件。 */
+  function evaluateStrongSignalForStock(code) {
+    const rows = query(`
+      SELECT dp.stock_code, s.stock_name, s.market, sec.sector_name, dp.trade_date,
+             dp.open, dp.high, dp.low, dp.close, dp.volume,
+             ti.ma5, ti.ma20, ti.ma60, ti.vol_ma5,
+             ti.kd_k, ti.kd_d, ti.macd_dif, ti.macd_macd, ti.macd_osc,
+             ti.bias20, ti.rs_rating
+      FROM daily_prices dp
+      JOIN stocks s ON s.stock_code = dp.stock_code
+      LEFT JOIN sectors sec ON sec.sector_id = s.sector_id
+      LEFT JOIN technical_indicators ti
+        ON ti.stock_code = dp.stock_code AND ti.trade_date = dp.trade_date
+      WHERE dp.stock_code = ?
+        AND dp.trade_date >= (SELECT date(MAX(trade_date), '-100 day') FROM daily_prices)
+      ORDER BY dp.trade_date
+    `, [code]);
+    if (rows.length < 3) return { available: false, reason: '歷史資料不足（少於3天），無法評估' };
+
+    const sp = Settings.get('strongParams') || {};
+    const current = scoreCurrent(rows, Settings.get('strongCurrentRules'));
+
+    const t = rows[rows.length - 1];
+    const latestDate = getLatestIndicatorDate();
+    let xq = { available: false, reason: '沒有當日技術指標資料（可能是新股或資料尚未更新）' };
+    if (t && t.trade_date === latestDate && t.rs_rating != null && t.ma20 != null && t.ma60 != null && t.vol_ma5 != null) {
+      const rsThreshold = sp.rsThreshold ?? 90, minVolRatio = sp.minVolRatio ?? 0.8, nearHighPct = sp.nearHighPct ?? 15;
+      const tail = rows.slice(Math.max(0, rows.length - 60));
+      const high60 = Math.max(...tail.map(r => r.high));
+      const distPct = high60 ? (high60 - t.close) / high60 * 100 : null;
+      const volRatio = t.vol_ma5 ? t.volume / t.vol_ma5 : null;
+      const okRS = t.rs_rating >= rsThreshold;
+      const okMa = t.close >= t.ma60 && t.ma20 >= t.ma60;
+      const okVol = volRatio != null && volRatio >= minVolRatio;
+      const okDist = distPct != null && distPct <= nearHighPct;
+      const failReasons = [];
+      if (!okRS) failReasons.push(`RS值 ${t.rs_rating?.toFixed(1)} < 門檻 ${rsThreshold}`);
+      if (!okMa) failReasons.push(`未站穩多頭排列（收盤 ${t.close?.toFixed(2)} / MA60 ${t.ma60?.toFixed(2)}、MA20 ${t.ma20?.toFixed(2)}）`);
+      if (!okVol) failReasons.push(`量比 ${volRatio != null ? volRatio.toFixed(2) : '-'} < 門檻 ${minVolRatio}`);
+      if (!okDist) failReasons.push(`距60日高點 ${distPct != null ? distPct.toFixed(1) : '-'}% > 門檻 ${nearHighPct}%`);
+      xq = {
+        available: true, passes: okRS && okMa && okVol && okDist,
+        rs_rating: t.rs_rating, vol_ratio: volRatio, dist_from_high60_pct: distPct,
+        trade_date: t.trade_date, failReasons,
+      };
+    }
+
+    return { available: true, trade_date: t?.trade_date, current, xq };
+  }
+
   function getWatchlistStocks(codes) {
     if (!codes.length) return [];
     const d  = getLatestDate();
@@ -3525,7 +3589,7 @@ const DBMgr = (() => {
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getSectorRotation, getVolumeRankingReference, getWatchlistStocks, searchStocks, getPrevClose,
-    computeStrongCurrent, computeStrongXQ,
+    computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
@@ -7589,6 +7653,8 @@ const R = {
   memoReadonlyNote:$('memo-readonly-note'),
   memoAiWrap:      $('memo-ai-wrap'),
   memoAiNote:      $('memo-ai-note'),
+  memoLiveWrap:    $('memo-live-wrap'),
+  memoLiveNote:    $('memo-live-note'),
 };
 
 /* ════════════════════════════════════════
@@ -9979,11 +10045,63 @@ function openMemoModal(code) {
       (aiNote.reasons || []).map(r => '‧ ' + r).join('\n') +
       `\n（${taipeiDateStr(t)} ${taipeiTimeStr(t)} 篩選時記錄）`;
     R.memoAiWrap.classList.remove('hidden');
+    R.memoLiveWrap.classList.add('hidden');
   } else {
     R.memoAiWrap.classList.add('hidden');
+    // tw_stock_db客製: 2026-08-23使用者要求——沒有現成的AI唯讀筆記時
+    // （代表這檔股票沒被上次的強勢股篩選抓到，常見於使用者自己手動加進
+    // 自選股、沒特別跑過篩選的情況），主動即時算一次評估顯示出來，不用
+    // 使用者自己想到要先去點「篩選強勢股」。
+    renderMemoLiveEvaluation(code);
   }
 
   R.memoModal.classList.remove('hidden');
+}
+
+function renderMemoLiveEvaluation(code) {
+  let ev;
+  try {
+    ev = DBMgr.evaluateStrongSignalForStock(code);
+  } catch (e) {
+    console.error('即時評估強勢股訊號失敗：', e);
+    R.memoLiveWrap.classList.add('hidden');
+    return;
+  }
+  if (!ev.available) {
+    R.memoLiveWrap.classList.add('hidden');
+    return;
+  }
+
+  const lines = [];
+  const cur = ev.current;
+  if (cur && cur.bull_signals && cur.bull_signals.length) {
+    lines.push(`現行原則：符合 ${cur.bull_score} 項多方訊號`);
+    cur.bull_signals.forEach(s => lines.push('‧ ' + s));
+  } else if (cur) {
+    lines.push('現行原則：目前沒有符合的多方訊號');
+  } else {
+    lines.push('現行原則：資料不足，無法評分');
+  }
+  if (cur && cur.bear_signals && cur.bear_signals.length) {
+    cur.bear_signals.forEach(s => lines.push('‧（空方）' + s));
+  }
+
+  lines.push('');
+  const xq = ev.xq;
+  if (xq.available) {
+    if (xq.passes) {
+      lines.push(`XQ原則：符合強勢股門檻（RS值 ${xq.rs_rating?.toFixed(1)}，量比 ${xq.vol_ratio != null ? xq.vol_ratio.toFixed(2) : '-'}，距60日高點 ${xq.dist_from_high60_pct != null ? xq.dist_from_high60_pct.toFixed(1) : '-'}%）`);
+    } else {
+      lines.push(`XQ原則：尚未符合門檻（RS值 ${xq.rs_rating?.toFixed(1)}）`);
+      xq.failReasons.forEach(r => lines.push('‧ ' + r));
+    }
+  } else {
+    lines.push(`XQ原則：${xq.reason}`);
+  }
+
+  lines.push(`\n（即時試算，資料日期 ${ev.trade_date || '-'}，非正式強勢股篩選記錄——按「篩選強勢股」重新掃描才會寫入正式記錄）`);
+  R.memoLiveNote.textContent = lines.join('\n');
+  R.memoLiveWrap.classList.remove('hidden');
 }
 
 function closeMemoModal() {
