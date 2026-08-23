@@ -1811,7 +1811,8 @@ const Settings = (() => {
              aiAssistantEnabled: false, // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
              appSkin: 'default', // 'default' | 'zhu'（朱老師App版面，見 applySkin()）
              cloudSyncToken: null, // 雲端同步設定（Google Sheet後端）目前連接的token，見 CloudSync 模組
-             cloudSyncAutoEnabled: false }; // 開啟後，每次打開頁面自動從雲端拉取並覆蓋本機設定
+             cloudSyncAutoEnabled: false, // 開啟後，每次打開頁面自動從雲端拉取並覆蓋本機設定
+             knownMissingDailyDates: {} }; // { [日期]: 最後一次確認補不到資料的時間戳 }，見 detectAndFillDateGaps
   }
   function load() {
     try {
@@ -3195,7 +3196,19 @@ const DBMgr = (() => {
      出「有洞」就會自己補起來，不需要使用者清快取或動手做任何事。
      用 TAIEX 當比對基準：market_index 裡唯一保證「每個交易日一定有資料、
      且日期一定跟台北日曆對齊」的代號（美股四個指數的 trade_date 天生就
-     跟台北日期差一天，拿來當基準會誤判）。 */
+     跟台北日期差一天，拿來當基準會誤判）。
+
+     2026-08-24使用者回報主控台每次都印出同一個日期的缺口警告（例如
+     2026-07-10），查證後發現這種缺口不是client邏輯bug，是後端當天完全
+     沒產生 daily/{日期}/ 資料夾（GitHub上該路徑404，可能是PC那天沒開機/
+     排程沒跑），這種「來源本來就沒有資料」的缺口永遠補不起來——但原本的
+     邏輯沒有記住「已經試過、補不到」，每次載入頁面都會重新偵測到同一個
+     缺口、重新警告、重新打一次注定失敗的請求，白白浪費請求也讓console
+     一直被同一則警告洗版。這裡加一層「已知缺口」快取（存在Settings裡的
+     knownMissingDailyDates，key是日期、值是最後嘗試補抓的時間戳），
+     補抓失敗（applyDaily回傳false）就記下來，7天內同一個日期不會再重新
+     嘗試/警告；超過7天才重新試一次，避免真的被backend之後補上資料時
+     （例如使用者手動重跑當天的排程）永遠卡在「已知缺口」狀態出不來。 */
   async function detectAndFillDateGaps(onProgress) {
     const rows = query(
       `SELECT DISTINCT trade_date FROM market_index WHERE index_code='TAIEX' AND trade_date >= date('now','-45 day') ORDER BY trade_date`
@@ -3204,19 +3217,33 @@ const DBMgr = (() => {
     const present = new Set(rows.map(r => r.trade_date));
     const first = new Date(rows[0].trade_date);
     const last  = new Date(rows[rows.length - 1].trade_date);
+    const knownMissing = Settings.get('knownMissingDailyDates') || {};
+    const RECHECK_INTERVAL_MS = 7 * 86400000;
+    const now = Date.now();
     const missing = [];
     for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
       const dow = d.getDay();
       if (dow === 0 || dow === 6) continue; // 週末台股本來就不交易，不是缺口
       const label = fmtDate(d);
-      if (!present.has(label)) missing.push(label);
+      if (present.has(label)) continue;
+      const lastChecked = knownMissing[label];
+      if (lastChecked && (now - lastChecked) < RECHECK_INTERVAL_MS) continue; // 最近才確認過真的補不到，先跳過
+      missing.push(label);
     }
     if (!missing.length) return;
     console.warn('[DBMgr] 偵測到日期資料缺口，自動補抓：', missing);
+    let knownMissingChanged = false;
     for (const date of missing) {
       onProgress?.(`偵測到缺口，補齊 ${date}…`);
-      await applyDaily(date, onProgress);
+      const gotData = await applyDaily(date, onProgress);
+      if (gotData) {
+        if (knownMissing[date] != null) { delete knownMissing[date]; knownMissingChanged = true; }
+      } else {
+        knownMissing[date] = now;
+        knownMissingChanged = true;
+      }
     }
+    if (knownMissingChanged) Settings.set('knownMissingDailyDates', knownMissing);
   }
 
   // tw_stock_db客製: 2026-08-22使用者實測回報「按了更新資料，特定個股
@@ -12087,6 +12114,52 @@ async function handleCloudSyncCreate() {
   }
 }
 
+// tw_stock_db客製: 2026-08-24使用者要求——雲端同步拉回設定時不要
+// location.reload()，因為cloud sync是背景/非同步觸發，完成時使用者可能
+// 已經操作到一半（切了股票、正在看某張圖），整頁重新整理會打斷使用者、
+// 造成困擾。改成「只套用真的會影響目前畫面的欄位，其餘欄位單純寫進本機
+// 儲存、不強制重繪」——不影響的地方不動，下次使用者自己切到那個功能時
+// 自然就是新值，不用現在就打斷他。刻意排除「使用者當下瀏覽位置」類的
+// 欄位（chartPeriod/chartMode/view/selectedStock/chartIndicator/
+// strongMethod/volrankSub/reportType/reportViewMode/intradayPeriod）不
+// 強制套用——那些代表「使用者正在看哪裡」，硬套另一台裝置最後看的地方
+// 等於幫使用者導覽走，正是要避免的干擾；只單純寫進Settings，之後使用者
+// 自己重新整理/切換時才會自然套用到新值。appSkin（朱老師App版面）雖然
+// 會改變分頁列外觀，但applySkin()本身就是輕量、不需要重新載入資料庫的
+// 純UI操作（見該函式），所以可以放心即時套用。
+function applyPulledCloudSettings(newSettings) {
+  const old = Settings.getAll();
+  Settings.replaceAll(newSettings);
+  Settings.set('cloudSyncToken', old.cloudSyncToken); // 拉回來的那份可能沒有/是別的裝置自己的token欄位，本機連結狀態不該被覆蓋
+
+  if (old.theme !== newSettings.theme) applyTheme(newSettings.theme || 'light');
+  if (old.appSkin !== newSettings.appSkin) applySkin(newSettings.appSkin || 'default');
+  if (old.followMouseTooltip !== newSettings.followMouseTooltip) Chart.setFollowMouse(!!newSettings.followMouseTooltip);
+  if (old.aiAssistantEnabled !== newSettings.aiAssistantEnabled) updateAiTabVisibility();
+
+  const chartParamsChanged = ['maPeriods', 'kdParams', 'macdParams', 'rsiParams', 'chartPanelWeights', 'enabledIndicators']
+    .some(k => JSON.stringify(old[k]) !== JSON.stringify(newSettings[k]));
+  if (chartParamsChanged) {
+    Chart.setMAPeriods(newSettings.maPeriods || { short:5, shortMid:10, mid:20, long:60 });
+    Chart.setKDParams(newSettings.kdParams || { rsvDays:5, kSmooth:3, dSmooth:3 });
+    Chart.setMACDParams(newSettings.macdParams || { emaShort:10, emaLong:20, difPeriod:10 });
+    Chart.setRSIParams(newSettings.rsiParams || { fast:3, slow:6 });
+    Chart.setPanelWeights(newSettings.chartPanelWeights || { kline: 304, volume: 76, indicator: 64 });
+    applyIndicatorVisibility();
+    // 目前正在看圖表（技術分析/持股診斷/走勢圖）時，原地重繪一次讓新參數
+    // 立即反映；preserveView保留使用者目前的縮放/位置，不是導覽走。
+    if (currentChartSource && (chartMode === 'daily' || chartMode === 'diagnosis' || chartMode === 'intraday')) {
+      renderCurrentSourceChart({ preserveView: true });
+    }
+  }
+
+  // 自選股清單如果使用者剛好正在看，內容變了就地重繪一次；沒在看這個
+  // 分頁的話單純寫進Settings，不用特別處理。
+  if (JSON.stringify(old.watchlist) !== JSON.stringify(newSettings.watchlist) && R.viewSel.value === 'watchlist') {
+    loadWatchlist();
+  }
+}
+
 async function handleCloudSyncLink() {
   const token = (R.cloudSyncTokenInput.value || '').trim();
   if (!token) { alert('請輸入Token'); return; }
@@ -12099,9 +12172,9 @@ async function handleCloudSyncLink() {
       R.cloudSyncStatus.textContent = '找不到這個Token對應的雲端設定';
       return;
     }
-    Settings.replaceAll(pulled);
+    applyPulledCloudSettings(pulled);
     Settings.set('cloudSyncToken', token);
-    location.reload();
+    renderCloudSyncPane();
   } catch (e) {
     R.cloudSyncStatus.textContent = `失敗：${e.message}`;
   } finally {
@@ -12120,12 +12193,11 @@ async function handleCloudSyncSyncNow() {
       R.cloudSyncLinkedStatus.textContent = '雲端目前沒有資料';
       return;
     }
-    R.cloudSyncLinkedStatus.textContent = '已從雲端同步最新設定，重新整理中…';
-    Settings.replaceAll(pulled);
-    Settings.set('cloudSyncToken', token); // 確保本機連結的token不會被雲端那份資料的欄位意外蓋掉
-    setTimeout(() => location.reload(), 600);
+    applyPulledCloudSettings(pulled);
+    R.cloudSyncLinkedStatus.textContent = '已從雲端同步最新設定。';
   } catch (e) {
     R.cloudSyncLinkedStatus.textContent = `失敗：${e.message}`;
+  } finally {
     R.cloudSyncSyncNowBtn.disabled = false;
   }
 }
@@ -12146,9 +12218,13 @@ function handleCloudSyncCopy() {
 }
 
 // 頁面載入完成後，如果使用者開啟了「自動跨裝置sync」，背景確認雲端有沒有
-// 資料、有的話比對是否跟本機不同，不同才reload套用（避免每次開頁都無意義
-// 重新整理）。全程無聲、不打斷使用者操作——這是使用者主動勾選啟用的行為，
-// 預期就是這樣；手動觸發（見handleCloudSyncSyncNow）才會顯示明確回饋。
+// 資料、有的話比對是否跟本機不同，不同才套用（避免每次開頁都做無意義的
+// 動作）。這個背景查詢本身可能比使用者開始操作還慢（網路來回一趟），完成
+// 時使用者搞不好已經在看別的股票/圖表了，所以套用邏輯一律走
+// applyPulledCloudSettings()（不reload整頁、不強制切換使用者目前的瀏覽
+// 位置，只更新真的會影響目前畫面的部分，見該函式說明）。全程無聲、不
+// 顯示提示——這是使用者主動勾選啟用的行為，預期就是這樣；手動觸發（見
+// handleCloudSyncSyncNow）才會顯示明確回饋。
 async function maybeAutoCloudSync() {
   const token = Settings.get('cloudSyncToken');
   if (!token || !Settings.get('cloudSyncAutoEnabled')) return;
@@ -12157,9 +12233,7 @@ async function maybeAutoCloudSync() {
     if (!pulled) return;
     const current = Settings.getAll();
     if (JSON.stringify(pulled) === JSON.stringify(current)) return;
-    Settings.replaceAll(pulled);
-    Settings.set('cloudSyncToken', token);
-    location.reload();
+    applyPulledCloudSettings(pulled);
   } catch (e) {
     console.warn('自動雲端同步失敗：', e.message);
   }
