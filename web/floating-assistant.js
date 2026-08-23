@@ -704,6 +704,7 @@ class FloatingAssistant {
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
+        this.refreshSuggestionChips();
     }
 
     setSystemPrompt(prompt) {
@@ -5387,6 +5388,7 @@ ${existingNodeSummaries}
                 </div>
             </div>
             <div id="ai-chat-body" style="flex:1; padding:15px; overflow-y:auto; background: ${palette.chatBg}; color: ${palette.chatText}; font-size: 14px;"></div>
+            <div id="ai-suggestion-chips" style="display:none; flex-wrap:wrap; gap:6px; padding:8px 12px; background:${palette.chatBg}; border-top:1px solid ${palette.windowBorder};"></div>
             <div id="ai-autocomplete-bar" style="background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; padding:4px 12px; display:none; border-top:1px solid ${palette.windowBorder};">
                 💡 按 <kbd style="background:#fff;padding:1px 3px;border:1px solid #ccc;border-radius:3px;">Tab</kbd> 自動補全: <span id="ai-suggest-text"></span>
             </div>
@@ -6015,6 +6017,18 @@ ${existingNodeSummaries}
                     mdDiv.textContent = answerText;
                 }
                 div.appendChild(mdDiv);
+                // tw_stock_db客製: 2026-08-23使用者要求「AI回應的表格裡股票
+                // 名稱/代號可以點下去跳過去」——floating-assistant.js不認識
+                // 「股票」這個概念，跟chipsProvider/register_slash_command
+                // 同一種設計：只提供options.onTableRendered這個callback，
+                // 每渲染出一個<table>就呼叫一次，實際的股票代號辨識/點擊
+                // 跳轉邏輯由index.html注入（見linkifyStockTableCells()）。
+                if (typeof this.options.onTableRendered === 'function') {
+                    mdDiv.querySelectorAll('table').forEach((table) => {
+                        try { this.options.onTableRendered(table); }
+                        catch (e) { console.warn('onTableRendered callback失敗:', e); }
+                    });
+                }
             } else {
                 div.appendChild(document.createTextNode(answerText));
                 if (!this._markdownRerenderScheduled) {
@@ -6078,6 +6092,35 @@ ${existingNodeSummaries}
         });
         inputText.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && slashMenu.style.display === 'block') hide();
+        });
+    }
+
+    // tw_stock_db客製: 2026-08-23使用者要求「使用者切到AI的時候，貼幾個
+    // breadcrumb讓使用者按下去當推薦詢問」——跟register_slash_command()同一
+    // 種「floating-assistant.js只提供機制、tw_stock_db自己的內容從
+    // index.html掛進來」設計，這裡不寫死任何跟股票/tw_stock_db有關的文字，
+    // 只提供options.chipsProvider這個callback（建構子傳入，跟既有的
+    // contextProvider是同一種模式）跟這個公開的refresh方法。index.html會在
+    // 使用者切到AI分頁、或切換選中的股票時呼叫這個方法重新產生（例如把
+    // 目前選中的股票代號/名稱代入模板文字）。點擊chip只會把文字填進輸入框
+    // （不自動送出），讓使用者可以先看一眼/改字再送，比較不會誤觸發要花
+    // token或會產生檔案的動作（例如「口頭+pptx」）。
+    refreshSuggestionChips() {
+        const container = document.getElementById('ai-suggestion-chips');
+        if (!container) return;
+        const chips = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
+        if (!chips.length) { container.style.display = 'none'; container.innerHTML = ''; return; }
+        const palette = this._getThemePalette();
+        container.innerHTML = chips.map((c, i) => `
+            <button type="button" class="ai-suggestion-chip" data-idx="${i}" style="padding:4px 10px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; cursor:pointer; white-space:nowrap;">${this._escapeHtml(c.label || c.text)}</button>
+        `).join('');
+        container.style.display = 'flex';
+        container.querySelectorAll('.ai-suggestion-chip').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const chip = chips[Number(btn.dataset.idx)];
+                const inputEl = document.getElementById('ai-input-text');
+                if (inputEl && chip) { inputEl.value = chip.text; inputEl.focus(); }
+            });
         });
     }
 

@@ -1578,7 +1578,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=9efd6d5125"></script>
+<script src="floating-assistant.js?v=a9b1a54e2d"></script>
 
 <script>
 'use strict';
@@ -9902,6 +9902,9 @@ function selectStock(code) {
      手機直向 media query 下才有視覺效果，但這裡的呼叫本身不分裝置）。 */
   switchMobileTab(chartMode === 'intraday' ? 'trend' : chartMode === 'chip' ? 'chip' : chartMode === 'diagnosis' ? 'diagnosis' : 'chart');
   setDrawerOpen(false);
+  // 換股票時，如果AI分頁已經開過，順便重新產生推薦詢問chip（把新選中的
+  // 股票代入模板），不用等使用者切到AI分頁才更新。
+  if (typeof aiConsoleInstance !== 'undefined' && aiConsoleInstance) aiConsoleInstance.refreshSuggestionChips();
 }
 
 /* 手機版抱怨：想看下一檔都要跳回清單分頁才能點。這裡在圖表header的最左/最右
@@ -10238,7 +10241,7 @@ function renderAiTab() {
     R.aiTabPanel.innerHTML = '<div class="diag-empty">AI助理尚未啟用，請到設定裡的「AI助理」分頁勾選啟用。</div>';
     return;
   }
-  if (aiConsoleInstance) return; // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建
+  if (aiConsoleInstance) { aiConsoleInstance.refreshSuggestionChips(); return; } // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建；但推薦詢問chip要重新產生，可能換了選中的股票
   // 使用者若還沒在AI設定面板自己填過API Key，預先塞一組
   // tw_stock_db_api:{sessionid} 假金鑰，讓Cloudflare Worker認得這個格式、
   // 改用worker端藏著的真金鑰代打（見 web/cloudflare-worker/worker.js 的
@@ -10281,6 +10284,8 @@ function renderAiTab() {
     buttonStyle: 'display:none;',
     windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:8px; z-index:1;',
     contextProvider: buildAiLiveContext,
+    chipsProvider: buildAiSuggestionChips,
+    onTableRendered: linkifyStockTableCells,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
@@ -10343,6 +10348,62 @@ function buildAiLiveContext() {
     lines.push('使用者目前沒有選定任何股票/指數。');
   }
   return lines.join('\n');
+}
+
+// tw_stock_db客製: 2026-08-23使用者要求「使用者切到AI的時候，貼幾個
+// breadcrumb讓使用者按下去當推薦詢問」——這是floating-assistant.js
+// chipsProvider選項的實際內容（見new FloatingAssistant()呼叫處跟
+// refreshSuggestionChips()），把「目前選中的股票」代入模板文字。跟
+// buildAiLiveContext()一樣用currentChartSource當「目前選中的股票」依據，
+// 保持兩處判斷邏輯一致。
+function buildAiSuggestionChips() {
+  const chips = [];
+  if (currentChartSource && currentChartSource.type === 'stock') {
+    const code = currentChartSource.code;
+    const info = DBMgr.getStockInfo(code);
+    const label = info && info.stock_name ? `${info.stock_name}(${code})` : code;
+    chips.push({ label: `${label}持股診斷`, text: `${label}持股診斷，口頭+pptx` });
+    chips.push({ label: `讀取${label}備忘錄`, text: `讀取${label}備忘錄的資訊` });
+  }
+  chips.push({ label: '列出量排行', text: '列出量排行' });
+  chips.push({ label: '強勢股', text: '強勢股' });
+  chips.push({ label: '本週鎖股名單', text: '本週鎖股名單' });
+  return chips;
+}
+
+// tw_stock_db客製: 2026-08-23使用者要求「AI回應的表格如果是股票名稱/代號，
+// 可以點下去跳過去」——floating-assistant.js透過onTableRendered callback
+// （見那邊_renderSingleMessage()的說明）把每個渲染出來的<table>元素交給
+// 這裡處理。故意只認「儲存格整體內容」（不是子字串），避免把敘述句裡剛好
+// 出現的數字/詞誤判成股票代號；代號要求4~6位數字且真的存在於本機股票
+// 清單，名稱要求精確等於某檔股票的stock_name，兩者都用DBMgr現有的查詢
+// （不重新發明比對邏輯），沒命中就完全不動那個儲存格。
+function linkifyStockTableCells(table) {
+  table.querySelectorAll('td, th').forEach((cell) => {
+    if (cell.querySelector('a, button')) return; // 已經處理過、或本來就有連結
+    const text = cell.textContent.trim();
+    if (!text) return;
+    let code = null;
+    if (/^\d{4,6}$/.test(text) && DBMgr.getStockInfo(text)) {
+      code = text;
+    } else {
+      const found = DBMgr.searchStocks(text, 5).find((s) => s.stock_name === text);
+      if (found) code = found.stock_code;
+    }
+    if (!code) return;
+    cell.innerHTML = '';
+    const link = document.createElement('a');
+    link.href = 'javascript:void(0)';
+    link.textContent = text;
+    link.style.cssText = 'color:#3b82f6; text-decoration:underline; cursor:pointer;';
+    link.title = `跳到 ${code}`;
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      selectStock(code);
+      switchMobileTab('chart');
+    });
+    cell.appendChild(link);
+  });
 }
 
 /* 把 diagnoseStock() 回傳的診斷結果，轉成 Chart.setAnnotations() 要的疊加
