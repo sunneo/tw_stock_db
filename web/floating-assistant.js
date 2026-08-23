@@ -637,6 +637,15 @@ class FloatingAssistant {
         
         this.commandHistory = JSON.parse(localStorage.getItem(this.HISTORY_KEY)) || [];
         this.historyIndex = -1;
+        // tw_stock_db客製: 斜線指令登記表，見register_slash_command()的說明。
+        // 只登記真正屬於「這個聊天widget本身」的內建指令，tw_stock_db自己的
+        // 業務邏輯指令一律由外部（index.html）呼叫register_slash_command()掛進來。
+        this.slashCommands = new Map();
+        this.register_slash_command(
+            '/benchmark-model', '<model> [<api base url>] [<api key>]',
+            '對指定模型跑三項基準測試（簡易回應/單一工具呼叫/完整多步驟報告），算加權總分評估要不要內建',
+            (argsText) => this._handleBenchmarkModelCommand(argsText)
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -738,6 +747,10 @@ class FloatingAssistant {
             // 快取容量上限，見 FileCache/generateAndDeliverFile()。超過上限
             // 時自動刪掉最久沒被存取的檔案，使用者可在Advanced Settings調整。
             fileCacheLimitMB: 256,
+            // tw_stock_db客製: 2026-08-23使用者要求輸入框打「/」開頭時要跳出
+            // 斜線指令選單（見_wireSlashCommandMenu），手機版也要有同樣的
+            // 好處——這裡給使用者一個開關可以關掉（例如覺得干擾），預設開啟。
+            slashCommandMenuEnabled: true,
         };
     }
 
@@ -982,6 +995,7 @@ class FloatingAssistant {
             generation: this._normalizeGenerationSettings(raw.generation),
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
+            slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
         };
     }
 
@@ -3761,11 +3775,33 @@ ${existingNodeSummaries}
         }
     }
 
+    // tw_stock_db客製: 斜線指令的公開註冊入口，跟register_openai_tool()同一種
+    // 「外部程式碼可以自己掛新能力進來、不用改floating-assistant.js本體」的
+    // 設計——2026-08-23使用者明確要求「stock相關的客製化行為（例如
+    // /collect-volrank）不要變成floating-assistant.js的內建功能」，這個檔案
+    // 定位是可重用的通用元件，tw_stock_db專案自己的斜線指令一律從
+    // web/index.html呼叫這個方法掛進來（見registerAiCapabilities()旁邊的
+    // 呼叫），本體只保留真正跟「這個聊天widget本身」有關的內建指令
+    // （目前只有/benchmark-model——它評估的是LLM模型本身，不是tw_stock_db
+    // 的業務邏輯，留在這裡合理）。cmd大小寫不敏感、必須以/開頭；handler
+    // 拿到的是指令名稱之後、trim過的參數字串（跟原本/benchmark-model的
+    // 呼叫慣例一致）。回傳this方便鏈式呼叫。
+    register_slash_command(cmd, hint, desc, handler) {
+        const key = String(cmd || '').trim().toLowerCase();
+        if (!key.startsWith('/')) {
+            console.warn('register_slash_command: cmd必須以/開頭，忽略：', cmd);
+            return this;
+        }
+        this.slashCommands.set(key, { cmd: key, hint: hint || '', desc: desc || '', handler });
+        return this;
+    }
+
     // tw_stock_db客製: 從輸入框取字、清空、觸發executeChat的共用邏輯，被
     // Enter鍵送出跟「送出」按鈕共用，確保兩條路徑行為完全一致（見上面
-    // bindEvents()裡兩處的呼叫端）。/benchmark-model指令刻意在這裡攔截、
-    // 不進executeChat/LLM——這是本地端function call直接觸發的工具指令，
-    // 不需要也不應該讓AI自己「決定」要不要跑基準測試。
+    // bindEvents()裡兩處的呼叫端）。斜線指令刻意在這裡攔截、不進
+    // executeChat/LLM——這些是本地端function call直接觸發的工具指令，
+    // 不需要也不應該讓AI自己「決定」要不要執行；實際指令清單見
+    // this.slashCommands（見register_slash_command()的註冊機制）。
     _submitChatInput(inputText, suggestBar) {
         const textToSend = inputText.value.trim();
         if (!textToSend) return;
@@ -3773,9 +3809,14 @@ ${existingNodeSummaries}
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
 
-        if (/^\/benchmark-model\b/i.test(textToSend)) {
-            this._handleBenchmarkModelCommand(textToSend.replace(/^\/benchmark-model\s*/i, ''));
-            return;
+        if (textToSend.startsWith('/')) {
+            const firstToken = textToSend.split(/\s+/)[0].toLowerCase();
+            const entry = this.slashCommands.get(firstToken);
+            if (entry) {
+                const argsText = textToSend.slice(firstToken.length).trim();
+                entry.handler(argsText);
+                return;
+            }
         }
 
         if (this.isResponding) {
@@ -5336,6 +5377,10 @@ ${existingNodeSummaries}
                     <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">
                     <label for="ai-hermes-evolve-chk" style="font-size:12px; font-weight:bold; color:#8b5cf6; cursor:pointer; user-select:none;">開啟 RAG 本地條件圖譜自我演化</label>
                 </div>
+                <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
+                    <label for="ai-slash-menu-chk" style="font-size:12px; cursor:pointer; user-select:none; color:${palette.detailText};">輸入框打「/」時顯示可用指令選單</label>
+                </div>
 
                 <div style="margin-top:10px;">
                     <button id="ai-btn-advanced" type="button" style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; cursor:pointer;">Advance</button>
@@ -5347,6 +5392,7 @@ ${existingNodeSummaries}
             </div>
             <div id="ai-input-wrap" style="padding:10px; background:${palette.windowBg}; border-top:1px solid ${palette.windowBorder}; position:relative;">
                 <div id="ai-history-panel" style="display:none; position:absolute; left:10px; right:10px; bottom:100%; margin-bottom:6px; max-height:45vh; overflow-y:auto; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:20;"></div>
+                <div id="ai-slash-menu" style="display:none; position:absolute; left:10px; right:10px; bottom:100%; margin-bottom:6px; max-height:30vh; overflow-y:auto; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:21;"></div>
                 <div style="display:flex; align-items:stretch; gap:6px;">
                     <button id="ai-history-btn" type="button" title="歷史訊息（手機沒有上下鍵時可以用這個瀏覽/挑選之前輸入過的內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">🕘</button>
                     <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="flex:1; min-width:0; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
@@ -5983,6 +6029,58 @@ ${existingNodeSummaries}
         container.appendChild(div);
     }
 
+    // tw_stock_db客製: 2026-08-23使用者要求輸入框打「/」開頭時跳出可用斜線
+    // 指令清單（不只是行動裝置——原本的Tab補全只認得指令「歷史」，不知道
+    // 「現在到底有哪些指令」）。讀this.slashCommands（見register_slash_command）
+    // 即時做前綴過濾，desktop/mobile共用同一份可點擊清單（觸控裝置上原生
+    // <select>沒有可靠的「用JS強制彈出」API，改用這個自訂清單、加大列高當
+    // 觸控目標，實務上比硬要求原生combobox更可靠）。
+    // this.advancedSettings.slashCommandMenuEnabled是使用者可以關掉這個功能
+    // 的開關（Advanced Settings裡的「輸入/時顯示指令選單」核取方塊）。
+    _wireSlashCommandMenu(inputText, slashMenu, suggestBar) {
+        if (!slashMenu) return;
+        const palette = this._getThemePalette();
+
+        const hide = () => { slashMenu.style.display = 'none'; slashMenu.innerHTML = ''; };
+
+        const renderMenu = () => {
+            if (this.advancedSettings.slashCommandMenuEnabled === false) { hide(); return; }
+            const val = inputText.value;
+            if (!val.startsWith('/') || /\s/.test(val)) { hide(); return; }
+            const matches = [...this.slashCommands.values()].filter((c) => c.cmd.startsWith(val.toLowerCase()));
+            if (!matches.length) { hide(); return; }
+            if (suggestBar) suggestBar.style.display = 'none'; // 兩個下拉選單不要同時開
+            slashMenu.innerHTML = matches.map((c) => `
+                <div class="ai-slash-item" data-cmd="${this._escapeAttr(c.cmd)}" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid ${palette.windowBorder};">
+                    <div style="font-size:13px; font-weight:bold; color:#76b900;">${this._escapeHtml(c.cmd)}${c.hint ? ` <span style="font-weight:normal; color:${palette.detailText};">${this._escapeHtml(c.hint)}</span>` : ''}</div>
+                    ${c.desc ? `<div style="font-size:11px; color:${palette.detailText}; margin-top:2px;">${this._escapeHtml(c.desc)}</div>` : ''}
+                </div>
+            `).join('');
+            slashMenu.style.display = 'block';
+        };
+
+        inputText.addEventListener('input', renderMenu);
+        inputText.addEventListener('focus', renderMenu);
+
+        slashMenu.addEventListener('mousedown', (e) => {
+            // mousedown（而不是click）先於textarea的blur觸發，避免blur把選單
+            // 關掉之後click事件才發生、選不到東西。
+            const item = e.target.closest('.ai-slash-item');
+            if (!item) return;
+            e.preventDefault();
+            inputText.value = item.dataset.cmd + ' ';
+            hide();
+            inputText.focus();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (e.target !== inputText && !slashMenu.contains(e.target)) hide();
+        });
+        inputText.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && slashMenu.style.display === 'block') hide();
+        });
+    }
+
     _initEventListeners() {
         const win = document.getElementById('ai-floating-window');
         const inputKey = document.getElementById('ai-input-key');
@@ -5992,6 +6090,7 @@ ${existingNodeSummaries}
         const configPanel = document.getElementById('ai-config-panel');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');
+        const slashMenu = document.getElementById('ai-slash-menu');
         const advancedModal = document.getElementById('ai-advanced-modal');
         const toolEditorModal = document.getElementById('ai-tool-editor-modal');
         const aiFnModal = document.getElementById('ai-fn-modal');
@@ -6010,6 +6109,13 @@ ${existingNodeSummaries}
             hermesChkBx.addEventListener('change', (e) => {
                 localStorage.setItem(this.HERMES_AUTO_EVOLVE_KEY, String(e.target.checked));
                 this._log("🤖 Hermes 圖譜進化功能已" + (e.target.checked ? '開啟' : '關閉'));
+            });
+        }
+        const slashMenuChkBx = document.getElementById('ai-slash-menu-chk');
+        if (slashMenuChkBx) {
+            slashMenuChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.slashCommandMenuEnabled = e.target.checked;
+                this._saveAdvancedSettings();
             });
         }
 
@@ -6353,6 +6459,8 @@ ${existingNodeSummaries}
         if (sendBtn) {
             sendBtn.addEventListener('click', () => this._submitChatInput(inputText, suggestBar));
         }
+
+        this._wireSlashCommandMenu(inputText, slashMenu, suggestBar);
 
         // tw_stock_db客製: 手機上沒有實體上/下鍵，原本的ArrowUp/ArrowDown
         // 瀏覽歷史指令沒辦法用——加一個🕘按鈕，點開一份可以直接點選的歷史

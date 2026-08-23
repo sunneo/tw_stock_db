@@ -47,7 +47,8 @@ reads happen locally without further network calls once loaded.
     （大盤/類股積極度判斷＋SOX/SPX/NASDAQ/DJI連動，不綁定特定個股）
   - 個股資訊：search_stocks, get_stock_info, get_sectors, get_stocks_by_sector
   - 選股：screen_strong_stocks（全市場挑個股）、scan_sector_rotation（全市場依
-    類股分組比較整體漲跌，回答「資金往哪個類股輪動」）
+    類股分組比較整體漲跌，回答「資金往哪個類股輪動」）、collect_volume_ranking_now
+    （緊急/即時需求：不等Pi高頻收集器排程，網頁自己補抓一批量排行快照）
   - 備忘錄：get_memo, set_memo（會修改使用者資料）
   - 盤後籌碼：get_chip_available_dates, get_chip_data
   - 鎖股名單：get_lock_list, get_stock_lock_status
@@ -1577,7 +1578,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=81561384e9"></script>
+<script src="floating-assistant.js?v=9efd6d5125"></script>
 
 <script>
 'use strict';
@@ -1991,27 +1992,79 @@ const LockList = (() => {
    ensureLoaded()對404一律當成「今天還沒有高頻資料」處理，不拋例外。
    ════════════════════════════════════════ */
 const VolumeRanking = (() => {
-  let cache = null; // { dateStr, byCode: Map<code, {code, ts, price, open, high, low, volume}> }
+  // { queriedFor: 今天日期(只是快取key，避免同一天內重複打GitHub),
+  //   dateStr: 實際拿到資料的那一天（可能不是今天，見下方回溯邏輯）,
+  //   byCode: Map<code, {code, ts, price, open, high, low, volume}>,
+  //   lastTs: 這份資料裡最新的一筆snapshot時間戳,
+  //   isStale: dateStr !== 今天 }
+  let cache = null;
 
-  async function ensureLoaded(forceRefresh = false) {
-    const dateStr = taipeiDateStr();
-    if (cache && cache.dateStr === dateStr && !forceRefresh) return cache;
-    const byCode = new Map();
+  async function fetchDay(dateStr) {
     try {
       const res = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        for (const line of text.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const rec = JSON.parse(line);
-            if (rec && rec.code) byCode.set(rec.code, rec); // 依檔案裡的順序覆蓋，保留每檔最後（最新）一筆
-          } catch { /* 壞掉的單行跳過，不影響其他列 */ }
-        }
+      if (!res.ok) return null;
+      const text = await res.text();
+      const byCode = new Map();
+      let lastTs = null;
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line);
+          if (rec && rec.code) {
+            byCode.set(rec.code, rec); // 依檔案裡的順序覆蓋，保留每檔最後（最新）一筆
+            if (rec.ts && (!lastTs || rec.ts > lastTs)) lastTs = rec.ts;
+          }
+        } catch { /* 壞掉的單行跳過，不影響其他列 */ }
       }
-    } catch { /* 網路/404都當作「今天還沒有高頻資料」，回傳空Map */ }
-    cache = { dateStr, byCode };
+      return byCode.size ? { dateStr, byCode, lastTs } : null;
+    } catch { return null; }
+  }
+
+  // tw_stock_db客製: 使用者要求「時間已經收盤，或還沒有資料」時要顯示資料
+  // 時間、並且能拿前一次的資料——今天的hf_intraday.jsonl可能還不存在
+  // （開盤前/收集器剛部署/假日），這裡今天抓不到就往前最多回溯7天找最近
+  // 一份「真的有內容」的資料，並標記isStale=true，UI端據此顯示「資料時間：
+  // ...（非最新，最近一次收集）」而不是顯示空白清單。
+  async function ensureLoaded(forceRefresh = false) {
+    const todayStr = taipeiDateStr();
+    if (cache && cache.queriedFor === todayStr && !forceRefresh) return cache;
+
+    let result = await fetchDay(todayStr);
+    let isStale = false;
+    if (!result) {
+      for (let back = 1; back <= 7; back++) {
+        const d = new Date(Date.now() + 8 * 3600 * 1000 - back * 86400000);
+        const ds = d.toISOString().slice(0, 10);
+        result = await fetchDay(ds);
+        if (result) { isStale = true; break; }
+      }
+    }
+    cache = result
+      ? { queriedFor: todayStr, dateStr: result.dateStr, byCode: result.byCode, lastTs: result.lastTs, isStale }
+      : { queriedFor: todayStr, dateStr: null, byCode: new Map(), lastTs: null, isStale: false };
     return cache;
+  }
+
+  // tw_stock_db客製: 給「緊急擷取」用（見AI_CAPABILITIES的collect_volume_ranking_now
+  // 工具跟/collect-volrank斜線指令）——AI/使用者透過worker的Yahoo代理臨時
+  // 補抓一批快照時，直接把結果併進目前的cache，不用等Pi的下一輪、也不用
+  // 真的寫檔案/推GitHub（那是Pi那邊的職責），這裡純粹是這個瀏覽器分頁的
+  // 暫時性資料，重新整理頁面就會恢復成讀GitHub上的正式資料。
+  function mergeSnapshots(records, sourceLabel) {
+    const todayStr = taipeiDateStr();
+    if (!cache || cache.queriedFor !== todayStr) {
+      cache = { queriedFor: todayStr, dateStr: todayStr, byCode: new Map(), lastTs: null, isStale: false };
+    }
+    let lastTs = cache.lastTs;
+    for (const rec of records) {
+      if (!rec || !rec.code) continue;
+      cache.byCode.set(rec.code, rec);
+      if (rec.ts && (!lastTs || rec.ts > lastTs)) lastTs = rec.ts;
+    }
+    cache.lastTs = lastTs;
+    cache.dateStr = todayStr;
+    cache.isStale = false;
+    cache.mergedFrom = sourceLabel || cache.mergedFrom;
   }
 
   // sub: 'vol_long'（量排行-多）| 'vol_short'（量排行-空）|
@@ -2051,7 +2104,7 @@ const VolumeRanking = (() => {
     return filtered.slice(0, topN);
   }
 
-  return { ensureLoaded, rank };
+  return { ensureLoaded, rank, mergeSnapshots };
 })();
 
 /* ════════════════════════════════════════
@@ -6015,6 +6068,15 @@ const AI_CAPABILITIES = [
       return { ok: true, ...body };
     },
   },
+  {
+    name: 'collect_volume_ranking_now', category: '選股',
+    description: '緊急/即時需求用：不等Raspberry Pi高頻收集器的排程，由這個網頁本身透過worker立刻補抓一批股票（本週/隔日/盤中鎖股+強勢股，最多約60檔，優先順序參考get_analysis_principles之外另有專屬的量排行優先順序）的盤中最新價量快照，直接更新「量排行」分頁目前顯示的資料。適合用在使用者明確要求「現在」「立刻」的量排行資訊、或Pi的正式資料明顯過期/尚未收集時；平常不需要主動呼叫，量排行分頁預設就是讀Pi推到GitHub的正式資料。呼叫完之後，如果使用者是在對話裡問的（不是在量排行分頁上點的），建議順便呼叫switch_tab切到量排行分頁讓使用者直接看結果，或用文字摘要重點。',
+    params: {},
+    handler: async () => {
+      const result = await collectVolumeRankingNow(60);
+      return { ok: true, ...result, note: '已更新量排行分頁的暫存資料（只在這個瀏覽器分頁有效，重新整理會恢復成讀取GitHub上的正式資料）。' };
+    },
+  },
 ];
 // const 頂層宣告不會自動變成 window 的屬性（跟var/function宣告不同）；
 // <head>那段AI-READABLE SKILL MANIFEST註解明講外部AI可以透過
@@ -8166,16 +8228,101 @@ async function loadVolRank() {
   renderPage();
   try {
     const rows = await VolumeRanking.rank(sub, 100);
+    const meta = await VolumeRanking.ensureLoaded();
     if (R.viewSel.value !== 'volrank') return; // 讀取期間使用者已經切走，結果丟棄
     State.stocks = rows;
     State.page = 0;
     renderPage();
+    // tw_stock_db客製: 使用者要求「已收盤或還沒有資料時，顯示資料時間、
+    // 並且可以拿前一次的資料」——meta.dateStr是實際拿到資料的那一天（可能
+    // 回溯到前幾天，見VolumeRanking.ensureLoaded），isStale代表不是今天。
+    const sourceLabel = meta.mergedFrom ? `AI緊急擷取，${meta.mergedFrom}` : 'Raspberry Pi高頻收集器';
+    let timeInfo;
+    if (!meta.dateStr) {
+      timeInfo = '目前完全沒有高頻資料（平常日08:30-14:00收集器才會產生資料，或收集器尚未部署/推送成功）';
+    } else if (meta.isStale) {
+      timeInfo = `⚠️ 非今日最新資料——顯示的是最近一次有收集到的資料，時間：${meta.lastTs || meta.dateStr}（來源：${sourceLabel}）`;
+    } else {
+      timeInfo = `資料時間：${meta.lastTs || meta.dateStr}（來源：${sourceLabel}）`;
+    }
     R.volrankStatus.textContent = rows.length
-      ? `共 ${rows.length} 檔（資料來源：Raspberry Pi高頻收集器，${taipeiDateStr()}）`
-      : '目前沒有符合條件的股票，或今天的高頻資料還沒開始收集（平常日08:30-14:00才會有資料）';
+      ? `共 ${rows.length} 檔。${timeInfo}`
+      : `目前沒有符合條件的股票。${timeInfo}`;
   } catch (e) {
     R.volrankStatus.textContent = '讀取失敗：' + e.message;
   }
+}
+
+// tw_stock_db客製: 2026-08-23使用者要求「緊急需求」時，量排行的資料來源
+// 也可以是這個網頁本身透過worker的Yahoo代理即時補抓，不用等Pi的排程——
+// 給AI工具collect_volume_ranking_now跟/collect-volrank斜線指令共用（見
+// AI_CAPABILITIES跟floating-assistant.js的_submitChatInput）。優先順序邏輯
+// 跟rpi/lib/priority-list.js一致（本週/隔日/盤中鎖股+強勢股），但這裡直接
+// 用瀏覽器已經同步好的LockList/strong_stocks_*.json，不用git pull；抓到的
+// 快照走跟走勢圖backfill同一個worker端點（TWSE_PROXY_BASE + /yahoo-intraday，
+// CORS安全），結果併進VolumeRanking的cache（見mergeSnapshots），純粹是這個
+// 分頁暫時的資料，不寫檔案也不推GitHub——那是Pi那邊的正式管道。
+async function collectVolumeRankingNow(maxStocks = 60) {
+  const codes = [];
+  const seen = new Set();
+  const pushCodes = (list) => { for (const c of list) if (c && !seen.has(c)) { seen.add(c); codes.push(c); } };
+
+  for (const source of ['week', 'nextday', 'intraday']) {
+    try {
+      await LockList.ensureLoaded(source);
+      pushCodes(LockList.getByDirection(source, '做多').map((r) => r.stock_code));
+      pushCodes(LockList.getByDirection(source, '做空').map((r) => r.stock_code));
+    } catch { /* 單一來源抓不到就跳過，不影響其他來源 */ }
+  }
+  for (const file of ['strong_stocks_current.json', 'strong_stocks_xq.json']) {
+    try {
+      const res = await fetch(`${RAW}/main/watchlist/${file}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        pushCodes((data.data || []).map((r) => String(r['代碼'])).filter(Boolean));
+      }
+    } catch { /* 抓不到就跳過這個tier */ }
+  }
+
+  const targets = codes.slice(0, maxStocks);
+  const nowTs = new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  const CONCURRENCY = 8;
+  const results = [];
+  let idx = 0;
+  async function worker() {
+    while (idx < targets.length) {
+      const code = targets[idx++];
+      const info = DBMgr.getStockInfo(code);
+      const market = info ? info.market : 'TWSE';
+      const symbol = code + (market === 'TWSE' ? '.TW' : '.TWO');
+      try {
+        const url = `${TWSE_PROXY_BASE}/yahoo-intraday?symbol=${symbol}&range=1d&interval=1m`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const result = data && data.chart && data.chart.result && data.chart.result[0];
+        const q = result && result.indicators && result.indicators.quote && result.indicators.quote[0];
+        if (!q) continue;
+        const closes = (q.close || []).filter((v) => v != null);
+        const opens = (q.open || []).filter((v) => v != null);
+        const highs = (q.high || []).filter((v) => v != null);
+        const lows = (q.low || []).filter((v) => v != null);
+        const volumes = (q.volume || []).filter((v) => v != null);
+        if (!closes.length) continue;
+        results.push({
+          code, ts: nowTs,
+          price: closes[closes.length - 1],
+          open: opens.length ? opens[0] : null,
+          high: highs.length ? Math.max(...highs) : null,
+          low: lows.length ? Math.min(...lows) : null,
+          volume: volumes.length ? volumes.reduce((a, b) => a + b, 0) : null,
+        });
+      } catch { /* 單檔失敗跳過，不影響其他檔 */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker));
+  VolumeRanking.mergeSnapshots(results, `瀏覽器緊急擷取${results.length}/${targets.length}檔`);
+  return { requested: targets.length, collected: results.length };
 }
 
 /* 左側 view-sel 選到「分析」時：借用既有的 #stock-table 清單UI 把 6 種報告
@@ -10136,7 +10283,43 @@ function renderAiTab() {
     contextProvider: buildAiLiveContext,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
+  registerAiSlashCommands(aiConsoleInstance);
   aiConsoleInstance.toggleWindow();
+}
+
+// tw_stock_db客製: tw_stock_db自己的斜線指令一律從這裡用
+// ai.register_slash_command()掛進floating-assistant.js（2026-08-23使用者
+// 明確要求：stock相關的客製化行為不要變成floating-assistant.js的內建
+// 功能，那個檔案要保持是可重用的通用元件，只留真正跟聊天widget本身有關
+// 的指令如/benchmark-model）。新增一個指令只需要在這裡加一段
+// register_slash_command()呼叫，跟registerAiCapabilities()新增AI工具是
+// 同一種模式。
+function registerAiSlashCommands(ai) {
+  ai.register_slash_command(
+    '/collect-volrank', '',
+    '緊急/即時需求：不等Raspberry Pi高頻收集器排程，網頁自己透過worker立即補抓一批量排行資料',
+    async () => {
+      const chatBody = document.getElementById('ai-chat-body');
+      const progressId = `volrank-progress-${Date.now()}`;
+      if (chatBody) {
+        chatBody.insertAdjacentHTML('beforeend', `<div id="${progressId}" style="margin:8px 0; padding:8px 10px; border:1px solid ${ai._getThemePalette().windowBorder}; border-radius:6px; font-size:12px;">📊 正在透過worker即時補抓量排行資料…</div>`);
+      }
+      const progressEl = document.getElementById(progressId);
+      let result;
+      try {
+        result = await collectVolumeRankingNow(60);
+      } catch (e) {
+        result = { error: String(e.message || e) };
+      }
+      if (progressEl) progressEl.remove();
+      const summary = result.error
+        ? `📊 量排行緊急擷取失敗：${result.error}`
+        : `📊 量排行緊急擷取完成：${result.collected}/${result.requested} 檔取得最新快照，已更新「量排行」分頁的暫存資料（只在這個分頁有效，重新整理會恢復成讀取GitHub上Pi的正式資料）。`;
+      ai.messages.push({ role: 'assistant', content: summary });
+      ai._persistChatHistory();
+      ai._renderMessageHistory();
+    }
+  );
 }
 
 // tw_stock_db客製: 每一輪對話開始前都會被floating-assistant.js的executeChat()
