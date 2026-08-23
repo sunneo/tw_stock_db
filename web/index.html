@@ -1605,7 +1605,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=c0bb630b9a"></script>
+<script src="floating-assistant.js?v=99439d2ff6"></script>
 
 <script>
 'use strict';
@@ -10214,9 +10214,12 @@ function selectStock(code) {
      手機直向 media query 下才有視覺效果，但這裡的呼叫本身不分裝置）。 */
   switchMobileTab(chartMode === 'intraday' ? 'trend' : chartMode === 'chip' ? 'chip' : chartMode === 'diagnosis' ? 'diagnosis' : 'chart');
   setDrawerOpen(false);
-  // 換股票時，如果AI分頁已經開過，順便重新產生推薦詢問chip（把新選中的
-  // 股票代入模板），不用等使用者切到AI分頁才更新。
-  if (typeof aiConsoleInstance !== 'undefined' && aiConsoleInstance) aiConsoleInstance.refreshSuggestionChips();
+  // tw_stock_db客製: 2026-08-24使用者要求——換股票不再主動插入建議操作
+  // 訊息到AI對話裡（原本的refreshSuggestionChips()常駐bar已經改成
+  // insertSuggestionChipsMessage()插入對話訊息，見floating-assistant.js
+  // 的說明）：如果使用者正在AI分頁聊到一半，換股票卻突然被插入一則訊息
+  // 會打斷對話，不符合「只在完全沒有對話/使用者主動要求時才插入」的
+  // 原則。使用者換股票後想要新的建議，可以自己在AI分頁輸入/suggest。
 }
 
 /* 手機版抱怨：想看下一檔都要跳回清單分頁才能點。這裡在圖表header的最左/最右
@@ -10605,7 +10608,11 @@ function renderAiTab() {
     R.aiTabPanel.innerHTML = '<div class="diag-empty">AI助理尚未啟用，請到設定裡的「AI助理」分頁勾選啟用。</div>';
     return;
   }
-  if (aiConsoleInstance) { aiConsoleInstance.refreshSuggestionChips(); return; } // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建；但推薦詢問chip要重新產生，可能換了選中的股票
+  // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建；
+  // 建議操作訊息只在完全沒有對話/使用者輸入/suggest時才插入（見
+  // floating-assistant.js的insertSuggestionChipsMessage()），單純切回這個
+  // 分頁不用做任何事。
+  if (aiConsoleInstance) return;
   // 使用者若還沒在AI設定面板自己填過API Key，預先塞一組
   // tw_stock_db_api:{sessionid} 假金鑰，讓Cloudflare Worker認得這個格式、
   // 改用worker端藏著的真金鑰代打（見 web/cloudflare-worker/worker.js 的
@@ -10717,9 +10724,11 @@ function buildAiLiveContext() {
 // tw_stock_db客製: 2026-08-23使用者要求「使用者切到AI的時候，貼幾個
 // breadcrumb讓使用者按下去當推薦詢問」——這是floating-assistant.js
 // chipsProvider選項的實際內容（見new FloatingAssistant()呼叫處跟
-// refreshSuggestionChips()），把「目前選中的股票」代入模板文字。跟
+// insertSuggestionChipsMessage()），把「目前選中的股票」代入模板文字。跟
 // buildAiLiveContext()一樣用currentChartSource當「目前選中的股票」依據，
-// 保持兩處判斷邏輯一致。
+// 保持兩處判斷邏輯一致。2026-08-24起，這份建議不再是常駐UI，只在對話
+// 一開始/使用者輸入/suggest時插入成訊息（見floating-assistant.js的說明），
+// 換股票不會自動重新插入。
 function buildAiSuggestionChips() {
   const chips = [];
   if (currentChartSource && currentChartSource.type === 'stock') {
