@@ -3776,6 +3776,71 @@ ${existingNodeSummaries}
         }
     }
 
+    // tw_stock_db客製: 2026-08-23使用者要求「AI回應的markdown內容右下角有
+    // 一個小按鈕可以匯出markdown/pptx/pdf」。Markdown本身是純文字，
+    // floating-assistant.js自己就能做（不需要任何外部轉檔能力），直接用
+    // 既有的generateAndDeliverFile()。PPTX/PDF需要把markdown轉成投影片
+    // 結構、套用這個網站自己的版型（ReportExport），floating-assistant.js
+    // 不認識這些，一樣透過options.onExportMarkdown(markdownText, format)
+    // 這個callback交給index.html處理（跟chipsProvider/onTableRendered同一種
+    // 模式）——沒有提供這個callback時，PPTX/PDF按鈕會停用並提示原因，
+    // Markdown永遠可用。
+    _appendMarkdownExportButton(container, markdownText, palette) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:absolute; bottom:4px; right:6px;';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = '匯出這則回覆';
+        btn.textContent = '📤';
+        btn.style.cssText = `border:none; background:transparent; cursor:pointer; font-size:13px; opacity:0.6; padding:2px 4px;`;
+        btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
+        btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.6'; });
+        wrap.appendChild(btn);
+
+        const menu = document.createElement('div');
+        menu.style.cssText = `display:none; position:absolute; bottom:100%; right:0; margin-bottom:4px; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.25); z-index:5; min-width:120px;`;
+        const canExportSlides = typeof this.options.onExportMarkdown === 'function';
+        const items = [
+            { fmt: 'markdown', label: '📝 Markdown', enabled: true },
+            { fmt: 'pptx', label: '📊 PPTX', enabled: canExportSlides },
+            { fmt: 'pdf', label: '📄 PDF', enabled: canExportSlides },
+        ];
+        menu.innerHTML = items.map((it) => `
+            <div class="ai-export-item" data-fmt="${it.fmt}" style="padding:6px 12px; font-size:12px; cursor:${it.enabled ? 'pointer' : 'not-allowed'}; color:${it.enabled ? palette.detailText : '#888'};" title="${it.enabled ? '' : '這個聊天視窗沒有提供PPTX/PDF匯出功能'}">${it.label}</div>
+        `).join('');
+        wrap.appendChild(menu);
+        container.appendChild(wrap);
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('.ai-export-menu-open').forEach((m) => { if (m !== menu) m.style.display = 'none'; });
+            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+        });
+        document.addEventListener('click', () => { menu.style.display = 'none'; });
+        menu.querySelectorAll('.ai-export-item').forEach((item) => {
+            item.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                menu.style.display = 'none';
+                const fmt = item.dataset.fmt;
+                if (fmt !== 'markdown' && !canExportSlides) return;
+                const originalText = btn.textContent;
+                btn.textContent = '⏳';
+                try {
+                    if (fmt === 'markdown') {
+                        const blob = new Blob([markdownText], { type: 'text/markdown;charset=utf-8' });
+                        await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.md`, 'text/markdown');
+                    } else {
+                        await this.options.onExportMarkdown(markdownText, fmt);
+                    }
+                } catch (err) {
+                    this._log(`❌ 匯出失敗（${fmt}）：${err.message || err}`);
+                } finally {
+                    btn.textContent = originalText;
+                }
+            });
+        });
+    }
+
     // tw_stock_db客製: 斜線指令的公開註冊入口，跟register_openai_tool()同一種
     // 「外部程式碼可以自己掛新能力進來、不用改floating-assistant.js本體」的
     // 設計——2026-08-23使用者明確要求「stock相關的客製化行為（例如
@@ -5992,7 +6057,7 @@ ${existingNodeSummaries}
                 detailEl.appendChild(thinkDiv);
                 container.appendChild(detailEl);
             }
-            div.style.cssText += `background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
+            div.style.cssText += `background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900; position: relative;`;
             const label = document.createElement('div');
             label.style.cssText = 'margin-bottom: 4px;';
             label.innerHTML = '<b>🤖 AI:</b>';
@@ -6029,6 +6094,7 @@ ${existingNodeSummaries}
                         catch (e) { console.warn('onTableRendered callback失敗:', e); }
                     });
                 }
+                this._appendMarkdownExportButton(div, answerText, palette);
             } else {
                 div.appendChild(document.createTextNode(answerText));
                 if (!this._markdownRerenderScheduled) {
