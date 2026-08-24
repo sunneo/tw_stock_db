@@ -2156,14 +2156,19 @@ const VolumeRanking = (() => {
     return { byCode, lastTs };
   }
 
+  // tw_stock_db客製: 2026-08-24使用者要求——高頻即時資料改從獨立的hf-live
+  // 分支讀（不再是main），這個分支只留最近幾天、沒有長久保留的commit歷史
+  // 包袱（見rpi/collector.js的ensureHfLiveRepo/pruneOldHfLiveDays說明）。
+  // 格式切換前的歷史日期（那時候還是main分支+JSONL格式）往下相容，改抓
+  // main分支的.jsonl。
   async function fetchDay(dateStr) {
     try {
       let byCode, lastTs;
-      const csvRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.csv`, { cache: 'no-store' });
+      const csvRes = await fetch(`${RAW}/hf-live/daily/${dateStr}/hf_intraday.csv`, { cache: 'no-store' });
       if (csvRes.ok) {
         ({ byCode, lastTs } = parseHfIntradayCSV(await csvRes.text()));
       } else {
-        // 格式切換前的歷史日期，往下相容舊格式
+        // 格式/分支切換前的歷史日期，往下相容main分支的舊格式
         const jsonlRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
         if (!jsonlRes.ok) return null;
         ({ byCode, lastTs } = parseHfIntradayJSONL(await jsonlRes.text()));
@@ -2301,18 +2306,33 @@ function scanTrendFlipEvents(bars) {
 // 抓單一股票整天的分鐘序列——跟上面VolumeRanking.fetchDay()讀同一份檔案，
 // 但fetchDay()只保留每檔最後一筆（給量排行用，不需要歷史序列），這裡要的
 // 是整天的序列，各自獨立實作、互不影響，也不影響VolumeRanking既有行為。
+// tw_stock_db客製: 2026-08-24使用者要求——高頻即時資料改讀hf-live分支的
+// CSV格式，跟上面VolumeRanking.fetchDay()同一套切換邏輯：先試hf-live分支
+// 的.csv，格式/分支切換前的歷史日期往下相容main分支的舊.jsonl。
 async function fetchIntradayTicksForStock(dateStr, code) {
   try {
-    const res = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
-    if (!res.ok) return null;
-    const text = await res.text();
     const ticks = [];
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const rec = JSON.parse(line);
-        if (rec && rec.code === code && rec.ts && rec.price != null) ticks.push({ ts: rec.ts, price: rec.price });
-      } catch { /* 壞掉的單行跳過 */ }
+    const csvRes = await fetch(`${RAW}/hf-live/daily/${dateStr}/hf_intraday.csv`, { cache: 'no-store' });
+    if (csvRes.ok) {
+      const lines = (await csvRes.text()).split('\n');
+      for (let i = 1; i < lines.length; i++) { // 跳過header
+        const line = lines[i];
+        if (!line.trim()) continue;
+        const cells = line.split(',');
+        if (cells.length !== 7) continue;
+        const [rowCode, ts, price] = cells;
+        if (rowCode === code && ts && price !== '') ticks.push({ ts, price: Number(price) });
+      }
+    } else {
+      const jsonlRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+      if (!jsonlRes.ok) return null;
+      for (const line of (await jsonlRes.text()).split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line);
+          if (rec && rec.code === code && rec.ts && rec.price != null) ticks.push({ ts: rec.ts, price: rec.price });
+        } catch { /* 壞掉的單行跳過 */ }
+      }
     }
     ticks.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
     return ticks.length ? ticks : null;
