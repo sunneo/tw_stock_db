@@ -778,6 +778,7 @@ select:focus { outline: 2px solid var(--acc); }
 /* ── Strong-stock filter bar ── */
 #strong-bar { display: flex; flex-direction: column; gap: 6px; }
 #volrank-bar { display: flex; flex-direction: column; gap: 6px; }
+#lock-intraday-bar { display: flex; flex-direction: column; gap: 6px; }
 #volrank-status { color: var(--txt2); font-size: 11px; }
 #strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; white-space: pre-line; line-height: 1.6; }
 
@@ -1220,6 +1221,13 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="big_vol_down">大量位置在下跌</option>
         </select>
         <div id="volrank-status" class="modal-hint"></div>
+      </div>
+      <div id="lock-intraday-bar" class="hidden">
+        <select id="lock-intraday-sub-sel">
+          <option value="all" id="opt-lockid-all">(不區分)</option>
+          <option value="up" id="opt-lockid-up">-漲</option>
+          <option value="down" id="opt-lockid-down">-跌</option>
+        </select>
       </div>
       <div id="wl-bar" class="hidden">
         <input id="wl-input" type="text" placeholder="輸入代號或名稱，按 Enter 或 + 新增" autocomplete="off">
@@ -7746,6 +7754,8 @@ const R = {
   volrankBar:      $('volrank-bar'),
   volrankSubSel:   $('volrank-sub-sel'),
   volrankStatus:   $('volrank-status'),
+  lockIntradayBar:    $('lock-intraday-bar'),
+  lockIntradaySubSel: $('lock-intraday-sub-sel'),
   stockTable:  $('stock-table'),
   stockTbody:  $('stock-tbody'),
   prevBtn:     $('prev-btn'),
@@ -8419,6 +8429,20 @@ function parseLockView(view) {
   return view.match(/^lock_(week|intraday|nextday)_(long|short)$/);
 }
 
+/* 「鎖做多-盤中」/「鎖做空-盤中」底下的子分類下拉選單（2026-08-24使用者
+   要求）：盤中鎖股名單可能同時有幾十檔候選，使用者想先依「今天是漲是跌」
+   （watchlist記錄裡本來就有的today_pct欄位）快速縮小範圍，不用整批看完。
+   比照#volrank-bar／R.volrankSubSel的既有子篩選模式，唯一差異是選項文字
+   要依目前選的是「鎖做多」還是「鎖做空」動態換字（比照
+   updateLockListOptionLabels()動態填日期的做法）。 */
+function updateLockIntradaySubLabels(direction) {
+  const prefix = direction === 'long' ? '鎖做多盤中' : '鎖做空盤中';
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  set('opt-lockid-up', `${prefix}-漲`);
+  set('opt-lockid-down', `${prefix}-跌`);
+  set('opt-lockid-all', `${prefix}(不區分)`);
+}
+
 /* 鎖股名單-鎖做多/鎖做空：來自排程產生的 watchlist/*.json（見
    run_daily_update.py 的 Step 7），跟使用者自己維護的「自選股」是兩回事，
    此處唯讀。source 是 'week'|'intraday'|'nextday'，見 LockList 模組註解。 */
@@ -8426,10 +8450,26 @@ async function loadLockList(source, direction) {
   const dirZh = direction === 'long' ? '做多' : '做空';
   R.stockTbody.innerHTML = '<tr><td colspan="8" class="empty-hint">載入鎖股名單中…</td></tr>';
   await LockList.ensureLoaded(source);
-  const recs  = LockList.getByDirection(source, dirZh);
+  let recs = LockList.getByDirection(source, dirZh);
   const codes = recs.map(r => r.stock_code);
   const priceRows = DBMgr.getWatchlistStocks(codes);
   const priceMap  = Object.fromEntries(priceRows.map(r => [r.stock_code, r]));
+  // tw_stock_db客製: 2026-08-24使用者要求「盤中鎖股」子分類依漲跌篩選——
+  // 故意用跟表格漲跌%欄位同一個資料源（DBMgr即時close/prev_close），不是
+  // watchlist JSON裡的today_pct（那是產生名單當下的靜態快照，可能已經跟
+  // 現在畫面上顯示的即時漲跌不同步），確保「篩到的」跟「畫面上看到的」
+  // 漲跌方向一致，不會讓使用者覺得篩選結果對不起來。close/prev_close缺一
+  // 個時退回today_pct（例如DBMgr還沒抓到這檔的即時價）。
+  if (source === 'intraday') {
+    const sub = R.lockIntradaySubSel.value;
+    if (sub === 'up' || sub === 'down') {
+      recs = recs.filter(r => {
+        const p = priceMap[r.stock_code];
+        const chg = (p?.close != null && p?.prev_close != null) ? (p.close - p.prev_close) : (r.today_pct ?? 0);
+        return sub === 'up' ? chg > 0 : chg < 0;
+      });
+    }
+  }
   State.stocks = recs.map(r => {
     const p = priceMap[r.stock_code];
     return {
@@ -8458,6 +8498,9 @@ function switchView(view) {
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
   R.strongBar.classList.toggle('hidden', view !== 'strong');
   R.volrankBar.classList.toggle('hidden', view !== 'volrank');
+  R.lockIntradayBar.classList.toggle('hidden', view !== 'lock_intraday_long' && view !== 'lock_intraday_short');
+  if (view === 'lock_intraday_long') updateLockIntradaySubLabels('long');
+  else if (view === 'lock_intraday_short') updateLockIntradaySubLabels('short');
 
   /* 「分析」清單選的是報告，不是個股/指數——技術分析/走勢圖這兩個分頁對
      它沒有意義，切進「分析」時整組藏起來；離開「分析」時要清掉報告狀態、
@@ -11645,6 +11688,11 @@ function bindEvents() {
 
   /* 量排行子篩選 */
   R.volrankSubSel.addEventListener('change', () => { Settings.set('volrankSub', R.volrankSubSel.value); loadVolRank(); });
+  R.lockIntradaySubSel.addEventListener('change', () => {
+    Settings.set('lockIntradaySub', R.lockIntradaySubSel.value);
+    const m = parseLockView(R.viewSel.value);
+    if (m) loadLockList(m[1], m[2]);
+  });
 
   /* paginator */
   R.prevBtn.addEventListener('click', () => { if (State.page > 0) { State.page--; renderPage(); } });
@@ -12330,6 +12378,7 @@ async function main() {
   Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
   R.volrankSubSel.value = Settings.get('volrankSub') || 'vol_long';
+  R.lockIntradaySubSel.value = Settings.get('lockIntradaySub') || 'all';
 
   /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
      觸發，這裡先把分頁按鈕、級距切換鈕的視覺狀態同步起來） */
