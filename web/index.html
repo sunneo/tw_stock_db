@@ -2108,22 +2108,65 @@ const VolumeRanking = (() => {
   //   isStale: dateStr !== 今天 }
   let cache = null;
 
+  // tw_stock_db客製: 2026-08-24使用者要求把hf_intraday.jsonl改成CSV——單日
+  // 這個檔案量體大（估算可到45萬行/~49MB原始文字），JSON每行都重複一次
+  // 欄位名稱，換成CSV（跟這個repo daily/資料夾其他檔案一致的格式）省下
+  // 40-50%大小，減輕Pi端git push的負擔。格式切換前的歷史日期（回溯7天找
+  // 資料時可能碰到）還是舊的.jsonl，所以.csv抓不到（404）時往下相容嘗試
+  // .jsonl，兩種格式都解析成同樣的{code,ts,price,open,high,low,volume}
+  // 物件，下游（rank()等）完全不用跟著改。
+  function parseHfIntradayCSV(text) {
+    const byCode = new Map();
+    let lastTs = null;
+    const lines = text.split('\n');
+    for (let i = 1; i < lines.length; i++) { // 跳過第一行header
+      const line = lines[i];
+      if (!line.trim()) continue;
+      const cells = line.split(',');
+      if (cells.length !== 7) continue; // 壞掉的單行跳過，不影響其他列
+      const [code, ts, price, open, high, low, volume] = cells;
+      if (!code) continue;
+      const rec = {
+        code, ts,
+        price: price === '' ? null : Number(price),
+        open: open === '' ? null : Number(open),
+        high: high === '' ? null : Number(high),
+        low: low === '' ? null : Number(low),
+        volume: volume === '' ? null : Number(volume),
+      };
+      byCode.set(code, rec); // 依檔案裡的順序覆蓋，保留每檔最後（最新）一筆
+      if (ts && (!lastTs || ts > lastTs)) lastTs = ts;
+    }
+    return { byCode, lastTs };
+  }
+
+  function parseHfIntradayJSONL(text) {
+    const byCode = new Map();
+    let lastTs = null;
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line);
+        if (rec && rec.code) {
+          byCode.set(rec.code, rec);
+          if (rec.ts && (!lastTs || rec.ts > lastTs)) lastTs = rec.ts;
+        }
+      } catch { /* 壞掉的單行跳過，不影響其他列 */ }
+    }
+    return { byCode, lastTs };
+  }
+
   async function fetchDay(dateStr) {
     try {
-      const res = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
-      if (!res.ok) return null;
-      const text = await res.text();
-      const byCode = new Map();
-      let lastTs = null;
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const rec = JSON.parse(line);
-          if (rec && rec.code) {
-            byCode.set(rec.code, rec); // 依檔案裡的順序覆蓋，保留每檔最後（最新）一筆
-            if (rec.ts && (!lastTs || rec.ts > lastTs)) lastTs = rec.ts;
-          }
-        } catch { /* 壞掉的單行跳過，不影響其他列 */ }
+      let byCode, lastTs;
+      const csvRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.csv`, { cache: 'no-store' });
+      if (csvRes.ok) {
+        ({ byCode, lastTs } = parseHfIntradayCSV(await csvRes.text()));
+      } else {
+        // 格式切換前的歷史日期，往下相容舊格式
+        const jsonlRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+        if (!jsonlRes.ok) return null;
+        ({ byCode, lastTs } = parseHfIntradayJSONL(await jsonlRes.text()));
       }
       return byCode.size ? { dateStr, byCode, lastTs } : null;
     } catch { return null; }
