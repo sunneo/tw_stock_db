@@ -1217,8 +1217,8 @@ select:focus { outline: 2px solid var(--acc); }
         <select id="volrank-sub-sel">
           <option value="vol_long">量排行-多</option>
           <option value="vol_short">量排行-空</option>
-          <option value="big_vol_up">大量位置在上漲</option>
-          <option value="big_vol_down">大量位置在下跌</option>
+          <option value="big_vol_up">大量貼近當日高點</option>
+          <option value="big_vol_down">大量貼近當日低點</option>
         </select>
         <div id="volrank-status" class="modal-hint"></div>
       </div>
@@ -2177,7 +2177,14 @@ const VolumeRanking = (() => {
   }
 
   // sub: 'vol_long'（量排行-多）| 'vol_short'（量排行-空）|
-  //      'big_vol_up'（大量位置在上漲）| 'big_vol_down'（大量位置在下跌）
+  //      'big_vol_up'（大量貼近當日高點）| 'big_vol_down'（大量貼近當日低點）
+  // tw_stock_db客製: 2026-08-24使用者反映「大量位置在上漲」這個舊標籤名稱
+  // 誤導——pos_in_range比較的是「現價在『今天自己』盤中高低區間的位置」
+  // （0=貼今天最低、1=貼今天最高），不是「今天收盤比昨收漲或跌」，所以清單
+  // 裡出現今天其實是跌的股票並不是bug（可能開高走低、盤中從更低點反彈回
+  // 到接近當天高點，跟昨收比仍是負的），只是舊標籤文字容易讓人誤會成
+  // 「今天上漲的股票」。改名成「大量貼近當日高/低點」，語意跟pos_in_range
+  // 的實際判斷條件（vol_ratio>=1.2 且 pos_in_range>=0.8／<=0.2）對齊。
   async function rank(sub, topN = 100) {
     const { byCode } = await ensureLoaded();
     const codes = [...byCode.keys()];
@@ -8595,9 +8602,18 @@ async function loadVolRank() {
     } else {
       timeInfo = `資料時間：${meta.lastTs || meta.dateStr}（來源：${sourceLabel}）`;
     }
-    R.volrankStatus.textContent = rows.length
+    // tw_stock_db客製: 2026-08-24使用者反映「大量位置在上漲/下跌」清單裡
+    // 出現跟標籤方向相反的漲跌%，誤以為是分類錯誤——實際判斷條件是「現價
+    // 貼近『今天自己』盤中高低區間的哪一端」，不是「今天比昨收漲跌」，兩者
+    // 是不同概念（可能開高走低、盤中從更低點反彈到接近當天高點，跟昨收比
+    // 仍是負的）。在這個子篩選底下额外补一句判斷條件說明，讓使用者一眼
+    // 看出這裡篩的是「位置」不是「方向」，不用再去猜清單邏輯。
+    const subHint = (sub === 'big_vol_up' || sub === 'big_vol_down')
+      ? `（量比≥1.2倍5日均量，且現價貼近「今天盤中自己」高低區間的${sub === 'big_vol_up' ? '最高' : '最低'}20%——跟昨收比是漲是跌不影響這裡的分類）`
+      : '';
+    R.volrankStatus.textContent = (rows.length
       ? `共 ${rows.length} 檔。${timeInfo}`
-      : `目前沒有符合條件的股票。${timeInfo}`;
+      : `目前沒有符合條件的股票。${timeInfo}`) + subHint;
   } catch (e) {
     R.volrankStatus.textContent = '讀取失敗：' + e.message;
   }
