@@ -6370,7 +6370,20 @@ ${existingNodeSummaries}
             const linkEl = fileWrap.querySelector('.ai-file-download-link');
             this.fileCache.get(id).then(record => {
                 if (!record) throw new Error('not found');
-                const url = URL.createObjectURL(record.blob);
+                // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
+                // 檔——PPTX(OOXML)內部結構本來就是zip壓縮檔，Blob經過IndexedDB
+                // 存取一輪後，record.blob自己的.type偶爾會遺失變成空字串（已知
+                // 瀏覽器/IndexedDB結構化複製的行為，不是每次都會發生），這時
+                // createObjectURL()產生的下載沒有明確MIME type可用，瀏覽器只能
+                // 用內容本身猜測，猜出zip格式（技術上沒錯，但不是使用者要的
+                // 結果）。record.mimeType是put()當初存進去、跟blob分開的獨立
+                // 欄位，一直都在但從沒被實際用來設定下載內容——這裡用它明確
+                // 重新包一次Blob，確保不管record.blob.type本身還在不在，下載
+                // 出去的內容一律帶正確的PPTX/PDF/Markdown MIME type。
+                const blobWithType = record.mimeType && record.blob.type !== record.mimeType
+                    ? new Blob([record.blob], { type: record.mimeType })
+                    : record.blob;
+                const url = URL.createObjectURL(blobWithType);
                 linkEl.href = url;
                 linkEl.setAttribute('download', record.filename);
                 linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
