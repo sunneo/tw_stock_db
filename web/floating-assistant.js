@@ -6810,6 +6810,30 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
     }
 
+    // tw_stock_db客製: 2026-08-26使用者要求——換股票（或任何會讓
+    // chipsProvider()回傳內容改變的動作）時，如果對話「目前唯一的內容」
+    // 就是建議操作訊息本身（代表使用者根本還沒開始聊，只是看看有什麼可以
+    // 問），舊的建議會造成誤會——例如剛從2330切到2027，畫面卻還顯示
+    // 「台積電(2330)持股診斷」，使用者會誤以為那是針對目前這檔的建議。
+    // 這種「對話還沒真的開始」的情況下應該原地替換成新內容，不是插入
+    // 新一則（避免同一個對話裡疊出兩則建議操作訊息）。如果使用者已經開始
+    // 聊（除了那則建議還有其他訊息），維持insertSuggestionChipsMessage()
+    // 既有的「不打斷對話」原則，完全不動、不呼叫也不插入。
+    refreshSuggestionChipsIfUntouched() {
+        const onlyMsg = this.messages.length === 1 ? this.messages[0] : null;
+        if (!onlyMsg || !onlyMsg._suggestionChips) {
+            if (!this.messages.length) this.insertSuggestionChipsMessage();
+            return; // 已經有其他對話內容，不打斷，什麼都不做
+        }
+        const chips = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
+        if (!chips.length) return;
+        const content = '💡 建議操作（點擊可以快速填入輸入框）：\n' + chips.map(c => `- ${c.label || c.text}`).join('\n');
+        onlyMsg.content = content;
+        Object.defineProperty(onlyMsg, '_suggestionChips', { value: chips, enumerable: false, configurable: true });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
     _initEventListeners() {
         const win = document.getElementById('ai-floating-window');
         const inputKey = document.getElementById('ai-input-key');
