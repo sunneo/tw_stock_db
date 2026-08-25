@@ -1627,6 +1627,43 @@ ${fnData.code}
                 }
             }
         );
+
+        // tw_stock_db客製: 2026-08-25使用者要求——文字式[CALL:...]協定模型
+        // （目前最明顯是nvidia/nemotron-3-super-120b-a12b，NVIDIA NIM端點對它
+        // 的原生tool_calls支援探測結果是false，見PRESET_MODEL_TOOLCALL_SUPPORT
+        // 說明，被迫走文字協定）原本每一輪對話都要把全部已註冊工具（目前38個）
+        // 的完整說明+參數JSON攤平進system prompt，量測起來高達約11,450字
+        // （光是export_document跟render_stock_chart兩個就佔了近4,000字）——
+        // 這正是使用者實測「模型越換越大顆反而越容易幻覺」的根因之一：不是
+        // 單純「context太大」，而是文字協定把所有工具的完整規格用自然語言
+        // 攤開，模型必須從這一大段文字裡精確記住每個工具的確切名稱/參數
+        // 格式，再手打出語法正確的呼叫，比原生API的結構化schema容易出錯
+        // 得多。解法：文字協定模式下，system prompt裡只列「名稱+極短摘要」
+        // （見_getFinalSystemPrompt()/_summarizeToolDescription()），這個
+        // get_tool_details就是對應的「按需查詢」入口——模型要呼叫一個不熟悉
+        // 的工具之前，先呼叫這個查出它完整的描述+參數格式，不用猜的。
+        // 原生tool_calls模式完全不受影響：那個路徑本來就用
+        // _buildNativeToolsSchema()把完整工具清單透過API的tools參數結構化
+        // 傳給模型，不會被這裡的「文字協定清單縮減」影響，模型也不需要呼叫
+        // 這個工具（結構化schema裡本來就看得到完整參數）。
+        this.register_openai_tool('get_tool_details',
+            '查詢一個或多個工具的完整說明（用途、每個參數的確切名稱與格式）。上面工具清單裡其他項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前，務必先呼叫這個工具查出它完整的參數規格，不要自己憑印象/猜測參數名稱或格式。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const names = Array.isArray(parsed.names) ? parsed.names
+                    : (typeof parsed.names === 'string' ? [parsed.names] : []);
+                if (!names.length) return JSON.stringify({ ok: false, error: '缺少names參數（工具名稱陣列，例如{"names":["get_price_history"]}）' });
+                const entries = this._getCombinedToolEntries();
+                const found = {}, notFound = [];
+                for (const name of names) {
+                    const entry = entries.find(([n]) => n === name);
+                    if (entry) found[name] = entry[1].description;
+                    else notFound.push(name);
+                }
+                return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
+            }
+        );
     }
 
     _refreshSystemPromptMessage() {
@@ -1709,6 +1746,20 @@ ${fnData.code}
         return true;
     }
 
+    // tw_stock_db客製: 見get_tool_details註冊處的說明——文字協定模式下，
+    // system prompt裡每個工具只給「名稱+極短摘要」，不給完整description
+    // （可能上千字），精確參數格式一律靠get_tool_details查詢。摘要取
+    // description開頭到第一個中文/英文句讀（。，；！,.）或字數上限，先到
+    // 先切——只是給模型一個「這個工具大概是做什麼的」的粗略印象，用來判斷
+    // 要不要查詢它的完整規格，不是要在這裡塞完整規格。
+    _summarizeToolDescription(desc, maxLen = 36) {
+        const text = String(desc || '');
+        const cutAt = text.search(/[。，；！,.\n]/);
+        let summary = (cutAt > 0 && cutAt < maxLen) ? text.slice(0, cutAt) : text.slice(0, maxLen);
+        if (summary.length < text.length) summary += '…';
+        return summary;
+    }
+
     _getFinalSystemPrompt() {
         const sections = [];
         const rulesMd = String(this.advancedSettings.rulesMd || '').trim();
@@ -1722,14 +1773,17 @@ ${fnData.code}
         // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
         // 結構化傳給模型，不需要再用文字重複描述一次工具清單、更不需要
         // [TOOL CALL PROTOCOL]這段文字慣例(那是給不支援原生function call的
-        // 模型用的)，所以這裡整段跳過。
+        // 模型用的)，所以這裡整段跳過。這裡的「名稱+摘要」縮減也只影響文字
+        // 協定路徑，原生模式不受影響（見_summarizeToolDescription說明）。
         const { apiModel } = this._getApiConfig();
         if (!this._shouldUseNativeToolCalls(apiModel) && (predefinedTools.length || customTools.length)) {
             const toolSections = [];
             if (predefinedTools.length) {
                 toolSections.push([
-                    '[PREDEFINED TOOLS]',
-                    ...predefinedTools.map(([name, tool]) => `- ${name}: ${tool.description}`)
+                    '[PREDEFINED TOOLS] (name + short hint only — call get_tool_details({"names":[...]}) to get a tool\'s exact parameters before using it for the first time; never guess parameter names/format)',
+                    ...predefinedTools.map(([name, tool]) => name === 'get_tool_details'
+                        ? `- ${name}: ${tool.description}`
+                        : `- ${name}: ${this._summarizeToolDescription(tool.description)}`)
                 ].join('\n'));
             }
             if (customTools.length) {
@@ -1753,6 +1807,7 @@ ${fnData.code}
                 'ARGUMENTS_AS_JSON_OBJECT means a JSON object whose keys match the parameter names listed in that tool\'s description — NEVER a bare value. For example, if a tool\'s params are {"code": "stock code"}, call it as:',
                 '[CALL: diagnose_stock({"code": "2330"})]',
                 'and NOT as [CALL: diagnose_stock("2330")] or [CALL: diagnose_stock(2330)].',
+                'The [PREDEFINED TOOLS] list above only gives each tool\'s name and a short hint, not its exact parameters. Before calling any tool for the first time in this conversation, call get_tool_details({"names": ["tool_name"]}) to get its exact parameter names/format, unless you already saw its full details earlier in this same conversation. Never invent or guess a parameter name that was not shown to you.',
                 'Do not output anything else in that turn. Once the user provides the [TOOL RESULT], you will continue answering.'
             ].join('\n'));
             sections.push(toolSections.join('\n\n'));
