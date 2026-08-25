@@ -1614,7 +1614,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=7a99e059a0"></script>
+<script src="floating-assistant.js?v=d840cfa7e8"></script>
 
 <script>
 'use strict';
@@ -10543,6 +10543,13 @@ function selectStock(code) {
   // 的說明）：如果使用者正在AI分頁聊到一半，換股票卻突然被插入一則訊息
   // 會打斷對話，不符合「只在完全沒有對話/使用者主動要求時才插入」的
   // 原則。使用者換股票後想要新的建議，可以自己在AI分頁輸入/suggest。
+  // 2026-08-26使用者追加要求：上面「不打斷對話」的原則沒有變，但如果
+  // 對話裡「目前唯一的內容」就是建議操作訊息本身（代表根本還沒開始聊），
+  // 舊的建議會造成誤會——換到新股票後畫面卻還顯示上一檔的建議文字，
+  // 使用者會誤以為那是針對目前這檔的建議。這種情況原地替換成新股票的
+  // 建議，見refreshSuggestionChipsIfUntouched()的說明；真的已經開始聊的
+  // 情況下這個函式本身就會判斷出來、什麼都不做，不用在這裡額外判斷。
+  if (aiConsoleInstance) aiConsoleInstance.refreshSuggestionChipsIfUntouched();
 }
 
 /* 手機版抱怨：想看下一檔都要跳回清單分頁才能點。這裡在圖表header的最左/最右
