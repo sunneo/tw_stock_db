@@ -1081,11 +1081,29 @@ class FloatingAssistant {
         return this; 
     }
 
-    register_openai_tool(name, description, callback) {
-        this.tools[name] = { description, callback };
+    // tw_stock_db客製: 2026-08-26使用者實測發現的真實回歸——把
+    // nemotron-3-super-120b-a12b修好切到原生tool_calls模式後（見
+    // PRESET_MODEL_TOOLCALL_SUPPORT/_probeNativeToolSupport的說明），
+    // render_stock_chart的markers/lines/indicators/range這類陣列/物件
+    // 參數突然整批消失——原因是_buildNativeToolsSchema()原本對所有工具
+    // 一律回傳空白的{type:'object',properties:{},additionalProperties:true}
+    // schema，完全沒有逐欄位型別資訊，模型沒有訊號知道這些參數該是原生
+    // 陣列/物件，於是自己決定用JSON字串包一層送出來（例如
+    // {"indicators":"[\"macd\",\"rsi\"]"}而不是{"indicators":["macd","rsi"]}），
+    // handler裡的Array.isArray()檢查全部落空、靜靜退回空陣列。文字式
+    // [CALL:...]協定沒有這個問題，是因為它在system prompt裡有明確的JSON
+    // 範例（見_getFinalSystemPrompt的TOOL CALL PROTOCOL段落）引導模型
+    // 直接生成巢狀結構的文字，不受這裡schema缺失的影響——這正是使用者
+    // 要求「確認native跟text based的工具註冊與支援度要一樣」的落差所在。
+    // 這裡新增可選的第4個參數parametersSchema，讓呼叫端（index.html的
+    // registerAiCapabilities）可以傳入逐欄位型別的JSON Schema，
+    // _buildNativeToolsSchema()優先使用它；沒有提供時維持原本的opaque
+    // schema（向下相容，不影響只用3個參數呼叫的既有builtin工具）。
+    register_openai_tool(name, description, callback, parametersSchema) {
+        this.tools[name] = { description, callback, parametersSchema };
         this._log("工具已註冊: " + name);
         this._refreshSystemPromptMessage();
-        return this; 
+        return this;
     }
 
     static mount(target, options = {}) {
@@ -1690,7 +1708,8 @@ ${fnData.code}
                     else notFound.push(name);
                 }
                 return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
-            }
+            },
+            { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
         );
     }
 
@@ -2037,7 +2056,12 @@ ${fnData.code}
             function: {
                 name: this._sanitizeToolNameForNativeApi(name),
                 description: String(tool.description || ''),
-                parameters: { type: 'object', properties: {}, additionalProperties: true }
+                // tw_stock_db客製: 見register_openai_tool()的說明——有提供
+                // parametersSchema（逐欄位型別）就用它，讓模型知道哪些參數
+                // 該是原生陣列/物件而不是自己包一層JSON字串；沒提供的工具
+                // （自訂工具、部分沒有結構化params的builtin工具）維持原本
+                // 的opaque schema，行為不變。
+                parameters: tool.parametersSchema || { type: 'object', properties: {}, additionalProperties: true }
             }
         }));
     }

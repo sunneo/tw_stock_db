@@ -1614,7 +1614,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=d95e011ba4"></script>
+<script src="floating-assistant.js?v=7a99e059a0"></script>
 
 <script>
 'use strict';
@@ -6568,6 +6568,35 @@ window.AI_CAPABILITIES = AI_CAPABILITIES;
    的是「原始參數字串」（模型輸出的JSON字串，或退化情況下的裸字串），要
    回傳字串。這裡統一處理parse/stringify/錯誤攔截，AI_CAPABILITIES本身
    不用管這些協定細節，也方便直接在console手動呼叫 c.handler({...}) 測試。 */
+// tw_stock_db客製: 2026-08-26使用者實測案例——_buildNativeToolsSchema()
+// （floating-assistant.js）目前對所有工具的parameters一律宣告成
+// {type:'object', properties:{}, additionalProperties:true}，完全沒有
+// 逐欄位的型別資訊。模型（實測nvidia/nemotron-3-super-120b-a12b原生
+// tool_calls）在缺乏schema型別提示時，對markers/lines/indicators/range
+// 這類「應該是陣列/物件」的參數，常常自己決定用JSON字串包一層送出來，
+// 例如 {"indicators":"[\"macd\", \"rsi\"]"} 而不是 {"indicators":["macd","rsi"]}
+// ——實測發生的真實案例：render_stock_chart收到這種雙重編碼的markers/
+// lines/indicators，handler裡的Array.isArray()檢查全部判定為false、
+// 靜靜退回空陣列，畫出來的圖完全沒有任何標記/副圖，使用者卻在最終回覆
+// 裡被模型宣稱「已包含MACD/RSI」（模型看不到圖片本身，只看得到自己的
+// 呼叫「成功了」，不知道參數其實整個被丟棄）。這裡在原本「裸值自動包裝
+// 成物件」邏輯之後，再加一層「逐欄位嘗試把看起來像JSON的字串值解開」
+// ——只處理以[或{開頭的字串（避免誤判一般文字參數，例如股票代號
+// "2330"不會被誤當JSON），解析失敗就保留原始字串，不影響一般字串參數。
+function _reparseJsonLikeStringFields(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  for (const key of Object.keys(obj)) {
+    const v = obj[key];
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      if (trimmed && (trimmed[0] === '[' || trimmed[0] === '{')) {
+        try { obj[key] = JSON.parse(trimmed); } catch { /* 不是合法JSON，維持原字串 */ }
+      }
+    }
+  }
+  return obj;
+}
+
 function aiToolHandler(fn, paramKeys = []) {
   return async (rawArgs) => {
     let a;
@@ -6585,6 +6614,7 @@ function aiToolHandler(fn, paramKeys = []) {
     if (a === null || typeof a !== 'object' || Array.isArray(a)) {
       a = paramKeys.length === 1 ? { [paramKeys[0]]: a } : { value: a };
     }
+    a = _reparseJsonLikeStringFields(a);
     try {
       const result = await fn(a);
       return typeof result === 'string' ? result : JSON.stringify(result);
@@ -6594,6 +6624,29 @@ function aiToolHandler(fn, paramKeys = []) {
   };
 }
 
+// tw_stock_db客製: 2026-08-26新增——見aiToolHandler前面_reparseJsonLikeStringFields
+// 的說明，這裡是同一個問題的另一半修法：從c.params的中文自由文字描述
+// 粗略推斷每個參數的JSON Schema型別，餵給_buildNativeToolsSchema()，讓
+// 原生tool_calls模式的模型從schema本身就看得出「這個參數該是陣列/物件」，
+// 不用只靠aiToolHandler事後補救。用詞比對很陽春（提到「陣列」就當array、
+// 提到「物件」就當object、其餘當string）——這些描述文字本來就是給AI看
+// 的自然語言，不是正式schema定義，抓不準的極少數案例仍然有
+// aiToolHandler的事後解析兜底，不會真的漏接。
+function _inferJsonSchemaTypeForParam(desc) {
+  const text = String(desc || '');
+  if (text.includes('陣列')) return { type: 'array', items: {} };
+  if (text.includes('物件')) return { type: 'object' };
+  return { type: 'string' };
+}
+
+function _buildParamsJsonSchema(params) {
+  const properties = {};
+  for (const [key, desc] of Object.entries(params || {})) {
+    properties[key] = Object.assign(_inferJsonSchemaTypeForParam(desc), { description: String(desc || '').slice(0, 800) });
+  }
+  return { type: 'object', properties, additionalProperties: true };
+}
+
 function registerAiCapabilities(ai) {
   AI_CAPABILITIES.forEach(c => {
     const paramKeys = Object.keys(c.params || {});
@@ -6601,7 +6654,7 @@ function registerAiCapabilities(ai) {
       ? ` 參數（JSON物件字串）：${JSON.stringify(c.params)}`
       : '（不需要參數）';
     const mutateNote = c.mutates ? '' : ''; // description本身已經在需要時內含【會修改使用者資料】等提醒
-    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys));
+    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys), _buildParamsJsonSchema(c.params));
   });
 }
 
