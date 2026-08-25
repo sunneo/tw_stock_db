@@ -588,17 +588,23 @@ const PRESET_MODEL_OPTIONS = [
 // 端點測試），直接寫死在這裡，_shouldUseNativeToolCalls()/
 // _ensureNativeToolSupportProbed()會優先查這份表，命中就直接用、不再對
 // 這8個內建模型另外打探測請求——省下每個使用者自己在瀏覽器裡各測一次的
-// 重複網路成本。meta/llama-3.3-70b-instruct探測時5次都在15秒逾時上限
-// 精準卡住（可能是這個模型回應本來就慢、加上tools欄位更慢，探測用的
-// 15秒逾時不夠長），沒辦法確認是否真的支援，保守寫false（退回文字式
-// [CALL:...]協定，這也是本來就實測穩定能用的路徑）。使用者自訂的模型
-// （不在這份表裡）不受影響，一樣照原本的邏輯即時探測。
+// 重複網路成本。使用者自訂的模型（不在這份表裡）不受影響，一樣照原本的
+// 邏輯即時探測。
+// 2026-08-25修正：原本這裡把nvidia/nemotron-3-super-120b-a12b跟
+// meta/llama-3.3-70b-instruct都寫死false，但兩者的false都是探測本身的
+// bug造成的偽陰性，不是真的不支援——見_probeNativeToolSupport()的說明，
+// 原本max_tokens只給50、逾時只給15秒，對「先吐一大段reasoning_content
+// 才輸出tool_calls」的推理模型（nemotron-120b）或回應本來就慢的模型
+// （llama-3.3-70b，這裡舊註解本來就寫「探測逾時、無法確認」）幾乎必定
+// 測不出真正結果。使用者實測NVIDIA官方範例證實nemotron-120b確實支援原生
+// tool_calls，修好探測本身（放寬到4096 tokens+45秒）之後，這兩個模型
+// 改成不寫死在這份表裡，讓它們用修正後的探測邏輯重新測一次、把真正結果
+// 存回快取（見NATIVE_TOOL_SUPPORT_CACHE_KEY版本號同步往上加一層，確保
+// 不會沿用舊探測留下的錯誤快取值）。
 const PRESET_MODEL_TOOLCALL_SUPPORT = {
-    'nvidia/nemotron-3-super-120b-a12b': false,
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
     'nvidia/nemotron-3-nano-30b-a3b': false,
-    'meta/llama-3.3-70b-instruct': false, // 探測逾時、無法確認，保守值
     'openai/gpt-oss-120b': false,
     'openai/gpt-oss-20b': true,
     'meta/llama-3.1-8b-instruct': true,
@@ -940,7 +946,18 @@ class FloatingAssistant {
         // tool_calls」，取代原本只靠模型名稱pattern猜測的作法（換一個新
         // 模型、pattern沒收錄到就一律被誤判成不支援）。探測結果確認完成後
         // 才寫進這個key，不會把「還沒測過」或「測到一半」的狀態存進去。
-        this.NATIVE_TOOL_SUPPORT_CACHE_KEY = "floating_ai_native_tool_support_cache";
+        // 2026-08-25使用者實測發現NVIDIA官方範例證實nemotron-3-super-120b
+        // 確實支援原生tool_calls，但這裡的探測請求原本max_tokens只給50——
+        // 這個模型是推理模型，會先在reasoning_content吐一大段思考過程才
+        // 輸出tool_calls（見_loopFetch/_loopFetchNative頂端關於
+        // reasoning_content的說明），50 tokens幾乎必定在思考階段就被截斷，
+        // 從沒機會真的輸出tool_calls，導致探測永遠回報false——不是模型真的
+        // 不支援，是探測本身的bug。修好_probeNativeToolSupport後，舊版
+        // 探測留在使用者localStorage裡的false快取不會自動失效（見
+        // _ensureNativeToolSupportProbed：快取命中就不會重新探測），所以
+        // 版本號往上加一層，讓所有人下次都重新測一次，不用手動清瀏覽器
+        // 資料。
+        this.NATIVE_TOOL_SUPPORT_CACHE_KEY = "floating_ai_native_tool_support_cache_v2";
         this._nativeToolSupportCache = null; // lazy load，見_ensureNativeToolSupportProbed()
         // tw_stock_db客製: MODEL NAME留空時的自動fallback狀態，見
         // executeChat()/_nextAutoFallbackModel()的說明，每輪新對話開始時
@@ -1907,7 +1924,15 @@ ${fnData.code}
     async _probeNativeToolSupport(apiKey, apiUrl, apiModel) {
         try {
             const controller = this._createAbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            // tw_stock_db客製: 2026-08-25修正——原本max_tokens:50+15秒逾時對
+            // 推理模型（例如nemotron系列）太苛刻：這類模型會先在
+            // reasoning_content吐一大段思考過程才輸出真正的tool_calls，50
+            // tokens幾乎必定在思考階段就被截斷，永遠測不到tool_calls，把
+            // 「探測預算不夠」誤判成「不支援原生tool_calls」（實測案例：
+            // nemotron-3-super-120b-a12b被這樣誤判成false，但NVIDIA官方
+            // 範例證實它確實支援）。放寬到4096 tokens + 45秒，給思考過程
+            // 足夠空間，才能測出真正的支援與否。
+            const timeoutId = setTimeout(() => controller.abort(), 45000);
             let response;
             try {
                 response = await fetch(`${apiUrl}/chat/completions`, {
@@ -1921,7 +1946,7 @@ ${fnData.code}
                             { role: 'user', content: 'You MUST call the "ping" function now with no arguments. Do not respond with any text, only call the function.' },
                         ],
                         temperature: 0,
-                        max_tokens: 50,
+                        max_tokens: 4096,
                         stream: false,
                         tools: [{
                             type: 'function',
