@@ -1220,6 +1220,7 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="big_vol_up">大量貼近當日高點</option>
           <option value="big_vol_down">大量貼近當日低點</option>
         </select>
+        <button class="btn" id="volrank-refresh-btn" title="不等Raspberry Pi排程，透過worker立即重新抓取一批股票的最新價量並重新計算目前這份清單">🔄 重新整理</button>
         <div id="volrank-status" class="modal-hint"></div>
       </div>
       <div id="lock-intraday-bar" class="hidden">
@@ -7960,6 +7961,7 @@ const R = {
   strongStatus:    $('strong-status'),
   volrankBar:      $('volrank-bar'),
   volrankSubSel:   $('volrank-sub-sel'),
+  volrankRefreshBtn: $('volrank-refresh-btn'),
   volrankStatus:   $('volrank-status'),
   lockIntradayBar:    $('lock-intraday-bar'),
   lockIntradaySubSel: $('lock-intraday-sub-sel'),
@@ -8793,14 +8795,13 @@ async function loadVolRank() {
     // tw_stock_db客製: 使用者要求「已收盤或還沒有資料時，顯示資料時間、
     // 並且可以拿前一次的資料」——meta.dateStr是實際拿到資料的那一天（可能
     // 回溯到前幾天，見VolumeRanking.ensureLoaded），isStale代表不是今天。
-    const sourceLabel = meta.mergedFrom ? `AI緊急擷取，${meta.mergedFrom}` : 'Raspberry Pi高頻收集器';
     let timeInfo;
     if (!meta.dateStr) {
       timeInfo = '目前完全沒有高頻資料（平常日08:30-14:00收集器才會產生資料，或收集器尚未部署/推送成功）';
     } else if (meta.isStale) {
-      timeInfo = `⚠️ 非今日最新資料——顯示的是最近一次有收集到的資料，時間：${meta.lastTs || meta.dateStr}（來源：${sourceLabel}）`;
+      timeInfo = `⚠️ 非今日最新資料——顯示的是最近一次有收集到的資料，時間：${meta.lastTs || meta.dateStr}`;
     } else {
-      timeInfo = `資料時間：${meta.lastTs || meta.dateStr}（來源：${sourceLabel}）`;
+      timeInfo = `資料時間：${meta.lastTs || meta.dateStr}`;
     }
     // tw_stock_db客製: 2026-08-24使用者反映「大量位置在上漲/下跌」清單裡
     // 出現跟標籤方向相反的漲跌%，誤以為是分類錯誤——實際判斷條件是「現價
@@ -11904,6 +11905,27 @@ function bindEvents() {
 
   /* 量排行子篩選 */
   R.volrankSubSel.addEventListener('change', () => { Settings.set('volrankSub', R.volrankSubSel.value); loadVolRank(); });
+  // tw_stock_db客製: 「重新整理」按鈕——不等Pi排程，立即用collectVolumeRankingNow
+  // （既有的、原本只給AI工具/斜線指令用的緊急擷取邏輯）補抓一批最新價量，
+  // 併進VolumeRanking的暫存cache後重新呼叫loadVolRank()重新計算/顯示，
+  // 套用目前選到的子篩選（量排行-多/空/大量貼近高低點都適用，不限定單一
+  // 子篩選）。
+  R.volrankRefreshBtn.addEventListener('click', async () => {
+    R.volrankRefreshBtn.disabled = true;
+    const originalLabel = R.volrankRefreshBtn.textContent;
+    R.volrankRefreshBtn.textContent = '⏳ 重新抓取中…';
+    R.volrankStatus.textContent = '重新抓取中，請稍候…';
+    try {
+      const result = await collectVolumeRankingNow(60);
+      await loadVolRank();
+      R.volrankStatus.textContent = `已重新抓取 ${result.collected}/${result.requested} 檔並重新計算。${R.volrankStatus.textContent}`;
+    } catch (e) {
+      R.volrankStatus.textContent = '重新抓取失敗：' + e.message;
+    } finally {
+      R.volrankRefreshBtn.disabled = false;
+      R.volrankRefreshBtn.textContent = originalLabel;
+    }
+  });
   R.lockIntradaySubSel.addEventListener('change', () => {
     Settings.set('lockIntradaySub', R.lockIntradaySubSel.value);
     const m = parseLockView(R.viewSel.value);
