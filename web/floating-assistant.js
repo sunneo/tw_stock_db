@@ -538,6 +538,17 @@ const CALL_STOP_SEQUENCE = ')]';
 // 燒費用的安全上限，不是真正的長度限制）。
 const MAX_AUTO_CONTINUE_ROUNDS = 40;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
+// tw_stock_db客製: 2026-08-25使用者實測案例——推理模型（例如
+// nemotron-3-super-120b-a12b）偶爾會在reasoning_content吐完一大段思考後
+// 就自然觸發EOS，finish_reason回報'stop'（不是'length'），但content跟
+// tool_calls都是空的，等於「想了一輪但沒有真的產出答案」，是死路而不是
+// 正常完成——原本的自動接續機制只認finish_reason==='length'，這種情況
+// 會被誤判成「這輪就是這樣，正常結束」，使用者只會看到「這一輪模型只
+// 輸出了思考過程」的警告，而不是像length截斷一樣自動重試。這裡跟
+// AI_AUTO_CONTINUE_PROMPT分開一個專用提示——因為這種情況沒有「上一段
+// 未完成的內容」可以接續，用「請接續」語意上不通，要講清楚「你剛才只
+// 想了沒有真的回答，現在請直接給答案」。
+const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成了內部思考，沒有輸出任何最終回覆內容、也沒有呼叫任何工具。請現在直接給出最終答案或呼叫需要的工具，不用重複或摘要你剛才想過的內容，也不要再次陷入純思考而不輸出結果。';
 
 // tw_stock_db客製: 內建的模型清單，給MODEL NAME欄位的<datalist>下拉選單、
 // 以及「MODEL NAME留空時自動fallback」機制（見_resolveAutoFallbackModel）
@@ -5103,6 +5114,7 @@ ${existingNodeSummaries}
             let finishReason = null; // tw_stock_db客製: 見下方truncation偵測說明
             let repetitionCut = false;
             let autoContinueRounds = 0; // tw_stock_db客製: 見MAX_AUTO_CONTINUE_ROUNDS說明
+            let lastRoundWasReasoningDeadEnd = false; // 見AI_REASONING_DEADEND_PROMPT說明
 
             // tw_stock_db客製: 外層迴圈＝自動接續。第一輪送使用者真正的對話
             // 歷史；若這一輪在還沒講完時就被max_tokens截斷
@@ -5113,10 +5125,12 @@ ${existingNodeSummaries}
             while (true) {
                 const requestMessages = autoContinueRounds === 0
                     ? this.messages
-                    : this.messages.concat([
-                        { role: 'assistant', content: fullContent },
-                        { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
-                    ]);
+                    : lastRoundWasReasoningDeadEnd
+                        ? this.messages.concat([{ role: 'user', content: AI_REASONING_DEADEND_PROMPT }])
+                        : this.messages.concat([
+                            { role: 'assistant', content: fullContent },
+                            { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
+                        ]);
 
                 const controller = this._createAbortController();
                 const response = await fetch(`${apiUrl}/chat/completions`, {
@@ -5273,23 +5287,36 @@ ${existingNodeSummaries}
                 }
 
                 finishReason = roundFinishReason;
-                if (repetitionCut || finishReason !== 'length') break;
+                if (repetitionCut) break;
+
+                // tw_stock_db客製: 見AI_REASONING_DEADEND_PROMPT說明——某些推理
+                // 模型會在思考階段就自然觸發EOS，finishReason回報'stop'而非
+                // 'length'，但fullContent到目前為止還是空的、只有reasoningContent
+                // 有大量內容，代表這一輪「想了但沒有真的產出答案」，也要當成
+                // 需要重試，不能只認'length'。
+                lastRoundWasReasoningDeadEnd = !fullContent.trim() && reasoningContent.trim().length > 20;
+                if (finishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
 
                 // tw_stock_db客製: 這一輪被max_tokens截斷——不是內容有問題，
                 // 是「這一次API呼叫」的長度上限到了，自動用「請接續」重送一次，
                 // 讓使用者不用手動追問。安全上限見MAX_AUTO_CONTINUE_ROUNDS。
                 autoContinueRounds++;
                 if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) break;
-                this._log(`↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
+                this._log(lastRoundWasReasoningDeadEnd
+                    ? `↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${autoContinueRounds}次）…`
+                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
             }
             if (repetitionCut) textSpan.innerText = fullContent;
 
-            // tw_stock_db客製: 走到這裡如果finishReason還是'length'，代表已經
-            // 自動接續到MAX_AUTO_CONTINUE_ROUNDS上限仍未寫完（極端情況，例如
-            // 端點異常或模型卡在某種輸出模式），才需要提醒使用者——正常情況
-            // 下自動接續機制會在使用者沒感覺到的狀況下把內容拼完整。
-            if (finishReason === 'length' && !repetitionCut) {
-                fullContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
+            // tw_stock_db客製: 走到這裡如果finishReason還是'length'、或還卡在
+            // lastRoundWasReasoningDeadEnd狀態，代表已經自動接續到
+            // MAX_AUTO_CONTINUE_ROUNDS上限仍未寫完（極端情況，例如端點異常或
+            // 模型卡在某種輸出模式），才需要提醒使用者——正常情況下自動接續
+            // 機制會在使用者沒感覺到的狀況下把內容拼完整。
+            if (!repetitionCut && (finishReason === 'length' || lastRoundWasReasoningDeadEnd)) {
+                fullContent += lastRoundWasReasoningDeadEnd
+                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程、沒有真正的答案內容（可能是端點異常或模型卡在某種輸出模式）。** 可以直接追問一次，或換一個模型試試。'
+                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
             // tw_stock_db客製: reasoningContent只存進非可枚舉的_reasoningDisplay
@@ -5441,6 +5468,7 @@ ${existingNodeSummaries}
             let autoContinueRounds = 0; // tw_stock_db客製: 見MAX_AUTO_CONTINUE_ROUNDS說明
             let hitContinueCap = false;
             let toolCalls = [];
+            let lastRoundWasReasoningDeadEnd = false; // 見AI_REASONING_DEADEND_PROMPT說明
 
             // tw_stock_db客製: 跟_loopFetch串流路徑同樣的自動接續機制（見那邊
             // 詳細說明）——finish_reason==='length'代表這一次API呼叫被max_tokens
@@ -5450,10 +5478,15 @@ ${existingNodeSummaries}
             while (true) {
                 const requestMessages = autoContinueRounds === 0
                     ? this.messages
-                    : this.messages.concat([
-                        { role: 'assistant', content: finalContent },
-                        { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
-                    ]);
+                    : lastRoundWasReasoningDeadEnd
+                        // tw_stock_db客製: 死路重試沒有「上一段未完成的內容」可以
+                        // 接續（finalContent就是空的），不附一則空白assistant訊息，
+                        // 只補一句「剛才只想了沒有回答，現在請直接回答」的提醒。
+                        ? this.messages.concat([{ role: 'user', content: AI_REASONING_DEADEND_PROMPT }])
+                        : this.messages.concat([
+                            { role: 'assistant', content: finalContent },
+                            { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
+                        ]);
 
                 const controller = this._createAbortController();
                 const response = await fetch(`${apiUrl}/chat/completions`, {
@@ -5525,14 +5558,23 @@ ${existingNodeSummaries}
                 toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
                 const roundFinishReason = data.choices[0].finish_reason;
-                // tool_calls跟finish_reason==='length'實務上不會同時發生（模型
-                // 若要呼叫工具，不會被裁在講到一半），這裡只在「純文字被截斷、
-                // 沒有工具呼叫」時才自動接續。
-                if (toolCalls.length || roundFinishReason !== 'length') break;
+                if (toolCalls.length) break; // 已經拿到工具呼叫，不需要（也不該）再接續
+
+                // tw_stock_db客製: 見AI_REASONING_DEADEND_PROMPT說明——某些推理
+                // 模型會在思考階段就自然觸發EOS，finish_reason回報'stop'而非
+                // 'length'，但finalContent到目前為止還是空的、只有reasoningAccum
+                // 有大量內容，代表這一輪「想了但沒有真的產出答案」，這種情況
+                // 也要當成需要重試，不能只認'length'（否則使用者只會看到一則
+                // 「這一輪模型只輸出了思考過程」的警告，而不是像length截斷一樣
+                // 自動重試）。
+                lastRoundWasReasoningDeadEnd = !finalContent.trim() && reasoningAccum.trim().length > 20;
+                if (roundFinishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
 
                 autoContinueRounds++;
                 if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) { hitContinueCap = true; break; }
-                this._log(`↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
+                this._log(lastRoundWasReasoningDeadEnd
+                    ? `↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${autoContinueRounds}次）…`
+                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
             }
 
             // tw_stock_db客製: 跟_loopFetch串流路徑同樣的理由（見那邊的詳細
@@ -5543,7 +5585,9 @@ ${existingNodeSummaries}
             // 下自動接續機制會無聲把內容拼完整，見_loopFetch串流路徑同樣的
             // 說明。
             if (hitContinueCap) {
-                finalContent += '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
+                finalContent += lastRoundWasReasoningDeadEnd
+                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程、沒有真正的答案內容（可能是端點異常或模型卡在某種輸出模式）。** 可以直接追問一次，或換一個模型試試。'
+                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
             this._pushAssistantMessage(finalContent, reasoningAccum, toolCalls.length ? { tool_calls: toolCalls } : {});
