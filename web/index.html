@@ -3887,30 +3887,59 @@ const DBMgr = (() => {
     };
   }
 
-  function computePatternScreenLive() {
+  /* 讓出主執行緒一次，等下一個畫面更新時機再繼續——2026-08-27使用者要求
+     computePatternScreenLive()不要整段同步卡住瀏覽器（全市場~2000檔+
+     完整JOIN查詢，資料量大時單一同步呼叫可能長達數秒，會讓UI在這段時間
+     完全沒反應）。優先用requestAnimationFrame（等下一次repaint機會，
+     概念上類似emscripten處理長時間同步運算常見的cooperative yielding
+     手法，只是不用真的搬進Worker——sql.js資料庫是main thread上單一份
+     WASM記憶體，搬進Worker需要整份資料庫另外複製一份過去，這裡的運算量
+     沒有大到值得那個複雜度）；但rAF只在分頁「可見」時才會觸發，使用者
+     切到別的分頁/視窗時rAF會被瀏覽器暫停，為了避免那種情況下整個計算
+     卡死不動，額外用setTimeout當保底上限，兩者取先到者。 */
+  function yieldToFrame(maxWaitMs = 200) {
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
+      setTimeout(finish, maxWaitMs);
+    });
+  }
+
+  /* onProgress(doneCount, totalCount) 選填，讓呼叫端（例如/pattern-xlsx-live
+     的進度訊息）能顯示「已掃描幾檔」，不用整段等到底才知道進度。 */
+  async function computePatternScreenLive(onProgress) {
     const LOOKBACK = 140;
-    const rows = query(`
-      SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
-             dp.open, dp.high, dp.low, dp.close, dp.volume,
-             ti.ma5, ti.ma10, ti.ma20, ti.ma60, ti.vol_ma5
-      FROM daily_prices dp
-      JOIN technical_indicators ti ON dp.stock_code = ti.stock_code AND dp.trade_date = ti.trade_date
-      JOIN stocks s ON s.stock_code = dp.stock_code
-      WHERE dp.trade_date >= (SELECT date(MAX(trade_date), '-260 day') FROM daily_prices)
-        AND s.is_active = 1
-      ORDER BY dp.stock_code, dp.trade_date
-    `);
-    const byStock = new Map();
-    for (const r of rows) {
-      let arr = byStock.get(r.stock_code);
-      if (!arr) { arr = []; byStock.set(r.stock_code, arr); }
-      arr.push(r);
-    }
+    const BATCH_SIZE = 150; // 每批查詢+分類幾檔股票，批次夠小才能讓每次同步運算的耗時控制在感覺不到卡頓的範圍
+    const codes = query('SELECT stock_code FROM stocks WHERE is_active = 1 ORDER BY stock_code').map(r => r.stock_code);
     const results = [];
-    for (const arr of byStock.values()) {
-      if (arr.length < 100) continue;
-      const hit = classifyPatternForStock(arr.slice(-LOOKBACK));
-      if (hit) results.push(hit);
+    for (let i = 0; i < codes.length; i += BATCH_SIZE) {
+      const batch = codes.slice(i, i + BATCH_SIZE);
+      const ph = batch.map(() => '?').join(',');
+      const rows = query(`
+        SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
+               dp.open, dp.high, dp.low, dp.close, dp.volume,
+               ti.ma5, ti.ma10, ti.ma20, ti.ma60, ti.vol_ma5
+        FROM daily_prices dp
+        JOIN technical_indicators ti ON dp.stock_code = ti.stock_code AND dp.trade_date = ti.trade_date
+        JOIN stocks s ON s.stock_code = dp.stock_code
+        WHERE dp.stock_code IN (${ph})
+          AND dp.trade_date >= (SELECT date(MAX(trade_date), '-260 day') FROM daily_prices)
+        ORDER BY dp.stock_code, dp.trade_date
+      `, batch);
+      const byStock = new Map();
+      for (const r of rows) {
+        let arr = byStock.get(r.stock_code);
+        if (!arr) { arr = []; byStock.set(r.stock_code, arr); }
+        arr.push(r);
+      }
+      for (const arr of byStock.values()) {
+        if (arr.length < 100) continue;
+        const hit = classifyPatternForStock(arr.slice(-LOOKBACK));
+        if (hit) results.push(hit);
+      }
+      if (onProgress) { try { onProgress(Math.min(i + BATCH_SIZE, codes.length), codes.length); } catch { /* 呼叫端UI更新失敗不該中斷計算 */ } }
+      await yieldToFrame();
     }
     const order = { flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3 };
     results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
@@ -6298,7 +6327,7 @@ async function exportPatternScreenXlsx(params) {
 
   let meta, filterRows;
   if (isLive) {
-    const live = DBMgr.computePatternScreenLive();
+    const live = await DBMgr.computePatternScreenLive(params.onProgress);
     meta = { asOfDate: live.as_of_date, patternLabels: live.pattern_labels };
     filterRows = (s) => (!s || s === 'all' ? live.data : live.data.filter(r => r.pattern_type === s));
   } else {
@@ -11734,6 +11763,14 @@ function registerAiSlashCommands(ai) {
       if (chatBody) {
         chatBody.insertAdjacentHTML('beforeend', `<div id="${progressId}" style="margin:8px 0; padding:8px 10px; border:1px solid ${ai._getThemePalette().windowBorder}; border-radius:6px; font-size:12px;">📊 正在即時掃描全市場型態＋畫圖，可能需要十幾秒到數十秒，請稍候…</div>`);
       }
+      // tw_stock_db客製: 2026-08-27使用者要求——即時計算現在分批處理+每批
+      // 讓出主執行緒(見DBMgr.computePatternScreenLive的說明)，不會整段
+      // 卡住瀏覽器；這裡順便把批次進度顯示出來，讓使用者看得到「還在跑，
+      // 不是卡死」，比單純一句靜態文字更有回饋感。
+      params.onProgress = (done, total) => {
+        const el = document.getElementById(progressId);
+        if (el) el.textContent = `📊 正在即時掃描全市場型態（${done}/${total}）…`;
+      };
       let result;
       try {
         result = await exportPatternScreenXlsx(params);
