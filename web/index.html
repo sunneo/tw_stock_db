@@ -911,9 +911,9 @@ select:focus { outline: 2px solid var(--acc); }
 
 /* ── Memo modal (no sidebar — plain scrollable body) ── */
 #memo-modal .modal-body { display: block; height: auto; max-height: 60vh; padding: 14px 16px; overflow-y: auto; }
-#memo-readonly-wrap, #memo-ai-wrap, #memo-live-wrap { margin-bottom: 14px; }
-#memo-readonly-wrap h3, #memo-ai-wrap h3, #memo-live-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
-#memo-readonly-note, #memo-ai-note, #memo-live-note {
+#memo-readonly-wrap, #memo-ai-wrap, #memo-pattern-wrap, #memo-live-wrap { margin-bottom: 14px; }
+#memo-readonly-wrap h3, #memo-ai-wrap h3, #memo-pattern-wrap h3, #memo-live-wrap h3, #memo-modal .modal-body > h3 { font-size: 12px; color: var(--txt2); margin: 0 0 8px; }
+#memo-readonly-note, #memo-ai-note, #memo-pattern-note, #memo-live-note {
   font-size: 13px; line-height: 1.6; color: var(--txt1);
   background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
   padding: 8px 10px; white-space: pre-wrap;
@@ -1583,8 +1583,12 @@ select:focus { outline: 2px solid var(--acc); }
         <h3>強勢股訊號（AI判讀，唯讀）</h3>
         <div id="memo-ai-note"></div>
       </div>
+      <div id="memo-pattern-wrap" class="hidden">
+        <h3>型態訊號（機器判讀，唯讀）</h3>
+        <div id="memo-pattern-note"></div>
+      </div>
       <div id="memo-live-wrap" class="hidden">
-        <h3>強勢股/鎖股訊號即時評估（尚未跑過篩選，僅供參考）</h3>
+        <h3>強勢股/型態訊號即時評估（尚未跑過篩選，僅供參考）</h3>
         <div id="memo-live-note"></div>
       </div>
       <h3>我的備忘錄</h3>
@@ -2033,7 +2037,24 @@ const MemoStore = (() => {
     Settings.set('memos', memos);
   }
 
-  return { getText, hasMemo, setText, getAiNote, setAiNote };
+  /* 型態(PatternScreen)偵測到訊號時寫入的唯讀筆記——2026-08-27使用者要求
+     「看到型態的時候也請把型態寫進備忘錄，類似強勢股/鎖股訊號即時評估」，
+     沿用跟aiNote完全一樣的存取模式，但存在獨立的key（patternNote），因為
+     同一檔股票「強勢股」跟「型態」是兩種不同性質的訊號，可能同時成立，
+     不該互相覆蓋——備忘錄modal會各自獨立顯示一個區塊（見recordPatternAiNotes
+     跟openMemoModal）。 */
+  function getPatternNote(code) {
+    const memos = Settings.get('memos') || {};
+    return memos[code]?.patternNote || null;
+  }
+  function setPatternNote(code, note) {
+    const memos = Object.assign({}, Settings.get('memos') || {});
+    const existing = memos[code];
+    memos[code] = { ...existing, patternNote: { ...note, updatedAt: Date.now() } };
+    Settings.set('memos', memos);
+  }
+
+  return { getText, hasMemo, setText, getAiNote, setAiNote, getPatternNote, setPatternNote };
 })();
 
 /* ════════════════════════════════════════
@@ -3961,6 +3982,29 @@ const DBMgr = (() => {
     return { available: true, trade_date: t?.trade_date, current, xq };
   }
 
+  /* tw_stock_db客製: 2026-08-27使用者要求——備忘錄的「即時評估」機制
+     （見上面evaluateStrongSignalForStock的說明）也要涵蓋「型態」：使用者
+     自己手動加進自選股、沒被上次「型態」分頁篩選抓到的股票，openMemoModal
+     也要能主動即時算一次型態，不用使用者自己想到要先去「型態」分頁看。
+     沿用跟computePatternScreenLive()同一套classifyPatternForStock()判定
+     邏輯，只是只查一檔（不用像computePatternScreenLive那樣掃全市場）。 */
+  function evaluatePatternForStock(code) {
+    const rows = query(`
+      SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
+             dp.open, dp.high, dp.low, dp.close, dp.volume,
+             ti.ma5, ti.ma10, ti.ma20, ti.ma60, ti.vol_ma5
+      FROM daily_prices dp
+      JOIN technical_indicators ti ON dp.stock_code = ti.stock_code AND dp.trade_date = ti.trade_date
+      JOIN stocks s ON s.stock_code = dp.stock_code
+      WHERE dp.stock_code = ?
+      ORDER BY dp.trade_date
+    `, [code]);
+    if (rows.length < 100) return { available: false, insufficientHistory: true, reason: '歷史資料不足（少於100天），無法評估型態' };
+    const hit = classifyPatternForStock(rows.slice(-140));
+    if (!hit) return { available: false, reason: '目前不符合任何已定義型態（一字型底噴出/箱型突破/主升段延續/上影線警訊)', trade_date: rows[rows.length - 1].trade_date };
+    return { available: true, ...hit };
+  }
+
   function getWatchlistStocks(codes) {
     if (!codes.length) return [];
     const d  = getLatestDate();
@@ -4089,7 +4133,7 @@ const DBMgr = (() => {
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getSectorRotation, getVolumeRankingReference, getWatchlistStocks, searchStocks, getPrevClose,
-    computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock, computePatternScreenLive,
+    computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock, computePatternScreenLive, evaluatePatternForStock,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
@@ -6268,6 +6312,7 @@ async function exportPatternScreenXlsx(params) {
   }
   let rows = filterRows(sub);
   if (!rows.length) return { ok: false, error: `型態「${sub}」目前沒有符合的股票` };
+  recordPatternAiNotes(rows, meta.asOfDate); // 2026-08-27使用者要求：匯出即代表使用者「看到」了這批型態，記進備忘錄
   const truncated = rows.length > limit;
   rows = rows.slice(0, limit);
 
@@ -6674,9 +6719,9 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_memo', category: '備忘錄',
-    description: '讀取某檔股票的使用者備忘錄文字，以及（如果有的話）強勢股篩選寫入的AI唯讀筆記。',
+    description: '讀取某檔股票的使用者備忘錄文字，以及（如果有的話）強勢股篩選寫入的AI唯讀筆記、型態篩選寫入的唯讀筆記。',
     params: { code: '股票代號' },
-    handler: (a) => ({ text: MemoStore.getText(a.code), hasMemo: MemoStore.hasMemo(a.code), aiNote: MemoStore.getAiNote(a.code) }),
+    handler: (a) => ({ text: MemoStore.getText(a.code), hasMemo: MemoStore.hasMemo(a.code), aiNote: MemoStore.getAiNote(a.code), patternNote: MemoStore.getPatternNote(a.code) }),
   },
   {
     name: 'set_memo', category: '備忘錄', mutates: true,
@@ -8662,6 +8707,8 @@ const R = {
   memoReadonlyNote:$('memo-readonly-note'),
   memoAiWrap:      $('memo-ai-wrap'),
   memoAiNote:      $('memo-ai-note'),
+  memoPatternWrap: $('memo-pattern-wrap'),
+  memoPatternNote: $('memo-pattern-note'),
   memoLiveWrap:    $('memo-live-wrap'),
   memoLiveNote:    $('memo-live-note'),
 };
@@ -9153,6 +9200,24 @@ function recordStrongAiNotes(method, results, params) {
   }
 }
 
+/* tw_stock_db客製: 2026-08-27使用者要求——「看到型態的時候也請把型態寫進
+   備忘錄，類似強勢股/鎖股訊號即時評估」，跟recordStrongAiNotes同樣的設計
+   動機：不管是「型態」分頁本身載入(loadPatternScreen，讀PC發布的資料)、
+   還是AI匯出型態xlsx(exportPatternScreenXlsx，含即時計算版)，只要使用者
+   實際「看到」了篩選結果，就順手記一筆到MemoStore的patternNote（跟強勢股
+   aiNote分開存，見MemoStore.setPatternNote的說明），事後開備忘錄不用再
+   回頭切到型態分頁重找一次。rows需要有stock_code/pattern_label/evidence
+   欄位（PatternScreen發布的JSON跟computePatternScreenLive()回傳的data都
+   是這個形狀）。 */
+function recordPatternAiNotes(rows, asOfDate) {
+  for (const r of rows) {
+    MemoStore.setPatternNote(r.stock_code, {
+      summary: `型態篩選：${r.pattern_label}（資料日期 ${r.trade_date || asOfDate || '-'}）`,
+      reasons: r.evidence ? [r.evidence] : [],
+    });
+  }
+}
+
 function loadWatchlist() {
   const wl     = Settings.get('watchlist') || [];
   const rows   = DBMgr.getWatchlistStocks(wl);
@@ -9390,6 +9455,7 @@ async function loadPatternScreen() {
     const meta = await PatternScreen.ensureLoaded();
     if (R.viewSel.value !== 'pattern') return; // 讀取期間使用者已經切走，結果丟棄
     const rows = PatternScreen.filterBy(sub);
+    if (rows.length) recordPatternAiNotes(rows, meta.asOfDate);
     const refMap = DBMgr.getVolumeRankingReference(rows.map(r => r.stock_code));
     State.stocks = rows.map(r => {
       const ref = refMap.get(r.stock_code);
@@ -11153,61 +11219,104 @@ function openMemoModal(code) {
       (aiNote.reasons || []).map(r => '‧ ' + r).join('\n') +
       `\n（${taipeiDateStr(t)} ${taipeiTimeStr(t)} 篩選時記錄）`;
     R.memoAiWrap.classList.remove('hidden');
-    R.memoLiveWrap.classList.add('hidden');
   } else {
     R.memoAiWrap.classList.add('hidden');
-    // tw_stock_db客製: 2026-08-23使用者要求——沒有現成的AI唯讀筆記時
-    // （代表這檔股票沒被上次的強勢股篩選抓到，常見於使用者自己手動加進
-    // 自選股、沒特別跑過篩選的情況），主動即時算一次評估顯示出來，不用
-    // 使用者自己想到要先去點「篩選強勢股」。
-    renderMemoLiveEvaluation(code);
   }
+
+  // tw_stock_db客製: 2026-08-27使用者要求——型態訊號也要跟強勢股aiNote
+  // 一樣，有現成記錄(patternNote)就顯示唯讀區塊；跟aiNote是各自獨立的
+  // 條件(見MemoStore.setPatternNote的說明)，同一檔股票可能兩者都有、
+  // 也可能只有其中一種，兩個區塊各自判斷、互不影響。
+  const patternNote = MemoStore.getPatternNote(code);
+  if (patternNote) {
+    const t = new Date(patternNote.updatedAt);
+    R.memoPatternNote.textContent =
+      `${patternNote.summary}\n` +
+      (patternNote.reasons || []).map(r => '‧ ' + r).join('\n') +
+      `\n（${taipeiDateStr(t)} ${taipeiTimeStr(t)} 篩選時記錄）`;
+    R.memoPatternWrap.classList.remove('hidden');
+  } else {
+    R.memoPatternWrap.classList.add('hidden');
+  }
+
+  // tw_stock_db客製: 2026-08-23使用者要求（強勢股）+ 2026-08-27使用者要求
+  // 「型態」也要比照——沒有現成記錄的那一種，主動即時算一次顯示出來，
+  // 不用使用者自己想到要先去跑篩選；兩種各自獨立判斷要不要顯示即時版，
+  // 見renderMemoLiveEvaluation()。
+  renderMemoLiveEvaluation(code, { hideStrong: !!aiNote, hidePattern: !!patternNote });
 
   R.memoModal.classList.remove('hidden');
 }
 
-function renderMemoLiveEvaluation(code) {
-  let ev;
-  try {
-    ev = DBMgr.evaluateStrongSignalForStock(code);
-  } catch (e) {
-    console.error('即時評估強勢股訊號失敗：', e);
-    R.memoLiveWrap.classList.add('hidden');
-    return;
-  }
-  if (!ev.available) {
-    R.memoLiveWrap.classList.add('hidden');
-    return;
-  }
-
+function renderMemoLiveEvaluation(code, opts) {
+  const { hideStrong, hidePattern } = opts || {};
   const lines = [];
-  const cur = ev.current;
-  if (cur && cur.bull_signals && cur.bull_signals.length) {
-    lines.push(`現行原則：符合 ${cur.bull_score} 項多方訊號`);
-    cur.bull_signals.forEach(s => lines.push('‧ ' + s));
-  } else if (cur) {
-    lines.push('現行原則：目前沒有符合的多方訊號');
-  } else {
-    lines.push('現行原則：資料不足，無法評分');
-  }
-  if (cur && cur.bear_signals && cur.bear_signals.length) {
-    cur.bear_signals.forEach(s => lines.push('‧（空方）' + s));
-  }
 
-  lines.push('');
-  const xq = ev.xq;
-  if (xq.available) {
-    if (xq.passes) {
-      lines.push(`XQ原則：符合強勢股門檻（RS值 ${xq.rs_rating?.toFixed(1)}，量比 ${xq.vol_ratio != null ? xq.vol_ratio.toFixed(2) : '-'}，距60日高點 ${xq.dist_from_high60_pct != null ? xq.dist_from_high60_pct.toFixed(1) : '-'}%）`);
-    } else {
-      lines.push(`XQ原則：尚未符合門檻（RS值 ${xq.rs_rating?.toFixed(1)}）`);
-      xq.failReasons.forEach(r => lines.push('‧ ' + r));
+  if (!hideStrong) {
+    let ev = null;
+    try {
+      ev = DBMgr.evaluateStrongSignalForStock(code);
+    } catch (e) {
+      console.error('即時評估強勢股訊號失敗：', e);
     }
-  } else {
-    lines.push(`XQ原則：${xq.reason}`);
+    if (ev && ev.available) {
+      lines.push('【強勢股】');
+      const cur = ev.current;
+      if (cur && cur.bull_signals && cur.bull_signals.length) {
+        lines.push(`現行原則：符合 ${cur.bull_score} 項多方訊號`);
+        cur.bull_signals.forEach(s => lines.push('‧ ' + s));
+      } else if (cur) {
+        lines.push('現行原則：目前沒有符合的多方訊號');
+      } else {
+        lines.push('現行原則：資料不足，無法評分');
+      }
+      if (cur && cur.bear_signals && cur.bear_signals.length) {
+        cur.bear_signals.forEach(s => lines.push('‧（空方）' + s));
+      }
+      lines.push('');
+      const xq = ev.xq;
+      if (xq.available) {
+        if (xq.passes) {
+          lines.push(`XQ原則：符合強勢股門檻（RS值 ${xq.rs_rating?.toFixed(1)}，量比 ${xq.vol_ratio != null ? xq.vol_ratio.toFixed(2) : '-'}，距60日高點 ${xq.dist_from_high60_pct != null ? xq.dist_from_high60_pct.toFixed(1) : '-'}%）`);
+        } else {
+          lines.push(`XQ原則：尚未符合門檻（RS值 ${xq.rs_rating?.toFixed(1)}）`);
+          xq.failReasons.forEach(r => lines.push('‧ ' + r));
+        }
+      } else {
+        lines.push(`XQ原則：${xq.reason}`);
+      }
+      lines.push(`（即時試算，資料日期 ${ev.trade_date || '-'}，非正式強勢股篩選記錄——按「篩選強勢股」重新掃描才會寫入正式記錄）`);
+    }
   }
 
-  lines.push(`\n（即時試算，資料日期 ${ev.trade_date || '-'}，非正式強勢股篩選記錄——按「篩選強勢股」重新掃描才會寫入正式記錄）`);
+  // tw_stock_db客製: 2026-08-27使用者要求——比照上面強勢股的即時評估，
+  // 型態也在這裡補一段；insufficientHistory(歷史太短，新股常見)才整段跳過
+  // 不顯示，「有查但沒符合任何型態」仍然顯示出來（跟強勢股「目前沒有符合的
+  // 多方訊號」同樣的透明度，讓使用者知道確實查過、不是漏查）。
+  if (!hidePattern) {
+    let pv = null;
+    try {
+      pv = DBMgr.evaluatePatternForStock(code);
+    } catch (e) {
+      console.error('即時評估型態訊號失敗：', e);
+    }
+    if (pv && !pv.insufficientHistory) {
+      if (lines.length) lines.push('', '');
+      lines.push('【型態】');
+      if (pv.available) {
+        lines.push(`符合：${pv.pattern_label}`);
+        if (pv.evidence) lines.push('‧ ' + pv.evidence);
+      } else {
+        lines.push(pv.reason);
+      }
+      lines.push(`（即時試算，資料日期 ${pv.trade_date || '-'}，非正式型態篩選記錄——切到「型態」分頁重新篩選才會寫入正式記錄）`);
+    }
+  }
+
+  if (!lines.length) {
+    R.memoLiveWrap.classList.add('hidden');
+    return;
+  }
   R.memoLiveNote.textContent = lines.join('\n');
   R.memoLiveWrap.classList.remove('hidden');
 }
