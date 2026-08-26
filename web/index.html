@@ -778,6 +778,7 @@ select:focus { outline: 2px solid var(--acc); }
 /* ── Strong-stock filter bar ── */
 #strong-bar { display: flex; flex-direction: column; gap: 6px; }
 #volrank-bar { display: flex; flex-direction: column; gap: 6px; }
+#pattern-bar { display: flex; flex-direction: column; gap: 6px; }
 #lock-intraday-bar { display: flex; flex-direction: column; gap: 6px; }
 #volrank-status { color: var(--txt2); font-size: 11px; }
 #strong-status { font-size: 11px; color: var(--txt2); min-height: 14px; white-space: pre-line; line-height: 1.6; }
@@ -1203,6 +1204,7 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="usmarket">美股</option>
         <option value="analysis">分析</option>
         <option value="volrank">量排行</option>
+        <option value="pattern">型態</option>
       </select>
       <select id="sector-sel" class="hidden"></select>
       <div id="strong-bar" class="hidden">
@@ -1222,6 +1224,16 @@ select:focus { outline: 2px solid var(--acc); }
         </select>
         <button class="btn" id="volrank-refresh-btn" title="不等Raspberry Pi排程，透過worker立即重新抓取一批股票的最新價量並重新計算目前這份清單">🔄 重新整理</button>
         <div id="volrank-status" class="modal-hint"></div>
+      </div>
+      <div id="pattern-bar" class="hidden">
+        <select id="pattern-sub-sel">
+          <option value="all">不分類(全部)</option>
+          <option value="flat_base_breakout">一字型底(均線糾結)後噴出</option>
+          <option value="box_breakout">箱型(矩形)中繼突破</option>
+          <option value="momentum_surge">主升段強勢股延續(噴出K棒)</option>
+          <option value="wick_warning">前波高整理回測(上影線警訊,觀察)</option>
+        </select>
+        <div id="pattern-status" class="modal-hint"></div>
       </div>
       <div id="lock-intraday-bar" class="hidden">
         <select id="lock-intraday-sub-sel">
@@ -2270,6 +2282,49 @@ const VolumeRanking = (() => {
   }
 
   return { ensureLoaded, rank, mergeSnapshots };
+})();
+
+/* ════════════════════════════════════════
+   PATTERN SCREEN（型態）——2026-08-26使用者要求，PC端run_daily_update.py
+   每天收盤後跑analysis/screen_pattern_types.py全市場程式化篩選，發布成
+   watchlist/pattern_screen.json（跟strong_stocks_current.json同一種
+   「PC算好、瀏覽器讀取引用」模式），這裡單純負責抓這份靜態檔案+依
+   pattern_type篩選，不做任何運算——真正的型態判讀邏輯只在PC那支腳本裡
+   維護一份，避免瀏覽器/PC兩邊各自重算、結果對不起來。
+   ════════════════════════════════════════ */
+const PatternScreen = (() => {
+  // { queriedFor: 今天日期(快取key), asOfDate, patternLabels, data: [...] }
+  let cache = null;
+
+  async function ensureLoaded(forceRefresh = false) {
+    const todayStr = taipeiDateStr();
+    if (cache && cache.queriedFor === todayStr && !forceRefresh) return cache;
+    try {
+      const res = await fetch(`${RAW}/main/watchlist/pattern_screen.json`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      cache = {
+        queriedFor: todayStr,
+        asOfDate: json.as_of_date || null,
+        patternLabels: json.pattern_labels || {},
+        data: Array.isArray(json.data) ? json.data : [],
+      };
+    } catch {
+      cache = { queriedFor: todayStr, asOfDate: null, patternLabels: {}, data: [] };
+    }
+    return cache;
+  }
+
+  // sub: 'all'(不分類，全部) | 'flat_base_breakout' | 'box_breakout' |
+  //      'momentum_surge' | 'wick_warning'（見screen_pattern_types.py的
+  //      PATTERN_LABELS）
+  function filterBy(sub) {
+    if (!cache) return [];
+    if (!sub || sub === 'all') return cache.data;
+    return cache.data.filter(r => r.pattern_type === sub);
+  }
+
+  return { ensureLoaded, filterBy };
 })();
 
 /* ════════════════════════════════════════
@@ -5886,6 +5941,233 @@ async function renderAiStockChart(params) {
   return { type: 'image', dataUrl, meta };
 }
 
+// tw_stock_db客製: 2026-08-26使用者要求——「型態」分頁(PatternScreen)的
+// similar_pattern_stocks.xlsx（先前對話裡Claude手動用Python+matplotlib畫的
+// 那份報表）要能讓網頁AI自己動態產生同樣格式的版本，不用每次都回頭找
+// Claude重跑一次。這裡是專門給這個匯出功能用的K線+均線縮圖渲染，跟
+// _renderAiStockChartCanvas（render_stock_chart工具用，支援markers/lines/
+// indicators副圖等豐富功能）刻意分開成獨立的簡化版函式——這裡只需要「K棒
+// +MA5/10/20/60疊圖」，硬要共用反而要在_renderAiStockChartCanvas裡塞一堆
+// 條件判斷、增加那個已經驗證過的函式的回歸風險，不划算。
+function _renderPatternChartCanvas(bars, opts) {
+  const width = opts.width || 260;
+  const height = opts.height || 105;
+  const showAxes = !!opts.showAxes;
+  const title = opts.title || '';
+  const marginLeft = showAxes ? 40 : 2;
+  const marginRight = 4;
+  const marginTop = title ? 16 : 2;
+  const marginBottom = showAxes ? 16 : 2;
+  const plotW = width - marginLeft - marginRight;
+  const plotH = height - marginTop - marginBottom;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  ctx.fillStyle = dark ? '#1b1f24' : '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  const n = bars.length;
+  const barSpacing = plotW / n;
+  const xOf = (i) => marginLeft + i * barSpacing;
+  const bodyWidth = Math.max(1, barSpacing * 0.6);
+
+  const closes = bars.map(b => b.close);
+  const minPrice = Math.min(...bars.map(b => b.low));
+  const maxPrice = Math.max(...bars.map(b => b.high));
+  const pad = (maxPrice - minPrice) * 0.05 || maxPrice * 0.02 || 1;
+  const lo = minPrice - pad, hi = maxPrice + pad;
+  const yOf = (price) => marginTop + (hi - price) / (hi - lo) * plotH;
+
+  if (showAxes) {
+    ctx.strokeStyle = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)';
+    ctx.fillStyle = dark ? '#93a4b7' : '#6b7280';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let g = 0; g <= 4; g++) {
+      const price = lo + (hi - lo) * (g / 4);
+      const y = yOf(price);
+      ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(width - marginRight, y); ctx.stroke();
+      ctx.fillText(price.toFixed(1), marginLeft - 3, y);
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    const cx = xOf(i) + barSpacing / 2;
+    const up = b.close >= b.open;
+    const col = up ? AI_CHART_UP_COLOR : AI_CHART_DOWN_COLOR;
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, yOf(b.high)); ctx.lineTo(cx, yOf(b.low)); ctx.stroke();
+    const yOpen = yOf(b.open), yClose = yOf(b.close);
+    const bodyTop = Math.min(yOpen, yClose), bodyH = Math.max(1, Math.abs(yClose - yOpen));
+    ctx.fillRect(cx - bodyWidth / 2, bodyTop, bodyWidth, bodyH);
+  }
+
+  const maSpecs = [[5, '#3b82f6'], [10, '#f59e0b'], [20, '#a855f7'], [60, '#6b7280']];
+  for (const [period, color] of maSpecs) {
+    const ma = computeSMA(closes, period);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      if (ma[i] == null) continue;
+      const x = xOf(i) + barSpacing / 2, y = yOf(ma[i]);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  if (title) {
+    ctx.fillStyle = dark ? '#e6edf3' : '#1f2328';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(title, 2, 1);
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+// tw_stock_db客製: ExcelJS只有匯出型態xlsx這個功能會用到（一般的AI匯出走
+// export_document的PPTX/PDF路徑，不需要ExcelJS），比照floating-assistant.js
+// 的_ensureJSZipLoaded()同一種「用到才動態注入CDN script」模式，不使用這
+// 功能的人不用背這個依賴。放在index.html而不是floating-assistant.js，是
+// 因為這是tw_stock_db的業務功能，不是聊天widget本身的通用能力（跟
+// registerAiSlashCommands開頭註解講的分工原則一致）。
+let _exceljsLoadPromise = null;
+function ensureExcelJSLoaded() {
+  if (typeof ExcelJS !== 'undefined') return Promise.resolve();
+  if (_exceljsLoadPromise) return _exceljsLoadPromise;
+  _exceljsLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+    script.onload = () => resolve();
+    script.onerror = () => { _exceljsLoadPromise = null; reject(new Error('ExcelJS 載入失敗（可能是網路問題）')); };
+    document.head.appendChild(script);
+  });
+  return _exceljsLoadPromise;
+}
+
+// tw_stock_db客製: 把dataUrl(png)轉成ExcelJS.addImage()要的base64字串（去掉
+// 開頭的"data:image/png;base64,"前綴，ExcelJS只要純base64本體）。
+function _dataUrlToBase64(dataUrl) {
+  const idx = dataUrl.indexOf(',');
+  return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+}
+
+// tw_stock_db客製: 2026-08-26使用者要求——AI要能動態產生「跟Claude剛剛
+// 手動做的similar_pattern_stocks.xlsx同樣格式」的報表：sheet1「相似型態
+// 清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖）+ sheet2「150天技術
+// 分析」（代號/名稱/型態/型態小圖/型態趨勢圖大圖，最小單位日K）。資料源
+// 直接讀PatternScreen模組（PC每天收盤後算好發布的靜態JSON，見
+// analysis/screen_pattern_types.py），不在瀏覽器裡重算一次型態判讀——
+// 兩邊分別重算容易因為門檻/邏輯微調不同步而結果對不起來（呼應
+// screen_strong_stocks.py開頭同樣的設計動機）。圖片用_renderPatternChartCanvas
+// 現場畫（150天日K+MA5/10/20/60），跟PC端Python版用同樣的資料來源
+// （DBMgr本機資料庫）、同樣的均線週期，視覺風格盡量一致。
+async function exportPatternScreenXlsx(params) {
+  const sub = params.pattern_type || 'all';
+  const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(200, Number(params.limit))) : 60;
+
+  const meta = await PatternScreen.ensureLoaded();
+  if (!meta.asOfDate) return { ok: false, error: '目前沒有型態篩選資料（PC端每日排程尚未發布pattern_screen.json，或今天還沒收盤）' };
+  let rows = PatternScreen.filterBy(sub);
+  if (!rows.length) return { ok: false, error: `型態「${sub}」目前沒有符合的股票` };
+  const truncated = rows.length > limit;
+  rows = rows.slice(0, limit);
+
+  try {
+    await ensureExcelJSLoaded();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+
+  // 逐檔抓150天日K，畫小圖(260x105)+大圖(660x310)，跟之前那份xlsx同樣尺寸。
+  const charts = [];
+  for (const r of rows) {
+    let bars = null;
+    try {
+      await ensureStockHistoryLoadedForAi(r.stock_code, 180);
+      bars = DBMgr.getPriceHistory(r.stock_code, 150);
+    } catch { /* 抓不到就跳過畫圖，清單文字欄位仍然保留 */ }
+    if (!bars || bars.length < 20) { charts.push({ small: null, large: null }); continue; }
+    const small = _renderPatternChartCanvas(bars, { width: 260, height: 105, showAxes: false });
+    const large = _renderPatternChartCanvas(bars, {
+      width: 660, height: 310, showAxes: true,
+      title: `${r.stock_code} ${r.stock_name}｜${r.pattern_label}`,
+    });
+    charts.push({ small, large });
+  }
+
+  const wb = new ExcelJS.Workbook();
+  const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+  const headerFont = { bold: true, color: { argb: 'FFFFFFFF' }, name: 'Arial' };
+  const bodyFont = { name: 'Arial', size: 10 };
+
+  function styleHeaderRow(ws, headers) {
+    const row = ws.addRow(headers);
+    row.eachCell(cell => {
+      cell.fill = headerFill;
+      cell.font = headerFont;
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    });
+  }
+
+  // ---- Sheet1: 相似型態清單 ----
+  const ws1 = wb.addWorksheet('相似型態清單');
+  ws1.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 90 }, { width: 38 }];
+  styleHeaderRow(ws1, ['代號', '名稱', '型態判讀', '關鍵證據', '型態趨勢圖']);
+  rows.forEach((r, i) => {
+    const row = ws1.addRow([r.stock_code, r.stock_name, r.pattern_label, r.evidence || '']);
+    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top', wrapText: cell.col === 4 }; });
+    row.height = 80;
+    const small = charts[i].small;
+    if (small) {
+      const imgId = wb.addImage({ base64: _dataUrlToBase64(small), extension: 'png' });
+      ws1.addImage(imgId, { tl: { col: 4, row: row.number - 1 }, ext: { width: 260, height: 105 } });
+    }
+  });
+
+  // ---- Sheet2: 150天技術分析 ----
+  const ws2 = wb.addWorksheet('150天技術分析');
+  ws2.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 38 }, { width: 96 }];
+  styleHeaderRow(ws2, ['個股代號', '個股名稱', '型態', '型態小圖', '型態趨勢圖']);
+  rows.forEach((r, i) => {
+    const row = ws2.addRow([r.stock_code, r.stock_name, r.pattern_label]);
+    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top' }; });
+    row.height = 235;
+    const { small, large } = charts[i];
+    if (small) {
+      const imgId = wb.addImage({ base64: _dataUrlToBase64(small), extension: 'png' });
+      ws2.addImage(imgId, { tl: { col: 3, row: row.number - 1 }, ext: { width: 260, height: 105 } });
+    }
+    if (large) {
+      const imgId2 = wb.addImage({ base64: _dataUrlToBase64(large), extension: 'png' });
+      ws2.addImage(imgId2, { tl: { col: 4, row: row.number - 1 }, ext: { width: 660, height: 310 } });
+    }
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const patternLabel = sub === 'all' ? '全部' : (meta.patternLabels[sub] || sub);
+  const filename = `型態篩選_${patternLabel}_${meta.asOfDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '');
+
+  const result = await aiConsoleInstance.generateAndDeliverFile(blob, filename, blob.type);
+  return {
+    ok: true,
+    filename: result.filename,
+    sizeBytes: blob.size,
+    stockCount: rows.length,
+    truncated: truncated || undefined,
+    note: '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
+  };
+}
+
 // tw_stock_db客製: 輕量的TOON風格編碼器（Token-Oriented Object Notation的
 // 精神：陣列裡每個物件欄位一模一樣時，欄位名稱只需要出現一次，不用像JSON
 // 一樣每個物件都重複一次{"trade_date":...,"open":...}——這在OHLCV這種
@@ -6547,6 +6829,15 @@ const AI_CAPABILITIES = [
       }
       return { ok: true, ...body };
     },
+  },
+  {
+    name: 'export_pattern_screen_xlsx', category: '匯出',
+    description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖），sheet2「150天技術分析」（代號/名稱/型態/型態小圖/150天日K大圖，含MA5/10/20/60）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。⚠️呼叫這個工具會實際畫圖+產生檔案，需要幾秒到十幾秒（依股票數量而定），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
+    params: {
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
+      limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
+    },
+    handler: (a) => exportPatternScreenXlsx(a),
   },
   {
     name: 'collect_volume_ranking_now', category: '選股',
@@ -8016,6 +8307,9 @@ const R = {
   volrankSubSel:   $('volrank-sub-sel'),
   volrankRefreshBtn: $('volrank-refresh-btn'),
   volrankStatus:   $('volrank-status'),
+  patternBar:      $('pattern-bar'),
+  patternSubSel:   $('pattern-sub-sel'),
+  patternStatus:   $('pattern-status'),
   lockIntradayBar:    $('lock-intraday-bar'),
   lockIntradaySubSel: $('lock-intraday-sub-sel'),
   stockTable:  $('stock-table'),
@@ -8224,6 +8518,7 @@ function renderPage() {
   const isStrong = view === 'strong';
   const isLock   = view.startsWith('lock_');
   const isVolRank = view === 'volrank';
+  const isPattern = view === 'pattern';
   const isAnalysisView = view === 'analysis';
   const codes       = pageItems.map(s => s.stock_code);
   const sparkMap    = DBMgr.getBatchSparklines(codes, 20);
@@ -8280,6 +8575,8 @@ function renderPage() {
       extraTd = `<td data-col="extra">${s.lock_score != null ? s.lock_score + '分' : '-'}</td>`;
     } else if (isVolRank) {
       extraTd = `<td data-col="extra">${s.vol_ratio != null ? s.vol_ratio.toFixed(2) + '倍' : '-'}</td>`;
+    } else if (isPattern) {
+      extraTd = `<td data-col="extra" title="${esc(s.evidence || '')}">${esc(s.pattern_label || '-')}</td>`;
     }
 
     // 分析 分頁的「代號」欄位改顯示中文報告名稱（premarket/holdings_week這些
@@ -8401,7 +8698,7 @@ function updateExtraColumn(view) {
   const thead = document.querySelector('#stock-table thead tr');
   const existing = thead.querySelector('.extra-col');
   if (existing) existing.remove();
-  if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_') || view === 'volrank') {
+  if (view === 'watchlist' || view === 'strong' || view.startsWith('lock_') || view === 'volrank' || view === 'pattern') {
     const th = document.createElement('th');
     th.className = 'extra-col';
     th.dataset.col = 'extra';
@@ -8409,6 +8706,7 @@ function updateExtraColumn(view) {
       ? (State.strongMethodUsed === 'xq' ? 'RS值' : '分數')
       : view.startsWith('lock_') ? '分數'
       : view === 'volrank' ? '量比'
+      : view === 'pattern' ? '型態'
       : '';
     thead.appendChild(th);
     th.appendChild(makeColResizer('extra'));
@@ -8760,6 +9058,7 @@ function switchView(view) {
   R.wlBar.classList.toggle('hidden',     view !== 'watchlist');
   R.strongBar.classList.toggle('hidden', view !== 'strong');
   R.volrankBar.classList.toggle('hidden', view !== 'volrank');
+  R.patternBar.classList.toggle('hidden', view !== 'pattern');
   R.lockIntradayBar.classList.toggle('hidden', view !== 'lock_intraday_long' && view !== 'lock_intraday_short');
   if (view === 'lock_intraday_long') updateLockIntradaySubLabels('long');
   else if (view === 'lock_intraday_short') updateLockIntradaySubLabels('short');
@@ -8798,6 +9097,7 @@ function switchView(view) {
   else if (view === 'usmarket') loadUsMarket();
   else if (view === 'analysis') loadAnalysisView();
   else if (view === 'volrank') loadVolRank();
+  else if (view === 'pattern') loadPatternScreen();
   else {
     const sid = R.sectorSel.value;
     if (sid) loadSector(sid);
@@ -8870,6 +9170,48 @@ async function loadVolRank() {
       : `目前沒有符合條件的股票。${timeInfo}`) + subHint;
   } catch (e) {
     R.volrankStatus.textContent = '讀取失敗：' + e.message;
+  }
+}
+
+// tw_stock_db客製: 「型態」分頁——資料源是PC端run_daily_update.py每天收盤後
+// 跑的analysis/screen_pattern_types.py（見PatternScreen模組說明），不分類
+// (sub='all')顯示全部四種型態合併排序，選特定型態時只顯示那一種。跟
+// loadVolRank()同一種模式：先清空畫面顯示讀取中，抓到資料後才真正填入，
+// 避免使用者在資料還沒回來前誤以為「這個型態目前沒有符合的股票」。
+async function loadPatternScreen() {
+  const sub = R.patternSubSel.value;
+  R.patternStatus.textContent = '讀取型態清單中…';
+  State.stocks = [];
+  State.page = 0;
+  renderPage();
+  try {
+    const meta = await PatternScreen.ensureLoaded();
+    if (R.viewSel.value !== 'pattern') return; // 讀取期間使用者已經切走，結果丟棄
+    const rows = PatternScreen.filterBy(sub);
+    const refMap = DBMgr.getVolumeRankingReference(rows.map(r => r.stock_code));
+    State.stocks = rows.map(r => {
+      const ref = refMap.get(r.stock_code);
+      return {
+        stock_code: r.stock_code,
+        stock_name: r.stock_name,
+        market: r.market,
+        sector_name: ref ? ref.sector_name : '',
+        open: r.open, close: r.close, prev_close: r.prev_close,
+        pattern_type: r.pattern_type,
+        pattern_label: r.pattern_label,
+        evidence: r.evidence,
+      };
+    });
+    State.page = 0;
+    renderPage();
+    const timeInfo = meta.asOfDate
+      ? `資料時間：${meta.asOfDate}收盤`
+      : '目前沒有型態篩選資料（PC端每日排程尚未發布，或今天還沒收盤）';
+    R.patternStatus.textContent = rows.length
+      ? `共 ${rows.length} 檔。${timeInfo}`
+      : `目前沒有符合條件的股票。${timeInfo}`;
+  } catch (e) {
+    R.patternStatus.textContent = '讀取失敗：' + e.message;
   }
 }
 
@@ -11026,6 +11368,41 @@ function registerAiSlashCommands(ai) {
       ai._renderMessageHistory();
     }
   );
+
+  // tw_stock_db客製: 2026-08-26使用者要求——跟export_pattern_screen_xlsx
+  // 這個AI工具是同一份實作，斜線指令只是「不用打自然語言、直接下指令」的
+  // 捷徑，兩者都呼叫同一個exportPatternScreenXlsx()，行為完全一致。
+  // 參數用空白分隔，跟/benchmark-model同樣的簡單慣例：
+  // /pattern-xlsx [型態代碼|all] [數量上限]，兩個都選填。
+  ai.register_slash_command(
+    '/pattern-xlsx', '[型態代碼|all] [數量上限]',
+    '把「型態」分頁的程式化篩選結果匯出成xlsx報表（含K線縮圖），例如 /pattern-xlsx box_breakout 30',
+    async (argsText) => {
+      const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+      const params = {};
+      if (parts[0]) params.pattern_type = parts[0];
+      if (parts[1] && Number.isFinite(Number(parts[1]))) params.limit = Number(parts[1]);
+
+      const chatBody = document.getElementById('ai-chat-body');
+      const progressId = `pattern-xlsx-progress-${Date.now()}`;
+      if (chatBody) {
+        chatBody.insertAdjacentHTML('beforeend', `<div id="${progressId}" style="margin:8px 0; padding:8px 10px; border:1px solid ${ai._getThemePalette().windowBorder}; border-radius:6px; font-size:12px;">📊 正在畫圖+產生型態篩選xlsx報表，依股票數量可能需要幾秒到十幾秒…</div>`);
+      }
+      let result;
+      try {
+        result = await exportPatternScreenXlsx(params);
+      } catch (e) {
+        result = { ok: false, error: String(e.message || e) };
+      }
+      document.getElementById(progressId)?.remove();
+      const summary = result.ok
+        ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? '（超過上限，未包含全部符合條件的股票）' : ''}。`
+        : `📊 型態篩選報表產生失敗：${result.error}`;
+      ai.messages.push({ role: 'assistant', content: summary });
+      ai._persistChatHistory();
+      ai._renderMessageHistory();
+    }
+  );
 }
 
 // tw_stock_db客製: 每一輪對話開始前都會被floating-assistant.js的executeChat()
@@ -11965,6 +12342,7 @@ function bindEvents() {
 
   /* 量排行子篩選 */
   R.volrankSubSel.addEventListener('change', () => { Settings.set('volrankSub', R.volrankSubSel.value); loadVolRank(); });
+  R.patternSubSel.addEventListener('change', () => { Settings.set('patternSub', R.patternSubSel.value); loadPatternScreen(); });
   // tw_stock_db客製: 「重新整理」按鈕——不等Pi排程，立即用collectVolumeRankingNow
   // （既有的、原本只給AI工具/斜線指令用的緊急擷取邏輯）補抓一批最新價量，
   // 併進VolumeRanking的暫存cache後重新呼叫loadVolRank()重新計算/顯示，
@@ -12676,6 +13054,7 @@ async function main() {
   Chart.setFollowMouse(Settings.get('followMouseTooltip') || false);
   R.strongMethodSel.value = Settings.get('strongMethod') || 'current';
   R.volrankSubSel.value = Settings.get('volrankSub') || 'vol_long';
+  R.patternSubSel.value = Settings.get('patternSub') || 'all';
   R.lockIntradaySubSel.value = Settings.get('lockIntradaySub') || 'all';
 
   /* restore 技術分析/走勢圖 分頁狀態（實際重繪要等下面選股/選大盤指數時才會
