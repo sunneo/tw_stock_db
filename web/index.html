@@ -2327,6 +2327,20 @@ const PatternScreen = (() => {
   return { ensureLoaded, filterBy };
 })();
 
+// tw_stock_db客製: 2026-08-27使用者澄清——原本要的/pattern-xlsx其實是要
+// 「馬上即時算」，不是「讀PC每天收盤後發布的靜態檔案」（上面PatternScreen
+// 模組那個版本）。這個常數獨立拉出來（不放進PatternScreen模組內部），因為
+// DBMgr.computePatternScreenLive()（瀏覽器端即時版，見下方DBMgr模組）跟
+// PatternScreen都需要用到同一份型態代碼→中文標籤對照表，且要跟
+// analysis/screen_pattern_types.py::PATTERN_LABELS逐字對齊，門檻調整時
+// 兩邊(Python/JS)要一起改，不要各自維護一份容易分岔的複本。
+const PATTERN_LABELS_JS = {
+  flat_base_breakout: '一字型底(均線糾結)後噴出',
+  box_breakout: '箱型(矩形)中繼突破',
+  momentum_surge: '主升段強勢股延續(噴出K棒)',
+  wick_warning: '前波高整理回測(上影線警訊,觀察)',
+};
+
 /* ════════════════════════════════════════
    TOUCH LOG（觸及紀錄）——2026-08-23使用者要求，每檔股票記錄「訊號被觸發
    過的歷史」，兩種事件類型都是既有邏輯的延伸，不是新演算法：
@@ -3734,6 +3748,159 @@ const DBMgr = (() => {
     };
   }
 
+  /* ── 型態(PatternScreen)「即時計算」——2026-08-27使用者澄清：/pattern-xlsx
+     原本要的其實是「現在馬上算」，不是等PC端run_daily_update.py收盤後才
+     發布的靜態watchlist/pattern_screen.json。這裡是
+     analysis/screen_pattern_types.py::detect_patterns()的瀏覽器版本，門檻/
+     字串證據格式逐條對齊那支腳本，方便日後兩邊要一起調整。跟Python版唯一
+     的差異：Python版一次抓全部歷史（~2年、近百萬列）再切最後140個交易日；
+     這裡改成SQL先用日曆天數(-260天，涵蓋140個交易日+假日緩衝)過濾，避免
+     瀏覽器sql.js(WASM)一次搬近百萬列資料太慢——只影響效能，不影響140天
+     窗口內的判斷邏輯本身。 */
+  function classifyPatternForStock(rows) {
+    const n = rows.length;
+    const today = rows[n - 1];
+    const o = today.open, h = today.high, c = today.close, vol = today.volume;
+    const ma5 = today.ma5, ma10 = today.ma10, ma20 = today.ma20, ma60 = today.ma60, volMa5 = today.vol_ma5;
+    if ([o, h, c, ma5, ma10, ma20, ma60, volMa5].some(v => v == null) || !volMa5 || !o) return null;
+
+    const closes = rows.map(r => r.close);
+    const bodyPct = (c - o) / o * 100;
+    const upperWick = h - Math.max(o, c);
+    const bodyAbs = Math.abs(c - o);
+    const upperWickExceedsBody = upperWick > bodyAbs;
+    const volRatio = vol / volMa5;
+    const maBullish = ma5 > ma10 && ma10 > ma20 && ma20 > ma60;
+
+    let patternType = null, evidence = null, keyLevels = {};
+
+    // ---- A: 一字型底(均線糾結)後噴出 ----
+    if (n >= 100) {
+      const baseWindow = rows.slice(n - 100, n - 15);
+      if (baseWindow.length >= 40) {
+        const spreads = [];
+        for (const r of baseWindow) {
+          const { ma5: m5, ma10: m10, ma20: m20, ma60: m60, close: rc } = r;
+          if ([m5, m10, m20, m60].some(v => v == null) || !rc) continue;
+          spreads.push((Math.max(m5, m10, m20, m60) - Math.min(m5, m10, m20, m60)) / rc);
+        }
+        if (spreads.length) {
+          const tightDays = spreads.filter(s => s < 0.08).length;
+          const baseCloseMin = Math.min(...baseWindow.map(r => r.close));
+          const baseCloseMax = Math.max(...baseWindow.map(r => r.close));
+          const baseRangePct = baseCloseMin ? (baseCloseMax - baseCloseMin) / baseCloseMin : 999;
+          const recentHigh = Math.max(...closes.slice(-90));
+          const isFreshHigh = c >= recentHigh * 0.97;
+          if (tightDays >= 20 && baseRangePct < 0.35 && maBullish && isFreshHigh && c > baseCloseMax) {
+            patternType = 'flat_base_breakout';
+            evidence = `近3個月(${baseWindow[0].trade_date}~${baseWindow[baseWindow.length - 1].trade_date})均線糾結` +
+              `(區間內${tightDays}天均線差幅<8%)，區間價格${baseCloseMin.toFixed(2)}~${baseCloseMax.toFixed(2)}；` +
+              `現價${c.toFixed(2)}創近90日新高(前高${recentHigh.toFixed(2)})，` +
+              `MA5${ma5.toFixed(2)}>MA10${ma10.toFixed(2)}>MA20${ma20.toFixed(2)}>MA60${ma60.toFixed(2)}多排`;
+            keyLevels = { base_low: baseCloseMin, base_high: baseCloseMax, base_start: baseWindow[0].trade_date, base_end: baseWindow[baseWindow.length - 1].trade_date };
+          }
+        }
+      }
+    }
+
+    // ---- B: 箱型(矩形)中繼突破 ----
+    if (!patternType && n >= 60) {
+      const priorWindow = rows.slice(Math.max(0, n - 140), n - 40);
+      const baseWindow2 = rows.slice(Math.max(0, n - 40), n - 3);
+      if (priorWindow.length && baseWindow2.length) {
+        let priorPeak = -Infinity, peakDate = null;
+        for (const r of priorWindow) { if (r.close > priorPeak) { priorPeak = r.close; peakDate = r.trade_date; } }
+        const baseHigh = Math.max(...baseWindow2.map(r => r.close));
+        const baseLow = Math.min(...baseWindow2.map(r => r.close));
+        if (baseLow > 0 && priorPeak > baseHigh * 1.05 && (baseHigh - baseLow) / baseLow < 0.25) {
+          if (baseHigh < c && c < priorPeak * 1.02 && volRatio >= 1.2) {
+            patternType = 'box_breakout';
+            evidence = `前波高${priorPeak.toFixed(2)}(${peakDate})，回檔後在${baseLow.toFixed(2)}~${baseHigh.toFixed(2)}箱型盤整` +
+              `(${baseWindow2[0].trade_date}~${baseWindow2[baseWindow2.length - 1].trade_date})，今日收${c.toFixed(2)}` +
+              `帶量突破箱頂(量比5日均量${volRatio.toFixed(2)}倍)`;
+            keyLevels = { prior_peak: priorPeak, prior_peak_date: peakDate, base_low: baseLow, base_high: baseHigh };
+          }
+        }
+      }
+    }
+
+    // ---- C: 主升段強勢股延續(噴出K棒) ----
+    if (!patternType && n >= 65) {
+      const c60ago = closes.length >= 61 ? closes[closes.length - 61] : null;
+      const filtered10 = rows.slice(-10).filter(r => r.ma5 && r.ma10 && r.ma20 && r.ma60);
+      const sustainedBullish = filtered10.every(r => r.ma5 > r.ma10 && r.ma10 > r.ma20 && r.ma20 > r.ma60);
+      if (c60ago && c60ago > 0 && c / c60ago >= 1.3 && sustainedBullish
+          && bodyPct >= 4.0 && !upperWickExceedsBody && (!h || c >= h * 0.98) && volRatio >= 1.3) {
+        patternType = 'momentum_surge';
+        evidence = `近60日累積漲幅${((c / c60ago - 1) * 100).toFixed(1)}%，近10日均線持續多排；` +
+          `今日開${o.toFixed(2)}收${c.toFixed(2)}實體${bodyPct.toFixed(1)}%、收最高點(上影線${upperWick.toFixed(2)})，` +
+          `量比5日均量${volRatio.toFixed(2)}倍——攻擊K棒`;
+        keyLevels = { close_60d_ago: c60ago };
+      }
+    }
+
+    // ---- D: 前波高整理回測，上影線警訊(觀察) ----
+    if (!patternType && n >= 60) {
+      const priorWindowD = n > 20 ? rows.slice(0, n - 20) : [];
+      if (priorWindowD.length) {
+        const priorPeakD = Math.max(...priorWindowD.map(r => r.close));
+        const recentLowD = Math.min(...closes.slice(-60));
+        if (priorPeakD > c * 1.05 && recentLowD < c && c > (priorPeakD + recentLowD) / 2
+            && upperWickExceedsBody && bodyPct > -2.0 && bodyPct < 2.0) {
+          patternType = 'wick_warning';
+          evidence = `前波高${priorPeakD.toFixed(2)}，回檔低點${recentLowD.toFixed(2)}後回升至${c.toFixed(2)}` +
+            `(已站上前波高低點中線)；但今日開${o.toFixed(2)}高${h.toFixed(2)}收${c.toFixed(2)}，` +
+            `實體僅${bodyPct.toFixed(1)}%、上影線${upperWick.toFixed(2)}明顯超過實體${bodyAbs.toFixed(2)}——力竭警訊`;
+          keyLevels = { prior_peak: priorPeakD, recent_low: recentLowD };
+        }
+      }
+    }
+
+    if (!patternType) return null;
+    const prevClose = n >= 2 ? rows[n - 2].close : null;
+    return {
+      stock_code: today.stock_code, stock_name: today.stock_name, market: today.market,
+      pattern_type: patternType, pattern_label: PATTERN_LABELS_JS[patternType],
+      evidence, key_levels: keyLevels,
+      open: o, close: c, prev_close: prevClose, trade_date: today.trade_date,
+    };
+  }
+
+  function computePatternScreenLive() {
+    const LOOKBACK = 140;
+    const rows = query(`
+      SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
+             dp.open, dp.high, dp.low, dp.close, dp.volume,
+             ti.ma5, ti.ma10, ti.ma20, ti.ma60, ti.vol_ma5
+      FROM daily_prices dp
+      JOIN technical_indicators ti ON dp.stock_code = ti.stock_code AND dp.trade_date = ti.trade_date
+      JOIN stocks s ON s.stock_code = dp.stock_code
+      WHERE dp.trade_date >= (SELECT date(MAX(trade_date), '-260 day') FROM daily_prices)
+        AND s.is_active = 1
+      ORDER BY dp.stock_code, dp.trade_date
+    `);
+    const byStock = new Map();
+    for (const r of rows) {
+      let arr = byStock.get(r.stock_code);
+      if (!arr) { arr = []; byStock.set(r.stock_code, arr); }
+      arr.push(r);
+    }
+    const results = [];
+    for (const arr of byStock.values()) {
+      if (arr.length < 100) continue;
+      const hit = classifyPatternForStock(arr.slice(-LOOKBACK));
+      if (hit) results.push(hit);
+    }
+    const order = { flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3 };
+    results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
+    return {
+      as_of_date: getLatestIndicatorDate(),
+      pattern_labels: PATTERN_LABELS_JS,
+      count: results.length,
+      data: results,
+    };
+  }
+
   /* tw_stock_db客製: 2026-08-23使用者要求——使用者自己手動加進自選股的
      股票，不一定跑過「篩選強勢股」，MemoStore不會有recordStrongAiNotes()
      寫的AI唯讀筆記可以顯示，備忘錄modal開起來就完全看不到強勢股/鎖股
@@ -3922,7 +4089,7 @@ const DBMgr = (() => {
     fetchWebManifest, ensureMonthsLoaded, ensureRecentMonths, ensureStockMonthLoaded,
     getLoadedMonths, getAvailableMonths, hasOlderMonthAvailable, oneOlderMonthLabel,
     getSectors, getStocksBySector, getSectorRotation, getVolumeRankingReference, getWatchlistStocks, searchStocks, getPrevClose,
-    computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock,
+    computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock, computePatternScreenLive,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
@@ -6063,20 +6230,43 @@ function _dataUrlToBase64(dataUrl) {
 // tw_stock_db客製: 2026-08-26使用者要求——AI要能動態產生「跟Claude剛剛
 // 手動做的similar_pattern_stocks.xlsx同樣格式」的報表：sheet1「相似型態
 // 清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖）+ sheet2「150天技術
-// 分析」（代號/名稱/型態/型態小圖/型態趨勢圖大圖，最小單位日K）。資料源
-// 直接讀PatternScreen模組（PC每天收盤後算好發布的靜態JSON，見
-// analysis/screen_pattern_types.py），不在瀏覽器裡重算一次型態判讀——
-// 兩邊分別重算容易因為門檻/邏輯微調不同步而結果對不起來（呼應
-// screen_strong_stocks.py開頭同樣的設計動機）。圖片用_renderPatternChartCanvas
-// 現場畫（150天日K+MA5/10/20/60），跟PC端Python版用同樣的資料來源
-// （DBMgr本機資料庫）、同樣的均線週期，視覺風格盡量一致。
+// 分析」（代號/名稱/型態/型態小圖/型態趨勢圖大圖，最小單位日K）。
+//
+// params.source 決定資料來源（2026-08-27使用者澄清後新增這個分支）：
+//   'published'（預設）— 讀PatternScreen模組（PC每天收盤後算好發布的靜態
+//     JSON，見analysis/screen_pattern_types.py），不在瀏覽器裡重算一次型態
+//     判讀，避免兩邊分別重算因門檻/邏輯微調不同步而結果對不起來（呼應
+//     screen_strong_stocks.py開頭同樣的設計動機）——資料只到「上次收盤」。
+//   'live' — 使用者原本對/pattern-xlsx的期待其實是這個：不等PC排程，直接
+//     呼叫DBMgr.computePatternScreenLive()對瀏覽器本機sql.js資料庫現場算
+//     一次（跟Python版同一套門檻邏輯，見那個函式的說明），反映「現在」
+//     資料庫裡最新一天的技術指標（可能跟PC端published版本是同一天——
+//     PatternScreen的資料本來就是DB裡當天收盤指標算出來的，兩者理應一致，
+//     'live'的差異只在於「不用等PC排程去發布這個檔案」，任何時候呼叫都會
+//     自己算，不依賴外部發布流程）。
+// 圖片一律用_renderPatternChartCanvas現場畫（150天日K+MA5/10/20/60），跟
+// PC端Python版用同樣的資料來源（DBMgr本機資料庫）、同樣的均線週期，視覺
+// 風格盡量一致，不受source影響。
 async function exportPatternScreenXlsx(params) {
   const sub = params.pattern_type || 'all';
   const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(200, Number(params.limit))) : 60;
+  const isLive = params.source === 'live';
 
-  const meta = await PatternScreen.ensureLoaded();
-  if (!meta.asOfDate) return { ok: false, error: '目前沒有型態篩選資料（PC端每日排程尚未發布pattern_screen.json，或今天還沒收盤）' };
-  let rows = PatternScreen.filterBy(sub);
+  let meta, filterRows;
+  if (isLive) {
+    const live = DBMgr.computePatternScreenLive();
+    meta = { asOfDate: live.as_of_date, patternLabels: live.pattern_labels };
+    filterRows = (s) => (!s || s === 'all' ? live.data : live.data.filter(r => r.pattern_type === s));
+  } else {
+    meta = await PatternScreen.ensureLoaded();
+    filterRows = (s) => PatternScreen.filterBy(s);
+  }
+  if (!meta.asOfDate) {
+    return isLive
+      ? { ok: false, error: '目前沒有足夠的本機資料可以即時計算型態（daily_prices/technical_indicators可能還沒同步）' }
+      : { ok: false, error: '目前沒有型態篩選資料（PC端每日排程尚未發布pattern_screen.json，或今天還沒收盤）' };
+  }
+  let rows = filterRows(sub);
   if (!rows.length) return { ok: false, error: `型態「${sub}」目前沒有符合的股票` };
   const truncated = rows.length > limit;
   rows = rows.slice(0, limit);
@@ -6155,7 +6345,8 @@ async function exportPatternScreenXlsx(params) {
   const buffer = await wb.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const patternLabel = sub === 'all' ? '全部' : (meta.patternLabels[sub] || sub);
-  const filename = `型態篩選_${patternLabel}_${meta.asOfDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '');
+  const filenamePrefix = isLive ? '型態篩選_即時' : '型態篩選';
+  const filename = `${filenamePrefix}_${patternLabel}_${meta.asOfDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '');
 
   const result = await aiConsoleInstance.generateAndDeliverFile(blob, filename, blob.type);
   return {
@@ -6164,6 +6355,8 @@ async function exportPatternScreenXlsx(params) {
     sizeBytes: blob.size,
     stockCount: rows.length,
     truncated: truncated || undefined,
+    live: isLive || undefined,
+    asOfDate: meta.asOfDate,
     note: '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
   };
 }
@@ -6832,12 +7025,21 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'export_pattern_screen_xlsx', category: '匯出',
-    description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖），sheet2「150天技術分析」（代號/名稱/型態/型態小圖/150天日K大圖，含MA5/10/20/60）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。⚠️呼叫這個工具會實際畫圖+產生檔案，需要幾秒到十幾秒（依股票數量而定），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
+    description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖），sheet2「150天技術分析」（代號/名稱/型態/型態小圖/150天日K大圖，含MA5/10/20/60）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+產生檔案，需要幾秒到十幾秒（依股票數量而定），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
     },
     handler: (a) => exportPatternScreenXlsx(a),
+  },
+  {
+    name: 'export_pattern_screen_xlsx_live', category: '匯出',
+    description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表，差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖，會比published版本更久（可能十幾秒到數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
+    params: {
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
+      limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
+    },
+    handler: (a) => exportPatternScreenXlsx({ ...a, source: 'live' }),
   },
   {
     name: 'collect_volume_ranking_now', category: '選股',
@@ -11398,6 +11600,41 @@ function registerAiSlashCommands(ai) {
       const summary = result.ok
         ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? '（超過上限，未包含全部符合條件的股票）' : ''}。`
         : `📊 型態篩選報表產生失敗：${result.error}`;
+      ai.messages.push({ role: 'assistant', content: summary });
+      ai._persistChatHistory();
+      ai._renderMessageHistory();
+    }
+  );
+
+  // tw_stock_db客製: 2026-08-27使用者澄清——上面/pattern-xlsx讀的是PC端
+  // 發布的靜態資料，使用者原本想要的其實是「現在馬上算」，所以另外加這個
+  // 獨立指令做即時計算（呼叫exportPatternScreenXlsx({...,source:'live'})），
+  // 兩個指令並存、互不取代：平常不趕時間用/pattern-xlsx比較快，需要反映
+  // 「現在」資料庫最新狀態時才用這個。
+  ai.register_slash_command(
+    '/pattern-xlsx-live', '[型態代碼|all] [數量上限]',
+    '不等PC端發布，直接對本機資料庫即時算一次型態篩選並匯出xlsx（含K線縮圖），例如 /pattern-xlsx-live box_breakout 30',
+    async (argsText) => {
+      const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+      const params = { source: 'live' };
+      if (parts[0]) params.pattern_type = parts[0];
+      if (parts[1] && Number.isFinite(Number(parts[1]))) params.limit = Number(parts[1]);
+
+      const chatBody = document.getElementById('ai-chat-body');
+      const progressId = `pattern-xlsx-live-progress-${Date.now()}`;
+      if (chatBody) {
+        chatBody.insertAdjacentHTML('beforeend', `<div id="${progressId}" style="margin:8px 0; padding:8px 10px; border:1px solid ${ai._getThemePalette().windowBorder}; border-radius:6px; font-size:12px;">📊 正在即時掃描全市場型態＋畫圖，可能需要十幾秒到數十秒，請稍候…</div>`);
+      }
+      let result;
+      try {
+        result = await exportPatternScreenXlsx(params);
+      } catch (e) {
+        result = { ok: false, error: String(e.message || e) };
+      }
+      document.getElementById(progressId)?.remove();
+      const summary = result.ok
+        ? `📊 型態篩選報表（即時計算，資料時間：${result.asOfDate}）已產生：共${result.stockCount}檔${result.truncated ? '（超過上限，未包含全部符合條件的股票）' : ''}。`
+        : `📊 型態篩選報表（即時計算）產生失敗：${result.error}`;
       ai.messages.push({ role: 'assistant', content: summary });
       ai._persistChatHistory();
       ai._renderMessageHistory();
