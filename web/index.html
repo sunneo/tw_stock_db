@@ -1550,7 +1550,11 @@ select:focus { outline: 2px solid var(--acc); }
           </div>
           <div id="cloudsync-linked" class="hidden">
             <h3>雲端同步</h3>
-            <p>目前Token：<code id="cloudsync-token-display"></code> <button class="btn icon" id="cloudsync-copy-btn" title="複製">📋</button></p>
+            <p>目前Token：<code id="cloudsync-token-display"></code> <button class="btn icon" id="cloudsync-copy-btn" title="複製">📋</button> <button class="btn icon" id="cloudsync-qr-btn" title="顯示QR碼">🔲</button></p>
+            <div id="cloudsync-qr-wrap" class="hidden" style="margin:8px 0; text-align:center;">
+              <img id="cloudsync-qr-img" alt="Token QR碼" style="width:180px; height:180px; background:#fff; padding:8px; border-radius:6px;">
+              <p class="modal-hint">用另一台裝置的相機/掃碼App掃描，會得到跟上面一樣的Token字串，貼到那台裝置的「使用現有Token連接」欄位即可，不用手動輸入整串Token。</p>
+            </div>
             <label class="modal-check-row"><input type="checkbox" id="cloudsync-auto-toggle"> 自動跨裝置sync</label>
             <p class="modal-hint">開啟後，每次打開網頁會自動向雲端確認有沒有其他裝置上傳的設定，有的話會自動拉回來覆蓋本機設定（完全覆蓋，不會詢問，因為就是要做到「打開就是最新」的效果）。你在本機儲存設定時，只要有連接Token，一律會自動把目前設定上傳雲端（不受這個開關影響）。</p>
             <button class="btn" id="cloudsync-sync-now-btn">立即同步（從雲端拉取）</button>
@@ -6293,6 +6297,27 @@ function ensureExcelJSLoaded() {
   return _exceljsLoadPromise;
 }
 
+// tw_stock_db客製: 2026-08-27使用者要求——雲端同步的token是一串20字元的
+// hex亂碼，另一台裝置手動輸入很容易打錯，加個「顯示QR碼」按鈕讓使用者
+// 用手機相機/掃碼App直接掃，比照ensureExcelJSLoaded同一種「用到才動態
+// 注入CDN script」模式，只有真的按下按鈕才載入這個依賴。用
+// kazuhikoarase/qrcode-generator（純JS、零依賴、同步產生，載入後是全域
+// 函式 qrcode(typeNumber, errorCorrectionLevel)，typeNumber傳0代表自動
+// 判斷QR版本大小），不用canvas、createDataURL()直接回傳圖片data URL。
+let _qrcodeLoadPromise = null;
+function ensureQRCodeLoaded() {
+  if (typeof qrcode !== 'undefined') return Promise.resolve();
+  if (_qrcodeLoadPromise) return _qrcodeLoadPromise;
+  _qrcodeLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+    script.onload = () => resolve();
+    script.onerror = () => { _qrcodeLoadPromise = null; reject(new Error('QR碼產生器載入失敗（可能是網路問題）')); };
+    document.head.appendChild(script);
+  });
+  return _qrcodeLoadPromise;
+}
+
 // tw_stock_db客製: 把dataUrl(png)轉成ExcelJS.addImage()要的base64字串（去掉
 // 開頭的"data:image/png;base64,"前綴，ExcelJS只要純base64本體）。
 function _dataUrlToBase64(dataUrl) {
@@ -8711,6 +8736,9 @@ const R = {
   cloudSyncStatus: $('cloudsync-status'),
   cloudSyncTokenDisplay: $('cloudsync-token-display'),
   cloudSyncCopyBtn: $('cloudsync-copy-btn'),
+  cloudSyncQrBtn: $('cloudsync-qr-btn'),
+  cloudSyncQrWrap: $('cloudsync-qr-wrap'),
+  cloudSyncQrImg: $('cloudsync-qr-img'),
   cloudSyncAutoToggle: $('cloudsync-auto-toggle'),
   cloudSyncSyncNowBtn: $('cloudsync-sync-now-btn'),
   cloudSyncUnlinkBtn: $('cloudsync-unlink-btn'),
@@ -12806,6 +12834,7 @@ function bindEvents() {
   R.cloudSyncSyncNowBtn.addEventListener('click', handleCloudSyncSyncNow);
   R.cloudSyncUnlinkBtn.addEventListener('click', handleCloudSyncUnlink);
   R.cloudSyncCopyBtn.addEventListener('click', handleCloudSyncCopy);
+  R.cloudSyncQrBtn.addEventListener('click', handleCloudSyncShowQr);
 
   /* memo modal */
   R.memoChartBtn.addEventListener('click', () => openMemoModal(R.memoChartBtn.dataset.code));
@@ -13222,6 +13251,10 @@ function renderCloudSyncPane() {
   const token = Settings.get('cloudSyncToken');
   R.cloudSyncUnlinked.classList.toggle('hidden', !!token);
   R.cloudSyncLinked.classList.toggle('hidden', !token);
+  // tw_stock_db客製: 每次重新render這個分頁（modal打開、建立/取消連結後）
+  // 都先收起QR碼——換了token之後繼續顯示舊token的QR碼會誤導使用者，
+  // 乾脆一律重置，要看再重新按一次按鈕。
+  R.cloudSyncQrWrap.classList.add('hidden');
   if (token) {
     R.cloudSyncTokenDisplay.textContent = token;
     R.cloudSyncAutoToggle.checked = !!Settings.get('cloudSyncAutoEnabled');
@@ -13230,6 +13263,30 @@ function renderCloudSyncPane() {
     R.cloudSyncNameInput.value = '';
     R.cloudSyncTokenInput.value = '';
     R.cloudSyncStatus.textContent = '';
+  }
+}
+
+// tw_stock_db客製: 2026-08-27使用者要求——token是20字元hex亂碼，另一台
+// 裝置手動輸入容易打錯，按下這個按鈕用QR碼顯示，另一台裝置掃碼App/相機
+// 掃出來就是同一串token文字，直接貼到「使用現有Token連接」欄位即可。
+// 用簡單的顯示/隱藏toggle（不是每次都重新產生），已經產生過的圖片
+// 直接切換顯示即可，token不會在同一次modal開啟期間內變動。
+async function handleCloudSyncShowQr() {
+  if (!R.cloudSyncQrWrap.classList.contains('hidden')) {
+    R.cloudSyncQrWrap.classList.add('hidden');
+    return;
+  }
+  const token = Settings.get('cloudSyncToken');
+  if (!token) return;
+  try {
+    await ensureQRCodeLoaded();
+    const qr = qrcode(0, 'M');
+    qr.addData(token);
+    qr.make();
+    R.cloudSyncQrImg.src = qr.createDataURL(6, 4);
+    R.cloudSyncQrWrap.classList.remove('hidden');
+  } catch (e) {
+    R.cloudSyncLinkedStatus.textContent = `QR碼產生失敗：${e.message}`;
   }
 }
 
