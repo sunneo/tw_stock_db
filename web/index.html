@@ -9615,13 +9615,31 @@ function recordStrongAiNotes(method, results, params) {
    回頭切到型態分頁重找一次。rows需要有stock_code/pattern_label/evidence
    欄位（PatternScreen發布的JSON跟computePatternScreenLive()回傳的data都
    是這個形狀）。 */
+// tw_stock_db客製: 2026-08-27使用者反饋——切到命中檔數多的型態(例如
+// v_reversal約700檔)時分頁幾乎整個卡住，快被作業系統判定成沒回應。追查
+// 發現真正的瓶頸不是陣列filter/map這種輕量操作，是這裡原本逐檔呼叫
+// MemoStore.setPatternNote()——那個函式每呼叫一次，Settings.set()就會把
+// 「整包」設定值(d，含watchlist/備忘錄/AI設定等全部內容)重新JSON.stringify
+// 一次+同步寫入localStorage(見Settings.save()的實作)，700次「整包」序列化
+// +同步磁碟I/O才是真正卡住主執行緒的原因。改成批次寫入：只讀一次memos、
+// 在記憶體裡把所有股票的patternNote都更新完，最後只呼叫一次
+// Settings.set('memos', memos)，把O(N×整包大小)降到O(整包大小)，不用
+// 逐檔呼叫MemoStore.setPatternNote()（那個函式本身沒問題，單次呼叫時
+// 效能沒差，問題只在「被呼叫700次」這件事本身）。
 function recordPatternAiNotes(rows, asOfDate) {
+  const memos = Object.assign({}, Settings.get('memos') || {});
   for (const r of rows) {
-    MemoStore.setPatternNote(r.stock_code, {
-      summary: `型態篩選：${r.pattern_label}（資料日期 ${r.trade_date || asOfDate || '-'}）`,
-      reasons: r.evidence ? [r.evidence] : [],
-    });
+    const existing = memos[r.stock_code];
+    memos[r.stock_code] = {
+      ...existing,
+      patternNote: {
+        summary: `型態篩選：${r.pattern_label}（資料日期 ${r.trade_date || asOfDate || '-'}）`,
+        reasons: r.evidence ? [r.evidence] : [],
+        updatedAt: Date.now(),
+      },
+    };
   }
+  Settings.set('memos', memos);
 }
 
 function loadWatchlist() {
@@ -9861,21 +9879,50 @@ async function loadPatternScreen() {
     const meta = await PatternScreen.ensureLoaded();
     if (R.viewSel.value !== 'pattern') return; // 讀取期間使用者已經切走，結果丟棄
     const rows = PatternScreen.filterBy(sub);
+    // 2026-08-27使用者反饋：命中檔數多的型態(例如v_reversal約700檔)切換
+    // 下拉選單時分頁幾乎整個卡住、快被作業系統判定成沒回應。真正的瓶頸
+    // 已經在recordPatternAiNotes()本身修掉了（原本逐檔寫localStorage，
+    // 見該函式說明），這裡仍比照使用者要求加上cooperative yielding+進度
+    // 顯示當一般性防呆——即使之後這條路徑又多了其他較重的逐檔運算，也
+    // 不會整段同步卡住瀏覽器讓分頁沒辦法回應系統的「還活著嗎」ping，
+    // 使用者也看得到「還在處理」而不是誤以為當機。
     if (rows.length) recordPatternAiNotes(rows, meta.asOfDate);
+
     const refMap = DBMgr.getVolumeRankingReference(rows.map(r => r.stock_code));
-    State.stocks = rows.map(r => {
-      const ref = refMap.get(r.stock_code);
-      return {
-        stock_code: r.stock_code,
-        stock_name: r.stock_name,
-        market: r.market,
-        sector_name: ref ? ref.sector_name : '',
-        open: r.open, close: r.close, prev_close: r.prev_close,
-        pattern_type: r.pattern_type,
-        pattern_label: r.pattern_label,
-        evidence: r.evidence,
-      };
-    });
+    const CHUNK = 200;
+    const mapped = [];
+    // 2026-08-27使用者要求：進度顯示要adaptive——只有真的超過一輪UI loop
+    // 還沒做完，才顯示「處理中」，不要每次切換型態(含快速、根本不需要
+    // yield的小資料量)都先閃一下進度文字，那樣反而變成雜訊。用經過的
+    // 實際時間判斷（不是用「有沒有超過CHUNK」這種資料量的間接推測），
+    // 第一次yield前如果已經花了超過一輪畫面更新的時間(~一個影格加一點
+    // 緩衝，這裡抓100ms)才開始顯示，之後每個chunk都更新一次。
+    const startTime = performance.now();
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      for (const r of rows.slice(i, i + CHUNK)) {
+        const ref = refMap.get(r.stock_code);
+        mapped.push({
+          stock_code: r.stock_code,
+          stock_name: r.stock_name,
+          market: r.market,
+          sector_name: ref ? ref.sector_name : '',
+          open: r.open, close: r.close, prev_close: r.prev_close,
+          pattern_type: r.pattern_type,
+          pattern_label: r.pattern_label,
+          evidence: r.evidence,
+        });
+      }
+      if (i + CHUNK < rows.length) {
+        if (performance.now() - startTime > 100) {
+          R.patternStatus.textContent = `處理中…（${Math.min(i + CHUNK, rows.length)}/${rows.length}）`;
+        }
+        await _yieldToFrame();
+        // 讓出主執行緒的這段時間，使用者可能已經切走分頁或改選別的型態，
+        // 那樣就不用再繼續算下去、也不該用這次的結果覆蓋掉新的選擇。
+        if (R.viewSel.value !== 'pattern' || R.patternSubSel.value !== sub) return;
+      }
+    }
+    State.stocks = mapped;
     State.page = 0;
     renderPage();
     const timeInfo = meta.asOfDate
