@@ -1543,11 +1543,12 @@ select:focus { outline: 2px solid var(--acc); }
             <label class="modal-field"><span>識別名稱</span><input type="text" id="cloudsync-name-input" placeholder="例如：我的桌機"></label>
             <button class="btn" id="cloudsync-create-btn">產生Token並上傳目前設定</button>
             <h3>使用現有Token連接</h3>
-            <label class="modal-field"><span>Token</span><input type="text" id="cloudsync-token-input" placeholder="貼上其他裝置的token"> <button class="btn icon" id="cloudsync-scan-btn" title="掃描QR碼">🔲</button></label>
-            <input type="file" id="cloudsync-scan-file" accept="image/*" class="hidden">
+            <label class="modal-field"><span>Token</span><input type="text" id="cloudsync-token-input" placeholder="貼上其他裝置的token"> <button class="btn icon" id="cloudsync-scan-camera-btn" title="拍照掃描QR碼">📷</button> <button class="btn icon" id="cloudsync-scan-upload-btn" title="上傳圖片掃描QR碼">🖼️</button></label>
+            <input type="file" id="cloudsync-scan-file-camera" accept="image/*" capture="environment" class="hidden">
+            <input type="file" id="cloudsync-scan-file-upload" accept="image/*" class="hidden">
             <button class="btn" id="cloudsync-link-btn">連接並拉取設定</button>
             <p class="modal-hint">「連接」會用貼上的token向雲端查詢，找到的話會完全覆蓋本機目前的設定（自選股、備忘錄、圖表偏好等全部換成雲端那份），請先確認本機沒有還沒上傳的重要變更。</p>
-            <p class="modal-hint">🔲 按鈕可以直接拍照/上傳另一台裝置顯示的QR碼圖片，自動辨識填入Token欄位（辨識完仍需要按「連接並拉取設定」才會真的套用）。</p>
+            <p class="modal-hint">📷 直接開相機拍另一台裝置顯示的QR碼；🖼️ 從相簿選現有的QR碼截圖/照片。兩者都會自動辨識填入Token欄位（辨識完仍需要按「連接並拉取設定」才會真的套用）。</p>
             <p class="modal-hint" id="cloudsync-status"></p>
           </div>
           <div id="cloudsync-linked" class="hidden">
@@ -8753,8 +8754,10 @@ const R = {
   cloudSyncNameInput: $('cloudsync-name-input'),
   cloudSyncCreateBtn: $('cloudsync-create-btn'),
   cloudSyncTokenInput: $('cloudsync-token-input'),
-  cloudSyncScanBtn: $('cloudsync-scan-btn'),
-  cloudSyncScanFile: $('cloudsync-scan-file'),
+  cloudSyncScanCameraBtn: $('cloudsync-scan-camera-btn'),
+  cloudSyncScanUploadBtn: $('cloudsync-scan-upload-btn'),
+  cloudSyncScanFileCamera: $('cloudsync-scan-file-camera'),
+  cloudSyncScanFileUpload: $('cloudsync-scan-file-upload'),
   cloudSyncLinkBtn: $('cloudsync-link-btn'),
   cloudSyncStatus: $('cloudsync-status'),
   cloudSyncTokenDisplay: $('cloudsync-token-display'),
@@ -12858,8 +12861,10 @@ function bindEvents() {
   R.cloudSyncUnlinkBtn.addEventListener('click', handleCloudSyncUnlink);
   R.cloudSyncCopyBtn.addEventListener('click', handleCloudSyncCopy);
   R.cloudSyncQrBtn.addEventListener('click', handleCloudSyncShowQr);
-  R.cloudSyncScanBtn.addEventListener('click', handleCloudSyncScanClick);
-  R.cloudSyncScanFile.addEventListener('change', handleCloudSyncScanFile);
+  R.cloudSyncScanCameraBtn.addEventListener('click', () => handleCloudSyncScanClick(R.cloudSyncScanFileCamera));
+  R.cloudSyncScanUploadBtn.addEventListener('click', () => handleCloudSyncScanClick(R.cloudSyncScanFileUpload));
+  R.cloudSyncScanFileCamera.addEventListener('change', handleCloudSyncScanFile);
+  R.cloudSyncScanFileUpload.addEventListener('change', handleCloudSyncScanFile);
 
   /* memo modal */
   R.memoChartBtn.addEventListener('click', () => openMemoModal(R.memoChartBtn.dataset.code));
@@ -13378,19 +13383,28 @@ function applyPulledCloudSettings(newSettings) {
   }
 }
 
-// tw_stock_db客製: 2026-08-27使用者要求——按鈕本身只負責跳出檔案選擇器
-// （相機/相簿），真正的辨識邏輯在handleCloudSyncScanFile（file input的
-// change事件）。先清空value再click，這樣使用者選「同一張」圖片（例如
-// 拍完發現辨識失敗、想重選同一張再試一次）也還是會觸發change事件——
-// 瀏覽器對file input的規則是「值沒變就不觸發change」，不清空的話重選
-// 同一張圖片會沒反應，使用者會以為按鈕壞了。
-function handleCloudSyncScanClick() {
-  R.cloudSyncScanFile.value = '';
-  R.cloudSyncScanFile.click();
+// tw_stock_db客製: 2026-08-27使用者反饋——原本只用單一
+// <input type=file accept=image/*>（沒有capture屬性）想讓瀏覽器原生跳出
+// 「拍照或選擇照片」的選單，但實測Android三星機型的Chrome會直接跳進
+// 系統相簿選擇器（Android Photo Picker），完全不會出現相機選項，使用者
+// 反而要先跳出去用相機App拍照、確認清晰後再回來相簿裡選那張照片，多繞
+// 一大圈、體驗很差。改成拆成兩個明確按鈕：📷直接用capture="environment"
+// 屬性強制跳相機、🖼️保留原本不加capture的相簿選擇器，讓使用者自己選
+// 要走哪條路，不再依賴瀏覽器/OS自己決定要不要顯示相機選項。
+//
+// 按鈕本身只負責跳出對應的檔案選擇器，真正的辨識邏輯在
+// handleCloudSyncScanFile（file input的change事件，兩個input共用同一個
+// handler，從event.target.files讀檔案）。先清空value再click，這樣使用者
+// 選「同一張」圖片（例如拍完發現辨識失敗、想重選同一張再試一次）也還是
+// 會觸發change事件——瀏覽器對file input的規則是「值沒變就不觸發change」，
+// 不清空的話重選同一張圖片會沒反應，使用者會以為按鈕壞了。
+function handleCloudSyncScanClick(fileInput) {
+  fileInput.value = '';
+  fileInput.click();
 }
 
-async function handleCloudSyncScanFile() {
-  const file = R.cloudSyncScanFile.files && R.cloudSyncScanFile.files[0];
+async function handleCloudSyncScanFile(event) {
+  const file = event.target.files && event.target.files[0];
   if (!file) return;
   R.cloudSyncStatus.textContent = '辨識QR碼中…';
   try {
