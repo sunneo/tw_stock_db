@@ -1543,9 +1543,11 @@ select:focus { outline: 2px solid var(--acc); }
             <label class="modal-field"><span>識別名稱</span><input type="text" id="cloudsync-name-input" placeholder="例如：我的桌機"></label>
             <button class="btn" id="cloudsync-create-btn">產生Token並上傳目前設定</button>
             <h3>使用現有Token連接</h3>
-            <label class="modal-field"><span>Token</span><input type="text" id="cloudsync-token-input" placeholder="貼上其他裝置的token"></label>
+            <label class="modal-field"><span>Token</span><input type="text" id="cloudsync-token-input" placeholder="貼上其他裝置的token"> <button class="btn icon" id="cloudsync-scan-btn" title="掃描QR碼">🔲</button></label>
+            <input type="file" id="cloudsync-scan-file" accept="image/*" class="hidden">
             <button class="btn" id="cloudsync-link-btn">連接並拉取設定</button>
             <p class="modal-hint">「連接」會用貼上的token向雲端查詢，找到的話會完全覆蓋本機目前的設定（自選股、備忘錄、圖表偏好等全部換成雲端那份），請先確認本機沒有還沒上傳的重要變更。</p>
+            <p class="modal-hint">🔲 按鈕可以直接拍照/上傳另一台裝置顯示的QR碼圖片，自動辨識填入Token欄位（辨識完仍需要按「連接並拉取設定」才會真的套用）。</p>
             <p class="modal-hint" id="cloudsync-status"></p>
           </div>
           <div id="cloudsync-linked" class="hidden">
@@ -6318,6 +6320,25 @@ function ensureQRCodeLoaded() {
   return _qrcodeLoadPromise;
 }
 
+// tw_stock_db客製: 2026-08-27使用者要求——反過來，「使用現有Token連接」
+// 那邊也要能反辨識：按鈕打開系統的相機/相簿選擇器（<input type=file
+// accept=image/*>沒有加capture屬性，讓瀏覽器原生跳出「拍照或選擇照片」
+// 的選單，兩種都能選，不強制只能用相機），選到圖片後解出QR碼裡的token
+// 字串。用nimiq/qr-scanner（cdnjs上沒有UMD版本，只有ES module，所以用
+// 動態import()而不是注入<script src>——動態import()在classic script裡
+// 也能直接呼叫，不需要把整個頁面改成type=module）。scanImage()靜態方法
+// 直接吃File物件，回傳{data,cornerPoints}（沒加returnDetailedScanResult
+// 選項的話library會印deprecation warning到console，所以明確帶上）。
+let _qrScannerLoadPromise = null;
+function ensureQrScannerLoaded() {
+  if (window.QrScanner) return Promise.resolve(window.QrScanner);
+  if (_qrScannerLoadPromise) return _qrScannerLoadPromise;
+  _qrScannerLoadPromise = import('https://cdnjs.cloudflare.com/ajax/libs/qr-scanner/1.4.2/qr-scanner.min.js')
+    .then(mod => { window.QrScanner = mod.default; return window.QrScanner; })
+    .catch(e => { _qrScannerLoadPromise = null; throw new Error('QR碼掃描器載入失敗（可能是網路問題）：' + (e?.message || e)); });
+  return _qrScannerLoadPromise;
+}
+
 // tw_stock_db客製: 把dataUrl(png)轉成ExcelJS.addImage()要的base64字串（去掉
 // 開頭的"data:image/png;base64,"前綴，ExcelJS只要純base64本體）。
 function _dataUrlToBase64(dataUrl) {
@@ -8732,6 +8753,8 @@ const R = {
   cloudSyncNameInput: $('cloudsync-name-input'),
   cloudSyncCreateBtn: $('cloudsync-create-btn'),
   cloudSyncTokenInput: $('cloudsync-token-input'),
+  cloudSyncScanBtn: $('cloudsync-scan-btn'),
+  cloudSyncScanFile: $('cloudsync-scan-file'),
   cloudSyncLinkBtn: $('cloudsync-link-btn'),
   cloudSyncStatus: $('cloudsync-status'),
   cloudSyncTokenDisplay: $('cloudsync-token-display'),
@@ -12835,6 +12858,8 @@ function bindEvents() {
   R.cloudSyncUnlinkBtn.addEventListener('click', handleCloudSyncUnlink);
   R.cloudSyncCopyBtn.addEventListener('click', handleCloudSyncCopy);
   R.cloudSyncQrBtn.addEventListener('click', handleCloudSyncShowQr);
+  R.cloudSyncScanBtn.addEventListener('click', handleCloudSyncScanClick);
+  R.cloudSyncScanFile.addEventListener('change', handleCloudSyncScanFile);
 
   /* memo modal */
   R.memoChartBtn.addEventListener('click', () => openMemoModal(R.memoChartBtn.dataset.code));
@@ -13350,6 +13375,33 @@ function applyPulledCloudSettings(newSettings) {
   // 分頁的話單純寫進Settings，不用特別處理。
   if (JSON.stringify(old.watchlist) !== JSON.stringify(newSettings.watchlist) && R.viewSel.value === 'watchlist') {
     loadWatchlist();
+  }
+}
+
+// tw_stock_db客製: 2026-08-27使用者要求——按鈕本身只負責跳出檔案選擇器
+// （相機/相簿），真正的辨識邏輯在handleCloudSyncScanFile（file input的
+// change事件）。先清空value再click，這樣使用者選「同一張」圖片（例如
+// 拍完發現辨識失敗、想重選同一張再試一次）也還是會觸發change事件——
+// 瀏覽器對file input的規則是「值沒變就不觸發change」，不清空的話重選
+// 同一張圖片會沒反應，使用者會以為按鈕壞了。
+function handleCloudSyncScanClick() {
+  R.cloudSyncScanFile.value = '';
+  R.cloudSyncScanFile.click();
+}
+
+async function handleCloudSyncScanFile() {
+  const file = R.cloudSyncScanFile.files && R.cloudSyncScanFile.files[0];
+  if (!file) return;
+  R.cloudSyncStatus.textContent = '辨識QR碼中…';
+  try {
+    const QrScanner = await ensureQrScannerLoaded();
+    const result = await QrScanner.scanImage(file, { returnDetailedScanResult: true });
+    const token = (result.data || '').trim();
+    if (!token) throw new Error('QR碼內容是空的');
+    R.cloudSyncTokenInput.value = token;
+    R.cloudSyncStatus.textContent = '已從QR碼讀取Token，請確認後按「連接並拉取設定」。';
+  } catch (e) {
+    R.cloudSyncStatus.textContent = `QR碼辨識失敗：${e.message || '找不到QR碼，請換一張更清楚的圖片再試'}`;
   }
 }
 
