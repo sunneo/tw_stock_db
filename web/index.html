@@ -1232,6 +1232,7 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="box_breakout">箱型(矩形)中繼突破</option>
           <option value="momentum_surge">主升段強勢股延續(噴出K棒)</option>
           <option value="wick_warning">前波高整理回測(上影線警訊,觀察)</option>
+          <option value="pullback_in_uptrend">多頭回檔(等待買點)</option>
         </select>
         <div id="pattern-status" class="modal-hint"></div>
       </div>
@@ -2367,6 +2368,7 @@ const PATTERN_LABELS_JS = {
   box_breakout: '箱型(矩形)中繼突破',
   momentum_surge: '主升段強勢股延續(噴出K棒)',
   wick_warning: '前波高整理回測(上影線警訊,觀察)',
+  pullback_in_uptrend: '多頭回檔(等待買點)',
 };
 
 /* ════════════════════════════════════════
@@ -3884,6 +3886,25 @@ const DBMgr = (() => {
       }
     }
 
+    // ---- E: 多頭回檔(等待買點) ----2026-08-27使用者要求延伸新增（不取代
+    // 原本ABCD四類）——使用者實際案例：2027大成鋼原本才被抓到A(一字型底
+    // 噴出)，隔天回檔跌破MA5/MA10、但均線仍多排、也還沒跌破MA20支撐，這種
+    // 「多頭架構未破壞、正在拉回找買點」的狀態值得單獨標出來，呼應SKILL
+    // 「回後買上漲」的設定（回檔不破前低+紅K站回5日均線才是正式進場訊號，
+    // 這裡抓的是「拉回中、還沒站回」的觀察階段，不是進場訊號本身）。
+    if (!patternType && n >= 15) {
+      const recentWindow = rows.slice(-10);
+      const recentHigh = Math.max(...recentWindow.map(r => r.high));
+      const pullbackPct = recentHigh > 0 ? (recentHigh - c) / recentHigh * 100 : 0;
+      if (maBullish && c >= ma20 && c < ma5 && pullbackPct >= 2 && pullbackPct <= 15) {
+        patternType = 'pullback_in_uptrend';
+        evidence = `近10日高點${recentHigh.toFixed(2)}，拉回至${c.toFixed(2)}(拉回${pullbackPct.toFixed(1)}%)，` +
+          `均線仍多排(MA5${ma5.toFixed(2)}>MA10${ma10.toFixed(2)}>MA20${ma20.toFixed(2)}>MA60${ma60.toFixed(2)})，` +
+          `目前站上MA20支撐未破，但尚未站回MA5，觀察是否出現紅K站回5日均線的回後買上漲訊號`;
+        keyLevels = { recent_high: recentHigh, pullback_pct: pullbackPct };
+      }
+    }
+
     if (!patternType) return null;
     const prevClose = n >= 2 ? rows[n - 2].close : null;
     return {
@@ -3948,7 +3969,7 @@ const DBMgr = (() => {
       if (onProgress) { try { onProgress(Math.min(i + BATCH_SIZE, codes.length), codes.length); } catch { /* 呼叫端UI更新失敗不該中斷計算 */ } }
       await yieldToFrame();
     }
-    const order = { flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3 };
+    const order = { flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3, pullback_in_uptrend: 4 };
     results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
     return {
       as_of_date: getLatestIndicatorDate(),
@@ -7312,7 +7333,7 @@ const AI_CAPABILITIES = [
     name: 'export_pattern_screen_xlsx', category: '匯出',
     description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖(每日收盤價小圖)/關鍵證據），sheet2「個股技術分析」（個股代號/個股名稱/型態判讀/產業/趨勢圖(同sheet1)/型態趨勢圖(K棒+MA5/10/20/60大圖)/分析(對每檔跑一次持股診斷diagnose_stock、轉成純文字段落，涵蓋目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/進出場建議)）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+逐檔跑診斷+產生檔案，股票數量多時可能需要一段時間，呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
-      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
     },
     handler: (a) => exportPatternScreenXlsx(a),
@@ -7321,7 +7342,7 @@ const AI_CAPABILITIES = [
     name: 'export_pattern_screen_xlsx_live', category: '匯出',
     description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表（同樣兩個sheet、同樣欄位），差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖+逐檔跑診斷，會比published版本更久（可能數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
-      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
     },
     handler: (a) => exportPatternScreenXlsx({ ...a, source: 'live' }),
