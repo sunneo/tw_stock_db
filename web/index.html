@@ -1519,6 +1519,15 @@ select:focus { outline: 2px solid var(--acc); }
           <label class="modal-check-row"><input type="checkbox" id="ai-assistant-enabled-toggle"> 啟用AI助理分頁</label>
           <p class="modal-hint">開啟後，分頁列會多一個「AI」分頁，可以直接跟AI對話，AI能查詢清單/備忘錄/盤後籌碼/鎖股名單/走勢圖K棒/技術分析K棒/持股診斷等資料，也能操作選股/切分頁等介面。沒有自己填金鑰的話，會使用內建的共用金鑰（透過Cloudflare Worker代理隱藏）。</p>
 
+          <h3>執行模式</h3>
+          <label class="modal-field"><span>工具執行前是否要確認</span>
+            <select id="ai-confirmation-mode-sel">
+              <option value="auto">Auto（預設）——直接執行，不中斷</option>
+              <option value="ask_if_need">Ask if need——會修改資料的動作先跳表單確認</option>
+            </select>
+          </label>
+          <p class="modal-hint">Auto模式下AI會直接執行所有工具（包括寫備忘錄、加自選股等會修改你資料的動作），適合信任AI自己判斷、想要流暢不被打斷的體驗。Ask if need模式下，任何會修改你資料或觸發下載的動作，執行前都會先跳出一個表單顯示AI打算做什麼、讓你確認或修改參數後再送出，AI也可以在判斷需要你決定時（例如有多種做法要你選）主動跳表單問你，不會自己瞎猜。兩種模式下AI都能讀到你在牠處理到一半時追加的訊息（跟Claude一樣的「Steering」機制），自己判斷要不要臨時改變方向。</p>
+
           <h3>LLM 連線設定</h3>
           <label class="modal-field"><span>API 金鑰</span><input type="password" id="ai-cfg-api-key" placeholder="留空使用內建共用金鑰"></label>
           <label class="modal-field"><span>API 網址</span><input type="text" id="ai-cfg-api-url" placeholder="https://integrate.api.nvidia.com/v1"></label>
@@ -1647,7 +1656,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=d840cfa7e8"></script>
+<script src="floating-assistant.js?v=6be1b2d24f"></script>
 
 <script>
 'use strict';
@@ -1851,6 +1860,8 @@ const Settings = (() => {
              strongCurrentRules: { kdCross:true, macd:true, oscGrow:true, volSpike:true, pullback:true, risingMa20:true },
              memos: {},  // { [stock_code]: { text, updatedAt } } — per-stock memo, see MemoStore
              aiAssistantEnabled: false, // 內嵌AI對話分頁，預設關閉，見 renderAiTab/updateAiTabVisibility
+             aiConfirmationMode: 'auto', // 'auto'(預設，工具直接執行) | 'ask_if_need'（會修改使用者資料的工具執行前跳表單確認，見aiToolHandler）
+
              appSkin: 'default', // 'default' | 'zhu'（朱老師App版面，見 applySkin()）
              cloudSyncToken: null, // 雲端同步設定（Google Sheet後端）目前連接的token，見 CloudSync 模組
              cloudSyncAutoEnabled: false, // 開啟後，每次打開頁面自動從雲端拉取並覆蓋本機設定
@@ -6650,10 +6661,12 @@ async function exportPatternScreenXlsx(params) {
   const sub = params.pattern_type || 'all';
   // 2026-08-27使用者反饋：預設60在只有5種舊分類、命中數百檔以內時還算
   // 合理，但F+新增9種型態後常見情況（尤其"all"）動輒上千檔命中，60檔
-  // 樣本太小、又容易被單一型態佔滿，預設上調到120；上限也從200提高到
-  // 300（呼應下面的balanced抽樣，300/14種型態≈每種還能有20來檔，樣本
-  // 才有代表性）。
-  const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(300, Number(params.limit))) : 120;
+  // 樣本太小、又容易被單一型態佔滿，預設上調到120。上限原本訂300，
+  // 2026-08-28使用者反饋「300不應該」再上調到900（呼應下面的balanced
+  // 抽樣，900/14種型態≈每種還能有60來檔，樣本更有代表性）——注意上限
+  // 拉高不影響「不特別要求」時的預設速度，只有使用者自己明確指定大
+  // limit時才會真的跑比較久（逐檔畫圖+跑診斷，900檔會需要數分鐘）。
+  const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(900, Number(params.limit))) : 120;
   const isLive = params.source === 'live';
 
   let meta, filterRows;
@@ -6800,7 +6813,7 @@ async function exportPatternScreenXlsx(params) {
     live: isLive || undefined,
     asOfDate: meta.asOfDate,
     note: truncated
-      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限300）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。`
+      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限900，但股票數量多時逐檔畫圖+跑診斷會需要數分鐘，記得提醒使用者要等）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。`
       : '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
   };
 }
@@ -7472,7 +7485,7 @@ const AI_CAPABILITIES = [
     description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖(每日收盤價小圖)/關鍵證據），sheet2「個股技術分析」（個股代號/個股名稱/型態判讀/產業/趨勢圖(同sheet1)/型態趨勢圖(K棒+MA5/10/20/60大圖)/分析(對每檔跑一次持股診斷diagnose_stock、轉成純文字段落，涵蓋目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/進出場建議)）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+逐檔跑診斷+產生檔案，股票數量多時可能需要一段時間，呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
-      limit: '選填數字，最多匯出幾檔，預設120、上限300——股票數量多時畫圖+跑診斷會需要比較久時間，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
+      limit: '選填數字，最多匯出幾檔，預設120、上限900——股票數量多時畫圖+跑診斷會需要比較久時間(數百檔可能要數分鐘)，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
     },
     handler: (a) => exportPatternScreenXlsx(a),
   },
@@ -7481,7 +7494,7 @@ const AI_CAPABILITIES = [
     description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表（同樣兩個sheet、同樣欄位），差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖+逐檔跑診斷，會比published版本更久（可能數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
-      limit: '選填數字，最多匯出幾檔，預設120、上限300——股票數量多時畫圖+跑診斷會需要比較久時間，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
+      limit: '選填數字，最多匯出幾檔，預設120、上限900——股票數量多時畫圖+跑診斷會需要比較久時間(數百檔可能要數分鐘)，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
     },
     handler: (a) => exportPatternScreenXlsx({ ...a, source: 'live' }),
   },
@@ -7492,6 +7505,26 @@ const AI_CAPABILITIES = [
     handler: async () => {
       const result = await collectVolumeRankingNow(60);
       return { ok: true, ...result, note: '已更新量排行分頁的暫存資料（只在這個瀏覽器分頁有效，重新整理會恢復成讀取GitHub上的正式資料）。' };
+    },
+  },
+  {
+    name: 'ask_user_for_input', category: '互動',
+    description: '當你判斷需要先確認使用者的意圖/偏好、有多種合理做法要讓使用者決定、或某個接下來要做的動作有風險/不容易復原時，呼叫這個工具跳出一個表單讓使用者親自回答，不要自己瞎猜或編造答案代替使用者決定。這個工具在任何執行模式下都能用（不限於「Ask if need」模式——那個模式是另外針對「會修改使用者資料」的工具自動跳表單，這個工具則是你自己主動判斷要不要問）。呼叫後會拿到使用者的實際回答，請根據回答繼續；如果使用者取消/沒有回答，就把這件事停在這裡如實告知使用者，不要假裝使用者已經同意或選了某個選項。⚠️不要每個問題都呼叫這個工具——一般性的資訊查詢、你自己就能從已知資料判斷的事，直接回答就好，只有真的需要使用者親自決定的情境才用。',
+    params: {
+      question: '要問使用者的問題（繁體中文，講清楚為什麼需要問、在猶豫什麼）',
+      choices: '選填，字串陣列（例如["方案A：先做X","方案B：先做Y"]）。有給的話會渲染成按鈕讓使用者點選其中一個（單選）；不給則渲染成一個開放式文字輸入框，讓使用者自己打字回答。',
+    },
+    handler: async (a) => {
+      if (!aiConsoleInstance) return { ok: false, error: '目前沒有可用的AI對話視窗，無法跳出表單' };
+      const choices = Array.isArray(a.choices) ? a.choices : null;
+      const result = await aiConsoleInstance.requestUserForm({
+        title: '🧭 AI 想確認一下',
+        description: a.question || '',
+        choices,
+        fields: choices ? null : [{ key: 'answer', label: '你的回答', value: '' }],
+      });
+      if (!result.confirmed) return { ok: false, cancelled: true, reason: '使用者取消了、或沒有填寫就關掉了這個表單——不要假裝使用者已經回答，如實告知使用者你原本想問但沒有得到回覆' };
+      return { ok: true, answer: result.answer ?? (result.values ? result.values.answer : null) };
     },
   },
 ];
@@ -7534,7 +7567,7 @@ function _reparseJsonLikeStringFields(obj) {
   return obj;
 }
 
-function aiToolHandler(fn, paramKeys = []) {
+function aiToolHandler(fn, paramKeys = [], toolMeta = {}) {
   return async (rawArgs) => {
     let a;
     if (rawArgs == null || rawArgs === '') a = {};
@@ -7552,6 +7585,34 @@ function aiToolHandler(fn, paramKeys = []) {
       a = paramKeys.length === 1 ? { [paramKeys[0]]: a } : { value: a };
     }
     a = _reparseJsonLikeStringFields(a);
+
+    // tw_stock_db客製: 2026-08-28使用者要求新增「Ask if need」執行模式
+    // （預設'auto'不擋，見Settings.defaults()的說明）——mutates:true的工具
+    // （會修改使用者資料或觸發網路下載，見AI_CAPABILITIES開頭的欄位說明）
+    // 在這個模式下，執行前先透過aiConsoleInstance.requestUserForm()跳一個
+    // 表單，把AI打算送的參數攤開讓使用者看、可以直接編輯後再送出，或按
+    // 取消整個不執行。這裡是唯一一個「所有工具呼叫，不管走原生tool_calls
+    // 還是文字式[CALL:...]慣例」都會經過的共用出口（見registerAiCapabilities
+    // 的說明），是加這個攔截最省事、也保證兩種呼叫協定都涵蓋到的地方。
+    if (toolMeta.mutates && Settings.get('aiConfirmationMode') === 'ask_if_need' && aiConsoleInstance) {
+      const fields = Object.entries(a).map(([k, v]) => ({
+        key: k, label: k, value: typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? ''),
+      }));
+      const confirmResult = await aiConsoleInstance.requestUserForm({
+        title: `⏸️ AI 想要執行：${toolMeta.name}`,
+        description: toolMeta.description || '',
+        fields: fields.length ? fields : null,
+      });
+      if (!confirmResult.confirmed) {
+        return JSON.stringify({ ok: false, cancelled: true, reason: '使用者在確認表單裡取消了這個操作，不要假裝已經執行、也不要重試同一個動作，除非使用者另外要求' });
+      }
+      if (confirmResult.values) {
+        for (const [k, v] of Object.entries(confirmResult.values)) {
+          try { a[k] = JSON.parse(v); } catch { a[k] = v; } // 使用者在表單裡打的是合法JSON(例如陣列/數字)才轉型，否則當純字串留著
+        }
+      }
+    }
+
     try {
       const result = await fn(a);
       return typeof result === 'string' ? result : JSON.stringify(result);
@@ -7591,7 +7652,8 @@ function registerAiCapabilities(ai) {
       ? ` 參數（JSON物件字串）：${JSON.stringify(c.params)}`
       : '（不需要參數）';
     const mutateNote = c.mutates ? '' : ''; // description本身已經在需要時內含【會修改使用者資料】等提醒
-    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys), _buildParamsJsonSchema(c.params));
+    const toolMeta = { name: c.name, description: c.description, mutates: !!c.mutates };
+    ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys, toolMeta), _buildParamsJsonSchema(c.params));
   });
 }
 
@@ -9058,6 +9120,7 @@ const R = {
   strongNearHighInput: $('strong-near-high'),
   diagnosisLookbackDaysInput: $('diagnosis-lookback-days'),
   aiAssistantEnabledToggle: $('ai-assistant-enabled-toggle'),
+  aiConfirmationModeSel: $('ai-confirmation-mode-sel'),
   aiCfgApiKey: $('ai-cfg-api-key'),
   aiCfgApiUrl: $('ai-cfg-api-url'),
   aiCfgModelName: $('ai-cfg-model-name'),
@@ -12106,6 +12169,16 @@ function renderAiTab() {
 // 的指令如/benchmark-model）。新增一個指令只需要在這裡加一段
 // register_slash_command()呼叫，跟registerAiCapabilities()新增AI工具是
 // 同一種模式。
+// tw_stock_db客製: 2026-08-28使用者反饋——「slashcommand沒有自動完成嗎？
+// 像是型態代碼，沒有任何一個使用者知道該填什麼」，給/pattern-xlsx跟
+// /pattern-xlsx-live的第一個參數（型態代碼）用，跟#pattern-sub-sel下拉
+// 選單的選項逐一對照（PATTERN_LABELS_JS加上"all"），確保網頁下拉選單跟
+// 斜線指令自動完成看到的是同一份型態清單，不用兩邊各自維護。
+const PATTERN_TYPE_ARG_CHOICES = [
+  { value: 'all', label: '不分類(全部)' },
+  ...Object.entries(PATTERN_LABELS_JS).map(([value, label]) => ({ value, label })),
+];
+
 function registerAiSlashCommands(ai) {
   ai.register_slash_command(
     '/collect-volrank', '',
@@ -12140,7 +12213,7 @@ function registerAiSlashCommands(ai) {
   // /pattern-xlsx [型態代碼|all] [數量上限]，兩個都選填。
   ai.register_slash_command(
     '/pattern-xlsx', '[型態代碼|all] [數量上限]',
-    '把「型態」分頁的程式化篩選結果匯出成xlsx報表（含K線縮圖），數量上限預設120、最多300，例如 /pattern-xlsx box_breakout 30 或 /pattern-xlsx all 300',
+    '把「型態」分頁的程式化篩選結果匯出成xlsx報表（含K線縮圖），數量上限預設120、最多900，例如 /pattern-xlsx box_breakout 30 或 /pattern-xlsx all 300',
     async (argsText) => {
       const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
       const params = {};
@@ -12160,12 +12233,13 @@ function registerAiSlashCommands(ai) {
       }
       document.getElementById(progressId)?.remove();
       const summary = result.ok
-        ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx all 300，上限300）` : ''}。`
+        ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx all 300，上限900）` : ''}。`
         : `📊 型態篩選報表產生失敗：${result.error}`;
       ai.messages.push({ role: 'assistant', content: summary });
       ai._persistChatHistory();
       ai._renderMessageHistory();
-    }
+    },
+    [PATTERN_TYPE_ARG_CHOICES, null] // 第1個參數(型態代碼)有自動完成候選值，第2個(數量上限)是自由輸入的數字，不提供候選
   );
 
   // tw_stock_db客製: 2026-08-27使用者澄清——上面/pattern-xlsx讀的是PC端
@@ -12175,7 +12249,7 @@ function registerAiSlashCommands(ai) {
   // 「現在」資料庫最新狀態時才用這個。
   ai.register_slash_command(
     '/pattern-xlsx-live', '[型態代碼|all] [數量上限]',
-    '不等PC端發布，直接對本機資料庫即時算一次型態篩選並匯出xlsx（含K線縮圖），數量上限預設120、最多300，例如 /pattern-xlsx-live box_breakout 30 或 /pattern-xlsx-live all 300',
+    '不等PC端發布，直接對本機資料庫即時算一次型態篩選並匯出xlsx（含K線縮圖），數量上限預設120、最多900，例如 /pattern-xlsx-live box_breakout 30 或 /pattern-xlsx-live all 300',
     async (argsText) => {
       const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
       const params = { source: 'live' };
@@ -12203,12 +12277,13 @@ function registerAiSlashCommands(ai) {
       }
       document.getElementById(progressId)?.remove();
       const summary = result.ok
-        ? `📊 型態篩選報表（即時計算，資料時間：${result.asOfDate}）已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx-live all 300，上限300）` : ''}。`
+        ? `📊 型態篩選報表（即時計算，資料時間：${result.asOfDate}）已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx-live all 300，上限900）` : ''}。`
         : `📊 型態篩選報表（即時計算）產生失敗：${result.error}`;
       ai.messages.push({ role: 'assistant', content: summary });
       ai._persistChatHistory();
       ai._renderMessageHistory();
-    }
+    },
+    [PATTERN_TYPE_ARG_CHOICES, null]
   );
 }
 
@@ -13472,6 +13547,7 @@ function openSettingsModal() {
   R.diagnosisLookbackDaysInput.value = getDiagnosisLookbackDays();
 
   R.aiAssistantEnabledToggle.checked = !!Settings.get('aiAssistantEnabled');
+  R.aiConfirmationModeSel.value = Settings.get('aiConfirmationMode') || 'auto';
   loadAiConnectionSettingsIntoModal();
 
   const scr = Settings.get('strongCurrentRules') || {};
@@ -13595,6 +13671,7 @@ function saveSettingsModal() {
   }
 
   Settings.set('aiAssistantEnabled', R.aiAssistantEnabledToggle.checked);
+  Settings.set('aiConfirmationMode', R.aiConfirmationModeSel.value === 'ask_if_need' ? 'ask_if_need' : 'auto');
   updateAiTabVisibility();
 
   const appSkin = R.zhuSkinToggle.checked ? 'zhu' : 'default';
