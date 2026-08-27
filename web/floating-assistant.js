@@ -2189,6 +2189,86 @@ ${fnData.code}
         return { id, filename };
     }
 
+    // tw_stock_db客製: 2026-08-28使用者要求——通用「暫停並跳表單詢問使用者」
+    // 機制，讓AI能像Claude一樣在需要時停下來問，不是自己瞎猜或直接執行
+    // 有風險的動作。兩種呼叫情境共用這一個方法：
+    //   (1) host app的aiToolHandler在"ask if need"模式下，執行mutates:true
+    //       的工具前先跳表單讓使用者確認/編輯參數（見index.html的說明）
+    //   (2) AI自己主動呼叫ask_user_for_input工具，判斷需要使用者決定時
+    //       主動問（例如有多種做法要使用者選）
+    //
+    // options: { title, description, choices?: string[], fields?:
+    //   [{key, label, value?, placeholder?}] }
+    //   - choices有給：渲染成按鈕群組（單選），回傳{confirmed:true, answer}
+    //   - 沒choices但fields有給：渲染成文字輸入表單+送出/取消按鈕，回傳
+    //     {confirmed:true, values:{key:value,...}} 或 {confirmed:false}
+    //   - 兩者都沒有：純文字確認(是/否)，回傳{confirmed:boolean}
+    //
+    // 刻意純DOM操作、不進this.messages/不persist——這是「當下這次互動」的
+    // 暫時性UI元件，跟index.html那些slash command進度條div是同一種模式
+    // (用完就從DOM移除)，不是聊天記錄的一部分；理由：Promise本來就沒辦法
+    // JSON序列化，使用者中途重新整理頁面的話，這個「暫停中」的狀態本來
+    // 就沒辦法真正恢復（相當於那次工具呼叫直接視為使用者沒有回應），比起
+    // 硬做一套可持久化的表單狀態機，這裡選擇不過度工程化。
+    requestUserForm(options = {}) {
+        return new Promise((resolve) => {
+            const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null } = options;
+            const chatBody = document.getElementById('ai-chat-body');
+            if (!chatBody) { resolve({ confirmed: true }); return; } // 理論上不該發生(呼叫這個方法時對話視窗一定已經開著)，保守起見不卡住整個工具呼叫流程
+            const palette = this._getThemePalette();
+            const formId = `ai-form-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+            let bodyHtml;
+            if (Array.isArray(choices) && choices.length) {
+                bodyHtml = `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">` +
+                    choices.map((c, i) => `<button class="btn" data-choice-idx="${i}" style="font-size:12px;">${this._escapeHtml(String(c))}</button>`).join('') +
+                    `</div>`;
+            } else if (Array.isArray(fields) && fields.length) {
+                bodyHtml = fields.map(f => `<label style="display:block; margin:6px 0; font-size:12px;">
+                    <span style="color:${palette.detailText};">${this._escapeHtml(f.label || f.key)}</span>
+                    <input type="text" data-field-key="${this._escapeHtml(f.key)}" value="${this._escapeHtml(String(f.value ?? ''))}" placeholder="${this._escapeHtml(f.placeholder || '')}"
+                        style="width:100%; box-sizing:border-box; padding:4px 6px; margin-top:2px; border:1px solid ${palette.windowBorder}; border-radius:4px; background:transparent; color:${palette.detailText};">
+                </label>`).join('') +
+                    `<div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn primary" data-action="submit" style="font-size:12px;">✅ 送出</button>
+                        <button class="btn" data-action="cancel" style="font-size:12px;">✖️ 取消</button>
+                    </div>`;
+            } else {
+                bodyHtml = `<div style="margin-top:8px; display:flex; gap:8px;">
+                    <button class="btn primary" data-action="confirm-yes" style="font-size:12px;">✅ 確定</button>
+                    <button class="btn" data-action="confirm-no" style="font-size:12px;">✖️ 取消</button>
+                </div>`;
+            }
+
+            const html = `<div id="${formId}" style="margin:8px 0; padding:10px 12px; border:1px solid ${palette.windowBorder}; border-radius:8px; font-size:13px;">
+                <div style="font-weight:bold; margin-bottom:4px;">${this._escapeHtml(title)}</div>
+                ${description ? `<div style="font-size:12px; color:${palette.detailText}; white-space:pre-wrap;">${this._escapeHtml(description)}</div>` : ''}
+                ${bodyHtml}
+            </div>`;
+            chatBody.insertAdjacentHTML('beforeend', html);
+            chatBody.scrollTo({ top: chatBody.scrollHeight, behavior: 'smooth' });
+
+            const container = document.getElementById(formId);
+            const finish = (result) => { container.remove(); resolve(result); };
+
+            if (Array.isArray(choices) && choices.length) {
+                container.querySelectorAll('[data-choice-idx]').forEach(btn => {
+                    btn.addEventListener('click', () => finish({ confirmed: true, answer: choices[Number(btn.dataset.choiceIdx)] }));
+                });
+            } else if (Array.isArray(fields) && fields.length) {
+                container.querySelector('[data-action="submit"]').addEventListener('click', () => {
+                    const values = {};
+                    container.querySelectorAll('[data-field-key]').forEach(input => { values[input.dataset.fieldKey] = input.value; });
+                    finish({ confirmed: true, values });
+                });
+                container.querySelector('[data-action="cancel"]').addEventListener('click', () => finish({ confirmed: false }));
+            } else {
+                container.querySelector('[data-action="confirm-yes"]').addEventListener('click', () => finish({ confirmed: true }));
+                container.querySelector('[data-action="confirm-no"]').addEventListener('click', () => finish({ confirmed: false }));
+            }
+        });
+    }
+
     // tw_stock_db客製: 把「工具執行結果」組成訊息物件的邏輯，跟「push進
     // this.messages」拆開——runBatchSubAgents()的子任務有自己獨立、用完即丟
     // 的本地訊息陣列（不是this.messages），需要同一套圖片/meta處理規則，
@@ -3915,12 +3995,27 @@ ${sourceTool.handlerScript}
         this._syncStopButton();
     }
 
+    // tw_stock_db客製: 2026-08-28使用者要求「加強」——原本這裡只是把使用者
+    // 插進來的文字原封不動塞進一則[Steering]系統訊息，模型看到之後要怎麼
+    // 處理完全靠自己猜。跟Claude Code自己處理「使用者在執行中途插話」的
+    // 方式一樣，明確教模型三件事：(1)這不是新的一輪對話、是插進目前任務
+    // 中間的訊息 (2)先自己判斷這需不需要改變方向 (3)不需要改變方向就直接
+    // 按原計畫做完，不用特別在回覆裡提起。這幾句指示故意寫在每一則
+    // steering訊息本身裡（不是塞進系統提示），理由跟AI_ANALYSIS_PRINCIPLES
+    // 等說明文件刻意不放進系統提示一樣——這種指示只在真的發生插話時才需要
+    // 出現一次，塞進每輪都會重送的系統提示只會不必要地增加token。
     _addSteeringMessage(userText) {
         const steeringText = String(userText || '').trim();
         if (!steeringText) return;
         this.messages.push({
             role: 'system',
-            content: `[Steering] 使用者在回應中插入新方向：${steeringText}`
+            content: `[Steering] 使用者在你還在處理原本的任務時，插入了這則新訊息：「${steeringText}」\n` +
+                `這不是一輪新的獨立對話，是插在你目前任務執行過程中間的訊息。請先判斷：這則訊息是不是` +
+                `代表使用者想改變方向、取消、或需要你先回應/處理？\n` +
+                `如果不需要改變方向（例如只是順口確認一下、跟原任務無關的閒聊、或內容其實跟你正在做的` +
+                `事一致），請直接按原計畫繼續完成剛才的任務，不用在回覆裡特別提起這則訊息。\n` +
+                `如果確實需要改變方向，才調整接下來的行動去回應這則新訊息，並視情況告知使用者你做了` +
+                `什麼調整。`,
         });
         this._renderMessageHistory();
         this._log('🧭 已加入 Steering 指令，AI 會在下一輪回應中優先處理。');
@@ -4375,13 +4470,23 @@ ${existingNodeSummaries}
     // 的業務邏輯，留在這裡合理）。cmd大小寫不敏感、必須以/開頭；handler
     // 拿到的是指令名稱之後、trim過的參數字串（跟原本/benchmark-model的
     // 呼叫慣例一致）。回傳this方便鏈式呼叫。
-    register_slash_command(cmd, hint, desc, handler) {
+    // tw_stock_db客製: 2026-08-28使用者反饋——「slashcommand沒有自動完成嗎？
+    // 像是型態代碼，沒有任何一個使用者知道該填什麼」，原本的自動完成只
+    // 認得指令名稱本身，使用者打完指令名稱+一個空白、開始打參數的當下，
+    // 選單就直接整個隱藏（見_wireSlashCommandMenu），參數該填什麼完全沒有
+    // 提示。新增選填的第5個參數argChoices：陣列，每個元素對應第N個位置
+    // 參數的候選值清單（第0個元素=第1個參數的候選值），元素本身可以是
+    // 純字串陣列、或{value,label}物件陣列（label選填，用來顯示中文說明，
+    // 沒有的話用value本身當顯示文字）；某個位置不需要自動完成（例如自由
+    // 輸入的數字）就填null或直接省略該位置。不是每個指令都要提供，沒給
+    // 就完全不影響原本行為。
+    register_slash_command(cmd, hint, desc, handler, argChoices) {
         const key = String(cmd || '').trim().toLowerCase();
         if (!key.startsWith('/')) {
             console.warn('register_slash_command: cmd必須以/開頭，忽略：', cmd);
             return this;
         }
-        this.slashCommands.set(key, { cmd: key, hint: hint || '', desc: desc || '', handler });
+        this.slashCommands.set(key, { cmd: key, hint: hint || '', desc: desc || '', handler, argChoices: Array.isArray(argChoices) ? argChoices : null });
         return this;
     }
 
@@ -6743,10 +6848,44 @@ ${existingNodeSummaries}
 
         const hide = () => { slashMenu.style.display = 'none'; slashMenu.innerHTML = ''; };
 
+        // tw_stock_db客製: 2026-08-28使用者要求——指令名稱打完、開始打參數時，
+        // 如果該指令有宣告argChoices（見register_slash_command的說明），顯示
+        // 「目前正在打的這個位置參數」的候選值清單，取代原本「打了空白就整個
+        // 隱藏」的行為。回傳null代表這個情境不該顯示參數選單（呼叫端會retreat
+        // 回command-name-matching模式或直接隱藏）。
+        const renderArgMenu = (val) => {
+            const firstSpace = val.indexOf(' ');
+            const cmdPart = val.slice(0, firstSpace).toLowerCase();
+            const entry = this.slashCommands.get(cmdPart);
+            if (!entry || !entry.argChoices || !entry.argChoices.length) return false;
+            const restText = val.slice(firstSpace + 1);
+            const tokens = restText.split(/\s+/);
+            const argIndex = tokens.length - 1; // 目前正在打第幾個參數(0-based)
+            const currentToken = (tokens[argIndex] || '').toLowerCase();
+            const rawChoices = entry.argChoices[argIndex];
+            if (!Array.isArray(rawChoices) || !rawChoices.length) return false;
+            const normalized = rawChoices.map(c => (typeof c === 'object' && c !== null) ? c : { value: c, label: c });
+            const filtered = normalized.filter(c => String(c.value).toLowerCase().includes(currentToken) || String(c.label).toLowerCase().includes(currentToken));
+            if (!filtered.length) return false;
+            if (suggestBar) suggestBar.style.display = 'none';
+            slashMenu.innerHTML = filtered.map((c) => `
+                <div class="ai-slash-item" data-arg-value="${this._escapeAttr(String(c.value))}" data-arg-index="${argIndex}" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid ${palette.windowBorder};">
+                    <div style="font-size:13px; font-weight:bold; color:#76b900;">${this._escapeHtml(String(c.value))}</div>
+                    ${c.label !== c.value ? `<div style="font-size:11px; color:${palette.detailText}; margin-top:2px;">${this._escapeHtml(String(c.label))}</div>` : ''}
+                </div>
+            `).join('');
+            slashMenu.style.display = 'block';
+            return true;
+        };
+
         const renderMenu = () => {
             if (this.advancedSettings.slashCommandMenuEnabled === false) { hide(); return; }
             const val = inputText.value;
-            if (!val.startsWith('/') || /\s/.test(val)) { hide(); return; }
+            if (!val.startsWith('/')) { hide(); return; }
+            if (/\s/.test(val)) {
+                if (!renderArgMenu(val)) hide();
+                return;
+            }
             const matches = [...this.slashCommands.values()].filter((c) => c.cmd.startsWith(val.toLowerCase()));
             if (!matches.length) { hide(); return; }
             if (suggestBar) suggestBar.style.display = 'none'; // 兩個下拉選單不要同時開
@@ -6768,7 +6907,20 @@ ${existingNodeSummaries}
             const item = e.target.closest('.ai-slash-item');
             if (!item) return;
             e.preventDefault();
-            inputText.value = item.dataset.cmd + ' ';
+            if (item.dataset.cmd) {
+                inputText.value = item.dataset.cmd + ' ';
+            } else if (item.dataset.argValue !== undefined) {
+                // 把「目前正在打的那個參數token」換成選中的值，前面已經打完的
+                // 參數(如果有)原封不動保留。
+                const val = inputText.value;
+                const firstSpace = val.indexOf(' ');
+                const cmdPart = val.slice(0, firstSpace);
+                const restText = val.slice(firstSpace + 1);
+                const tokens = restText.split(/\s+/);
+                const argIndex = Number(item.dataset.argIndex);
+                tokens[argIndex] = item.dataset.argValue;
+                inputText.value = `${cmdPart} ${tokens.slice(0, argIndex + 1).join(' ')} `;
+            }
             hide();
             inputText.focus();
         });
