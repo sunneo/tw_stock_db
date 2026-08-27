@@ -4992,6 +4992,14 @@ function findSwingPoints(highs, lows, window = 3) {
   const n = highs.length;
   const swings = [];
   for (let i = window; i < n - window; i++) {
+    // 2026-08-27發現的latent bug（全市場批次掃描~2000檔才踩到，例如0050在
+    // 2026-08-06因資料收集錯誤變成open/high/low=0）：0是合法數字，會被
+    // Math.min()選中當成「假的最低點」，讓W底/M頭/頭肩底/頭肩頂/楔形這幾個
+    // 依賴findSwingPoints()的偵測器做出離譜的假型態（見detectVReversal同一天
+    // 修的同類問題，那邊是視窗層級擋掉，這裡因為findSwingPoints是好幾個
+    // 偵測器共用的底層函式，直接在這裡擋一次比較徹底）。股價實務上不可能
+    // 是0或負值，這裡跳過這種列，不讓它有資格被選成轉折點。
+    if (highs[i] <= 0 || lows[i] <= 0) continue;
     const segH = highs.slice(i - window, i + window + 1);
     if (highs[i] === Math.max(...segH)) swings.push({ idx: i, price: highs[i], type: 'H' });
     const segL = lows.slice(i - window, i + window + 1);
@@ -6610,9 +6618,42 @@ function _yieldToFrame(maxWaitMs = 100) {
 // sparkline()視覺邏輯一致，見該函式說明）；「型態趨勢圖」沿用既有的K棒+
 // MA5/10/20/60大圖(_renderPatternChartCanvas)；「分析」是diagnoseStock()
 // 跑一次持股診斷、轉成純文字(buildDiagnosisSummaryText)。
+// tw_stock_db客製: 2026-08-27使用者反饋——新增F+(9種幾何型態)後，「不分類
+// (全部)」情境下命中檔數暴增(例如box/v_reversal這種市場常見型態動輒
+// 五六百檔)，但既有的排序是A→B→C→D→E→F+固定優先序，如果匯出時只是單純
+// slice(0, limit)取前N筆，A~E那~200來檔就會把預設上限(甚至200上限)全部
+// 佔滿，F+新增的9種型態反而完全擠不進報表，使用者只看得到最先掃到的幾種
+// 類別，根本看不到新增的分類——不是「limit太小」的問題，是排序方式本身
+// 讓截斷後的樣本嚴重失真。改成輪流從各type各拿一筆（round-robin），確保
+// 只要limit夠大於「有出現的type數」，每一種有命中的型態至少都會被看到。
+function selectBalancedSample(rows, limit) {
+  if (rows.length <= limit) return rows;
+  const byType = new Map();
+  for (const r of rows) {
+    if (!byType.has(r.pattern_type)) byType.set(r.pattern_type, []);
+    byType.get(r.pattern_type).push(r);
+  }
+  const buckets = [...byType.values()];
+  const result = [];
+  let round = 0;
+  while (result.length < limit && buckets.some(b => round < b.length)) {
+    for (const b of buckets) {
+      if (result.length >= limit) break;
+      if (round < b.length) result.push(b[round]);
+    }
+    round++;
+  }
+  return result;
+}
+
 async function exportPatternScreenXlsx(params) {
   const sub = params.pattern_type || 'all';
-  const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(200, Number(params.limit))) : 60;
+  // 2026-08-27使用者反饋：預設60在只有5種舊分類、命中數百檔以內時還算
+  // 合理，但F+新增9種型態後常見情況（尤其"all"）動輒上千檔命中，60檔
+  // 樣本太小、又容易被單一型態佔滿，預設上調到120；上限也從200提高到
+  // 300（呼應下面的balanced抽樣，300/14種型態≈每種還能有20來檔，樣本
+  // 才有代表性）。
+  const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(300, Number(params.limit))) : 120;
   const isLive = params.source === 'live';
 
   let meta, filterRows;
@@ -6633,7 +6674,9 @@ async function exportPatternScreenXlsx(params) {
   if (!rows.length) return { ok: false, error: `型態「${sub}」目前沒有符合的股票` };
   recordPatternAiNotes(rows, meta.asOfDate); // 2026-08-27使用者要求：匯出即代表使用者「看到」了這批型態，記進備忘錄
   const truncated = rows.length > limit;
-  rows = rows.slice(0, limit);
+  // sub==='all'才需要balanced抽樣——指定單一型態時本來就只有一種type，
+  // slice(0, limit)（依原本優先序/資料順序取前N筆）行為不變。
+  rows = sub === 'all' ? selectBalancedSample(rows, limit) : rows.slice(0, limit);
 
   try {
     await ensureExcelJSLoaded();
@@ -6751,10 +6794,14 @@ async function exportPatternScreenXlsx(params) {
     filename: result.filename,
     sizeBytes: blob.size,
     stockCount: rows.length,
+    limitUsed: limit,
     truncated: truncated || undefined,
+    balancedSampling: (truncated && sub === 'all') || undefined,
     live: isLive || undefined,
     asOfDate: meta.asOfDate,
-    note: '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
+    note: truncated
+      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限300）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。`
+      : '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
   };
 }
 
@@ -7425,7 +7472,7 @@ const AI_CAPABILITIES = [
     description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖(每日收盤價小圖)/關鍵證據），sheet2「個股技術分析」（個股代號/個股名稱/型態判讀/產業/趨勢圖(同sheet1)/型態趨勢圖(K棒+MA5/10/20/60大圖)/分析(對每檔跑一次持股診斷diagnose_stock、轉成純文字段落，涵蓋目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/進出場建議)）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+逐檔跑診斷+產生檔案，股票數量多時可能需要一段時間，呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
-      limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
+      limit: '選填數字，最多匯出幾檔，預設120、上限300——股票數量多時畫圖+跑診斷會需要比較久時間，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
     },
     handler: (a) => exportPatternScreenXlsx(a),
   },
@@ -7434,7 +7481,7 @@ const AI_CAPABILITIES = [
     description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表（同樣兩個sheet、同樣欄位），差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖+逐檔跑診斷，會比published版本更久（可能數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
-      limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
+      limit: '選填數字，最多匯出幾檔，預設120、上限300——股票數量多時畫圖+跑診斷會需要比較久時間，使用者沒特別要求「全部」就不用設太大。pattern_type="all"時，如果符合條件的股票數超過這個上限，會依各型態平均抽樣(而不是只取排序最前面的型態)，確保14種型態各自有出現在報表裡，不會被少數型態佔滿名額。',
     },
     handler: (a) => exportPatternScreenXlsx({ ...a, source: 'live' }),
   },
@@ -12046,7 +12093,7 @@ function registerAiSlashCommands(ai) {
   // /pattern-xlsx [型態代碼|all] [數量上限]，兩個都選填。
   ai.register_slash_command(
     '/pattern-xlsx', '[型態代碼|all] [數量上限]',
-    '把「型態」分頁的程式化篩選結果匯出成xlsx報表（含K線縮圖），例如 /pattern-xlsx box_breakout 30',
+    '把「型態」分頁的程式化篩選結果匯出成xlsx報表（含K線縮圖），數量上限預設120、最多300，例如 /pattern-xlsx box_breakout 30 或 /pattern-xlsx all 300',
     async (argsText) => {
       const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
       const params = {};
@@ -12066,7 +12113,7 @@ function registerAiSlashCommands(ai) {
       }
       document.getElementById(progressId)?.remove();
       const summary = result.ok
-        ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? '（超過上限，未包含全部符合條件的股票）' : ''}。`
+        ? `📊 型態篩選報表已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx all 300，上限300）` : ''}。`
         : `📊 型態篩選報表產生失敗：${result.error}`;
       ai.messages.push({ role: 'assistant', content: summary });
       ai._persistChatHistory();
@@ -12081,7 +12128,7 @@ function registerAiSlashCommands(ai) {
   // 「現在」資料庫最新狀態時才用這個。
   ai.register_slash_command(
     '/pattern-xlsx-live', '[型態代碼|all] [數量上限]',
-    '不等PC端發布，直接對本機資料庫即時算一次型態篩選並匯出xlsx（含K線縮圖），例如 /pattern-xlsx-live box_breakout 30',
+    '不等PC端發布，直接對本機資料庫即時算一次型態篩選並匯出xlsx（含K線縮圖），數量上限預設120、最多300，例如 /pattern-xlsx-live box_breakout 30 或 /pattern-xlsx-live all 300',
     async (argsText) => {
       const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
       const params = { source: 'live' };
@@ -12109,7 +12156,7 @@ function registerAiSlashCommands(ai) {
       }
       document.getElementById(progressId)?.remove();
       const summary = result.ok
-        ? `📊 型態篩選報表（即時計算，資料時間：${result.asOfDate}）已產生：共${result.stockCount}檔${result.truncated ? '（超過上限，未包含全部符合條件的股票）' : ''}。`
+        ? `📊 型態篩選報表（即時計算，資料時間：${result.asOfDate}）已產生：共${result.stockCount}檔${result.truncated ? `（已達上限${result.limitUsed}檔，實際符合條件的更多；可指定數量上限參數看更多，例如 /pattern-xlsx-live all 300，上限300）` : ''}。`
         : `📊 型態篩選報表（即時計算）產生失敗：${result.error}`;
       ai.messages.push({ role: 'assistant', content: summary });
       ai._persistChatHistory();
