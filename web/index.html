@@ -5613,6 +5613,76 @@ function diagnoseStock(code) {
 
 const StockDiagnosis = { diagnose: diagnoseStock };
 
+// tw_stock_db客製: 2026-08-27使用者要求——型態xlsx報表的「分析」欄要放
+// 「持股診斷的內容」，也就是diagnoseStock()的結果，但那份資料是給
+// renderDiagnosisPanelBody()組HTML用的（診斷分頁），xlsx儲存格只能放
+// 純文字。這裡另外寫一份純文字版本，涵蓋跟renderDiagnosisPanelBody同樣
+// 的七個段落（目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/
+// 進出場建議）+風險提示，故意不去改renderDiagnosisPanelBody本身（那個
+// 函式是已經上線的診斷分頁渲染邏輯，換成共用抽象反而增加回歸風險，
+// 兩者各自維護一份、內容對齊即可，跟_renderPatternChartCanvas/
+// _renderAiStockChartCanvas刻意分開的理由一致）。
+function buildDiagnosisSummaryText(diag) {
+  if (!diag.available) return diag.reason || '資料不足，無法診斷';
+  const p = diag.position, t = diag.trend, kb = diag.kbar_quality, vp = diag.volume_price;
+  const ml = diag.market_linkage, ee = diag.entry_exit, pat = diag.pattern;
+  const lines = [];
+
+  const maLine = ['5', '10', '20', '60'].map(k => `MA${k} ${p.ma[k] != null ? p.ma[k].toFixed(2) : '-'}`).join('　');
+  lines.push('【目前位置】');
+  lines.push(`收盤 ${p.close.toFixed(2)}　${p.above_ma20 ? '站上月線' : '跌破月線'}　均線排列：${p.ma_alignment || '資料不足'}`);
+  lines.push(maLine);
+
+  lines.push('', '【趨勢判斷】');
+  lines.push(`趨勢判斷：${t.label}`);
+  lines.push(t.prior_high != null
+    ? `近10日高低 ${t.recent_high} / ${t.recent_low}　前10-30日高低 ${t.prior_high} / ${t.prior_low}`
+    : `近10日高低 ${t.recent_high} / ${t.recent_low}（資料不足30日，未比對前波高低點）`);
+
+  lines.push('', '【型態辨識】');
+  if (!pat.detected.length) {
+    lines.push(pat.note);
+  } else {
+    for (const pp of pat.detected) {
+      const ptLine = pp.points.map(x => `${x.label} ${x.price}（${x.date || ''}）`).join('　');
+      const scaleTag = pp.scaleLabel ? `[${pp.scaleLabel}${pp.scaleLookbackDays ? `・近${pp.scaleLookbackDays}天` : ''}] ` : '';
+      lines.push(`${scaleTag}${pp.label}　目標價 ${pp.target}`);
+      lines.push(ptLine);
+      if (pp.basis) lines.push(`依據：${pp.basis}`);
+    }
+  }
+
+  lines.push('', '【K棒品質判讀鐵律】');
+  lines.push(`最近一根K棒：實體 ${kb.body_pct != null ? kb.body_pct.toFixed(2) : '-'}%　上影線占比 ${kb.upper_wick_pct_of_range != null ? kb.upper_wick_pct_of_range.toFixed(1) : '-'}%`);
+  lines.push(kb.passes ? '✓ 通過K棒品質判讀鐵律' : `✗ 未通過：${kb.reason || ''}`);
+
+  lines.push('', '【量價關係】');
+  lines.push(`量 ${vp.volume ?? '-'}　5日均量 ${vp.vol_ma5 ?? '-'}　量比 ${vp.vol_ratio != null ? vp.vol_ratio.toFixed(2) : '-'}`);
+  lines.push(vp.label);
+
+  lines.push('', '【大盤連動】');
+  const idxLine = (i, name) => i.available
+    ? `${name} ${i.close}（${i.chg1_pct != null ? (i.chg1_pct >= 0 ? '+' : '') + i.chg1_pct.toFixed(2) : '-'}%，${i.trade_date}）${i.above_ma20 ? '站上MA20' : '跌破MA20'}`
+    : `${name}：資料不足`;
+  lines.push(idxLine(ml.sox, 'SOX 費城半導體'));
+  lines.push(idxLine(ml.dji, 'DJI 道瓊工業'));
+  lines.push(ml.note);
+
+  lines.push('', '【進出場建議】');
+  lines.push(ee.trend_stop || '月線資料不足，無法給出趨勢停損價');
+  lines.push(`百分比停損：${ee.pct_stop_range}`);
+  const mm = ee.measured_move;
+  if (!mm?.available) {
+    lines.push(mm?.reason || '轉折點不足，無法計算測量法目標價');
+  } else {
+    if (mm.n_measure) lines.push(`N字測量：振幅 ${mm.n_measure.amplitude} → 目標價 ${mm.n_measure.target}`);
+    if (mm.equal_measure) lines.push(`等幅測量：振幅 ${mm.equal_measure.amplitude} → 目標價 ${mm.equal_measure.target}`);
+  }
+
+  lines.push('', diag.risk_note);
+  return lines.join('\n');
+}
+
 /* AI能力如果直接讀某檔股票的K棒（get_price_history/diagnose_stock），跟
    使用者手動點選那檔股票不一樣——手動點選會透過技術分析/持股診斷分頁的
    normal rendering path帶出目前已載入的本地快取，但AI是憑對話內容裡的
@@ -6280,6 +6350,47 @@ function _renderPatternChartCanvas(bars, opts) {
   return canvas.toDataURL('image/png');
 }
 
+// tw_stock_db客製: 2026-08-27使用者要求——型態xlsx報表的「趨勢圖」欄要
+// 「跟目前網頁的一樣是用每日收盤價做出的小圖」，網頁清單本來就有這種圖
+// （見上面的sparkline()函式，SVG版、用在清單「趨勢」欄），這裡是同一套
+// 視覺邏輯（純收盤價折線、min/max正規化、依漲跌方向上色、台股慣例紅漲
+// 綠跌）的canvas版本——ExcelJS embedded image只能吃PNG/JPEG，SVG字串沒辦法
+// 直接嵌，所以另外寫一份canvas繪製版本，故意不去改sparkline()本身（那個
+// 函式是清單畫面即時渲染用，換成canvas反而增加那邊的複雜度跟回歸風險）。
+function _renderCloseSparklineCanvas(closes, opts = {}) {
+  const width = opts.width || 200;
+  const height = opts.height || 60;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  ctx.fillStyle = dark ? '#1b1f24' : '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  if (!closes || closes.length < 2) return canvas.toDataURL('image/png');
+  const pad = 3;
+  const plotW = width - pad * 2, plotH = height - pad * 2;
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const rng = max - min || 1;
+  const step = plotW / (closes.length - 1);
+  const isUp = closes.at(-1) >= closes[0];
+  // 台股慣例：紅漲、綠跌（跟sparkline()的isUp判斷、配色邏輯完全一致）
+  const color = isUp ? (dark ? '#f87171' : '#dc2626') : (dark ? '#4ade80' : '#16a34a');
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  closes.forEach((c, i) => {
+    const x = pad + i * step;
+    const y = pad + (plotH - 1) - ((c - min) / rng) * (plotH - 2);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  return canvas.toDataURL('image/png');
+}
+
 // tw_stock_db客製: ExcelJS只有匯出型態xlsx這個功能會用到（一般的AI匯出走
 // export_document的PPTX/PDF路徑，不需要ExcelJS），比照floating-assistant.js
 // 的_ensureJSZipLoaded()同一種「用到才動態注入CDN script」模式，不使用這
@@ -6367,6 +6478,26 @@ function _dataUrlToBase64(dataUrl) {
 // 圖片一律用_renderPatternChartCanvas現場畫（150天日K+MA5/10/20/60），跟
 // PC端Python版用同樣的資料來源（DBMgr本機資料庫）、同樣的均線週期，視覺
 // 風格盡量一致，不受source影響。
+// tw_stock_db客製: 給exportPatternScreenXlsx()逐檔畫圖+跑診斷用的cooperative
+// yielding（跟DBMgr內部的yieldToFrame同一個概念，見那邊的說明——不重複抽成
+// 共用函式是因為這裡在DBMgr模組外部，不方便直接拿到那個私有函式）。
+function _yieldToFrame(maxWaitMs = 100) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
+    setTimeout(finish, maxWaitMs);
+  });
+}
+
+// tw_stock_db客製: 2026-08-27使用者要求重新定義兩個sheet的欄位（沿用同一個
+// 函式，/pattern-xlsx跟/pattern-xlsx-live共用，改這裡兩邊自動一起生效）：
+//   sheet1「相似型態清單」：代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖/關鍵證據
+//   sheet2「個股技術分析」：個股代號/個股名稱/型態判讀/產業/趨勢圖/型態趨勢圖/分析
+// 「趨勢圖」是每日收盤價小圖（_renderCloseSparklineCanvas，跟清單畫面的
+// sparkline()視覺邏輯一致，見該函式說明）；「型態趨勢圖」沿用既有的K棒+
+// MA5/10/20/60大圖(_renderPatternChartCanvas)；「分析」是diagnoseStock()
+// 跑一次持股診斷、轉成純文字(buildDiagnosisSummaryText)。
 async function exportPatternScreenXlsx(params) {
   const sub = params.pattern_type || 'all';
   const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(200, Number(params.limit))) : 60;
@@ -6398,21 +6529,37 @@ async function exportPatternScreenXlsx(params) {
     return { ok: false, error: e.message };
   }
 
-  // 逐檔抓150天日K，畫小圖(260x105)+大圖(660x310)，跟之前那份xlsx同樣尺寸。
-  const charts = [];
+  // 產業名稱：批次查一次（跟loadPatternScreen()同樣做法），不用逐檔各查一次。
+  const refMap = DBMgr.getVolumeRankingReference(rows.map(r => r.stock_code));
+
+  // 逐檔：抓歷史K棒(320天緩衝，蓋過diagnoseStock()預設抓300天的門檻)→畫
+  // 趨勢圖(收盤價小圖)+型態趨勢圖(K棒+MA大圖)→跑一次持股診斷。這是這個
+  // 函式最耗時的段落（尤其diagnoseStock()的型態偵測有好幾種子演算法），
+  // 每檔跑完後yield一次（見_yieldToFrame說明），避免大量股票時整段同步
+  // 卡住瀏覽器——跟DBMgr.computePatternScreenLive()同樣的cooperative
+  // yielding概念，只是這裡讓出的頻率是「每一檔」而不是「每一批」，因為
+  // 這裡單檔的畫圖+診斷耗時本身就已經比computePatternScreenLive()單一批
+  // 次的查詢+分類重，不需要再額外分批。
+  const perStock = [];
   for (const r of rows) {
     let bars = null;
     try {
-      await ensureStockHistoryLoadedForAi(r.stock_code, 180);
+      await ensureStockHistoryLoadedForAi(r.stock_code, 320);
       bars = DBMgr.getPriceHistory(r.stock_code, 150);
-    } catch { /* 抓不到就跳過畫圖，清單文字欄位仍然保留 */ }
-    if (!bars || bars.length < 20) { charts.push({ small: null, large: null }); continue; }
-    const small = _renderPatternChartCanvas(bars, { width: 260, height: 105, showAxes: false });
-    const large = _renderPatternChartCanvas(bars, {
-      width: 660, height: 310, showAxes: true,
-      title: `${r.stock_code} ${r.stock_name}｜${r.pattern_label}`,
-    });
-    charts.push({ small, large });
+    } catch { /* 抓不到就跳過畫圖/診斷，清單文字欄位仍然保留 */ }
+    const sparkline = (bars && bars.length >= 2)
+      ? _renderCloseSparklineCanvas(bars.map(b => b.close), { width: 200, height: 60 })
+      : null;
+    const large = (bars && bars.length >= 20)
+      ? _renderPatternChartCanvas(bars, {
+          width: 660, height: 310, showAxes: true,
+          title: `${r.stock_code} ${r.stock_name}｜${r.pattern_label}`,
+        })
+      : null;
+    let diag;
+    try { diag = diagnoseStock(r.stock_code); } catch (e) { diag = { available: false, reason: `診斷時發生錯誤：${e.message}` }; }
+    perStock.push({ sparkline, large, analysisText: buildDiagnosisSummaryText(diag) });
+    await _yieldToFrame();
   }
 
   const wb = new ExcelJS.Workbook();
@@ -6429,37 +6576,54 @@ async function exportPatternScreenXlsx(params) {
     });
   }
 
+  // 漲跌文字：跟清單畫面「漲跌」欄同一個格式（見renderPage()裡changePctText
+  // 的組法），例如"+2.50 (+2.15%)"，數字前面帶正負號、金額跟百分比一起顯示。
+  function changeText(close, prevClose) {
+    if (close == null || prevClose == null || !prevClose) return '-';
+    const amt = close - prevClose;
+    const pct = amt / prevClose * 100;
+    return `${amt >= 0 ? '+' : ''}${amt.toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+  }
+
   // ---- Sheet1: 相似型態清單 ----
   const ws1 = wb.addWorksheet('相似型態清單');
-  ws1.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 90 }, { width: 38 }];
-  styleHeaderRow(ws1, ['代號', '名稱', '型態判讀', '關鍵證據', '型態趨勢圖']);
+  ws1.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 16 }, { width: 10 }, { width: 16 }, { width: 30 }, { width: 80 }];
+  styleHeaderRow(ws1, ['代號', '名稱', '型態判讀', '產業', '現價', '漲跌', '趨勢圖', '關鍵證據']);
   rows.forEach((r, i) => {
-    const row = ws1.addRow([r.stock_code, r.stock_name, r.pattern_label, r.evidence || '']);
-    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top', wrapText: cell.col === 4 }; });
-    row.height = 80;
-    const small = charts[i].small;
-    if (small) {
-      const imgId = wb.addImage({ base64: _dataUrlToBase64(small), extension: 'png' });
-      ws1.addImage(imgId, { tl: { col: 4, row: row.number - 1 }, ext: { width: 260, height: 105 } });
+    const sector = refMap.get(r.stock_code)?.sector_name || '';
+    const row = ws1.addRow([
+      r.stock_code, r.stock_name, r.pattern_label, sector,
+      r.close != null ? Number(r.close.toFixed(2)) : null,
+      changeText(r.close, r.prev_close),
+      '', // 趨勢圖欄位留空，圖片用addImage疊上去
+      r.evidence || '',
+    ]);
+    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top', wrapText: cell.col === 8 }; });
+    row.height = 65;
+    const { sparkline } = perStock[i];
+    if (sparkline) {
+      const imgId = wb.addImage({ base64: _dataUrlToBase64(sparkline), extension: 'png' });
+      ws1.addImage(imgId, { tl: { col: 6, row: row.number - 1 }, ext: { width: 200, height: 60 } });
     }
   });
 
-  // ---- Sheet2: 150天技術分析 ----
-  const ws2 = wb.addWorksheet('150天技術分析');
-  ws2.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 38 }, { width: 96 }];
-  styleHeaderRow(ws2, ['個股代號', '個股名稱', '型態', '型態小圖', '型態趨勢圖']);
+  // ---- Sheet2: 個股技術分析 ----
+  const ws2 = wb.addWorksheet('個股技術分析');
+  ws2.columns = [{ width: 10 }, { width: 14 }, { width: 26 }, { width: 16 }, { width: 30 }, { width: 96 }, { width: 110 }];
+  styleHeaderRow(ws2, ['個股代號', '個股名稱', '型態判讀', '產業', '趨勢圖', '型態趨勢圖', '分析']);
   rows.forEach((r, i) => {
-    const row = ws2.addRow([r.stock_code, r.stock_name, r.pattern_label]);
-    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top' }; });
-    row.height = 235;
-    const { small, large } = charts[i];
-    if (small) {
-      const imgId = wb.addImage({ base64: _dataUrlToBase64(small), extension: 'png' });
-      ws2.addImage(imgId, { tl: { col: 3, row: row.number - 1 }, ext: { width: 260, height: 105 } });
+    const sector = refMap.get(r.stock_code)?.sector_name || '';
+    const { sparkline, large, analysisText } = perStock[i];
+    const row = ws2.addRow([r.stock_code, r.stock_name, r.pattern_label, sector, '', '', analysisText]);
+    row.eachCell(cell => { cell.font = bodyFont; cell.alignment = { vertical: 'top', wrapText: cell.col === 7 }; });
+    row.height = 320;
+    if (sparkline) {
+      const imgId = wb.addImage({ base64: _dataUrlToBase64(sparkline), extension: 'png' });
+      ws2.addImage(imgId, { tl: { col: 4, row: row.number - 1 }, ext: { width: 200, height: 60 } });
     }
     if (large) {
       const imgId2 = wb.addImage({ base64: _dataUrlToBase64(large), extension: 'png' });
-      ws2.addImage(imgId2, { tl: { col: 4, row: row.number - 1 }, ext: { width: 660, height: 310 } });
+      ws2.addImage(imgId2, { tl: { col: 5, row: row.number - 1 }, ext: { width: 660, height: 310 } });
     }
   });
 
@@ -7146,7 +7310,7 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'export_pattern_screen_xlsx', category: '匯出',
-    description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/關鍵證據/型態趨勢圖小圖），sheet2「150天技術分析」（代號/名稱/型態/型態小圖/150天日K大圖，含MA5/10/20/60）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+產生檔案，需要幾秒到十幾秒（依股票數量而定），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
+    description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖(每日收盤價小圖)/關鍵證據），sheet2「個股技術分析」（個股代號/個股名稱/型態判讀/產業/趨勢圖(同sheet1)/型態趨勢圖(K棒+MA5/10/20/60大圖)/分析(對每檔跑一次持股診斷diagnose_stock、轉成純文字段落，涵蓋目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/進出場建議)）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+逐檔跑診斷+產生檔案，股票數量多時可能需要一段時間，呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
@@ -7155,7 +7319,7 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'export_pattern_screen_xlsx_live', category: '匯出',
-    description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表，差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖，會比published版本更久（可能十幾秒到數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
+    description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表（同樣兩個sheet、同樣欄位），差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖+逐檔跑診斷，會比published版本更久（可能數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
       pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類)',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
