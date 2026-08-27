@@ -1233,6 +1233,15 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="momentum_surge">主升段強勢股延續(噴出K棒)</option>
           <option value="wick_warning">前波高整理回測(上影線警訊,觀察)</option>
           <option value="pullback_in_uptrend">多頭回檔(等待買點)</option>
+          <option value="head_shoulders_bottom">頭肩底</option>
+          <option value="head_shoulders_top">頭肩頂</option>
+          <option value="double_bottom">W底</option>
+          <option value="double_top">M頭</option>
+          <option value="box">箱型整理</option>
+          <option value="v_reversal">V型反轉</option>
+          <option value="rounding_bottom">圓弧底</option>
+          <option value="flag">旗形</option>
+          <option value="wedge">楔形</option>
         </select>
         <div id="pattern-status" class="modal-hint"></div>
       </div>
@@ -2369,6 +2378,21 @@ const PATTERN_LABELS_JS = {
   momentum_surge: '主升段強勢股延續(噴出K棒)',
   wick_warning: '前波高整理回測(上影線警訊,觀察)',
   pullback_in_uptrend: '多頭回檔(等待買點)',
+  // 2026-08-27使用者要求延伸——F+：沿用diagnoseStock()的detectPatterns()
+  // （已經驗證過的9種幾何型態偵測），只在A~E都沒中的股票身上補充分類，
+  // 見classifyPatternForStock()裡的說明。這裡的標籤是給下拉選單/篩選/
+  // 檔名產生用的靜態版本；個別股票實際顯示的pattern_label優先用
+  // detectPatterns()當下算出的動態標籤（例如flag依方向分「上升旗形」/
+  // 「下降旗形」），不是每次都查這張表。
+  head_shoulders_bottom: '頭肩底',
+  head_shoulders_top: '頭肩頂',
+  double_bottom: 'W底',
+  double_top: 'M頭',
+  box: '箱型整理',
+  v_reversal: 'V型反轉',
+  rounding_bottom: '圓弧底',
+  flag: '旗形',
+  wedge: '楔形',
 };
 
 /* ════════════════════════════════════════
@@ -3787,7 +3811,13 @@ const DBMgr = (() => {
      這裡改成SQL先用日曆天數(-260天，涵蓋140個交易日+假日緩衝)過濾，避免
      瀏覽器sql.js(WASM)一次搬近百萬列資料太慢——只影響效能，不影響140天
      窗口內的判斷邏輯本身。 */
-  function classifyPatternForStock(rows) {
+  function classifyPatternForStock(fullRows) {
+    // 2026-08-27使用者要求延伸——A~E這五類自訂的簡易分類仍然只看最近140個
+    // 交易日(LOOKBACK)，行為完全不變；但下面新增的F+(detectPatterns()進階
+    // 幾何型態)需要更長的歷史才能驗證「大型態」尺度，所以呼叫端(見
+    // computePatternScreenLive/evaluatePatternForStock)改傳整段fullRows
+    // 進來，這裡自己視需要各自截斷，不影響A~E既有邏輯。
+    const rows = fullRows.length > 140 ? fullRows.slice(-140) : fullRows;
     const n = rows.length;
     const today = rows[n - 1];
     const o = today.open, h = today.high, c = today.close, vol = today.volume;
@@ -3905,11 +3935,54 @@ const DBMgr = (() => {
       }
     }
 
+    // ---- F+: 頭肩底/頭肩頂/W底/M頭/箱型整理/V型反轉/圓弧底/旗形/楔形 ----
+    // 2026-08-27使用者要求延伸——不重新發明一套新演算法，直接沿用
+    // diagnoseStock()(持股診斷)已經在用、驗證過的detectPatterns()（多層次
+    // 巢狀型態分析，見該函式上方的完整說明），只在A~E都沒中的股票身上
+    // 額外跑一次當作補充分類。detectPatterns()需要比140天更長的歷史才能
+    // 驗證「大型態」尺度的長期相對高低點，所以這裡用fullRows（呼叫端已經
+    // 改傳整段歷史進來，不是只有140天），不是上面A~E用的140天截斷版rows。
+    // 同一檔股票detectPatterns()可能同時偵測到好幾種型態（不同尺度），
+    // 這裡只取第一個（scale由小到大排序，小尺度通常更貼近「現在」的位置，
+    // detectPatterns()內部已經這樣排序過），避免分類歧義——只是型態
+    // 分類用的簡化，AI匯出xlsx等場景如果需要看到全部型態，仍應該呼叫
+    // diagnose_stock工具取得完整清單。
+    let patternLabel = null;
+    if (!patternType) {
+      // detectPatterns()原本只給單一股票的持股診斷用，never在~2000檔規模
+      // 的批次掃描上跑過；try/catch是防禦性寫法，避免「這9種偵測器裡任何
+      // 一個，在某一檔真實股票的真實(可能不完美)資料上」丟出未預期例外時，
+      // 拖垮整個全市場掃描——只是讓那一檔股票的F+分類跳過(仍可能已經被
+      // A~E分類到)，不是把例外吞掉裝作沒事，見catch裡的console.warn。
+      try {
+        // 2026-08-27使用者討論後定案：一開始因為v_reversal(V型反轉)/
+        // box(箱型整理)全市場觸發率高達23%~34%而想排除，但使用者指出
+        // 「數量不是重點，分類確實才是重點」——實際抽查真實K線圖(例如
+        // 1101台泥的box分類)確認幾何判斷是準確的，高觸發率反映的是當前
+        // 大環境本身偏弱/盤整，多數個股確實符合箱型整理/急跌急彈的定義，
+        // 不是門檻寫錯。真正發現的問題是daily_prices極少數(全庫僅6筆)
+        // 日期的open/high/low是0(資料收集錯誤，例如0050在2026-08-06)，
+        // 這種「假的最低點」才會製造出真正的誤判——已經用下面的0值檢查
+        // 排除，不是靠拿掉整個型態類別來規避問題。
+        const advanced = detectPatterns(fullRows, 150);
+        if (advanced.length) {
+          const hit = advanced[0];
+          patternType = hit.type;
+          patternLabel = hit.label; // flag/wedge是動態標籤(上升/下降旗形等)，不能用靜態PATTERN_LABELS_JS查表
+          evidence = hit.basis;
+          keyLevels = { target: hit.target, scale: hit.scale, scale_label: hit.scaleLabel };
+        }
+      } catch (e) {
+        console.warn(`detectPatterns()對${today.stock_code}拋出例外，跳過F+分類：`, e);
+      }
+    }
+
     if (!patternType) return null;
+    if (!patternLabel) patternLabel = PATTERN_LABELS_JS[patternType]; // A~E走這裡，靜態查表
     const prevClose = n >= 2 ? rows[n - 2].close : null;
     return {
       stock_code: today.stock_code, stock_name: today.stock_name, market: today.market,
-      pattern_type: patternType, pattern_label: PATTERN_LABELS_JS[patternType],
+      pattern_type: patternType, pattern_label: patternLabel,
       evidence, key_levels: keyLevels,
       open: o, close: c, prev_close: prevClose, trade_date: today.trade_date,
     };
@@ -3937,13 +4010,16 @@ const DBMgr = (() => {
   /* onProgress(doneCount, totalCount) 選填，讓呼叫端（例如/pattern-xlsx-live
      的進度訊息）能顯示「已掃描幾檔」，不用整段等到底才知道進度。 */
   async function computePatternScreenLive(onProgress) {
-    const LOOKBACK = 140;
     const BATCH_SIZE = 150; // 每批查詢+分類幾檔股票，批次夠小才能讓每次同步運算的耗時控制在感覺不到卡頓的範圍
     const codes = query('SELECT stock_code FROM stocks WHERE is_active = 1 ORDER BY stock_code').map(r => r.stock_code);
     const results = [];
     for (let i = 0; i < codes.length; i += BATCH_SIZE) {
       const batch = codes.slice(i, i + BATCH_SIZE);
       const ph = batch.map(() => '?').join(',');
+      // 2026-08-27使用者要求延伸：cutoff從-260天放寬到-420天(約300個交易日)，
+      // 蓋過classifyPatternForStock()裡F+(detectPatterns())「大型態」尺度
+      // (mainDays*1.6=240個交易日)+長期相對高低點驗證的需求；A~E仍然只看
+      // 最近140天，不受影響（classifyPatternForStock內部自己再截斷一次）。
       const rows = query(`
         SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
                dp.open, dp.high, dp.low, dp.close, dp.volume,
@@ -3952,7 +4028,7 @@ const DBMgr = (() => {
         JOIN technical_indicators ti ON dp.stock_code = ti.stock_code AND dp.trade_date = ti.trade_date
         JOIN stocks s ON s.stock_code = dp.stock_code
         WHERE dp.stock_code IN (${ph})
-          AND dp.trade_date >= (SELECT date(MAX(trade_date), '-260 day') FROM daily_prices)
+          AND dp.trade_date >= (SELECT date(MAX(trade_date), '-420 day') FROM daily_prices)
         ORDER BY dp.stock_code, dp.trade_date
       `, batch);
       const byStock = new Map();
@@ -3963,13 +4039,17 @@ const DBMgr = (() => {
       }
       for (const arr of byStock.values()) {
         if (arr.length < 100) continue;
-        const hit = classifyPatternForStock(arr.slice(-LOOKBACK));
+        const hit = classifyPatternForStock(arr);
         if (hit) results.push(hit);
       }
       if (onProgress) { try { onProgress(Math.min(i + BATCH_SIZE, codes.length), codes.length); } catch { /* 呼叫端UI更新失敗不該中斷計算 */ } }
       await yieldToFrame();
     }
-    const order = { flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3, pullback_in_uptrend: 4 };
+    const order = {
+      flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3, pullback_in_uptrend: 4,
+      head_shoulders_bottom: 5, double_bottom: 6, box: 7, v_reversal: 8, rounding_bottom: 9, flag: 10, wedge: 11,
+      head_shoulders_top: 12, double_top: 13,
+    };
     results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
     return {
       as_of_date: getLatestIndicatorDate(),
@@ -4057,8 +4137,8 @@ const DBMgr = (() => {
       ORDER BY dp.trade_date
     `, [code]);
     if (rows.length < 100) return { available: false, insufficientHistory: true, reason: '歷史資料不足（少於100天），無法評估型態' };
-    const hit = classifyPatternForStock(rows.slice(-140));
-    if (!hit) return { available: false, reason: '目前不符合任何已定義型態（一字型底噴出/箱型突破/主升段延續/上影線警訊)', trade_date: rows[rows.length - 1].trade_date };
+    const hit = classifyPatternForStock(rows); // 傳整段歷史，F+(detectPatterns)需要比140天更長的窗口
+    if (!hit) return { available: false, reason: '目前不符合任何已定義型態（見get_analysis_principles或型態下拉選單的完整清單)', trade_date: rows[rows.length - 1].trade_date };
     return { available: true, ...hit };
   }
 
@@ -5179,6 +5259,17 @@ function detectBox(bars) {
 function detectVReversal(bars) {
   const window = bars.slice(-V_SEARCH_WINDOW);
   if (window.length < 10) return null;
+  // 2026-08-27發現的latent bug（單一股票診斷從沒踩過，全市場批次掃描
+  // ~2000檔第一次跑就踩到）：daily_prices極少數日期(全庫實測只有6筆，
+  // 例如0050在2026-08-06)的open/high/low會是0（資料收集錯誤，不是真的
+  // 那天股價归零，close欄位當天仍是正常值、volume也是0，看得出是那天
+  // 收集流程整個失敗只補了收盤價），這種「假的0」比null更難防——0比較
+  // 時是合法數字，會被下面找「最低點」的迴圈直接選中，做出「股價從正常
+  // 價位一天內跌到0、隔天又完全復原」的假V型反轉，跟真正的null缺值
+  // （前一版只擋了這個）不是同一種問題，這裡一併排除任一價格<=0的視窗。
+  // 股價實務上不可能是0或負值，這個檢查不會誤殺任何真實資料。
+  if (window.some(b => b.low == null || b.high == null || b.open == null || b.close == null
+      || b.low <= 0 || b.high <= 0 || b.open <= 0 || b.close <= 0)) return null;
   let vLocalIdx = 0;
   for (let i = 1; i < window.length; i++) if (window[i].low < window[vLocalIdx].low) vLocalIdx = i;
 
@@ -7333,7 +7424,7 @@ const AI_CAPABILITIES = [
     name: 'export_pattern_screen_xlsx', category: '匯出',
     description: '把「型態」分頁的程式化篩選結果匯出成xlsx報表下載，格式跟人工分析報表一致：sheet1「相似型態清單」（代號/名稱/型態判讀/產業/現價/漲跌/趨勢圖(每日收盤價小圖)/關鍵證據），sheet2「個股技術分析」（個股代號/個股名稱/型態判讀/產業/趨勢圖(同sheet1)/型態趨勢圖(K棒+MA5/10/20/60大圖)/分析(對每檔跑一次持股診斷diagnose_stock、轉成純文字段落，涵蓋目前位置/趨勢判斷/型態辨識/K棒品質/量價關係/大盤連動/進出場建議)）。資料來源是PC端每天收盤後發布的型態篩選結果（見get_analysis_principles或直接查watchlist/pattern_screen.json），不是這個工具自己重新分析——如果那份資料還沒發布（例如今天還沒收盤），會回傳明確的錯誤而不是憑空編造股票清單。使用者若明確要求「即時」「現在馬上算」「不要等收盤」，改用export_pattern_screen_xlsx_live（同格式，但現場對本機資料庫重算，不依賴PC端發布）。⚠️呼叫這個工具會實際畫圖+逐檔跑診斷+產生檔案，股票數量多時可能需要一段時間，呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
-      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)',
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
     },
     handler: (a) => exportPatternScreenXlsx(a),
@@ -7342,7 +7433,7 @@ const AI_CAPABILITIES = [
     name: 'export_pattern_screen_xlsx_live', category: '匯出',
     description: '跟export_pattern_screen_xlsx格式完全一樣的xlsx報表（同樣兩個sheet、同樣欄位），差別是資料「即時計算」：不讀PC端每天收盤後才發布的靜態檔案，而是現場對這個瀏覽器本機的sql.js資料庫重新跑一次全市場型態篩選（跟PC端analysis/screen_pattern_types.py同一套門檻邏輯），任何時間點呼叫都會反映本機資料庫目前實際的最新技術指標日期，不受PC排程有沒有跑過影響。適合使用者明確要求「現在」「馬上」「不要等收盤發布」算型態的情境；平常沒特別要求即時性時，優先用export_pattern_screen_xlsx（不用重算，比較快）。⚠️全市場掃描約2000檔+逐檔畫圖+逐檔跑診斷，會比published版本更久（可能數十秒），呼叫後要等真正的回傳結果，不要在看到結果前就先說「已經產生好了」。',
     params: {
-      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)',
+      pattern_type: '選填字串，不填或"all"＝全部型態合併匯出；可指定單一型態，A~E是自訂簡易規則(優先判定)："flat_base_breakout"(一字型底均線糾結後噴出) | "box_breakout"(箱型矩形中繼突破) | "momentum_surge"(主升段強勢股延續噴出K棒) | "wick_warning"(前波高整理回測上影線警訊,觀察類) | "pullback_in_uptrend"(多頭回檔,等待買點,觀察類)；A~E都不符合才補充判定以下較嚴謹的幾何型態(跟diagnose_stock同一套偵測邏輯)："head_shoulders_bottom"(頭肩底) | "head_shoulders_top"(頭肩頂) | "double_bottom"(W底) | "double_top"(M頭) | "box"(箱型整理) | "v_reversal"(V型反轉) | "rounding_bottom"(圓弧底) | "flag"(旗形) | "wedge"(楔形)——這些型態在弱勢/盤整市況下觸發率會偏高(例如箱型整理)，這反映的是大環境本身，不是誤判，不要因為命中檔數多就懷疑分類錯誤',
       limit: '選填數字，最多匯出幾檔（依型態篩選結果的順序），預設60、上限200——股票數量多時畫圖+匯出會需要比較久時間，使用者沒特別要求「全部」就不用設太大',
     },
     handler: (a) => exportPatternScreenXlsx({ ...a, source: 'live' }),
