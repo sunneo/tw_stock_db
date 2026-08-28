@@ -627,27 +627,105 @@ const PRESET_MODEL_TOOLCALL_SUPPORT = {
 // （那些屬於host頁面自己的報告系統，例如tw_stock_db的ReportExport，
 // 透過options.onExportMarkdown覆寫時會用host頁面那一套，不會經過這裡）。
 // ============================================================
-const FA_PPTXGENJS_URL = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
-const FA_PDFMAKE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js';
-const FA_PDFMAKE_FONTS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/vfs_fonts.js';
-// Noto Sans TC「繁體中文」子集，透過jsDelivr的fontsource鏡像取得TTF——
-// pdfmake內建字型（Roboto）完全沒有中文字圖，不額外載入的話中文會整段
-// 變成豆腐字方塊。
-const FA_CJK_FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-400-normal.ttf';
-const FA_CJK_FONT_BOLD_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-700-normal.ttf';
+// tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
+// markdown渲染用到的所有外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/
+// DOMPurify/KaTeX/JSZip）原本全部寫死指向公開CDN，使用者希望PPT/PDF等匯出
+// 功能不要依賴CDN的存活與否，要能vendor一份到host頁面自己的網域下、由
+// host頁面覆寫這裡的網址。這裡集中成一個可被覆寫的設定物件（預設值仍然是
+// 原本的CDN網址，讓floating-assistant.js單獨拿去別的專案用時，不需要
+// 額外設定就能照樣運作——這是它原本「通用聊天widget，不綁定特定host」的
+// 設計精神，見檔案開頭說明），host頁面（例如這個專案的index.html）載入
+// floating-assistant.js之後、在new FloatingAssistant()之前，呼叫
+// FloatingAssistant.setAssetUrls({...})覆寫成自己vendor的路徑即可，未覆寫
+// 的鍵值保留預設CDN網址（部分覆寫也支援，不用整包重寫）。
+const FA_ASSET_URLS = {
+    pptxgenjs: 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',
+    pdfmake: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js',
+    pdfmakeFonts: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/vfs_fonts.js',
+    // Noto Sans TC「繁體中文」子集，透過jsDelivr的fontsource鏡像取得TTF——
+    // pdfmake內建字型（Roboto）完全沒有中文字圖，不額外載入的話中文會整段
+    // 變成豆腐字方塊。
+    cjkFontRegular: 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-400-normal.ttf',
+    cjkFontBold: 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@latest/chinese-traditional-700-normal.ttf',
+    marked: 'https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js',
+    dompurify: 'https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js',
+    katexJs: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js',
+    // katex.min.css用相對路徑url(fonts/xxx)引用字型檔，覆寫這個網址時要指向
+    // 一個「同目錄下也放著對應fonts/資料夾」的位置，不能只換CSS本身的網址
+    // （見web/vendor/katex/README.md的說明）。
+    katexCss: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css',
+    jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+};
+function _faSetAssetUrls(overrides) {
+    Object.assign(FA_ASSET_URLS, overrides || {});
+}
 const FA_EXPORT_PALETTE = { navy: '1E2761', txt: '333333', muted: '888888', border: 'DDDDDD', tileGray: 'F5F6FA', white: 'FFFFFF' };
 
+// tw_stock_db客製: 2026-08-28使用者要求把匯出用的外部函式庫vendor到自己的
+// GitHub repo（見FA_ASSET_URLS），vendor完之後瀏覽器實測發現一個重要限制：
+// raw.githubusercontent.com（vendor資源放置處）每個檔案的回應一律帶
+// `Content-Type: text/plain` + `X-Content-Type-Options: nosniff`，這是
+// GitHub刻意的安全設計（避免raw.githubusercontent.com被當成公開JS/CSS CDN
+// 濫用），瀏覽器看到nosniff+非JS/CSS的MIME類型時，會直接拒絕把回應內容
+// 當<script>/<link rel=stylesheet>執行/套用——長期不會改變，不是暫時性
+// 問題。實測驗證：對同一個網址直接用<script src=...>四連發全部失敗，改用
+// fetch()卻100%成功（fetch()本身不受回應MIME類型限制，單純把回應當
+// bytes/text處理）。字型(@font-face url())不受這個限制影響，不需要處理。
+//
+// 解法：fetch()抓下內容→包成Blob（自己指定正確的MIME type，不理會伺服器
+// 回應的Content-Type）→用Blob URL當<script src>/<link href>，繞過nosniff
+// 限制。sql.js本身的wasm是initSqlJs內部自己走fetch機制載入（不是
+// <script>/<link>），不受影響，不需要處理（見index.html的initSqlJs呼叫）。
 const _faExportScriptCache = new Map();
 function _faLoadScriptOnce(url) {
     if (_faExportScriptCache.has(url)) return _faExportScriptCache.get(url);
-    const p = new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = url;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`匯出功能所需的外部程式庫載入失敗：${url}`));
-        document.head.appendChild(s);
-    });
+    const p = fetch(url)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        .then(text => new Promise((resolve, reject) => {
+            const blob = new Blob([text], { type: 'application/javascript' });
+            const blobUrl = URL.createObjectURL(blob);
+            const s = document.createElement('script');
+            s.src = blobUrl;
+            s.onload = () => { URL.revokeObjectURL(blobUrl); resolve(); };
+            s.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error(`匯出功能所需的外部程式庫執行失敗：${url}`)); };
+            document.head.appendChild(s);
+        }))
+        .catch(e => { _faExportScriptCache.delete(url); throw new Error(`匯出功能所需的外部程式庫載入失敗：${url}（${e.message}）`); });
     _faExportScriptCache.set(url, p);
+    return p;
+}
+
+// katex.min.css用相對路徑url(fonts/xxx)引用字型檔，Blob URL沒有「目錄」
+// 概念、相對路徑解析會全部失效，這裡在包成Blob之前，先把CSS內容裡的
+// 相對路徑改寫成絕對網址（rewriteBaseUrl，指向katex vendor資料夾），字型
+// 本身不受nosniff限制（見上方說明），可以直接指向raw.githubusercontent.com。
+// elementId選填：因為套用的是Blob URL，href不會再帶原始網址的字樣，呼叫端
+// 沒辦法再用「href包含某關鍵字」去判斷「這個樣式表是不是已經套用過」，改成
+// 由這裡直接把id設在建立出來的<link>上，呼叫端改用document.getElementById
+// 判斷即可（見_ensureMarkdownLibsLoaded的katex.min.css用法）。
+function _faLoadStyleOnce(url, rewriteBaseUrl, elementId) {
+    const cacheKey = 'style:' + url;
+    if (_faExportScriptCache.has(cacheKey)) return _faExportScriptCache.get(cacheKey);
+    const p = fetch(url)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        .then(text => {
+            if (rewriteBaseUrl) {
+                text = text.replace(/url\((?!['"]?(?:https?:|data:|blob:))(['"]?)([^'")]+)\1\)/g, (m, q, path) => `url(${q}${rewriteBaseUrl}${path}${q})`);
+            }
+            return new Promise((resolve, reject) => {
+                const blob = new Blob([text], { type: 'text/css' });
+                const blobUrl = URL.createObjectURL(blob);
+                const l = document.createElement('link');
+                if (elementId) l.id = elementId;
+                l.rel = 'stylesheet';
+                l.href = blobUrl;
+                l.onload = () => { URL.revokeObjectURL(blobUrl); resolve(); };
+                l.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error(`樣式表套用失敗：${url}`)); };
+                document.head.appendChild(l);
+            });
+        })
+        .catch(e => { _faExportScriptCache.delete(cacheKey); throw new Error(`樣式表載入失敗：${url}（${e.message}）`); });
+    _faExportScriptCache.set(cacheKey, p);
     return p;
 }
 
@@ -667,8 +745,8 @@ async function _faEnsureCjkFontRegistered() {
     _faCjkFontPromise = (async () => {
         const pdfMake = window.pdfMake;
         const [regularBuf, boldBuf] = await Promise.all([
-            fetch(FA_CJK_FONT_REGULAR_URL).then(r => { if (!r.ok) throw new Error('中文字型下載失敗'); return r.arrayBuffer(); }),
-            fetch(FA_CJK_FONT_BOLD_URL).then(r => { if (!r.ok) throw new Error('中文字型(粗體)下載失敗'); return r.arrayBuffer(); }),
+            fetch(FA_ASSET_URLS.cjkFontRegular).then(r => { if (!r.ok) throw new Error('中文字型下載失敗'); return r.arrayBuffer(); }),
+            fetch(FA_ASSET_URLS.cjkFontBold).then(r => { if (!r.ok) throw new Error('中文字型(粗體)下載失敗'); return r.arrayBuffer(); }),
         ]);
         pdfMake.vfs = pdfMake.vfs || {};
         pdfMake.vfs['NotoSansTC-Regular.ttf'] = _faArrayBufferToBase64(regularBuf);
@@ -807,7 +885,7 @@ function _faMarkdownToSlides(markdownText, heading) {
 }
 
 async function _faMarkdownToPptxBlob(markdownText, heading) {
-    await _faLoadScriptOnce(FA_PPTXGENJS_URL);
+    await _faLoadScriptOnce(FA_ASSET_URLS.pptxgenjs);
     const PptxGenJS = window.PptxGenJS;
     const pres = new PptxGenJS();
     pres.layout = 'LAYOUT_WIDE'; // 13.3"x7.5"，預設是10"寬的16x9，要先設過再addSlide
@@ -843,8 +921,8 @@ async function _faMarkdownToPptxBlob(markdownText, heading) {
 }
 
 async function _faMarkdownToPdfBlob(markdownText, heading) {
-    await _faLoadScriptOnce(FA_PDFMAKE_URL);
-    await _faLoadScriptOnce(FA_PDFMAKE_FONTS_URL);
+    await _faLoadScriptOnce(FA_ASSET_URLS.pdfmake);
+    await _faLoadScriptOnce(FA_ASSET_URLS.pdfmakeFonts);
     await _faEnsureCjkFontRegistered();
     const pdfMake = window.pdfMake;
 
@@ -918,6 +996,21 @@ async function _faMarkdownToPdfBlob(markdownText, heading) {
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
 class FloatingAssistant {
+    // tw_stock_db客製: 2026-08-28使用者要求——讓host頁面能在`new FloatingAssistant()`
+    // 之前，把PPT/PDF/markdown渲染用到的外部函式庫網址（pptxgenjs/pdfmake/
+    // CJK字型/marked/DOMPurify/KaTeX/JSZip，見FA_ASSET_URLS）覆寫成自己
+    // vendor的路徑，讓這些匯出功能不依賴公開CDN的存活與否。只需要覆寫
+    // 需要的鍵值（例如只換pptxgenjs跟pdfmake），沒覆寫的鍵值繼續用預設CDN
+    // 網址，同一份floating-assistant.js單獨拿去別的專案用時不用額外設定
+    // 也能照樣運作。用法：
+    //   FloatingAssistant.setAssetUrls({
+    //     pptxgenjs: 'https://your-host/vendor/pptxgenjs/pptxgen.bundle.js',
+    //     katexCss: 'https://your-host/vendor/katex/katex.min.css', // 注意katexCss要跟fonts/資料夾放在一起，見web/vendor/katex/README.md
+    //   });
+    static setAssetUrls(overrides) {
+        _faSetAssetUrls(overrides);
+    }
+
     constructor(options = {}) {
         // --- 核心方法強制綁定實例 (防禦 Context 遺失 Bug) ---
         this.toggleWindow = this.toggleWindow.bind(this);
@@ -3154,32 +3247,19 @@ ${sourceTool.handlerScript}
     // 影響其他功能。
     _ensureMarkdownLibsLoaded() {
         if (this._markdownLibsPromise) return this._markdownLibsPromise;
-        const loadScript = (src) => new Promise((resolve, reject) => {
-            const s = document.createElement('script');
-            s.src = src;
-            s.onload = () => resolve();
-            s.onerror = () => reject(new Error('載入失敗: ' + src));
-            document.head.appendChild(s);
-        });
-        const loadStyle = (href) => new Promise((resolve, reject) => {
-            const l = document.createElement('link');
-            l.rel = 'stylesheet';
-            l.href = href;
-            l.onload = () => resolve();
-            l.onerror = () => reject(new Error('載入失敗: ' + href));
-            document.head.appendChild(l);
-        });
         // tw_stock_db客製: KaTeX用來把AI回覆裡的LaTeX數學語法（$...$/$$...$$）
         // 排版成正式的數學符號，見_renderMarkdownWithMath()。跟marked/
-        // DOMPurify一樣是輕量單檔CDN函式庫，一起在mount時背景預載。
+        // DOMPurify一樣是輕量單檔CDN函式庫，一起在mount時背景預載。改用
+        // _faLoadScriptOnce/_faLoadStyleOnce（見該函式說明：fetch+Blob繞過
+        // raw.githubusercontent.com的nosniff限制），不再自己直接注入
+        // <script src>/<link href>——katex.min.css的相對路徑字型引用要改寫
+        // 成絕對網址，rewriteBaseUrl取katexCss網址本身去掉檔名的目錄部分。
+        const katexCssBase = FA_ASSET_URLS.katexCss.replace(/katex\.min\.css(?:\?.*)?$/, '');
         this._markdownLibsPromise = Promise.all([
-            typeof marked === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js') : Promise.resolve(),
-            typeof DOMPurify === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js') : Promise.resolve(),
-            typeof katex === 'undefined' ? loadScript('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js') : Promise.resolve(),
-            document.getElementById('ai-katex-style') ? Promise.resolve() : loadStyle('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css').then(() => {
-                const link = document.querySelector('link[href*="katex.min.css"]');
-                if (link) link.id = 'ai-katex-style';
-            }),
+            typeof marked === 'undefined' ? _faLoadScriptOnce(FA_ASSET_URLS.marked) : Promise.resolve(),
+            typeof DOMPurify === 'undefined' ? _faLoadScriptOnce(FA_ASSET_URLS.dompurify) : Promise.resolve(),
+            typeof katex === 'undefined' ? _faLoadScriptOnce(FA_ASSET_URLS.katexJs) : Promise.resolve(),
+            document.getElementById('ai-katex-style') ? Promise.resolve() : _faLoadStyleOnce(FA_ASSET_URLS.katexCss, katexCssBase, 'ai-katex-style'),
         ]).then(() => {
             if (typeof marked !== 'undefined' && marked.setOptions) {
                 marked.setOptions({ gfm: true, breaks: true });
@@ -3805,15 +3885,12 @@ ${sourceTool.handlerScript}
     _ensureJSZipLoaded() {
         if (typeof JSZip !== 'undefined') return Promise.resolve();
         if (this._jszipLoadPromise) return this._jszipLoadPromise;
-        this._jszipLoadPromise = new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-            script.onload = () => resolve();
-            script.onerror = () => {
-                this._jszipLoadPromise = null;
-                reject(new Error('JSZip 載入失敗（可能是網路問題）'));
-            };
-            document.head.appendChild(script);
+        // 改用_faLoadScriptOnce（fetch+Blob，見該函式說明）而不是直接注入
+        // <script src>，避免vendor資源放在raw.githubusercontent.com時因為
+        // nosniff MIME限制載入失敗。
+        this._jszipLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.jszip).catch(e => {
+            this._jszipLoadPromise = null;
+            throw new Error('JSZip 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._jszipLoadPromise;
     }

@@ -1651,8 +1651,39 @@ select:focus { outline: 2px solid var(--acc); }
 <!-- hidden file input -->
 <input id="file-input" type="file" accept=".json" style="display:none">
 
-<!-- sql.js：本地備份（不依賴CDN，見 vendor/sql.js/README.md 說明來源/版本/授權） -->
-<script src="vendor/sql.js/sql-wasm.js"></script>
+<!-- sql.js：本地備份（不依賴CDN，見 vendor-assets 分支 vendor/sql.js/README.md 說明
+     來源/版本/授權）。2026-08-28使用者要求：所有vendor資源改放獨立的vendor-assets
+     分支（只有一個commit、每次更新force push覆蓋，不佔main分支的一般commit歷史，
+     見web/vendor/README.md），所以這裡不能用相對路徑，改用絕對網址指向該分支。
+
+     ⚠️不能直接用<script src=絕對網址>：實測發現raw.githubusercontent.com每個
+     檔案的回應都帶Content-Type: text/plain + X-Content-Type-Options: nosniff
+     （GitHub刻意的安全設計，避免raw.githubusercontent.com被當成公開JS CDN濫用，
+     長期不會改變），瀏覽器看到nosniff+非JS的MIME類型會直接拒絕把回應內容當
+     <script>執行——四連發直接<script src>實測全部失敗，fetch()對完全同一個
+     網址卻100%成功（fetch()本身不受回應MIME類型限制）。改成fetch()抓下內容→
+     包成Blob（自己指定正確MIME type）→用Blob URL當<script src>，繞過這個限制
+     （跟floating-assistant.js的_faLoadScriptOnce同樣手法，這裡因為要在
+     DBMgr.init()呼叫initSqlJs()之前就緒、且是在<head>階段執行，獨立實作一份，
+     不依賴floating-assistant.js先載入完成）。sql.js本身的.wasm是initSqlJs
+     內部自己走fetch機制載入，不是<script>/<link>，不受這個限制影響，不需要
+     處理（已實測確認.wasm即使Content-Type是application/octet-stream也能正常
+     載入，sql.js有fallback邏輯，不依賴WebAssembly.instantiateStreaming要求的
+     application/wasm）。 -->
+<script>
+  window.__sqlJsLibReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/sql-wasm.js')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(text => new Promise((resolve, reject) => {
+      const blob = new Blob([text], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+      const s = document.createElement('script');
+      s.src = blobUrl;
+      s.onload = () => { URL.revokeObjectURL(blobUrl); resolve(); };
+      s.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error('sql.js 執行失敗')); };
+      document.head.appendChild(s);
+    }))
+    .catch(e => { throw new Error('sql.js 載入失敗：' + e.message); });
+</script>
 
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
      載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
@@ -1664,7 +1695,36 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=6be1b2d24f"></script>
+<script src="floating-assistant.js?v=71d9457286"></script>
+<script>
+  // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
+  // markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/DOMPurify/
+  // KaTeX/JSZip）原本都指向公開CDN，改成覆寫成這個repo自己vendor的版本（見
+  // web/vendor/README.md），PPT/PDF等匯出功能才不會因為CDN當下打不到/被擋而
+  // 失敗。這些資源放在獨立的vendor-assets分支（只有一個commit，不佔main分支
+  // 一般commit歷史），所以一律用絕對網址，不能用相對路徑。放在<script src=
+  // floating-assistant.js>之後、任何new FloatingAssistant()實例化之前執行即可
+  // （AI助理面板是使用者真的點進AI分頁才會延遲初始化，見renderAiTab），
+  // FA_ASSET_URLS只有被覆寫的鍵值會改變，其餘鍵值繼續用floating-assistant.js
+  // 內建的CDN網址當備援。
+  (function () {
+    const VENDOR = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor';
+    if (typeof FloatingAssistant !== 'undefined' && FloatingAssistant.setAssetUrls) {
+      FloatingAssistant.setAssetUrls({
+        pptxgenjs: `${VENDOR}/pptxgenjs/pptxgen.bundle.js`,
+        pdfmake: `${VENDOR}/pdfmake/pdfmake.min.js`,
+        pdfmakeFonts: `${VENDOR}/pdfmake/vfs_fonts.js`,
+        cjkFontRegular: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-400-normal.ttf`,
+        cjkFontBold: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-700-normal.ttf`,
+        marked: `${VENDOR}/marked/marked.min.js`,
+        dompurify: `${VENDOR}/dompurify/purify.min.js`,
+        katexJs: `${VENDOR}/katex/katex.min.js`,
+        katexCss: `${VENDOR}/katex/katex.min.css`,
+        jszip: `${VENDOR}/jszip/jszip.min.js`,
+      });
+    }
+  })();
+</script>
 
 <script>
 'use strict';
@@ -3136,8 +3196,9 @@ const DBMgr = (() => {
   /* ── Init: try to load the already-merged db from IDB ── */
   async function init(onProgress) {
     onProgress('載入 sql.js…', 3);
+    await window.__sqlJsLibReady; // 見<head>附近的說明：fetch+Blob載入，確保initSqlJs已經是全域函式
     SQL = await initSqlJs({
-      locateFile: f => `vendor/sql.js/${f}`
+      locateFile: f => `https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/${f}`
     });
 
     const bytes = await IDB.get('blobs', 'sqlite_v2');
@@ -8913,7 +8974,8 @@ const ChipStore = (() => {
 
   async function ensureSqlLib() {
     if (!sqlLib) {
-      sqlLib = await initSqlJs({ locateFile: f => `vendor/sql.js/${f}` });
+      await window.__sqlJsLibReady; // 見<head>附近的說明：fetch+Blob載入，確保initSqlJs已經是全域函式
+      sqlLib = await initSqlJs({ locateFile: f => `https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/${f}` });
     }
     return sqlLib;
   }
