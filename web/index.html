@@ -1665,11 +1665,24 @@ select:focus { outline: 2px solid var(--acc); }
      包成Blob（自己指定正確MIME type）→用Blob URL當<script src>，繞過這個限制
      （跟floating-assistant.js的_faLoadScriptOnce同樣手法，這裡因為要在
      DBMgr.init()呼叫initSqlJs()之前就緒、且是在<head>階段執行，獨立實作一份，
-     不依賴floating-assistant.js先載入完成）。sql.js本身的.wasm是initSqlJs
-     內部自己走fetch機制載入，不是<script>/<link>，不受這個限制影響，不需要
-     處理（已實測確認.wasm即使Content-Type是application/octet-stream也能正常
-     載入，sql.js有fallback邏輯，不依賴WebAssembly.instantiateStreaming要求的
-     application/wasm）。 -->
+     不依賴floating-assistant.js先載入完成）。
+
+     sql.js本身的.wasm是initSqlJs內部自己走fetch機制載入，不是<script>/
+     <link>，不受nosniff限制影響，可以正常抓到內容——但raw.githubusercontent.com
+     幫.wasm檔回應的Content-Type是application/octet-stream，不是規範要求
+     WebAssembly.instantiateStreaming()一定要看到的application/wasm，
+     瀏覽器會先嘗試instantiateStreaming()失敗一次（console噴出
+     「wasm streaming compile failed」警告），才fallback成ArrayBuffer
+     instantiation——雖然功能上完全正常（已實測確認），但這個警告本身很
+     容易讓使用者誤以為出了問題。2026-08-28使用者再次反映這個警告，這裡
+     直接根治：sql.js支援initSqlJs({wasmBinary: arrayBuffer})，傳了這個
+     選項就會完全跳過instantiateStreaming那次嘗試（見sql-wasm.js原始碼
+     db()函式：wasmBinary存在時直接用ArrayBuffer路徑，不會先打
+     instantiateStreaming），不是「捕捉錯誤後fallback」而是「一開始就不會
+     觸發」，警告訊息從此不會出現。這裡先把.wasm整包fetch回來存成
+     ArrayBuffer，跟sql-wasm.js一樣用Promise.all並行抓（不用等其中一個
+     抓完才抓下一個），兩個call initSqlJs()的地方都要帶上wasmBinary（見
+     DBMgr.init()跟ChipStore的ensureSqlLib()）。 -->
 <script>
   window.__sqlJsLibReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/sql-wasm.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
@@ -1683,6 +1696,9 @@ select:focus { outline: 2px solid var(--acc); }
       document.head.appendChild(s);
     }))
     .catch(e => { throw new Error('sql.js 載入失敗：' + e.message); });
+  window.__sqlWasmBinaryReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/sql-wasm.wasm')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+    .catch(e => { throw new Error('sql-wasm.wasm 載入失敗：' + e.message); });
 </script>
 
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
@@ -3196,8 +3212,9 @@ const DBMgr = (() => {
   /* ── Init: try to load the already-merged db from IDB ── */
   async function init(onProgress) {
     onProgress('載入 sql.js…', 3);
-    await window.__sqlJsLibReady; // 見<head>附近的說明：fetch+Blob載入，確保initSqlJs已經是全域函式
+    const [, wasmBinary] = await Promise.all([window.__sqlJsLibReady, window.__sqlWasmBinaryReady]); // 見<head>附近的說明
     SQL = await initSqlJs({
+      wasmBinary, // 見<head>附近的說明：預先把.wasm抓成ArrayBuffer傳進去，完全跳過instantiateStreaming，不會再噴MIME警告
       locateFile: f => `https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/${f}`
     });
 
@@ -8974,8 +8991,11 @@ const ChipStore = (() => {
 
   async function ensureSqlLib() {
     if (!sqlLib) {
-      await window.__sqlJsLibReady; // 見<head>附近的說明：fetch+Blob載入，確保initSqlJs已經是全域函式
-      sqlLib = await initSqlJs({ locateFile: f => `https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/${f}` });
+      const [, wasmBinary] = await Promise.all([window.__sqlJsLibReady, window.__sqlWasmBinaryReady]); // 見<head>附近的說明
+      sqlLib = await initSqlJs({
+        wasmBinary, // 見<head>附近的說明：跳過instantiateStreaming，不會再噴MIME警告
+        locateFile: f => `https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/${f}`,
+      });
     }
     return sqlLib;
   }
