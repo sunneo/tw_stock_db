@@ -1642,9 +1642,8 @@ select:focus { outline: 2px solid var(--acc); }
 <!-- hidden file input -->
 <input id="file-input" type="file" accept=".json" style="display:none">
 
-<!-- sql.js CDN -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"
-        crossorigin="anonymous"></script>
+<!-- sql.js：本地備份（不依賴CDN，見 vendor/sql.js/README.md 說明來源/版本/授權） -->
+<script src="vendor/sql.js/sql-wasm.js"></script>
 
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
      載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
@@ -3129,7 +3128,7 @@ const DBMgr = (() => {
   async function init(onProgress) {
     onProgress('載入 sql.js…', 3);
     SQL = await initSqlJs({
-      locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}`
+      locateFile: f => `vendor/sql.js/${f}`
     });
 
     const bytes = await IDB.get('blobs', 'sqlite_v2');
@@ -8834,7 +8833,7 @@ const ChipStore = (() => {
 
   async function ensureSqlLib() {
     if (!sqlLib) {
-      sqlLib = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}` });
+      sqlLib = await initSqlJs({ locateFile: f => `vendor/sql.js/${f}` });
     }
     return sqlLib;
   }
