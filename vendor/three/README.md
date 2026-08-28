@@ -1,0 +1,21 @@
+# three.js r128（舊式 global-attaching build）
+
+AI 助理的 3D 場景（`render_3d_scene`）、簡報的 3D 舞台用，用到才載入（lazy）。
+
+- 來源：npm 套件 `three@0.128.0`（`build/three.min.js`、`examples/js/controls/OrbitControls.js`、`examples/js/loaders/{STL,OBJ,3MF,FBX}Loader.js`、`examples/js/libs/fflate.min.js`），原封不動。
+- 下載日期：2026-10-19
+- 授權：MIT（`LICENSE`，three.js 作者）
+- 桌面版放在 `desktop-app/renderer/vendor/three/`（同一份檔案）；網頁版由 `web/index.html` 的 `setAssetUrls` 指到這裡。載入失敗會退回原本的 CDN（cdnjs／jsDelivr）。
+
+SHA256：
+
+```
+9fafb48d64d0626afab19eca85b0e44e28f42c275b8cd8c7ff1ca36e1de20fa7  3MFLoader.js
+a5732b0dcdf530ecfd5ff21eb96e9343fc8e40dd75e548730352e6cfb79342b1  FBXLoader.js
+798b397d482f2ff743452362e880f1be4b683c43d7b2db3e8751f7412e7d5f4b  fflate.min.js
+7dddf7c5b8fd10ee654db8857d75d104b5557889aa5a91fc4ca545ea7c07062f  LICENSE
+e3c4cf3a6b061b6956e8e8d5cc360cf95da456dcced32961f859c8be6849a579  OBJLoader.js
+02bb4ade710f3e607329e37a21f098bc3ac70eb6e33daf8a65e79f4db785e7b2  OrbitControls.js
+c392b93d1331e64082cbd76deb850fe5de11385472a3f4c5b7fe82ba216cb49e  STLLoader.js
+9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2  three.min.js
+```
