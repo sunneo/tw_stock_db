@@ -4018,20 +4018,46 @@ const DBMgr = (() => {
     });
   }
 
-  /* onProgress(doneCount, totalCount) 選填，讓呼叫端（例如/pattern-xlsx-live
-     的進度訊息）能顯示「已掃描幾檔」，不用整段等到底才知道進度。 */
+  /* 2026-08-28使用者釐清設計方向、並且實測驗證過根因：拿PC端發布的73檔
+     rounding_bottom逐檔跟DBMgr.evaluatePatternForStock()（用本機當下有的
+     完整歷史，不裁切）比對，結果是71檔分類結果完全一致、2檔是本機歷史
+     不足（<100列）被跳過——分類邏輯本身沒有任何一檔判斷錯誤或不一樣。
+     真正的問題只有「本機歷史深度不夠的股票該怎麼辦」。
+
+     原本的做法是直接跳過（silently drop），使用者實測回報65 vs 73的落差
+     正是這個機制造成的。第一個修法嘗試是分類前先backfill全市場歷史（見
+     git history），但實測冷啟動要跑完全市場約69個代碼分桶×所需月數，
+     耗時接近~14分鐘，使用者明確指出「網頁端client非常需要UX, include
+     performance」——這樣的等待時間對「即時」功能是不能接受的，予以捨棄。
+
+     改用使用者自己點出的正確方向：「live應該就只有差在多一個用當天/當下
+     資料即時計算」——也就是「以PC端已發布的完整市場結果為底，本機資料
+     夠新鮮的地方才動態覆蓋」，而不是「本機從零全部重算、覆蓋不到的就drop」。
+     具體做法：
+       - 本機歷史足夠(≥100列)的股票：現場用本機最新資料分類——這才是
+         「即時」真正有意義的部分，能反映PC端快照之後才發生的變化。
+       - 本機歷史不足的股票：直接沿用PatternScreen（PC端發布的
+         pattern_screen.json）當底，不會比公開版本更差，而且這個檔案本來
+         就已經在下面抓一次，不需要任何額外的歷史backfill/網路成本。
+     這樣「live」的結果理論上下限就是「published」的完整市場覆蓋，只有
+     本機資料實際夠新鮮時才會即時更新，符合使用者的設計期待，而且完全
+     不需要主動backfill——效能上就是現在這樣（純本地SQL＋一次輕量JSON
+     抓取），不會變慢。 */
   async function computePatternScreenLive(onProgress) {
     const BATCH_SIZE = 150; // 每批查詢+分類幾檔股票，批次夠小才能讓每次同步運算的耗時控制在感覺不到卡頓的範圍
     const codes = query('SELECT stock_code FROM stocks WHERE is_active = 1 ORDER BY stock_code').map(r => r.stock_code);
+    const published = await PatternScreen.ensureLoaded();
+    const publishedByCode = new Map(published.data.map(r => [r.stock_code, r]));
     const results = [];
-    let skippedInsufficientHistory = 0;
+    let liveClassifiedCount = 0;
+    let publishedFallbackCount = 0;
     for (let i = 0; i < codes.length; i += BATCH_SIZE) {
       const batch = codes.slice(i, i + BATCH_SIZE);
       const ph = batch.map(() => '?').join(',');
-      // 2026-08-27使用者要求延伸：cutoff從-260天放寬到-420天(約300個交易日)，
-      // 蓋過classifyPatternForStock()裡F+(detectPatterns())「大型態」尺度
-      // (mainDays*1.6=240個交易日)+長期相對高低點驗證的需求；A~E仍然只看
-      // 最近140天，不受影響（classifyPatternForStock內部自己再截斷一次）。
+      // cutoff -420天(約300個交易日)：蓋過classifyPatternForStock()裡
+      // F+(detectPatterns())「大型態」尺度(mainDays*1.6=240個交易日)+長期
+      // 相對高低點驗證的需求；A~E仍然只看最近140天，不受影響
+      // （classifyPatternForStock內部自己再截斷一次）。
       const rows = query(`
         SELECT dp.stock_code, s.stock_name, s.market, dp.trade_date,
                dp.open, dp.high, dp.low, dp.close, dp.volume,
@@ -4049,21 +4075,19 @@ const DBMgr = (() => {
         if (!arr) { arr = []; byStock.set(r.stock_code, arr); }
         arr.push(r);
       }
-      // 2026-08-28使用者反饋：/pattern-xlsx-live算出的檔數(例如rounding_bottom
-      // 只有4檔)遠低於PC端每天發布、完整市場覆蓋的PatternScreen(例如73檔)——
-      // 根源不是分類邏輯錯誤，是這個函式完全只吃「瀏覽器本機sql.js目前已經
-      // 合併好的daily_prices」，不會像匯出xlsx那樣主動幫忙下載歷史（這正是
-      // 它能「即時、不用等」的原因，若也要主動補歷史，全市場~2000檔逐檔補
-      // 320天以上的歷史會跟匯出xlsx一樣慢，違背「live」的本意）。使用者平常
-      // 瀏覽網頁時，全市場基準資料通常只有最近一小段月份，只有使用者個別
-      // 點開看過的股票才有更深的本地歷史，導致多數股票在420天窗口內的列數
-      // 不到100列而被下面這行跳過、根本沒被分類到——這裡額外把「因為本地
-      // 歷史不足而跳過」的檔數記下來，讓呼叫端能誠實告知使用者這個落差是
-      // 「本地資料涵蓋不足」，不是「這些股票真的不符合型態」。
-      for (const [code, arr] of byStock.entries()) {
-        if (arr.length < 100) { skippedInsufficientHistory++; continue; }
-        const hit = classifyPatternForStock(arr);
-        if (hit) results.push(hit);
+      for (const code of batch) {
+        const arr = byStock.get(code);
+        if (arr && arr.length >= 100) {
+          const hit = classifyPatternForStock(arr);
+          if (hit) { results.push(hit); liveClassifiedCount++; }
+          // 本機資料足夠時，現場分類的結果就是最終答案（即使跟published
+          // 不同，也不再退回published——本機資料通常比PC快照更新，這正是
+          // 「即時」的意義；本機判定「不符合任何型態」也一樣尊重，不用
+          // published硬湊數字）。
+        } else {
+          const pub = publishedByCode.get(code);
+          if (pub) { results.push(pub); publishedFallbackCount++; }
+        }
       }
       if (onProgress) { try { onProgress(Math.min(i + BATCH_SIZE, codes.length), codes.length); } catch { /* 呼叫端UI更新失敗不該中斷計算 */ } }
       await yieldToFrame();
@@ -4075,11 +4099,12 @@ const DBMgr = (() => {
     };
     results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
     return {
-      as_of_date: getLatestIndicatorDate(),
+      as_of_date: getLatestIndicatorDate() || published.asOfDate,
       pattern_labels: PATTERN_LABELS_JS,
       count: results.length,
       data: results,
-      skippedInsufficientHistory,
+      liveClassifiedCount,
+      publishedFallbackCount,
     };
   }
 
@@ -6682,10 +6707,10 @@ async function exportPatternScreenXlsx(params) {
   const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(900, Number(params.limit))) : 120;
   const isLive = params.source === 'live';
 
-  let meta, filterRows, liveSkipped = 0;
+  let meta, filterRows, livePublishedFallback = 0;
   if (isLive) {
     const live = await DBMgr.computePatternScreenLive(params.onProgress);
-    liveSkipped = live.skippedInsufficientHistory || 0;
+    livePublishedFallback = live.publishedFallbackCount || 0;
     meta = { asOfDate: live.as_of_date, patternLabels: live.pattern_labels };
     filterRows = (s) => (!s || s === 'all' ? live.data : live.data.filter(r => r.pattern_type === s));
   } else {
@@ -6839,15 +6864,17 @@ async function exportPatternScreenXlsx(params) {
     balancedSampling: (truncated && sub === 'all') || undefined,
     live: isLive || undefined,
     asOfDate: meta.asOfDate,
-    // 2026-08-28使用者反饋：/pattern-xlsx-live算出的檔數常遠低於PC端每天
-    // 發布的完整市場結果，根源是即時計算只吃瀏覽器本機目前已經合併好的
-    // 歷史（見computePatternScreenLive註解），不會像匯出流程那樣主動幫忙
-    // 補歷史。這裡把skippedInsufficientHistory講清楚，讓AI能誠實回覆使用者
-    // 「數量少是本地資料涵蓋不足，不是這些股票真的不符合型態」，避免誤導。
-    skippedInsufficientHistory: (isLive && liveSkipped > 0) ? liveSkipped : undefined,
+    // 2026-08-28使用者反饋+釐清設計方向：/pattern-xlsx-live原本只吃瀏覽器
+    // 本機已合併的歷史，本機歷史不足的股票會被silently drop，導致檔數
+    // 常遠低於PC端發布的完整市場結果。改成本機歷史夠深的股票才現場即時
+    // 分類，不夠的直接沿用PC端pattern_screen.json的分類當底（見
+    // computePatternScreenLive註解）——理論上檔數不會再低於PC端發布的
+    // 完整市場覆蓋。這裡把「這次有幾檔是用PC端底稿、不是本機現場算」的
+    // 數字講清楚，單純告知資訊新鮮度，不是在解釋「為什麼比較少」。
+    livePublishedFallbackCount: (isLive && livePublishedFallback > 0) ? livePublishedFallback : undefined,
     note: truncated
-      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限900，但股票數量多時逐檔畫圖+跑診斷會需要數分鐘，記得提醒使用者要等）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && liveSkipped > 0 ? `另外，即時計算這次有${liveSkipped}檔股票因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）被跳過、根本沒被分類到，不是這些股票不符合型態——如果使用者發現即時算出的檔數比「型態」分頁平常顯示的（PC端每天發布、完整市場覆蓋）少很多，這就是原因，請如實告知使用者，不要說成「這些股票真的不符合」。` : ''}`
-      : `已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && liveSkipped > 0 ? `另外，即時計算這次有${liveSkipped}檔股票因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）被跳過、根本沒被分類到，不是這些股票不符合型態——如果使用者發現即時算出的檔數比「型態」分頁平常顯示的（PC端每天發布、完整市場覆蓋）少很多，這就是原因，請如實告知使用者，不要說成「這些股票真的不符合」。` : ''}`,
+      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限900，但股票數量多時逐檔畫圖+跑診斷會需要數分鐘，記得提醒使用者要等）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && livePublishedFallback > 0 ? `另外，這次「即時計算」結果裡有${livePublishedFallback}檔是因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）而沿用PC端每天發布的既有分類結果，不是本機現場重新判讀——如果使用者問「這些是不是即時算的」要如實說明，不要說成全部都是本機當下重新計算的。` : ''}`
+      : `已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && livePublishedFallback > 0 ? `另外，這次「即時計算」結果裡有${livePublishedFallback}檔是因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）而沿用PC端每天發布的既有分類結果，不是本機現場重新判讀——如果使用者問「這些是不是即時算的」要如實說明，不要說成全部都是本機當下重新計算的。` : ''}`,
   };
 }
 
