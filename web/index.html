@@ -964,6 +964,15 @@ select:focus { outline: 2px solid var(--acc); }
   background: var(--bg2); border: 1px solid var(--bdr); border-radius: 6px;
   padding: 8px 10px; margin-bottom: 14px; line-height: 1.5;
 }
+/* 白話結論：放在整份診斷最前面的2-3句摘要（見buildPlainVerdict說明），
+   刻意跟.diag-banner（型態偵測的警示性提醒）用不同視覺——這裡是「結論」
+   不是「警告」，用主色邊框+較大字級凸顯，但不要太搶眼蓋過下面的細節。 */
+.diag-verdict {
+  font-size: 13.5px; line-height: 1.75; color: var(--txt0);
+  background: var(--bg2); border: 1px solid var(--acc); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 16px;
+}
+.diag-verdict h3 { font-size: 12px; color: var(--acc); margin: 0 0 6px; }
 .diag-section { margin-bottom: 16px; }
 .diag-section:last-child { margin-bottom: 0; }
 .diag-section h3 { font-size: 12px; color: var(--txt2); margin: 0 0 6px; }
@@ -5700,6 +5709,61 @@ function computeTrendLabelAt(bars, asOfIndex) {
   return { label, recent_high: recentHigh, recent_low: recentLow, prior_high: priorHigh, prior_low: priorLow };
 }
 
+/* 白話結論：把下面8段結構化診斷濃縮成2-3句白話文字，放在整份診斷結果
+   最前面。2026-08-28使用者反饋「看不懂AI的分析，看不懂在分析什麼」——
+   原本8段式結構化輸出資訊完整、有憑有據（符合stock-pattern-analysis
+   技能規範的專業度要求），但對非技術背景的使用者來說，一堆數字/術語
+   並列，沒有先講「所以呢」，看不出重點跟下一步該注意什麼（例如使用者
+   實際舉的例子：2027大成鋼在月線附近收十字線，使用者自己都看得出這是
+   變盤線、希望看到止跌訊號，但診斷結果只丟出「✗ 未通過：實體僅0.10%」
+   這種偏向「檢查失敗」語氣的判定，沒有講清楚「十字線本身在這個位置
+   出現是正常的，還不能確認，但要看接下來一根K棒」）。這裡不是取代8段
+   細節（那些細節仍然是判讀依據，原封不動保留），而是在最前面加一段
+   白話結論，先講結論、再看證據——貼近實際教學時「先講這裡站穩了嗎，
+   再展開細節」的順序。純文字組合，不做任何額外運算，全部沿用
+   diagnoseStock()裡已經算好的欄位，跟kbarQuality()判斷邏輯保持同一套
+   優先順序（先看實體是否達標，再看上影線），避免兩處各自判斷、結果
+   不一致。 */
+function buildPlainVerdict(diag) {
+  if (!diag.available) return null;
+  const p = diag.position, kb = diag.kbar_quality, t = diag.trend, vp = diag.volume_price;
+  const parts = [];
+
+  const trendWord = t.label.includes('多頭') ? '多頭' : t.label.includes('空頭') ? '空頭' : '盤整';
+  const ma20Text = p.ma[20] != null ? p.ma[20].toFixed(2) : '-';
+  parts.push(
+    (p.above_ma20 ? `目前站在月線（MA20=${ma20Text}）之上` : `目前跌破月線（MA20=${ma20Text}）`) +
+    `，大趨勢屬於${trendWord}格局。`
+  );
+
+  if (kb.body_pct == null) {
+    parts.push('今天K棒資料不完整，無法判讀。');
+  } else if (kb.passes) {
+    parts.push(kb.is_red
+      ? `今天收一根實體${kb.body_pct.toFixed(2)}%的紅K，通過K棒品質判讀鐵律，屬於相對乾淨的多方訊號。`
+      : `今天收一根實體${kb.body_pct.toFixed(2)}%的黑K，通過K棒品質判讀鐵律，屬於相對乾淨的空方訊號。`);
+  } else if (kb.body_pct < KBAR_BODY_MIN_PCT) {
+    parts.push(
+      `今天K棒實體只有${kb.body_pct.toFixed(2)}%，屬於十字線／變盤線（多空還在拉鋸，還沒分出勝負），` +
+      `還不能當作止跌或止漲的確認訊號——要等下一根K棒收出實體≥2%的方向K、且不跌破今天的高低點，` +
+      `才算真正確認；如果反而收破關鍵均線，就要視為轉弱警訊，重新評估。`
+    );
+  } else {
+    parts.push(
+      `今天上影線偏長（占K棒全長${kb.upper_wick_pct_of_range != null ? kb.upper_wick_pct_of_range.toFixed(1) : '-'}%），` +
+      `代表盤中一度走強又被壓回，即使價格守住關鍵位置，也要當成力竭／賣壓警訊看待，不算乾淨的多方訊號。`
+    );
+  }
+
+  if (vp.vol_ratio != null) {
+    parts.push(vp.vol_ratio >= 1.2
+      ? `成交量達攻擊量標準（${vp.vol_ratio.toFixed(2)}倍基本量），有實際資金進出佐證。`
+      : `成交量只有${vp.vol_ratio.toFixed(2)}倍基本量，還沒有明顯資金進場跡象，須留意是否只是量縮整理。`);
+  }
+
+  return parts.join('');
+}
+
 function diagnoseStock(code) {
   const info = DBMgr.getStockInfo(code);
   const mainDays = getDiagnosisLookbackDays();
@@ -5766,7 +5830,7 @@ function diagnoseStock(code) {
     measured_move: targets,
   };
 
-  return {
+  const result = {
     available: true, stock_code: code, stock_name: info?.stock_name, market: info?.market,
     as_of_date: last.trade_date,
     position, trend,
@@ -5777,6 +5841,8 @@ function diagnoseStock(code) {
     kbar_quality: kbar, volume_price: volumePrice, market_linkage: marketLinkage, entry_exit: entryExit,
     risk_note: '以上為技術面框架推演，非投資建議；型態偵測為機械式規則比對，非人工圖形驗證，最終進出場決策仍須自行覆核K線圖。',
   };
+  result.plain_summary = buildPlainVerdict(result);
+  return result;
 }
 
 const StockDiagnosis = { diagnose: diagnoseStock };
@@ -5795,6 +5861,10 @@ function buildDiagnosisSummaryText(diag) {
   const p = diag.position, t = diag.trend, kb = diag.kbar_quality, vp = diag.volume_price;
   const ml = diag.market_linkage, ee = diag.entry_exit, pat = diag.pattern;
   const lines = [];
+
+  if (diag.plain_summary) {
+    lines.push('【白話結論】', diag.plain_summary, '');
+  }
 
   const maLine = ['5', '10', '20', '60'].map(k => `MA${k} ${p.ma[k] != null ? p.ma[k].toFixed(2) : '-'}`).join('　');
   lines.push('【目前位置】');
@@ -12593,7 +12663,12 @@ function renderDiagnosisPanelBody(diag) {
     `<div class="diag-row">百分比停損：${esc(ee.pct_stop_range)}</div>` +
     mmHtml;
 
+  const verdictHtml = diag.plain_summary
+    ? `<div class="diag-verdict"><h3>白話結論</h3>${esc(diag.plain_summary)}</div>`
+    : '';
+
   R.diagnosisPanel.innerHTML =
+    verdictHtml +
     `<div class="diag-section"><h3>目前位置</h3>${positionHtml}</div>` +
     `<div class="diag-section"><h3>趨勢判斷</h3>${trendHtml}</div>` +
     `<div class="diag-section"><h3>型態辨識</h3>${patternHtml}</div>` +
