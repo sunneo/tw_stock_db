@@ -4024,6 +4024,7 @@ const DBMgr = (() => {
     const BATCH_SIZE = 150; // 每批查詢+分類幾檔股票，批次夠小才能讓每次同步運算的耗時控制在感覺不到卡頓的範圍
     const codes = query('SELECT stock_code FROM stocks WHERE is_active = 1 ORDER BY stock_code').map(r => r.stock_code);
     const results = [];
+    let skippedInsufficientHistory = 0;
     for (let i = 0; i < codes.length; i += BATCH_SIZE) {
       const batch = codes.slice(i, i + BATCH_SIZE);
       const ph = batch.map(() => '?').join(',');
@@ -4048,8 +4049,19 @@ const DBMgr = (() => {
         if (!arr) { arr = []; byStock.set(r.stock_code, arr); }
         arr.push(r);
       }
-      for (const arr of byStock.values()) {
-        if (arr.length < 100) continue;
+      // 2026-08-28使用者反饋：/pattern-xlsx-live算出的檔數(例如rounding_bottom
+      // 只有4檔)遠低於PC端每天發布、完整市場覆蓋的PatternScreen(例如73檔)——
+      // 根源不是分類邏輯錯誤，是這個函式完全只吃「瀏覽器本機sql.js目前已經
+      // 合併好的daily_prices」，不會像匯出xlsx那樣主動幫忙下載歷史（這正是
+      // 它能「即時、不用等」的原因，若也要主動補歷史，全市場~2000檔逐檔補
+      // 320天以上的歷史會跟匯出xlsx一樣慢，違背「live」的本意）。使用者平常
+      // 瀏覽網頁時，全市場基準資料通常只有最近一小段月份，只有使用者個別
+      // 點開看過的股票才有更深的本地歷史，導致多數股票在420天窗口內的列數
+      // 不到100列而被下面這行跳過、根本沒被分類到——這裡額外把「因為本地
+      // 歷史不足而跳過」的檔數記下來，讓呼叫端能誠實告知使用者這個落差是
+      // 「本地資料涵蓋不足」，不是「這些股票真的不符合型態」。
+      for (const [code, arr] of byStock.entries()) {
+        if (arr.length < 100) { skippedInsufficientHistory++; continue; }
         const hit = classifyPatternForStock(arr);
         if (hit) results.push(hit);
       }
@@ -4067,6 +4079,7 @@ const DBMgr = (() => {
       pattern_labels: PATTERN_LABELS_JS,
       count: results.length,
       data: results,
+      skippedInsufficientHistory,
     };
   }
 
@@ -6669,9 +6682,10 @@ async function exportPatternScreenXlsx(params) {
   const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.min(900, Number(params.limit))) : 120;
   const isLive = params.source === 'live';
 
-  let meta, filterRows;
+  let meta, filterRows, liveSkipped = 0;
   if (isLive) {
     const live = await DBMgr.computePatternScreenLive(params.onProgress);
+    liveSkipped = live.skippedInsufficientHistory || 0;
     meta = { asOfDate: live.as_of_date, patternLabels: live.pattern_labels };
     filterRows = (s) => (!s || s === 'all' ? live.data : live.data.filter(r => r.pattern_type === s));
   } else {
@@ -6700,19 +6714,32 @@ async function exportPatternScreenXlsx(params) {
   // 產業名稱：批次查一次（跟loadPatternScreen()同樣做法），不用逐檔各查一次。
   const refMap = DBMgr.getVolumeRankingReference(rows.map(r => r.stock_code));
 
-  // 逐檔：抓歷史K棒(320天緩衝，蓋過diagnoseStock()預設抓300天的門檻)→畫
-  // 趨勢圖(收盤價小圖)+型態趨勢圖(K棒+MA大圖)→跑一次持股診斷。這是這個
-  // 函式最耗時的段落（尤其diagnoseStock()的型態偵測有好幾種子演算法），
-  // 每檔跑完後yield一次（見_yieldToFrame說明），避免大量股票時整段同步
-  // 卡住瀏覽器——跟DBMgr.computePatternScreenLive()同樣的cooperative
-  // yielding概念，只是這裡讓出的頻率是「每一檔」而不是「每一批」，因為
-  // 這裡單檔的畫圖+診斷耗時本身就已經比computePatternScreenLive()單一批
-  // 次的查詢+分類重，不需要再額外分批。
+  // 逐檔：抓歷史K棒→畫趨勢圖(收盤價小圖)+型態趨勢圖(K棒+MA大圖)→跑一次
+  // 持股診斷。這是這個函式最耗時的段落（尤其diagnoseStock()的型態偵測有
+  // 好幾種子演算法），每檔跑完後yield一次（見_yieldToFrame說明），避免
+  // 大量股票時整段同步卡住瀏覽器——跟DBMgr.computePatternScreenLive()同樣
+  // 的cooperative yielding概念，只是這裡讓出的頻率是「每一檔」而不是
+  // 「每一批」，因為這裡單檔的畫圖+診斷耗時本身就已經比
+  // computePatternScreenLive()單一批次的查詢+分類重，不需要再額外分批。
+  //
+  // 2026-08-28使用者反饋：這裡原本是寫死320天（註解說「蓋過diagnoseStock()
+  // 預設抓300天的門檻」），但那只在使用者從沒調整過「持股診斷」設定的
+  // K棒數量(diagnosisLookbackDays，預設150)時才剛好夠用——如果使用者把
+  // K棒數量調高（例如300），diagnoseStock()實際需要的天數
+  // (diagnosisHistoryDaysFor(300)=540天)會超過這裡寫死的320，導致
+  // diagnoseStock()拿到的歷史被悄悄裁短、型態判讀失真；調低（例如「短期」
+  // 型態只需要60-90天）時，寫死320又會白白多抓一大段用不到的歷史，正是
+  // 使用者反映「/pattern-xlsx要一路往回抓到超過一年前」的根本原因。改成
+  // 呼叫跟單一持股診斷分頁（見7352行同樣的寫法）完全一樣的
+  // diagnosisHistoryDaysFor(getDiagnosisLookbackDays())，讓匯出用的歷史
+  // 深度精確對齊diagnoseStock()實際需要的量、也對齊使用者自己在設定裡
+  // 調整過的K棒數量，不多抓也不少抓。
+  const neededHistoryDays = diagnosisHistoryDaysFor(getDiagnosisLookbackDays());
   const perStock = [];
   for (const r of rows) {
     let bars = null;
     try {
-      await ensureStockHistoryLoadedForAi(r.stock_code, 320);
+      await ensureStockHistoryLoadedForAi(r.stock_code, neededHistoryDays);
       bars = DBMgr.getPriceHistory(r.stock_code, 150);
     } catch { /* 抓不到就跳過畫圖/診斷，清單文字欄位仍然保留 */ }
     const sparkline = (bars && bars.length >= 2)
@@ -6812,9 +6839,15 @@ async function exportPatternScreenXlsx(params) {
     balancedSampling: (truncated && sub === 'all') || undefined,
     live: isLive || undefined,
     asOfDate: meta.asOfDate,
+    // 2026-08-28使用者反饋：/pattern-xlsx-live算出的檔數常遠低於PC端每天
+    // 發布的完整市場結果，根源是即時計算只吃瀏覽器本機目前已經合併好的
+    // 歷史（見computePatternScreenLive註解），不會像匯出流程那樣主動幫忙
+    // 補歷史。這裡把skippedInsufficientHistory講清楚，讓AI能誠實回覆使用者
+    // 「數量少是本地資料涵蓋不足，不是這些股票真的不符合型態」，避免誤導。
+    skippedInsufficientHistory: (isLive && liveSkipped > 0) ? liveSkipped : undefined,
     note: truncated
-      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限900，但股票數量多時逐檔畫圖+跑診斷會需要數分鐘，記得提醒使用者要等）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。`
-      : '已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。',
+      ? `已在對話裡插入下載連結，不用再重複貼一次清單內容。這次有超過上限(${limit})，實際符合條件的股票更多，只匯出了其中${rows.length}檔${sub === 'all' ? '（已依各型態平均抽樣，不是只取單一型態）' : ''}；如果使用者想要更多，可以呼叫時明確指定limit參數（上限900，但股票數量多時逐檔畫圖+跑診斷會需要數分鐘，記得提醒使用者要等）。如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && liveSkipped > 0 ? `另外，即時計算這次有${liveSkipped}檔股票因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）被跳過、根本沒被分類到，不是這些股票不符合型態——如果使用者發現即時算出的檔數比「型態」分頁平常顯示的（PC端每天發布、完整市場覆蓋）少很多，這就是原因，請如實告知使用者，不要說成「這些股票真的不符合」。` : ''}`
+      : `已在對話裡插入下載連結，不用再重複貼一次清單內容；如果使用者想知道有哪些股票/型態，可以口頭摘要重點（例如各型態各有幾檔、挑1-2檔最具代表性的舉例說明），不用整份逐檔複述。${isLive && liveSkipped > 0 ? `另外，即時計算這次有${liveSkipped}檔股票因為瀏覽器本機還沒有足夠的歷史資料（少於約100個交易日）被跳過、根本沒被分類到，不是這些股票不符合型態——如果使用者發現即時算出的檔數比「型態」分頁平常顯示的（PC端每天發布、完整市場覆蓋）少很多，這就是原因，請如實告知使用者，不要說成「這些股票真的不符合」。` : ''}`,
   };
 }
 
