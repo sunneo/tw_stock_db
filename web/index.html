@@ -1210,7 +1210,7 @@ select:focus { outline: 2px solid var(--acc); }
         <option value="lock_nextday_short" id="opt-lock-nextday-short">鎖做空-隔日</option>
         <option value="lock_week_long">鎖做多-本週</option>
         <option value="lock_week_short">鎖做空-本週</option>
-        <option value="usmarket">美股</option>
+        <option value="usmarket">美股/指數</option>
         <option value="analysis">分析</option>
         <option value="volrank">量排行</option>
         <option value="pattern">型態</option>
@@ -1245,6 +1245,7 @@ select:focus { outline: 2px solid var(--acc); }
           <option value="head_shoulders_bottom">頭肩底</option>
           <option value="head_shoulders_top">頭肩頂</option>
           <option value="double_bottom">W底</option>
+          <option value="n_bottom">N字底</option>
           <option value="double_top">M頭</option>
           <option value="box">箱型整理</option>
           <option value="v_reversal">V型反轉</option>
@@ -2482,6 +2483,7 @@ const PATTERN_LABELS_JS = {
   head_shoulders_bottom: '頭肩底',
   head_shoulders_top: '頭肩頂',
   double_bottom: 'W底',
+  n_bottom: 'N字底',
   double_top: 'M頭',
   box: '箱型整理',
   v_reversal: 'V型反轉',
@@ -4180,8 +4182,8 @@ const DBMgr = (() => {
     }
     const order = {
       flat_base_breakout: 0, box_breakout: 1, momentum_surge: 2, wick_warning: 3, pullback_in_uptrend: 4,
-      head_shoulders_bottom: 5, double_bottom: 6, box: 7, v_reversal: 8, rounding_bottom: 9, flag: 10, wedge: 11,
-      head_shoulders_top: 12, double_top: 13,
+      head_shoulders_bottom: 5, double_bottom: 6, n_bottom: 7, box: 8, v_reversal: 9, rounding_bottom: 10, flag: 11, wedge: 12,
+      head_shoulders_top: 13, double_top: 14,
     };
     results.sort((a, b) => (order[a.pattern_type] ?? 9) - (order[b.pattern_type] ?? 9) || a.stock_code.localeCompare(b.stock_code));
     return {
@@ -4810,7 +4812,7 @@ const IntradayFeed = (() => {
   /* 切到走勢圖分頁/選股時呼叫：把今天已經記錄過的 tick（可能是稍早這個分頁
      開過、或重新整理過頁面）從 IndexedDB 撈回來，避免每次都要重新累積；
      同時觸發 Yahoo backfill 補開盤到現在那段空白。yahooSymbol 由呼叫端解析
-     好完整代號傳進來（個股：代號+.TW/.TWO；美股指數：US_INDEX_LIST 裡的
+     好完整代號傳進來（個股：代號+.TW/.TWO；美股指數：MARKET_INDEX_LIST 裡的
      yahoo 欄位，例如 ^DJI），這裡不用再判斷來源類型。個股沒有 LiveFeed
      即時輪詢時（例如美股指數，本來就不支援），走勢圖就完全只靠這份
      backfill，同樣可以正常顯示、只是不會有「還在成形中」的當下那一分鐘。 */
@@ -4977,6 +4979,7 @@ const KBAR_BODY_MIN_PCT = 2.0;        // K棒品質判讀鐵律：實體漲跌�
 const KBAR_UPPER_WICK_MAX_PCT = 40.0; // 上影線占K棒全長比例上限
 const HS_HEAD_TOLERANCE = 0.02;       // 頭肩底：頭部須比兩肩低點的較低者再低至少2%，才算「明顯低於雙肩」
 const WBOTTOM_TOLERANCE = 0.005;      // W底：第二腳容許比第一腳低點再低0.5%以內，仍視為「未跌破」（雜訊容忍）
+const NBOTTOM_MIN_RISE_PCT = 3;       // N字底：第二腳低點至少要比第一腳墊高這個百分比，才算「明顯墊高」（不是雜訊），跟W底（兩腳大致等高）互斥——2026-08-28使用者提供實際案例要求新增
 const BOX_TOLERANCE = 0.03;           // 箱型：高點/低點群聚容忍值，同一群視為「價位相近」
 const BOX_MAX_RANGE_PCT = 25;         // 箱型：上下頸線價差超過此比例，不像整理區間，不判定為箱型
 const PATTERN_LOOKBACK_DAYS_REF = 150; // 型態偵測窗口的「參考基準」天數：使用者可在持股診斷設定調整
@@ -5302,6 +5305,10 @@ function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0, priorTren
   if (last3.map(s => s.type).join('') !== 'LHL') return null;
   const [A, E, B] = last3;
   if (B.price < A.price * (1 - WBOTTOM_TOLERANCE)) return null; // 第二腳跌破第一腳，型態失敗
+  // 2026-08-28使用者要求新增N字底：第二腳明顯墊高（見NBOTTOM_MIN_RISE_PCT）
+  // 屬於N字底範疇（第二次探底高於第一次），不算W底（W底定義是兩腳大致
+  // 等高），這裡讓出去給detectNBottom判斷，避免同一組轉折點被雙重分類。
+  if (B.price > A.price * (1 + NBOTTOM_MIN_RISE_PCT / 100)) return null;
 
   // W底是底部反轉型態，第一腳(A)之前要先走過一段夠份量的空頭破壞段，才算
   // 「真的跌到低檔」，不是盤整區間裡隨機出現的兩個低點（見上方
@@ -5322,6 +5329,43 @@ function detectDoubleBottom(bars, swings, fullBars = bars, offset = 0, priorTren
     necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
     target,
     basis: `第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一腳本身是近${positionLookback}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）未跌破第一腳逾${(WBOTTOM_TOLERANCE * 100).toFixed(1)}%；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(lowest)}) = ${target}`,
+    note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
+  };
+}
+
+/* ── N字底：跟W底(detectDoubleBottom)共用同一種Low-High-Low轉折結構，但
+   定義相反——W底要求兩腳「大致等高」（誤差在WBOTTOM_TOLERANCE以內），
+   N字底要求第二腳「明顯墊高」（見NBOTTOM_MIN_RISE_PCT，本專案
+   stock-pattern-analysis技能參考資料裡對N字底的既有定義：「第二次探底
+   高於第一次」），代表賣壓一次比一次輕、支撐持續墊高，是比W底更強烈的
+   止跌訊號，也呼應「空頭跌到相對低檔，在底部做了盤整之後」的型態描述。
+   2026-08-28使用者提供4檔實際案例佐證（晟楠3631、凱崴5498、明基材8215、
+   尖點8021），反映我們原本完全沒有這個分類，要求新增——實測其中凱崴5498
+   在加這個分類之前，因為detectDoubleBottom的容忍區間沒有排除「明顯墊高」
+   的情況，被誤判成W底（第二腳48.2比第一腳37.6高了28%，明顯不是「大致
+   等高」），加了這個分類後改分類到這裡才正確。 ── */
+function detectNBottom(bars, swings, fullBars = bars, offset = 0, priorTrendLookback = REVERSAL_PRIOR_TREND_LOOKBACK, positionLookback = REVERSAL_POSITION_LOOKBACK) {
+  if (swings.length < 3) return null;
+  const last3 = swings.slice(-3);
+  if (last3.map(s => s.type).join('') !== 'LHL') return null;
+  const [A, E, B] = last3;
+  if (B.price < A.price * (1 + NBOTTOM_MIN_RISE_PCT / 100)) return null; // 第二腳沒有明顯墊高，不算N字底（可能是W底，見detectDoubleBottom）
+
+  const declinePct = priorDeclinePct(bars, A.idx, priorTrendLookback);
+  if (declinePct < REVERSAL_PRIOR_TREND_MIN_PCT) return null;
+  if (!isNearRelativeLow(fullBars, offset + A.idx, positionLookback, REVERSAL_POSITION_TOLERANCE)) return null;
+
+  // 目標價用第一腳（較低的那一腳）當測量基準，比較保守——N字底的兩腳本來
+  // 就不等高，不能像W底一樣簡單取min（兩腳本身就是min）。
+  const target = round2(E.price + (E.price - A.price));
+  const pt = (s, label) => ({ idx: s.idx, price: round2(s.price), date: dateOf(bars, s.idx), label });
+  const risePct = (B.price - A.price) / A.price * 100;
+  return {
+    type: 'n_bottom', label: 'N字底',
+    points: [pt(A, '底1'), pt(E, '頸線高點'), pt(B, '底2(墊高)')],
+    necklines: [{ points: [pt(E, '頸線')] }], // 只有單點：畫成貫穿整個可視範圍的水平線
+    target,
+    basis: `第一腳（${round2(A.price)}，${dateOf(bars, A.idx)}）形成前，近${priorTrendLookback}根K棒已從高點下跌${declinePct.toFixed(1)}%（門檻${REVERSAL_PRIOR_TREND_MIN_PCT}%），且第一腳本身是近${positionLookback}根K棒的相對低點（貼近這段期間最低點的${(REVERSAL_POSITION_TOLERANCE * 100).toFixed(0)}%以內），確實是空頭低檔而非反彈途中；第二腳（${round2(B.price)}，${dateOf(bars, B.idx)}）比第一腳墊高${risePct.toFixed(1)}%（門檻${NBOTTOM_MIN_RISE_PCT}%，第二次探底高於第一次，賣壓遞減）；頸線＝中間反彈高點 ${round2(E.price)}；突破頸線後，目標價＝頸線＋(頸線－第一腳低點) = ${round2(E.price)} ＋ (${round2(E.price)} － ${round2(A.price)}) = ${target}`,
     note: '機械式偵測（依轉折點座標套公式判斷），型態本體是否成立仍需人工覆核K線圖',
   };
 }
@@ -5636,6 +5680,7 @@ function detectPatternsAtScale(bars, lookbackDays) {
     () => detectHeadShoulders(window, swings, bars, offset, priorTrendLookback, positionLookback),
     () => detectHeadShouldersTop(window, swings, bars, offset, priorTrendLookback, positionLookback),
     () => detectDoubleBottom(window, swings, bars, offset, priorTrendLookback, positionLookback),
+    () => detectNBottom(window, swings, bars, offset, priorTrendLookback, positionLookback),
     () => detectDoubleTop(window, swings, bars, offset, priorTrendLookback, positionLookback),
     () => detectBox(window),
     () => detectVReversal(window),
@@ -7078,6 +7123,7 @@ K棒品質(kbar_quality)：body_pct=|close-open|/open*100，≥2%才算實心K�
 
 - 頭肩底/頭肩頂(head_shoulders_bottom/top)：5轉折點(肩-頸-頭-頸-肩)，頭部比兩肩極值多跌/漲≥2%，頸線=兩頸點連線，兩肩不可跌破/突破頭部到頸線中點，目標價=頸線±(頸線-頭部)。
 - W底/M頭(double_bottom/top)：3轉折點(低-高-低)，第二隻腳跟第一隻誤差≤0.5%，頸線=中間高/低點，目標價=頸線±(頸線-低/高點)。
+- N字底(n_bottom)：跟W底同樣3轉折點(低-高-低)，但第二腳要比第一腳墊高≥3%(第二次探底高於第一次，賣壓遞減，跟W底的「兩腳大致等高」互斥)，頸線=中間高點，目標價=頸線+(頸線-第一腳低點)。
 - 箱型(box)：≥20根K棒，壓力/支撐各由≥2次觸碰均值算出，箱高≤支撐25%，目標價=壓力+箱高。
 - V型反轉(v_reversal)：30根內找最低點，左跌右漲各≤12根，跌幅≥8%，反彈須達跌幅50%以上。
 - 圓弧底(rounding_bottom)：40根收盤價二次回歸，開口向上、R²≥0.5、最低點落在區間中段60%。
@@ -10081,14 +10127,21 @@ function switchView(view) {
 }
 
 /* ════════════════════════════════════════
-   美股（大盤觀察指標：DJI/SPX/NASDAQ/SOX）
+   美股/指數（大盤觀察指標：TAIEX/TPEx + DJI/SPX/NASDAQ/SOX）
    資料已隨既有的 monthly 快照/每日增量一起同步，這裡只是換一張表查詢，不需要另外抓資料。
    個股層級的美股追蹤（例如任意輸入 AAPL）目前還沒有爬蟲支援，之後再加。
-   ════════════════════════════════════════ */
+   2026-08-30使用者要求：分類改名「美股/指數」，並且要包含台股指數（加權
+   指數/櫃買指數），原本這裡（跟這個常數的名字）只有美股四個觀察指標，
+   台股大盤指數雖然已經在market_index表裡（大盤連動診斷等功能早就在用），
+   但沒有出現在使用者這個清單分頁裡——這裡直接把常數改名成
+   MARKET_INDEX_LIST（不再只是「美股」）並補上TAIEX/TPEx兩筆。 ════════════════════════════════════════ */
 // yahoo：走勢圖用 Yahoo 股市圖表 API 補資料時要打的代號（見 IntradayFeed.
 // fetchYahooBackfill），跟 DBMgr.getMarketIndexHistory 查表用的 code 是
-// 兩套不同代號、故意分開存，避免混用。
-const US_INDEX_LIST = [
+// 兩套不同代號、故意分開存，避免混用。TAIEX/TPEx的yahoo代號(^TWII/^TWOII)
+// 實測過確實有資料，跟美股四個指數一樣可以支援走勢圖分頁的分線backfill。
+const MARKET_INDEX_LIST = [
+  { code: 'TAIEX',   name: '加權指數',     yahoo: '^TWII' },
+  { code: 'TPEx',    name: '櫃買指數',     yahoo: '^TWOII' },
   { code: 'DJI',     name: '道瓊工業指數', yahoo: '^DJI' },
   { code: 'SPX',     name: '標普500',      yahoo: '^GSPC' },
   { code: 'NASDAQ',  name: '那斯達克',      yahoo: '^IXIC' },
@@ -10096,7 +10149,7 @@ const US_INDEX_LIST = [
 ];
 
 function loadUsMarket() {
-  State.stocks = US_INDEX_LIST.map(({ code, name }) => {
+  State.stocks = MARKET_INDEX_LIST.map(({ code, name }) => {
     const latest = DBMgr.getMarketIndexLatest(code) || {};
     return { stock_code: code, stock_name: name, open: latest.open, high: latest.high, low: latest.low, close: latest.close };
   });
@@ -10506,14 +10559,14 @@ function maybeApplyZhuOverlay() {
 }
 
 /* 走勢圖分頁：個股靠 LiveFeed 即時輪詢 + Yahoo backfill；美股指數（見
-   US_INDEX_LIST）沒有 LiveFeed 這種即時輪詢來源，純靠 Yahoo backfill——
+   MARKET_INDEX_LIST）沒有 LiveFeed 這種即時輪詢來源，純靠 Yahoo backfill——
    兩者都交給 IntradayFeed 同一套機制處理，差別只在丟進去的 yahooSymbol
    跟有沒有後續的即時 tick 而已（見 IntradayFeed.ensureLoadedFor 註解）。 */
 async function renderIntradaySourceChart(opts = {}) {
   const { type, code } = currentChartSource;
   const isIndex = type === 'index';
   const yahooSymbol = isIndex
-    ? (US_INDEX_LIST.find(x => x.code === code)?.yahoo || code)
+    ? (MARKET_INDEX_LIST.find(x => x.code === code)?.yahoo || code)
     : (code + (DBMgr.getStockInfo(code)?.market === 'TPEx' ? '.TWO' : '.TW'));
   await IntradayFeed.ensureLoadedFor(code, yahooSymbol);
   if (currentChartSource?.type !== type || currentChartSource.code !== code) return; // 使用者可能已經切走了
@@ -10539,7 +10592,7 @@ function renderCurrentSourceChart(opts = {}) {
   // 下面 !currentChartSource 的guard之前，其餘分頁不受影響。
   if (chartMode === 'ai') { renderAiTab(); return; }
   if (!currentChartSource) return;
-  // 個股、美股指數（見 US_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
+  // 個股、美股指數（見 MARKET_INDEX_LIST）現在都支援走勢圖了，純粹依 chartMode
   // 決定要畫哪一種，不再依 currentChartSource.type 特別把指數鎖在日線。
   // 「盤後」分頁美股指數不支援，見 renderChipSourceChart 自己的判斷。
   if (chartMode === 'intraday') renderIntradaySourceChart(opts);
@@ -11787,7 +11840,7 @@ const ReportExport = (() => {
   return { docToMarkdown, docToPPTX, docToPDF, exportDoc };
 })();
 
-/* 個股跟美股指數（見 US_INDEX_LIST）都支援走勢圖，但「盤後」分頁（三大法人/
+/* 個股跟美股指數（見 MARKET_INDEX_LIST）都支援走勢圖，但「盤後」分頁（三大法人/
    股權分布/強制集保）是台股特有的揭露資訊，美股指數沒有，切到指數時要
    disable 掉，並且如果目前正在看盤後分頁，要退回技術分析（見
    selectMarketIndex 呼叫端）。持股診斷同理，指數沒有個股型態可診斷。 */
@@ -11835,7 +11888,7 @@ function selectMarketIndex(code) {
     tr.classList.toggle('selected', tr.dataset.code === code)
   );
 
-  const entry = US_INDEX_LIST.find(x => x.code === code);
+  const entry = MARKET_INDEX_LIST.find(x => x.code === code);
   R.chartCode.textContent = code;
   R.chartName.textContent = entry ? entry.name : '';
   showMemoChartBtn(code);
@@ -12673,6 +12726,7 @@ function applyDiagnosisAnnotations(diag) {
    currentColor 讓顏色跟隨 .diag-pattern-svg 的 CSS 顏色（主題自適應）。 ── */
 const PATTERN_SCHEMATIC_SVG = {
   double_bottom: `<svg viewBox="0 0 120 50"><polyline points="5,15 25,40 45,22 65,40 100,10" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="8" y1="24" x2="97" y2="24" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
+  n_bottom: `<svg viewBox="0 0 120 50"><polyline points="5,15 25,42 45,20 62,30 100,8" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="8" y1="22" x2="97" y2="22" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
   double_top: `<svg viewBox="0 0 120 50"><polyline points="5,35 25,10 45,28 65,10 100,40" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="8" y1="26" x2="97" y2="26" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
   head_shoulders_bottom: `<svg viewBox="0 0 120 50"><polyline points="5,20 20,38 35,22 50,45 65,22 80,38 110,18" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="30" y1="23" x2="85" y2="21" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
   head_shoulders_top: `<svg viewBox="0 0 120 50"><polyline points="5,30 20,12 35,28 50,5 65,28 80,12 110,32" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="30" y1="27" x2="85" y2="29" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity=".55"/></svg>`,
