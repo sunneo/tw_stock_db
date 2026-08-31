@@ -1,0 +1,164 @@
+{
+  "generated_at": "2026-08-31T22:11:47.285426+00:00",
+  "months": [
+    {
+      "label": "2024-07",
+      "path": "db/monthly-chip/2024/07.db",
+      "sha256": "23f04d2dc2f1074611b8a3151bcf2564217e3c522df2c73e5e34e6cdd07cddbc",
+      "size_bytes": 327680
+    },
+    {
+      "label": "2024-08",
+      "path": "db/monthly-chip/2024/08.db",
+      "sha256": "00fd23434b945f6bb0cdbdaccd951e798b494af45d92632859af211aa0619a47",
+      "size_bytes": 1662976
+    },
+    {
+      "label": "2024-09",
+      "path": "db/monthly-chip/2024/09.db",
+      "sha256": "1b0aca64f426f409030216e345fdf6d9882b0f7fe38d26bd2fb01a75f27e8ec3",
+      "size_bytes": 1781760
+    },
+    {
+      "label": "2024-10",
+      "path": "db/monthly-chip/2024/10.db",
+      "sha256": "e36db5eb3e9a24cc1e354930e306f6a0ef9b31c1c2261bff238cf8575f5603b0",
+      "size_bytes": 1437696
+    },
+    {
+      "label": "2024-11",
+      "path": "db/monthly-chip/2024/11.db",
+      "sha256": "9157f8c60f6071e175a6e5496ae6fe8e549fd662f5c5cfffae3696b66b7f774b",
+      "size_bytes": 1753088
+    },
+    {
+      "label": "2024-12",
+      "path": "db/monthly-chip/2024/12.db",
+      "sha256": "ce7c35916f0a7735ae923386104f8e727d8a281762d038805a16aa58225f3156",
+      "size_bytes": 1945600
+    },
+    {
+      "label": "2025-01",
+      "path": "db/monthly-chip/2025/01.db",
+      "sha256": "01c2087f4b81ccf0c3a29a3e2e58881532a76dbfd5b1470a392a0c3080f51475",
+      "size_bytes": 1146880
+    },
+    {
+      "label": "2025-02",
+      "path": "db/monthly-chip/2025/02.db",
+      "sha256": "7b8edca5f41d2c0e3f7c86d02d86ef1f58273796af994edf041d08ea7f9d62d4",
+      "size_bytes": 1458176
+    },
+    {
+      "label": "2025-03",
+      "path": "db/monthly-chip/2025/03.db",
+      "sha256": "6514d5d370f3830f65eead58d2c2652cfd1d9d0405553fe6db46f105e5d8b335",
+      "size_bytes": 1613824
+    },
+    {
+      "label": "2025-04",
+      "path": "db/monthly-chip/2025/04.db",
+      "sha256": "d6a3cd585de83ce0fdc68f15cbde3ecbefd12e77c156b45ae528e3da030d5c98",
+      "size_bytes": 1576960
+    },
+    {
+      "label": "2025-05",
+      "path": "db/monthly-chip/2025/05.db",
+      "sha256": "09f6d9fa5a4f0a182f0adba2b8581ec341e903f71360823effffdd0b2d16392f",
+      "size_bytes": 1552384
+    },
+    {
+      "label": "2025-06",
+      "path": "db/monthly-chip/2025/06.db",
+      "sha256": "f2ad73e85f2393c6c9e064bd95df45c218c6a459059b22ddc346d0adce75d9b6",
+      "size_bytes": 1630208
+    },
+    {
+      "label": "2025-07",
+      "path": "db/monthly-chip/2025/07.db",
+      "sha256": "85ece47c8297150a07aef8bf81b8971fa474c5c1526ab4c6db8bfb5e5e69bc3c",
+      "size_bytes": 1851392
+    },
+    {
+      "label": "2025-08",
+      "path": "db/monthly-chip/2025/08.db",
+      "sha256": "5ec1bf7c8b18fc9d29487ff37bb6890f562ca3f35e0813613c57998777cd903f",
+      "size_bytes": 1683456
+    },
+    {
+      "label": "2025-09",
+      "path": "db/monthly-chip/2025/09.db",
+      "sha256": "e6ef8a965c6e334de5448db24b6a4e411a7d0f5f5588b7c655c6a6b50ac40ed5",
+      "size_bytes": 1630208
+    },
+    {
+      "label": "2025-10",
+      "path": "db/monthly-chip/2025/10.db",
+      "sha256": "3c1e8b5644153594ca8d094ee9d96a596856ade561ce521af38d65fce86acf3b",
+      "size_bytes": 1630208
+    },
+    {
+      "label": "2025-11",
+      "path": "db/monthly-chip/2025/11.db",
+      "sha256": "8cc8bf66eba961f9cac5dd860d8d037d13ec11a7114f7e9372b2eccfe13c6abb",
+      "size_bytes": 1634304
+    },
+    {
+      "label": "2025-12",
+      "path": "db/monthly-chip/2025/12.db",
+      "sha256": "d98a58bede56220358c8e2e98cee814875751581d481892fc7a04952e2060407",
+      "size_bytes": 1736704
+    },
+    {
+      "label": "2026-01",
+      "path": "db/monthly-chip/2026/01.db",
+      "sha256": "6b260de4228d21327217d70497e9c8c0c2aef8c1eea8fa33ae7f979150caf03d",
+      "size_bytes": 2101248
+    },
+    {
+      "label": "2026-02",
+      "path": "db/monthly-chip/2026/02.db",
+      "sha256": "310a48eb6fb4f4fcc2c6980cc41ac6579239a4392c8aaedb6ebc272078468c5c",
+      "size_bytes": 1650688
+    },
+    {
+      "label": "2026-03",
+      "path": "db/monthly-chip/2026/03.db",
+      "sha256": "b9d6256cfa4c1686cf2f9947a6539793c067a2fa3dd63ace4adfed2bc6c390fc",
+      "size_bytes": 3018752
+    },
+    {
+      "label": "2026-04",
+      "path": "db/monthly-chip/2026/04.db",
+      "sha256": "4aeace3137f7b7380a8683676318de1bcc2bacc93b640b421202963684de7541",
+      "size_bytes": 2760704
+    },
+    {
+      "label": "2026-05",
+      "path": "db/monthly-chip/2026/05.db",
+      "sha256": "0859e484cdba0eff59b38e30e03abe30c6612f78894d7f34691b769a221300d5",
+      "size_bytes": 2785280
+    },
+    {
+      "label": "2026-06",
+      "path": "db/monthly-chip/2026/06.db",
+      "sha256": "40d0de60a1875e9e8e8287a610c6034c271ad97ecd703774423285278a0aa01a",
+      "size_bytes": 2945024
+    },
+    {
+      "label": "2026-07",
+      "path": "db/monthly-chip/2026/07.db",
+      "sha256": "edd5b3ada216152e9db82dc1883ad3cad96078e74ade4646c8498e12f1e22f94",
+      "size_bytes": 7667712
+    },
+    {
+      "label": "2026-08",
+      "path": "db/monthly-chip/2026/08.db",
+      "sha256": "60bcda043d109675538a2126ac4aced5cd073d0457327949fce427a21cb38745",
+      "size_bytes": 21118976
+    }
+  ],
+  "rebuilt_this_run": [
+    "2026-08"
+  ]
+}
