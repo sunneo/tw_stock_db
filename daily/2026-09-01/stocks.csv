@@ -551,7 +551,7 @@ stock_code,stock_name,market,sector_id,is_active
 3050,鈺德,TWSE,273.0,1
 3051,力特,TWSE,273.0,1
 3052,夆典,TWSE,40.0,1
-3054,立萬利,TWSE,8.0,1
+3054,立萬利,TWSE,287.0,1
 3055,蔚華科,TWSE,287.0,1
 3056,富華新,TWSE,40.0,1
 3057,喬鼎,TWSE,262.0,1
@@ -1393,7 +1393,7 @@ stock_code,stock_name,market,sector_id,is_active
 4527,方土霖,TPEx,102.0,1
 4528,江興鍛,TPEx,102.0,1
 4529,淳紳,TPEx,52.0,1
-4530,宏易,TPEx,449.0,1
+4530,天意能創,TPEx,449.0,1
 4533,協易機,TPEx,102.0,1
 4534,慶騰,TPEx,102.0,1
 4535,至興,TPEx,102.0,1
@@ -1428,7 +1428,7 @@ stock_code,stock_name,market,sector_id,is_active
 4743,合一,TPEx,157.0,1
 4744,皇將,TPEx,157.0,1
 4745,合富-KY,TPEx,157.0,1
-4747,強生,TPEx,157.0,1
+4747,強生*,TPEx,157.0,1
 4749,新應材,TPEx,263.0,1
 4754,國碳科,TPEx,158.0,1
 4760,勤凱,TPEx,267.0,1
@@ -1987,3 +1987,4 @@ stock_code,stock_name,market,sector_id,is_active
 00929,Fuh Hwa Taiwan Technology Dividend Highlight ETF,TWSE,,1
 7689,大鵬科CLMX,TWSE,269.0,1
 2237,華德動能-創,TWSE,41.0,1
+7855,和運租車,TWSE,52.0,1
