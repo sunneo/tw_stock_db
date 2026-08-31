@@ -1,0 +1,169 @@
+{
+  "generated_at": "2026-08-31T22:10:16.123942+00:00",
+  "core": {
+    "path": "db/core.db",
+    "sha256": "ca81e5229d194c1d49eb5515bdbc522696733359e1c7e395584b125c5e6a5b70",
+    "size_bytes": 147456
+  },
+  "months": [
+    {
+      "label": "2024-07",
+      "path": "db/monthly/2024/07.db",
+      "sha256": "ada36c36be7222a2a1c8e2785f7eaf1f34195cefa05f866a02bf910a9c32f8c0",
+      "size_bytes": 1380352
+    },
+    {
+      "label": "2024-08",
+      "path": "db/monthly/2024/08.db",
+      "sha256": "b109c38ab8a6e53ac9cd0049b8375dbc2c817c44549463e7d0e480c9872aa71a",
+      "size_bytes": 10170368
+    },
+    {
+      "label": "2024-09",
+      "path": "db/monthly/2024/09.db",
+      "sha256": "8e3c8a1be974325419bd858c2dfec07c5a44270e9eecd457887335de7b45d17a",
+      "size_bytes": 10559488
+    },
+    {
+      "label": "2024-10",
+      "path": "db/monthly/2024/10.db",
+      "sha256": "7e8343057d396b962ab3f17914be77b6629e94754f0b3fb8bdc706224f899de5",
+      "size_bytes": 10289152
+    },
+    {
+      "label": "2024-11",
+      "path": "db/monthly/2024/11.db",
+      "sha256": "9e759f70bac62c88a71b94c3675d7db401174dc5c80edbfef618688913809573",
+      "size_bytes": 11894784
+    },
+    {
+      "label": "2024-12",
+      "path": "db/monthly/2024/12.db",
+      "sha256": "989e6642184b9f18f847d7ac5ea57b94e0b6df1758a01bec8ab1688a3ed64bd1",
+      "size_bytes": 12488704
+    },
+    {
+      "label": "2025-01",
+      "path": "db/monthly/2025/01.db",
+      "sha256": "9544b96b3fa91d93b5e4fc28e1ef54efacaddaafb2d5fa0a6333104d1277794b",
+      "size_bytes": 8507392
+    },
+    {
+      "label": "2025-02",
+      "path": "db/monthly/2025/02.db",
+      "sha256": "790e17a7e7fb319e352e2edb512f7bb4449dc9e23a3921c202ccdbd2e04d6004",
+      "size_bytes": 10956800
+    },
+    {
+      "label": "2025-03",
+      "path": "db/monthly/2025/03.db",
+      "sha256": "7f0b63a2aba7e8b1916d55b4e1d725f790d86b06c88397ccab3e8cc819ce61d7",
+      "size_bytes": 12066816
+    },
+    {
+      "label": "2025-04",
+      "path": "db/monthly/2025/04.db",
+      "sha256": "1c603cd2774cbfa3ba7079397db6da3d75bb40d63ec65e07786271b4ce7028a4",
+      "size_bytes": 11485184
+    },
+    {
+      "label": "2025-05",
+      "path": "db/monthly/2025/05.db",
+      "sha256": "ba8c4837b9aad46d860719ab885ad4c5ddd95407699eada39eb0f6674fee353e",
+      "size_bytes": 11636736
+    },
+    {
+      "label": "2025-06",
+      "path": "db/monthly/2025/06.db",
+      "sha256": "8cc6460cb5b34caee4ba329d8bd2511ae24d518c94d765d2e24b2267c55c818b",
+      "size_bytes": 12107776
+    },
+    {
+      "label": "2025-07",
+      "path": "db/monthly/2025/07.db",
+      "sha256": "e5df2136dbc50733d591ce13ba8528a4e8b4a29d0c8e6a6ca4c62fb9ea44469e",
+      "size_bytes": 13303808
+    },
+    {
+      "label": "2025-08",
+      "path": "db/monthly/2025/08.db",
+      "sha256": "57e4f0e5546eb69e64e7b16b0c3fc9968942a9924ab02ece1ba01a1e08c870eb",
+      "size_bytes": 11583488
+    },
+    {
+      "label": "2025-09",
+      "path": "db/monthly/2025/09.db",
+      "sha256": "23a97daef35d001c4b0af4f359b326a872809799c978ffd8b98d019359635470",
+      "size_bytes": 12201984
+    },
+    {
+      "label": "2025-10",
+      "path": "db/monthly/2025/10.db",
+      "sha256": "02b337187da049326c1000b0b8e651c76b7454bd98f0ed420073e55da8dd28bf",
+      "size_bytes": 11612160
+    },
+    {
+      "label": "2025-11",
+      "path": "db/monthly/2025/11.db",
+      "sha256": "ad5dddbe3e25165dcdf8ba971331e4bce7a94969a95d3130a928802a364d7f32",
+      "size_bytes": 11587584
+    },
+    {
+      "label": "2025-12",
+      "path": "db/monthly/2025/12.db",
+      "sha256": "72db01da0932726d8207b00f049eb24da1ad406e0908e71e84403863f8791438",
+      "size_bytes": 12812288
+    },
+    {
+      "label": "2026-01",
+      "path": "db/monthly/2026/01.db",
+      "sha256": "02640dcf668489bb9bfbaf9040a3987d2fc68f4062d3fa4d488669221018cdb4",
+      "size_bytes": 12218368
+    },
+    {
+      "label": "2026-02",
+      "path": "db/monthly/2026/02.db",
+      "sha256": "30ebcddc94c14fd1a5773a92f787b7385f5a7403b3a7991d5180bb54c313dc0b",
+      "size_bytes": 6979584
+    },
+    {
+      "label": "2026-03",
+      "path": "db/monthly/2026/03.db",
+      "sha256": "556cd43f9c0be7aa393f7602922f5181aeb025ea95f71c23eb07e4b168307787",
+      "size_bytes": 12763136
+    },
+    {
+      "label": "2026-04",
+      "path": "db/monthly/2026/04.db",
+      "sha256": "a0221f5376420fa7e44140b9ca43f987c879cd03e9ef6053c81db712f8a33b60",
+      "size_bytes": 11632640
+    },
+    {
+      "label": "2026-05",
+      "path": "db/monthly/2026/05.db",
+      "sha256": "7225ddd6d15e09b3f39b5bc5464b885fa404551f05a236c37b28cbcbc898af65",
+      "size_bytes": 11591680
+    },
+    {
+      "label": "2026-06",
+      "path": "db/monthly/2026/06.db",
+      "sha256": "51ec682e1ed856315407480a45ed29fc154c377807ec333e8eb9170813882073",
+      "size_bytes": 12234752
+    },
+    {
+      "label": "2026-07",
+      "path": "db/monthly/2026/07.db",
+      "sha256": "b4fa9e206c14041ec17cc20aab62bd8d1308c30f8e31a99a876078c873b8ddc0",
+      "size_bytes": 13320192
+    },
+    {
+      "label": "2026-08",
+      "path": "db/monthly/2026/08.db",
+      "sha256": "9fa248bcc89532bc28639e99d1470255baeb431b1a85dcdd674b3cc8d101e3f3",
+      "size_bytes": 12267520
+    }
+  ],
+  "rebuilt_this_run": [
+    "2026-08"
+  ]
+}
