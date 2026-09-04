@@ -615,6 +615,26 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // 相當寬裕。
 const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
 
+// tw_stock_db客製: 共用的「安全表達式」白名單函式表——階段3自訂粒子preset
+// 的init/update/output公式、階段5互動viewer的visible_if/enabled_if都用
+// 同一套expression evaluator（見_compileSafeExpression）。這是一個固定、
+// 封閉的JS物件，運算式文字本身永遠沒有任何管道能新增/覆寫/繞過這張表、
+// 也沒有任何語法能存取這張表以外的任何東西（沒有DOM/window、沒有任意
+// 函式呼叫）——不是用eval/new Function實作，是手刻的遞迴下降parser把
+// 每段運算式編譯成一串closure，呼叫時只會呼叫到這裡列出的純函式。
+// random()是唯一有非決定性副作用的例外（給粒子初始化亂數用），其餘全是
+// 無副作用的Math包裝。
+const SAFE_EXPR_FUNCTIONS = {
+    sin: Math.sin, cos: Math.cos, tan: Math.tan, atan2: Math.atan2,
+    sqrt: Math.sqrt, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, round: Math.round,
+    min: Math.min, max: Math.max, pow: Math.pow,
+    mod: (a, b) => a % b,
+    clamp: (v, lo, hi) => Math.min(hi, Math.max(lo, v)),
+    lerp: (a, b, f) => a + (b - a) * f,
+    random: () => Math.random(),
+    pi: () => Math.PI,
+};
+
 // tw_stock_db客製: 階段3——3D場景YAML格式的資源上限，跟計畫文件/redmine
 // 參考文件的§13.5同一組數字（MAX_EXPANDED_NODES=500）；粒子上限一般
 // preset是2000、nbody因為是真正O(n²)互相引力運算，額外壓低到60（見
@@ -634,10 +654,11 @@ const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'f
 // 一致（「主功能工具保持精簡、核心功能註冊分段」），也是redmine參考
 // 文件§13.6同樣的分層說明模式。
 const SCENE3D_TOPIC_DOCS = {
-    texture: '材質貼圖進階欄位（放在node.material底下）：texture_url（外部http(s)圖片網址）或texture_data_url（base64 data URL，這個無後端架構下沒有伺服器附件系統，用這兩個取代redmine參考版本的texture_attachment_id）；texture_uv_offset:[u,v]（平移UV，0~1）、texture_uv_scale:[u,v]（縮放/裁切UV，例如[0.5,0.5]只取左上1/4區域）。注意：WebGL初始化失敗時的CPU軟體光柵化fallback不支援貼圖取樣，會退化成純色近似，這是已知取捨。',
-    particles: '粒子節點格式：{mesh:"particles", position:[x,y,z], particles:{preset, count, color, color2, size, ...依preset而定的額外欄位}}。六種preset：spark（火花噴發，額外欄位gravity，真的套用重力+顏色隨年齡冷卻+超過壽命原地重生）、flame（火焰，額外欄位spread/rise_speed/sway，往上升+亂流擾動+顏色從底部到尖端漸變）、mist（煙霧/冷氣出風口，跟flame同一種機制只是預設較慢較廣、顏色較淡）、bounce（不停彈跳的球，額外欄位amplitude/frequency/spread，用封閉解y=amplitude*|sin(t*freq+phase)|保證天生完美循環永不停止）、firework（夜空煙火，額外欄位cycle，用t%cycle實作重複的發射-爆炸-淡出循環，粒子夠多會自動分成好幾組不同相位偏移同時交錯爆炸）、nbody（真正的O(n²)小規模相互重力模擬，額外欄位g/softening，count上限只有60，比其他preset的2000低很多，因為是真的O(n²)不是預錄動畫）。count超過各自preset的上限會直接被render_3d_scene拒絕，不是靜默裁切。',
+    texture: '材質貼圖（放在node.material底下）：texture:"water"（內建具名程序貼圖，目前有water/grass/sand/wood/brick五種，沒對到已知名稱會退回grass，不是照片、是手繪花紋）+texture_repeat:[rx,ry]（貼圖重複次數，例如[10,6]）；texture也可以直接給http(s)網址或data:開頭的base64圖片當自訂貼圖（此時texture_repeat/texture_uv_offset/texture_uv_scale一樣適用）。舊版欄位texture_url/texture_data_url+texture_uv_scale仍相容，但新場景建議直接用texture欄位＋texture_repeat。注意：WebGL初始化失敗時的CPU軟體光柵化fallback不支援貼圖取樣，會退化成純色近似，這是已知取捨。',
+    particles: '粒子節點：{mesh:"particles", position:[x,y,z], particle_preset:"...", particle_count:200, material:{color,color2}}——preset/count/其他額外參數（例如particle_spread）建議直接攤平寫在node底下（用particle_前綴，例如particle_spread、particle_gravity），跟position/material同一層，不用包一層particles物件（舊版巢狀寫法particles:{preset,count,...}仍相容，兩者可以並存，衝突時以巢狀寫法為準）；color/color2建議放在material底下（跟其他mesh類型的material.color一致），也支援直接放在particles/攤平參數裡。六種內建preset：spark（火花噴發，額外欄位gravity）、flame（火焰，額外欄位spread/rise_speed/sway）、mist（煙霧/冷氣出風口，跟flame同機制只是較慢較廣較淡）、bounce（不停彈跳的球，額外欄位amplitude/frequency/spread）、firework（夜空煙火，額外欄位cycle）、nbody（真正O(n²)相互重力模擬，額外欄位g/softening，count上限只有60，比其他preset的2000低很多）。count超過各自preset的上限會直接被render_3d_scene拒絕。除了六種內建preset，也可以在scene.particle_presets自己註冊全新的preset（用安全表達式公式描述動畫邏輯，不是JS程式碼）——完整格式見get_3d_scene_topic("particle_presets")。',
     polygon: 'polygon節點格式：{mesh:"polygon", vertices:[[x,y,z],...], faces:[[i,j,k],...]}（faces選填，三角形頂點index清單；不給的話用簡單扇形三角化，假設vertices依序繞邊界排列）。用來表達沒有對應固定圖元的自訂形狀（例如傾斜懸挑的屋頂），沒有stairs/chair這類複雜mesh，一律用原語（含polygon）組合出來。',
     defs: 'defs是一組具名、可重複使用的節點群組：{defs:{樹:{nodes:[{mesh:...},{mesh:...}]}}}，頂層nodes陣列裡用{use:"樹", position:[x,y,z], scale:n}實例化一次（套用位移position+等比縮放scale，縮放同時套用到子節點的position/size/radius/height）。刻意不支援巢狀（defs底下的節點自己不能再use另一個defs），展開後全部節點總數不能超過500，超過會被render_3d_scene拒絕。',
+    particle_presets: '在scene頂層新增particle_presets可以自己註冊全新的粒子動畫preset，讓動畫邏輯寫在場景YAML本身（portable），不是只能用六選一的內建preset。格式：{particle_presets:{我的preset名:{count_default:200, init:{變數名:"安全表達式"}, update:{變數名:"安全表達式"}, output:{x:"...",y:"...",z:"...",r:"...",g:"...",b:"...",alive:"...(選填)"}}}}。三個階段：init（粒子誕生/重生時算一次，例如隨機初速度）、update（每幀先跑，可更新自訂狀態變數）、output（每幀算出最終x/y/z（世界座標）與r/g/b（0~1顏色），選填的alive決定是否要重生，通常寫成"age < life"這種條件）。運算式語法：算術(+-*/%)、比較(==!=<<=>>=)、布林(&&||!)、括號、數字/字串/true/false/null字面值、對context變數的讀取（可以讀base_x/base_y/base_z（發射原點）、age（這個粒子存活了多久，秒）、t（場景經過的總時間，秒）、dt（每幀時間差，通常1/60）、以及init/update自己定義過的任何變數名）、以及呼叫白名單數學函式：sin/cos/tan/atan2/sqrt/abs/floor/ceil/round/min/max/pow/mod/clamp/lerp/random/pi——絕對不能寫真正的JS程式碼、不能呼叫這份白名單以外的任何函式、不能存取DOM/window，語法上就不存在這些管道，不是黑名單擋。particles節點用particle_preset:"我的preset名"（或巢狀particles:{preset:"我的preset名"}）指向這個自訂preset，count/size等欄位用法跟內建preset一樣。',
 };
 
 // tw_stock_db客製: 內建的模型清單，給MODEL NAME欄位的<datalist>下拉選單、
@@ -985,7 +1006,27 @@ function _faMarkdownToSlides(markdownText, heading) {
     return slides;
 }
 
-async function _faMarkdownToPptxBlob(markdownText, heading) {
+// tw_stock_db客製: 2026-09-05使用者明確要求——對話中出現3D場景/互動viewer/
+// 通用繪圖時，使用者把回覆匯出成PPTX（或PDF）也要能把這些視覺內容一併
+// 放進去，不能只匯出文字。做法比照redmine參考文件PROMPT.md §13（見那邊
+// 的rasterizeIfSvg說明）的精神——不管畫面/PDF/PPTX，最終都是「把視覺內容
+// 轉成一張PNG圖片再嵌進去」，差別只在於這個無後端架構沒有伺服器附件URL可
+// 抓，改成直接對這個對話輪次裡實際渲染過的DOM節點（3D canvas / SVG）
+// 截圖，見FloatingAssistant.prototype._collectTurnVisualSnapshots/
+// _captureVisualSnapshot。visualSnapshots是選填的{dataUrl,kind}陣列，
+// 沒有提供時行為完全不變（純文字/表格投影片）。
+function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
+    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖' };
+    (visualSnapshots || []).forEach((snap) => {
+        if (!snap || !snap.dataUrl) return;
+        const s = addHeadingSlideBase(KIND_LABEL[snap.kind] || '視覺內容');
+        try {
+            s.addImage({ data: snap.dataUrl, x: 1.5, y: 1.3, w: 10.3, h: 5.7, sizing: { type: 'contain', w: 10.3, h: 5.7 } });
+        } catch (_) { /* 個別截圖嵌入失敗不影響其餘投影片 */ }
+    });
+}
+
+async function _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots) {
     await _faLoadScriptOnce(FA_ASSET_URLS.pptxgenjs);
     const PptxGenJS = window.PptxGenJS;
     const pres = new PptxGenJS();
@@ -1018,10 +1059,12 @@ async function _faMarkdownToPptxBlob(markdownText, heading) {
         }
     });
 
+    _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots);
+
     return pres.write({ outputType: 'blob' });
 }
 
-async function _faMarkdownToPdfBlob(markdownText, heading) {
+async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
     await _faLoadScriptOnce(FA_ASSET_URLS.pdfmake);
     await _faLoadScriptOnce(FA_ASSET_URLS.pdfmakeFonts);
     await _faEnsureCjkFontRegistered();
@@ -1054,6 +1097,18 @@ async function _faMarkdownToPdfBlob(markdownText, heading) {
         } else {
             content.push({ text: _faMdLiteToPlainText(slide.body), style: 'body' });
         }
+        content.push({ text: '', margin: [0, 4, 0, 4] });
+    });
+
+    // tw_stock_db客製: 3D場景/繪圖截圖同樣以圖片content item加進去（見
+    // _faAppendVisualSnapshotSlides在PPTX那邊的說明，這裡是PDF版本）。
+    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖' };
+    (visualSnapshots || []).forEach((snap) => {
+        if (!snap || !snap.dataUrl) return;
+        content.push({ text: VISUAL_KIND_LABEL[snap.kind] || '視覺內容', style: 'h2' });
+        try {
+            content.push({ image: snap.dataUrl, width: 460, alignment: 'center' });
+        } catch (_) { /* 個別截圖嵌入失敗不影響其餘內容 */ }
         content.push({ text: '', margin: [0, 4, 0, 4] });
     });
 
@@ -4239,6 +4294,170 @@ ${sourceTool.handlerScript}
     }
 
     // ============================================================
+    // tw_stock_db客製: 共用的「安全表達式」評估器（見SAFE_EXPR_FUNCTIONS的
+    // 說明）——手刻的遞迴下降parser，直接把運算式編譯成一串closure
+    // （_compileSafeExpression回傳(context)=>value的函式，可以編譯一次、
+    // 用不同context重複呼叫很多次，這對階段3每個粒子每幀都要算一次公式
+    // 的情境很重要，不用每幀重新做字串斷詞/語法分析）。文法涵蓋算術
+    // （+-*/%）、比較（==!=<<=>>=）、布林（&&||!）、括號分組、數字/字串/
+    // true/false/null字面值、對context物件的dot-path讀取（例如base_x、
+    // user.name）、以及只能呼叫SAFE_EXPR_FUNCTIONS白名單裡函式的呼叫語法
+    // （語法上完全沒有辦法呼叫白名單以外的任何東西，不是靠黑名單擋，是
+    // 語法結構性地不存在）——絕對不用eval/new Function實作。
+    // ============================================================
+
+    _tokenizeSafeExpr(text) {
+        const tokens = [];
+        const s = String(text || '');
+        let i = 0;
+        while (i < s.length) {
+            const ch = s[i];
+            if (/\s/.test(ch)) { i++; continue; }
+            if (ch === '"' || ch === "'") {
+                const quote = ch; let j = i + 1; let str = '';
+                while (j < s.length && s[j] !== quote) { str += s[j]; j++; }
+                tokens.push({ type: 'string', value: str }); i = j + 1; continue;
+            }
+            if (/[0-9]/.test(ch)) {
+                let j = i; while (j < s.length && /[0-9.]/.test(s[j])) j++;
+                tokens.push({ type: 'number', value: Number(s.slice(i, j)) }); i = j; continue;
+            }
+            if (/[A-Za-z_一-鿿]/.test(ch)) {
+                let j = i; while (j < s.length && /[A-Za-z0-9_一-鿿]/.test(s[j])) j++;
+                tokens.push({ type: 'ident', value: s.slice(i, j) }); i = j; continue;
+            }
+            const two = s.slice(i, i + 2);
+            if (['==', '!=', '<=', '>=', '&&', '||'].includes(two)) { tokens.push({ type: 'op', value: two }); i += 2; continue; }
+            if ('+-*/%<>().!,'.includes(ch)) { tokens.push({ type: 'op', value: ch }); i++; continue; }
+            throw new Error(`無法識別的字元: "${ch}"`);
+        }
+        return tokens;
+    }
+
+    // 編譯一次、回傳(context)=>value的函式，不重複斷詞/語法分析。
+    _compileSafeExpression(exprText) {
+        const tokens = this._tokenizeSafeExpr(exprText);
+        let pos = 0;
+        const peek = () => tokens[pos];
+        const next = () => tokens[pos++];
+        const expect = (val) => {
+            if (!peek() || peek().value !== val) throw new Error(`預期 "${val}"，但看到 "${peek() ? peek().value : 'EOF'}"`);
+            return next();
+        };
+
+        const parseOr = () => {
+            let leftFn = parseAnd();
+            while (peek() && peek().value === '||') {
+                next(); const rightFn = parseAnd(); const prevFn = leftFn;
+                leftFn = (ctx) => prevFn(ctx) || rightFn(ctx);
+            }
+            return leftFn;
+        };
+        const parseAnd = () => {
+            let leftFn = parseNot();
+            while (peek() && peek().value === '&&') {
+                next(); const rightFn = parseNot(); const prevFn = leftFn;
+                leftFn = (ctx) => prevFn(ctx) && rightFn(ctx);
+            }
+            return leftFn;
+        };
+        const parseNot = () => {
+            if (peek() && peek().value === '!') { next(); const fn = parseNot(); return (ctx) => !fn(ctx); }
+            return parseCmp();
+        };
+        const parseCmp = () => {
+            const leftFn = parseAdd();
+            if (peek() && ['==', '!=', '<=', '>=', '<', '>'].includes(peek().value)) {
+                const op = next().value;
+                const rightFn = parseAdd();
+                switch (op) {
+                    case '==': return (ctx) => leftFn(ctx) == rightFn(ctx);
+                    case '!=': return (ctx) => leftFn(ctx) != rightFn(ctx);
+                    case '<=': return (ctx) => leftFn(ctx) <= rightFn(ctx);
+                    case '>=': return (ctx) => leftFn(ctx) >= rightFn(ctx);
+                    case '<': return (ctx) => leftFn(ctx) < rightFn(ctx);
+                    case '>': return (ctx) => leftFn(ctx) > rightFn(ctx);
+                }
+            }
+            return leftFn;
+        };
+        const parseAdd = () => {
+            let leftFn = parseMul();
+            while (peek() && (peek().value === '+' || peek().value === '-')) {
+                const op = next().value; const rightFn = parseMul(); const prevFn = leftFn;
+                leftFn = op === '+' ? (ctx) => prevFn(ctx) + rightFn(ctx) : (ctx) => prevFn(ctx) - rightFn(ctx);
+            }
+            return leftFn;
+        };
+        const parseMul = () => {
+            let leftFn = parseUnary();
+            while (peek() && (peek().value === '*' || peek().value === '/' || peek().value === '%')) {
+                const op = next().value; const rightFn = parseUnary(); const prevFn = leftFn;
+                leftFn = op === '*' ? (ctx) => prevFn(ctx) * rightFn(ctx)
+                    : op === '/' ? (ctx) => prevFn(ctx) / rightFn(ctx)
+                        : (ctx) => prevFn(ctx) % rightFn(ctx);
+            }
+            return leftFn;
+        };
+        const parseUnary = () => {
+            if (peek() && peek().value === '-') { next(); const fn = parseUnary(); return (ctx) => -fn(ctx); }
+            return parsePrimary();
+        };
+        const parsePrimary = () => {
+            const tok = next();
+            if (!tok) throw new Error('表達式意外結束');
+            if (tok.type === 'number') { const v = tok.value; return () => v; }
+            if (tok.type === 'string') { const v = tok.value; return () => v; }
+            if (tok.type === 'ident') {
+                if (tok.value === 'true') return () => true;
+                if (tok.value === 'false') return () => false;
+                if (tok.value === 'null') return () => null;
+                if (peek() && peek().value === '(') {
+                    const fn = SAFE_EXPR_FUNCTIONS[tok.value];
+                    if (!fn) throw new Error(`未知的函式: "${tok.value}"（只允許白名單裡的數學函式：${Object.keys(SAFE_EXPR_FUNCTIONS).join('/')}）`);
+                    next(); // consume '('
+                    const argFns = [];
+                    if (!(peek() && peek().value === ')')) {
+                        argFns.push(parseOr());
+                        while (peek() && peek().value === ',') { next(); argFns.push(parseOr()); }
+                    }
+                    expect(')');
+                    return (ctx) => fn(...argFns.map(f => f(ctx)));
+                }
+                const path = [tok.value];
+                while (peek() && peek().value === '.') {
+                    next();
+                    const propTok = next();
+                    if (!propTok || propTok.type !== 'ident') throw new Error('屬性名稱格式錯誤');
+                    path.push(propTok.value);
+                }
+                return (ctx) => {
+                    let val = ctx;
+                    for (const key of path) val = (val && typeof val === 'object') ? val[key] : undefined;
+                    return val;
+                };
+            }
+            if (tok.value === '(') {
+                const innerFn = parseOr();
+                expect(')');
+                return innerFn;
+            }
+            throw new Error(`無法解析的token: "${tok.value}"`);
+        };
+
+        const rootFn = parseOr();
+        if (pos < tokens.length) throw new Error(`表達式結尾有多餘內容: "${tokens[pos].value}"`);
+        return rootFn;
+    }
+
+    // 一次性求值的便利包裝（給不需要重複呼叫的情境用，例如驗證階段確認
+    // 語法正確、或互動viewer的visible_if/enabled_if——每次重新編譯，換取
+    // 呼叫端不用自己管理編譯快取的簡單性）。
+    _evalSafeExpression(exprText, context) {
+        return this._compileSafeExpression(exprText)(context || {});
+    }
+
+    // ============================================================
     // tw_stock_db客製: 階段3——3D場景viewer（見計畫文件階段3、redmine參考
     // 文件§13）。純宣告式YAML描述場景（不嵌入真正會執行的JS，理由跟
     // browser_action的封閉動作清單一致——AI生成內容是prompt injection攻擊
@@ -4253,6 +4472,32 @@ ${sourceTool.handlerScript}
         if (!SCENE3D_MESH_TYPES.has(n.mesh)) return `${where} 內有未知的mesh類型: "${n.mesh}"（合法值：${[...SCENE3D_MESH_TYPES].join('/')}）`;
         if (n.animation && !SCENE3D_ANIMATION_TYPES.has(n.animation)) return `${where} 內有未知的animation類型: "${n.animation}"（合法值：spin/bounce/orbit）`;
         return null;
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者貼了一份redmine那邊AI實際產生過的
+    // 真實場景YAML（生日蛋糕+海洋+山脈+煙火），粒子節點寫的是攤平的
+    // particle_preset/particle_count/particle_spread等欄位直接放在node
+    // 底下（不是巢狀的particles:{preset,count,...}），color/color2放在
+    // material底下——這是已經實際跑過的慣例，這裡在驗證/建構之前先正規化
+    // 成內部統一使用的node.particles.xxx形式，讓後面所有既有邏輯
+    // （_validate3DSceneYaml的preset/count檢查、六個preset builder、
+    // _buildFormulaParticles）都不用另外改，只要餵normalize過的node即可。
+    // 兩種寫法（巢狀particles物件 vs 攤平particle_*欄位）都繼續支援，都給
+    // 就以巢狀寫法為準。
+    _normalize3DParticleNode(node) {
+        if (!node || node.mesh !== 'particles') return node;
+        const particles = Object.assign({}, node.particles || {});
+        Object.keys(node).forEach((key) => {
+            if (key.startsWith('particle_') && key.length > 'particle_'.length) {
+                const shortKey = key.slice('particle_'.length);
+                if (particles[shortKey] === undefined) particles[shortKey] = node[key];
+            }
+        });
+        if (node.material && typeof node.material === 'object') {
+            if (particles.color === undefined && node.material.color !== undefined) particles.color = node.material.color;
+            if (particles.color2 === undefined && node.material.color2 !== undefined) particles.color2 = node.material.color2;
+        }
+        return Object.assign({}, node, { particles });
     }
 
     // defs不可巢狀use（見計畫文件——這個限制讓「檢查循環參照」整個問題不
@@ -4311,11 +4556,22 @@ ${sourceTool.handlerScript}
             return { ok: false, error: `YAML語法錯誤: ${err.message}` };
         }
         if (!scene || typeof scene !== 'object') return { ok: false, error: '場景內容必須是一個物件（至少要有nodes陣列）' };
-        const nodes = Array.isArray(scene.nodes) ? scene.nodes : [];
+        const nodes = (Array.isArray(scene.nodes) ? scene.nodes : []).map(n => this._normalize3DParticleNode(n));
         if (!nodes.length) return { ok: false, error: '缺少nodes陣列，或nodes是空的' };
         const defs = (scene.defs && typeof scene.defs === 'object') ? scene.defs : {};
+        Object.values(defs).forEach((def) => {
+            if (def && Array.isArray(def.nodes)) def.nodes = def.nodes.map(n => this._normalize3DParticleNode(n));
+        });
         const defsErr = this._validate3DDefs(defs);
         if (defsErr) return { ok: false, error: defsErr };
+        // tw_stock_db客製: 2026-09-05使用者明確要求——粒子動畫要能「portable
+        // 在model裡，不是寫死在JS引擎內」，新增scene.particle_presets讓YAML
+        // 自己註冊自訂preset（init/update/output都是安全表達式公式，見
+        // _compileSafeExpression/_buildFormulaParticles），particles.preset
+        // 可以是內建六選一，也可以是這裡註冊的自訂名稱。
+        const particlePresets = (scene.particle_presets && typeof scene.particle_presets === 'object') ? scene.particle_presets : {};
+        const presetsErr = this._validate3DParticlePresets(particlePresets);
+        if (presetsErr) return { ok: false, error: presetsErr };
         for (const n of nodes) {
             if (n && n.use) {
                 if (!defs[n.use]) return { ok: false, error: `use引用了不存在的defs: "${n.use}"` };
@@ -4331,15 +4587,43 @@ ${sourceTool.handlerScript}
         for (const n of expanded) {
             if (n.mesh === 'particles') {
                 const preset = n.particles && n.particles.preset;
-                if (!SCENE3D_PARTICLE_PRESETS.has(preset)) {
-                    return { ok: false, error: `particles節點缺少合法的preset（spark/flame/mist/bounce/firework/nbody），收到: ${preset}` };
+                const isBuiltin = SCENE3D_PARTICLE_PRESETS.has(preset);
+                const isCustom = Object.prototype.hasOwnProperty.call(particlePresets, preset);
+                if (!isBuiltin && !isCustom) {
+                    return { ok: false, error: `particles節點缺少合法的preset——內建preset：spark/flame/mist/bounce/firework/nbody，或scene.particle_presets裡註冊過的自訂名稱，收到: ${preset}` };
                 }
                 const cap = preset === 'nbody' ? SCENE3D_MAX_NBODY_PARTICLE_COUNT : SCENE3D_MAX_PARTICLE_COUNT;
                 const count = Number(n.particles.count) || 0;
                 if (count > cap) return { ok: false, error: `particles節點的count(${count})超過${preset}的上限${cap}` };
             }
         }
-        return { ok: true, scene, expandedNodes: expanded };
+        return { ok: true, scene, expandedNodes: expanded, particlePresets };
+    }
+
+    // 自訂粒子preset的形狀驗證：init/update/output都必須是{變數名:安全表達式字串}
+    // 的字典，每個表達式先實際編譯一次確認語法正確（編譯失敗直接回報是哪個
+    // preset的哪個欄位錯，不是籠統的錯誤）。
+    _validate3DParticlePresets(particlePresets) {
+        for (const [name, def] of Object.entries(particlePresets)) {
+            if (!def || typeof def !== 'object') return `particle_presets.${name} 必須是一個物件`;
+            for (const stage of ['init', 'update', 'output']) {
+                const dict = def[stage];
+                if (dict == null) continue;
+                if (typeof dict !== 'object' || Array.isArray(dict)) return `particle_presets.${name}.${stage} 必須是一個{變數名:表達式}物件`;
+                for (const [key, expr] of Object.entries(dict)) {
+                    if (typeof expr !== 'string') return `particle_presets.${name}.${stage}.${key} 必須是字串表達式`;
+                    try {
+                        this._compileSafeExpression(expr);
+                    } catch (err) {
+                        return `particle_presets.${name}.${stage}.${key} 表達式錯誤: ${err.message}`;
+                    }
+                }
+            }
+            if (!def.output || (!def.output.x && !def.output.y && !def.output.z)) {
+                return `particle_presets.${name}.output 至少要定義x/y/z其中一個座標公式`;
+            }
+        }
+        return null;
     }
 
     _build3DGeometryForNode(node) {
@@ -4385,6 +4669,14 @@ ${sourceTool.handlerScript}
     // texture_attachment_id（redmine版本指向伺服器端Workspace附件）在這個
     // 無後端架構下沒有對應物——改用texture_url（外部http(s)網址）或
     // texture_data_url（base64 data URL），這是計畫文件記錄過的刻意調整。
+    // tw_stock_db客製: 2026-09-05使用者貼了一份redmine那邊AI實際產生過的
+    // 真實場景YAML範例（生日蛋糕+海洋+山脈+煙火），material.texture用的是
+    // 「water」「grass」這種具名貼圖（不是網址）+texture_repeat（不是
+    // texture_uv_scale）——這是已經跑過的實際慣例，不是我方原設計的
+    // texture_url/texture_data_url。兩者都支援：texture是http(s)/data:
+    // 開頭時當URL用TextureLoader載入，其餘字串當內建具名貼圖查
+    // _getBuiltin3DTexture（沒有伺服器附件系統，這幾個是手刻的canvas
+    // 程序貼圖，不是真的照片，但比純色更接近使用者對water/grass的直覺）。
     _build3DMaterial(node) {
         const m = node.material || {};
         const params = {
@@ -4398,21 +4690,85 @@ ${sourceTool.handlerScript}
             params.emissiveIntensity = Number.isFinite(m.emissive_intensity) ? m.emissive_intensity : 1;
         }
         const material = new THREE.MeshStandardMaterial(params);
-        const texUrl = m.texture_url || m.texture_data_url;
-        if (texUrl) {
-            try {
-                const tex = new THREE.TextureLoader().load(texUrl);
-                if (Array.isArray(m.texture_uv_offset)) tex.offset.set(m.texture_uv_offset[0] || 0, m.texture_uv_offset[1] || 0);
-                if (Array.isArray(m.texture_uv_scale)) tex.repeat.set(m.texture_uv_scale[0] || 1, m.texture_uv_scale[1] || 1);
+        try {
+            let tex = null;
+            if (m.texture_url || m.texture_data_url) {
+                tex = new THREE.TextureLoader().load(m.texture_url || m.texture_data_url);
+            } else if (typeof m.texture === 'string' && m.texture) {
+                tex = /^(https?:|data:)/i.test(m.texture)
+                    ? new THREE.TextureLoader().load(m.texture)
+                    : this._getBuiltin3DTexture(m.texture);
+            }
+            if (tex) {
+                const uvOffset = m.texture_uv_offset;
+                const uvScale = m.texture_uv_scale || m.texture_repeat;
+                if (Array.isArray(uvOffset)) tex.offset.set(uvOffset[0] || 0, uvOffset[1] || 0);
+                if (Array.isArray(uvScale)) tex.repeat.set(uvScale[0] || 1, uvScale[1] || 1);
                 material.map = tex;
                 material.needsUpdate = true;
-            } catch (_) { /* 貼圖載入失敗不影響其餘場景渲染，退回純色 */ }
-        }
+            }
+        } catch (_) { /* 貼圖載入失敗不影響其餘場景渲染，退回純色 */ }
         return material;
     }
 
-    _build3DMeshObject(node) {
-        if (node.mesh === 'particles') return this._build3DParticleSystem(node);
+    // 內建具名程序貼圖（canvas手繪出來的簡易花紋，不是照片）——目前涵蓋
+    // water/grass/sand/wood/brick五種常見地面/背景材質，沒對到已知名稱時
+    // 退回grass當保底，不會渲染失敗。同一個名稱在同一個場景內只會建一次、
+    // 快取重複使用。
+    _getBuiltin3DTexture(name) {
+        this._builtin3DTextureCache = this._builtin3DTextureCache || {};
+        if (this._builtin3DTextureCache[name]) return this._builtin3DTextureCache[name];
+        const canvas = document.createElement('canvas');
+        canvas.width = 64; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        const presets = {
+            water: () => {
+                ctx.fillStyle = '#1c5d8c'; ctx.fillRect(0, 0, 64, 64);
+                ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+                for (let y = 6; y < 64; y += 10) {
+                    ctx.beginPath(); ctx.moveTo(0, y);
+                    for (let x = 0; x <= 64; x += 8) ctx.lineTo(x, y + Math.sin(x * 0.5) * 2);
+                    ctx.stroke();
+                }
+            },
+            grass: () => {
+                ctx.fillStyle = '#3a7d34'; ctx.fillRect(0, 0, 64, 64);
+                for (let i = 0; i < 200; i++) {
+                    ctx.fillStyle = Math.random() > 0.5 ? '#4c9a3f' : '#2f6b2a';
+                    ctx.fillRect(Math.random() * 64, Math.random() * 64, 1.5, 1.5);
+                }
+            },
+            sand: () => {
+                ctx.fillStyle = '#e6d19a'; ctx.fillRect(0, 0, 64, 64);
+                for (let i = 0; i < 150; i++) {
+                    ctx.fillStyle = 'rgba(0,0,0,0.05)';
+                    ctx.fillRect(Math.random() * 64, Math.random() * 64, 1, 1);
+                }
+            },
+            wood: () => {
+                ctx.fillStyle = '#8a5a34'; ctx.fillRect(0, 0, 64, 64);
+                ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+                for (let y = 4; y < 64; y += 8) {
+                    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(64, y + Math.sin(y) * 2); ctx.stroke();
+                }
+            },
+            brick: () => {
+                ctx.fillStyle = '#a33'; ctx.fillRect(0, 0, 64, 64);
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+                for (let y = 0; y < 64; y += 16) {
+                    for (let x = (y / 16 % 2) * 8; x < 64; x += 16) ctx.strokeRect(x, y, 16, 16);
+                }
+            },
+        };
+        (presets[name] || presets.grass)();
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        this._builtin3DTextureCache[name] = tex;
+        return tex;
+    }
+
+    _build3DMeshObject(node, particlePresets) {
+        if (node.mesh === 'particles') return this._build3DParticleSystem(node, particlePresets || {});
         const geometry = this._build3DGeometryForNode(node);
         if (!geometry) return null;
         const mesh = new THREE.Mesh(geometry, this._build3DMaterial(node));
@@ -4459,7 +4815,7 @@ ${sourceTool.handlerScript}
 
     // ---- 粒子系統：六種preset，見計畫/redmine參考文件§13.3的逐一說明 ----
 
-    _build3DParticleSystem(node) {
+    _build3DParticleSystem(node, particlePresets) {
         const preset = node.particles && node.particles.preset;
         if (preset === 'spark') return this._buildSparkParticles(node);
         if (preset === 'flame') return this._buildFlameLikeParticles(node, { spread: 0.4, speed: 1.2, sway: 0.4, defaultColor1: '#ffcc66', defaultColor2: '#552200' });
@@ -4467,6 +4823,10 @@ ${sourceTool.handlerScript}
         if (preset === 'bounce') return this._buildBounceParticles(node);
         if (preset === 'firework') return this._buildFireworkParticles(node);
         if (preset === 'nbody') return this._buildNBodyParticles(node);
+        // tw_stock_db客製: 自訂preset（scene.particle_presets註冊的，見
+        // _validate3DParticlePresets/_buildFormulaParticles）——動畫邏輯
+        // portable在model本身的YAML裡，不是寫死在這個JS引擎裡的六選一。
+        if (particlePresets && particlePresets[preset]) return this._buildFormulaParticles(node, particlePresets[preset]);
         return null;
     }
 
@@ -4670,6 +5030,68 @@ ${sourceTool.handlerScript}
             for (let i = 0; i < count; i++) {
                 vel[i * 3] += ax[i] * dt; vel[i * 3 + 1] += ay[i] * dt; vel[i * 3 + 2] += az[i] * dt;
                 positions[i * 3] += vel[i * 3] * dt; positions[i * 3 + 1] += vel[i * 3 + 1] * dt; positions[i * 3 + 2] += vel[i * 3 + 2] * dt;
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者明確要求——粒子動畫要能「portable在
+    // model裡，不是寫死在JS引擎內」，這是自訂preset（scene.particle_presets
+    // 註冊，見_validate3DParticlePresets）的實際執行引擎。三個階段：
+    // init（粒子誕生/重生時算一次，結果存進該粒子的自訂狀態）、update
+    // （每幀先跑，可以更新自訂狀態裡的變數，例如累加位移）、output（每幀
+    // 算出最終的x/y/z/r/g/b，選填alive決定要不要重生）。每個公式只在
+    // 「建立這個粒子系統時」編譯一次（_compileSafeExpression），每幀/每
+    // 粒子只是呼叫已編譯好的closure，不會每幀重新斷詞/語法分析。
+    _buildFormulaParticles(node, presetDef) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || presetDef.count_default || 200, SCENE3D_MAX_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.1);
+
+        const compileStage = (dict) => {
+            const compiled = {};
+            for (const [key, expr] of Object.entries(dict || {})) compiled[key] = this._compileSafeExpression(expr);
+            return compiled;
+        };
+        const initFns = compileStage(presetDef.init);
+        const updateFns = compileStage(presetDef.update);
+        const outputFns = compileStage(presetDef.output);
+
+        // particles節點底下除了preset/count/size之外的其餘欄位，原樣併入
+        // context給init/update/output公式參照（例如自訂的gravity/spread等
+        // 參數），跟內建preset讀node.particles.xxx是同一個精神。
+        const customParams = {};
+        Object.keys(p).forEach((k) => { if (!['preset', 'count', 'size'].includes(k)) customParams[k] = p[k]; });
+        const baseCtx = { base_x: basePos[0], base_y: basePos[1], base_z: basePos[2], ...customParams };
+
+        const age = new Float32Array(count);
+        const state = new Array(count);
+        const resetParticle = (i) => {
+            age[i] = 0;
+            const s = {};
+            for (const [key, fn] of Object.entries(initFns)) s[key] = fn({ ...baseCtx, ...s });
+            state[i] = s;
+        };
+        for (let i = 0; i < count; i++) resetParticle(i);
+
+        const update = (t, dt) => {
+            for (let i = 0; i < count; i++) {
+                age[i] += dt;
+                const updCtx = { ...baseCtx, ...state[i], age: age[i], t, dt };
+                for (const [key, fn] of Object.entries(updateFns)) state[i][key] = fn(updCtx);
+                const outCtx = { ...baseCtx, ...state[i], age: age[i], t, dt };
+                if (outputFns.alive && !outputFns.alive(outCtx)) { resetParticle(i); continue; }
+                const ox = outputFns.x ? outputFns.x(outCtx) : basePos[0];
+                const oy = outputFns.y ? outputFns.y(outCtx) : basePos[1];
+                const oz = outputFns.z ? outputFns.z(outCtx) : basePos[2];
+                const or_ = outputFns.r != null ? outputFns.r(outCtx) : 1;
+                const og = outputFns.g != null ? outputFns.g(outCtx) : 1;
+                const ob = outputFns.b != null ? outputFns.b(outCtx) : 1;
+                positions[i * 3] = ox; positions[i * 3 + 1] = oy; positions[i * 3 + 2] = oz;
+                colors[i * 3] = Math.max(0, Math.min(1, Number(or_) || 0));
+                colors[i * 3 + 1] = Math.max(0, Math.min(1, Number(og) || 0));
+                colors[i * 3 + 2] = Math.max(0, Math.min(1, Number(ob) || 0));
             }
         };
         return { object: points, update, isParticleSystem: true };
@@ -5795,7 +6217,87 @@ ${existingNodeSummaries}
     // 報告版型/投影片類型（例如tw_stock_db的ReportExport支援股票診斷卡片
     // 等專屬版面），提供這個callback就會優先使用；沒提供時一律用內建版本，
     // 不會像之前那樣停用按鈕。
-    _appendMarkdownExportButton(container, markdownText, palette) {
+    // tw_stock_db客製: 2026-09-05使用者明確要求——匯出PPTX/PDF時，這個對話
+    // 輪次裡出現過的3D場景/繪圖/圖表也要一併嵌進去，不能只匯出文字。SVG
+    // 繪圖用Image+離屏canvas轉成PNG（比照redmine參考文件rasterizeIfSvg的
+    // 精神）。
+    async _rasterizeSvgToDataUrl(svgText, targetWidth) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                const w = targetWidth || img.naturalWidth || 800;
+                const scale = w / (img.naturalWidth || w);
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = Math.max(1, Math.round((img.naturalHeight || w * 0.6) * scale));
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                resolve(canvas.toDataURL('image/png'));
+            };
+            img.onerror = () => reject(new Error('SVG轉PNG失敗'));
+            img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+        });
+    }
+
+    // 依訊息的顯示型態（圖片/3D場景/繪圖）截出一張PNG data URL。3D場景優先
+    // 用目前存活的_scene3DHandle（畫面上正在跑的那個canvas實例，見
+    // _renderSingleMessage掛載scene3d的地方）直接截圖，沒有存活的handle
+    // （例如重新整理過頁面後才匯出）才off-screen重新掛載一次、截完立刻
+    // stop()釋放，不留在畫面上。
+    async _captureVisualSnapshot(msg) {
+        if (msg._displayDataUrl) return { dataUrl: msg._displayDataUrl, kind: 'image' };
+        if (msg._displayScene3DYaml) {
+            if (msg._scene3DHandle && typeof msg._scene3DHandle.snapshotDataUri === 'function') {
+                try { return { dataUrl: msg._scene3DHandle.snapshotDataUri(), kind: 'scene3d' }; } catch (_) { /* 落到下面重新掛載 */ }
+            }
+            const offDiv = document.createElement('div');
+            offDiv.style.cssText = 'position:fixed; left:-9999px; top:-9999px; width:480px;';
+            document.body.appendChild(offDiv);
+            try {
+                const handle = await this._mount3DScene(offDiv, msg._displayScene3DYaml);
+                if (!handle) return null;
+                await new Promise(r => setTimeout(r, 50));
+                const dataUrl = handle.snapshotDataUri();
+                handle.stop();
+                return { dataUrl, kind: 'scene3d' };
+            } catch (_) {
+                return null;
+            } finally {
+                document.body.removeChild(offDiv);
+            }
+        }
+        if (msg._displayDrawingSvg) {
+            try {
+                return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayDrawingSvg, 800), kind: 'drawing' };
+            } catch (_) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    // 掃這則assistant回覆「同一輪對話」（往前找到上一則user訊息為止）裡
+    // 出現過的所有視覺型tool結果，依原始順序回傳截圖陣列，給匯出PPTX/PDF
+    // 用。找不到訊息本身（例如是archivedDisplayBlocks裡的舊訊息）就回傳
+    // 空陣列，不強求archived訊息也要能匯出視覺內容。
+    async _collectTurnVisualSnapshots(msg) {
+        const idx = this.messages.indexOf(msg);
+        if (idx === -1) return [];
+        const collected = [];
+        for (let i = idx - 1; i >= 0; i--) {
+            const m = this.messages[i];
+            if (m.role === 'user') break;
+            if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg) {
+                const snap = await this._captureVisualSnapshot(m);
+                if (snap) collected.unshift(snap);
+            }
+        }
+        return collected;
+    }
+
+    _appendMarkdownExportButton(container, markdownText, palette, msg) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:absolute; bottom:4px; right:6px;';
         const btn = document.createElement('button');
@@ -5841,10 +6343,12 @@ ${existingNodeSummaries}
                     } else if (typeof this.options.onExportMarkdown === 'function') {
                         await this.options.onExportMarkdown(markdownText, fmt);
                     } else if (fmt === 'pptx') {
-                        const blob = await _faMarkdownToPptxBlob(markdownText, heading);
+                        const visualSnapshots = msg ? await this._collectTurnVisualSnapshots(msg) : [];
+                        const blob = await _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots);
                         await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.pptx`, blob.type);
                     } else if (fmt === 'pdf') {
-                        const blob = await _faMarkdownToPdfBlob(markdownText, heading);
+                        const visualSnapshots = msg ? await this._collectTurnVisualSnapshots(msg) : [];
+                        const blob = await _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots);
                         await this.generateAndDeliverFile(blob, `ai回覆_${Date.now()}.pdf`, blob.type);
                     }
                 } catch (err) {
@@ -8232,6 +8736,15 @@ ${existingNodeSummaries}
                 container.appendChild(sceneWrap);
                 sceneWrap.appendChild(mountDiv);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
+                    if (handle) {
+                        // tw_stock_db客製: 存活的handle（含snapshotDataUri）
+                        // 快取在訊息物件上，給匯出PPTX/PDF時直接用目前畫面上
+                        // 正在跑的這個canvas截圖，不用另外off-screen重新掛載
+                        // 一次（見_captureVisualSnapshot）。非可枚舉，避免
+                        // JSON.stringify(this.messages)存檔時碰到THREE.js
+                        // 物件的循環參照。
+                        Object.defineProperty(msg, '_scene3DHandle', { value: handle, enumerable: false, configurable: true });
+                    }
                     if (handle && !handle.webglOk) {
                         const badge = document.createElement('div');
                         badge.style.cssText = 'font-size:10px; color:#dd6b20; margin-top:4px;';
@@ -8374,7 +8887,7 @@ ${existingNodeSummaries}
                         catch (e) { console.warn('onTableRendered callback失敗:', e); }
                     });
                 }
-                this._appendMarkdownExportButton(div, answerText, palette);
+                this._appendMarkdownExportButton(div, answerText, palette, msg);
             } else {
                 div.appendChild(document.createTextNode(answerText));
                 if (!this._markdownRerenderScheduled) {
