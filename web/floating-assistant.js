@@ -2181,7 +2181,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box/plane用）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板用要手動處理；沒有stairs/chair這類複雜mesh，用原語組合。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box/plane用）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板用要手動處理；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4829,7 +4829,10 @@ ${sourceTool.handlerScript}
             case 'cylinder': return new THREE.CylinderGeometry(radius, radius, height, 24);
             case 'cone': return new THREE.ConeGeometry(radius, height, 24);
             case 'plane': return new THREE.PlaneGeometry(size[0] || 1, size[1] || 1);
-            case 'torus': return new THREE.TorusGeometry(radius, radius * 0.35, 12, 24);
+            // tw_stock_db客製: 2026-09-05——使用者貼的redmine真實場景YAML用了
+            // tube_radius欄位（甜甜圈的管徑），原本這裡只會自動用radius*0.35
+            // 估算，沒有讀取這個欄位，收到tube_radius時優先採用。
+            case 'torus': return new THREE.TorusGeometry(radius, Number.isFinite(node.tube_radius) ? node.tube_radius : radius * 0.35, 12, 24);
             case 'polygon': return this._build3DPolygonGeometry(node);
             default: return null;
         }
@@ -4964,7 +4967,23 @@ ${sourceTool.handlerScript}
         if (node.mesh === 'particles') return this._build3DParticleSystem(node, particlePresets || {});
         const geometry = this._build3DGeometryForNode(node);
         if (!geometry) return null;
-        const mesh = new THREE.Mesh(geometry, this._build3DMaterial(node));
+        const material = this._build3DMaterial(node);
+        // tw_stock_db客製: 2026-09-05使用者實測回報——AI手刻的polygon
+        // （例如正四面體，用vertices/faces描述）常常沒辦法保證每個面的
+        // winding方向對外一致，一旦某一面winding反過來，法向量會指向內部，
+        // WebGL預設的單面背面剔除就會讓那一面直接消失（使用者截圖看到的
+        // 「一面三角形不見了」）。要求LLM每次都產出全域一致的外向winding
+        // 不切實際，這裡直接把polygon改成雙面渲染（材質+軟體光柵化fallback
+        // 都要改，兩邊是各自獨立的剔除實作）——winding錯誤最多只影響那一面
+        // 的明暗方向，不會再讓整面消失。box/sphere/cylinder/cone/plane/
+        // torus這些內建圖元幾何體本身winding永遠正確，維持單面剔除不受影響
+        // （效能/正確性都沒有理由改成雙面）。
+        if (node.mesh === 'polygon') {
+            material.side = THREE.DoubleSide;
+            geometry.userData = geometry.userData || {};
+            geometry.userData.faDoubleSided = true;
+        }
+        const mesh = new THREE.Mesh(geometry, material);
         const pos = Array.isArray(node.position) ? node.position : [0, 0, 0];
         mesh.position.set(pos[0] || 0, pos[1] || 0, pos[2] || 0);
         if (Array.isArray(node.rotation)) {
@@ -5010,17 +5029,39 @@ ${sourceTool.handlerScript}
 
     _build3DParticleSystem(node, particlePresets) {
         const preset = node.particles && node.particles.preset;
-        if (preset === 'spark') return this._buildSparkParticles(node);
-        if (preset === 'flame') return this._buildFlameLikeParticles(node, { spread: 0.4, speed: 1.2, sway: 0.4, defaultColor1: '#ffcc66', defaultColor2: '#552200' });
-        if (preset === 'mist') return this._buildFlameLikeParticles(node, { spread: 1.5, speed: 0.35, sway: 0.9, defaultColor1: '#dddddd', defaultColor2: '#aaccee' });
-        if (preset === 'bounce') return this._buildBounceParticles(node);
-        if (preset === 'firework') return this._buildFireworkParticles(node);
-        if (preset === 'nbody') return this._buildNBodyParticles(node);
-        // tw_stock_db客製: 自訂preset（scene.particle_presets註冊的，見
-        // _validate3DParticlePresets/_buildFormulaParticles）——動畫邏輯
-        // portable在model本身的YAML裡，不是寫死在這個JS引擎裡的六選一。
-        if (particlePresets && particlePresets[preset]) return this._buildFormulaParticles(node, particlePresets[preset]);
-        return null;
+        let built = null;
+        if (preset === 'spark') built = this._buildSparkParticles(node);
+        else if (preset === 'flame') built = this._buildFlameLikeParticles(node, { spread: 0.4, speed: 1.2, sway: 0.4, defaultColor1: '#ffcc66', defaultColor2: '#552200' });
+        else if (preset === 'mist') built = this._buildFlameLikeParticles(node, { spread: 1.5, speed: 0.35, sway: 0.9, defaultColor1: '#dddddd', defaultColor2: '#aaccee' });
+        else if (preset === 'bounce') built = this._buildBounceParticles(node);
+        else if (preset === 'firework') built = this._buildFireworkParticles(node);
+        else if (preset === 'nbody') built = this._buildNBodyParticles(node);
+        else if (particlePresets && particlePresets[preset]) {
+            // tw_stock_db客製: 自訂preset（scene.particle_presets註冊的，見
+            // _validate3DParticlePresets/_buildFormulaParticles）——動畫邏輯
+            // portable在model本身的YAML裡，不是寫死在這個JS引擎裡的六選一。
+            built = this._buildFormulaParticles(node, particlePresets[preset]);
+        }
+        if (!built) return null;
+        // tw_stock_db客製: 2026-09-05使用者實測回報「nbody顆粒不會動」「煙火
+        // 特效沒看到」——真正根因：所有六種內建preset+自訂formula preset的
+        // update()都直接改寫position/color這兩個BufferAttribute背後的
+        // Float32Array，但從來沒有標記needsUpdate=true。three.js只有第一次
+        // 繪製時會自動上傳GPU緩衝區，之後的每一幀即使JS端的陣列數值真的
+        // 有在變（用posAttr.array直接讀確實看得到變化），畫面上看到的還是
+        // 第一幀上傳過的那份舊資料，等於視覺上完全靜止——nbody看起來像
+        // 「完全沒有在動」、firework看起來像「幾乎沒有效果」都是同一個根因。
+        // 集中在這個唯一的組裝入口統一補上needsUpdate，而不是在六個+一個
+        // preset builder裡各自重複加一次，避免以後新增preset又忘記加同樣
+        // 的兩行。
+        const geometry = built.object.geometry;
+        const rawUpdate = built.update;
+        built.update = (t, dt) => {
+            rawUpdate(t, dt);
+            if (geometry.attributes.position) geometry.attributes.position.needsUpdate = true;
+            if (geometry.attributes.color) geometry.attributes.color.needsUpdate = true;
+        };
+        return built;
     }
 
     _new3DPointsBase(count, sizeDefault) {
@@ -5193,16 +5234,26 @@ ${sourceTool.handlerScript}
         const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
         const color1 = new THREE.Color(p.color || '#88ccff');
         const spread = Number.isFinite(p.spread) ? p.spread : 2;
-        const g = Number.isFinite(p.g) ? p.g : 0.5;
+        // tw_stock_db客製: 2026-09-05使用者實測回報「顆粒都不會動」——舊預設
+        // g=0.5、粒子從完全靜止開始，純引力積分要好幾秒才會累積出肉眼看得
+        // 出來的位移量，第一印象就是「沒在動」。提高預設g，且不再從零速度
+        // 開始：改給每個粒子一個跟半徑相關的切向初速度（模擬迷你星系自帶
+        // 角動量），從第一幀就看得到粒子繞著彼此轉，之後才逐漸因為真正的
+        // O(n²)引力交互作用偏離簡單圓周軌道——效果立即可見，同時仍然是
+        // 真正的物理模擬，不是預錄動畫。
+        const g = Number.isFinite(p.g) ? p.g : 1.5;
         const softening = Number.isFinite(p.softening) ? p.softening : 0.2;
         const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.15);
         const vel = new Float32Array(count * 3), mass = new Float32Array(count);
         for (let i = 0; i < count; i++) {
-            const ang = Math.random() * Math.PI * 2, r = Math.random() * spread, h = (Math.random() - 0.5) * spread * 0.4;
+            const ang = Math.random() * Math.PI * 2, r = 0.3 + Math.random() * spread, h = (Math.random() - 0.5) * spread * 0.4;
             positions[i * 3] = basePos[0] + Math.cos(ang) * r;
             positions[i * 3 + 1] = basePos[1] + h;
             positions[i * 3 + 2] = basePos[2] + Math.sin(ang) * r;
             mass[i] = 0.5 + Math.random();
+            const tangentialSpeed = 0.6 * Math.sqrt(r);
+            vel[i * 3] = -Math.sin(ang) * tangentialSpeed;
+            vel[i * 3 + 2] = Math.cos(ang) * tangentialSpeed;
             colors[i * 3] = color1.r; colors[i * 3 + 1] = color1.g; colors[i * 3 + 2] = color1.b;
         }
         const update = (t, dt) => {
@@ -5319,6 +5370,12 @@ ${sourceTool.handlerScript}
             const index = obj.geometry.index;
             const worldMatrix = obj.matrixWorld;
             const color = (obj.material && obj.material.color) ? obj.material.color : new THREE.Color('#cccccc');
+            // tw_stock_db客製: 2026-09-05——跟_build3DMeshObject的DoubleSide
+            // 修法對稱：polygon的geometry.userData.faDoubleSided為true時，
+            // 這條路徑（軟體光柵化，WebGL以外獨立的另一套剔除實作，兩邊都要
+            // 修）也要放棄背面剔除，並用abs()明暗（見下面），winding反過來
+            // 的面才不會直接消失或整片死黑。
+            const doubleSided = !!(obj.geometry.userData && obj.geometry.userData.faDoubleSided);
             const getVertex = (idx) => new THREE.Vector3().fromBufferAttribute(posAttr, idx).applyMatrix4(worldMatrix);
             const triCount = index ? Math.floor(index.count / 3) : Math.floor(posAttr.count / 3);
             for (let t = 0; t < triCount; t++) {
@@ -5327,9 +5384,10 @@ ${sourceTool.handlerScript}
                 const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
                 const a = getVertex(i0), b = getVertex(i1), c = getVertex(i2);
                 const normal = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize();
-                const brightness = Math.max(0.25, normal.dot(lightDir));
+                const rawDot = normal.dot(lightDir);
+                const brightness = Math.max(0.25, doubleSided ? Math.abs(rawDot) : rawDot);
                 const depth = a.distanceTo(camera.position) + b.distanceTo(camera.position) + c.distanceTo(camera.position);
-                triangles.push({ a, b, c, color, brightness, depth });
+                triangles.push({ a, b, c, color, brightness, depth, doubleSided });
             }
         });
         triangles.sort((x, y) => y.depth - x.depth);
@@ -5338,7 +5396,7 @@ ${sourceTool.handlerScript}
             const pa = project(tri.a), pb = project(tri.b), pc = project(tri.c);
             if (pa.behind || pb.behind || pc.behind) continue;
             const area = (pb.x - pa.x) * (pc.y - pa.y) - (pc.x - pa.x) * (pb.y - pa.y);
-            if (area >= 0) continue; // 背面剔除（螢幕座標y向下，正面三角形投影後帶負面積）
+            if (!tri.doubleSided && area >= 0) continue; // 背面剔除（螢幕座標y向下，正面三角形投影後帶負面積）；doubleSided的polygon不剔除
             const c = tri.color;
             const r = Math.min(255, Math.round(c.r * 255 * tri.brightness));
             const g = Math.min(255, Math.round(c.g * 255 * tri.brightness));
@@ -5458,6 +5516,8 @@ ${sourceTool.handlerScript}
         try {
             controls = new THREE.OrbitControls(camera, canvas);
             controls.enableDamping = true;
+            controls.target.set(lookAt[0], lookAt[1], lookAt[2]);
+            controls.update();
         } catch (_) { controls = null; }
 
         let frameIndex = 0;
@@ -5479,7 +5539,18 @@ ${sourceTool.handlerScript}
 
         return {
             scene, camera, canvas, webglOk,
+            title: (typeof sceneDef.title === 'string' && sceneDef.title.trim()) ? sceneDef.title.trim() : null,
             stop: () => { stopped = true; if (controls) controls.dispose(); },
+            // tw_stock_db客製: 2026-09-05使用者要求——右下角要有「重設視角」
+            // 按鈕，把camera位置/朝向、OrbitControls的target都還原成場景YAML
+            // 一開始定義的camera.position/look_at，不是重新掛載整個場景（那樣
+            // 會讓動畫/粒子系統的累積狀態也跟著重置，使用者只是想恢復視角，
+            // 不是重新播放整個場景）。
+            resetView: () => {
+                camera.position.set(camPos[0], camPos[1], camPos[2]);
+                camera.lookAt(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]));
+                if (controls) { controls.target.set(lookAt[0], lookAt[1], lookAt[2]); controls.update(); }
+            },
             // 匯出前先快轉90幀（1.5秒），讓靜態圖抓到「效果進行中」的畫面，
             // 不是動畫剛開始播放、還沒真的動起來的初始退化姿態。
             snapshotDataUri: () => {
@@ -6745,16 +6816,80 @@ ${existingNodeSummaries}
     async _collectTurnVisualSnapshots(msg) {
         const idx = this.messages.indexOf(msg);
         if (idx === -1) return [];
+        // tw_stock_db客製: 2026-09-05——同一輪內被之後的呼叫取代掉的草稿
+        // （見_markSupersededVisualDrafts）匯出時也要跳過，跟畫面顯示邏輯
+        // 一致：使用者要匯出的是「最終交件」，不是每一次試錯的草稿。
+        this._markSupersededVisualDrafts(this.messages);
         const collected = [];
         for (let i = idx - 1; i >= 0; i--) {
             const m = this.messages[i];
             if (m.role === 'user') break;
+            if (m._visualSuperseded) continue;
             if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg || m._displayViewerYaml) {
                 const snap = await this._captureVisualSnapshot(m);
                 if (snap) collected.unshift(snap);
             }
         }
         return collected;
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者實測回報——AI回應一個3D場景時，畫面
+    // 上完全找不到匯出PPTX的入口（原本的📤匯出按鈕只掛在assistant文字回覆
+    // 泡泡上，_collectTurnVisualSnapshots雖然會掃到同一輪的3D場景，但如果
+    // 那輪assistant文字回覆很短、甚至使用者根本沒注意到底下還有文字泡泡，
+    // 這個入口形同不存在）。這裡是給3D場景/繪圖卡片本身直接加一個小型
+    // 📤匯出按鈕的共用helper，getSnapshotFn是一個回傳{dataUrl,kind}或
+    // {text,kind}的非同步函式（呼叫當下才截圖/產生摘要，不是預先算好），
+    // 匯出範圍只有「這一張卡片」，跟訊息底下那個匯出「整個回覆」的按鈕
+    // 語意不同、互不取代。
+    _appendCardExportButton(container, getSnapshotFn, defaultTitle) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative; display:inline-block;';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = '匯出這個內容';
+        btn.textContent = '📤';
+        btn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; line-height:1.4;';
+        const menu = document.createElement('div');
+        menu.style.cssText = 'display:none; position:absolute; bottom:100%; right:0; margin-bottom:4px; background:#fff; border:1px solid #ccc; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.25); z-index:6; min-width:96px;';
+        menu.innerHTML = `
+            <div class="fa-card-export-item" data-fmt="pptx" style="padding:6px 12px; font-size:12px; cursor:pointer; color:#333;">📊 PPTX</div>
+            <div class="fa-card-export-item" data-fmt="pdf" style="padding:6px 12px; font-size:12px; cursor:pointer; color:#333;">📄 PDF</div>
+        `;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('.fa-card-export-menu-open').forEach((m) => { if (m !== menu) m.style.display = 'none'; });
+            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+        });
+        document.addEventListener('click', () => { menu.style.display = 'none'; });
+        menu.querySelectorAll('.fa-card-export-item').forEach((item) => {
+            item.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                menu.style.display = 'none';
+                const fmt = item.dataset.fmt;
+                const original = btn.textContent;
+                btn.textContent = '⏳';
+                try {
+                    const snap = await getSnapshotFn();
+                    if (!snap) throw new Error('目前沒有可匯出的內容');
+                    if (fmt === 'pptx') {
+                        const blob = await _faMarkdownToPptxBlob('', defaultTitle, [snap]);
+                        await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pptx`, blob.type);
+                    } else {
+                        const blob = await _faMarkdownToPdfBlob('', defaultTitle, [snap]);
+                        await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pdf`, blob.type);
+                    }
+                } catch (err) {
+                    this._log(`❌ 匯出失敗：${err.message || err}`);
+                } finally {
+                    btn.textContent = original;
+                }
+            });
+        });
+        wrap.appendChild(btn);
+        wrap.appendChild(menu);
+        container.appendChild(wrap);
+        return wrap;
     }
 
     _appendMarkdownExportButton(container, markdownText, palette, msg) {
@@ -9053,9 +9188,62 @@ ${existingNodeSummaries}
             chatBody.appendChild(archiveEl);
         });
 
+        // tw_stock_db客製: 2026-09-05使用者實測回報——「我沒看到星空，重做」
+        // 這種情境下，AI在同一輪對話裡連續呼叫好幾次render_3d_scene（或
+        // render_drawing/render_interactive_viewer）試錯，原本每一次都是
+        // 「一律顯示」的最終視覺結果，導致畫面被好幾張其實已經被取代的
+        // 草稿灌爆——使用者要的是「交件之前都是對草稿的修改」，只有同一輪
+        // 裡最後一次同類型的呼叫才算數。這裡在重繪之前先標記哪些訊息是
+        // 「後來被同一輪更新的呼叫取代掉的草稿」，讓_renderSingleMessage
+        // 把它們當成內部過程處理（受showInternalTrace開關控制，不是
+        // 一律顯示），不是刪除訊息本身——AI仍然看得到完整的對話歷史。
+        this._markSupersededVisualDrafts(this.messages);
         this.messages.forEach(msg => this._renderSingleMessage(msg, chatBody, palette));
         chatBody.scrollTop = wasNearBottomForRerender ? chatBody.scrollHeight : prevScrollTopForRerender;
         this._persistChatHistory();
+    }
+
+    // 「同一輪」定義為兩則role:'user'訊息之間的區間。同一輪內，同一種視覺
+    // 類型（scene3d/drawing/viewer/image）如果出現不只一次，只有最後一次
+    // 保持「一律顯示」，較早的幾次標記_visualSuperseded=true。每次呼叫都
+    // 會把所有視覺訊息的旗標重新算過一次（configurable:true可以覆寫），
+    // 不會有殘留的舊狀態。
+    _markSupersededVisualDrafts(messages) {
+        const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayViewerYaml', '_displayDataUrl'];
+        let lastIdxByKind = {};
+        messages.forEach((msg, idx) => {
+            if (msg.role === 'user') { lastIdxByKind = {}; return; }
+            for (const prop of KIND_PROPS) {
+                if (!msg[prop]) continue;
+                if (lastIdxByKind[prop] !== undefined) {
+                    Object.defineProperty(messages[lastIdxByKind[prop]], '_visualSuperseded', { value: true, enumerable: false, configurable: true });
+                }
+                Object.defineProperty(msg, '_visualSuperseded', { value: false, enumerable: false, configurable: true });
+                lastIdxByKind[prop] = idx;
+            }
+        });
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者實測回報——「重做」時AI連續呼叫好
+    // 幾次render_3d_scene，每次都被當成「一律顯示」的最終結果，畫面塞滿
+    // 已經被取代的草稿。同一輪內被_markSupersededVisualDrafts標記過的
+    // 視覺訊息改用這個helper：預設完全不畫（受showInternalTrace開關控制，
+    // 跟其他內部過程一致），開關打開時才顯示一個收合的草稿卡，展開時才
+    // 用mountFn懶惰掛載（沒人點開就不用花資源真的去建立3D場景/表單）。
+    _renderSupersededDraftCard(container, label, mountFn) {
+        if (this.advancedSettings.showInternalTrace !== true) return;
+        const palette = this._getThemePalette();
+        const draftEl = document.createElement('details');
+        draftEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
+        draftEl.innerHTML = `<summary style="font-weight: bold; outline: none; user-select: none; cursor: pointer;">🗂️ ${this._escapeHtml(label)}（已被稍後版本取代，點擊展開查看草稿）</summary>`;
+        const inner = document.createElement('div');
+        inner.style.cssText = 'margin-top: 6px;';
+        draftEl.appendChild(inner);
+        let mounted = false;
+        draftEl.addEventListener('toggle', () => {
+            if (draftEl.open && !mounted) { mounted = true; mountFn(inner); }
+        });
+        container.appendChild(draftEl);
     }
 
     // tw_stock_db客製: 從 _renderMessageHistory() 拆出來的單則訊息渲染邏輯
@@ -9223,12 +9411,41 @@ ${existingNodeSummaries}
             // 資訊）。_mount3DScene是非同步的（要動態載入three.js/js-yaml），
             // 這裡先同步插入容器保住訊息順序，掛載完成再非同步填入canvas。
             if (msg._displayScene3DYaml) {
+                if (msg._visualSuperseded) {
+                    this._renderSupersededDraftCard(container, '3D場景草稿', (inner) => { this._mount3DScene(inner, msg._displayScene3DYaml); });
+                    return;
+                }
                 const sceneWrap = document.createElement('div');
                 sceneWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
                 sceneWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #6366f1; margin-bottom: 4px;">🧊 3D場景（可用滑鼠拖曳/滾輪縮放）</div>`;
+                // tw_stock_db客製: 2026-09-05使用者要求——canvas要包一層
+                // position:relative容器，右下角疊一個「重設視角」按鈕
+                // （position:absolute），下方另外一列放場景標題（如果場景
+                // YAML有給title的話）+匯出按鈕（見_appendCardExportButton的
+                // 說明，這是新增的、掛在卡片本身而不是訊息文字回覆上的匯出
+                // 入口）。
+                const canvasHolder = document.createElement('div');
+                canvasHolder.style.cssText = 'position:relative;';
                 const mountDiv = document.createElement('div');
+                canvasHolder.appendChild(mountDiv);
+                const resetBtn = document.createElement('button');
+                resetBtn.type = 'button';
+                resetBtn.title = '重設視角';
+                resetBtn.textContent = '🔄';
+                resetBtn.style.cssText = 'display:none; position:absolute; right:8px; bottom:8px; border:none; background:rgba(0,0,0,0.45); color:#fff; border-radius:6px; cursor:pointer; font-size:14px; padding:4px 8px; line-height:1.4;';
+                canvasHolder.appendChild(resetBtn);
+                sceneWrap.appendChild(canvasHolder);
+                const footerRow = document.createElement('div');
+                footerRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-top:4px; gap:8px;';
+                const titleDiv = document.createElement('div');
+                titleDiv.style.cssText = 'font-size:12px; opacity:0.75; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                footerRow.appendChild(titleDiv);
+                sceneWrap.appendChild(footerRow);
+                this._appendCardExportButton(footerRow, async () => {
+                    if (!msg._scene3DHandle || typeof msg._scene3DHandle.snapshotDataUri !== 'function') return null;
+                    try { return { dataUrl: msg._scene3DHandle.snapshotDataUri(), kind: 'scene3d' }; } catch (_) { return null; }
+                }, '3D場景');
                 container.appendChild(sceneWrap);
-                sceneWrap.appendChild(mountDiv);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
                     if (handle) {
                         // tw_stock_db客製: 存活的handle（含snapshotDataUri）
@@ -9238,6 +9455,9 @@ ${existingNodeSummaries}
                         // JSON.stringify(this.messages)存檔時碰到THREE.js
                         // 物件的循環參照。
                         Object.defineProperty(msg, '_scene3DHandle', { value: handle, enumerable: false, configurable: true });
+                        if (handle.title) titleDiv.textContent = handle.title;
+                        resetBtn.style.display = 'block';
+                        resetBtn.addEventListener('click', (e) => { e.stopPropagation(); handle.resetView(); });
                     }
                     if (handle && !handle.webglOk) {
                         const badge = document.createElement('div');
@@ -9256,12 +9476,22 @@ ${existingNodeSummaries}
             // _displayDrawingSvg之前已經在render_drawing工具callback裡經過
             // DOMPurify消毒，這裡直接innerHTML是安全的，不需要再消毒一次。
             if (msg._displayDrawingSvg) {
+                if (msg._visualSuperseded) {
+                    this._renderSupersededDraftCard(container, '繪圖草稿', (inner) => { inner.innerHTML = msg._displayDrawingSvg; });
+                    return;
+                }
                 const drawWrap = document.createElement('div');
                 drawWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
                 drawWrap.innerHTML = `
                     <div style="font-size: 12px; font-weight: bold; color: #dd6b20; margin-bottom: 4px;">🎨 繪圖</div>
                     <div style="max-width:100%; overflow:auto; background:#fff; border-radius:6px; border:1px solid rgba(0,0,0,0.1); padding:8px;">${msg._displayDrawingSvg}</div>
                 `;
+                const drawFooter = document.createElement('div');
+                drawFooter.style.cssText = 'display:flex; justify-content:flex-end; margin-top:4px;';
+                drawWrap.appendChild(drawFooter);
+                this._appendCardExportButton(drawFooter, async () => {
+                    try { return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayDrawingSvg, 800), kind: 'drawing' }; } catch (_) { return null; }
+                }, '繪圖');
                 container.appendChild(drawWrap);
                 return;
             }
@@ -9270,12 +9500,26 @@ ${existingNodeSummaries}
             // showInternalTrace開關影響」原則。掛載是非同步的（要載入
             // js-yaml），先同步插入容器保住訊息順序。
             if (msg._displayViewerYaml) {
+                if (msg._visualSuperseded) {
+                    this._renderSupersededDraftCard(container, '互動表單草稿', (inner) => {
+                        const validation = this._validateInteractiveViewerYaml(msg._displayViewerYaml);
+                        if (validation.ok) this._mountInteractiveViewer(inner, validation.viewer);
+                        else inner.textContent = '格式錯誤: ' + validation.error;
+                    });
+                    return;
+                }
                 const viewerWrap = document.createElement('div');
                 viewerWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
                 viewerWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #059669; margin-bottom: 4px;">📋 互動表單</div>`;
                 const mountDiv = document.createElement('div');
                 container.appendChild(viewerWrap);
                 viewerWrap.appendChild(mountDiv);
+                const viewerFooter = document.createElement('div');
+                viewerFooter.style.cssText = 'display:flex; justify-content:flex-end; margin-top:4px;';
+                viewerWrap.appendChild(viewerFooter);
+                this._appendCardExportButton(viewerFooter, async () => {
+                    try { return { text: await this._summarizeViewerStateForExport(msg._displayViewerYaml), kind: 'viewer_summary' }; } catch (_) { return null; }
+                }, '互動表單');
                 (async () => {
                     const validation = this._validateInteractiveViewerYaml(msg._displayViewerYaml);
                     if (!validation.ok) {
