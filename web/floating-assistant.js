@@ -491,6 +491,61 @@ class FileCache {
     }
 }
 
+// tw_stock_db客製: 階段5——互動式viewer的persistentStorage（見計畫文件
+// 階段5）。跟FileCache是同一種IndexedDB持久化精神，但存的是結構化的
+// 鍵值狀態（例如viewer表單填了什麼），不是blob——單筆記錄很小，不需要
+// FileCache那種LRU容量淘汰機制，這裡刻意保持精簡。key是字串（慣例上用
+// "viewer:<namespace>"這種前綴避免不同用途互相覆蓋，但這個class本身
+// 不強制），value是任意可JSON化的物件。
+class KVStore {
+    constructor(dbName) {
+        this.dbName = dbName;
+        this.storeName = 'kv';
+        this.db = null;
+        this._ready = this._init();
+    }
+
+    _init() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.dbName, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) db.createObjectStore(this.storeName, { keyPath: 'key' });
+            };
+            req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async _tx(mode, fn) {
+        await this._ready;
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(this.storeName, mode);
+            const store = tx.objectStore(this.storeName);
+            const req = fn(store);
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async get(key) {
+        const rec = await this._tx('readonly', s => s.get(key));
+        return rec ? rec.value : undefined;
+    }
+
+    async set(key, value) {
+        await this._tx('readwrite', s => s.put({ key, value, updatedAt: Date.now() }));
+    }
+
+    async delete(key) {
+        await this._tx('readwrite', s => s.delete(key));
+    }
+
+    async getAll() {
+        return this._tx('readonly', s => s.getAll());
+    }
+}
+
 // tw_stock_db客製：已知支援OpenAI相容原生 tools/tool_calls 參數的模型名稱
 // pattern（用於 toolCallMode==='auto' 時猜測），對不到的模型一律退回文字式
 // [CALL: ...] 慣例（走既有路徑，最保險）。
@@ -604,7 +659,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['render_3d_scene', 'get_3d_scene_topic', 'get_3d_scene_yaml'],
         systemPrompt: '你是一個專門設計/繪製3D場景的子任務助理，用render_3d_scene渲染純宣告式YAML描述的3D場景給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，場景格式是固定字彙的宣告式YAML）。不確定texture/particles/polygon/defs這幾個進階主題的欄位格式時，先呼叫get_3d_scene_topic查詢，不要用猜的；如果使用者是要求「調整/修改」既有場景，先呼叫get_3d_scene_yaml取得目前真正的內容再基於它修改，絕對不要憑對話記憶重新編寫一份、也不要虛構任何場景網址。渲染完成後只需要用一兩句話簡短說明做了什麼，不用重複整份YAML內容。',
     },
-    interactive_component: { enabled: false, label: '互動元件生成', toolNames: [], systemPrompt: '' },
+    interactive_component: {
+        enabled: true,
+        label: '互動元件生成',
+        toolNames: ['render_interactive_viewer', 'get_interactive_viewer_yaml', 'get_viewer_state', 'set_viewer_state'],
+        systemPrompt: '你是一個專門設計多頁互動表單/精靈/教學畫面的子任務助理，用render_interactive_viewer渲染純宣告式YAML描述的viewer給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，viewer格式是固定字彙的宣告式YAML，visible_if/enabled_if只能用有限的安全表達式）。修改既有viewer前先呼叫get_interactive_viewer_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
+    },
 };
 
 // tw_stock_db客製: delegate_to_subagent委派出去的子任務迴圈輪數上限——
@@ -647,6 +707,12 @@ const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
 const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
 const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
 const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
+
+// tw_stock_db客製: 階段5——互動viewer的封閉元件字彙（跟3D場景的
+// SCENE3D_MESH_TYPES同一個精神：固定、封閉，不是任意HTML/JS）。
+const VIEWER_COMPONENT_TYPES = new Set(['text', 'input', 'button', 'subagent_panel']);
+const VIEWER_INPUT_TYPES = new Set(['text', 'number', 'select', 'checkbox', 'textarea']);
+const VIEWER_ACTION_KINDS = new Set(['next_page', 'prev_page', 'goto_page', 'save_state', 'run_subagent', 'close']);
 
 // tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
 // 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
@@ -1016,13 +1082,20 @@ function _faMarkdownToSlides(markdownText, heading) {
 // _captureVisualSnapshot。visualSnapshots是選填的{dataUrl,kind}陣列，
 // 沒有提供時行為完全不變（純文字/表格投影片）。
 function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
-    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖' };
+    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', viewer_summary: '📝 互動表單內容' };
     (visualSnapshots || []).forEach((snap) => {
-        if (!snap || !snap.dataUrl) return;
+        if (!snap) return;
         const s = addHeadingSlideBase(KIND_LABEL[snap.kind] || '視覺內容');
         try {
-            s.addImage({ data: snap.dataUrl, x: 1.5, y: 1.3, w: 10.3, h: 5.7, sizing: { type: 'contain', w: 10.3, h: 5.7 } });
-        } catch (_) { /* 個別截圖嵌入失敗不影響其餘投影片 */ }
+            // tw_stock_db客製: 互動viewer是文字摘要（kind==='viewer_summary'，
+            // 見_summarizeViewerStateForExport），不是截圖——表單填寫內容用
+            // 文字呈現比像素截圖更有報告價值。其餘kind都是dataUrl截圖。
+            if (snap.kind === 'viewer_summary' && snap.text) {
+                s.addText(_faMdLiteToPlainText(snap.text), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3 });
+            } else if (snap.dataUrl) {
+                s.addImage({ data: snap.dataUrl, x: 1.5, y: 1.3, w: 10.3, h: 5.7, sizing: { type: 'contain', w: 10.3, h: 5.7 } });
+            }
+        } catch (_) { /* 個別截圖/摘要嵌入失敗不影響其餘投影片 */ }
     });
 }
 
@@ -1102,13 +1175,18 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
 
     // tw_stock_db客製: 3D場景/繪圖截圖同樣以圖片content item加進去（見
     // _faAppendVisualSnapshotSlides在PPTX那邊的說明，這裡是PDF版本）。
-    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖' };
+    // 互動viewer是文字摘要（kind==='viewer_summary'），不是截圖。
+    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', viewer_summary: '📝 互動表單內容' };
     (visualSnapshots || []).forEach((snap) => {
-        if (!snap || !snap.dataUrl) return;
+        if (!snap) return;
         content.push({ text: VISUAL_KIND_LABEL[snap.kind] || '視覺內容', style: 'h2' });
         try {
-            content.push({ image: snap.dataUrl, width: 460, alignment: 'center' });
-        } catch (_) { /* 個別截圖嵌入失敗不影響其餘內容 */ }
+            if (snap.kind === 'viewer_summary' && snap.text) {
+                content.push({ text: _faMdLiteToPlainText(snap.text), style: 'body' });
+            } else if (snap.dataUrl) {
+                content.push({ image: snap.dataUrl, width: 460, alignment: 'center' });
+            }
+        } catch (_) { /* 個別截圖/摘要嵌入失敗不影響其餘內容 */ }
         content.push({ text: '', margin: [0, 4, 0, 4] });
     });
 
@@ -1313,6 +1391,9 @@ class FloatingAssistant {
         // 系統一樣依mount實例分開資料庫，避免同一頁掛多個AI助理實例時互相
         // 干擾彼此的檔案快取。
         this.fileCache = new FileCache('FloatingAssistantFiles_' + ragDbSuffix, this._getFileCacheLimitBytes());
+        // tw_stock_db客製: 階段5——互動viewer的結構化狀態儲存（見KVStore/
+        // 計畫文件階段5），跟fileCache一樣依mount實例分開資料庫。
+        this.stateStore = new KVStore('FloatingAssistantState_' + ragDbSuffix);
         // tw_stock_db客製: 階段2——使用者按📎附件按鈕選好、還沒送出訊息前的
         // 暫存附件清單（見_wireAttachmentUpload/_submitChatInput），送出當下
         // 才把檔名+file_id接進使用者訊息文字並清空。
@@ -1990,20 +2071,7 @@ ${fnData.code}
                 const task = String(parsed.task || '').trim();
                 const domainKey = String(parsed.domain || '').trim();
                 if (!task) return JSON.stringify({ ok: false, error: '缺少task參數（要委派的任務描述）' });
-                const domain = SUBAGENT_DOMAIN_REGISTRY[domainKey];
-                if (!domain || !domain.enabled) {
-                    const available = Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k]) => k);
-                    return JSON.stringify({ ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available });
-                }
-                try {
-                    const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
-                        allowedToolNames: domain.toolNames,
-                        systemPrompt: domain.systemPrompt,
-                    });
-                    return JSON.stringify({ ok: true, domain: domainKey, result });
-                } catch (err) {
-                    return JSON.stringify({ ok: false, error: String(err.message || err) });
-                }
+                return JSON.stringify(await this._delegateToSubagentDomain(domainKey, task));
             },
             { type: 'object', properties: {
                 task: { type: 'string', description: '要委派給子agent的任務描述' },
@@ -2125,6 +2193,65 @@ ${fnData.code}
                 return JSON.stringify({ type: 'drawing', svg: sanitized });
             },
             { type: 'object', properties: { svg: { type: 'string', description: '完整的<svg>...</svg>原始碼' } }, required: ['svg'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 階段5——互動式viewer（見_mountInteractiveViewer/
+        // 計畫文件階段5）。跟render_3d_scene一樣主功能工具保持精簡，格式細節
+        // 交給模型自己看description裡的範例欄位即可（viewer的元件字彙比3D
+        // 場景簡單很多，不需要另外拆get_xxx_topic）。
+        this.register_openai_tool('render_interactive_viewer',
+            '用一段YAML描述渲染一個多頁互動表單/精靈/教學畫面給使用者看（純宣告式，不能寫真正的JS）。格式：{state_namespace:"必填，這個viewer狀態要存在persistentStorage的哪個位置", pages:[{id:"page1", title:"標題", components:[{type:"text", content:"說明文字"}, {type:"input", state_key:"變數名", label:"標籤", input_type:"text|number|select|checkbox|textarea", options:[...]（select用）, default:預設值, visible_if:"安全表達式（選填，可讀其他input的state_key當變數）", enabled_if:"安全表達式（選填）"}, {type:"button", label:"下一步", action:"next_page|prev_page|goto_page:目標page_id|save_state|close", enabled_if:"..."}, {type:"subagent_panel", domain:"領域代號", prompt_placeholder:"..."}]}]}。visible_if/enabled_if是有限安全表達式（算術/比較/布林+讀其他欄位的值），不是真正的JS，不能呼叫函式（除了白名單數學函式）也不能存取DOM。save_state按鈕會把使用者目前填的所有input值存進persistentStorage；之後可以用get_viewer_state(state_namespace)查詢使用者實際填了什麼。參數: {"yaml":"viewer YAML描述"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const yamlText = String(parsed.yaml || '').trim();
+                if (!yamlText) return JSON.stringify({ ok: false, error: '缺少yaml參數' });
+                try {
+                    await this._ensureJsYamlLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                const validation = this._validateInteractiveViewerYaml(yamlText);
+                if (!validation.ok) return JSON.stringify({ ok: false, error: validation.error });
+                return JSON.stringify({ type: 'viewer', yaml: yamlText });
+            },
+            { type: 'object', properties: { yaml: { type: 'string', description: 'viewer YAML描述' } }, required: ['yaml'], additionalProperties: false }
+        );
+
+        this.register_openai_tool('get_interactive_viewer_yaml',
+            '取得目前對話中最近一次成功渲染的互動viewer YAML原始內容——要修改既有viewer之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
+            async () => {
+                if (!this._latestViewerYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何互動viewer' });
+                return JSON.stringify({ ok: true, yaml: this._latestViewerYaml });
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        this.register_openai_tool('get_viewer_state',
+            '查詢某個互動viewer目前persistentStorage裡存的狀態（使用者按過save_state之後實際填了什麼）。參數: {"state_namespace":"viewer YAML裡的state_namespace"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ns = String(parsed.state_namespace || '').trim();
+                if (!ns) return JSON.stringify({ ok: false, error: '缺少state_namespace參數' });
+                const value = await this.stateStore.get(`viewer:${ns}`);
+                return JSON.stringify({ ok: true, state_namespace: ns, state: value === undefined ? null : value });
+            },
+            { type: 'object', properties: { state_namespace: { type: 'string' } }, required: ['state_namespace'], additionalProperties: false }
+        );
+
+        this.register_openai_tool('set_viewer_state',
+            '直接修改某個互動viewer在persistentStorage裡的狀態（例如AI想預先幫使用者填一些預設值）。這會整包覆蓋該namespace目前的狀態，不是欄位級合併。參數: {"state_namespace":"...", "state":{...任意物件...}}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ns = String(parsed.state_namespace || '').trim();
+                if (!ns) return JSON.stringify({ ok: false, error: '缺少state_namespace參數' });
+                if (!parsed.state || typeof parsed.state !== 'object') return JSON.stringify({ ok: false, error: '缺少state參數（必須是物件）' });
+                await this.stateStore.set(`viewer:${ns}`, parsed.state);
+                return JSON.stringify({ ok: true, state_namespace: ns });
+            },
+            { type: 'object', properties: { state_namespace: { type: 'string' }, state: { type: 'object' } }, required: ['state_namespace', 'state'], additionalProperties: false }
         );
     }
 
@@ -2700,6 +2827,7 @@ ${fnData.code}
         let imageMeta = null;
         let scene3DYaml = null;
         let drawingSvg = null;
+        let viewerYaml = null;
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
             if (parsed && parsed.type === 'drawing' && typeof parsed.svg === 'string') {
@@ -2726,8 +2854,13 @@ ${fnData.code}
                 // 修改既有場景一律要求先呼叫get_3d_scene_yaml拿到目前真正的
                 // 內容，這裡刻意不把YAML留在content裡，逼模型走那個工具。
                 scene3DYaml = parsed.yaml;
+            } else if (parsed && parsed.type === 'viewer' && typeof parsed.yaml === 'string') {
+                // tw_stock_db客製: 階段5——互動viewer跟3D場景同一個「不列入
+                // 對話上下文、逼模型走get_interactive_viewer_yaml重新取得
+                // 最新內容」原則。
+                viewerYaml = parsed.yaml;
             }
-        } catch (_) { /* 不是圖片/3D場景payload，走下面一般文字流程 */ }
+        } catch (_) { /* 不是圖片/3D場景/viewer payload，走下面一般文字流程 */ }
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
         // tw_stock_db客製: 實測發現這個NVIDIA相容端點無論是不是走原生
@@ -2762,6 +2895,10 @@ ${fnData.code}
         } else if (drawingSvg) {
             msg.content = `[Tool ${fnName} 已產生一張向量圖，已直接顯示給使用者看，SVG原始碼不列入對話上下文]`;
             Object.defineProperty(msg, '_displayDrawingSvg', { value: drawingSvg, enumerable: false, configurable: true });
+        } else if (viewerYaml) {
+            msg.content = `[Tool ${fnName} 已產生一個互動viewer，已直接顯示給使用者看，viewer YAML原始內容不列入對話上下文。如果之後要修改這個viewer，請先呼叫get_interactive_viewer_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
+            Object.defineProperty(msg, '_displayViewerYaml', { value: viewerYaml, enumerable: false, configurable: true });
+            this._latestViewerYaml = viewerYaml;
         } else {
             msg.content = this._formatToolResult(result, fnName);
         }
@@ -5303,6 +5440,237 @@ ${sourceTool.handlerScript}
     }
 
     // ============================================================
+    // tw_stock_db客製: 階段5——互動式viewer（見計畫文件階段5）。純宣告式
+    // YAML描述多頁表單/精靈流程，元件顯示/啟用條件用_compileSafeExpression
+    // （跟階段3自訂粒子preset共用同一套安全表達式評估器，見使用者2026-09-05
+    // 確認的折衷方案：允許有限白名單運算式，不是任意JS）。狀態存in-memory+
+    // this.stateStore（KVStore，見計畫文件），元件是固定封閉字彙
+    // （text/input/button/subagent_panel），不是任意HTML/JS。
+    // ============================================================
+
+    _validateInteractiveViewerYaml(yamlText) {
+        let viewer;
+        try {
+            viewer = jsyaml.load(yamlText);
+        } catch (err) {
+            return { ok: false, error: `YAML語法錯誤: ${err.message}` };
+        }
+        if (!viewer || typeof viewer !== 'object') return { ok: false, error: 'viewer內容必須是一個物件' };
+        if (!viewer.state_namespace || typeof viewer.state_namespace !== 'string') {
+            return { ok: false, error: '缺少state_namespace（字串）——這個viewer的狀態要存在persistentStorage的哪個位置，必須明確指定，才能之後用get_viewer_state查詢' };
+        }
+        const pages = Array.isArray(viewer.pages) ? viewer.pages : null;
+        if (!pages || !pages.length) return { ok: false, error: '缺少pages陣列，或pages是空的' };
+        const seenIds = new Set();
+        for (const page of pages) {
+            if (!page || typeof page !== 'object' || !page.id) return { ok: false, error: '每個page都要有id欄位' };
+            if (seenIds.has(page.id)) return { ok: false, error: `page id重複: "${page.id}"` };
+            seenIds.add(page.id);
+            for (const c of (Array.isArray(page.components) ? page.components : [])) {
+                const err = this._validateViewerComponentShape(c, page.id);
+                if (err) return { ok: false, error: err };
+            }
+        }
+        for (const page of pages) {
+            for (const c of (page.components || [])) {
+                if (c.type === 'button' && typeof c.action === 'string' && c.action.startsWith('goto_page:')) {
+                    const target = c.action.slice('goto_page:'.length);
+                    if (!seenIds.has(target)) return { ok: false, error: `page "${page.id}" 的button action goto_page指向不存在的page id: "${target}"` };
+                }
+                if (c.type === 'subagent_panel') {
+                    if (!c.domain) return { ok: false, error: `page "${page.id}" 的subagent_panel缺少domain` };
+                    const d = SUBAGENT_DOMAIN_REGISTRY[c.domain];
+                    if (!d || !d.enabled) return { ok: false, error: `page "${page.id}" 的subagent_panel指向未啟用的domain: "${c.domain}"` };
+                }
+            }
+        }
+        return { ok: true, viewer };
+    }
+
+    _validateViewerComponentShape(c, pageId) {
+        if (!c || typeof c !== 'object' || !VIEWER_COMPONENT_TYPES.has(c.type)) {
+            return `page "${pageId}" 內有未知的component類型: "${c && c.type}"（合法值：${[...VIEWER_COMPONENT_TYPES].join('/')}）`;
+        }
+        if (c.type === 'input') {
+            if (!c.state_key) return `page "${pageId}" 的input元件缺少state_key`;
+            if (c.input_type && !VIEWER_INPUT_TYPES.has(c.input_type)) return `page "${pageId}" 的input元件有未知的input_type: "${c.input_type}"`;
+        }
+        if (c.type === 'button' && c.action) {
+            const actionKind = String(c.action).split(':')[0];
+            if (!VIEWER_ACTION_KINDS.has(actionKind)) return `page "${pageId}" 的button有未知的action: "${c.action}"（合法值：${[...VIEWER_ACTION_KINDS].join('/')}或goto_page:頁面id）`;
+        }
+        for (const exprField of ['visible_if', 'enabled_if']) {
+            if (c[exprField]) {
+                try { this._compileSafeExpression(c[exprField]); } catch (err) { return `page "${pageId}" 的${exprField}表達式錯誤: ${err.message}`; }
+            }
+        }
+        return null;
+    }
+
+    // 把viewer掛到container底下：目前頁面/表單狀態存成closure裡的區域變數
+    // （state），每次互動後就地更新+重繪整個container（元件數量通常很小，
+    // 不需要virtual DOM diff那種複雜度）。首次掛載時從this.stateStore讀出
+    // 上次save_state存過的狀態當初始值，讓使用者離開又回來的viewer（例如
+    // 重新整理頁面）能接續填過的內容。
+    async _mountInteractiveViewer(container, viewerDef) {
+        const stateNamespace = `viewer:${viewerDef.state_namespace}`;
+        const persisted = (await this.stateStore.get(stateNamespace)) || {};
+        const state = Object.assign({}, persisted);
+        let currentPageIndex = 0;
+
+        const dispatchAction = async (action) => {
+            if (action === 'next_page') { currentPageIndex = Math.min(viewerDef.pages.length - 1, currentPageIndex + 1); render(); return; }
+            if (action === 'prev_page') { currentPageIndex = Math.max(0, currentPageIndex - 1); render(); return; }
+            if (action.startsWith('goto_page:')) {
+                const idx = viewerDef.pages.findIndex(p => p.id === action.slice('goto_page:'.length));
+                if (idx !== -1) { currentPageIndex = idx; render(); }
+                return;
+            }
+            if (action === 'save_state') { await this.stateStore.set(stateNamespace, state); render(); return; }
+            if (action === 'close') { container.innerHTML = '<div style="padding:8px; font-size:12px; opacity:0.6;">（已關閉）</div>'; return; }
+        };
+
+        const render = () => {
+            container.innerHTML = '';
+            const page = viewerDef.pages[currentPageIndex];
+            const pageDiv = document.createElement('div');
+            pageDiv.style.cssText = 'padding:10px; border:1px solid rgba(0,0,0,0.12); border-radius:8px;';
+            if (viewerDef.pages.length > 1) {
+                const nav = document.createElement('div');
+                nav.style.cssText = 'font-size:10px; opacity:0.6; margin-bottom:6px;';
+                nav.textContent = `第 ${currentPageIndex + 1} / ${viewerDef.pages.length} 頁`;
+                pageDiv.appendChild(nav);
+            }
+            if (page.title) {
+                const h = document.createElement('div');
+                h.style.cssText = 'font-weight:bold; margin-bottom:8px; font-size:14px;';
+                h.textContent = page.title;
+                pageDiv.appendChild(h);
+            }
+            (page.components || []).forEach((c) => {
+                if (c.visible_if) {
+                    let visible = true;
+                    try { visible = !!this._evalSafeExpression(c.visible_if, state); } catch (_) { /* 表達式錯誤時預設顯示，不憑空隱藏元件 */ }
+                    if (!visible) return;
+                }
+                const el = this._renderViewerComponent(c, state, { rerender: render, dispatchAction });
+                if (el) pageDiv.appendChild(el);
+            });
+            container.appendChild(pageDiv);
+        };
+        render();
+        return { getState: () => state, rerender: render };
+    }
+
+    _renderViewerComponent(c, state, ctx) {
+        if (c.type === 'text') {
+            const div = document.createElement('div');
+            div.style.cssText = 'margin-bottom:8px; font-size:13px; white-space:pre-wrap;';
+            div.textContent = c.content || '';
+            return div;
+        }
+        if (c.type === 'input') {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'margin-bottom:8px;';
+            if (c.label) {
+                const label = document.createElement('label');
+                label.style.cssText = 'display:block; font-size:12px; margin-bottom:2px;';
+                label.textContent = c.label;
+                wrap.appendChild(label);
+            }
+            const inputType = c.input_type || 'text';
+            let inputEl;
+            if (inputType === 'select') {
+                inputEl = document.createElement('select');
+                (c.options || []).forEach((opt) => {
+                    const optionEl = document.createElement('option');
+                    const val = (opt && typeof opt === 'object') ? opt.value : opt;
+                    optionEl.value = val;
+                    optionEl.textContent = (opt && typeof opt === 'object' && opt.label) ? opt.label : String(val);
+                    inputEl.appendChild(optionEl);
+                });
+            } else if (inputType === 'textarea') {
+                inputEl = document.createElement('textarea');
+                inputEl.rows = 3;
+            } else if (inputType === 'checkbox') {
+                inputEl = document.createElement('input');
+                inputEl.type = 'checkbox';
+            } else {
+                inputEl = document.createElement('input');
+                inputEl.type = inputType === 'number' ? 'number' : 'text';
+            }
+            inputEl.style.cssText = inputType === 'checkbox' ? 'cursor:pointer;' : 'width:100%; box-sizing:border-box; padding:4px; font-size:12px;';
+            const currentVal = state[c.state_key] !== undefined ? state[c.state_key] : c.default;
+            if (inputType === 'checkbox') inputEl.checked = !!currentVal;
+            else if (currentVal !== undefined) inputEl.value = currentVal;
+            if (c.enabled_if) {
+                let enabled = true;
+                try { enabled = !!this._evalSafeExpression(c.enabled_if, state); } catch (_) { /* 表達式錯誤時預設啟用 */ }
+                inputEl.disabled = !enabled;
+            }
+            inputEl.addEventListener('change', () => {
+                state[c.state_key] = inputType === 'checkbox' ? inputEl.checked : (inputType === 'number' ? Number(inputEl.value) : inputEl.value);
+                ctx.rerender();
+            });
+            wrap.appendChild(inputEl);
+            return wrap;
+        }
+        if (c.type === 'button') {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = c.label || '按鈕';
+            btn.style.cssText = 'padding:6px 14px; margin:2px 4px 2px 0; border-radius:6px; border:1px solid rgba(0,0,0,0.15); cursor:pointer; font-size:12px;';
+            if (c.enabled_if) {
+                let enabled = true;
+                try { enabled = !!this._evalSafeExpression(c.enabled_if, state); } catch (_) { /* 表達式錯誤時預設啟用 */ }
+                btn.disabled = !enabled;
+            }
+            btn.addEventListener('click', () => ctx.dispatchAction(String(c.action || '')));
+            return btn;
+        }
+        if (c.type === 'subagent_panel') return this._renderViewerSubagentPanel(c);
+        return null;
+    }
+
+    _renderViewerSubagentPanel(c) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin:8px 0; padding:8px; border:1px dashed rgba(0,0,0,0.2); border-radius:6px;';
+        const domainInfo = SUBAGENT_DOMAIN_REGISTRY[c.domain];
+        const label = document.createElement('div');
+        label.style.cssText = 'font-size:11px; font-weight:bold; margin-bottom:4px; opacity:0.7;';
+        label.textContent = `🤖 子agent（${(domainInfo && domainInfo.label) || c.domain}）`;
+        wrap.appendChild(label);
+        const textarea = document.createElement('textarea');
+        textarea.rows = 2;
+        textarea.placeholder = c.prompt_placeholder || '輸入要問這個子agent的內容...';
+        textarea.style.cssText = 'width:100%; box-sizing:border-box; font-size:12px; padding:4px;';
+        wrap.appendChild(textarea);
+        const sendBtn = document.createElement('button');
+        sendBtn.type = 'button';
+        sendBtn.textContent = '送出';
+        sendBtn.style.cssText = 'margin-top:4px; padding:4px 12px; font-size:12px; border-radius:6px; border:1px solid rgba(0,0,0,0.15); cursor:pointer;';
+        const resultDiv = document.createElement('div');
+        resultDiv.style.cssText = 'margin-top:6px; font-size:12px; white-space:pre-wrap;';
+        sendBtn.addEventListener('click', async () => {
+            const task = textarea.value.trim();
+            if (!task) return;
+            sendBtn.disabled = true;
+            resultDiv.textContent = '⏳ 執行中…';
+            try {
+                const r = await this._delegateToSubagentDomain(c.domain, task);
+                resultDiv.textContent = r.ok ? r.result : `⚠️ ${r.error}`;
+            } catch (err) {
+                resultDiv.textContent = `⚠️ ${err.message || err}`;
+            } finally {
+                sendBtn.disabled = false;
+            }
+        });
+        wrap.appendChild(sendBtn);
+        wrap.appendChild(resultDiv);
+        return wrap;
+    }
+
+    // ============================================================
     // tw_stock_db客製: 階段2——persistentStorage檔案解析（見計畫文件階段2）。
     // 使用者透過📎附件按鈕上傳的檔案存在既有this.fileCache（IndexedDB，
     // kind='uploaded'），AI透過list_uploaded_files/parse_uploaded_file（見
@@ -6275,7 +6643,43 @@ ${existingNodeSummaries}
                 return null;
             }
         }
+        if (msg._displayViewerYaml) {
+            // tw_stock_db客製: 互動viewer匯出時刻意不截圖（表單元件的像素
+            // 外觀對報告閱讀者沒什麼意義，實際有意義的是「使用者填了什麼」
+            // 這份資料本身）——改成文字摘要（頁面標題+每個input目前的值），
+            // 見_faAppendVisualSnapshotSlides/_faMarkdownToPdfBlob怎麼處理
+            // kind==='viewer_summary'。
+            try {
+                const text = await this._summarizeViewerStateForExport(msg._displayViewerYaml);
+                return { text, kind: 'viewer_summary' };
+            } catch (_) {
+                return null;
+            }
+        }
         return null;
+    }
+
+    // 把viewer YAML的頁面/元件結構＋目前persistentStorage存的實際填寫值，
+    // 組成一段給PPTX/PDF用的可讀文字摘要。
+    async _summarizeViewerStateForExport(yamlText) {
+        await this._ensureJsYamlLoaded();
+        const validation = this._validateInteractiveViewerYaml(yamlText);
+        if (!validation.ok) return `（互動viewer格式錯誤，無法產生摘要：${validation.error}）`;
+        const viewer = validation.viewer;
+        const state = (await this.stateStore.get(`viewer:${viewer.state_namespace}`)) || {};
+        const lines = [];
+        viewer.pages.forEach((page) => {
+            lines.push(`【${page.title || page.id}】`);
+            (page.components || []).forEach((c) => {
+                if (c.type === 'text' && c.content) lines.push(c.content);
+                if (c.type === 'input') {
+                    const val = state[c.state_key] !== undefined ? state[c.state_key] : c.default;
+                    lines.push(`${c.label || c.state_key}：${val === undefined || val === '' ? '(未填寫)' : val}`);
+                }
+            });
+            lines.push('');
+        });
+        return lines.join('\n').trim() || '（這個viewer沒有任何內容）';
     }
 
     // 掃這則assistant回覆「同一輪對話」（往前找到上一則user訊息為止）裡
@@ -6289,7 +6693,7 @@ ${existingNodeSummaries}
         for (let i = idx - 1; i >= 0; i--) {
             const m = this.messages[i];
             if (m.role === 'user') break;
-            if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg) {
+            if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg || m._displayViewerYaml) {
                 const snap = await this._captureVisualSnapshot(m);
                 if (snap) collected.unshift(snap);
             }
@@ -7753,6 +8157,27 @@ ${existingNodeSummaries}
     // 互相比較，拆開各自獨立判斷就沒有意義）——AI_SYSTEM_PROMPT裡有教
     // 這個判斷原則，交給AI自己先分類問題類型再決定要不要用這個工具。
 
+    // tw_stock_db客製: 階段5——從delegate_to_subagent工具callback抽出來的
+    // 共用邏輯，讓互動viewer的subagent_panel元件（見_mountInteractiveViewer）
+    // 可以呼叫同一套domain查找/委派邏輯，不用重複寫一份。回傳plain object
+    // （不是JSON字串），呼叫端各自決定要不要JSON.stringify。
+    async _delegateToSubagentDomain(domainKey, task) {
+        const domain = SUBAGENT_DOMAIN_REGISTRY[domainKey];
+        if (!domain || !domain.enabled) {
+            const available = Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k]) => k);
+            return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
+        }
+        try {
+            const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+                allowedToolNames: domain.toolNames,
+                systemPrompt: domain.systemPrompt,
+            });
+            return { ok: true, domain: domainKey, result };
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+    }
+
     // tw_stock_db客製: 單一子任務的執行迴圈——跟主對話的_loopFetch/
     // _loopFetchNative是同樣的「送出請求→解析工具呼叫→執行→餵回結果→
     // 再送出」邏輯，但簡化成非串流、固定輪數上限、訊息歷史用區域變數
@@ -8389,6 +8814,9 @@ ${existingNodeSummaries}
             // tw_stock_db客製: 階段4——通用繪圖SVG同一套作法（見
             // _buildToolResultMessage的_displayDrawingSvg說明）。
             const drawingMap = {};
+            // tw_stock_db客製: 階段5——互動viewer YAML同一套作法（見
+            // _buildToolResultMessage的_displayViewerYaml說明）。
+            const viewerMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -8406,6 +8834,7 @@ ${existingNodeSummaries}
                 if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
                 if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
                 if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
+                if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -8416,6 +8845,7 @@ ${existingNodeSummaries}
                     if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
                     if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
                     if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
+                    if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -8428,6 +8858,7 @@ ${existingNodeSummaries}
                 chipsMap,
                 scene3DMap,
                 drawingMap,
+                viewerMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -8493,6 +8924,13 @@ ${existingNodeSummaries}
                 Object.entries(data.drawingMap).forEach(([key, svgText]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayDrawingSvg', { value: svgText, enumerable: false, configurable: true });
+                });
+            }
+            if (data.viewerMap) {
+                Object.entries(data.viewerMap).forEach(([key, yamlText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayViewerYaml', { value: yamlText, enumerable: false, configurable: true });
+                    this._latestViewerYaml = yamlText;
                 });
             }
         } catch (err) {
@@ -8769,6 +9207,29 @@ ${existingNodeSummaries}
                     <div style="max-width:100%; overflow:auto; background:#fff; border-radius:6px; border:1px solid rgba(0,0,0,0.1); padding:8px;">${msg._displayDrawingSvg}</div>
                 `;
                 container.appendChild(drawWrap);
+                return;
+            }
+
+            // tw_stock_db客製: 階段5——互動viewer，同樣「一律顯示、不受
+            // showInternalTrace開關影響」原則。掛載是非同步的（要載入
+            // js-yaml），先同步插入容器保住訊息順序。
+            if (msg._displayViewerYaml) {
+                const viewerWrap = document.createElement('div');
+                viewerWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                viewerWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #059669; margin-bottom: 4px;">📋 互動表單</div>`;
+                const mountDiv = document.createElement('div');
+                container.appendChild(viewerWrap);
+                viewerWrap.appendChild(mountDiv);
+                (async () => {
+                    const validation = this._validateInteractiveViewerYaml(msg._displayViewerYaml);
+                    if (!validation.ok) {
+                        mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 互動viewer格式錯誤：${this._escapeHtml(validation.error)}</div>`;
+                        return;
+                    }
+                    await this._mountInteractiveViewer(mountDiv, validation.viewer);
+                })().catch((err) => {
+                    mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 互動viewer渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
+                });
                 return;
             }
         }
