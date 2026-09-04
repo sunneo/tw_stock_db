@@ -7092,18 +7092,29 @@ ${existingNodeSummaries}
             sourcePre.textContent = src || '（沒有原始碼內容）';
             wrapEl.appendChild(sourcePre);
         });
+        // tw_stock_db客製: 2026-09-05使用者明確要求「必須要做，不要當
+        // ambiguous」——原本這裡是「動態建立<a>+合成click()」的做法，
+        // 這種模式在部分行動裝置瀏覽器上，如果click()前有經過任何一次
+        // await（即使只是微任務等級的延遲），可能會被瀏覽器判定不再是
+        // 「使用者手勢觸發」而悄悄擋下下載、完全沒有錯誤訊息、看起來就像
+        // 按了沒反應。改用這個專案既有、已經在PPTX/PDF/圖片/skill.zip
+        // 匯出都驗證過確實可靠的下載機制（generateAndDeliverFile→存進
+        // FileCache→在對話裡產生一個真正的、使用者自己點擊的下載連結
+        // 訊息）——下載動作變成使用者自己在後續一次真實點擊觸發，不會
+        // 有這種瀏覽器手勢時效性的疑慮。
         downloadBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const src = await getSourceFn();
-            const blob = new Blob([src || ''], { type: 'text/plain;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${filenameBase}_${Date.now()}.${fileExt}`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
+            const original = downloadBtn.textContent;
+            downloadBtn.textContent = '⏳';
+            try {
+                const src = await getSourceFn();
+                const blob = new Blob([src || ''], { type: 'text/plain;charset=utf-8' });
+                await this.generateAndDeliverFile(blob, `${filenameBase}_${Date.now()}.${fileExt}`, 'text/plain;charset=utf-8');
+            } catch (err) {
+                this._log(`❌ 下載原始碼失敗：${err.message || err}`);
+            } finally {
+                downloadBtn.textContent = original;
+            }
         });
         container.appendChild(viewBtn);
         container.appendChild(downloadBtn);
