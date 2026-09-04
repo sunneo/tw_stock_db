@@ -2208,7 +2208,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5111,6 +5111,16 @@ ${sourceTool.handlerScript}
             params.emissive = m.emissive;
             params.emissiveIntensity = Number.isFinite(m.emissive_intensity) ? m.emissive_intensity : 1;
         }
+        // tw_stock_db客製: 2026-09-05使用者實測回報——想用一顆大球體當「天空」
+        // 把相機包在裡面，結果完全看不到球體，因為THREE.Mesh預設單面渲染
+        // （THREE.FrontSide，只畫外側面），相機在球體內部時看到的是背面，
+        // 直接被剔除變成完全透明/看不見。這是跟polygon那次winding bug
+        // 不同的成因（sphere幾何體本身完全正確，問題純粹是「從哪一側看」），
+        // 修法是讓material.side可以由YAML明講：front（預設，維持現有行為
+        // 不變）、back（只畫內側面，天空球/室內場景從裡面看這種情境要用
+        // 這個）、double（兩面都畫，最保險但效能較差）。
+        if (m.side === 'back') params.side = THREE.BackSide;
+        else if (m.side === 'double') params.side = THREE.DoubleSide;
         const material = new THREE.MeshStandardMaterial(params);
         try {
             let tex = null;
@@ -5206,12 +5216,20 @@ ${sourceTool.handlerScript}
         // （效能/正確性都沒有理由改成雙面）。
         if (node.mesh === 'polygon') {
             material.side = THREE.DoubleSide;
-            geometry.userData = geometry.userData || {};
-            geometry.userData.faDoubleSided = true;
             // tw_stock_db客製: 有給逐頂點colors時（見_build3DPolygonGeometry）
             // 要開啟vertexColors材質才會真的套用，不然three.js預設無視color
             // BufferAttribute、整片維持material.color那個單一顏色。
             if (geometry.attributes.color) material.vertexColors = true;
+        }
+        // tw_stock_db客製: 2026-09-05——軟體光柵化fallback（_raster3DFrame）
+        // 是跟WebGL材質完全獨立的另一套剔除實作，material.side==='back'/
+        // 'double'（見_build3DMaterial的說明，例如天空球從內部看）跟
+        // polygon的winding安全網一樣都要標記faDoubleSided，兩條路徑才會
+        // 一致——軟體路徑不特別區分back跟double（都當作「不剔除」處理，
+        // 對「相機在球體內部看天空」這種實際用法來說視覺上沒有差異）。
+        if (node.mesh === 'polygon' || (node.material && (node.material.side === 'back' || node.material.side === 'double'))) {
+            geometry.userData = geometry.userData || {};
+            geometry.userData.faDoubleSided = true;
         }
         const mesh = new THREE.Mesh(geometry, material);
         const pos = Array.isArray(node.position) ? node.position : [0, 0, 0];
