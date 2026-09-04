@@ -550,6 +550,50 @@ const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸�
 // 想了沒有真的回答，現在請直接給答案」。
 const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成了內部思考，沒有輸出任何最終回覆內容、也沒有呼叫任何工具。請現在直接給出最終答案或呼叫需要的工具，不用重複或摘要你剛才想過的內容，也不要再次陷入純思考而不輸出結果。';
 
+// tw_stock_db客製: sub agent委派框架（delegate_to_subagent工具）的domain
+// 註冊表——刻意寫死每個domain能用的工具子集+專屬system prompt（不像
+// 通用的_runSubAgentTask那樣預設能看到全部工具），理由見計畫文件：
+// domain專屬工具的使用guidance是跟該domain專屬system prompt綁在一起設計
+// 的，開放任意組合等於要求每個工具都要能配合任何system prompt，複雜度
+// 不成比例。目前只有rag_lookup是真正啟用的驗證用domain，其餘（
+// file_analysis/drawing/scene_3d/interactive_component）留給後續階段
+// 各自加入工具子集時才把enabled改成true——未啟用的domain呼叫時直接回報
+// 「尚未實作」，不是crash。
+//
+// 2026-09-05使用者明確要求的設計原則（後續階段新增domain時都要遵守）：
+// 「domain主功能的tool的暴露保持為主體，並將核心功能註冊分段，省token以
+// 避免注意渙散與幻覺發生」——跟get_tool_details（文字協定下只列名稱+極短
+// 摘要，完整規格按需查詢）跟redmine參考文件§13.6（render_3d_scene自己的
+// description只留最常用欄位，texture/particles/polygon/defs這類進階主題
+// 移出去用get_3d_scene_topic(topic)按需查）是同一個精神。後續階段（尤其
+// file_analysis要對付十幾種檔案格式、scene_3d要涵蓋粒子/貼圖/defs等進階
+// 主題）新增toolNames時，每個domain應該只暴露1-2個「主功能」工具（名稱+
+// 描述要精簡，只講最常用的核心用法），任何進階/次要的參數細節或次要能力
+// 一律包成domain自己的get_xxx_topic(topic)這類按需查詢工具，不要把所有
+// 細節一次攤平進主工具的description或一次註冊一大排工具——目的是讓被委派
+// 的子任務system prompt/tools schema本身保持精簡，不會因為工具描述太長
+// 稀釋掉模型的注意力、增加幻覺機率。
+const SUBAGENT_DOMAIN_REGISTRY = {
+    rag_lookup: {
+        enabled: true,
+        label: 'RAG知識圖譜查詢',
+        toolNames: ['rag_query_graph'],
+        systemPrompt: '你是一個專門查詢RAG知識圖譜的子任務助理。使用者會給你一個查詢需求，你只能使用rag_query_graph工具查詢知識圖譜，查到結果後直接用一段精簡的文字總結回答，不要輸出多餘的寒暄或重複問題本身。如果查無相關記錄，直接明講查無資料，不要編造答案。',
+    },
+    file_analysis: { enabled: false, label: '檔案解讀分析', toolNames: [], systemPrompt: '' },
+    drawing: { enabled: false, label: '通用繪圖', toolNames: [], systemPrompt: '' },
+    scene_3d: { enabled: false, label: '3D場景設計', toolNames: [], systemPrompt: '' },
+    interactive_component: { enabled: false, label: '互動元件生成', toolNames: [], systemPrompt: '' },
+};
+
+// tw_stock_db客製: delegate_to_subagent委派出去的子任務迴圈輪數上限——
+// 瀏覽器端沒有redmine版本「佔用共用伺服器執行緒」的限制，不需要照抄它的
+// 8輪硬上限，但仍要有一個寬鬆但存在的上限純粹防止端點異常/模型跳針造成
+// 無限迴圈燒費用，量級比照既有MAX_AUTO_CONTINUE_ROUNDS（40）思路，這裡
+// 取一半——委派任務通常比「接續被截斷的單一回覆」更早能有結論，20輪已經
+// 相當寬裕。
+const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
+
 // tw_stock_db客製: 內建的模型清單，給MODEL NAME欄位的<datalist>下拉選單、
 // 以及「MODEL NAME留空時自動fallback」機制（見_resolveAutoFallbackModel）
 // 共用。使用者仍然可以自己輸入清單以外的任何模型名稱——這只是常用選項的
@@ -1231,6 +1275,14 @@ class FloatingAssistant {
             // 斜線指令選單（見_wireSlashCommandMenu），手機版也要有同樣的
             // 好處——這裡給使用者一個開關可以關掉（例如覺得干擾），預設開啟。
             slashCommandMenuEnabled: true,
+            // tw_stock_db客製: 使用者要求「中間tool call tracing跟thinking都要
+            // 可以用齒輪開關決定是否顯示，預設改成隱藏，使用者只應該在乎最終
+            // 結果」——這個開關預設false（隱藏），跟slashCommandMenuEnabled
+            // 預設true的方向刻意相反，見_renderSingleMessage()裡實際套用這個
+            // 開關的四個位置（原生tool_calls摺疊卡、文字式[CALL:...]摺疊卡、
+            // tool結果/系統上下文摘要摺疊卡、思考過程摺疊卡）。圖片型tool結果
+            // （🖼️ 圖表截圖）不受這個開關影響，一律顯示。
+            showInternalTrace: false,
         };
     }
 
@@ -1476,6 +1528,7 @@ class FloatingAssistant {
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
+            showInternalTrace: raw.showInternalTrace === true,
         };
     }
 
@@ -1804,6 +1857,43 @@ ${fnData.code}
             },
             { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
         );
+
+        // tw_stock_db客製: sub agent委派框架的入口工具（見計畫階段1）。刻意
+        // 不把delegate_to_subagent自己放進任何domain的toolNames子集裡——
+        // 委派出去的子任務迴圈看不到這個工具，沒辦法再往下委派，避免無限
+        // 遞迴。description刻意精簡（只列domain名稱+一行用途），不逐一展開
+        // 每個domain底下實際有哪些工具/怎麼用，呼應上面SUBAGENT_DOMAIN_REGISTRY
+        // 的註解說明的「主功能工具保持精簡」原則。
+        this.register_openai_tool('delegate_to_subagent',
+            '把一個任務委派給指定領域的專家子agent處理，子agent只能使用該領域的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。domain目前可用: ' +
+            Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k, d]) => `${k}(${d.label})`).join('、') +
+            '。參數: {"task":"要委派的任務描述","domain":"領域代號"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const task = String(parsed.task || '').trim();
+                const domainKey = String(parsed.domain || '').trim();
+                if (!task) return JSON.stringify({ ok: false, error: '缺少task參數（要委派的任務描述）' });
+                const domain = SUBAGENT_DOMAIN_REGISTRY[domainKey];
+                if (!domain || !domain.enabled) {
+                    const available = Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k]) => k);
+                    return JSON.stringify({ ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available });
+                }
+                try {
+                    const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+                        allowedToolNames: domain.toolNames,
+                        systemPrompt: domain.systemPrompt,
+                    });
+                    return JSON.stringify({ ok: true, domain: domainKey, result });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                task: { type: 'string', description: '要委派給子agent的任務描述' },
+                domain: { type: 'string', description: '領域代號，例如rag_lookup' },
+            }, required: ['task', 'domain'], additionalProperties: false }
+        );
     }
 
     _refreshSystemPromptMessage() {
@@ -1836,7 +1926,12 @@ ${fnData.code}
         ].join('\n');
     }
 
-    _getCombinedToolEntries() {
+    // tw_stock_db客製: allowedNames（非null時）把回傳的工具entries限制在這個
+    // 名稱子集內——給delegate_to_subagent的domain委派用（見
+    // SUBAGENT_DOMAIN_REGISTRY/_runSubAgentTask），讓被委派的子任務迴圈
+    // 只看得到、只能呼叫該domain允許的工具，不是全部38個工具。null（預設，
+    // 所有既有呼叫端都沒傳這個參數）維持原本「回傳全部工具」的行為不變。
+    _getCombinedToolEntries(allowedNames = null) {
         const entries = Object.entries(this.tools).map(([name, tool]) => [name, Object.assign({ source: 'predefined' }, tool)]);
         this.advancedSettings.customTools.forEach(tool => {
             entries.push([tool.name, {
@@ -1845,7 +1940,9 @@ ${fnData.code}
                 source: 'custom'
             }]);
         });
-        return entries;
+        if (!allowedNames) return entries;
+        const allowedSet = new Set(allowedNames);
+        return entries.filter(([name]) => allowedSet.has(name));
     }
 
     // tw_stock_db客製: 2026-08-24使用者要求——沒有資工背景的人透過自訂
@@ -1869,8 +1966,8 @@ ${fnData.code}
         return 'tool_' + hash.toString(36);
     }
 
-    _getToolDefinition(name) {
-        const entries = this._getCombinedToolEntries();
+    _getToolDefinition(name, allowedNames = null) {
+        const entries = this._getCombinedToolEntries(allowedNames);
         const direct = entries.find(([toolName]) => toolName === name);
         if (direct) return direct[1];
         const byAlias = entries.find(([toolName]) => this._sanitizeToolNameForNativeApi(toolName) === name);
@@ -2143,8 +2240,8 @@ ${fnData.code}
     // {type:'object'}（不逐一定義每個參數型別），效果比嚴格schema差一點，
     // 但仍然比純文字[CALL:...]可靠，模型看得到工具名稱/描述並能正確產生
     // 呼叫。
-    _buildNativeToolsSchema() {
-        return this._getCombinedToolEntries().map(([name, tool]) => ({
+    _buildNativeToolsSchema(allowedNames = null) {
+        return this._getCombinedToolEntries(allowedNames).map(([name, tool]) => ({
             type: 'function',
             function: {
                 name: this._sanitizeToolNameForNativeApi(name),
@@ -5862,11 +5959,20 @@ ${existingNodeSummaries}
     // （不動this.messages），沒有streaming UI更新、沒有pruneContext（子
     // 任務本來就是短命、用完即丟，正常不會累積到需要壓縮；真的異常時
     // maxRounds上限會擋住，不會無限迴圈）。
-    async _runSubAgentTask(userPrompt, maxRounds = 6) {
+    // tw_stock_db客製: options.allowedToolNames（非null時）+ options.systemPrompt
+    // （非空字串時）給delegate_to_subagent的domain委派用——把這次子任務迴圈
+    // 限制在指定的工具子集內、換上domain專屬system prompt，取代預設的
+    // 「看得到全部工具+主system prompt」行為。runBatchSubAgents既有呼叫端
+    // 沒有傳options，行為完全不變。
+    async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
         const useNative = this._shouldUseNativeToolCalls(apiModel);
+        const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames : null;
+        const systemPrompt = (typeof options.systemPrompt === 'string' && options.systemPrompt.trim())
+            ? options.systemPrompt
+            : this._getFinalSystemPrompt();
         let messages = [
-            { role: 'system', content: this._getFinalSystemPrompt() },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
         ];
 
@@ -5880,7 +5986,7 @@ ${existingNodeSummaries}
                 stream: false,
             };
             if (useNative) {
-                body.tools = this._buildNativeToolsSchema();
+                body.tools = this._buildNativeToolsSchema(allowedToolNames);
                 body.tool_choice = 'auto';
             } else {
                 // tw_stock_db客製: 見_loopFetch裡CALL_STOP_SEQUENCE的說明，子任務
@@ -5930,7 +6036,7 @@ ${existingNodeSummaries}
                     const fnName = tc.function && tc.function.name;
                     const rawArgs = (tc.function && tc.function.arguments) || '{}';
                     try {
-                        const toolDef = this._getToolDefinition(fnName);
+                        const toolDef = this._getToolDefinition(fnName, allowedToolNames);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
                         const result = await Promise.resolve(toolDef.callback(rawArgs));
                         messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
@@ -5986,7 +6092,7 @@ ${existingNodeSummaries}
 
             for (const task of toolTasks) {
                 try {
-                    const toolDef = this._getToolDefinition(task.fnName);
+                    const toolDef = this._getToolDefinition(task.fnName, allowedToolNames);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                     const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
@@ -6184,6 +6290,10 @@ ${existingNodeSummaries}
                 <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
                     <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                     <label for="ai-slash-menu-chk" style="font-size:12px; cursor:pointer; user-select:none; color:${palette.detailText};">輸入框打「/」時顯示可用指令選單</label>
+                </div>
+                <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" id="ai-show-trace-chk" ${this.advancedSettings.showInternalTrace === true ? 'checked' : ''} style="cursor:pointer;">
+                    <label for="ai-show-trace-chk" style="font-size:12px; cursor:pointer; user-select:none; color:${palette.detailText};">顯示工具呼叫追蹤與思考過程（預設隱藏，圖片結果不受影響）</label>
                 </div>
 
                 <div style="margin-top:10px;">
@@ -6729,6 +6839,7 @@ ${existingNodeSummaries}
         // [CALL:...]文字（呼叫資訊在msg.tool_calls結構化欄位），比照文字
         // 模式的摺疊呈現方式，避免畫面出現一個空白的AI回覆泡泡。
         if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+            if (this.advancedSettings.showInternalTrace !== true) return;
             const detailEl = document.createElement('details');
             detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
             const callsText = msg.tool_calls.map(tc => `${tc.function?.name}(${tc.function?.arguments || ''})`).join('\n');
@@ -6742,6 +6853,7 @@ ${existingNodeSummaries}
 
         // 💡 情況一：如果訊息是 AI 輸出的 Tool 呼叫指令，例如 [CALL: xxx(...)]
         if (msg.role === 'assistant' && msg.content.trim().startsWith('[CALL:')) {
+            if (this.advancedSettings.showInternalTrace !== true) return;
             const detailEl = document.createElement('details');
             detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
             detailEl.innerHTML = `
@@ -6795,6 +6907,7 @@ ${existingNodeSummaries}
                 )
             )
         ) {
+            if (this.advancedSettings.showInternalTrace !== true) return;
             let title = "ℹ️ 系統內部上下文";
             let bgColor = "#feebc8"; // 預設黃色
             let borderCol = "#dd6b20";
@@ -6849,7 +6962,7 @@ ${existingNodeSummaries}
             const thinking = msg._reasoningDisplay
                 ? { thinking: msg._reasoningDisplay, answer: msg.content }
                 : this._extractThinkingContent(msg.content);
-            if (thinking.thinking) {
+            if (thinking.thinking && this.advancedSettings.showInternalTrace === true) {
                 const detailEl = document.createElement('details');
                 detailEl.style = `margin-bottom: 8px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #6366f1; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
                 detailEl.innerHTML = `<summary style="font-weight: bold; outline: none; user-select: none;">🧠 思考過程 (點擊展開)</summary>`;
@@ -7098,6 +7211,14 @@ ${existingNodeSummaries}
             slashMenuChkBx.addEventListener('change', (e) => {
                 this.advancedSettings.slashCommandMenuEnabled = e.target.checked;
                 this._saveAdvancedSettings();
+            });
+        }
+        const showTraceChkBx = document.getElementById('ai-show-trace-chk');
+        if (showTraceChkBx) {
+            showTraceChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.showInternalTrace = e.target.checked;
+                this._saveAdvancedSettings();
+                this._renderMessageHistory();
             });
         }
 
