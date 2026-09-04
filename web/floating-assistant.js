@@ -427,10 +427,16 @@ class FileCache {
        立刻檢查是否超過容量上限，超過就從「最久沒被存取」的開始刪，直到
        低於上限的95%（留一點緩衝，避免每次都卡在上限邊緣頻繁觸發淘汰）。
        回傳存進去的id，供訊息物件的_downloadFile參照使用。 */
-    async put(filename, mimeType, blob) {
+    // tw_stock_db客製: kind區分這筆記錄是誰產生的——'generated'（預設，AI
+    // 匯出的PDF/PPTX/Markdown，既有行為不變）或'uploaded'（階段2新增：
+    // 使用者透過📎附件按鈕上傳、給AI叫用sub agent解析的檔案，見
+    // list_uploaded_files/parse_uploaded_file）。同一個FileCache/LRU淘汰
+    // 機制兩種都適用，只是列出「使用者上傳了哪些檔案」時要能篩掉AI自己
+    // 產生的匯出檔，不然使用者會在清單裡看到自己從沒上傳過的PPTX。
+    async put(filename, mimeType, blob, kind = 'generated') {
         const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
         const record = {
-            id, filename, mimeType, blob,
+            id, filename, mimeType, blob, kind,
             sizeBytes: blob.size,
             createdAt: Date.now(),
             lastAccessedAt: Date.now(),
@@ -580,7 +586,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['rag_query_graph'],
         systemPrompt: '你是一個專門查詢RAG知識圖譜的子任務助理。使用者會給你一個查詢需求，你只能使用rag_query_graph工具查詢知識圖譜，查到結果後直接用一段精簡的文字總結回答，不要輸出多餘的寒暄或重複問題本身。如果查無相關記錄，直接明講查無資料，不要編造答案。',
     },
-    file_analysis: { enabled: false, label: '檔案解讀分析', toolNames: [], systemPrompt: '' },
+    file_analysis: {
+        enabled: true,
+        label: '檔案解讀分析',
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file'],
+        systemPrompt: '你是一個專門解讀使用者上傳檔案的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+    },
     drawing: { enabled: false, label: '通用繪圖', toolNames: [], systemPrompt: '' },
     scene_3d: { enabled: false, label: '3D場景設計', toolNames: [], systemPrompt: '' },
     interactive_component: { enabled: false, label: '互動元件生成', toolNames: [], systemPrompt: '' },
@@ -699,6 +710,10 @@ const FA_ASSET_URLS = {
     // （見web/vendor/katex/README.md的說明）。
     katexCss: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css',
     jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+    // tw_stock_db客製: 階段2（檔案解析sub agent）跟階段3（3D場景YAML描述）
+    // 共用同一份js-yaml，理由跟redmine參考版本一致（見計畫文件）——同一個
+    // vendored版本兩處共用，不重複vendor兩份。
+    jsyaml: 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js',
 };
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
@@ -1201,6 +1216,10 @@ class FloatingAssistant {
         // 系統一樣依mount實例分開資料庫，避免同一頁掛多個AI助理實例時互相
         // 干擾彼此的檔案快取。
         this.fileCache = new FileCache('FloatingAssistantFiles_' + ragDbSuffix, this._getFileCacheLimitBytes());
+        // tw_stock_db客製: 階段2——使用者按📎附件按鈕選好、還沒送出訊息前的
+        // 暫存附件清單（見_wireAttachmentUpload/_submitChatInput），送出當下
+        // 才把檔名+file_id接進使用者訊息文字並清空。
+        this._pendingAttachments = [];
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
@@ -1893,6 +1912,46 @@ ${fnData.code}
                 task: { type: 'string', description: '要委派給子agent的任務描述' },
                 domain: { type: 'string', description: '領域代號，例如rag_lookup' },
             }, required: ['task', 'domain'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 階段2——persistentStorage檔案上傳+解析（見計畫文件
+        // 階段2、_parseUploadedFileContent的說明）。只暴露兩個主功能工具
+        // （列出/解析），每個格式的細節解析邏輯藏在_parseUploadedFileContent
+        // 內部依副檔名分派，不對AI逐一展開每種格式怎麼解析——呼應
+        // SUBAGENT_DOMAIN_REGISTRY註解說的「主功能工具保持精簡」原則。
+        this.register_openai_tool('list_uploaded_files',
+            '列出使用者透過📎附件按鈕上傳、目前還在快取中的檔案清單（不含AI自己產生的匯出檔）。無參數。',
+            async () => {
+                try {
+                    const all = await this.fileCache.getAll();
+                    const uploaded = all.filter(r => r.kind === 'uploaded')
+                        .map(r => ({ file_id: r.id, filename: r.filename, sizeBytes: r.sizeBytes, uploadedAt: r.createdAt }));
+                    return JSON.stringify({ ok: true, files: uploaded });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        this.register_openai_tool('parse_uploaded_file',
+            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（用list_uploaded_files查詢可用的file_id）' });
+                const record = await this.fileCache.get(fileId);
+                if (!record || record.kind !== 'uploaded') {
+                    return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
+                }
+                const result = await this._parseUploadedFileContent(record, { entryPath: parsed.entry_path });
+                return JSON.stringify(Object.assign({ filename: record.filename }, result));
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: '要解析的檔案id，用list_uploaded_files取得' },
+                entry_path: { type: 'string', description: '（選填）壓縮檔內要抽取內容的項目路徑' },
+            }, required: ['file_id'], additionalProperties: false }
         );
     }
 
@@ -3992,6 +4051,354 @@ ${sourceTool.handlerScript}
         return this._jszipLoadPromise;
     }
 
+    // tw_stock_db客製: 階段2（parse_uploaded_file解析yaml）+ 階段3（3D場景
+    // YAML描述）共用同一份js-yaml延遲載入，同一個精神：不用到就不多背這個
+    // CDN依賴。
+    _ensureJsYamlLoaded() {
+        if (typeof jsyaml !== 'undefined') return Promise.resolve();
+        if (this._jsyamlLoadPromise) return this._jsyamlLoadPromise;
+        this._jsyamlLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.jsyaml).catch(e => {
+            this._jsyamlLoadPromise = null;
+            throw new Error('js-yaml 載入失敗（可能是網路問題）：' + e.message);
+        });
+        return this._jsyamlLoadPromise;
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 階段2——persistentStorage檔案解析（見計畫文件階段2）。
+    // 使用者透過📎附件按鈕上傳的檔案存在既有this.fileCache（IndexedDB，
+    // kind='uploaded'），AI透過list_uploaded_files/parse_uploaded_file（見
+    // _registerBuiltinAiTools）讀取。這裡是實際的格式偵測+各格式解析邏輯，
+    // 刻意不vendor SheetJS/mammoth這類重量級函式庫（見計畫文件），xlsx/docx/
+    // pptx都是zip-based OOXML，用既有已vendored的JSZip手刻抽取，只取「AI
+    // 讀得懂內容」所需的最小結構，不追求還原完整格式/樣式。
+    // ============================================================
+
+    _detectFileFormat(filename) {
+        const lower = String(filename || '').toLowerCase();
+        if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'tgz';
+        const dotIdx = lower.lastIndexOf('.');
+        return dotIdx === -1 ? '' : lower.slice(dotIdx + 1);
+    }
+
+    // 簡易CSV欄位切割，支援雙引號包欄位+雙引號escape（""→"），不支援
+    // RFC4180以外的進階情境（例如欄位內換行），對絕大多數實務CSV已經足夠。
+    _parseCsvLine(line) {
+        const fields = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuotes) {
+                if (ch === '"') {
+                    if (line[i + 1] === '"') { cur += '"'; i++; } else { inQuotes = false; }
+                } else cur += ch;
+            } else {
+                if (ch === '"') inQuotes = true;
+                else if (ch === ',') { fields.push(cur); cur = ''; }
+                else cur += ch;
+            }
+        }
+        fields.push(cur);
+        return fields;
+    }
+
+    _parseCsvText(text, maxRows = 50) {
+        const lines = text.split(/\r\n|\n|\r/).filter(l => l.length > 0);
+        if (!lines.length) return { headers: [], rows: [], totalRows: 0 };
+        const headers = this._parseCsvLine(lines[0]);
+        const dataLines = lines.slice(1);
+        const rows = dataLines.slice(0, maxRows).map(l => this._parseCsvLine(l));
+        return { headers, rows, totalRows: dataLines.length, truncated: dataLines.length > maxRows };
+    }
+
+    // 極簡INI/CFG/INF解析：[section]標頭+key=value，不支援跨行值/巢狀
+    // section，遇到不合語法的行直接跳過（防禦性，不拋錯中斷整份解析）。
+    _parseIniText(text) {
+        const result = {};
+        let currentSection = result;
+        text.split(/\r\n|\n|\r/).forEach(rawLine => {
+            const line = rawLine.trim();
+            if (!line || line.startsWith(';') || line.startsWith('#')) return;
+            const sectionMatch = line.match(/^\[(.+)\]$/);
+            if (sectionMatch) {
+                const name = sectionMatch[1].trim();
+                result[name] = result[name] || {};
+                currentSection = result[name];
+                return;
+            }
+            const eqIdx = line.indexOf('=');
+            if (eqIdx === -1) return;
+            const key = line.slice(0, eqIdx).trim();
+            const value = line.slice(eqIdx + 1).trim();
+            currentSection[key] = value;
+        });
+        return result;
+    }
+
+    // tw_stock_db客製: TOON（Token-Oriented Object Notation）是用縮排+表格
+    // 語法縮減JSON語意冗餘的緊湊格式。這裡是best-effort簡化實作（純量、
+    // 巢狀物件、`key[N]{f1,f2}:`表格陣列、`key[N]:`純量陣列四種語法），不是
+    // 對照官方spec逐字驗證過的完整實作——見計畫文件「已知取捨」，解析失敗
+    // 一律安全退回rawText，不拋錯中斷，讓AI至少能看到原始文字自己判讀。
+    _parseToonText(text) {
+        try {
+            const lines = text.split(/\r\n|\n|\r/);
+            const getIndent = (line) => { const m = line.match(/^ */); return m[0].length; };
+            let pos = 0;
+            const parseBlock = (indent) => {
+                const obj = {};
+                while (pos < lines.length) {
+                    const line = lines[pos];
+                    if (!line.trim()) { pos++; continue; }
+                    const lineIndent = getIndent(line);
+                    if (lineIndent < indent) break;
+                    if (lineIndent > indent) { pos++; continue; }
+                    const trimmed = line.trim();
+                    pos++;
+                    const tableMatch = trimmed.match(/^([^\[\]{}:]+)\[(\d+)\]\{([^}]*)\}:\s*$/);
+                    if (tableMatch) {
+                        const [, key, countStr, fieldsStr] = tableMatch;
+                        const count = Number(countStr);
+                        const fields = fieldsStr.split(',').map(f => f.trim());
+                        const arr = [];
+                        for (let i = 0; i < count && pos < lines.length;) {
+                            const rowLine = lines[pos];
+                            if (!rowLine.trim()) { pos++; continue; }
+                            pos++;
+                            const values = this._parseCsvLine(rowLine.trim());
+                            const rowObj = {};
+                            fields.forEach((f, idx) => { rowObj[f] = values[idx] !== undefined ? values[idx] : ''; });
+                            arr.push(rowObj);
+                            i++;
+                        }
+                        obj[key.trim()] = arr;
+                        continue;
+                    }
+                    const listMatch = trimmed.match(/^([^\[\]{}:]+)\[(\d+)\]:\s*$/);
+                    if (listMatch) {
+                        const [, key, countStr] = listMatch;
+                        const count = Number(countStr);
+                        const arr = [];
+                        for (let i = 0; i < count && pos < lines.length;) {
+                            const itemLine = lines[pos];
+                            if (!itemLine.trim()) { pos++; continue; }
+                            pos++;
+                            const m2 = itemLine.trim().match(/^-\s?(.*)$/);
+                            arr.push(m2 ? m2[1] : itemLine.trim());
+                            i++;
+                        }
+                        obj[key.trim()] = arr;
+                        continue;
+                    }
+                    const colonIdx = trimmed.indexOf(':');
+                    if (colonIdx === -1) continue;
+                    const key = trimmed.slice(0, colonIdx).trim();
+                    const rest = trimmed.slice(colonIdx + 1).trim();
+                    obj[key] = rest === '' ? parseBlock(indent + 2) : rest;
+                }
+                return obj;
+            };
+            const parsed = parseBlock(0);
+            return { parsed };
+        } catch (err) {
+            return { parseError: String(err.message || err), rawText: text.length > 8000 ? text.slice(0, 8000) + '\n…(截斷)' : text };
+        }
+    }
+
+    async _gunzipToArrayBuffer(blob) {
+        if (typeof DecompressionStream === 'undefined') {
+            throw new Error('這個瀏覽器不支援DecompressionStream，無法解開gzip/tgz');
+        }
+        const decompressedStream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
+        return await new Response(decompressedStream).arrayBuffer();
+    }
+
+    // 極簡USTAR格式tar reader：只讀header算出name/size/typeflag+對應的資料
+    // 區塊位移，不驗證checksum、不支援長檔名擴充(pax/gnu longlink)——實務上
+    // 絕大多數現代打包出來的.tar都能正確讀出entry清單，遇到不支援的擴充
+    // 格式頂多名稱被截斷，不會整包解析失敗。
+    _parseTarBuffer(buffer) {
+        const bytes = new Uint8Array(buffer);
+        const entries = [];
+        let offset = 0;
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const parseOctal = (segment) => {
+            let s = '';
+            for (const b of segment) { if (b === 0 || b === 32) break; s += String.fromCharCode(b); }
+            return s.trim() ? parseInt(s.trim(), 8) : 0;
+        };
+        while (offset + 512 <= bytes.length) {
+            const header = bytes.subarray(offset, offset + 512);
+            let allZero = true;
+            for (let i = 0; i < 512; i++) { if (header[i] !== 0) { allZero = false; break; } }
+            if (allZero) break;
+            const nameBytes = header.subarray(0, 100);
+            let nameEnd = nameBytes.indexOf(0);
+            if (nameEnd === -1) nameEnd = 100;
+            const name = decoder.decode(nameBytes.subarray(0, nameEnd));
+            const size = parseOctal(header.subarray(124, 136));
+            const typeflag = String.fromCharCode(header[156] || 48);
+            const dataStart = offset + 512;
+            entries.push({ name, size, typeflag, isDir: typeflag === '5' || name.endsWith('/'), _dataStart: dataStart });
+            const dataBlocks = Math.ceil(size / 512);
+            offset = dataStart + dataBlocks * 512;
+        }
+        return { bytes, entries };
+    }
+
+    _extractTarEntry(parsedTar, name) {
+        const entry = parsedTar.entries.find(e => e.name === name);
+        if (!entry) return null;
+        return parsedTar.bytes.subarray(entry._dataStart, entry._dataStart + entry.size);
+    }
+
+    // xlsx是zip-based OOXML：xl/sharedStrings.xml存共用字串表(<si><t>)，
+    // xl/worksheets/sheetN.xml的<c t="s">用索引參照它，其餘型別(數字/inline
+    // string)直接讀<v>/<is><t>。這裡只還原「第一個工作表的儲存格文字內容」
+    // 這個最小可用結構（依<row>/<c>的XML書寫順序輸出，不精確對應欄位字母），
+    // 不處理公式/樣式/合併儲存格。
+    async _parseXlsxZip(zip) {
+        const sheetFiles = Object.keys(zip.files).filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
+        if (!sheetFiles.length) return { ok: false, error: '找不到任何工作表 (xl/worksheets/*.xml)，可能不是有效的xlsx檔' };
+        let sharedStrings = [];
+        const sharedStringsFile = zip.file('xl/sharedStrings.xml');
+        if (sharedStringsFile) {
+            const xml = await sharedStringsFile.async('string');
+            const doc = new DOMParser().parseFromString(xml, 'application/xml');
+            sharedStrings = Array.from(doc.getElementsByTagName('si')).map(si => si.textContent || '');
+        }
+        const parseSheet = async (fileName) => {
+            const xml = await zip.file(fileName).async('string');
+            const doc = new DOMParser().parseFromString(xml, 'application/xml');
+            return Array.from(doc.getElementsByTagName('row')).map(rowEl =>
+                Array.from(rowEl.getElementsByTagName('c')).map(c => {
+                    const t = c.getAttribute('t');
+                    const vEl = c.getElementsByTagName('v')[0];
+                    if (t === 's') {
+                        const idx = vEl ? Number(vEl.textContent) : -1;
+                        return sharedStrings[idx] != null ? sharedStrings[idx] : '';
+                    }
+                    if (t === 'inlineStr') {
+                        const isEl = c.getElementsByTagName('is')[0];
+                        return isEl ? isEl.textContent : '';
+                    }
+                    return vEl ? vEl.textContent : '';
+                })
+            );
+        };
+        const firstSheetRows = await parseSheet(sheetFiles[0]);
+        return { ok: true, sheetFiles, firstSheetRows: firstSheetRows.slice(0, 200) };
+    }
+
+    // docx是zip-based OOXML：word/document.xml，段落是<w:p>，段落內文字跑在
+    // 一或多個<w:t>裡（w:r的run可能因為格式切換被拆成好幾段<w:t>，這裡把同一
+    // 段落內全部<w:t>接起來還原成一行純文字，不保留粗體/字型等樣式資訊）。
+    async _parseDocxZip(zip) {
+        const docFile = zip.file('word/document.xml');
+        if (!docFile) return { ok: false, error: '找不到 word/document.xml，可能不是有效的docx檔' };
+        const xml = await docFile.async('string');
+        const doc = new DOMParser().parseFromString(xml, 'application/xml');
+        const paragraphs = Array.from(doc.getElementsByTagName('w:p')).map(p =>
+            Array.from(p.getElementsByTagName('w:t')).map(t => t.textContent).join('')
+        );
+        const fullText = paragraphs.join('\n');
+        return { ok: true, paragraphs: paragraphs.slice(0, 300), fullText: fullText.length > 12000 ? fullText.slice(0, 12000) + '\n…(截斷)' : fullText };
+    }
+
+    // pptx是zip-based OOXML：每張投影片是ppt/slides/slideN.xml，文字跑在
+    // <a:t>裡，依slideN數字順序輸出每張投影片的文字內容陣列。
+    async _parsePptxZip(zip) {
+        const slideFiles = Object.keys(zip.files)
+            .filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+            .sort((a, b) => Number(a.match(/slide(\d+)/)[1]) - Number(b.match(/slide(\d+)/)[1]));
+        if (!slideFiles.length) return { ok: false, error: '找不到任何投影片 (ppt/slides/*.xml)，可能不是有效的pptx檔' };
+        const slides = [];
+        for (const f of slideFiles) {
+            const xml = await zip.file(f).async('string');
+            const doc = new DOMParser().parseFromString(xml, 'application/xml');
+            slides.push(Array.from(doc.getElementsByTagName('a:t')).map(t => t.textContent).join(' '));
+        }
+        return { ok: true, slideCount: slides.length, slides };
+    }
+
+    // 主解析入口：依副檔名分派。archives（zip/tar/tgz）預設只列出entries清單
+    // （不展開內容），呼叫端要看某個entry的實際內容時再帶entryPath指定要
+    // 抽取哪一個，避免一次把整個archive所有檔案內容都塞進AI的context。
+    async _parseUploadedFileContent(record, opts = {}) {
+        const format = this._detectFileFormat(record.filename);
+        const entryPath = typeof opts.entryPath === 'string' && opts.entryPath ? opts.entryPath : null;
+        try {
+            if (format === 'zip') {
+                await this._ensureJSZipLoaded();
+                const zip = await JSZip.loadAsync(record.blob);
+                if (entryPath) {
+                    const entry = zip.file(entryPath);
+                    if (!entry) return { ok: false, error: `zip內找不到項目: ${entryPath}` };
+                    const text = await entry.async('string');
+                    return { ok: true, format: 'zip_entry', entryPath, content: text.length > 20000 ? text.slice(0, 20000) + '\n…(截斷)' : text };
+                }
+                const entries = Object.keys(zip.files).map(name => ({ name, isDir: zip.files[name].dir }));
+                return { ok: true, format: 'zip', entries };
+            }
+            if (format === 'tar' || format === 'tgz') {
+                const buffer = format === 'tgz' ? await this._gunzipToArrayBuffer(record.blob) : await record.blob.arrayBuffer();
+                const parsed = this._parseTarBuffer(buffer);
+                if (entryPath) {
+                    const raw = this._extractTarEntry(parsed, entryPath);
+                    if (!raw) return { ok: false, error: `${format}內找不到項目: ${entryPath}` };
+                    const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+                    return { ok: true, format: `${format}_entry`, entryPath, content: text.length > 20000 ? text.slice(0, 20000) + '\n…(截斷)' : text };
+                }
+                return { ok: true, format, entries: parsed.entries.map(e => ({ name: e.name, size: e.size, isDir: e.isDir })) };
+            }
+            if (format === 'xlsx') {
+                await this._ensureJSZipLoaded();
+                return await this._parseXlsxZip(await JSZip.loadAsync(record.blob));
+            }
+            if (format === 'docx') {
+                await this._ensureJSZipLoaded();
+                return await this._parseDocxZip(await JSZip.loadAsync(record.blob));
+            }
+            if (format === 'pptx') {
+                await this._ensureJSZipLoaded();
+                return await this._parsePptxZip(await JSZip.loadAsync(record.blob));
+            }
+            if (format === 'csv') {
+                return { ok: true, format: 'csv', ...this._parseCsvText(await record.blob.text()) };
+            }
+            if (format === 'yaml' || format === 'yml') {
+                const text = await record.blob.text();
+                try {
+                    await this._ensureJsYamlLoaded();
+                    return { ok: true, format: 'yaml', parsed: jsyaml.load(text) };
+                } catch (err) {
+                    return { ok: true, format: 'yaml', parseError: String(err.message || err), rawText: text.length > 8000 ? text.slice(0, 8000) + '\n…(截斷)' : text };
+                }
+            }
+            if (format === 'toon') {
+                return { ok: true, format: 'toon', ...this._parseToonText(await record.blob.text()) };
+            }
+            if (['cfg', 'conf', 'ini', 'inf'].includes(format)) {
+                const text = await record.blob.text();
+                return { ok: true, format, parsed: this._parseIniText(text), rawText: text.length > 8000 ? text.slice(0, 8000) + '\n…(截斷)' : text };
+            }
+            const text = await record.blob.text();
+            if (format === 'json') {
+                try {
+                    return { ok: true, format: 'json', parsed: JSON.parse(text) };
+                } catch (err) {
+                    return { ok: true, format: 'json', parseError: String(err.message || err), rawText: text.length > 8000 ? text.slice(0, 8000) + '\n…(截斷)' : text };
+                }
+            }
+            // txt/md/markdown/log/js等純文字類，直接回傳（js刻意只當文字讀，
+            // 絕不執行——見計畫文件的安全立場）。
+            return { ok: true, format: format || 'text', content: text.length > 8000 ? text.slice(0, 8000) + `\n…(截斷，共${text.length}字元)` : text };
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+    }
+
     async _exportSkillZip() {
         try {
             await this._ensureJSZipLoaded();
@@ -4671,8 +5078,12 @@ ${existingNodeSummaries}
     // 不需要也不應該讓AI自己「決定」要不要執行；實際指令清單見
     // this.slashCommands（見register_slash_command()的註冊機制）。
     _submitChatInput(inputText, suggestBar) {
-        const textToSend = inputText.value.trim();
-        if (!textToSend) return;
+        let textToSend = inputText.value.trim();
+        // tw_stock_db客製: 階段2——如果有📎附加的檔案，就算輸入框是空的也
+        // 允許送出（單純附檔案、讓AI自己判斷要不要主動看內容，是合理的使用
+        // 情境），沒有附件時維持原本「空白不送出」的行為。
+        const hasAttachments = this._pendingAttachments.length > 0;
+        if (!textToSend && !hasAttachments) return;
 
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
@@ -4687,10 +5098,79 @@ ${existingNodeSummaries}
             }
         }
 
+        if (hasAttachments) {
+            const attachmentNote = this._pendingAttachments
+                .map(a => `${a.filename}（file_id=${a.id}）`)
+                .join('、');
+            const instruction = textToSend
+                ? textToSend
+                : '請視需要使用檔案解讀能力（parse_uploaded_file / delegate_to_subagent的file_analysis領域）查看下面附件的內容，再回答我。';
+            textToSend = `${instruction}\n\n[附件：${attachmentNote}]`;
+            this._pendingAttachments = [];
+            this._renderPendingAttachments();
+        }
+
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }
         this.executeChat(textToSend);
+    }
+
+    // tw_stock_db客製: 階段2——📎按鈕觸發隱藏的<input type=file>，選好的每個
+    // 檔案立刻存進this.fileCache（kind='uploaded'，見FileCache.put），存好
+    // 就加進this._pendingAttachments暫存清單、更新聊天輸入框上方的附件
+    // chip列；真正把file_id接進使用者訊息文字是送出當下才做（見
+    // _submitChatInput），先存起來只是讓使用者能在送出前看到「等一下會附上
+    // 哪些檔案」、也能點×移除還沒送出的附件。
+    _wireAttachmentUpload() {
+        const attachBtn = document.getElementById('ai-attach-btn');
+        const attachInput = document.getElementById('ai-attach-input');
+        if (!attachBtn || !attachInput) return;
+        attachBtn.addEventListener('click', () => attachInput.click());
+        attachInput.addEventListener('change', async () => {
+            const files = Array.from(attachInput.files || []);
+            attachInput.value = '';
+            for (const file of files) {
+                try {
+                    const id = await this.fileCache.put(file.name, file.type || 'application/octet-stream', file, 'uploaded');
+                    this._pendingAttachments.push({ id, filename: file.name, sizeBytes: file.size });
+                } catch (err) {
+                    this._log(`⚠️ 附件「${file.name}」存檔失敗：${err.message || err}`);
+                }
+            }
+            this._renderPendingAttachments();
+        });
+        const pendingRow = document.getElementById('ai-pending-attachments');
+        if (pendingRow) {
+            pendingRow.addEventListener('click', (e) => {
+                const removeBtn = e.target.closest('[data-remove-attachment-id]');
+                if (!removeBtn) return;
+                const id = removeBtn.dataset.removeAttachmentId;
+                this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== id);
+                this._renderPendingAttachments();
+            });
+        }
+    }
+
+    _renderPendingAttachments() {
+        const row = document.getElementById('ai-pending-attachments');
+        if (!row) return;
+        if (!this._pendingAttachments.length) {
+            row.style.display = 'none';
+            row.innerHTML = '';
+            return;
+        }
+        const palette = this._getThemePalette();
+        row.style.display = 'flex';
+        row.innerHTML = this._pendingAttachments.map(a => {
+            const sizeLabel = a.sizeBytes >= 1024 * 1024
+                ? `${(a.sizeBytes / 1024 / 1024).toFixed(1)}MB`
+                : `${Math.ceil(a.sizeBytes / 1024)}KB`;
+            return `<span style="display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:999px; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px;">
+                📎 ${this._escapeHtml(a.filename)}（${sizeLabel}）
+                <span data-remove-attachment-id="${this._escapeAttr(a.id)}" style="cursor:pointer; opacity:0.7;" title="移除">✕</span>
+            </span>`;
+        }).join('');
     }
 
     // ============================================================
@@ -6307,8 +6787,11 @@ ${existingNodeSummaries}
             <div id="ai-input-wrap" style="padding:10px; background:${palette.windowBg}; border-top:1px solid ${palette.windowBorder}; position:relative;">
                 <div id="ai-history-panel" style="display:none; position:absolute; left:10px; right:10px; bottom:100%; margin-bottom:6px; max-height:45vh; overflow-y:auto; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:20;"></div>
                 <div id="ai-slash-menu" style="display:none; position:absolute; left:10px; right:10px; bottom:100%; margin-bottom:6px; max-height:30vh; overflow-y:auto; background:${palette.windowBg}; border:1px solid ${palette.inputBorder}; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:21;"></div>
+                <div id="ai-pending-attachments" style="display:none; flex-wrap:wrap; gap:6px; margin-bottom:6px;"></div>
+                <input type="file" id="ai-attach-input" multiple style="display:none;">
                 <div style="display:flex; align-items:stretch; gap:6px;">
                     <button id="ai-history-btn" type="button" title="歷史訊息（手機沒有上下鍵時可以用這個瀏覽/挑選之前輸入過的內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">🕘</button>
+                    <button id="ai-attach-btn" type="button" title="附加檔案（AI 可以叫用檔案解讀能力讀取內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">📎</button>
                     <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="flex:1; min-width:0; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
                     <button id="ai-send-btn" type="button" title="送出 (Enter)" style="flex:0 0 auto; padding:0 14px; border:none; border-radius:6px; background:#76b900; color:#fff; font-size:13px; font-weight:bold; cursor:pointer;">送出</button>
                 </div>
@@ -7562,6 +8045,7 @@ ${existingNodeSummaries}
             sendBtn.addEventListener('click', () => this._submitChatInput(inputText, suggestBar));
         }
 
+        this._wireAttachmentUpload();
         this._wireSlashCommandMenu(inputText, slashMenu, suggestBar);
 
         // tw_stock_db客製: 手機上沒有實體上/下鍵，原本的ArrowUp/ArrowDown
