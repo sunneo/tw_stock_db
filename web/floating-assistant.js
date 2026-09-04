@@ -593,7 +593,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         systemPrompt: '你是一個專門解讀使用者上傳檔案的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
     drawing: { enabled: false, label: '通用繪圖', toolNames: [], systemPrompt: '' },
-    scene_3d: { enabled: false, label: '3D場景設計', toolNames: [], systemPrompt: '' },
+    scene_3d: {
+        enabled: true,
+        label: '3D場景設計',
+        toolNames: ['render_3d_scene', 'get_3d_scene_topic', 'get_3d_scene_yaml'],
+        systemPrompt: '你是一個專門設計/繪製3D場景的子任務助理，用render_3d_scene渲染純宣告式YAML描述的3D場景給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，場景格式是固定字彙的宣告式YAML）。不確定texture/particles/polygon/defs這幾個進階主題的欄位格式時，先呼叫get_3d_scene_topic查詢，不要用猜的；如果使用者是要求「調整/修改」既有場景，先呼叫get_3d_scene_yaml取得目前真正的內容再基於它修改，絕對不要憑對話記憶重新編寫一份、也不要虛構任何場景網址。渲染完成後只需要用一兩句話簡短說明做了什麼，不用重複整份YAML內容。',
+    },
     interactive_component: { enabled: false, label: '互動元件生成', toolNames: [], systemPrompt: '' },
 };
 
@@ -604,6 +609,31 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // 取一半——委派任務通常比「接續被截斷的單一回覆」更早能有結論，20輪已經
 // 相當寬裕。
 const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
+
+// tw_stock_db客製: 階段3——3D場景YAML格式的資源上限，跟計畫文件/redmine
+// 參考文件的§13.5同一組數字（MAX_EXPANDED_NODES=500）；粒子上限一般
+// preset是2000、nbody因為是真正O(n²)互相引力運算，額外壓低到60（見
+// _buildNBodyParticles的說明），這裡只在client端驗證（沒有伺服器端，
+// 見計畫文件——redmine版本的驗證原本在Ruby伺服器端，這裡整個搬到瀏覽器
+// 端做，行為一致）。
+const SCENE3D_MAX_EXPANDED_NODES = 500;
+const SCENE3D_MAX_PARTICLE_COUNT = 2000;
+const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
+const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
+const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
+const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
+
+// tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
+// 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
+// 用get_3d_scene_topic(topic)按需查詢——跟計畫文件記錄的使用者要求
+// 一致（「主功能工具保持精簡、核心功能註冊分段」），也是redmine參考
+// 文件§13.6同樣的分層說明模式。
+const SCENE3D_TOPIC_DOCS = {
+    texture: '材質貼圖進階欄位（放在node.material底下）：texture_url（外部http(s)圖片網址）或texture_data_url（base64 data URL，這個無後端架構下沒有伺服器附件系統，用這兩個取代redmine參考版本的texture_attachment_id）；texture_uv_offset:[u,v]（平移UV，0~1）、texture_uv_scale:[u,v]（縮放/裁切UV，例如[0.5,0.5]只取左上1/4區域）。注意：WebGL初始化失敗時的CPU軟體光柵化fallback不支援貼圖取樣，會退化成純色近似，這是已知取捨。',
+    particles: '粒子節點格式：{mesh:"particles", position:[x,y,z], particles:{preset, count, color, color2, size, ...依preset而定的額外欄位}}。六種preset：spark（火花噴發，額外欄位gravity，真的套用重力+顏色隨年齡冷卻+超過壽命原地重生）、flame（火焰，額外欄位spread/rise_speed/sway，往上升+亂流擾動+顏色從底部到尖端漸變）、mist（煙霧/冷氣出風口，跟flame同一種機制只是預設較慢較廣、顏色較淡）、bounce（不停彈跳的球，額外欄位amplitude/frequency/spread，用封閉解y=amplitude*|sin(t*freq+phase)|保證天生完美循環永不停止）、firework（夜空煙火，額外欄位cycle，用t%cycle實作重複的發射-爆炸-淡出循環，粒子夠多會自動分成好幾組不同相位偏移同時交錯爆炸）、nbody（真正的O(n²)小規模相互重力模擬，額外欄位g/softening，count上限只有60，比其他preset的2000低很多，因為是真的O(n²)不是預錄動畫）。count超過各自preset的上限會直接被render_3d_scene拒絕，不是靜默裁切。',
+    polygon: 'polygon節點格式：{mesh:"polygon", vertices:[[x,y,z],...], faces:[[i,j,k],...]}（faces選填，三角形頂點index清單；不給的話用簡單扇形三角化，假設vertices依序繞邊界排列）。用來表達沒有對應固定圖元的自訂形狀（例如傾斜懸挑的屋頂），沒有stairs/chair這類複雜mesh，一律用原語（含polygon）組合出來。',
+    defs: 'defs是一組具名、可重複使用的節點群組：{defs:{樹:{nodes:[{mesh:...},{mesh:...}]}}}，頂層nodes陣列裡用{use:"樹", position:[x,y,z], scale:n}實例化一次（套用位移position+等比縮放scale，縮放同時套用到子節點的position/size/radius/height）。刻意不支援巢狀（defs底下的節點自己不能再use另一個defs），展開後全部節點總數不能超過500，超過會被render_3d_scene拒絕。',
+};
 
 // tw_stock_db客製: 內建的模型清單，給MODEL NAME欄位的<datalist>下拉選單、
 // 以及「MODEL NAME留空時自動fallback」機制（見_resolveAutoFallbackModel）
@@ -714,6 +744,13 @@ const FA_ASSET_URLS = {
     // 共用同一份js-yaml，理由跟redmine參考版本一致（見計畫文件）——同一個
     // vendored版本兩處共用，不重複vendor兩份。
     jsyaml: 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js',
+    // tw_stock_db客製: 階段3（3D場景viewer）——固定用舊式global-attaching
+    // build（r128，非ES module），因為要靠<script>依序載入
+    // three.min.js→OrbitControls.js讓後者透過window.THREE直接掛上
+    // THREE.OrbitControls，跟其餘vendored函式庫（marked/pdfmake等）同一種
+    // 載入模式一致，不用額外處理ES module的import graph。
+    threejs: 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
+    threeOrbitControls: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
 };
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
@@ -1953,6 +1990,52 @@ ${fnData.code}
                 entry_path: { type: 'string', description: '（選填）壓縮檔內要抽取內容的項目路徑' },
             }, required: ['file_id'], additionalProperties: false }
         );
+
+        // tw_stock_db客製: 階段3——3D場景viewer（見_mount3DScene/計畫文件
+        // 階段3）。render_3d_scene自己的description刻意只留最常用欄位，
+        // texture/particles/polygon/defs四個進階主題移到get_3d_scene_topic
+        // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
+        // 保持精簡」的明確要求。
+        this.register_openai_tool('render_3d_scene',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box/plane用）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板用要手動處理；沒有stairs/chair這類複雜mesh，用原語組合。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。參數: {"yaml":"場景YAML描述"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const yamlText = String(parsed.yaml || '').trim();
+                if (!yamlText) return JSON.stringify({ ok: false, error: '缺少yaml參數' });
+                try {
+                    await this._ensureJsYamlLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                const validation = this._validate3DSceneYaml(yamlText);
+                if (!validation.ok) return JSON.stringify({ ok: false, error: validation.error });
+                return JSON.stringify({ type: 'scene3d', yaml: yamlText });
+            },
+            { type: 'object', properties: { yaml: { type: 'string', description: '場景YAML描述' } }, required: ['yaml'], additionalProperties: false }
+        );
+
+        this.register_openai_tool('get_3d_scene_topic',
+            '查詢render_3d_scene進階主題的完整說明（texture貼圖/particles粒子/polygon自訂形狀/defs可重用群組），這些細節不包含在render_3d_scene自己的說明裡，用之前先查這個，不要用猜的。參數: {"topic":"texture|particles|polygon|defs"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const topic = String(parsed.topic || '').trim();
+                const doc = SCENE3D_TOPIC_DOCS[topic];
+                if (!doc) return JSON.stringify({ ok: false, error: `未知主題: "${topic}"，合法值：${Object.keys(SCENE3D_TOPIC_DOCS).join('/')}` });
+                return JSON.stringify({ ok: true, topic, doc });
+            },
+            { type: 'object', properties: { topic: { type: 'string', description: 'texture|particles|polygon|defs' } }, required: ['topic'], additionalProperties: false }
+        );
+
+        this.register_openai_tool('get_3d_scene_yaml',
+            '取得目前對話中最近一次成功渲染的3D場景YAML原始內容——要修改既有場景之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
+            async () => {
+                if (!this._latestScene3DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何3D場景' });
+                return JSON.stringify({ ok: true, yaml: this._latestScene3DYaml });
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
     }
 
     _refreshSystemPromptMessage() {
@@ -2525,6 +2608,7 @@ ${fnData.code}
     _buildToolResultMessage(fnName, result, extra) {
         let imageDataUrl = null;
         let imageMeta = null;
+        let scene3DYaml = null;
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
             if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
@@ -2536,8 +2620,17 @@ ${fnData.code}
                 // 完全沒有真實數字可以用來下精準的標記/線段，只能瞎猜（實測
                 // 遇到的真實案例：標記位置對不齊K棒）。
                 if (parsed.meta && typeof parsed.meta === 'object') imageMeta = parsed.meta;
+            } else if (parsed && parsed.type === 'scene3d' && typeof parsed.yaml === 'string') {
+                // tw_stock_db客製: 階段3——3D場景跟圖片同一個「顯示內容不列入
+                // 送給LLM的上下文」原則，但理由不完全一樣：圖片是「base64太佔
+                // token」，YAML場景文字量通常不大，真正的理由是仿照參考文件
+                // §13的既有規則——絕不能讓模型憑自己對話記憶「重新默寫」一份
+                // 已經渲染過的場景YAML去修改（容易跟實際渲染出來的內容有落差），
+                // 修改既有場景一律要求先呼叫get_3d_scene_yaml拿到目前真正的
+                // 內容，這裡刻意不把YAML留在content裡，逼模型走那個工具。
+                scene3DYaml = parsed.yaml;
             }
-        } catch (_) { /* 不是圖片payload，走下面一般文字流程 */ }
+        } catch (_) { /* 不是圖片/3D場景payload，走下面一般文字流程 */ }
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
         // tw_stock_db客製: 實測發現這個NVIDIA相容端點無論是不是走原生
@@ -2565,6 +2658,10 @@ ${fnData.code}
             msg.content = `[Tool ${fnName} 已產生一張圖表圖片，已直接顯示給使用者看，圖片二進位內容不列入對話上下文]`
                 + (imageMeta ? ` 圖表實際資料摘要（如需精準標記請以此為準，不要自行估計）：${this._stripInlineBase64(JSON.stringify(imageMeta))}` : '');
             Object.defineProperty(msg, '_displayDataUrl', { value: imageDataUrl, enumerable: false, configurable: true });
+        } else if (scene3DYaml) {
+            msg.content = `[Tool ${fnName} 已產生一個可用滑鼠互動的3D場景，已直接顯示給使用者看，場景YAML原始內容不列入對話上下文。如果之後要修改這個場景，請先呼叫get_3d_scene_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
+            Object.defineProperty(msg, '_displayScene3DYaml', { value: scene3DYaml, enumerable: false, configurable: true });
+            this._latestScene3DYaml = scene3DYaml;
         } else {
             msg.content = this._formatToolResult(result, fnName);
         }
@@ -4062,6 +4159,665 @@ ${sourceTool.handlerScript}
             throw new Error('js-yaml 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._jsyamlLoadPromise;
+    }
+
+    // tw_stock_db客製: 階段3——three.js本體+OrbitControls依序載入（後者要靠
+    // 前者的window.THREE先存在才能掛上THREE.OrbitControls，見FA_ASSET_URLS
+    // 的threejs/threeOrbitControls說明），只有使用者真的觸發3D場景渲染時
+    // 才載入，同樣不無條件多背這個依賴。
+    _ensureThreeJsLoaded() {
+        if (typeof THREE !== 'undefined' && THREE.OrbitControls) return Promise.resolve();
+        if (this._threejsLoadPromise) return this._threejsLoadPromise;
+        this._threejsLoadPromise = (async () => {
+            if (typeof THREE === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.threejs);
+            if (!THREE.OrbitControls) await _faLoadScriptOnce(FA_ASSET_URLS.threeOrbitControls);
+        })().catch(e => {
+            this._threejsLoadPromise = null;
+            throw new Error('three.js 載入失敗（可能是網路問題）：' + e.message);
+        });
+        return this._threejsLoadPromise;
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 階段3——3D場景viewer（見計畫文件階段3、redmine參考
+    // 文件§13）。純宣告式YAML描述場景（不嵌入真正會執行的JS，理由跟
+    // browser_action的封閉動作清單一致——AI生成內容是prompt injection攻擊
+    // 面），驗證/展開全部搬到瀏覽器端做（沒有伺服器端）。WebGL初始化失敗時
+    // 落到CPU軟體光柵化fallback（_raster3DFrame），OrbitControls互動在
+    // 兩條路徑下都能動（只需要camera+DOM事件，不需要真的有WebGLRenderer）。
+    // ============================================================
+
+    _validate3DNodeShape(n, where) {
+        if (!n || typeof n !== 'object') return `${where} 內有非物件的節點`;
+        if (!n.mesh) return `${where} 內有節點缺少mesh欄位`;
+        if (!SCENE3D_MESH_TYPES.has(n.mesh)) return `${where} 內有未知的mesh類型: "${n.mesh}"（合法值：${[...SCENE3D_MESH_TYPES].join('/')}）`;
+        if (n.animation && !SCENE3D_ANIMATION_TYPES.has(n.animation)) return `${where} 內有未知的animation類型: "${n.animation}"（合法值：spin/bounce/orbit）`;
+        return null;
+    }
+
+    // defs不可巢狀use（見計畫文件——這個限制讓「檢查循環參照」整個問題不
+    // 存在，不需要另外寫圖形走訪防止defs互相參照造成無限展開）。
+    _validate3DDefs(defs) {
+        for (const [defName, def] of Object.entries(defs)) {
+            if (!def || !Array.isArray(def.nodes)) return `defs.${defName} 缺少nodes陣列`;
+            for (const n of def.nodes) {
+                if (n && n.use) return `defs.${defName} 內的節點不可以再use其他defs（不支援巢狀prefab）`;
+                const err = this._validate3DNodeShape(n, `defs.${defName}`);
+                if (err) return err;
+            }
+        }
+        return null;
+    }
+
+    // 把use節點換成偏移/縮放過的真實節點副本，一律深拷貝，絕不修改defs本身。
+    _instantiate3DPrefabNode(node, offset, scale) {
+        const cloned = JSON.parse(JSON.stringify(node));
+        const pos = Array.isArray(cloned.position) ? cloned.position : [0, 0, 0];
+        cloned.position = [
+            (pos[0] || 0) * scale + offset[0],
+            (pos[1] || 0) * scale + offset[1],
+            (pos[2] || 0) * scale + offset[2],
+        ];
+        if (Array.isArray(cloned.size)) cloned.size = cloned.size.map(v => v * scale);
+        if (Number.isFinite(cloned.radius)) cloned.radius *= scale;
+        if (Number.isFinite(cloned.height)) cloned.height *= scale;
+        return cloned;
+    }
+
+    _expand3DSceneNodes(nodes, defs) {
+        const result = [];
+        for (const n of nodes) {
+            if (n && n.use) {
+                const def = defs[n.use];
+                if (!def) continue; // 未知use名稱：防禦性靜默跳過（正常情況已在validate階段擋過一次，這裡是給手改/過期yaml的防禦）
+                const offset = Array.isArray(n.position) ? n.position : [0, 0, 0];
+                const scale = Number.isFinite(n.scale) ? n.scale : 1;
+                for (const child of def.nodes) result.push(this._instantiate3DPrefabNode(child, offset, scale));
+                continue;
+            }
+            result.push(n);
+        }
+        return result;
+    }
+
+    // 主驗證入口：YAML語法→形狀→defs/use展開→節點數/粒子數上限，全部通過
+    // 才回傳ok:true+展開後的節點陣列，任何一步失敗都回傳明確的錯誤訊息
+    // （不是籠統的「格式錯誤」，讓AI看得懂哪裡要修正）。
+    _validate3DSceneYaml(yamlText) {
+        let scene;
+        try {
+            scene = jsyaml.load(yamlText);
+        } catch (err) {
+            return { ok: false, error: `YAML語法錯誤: ${err.message}` };
+        }
+        if (!scene || typeof scene !== 'object') return { ok: false, error: '場景內容必須是一個物件（至少要有nodes陣列）' };
+        const nodes = Array.isArray(scene.nodes) ? scene.nodes : [];
+        if (!nodes.length) return { ok: false, error: '缺少nodes陣列，或nodes是空的' };
+        const defs = (scene.defs && typeof scene.defs === 'object') ? scene.defs : {};
+        const defsErr = this._validate3DDefs(defs);
+        if (defsErr) return { ok: false, error: defsErr };
+        for (const n of nodes) {
+            if (n && n.use) {
+                if (!defs[n.use]) return { ok: false, error: `use引用了不存在的defs: "${n.use}"` };
+                continue;
+            }
+            const err = this._validate3DNodeShape(n, 'nodes');
+            if (err) return { ok: false, error: err };
+        }
+        const expanded = this._expand3DSceneNodes(nodes, defs);
+        if (expanded.length > SCENE3D_MAX_EXPANDED_NODES) {
+            return { ok: false, error: `展開後節點數(${expanded.length})超過上限${SCENE3D_MAX_EXPANDED_NODES}，請減少use次數或nodes數量` };
+        }
+        for (const n of expanded) {
+            if (n.mesh === 'particles') {
+                const preset = n.particles && n.particles.preset;
+                if (!SCENE3D_PARTICLE_PRESETS.has(preset)) {
+                    return { ok: false, error: `particles節點缺少合法的preset（spark/flame/mist/bounce/firework/nbody），收到: ${preset}` };
+                }
+                const cap = preset === 'nbody' ? SCENE3D_MAX_NBODY_PARTICLE_COUNT : SCENE3D_MAX_PARTICLE_COUNT;
+                const count = Number(n.particles.count) || 0;
+                if (count > cap) return { ok: false, error: `particles節點的count(${count})超過${preset}的上限${cap}` };
+            }
+        }
+        return { ok: true, scene, expandedNodes: expanded };
+    }
+
+    _build3DGeometryForNode(node) {
+        const size = Array.isArray(node.size) ? node.size : [1, 1, 1];
+        const radius = Number.isFinite(node.radius) ? node.radius : 1;
+        const height = Number.isFinite(node.height) ? node.height : 1;
+        switch (node.mesh) {
+            case 'box': return new THREE.BoxGeometry(size[0] || 1, size[1] || 1, size[2] || 1);
+            case 'sphere': return new THREE.SphereGeometry(radius, 24, 16);
+            case 'cylinder': return new THREE.CylinderGeometry(radius, radius, height, 24);
+            case 'cone': return new THREE.ConeGeometry(radius, height, 24);
+            case 'plane': return new THREE.PlaneGeometry(size[0] || 1, size[1] || 1);
+            case 'torus': return new THREE.TorusGeometry(radius, radius * 0.35, 12, 24);
+            case 'polygon': return this._build3DPolygonGeometry(node);
+            default: return null;
+        }
+    }
+
+    // polygon：接受任意3D頂點+可選的三角面index清單(faces)，沒給faces時
+    // 用簡單扇形三角化（假設頂點依序繞邊界排列），足以表達自訂形狀（例如
+    // 傾斜懸挑屋頂），不追求處理非凸/自我相交這類進階幾何情況。
+    _build3DPolygonGeometry(node) {
+        const verts = Array.isArray(node.vertices) ? node.vertices : [];
+        const geo = new THREE.BufferGeometry();
+        if (verts.length < 3) return geo;
+        let faces = Array.isArray(node.faces) && node.faces.length ? node.faces : null;
+        if (!faces) {
+            faces = [];
+            for (let i = 1; i < verts.length - 1; i++) faces.push([0, i, i + 1]);
+        }
+        const positions = [];
+        for (const f of faces) {
+            for (const idx of f) {
+                const v = verts[idx];
+                if (v) positions.push(v[0] || 0, v[1] || 0, v[2] || 0);
+            }
+        }
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.computeVertexNormals();
+        return geo;
+    }
+
+    // texture_attachment_id（redmine版本指向伺服器端Workspace附件）在這個
+    // 無後端架構下沒有對應物——改用texture_url（外部http(s)網址）或
+    // texture_data_url（base64 data URL），這是計畫文件記錄過的刻意調整。
+    _build3DMaterial(node) {
+        const m = node.material || {};
+        const params = {
+            color: m.color || '#cccccc',
+            metalness: Number.isFinite(m.metalness) ? m.metalness : 0.2,
+            roughness: Number.isFinite(m.roughness) ? m.roughness : 0.7,
+        };
+        if (Number.isFinite(m.opacity) && m.opacity < 1) { params.transparent = true; params.opacity = m.opacity; }
+        if (m.emissive) {
+            params.emissive = m.emissive;
+            params.emissiveIntensity = Number.isFinite(m.emissive_intensity) ? m.emissive_intensity : 1;
+        }
+        const material = new THREE.MeshStandardMaterial(params);
+        const texUrl = m.texture_url || m.texture_data_url;
+        if (texUrl) {
+            try {
+                const tex = new THREE.TextureLoader().load(texUrl);
+                if (Array.isArray(m.texture_uv_offset)) tex.offset.set(m.texture_uv_offset[0] || 0, m.texture_uv_offset[1] || 0);
+                if (Array.isArray(m.texture_uv_scale)) tex.repeat.set(m.texture_uv_scale[0] || 1, m.texture_uv_scale[1] || 1);
+                material.map = tex;
+                material.needsUpdate = true;
+            } catch (_) { /* 貼圖載入失敗不影響其餘場景渲染，退回純色 */ }
+        }
+        return material;
+    }
+
+    _build3DMeshObject(node) {
+        if (node.mesh === 'particles') return this._build3DParticleSystem(node);
+        const geometry = this._build3DGeometryForNode(node);
+        if (!geometry) return null;
+        const mesh = new THREE.Mesh(geometry, this._build3DMaterial(node));
+        const pos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        mesh.position.set(pos[0] || 0, pos[1] || 0, pos[2] || 0);
+        if (Array.isArray(node.rotation)) {
+            mesh.rotation.set(node.rotation[0] || 0, node.rotation[1] || 0, node.rotation[2] || 0);
+        } else if (node.mesh === 'plane') {
+            // tw_stock_db客製: plane預設面朝相機（垂直），不是水平躺平——這是
+            // 計畫文件記錄過的既知bug教訓，只在使用者沒有明確指定rotation時
+            // 才補上-90度讓plane預設當地板用。
+            mesh.rotation.x = -Math.PI / 2;
+        }
+        return mesh;
+    }
+
+    _build3DAnimatorForNode(obj, node) {
+        const anim = node.animation;
+        if (anim === 'spin') {
+            const speed = Number.isFinite(node.animation_speed) ? node.animation_speed : 1;
+            return () => { obj.rotation.y += 0.02 * speed; };
+        }
+        if (anim === 'bounce') {
+            const baseY = obj.position.y;
+            const amplitude = Number.isFinite(node.animation_amplitude) ? node.animation_amplitude : 0.5;
+            const freq = Number.isFinite(node.animation_speed) ? node.animation_speed : 2;
+            return (t) => { obj.position.y = baseY + amplitude * Math.abs(Math.sin(t * freq)); };
+        }
+        if (anim === 'orbit') {
+            const center = Array.isArray(node.animation_center) ? node.animation_center : [0, obj.position.y, 0];
+            const radius = Number.isFinite(node.animation_radius)
+                ? node.animation_radius
+                : (Math.hypot(obj.position.x - center[0], obj.position.z - center[2]) || 2);
+            const speed = Number.isFinite(node.animation_speed) ? node.animation_speed : 1;
+            const startAngle = Math.atan2(obj.position.z - center[2], obj.position.x - center[0]);
+            return (t) => {
+                const angle = startAngle + t * speed;
+                obj.position.x = center[0] + radius * Math.cos(angle);
+                obj.position.z = center[2] + radius * Math.sin(angle);
+            };
+        }
+        return null;
+    }
+
+    // ---- 粒子系統：六種preset，見計畫/redmine參考文件§13.3的逐一說明 ----
+
+    _build3DParticleSystem(node) {
+        const preset = node.particles && node.particles.preset;
+        if (preset === 'spark') return this._buildSparkParticles(node);
+        if (preset === 'flame') return this._buildFlameLikeParticles(node, { spread: 0.4, speed: 1.2, sway: 0.4, defaultColor1: '#ffcc66', defaultColor2: '#552200' });
+        if (preset === 'mist') return this._buildFlameLikeParticles(node, { spread: 1.5, speed: 0.35, sway: 0.9, defaultColor1: '#dddddd', defaultColor2: '#aaccee' });
+        if (preset === 'bounce') return this._buildBounceParticles(node);
+        if (preset === 'firework') return this._buildFireworkParticles(node);
+        if (preset === 'nbody') return this._buildNBodyParticles(node);
+        return null;
+    }
+
+    _new3DPointsBase(count, sizeDefault) {
+        const positions = new Float32Array(count * 3);
+        const colors = new Float32Array(count * 3);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const material = new THREE.PointsMaterial({ size: sizeDefault, vertexColors: true, transparent: true, depthWrite: false });
+        return { positions, colors, points: new THREE.Points(geometry, material) };
+    }
+
+    // spark：從position往外/往上噴出，真的套用重力，顏色隨年齡從color冷卻到
+    // color2，超過壽命就在原地重生形成連續噴發循環。
+    _buildSparkParticles(node) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || 200, SCENE3D_MAX_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const color1 = new THREE.Color(p.color || '#ffffff');
+        const color2 = new THREE.Color(p.color2 || '#661100');
+        const gravity = Number.isFinite(p.gravity) ? p.gravity : -3;
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.08);
+        const vel = new Float32Array(count * 3), age = new Float32Array(count), life = new Float32Array(count);
+        const reset = (i) => {
+            positions[i * 3] = basePos[0]; positions[i * 3 + 1] = basePos[1]; positions[i * 3 + 2] = basePos[2];
+            const theta = Math.random() * Math.PI * 2, phi = Math.random() * Math.PI * 0.4;
+            const speed = 1.5 + Math.random() * 2.5;
+            vel[i * 3] = Math.cos(theta) * Math.sin(phi) * speed;
+            vel[i * 3 + 1] = Math.cos(phi) * speed + 1.5;
+            vel[i * 3 + 2] = Math.sin(theta) * Math.sin(phi) * speed;
+            age[i] = 0; life[i] = 0.5 + Math.random() * 0.6;
+            colors[i * 3] = color1.r; colors[i * 3 + 1] = color1.g; colors[i * 3 + 2] = color1.b;
+        };
+        for (let i = 0; i < count; i++) reset(i);
+        const update = (t, dt) => {
+            for (let i = 0; i < count; i++) {
+                age[i] += dt;
+                if (age[i] > life[i]) { reset(i); continue; }
+                vel[i * 3 + 1] += gravity * dt;
+                positions[i * 3] += vel[i * 3] * dt; positions[i * 3 + 1] += vel[i * 3 + 1] * dt; positions[i * 3 + 2] += vel[i * 3 + 2] * dt;
+                const f = age[i] / life[i];
+                colors[i * 3] = color1.r + (color2.r - color1.r) * f;
+                colors[i * 3 + 1] = color1.g + (color2.g - color1.g) * f;
+                colors[i * 3 + 2] = color1.b + (color2.b - color1.b) * f;
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // flame/mist共用同一種機制（往上升+亂流擾動+顏色從底部到尖端漸變），
+    // 差別只在spread/speed/sway/預設顏色（flame橘黃→暗紅較快較窄；mist
+    // 灰白→淡藍白較慢較廣，見_build3DParticleSystem呼叫端的opts）。
+    _buildFlameLikeParticles(node, opts) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || 150, SCENE3D_MAX_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const color1 = new THREE.Color(p.color || opts.defaultColor1);
+        const color2 = new THREE.Color(p.color2 || opts.defaultColor2);
+        const spread = Number.isFinite(p.spread) ? p.spread : opts.spread;
+        const riseSpeed = Number.isFinite(p.rise_speed) ? p.rise_speed : opts.speed;
+        const sway = Number.isFinite(p.sway) ? p.sway : opts.sway;
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.15);
+        const age = new Float32Array(count), life = new Float32Array(count), phase = new Float32Array(count);
+        const seedX = new Float32Array(count), seedZ = new Float32Array(count);
+        const reset = (i) => {
+            age[i] = 0; life[i] = 0.8 + Math.random() * 0.8; phase[i] = Math.random() * Math.PI * 2;
+            seedX[i] = (Math.random() - 0.5) * spread; seedZ[i] = (Math.random() - 0.5) * spread;
+            positions[i * 3] = basePos[0] + seedX[i] * 0.2;
+            positions[i * 3 + 1] = basePos[1];
+            positions[i * 3 + 2] = basePos[2] + seedZ[i] * 0.2;
+            colors[i * 3] = color1.r; colors[i * 3 + 1] = color1.g; colors[i * 3 + 2] = color1.b;
+        };
+        for (let i = 0; i < count; i++) reset(i);
+        const update = (t, dt) => {
+            for (let i = 0; i < count; i++) {
+                age[i] += dt;
+                if (age[i] > life[i]) { reset(i); continue; }
+                const f = age[i] / life[i];
+                positions[i * 3 + 1] += riseSpeed * dt;
+                positions[i * 3] = basePos[0] + seedX[i] * (0.2 + f * spread) + Math.sin(t * 2 + phase[i]) * sway * f * 0.3;
+                positions[i * 3 + 2] = basePos[2] + seedZ[i] * (0.2 + f * spread) + Math.cos(t * 2 + phase[i]) * sway * f * 0.3;
+                colors[i * 3] = color1.r + (color2.r - color1.r) * f;
+                colors[i * 3 + 1] = color1.g + (color2.g - color1.g) * f;
+                colors[i * 3 + 2] = color1.b + (color2.b - color1.b) * f;
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // bounce：刻意用封閉解y=amplitude*|sin(t*freq+phase)|而不是追蹤真實
+    // 速度/阻尼，保證每個球永遠彈到同樣高度、永不停止、天生完美循環。
+    _buildBounceParticles(node) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || 100, SCENE3D_MAX_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const color1 = new THREE.Color(p.color || '#ffffff');
+        const spreadRadius = Number.isFinite(p.spread) ? p.spread : 2;
+        const amplitude = Number.isFinite(p.amplitude) ? p.amplitude : 1;
+        const freq = Number.isFinite(p.frequency) ? p.frequency : 2;
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.12);
+        const seedX = new Float32Array(count), seedZ = new Float32Array(count), phase = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+            const ang = Math.random() * Math.PI * 2, r = Math.random() * spreadRadius;
+            seedX[i] = Math.cos(ang) * r; seedZ[i] = Math.sin(ang) * r; phase[i] = Math.random() * Math.PI * 2;
+            colors[i * 3] = color1.r; colors[i * 3 + 1] = color1.g; colors[i * 3 + 2] = color1.b;
+        }
+        const update = (t) => {
+            for (let i = 0; i < count; i++) {
+                positions[i * 3] = basePos[0] + seedX[i];
+                positions[i * 3 + 1] = basePos[1] + amplitude * Math.abs(Math.sin(t * freq + phase[i]));
+                positions[i * 3 + 2] = basePos[2] + seedZ[i];
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // firework：用t%cycle直接取模實作重複的「發射-爆炸-淡出」循環，天生
+    // 完美循環不需要額外狀態；粒子數夠多時自動分成好幾組、每組不同的相位
+    // 偏移，畫面上同時看得到好幾發交錯的煙火。
+    _buildFireworkParticles(node) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || 300, SCENE3D_MAX_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const color1 = new THREE.Color(p.color || '#ffaa00');
+        const color2 = new THREE.Color(p.color2 || '#ff2222');
+        const cycle = Number.isFinite(p.cycle) ? p.cycle : 3;
+        const groupCount = Math.max(1, Math.min(6, Math.round(count / 50)));
+        const perGroup = Math.max(1, Math.floor(count / groupCount));
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.1);
+        const groupOf = new Int32Array(count);
+        const dirX = new Float32Array(count), dirY = new Float32Array(count), dirZ = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+            groupOf[i] = Math.min(groupCount - 1, Math.floor(i / perGroup));
+            const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+            dirX[i] = Math.sin(phi) * Math.cos(theta); dirY[i] = Math.cos(phi); dirZ[i] = Math.sin(phi) * Math.sin(theta);
+        }
+        const groupPhase = new Float32Array(groupCount);
+        for (let g = 0; g < groupCount; g++) groupPhase[g] = (g / groupCount) * cycle;
+        const update = (t) => {
+            for (let i = 0; i < count; i++) {
+                const g = groupOf[i];
+                const localT = (t + groupPhase[g]) % cycle;
+                let ex, ey, ez, brightness;
+                if (localT < cycle * 0.3) {
+                    const f = localT / (cycle * 0.3);
+                    ex = basePos[0]; ey = basePos[1] + f * 3; ez = basePos[2];
+                    brightness = 0.3;
+                } else {
+                    const f = (localT - cycle * 0.3) / (cycle * 0.7);
+                    const expandR = f * 2.5;
+                    ex = basePos[0] + dirX[i] * expandR;
+                    ey = basePos[1] + 3 + dirY[i] * expandR - f * f * 1.5;
+                    ez = basePos[2] + dirZ[i] * expandR;
+                    brightness = Math.max(0, 1 - f);
+                }
+                positions[i * 3] = ex; positions[i * 3 + 1] = ey; positions[i * 3 + 2] = ez;
+                colors[i * 3] = (color1.r + (color2.r - color1.r) * 0.3) * brightness;
+                colors[i * 3 + 1] = (color1.g + (color2.g - color1.g) * 0.3) * brightness;
+                colors[i * 3 + 2] = (color1.b + (color2.b - color1.b) * 0.3) * brightness;
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // nbody：真正的小規模相互重力模擬，O(n²)每幀，softening避免距離趨近0
+    // 時力道爆炸；因為是O(n²)，count另外裁切到比一般preset更低的上限。
+    _buildNBodyParticles(node) {
+        const p = node.particles || {};
+        const count = Math.min(Number(p.count) || 20, SCENE3D_MAX_NBODY_PARTICLE_COUNT);
+        const basePos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        const color1 = new THREE.Color(p.color || '#88ccff');
+        const spread = Number.isFinite(p.spread) ? p.spread : 2;
+        const g = Number.isFinite(p.g) ? p.g : 0.5;
+        const softening = Number.isFinite(p.softening) ? p.softening : 0.2;
+        const { positions, colors, points } = this._new3DPointsBase(count, Number.isFinite(p.size) ? p.size : 0.15);
+        const vel = new Float32Array(count * 3), mass = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+            const ang = Math.random() * Math.PI * 2, r = Math.random() * spread, h = (Math.random() - 0.5) * spread * 0.4;
+            positions[i * 3] = basePos[0] + Math.cos(ang) * r;
+            positions[i * 3 + 1] = basePos[1] + h;
+            positions[i * 3 + 2] = basePos[2] + Math.sin(ang) * r;
+            mass[i] = 0.5 + Math.random();
+            colors[i * 3] = color1.r; colors[i * 3 + 1] = color1.g; colors[i * 3 + 2] = color1.b;
+        }
+        const update = (t, dt) => {
+            const ax = new Float32Array(count), ay = new Float32Array(count), az = new Float32Array(count);
+            for (let i = 0; i < count; i++) {
+                for (let j = i + 1; j < count; j++) {
+                    const dx = positions[j * 3] - positions[i * 3];
+                    const dy = positions[j * 3 + 1] - positions[i * 3 + 1];
+                    const dz = positions[j * 3 + 2] - positions[i * 3 + 2];
+                    const distSq = dx * dx + dy * dy + dz * dz + softening * softening;
+                    const dist = Math.sqrt(distSq);
+                    const force = g / distSq;
+                    const fx = force * dx / dist, fy = force * dy / dist, fz = force * dz / dist;
+                    ax[i] += fx * mass[j]; ay[i] += fy * mass[j]; az[i] += fz * mass[j];
+                    ax[j] -= fx * mass[i]; ay[j] -= fy * mass[i]; az[j] -= fz * mass[i];
+                }
+            }
+            for (let i = 0; i < count; i++) {
+                vel[i * 3] += ax[i] * dt; vel[i * 3 + 1] += ay[i] * dt; vel[i * 3 + 2] += az[i] * dt;
+                positions[i * 3] += vel[i * 3] * dt; positions[i * 3 + 1] += vel[i * 3 + 1] * dt; positions[i * 3 + 2] += vel[i * 3 + 2] * dt;
+            }
+        };
+        return { object: points, update, isParticleSystem: true };
+    }
+
+    // ---- CPU軟體光柵化fallback（WebGLRenderer建立失敗時使用） ----
+
+    // 把場景裡所有Mesh的世界座標三角形投影到螢幕座標、依深度排序後逐一
+    // 填色（painter's algorithm，不是真正的z-buffer），法向量點光源方向
+    // 當作簡易平面明暗；粒子（THREE.Points）改用獨立的fillRect繪製步驟，
+    // 疊在mesh三角形之後畫（跟參考實作一致）。刻意不支援材質貼圖取樣
+    // （退化成純色近似），也沒有真正的疊加混合/發光後製特效——這些都是
+    // 計畫文件記錄過的已知取捨。
+    _raster3DFrame(scene, camera, ctx, width, height) {
+        ctx.fillStyle = '#111318';
+        ctx.fillRect(0, 0, width, height);
+        camera.updateMatrixWorld();
+        const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        const lightDir = new THREE.Vector3(0.5, 1, 0.3).normalize();
+
+        const project = (v3) => {
+            const p = v3.clone().applyMatrix4(vpMatrix);
+            return { x: (p.x * 0.5 + 0.5) * width, y: (1 - (p.y * 0.5 + 0.5)) * height, behind: p.z > 1 || p.z < -1 };
+        };
+
+        const triangles = [];
+        scene.traverse((obj) => {
+            if (!obj.isMesh || !obj.geometry) return;
+            obj.updateMatrixWorld();
+            const posAttr = obj.geometry.attributes.position;
+            if (!posAttr) return;
+            const index = obj.geometry.index;
+            const worldMatrix = obj.matrixWorld;
+            const color = (obj.material && obj.material.color) ? obj.material.color : new THREE.Color('#cccccc');
+            const getVertex = (idx) => new THREE.Vector3().fromBufferAttribute(posAttr, idx).applyMatrix4(worldMatrix);
+            const triCount = index ? Math.floor(index.count / 3) : Math.floor(posAttr.count / 3);
+            for (let t = 0; t < triCount; t++) {
+                const i0 = index ? index.getX(t * 3) : t * 3;
+                const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+                const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+                const a = getVertex(i0), b = getVertex(i1), c = getVertex(i2);
+                const normal = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize();
+                const brightness = Math.max(0.25, normal.dot(lightDir));
+                const depth = a.distanceTo(camera.position) + b.distanceTo(camera.position) + c.distanceTo(camera.position);
+                triangles.push({ a, b, c, color, brightness, depth });
+            }
+        });
+        triangles.sort((x, y) => y.depth - x.depth);
+
+        for (const tri of triangles) {
+            const pa = project(tri.a), pb = project(tri.b), pc = project(tri.c);
+            if (pa.behind || pb.behind || pc.behind) continue;
+            const area = (pb.x - pa.x) * (pc.y - pa.y) - (pc.x - pa.x) * (pb.y - pa.y);
+            if (area >= 0) continue; // 背面剔除（螢幕座標y向下，正面三角形投影後帶負面積）
+            const c = tri.color;
+            const r = Math.min(255, Math.round(c.r * 255 * tri.brightness));
+            const g = Math.min(255, Math.round(c.g * 255 * tri.brightness));
+            const b = Math.min(255, Math.round(c.b * 255 * tri.brightness));
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.beginPath();
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
+            ctx.lineTo(pc.x, pc.y);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        scene.traverse((obj) => {
+            if (!obj.isPoints || !obj.geometry) return;
+            obj.updateMatrixWorld();
+            const posAttr = obj.geometry.attributes.position;
+            const colorAttr = obj.geometry.attributes.color;
+            if (!posAttr || !colorAttr) return;
+            for (let i = 0; i < posAttr.count; i++) {
+                const v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(obj.matrixWorld);
+                const proj = project(v);
+                if (proj.behind) continue;
+                const r = Math.round(Math.min(1, Math.max(0, colorAttr.getX(i))) * 255);
+                const g = Math.round(Math.min(1, Math.max(0, colorAttr.getY(i))) * 255);
+                const b = Math.round(Math.min(1, Math.max(0, colorAttr.getZ(i))) * 255);
+                ctx.fillStyle = `rgb(${r},${g},${b})`;
+                ctx.fillRect(proj.x - 2, proj.y - 2, 4, 4);
+            }
+        });
+    }
+
+    // ---- 掛載/渲染迴圈 ----
+
+    // 把一段場景YAML掛到container底下：建THREE.Scene/camera/lights/nodes，
+    // 試著建立WebGLRenderer，失敗就落到_raster3DFrame軟體光柵化；不管走
+    // 哪條路徑都用真正的THREE.OrbitControls處理滑鼠互動（只需要camera+DOM
+    // 事件，不需要WebGLRenderer存在），每幀先跑完animators（含粒子系統的
+    // update）再渲染，frameIndex/60當作動畫時間軸，方便exportSnapshot時
+    // 用整數幀數快轉。回傳null代表驗證/建立失敗（container已經填入錯誤
+    // 訊息），呼叫端不需要再處理。
+    async _mount3DScene(container, yamlText) {
+        await this._ensureJsYamlLoaded();
+        const validation = this._validate3DSceneYaml(yamlText);
+        if (!validation.ok) {
+            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D場景格式錯誤：${this._escapeHtml(validation.error)}</div>`;
+            return null;
+        }
+        try {
+            await this._ensureThreeJsLoaded();
+        } catch (err) {
+            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D函式庫載入失敗：${this._escapeHtml(err.message || String(err))}</div>`;
+            return null;
+        }
+        const sceneDef = validation.scene;
+        const width = Math.max(240, container.clientWidth || 480);
+        const height = Math.round(width * 0.65);
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; touch-action:none; background:#111318;';
+        container.appendChild(canvas);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(sceneDef.background || '#111318');
+        const camDef = sceneDef.camera || {};
+        const camera = new THREE.PerspectiveCamera(camDef.fov || 50, width / height, 0.1, 1000);
+        const camPos = Array.isArray(camDef.position) ? camDef.position : [4, 3, 6];
+        camera.position.set(camPos[0], camPos[1], camPos[2]);
+        const lookAt = Array.isArray(camDef.look_at) ? camDef.look_at : [0, 0, 0];
+        camera.lookAt(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]));
+
+        const lights = (Array.isArray(sceneDef.lights) && sceneDef.lights.length)
+            ? sceneDef.lights
+            : [{ type: 'directional', position: [5, 8, 5], intensity: 1 }, { type: 'ambient', intensity: 0.4 }];
+        lights.forEach((l) => {
+            if (l.type === 'ambient') {
+                scene.add(new THREE.AmbientLight(l.color || '#ffffff', Number.isFinite(l.intensity) ? l.intensity : 0.4));
+            } else if (l.type === 'point') {
+                const pl = new THREE.PointLight(l.color || '#ffffff', Number.isFinite(l.intensity) ? l.intensity : 1);
+                const p = Array.isArray(l.position) ? l.position : [0, 3, 0];
+                pl.position.set(p[0], p[1], p[2]);
+                scene.add(pl);
+            } else {
+                const dl = new THREE.DirectionalLight(l.color || '#ffffff', Number.isFinite(l.intensity) ? l.intensity : 1);
+                const p = Array.isArray(l.position) ? l.position : [5, 8, 5];
+                dl.position.set(p[0], p[1], p[2]);
+                scene.add(dl);
+            }
+        });
+
+        const animators = [];
+        for (const node of validation.expandedNodes) {
+            const built = this._build3DMeshObject(node);
+            if (!built) continue;
+            if (built.isParticleSystem) {
+                scene.add(built.object);
+                animators.push(built.update);
+            } else {
+                scene.add(built);
+                const animFn = this._build3DAnimatorForNode(built, node);
+                if (animFn) animators.push(animFn);
+            }
+        }
+
+        let renderer = null;
+        let webglOk = false;
+        try {
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+            renderer.setSize(width, height, false);
+            webglOk = true;
+        } catch (_) {
+            webglOk = false;
+        }
+        const ctx2d = webglOk ? null : canvas.getContext('2d');
+
+        let controls = null;
+        try {
+            controls = new THREE.OrbitControls(camera, canvas);
+            controls.enableDamping = true;
+        } catch (_) { controls = null; }
+
+        let frameIndex = 0;
+        let stopped = false;
+        const renderOnce = () => {
+            const t = frameIndex / 60;
+            for (const fn of animators) fn(t, 1 / 60);
+            if (controls) controls.update();
+            if (webglOk) renderer.render(scene, camera);
+            else this._raster3DFrame(scene, camera, ctx2d, width, height);
+            frameIndex++;
+        };
+        const loop = () => {
+            if (stopped) return;
+            renderOnce();
+            requestAnimationFrame(loop);
+        };
+        loop();
+
+        return {
+            scene, camera, canvas, webglOk,
+            stop: () => { stopped = true; if (controls) controls.dispose(); },
+            // 匯出前先快轉90幀（1.5秒），讓靜態圖抓到「效果進行中」的畫面，
+            // 不是動畫剛開始播放、還沒真的動起來的初始退化姿態。
+            snapshotDataUri: () => {
+                for (let i = 0; i < 90; i++) {
+                    frameIndex++;
+                    const t = frameIndex / 60;
+                    for (const fn of animators) fn(t, 1 / 60);
+                }
+                if (controls) controls.update();
+                if (webglOk) renderer.render(scene, camera); else this._raster3DFrame(scene, camera, ctx2d, width, height);
+                return canvas.toDataURL('image/png');
+            },
+        };
     }
 
     // ============================================================
@@ -7062,6 +7818,10 @@ ${existingNodeSummaries}
             const imageMap = {};
             const reasoningMap = {};
             const fileMap = {};
+            // tw_stock_db客製: 階段3——3D場景YAML跟imageMap同一套「非可枚舉
+            // 屬性額外存一份」作法（見_buildToolResultMessage的_displayScene3DYaml
+            // 說明）。
+            const scene3DMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -7077,6 +7837,7 @@ ${existingNodeSummaries}
                 if (m._downloadFile) fileMap[i] = m._downloadFile;
                 if (m._benchmarkReport) benchmarkReportMap[i] = m._benchmarkReport;
                 if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
+                if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -7085,6 +7846,7 @@ ${existingNodeSummaries}
                     if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
                     if (m._benchmarkReport) benchmarkReportMap[`${bi}:${mi}`] = m._benchmarkReport;
                     if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
+                    if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -7095,6 +7857,7 @@ ${existingNodeSummaries}
                 fileMap,
                 benchmarkReportMap,
                 chipsMap,
+                scene3DMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -7147,6 +7910,13 @@ ${existingNodeSummaries}
                 Object.entries(data.chipsMap).forEach(([key, chips]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_suggestionChips', { value: chips, enumerable: false, configurable: true });
+                });
+            }
+            if (data.scene3DMap) {
+                Object.entries(data.scene3DMap).forEach(([key, yamlText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayScene3DYaml', { value: yamlText, enumerable: false, configurable: true });
+                    this._latestScene3DYaml = yamlText;
                 });
             }
         } catch (err) {
@@ -7374,6 +8144,31 @@ ${existingNodeSummaries}
                     <img src="${imagePayload.dataUrl}" style="max-width: 100%; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);">
                 `;
                 container.appendChild(imgWrap);
+                return;
+            }
+
+            // tw_stock_db客製: 階段3——3D場景跟圖片同一個「一律顯示、不受
+            // showInternalTrace開關影響」原則（使用者明講「除了產生圖片」
+            // 這句話的精神延伸到3D場景，都是最終視覺產出，不是中間追蹤
+            // 資訊）。_mount3DScene是非同步的（要動態載入three.js/js-yaml），
+            // 這裡先同步插入容器保住訊息順序，掛載完成再非同步填入canvas。
+            if (msg._displayScene3DYaml) {
+                const sceneWrap = document.createElement('div');
+                sceneWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                sceneWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #6366f1; margin-bottom: 4px;">🧊 3D場景（可用滑鼠拖曳/滾輪縮放）</div>`;
+                const mountDiv = document.createElement('div');
+                container.appendChild(sceneWrap);
+                sceneWrap.appendChild(mountDiv);
+                this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
+                    if (handle && !handle.webglOk) {
+                        const badge = document.createElement('div');
+                        badge.style.cssText = 'font-size:10px; color:#dd6b20; margin-top:4px;';
+                        badge.textContent = '⚠️ 這個瀏覽器/裝置無法啟用WebGL，已改用CPU軟體繪圖顯示（互動與動畫仍然可用，但不支援材質貼圖）。';
+                        sceneWrap.appendChild(badge);
+                    }
+                }).catch((err) => {
+                    mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 3D場景渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
+                });
                 return;
             }
         }
