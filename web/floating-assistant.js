@@ -592,7 +592,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['list_uploaded_files', 'parse_uploaded_file'],
         systemPrompt: '你是一個專門解讀使用者上傳檔案的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
-    drawing: { enabled: false, label: '通用繪圖', toolNames: [], systemPrompt: '' },
+    drawing: {
+        enabled: true,
+        label: '通用繪圖',
+        toolNames: ['render_drawing'],
+        systemPrompt: '你是一個專門畫向量圖（流程圖、示意圖、圖表、插畫等）的子任務助理，用render_drawing工具輸出SVG原始碼給使用者看。這不是股票K線圖表工具。SVG會被自動消毒過濾掉script/事件屬性，所以只能用純圖形元素（path/rect/circle/line/text等）表達，不能靠內嵌JS互動。畫完後只需要一兩句話簡短說明，不用重複整份SVG原始碼。',
+    },
     scene_3d: {
         enabled: true,
         label: '3D場景設計',
@@ -2036,6 +2041,36 @@ ${fnData.code}
             },
             { type: 'object', properties: {}, additionalProperties: false }
         );
+
+        // tw_stock_db客製: 階段4——內建通用繪圖工具（見計畫文件階段4）。跟
+        // host頁面（index.html）自己既有的個股K線圖表/型態標記功能明確分開，
+        // 這裡是floating-assistant.js內建、不限host的通用向量繪圖能力
+        // （流程圖/示意圖/插畫等）。AI直接輸出SVG原始碼，用既有已vendored的
+        // DOMPurify消毒（跟既有markdown渲染管線同一套信任邊界處理方式，不是
+        // 新發明的沙盒機制）——SVG本身非可執行，消毒後可安全內嵌，不需要
+        // 另外設計一套YAML圖元語言（比3D場景的固定字彙宣告式格式更靈活，
+        // 適合這種開放式繪圖需求）。
+        this.register_openai_tool('render_drawing',
+            '畫一張通用向量圖給使用者看（流程圖、示意圖、圖表、插畫等），直接輸出完整的SVG原始碼——這不是股票K線圖表工具（那是這個網頁應用自己的功能，不透過這裡）。輸出的SVG會先經過消毒過濾掉任何可執行的script/事件屬性才顯示，所以安全無虞，但也代表SVG裡不能靠內嵌JS做互動效果，只能用純圖形元素表達。參數: {"svg":"完整的<svg .../>...</svg>原始碼"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const svgText = String(parsed.svg || '').trim();
+                if (!svgText) return JSON.stringify({ ok: false, error: '缺少svg參數' });
+                if (!/^<svg[\s>]/i.test(svgText)) return JSON.stringify({ ok: false, error: 'svg參數必須是完整的<svg>...</svg>原始碼（以<svg開頭）' });
+                try {
+                    await this._ensureDOMPurifyLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                const sanitized = DOMPurify.sanitize(svgText, { USE_PROFILES: { svg: true, svgFilters: true } });
+                if (!sanitized.trim()) {
+                    return JSON.stringify({ ok: false, error: 'SVG消毒後內容變成空的，可能整段被判定不安全（例如包含script/事件屬性），請只用純圖形元素（path/rect/circle/text等）重新繪製' });
+                }
+                return JSON.stringify({ type: 'drawing', svg: sanitized });
+            },
+            { type: 'object', properties: { svg: { type: 'string', description: '完整的<svg>...</svg>原始碼' } }, required: ['svg'], additionalProperties: false }
+        );
     }
 
     _refreshSystemPromptMessage() {
@@ -2609,9 +2644,16 @@ ${fnData.code}
         let imageDataUrl = null;
         let imageMeta = null;
         let scene3DYaml = null;
+        let drawingSvg = null;
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
-            if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
+            if (parsed && parsed.type === 'drawing' && typeof parsed.svg === 'string') {
+                // tw_stock_db客製: 階段4——通用繪圖跟圖片/3D場景同一個「顯示
+                // 內容不列入對話上下文」原則，理由也一樣：SVG原始碼可能不小，
+                // 沒有必要每輪都重新送給模型看一次已經畫好、使用者已經看到
+                // 的圖。
+                drawingSvg = parsed.svg;
+            } else if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
                 imageDataUrl = parsed.dataUrl;
                 // tw_stock_db客製: 圖片本身不列入對話上下文（見下面），但如果
                 // 工具額外附了一個輕量的meta摘要（例如render_stock_chart回傳
@@ -2662,6 +2704,9 @@ ${fnData.code}
             msg.content = `[Tool ${fnName} 已產生一個可用滑鼠互動的3D場景，已直接顯示給使用者看，場景YAML原始內容不列入對話上下文。如果之後要修改這個場景，請先呼叫get_3d_scene_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
             Object.defineProperty(msg, '_displayScene3DYaml', { value: scene3DYaml, enumerable: false, configurable: true });
             this._latestScene3DYaml = scene3DYaml;
+        } else if (drawingSvg) {
+            msg.content = `[Tool ${fnName} 已產生一張向量圖，已直接顯示給使用者看，SVG原始碼不列入對話上下文]`;
+            Object.defineProperty(msg, '_displayDrawingSvg', { value: drawingSvg, enumerable: false, configurable: true });
         } else {
             msg.content = this._formatToolResult(result, fnName);
         }
@@ -4176,6 +4221,21 @@ ${sourceTool.handlerScript}
             throw new Error('three.js 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._threejsLoadPromise;
+    }
+
+    // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
+    // 消毒SVG，不需要marked/katex——獨立一個輕量loader，不要為了畫一張圖
+    // 就連帶把markdown/數學公式的函式庫也載進來（那些由
+    // _ensureMarkdownLibsLoaded()另外管理，兩者共用同一個全域DOMPurify，
+    // 不會重複載入）。
+    _ensureDOMPurifyLoaded() {
+        if (typeof DOMPurify !== 'undefined') return Promise.resolve();
+        if (this._dompurifyLoadPromise) return this._dompurifyLoadPromise;
+        this._dompurifyLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.dompurify).catch(e => {
+            this._dompurifyLoadPromise = null;
+            throw new Error('DOMPurify 載入失敗（可能是網路問題）：' + e.message);
+        });
+        return this._dompurifyLoadPromise;
     }
 
     // ============================================================
@@ -7822,6 +7882,9 @@ ${existingNodeSummaries}
             // 屬性額外存一份」作法（見_buildToolResultMessage的_displayScene3DYaml
             // 說明）。
             const scene3DMap = {};
+            // tw_stock_db客製: 階段4——通用繪圖SVG同一套作法（見
+            // _buildToolResultMessage的_displayDrawingSvg說明）。
+            const drawingMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -7838,6 +7901,7 @@ ${existingNodeSummaries}
                 if (m._benchmarkReport) benchmarkReportMap[i] = m._benchmarkReport;
                 if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
                 if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
+                if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -7847,6 +7911,7 @@ ${existingNodeSummaries}
                     if (m._benchmarkReport) benchmarkReportMap[`${bi}:${mi}`] = m._benchmarkReport;
                     if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
                     if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
+                    if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -7858,6 +7923,7 @@ ${existingNodeSummaries}
                 benchmarkReportMap,
                 chipsMap,
                 scene3DMap,
+                drawingMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -7917,6 +7983,12 @@ ${existingNodeSummaries}
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayScene3DYaml', { value: yamlText, enumerable: false, configurable: true });
                     this._latestScene3DYaml = yamlText;
+                });
+            }
+            if (data.drawingMap) {
+                Object.entries(data.drawingMap).forEach(([key, svgText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayDrawingSvg', { value: svgText, enumerable: false, configurable: true });
                 });
             }
         } catch (err) {
@@ -8169,6 +8241,21 @@ ${existingNodeSummaries}
                 }).catch((err) => {
                     mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 3D場景渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
                 });
+                return;
+            }
+
+            // tw_stock_db客製: 階段4——通用繪圖，跟圖片/3D場景同一個「一律
+            // 顯示、不受showInternalTrace開關影響」原則。SVG在存進
+            // _displayDrawingSvg之前已經在render_drawing工具callback裡經過
+            // DOMPurify消毒，這裡直接innerHTML是安全的，不需要再消毒一次。
+            if (msg._displayDrawingSvg) {
+                const drawWrap = document.createElement('div');
+                drawWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                drawWrap.innerHTML = `
+                    <div style="font-size: 12px; font-weight: bold; color: #dd6b20; margin-bottom: 4px;">🎨 繪圖</div>
+                    <div style="max-width:100%; overflow:auto; background:#fff; border-radius:6px; border:1px solid rgba(0,0,0,0.1); padding:8px;">${msg._displayDrawingSvg}</div>
+                `;
+                container.appendChild(drawWrap);
                 return;
             }
         }
