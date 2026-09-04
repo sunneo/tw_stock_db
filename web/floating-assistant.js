@@ -847,7 +847,59 @@ const FA_ASSET_URLS = {
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
 }
-const FA_EXPORT_PALETTE = { navy: '1E2761', txt: '333333', muted: '888888', border: 'DDDDDD', tileGray: 'F5F6FA', white: 'FFFFFF' };
+// tw_stock_db客製: 2026-09-05使用者要求（計畫文件階段3的「已完成的部分」
+// 項目3）——PPTX匯出的視覺識別要換成適合這個台股專案的風格，不要沿用
+// redmine參考版本的Insyde品牌配色。這裡選深藏青（信任/專業，金融業常見
+// 基調色）+金色（股票代碼機常見的暖色點綴，呼應「台股」語境），不是隨便
+// 換一個顏色——navy/accent兩色刻意保持強烈明暗對比，其餘皆為輔助中性色。
+const FA_EXPORT_PALETTE = { navy: '0B1E3D', accent: 'C9A227', accentDark: '8A6E17', txt: '333333', muted: '888888', border: 'DDDDDD', tileGray: 'F5F6FA', white: 'FFFFFF' };
+
+// tw_stock_db客製: 標題投影片背景——不用靜態圖片檔案（這個專案沒有伺服器
+// 附件系統可以vendor圖片資源，見計畫文件對texture_attachment_id的說明，
+// 同樣的限制在這裡也適用），改成在匯出當下用canvas程序生成一張淡淡的
+// 股價走勢面積圖當背景紋理（深藏青漸層底色+低透明度的金色走勢線+填色），
+// 呼應「台股」主題但不會蓋過上面疊的標題文字。只在真的要匯出標題投影片
+// 時才呼叫，不是每次載入都要背這個運算成本。
+function _faGeneratePptxTitleBackgroundDataUri() {
+    const w = 1280, h = 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#0B1E3D');
+    grad.addColorStop(1, '#16305C');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const n = 24;
+    const points = [];
+    let y = h * 0.62;
+    for (let i = 0; i <= n; i++) {
+        y += (Math.sin(i * 0.7) + (Math.random() - 0.5)) * 14;
+        y = Math.max(h * 0.45, Math.min(h * 0.8, y));
+        points.push({ x: (i / n) * w, y });
+    }
+    // tw_stock_db客製: 第一版純色低透明度填色在深藏青底色上會被吃成灰藍色，
+    // 完全看不出「金色」——改用由淡轉濃的垂直漸層填色（越靠底部越實色），
+    // 讓面積圖底部有足夠彩度撐住金色，頂部邊緣仍維持淡出、不搶標題文字。
+    const fillGrad = ctx.createLinearGradient(0, h * 0.4, 0, h);
+    fillGrad.addColorStop(0, 'rgba(201,162,39,0.05)');
+    fillGrad.addColorStop(1, 'rgba(201,162,39,0.4)');
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    points.forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = fillGrad;
+    ctx.fill();
+
+    ctx.strokeStyle = '#F0C94D';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.stroke();
+    return canvas.toDataURL('image/png');
+}
 
 // tw_stock_db客製: 2026-08-28使用者要求把匯出用的外部函式庫vendor到自己的
 // GitHub repo（見FA_ASSET_URLS），vendor完之後瀏覽器實測發現一個重要限制：
@@ -1107,9 +1159,13 @@ async function _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots) {
     pres.title = heading;
 
     const titleSlide = pres.addSlide();
-    titleSlide.background = { color: FA_EXPORT_PALETTE.navy };
-    titleSlide.addText(heading, { x: 0.8, y: 2.6, w: 11.7, h: 1.2, fontFace: 'Calibri', fontSize: 32, bold: true, color: FA_EXPORT_PALETTE.white, align: 'center' });
-    titleSlide.addText(new Date().toLocaleDateString('zh-TW'), { x: 0.8, y: 3.8, w: 11.7, h: 0.5, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.white, align: 'center' });
+    try {
+        titleSlide.background = { data: _faGeneratePptxTitleBackgroundDataUri() };
+    } catch (_) {
+        titleSlide.background = { color: FA_EXPORT_PALETTE.navy }; // canvas生成失敗時的保底純色背景
+    }
+    titleSlide.addText(heading, { x: 0.8, y: 2.5, w: 11.7, h: 1.2, fontFace: 'Calibri', fontSize: 32, bold: true, color: FA_EXPORT_PALETTE.white, align: 'center' });
+    titleSlide.addText(new Date().toLocaleDateString('zh-TW'), { x: 0.8, y: 3.7, w: 11.7, h: 0.5, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.accent, align: 'center' });
 
     const addHeadingSlideBase = (slideHeading) => {
         const s = pres.addSlide();
