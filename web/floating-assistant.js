@@ -656,7 +656,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     scene_3d: {
         enabled: true,
         label: '3D場景設計',
-        toolNames: ['render_3d_scene', 'get_3d_scene_topic', 'get_3d_scene_yaml'],
+        toolNames: ['render_3d_scene', 'get_3d_scene_topic', 'get_3d_scene_yaml', 'import_3d_model_attachment', 'list_uploaded_files'],
         systemPrompt: '你是一個專門設計/繪製3D場景的子任務助理，用render_3d_scene渲染純宣告式YAML描述的3D場景給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，場景格式是固定字彙的宣告式YAML）。不確定texture/particles/polygon/defs這幾個進階主題的欄位格式時，先呼叫get_3d_scene_topic查詢，不要用猜的；如果使用者是要求「調整/修改」既有場景，先呼叫get_3d_scene_yaml取得目前真正的內容再基於它修改，絕對不要憑對話記憶重新編寫一份、也不要虛構任何場景網址。渲染完成後只需要用一兩句話簡短說明做了什麼，不用重複整份YAML內容。',
     },
     interactive_component: {
@@ -704,6 +704,13 @@ const SAFE_EXPR_FUNCTIONS = {
 const SCENE3D_MAX_EXPANDED_NODES = 500;
 const SCENE3D_MAX_PARTICLE_COUNT = 2000;
 const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
+// tw_stock_db客製: 2026-09-05——STL/OBJ/3MF/FBX匯入轉成的polygon節點若
+// 三角形數量超過這個上限直接拒絕（見_convertModelFileToSceneYaml），
+// 理由：YAML用逐頂點座標的文字表示法，高面數CAD/掃描模型直接嵌入會讓
+// 檔案暴增到不合理的大小，也會拖垮CPU軟體光柵化fallback的每幀效能——
+// 5000三角形大致涵蓋一般3D列印/簡單模型的量級，掃描級/工業CAD等級的
+// 高面數模型不在這次支援範圍內。
+const SCENE3D_MAX_IMPORTED_MESH_TRIANGLES = 5000;
 const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
 const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
 const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
@@ -843,6 +850,17 @@ const FA_ASSET_URLS = {
     // 載入模式一致，不用額外處理ES module的import graph。
     threejs: 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
     threeOrbitControls: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
+    // tw_stock_db客製: 2026-09-05使用者要求支援上傳STL/OBJ/3MF/FBX並轉成
+    // 內部3D場景YAML顯示——直接用three.js官方addon loader解析（同一個r128
+    // 版本、同樣是舊式global-attaching build），比自己手刻四種格式的解析器
+    // 可靠很多，尤其FBX的二進位/ASCII雙格式規格複雜，官方loader已經是
+    // 經過大量真實檔案驗證過的實作。fflate是FBXLoader解析壓縮/二進位FBX
+    // 用的相依套件，只有真的匯入FBX時才會載入。
+    threeSTLLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js',
+    threeOBJLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js',
+    three3MFLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/3MFLoader.js',
+    threeFBXLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js',
+    threeFflate: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/fflate.min.js',
 };
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
@@ -2228,6 +2246,33 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, yaml: this._latestScene3DYaml });
             },
             { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-05使用者要求——使用者上傳STL/OBJ/3MF/FBX
+        // 這幾種3D模型檔案（透過📎附件，見list_uploaded_files/
+        // parse_uploaded_file），想直接看模型時不用一定要打/view-3d-attachment
+        // 指令，AI也可以在對話中判斷「使用者想看這個檔案」直接呼叫這個
+        // 工具轉換+顯示。轉換邏輯見_convertModelFileToSceneYaml——只還原
+        // 幾何形狀+單一材質顏色，不含貼圖/骨架動畫，三角形數量超過上限
+        // 會直接報錯而不是硬做有損簡化。
+        this.register_openai_tool('import_3d_model_attachment',
+            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過5000會被拒絕，請提醒使用者換更精簡的模型。參數: {"file_id":"..."}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（用list_uploaded_files查詢可用的file_id）' });
+                const record = await this.fileCache.get(fileId);
+                if (!record || record.kind !== 'uploaded') {
+                    return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
+                }
+                const converted = await this._convertModelFileToSceneYaml(record);
+                if (!converted.ok) return JSON.stringify(converted);
+                const validation = this._validate3DSceneYaml(converted.yaml);
+                if (!validation.ok) return JSON.stringify({ ok: false, error: `轉換出來的場景格式有誤：${validation.error}` });
+                return JSON.stringify({ type: 'scene3d', yaml: converted.yaml });
+            },
+            { type: 'object', properties: { file_id: { type: 'string', description: '要匯入的3D模型檔案id，用list_uploaded_files取得' } }, required: ['file_id'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 階段4——內建通用繪圖工具（見計畫文件階段4）。跟
@@ -4480,6 +4525,144 @@ ${sourceTool.handlerScript}
         return this._threejsLoadPromise;
     }
 
+    // tw_stock_db客製: 2026-09-05使用者要求支援匯入STL/OBJ/3MF/FBX——依格式
+    // 只載入對應的官方loader（都是r128同一批舊式global-attaching build，
+    // 見FA_ASSET_URLS的說明），不會四個loader一次全載。FBX額外需要fflate
+    // （解壓縮二進位FBX用），loader本身沒載入時才載入fflate，避免已經
+    // 有全域fflate時重複注入。
+    async _ensure3DModelImportLoaded(format) {
+        await this._ensureThreeJsLoaded();
+        if (format === 'stl' && !THREE.STLLoader) await _faLoadScriptOnce(FA_ASSET_URLS.threeSTLLoader);
+        else if (format === 'obj' && !THREE.OBJLoader) await _faLoadScriptOnce(FA_ASSET_URLS.threeOBJLoader);
+        else if (format === '3mf' && !THREE.ThreeMFLoader) await _faLoadScriptOnce(FA_ASSET_URLS.three3MFLoader);
+        else if (format === 'fbx' && !THREE.FBXLoader) {
+            if (typeof fflate === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.threeFflate);
+            await _faLoadScriptOnce(FA_ASSET_URLS.threeFBXLoader);
+        }
+    }
+
+    // 把STLLoader/OBJLoader/ThreeMFLoader/FBXLoader解析出來的Object3D圖
+    // （可能是單一Mesh、也可能是巢狀Group）攤平成這個內部YAML格式能用的
+    // 「mesh零件」清單——每個零件的頂點座標先乘上該Mesh的matrixWorld
+    // （把巢狀transform直接烘焙進頂點座標本身），因為這個YAML格式的node
+    // 是扁平清單、沒有父子巢狀transform的概念。只取幾何形狀+單一材質顏色，
+    // 不嘗試還原貼圖/多重材質/骨架動畫這類進階內容（見計畫文件的取捨
+    // 說明）。
+    _extractMeshPartsFromObject3D(root) {
+        root.updateMatrixWorld(true);
+        const parts = [];
+        root.traverse((obj) => {
+            if (!obj.isMesh || !obj.geometry) return;
+            const posAttr = obj.geometry.attributes.position;
+            if (!posAttr) return;
+            const worldMatrix = obj.matrixWorld;
+            const vertices = [];
+            const round = (n) => Math.round(n * 10000) / 10000;
+            for (let i = 0; i < posAttr.count; i++) {
+                const v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(worldMatrix);
+                vertices.push([round(v.x), round(v.y), round(v.z)]);
+            }
+            const index = obj.geometry.index;
+            const faces = [];
+            const triCount = index ? Math.floor(index.count / 3) : Math.floor(posAttr.count / 3);
+            for (let t = 0; t < triCount; t++) {
+                faces.push(index
+                    ? [index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)]
+                    : [t * 3, t * 3 + 1, t * 3 + 2]);
+            }
+            let color = '#cccccc';
+            const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+            if (mat && mat.color) { try { color = '#' + mat.color.getHexString(); } catch (_) { /* 保底顏色 */ } }
+            parts.push({ name: obj.name || `part${parts.length + 1}`, vertices, faces, color });
+        });
+        return parts;
+    }
+
+    // 把mesh零件清單組成一份完整的場景YAML：先算全部零件合併起來的
+    // bounding box，置中到原點+等比縮放讓最長邊落在4個單位左右（STL常見
+    // 單位是公釐，數字動輒幾十~幾百，不縮放的話會跟這個場景格式預設的
+    // camera/燈光距離完全對不起來，畫面上不是整個模型跑到畫面外就是
+    // 縮成一個看不見的小點），每個零件對應一個mesh:polygon節點，附一個
+    // 依bounding box自動抓的相機視角。用jsyaml.dump()產生YAML文字而不是
+    // 手拼字串，正確處理浮點數/巢狀陣列的格式，也順便用lineWidth:-1避免
+    // 長陣列被自動換行。
+    _buildSceneYamlFromMeshParts(parts, filename) {
+        let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        parts.forEach(p => p.vertices.forEach(([x, y, z]) => {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+            minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+        }));
+        const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+        const maxDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+        const scale = 4 / maxDim;
+        const round = (n) => Math.round(n * 10000) / 10000;
+
+        const nodes = parts.map((p) => ({
+            mesh: 'polygon',
+            vertices: p.vertices.map(([x, y, z]) => [round((x - cx) * scale), round((y - cy) * scale), round((z - cz) * scale)]),
+            faces: p.faces,
+            material: { color: p.color, metalness: 0.1, roughness: 0.6 },
+        }));
+
+        const scene = {
+            title: `匯入模型：${filename}`,
+            camera: { position: [4, 3, 6], look_at: [0, 0, 0], fov: 50 },
+            lights: [
+                { type: 'directional', position: [5, 8, 5], intensity: 1 },
+                { type: 'ambient', intensity: 0.5 },
+            ],
+            nodes,
+        };
+        return jsyaml.dump(scene, { lineWidth: -1 });
+    }
+
+    // tw_stock_db客製: 主要轉換入口——給/view-3d-attachment跟
+    // import_3d_model_attachment工具共用。依副檔名判斷格式、載入對應
+    // loader、解析成Object3D、攤平成mesh零件、算出總三角形數跟
+    // SCENE3D_MAX_IMPORTED_MESH_TRIANGLES比較（STL/OBJ/3MF/FBX都可能是
+    // 掃描/CAD等級的高面數模型，YAML用逐頂點座標的文字表示法直接嵌入
+    // 太大量三角形會讓檔案暴增、也會拖垮軟體光柵化fallback的每幀效能，
+    // 超過上限直接拒絕、不做任何有損簡化——簡化錯了會做出比拒絕更糟的
+    // 「看起來壞掉」的模型)，通過才組成場景YAML回傳。
+    async _convertModelFileToSceneYaml(record) {
+        const format = this._detectFileFormat(record.filename);
+        if (!['stl', 'obj', '3mf', 'fbx'].includes(format)) {
+            return { ok: false, error: `不支援的3D模型格式: ${format}（目前支援stl/obj/3mf/fbx）` };
+        }
+        try {
+            await this._ensure3DModelImportLoaded(format);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        let object3D;
+        try {
+            if (format === 'stl') {
+                const buf = await record.blob.arrayBuffer();
+                object3D = new THREE.Mesh(new THREE.STLLoader().parse(buf));
+            } else if (format === 'obj') {
+                const text = await record.blob.text();
+                object3D = new THREE.OBJLoader().parse(text);
+            } else if (format === '3mf') {
+                const buf = await record.blob.arrayBuffer();
+                object3D = new THREE.ThreeMFLoader().parse(buf);
+            } else if (format === 'fbx') {
+                const buf = await record.blob.arrayBuffer();
+                object3D = new THREE.FBXLoader().parse(buf, '');
+            }
+        } catch (err) {
+            return { ok: false, error: `解析${format.toUpperCase()}檔案失敗: ${err.message || err}` };
+        }
+        const parts = this._extractMeshPartsFromObject3D(object3D);
+        if (!parts.length) return { ok: false, error: '這個檔案裡沒有找到任何可渲染的網格' };
+        const totalTriangles = parts.reduce((sum, p) => sum + p.faces.length, 0);
+        if (totalTriangles > SCENE3D_MAX_IMPORTED_MESH_TRIANGLES) {
+            return { ok: false, error: `模型三角形數量(${totalTriangles})超過上限${SCENE3D_MAX_IMPORTED_MESH_TRIANGLES}，請提供更精簡/低面數的模型` };
+        }
+        const yaml = this._buildSceneYamlFromMeshParts(parts, record.filename);
+        return { ok: true, yaml, triangleCount: totalTriangles, partCount: parts.length };
+    }
+
     // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
     // 消毒SVG，不需要marked/katex——獨立一個輕量loader，不要為了畫一張圖
     // 就連帶把markdown/數學公式的函式庫也載進來（那些由
@@ -4862,6 +5045,15 @@ ${sourceTool.handlerScript}
     // polygon：接受任意3D頂點+可選的三角面index清單(faces)，沒給faces時
     // 用簡單扇形三角化（假設頂點依序繞邊界排列），足以表達自訂形狀（例如
     // 傾斜懸挑屋頂），不追求處理非凸/自我相交這類進階幾何情況。
+    // tw_stock_db客製: 2026-09-05使用者要求支援匯入STL/OBJ/3MF/FBX並轉成
+    // 這個內部YAML格式（見_convertModelFileToSceneYaml），為了讓這個格式
+    // 「設計到可以完整相容」外部網格資料，額外接受選填的normals（逐頂點
+    // 法向量，沒給時退回computeVertexNormals()自動估算）、uvs（逐頂點UV，
+    // 給了才能正確貼材質貼圖）、colors（逐頂點顏色，給了會覆蓋material.color
+    // 變成頂點著色，常見於3MF的color extension）——目前實際的匯入轉換
+    // 只會填vertices/faces+單一material.color（純幾何形狀優先，見計畫
+    // 文件的取捨說明），但格式本身完整支援這三個欄位，AI手刻場景或未來
+    // 需要更高保真度的匯入都能直接使用。
     _build3DPolygonGeometry(node) {
         const verts = Array.isArray(node.vertices) ? node.vertices : [];
         const geo = new THREE.BufferGeometry();
@@ -4871,15 +5063,28 @@ ${sourceTool.handlerScript}
             faces = [];
             for (let i = 1; i < verts.length - 1; i++) faces.push([0, i, i + 1]);
         }
+        const hasNormals = Array.isArray(node.normals) && node.normals.length === verts.length;
+        const hasUvs = Array.isArray(node.uvs) && node.uvs.length === verts.length;
+        const hasColors = Array.isArray(node.colors) && node.colors.length === verts.length;
         const positions = [];
+        const normals = hasNormals ? [] : null;
+        const uvs = hasUvs ? [] : null;
+        const colors = hasColors ? [] : null;
         for (const f of faces) {
             for (const idx of f) {
                 const v = verts[idx];
-                if (v) positions.push(v[0] || 0, v[1] || 0, v[2] || 0);
+                if (!v) continue;
+                positions.push(v[0] || 0, v[1] || 0, v[2] || 0);
+                if (hasNormals) { const n = node.normals[idx] || [0, 1, 0]; normals.push(n[0] || 0, n[1] || 0, n[2] || 0); }
+                if (hasUvs) { const uv = node.uvs[idx] || [0, 0]; uvs.push(uv[0] || 0, uv[1] || 0); }
+                if (hasColors) { const c = node.colors[idx] || [1, 1, 1]; colors.push(c[0] ?? 1, c[1] ?? 1, c[2] ?? 1); }
             }
         }
         geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        geo.computeVertexNormals();
+        if (normals) geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        else geo.computeVertexNormals();
+        if (uvs) geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        if (colors) geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
         return geo;
     }
 
@@ -5003,6 +5208,10 @@ ${sourceTool.handlerScript}
             material.side = THREE.DoubleSide;
             geometry.userData = geometry.userData || {};
             geometry.userData.faDoubleSided = true;
+            // tw_stock_db客製: 有給逐頂點colors時（見_build3DPolygonGeometry）
+            // 要開啟vertexColors材質才會真的套用，不然three.js預設無視color
+            // BufferAttribute、整片維持material.color那個單一顏色。
+            if (geometry.attributes.color) material.vertexColors = true;
         }
         const mesh = new THREE.Mesh(geometry, material);
         const pos = Array.isArray(node.position) ? node.position : [0, 0, 0];
@@ -7158,8 +7367,11 @@ ${existingNodeSummaries}
     // tw_stock_db客製: 2026-09-05使用者要求——/view-3d-attachment指令的實作。
     // 優先用「輸入框旁邊還沒送出的📎附件」（使用者剛附加、想直接看，不想
     // 麻煩AI）；沒有pending附件時，退而找this.fileCache裡最近上傳過的一個
-    // 檔案（kind='uploaded'）試試看。內容必須通過_validate3DSceneYaml才會
-    // 顯示，不是任意檔案都能硬塞——完全不呼叫API/LLM，純本地動作。
+    // 檔案（kind='uploaded'）試試看。附件如果是.yaml/.yml，走既有的場景
+    // YAML驗證；如果是.stl/.obj/.3mf/.fbx，先透過
+    // _convertModelFileToSceneYaml轉成場景YAML再顯示——兩條路徑最後都
+    // 收斂到同一個_validate3DSceneYaml+渲染流程。完全不呼叫API/LLM，
+    // 純本地動作。
     async _handleViewAttachedSceneCommand() {
         let record = null;
         if (this._pendingAttachments.length) {
@@ -7176,22 +7388,32 @@ ${existingNodeSummaries}
             this._log('⚠️ /view-3d-attachment：目前沒有附加、也沒有最近上傳過的檔案');
             return;
         }
-        let yamlText;
-        try {
-            yamlText = await record.blob.text();
-        } catch (err) {
-            this._log(`⚠️ /view-3d-attachment：讀取附件失敗：${err.message || err}`);
-            return;
-        }
         try {
             await this._ensureJsYamlLoaded();
         } catch (err) {
             this._log(`⚠️ /view-3d-attachment：${err.message || err}`);
             return;
         }
+        const format = this._detectFileFormat(record.filename);
+        let yamlText;
+        if (['stl', 'obj', '3mf', 'fbx'].includes(format)) {
+            const converted = await this._convertModelFileToSceneYaml(record);
+            if (!converted.ok) {
+                this._log(`⚠️ /view-3d-attachment：${converted.error}`);
+                return;
+            }
+            yamlText = converted.yaml;
+        } else {
+            try {
+                yamlText = await record.blob.text();
+            } catch (err) {
+                this._log(`⚠️ /view-3d-attachment：讀取附件失敗：${err.message || err}`);
+                return;
+            }
+        }
         const validation = this._validate3DSceneYaml(yamlText);
         if (!validation.ok) {
-            this._log(`⚠️ /view-3d-attachment：附件「${record.filename}」不是合法的3D場景YAML：${validation.error}`);
+            this._log(`⚠️ /view-3d-attachment：附件「${record.filename}」不是合法的3D場景（或轉換失敗）：${validation.error}`);
             return;
         }
         this.messages.push({ role: 'user', content: `📎 開啟附件的3D場景：${record.filename}` });
