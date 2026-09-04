@@ -1392,6 +1392,15 @@ class FloatingAssistant {
             '重新顯示建議操作（例如換了股票之後想看新的建議）',
             () => this.insertSuggestionChipsMessage()
         );
+        // tw_stock_db客製: 2026-09-05使用者要求——如果剛好附加了一個3D場景
+        // YAML檔案（或最近上傳過），不用麻煩AI，直接用這個指令本地開啟
+        // 顯示，完全不經過LLM/API呼叫。跟/benchmark-model同一種「屬於這個
+        // 聊天widget本身、不涉及tw_stock_db業務邏輯」的內建指令。
+        this.register_slash_command(
+            '/view-3d-attachment', '',
+            '如果目前輸入框旁邊有附加、或最近上傳過3D場景YAML檔案，直接在對話中開啟顯示（不經過AI）',
+            () => this._handleViewAttachedSceneCommand()
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -2181,7 +2190,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box/plane用）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板用要手動處理；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4828,7 +4837,19 @@ ${sourceTool.handlerScript}
             case 'sphere': return new THREE.SphereGeometry(radius, 24, 16);
             case 'cylinder': return new THREE.CylinderGeometry(radius, radius, height, 24);
             case 'cone': return new THREE.ConeGeometry(radius, height, 24);
-            case 'plane': return new THREE.PlaneGeometry(size[0] || 1, size[1] || 1);
+            // tw_stock_db客製: 2026-09-05使用者實測回報——AI寫size:[100,1,100]
+            // 描述一片沙灘（明顯是套用box的[寬,高,深]心智模型，中間塞一個
+            // 「厚度」占位值），但plane是純2D幾何體，PlaneGeometry(w,h)的h
+            // 其實是「第二維長度」，size[1]=1會讓整片沙灘變成只有1個單位
+            // 深的細長條——使用者截圖看到的「兩條線」正是這個bug。收到3個
+            // 元素的size時，改用size[0]/size[2]（比照box的寬/深），中間的
+            // size[1]視為「厚度」直接忽略（plane本來就沒有厚度）；只給2個
+            // 元素時維持原本[w,h]的解讀，向下相容。
+            case 'plane': {
+                const w = size[0] || 1;
+                const h = (Array.isArray(node.size) && node.size.length >= 3) ? (size[2] || 1) : (size[1] || 1);
+                return new THREE.PlaneGeometry(w, h);
+            }
             // tw_stock_db客製: 2026-09-05——使用者貼的redmine真實場景YAML用了
             // tube_radius欄位（甜甜圈的管徑），原本這裡只會自動用radius*0.35
             // 估算，沒有讀取這個欄位，收到tube_radius時優先採用。
@@ -6833,6 +6854,52 @@ ${existingNodeSummaries}
         return collected;
     }
 
+    // tw_stock_db客製: 2026-09-05使用者要求——3D場景/繪圖/互動viewer卡片
+    // 除了匯出PPTX/PDF，還要能直接下載原始碼、或就地檢視原始碼文字，不
+    // 經過任何轉檔。getSourceFn是同步/非同步都可、回傳原始碼字串的函式
+    // （呼叫當下才取，例如get_interactive_viewer_yaml那種「最新內容」
+    // 語意，不是預先算好凍結一份）；wrapEl是要把展開的<pre>原始碼區塊
+    // 插進去的容器（通常是整張卡片本身，不是按鈕列，這樣<pre>會排在
+    // 按鈕列下方而不是塞進同一列擠爆版面）。
+    _appendCardSourceButtons(container, wrapEl, getSourceFn, filenameBase, fileExt) {
+        const viewBtn = document.createElement('button');
+        viewBtn.type = 'button';
+        viewBtn.title = '檢視原始碼';
+        viewBtn.textContent = '📝';
+        viewBtn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; line-height:1.4;';
+        const downloadBtn = document.createElement('button');
+        downloadBtn.type = 'button';
+        downloadBtn.title = '下載原始碼';
+        downloadBtn.textContent = '📥';
+        downloadBtn.style.cssText = viewBtn.style.cssText;
+
+        let sourcePre = null;
+        viewBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (sourcePre) { sourcePre.remove(); sourcePre = null; return; }
+            const src = await getSourceFn();
+            sourcePre = document.createElement('pre');
+            sourcePre.style.cssText = 'margin-top:6px; padding:8px; background:rgba(0,0,0,0.04); border:1px solid rgba(0,0,0,0.1); border-radius:6px; font-size:11px; white-space:pre-wrap; word-break:break-all; max-height:260px; overflow:auto;';
+            sourcePre.textContent = src || '（沒有原始碼內容）';
+            wrapEl.appendChild(sourcePre);
+        });
+        downloadBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const src = await getSourceFn();
+            const blob = new Blob([src || ''], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${filenameBase}_${Date.now()}.${fileExt}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 4000);
+        });
+        container.appendChild(viewBtn);
+        container.appendChild(downloadBtn);
+    }
+
     // tw_stock_db客製: 2026-09-05使用者實測回報——AI回應一個3D場景時，畫面
     // 上完全找不到匯出PPTX的入口（原本的📤匯出按鈕只掛在assistant文字回覆
     // 泡泡上，_collectTurnVisualSnapshots雖然會掃到同一輪的3D場景，但如果
@@ -7086,6 +7153,51 @@ ${existingNodeSummaries}
                 <span data-remove-attachment-id="${this._escapeAttr(a.id)}" style="cursor:pointer; opacity:0.7;" title="移除">✕</span>
             </span>`;
         }).join('');
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者要求——/view-3d-attachment指令的實作。
+    // 優先用「輸入框旁邊還沒送出的📎附件」（使用者剛附加、想直接看，不想
+    // 麻煩AI）；沒有pending附件時，退而找this.fileCache裡最近上傳過的一個
+    // 檔案（kind='uploaded'）試試看。內容必須通過_validate3DSceneYaml才會
+    // 顯示，不是任意檔案都能硬塞——完全不呼叫API/LLM，純本地動作。
+    async _handleViewAttachedSceneCommand() {
+        let record = null;
+        if (this._pendingAttachments.length) {
+            const pending = this._pendingAttachments[this._pendingAttachments.length - 1];
+            record = await this.fileCache.get(pending.id);
+            this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
+            this._renderPendingAttachments();
+        } else {
+            const all = await this.fileCache.getAll();
+            const uploaded = all.filter(r => r.kind === 'uploaded').sort((a, b) => b.createdAt - a.createdAt);
+            record = uploaded[0];
+        }
+        if (!record) {
+            this._log('⚠️ /view-3d-attachment：目前沒有附加、也沒有最近上傳過的檔案');
+            return;
+        }
+        let yamlText;
+        try {
+            yamlText = await record.blob.text();
+        } catch (err) {
+            this._log(`⚠️ /view-3d-attachment：讀取附件失敗：${err.message || err}`);
+            return;
+        }
+        try {
+            await this._ensureJsYamlLoaded();
+        } catch (err) {
+            this._log(`⚠️ /view-3d-attachment：${err.message || err}`);
+            return;
+        }
+        const validation = this._validate3DSceneYaml(yamlText);
+        if (!validation.ok) {
+            this._log(`⚠️ /view-3d-attachment：附件「${record.filename}」不是合法的3D場景YAML：${validation.error}`);
+            return;
+        }
+        this.messages.push({ role: 'user', content: `📎 開啟附件的3D場景：${record.filename}` });
+        const msg = this._buildToolResultMessage('view_3d_attachment', JSON.stringify({ type: 'scene3d', yaml: yamlText }), {});
+        this.messages.push(msg);
+        this._renderMessageHistory();
     }
 
     // ============================================================
@@ -9440,8 +9552,14 @@ ${existingNodeSummaries}
                 const titleDiv = document.createElement('div');
                 titleDiv.style.cssText = 'font-size:12px; opacity:0.75; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
                 footerRow.appendChild(titleDiv);
+                const btnGroup = document.createElement('div');
+                btnGroup.style.cssText = 'display:flex; align-items:center; gap:4px; flex:0 0 auto;';
+                footerRow.appendChild(btnGroup);
                 sceneWrap.appendChild(footerRow);
-                this._appendCardExportButton(footerRow, async () => {
+                // tw_stock_db客製: 2026-09-05使用者要求——除了匯出PPTX/PDF，
+                // 也要能直接下載/檢視這個場景的原始YAML（不經過任何轉檔）。
+                this._appendCardSourceButtons(btnGroup, sceneWrap, () => msg._displayScene3DYaml, '3D場景', 'yaml');
+                this._appendCardExportButton(btnGroup, async () => {
                     if (!msg._scene3DHandle || typeof msg._scene3DHandle.snapshotDataUri !== 'function') return null;
                     try { return { dataUrl: msg._scene3DHandle.snapshotDataUri(), kind: 'scene3d' }; } catch (_) { return null; }
                 }, '3D場景');
@@ -9487,8 +9605,9 @@ ${existingNodeSummaries}
                     <div style="max-width:100%; overflow:auto; background:#fff; border-radius:6px; border:1px solid rgba(0,0,0,0.1); padding:8px;">${msg._displayDrawingSvg}</div>
                 `;
                 const drawFooter = document.createElement('div');
-                drawFooter.style.cssText = 'display:flex; justify-content:flex-end; margin-top:4px;';
+                drawFooter.style.cssText = 'display:flex; justify-content:flex-end; gap:4px; margin-top:4px;';
                 drawWrap.appendChild(drawFooter);
+                this._appendCardSourceButtons(drawFooter, drawWrap, () => msg._displayDrawingSvg, '繪圖', 'svg');
                 this._appendCardExportButton(drawFooter, async () => {
                     try { return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayDrawingSvg, 800), kind: 'drawing' }; } catch (_) { return null; }
                 }, '繪圖');
@@ -9515,8 +9634,9 @@ ${existingNodeSummaries}
                 container.appendChild(viewerWrap);
                 viewerWrap.appendChild(mountDiv);
                 const viewerFooter = document.createElement('div');
-                viewerFooter.style.cssText = 'display:flex; justify-content:flex-end; margin-top:4px;';
+                viewerFooter.style.cssText = 'display:flex; justify-content:flex-end; gap:4px; margin-top:4px;';
                 viewerWrap.appendChild(viewerFooter);
+                this._appendCardSourceButtons(viewerFooter, viewerWrap, () => msg._displayViewerYaml, '互動表單', 'yaml');
                 this._appendCardExportButton(viewerFooter, async () => {
                     try { return { text: await this._summarizeViewerStateForExport(msg._displayViewerYaml), kind: 'viewer_summary' }; } catch (_) { return null; }
                 }, '互動表單');
