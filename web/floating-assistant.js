@@ -3639,6 +3639,52 @@ ${sourceTool.handlerScript}
                 flex-direction: column;
                 gap: 8px;
             }
+            .ai-advanced-body {
+                display: flex;
+                min-height: 320px;
+                max-height: 58vh;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            .ai-advanced-sidebar {
+                width: 132px;
+                flex-shrink: 0;
+                background: #0f172a;
+                border-right: 1px solid #334155;
+                overflow-y: auto;
+            }
+            .ai-advanced-cat {
+                padding: 10px 12px;
+                font-size: 12px;
+                cursor: pointer;
+                color: #cbd5e1;
+                border-left: 3px solid transparent;
+                user-select: none;
+            }
+            .ai-advanced-cat:hover { background: #1e293b; }
+            .ai-advanced-cat.active {
+                background: #1e293b;
+                border-left-color: #76b900;
+                color: #f8fafc;
+                font-weight: bold;
+            }
+            .ai-advanced-content {
+                flex: 1;
+                min-width: 0;
+                padding: 14px;
+                overflow-y: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 14px;
+            }
+            .ai-advanced-pane.hidden { display: none; }
+            .ai-advanced-hint {
+                font-size: 11px;
+                color: #94a3b8;
+                line-height: 1.5;
+                margin: 0;
+            }
             .ai-advanced-label {
                 font-size: 12px;
                 font-weight: bold;
@@ -3778,6 +3824,25 @@ ${sourceTool.handlerScript}
                 }
                 .ai-code-editor {
                     grid-template-columns: 38px 1fr;
+                }
+                .ai-advanced-body {
+                    flex-direction: column;
+                    max-height: none;
+                }
+                .ai-advanced-sidebar {
+                    width: 100%;
+                    display: flex;
+                    flex-wrap: wrap;
+                    border-right: none;
+                    border-bottom: 1px solid #334155;
+                }
+                .ai-advanced-cat {
+                    border-left: none;
+                    border-bottom: 3px solid transparent;
+                }
+                .ai-advanced-cat.active {
+                    border-left-color: transparent;
+                    border-bottom-color: #76b900;
                 }
             }
             .ai-rag-table {
@@ -4109,6 +4174,12 @@ ${sourceTool.handlerScript}
         const functionsInput = document.getElementById('ai-custom-functions-input');
         if (rulesInput) rulesInput.value = this.advancedSettings.rulesMd || '';
         if (functionsInput) functionsInput.value = this.advancedSettings.customFunctions || '';
+        const perfFileCacheMbInput = document.getElementById('ai-perf-file-cache-mb');
+        if (perfFileCacheMbInput) perfFileCacheMbInput.value = this.advancedSettings.fileCacheLimitMB;
+        const perfBatchConcurrencyInput = document.getElementById('ai-perf-batch-concurrency');
+        if (perfBatchConcurrencyInput) perfBatchConcurrencyInput.value = this.advancedSettings.batchConcurrency;
+        const perfMaxMeshTrianglesInput = document.getElementById('ai-perf-max-mesh-triangles');
+        if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -9264,35 +9335,74 @@ ${existingNodeSummaries}
                         <h3 style="margin:0; color:#76b900;">Advance 設定</h3>
                         <button type="button" id="ai-advanced-close" class="ai-advanced-btn">關閉</button>
                     </div>
-                    <div class="ai-advanced-stack">
-                        <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
-                        <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
-                    </div>
-                    <div class="ai-advanced-stack">
-                        <label class="ai-advanced-label" for="ai-custom-functions-input">Customize Functions (JavaScript, private for AI)</label>
-                        ${this._buildCodeEditorHtml('ai-custom-functions-input', 240)}
-                    </div>
-                    <div class="ai-advanced-stack">
-                        <div class="ai-advanced-tools-header">
-                            <div class="ai-advanced-label" style="margin:0;">Skill（自訂工具 / Custom Tools）</div>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                                <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Skill</button>
-                                <button type="button" id="ai-skill-export-btn" class="ai-advanced-btn">匯出 .skill</button>
-                                <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入 .skill<input type="file" id="ai-skill-import-input" accept=".skill,.zip" style="display:none;"></label>
+                    <div class="ai-advanced-body">
+                        <div class="ai-advanced-sidebar">
+                            <div class="ai-advanced-cat active" data-cat="general">一般</div>
+                            <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
+                            <div class="ai-advanced-cat" data-cat="skills">Skill</div>
+                            <div class="ai-advanced-cat" data-cat="ai-functions">AI自製函式</div>
+                            <div class="ai-advanced-cat" data-cat="rag">RAG 知識庫</div>
+                            <div class="ai-advanced-cat" data-cat="limits">效能與限制</div>
+                        </div>
+                        <div class="ai-advanced-content">
+                            <div class="ai-advanced-pane" data-pane="general">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
+                                    <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
+                                </div>
                             </div>
-                        </div>
-                        <div id="ai-custom-tool-list" class="ai-tool-list"></div>
-                    </div>
-                    <div class="ai-advanced-stack">
-                        <div class="ai-advanced-tools-header">
-                            <div class="ai-advanced-label" style="margin:0;">AI自製函式 (FromAI)</div>
-                            <button type="button" id="ai-fn-manage-btn" class="ai-advanced-btn primary">管理AI自製函式</button>
-                        </div>
-                    </div>
-                    <div class="ai-advanced-stack">
-                        <div class="ai-advanced-tools-header">
-                            <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
-                            <button type="button" id="ai-rag-manage-btn" class="ai-advanced-btn primary">管理條件圖譜</button>
+                            <div class="ai-advanced-pane hidden" data-pane="functions">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-custom-functions-input">Customize Functions (JavaScript, private for AI)</label>
+                                    ${this._buildCodeEditorHtml('ai-custom-functions-input', 240)}
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="skills">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">Skill（自訂工具 / Custom Tools）</div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                            <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Skill</button>
+                                            <button type="button" id="ai-skill-export-btn" class="ai-advanced-btn">匯出 .skill</button>
+                                            <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入 .skill<input type="file" id="ai-skill-import-input" accept=".skill,.zip" style="display:none;"></label>
+                                        </div>
+                                    </div>
+                                    <div id="ai-custom-tool-list" class="ai-tool-list"></div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="ai-functions">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">AI自製函式 (FromAI)</div>
+                                        <button type="button" id="ai-fn-manage-btn" class="ai-advanced-btn primary">管理AI自製函式</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="rag">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
+                                        <button type="button" id="ai-rag-manage-btn" class="ai-advanced-btn primary">管理條件圖譜</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="limits">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-file-cache-mb">檔案快取容量上限 (MB)</label>
+                                    <input type="number" id="ai-perf-file-cache-mb" class="ai-advanced-input" min="1" max="2048">
+                                    <p class="ai-advanced-hint">上傳/RAG檔案的persistent快取（IndexedDB），超過上限時自動刪掉最久沒被存取的檔案，範圍1~2048。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-batch-concurrency">批次併發數</label>
+                                    <input type="number" id="ai-perf-batch-concurrency" class="ai-advanced-input" min="1" max="20">
+                                    <p class="ai-advanced-hint">批次工具呼叫（例如一次分析多檔股票）同時進行的併發數量，太大可能一次炸出過多併發請求。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
+                                    <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
+                                    <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="ai-advanced-footer">
@@ -10422,6 +10532,17 @@ ${existingNodeSummaries}
         document.getElementById('ai-stop-response-btn').onclick = () => this._requestStopResponse();
         document.getElementById('ai-advanced-close').onclick = () => this._closeAdvancedModal();
         document.getElementById('ai-advanced-done').onclick = () => this._closeAdvancedModal();
+        // tw_stock_db客製: Advance設定改版面太長、找不到設定為分頁式（比照
+        // web/index.html的#settings-modal .modal-cat/.modal-pane同一套互動模式，
+        // 這裡是floating-assistant自己的獨立CSS命名空間ai-advanced-*）。
+        document.querySelectorAll('#ai-advanced-modal .ai-advanced-cat').forEach(cat => {
+            cat.addEventListener('click', () => {
+                document.querySelectorAll('#ai-advanced-modal .ai-advanced-cat').forEach(c => c.classList.toggle('active', c === cat));
+                document.querySelectorAll('#ai-advanced-modal .ai-advanced-pane').forEach(p =>
+                    p.classList.toggle('hidden', p.dataset.pane !== cat.dataset.cat)
+                );
+            });
+        });
         document.getElementById('ai-tool-add-btn').onclick = () => this._openToolEditor(-1);
         document.getElementById('ai-skill-export-btn').onclick = () => this._exportSkillZip();
         document.getElementById('ai-skill-import-input').addEventListener('change', (e) => {
@@ -10526,6 +10647,40 @@ ${existingNodeSummaries}
             this._saveAdvancedSettings();
             this._syncCodeEditor(functionsInput.closest('.ai-code-editor'));
         });
+        // tw_stock_db客製: 效能與限制分頁——之前fileCacheLimitMB/batchConcurrency
+        // 只能靠匯出/匯入設定JSON調整，使用者反應「看不到」在哪裡設定匯入模型
+        // 三角形上限，這裡補上實際輸入框。三個欄位都是「輸入即存」，跟API Key/
+        // URL/生成參數同樣的既有慣例。
+        const perfFileCacheMbInput = document.getElementById('ai-perf-file-cache-mb');
+        if (perfFileCacheMbInput) {
+            perfFileCacheMbInput.addEventListener('input', () => {
+                const n = Number(perfFileCacheMbInput.value);
+                if (Number.isFinite(n) && n > 0) this.advancedSettings.fileCacheLimitMB = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        const perfBatchConcurrencyInput = document.getElementById('ai-perf-batch-concurrency');
+        if (perfBatchConcurrencyInput) {
+            perfBatchConcurrencyInput.addEventListener('input', () => {
+                const n = Number(perfBatchConcurrencyInput.value);
+                if (Number.isFinite(n) && n > 0) this.advancedSettings.batchConcurrency = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        const perfMaxMeshTrianglesInput = document.getElementById('ai-perf-max-mesh-triangles');
+        if (perfMaxMeshTrianglesInput) {
+            perfMaxMeshTrianglesInput.addEventListener('input', () => {
+                // 0是使用者刻意要的「不限制」，跟fileCacheLimitMB/batchConcurrency
+                // 的「n>0才接受」不同，這裡要用n>=0（見_getMaxImportedMeshTriangles/
+                // _normalizeAdvancedSettings的同一個決策，維持三處一致）。
+                const raw = perfMaxMeshTrianglesInput.value.trim();
+                if (raw !== '') {
+                    const n = Number(raw);
+                    if (Number.isFinite(n) && n >= 0) this.advancedSettings.maxImportedMeshTriangles = Math.round(n);
+                }
+                this._saveAdvancedSettings();
+            });
+        }
         [functionsInput, toolScriptInput, fnCodeInput].forEach(textarea => {
             textarea.addEventListener('scroll', () => this._syncCodeEditor(textarea.closest('.ai-code-editor')));
             textarea.addEventListener('input', () => this._syncCodeEditor(textarea.closest('.ai-code-editor')));
