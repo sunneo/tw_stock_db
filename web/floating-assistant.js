@@ -722,9 +722,20 @@ const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
 // 使用者自己選擇不限制），這個常數只在使用者從未碰過那個設定時當退回值，
 // 不是寫死的硬限制。
 const SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES = 10000;
-const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
+// tw_stock_db客製: 2026-09-05使用者實測回報——請AI畫「太陽-地球-月球系統
+// （軌道與節氣）」，AI自己編了一組完全不存在的頂層欄位`lines:`/`markers:`
+// （型態抄自render_chart的trend圖表資料格式：{from,to,color,label}）想畫
+// 軌道線，這兩個欄位從來沒有被_validate3DSceneYaml/建構邏輯讀取過，靜默
+// 被忽略——使用者完全看不到軌道線，AI自己卻誤以為畫成功了（因為沒有收到
+// 任何錯誤）。根因是這個格式原本真的沒有任何畫「線/軌跡」的圖元，
+// 新增mesh:"line"補上這個缺口（見_build3DLineObject），並在
+// _validate3DSceneYaml加上「未知頂層欄位直接報錯」的守門（見下方
+// SCENE3D_KNOWN_TOP_LEVEL_KEYS），讓AI下次编造出不存在的頂層欄位時，第一
+// 時間就會收到明確錯誤訊息，而不是像這次一樣靜默失敗。
+const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles', 'line']);
 const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
 const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
+const SCENE3D_KNOWN_TOP_LEVEL_KEYS = new Set(['title', 'background', 'camera', 'lights', 'nodes', 'defs', 'particle_presets']);
 
 // tw_stock_db客製: 階段5——互動viewer的封閉元件字彙（跟3D場景的
 // SCENE3D_MESH_TYPES同一個精神：固定、封閉，不是任意HTML/JS）。
@@ -2353,7 +2364,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5357,6 +5368,17 @@ ${sourceTool.handlerScript}
         if (!n.mesh) return `${where} 內有節點缺少mesh欄位`;
         if (!SCENE3D_MESH_TYPES.has(n.mesh)) return `${where} 內有未知的mesh類型: "${n.mesh}"（合法值：${[...SCENE3D_MESH_TYPES].join('/')}）`;
         if (n.animation && !SCENE3D_ANIMATION_TYPES.has(n.animation)) return `${where} 內有未知的animation類型: "${n.animation}"（合法值：spin/bounce/orbit）`;
+        // tw_stock_db客製: 2026-09-05——line節點要嘛給明確的points折線，要嘛
+        // 用shape:"circle"+radius的簡便寫法畫一個圓環（軌道最常見的形狀），
+        // 兩者都沒給就直接報錯，不要讓一個畫不出任何東西的line節點靜默通過
+        // 驗證。
+        if (n.mesh === 'line') {
+            const hasPoints = Array.isArray(n.points) && n.points.length >= 2 && n.points.every(p => Array.isArray(p) && p.length >= 2);
+            const hasCircleShape = n.shape === 'circle' && Number.isFinite(n.radius);
+            if (!hasPoints && !hasCircleShape) {
+                return `${where} 內有line節點缺少有效內容：要嘛給points陣列（至少2個[x,y,z]座標），要嘛給shape:"circle"+radius（畫一個圓形軌道環）`;
+            }
+        }
         return null;
     }
 
@@ -5442,6 +5464,15 @@ ${sourceTool.handlerScript}
             return { ok: false, error: `YAML語法錯誤: ${err.message}` };
         }
         if (!scene || typeof scene !== 'object') return { ok: false, error: '場景內容必須是一個物件（至少要有nodes陣列）' };
+        // tw_stock_db客製: 2026-09-05使用者實測回報——AI編了完全不存在的
+        // 頂層欄位`lines:`/`markers:`想畫軌道線，靜默被忽略、AI自己毫無所覺
+        // 以為畫成功了。改成直接擋掉任何未知頂層欄位，並在錯誤訊息裡直接
+        // 提示正確做法（把物件加進nodes、用mesh:"line"畫軌跡），比起讓AI
+        // 瞎猜格式、卻連「猜錯了」都不知道好得多。
+        const unknownTopKeys = Object.keys(scene).filter(k => !SCENE3D_KNOWN_TOP_LEVEL_KEYS.has(k));
+        if (unknownTopKeys.length) {
+            return { ok: false, error: `場景包含未知的頂層欄位: ${unknownTopKeys.join(', ')}（合法頂層欄位：${[...SCENE3D_KNOWN_TOP_LEVEL_KEYS].join('/')}）。想畫軌跡線/軌道環請用nodes陣列裡的mesh:"line"節點（points或shape:"circle"+radius），不是額外的lines/markers頂層陣列；想加更多物體，直接加進nodes陣列即可。` };
+        }
         const nodes = (Array.isArray(scene.nodes) ? scene.nodes : []).map(n => this._normalize3DParticleNode(n));
         if (!nodes.length) return { ok: false, error: '缺少nodes陣列，或nodes是空的' };
         const defs = (scene.defs && typeof scene.defs === 'object') ? scene.defs : {};
@@ -5700,8 +5731,48 @@ ${sourceTool.handlerScript}
         return tex;
     }
 
+    // tw_stock_db客製: 2026-09-05——mesh:"line"的建構邏輯，見上面
+    // SCENE3D_KNOWN_TOP_LEVEL_KEYS/SCENE3D_MESH_TYPES的說明。回傳一個真正的
+    // THREE.Line/THREE.LineLoop（跟_build3DMeshObject其他分支一樣是個
+    // Object3D，本身就有position/rotation，套spin/orbit動畫在一整個線圈上
+    // 完全免費適用，不需要另外處理）。plane預設"xz"是刻意配合
+    // _build3DAnimatorForNode的orbit動畫（繞行XZ平面、Y軸中心固定）——
+    // 用預設值畫出來的圓形軌道環，跟同一個中心用animation:"orbit"繞行的
+    // 星體軌跡是同一個平面，不用另外對齊。
+    _build3DLineObject(node) {
+        let points;
+        if (Array.isArray(node.points) && node.points.length >= 2) {
+            points = node.points.map(p => new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0));
+        } else if (node.shape === 'circle' && Number.isFinite(node.radius)) {
+            const center = Array.isArray(node.center) ? node.center : [0, 0, 0];
+            const radius = node.radius;
+            const segments = Number.isFinite(node.segments) ? Math.max(8, Math.min(256, Math.round(node.segments))) : 64;
+            const plane = node.plane || 'xz';
+            points = [];
+            for (let i = 0; i < segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                const cx = Math.cos(angle) * radius, sx = Math.sin(angle) * radius;
+                if (plane === 'xy') points.push(new THREE.Vector3(center[0] + cx, center[1] + sx, center[2]));
+                else if (plane === 'yz') points.push(new THREE.Vector3(center[0], center[1] + cx, center[2] + sx));
+                else points.push(new THREE.Vector3(center[0] + cx, center[1], center[2] + sx));
+            }
+        } else {
+            return null; // 已經在_validate3DNodeShape擋過，這裡是防禦性處理
+        }
+        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+        const color = (node.material && node.material.color) || '#ffffff';
+        const material = new THREE.LineBasicMaterial({ color });
+        const closed = node.closed === true || node.shape === 'circle';
+        const line = closed ? new THREE.LineLoop(geometry, material) : new THREE.Line(geometry, material);
+        const pos = Array.isArray(node.position) ? node.position : [0, 0, 0];
+        line.position.set(pos[0] || 0, pos[1] || 0, pos[2] || 0);
+        if (Array.isArray(node.rotation)) line.rotation.set(node.rotation[0] || 0, node.rotation[1] || 0, node.rotation[2] || 0);
+        return line;
+    }
+
     _build3DMeshObject(node, particlePresets) {
         if (node.mesh === 'particles') return this._build3DParticleSystem(node, particlePresets || {});
+        if (node.mesh === 'line') return this._build3DLineObject(node);
         const geometry = this._build3DGeometryForNode(node);
         if (!geometry) return null;
         const material = this._build3DMaterial(node);
@@ -6176,6 +6247,35 @@ ${sourceTool.handlerScript}
                 ctx.fillRect(proj.x - 2, proj.y - 2, 4, 4);
             }
         });
+
+        // tw_stock_db客製: 2026-09-05——mesh:"line"（THREE.Line/LineLoop）是
+        // 跟三角形mesh/Points完全不同的第三種obj型態，WebGL renderer.render()
+        // 原生就認得怎麼畫，但這條軟體光柵化路徑要自己補上，否則找不到
+        // WebGL的環境下軌道線會整條消失（跟粒子系統當初一樣的道理：每種
+        // three.js物件類型在這條路徑都要有自己的繪製步驟，不能只處理三角形）。
+        // 簡化處理：behind的點直接斷開該段折線，不做真正的near-plane clip
+        // （軌道線通常整條都在畫面附近，這個簡化在實務上不會造成明顯瑕疵）。
+        scene.traverse((obj) => {
+            if (!obj.isLine || !obj.geometry) return;
+            obj.updateMatrixWorld();
+            const posAttr = obj.geometry.attributes.position;
+            if (!posAttr) return;
+            const color = (obj.material && obj.material.color) ? obj.material.color : new THREE.Color('#ffffff');
+            ctx.strokeStyle = `rgb(${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)})`;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            let started = false;
+            let firstPt = null;
+            for (let i = 0; i < posAttr.count; i++) {
+                const v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(obj.matrixWorld);
+                const proj = project(v);
+                if (proj.behind) { started = false; continue; }
+                if (!started) { ctx.moveTo(proj.x, proj.y); started = true; firstPt = proj; }
+                else ctx.lineTo(proj.x, proj.y);
+            }
+            if (obj.type === 'LineLoop' && firstPt) ctx.lineTo(firstPt.x, firstPt.y);
+            ctx.stroke();
+        });
     }
 
     // ---- 掛載/渲染迴圈 ----
@@ -6238,7 +6338,13 @@ ${sourceTool.handlerScript}
 
         const animators = [];
         for (const node of validation.expandedNodes) {
-            const built = this._build3DMeshObject(node);
+            // tw_stock_db客製: 2026-09-05修正——這裡原本沒有把validation.particlePresets
+            // 傳進去，導致場景YAML自己註冊的自訂粒子preset（particle_presets，
+            // 見_validate3DParticlePresets）在「即時掛載顯示」這條路徑上永遠找不到
+            // （回傳{}當空字典），只有PDF/PPTX匯出快照那條路徑（另一處呼叫，已經
+            // 有正確傳）才用得到自訂preset——使用者畫面上完全看不出來這個落差，
+            // 因為custom preset找不到時只是靜默回傳null、什麼都不畫，不會報錯。
+            const built = this._build3DMeshObject(node, validation.particlePresets);
             if (!built) continue;
             if (built.isParticleSystem) {
                 scene.add(built.object);
