@@ -705,16 +705,19 @@ const SCENE3D_MAX_EXPANDED_NODES = 500;
 const SCENE3D_MAX_PARTICLE_COUNT = 2000;
 const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
 // tw_stock_db客製: 2026-09-05——STL/OBJ/3MF/FBX匯入轉成的polygon節點若
-// 三角形數量超過這個上限直接拒絕（見_convertModelFileToSceneYaml），
-// 理由：YAML用逐頂點座標的文字表示法，高面數CAD/掃描模型直接嵌入會讓
-// 檔案暴增到不合理的大小，也會拖垮CPU軟體光柵化fallback的每幀效能。
-// 原本設5000，使用者實測用common-3d-test-models這組業界常見測試模型
-// （github.com/alecjacobson/common-3d-test-models）——經典的Utah teapot
-// 是6320個三角形，剛好卡在5000上限外面被拒絕，但這是一個很合理、常見
-// 的「簡單模型」代表，不該被擋——調高到10000，teapot（6320）/一般簡單
-// 模型（例如woody.obj的1267）都能過，真正的掃描級高面數模型（同一組
-// 測試集裡的xyzrgb_dragon.obj高達249882個三角形）仍然會被正確擋下。
-const SCENE3D_MAX_IMPORTED_MESH_TRIANGLES = 10000;
+// 三角形數量超過上限就拒絕（見_convertModelFileToSceneYaml），理由：
+// YAML用逐頂點座標的文字表示法，高面數CAD/掃描模型直接嵌入會讓檔案暴增
+// 到不合理的大小，也會拖垮CPU軟體光柵化fallback的每幀效能。原本設5000，
+// 用common-3d-test-models這組業界常見測試模型
+// （github.com/alecjacobson/common-3d-test-models）實測發現經典的Utah
+// teapot是6320個三角形，剛好卡在5000上限外面被拒絕，但這是很合理常見
+// 的「簡單模型」代表，調高到10000——這裡只是「使用者完全沒調過設定時」
+// 的預設值，實際上限使用者要求「不希望工具被限制」，已經改成
+// advancedSettings.maxImportedMeshTriangles可調（見
+// _getMaxImportedMeshTriangles/_createDefaultAdvancedSettings，0代表
+// 使用者自己選擇不限制），這個常數只在使用者從未碰過那個設定時當退回值，
+// 不是寫死的硬限制。
+const SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES = 10000;
 const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
 const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
 const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
@@ -1567,6 +1570,12 @@ class FloatingAssistant {
             // tool結果/系統上下文摘要摺疊卡、思考過程摺疊卡）。圖片型tool結果
             // （🖼️ 圖表截圖）不受這個開關影響，一律顯示。
             showInternalTrace: false,
+            // tw_stock_db客製: 2026-09-05使用者明確要求——匯入STL/OBJ/3MF/FBX
+            // 模型的三角形數量上限（見_convertModelFileToSceneYaml的說明）
+            // 原本是寫死的常數，使用者不希望這個工具被寫死限制住，改成可
+            // 在Advanced Settings調整；0代表不限制（使用者自己承擔YAML檔案
+            // 過大/軟體光柵化fallback效能變差的風險，不是這個工具幫他決定）。
+            maxImportedMeshTriangles: SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES,
         };
     }
 
@@ -1576,6 +1585,16 @@ class FloatingAssistant {
         const mb = Number(this.advancedSettings?.fileCacheLimitMB);
         const clamped = Number.isFinite(mb) && mb > 0 ? Math.min(2048, Math.max(1, mb)) : 256;
         return clamped * 1024 * 1024;
+    }
+
+    // tw_stock_db客製: 2026-09-05——maxImportedMeshTriangles===0是使用者
+    // 明確要求的「不限制」旗標，回傳Infinity讓呼叫端的比較（三角形數量>
+    // 上限）永遠不成立；負數/非數字一律視為未設定，退回內建預設10000，
+    // 不會因為填錯數字就意外變成完全不限制。
+    _getMaxImportedMeshTriangles() {
+        const n = Number(this.advancedSettings?.maxImportedMeshTriangles);
+        if (n === 0) return Infinity;
+        return Number.isFinite(n) && n > 0 ? Math.round(n) : SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES;
     }
 
     // tw_stock_db客製: 使用者可調的生成/取樣參數。
@@ -1813,6 +1832,15 @@ class FloatingAssistant {
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
             showInternalTrace: raw.showInternalTrace === true,
+            // tw_stock_db客製: 0是刻意保留給「不限制」用的合法值，不能套用
+            // 「> 0才採用，否則退回預設」這個跟其他數字設定一樣的判斷式
+            // （那樣會讓使用者填0永遠被視為無效、退回10000，達不到「不限制」
+            // 的效果）——一律原樣保留任何>=0的數字，交給_getMaxImportedMeshTriangles()
+            // 決定怎麼解讀0，這裡只擋負數/非數字。
+            maxImportedMeshTriangles: (() => {
+                const n = Number(raw.maxImportedMeshTriangles);
+                return Number.isFinite(n) && n >= 0 ? Math.round(n) : SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES;
+            })(),
         };
     }
 
@@ -2260,7 +2288,7 @@ ${fnData.code}
         // 幾何形狀+單一材質顏色，不含貼圖/骨架動畫，三角形數量超過上限
         // 會直接報錯而不是硬做有損簡化。
         this.register_openai_tool('import_3d_model_attachment',
-            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過10000會被拒絕，請提醒使用者換更精簡的模型（掃描級/工業CAD等級的高面數模型不支援）。參數: {"file_id":"..."}',
+            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過使用者設定的上限（Advanced Settings的maxImportedMeshTriangles，預設10000，0代表不限制）會被拒絕，若被拒絕請提醒使用者換更精簡的模型，或在Advanced Settings調高/解除上限。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4632,7 +4660,8 @@ ${sourceTool.handlerScript}
     // tw_stock_db客製: 主要轉換入口——給/view-3d-attachment跟
     // import_3d_model_attachment工具共用。依副檔名判斷格式、載入對應
     // loader、解析成Object3D、攤平成mesh零件、算出總三角形數跟
-    // SCENE3D_MAX_IMPORTED_MESH_TRIANGLES比較（STL/OBJ/3MF/FBX都可能是
+    // _getMaxImportedMeshTriangles()（advancedSettings.maxImportedMeshTriangles，
+    // 0=不限制）比較（STL/OBJ/3MF/FBX都可能是
     // 掃描/CAD等級的高面數模型，YAML用逐頂點座標的文字表示法直接嵌入
     // 太大量三角形會讓檔案暴增、也會拖垮軟體光柵化fallback的每幀效能，
     // 超過上限直接拒絕、不做任何有損簡化——簡化錯了會做出比拒絕更糟的
@@ -4668,8 +4697,9 @@ ${sourceTool.handlerScript}
         const parts = this._extractMeshPartsFromObject3D(object3D);
         if (!parts.length) return { ok: false, error: '這個檔案裡沒有找到任何可渲染的網格' };
         const totalTriangles = parts.reduce((sum, p) => sum + p.faces.length, 0);
-        if (totalTriangles > SCENE3D_MAX_IMPORTED_MESH_TRIANGLES) {
-            return { ok: false, error: `模型三角形數量(${totalTriangles})超過上限${SCENE3D_MAX_IMPORTED_MESH_TRIANGLES}，請提供更精簡/低面數的模型` };
+        const maxTriangles = this._getMaxImportedMeshTriangles();
+        if (totalTriangles > maxTriangles) {
+            return { ok: false, error: `模型三角形數量(${totalTriangles})超過上限${maxTriangles}（可在Advanced Settings的「匯入模型三角形數量上限」調整，設0代表不限制），請提供更精簡/低面數的模型` };
         }
         const yaml = this._buildSceneYamlFromMeshParts(parts, record.filename);
         return { ok: true, yaml, triangleCount: totalTriangles, partCount: parts.length };
