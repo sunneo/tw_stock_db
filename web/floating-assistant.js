@@ -707,10 +707,14 @@ const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
 // tw_stock_db客製: 2026-09-05——STL/OBJ/3MF/FBX匯入轉成的polygon節點若
 // 三角形數量超過這個上限直接拒絕（見_convertModelFileToSceneYaml），
 // 理由：YAML用逐頂點座標的文字表示法，高面數CAD/掃描模型直接嵌入會讓
-// 檔案暴增到不合理的大小，也會拖垮CPU軟體光柵化fallback的每幀效能——
-// 5000三角形大致涵蓋一般3D列印/簡單模型的量級，掃描級/工業CAD等級的
-// 高面數模型不在這次支援範圍內。
-const SCENE3D_MAX_IMPORTED_MESH_TRIANGLES = 5000;
+// 檔案暴增到不合理的大小，也會拖垮CPU軟體光柵化fallback的每幀效能。
+// 原本設5000，使用者實測用common-3d-test-models這組業界常見測試模型
+// （github.com/alecjacobson/common-3d-test-models）——經典的Utah teapot
+// 是6320個三角形，剛好卡在5000上限外面被拒絕，但這是一個很合理、常見
+// 的「簡單模型」代表，不該被擋——調高到10000，teapot（6320）/一般簡單
+// 模型（例如woody.obj的1267）都能過，真正的掃描級高面數模型（同一組
+// 測試集裡的xyzrgb_dragon.obj高達249882個三角形）仍然會被正確擋下。
+const SCENE3D_MAX_IMPORTED_MESH_TRIANGLES = 10000;
 const SCENE3D_MESH_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'plane', 'torus', 'polygon', 'particles']);
 const SCENE3D_ANIMATION_TYPES = new Set(['spin', 'bounce', 'orbit']);
 const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'firework', 'nbody']);
@@ -2256,7 +2260,7 @@ ${fnData.code}
         // 幾何形狀+單一材質顏色，不含貼圖/骨架動畫，三角形數量超過上限
         // 會直接報錯而不是硬做有損簡化。
         this.register_openai_tool('import_3d_model_attachment',
-            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過5000會被拒絕，請提醒使用者換更精簡的模型。參數: {"file_id":"..."}',
+            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過10000會被拒絕，請提醒使用者換更精簡的模型（掃描級/工業CAD等級的高面數模型不支援）。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4527,15 +4531,23 @@ ${sourceTool.handlerScript}
 
     // tw_stock_db客製: 2026-09-05使用者要求支援匯入STL/OBJ/3MF/FBX——依格式
     // 只載入對應的官方loader（都是r128同一批舊式global-attaching build，
-    // 見FA_ASSET_URLS的說明），不會四個loader一次全載。FBX額外需要fflate
-    // （解壓縮二進位FBX用），loader本身沒載入時才載入fflate，避免已經
-    // 有全域fflate時重複注入。
+    // 見FA_ASSET_URLS的說明），不會四個loader一次全載。
+    // 2026-09-05修正一個真實bug：3MFLoader內部也是用全域fflate.unzipSync()
+    // 解開3MF本身的zip容器（不是只有FBX需要），一開始只在format==='fbx'
+    // 時載入fflate，導致3MFLoader.parse()在沒有全域fflate時對
+    // ReferenceError靜默回傳null（它自己的try/catch吞掉錯誤只console.error
+    // 一行「fflate missing」），後續buildObjects(null)才真正炸開丟出
+    // 「Cannot read properties of null (reading 'model')」——從錯誤訊息本身
+    // 完全看不出問題在fflate沒載入，是直接讀過3MFLoader.js原始碼的
+    // loadDocument()函式才找到的。3mf/fbx現在都會確保fflate先載入。
     async _ensure3DModelImportLoaded(format) {
         await this._ensureThreeJsLoaded();
         if (format === 'stl' && !THREE.STLLoader) await _faLoadScriptOnce(FA_ASSET_URLS.threeSTLLoader);
         else if (format === 'obj' && !THREE.OBJLoader) await _faLoadScriptOnce(FA_ASSET_URLS.threeOBJLoader);
-        else if (format === '3mf' && !THREE.ThreeMFLoader) await _faLoadScriptOnce(FA_ASSET_URLS.three3MFLoader);
-        else if (format === 'fbx' && !THREE.FBXLoader) {
+        else if (format === '3mf' && !THREE.ThreeMFLoader) {
+            if (typeof fflate === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.threeFflate);
+            await _faLoadScriptOnce(FA_ASSET_URLS.three3MFLoader);
+        } else if (format === 'fbx' && !THREE.FBXLoader) {
             if (typeof fflate === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.threeFflate);
             await _faLoadScriptOnce(FA_ASSET_URLS.threeFBXLoader);
         }
@@ -4661,6 +4673,106 @@ ${sourceTool.handlerScript}
         }
         const yaml = this._buildSceneYamlFromMeshParts(parts, record.filename);
         return { ok: true, yaml, triangleCount: totalTriangles, partCount: parts.length };
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-05使用者要求——反方向的轉換：把場景YAML
+    // 匯出成STL/OBJ/3MF標準格式檔案（可以帶去其他3D軟體、3D印表機切片
+    // 軟體開）。跟匯入是同一套_extractMeshPartsFromObject3D抽取邏輯，
+    // 這裡只是先用既有的_build3DMeshObject（不需要WebGLRenderer/canvas，
+    // THREE.Object3D建構本身不需要渲染context）把YAML節點組回一個暫時的
+    // THREE.Group，再攤平抽取——匯入/匯出共用同一份「Object3D↔mesh零件
+    // 清單」轉換邏輯，不用維護兩套。particles節點是點雲，這幾種格式都是
+    // 表達實體三角網格，沒有對應概念，匯出時直接跳過（不會讓整個匯出失敗，
+    // 只是那個節點不會出現在匯出檔案裡）。
+    // 刻意不支援FBX匯出：FBX是Autodesk的專利二進位/ASCII雙格式，沒有
+    // 輕量、可靠的社群編碼器可以vendor（跟STLLoader/OBJLoader/3MFLoader
+    // 這些「讀」的loader不同，官方three.js本身也沒有對應的Exporter），
+    // 手刻一個容易做出實際上開不了的假FBX檔案，這裡選擇誠實地不支援，
+    // 而不是生成一個看起來像但實際上壞掉的檔案。
+    // ============================================================
+
+    _buildTemporarySceneObjectFromYaml(yamlText) {
+        const validation = this._validate3DSceneYaml(yamlText);
+        if (!validation.ok) return { ok: false, error: validation.error };
+        const group = new THREE.Group();
+        for (const node of validation.expandedNodes) {
+            if (node.mesh === 'particles') continue; // 點雲，這些格式無法表達，匯出時跳過
+            const built = this._build3DMeshObject(node, validation.particlePresets);
+            if (built && !built.isParticleSystem) group.add(built);
+        }
+        return { ok: true, group };
+    }
+
+    _buildStlBlobFromParts(parts) {
+        const lines = ['solid exported_scene'];
+        parts.forEach((p) => {
+            p.faces.forEach(([a, b, c]) => {
+                const va = p.vertices[a], vb = p.vertices[b], vc = p.vertices[c];
+                if (!va || !vb || !vc) return;
+                const ux = vb[0] - va[0], uy = vb[1] - va[1], uz = vb[2] - va[2];
+                const wx = vc[0] - va[0], wy = vc[1] - va[1], wz = vc[2] - va[2];
+                let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+                const len = Math.hypot(nx, ny, nz) || 1;
+                nx /= len; ny /= len; nz /= len;
+                lines.push(`facet normal ${nx} ${ny} ${nz}`, '  outer loop');
+                [va, vb, vc].forEach(v => lines.push(`    vertex ${v[0]} ${v[1]} ${v[2]}`));
+                lines.push('  endloop', 'endfacet');
+            });
+        });
+        lines.push('endsolid exported_scene');
+        return new Blob([lines.join('\n')], { type: 'model/stl' });
+    }
+
+    _buildObjBlobFromParts(parts) {
+        const lines = ['# exported from floating-assistant.js 3D scene viewer'];
+        let vertexOffset = 0;
+        parts.forEach((p, idx) => {
+            lines.push(`o part_${idx + 1}_${String(p.name || '').replace(/\s+/g, '_') || 'unnamed'}`);
+            p.vertices.forEach(v => lines.push(`v ${v[0]} ${v[1]} ${v[2]}`));
+            p.faces.forEach(([a, b, c]) => lines.push(`f ${a + 1 + vertexOffset} ${b + 1 + vertexOffset} ${c + 1 + vertexOffset}`));
+            vertexOffset += p.vertices.length;
+        });
+        return new Blob([lines.join('\n')], { type: 'text/plain' });
+    }
+
+    // 3MF是zip容器（OPC package），結構跟docx/xlsx這類OOXML格式同一個精神，
+    // 用既有vendored的JSZip手刻——這個結構是實際測過redmine參考文件的
+    // 3MFLoader能正確讀回的最小組成（[Content_Types].xml + _rels/.rels +
+    // 3D/3dmodel.model），不是憑空猜的。
+    async _build3mfBlobFromParts(parts) {
+        await this._ensureJSZipLoaded();
+        let objectsXml = '';
+        let buildItemsXml = '';
+        parts.forEach((p, idx) => {
+            const objId = idx + 1;
+            const verticesXml = p.vertices.map(v => `<vertex x="${v[0]}" y="${v[1]}" z="${v[2]}"/>`).join('');
+            const trianglesXml = p.faces.map(([a, b, c]) => `<triangle v1="${a}" v2="${b}" v3="${c}"/>`).join('');
+            objectsXml += `<object id="${objId}" type="model"><mesh><vertices>${verticesXml}</vertices><triangles>${trianglesXml}</triangles></mesh></object>`;
+            buildItemsXml += `<item objectid="${objId}"/>`;
+        });
+        const modelXml = `<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n  <resources>${objectsXml}</resources>\n  <build>${buildItemsXml}</build>\n</model>`;
+        const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n</Types>`;
+        const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n</Relationships>`;
+        const zip = new JSZip();
+        zip.file('[Content_Types].xml', contentTypes);
+        zip.file('_rels/.rels', rels);
+        zip.file('3D/3dmodel.model', modelXml);
+        return zip.generateAsync({ type: 'blob' });
+    }
+
+    // 主要匯出入口，給3D場景卡片的📤匯出選單用（見_appendCardExportButton
+    // 的extraFormats參數）。
+    async _exportSceneToModelFormat(yamlText, format) {
+        await this._ensureThreeJsLoaded();
+        const built = this._buildTemporarySceneObjectFromYaml(yamlText);
+        if (!built.ok) return { ok: false, error: built.error };
+        const parts = this._extractMeshPartsFromObject3D(built.group);
+        if (!parts.length) return { ok: false, error: '這個場景裡沒有可匯出的靜態網格（粒子系統無法匯出成STL/OBJ/3MF）' };
+        if (format === 'stl') return { ok: true, blob: this._buildStlBlobFromParts(parts), ext: 'stl', mimeType: 'model/stl' };
+        if (format === 'obj') return { ok: true, blob: this._buildObjBlobFromParts(parts), ext: 'obj', mimeType: 'text/plain' };
+        if (format === '3mf') return { ok: true, blob: await this._build3mfBlobFromParts(parts), ext: '3mf', mimeType: 'model/3mf' };
+        return { ok: false, error: `不支援匯出成${format}（FBX是專利格式，沒有可靠的輕量編碼器可用，建議改用OBJ——幾乎所有3D軟體都讀得懂）` };
     }
 
     // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
@@ -7147,7 +7259,13 @@ ${existingNodeSummaries}
     // {text,kind}的非同步函式（呼叫當下才截圖/產生摘要，不是預先算好），
     // 匯出範圍只有「這一張卡片」，跟訊息底下那個匯出「整個回覆」的按鈕
     // 語意不同、互不取代。
-    _appendCardExportButton(container, getSnapshotFn, defaultTitle) {
+    // tw_stock_db客製: 2026-09-05使用者要求「怎麼儲存成obj/fbx/stl/3mf」——
+    // extraFormats（選填）是給3D場景卡片額外掛上的模型格式選項，格式為
+    // [{fmt,label,getBlobFn}]，getBlobFn是非同步函式、回傳
+    // {blob,ext,mimeType}或{ok:false,error}（見_exportSceneToModelFormat）。
+    // 沒有傳這個參數時（繪圖/互動viewer卡片）行為完全不變，只有PPTX/PDF
+    // 兩個選項。
+    _appendCardExportButton(container, getSnapshotFn, defaultTitle, extraFormats) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:relative; display:inline-block;';
         const btn = document.createElement('button');
@@ -7157,10 +7275,12 @@ ${existingNodeSummaries}
         btn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; line-height:1.4;';
         const menu = document.createElement('div');
         menu.style.cssText = 'display:none; position:absolute; bottom:100%; right:0; margin-bottom:4px; background:#fff; border:1px solid #ccc; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,0.25); z-index:6; min-width:96px;';
-        menu.innerHTML = `
-            <div class="fa-card-export-item" data-fmt="pptx" style="padding:6px 12px; font-size:12px; cursor:pointer; color:#333;">📊 PPTX</div>
-            <div class="fa-card-export-item" data-fmt="pdf" style="padding:6px 12px; font-size:12px; cursor:pointer; color:#333;">📄 PDF</div>
-        `;
+        const baseItems = [
+            { fmt: 'pptx', label: '📊 PPTX' },
+            { fmt: 'pdf', label: '📄 PDF' },
+        ];
+        const allItems = baseItems.concat(extraFormats || []);
+        menu.innerHTML = allItems.map(it => `<div class="fa-card-export-item" data-fmt="${it.fmt}" style="padding:6px 12px; font-size:12px; cursor:pointer; color:#333; white-space:nowrap;">${it.label}</div>`).join('');
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             document.querySelectorAll('.fa-card-export-menu-open').forEach((m) => { if (m !== menu) m.style.display = 'none'; });
@@ -7175,14 +7295,22 @@ ${existingNodeSummaries}
                 const original = btn.textContent;
                 btn.textContent = '⏳';
                 try {
-                    const snap = await getSnapshotFn();
-                    if (!snap) throw new Error('目前沒有可匯出的內容');
-                    if (fmt === 'pptx') {
-                        const blob = await _faMarkdownToPptxBlob('', defaultTitle, [snap]);
-                        await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pptx`, blob.type);
+                    if (fmt === 'pptx' || fmt === 'pdf') {
+                        const snap = await getSnapshotFn();
+                        if (!snap) throw new Error('目前沒有可匯出的內容');
+                        if (fmt === 'pptx') {
+                            const blob = await _faMarkdownToPptxBlob('', defaultTitle, [snap]);
+                            await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pptx`, blob.type);
+                        } else {
+                            const blob = await _faMarkdownToPdfBlob('', defaultTitle, [snap]);
+                            await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pdf`, blob.type);
+                        }
                     } else {
-                        const blob = await _faMarkdownToPdfBlob('', defaultTitle, [snap]);
-                        await this.generateAndDeliverFile(blob, `${defaultTitle}_${Date.now()}.pdf`, blob.type);
+                        const extra = (extraFormats || []).find(f => f.fmt === fmt);
+                        if (!extra) throw new Error('未知的匯出格式');
+                        const result = await extra.getBlobFn();
+                        if (!result || result.ok === false) throw new Error((result && result.error) || '匯出失敗');
+                        await this.generateAndDeliverFile(result.blob, `${defaultTitle}_${Date.now()}.${result.ext}`, result.mimeType);
                     }
                 } catch (err) {
                     this._log(`❌ 匯出失敗：${err.message || err}`);
@@ -9813,7 +9941,16 @@ ${existingNodeSummaries}
                 this._appendCardExportButton(btnGroup, async () => {
                     if (!msg._scene3DHandle || typeof msg._scene3DHandle.snapshotDataUri !== 'function') return null;
                     try { return { dataUrl: msg._scene3DHandle.snapshotDataUri(), kind: 'scene3d' }; } catch (_) { return null; }
-                }, '3D場景');
+                }, '3D場景', [
+                    // tw_stock_db客製: 2026-09-05使用者要求「怎麼儲存成
+                    // obj/fbx/stl/3mf」——這三種是實際輸出真正的3D幾何檔案
+                    // （可以帶去其他3D軟體/3D印表機切片軟體），跟上面PPTX/PDF
+                    // 那種「畫面截圖嵌進報告」語意不同。FBX刻意不提供，見
+                    // _exportSceneToModelFormat的說明。
+                    { fmt: 'stl', label: '🧊 STL', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, 'stl') },
+                    { fmt: 'obj', label: '🧊 OBJ', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, 'obj') },
+                    { fmt: '3mf', label: '🧊 3MF', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, '3mf') },
+                ]);
                 container.appendChild(sceneWrap);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
                     if (handle) {
