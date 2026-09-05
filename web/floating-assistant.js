@@ -433,8 +433,12 @@ class FileCache {
     // list_uploaded_files/parse_uploaded_file）。同一個FileCache/LRU淘汰
     // 機制兩種都適用，只是列出「使用者上傳了哪些檔案」時要能篩掉AI自己
     // 產生的匯出檔，不然使用者會在清單裡看到自己從沒上傳過的PPTX。
-    async put(filename, mimeType, blob, kind = 'generated') {
-        const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+    // tw_stock_db客製: 2026-09-05——explicitId選填，給附件上傳進度chip用
+    // （見_readFileWithProgress）：附件id要在開始讀取檔案「之前」就先決定
+    // 好，才能讓chip的取消/移除按鈕在整個讀取過程中都認得同一個id，不用
+    // 等put()真正執行完（讀完整個檔案）才拿得到id。
+    async put(filename, mimeType, blob, kind = 'generated', explicitId = null) {
+        const id = explicitId || (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
         const record = {
             id, filename, mimeType, blob, kind,
             sizeBytes: blob.size,
@@ -738,6 +742,81 @@ const VIEWER_ACTION_KINDS = new Set(['next_page', 'prev_page', 'goto_page', 'sav
 // 也方便未來其他實作（例如redmine_ai_chat）用同一份格式互通。
 const VIEWER_PACKAGE_KIND = 'ai_chat_viewer_package';
 
+// tw_stock_db客製: 2026-09-05使用者實測回報——STL/OBJ/3MF/FBX從上傳到轉成
+// 場景YAML這段UI會卡住一陣子，3D場景真正畫出來之後反而很順。根因是
+// three.js loader的.parse()是同步呼叫，加上_extractMeshPartsFromObject3D
+// 對逐頂點做矩陣運算/建陣列，三角形數量一多（幾萬~幾十萬）就會佔滿主
+// 執行緒好幾百毫秒到幾秒，這段期間整個分頁（不只聊天視窗）完全無法
+// 互動。這裡把「解析+抽取」這段CPU密集工作搬進一個獨立的Web Worker
+// （worker是完全獨立的global scope，無法直接共用主執行緒已經載入的
+// THREE/class method，必須自己重新載入一份three.js+對應loader，抽取
+// 邏輯也只能複製一份原始碼字串塞進worker，不能用function reference）
+// ——下面這份worker原始碼的抽取邏輯要跟_extractMeshPartsFromObject3D
+// 保持完全一致，修改其中一份時記得同步修改另一份。worker內載入函式庫
+// 用fetch()抓文字後在worker自己的global scope用indirect eval執行，
+// fetch()本身不受nosniff限制（理由跟_faLoadScriptOnce上方註解一致），
+// 不需要像主執行緒<script>注入那樣額外包一層Blob URL。
+const FA_3D_IMPORT_WORKER_SRC = `
+self.onmessage = function (e) {
+    var jobId = e.data.jobId, format = e.data.format, buffer = e.data.buffer,
+        text = e.data.text, scripts = e.data.scripts, maxTriangles = e.data.maxTriangles;
+    function reportStage(stage) { self.postMessage({ jobId: jobId, type: 'progress', stage: stage }); }
+    try {
+        reportStage('loading-libs');
+        (scripts || []).forEach(function (src) { if (src) (0, eval)(src); });
+        reportStage('parsing');
+        var object3D;
+        if (format === 'stl') {
+            object3D = new THREE.Mesh(new THREE.STLLoader().parse(buffer));
+        } else if (format === 'obj') {
+            object3D = new THREE.OBJLoader().parse(text);
+        } else if (format === '3mf') {
+            object3D = new THREE.ThreeMFLoader().parse(buffer);
+        } else if (format === 'fbx') {
+            object3D = new THREE.FBXLoader().parse(buffer, '');
+        } else {
+            throw new Error('worker不認得的格式: ' + format);
+        }
+        reportStage('extracting');
+        object3D.updateMatrixWorld(true);
+        var parts = [];
+        object3D.traverse(function (obj) {
+            if (!obj.isMesh || !obj.geometry) return;
+            var posAttr = obj.geometry.attributes.position;
+            if (!posAttr) return;
+            var worldMatrix = obj.matrixWorld;
+            var vertices = [];
+            var round = function (n) { return Math.round(n * 10000) / 10000; };
+            for (var i = 0; i < posAttr.count; i++) {
+                var v = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(worldMatrix);
+                vertices.push([round(v.x), round(v.y), round(v.z)]);
+            }
+            var index = obj.geometry.index;
+            var faces = [];
+            var triCount = index ? Math.floor(index.count / 3) : Math.floor(posAttr.count / 3);
+            for (var t = 0; t < triCount; t++) {
+                faces.push(index
+                    ? [index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)]
+                    : [t * 3, t * 3 + 1, t * 3 + 2]);
+            }
+            var color = '#cccccc';
+            var mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+            if (mat && mat.color) { try { color = '#' + mat.color.getHexString(); } catch (err) {} }
+            parts.push({ name: obj.name || ('part' + (parts.length + 1)), vertices: vertices, faces: faces, color: color });
+        });
+        if (!parts.length) throw new Error('這個檔案裡沒有找到任何可渲染的網格');
+        var totalTriangles = parts.reduce(function (sum, p) { return sum + p.faces.length; }, 0);
+        if (typeof maxTriangles === 'number' && isFinite(maxTriangles) && totalTriangles > maxTriangles) {
+            throw new Error('模型三角形數量(' + totalTriangles + ')超過上限' + maxTriangles + '（可在Advanced Settings的「匯入模型三角形數量上限」調整，設0代表不限制），請提供更精簡/低面數的模型');
+        }
+        reportStage('done');
+        self.postMessage({ jobId: jobId, type: 'result', ok: true, parts: parts, triangleCount: totalTriangles });
+    } catch (err) {
+        self.postMessage({ jobId: jobId, type: 'result', ok: false, error: String((err && err.message) || err) });
+    }
+};
+`;
+
 // tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
 // 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
 // 用get_3d_scene_topic(topic)按需查詢——跟計畫文件記錄的使用者要求
@@ -967,6 +1046,22 @@ function _faLoadScriptOnce(url) {
         }))
         .catch(e => { _faExportScriptCache.delete(url); throw new Error(`匯出功能所需的外部程式庫載入失敗：${url}（${e.message}）`); });
     _faExportScriptCache.set(url, p);
+    return p;
+}
+
+// tw_stock_db客製: 2026-09-05——給FA_3D_IMPORT_WORKER_SRC用，只需要拿到
+// 純文字內容（在worker自己的global scope裡indirect eval執行），不需要
+// 像_faLoadScriptOnce那樣包Blob URL再用<script>標籤注入——fetch()本身
+// 不受nosniff限制（見上面_faLoadScriptOnce的說明），直接拿文字就夠用。
+// 獨立一份cache（不跟_faExportScriptCache共用），避免兩種不同用途
+// 互相干擾。
+const _faScriptTextCache = new Map();
+function _faFetchScriptText(url) {
+    if (_faScriptTextCache.has(url)) return _faScriptTextCache.get(url);
+    const p = fetch(url)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        .catch(e => { _faScriptTextCache.delete(url); throw e; });
+    _faScriptTextCache.set(url, p);
     return p;
 }
 
@@ -2316,7 +2411,14 @@ ${fnData.code}
                 if (!record || record.kind !== 'uploaded') {
                     return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
                 }
-                const converted = await this._convertModelFileToSceneYaml(record);
+                // tw_stock_db客製: 2026-09-05——工具呼叫期間也要看得到處理進度
+                // （見_setResponseIndicatorLabel/_3dImportStageLabel的說明），
+                // 這條路徑不像/view-3d-attachment指令能自己掌控訊息卡片的
+                // 生命週期（工具結果要等這個函式return才會變成一則訊息），
+                // 退而求其次更新既有的「AI 回應中」狀態列文字。
+                const converted = await this._convertModelFileToSceneYaml(record, (stage) => {
+                    this._setResponseIndicatorLabel(`⏳ ${this._3dImportStageLabel(stage)}`);
+                });
                 if (!converted.ok) return JSON.stringify(converted);
                 const validation = this._validate3DSceneYaml(converted.yaml);
                 if (!validation.ok) return JSON.stringify({ ok: false, error: `轉換出來的場景格式有誤：${validation.error}` });
@@ -3922,6 +4024,10 @@ ${sourceTool.handlerScript}
                 flex-direction: column;
                 gap: 10px;
             }
+            @keyframes fa-spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
         `;
         document.head.appendChild(style);
     }
@@ -4692,13 +4798,102 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-05——懶惰建立、常駐重用的3D模型解析worker
+    // （見FA_3D_IMPORT_WORKER_SRC）。失敗（環境不支援Worker/建立時擲例外）
+    // 一律拋出帶isWorkerInfraFailure旗標的Error，讓呼叫端能分辨「worker
+    // 基礎設施本身有問題，該退回主執行緒」跟「worker成功執行、只是回報
+    // 業務邏輯錯誤（例如超過三角形上限）」這兩種情況——後者不該觸發回退
+    // 重跑，那樣只是白白浪費時間又得到一模一樣的錯誤。
+    async _ensureModelImportWorker() {
+        if (this._modelImportWorker) return this._modelImportWorker;
+        if (typeof Worker === 'undefined') {
+            const err = new Error('此環境不支援Web Worker');
+            err.isWorkerInfraFailure = true;
+            throw err;
+        }
+        try {
+            const blob = new Blob([FA_3D_IMPORT_WORKER_SRC], { type: 'application/javascript' });
+            const blobUrl = URL.createObjectURL(blob);
+            const worker = new Worker(blobUrl);
+            worker._faJobs = new Map();
+            worker.onmessage = (e) => {
+                const data = e.data || {};
+                const job = worker._faJobs.get(data.jobId);
+                if (!job) return;
+                if (data.type === 'progress') {
+                    if (job.onProgress) job.onProgress(data.stage);
+                } else if (data.type === 'result') {
+                    worker._faJobs.delete(data.jobId);
+                    if (data.ok) job.resolve({ parts: data.parts, triangleCount: data.triangleCount });
+                    else job.reject(new Error(data.error));
+                }
+            };
+            worker.onerror = (e) => {
+                // worker本身崩潰（例如注入的函式庫文字語法錯誤、或真正未預期的
+                // engine錯誤）——不是worker自己try/catch包得住的「模型解析失敗」
+                // （那種一律走上面的result/ok:false路徑），這裡一律視為基礎設施
+                // 問題，讓所有還在等待中的job都退回主執行緒重試，而不是永遠pending。
+                const infraErr = new Error('3D模型解析worker發生未預期錯誤: ' + (e.message || e));
+                infraErr.isWorkerInfraFailure = true;
+                worker._faJobs.forEach((job) => job.reject(infraErr));
+                worker._faJobs.clear();
+            };
+            this._modelImportWorker = worker;
+            return worker;
+        } catch (err) {
+            const wrapped = new Error('建立3D模型解析worker失敗: ' + (err.message || err));
+            wrapped.isWorkerInfraFailure = true;
+            throw wrapped;
+        }
+    }
+
+    // format對應要送進worker的函式庫原始碼清單（跟_ensure3DModelImportLoaded
+    // 判斷邏輯一致，只是這裡是抓文字給worker自己eval，不是用<script>注入
+    // 主執行緒）；payload是{buffer}（STL/3MF/FBX，二進位）或{text}（OBJ，
+    // 純文字），呼叫端已經在主執行緒讀好，這裡只負責轉送＋等待worker回覆。
+    async _convertModelPartsViaWorker(format, payload, maxTriangles, onProgress) {
+        const worker = await this._ensureModelImportWorker();
+        const scriptUrls = [FA_ASSET_URLS.threejs];
+        if (format === 'stl') scriptUrls.push(FA_ASSET_URLS.threeSTLLoader);
+        else if (format === 'obj') scriptUrls.push(FA_ASSET_URLS.threeOBJLoader);
+        else if (format === '3mf') scriptUrls.push(FA_ASSET_URLS.threeFflate, FA_ASSET_URLS.three3MFLoader);
+        else if (format === 'fbx') scriptUrls.push(FA_ASSET_URLS.threeFflate, FA_ASSET_URLS.threeFBXLoader);
+        let scripts;
+        try {
+            if (onProgress) onProgress('loading-libs');
+            scripts = await Promise.all(scriptUrls.map(u => _faFetchScriptText(u)));
+        } catch (err) {
+            const wrapped = new Error('載入3D模型解析所需的函式庫失敗: ' + (err.message || err));
+            wrapped.isWorkerInfraFailure = true;
+            throw wrapped;
+        }
+        const jobId = (crypto.randomUUID ? crypto.randomUUID() : `job_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+        return new Promise((resolve, reject) => {
+            worker._faJobs.set(jobId, { resolve, reject, onProgress });
+            try {
+                const msg = { jobId, format, scripts, maxTriangles };
+                const transfer = [];
+                if (payload.buffer) { msg.buffer = payload.buffer; transfer.push(payload.buffer); }
+                if (payload.text) msg.text = payload.text;
+                worker.postMessage(msg, transfer);
+            } catch (err) {
+                worker._faJobs.delete(jobId);
+                const wrapped = new Error('傳送資料給3D模型解析worker失敗: ' + (err.message || err));
+                wrapped.isWorkerInfraFailure = true;
+                reject(wrapped);
+            }
+        });
+    }
+
     // 把STLLoader/OBJLoader/ThreeMFLoader/FBXLoader解析出來的Object3D圖
     // （可能是單一Mesh、也可能是巢狀Group）攤平成這個內部YAML格式能用的
     // 「mesh零件」清單——每個零件的頂點座標先乘上該Mesh的matrixWorld
     // （把巢狀transform直接烘焙進頂點座標本身），因為這個YAML格式的node
     // 是扁平清單、沒有父子巢狀transform的概念。只取幾何形狀+單一材質顏色，
     // 不嘗試還原貼圖/多重材質/骨架動畫這類進階內容（見計畫文件的取捨
-    // 說明）。
+    // 說明）。這個函式只有「worker路徑失敗、退回主執行緒」時才會真的被
+    // 呼叫到（見_convertModelFileToSceneYaml）——正常情況下抽取邏輯是跑在
+    // FA_3D_IMPORT_WORKER_SRC裡的同一份邏輯的複製版，兩份要保持一致。
     _extractMeshPartsFromObject3D(root) {
         root.updateMatrixWorld(true);
         const parts = [];
@@ -4777,43 +4972,96 @@ ${sourceTool.handlerScript}
     // 太大量三角形會讓檔案暴增、也會拖垮軟體光柵化fallback的每幀效能，
     // 超過上限直接拒絕、不做任何有損簡化——簡化錯了會做出比拒絕更糟的
     // 「看起來壞掉」的模型)，通過才組成場景YAML回傳。
-    async _convertModelFileToSceneYaml(record) {
+    // tw_stock_db客製: 2026-09-05使用者實測回報上傳到轉換這段UI會卡住——
+    // 優先走_convertModelPartsViaWorker（背景執行緒，不擋主執行緒互動），
+    // 只有worker基礎設施本身失敗（isWorkerInfraFailure旗標，見
+    // _ensureModelImportWorker/_convertModelPartsViaWorker的說明）才退回
+    // 原本的主執行緒同步解析路徑；worker成功執行但回報業務邏輯錯誤（超過
+    // 三角形上限、找不到網格等）直接當最終結果回傳，不重跑一次。onProgress
+    // （選填）依序收到 reading-file → loading-libs → parsing → extracting →
+    // building-scene 幾個階段名稱，給呼叫端更新畫面用（見
+    // _handleViewAttachedSceneCommand的3D場景進度卡片）。
+    async _convertModelFileToSceneYaml(record, onProgress) {
         const format = this._detectFileFormat(record.filename);
         if (!['stl', 'obj', '3mf', 'fbx'].includes(format)) {
             return { ok: false, error: `不支援的3D模型格式: ${format}（目前支援stl/obj/3mf/fbx）` };
         }
-        try {
-            await this._ensure3DModelImportLoaded(format);
-        } catch (err) {
-            return { ok: false, error: String(err.message || err) };
-        }
-        let object3D;
-        try {
-            if (format === 'stl') {
-                const buf = await record.blob.arrayBuffer();
-                object3D = new THREE.Mesh(new THREE.STLLoader().parse(buf));
-            } else if (format === 'obj') {
-                const text = await record.blob.text();
-                object3D = new THREE.OBJLoader().parse(text);
-            } else if (format === '3mf') {
-                const buf = await record.blob.arrayBuffer();
-                object3D = new THREE.ThreeMFLoader().parse(buf);
-            } else if (format === 'fbx') {
-                const buf = await record.blob.arrayBuffer();
-                object3D = new THREE.FBXLoader().parse(buf, '');
-            }
-        } catch (err) {
-            return { ok: false, error: `解析${format.toUpperCase()}檔案失敗: ${err.message || err}` };
-        }
-        const parts = this._extractMeshPartsFromObject3D(object3D);
-        if (!parts.length) return { ok: false, error: '這個檔案裡沒有找到任何可渲染的網格' };
-        const totalTriangles = parts.reduce((sum, p) => sum + p.faces.length, 0);
         const maxTriangles = this._getMaxImportedMeshTriangles();
-        if (totalTriangles > maxTriangles) {
-            return { ok: false, error: `模型三角形數量(${totalTriangles})超過上限${maxTriangles}（可在Advanced Settings的「匯入模型三角形數量上限」調整，設0代表不限制），請提供更精簡/低面數的模型` };
+        // 跟worker平行預先開始載入主執行緒自己的three.js（畫面上要掛載
+        // 3D canvas時本來就需要），不等待、失敗也不影響——單純讓worker
+        // 解析完成的當下，主執行緒的three.js也大機率已經就緒，掛載可以
+        // 立刻開始，不用再等一次網路載入。
+        this._ensureThreeJsLoaded().catch(() => {});
+        let parts, triangleCount;
+        try {
+            if (onProgress) onProgress('reading-file');
+            const payload = format === 'obj'
+                ? { text: await record.blob.text() }
+                : { buffer: await record.blob.arrayBuffer() };
+            const result = await this._convertModelPartsViaWorker(format, payload, maxTriangles, onProgress);
+            parts = result.parts;
+            triangleCount = result.triangleCount;
+        } catch (err) {
+            if (!err.isWorkerInfraFailure) {
+                // worker真的跑完、給出明確的業務邏輯錯誤（超過上限/沒有網格/
+                // 解析失敗），這就是最終答案，重跑一次主執行緒只會拖時間又
+                // 得到一模一樣的結果。
+                return { ok: false, error: err.message };
+            }
+            // worker基礎設施本身有問題（環境不支援/建立失敗/傳輸失敗/未預期
+            // crash）——退回原本的主執行緒同步解析，功能不會壞掉，只是這一次
+            // 沒有worker的不卡頓效果。
+            try {
+                await this._ensure3DModelImportLoaded(format);
+            } catch (loadErr) {
+                return { ok: false, error: String(loadErr.message || loadErr) };
+            }
+            if (onProgress) onProgress('parsing');
+            let object3D;
+            try {
+                if (format === 'stl') {
+                    const buf = await record.blob.arrayBuffer();
+                    object3D = new THREE.Mesh(new THREE.STLLoader().parse(buf));
+                } else if (format === 'obj') {
+                    const text = await record.blob.text();
+                    object3D = new THREE.OBJLoader().parse(text);
+                } else if (format === '3mf') {
+                    const buf = await record.blob.arrayBuffer();
+                    object3D = new THREE.ThreeMFLoader().parse(buf);
+                } else if (format === 'fbx') {
+                    const buf = await record.blob.arrayBuffer();
+                    object3D = new THREE.FBXLoader().parse(buf, '');
+                }
+            } catch (parseErr) {
+                return { ok: false, error: `解析${format.toUpperCase()}檔案失敗: ${parseErr.message || parseErr}` };
+            }
+            if (onProgress) onProgress('extracting');
+            parts = this._extractMeshPartsFromObject3D(object3D);
+            if (!parts.length) return { ok: false, error: '這個檔案裡沒有找到任何可渲染的網格' };
+            triangleCount = parts.reduce((sum, p) => sum + p.faces.length, 0);
+            if (triangleCount > maxTriangles) {
+                return { ok: false, error: `模型三角形數量(${triangleCount})超過上限${maxTriangles}（可在Advanced Settings的「匯入模型三角形數量上限」調整，設0代表不限制），請提供更精簡/低面數的模型` };
+            }
         }
+        if (onProgress) onProgress('building-scene');
         const yaml = this._buildSceneYamlFromMeshParts(parts, record.filename);
-        return { ok: true, yaml, triangleCount: totalTriangles, partCount: parts.length };
+        return { ok: true, yaml, triangleCount, partCount: parts.length };
+    }
+
+    // _convertModelFileToSceneYaml的onProgress階段名稱→中文顯示文字，給
+    // 進度卡（_renderSingleMessage的_displayScene3DImportProgress分支）跟
+    // AI tool路徑（import_3d_model_attachment，更新_setResponseIndicatorLabel）
+    // 共用。
+    _3dImportStageLabel(stage) {
+        const labels = {
+            'reading-file': '讀取檔案中',
+            'loading-libs': '載入模型解析函式庫中',
+            'parsing': '解析模型中',
+            'extracting': '抽取網格資料中',
+            'building-scene': '建立場景中',
+            'done': '整理結果中',
+        };
+        return labels[stage] || stage;
     }
 
     // ============================================================
@@ -6763,6 +7011,17 @@ ${sourceTool.handlerScript}
         this._renderResponseIndicator(`${label} · 已經過 ${this._formatElapsedTime(elapsed)}`);
     }
 
+    // tw_stock_db客製: 2026-09-05使用者要求——工具呼叫（例如
+    // import_3d_model_attachment）執行期間也要能看到處理進度，不是只能
+    // 乾等「AI 回應中」這句固定文字。只有isResponding時才更新（工具呼叫
+    // 一定是在回應迴圈進行中才會發生），沒有回應中時静默跳過，避免殘留
+    // 上一輪的階段文字。
+    _setResponseIndicatorLabel(text) {
+        if (!this.isResponding) return;
+        this.responseIndicatorLabel = text;
+        this._updateElapsedIndicator();
+    }
+
     _requestStopResponse() {
         if (!this.isResponding) return;
         this.stopRequested = true;
@@ -7623,7 +7882,7 @@ ${existingNodeSummaries}
     // executeChat/LLM——這些是本地端function call直接觸發的工具指令，
     // 不需要也不應該讓AI自己「決定」要不要執行；實際指令清單見
     // this.slashCommands（見register_slash_command()的註冊機制）。
-    _submitChatInput(inputText, suggestBar) {
+    async _submitChatInput(inputText, suggestBar) {
         let textToSend = inputText.value.trim();
         // tw_stock_db客製: 階段2——如果有📎附加的檔案，就算輸入框是空的也
         // 允許送出（單純附檔案、讓AI自己判斷要不要主動看內容，是合理的使用
@@ -7645,13 +7904,26 @@ ${existingNodeSummaries}
         }
 
         if (hasAttachments) {
+            // tw_stock_db客製: 2026-09-05使用者要求——送出＝把附件上傳結果
+            // commit進使用者訊息。如果剛好還有附件在背景上傳中，先等它們
+            // 完成（或使用者中途按×取消）再組附件清單，避免把還沒真的寫進
+            // FileCache的file_id塞進訊息裡，造成之後AI查詢file_id時找不到
+            // 檔案。
+            const stillUploading = this._pendingAttachments.filter(a => a.status === 'uploading');
+            if (stillUploading.length) {
+                this._log('⏳ 等待附件上傳完成中...');
+                await Promise.all(stillUploading.map(a => a.promise || Promise.resolve()));
+            }
             const attachmentNote = this._pendingAttachments
+                .filter(a => a.status === 'done')
                 .map(a => `${a.filename}（file_id=${a.id}）`)
                 .join('、');
             const instruction = textToSend
                 ? textToSend
                 : '請視需要使用檔案解讀能力（parse_uploaded_file / delegate_to_subagent的file_analysis領域）查看下面附件的內容，再回答我。';
-            textToSend = `${instruction}\n\n[附件：${attachmentNote}]`;
+            // attachmentNote可能因為等待期間全部被取消而變空——這種情況下
+            // 不要留下一個空的「[附件：]」標記。
+            textToSend = attachmentNote ? `${instruction}\n\n[附件：${attachmentNote}]` : instruction;
             this._pendingAttachments = [];
             this._renderPendingAttachments();
         }
@@ -7663,39 +7935,99 @@ ${existingNodeSummaries}
     }
 
     // tw_stock_db客製: 階段2——📎按鈕觸發隱藏的<input type=file>，選好的每個
-    // 檔案立刻存進this.fileCache（kind='uploaded'，見FileCache.put），存好
-    // 就加進this._pendingAttachments暫存清單、更新聊天輸入框上方的附件
-    // chip列；真正把file_id接進使用者訊息文字是送出當下才做（見
-    // _submitChatInput），先存起來只是讓使用者能在送出前看到「等一下會附上
-    // 哪些檔案」、也能點×移除還沒送出的附件。
+    // 檔案立刻開始寫進this.fileCache（kind='uploaded'，見FileCache.put）、
+    // 加進this._pendingAttachments暫存清單、更新聊天輸入框上方的附件chip列
+    // ——upload in advance，不等使用者按送出才開始存檔；真正把file_id接進
+    // 使用者訊息文字是送出當下才做（見_submitChatInput），送出的動作等於
+    // commit（chip上的×從那之後就不會再出現，因為已經送出的附件不在
+    // _pendingAttachments清單裡了）。
+    // 2026-09-05使用者要求——大檔案（尤其3D模型）用File.slice()分塊讀取
+    // （見_readFileWithProgress），讓chip上能顯示真正的位元組進度而不是
+    // 單純的轉圈動畫，讀取過程中可以按×取消（清掉還沒寫入的部分，不留
+    // 殘留）；已經寫入完成的附件按×則是單純移除（含刪除FileCache裡的
+    // 實體記錄，不是只從畫面清單移除、留下孤兒記錄）。
     _wireAttachmentUpload() {
         const attachBtn = document.getElementById('ai-attach-btn');
         const attachInput = document.getElementById('ai-attach-input');
         if (!attachBtn || !attachInput) return;
         attachBtn.addEventListener('click', () => attachInput.click());
-        attachInput.addEventListener('change', async () => {
+        attachInput.addEventListener('change', () => {
             const files = Array.from(attachInput.files || []);
             attachInput.value = '';
             for (const file of files) {
-                try {
-                    const id = await this.fileCache.put(file.name, file.type || 'application/octet-stream', file, 'uploaded');
-                    this._pendingAttachments.push({ id, filename: file.name, sizeBytes: file.size });
-                } catch (err) {
+                const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+                const entry = { id, filename: file.name, sizeBytes: file.size, status: 'uploading', progress: 0, cancelled: false };
+                entry.promise = this._readFileWithProgress(file, entry).catch((err) => {
+                    if (entry.cancelled) return; // 使用者主動取消，不算失敗，不用額外記log
                     this._log(`⚠️ 附件「${file.name}」存檔失敗：${err.message || err}`);
-                }
+                    this._pendingAttachments = this._pendingAttachments.filter(a => a !== entry);
+                    this._renderPendingAttachments();
+                });
+                this._pendingAttachments.push(entry);
             }
             this._renderPendingAttachments();
         });
         const pendingRow = document.getElementById('ai-pending-attachments');
         if (pendingRow) {
-            pendingRow.addEventListener('click', (e) => {
+            pendingRow.addEventListener('click', async (e) => {
                 const removeBtn = e.target.closest('[data-remove-attachment-id]');
                 if (!removeBtn) return;
                 const id = removeBtn.dataset.removeAttachmentId;
+                const entry = this._pendingAttachments.find(a => a.id === id);
                 this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== id);
                 this._renderPendingAttachments();
+                if (!entry) return;
+                entry.cancelled = true; // 讓還在跑的_readFileWithProgress迴圈中止、不寫入FileCache
+                if (entry.status === 'done') {
+                    // 已經上傳完成才按×＝真的移除，不留孤兒記錄在persistent storage裡。
+                    await this.fileCache.delete(id).catch(() => {});
+                }
             });
         }
+    }
+
+    // 把File用固定大小分塊讀取（而不是一次性blob.arrayBuffer()/put()），
+    // 讓chip的進度條反映真正讀取到的位元組比例；entry.cancelled在每個
+    // chunk邊界都會檢查，使用者按×取消時最多只是多等一個chunk的時間就會
+    // 中止，不會真的寫進FileCache。
+    async _readFileWithProgress(file, entry) {
+        const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
+        const total = file.size || 0;
+        let blob;
+        if (total === 0) {
+            blob = file;
+        } else {
+            const chunks = [];
+            let offset = 0;
+            while (offset < total) {
+                if (entry.cancelled) return;
+                const end = Math.min(offset + CHUNK_SIZE, total);
+                chunks.push(await file.slice(offset, end).arrayBuffer());
+                offset = end;
+                entry.progress = offset / total;
+                this._renderPendingAttachments();
+            }
+            if (entry.cancelled) return;
+            blob = new Blob(chunks, { type: file.type || 'application/octet-stream' });
+        }
+        await this.fileCache.put(file.name, file.type || 'application/octet-stream', blob, 'uploaded', entry.id);
+        if (entry.cancelled) {
+            // 極端時序：讀取剛完成的瞬間才被取消——寫都寫了，補刪掉避免殘留。
+            await this.fileCache.delete(entry.id).catch(() => {});
+            return;
+        }
+        entry.status = 'done';
+        entry.progress = 1;
+        this._renderPendingAttachments();
+    }
+
+    // tw_stock_db客製: /view-3d-attachment、/import-viewer-attachment這類
+    // 「用最近一個pending附件」的指令，只能挑「已經真正寫進FileCache」的
+    // 項目——還在上傳中的項目fileCache.get()會拿到undefined（put()根本
+    // 還沒被呼叫），選到就會誤判成「找不到附件」。
+    _getLastCompletedPendingAttachment() {
+        const done = this._pendingAttachments.filter(a => a.status === 'done');
+        return done.length ? done[done.length - 1] : null;
     }
 
     _renderPendingAttachments() {
@@ -7712,9 +8044,13 @@ ${existingNodeSummaries}
             const sizeLabel = a.sizeBytes >= 1024 * 1024
                 ? `${(a.sizeBytes / 1024 / 1024).toFixed(1)}MB`
                 : `${Math.ceil(a.sizeBytes / 1024)}KB`;
-            return `<span style="display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:999px; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px;">
-                📎 ${this._escapeHtml(a.filename)}（${sizeLabel}）
-                <span data-remove-attachment-id="${this._escapeAttr(a.id)}" style="cursor:pointer; opacity:0.7;" title="移除">✕</span>
+            const uploading = a.status === 'uploading';
+            const pct = Math.round((a.progress || 0) * 100);
+            const fillColor = uploading ? '#3b82f6' : '#10b981';
+            return `<span style="position:relative; display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:999px; background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; overflow:hidden;">
+                <span style="position:absolute; inset:0; left:0; width:${pct}%; background:${fillColor}; opacity:0.22; transition:width 0.12s linear;"></span>
+                <span style="position:relative; z-index:1;">📎 ${this._escapeHtml(a.filename)}（${sizeLabel}）${uploading ? ` ⬆️${pct}%` : ''}</span>
+                <span data-remove-attachment-id="${this._escapeAttr(a.id)}" style="position:relative; z-index:1; cursor:pointer; opacity:0.7;" title="${uploading ? '取消上傳' : '移除附件'}">✕</span>
             </span>`;
         }).join('');
     }
@@ -7729,8 +8065,8 @@ ${existingNodeSummaries}
     // 純本地動作。
     async _handleViewAttachedSceneCommand() {
         let record = null;
-        if (this._pendingAttachments.length) {
-            const pending = this._pendingAttachments[this._pendingAttachments.length - 1];
+        const pending = this._getLastCompletedPendingAttachment();
+        if (pending) {
             record = await this.fileCache.get(pending.id);
             this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
             this._renderPendingAttachments();
@@ -7750,10 +8086,37 @@ ${existingNodeSummaries}
             return;
         }
         const format = this._detectFileFormat(record.filename);
+        const isModelFormat = ['stl', 'obj', '3mf', 'fbx'].includes(format);
+
+        // tw_stock_db客製: 2026-09-05使用者要求——STL/OBJ/3MF/FBX轉換這段要
+        // 在畫面上顯示處理進度（見_convertModelFileToSceneYaml的onProgress／
+        // _renderSingleMessage的_displayScene3DImportProgress分支）。先插入
+        // user訊息＋一則進度佔位訊息，轉換過程中反覆更新進度旗標並重繪；
+        // 成功時把佔位訊息原地換成正常的3D場景結果訊息，失敗時把兩則訊息
+        // 都撤回，維持跟原本「指令失敗不留下任何訊息紀錄、只透過_log顯示
+        // 錯誤」一致的行為。
+        const userMsg = { role: 'user', content: `📎 開啟附件的3D場景：${record.filename}` };
+        this.messages.push(userMsg);
+        let progressMsg = null;
+        if (isModelFormat) {
+            progressMsg = { role: 'tool' };
+            Object.defineProperty(progressMsg, '_displayScene3DImportProgress', { value: 'reading-file', enumerable: false, configurable: true });
+            this.messages.push(progressMsg);
+            this._renderMessageHistory();
+        }
+        const cleanupOnFailure = () => {
+            this.messages = this.messages.filter(m => m !== userMsg && m !== progressMsg);
+            this._renderMessageHistory();
+        };
+
         let yamlText;
-        if (['stl', 'obj', '3mf', 'fbx'].includes(format)) {
-            const converted = await this._convertModelFileToSceneYaml(record);
+        if (isModelFormat) {
+            const converted = await this._convertModelFileToSceneYaml(record, (stage) => {
+                Object.defineProperty(progressMsg, '_displayScene3DImportProgress', { value: stage, enumerable: false, configurable: true });
+                this._renderMessageHistory();
+            });
             if (!converted.ok) {
+                cleanupOnFailure();
                 this._log(`⚠️ /view-3d-attachment：${converted.error}`);
                 return;
             }
@@ -7762,18 +8125,24 @@ ${existingNodeSummaries}
             try {
                 yamlText = await record.blob.text();
             } catch (err) {
+                cleanupOnFailure();
                 this._log(`⚠️ /view-3d-attachment：讀取附件失敗：${err.message || err}`);
                 return;
             }
         }
         const validation = this._validate3DSceneYaml(yamlText);
         if (!validation.ok) {
+            cleanupOnFailure();
             this._log(`⚠️ /view-3d-attachment：附件「${record.filename}」不是合法的3D場景（或轉換失敗）：${validation.error}`);
             return;
         }
-        this.messages.push({ role: 'user', content: `📎 開啟附件的3D場景：${record.filename}` });
-        const msg = this._buildToolResultMessage('view_3d_attachment', JSON.stringify({ type: 'scene3d', yaml: yamlText }), {});
-        this.messages.push(msg);
+        const finalMsg = this._buildToolResultMessage('view_3d_attachment', JSON.stringify({ type: 'scene3d', yaml: yamlText }), {});
+        if (progressMsg) {
+            const idx = this.messages.indexOf(progressMsg);
+            this.messages.splice(idx, 1, finalMsg);
+        } else {
+            this.messages.push(finalMsg);
+        }
         this._renderMessageHistory();
     }
 
@@ -7784,8 +8153,8 @@ ${existingNodeSummaries}
     // 用猜副檔名/格式。
     async _handleImportViewerAttachmentCommand() {
         let record = null;
-        if (this._pendingAttachments.length) {
-            const pending = this._pendingAttachments[this._pendingAttachments.length - 1];
+        const pending = this._getLastCompletedPendingAttachment();
+        if (pending) {
             record = await this.fileCache.get(pending.id);
             this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
             this._renderPendingAttachments();
@@ -10169,6 +10538,22 @@ ${existingNodeSummaries}
                     <img src="${imagePayload.dataUrl}" style="max-width: 100%; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);">
                 `;
                 container.appendChild(imgWrap);
+                return;
+            }
+
+            // tw_stock_db客製: 2026-09-05使用者要求——STL/OBJ/3MF/FBX從上傳到
+            // 轉換這段（見_convertModelFileToSceneYaml的onProgress）要在畫面
+            // 上顯示載入/處理進度，不是讓使用者對著空白/沒反應的畫面等。這裡
+            // 是/view-3d-attachment指令用的進度卡（_handleViewAttachedSceneCommand
+            // 會在轉換過程中反覆更新這個旗標值＋呼叫_renderMessageHistory()），
+            // 轉換完成後這個旗標會被拿掉、換成正常的_displayScene3DYaml，所以
+            // 這個分支一定要放在下面_displayScene3DYaml判斷之前。
+            if (msg._displayScene3DImportProgress) {
+                const stageLabel = this._3dImportStageLabel(msg._displayScene3DImportProgress);
+                const progWrap = document.createElement('div');
+                progWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%; padding: 14px 16px; border-radius: 8px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); font-size: 12px; color: #6366f1;';
+                progWrap.innerHTML = `<span style="display:inline-block; animation: fa-spin 1s linear infinite;">🔄</span> 正在匯入3D模型…${this._escapeHtml(stageLabel)}`;
+                container.appendChild(progWrap);
                 return;
             }
 
