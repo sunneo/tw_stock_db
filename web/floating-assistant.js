@@ -5093,13 +5093,18 @@ ${sourceTool.handlerScript}
     // ============================================================
 
     _buildTemporarySceneObjectFromYaml(yamlText) {
-        const validation = this._validate3DSceneYaml(yamlText);
+        // tw_stock_db客製: 2026-09-05——匯出的是使用者已經在看的既有場景，用
+        // lenient模式（見_validate3DSceneYaml的說明），不要因為場景裡有一個
+        // 壞掉的節點就讓整個STL/OBJ/3MF匯出失敗。
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
         if (!validation.ok) return { ok: false, error: validation.error };
         const group = new THREE.Group();
         for (const node of validation.expandedNodes) {
             if (node.mesh === 'particles') continue; // 點雲，這些格式無法表達，匯出時跳過
-            const built = this._build3DMeshObject(node, validation.particlePresets);
-            if (built && !built.isParticleSystem) group.add(built);
+            try {
+                const built = this._build3DMeshObject(node, validation.particlePresets);
+                if (built && !built.isParticleSystem) group.add(built);
+            } catch (_) { /* 單一節點建構失敗不影響其餘節點匯出 */ }
         }
         return { ok: true, group };
     }
@@ -5456,7 +5461,21 @@ ${sourceTool.handlerScript}
     // 主驗證入口：YAML語法→形狀→defs/use展開→節點數/粒子數上限，全部通過
     // 才回傳ok:true+展開後的節點陣列，任何一步失敗都回傳明確的錯誤訊息
     // （不是籠統的「格式錯誤」，讓AI看得懂哪裡要修正）。
-    _validate3DSceneYaml(yamlText) {
+    //
+    // tw_stock_db客製: 2026-09-05使用者明確要求——這個嚴格「一有問題就整個
+    // reject」的行為只適合AI「生成當下」的回饋迴圈（render_3d_scene工具呼叫，
+    // 讓模型能在同一輪立刻看到自己哪裡編錯格式並修正），不適合「檢視/播放」
+    // 這件事本身：使用者原話「不存在的preset,不需要reject...出現意外的元件
+    // 應該還是可以by pass並播放，不然這會造成舊的model無法繼續顯示」——如果
+    // 之後又新增新的驗證規則（跟這次的頂層欄位白名單一樣），舊的、之前已經
+    // 生成/存起來的場景YAML不應該因為新規則而整個播不出來。新增選填的
+    // opts.lenient：預設false（維持原本嚴格行為，AI工具呼叫路徑不傳這個
+    // 參數，行為完全不變），true時同一組檢查邏輯改成「跳過壞掉的部分＋記錄
+    // 一筆warning訊息＋繼續」，只有YAML語法錯誤/scene本身不是物件這兩種
+    // 「連骨架都沒有、沒東西可以跳過」的情況仍然視為真正致命、回傳ok:false。
+    _validate3DSceneYaml(yamlText, opts) {
+        const lenient = !!(opts && opts.lenient);
+        const warnings = [];
         let scene;
         try {
             scene = jsyaml.load(yamlText);
@@ -5466,21 +5485,32 @@ ${sourceTool.handlerScript}
         if (!scene || typeof scene !== 'object') return { ok: false, error: '場景內容必須是一個物件（至少要有nodes陣列）' };
         // tw_stock_db客製: 2026-09-05使用者實測回報——AI編了完全不存在的
         // 頂層欄位`lines:`/`markers:`想畫軌道線，靜默被忽略、AI自己毫無所覺
-        // 以為畫成功了。改成直接擋掉任何未知頂層欄位，並在錯誤訊息裡直接
-        // 提示正確做法（把物件加進nodes、用mesh:"line"畫軌跡），比起讓AI
-        // 瞎猜格式、卻連「猜錯了」都不知道好得多。
+        // 以為畫成功了。generation時直接擋掉任何未知頂層欄位，並在錯誤訊息裡
+        // 直接提示正確做法（把物件加進nodes、用mesh:"line"畫軌跡）；lenient
+        // （檢視/播放）時則單純忽略這些未知欄位、記一筆warning，不影響其他
+        // 合法欄位繼續渲染。
         const unknownTopKeys = Object.keys(scene).filter(k => !SCENE3D_KNOWN_TOP_LEVEL_KEYS.has(k));
         if (unknownTopKeys.length) {
-            return { ok: false, error: `場景包含未知的頂層欄位: ${unknownTopKeys.join(', ')}（合法頂層欄位：${[...SCENE3D_KNOWN_TOP_LEVEL_KEYS].join('/')}）。想畫軌跡線/軌道環請用nodes陣列裡的mesh:"line"節點（points或shape:"circle"+radius），不是額外的lines/markers頂層陣列；想加更多物體，直接加進nodes陣列即可。` };
+            const msg = `場景包含未知的頂層欄位: ${unknownTopKeys.join(', ')}（合法頂層欄位：${[...SCENE3D_KNOWN_TOP_LEVEL_KEYS].join('/')}）。想畫軌跡線/軌道環請用nodes陣列裡的mesh:"line"節點（points或shape:"circle"+radius），不是額外的lines/markers頂層陣列；想加更多物體，直接加進nodes陣列即可。`;
+            if (!lenient) return { ok: false, error: msg };
+            warnings.push(msg);
         }
-        const nodes = (Array.isArray(scene.nodes) ? scene.nodes : []).map(n => this._normalize3DParticleNode(n));
-        if (!nodes.length) return { ok: false, error: '缺少nodes陣列，或nodes是空的' };
+        const rawNodes = Array.isArray(scene.nodes) ? scene.nodes : [];
+        if (!rawNodes.length) {
+            const msg = '缺少nodes陣列，或nodes是空的';
+            if (!lenient) return { ok: false, error: msg };
+            warnings.push(msg);
+        }
+        const nodes = rawNodes.map(n => this._normalize3DParticleNode(n));
         const defs = (scene.defs && typeof scene.defs === 'object') ? scene.defs : {};
         Object.values(defs).forEach((def) => {
             if (def && Array.isArray(def.nodes)) def.nodes = def.nodes.map(n => this._normalize3DParticleNode(n));
         });
         const defsErr = this._validate3DDefs(defs);
-        if (defsErr) return { ok: false, error: defsErr };
+        if (defsErr) {
+            if (!lenient) return { ok: false, error: defsErr };
+            warnings.push(defsErr);
+        }
         // tw_stock_db客製: 2026-09-05使用者明確要求——粒子動畫要能「portable
         // 在model裡，不是寫死在JS引擎內」，新增scene.particle_presets讓YAML
         // 自己註冊自訂preset（init/update/output都是安全表達式公式，見
@@ -5488,33 +5518,61 @@ ${sourceTool.handlerScript}
         // 可以是內建六選一，也可以是這裡註冊的自訂名稱。
         const particlePresets = (scene.particle_presets && typeof scene.particle_presets === 'object') ? scene.particle_presets : {};
         const presetsErr = this._validate3DParticlePresets(particlePresets);
-        if (presetsErr) return { ok: false, error: presetsErr };
+        if (presetsErr) {
+            if (!lenient) return { ok: false, error: presetsErr };
+            warnings.push(presetsErr);
+        }
+        const validNodes = [];
         for (const n of nodes) {
             if (n && n.use) {
-                if (!defs[n.use]) return { ok: false, error: `use引用了不存在的defs: "${n.use}"` };
+                if (!defs[n.use]) {
+                    const msg = `use引用了不存在的defs: "${n.use}"`;
+                    if (!lenient) return { ok: false, error: msg };
+                    warnings.push(msg);
+                    continue; // lenient：跳過這個use節點，其餘節點繼續
+                }
+                validNodes.push(n);
                 continue;
             }
             const err = this._validate3DNodeShape(n, 'nodes');
-            if (err) return { ok: false, error: err };
+            if (err) {
+                if (!lenient) return { ok: false, error: err };
+                warnings.push(err);
+                continue; // lenient：跳過這個格式不對的節點（例如使用者這次遇到的「不存在的preset」）
+            }
+            validNodes.push(n);
         }
-        const expanded = this._expand3DSceneNodes(nodes, defs);
+        let expanded = this._expand3DSceneNodes(validNodes, defs);
         if (expanded.length > SCENE3D_MAX_EXPANDED_NODES) {
-            return { ok: false, error: `展開後節點數(${expanded.length})超過上限${SCENE3D_MAX_EXPANDED_NODES}，請減少use次數或nodes數量` };
+            const msg = `展開後節點數(${expanded.length})超過上限${SCENE3D_MAX_EXPANDED_NODES}，請減少use次數或nodes數量`;
+            if (!lenient) return { ok: false, error: msg };
+            warnings.push(`${msg}（已自動截斷，只保留前${SCENE3D_MAX_EXPANDED_NODES}個節點）`);
+            expanded = expanded.slice(0, SCENE3D_MAX_EXPANDED_NODES);
         }
-        for (const n of expanded) {
+        const finalNodes = [];
+        for (let n of expanded) {
             if (n.mesh === 'particles') {
                 const preset = n.particles && n.particles.preset;
                 const isBuiltin = SCENE3D_PARTICLE_PRESETS.has(preset);
                 const isCustom = Object.prototype.hasOwnProperty.call(particlePresets, preset);
                 if (!isBuiltin && !isCustom) {
-                    return { ok: false, error: `particles節點缺少合法的preset——內建preset：spark/flame/mist/bounce/firework/nbody，或scene.particle_presets裡註冊過的自訂名稱，收到: ${preset}` };
+                    const msg = `particles節點缺少合法的preset——內建preset：spark/flame/mist/bounce/firework/nbody，或scene.particle_presets裡註冊過的自訂名稱，收到: ${preset}`;
+                    if (!lenient) return { ok: false, error: msg };
+                    warnings.push(msg);
+                    continue; // lenient：跳過這個particles節點，不是整個場景都不能播
                 }
                 const cap = preset === 'nbody' ? SCENE3D_MAX_NBODY_PARTICLE_COUNT : SCENE3D_MAX_PARTICLE_COUNT;
                 const count = Number(n.particles.count) || 0;
-                if (count > cap) return { ok: false, error: `particles節點的count(${count})超過${preset}的上限${cap}` };
+                if (count > cap) {
+                    const msg = `particles節點的count(${count})超過${preset}的上限${cap}`;
+                    if (!lenient) return { ok: false, error: msg };
+                    warnings.push(`${msg}（已自動降為${cap}）`);
+                    n = Object.assign({}, n, { particles: Object.assign({}, n.particles, { count: cap }) });
+                }
             }
+            finalNodes.push(n);
         }
-        return { ok: true, scene, expandedNodes: expanded, particlePresets };
+        return { ok: true, scene, expandedNodes: finalNodes, particlePresets, warnings };
     }
 
     // 自訂粒子preset的形狀驗證：init/update/output都必須是{變數名:安全表達式字串}
@@ -6289,11 +6347,19 @@ ${sourceTool.handlerScript}
     // 訊息），呼叫端不需要再處理。
     async _mount3DScene(container, yamlText) {
         await this._ensureJsYamlLoaded();
-        const validation = this._validate3DSceneYaml(yamlText);
+        // tw_stock_db客製: 2026-09-05使用者明確要求——播放/檢視場景時要能
+        // 「bypass意外的元件並繼續播放」，用lenient模式（見_validate3DSceneYaml
+        // 的說明），只有YAML語法錯誤/scene本身不是物件這種真的沒東西可以顯示
+        // 的情況才整個擋下來；其餘問題（不存在的preset、未知mesh類型、未知
+        // 頂層欄位等）都只是跳過該節點/欄位並記一筆warning，讓場景其餘部分
+        // 照常播放——不然新增驗證規則後，舊的、之前已經生成好的場景YAML會
+        // 突然整個播不出來。
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
         if (!validation.ok) {
             container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D場景格式錯誤：${this._escapeHtml(validation.error)}</div>`;
             return null;
         }
+        const warnings = validation.warnings || [];
         try {
             await this._ensureThreeJsLoaded();
         } catch (err) {
@@ -6344,7 +6410,18 @@ ${sourceTool.handlerScript}
             // （回傳{}當空字典），只有PDF/PPTX匯出快照那條路徑（另一處呼叫，已經
             // 有正確傳）才用得到自訂preset——使用者畫面上完全看不出來這個落差，
             // 因為custom preset找不到時只是靜默回傳null、什麼都不畫，不會報錯。
-            const built = this._build3DMeshObject(node, validation.particlePresets);
+            // tw_stock_db客製: 2026-09-05使用者要求——「出現意外的元件應該
+            // 還是可以by pass並播放」，這裡是lenient驗證通過後的第二道防線：
+            // 就算某個節點通過了驗證，實際建構時仍可能因為未預期的資料組合
+            // 丟出例外（例如未來新增mesh類型但漏改某段舊邏輯），一個節點壞掉
+            // 不該讓整個場景的其餘節點都不畫出來。
+            let built;
+            try {
+                built = this._build3DMeshObject(node, validation.particlePresets);
+            } catch (err) {
+                warnings.push(`節點(mesh:${node.mesh || '?'})建構失敗，已略過：${err.message || err}`);
+                continue;
+            }
             if (!built) continue;
             if (built.isParticleSystem) {
                 scene.add(built.object);
@@ -6395,6 +6472,10 @@ ${sourceTool.handlerScript}
         return {
             scene, camera, canvas, webglOk,
             title: (typeof sceneDef.title === 'string' && sceneDef.title.trim()) ? sceneDef.title.trim() : null,
+            // tw_stock_db客製: 2026-09-05——lenient驗證＋建構時try/catch收集到的
+            // warning清單，給呼叫端（_renderSingleMessage的3D場景卡片）顯示
+            // 一個「⚠️ N」錯誤紀錄按鈕用，點開才看得到細節，不干擾正常播放。
+            warnings,
             stop: () => { stopped = true; if (controls) controls.dispose(); },
             // tw_stock_db客製: 2026-09-05使用者要求——右下角要有「重設視角」
             // 按鈕，把camera位置/朝向、OrbitControls的target都還原成場景YAML
@@ -8236,7 +8317,11 @@ ${existingNodeSummaries}
                 return;
             }
         }
-        const validation = this._validate3DSceneYaml(yamlText);
+        // tw_stock_db客製: 2026-09-05——檢視附件走lenient模式（見
+        // _validate3DSceneYaml的說明），只有YAML語法錯誤/scene不是物件這種
+        // 完全無法顯示的情況才擋下來，其餘問題交給_mount3DScene自己收集
+        // warning、bypass有問題的部分繼續播放。
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
         if (!validation.ok) {
             cleanupOnFailure();
             this._log(`⚠️ /view-3d-attachment：附件「${record.filename}」不是合法的3D場景（或轉換失敗）：${validation.error}`);
@@ -10737,6 +10822,29 @@ ${existingNodeSummaries}
                         badge.style.cssText = 'font-size:10px; color:#dd6b20; margin-top:4px;';
                         badge.textContent = '⚠️ 這個瀏覽器/裝置無法啟用WebGL，已改用CPU軟體繪圖顯示（互動與動畫仍然可用，但不支援材質貼圖）。';
                         sceneWrap.appendChild(badge);
+                    }
+                    // tw_stock_db客製: 2026-09-05使用者要求——lenient驗證/建構
+                    // 時bypass掉的部分（不存在的preset、未知mesh類型、未知頂層
+                    // 欄位等）不應該讓場景整個播不出來，但使用者要能查得到「
+                    // 到底哪些東西被跳過了」，這裡加一個小按鈕，預設不佔版面、
+                    // 點下去才展開細節列表，不干擾一般正常播放時的畫面。
+                    if (handle && Array.isArray(handle.warnings) && handle.warnings.length) {
+                        const warnBtn = document.createElement('button');
+                        warnBtn.type = 'button';
+                        warnBtn.title = '這個場景有部分內容被略過，點擊查看原因';
+                        warnBtn.textContent = `⚠️ ${handle.warnings.length}`;
+                        warnBtn.style.cssText = 'border:none; background:rgba(221,107,32,0.15); color:#dd6b20; border-radius:6px; cursor:pointer; font-size:11px; padding:3px 7px; line-height:1.4; font-weight:bold;';
+                        btnGroup.insertBefore(warnBtn, btnGroup.firstChild);
+                        let warnPanel = null;
+                        warnBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            if (warnPanel) { warnPanel.remove(); warnPanel = null; return; }
+                            warnPanel = document.createElement('div');
+                            warnPanel.style.cssText = 'margin-top:6px; padding:8px 10px; background:rgba(221,107,32,0.08); border:1px solid rgba(221,107,32,0.3); border-radius:6px; font-size:11px; color:#dd6b20;';
+                            warnPanel.innerHTML = `<div style="font-weight:bold; margin-bottom:4px;">以下內容因為格式問題被略過，其餘部分仍正常顯示：</div>` +
+                                handle.warnings.map(w => `<div style="margin-bottom:2px;">• ${this._escapeHtml(w)}</div>`).join('');
+                            sceneWrap.appendChild(warnPanel);
+                        });
                     }
                 }).catch((err) => {
                     mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 3D場景渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
