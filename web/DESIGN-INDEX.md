@@ -88,6 +88,24 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 
 ## 近期重大修改（2026-09-05這次工作階段新增，尚未整理進上面的階段分類）
 
+- **3D場景驗證分成strict（生成）/lenient（播放）兩種模式**：
+  `_validate3DSceneYaml(yamlText, opts)`新增選填的`opts.lenient`——**這是理解
+  這一整塊驗證邏輯最關鍵的一點，改動前務必先讀這裡**。預設（`opts`省略，
+  `render_3d_scene`工具呼叫等AI生成路徑用這個）維持嚴格行為：任何一項不符合
+  就整個reject並回傳明確錯誤，讓AI能在同一輪立刻自我修正。`{lenient:true}`
+  （`_mount3DScene`/`_buildTemporarySceneObjectFromYaml`/
+  `_handleViewAttachedSceneCommand`這些「播放/檢視既有場景」的路徑用這個）則是
+  「跳過壞掉的部分＋記一筆warning＋繼續」，只有YAML語法錯誤/scene本身不是物件
+  這兩種真的沒東西可以顯示的情況才會整個擋下來——理由是使用者明確要求「不存在
+  的preset不需要reject...出現意外的元件應該還是可以by pass並播放，不然這會
+  造成舊的model無法繼續顯示」，新增驗證規則不該讓舊場景突然整個播不出來。
+  `_mount3DScene`的節點建構迴圈也額外包了一層try/catch（收集進同一個
+  `warnings`陣列）當第二道防線，防止未預期的例外讓其餘節點也不畫出來。收集到
+  的warnings會顯示在3D場景卡片的「⚠️ N」按鈕（`_renderSingleMessage`的
+  scene3d分支裡，`btnGroup.insertBefore(warnBtn,...)`那段），點擊才展開細節，
+  預設不佔版面。**新增任何一種scene3d相關的驗證規則時，都要同時想清楚它在
+  strict跟lenient兩種模式下該怎麼表現**（通常是「一樣的判斷邏輯，只是要不要
+  立刻return」），不能只改strict那一種情境。
 - **`mesh:"line"`（軌跡線/軌道環）+ 頂層欄位白名單守門**：`_build3DLineObject`（
   `points:[[x,y,z],...]`折線，或`shape:"circle"+radius+center+plane+segments`
   簡便畫圓環；`plane`預設`"xz"`跟`animation:"orbit"`的繞行平面一致）、
