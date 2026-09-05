@@ -64,7 +64,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 | 0 | 工具呼叫追蹤/思考過程顯示開關 | `showInternalTrace`（advancedSettings欄位） | — |
 | 1 | Sub agent委派框架 | `delegate_to_subagent`、`SUBAGENT_DOMAIN_REGISTRY`、`_runSubAgentTask` | `SUBAGENT_DOMAIN_REGISTRY`（~641行）、`SUBAGENT_DELEGATE_MAX_ROUNDS` |
 | 2 | 檔案上傳+sub agent解析 | `parse_uploaded_file`、`_wireAttachmentUpload`、`FileCache`類別 | — |
-| 3 | 3D場景viewer（含2026-09-05新增的STL/OBJ/3MF/FBX匯入匯出、Worker offload） | `_mount3DScene`（~5347行起）、`render_3d_scene`、`_convertModelFileToSceneYaml`、`_extractMeshPartsFromObject3D`、`FA_3D_IMPORT_WORKER_SRC` | `SCENE3D_MESH_TYPES`、`SCENE3D_ANIMATION_TYPES`、`SCENE3D_PARTICLE_PRESETS`、`SCENE3D_TOPIC_DOCS`、`SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES` |
+| 3 | 3D場景viewer（含2026-09-05新增的STL/OBJ/3MF/FBX匯入匯出、Worker offload、`mesh:"line"`軌跡線、頂層欄位白名單） | `_mount3DScene`（~5347行起）、`render_3d_scene`、`_convertModelFileToSceneYaml`、`_extractMeshPartsFromObject3D`、`FA_3D_IMPORT_WORKER_SRC`、`_build3DLineObject` | `SCENE3D_MESH_TYPES`、`SCENE3D_ANIMATION_TYPES`、`SCENE3D_PARTICLE_PRESETS`、`SCENE3D_TOPIC_DOCS`、`SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES`、`SCENE3D_KNOWN_TOP_LEVEL_KEYS` |
 | 4 | 通用繪圖工具（SVG） | `render_drawing`、DOMPurify sanitize流程 | — |
 | 5 | 互動式viewer（多頁表單/精靈）+ 2026-09-05新增的可互動文件封裝匯出/匯入 | `_mountInteractiveViewer`（~6319行起）、`render_interactive_viewer`、`KVStore`類別、`_buildViewerPackageYaml`、`_importViewerPackageText` | `VIEWER_COMPONENT_TYPES`、`VIEWER_INPUT_TYPES`、`VIEWER_ACTION_KINDS`、`VIEWER_PACKAGE_KIND` |
 | 6 | 暫停並詢問使用者 | `requestUserForm`（~3046行） | — |
@@ -88,6 +88,15 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 
 ## 近期重大修改（2026-09-05這次工作階段新增，尚未整理進上面的階段分類）
 
+- **`mesh:"line"`（軌跡線/軌道環）+ 頂層欄位白名單守門**：`_build3DLineObject`（
+  `points:[[x,y,z],...]`折線，或`shape:"circle"+radius+center+plane+segments`
+  簡便畫圓環；`plane`預設`"xz"`跟`animation:"orbit"`的繞行平面一致）、
+  `SCENE3D_KNOWN_TOP_LEVEL_KEYS`（`_validate3DSceneYaml`現在會擋掉任何不在白名單
+  內的頂層欄位並直接報錯，起因是AI自己編了不存在的`lines:`/`markers:`頂層陣列
+  想畫軌道線，靜默被忽略）、`_raster3DFrame`裡新增的`obj.isLine`繪製分支（軟體
+  光柵化路徑，跟三角形/Points是三種各自獨立的繪製步驟）。同一次修正也補上
+  `_mount3DScene`呼叫`_build3DMeshObject`時漏傳`validation.particlePresets`的
+  既有bug（自訂粒子preset在即時掛載這條路徑上原本永遠找不到）。
 - **3D模型匯入的Web Worker offload**：`_ensureModelImportWorker`/
   `_convertModelPartsViaWorker`/`FA_3D_IMPORT_WORKER_SRC`——STL/OBJ/3MF/FBX的
   `.parse()`+網格抽取搬進背景執行緒，避免卡住主執行緒；`isWorkerInfraFailure`
