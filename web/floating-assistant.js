@@ -662,7 +662,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     interactive_component: {
         enabled: true,
         label: '互動元件生成',
-        toolNames: ['render_interactive_viewer', 'get_interactive_viewer_yaml', 'get_viewer_state', 'set_viewer_state'],
+        toolNames: ['render_interactive_viewer', 'get_interactive_viewer_yaml', 'get_viewer_state', 'set_viewer_state', 'import_interactive_viewer_attachment', 'list_uploaded_files'],
         systemPrompt: '你是一個專門設計多頁互動表單/精靈/教學畫面的子任務助理，用render_interactive_viewer渲染純宣告式YAML描述的viewer給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，viewer格式是固定字彙的宣告式YAML，visible_if/enabled_if只能用有限的安全表達式）。修改既有viewer前先呼叫get_interactive_viewer_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
     },
 };
@@ -727,6 +727,16 @@ const SCENE3D_PARTICLE_PRESETS = new Set(['spark', 'flame', 'mist', 'bounce', 'f
 const VIEWER_COMPONENT_TYPES = new Set(['text', 'input', 'button', 'subagent_panel']);
 const VIEWER_INPUT_TYPES = new Set(['text', 'number', 'select', 'checkbox', 'textarea']);
 const VIEWER_ACTION_KINDS = new Set(['next_page', 'prev_page', 'goto_page', 'save_state', 'run_subagent', 'close']);
+
+// tw_stock_db客製: 2026-09-05使用者要求——互動viewer要能完整匯出/匯入
+// （清除對話後還能把同一份可互動文件連同填寫狀態拿回來），不是只能看
+// 原始碼/下載YAML定義（那個既有的📥按鈕只有viewer定義本身，不含
+// persistentStorage裡的實際填寫值）。這裡定義一個獨立的封裝格式
+// （*.viewerdoc.yaml，比照scene的*.3dscene.yaml命名慣例），viewer定義
+// 跟填寫狀態各自是頂層欄位，狀態欄位是否要打包由匯出當下選擇（見
+// _buildViewerPackageYaml），刻意設計成同時能給人看得懂（純YAML文字檔）
+// 也方便未來其他實作（例如redmine_ai_chat）用同一份格式互通。
+const VIEWER_PACKAGE_KIND = 'ai_chat_viewer_package';
 
 // tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
 // 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
@@ -1425,6 +1435,14 @@ class FloatingAssistant {
             '/view-3d-attachment', '',
             '如果目前輸入框旁邊有附加、或最近上傳過3D場景YAML檔案，直接在對話中開啟顯示（不經過AI）',
             () => this._handleViewAttachedSceneCommand()
+        );
+        // tw_stock_db客製: 2026-09-05使用者要求——互動viewer要能匯出/匯入
+        // 「可互動文件」封裝檔（見VIEWER_PACKAGE_KIND），這個指令是匯入端，
+        // 跟/view-3d-attachment同一種本地、不經過AI的開啟模式。
+        this.register_slash_command(
+            '/import-viewer-attachment', '',
+            '如果目前輸入框旁邊有附加、或最近上傳過用📦匯出的可互動文件封裝檔，直接在對話中匯入並開啟顯示（不經過AI）',
+            () => this._handleImportViewerAttachmentCommand()
         );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
@@ -2394,6 +2412,28 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, state_namespace: ns });
             },
             { type: 'object', properties: { state_namespace: { type: 'string' }, state: { type: 'object' } }, required: ['state_namespace', 'state'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-05使用者要求——讓AI也能主動匯入使用者
+        // 上傳的「可互動文件」封裝檔（用list_uploaded_files取得file_id），
+        // 跟/import-viewer-attachment指令共用同一個_importViewerPackageText
+        // 邏輯，差別只在這個是AI自己判斷該不該叫用，不用使用者手動下指令。
+        this.register_openai_tool('import_interactive_viewer_attachment',
+            '把使用者上傳的「可互動文件」封裝檔（用互動表單卡片上的📦匯出按鈕產生的.viewerdoc.yaml）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。如果封裝內有包含填寫狀態，會覆蓋回persistentStorage對應的state_namespace；沒有包含狀態則只匯入模板、不動使用者本機已有的填寫進度。參數: {"file_id":"..."}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數' });
+                const record = await this.fileCache.get(fileId);
+                if (!record) return JSON.stringify({ ok: false, error: '找不到這個file_id對應的檔案' });
+                let text;
+                try { text = await record.blob.text(); } catch (err) { return JSON.stringify({ ok: false, error: `讀取檔案失敗: ${err.message || err}` }); }
+                const result = await this._importViewerPackageText(text);
+                if (!result.ok) return JSON.stringify({ ok: false, error: result.error });
+                return JSON.stringify({ type: 'viewer', yaml: result.viewerYamlText });
+            },
+            { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
         );
     }
 
@@ -7270,6 +7310,63 @@ ${existingNodeSummaries}
         return lines.join('\n').trim() || '（這個viewer沒有任何內容）';
     }
 
+    // tw_stock_db客製: 2026-09-05使用者要求——互動viewer要能完整匯出成一個
+    // 「可互動文件」封裝檔（viewer定義本身，選擇性帶上persistentStorage裡
+    // 目前的填寫狀態），跟_appendCardSourceButtons的📥（只下載viewer定義
+    // 純文字）是不同的東西：這裡產生的是VIEWER_PACKAGE_KIND封裝格式，用來
+    // 給_importViewerPackageText在清除對話後（或另一個瀏覽器/裝置）重新
+    // 匯入還原。includeState=false時完全不含state欄位（連空物件都不寫），
+    // 讓「只是想分享一份空白表單模板」的匯出情境產生的檔案裡不會誤留下
+    // 任何使用者資料。
+    async _buildViewerPackageYaml(viewerYamlText, includeState) {
+        await this._ensureJsYamlLoaded();
+        const viewerDef = jsyaml.load(viewerYamlText);
+        const pkg = {
+            kind: VIEWER_PACKAGE_KIND,
+            version: 1,
+            exported_at: new Date().toISOString(),
+            state_included: !!includeState,
+            viewer: viewerDef,
+        };
+        if (includeState) {
+            pkg.state = (await this.stateStore.get(`viewer:${viewerDef.state_namespace}`)) || {};
+        }
+        return jsyaml.dump(pkg, { lineWidth: -1 });
+    }
+
+    // 匯入端共用邏輯，給/import-viewer-attachment指令跟
+    // import_interactive_viewer_attachment工具共用。刻意不檢查副檔名（
+    // 使用者可能改過檔名），純粹靠內容裡的kind欄位判斷是不是合法封裝。
+    // state_included為true時才覆蓋本機persistentStorage——false時完全
+    // 不動該namespace既有的本機資料（可能是空白，也可能還留著之前填過
+    // 的舊資料，語意等同「只匯入模板，不動使用者本機已經有的填寫進度」）。
+    async _importViewerPackageText(text) {
+        try {
+            await this._ensureJsYamlLoaded();
+        } catch (err) {
+            return { ok: false, error: `無法載入YAML解析器：${err.message || err}` };
+        }
+        let pkg;
+        try {
+            pkg = jsyaml.load(text);
+        } catch (err) {
+            return { ok: false, error: `不是合法的YAML/JSON：${err.message}` };
+        }
+        if (!pkg || typeof pkg !== 'object' || pkg.kind !== VIEWER_PACKAGE_KIND) {
+            return { ok: false, error: `不是合法的可互動文件封裝格式（缺少kind: ${VIEWER_PACKAGE_KIND}）` };
+        }
+        if (!pkg.viewer || typeof pkg.viewer !== 'object') {
+            return { ok: false, error: '封裝內容缺少viewer欄位' };
+        }
+        const viewerYamlText = jsyaml.dump(pkg.viewer, { lineWidth: -1 });
+        const validation = this._validateInteractiveViewerYaml(viewerYamlText);
+        if (!validation.ok) return { ok: false, error: `內嵌的viewer格式不合法：${validation.error}` };
+        if (pkg.state_included && pkg.state && typeof pkg.state === 'object') {
+            await this.stateStore.set(`viewer:${validation.viewer.state_namespace}`, pkg.state);
+        }
+        return { ok: true, viewerYamlText, stateNamespace: validation.viewer.state_namespace, stateIncluded: !!pkg.state_included };
+    }
+
     // 掃這則assistant回覆「同一輪對話」（往前找到上一則user訊息為止）裡
     // 出現過的所有視覺型tool結果，依原始順序回傳截圖陣列，給匯出PPTX/PDF
     // 用。找不到訊息本身（例如是archivedDisplayBlocks裡的舊訊息）就回傳
@@ -7676,6 +7773,45 @@ ${existingNodeSummaries}
         }
         this.messages.push({ role: 'user', content: `📎 開啟附件的3D場景：${record.filename}` });
         const msg = this._buildToolResultMessage('view_3d_attachment', JSON.stringify({ type: 'scene3d', yaml: yamlText }), {});
+        this.messages.push(msg);
+        this._renderMessageHistory();
+    }
+
+    // tw_stock_db客製: 2026-09-05使用者要求——互動viewer的「可互動文件」
+    // 封裝檔（用卡片上的📦匯出按鈕產生）匯入指令，跟/view-3d-attachment
+    // 同一種「附加/最近上傳過就直接本地開啟，不經過AI」模式，差別是這裡
+    // 固定走_importViewerPackageText（VIEWER_PACKAGE_KIND封裝格式），不
+    // 用猜副檔名/格式。
+    async _handleImportViewerAttachmentCommand() {
+        let record = null;
+        if (this._pendingAttachments.length) {
+            const pending = this._pendingAttachments[this._pendingAttachments.length - 1];
+            record = await this.fileCache.get(pending.id);
+            this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
+            this._renderPendingAttachments();
+        } else {
+            const all = await this.fileCache.getAll();
+            const uploaded = all.filter(r => r.kind === 'uploaded').sort((a, b) => b.createdAt - a.createdAt);
+            record = uploaded[0];
+        }
+        if (!record) {
+            this._log('⚠️ /import-viewer-attachment：目前沒有附加、也沒有最近上傳過的檔案');
+            return;
+        }
+        let text;
+        try {
+            text = await record.blob.text();
+        } catch (err) {
+            this._log(`⚠️ /import-viewer-attachment：讀取附件失敗：${err.message || err}`);
+            return;
+        }
+        const result = await this._importViewerPackageText(text);
+        if (!result.ok) {
+            this._log(`⚠️ /import-viewer-attachment：附件「${record.filename}」${result.error}`);
+            return;
+        }
+        this.messages.push({ role: 'user', content: `📎 匯入可互動文件：${record.filename}${result.stateIncluded ? '（含填寫狀態）' : '（不含填寫狀態）'}` });
+        const msg = this._buildToolResultMessage('import_viewer_attachment', JSON.stringify({ type: 'viewer', yaml: result.viewerYamlText }), {});
         this.messages.push(msg);
         this._renderMessageHistory();
     }
@@ -10167,7 +10303,26 @@ ${existingNodeSummaries}
                 this._appendCardSourceButtons(viewerFooter, viewerWrap, () => msg._displayViewerYaml, '互動表單', 'yaml');
                 this._appendCardExportButton(viewerFooter, async () => {
                     try { return { text: await this._summarizeViewerStateForExport(msg._displayViewerYaml), kind: 'viewer_summary' }; } catch (_) { return null; }
-                }, '互動表單');
+                }, '互動表單', [
+                    // tw_stock_db客製: 2026-09-05——「可互動文件」封裝匯出，見
+                    // _buildViewerPackageYaml的說明。跟上面的PPTX/PDF（純文字
+                    // 摘要快照）不同，這兩個選項匯出的是可以再用
+                    // /import-viewer-attachment或import_interactive_viewer_attachment
+                    // 匯入、重新變回一個真正能互動的viewer的封裝檔——差別只在
+                    // 要不要一併打包目前的填寫狀態。
+                    { fmt: 'viewerdoc-state', label: '📦 可互動文件(含狀態)', getBlobFn: async () => {
+                        try {
+                            const yaml = await this._buildViewerPackageYaml(msg._displayViewerYaml, true);
+                            return { ok: true, blob: new Blob([yaml], { type: 'application/x-yaml' }), ext: 'viewerdoc.yaml', mimeType: 'application/x-yaml' };
+                        } catch (err) { return { ok: false, error: String(err.message || err) }; }
+                    } },
+                    { fmt: 'viewerdoc-template', label: '📦 可互動文件(不含狀態)', getBlobFn: async () => {
+                        try {
+                            const yaml = await this._buildViewerPackageYaml(msg._displayViewerYaml, false);
+                            return { ok: true, blob: new Blob([yaml], { type: 'application/x-yaml' }), ext: 'viewerdoc.yaml', mimeType: 'application/x-yaml' };
+                        } catch (err) { return { ok: false, error: String(err.message || err) }; }
+                    } },
+                ]);
                 (async () => {
                     const validation = this._validateInteractiveViewerYaml(msg._displayViewerYaml);
                     if (!validation.ok) {
