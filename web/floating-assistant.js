@@ -2418,7 +2418,7 @@ ${fnData.code}
         // 傳給模型，不會被這裡的「文字協定清單縮減」影響，模型也不需要呼叫
         // 這個工具（結構化schema裡本來就看得到完整參數）。
         this.register_openai_tool('get_tool_details',
-            '查詢一個或多個工具的完整說明（用途、每個參數的確切名稱與格式）。上面工具清單裡其他項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前，務必先呼叫這個工具查出它完整的參數規格，不要自己憑印象/猜測參數名稱或格式。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
+            '查詢一個或多個工具的完整說明（用途、每個參數的確切名稱與格式）——只能查詢「目前真的出現在你自己的工具清單裡」的名稱，上面清單裡的項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前先用這個查出完整參數規格，不要自己憑印象/猜測參數名稱或格式。**不要用這個工具去猜測/尋找沒有出現在你工具清單裡的名稱**——你需要的能力如果根本沒出現在清單裡，代表它是委派給專家子agent處理的範圍，應該直接呼叫delegate_to_subagent描述你要做的事，不是想辦法用這個工具找出隱藏的工具名稱（那樣只會浪費好幾輪都查無結果）。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -2455,7 +2455,7 @@ ${fnData.code}
         // 根模型不需要（也看不到）domain代號字串或個別工具規格，只需要知道
         // 這個委派入口存在、大致能處理哪類任務。
         this.register_openai_tool('delegate_to_subagent',
-            '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具；已經明確知道領域代號時可以直接指定domain跳過自動判斷。參數: {"task":"要委派的任務描述","domain":"（選填）領域代號"}',
+            '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具，一次可以判斷出多個領域一起開放給同一個子agent；已經明確知道領域代號時可以直接指定domain跳過自動判斷。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫——系統會自動判斷這一次task需要開放哪些領域的工具，拆成多次呼叫只會浪費更多輪對話。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（選填）領域代號"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -3347,51 +3347,58 @@ ${fnData.code}
     // this.messages」拆開——runBatchSubAgents()的子任務有自己獨立、用完即丟
     // 的本地訊息陣列（不是this.messages），需要同一套圖片/meta處理規則，
     // 但不能push進主對話。
-    _buildToolResultMessage(fnName, result, extra) {
-        let imageDataUrl = null;
-        let imageMeta = null;
-        let scene3DYaml = null;
-        let drawingSvg = null;
-        let viewerYaml = null;
-        let anim2DYaml = null;
+    // tw_stock_db客製: 2026-09-06從_buildToolResultMessage抽出來的shape偵測
+    // 邏輯——原本只有這裡用到，現在_runSubAgentTask（domain委派的Layer 2
+    // 執行子agent）也要用同一套判斷來抓「這次工具呼叫是不是視覺型結果」，
+    // 見_runSubAgentTask/_mergeSubAgentResultForDisplay的說明：子agent內部
+    // 呼叫render_3d_scene/render_drawing等工具時，原本子agent只會把這個
+    // 結果轉述成一段文字結論回傳給delegate_to_subagent，畫面上完全看不到
+    // 真正渲染出來的SVG/YAML/圖片——抽成共用方法就是為了讓委派路徑也能
+    // 正確認出、原封不動把視覺payload傳回主對話。回傳{type, ...對應欄位}
+    // 或null（不是任何已知的視覺型payload）。
+    _detectVisualToolPayload(result) {
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
             if (parsed && parsed.type === 'drawing' && typeof parsed.svg === 'string') {
-                // tw_stock_db客製: 階段4——通用繪圖跟圖片/3D場景同一個「顯示
-                // 內容不列入對話上下文」原則，理由也一樣：SVG原始碼可能不小，
-                // 沒有必要每輪都重新送給模型看一次已經畫好、使用者已經看到
-                // 的圖。
-                drawingSvg = parsed.svg;
-            } else if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
-                imageDataUrl = parsed.dataUrl;
-                // tw_stock_db客製: 圖片本身不列入對話上下文（見下面），但如果
-                // 工具額外附了一個輕量的meta摘要（例如render_stock_chart回傳
-                // 實際畫出來的高低點價位/時間），這個摘要要照樣送進模型看得到
-                // 的content，不能被「圖片=整包隱藏」的規則一起吃掉——不然模型
-                // 完全沒有真實數字可以用來下精準的標記/線段，只能瞎猜（實測
-                // 遇到的真實案例：標記位置對不齊K棒）。
-                if (parsed.meta && typeof parsed.meta === 'object') imageMeta = parsed.meta;
-            } else if (parsed && parsed.type === 'scene3d' && typeof parsed.yaml === 'string') {
-                // tw_stock_db客製: 階段3——3D場景跟圖片同一個「顯示內容不列入
-                // 送給LLM的上下文」原則，但理由不完全一樣：圖片是「base64太佔
-                // token」，YAML場景文字量通常不大，真正的理由是仿照參考文件
-                // §13的既有規則——絕不能讓模型憑自己對話記憶「重新默寫」一份
-                // 已經渲染過的場景YAML去修改（容易跟實際渲染出來的內容有落差），
-                // 修改既有場景一律要求先呼叫get_3d_scene_yaml拿到目前真正的
-                // 內容，這裡刻意不把YAML留在content裡，逼模型走那個工具。
-                scene3DYaml = parsed.yaml;
-            } else if (parsed && parsed.type === 'viewer' && typeof parsed.yaml === 'string') {
-                // tw_stock_db客製: 階段5——互動viewer跟3D場景同一個「不列入
-                // 對話上下文、逼模型走get_interactive_viewer_yaml重新取得
-                // 最新內容」原則。
-                viewerYaml = parsed.yaml;
-            } else if (parsed && parsed.type === 'anim2d' && typeof parsed.yaml === 'string') {
-                // tw_stock_db客製: 2026-09-06——2D多邊形動畫，跟3D場景/互動
-                // viewer同一個「不列入對話上下文、逼模型走get_2d_animation_yaml
-                // 重新取得最新內容」原則。
-                anim2DYaml = parsed.yaml;
+                return { type: 'drawing', svg: parsed.svg };
             }
-        } catch (_) { /* 不是圖片/3D場景/viewer/2D動畫payload，走下面一般文字流程 */ }
+            if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
+                const meta = (parsed.meta && typeof parsed.meta === 'object') ? parsed.meta : null;
+                return meta ? { type: 'image', dataUrl: parsed.dataUrl, meta } : { type: 'image', dataUrl: parsed.dataUrl };
+            }
+            if (parsed && parsed.type === 'scene3d' && typeof parsed.yaml === 'string') {
+                return { type: 'scene3d', yaml: parsed.yaml };
+            }
+            if (parsed && parsed.type === 'viewer' && typeof parsed.yaml === 'string') {
+                return { type: 'viewer', yaml: parsed.yaml };
+            }
+            if (parsed && parsed.type === 'anim2d' && typeof parsed.yaml === 'string') {
+                return { type: 'anim2d', yaml: parsed.yaml };
+            }
+        } catch (_) { /* 不是圖片/3D場景/viewer/2D動畫payload，走一般文字流程 */ }
+        return null;
+    }
+
+    _buildToolResultMessage(fnName, result, extra) {
+        const visual = this._detectVisualToolPayload(result);
+        const imageDataUrl = visual && visual.type === 'image' ? visual.dataUrl : null;
+        // tw_stock_db客製: 圖片本身不列入對話上下文（見下面），但如果工具
+        // 額外附了一個輕量的meta摘要（例如render_stock_chart回傳實際畫出來的
+        // 高低點價位/時間），這個摘要要照樣送進模型看得到的content，不能被
+        // 「圖片=整包隱藏」的規則一起吃掉——不然模型完全沒有真實數字可以用來
+        // 下精準的標記/線段，只能瞎猜（實測遇到的真實案例：標記位置對不齊
+        // K棒）。
+        const imageMeta = visual && visual.type === 'image' ? (visual.meta || null) : null;
+        // tw_stock_db客製: 階段3/4/5——3D場景/繪圖/互動viewer/2D動畫這幾種
+        // 視覺型結果統一「顯示內容不列入送給LLM的上下文」原則：3D場景/viewer/
+        // 2D動畫是仿照參考文件§13的既有規則——絕不能讓模型憑自己對話記憶
+        // 「重新默寫」一份已經渲染過的YAML去修改，修改前一律要求先呼叫對應的
+        // get_xxx_yaml拿到目前真正的內容；繪圖則是SVG原始碼可能不小，沒有
+        // 必要每輪都重新送給模型看一次已經畫好、使用者已經看到的圖。
+        const scene3DYaml = visual && visual.type === 'scene3d' ? visual.yaml : null;
+        const drawingSvg = visual && visual.type === 'drawing' ? visual.svg : null;
+        const viewerYaml = visual && visual.type === 'viewer' ? visual.yaml : null;
+        const anim2DYaml = visual && visual.type === 'anim2d' ? visual.yaml : null;
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
         // tw_stock_db客製: 實測發現這個NVIDIA相容端點無論是不是走原生
@@ -10692,14 +10699,35 @@ ${existingNodeSummaries}
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
         }
         try {
-            const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+            const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: domain.toolNames,
                 systemPrompt: domain.systemPrompt,
             });
-            return { ok: true, domain: domainKey, result };
+            return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         }
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者發現的真實回歸——子agent（不管是明確
+    // 指定domain還是_delegateToSubagentAuto自動路由）內部呼叫render_3d_scene/
+    // render_drawing/render_interactive_viewer/render_2d_animation這類視覺型
+    // 工具時，_runSubAgentTask原本「只回傳文字結論」的設計會讓實際渲染出來的
+    // SVG/YAML/圖片完全消失——使用者只看得到子agent自己用文字描述畫了什麼，
+    // 看不到真正的視覺內容本身。這裡把_runSubAgentTask回傳的visual欄位（見
+    // _detectVisualToolPayload）原封不動攤平合併進最終回傳物件（例如
+    // {ok:true, domain:'scene_3d', type:'scene3d', yaml:'...', note:'...'}），
+    // 這樣主對話處理delegate_to_subagent工具結果時，_buildToolResultMessage
+    // 同一套shape偵測邏輯就能正確認出並顯示，不是只顯示一段文字轉述。
+    // baseFields是呼叫端各自的識別欄位（_delegateToSubagentDomain用
+    // {domain}，_delegateToSubagentAuto用{domains}陣列），沒有視覺結果時
+    // 維持原本「{ok, ...baseFields, result:文字}」的既有行為不變。
+    _mergeSubAgentResultForDisplay(baseFields, subResult) {
+        const text = subResult ? subResult.text : '';
+        if (subResult && subResult.visual) {
+            return Object.assign({ ok: true }, baseFields, { note: text }, subResult.visual);
+        }
+        return Object.assign({ ok: true }, baseFields, { result: text });
     }
 
     // tw_stock_db客製: 2026-09-06使用者要求「兩層對話」的第一層——一個
@@ -10804,11 +10832,11 @@ ${existingNodeSummaries}
             return { ok: false, error: '沒有找到適合的專家領域可以處理這個任務，domain參數也可以指定明確的領域代號重試，或直接嘗試自己回答使用者。' };
         }
         try {
-            const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+            const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: routed.toolNames,
                 systemPrompt: routed.systemPrompt,
             });
-            return { ok: true, domains: routed.domains, result };
+            return this._mergeSubAgentResultForDisplay({ domains: routed.domains }, subResult);
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         }
@@ -10825,6 +10853,15 @@ ${existingNodeSummaries}
     // 限制在指定的工具子集內、換上domain專屬system prompt，取代預設的
     // 「看得到全部工具+主system prompt」行為。runBatchSubAgents既有呼叫端
     // 沒有傳options，行為完全不變。
+    // tw_stock_db客製: 2026-09-06回傳值改成{text, visual}（原本是純字串）——
+    // text是子agent的最終文字結論（原本回傳的就是這段），visual是子agent
+    // 過程中最後一次呼叫視覺型工具（render_3d_scene/render_drawing/
+    // render_interactive_viewer/render_2d_animation）的原始payload（見
+    // _detectVisualToolPayload），沒有則為null。這是因為子agent原本「只回傳
+    // 文字結論」的設計，會讓委派出去的視覺型工具呼叫結果整個消失、使用者
+    // 只看得到文字轉述——見_mergeSubAgentResultForDisplay的說明。
+    // runBatchSubAgents這個既有呼叫端只需要文字結論，取.text即可，不需要
+    // 處理visual（批次分析本來就只收集短結論陣列，沒有渲染視覺內容的地方）。
     async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
         const useNative = this._shouldUseNativeToolCalls(apiModel);
@@ -10836,6 +10873,17 @@ ${existingNodeSummaries}
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
         ];
+        // tw_stock_db客製: 2026-09-06使用者發現的真實回歸——子agent內部呼叫
+        // render_3d_scene/render_drawing/render_interactive_viewer/
+        // render_2d_animation這類視覺型工具時，這裡原本只把結果轉述成
+        // finalContent這段純文字結論回傳，畫面上完全看不到真正渲染出來的
+        // SVG/YAML/圖片。這裡記錄「這次子任務期間最後一次出現的視覺型工具
+        // 結果」（同一子任務理論上只會產出一個有意義的視覺結果，多個視覺
+        // 呼叫時後面蓋掉前面，跟一般對話「畫面只留最後一次渲染結果」是
+        // 同一個直覺），最後隨著回傳值一起交給呼叫端（見下面所有return，
+        // 以及_delegateToSubagentDomain/_delegateToSubagentAuto的
+        // _mergeSubAgentResultForDisplay）決定要不要原封不動傳回主對話。
+        let capturedVisual = null;
 
         for (let round = 0; round < maxRounds; round++) {
             const body = {
@@ -10863,7 +10911,7 @@ ${existingNodeSummaries}
                     body: JSON.stringify(body),
                 });
             } catch (err) {
-                return `[子任務網路錯誤: ${err.message}]`;
+                return { text: `[子任務網路錯誤: ${err.message}]`, visual: capturedVisual };
             }
             if (!response.ok) {
                 const errText = await response.text().catch(() => '');
@@ -10893,12 +10941,12 @@ ${existingNodeSummaries}
                 // （系統prompt+單一問題+少數工具往返），真的撞到400/413多半
                 // 代表這個端點/模型本身有問題，重試對子任務的成本效益不划算，
                 // 直接回報失敗讓上層知道即可。
-                return `[子任務失敗: HTTP ${response.status}${errText ? ' ' + errText.slice(0, 150) : ''}]`;
+                return { text: `[子任務失敗: HTTP ${response.status}${errText ? ' ' + errText.slice(0, 150) : ''}]`, visual: capturedVisual };
             }
 
             const data = await response.json();
             const message = data.choices && data.choices[0] && data.choices[0].message;
-            if (!message) return '[子任務失敗: 回應格式異常]';
+            if (!message) return { text: '[子任務失敗: 回應格式異常]', visual: capturedVisual };
 
             const rawContent = message.content || '';
             const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
@@ -10912,6 +10960,8 @@ ${existingNodeSummaries}
                         const toolDef = this._getToolDefinition(fnName, allowedToolNames);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
                         const result = await Promise.resolve(toolDef.callback(rawArgs));
+                        const visual = this._detectVisualToolPayload(result);
+                        if (visual) capturedVisual = visual;
                         messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
                     } catch (err) {
                         messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ ok: false, error: String(err.message || err) }) });
@@ -10958,7 +11008,7 @@ ${existingNodeSummaries}
 
             if (!toolTasks.length) {
                 const finalText = this._stripInlineBase64(rawContent).trim();
-                return finalText || '（子任務無回應）';
+                return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
 
             messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
@@ -10969,6 +11019,8 @@ ${existingNodeSummaries}
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                     const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                    const visual = this._detectVisualToolPayload(result);
+                    if (visual) capturedVisual = visual;
                     messages.push(this._buildToolResultMessage(task.fnName, result));
                 } catch (err) {
                     messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
@@ -10976,7 +11028,7 @@ ${existingNodeSummaries}
             }
             // 迴圈繼續下一輪，讓模型看到工具結果後給出最終結論
         }
-        return '[子任務超過最大回合數仍未給出結論]';
+        return { text: '[子任務超過最大回合數仍未給出結論]', visual: capturedVisual };
     }
 
     // tw_stock_db客製: batch_analyze_stocks工具的實作入口（見web/index.html
@@ -11007,7 +11059,11 @@ ${existingNodeSummaries}
                 const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
-                    verdict = await this._runSubAgentTask(prompt);
+                    // tw_stock_db客製: 2026-09-06——_runSubAgentTask回傳值改成
+                    // {text, visual}，這裡只需要文字結論，取.text即可（批次分析
+                    // 本來就只收集短結論陣列，沒有渲染視覺內容的地方，不需要
+                    // 處理visual欄位）。
+                    verdict = (await this._runSubAgentTask(prompt)).text;
                 } catch (err) {
                     verdict = `[子任務例外: ${err.message}]`;
                 }
