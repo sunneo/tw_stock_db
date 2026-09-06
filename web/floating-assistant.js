@@ -1740,6 +1740,13 @@ class FloatingAssistant {
             // 在Advanced Settings調整；0代表不限制（使用者自己承擔YAML檔案
             // 過大/軟體光柵化fallback效能變差的風險，不是這個工具幫他決定）。
             maxImportedMeshTriangles: SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES,
+            // tw_stock_db客製: 2026-09-06使用者要求——3D場景/2D動畫匯出MP4時的
+            // 預設總秒數可在Advance設定調整（不用每次匯出都手動改），匯出當下
+            // 仍會跳dialog讓使用者臨時調整（見_appendCardExportButton的
+            // needsDurationPrompt分支），這裡只是那個dialog的預填值來源。
+            // 範圍跟_exportSceneToMp4/_export2DAnimationToMp4的durationSeconds
+            // 夾值範圍一致（1~30秒），維持三處同步。
+            mp4DefaultDurationSeconds: 5,
         };
     }
 
@@ -1759,6 +1766,14 @@ class FloatingAssistant {
         const n = Number(this.advancedSettings?.maxImportedMeshTriangles);
         if (n === 0) return Infinity;
         return Number.isFinite(n) && n > 0 ? Math.round(n) : SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES;
+    }
+
+    // tw_stock_db客製: 2026-09-06——MP4匯出dialog的預填秒數，夾值邏輯跟
+    // _exportSceneToMp4/_export2DAnimationToMp4內部的durationSeconds夾值
+    // 範圍(1~30)保持一致，避免使用者在Advance設定填的值跟實際匯出行為對不上。
+    _getMp4DefaultDurationSeconds() {
+        const n = Number(this.advancedSettings?.mp4DefaultDurationSeconds);
+        return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : 5;
     }
 
     // tw_stock_db客製: 使用者可調的生成/取樣參數。
@@ -2004,6 +2019,10 @@ class FloatingAssistant {
             maxImportedMeshTriangles: (() => {
                 const n = Number(raw.maxImportedMeshTriangles);
                 return Number.isFinite(n) && n >= 0 ? Math.round(n) : SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES;
+            })(),
+            mp4DefaultDurationSeconds: (() => {
+                const n = Number(raw.mp4DefaultDurationSeconds);
+                return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : 5;
             })(),
         };
     }
@@ -4437,6 +4456,8 @@ ${sourceTool.handlerScript}
         if (perfBatchConcurrencyInput) perfBatchConcurrencyInput.value = this.advancedSettings.batchConcurrency;
         const perfMaxMeshTrianglesInput = document.getElementById('ai-perf-max-mesh-triangles');
         if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
+        const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
+        if (perfMp4DurationInput) perfMp4DurationInput.value = this.advancedSettings.mp4DefaultDurationSeconds;
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -8671,14 +8692,31 @@ ${existingNodeSummaries}
                     } else {
                         const extra = (extraFormats || []).find(f => f.fmt === fmt);
                         if (!extra) throw new Error('未知的匯出格式');
+                        // tw_stock_db客製: 2026-09-06使用者要求——MP4匯出要能在
+                        // 匯出當下臨時選擇要匯出多長，不是每次都用寫死的預設值。
+                        // 用原生prompt()跳出dialog（跟這個檔案既有的confirm()
+                        // 二次確認同一種「原生瀏覽器對話框」慣例一致，不用另外
+                        // 刻一套Modal UI），預填值來自Advance設定的
+                        // mp4DefaultDurationSeconds。使用者按取消就直接放棄
+                        // 這次匯出（不當成錯誤，不跳❌訊息）。
+                        let extraOpts;
+                        if (extra.needsDurationPrompt) {
+                            const defaultDuration = this._getMp4DefaultDurationSeconds();
+                            const input = window.prompt('要匯出的影片長度（秒，1~30）：', String(defaultDuration));
+                            if (input === null) return;
+                            const n = Number(input);
+                            const durationSeconds = Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : defaultDuration;
+                            extraOpts = { durationSeconds };
+                        }
                         // tw_stock_db客製: 2026-09-06——MP4這類需要逐幀編碼、
                         // 耗時比較明顯的格式，getBlobFn可以選擇性接受第二個
-                        // 進度callback參數（(current,total)），這裡統一把它
+                        // 進度callback參數（(current,total)）+ 第三個opts參數
+                        // （目前只有durationSeconds），這裡統一把進度callback
                         // 接成更新按鈕文字，既有的STL/OBJ/3MF等getBlobFn不接
-                        // 這個參數也完全不受影響（JS函式本來就能忽略多餘參數）。
+                        // 這兩個參數也完全不受影響（JS函式本來就能忽略多餘參數）。
                         const result = await extra.getBlobFn((current, total) => {
                             if (total > 0) btn.textContent = `⏳${Math.round((current / total) * 100)}%`;
-                        });
+                        }, extraOpts);
                         if (!result || result.ok === false) throw new Error((result && result.error) || '匯出失敗');
                         await this.generateAndDeliverFile(result.blob, `${defaultTitle}_${Date.now()}.${result.ext}`, result.mimeType);
                     }
@@ -10865,6 +10903,11 @@ ${existingNodeSummaries}
                                     <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
                                     <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-mp4-duration">匯出MP4影片預設秒數</label>
+                                    <input type="number" id="ai-perf-mp4-duration" class="ai-advanced-input" min="1" max="30" step="1">
+                                    <p class="ai-advanced-hint">3D場景/2D動畫匯出MP4時的預設總秒數（範圍1~30），匯出當下仍會跳出視窗讓你臨時調整這次要匯出多長。</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -11587,7 +11630,7 @@ ${existingNodeSummaries}
                     // 的說明。5秒/30fps是預設值，這個UI入口暫不提供調整時長
                     // 的介面（維持跟其他匯出按鈕一致的「一鍵匯出」體驗），
                     // 之後如果需要調整可以再加輸入欄位。
-                    { fmt: 'mp4', label: '🎬 MP4影片', getBlobFn: (onProgress) => this._exportSceneToMp4(msg._displayScene3DYaml, {}, onProgress) },
+                    { fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true, getBlobFn: (onProgress, opts) => this._exportSceneToMp4(msg._displayScene3DYaml, opts || {}, onProgress) },
                 ]);
                 container.appendChild(sceneWrap);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
@@ -11754,7 +11797,7 @@ ${existingNodeSummaries}
                     // 匯出成H.264 MP4，跟3D場景_exportSceneToMp4同一套
                     // _encodeCanvasFramesToMp4編碼邏輯，只是畫面來源換成
                     // Canvas2D。
-                    { fmt: 'mp4', label: '🎬 MP4影片', getBlobFn: (onProgress) => this._export2DAnimationToMp4(msg._displayAnim2DYaml, {}, onProgress) },
+                    { fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true, getBlobFn: (onProgress, opts) => this._export2DAnimationToMp4(msg._displayAnim2DYaml, opts || {}, onProgress) },
                 ]);
                 container.appendChild(animWrap);
                 this._mount2DAnimation(mountDiv, msg._displayAnim2DYaml).then((handle) => {
@@ -12283,6 +12326,14 @@ ${existingNodeSummaries}
                     const n = Number(raw);
                     if (Number.isFinite(n) && n >= 0) this.advancedSettings.maxImportedMeshTriangles = Math.round(n);
                 }
+                this._saveAdvancedSettings();
+            });
+        }
+        const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
+        if (perfMp4DurationInput) {
+            perfMp4DurationInput.addEventListener('input', () => {
+                const n = Number(perfMp4DurationInput.value);
+                if (Number.isFinite(n) && n > 0) this.advancedSettings.mp4DefaultDurationSeconds = Math.max(1, Math.min(30, Math.round(n)));
                 this._saveAdvancedSettings();
             });
         }
