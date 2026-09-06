@@ -1743,7 +1743,8 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-06使用者要求——3D場景/2D動畫匯出MP4時的
             // 預設總秒數可在Advance設定調整（不用每次匯出都手動改），匯出當下
             // 仍會跳dialog讓使用者臨時調整（見_appendCardExportButton的
-            // needsDurationPrompt分支），這裡只是那個dialog的預填值來源。
+            // needsMp4ExportDialog分支/_showMp4ExportOptionsDialog），這裡
+            // 只是那個dialog秒數欄位的預填值來源。
             // 使用者明確要求「不要有上限秒數」——只有下限1秒（防呆用，不是
             // 限制），跟_exportSceneToMp4/_export2DAnimationToMp4的
             // durationSeconds處理方式一致，三處同步移除上限。
@@ -5407,6 +5408,12 @@ ${sourceTool.handlerScript}
         const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
         const width = Number.isFinite(opts.width) ? opts.width : 640;
         const height = Number.isFinite(opts.height) ? opts.height : Math.round(width * 0.65);
+        // tw_stock_db客製: 2026-09-06使用者要求——匯出dialog新增「播放速度」
+        // (0.1x~4.0x，預設1x)：不是改fps/位元率，是動畫時間軸相對匯出秒數
+        // 的加速/減速倍率——例如durationSeconds=5、speed=2時，輸出仍然是5秒
+        // 長的影片，但動畫內容播完10秒份的進度（等於2倍速播放）；speed=0.5
+        // 則是慢動作，5秒輸出只播完2.5秒份的動畫內容。
+        const speed = Number.isFinite(opts.speed) && opts.speed > 0 ? Math.max(0.1, Math.min(4, opts.speed)) : 1;
 
         await this._ensureJsYamlLoaded();
         try {
@@ -5444,8 +5451,8 @@ ${sourceTool.handlerScript}
 
         const totalFrames = Math.round(durationSeconds * fps);
         const result = await this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
-            const t = i / fps;
-            for (const fn of animators) fn(t, 1 / fps);
+            const t = (i / fps) * speed;
+            for (const fn of animators) fn(t, (1 / fps) * speed);
             if (webglOk) renderer.render(scene, camera);
             else this._raster3DFrame(scene, camera, ctx2d, width, height);
         }, onProgress);
@@ -5855,6 +5862,10 @@ ${sourceTool.handlerScript}
         const durationSeconds = Number.isFinite(opts.durationSeconds)
             ? Math.max(1, opts.durationSeconds)
             : (Number.isFinite(animDef.duration) && animDef.duration > 0 ? animDef.duration : 4);
+        // tw_stock_db客製: 2026-09-06——跟_exportSceneToMp4同一個「播放速度」
+        // 設計，見那邊的說明；這裡同樣是動畫時間軸相對匯出秒數的倍率，不是
+        // fps/位元率。
+        const speed = Number.isFinite(opts.speed) && opts.speed > 0 ? Math.max(0.1, Math.min(4, opts.speed)) : 1;
 
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
@@ -5868,8 +5879,8 @@ ${sourceTool.handlerScript}
 
         const totalFrames = Math.round(durationSeconds * fps);
         return this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
-            const t = i / fps;
-            for (const fn of animators) { try { fn(t, 1 / fps); } catch (_) {} }
+            const t = (i / fps) * speed;
+            for (const fn of animators) { try { fn(t, (1 / fps) * speed); } catch (_) {} }
             ctx.save();
             ctx.fillStyle = animDef.background || '#ffffff';
             ctx.fillRect(0, 0, width, height);
@@ -8679,6 +8690,60 @@ ${existingNodeSummaries}
     // {blob,ext,mimeType}或{ok:false,error}（見_exportSceneToModelFormat）。
     // 沒有傳這個參數時（繪圖/互動viewer卡片）行為完全不變，只有PPTX/PDF
     // 兩個選項。
+    // tw_stock_db客製: 2026-09-06使用者要求——MP4匯出的秒數+播放速度需要
+    // 兩個欄位，單一window.prompt()放不下，這裡刻一個獨立、inline style的
+    // 輕量Modal（不依賴_ensureAdvancedStyles那份專屬Advance設定的深色CSS，
+    // 避免使用者還沒開過Advance設定面板時樣式沒被注入），回傳
+    // Promise<{durationSeconds, speed}|null>，null代表使用者取消（點取消
+    // 按鈕或點遮罩背景）。秒數只夾下限1秒（使用者明確要求不要有上限），
+    // 速度夾在0.1x~4.0x之間（使用者給的example範圍）。
+    _showMp4ExportOptionsDialog(defaults) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000010; display:flex; align-items:center; justify-content:center;';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(300px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
+            box.innerHTML = `
+                <div style="font-weight:bold; font-size:14px; margin-bottom:14px;">匯出MP4影片</div>
+                <label style="display:block; margin-bottom:12px;">
+                    <div style="margin-bottom:4px;">秒數（至少1秒，無上限）</div>
+                    <input type="number" id="fa-mp4dlg-duration" min="1" step="1" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #ccc; border-radius:6px; font-size:13px;">
+                </label>
+                <label style="display:block; margin-bottom:16px;">
+                    <div style="margin-bottom:4px;">播放速度（0.1x ~ 4.0x）</div>
+                    <input type="number" id="fa-mp4dlg-speed" min="0.1" max="4" step="0.1" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #ccc; border-radius:6px; font-size:13px;">
+                </label>
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button type="button" id="fa-mp4dlg-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer; font-size:13px;">取消</button>
+                    <button type="button" id="fa-mp4dlg-confirm" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">匯出</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            const durationInput = box.querySelector('#fa-mp4dlg-duration');
+            const speedInput = box.querySelector('#fa-mp4dlg-speed');
+            durationInput.value = defaults.durationSeconds;
+            speedInput.value = defaults.speed;
+            const cleanup = () => overlay.remove();
+            const cancel = () => { cleanup(); resolve(null); };
+            const confirm = () => {
+                const d = Number(durationInput.value);
+                const s = Number(speedInput.value);
+                const durationSeconds = Number.isFinite(d) && d > 0 ? Math.max(1, d) : defaults.durationSeconds;
+                const speed = Number.isFinite(s) && s > 0 ? Math.max(0.1, Math.min(4, s)) : defaults.speed;
+                cleanup();
+                resolve({ durationSeconds, speed });
+            };
+            box.querySelector('#fa-mp4dlg-cancel').addEventListener('click', cancel);
+            box.querySelector('#fa-mp4dlg-confirm').addEventListener('click', confirm);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+            durationInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
+            speedInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
+            durationInput.focus();
+            durationInput.select();
+        });
+    }
+
     _appendCardExportButton(container, getSnapshotFn, defaultTitle, extraFormats) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:relative; display:inline-block;';
@@ -8723,13 +8788,13 @@ ${existingNodeSummaries}
                         const extra = (extraFormats || []).find(f => f.fmt === fmt);
                         if (!extra) throw new Error('未知的匯出格式');
                         // tw_stock_db客製: 2026-09-06使用者要求——MP4匯出要能在
-                        // 匯出當下臨時選擇要匯出多長，不是每次都用寫死的預設值。
-                        // 用原生prompt()跳出dialog（跟這個檔案既有的confirm()
-                        // 二次確認同一種「原生瀏覽器對話框」慣例一致，不用另外
-                        // 刻一套Modal UI），預填值來自Advance設定的
-                        // mp4DefaultDurationSeconds。使用者按取消就直接放棄
-                        // 這次匯出（不當成錯誤，不跳❌訊息）。使用者明確要求
-                        // 「不要有上限秒數」，只保留下限1秒防呆。
+                        // 匯出當下臨時選擇要匯出多長＋播放速度，不是每次都用
+                        // 寫死的預設值。兩個欄位放不進window.prompt()單一輸入框，
+                        // 改用自己刻的輕量Modal（_showMp4ExportOptionsDialog）。
+                        // 秒數預填值來自Advance設定的mp4DefaultDurationSeconds，
+                        // 速度預設1x。使用者按取消就直接放棄這次匯出（不當成
+                        // 錯誤，不跳❌訊息）。使用者明確要求「秒數不要有上限」，
+                        // 只保留下限1秒防呆；速度範圍0.1x~4.0x。
                         const extraOpts = {};
                         // tw_stock_db客製: 2026-09-06使用者要求——3D場景匯出MP4
                         // 要用「使用者當下調整過的角度」，不是永遠用YAML寫死的
@@ -8742,12 +8807,12 @@ ${existingNodeSummaries}
                             const cameraOverride = extra.getCameraOverride();
                             if (cameraOverride) extraOpts.cameraOverride = cameraOverride;
                         }
-                        if (extra.needsDurationPrompt) {
+                        if (extra.needsMp4ExportDialog) {
                             const defaultDuration = this._getMp4DefaultDurationSeconds();
-                            const input = window.prompt('要匯出的影片長度（秒，至少1秒，無上限）：', String(defaultDuration));
-                            if (input === null) return;
-                            const n = Number(input);
-                            extraOpts.durationSeconds = Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : defaultDuration;
+                            const chosen = await this._showMp4ExportOptionsDialog({ durationSeconds: defaultDuration, speed: 1 });
+                            if (!chosen) return;
+                            extraOpts.durationSeconds = chosen.durationSeconds;
+                            extraOpts.speed = chosen.speed;
                         }
                         // tw_stock_db客製: 2026-09-06——MP4這類需要逐幀編碼、
                         // 耗時比較明顯的格式，getBlobFn可以選擇性接受第二個
@@ -11668,15 +11733,16 @@ ${existingNodeSummaries}
                     { fmt: '3mf', label: '🧊 3MF', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, '3mf') },
                     // tw_stock_db客製: 2026-09-06使用者要求——匯出成真正的
                     // H.264 MP4動畫影片（不是靜態快照），見_exportSceneToMp4
-                    // 的說明。匯出時會跳dialog讓使用者選要匯出多長（預填值來自
-                    // Advance設定，無上限），且會用畫面上正在跑的
+                    // 的說明。匯出時會跳dialog（_showMp4ExportOptionsDialog）
+                    // 讓使用者選要匯出多長（預填值來自Advance設定，無上限）＋
+                    // 播放速度（0.1x~4.0x，預設1x），且會用畫面上正在跑的
                     // msg._scene3DHandle目前的camera角度（使用者用滑鼠調整過的
                     // 視角），不是永遠用YAML寫死的camera.position/look_at——
                     // 場景還沒mount完成時（handle尚未存在）getCameraOverride
                     // 回傳null，_exportSceneToMp4會照原本行為退回YAML自己的
                     // camera定義。
                     {
-                        fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true,
+                        fmt: 'mp4', label: '🎬 MP4影片', needsMp4ExportDialog: true,
                         getCameraOverride: () => (msg._scene3DHandle && typeof msg._scene3DHandle.getCameraState === 'function') ? msg._scene3DHandle.getCameraState() : null,
                         getBlobFn: (onProgress, opts) => this._exportSceneToMp4(msg._displayScene3DYaml, opts || {}, onProgress),
                     },
@@ -11846,7 +11912,7 @@ ${existingNodeSummaries}
                     // 匯出成H.264 MP4，跟3D場景_exportSceneToMp4同一套
                     // _encodeCanvasFramesToMp4編碼邏輯，只是畫面來源換成
                     // Canvas2D。
-                    { fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true, getBlobFn: (onProgress, opts) => this._export2DAnimationToMp4(msg._displayAnim2DYaml, opts || {}, onProgress) },
+                    { fmt: 'mp4', label: '🎬 MP4影片', needsMp4ExportDialog: true, getBlobFn: (onProgress, opts) => this._export2DAnimationToMp4(msg._displayAnim2DYaml, opts || {}, onProgress) },
                 ]);
                 container.appendChild(animWrap);
                 this._mount2DAnimation(mountDiv, msg._displayAnim2DYaml).then((handle) => {
