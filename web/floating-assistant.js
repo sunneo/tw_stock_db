@@ -1867,7 +1867,17 @@ class FloatingAssistant {
                 frequency_penalty: { value: 0, disabled: false },
                 presence_penalty: { value: 0, disabled: false },
                 repetition_penalty: { value: 1, disabled: false },
-                length_penalty: { value: 0.3, disabled: false },
+                // tw_stock_db客製: 2026-09-06——length_penalty預設值改回null
+                // （＝不送這個欄位）。原本預設0.3，但length_penalty是beam
+                // search專屬的HF/vLLM擴充欄位，OpenAI相容的chat completions
+                // 端點多半根本不吃，實測預設匿名channel的預設模型
+                // （nvidia/nemotron-3-super-120b-a12b）會直接回HTTP 400
+                // "Unsupported parameter(s): length_penalty"，導致每一個
+                // _runSubAgentTask（delegate_to_subagent／batch_analyze_stocks）
+                // 在預設設定下直接失敗。其餘三個參數預設值都是中性值
+                // （0/0/1），只有這個是帶意見的非中性預設（0.3會強烈偏好
+                // 短輸出），本來就不該預設送出。想用的人可以到設定面板自己填。
+                length_penalty: { value: null, disabled: false },
             },
             // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——只用在文字式[CALL:...]
             // 協定，被目標端點拒絕過(偵測到400+關鍵字)就記住，之後不再送這個
@@ -10864,6 +10874,18 @@ ${existingNodeSummaries}
                 // 停用、重跑同一輪（不消耗maxRounds），_disableStopParam對同一個
                 // session只會成功一次，不會無窮重試。
                 if (!useNative && this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
+                    round--;
+                    continue;
+                }
+                // tw_stock_db客製: 2026-09-06——跟上面stop參數同理，某個取樣參數
+                // 被端點拒絕（例如預設模型不吃length_penalty/repetition_penalty）
+                // 也是「這次request body本身有問題」而非內容太長。主對話迴圈
+                // (_loopFetch)早就有這條自我修復路徑，但子任務漏接了，導致整批
+                // batch_analyze_stocks／每個delegate_to_subagent在預設設定下全部
+                // 失敗。偵測到就標記停用、重跑同一輪（不消耗maxRounds）；
+                // _disableRejectedSamplingParam對同一個key只會成功一次，不會無窮重試。
+                const rejectedParam = this._detectRejectedSamplingParam(errText);
+                if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
                     round--;
                     continue;
                 }
