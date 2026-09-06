@@ -669,6 +669,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['render_interactive_viewer', 'get_interactive_viewer_yaml', 'get_viewer_state', 'set_viewer_state', 'import_interactive_viewer_attachment', 'list_uploaded_files'],
         systemPrompt: '你是一個專門設計多頁互動表單/精靈/教學畫面的子任務助理，用render_interactive_viewer渲染純宣告式YAML描述的viewer給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，viewer格式是固定字彙的宣告式YAML，visible_if/enabled_if只能用有限的安全表達式）。修改既有viewer前先呼叫get_interactive_viewer_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
     },
+    animation_2d: {
+        enabled: true,
+        label: '2D多邊形動畫生成',
+        toolNames: ['render_2d_animation', 'get_2d_animation_yaml', 'import_2d_animation_attachment', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門設計2D向量圖形動畫的子任務助理，用render_2d_animation渲染純宣告式YAML描述的2D動畫給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，動畫格式是固定字彙的宣告式YAML，用Canvas2D畫圓/矩形/多邊形/折線/文字/圖片，不是3D）。修改既有動畫前先呼叫get_2d_animation_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
+    },
 };
 
 // tw_stock_db客製: delegate_to_subagent委派出去的子任務迴圈輪數上限——
@@ -752,6 +758,26 @@ const VIEWER_ACTION_KINDS = new Set(['next_page', 'prev_page', 'goto_page', 'sav
 // _buildViewerPackageYaml），刻意設計成同時能給人看得懂（純YAML文字檔）
 // 也方便未來其他實作（例如redmine_ai_chat）用同一份格式互通。
 const VIEWER_PACKAGE_KIND = 'ai_chat_viewer_package';
+
+// tw_stock_db客製: 2026-09-06使用者要求——新增一個獨立於3D場景/互動viewer
+// 之外的「2D多邊形動畫」子系統：純宣告式YAML描述一組2D圖形（圓/矩形/
+// 多邊形/折線/文字）+ 各自的動畫（位移/旋轉/縮放/淡入淡出/軌道/關鍵影格），
+// 用Canvas2D渲染（不是three.js/WebGL，這個子系統完全獨立、不共用3D場景的
+// 任何渲染邏輯，只共用_encodeCanvasFramesToMp4這個MP4編碼工具方法）。
+// 從一開始就吸取3D場景階層軌道那次的教訓：animation.parent（軌道動畫的
+// 母體參照）從第一版就設計進去，不用像3D那樣事後才補。跟3D場景/互動viewer
+// 同一個「封閉字彙表」安全立場——不能寫真正可執行的JS，只有這裡列出的
+// shape類型/animation類型才合法。
+// tw_stock_db客製: 2026-09-06使用者要求——2D動畫（跟3D場景一樣）要能支援
+// 貼圖/照片，不是只有純色。這個架構沒有伺服器端附件系統（跟3D的texture
+// 遇到的限制完全一樣，見_build3DMaterial上面的說明），所以一律用
+// data:開頭的base64 data URL或http(s)網址直接內嵌在YAML的src/fill_image
+// 欄位裡，不是引用一個file_id——AI要用使用者上傳的圖片時，需要先把圖片
+// 內容轉成data URL文字再寫進YAML（未來如果要簡化這個步驟，可以另外加一個
+// 「讀取上傳檔案回傳data URL」的工具，這次先只做渲染端的支援）。
+const TWODANIM_SHAPE_TYPES = new Set(['circle', 'rect', 'polygon', 'line', 'text', 'image']);
+const TWODANIM_ANIMATION_TYPES = new Set(['move', 'rotate', 'scale', 'fade', 'orbit', 'keyframes']);
+const TWODANIM_KNOWN_TOP_LEVEL_KEYS = new Set(['title', 'width', 'height', 'background', 'duration', 'shapes']);
 
 // tw_stock_db客製: 2026-09-05使用者實測回報——STL/OBJ/3MF/FBX從上傳到轉成
 // 場景YAML這段UI會卡住一陣子，3D場景真正畫出來之後反而很順。根因是
@@ -1556,6 +1582,13 @@ class FloatingAssistant {
             '/import-viewer-attachment', '',
             '如果目前輸入框旁邊有附加、或最近上傳過用📦匯出的可互動文件封裝檔，直接在對話中匯入並開啟顯示（不經過AI）',
             () => this._handleImportViewerAttachmentCommand()
+        );
+        // tw_stock_db客製: 2026-09-06使用者要求——2D多邊形動畫也要能匯入，
+        // 跟/import-viewer-attachment同一種本地、不經過AI的開啟模式。
+        this.register_slash_command(
+            '/import-2d-animation-attachment', '',
+            '如果目前輸入框旁邊有附加、或最近上傳過2D動畫YAML檔案，直接在對話中匯入並開啟顯示（不經過AI）',
+            () => this._handleImport2DAnimationAttachmentCommand()
         );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
@@ -2555,6 +2588,56 @@ ${fnData.code}
             },
             { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-06——2D多邊形動畫子系統的工具，跟
+        // render_3d_scene/render_interactive_viewer同一套「主功能工具精簡、
+        // 修改前先查真實內容」設計精神。
+        this.register_openai_tool('render_2d_animation',
+            '用一段YAML描述渲染一個2D向量圖形動畫給使用者看（純宣告式格式，不能寫真正的JS程式碼；用Canvas2D畫圓/矩形/多邊形/折線/文字，不是3D）。頂層欄位：{title:"標題（選填）", width:480, height:320（皆選填，預設480x312）, background:"#ffffff", duration:4（動畫一輪的秒數，會loop重播）, shapes:[{id:"這個shape的名字（選填，給animation.parent引用）", type:"circle"|"rect"|"polygon"|"line"|"text"|"image", position:[x,y]（畫布座標，原點左上角，y向下）, rotation:0（度）, scale:1, opacity:1, fill:"#ff0000", stroke:"#000000", stroke_width:0, radius（circle用）, width,height（rect用、image用，image是唯一必填width/height的類型）, points:[[x,y],...]（polygon至少3點/line至少2點，座標相對於shape自己的position）, closed:true（line專用，選填，首尾相連）, content:"文字內容"（text用）, font_size:16（text用）, src:"http(s)網址或data:開頭的base64圖片"（image類型必填：整張圖依width/height拉伸畫出來）, fill_image:"http(s)網址或data:開頭的base64圖片"（circle/rect/polygon選填：改用這張圖貼滿該shape的外形取代純色fill，圖片以shape的bounding box拉伸、裁切到形狀輪廓內，不是精確的UV映射，多邊形也一樣用bounding box近似）, animation:{type:"move"|"rotate"|"scale"|"fade"|"orbit"|"keyframes", ...}}]}。這個架構沒有伺服器端附件系統，src/fill_image一律用http(s)網址或直接把圖片內容轉成data:開頭的base64字串內嵌在YAML裡，圖片還沒載入完成或載入失敗時會優雅退回灰色佔位方塊/純色，不會讓整個動畫壞掉。animation依type各自的參數：move用from:[x,y]/to:[x,y]/duration/loop:true|"pingpong"；rotate用speed（度/秒，持續轉）；scale用min/max/speed（來回縮放）；fade用from/to/duration/loop（透明度變化）；orbit用center:[x,y]或parent:"另一個shape的id"（衛星繞著該shape轉，母shape自己也可以再animation.parent繞第三個shape，可以疊多層，跟3D場景的animation_parent同一個設計）+radius+speed（弧度/秒）；keyframes用keyframes:[{t:秒數,position,rotation,scale,opacity},...]（依時間線性內插，最泛用但要自己列出每個時間點）。未知的頂層欄位/shape類型/animation類型都會直接回報錯誤。修改既有動畫之前，一律先呼叫get_2d_animation_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫。畫面上會有📤按鈕讓使用者自己把這個動畫匯出成PPTX/PDF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"2D動畫YAML描述"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const yamlText = String(parsed.yaml || '').trim();
+                if (!yamlText) return JSON.stringify({ ok: false, error: '缺少yaml參數' });
+                try {
+                    await this._ensureJsYamlLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                const validation = this._validate2DAnimationYaml(yamlText);
+                if (!validation.ok) return JSON.stringify({ ok: false, error: validation.error });
+                return JSON.stringify({ type: 'anim2d', yaml: yamlText });
+            },
+            { type: 'object', properties: { yaml: { type: 'string', description: '2D動畫YAML描述' } }, required: ['yaml'], additionalProperties: false }
+        );
+
+        this.register_openai_tool('get_2d_animation_yaml',
+            '取得目前對話中最近一次成功渲染的2D動畫YAML原始內容——要修改既有動畫之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
+            async () => {
+                if (!this._latestAnim2DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何2D動畫' });
+                return JSON.stringify({ ok: true, yaml: this._latestAnim2DYaml });
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        this.register_openai_tool('import_2d_animation_attachment',
+            '把使用者上傳的2D動畫YAML檔案（用動畫卡片上的📥下載按鈕產生的.2danim.yaml，或使用者自己手寫的同格式YAML）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。參數: {"file_id":"..."}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數' });
+                const record = await this.fileCache.get(fileId);
+                if (!record) return JSON.stringify({ ok: false, error: '找不到這個file_id對應的檔案' });
+                let text;
+                try { text = await record.blob.text(); } catch (err) { return JSON.stringify({ ok: false, error: `讀取檔案失敗: ${err.message || err}` }); }
+                try { await this._ensureJsYamlLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                const validation = this._validate2DAnimationYaml(text, { lenient: true });
+                if (!validation.ok) return JSON.stringify({ ok: false, error: `不是合法的2D動畫YAML: ${validation.error}` });
+                return JSON.stringify({ type: 'anim2d', yaml: text });
+            },
+            { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
+        );
     }
 
     _refreshSystemPromptMessage() {
@@ -3130,6 +3213,7 @@ ${fnData.code}
         let scene3DYaml = null;
         let drawingSvg = null;
         let viewerYaml = null;
+        let anim2DYaml = null;
         try {
             const parsed = typeof result === 'string' ? JSON.parse(result) : result;
             if (parsed && parsed.type === 'drawing' && typeof parsed.svg === 'string') {
@@ -3161,8 +3245,13 @@ ${fnData.code}
                 // 對話上下文、逼模型走get_interactive_viewer_yaml重新取得
                 // 最新內容」原則。
                 viewerYaml = parsed.yaml;
+            } else if (parsed && parsed.type === 'anim2d' && typeof parsed.yaml === 'string') {
+                // tw_stock_db客製: 2026-09-06——2D多邊形動畫，跟3D場景/互動
+                // viewer同一個「不列入對話上下文、逼模型走get_2d_animation_yaml
+                // 重新取得最新內容」原則。
+                anim2DYaml = parsed.yaml;
             }
-        } catch (_) { /* 不是圖片/3D場景/viewer payload，走下面一般文字流程 */ }
+        } catch (_) { /* 不是圖片/3D場景/viewer/2D動畫payload，走下面一般文字流程 */ }
 
         const msg = Object.assign({ role: 'tool' }, extra || {});
         // tw_stock_db客製: 實測發現這個NVIDIA相容端點無論是不是走原生
@@ -3201,6 +3290,10 @@ ${fnData.code}
             msg.content = `[Tool ${fnName} 已產生一個互動viewer，已直接顯示給使用者看，viewer YAML原始內容不列入對話上下文。如果之後要修改這個viewer，請先呼叫get_interactive_viewer_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
             Object.defineProperty(msg, '_displayViewerYaml', { value: viewerYaml, enumerable: false, configurable: true });
             this._latestViewerYaml = viewerYaml;
+        } else if (anim2DYaml) {
+            msg.content = `[Tool ${fnName} 已產生一個2D多邊形動畫，已直接顯示給使用者看，動畫YAML原始內容不列入對話上下文。如果之後要修改這個動畫，請先呼叫get_2d_animation_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
+            Object.defineProperty(msg, '_displayAnim2DYaml', { value: anim2DYaml, enumerable: false, configurable: true });
+            this._latestAnim2DYaml = anim2DYaml;
         } else {
             msg.content = this._formatToolResult(result, fnName);
         }
@@ -5199,35 +5292,24 @@ ${sourceTool.handlerScript}
     // 正在播放的即時檢視。每10幀主動yield一次主執行緒（await一個0ms的
     // setTimeout），避免長片段/複雜場景把整個分頁卡住——這是延續使用者先前
     // 對「3D處理卡住UI」的同一個顧慮。
-    async _exportSceneToMp4(yamlText, opts, onProgress) {
-        opts = opts || {};
-        const durationSeconds = Number.isFinite(opts.durationSeconds) ? Math.max(1, Math.min(30, opts.durationSeconds)) : 5;
-        const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
-        const width = Number.isFinite(opts.width) ? opts.width : 640;
-        const height = Number.isFinite(opts.height) ? opts.height : Math.round(width * 0.65);
-
+    // tw_stock_db客製: 2026-09-06——把WebCodecs/mp4-muxer的低階編碼邏輯抽成
+    // 共用方法，呼叫端只需要準備好一個canvas＋一個「渲染第i幀」的callback，
+    // 3D場景（_exportSceneToMp4）跟2D多邊形動畫（_export2DAnimationToMp4）
+    // 各自的畫面產生方式完全不同（WebGL/軟體光柵化 vs. Canvas2D），但編碼/
+    // 封裝MP4這段是完全共用的，不用維護兩份幾乎一樣的WebCodecs樣板程式碼。
+    async _encodeCanvasFramesToMp4(canvas, totalFrames, fps, renderFrameFn, onProgress) {
         if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
             return { ok: false, error: '這個瀏覽器不支援WebCodecs（VideoEncoder/VideoFrame），無法在瀏覽器端編碼H.264影片。請改用桌機版最新Chrome或Edge瀏覽器。' };
         }
-
-        await this._ensureJsYamlLoaded();
-        try {
-            await this._ensureThreeJsLoaded();
-        } catch (err) {
-            return { ok: false, error: String(err.message || err) };
-        }
-        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
-        if (!validation.ok) return { ok: false, error: validation.error };
-
         if (typeof Mp4Muxer === 'undefined') {
             // tw_stock_db客製: 2026-09-06實測發現——indirect eval（(0,eval)(text)）
             // 理論上會在global scope執行，但實際測試這個手法在部分環境下
             // 「沒有丟出任何錯誤、卻也沒有真的建立window上的全域變數」（懷疑
-            // 跟執行環境本身的scope隔離方式有關，不是三顆函式庫的問題——
+            // 跟執行環境本身的scope隔離方式有關，不是函式庫本身的問題——
             // three.js/OrbitControls等其餘vendor函式庫全部走的是
-            // _faLoadScriptOnce的Blob URL+&lt;script&gt;標籤注入手法，從來
-            // 沒有用過eval，這裡改用同一個已經驗證可靠的既有手法，不要另外
-            // 發明新的載入方式）。
+            // _faLoadScriptOnce的Blob URL+<script>標籤注入手法，從來沒有用過
+            // eval，這裡改用同一個已經驗證可靠的既有手法，不要另外發明新的
+            // 載入方式）。
             try {
                 await _faLoadScriptOnce(FA_ASSET_URLS.mp4Muxer);
             } catch (err) {
@@ -5238,9 +5320,10 @@ ${sourceTool.handlerScript}
             return { ok: false, error: 'MP4編碼函式庫載入後仍找不到Mp4Muxer（可能是CDN回應內容有異動）' };
         }
 
+        const width = canvas.width, height = canvas.height;
         // tw_stock_db客製: H.264 Baseline Profile Level 3.1——刻意選相容性
         // 最廣的profile（PowerPoint/舊版播放器都讀得懂），不是壓縮效率最高的
-        // High Profile，這個場景本來就是簡單幾何圖形，Baseline的壓縮效率
+        // High Profile，這裡的畫面本來就是簡單幾何圖形，Baseline的壓縮效率
         // 損失在實務上不明顯。
         const codec = 'avc1.42001f';
         const bitrate = 5_000_000;
@@ -5252,18 +5335,6 @@ ${sourceTool.handlerScript}
         } catch (err) {
             return { ok: false, error: `檢查H.264編碼支援度失敗: ${err.message || err}` };
         }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        const { scene, camera, animators } = this._build3DSceneGraph(validation.scene, validation.expandedNodes, validation.particlePresets, width / height);
-
-        let renderer = null, webglOk = false;
-        try {
-            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-            renderer.setSize(width, height, false);
-            webglOk = true;
-        } catch (_) { webglOk = false; }
-        const ctx2d = webglOk ? null : canvas.getContext('2d');
 
         const muxer = new Mp4Muxer.Muxer({
             target: new Mp4Muxer.ArrayBufferTarget(),
@@ -5278,27 +5349,492 @@ ${sourceTool.handlerScript}
         });
         encoder.configure({ codec, width, height, bitrate, framerate: fps });
 
-        const totalFrames = Math.round(durationSeconds * fps);
         const frameDurationUs = 1e6 / fps;
         for (let i = 0; i < totalFrames && !encodeError; i++) {
-            const t = i / fps;
-            for (const fn of animators) fn(t, 1 / fps);
-            if (webglOk) renderer.render(scene, camera);
-            else this._raster3DFrame(scene, camera, ctx2d, width, height);
+            renderFrameFn(i);
             const frame = new VideoFrame(canvas, { timestamp: Math.round(i * frameDurationUs), duration: Math.round(frameDurationUs) });
             encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
             frame.close();
             if (onProgress) onProgress(i + 1, totalFrames);
+            // tw_stock_db客製: 每10幀主動yield一次主執行緒，避免長片段/複雜
+            // 畫面把整個分頁卡住——延續使用者先前對「3D處理卡住UI」的同一個
+            // 顧慮，這裡是2D/3D匯出MP4共用的防線。
             if (i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
         }
         await encoder.flush();
         encoder.close();
-        if (renderer) renderer.dispose();
         if (encodeError) return { ok: false, error: `H.264編碼失敗: ${encodeError.message || encodeError}` };
 
         muxer.finalize();
         const { buffer } = muxer.target;
         return { ok: true, blob: new Blob([buffer], { type: 'video/mp4' }), ext: 'mp4', mimeType: 'video/mp4' };
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求——3D場景要能匯出成真正的H.264
+    // MP4影片（不是PNG快照/PPTX那種靜態嵌入）。逐幀把_build3DSceneGraph組
+    // 出來的畫面render到一個off-screen canvas（不是使用者目前看著的那個
+    // canvas，解析度/時長/幀率都是匯出時獨立指定，不影響畫面上正在播放的
+    // 即時檢視），交給共用的_encodeCanvasFramesToMp4編碼。
+    async _exportSceneToMp4(yamlText, opts, onProgress) {
+        opts = opts || {};
+        const durationSeconds = Number.isFinite(opts.durationSeconds) ? Math.max(1, Math.min(30, opts.durationSeconds)) : 5;
+        const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
+        const width = Number.isFinite(opts.width) ? opts.width : 640;
+        const height = Number.isFinite(opts.height) ? opts.height : Math.round(width * 0.65);
+
+        await this._ensureJsYamlLoaded();
+        try {
+            await this._ensureThreeJsLoaded();
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
+        if (!validation.ok) return { ok: false, error: validation.error };
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const { scene, camera, animators } = this._build3DSceneGraph(validation.scene, validation.expandedNodes, validation.particlePresets, width / height);
+
+        let renderer = null, webglOk = false;
+        try {
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+            renderer.setSize(width, height, false);
+            webglOk = true;
+        } catch (_) { webglOk = false; }
+        const ctx2d = webglOk ? null : canvas.getContext('2d');
+
+        const totalFrames = Math.round(durationSeconds * fps);
+        const result = await this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
+            const t = i / fps;
+            for (const fn of animators) fn(t, 1 / fps);
+            if (webglOk) renderer.render(scene, camera);
+            else this._raster3DFrame(scene, camera, ctx2d, width, height);
+        }, onProgress);
+        if (renderer) renderer.dispose();
+        return result;
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-06——2D多邊形動畫子系統。跟3D場景/互動viewer
+    // 完全獨立（不共用場景圖/渲染邏輯），只共用_encodeCanvasFramesToMp4。
+    // 驗證邏輯從一開始就採用strict（生成，AI工具呼叫直接用）/lenient（播放，
+    // 見_validate3DSceneYaml當初補上的同一套設計，這裡直接沿用同一個決策，
+    // 不用再重新討論一次）兩種模式。
+    // ============================================================
+
+    _validate2DShapeShape(s, where) {
+        if (!s || typeof s !== 'object') return `${where} 內有非物件的元素`;
+        if (!s.type) return `${where} 內有元素缺少type欄位`;
+        if (!TWODANIM_SHAPE_TYPES.has(s.type)) return `${where} 內有未知的type: "${s.type}"（合法值：${[...TWODANIM_SHAPE_TYPES].join('/')}）`;
+        if (s.type === 'polygon' && (!Array.isArray(s.points) || s.points.length < 3)) return `${where} 的polygon類型缺少至少3個點的points陣列`;
+        if (s.type === 'line' && (!Array.isArray(s.points) || s.points.length < 2)) return `${where} 的line類型缺少至少2個點的points陣列`;
+        if (s.type === 'circle' && !Number.isFinite(s.radius)) return `${where} 的circle類型缺少radius`;
+        if (s.type === 'rect' && (!Number.isFinite(s.width) || !Number.isFinite(s.height))) return `${where} 的rect類型缺少width/height`;
+        if (s.type === 'text' && typeof s.content !== 'string') return `${where} 的text類型缺少content（字串）`;
+        if (s.type === 'image') {
+            if (typeof s.src !== 'string' || !s.src) return `${where} 的image類型缺少src（http(s)網址或data:開頭的base64圖片）`;
+            if (!Number.isFinite(s.width) || !Number.isFinite(s.height)) return `${where} 的image類型缺少width/height`;
+        }
+        if (s.fill_image && typeof s.fill_image !== 'string') return `${where} 的fill_image必須是字串（http(s)網址或data:開頭的base64圖片）`;
+        if (s.animation && typeof s.animation === 'object' && s.animation.type && !TWODANIM_ANIMATION_TYPES.has(s.animation.type)) {
+            return `${where} 的animation.type未知: "${s.animation.type}"（合法值：${[...TWODANIM_ANIMATION_TYPES].join('/')}）`;
+        }
+        return null;
+    }
+
+    // 主驗證入口，跟_validate3DSceneYaml同一套strict(預設)/lenient
+    // （opts.lenient:true）設計精神：strict給AI生成時用（render_2d_animation
+    // 工具呼叫），一有問題就整個reject讓AI能立刻自我修正；lenient給播放/
+    // 檢視既有動畫用（_mount2DAnimation/匯出MP4/PPTX/PDF），跳過壞掉的
+    // shape＋記warning＋其餘shape正常播放，不會因為新增驗證規則讓舊動畫
+    // 突然整個播不出來。
+    _validate2DAnimationYaml(yamlText, opts) {
+        const lenient = !!(opts && opts.lenient);
+        const warnings = [];
+        let anim;
+        try {
+            anim = jsyaml.load(yamlText);
+        } catch (err) {
+            return { ok: false, error: `YAML語法錯誤: ${err.message}` };
+        }
+        if (!anim || typeof anim !== 'object') return { ok: false, error: '動畫內容必須是一個物件（至少要有shapes陣列）' };
+        const unknownTopKeys = Object.keys(anim).filter(k => !TWODANIM_KNOWN_TOP_LEVEL_KEYS.has(k));
+        if (unknownTopKeys.length) {
+            const msg = `動畫包含未知的頂層欄位: ${unknownTopKeys.join(', ')}（合法頂層欄位：${[...TWODANIM_KNOWN_TOP_LEVEL_KEYS].join('/')}）`;
+            if (!lenient) return { ok: false, error: msg };
+            warnings.push(msg);
+        }
+        const rawShapes = Array.isArray(anim.shapes) ? anim.shapes : [];
+        if (!rawShapes.length) {
+            const msg = '缺少shapes陣列，或shapes是空的';
+            if (!lenient) return { ok: false, error: msg };
+            warnings.push(msg);
+        }
+        const validShapes = [];
+        for (const s of rawShapes) {
+            const err = this._validate2DShapeShape(s, 'shapes');
+            if (err) {
+                if (!lenient) return { ok: false, error: err };
+                warnings.push(err);
+                continue;
+            }
+            validShapes.push(s);
+        }
+        return { ok: true, anim, shapes: validShapes, warnings };
+    }
+
+    // 把shape定義清單建成「即時狀態」物件（position/rotation/scale/opacity
+    // 是可變動的，animator每一幀直接改這幾個欄位；其餘幾何/樣式欄位維持
+    // 靜態）+ 依animation.parent建立階層動畫，跟3D場景_build3DSceneGraph
+    // 同一個兩階段做法：先把全部shape的state建好＋建立id查找表，animator
+    // 才會查得到parent（可能宣告順序在後面）。
+    _build2DShapeGraph(shapeDefs) {
+        const statesById = {};
+        const list = [];
+        for (const def of shapeDefs) {
+            const state = {
+                type: def.type,
+                radius: def.radius,
+                width: def.width,
+                height: def.height,
+                points: def.points,
+                closed: !!def.closed,
+                content: def.content,
+                fontSize: Number.isFinite(def.font_size) ? def.font_size : 16,
+                fill: def.fill || '#333333',
+                stroke: def.stroke || null,
+                strokeWidth: Number.isFinite(def.stroke_width) ? def.stroke_width : 0,
+                src: def.src || null,
+                fillImage: def.fill_image || null,
+                position: Array.isArray(def.position) ? def.position.slice(0, 2) : [0, 0],
+                rotation: Number.isFinite(def.rotation) ? def.rotation : 0,
+                scale: Number.isFinite(def.scale) ? def.scale : 1,
+                opacity: Number.isFinite(def.opacity) ? def.opacity : 1,
+            };
+            if (typeof def.id === 'string' && def.id) statesById[def.id] = state;
+            list.push({ def, state });
+        }
+        const animators = [];
+        for (const { def, state } of list) {
+            if (!def.animation || typeof def.animation !== 'object') continue;
+            const fn = this._build2DAnimatorForShape(state, def.animation, statesById);
+            if (fn) animators.push(fn);
+        }
+        return { shapes: list.map((l) => l.state), animators };
+    }
+
+    // tw_stock_db客製: animation.parent（跟3D場景的animation_parent同一個
+    // 設計，這次是orbit類型專用）從第一版就支援階層動畫（例如齒輪帶動另一個
+    // 齒輪、衛星圖示繞著另一個會動的圖示轉），不用等使用者回報「畫不出來」
+    // 才事後補（見3D場景那次的教訓）。
+    _build2DAnimatorForShape(state, anim, shapesById) {
+        const type = anim.type;
+        if (type === 'rotate') {
+            const speed = Number.isFinite(anim.speed) ? anim.speed : 60; // 度/秒
+            const start = state.rotation;
+            return (t) => { state.rotation = start + speed * t; };
+        }
+        if (type === 'move') {
+            const from = Array.isArray(anim.from) ? anim.from : state.position.slice();
+            const to = Array.isArray(anim.to) ? anim.to : state.position.slice();
+            const dur = Number.isFinite(anim.duration) && anim.duration > 0 ? anim.duration : 2;
+            const mode = anim.loop === true ? 'loop' : (anim.loop === 'pingpong' ? 'pingpong' : 'once');
+            return (t) => {
+                let localT;
+                if (mode === 'pingpong') { const cycle = (t % (dur * 2)) / dur; localT = cycle <= 1 ? cycle : 2 - cycle; }
+                else if (mode === 'loop') { localT = (t % dur) / dur; }
+                else { localT = Math.min(1, t / dur); }
+                state.position = [from[0] + (to[0] - from[0]) * localT, from[1] + (to[1] - from[1]) * localT];
+            };
+        }
+        if (type === 'scale') {
+            const min = Number.isFinite(anim.min) ? anim.min : 0.8;
+            const max = Number.isFinite(anim.max) ? anim.max : 1.2;
+            const speed = Number.isFinite(anim.speed) ? anim.speed : 1;
+            return (t) => { state.scale = min + (max - min) * (0.5 + 0.5 * Math.sin(t * speed * Math.PI * 2)); };
+        }
+        if (type === 'fade') {
+            const from = Number.isFinite(anim.from) ? anim.from : 1;
+            const to = Number.isFinite(anim.to) ? anim.to : 0;
+            const dur = Number.isFinite(anim.duration) && anim.duration > 0 ? anim.duration : 2;
+            const loop = anim.loop !== false;
+            return (t) => { const localT = loop ? (t % dur) / dur : Math.min(1, t / dur); state.opacity = from + (to - from) * localT; };
+        }
+        if (type === 'orbit') {
+            const parentId = typeof anim.parent === 'string' ? anim.parent : null;
+            const parentState = (parentId && shapesById) ? shapesById[parentId] : null;
+            const staticCenter = Array.isArray(anim.center) ? anim.center : state.position.slice();
+            const initialCx = parentState ? parentState.position[0] : staticCenter[0];
+            const initialCy = parentState ? parentState.position[1] : staticCenter[1];
+            const radius = Number.isFinite(anim.radius)
+                ? anim.radius
+                : (Math.hypot(state.position[0] - initialCx, state.position[1] - initialCy) || 50);
+            const speed = Number.isFinite(anim.speed) ? anim.speed : 1; // 弧度/秒
+            const startAngle = Math.atan2(state.position[1] - initialCy, state.position[0] - initialCx);
+            return (t) => {
+                const angle = startAngle + t * speed;
+                const cx = parentState ? parentState.position[0] : staticCenter[0];
+                const cy = parentState ? parentState.position[1] : staticCenter[1];
+                state.position = [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)];
+            };
+        }
+        if (type === 'keyframes') {
+            const kfs = Array.isArray(anim.keyframes) ? anim.keyframes.slice().sort((a, b) => a.t - b.t) : [];
+            if (kfs.length < 2) return null;
+            const totalDur = kfs[kfs.length - 1].t;
+            const loop = anim.loop !== false;
+            return (t) => {
+                const localT = loop ? (t % totalDur) : Math.min(t, totalDur);
+                let i = 0;
+                while (i < kfs.length - 1 && kfs[i + 1].t < localT) i++;
+                const a = kfs[i], b = kfs[Math.min(i + 1, kfs.length - 1)];
+                const span = (b.t - a.t) || 1;
+                const frac = Math.max(0, Math.min(1, (localT - a.t) / span));
+                const lerp = (x, y) => x + (y - x) * frac;
+                if (Array.isArray(a.position) && Array.isArray(b.position)) state.position = [lerp(a.position[0], b.position[0]), lerp(a.position[1], b.position[1])];
+                if (Number.isFinite(a.rotation) && Number.isFinite(b.rotation)) state.rotation = lerp(a.rotation, b.rotation);
+                if (Number.isFinite(a.scale) && Number.isFinite(b.scale)) state.scale = lerp(a.scale, b.scale);
+                if (Number.isFinite(a.opacity) && Number.isFinite(b.opacity)) state.opacity = lerp(a.opacity, b.opacity);
+            };
+        }
+        return null;
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求——2D動畫也要能支援貼圖/照片，
+    // 不是只有純色（跟3D場景的material.texture_data_url同一個限制/同一個
+    // 解法：這個架構沒有伺服器端附件系統，一律用data:開頭的base64 data URL
+    // 或http(s)網址直接內嵌在YAML裡，不是引用file_id）。Image載入是非同步的
+    // 但render loop是同步的每幀呼叫，所以在掛載/匯出流程一開始就先把所有
+    // 用到的src/fill_image集中預先載入完成（見_mount2DAnimation/
+    // _export2DAnimationToMp4呼叫這個方法的地方），render時只查已經載入好
+    // 的快取，不會在畫每一幀時才臨時觸發載入。同一個src在同一個FloatingAssistant
+    // 實例內只會真的載入一次、跨多個動畫重複使用。
+    _load2DImageAsync(src) {
+        this._anim2dImageCache = this._anim2dImageCache || {};
+        if (this._anim2dImageCache[src]) return this._anim2dImageCache[src];
+        const promise = new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null); // 載入失敗resolve(null)而不是reject，讓呼叫端優雅退回純色，不整個動畫失敗
+            img.src = src;
+        });
+        this._anim2dImageCache[src] = promise;
+        return promise;
+    }
+
+    // 掃過所有shape定義收集用到的src/fill_image，全部平行預先載入，回傳
+    // {src: HTMLImageElement|null}的查找表給_draw2DShape用。
+    async _preload2DShapeImages(shapeDefs) {
+        const srcs = new Set();
+        shapeDefs.forEach((def) => {
+            if (def.type === 'image' && def.src) srcs.add(def.src);
+            if (def.fill_image) srcs.add(def.fill_image);
+        });
+        const images = {};
+        await Promise.all([...srcs].map(async (src) => { images[src] = await this._load2DImageAsync(src); }));
+        return images;
+    }
+
+    // 用Canvas2D原生API畫單一shape目前的即時狀態，local座標系原點在shape
+    // 自己的position，旋轉/縮放都繞這個原點（用ctx.translate/rotate/scale
+    // 疊加transform，畫完save/restore還原，不影響其他shape）。images是
+    // _preload2DShapeImages準備好的src→Image查找表（選填，沒有貼圖需求的
+    // 動畫可以不傳）；圖片還沒載入完成/載入失敗時一律優雅退回純色，不會
+    // 讓整個shape畫不出來。
+    _draw2DShape(ctx, shape, images) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, Number.isFinite(shape.opacity) ? shape.opacity : 1));
+        ctx.translate(shape.position[0], shape.position[1]);
+        ctx.rotate((shape.rotation || 0) * Math.PI / 180);
+        const scale = Number.isFinite(shape.scale) ? shape.scale : 1;
+        ctx.scale(scale, scale);
+        ctx.fillStyle = shape.fill || '#333333';
+        if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.lineWidth = shape.strokeWidth; }
+        const fillImg = shape.fillImage && images ? images[shape.fillImage] : null;
+        switch (shape.type) {
+            case 'circle': {
+                const r = shape.radius || 10;
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                if (fillImg) { ctx.save(); ctx.clip(); ctx.drawImage(fillImg, -r, -r, r * 2, r * 2); ctx.restore(); }
+                else ctx.fill();
+                if (shape.stroke && shape.strokeWidth > 0) ctx.stroke();
+                break;
+            }
+            case 'rect': {
+                if (fillImg) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(-shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                    ctx.clip();
+                    ctx.drawImage(fillImg, -shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                    ctx.restore();
+                } else {
+                    ctx.fillRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                }
+                if (shape.stroke && shape.strokeWidth > 0) ctx.strokeRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                break;
+            }
+            case 'polygon': {
+                ctx.beginPath();
+                (shape.points || []).forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+                ctx.closePath();
+                if (fillImg) {
+                    // tw_stock_db客製: 用多邊形的bounding box把圖片拉伸貼進去、
+                    // clip裁掉超出多邊形輪廓的部分——不是真正的UV貼圖映射
+                    // （那需要每個頂點自己的uv座標，這個格式目前沒有），但足以
+                    // 表達「這個多邊形貼一張照片」的常見需求，是刻意的簡化。
+                    const xs = shape.points.map((p) => p[0]), ys = shape.points.map((p) => p[1]);
+                    const minX = Math.min(...xs), maxX = Math.max(...xs);
+                    const minY = Math.min(...ys), maxY = Math.max(...ys);
+                    ctx.save();
+                    ctx.clip();
+                    ctx.drawImage(fillImg, minX, minY, maxX - minX, maxY - minY);
+                    ctx.restore();
+                } else {
+                    ctx.fill();
+                }
+                if (shape.stroke && shape.strokeWidth > 0) ctx.stroke();
+                break;
+            }
+            case 'line':
+                ctx.beginPath();
+                (shape.points || []).forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+                if (shape.closed) ctx.closePath();
+                if (shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke || shape.fill || '#333333'; ctx.lineWidth = shape.strokeWidth; ctx.stroke(); }
+                else { ctx.strokeStyle = shape.fill || '#333333'; ctx.lineWidth = 1; ctx.stroke(); }
+                break;
+            case 'text':
+                ctx.font = `${shape.fontSize}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(shape.content || '', 0, 0);
+                break;
+            case 'image': {
+                const img = shape.src && images ? images[shape.src] : null;
+                if (img) {
+                    ctx.drawImage(img, -shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                } else {
+                    // 圖片還沒載入完成/載入失敗時的佔位灰色方塊，不留一片空白
+                    // 讓使用者以為shape整個消失了。
+                    ctx.fillStyle = '#cccccc';
+                    ctx.fillRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height);
+                }
+                break;
+            }
+        }
+        ctx.restore();
+    }
+
+    // 掛載一段2D動畫YAML到container底下：跟_mount3DScene同一種「lenient
+    // 驗證+建構時try/catch」雙重防線，bypass有問題的shape繼續播放其餘部分，
+    // 回傳的handle帶warnings（給卡片的「⚠️ N」按鈕用）跟snapshotDataUri
+    // （給PPTX/PDF快照用）。
+    async _mount2DAnimation(container, yamlText) {
+        await this._ensureJsYamlLoaded();
+        const validation = this._validate2DAnimationYaml(yamlText, { lenient: true });
+        if (!validation.ok) {
+            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 2D動畫格式錯誤：${this._escapeHtml(validation.error)}</div>`;
+            return null;
+        }
+        const animDef = validation.anim;
+        const width = Number.isFinite(animDef.width) ? animDef.width : 480;
+        const height = Number.isFinite(animDef.height) ? animDef.height : Math.round(width * 0.65);
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; background:#fff;';
+        container.appendChild(canvas);
+        const ctx = canvas.getContext('2d');
+
+        const warnings = (validation.warnings || []).slice();
+        let shapes = [], animators = [];
+        try {
+            const built = this._build2DShapeGraph(validation.shapes);
+            shapes = built.shapes; animators = built.animators;
+        } catch (err) {
+            warnings.push(`建構shapes失敗：${err.message || err}`);
+        }
+        // tw_stock_db客製: 2026-09-06——貼圖/照片支援，在真的開始render loop
+        // 之前先把所有用到的圖片非同步載入完成，避免前幾幀因為圖片還沒到位
+        // 而畫成灰色佔位方塊（見_preload2DShapeImages/_draw2DShape的說明）。
+        let images = {};
+        try {
+            images = await this._preload2DShapeImages(validation.shapes);
+        } catch (_) { /* 預先載入失敗不影響動畫其餘部分，_draw2DShape本來就有貼圖缺失的優雅降級 */ }
+
+        const duration = Number.isFinite(animDef.duration) && animDef.duration > 0 ? animDef.duration : 4;
+        let frameIndex = 0;
+        let stopped = false;
+        const drawFrame = (t) => {
+            for (const fn of animators) { try { fn(t, 1 / 60); } catch (_) { /* 單一animator失敗不影響其餘shape */ } }
+            ctx.save();
+            ctx.fillStyle = animDef.background || '#ffffff';
+            ctx.fillRect(0, 0, width, height);
+            for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) { /* 單一shape畫失敗不影響其餘shape */ } }
+            ctx.restore();
+        };
+        const renderOnce = () => {
+            drawFrame((frameIndex / 60) % duration);
+            frameIndex++;
+        };
+        const loop = () => {
+            if (stopped) return;
+            renderOnce();
+            requestAnimationFrame(loop);
+        };
+        loop();
+
+        return {
+            canvas, warnings,
+            title: (typeof animDef.title === 'string' && animDef.title.trim()) ? animDef.title.trim() : null,
+            stop: () => { stopped = true; },
+            // 匯出前快轉到動畫中段（duration的一半），比起永遠抓第0幀的初始
+            // 姿態更能代表「動畫進行中」的畫面，跟3D場景snapshotDataUri的
+            // 「快轉90幀」是同一個目的、不同的實作方式（2D動畫本身有明確的
+            // duration週期，直接用一半週期比較準）。
+            snapshotDataUri: () => {
+                drawFrame(duration / 2);
+                return canvas.toDataURL('image/png');
+            },
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-06——2D動畫匯出成H.264 MP4，跟3D場景
+    // _exportSceneToMp4結構完全對稱，只是畫面產生方式換成Canvas2D＋
+    // _build2DShapeGraph，編碼部分共用同一個_encodeCanvasFramesToMp4。
+    async _export2DAnimationToMp4(yamlText, opts, onProgress) {
+        opts = opts || {};
+        await this._ensureJsYamlLoaded();
+        const validation = this._validate2DAnimationYaml(yamlText, { lenient: true });
+        if (!validation.ok) return { ok: false, error: validation.error };
+        const animDef = validation.anim;
+        const width = Number.isFinite(opts.width) ? opts.width : (Number.isFinite(animDef.width) ? animDef.width : 480);
+        const height = Number.isFinite(opts.height) ? opts.height : (Number.isFinite(animDef.height) ? animDef.height : Math.round(width * 0.65));
+        const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
+        const durationSeconds = Number.isFinite(opts.durationSeconds)
+            ? Math.max(1, Math.min(30, opts.durationSeconds))
+            : (Number.isFinite(animDef.duration) && animDef.duration > 0 ? animDef.duration : 4);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        const { shapes, animators } = this._build2DShapeGraph(validation.shapes);
+        // tw_stock_db客製: 2026-09-06——匯出MP4前也要先把貼圖載入完成，不然
+        // 匯出的影片前幾幀（甚至全部幀，如果圖片載入比編碼還慢）會是灰色
+        // 佔位方塊，見_mount2DAnimation同一段的說明。
+        let images = {};
+        try { images = await this._preload2DShapeImages(validation.shapes); } catch (_) {}
+
+        const totalFrames = Math.round(durationSeconds * fps);
+        return this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
+            const t = i / fps;
+            for (const fn of animators) { try { fn(t, 1 / fps); } catch (_) {} }
+            ctx.save();
+            ctx.fillStyle = animDef.background || '#ffffff';
+            ctx.fillRect(0, 0, width, height);
+            for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) {} }
+            ctx.restore();
+        }, onProgress);
     }
 
     // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
@@ -7894,6 +8430,25 @@ ${existingNodeSummaries}
                 return null;
             }
         }
+        if (msg._displayAnim2DYaml) {
+            if (msg._anim2DHandle && typeof msg._anim2DHandle.snapshotDataUri === 'function') {
+                try { return { dataUrl: msg._anim2DHandle.snapshotDataUri(), kind: 'anim2d' }; } catch (_) { /* 落到下面重新掛載 */ }
+            }
+            const offDiv = document.createElement('div');
+            offDiv.style.cssText = 'position:fixed; left:-9999px; top:-9999px; width:480px;';
+            document.body.appendChild(offDiv);
+            try {
+                const handle = await this._mount2DAnimation(offDiv, msg._displayAnim2DYaml);
+                if (!handle) return null;
+                const dataUrl = handle.snapshotDataUri();
+                handle.stop();
+                return { dataUrl, kind: 'anim2d' };
+            } catch (_) {
+                return null;
+            } finally {
+                document.body.removeChild(offDiv);
+            }
+        }
         return null;
     }
 
@@ -7993,7 +8548,7 @@ ${existingNodeSummaries}
             const m = this.messages[i];
             if (m.role === 'user') break;
             if (m._visualSuperseded) continue;
-            if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg || m._displayViewerYaml) {
+            if (m._displayDataUrl || m._displayScene3DYaml || m._displayDrawingSvg || m._displayViewerYaml || m._displayAnim2DYaml) {
                 const snap = await this._captureVisualSnapshot(m);
                 if (snap) collected.unshift(snap);
             }
@@ -8543,6 +9098,47 @@ ${existingNodeSummaries}
         }
         this.messages.push({ role: 'user', content: `📎 匯入可互動文件：${record.filename}${result.stateIncluded ? '（含填寫狀態）' : '（不含填寫狀態）'}` });
         const msg = this._buildToolResultMessage('import_viewer_attachment', JSON.stringify({ type: 'viewer', yaml: result.viewerYamlText }), {});
+        this.messages.push(msg);
+        this._renderMessageHistory();
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求——2D動畫也要能匯入，跟
+    // /import-viewer-attachment同一種「附加/最近上傳過就直接本地開啟，不
+    // 經過AI」模式。2D動畫YAML沒有另外的封裝格式（不像互動viewer有「填寫
+    // 狀態要不要打包」的問題，動畫本身就是完全由YAML決定的宣告式內容，
+    // 沒有分離的可變狀態），所以直接用lenient驗證確認格式合法就好，不需要
+    // 額外的封裝/解封裝步驟。
+    async _handleImport2DAnimationAttachmentCommand() {
+        let record = null;
+        const pending = this._getLastCompletedPendingAttachment();
+        if (pending) {
+            record = await this.fileCache.get(pending.id);
+            this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
+            this._renderPendingAttachments();
+        } else {
+            const all = await this.fileCache.getAll();
+            const uploaded = all.filter(r => r.kind === 'uploaded').sort((a, b) => b.createdAt - a.createdAt);
+            record = uploaded[0];
+        }
+        if (!record) {
+            this._log('⚠️ /import-2d-animation-attachment：目前沒有附加、也沒有最近上傳過的檔案');
+            return;
+        }
+        let text;
+        try {
+            text = await record.blob.text();
+        } catch (err) {
+            this._log(`⚠️ /import-2d-animation-attachment：讀取附件失敗：${err.message || err}`);
+            return;
+        }
+        try { await this._ensureJsYamlLoaded(); } catch (err) { this._log(`⚠️ /import-2d-animation-attachment：${err.message || err}`); return; }
+        const validation = this._validate2DAnimationYaml(text, { lenient: true });
+        if (!validation.ok) {
+            this._log(`⚠️ /import-2d-animation-attachment：附件「${record.filename}」不是合法的2D動畫YAML：${validation.error}`);
+            return;
+        }
+        this.messages.push({ role: 'user', content: `📎 匯入2D動畫：${record.filename}` });
+        const msg = this._buildToolResultMessage('import_2d_animation_attachment', JSON.stringify({ type: 'anim2d', yaml: text }), {});
         this.messages.push(msg);
         this._renderMessageHistory();
     }
@@ -10506,6 +11102,9 @@ ${existingNodeSummaries}
             // tw_stock_db客製: 階段5——互動viewer YAML同一套作法（見
             // _buildToolResultMessage的_displayViewerYaml說明）。
             const viewerMap = {};
+            // tw_stock_db客製: 2026-09-06——2D多邊形動畫YAML同一套作法（見
+            // _buildToolResultMessage的_displayAnim2DYaml說明）。
+            const anim2dMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -10524,6 +11123,7 @@ ${existingNodeSummaries}
                 if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
                 if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
                 if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
+                if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -10535,6 +11135,7 @@ ${existingNodeSummaries}
                     if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
                     if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
                     if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
+                    if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -10548,6 +11149,7 @@ ${existingNodeSummaries}
                 scene3DMap,
                 drawingMap,
                 viewerMap,
+                anim2dMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -10620,6 +11222,13 @@ ${existingNodeSummaries}
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayViewerYaml', { value: yamlText, enumerable: false, configurable: true });
                     this._latestViewerYaml = yamlText;
+                });
+            }
+            if (data.anim2dMap) {
+                Object.entries(data.anim2dMap).forEach(([key, yamlText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayAnim2DYaml', { value: yamlText, enumerable: false, configurable: true });
+                    this._latestAnim2DYaml = yamlText;
                 });
             }
         } catch (err) {
@@ -10707,7 +11316,7 @@ ${existingNodeSummaries}
     // 會把所有視覺訊息的旗標重新算過一次（configurable:true可以覆寫），
     // 不會有殘留的舊狀態。
     _markSupersededVisualDrafts(messages) {
-        const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayViewerYaml', '_displayDataUrl'];
+        const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayViewerYaml', '_displayDataUrl', '_displayAnim2DYaml'];
         let lastIdxByKind = {};
         messages.forEach((msg, idx) => {
             if (msg.role === 'user') { lastIdxByKind = {}; return; }
@@ -11108,6 +11717,71 @@ ${existingNodeSummaries}
                     await this._mountInteractiveViewer(mountDiv, validation.viewer);
                 })().catch((err) => {
                     mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 互動viewer渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
+                });
+                return;
+            }
+
+            // tw_stock_db客製: 2026-09-06——2D多邊形動畫，跟3D場景同一個
+            // 「一律顯示、不受showInternalTrace開關影響」原則，卡片結構也
+            // 直接比照3D場景（標題列+匯出/檢視原始碼按鈕+warnings按鈕），
+            // 差別只在沒有「重設視角」按鈕（2D動畫沒有camera/OrbitControls
+            // 這個概念）。
+            if (msg._displayAnim2DYaml) {
+                if (msg._visualSuperseded) {
+                    this._renderSupersededDraftCard(container, '2D動畫草稿', (inner) => { this._mount2DAnimation(inner, msg._displayAnim2DYaml); });
+                    return;
+                }
+                const animWrap = document.createElement('div');
+                animWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                animWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #d946ef; margin-bottom: 4px;">🔷 2D動畫</div>`;
+                const mountDiv = document.createElement('div');
+                animWrap.appendChild(mountDiv);
+                const footerRow = document.createElement('div');
+                footerRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-top:4px; gap:8px;';
+                const titleDiv = document.createElement('div');
+                titleDiv.style.cssText = 'font-size:12px; opacity:0.75; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                footerRow.appendChild(titleDiv);
+                const btnGroup = document.createElement('div');
+                btnGroup.style.cssText = 'display:flex; align-items:center; gap:4px; flex:0 0 auto;';
+                footerRow.appendChild(btnGroup);
+                animWrap.appendChild(footerRow);
+                this._appendCardSourceButtons(btnGroup, animWrap, () => msg._displayAnim2DYaml, '2D動畫', '2danim.yaml');
+                this._appendCardExportButton(btnGroup, async () => {
+                    if (!msg._anim2DHandle || typeof msg._anim2DHandle.snapshotDataUri !== 'function') return null;
+                    try { return { dataUrl: msg._anim2DHandle.snapshotDataUri(), kind: 'anim2d' }; } catch (_) { return null; }
+                }, '2D動畫', [
+                    // tw_stock_db客製: 2026-09-06使用者要求——2D動畫也要能
+                    // 匯出成H.264 MP4，跟3D場景_exportSceneToMp4同一套
+                    // _encodeCanvasFramesToMp4編碼邏輯，只是畫面來源換成
+                    // Canvas2D。
+                    { fmt: 'mp4', label: '🎬 MP4影片', getBlobFn: (onProgress) => this._export2DAnimationToMp4(msg._displayAnim2DYaml, {}, onProgress) },
+                ]);
+                container.appendChild(animWrap);
+                this._mount2DAnimation(mountDiv, msg._displayAnim2DYaml).then((handle) => {
+                    if (handle) {
+                        Object.defineProperty(msg, '_anim2DHandle', { value: handle, enumerable: false, configurable: true });
+                        if (handle.title) titleDiv.textContent = handle.title;
+                    }
+                    if (handle && Array.isArray(handle.warnings) && handle.warnings.length) {
+                        const warnBtn = document.createElement('button');
+                        warnBtn.type = 'button';
+                        warnBtn.title = '這個動畫有部分內容被略過，點擊查看原因';
+                        warnBtn.textContent = `⚠️ ${handle.warnings.length}`;
+                        warnBtn.style.cssText = 'border:none; background:rgba(221,107,32,0.15); color:#dd6b20; border-radius:6px; cursor:pointer; font-size:11px; padding:3px 7px; line-height:1.4; font-weight:bold;';
+                        btnGroup.insertBefore(warnBtn, btnGroup.firstChild);
+                        let warnPanel = null;
+                        warnBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            if (warnPanel) { warnPanel.remove(); warnPanel = null; return; }
+                            warnPanel = document.createElement('div');
+                            warnPanel.style.cssText = 'margin-top:6px; padding:8px 10px; background:rgba(221,107,32,0.08); border:1px solid rgba(221,107,32,0.3); border-radius:6px; font-size:11px; color:#dd6b20;';
+                            warnPanel.innerHTML = `<div style="font-weight:bold; margin-bottom:4px;">以下內容因為格式問題被略過，其餘部分仍正常顯示：</div>` +
+                                handle.warnings.map(w => `<div style="margin-bottom:2px;">• ${this._escapeHtml(w)}</div>`).join('');
+                            animWrap.appendChild(warnPanel);
+                        });
+                    }
+                }).catch((err) => {
+                    mountDiv.innerHTML = `<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 2D動畫渲染失敗：${this._escapeHtml(err.message || String(err))}</div>`;
                 });
                 return;
             }
