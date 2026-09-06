@@ -131,6 +131,22 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
   參數也完全不受影響），MP4匯出用它把匯出按鈕文字即時顯示成`⏳42%`。已用
   真實瀏覽器測試驗證：產出的檔案有正確的MP4 `ftyp` box、原生`<video>`元素能
   正確讀出metadata（時長/寬高皆正確）。
+- **MP4匯出：預設秒數可調(無上限)＋匯出當下選秒數＋用目前視角**（2026-09-06）：
+  `advancedSettings.mp4DefaultDurationSeconds`（Advance設定「效能與限制」分頁，
+  `_getMp4DefaultDurationSeconds()`讀取，只有下限1秒防呆，**刻意不設上限**——
+  使用者明確要求秒數越長匯出時間/檔案越大是使用者自己的取捨，不是這裡該擋的
+  事，`_exportSceneToMp4`/`_export2DAnimationToMp4`的`durationSeconds`夾值邏輯
+  同步拿掉原本的`Math.min(30,...)`）。`_appendCardExportButton`新增
+  `extra.needsDurationPrompt`分支：點MP4匯出項目時用原生`window.prompt()`跳
+  dialog讓使用者臨時輸入這次要匯出多長（預填值來自上述設定），取消就靜默
+  放棄匯出（不當錯誤）。3D場景卡片的MP4匯出項目另外多帶一個
+  `extra.getCameraOverride`函式，讀取畫面上正在跑的`msg._scene3DHandle`
+  （見`_mount3DScene`新增的`getCameraState()`——回傳`{position, target}`，
+  分別讀`camera.position`跟`OrbitControls.target`目前的即時值）當作
+  `opts.cameraOverride`傳給`_exportSceneToMp4`，讓匯出影片用「使用者自己拖曳
+  調整過的視角」而不是永遠用YAML寫死的`camera.position`/`look_at`；場景還沒
+  mount完成時（handle不存在）`getCameraOverride`回傳null，行為退回原本的YAML
+  camera定義。2D動畫沒有camera概念，不受影響。
 - **階層式軌道（衛星繞母星）+ `_build3DSceneGraph`共用場景組裝**：
   `node.id`（選填字串）+ `node.animation_parent`（orbit動畫專用，指向另一個
   節點的id）讓軌道中心從固定世界座標改成每一幀動態讀取母星節點目前的位置
