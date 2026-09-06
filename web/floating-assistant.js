@@ -704,6 +704,19 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // 相當寬裕。
 const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
 
+// tw_stock_db客製: 2026-09-07使用者實測回報——子任務（delegate_to_subagent/
+// batch_analyze_stocks底層都是_runSubAgentTask）遇到端點暫時性錯誤
+// （HTTP 500/502/503這類伺服器端異常、或網路例外）時原本直接放棄回報失敗，
+// 使用者要求「支援retry，以及在沒有指定MODEL NAME時比照主對話迴圈的精神
+// 依序往下試候選模型」。這兩個常數控制重試的力道——SUBAGENT_TRANSIENT_RETRY_LIMIT
+// 是同一個模型最多重試幾次（不含第一次嘗試）才會放棄/換下一個候選模型，
+// SUBAGENT_TRANSIENT_RETRY_DELAY_MS是每次重試前的等待時間（給端點喘息
+// 空間，不是無延遲狂打）。這個重試/換模型機制刻意不消耗maxRounds（見
+// _runSubAgentTask內的round--用法），跟既有的stop參數/取樣參數被拒絕
+// 自我修復路徑是同一個「基礎設施層級的問題，不算真正的一輪對話」原則。
+const SUBAGENT_TRANSIENT_RETRY_LIMIT = 2;
+const SUBAGENT_TRANSIENT_RETRY_DELAY_MS = 800;
+
 // tw_stock_db客製: 共用的「安全表達式」白名單函式表——階段3自訂粒子preset
 // 的init/update/output公式、階段5互動viewer的visible_if/enabled_if都用
 // 同一套expression evaluator（見_compileSafeExpression）。這是一個固定、
@@ -10897,8 +10910,22 @@ ${existingNodeSummaries}
     // runBatchSubAgents這個既有呼叫端只需要文字結論，取.text即可，不需要
     // 處理visual（批次分析本來就只收集短結論陣列，沒有渲染視覺內容的地方）。
     async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
-        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
-        const useNative = this._shouldUseNativeToolCalls(apiModel);
+        const { apiKey, apiUrl } = this._getApiConfig();
+        // tw_stock_db客製: 2026-09-07使用者要求子任務支援retry+model
+        // fallback——apiModel/useNative改成let，允許中途換成下一個候選模型
+        // 時重新指定/重新判斷（不同模型的原生tool_calls支援度可能不同，
+        // 換模型後不能沿用舊模型探測出來的useNative判斷）。這裡刻意用
+        // function-scope的區域變數（modelFieldBlank/fallbackIndex/
+        // transientRetryCount）自己管理狀態，不是共用
+        // this._autoFallbackActive/this._autoFallbackIndex那組instance-level
+        // 狀態——那是給主對話（單一、序列執行）用的，子任務可能透過
+        // runBatchSubAgents同時有好幾個並行執行，共用instance狀態會互相
+        // 干擾，必須各自獨立（見下面錯誤處理段落的詳細說明）。
+        let apiModel = this._getApiConfig().apiModel;
+        let useNative = this._shouldUseNativeToolCalls(apiModel);
+        const modelFieldBlank = this._isModelFieldBlank();
+        let fallbackIndex = 0;
+        let transientRetryCount = 0;
         const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames : null;
         const systemPrompt = (typeof options.systemPrompt === 'string' && options.systemPrompt.trim())
             ? options.systemPrompt
@@ -10937,7 +10964,8 @@ ${existingNodeSummaries}
                 Object.assign(body, this._buildStopParamBody());
             }
 
-            let response;
+            let response = null;
+            let networkError = null;
             try {
                 response = await fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
@@ -10945,12 +10973,47 @@ ${existingNodeSummaries}
                     body: JSON.stringify(body),
                 });
             } catch (err) {
-                return { text: `[子任務網路錯誤: ${err.message}]`, visual: capturedVisual };
+                networkError = err;
+            }
+            // tw_stock_db客製: 2026-09-07使用者實測回報——子任務遇到端點暫時性
+            // 錯誤（HTTP 5xx、或這裡的網路例外）時原本直接放棄回報失敗，太
+            // 脆弱：這類錯誤通常是端點/模型當下短暫過載或抖動，重試往往就
+            // 好了。404（模型/部署在這個端點上根本不存在，重試同一個模型
+            // 沒有意義，直接換下一個候選模型）也歸在這裡一起處理，跟主對話
+            // 迴圈_nextAutoFallbackModel的判斷精神一致，但這裡刻意不共用
+            // instance-level的_autoFallbackActive/_autoFallbackIndex（原因見
+            // 上面函式開頭的說明）。處理順序：(1)網路例外/5xx先重試同一個
+            // 模型（有次數上限，重試前等一小段時間），(2)重試次數用完、或
+            // 404不值得重試同一個模型時，若使用者沒有手動指定MODEL NAME就
+            // 換下一個候選模型（PRESET_MODEL_OPTIONS），(3)都不行了才真的
+            // 放棄回報失敗。這三種情況都用round--不消耗maxRounds，跟下面
+            // 既有的stop參數/取樣參數自我修復路徑同一個「基礎設施問題不算
+            // 一輪對話」原則。
+            const isServerTransient = !!networkError || (response && response.status >= 500);
+            const isModelUnavailable = response && response.status === 404;
+            if (isServerTransient || isModelUnavailable) {
+                const statusLabel = networkError ? `網路錯誤: ${networkError.message}` : `HTTP ${response.status}`;
+                if (isServerTransient && transientRetryCount < SUBAGENT_TRANSIENT_RETRY_LIMIT) {
+                    transientRetryCount++;
+                    this._log(`⚠️ 子任務暫時性錯誤(${statusLabel})，${SUBAGENT_TRANSIENT_RETRY_DELAY_MS}ms後重試第${transientRetryCount}次…`);
+                    await new Promise(r => setTimeout(r, SUBAGENT_TRANSIENT_RETRY_DELAY_MS));
+                    round--;
+                    continue;
+                }
+                if (modelFieldBlank && fallbackIndex < PRESET_MODEL_OPTIONS.length - 1) {
+                    fallbackIndex++;
+                    apiModel = PRESET_MODEL_OPTIONS[fallbackIndex];
+                    useNative = this._shouldUseNativeToolCalls(apiModel);
+                    transientRetryCount = 0;
+                    this._log(`⚠️ 子任務改用下一個候選模型：${apiModel}`);
+                    round--;
+                    continue;
+                }
+                return { text: `[子任務失敗: ${statusLabel}（已重試/嘗試切換候選模型仍失敗）]`, visual: capturedVisual };
             }
             if (!response.ok) {
                 const errText = await response.text().catch(() => '');
-                // tw_stock_db客製: 子任務故意不接pruneContext/一般重試機制（見下面
-                // 的原有說明），但stop參數被拒絕是「這次request body本身有問題」
+                // tw_stock_db客製: stop參數被拒絕是「這次request body本身有問題」
                 // 而不是內容太長，值得單獨處理——不然只要stop一被拒絕，整批
                 // batch_analyze_stocks的每一個子任務都會全部失敗。偵測到就標記
                 // 停用、重跑同一輪（不消耗maxRounds），_disableStopParam對同一個
@@ -10971,10 +11034,12 @@ ${existingNodeSummaries}
                     round--;
                     continue;
                 }
-                // 子任務故意不接pruneContext/重試機制——訊息歷史本來就很短
-                // （系統prompt+單一問題+少數工具往返），真的撞到400/413多半
-                // 代表這個端點/模型本身有問題，重試對子任務的成本效益不划算，
-                // 直接回報失敗讓上層知道即可。
+                // 子任務故意不對400/413這類「請求本身格式有問題」的錯誤接
+                // pruneContext——訊息歷史本來就很短（系統prompt+單一問題+
+                // 少數工具往返），真的撞到400/413多半代表這個端點/模型本身
+                // 有問題，重試對子任務的成本效益不划算，直接回報失敗讓上層
+                // 知道即可（5xx/404/網路例外已經在上面處理過重試/換模型了，
+                // 這裡只剩下真正「請求本身有問題」的類別）。
                 return { text: `[子任務失敗: HTTP ${response.status}${errText ? ' ' + errText.slice(0, 150) : ''}]`, visual: capturedVisual };
             }
 
