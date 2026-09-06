@@ -10827,9 +10827,29 @@ ${existingNodeSummaries}
     // 合併回傳（使用者說的「最後再合併結果」）。
     async _delegateToSubagentAuto(task) {
         const routed = await this._routeTaskToDomains(task);
-        if (!routed.ok) return routed;
+        // tw_stock_db客製: 2026-09-06使用者實測發現的真實問題——自動路由失敗
+        // 時（不管是分類請求本身出錯，還是分類出來domains是空陣列），原本的
+        // 錯誤訊息只叫根模型「可以指定明確的domain重試」，卻完全沒有告訴它
+        // 有哪些domain代號可以選——delegate_to_subagent的description刻意
+        // 不列出domain清單給根模型看（省token），導致根模型結構上根本沒有
+        // 任何domain代號可以拿來重試，只能放棄委派、自己亂寫程式碼交差
+        // （使用者實測遇到的真實案例：3D太陽地球月亮的請求被誤判成沒有
+        // 適合的領域，根模型因此直接輸出一段Three.js程式碼叫使用者自己貼到
+        // CodePen執行，完全沒有用到這個元件內建的3D渲染能力）。修法：兩種
+        // 失敗情況都附上`available_domains`（key+label），讓根模型真的能夠
+        // 照著錯誤訊息的建議重試，不是給一個無法執行的指示。
+        const availableDomains = Object.entries(this.domains)
+            .filter(([, d]) => d.enabled)
+            .map(([k, d]) => `${k}(${d.label})`);
+        if (!routed.ok) {
+            return Object.assign({}, routed, { available_domains: availableDomains });
+        }
         if (!routed.domains.length) {
-            return { ok: false, error: '沒有找到適合的專家領域可以處理這個任務，domain參數也可以指定明確的領域代號重試，或直接嘗試自己回答使用者。' };
+            return {
+                ok: false,
+                error: `自動判斷後認為這個任務不需要用到任何專家領域，但如果你認為判斷錯誤（例如任務其實明顯屬於某個領域），請直接重新呼叫這個工具、改成明確指定domain參數重試（不要放棄委派、改成自己憑空編寫程式碼或答案）。`,
+                available_domains: availableDomains,
+            };
         }
         try {
             const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
