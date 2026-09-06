@@ -2364,7 +2364,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit"}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{id:"這個節點的名字（選填字串，給animation_parent引用用，例如\"earth\"）", mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit", animation_speed, animation_radius, animation_center:[x,y,z]（orbit預設繞[0,y,0]轉，y是這個節點自己的初始高度）, animation_parent:"另一個節點的id"（orbit專用，選填，見下方說明）}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。**階層式軌道（衛星繞母星，例如月亮繞地球、地球繞太陽）**：animation:"orbit"預設繞著固定世界座標（animation_center，預設原點）轉，這樣沒辦法表達「月亮繞著會動的地球轉」；要畫這種階層軌道，先給母星節點一個id（例如地球設id:"earth"），衛星節點animation:"orbit"再加上animation_parent:"earth"（衛星的animation_radius/animation_speed就是牠自己繞著地球轉的半徑/速度，不要沿用地球繞太陽的半徑），這樣衛星的軌道中心每一幀都會自動跟著母星目前的位置走，母星自己也可以同時animation_parent指向再上一層的母星（例如地球又繞太陽），可以疊多層；純向下相容，不寫animation_parent時行為完全不變。畫對應的軌道環（mesh:"line"）時，圓心/半徑要對齊真正在動的軌道（例如月亮軌道環的center要放地球目前的初始位置，不是原點）。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5875,7 +5875,11 @@ ${sourceTool.handlerScript}
         return mesh;
     }
 
-    _build3DAnimatorForNode(obj, node) {
+    // tw_stock_db客製: 2026-09-06使用者要求——「動態位移跟軌跡動畫」，用來
+    // 支援衛星繞行母星（月亮繞地球、地球繞太陽）這種階層式軌道，母星本身
+    // 也可能在動。nodesById是_build3DSceneGraph兩階段建構產生的node.id→
+    // Object3D查找表（第一輪先建完所有物件才建animator，保證這裡查得到）。
+    _build3DAnimatorForNode(obj, node, nodesById) {
         const anim = node.animation;
         if (anim === 'spin') {
             const speed = Number.isFinite(node.animation_speed) ? node.animation_speed : 1;
@@ -5888,16 +5892,30 @@ ${sourceTool.handlerScript}
             return (t) => { obj.position.y = baseY + amplitude * Math.abs(Math.sin(t * freq)); };
         }
         if (anim === 'orbit') {
-            const center = Array.isArray(node.animation_center) ? node.animation_center : [0, obj.position.y, 0];
+            // tw_stock_db客製: 2026-09-06——animation_parent（選填，字串，
+            // 指向某個節點的id）讓軌道中心從「固定世界座標」換成「每一幀
+            // 動態讀取該節點目前的位置」，藉此支援階層式軌道：月亮的
+            // animation_parent設成地球的id，月亮的軌道中心就會跟著地球一起
+            // 移動；地球自己也可以同時animation_parent設成太陽的id（如果
+            // 太陽也在動）。完全向下相容——沒有animation_parent時（絕大多數
+            // 既有場景）行為跟這次修改前逐字一致，一律走原本的固定
+            // animation_center。
+            const parentId = typeof node.animation_parent === 'string' ? node.animation_parent : null;
+            const parentObj = (parentId && nodesById) ? nodesById[parentId] : null;
+            const staticCenter = Array.isArray(node.animation_center) ? node.animation_center : [0, obj.position.y, 0];
+            const initialCx = parentObj ? parentObj.position.x : staticCenter[0];
+            const initialCz = parentObj ? parentObj.position.z : staticCenter[2];
             const radius = Number.isFinite(node.animation_radius)
                 ? node.animation_radius
-                : (Math.hypot(obj.position.x - center[0], obj.position.z - center[2]) || 2);
+                : (Math.hypot(obj.position.x - initialCx, obj.position.z - initialCz) || 2);
             const speed = Number.isFinite(node.animation_speed) ? node.animation_speed : 1;
-            const startAngle = Math.atan2(obj.position.z - center[2], obj.position.x - center[0]);
+            const startAngle = Math.atan2(obj.position.z - initialCz, obj.position.x - initialCx);
             return (t) => {
                 const angle = startAngle + t * speed;
-                obj.position.x = center[0] + radius * Math.cos(angle);
-                obj.position.z = center[2] + radius * Math.sin(angle);
+                const cx = parentObj ? parentObj.position.x : staticCenter[0];
+                const cz = parentObj ? parentObj.position.z : staticCenter[2];
+                obj.position.x = cx + radius * Math.cos(angle);
+                obj.position.z = cz + radius * Math.sin(angle);
             };
         }
         return null;
@@ -6345,39 +6363,18 @@ ${sourceTool.handlerScript}
     // update）再渲染，frameIndex/60當作動畫時間軸，方便exportSnapshot時
     // 用整數幀數快轉。回傳null代表驗證/建立失敗（container已經填入錯誤
     // 訊息），呼叫端不需要再處理。
-    async _mount3DScene(container, yamlText) {
-        await this._ensureJsYamlLoaded();
-        // tw_stock_db客製: 2026-09-05使用者明確要求——播放/檢視場景時要能
-        // 「bypass意外的元件並繼續播放」，用lenient模式（見_validate3DSceneYaml
-        // 的說明），只有YAML語法錯誤/scene本身不是物件這種真的沒東西可以顯示
-        // 的情況才整個擋下來；其餘問題（不存在的preset、未知mesh類型、未知
-        // 頂層欄位等）都只是跳過該節點/欄位並記一筆warning，讓場景其餘部分
-        // 照常播放——不然新增驗證規則後，舊的、之前已經生成好的場景YAML會
-        // 突然整個播不出來。
-        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
-        if (!validation.ok) {
-            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D場景格式錯誤：${this._escapeHtml(validation.error)}</div>`;
-            return null;
-        }
-        const warnings = validation.warnings || [];
-        try {
-            await this._ensureThreeJsLoaded();
-        } catch (err) {
-            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D函式庫載入失敗：${this._escapeHtml(err.message || String(err))}</div>`;
-            return null;
-        }
-        const sceneDef = validation.scene;
-        const width = Math.max(240, container.clientWidth || 480);
-        const height = Math.round(width * 0.65);
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; touch-action:none; background:#111318;';
-        container.appendChild(canvas);
-
+    // tw_stock_db客製: 2026-09-06——從_mount3DScene抽出來的共用場景組裝邏輯
+    // （camera/lights/nodes/animators，不含canvas/renderer/OrbitControls這些
+    // 「即時顯示」才需要的部分），讓MP4匯出（_exportSceneToMp4，逐幀encode、
+    // 不需要即時render loop/滑鼠互動）能重用同一套節點建構+動畫邏輯，不用
+    // 維護兩份幾乎一樣的程式碼。回傳的animators陣列跟原本_mount3DScene裡的
+    // 用法完全一致：呼叫端自己的render loop負責依序呼叫`fn(t, dt)`再渲染。
+    _build3DSceneGraph(sceneDef, expandedNodes, particlePresets, aspectRatio) {
+        const warnings = [];
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(sceneDef.background || '#111318');
         const camDef = sceneDef.camera || {};
-        const camera = new THREE.PerspectiveCamera(camDef.fov || 50, width / height, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(camDef.fov || 50, aspectRatio, 0.1, 1000);
         const camPos = Array.isArray(camDef.position) ? camDef.position : [4, 3, 6];
         camera.position.set(camPos[0], camPos[1], camPos[2]);
         const lookAt = Array.isArray(camDef.look_at) ? camDef.look_at : [0, 0, 0];
@@ -6402,9 +6399,17 @@ ${sourceTool.handlerScript}
             }
         });
 
-        const animators = [];
-        for (const node of validation.expandedNodes) {
-            // tw_stock_db客製: 2026-09-05修正——這裡原本沒有把validation.particlePresets
+        // tw_stock_db客製: 2026-09-06使用者要求——支援「衛星繞行母星」的階層
+        // 軌道（月亮繞地球、地球繞太陽），animator需要能讀到「另一個節點目前
+        // 的位置」，所以先把全部節點建構+加進scene（順便建立node.id→Object3D
+        // 的查找表），第二輪才建animator——保證任何animator執行時，牠可能會
+        // 參照的parent物件都已經存在於builtById裡（見_build3DAnimatorForNode
+        // 的animation_parent說明）。這是跟原本「建構跟建animator一次迴圈做完」
+        // 不同的地方，但對沒有用到animation_parent的既有場景行為完全不變。
+        const builtById = {};
+        const builtList = [];
+        for (const node of expandedNodes) {
+            // tw_stock_db客製: 2026-09-05修正——這裡原本沒有把particlePresets
             // 傳進去，導致場景YAML自己註冊的自訂粒子preset（particle_presets，
             // 見_validate3DParticlePresets）在「即時掛載顯示」這條路徑上永遠找不到
             // （回傳{}當空字典），只有PDF/PPTX匯出快照那條路徑（另一處呼叫，已經
@@ -6417,21 +6422,59 @@ ${sourceTool.handlerScript}
             // 不該讓整個場景的其餘節點都不畫出來。
             let built;
             try {
-                built = this._build3DMeshObject(node, validation.particlePresets);
+                built = this._build3DMeshObject(node, particlePresets);
             } catch (err) {
                 warnings.push(`節點(mesh:${node.mesh || '?'})建構失敗，已略過：${err.message || err}`);
                 continue;
             }
             if (!built) continue;
-            if (built.isParticleSystem) {
-                scene.add(built.object);
-                animators.push(built.update);
-            } else {
-                scene.add(built);
-                const animFn = this._build3DAnimatorForNode(built, node);
-                if (animFn) animators.push(animFn);
-            }
+            const isParticleSystem = !!built.isParticleSystem;
+            const obj = isParticleSystem ? built.object : built;
+            scene.add(obj);
+            if (typeof node.id === 'string' && node.id) builtById[node.id] = obj;
+            builtList.push({ node, obj, isParticleSystem, particleUpdate: isParticleSystem ? built.update : null });
         }
+        const animators = [];
+        for (const { node, obj, isParticleSystem, particleUpdate } of builtList) {
+            if (isParticleSystem) { animators.push(particleUpdate); continue; }
+            const animFn = this._build3DAnimatorForNode(obj, node, builtById);
+            if (animFn) animators.push(animFn);
+        }
+
+        return { scene, camera, animators, warnings, camPos, lookAt };
+    }
+
+    async _mount3DScene(container, yamlText) {
+        await this._ensureJsYamlLoaded();
+        // tw_stock_db客製: 2026-09-05使用者明確要求——播放/檢視場景時要能
+        // 「bypass意外的元件並繼續播放」，用lenient模式（見_validate3DSceneYaml
+        // 的說明），只有YAML語法錯誤/scene本身不是物件這種真的沒東西可以顯示
+        // 的情況才整個擋下來；其餘問題（不存在的preset、未知mesh類型、未知
+        // 頂層欄位等）都只是跳過該節點/欄位並記一筆warning，讓場景其餘部分
+        // 照常播放——不然新增驗證規則後，舊的、之前已經生成好的場景YAML會
+        // 突然整個播不出來。
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
+        if (!validation.ok) {
+            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D場景格式錯誤：${this._escapeHtml(validation.error)}</div>`;
+            return null;
+        }
+        try {
+            await this._ensureThreeJsLoaded();
+        } catch (err) {
+            container.innerHTML = `<div style="padding:10px 12px; color:#e53e3e; font-size:12px; background:#fff5f5; border-radius:6px;">⚠️ 3D函式庫載入失敗：${this._escapeHtml(err.message || String(err))}</div>`;
+            return null;
+        }
+        const sceneDef = validation.scene;
+        const width = Math.max(240, container.clientWidth || 480);
+        const height = Math.round(width * 0.65);
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; touch-action:none; background:#111318;';
+        container.appendChild(canvas);
+
+        const { scene, camera, animators, warnings: buildWarnings, camPos, lookAt } =
+            this._build3DSceneGraph(sceneDef, validation.expandedNodes, validation.particlePresets, width / height);
+        const warnings = (validation.warnings || []).concat(buildWarnings);
 
         let renderer = null;
         let webglOk = false;
