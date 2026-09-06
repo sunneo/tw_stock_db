@@ -879,7 +879,7 @@ self.onmessage = function (e) {
 // 一致（「主功能工具保持精簡、核心功能註冊分段」），也是redmine參考
 // 文件§13.6同樣的分層說明模式。
 const SCENE3D_TOPIC_DOCS = {
-    texture: '材質貼圖（放在node.material底下）：texture:"water"（內建具名程序貼圖，目前有water/grass/sand/wood/brick五種，沒對到已知名稱會退回grass，不是照片、是手繪花紋）+texture_repeat:[rx,ry]（貼圖重複次數，例如[10,6]）；texture也可以直接給http(s)網址或data:開頭的base64圖片當自訂貼圖（此時texture_repeat/texture_uv_offset/texture_uv_scale一樣適用）。舊版欄位texture_url/texture_data_url+texture_uv_scale仍相容，但新場景建議直接用texture欄位＋texture_repeat。注意：WebGL初始化失敗時的CPU軟體光柵化fallback不支援貼圖取樣，會退化成純色近似，這是已知取捨。',
+    texture: '材質貼圖（放在node.material底下）：texture:"water"（內建具名程序貼圖，目前有water/grass/sand/wood/brick五種，沒對到已知名稱會退回grass，不是照片、是手繪花紋）+texture_repeat:[rx,ry]（貼圖重複次數，例如[10,6]）；texture也可以直接給http(s)網址或data:開頭的base64圖片當自訂貼圖（此時texture_repeat/texture_uv_offset/texture_uv_scale一樣適用）。舊版欄位texture_url/texture_data_url+texture_uv_scale仍相容，但新場景建議直接用texture欄位＋texture_repeat。注意：WebGL初始化失敗時的CPU軟體光柵化fallback不支援貼圖取樣，會退化成純色近似，這是已知取捨。**同時設定texture又設定emissive時**（例如想做「會發光又有貼圖」的太陽）：texture會自動同時當emissiveMap用，讓自發光的亮度跟著貼圖花紋走，貼圖細節不會被純色的emissive蓋過去；但emissive_intensity仍然不要設太高（建議1~2之間），數值太高（例如3以上）還是會讓亮部過曝、貼圖細節看起來偏白/偏淡。',
     particles: '粒子節點：{mesh:"particles", position:[x,y,z], particle_preset:"...", particle_count:200, material:{color,color2}}——preset/count/其他額外參數（例如particle_spread）建議直接攤平寫在node底下（用particle_前綴，例如particle_spread、particle_gravity），跟position/material同一層，不用包一層particles物件（舊版巢狀寫法particles:{preset,count,...}仍相容，兩者可以並存，衝突時以巢狀寫法為準）；color/color2建議放在material底下（跟其他mesh類型的material.color一致），也支援直接放在particles/攤平參數裡。六種內建preset：spark（火花噴發，額外欄位gravity）、flame（火焰，額外欄位spread/rise_speed/sway）、mist（煙霧/冷氣出風口，跟flame同機制只是較慢較廣較淡）、bounce（不停彈跳的球，額外欄位amplitude/frequency/spread）、firework（夜空煙火，額外欄位cycle）、nbody（真正O(n²)相互重力模擬，額外欄位g/softening，count上限只有60，比其他preset的2000低很多）。count超過各自preset的上限會直接被render_3d_scene拒絕。除了六種內建preset，也可以在scene.particle_presets自己註冊全新的preset（用安全表達式公式描述動畫邏輯，不是JS程式碼）——完整格式見get_3d_scene_topic("particle_presets")。',
     polygon: 'polygon節點格式：{mesh:"polygon", vertices:[[x,y,z],...], faces:[[i,j,k],...]}（faces選填，三角形頂點index清單；不給的話用簡單扇形三角化，假設vertices依序繞邊界排列）。用來表達沒有對應固定圖元的自訂形狀（例如傾斜懸挑的屋頂），沒有stairs/chair這類複雜mesh，一律用原語（含polygon）組合出來。',
     defs: 'defs是一組具名、可重複使用的節點群組：{defs:{樹:{nodes:[{mesh:...},{mesh:...}]}}}，頂層nodes陣列裡用{use:"樹", position:[x,y,z], scale:n}實例化一次（套用位移position+等比縮放scale，縮放同時套用到子節點的position/size/radius/height）。刻意不支援巢狀（defs底下的節點自己不能再use另一個defs），展開後全部節點總數不能超過500，超過會被render_3d_scene拒絕。',
@@ -6562,6 +6562,20 @@ ${sourceTool.handlerScript}
                 if (Array.isArray(uvOffset)) tex.offset.set(uvOffset[0] || 0, uvOffset[1] || 0);
                 if (Array.isArray(uvScale)) tex.repeat.set(uvScale[0] || 1, uvScale[1] || 1);
                 material.map = tex;
+                // tw_stock_db客製: 2026-09-06使用者實測回報「太陽貼圖完全看不到、
+                // 只剩一顆純色黃球」——不是貼圖沒載入（同一個URL用在earth節點上
+                // 就正常顯示，用curl逐一驗證這幾個外部貼圖網址本身也都能正常
+                // 下載、CORS標頭也都正常），而是MeshStandardMaterial的emissive
+                // 是用「純色*intensity」直接疊加進最終畫面的自發光分量，太陽
+                // 這類節點常見的emissive_intensity（例如3）遠超過texture能貢獻
+                // 的範圍（0~1），疊加後整顆球被單一顏色的自發光完全蓋過去，
+                // 貼圖花紋根本看不出來——這是PBR著色模型的既有行為，不是bug，
+                // 但對「想要貼圖+發光效果同時存在」的場景設計意圖不友善。修法：
+                // 同時設定emissiveMap=同一張貼圖，讓「發光的亮度」跟著貼圖本身
+                // 的花紋走（亮部分多發光、暗部分少發光），而不是整顆球均勻發出
+                // 同一種純色的光——這樣貼圖花紋在glow之下仍然看得出來，同時
+                // 保留自發光效果，兩者不再互斥。
+                if (m.emissive) material.emissiveMap = tex;
                 material.needsUpdate = true;
             }
         } catch (_) { /* 貼圖載入失敗不影響其餘場景渲染，退回純色 */ }
