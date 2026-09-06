@@ -137,9 +137,16 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
   使用者明確要求秒數越長匯出時間/檔案越大是使用者自己的取捨，不是這裡該擋的
   事，`_exportSceneToMp4`/`_export2DAnimationToMp4`的`durationSeconds`夾值邏輯
   同步拿掉原本的`Math.min(30,...)`）。`_appendCardExportButton`新增
-  `extra.needsDurationPrompt`分支：點MP4匯出項目時用原生`window.prompt()`跳
-  dialog讓使用者臨時輸入這次要匯出多長（預填值來自上述設定），取消就靜默
-  放棄匯出（不當錯誤）。3D場景卡片的MP4匯出項目另外多帶一個
+  `extra.needsMp4ExportDialog`分支：點MP4匯出項目時跳出自製的輕量Modal
+  `_showMp4ExportOptionsDialog(defaults)`（inline style、不依賴
+  `_ensureAdvancedStyles`那份Advance設定專用CSS，回傳
+  `Promise<{durationSeconds,speed}|null>`）讓使用者臨時調整**秒數**（預填值
+  來自上述設定，無上限）跟**播放速度**（0.1x~4.0x，預設1x——動畫時間軸相對
+  匯出秒數的加速/減速倍率，不是fps/位元率；`_exportSceneToMp4`/
+  `_export2DAnimationToMp4`都在算`t`/`dt`時乘上`speed`），取消（按取消鈕或
+  點遮罩背景）就靜默放棄匯出（不當錯誤）。**原本第一版用單欄位
+  `window.prompt()`，因為要加播放速度變成兩個欄位放不下才改成自製Modal**
+  （2026-09-06當天兩次迭代）。3D場景卡片的MP4匯出項目另外多帶一個
   `extra.getCameraOverride`函式，讀取畫面上正在跑的`msg._scene3DHandle`
   （見`_mount3DScene`新增的`getCameraState()`——回傳`{position, target}`，
   分別讀`camera.position`跟`OrbitControls.target`目前的即時值）當作
