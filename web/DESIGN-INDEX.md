@@ -88,6 +88,34 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 
 ## 近期重大修改（2026-09-05/06這次工作階段新增，尚未整理進上面的階段分類）
 
+- **全新子系統：2D多邊形動畫**（跟3D場景/互動viewer完全獨立，不共用場景圖/
+  渲染邏輯，只共用`_encodeCanvasFramesToMp4`）——圓/矩形/多邊形/折線/文字/圖片
+  六種shape類型（`TWODANIM_SHAPE_TYPES`）+ 六種動畫類型move/rotate/scale/fade/
+  orbit/keyframes（`TWODANIM_ANIMATION_TYPES`），純Canvas2D渲染（沒有WebGL/軟體
+  光柵化fallback的複雜度，Canvas2D本身不會像WebGL context創建那樣失敗）。核心
+  方法：`_validate2DAnimationYaml`/`_validate2DShapeShape`（跟3D場景同一套
+  strict生成/lenient播放驗證模式，從第一版就這樣設計，不是事後補）、
+  `_build2DShapeGraph`/`_build2DAnimatorForShape`（`animation.parent`階層動畫，
+  例如齒輪帶動另一個齒輪——這是直接吸取3D場景那次「衛星繞母星」教訓、從一開始
+  就做進去的設計，不是事後才補）、`_draw2DShape`、`_mount2DAnimation`（掛載即時
+  播放）、`_export2DAnimationToMp4`。**貼圖/照片支援**：`type:"image"`（獨立圖片
+  shape）+ circle/rect/polygon的`fill_image`（用圖片取代純色填滿形狀，polygon是
+  用bounding box近似、不是精確UV映射）；跟3D場景的`material.texture_data_url`
+  同一個限制/同一個解法——沒有伺服器端附件系統，一律用`data:`開頭的base64或
+  http(s)網址直接內嵌在YAML的`src`/`fill_image`欄位，`_load2DImageAsync`/
+  `_preload2DShapeImages`負責非同步預先載入（render loop本身是同步的），載入
+  失敗/未完成一律優雅退回灰色佔位/純色，不會讓整個動畫壞掉。訊息顯示走
+  `_displayAnim2DYaml`旗標，跟`_displayScene3DYaml`等其餘視覺類型並列在
+  `_persistChatHistory`/`_loadPersistedChatHistory`（`anim2dMap`）、
+  `_markSupersededVisualDrafts`（`KIND_PROPS`）、`_captureVisualSnapshot`、
+  `_renderSingleMessage`（卡片UI，跟3D場景卡片結構幾乎一致，只是沒有「重設
+  視角」按鈕——2D動畫沒有camera概念）這幾個既有的「視覺類型分派點」裡，新增
+  一種視覺類型時這幾個地方都要記得同步加，不能只顧著渲染邏輯本身。工具：
+  `render_2d_animation`/`get_2d_animation_yaml`/`import_2d_animation_attachment`，
+  獨立的`animation_2d`委派domain。匯入指令`/import-2d-animation-attachment`
+  （跟互動viewer不同，2D動畫本身就是完全由YAML決定的宣告式內容，沒有分離的
+  可變狀態，不需要像`VIEWER_PACKAGE_KIND`那樣另外設計一個「狀態要不要打包」的
+  封裝格式，直接匯入/匯出YAML文字本身就夠）。
 - **3D場景匯出成H.264 MP4影片**：`_exportSceneToMp4(yamlText, opts, onProgress)`
   ——瀏覽器原生WebCodecs的`VideoEncoder`直接編碼H.264（Chrome/Edge支援，
   Firefox/Safari目前不支援WebCodecs時會明確回報不支援，不會假裝成功），純JS的
@@ -170,7 +198,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
   `.ai-advanced-content`/`.ai-advanced-pane`（CSS在`_ensureAdvancedStyles`），
   分頁切換邏輯在`_initEventListeners`裡找`.ai-advanced-cat`的click監聽。
 
-## 內建AI工具完整清單（`register_openai_tool`，共22個，行號為commit `fbdd5039`快照）
+## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
 | 工具名 | 約略行號 | 一句話用途 |
 |---|---|---|
@@ -196,12 +224,15 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 | `get_viewer_state` | 2492 | 查詢互動viewer的填寫狀態 |
 | `set_viewer_state` | 2505 | 覆寫互動viewer的填寫狀態 |
 | `import_interactive_viewer_attachment` | 2523 | 匯入「可互動文件」封裝檔 |
+| `render_2d_animation` | ~2582 | 渲染純宣告式YAML描述的2D多邊形動畫(Canvas2D) |
+| `get_2d_animation_yaml` | ~2600 | 取得目前2D動畫的真實YAML(修改前必查) |
+| `import_2d_animation_attachment` | ~2610 | 匯入2D動畫YAML附件 |
 
 （tw_stock_db自己的業務工具，例如`diagnose_stock`/`export_document`，不在這份
 清單——那些是`index.html`透過`AI_CAPABILITIES`陣列掛進來的，見上面「這個檔案跟
 index.html的分工」。）
 
-## 內建斜線指令完整清單（`register_slash_command`，共4個）
+## 內建斜線指令完整清單（`register_slash_command`，共5個）
 
 | 指令 | 約略行號 | 用途 |
 |---|---|---|
@@ -209,6 +240,7 @@ index.html的分工」。）
 | `/suggest` | 1520 | 重新顯示建議操作按鈕 |
 | `/view-3d-attachment` | 1529 | 本地開啟附加的3D場景/模型檔案（不經過AI） |
 | `/import-viewer-attachment` | 1537 | 本地匯入「可互動文件」封裝檔（不經過AI） |
+| `/import-2d-animation-attachment` | ~1587 | 本地匯入2D動畫YAML附件（不經過AI） |
 
 （`/collect-volrank`/`/pattern-xlsx`/`/pattern-xlsx-live`是tw_stock_db業務指令，
 `index.html`裡註冊，不在這份清單。）
