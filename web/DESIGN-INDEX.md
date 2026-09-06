@@ -262,13 +262,17 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     判斷「畫流程圖」→`drawing`、「存進長期記憶」→`rag_management`、「新增
     AI自製函式」→`ai_functions`、單純打招呼→空陣列（不委派），完整
     delegate_to_subagent呼叫（含實際render_drawing執行）也成功產出真正的
-    SVG。**驗證過程中發現一個既有、無關的bug**：預設的
-    `advancedSettings.generation.samplingParams.length_penalty`（value 0.3,
+    SVG。**驗證過程中發現一個既有、無關的bug（2026-09-06已修）**：預設的
+    `advancedSettings.generation.samplingParams.length_penalty`（原本 value 0.3,
     disabled:false）在這個預設channel/模型組合下會被NVIDIA API直接拒絕
     （HTTP 400 Unsupported parameter），導致所有`_runSubAgentTask`（不限於
     這次新功能，`delegate_to_subagent`/`batch_analyze_stocks`都受影響）在
-    預設設定下都會失敗——已用`spawn_task`交給獨立session追蹤，不在這次
-    範圍內修。
+    預設設定下都會失敗。修法：(1)`_createDefaultGenerationSettings()`把
+    `length_penalty`預設值改回`null`（＝不送這個欄位；它是beam search專屬的
+    非標準欄位，其餘三個參數預設都是中性值，只有它是帶意見的非中性預設）；
+    (2)`_runSubAgentTask`補上跟主迴圈`_loopFetch`一樣的取樣參數被拒自我修復
+    路徑（`_detectRejectedSamplingParam`+`_disableRejectedSamplingParam`），
+    讓已經在localStorage存過舊預設值的使用者也能自動排除、不用手動進設定面板。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
