@@ -356,6 +356,26 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     仍然看得出來。已用真實截圖前後對照驗證：修前太陽是一顆純黃球，修後
     太陽清楚看得出貼圖的大陸/海洋花紋（同一張圖）。`SCENE3D_TOPIC_DOCS.texture`
     也補上這個行為的說明，順便建議emissive_intensity不要超過1~2。
+  - **`_runSubAgentTask`新增暫時性錯誤retry + MODEL NAME留空時的候選模型
+    fallback**：使用者實測遇到`delegate_to_subagent`回傳
+    `[子任務失敗: HTTP 500 ...]`，要求子任務也要能retry、且MODEL NAME
+    留空時能比照主對話迴圈依序往下試候選模型。新增
+    `SUBAGENT_TRANSIENT_RETRY_LIMIT`(2)/`SUBAGENT_TRANSIENT_RETRY_DELAY_MS`(800)
+    兩個常數；`_runSubAgentTask`裡`apiModel`/`useNative`改成`let`，新增
+    function-scope（不是instance-level，避免`runBatchSubAgents`平行執行
+    的多個子任務互相干擾）的`modelFieldBlank`/`fallbackIndex`/
+    `transientRetryCount`三個狀態變數。處理順序：網路例外或HTTP
+    5xx先重試同一個模型（有次數上限，重試前等一段時間）；重試次數用完、
+    或HTTP 404（模型/部署根本不存在，重試同一個模型沒意義）時，若使用者
+    沒有手動指定MODEL NAME（`_isModelFieldBlank()`）就換
+    `PRESET_MODEL_OPTIONS`的下一個候選模型繼續；都不行了才真的回報失敗。
+    這整套retry/fallback都用`round--`不消耗`maxRounds`，跟既有的stop參數/
+    取樣參數自我修復路徑同一個「基礎設施問題不算一輪對話」原則。已用
+    mock fetch驗證4種情境：500兩次後成功（重試同一個模型，不觸發
+    fallback）、500持續失敗（依序試完全部8個候選模型後才放棄）、明確指定
+    MODEL NAME時500持續失敗（只重試同一個模型3次就放棄，不會fallback到
+    其他模型，尊重使用者的明確選擇）、404（跳過同一個模型的重試，直接
+    逐一換下一個候選模型）。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
