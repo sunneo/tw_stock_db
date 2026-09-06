@@ -1744,8 +1744,9 @@ class FloatingAssistant {
             // 預設總秒數可在Advance設定調整（不用每次匯出都手動改），匯出當下
             // 仍會跳dialog讓使用者臨時調整（見_appendCardExportButton的
             // needsDurationPrompt分支），這裡只是那個dialog的預填值來源。
-            // 範圍跟_exportSceneToMp4/_export2DAnimationToMp4的durationSeconds
-            // 夾值範圍一致（1~30秒），維持三處同步。
+            // 使用者明確要求「不要有上限秒數」——只有下限1秒（防呆用，不是
+            // 限制），跟_exportSceneToMp4/_export2DAnimationToMp4的
+            // durationSeconds處理方式一致，三處同步移除上限。
             mp4DefaultDurationSeconds: 5,
         };
     }
@@ -1773,7 +1774,7 @@ class FloatingAssistant {
     // 範圍(1~30)保持一致，避免使用者在Advance設定填的值跟實際匯出行為對不上。
     _getMp4DefaultDurationSeconds() {
         const n = Number(this.advancedSettings?.mp4DefaultDurationSeconds);
-        return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : 5;
+        return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
     }
 
     // tw_stock_db客製: 使用者可調的生成/取樣參數。
@@ -2022,7 +2023,7 @@ class FloatingAssistant {
             })(),
             mp4DefaultDurationSeconds: (() => {
                 const n = Number(raw.mp4DefaultDurationSeconds);
-                return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : 5;
+                return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
         };
     }
@@ -5398,7 +5399,11 @@ ${sourceTool.handlerScript}
     // 即時檢視），交給共用的_encodeCanvasFramesToMp4編碼。
     async _exportSceneToMp4(yamlText, opts, onProgress) {
         opts = opts || {};
-        const durationSeconds = Number.isFinite(opts.durationSeconds) ? Math.max(1, Math.min(30, opts.durationSeconds)) : 5;
+        // tw_stock_db客製: 2026-09-06使用者明確要求「不要有上限秒數」——
+        // 原本的Math.min(30,...)拿掉，只保留下限1秒（防呆，不是限制），
+        // 使用者自己決定要匯出多長（拉長片段/複雜場景本來就會花更久時間+
+        // 更大檔案，這是使用者自己承擔的取捨，不是這裡該幫忙擋的事）。
+        const durationSeconds = Number.isFinite(opts.durationSeconds) ? Math.max(1, opts.durationSeconds) : 5;
         const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
         const width = Number.isFinite(opts.width) ? opts.width : 640;
         const height = Number.isFinite(opts.height) ? opts.height : Math.round(width * 0.65);
@@ -5415,6 +5420,19 @@ ${sourceTool.handlerScript}
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
         const { scene, camera, animators } = this._build3DSceneGraph(validation.scene, validation.expandedNodes, validation.particlePresets, width / height);
+        // tw_stock_db客製: 2026-09-06使用者要求——匯出MP4要用「使用者當下
+        // 調整過的角度」，不是永遠用YAML寫死的camera.position/look_at。
+        // opts.cameraOverride來自畫面上正在跑的那個場景handle
+        // （見_mount3DScene新增的getCameraState()），只覆寫位置/朝向，
+        // 不影響aspectRatio/fov（那些跟匯出解析度綁定，維持_build3DSceneGraph
+        // 算好的值）。沒有帶cameraOverride（例如場景還沒mount過就直接匯出）
+        // 時完全不影響，退回YAML自己的camera定義，跟原本行為一致。
+        if (opts.cameraOverride && Array.isArray(opts.cameraOverride.position) && Array.isArray(opts.cameraOverride.target)) {
+            const [px, py, pz] = opts.cameraOverride.position;
+            const [tx, ty, tz] = opts.cameraOverride.target;
+            camera.position.set(px, py, pz);
+            camera.lookAt(new THREE.Vector3(tx, ty, tz));
+        }
 
         let renderer = null, webglOk = false;
         try {
@@ -5832,8 +5850,10 @@ ${sourceTool.handlerScript}
         const width = Number.isFinite(opts.width) ? opts.width : (Number.isFinite(animDef.width) ? animDef.width : 480);
         const height = Number.isFinite(opts.height) ? opts.height : (Number.isFinite(animDef.height) ? animDef.height : Math.round(width * 0.65));
         const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
+        // tw_stock_db客製: 2026-09-06使用者明確要求「不要有上限秒數」，
+        // 拿掉原本的Math.min(30,...)，跟_exportSceneToMp4同一個決策。
         const durationSeconds = Number.isFinite(opts.durationSeconds)
-            ? Math.max(1, Math.min(30, opts.durationSeconds))
+            ? Math.max(1, opts.durationSeconds)
             : (Number.isFinite(animDef.duration) && animDef.duration > 0 ? animDef.duration : 4);
 
         const canvas = document.createElement('canvas');
@@ -7208,6 +7228,16 @@ ${sourceTool.handlerScript}
                 camera.lookAt(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]));
                 if (controls) { controls.target.set(lookAt[0], lookAt[1], lookAt[2]); controls.update(); }
             },
+            // tw_stock_db客製: 2026-09-06使用者要求——匯出MP4時要用「使用者當下
+            // 用滑鼠調整過的角度」，不是永遠用YAML裡寫死的camera.position/
+            // look_at。這裡把目前存活的camera位置+OrbitControls target（使用者
+            // 拖曳/縮放後的即時狀態）讀出來給_exportSceneToMp4當cameraOverride
+            // 用；沒有controls（fallback成軟體光柵化時仍會建立OrbitControls，
+            // 理論上一定存在，這裡保留退回lookAt的分支只是防禦性寫法）。
+            getCameraState: () => ({
+                position: [camera.position.x, camera.position.y, camera.position.z],
+                target: controls ? [controls.target.x, controls.target.y, controls.target.z] : [lookAt[0], lookAt[1], lookAt[2]],
+            }),
             // 匯出前先快轉90幀（1.5秒），讓靜態圖抓到「效果進行中」的畫面，
             // 不是動畫剛開始播放、還沒真的動起來的初始退化姿態。
             snapshotDataUri: () => {
@@ -8698,15 +8728,26 @@ ${existingNodeSummaries}
                         // 二次確認同一種「原生瀏覽器對話框」慣例一致，不用另外
                         // 刻一套Modal UI），預填值來自Advance設定的
                         // mp4DefaultDurationSeconds。使用者按取消就直接放棄
-                        // 這次匯出（不當成錯誤，不跳❌訊息）。
-                        let extraOpts;
+                        // 這次匯出（不當成錯誤，不跳❌訊息）。使用者明確要求
+                        // 「不要有上限秒數」，只保留下限1秒防呆。
+                        const extraOpts = {};
+                        // tw_stock_db客製: 2026-09-06使用者要求——3D場景匯出MP4
+                        // 要用「使用者當下調整過的角度」，不是永遠用YAML寫死的
+                        // camera.position/look_at。extra.getCameraOverride()由
+                        // 呼叫端（3D場景卡片，見_renderSingleMessage）提供，
+                        // 讀取畫面上正在跑的handle.getCameraState()；其餘匯出
+                        // 項目（PPTX/PDF/STL/OBJ/3MF/2D動畫MP4）不提供這個
+                        // 函式，這裡就完全不影響。
+                        if (typeof extra.getCameraOverride === 'function') {
+                            const cameraOverride = extra.getCameraOverride();
+                            if (cameraOverride) extraOpts.cameraOverride = cameraOverride;
+                        }
                         if (extra.needsDurationPrompt) {
                             const defaultDuration = this._getMp4DefaultDurationSeconds();
-                            const input = window.prompt('要匯出的影片長度（秒，1~30）：', String(defaultDuration));
+                            const input = window.prompt('要匯出的影片長度（秒，至少1秒，無上限）：', String(defaultDuration));
                             if (input === null) return;
                             const n = Number(input);
-                            const durationSeconds = Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(30, Math.round(n))) : defaultDuration;
-                            extraOpts = { durationSeconds };
+                            extraOpts.durationSeconds = Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : defaultDuration;
                         }
                         // tw_stock_db客製: 2026-09-06——MP4這類需要逐幀編碼、
                         // 耗時比較明顯的格式，getBlobFn可以選擇性接受第二個
@@ -10905,8 +10946,8 @@ ${existingNodeSummaries}
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-mp4-duration">匯出MP4影片預設秒數</label>
-                                    <input type="number" id="ai-perf-mp4-duration" class="ai-advanced-input" min="1" max="30" step="1">
-                                    <p class="ai-advanced-hint">3D場景/2D動畫匯出MP4時的預設總秒數（範圍1~30），匯出當下仍會跳出視窗讓你臨時調整這次要匯出多長。</p>
+                                    <input type="number" id="ai-perf-mp4-duration" class="ai-advanced-input" min="1" step="1">
+                                    <p class="ai-advanced-hint">3D場景/2D動畫匯出MP4時的預設總秒數（沒有上限，數字越大匯出越慢、檔案也越大），匯出當下仍會跳出視窗讓你臨時調整這次要匯出多長。</p>
                                 </div>
                             </div>
                         </div>
@@ -11627,10 +11668,18 @@ ${existingNodeSummaries}
                     { fmt: '3mf', label: '🧊 3MF', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, '3mf') },
                     // tw_stock_db客製: 2026-09-06使用者要求——匯出成真正的
                     // H.264 MP4動畫影片（不是靜態快照），見_exportSceneToMp4
-                    // 的說明。5秒/30fps是預設值，這個UI入口暫不提供調整時長
-                    // 的介面（維持跟其他匯出按鈕一致的「一鍵匯出」體驗），
-                    // 之後如果需要調整可以再加輸入欄位。
-                    { fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true, getBlobFn: (onProgress, opts) => this._exportSceneToMp4(msg._displayScene3DYaml, opts || {}, onProgress) },
+                    // 的說明。匯出時會跳dialog讓使用者選要匯出多長（預填值來自
+                    // Advance設定，無上限），且會用畫面上正在跑的
+                    // msg._scene3DHandle目前的camera角度（使用者用滑鼠調整過的
+                    // 視角），不是永遠用YAML寫死的camera.position/look_at——
+                    // 場景還沒mount完成時（handle尚未存在）getCameraOverride
+                    // 回傳null，_exportSceneToMp4會照原本行為退回YAML自己的
+                    // camera定義。
+                    {
+                        fmt: 'mp4', label: '🎬 MP4影片', needsDurationPrompt: true,
+                        getCameraOverride: () => (msg._scene3DHandle && typeof msg._scene3DHandle.getCameraState === 'function') ? msg._scene3DHandle.getCameraState() : null,
+                        getBlobFn: (onProgress, opts) => this._exportSceneToMp4(msg._displayScene3DYaml, opts || {}, onProgress),
+                    },
                 ]);
                 container.appendChild(sceneWrap);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
@@ -12333,7 +12382,7 @@ ${existingNodeSummaries}
         if (perfMp4DurationInput) {
             perfMp4DurationInput.addEventListener('input', () => {
                 const n = Number(perfMp4DurationInput.value);
-                if (Number.isFinite(n) && n > 0) this.advancedSettings.mp4DefaultDurationSeconds = Math.max(1, Math.min(30, Math.round(n)));
+                if (Number.isFinite(n) && n > 0) this.advancedSettings.mp4DefaultDurationSeconds = Math.max(1, Math.round(n));
                 this._saveAdvancedSettings();
             });
         }
