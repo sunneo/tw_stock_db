@@ -339,6 +339,23 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     3D場景卡片正確渲染出來（不再是純文字模型結果）；`available_domains`
     的加強屬於「即使之後再發生類似誤判，根模型也不會束手無策」的防禦性
     修復，不是治本（治本仍要靠路由prompt本身的準確度）。
+  - **修復：`emissive`+`texture`同時設定時貼圖完全被自發光蓋過去**：使用者
+    實測回報太陽地球月亮場景「最多只有一個材質被載入」，一開始懷疑是CORS/
+    載入問題，逐一用curl驗證使用者提供的外部貼圖網址（wellesley/threejs.org/
+    raw.githubusercontent/jsdelivr）**全部**都有`Access-Control-Allow-Origin: *`
+    也都能正常下載——不是CORS問題。使用者刻意把三個節點都指向同一張貼圖
+    網址做對照實驗才抓到真正原因：太陽節點同時有`emissive_intensity: 3`，
+    地球/月亮沒有emissive；三個節點用同一張貼圖，唯獨太陽完全看不出貼圖
+    花紋、只剩一顆均勻的黃色球——`MeshStandardMaterial`的emissive是「純色
+    ×intensity」直接疊加進最終畫面的自發光分量，intensity超過1時遠超
+    texture能貢獻的範圍（0~1），太陽這類常見的高intensity發光設定會把
+    貼圖完全蓋過去，這是PBR著色模型的既有行為，不是載入失敗。修法：
+    `_build3DMaterial`（~6527行）在`m.texture`跟`m.emissive`同時存在時，
+    額外把同一張貼圖設成`material.emissiveMap`，讓自發光亮度跟著貼圖花紋
+    走（亮部多發光、暗部少發光）而不是均勻的純色光——貼圖細節在glow之下
+    仍然看得出來。已用真實截圖前後對照驗證：修前太陽是一顆純黃球，修後
+    太陽清楚看得出貼圖的大陸/海洋花紋（同一張圖）。`SCENE3D_TOPIC_DOCS.texture`
+    也補上這個行為的說明，順便建議emissive_intensity不要超過1~2。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
