@@ -86,8 +86,20 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 | 訊息渲染主流程 | `_renderMessageHistory`、`_renderSingleMessage`（單則訊息渲染，兩者都在同一個大區塊） | `_markSupersededVisualDrafts`處理「同輪重做只留最後結果」 |
 | 主視窗UI建構+事件綁定 | `_initUI()`（建HTML骨架）、`_initEventListeners()`（~11006行，所有`document.getElementById('ai-*').onclick`集中在這裡） | 見下方「主要DOM id」 |
 
-## 近期重大修改（2026-09-05這次工作階段新增，尚未整理進上面的階段分類）
+## 近期重大修改（2026-09-05/06這次工作階段新增，尚未整理進上面的階段分類）
 
+- **階層式軌道（衛星繞母星）+ `_build3DSceneGraph`共用場景組裝**：
+  `node.id`（選填字串）+ `node.animation_parent`（orbit動畫專用，指向另一個
+  節點的id）讓軌道中心從固定世界座標改成每一幀動態讀取母星節點目前的位置
+  （`_build3DAnimatorForNode`新增第三個參數`nodesById`）——解決「月亮繞地球、
+  地球繞太陽」這種階層運動原本畫不出來的問題（原本兩個都繞固定原點轉，會
+  完全重疊）。純向下相容，沒有animation_parent時行為逐字不變。連帶把
+  `_mount3DScene`裡camera/lights/nodes/animators的組裝邏輯抽成獨立方法
+  `_build3DSceneGraph(sceneDef, expandedNodes, particlePresets, aspectRatio)`
+  （不含canvas/renderer/OrbitControls），因為要支援階層軌道，節點建構跟
+  animator建立必須拆成兩輪（先建完全部物件＋id查找表，animator才能查到
+  parent），這個共用方法之後也給MP4匯出功能重用，避免維護兩份幾乎一樣的
+  場景組裝程式碼。
 - **3D場景驗證分成strict（生成）/lenient（播放）兩種模式**：
   `_validate3DSceneYaml(yamlText, opts)`新增選填的`opts.lenient`——**這是理解
   這一整塊驗證邏輯最關鍵的一點，改動前務必先讀這裡**。預設（`opts`省略，
