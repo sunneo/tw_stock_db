@@ -320,6 +320,25 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     `delegate_to_subagent`的工具結果訊息確實帶有`_displayDrawingSvg`，
     畫面上也確實渲染出真正的三角形SVG卡片（截圖驗證過），不再只有文字
     轉述。
+  - **修復：自動路由失敗時，根模型結構上無法照建議重試**：使用者實測
+    真實案例——請求「3D顯示太陽地球月亮…真實貼圖」被`_routeTaskToDomains`
+    誤判成`domains:[]`（沒有適合的領域），根模型收到
+    `_delegateToSubagentAuto`的錯誤訊息「domain參數也可以指定明確的領域
+    代號重試」後，直接放棄委派、自己輸出一大段Three.js程式碼叫使用者貼去
+    CodePen執行——完全沒用到這個元件內建的3D渲染能力。根因：
+    `delegate_to_subagent`的description刻意不列出domain代號清單給根模型看
+    （省token），導致失敗訊息叫模型「指定domain重試」時，模型結構上根本
+    不知道有哪些domain代號可以填，這個建議對它來說是做不到的事。修法：
+    `_delegateToSubagentAuto`的兩種失敗路徑（`_routeTaskToDomains`本身
+    出錯、或domains回傳空陣列）都附上`available_domains`（key+label陣列，
+    跟`_delegateToSubagentDomain`原本就有的同一個欄位），讓根模型收到
+    失敗訊息時真的有domain代號可以拿來重試。已用真實模型重新測試同一句
+    「3D太陽地球月亮」請求，`_routeTaskToDomains`本身這次正確判斷出
+    `scene_3d`（4次重複測試皆一致，這次沒有觸發到空陣列分支，研判使用者
+    當時遇到的是舊版本快取或單次模型判斷失誤），完整端對端流程也確認
+    3D場景卡片正確渲染出來（不再是純文字模型結果）；`available_domains`
+    的加強屬於「即使之後再發生類似誤判，根模型也不會束手無策」的防禦性
+    修復，不是治本（治本仍要靠路由prompt本身的準確度）。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
