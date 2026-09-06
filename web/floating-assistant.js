@@ -968,6 +968,13 @@ const FA_ASSET_URLS = {
     three3MFLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/3MFLoader.js',
     threeFBXLoader: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js',
     threeFflate: 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/fflate.min.js',
+    // tw_stock_db客製: 2026-09-06使用者要求——3D場景匯出成H.264 MP4影片。
+    // 純JS的MP4 muxer（把WebCodecs VideoEncoder吐出的H.264 chunk包成真正的
+    // .mp4容器，不需要ffmpeg.wasm那種幾十MB的重量級wasm），global-attaching
+    // build（window.Mp4Muxer.Muxer/.ArrayBufferTarget），已實際下載驗證過
+    // 內容是IIFE形式的global build，不是ESM，跟這個專案既有的fetch文字+eval
+    // 載入手法相容。版本鎖定5.2.2（寫這段程式碼時的最新穩定版）。
+    mp4Muxer: 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js',
 };
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
@@ -2364,7 +2371,7 @@ ${fnData.code}
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
         this.register_openai_tool('render_3d_scene',
-            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{id:"這個節點的名字（選填字串，給animation_parent引用用，例如\"earth\"）", mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit", animation_speed, animation_radius, animation_center:[x,y,z]（orbit預設繞[0,y,0]轉，y是這個節點自己的初始高度）, animation_parent:"另一個節點的id"（orbit專用，選填，見下方說明）}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。**階層式軌道（衛星繞母星，例如月亮繞地球、地球繞太陽）**：animation:"orbit"預設繞著固定世界座標（animation_center，預設原點）轉，這樣沒辦法表達「月亮繞著會動的地球轉」；要畫這種階層軌道，先給母星節點一個id（例如地球設id:"earth"），衛星節點animation:"orbit"再加上animation_parent:"earth"（衛星的animation_radius/animation_speed就是牠自己繞著地球轉的半徑/速度，不要沿用地球繞太陽的半徑），這樣衛星的軌道中心每一幀都會自動跟著母星目前的位置走，母星自己也可以同時animation_parent指向再上一層的母星（例如地球又繞太陽），可以疊多層；純向下相容，不寫animation_parent時行為完全不變。畫對應的軌道環（mesh:"line"）時，圓心/半徑要對齊真正在動的軌道（例如月亮軌道環的center要放地球目前的初始位置，不是原點）。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF，不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
+            '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{id:"這個節點的名字（選填字串，給animation_parent引用用，例如\"earth\"）", mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit", animation_speed, animation_radius, animation_center:[x,y,z]（orbit預設繞[0,y,0]轉，y是這個節點自己的初始高度）, animation_parent:"另一個節點的id"（orbit專用，選填，見下方說明）}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。**階層式軌道（衛星繞母星，例如月亮繞地球、地球繞太陽）**：animation:"orbit"預設繞著固定世界座標（animation_center，預設原點）轉，這樣沒辦法表達「月亮繞著會動的地球轉」；要畫這種階層軌道，先給母星節點一個id（例如地球設id:"earth"），衛星節點animation:"orbit"再加上animation_parent:"earth"（衛星的animation_radius/animation_speed就是牠自己繞著地球轉的半徑/速度，不要沿用地球繞太陽的半徑），這樣衛星的軌道中心每一幀都會自動跟著母星目前的位置走，母星自己也可以同時animation_parent指向再上一層的母星（例如地球又繞太陽），可以疊多層；純向下相容，不寫animation_parent時行為完全不變。畫對應的軌道環（mesh:"line"）時，圓心/半徑要對齊真正在動的軌道（例如月亮軌道環的center要放地球目前的初始位置，不是原點）。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF/STL/OBJ/3MF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5178,6 +5185,120 @@ ${sourceTool.handlerScript}
         if (format === 'obj') return { ok: true, blob: this._buildObjBlobFromParts(parts), ext: 'obj', mimeType: 'text/plain' };
         if (format === '3mf') return { ok: true, blob: await this._build3mfBlobFromParts(parts), ext: '3mf', mimeType: 'model/3mf' };
         return { ok: false, error: `不支援匯出成${format}（FBX是專利格式，沒有可靠的輕量編碼器可用，建議改用OBJ——幾乎所有3D軟體都讀得懂）` };
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求——3D場景要能匯出成真正的H.264
+    // MP4影片（不是PNG快照/PPTX那種靜態嵌入）。做法：WebCodecs的原生
+    // VideoEncoder直接編碼H.264（Chrome/Edge支援，Firefox/Safari目前不支援
+    // WebCodecs，會在這裡明確回報不支援而不是假裝成功），逐幀把
+    // _build3DSceneGraph組出來的畫面render到一個off-screen canvas，餵進
+    // encoder；純JS的mp4-muxer（見FA_ASSET_URLS.mp4Muxer）把encoder吐出的
+    // H.264 chunk包成真正的.mp4容器——這條路徑完全不需要ffmpeg.wasm那種
+    // 幾十MB的重量級wasm。用的是新建的off-screen canvas（不是使用者目前看
+    // 著的那個canvas），解析度/時長/幀率都是匯出時獨立指定，不影響畫面上
+    // 正在播放的即時檢視。每10幀主動yield一次主執行緒（await一個0ms的
+    // setTimeout），避免長片段/複雜場景把整個分頁卡住——這是延續使用者先前
+    // 對「3D處理卡住UI」的同一個顧慮。
+    async _exportSceneToMp4(yamlText, opts, onProgress) {
+        opts = opts || {};
+        const durationSeconds = Number.isFinite(opts.durationSeconds) ? Math.max(1, Math.min(30, opts.durationSeconds)) : 5;
+        const fps = Number.isFinite(opts.fps) ? Math.max(10, Math.min(60, opts.fps)) : 30;
+        const width = Number.isFinite(opts.width) ? opts.width : 640;
+        const height = Number.isFinite(opts.height) ? opts.height : Math.round(width * 0.65);
+
+        if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+            return { ok: false, error: '這個瀏覽器不支援WebCodecs（VideoEncoder/VideoFrame），無法在瀏覽器端編碼H.264影片。請改用桌機版最新Chrome或Edge瀏覽器。' };
+        }
+
+        await this._ensureJsYamlLoaded();
+        try {
+            await this._ensureThreeJsLoaded();
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const validation = this._validate3DSceneYaml(yamlText, { lenient: true });
+        if (!validation.ok) return { ok: false, error: validation.error };
+
+        if (typeof Mp4Muxer === 'undefined') {
+            // tw_stock_db客製: 2026-09-06實測發現——indirect eval（(0,eval)(text)）
+            // 理論上會在global scope執行，但實際測試這個手法在部分環境下
+            // 「沒有丟出任何錯誤、卻也沒有真的建立window上的全域變數」（懷疑
+            // 跟執行環境本身的scope隔離方式有關，不是三顆函式庫的問題——
+            // three.js/OrbitControls等其餘vendor函式庫全部走的是
+            // _faLoadScriptOnce的Blob URL+&lt;script&gt;標籤注入手法，從來
+            // 沒有用過eval，這裡改用同一個已經驗證可靠的既有手法，不要另外
+            // 發明新的載入方式）。
+            try {
+                await _faLoadScriptOnce(FA_ASSET_URLS.mp4Muxer);
+            } catch (err) {
+                return { ok: false, error: `載入MP4編碼函式庫失敗: ${err.message || err}` };
+            }
+        }
+        if (typeof Mp4Muxer === 'undefined') {
+            return { ok: false, error: 'MP4編碼函式庫載入後仍找不到Mp4Muxer（可能是CDN回應內容有異動）' };
+        }
+
+        // tw_stock_db客製: H.264 Baseline Profile Level 3.1——刻意選相容性
+        // 最廣的profile（PowerPoint/舊版播放器都讀得懂），不是壓縮效率最高的
+        // High Profile，這個場景本來就是簡單幾何圖形，Baseline的壓縮效率
+        // 損失在實務上不明顯。
+        const codec = 'avc1.42001f';
+        const bitrate = 5_000_000;
+        try {
+            const support = await VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate: fps });
+            if (!support || !support.supported) {
+                return { ok: false, error: `這個瀏覽器/裝置不支援指定的H.264編碼設定(${codec}, ${width}x${height})` };
+            }
+        } catch (err) {
+            return { ok: false, error: `檢查H.264編碼支援度失敗: ${err.message || err}` };
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const { scene, camera, animators } = this._build3DSceneGraph(validation.scene, validation.expandedNodes, validation.particlePresets, width / height);
+
+        let renderer = null, webglOk = false;
+        try {
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+            renderer.setSize(width, height, false);
+            webglOk = true;
+        } catch (_) { webglOk = false; }
+        const ctx2d = webglOk ? null : canvas.getContext('2d');
+
+        const muxer = new Mp4Muxer.Muxer({
+            target: new Mp4Muxer.ArrayBufferTarget(),
+            video: { codec: 'avc', width, height },
+            fastStart: 'in-memory',
+        });
+
+        let encodeError = null;
+        const encoder = new VideoEncoder({
+            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+            error: (err) => { encodeError = err; },
+        });
+        encoder.configure({ codec, width, height, bitrate, framerate: fps });
+
+        const totalFrames = Math.round(durationSeconds * fps);
+        const frameDurationUs = 1e6 / fps;
+        for (let i = 0; i < totalFrames && !encodeError; i++) {
+            const t = i / fps;
+            for (const fn of animators) fn(t, 1 / fps);
+            if (webglOk) renderer.render(scene, camera);
+            else this._raster3DFrame(scene, camera, ctx2d, width, height);
+            const frame = new VideoFrame(canvas, { timestamp: Math.round(i * frameDurationUs), duration: Math.round(frameDurationUs) });
+            encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+            frame.close();
+            if (onProgress) onProgress(i + 1, totalFrames);
+            if (i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
+        }
+        await encoder.flush();
+        encoder.close();
+        if (renderer) renderer.dispose();
+        if (encodeError) return { ok: false, error: `H.264編碼失敗: ${encodeError.message || encodeError}` };
+
+        muxer.finalize();
+        const { buffer } = muxer.target;
+        return { ok: true, blob: new Blob([buffer], { type: 'video/mp4' }), ext: 'mp4', mimeType: 'video/mp4' };
     }
 
     // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
@@ -7995,7 +8116,14 @@ ${existingNodeSummaries}
                     } else {
                         const extra = (extraFormats || []).find(f => f.fmt === fmt);
                         if (!extra) throw new Error('未知的匯出格式');
-                        const result = await extra.getBlobFn();
+                        // tw_stock_db客製: 2026-09-06——MP4這類需要逐幀編碼、
+                        // 耗時比較明顯的格式，getBlobFn可以選擇性接受第二個
+                        // 進度callback參數（(current,total)），這裡統一把它
+                        // 接成更新按鈕文字，既有的STL/OBJ/3MF等getBlobFn不接
+                        // 這個參數也完全不受影響（JS函式本來就能忽略多餘參數）。
+                        const result = await extra.getBlobFn((current, total) => {
+                            if (total > 0) btn.textContent = `⏳${Math.round((current / total) * 100)}%`;
+                        });
                         if (!result || result.ok === false) throw new Error((result && result.error) || '匯出失敗');
                         await this.generateAndDeliverFile(result.blob, `${defaultTitle}_${Date.now()}.${result.ext}`, result.mimeType);
                     }
@@ -10845,6 +10973,12 @@ ${existingNodeSummaries}
                     { fmt: 'stl', label: '🧊 STL', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, 'stl') },
                     { fmt: 'obj', label: '🧊 OBJ', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, 'obj') },
                     { fmt: '3mf', label: '🧊 3MF', getBlobFn: () => this._exportSceneToModelFormat(msg._displayScene3DYaml, '3mf') },
+                    // tw_stock_db客製: 2026-09-06使用者要求——匯出成真正的
+                    // H.264 MP4動畫影片（不是靜態快照），見_exportSceneToMp4
+                    // 的說明。5秒/30fps是預設值，這個UI入口暫不提供調整時長
+                    // 的介面（維持跟其他匯出按鈕一致的「一鍵匯出」體驗），
+                    // 之後如果需要調整可以再加輸入欄位。
+                    { fmt: 'mp4', label: '🎬 MP4影片', getBlobFn: (onProgress) => this._exportSceneToMp4(msg._displayScene3DYaml, {}, onProgress) },
                 ]);
                 container.appendChild(sceneWrap);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {

@@ -88,6 +88,21 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 
 ## 近期重大修改（2026-09-05/06這次工作階段新增，尚未整理進上面的階段分類）
 
+- **3D場景匯出成H.264 MP4影片**：`_exportSceneToMp4(yamlText, opts, onProgress)`
+  ——瀏覽器原生WebCodecs的`VideoEncoder`直接編碼H.264（Chrome/Edge支援，
+  Firefox/Safari目前不支援WebCodecs時會明確回報不支援，不會假裝成功），純JS的
+  `mp4-muxer`（`FA_ASSET_URLS.mp4Muxer`，透過既有的`_faLoadScriptOnce`載入，
+  **不要用indirect eval**——2026-09-06實測發現這個做法在某些執行環境下會
+  「不報錯但也沒有真的建立全域變數」，原因不明，改用已驗證可靠的
+  `_faLoadScriptOnce`就正常了）把encoder吐出的H.264 chunk包成真正的.mp4容器，
+  不需要ffmpeg.wasm那種重量級wasm。逐幀呼叫`_build3DSceneGraph`同一套animator
+  在一個off-screen canvas上render，`codec:'avc1.42001f'`（H.264 Baseline
+  Profile，相容性優先）。每10幀yield一次主執行緒避免長片段卡住UI。
+  `_appendCardExportButton`同步擴充：`getBlobFn`現在可以選擇性接受一個
+  `(current,total)`進度callback參數（既有的STL/OBJ/3MF等`getBlobFn`不用這個
+  參數也完全不受影響），MP4匯出用它把匯出按鈕文字即時顯示成`⏳42%`。已用
+  真實瀏覽器測試驗證：產出的檔案有正確的MP4 `ftyp` box、原生`<video>`元素能
+  正確讀出metadata（時長/寬高皆正確）。
 - **階層式軌道（衛星繞母星）+ `_build3DSceneGraph`共用場景組裝**：
   `node.id`（選填字串）+ `node.animation_parent`（orbit動畫專用，指向另一個
   節點的id）讓軌道中心從固定世界座標改成每一幀動態讀取母星節點目前的位置
