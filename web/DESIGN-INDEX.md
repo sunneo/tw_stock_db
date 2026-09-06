@@ -273,6 +273,53 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     (2)`_runSubAgentTask`補上跟主迴圈`_loopFetch`一樣的取樣參數被拒自我修復
     路徑（`_detectRejectedSamplingParam`+`_disableRejectedSamplingParam`），
     讓已經在localStorage存過舊預設值的使用者也能自動排除、不用手動進設定面板。
+  - **實測token數對照**（同一模型、同一組25個內建工具，`'root'` vs 預設
+    `'domains'`，真實API `usage`欄位加總，不是估算）：**單一明確意圖的簡單
+    需求**（例如「列出所有AI自製函式」）——`root`模式2次呼叫共14,512
+    tokens；`domains`模式雖然多繞3輪（root呼叫delegate→路由子agent→執行
+    子agent→root收尾）變成5次呼叫，但總計只要5,459 tokens（省62%），因為
+    每輪的tools schema從25個縮到2~4個，省下的遠多於多繞幾輪的成本。
+    **一句話同時橫跨3個領域的複雜需求**（RAG查詢/寫入+畫圖+列AI函式）——
+    一開始`domains`模式反而比`root`模式的39,180 tokens貴38%（54,012
+    tokens，25次呼叫）：根模型只看得到2個工具，會先用`get_tool_details`
+    亂猜工具名稱（"draw"/"sketch"/"image_generation"...都查無結果）才想到
+    用delegate_to_subagent，而且把一句話拆成3次獨立的delegate呼叫而不是
+    一次講清楚。**修法**：`get_tool_details`跟`delegate_to_subagent`兩個的
+    description都補上明確引導（`get_tool_details`不要用來猜測未出現在清單
+    裡的名稱、找不到能力應該直接委派；`delegate_to_subagent`一次講清楚
+    整段需求即可、不用拆成多次呼叫），同樣的複雜需求重測後降到27,766
+    tokens、15次呼叫（比修之前省49%），雖然還沒完全達到只呼叫一次delegate
+    的理想（模型仍然傾向拆成幾個獨立呼叫），但已經大幅減少無謂的
+    get_tool_details亂猜。這個「單一意圖大幅省token、多重意圖混雜在一句話
+    裡反而可能更貴」的落差是這個設計本質上的取捨（根層級知道的原則越少，
+    複雜/混雜需求就越需要多繞幾圈才能釐清該委派什麼），descriptions已經
+    盡量緩解但沒有完全消除，仍有進一步優化空間（例如routing prompt本身
+    的準確度、或讓根模型更傾向一次把整段需求講完）。
+  - **修復：委派出去的視覺型工具結果原本會整個消失（重大，已修）**：
+    使用者實測token對照時發現「畫的圖沒看到」——`render_3d_scene`/
+    `render_drawing`/`render_interactive_viewer`/`render_2d_animation`這幾個
+    工具透過`delegate_to_subagent`委派執行時，`_runSubAgentTask`原本的設計
+    是「只回傳最終文字結論」，子agent自己會把render_drawing的SVG結果轉述
+    成一段文字（例如「這是一個簡單的咖啡杯示意圖：...」），這段文字才是
+    回傳給主對話的東西——真正的SVG/YAML從來沒有機會傳回去，使用者只看得到
+    文字轉述，看不到真正渲染出來的圖/3D場景/viewer/動畫。**因為
+    `builtinToolExposure`預設值已經改成`'domains'`，這幾個工具現在只能透過
+    委派抵達**，代表這個bug預設就會影響所有畫圖/3D/viewer/2D動畫需求，
+    嚴重度很高。修法：抽出`_detectVisualToolPayload(result)`（從
+    `_buildToolResultMessage`原本inline的shape判斷邏輯抽出來，兩處共用）；
+    `_runSubAgentTask`回傳值改成`{text, visual}`（原本是純字串，
+    `runBatchSubAgents`這個既有呼叫端取`.text`即可，不受影響）——`visual`
+    是子agent執行期間最後一次呼叫視覺型工具的原始payload；新增
+    `_mergeSubAgentResultForDisplay(baseFields, subResult)`，
+    `_delegateToSubagentDomain`/`_delegateToSubagentAuto`都改用它：有
+    `visual`時把它原封不動攤平合併進最終回傳物件（例如
+    `{ok:true, domain:'drawing', type:'drawing', svg:'...', note:'子agent的
+    文字結論'}`），這樣主對話處理`delegate_to_subagent`工具結果時，
+    `_buildToolResultMessage`同一套shape偵測邏輯就能正確認出並顯示。已用
+    真實模型端對端驗證：委派畫三角形的請求，`this.messages`裡
+    `delegate_to_subagent`的工具結果訊息確實帶有`_displayDrawingSvg`，
+    畫面上也確實渲染出真正的三角形SVG卡片（截圖驗證過），不再只有文字
+    轉述。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
