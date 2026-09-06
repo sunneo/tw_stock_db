@@ -62,7 +62,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 | 階段 | 功能 | 主要進入點（grep關鍵字） | 主要常數 |
 |---|---|---|---|
 | 0 | 工具呼叫追蹤/思考過程顯示開關 | `showInternalTrace`（advancedSettings欄位） | — |
-| 1 | Sub agent委派框架 | `delegate_to_subagent`、`SUBAGENT_DOMAIN_REGISTRY`、`_runSubAgentTask` | `SUBAGENT_DOMAIN_REGISTRY`（~641行）、`SUBAGENT_DELEGATE_MAX_ROUNDS` |
+| 1 | Sub agent委派框架（2026-09-06新增domain階層式註冊+兩層委派自動路由，見下方「近期重大修改」） | `delegate_to_subagent`、`SUBAGENT_DOMAIN_REGISTRY`、`this.domains`、`register_domain`、`_routeTaskToDomains`、`_delegateToSubagentAuto`、`_runSubAgentTask`、`_getRootToolNames` | `SUBAGENT_DOMAIN_REGISTRY`（~641行）、`SUBAGENT_DELEGATE_MAX_ROUNDS` |
 | 2 | 檔案上傳+sub agent解析 | `parse_uploaded_file`、`_wireAttachmentUpload`、`FileCache`類別 | — |
 | 3 | 3D場景viewer（含2026-09-05新增的STL/OBJ/3MF/FBX匯入匯出、Worker offload、`mesh:"line"`軌跡線、頂層欄位白名單） | `_mount3DScene`（~5347行起）、`render_3d_scene`、`_convertModelFileToSceneYaml`、`_extractMeshPartsFromObject3D`、`FA_3D_IMPORT_WORKER_SRC`、`_build3DLineObject` | `SCENE3D_MESH_TYPES`、`SCENE3D_ANIMATION_TYPES`、`SCENE3D_PARTICLE_PRESETS`、`SCENE3D_TOPIC_DOCS`、`SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES`、`SCENE3D_KNOWN_TOP_LEVEL_KEYS` |
 | 4 | 通用繪圖工具（SVG） | `render_drawing`、DOMPurify sanitize流程 | — |
@@ -220,6 +220,55 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 - **Advance設定面板改分頁式**：`.ai-advanced-sidebar`/`.ai-advanced-cat`/
   `.ai-advanced-content`/`.ai-advanced-pane`（CSS在`_ensureAdvancedStyles`），
   分頁切換邏輯在`_initEventListeners`裡找`.ai-advanced-cat`的click監聽。
+- **Domain階層式工具註冊 + 兩層委派（路由子agent+執行子agent）**（2026-09-06，
+  起因是把這個檔案整合進另一個專案`piano-web`時發現內建的22個通用工具不管
+  host需不需要都無條件塞進根層級對話，稀釋模型注意力）：
+  - `SUBAGENT_DOMAIN_REGISTRY`（~641行）新增兩個domain：`ai_functions`
+    （AI自製函式4個工具）、`rag_management`（RAG寫入/分段/刪除3個工具，跟
+    唯讀的`rag_lookup`分開）——這樣`_registerBuiltinAiTools()`裡的25個工具
+    才會全部有domain覆蓋。
+  - `this.domains`：建構子把`SUBAGENT_DOMAIN_REGISTRY`複製成instance-level
+    的可擴充登記表，新增公開方法`register_domain(key, {label, toolNames,
+    systemPrompt, enabled})`讓host頁面自己新增domain（跟`register_openai_tool`
+    同一種公開介面模式）。原本4處讀`SUBAGENT_DOMAIN_REGISTRY[...]`的地方
+    （互動viewer的`subagent_panel`驗證/渲染、`_delegateToSubagentDomain`）
+    全部改讀`this.domains[...]`。
+  - `builtinToolExposure`選項（建構子`options.builtinToolExposure`）：
+    **預設`'domains'`**——`_registerBuiltinAiTools()`裡25個工具中的22個
+    （除了`get_tool_details`/`delegate_to_subagent`這兩個核心plumbing）改用
+    內部的`registerOptional()`外殼註冊，被記進`this._domainGatedToolNames`；
+    `_getRootToolNames()`回傳「host自己的工具＋這兩個核心plumbing」這份
+    allowlist（不含這22個），3處根層級工具清單組裝（`_loopFetchNative`的
+    `_buildNativeToolsSchema()`呼叫、`/benchmark-model`的同一個呼叫、
+    `_getFinalSystemPrompt()`文字協定的`[PREDEFINED TOOLS]`清單）都改用這份
+    allowlist過濾。傳`options.builtinToolExposure:'root'`可以退回舊行為（全部
+    25個工具都在根層級，`_getRootToolNames()`回傳`null`＝不過濾）——這是
+    唯一影響既有tw_stock_db行為的地方，但預設值已經改變，**web/index.html
+    沒有另外設定這個選項**，確認過它的`AI_SYSTEM_PROMPT`完全沒有直接引用
+    這22個工具名稱，所以吃到新預設值不需要額外處理。
+  - `delegate_to_subagent`工具的`domain`參數從必填改選填、description不再
+    列出每個domain代號+label（那份清單現在只在下面的路由子agent自己的
+    system prompt裡）。留空domain時走新的`_delegateToSubagentAuto(task)`：
+    先呼叫`_routeTaskToDomains(task)`（Layer 1，單次非streaming、不帶tools
+    參數的分類請求，system prompt用`_getCombinedToolEntries(null)`+
+    `_summarizeToolDescription`列出全部domain底下全部工具的「名稱+極短
+    摘要」，模型只需要回傳`{"domains":[...]}`，用既有的`repairJsonPayload`
+    寬容解析），拿到要開的domain後合併`toolNames`/`systemPrompt`，直接複用
+    既有`_runSubAgentTask`（Layer 2，跟`_delegateToSubagentDomain`完全同一條
+    執行路徑）真正執行，回傳`{ok:true, domains, result}`。已明確指定domain
+    時完全不觸發這條路由，行為跟原本一模一樣。已用真實的NVIDIA端點
+    （`web/index.html`的匿名假金鑰channel，`tw_stock_db_api:{sessionId}` +
+    `https://dawn-disk-778c.sunneo529.workers.dev`）端對端驗證過：路由正確
+    判斷「畫流程圖」→`drawing`、「存進長期記憶」→`rag_management`、「新增
+    AI自製函式」→`ai_functions`、單純打招呼→空陣列（不委派），完整
+    delegate_to_subagent呼叫（含實際render_drawing執行）也成功產出真正的
+    SVG。**驗證過程中發現一個既有、無關的bug**：預設的
+    `advancedSettings.generation.samplingParams.length_penalty`（value 0.3,
+    disabled:false）在這個預設channel/模型組合下會被NVIDIA API直接拒絕
+    （HTTP 400 Unsupported parameter），導致所有`_runSubAgentTask`（不限於
+    這次新功能，`delegate_to_subagent`/`batch_analyze_stocks`都受影響）在
+    預設設定下都會失敗——已用`spawn_task`交給獨立session追蹤，不在這次
+    範圍內修。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 

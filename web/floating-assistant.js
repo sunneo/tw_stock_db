@@ -675,6 +675,25 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['render_2d_animation', 'get_2d_animation_yaml', 'import_2d_animation_attachment', 'list_uploaded_files'],
         systemPrompt: '你是一個專門設計2D向量圖形動畫的子任務助理，用render_2d_animation渲染純宣告式YAML描述的2D動畫給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，動畫格式是固定字彙的宣告式YAML，用Canvas2D畫圓/矩形/多邊形/折線/文字/圖片，不是3D）。修改既有動畫前先呼叫get_2d_animation_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
     },
+    // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——這兩個domain
+    // 補上_registerBuiltinAiTools()裡原本沒有domain覆蓋的工具（AI自製函式4個、
+    // RAG的寫入/維護3個），讓builtinToolExposure:'domains'模式下不會有工具變成
+    // 孤兒（註冊了卻既不在根層級、也不在任何domain的toolNames裡）。刻意跟既有
+    // 唯讀的rag_lookup分開、不擴大它的toolNames——rag_lookup的名稱語意就是「只
+    // 查詢」，混進寫入能力會讓既有明確指定domain:'rag_lookup'的呼叫端system
+    // prompt跟實際能力對不上。
+    ai_functions: {
+        enabled: true,
+        label: 'AI自製函式管理',
+        toolNames: ['list_ai_functions', 'call_ai_function', 'add_ai_function', 'delete_ai_function'],
+        systemPrompt: '你是一個專門管理AI自製函式(FromAI)的子任務助理——列舉/呼叫/新增/刪除使用者透過對話讓AI自己定義出來的JS函式。根據使用者的實際需求選用對應工具，完成後用一兩句話簡短說明結果，不用重複整段程式碼內容。',
+    },
+    rag_management: {
+        enabled: true,
+        label: 'RAG知識庫維護（新增節點/大文件分段/刪除）',
+        toolNames: ['rag_store_graph_node', 'rag_chunk_document', 'rag_delete'],
+        systemPrompt: '你是一個專門維護RAG知識圖譜的子任務助理，負責新增節點(rag_store_graph_node)、把大文件切成語意分段後個別存入(rag_chunk_document)、刪除節點(rag_delete)。純查詢需求請改用rag_lookup領域，不要在這裡處理查詢。完成後用一兩句話簡短說明做了什麼，不用重複整段內容。',
+    },
 };
 
 // tw_stock_db客製: delegate_to_subagent委派出去的子任務迴圈輪數上限——
@@ -1652,6 +1671,27 @@ class FloatingAssistant {
         // 暫存附件清單（見_wireAttachmentUpload/_submitChatInput），送出當下
         // 才把檔名+file_id接進使用者訊息文字並清空。
         this._pendingAttachments = [];
+        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——把
+        // SUBAGENT_DOMAIN_REGISTRY這個module常數複製成instance-level的
+        // this.domains，讓host頁面能用register_domain()自己新增domain（module
+        // 常數本身保留當作內建domain的預設值來源，不刪除，向後相容）。
+        this.domains = Object.fromEntries(
+            Object.entries(SUBAGENT_DOMAIN_REGISTRY).map(([k, v]) => [k, { ...v }])
+        );
+        // tw_stock_db客製: 2026-09-06使用者要求——floating-assistant.js內建的
+        // 一大批通用工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫，
+        // 共22個，見_registerBuiltinAiTools）**預設**('domains')改成只透過
+        // delegate_to_subagent間接觸及（見_getRootToolNames），不再無條件直接掛
+        // 根層級對話——使用者明確要求「統一用domains」，不要讓兩個host各跑一套
+        // 不同的曝光模式；根層級對話因此永遠只看得到host自己註冊的工具+
+        // get_tool_details+delegate_to_subagent這兩個核心plumbing，稀釋模型
+        // 注意力/幻覺風險降到最低，跟piano-web/tw_stock_db兩邊都適用。保留
+        // options.builtinToolExposure:'root'當escape hatch（退回無條件全部直接
+        // 掛根層級的舊行為），供之後真的需要時使用，但不再是預設。實測確認
+        // web/index.html的AI_SYSTEM_PROMPT完全沒有直接引用這22個工具的名稱
+        // （只透過工具自己的description+delegate_to_subagent間接曝光），所以
+        // 這個預設值變更不需要同步改tw_stock_db自己的system prompt。
+        this.builtinToolExposure = (options.builtinToolExposure === 'root') ? 'root' : 'domains';
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
@@ -1691,6 +1731,23 @@ class FloatingAssistant {
         this.tools[name] = { description, callback, parametersSchema };
         this._log("工具已註冊: " + name);
         this._refreshSystemPromptMessage();
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——跟
+    // register_openai_tool同一種「host頁面可以自己掛新能力進來」的公開介面
+    // 模式，讓host頁面能新增自己的domain（不限於floating-assistant.js內建的
+    // SUBAGENT_DOMAIN_REGISTRY那幾個）。key是domain代號（給delegate_to_subagent
+    // 的domain參數/_delegateToSubagentDomain查找用），toolNames是這個domain
+    // 允許使用的工具名稱子集（必須是已經用register_openai_tool註冊過的名稱，
+    // 這裡不驗證存在性——跟既有domain一樣，交給_runSubAgentTask實際執行時
+    // 才會知道某個名稱查無此工具）。這個方法本身不會把toolNames對應的工具
+    // 加進/移出根層級曝光，那是builtinToolExposure/_getRootToolNames另外
+    // 控制的事——register_domain純粹是讓_delegateToSubagentDomain/
+    // _routeTaskToDomains/互動viewer的subagent_panel這幾處domain查找點
+    // 認得這個新domain。
+    register_domain(key, { label, toolNames, systemPrompt, enabled = true } = {}) {
+        this.domains[key] = { label, toolNames: Array.isArray(toolNames) ? toolNames : [], systemPrompt, enabled };
         return this;
     }
 
@@ -2100,7 +2157,22 @@ ${fnData.code}
     }
 
     _registerBuiltinAiTools() {
-        this.register_openai_tool('list_ai_functions',
+        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——這22個
+        // 通用內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫）
+        // 改用registerOptional()註冊，讓_getRootToolNames()知道哪些工具要從
+        // 根層級對話清單排除（builtinToolExposure:'domains'，見建構子；預設
+        // 就是這個模式）。這些工具本身完全不受影響——照樣註冊進this.tools、
+        // 照樣可以被callFromAI/get_tool_details/_runSubAgentTask（domain委派）
+        // 使用，只是不會出現在根層級的tools參數/文字協定工具清單裡。
+        // get_tool_details跟delegate_to_subagent這兩個核心plumbing工具刻意
+        // 維持用this.register_openai_tool()直接註冊，不經過registerOptional，
+        // 任何模式下都留在根層級。
+        this._domainGatedToolNames = new Set();
+        const registerOptional = (name, desc, cb, schema) => {
+            this.register_openai_tool(name, desc, cb, schema);
+            if (this.builtinToolExposure === 'domains') this._domainGatedToolNames.add(name);
+        };
+        registerOptional('list_ai_functions',
             '列舉所有AI自製函式，返回函式名稱和描述的清單。',
             async () => {
                 const fns = this.advancedSettings.aiCustomFunctions || {};
@@ -2109,7 +2181,7 @@ ${fnData.code}
                 return JSON.stringify(list, null, 2);
             }
         );
-        this.register_openai_tool('call_ai_function',
+        registerOptional('call_ai_function',
             '呼叫指定名稱的AI自製函式。參數: {"name":"函式名稱","args":{任意參數}}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2125,7 +2197,7 @@ ${fnData.code}
                 }
             }
         );
-        this.register_openai_tool('add_ai_function',
+        registerOptional('add_ai_function',
             '新增或更新AI自製函式。注意：設計此自製功能之 JavaScript 函式體時，腳本結尾必須有一行主動調用執行並回傳（例如，若定義了 async function main(args)，最後一行必須寫 "return await main(args);"），否則自製功能僅會被宣告定義而不會實際執行。參數: {"name":"函式名稱","description":"描述","code":"JavaScript函式體"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2144,7 +2216,7 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, message: "已儲存AI函式: " + fnName });
             }
         );
-        this.register_openai_tool('delete_ai_function',
+        registerOptional('delete_ai_function',
             '刪除指定名稱的AI自製函式。參數: {"name":"函式名稱"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2164,7 +2236,7 @@ ${fnData.code}
         // ============================================================
         // 核心 Graph-RAG 圖譜 API
         // ============================================================
-        this.register_openai_tool('rag_store_graph_node',
+        registerOptional('rag_store_graph_node',
             '將高價值 Routine 技能或偏好儲存到記憶圖譜中。參數: {"id":"節點名稱(如 skill_debounce)","content":"核心內容","dependencies":["依賴的前置節點ID清單"],"preConditions":["滿足此條件才調用此節點的描述"],"tags":"標籤(可填 skill, user_preference, document_section)"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2186,7 +2258,7 @@ ${fnData.code}
             }
         );
 
-        this.register_openai_tool('rag_query_graph',
+        registerOptional('rag_query_graph',
             '從知識圖譜中進行語意查詢，會自動提取符合條件與所有前置依賴鏈(DAG Traversal)的有序列表。參數: {"query":"查詢語意","top_k":3}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2214,7 +2286,7 @@ ${fnData.code}
         // ============================================================
         // 📚 長文章自動語意切塊工具 (Semantic Dependency-Chunking)
         // ============================================================
-        this.register_openai_tool('rag_chunk_document',
+        registerOptional('rag_chunk_document',
             '【長文組織器】將超大文章、程式專案或長文件，在背景進行章節拆解，為每個章節提煉精準摘要，並自動設定 dependencies 與 preconditions。參數: {"documentText":"超長文章內文","title":"文章大標題","tags":"自訂標籤(選填)"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2301,7 +2373,7 @@ ${fnData.code}
             }
         );
 
-        this.register_openai_tool('rag_delete',
+        registerOptional('rag_delete',
             '從RAG記憶庫刪除指定id的記錄。參數: {"id":記錄id}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2358,25 +2430,37 @@ ${fnData.code}
         // tw_stock_db客製: sub agent委派框架的入口工具（見計畫階段1）。刻意
         // 不把delegate_to_subagent自己放進任何domain的toolNames子集裡——
         // 委派出去的子任務迴圈看不到這個工具，沒辦法再往下委派，避免無限
-        // 遞迴。description刻意精簡（只列domain名稱+一行用途），不逐一展開
-        // 每個domain底下實際有哪些工具/怎麼用，呼應上面SUBAGENT_DOMAIN_REGISTRY
-        // 的註解說明的「主功能工具保持精簡」原則。
+        // 遞迴。
+        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊+兩層委派
+        // ——domain參數改成選填：根模型已經明確知道領域代號時可以直接指定
+        // （沿用原本_delegateToSubagentDomain那條路徑，完全不變）；留空時
+        // 改交給_delegateToSubagentAuto，先用一個「認識所有工具」的路由子
+        // agent（_routeTaskToDomains）判斷這個task該開哪些domain，再把開放
+        // 的工具+task交給第二層執行子agent（沿用_runSubAgentTask），最後把
+        // 結果合併回傳——這是使用者說的「兩層對話」。description刻意不再
+        // 逐一列出每個domain代號+label（那份清單現在只在Layer 1路由子agent
+        // 自己的system prompt裡看得到，見_routeTaskToDomains），只用一句話
+        // 讓根模型知道「有哪幾大類能力可以委派」這個原則層級的認知，滿足
+        // 「保持所有LLM Model都可以知道這些原則，只做逐層披露」的要求——
+        // 根模型不需要（也看不到）domain代號字串或個別工具規格，只需要知道
+        // 這個委派入口存在、大致能處理哪類任務。
         this.register_openai_tool('delegate_to_subagent',
-            '把一個任務委派給指定領域的專家子agent處理，子agent只能使用該領域的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。domain目前可用: ' +
-            Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k, d]) => `${k}(${d.label})`).join('、') +
-            '。參數: {"task":"要委派的任務描述","domain":"領域代號"}',
+            '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具；已經明確知道領域代號時可以直接指定domain跳過自動判斷。參數: {"task":"要委派的任務描述","domain":"（選填）領域代號"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const task = String(parsed.task || '').trim();
                 const domainKey = String(parsed.domain || '').trim();
                 if (!task) return JSON.stringify({ ok: false, error: '缺少task參數（要委派的任務描述）' });
-                return JSON.stringify(await this._delegateToSubagentDomain(domainKey, task));
+                const result = domainKey
+                    ? await this._delegateToSubagentDomain(domainKey, task)
+                    : await this._delegateToSubagentAuto(task);
+                return JSON.stringify(result);
             },
             { type: 'object', properties: {
                 task: { type: 'string', description: '要委派給子agent的任務描述' },
-                domain: { type: 'string', description: '領域代號，例如rag_lookup' },
-            }, required: ['task', 'domain'], additionalProperties: false }
+                domain: { type: 'string', description: '（選填）明確知道的領域代號，例如rag_lookup；不確定就留空讓系統自動判斷' },
+            }, required: ['task'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 階段2——persistentStorage檔案上傳+解析（見計畫文件
@@ -2384,7 +2468,7 @@ ${fnData.code}
         // （列出/解析），每個格式的細節解析邏輯藏在_parseUploadedFileContent
         // 內部依副檔名分派，不對AI逐一展開每種格式怎麼解析——呼應
         // SUBAGENT_DOMAIN_REGISTRY註解說的「主功能工具保持精簡」原則。
-        this.register_openai_tool('list_uploaded_files',
+        registerOptional('list_uploaded_files',
             '列出使用者透過📎附件按鈕上傳、目前還在快取中的檔案清單（不含AI自己產生的匯出檔）。無參數。',
             async () => {
                 try {
@@ -2399,7 +2483,7 @@ ${fnData.code}
             { type: 'object', properties: {}, additionalProperties: false }
         );
 
-        this.register_openai_tool('parse_uploaded_file',
+        registerOptional('parse_uploaded_file',
             '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2424,7 +2508,7 @@ ${fnData.code}
         // texture/particles/polygon/defs四個進階主題移到get_3d_scene_topic
         // 按需查詢（見SCENE3D_TOPIC_DOCS的說明），呼應使用者「主功能工具
         // 保持精簡」的明確要求。
-        this.register_openai_tool('render_3d_scene',
+        registerOptional('render_3d_scene',
             '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{id:"這個節點的名字（選填字串，給animation_parent引用用，例如\"earth\"）", mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit", animation_speed, animation_radius, animation_center:[x,y,z]（orbit預設繞[0,y,0]轉，y是這個節點自己的初始高度）, animation_parent:"另一個節點的id"（orbit專用，選填，見下方說明）}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。**階層式軌道（衛星繞母星，例如月亮繞地球、地球繞太陽）**：animation:"orbit"預設繞著固定世界座標（animation_center，預設原點）轉，這樣沒辦法表達「月亮繞著會動的地球轉」；要畫這種階層軌道，先給母星節點一個id（例如地球設id:"earth"），衛星節點animation:"orbit"再加上animation_parent:"earth"（衛星的animation_radius/animation_speed就是牠自己繞著地球轉的半徑/速度，不要沿用地球繞太陽的半徑），這樣衛星的軌道中心每一幀都會自動跟著母星目前的位置走，母星自己也可以同時animation_parent指向再上一層的母星（例如地球又繞太陽），可以疊多層；純向下相容，不寫animation_parent時行為完全不變。畫對應的軌道環（mesh:"line"）時，圓心/半徑要對齊真正在動的軌道（例如月亮軌道環的center要放地球目前的初始位置，不是原點）。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF/STL/OBJ/3MF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2443,7 +2527,7 @@ ${fnData.code}
             { type: 'object', properties: { yaml: { type: 'string', description: '場景YAML描述' } }, required: ['yaml'], additionalProperties: false }
         );
 
-        this.register_openai_tool('get_3d_scene_topic',
+        registerOptional('get_3d_scene_topic',
             '查詢render_3d_scene進階主題的完整說明（texture貼圖/particles粒子/polygon自訂形狀/defs可重用群組），這些細節不包含在render_3d_scene自己的說明裡，用之前先查這個，不要用猜的。參數: {"topic":"texture|particles|polygon|defs"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2456,7 +2540,7 @@ ${fnData.code}
             { type: 'object', properties: { topic: { type: 'string', description: 'texture|particles|polygon|defs' } }, required: ['topic'], additionalProperties: false }
         );
 
-        this.register_openai_tool('get_3d_scene_yaml',
+        registerOptional('get_3d_scene_yaml',
             '取得目前對話中最近一次成功渲染的3D場景YAML原始內容——要修改既有場景之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
             async () => {
                 if (!this._latestScene3DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何3D場景' });
@@ -2472,7 +2556,7 @@ ${fnData.code}
         // 工具轉換+顯示。轉換邏輯見_convertModelFileToSceneYaml——只還原
         // 幾何形狀+單一材質顏色，不含貼圖/骨架動畫，三角形數量超過上限
         // 會直接報錯而不是硬做有損簡化。
-        this.register_openai_tool('import_3d_model_attachment',
+        registerOptional('import_3d_model_attachment',
             '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過使用者設定的上限（Advanced Settings的maxImportedMeshTriangles，預設10000，0代表不限制）會被拒絕，若被拒絕請提醒使用者換更精簡的模型，或在Advanced Settings調高/解除上限。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2507,7 +2591,7 @@ ${fnData.code}
         // 新發明的沙盒機制）——SVG本身非可執行，消毒後可安全內嵌，不需要
         // 另外設計一套YAML圖元語言（比3D場景的固定字彙宣告式格式更靈活，
         // 適合這種開放式繪圖需求）。
-        this.register_openai_tool('render_drawing',
+        registerOptional('render_drawing',
             '畫一張通用向量圖給使用者看（流程圖、示意圖、圖表、插畫等），直接輸出完整的SVG原始碼——這不是股票K線圖表工具（那是這個網頁應用自己的功能，不透過這裡）。輸出的SVG會先經過消毒過濾掉任何可執行的script/事件屬性才顯示，所以安全無虞，但也代表SVG裡不能靠內嵌JS做互動效果，只能用純圖形元素表達。參數: {"svg":"完整的<svg .../>...</svg>原始碼"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2533,7 +2617,7 @@ ${fnData.code}
         // 計畫文件階段5）。跟render_3d_scene一樣主功能工具保持精簡，格式細節
         // 交給模型自己看description裡的範例欄位即可（viewer的元件字彙比3D
         // 場景簡單很多，不需要另外拆get_xxx_topic）。
-        this.register_openai_tool('render_interactive_viewer',
+        registerOptional('render_interactive_viewer',
             '用一段YAML描述渲染一個多頁互動表單/精靈/教學畫面給使用者看（純宣告式，不能寫真正的JS）。格式：{state_namespace:"必填，這個viewer狀態要存在persistentStorage的哪個位置", pages:[{id:"page1", title:"標題", components:[{type:"text", content:"說明文字"}, {type:"input", state_key:"變數名", label:"標籤", input_type:"text|number|select|checkbox|textarea", options:[...]（select用）, default:預設值, visible_if:"安全表達式（選填，可讀其他input的state_key當變數）", enabled_if:"安全表達式（選填）"}, {type:"button", label:"下一步", action:"next_page|prev_page|goto_page:目標page_id|save_state|close", enabled_if:"..."}, {type:"subagent_panel", domain:"領域代號", prompt_placeholder:"..."}]}]}。visible_if/enabled_if是有限安全表達式（算術/比較/布林+讀其他欄位的值），不是真正的JS，不能呼叫函式（除了白名單數學函式）也不能存取DOM。save_state按鈕會把使用者目前填的所有input值存進persistentStorage；之後可以用get_viewer_state(state_namespace)查詢使用者實際填了什麼。參數: {"yaml":"viewer YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2552,7 +2636,7 @@ ${fnData.code}
             { type: 'object', properties: { yaml: { type: 'string', description: 'viewer YAML描述' } }, required: ['yaml'], additionalProperties: false }
         );
 
-        this.register_openai_tool('get_interactive_viewer_yaml',
+        registerOptional('get_interactive_viewer_yaml',
             '取得目前對話中最近一次成功渲染的互動viewer YAML原始內容——要修改既有viewer之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
             async () => {
                 if (!this._latestViewerYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何互動viewer' });
@@ -2561,7 +2645,7 @@ ${fnData.code}
             { type: 'object', properties: {}, additionalProperties: false }
         );
 
-        this.register_openai_tool('get_viewer_state',
+        registerOptional('get_viewer_state',
             '查詢某個互動viewer目前persistentStorage裡存的狀態（使用者按過save_state之後實際填了什麼）。參數: {"state_namespace":"viewer YAML裡的state_namespace"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2574,7 +2658,7 @@ ${fnData.code}
             { type: 'object', properties: { state_namespace: { type: 'string' } }, required: ['state_namespace'], additionalProperties: false }
         );
 
-        this.register_openai_tool('set_viewer_state',
+        registerOptional('set_viewer_state',
             '直接修改某個互動viewer在persistentStorage裡的狀態（例如AI想預先幫使用者填一些預設值）。這會整包覆蓋該namespace目前的狀態，不是欄位級合併。參數: {"state_namespace":"...", "state":{...任意物件...}}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2592,7 +2676,7 @@ ${fnData.code}
         // 上傳的「可互動文件」封裝檔（用list_uploaded_files取得file_id），
         // 跟/import-viewer-attachment指令共用同一個_importViewerPackageText
         // 邏輯，差別只在這個是AI自己判斷該不該叫用，不用使用者手動下指令。
-        this.register_openai_tool('import_interactive_viewer_attachment',
+        registerOptional('import_interactive_viewer_attachment',
             '把使用者上傳的「可互動文件」封裝檔（用互動表單卡片上的📦匯出按鈕產生的.viewerdoc.yaml）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。如果封裝內有包含填寫狀態，會覆蓋回persistentStorage對應的state_namespace；沒有包含狀態則只匯入模板、不動使用者本機已有的填寫進度。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2613,7 +2697,7 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-06——2D多邊形動畫子系統的工具，跟
         // render_3d_scene/render_interactive_viewer同一套「主功能工具精簡、
         // 修改前先查真實內容」設計精神。
-        this.register_openai_tool('render_2d_animation',
+        registerOptional('render_2d_animation',
             '用一段YAML描述渲染一個2D向量圖形動畫給使用者看（純宣告式格式，不能寫真正的JS程式碼；用Canvas2D畫圓/矩形/多邊形/折線/文字，不是3D）。頂層欄位：{title:"標題（選填）", width:480, height:320（皆選填，預設480x312）, background:"#ffffff", duration:4（動畫一輪的秒數，會loop重播）, shapes:[{id:"這個shape的名字（選填，給animation.parent引用）", type:"circle"|"rect"|"polygon"|"line"|"text"|"image", position:[x,y]（畫布座標，原點左上角，y向下）, rotation:0（度）, scale:1, opacity:1, fill:"#ff0000", stroke:"#000000", stroke_width:0, radius（circle用）, width,height（rect用、image用，image是唯一必填width/height的類型）, points:[[x,y],...]（polygon至少3點/line至少2點，座標相對於shape自己的position）, closed:true（line專用，選填，首尾相連）, content:"文字內容"（text用）, font_size:16（text用）, src:"http(s)網址或data:開頭的base64圖片"（image類型必填：整張圖依width/height拉伸畫出來）, fill_image:"http(s)網址或data:開頭的base64圖片"（circle/rect/polygon選填：改用這張圖貼滿該shape的外形取代純色fill，圖片以shape的bounding box拉伸、裁切到形狀輪廓內，不是精確的UV映射，多邊形也一樣用bounding box近似）, animation:{type:"move"|"rotate"|"scale"|"fade"|"orbit"|"keyframes", ...}}]}。這個架構沒有伺服器端附件系統，src/fill_image一律用http(s)網址或直接把圖片內容轉成data:開頭的base64字串內嵌在YAML裡，圖片還沒載入完成或載入失敗時會優雅退回灰色佔位方塊/純色，不會讓整個動畫壞掉。animation依type各自的參數：move用from:[x,y]/to:[x,y]/duration/loop:true|"pingpong"；rotate用speed（度/秒，持續轉）；scale用min/max/speed（來回縮放）；fade用from/to/duration/loop（透明度變化）；orbit用center:[x,y]或parent:"另一個shape的id"（衛星繞著該shape轉，母shape自己也可以再animation.parent繞第三個shape，可以疊多層，跟3D場景的animation_parent同一個設計）+radius+speed（弧度/秒）；keyframes用keyframes:[{t:秒數,position,rotation,scale,opacity},...]（依時間線性內插，最泛用但要自己列出每個時間點）。未知的頂層欄位/shape類型/animation類型都會直接回報錯誤。修改既有動畫之前，一律先呼叫get_2d_animation_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫。畫面上會有📤按鈕讓使用者自己把這個動畫匯出成PPTX/PDF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"2D動畫YAML描述"}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2632,7 +2716,7 @@ ${fnData.code}
             { type: 'object', properties: { yaml: { type: 'string', description: '2D動畫YAML描述' } }, required: ['yaml'], additionalProperties: false }
         );
 
-        this.register_openai_tool('get_2d_animation_yaml',
+        registerOptional('get_2d_animation_yaml',
             '取得目前對話中最近一次成功渲染的2D動畫YAML原始內容——要修改既有動畫之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
             async () => {
                 if (!this._latestAnim2DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何2D動畫' });
@@ -2641,7 +2725,7 @@ ${fnData.code}
             { type: 'object', properties: {}, additionalProperties: false }
         );
 
-        this.register_openai_tool('import_2d_animation_attachment',
+        registerOptional('import_2d_animation_attachment',
             '把使用者上傳的2D動畫YAML檔案（用動畫卡片上的📥下載按鈕產生的.2danim.yaml，或使用者自己手寫的同格式YAML）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
@@ -2710,6 +2794,23 @@ ${fnData.code}
         return entries.filter(([name]) => allowedSet.has(name));
     }
 
+    // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——根層級對話
+    // 實際會看到的工具名稱清單。builtinToolExposure:'root'（escape hatch）時
+    // 回傳null，交給_getCombinedToolEntries/_buildNativeToolsSchema維持原本
+    // 「不過濾、回傳全部」的行為，完全不影響任何呼叫端。預設'domains'模式時
+    // 回傳一個明確的allowlist：host頁面自己註冊的工具（含這22個以外的任何
+    // 工具、以及使用者透過Skill編輯器新增的customTools）＋這兩個一律留在根
+    // 層級的核心plumbing（get_tool_details/delegate_to_subagent），22個
+    // domain-gated的通用內建工具（見_registerBuiltinAiTools的registerOptional）
+    // 從這份清單排除，只能透過delegate_to_subagent間接觸及——工具本身仍然
+    // 完整存在於this.tools，只是不出現在根層級的tools參數/文字協定清單裡。
+    _getRootToolNames() {
+        if (this.builtinToolExposure !== 'domains') return null;
+        const custom = this.advancedSettings.customTools.map(t => t.name);
+        const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
+        return rootBuiltins.concat(custom);
+    }
+
     // tw_stock_db客製: 2026-08-24使用者要求——沒有資工背景的人透過自訂
     // 工具編輯器或add_ai_function讓AI建立函式時，很自然會用自己看得懂的
     // 中文命名（例如「計算持股獲利」），但原生tool-calling API（OpenAI相容
@@ -2766,7 +2867,15 @@ ${fnData.code}
         const sections = [];
         const rulesMd = String(this.advancedSettings.rulesMd || '').trim();
         const basePrompt = String(this.baseSystemPrompt || '').trim();
-        const predefinedTools = Object.entries(this.tools);
+        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——文字協定
+        // 模式下的[PREDEFINED TOOLS]清單也要套用同一份根層級過濾（跟原生模式
+        // 的_buildNativeToolsSchema(this._getRootToolNames())是同一個過濾邏輯，
+        // 只是這裡是文字清單而不是JSON schema），不然domain-gated的22個內建
+        // 工具還是會整段description摘要出現在system prompt裡，白費過濾的意義。
+        const rootNames = this._getRootToolNames();
+        const predefinedTools = rootNames
+            ? Object.entries(this.tools).filter(([name]) => rootNames.includes(name))
+            : Object.entries(this.tools);
         const customTools = this.advancedSettings.customTools;
 
         if (rulesMd) sections.push(rulesMd);
@@ -7304,7 +7413,10 @@ ${sourceTool.handlerScript}
                 }
                 if (c.type === 'subagent_panel') {
                     if (!c.domain) return { ok: false, error: `page "${page.id}" 的subagent_panel缺少domain` };
-                    const d = SUBAGENT_DOMAIN_REGISTRY[c.domain];
+                    // tw_stock_db客製: 2026-09-06改讀instance-level的this.domains
+                    // （見register_domain），讓host頁面自己新增的domain也能被
+                    // subagent_panel元件引用，不限於內建的SUBAGENT_DOMAIN_REGISTRY。
+                    const d = this.domains[c.domain];
                     if (!d || !d.enabled) return { ok: false, error: `page "${page.id}" 的subagent_panel指向未啟用的domain: "${c.domain}"` };
                 }
             }
@@ -7460,7 +7572,7 @@ ${sourceTool.handlerScript}
     _renderViewerSubagentPanel(c) {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'margin:8px 0; padding:8px; border:1px dashed rgba(0,0,0,0.2); border-radius:6px;';
-        const domainInfo = SUBAGENT_DOMAIN_REGISTRY[c.domain];
+        const domainInfo = this.domains[c.domain]; // tw_stock_db客製: 2026-09-06改讀instance-level this.domains，理由同上
         const label = document.createElement('div');
         label.style.cssText = 'font-size:11px; font-weight:bold; margin-bottom:4px; opacity:0.7;';
         label.textContent = `🤖 子agent（${(domainInfo && domainInfo.label) || c.domain}）`;
@@ -9384,7 +9496,11 @@ ${existingNodeSummaries}
                     stream: !useNative,
                 };
                 if (useNative) {
-                    body.tools = this._buildNativeToolsSchema();
+                    // tw_stock_db客製: 2026-09-06——跟真實對話（_loopFetchNative）
+                    // 用同一份_getRootToolNames()過濾，benchmark量到的才是使用者
+                    // 真實對話裡實際會看到的工具數量/schema，不是全部25個內建
+                    // 工具都攤開來測。
+                    body.tools = this._buildNativeToolsSchema(this._getRootToolNames());
                     body.tool_choice = 'auto';
                 } else {
                     Object.assign(body, this._buildStopParamBody());
@@ -10401,7 +10517,12 @@ ${existingNodeSummaries}
                         ...this._buildSamplingParamsBody(),
                         max_tokens: this._getGenerationSettings().maxOutputTokens,
                         stream: false,
-                        tools: this._buildNativeToolsSchema(),
+                        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具
+                        // 註冊——根層級對話（這就是主對話迴圈本身）只送出
+                        // _getRootToolNames()過濾後的工具子集，domain-gated的
+                        // 22個通用內建工具改成只透過delegate_to_subagent間接
+                        // 觸及（見_getRootToolNames/_registerBuiltinAiTools的說明）。
+                        tools: this._buildNativeToolsSchema(this._getRootToolNames()),
                         tool_choice: 'auto'
                     })
                 });
@@ -10552,9 +10673,12 @@ ${existingNodeSummaries}
     // 可以呼叫同一套domain查找/委派邏輯，不用重複寫一份。回傳plain object
     // （不是JSON字串），呼叫端各自決定要不要JSON.stringify。
     async _delegateToSubagentDomain(domainKey, task) {
-        const domain = SUBAGENT_DOMAIN_REGISTRY[domainKey];
+        // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
+        // register_domain），讓host頁面自己新增的domain也能透過明確指定
+        // domain參數委派，不限於內建的SUBAGENT_DOMAIN_REGISTRY。
+        const domain = this.domains[domainKey];
         if (!domain || !domain.enabled) {
-            const available = Object.entries(SUBAGENT_DOMAIN_REGISTRY).filter(([, d]) => d.enabled).map(([k]) => k);
+            const available = Object.entries(this.domains).filter(([, d]) => d.enabled).map(([k]) => k);
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
         }
         try {
@@ -10563,6 +10687,118 @@ ${existingNodeSummaries}
                 systemPrompt: domain.systemPrompt,
             });
             return { ok: true, domain: domainKey, result };
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求「兩層對話」的第一層——一個
+    // 「認識所有工具」的路由子agent。跟_runSubAgentTask不同，這不是一個
+    // 會累積對話歷史、真的執行工具的agentic loop（它唯一的輸出是一小段
+    // JSON，不需要真的呼叫任何工具），是單次、非streaming、不帶tools參數
+    // 的純文字分類請求——比_runSubAgentTask簡單很多、也便宜很多。
+    //
+    // system prompt動態列出全部enabled domain底下全部工具的「名稱+極短
+    // 摘要」（重用_getCombinedToolEntries(null)拿到全部工具實體，
+    // _summarizeToolDescription壓成一行），依domain分組——這就是使用者說的
+    // 「他要註冊所有tool」：這個路由角色看得到系統裡每一個已註冊工具的
+    // 存在，只是每個工具只給一行極短摘要（跟get_tool_details同一個「先給
+    // 極簡印象，細節按需查」精神），不是把完整規格/schema都攤給它——這是
+    // 「逐層披露」在這一層的具體實作，Layer 2執行子agent（_delegateToSubagentAuto）
+    // 才會看到被選中domain的完整工具規格。
+    //
+    // 回傳{ok:true, domains, toolNames, systemPrompt}（domains空陣列代表
+    // 這個任務不需要任何專家領域）或{ok:false, error}（網路錯誤/JSON解析
+    // 失敗/沒有任何已啟用的domain）。
+    async _routeTaskToDomains(task) {
+        const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
+        if (!enabledDomains.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
+
+        const toolByName = new Map(this._getCombinedToolEntries(null));
+        const catalogSections = enabledDomains.map(([key, d]) => {
+            const lines = (d.toolNames || [])
+                .map(name => {
+                    const tool = toolByName.get(name);
+                    return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
+                })
+                .filter(Boolean);
+            return `[${key}] ${d.label}\n${lines.join('\n')}`;
+        });
+
+        const routerSystemPrompt = [
+            '你是一個工具領域路由器。以下是系統目前登記的所有「專家領域」，每個領域底下列出它擁有的工具（僅供你判斷相關性參考，不代表你自己能呼叫這些工具）：',
+            '',
+            catalogSections.join('\n\n'),
+            '',
+            '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些領域的工具（可以是0個、1個、或多個）。只需要回傳領域代號（例如"scene_3d"），不要回傳個別工具名稱。如果任務不需要用到任何專家領域（例如只是打招呼、或你判斷不需要用到上面任何一個領域），domains請回傳空陣列。',
+            '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
+        ].join('\n');
+
+        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+        let response;
+        try {
+            response = await fetch(`${apiUrl}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: apiModel,
+                    messages: [
+                        { role: 'system', content: routerSystemPrompt },
+                        { role: 'user', content: task },
+                    ],
+                    temperature: 0,
+                    // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
+                    // 夾一個很小的max_tokens上限（不跟主對話共用
+                    // _getGenerationSettings().maxOutputTokens，那是給正常
+                    // 回覆用的，通常設定得比這裡需要的大很多），避免模型
+                    // 意外跑出一大段文字浪費時間/費用。
+                    max_tokens: 200,
+                    stream: false,
+                }),
+            });
+        } catch (err) {
+            return { ok: false, error: `路由子任務網路錯誤: ${err.message}` };
+        }
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            return { ok: false, error: `路由子任務API錯誤(${response.status}): ${errText.slice(0, 300)}` };
+        }
+        let data;
+        try { data = await response.json(); } catch (err) {
+            return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
+        }
+        const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+        let parsed;
+        try { parsed = await this.repairJsonPayload(rawText); } catch (err) {
+            return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
+        }
+        const requestedDomains = Array.isArray(parsed.domains) ? parsed.domains.map(String) : [];
+        const validDomains = requestedDomains.filter(k => this.domains[k] && this.domains[k].enabled);
+        if (!validDomains.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
+
+        const toolNames = [...new Set(validDomains.flatMap(k => this.domains[k].toolNames || []))];
+        const systemPrompt = validDomains.map(k => `## ${this.domains[k].label}\n${this.domains[k].systemPrompt}`).join('\n\n');
+        return { ok: true, domains: validDomains, toolNames, systemPrompt };
+    }
+
+    // tw_stock_db客製: 2026-09-06使用者要求「兩層對話」的第二層——真正執行
+    // 任務的子agent。呼叫Layer 1(_routeTaskToDomains)判斷這個task該開放
+    // 哪些domain的工具，直接複用既有_runSubAgentTask（跟
+    // _delegateToSubagentDomain完全同一條執行路徑，只是allowedToolNames/
+    // systemPrompt是動態合併出來的，不是單一固定domain的），最後把結果
+    // 合併回傳（使用者說的「最後再合併結果」）。
+    async _delegateToSubagentAuto(task) {
+        const routed = await this._routeTaskToDomains(task);
+        if (!routed.ok) return routed;
+        if (!routed.domains.length) {
+            return { ok: false, error: '沒有找到適合的專家領域可以處理這個任務，domain參數也可以指定明確的領域代號重試，或直接嘗試自己回答使用者。' };
+        }
+        try {
+            const result = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+                allowedToolNames: routed.toolNames,
+                systemPrompt: routed.systemPrompt,
+            });
+            return { ok: true, domains: routed.domains, result };
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         }
