@@ -1712,7 +1712,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=32dd279658"></script>
+<script src="floating-assistant.js?v=fc486959db"></script>
 <script>
   // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
   // markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/DOMPurify/
@@ -12463,14 +12463,15 @@ function renderAiTab() {
     onTableRendered: linkifyStockTableCells,
     // tw_stock_db客製: 2026-09-09——browser_search子agent（見
     // floating-assistant.js的SUBAGENT_DOMAIN_REGISTRY.browser_search）預設
-    // 關閉（使用者要自己在Advance Settings勾選啟用），但它需要的Cloudflare
-    // Worker端點跟這裡AI助理本來就在用的同一個worker（TWSE_PROXY_BASE，見
-    // web/cloudflare-worker/worker.js的/browser-search路由）是同一個部署，
-    // 這裡先把預設值傳進去，使用者啟用時就不用自己另外去查/填網址——這只是
-    // 建構子的「初始預設值」，只在使用者從沒存過Advance設定時生效，之後
-    // 使用者自己在面板改過就不會被這裡覆蓋（見multiSubAgentMode/
-    // browserSearchProxyUrl建構子選項的說明）。
-    browserSearchProxyUrl: TWSE_PROXY_BASE,
+    // 關閉（使用者要自己在Advance Settings勾選啟用）。它需要的Cloudflare
+    // Worker端點（/browser-search路由，見web/cloudflare-worker/worker.js）
+    // 剛好跟這裡AI助理本來就在用的同一個worker是同一個部署，不需要在這裡
+    // 額外傳browserSearchProxyUrl當初始預設值——browserSearchProxyUrl留空時
+    // _browserSearch()會自動沿用目前的API URL（floating_ai_base_url_key，
+    // 就是TWSE_PROXY_BASE），且會**動態**跟著API URL變動（不像建構子選項
+    // 只是使用者從沒存過設定時的一次性快照，之後使用者換了API URL，寫死的
+    // 快照值不會跟著換，動態沿用才不會遇到這個問題），所以刻意不在這裡傳
+    // 這個選項。
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
