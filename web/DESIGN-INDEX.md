@@ -474,6 +474,54 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     誘發，如實記錄），代表這次的「複雜任務」比較數字混雜了「domain曝光
     方式的差異」跟「模型是否選擇使用委派/工具」兩種變因，不是單純的
     apples-to-apples token成本比較，解讀時要留意這點。
+  - **`browserSearchProxyUrl`留空時自動沿用API URL**（2026-09-09，使用者
+    追問）：`_browserSearch()`原本留空就直接報錯，改成`|| this._getApiConfig().apiUrl`
+    ——多數情況下`/browser-search`本來就跟chat completions代理部署在同一個
+    Worker，這樣使用者不用重複填兩次網址；且是**每次呼叫都重新讀取**，不是
+    快照，使用者之後換API URL會自動跟著換。連帶把`web/index.html`原本寫死
+    `browserSearchProxyUrl:TWSE_PROXY_BASE`的建構子選項拿掉（那個快照現在
+    反而是劣化版，不會跟著API URL變動）。也順便修掉3處還在講舊檔名
+    `browser-search-worker.js`的過期註解（合併進`worker.js`之後忘記全部
+    更新）。
+  - **新增`news`來源（Google News RSS）**（2026-09-09，使用者實測回報
+    `google`來源查「今日焦點新聞」效果很差）：`google`來源代打的是
+    DuckDuckGo一般網頁搜尋，沒有新聞時效性概念；改用Google官方的
+    News RSS Feed（`news.google.com/rss/search?q=...&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`，
+    不需要金鑰、文件本身允許個人非商業feed reader用途），回應是真正依時間
+    排序、含正確發布時間/來源媒體名稱的新聞——用一般正則表達式解析（RSS
+    結構固定可信任，不像任意HTML需要HTMLRewriter的容錯能力）。`google`
+    來源保留不變（一般網頁查詢仍然有用），`news`是新增的第8個來源，
+    `BROWSER_SEARCH_SOURCES`陣列/domain systemPrompt都提醒模型「時效性
+    查詢要用news、不要只靠google」。已用真實curl請求驗證RSS格式+parser
+    邏輯（下載實際回應、跑同一套regex，確認能正確抽出title/url/snippet）。
+  - **清除對話沒有重設`topicData.currentTopic`的bug**（2026-09-09使用者
+    實測回報「對話刪除了，還是會檢查話題轉移」）：`this.topicData.currentTopic`
+    是純instance-level狀態，只有建構子會初始化成「無（新對話開始）」，
+    `_clearChatHistory()`原本只重設`this.messages`/`archivedDisplayBlocks`，
+    沒有一併重設這個欄位——使用者清除對話後，新對話一旦累積到3則訊息
+    （`_checkTopicTransition`的length<3提早return門檻），就會拿新對話內容
+    去跟清除前殘留的舊話題比對，容易誤判成「已經轉移話題」而觸發不必要的
+    封存。修法：`_clearChatHistory()`裡一併把`topicData.currentTopic`重設回
+    建構子的初始值，讓「清除對話」在語意上真正等同「回到全新對話開始」。
+  - **Skill自動register成slash-command**（2026-09-09使用者要求）：新增
+    `_syncCustomToolSlashCommands()`——每個`advancedSettings.customTools`
+    （Advance Settings「Skill」分頁）自動掛一個同名`/<skill名稱>`指令，
+    讓使用者可以直接在輸入框打指令跳過AI判斷、本地端直接執行（複用既有
+    `_executeCustomTool`，跟AI自己決定呼叫時完全同一份handlerScript/執行
+    邏輯），也會自動出現在既有的「/」自動完成選單裡。用
+    `entry._autoFromSkill`旗標區分「這個slash command是自動衍生出來的」
+    跟「host/內建明確註冊的」——同名時明確註冊的優先，Skill不會覆蓋掉既有
+    指令（該Skill仍然可以被AI正常呼叫，只是拿不到這個slash command捷徑）。
+    掛在`_saveAdvancedSettings()`裡（Skill新增/編輯/刪除/.skill匯入/完整
+    設定匯入這幾個既有入口最後都會呼叫它），每次都重新同步一次（先移除
+    上一輪自動註冊、這次已經不在customTools裡的舊entry，再逐一重新註冊），
+    建構子裡也額外呼叫一次（`_saveAdvancedSettings()`不會在單純載入既有
+    設定時被呼叫）。觸發後的畫面呈現比照
+    `_handleImport2DAnimationAttachmentCommand`那類「本地端直接產生結果」
+    的既有slash command：推入使用者訊息回顯指令、用`_buildToolResultMessage()`
+    包裝結果（連帶支援視覺型payload自動偵測），渲染+存檔。已用mock測試
+    驗證：預先存在的Skill建構時自動註冊、新增/刪除即時同步、呼叫時0次
+    fetch（真的跳過LLM）、撞名時不覆蓋既有指令。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
