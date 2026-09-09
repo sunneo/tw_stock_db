@@ -709,24 +709,25 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 「使用者從未做過任何設定」時的安全預設。
     browser_search: {
         enabled: false,
-        label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/SourceForge/CodeProject/DeepWiki）',
+        label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/Google新聞/SourceForge/CodeProject/DeepWiki）',
         toolNames: ['browser_search'],
-        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源），查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
+        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
     },
 };
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
-// github三個走各自的官方JSON API（穩定、有結構化snippet）；google/
-// sourceforge/codeproject/deepwiki四個沒有可靠的官方搜尋API或CORS支援
-// （google自己的搜尋結果頁面近年高度JS化，直接fetch拿不到可解析的連結；
-// sourceforge/codeproject會擋掉非瀏覽器的自動化請求；deepwiki是純SPA），
-// 改用DuckDuckGo的HTML介面(html.duckduckgo.com/html/)代打，google不加
-// site:限制，其餘三個加`site:對應網域`限制查詢範圍——這是實際探測過幾個
-// 來源真實回應後的結果（google直接fetch拿不到任何可解析連結、
-// sourceforge/codeproject直接fetch回403/JS轉址、deepwiki是純前端渲染），
-// 不是憑空猜測；detail欄位供get_tool_details/UI顯示這個事實，避免使用者
-// 誤以為google/sourceforge/codeproject/deepwiki是各自站內原生搜尋結果。
-const BROWSER_SEARCH_SOURCES = ['wiki', 'stackoverflow', 'github', 'google', 'sourceforge', 'codeproject', 'deepwiki'];
+// github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
+// News官方RSS Feed（穩定、真正依時間排序，2026-09-09使用者實測回報google
+// 來源對「今日焦點新聞」這類查詢效果很差後新增，見_browserSearch/worker.js
+// 的說明）；google/sourceforge/codeproject/deepwiki四個沒有可靠的官方
+// 搜尋API或CORS支援（google自己的搜尋結果頁面近年高度JS化，直接fetch
+// 拿不到可解析的連結；sourceforge/codeproject會擋掉非瀏覽器的自動化請求；
+// deepwiki是純SPA），改用DuckDuckGo的HTML介面(html.duckduckgo.com/html/)
+// 代打，google不加site:限制，其餘三個加`site:對應網域`限制查詢範圍——這是
+// 實際探測過幾個來源真實回應後的結果（google直接fetch拿不到任何可解析
+// 連結、sourceforge/codeproject直接fetch回403/JS轉址、deepwiki是純前端
+// 渲染），不是憑空猜測。
+const BROWSER_SEARCH_SOURCES = ['wiki', 'stackoverflow', 'github', 'google', 'news', 'sourceforge', 'codeproject', 'deepwiki'];
 
 // tw_stock_db客製: browser_search結果的persistentStorage快取——跟FileCache
 // 既有的「容量上限+LRU淘汰」原則共用同一套class（見FileCache），但用
@@ -1782,6 +1783,7 @@ class FloatingAssistant {
         this._initEventListeners();
         this._registerBuiltinAiTools();
         this._updateDelegateToSubagentDescription();
+        this._syncCustomToolSlashCommands();
         // tw_stock_db客製: 只在「完全沒有對話紀錄」時（全新安裝、或上次
         // 結束時剛好是空的）主動插入一次建議操作訊息，不要每次mount都插入
         // ——this.messages在上面_loadPersistedChatHistory()已經還原過，這裡
@@ -2277,6 +2279,11 @@ class FloatingAssistant {
         // 兩種模式的描述不同，見_buildDelegateToSubagentDescription）。
         this._syncBrowserSearchDomainEnabled();
         this._updateDelegateToSubagentDescription();
+        // tw_stock_db客製: 2026-09-09使用者要求Skill自動註冊成slash-command
+        // ——customTools可能剛被新增/修改/刪除/匯入（Skill編輯器/.skill匯入/
+        // 完整設定匯入這幾個既有入口最後都會呼叫_saveAdvancedSettings()，
+        // 見_syncCustomToolSlashCommands()的說明），這裡統一重新同步一次。
+        this._syncCustomToolSlashCommands();
         this._refreshSystemPromptMessage();
     }
 
@@ -9499,6 +9506,71 @@ ${existingNodeSummaries}
         return this;
     }
 
+    // tw_stock_db客製: 2026-09-09使用者要求「Skill自動register成
+    // slash-command」——Advance Settings的「Skill」分頁（`this.advancedSettings.
+    // customTools`，一般透過工具編輯器新增/編輯、.skill檔匯入、或完整設定
+    // 匯入產生）原本只能讓AI在對話中「自己判斷」要不要呼叫；使用者要的是
+    // 使用者自己也可以直接在輸入框打`/skill名稱 參數`跳過AI決策、本地端
+    // 直接執行，跟其他內建/host自訂的slash command同一種體驗（自動出現在
+    // 「/」自動完成選單裡，見_wireSlashCommandMenu）。
+    //
+    // 每次customTools變動（新增/編輯/刪除/匯入，這幾個既有入口最後都會呼叫
+    // _saveAdvancedSettings()）都要重新同步一次：先移除「上一輪由這個方法
+    // 自動註冊、這次已經不在customTools裡」的舊entry（改名/刪除的情況），
+    // 再逐一（重新）註冊目前的customTools。用`entry._autoFromSkill`旗標
+    // 標記「這個slash command是自動註冊出來的」，讓下一輪同步知道哪些
+    // entry是自己管理的、可以安全覆蓋/移除；如果`/<skill名稱>`已經被別的
+    // 呼叫端（floating-assistant.js內建、或host頁面自己register_slash_command
+    // 註冊過）佔用且不是這個自動機制掛的，就跳過不覆蓋——手動明確註冊的
+    // 指令優先權高於自動衍生出來的，避免Skill意外「劫持」既有指令。
+    _syncCustomToolSlashCommands() {
+        if (this._skillSlashCommandKeys) {
+            for (const key of this._skillSlashCommandKeys) {
+                const entry = this.slashCommands.get(key);
+                if (entry && entry._autoFromSkill) this.slashCommands.delete(key);
+            }
+        }
+        this._skillSlashCommandKeys = new Set();
+        for (const tool of this.advancedSettings.customTools) {
+            const key = '/' + String(tool.name || '').trim().toLowerCase();
+            if (key === '/') continue;
+            const existing = this.slashCommands.get(key);
+            if (existing && !existing._autoFromSkill) continue; // 已被非自動來源佔用，不覆蓋
+            this.register_slash_command(
+                key,
+                '（Skill，選填JSON參數）',
+                tool.description || `Skill「${tool.name}」`,
+                (argsText) => this._runSkillAsSlashCommand(tool, argsText)
+            );
+            const entry = this.slashCommands.get(key);
+            if (entry) entry._autoFromSkill = true;
+            this._skillSlashCommandKeys.add(key);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-09——Skill被當成slash command直接觸發時的
+    // 執行邏輯，跳過LLM決策，直接跑_executeCustomTool（跟AI自己決定呼叫
+    // 這個Skill時完全同一份執行邏輯/同一份handlerScript，唯一差別是觸發
+    // 來源）。畫面呈現比照其他「本地端直接產生結果」的slash command
+    // （例如_handleImport2DAnimationAttachmentCommand）：推入一則使用者
+    // 訊息回顯輸入的指令，再用_buildToolResultMessage()把結果包成跟AI
+    // 工具呼叫結果同一種訊息形狀（連帶支援scene3d/drawing/viewer/anim2d/
+    // 圖片這幾種視覺型payload的自動偵測渲染，如果這個Skill剛好回傳這種
+    // 格式，能直接顯示，不用另外處理），最後渲染+存檔。
+    async _runSkillAsSlashCommand(tool, argsText) {
+        this.messages.push({ role: 'user', content: `/${tool.name}${argsText ? ' ' + argsText : ''}` });
+        let resultStr;
+        try {
+            resultStr = await this._executeCustomTool(tool, argsText);
+        } catch (err) {
+            resultStr = JSON.stringify({ ok: false, error: String(err.message || err) });
+        }
+        const msg = this._buildToolResultMessage(tool.name, resultStr, {});
+        this.messages.push(msg);
+        this._renderMessageHistory();
+        this._persistChatHistory();
+    }
+
     // tw_stock_db客製: 從輸入框取字、清空、觸發executeChat的共用邏輯，被
     // Enter鍵送出跟「送出」按鈕共用，確保兩條路徑行為完全一致（見上面
     // bindEvents()裡兩處的呼叫端）。斜線指令刻意在這裡攔截、不進
@@ -11940,6 +12012,7 @@ ${existingNodeSummaries}
                                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入 .skill<input type="file" id="ai-skill-import-input" accept=".skill,.zip" style="display:none;"></label>
                                         </div>
                                     </div>
+                                    <p class="ai-advanced-hint">每個Skill會自動註冊成同名的slash指令（例如Skill叫「my_skill」，輸入框直接打「/my_skill 參數」即可跳過AI判斷、直接本地執行，也會出現在「/」自動完成選單裡）——如果名稱撞到既有指令，既有的優先，這個Skill仍然只能靠AI自己判斷呼叫。</p>
                                     <div id="ai-custom-tool-list" class="ai-tool-list"></div>
                                 </div>
                             </div>
@@ -12386,6 +12459,17 @@ ${existingNodeSummaries}
     _clearChatHistory() {
         this.messages = [];
         this.archivedDisplayBlocks = [];
+        // tw_stock_db客製: 2026-09-09使用者實測回報——清除對話後，緊接著的
+        // 新對話很快就會觸發「話題轉移」偵測（_checkTopicTransition），即使
+        // 這明明是全新開始的對話。根因：this.topicData.currentTopic是純
+        // instance-level狀態，只有建構子會初始化成"無（新對話開始）"，
+        // _clearChatHistory()原本沒有一併重設它——使用者清除對話後，
+        // topicData.currentTopic仍然停留在「清除前最後一個話題」，新對話
+        // 只要累積到3則訊息（見_checkTopicTransition的length<3提早return），
+        // 就會拿新對話的內容去跟這個過期的舊話題比對，很容易誤判成「已經
+        // 轉移話題」。清除對話在語意上就等於「回到全新對話開始」，這裡一併
+        // 重設回建構子的初始值，維持跟「完全沒有對話」狀態一致。
+        this.topicData.currentTopic = "無（新對話開始）";
         localStorage.removeItem(this.CHAT_HISTORY_KEY);
         // insertSuggestionChipsMessage()在chipsProvider沒回傳任何建議時會
         // 直接return、不會呼叫_renderMessageHistory()——這裡不能依賴它一定
