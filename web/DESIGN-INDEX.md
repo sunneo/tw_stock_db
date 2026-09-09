@@ -376,6 +376,104 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     MODEL NAME時500持續失敗（只重試同一個模型3次就放棄，不會fallback到
     其他模型，尊重使用者的明確選擇）、404（跳過同一個模型的重試，直接
     逐一換下一個候選模型）。
+  - **Multi-subagent三模式（router/full/off）+ browser_search子agent + 大型
+    文字「不論多長都能分段處理」**（2026-09-09）：使用者要求把原本二選一的
+    `builtinToolExposure`（'root'/'domains'）擴充成三種`multiSubAgentMode`：
+    1. **router**（預設，等同原本'domains'行為）：根層級只看得到
+       `get_tool_details`/`delegate_to_subagent`兩個plumbing，不知道有哪些
+       domain，`domain`留空時交給`_routeTaskToDomains`（路由子agent，多一次
+       LLM往返）判斷。
+    2. **full**（新）：`delegate_to_subagent`的description改成動態列出全部
+       enabled domain代號+label（見`_buildDelegateToSubagentDescription`），
+       鼓勵根模型自己判斷、直接指定domain（省掉路由那次往返，代價是根層級
+       system prompt/tools每輪都多背一份domain清單）。
+    3. **off**（等同原本'root'）：`_getRootToolNames()`回傳「全部工具except
+       `delegate_to_subagent`」（`get_tool_details`仍保留，那是文字協定通用
+       機制、跟subagent無關），23個內建工具直接掛根層級，完全沒有委派機制。
+       三種模式都是`advancedSettings.multiSubAgentMode`（localStorage持久化），
+       **可以在Advance Settings的新分頁「子Agent」即時切換，不用重新整理**
+       ——`_getRootToolNames()`/`_buildDelegateToSubagentDescription()`都是
+       即時讀取當下模式，`_registerBuiltinAiTools()`的`registerOptional`改成
+       無條件把工具名稱收進`_domainGatedToolNames`（不再依註冊當下的模式
+       決定），過濾邏輯完全交給`_getRootToolNames()`。建構子仍接受
+       `options.multiSubAgentMode`/`options.builtinToolExposure:'root'`
+       （向下相容別名）當**初始預設值**，只在使用者從沒存過Advance設定時
+       套用。
+  - **新增`browser_search`內建domain**（預設`browserSearchEnabled:false`，
+    需使用者自己在「子Agent」分頁勾選啟用）：查詢
+    wiki/stackoverflow/github/google/sourceforge/codeproject/deepwiki，經
+    `web/cloudflare-worker/worker.js`的新路由`/browser-search`代打（wiki/
+    stackoverflow/github打各自官方API；google/sourceforge/codeproject/
+    deepwiki代打DuckDuckGo HTML介面+`site:`限制，是2026-09-09實測過各來源
+    真實回應後才決定的做法，不是猜的——見worker.js檔頭「關於
+    /browser-search」的完整說明）。結果存進獨立的
+    `this.searchCache`（`FileCache`實例，獨立20MB預算，不跟256MB的
+    `fileCache`共用）＋1天TTL（`SEARCH_CACHE_TTL_MS`，`_getCachedSearchResult`
+    讀取時主動判斷過期並刪除，`_purgeExpiredSearchCache`每個實例生命週期
+    額外主動掃描一次），TTL之外沿用FileCache既有的LRU容量淘汰——完全符合
+    使用者說的「跟使用空間的原則一樣，超出去就用LRU找到沒在用的移除」。
+    `browserSearchProxyUrl`（Advance Settings「子Agent」分頁）指向worker
+    網址本身（不含路徑）；`web/index.html`已經把這個值的建構子預設指到
+    `TWSE_PROXY_BASE`（跟AI助理本來就在用的同一個worker），使用者只需要
+    勾選啟用即可。
+  - **`summarize_large_text`新工具 + `rag_chunk_document`修掉25000字元截斷**：
+    使用者明確要求「不論多大的文章都可以分段summary，無論是upload、
+    webfetch，或任何現有AI整合到的情境」。新增共用helper
+    `_callSimpleCompletion`（單輪非agentic LLM呼叫）、
+    `_chunkTextByLength`（純字元數切塊）、`_summarizeLargeTextChunks`
+    （map-reduce：每個`SUMMARIZE_CHUNK_SIZE`=6000字元的區塊各自摘要，
+    >1個區塊時再彙整成最終摘要；單一區塊失敗不會讓整個流程中止，用佔位
+    文字接續）。`summarize_large_text`工具（`file_analysis` domain新成員）
+    透過新的`_getFullTextFromUploadedFile`（跟`_parseUploadedFileContent`
+    分開——那個方法設計上就是會截斷，這個方法保證讀到完整原始文字）讀取
+    persistentStorage裡的檔案，不論多長都能摘要。`rag_chunk_document`原本
+    `docText.slice(0,25000)`直接截斷丟棄後面內容，改成`_chunkDocumentForRag`
+    依`RAG_CHUNK_WINDOW_SIZE`=20000字元切窗口、每個窗口各自跑一次原本的
+    語意分段+依賴關係prompt（窗口間用「上一個窗口最後一個節點id」當提示
+    引導依賴鏈延續，非強制），新增`file_id`參數當`documentText`的替代輸入
+    （跟`summarize_large_text`共用同一份`fileCache`，不用先把全文讀出來
+    當參數傳回去——那樣還是沒解決「多長都能處理」的根本問題，因為受限於
+    呼叫端自己能產生的輸出長度）。
+  - **`web/index.html`的`fetch_web_page`改存persistentStorage**：原本
+    worker端`/webfetch`用`WEBFETCH_MAX_BYTES`(200000)截斷回應（使用者要求
+    拿掉，已從worker.js移除，含一開始遺漏移除`handleWebFetch`內兩處
+    使用點的疏漏，隨後修正），前端`fetch_web_page`原本直接把抓到的原始
+    內容整段回傳給根模型。使用者要求「先放到persistentStorage，然後用
+    subagent自己分段處理」——改成抓到內容後用`aiConsoleInstance.fileCache.put`
+    存成`kind:'uploaded'`記錄（跟使用者📎上傳檔案共用同一套機制/同一份
+    `list_uploaded_files`清單），只回傳`file_id`+提示文字，引導根模型呼叫
+    `delegate_to_subagent(domain:"file_analysis")`委派子agent用
+    `parse_uploaded_file`/`summarize_large_text`處理，不是自己回答內容或
+    把整段HTML塞進對話。persistentStorage寫入失敗時有防禦性fallback（退回
+    直接回傳原始內容），不會讓整個工具直接失效。
+  - **`web/cloudflare-worker/worker.js`第一次進repo**：這個檔案先前只在
+    tw_stock_db的AI助理程式碼註解裡被提及（例如
+    `checkAndIncrementRateLimit`），實際的Worker原始碼從沒進過這個repo
+    （使用者透過對話貼出目前實際部署的版本）。已補進repo，同時整合了
+    `/browser-search`新路由；同目錄`README.md`記錄部署步驟/環境變數/
+    `browser_search`要在Advance Settings額外設定的東西。
+  - **真實LLM三模式token/時間比較**（`nvidia/nemotron-3.5-lightning-30b-a3b`，
+    支援原生tool_calls，用來確保拿到穩定的`usage`欄位；透過匿名共用channel
+    量測，非估算值）：
+    | 模式 | 簡單問題（無需委派） | 複雜問題（畫圖+查RAG，需委派） |
+    |---|---|---|
+    | router | 2.3s／1,304 tokens（1次呼叫） | 84.7s／9,328 tokens（6次呼叫） |
+    | full | 19.0s／1,903 tokens（1次呼叫） | 81.3s／13,977 tokens（7次呼叫） |
+    | off | 18.3s／8,602 tokens（1次呼叫） | 45.5s／26,687 tokens（3次呼叫） |
+
+    簡單問題：router的prompt token明顯最省（根層級只看得到host自己的工具+
+    2個plumbing），off最貴（25個內建工具的完整schema/description每輪都要
+    帶）；full介於中間（domain清單比完整工具規格輕，但比router多）。複雜
+    問題：off雖然token最貴，但因為不用經過委派/路由的LLM往返，總耗時反而
+    最短；router因為要先問路由子agent才知道開哪些domain，往返次數
+    （6次）介於full（7次，含根模型自己先摸索了一輪才決定委派）跟off（3次，
+    根模型直接呼叫`render_drawing`/`rag_query_graph`兩個工具）之間。**注意
+    這次複雜任務兩次(router/full)測試中，模型都沒有真的呼叫`render_drawing`
+    ——而是直接把SVG程式碼寫進文字回覆**（`temperature:0`仍無法完全消除
+    這種行為變異，這是量測當下真實觀察到的模型行為，不是測試設計刻意
+    誘發，如實記錄），代表這次的「複雜任務」比較數字混雜了「domain曝光
+    方式的差異」跟「模型是否選擇使用委派/工具」兩種變因，不是單純的
+    apples-to-apples token成本比較，解讀時要留意這點。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
