@@ -697,7 +697,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋子agent——查詢
     // Wikipedia/StackOverflow/GitHub/一般網頁(google)/SourceForge/CodeProject/
     // DeepWiki，全部透過一個Cloudflare Worker中繼（見
-    // web/cloudflare-worker/browser-search-worker.js），瀏覽器端不直接對這些
+    // web/cloudflare-worker/worker.js的/browser-search路由），瀏覽器端不直接對這些
     // 外部網站發request（部分網站本來就沒開CORS、部分透過Worker統一做結果
     // 正規化/快取）。刻意預設enabled:false（跟其他內建domain不同）——這個
     // domain需要使用者自己部署Worker並在Advance Settings填入
@@ -1938,11 +1938,13 @@ class FloatingAssistant {
             // 見get multiSubAgentMode()的說明。預設'router'＝維持原本的兩層
             // 委派行為不變。
             multiSubAgentMode: 'router',
-            // tw_stock_db客製: browser_search子agent預設關閉——需要使用者自己
-            // 部署Cloudflare Worker（見web/cloudflare-worker/browser-search-worker.js）
-            // 並填入browserSearchProxyUrl才有作用，跟其他一開箱就能用的內建
-            // domain不同，不適合預設開啟（開了但沒配置端點只會讓根模型/路由
-            // 子agent誤以為有這個能力可用卻每次都失敗）。
+            // tw_stock_db客製: browser_search子agent預設關閉——需要有一個部署
+            // 了/browser-search路由的Cloudflare Worker（見
+            // web/cloudflare-worker/worker.js）才有作用，browserSearchProxyUrl
+            // 留空時會自動沿用目前的LLM API URL（見_browserSearch），但如果
+            // 那個端點背後根本沒有部署這條路由，一樣會查詢失敗——跟其他
+            // 一開箱就能用的內建domain不同，不適合預設開啟（開了但沒有可用
+            // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: false,
             browserSearchProxyUrl: '',
         };
@@ -2964,8 +2966,8 @@ ${fnData.code}
     // tw_stock_db客製: 2026-09-09——browser_search工具的實作，含
     // persistentStorage快取（1天TTL + LRU容量淘汰，見searchCache/
     // SEARCH_CACHE_TTL_MS/SEARCH_CACHE_MAX_BYTES的說明）跟呼叫Cloudflare
-    // Worker（web/cloudflare-worker/browser-search-worker.js）取得未命中
-    // 快取的來源。
+    // Worker（web/cloudflare-worker/worker.js的/browser-search路由）取得
+    // 未命中快取的來源。
     // ============================================================
 
     // 快取鍵故意用「來源+正規化後的查詢字串」直接當IndexedDB的id（不用另外
@@ -3049,9 +3051,19 @@ ${fnData.code}
             else misses.push(source);
         }
         if (misses.length) {
-            const proxyUrl = String(this.advancedSettings.browserSearchProxyUrl || '').trim();
+            // tw_stock_db客製: 2026-09-09使用者要求——browserSearchProxyUrl
+            // 留空時，預設直接沿用目前設定的LLM API網址（_getApiConfig().apiUrl）
+            // 當Worker端點，不強制使用者另外填一次。多數情況下browser_search
+            // 依賴的/browser-search路由，本來就會跟chat completions代理部署
+            // 在同一個Worker上（見web/cloudflare-worker/worker.js），這裡動態
+            // 沿用apiUrl比host頁面在建構子固定寫死一份「快照」值更正確——
+            // 使用者之後如果換了API網址，這裡也會跟著換，不會沿用一份過期的
+            // 舊網址。如果apiUrl背後的端點其實沒有部署/browser-search這條
+            // 路由（例如直接打官方NVIDIA端點），下面的fetch會收到404，錯誤
+            // 訊息會清楚說明狀況，不是靜默失敗。
+            const proxyUrl = String(this.advancedSettings.browserSearchProxyUrl || '').trim() || this._getApiConfig().apiUrl;
             if (!proxyUrl) {
-                for (const source of misses) results[source] = { error: '尚未設定browserSearchProxyUrl（Cloudflare Worker端點），請先在Advance Settings的「子Agent」分頁填入後再使用browser_search。' };
+                for (const source of misses) results[source] = { error: '尚未設定browserSearchProxyUrl（Cloudflare Worker端點），且目前也沒有可用的API網址可以沿用，請先在Advance Settings的「子Agent」分頁填入後再使用browser_search。' };
                 return { ok: true, query, results };
             }
             const controller = new AbortController();
@@ -11967,9 +11979,10 @@ ${existingNodeSummaries}
                                         <input type="checkbox" id="ai-browser-search-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-browser-search-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用「網路搜尋」子Agent（browser_search）</label>
                                     </div>
-                                    <p class="ai-advanced-hint">查詢Wikipedia／StackOverflow／GitHub／一般網頁／SourceForge／CodeProject／DeepWiki，結果透過下面設定的Cloudflare Worker端點取得並正規化，快取1天（跟檔案快取一樣是IndexedDB持久化＋LRU容量淘汰，額外疊加1天有效期限）。預設關閉——需要先部署 web/cloudflare-worker/browser-search-worker.js 並填入端點網址才能真正運作。</p>
+                                    <p class="ai-advanced-hint">查詢Wikipedia／StackOverflow／GitHub／一般網頁／SourceForge／CodeProject／DeepWiki，結果透過下面設定的Cloudflare Worker端點取得並正規化，快取1天（跟檔案快取一樣是IndexedDB持久化＋LRU容量淘汰，額外疊加1天有效期限）。預設關閉——需要Worker有部署支援/browser-search路由（見 web/cloudflare-worker/worker.js）才能真正運作。</p>
                                     <label class="ai-advanced-label" for="ai-browser-search-proxy-url">Cloudflare Worker 端點網址</label>
-                                    <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="https://your-search-proxy.workers.dev">
+                                    <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用上面的API URL">
+                                    <p class="ai-advanced-hint">留空時會直接沿用目前設定的LLM API URL（如果那個Worker本身也有部署/browser-search路由的話，不需要另外填）；只有想用「跟LLM不同的另一個」Worker端點時才需要在這裡明確指定。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
