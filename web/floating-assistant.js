@@ -648,8 +648,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file'],
-        systemPrompt: '你是一個專門解讀使用者上傳檔案的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
+        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
     drawing: {
         enabled: true,
@@ -691,10 +691,64 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     rag_management: {
         enabled: true,
         label: 'RAG知識庫維護（新增節點/大文件分段/刪除）',
-        toolNames: ['rag_store_graph_node', 'rag_chunk_document', 'rag_delete'],
-        systemPrompt: '你是一個專門維護RAG知識圖譜的子任務助理，負責新增節點(rag_store_graph_node)、把大文件切成語意分段後個別存入(rag_chunk_document)、刪除節點(rag_delete)。純查詢需求請改用rag_lookup領域，不要在這裡處理查詢。完成後用一兩句話簡短說明做了什麼，不用重複整段內容。',
+        toolNames: ['rag_store_graph_node', 'rag_chunk_document', 'rag_delete', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門維護RAG知識圖譜的子任務助理，負責新增節點(rag_store_graph_node)、把大文件切成語意分段後個別存入(rag_chunk_document)、刪除節點(rag_delete)。rag_chunk_document不論文件多長都能完整處理（內部自動分段，不會截斷丟棄），文件已經在persistentStorage時（使用者上傳的檔案、或AI用fetch_web_page/summarize_large_text看過的file_id）直接傳file_id即可，不確定file_id時可以先用list_uploaded_files查。純查詢需求請改用rag_lookup領域，不要在這裡處理查詢。完成後用一兩句話簡短說明做了什麼，不用重複整段內容。',
+    },
+    // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋子agent——查詢
+    // Wikipedia/StackOverflow/GitHub/一般網頁(google)/SourceForge/CodeProject/
+    // DeepWiki，全部透過一個Cloudflare Worker中繼（見
+    // web/cloudflare-worker/browser-search-worker.js），瀏覽器端不直接對這些
+    // 外部網站發request（部分網站本來就沒開CORS、部分透過Worker統一做結果
+    // 正規化/快取）。刻意預設enabled:false（跟其他內建domain不同）——這個
+    // domain需要使用者自己部署Worker並在Advance Settings填入
+    // browserSearchProxyUrl才能真正運作，沒配置好時貿然開放只會讓根模型/
+    // 路由子agent誤以為這個能力可用，見_registerBuiltinAiTools裡
+    // browser_search工具本身的錯誤訊息。實際的enabled值在建構子/
+    // _saveAdvancedSettings()裡會依this.advancedSettings.browserSearchEnabled
+    // 動態覆蓋（見_syncBrowserSearchDomainEnabled()），這裡的false只是
+    // 「使用者從未做過任何設定」時的安全預設。
+    browser_search: {
+        enabled: false,
+        label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/SourceForge/CodeProject/DeepWiki）',
+        toolNames: ['browser_search'],
+        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源），查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
     },
 };
+
+// tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
+// github三個走各自的官方JSON API（穩定、有結構化snippet）；google/
+// sourceforge/codeproject/deepwiki四個沒有可靠的官方搜尋API或CORS支援
+// （google自己的搜尋結果頁面近年高度JS化，直接fetch拿不到可解析的連結；
+// sourceforge/codeproject會擋掉非瀏覽器的自動化請求；deepwiki是純SPA），
+// 改用DuckDuckGo的HTML介面(html.duckduckgo.com/html/)代打，google不加
+// site:限制，其餘三個加`site:對應網域`限制查詢範圍——這是實際探測過幾個
+// 來源真實回應後的結果（google直接fetch拿不到任何可解析連結、
+// sourceforge/codeproject直接fetch回403/JS轉址、deepwiki是純前端渲染），
+// 不是憑空猜測；detail欄位供get_tool_details/UI顯示這個事實，避免使用者
+// 誤以為google/sourceforge/codeproject/deepwiki是各自站內原生搜尋結果。
+const BROWSER_SEARCH_SOURCES = ['wiki', 'stackoverflow', 'github', 'google', 'sourceforge', 'codeproject', 'deepwiki'];
+
+// tw_stock_db客製: browser_search結果的persistentStorage快取——跟FileCache
+// 既有的「容量上限+LRU淘汰」原則共用同一套class（見FileCache），但用
+// 獨立的IndexedDB資料庫/獨立容量預算（20MB，搜尋結果都是精簡文字，不需要
+// 跟檔案上傳/AI匯出檔共用256MB預算），另外疊加一個FileCache本身沒有的
+// TTL規則——使用者明確要求「生命週期1天」，見_getCachedSearchResult()。
+const SEARCH_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SEARCH_CACHE_MAX_BYTES = 20 * 1024 * 1024;
+
+// tw_stock_db客製: 2026-09-09使用者要求「不論多大的文章都可以分段summary」
+// ——summarize_large_text/rag_chunk_document的長文件fallback共用的切塊大小。
+// 6000字元大約落在多數模型單次prompt可以安全處理、又不會太瑣碎導致區塊數
+// 暴增、往返次數過多的中間值——不是精確的token數換算（不同語言/模型的
+// tokenizer比例不同），只是一個實務上安全的經驗值。
+const SUMMARIZE_CHUNK_SIZE = 6000;
+// tw_stock_db客製: rag_chunk_document的長文件分段窗口大小——比
+// SUMMARIZE_CHUNK_SIZE大，因為這裡的prompt本身要求模型輸出結構化JSON
+// （id/content/dependencies/preConditions/tags逐一寫出來），比純摘要文字
+// 需要更多輸出token預算，窗口太大容易讓模型在單次回應裡把JSON寫壞/被
+// max_tokens腰斬；20000是原本程式碼裡docText.slice(0,25000)這個既有經驗值
+// 留一些headroom後的版本，不是重新從零估算。
+const RAG_CHUNK_WINDOW_SIZE = 20000;
 
 // tw_stock_db客製: delegate_to_subagent委派出去的子任務迴圈輪數上限——
 // 瀏覽器端沒有redmine版本「佔用共用伺服器執行緒」的限制，不需要照抄它的
@@ -1677,6 +1731,12 @@ class FloatingAssistant {
         // 系統一樣依mount實例分開資料庫，避免同一頁掛多個AI助理實例時互相
         // 干擾彼此的檔案快取。
         this.fileCache = new FileCache('FloatingAssistantFiles_' + ragDbSuffix, this._getFileCacheLimitBytes());
+        // tw_stock_db客製: 2026-09-09——browser_search工具結果的persistentStorage
+        // 快取，跟fileCache一樣是獨立的FileCache實例（獨立IndexedDB資料庫、
+        // 獨立20MB容量預算，不跟檔案上傳/AI匯出檔共用），另外疊加1天TTL（見
+        // SEARCH_CACHE_TTL_MS/_getCachedSearchResult()）。
+        this.searchCache = new FileCache('FloatingAssistantSearchCache_' + ragDbSuffix, SEARCH_CACHE_MAX_BYTES);
+        this._searchCachePurgedOnce = false;
         // tw_stock_db客製: 階段5——互動viewer的結構化狀態儲存（見KVStore/
         // 計畫文件階段5），跟fileCache一樣依mount實例分開資料庫。
         this.stateStore = new KVStore('FloatingAssistantState_' + ragDbSuffix);
@@ -1691,29 +1751,77 @@ class FloatingAssistant {
         this.domains = Object.fromEntries(
             Object.entries(SUBAGENT_DOMAIN_REGISTRY).map(([k, v]) => [k, { ...v }])
         );
-        // tw_stock_db客製: 2026-09-06使用者要求——floating-assistant.js內建的
-        // 一大批通用工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫，
-        // 共22個，見_registerBuiltinAiTools）**預設**('domains')改成只透過
-        // delegate_to_subagent間接觸及（見_getRootToolNames），不再無條件直接掛
-        // 根層級對話——使用者明確要求「統一用domains」，不要讓兩個host各跑一套
-        // 不同的曝光模式；根層級對話因此永遠只看得到host自己註冊的工具+
-        // get_tool_details+delegate_to_subagent這兩個核心plumbing，稀釋模型
-        // 注意力/幻覺風險降到最低，跟piano-web/tw_stock_db兩邊都適用。保留
-        // options.builtinToolExposure:'root'當escape hatch（退回無條件全部直接
-        // 掛根層級的舊行為），供之後真的需要時使用，但不再是預設。實測確認
-        // web/index.html的AI_SYSTEM_PROMPT完全沒有直接引用這22個工具的名稱
-        // （只透過工具自己的description+delegate_to_subagent間接曝光），所以
-        // 這個預設值變更不需要同步改tw_stock_db自己的system prompt。
-        this.builtinToolExposure = (options.builtinToolExposure === 'root') ? 'root' : 'domains';
+        // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
+        // builtinToolExposure('root'/'domains')二選一，擴充成三種
+        // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
+        // get builtinToolExposure()兩個accessor的說明）。這個設定現在是
+        // advancedSettings的一部分（持久化在localStorage、可以在Advance
+        // Settings面板即時切換，不用重新整理頁面就生效——見
+        // _getRootToolNames()/_buildDelegateToSubagentDescription()都是即時
+        // 讀取，不是建構子跑一次就固定），constructor options只在「這個瀏覽器
+        // 從來沒有儲存過Advance設定」時提供初始預設值，之後使用者自己在面板
+        // 改過就不再被options覆蓋（跟其他持久化設定同一套邏輯）。保留
+        // options.builtinToolExposure:'root'當舊版escape hatch的向下相容別名
+        // （對應到新的'off'模式），沒有任何一邊有指定時退回內建預設'router'
+        // （＝原本的'domains'行為，維持既有預設不變）。
+        if (localStorage.getItem(this.ADVANCED_SETTINGS_KEY) === null) {
+            if (['router', 'full', 'off'].includes(options.multiSubAgentMode)) {
+                this.advancedSettings.multiSubAgentMode = options.multiSubAgentMode;
+            } else if (options.builtinToolExposure === 'root') {
+                this.advancedSettings.multiSubAgentMode = 'off';
+            }
+            if (typeof options.browserSearchEnabled === 'boolean') {
+                this.advancedSettings.browserSearchEnabled = options.browserSearchEnabled;
+            }
+            if (typeof options.browserSearchProxyUrl === 'string' && options.browserSearchProxyUrl.trim()) {
+                this.advancedSettings.browserSearchProxyUrl = options.browserSearchProxyUrl.trim();
+            }
+        }
+        this._syncBrowserSearchDomainEnabled();
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
+        this._updateDelegateToSubagentDescription();
         // tw_stock_db客製: 只在「完全沒有對話紀錄」時（全新安裝、或上次
         // 結束時剛好是空的）主動插入一次建議操作訊息，不要每次mount都插入
         // ——this.messages在上面_loadPersistedChatHistory()已經還原過，這裡
         // 看到的長度就是使用者實際的對話狀態。見insertSuggestionChipsMessage()
         // 的說明。
         if (!this.messages.length) this.insertSuggestionChipsMessage();
+    }
+
+    // tw_stock_db客製: 2026-09-09——multiSubAgentMode三態的存取入口，永遠讀
+    // this.advancedSettings（即時反映Advance Settings面板的調整，不是建構子
+    // 跑一次就固定的值）。'router'（預設）＝原本的兩層委派（根層級不知道
+    // domain清單，先問路由子agent）；'full'＝根層級直接看到全部domain清單+
+    // delegate_to_subagent會鼓勵直接指定domain（省掉路由子agent那一輪往返，
+    // 代價是根層級system prompt/tools多一些常駐token）；'off'＝完全沒有
+    // subagent機制，22＋1個內建工具直接掛根層級（等同舊版
+    // builtinToolExposure:'root'）。任何非法值一律退回'router'。
+    get multiSubAgentMode() {
+        const v = this.advancedSettings && this.advancedSettings.multiSubAgentMode;
+        return (v === 'full' || v === 'off') ? v : 'router';
+    }
+
+    // tw_stock_db客製: 向下相容既有程式碼裡任何直接讀this.builtinToolExposure
+    // 的地方（互動viewer/_getRootToolNames等）——'off'對應舊的'root'
+    // （不過濾，全部工具直接曝光），'router'/'full'都對應舊的'domains'
+    // （22＋1個內建工具domain-gated，只差在delegate_to_subagent的description
+    // 內容跟根層級system prompt要不要多列一份domain清單）。
+    get builtinToolExposure() {
+        return this.multiSubAgentMode === 'off' ? 'root' : 'domains';
+    }
+
+    // tw_stock_db客製: browser_search這個domain的enabled狀態不是寫死的
+    // module常數（跟其他內建domain不同），而是跟著Advance
+    // Settings的browserSearchEnabled即時同步——建構子跑一次、
+    // _saveAdvancedSettings()裡使用者改變這個checkbox時也要再跑一次，否則
+    // 面板上關掉了、_routeTaskToDomains/_delegateToSubagentDomain卻還是覺得
+    // 這個domain可用。
+    _syncBrowserSearchDomainEnabled() {
+        if (this.domains.browser_search) {
+            this.domains.browser_search.enabled = !!(this.advancedSettings && this.advancedSettings.browserSearchEnabled);
+        }
     }
 
     setSystemPrompt(prompt) {
@@ -1761,6 +1869,13 @@ class FloatingAssistant {
     // 認得這個新domain。
     register_domain(key, { label, toolNames, systemPrompt, enabled = true } = {}) {
         this.domains[key] = { label, toolNames: Array.isArray(toolNames) ? toolNames : [], systemPrompt, enabled };
+        // tw_stock_db客製: 2026-09-09——'full'模式下delegate_to_subagent的
+        // description會列出目前全部enabled domain，host頁面新增domain後要
+        // 讓這份清單立刻反映最新狀態（不用等使用者手動觸發一次
+        // _saveAdvancedSettings才更新）。_updateDelegateToSubagentDescription
+        // 內部有防呆（工具還沒註冊時直接跳過），host在建構子完成前呼叫
+        // register_domain也不會出錯。
+        this._updateDelegateToSubagentDescription();
         return this;
     }
 
@@ -1819,6 +1934,17 @@ class FloatingAssistant {
             // 限制），跟_exportSceneToMp4/_export2DAnimationToMp4的
             // durationSeconds處理方式一致，三處同步移除上限。
             mp4DefaultDurationSeconds: 5,
+            // tw_stock_db客製: 2026-09-09使用者要求的三種multi-subagent模式，
+            // 見get multiSubAgentMode()的說明。預設'router'＝維持原本的兩層
+            // 委派行為不變。
+            multiSubAgentMode: 'router',
+            // tw_stock_db客製: browser_search子agent預設關閉——需要使用者自己
+            // 部署Cloudflare Worker（見web/cloudflare-worker/browser-search-worker.js）
+            // 並填入browserSearchProxyUrl才有作用，跟其他一開箱就能用的內建
+            // domain不同，不適合預設開啟（開了但沒配置端點只會讓根模型/路由
+            // 子agent誤以為有這個能力可用卻每次都失敗）。
+            browserSearchEnabled: false,
+            browserSearchProxyUrl: '',
         };
     }
 
@@ -2106,6 +2232,9 @@ class FloatingAssistant {
                 const n = Number(raw.mp4DefaultDurationSeconds);
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
+            multiSubAgentMode: ['router', 'full', 'off'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
+            browserSearchEnabled: raw.browserSearchEnabled === true,
+            browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
         };
     }
 
@@ -2139,6 +2268,13 @@ class FloatingAssistant {
         // 整理頁面——下一次saveGeneratedFile()觸發LRU淘汰檢查時就會照新的
         // 上限計算，這裡只是同步this.fileCache.maxBytes這個數字本身。
         if (this.fileCache) this.fileCache.setMaxBytes(this._getFileCacheLimitBytes());
+        // tw_stock_db客製: 2026-09-09——multiSubAgentMode/browserSearchEnabled
+        // 都可能剛被使用者在Advance Settings面板改過，這裡統一同步兩個
+        // 衍生狀態：browser_search這個domain的enabled旗標、
+        // delegate_to_subagent工具description的實際文字內容（'router'/'full'
+        // 兩種模式的描述不同，見_buildDelegateToSubagentDescription）。
+        this._syncBrowserSearchDomainEnabled();
+        this._updateDelegateToSubagentDescription();
         this._refreshSystemPromptMessage();
     }
 
@@ -2180,20 +2316,31 @@ ${fnData.code}
     }
 
     _registerBuiltinAiTools() {
-        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——這22個
-        // 通用內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫）
-        // 改用registerOptional()註冊，讓_getRootToolNames()知道哪些工具要從
-        // 根層級對話清單排除（builtinToolExposure:'domains'，見建構子；預設
-        // 就是這個模式）。這些工具本身完全不受影響——照樣註冊進this.tools、
-        // 照樣可以被callFromAI/get_tool_details/_runSubAgentTask（domain委派）
-        // 使用，只是不會出現在根層級的tools參數/文字協定工具清單裡。
+        // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——這批
+        // 通用內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫/
+        // 2026-09-09新增的browser_search，共23個）改用registerOptional()註冊，
+        // 讓_getRootToolNames()知道哪些工具要從根層級對話清單排除。這些工具
+        // 本身完全不受影響——照樣註冊進this.tools、照樣可以被callFromAI/
+        // get_tool_details/_runSubAgentTask（domain委派）使用，只是不一定會
+        // 出現在根層級的tools參數/文字協定工具清單裡。
         // get_tool_details跟delegate_to_subagent這兩個核心plumbing工具刻意
         // 維持用this.register_openai_tool()直接註冊，不經過registerOptional，
-        // 任何模式下都留在根層級。
+        // 'router'/'full'模式下都留在根層級（'off'模式的例外處理見
+        // _getRootToolNames()——那裡才是真正決定「這個模式下根層級看不看得到
+        // 某個工具」的地方，不是這裡）。
+        // tw_stock_db客製: 2026-09-09——_domainGatedToolNames改成無條件收錄
+        // （不再依當下this.builtinToolExposure決定要不要加入），因為
+        // multiSubAgentMode現在是可以在Advance Settings面板即時切換的
+        // localStorage設定，不再是建構子跑一次就固定的值；如果只在
+        // 'domains'模式下才收錄，使用者從'off'切回'router'/'full'時這個Set
+        // 會是空的，_getRootToolNames()就沒東西可以過濾。改成固定收錄「這23個
+        // 工具本來就是domain-gated候選」這個事實，實際上要不要過濾完全交給
+        // _getRootToolNames()依當下模式決定，兩者職責分開、不會因為切換模式
+        // 的先後順序產生不一致。
         this._domainGatedToolNames = new Set();
         const registerOptional = (name, desc, cb, schema) => {
             this.register_openai_tool(name, desc, cb, schema);
-            if (this.builtinToolExposure === 'domains') this._domainGatedToolNames.add(name);
+            this._domainGatedToolNames.add(name);
         };
         registerOptional('list_ai_functions',
             '列舉所有AI自製函式，返回函式名稱和描述的清單。',
@@ -2309,91 +2456,60 @@ ${fnData.code}
         // ============================================================
         // 📚 長文章自動語意切塊工具 (Semantic Dependency-Chunking)
         // ============================================================
+        // tw_stock_db客製: 2026-09-09使用者明確要求「不論多大的文章都可以
+        // 分段summary，無論是upload、webfetch，或任何現有AI整合到的情境」
+        // ——這個工具原本docText超過25000字元就直接`.slice(0,25000)`截斷丟棄
+        // 後面的部分，明顯不符合這個要求，見下方_chunkDocumentForRag()的
+        // 說明。另外新增file_id（選填，跟summarize_large_text/
+        // parse_uploaded_file共用同一份persistentStorage/fileCache）當
+        // documentText的替代輸入——文件已經在persistentStorage時（使用者
+        // 上傳、或AI用fetch_web_page抓回來存的），不需要先整段讀出來再當
+        // 參數傳回來一次（那樣文件內容還是得先完整進到呼叫端自己的context/
+        // 輸出token預算裡，等於沒解決「多長都能處理」這個根本問題），直接
+        // 給file_id、由這個工具自己去讀完整內容。
         registerOptional('rag_chunk_document',
-            '【長文組織器】將超大文章、程式專案或長文件，在背景進行章節拆解，為每個章節提煉精準摘要，並自動設定 dependencies 與 preconditions。參數: {"documentText":"超長文章內文","title":"文章大標題","tags":"自訂標籤(選填)"}',
+            '【長文組織器】將超大文章、程式專案或長文件，在背景進行章節拆解，為每個章節提煉精準摘要，並自動設定 dependencies 與 preconditions。不論文件多長都會完整處理（內部自動分段、不會截斷丟棄），文件已經在persistentStorage時（使用者上傳的檔案、或AI用fetch_web_page/summarize_large_text看過的file_id）建議直接傳file_id，不用自己先讀出全文再貼進documentText。參數: {"documentText":"文章內文（跟file_id擇一）","file_id":"（跟documentText擇一）persistentStorage裡的檔案id","entry_path":"（選填，file_id指向壓縮檔時用）","title":"文章大標題","tags":"自訂標籤(選填)"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const docText = String(parsed.documentText || '').trim();
                 const title = String(parsed.title || '長文件分析').trim();
-                if (!docText) return JSON.stringify({ ok: false, error: '缺少 documentText 參數' });
-                
-                this._log("📚 正在解析長文「" + title + "」，進行動態切塊中...");
-                
-                const { apiKey, apiUrl, apiModel } = this._getApiConfig();
-                if (!apiKey) return JSON.stringify({ ok: false, error: '缺少 API KEY，無法在本地調用 AI 解析長文' });
-
-                const prompt = `你是一個專業的文件分析官。
-現在有一篇名為「${title}」的大型文章，由於內文過於龐大，LLM 容易迷失。
-請幫我將這篇文章進行章節拆碎與切塊（Semantic Chunking）。為每個重要的章節或小段，撰寫精準的核心內文總結。
-更重要的是：你必須為每個章節，建立承接它的 \`dependencies\`（依賴節點ID）與 \`preConditions\`（需要理解的前置背景）。
-例如：
-- 第二小節(例如：'node_2') 的 dependencies 必須包含第一小節(例如：'node_1')。
-- 第三小節(例如：'node_3') 依賴 第二小節。
-
-請嚴格以下列 JSON Array 格式輸出，不要含有任何額外文字或 markdown 標記：
-[
-  {
-    "id": "一組唯一的英文蛇形 ID，如 ${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_sec_1",
-    "content": "此小節的核心總結與關鍵代碼/事實",
-    "dependencies": [],
-    "preConditions": ["需要先了解的文章段落背景或前提"],
-    "tags": "document_section, ${parsed.tags || 'docs'}"
-  },
-  ...
-]
-
-超大文章內容：\n${docText.slice(0, 25000)}`;
-
-                try {
-                    const response = await fetch(`${apiUrl}/chat/completions`, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${apiKey}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            model: apiModel,
-                            messages: [{ role: "user", content: prompt }],
-                            temperature: 0.2,
-                            stream: false
-                        })
-                    });
-
-                    if (!response.ok) throw new Error("HTTP " + response.status);
-                    const data = await response.json();
-                    const reply = data.choices[0]?.message?.content?.trim() || "";
-                    const jsonMatch = reply.match(/\[[\s\S]*\]/);
-                    if (!jsonMatch) throw new Error('AI 回傳格式不符合 JSON Array 期待');
-
-                    const chunks = JSON.parse(jsonMatch[0]);
-                    const ids = [];
-
-                    for (const chunk of chunks) {
-                        const newId = await this.ragSystem.add(chunk.content, {
-                            id: chunk.id,
-                            dependencies: chunk.dependencies || [],
-                            preConditions: chunk.preConditions || [],
-                            source: `chunk_document:${title}`,
-                            tags: chunk.tags || 'document_section'
-                        });
-                        ids.push(newId);
+                const fileId = String(parsed.file_id || '').trim();
+                let docText = String(parsed.documentText || '').trim();
+                if (!docText && fileId) {
+                    const record = await this.fileCache.get(fileId);
+                    if (!record || record.kind !== 'uploaded') {
+                        return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
                     }
+                    try {
+                        docText = await this._getFullTextFromUploadedFile(record, parsed.entry_path);
+                    } catch (err) {
+                        return JSON.stringify({ ok: false, error: String(err.message || err) });
+                    }
+                }
+                if (!docText || !docText.trim()) return JSON.stringify({ ok: false, error: '缺少documentText或file_id參數（擇一提供）' });
 
+                this._log("📚 正在解析長文「" + title + "」，進行動態切塊中...");
+                try {
+                    const ids = await this._chunkDocumentForRag(docText, title, String(parsed.tags || 'docs'));
                     // 強制刷新 TF-IDF 索引
                     const allRecords = await this.ragSystem.getAll();
                     this.ragSystem.engine.updateIDF(allRecords.map(r => r.content));
-
-                    return JSON.stringify({ 
-                        ok: true, 
+                    return JSON.stringify({
+                        ok: true,
                         message: "成功將文件「" + title + "」切割為 " + ids.length + " 個帶有依賴關係的知識節點！",
-                        nodeIds: ids 
+                        nodeIds: ids
                     });
-
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: "解析長文失敗: " + err.message });
                 }
-            }
+            },
+            { type: 'object', properties: {
+                documentText: { type: 'string', description: '文章內文（跟file_id擇一）' },
+                file_id: { type: 'string', description: '（跟documentText擇一）persistentStorage裡的檔案id' },
+                entry_path: { type: 'string', description: '（選填）file_id指向壓縮檔時，要處理的內部項目路徑' },
+                title: { type: 'string', description: '文章大標題' },
+                tags: { type: 'string', description: '（選填）自訂標籤' },
+            }, additionalProperties: false }
         );
 
         registerOptional('rag_delete',
@@ -2523,6 +2639,55 @@ ${fnData.code}
             { type: 'object', properties: {
                 file_id: { type: 'string', description: '要解析的檔案id，用list_uploaded_files取得' },
                 entry_path: { type: 'string', description: '（選填）壓縮檔內要抽取內容的項目路徑' },
+            }, required: ['file_id'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-09使用者明確要求——「不論多大的文章都可以
+        // 分段summary，無論是upload、webfetch，或任何現有AI整合到的情境」。
+        // parse_uploaded_file對純文字類內容超過8000字元直接截斷丟棄（見
+        // _parseUploadedFileContent），適合快速看開頭，但沒辦法真正涵蓋全文；
+        // 這個工具改用_summarizeLargeTextChunks()分段map-reduce，不論原始
+        // 內容多長都會涵蓋到（只是要多花幾次LLM往返）。跟parse_uploaded_file
+        // 共用同一份persistentStorage（fileCache）+file_id，不是另一套獨立
+        // 儲存機制——任何情境（使用者📎上傳、AI自己用fetch_web_page抓回來
+        // 存進去的網頁內容、未來任何新增的內容來源）只要走fileCache這條路，
+        // 都能直接用這個工具處理，不需要每個內容來源各自重新發明一套「大型
+        // 內容怎麼摘要」的邏輯。
+        registerOptional('summarize_large_text',
+            '把一個已存進persistentStorage的大型文字內容（使用者上傳的檔案，或AI自己透過fetch_web_page等工具抓回來存進去的網頁內容——這類內容一樣會出現在list_uploaded_files清單裡）分段摘要——不論原始內容多長，都會自動切成多個區塊各自摘要、再彙整成一份涵蓋全文重點的最終摘要，不像parse_uploaded_file遇到超長純文字內容時會直接截斷丟棄後面的部分。壓縮檔（zip/tar/tgz）必須指定entry_path指定要摘要哪個內部檔案，不能對整個壓縮檔本身摘要；xlsx/docx/pptx這類二進位格式請改用parse_uploaded_file取得結構化內容，這個工具只適合純文字/HTML/Markdown/JSON這類本質上是一大段文字的內容。內容越長，處理時間越久（每個區塊都是一次LLM往返），不是瞬間完成。參數: {"file_id":"...", "entry_path":"（選填，壓縮檔用）", "focus":"（選填）你想特別關注的重點方向，會用來引導每個區塊的摘要方向"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（用list_uploaded_files查詢可用的file_id）' });
+                const record = await this.fileCache.get(fileId);
+                if (!record || record.kind !== 'uploaded') {
+                    return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
+                }
+                let fullText;
+                try {
+                    fullText = await this._getFullTextFromUploadedFile(record, parsed.entry_path);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                if (!fullText || !fullText.trim()) return JSON.stringify({ ok: false, error: '這個檔案/項目沒有可摘要的文字內容' });
+                try {
+                    const summary = await this._summarizeLargeTextChunks(fullText, String(parsed.focus || '').trim());
+                    return JSON.stringify({
+                        ok: true,
+                        filename: record.filename,
+                        totalChars: fullText.length,
+                        chunkCount: Math.max(1, Math.ceil(fullText.length / SUMMARIZE_CHUNK_SIZE)),
+                        summary,
+                    });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: '要摘要的檔案id，用list_uploaded_files取得' },
+                entry_path: { type: 'string', description: '（選填）壓縮檔內要摘要的項目路徑' },
+                focus: { type: 'string', description: '（選填）想特別關注的重點方向，會用來引導每個區塊的摘要' },
             }, required: ['file_id'], additionalProperties: false }
         );
 
@@ -2766,6 +2931,162 @@ ${fnData.code}
             },
             { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋工具（browser_search
+        // domain唯一的工具）。實際查詢邏輯見_browserSearch()——這裡只負責
+        // 參數解析/cache命中判斷/呼叫Worker/寫回cache，跟其他registerOptional
+        // 工具一樣的薄callback模式。
+        registerOptional('browser_search',
+            `向外部網站搜尋資料（技術文件/開源專案/問答討論串/一般網頁），來源代號：${BROWSER_SEARCH_SOURCES.join('/')}。google實際上是透過DuckDuckGo代打（Google對自動化請求的回應格式不穩定，不是真的呼叫Google）；sourceforge/codeproject/deepwiki是用site:限定範圍的網頁搜尋代打（這三個網站自己的搜尋功能無法從伺服器端穩定存取），只有wiki/stackoverflow/github三個是呼叫各自的官方搜尋API。結果只有標題+連結+摘要，不是完整網頁內容，需要更多細節時把最相關的連結告訴使用者、不要自己編造網頁沒提到的細節。查詢結果會快取1天，同樣的查詢短時間內重複呼叫不會產生新的網路請求。這個工具需要host頁面已經設定好Cloudflare Worker端點才能使用，若回傳"尚未設定"錯誤，請直接把這個限制告訴使用者，不要嘗試用其他工具繞過。參數: {"query":"搜尋關鍵字","sources":["wiki","github",...]}（sources選填，留空＝查詢全部${BROWSER_SEARCH_SOURCES.length}個來源）`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const query = String(parsed.query || '').trim();
+                if (!query) return JSON.stringify({ ok: false, error: '缺少query參數' });
+                const sources = Array.isArray(parsed.sources) && parsed.sources.length
+                    ? parsed.sources.map(String).filter(s => BROWSER_SEARCH_SOURCES.includes(s))
+                    : BROWSER_SEARCH_SOURCES.slice();
+                if (!sources.length) return JSON.stringify({ ok: false, error: `sources參數沒有任何合法值，可用來源：${BROWSER_SEARCH_SOURCES.join('/')}` });
+                try {
+                    return JSON.stringify(await this._browserSearch(query, sources));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                query: { type: 'string', description: '搜尋關鍵字' },
+                sources: { type: 'array', items: { type: 'string', enum: BROWSER_SEARCH_SOURCES }, description: '（選填）要查詢的來源子集，留空＝全部來源' },
+            }, required: ['query'], additionalProperties: false }
+        );
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-09——browser_search工具的實作，含
+    // persistentStorage快取（1天TTL + LRU容量淘汰，見searchCache/
+    // SEARCH_CACHE_TTL_MS/SEARCH_CACHE_MAX_BYTES的說明）跟呼叫Cloudflare
+    // Worker（web/cloudflare-worker/browser-search-worker.js）取得未命中
+    // 快取的來源。
+    // ============================================================
+
+    // 快取鍵故意用「來源+正規化後的查詢字串」直接當IndexedDB的id（不用另外
+    // 算hash）——FileCache的keyPath是任意字串都合法，查詢字串長度上限
+    // 截斷在200字元純粹防呆（正常搜尋關鍵字不會這麼長）。
+    _searchCacheKey(source, query) {
+        const normalized = String(query || '').trim().toLowerCase().slice(0, 200);
+        return `${source}::${normalized}`;
+    }
+
+    // tw_stock_db客製: 讀取單一來源的快取結果，命中且未過期(見
+    // SEARCH_CACHE_TTL_MS)才回傳；沒命中或已過期回傳null（過期的記錄順便
+    // 主動刪掉，不用等LRU容量淘汰才清掉，讓「生命週期1天」這個規則不會因為
+    // 容量預算還沒滿就一直延遲生效）。FileCache.get()本身會順便把
+    // lastAccessedAt洗新，符合「跟使用空間的原則一樣，用LRU找到沒在用的
+    // 移除」——只要這筆快取還在1天內持續被查詢命中，就會一直被視為「還在
+    // 用」，不會被優先淘汰。
+    async _getCachedSearchResult(source, query) {
+        const id = this._searchCacheKey(source, query);
+        let record;
+        try { record = await this.searchCache.get(id); } catch (_) { return null; }
+        if (!record) return null;
+        if (Date.now() - (record.createdAt || 0) > SEARCH_CACHE_TTL_MS) {
+            this.searchCache.delete(id).catch(() => {});
+            return null;
+        }
+        try {
+            const text = await record.blob.text();
+            return JSON.parse(text);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    async _setCachedSearchResult(source, query, resultObj) {
+        const id = this._searchCacheKey(source, query);
+        const blob = new Blob([JSON.stringify(resultObj)], { type: 'application/json' });
+        try {
+            await this.searchCache.put(`search_${source}_${query.slice(0, 60)}`, 'application/json', blob, 'search_cache', id);
+        } catch (err) {
+            console.warn('browser_search快取寫入失敗:', err);
+        }
+    }
+
+    // tw_stock_db客製: 主動清掉已過期的搜尋快取記錄（不是正確性必要的步驟
+    // ——_getCachedSearchResult本身在讀取時就會擋掉過期記錄——純粹是為了讓
+    // 過期記錄不會一直占用20MB預算、擠壓還沒過期的記錄提早被LRU淘汰）。
+    // 每個實例生命週期只主動掃描一次（用_searchCachePurgedOnce guard），
+    // 避免每次呼叫browser_search都要整包getAll()掃一次容量不大但仍是額外
+    // 開銷的搜尋快取store。
+    async _purgeExpiredSearchCache() {
+        if (this._searchCachePurgedOnce) return;
+        this._searchCachePurgedOnce = true;
+        try {
+            const all = await this.searchCache.getAll();
+            const now = Date.now();
+            const expiredIds = all.filter(r => now - (r.createdAt || 0) > SEARCH_CACHE_TTL_MS).map(r => r.id);
+            if (expiredIds.length) await this.searchCache.deleteMany(expiredIds);
+        } catch (err) {
+            console.warn('搜尋快取過期清理失敗:', err);
+        }
+    }
+
+    // tw_stock_db客製: 查詢單一query在多個sources底下的結果——每個來源先查
+    // 快取，全部命中的話完全不打Worker（0次網路請求）；有任何來源沒命中，
+    // 一次HTTP請求把「所有未命中的來源」一起送給Worker（Worker內部平行處理
+    // 各來源），不會每個來源各自送一次請求。回傳格式:
+    // {ok:true, query, results:{來源代號: {items:[{title,url,snippet}], note?}}}
+    // 或某個來源查詢失敗時，該來源底下是{error:'...'}而不是{items:[...]}
+    // （單一來源失敗不影響其他來源的結果，見下面對Worker回應的合併邏輯）。
+    async _browserSearch(query, sources) {
+        if (!this.advancedSettings.browserSearchEnabled) {
+            return { ok: false, error: 'browser_search子agent目前未啟用，請先到Advance Settings的「子Agent」分頁開啟。' };
+        }
+        this._purgeExpiredSearchCache();
+        const results = {};
+        const misses = [];
+        for (const source of sources) {
+            const cached = await this._getCachedSearchResult(source, query);
+            if (cached) results[source] = Object.assign({ fromCache: true }, cached);
+            else misses.push(source);
+        }
+        if (misses.length) {
+            const proxyUrl = String(this.advancedSettings.browserSearchProxyUrl || '').trim();
+            if (!proxyUrl) {
+                for (const source of misses) results[source] = { error: '尚未設定browserSearchProxyUrl（Cloudflare Worker端點），請先在Advance Settings的「子Agent」分頁填入後再使用browser_search。' };
+                return { ok: true, query, results };
+            }
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+            try {
+                const resp = await fetch(proxyUrl.replace(/\/$/, '') + '/browser-search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, sources: misses }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+                if (!resp.ok) {
+                    const errText = await resp.text().catch(() => '');
+                    for (const source of misses) results[source] = { error: `Worker回應HTTP ${resp.status}: ${errText.slice(0, 200)}` };
+                } else {
+                    const data = await resp.json();
+                    const workerResults = (data && data.results) || {};
+                    for (const source of misses) {
+                        const entry = workerResults[source];
+                        if (entry && !entry.error) {
+                            results[source] = entry;
+                            this._setCachedSearchResult(source, query, entry).catch(() => {});
+                        } else {
+                            results[source] = entry || { error: 'Worker沒有回傳這個來源的結果' };
+                        }
+                    }
+                }
+            } catch (err) {
+                clearTimeout(timeoutId);
+                const msg = err && err.name === 'AbortError' ? '請求逾時（20秒）' : String(err.message || err);
+                for (const source of misses) results[source] = { error: `呼叫Worker失敗: ${msg}` };
+            }
+        }
+        return { ok: true, query, results };
     }
 
     _refreshSystemPromptMessage() {
@@ -2817,21 +3138,60 @@ ${fnData.code}
         return entries.filter(([name]) => allowedSet.has(name));
     }
 
-    // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——根層級對話
-    // 實際會看到的工具名稱清單。builtinToolExposure:'root'（escape hatch）時
-    // 回傳null，交給_getCombinedToolEntries/_buildNativeToolsSchema維持原本
-    // 「不過濾、回傳全部」的行為，完全不影響任何呼叫端。預設'domains'模式時
-    // 回傳一個明確的allowlist：host頁面自己註冊的工具（含這22個以外的任何
-    // 工具、以及使用者透過Skill編輯器新增的customTools）＋這兩個一律留在根
-    // 層級的核心plumbing（get_tool_details/delegate_to_subagent），22個
-    // domain-gated的通用內建工具（見_registerBuiltinAiTools的registerOptional）
-    // 從這份清單排除，只能透過delegate_to_subagent間接觸及——工具本身仍然
-    // 完整存在於this.tools，只是不出現在根層級的tools參數/文字協定清單裡。
+    // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊，2026-09-09
+    // 擴充成三種multiSubAgentMode——根層級對話實際會看到的工具名稱清單。
+    // 'off'模式：23個domain-gated的通用內建工具直接曝光（跟舊版
+    // builtinToolExposure:'root'行為一致），但**排除delegate_to_subagent**
+    // ——這個模式代表「沒有subagent」，委派入口本身不該出現在根模型看得到
+    // 的工具清單裡；get_tool_details維持存在（這是文字協定下任何模式都用得
+    // 到的按需查詢機制，跟subagent機制無關，見get_tool_details註冊處的
+    // 說明）。'router'/'full'兩種模式都回傳明確的allowlist：host頁面自己
+    // 註冊的工具＋customTools＋get_tool_details/delegate_to_subagent這兩個
+    // 核心plumbing，23個domain-gated的通用內建工具從這份清單排除，只能透過
+    // delegate_to_subagent間接觸及——工具本身仍然完整存在於this.tools，只是
+    // 不出現在根層級的tools參數/文字協定清單裡。'router'跟'full'在這個方法
+    // 裡回傳的清單完全一樣，兩者的差異在delegate_to_subagent工具本身的
+    // description內容（見_buildDelegateToSubagentDescription），不是根層級
+    // 看不看得到哪些工具名稱。
     _getRootToolNames() {
-        if (this.builtinToolExposure !== 'domains') return null;
+        const mode = this.multiSubAgentMode;
         const custom = this.advancedSettings.customTools.map(t => t.name);
+        if (mode === 'off') {
+            const allBuiltins = Object.keys(this.tools).filter(n => n !== 'delegate_to_subagent');
+            return allBuiltins.concat(custom);
+        }
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
         return rootBuiltins.concat(custom);
+    }
+
+    // tw_stock_db客製: 2026-09-09——multiSubAgentMode三態裡'router'跟'full'
+    // 的核心差異就在這個工具的description內容。'router'（預設，跟原本行為
+    // 完全一致）刻意不列出domain代號清單，根模型不知道有哪些domain可以指定，
+    // domain留空時一律先問Layer 1路由子agent（_routeTaskToDomains，多一次
+    // LLM往返，但根層級system prompt/tools本身不用多背一份domain清單，每輪
+    // 對話都省token）。'full'則反過來：根層級system prompt直接列出全部
+    // enabled domain的代號+label，鼓勵根模型自己判斷、直接指定domain（跳過
+    // Layer 1路由子agent那一次往返），代價是這份清單每輪對話都會出現在根
+    // system prompt/tools schema裡，多佔一些常駐token——這是兩種模式在
+    // 「每輪都多付一點token」vs「委派時多一次LLM往返」之間的取捨，讓使用者
+    // 自己依實際任務分布（簡單任務多、還是委派任務多）選擇。'off'模式沒有
+    // delegate_to_subagent（見_getRootToolNames），這個方法回傳的內容不會被
+    // 用到，但仍然照算不特別處理（維持this.tools['delegate_to_subagent']本身
+    // 的description是合理的字串，不留空字串）。
+    _buildDelegateToSubagentDescription() {
+        const base = '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
+        if (this.multiSubAgentMode === 'full') {
+            const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
+            const domainList = enabledDomains.map(([k, d]) => `${k}(${d.label})`).join('、');
+            return base + ` 目前登記的專家領域代號：${domainList}。你已經知道這些領域代號，**建議直接在domain參數指定最相關的一個**（可以省下系統內部自動判斷那一輪額外往返）；如果任務同時橫跨好幾個領域、或你不確定該選哪一個，把domain留空，系統會自動判斷需要開放哪些領域的工具（可以一次判斷出多個）。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（建議指定上面列出的領域代號之一，不確定或橫跨多領域時可留空讓系統自動判斷）"}`;
+        }
+        return base + ' 不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具，一次可以判斷出多個領域一起開放給同一個子agent；已經明確知道領域代號時可以直接指定domain跳過自動判斷。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（選填）領域代號"}';
+    }
+
+    _updateDelegateToSubagentDescription() {
+        if (this.tools && this.tools.delegate_to_subagent) {
+            this.tools.delegate_to_subagent.description = this._buildDelegateToSubagentDescription();
+        }
     }
 
     // tw_stock_db客製: 2026-08-24使用者要求——沒有資工背景的人透過自訂
@@ -4599,6 +4959,12 @@ ${sourceTool.handlerScript}
         if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
         const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
         if (perfMp4DurationInput) perfMp4DurationInput.value = this.advancedSettings.mp4DefaultDurationSeconds;
+        const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
+        if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
+        const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
+        if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
+        const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
+        if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -7986,6 +8352,38 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-09——summarize_large_text用，取得一個
+    // persistentStorage檔案（或壓縮檔內指定項目）的**完整、未截斷**原始
+    // 文字，跟_parseUploadedFileContent()刻意分開（那個方法對純文字/zip
+    // entry/json rawText都會截斷，是設計來給「快速看內容」用的，不適合
+    // 「一定要看到全文」的摘要需求）。xlsx/docx/pptx這類二進位格式沒有
+    // 「原始文字」這個概念，直接讀blob文字只會拿到亂碼，不在這裡處理——
+    // 呼叫端（summarize_large_text工具description）已經明確引導使用者對
+    // 這類格式改用parse_uploaded_file。
+    async _getFullTextFromUploadedFile(record, entryPath) {
+        const format = this._detectFileFormat(record.filename);
+        if (format === 'zip') {
+            await this._ensureJSZipLoaded();
+            const zip = await JSZip.loadAsync(record.blob);
+            if (!entryPath) throw new Error('這是壓縮檔，需要指定entry_path才能讀取內部檔案的完整內容（可以先用parse_uploaded_file查entries清單）');
+            const entry = zip.file(entryPath);
+            if (!entry) throw new Error(`zip內找不到項目: ${entryPath}`);
+            return await entry.async('string');
+        }
+        if (format === 'tar' || format === 'tgz') {
+            const buffer = format === 'tgz' ? await this._gunzipToArrayBuffer(record.blob) : await record.blob.arrayBuffer();
+            const parsedTar = this._parseTarBuffer(buffer);
+            if (!entryPath) throw new Error('這是壓縮檔，需要指定entry_path才能讀取內部檔案的完整內容（可以先用parse_uploaded_file查entries清單）');
+            const raw = this._extractTarEntry(parsedTar, entryPath);
+            if (!raw) throw new Error(`${format}內找不到項目: ${entryPath}`);
+            return new TextDecoder('utf-8', { fatal: false }).decode(raw);
+        }
+        if (['xlsx', 'docx', 'pptx'].includes(format)) {
+            throw new Error(`${format}是二進位格式，沒有「原始文字」可以摘要，請改用parse_uploaded_file取得結構化內容`);
+        }
+        return await record.blob.text();
+    }
+
     async _exportSkillZip() {
         try {
             await this._ensureJSZipLoaded();
@@ -10757,6 +11155,148 @@ ${existingNodeSummaries}
         return Object.assign({ ok: true }, baseFields, { result: text });
     }
 
+    // tw_stock_db客製: 2026-09-09使用者要求「不論多大的文章都可以分段
+    // summary，無論是upload/webfetch/或任何現有情境」——這是共用的單輪、
+    // 非agentic的LLM呼叫helper（送一個system+user訊息、不帶tools、
+    // stream:false），給_summarizeLargeTextChunks()/_chunkDocumentForRag()
+    // 這類「內部要多次呼叫LLM處理一段文字」的流程重用，跟_routeTaskToDomains
+    // 內部那次路由呼叫是同一種「單次分類/摘要用途、不需要完整agentic loop」
+    // 的呼叫模式，抽出來避免重複程式碼。失敗時丟出例外，呼叫端自行決定要
+    // 整段失敗還是（像summarize_large_text那樣）用佔位文字讓其他區塊繼續。
+    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2 } = {}) {
+        const { apiKey, apiUrl, apiModel } = this._getApiConfig();
+        const messages = [];
+        if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+        messages.push({ role: 'user', content: userPrompt });
+        let response;
+        try {
+            response = await fetch(`${apiUrl}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: apiModel, messages, temperature, max_tokens: maxTokens, stream: false }),
+            });
+        } catch (err) {
+            throw new Error(`網路錯誤: ${err.message || err}`);
+        }
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            throw new Error(`API錯誤(${response.status}): ${errText.slice(0, 300)}`);
+        }
+        const data = await response.json();
+        const text = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+        return text.trim();
+    }
+
+    // tw_stock_db客製: 2026-09-09——把任意長度的純文字切成固定大小的區塊，
+    // summarize_large_text跟_chunkDocumentForRag（rag_chunk_document的長文件
+    // fallback路徑）共用同一個切法，單純依字元數切，不做語意邊界判斷（語意
+    // 邊界判斷本身就是LLM要做的事，這裡只負責讓每個區塊的大小落在安全範圍
+    // 內，不會超出單次prompt的合理長度）。
+    _chunkTextByLength(text, chunkSize) {
+        const chunks = [];
+        for (let i = 0; i < text.length; i += chunkSize) chunks.push(text.slice(i, i + chunkSize));
+        return chunks.length ? chunks : [''];
+    }
+
+    // tw_stock_db客製: 2026-09-09使用者明確要求——「不論多大的文章都可以
+    // 分段summary，無論是upload、webfetch，或任何現有AI整合到的情境」。
+    // 這是summarize_large_text工具的核心實作：不管原始文字多長，都先切成
+    // SUMMARIZE_CHUNK_SIZE大小的區塊，對每個區塊各自呼叫LLM摘要（map），
+    // 只有一個區塊時直接回傳那一個摘要；超過一個區塊時，把每個區塊的摘要
+    // 再送一次LLM彙整成一份連貫、去除重複的最終摘要（reduce）。單一區塊
+    // 摘要失敗不會讓整個流程中止——用一段「本區塊摘要失敗」的佔位文字接續
+    // 處理其餘區塊，reduce階段仍然會嘗試把「成功的部分」整合出一份有意義
+    // 的結果，而不是因為一個區塊的暫時性錯誤就整份放棄。
+    async _summarizeLargeTextChunks(fullText, focus) {
+        const chunks = this._chunkTextByLength(fullText, SUMMARIZE_CHUNK_SIZE);
+        const focusNote = focus ? `（重點方向：${focus}）` : '';
+        const chunkSummaries = [];
+        for (let i = 0; i < chunks.length; i++) {
+            const prompt = `這是一份長文件依序切成${chunks.length}段中的第${i + 1}段${focusNote}，請用精簡的重點條列摘要「這一段」的核心內容，保留關鍵事實/數字/名稱，不要加入猜測或臆測後續段落的內容：\n\n${chunks[i]}`;
+            try {
+                chunkSummaries.push(await this._callSimpleCompletion(prompt, { maxTokens: 500 }));
+            } catch (err) {
+                chunkSummaries.push(`[本區塊(第${i + 1}段)摘要失敗: ${String(err.message || err)}]`);
+            }
+        }
+        if (chunkSummaries.length === 1) return chunkSummaries[0];
+        const combinePrompt = `以下是一份長文件依序切成${chunkSummaries.length}段、各段各自的摘要，請把它們彙整成一份連貫、去除重複的最終摘要${focusNote}，涵蓋全文的重點（部分區塊如果標註「摘要失敗」，在最終摘要裡簡短註明「有部分內容因技術問題未能摘要」即可，不用杜撰那段內容）：\n\n` +
+            chunkSummaries.map((s, i) => `[第${i + 1}段摘要]\n${s}`).join('\n\n');
+        return await this._callSimpleCompletion(combinePrompt, { maxTokens: 1500 });
+    }
+
+    // tw_stock_db客製: 2026-09-09使用者明確要求rag_chunk_document也要「不論
+    // 多大都能處理」——原本docText超過25000字元直接`.slice(0,25000)`截斷、
+    // 只用一次LLM呼叫把整段（截斷後的）文字拆成語意分段節點。這裡改成依
+    // RAG_CHUNK_WINDOW_SIZE切成多個窗口，**每個窗口各自呼叫一次同樣的拆解
+    // prompt**（不是縮減prompt本身，語意分段的邏輯完全不變，只是不再要求
+    // 模型一次消化整份文件），再把每個窗口產生的節點合併成一份結果——窗口
+    // 之間用「上一個窗口最後一個節點的id」當提示詞的一部分，讓模型有機會
+    // 把下一個窗口第一個節點的dependencies接到前一個窗口的尾端，盡量維持
+    // 跨窗口的依賴鏈連貫（不是強制保證，模型仍可能選擇不接，這是提示不是
+    // 程式邏輯強制的約束）。單一窗口處理失敗不會讓整份文件的其餘窗口跟著
+    // 失敗——用一個帶錯誤說明的單一節點頂替那個窗口，其餘窗口照常處理。
+    async _chunkDocumentForRag(docText, title, tagsHint) {
+        const windows = this._chunkTextByLength(docText, RAG_CHUNK_WINDOW_SIZE);
+        const idPrefix = title.toLowerCase().replace(/[^a-z0-9]/g, '_') || 'doc';
+        const allIds = [];
+        let prevLastNodeId = null;
+        for (let w = 0; w < windows.length; w++) {
+            const windowNote = windows.length > 1
+                ? `（這是全文依序切成${windows.length}個窗口中的第${w + 1}個窗口，只需要拆解「這個窗口」的內容；${prevLastNodeId ? `如果這個窗口的內容明顯是接續前一個窗口，第一個節點的dependencies可以視情況包含前一個窗口的最後一個節點id"${prevLastNodeId}"` : '這是第一個窗口'}）`
+                : '';
+            const prompt = `你是一個專業的文件分析官。
+現在有一篇名為「${title}」的大型文章，由於內文過於龐大，LLM 容易迷失${windowNote}。
+請幫我將這段文章進行章節拆碎與切塊（Semantic Chunking）。為每個重要的章節或小段，撰寫精準的核心內文總結。
+更重要的是：你必須為每個章節，建立承接它的 \`dependencies\`（依賴節點ID）與 \`preConditions\`（需要理解的前置背景）。
+例如：
+- 第二小節(例如：'node_2') 的 dependencies 必須包含第一小節(例如：'node_1')。
+- 第三小節(例如：'node_3') 依賴 第二小節。
+
+請嚴格以下列 JSON Array 格式輸出，不要含有任何額外文字或 markdown 標記：
+[
+  {
+    "id": "一組唯一的英文蛇形 ID，如 ${idPrefix}_w${w + 1}_sec_1",
+    "content": "此小節的核心總結與關鍵代碼/事實",
+    "dependencies": [],
+    "preConditions": ["需要先了解的文章段落背景或前提"],
+    "tags": "document_section, ${tagsHint}"
+  },
+  ...
+]
+
+這個窗口的文章內容：\n${windows[w]}`;
+
+            let chunks;
+            try {
+                const reply = await this._callSimpleCompletion(prompt, { maxTokens: 2000 });
+                const jsonMatch = reply.match(/\[[\s\S]*\]/);
+                if (!jsonMatch) throw new Error('AI 回傳格式不符合 JSON Array 期待');
+                chunks = JSON.parse(jsonMatch[0]);
+            } catch (err) {
+                chunks = [{
+                    id: `${idPrefix}_w${w + 1}_error`,
+                    content: `[第${w + 1}個窗口拆解失敗: ${String(err.message || err)}，原始內容前200字: ${windows[w].slice(0, 200)}]`,
+                    dependencies: prevLastNodeId ? [prevLastNodeId] : [],
+                    preConditions: [],
+                    tags: `document_section, ${tagsHint}`,
+                }];
+            }
+            for (const chunk of chunks) {
+                const newId = await this.ragSystem.add(chunk.content, {
+                    id: chunk.id,
+                    dependencies: chunk.dependencies || [],
+                    preConditions: chunk.preConditions || [],
+                    source: `chunk_document:${title}`,
+                    tags: chunk.tags || 'document_section',
+                });
+                allIds.push(newId);
+            }
+            if (allIds.length) prevLastNodeId = allIds[allIds.length - 1];
+        }
+        return allIds;
+    }
+
     // tw_stock_db客製: 2026-09-06使用者要求「兩層對話」的第一層——一個
     // 「認識所有工具」的路由子agent。跟_runSubAgentTask不同，這不是一個
     // 會累積對話歷史、真的執行工具的agentic loop（它唯一的輸出是一小段
@@ -11362,6 +11902,7 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-cat" data-cat="skills">Skill</div>
                             <div class="ai-advanced-cat" data-cat="ai-functions">AI自製函式</div>
                             <div class="ai-advanced-cat" data-cat="rag">RAG 知識庫</div>
+                            <div class="ai-advanced-cat" data-cat="subagent">子Agent</div>
                             <div class="ai-advanced-cat" data-cat="limits">效能與限制</div>
                         </div>
                         <div class="ai-advanced-content">
@@ -11404,6 +11945,31 @@ ${existingNodeSummaries}
                                         <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
                                         <button type="button" id="ai-rag-manage-btn" class="ai-advanced-btn primary">管理條件圖譜</button>
                                     </div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="subagent">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-multi-subagent-mode">多重子Agent模式</label>
+                                    <select id="ai-multi-subagent-mode" class="ai-advanced-input">
+                                        <option value="router">1. Orchestrator + 多領域子Agent（預設，兩層委派）</option>
+                                        <option value="full">2. Orchestrator + 認識全部工具的子Agent + 多領域子Agent</option>
+                                        <option value="off">3. 不使用子Agent（全部內建工具直接掛在根層級）</option>
+                                    </select>
+                                    <p class="ai-advanced-hint">
+                                        <b>模式1（router）</b>：根層級對話只看得到自己註冊的工具＋委派入口，不知道有哪些領域可選；不確定要委派給誰時，系統會先問一個「認識全部工具」的路由子Agent該開放哪些領域，再把任務交給真正執行的子Agent——每次委派多一輪內部LLM往返，但根層級system prompt/tools每輪對話都精簡。<br>
+                                        <b>模式2（full）</b>：根層級直接看得到全部領域代號+說明，可以自己判斷、直接指定領域委派（省掉路由子Agent那一輪往返）；代價是根層級system prompt/tools每輪對話都多背一份領域清單。<br>
+                                        <b>模式3（off）</b>：完全不透過子Agent委派，全部內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫/網路搜尋）直接掛在根層級對話——最簡單、沒有委派往返，但根層級system prompt/tools會攤開全部工具的完整說明，工具越多越容易稀釋模型注意力。<br>
+                                        三種模式可以隨時切換，立即生效，不用重新整理頁面。
+                                    </p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-browser-search-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-browser-search-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用「網路搜尋」子Agent（browser_search）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">查詢Wikipedia／StackOverflow／GitHub／一般網頁／SourceForge／CodeProject／DeepWiki，結果透過下面設定的Cloudflare Worker端點取得並正規化，快取1天（跟檔案快取一樣是IndexedDB持久化＋LRU容量淘汰，額外疊加1天有效期限）。預設關閉——需要先部署 web/cloudflare-worker/browser-search-worker.js 並填入端點網址才能真正運作。</p>
+                                    <label class="ai-advanced-label" for="ai-browser-search-proxy-url">Cloudflare Worker 端點網址</label>
+                                    <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="https://your-search-proxy.workers.dev">
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
@@ -12862,6 +13428,29 @@ ${existingNodeSummaries}
             perfMp4DurationInput.addEventListener('input', () => {
                 const n = Number(perfMp4DurationInput.value);
                 if (Number.isFinite(n) && n > 0) this.advancedSettings.mp4DefaultDurationSeconds = Math.max(1, Math.round(n));
+                this._saveAdvancedSettings();
+            });
+        }
+        const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
+        if (multiSubAgentModeSelect) {
+            multiSubAgentModeSelect.addEventListener('change', () => {
+                if (['router', 'full', 'off'].includes(multiSubAgentModeSelect.value)) {
+                    this.advancedSettings.multiSubAgentMode = multiSubAgentModeSelect.value;
+                }
+                this._saveAdvancedSettings();
+            });
+        }
+        const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
+        if (browserSearchEnabledChk) {
+            browserSearchEnabledChk.addEventListener('change', () => {
+                this.advancedSettings.browserSearchEnabled = !!browserSearchEnabledChk.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
+        if (browserSearchProxyUrlInput) {
+            browserSearchProxyUrlInput.addEventListener('change', () => {
+                this.advancedSettings.browserSearchProxyUrl = browserSearchProxyUrlInput.value.trim();
                 this._saveAdvancedSettings();
             });
         }
