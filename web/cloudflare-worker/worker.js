@@ -73,23 +73,32 @@
  * ── 關於 /browser-search（floating-assistant.js的browser_search工具用）──
  * 2026-09-09新增：floating-assistant.js內建的browser_search子agent（見
  * SUBAGENT_DOMAIN_REGISTRY.browser_search）需要查詢Wikipedia/StackOverflow/
- * GitHub/一般網頁(google)/SourceForge/CodeProject/DeepWiki，這裡跟
- * /webfetch同樣的理由（目標網站沒開CORS）需要代理，但跟/webfetch不同的是
- * **不接受任意URL**——只接受{query, sources}，每個來源打哪個固定上游API/
- * 網址完全由這個worker自己決定（不是呼叫端指定），所以不需要host whitelist
- * 這一層防護，風險模型比/webfetch更收斂。
+ * GitHub/一般網頁(google)/Google新聞(news)/SourceForge/CodeProject/
+ * DeepWiki，這裡跟/webfetch同樣的理由（目標網站沒開CORS）需要代理，但跟
+ * /webfetch不同的是**不接受任意URL**——只接受{query, sources}，每個來源
+ * 打哪個固定上游API/網址完全由這個worker自己決定（不是呼叫端指定），所以
+ * 不需要host whitelist這一層防護，風險模型比/webfetch更收斂。
  * 各來源實作方式（2026-09-09實測過各來源真實回應後才決定）：
  *   - wiki/stackoverflow/github：呼叫各自官方搜尋API，穩定、有結構化snippet。
  *   - google：直接fetch Google搜尋結果頁拿不到任何可解析連結（實測結果，
  *     近年高度JS化），改用DuckDuckGo的HTML介面(html.duckduckgo.com/html/)
- *     代打，不加site:限制。
+ *     代打，不加site:限制——適合一般網頁查詢，**不適合**「今日焦點/最新
+ *     新聞」這類需要新聞垂直領域時效性的查詢（DuckDuckGo一般網頁搜尋沒有
+ *     這個概念，實測回應品質很差），這類需求請改用news來源。
+ *   - news：Google News官方RSS Feed（news.google.com/rss/search），不需要
+ *     金鑰、官方文件本身就允許「個人非商業feed reader」用途，回傳真正依
+ *     時間排序、含正確發布時間/來源媒體名稱的新聞——這是2026-09-09使用者
+ *     實測回報google來源對「今日焦點新聞」查詢效果很差後，另外新增的專門
+ *     新聞來源，不是拿google來源硬套。固定用zh-TW/TW locale（跟searchWiki
+ *     固定用zh.wikipedia.org同一個「中文使用者優先」的既有慣例）。
  *   - sourceforge/codeproject：兩站自己的搜尋頁會擋掉非瀏覽器請求(403)或
  *     用JS轉址（實測結果），改用DuckDuckGo HTML介面+site:限定範圍代打。
  *   - deepwiki：純前端SPA，靜態HTML拿不到搜尋結果（實測結果），同樣改用
  *     DuckDuckGo HTML介面+site:deepwiki.com；另外對「像GitHub repo命名」
  *     的查詢附加一個推測連結候選（deepwiki.com網址規則是/owner/repo）。
  * 用Cloudflare Workers runtime原生的HTMLRewriter解析DuckDuckGo回應的HTML
- * （比手刻regex parser穩健，這個runtime本來就有這個API，不需要額外套件）。
+ * （比手刻regex parser穩健，這個runtime本來就有這個API，不需要額外套件）；
+ * news來源的RSS本身是結構固定、可信任的XML，用一般正則表達式解析即可。
  *
  * ── 關於 /sheet-sync（雲端同步設定）──
  * 2026-08-23使用者要求：網頁的「設定」齒輪要能把整包Settings JSON同步到
@@ -394,11 +403,50 @@ async function searchDeepWiki(query) {
   return items.slice(0, BROWSER_SEARCH_RESULT_LIMIT);
 }
 
+// tw_stock_db客製: 2026-09-09使用者實測發現——「google」來源（代打
+// DuckDuckGo一般網頁搜尋）對「今日焦點新聞」這類時效性強、需要「新聞」
+// 這個垂直領域而非一般網頁的查詢，回應品質很差（DuckDuckGo沒有專門的新聞
+// 索引，一般網頁搜尋不會理解「今天」「焦點」這類時間/熱度語意）。改用
+// Google News自己公開的RSS Feed（news.google.com/rss/search?q=...），這是
+// Google官方提供、不需要金鑰、專門設計給「個人非商業用途的feed reader」
+// 使用的正式介面（RSS本身的版權聲明也明講這個用途），回應是真正依時間排序
+// 的新聞（含正確的發布時間/來源媒體名稱），不是像sourceforge/codeproject/
+// deepwiki那樣「不得已才代打」的權宜之計。跟其他來源一樣用XML正規表達式
+// 解析（RSS結構固定、可信任，不像任意HTML頁面需要HTMLRewriter那種容錯
+// 能力）。hl/gl/ceid固定用zh-TW/TW（跟searchWiki固定用zh.wikipedia.org
+// 同一個「中文使用者優先」的既有慣例），不是每個host都需要不同語系時再
+// 討論要不要開放參數。
+function decodeXmlEntities(text) {
+  return String(text || "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+}
+
+async function searchGoogleNews(query) {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+  const resp = await fetchWithTimeout(url, { headers: { "User-Agent": BROWSER_SEARCH_UA } });
+  if (!resp.ok) throw new Error(`Google News RSS HTTP ${resp.status}`);
+  const xml = await resp.text();
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = itemRe.exec(xml)) && items.length < BROWSER_SEARCH_RESULT_LIMIT) {
+    const block = m[1];
+    const title = decodeXmlEntities((block.match(/<title>([\s\S]*?)<\/title>/) || [])[1]).trim();
+    const link = ((block.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || "").trim();
+    const pubDate = ((block.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || "").trim();
+    const source = decodeXmlEntities((block.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1]).trim();
+    if (!title || !link) continue;
+    items.push({ title, url: link, snippet: [source, pubDate].filter(Boolean).join(" · ") });
+  }
+  return items;
+}
+
 const BROWSER_SEARCH_SOURCE_HANDLERS = {
   wiki: searchWiki,
   stackoverflow: searchStackOverflow,
   github: searchGitHub,
   google: searchGoogle,
+  news: searchGoogleNews,
   sourceforge: searchSourceForge,
   codeproject: searchCodeProject,
   deepwiki: searchDeepWiki,
