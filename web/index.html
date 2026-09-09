@@ -1712,7 +1712,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=7beec4c7eb"></script>
+<script src="floating-assistant.js?v=32dd279658"></script>
 <script>
   // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
   // markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/DOMPurify/
@@ -7715,7 +7715,7 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'fetch_web_page', category: '網路查詢',
-    description: '透過worker代理抓取「白名單網域」的網頁內容，繞過瀏覽器的CORS限制。目前只開放官方公開資料網域：www.twse.com.tw（證交所）、www.tpex.org.tw（櫃買中心）、mops.twse.com.tw（公開資訊觀測站）、openapi.twse.com.tw（證交所OpenAPI）、data.gov.tw（政府資料開放平台）——刻意不含任何商業新聞網站（爬取新聞內容牽涉版權/使用條款，需要使用者先明確指定要用哪個來源才會另外評估加入白名單，不要自己嘗試繞過去抓白名單以外的網域，一定會被擋掉並回傳403）。回傳的是原始HTML/JSON文字（可能很長，超過約20萬字會被截斷），不會幫你解析成結構化資料，適合查詢官方公告/財報/資料集，不是通用網頁瀏覽器。⚠️這個功能依賴目前設定的API網址背後是有部署/webfetch路由的那個worker，如果使用的是別的API端點（例如直接打NVIDIA官方網址）會收到404，不代表這個能力本身壞掉。',
+    description: '透過worker代理抓取「白名單網域」的網頁內容，繞過瀏覽器的CORS限制。目前只開放官方公開資料網域：www.twse.com.tw（證交所）、www.tpex.org.tw（櫃買中心）、mops.twse.com.tw（公開資訊觀測站）、openapi.twse.com.tw（證交所OpenAPI）、data.gov.tw（政府資料開放平台）——刻意不含任何商業新聞網站（爬取新聞內容牽涉版權/使用條款，需要使用者先明確指定要用哪個來源才會另外評估加入白名單，不要自己嘗試繞過去抓白名單以外的網域，一定會被擋掉並回傳403）。⚠️不論抓回來的內容多長都不會截斷，但也不會直接把原始內容塞進這次回應——內容會整份存進persistentStorage（跟使用者📎上傳的檔案共用同一套機制），只回傳一個file_id指標，避免一次把可能很長的原始HTML/JSON文字塞爆對話上下文。想看內容/找特定資訊/摘要時，接著呼叫delegate_to_subagent(domain:"file_analysis")委派子agent用parse_uploaded_file（快速看開頭，適合結構清楚的JSON/短內容）或summarize_large_text（不論多長都會分段摘要涵蓋全文，適合長篇官方公告/財報）處理這個file_id，不要自己憑猜測回答內容。⚠️這個功能依賴目前設定的API網址背後是有部署/webfetch路由的那個worker，如果使用的是別的API端點（例如直接打NVIDIA官方網址）會收到404，不代表這個能力本身壞掉。',
     params: { url: '完整的https網址，網域必須在白名單內，否則會回傳403' },
     handler: async (a) => {
       const { apiUrl } = aiConsoleInstance._getApiConfig();
@@ -7740,7 +7740,38 @@ const AI_CAPABILITIES = [
       if (!resp.ok || typeof body.body !== 'string') {
         return { ok: false, status: resp.status, error: body.error || `HTTP ${resp.status}` };
       }
-      return { ok: true, ...body };
+      // tw_stock_db客製: 2026-09-09使用者明確要求——抓回來的內容不論多大
+      // 都先存進persistentStorage（跟📎上傳檔案共用的fileCache），不直接
+      // 把原始內容塞進這次工具結果回傳給根模型；根模型看到的是file_id指標
+      // +提示，需要進一步處理時應該委派給file_analysis子agent（見上方
+      // description，該domain的parse_uploaded_file/summarize_large_text都
+      // 認得這個file_id，跟處理使用者上傳的檔案是同一套機制，不是另外發明
+      // 一套網頁內容專用的處理路徑）。
+      let fileId;
+      try {
+        const blob = new Blob([body.body], { type: body.contentType || 'text/plain' });
+        const filename = (() => {
+          try {
+            const u = new URL(body.url || a.url);
+            return (u.hostname + u.pathname).replace(/[\/:]+/g, '_').slice(0, 80) + '.txt';
+          } catch { return 'fetched_page.txt'; }
+        })();
+        fileId = await aiConsoleInstance.fileCache.put(filename, body.contentType || 'text/plain', blob, 'uploaded');
+        return {
+          ok: true,
+          file_id: fileId,
+          filename,
+          sizeBytes: blob.size,
+          url: body.url,
+          status: body.status,
+          note: `內容已存進persistentStorage（file_id=${fileId}，共${body.body.length}字元），沒有直接回傳原始內容。請呼叫delegate_to_subagent(domain:"file_analysis")委派子agent用parse_uploaded_file或summarize_large_text處理這個file_id，不要自己憑猜測回答內容。`,
+        };
+      } catch (e) {
+        // persistentStorage寫入失敗（極端情況，例如IndexedDB被瀏覽器封鎖）
+        // 時退回原本「直接回傳原始內容」的行為，不要整個功能直接失敗——
+        // 這是防禦性fallback，正常情況不會走到這裡。
+        return { ok: true, ...body, note: `⚠️存入persistentStorage失敗（${e.message}），改為直接回傳原始內容，內容可能很長。` };
+      }
     },
   },
   {
@@ -12430,6 +12461,16 @@ function renderAiTab() {
     contextProvider: buildAiLiveContext,
     chipsProvider: buildAiSuggestionChips,
     onTableRendered: linkifyStockTableCells,
+    // tw_stock_db客製: 2026-09-09——browser_search子agent（見
+    // floating-assistant.js的SUBAGENT_DOMAIN_REGISTRY.browser_search）預設
+    // 關閉（使用者要自己在Advance Settings勾選啟用），但它需要的Cloudflare
+    // Worker端點跟這裡AI助理本來就在用的同一個worker（TWSE_PROXY_BASE，見
+    // web/cloudflare-worker/worker.js的/browser-search路由）是同一個部署，
+    // 這裡先把預設值傳進去，使用者啟用時就不用自己另外去查/填網址——這只是
+    // 建構子的「初始預設值」，只在使用者從沒存過Advance設定時生效，之後
+    // 使用者自己在面板改過就不會被這裡覆蓋（見multiSubAgentMode/
+    // browserSearchProxyUrl建構子選項的說明）。
+    browserSearchProxyUrl: TWSE_PROXY_BASE,
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
