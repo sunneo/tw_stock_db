@@ -713,17 +713,16 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['browser_search'],
         systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
     },
-    // tw_stock_db客製: 2026-09-11使用者要求的「帶聲音的影片 → 逐字稿」子agent
-    // （見transcribe_media工具 / _transcribeMedia的說明）。Phase 1：只做語音
-    // 轉文字（Whisper base，中英雙語，透過transformers.js在瀏覽器端跑，
-    // WebGPU可用時用WebGPU、否則CPU WASM多執行緒），不含後續「用逐字稿產生
-    // 有字幕的動畫影片」那幾個Phase。模型首次使用時從HuggingFace下載、
-    // 瀏覽器Cache API快取，之後不重抓。
-    media_transcription: {
+    // tw_stock_db客製: 2026-09-11使用者要求的「帶聲音的影片」影音處理子agent。
+    // 目前有的工具：transcribe_media（語音轉逐字稿，Whisper base中英雙語，
+    // transformers.js在瀏覽器端跑，WebGPU可用時用WebGPU否則CPU WASM）、
+    // extract_audio（把音軌抽成WAV檔）。模型首次使用時從HuggingFace下載、
+    // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
+    media_av: {
         enabled: true,
-        label: '語音轉文字（影片/音檔 → 逐字稿）',
-        toolNames: ['transcribe_media', 'list_uploaded_files'],
-        systemPrompt: '你是一個專門把影片/音檔轉成逐字稿的子任務助理。先用list_uploaded_files確認可用的file_id（使用者訊息裡已經給了file_id就跳過），再用transcribe_media轉逐字稿——這個工具第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取），且轉錄本身依影片長度可能要跑好幾分鐘，呼叫後要等真正的結果，不要在拿到結果前就說「已經轉好了」。轉完後依使用者的實際需求回答（給全文逐字稿／找特定段落／做重點摘要等）；如果逐字稿很長且使用者要的是摘要，回傳的結果裡會有一個transcript_file_id，可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+        label: '影音處理（逐字稿／擷取聲音／字幕）',
+        toolNames: ['transcribe_media', 'extract_audio', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門處理影片/音檔的子任務助理，能做的事：transcribe_media（語音轉逐字稿，中英雙語，會產生一個.srt字幕檔）、extract_audio（把音軌抽成WAV檔）。需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取），轉錄本身依影片長度可能要跑好幾分鐘（每30秒一段、逐段回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。轉完/處理完依使用者的實際需求回答；逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
 
@@ -1164,6 +1163,93 @@ function _faFormatTimestamp(seconds) {
     return h > 0
         ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
         : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// tw_stock_db客製: 2026-09-11——SubRip(.srt)字幕的時間格式 HH:MM:SS,mmm。
+// null/NaN當0處理（.srt格式沒有「未知時間」這種東西，寧可給0也不要產生
+// 不合法的.srt）。
+function _faFormatSrtTime(seconds) {
+    const total = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = Math.floor(total % 60);
+    const ms = Math.round((total - Math.floor(total)) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+// tw_stock_db客製: 2026-09-11——segments[{start,end,text}]轉成.srt字幕檔內容。
+function _faSegmentsToSrt(segments) {
+    return segments.map((s, i) => {
+        const end = (s.end != null && s.end > s.start) ? s.end : (s.start || 0) + 2;
+        return `${i + 1}\n${_faFormatSrtTime(s.start)} --> ${_faFormatSrtTime(end)}\n${s.text}\n`;
+    }).join('\n');
+}
+
+// tw_stock_db客製: 2026-09-11——把.srt字幕檔、或transcribe_media早期版本的
+// 「[M:SS - M:SS] 文字」逐行格式，解析回segments[{start,end,text}]。
+// 給燒錄字幕吃「使用者自己提供的字幕檔」用。
+function _faParseSubtitleText(text) {
+    const raw = String(text || '').replace(/\r\n/g, '\n').trim();
+    if (!raw) return [];
+    const toSec = (hms) => {
+        // 支援 HH:MM:SS,mmm / HH:MM:SS.mmm / MM:SS / M:SS
+        const m = hms.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+        if (!m) return null;
+        const h = m[1] ? +m[1] : 0;
+        return h * 3600 + (+m[2]) * 60 + (+m[3]) + (m[4] ? +('0.' + m[4]) : 0);
+    };
+    const segs = [];
+    // .srt: 區塊之間用空行分隔，每塊 序號\n 開始 --> 結束\n 文字...
+    if (/-->/.test(raw)) {
+        for (const block of raw.split(/\n{2,}/)) {
+            const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+            const tl = lines.find(l => l.includes('-->'));
+            if (!tl) continue;
+            const [a, b] = tl.split('-->').map(x => x.trim());
+            const start = toSec(a), end = toSec(b);
+            const textLines = lines.slice(lines.indexOf(tl) + 1);
+            if (start == null || !textLines.length) continue;
+            segs.push({ start, end: end != null ? end : start + 2, text: textLines.join(' ').trim() });
+        }
+        return segs;
+    }
+    // 「[M:SS - M:SS] 文字」逐行
+    for (const line of raw.split('\n')) {
+        const m = line.match(/^\s*\[\s*([\d:.,?]+)\s*[-–]\s*([\d:.,?]+)\s*\]\s*(.+)$/);
+        if (!m) continue;
+        const start = toSec(m[1]), end = toSec(m[2]);
+        if (start == null) continue;
+        segs.push({ start, end: end != null ? end : start + 2, text: m[3].trim() });
+    }
+    return segs;
+}
+
+// tw_stock_db客製: 2026-09-11——把一個AudioBuffer編成16-bit PCM WAV Blob
+// （擷取聲音功能用）。純JS、不需要任何函式庫。多聲道交錯寫入。
+function _faEncodeWav(audioBuffer) {
+    const numCh = audioBuffer.numberOfChannels;
+    const sr = audioBuffer.sampleRate;
+    const nSamples = audioBuffer.length;
+    const chans = [];
+    for (let c = 0; c < numCh; c++) chans.push(audioBuffer.getChannelData(c));
+    const dataBytes = nSamples * numCh * 2;
+    const buf = new ArrayBuffer(44 + dataBytes);
+    const dv = new DataView(buf);
+    const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, 'RIFF'); dv.setUint32(4, 36 + dataBytes, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, numCh, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * numCh * 2, true);
+    dv.setUint16(32, numCh * 2, true); dv.setUint16(34, 16, true);
+    ws(36, 'data'); dv.setUint32(40, dataBytes, true);
+    let off = 44;
+    for (let i = 0; i < nSamples; i++) {
+        for (let c = 0; c < numCh; c++) {
+            let v = Math.max(-1, Math.min(1, chans[c][i]));
+            dv.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+            off += 2;
+        }
+    }
+    return new Blob([buf], { type: 'audio/wav' });
 }
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
@@ -1753,6 +1839,19 @@ class FloatingAssistant {
             '如果目前輸入框旁邊有附加、或最近上傳過2D動畫YAML檔案，直接在對話中匯入並開啟顯示（不經過AI）',
             () => this._handleImport2DAnimationAttachmentCommand()
         );
+        // tw_stock_db客製: 2026-09-11——影音處理指令（都用 /media- 開頭）。
+        // 第一個參數＝影片/音檔的file_id或檔名（留空＝用最近上傳的附件/檔案）；
+        // 直接跑本地端工具，不經過LLM。
+        this.register_slash_command(
+            '/media-transcribe', '[<影片id或檔名>] [zh|en]',
+            '把影片/音檔轉成逐字稿（瀏覽器端Whisper，不上傳）。留空＝用最近上傳的檔案；可加 zh 或 en 指定語言',
+            (argsText) => this._handleMediaTranscribeCommand(argsText)
+        );
+        this.register_slash_command(
+            '/media-extract-audio', '[<影片id或檔名>]',
+            '把影片的音軌抽出來存成WAV檔（瀏覽器端解碼，不上傳）。留空＝用最近上傳的檔案',
+            (argsText) => this._handleMediaExtractAudioCommand(argsText)
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -2025,6 +2124,11 @@ class FloatingAssistant {
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: false,
             browserSearchProxyUrl: '',
+            // tw_stock_db客製: 2026-09-11——transcribe_media走CPU WASM路徑時
+            // 請求的執行緒數（見WHISPER_WASM_THREADS/_getWhisperWasmThreads）。
+            // 只在crossOriginIsolated成立（host頁面有coi-serviceworker）時
+            // 才真的多執行緒，否則onnxruntime-web自動夾回1。
+            whisperWasmThreads: WHISPER_WASM_THREADS,
         };
     }
 
@@ -2315,7 +2419,17 @@ class FloatingAssistant {
             multiSubAgentMode: ['router', 'full', 'off'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
             browserSearchEnabled: raw.browserSearchEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
+            whisperWasmThreads: (() => {
+                const n = Number(raw.whisperWasmThreads);
+                return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
+            })(),
         };
+    }
+
+    // tw_stock_db客製: transcribe_media的CPU WASM執行緒數存取入口，夾在1~16。
+    _getWhisperWasmThreads() {
+        const n = Number(this.advancedSettings && this.advancedSettings.whisperWasmThreads);
+        return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
     }
 
     // tw_stock_db客製: 統一的併發數存取入口，夾在1~8之間——上限8是保守值，
@@ -3044,20 +3158,17 @@ ${fnData.code}
             }, required: ['query'], additionalProperties: false }
         );
 
-        // tw_stock_db客製: 2026-09-11——語音轉文字（media_transcription domain
+        // tw_stock_db客製: 2026-09-11——語音轉文字（media_av domain
         // 的主工具）。實作見_transcribeMedia。第一次執行會下載Whisper模型
         // （約77MB，之後瀏覽器Cache API快取），且轉錄本身依長度可能跑數分鐘。
         registerOptional('transcribe_media',
-            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿也另存成persistentStorage檔案，逐字稿很長時可以再交給summarize_large_text處理）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘，呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️只有桌機版Chrome/Edge能跑（需要WebGPU或WebCodecs等新API），其他瀏覽器會明確回報不支援。參數: {"file_id":"...", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
+            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️只有桌機版Chrome/Edge能跑，其他瀏覽器會明確回報不支援。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const fileId = String(parsed.file_id || '').trim();
-                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（用list_uploaded_files查詢可用的file_id）' });
-                const record = await this.fileCache.get(fileId);
-                if (!record || record.kind !== 'uploaded') {
-                    return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
-                }
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(fileArg);
+                if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔（請先上傳，或用file參數指定id/檔名）' });
                 const language = ['zh', 'en'].includes(String(parsed.language || '').trim()) ? String(parsed.language).trim() : null;
                 try {
                     return JSON.stringify(await this._transcribeMedia(record, language));
@@ -3066,9 +3177,30 @@ ${fnData.code}
                 }
             },
             { type: 'object', properties: {
-                file_id: { type: 'string', description: '要轉錄的影片/音檔id，用list_uploaded_files取得' },
+                file: { type: 'string', description: '要轉錄的影片/音檔的file_id或檔名；留空＝用最近上傳的' },
                 language: { type: 'string', enum: ['zh', 'en'], description: '（選填）指定語言，不填＝自動偵測' },
-            }, required: ['file_id'], additionalProperties: false }
+            }, additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-11——「擷取聲音」：把影片的音軌抽出來存成
+        // WAV檔（見_extractAudio）。
+        registerOptional('extract_audio',
+            `把一個已上傳的影片（或任何有音軌的媒體檔）的聲音抽出來，存成一個獨立的WAV音檔到persistentStorage，回傳 {ok, audio_file_id, filename, durationSeconds, sampleRate, channels, sizeBytes}。純瀏覽器端解碼、不上傳。WAV是無損格式、檔案會比原本的壓縮音訊大。參數: {"file":"file_id或檔名（留空＝用最近上傳的影片/音檔）"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(fileArg);
+                if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔' });
+                try {
+                    return JSON.stringify(await this._extractAudio(record));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: '要擷取聲音的影片/音檔的file_id或檔名；留空＝用最近上傳的' },
+            }, additionalProperties: false }
         );
     }
 
@@ -3240,7 +3372,7 @@ ${fnData.code}
                 // 時onnxruntime-web會自動夾回1、不會壞，只是慢。
                 if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
                     const isolated = (typeof crossOriginIsolated !== 'undefined') && crossOriginIsolated;
-                    env.backends.onnx.wasm.numThreads = isolated ? WHISPER_WASM_THREADS : 1;
+                    env.backends.onnx.wasm.numThreads = isolated ? this._getWhisperWasmThreads() : 1;
                 }
             } catch (_) { /* env欄位結構若隨版本變動，載入本身不該因此失敗 */ }
             return mod;
@@ -3287,24 +3419,29 @@ ${fnData.code}
         return transcriber;
     }
 
-    // 把上傳的影片/音檔解碼成Whisper要的16kHz單聲道Float32 PCM。
-    // decodeAudioData會自動從mp4/mov抽出音軌並解成PCM（Chrome/Edge/新版
-    // Firefox/Safari對AAC都支援），不需要ffmpeg.wasm。
-    async _decodeAudioForWhisper(blob) {
+    // 把上傳的影片/音檔用Web Audio API解碼成AudioBuffer（保留原始取樣率/
+    // 聲道數）。decodeAudioData會自動從mp4/mov抽出音軌並解成PCM（Chrome/Edge/
+    // 新版Firefox/Safari對AAC都支援），不需要ffmpeg.wasm。
+    async _decodeAudioBuffer(blob) {
         const AC = (typeof AudioContext !== 'undefined') ? AudioContext : (typeof window !== 'undefined' ? window.webkitAudioContext : null);
-        const OAC = (typeof OfflineAudioContext !== 'undefined') ? OfflineAudioContext : (typeof window !== 'undefined' ? window.webkitOfflineAudioContext : null);
-        if (!AC || !OAC) throw new Error('這個瀏覽器不支援 Web Audio API，無法解碼音訊。請改用桌機版 Chrome 或 Edge。');
+        if (!AC) throw new Error('這個瀏覽器不支援 Web Audio API，無法解碼音訊。請改用桌機版 Chrome 或 Edge。');
         const arrayBuffer = await blob.arrayBuffer();
         const tmpCtx = new AC();
-        let decoded;
         try {
             // slice(0)複製一份——decodeAudioData會detach傳入的ArrayBuffer。
-            decoded = await tmpCtx.decodeAudioData(arrayBuffer.slice(0));
+            return await tmpCtx.decodeAudioData(arrayBuffer.slice(0));
         } catch (err) {
             throw new Error('無法解碼這個檔案的音訊（可能沒有音軌，或是這個瀏覽器不支援的音訊編碼）：' + (err && err.message || err));
         } finally {
             try { if (tmpCtx.close) tmpCtx.close(); } catch (_) {}
         }
+    }
+
+    // 解碼並重採樣成Whisper要的16kHz單聲道Float32 PCM。
+    async _decodeAudioForWhisper(blob) {
+        const OAC = (typeof OfflineAudioContext !== 'undefined') ? OfflineAudioContext : (typeof window !== 'undefined' ? window.webkitOfflineAudioContext : null);
+        if (!OAC) throw new Error('這個瀏覽器不支援 OfflineAudioContext，無法重採樣音訊。請改用桌機版 Chrome 或 Edge。');
+        const decoded = await this._decodeAudioBuffer(blob);
         const durationSeconds = decoded.duration;
         if (decoded.sampleRate === WHISPER_SAMPLE_RATE && decoded.numberOfChannels === 1) {
             return { pcm: decoded.getChannelData(0), durationSeconds };
@@ -3321,6 +3458,122 @@ ${fnData.code}
         return { pcm: resampled.getChannelData(0), durationSeconds };
     }
 
+    // tw_stock_db客製: 2026-09-11——「擷取聲音」：把影片/音檔的音軌解碼後
+    // 編成一個16-bit PCM WAV存進persistentStorage。WAV是純JS就能編、通吃
+    // 所有播放器的無損格式（見_faEncodeWav）；不用ffmpeg.wasm。回傳
+    // {ok, audio_file_id, filename, durationSeconds, sampleRate, channels}。
+    async _extractAudio(record) {
+        this._log('🔊 解碼「' + record.filename + '」的音軌…');
+        let audioBuffer;
+        try {
+            audioBuffer = await this._decodeAudioBuffer(record.blob);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const wavBlob = _faEncodeWav(audioBuffer);
+        const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
+        let audioFileId = null;
+        try {
+            audioFileId = await this.fileCache.put(`${base}.音軌.wav`, 'audio/wav', wavBlob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '音軌存檔失敗：' + String(err.message || err) };
+        }
+        this._log(`🔊 已擷取音軌：${(wavBlob.size / 1024 / 1024).toFixed(1)}MB WAV`);
+        return {
+            ok: true,
+            audio_file_id: audioFileId,
+            filename: `${base}.音軌.wav`,
+            durationSeconds: Math.round(audioBuffer.duration),
+            sampleRate: audioBuffer.sampleRate,
+            channels: audioBuffer.numberOfChannels,
+            sizeBytes: wavBlob.size,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-11——slash-command/工具用「附件、或已上傳在
+    // fileCache的id/檔名」定位一個檔案。arg可以是：
+    //   - 空字串 → 目前輸入框旁邊剛上傳完成的附件，沒有的話取最近上傳的檔案
+    //   - 一個file_id（crypto.randomUUID格式）→ 直接查
+    //   - 一段檔名（或檔名的一部分）→ 在已上傳檔案裡找（完全符合優先，否則
+    //     子字串比對，多個符合時取最近上傳的）
+    // 回傳fileCache record或null。kindFilter（選填）限定record.kind。
+    async _resolveUploadedFileRecord(arg, { kindFilter = 'uploaded', consumePendingAttachment = false } = {}) {
+        const q = String(arg || '').trim();
+        if (!q) {
+            const pending = this._getLastCompletedPendingAttachment && this._getLastCompletedPendingAttachment();
+            if (pending) {
+                const rec = await this.fileCache.get(pending.id);
+                if (rec && consumePendingAttachment) {
+                    this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== pending.id);
+                    this._renderPendingAttachments();
+                }
+                if (rec) return rec;
+            }
+            const all = await this.fileCache.getAll();
+            const uploaded = all.filter(r => !kindFilter || r.kind === kindFilter).sort((a, b) => b.createdAt - a.createdAt);
+            return uploaded[0] || null;
+        }
+        // 先當file_id直接查
+        const byId = await this.fileCache.get(q).catch(() => null);
+        if (byId && (!kindFilter || byId.kind === kindFilter)) return byId;
+        // 再當檔名比對
+        const all = await this.fileCache.getAll();
+        const pool = all.filter(r => !kindFilter || r.kind === kindFilter).sort((a, b) => b.createdAt - a.createdAt);
+        const exact = pool.find(r => r.filename === q);
+        if (exact) return exact;
+        const lc = q.toLowerCase();
+        return pool.find(r => String(r.filename || '').toLowerCase().includes(lc)) || null;
+    }
+
+    // tw_stock_db客製: 2026-09-11——transformers.js模型檔的瀏覽器Cache API
+    // 用量（Sub Agent設定頁顯示用）。transformers.js預設把模型檔存在名為
+    // 'transformers-cache'的Cache裡（見env.useBrowserCache）。
+    async _getWhisperCacheInfo() {
+        try {
+            if (typeof caches === 'undefined') return { supported: false };
+            const names = await caches.keys();
+            const cacheName = names.find(n => /transformers/i.test(n)) || 'transformers-cache';
+            if (!names.includes(cacheName)) return { supported: true, cacheName, entries: 0, bytes: 0 };
+            const c = await caches.open(cacheName);
+            const reqs = await c.keys();
+            let bytes = 0;
+            for (const rq of reqs) {
+                const r = await c.match(rq);
+                if (!r) continue;
+                const len = r.headers.get('content-length');
+                if (len && Number.isFinite(+len)) { bytes += +len; continue; }
+                try { bytes += (await r.clone().blob()).size; } catch (_) {}
+            }
+            return { supported: true, cacheName, entries: reqs.length, bytes };
+        } catch (err) {
+            return { supported: false, error: String(err.message || err) };
+        }
+    }
+
+    async _clearWhisperCache() {
+        try {
+            if (typeof caches === 'undefined') return false;
+            const names = await caches.keys();
+            for (const n of names) if (/transformers/i.test(n)) await caches.delete(n);
+            // 下次轉錄要重新載模型
+            this._whisperTranscriber = null;
+            this._whisperTranscriberDevice = null;
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async _refreshWhisperCacheSizeDisplay() {
+        const el = document.getElementById('ai-whisper-cache-size');
+        if (!el) return;
+        el.textContent = '計算中…';
+        const info = await this._getWhisperCacheInfo();
+        if (!info.supported) { el.textContent = '（此瀏覽器不支援 Cache API）'; return; }
+        if (!info.entries) { el.textContent = '尚未下載（0 MB）'; return; }
+        el.textContent = `${(info.bytes / 1024 / 1024).toFixed(1)} MB（${info.entries} 個檔案）`;
+    }
+
     async _transcribeMedia(record, language) {
         const log = (m) => this._log('🎙️ ' + m);
         log(`解碼「${record.filename}」的音訊…`);
@@ -3332,14 +3585,6 @@ ${fnData.code}
         }
         log(`音訊長度約 ${Math.round(audio.durationSeconds)} 秒`);
 
-        const runOptions = {
-            chunk_length_s: WHISPER_CHUNK_LENGTH_S,
-            stride_length_s: WHISPER_STRIDE_LENGTH_S,
-            return_timestamps: true,
-            task: 'transcribe',
-        };
-        if (language) runOptions.language = language;
-
         // device選擇：WebGPU可用就先試WebGPU，任何一步（建pipeline或實際
         // 轉錄）失敗就重置、退回CPU WASM重跑一次；CPU再失敗才真的回報。
         const wantWebGpu = await this._isWebGpuAvailable();
@@ -3350,9 +3595,8 @@ ${fnData.code}
             try {
                 log(`載入 Whisper 模型（${device === 'webgpu' ? 'WebGPU' : 'CPU'}，首次約需下載 77MB）…`);
                 const transcriber = await this._getWhisperTranscriber(device, log);
-                log(`開始轉錄（${device === 'webgpu' ? 'WebGPU' : 'CPU'}）…`);
-                const output = await transcriber(audio.pcm, runOptions);
-                return this._formatTranscriptionResult(output, audio.durationSeconds, device, record, language);
+                const merged = await this._runWhisperWindowed(transcriber, audio.pcm, language, device, log);
+                return this._formatTranscriptionResult(merged, audio.durationSeconds, device, record, language);
             } catch (err) {
                 lastErr = err;
                 this._whisperTranscriber = null;
@@ -3365,6 +3609,69 @@ ${fnData.code}
         return { ok: false, error: '轉錄失敗：' + String((lastErr && lastErr.message) || lastErr || '未知錯誤') };
     }
 
+    // tw_stock_db客製: 2026-09-11——自己把音訊切成30秒的window逐段轉錄，
+    // 不用transformers.js pipeline的內建chunk_length_s。理由：
+    //   1. 每轉完一個window就能log進度（長影片轉錄可能要跑好幾分鐘，
+    //      使用者實測回報「開始轉錄」之後一直沒有動靜像卡住）。
+    //   2. 繞開pipeline內建chunking在某些transformers.js版本的stitching
+    //      問題。
+    // window之間留WHISPER_STRIDE_LENGTH_S的重疊避免切在字中間，第2個window
+    // 起把落在重疊區前段的segment丟掉（前一個window已經涵蓋），並把各window
+    // 的時間軸offset回整段音訊的絕對時間；最後把相鄰逐字相同的segment去重
+    // （重疊造成的假重複）。
+    async _runWhisperWindowed(transcriber, pcm, language, device, log) {
+        const SR = WHISPER_SAMPLE_RATE;
+        const winSec = WHISPER_CHUNK_LENGTH_S;
+        const overlapSec = WHISPER_STRIDE_LENGTH_S;
+        const stepSec = Math.max(1, winSec - overlapSec);
+        const totalSec = pcm.length / SR;
+        const starts = [];
+        for (let s = 0; s < totalSec; s += stepSec) {
+            starts.push(s);
+            if (s + winSec >= totalSec) break;
+        }
+        if (starts.length > 1) log(`共 ${starts.length} 段要轉（每段約 ${winSec}s）…`);
+        const opts = { return_timestamps: true, task: 'transcribe' };
+        if (language) opts.language = language;
+
+        const segs = [];
+        for (let wi = 0; wi < starts.length; wi++) {
+            const startSec = starts[wi];
+            const s0 = Math.floor(startSec * SR);
+            const s1 = Math.min(pcm.length, Math.ceil((startSec + winSec) * SR));
+            if (s1 - s0 < SR * 0.2) break; // 尾巴不到0.2秒就不用再轉了
+            if (starts.length > 1) log(`轉錄中… 第 ${wi + 1}/${starts.length} 段（${device === 'webgpu' ? 'WebGPU' : 'CPU'}）`);
+            const out = await transcriber(pcm.subarray(s0, s1), opts);
+            const chunks = Array.isArray(out && out.chunks) && out.chunks.length
+                ? out.chunks
+                : [{ timestamp: [0, null], text: String((out && out.text) || '') }];
+            for (const c of chunks) {
+                const cs = Array.isArray(c.timestamp) ? c.timestamp[0] : null;
+                const ce = Array.isArray(c.timestamp) ? c.timestamp[1] : null;
+                const absStart = cs != null ? +(cs + startSec).toFixed(2) : null;
+                const absEnd = ce != null ? +(ce + startSec).toFixed(2) : null;
+                // 第2個window起，落在跟前一個window重疊區前段的segment丟掉
+                if (wi > 0 && absStart != null && absStart < startSec + overlapSec * 0.6) continue;
+                const txt = String(c.text || '').trim();
+                if (txt) segs.push({ start: absStart, end: absEnd, text: txt });
+            }
+        }
+        // 相鄰逐字相同的segment去重（重疊造成的假重複）
+        const deduped = [];
+        for (const s of segs) {
+            const prev = deduped[deduped.length - 1];
+            if (prev && prev.text === s.text) { if (s.end != null) prev.end = s.end; continue; }
+            deduped.push(s);
+        }
+        // 全文：中文segment之間不要有空格，英文保留空格
+        let fullText = deduped.map(s => s.text).join(' ')
+            .replace(/\s+/g, ' ')
+            .replace(/([一-鿿]) (?=[一-鿿　-〿＀-￯])/g, '$1')
+            .replace(/ ([，。！？、；：」』）】])/g, '$1')
+            .trim();
+        return { text: fullText, chunks: deduped.map(s => ({ timestamp: [s.start, s.end], text: s.text })) };
+    }
+
     async _formatTranscriptionResult(output, durationSeconds, device, record, requestedLanguage) {
         const text = String((output && output.text) || '').trim();
         const segments = Array.isArray(output && output.chunks)
@@ -3374,16 +3681,22 @@ ${fnData.code}
                 text: String(c.text || '').trim(),
             })).filter(s => s.text)
             : [];
-        // 逐字稿另存成persistentStorage檔案（跟檔案上傳/fetch_web_page共用
-        // 同一套fileCache）——逐字稿很長時可以再委派給summarize_large_text。
+        // 逐字稿另存成persistentStorage的.srt字幕檔（跟檔案上傳/fetch_web_page
+        // 共用同一套fileCache）——這樣「燒錄字幕」可以直接吃這個file_id當
+        // 字幕來源，逐字稿很長時也可以再委派給summarize_large_text。有時間軸
+        // 分段就存.srt，沒有（極短音檔模型沒吐timestamp）就存純文字.txt。
         let transcriptFileId = null;
+        const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
         try {
-            const body = segments.length
-                ? segments.map(s => `[${_faFormatTimestamp(s.start)} - ${_faFormatTimestamp(s.end)}] ${s.text}`).join('\n')
-                : text;
-            const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
-            const tBlob = new Blob([body], { type: 'text/plain' });
-            transcriptFileId = await this.fileCache.put(`${base}.逐字稿.txt`, 'text/plain', tBlob, 'uploaded');
+            let tBlob, tName;
+            if (segments.length && segments.some(s => s.start != null)) {
+                tBlob = new Blob([_faSegmentsToSrt(segments)], { type: 'text/plain' });
+                tName = `${base}.字幕.srt`;
+            } else {
+                tBlob = new Blob([text], { type: 'text/plain' });
+                tName = `${base}.逐字稿.txt`;
+            }
+            transcriptFileId = await this.fileCache.put(tName, 'text/plain', tBlob, 'uploaded');
         } catch (err) {
             this._log('⚠️ 逐字稿存檔失敗（不影響轉錄結果）：' + (err && err.message || err));
         }
@@ -5275,6 +5588,9 @@ ${sourceTool.handlerScript}
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
         if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
+        const whisperThreadsInput = document.getElementById('ai-whisper-threads');
+        if (whisperThreadsInput) whisperThreadsInput.value = this._getWhisperWasmThreads();
+        this._refreshWhisperCacheSizeDisplay();
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -10216,6 +10532,90 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
     }
 
+    // tw_stock_db客製: 2026-09-11——把已在fileCache的檔案「交付」給使用者
+    // （對話裡出現一則帶下載連結的訊息），不重新存一份。給/media-*指令
+    // 產出.srt/.wav後讓使用者能直接下載用。
+    async _deliverExistingCacheFile(fileId, noteText) {
+        const rec = await this.fileCache.get(fileId);
+        if (!rec) return;
+        const msg = this._pushAssistantMessage(noteText, null);
+        Object.defineProperty(msg, '_downloadFile', {
+            value: { id: fileId, filename: rec.filename, mimeType: rec.mimeType, sizeBytes: rec.sizeBytes },
+            enumerable: false, configurable: true,
+        });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    // /media-transcribe [<影片id或檔名>] [zh|en]
+    async _handleMediaTranscribeCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let language = null;
+        if (tokens.length && ['zh', 'en'].includes(tokens[tokens.length - 1].toLowerCase())) {
+            language = tokens.pop().toLowerCase();
+        }
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true });
+        if (!record) {
+            this._log(fileArg ? `⚠️ /media-transcribe：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-transcribe：目前沒有附加、也沒有最近上傳過的影片/音檔');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `🎙️ 轉逐字稿：${record.filename}${language ? '（' + language + '）' : ''}` });
+        this._renderMessageHistory();
+        let result;
+        try {
+            result = await this._transcribeMedia(record, language);
+        } catch (err) {
+            this._pushAssistantMessage(`轉逐字稿失敗：${err && err.message || err}`, null);
+            this._renderMessageHistory();
+            return;
+        }
+        if (!result.ok) {
+            this._pushAssistantMessage(`轉逐字稿失敗：${result.error}`, null);
+            this._renderMessageHistory();
+            return;
+        }
+        const preview = (result.segments || []).slice(0, 30)
+            .map(s => `\`[${_faFormatTimestamp(s.start)}]\` ${s.text}`).join('\n');
+        const more = (result.segments || []).length > 30 ? `\n\n…（共 ${result.segments.length} 段，完整內容見下方 .srt 檔）` : '';
+        this._pushAssistantMessage(
+            `**逐字稿**（${result.durationSeconds}s，${result.device === 'webgpu' ? 'WebGPU' : 'CPU'}，語言 ${result.language}）\n\n${preview || result.text}${more}`,
+            null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+        if (result.transcript_file_id) {
+            await this._deliverExistingCacheFile(result.transcript_file_id, '📎 字幕/逐字稿檔（可當 /media-burn-subtitles 的字幕來源）');
+        }
+    }
+
+    // /media-extract-audio [<影片id或檔名>]
+    async _handleMediaExtractAudioCommand(argsText) {
+        const fileArg = String(argsText || '').trim();
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true });
+        if (!record) {
+            this._log(fileArg ? `⚠️ /media-extract-audio：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-extract-audio：目前沒有附加、也沒有最近上傳過的影片/音檔');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `🔊 擷取聲音：${record.filename}` });
+        this._renderMessageHistory();
+        let result;
+        try {
+            result = await this._extractAudio(record);
+        } catch (err) {
+            this._pushAssistantMessage(`擷取聲音失敗：${err && err.message || err}`, null);
+            this._renderMessageHistory();
+            return;
+        }
+        if (!result.ok) {
+            this._pushAssistantMessage(`擷取聲音失敗：${result.error}`, null);
+            this._renderMessageHistory();
+            return;
+        }
+        await this._deliverExistingCacheFile(
+            result.audio_file_id,
+            `📎 已擷取音軌：${result.filename}（${result.durationSeconds}s，${result.sampleRate}Hz，${result.channels} 聲道，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB WAV）`);
+    }
+
     // ============================================================
     // tw_stock_db客製: /benchmark-model 指令——見使用者要求記錄的評估準則
     // （簡易回應速度／單一工具呼叫／完整多步驟請求跑2次，各自評分、算
@@ -12348,6 +12748,18 @@ ${existingNodeSummaries}
                                     <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用上面的API URL">
                                     <p class="ai-advanced-hint">留空時會直接沿用目前設定的LLM API URL（如果那個Worker本身也有部署/browser-search路由的話，不需要另外填）；只有想用「跟LLM不同的另一個」Worker端點時才需要在這裡明確指定。</p>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">影音處理子Agent（transcribe_media／extract_audio）</label>
+                                    <p class="ai-advanced-hint">影片/音檔的語音轉文字、擷取聲音，全部在瀏覽器端執行、不上傳。Whisper 模型（約 77MB）首次使用時從 HuggingFace 下載、瀏覽器自動快取。</p>
+                                    <label class="ai-advanced-label" for="ai-whisper-threads" style="font-weight:normal;">CPU 執行緒數（沒有 WebGPU 時的 fallback）</label>
+                                    <input type="number" id="ai-whisper-threads" class="ai-advanced-input" min="1" max="16" step="1">
+                                    <p class="ai-advanced-hint">有 WebGPU 的機器會優先用 WebGPU、不受這個影響。CPU 路徑要真的用滿多執行緒，需要頁面是 cross-origin isolated（COOP/COEP，GitHub Pages 要靠 coi-serviceworker）；沒有的話 onnxruntime-web 會自動夾回 1 條、不會壞、只是慢。範圍 1~16，預設 4。</p>
+                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
+                                        <span class="ai-advanced-hint" style="margin:0;">模型快取占用：<b id="ai-whisper-cache-size">—</b></span>
+                                        <button type="button" id="ai-whisper-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
+                                        <button type="button" id="ai-whisper-cache-clear" class="ai-advanced-btn danger" style="padding:2px 8px;">清除模型快取</button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
                                 <div class="ai-advanced-stack">
@@ -13840,6 +14252,30 @@ ${existingNodeSummaries}
             browserSearchProxyUrlInput.addEventListener('change', () => {
                 this.advancedSettings.browserSearchProxyUrl = browserSearchProxyUrlInput.value.trim();
                 this._saveAdvancedSettings();
+            });
+        }
+        const whisperThreadsInput = document.getElementById('ai-whisper-threads');
+        if (whisperThreadsInput) {
+            whisperThreadsInput.addEventListener('change', () => {
+                const n = Number(whisperThreadsInput.value);
+                if (Number.isFinite(n) && n >= 1) this.advancedSettings.whisperWasmThreads = Math.min(16, Math.max(1, Math.round(n)));
+                this._saveAdvancedSettings();
+                whisperThreadsInput.value = this._getWhisperWasmThreads();
+                // 下次轉錄重建pipeline時才會套用新的執行緒數
+                this._transformersJsModules = null;
+                this._whisperTranscriber = null;
+                this._whisperTranscriberDevice = null;
+            });
+        }
+        const whisperCacheRefreshBtn = document.getElementById('ai-whisper-cache-refresh');
+        if (whisperCacheRefreshBtn) whisperCacheRefreshBtn.addEventListener('click', () => this._refreshWhisperCacheSizeDisplay());
+        const whisperCacheClearBtn = document.getElementById('ai-whisper-cache-clear');
+        if (whisperCacheClearBtn) {
+            whisperCacheClearBtn.addEventListener('click', async () => {
+                if (!confirm('清除已下載的 Whisper 模型快取？下次語音轉文字會重新下載約 77MB。')) return;
+                const ok = await this._clearWhisperCache();
+                this._log(ok ? '🗑️ 已清除 Whisper 模型快取' : '⚠️ 清除模型快取失敗');
+                this._refreshWhisperCacheSizeDisplay();
             });
         }
         [functionsInput, toolScriptInput, fnCodeInput].forEach(textarea => {
