@@ -2381,6 +2381,11 @@ class FloatingAssistant {
             // 只在crossOriginIsolated成立（host頁面有coi-serviceworker）時
             // 才真的多執行緒，否則onnxruntime-web自動夾回1。
             whisperWasmThreads: WHISPER_WASM_THREADS,
+            // tw_stock_db客製: 2026-09-12——transcribe_media挑device的偏好。
+            // 'auto'（預設）＝WebGPU可用就先試WebGPU、失敗退CPU；'cpu'＝直接
+            // 只用CPU WASM（使用者實測某些機器/某些顯卡上WebGPU反而比CPU慢，
+            // 或WebGPU那條路徑在該環境有相容性問題）。
+            whisperDevicePreference: 'auto',
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -2679,6 +2684,7 @@ class FloatingAssistant {
                 const n = Number(raw.whisperWasmThreads);
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
             })(),
+            whisperDevicePreference: raw.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto',
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -4154,9 +4160,12 @@ ${fnData.code}
         }
         log(`音訊長度約 ${Math.round(audio.durationSeconds)} 秒`);
 
-        // device選擇：WebGPU可用就先試WebGPU，任何一步（建pipeline或實際
+        // device選擇：預設WebGPU可用就先試WebGPU，任何一步（建pipeline或實際
         // 轉錄）失敗就重置、退回CPU WASM重跑一次；CPU再失敗才真的回報。
-        const wantWebGpu = await this._isWebGpuAvailable();
+        // 使用者在Advance Settings把whisperDevicePreference設成'cpu'時（實測
+        // 某些機器WebGPU反而比CPU慢/有相容性問題），直接只走CPU WASM。
+        const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu';
+        const wantWebGpu = !cpuOnly && await this._isWebGpuAvailable();
         const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
         let lastErr = null;
         for (let i = 0; i < deviceOrder.length; i++) {
@@ -6203,6 +6212,8 @@ ${sourceTool.handlerScript}
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
         if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
+        const whisperDeviceSelect = document.getElementById('ai-whisper-device');
+        if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
         if (whisperThreadsInput) whisperThreadsInput.value = this._getWhisperWasmThreads();
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
@@ -13458,9 +13469,15 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">影音處理子Agent（transcribe_media／extract_audio）</label>
                                     <p class="ai-advanced-hint">影片/音檔的語音轉文字、擷取聲音，全部在瀏覽器端執行、不上傳。Whisper 模型（約 77MB）首次使用時從 HuggingFace 下載、瀏覽器自動快取。</p>
-                                    <label class="ai-advanced-label" for="ai-whisper-threads" style="font-weight:normal;">CPU 執行緒數（沒有 WebGPU 時的 fallback）</label>
+                                    <label class="ai-advanced-label" for="ai-whisper-device" style="font-weight:normal;">運算裝置</label>
+                                    <select id="ai-whisper-device" class="ai-advanced-input">
+                                        <option value="auto">自動（有 WebGPU 先用 WebGPU，失敗退 CPU）</option>
+                                        <option value="cpu">只用 CPU（WebGPU 反而比較慢時選這個）</option>
+                                    </select>
+                                    <p class="ai-advanced-hint">部分機器/顯卡上 WebGPU 路徑反而比 CPU 慢、或有相容性問題，這時改成「只用 CPU」。</p>
+                                    <label class="ai-advanced-label" for="ai-whisper-threads" style="font-weight:normal; margin-top:8px;">CPU 執行緒數</label>
                                     <input type="number" id="ai-whisper-threads" class="ai-advanced-input" min="1" max="16" step="1">
-                                    <p class="ai-advanced-hint">有 WebGPU 的機器會優先用 WebGPU、不受這個影響。CPU 路徑要真的用滿多執行緒，需要頁面是 cross-origin isolated（COOP/COEP，GitHub Pages 要靠 coi-serviceworker）；沒有的話 onnxruntime-web 會自動夾回 1 條、不會壞、只是慢。範圍 1~16，預設 4。</p>
+                                    <p class="ai-advanced-hint">走 CPU 路徑時（沒有 WebGPU、或上面設成「只用 CPU」）請求的執行緒數。要真的用滿多執行緒，需要頁面是 cross-origin isolated（COOP/COEP，GitHub Pages 要靠 coi-serviceworker）；沒有的話 onnxruntime-web 會自動夾回 1 條、不會壞、只是慢。範圍 1~16，預設 4。</p>
                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
                                         <span class="ai-advanced-hint" style="margin:0;">模型快取占用：<b id="ai-whisper-cache-size">—</b></span>
                                         <button type="button" id="ai-whisper-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
@@ -14994,6 +15011,16 @@ ${existingNodeSummaries}
             browserSearchProxyUrlInput.addEventListener('change', () => {
                 this.advancedSettings.browserSearchProxyUrl = browserSearchProxyUrlInput.value.trim();
                 this._saveAdvancedSettings();
+            });
+        }
+        const whisperDeviceSelect = document.getElementById('ai-whisper-device');
+        if (whisperDeviceSelect) {
+            whisperDeviceSelect.addEventListener('change', () => {
+                this.advancedSettings.whisperDevicePreference = whisperDeviceSelect.value === 'cpu' ? 'cpu' : 'auto';
+                this._saveAdvancedSettings();
+                // 下次轉錄重挑device
+                this._whisperTranscriber = null;
+                this._whisperTranscriberDevice = null;
             });
         }
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
