@@ -522,6 +522,44 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     包裝結果（連帶支援視覺型payload自動偵測），渲染+存檔。已用mock測試
     驗證：預先存在的Skill建構時自動註冊、新增/刪除即時同步、呼叫時0次
     fetch（真的跳過LLM）、撞名時不覆蓋既有指令。
+  - **`transcribe_media`（語音轉文字）+ 新`media_transcription` domain**
+    （2026-09-11，「帶聲音的影片→逐字稿」的Phase 1）：上傳的影片/音檔在
+    **瀏覽器端**用Whisper轉逐字稿，音訊完全不上傳伺服器。
+    - 模型：`onnx-community/whisper-base`（中英雙語）`dtype:'q8'`（int8，
+      encoder~23MB + decoder~54MB ≈ 77MB），首次使用從HuggingFace Hub
+      下載、transformers.js用瀏覽器Cache API快取。Whisper詞彙表是跨語言
+      共用的byte-level BPE，**沒辦法**用「只要中英文」把詞彙表砍小，
+      「minimize」＝挑最小的模型層級＋還堪用的量化，這已經是底線
+      （`WHISPER_MODEL_ID`/`WHISPER_DTYPE`常數，換模型只改這裡）。
+    - Runtime：transformers.js經jsDelivr `/+esm`（官方dist有未解析的
+      bare specifier `onnxruntime-web/webgpu`，`/+esm`會預先bundle掉），
+      動態`import()`載入（跟index.html載qr-scanner同一種手法）。
+    - Device：`_isWebGpuAvailable()`（`navigator.gpu.requestAdapter()`）
+      可用就走WebGPU、否則CPU WASM，WebGPU建pipeline或轉錄失敗會退回CPU。
+      CPU多執行緒（`WHISPER_WASM_THREADS`=4）需要`crossOriginIsolated`
+      （COOP/COEP header），GitHub Pages不能設header→沒加coi-serviceworker
+      的話onnxruntime-web自動夾回1執行緒（不會壞、只是慢）。
+    - **WebGPU跟CPU用不同版本的transformers.js**（`transformersJs`＝3.7.5、
+      `transformersJsWebGpu`＝4.2.0，`_ensureTransformersJsLoaded(device)`
+      依device挑）：2026-09-11對jfk.wav實測——4.2.0的WebGPU路徑正確、CPU
+      WASM路徑載入量化模型直接噴`TransposeDQWeightsForMatMulNBits`建session
+      失敗（所有dtype都一樣）；3.7.5的CPU WASM路徑正確、WebGPU路徑會跑完
+      但吐整段亂碼。兩版共用同一組HF模型檔（Cache API依模型URL快取、跟
+      transformers.js版本無關），只有transformers.js那包JS各下載一次。
+      上游修好其中一版的兩條路徑後可以收斂回單一版本。
+    - 音訊解碼：Web Audio API `decodeAudioData`（自動從mp4/mov抽AAC音軌，
+      **不需要ffmpeg.wasm**）+ `OfflineAudioContext`重採樣成16kHz單聲道
+      （`_decodeAudioForWhisper`）。已實測mp4（帶聲音的影片）解碼正常。
+    - 回傳`{ok, language, durationSeconds, device, text, segments:[{start,
+      end,text}], transcript_file_id}`——逐字稿也另存成persistentStorage
+      檔案（跟檔案上傳/fetch_web_page共用fileCache），很長時可再委派給
+      `summarize_large_text`。
+    - 已實測驗證：WebGPU/CPU兩條路徑對jfk.wav都轉錄正確、有時間軸分段、
+      逐字稿存檔可取回；mp4影片音軌解碼正常。中文沒有另外找到乾淨的公開
+      樣本直接測，但走的是完全相同的程式路徑（只差decoder的語言起始
+      token），whisper-base本身就是標準多語言模型。
+    - **後續Phase**（尚未做）：Phase 2 MP4匯出加音軌、Phase 3 字幕/音訊
+      同步的宣告式動畫、Phase 4 統籌subagent。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
