@@ -713,7 +713,44 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['browser_search'],
         systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
     },
+    // tw_stock_db客製: 2026-09-11使用者要求的「帶聲音的影片 → 逐字稿」子agent
+    // （見transcribe_media工具 / _transcribeMedia的說明）。Phase 1：只做語音
+    // 轉文字（Whisper base，中英雙語，透過transformers.js在瀏覽器端跑，
+    // WebGPU可用時用WebGPU、否則CPU WASM多執行緒），不含後續「用逐字稿產生
+    // 有字幕的動畫影片」那幾個Phase。模型首次使用時從HuggingFace下載、
+    // 瀏覽器Cache API快取，之後不重抓。
+    media_transcription: {
+        enabled: true,
+        label: '語音轉文字（影片/音檔 → 逐字稿）',
+        toolNames: ['transcribe_media', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門把影片/音檔轉成逐字稿的子任務助理。先用list_uploaded_files確認可用的file_id（使用者訊息裡已經給了file_id就跳過），再用transcribe_media轉逐字稿——這個工具第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取），且轉錄本身依影片長度可能要跑好幾分鐘，呼叫後要等真正的結果，不要在拿到結果前就說「已經轉好了」。轉完後依使用者的實際需求回答（給全文逐字稿／找特定段落／做重點摘要等）；如果逐字稿很長且使用者要的是摘要，回傳的結果裡會有一個transcript_file_id，可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+    },
 };
+
+// tw_stock_db客製: 2026-09-11——transcribe_media工具用的Whisper設定。
+// 使用者要求「model minimize、只要中英文」：Whisper的詞彙表是跨語言共用的
+// byte-level BPE（51865個token），**沒辦法**用「只要中英文」把詞彙表砍小，
+// 模型大小是在transformer層本身；所以「minimize」＝挑最小的模型層級＋最
+// aggressive、但中文還堪用的量化。onnx-community/whisper-base的q8(int8)
+// 變體：encoder約23MB + decoder約54MB ≈ 77MB，是「保留中文可用度」前提下
+// 的最小組合（whisper-tiny q8約35MB更小，但中文準確度明顯掉，不預設用）。
+// 轉錄時強制指定language（不做語言自動偵測）——這不會讓模型變小，但會
+// 略微加速、也避免輸出成錯的語言。這幾個值刻意抽成常數，換模型/精度只要
+// 改這裡。
+const WHISPER_MODEL_ID = 'onnx-community/whisper-base';
+const WHISPER_DTYPE = 'q8';
+// CPU WASM後端要跑多執行緒（numThreads > 1）需要crossOriginIsolated===true
+// （COOP/COEP header）。GitHub Pages不能設自訂header，標準解法是host頁面
+// 加coi-serviceworker；沒加的話onnxruntime-web會自動夾回單執行緒、不會壞，
+// 只是慢。這裡照使用者要求請求4條，實際能不能用4條由執行環境決定。
+const WHISPER_WASM_THREADS = 4;
+// Whisper把音訊切成30秒的window處理；轉錄長音檔時_transcribeMedia會
+// chunk_length_s=30、stride_length_s=5（前後各留5秒重疊避免切在字中間）。
+const WHISPER_CHUNK_LENGTH_S = 30;
+const WHISPER_STRIDE_LENGTH_S = 5;
+// Whisper模型的取樣率固定16kHz單聲道——_decodeAudioForWhisper一律把上傳的
+// 音訊重採樣成這個規格。
+const WHISPER_SAMPLE_RATE = 16000;
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
@@ -1088,7 +1125,46 @@ const FA_ASSET_URLS = {
     // 內容是IIFE形式的global build，不是ESM，跟這個專案既有的fetch文字+eval
     // 載入手法相容。版本鎖定5.2.2（寫這段程式碼時的最新穩定版）。
     mp4Muxer: 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js',
+    // tw_stock_db客製: 2026-09-11——transcribe_media（語音轉文字）用的
+    // transformers.js。跟其他vendored函式庫不同，這個是**ES module**（沒有
+    // global-attaching build），所以走原生動態import()載入（見
+    // _ensureTransformersJsLoaded），跟index.html載入nimiq/qr-scanner同一種
+    // 手法，不需要把整頁改成type=module。
+    // 用jsDelivr的 /+esm 變體：官方dist/transformers.web.js裡有
+    // `import ... from "onnxruntime-web/webgpu"`這種bare specifier，瀏覽器
+    // 原生import()沒有import map的話解不開；/+esm會由jsDelivr預先把整包
+    // 相依（含onnxruntime-web）bundle成瀏覽器可直接import的單一ESM
+    // （2026-09-11實測過，dist/transformers.web.js直接載入會噴
+    // "Failed to resolve module specifier onnxruntime-web/webgpu"）。
+    //
+    // **為什麼WebGPU跟CPU用不同版本**（2026-09-11對jfk.wav樣本實測的結果）：
+    //   - 4.2.0：WebGPU路徑轉錄正確；CPU WASM路徑載入量化Whisper模型時直接噴
+    //     "TransposeDQWeightsForMatMulNBits Missing required scale"建session失敗
+    //     （試過fp32/fp16/int8所有dtype都一樣，不是dtype的問題）。
+    //   - 3.7.5：CPU WASM路徑轉錄正確且快（11秒音檔約10秒）；WebGPU路徑會跑完
+    //     但吐出整段亂碼（onnxruntime-web WebGPU EP對這個量化模型的
+    //     dequant有精度問題）。
+    // 兩個版本用的是同一個HuggingFace模型repo、同一組q8檔案，瀏覽器Cache API
+    // 依模型檔URL快取、跟transformers.js版本無關，所以模型只會下載一次、
+    // 兩條路徑共用；只有transformers.js自己那包JS（約2-3MB）會依實際走到的
+    // 路徑各下載一次。等上游把某個版本的兩條路徑都修好，這裡就能收斂回單一
+    // 版本（見_ensureTransformersJsLoaded）。
+    transformersJs: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm',
+    transformersJsWebGpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm',
 };
+// tw_stock_db客製: 2026-09-11——transcribe_media產生逐字稿檔案時，把秒數
+// 格式化成 M:SS 或 H:MM:SS（超過一小時才顯示小時位）。null/NaN回傳"?:??"，
+// 讓「模型沒吐出這一段的時間軸」的情況在檔案裡看得出來、不會靜靜變成0。
+function _faFormatTimestamp(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) return '?:??';
+    const total = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return h > 0
+        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${m}:${String(s).padStart(2, '0')}`;
+}
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
 }
@@ -2967,6 +3043,33 @@ ${fnData.code}
                 sources: { type: 'array', items: { type: 'string', enum: BROWSER_SEARCH_SOURCES }, description: '（選填）要查詢的來源子集，留空＝全部來源' },
             }, required: ['query'], additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-11——語音轉文字（media_transcription domain
+        // 的主工具）。實作見_transcribeMedia。第一次執行會下載Whisper模型
+        // （約77MB，之後瀏覽器Cache API快取），且轉錄本身依長度可能跑數分鐘。
+        registerOptional('transcribe_media',
+            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿也另存成persistentStorage檔案，逐字稿很長時可以再交給summarize_large_text處理）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘，呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️只有桌機版Chrome/Edge能跑（需要WebGPU或WebCodecs等新API），其他瀏覽器會明確回報不支援。參數: {"file_id":"...", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（用list_uploaded_files查詢可用的file_id）' });
+                const record = await this.fileCache.get(fileId);
+                if (!record || record.kind !== 'uploaded') {
+                    return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
+                }
+                const language = ['zh', 'en'].includes(String(parsed.language || '').trim()) ? String(parsed.language).trim() : null;
+                try {
+                    return JSON.stringify(await this._transcribeMedia(record, language));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: '要轉錄的影片/音檔id，用list_uploaded_files取得' },
+                language: { type: 'string', enum: ['zh', 'en'], description: '（選填）指定語言，不填＝自動偵測' },
+            }, required: ['file_id'], additionalProperties: false }
+        );
     }
 
     // ============================================================
@@ -3106,6 +3209,194 @@ ${fnData.code}
             }
         }
         return { ok: true, query, results };
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-11——transcribe_media（語音轉文字）的實作。
+    // Whisper base（中英雙語）跑在瀏覽器端，透過transformers.js
+    // （見FA_ASSET_URLS.transformersJs / _ensureTransformersJsLoaded）。
+    // 音訊不會上傳到任何伺服器——decodeAudioData在本機解碼、模型也在本機跑。
+    // ============================================================
+
+    // transformers.js是ES module，走原生動態import()載入（跟index.html載入
+    // nimiq/qr-scanner同一種手法），不是這個專案其他vendored函式庫用的
+    // 「fetch文字+eval掛global」方式。依device挑版本（見FA_ASSET_URLS的
+    // transformersJs/transformersJsWebGpu的說明——WebGPU/CPU各自有一個版本
+    // 才轉錄正確），每個URL的module memoize在一個Map裡，同一個URL只載一次。
+    async _ensureTransformersJsLoaded(device) {
+        const url = device === 'webgpu' ? FA_ASSET_URLS.transformersJsWebGpu : FA_ASSET_URLS.transformersJs;
+        if (!this._transformersJsModules) this._transformersJsModules = new Map();
+        if (this._transformersJsModules.has(url)) return this._transformersJsModules.get(url);
+        const loadPromise = (async () => {
+            const mod = await import(/* webpackIgnore: true */ url);
+            const env = mod.env;
+            // 模型從HuggingFace Hub抓（transformers.js預設就是），允許瀏覽器
+            // Cache API快取，不用本機模型。
+            try {
+                env.allowLocalModels = false;
+                env.useBrowserCache = true;
+                // CPU WASM後端執行緒數——見WHISPER_WASM_THREADS的說明，
+                // crossOriginIsolated不成立（host頁面沒加coi-serviceworker）
+                // 時onnxruntime-web會自動夾回1、不會壞，只是慢。
+                if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
+                    const isolated = (typeof crossOriginIsolated !== 'undefined') && crossOriginIsolated;
+                    env.backends.onnx.wasm.numThreads = isolated ? WHISPER_WASM_THREADS : 1;
+                }
+            } catch (_) { /* env欄位結構若隨版本變動，載入本身不該因此失敗 */ }
+            return mod;
+        })().catch(err => {
+            this._transformersJsModules.delete(url);
+            throw new Error('語音轉文字函式庫(transformers.js)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
+        });
+        this._transformersJsModules.set(url, loadPromise);
+        return loadPromise;
+    }
+
+    async _isWebGpuAvailable() {
+        try {
+            if (typeof navigator === 'undefined' || !navigator.gpu) return false;
+            const adapter = await navigator.gpu.requestAdapter();
+            return !!adapter;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    // 建立(或取回快取的)Whisper ASR pipeline。device明確傳入（'webgpu'
+    // 或'wasm'），fallback邏輯放在呼叫端_transcribeMedia，這裡只負責「照指定
+    // 的device建一個pipeline」。同一個device的pipeline memoize起來重用
+    // （模型檔案本身也會被transformers.js/瀏覽器快取，換device重建也不會
+    // 重新下載模型）。
+    async _getWhisperTranscriber(device, onProgress) {
+        if (this._whisperTranscriber && this._whisperTranscriberDevice === device) return this._whisperTranscriber;
+        const mod = await this._ensureTransformersJsLoaded(device);
+        const transcriber = await mod.pipeline('automatic-speech-recognition', WHISPER_MODEL_ID, {
+            device,
+            dtype: WHISPER_DTYPE,
+            progress_callback: (p) => {
+                if (!onProgress || !p) return;
+                if (p.status === 'progress' && p.file && p.total) {
+                    onProgress(`下載模型 ${p.file}：${Math.round((p.loaded / p.total) * 100)}%`);
+                } else if (p.status === 'done' && p.file) {
+                    onProgress(`模型檔案就緒：${p.file}`);
+                }
+            },
+        });
+        this._whisperTranscriber = transcriber;
+        this._whisperTranscriberDevice = device;
+        return transcriber;
+    }
+
+    // 把上傳的影片/音檔解碼成Whisper要的16kHz單聲道Float32 PCM。
+    // decodeAudioData會自動從mp4/mov抽出音軌並解成PCM（Chrome/Edge/新版
+    // Firefox/Safari對AAC都支援），不需要ffmpeg.wasm。
+    async _decodeAudioForWhisper(blob) {
+        const AC = (typeof AudioContext !== 'undefined') ? AudioContext : (typeof window !== 'undefined' ? window.webkitAudioContext : null);
+        const OAC = (typeof OfflineAudioContext !== 'undefined') ? OfflineAudioContext : (typeof window !== 'undefined' ? window.webkitOfflineAudioContext : null);
+        if (!AC || !OAC) throw new Error('這個瀏覽器不支援 Web Audio API，無法解碼音訊。請改用桌機版 Chrome 或 Edge。');
+        const arrayBuffer = await blob.arrayBuffer();
+        const tmpCtx = new AC();
+        let decoded;
+        try {
+            // slice(0)複製一份——decodeAudioData會detach傳入的ArrayBuffer。
+            decoded = await tmpCtx.decodeAudioData(arrayBuffer.slice(0));
+        } catch (err) {
+            throw new Error('無法解碼這個檔案的音訊（可能沒有音軌，或是這個瀏覽器不支援的音訊編碼）：' + (err && err.message || err));
+        } finally {
+            try { if (tmpCtx.close) tmpCtx.close(); } catch (_) {}
+        }
+        const durationSeconds = decoded.duration;
+        if (decoded.sampleRate === WHISPER_SAMPLE_RATE && decoded.numberOfChannels === 1) {
+            return { pcm: decoded.getChannelData(0), durationSeconds };
+        }
+        // OfflineAudioContext的destination設1聲道，多聲道會自動downmix成單聲道；
+        // 取樣率設16kHz，rendering出來就是重採樣後的結果。
+        const frameCount = Math.max(1, Math.ceil(decoded.duration * WHISPER_SAMPLE_RATE));
+        const offline = new OAC(1, frameCount, WHISPER_SAMPLE_RATE);
+        const src = offline.createBufferSource();
+        src.buffer = decoded;
+        src.connect(offline.destination);
+        src.start();
+        const resampled = await offline.startRendering();
+        return { pcm: resampled.getChannelData(0), durationSeconds };
+    }
+
+    async _transcribeMedia(record, language) {
+        const log = (m) => this._log('🎙️ ' + m);
+        log(`解碼「${record.filename}」的音訊…`);
+        let audio;
+        try {
+            audio = await this._decodeAudioForWhisper(record.blob);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        log(`音訊長度約 ${Math.round(audio.durationSeconds)} 秒`);
+
+        const runOptions = {
+            chunk_length_s: WHISPER_CHUNK_LENGTH_S,
+            stride_length_s: WHISPER_STRIDE_LENGTH_S,
+            return_timestamps: true,
+            task: 'transcribe',
+        };
+        if (language) runOptions.language = language;
+
+        // device選擇：WebGPU可用就先試WebGPU，任何一步（建pipeline或實際
+        // 轉錄）失敗就重置、退回CPU WASM重跑一次；CPU再失敗才真的回報。
+        const wantWebGpu = await this._isWebGpuAvailable();
+        const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
+        let lastErr = null;
+        for (let i = 0; i < deviceOrder.length; i++) {
+            const device = deviceOrder[i];
+            try {
+                log(`載入 Whisper 模型（${device === 'webgpu' ? 'WebGPU' : 'CPU'}，首次約需下載 77MB）…`);
+                const transcriber = await this._getWhisperTranscriber(device, log);
+                log(`開始轉錄（${device === 'webgpu' ? 'WebGPU' : 'CPU'}）…`);
+                const output = await transcriber(audio.pcm, runOptions);
+                return this._formatTranscriptionResult(output, audio.durationSeconds, device, record, language);
+            } catch (err) {
+                lastErr = err;
+                this._whisperTranscriber = null;
+                this._whisperTranscriberDevice = null;
+                if (i < deviceOrder.length - 1) {
+                    log(`${device === 'webgpu' ? 'WebGPU' : 'CPU'} 路徑失敗（${err && err.message || err}），改用下一個…`);
+                }
+            }
+        }
+        return { ok: false, error: '轉錄失敗：' + String((lastErr && lastErr.message) || lastErr || '未知錯誤') };
+    }
+
+    async _formatTranscriptionResult(output, durationSeconds, device, record, requestedLanguage) {
+        const text = String((output && output.text) || '').trim();
+        const segments = Array.isArray(output && output.chunks)
+            ? output.chunks.map(c => ({
+                start: Array.isArray(c.timestamp) ? c.timestamp[0] : null,
+                end: Array.isArray(c.timestamp) ? c.timestamp[1] : null,
+                text: String(c.text || '').trim(),
+            })).filter(s => s.text)
+            : [];
+        // 逐字稿另存成persistentStorage檔案（跟檔案上傳/fetch_web_page共用
+        // 同一套fileCache）——逐字稿很長時可以再委派給summarize_large_text。
+        let transcriptFileId = null;
+        try {
+            const body = segments.length
+                ? segments.map(s => `[${_faFormatTimestamp(s.start)} - ${_faFormatTimestamp(s.end)}] ${s.text}`).join('\n')
+                : text;
+            const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
+            const tBlob = new Blob([body], { type: 'text/plain' });
+            transcriptFileId = await this.fileCache.put(`${base}.逐字稿.txt`, 'text/plain', tBlob, 'uploaded');
+        } catch (err) {
+            this._log('⚠️ 逐字稿存檔失敗（不影響轉錄結果）：' + (err && err.message || err));
+        }
+        this._log(`🎙️ 轉錄完成：共 ${segments.length} 段、${text.length} 字`);
+        return {
+            ok: true,
+            language: (output && output.language) || requestedLanguage || 'auto',
+            durationSeconds: Math.round(durationSeconds),
+            device,
+            text,
+            segments,
+            transcript_file_id: transcriptFileId,
+        };
     }
 
     _refreshSystemPromptMessage() {
