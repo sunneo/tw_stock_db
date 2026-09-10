@@ -4059,9 +4059,11 @@ ${fnData.code}
             });
             if (!result.ok) return { ok: false, error: result.error };
             const outBlob = new Blob([result.buffer], { type: 'video/mp4' });
-            const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '');
-            const outId = await this.fileCache.put(`${base}.字幕版.mp4`, 'video/mp4', outBlob, 'uploaded');
-            return { ok: true, video_file_id: outId, filename: `${base}.字幕版.mp4`, frames: result.frames, sizeBytes: outBlob.size };
+            // 去副檔名；已經是「.字幕版」的檔案再燒一次不要疊成「.字幕版.字幕版」
+            const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '').replace(/\.字幕版$/, '');
+            const outName = `${base}.字幕版.mp4`;
+            const outId = await this.fileCache.put(outName, 'video/mp4', outBlob, 'uploaded');
+            return { ok: true, video_file_id: outId, filename: outName, frames: result.frames, sizeBytes: outBlob.size };
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         } finally {
@@ -14088,7 +14090,14 @@ ${existingNodeSummaries}
                 linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
             }).catch(() => {
                 linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
-                linkEl.style.background = palette.detailBg || '#999';
+                // tw_stock_db客製: 2026-09-11——原本改成 palette.detailBg 但沒動
+                // 到 <a> 內建的 color:#fff，light theme 下變成白字配淺底幾乎看不到
+                // （使用者回報）。改成透明底＋沿用泡泡本身的文字色＋琥珀色外框，
+                // 深淺色主題都有對比。
+                linkEl.style.background = 'transparent';
+                linkEl.style.color = palette.assistantText;
+                linkEl.style.border = '1px solid #f59e0b';
+                linkEl.style.fontWeight = 'normal';
                 linkEl.style.cursor = 'default';
             });
             return;
