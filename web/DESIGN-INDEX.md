@@ -555,11 +555,44 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       檔案（跟檔案上傳/fetch_web_page共用fileCache），很長時可再委派給
       `summarize_large_text`。
     - 已實測驗證：WebGPU/CPU兩條路徑對jfk.wav都轉錄正確、有時間軸分段、
-      逐字稿存檔可取回；mp4影片音軌解碼正常。中文沒有另外找到乾淨的公開
-      樣本直接測，但走的是完全相同的程式路徑（只差decoder的語言起始
-      token），whisper-base本身就是標準多語言模型。
-    - **後續Phase**（尚未做）：Phase 2 MP4匯出加音軌、Phase 3 字幕/音訊
-      同步的宣告式動畫、Phase 4 統籌subagent。
+      逐字稿存檔可取回；mp4影片音軌解碼正常；**使用者提供的真實中文影片
+      （康軒「月亮魔法師」）也實測過**——whisper-base對中文是「聽得懂在講
+      什麼」的水準但有同音字錯（魔法→模法、細細→吸息），這是q8 base的
+      已知取捨，不是bug。
+  - **2026-09-11 追加（影音處理domain擴充）**：
+    - domain從`media_transcription`改名`media_av`「影音處理（逐字稿/擷取
+      聲音/字幕）」，toolNames加`extract_audio`。
+    - `transcribe_media`的參數`file_id`改成`file`（吃file_id**或檔名**，
+      留空＝用最近上傳的），透過新的`_resolveUploadedFileRecord(arg,
+      {kindFilter, consumePendingAttachment})`定位檔案——這是使用者要求
+      「slash-command能用附件id/檔名接續操作」的共用機制。
+    - `transcribe_media`改成**自己把音訊切30秒window逐段轉錄**
+      （`_runWhisperWindowed`），不用transformers.js pipeline內建chunking：
+      (1) 每段log進度（長影片轉錄可能好幾分鐘，使用者實測回報「開始轉錄」
+      後一直沒動靜像卡住）(2) 繞開pipeline內建chunking在某些版本的
+      stitching問題。window間留`WHISPER_STRIDE_LENGTH_S`重疊、第2段起丟
+      重疊前段的segment、時間軸offset回絕對時間、相鄰逐字相同的segment
+      去重。逐字稿檔改存**`.srt`**（有時間軸時）——可以直接當之後
+      burn_subtitles的字幕來源，也還是純文字能餵summarize_large_text。
+    - 新工具`extract_audio`（`_extractAudio`）：`decodeAudioData`解碼音軌
+      →`_faEncodeWav`（純JS、無函式庫）編成16-bit PCM WAV存進fileCache。
+    - 新slash指令（共同`/media-`前綴，都跳過LLM直接跑本地工具）：
+      `/media-transcribe [<影片id或檔名>] [zh|en]`、
+      `/media-extract-audio [<影片id或檔名>]`——結果用
+      `_deliverExistingCacheFile`在對話裡給下載連結。
+    - Advance Settings「子Agent」分頁新增：CPU執行緒數（`whisperWasmThreads`，
+      預設4，夾1~16，`_getWhisperWasmThreads`）＋模型快取占用顯示/重新
+      整理/清除（`_getWhisperCacheInfo`/`_clearWhisperCache`/
+      `_refreshWhisperCacheSizeDisplay`——transformers.js把模型檔存在
+      `transformers-cache`這個Cache API）。
+    - 字幕解析helper`_faParseSubtitleText`（吃`.srt`或`[M:SS - M:SS] 文字`
+      逐行格式→segments）已就緒，給burn_subtitles吃「使用者自己提供的
+      字幕檔」用。
+    - **還沒做**：`burn_subtitles`（把字幕燒進影片重新輸出）——需要影片
+      逐幀解碼（`<video>`+`requestVideoFrameCallback`+canvas）、逐幀畫
+      字幕overlay、音軌用WebCodecs AudioEncoder編AAC、跟影像一起丟
+      mp4-muxer（mp4-muxer本來就支援AAC音軌，`_encodeCanvasFramesToMp4`
+      已有影像那半）。這是Phase 3，獨立一塊。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
