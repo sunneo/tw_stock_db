@@ -586,13 +586,39 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       `_refreshWhisperCacheSizeDisplay`——transformers.js把模型檔存在
       `transformers-cache`這個Cache API）。
     - 字幕解析helper`_faParseSubtitleText`（吃`.srt`或`[M:SS - M:SS] 文字`
-      逐行格式→segments）已就緒，給burn_subtitles吃「使用者自己提供的
-      字幕檔」用。
-    - **還沒做**：`burn_subtitles`（把字幕燒進影片重新輸出）——需要影片
-      逐幀解碼（`<video>`+`requestVideoFrameCallback`+canvas）、逐幀畫
-      字幕overlay、音軌用WebCodecs AudioEncoder編AAC、跟影像一起丟
-      mp4-muxer（mp4-muxer本來就支援AAC音軌，`_encodeCanvasFramesToMp4`
-      已有影像那半）。這是Phase 3，獨立一塊。
+      逐行格式→segments），給burn_subtitles吃「使用者自己提供的字幕檔」用。
+  - **2026-09-11 追加（burn_subtitles 燒錄字幕，Phase 3）**：
+    - **用 Mediabunny + WebCodecs，不是 `<video>` tag**（使用者明確要求：
+      不要即時播放那種、要用 decoder、要平行、offscreen）。Mediabunny
+      （`mp4-muxer` 作者的新作、`mp4-muxer` 已停止維護官方導向這個）
+      `FA_ASSET_URLS.mediabunny` 走 jsDelivr `/+esm` 動態 import。
+    - `FA_BURN_SUBTITLES_WORKER_SRC`：**module worker**（才能 import ESM），
+      整條「demux→`VideoDecoder` 硬體解碼→逐幀畫字幕 overlay 到
+      OffscreenCanvas→`VideoEncoder` 重編→mux」都在 worker 裡跑、不碰
+      主執行緒。用 `Conversion.init({ video:{process}, audio:{} })`——
+      `audio:{}` 就是**音軌 passthrough 不重編**（AAC 原封不動）。字幕
+      繪製函式 `_drawSubtitle`/`_wrapLines`（CJK 逐字換行、Latin 空白換行）
+      也在 worker src 裡。實測 12s/1080p 影片 6.3s 燒完（2x 影片長度、
+      連沒有真實 GPU 的環境）、音軌長度保留、輸出可播、字幕正確燒進畫面
+      （白字黑邊半透明底、置中）。
+    - `_burnSubtitles(videoRecord, segments, onProgress)`：建 worker、
+      postMessage、收 progress + 最後 transfer 回來的 ArrayBuffer→Blob→
+      fileCache→`{ok, video_file_id, filename, frames, sizeBytes}`。
+    - `_resolveSubtitleSegments(videoRecord, subtitleArg, language, onLog)`：
+      subtitleArg 給字幕檔 id/檔名就 `_faParseSubtitleText`；留空就自動
+      先跑 `_transcribeMedia` 轉一份（`autoTranscribed:true`）。
+    - 工具 `burn_subtitles({video, subtitle?, language?})`、slash
+      `/media-burn-subtitles [<影片>] [<字幕檔>]`，都加進 media_av domain。
+    - **進度 widget**（使用者要求：長處理要有會更新的對話內 widget）：
+      `_createProgressWidget(title)` → 推一則帶 `_progressWidget` 非可枚舉
+      旗標的訊息，`_renderSingleMessage` 有對應渲染分支（標題+進度條+狀態
+      +spinner/✅/❌），回傳 handle 讓呼叫端 `update({pct,status})`/
+      `finish()`/`fail()`（內部節流 250ms 重繪）。**三個 `/media-*` slash
+      指令都改用它**（不再狂洗 `_log`）：transcribe 把 `_transcribeMedia`
+      內部的 `_log` 暫時導到 widget status 列。
+    - Advance Settings「子Agent」分頁加：字幕字級（`subtitleFontScale`，
+      占影片高度比例，預設 0.052）＋位置（`subtitlePosition` top/bottom）。
+      其餘外觀用 `SUBTITLE_DEFAULT_STYLE` 內建（`_getSubtitleStyle` 疊合）。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
