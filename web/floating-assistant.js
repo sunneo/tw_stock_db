@@ -755,6 +755,25 @@ const WHISPER_STRIDE_LENGTH_S = 5;
 // Whisper模型的取樣率固定16kHz單聲道——_decodeAudioForWhisper一律把上傳的
 // 音訊重採樣成這個規格。
 const WHISPER_SAMPLE_RATE = 16000;
+// tw_stock_db客製: 2026-09-11——HuggingFace 抓不到（被擋/CDN 掛掉/離線）時的
+// 退路：從自家 repo 的 whisper-model-backup 分支抓同一份 q8 模型檔（大檔切成
+// 20MB 一份，見 web/tools/build-whisper-backup-branch.mjs 產生）。這裡列出
+// dtype='q8' 實際會用到的 7 個檔案——鍵是模型 repo 內的相對路徑，值是
+// transformers.js 真正會 fetch 的 HuggingFace 完整 URL（退路把 part 合併回
+// Blob 後，就用這個 URL 當 key 塞進 transformers-cache，transformers.js 下次
+// cache.match 命中就不會再打 HF）。相對路徑同時就是備份分支裡的目錄結構。
+const WHISPER_MODEL_ID_PATH = 'onnx-community/whisper-base';
+const WHISPER_HF_RESOLVE_BASE = 'https://huggingface.co/' + WHISPER_MODEL_ID_PATH + '/resolve/main/';
+const WHISPER_MODEL_BACKUP_FILES = [
+    'config.json',
+    'preprocessor_config.json',
+    'tokenizer_config.json',
+    'tokenizer.json',
+    'generation_config.json',
+    'onnx/encoder_model_quantized.onnx',
+    'onnx/decoder_model_merged_quantized.onnx',
+];
+const WHISPER_MODEL_BACKUP_PART_SIZE = 20 * 1024 * 1024;
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
@@ -1286,6 +1305,11 @@ const FA_ASSET_URLS = {
     // passthrough不重編。ES module，跟transformers.js一樣走/+esm動態import。
     // 實測1.56.1可以（連在沒有真實GPU的環境都能到1.5x影片長度的處理速度）。
     mediabunny: 'https://cdn.jsdelivr.net/npm/mediabunny@1.56.1/+esm',
+    // tw_stock_db客製: 2026-09-11——HuggingFace 抓 Whisper 模型失敗時的退路，
+    // 從自家 repo 的 whisper-model-backup 分支抓（見 WHISPER_MODEL_BACKUP_FILES
+    // 跟 web/tools/build-whisper-backup-branch.mjs）。結尾要有 /。換 host（例如
+    // piano-web 或其他部署）時用 setAssetUrls 覆蓋成自己的 raw base 即可。
+    whisperModelBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/whisper-model-backup/whisper-base-q8/',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -3723,7 +3747,7 @@ ${fnData.code}
     async _getWhisperTranscriber(device, onProgress) {
         if (this._whisperTranscriber && this._whisperTranscriberDevice === device) return this._whisperTranscriber;
         const mod = await this._ensureTransformersJsLoaded(device);
-        const transcriber = await mod.pipeline('automatic-speech-recognition', WHISPER_MODEL_ID, {
+        const buildPipeline = () => mod.pipeline('automatic-speech-recognition', WHISPER_MODEL_ID, {
             device,
             dtype: WHISPER_DTYPE,
             progress_callback: (p) => {
@@ -3735,9 +3759,97 @@ ${fnData.code}
                 }
             },
         });
+        let transcriber;
+        try {
+            transcriber = await buildPipeline();
+        } catch (err) {
+            // tw_stock_db客製: 2026-09-11——HuggingFace 抓不到模型檔（被牆/CDN
+            // 掛掉/離線）時，改從自家 repo 的 whisper-model-backup 分支抓同一份
+            // q8 檔、合併後塞進 transformers-cache，再讓 transformers.js 重跑一次
+            // （這次會 cache 命中、不碰 HF）。只試一次，退路本身也失敗就照原本
+            // 的錯誤往上丟。
+            if (this._whisperRepoFallbackTried) throw err;
+            this._whisperRepoFallbackTried = true;
+            if (onProgress) onProgress('HuggingFace 下載失敗，改從備份分支抓模型…');
+            const fb = await this._prefetchWhisperModelFromRepo(onProgress);
+            if (!fb.ok) throw new Error((err && err.message || err) + '；備份分支也失敗：' + fb.error);
+            transcriber = await buildPipeline();
+        }
         this._whisperTranscriber = transcriber;
         this._whisperTranscriberDevice = device;
         return transcriber;
+    }
+
+    // tw_stock_db客製: 2026-09-11——把 whisper-base q8 模型檔從自家 repo 的
+    // whisper-model-backup 分支抓回來（大檔以 20MB 一份切割上傳，見
+    // web/tools/build-whisper-backup-branch.mjs 跟 WHISPER_MODEL_BACKUP_FILES），
+    // 合併後用 transformers.js 真正會 fetch 的 HuggingFace URL 當 key 塞進
+    // transformers-cache。只在 _getWhisperTranscriber 裡 HF 直抓失敗時才呼叫。
+    // manifest.json 由建置腳本產生：{ files: [{ path, size, sha256, parts }] }。
+    async _prefetchWhisperModelFromRepo(onProgress) {
+        const base = String(FA_ASSET_URLS.whisperModelBackupBase || '').replace(/\/?$/, '/');
+        if (!base) return { ok: false, error: '沒有設定 whisperModelBackupBase' };
+        if (typeof caches === 'undefined') return { ok: false, error: '這個環境沒有 Cache API，無法預載模型' };
+        let manifest = null;
+        try {
+            const mResp = await fetch(base + 'manifest.json', { cache: 'no-cache' });
+            if (mResp.ok) manifest = await mResp.json();
+        } catch (_) { /* 沒有 manifest 就退回用內建清單、不切割猜測 */ }
+        const fileList = (manifest && Array.isArray(manifest.files) && manifest.files.length)
+            ? manifest.files
+            : WHISPER_MODEL_BACKUP_FILES.map(p => ({ path: p, parts: null }));
+        const cacheName = 'transformers-cache';
+        const cache = await caches.open(cacheName);
+        for (const f of fileList) {
+            const relPath = f.path;
+            const hfUrl = WHISPER_HF_RESOLVE_BASE + relPath;
+            if (await cache.match(hfUrl)) continue; // 已經有了（HF 抓成功一部分）
+            if (onProgress) onProgress(`備份分支：抓 ${relPath}…`);
+            let blob;
+            const partCount = Number.isInteger(f.parts) && f.parts > 0 ? f.parts : null;
+            try {
+                if (partCount) {
+                    const buffers = [];
+                    for (let i = 0; i < partCount; i++) {
+                        const partUrl = base + relPath + '.part' + String(i).padStart(3, '0');
+                        const r = await fetch(partUrl, { cache: 'no-cache' });
+                        if (!r.ok) throw new Error(`${partUrl} → HTTP ${r.status}`);
+                        buffers.push(await r.arrayBuffer());
+                        if (onProgress && partCount > 1) onProgress(`備份分支：${relPath} 第 ${i + 1}/${partCount} 份`);
+                    }
+                    blob = new Blob(buffers);
+                } else {
+                    // 沒有 manifest：先試單檔，再試 .part000.. 直到 404
+                    const single = await fetch(base + relPath, { cache: 'no-cache' });
+                    if (single.ok) {
+                        blob = await single.blob();
+                    } else {
+                        const buffers = [];
+                        for (let i = 0; i < 64; i++) {
+                            const r = await fetch(base + relPath + '.part' + String(i).padStart(3, '0'), { cache: 'no-cache' });
+                            if (!r.ok) { if (i === 0) throw new Error(`${relPath} 單檔跟分片都抓不到`); break; }
+                            buffers.push(await r.arrayBuffer());
+                        }
+                        blob = new Blob(buffers);
+                    }
+                }
+            } catch (err) {
+                return { ok: false, error: `抓 ${relPath} 失敗：` + String(err && err.message || err) };
+            }
+            if (f.size && blob.size !== f.size) {
+                return { ok: false, error: `${relPath} 合併後大小不符（預期 ${f.size}、實際 ${blob.size}）` };
+            }
+            const headers = new Headers({ 'Content-Length': String(blob.size) });
+            if (/\.json$/.test(relPath)) headers.set('Content-Type', 'application/json');
+            else if (/\.onnx$/.test(relPath)) headers.set('Content-Type', 'application/octet-stream');
+            try {
+                await cache.put(hfUrl, new Response(blob, { status: 200, statusText: 'OK', headers }));
+            } catch (err) {
+                return { ok: false, error: `寫入快取失敗（${relPath}）：` + String(err && err.message || err) };
+            }
+        }
+        if (onProgress) onProgress('備份分支模型就緒，重新載入…');
+        return { ok: true, source: base };
     }
 
     // 把上傳的影片/音檔用Web Audio API解碼成AudioBuffer（保留原始取樣率/
@@ -3879,6 +3991,7 @@ ${fnData.code}
             // 下次轉錄要重新載模型
             this._whisperTranscriber = null;
             this._whisperTranscriberDevice = null;
+            this._whisperRepoFallbackTried = false;
             return true;
         } catch (_) {
             return false;
