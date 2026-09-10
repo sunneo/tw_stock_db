@@ -720,9 +720,9 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
     media_av: {
         enabled: true,
-        label: '影音處理（逐字稿／擷取聲音／字幕）',
-        toolNames: ['transcribe_media', 'extract_audio', 'list_uploaded_files'],
-        systemPrompt: '你是一個專門處理影片/音檔的子任務助理，能做的事：transcribe_media（語音轉逐字稿，中英雙語，會產生一個.srt字幕檔）、extract_audio（把音軌抽成WAV檔）。需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取），轉錄本身依影片長度可能要跑好幾分鐘（每30秒一段、逐段回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。轉完/處理完依使用者的實際需求回答；逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+        label: '影音處理（逐字稿／擷取聲音／燒字幕）',
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門處理影片/音檔的子任務助理，能做的事：transcribe_media（語音轉逐字稿，中英雙語，會產生一個.srt字幕檔）、extract_audio（把音軌抽成WAV檔）、burn_subtitles（把字幕燒進影片輸出新MP4，字幕來源可以是字幕檔或留空自動先轉逐字稿）。需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取）；transcribe_media/burn_subtitles都依影片長度可能要跑好幾分鐘（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。處理完依使用者的實際需求回答；逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
 
@@ -977,6 +977,130 @@ self.onmessage = function (e) {
 };
 `;
 
+// tw_stock_db客製: 2026-09-11——burn_subtitles的module worker。整條「demux→
+// 逐幀解碼→畫字幕overlay→重編碼→mux」都跑在worker裡，不碰主執行緒
+// （使用者明確要求不要用<video>tag即時播放那種、要用decoder、要offscreen）。
+// module worker才能用import()載入ESM的Mediabunny。字幕繪製函式也在這裡面
+// （每幀的process callback裡呼叫）。收 {jobId, mediabunnyUrl, videoBlob,
+// segments, style}，回 {type:'progress', pct, frames, t} 多次 + 最後一次
+// {type:'result', ok, buffer|error, frames}（buffer用transfer送回）。
+const FA_BURN_SUBTITLES_WORKER_SRC = `
+let _mb = null;
+
+function _wrapLines(ctx, text, maxWidth) {
+    const out = [];
+    for (const para of String(text || '').split('\\n')) {
+        let line = '';
+        const tokens = para.split(/(\\s+)/);
+        for (const tok of tokens) {
+            if (!tok) continue;
+            if (ctx.measureText(line + tok).width <= maxWidth) { line += tok; continue; }
+            if (line.trim()) out.push(line.trim());
+            line = '';
+            if (ctx.measureText(tok).width > maxWidth) {
+                let chunk = '';
+                for (const ch of Array.from(tok)) {
+                    if (ctx.measureText(chunk + ch).width <= maxWidth) chunk += ch;
+                    else { if (chunk) out.push(chunk); chunk = ch; }
+                }
+                line = chunk;
+            } else {
+                line = tok.replace(/^\\s+/, '');
+            }
+        }
+        if (line.trim()) out.push(line.trim());
+    }
+    return out.length ? out : [''];
+}
+
+function _drawSubtitle(ctx, tSec, segments, style) {
+    let seg = null;
+    for (const s of segments) {
+        const end = (s.end != null && s.end > s.start) ? s.end : s.start + 3;
+        if (tSec >= s.start - 0.05 && tSec < end + 0.05) { seg = s; break; }
+    }
+    if (!seg || !seg.text) return;
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    const fs = Math.max(10, Math.round(H * style.fontScale));
+    ctx.save();
+    ctx.font = 'bold ' + fs + 'px ' + style.fontFamily;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const maxW = W * style.maxWidthFrac;
+    const lines = _wrapLines(ctx, seg.text, maxW);
+    const lh = fs * style.lineHeightScale;
+    const blockH = lh * (lines.length - 1) + fs;
+    const pad = fs * style.paddingScale;
+    let firstBaseline;
+    if (style.position === 'top') firstBaseline = H * style.marginScale + fs;
+    else firstBaseline = H - H * style.marginScale - blockH + fs;
+    if (style.background) {
+        let boxW = 0;
+        for (const ln of lines) boxW = Math.max(boxW, ctx.measureText(ln).width);
+        boxW = Math.min(W, boxW + pad * 2);
+        const boxX = (W - boxW) / 2;
+        const boxY = firstBaseline - fs - pad * 0.7;
+        const boxH = blockH + pad * 1.4;
+        ctx.fillStyle = style.background;
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, Math.min(pad, 12)); ctx.fill(); }
+        else ctx.fillRect(boxX, boxY, boxW, boxH);
+    }
+    ctx.lineWidth = Math.max(1, fs * style.strokeScale);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = style.strokeColor;
+    ctx.fillStyle = style.color;
+    for (let i = 0; i < lines.length; i++) {
+        const y = firstBaseline + i * lh;
+        if (ctx.lineWidth > 0.5) ctx.strokeText(lines[i], W / 2, y);
+        ctx.fillText(lines[i], W / 2, y);
+    }
+    ctx.restore();
+}
+
+self.onmessage = async (e) => {
+    const d = e.data || {};
+    const jobId = d.jobId;
+    try {
+        if (!_mb) _mb = await import(d.mediabunnyUrl);
+        const MB = _mb;
+        const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(d.videoBlob) });
+        let totalDur = 0;
+        try { totalDur = await input.computeDuration(); } catch (_) {}
+        const vt = await input.getPrimaryVideoTrack();
+        if (!vt) { self.postMessage({ jobId: jobId, type: 'result', ok: false, error: '這個檔案沒有影像軌，不能燒字幕' }); return; }
+        const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+        let ctx = null, frames = 0, lastPct = -1, lastPost = 0;
+        const conversion = await MB.Conversion.init({
+            input: input,
+            output: output,
+            video: { process: (sample) => {
+                if (!ctx) ctx = new OffscreenCanvas(sample.displayWidth, sample.displayHeight).getContext('2d');
+                sample.draw(ctx, 0, 0);
+                try { _drawSubtitle(ctx, sample.timestamp, d.segments || [], d.style); } catch (_) {}
+                frames++;
+                const now = Date.now();
+                const pct = totalDur > 0 ? Math.min(99, Math.floor((sample.timestamp / totalDur) * 100)) : null;
+                if ((pct != null && pct !== lastPct) || now - lastPost > 500) {
+                    lastPct = pct; lastPost = now;
+                    self.postMessage({ jobId: jobId, type: 'progress', pct: pct, frames: frames, t: sample.timestamp });
+                }
+                return ctx.canvas;
+            } },
+            audio: {},
+        });
+        if (!conversion.isValid) {
+            self.postMessage({ jobId: jobId, type: 'result', ok: false, error: '無法轉換這個影片（' + JSON.stringify(conversion.discardedTracks || []).slice(0, 200) + '）' });
+            return;
+        }
+        await conversion.execute();
+        const buf = output.target.buffer;
+        self.postMessage({ jobId: jobId, type: 'result', ok: true, buffer: buf, frames: frames }, [buf]);
+    } catch (err) {
+        self.postMessage({ jobId: jobId, type: 'result', ok: false, error: String((err && err.message) || err) });
+    }
+};
+`;
+
 // tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
 // 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
 // 用get_3d_scene_topic(topic)按需查詢——跟計畫文件記錄的使用者要求
@@ -1150,6 +1274,30 @@ const FA_ASSET_URLS = {
     // 版本（見_ensureTransformersJsLoaded）。
     transformersJs: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm',
     transformersJsWebGpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm',
+    // tw_stock_db客製: 2026-09-11——burn_subtitles（把字幕燒進影片）用的
+    // Mediabunny（mp4-muxer作者的新作、mp4-muxer已停止維護並官方導向這個）。
+    // 純TS、零執行期相依、內建demux+mux+WebCodecs封裝，有「逐幀丟canvas
+    // context轉換再編碼」的process hook正好給燒字幕用；音軌用audio:{}直接
+    // passthrough不重編。ES module，跟transformers.js一樣走/+esm動態import。
+    // 實測1.56.1可以（連在沒有真實GPU的環境都能到1.5x影片長度的處理速度）。
+    mediabunny: 'https://cdn.jsdelivr.net/npm/mediabunny@1.56.1/+esm',
+};
+
+// tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
+// 都用「影片高度的比例」表示，不同解析度的影片字幕看起來大小一致。使用者
+// 可以在Advance Settings「子Agent」分頁改size/position。
+const SUBTITLE_DEFAULT_STYLE = {
+    fontScale: 0.052,
+    fontFamily: '"Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", "Hiragino Sans", "Heiti TC", sans-serif',
+    color: '#ffffff',
+    strokeColor: '#000000',
+    strokeScale: 0.16,
+    position: 'bottom',
+    marginScale: 0.055,
+    maxWidthFrac: 0.9,
+    lineHeightScale: 1.28,
+    background: 'rgba(0,0,0,0.4)',
+    paddingScale: 0.28,
 };
 // tw_stock_db客製: 2026-09-11——transcribe_media產生逐字稿檔案時，把秒數
 // 格式化成 M:SS 或 H:MM:SS（超過一小時才顯示小時位）。null/NaN回傳"?:??"，
@@ -1852,6 +2000,11 @@ class FloatingAssistant {
             '把影片的音軌抽出來存成WAV檔（瀏覽器端解碼，不上傳）。留空＝用最近上傳的檔案',
             (argsText) => this._handleMediaExtractAudioCommand(argsText)
         );
+        this.register_slash_command(
+            '/media-burn-subtitles', '[<影片id或檔名>] [<字幕檔id或檔名>]',
+            '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿；影片留空＝用最近上傳的',
+            (argsText) => this._handleMediaBurnSubtitlesCommand(argsText)
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -2129,6 +2282,10 @@ class FloatingAssistant {
             // 只在crossOriginIsolated成立（host頁面有coi-serviceworker）時
             // 才真的多執行緒，否則onnxruntime-web自動夾回1。
             whisperWasmThreads: WHISPER_WASM_THREADS,
+            // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
+            // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
+            subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
+            subtitlePosition: SUBTITLE_DEFAULT_STYLE.position,
         };
     }
 
@@ -2423,6 +2580,11 @@ class FloatingAssistant {
                 const n = Number(raw.whisperWasmThreads);
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
             })(),
+            subtitleFontScale: (() => {
+                const n = Number(raw.subtitleFontScale);
+                return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
+            })(),
+            subtitlePosition: (raw.subtitlePosition === 'top' || raw.subtitlePosition === 'bottom') ? raw.subtitlePosition : SUBTITLE_DEFAULT_STYLE.position,
         };
     }
 
@@ -3202,6 +3364,36 @@ ${fnData.code}
                 file: { type: 'string', description: '要擷取聲音的影片/音檔的file_id或檔名；留空＝用最近上傳的' },
             }, additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-11——「燒錄字幕」：把字幕燒進影片畫面
+        // （硬字幕，不是可關的軟字幕），輸出新的MP4（見_burnSubtitles）。
+        registerOptional('burn_subtitles',
+            `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️只有桌機Chrome/Edge能跑；處理時間約1~2倍影片長度，長影片可能好幾分鐘，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）zh 或 en"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg);
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片（請先上傳，或用video參數指定id/檔名）' });
+                const language = ['zh', 'en'].includes(String(parsed.language || '').trim()) ? String(parsed.language).trim() : null;
+                try {
+                    const sub = await this._resolveSubtitleSegments(record, parsed.subtitle, language, (m) => this._log('🎬 ' + m));
+                    if (!sub.ok) return JSON.stringify({ ok: false, error: sub.error });
+                    const r = await this._burnSubtitles(record, sub.segments, (p) => {
+                        if (p.pct != null) this._log(`🎬 燒字幕中… ${p.pct}%（${p.frames} 幀）`);
+                    });
+                    if (r.ok) r.autoTranscribed = sub.autoTranscribed;
+                    return JSON.stringify(r);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝用最近上傳的' },
+                subtitle: { type: 'string', description: '（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿' },
+                language: { type: 'string', enum: ['zh', 'en'], description: '（選填）自動轉逐字稿時的語言' },
+            }, additionalProperties: false }
+        );
     }
 
     // ============================================================
@@ -3572,6 +3764,88 @@ ${fnData.code}
         if (!info.supported) { el.textContent = '（此瀏覽器不支援 Cache API）'; return; }
         if (!info.entries) { el.textContent = '尚未下載（0 MB）'; return; }
         el.textContent = `${(info.bytes / 1024 / 1024).toFixed(1)} MB（${info.entries} 個檔案）`;
+    }
+
+    // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀＝
+    // SUBTITLE_DEFAULT_STYLE疊上Advance Settings的覆寫（目前只開size/position
+    // 兩個常用旋鈕，其餘用預設）。
+    _getSubtitleStyle() {
+        const s = Object.assign({}, SUBTITLE_DEFAULT_STYLE);
+        const adv = this.advancedSettings || {};
+        const fontScale = Number(adv.subtitleFontScale);
+        if (Number.isFinite(fontScale) && fontScale >= 0.02 && fontScale <= 0.15) s.fontScale = fontScale;
+        if (adv.subtitlePosition === 'top' || adv.subtitlePosition === 'bottom') s.position = adv.subtitlePosition;
+        return s;
+    }
+
+    // tw_stock_db客製: 2026-09-11——把字幕(segments)燒進影片，輸出新的MP4。
+    // 整條pipeline跑在module worker裡（見FA_BURN_SUBTITLES_WORKER_SRC），
+    // WebCodecs硬體解碼+Mediabunny，音軌passthrough不重編。onProgress收
+    // {pct, frames, t}。回傳{ok, video_file_id, filename, frames, sizeBytes}
+    // 或{ok:false, error}。
+    async _burnSubtitles(videoRecord, segments, onProgress) {
+        if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+            return { ok: false, error: '這個瀏覽器不支援 Web Worker / OffscreenCanvas，無法燒字幕。請改用桌機版 Chrome 或 Edge。' };
+        }
+        if (!Array.isArray(segments) || !segments.length) {
+            return { ok: false, error: '沒有可用的字幕內容（segments 是空的）' };
+        }
+        let worker;
+        try {
+            const blobUrl = URL.createObjectURL(new Blob([FA_BURN_SUBTITLES_WORKER_SRC], { type: 'application/javascript' }));
+            worker = new Worker(blobUrl, { type: 'module' });
+        } catch (err) {
+            return { ok: false, error: '建立燒字幕 worker 失敗：' + String(err.message || err) };
+        }
+        const jobId = 'burn_' + Date.now();
+        try {
+            const result = await new Promise((resolve, reject) => {
+                worker.onmessage = (e) => {
+                    const dd = e.data || {};
+                    if (dd.jobId !== jobId) return;
+                    if (dd.type === 'progress') { if (onProgress) onProgress(dd); }
+                    else if (dd.type === 'result') resolve(dd);
+                };
+                worker.onerror = (e) => reject(new Error('燒字幕 worker 錯誤：' + (e.message || e)));
+                worker.postMessage({
+                    jobId,
+                    mediabunnyUrl: FA_ASSET_URLS.mediabunny,
+                    videoBlob: videoRecord.blob,
+                    segments,
+                    style: this._getSubtitleStyle(),
+                });
+            });
+            if (!result.ok) return { ok: false, error: result.error };
+            const outBlob = new Blob([result.buffer], { type: 'video/mp4' });
+            const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '');
+            const outId = await this.fileCache.put(`${base}.字幕版.mp4`, 'video/mp4', outBlob, 'uploaded');
+            return { ok: true, video_file_id: outId, filename: `${base}.字幕版.mp4`, frames: result.frames, sizeBytes: outBlob.size };
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        } finally {
+            try { worker.terminate(); } catch (_) {}
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-11——把「字幕來源」(subtitle參數，可以是
+    // .srt/逐字稿檔的file_id或檔名，或留空)解析成segments。留空時自動先跑
+    // transcribe_media轉一份。回傳{ok, segments, autoTranscribed, error}。
+    async _resolveSubtitleSegments(videoRecord, subtitleArg, language, onLog) {
+        const q = String(subtitleArg || '').trim();
+        if (q) {
+            const rec = await this._resolveUploadedFileRecord(q);
+            if (!rec) return { ok: false, error: `找不到符合「${q}」的字幕檔` };
+            let text;
+            try { text = await rec.blob.text(); } catch (err) { return { ok: false, error: `讀取字幕檔失敗：${err.message || err}` }; }
+            const segs = _faParseSubtitleText(text);
+            if (!segs.length) return { ok: false, error: `字幕檔「${rec.filename}」解析不出任何帶時間軸的字幕（支援 .srt 或每行「[M:SS - M:SS] 文字」）` };
+            return { ok: true, segments: segs, autoTranscribed: false };
+        }
+        if (onLog) onLog('沒有提供字幕檔，先自動轉逐字稿…');
+        const tr = await this._transcribeMedia(videoRecord, language);
+        if (!tr.ok) return { ok: false, error: '自動轉逐字稿失敗：' + tr.error };
+        if (!Array.isArray(tr.segments) || !tr.segments.length) return { ok: false, error: '自動轉出來的逐字稿沒有帶時間軸的分段，沒辦法拿來燒字幕' };
+        return { ok: true, segments: tr.segments, autoTranscribed: true };
     }
 
     async _transcribeMedia(record, language) {
@@ -4226,6 +4500,52 @@ ${fnData.code}
         }
         this.messages.push(msg);
         return msg;
+    }
+
+    // tw_stock_db客製: 2026-09-11使用者要求——長時間的slash-command處理
+    // （語音轉文字/擷取聲音/燒字幕）要在對話裡放一個「會更新的widget」顯示
+    // 進度，而不是狂洗_log訊息。做法：推一則帶`_progressWidget`非可枚舉
+    // 旗標的訊息（_renderSingleMessage有對應的渲染分支：標題+進度條+狀態
+    // 列+spinner/✅/❌），回傳一個handle讓呼叫端update({pct,status})／
+    // finish()／fail()，內部節流重繪（每幀更新太頻繁，250ms一次就夠）。
+    // _progressWidget是非可枚舉的，JSON.stringify不會序列化它，重新整理
+    // 頁面後這則訊息會變成空的tool訊息（等於消失），符合「純過渡UI」語意。
+    _createProgressWidget(title) {
+        const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now() };
+        const msg = { role: 'tool', content: '' };
+        Object.defineProperty(msg, '_progressWidget', { value: state, enumerable: false, configurable: true });
+        this.messages.push(msg);
+        this._renderMessageHistory();
+        let lastRender = 0;
+        const rerender = (force) => {
+            const now = Date.now();
+            if (!force && now - lastRender < 250) return;
+            lastRender = now;
+            this._renderMessageHistory();
+        };
+        return {
+            msg,
+            update: (patch = {}) => {
+                if (patch.pct != null) state.pct = Math.max(0, Math.min(100, patch.pct));
+                if (patch.status != null) state.status = String(patch.status);
+                rerender(false);
+            },
+            finish: (finalStatus) => {
+                state.done = true;
+                if (state.pct != null) state.pct = 100;
+                if (finalStatus != null) state.status = String(finalStatus);
+                rerender(true);
+            },
+            fail: (errMsg) => {
+                state.done = true;
+                state.error = String(errMsg || '失敗');
+                rerender(true);
+            },
+            remove: () => {
+                this.messages = this.messages.filter(m => m !== msg);
+                this._renderMessageHistory();
+            },
+        };
     }
 
     // tw_stock_db客製: 通用能力——讓AI助理（或host app透過register_openai_tool
@@ -5590,6 +5910,10 @@ ${sourceTool.handlerScript}
         if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
         if (whisperThreadsInput) whisperThreadsInput.value = this._getWhisperWasmThreads();
+        const subtitleSizeInput = document.getElementById('ai-subtitle-size');
+        if (subtitleSizeInput) subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
+        const subtitlePosSelect = document.getElementById('ai-subtitle-position');
+        if (subtitlePosSelect) subtitlePosSelect.value = this._getSubtitleStyle().position;
         this._refreshWhisperCacheSizeDisplay();
         this._renderCustomToolList();
         this._renderAiFnList();
@@ -10561,26 +10885,25 @@ ${existingNodeSummaries}
             return;
         }
         this.messages.push({ role: 'user', content: `🎙️ 轉逐字稿：${record.filename}${language ? '（' + language + '）' : ''}` });
-        this._renderMessageHistory();
+        const prog = this._createProgressWidget(`轉逐字稿：${record.filename}`);
+        // _transcribeMedia內部的_log會被暫時導向進度widget的status列
+        const origLog = this._log.bind(this);
+        this._log = (m) => { prog.update({ status: String(m).replace(/^🎙️\s*/, '') }); origLog(m); };
         let result;
         try {
             result = await this._transcribeMedia(record, language);
         } catch (err) {
-            this._pushAssistantMessage(`轉逐字稿失敗：${err && err.message || err}`, null);
-            this._renderMessageHistory();
-            return;
+            result = { ok: false, error: String(err && err.message || err) };
+        } finally {
+            this._log = origLog;
         }
-        if (!result.ok) {
-            this._pushAssistantMessage(`轉逐字稿失敗：${result.error}`, null);
-            this._renderMessageHistory();
-            return;
-        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.durationSeconds}s，${result.device === 'webgpu' ? 'WebGPU' : 'CPU'}，${(result.segments || []).length} 段`);
         const preview = (result.segments || []).slice(0, 30)
             .map(s => `\`[${_faFormatTimestamp(s.start)}]\` ${s.text}`).join('\n');
         const more = (result.segments || []).length > 30 ? `\n\n…（共 ${result.segments.length} 段，完整內容見下方 .srt 檔）` : '';
         this._pushAssistantMessage(
-            `**逐字稿**（${result.durationSeconds}s，${result.device === 'webgpu' ? 'WebGPU' : 'CPU'}，語言 ${result.language}）\n\n${preview || result.text}${more}`,
-            null);
+            `**逐字稿**（語言 ${result.language}）\n\n${preview || result.text}${more}`, null);
         this._persistChatHistory();
         this._renderMessageHistory();
         if (result.transcript_file_id) {
@@ -10597,23 +10920,56 @@ ${existingNodeSummaries}
             return;
         }
         this.messages.push({ role: 'user', content: `🔊 擷取聲音：${record.filename}` });
-        this._renderMessageHistory();
+        const prog = this._createProgressWidget(`擷取聲音：${record.filename}`);
+        prog.update({ status: '解碼音軌中…' });
         let result;
         try {
             result = await this._extractAudio(record);
         } catch (err) {
-            this._pushAssistantMessage(`擷取聲音失敗：${err && err.message || err}`, null);
-            this._renderMessageHistory();
-            return;
+            result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) {
-            this._pushAssistantMessage(`擷取聲音失敗：${result.error}`, null);
-            this._renderMessageHistory();
-            return;
-        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.durationSeconds}s，${result.sampleRate}Hz，${result.channels} 聲道`);
         await this._deliverExistingCacheFile(
             result.audio_file_id,
-            `📎 已擷取音軌：${result.filename}（${result.durationSeconds}s，${result.sampleRate}Hz，${result.channels} 聲道，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB WAV）`);
+            `📎 已擷取音軌：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB WAV）`);
+    }
+
+    // /media-burn-subtitles [<影片id或檔名>] [<字幕檔id或檔名>]
+    async _handleMediaBurnSubtitlesCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const videoArg = tokens[0] || '';
+        const subArg = tokens.slice(1).join(' ');
+        const record = await this._resolveUploadedFileRecord(videoArg, { consumePendingAttachment: true });
+        if (!record) {
+            this._log(videoArg ? `⚠️ /media-burn-subtitles：找不到符合「${videoArg}」的影片` : '⚠️ /media-burn-subtitles：目前沒有附加、也沒有最近上傳過的影片');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `🎬 燒字幕：${record.filename}${subArg ? `　字幕：${subArg}` : '（自動轉逐字稿）'}` });
+        const prog = this._createProgressWidget(`燒字幕：${record.filename}`);
+        let result;
+        try {
+            prog.update({ status: subArg ? '讀取字幕檔…' : '沒有字幕檔，先自動轉逐字稿…' });
+            const origLog = this._log.bind(this);
+            this._log = (m) => { prog.update({ status: String(m).replace(/^[🎙️🎬]\s*/, '') }); origLog(m); };
+            let sub;
+            try {
+                sub = await this._resolveSubtitleSegments(record, subArg, null, (m) => prog.update({ status: m }));
+            } finally { this._log = origLog; }
+            if (!sub.ok) { prog.fail(sub.error); return; }
+            prog.update({ pct: 0, status: `字幕 ${sub.segments.length} 段，開始燒錄（WebCodecs）…` });
+            result = await this._burnSubtitles(record, sub.segments, (p) => {
+                prog.update({ pct: p.pct != null ? p.pct : undefined, status: `燒錄中…${p.frames} 幀${p.t != null ? `（${_faFormatTimestamp(p.t)}）` : ''}` });
+            });
+            if (result.ok) result.autoTranscribed = sub.autoTranscribed;
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.frames} 幀，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB`);
+        await this._deliverExistingCacheFile(
+            result.video_file_id,
+            `📎 已燒好字幕：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）${result.autoTranscribed ? '　字幕來自自動轉逐字稿' : ''}`);
     }
 
     // ============================================================
@@ -12759,6 +13115,14 @@ ${existingNodeSummaries}
                                         <button type="button" id="ai-whisper-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
                                         <button type="button" id="ai-whisper-cache-clear" class="ai-advanced-btn danger" style="padding:2px 8px;">清除模型快取</button>
                                     </div>
+                                    <label class="ai-advanced-label" for="ai-subtitle-size" style="font-weight:normal; margin-top:8px;">燒錄字幕：字級（占影片高度比例）</label>
+                                    <input type="number" id="ai-subtitle-size" class="ai-advanced-input" min="0.02" max="0.15" step="0.005">
+                                    <label class="ai-advanced-label" for="ai-subtitle-position" style="font-weight:normal; margin-top:4px;">燒錄字幕：位置</label>
+                                    <select id="ai-subtitle-position" class="ai-advanced-input">
+                                        <option value="bottom">畫面下方</option>
+                                        <option value="top">畫面上方</option>
+                                    </select>
+                                    <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
@@ -13453,6 +13817,26 @@ ${existingNodeSummaries}
                 progWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%; padding: 14px 16px; border-radius: 8px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); font-size: 12px; color: #6366f1;';
                 progWrap.innerHTML = `<span style="display:inline-block; animation: fa-spin 1s linear infinite;">🔄</span> 正在匯入3D模型…${this._escapeHtml(stageLabel)}`;
                 container.appendChild(progWrap);
+                return;
+            }
+
+            // tw_stock_db客製: 2026-09-11——通用進度widget（見_createProgressWidget）。
+            // /media-*那幾個長時間處理的slash指令用來顯示「處理中」的進度條。
+            if (msg._progressWidget) {
+                const st = msg._progressWidget;
+                const w = document.createElement('div');
+                w.style.cssText = 'margin-bottom:12px; max-width:95%; padding:12px 14px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.28); font-size:12px; color:#6366f1;';
+                const icon = st.error ? '❌' : (st.done ? '✅' : '<span style="display:inline-block; animation:fa-spin 1s linear infinite;">🔄</span>');
+                const elapsed = Math.round((Date.now() - st.startedAt) / 1000);
+                let bar = '';
+                if (st.pct != null && !st.error) {
+                    bar = `<div style="margin-top:8px; height:6px; border-radius:999px; background:rgba(99,102,241,0.18); overflow:hidden;">
+                        <div style="height:100%; width:${st.pct}%; background:#6366f1; border-radius:999px; transition:width .2s linear;"></div>
+                    </div>`;
+                }
+                w.innerHTML = `<div style="font-weight:bold;">${icon} ${this._escapeHtml(st.title)}${st.pct != null && !st.error ? `　${st.pct}%` : ''}</div>
+                    <div style="margin-top:4px; opacity:0.85;">${this._escapeHtml(st.error || st.status)}${!st.done ? `　（已 ${elapsed}s）` : ''}</div>${bar}`;
+                container.appendChild(w);
                 return;
             }
 
@@ -14265,6 +14649,22 @@ ${existingNodeSummaries}
                 this._transformersJsModules = null;
                 this._whisperTranscriber = null;
                 this._whisperTranscriberDevice = null;
+            });
+        }
+        const subtitleSizeInput = document.getElementById('ai-subtitle-size');
+        if (subtitleSizeInput) {
+            subtitleSizeInput.addEventListener('change', () => {
+                const n = Number(subtitleSizeInput.value);
+                if (Number.isFinite(n) && n >= 0.02 && n <= 0.15) this.advancedSettings.subtitleFontScale = n;
+                this._saveAdvancedSettings();
+                subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
+            });
+        }
+        const subtitlePosSelect = document.getElementById('ai-subtitle-position');
+        if (subtitlePosSelect) {
+            subtitlePosSelect.addEventListener('change', () => {
+                if (['top', 'bottom'].includes(subtitlePosSelect.value)) this.advancedSettings.subtitlePosition = subtitlePosSelect.value;
+                this._saveAdvancedSettings();
             });
         }
         const whisperCacheRefreshBtn = document.getElementById('ai-whisper-cache-refresh');
