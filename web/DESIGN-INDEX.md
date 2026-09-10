@@ -601,6 +601,14 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       也在 worker src 裡。實測 12s/1080p 影片 6.3s 燒完（2x 影片長度、
       連沒有真實 GPU 的環境）、音軌長度保留、輸出可播、字幕正確燒進畫面
       （白字黑邊半透明底、置中）。
+    - **瀏覽器需求**：WebCodecs（`VideoDecoder`/`VideoEncoder`）＋
+      OffscreenCanvas＋module worker——較新的 Chrome/Edge/Safari，**含
+      Android Chrome 跟 iOS Safari 16.4+**（跟既有的 3D→MP4 匯出同一組
+      API，那個一樣早就能在手機跑，所以工具/錯誤訊息裡「只有桌機」的
+      措辭是抄舊版 3D 匯出、過度保守，2026-09-11 已改成正確措辭）。
+      Firefox 目前 `VideoEncoder` 支援還不夠、不能用。手機/沒 GPU 會
+      慢很多，長影片也可能因記憶體不足失敗（尤其 iOS Safari），這是
+      「可能失敗」不是「不支援」。
     - `_burnSubtitles(videoRecord, segments, onProgress)`：建 worker、
       postMessage、收 progress + 最後 transfer 回來的 ArrayBuffer→Blob→
       fileCache→`{ok, video_file_id, filename, frames, sizeBytes}`。
