@@ -682,9 +682,17 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - `_getWhisperTranscriber`：`mod.pipeline(...)` 包 try/catch，失敗且
       `!this._whisperRepoFallbackTried` 時跑退路再重試一次（cache 命中、不碰 HF）。
       `_clearWhisperCache` 會把 `_whisperRepoFallbackTried` 重設。
-    - 實測（本機 serve staging 當備份來源）：prefetch 76MB / 7 keys size 全對、
-      transformers.js 建 pipeline **0 次 huggingface.co 請求**、silence 推論
-      正確回 `[BLANK_AUDIO]`。
+    - 實測（本機 serve staging 當備份來源、以及對實際推上去的 GitHub 分支）：
+      prefetch 76MB / 7 keys size 全對、transformers.js 建 pipeline
+      **0 次 huggingface.co 請求**、silence 推論正確回 `[BLANK_AUDIO]`。
+  - **2026-09-12 追加（transcribe_media 運算裝置偏好）**：
+    - 使用者回報某些機器 WebGPU 反而比 CPU 慢。新增
+      `advancedSettings.whisperDevicePreference`（`'auto'` 預設／`'cpu'`）。
+      `_transcribeMedia` 的 `deviceOrder`：`'cpu'` 時直接 `['wasm']`、
+      連 `_isWebGpuAvailable()` 都不呼叫。
+    - Advance Settings「子Agent」分頁的影音區塊：原本只有「CPU 執行緒數」，
+      上面加一個「運算裝置」下拉（自動／只用 CPU）。改動後清掉
+      `_whisperTranscriber` 讓下次轉錄重挑。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
