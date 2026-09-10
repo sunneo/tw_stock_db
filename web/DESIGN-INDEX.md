@@ -660,6 +660,31 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - 實測（`_compose_test.html`，已刪）：2D 動畫 YAML＋3s tone WAV＋
       2 段 inline 字幕 → 3.01s 輸出、`video=avc audio=aac`、字幕確實燒進
       像素（t=2s 底部偵測到白字＋半透明黑底）、耗時 ~1.1s。
+  - **2026-09-11 追加（Whisper 模型 GitHub 備份分支 + 退路）**：
+    - 使用者要求：repo 要有一個 single-commit 分支放同一份 Whisper q8 模型
+      （大檔切 20MB 一份），HuggingFace 抓不到時從 GitHub 取回合併。
+    - `web/tools/build-whisper-backup-branch.mjs`（Node 16 相容，用 `node:https`
+      不用 `fetch`）：從 HF 抓 `dtype=q8` 實際用到的 7 個檔
+      （`WHISPER_MODEL_BACKUP_FILES`：config/preprocessor_config/tokenizer_config/
+      tokenizer/generation_config + `onnx/encoder_model_quantized.onnx` 23.2MB +
+      `onnx/decoder_model_merged_quantized.onnx` 53.7MB），>20MB 切成
+      `.part000..` + 產 `manifest.json`（`{files:[{path,size,sha256,parts}]}`）
+      到 `web/tools/_whisper-backup-staging/`（gitignored）。加 `--commit` 在
+      暫存 clone 裡建 orphan 分支 `whisper-model-backup`（目錄 `whisper-base-q8/`）
+      並 commit，`--push` 才 force-push（不碰使用者工作樹）。
+    - `FA_ASSET_URLS.whisperModelBackupBase`（預設
+      `raw.githubusercontent.com/sunneo/tw_stock_db/whisper-model-backup/whisper-base-q8/`，
+      `setAssetUrls` 可覆蓋）。
+    - `_prefetchWhisperModelFromRepo(onProgress)`：讀 manifest → 每個檔抓
+      `.partNNN` 合併回 Blob（驗 size）→ 用 transformers.js 真正 fetch 的
+      **HF 完整 URL**（`WHISPER_HF_RESOLVE_BASE + path`）當 key `cache.put` 進
+      `transformers-cache`。沒 manifest 時退回內建清單、單檔失敗再試分片。
+    - `_getWhisperTranscriber`：`mod.pipeline(...)` 包 try/catch，失敗且
+      `!this._whisperRepoFallbackTried` 時跑退路再重試一次（cache 命中、不碰 HF）。
+      `_clearWhisperCache` 會把 `_whisperRepoFallbackTried` 重設。
+    - 實測（本機 serve staging 當備份來源）：prefetch 76MB / 7 keys size 全對、
+      transformers.js 建 pipeline **0 次 huggingface.co 請求**、silence 推論
+      正確回 `[BLANK_AUDIO]`。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
