@@ -2091,7 +2091,7 @@ class FloatingAssistant {
         // 直接跑本地端工具，不經過LLM。
         this.register_slash_command(
             '/media-transcribe', '[<影片id或檔名>] [zh|en]',
-            '把影片/音檔轉成逐字稿（瀏覽器端Whisper，不上傳）。留空＝用最近上傳的檔案；可加 zh 或 en 指定語言',
+            '把影片/音檔轉成逐字稿（瀏覽器端Whisper，不上傳）。留空＝用最近上傳的檔案；預設中文（不自動偵測語言），要英文才加 en',
             (argsText) => this._handleMediaTranscribeCommand(argsText)
         );
         this.register_slash_command(
@@ -2100,8 +2100,8 @@ class FloatingAssistant {
             (argsText) => this._handleMediaExtractAudioCommand(argsText)
         );
         this.register_slash_command(
-            '/media-burn-subtitles', '[<影片id或檔名>] [<字幕檔id或檔名>]',
-            '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿；影片留空＝用最近上傳的',
+            '/media-burn-subtitles', '[<影片id或檔名>] [<字幕檔id或檔名>] [zh|en]',
+            '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿（預設中文，要英文才加 en）；影片留空＝用最近上傳的',
             (argsText) => this._handleMediaBurnSubtitlesCommand(argsText)
         );
         this.retryLimit = 10;
@@ -3429,14 +3429,16 @@ ${fnData.code}
         // 的主工具）。實作見_transcribeMedia。第一次執行會下載Whisper模型
         // （約77MB，之後瀏覽器Cache API快取），且轉錄本身依長度可能跑數分鐘。
         registerOptional('transcribe_media',
-            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️需要較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）；手機或沒有 GPU 的機器會慢很多、長影片可能因記憶體不足失敗。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
+            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️需要較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）；手機或沒有 GPU 的機器會慢很多、長影片可能因記憶體不足失敗。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）不填＝中文（zh），確定整支是英文才傳 en。不做語言自動偵測。中文內容裡夾雜英文會照原樣保留、算正常"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(fileArg);
                 if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔（請先上傳，或用file參數指定id/檔名）' });
-                const language = ['zh', 'en'].includes(String(parsed.language || '').trim()) ? String(parsed.language).trim() : null;
+                // 預設中文、不做語言自動偵測（Whisper-base 自動偵測不可靠）；
+                // task 是 transcribe 不是 translate，講者夾英文時會照原樣保留。
+                const language = String(parsed.language || '').trim() === 'en' ? 'en' : 'zh';
                 try {
                     return JSON.stringify(await this._transcribeMedia(record, language));
                 } catch (err) {
@@ -3473,14 +3475,15 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-11——「燒錄字幕」：把字幕燒進影片畫面
         // （硬字幕，不是可關的軟字幕），輸出新的MP4（見_burnSubtitles）。
         registerOptional('burn_subtitles',
-            `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️需要有 WebCodecs 的瀏覽器（較新的 Chrome/Edge/Safari，含手機版；Firefox 目前不支援）；處理時間約1~2倍影片長度（手機更慢），長影片可能好幾分鐘、也可能因記憶體不足失敗，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）zh 或 en"}`,
+            `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️需要有 WebCodecs 的瀏覽器（較新的 Chrome/Edge/Safari，含手機版；Firefox 目前不支援）；處理時間約1~2倍影片長度（手機更慢），長影片可能好幾分鐘、也可能因記憶體不足失敗，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）不填＝中文（zh），確定是英文才傳 en"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(videoArg);
                 if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片（請先上傳，或用video參數指定id/檔名）' });
-                const language = ['zh', 'en'].includes(String(parsed.language || '').trim()) ? String(parsed.language).trim() : null;
+                // 預設中文、不做語言自動偵測（同 transcribe_media）
+                const language = String(parsed.language || '').trim() === 'en' ? 'en' : 'zh';
                 try {
                     const sub = await this._resolveSubtitleSegments(record, parsed.subtitle, language, (m) => this._log('🎬 ' + m));
                     if (!sub.ok) return JSON.stringify({ ok: false, error: sub.error });
@@ -11236,7 +11239,11 @@ ${existingNodeSummaries}
     // /media-transcribe [<影片id或檔名>] [zh|en]
     async _handleMediaTranscribeCommand(argsText) {
         const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
-        let language = null;
+        // 使用者要求：slash 指令預設中文（zh）。Whisper task 是 'transcribe'
+        // 不是 'translate'，所以講者中間夾英文時輸出會照原樣保留英文——這是
+        // 預期行為、不是辨識錯誤（「中文辨識時產生英文也算準」）。要純英文
+        // 內容時在指令後面明寫 en。
+        let language = 'zh';
         if (tokens.length && ['zh', 'en'].includes(tokens[tokens.length - 1].toLowerCase())) {
             language = tokens.pop().toLowerCase();
         }
@@ -11297,9 +11304,14 @@ ${existingNodeSummaries}
             `📎 已擷取音軌：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB WAV）`);
     }
 
-    // /media-burn-subtitles [<影片id或檔名>] [<字幕檔id或檔名>]
+    // /media-burn-subtitles [<影片id或檔名>] [<字幕檔id或檔名>] [zh|en]
     async _handleMediaBurnSubtitlesCommand(argsText) {
         const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        // 使用者要求：預設中文（zh）。只在「沒給字幕檔、要自動轉逐字稿」時用得到。
+        let autoLang = 'zh';
+        if (tokens.length && ['zh', 'en'].includes(tokens[tokens.length - 1].toLowerCase())) {
+            autoLang = tokens.pop().toLowerCase();
+        }
         const videoArg = tokens[0] || '';
         const subArg = tokens.slice(1).join(' ');
         const record = await this._resolveUploadedFileRecord(videoArg, { consumePendingAttachment: true });
@@ -11316,7 +11328,7 @@ ${existingNodeSummaries}
             this._log = (m) => { prog.update({ status: String(m).replace(/^[🎙️🎬]\s*/, '') }); origLog(m); };
             let sub;
             try {
-                sub = await this._resolveSubtitleSegments(record, subArg, null, (m) => prog.update({ status: m }));
+                sub = await this._resolveSubtitleSegments(record, subArg, autoLang, (m) => prog.update({ status: m }));
             } finally { this._log = origLog; }
             if (!sub.ok) { prog.fail(sub.error); return; }
             prog.update({ pct: 0, status: `字幕 ${sub.segments.length} 段，開始燒錄（WebCodecs）…` });
