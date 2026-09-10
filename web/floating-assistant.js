@@ -1362,6 +1362,18 @@ function _faSegmentsToSrt(segments) {
     }).join('\n');
 }
 
+// tw_stock_db客製: 2026-09-12——依副檔名把上傳的檔案粗分類，讓 /media-*
+// slash 指令在「一次附加多個檔案（例如 mp4 + srt）」時能自己挑對：影音檔
+// 當來源、字幕檔當字幕，不會拿 .srt 去當影片解碼。
+function _faClassifyMediaFile(filename) {
+    const ext = String(filename || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+    const e = ext ? ext[1] : '';
+    if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'mpg', 'mpeg', '3gp', 'ogv'].includes(e)) return 'video';
+    if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'flac', 'opus', 'weba', 'wma'].includes(e)) return 'audio';
+    if (['srt', 'vtt', 'ass', 'ssa', 'sbv'].includes(e)) return 'subtitle';
+    return 'other';
+}
+
 // tw_stock_db客製: 2026-09-11——把.srt字幕檔、或transcribe_media早期版本的
 // 「[M:SS - M:SS] 文字」逐行格式，解析回segments[{start,end,text}]。
 // 給燒錄字幕吃「使用者自己提供的字幕檔」用。
@@ -3939,10 +3951,14 @@ ${fnData.code}
     //   - 一段檔名（或檔名的一部分）→ 在已上傳檔案裡找（完全符合優先，否則
     //     子字串比對，多個符合時取最近上傳的）
     // 回傳fileCache record或null。kindFilter（選填）限定record.kind。
-    async _resolveUploadedFileRecord(arg, { kindFilter = 'uploaded', consumePendingAttachment = false } = {}) {
+    async _resolveUploadedFileRecord(arg, { kindFilter = 'uploaded', consumePendingAttachment = false, preferAv = false } = {}) {
         const q = String(arg || '').trim();
         if (!q) {
-            const pending = this._getLastCompletedPendingAttachment && this._getLastCompletedPendingAttachment();
+            // preferAv：多個附件時優先挑影音檔（不要拿 .srt 之類的去當影片/音檔）
+            const done = (this._pendingAttachments || []).filter(a => a.status === 'done');
+            const pending = preferAv
+                ? (done.find(a => ['video', 'audio'].includes(_faClassifyMediaFile(a.filename))) || done[done.length - 1] || null)
+                : (this._getLastCompletedPendingAttachment && this._getLastCompletedPendingAttachment());
             if (pending) {
                 const rec = await this.fileCache.get(pending.id);
                 if (rec && consumePendingAttachment) {
@@ -3952,7 +3968,11 @@ ${fnData.code}
                 if (rec) return rec;
             }
             const all = await this.fileCache.getAll();
-            const uploaded = all.filter(r => !kindFilter || r.kind === kindFilter).sort((a, b) => b.createdAt - a.createdAt);
+            let uploaded = all.filter(r => !kindFilter || r.kind === kindFilter).sort((a, b) => b.createdAt - a.createdAt);
+            if (preferAv) {
+                const av = uploaded.find(r => ['video', 'audio'].includes(_faClassifyMediaFile(r.filename)));
+                if (av) return av;
+            }
             return uploaded[0] || null;
         }
         // 先當file_id直接查
@@ -11248,7 +11268,7 @@ ${existingNodeSummaries}
             language = tokens.pop().toLowerCase();
         }
         const fileArg = tokens.join(' ');
-        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true });
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
         if (!record) {
             this._log(fileArg ? `⚠️ /media-transcribe：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-transcribe：目前沒有附加、也沒有最近上傳過的影片/音檔');
             return;
@@ -11283,7 +11303,7 @@ ${existingNodeSummaries}
     // /media-extract-audio [<影片id或檔名>]
     async _handleMediaExtractAudioCommand(argsText) {
         const fileArg = String(argsText || '').trim();
-        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true });
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
         if (!record) {
             this._log(fileArg ? `⚠️ /media-extract-audio：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-extract-audio：目前沒有附加、也沒有最近上傳過的影片/音檔');
             return;
@@ -11312,14 +11332,37 @@ ${existingNodeSummaries}
         if (tokens.length && ['zh', 'en'].includes(tokens[tokens.length - 1].toLowerCase())) {
             autoLang = tokens.pop().toLowerCase();
         }
-        const videoArg = tokens[0] || '';
-        const subArg = tokens.slice(1).join(' ');
-        const record = await this._resolveUploadedFileRecord(videoArg, { consumePendingAttachment: true });
+        let videoArg = tokens[0] || '';
+        let subArg = tokens.slice(1).join(' ');
+        let subLabel = subArg;
+
+        // 一次附加了多個檔案（例如 mp4 + srt）又沒明寫參數時：影音檔當來源、
+        // 字幕檔（.srt/.vtt…）當字幕，兩個都從附件清單消化掉。找不到影音檔
+        // 才退回原本「取最近一個」的行為。
+        if (!videoArg && !subArg) {
+            const done = (this._pendingAttachments || []).filter(a => a.status === 'done');
+            const media = done.find(a => ['video', 'audio'].includes(_faClassifyMediaFile(a.filename)));
+            const sub = done.find(a => _faClassifyMediaFile(a.filename) === 'subtitle');
+            if (media && (sub || done.length >= 2)) {
+                videoArg = media.id;
+                if (sub) { subArg = sub.id; subLabel = sub.filename; }
+                this._pendingAttachments = this._pendingAttachments.filter(a => a.id !== media.id && (!sub || a.id !== sub.id));
+                this._renderPendingAttachments();
+            }
+        }
+
+        const record = await this._resolveUploadedFileRecord(videoArg, { consumePendingAttachment: true, preferAv: true });
         if (!record) {
             this._log(videoArg ? `⚠️ /media-burn-subtitles：找不到符合「${videoArg}」的影片` : '⚠️ /media-burn-subtitles：目前沒有附加、也沒有最近上傳過的影片');
             return;
         }
-        this.messages.push({ role: 'user', content: `🎬 燒字幕：${record.filename}${subArg ? `　字幕：${subArg}` : '（自動轉逐字稿）'}` });
+        // 影片本身其實是字幕檔（使用者只附了一個 .srt，或分類挑錯）——擋下來，
+        // 不要拿去當音訊解碼（就是使用者回報的 "Unable to decode audio data"）。
+        if (_faClassifyMediaFile(record.filename) === 'subtitle') {
+            this._log(`⚠️ /media-burn-subtitles：「${record.filename}」看起來是字幕檔，不是影片。請一起附加影片檔，或用 /media-burn-subtitles <影片> <字幕檔> 指定。`);
+            return;
+        }
+        this.messages.push({ role: 'user', content: `🎬 燒字幕：${record.filename}${subArg ? `　字幕：${subLabel || subArg}` : '（自動轉逐字稿）'}` });
         const prog = this._createProgressWidget(`燒字幕：${record.filename}`);
         let result;
         try {
