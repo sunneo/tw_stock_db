@@ -3324,7 +3324,7 @@ ${fnData.code}
         // 的主工具）。實作見_transcribeMedia。第一次執行會下載Whisper模型
         // （約77MB，之後瀏覽器Cache API快取），且轉錄本身依長度可能跑數分鐘。
         registerOptional('transcribe_media',
-            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️只有桌機版Chrome/Edge能跑，其他瀏覽器會明確回報不支援。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
+            `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️需要較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）；手機或沒有 GPU 的機器會慢很多、長影片可能因記憶體不足失敗。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）zh 或 en，不填＝自動偵測（稍慢、偶爾會判錯語言，已知講中英文的話建議明確指定）"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -3368,7 +3368,7 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-11——「燒錄字幕」：把字幕燒進影片畫面
         // （硬字幕，不是可關的軟字幕），輸出新的MP4（見_burnSubtitles）。
         registerOptional('burn_subtitles',
-            `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️只有桌機Chrome/Edge能跑；處理時間約1~2倍影片長度，長影片可能好幾分鐘，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）zh 或 en"}`,
+            `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️需要有 WebCodecs 的瀏覽器（較新的 Chrome/Edge/Safari，含手機版；Firefox 目前不支援）；處理時間約1~2倍影片長度（手機更慢），長影片可能好幾分鐘、也可能因記憶體不足失敗，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）zh 或 en"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -3616,7 +3616,7 @@ ${fnData.code}
     // 新版Firefox/Safari對AAC都支援），不需要ffmpeg.wasm。
     async _decodeAudioBuffer(blob) {
         const AC = (typeof AudioContext !== 'undefined') ? AudioContext : (typeof window !== 'undefined' ? window.webkitAudioContext : null);
-        if (!AC) throw new Error('這個瀏覽器不支援 Web Audio API，無法解碼音訊。請改用桌機版 Chrome 或 Edge。');
+        if (!AC) throw new Error('這個瀏覽器不支援 Web Audio API，無法解碼音訊。請用較新的 Chrome/Edge/Safari。');
         const arrayBuffer = await blob.arrayBuffer();
         const tmpCtx = new AC();
         try {
@@ -3632,7 +3632,7 @@ ${fnData.code}
     // 解碼並重採樣成Whisper要的16kHz單聲道Float32 PCM。
     async _decodeAudioForWhisper(blob) {
         const OAC = (typeof OfflineAudioContext !== 'undefined') ? OfflineAudioContext : (typeof window !== 'undefined' ? window.webkitOfflineAudioContext : null);
-        if (!OAC) throw new Error('這個瀏覽器不支援 OfflineAudioContext，無法重採樣音訊。請改用桌機版 Chrome 或 Edge。');
+        if (!OAC) throw new Error('這個瀏覽器不支援 OfflineAudioContext，無法重採樣音訊。請用較新的 Chrome/Edge/Safari。');
         const decoded = await this._decodeAudioBuffer(blob);
         const durationSeconds = decoded.duration;
         if (decoded.sampleRate === WHISPER_SAMPLE_RATE && decoded.numberOfChannels === 1) {
@@ -3785,7 +3785,7 @@ ${fnData.code}
     // 或{ok:false, error}。
     async _burnSubtitles(videoRecord, segments, onProgress) {
         if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
-            return { ok: false, error: '這個瀏覽器不支援 Web Worker / OffscreenCanvas，無法燒字幕。請改用桌機版 Chrome 或 Edge。' };
+            return { ok: false, error: '這個瀏覽器不支援 Web Worker / OffscreenCanvas，無法燒字幕。請用較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）。' };
         }
         if (!Array.isArray(segments) || !segments.length) {
             return { ok: false, error: '沒有可用的字幕內容（segments 是空的）' };
