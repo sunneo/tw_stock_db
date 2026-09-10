@@ -627,6 +627,39 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - Advance Settings「子Agent」分頁加：字幕字級（`subtitleFontScale`，
       占影片高度比例，預設 0.052）＋位置（`subtitlePosition` top/bottom）。
       其餘外觀用 `SUBTITLE_DEFAULT_STYLE` 內建（`_getSubtitleStyle` 疊合）。
+  - **2026-09-11 追加（compose_video 動畫版影片，media_av 第 4 項）**：
+    - 完成使用者要的「一個完整 subagent 做 4 件事」：mp4→逐字稿
+      (`transcribe_media`)、mp4→音軌 (`extract_audio`)、字幕燒回原片
+      (`burn_subtitles`)、**mp4→動畫版影片 (`compose_video`)**——最後這項
+      是「LLM 自己設計一段 2D/3D 動畫 YAML＋配上原片音軌＋時間軸對齊的
+      字幕，合成一支有聲 MP4」。
+    - 工具 `compose_video({animation_2d? | animation_3d?, audio?, captions?})`
+      → `_composeAnimationVideo(opts)`：`audio` 有給就 `_decodeAudioBuffer`
+      拿 `AudioBuffer`、輸出長度＝音軌長度（動畫 `duration` 被 override 成
+      音軌長度、`speed` 不變、不 loop）；`captions` 收字幕檔 id/檔名
+      （`_faParseSubtitleText`）或直接 `[{start,end,text}]` 陣列。
+      **不新增渲染路徑**——直接重用既有 `_export2DAnimationToMp4` /
+      `_exportSceneToMp4`，只在它們共用的 `_encodeCanvasFramesToMp4`
+      加第 6 個參數 `extra = {audioBuffer, captionSegments, captionStyle}`：
+      - `audioBuffer` 有值 → 改走 **Mediabunny `Output` + `CanvasSource`
+        + `AudioBufferSource`**（`avc` 5Mbps／`aac` 160kbps），舊的
+        `mp4-muxer` 路徑只有影像軌、留給無音軌情況。
+      - `captionSegments` 有值 → 用一個中介 2D canvas
+        （`compositeCtx.drawImage(來源canvas)` + `_faDrawSubtitle`）逐幀
+        合成，這樣 WebGL 來源 canvas（3D 場景）也能疊字幕。
+    - `_faWrapSubtitleLines` / `_faDrawSubtitle`：**主執行緒版**的字幕
+      繪製（跟 `FA_BURN_SUBTITLES_WORKER_SRC` 裡 worker 的
+      `_wrapLines`/`_drawSubtitle` 是同一份邏輯的兩份拷貝，改字幕外觀
+      要兩邊一起改）。`_export2DAnimationToMp4`/`_exportSceneToMp4` 的
+      `opts` 也接 `audioBuffer`/`captionSegments`/`captionStyle` 透傳。
+    - media_av domain `toolNames` 補上 `compose_video` + 動畫工具
+      （`render_2d_animation`/`render_3d_scene`/`get_2d_animation_yaml`/
+      `get_3d_scene_yaml`/`get_3d_scene_topic`），systemPrompt 改寫成完整
+      「影片→動畫版」流程指引。**沒有** `/media-compose-video` slash——
+      合成需要 LLM 設計動畫，不像其他三個 `/media-*` 是純機械轉換。
+    - 實測（`_compose_test.html`，已刪）：2D 動畫 YAML＋3s tone WAV＋
+      2 段 inline 字幕 → 3.01s 輸出、`video=avc audio=aac`、字幕確實燒進
+      像素（t=2s 底部偵測到白字＋半透明黑底）、耗時 ~1.1s。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
