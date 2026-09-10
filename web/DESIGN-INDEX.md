@@ -700,6 +700,17 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       英文才明寫 `en`。slash 指令的 `[zh|en]` token 仍可覆蓋。
     - `task` 維持 `'transcribe'`（不是 `'translate'`）——講者中英夾雜時輸出
       照原樣保留英文，屬正常、不是辨識錯誤。工具描述也照這個講法改寫。
+  - **2026-09-12 修正（一次附加 mp4＋srt 時 /media-burn-subtitles 挑錯檔）**：
+    - 症狀：使用者同時附加 `x.mp4` 跟 `x.字幕.srt` 後直接 `/media-burn-subtitles`
+      （不帶參數），`_resolveUploadedFileRecord('')` 取「最後一個附件」＝ `.srt`，
+      當成影片拿去 `decodeAudioData` → `Unable to decode audio data`。
+    - `_faClassifyMediaFile(filename)`：依副檔名分 video/audio/subtitle/other。
+    - `_handleMediaBurnSubtitlesCommand`：沒帶參數時掃 `_pendingAttachments`，
+      影音檔當來源、字幕檔（.srt/.vtt/.ass…）當字幕，兩個都從清單消化；
+      解析出來的「影片」若其實是字幕檔就擋下來給明確提示。
+    - `_resolveUploadedFileRecord` 加 `preferAv` 選項（`/media-transcribe`／
+      `/media-extract-audio`／burn 都帶）：空參數挑附件/最近上傳時優先選
+      影音檔，不會抓到一起附加的 `.srt`。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
