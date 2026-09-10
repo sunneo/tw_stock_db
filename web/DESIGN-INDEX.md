@@ -693,6 +693,13 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - Advance Settings「子Agent」分頁的影音區塊：原本只有「CPU 執行緒數」，
       上面加一個「運算裝置」下拉（自動／只用 CPU）。改動後清掉
       `_whisperTranscriber` 讓下次轉錄重挑。
+  - **2026-09-12 追加（轉錄語言預設中文、不自動偵測）**：
+    - 使用者要求：`/media-transcribe`、`/media-burn-subtitles`（自動轉逐字稿時）
+      跟 `transcribe_media`/`burn_subtitles` 工具，language 不填一律當
+      **中文（zh）**，不做語言自動偵測（Whisper-base 自動偵測不可靠）。要
+      英文才明寫 `en`。slash 指令的 `[zh|en]` token 仍可覆蓋。
+    - `task` 維持 `'transcribe'`（不是 `'translate'`）——講者中英夾雜時輸出
+      照原樣保留英文，屬正常、不是辨識錯誤。工具描述也照這個講法改寫。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
