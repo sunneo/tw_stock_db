@@ -720,9 +720,14 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
     media_av: {
         enabled: true,
-        label: '影音處理（逐字稿／擷取聲音／燒字幕）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'list_uploaded_files'],
-        systemPrompt: '你是一個專門處理影片/音檔的子任務助理，能做的事：transcribe_media（語音轉逐字稿，中英雙語，會產生一個.srt字幕檔）、extract_audio（把音軌抽成WAV檔）、burn_subtitles（把字幕燒進影片輸出新MP4，字幕來源可以是字幕檔或留空自動先轉逐字稿）。需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取）；transcribe_media/burn_subtitles都依影片長度可能要跑好幾分鐘（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。處理完依使用者的實際需求回答；逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片）',
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
+            '- transcribe_media：語音轉逐字稿（中英雙語，會產生一個.srt字幕檔）\n' +
+            '- extract_audio：把音軌抽成WAV檔\n' +
+            '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
+            '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
+            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取）；transcribe_media/burn_subtitles/compose_video都依影片長度可能要跑好幾分鐘（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
 
@@ -1401,6 +1406,76 @@ function _faEncodeWav(audioBuffer) {
 }
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
+}
+
+// tw_stock_db客製: 2026-09-11——字幕繪製（主執行緒版）。跟
+// FA_BURN_SUBTITLES_WORKER_SRC裡的_wrapLines/_drawSubtitle是**同一份邏輯的
+// 複製**（worker src是字串沒辦法共用函式參照），兩份要保持一致。這個版本
+// 給compose_video在主執行緒逐幀疊字幕用（burn_subtitles是在worker裡疊）。
+function _faWrapSubtitleLines(ctx, text, maxWidth) {
+    const out = [];
+    for (const para of String(text || '').split('\n')) {
+        let line = '';
+        for (const tok of para.split(/(\s+)/)) {
+            if (!tok) continue;
+            if (ctx.measureText(line + tok).width <= maxWidth) { line += tok; continue; }
+            if (line.trim()) out.push(line.trim());
+            line = '';
+            if (ctx.measureText(tok).width > maxWidth) {
+                let chunk = '';
+                for (const ch of Array.from(tok)) {
+                    if (ctx.measureText(chunk + ch).width <= maxWidth) chunk += ch;
+                    else { if (chunk) out.push(chunk); chunk = ch; }
+                }
+                line = chunk;
+            } else { line = tok.replace(/^\s+/, ''); }
+        }
+        if (line.trim()) out.push(line.trim());
+    }
+    return out.length ? out : [''];
+}
+function _faDrawSubtitle(ctx, tSec, segments, style) {
+    let seg = null;
+    for (const s of segments) {
+        const end = (s.end != null && s.end > s.start) ? s.end : s.start + 3;
+        if (tSec >= s.start - 0.05 && tSec < end + 0.05) { seg = s; break; }
+    }
+    if (!seg || !seg.text) return;
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    const fs = Math.max(10, Math.round(H * style.fontScale));
+    ctx.save();
+    ctx.font = 'bold ' + fs + 'px ' + style.fontFamily;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const maxW = W * style.maxWidthFrac;
+    const lines = _faWrapSubtitleLines(ctx, seg.text, maxW);
+    const lh = fs * style.lineHeightScale;
+    const blockH = lh * (lines.length - 1) + fs;
+    const pad = fs * style.paddingScale;
+    let firstBaseline;
+    if (style.position === 'top') firstBaseline = H * style.marginScale + fs;
+    else firstBaseline = H - H * style.marginScale - blockH + fs;
+    if (style.background) {
+        let boxW = 0;
+        for (const ln of lines) boxW = Math.max(boxW, ctx.measureText(ln).width);
+        boxW = Math.min(W, boxW + pad * 2);
+        const boxX = (W - boxW) / 2;
+        const boxY = firstBaseline - fs - pad * 0.7;
+        const boxH = blockH + pad * 1.4;
+        ctx.fillStyle = style.background;
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(boxX, boxY, boxW, boxH, Math.min(pad, 12)); ctx.fill(); }
+        else ctx.fillRect(boxX, boxY, boxW, boxH);
+    }
+    ctx.lineWidth = Math.max(1, fs * style.strokeScale);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = style.strokeColor;
+    ctx.fillStyle = style.color;
+    for (let i = 0; i < lines.length; i++) {
+        const y = firstBaseline + i * lh;
+        if (ctx.lineWidth > 0.5) ctx.strokeText(lines[i], W / 2, y);
+        ctx.fillText(lines[i], W / 2, y);
+    }
+    ctx.restore();
 }
 // tw_stock_db客製: 2026-09-05使用者要求（計畫文件階段3的「已完成的部分」
 // 項目3）——PPTX匯出的視覺識別要換成適合這個台股專案的風格，不要沿用
@@ -3394,6 +3469,42 @@ ${fnData.code}
                 language: { type: 'string', enum: ['zh', 'en'], description: '（選填）自動轉逐字稿時的語言' },
             }, additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-11——「從聲音產生新的動畫影片」：把一段
+        // 你設計的2D/3D動畫 + 一個音軌 + 對齊音軌的字幕，合成成有聲MP4
+        // （見_composeAnimationVideo）。搭配 transcribe_media（拿逐字稿當
+        // 字幕）+ extract_audio（拿音軌）就是完整的「影片→動畫版」流程。
+        registerOptional('compose_video',
+            `把一段2D動畫（render_2d_animation格式的YAML）或3D場景（render_3d_scene格式）＋一個音軌＋（選填）對齊時間軸的字幕，合成成一支有聲音的MP4。典型用途：把一支影片的旁白轉成逐字稿後、你自己設計一個把內容視覺化的動畫，再配上原本的聲音跟字幕，產生「動畫版影片」。純瀏覽器端（WebCodecs＋Mediabunny）。回傳 {ok, video_file_id, filename, sizeBytes, durationSeconds, hasAudio, hasCaptions}。⚠️輸出影片長度＝音軌長度；動畫請在YAML的width/height設成適合影片的尺寸（例如1280x720），動畫內容用keyframes依時間軸鋪陳（duration設成跟音軌一樣長，不要loop）。參數: {"animation_2d":"（跟animation_3d擇一）2D動畫YAML", "animation_3d":"（跟animation_2d擇一）3D場景YAML", "audio":"音軌檔的file_id或檔名（通常是extract_audio產生的）", "captions":"（選填）字幕檔的file_id/檔名，或直接給[{start,end,text}]陣列"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const yaml2d = String(parsed.animation_2d || '').trim();
+                const yaml3d = String(parsed.animation_3d || '').trim();
+                if (!yaml2d && !yaml3d) return JSON.stringify({ ok: false, error: '需要提供 animation_2d 或 animation_3d 其中一個' });
+                const audioArg = String(parsed.audio || '').trim();
+                const audioRecord = audioArg ? await this._resolveUploadedFileRecord(audioArg) : null;
+                if (audioArg && !audioRecord) return JSON.stringify({ ok: false, error: `找不到符合「${audioArg}」的音軌檔` });
+                let captionSegments = null;
+                if (Array.isArray(parsed.captions)) captionSegments = parsed.captions;
+                else if (parsed.captions) {
+                    const cr = await this._resolveUploadedFileRecord(String(parsed.captions).trim());
+                    if (cr) { try { captionSegments = _faParseSubtitleText(await cr.blob.text()); } catch (_) {} }
+                }
+                try {
+                    return JSON.stringify(await this._composeAnimationVideo({
+                        animationYaml: yaml3d || yaml2d, is3d: !!yaml3d, audioRecord, captionSegments,
+                        onProgress: (cur, total) => { if (cur % 30 === 0 || cur === total) this._log(`🎞️ 合成影片… ${Math.round((cur / total) * 100)}%`); },
+                    }));
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                animation_2d: { type: 'string', description: '2D動畫YAML（跟animation_3d擇一）' },
+                animation_3d: { type: 'string', description: '3D場景YAML（跟animation_2d擇一）' },
+                audio: { type: 'string', description: '音軌檔的file_id或檔名' },
+                captions: { description: '（選填）字幕檔的file_id/檔名，或 [{start,end,text}] 陣列' },
+            }, additionalProperties: false }
+        );
     }
 
     // ============================================================
@@ -3584,6 +3695,24 @@ ${fnData.code}
         } catch (_) {
             return false;
         }
+    }
+
+    // tw_stock_db客製: 2026-09-11——Mediabunny（ES module）動態import載入，
+    // memoize在instance上。burn_subtitles是在worker裡自己import的；
+    // compose_video（把2D/3D動畫+音軌+字幕合成MP4）在主執行緒用，所以這裡
+    // 也留一個主執行緒的載入入口。
+    async _ensureMediabunnyLoaded() {
+        if (this._mediabunnyModule) return this._mediabunnyModule;
+        if (this._mediabunnyLoadPromise) return this._mediabunnyLoadPromise;
+        this._mediabunnyLoadPromise = (async () => {
+            const mod = await import(/* webpackIgnore: true */ FA_ASSET_URLS.mediabunny);
+            this._mediabunnyModule = mod;
+            return mod;
+        })().catch(err => {
+            this._mediabunnyLoadPromise = null;
+            throw new Error('影音函式庫(Mediabunny)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
+        });
+        return this._mediabunnyLoadPromise;
     }
 
     // 建立(或取回快取的)Whisper ASR pipeline。device明確傳入（'webgpu'
@@ -3846,6 +3975,57 @@ ${fnData.code}
         if (!tr.ok) return { ok: false, error: '自動轉逐字稿失敗：' + tr.error };
         if (!Array.isArray(tr.segments) || !tr.segments.length) return { ok: false, error: '自動轉出來的逐字稿沒有帶時間軸的分段，沒辦法拿來燒字幕' };
         return { ok: true, segments: tr.segments, autoTranscribed: true };
+    }
+
+    // tw_stock_db客製: 2026-09-11——compose_video的實作。把2D/3D動畫YAML
+    // ＋音軌（可選）＋字幕（可選）合成一支MP4。音軌有給時輸出長度＝音軌
+    // 長度（動畫的duration被override成音軌長度、只播一次不loop）。實際
+    // 逐幀渲染+編碼+mux都在_export2DAnimationToMp4/_exportSceneToMp4 →
+    // _encodeCanvasFramesToMp4（見那邊的extra參數：audioBuffer/
+    // captionSegments）。
+    async _composeAnimationVideo(opts) {
+        let audioBuffer = null, durationSeconds = null;
+        if (opts.audioRecord) {
+            try {
+                audioBuffer = await this._decodeAudioBuffer(opts.audioRecord.blob);
+                durationSeconds = audioBuffer.duration;
+            } catch (err) {
+                return { ok: false, error: '解碼音訊失敗：' + String(err.message || err) };
+            }
+        }
+        const exportOpts = {
+            audioBuffer,
+            captionSegments: Array.isArray(opts.captionSegments) && opts.captionSegments.length ? opts.captionSegments : null,
+            captionStyle: this._getSubtitleStyle(),
+        };
+        // 有音軌時把動畫時長對齊音軌（只播一次、不 loop），沒有就用動畫
+        // YAML 自己的 duration。
+        if (durationSeconds) exportOpts.durationSeconds = durationSeconds;
+        let result;
+        try {
+            result = opts.is3d
+                ? await this._exportSceneToMp4(opts.animationYaml, exportOpts, opts.onProgress)
+                : await this._export2DAnimationToMp4(opts.animationYaml, exportOpts, opts.onProgress);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        if (!result || !result.ok) return { ok: false, error: (result && result.error) || '合成影片失敗' };
+        const name = `合成影片_${Date.now()}.mp4`;
+        let outId;
+        try {
+            outId = await this.fileCache.put(name, 'video/mp4', result.blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '影片存檔失敗：' + String(err.message || err) };
+        }
+        return {
+            ok: true,
+            video_file_id: outId,
+            filename: name,
+            sizeBytes: result.blob.size,
+            durationSeconds: Math.round(durationSeconds || 0),
+            hasAudio: !!audioBuffer,
+            hasCaptions: !!exportOpts.captionSegments,
+        };
     }
 
     async _transcribeMedia(record, language) {
@@ -6775,9 +6955,59 @@ ${sourceTool.handlerScript}
     // 3D場景（_exportSceneToMp4）跟2D多邊形動畫（_export2DAnimationToMp4）
     // 各自的畫面產生方式完全不同（WebGL/軟體光柵化 vs. Canvas2D），但編碼/
     // 封裝MP4這段是完全共用的，不用維護兩份幾乎一樣的WebCodecs樣板程式碼。
-    async _encodeCanvasFramesToMp4(canvas, totalFrames, fps, renderFrameFn, onProgress) {
+    async _encodeCanvasFramesToMp4(canvas, totalFrames, fps, renderFrameFn, onProgress, extra) {
         if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
             return { ok: false, error: '這個瀏覽器不支援WebCodecs（VideoEncoder/VideoFrame），無法在瀏覽器端編碼H.264影片。請改用桌機版最新Chrome或Edge瀏覽器。' };
+        }
+        // tw_stock_db客製: 2026-09-11——compose_video用。extra可帶：
+        //   audioBuffer：要mux進去的音軌（既有mp4-muxer路徑只有影像軌，
+        //     有音軌就改走Mediabunny）
+        //   captionSegments/captionStyle：逐幀疊字幕（時間軸＝輸出影片秒數
+        //     i/fps）。用一個中介2d canvas合成（drawImage來源canvas+畫字幕），
+        //     這樣3D/WebGL的來源canvas也能疊字幕（WebGL canvas不能直接拿2d
+        //     context）。
+        const audioBuffer = extra && extra.audioBuffer;
+        const capSegs = extra && Array.isArray(extra.captionSegments) && extra.captionSegments.length ? extra.captionSegments : null;
+        const capStyle = (extra && extra.captionStyle) || SUBTITLE_DEFAULT_STYLE;
+        let compositeCanvas = null, compositeCtx = null;
+        const frameSource = () => {
+            if (!capSegs) return canvas;
+            if (!compositeCanvas) {
+                compositeCanvas = document.createElement('canvas');
+                compositeCanvas.width = canvas.width; compositeCanvas.height = canvas.height;
+                compositeCtx = compositeCanvas.getContext('2d');
+            }
+            return compositeCanvas;
+        };
+        const paintFrame = (i) => {
+            renderFrameFn(i);
+            if (!capSegs) return;
+            compositeCtx.clearRect(0, 0, compositeCanvas.width, compositeCanvas.height);
+            compositeCtx.drawImage(canvas, 0, 0);
+            try { _faDrawSubtitle(compositeCtx, i / fps, capSegs, capStyle); } catch (_) {}
+        };
+        if (audioBuffer) {
+            try {
+                const MB = await this._ensureMediabunnyLoaded();
+                const src = frameSource();
+                const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+                const vSrc = new MB.CanvasSource(src, { codec: 'avc', bitrate: 5_000_000 });
+                output.addVideoTrack(vSrc, { frameRate: fps });
+                const aSrc = new MB.AudioBufferSource({ codec: 'aac', bitrate: 160_000 });
+                output.addAudioTrack(aSrc);
+                await output.start();
+                await aSrc.add(audioBuffer);
+                for (let i = 0; i < totalFrames; i++) {
+                    paintFrame(i);
+                    await vSrc.add(i / fps, 1 / fps);
+                    if (onProgress) onProgress(i + 1, totalFrames);
+                    if (i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
+                }
+                await output.finalize();
+                return { ok: true, blob: new Blob([output.target.buffer], { type: 'video/mp4' }), ext: 'mp4', mimeType: 'video/mp4' };
+            } catch (err) {
+                return { ok: false, error: `合成有聲影片失敗：${err && err.message || err}` };
+            }
         }
         if (typeof Mp4Muxer === 'undefined') {
             // tw_stock_db客製: 2026-09-06實測發現——indirect eval（(0,eval)(text)）
@@ -6829,8 +7059,8 @@ ${sourceTool.handlerScript}
 
         const frameDurationUs = 1e6 / fps;
         for (let i = 0; i < totalFrames && !encodeError; i++) {
-            renderFrameFn(i);
-            const frame = new VideoFrame(canvas, { timestamp: Math.round(i * frameDurationUs), duration: Math.round(frameDurationUs) });
+            paintFrame(i);
+            const frame = new VideoFrame(frameSource(), { timestamp: Math.round(i * frameDurationUs), duration: Math.round(frameDurationUs) });
             encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
             frame.close();
             if (onProgress) onProgress(i + 1, totalFrames);
@@ -6905,12 +7135,15 @@ ${sourceTool.handlerScript}
         const ctx2d = webglOk ? null : canvas.getContext('2d');
 
         const totalFrames = Math.round(durationSeconds * fps);
+        // tw_stock_db客製: 2026-09-11——compose_video用：opts.audioBuffer把音軌
+        // mux進去、opts.captionSegments逐幀疊字幕（_encodeCanvasFramesToMp4
+        // 用中介2d canvas合成，WebGL來源canvas也能疊）。
         const result = await this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
             const t = (i / fps) * speed;
             for (const fn of animators) fn(t, (1 / fps) * speed);
             if (webglOk) renderer.render(scene, camera);
             else this._raster3DFrame(scene, camera, ctx2d, width, height);
-        }, onProgress);
+        }, onProgress, { audioBuffer: opts.audioBuffer, captionSegments: opts.captionSegments, captionStyle: opts.captionStyle });
         if (renderer) renderer.dispose();
         return result;
     }
@@ -7333,6 +7566,9 @@ ${sourceTool.handlerScript}
         try { images = await this._preload2DShapeImages(validation.shapes); } catch (_) {}
 
         const totalFrames = Math.round(durationSeconds * fps);
+        // tw_stock_db客製: 2026-09-11——compose_video用：opts.captionSegments
+        // 逐幀疊字幕（時間軸對齊輸出影片秒數）、opts.audioBuffer把音軌mux
+        // 進去，都在_encodeCanvasFramesToMp4裡處理（見那邊的extra參數）。
         return this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
             const t = (i / fps) * speed;
             for (const fn of animators) { try { fn(t, (1 / fps) * speed); } catch (_) {} }
@@ -7341,7 +7577,7 @@ ${sourceTool.handlerScript}
             ctx.fillRect(0, 0, width, height);
             for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) {} }
             ctx.restore();
-        }, onProgress);
+        }, onProgress, { audioBuffer: opts.audioBuffer, captionSegments: opts.captionSegments, captionStyle: opts.captionStyle });
     }
 
     // tw_stock_db客製: 階段4（通用繪圖工具render_drawing）只需要DOMPurify
