@@ -720,14 +720,15 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
     media_av: {
         enabled: true,
-        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'list_uploaded_files'],
+        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
-            '- transcribe_media：語音轉逐字稿（中英雙語，會產生一個.srt字幕檔）\n' +
-            '- extract_audio：把音軌抽成WAV檔\n' +
+            '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
+            '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
-            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB，之後瀏覽器會快取）；transcribe_media/burn_subtitles/compose_video都依影片長度可能要跑好幾分鐘（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+            '- text_to_speech：把一段英文文字念成語音MP3（Kokoro TTS，多種男女聲可選）。⚠️只支援英文——目前瀏覽器端沒有我們能驗證可靠的中文語音合成方案，使用者要求中文語音朗讀/說故事時，要照實告知「這個功能目前只能念英文」，不要嘗試硬用這個工具念中文（會讀出錯誤的音）。\n' +
+            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
 
@@ -774,6 +775,65 @@ const WHISPER_MODEL_BACKUP_FILES = [
     'onnx/decoder_model_merged_quantized.onnx',
 ];
 const WHISPER_MODEL_BACKUP_PART_SIZE = 20 * 1024 * 1024;
+
+// tw_stock_db客製: 2026-09-12——text_to_speech（語音合成）用Kokoro-82M
+// （onnx-community/Kokoro-82M-v1.0-ONNX，q8量化，跟Whisper q8同一個決策：
+// 保留可用品質前提下最小的組合，encoder+decoder合計約90MB）。⚠️已實測確認
+// 的限制：kokoro-js套件本身的文字轉音素(G2P)只認得voice代號開頭'a'(美式
+// 英文)/'b'(英式英文)兩種，中文（或其他語言）文字丟進去只會讀成錯誤的
+// 音——這不是我們這邊的限制，是kokoro-js這個JS port目前只做了英文G2P
+// （Python版kokoro需要另外裝misaki[zh]，是純Python套件，沒有瀏覽器可用的
+// JS版本）。HuggingFace上是有一個onnx-community/Kokoro-82M-v1.1-zh-ONNX
+// 中文模型，但transformers.js的通用pipeline('text-to-speech',...)不支援它
+// 的model_type(style_text_to_speech_2)、kokoro-js的KokoroTTS也只認英文
+// voice代號——目前沒有找到瀏覽器端可驗證可靠的中文方案，所以text_to_speech
+// 工具/指令一律只接受英文文字，中文會被明確擋下並告知使用者。
+const TTS_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const TTS_DTYPE = 'q8';
+const TTS_SAMPLE_RATE = 24000;
+const TTS_DEFAULT_VOICE = 'af_heart';
+// 每次generate()餵給模型的token數上限（kokoro-js內部固定509），這裡切句子
+// 時保守抓一個字元數上限（英文平均~5字元/字+標點，509 token留一些餘裕），
+// 避免單一chunk被模型內部截斷、丟字。
+const TTS_MAX_CHARS_PER_CHUNK = 400;
+// 28個內建英文語音（美式af_*/am_*、英式bf_*/bm_*），抄自kokoro-js
+// voices.js的VOICES常數（僅取這裡用得到的欄位：顯示名稱/語言/性別）——
+// 「語音包」概念：每個語音是一個獨立、約522KB的.bin檔，透過kokoro-js自己
+// 的"kokoro-voices" Cache API bucket持久化（跟Whisper模型的
+// "transformers-cache"是不同的Cache物件，天生就是「獨立一組」，不用我們
+// 自己另外實作快取層），使用者可以在Advance Settings個別安裝/刪除。
+const TTS_VOICES = [
+    { id: 'af_heart', name: 'Heart', lang: '美式英文', gender: '女' },
+    { id: 'af_alloy', name: 'Alloy', lang: '美式英文', gender: '女' },
+    { id: 'af_aoede', name: 'Aoede', lang: '美式英文', gender: '女' },
+    { id: 'af_bella', name: 'Bella', lang: '美式英文', gender: '女' },
+    { id: 'af_jessica', name: 'Jessica', lang: '美式英文', gender: '女' },
+    { id: 'af_kore', name: 'Kore', lang: '美式英文', gender: '女' },
+    { id: 'af_nicole', name: 'Nicole', lang: '美式英文', gender: '女' },
+    { id: 'af_nova', name: 'Nova', lang: '美式英文', gender: '女' },
+    { id: 'af_river', name: 'River', lang: '美式英文', gender: '女' },
+    { id: 'af_sarah', name: 'Sarah', lang: '美式英文', gender: '女' },
+    { id: 'af_sky', name: 'Sky', lang: '美式英文', gender: '女' },
+    { id: 'am_adam', name: 'Adam', lang: '美式英文', gender: '男' },
+    { id: 'am_echo', name: 'Echo', lang: '美式英文', gender: '男' },
+    { id: 'am_eric', name: 'Eric', lang: '美式英文', gender: '男' },
+    { id: 'am_fenrir', name: 'Fenrir', lang: '美式英文', gender: '男' },
+    { id: 'am_liam', name: 'Liam', lang: '美式英文', gender: '男' },
+    { id: 'am_michael', name: 'Michael', lang: '美式英文', gender: '男' },
+    { id: 'am_onyx', name: 'Onyx', lang: '美式英文', gender: '男' },
+    { id: 'am_puck', name: 'Puck', lang: '美式英文', gender: '男' },
+    { id: 'am_santa', name: 'Santa', lang: '美式英文', gender: '男' },
+    { id: 'bf_alice', name: 'Alice', lang: '英式英文', gender: '女' },
+    { id: 'bf_emma', name: 'Emma', lang: '英式英文', gender: '女' },
+    { id: 'bf_isabella', name: 'Isabella', lang: '英式英文', gender: '女' },
+    { id: 'bf_lily', name: 'Lily', lang: '英式英文', gender: '女' },
+    { id: 'bm_daniel', name: 'Daniel', lang: '英式英文', gender: '男' },
+    { id: 'bm_fable', name: 'Fable', lang: '英式英文', gender: '男' },
+    { id: 'bm_george', name: 'George', lang: '英式英文', gender: '男' },
+    { id: 'bm_lewis', name: 'Lewis', lang: '英式英文', gender: '男' },
+];
+const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個名稱
+const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
@@ -1310,6 +1370,16 @@ const FA_ASSET_URLS = {
     // 跟 web/tools/build-whisper-backup-branch.mjs）。結尾要有 /。換 host（例如
     // piano-web 或其他部署）時用 setAssetUrls 覆蓋成自己的 raw base 即可。
     whisperModelBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/whisper-model-backup/whisper-base-q8/',
+    // tw_stock_db客製: 2026-09-12——extract_audio預設輸出MP3（省
+    // persistentStorage空間，使用者要求）用的純JS MP3編碼器，UMD全域腳本，
+    // 跟jszip/mp4-muxer同一種_faLoadScriptOnce（fetch+Blob URL）載入方式。
+    lamejs: 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js',
+    // tw_stock_db客製: 2026-09-12——text_to_speech（語音合成）用的Kokoro TTS
+    // （82M參數、Apache授權，純瀏覽器端跑，透過@huggingface/transformers）。
+    // ES module，跟transformers.js/mediabunny一樣走/+esm動態import。⚠️目前
+    // 只驗證過英文（kokoro-js套件本身的G2P只支援'a'/'b'=美式/英式英文，見
+    // _synthesizeSpeech的說明），中文語音朗讀目前做不到。
+    kokoroJs: 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -1440,6 +1510,42 @@ function _faEncodeWav(audioBuffer) {
     }
     return new Blob([buf], { type: 'audio/wav' });
 }
+
+// tw_stock_db客製: 2026-09-12——用已載入好的全域lamejs把PCM樣本編成MP3
+// Blob（純函式，呼叫端要先確保lamejs已經載入——見_ensureLamejsLoaded）。
+// extract_audio（省persistentStorage空間，使用者要求）跟text_to_speech
+// 兩處共用同一個編碼路徑，各自把來源（AudioBuffer / Kokoro產生的Float32
+// 樣本）轉成Int16聲道陣列後餵進來。lame的encodeBuffer/encodeBuffer(l,r)
+// 一次吃一個chunk（用官方範例的1152這個frame size），flush()拿最後剩餘的。
+function _faLamejsEncode(channelsInt16, sampleRate, bitrateKbps) {
+    const numCh = channelsInt16.length;
+    const encoder = new lamejs.Mp3Encoder(numCh, sampleRate, bitrateKbps || 128);
+    const chunkSize = 1152;
+    const mp3Chunks = [];
+    const total = channelsInt16[0].length;
+    for (let i = 0; i < total; i += chunkSize) {
+        const left = channelsInt16[0].subarray(i, i + chunkSize);
+        const right = numCh > 1 ? channelsInt16[1].subarray(i, i + chunkSize) : undefined;
+        const buf = numCh > 1 ? encoder.encodeBuffer(left, right) : encoder.encodeBuffer(left);
+        if (buf.length > 0) mp3Chunks.push(buf);
+    }
+    const end = encoder.flush();
+    if (end.length > 0) mp3Chunks.push(end);
+    return new Blob(mp3Chunks, { type: 'audio/mpeg' });
+}
+
+// tw_stock_db客製: 2026-09-12——Float32（-1~1）樣本轉Int16 PCM，MP3/WAV
+// 編碼共用的量化邏輯（跟_faEncodeWav裡那段inline的算法一致，這裡抽出來給
+// _faLamejsEncode的呼叫端重用，避免兩處各自寫一次同樣的截幅公式）。
+function _faFloat32ToInt16(f32) {
+    const out = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+        const v = Math.max(-1, Math.min(1, f32[i]));
+        out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    return out;
+}
+
 function _faSetAssetUrls(overrides) {
     Object.assign(FA_ASSET_URLS, overrides || {});
 }
@@ -2108,13 +2214,25 @@ class FloatingAssistant {
         );
         this.register_slash_command(
             '/media-extract-audio', '[<影片id或檔名>]',
-            '把影片的音軌抽出來存成WAV檔（瀏覽器端解碼，不上傳）。留空＝用最近上傳的檔案',
+            '把影片的音軌抽出來存成音檔（瀏覽器端解碼，不上傳；預設MP3省空間，可在設定改WAV）。留空＝用最近上傳的檔案',
             (argsText) => this._handleMediaExtractAudioCommand(argsText)
         );
         this.register_slash_command(
             '/media-burn-subtitles', '[<影片id或檔名>] [<字幕檔id或檔名>] [zh|en]',
             '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿（預設中文，要英文才加 en）；影片留空＝用最近上傳的',
             (argsText) => this._handleMediaBurnSubtitlesCommand(argsText)
+        );
+        // tw_stock_db客製: 2026-09-12使用者要求——文字轉語音。只支援英文，
+        // 見TTS_VOICES常數上方的說明。<聲音代號>可留空（用設定裡的預設語音）。
+        this.register_slash_command(
+            '/media-text-to-speech', '<英文文字…> [聲音代號]',
+            '把一段英文文字念成語音MP3（Kokoro TTS，瀏覽器端，不上傳）。只支援英文；聲音代號留空＝用預設語音（可在設定改），列出全部代號用 /media-list-voices',
+            (argsText) => this._handleMediaTextToSpeechCommand(argsText)
+        );
+        this.register_slash_command(
+            '/media-list-voices', '',
+            '列出 /media-text-to-speech 可用的全部語音代號',
+            () => this._handleMediaListVoicesCommand()
         );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
@@ -2398,6 +2516,12 @@ class FloatingAssistant {
             // 只用CPU WASM（使用者實測某些機器/某些顯卡上WebGPU反而比CPU慢，
             // 或WebGPU那條路徑在該環境有相容性問題）。
             whisperDevicePreference: 'auto',
+            // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
+            // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
+            extractAudioFormat: 'mp3',
+            // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
+            // TTS_VOICES）。
+            ttsDefaultVoice: TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -2697,6 +2821,8 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
             })(),
             whisperDevicePreference: raw.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto',
+            extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
+            ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -3550,6 +3676,33 @@ ${fnData.code}
                 captions: { description: '（選填）字幕檔的file_id/檔名，或 [{start,end,text}] 陣列' },
             }, additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-12——文字轉語音（Kokoro TTS，純瀏覽器端）。
+        // ⚠️只支援英文——見TTS_VOICES常數上方的完整說明：瀏覽器端可驗證可靠
+        // 的中文TTS方案目前不存在（kokoro-js的G2P只做了英文；HF上雖然有
+        // Kokoro的中文模型，但沒有能在瀏覽器跑的中文G2P/pipeline銜接），
+        // 所以工具本身會主動偵測、拒絕明顯是CJK的文字，不會嘗試硬讀出
+        // 錯誤的音。
+        registerOptional('text_to_speech',
+            `把一段「英文」文字念成語音，存成MP3。純瀏覽器端跑Kokoro TTS模型（不上傳文字）。⚠️目前只支援英文，中文（或其他CJK語言）文字會被拒絕——瀏覽器端還沒有我們能驗證可靠的中文語音合成方案，遇到使用者要中文語音朗讀/說故事時，要照實告知這個限制，不要嘗試硬用這個工具念中文。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}；${TTS_VOICES.length}個內建英文語音，voice留空＝用使用者在設定裡選的預設語音（見get_tool_details或直接呼叫時試試常見的 af_heart（女聲）/am_michael（男聲）/bf_emma（英式女聲）等）。⚠️第一次執行會下載約90MB的模型（之後瀏覽器會快取）＋所選語音約522KB；長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的英文文字", "voice":"（選填）語音代號，例如 af_heart"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const text = String(parsed.text || '').trim();
+                if (!text) return JSON.stringify({ ok: false, error: '缺少text參數' });
+                const voiceArg = String(parsed.voice || '').trim();
+                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg)) {
+                    return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，可用：${TTS_VOICES.map(v => v.id).join(', ')}` });
+                }
+                try {
+                    return JSON.stringify(await this._synthesizeSpeech(text, voiceArg || this.advancedSettings.ttsDefaultVoice, (m) => this._log('🗣️ ' + m)));
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                text: { type: 'string', description: '要念的英文文字' },
+                voice: { type: 'string', enum: TTS_VOICES.map(v => v.id), description: '（選填）語音代號，留空用預設語音' },
+            }, additionalProperties: false }
+        );
     }
 
     // ============================================================
@@ -3760,6 +3913,291 @@ ${fnData.code}
         return this._mediabunnyLoadPromise;
     }
 
+    // tw_stock_db客製: 2026-09-12——lamejs（純JS MP3編碼器）載入，
+    // extract_audio（預設輸出MP3省空間）＋text_to_speech共用。UMD全域腳本，
+    // 跟jszip同一種_faLoadScriptOnce（fetch+Blob URL注入）方式。
+    async _ensureLamejsLoaded() {
+        if (typeof lamejs !== 'undefined' && lamejs.Mp3Encoder) return;
+        if (this._lamejsLoadPromise) return this._lamejsLoadPromise;
+        this._lamejsLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.lamejs).catch(err => {
+            this._lamejsLoadPromise = null;
+            throw new Error('MP3編碼函式庫(lamejs)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
+        });
+        return this._lamejsLoadPromise;
+    }
+
+    // 把AudioBuffer編成MP3 Blob（extract_audio用）。128kbps對語音/一般影片
+    // 音軌已經夠用，檔案大小大約是WAV的1/5~1/6。
+    async _encodeMp3(audioBuffer, bitrateKbps = 128) {
+        await this._ensureLamejsLoaded();
+        const numCh = Math.min(2, audioBuffer.numberOfChannels); // lamejs只支援mono/stereo
+        const chans = [];
+        for (let c = 0; c < numCh; c++) chans.push(_faFloat32ToInt16(audioBuffer.getChannelData(c)));
+        return _faLamejsEncode(chans, audioBuffer.sampleRate, bitrateKbps);
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-12——text_to_speech（語音合成）的實作。
+    // Kokoro TTS（82M參數）跑在瀏覽器端，透過kokoro-js（內部用
+    // @huggingface/transformers）。⚠️只支援英文——見TTS_VOICES上方那段
+    // 註解的完整說明：kokoro-js套件的G2P只認'a'(美式)/'b'(英式)兩種語言，
+    // 中文（或任何其他語言）文字丟進去會被硬套英文發音規則、讀出完全錯誤
+    // 的音，所以_synthesizeSpeech一律先擋下明顯不是英文的文字，不會嘗試
+    // 「盡量做」——寧可明確告知使用者做不到，也不要生出聽不懂的語音檔。
+    // ============================================================
+
+    async _ensureKokoroLoaded() {
+        if (this._kokoroModule) return this._kokoroModule;
+        if (this._kokoroLoadPromise) return this._kokoroLoadPromise;
+        this._kokoroLoadPromise = (async () => {
+            const mod = await import(/* webpackIgnore: true */ FA_ASSET_URLS.kokoroJs);
+            this._kokoroModule = mod;
+            return mod;
+        })().catch(err => {
+            this._kokoroLoadPromise = null;
+            throw new Error('語音合成函式庫(kokoro-js)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
+        });
+        return this._kokoroLoadPromise;
+    }
+
+    // 建立(或取回快取的)Kokoro TTS引擎。⚠️2026-09-12實測發現：這個模型走
+    // WebGPU在部分環境會直接把GPU裝置卡死（onnxruntime-web的WebGPU
+    // backend對Kokoro/StyleTTS2這個模型結構有問題，實測出現
+    // DXGI_ERROR_DEVICE_HUNG，整個推論永遠不會回來，不是「比較慢」是真的
+    // 掛住），跟Whisper不一樣（Whisper WebGPU路徑是可用的，只是使用者反映
+    // 有時比CPU慢）——所以這裡刻意「一律用CPU wasm，不嘗試WebGPU」，不是
+    // 沿用whisperDevicePreference那個auto/cpu選項。等上游修好這個模型的
+    // WebGPU相容性問題後再考慮開放。模型本身（onnx+tokenizer）走
+    // @huggingface/transformers的env.useBrowserCache，跟Whisper共用同一個
+    // 'transformers-cache' Cache物件（沒有辦法讓kokoro-js用不同的cache
+    // 名稱），Advance Settings顯示「語音合成模型」用量時用URL含'Kokoro'這個
+    // 子字串從同一個cache裡篩出來，效果上等同獨立管理。語音本身（.bin，
+    // 522KB/個）kokoro-js自己已經用另一個獨立的Cache物件("kokoro-voices"，
+    // 見TTS_VOICE_CACHE_NAME)持久化，天生就跟模型分開，不用我們自己另外
+    // 實作一層快取。
+    async _getTtsEngine(onProgress) {
+        if (this._ttsEngine) return this._ttsEngine;
+        const mod = await this._ensureKokoroLoaded();
+        const device = 'wasm';
+        const engine = await mod.KokoroTTS.from_pretrained(TTS_MODEL_ID, {
+            dtype: TTS_DTYPE,
+            device,
+            progress_callback: (p) => {
+                if (!onProgress || !p) return;
+                if (p.status === 'progress' && p.file && p.total) onProgress(`下載模型 ${p.file}：${Math.round((p.loaded / p.total) * 100)}%`);
+                else if (p.status === 'done' && p.file) onProgress(`模型檔案就緒：${p.file}`);
+            },
+        });
+        this._ttsEngine = engine;
+        return engine;
+    }
+
+    // 粗略判斷一段文字是不是「主要是中文/日文/韓文之類的CJK文字」——
+    // kokoro-js目前完全沒有這些語言的G2P，硬做只會讀出錯誤的音，見上方
+    // 說明。門檻抓20%（超過這個比例的字元是CJK就擋下來），容忍文字裡夾雜
+    // 少量專有名詞/人名的情況，不會對純英文文字裡偶爾一兩個中文字誤判。
+    _looksLikeCjkText(text) {
+        const s = String(text || '');
+        if (!s.trim()) return false;
+        const cjk = s.match(/[一-鿿㐀-䶿぀-ヿ가-힯]/g);
+        return !!cjk && cjk.length / s.length > 0.2;
+    }
+
+    // 把長文字切成每段不超過TTS_MAX_CHARS_PER_CHUNK字元的句子群組（盡量在
+    // 句尾標點斷開，保留自然的語調停頓；單一句子本身超過上限就強制截斷，
+    // 避免單一chunk被kokoro-js內部的509 token限制截斷丟字——見
+    // TTS_MAX_CHARS_PER_CHUNK的說明）。
+    _ttsChunkText(text) {
+        const sentences = String(text || '').trim().split(/(?<=[.!?;])\s+/).filter(Boolean);
+        const chunks = [];
+        let cur = '';
+        for (let s of sentences) {
+            while (s.length > TTS_MAX_CHARS_PER_CHUNK) {
+                if (cur) { chunks.push(cur); cur = ''; }
+                chunks.push(s.slice(0, TTS_MAX_CHARS_PER_CHUNK));
+                s = s.slice(TTS_MAX_CHARS_PER_CHUNK);
+            }
+            if ((cur + ' ' + s).trim().length > TTS_MAX_CHARS_PER_CHUNK) { chunks.push(cur); cur = s; }
+            else cur = (cur ? cur + ' ' : '') + s;
+        }
+        if (cur) chunks.push(cur);
+        return chunks.length ? chunks : [String(text || '').trim()];
+    }
+
+    // 主流程：驗證語言/語音代號 → 分段合成 → 串接樣本 → 編碼(mp3預設，跟
+    // extract_audio同一個「省空間」決策，共用_encodeMp3/_faLamejsEncode)
+    // → 存進persistentStorage。回傳
+    // {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。
+    async _synthesizeSpeech(text, voiceId, onProgress) {
+        const t = String(text || '').trim();
+        if (!t) return { ok: false, error: '沒有要念的文字' };
+        if (this._looksLikeCjkText(t)) {
+            return { ok: false, error: '目前語音合成只支援英文——kokoro-js這個瀏覽器端TTS函式庫的文字轉音素只做了英文（美式/英式），中文（或其他CJK語言）丟進去只會讀出錯誤的音，所以這裡直接擋下來，不產生聽不懂的語音檔。' };
+        }
+        const voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
+        let engine;
+        try {
+            engine = await this._getTtsEngine(onProgress);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const chunks = this._ttsChunkText(t);
+        const parts = [];
+        try {
+            for (let i = 0; i < chunks.length; i++) {
+                if (onProgress && chunks.length > 1) onProgress(`合成中… 第 ${i + 1}/${chunks.length} 段`);
+                const audio = await engine.generate(chunks[i], { voice: voice.id });
+                parts.push(audio.audio); // Float32Array, 單聲道, TTS_SAMPLE_RATE
+            }
+        } catch (err) {
+            return { ok: false, error: '語音合成失敗：' + String(err && err.message || err) };
+        }
+        let totalLen = 0;
+        for (const p of parts) totalLen += p.length;
+        const merged = new Float32Array(totalLen);
+        let off = 0;
+        for (const p of parts) { merged.set(p, off); off += p.length; }
+
+        const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav'; // 沿用同一個「要不要壓縮」偏好
+        let blob, ext, mimeType;
+        if (wantMp3) {
+            try {
+                await this._ensureLamejsLoaded();
+                blob = _faLamejsEncode([_faFloat32ToInt16(merged)], TTS_SAMPLE_RATE, 128);
+                ext = 'mp3'; mimeType = 'audio/mpeg';
+            } catch (err) {
+                this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err));
+            }
+        }
+        if (!blob) {
+            const int16 = _faFloat32ToInt16(merged);
+            const buf = new ArrayBuffer(44 + int16.length * 2);
+            const dv = new DataView(buf);
+            const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+            ws(0, 'RIFF'); dv.setUint32(4, 36 + int16.length * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+            dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+            dv.setUint32(24, TTS_SAMPLE_RATE, true); dv.setUint32(28, TTS_SAMPLE_RATE * 2, true);
+            dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+            ws(36, 'data'); dv.setUint32(40, int16.length * 2, true);
+            for (let i = 0; i < int16.length; i++) dv.setInt16(44 + i * 2, int16[i], true);
+            blob = new Blob([buf], { type: 'audio/wav' });
+            ext = 'wav'; mimeType = 'audio/wav';
+        }
+        const durationSeconds = totalLen / TTS_SAMPLE_RATE;
+        const name = `語音_${voice.id}_${Date.now()}.${ext}`;
+        let audioFileId;
+        try {
+            audioFileId = await this.fileCache.put(name, mimeType, blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '語音檔存檔失敗：' + String(err.message || err) };
+        }
+        return {
+            ok: true,
+            audio_file_id: audioFileId,
+            filename: name,
+            durationSeconds: Math.round(durationSeconds * 10) / 10,
+            voice: voice.id,
+            sizeBytes: blob.size,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-12——語音包（Kokoro TTS的.bin語音檔）管理。
+    // kokoro-js自己已經用"kokoro-voices"這個獨立Cache物件持久化每個語音
+    // （見上方_getTtsEngine的說明），這裡直接讀/寫同一個Cache——不用等
+    // 使用者真的呼叫一次generate()才觸發下載，Advance Settings可以讓使用者
+    // 「預先安裝」／「刪除」個別語音包。
+    async _listInstalledTtsVoices() {
+        if (typeof caches === 'undefined') return [];
+        let cache;
+        try { cache = await caches.open(TTS_VOICE_CACHE_NAME); } catch (_) { return []; }
+        const reqs = await cache.keys();
+        const ids = new Set();
+        for (const r of reqs) {
+            const m = String(r.url || '').match(/\/voices\/([a-z]+_[a-z]+)\.bin$/);
+            if (m) ids.add(m[1]);
+        }
+        return [...ids];
+    }
+
+    async _installTtsVoice(voiceId, onProgress) {
+        const voice = TTS_VOICES.find(v => v.id === voiceId);
+        if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
+        if (typeof caches === 'undefined') return { ok: false, error: '這個環境沒有 Cache API，無法安裝語音包' };
+        const url = TTS_VOICE_DATA_URL_BASE + voiceId + '.bin';
+        try {
+            if (onProgress) onProgress(`下載語音包 ${voice.name}…`);
+            const resp = await fetch(url);
+            if (!resp.ok) return { ok: false, error: `下載失敗：HTTP ${resp.status}` };
+            const buf = await resp.arrayBuffer();
+            const cache = await caches.open(TTS_VOICE_CACHE_NAME);
+            await cache.put(url, new Response(buf.slice(0), { status: 200, headers: resp.headers }));
+            return { ok: true, sizeBytes: buf.byteLength };
+        } catch (err) {
+            return { ok: false, error: String(err && err.message || err) };
+        }
+    }
+
+    async _deleteTtsVoice(voiceId) {
+        if (typeof caches === 'undefined') return false;
+        try {
+            const cache = await caches.open(TTS_VOICE_CACHE_NAME);
+            return await cache.delete(TTS_VOICE_DATA_URL_BASE + voiceId + '.bin');
+        } catch (_) { return false; }
+    }
+
+    // 跟_getWhisperCacheInfo同一個模式——但這裡篩'transformers-cache'裡
+    // URL含'Kokoro'的項目（TTS模型本體，跟Whisper模型共用同一個Cache物件、
+    // 用URL子字串區分「哪一組」，見_getTtsEngine的說明），語音包大小另外
+    // 從"kokoro-voices"這個獨立Cache算。
+    async _getTtsCacheInfo() {
+        try {
+            if (typeof caches === 'undefined') return { supported: false };
+            let modelBytes = 0, modelEntries = 0;
+            const names = await caches.keys();
+            const tcName = names.find(n => /transformers/i.test(n));
+            if (tcName) {
+                const c = await caches.open(tcName);
+                for (const rq of await c.keys()) {
+                    if (!/Kokoro/i.test(rq.url)) continue;
+                    const r = await c.match(rq);
+                    if (!r) continue;
+                    modelEntries++;
+                    const len = r.headers.get('content-length');
+                    modelBytes += (len && Number.isFinite(+len)) ? +len : (await r.clone().blob()).size;
+                }
+            }
+            let voiceBytes = 0;
+            const installedVoices = await this._listInstalledTtsVoices();
+            if (installedVoices.length && names.includes(TTS_VOICE_CACHE_NAME)) {
+                const vc = await caches.open(TTS_VOICE_CACHE_NAME);
+                for (const rq of await vc.keys()) {
+                    const r = await vc.match(rq);
+                    if (r) voiceBytes += (await r.clone().blob()).size;
+                }
+            }
+            return { supported: true, modelBytes, modelEntries, voiceCount: installedVoices.length, voiceBytes, installedVoices };
+        } catch (err) {
+            return { supported: false, error: String(err.message || err) };
+        }
+    }
+
+    // 只清TTS模型本體（'transformers-cache'裡URL含'Kokoro'的項目），不動
+    // Whisper——這兩個目前共用同一個Cache物件，清除時必須逐項篩選刪除，
+    // 不能整包caches.delete(整個cache)。
+    async _clearTtsModelCache() {
+        try {
+            if (typeof caches === 'undefined') return false;
+            const names = await caches.keys();
+            const tcName = names.find(n => /transformers/i.test(n));
+            if (tcName) {
+                const c = await caches.open(tcName);
+                for (const rq of await c.keys()) if (/Kokoro/i.test(rq.url)) await c.delete(rq);
+            }
+            this._ttsEngine = null;
+            return true;
+        } catch (_) { return false; }
+    }
+
     // 建立(或取回快取的)Whisper ASR pipeline。device明確傳入（'webgpu'
     // 或'wasm'），fallback邏輯放在呼叫端_transcribeMedia，這裡只負責「照指定
     // 的device建一個pipeline」。同一個device的pipeline memoize起來重用
@@ -3913,8 +4351,10 @@ ${fnData.code}
     }
 
     // tw_stock_db客製: 2026-09-11——「擷取聲音」：把影片/音檔的音軌解碼後
-    // 編成一個16-bit PCM WAV存進persistentStorage。WAV是純JS就能編、通吃
-    // 所有播放器的無損格式（見_faEncodeWav）；不用ffmpeg.wasm。回傳
+    // 存進persistentStorage。2026-09-12使用者要求：預設輸出MP3而不是WAV
+    // （WAV無損但很占空間，MP3(128kbps)大約只有WAV的1/5~1/6）；可用
+    // advancedSettings.extractAudioFormat切回wav（要無損時）。MP3編碼失敗
+    // （lamejs載入失敗等）時優雅退回WAV，不讓整個功能失敗。回傳
     // {ok, audio_file_id, filename, durationSeconds, sampleRate, channels}。
     async _extractAudio(record) {
         this._log('🔊 解碼「' + record.filename + '」的音軌…');
@@ -3924,23 +4364,37 @@ ${fnData.code}
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         }
-        const wavBlob = _faEncodeWav(audioBuffer);
         const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
+        const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav';
+        let blob, ext, mimeType;
+        if (wantMp3) {
+            try {
+                blob = await this._encodeMp3(audioBuffer);
+                ext = 'mp3'; mimeType = 'audio/mpeg';
+            } catch (err) {
+                this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err));
+            }
+        }
+        if (!blob) {
+            blob = _faEncodeWav(audioBuffer);
+            ext = 'wav'; mimeType = 'audio/wav';
+        }
+        const filename = `${base}.音軌.${ext}`;
         let audioFileId = null;
         try {
-            audioFileId = await this.fileCache.put(`${base}.音軌.wav`, 'audio/wav', wavBlob, 'uploaded');
+            audioFileId = await this.fileCache.put(filename, mimeType, blob, 'uploaded');
         } catch (err) {
             return { ok: false, error: '音軌存檔失敗：' + String(err.message || err) };
         }
-        this._log(`🔊 已擷取音軌：${(wavBlob.size / 1024 / 1024).toFixed(1)}MB WAV`);
+        this._log(`🔊 已擷取音軌：${(blob.size / 1024 / 1024).toFixed(1)}MB ${ext.toUpperCase()}`);
         return {
             ok: true,
             audio_file_id: audioFileId,
-            filename: `${base}.音軌.wav`,
+            filename,
             durationSeconds: Math.round(audioBuffer.duration),
             sampleRate: audioBuffer.sampleRate,
             channels: audioBuffer.numberOfChannels,
-            sizeBytes: wavBlob.size,
+            sizeBytes: blob.size,
         };
     }
 
@@ -4035,6 +4489,46 @@ ${fnData.code}
         if (!info.supported) { el.textContent = '（此瀏覽器不支援 Cache API）'; return; }
         if (!info.entries) { el.textContent = '尚未下載（0 MB）'; return; }
         el.textContent = `${(info.bytes / 1024 / 1024).toFixed(1)} MB（${info.entries} 個檔案）`;
+    }
+
+    async _refreshTtsCacheSizeDisplay() {
+        const el = document.getElementById('ai-tts-model-cache-size');
+        if (!el) return;
+        el.textContent = '計算中…';
+        const info = await this._getTtsCacheInfo();
+        if (!info.supported) { el.textContent = '（此瀏覽器不支援 Cache API）'; return; }
+        if (!info.modelEntries) { el.textContent = '尚未下載（0 MB）'; return; }
+        el.textContent = `${(info.modelBytes / 1024 / 1024).toFixed(1)} MB（${info.modelEntries} 個檔案）`;
+    }
+
+    // tw_stock_db客製: 2026-09-12——語音包管理面板：安裝下拉（未安裝的語音）
+    // ＋已安裝清單（各自一個刪除按鈕）。每次重繪都重新讀"kokoro-voices"
+    // Cache（見_listInstalledTtsVoices），不快取狀態，避免顯示跟實際快取
+    // 內容不同步。
+    async _renderTtsVoicePanel() {
+        const installSelect = document.getElementById('ai-tts-voice-install-select');
+        const listEl = document.getElementById('ai-tts-voice-list');
+        const defaultSelect = document.getElementById('ai-tts-default-voice');
+        if (defaultSelect && !defaultSelect.options.length) {
+            defaultSelect.innerHTML = TTS_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
+        }
+        if (defaultSelect) defaultSelect.value = this.advancedSettings.ttsDefaultVoice;
+        if (!installSelect || !listEl) return;
+        const installed = new Set(await this._listInstalledTtsVoices());
+        const notInstalled = TTS_VOICES.filter(v => !installed.has(v.id));
+        installSelect.innerHTML = notInstalled.length
+            ? notInstalled.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('')
+            : '<option value="">（全部已安裝）</option>';
+        installSelect.disabled = !notInstalled.length;
+        if (!installed.size) {
+            listEl.innerHTML = '<span>尚未安裝任何語音包（第一次使用 text_to_speech 時會自動安裝所選的那一個）。</span>';
+            return;
+        }
+        listEl.innerHTML = [...installed].sort().map(id => {
+            const v = TTS_VOICES.find(x => x.id === id);
+            const label = v ? `${v.name}（${v.lang}／${v.gender}）— ${id}` : id;
+            return `<span style="display:flex; align-items:center; gap:8px;">✅ ${label}<button type="button" class="ai-advanced-btn danger" data-tts-delete-voice="${id}" style="padding:1px 8px; margin-left:auto;">刪除</button></span>`;
+        }).join('');
     }
 
     // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀＝
@@ -6239,11 +6733,15 @@ ${sourceTool.handlerScript}
         if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
         if (whisperThreadsInput) whisperThreadsInput.value = this._getWhisperWasmThreads();
+        const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
+        if (extractAudioFormatSelect) extractAudioFormatSelect.value = this.advancedSettings.extractAudioFormat === 'wav' ? 'wav' : 'mp3';
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
         if (subtitleSizeInput) subtitleSizeInput.value = this._getSubtitleStyle().fontScale;
         const subtitlePosSelect = document.getElementById('ai-subtitle-position');
         if (subtitlePosSelect) subtitlePosSelect.value = this._getSubtitleStyle().position;
         this._refreshWhisperCacheSizeDisplay();
+        this._refreshTtsCacheSizeDisplay();
+        this._renderTtsVoicePanel();
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -11389,6 +11887,53 @@ ${existingNodeSummaries}
             `📎 已燒好字幕：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）${result.autoTranscribed ? '　字幕來自自動轉逐字稿' : ''}`);
     }
 
+    // /media-text-to-speech <英文文字…> [聲音代號]
+    // tw_stock_db客製: 2026-09-12——<聲音代號>是最後一個token、且剛好完全
+    // 符合TTS_VOICES某個id時才當作聲音代號抽掉，否則整段都當文字（避免
+    // 文字內容剛好以某個詞結尾時被誤判成聲音代號——TTS_VOICES的id都是
+    // "xf_name"/"xm_name"這種帶底線的固定格式，一般英文句子結尾不會剛好
+    // 完全符合，誤判機率極低）。
+    async _handleMediaTextToSpeechCommand(argsText) {
+        const raw = String(argsText || '').trim();
+        if (!raw) { this._log('⚠️ /media-text-to-speech：請提供要念的英文文字，例如 /media-text-to-speech Hello world af_bella'); return; }
+        const tokens = raw.split(/\s+/);
+        let voiceId = this.advancedSettings.ttsDefaultVoice;
+        let text = raw;
+        if (tokens.length > 1 && TTS_VOICES.some(v => v.id === tokens[tokens.length - 1])) {
+            voiceId = tokens.pop();
+            text = tokens.join(' ');
+        }
+        const voice = TTS_VOICES.find(v => v.id === voiceId);
+        this.messages.push({ role: 'user', content: `🗣️ 語音合成（${voice ? voice.name : voiceId}）：${text.length > 60 ? text.slice(0, 60) + '…' : text}` });
+        const prog = this._createProgressWidget(`語音合成（${voice ? voice.name : voiceId}）`);
+        const origLog = this._log.bind(this);
+        this._log = (m) => { prog.update({ status: String(m).replace(/^🗣️\s*/, '') }); origLog(m); };
+        let result;
+        try {
+            result = await this._synthesizeSpeech(text, voiceId, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        } finally {
+            this._log = origLog;
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.durationSeconds}s，${(result.sizeBytes / 1024).toFixed(0)}KB`);
+        await this._deliverExistingCacheFile(
+            result.audio_file_id,
+            `📎 已合成語音：${result.filename}（${result.durationSeconds}s，${(result.sizeBytes / 1024).toFixed(0)}KB，${voice ? voice.name : result.voice}）`);
+    }
+
+    // /media-list-voices
+    async _handleMediaListVoicesCommand() {
+        const byLang = {};
+        for (const v of TTS_VOICES) { (byLang[v.lang] = byLang[v.lang] || []).push(v); }
+        const lines = Object.entries(byLang).map(([lang, list]) =>
+            `**${lang}**\n` + list.map(v => `- \`${v.id}\`　${v.name}（${v.gender}）`).join('\n'));
+        this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length} 個，⚠️只支援英文）\n\n${lines.join('\n\n')}`, null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
     // ============================================================
     // tw_stock_db客製: /benchmark-model 指令——見使用者要求記錄的評估準則
     // （簡易回應速度／單一工具呼叫／完整多步驟請求跑2次，各自評分、算
@@ -13524,7 +14069,12 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">影音處理子Agent（transcribe_media／extract_audio）</label>
                                     <p class="ai-advanced-hint">影片/音檔的語音轉文字、擷取聲音，全部在瀏覽器端執行、不上傳。Whisper 模型（約 77MB）首次使用時從 HuggingFace 下載、瀏覽器自動快取。</p>
-                                    <label class="ai-advanced-label" for="ai-whisper-device" style="font-weight:normal;">運算裝置</label>
+                                    <label class="ai-advanced-label" for="ai-extract-audio-format" style="font-weight:normal;">擷取聲音：輸出格式</label>
+                                    <select id="ai-extract-audio-format" class="ai-advanced-input">
+                                        <option value="mp3">MP3（預設，省空間，約是WAV的1/5~1/6）</option>
+                                        <option value="wav">WAV（無損，檔案較大）</option>
+                                    </select>
+                                    <label class="ai-advanced-label" for="ai-whisper-device" style="font-weight:normal; margin-top:8px;">運算裝置</label>
                                     <select id="ai-whisper-device" class="ai-advanced-input">
                                         <option value="auto">自動（有 WebGPU 先用 WebGPU，失敗退 CPU）</option>
                                         <option value="cpu">只用 CPU（WebGPU 反而比較慢時選這個）</option>
@@ -13546,6 +14096,23 @@ ${existingNodeSummaries}
                                         <option value="top">畫面上方</option>
                                     </select>
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">語音合成子Agent（text_to_speech）</label>
+                                    <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字。⚠️目前只支援英文（中文/其他CJK語言的瀏覽器端方案還沒有能驗證可靠的，會被工具主動擋下）。模型本體（約90MB）首次使用時下載；每個語音（下面「語音包」）約522KB，各自獨立下載/快取，能個別安裝/刪除。</p>
+                                    <label class="ai-advanced-label" for="ai-tts-default-voice" style="font-weight:normal;">預設語音</label>
+                                    <select id="ai-tts-default-voice" class="ai-advanced-input"></select>
+                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
+                                        <span class="ai-advanced-hint" style="margin:0;">語音合成模型占用：<b id="ai-tts-model-cache-size">—</b></span>
+                                        <button type="button" id="ai-tts-model-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
+                                        <button type="button" id="ai-tts-model-cache-clear" class="ai-advanced-btn danger" style="padding:2px 8px;">清除模型快取</button>
+                                    </div>
+                                    <label class="ai-advanced-label" style="font-weight:normal; margin-top:8px;">語音包管理</label>
+                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                        <select id="ai-tts-voice-install-select" class="ai-advanced-input" style="flex:1; min-width:160px;"></select>
+                                        <button type="button" id="ai-tts-voice-install-btn" class="ai-advanced-btn" style="padding:2px 8px;">安裝</button>
+                                    </div>
+                                    <div id="ai-tts-voice-list" class="ai-advanced-hint" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
@@ -15116,6 +15683,58 @@ ${existingNodeSummaries}
                 const ok = await this._clearWhisperCache();
                 this._log(ok ? '🗑️ 已清除 Whisper 模型快取' : '⚠️ 清除模型快取失敗');
                 this._refreshWhisperCacheSizeDisplay();
+            });
+        }
+        const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
+        if (extractAudioFormatSelect) {
+            extractAudioFormatSelect.addEventListener('change', () => {
+                this.advancedSettings.extractAudioFormat = extractAudioFormatSelect.value === 'wav' ? 'wav' : 'mp3';
+                this._saveAdvancedSettings();
+            });
+        }
+        // tw_stock_db客製: 2026-09-12——語音合成（text_to_speech）設定區塊。
+        const ttsDefaultVoiceSelect = document.getElementById('ai-tts-default-voice');
+        if (ttsDefaultVoiceSelect) {
+            ttsDefaultVoiceSelect.addEventListener('change', () => {
+                if (TTS_VOICES.some(v => v.id === ttsDefaultVoiceSelect.value)) this.advancedSettings.ttsDefaultVoice = ttsDefaultVoiceSelect.value;
+                this._saveAdvancedSettings();
+            });
+        }
+        const ttsCacheRefreshBtn = document.getElementById('ai-tts-model-cache-refresh');
+        if (ttsCacheRefreshBtn) ttsCacheRefreshBtn.addEventListener('click', () => this._refreshTtsCacheSizeDisplay());
+        const ttsCacheClearBtn = document.getElementById('ai-tts-model-cache-clear');
+        if (ttsCacheClearBtn) {
+            ttsCacheClearBtn.addEventListener('click', async () => {
+                if (!confirm('清除已下載的語音合成模型快取？下次語音合成會重新下載約 90MB（已安裝的語音包不受影響）。')) return;
+                const ok = await this._clearTtsModelCache();
+                this._log(ok ? '🗑️ 已清除語音合成模型快取' : '⚠️ 清除模型快取失敗');
+                this._refreshTtsCacheSizeDisplay();
+            });
+        }
+        const ttsVoiceInstallBtn = document.getElementById('ai-tts-voice-install-btn');
+        if (ttsVoiceInstallBtn) {
+            ttsVoiceInstallBtn.addEventListener('click', async () => {
+                const sel = document.getElementById('ai-tts-voice-install-select');
+                const voiceId = sel && sel.value;
+                if (!voiceId) return;
+                ttsVoiceInstallBtn.disabled = true;
+                ttsVoiceInstallBtn.textContent = '安裝中…';
+                const r = await this._installTtsVoice(voiceId);
+                ttsVoiceInstallBtn.disabled = false;
+                ttsVoiceInstallBtn.textContent = '安裝';
+                this._log(r.ok ? `✅ 已安裝語音包 ${voiceId}（${(r.sizeBytes / 1024).toFixed(0)}KB）` : `⚠️ 安裝語音包失敗：${r.error}`);
+                this._renderTtsVoicePanel();
+            });
+        }
+        const ttsVoiceListEl = document.getElementById('ai-tts-voice-list');
+        if (ttsVoiceListEl) {
+            ttsVoiceListEl.addEventListener('click', async (e) => {
+                const btn = e.target.closest('[data-tts-delete-voice]');
+                if (!btn) return;
+                const voiceId = btn.dataset.ttsDeleteVoice;
+                if (!confirm(`刪除已安裝的語音包「${voiceId}」？之後要再用到會重新下載。`)) return;
+                await this._deleteTtsVoice(voiceId);
+                this._renderTtsVoicePanel();
             });
         }
         [functionsInput, toolScriptInput, fnCodeInput].forEach(textarea => {
