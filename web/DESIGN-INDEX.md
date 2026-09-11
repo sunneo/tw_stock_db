@@ -801,10 +801,8 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       文字訊息→收二進位音訊frame（`Path:audio\r\n`分隔）→`turn.end`後
       關閉、把累積的MP3位元組原樣回傳。`edgeTtsGenerateSecMsGec()`用Web
       Crypto(`crypto.subtle.digest`)算SHA-256，跟node-edge-tts參考實作的
-      node:crypto版本等價。⚠️這一段（Worker的outbound WebSocket自訂header）
-      沒辦法在這個環境部署測試，是照Cloudflare文件模式實作、還沒有完整
-      路徑的部署驗證，如實記錄在
-      `web/cloudflare-worker/README.md`的已知限制。
+      node:crypto版本等價。（這個版本部署後實測跑不動，除錯過程跟最終
+      修好的版本見下面「`/edge-tts` 真實部署除錯」那一條。）
     - `floating-assistant.js`：`TTS_API_VOICES`（12個精選Edge語音：
       中文台灣3個/中國大陸4個/粵語香港2個/日文/韓文/英文各1個，
       `engine:'api'`）＋`TTS_VOICES`全部28個補上`engine:'local'`tag，
@@ -831,11 +829,45 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       區塊：啟用checkbox、Worker端點網址輸入框、預設中文語音下拉——跟
       本地英文語音那個區塊分開放，明確標示這條路徑「文字會離開瀏覽器」
       的差異。
-    - 實測（mock `fetch`模擬Worker回應，因為沒有真實部署可測）：CJK+API
+    - 實測（mock `fetch`模擬Worker回應，因為當時沒有真實部署可測）：CJK+API
       關閉→明確錯誤；CJK+API開啟→自動選zh-TW-HsiaoChenNeural、正確組
       lang參數；明確指定日文/中文API voice→正確使用；長文字(2400字元)→
       正確切成2段、各自呼叫、MP3正確串接；設定面板checkbox/輸入框/下拉
       渲染+存檔正確；`/media-list-voices`兩個section+啟用狀態顯示正確。
+  - **2026-09-12 追加（`/edge-tts` 真實部署除錯，三個Cloudflare Workers
+    runtime特有的bug）**：使用者實際部署`worker.js`到
+    `dawn-disk-778c.sunneo529.workers.dev`後，協定本身（已經用Node.js對
+    Microsoft伺服器驗證過正確）在Workers環境完全跑不動，靠使用者一輪輪
+    curl測試+回報才抓出來，全部不是協定公式的錯，是Workers runtime的
+    outbound WebSocket實作跟Node.js/瀏覽器行為不一樣：
+    1. `fetch()`走`Upgrade:websocket`時URL要是`https://`不能是`wss://`
+       （`"Fetch API cannot load: wss://..."`）。
+    2. 修完(1)後連線成功但`audioChunks.length===0`——加了診斷欄位
+       （收到的文字/二進位訊息內容、close code）才發現`turn.end`分支
+       之前無條件`resolve({ok:true})`沒檢查`audioChunks`，把診斷資訊
+       都吞掉了，回到外層只看到一句籠統訊息。
+    3. 修完(2)後看到真正的診斷：連線/訊息交換都正常（`turn.start`/
+       `response`/`turn.end`都收到），但**唯一一則二進位訊息是0
+       bytes**——查到`DIYgod/cloudflare-edge-tts`（真的部署在Cloudflare、
+       有使用者在用的開源實作）的原始碼，發現Workers上binary WebSocket
+       訊息的`event.data`有時是`Blob`不是`ArrayBuffer`，
+       `new Uint8Array(blob)`不會報錯、只會靜默產生0長度陣列——完全對上
+       症狀。同時發現之前照抄node-edge-tts（純Node.js套件）的協定細節在
+       Workers環境缺了幾樣東西：URL要帶`ConnectionId`、header要加
+       `Sec-WebSocket-Version:13`+`Cookie:muid=<隨機值>;`；二進位frame
+       正確格式是「前2 bytes big-endian長度＋文字header＋音訊body」，不是
+       土法煉鋼搜尋`"Path:audio\r\n"`子字串（這招在Node.js剛好搜得到，
+       但不是正式協定）。全部照`DIYgod/cloudflare-edge-tts`的寫法改掉
+       （`edgeTtsToUint8Array`處理Blob、`edgeTtsParseBinaryFrame`用長度
+       前綴、拿掉沒用的`Origin`header——參考實作根本沒送這個）。
+    - **最終在真實部署上端到端驗證成功**：`curl`直打`/edge-tts`→HTTP
+      200、`audio/mpeg`、20160 bytes、`ffprobe`驗證3.36秒、`file`指令
+      確認是正確的MPEG Layer III 24kHz/48kbps mono；瀏覽器端`fa.
+      _synthesizeSpeech()`（自動CJK路由）跟`fa.tools['text_to_speech']`
+      （真正的AI工具callback路徑）都對著真實Worker測過，拿到可解碼、
+      時長吻合的MP3（6.4秒故事文本測試）。三個樣本檔都已傳給使用者
+      聽過。`README.md`「已知限制」的「沒辦法部署測試」那條已經拿掉，
+      改成記錄這次除錯過程本身。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
