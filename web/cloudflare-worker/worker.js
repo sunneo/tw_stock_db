@@ -826,7 +826,10 @@ async function handleEdgeTts(request) {
   try { ws.close(); } catch { /* 可能已經關閉，忽略 */ }
 
   if (!result.ok || !audioChunks.length) {
-    return jsonResponse(JSON.stringify({ ok: false, error: result.error || "沒有收到音訊資料" }), 502);
+    // _diag_build：暫時的部署驗證標記，確認Cloudflare上跑的是不是這個版本
+    // （如果回應裡沒有這個欄位，代表部署還沒吃到最新的worker.js）。等
+    // /edge-tts穩定後會拿掉。
+    return jsonResponse(JSON.stringify({ ok: false, error: result.error || "沒有收到音訊資料", _diag_build: "edge-tts-diag-2026-09-12b" }), 502);
   }
   let totalLen = 0;
   for (const c of audioChunks) totalLen += c.length;
