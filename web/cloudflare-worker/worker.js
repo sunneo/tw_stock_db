@@ -684,16 +684,18 @@ async function handleSheetSync(request, env) {
  * POST /edge-tts  body: {text, voice, lang?, rate?, pitch?, volume?}
  *   voice: 例如 "zh-TW-HsiaoChenNeural"（格式 xx-XX-NameNeural，白名單見
  *          EDGE_TTS_VOICE_PATTERN）
- *   lang:  選填，例如 "zh-TW"；留空時從voice前兩段推導（zh-TW-XXX → zh-TW）
+ *   lang:  目前不使用（voice本身已經決定實際發音語言；SSML的xml:lang只是
+ *          文件層級的提示，照DIYgod/cloudflare-edge-tts這個確認可用的實作
+ *          固定寫en-US，不影響實際念出來的語言），保留這個欄位只是向下
+ *          相容前端可能還會傳，不會報錯。
  *   rate/pitch/volume: 選填，Edge TTS SSML的prosody參數，例如 "+10%"/"+0Hz"/
- *          "+0%"，不合法就用預設值 "default"（維持原速/原調/原音量）
+ *          "+0%"，不合法就用預設值（原速/原調/原音量）
  * 回傳：成功→ audio/mpeg 位元組；失敗→ JSON {ok:false, error}
  */
 const EDGE_TTS_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"; // 公開已知的固定值，不是使用者的密鑰
 const EDGE_TTS_CHROMIUM_VERSION = "143.0.3650.75";
-const EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC = 11644473600n; // Windows FILETIME紀元(1601-01-01)跟Unix紀元(1970-01-01)的秒數差
+const EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC = 11644473600; // Windows FILETIME紀元(1601-01-01)跟Unix紀元(1970-01-01)的秒數差
 const EDGE_TTS_VOICE_PATTERN = /^[A-Za-z]{2}-[A-Za-z]{2,8}-[A-Za-z0-9]+Neural$/;
-const EDGE_TTS_LANG_PATTERN = /^[A-Za-z]{2}-[A-Za-z]{2,8}$/;
 const EDGE_TTS_PROSODY_PATTERN = /^[+-]?\d{1,3}(%|Hz)$/;
 const EDGE_TTS_MAX_TEXT_LENGTH = 4000; // 單次請求文字長度上限，長文字由前端自己切段分批打
 
@@ -706,12 +708,52 @@ function edgeTtsEscapeXml(unsafe) {
 // Workers runtime有Web Crypto API(crypto.subtle)，這裡用它算雜湊，等價於
 // node-edge-tts參考實作用node:crypto的createHash('sha256')那段邏輯。
 async function edgeTtsGenerateSecMsGec() {
-  const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  const ticks = (nowSec + EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC) * 10000000n;
-  const roundedTicks = ticks - (ticks % 3000000000n); // 3e9 * 100ns = 300秒 = 5分鐘
-  const strToHash = `${roundedTicks}${EDGE_TTS_TRUSTED_CLIENT_TOKEN}`;
+  let ticks = Date.now() / 1000 + EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC;
+  ticks -= ticks % 300; // 無條件捨去到5分鐘邊界
+  ticks *= 1e9 / 100; // 換算成100奈秒為單位的FILETIME刻度
+  const strToHash = `${ticks.toFixed(0)}${EDGE_TTS_TRUSTED_CLIENT_TOKEN}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(strToHash));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+// 32個大寫hex字元的隨機muid（Microsoft用來追蹤/區分連線的cookie值，跟
+// TrustedClientToken一樣是公開已知、任何人都能自己產生的格式，不是帳號
+// 憑證）。
+function edgeTtsGenerateMuid() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+// tw_stock_db客製: 2026-09-12——WebSocket message事件的evt.data在Cloudflare
+// Workers環境有時是Blob（不是直接可用的ArrayBuffer），部署後實測踩到這個
+// 坑：直接new Uint8Array(evt.data)對Blob不會丟例外，但會靜默產生一個長度0
+// 的陣列（這正是第一輪診斷抓到「binary msg 0B」的真正原因，不是Microsoft
+// 沒送音訊，是資料型別沒轉對）。抄自DIYgod/cloudflare-edge-tts（真的部署在
+// Cloudflare上、有使用者在用的開源實作）的toUint8Array寫法，同時處理
+// Uint8Array/ArrayBuffer/Blob三種可能型別。
+async function edgeTtsToUint8Array(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (typeof Blob !== "undefined" && data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+  return null;
+}
+
+// 二進位音訊frame的正確格式：前2個bytes是big-endian的「文字header長度」，
+// 接著是那個長度的文字header（含Path/Content-Type等欄位，用\r\n分隔），
+// 再來才是真正的音訊bytes。這個長度前綴格式才是正確的協定（之前的版本
+// 用「搜尋'Path:audio\r\n'子字串」土法煉鋼，剛好在Node.js環境能用，但跟
+// 正式協定對不起來，同樣抄自DIYgod/cloudflare-edge-tts的parseBinaryAudioFrame）。
+function edgeTtsParseBinaryFrame(data) {
+  if (data.length < 2) return null;
+  const headerLength = (data[0] << 8) | data[1];
+  if (data.length < 2 + headerLength) return null;
+  const headerText = new TextDecoder().decode(data.slice(2, 2 + headerLength));
+  const headers = {};
+  for (const line of headerText.split("\r\n")) {
+    const idx = line.indexOf(":");
+    if (idx > 0) headers[line.slice(0, idx)] = line.slice(idx + 1).trim();
+  }
+  return { headers, body: data.slice(2 + headerLength) };
 }
 
 async function handleEdgeTts(request) {
@@ -730,36 +772,38 @@ async function handleEdgeTts(request) {
   if (!EDGE_TTS_VOICE_PATTERN.test(voice)) {
     return jsonResponse(JSON.stringify({ ok: false, error: `voice格式不合法（例如 zh-TW-HsiaoChenNeural）：${voice}` }), 400);
   }
-  let lang = typeof body.lang === "string" ? body.lang.trim() : "";
-  if (!EDGE_TTS_LANG_PATTERN.test(lang)) lang = voice.split("-").slice(0, 2).join("-");
-  const rate = EDGE_TTS_PROSODY_PATTERN.test(body.rate) ? body.rate : "default";
-  const pitch = EDGE_TTS_PROSODY_PATTERN.test(body.pitch) ? body.pitch : "default";
-  const volume = EDGE_TTS_PROSODY_PATTERN.test(body.volume) ? body.volume : "default";
+  const rate = EDGE_TTS_PROSODY_PATTERN.test(body.rate) ? body.rate : "+0%";
+  const pitch = EDGE_TTS_PROSODY_PATTERN.test(body.pitch) ? body.pitch : "+0Hz";
+  const volume = EDGE_TTS_PROSODY_PATTERN.test(body.volume) ? body.volume : "+0%";
 
   const secMsGec = await edgeTtsGenerateSecMsGec();
+  const connectionId = crypto.randomUUID().replace(/-/g, "");
   // tw_stock_db客製: 2026-09-12實測發現——Cloudflare Workers的fetch()走
   // Upgrade:websocket這個手法時，URL本身要是https:// scheme（不是wss://），
-  // 協定切換完全靠Upgrade header觸發；傳wss://會直接被fetch()拒絕
-  // （"Fetch API cannot load: wss://..."），部署後才測出來的，worker.js文件
-  // 範例雖然用wss://當client端new WebSocket()的URL，但fetch()這條路徑
-  // 不一樣。
+  // 協定切換完全靠Upgrade header觸發。ConnectionId這個query參數（跟後面
+  // 的Cookie muid、Sec-WebSocket-Version header）是照DIYgod/cloudflare-edge-tts
+  // 這個確認能在Cloudflare Workers上正常運作的實作補上的——原本沿用
+  // node-edge-tts（Node.js套件）的做法漏了這些，在Node.js環境能用、但在
+  // Workers環境會連線成功卻收不到任何音訊（只收到中繼metadata），這幾個
+  // 欄位看起來就是關鍵差異。
   const msUrl = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
-    + `?TrustedClientToken=${EDGE_TTS_TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=1-${EDGE_TTS_CHROMIUM_VERSION}`;
+    + `?TrustedClientToken=${EDGE_TTS_TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=1-${EDGE_TTS_CHROMIUM_VERSION}&ConnectionId=${connectionId}`;
 
   let upstream;
   try {
     // Cloudflare Workers的outbound WebSocket走fetch()+Upgrade header這個
     // 官方文件記載的手法（不是瀏覽器的new WebSocket()，那個不能自訂
-    // Origin/User-Agent等header——這正是本來要繞過的限制，見上方說明）。
+    // header——這正是本來要繞過的限制，見上方說明）。
     upstream = await fetch(msUrl, {
       headers: {
         Upgrade: "websocket",
-        Origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+        "Sec-WebSocket-Version": "13",
         "User-Agent": `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_VERSION.split(".")[0]}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_VERSION.split(".")[0]}.0.0.0`,
         Pragma: "no-cache",
         "Cache-Control": "no-cache",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
+        Cookie: `muid=${edgeTtsGenerateMuid()};`,
       },
     });
   } catch (err) {
@@ -772,71 +816,44 @@ async function handleEdgeTts(request) {
   ws.accept();
 
   const audioChunks = [];
-  // tw_stock_db客製: 2026-09-12——部署後實測卡在「連線成功但沒收到音訊」
-  // （沒有丟出fetch層級的錯誤，但turn.end/音訊都沒等到），單靠一個籠統的
-  // 「沒有收到音訊資料」沒辦法遠端診斷是卡在哪一步，先加上這些診斷欄位
-  // （收到的文字訊息、二進位訊息數量/總長度、close code/reason），失敗時
-  // 一起回傳，方便不需要Cloudflare Dashboard日誌也能定位問題。等確認好了
-  //之後可以考慮精簡掉。
-  const debugTextMsgs = [];
-  let binaryMsgCount = 0, binaryTotalBytes = 0;
+  const debugMsgs = [];
   const result = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve({ ok: false, error: "逾時（15秒內沒有收到完整音訊）" }), 15000);
+    const finish = (ok, error) => { clearTimeout(timer); resolve({ ok, error }); };
     ws.addEventListener("message", (evt) => {
-      if (typeof evt.data === "string") {
-        if (debugTextMsgs.length < 10) debugTextMsgs.push(evt.data.slice(0, 200));
-        if (evt.data.includes("Path:turn.end")) {
-          clearTimeout(timer);
-          // tw_stock_db客製: 2026-09-12實測發現——Microsoft有時會送
-          // turn.end但完全沒有任何音訊binary frame（後面還是502、
-          // audioChunks.length===0，之前這裡無條件resolve({ok:true})、
-          // 診斷資訊全部漏接，回到外層只看到籠統的「沒有收到音訊資料」）。
-          // 跟close handler比照，turn.end時也要檢查audioChunks，沒收到
-          // 就照樣帶上診斷資訊，不要假設turn.end=一定有音訊。
-          if (audioChunks.length > 0) { resolve({ ok: true }); }
-          else resolve({ ok: false, error: `收到turn.end但沒有任何音訊（收到${debugTextMsgs.length}則文字訊息、${binaryMsgCount}則二進位訊息共${binaryTotalBytes}bytes）：${JSON.stringify(debugTextMsgs)}` });
+      (async () => {
+        if (typeof evt.data === "string") {
+          const path = /Path:(\S+)/.exec(evt.data);
+          const p = path ? path[1] : "?";
+          if (debugMsgs.length < 10) debugMsgs.push(`text:${p}`);
+          if (p === "turn.end") finish(audioChunks.length > 0, audioChunks.length > 0 ? undefined : `收到turn.end但沒有任何音訊（${JSON.stringify(debugMsgs)}）`);
+          return;
         }
-        return;
-      }
-      // 二進位訊息：前面是一段文字header（含"Path:audio\r\n\r\n"），後面才是
-      // 真正的MP3位元組，跟node-edge-tts參考實作的切法一致。
-      const data = new Uint8Array(evt.data);
-      binaryMsgCount++; binaryTotalBytes += data.length;
-      const sep = "Path:audio\r\n";
-      const sepBytes = new TextEncoder().encode(sep);
-      let idx = -1;
-      for (let i = 0; i <= data.length - sepBytes.length; i++) {
-        let match = true;
-        for (let j = 0; j < sepBytes.length; j++) { if (data[i + j] !== sepBytes[j]) { match = false; break; } }
-        if (match) { idx = i + sepBytes.length; break; }
-      }
-      if (idx >= 0) audioChunks.push(data.subarray(idx));
-      else if (debugTextMsgs.length < 10) debugTextMsgs.push(`[binary msg ${data.length}B, no Path:audio separator found; first 60B hex: ${[...data.subarray(0, 60)].map(b => b.toString(16).padStart(2, "0")).join(" ")}]`);
+        const data = await edgeTtsToUint8Array(evt.data);
+        if (!data) { if (debugMsgs.length < 10) debugMsgs.push(`binary:unsupported-type(${typeof evt.data})`); return; }
+        const frame = edgeTtsParseBinaryFrame(data);
+        if (!frame) { if (debugMsgs.length < 10) debugMsgs.push(`binary:malformed(${data.length}B)`); return; }
+        if (frame.headers.Path === "audio" && frame.body.length > 0) audioChunks.push(frame.body);
+        else if (debugMsgs.length < 10) debugMsgs.push(`binary:${frame.headers.Path || "?"}(${frame.body.length}B)`);
+      })();
     });
     ws.addEventListener("close", (evt) => {
-      clearTimeout(timer);
-      if (audioChunks.length > 0) { resolve({ ok: true }); return; }
-      resolve({ ok: false, error: `WebSocket關閉時還沒收到音訊（close code=${evt.code} reason=${evt.reason || "(無)"}，收到${debugTextMsgs.length}則文字訊息、${binaryMsgCount}則二進位訊息共${binaryTotalBytes}bytes）：${JSON.stringify(debugTextMsgs)}` });
+      if (audioChunks.length > 0) { finish(true); return; }
+      finish(false, `WebSocket關閉時還沒收到音訊（close code=${evt.code} reason=${evt.reason || "(無)"}）：${JSON.stringify(debugMsgs)}`);
     });
-    ws.addEventListener("error", (evt) => { clearTimeout(timer); resolve({ ok: false, error: `WebSocket連線錯誤：${(evt && evt.message) || String(evt)}` }); });
+    ws.addEventListener("error", (evt) => finish(false, `WebSocket連線錯誤：${(evt && evt.message) || String(evt)}`));
 
-    const speechConfig = JSON.stringify({ context: { synthesis: { audio: {
-      metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
-      outputFormat: "audio-24khz-48kbitrate-mono-mp3",
-    } } } });
+    const speechConfig = '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}';
     ws.send(`Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${speechConfig}`);
     const requestId = crypto.randomUUID().replace(/-/g, "");
-    const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${lang}">`
-      + `<voice name="${voice}"><prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${edgeTtsEscapeXml(text)}</prosody></voice></speak>`;
+    const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>`
+      + `<voice name='${voice}'><prosody pitch='${pitch}' rate='${rate}' volume='${volume}'>${edgeTtsEscapeXml(text)}</prosody></voice></speak>`;
     ws.send(`X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`);
   });
   try { ws.close(); } catch { /* 可能已經關閉，忽略 */ }
 
   if (!result.ok || !audioChunks.length) {
-    // _diag_build：暫時的部署驗證標記，確認Cloudflare上跑的是不是這個版本
-    // （如果回應裡沒有這個欄位，代表部署還沒吃到最新的worker.js）。等
-    // /edge-tts穩定後會拿掉。
-    return jsonResponse(JSON.stringify({ ok: false, error: result.error || "沒有收到音訊資料", _diag_build: "edge-tts-diag-2026-09-12b" }), 502);
+    return jsonResponse(JSON.stringify({ ok: false, error: result.error || "沒有收到音訊資料" }), 502);
   }
   let totalLen = 0;
   for (const c of audioChunks) totalLen += c.length;
