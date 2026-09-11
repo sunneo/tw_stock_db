@@ -772,10 +772,19 @@ async function handleEdgeTts(request) {
   ws.accept();
 
   const audioChunks = [];
+  // tw_stock_db客製: 2026-09-12——部署後實測卡在「連線成功但沒收到音訊」
+  // （沒有丟出fetch層級的錯誤，但turn.end/音訊都沒等到），單靠一個籠統的
+  // 「沒有收到音訊資料」沒辦法遠端診斷是卡在哪一步，先加上這些診斷欄位
+  // （收到的文字訊息、二進位訊息數量/總長度、close code/reason），失敗時
+  // 一起回傳，方便不需要Cloudflare Dashboard日誌也能定位問題。等確認好了
+  //之後可以考慮精簡掉。
+  const debugTextMsgs = [];
+  let binaryMsgCount = 0, binaryTotalBytes = 0;
   const result = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve({ ok: false, error: "逾時（15秒內沒有收到完整音訊）" }), 15000);
     ws.addEventListener("message", (evt) => {
       if (typeof evt.data === "string") {
+        if (debugTextMsgs.length < 10) debugTextMsgs.push(evt.data.slice(0, 200));
         if (evt.data.includes("Path:turn.end")) {
           clearTimeout(timer);
           resolve({ ok: true });
@@ -785,6 +794,7 @@ async function handleEdgeTts(request) {
       // 二進位訊息：前面是一段文字header（含"Path:audio\r\n\r\n"），後面才是
       // 真正的MP3位元組，跟node-edge-tts參考實作的切法一致。
       const data = new Uint8Array(evt.data);
+      binaryMsgCount++; binaryTotalBytes += data.length;
       const sep = "Path:audio\r\n";
       const sepBytes = new TextEncoder().encode(sep);
       let idx = -1;
@@ -794,9 +804,14 @@ async function handleEdgeTts(request) {
         if (match) { idx = i + sepBytes.length; break; }
       }
       if (idx >= 0) audioChunks.push(data.subarray(idx));
+      else if (debugTextMsgs.length < 10) debugTextMsgs.push(`[binary msg ${data.length}B, no Path:audio separator found; first 60B hex: ${[...data.subarray(0, 60)].map(b => b.toString(16).padStart(2, "0")).join(" ")}]`);
     });
-    ws.addEventListener("close", () => { clearTimeout(timer); resolve({ ok: audioChunks.length > 0 }); });
-    ws.addEventListener("error", () => { clearTimeout(timer); resolve({ ok: false, error: "WebSocket連線錯誤" }); });
+    ws.addEventListener("close", (evt) => {
+      clearTimeout(timer);
+      if (audioChunks.length > 0) { resolve({ ok: true }); return; }
+      resolve({ ok: false, error: `WebSocket關閉時還沒收到音訊（close code=${evt.code} reason=${evt.reason || "(無)"}，收到${debugTextMsgs.length}則文字訊息、${binaryMsgCount}則二進位訊息共${binaryTotalBytes}bytes）：${JSON.stringify(debugTextMsgs)}` });
+    });
+    ws.addEventListener("error", (evt) => { clearTimeout(timer); resolve({ ok: false, error: `WebSocket連線錯誤：${(evt && evt.message) || String(evt)}` }); });
 
     const speechConfig = JSON.stringify({ context: { synthesis: { audio: {
       metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
