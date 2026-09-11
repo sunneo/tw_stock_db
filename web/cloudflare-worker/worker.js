@@ -787,7 +787,14 @@ async function handleEdgeTts(request) {
         if (debugTextMsgs.length < 10) debugTextMsgs.push(evt.data.slice(0, 200));
         if (evt.data.includes("Path:turn.end")) {
           clearTimeout(timer);
-          resolve({ ok: true });
+          // tw_stock_db客製: 2026-09-12實測發現——Microsoft有時會送
+          // turn.end但完全沒有任何音訊binary frame（後面還是502、
+          // audioChunks.length===0，之前這裡無條件resolve({ok:true})、
+          // 診斷資訊全部漏接，回到外層只看到籠統的「沒有收到音訊資料」）。
+          // 跟close handler比照，turn.end時也要檢查audioChunks，沒收到
+          // 就照樣帶上診斷資訊，不要假設turn.end=一定有音訊。
+          if (audioChunks.length > 0) { resolve({ ok: true }); }
+          else resolve({ ok: false, error: `收到turn.end但沒有任何音訊（收到${debugTextMsgs.length}則文字訊息、${binaryMsgCount}則二進位訊息共${binaryTotalBytes}bytes）：${JSON.stringify(debugTextMsgs)}` });
         }
         return;
       }
