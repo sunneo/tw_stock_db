@@ -727,7 +727,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
-            '- text_to_speech：把一段英文文字念成語音MP3（Kokoro TTS，多種男女聲可選）。⚠️只支援英文——目前瀏覽器端沒有我們能驗證可靠的中文語音合成方案，使用者要求中文語音朗讀/說故事時，要照實告知「這個功能目前只能念英文」，不要嘗試硬用這個工具念中文（會讀出錯誤的音）。\n' +
+            '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
@@ -786,8 +786,18 @@ const WHISPER_MODEL_BACKUP_PART_SIZE = 20 * 1024 * 1024;
 // JS版本）。HuggingFace上是有一個onnx-community/Kokoro-82M-v1.1-zh-ONNX
 // 中文模型，但transformers.js的通用pipeline('text-to-speech',...)不支援它
 // 的model_type(style_text_to_speech_2)、kokoro-js的KokoroTTS也只認英文
-// voice代號——目前沒有找到瀏覽器端可驗證可靠的中文方案，所以text_to_speech
-// 工具/指令一律只接受英文文字，中文會被明確擋下並告知使用者。
+// voice代號——本地端（純瀏覽器、不上傳）目前沒有找到可驗證可靠的中文方案。
+// 2026-09-12使用者要求：中文改走API轉接層——透過Cloudflare Worker的
+// /edge-tts路由（見web/cloudflare-worker/worker.js）轉接Microsoft Edge
+// 瀏覽器內建的神經網路語音服務（免費、不用金鑰，但只接受Edge擴充功能
+// 情境的連線，瀏覽器JS沒辦法直接連，所以要Worker代為轉接）。這條路徑
+// ⚠️會把文字送到你設定的Worker端點（進而送到Microsoft），跟本地端Kokoro
+// 「純瀏覽器、不上傳」不同，所以預設關閉（advancedSettings.ttsApiEnabled），
+// 要使用者自己在設定裡開啟。已實測整條協定（Node.js直接測試
+// speech.platform.bing.com的WebSocket，見commit訊息）：Sec-MS-GEC簽章公式
+// 正確、真的能拿到有效MP3——但Worker那端（Cloudflare的outbound WebSocket
+// 能不能設定Origin/User-Agent等自訂header）沒辦法在這個環境部署測試，
+// 需要使用者部署後才能確認整條路徑通不通。
 const TTS_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const TTS_DTYPE = 'q8';
 const TTS_SAMPLE_RATE = 24000;
@@ -803,37 +813,64 @@ const TTS_MAX_CHARS_PER_CHUNK = 400;
 // "transformers-cache"是不同的Cache物件，天生就是「獨立一組」，不用我們
 // 自己另外實作快取層），使用者可以在Advance Settings個別安裝/刪除。
 const TTS_VOICES = [
-    { id: 'af_heart', name: 'Heart', lang: '美式英文', gender: '女' },
-    { id: 'af_alloy', name: 'Alloy', lang: '美式英文', gender: '女' },
-    { id: 'af_aoede', name: 'Aoede', lang: '美式英文', gender: '女' },
-    { id: 'af_bella', name: 'Bella', lang: '美式英文', gender: '女' },
-    { id: 'af_jessica', name: 'Jessica', lang: '美式英文', gender: '女' },
-    { id: 'af_kore', name: 'Kore', lang: '美式英文', gender: '女' },
-    { id: 'af_nicole', name: 'Nicole', lang: '美式英文', gender: '女' },
-    { id: 'af_nova', name: 'Nova', lang: '美式英文', gender: '女' },
-    { id: 'af_river', name: 'River', lang: '美式英文', gender: '女' },
-    { id: 'af_sarah', name: 'Sarah', lang: '美式英文', gender: '女' },
-    { id: 'af_sky', name: 'Sky', lang: '美式英文', gender: '女' },
-    { id: 'am_adam', name: 'Adam', lang: '美式英文', gender: '男' },
-    { id: 'am_echo', name: 'Echo', lang: '美式英文', gender: '男' },
-    { id: 'am_eric', name: 'Eric', lang: '美式英文', gender: '男' },
-    { id: 'am_fenrir', name: 'Fenrir', lang: '美式英文', gender: '男' },
-    { id: 'am_liam', name: 'Liam', lang: '美式英文', gender: '男' },
-    { id: 'am_michael', name: 'Michael', lang: '美式英文', gender: '男' },
-    { id: 'am_onyx', name: 'Onyx', lang: '美式英文', gender: '男' },
-    { id: 'am_puck', name: 'Puck', lang: '美式英文', gender: '男' },
-    { id: 'am_santa', name: 'Santa', lang: '美式英文', gender: '男' },
-    { id: 'bf_alice', name: 'Alice', lang: '英式英文', gender: '女' },
-    { id: 'bf_emma', name: 'Emma', lang: '英式英文', gender: '女' },
-    { id: 'bf_isabella', name: 'Isabella', lang: '英式英文', gender: '女' },
-    { id: 'bf_lily', name: 'Lily', lang: '英式英文', gender: '女' },
-    { id: 'bm_daniel', name: 'Daniel', lang: '英式英文', gender: '男' },
-    { id: 'bm_fable', name: 'Fable', lang: '英式英文', gender: '男' },
-    { id: 'bm_george', name: 'George', lang: '英式英文', gender: '男' },
-    { id: 'bm_lewis', name: 'Lewis', lang: '英式英文', gender: '男' },
+    { id: 'af_heart', name: 'Heart', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_alloy', name: 'Alloy', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_aoede', name: 'Aoede', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_bella', name: 'Bella', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_jessica', name: 'Jessica', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_kore', name: 'Kore', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_nicole', name: 'Nicole', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_nova', name: 'Nova', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_river', name: 'River', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_sarah', name: 'Sarah', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'af_sky', name: 'Sky', lang: '美式英文', gender: '女', engine: 'local' },
+    { id: 'am_adam', name: 'Adam', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_echo', name: 'Echo', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_eric', name: 'Eric', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_fenrir', name: 'Fenrir', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_liam', name: 'Liam', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_michael', name: 'Michael', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_onyx', name: 'Onyx', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_puck', name: 'Puck', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'am_santa', name: 'Santa', lang: '美式英文', gender: '男', engine: 'local' },
+    { id: 'bf_alice', name: 'Alice', lang: '英式英文', gender: '女', engine: 'local' },
+    { id: 'bf_emma', name: 'Emma', lang: '英式英文', gender: '女', engine: 'local' },
+    { id: 'bf_isabella', name: 'Isabella', lang: '英式英文', gender: '女', engine: 'local' },
+    { id: 'bf_lily', name: 'Lily', lang: '英式英文', gender: '女', engine: 'local' },
+    { id: 'bm_daniel', name: 'Daniel', lang: '英式英文', gender: '男', engine: 'local' },
+    { id: 'bm_fable', name: 'Fable', lang: '英式英文', gender: '男', engine: 'local' },
+    { id: 'bm_george', name: 'George', lang: '英式英文', gender: '男', engine: 'local' },
+    { id: 'bm_lewis', name: 'Lewis', lang: '英式英文', gender: '男', engine: 'local' },
 ];
 const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個名稱
 const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
+
+// tw_stock_db客製: 2026-09-12——中文（及其他Kokoro本地不支援的語言）走API
+// 轉接（見上方大段說明＋web/cloudflare-worker/worker.js的/edge-tts路由）。
+// 精選常用的Microsoft Edge神經網路語音（voice代號格式固定是
+// "xx-XX-NameNeural"，跟本地的Kokoro代號"xx_name"格式完全不同、可以直接
+// 用來判斷要走哪個engine，見_resolveTtsVoice）。這些voice不用「安裝」——
+// 每次呼叫都是即時打API，沒有本機persistentStorage占用，所以不會出現在
+// Advance Settings的「語音包管理」清單裡（那個清單只管本地Kokoro語音）。
+const TTS_API_VOICES = [
+    { id: 'zh-TW-HsiaoChenNeural', name: '曉臻', lang: '中文（台灣）', gender: '女', engine: 'api' },
+    { id: 'zh-TW-HsiaoYuNeural', name: '曉雨', lang: '中文（台灣）', gender: '女', engine: 'api' },
+    { id: 'zh-TW-YunJheNeural', name: '雲哲', lang: '中文（台灣）', gender: '男', engine: 'api' },
+    { id: 'zh-CN-XiaoxiaoNeural', name: '晓晓', lang: '中文（中國大陸）', gender: '女', engine: 'api' },
+    { id: 'zh-CN-XiaoyiNeural', name: '晓伊', lang: '中文（中國大陸）', gender: '女', engine: 'api' },
+    { id: 'zh-CN-YunxiNeural', name: '云希', lang: '中文（中國大陸）', gender: '男', engine: 'api' },
+    { id: 'zh-CN-YunyangNeural', name: '云扬', lang: '中文（中國大陸）', gender: '男', engine: 'api' },
+    { id: 'zh-HK-HiuMaanNeural', name: '曉曼', lang: '粵語（香港）', gender: '女', engine: 'api' },
+    { id: 'zh-HK-WanLungNeural', name: '雲龍', lang: '粵語（香港）', gender: '男', engine: 'api' },
+    { id: 'ja-JP-NanamiNeural', name: 'Nanami', lang: '日文', gender: '女', engine: 'api' },
+    { id: 'ko-KR-SunHiNeural', name: 'SunHi', lang: '韓文', gender: '女', engine: 'api' },
+    { id: 'en-US-AriaNeural', name: 'Aria', lang: '美式英文（API）', gender: '女', engine: 'api' },
+];
+// API路徑預設語音（中文為主要使用情境）。
+const TTS_DEFAULT_API_VOICE = 'zh-TW-HsiaoChenNeural';
+// Worker端/edge-tts單次請求的文字長度上限是4000字元（見worker.js
+// EDGE_TTS_MAX_TEXT_LENGTH），這裡切段抓保守一點的上限，多留餘裕。
+const TTS_API_MAX_CHARS_PER_CHUNK = 1800;
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
@@ -2222,11 +2259,12 @@ class FloatingAssistant {
             '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿（預設中文，要英文才加 en）；影片留空＝用最近上傳的',
             (argsText) => this._handleMediaBurnSubtitlesCommand(argsText)
         );
-        // tw_stock_db客製: 2026-09-12使用者要求——文字轉語音。只支援英文，
-        // 見TTS_VOICES常數上方的說明。<聲音代號>可留空（用設定裡的預設語音）。
+        // tw_stock_db客製: 2026-09-12使用者要求——文字轉語音。英文走本地
+        // Kokoro；中文走可選的API轉接（見TTS_API_VOICES上方說明），<聲音
+        // 代號>留空時依文字語言自動判斷。
         this.register_slash_command(
-            '/media-text-to-speech', '<英文文字…> [聲音代號]',
-            '把一段英文文字念成語音MP3（Kokoro TTS，瀏覽器端，不上傳）。只支援英文；聲音代號留空＝用預設語音（可在設定改），列出全部代號用 /media-list-voices',
+            '/media-text-to-speech', '<文字…> [聲音代號]',
+            '把一段文字念成語音MP3。英文用本地Kokoro TTS（不上傳）；中文/粵語/日文/韓文用可選的API轉接（需設定啟用，文字會送到Worker）。聲音代號留空＝依文字語言自動判斷，列出全部代號用 /media-list-voices',
             (argsText) => this._handleMediaTextToSpeechCommand(argsText)
         );
         this.register_slash_command(
@@ -2522,6 +2560,13 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
+            // tw_stock_db客製: 2026-09-12——中文語音走API轉接（見/edge-tts
+            // 路由說明）。預設關閉（跟browserSearchEnabled同一個理由：文字
+            // 會離開瀏覽器送到Worker/Microsoft，不是本機執行，也需要Worker
+            // 有部署對應路由才能真正運作，開了但沒部署只會一直失敗）。
+            ttsApiEnabled: false,
+            ttsApiProxyUrl: '',
+            ttsDefaultApiVoice: TTS_DEFAULT_API_VOICE,
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -2823,6 +2868,9 @@ class FloatingAssistant {
             whisperDevicePreference: raw.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto',
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
+            ttsApiEnabled: raw.ttsApiEnabled === true,
+            ttsApiProxyUrl: String(raw.ttsApiProxyUrl || '').trim(),
+            ttsDefaultApiVoice: TTS_API_VOICES.some(v => v.id === raw.ttsDefaultApiVoice) ? raw.ttsDefaultApiVoice : TTS_DEFAULT_API_VOICE,
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -3677,30 +3725,32 @@ ${fnData.code}
             }, additionalProperties: false }
         );
 
-        // tw_stock_db客製: 2026-09-12——文字轉語音（Kokoro TTS，純瀏覽器端）。
-        // ⚠️只支援英文——見TTS_VOICES常數上方的完整說明：瀏覽器端可驗證可靠
-        // 的中文TTS方案目前不存在（kokoro-js的G2P只做了英文；HF上雖然有
-        // Kokoro的中文模型，但沒有能在瀏覽器跑的中文G2P/pipeline銜接），
-        // 所以工具本身會主動偵測、拒絕明顯是CJK的文字，不會嘗試硬讀出
-        // 錯誤的音。
+        // tw_stock_db客製: 2026-09-12——文字轉語音。英文走Kokoro TTS（純
+        // 瀏覽器端、不上傳文字，見TTS_VOICES）；中文（或其他Kokoro不支援的
+        // 語言）可選擇性走API轉接（見TTS_API_VOICES上方的完整說明＋
+        // web/cloudflare-worker/worker.js的/edge-tts路由）——⚠️這條路徑文字
+        // 會離開瀏覽器，預設關閉，需要使用者自己在設定啟用。voice留空時，
+        // _synthesizeSpeech會依文字內容自動判斷（中文→API，若API未啟用會
+        // 回報明確錯誤；英文→本地Kokoro），不會嘗試硬用錯的engine念錯的
+        // 語言。
         registerOptional('text_to_speech',
-            `把一段「英文」文字念成語音，存成MP3。純瀏覽器端跑Kokoro TTS模型（不上傳文字）。⚠️目前只支援英文，中文（或其他CJK語言）文字會被拒絕——瀏覽器端還沒有我們能驗證可靠的中文語音合成方案，遇到使用者要中文語音朗讀/說故事時，要照實告知這個限制，不要嘗試硬用這個工具念中文。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}；${TTS_VOICES.length}個內建英文語音，voice留空＝用使用者在設定裡選的預設語音（見get_tool_details或直接呼叫時試試常見的 af_heart（女聲）/am_michael（男聲）/bf_emma（英式女聲）等）。⚠️第一次執行會下載約90MB的模型（之後瀏覽器會快取）＋所選語音約522KB；長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的英文文字", "voice":"（選填）語音代號，例如 af_heart"}`,
+            `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的文字", "voice":"（選填）語音代號"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const text = String(parsed.text || '').trim();
                 if (!text) return JSON.stringify({ ok: false, error: '缺少text參數' });
                 const voiceArg = String(parsed.voice || '').trim();
-                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg)) {
-                    return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，可用：${TTS_VOICES.map(v => v.id).join(', ')}` });
+                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
+                    return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
-                    return JSON.stringify(await this._synthesizeSpeech(text, voiceArg || this.advancedSettings.ttsDefaultVoice, (m) => this._log('🗣️ ' + m)));
+                    return JSON.stringify(await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m)));
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: {
-                text: { type: 'string', description: '要念的英文文字' },
-                voice: { type: 'string', enum: TTS_VOICES.map(v => v.id), description: '（選填）語音代號，留空用預設語音' },
+                text: { type: 'string', description: '要念的文字' },
+                voice: { type: 'string', enum: TTS_VOICES.concat(TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
             }, additionalProperties: false }
         );
     }
@@ -4003,21 +4053,24 @@ ${fnData.code}
         return !!cjk && cjk.length / s.length > 0.2;
     }
 
-    // 把長文字切成每段不超過TTS_MAX_CHARS_PER_CHUNK字元的句子群組（盡量在
-    // 句尾標點斷開，保留自然的語調停頓；單一句子本身超過上限就強制截斷，
-    // 避免單一chunk被kokoro-js內部的509 token限制截斷丟字——見
-    // TTS_MAX_CHARS_PER_CHUNK的說明）。
-    _ttsChunkText(text) {
-        const sentences = String(text || '').trim().split(/(?<=[.!?;])\s+/).filter(Boolean);
+    // 把長文字切成每段不超過maxChars字元的句子群組（盡量在句尾標點斷開，
+    // 保留自然的語調停頓——英式標點後面通常有空白、中式標點(。！？；)通常
+    // 沒有，兩種都當切點；單一句子本身超過上限就強制截斷）。本地Kokoro路徑
+    // 不傳maxChars時用TTS_MAX_CHARS_PER_CHUNK（避免超過kokoro-js內部509
+    // token限制丟字）；API路徑呼叫端自己傳TTS_API_MAX_CHARS_PER_CHUNK
+    // （Worker那邊單次請求的字元上限更寬鬆）。
+    _ttsChunkText(text, maxChars) {
+        const limit = Number.isFinite(maxChars) && maxChars > 0 ? maxChars : TTS_MAX_CHARS_PER_CHUNK;
+        const sentences = String(text || '').trim().split(/(?<=[.!?;。！？；])\s*/).filter(Boolean);
         const chunks = [];
         let cur = '';
         for (let s of sentences) {
-            while (s.length > TTS_MAX_CHARS_PER_CHUNK) {
+            while (s.length > limit) {
                 if (cur) { chunks.push(cur); cur = ''; }
-                chunks.push(s.slice(0, TTS_MAX_CHARS_PER_CHUNK));
-                s = s.slice(TTS_MAX_CHARS_PER_CHUNK);
+                chunks.push(s.slice(0, limit));
+                s = s.slice(limit);
             }
-            if ((cur + ' ' + s).trim().length > TTS_MAX_CHARS_PER_CHUNK) { chunks.push(cur); cur = s; }
+            if ((cur + ' ' + s).trim().length > limit) { chunks.push(cur); cur = s; }
             else cur = (cur ? cur + ' ' : '') + s;
         }
         if (cur) chunks.push(cur);
@@ -4028,13 +4081,36 @@ ${fnData.code}
     // extract_audio同一個「省空間」決策，共用_encodeMp3/_faLamejsEncode)
     // → 存進persistentStorage。回傳
     // {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。
+    // tw_stock_db客製: 2026-09-12——路由：voice代號決定走哪個engine（本地
+    // Kokoro或API轉接，見TTS_VOICES/TTS_API_VOICES各自的engine欄位）；沒指定
+    // voice時依文字內容自動選——CJK文字且API已啟用→API＋預設中文語音，CJK
+    // 但API未啟用→明確錯誤（附啟用方式），非CJK→本地Kokoro預設語音。
     async _synthesizeSpeech(text, voiceId, onProgress) {
         const t = String(text || '').trim();
         if (!t) return { ok: false, error: '沒有要念的文字' };
-        if (this._looksLikeCjkText(t)) {
-            return { ok: false, error: '目前語音合成只支援英文——kokoro-js這個瀏覽器端TTS函式庫的文字轉音素只做了英文（美式/英式），中文（或其他CJK語言）丟進去只會讀出錯誤的音，所以這裡直接擋下來，不產生聽不懂的語音檔。' };
+        const isCjk = this._looksLikeCjkText(t);
+        let voice = null;
+        if (voiceId) {
+            voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_API_VOICES.find(v => v.id === voiceId);
+            if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
+        } else if (isCjk) {
+            if (!this.advancedSettings.ttsApiEnabled) {
+                return { ok: false, error: '這段文字看起來主要是中文（或其他CJK語言）——本地端（純瀏覽器、不上傳）的Kokoro語音只支援英文，讀不出正確的中文音。可以在 Advance Settings「子Agent」分頁的「語音合成子Agent」區塊啟用「中文語音API」（會把文字透過你的Cloudflare Worker送到Microsoft的免費語音服務，不是純本機），啟用後再試一次；或明確指定一個 zh-TW-* / zh-CN-* 開頭的voice代號。' };
+            }
+            voice = TTS_API_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultApiVoice) || TTS_API_VOICES[0];
+        } else {
+            voice = TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
         }
-        const voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
+        if (voice.engine === 'api') {
+            if (!this.advancedSettings.ttsApiEnabled) {
+                return { ok: false, error: `語音「${voice.id}」需要啟用中文語音API（Advance Settings「子Agent」分頁的「語音合成子Agent」區塊），目前是關閉的。` };
+            }
+            return this._synthesizeSpeechViaApi(t, voice, onProgress);
+        }
+        return this._synthesizeSpeechLocal(t, voice, onProgress);
+    }
+
+    async _synthesizeSpeechLocal(t, voice, onProgress) {
         let engine;
         try {
             engine = await this._getTtsEngine(onProgress);
@@ -4096,6 +4172,68 @@ ${fnData.code}
             audio_file_id: audioFileId,
             filename: name,
             durationSeconds: Math.round(durationSeconds * 10) / 10,
+            voice: voice.id,
+            sizeBytes: blob.size,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-12——透過Cloudflare Worker的/edge-tts路由轉接
+    // Microsoft Edge神經網路語音（見web/cloudflare-worker/worker.js該路由的
+    // 說明＋TTS_API_VOICES上方那段「為什麼要走API」的完整說明）。⚠️這條路徑
+    // 文字會離開瀏覽器；長文字依TTS_API_MAX_CHARS_PER_CHUNK切段逐段打API、
+    // 把回傳的MP3位元組直接串接（不像本地Kokoro路徑要自己解碼混音——Worker
+    // 回傳的本來就已經是MP3，這裡不重新編碼，單純接起來）。沒有duration
+    // 資訊可以直接拿（不像本地路徑算得出樣本數/取樣率），用一個粗略的
+    // 中文語速估計（約4字/秒）當顯示用的估計值，不保證精確。
+    async _synthesizeSpeechViaApi(t, voice, onProgress) {
+        const proxyUrl = String(this.advancedSettings.ttsApiProxyUrl || '').trim()
+            || String(this.advancedSettings.browserSearchProxyUrl || '').trim()
+            || this._getApiConfig().apiUrl;
+        if (!proxyUrl) {
+            return { ok: false, error: '沒有設定Worker端點（ttsApiProxyUrl留空時會沿用browser_search的Worker網址或目前的LLM API網址，但這兩個目前也都是空的），請先在設定裡填一個。' };
+        }
+        const base = proxyUrl.replace(/\/$/, '');
+        const lang = voice.id.split('-').slice(0, 2).join('-');
+        const chunks = this._ttsChunkText(t, TTS_API_MAX_CHARS_PER_CHUNK);
+        const mp3Chunks = [];
+        for (let i = 0; i < chunks.length; i++) {
+            if (onProgress && chunks.length > 1) onProgress(`合成中（API）… 第 ${i + 1}/${chunks.length} 段`);
+            let resp;
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 20000);
+                resp = await fetch(base + '/edge-tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: chunks[i], voice: voice.id, lang }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+            } catch (err) {
+                const msg = err && err.name === 'AbortError' ? '請求逾時（20秒）' : String(err && err.message || err);
+                return { ok: false, error: `呼叫語音API失敗（第${i + 1}段）：${msg}` };
+            }
+            if (!resp.ok) {
+                let errText = '';
+                try { errText = (await resp.json()).error; } catch (_) { errText = await resp.text().catch(() => ''); }
+                return { ok: false, error: `語音API回應HTTP ${resp.status}（第${i + 1}段）：${String(errText).slice(0, 300)}` };
+            }
+            mp3Chunks.push(await resp.blob());
+        }
+        const blob = new Blob(mp3Chunks, { type: 'audio/mpeg' });
+        const estimatedDurationSeconds = Math.round((t.length / 4) * 10) / 10; // 粗估，中文約4字/秒
+        const name = `語音_${voice.id}_${Date.now()}.mp3`;
+        let audioFileId;
+        try {
+            audioFileId = await this.fileCache.put(name, 'audio/mpeg', blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '語音檔存檔失敗：' + String(err.message || err) };
+        }
+        return {
+            ok: true,
+            audio_file_id: audioFileId,
+            filename: name,
+            durationSeconds: estimatedDurationSeconds,
             voice: voice.id,
             sizeBytes: blob.size,
         };
@@ -4513,6 +4651,15 @@ ${fnData.code}
             defaultSelect.innerHTML = TTS_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
         }
         if (defaultSelect) defaultSelect.value = this.advancedSettings.ttsDefaultVoice;
+        const defaultApiSelect = document.getElementById('ai-tts-default-api-voice');
+        if (defaultApiSelect && !defaultApiSelect.options.length) {
+            defaultApiSelect.innerHTML = TTS_API_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('');
+        }
+        if (defaultApiSelect) defaultApiSelect.value = this.advancedSettings.ttsDefaultApiVoice;
+        const apiEnabledChk = document.getElementById('ai-tts-api-enabled-chk');
+        if (apiEnabledChk) apiEnabledChk.checked = this.advancedSettings.ttsApiEnabled === true;
+        const apiProxyUrlInput = document.getElementById('ai-tts-api-proxy-url');
+        if (apiProxyUrlInput) apiProxyUrlInput.value = this.advancedSettings.ttsApiProxyUrl || '';
         if (!installSelect || !listEl) return;
         const installed = new Set(await this._listInstalledTtsVoices());
         const notInstalled = TTS_VOICES.filter(v => !installed.has(v.id));
@@ -11887,25 +12034,27 @@ ${existingNodeSummaries}
             `📎 已燒好字幕：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）${result.autoTranscribed ? '　字幕來自自動轉逐字稿' : ''}`);
     }
 
-    // /media-text-to-speech <英文文字…> [聲音代號]
+    // /media-text-to-speech <文字…> [聲音代號]
     // tw_stock_db客製: 2026-09-12——<聲音代號>是最後一個token、且剛好完全
-    // 符合TTS_VOICES某個id時才當作聲音代號抽掉，否則整段都當文字（避免
-    // 文字內容剛好以某個詞結尾時被誤判成聲音代號——TTS_VOICES的id都是
-    // "xf_name"/"xm_name"這種帶底線的固定格式，一般英文句子結尾不會剛好
-    // 完全符合，誤判機率極低）。
+    // 符合某個voice id（本地Kokoro或API）時才當作聲音代號抽掉，否則整段都
+    // 當文字（避免文字內容剛好以某個詞結尾時被誤判——voice id都是固定格式
+    // "xf_name"/"xx-XX-NameNeural"，一般句子結尾不會剛好完全符合）。留空時
+    // 交給_synthesizeSpeech依文字語言自動判斷engine。
     async _handleMediaTextToSpeechCommand(argsText) {
         const raw = String(argsText || '').trim();
-        if (!raw) { this._log('⚠️ /media-text-to-speech：請提供要念的英文文字，例如 /media-text-to-speech Hello world af_bella'); return; }
+        if (!raw) { this._log('⚠️ /media-text-to-speech：請提供要念的文字，例如 /media-text-to-speech Hello world af_bella'); return; }
         const tokens = raw.split(/\s+/);
-        let voiceId = this.advancedSettings.ttsDefaultVoice;
+        let voiceId = '';
         let text = raw;
-        if (tokens.length > 1 && TTS_VOICES.some(v => v.id === tokens[tokens.length - 1])) {
+        const allVoices = TTS_VOICES.concat(TTS_API_VOICES);
+        if (tokens.length > 1 && allVoices.some(v => v.id === tokens[tokens.length - 1])) {
             voiceId = tokens.pop();
             text = tokens.join(' ');
         }
-        const voice = TTS_VOICES.find(v => v.id === voiceId);
-        this.messages.push({ role: 'user', content: `🗣️ 語音合成（${voice ? voice.name : voiceId}）：${text.length > 60 ? text.slice(0, 60) + '…' : text}` });
-        const prog = this._createProgressWidget(`語音合成（${voice ? voice.name : voiceId}）`);
+        const voice = allVoices.find(v => v.id === voiceId);
+        const label = voice ? voice.name : (voiceId || '自動判斷');
+        this.messages.push({ role: 'user', content: `🗣️ 語音合成（${label}）：${text.length > 60 ? text.slice(0, 60) + '…' : text}` });
+        const prog = this._createProgressWidget(`語音合成（${label}）`);
         const origLog = this._log.bind(this);
         this._log = (m) => { prog.update({ status: String(m).replace(/^🗣️\s*/, '') }); origLog(m); };
         let result;
@@ -11917,19 +12066,26 @@ ${existingNodeSummaries}
             this._log = origLog;
         }
         if (!result.ok) { prog.fail(result.error); return; }
+        const resultVoice = allVoices.find(v => v.id === result.voice);
         prog.finish(`完成：${result.durationSeconds}s，${(result.sizeBytes / 1024).toFixed(0)}KB`);
         await this._deliverExistingCacheFile(
             result.audio_file_id,
-            `📎 已合成語音：${result.filename}（${result.durationSeconds}s，${(result.sizeBytes / 1024).toFixed(0)}KB，${voice ? voice.name : result.voice}）`);
+            `📎 已合成語音：${result.filename}（${result.durationSeconds}s，${(result.sizeBytes / 1024).toFixed(0)}KB，${resultVoice ? resultVoice.name : result.voice}）`);
     }
 
     // /media-list-voices
     async _handleMediaListVoicesCommand() {
-        const byLang = {};
-        for (const v of TTS_VOICES) { (byLang[v.lang] = byLang[v.lang] || []).push(v); }
-        const lines = Object.entries(byLang).map(([lang, list]) =>
-            `**${lang}**\n` + list.map(v => `- \`${v.id}\`　${v.name}（${v.gender}）`).join('\n'));
-        this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length} 個，⚠️只支援英文）\n\n${lines.join('\n\n')}`, null);
+        const section = (title, voices, note) => {
+            const byLang = {};
+            for (const v of voices) { (byLang[v.lang] = byLang[v.lang] || []).push(v); }
+            const body = Object.entries(byLang).map(([lang, list]) =>
+                `**${lang}**\n` + list.map(v => `- \`${v.id}\`　${v.name}（${v.gender}）`).join('\n')).join('\n\n');
+            return `### ${title}${note ? `　${note}` : ''}\n\n${body}`;
+        };
+        const apiNote = this.advancedSettings.ttsApiEnabled ? '（已啟用）' : '（⚠️尚未啟用，見設定「子Agent」分頁）';
+        const msg = section('本地語音（純瀏覽器、不上傳，只支援英文）', TTS_VOICES)
+            + '\n\n' + section('API語音（中文／粵語／日文／韓文…，需要啟用）', TTS_API_VOICES, apiNote);
+        this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
         this._persistChatHistory();
         this._renderMessageHistory();
     }
@@ -14098,8 +14254,8 @@ ${existingNodeSummaries}
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label">語音合成子Agent（text_to_speech）</label>
-                                    <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字。⚠️目前只支援英文（中文/其他CJK語言的瀏覽器端方案還沒有能驗證可靠的，會被工具主動擋下）。模型本體（約90MB）首次使用時下載；每個語音（下面「語音包」）約522KB，各自獨立下載/快取，能個別安裝/刪除。</p>
+                                    <label class="ai-advanced-label">語音合成子Agent（text_to_speech）—— 本地英文語音</label>
+                                    <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字，只支援英文。模型本體（約90MB）首次使用時下載；每個語音（下面「語音包」）約522KB，各自獨立下載/快取，能個別安裝/刪除。</p>
                                     <label class="ai-advanced-label" for="ai-tts-default-voice" style="font-weight:normal;">預設語音</label>
                                     <select id="ai-tts-default-voice" class="ai-advanced-input"></select>
                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
@@ -14113,6 +14269,19 @@ ${existingNodeSummaries}
                                         <button type="button" id="ai-tts-voice-install-btn" class="ai-advanced-btn" style="padding:2px 8px;">安裝</button>
                                     </div>
                                     <div id="ai-tts-voice-list" class="ai-advanced-hint" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
+                                    <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見 web/cloudflare-worker/README.md）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。預設關閉。</p>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-tts-api-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-tts-api-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用中文語音API</label>
+                                    </div>
+                                    <label class="ai-advanced-label" for="ai-tts-api-proxy-url" style="font-weight:normal; margin-top:4px;">Cloudflare Worker 端點網址</label>
+                                    <input type="text" id="ai-tts-api-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用 browser_search 或 LLM 的 Worker 網址">
+                                    <label class="ai-advanced-label" for="ai-tts-default-api-voice" style="font-weight:normal; margin-top:4px;">預設中文/其他語言語音</label>
+                                    <select id="ai-tts-default-api-voice" class="ai-advanced-input"></select>
+                                    <p class="ai-advanced-hint">API語音不用「安裝」，每次呼叫都是即時打API，不占用 persistentStorage。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
@@ -15697,6 +15866,27 @@ ${existingNodeSummaries}
         if (ttsDefaultVoiceSelect) {
             ttsDefaultVoiceSelect.addEventListener('change', () => {
                 if (TTS_VOICES.some(v => v.id === ttsDefaultVoiceSelect.value)) this.advancedSettings.ttsDefaultVoice = ttsDefaultVoiceSelect.value;
+                this._saveAdvancedSettings();
+            });
+        }
+        const ttsApiEnabledChk = document.getElementById('ai-tts-api-enabled-chk');
+        if (ttsApiEnabledChk) {
+            ttsApiEnabledChk.addEventListener('change', () => {
+                this.advancedSettings.ttsApiEnabled = ttsApiEnabledChk.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const ttsApiProxyUrlInput = document.getElementById('ai-tts-api-proxy-url');
+        if (ttsApiProxyUrlInput) {
+            ttsApiProxyUrlInput.addEventListener('change', () => {
+                this.advancedSettings.ttsApiProxyUrl = ttsApiProxyUrlInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const ttsDefaultApiVoiceSelect = document.getElementById('ai-tts-default-api-voice');
+        if (ttsDefaultApiVoiceSelect) {
+            ttsDefaultApiVoiceSelect.addEventListener('change', () => {
+                if (TTS_API_VOICES.some(v => v.id === ttsDefaultApiVoiceSelect.value)) this.advancedSettings.ttsDefaultApiVoice = ttsDefaultApiVoiceSelect.value;
                 this._saveAdvancedSettings();
             });
         }

@@ -23,6 +23,9 @@
  *   POST /api 或 /chat/completions    既有的 NVIDIA chat completions 代理（不變）
  *   POST /sheet-sync                  雲端同步設定（轉發到使用者自架的 Apps
  *                                      Script，見下方「關於 /sheet-sync」）
+ *   POST /edge-tts                    轉接Microsoft Edge神經網路語音（免費、
+ *                                      不用金鑰），AI助理text_to_speech工具的
+ *                                      中文語音走這條路，見下方「關於 /edge-tts」
  *
  * ── 為什麼多一個 /yahoo-intraday ──
  * 證交所自己完全沒有「個股當日已發生的分時/逐筆歷史」這種公開 API（只有
@@ -657,6 +660,161 @@ async function handleSheetSync(request, env) {
   return jsonResponse(resultText, upstream.status, { "Cache-Control": "no-store" });
 }
 
+/**
+ * ── 關於 /edge-tts ──
+ * floating-assistant.js的text_to_speech工具，中文（或其他Kokoro本地模型
+ * 不支援的語言）走這條路。轉接Microsoft Edge瀏覽器「大聲朗讀」功能背後用的
+ * 神經網路語音服務（speech.platform.bing.com）——免費、不需要帳號/API金鑰，
+ * 這是Edge瀏覽器本身內建功能，不是Azure付費API，但這個服務只接受來自
+ * Edge擴充功能情境的連線（驗證Origin header+一個時間戳雜湊簽章），瀏覽器
+ * JS沒辦法直接設定這些header，所以需要這裡（Worker，不受瀏覽器同源限制）
+ * 代為轉接：瀏覽器→這個Worker(HTTP POST)→Microsoft(WebSocket)→把回傳的
+ * MP3位元組原樣轉發回瀏覽器。protocol細節（Sec-MS-GEC簽章公式、二進位
+ * frame格式）抄自目前(2026-09)仍在維護、下載量最大的開源實作
+ * node-edge-tts@1.2.10（MIT授權，https://www.npmjs.com/package/node-edge-tts），
+ * 不是我們自己逆向的——Microsoft之前的做法只驗證Origin header，該套件
+ * 1.0.1版本現在已經失效(HTTP 403)，1.2.x這個新版加了Sec-MS-GEC簽章才能用，
+ * 這裡直接採用目前有效的版本。⚠️這個路由送出去的文字會離開瀏覽器、經過
+ * 這個Worker、送到Microsoft的伺服器——跟這個專案其餘AI功能（Whisper轉錄／
+ * Kokoro英文語音合成）「純瀏覽器端、不上傳」不同，是刻意的取捨（本地端
+ * 目前沒有能驗證可靠的中文語音方案，見floating-assistant.js的
+ * TTS常數說明），floating-assistant.js那邊預設關閉這個功能、要使用者自己
+ * 在設定裡開啟才會用到。
+ *
+ * POST /edge-tts  body: {text, voice, lang?, rate?, pitch?, volume?}
+ *   voice: 例如 "zh-TW-HsiaoChenNeural"（格式 xx-XX-NameNeural，白名單見
+ *          EDGE_TTS_VOICE_PATTERN）
+ *   lang:  選填，例如 "zh-TW"；留空時從voice前兩段推導（zh-TW-XXX → zh-TW）
+ *   rate/pitch/volume: 選填，Edge TTS SSML的prosody參數，例如 "+10%"/"+0Hz"/
+ *          "+0%"，不合法就用預設值 "default"（維持原速/原調/原音量）
+ * 回傳：成功→ audio/mpeg 位元組；失敗→ JSON {ok:false, error}
+ */
+const EDGE_TTS_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"; // 公開已知的固定值，不是使用者的密鑰
+const EDGE_TTS_CHROMIUM_VERSION = "143.0.3650.75";
+const EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC = 11644473600n; // Windows FILETIME紀元(1601-01-01)跟Unix紀元(1970-01-01)的秒數差
+const EDGE_TTS_VOICE_PATTERN = /^[A-Za-z]{2}-[A-Za-z]{2,8}-[A-Za-z0-9]+Neural$/;
+const EDGE_TTS_LANG_PATTERN = /^[A-Za-z]{2}-[A-Za-z]{2,8}$/;
+const EDGE_TTS_PROSODY_PATTERN = /^[+-]?\d{1,3}(%|Hz)$/;
+const EDGE_TTS_MAX_TEXT_LENGTH = 4000; // 單次請求文字長度上限，長文字由前端自己切段分批打
+
+function edgeTtsEscapeXml(unsafe) {
+  return unsafe.replace(/[<>&"']/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c]));
+}
+
+// Sec-MS-GEC簽章：把「目前時間換算成Windows FILETIME格式(100奈秒為單位)、
+// 無條件捨去到最近的5分鐘邊界」跟固定token串起來做SHA-256、轉大寫hex。
+// Workers runtime有Web Crypto API(crypto.subtle)，這裡用它算雜湊，等價於
+// node-edge-tts參考實作用node:crypto的createHash('sha256')那段邏輯。
+async function edgeTtsGenerateSecMsGec() {
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  const ticks = (nowSec + EDGE_TTS_WINDOWS_EPOCH_OFFSET_SEC) * 10000000n;
+  const roundedTicks = ticks - (ticks % 3000000000n); // 3e9 * 100ns = 300秒 = 5分鐘
+  const strToHash = `${roundedTicks}${EDGE_TTS_TRUSTED_CLIENT_TOKEN}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(strToHash));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+async function handleEdgeTts(request) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(JSON.stringify({ ok: false, error: "invalid JSON body" }), 400);
+  }
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) return jsonResponse(JSON.stringify({ ok: false, error: "缺少text" }), 400);
+  if (text.length > EDGE_TTS_MAX_TEXT_LENGTH) {
+    return jsonResponse(JSON.stringify({ ok: false, error: `文字過長（${text.length}字元，單次請求上限${EDGE_TTS_MAX_TEXT_LENGTH}字元），請分段` }), 400);
+  }
+  const voice = typeof body.voice === "string" ? body.voice.trim() : "";
+  if (!EDGE_TTS_VOICE_PATTERN.test(voice)) {
+    return jsonResponse(JSON.stringify({ ok: false, error: `voice格式不合法（例如 zh-TW-HsiaoChenNeural）：${voice}` }), 400);
+  }
+  let lang = typeof body.lang === "string" ? body.lang.trim() : "";
+  if (!EDGE_TTS_LANG_PATTERN.test(lang)) lang = voice.split("-").slice(0, 2).join("-");
+  const rate = EDGE_TTS_PROSODY_PATTERN.test(body.rate) ? body.rate : "default";
+  const pitch = EDGE_TTS_PROSODY_PATTERN.test(body.pitch) ? body.pitch : "default";
+  const volume = EDGE_TTS_PROSODY_PATTERN.test(body.volume) ? body.volume : "default";
+
+  const secMsGec = await edgeTtsGenerateSecMsGec();
+  const msUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
+    + `?TrustedClientToken=${EDGE_TTS_TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=1-${EDGE_TTS_CHROMIUM_VERSION}`;
+
+  let upstream;
+  try {
+    // Cloudflare Workers的outbound WebSocket走fetch()+Upgrade header這個
+    // 官方文件記載的手法（不是瀏覽器的new WebSocket()，那個不能自訂
+    // Origin/User-Agent等header——這正是本來要繞過的限制，見上方說明）。
+    upstream = await fetch(msUrl, {
+      headers: {
+        Upgrade: "websocket",
+        Origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+        "User-Agent": `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_VERSION.split(".")[0]}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_VERSION.split(".")[0]}.0.0.0`,
+        Pragma: "no-cache",
+        "Cache-Control": "no-cache",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+  } catch (err) {
+    return jsonResponse(JSON.stringify({ ok: false, error: "連線Microsoft語音服務失敗：" + String(err && err.message || err) }), 502);
+  }
+  const ws = upstream.webSocket;
+  if (!ws) {
+    return jsonResponse(JSON.stringify({ ok: false, error: `Microsoft語音服務拒絕連線（HTTP ${upstream.status}，可能是簽章公式已過期，需要更新Sec-MS-GEC邏輯）` }), 502);
+  }
+  ws.accept();
+
+  const audioChunks = [];
+  const result = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: false, error: "逾時（15秒內沒有收到完整音訊）" }), 15000);
+    ws.addEventListener("message", (evt) => {
+      if (typeof evt.data === "string") {
+        if (evt.data.includes("Path:turn.end")) {
+          clearTimeout(timer);
+          resolve({ ok: true });
+        }
+        return;
+      }
+      // 二進位訊息：前面是一段文字header（含"Path:audio\r\n\r\n"），後面才是
+      // 真正的MP3位元組，跟node-edge-tts參考實作的切法一致。
+      const data = new Uint8Array(evt.data);
+      const sep = "Path:audio\r\n";
+      const sepBytes = new TextEncoder().encode(sep);
+      let idx = -1;
+      for (let i = 0; i <= data.length - sepBytes.length; i++) {
+        let match = true;
+        for (let j = 0; j < sepBytes.length; j++) { if (data[i + j] !== sepBytes[j]) { match = false; break; } }
+        if (match) { idx = i + sepBytes.length; break; }
+      }
+      if (idx >= 0) audioChunks.push(data.subarray(idx));
+    });
+    ws.addEventListener("close", () => { clearTimeout(timer); resolve({ ok: audioChunks.length > 0 }); });
+    ws.addEventListener("error", () => { clearTimeout(timer); resolve({ ok: false, error: "WebSocket連線錯誤" }); });
+
+    const speechConfig = JSON.stringify({ context: { synthesis: { audio: {
+      metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
+      outputFormat: "audio-24khz-48kbitrate-mono-mp3",
+    } } } });
+    ws.send(`Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${speechConfig}`);
+    const requestId = crypto.randomUUID().replace(/-/g, "");
+    const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${lang}">`
+      + `<voice name="${voice}"><prosody rate="${rate}" pitch="${pitch}" volume="${volume}">${edgeTtsEscapeXml(text)}</prosody></voice></speak>`;
+    ws.send(`X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`);
+  });
+  try { ws.close(); } catch { /* 可能已經關閉，忽略 */ }
+
+  if (!result.ok || !audioChunks.length) {
+    return jsonResponse(JSON.stringify({ ok: false, error: result.error || "沒有收到音訊資料" }), 502);
+  }
+  let totalLen = 0;
+  for (const c of audioChunks) totalLen += c.length;
+  const merged = new Uint8Array(totalLen);
+  let off = 0;
+  for (const c of audioChunks) { merged.set(c, off); off += c.length; }
+  return new Response(merged, { status: 200, headers: { "Content-Type": "audio/mpeg", ...corsHeaders, "Cache-Control": "no-store" } });
+}
+
 export default {
   async fetch(request, env, ctx) {
     // 強制優先處理所有瀏覽器的 OPTIONS 預檢請求
@@ -675,6 +833,7 @@ export default {
       if (sanitizedPath === "/webfetch") return await handleWebFetch(url);
       if (sanitizedPath === "/browser-search") return await handleBrowserSearch(request);
       if (sanitizedPath === "/sheet-sync") return await handleSheetSync(request, env);
+      if (sanitizedPath === "/edge-tts") return await handleEdgeTts(request);
 
       // ── 既有的 NVIDIA chat completions 代理 ──
       if (sanitizedPath === "/api" || sanitizedPath === "/chat/completions") {

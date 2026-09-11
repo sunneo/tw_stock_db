@@ -33,8 +33,8 @@ README 只講部署步驟。
 | `RATE_LIMIT_KV` | 選用（KV binding，不是字串） | 共用金鑰的 per-session 流量控管，沒綁定就不擋流量 |
 | `SHEET_SYNC_APPS_SCRIPT_URL` | 選用 | 雲端設定同步功能要轉發到的 Google Apps Script 網址，沒設定 `/sheet-sync` 會回傳明確的「尚未設定」錯誤，不影響其他路由 |
 
-`/realtime`、`/holiday`、`/yahoo-intraday`、`/webfetch`、`/browser-search`
-這幾個路由都不需要任何金鑰/環境變數，開箱即用。
+`/realtime`、`/holiday`、`/yahoo-intraday`、`/webfetch`、`/browser-search`、
+`/edge-tts` 這幾個路由都不需要任何金鑰/環境變數，開箱即用。
 
 ## floating-assistant.js 的 browser_search 要另外在 Advance Settings 設定
 
@@ -52,12 +52,38 @@ README 只講部署步驟。
 host 自己決定要不要比照這個模式傳入 `browserSearchProxyUrl` 建構子選項，或
 留給使用者自己在 Advance Settings 手動填。
 
+## floating-assistant.js 的 text_to_speech（中文語音）要另外在 Advance Settings 設定
+
+中文（及粵語/日文/韓文）語音走 `/edge-tts` 路由轉接 Microsoft Edge 免費的神經
+網路語音服務，預設**關閉**（跟 `browser_search` 一樣的理由：文字會離開瀏覽器、
+需要 Worker 部署才能運作）。啟用方式：
+
+1. Advance Settings →「子Agent」分頁 → 「語音合成子Agent —— 中文語音（API
+   轉接）」區塊 → 勾選「啟用中文語音API」。
+2. 同區塊「Cloudflare Worker 端點網址」欄位，留空會自動沿用 `browser_search`
+   的 Worker 網址（再留空才沿用目前的 LLM API 網址），通常不需要另外填——
+   只有想用「跟其他功能不同的另一個」Worker 端點時才需要明確指定。
+
+⚠️`/edge-tts` 轉接的是 Microsoft Edge 瀏覽器「大聲朗讀」功能背後的免費服務
+（不是 Azure 付費 API，不需要任何金鑰），但這個服務只接受特定簽章格式的連線
+（見 `worker.js` 裡 `handleEdgeTts`/`edgeTtsGenerateSecMsGec` 的完整說明），是
+Microsoft 自己的內部驗證機制、隨時可能改版失效——如果部署後這個功能一直回報
+錯誤，先確認 `worker.js` 是不是已經更新到含 `Sec-MS-GEC` 簽章邏輯的版本（這是
+2026-09 之後才需要的，更早的版本只驗證 Origin header、現在已經失效）。
+
 ## 已知限制
 
 - `/browser-search` 沒有做任何速率限制/防濫用機制——`floating-assistant.js`
   端已經有 1 天 TTL 的結果快取（見 `SEARCH_CACHE_TTL_MS`）減少重複查詢，但如果
   多人共用同一個 Worker 部署仍可能被大量請求灌爆；如果之後需要，可以比照
   `checkAndIncrementRateLimit` 的做法另外加上去，這次沒有做。
+- `/edge-tts` 的 WebSocket 轉接協定（`Sec-MS-GEC` 簽章公式、二進位 frame
+  切法）已經用 Node.js（`ws` 套件，直接對 `speech.platform.bing.com` 送真實
+  請求）驗證過確實可以拿到正確、可播放的 MP3——但 Worker 那端「用
+  `fetch(url, {headers:{Upgrade:'websocket', Origin:..., ...}})` 這個
+  Cloudflare 文件記載的手法設定自訂 header」這一步，沒辦法在開發環境部署
+  測試，是照 Cloudflare 官方文件的模式實作、還沒有實際部署驗證過完整路徑；
+  部署後如果一直失敗，優先檢查是不是這個環節有問題。
 - `/browser-search` 的 `google`/`sourceforge`/`codeproject`/`deepwiki` 四個
   來源是代打 DuckDuckGo 的 HTML 介面（非官方用途，沒有官方 API 文件保證格式
   穩定），`class="result__a"`/`class="result__snippet"` 這兩個 CSS class
