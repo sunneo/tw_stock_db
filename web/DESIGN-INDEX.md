@@ -779,6 +779,63 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       設定面板渲染正確（模型88.1MB/7檔、4個已安裝語音、24個可安裝選項）；
       slash指令trailing voice token解析正確；長文字分段（1000字元→3段、
       每段≤400）正確。
+  - **2026-09-12 追加（中文語音走API轉接：Microsoft Edge神經網路語音）**：
+    - 使用者要求：本地Kokoro只支援英文，中文改用API轉接層，並實際點名
+      Microsoft Edge的神經網路語音（免費、不用金鑰）。研究/驗證過程：
+      (1) 用真實瀏覽器`WebSocket`直連`speech.platform.bing.com`（照舊版
+      `edge-tts@1.0.1`的協定）→ code 1006連線被拒（Microsoft驗證Origin
+      header，瀏覽器JS設不了）。(2) 用Node.js `ws`套件（可以自訂header）
+      照同一份協定連 → HTTP 403——查到2026-09仍在維護、下載量最大的
+      `node-edge-tts@1.2.10`原始碼，發現Microsoft後來加了`Sec-MS-GEC`
+      簽章要求（時間戳無條件捨去到5分鐘邊界＋固定token做SHA-256）。
+      (3) 照這個新版協定重新實作、用Node.js對`speech.platform.bing.com`
+      送真實請求 → **成功**，拿到5.66秒、可播放的中文MP3（`ffprobe`驗證
+      duration正確、xxd確認MP3 magic bytes+LAME header）。
+    - 因為瀏覽器JS設不了`Origin`/`User-Agent`等自訂header、Microsoft的
+      服務只接受特定Origin，改走Cloudflare Worker轉接（跟`/browser-search`
+      同一個「瀏覽器做不到、Worker代勞」的既有模式）：新路由
+      `POST /edge-tts`（`web/cloudflare-worker/worker.js`的
+      `handleEdgeTts`）——`fetch(msUrl, {headers:{Upgrade:'websocket',
+      Origin:...}})`（Cloudflare官方文件記載的outbound WebSocket+自訂
+      header手法）→`.webSocket.accept()`→送`speech.config`+`ssml`兩則
+      文字訊息→收二進位音訊frame（`Path:audio\r\n`分隔）→`turn.end`後
+      關閉、把累積的MP3位元組原樣回傳。`edgeTtsGenerateSecMsGec()`用Web
+      Crypto(`crypto.subtle.digest`)算SHA-256，跟node-edge-tts參考實作的
+      node:crypto版本等價。⚠️這一段（Worker的outbound WebSocket自訂header）
+      沒辦法在這個環境部署測試，是照Cloudflare文件模式實作、還沒有完整
+      路徑的部署驗證，如實記錄在
+      `web/cloudflare-worker/README.md`的已知限制。
+    - `floating-assistant.js`：`TTS_API_VOICES`（12個精選Edge語音：
+      中文台灣3個/中國大陸4個/粵語香港2個/日文/韓文/英文各1個，
+      `engine:'api'`）＋`TTS_VOICES`全部28個補上`engine:'local'`tag，
+      voice id格式天生可判斷engine（本地`xx_name`底線格式 vs API
+      `xx-XX-NameNeural`連字號格式）。`advancedSettings.ttsApiEnabled`
+      （預設**關閉**，跟`browserSearchEnabled`同一個理由）、
+      `ttsApiProxyUrl`（留空依序fallback到`browserSearchProxyUrl`→
+      目前LLM apiUrl，同`browser_search`的既有模式）、
+      `ttsDefaultApiVoice`（預設`zh-TW-HsiaoChenNeural`曉臻）。
+    - `_synthesizeSpeech`改成路由器：有給voice→依engine分派；沒給→
+      `_looksLikeCjkText`判斷，CJK且API已啟用→API＋預設中文語音，CJK但
+      API未啟用→明確錯誤（附啟用方式，不再是死路）,非CJK→本地Kokoro。
+      `_synthesizeSpeechLocal`（原本的Kokoro邏輯，改名）／
+      `_synthesizeSpeechViaApi`（新增：`_ttsChunkText`現在接受
+      `maxChars`參數、且分句regex加入中文標點`。！？；`當切點，
+      API路徑用`TTS_API_MAX_CHARS_PER_CHUNK`=1800字元；逐段POST
+      `{proxyUrl}/edge-tts`、直接串接回傳的MP3 Blob——不像本地路徑要
+      解碼混音重新編碼，Worker回傳的本來就是MP3）。API語音沒有duration
+      資訊，用粗略估計（中文約4字/秒）當顯示值。
+    - 工具/slash描述、media_av systemPrompt、`/media-list-voices`（分
+      「本地」/「API」兩個section，API section顯示目前啟用/未啟用狀態）
+      全部更新反映新路徑。
+    - Advance Settings新增「語音合成子Agent —— 中文語音（API轉接）」
+      區塊：啟用checkbox、Worker端點網址輸入框、預設中文語音下拉——跟
+      本地英文語音那個區塊分開放，明確標示這條路徑「文字會離開瀏覽器」
+      的差異。
+    - 實測（mock `fetch`模擬Worker回應，因為沒有真實部署可測）：CJK+API
+      關閉→明確錯誤；CJK+API開啟→自動選zh-TW-HsiaoChenNeural、正確組
+      lang參數；明確指定日文/中文API voice→正確使用；長文字(2400字元)→
+      正確切成2段、各自呼叫、MP3正確串接；設定面板checkbox/輸入框/下拉
+      渲染+存檔正確；`/media-list-voices`兩個section+啟用狀態顯示正確。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
