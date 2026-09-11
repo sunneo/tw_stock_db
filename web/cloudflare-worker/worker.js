@@ -737,7 +737,13 @@ async function handleEdgeTts(request) {
   const volume = EDGE_TTS_PROSODY_PATTERN.test(body.volume) ? body.volume : "default";
 
   const secMsGec = await edgeTtsGenerateSecMsGec();
-  const msUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
+  // tw_stock_db客製: 2026-09-12實測發現——Cloudflare Workers的fetch()走
+  // Upgrade:websocket這個手法時，URL本身要是https:// scheme（不是wss://），
+  // 協定切換完全靠Upgrade header觸發；傳wss://會直接被fetch()拒絕
+  // （"Fetch API cannot load: wss://..."），部署後才測出來的，worker.js文件
+  // 範例雖然用wss://當client端new WebSocket()的URL，但fetch()這條路徑
+  // 不一樣。
+  const msUrl = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
     + `?TrustedClientToken=${EDGE_TTS_TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=1-${EDGE_TTS_CHROMIUM_VERSION}`;
 
   let upstream;
