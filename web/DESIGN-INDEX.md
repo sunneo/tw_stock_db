@@ -711,6 +711,74 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - `_resolveUploadedFileRecord` 加 `preferAv` 選項（`/media-transcribe`／
       `/media-extract-audio`／burn 都帶）：空參數挑附件/最近上傳時優先選
       影音檔，不會抓到一起附加的 `.srt`。
+  - **2026-09-12 追加（extract_audio 預設輸出 MP3）**：
+    - 使用者要求：WAV 太占 persistentStorage 空間。新增 `lamejs`（純 JS MP3
+      編碼器，UMD 全域腳本，`_faLoadScriptOnce` 載入）＋
+      `_faLamejsEncode(channelsInt16, sr, kbps)`/`_faFloat32ToInt16` 兩個
+      module-level 共用函式、`_ensureLamejsLoaded()`/`_encodeMp3(audioBuffer)`
+      instance方法。`advancedSettings.extractAudioFormat`（`'mp3'`預設／
+      `'wav'`）控制，MP3編碼失敗（載入失敗等）優雅退回WAV，不讓功能整個
+      失敗。Advance Settings「子Agent」分頁新增下拉。
+    - 實測：1s 44.1kHz WAV→MP3(128kbps)：96KB→16.5KB（約1/5.8）、解碼回去
+      驗證時長正確。
+  - **2026-09-12 追加（text_to_speech 語音合成，Kokoro TTS）**：
+    - 使用者要求：`/media-text-to-speech <prompt> [聲音id]`＋語音庫可從
+      Advance Settings安裝到persistentStorage、語音包獨立一組可個別
+      安裝/刪除。
+    - **重要限制（已實測確認，不是猜測）**：只支援英文。研究過程：
+      (1) `kokoro-js`（官方推薦的瀏覽器JS wrapper）npm套件本身的
+      `_validate_voice`把語言代號寫死成`voice.at(0)`只認`'a'`(美式)/`'b'`
+      (英式)，voice清單也寫死只有28個英文語音，中文voice代號（`zf_*`等，
+      HF模型repo裡的`.bin`檔確實存在）直接被拒絕。(2) 改用
+      `@huggingface/transformers`通用`pipeline('text-to-speech',...)`指向
+      HF上專門的中文模型`onnx-community/Kokoro-82M-v1.1-zh-ONNX`——實測
+      拋錯`Unsupported model type: style_text_to_speech_2`，這個model_type
+      根本沒被transformers.js的通用pipeline dispatcher支援，只有kokoro-js
+      自己手動兜的`StyleTextToSpeech2Model`路徑能用，而那條路徑的G2P是
+      英文專屬的。(3) Meta的MMS-TTS（另一個多語言選項）沒有涵蓋中文
+      （`facebook/mms-tts-cmn`不存在）。**結論**：瀏覽器端目前沒有可驗證
+      可靠的中文TTS方案，`text_to_speech`工具/`_synthesizeSpeech`主動用
+      `_looksLikeCjkText()`（CJK字元占比>20%）擋下中文文字，回傳明確錯誤
+      而不是嘗試硬讀（會讀出錯誤的音），media_av systemPrompt也交代AI
+      遇到使用者要中文語音要照實告知限制。
+    - **⚠️2026-09-12實測發現：這個模型走WebGPU在部分環境會直接把GPU裝置
+      卡死**（`DXGI_ERROR_DEVICE_HUNG`，onnxruntime-web的WebGPU backend對
+      Kokoro/StyleTTS2這個模型結構有問題，推論永遠不回來，不是「比較慢」
+      是真的掛住）——`_getTtsEngine`因此**一律用CPU wasm，不嘗試
+      WebGPU**（跟Whisper的auto/cpu選項不同，刻意不給選）。CPU路徑實測：
+      模型下載92.4MB/7個檔＋一句~20字英文推論，首次（含tokenizer/session
+      建立）約50~70秒（WASM單執行緒，沒有crossOriginIsolated），輸出正確
+      可解碼MP3。
+    - 常數：`TTS_MODEL_ID`(`onnx-community/Kokoro-82M-v1.0-ONNX`)、
+      `TTS_DTYPE`(`q8`，模型本體約90MB)、`TTS_SAMPLE_RATE`(24000)、
+      `TTS_VOICES`(28個內建英文語音，抄自kokoro-js的voices.js)、
+      `TTS_VOICE_CACHE_NAME`(`'kokoro-voices'`)、`TTS_VOICE_DATA_URL_BASE`。
+    - **語音包天生獨立管理**（使用者要求的「獨立一組」）：kokoro-js自己
+      用一個獨立的Cache API物件`"kokoro-voices"`持久化每個語音的`.bin`
+      （522KB/個，跟模型本體、跟Whisper都不同的cache）——不用我們自己另外
+      實作快取層，`_listInstalledTtsVoices`/`_installTtsVoice`/
+      `_deleteTtsVoice`直接讀寫這個Cache即可。模型本體（onnx+tokenizer）
+      沒得選，跟Whisper共用同一個`'transformers-cache'`（
+      `@huggingface/transformers`固定用這個名稱），`_getTtsCacheInfo`／
+      `_clearTtsModelCache`用URL含`'Kokoro'`子字串篩選/清除，效果上等同
+      獨立管理。
+    - `_synthesizeSpeech(text, voiceId, onProgress)`：CJK擋下→挑語音→
+      `_ttsChunkText`依句尾標點切段（每段≤400字元，避免超過kokoro-js內部
+      509 token限制丟字）→逐段`engine.generate()`→接起Float32樣本→
+      預設MP3編碼（沿用`_faLamejsEncode`，跟extract_audio同一個「省空間」
+      決策）失敗才退WAV→存fileCache。
+    - 工具`text_to_speech({text, voice?})`＋slash
+      `/media-text-to-speech <英文文字…> [聲音代號]`（trailing token剛好
+      完全符合某個voice id才當作聲音代號抽掉）＋`/media-list-voices`（列出
+      全部28個代號）。media_av domain toolNames/systemPrompt加入。
+    - Advance Settings「子Agent」分頁新增「語音合成子Agent」區塊：預設
+      語音下拉（28選項）、模型快取用量+清除、語音包管理（安裝下拉+按鈕、
+      已安裝清單各自一個刪除按鈕）。
+    - 實測：CJK文字秒退（不下載模型）；英文合成CPU路徑成功（7.1s輸出，
+      MP3 114KB，解碼驗證duration/sr正確）；語音包安裝/刪除/列舉正確；
+      設定面板渲染正確（模型88.1MB/7檔、4個已安裝語音、24個可安裝選項）；
+      slash指令trailing voice token解析正確；長文字分段（1000字元→3段、
+      每段≤400）正確。
 
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
