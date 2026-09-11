@@ -71,19 +71,32 @@ Microsoft 自己的內部驗證機制、隨時可能改版失效——如果部�
 錯誤，先確認 `worker.js` 是不是已經更新到含 `Sec-MS-GEC` 簽章邏輯的版本（這是
 2026-09 之後才需要的，更早的版本只驗證 Origin header、現在已經失效）。
 
+**2026-09-12 已在真實部署上端到端驗證成功**（`dawn-disk-778c.sunneo529.workers.dev`，
+真實 curl + 真實瀏覽器呼叫 `_synthesizeSpeech`/`text_to_speech` 工具都測過，
+拿到正確、可播放、時長吻合的中文 MP3）。過程中修過三個 Cloudflare Workers
+runtime 特有的問題，不是協定公式本身的錯（協定公式一開始就對 Microsoft 的
+伺服器驗證過正確）：
+1. `fetch()` 走 `Upgrade: websocket` 這招時，URL 要是 `https://`，不能是
+   `wss://`（跟純 client 端 `new WebSocket(wss://...)` 不同）。
+2. 二進位訊息的 `event.data` 在 Workers 上有時是 `Blob`，不是可以直接
+   `new Uint8Array()` 讀的 `ArrayBuffer`（不會報錯，只會靜默產生 0 長度
+   陣列）。
+3. 除了 `TrustedClientToken`/`Sec-MS-GEC` 簽章，還需要 URL 帶
+   `ConnectionId`、`Sec-WebSocket-Version: 13` header、`Cookie: muid=...;`
+   header——這幾個在 Node.js 環境不需要也能連上，但在 Cloudflare Workers
+   環境似乎是必要的（照 `DIYgod/cloudflare-edge-tts`——一個真的部署在
+   Cloudflare 上的開源實作——補上的）。
+目前 `handleEdgeTts` 已經包含這些修正，直接照最新的 `worker.js` 部署即可，
+不需要再自己踩一次這些坑。
+
 ## 已知限制
 
 - `/browser-search` 沒有做任何速率限制/防濫用機制——`floating-assistant.js`
   端已經有 1 天 TTL 的結果快取（見 `SEARCH_CACHE_TTL_MS`）減少重複查詢，但如果
   多人共用同一個 Worker 部署仍可能被大量請求灌爆；如果之後需要，可以比照
   `checkAndIncrementRateLimit` 的做法另外加上去，這次沒有做。
-- `/edge-tts` 的 WebSocket 轉接協定（`Sec-MS-GEC` 簽章公式、二進位 frame
-  切法）已經用 Node.js（`ws` 套件，直接對 `speech.platform.bing.com` 送真實
-  請求）驗證過確實可以拿到正確、可播放的 MP3——但 Worker 那端「用
-  `fetch(url, {headers:{Upgrade:'websocket', Origin:..., ...}})` 這個
-  Cloudflare 文件記載的手法設定自訂 header」這一步，沒辦法在開發環境部署
-  測試，是照 Cloudflare 官方文件的模式實作、還沒有實際部署驗證過完整路徑；
-  部署後如果一直失敗，優先檢查是不是這個環節有問題。
+- `/edge-tts` 已經在真實部署上端到端驗證成功（見上一節「已在真實部署上
+  端到端驗證成功」），不再是未驗證的狀態。
 - `/browser-search` 的 `google`/`sourceforge`/`codeproject`/`deepwiki` 四個
   來源是代打 DuckDuckGo 的 HTML 介面（非官方用途，沒有官方 API 文件保證格式
   穩定），`class="result__a"`/`class="result__snippet"` 這兩個 CSS class
