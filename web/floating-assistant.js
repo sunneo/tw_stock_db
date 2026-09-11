@@ -4182,9 +4182,9 @@ ${fnData.code}
     // 說明＋TTS_API_VOICES上方那段「為什麼要走API」的完整說明）。⚠️這條路徑
     // 文字會離開瀏覽器；長文字依TTS_API_MAX_CHARS_PER_CHUNK切段逐段打API、
     // 把回傳的MP3位元組直接串接（不像本地Kokoro路徑要自己解碼混音——Worker
-    // 回傳的本來就已經是MP3，這裡不重新編碼，單純接起來）。沒有duration
-    // 資訊可以直接拿（不像本地路徑算得出樣本數/取樣率），用一個粗略的
-    // 中文語速估計（約4字/秒）當顯示用的估計值，不保證精確。
+    // 回傳的本來就已經是MP3，這裡不重新編碼，單純接起來）。串接完再用
+    // _decodeAudioBuffer解碼一次拿精確duration（2026-09-12實測發現語速
+    // 估計值誤差太大，直接解碼比較可靠，見下面的說明）。
     async _synthesizeSpeechViaApi(t, voice, onProgress) {
         const proxyUrl = String(this.advancedSettings.ttsApiProxyUrl || '').trim()
             || String(this.advancedSettings.browserSearchProxyUrl || '').trim()
@@ -4221,7 +4221,18 @@ ${fnData.code}
             mp3Chunks.push(await resp.blob());
         }
         const blob = new Blob(mp3Chunks, { type: 'audio/mpeg' });
-        const estimatedDurationSeconds = Math.round((t.length / 4) * 10) / 10; // 粗估，中文約4字/秒
+        // tw_stock_db客製: 2026-09-12——原本用「中文約4字/秒」粗估，實測
+        // （小狐狸故事72字元）發現Edge語音實際語速接近7.3字/秒，粗估值
+        // 誤差快到2倍，直接不猜了：Worker回傳的本來就是真正的MP3位元組，
+        // 用_decodeAudioBuffer解碼一次拿精確時長（Whisper/extract_audio
+        // 也是同一個既有函式），比維護一個容易失準的語速常數可靠。
+        let durationSeconds;
+        try {
+            const decoded = await this._decodeAudioBuffer(blob);
+            durationSeconds = Math.round(decoded.duration * 10) / 10;
+        } catch (_) {
+            durationSeconds = Math.round((t.length / 7) * 10) / 10; // 解碼失敗才退回粗估
+        }
         const name = `語音_${voice.id}_${Date.now()}.mp3`;
         let audioFileId;
         try {
@@ -4233,7 +4244,7 @@ ${fnData.code}
             ok: true,
             audio_file_id: audioFileId,
             filename: name,
-            durationSeconds: estimatedDurationSeconds,
+            durationSeconds,
             voice: voice.id,
             sizeBytes: blob.size,
         };
