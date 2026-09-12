@@ -1004,6 +1004,62 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     不同，證實混音時原始音軌確實在配音時段被正確靜音、配音音軌確實被
     正確插入，不是簡單疊加或完全沒替換到。
 
+- **2026-09-12 配音小幫手三項延伸：時間段配音／上傳音檔／獨立domain＋斜線指令**：
+  使用者要求：(1) 使用者可以直接指定一個時間段配音，不用整支轉逐字稿；
+  (2) widget互動時除了按麥克風錄音，也能直接上傳音檔；(3) 配音功能改歸到一個
+  獨立的「影片編修」domain（不再混在media_av裡），也要有`/media-`開頭的斜線
+  指令可以直接觸發（不經過LLM）。
+  - **`_parseTimeValue(v)`**：新增的共用時間解析helper，接受純數字（當秒數）、
+    `"M:SS"`、`"H:MM:SS"`（可選`.mmm`/`,mmm`毫秒），無法解析回傳`null`。斜線
+    指令的時間範圍token、`start_dubbing_session`工具的`ranges`參數都共用這個
+    函式，只寫一次解析邏輯。
+  - **`_startDubbingSession`新增第4個參數`explicitRanges`**：有值時完全跳過
+    `_resolveSubtitleSegments`（不呼叫字幕解析、不會觸發自動轉逐字稿），直接
+    把每筆`{start,end,text}`轉成頁面（`end`留空自動補`start+1`秒，`text`留空
+    自動補時間範圍字串），其餘關鍵影格擷取/建立widget邏輯完全共用不變。實測
+    （真實測試短片＋`_resolveUploadedFileRecord`拿到的record）：給2筆range
+    （其中1筆`end`留空、1筆`text`留空）正確產生2頁、關鍵影格正確擷取、全程
+    沒有呼叫任何逐字稿相關函式（用`console.log`確認`_resolveSubtitleSegments`
+    未被觸發）。
+  - **`start_dubbing_session`工具schema新增`ranges`參數**（陣列，每筆
+    `{start,end?,text?}`），description明確交代兩種用法的取捨（給ranges＝快、
+    不需要字幕；不給＝整支字幕逐句一頁）；`ranges`存在時完全忽略`subtitle`
+    參數。
+  - **`_handleDubbingUpload(file, state, pageIdx, rerender)`**：新增的上傳
+    處理函式，直接把使用者選的音檔存進`fileCache`（檔名帶頁碼、副檔名沿用
+    原始檔案），寫回`state.pages[pageIdx].takeFileId`後持久化＋觸發widget
+    重繪——跟錄音完成後的效果完全一樣（`_exportDubbedVideo`混音時不分辨這段
+    配音是錄的還是上傳的，統一當作`takeFileId`處理）。`_mountDubbingWidget`
+    的錄音按鈕那一列改成flex row，右側加一個「📁 上傳音檔」按鈕＋隱藏的
+    `<input type=file accept=audio/*>`，正在錄音時disabled（避免錄音與上傳
+    同時對同一頁寫入衝突）。實測：上傳一個假音檔後`takeFileId`正確寫入、
+    `fileCache`裡確實存在該筆、重繪callback有被觸發。
+  - **domain拆分**：`SUBAGENT_DOMAIN_REGISTRY.media_av`移除`start_dubbing_session`
+    （toolNames與systemPrompt的說明段落都拿掉，補一句「配音是另一個領域，
+    委派過去」避免它自己嘗試處理），新增`video_editing`domain（`toolNames:
+    ['start_dubbing_session','list_uploaded_files']`，systemPrompt描述新的
+    ranges用法）。這個專案的domain機制在9/6已經改成instance-level的
+    `this.domains`（建構子從`SUBAGENT_DOMAIN_REGISTRY`複製一份，見
+    `_routeTaskToDomains`等處都讀`this.domains`不是直接讀module常數），所以
+    module常數這裡改完，委派路由（`_routeTaskToDomains`依`this.domains`動態
+    組出的路由system prompt）自動就會反映新domain，不需要另外改別的查找點。
+    實測：new一個實例後`fa.domains.media_av.toolNames`確認已移除、
+    `fa.domains.video_editing`確認存在且內容正確。
+  - **新斜線指令`/media-dub-video [<影片id或檔名>] [<開始>-<結束>]`**：
+    `_parseDubRangeToken(token)`用正規表示式`^([\d:.,]+)-([\d:.,]+)$`判斷
+    最後一個token是不是時間範圍格式（避免跟檔名裡的`-`混淆——檔名格式不會
+    整段只由數字/冒號/逗號/句點加一個`-`組成），是的話呼叫`_parseTimeValue`
+    解析成`{start,end}`並從token清單裡移除；剩下的token當檔案id/檔名。有
+    range就走`explicitRanges`（不轉逐字稿）；沒有range就傳`null`給
+    `_startDubbingSession`走既有的整支字幕流程（跟工具版`ranges`留空時完全
+    同一條路徑，沒有另外寫一份邏輯）。指令本身先push一則`user`角色訊息代表
+    這次操作（跟其他`/media-*`指令同樣的既有慣例），再呼叫
+    `_startDubbingSession`（成功會自己建立widget訊息並渲染，指令這裡失敗才
+    額外`_log`錯誤）。實測：`/media-dub-video <id> 1:00-2:00`正確解析出
+    `{start:60,end:120}`、只產生1頁、頁面文字正確補成`"1:00 - 2:00"`；純數字
+    `1:20-1:45`、`80-105`、帶毫秒`0:05-0:10,500`都正確解析；`my-video-file.mp4`
+    這種帶`-`的檔名正確判斷「不是」時間範圍（不會被誤吃）。
+
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
 | 工具名 | 約略行號 | 一句話用途 |

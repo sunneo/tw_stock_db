@@ -720,16 +720,27 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
     media_av: {
         enabled: true,
-        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成／配音）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'start_dubbing_session', 'list_uploaded_files'],
+        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
             '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。\n' +
-            '- start_dubbing_session：使用者說類似「幫這支影片配音／錄我自己的聲音」時呼叫，會在對話裡建立一個互動widget（逐句：關鍵影格截圖＋字幕＋錄音/重錄/試聽＋上一頁下一頁，可隨時輸出目前成果或結束配音）——呼叫成功後接下來使用者自己在widget操作，你不用再問要不要繼續、也不用描述後續步驟。\n' +
-            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech/start_dubbing_session都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
+    },
+    // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
+    // domain，跟media_av（轉錄/字幕/語音合成這類「處理」）分開，語意上更
+    // 貼近「編修一支影片的內容」這件事，之後如果加更多剪輯類工具（剪片段/
+    // 調速度等）也歸在這個domain底下，不會混進media_av。
+    video_editing: {
+        enabled: true,
+        label: '影片編修（配音）',
+        toolNames: ['start_dubbing_session', 'list_uploaded_files'],
+        systemPrompt: '你是一個專門編修影片內容的子任務助理。目前能做的事：\n' +
+            '- start_dubbing_session：建立「配音小幫手」互動widget，讓使用者針對影片的某幾個時間段（自己指定的時間範圍，或整支的逐句字幕）錄音/上傳音檔配音，取代原本的聲音。使用者說類似「幫這支影片配音」「把1:20到1:45這段換成我的聲音」都呼叫這個工具。給ranges參數可以直接指定時間段（不需要字幕、速度快）；不給就用整支字幕（逐句一頁）。呼叫成功、widget建立好之後，接下來使用者自己在widget裡操作（錄音/上傳/重錄/試聽/換頁/輸出/結束），你不用再問要不要繼續、也不用描述後續步驟，直接告知widget已經準備好即可。\n' +
+            '需要指定影片時可以用file_id或檔名，或留空用最近上傳的。⚠️這個工具依時間段數量可能要花一點處理時間（擷取關鍵影格），呼叫後要等真正的結果。',
     },
 };
 
@@ -2290,6 +2301,13 @@ class FloatingAssistant {
             '列出 /media-text-to-speech 可用的全部語音代號',
             () => this._handleMediaListVoicesCommand()
         );
+        // tw_stock_db客製: 2026-09-12使用者要求——配音也要能用/media-開頭的
+        // 指令直接觸發（不經過LLM），走跟start_dubbing_session工具同一條路徑。
+        this.register_slash_command(
+            '/media-dub-video', '[<影片id或檔名>] [<開始>-<結束>]',
+            '建立配音小幫手互動widget，針對影片的某個時間段（或整支字幕，留空時間段）逐句錄音/上傳音檔配音。時間格式可以是秒數或"分:秒"，例如 /media-dub-video 1:20-1:45',
+            (argsText) => this._handleMediaDubVideoCommand(argsText)
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -3778,25 +3796,43 @@ ${fnData.code}
         );
 
         // tw_stock_db客製: 2026-09-12使用者要求——「配音小幫手」。使用者說
-        // 類似「我要為這個影片的對話錄音」時呼叫這個工具，不是自己想辦法
-        // 用其他工具兜流程——它會在對話裡建立一個互動widget（逐句：關鍵
-        // 影格截圖＋原字幕文字＋錄音/重錄/試聽按鈕＋上一頁下一頁），使用者
-        // 接下來自己在widget裡操作，不需要AI再介入。
+        // 類似「我要為這個影片的對話錄音」（整支/逐句字幕）或「幫我把
+        // 1:20~1:45這段配音」（單一時間段，不需要字幕）時呼叫這個工具，
+        // 不是自己想辦法用其他工具兜流程——它會在對話裡建立一個互動widget
+        // （每頁：關鍵影格截圖＋文字說明＋錄音／上傳音檔／重錄／試聽按鈕＋
+        // 上一頁下一頁），使用者接下來自己在widget裡操作，不需要AI再介入。
         registerOptional('start_dubbing_session',
-            `建立一個「配音小幫手」互動widget，讓使用者針對一支影片的逐句字幕，一句一句錄音配音（例如把原本的對話換成使用者自己的聲音）。widget會直接顯示在對話裡：每頁一句，有那句話當下的關鍵影格截圖、原字幕文字、錄音/重錄/試聽按鈕、上一頁/下一頁；使用者可以隨時在widget裡按「輸出目前成果」匯出一支合成好的MP4看效果（沒配音的句子維持原音），或按「結束配音」收工——這些操作使用者自己在widget裡完成，呼叫完這個工具、widget建立成功後，你不用再問使用者要不要繼續、也不用再描述接下來的步驟，直接告知widget已經準備好即可。回傳 {ok, pages}。⚠️需要影片有帶時間軸的字幕（提供subtitle參數，或留空自動先跑一次語音轉逐字稿，可能要花一點時間）；擷取每一頁的關鍵影格截圖也需要處理時間，句數多的話請求後要等一下。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動先轉逐字稿"}`,
+            `建立一個「配音小幫手」互動widget，讓使用者針對一支影片的某幾個時間段錄音配音（例如把原本的對話換成使用者自己的聲音）。兩種用法：(1) 給ranges——使用者自己指定要配音的時間段（例如「幫我把1:20到1:45這段配音」），不需要字幕、也不會轉整支逐字稿，速度快很多；(2) 不給ranges——用整支影片的逐句字幕（提供subtitle參數，或留空自動先跑一次語音轉逐字稿），每句一頁。widget每頁都顯示：那個時間段當下的關鍵影格截圖、文字說明、錄音/上傳音檔/重新錄音/試聽按鈕、上一頁/下一頁；使用者可以隨時在widget裡按「輸出目前成果」匯出一支合成好的MP4看效果（沒配音的段落維持原音），或按「結束配音」收工——這些操作使用者自己在widget裡完成，呼叫完這個工具、widget建立成功後，你不用再問使用者要不要繼續、也不用再描述接下來的步驟，直接告知widget已經準備好即可。回傳 {ok, pages}。⚠️沒給ranges時，句數多的話擷取關鍵影格需要處理時間，請求後要等一下。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "ranges":"（選填）[{start:秒數或\\"M:SS\\",end:選填,text:選填的文字說明}]，給了就忽略subtitle", "subtitle":"（選填，沒給ranges時才有作用）字幕檔的file_id或檔名；留空＝自動先轉逐字稿"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || '').trim();
                 const record = await this._resolveUploadedFileRecord(videoArg, { preferAv: true });
                 if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片（請先上傳，或用video參數指定id/檔名）' });
+                let explicitRanges = null;
+                if (Array.isArray(parsed.ranges) && parsed.ranges.length) {
+                    explicitRanges = parsed.ranges.map((r) => ({
+                        start: this._parseTimeValue(r && r.start),
+                        end: r && r.end != null ? this._parseTimeValue(r.end) : null,
+                        text: r && r.text,
+                    }));
+                }
                 try {
-                    return JSON.stringify(await this._startDubbingSession(record, parsed.subtitle, (m) => this._log('🎙️ ' + m)));
+                    return JSON.stringify(await this._startDubbingSession(record, parsed.subtitle, (m) => this._log('🎙️ ' + m), explicitRanges));
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: {
                 video: { type: 'string', description: '影片的file_id或檔名；留空＝最近上傳的' },
-                subtitle: { type: 'string', description: '（選填）字幕檔的file_id或檔名；留空＝自動先轉逐字稿' },
+                ranges: {
+                    type: 'array',
+                    description: '（選填）自己指定要配音的時間段，給了就忽略subtitle；不需要整支轉逐字稿',
+                    items: { type: 'object', properties: {
+                        start: { description: '開始時間，秒數或"M:SS"/"H:MM:SS"字串' },
+                        end: { description: '（選填）結束時間，格式同start；留空＝start+1秒' },
+                        text: { type: 'string', description: '（選填）這段的文字說明，顯示在widget上；留空會用時間範圍當說明' },
+                    }, required: ['start'] },
+                },
+                subtitle: { type: 'string', description: '（選填，沒給ranges時才有作用）字幕檔的file_id或檔名；留空＝自動先轉逐字稿' },
             }, additionalProperties: false }
         );
     }
@@ -4837,6 +4873,22 @@ ${fnData.code}
     // video tag，要用decoder」，這裡補上同一個決策。
     // ============================================================
 
+    // tw_stock_db客製: 2026-09-12——start_dubbing_session的ranges參數讓AI/
+    // 使用者用「1:20」這種字串或直接用數字秒數指定時間，這裡統一轉成秒數
+    // （number）。跟_faParseSubtitleText內部的toSec同一套HH:MM:SS(,mmm)/
+    // MM:SS解析規則，抽成方法讓ranges也能用；數字或數字字串（"90"）直接
+    // 當秒數，解析不出來回傳null（呼叫端會濾掉）。
+    _parseTimeValue(v) {
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+        const s = String(v || '').trim();
+        if (!s) return null;
+        if (/^\d+(\.\d+)?$/.test(s)) return +s; // 純數字字串＝秒數
+        const m = s.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+        if (!m) return null;
+        const h = m[1] ? +m[1] : 0;
+        return h * 3600 + (+m[2]) * 60 + (+m[3]) + (m[4] ? +('0.' + m[4]) : 0);
+    }
+
     // CanvasSink在主執行緒會給HTMLCanvasElement（.toBlob是callback式），
     // worker context才會退回OffscreenCanvas（.convertToBlob是Promise式）
     // ——這裡兩種都處理，不假設一定是哪一種。
@@ -4884,15 +4936,30 @@ ${fnData.code}
         };
     }
 
-    // 建立配音小幫手：解析字幕/逐字稿（跟burn_subtitles共用同一套
-    // _resolveSubtitleSegments）→逐句擷取關鍵影格縮圖→在對話中建立一則
-    // 帶_dubbingWidget的訊息。回傳給AI的note刻意講清楚「widget已經在對話
-    // 裡了、使用者要自己操作」，避免AI誤以為自己還要接著做什麼。
-    async _startDubbingSession(record, subtitleArg, onProgress) {
-        const sub = await this._resolveSubtitleSegments(record, subtitleArg, 'zh', onProgress);
-        if (!sub.ok) return { ok: false, error: sub.error };
-        const segments = (sub.segments || []).filter(s => s.text && s.text.trim() && s.start != null);
-        if (!segments.length) return { ok: false, error: '沒有帶時間軸、有文字內容的字幕/逐字稿可以配音' };
+    // 建立配音小幫手：頁面(segments)來源有兩種——(1) explicitRanges：使用者
+    // /AI自己指定的時間段（例如「幫我把1:20~1:45這段配音」），不需要字幕、
+    // 也不用整支影片都轉逐字稿；(2) 沒給explicitRanges時走舊路徑，解析
+    // 字幕/逐字稿（跟burn_subtitles共用同一套_resolveSubtitleSegments）。
+    // 兩種來源最後都收斂成同一份segments陣列，後面擷取關鍵影格縮圖／建立
+    // widget的邏輯完全共用，不用寫兩套。回傳給AI的note刻意講清楚「widget
+    // 已經在對話裡了、使用者要自己操作」，避免AI誤以為自己還要接著做什麼。
+    async _startDubbingSession(record, subtitleArg, onProgress, explicitRanges) {
+        let segments;
+        if (Array.isArray(explicitRanges) && explicitRanges.length) {
+            segments = explicitRanges
+                .filter((r) => r && Number.isFinite(r.start) && r.start >= 0)
+                .map((r) => ({
+                    start: r.start,
+                    end: Number.isFinite(r.end) && r.end > r.start ? r.end : r.start + 1,
+                    text: String(r.text || '').trim() || `${_faFormatTimestamp(r.start)} - ${_faFormatTimestamp(Number.isFinite(r.end) ? r.end : r.start + 1)}`,
+                }));
+            if (!segments.length) return { ok: false, error: 'ranges參數格式不對（每筆至少要有start，單位秒）' };
+        } else {
+            const sub = await this._resolveSubtitleSegments(record, subtitleArg, 'zh', onProgress);
+            if (!sub.ok) return { ok: false, error: sub.error };
+            segments = (sub.segments || []).filter(s => s.text && s.text.trim() && s.start != null);
+            if (!segments.length) return { ok: false, error: '沒有帶時間軸、有文字內容的字幕/逐字稿可以配音' };
+        }
 
         let MB, input, track;
         try {
@@ -4994,13 +5061,38 @@ ${fnData.code}
                 }
             }
 
+            // tw_stock_db客製: 2026-09-12使用者要求——除了按麥克風錄音，也
+            // 可以直接上傳一個現成的音檔當這一頁的配音（例如已經在別的軟體
+            // 錄好/剪好的旁白）。兩條路徑最後都收斂成同一個takeFileId，
+            // _mountDubbingWidget其餘顯示/試聽/匯出邏輯完全不用區分來源。
+            const recRow = document.createElement('div');
+            recRow.style.cssText = 'display:flex; gap:8px; margin-bottom:8px;';
             const recBtn = document.createElement('button');
             recBtn.type = 'button';
             recBtn.textContent = isRecordingThisPage ? '⏹️ 停止錄音' : (page.takeFileId ? '🎤 重新錄音' : '🎤 開始錄音');
-            recBtn.style.cssText = `width:100%; margin-bottom:8px; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.15); cursor:pointer; color:#fff; background:${isRecordingThisPage ? '#dc2626' : '#10b981'};`;
+            recBtn.style.cssText = `flex:1; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.15); cursor:pointer; color:#fff; background:${isRecordingThisPage ? '#dc2626' : '#10b981'};`;
             recBtn.disabled = state.stopped || (isRecording && !isRecordingThisPage);
             recBtn.addEventListener('click', () => this._handleDubbingRecordClick(recBtn, state, idx, renderPage));
-            wrap.appendChild(recBtn);
+            recRow.appendChild(recBtn);
+
+            const uploadBtn = document.createElement('button');
+            uploadBtn.type = 'button';
+            uploadBtn.textContent = '📁 上傳音檔';
+            uploadBtn.style.cssText = 'flex:0 0 auto; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.2); background:transparent; cursor:pointer;';
+            uploadBtn.disabled = state.stopped || isRecording;
+            const uploadInput = document.createElement('input');
+            uploadInput.type = 'file';
+            uploadInput.accept = 'audio/*';
+            uploadInput.style.display = 'none';
+            uploadBtn.addEventListener('click', () => uploadInput.click());
+            uploadInput.addEventListener('change', () => {
+                const file = uploadInput.files && uploadInput.files[0];
+                uploadInput.value = '';
+                if (file) this._handleDubbingUpload(file, state, idx, renderPage);
+            });
+            recRow.appendChild(uploadBtn);
+            recRow.appendChild(uploadInput);
+            wrap.appendChild(recRow);
 
             const navRow = document.createElement('div');
             navRow.style.cssText = 'display:flex; gap:8px; margin-bottom:8px;';
@@ -5098,6 +5190,21 @@ ${fnData.code}
         this._dubbingRecorder = recorder;
         this._dubbingRecordingPage = pageIdx;
         recorder.start();
+        rerender();
+    }
+
+    // 上傳現成音檔當這一頁的配音（跟_handleDubbingRecordClick的onstop收尾
+    // 是同一段邏輯：存進fileCache→設takeFileId→存檔→重繪），不檢查/轉碼
+    // 音檔格式——_decodeAudioBuffer（匯出時才用到）本來就吃瀏覽器原生支援
+    // 的任何格式，這裡上傳階段不用重複驗證。
+    async _handleDubbingUpload(file, state, pageIdx, rerender) {
+        try {
+            const fileId = await this.fileCache.put(`配音_第${pageIdx + 1}句_上傳.${(file.name.split('.').pop() || 'audio')}`, file.type || 'audio/mpeg', file, 'uploaded');
+            state.pages[pageIdx].takeFileId = fileId;
+            this._persistChatHistory();
+        } catch (err) {
+            this._log('⚠️ 配音上傳失敗：' + String(err && err.message || err));
+        }
         rerender();
     }
 
@@ -12697,6 +12804,47 @@ ${existingNodeSummaries}
         this._pushAssistantMessage(`**可用語音代號**（共 ${TTS_VOICES.length + TTS_API_VOICES.length} 個）\n\n${msg}`, null);
         this._persistChatHistory();
         this._renderMessageHistory();
+    }
+
+    // /media-dub-video [<影片id或檔名>] [<開始>-<結束>]
+    // tw_stock_db客製: 2026-09-12——指令版的最後一個token如果符合
+    // "開始-結束"這種時間範圍格式，就當範圍抽掉（不需要字幕、直接指定
+    // 時間段，速度比整支轉逐字稿快很多）；沒有這種token就走整支字幕的
+    // 既有流程（留空字幕會自動先轉逐字稿）。
+    _parseDubRangeToken(token) {
+        const m = String(token || '').match(/^([\d:.,]+)-([\d:.,]+)$/);
+        if (!m) return null;
+        const start = this._parseTimeValue(m[1]);
+        const end = this._parseTimeValue(m[2]);
+        if (start == null || end == null || !(end > start)) return null;
+        return { start, end };
+    }
+
+    async _handleMediaDubVideoCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let range = null;
+        if (tokens.length) {
+            const parsed = this._parseDubRangeToken(tokens[tokens.length - 1]);
+            if (parsed) { range = parsed; tokens.pop(); }
+        }
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
+        if (!record) {
+            this._log(fileArg ? `⚠️ /media-dub-video：找不到符合「${fileArg}」的影片` : '⚠️ /media-dub-video：目前沒有附加、也沒有最近上傳過的影片');
+            return;
+        }
+        this.messages.push({
+            role: 'user',
+            content: `🎙️ 配音：${record.filename}${range ? `　${_faFormatTimestamp(range.start)} - ${_faFormatTimestamp(range.end)}` : '（整支字幕，自動先轉逐字稿）'}`,
+        });
+        const explicitRanges = range ? [{ start: range.start, end: range.end, text: '' }] : null;
+        let result;
+        try {
+            result = await this._startDubbingSession(record, null, (m) => this._log('🎙️ ' + m), explicitRanges);
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { this._log(`⚠️ /media-dub-video：${result.error}`); }
     }
 
     // ============================================================
