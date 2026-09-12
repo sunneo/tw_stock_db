@@ -910,6 +910,100 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     後面；辨識失敗/辨識出空字串都有對應警告且不會讓輸入框內容跑掉、
     按鈕正確恢復可點擊。
 
+- **2026-09-12 新增「配音小幫手」（`start_dubbing_session`工具＋互動widget）**：
+  使用者要求：針對一支影片的逐句字幕，一句一句提示使用者錄音配音（例如
+  把外語對話換成使用者自己的聲音），用一個有上一頁/下一頁、可以看到那句
+  話關鍵影格截圖的互動widget呈現，可以隨時輸出目前錄好的成果看效果、或
+  結束配音。
+  - **踩到的一個渲染架構bug**：一開始把widget訊息寫成`{role:'assistant',
+    content:...}`，widget完全沒出現、只看到一句純文字。查`_renderSingleMessage`
+    才發現`_progressWidget`/`_displayScene3DYaml`等等所有「特殊widget」
+    判斷式全部包在`if (msg.role === 'tool')`這個大分支裡面，
+    `role:'assistant'`的訊息根本進不去、被更早的一般文字訊息渲染邏輯接走
+    了。改成跟`_createProgressWidget`同一個慣例——`role:'tool'`、
+    `content`留空（真正的說明交給widget本身呈現）——才正確顯示。
+  - **踩到的一個關鍵影格全黑bug**：第一頁（t=0）的截圖永遠是全黑，其他頁
+    正常。原因是`_seekVideoTo`（第一版用`<video>`+seek實作）在
+    `currentTime`已經等於目標時間時直接return不等待——但這只保證影片
+    metadata（尺寸/時長）讀到了，不保證第0幀真的解碼完成可以畫；瀏覽器對
+    「設定成一樣的currentTime」不會觸發`'seeked'`事件，原本的程式碼因此
+    完全不等，畫出一張還沒解碼的黑畫面。（這個bug在後續改用Mediabunny
+    CanvasSink後不再適用，但診斷過程本身值得記錄。）
+  - **效能問題與架構改版（最重要的一次修正）**：第一版關鍵影格截圖／最終
+    匯出的畫面來源都用`<video>`標籤seek+canvas截圖，理由是「音軌替換、
+    影像完全不變」這個操作模式，用Mediabunny的`Conversion` API能不能做到
+    「影像passthrough＋音軌換成自訂buffer」當下沒有把握（跟burn_subtitles
+    「逐格畫字幕」、compose_video「動畫產生新畫面」的既有用法都不一樣），
+    為了避免重演edge-tts那種要來回好幾輪部署才抓到根因的除錯過程，先用
+    確定會動的`<video>`方式。**實測發現這是災難級的效能問題**：一支12秒
+    測試短片，逐格seek要跑220秒以上（約18倍real-time）——對「隨時輸出看
+    效果」這個核心賣點完全不能用（一支3分鐘影片會需要55分鐘才能匯出一次）。
+    查Mediabunny官方文件（https://mediabunny.dev/guide/media-sinks）找到
+    `CanvasSink`：`canvasesAtTimestamps([...])`（稀疏查詢，一次查多個
+    時間點，內部避免重複解碼同一個packet）跟`canvases()`（循序解碼
+    async iterator，只解碼一次、不重複seek）——純decoder-based、不透過
+    `<video>`播放/seek管線，正好呼應使用者先前對burn_subtitles的「不要
+    video tag、要用decoder」要求。改用後同一支影片：關鍵影格（3個時間點）
+    4.1秒→3.4秒，完整匯出（288幀，約12秒份的影片內容）從220+秒降到
+    **6.1秒（循序解碼）／4.1秒（含混音+編碼的完整匯出）**，約2倍real-time，
+    效能落差35倍以上。
+  - `_getMediabunnyVideoTrack(blob)`：`new MB.Input({formats:ALL_FORMATS,
+    source:new MB.BlobSource(blob)})`+`getPrimaryVideoTrack()`。
+    `_createVideoFrameCursor(canvasSink)`：包一層在`canvases()`這個async
+    iterator外面，用一幀lookahead buffer做「輸出時間t落在[目前幀,下一幀)
+    之間就沿用目前幀」的對齊邏輯，讓輸出fps（`DUBBING_EXPORT_FPS`=24）
+    跟來源影片實際fps不同也不會隨時間累積誤差；來源解碼完之後（配音比
+    原片長）全部輸出時間沿用最後一幀（維持最後畫面，不會變黑）。
+    `_canvasElementToBlob`：CanvasSink在主執行緒給`HTMLCanvasElement`
+    （`.toBlob`是callback式），worker context才會退回`OffscreenCanvas`
+    （`.convertToBlob`是Promise式），兩種都處理。
+  - `_startDubbingSession(record, subtitleArg, onProgress)`：跟
+    burn_subtitles共用`_resolveSubtitleSegments`（字幕檔或自動先轉逐字稿，
+    語言固定`'zh'`）→`CanvasSink.canvasesAtTimestamps()`稀疏查詢每句
+    開始時間的關鍵影格（存成JPEG進fileCache，寬度上限
+    `DUBBING_KEYFRAME_MAX_WIDTH`=240）→建立`_dubbingWidget`訊息。
+  - `_mountDubbingWidget(container, msg)`：整個widget用一個內部
+    `renderPage()`重繪函式管理（不是每次操作都觸發整個訊息列表
+    `_renderMessageHistory()`——換頁/錄音/試聽這種互動頻繁的操作，整包
+    重繪代價較高、也容易在錄音途中把DOM砍掉重建）。每頁顯示：頁碼、關鍵
+    影格、字幕文字、試聽（如果已錄）、錄音/重新錄音按鈕、上一頁/下一頁、
+    輸出目前成果/結束配音。`this._dubbingRecorder`/`_dubbingRecordingPage`
+    是widget層級共用狀態（一次只能錄一頁，其他頁的錄音按鈕/換頁按鈕會
+    disabled）。
+  - `_handleDubbingRecordClick`：跟輸入框🎤語音輸入同一套`MediaRecorder`
+    手法，差別是錄完不做語音辨識，直接存原始錄音當這一頁的配音檔（給
+    `_exportDubbedVideo`混音、給使用者試聽）。
+  - `_exportDubbedVideo(state, onProgress)`：解碼原始音軌
+    （`_decodeAudioBuffer`）＋解碼每一句已錄的配音音軌→用
+    `OfflineAudioContext`混音（`GainNode`在每個「已配音」的時間段把原始
+    音軌自動化到0、同時在那個時間點插入配音音軌，兩者一次算出來，不是
+    先剪接原始音檔）→`_createVideoFrameCursor`循序解碼原始畫面（完全不變，
+    純passthrough）→沿用既有的`_encodeCanvasFramesToMp4`（跟compose_video
+    共用同一個「canvas幀+自訂audioBuffer」Mediabunny編碼路徑，這裡把
+    `renderFrameFn`改成`async`才能在裡面`await`游標推進——見
+    `_encodeCanvasFramesToMp4`的異動說明）。沒配音的句子維持原音，可以在
+    任何進度按輸出看效果。
+  - `advancedSettings.voiceInputEnabled`不影響這個功能（配音小幫手的錄音
+    permission/MediaRecorder跟輸入框🎤是各自獨立的功能，只是共用同一套
+    `MediaRecorder`手法）。
+  - `_persistChatHistory`/`_loadPersistedChatHistory`新增`dubbingMap`（跟
+    `scene3DMap`/`anim2dMap`同一套「非可枚舉屬性額外存一份」既有模式）——
+    這個widget的互動狀態（已錄哪幾句、頁碼、關鍵影格/錄音的file_id）
+    如果重新整理頁面就不見，使用者辛苦錄的東西會全部白錄，所以一定要
+    進這個既有的持久化機制，不能像`_progressWidget`那樣當作純ephemeral
+    狀態處理。
+  - media_av domain toolNames/systemPrompt加入`start_dubbing_session`；
+    工具描述明確交代「widget建立成功後AI不用再問要不要繼續、不用描述
+    後續步驟」，避免子agent畫蛇添足。
+  - 實測（真實12秒測試片段，非mock）：關鍵影格擷取全部正常（含修過bug
+    後的第0秒那一幀）；完整錄音/換頁/試聽/停止/結束配音狀態機（mock
+    `getUserMedia`/`MediaRecorder`，環境沒有真麥克風）；匯出正確性用
+    zero-crossing-rate驗證——餵一段1kHz純音當配音，匯出後解碼該時間段
+    量到約2000次過零/秒（1kHz正弦波理論值剛好2000），RMS約0.353（0.5
+    振幅正弦波理論RMS），跟前後原始音軌時段的zero-crossing特徵/RMS明顯
+    不同，證實混音時原始音軌確實在配音時段被正確靜音、配音音軌確實被
+    正確插入，不是簡單疊加或完全沒替換到。
+
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
 | 工具名 | 約略行號 | 一句話用途 |
