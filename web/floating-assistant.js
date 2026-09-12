@@ -720,15 +720,16 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // 瀏覽器Cache API快取。之後Phase會加上burn_subtitles（把字幕燒進影片）。
     media_av: {
         enabled: true,
-        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'list_uploaded_files'],
+        label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成／配音）',
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'start_dubbing_session', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
             '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。\n' +
-            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
+            '- start_dubbing_session：使用者說類似「幫這支影片配音／錄我自己的聲音」時呼叫，會在對話裡建立一個互動widget（逐句：關鍵影格截圖＋字幕＋錄音/重錄/試聽＋上一頁下一頁，可隨時輸出目前成果或結束配音）——呼叫成功後接下來使用者自己在widget操作，你不用再問要不要繼續、也不用描述後續步驟。\n' +
+            '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech/start_dubbing_session都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。',
     },
 };
 
@@ -871,6 +872,23 @@ const TTS_DEFAULT_API_VOICE = 'zh-TW-HsiaoChenNeural';
 // Worker端/edge-tts單次請求的文字長度上限是4000字元（見worker.js
 // EDGE_TTS_MAX_TEXT_LENGTH），這裡切段抓保守一點的上限，多留餘裕。
 const TTS_API_MAX_CHARS_PER_CHUNK = 1800;
+
+// tw_stock_db客製: 2026-09-12使用者要求——「配音小幫手」：針對一支影片的
+// 逐句字幕，一句一句提示使用者錄音配音（例如把外語對話換成自己的聲音），
+// 用一個互動widget呈現（每頁一句：關鍵影格截圖＋原字幕文字＋錄音/重錄/
+// 試聽），可以隨時匯出目前錄好的成果看效果。關鍵影格截圖跟最終匯出的畫面
+// 來源用Mediabunny的CanvasSink（見_getMediabunnyVideoTrack/
+// _createVideoFrameCursor的說明）——純decoder、不透過<video>播放/seek管線，
+// 呼應burn_subtitles那次使用者「不要video tag、要用decoder」的要求。這是
+// 第二版：第一版最初用<video>+canvas seek實作（覺得"音軌替換、影像不變"
+// 用CanvasSink這種「循序解碼」風格的API可能不好對應），實測一支12秒短片
+// 逐格seek要跑220秒以上（約18倍real-time，對「隨時輸出看效果」這個核心
+// 賣點完全不能用）——改用CanvasSink.canvasesAtTimestamps()（關鍵影格，稀疏
+// 查詢）+canvases()（完整匯出，循序解碼迭代）之後，同一支影片：關鍵影格
+// 4.1秒、完整匯出6.1秒（約2倍real-time），效能落差35倍以上，值得為了這個
+// 改一次。
+const DUBBING_KEYFRAME_MAX_WIDTH = 240;
+const DUBBING_EXPORT_FPS = 24; // 純畫面passthrough，不需要跟來源影片同fps，24已經很流暢，可控制匯出時間
 
 // tw_stock_db客製: browser_search工具支援的來源代號——wiki/stackoverflow/
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
@@ -3758,6 +3776,29 @@ ${fnData.code}
                 voice: { type: 'string', enum: TTS_VOICES.concat(TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
             }, additionalProperties: false }
         );
+
+        // tw_stock_db客製: 2026-09-12使用者要求——「配音小幫手」。使用者說
+        // 類似「我要為這個影片的對話錄音」時呼叫這個工具，不是自己想辦法
+        // 用其他工具兜流程——它會在對話裡建立一個互動widget（逐句：關鍵
+        // 影格截圖＋原字幕文字＋錄音/重錄/試聽按鈕＋上一頁下一頁），使用者
+        // 接下來自己在widget裡操作，不需要AI再介入。
+        registerOptional('start_dubbing_session',
+            `建立一個「配音小幫手」互動widget，讓使用者針對一支影片的逐句字幕，一句一句錄音配音（例如把原本的對話換成使用者自己的聲音）。widget會直接顯示在對話裡：每頁一句，有那句話當下的關鍵影格截圖、原字幕文字、錄音/重錄/試聽按鈕、上一頁/下一頁；使用者可以隨時在widget裡按「輸出目前成果」匯出一支合成好的MP4看效果（沒配音的句子維持原音），或按「結束配音」收工——這些操作使用者自己在widget裡完成，呼叫完這個工具、widget建立成功後，你不用再問使用者要不要繼續、也不用再描述接下來的步驟，直接告知widget已經準備好即可。回傳 {ok, pages}。⚠️需要影片有帶時間軸的字幕（提供subtitle參數，或留空自動先跑一次語音轉逐字稿，可能要花一點時間）；擷取每一頁的關鍵影格截圖也需要處理時間，句數多的話請求後要等一下。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動先轉逐字稿"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg, { preferAv: true });
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片（請先上傳，或用video參數指定id/檔名）' });
+                try {
+                    return JSON.stringify(await this._startDubbingSession(record, parsed.subtitle, (m) => this._log('🎙️ ' + m)));
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝最近上傳的' },
+                subtitle: { type: 'string', description: '（選填）字幕檔的file_id或檔名；留空＝自動先轉逐字稿' },
+            }, additionalProperties: false }
+        );
     }
 
     // ============================================================
@@ -4776,6 +4817,412 @@ ${fnData.code}
         if (!tr.ok) return { ok: false, error: '自動轉逐字稿失敗：' + tr.error };
         if (!Array.isArray(tr.segments) || !tr.segments.length) return { ok: false, error: '自動轉出來的逐字稿沒有帶時間軸的分段，沒辦法拿來燒字幕' };
         return { ok: true, segments: tr.segments, autoTranscribed: true };
+    }
+
+    // ============================================================
+    // tw_stock_db客製: 2026-09-12使用者要求——「配音小幫手」。給一支影片＋
+    // 逐句字幕，一頁一句提示使用者錄音配音（例如把外語對話換成自己的聲音），
+    // 用一個互動widget呈現在對話裡：關鍵影格截圖＋原字幕文字＋錄音/重錄/
+    // 試聽＋上一頁/下一頁，可以隨時輸出目前錄好的成果看效果，或按「結束
+    // 配音」收工。
+    // ⚠️關鍵影格截圖/最終匯出的畫面來源，第一版曾經用<video>+canvas seek
+    // 實作過，實測發現**災難級的效能問題**：一支12秒的短片光是逐格seek
+    // 就要跑220秒以上（約18倍real-time），對這個功能的核心賣點「隨時輸出
+    // 看效果」根本不能用。改用Mediabunny的CanvasSink（見
+    // https://mediabunny.dev/guide/media-sinks，`canvasesAtTimestamps()`
+    // 做稀疏查詢/`canvases()`做循序解碼迭代，兩個都是純decoder、不透過
+    // <video>播放管線）之後，同一支測試影片：關鍵影格（稀疏查詢3個時間點）
+    // 4.1秒、完整匯出（循序解碼288幀）只要6.1秒（約2倍real-time，比原本
+    // 快35倍以上）——這也正好呼應使用者先前對burn_subtitles的要求「不要用
+    // video tag，要用decoder」，這裡補上同一個決策。
+    // ============================================================
+
+    // CanvasSink在主執行緒會給HTMLCanvasElement（.toBlob是callback式），
+    // worker context才會退回OffscreenCanvas（.convertToBlob是Promise式）
+    // ——這裡兩種都處理，不假設一定是哪一種。
+    async _canvasElementToBlob(canvas, type, quality) {
+        if (typeof canvas.convertToBlob === 'function') return canvas.convertToBlob({ type, quality });
+        return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+    }
+
+    // 從Blob建立Mediabunny的Input+抓出主要視訊軌，呼叫端可以用track建立
+    // CanvasSink做關鍵影格查詢或循序解碼。
+    async _getMediabunnyVideoTrack(blob) {
+        const MB = await this._ensureMediabunnyLoaded();
+        const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(blob) });
+        const track = await input.getPrimaryVideoTrack();
+        if (!track) throw new Error('這個檔案裡找不到視訊軌');
+        return { MB, input, track };
+    }
+
+    // 循序解碼游標：包一層在CanvasSink.canvases()這個async iterator外面，
+    // 讓呼叫端可以用「我要輸出時間t的畫面」這種隨選方式取用（advanceTo），
+    // 內部只會往前推進、不會重新seek——時間對得上（t落在[目前幀,下一幀)
+    // 之間）就沿用目前這一幀，這樣輸出fps跟來源影片實際fps不同（例如輸出
+    // 24fps、來源30fps）也能正確對齊，不會隨時間累積誤差。來源解碼完
+    // （iterator done）之後全部輸出時間都沿用最後一幀（影片播完維持最後
+    // 畫面，而不是黑畫面或報錯）。
+    _createVideoFrameCursor(canvasSink) {
+        const iterator = canvasSink.canvases()[Symbol.asyncIterator]();
+        let current = null;
+        let pending = null;
+        let done = false;
+        return {
+            async advanceTo(t) {
+                for (;;) {
+                    if (pending === null && !done) {
+                        const r = await iterator.next();
+                        if (r.done) { done = true; break; }
+                        pending = r.value;
+                    }
+                    if (pending && pending.timestamp <= t) { current = pending; pending = null; continue; }
+                    break;
+                }
+                return current;
+            },
+            async close() { try { await iterator.return(); } catch (_) {} },
+        };
+    }
+
+    // 建立配音小幫手：解析字幕/逐字稿（跟burn_subtitles共用同一套
+    // _resolveSubtitleSegments）→逐句擷取關鍵影格縮圖→在對話中建立一則
+    // 帶_dubbingWidget的訊息。回傳給AI的note刻意講清楚「widget已經在對話
+    // 裡了、使用者要自己操作」，避免AI誤以為自己還要接著做什麼。
+    async _startDubbingSession(record, subtitleArg, onProgress) {
+        const sub = await this._resolveSubtitleSegments(record, subtitleArg, 'zh', onProgress);
+        if (!sub.ok) return { ok: false, error: sub.error };
+        const segments = (sub.segments || []).filter(s => s.text && s.text.trim() && s.start != null);
+        if (!segments.length) return { ok: false, error: '沒有帶時間軸、有文字內容的字幕/逐字稿可以配音' };
+
+        let MB, input, track;
+        try {
+            ({ MB, input, track } = await this._getMediabunnyVideoTrack(record.blob));
+        } catch (err) {
+            return { ok: false, error: '無法讀取影片：' + String(err.message || err) };
+        }
+        const kw = Math.min(DUBBING_KEYFRAME_MAX_WIDTH, track.displayWidth || DUBBING_KEYFRAME_MAX_WIDTH);
+        const sink = new MB.CanvasSink(track, { width: kw });
+
+        // canvasesAtTimestamps是稀疏查詢，一次把全部時間點丟進去，內部會
+        // 自動避免重複解碼同一個packet，比逐一呼叫getCanvas(t)更有效率。
+        const pages = segments.map((seg) => ({ start: seg.start, end: seg.end, text: seg.text, keyframeFileId: null, takeFileId: null }));
+        let i = 0;
+        try {
+            for await (const wrapped of sink.canvasesAtTimestamps(segments.map((s) => s.start))) {
+                if (onProgress) onProgress(`擷取關鍵影格… ${i + 1}/${segments.length}`);
+                if (wrapped) {
+                    try {
+                        const blob = await this._canvasElementToBlob(wrapped.canvas, 'image/jpeg', 0.75);
+                        if (blob) pages[i].keyframeFileId = await this.fileCache.put(`配音關鍵影格_${i + 1}.jpg`, 'image/jpeg', blob, 'uploaded');
+                    } catch (_) { /* 擷取失敗頂多沒有縮圖，不擋整個流程 */ }
+                }
+                i++;
+            }
+        } finally {
+            try { input.dispose && input.dispose(); } catch (_) {}
+        }
+
+        // tw_stock_db客製: 2026-09-12實測發現——_renderSingleMessage裡
+        // _progressWidget/_displayScene3DYaml等等「特殊widget」判斷式全部
+        // 包在`if (msg.role === 'tool')`這個大分支裡面，role:'assistant'的
+        // 訊息根本不會進到這段、只會被更早的一般文字訊息渲染邏輯接走（一開
+        // 始寫成role:'assistant'時沒注意到，widget完全沒出現，只看到一句
+        // 純文字）。改成跟_createProgressWidget同一個慣例：role:'tool'、
+        // content留空——真正給使用者看的說明文字改由_dubbingWidget那個
+        // widget本身呈現（頁碼/字幕/按鈕），這個訊息物件的content純粹是
+        // 掛widget的容器，不需要另外顯示一段文字。
+        const msg = { role: 'tool', content: '' };
+        Object.defineProperty(msg, '_dubbingWidget', {
+            value: { videoFileId: record.id, videoFilename: record.filename, pages, currentPage: 0, stopped: false },
+            enumerable: false, writable: true, configurable: true,
+        });
+        this.messages.push(msg);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+        return { ok: true, pages: pages.length, note: '已經在對話中建立配音互動widget了，請使用者直接在widget裡操作（錄音／換頁／輸出），不用再重複描述接下來的步驟或詢問使用者要不要繼續。' };
+    }
+
+    // 掛載配音widget（訊息渲染分支呼叫）。整個widget用一個renderPage()
+    // 內部重繪函式管理，不是每次操作都觸發整個訊息列表重新渲染——原因見
+    // 上方常數區塊的說明，跟_progressWidget那種「狀態一變就整包
+    // _renderMessageHistory()」不同，這裡的互動更頻繁（換頁/錄音/試聽），
+    // 整包重繪代價較高、也容易在錄音途中把DOM砍掉重建。
+    async _mountDubbingWidget(container, msg) {
+        const state = msg._dubbingWidget;
+        if (!state || !Array.isArray(state.pages) || !state.pages.length) return;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-bottom:12px; max-width:min(420px,95%); padding:12px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.25); font-size:13px;';
+        container.appendChild(wrap);
+
+        const renderPage = async () => {
+            wrap.innerHTML = '';
+            const total = state.pages.length;
+            const idx = Math.min(Math.max(0, state.currentPage || 0), total - 1);
+            state.currentPage = idx;
+            const page = state.pages[idx];
+            const isRecording = this._dubbingRecorder && this._dubbingRecorder.state === 'recording';
+            const isRecordingThisPage = isRecording && this._dubbingRecordingPage === idx;
+
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-weight:bold;';
+            header.innerHTML = `<span>🎙️ 配音小幫手</span><span>第 ${idx + 1} / ${total} 頁</span>`;
+            wrap.appendChild(header);
+
+            if (page.keyframeFileId) {
+                const imgWrap = document.createElement('div');
+                imgWrap.style.cssText = 'margin-bottom:8px; border-radius:6px; overflow:hidden; background:#000; text-align:center;';
+                const img = document.createElement('img');
+                img.style.cssText = 'max-width:100%; display:inline-block;';
+                imgWrap.appendChild(img);
+                wrap.appendChild(imgWrap);
+                this.fileCache.get(page.keyframeFileId).then((rec) => { if (rec) img.src = URL.createObjectURL(rec.blob); });
+            }
+
+            const textEl = document.createElement('div');
+            textEl.style.cssText = 'padding:8px 10px; background:rgba(0,0,0,0.05); border-radius:6px; margin-bottom:8px; line-height:1.5;';
+            textEl.textContent = `${_faFormatTimestamp(page.start)}　${page.text}`;
+            wrap.appendChild(textEl);
+
+            if (page.takeFileId) {
+                const rec = await this.fileCache.get(page.takeFileId);
+                if (rec) {
+                    const audioEl = document.createElement('audio');
+                    audioEl.controls = true;
+                    audioEl.style.cssText = 'width:100%; margin-bottom:8px;';
+                    audioEl.src = URL.createObjectURL(rec.blob);
+                    wrap.appendChild(audioEl);
+                }
+            }
+
+            const recBtn = document.createElement('button');
+            recBtn.type = 'button';
+            recBtn.textContent = isRecordingThisPage ? '⏹️ 停止錄音' : (page.takeFileId ? '🎤 重新錄音' : '🎤 開始錄音');
+            recBtn.style.cssText = `width:100%; margin-bottom:8px; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.15); cursor:pointer; color:#fff; background:${isRecordingThisPage ? '#dc2626' : '#10b981'};`;
+            recBtn.disabled = state.stopped || (isRecording && !isRecordingThisPage);
+            recBtn.addEventListener('click', () => this._handleDubbingRecordClick(recBtn, state, idx, renderPage));
+            wrap.appendChild(recBtn);
+
+            const navRow = document.createElement('div');
+            navRow.style.cssText = 'display:flex; gap:8px; margin-bottom:8px;';
+            const prevBtn = document.createElement('button'); prevBtn.type = 'button'; prevBtn.textContent = '⬅ 上一句';
+            const nextBtn = document.createElement('button'); nextBtn.type = 'button'; nextBtn.textContent = '下一句 ➡';
+            [prevBtn, nextBtn].forEach((b) => { b.style.cssText = 'flex:1; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.2); background:transparent; cursor:pointer;'; });
+            prevBtn.disabled = idx === 0 || isRecording;
+            nextBtn.disabled = idx === total - 1 || isRecording;
+            prevBtn.addEventListener('click', () => { state.currentPage = idx - 1; renderPage(); });
+            nextBtn.addEventListener('click', () => { state.currentPage = idx + 1; renderPage(); });
+            navRow.appendChild(prevBtn); navRow.appendChild(nextBtn);
+            wrap.appendChild(navRow);
+
+            const actionRow = document.createElement('div');
+            actionRow.style.cssText = 'display:flex; gap:8px;';
+            const exportBtn = document.createElement('button'); exportBtn.type = 'button'; exportBtn.textContent = '📤 輸出目前成果';
+            const stopBtn = document.createElement('button'); stopBtn.type = 'button'; stopBtn.textContent = state.stopped ? '已結束配音' : '⏹ 結束配音';
+            [exportBtn, stopBtn].forEach((b) => { b.style.cssText = 'flex:1; padding:6px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.2); background:transparent; cursor:pointer; font-size:12px;'; });
+            stopBtn.disabled = state.stopped || isRecording;
+            actionRow.appendChild(exportBtn); actionRow.appendChild(stopBtn);
+            wrap.appendChild(actionRow);
+
+            const recordedCount = state.pages.filter((p) => p.takeFileId).length;
+            const statusEl = document.createElement('div');
+            statusEl.style.cssText = 'margin-top:6px; font-size:11px; opacity:0.75;';
+            statusEl.textContent = `已錄 ${recordedCount}/${total} 句${state.stopped ? '　（配音已結束，仍可輸出成果）' : ''}`;
+            wrap.appendChild(statusEl);
+
+            exportBtn.addEventListener('click', () => this._handleDubbingExportClick(exportBtn, msg));
+            stopBtn.addEventListener('click', () => {
+                if (!confirm('結束配音？結束後這個widget不能再錄音／換頁，但仍然可以輸出目前的成果。')) return;
+                state.stopped = true;
+                this._persistChatHistory();
+                renderPage();
+            });
+        };
+        await renderPage();
+    }
+
+    // 單一頁的錄音/停止錄音——跟輸入框的🎤語音輸入用同一套MediaRecorder
+    // 手法（見_startVoiceRecording），差別是這裡錄完不做語音辨識，直接把
+    // 原始錄音存起來當這一頁的配音檔（給_exportDubbedVideo混音用、給使用者
+    // 試聽）。this._dubbingRecorder/_dubbingRecordingPage是widget層級的
+    // 共用狀態（一次只能錄一頁），跨renderPage()重繪都要看得到。
+    async _handleDubbingRecordClick(btn, state, pageIdx, rerender) {
+        if (btn.disabled) return;
+        if (this._dubbingRecorder && this._dubbingRecorder.state === 'recording') {
+            if (this._dubbingRecordingPage === pageIdx) this._dubbingRecorder.stop();
+            return; // 正在錄別頁，這裡的按鈕理論上已經disabled，多一層防呆
+        }
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            this._log('⚠️ 配音錄音：無法取得麥克風權限（' + String(err && err.message || err) + '）');
+            return;
+        }
+        if (typeof MediaRecorder === 'undefined') {
+            this._log('⚠️ 這個瀏覽器不支援 MediaRecorder，無法錄音。');
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+        }
+        let mimeType = '';
+        for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']) {
+            if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) { mimeType = t; break; }
+        }
+        let recorder;
+        try {
+            recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+        } catch (err) {
+            this._log('⚠️ 配音錄音：無法啟動（' + String(err.message || err) + '）');
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+        }
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = async () => {
+            stream.getTracks().forEach((t) => t.stop());
+            this._dubbingRecorder = null;
+            this._dubbingRecordingPage = null;
+            if (chunks.length) {
+                const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+                try {
+                    const fileId = await this.fileCache.put(`配音_第${pageIdx + 1}句.webm`, blob.type, blob, 'uploaded');
+                    state.pages[pageIdx].takeFileId = fileId;
+                    this._persistChatHistory();
+                } catch (err) {
+                    this._log('⚠️ 配音存檔失敗：' + String(err.message || err));
+                }
+            } else {
+                this._log('⚠️ 配音錄音：沒有錄到聲音');
+            }
+            rerender();
+        };
+        this._dubbingRecorder = recorder;
+        this._dubbingRecordingPage = pageIdx;
+        recorder.start();
+        rerender();
+    }
+
+    async _handleDubbingExportClick(btn, msg) {
+        if (btn.disabled) return;
+        const state = msg._dubbingWidget;
+        const recordedCount = state.pages.filter((p) => p.takeFileId).length;
+        if (!recordedCount) { this._log('⚠️ 配音小幫手：還沒有錄好任何一句，無法輸出'); return; }
+        btn.disabled = true;
+        const origText = btn.textContent;
+        btn.textContent = '輸出中…';
+        const prog = this._createProgressWidget(`輸出配音影片（${state.videoFilename}）`);
+        try {
+            const result = await this._exportDubbedVideo(state, (m) => prog.update({ status: m }));
+            if (!result.ok) { prog.fail(result.error); return; }
+            prog.finish(`完成：約${result.durationSeconds}s，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB`);
+            await this._deliverExistingCacheFile(result.video_file_id, `📎 配音成果影片：${result.filename}（已錄 ${recordedCount}/${state.pages.length} 句）`);
+        } catch (err) {
+            prog.fail(String(err && err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.textContent = origText;
+        }
+    }
+
+    // 匯出目前的配音成果：原始畫面完全不變（逐格<video>+canvas截圖，見
+    // 檔案開頭常數區塊的取捨說明），音軌＝原始音軌疊上使用者錄好的每一句
+    // （用GainNode把原始音軌在每個「已配音」的時間段靜音、同時在那個時間點
+    // 插入使用者的錄音，兩者都在OfflineAudioContext裡一次算出來，不是先
+    // 剪接原始音檔）。沒配音的句子維持原音，可以在任何進度按輸出看效果。
+    async _exportDubbedVideo(state, onProgress) {
+        const videoRecord = await this.fileCache.get(state.videoFileId);
+        if (!videoRecord) return { ok: false, error: '找不到原始影片（可能已經被清除快取）' };
+        if (onProgress) onProgress('解碼原始音軌…');
+        let originalAudio;
+        try {
+            originalAudio = await this._decodeAudioBuffer(videoRecord.blob);
+        } catch (err) {
+            return { ok: false, error: '解碼原始音軌失敗：' + String(err.message || err) };
+        }
+
+        const takes = [];
+        for (let i = 0; i < state.pages.length; i++) {
+            const page = state.pages[i];
+            if (!page.takeFileId) continue;
+            const rec = await this.fileCache.get(page.takeFileId);
+            if (!rec) continue;
+            if (onProgress) onProgress(`解碼配音音軌… 第 ${i + 1} 句`);
+            try {
+                const buf = await this._decodeAudioBuffer(rec.blob);
+                takes.push({ start: page.start || 0, buffer: buf });
+            } catch (_) { /* 單一句解碼失敗就跳過那句，不擋整個匯出 */ }
+        }
+
+        if (onProgress) onProgress('混音中…');
+        const sr = originalAudio.sampleRate;
+        const numCh = originalAudio.numberOfChannels || 1;
+        let maxEnd = originalAudio.duration;
+        for (const t of takes) maxEnd = Math.max(maxEnd, t.start + t.buffer.duration);
+        const offline = new OfflineAudioContext(numCh, Math.max(1, Math.ceil(maxEnd * sr)), sr);
+        const origSrc = offline.createBufferSource();
+        origSrc.buffer = originalAudio;
+        const gain = offline.createGain();
+        origSrc.connect(gain);
+        gain.connect(offline.destination);
+        gain.gain.setValueAtTime(1, 0);
+        for (const t of takes) {
+            gain.gain.setValueAtTime(0, t.start);
+            gain.gain.setValueAtTime(1, Math.min(maxEnd, t.start + t.buffer.duration));
+        }
+        origSrc.start(0);
+        for (const t of takes) {
+            const src = offline.createBufferSource();
+            src.buffer = t.buffer;
+            src.connect(offline.destination);
+            src.start(Math.max(0, t.start));
+        }
+        const mixedBuffer = await offline.startRendering();
+
+        if (onProgress) onProgress('讀取原始影片畫面…');
+        let MB, input, track;
+        try {
+            ({ MB, input, track } = await this._getMediabunnyVideoTrack(videoRecord.blob));
+        } catch (err) {
+            return { ok: false, error: '無法讀取影片畫面：' + String(err.message || err) };
+        }
+        const width = track.displayWidth || 640, height = track.displayHeight || 360;
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        const fps = DUBBING_EXPORT_FPS;
+        const totalFrames = Math.max(1, Math.round(maxEnd * fps));
+
+        // 循序解碼整支影片（見_createVideoFrameCursor的說明——這是為什麼
+        // 這個功能能做到「隨時輸出看效果」還不會慢到不能用的關鍵：不是
+        // 每一幀都重新seek，是一次從頭到尾解碼過去、依輸出時間軸對齊）。
+        const sink = new MB.CanvasSink(track, { width, height, fit: 'fill' });
+        const cursor = this._createVideoFrameCursor(sink);
+        let result;
+        try {
+            result = await this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, async (i) => {
+                const frame = await cursor.advanceTo(i / fps);
+                ctx.clearRect(0, 0, width, height);
+                if (frame) ctx.drawImage(frame.canvas, 0, 0, width, height);
+                // 配音比原片長、原片已經播完之後：frame會沿用最後一幀（不是
+                // undefined，_createVideoFrameCursor保證done之後繼續回傳
+                // current），畫面維持在最後一格，不會變黑畫面。
+            }, (cur, total) => {
+                if (onProgress && (cur === total || cur % Math.max(1, Math.round(total / 20)) === 0)) onProgress(`合成畫面＋音軌… ${Math.round((cur / total) * 100)}%`);
+            }, { audioBuffer: mixedBuffer });
+        } finally {
+            await cursor.close();
+            try { input.dispose && input.dispose(); } catch (_) {}
+        }
+        if (!result || !result.ok) return { ok: false, error: (result && result.error) || '合成失敗' };
+
+        const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '').replace(/\.配音版$/, '');
+        const name = `${base}.配音版.mp4`;
+        let outId;
+        try {
+            outId = await this.fileCache.put(name, 'video/mp4', result.blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '影片存檔失敗：' + String(err.message || err) };
+        }
+        return { ok: true, video_file_id: outId, filename: name, sizeBytes: result.blob.size, durationSeconds: Math.round(maxEnd) };
     }
 
     // tw_stock_db客製: 2026-09-11——compose_video的實作。把2D/3D動畫YAML
@@ -7791,8 +8238,15 @@ ${sourceTool.handlerScript}
             }
             return compositeCanvas;
         };
-        const paintFrame = (i) => {
-            renderFrameFn(i);
+        // tw_stock_db客製: 2026-09-12——renderFrameFn這裡改成await（原本是
+        // 同步呼叫）——2D/3D動畫的renderFrameFn本來就是同步函式，await一個
+        // 非Promise值是no-op、下個microtask就繼續，完全不影響既有行為；
+        // 但配音小幫手的匯出（_exportDubbedVideo）需要seek一支<video>元素
+        // 到指定時間再截圖，seek本身是非同步的，這裡改成await才能讓每一幀
+        // 真的先等畫面seek/畫好再送進編碼器，不然幀跟幀之間的畫面時間會
+        // 對不上。
+        const paintFrame = async (i) => {
+            await renderFrameFn(i);
             if (!capSegs) return;
             compositeCtx.clearRect(0, 0, compositeCanvas.width, compositeCanvas.height);
             compositeCtx.drawImage(canvas, 0, 0);
@@ -7810,7 +8264,7 @@ ${sourceTool.handlerScript}
                 await output.start();
                 await aSrc.add(audioBuffer);
                 for (let i = 0; i < totalFrames; i++) {
-                    paintFrame(i);
+                    await paintFrame(i);
                     await vSrc.add(i / fps, 1 / fps);
                     if (onProgress) onProgress(i + 1, totalFrames);
                     if (i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
@@ -7871,7 +8325,7 @@ ${sourceTool.handlerScript}
 
         const frameDurationUs = 1e6 / fps;
         for (let i = 0; i < totalFrames && !encodeError; i++) {
-            paintFrame(i);
+            await paintFrame(i);
             const frame = new VideoFrame(frameSource(), { timestamp: Math.round(i * frameDurationUs), duration: Math.round(frameDurationUs) });
             encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
             frame.close();
@@ -14721,6 +15175,12 @@ ${existingNodeSummaries}
             // 也是同一套「非可枚舉屬性額外存一份」作法，跟benchmarkReportMap
             // 同樣理由（chips陣列很小，沒有大檔案顧慮）。
             const chipsMap = {};
+            // tw_stock_db客製: 2026-09-12——配音小幫手widget狀態（頁面/關鍵
+            // 影格file_id/錄音file_id）同一套「非可枚舉屬性額外存一份」作法
+            // ——這個widget的互動狀態（已錄哪幾句）如果重新整理頁面就不見，
+            // 使用者辛苦錄的東西全部白錄，所以一定要進這個既有的持久化機制，
+            // 不能像_progressWidget那樣當作純ephemeral狀態。
+            const dubbingMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
@@ -14731,6 +15191,7 @@ ${existingNodeSummaries}
                 if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
                 if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
+                if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -14743,6 +15204,7 @@ ${existingNodeSummaries}
                     if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
                     if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
+                    if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -14757,6 +15219,7 @@ ${existingNodeSummaries}
                 drawingMap,
                 viewerMap,
                 anim2dMap,
+                dubbingMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -14836,6 +15299,12 @@ ${existingNodeSummaries}
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayAnim2DYaml', { value: yamlText, enumerable: false, configurable: true });
                     this._latestAnim2DYaml = yamlText;
+                });
+            }
+            if (data.dubbingMap) {
+                Object.entries(data.dubbingMap).forEach(([key, dubbingState]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_dubbingWidget', { value: dubbingState, enumerable: false, writable: true, configurable: true });
                 });
             }
         } catch (err) {
@@ -15170,6 +15639,16 @@ ${existingNodeSummaries}
                 w.innerHTML = `<div style="font-weight:bold;">${icon} ${this._escapeHtml(st.title)}${st.pct != null && !st.error ? `　${st.pct}%` : ''}</div>
                     <div style="margin-top:4px; opacity:0.85;">${this._escapeHtml(st.error || st.status)}${!st.done ? `　（已 ${elapsed}s）` : ''}</div>${bar}`;
                 container.appendChild(w);
+                return;
+            }
+
+            // tw_stock_db客製: 2026-09-12——配音小幫手互動widget（見
+            // _startDubbingSession/_mountDubbingWidget）。跟圖片/3D場景同一個
+            // 「最終視覺/互動產出，一律顯示、不受showInternalTrace開關影響」
+            // 原則。_mountDubbingWidget自己非同步取關鍵影格/試聽音檔，這裡
+            // 只負責呼叫掛載，不用等它完成才return（保住訊息順序即可）。
+            if (msg._dubbingWidget) {
+                this._mountDubbingWidget(container, msg);
                 return;
             }
 
