@@ -869,6 +869,47 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
       聽過。`README.md`「已知限制」的「沒辦法部署測試」那條已經拿掉，
       改成記錄這次除錯過程本身。
 
+- **2026-09-12 新增（輸入框🎤語音輸入按鈕，不是工具，是根層級UI功能）**：
+  使用者要求：跟transcribe_media共用同一份Whisper模型/快取，不是另一套
+  辨識邏輯，用Advance Settings新分頁「輸入」開關控制，第一次用要先跳確認框
+  說明會下載模型、按確定才下載並要求麥克風權限，操作方式是點一下開始錄音
+  （按鈕變成⏹️）、再點一下停止並辨識。
+  - HTML：`#ai-mic-btn`（🎤），放在`#ai-input-text`跟`#ai-send-btn`中間，
+    預設`style="display:none"`（不是`.hidden`——這個檔案的`.hidden`只對
+    `.ai-advanced-pane`生效，一般元素直接控制inline style）。
+  - Advance Settings新增分頁：sidebar `.ai-advanced-cat[data-cat="input"]`
+    「輸入」＋對應pane，只有一個checkbox「啟用語音輸入」
+    （`#ai-voice-input-enabled-chk`）＋說明文字。分頁切換本身是既有的
+    通用`data-cat`/`data-pane`比對機制，新增分頁不用額外寫JS。
+  - `advancedSettings.voiceInputEnabled`（預設**關閉**，跟browser_search/
+    TTS API同樣理由：要下載模型、要跟使用者要麥克風權限，不該預設出現）。
+    勾選/取消即時呼叫`_updateVoiceInputButtonVisibility()`顯示/隱藏按鈕，
+    不用重新整理頁面。
+  - `_wireVoiceInputButton(inputText)`／`_handleMicButtonClick`：閒置時
+    點擊→`_getWhisperCacheInfo()`檢查模型是否已快取→沒快取才跳
+    `confirm()`（使用者取消就整個中止，**不會**呼叫`getUserMedia`）→
+    `navigator.mediaDevices.getUserMedia({audio:true})`要麥克風權限→
+    `_startVoiceRecording`（`MediaRecorder`，優先選
+    `audio/webm;codecs=opus`，逐一嘗試fallback格式）。錄音中再點一次→
+    `recorder.stop()`→`onstop`裡釋放麥克風track、把錄到的Blob丟給
+    `_recognizeVoiceInput`。
+  - `_recognizeVoiceInput(blob, btn, inputText)`：`_decodeAudioForWhisper`
+    解碼→跟`_transcribeMedia`同一套device fallback
+    （`whisperDevicePreference`／WebGPU可用性）→
+    `_getWhisperTranscriber`＋`_runWhisperWindowed`（跟transcribe_media
+    共用，處理錄超過30秒的情況；語言固定`'zh'`，跟這個專案其餘語音功能
+    一致不做自動偵測）→辨識出的文字接到輸入框現有內容後面（空白分隔，
+    不覆蓋、不自動送出，使用者可以先看/改再按送出）。失敗/沒辨識出文字
+    都有對應的`_log`警告，按鈕一律在`finally`重設回🎤／可點擊狀態，不會
+    卡住。
+  - 實測（mock `getUserMedia`/`MediaRecorder`/whisper底層函式，因為
+    自動化瀏覽器工具沒有真的麥克風裝置）：預設隱藏→啟用後顯示；模型未
+    快取＋使用者取消確認框→**不會**呼叫`getUserMedia`；模型已快取→
+    **不會**跳確認框、直接要權限錄音；完整開始/停止狀態機（按鈕文字/
+    背景色切換、麥克風track正確釋放）；辨識成功正確接回輸入框既有內容
+    後面；辨識失敗/辨識出空字串都有對應警告且不會讓輸入框內容跑掉、
+    按鈕正確恢復可點擊。
+
 ## 內建AI工具完整清單（`register_openai_tool`，共25個，行號為commit `fbdd5039`快照，2D動畫3個工具行號較新未更新）
 
 | 工具名 | 約略行號 | 一句話用途 |
