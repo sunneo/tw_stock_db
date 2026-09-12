@@ -2567,6 +2567,10 @@ class FloatingAssistant {
             ttsApiEnabled: false,
             ttsApiProxyUrl: '',
             ttsDefaultApiVoice: TTS_DEFAULT_API_VOICE,
+            // tw_stock_db客製: 2026-09-12使用者要求——輸入框旁邊的🎤語音輸入
+            // 按鈕，預設關閉（跟browserSearchEnabled同一個理由：要跳確認框
+            // 才下載模型、要跟使用者要麥克風權限，不該預設就出現在畫面上）。
+            voiceInputEnabled: false,
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -2871,6 +2875,7 @@ class FloatingAssistant {
             ttsApiEnabled: raw.ttsApiEnabled === true,
             ttsApiProxyUrl: String(raw.ttsApiProxyUrl || '').trim(),
             ttsDefaultApiVoice: TTS_API_VOICES.some(v => v.id === raw.ttsDefaultApiVoice) ? raw.ttsDefaultApiVoice : TTS_DEFAULT_API_VOICE,
+            voiceInputEnabled: raw.voiceInputEnabled === true,
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -6883,6 +6888,8 @@ ${sourceTool.handlerScript}
         if (perfMp4DurationInput) perfMp4DurationInput.value = this.advancedSettings.mp4DefaultDurationSeconds;
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
+        const voiceInputEnabledChk = document.getElementById('ai-voice-input-enabled-chk');
+        if (voiceInputEnabledChk) voiceInputEnabledChk.checked = this.advancedSettings.voiceInputEnabled === true;
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
@@ -11601,6 +11608,143 @@ ${existingNodeSummaries}
         this.executeChat(textToSend);
     }
 
+    // ============================================================
+    // tw_stock_db客製: 2026-09-12使用者要求——輸入框旁邊的🎤語音輸入按鈕。
+    // 跟transcribe_media共用同一份Whisper模型/瀏覽器快取（_getWhisperTranscriber/
+    // _runWhisperWindowed），不是另外一套辨識邏輯。流程：按一下🎤→（模型還沒
+    // 下載過的話先跳確認框，使用者按確定才繼續）→跟瀏覽器要麥克風權限→
+    // 開始錄音（按鈕變成⏹️）→再按一下→停止錄音、把音訊丟給Whisper辨識→
+    // 辨識完把文字接回輸入框（不自動送出，使用者可以先看/改再按送出）。
+    // ============================================================
+
+    // Advance Settings的「輸入」分頁勾選/取消時，即時顯示/隱藏這個按鈕
+    // （不用重新整理頁面）；也在widget一開始建立時呼叫一次套用目前設定。
+    _updateVoiceInputButtonVisibility() {
+        const btn = document.getElementById('ai-mic-btn');
+        if (btn) btn.style.display = this.advancedSettings.voiceInputEnabled ? '' : 'none';
+    }
+
+    _wireVoiceInputButton(inputText) {
+        const btn = document.getElementById('ai-mic-btn');
+        if (!btn) return;
+        this._updateVoiceInputButtonVisibility();
+        this._voiceInputRecording = false;
+        btn.addEventListener('click', () => this._handleMicButtonClick(btn, inputText));
+    }
+
+    async _handleMicButtonClick(btn, inputText) {
+        if (btn.disabled) return; // 辨識中，忽略重複點擊
+        if (this._voiceInputRecording) {
+            // 錄音中再按一次＝停止錄音（真正的辨識在MediaRecorder的onstop callback裡）
+            if (this._voiceRecorder && this._voiceRecorder.state !== 'inactive') this._voiceRecorder.stop();
+            return;
+        }
+        // 第一次使用（或清過快取後）才會跳這個確認框——只在真的要下載前問，
+        // 不是每次錄音都問。
+        const info = await this._getWhisperCacheInfo();
+        const modelReady = info.supported && info.entries > 0;
+        if (!modelReady) {
+            const ok = confirm('語音輸入使用瀏覽器端的Whisper語音辨識模型。第一次使用需要下載約77MB（下載後會快取在瀏覽器，之後不用重複下載，也不會上傳到任何伺服器）。是否繼續？');
+            if (!ok) return;
+        }
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            this._log('⚠️ 語音輸入：無法取得麥克風權限（' + String(err && err.message || err) + '）');
+            return;
+        }
+        this._startVoiceRecording(stream, btn, inputText);
+    }
+
+    _startVoiceRecording(stream, btn, inputText) {
+        if (typeof MediaRecorder === 'undefined') {
+            this._log('⚠️ 這個瀏覽器不支援 MediaRecorder，無法錄音。');
+            stream.getTracks().forEach(t => t.stop());
+            return;
+        }
+        let mimeType = '';
+        for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']) {
+            if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) { mimeType = t; break; }
+        }
+        let recorder;
+        try {
+            recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+        } catch (err) {
+            this._log('⚠️ 語音輸入：無法啟動錄音（' + String(err && err.message || err) + '）');
+            stream.getTracks().forEach(t => t.stop());
+            return;
+        }
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop()); // 停止錄音後立刻釋放麥克風，不要讓瀏覽器一直顯示「使用中」
+            this._voiceInputRecording = false;
+            if (!chunks.length) {
+                btn.textContent = '🎤'; btn.title = '語音輸入（點一下開始錄音，再點一下停止並辨識）';
+                btn.style.background = ''; btn.style.color = '';
+                this._log('⚠️ 語音輸入：沒有錄到聲音');
+                return;
+            }
+            const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+            await this._recognizeVoiceInput(blob, btn, inputText);
+        };
+        this._voiceRecorder = recorder;
+        this._voiceInputRecording = true;
+        recorder.start();
+        btn.textContent = '⏹️';
+        btn.title = '停止錄音';
+        btn.style.background = '#dc2626';
+        btn.style.color = '#fff';
+    }
+
+    // 錄音結束後的辨識步驟——跟_transcribeMedia同一套device fallback邏輯
+    // （WebGPU可用先試WebGPU、失敗退CPU，或使用者在設定選了「只用CPU」），
+    // 共用同一個Whisper transcriber/模型快取；用_runWhisperWindowed而不是
+    // 單純呼叫一次transcriber，是為了跟transcribe_media一致地處理「錄超過
+    // 30秒」的情況（正常口述輸入通常不會這麼長，但這裡不假設）。辨識預設
+    // 中文，跟這個專案其餘語音功能的既有決策一致（不做語言自動偵測）。
+    async _recognizeVoiceInput(blob, btn, inputText) {
+        btn.disabled = true;
+        btn.textContent = '⏳';
+        const origTitle = btn.title;
+        btn.title = '辨識中…';
+        try {
+            const audio = await this._decodeAudioForWhisper(blob);
+            const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu';
+            const wantWebGpu = !cpuOnly && await this._isWebGpuAvailable();
+            const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
+            let result = null, lastErr = null;
+            for (const device of deviceOrder) {
+                try {
+                    const transcriber = await this._getWhisperTranscriber(device, (m) => { btn.title = m; });
+                    result = await this._runWhisperWindowed(transcriber, audio.pcm, 'zh', device, () => {});
+                    break;
+                } catch (err) {
+                    lastErr = err;
+                    this._whisperTranscriber = null;
+                    this._whisperTranscriberDevice = null;
+                }
+            }
+            if (!result) throw (lastErr || new Error('轉錄失敗'));
+            const text = String(result.text || '').trim();
+            if (!text) { this._log('⚠️ 語音輸入：沒有辨識出文字'); return; }
+            const cur = inputText.value || '';
+            const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+            inputText.value = cur + sep + text;
+            inputText.dispatchEvent(new Event('input'));
+            inputText.focus();
+        } catch (err) {
+            this._log('⚠️ 語音輸入辨識失敗：' + String(err && err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🎤';
+            btn.title = origTitle || '語音輸入（點一下開始錄音，再點一下停止並辨識）';
+            btn.style.background = '';
+            btn.style.color = '';
+        }
+    }
+
     // tw_stock_db客製: 階段2——📎按鈕觸發隱藏的<input type=file>，選好的每個
     // 檔案立刻開始寫進this.fileCache（kind='uploaded'，見FileCache.put）、
     // 加進this._pendingAttachments暫存清單、更新聊天輸入框上方的附件chip列
@@ -14141,6 +14285,7 @@ ${existingNodeSummaries}
                     <button id="ai-history-btn" type="button" title="歷史訊息（手機沒有上下鍵時可以用這個瀏覽/挑選之前輸入過的內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">🕘</button>
                     <button id="ai-attach-btn" type="button" title="附加檔案（AI 可以叫用檔案解讀能力讀取內容）" style="flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">📎</button>
                     <textarea id="ai-input-text" rows="2" placeholder="輸入訊息... (上下鍵選歷史, Tab補全)" style="flex:1; min-width:0; box-sizing:border-box; padding:8px; border:1px solid ${palette.inputBorder}; border-radius:6px; resize:none; font-size:13px; font-family:inherit; background:${palette.inputBg}; color:${palette.inputText};"></textarea>
+                    <button id="ai-mic-btn" type="button" title="語音輸入（點一下開始錄音，再點一下停止並辨識）" style="display:none; flex:0 0 auto; padding:0 10px; border:1px solid ${palette.inputBorder}; border-radius:6px; background:${palette.detailBg}; color:${palette.detailText}; font-size:15px; cursor:pointer;">🎤</button>
                     <button id="ai-send-btn" type="button" title="送出 (Enter)" style="flex:0 0 auto; padding:0 14px; border:none; border-radius:6px; background:#76b900; color:#fff; font-size:13px; font-weight:bold; cursor:pointer;">送出</button>
                 </div>
                 <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
@@ -14158,6 +14303,7 @@ ${existingNodeSummaries}
                     <div class="ai-advanced-body">
                         <div class="ai-advanced-sidebar">
                             <div class="ai-advanced-cat active" data-cat="general">一般</div>
+                            <div class="ai-advanced-cat" data-cat="input">輸入</div>
                             <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
                             <div class="ai-advanced-cat" data-cat="skills">Skill</div>
                             <div class="ai-advanced-cat" data-cat="ai-functions">AI自製函式</div>
@@ -14170,6 +14316,16 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
                                     <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="input">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">語音輸入（麥克風）</label>
+                                    <p class="ai-advanced-hint">在輸入框旁邊加一個🎤按鈕，按一下開始錄音、再按一下停止並轉成文字填回輸入框（不會自動送出，你可以先看過再修改）。用瀏覽器端的Whisper模型辨識，跟 transcribe_media 共用同一份模型/快取，第一次使用會下載約77MB（之後不用重複下載），會另外跳出確認框說明；需要瀏覽器的麥克風權限。</p>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-voice-input-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-voice-input-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用語音輸入</label>
+                                    </div>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
@@ -15801,6 +15957,14 @@ ${existingNodeSummaries}
                 this._saveAdvancedSettings();
             });
         }
+        const voiceInputEnabledChk = document.getElementById('ai-voice-input-enabled-chk');
+        if (voiceInputEnabledChk) {
+            voiceInputEnabledChk.addEventListener('change', () => {
+                this.advancedSettings.voiceInputEnabled = !!voiceInputEnabledChk.checked;
+                this._saveAdvancedSettings();
+                this._updateVoiceInputButtonVisibility();
+            });
+        }
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
         if (browserSearchEnabledChk) {
             browserSearchEnabledChk.addEventListener('change', () => {
@@ -16151,6 +16315,7 @@ ${existingNodeSummaries}
             sendBtn.addEventListener('click', () => this._submitChatInput(inputText, suggestBar));
         }
 
+        this._wireVoiceInputButton(inputText);
         this._wireAttachmentUpload();
         this._wireSlashCommandMenu(inputText, slashMenu, suggestBar);
 
