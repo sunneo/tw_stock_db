@@ -5,6 +5,48 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
+## 2026-09-14（晚上）
+
+背景：使用者對Advance Settings面板提出一批UI/預設值調整意見：上下文視窗預設
+8192偏少（現在內建模型基礎都有128K）；「子Agent」分頁塞太多不相干內容太
+rough；3D模型匯入三角形數量上限想改100000；「自訂函式」分頁少一個範例按鈕；
+「AI自製函式」分頁應該併入「自訂函式」；「一般」分頁的RULES.md應該併入「LLM
+基礎設定」。
+
+1. **模型上下文視窗預設值8192→128000**：`_createDefaultGenerationSettings`。
+   順便把面板上這個欄位的說明文字改正確——它其實只是參考顯示用，實際壓縮
+   時機是靠伺服器400/413回應觸發，不是靠這個數字主動估算（既有code comment
+   早就講過這點，欄位label文字卻沒跟著更新，一併修正）。
+2. **匯入3D模型三角形數量上限預設10000→100000**：
+   `SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES`，同步更新`import_3d_model`
+   工具description裡提到的預設值文字。
+3. **Advance Settings分頁重整**：
+   - 移除「一般」分頁，RULES.md欄位併入「LLM 基礎設定」分頁（排在API KEY/
+     URL/MODEL NAME跟兩個checkbox之後）。
+   - 移除「AI自製函式」分頁，內容（標題+「管理AI自製函式」按鈕）併入
+     「自訂函式」分頁，排在原本的Customize Functions編輯器下方。
+   - 「自訂函式」分頁的Customize Functions編輯器新增「範例」按鈕，點擊插入
+     一段示範JS函式（`formatCurrency`/`clamp`/`daysBetween`）；範例內容如實
+     說明這個欄位目前只是使用者自己的共用函式草稿，不會被自動注入到Skill/
+     AI自製函式的實際執行環境（讀`_executeCustomTool`/`_createAiFnCallable`
+     確認：只有各自的handlerScript/code會被組進執行用的`new Function`，
+     `customFunctions`本身只會被驗證一次，這個既有的no-op驗證/未接線狀態
+     這次沒有動，只是誠實反映在範例文案裡，不擴大這次變更範圍）。
+   - 「子Agent」分頁拆成三個：「子Agent」只留多重子Agent模式選擇＋
+     browser_search設定；新增「多媒體」分頁放影音處理子Agent設定（Whisper
+     裝置/執行緒數、擷取聲音格式、燒錄字幕外觀）；新增「語音設定」分頁放
+     兩塊語音合成子Agent設定（本地Kokoro英文語音＋API中文語音，含上一批
+     剛做的試聽按鈕/語速滑桿）。分頁切換邏輯本來就是通用的
+     `data-cat`/`data-pane`比對（沒有任何地方寫死分頁名稱字串），純粹是
+     HTML區塊搬動+cat清單調整，不需要改任何JS邏輯。
+   實測（Browser工具，`toggleWindow(true)`+`_openAdvancedModal()`）：確認
+   分頁清單正確（11個分頁，無「一般」/「AI自製函式」，新增「多媒體」/
+   「語音設定」）；LLM基礎設定分頁底部正確顯示RULES.md；自訂函式分頁正確
+   顯示合併後的兩塊內容＋範例按鈕（點擊後textarea值與`advancedSettings
+   .customFunctions`都正確寫入範例內容）；多媒體/語音設定/子Agent三個新
+   分頁各自顯示正確的子集內容；`_getGenerationSettings().contextWindowTokens`
+   確認128000、`advancedSettings.maxImportedMeshTriangles`確認100000。
+
 ## 2026-09-14（下午）
 
 背景：使用者回報AI直接呼叫media_av子agent時被告知「沒有工具可以合併多個音檔」
