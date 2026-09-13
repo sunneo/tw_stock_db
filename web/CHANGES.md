@@ -5,6 +5,41 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
+## 2026-09-14（深夜再追加）
+
+背景：使用者看了截圖回報「RAG知識庫還要多按一下管理條件圖譜太麻煩，應該
+直接嵌入那頁面」；同一段對話中也要求把model row的temperature預設值從0
+改成0.1。
+
+1. **RAG知識庫分頁直接嵌入清單**：原本「RAG 知識庫」分頁只有一顆「管理
+   條件圖譜」按鈕，點了才彈出獨立`ai-rag-modal`顯示搜尋列/操作列/表格。
+   把那個modal的內容整段搬進`data-pane="rag"`本身，`_renderAdvancedSettings()`
+   （Advance設定對話框每次開啟/重繪都會呼叫）新增一行`this._loadAndRenderRag()`，
+   打開設定就直接看到清單，不用再多點一次。移除`ai-rag-modal`元素本身、
+   `_openRagModal()`方法、以及3個會throw的按鈕事件綁定（`ai-rag-manage-btn`/
+   `ai-rag-modal-close`/`ai-rag-modal-done`，元素已經不存在，若沒移除
+   `.onclick=`賦值會直接噴錯讓整個widget初始化失敗）。單一節點的新增/編輯
+   仍然維持獨立的`ai-rag-editor-modal`（沒有動，比照其他「清單inline、
+   單項編輯用modal」的既有慣例，例如Skill清單）。`_closeRagModal()`保留
+   成no-op（安全處理`document.getElementById`找不到元素的情況），避免要
+   同步修改另外兩處既有的「點modal外側/按Escape關閉」判斷式——那兩處靠
+   `ragModal`變數自然變成`null`、`_isModalOpen(null)===false`就自動變成
+   無效分支，不用額外改動。
+2. **model row的temperature預設值0→0.1**：新增`DEFAULT_CHAT_TEMPERATURE = 0.1`
+   常數，取代`_loopFetch`/`_loopFetchNative`/`_runSubAgentTask`三處原本
+   寫死的`temperature: 0`退回值（row自己有填temperature時仍然優先用row的
+   值，這裡只改「row留空時的退回值」）。理由：既有comment本來就記錄過
+   「temperature=0的貪婪解碼在某些模型上容易卡進『同一段輸出不斷重複』的
+   退化狀態」，0.1幾乎一樣接近deterministic、不影響工具呼叫協定穩定性，
+   但能進一步降低這個已知風險，`_hasRepeatingTail`偵測仍然保留當最後一道
+   防線。UI上model row的temperature欄位placeholder同步從「預設0」改成
+   「預設0.1」。
+3. 實測（Browser工具）：RAG分頁確認清單直接顯示（`共0筆記錄`空狀態正確、
+   無需額外點擊）、「新增節點」仍正確開啟獨立編輯modal、搜尋/全選按鈕
+   無報錯；mock `fetch`跑一次真實`executeChat`，確認實際送出的`_loopFetch`
+   請求`temperature`正確是`0.1`（另一次捕捉到的`temperature:0`請求經確認
+   是既有、不受這次改動影響的原生tool_calls支援探測請求，不是聊天本身）。
+
 ## 2026-09-14（深夜）
 
 背景：使用者要求把「模型」設定從單一組API KEY/URL/MODEL NAME＋MODEL NAME
