@@ -1385,7 +1385,48 @@ const PRESET_MODEL_OPTIONS = [
     'openai/gpt-oss-120b',
     'openai/gpt-oss-20b',
     'meta/llama-3.1-8b-instruct',
+    'openrouter/free',
 ];
+
+// tw_stock_db客製: 2026-09-14使用者要求——把原本「單一組API KEY/URL/MODEL
+// NAME＋MODEL NAME留空時依這份陣列自動fallback」的設計，改成「多筆完整的
+// model row（每個row=一個獨立的model/llm，各自可以有自己的URL/KEY/生成
+// 參數），可拖曳調整fallback順序、可新增/刪除」。DEFAULT_LLM_API_URL是
+// row的apiUrl留空時的「我們預設的網址」退回值（見_resolveModelRowConfig）
+// ——沿用原本_getApiConfig()寫死的NVIDIA官方端點，行為不變；tw_stock_db
+// 自己的index.html會在使用者第一次造訪時把floating_ai_base_url_key先
+// seed成它部署的Cloudflare Worker網址（見web/index.html的說明），所以
+// 「留空」對tw_stock_db的訪客而言實際上會退回那個worker，不是真的打
+// NVIDIA官方網址——這個常數只是「連那個seed都沒有時」的最後一層退回值，
+// 對這個host-agnostic元件本身而言是合理、無害的預設。
+const DEFAULT_LLM_API_URL = 'https://integrate.api.nvidia.com/v1';
+
+// 每個model row除了apiUrl/apiKey/modelName（字串），其餘都是「留空(null)＝
+// 不覆寫、沿用全域生成設定」的數值型欄位，統一在這裡列出，_normalizeModelRow/
+// UI渲染/儲存都共用同一份清單，不用四處重複打欄位名稱。
+const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens'];
+
+// tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
+// PRESET_MODEL_OPTIONS（含新加的openrouter/free）逐一轉成row，URL/KEY/
+// 生成參數全部留空（代表沿用「我們預設的網址」／全域生成設定，openrouter/
+// 開頭的row會額外經Cloudflare Worker的/openrouter路由轉接，見
+// _resolveModelRowConfig）。刻意寫成module-level純函式（不是instance
+// method）：_createDefaultAdvancedSettings()呼叫這個的時機，instance可能
+// 還沒完全初始化完成，純函式沒有this綁定疑慮。
+function _buildDefaultModelRows() {
+    return PRESET_MODEL_OPTIONS.map(name => ({
+        id: (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
+        apiUrl: '',
+        apiKey: '',
+        modelName: name,
+        temperature: null,
+        frequency_penalty: null,
+        presence_penalty: null,
+        repetition_penalty: null,
+        length_penalty: null,
+        maxOutputTokens: null,
+    }));
+}
 
 // tw_stock_db客製: 使用者要求「內建模型就提前把model card的支援tool call
 // 建表紀錄，因為這個屬性是固定的」——用_probeNativeToolSupport()對真實
@@ -2695,6 +2736,10 @@ class FloatingAssistant {
             aiCustomFunctions: {},
             toolCallMode: 'auto', // tw_stock_db客製: 'auto' | 'native' | 'text'
             generation: this._createDefaultGenerationSettings(),
+            // tw_stock_db客製: 2026-09-14——見PRESET_MODEL_OPTIONS上方
+            // _buildDefaultModelRows()的說明，取代原本單一組API KEY/URL/
+            // MODEL NAME的設計。
+            llmModelRows: _buildDefaultModelRows(),
             // tw_stock_db客製: batch_analyze_stocks工具（見runBatchSubAgents）
             // 同時開幾個子任務並行執行——太小沒有平行效益，太大容易一次炸開
             // 太多併發請求（共用金鑰的NVIDIA端點/Cloudflare Worker流量控管
@@ -2901,11 +2946,17 @@ class FloatingAssistant {
 
     // tw_stock_db客製: 只把「使用者有填值、且沒被標記為已拒絕」的取樣參數
     // 組進request body，其餘一律不送（不送=沿用端點自己的預設值，比送一個
-    // 猜錯的值安全）。
-    _buildSamplingParamsBody() {
+    // 猜錯的值安全）。2026-09-14新增可選的rowOverrides參數（來自
+    // _resolveModelRowConfig(row).samplingOverrides）——per-row填過值的
+    // 欄位優先蓋過全域設定，該row沒填（null）的欄位才退回原本「全域設定
+    // ＋disabled旗標」的既有邏輯，不影響沒有傳rowOverrides的既有呼叫端
+    // （benchmark/路由子agent等，見_getApiConfig()的說明）。
+    _buildSamplingParamsBody(rowOverrides = null) {
         const sp = this._getGenerationSettings().samplingParams || {};
         const body = {};
         for (const key of SAMPLING_PARAM_KEYS) {
+            const rowVal = rowOverrides ? rowOverrides[key] : null;
+            if (rowVal != null) { body[key] = rowVal; continue; }
             const entry = sp[key];
             if (entry && !entry.disabled && entry.value != null) body[key] = entry.value;
         }
@@ -3025,9 +3076,76 @@ class FloatingAssistant {
         return normalized;
     }
 
+    // tw_stock_db客製: 2026-09-14——單一model row的正規化。除了modelName
+    // 必填（沒填的row直接丟棄，見_normalizeModelRows），apiUrl/apiKey留空
+    // 都是合法狀態（代表沿用預設，見_resolveModelRowConfig），
+    // MODEL_ROW_NUMERIC_FIELDS每個欄位只接受有限數字，其餘（含缺欄位/
+    // 空字串/非數字）一律正規化成null（=不覆寫）。
+    _normalizeModelRow(row) {
+        if (!row || typeof row !== 'object') return null;
+        const modelName = String(row.modelName || '').trim();
+        if (!modelName) return null;
+        const normalized = {
+            id: String(row.id || '').trim() || (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
+            apiUrl: String(row.apiUrl || '').trim(),
+            apiKey: String(row.apiKey || '').trim(),
+            modelName,
+        };
+        for (const key of MODEL_ROW_NUMERIC_FIELDS) {
+            // tw_stock_db客製: Number(null)===0（不是NaN！），一定要先擋掉
+            // null/undefined，不然「留空(null)＝不覆寫」的row會被誤轉成
+            // 「明確填了0」，整批預設row的溫度/penalty全部變成0而不是留空。
+            const raw = row[key];
+            const n = (raw == null || raw === '') ? NaN : Number(raw);
+            normalized[key] = Number.isFinite(n) ? n : null;
+        }
+        return normalized;
+    }
+
+    // tw_stock_db客製: 2026-09-14——raw.llmModelRows存在且至少有一筆有效
+    // row時直接用（使用者自己的設定，含順序），否則視為「第一次升級到這個
+    // 機制」，一次性把使用者原本存在localStorage的單一組API KEY/URL/MODEL
+    // NAME（如果有填過MODEL NAME）migrate成第一筆row，其餘用內建預設清單
+    // 補滿——這樣升級後的既有使用者原本的模型設定不會憑空消失，也不用
+    // 重新設定一次。這個migration只會在raw.llmModelRows是空/不存在時觸發，
+    // 一旦存過一次（哪怕只是空陣列被使用者清空），下次就不會再migrate，
+    // 尊重使用者「就是要清空」的選擇。
+    _normalizeModelRows(rawRows) {
+        if (Array.isArray(rawRows)) {
+            const normalized = rawRows.map(r => this._normalizeModelRow(r)).filter(Boolean);
+            if (normalized.length) return normalized;
+        }
+        const legacyModel = (localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '').trim();
+        const legacyUrl = (localStorage.getItem(this.LLM_BASE_URL_KEY) || '').trim();
+        const legacyKey = (localStorage.getItem(this.STORAGE_KEY) || '').trim();
+        const rows = _buildDefaultModelRows();
+        if (legacyModel && !rows.some(r => r.modelName === legacyModel)) {
+            rows.unshift({
+                id: (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
+                apiUrl: (legacyUrl && legacyUrl !== DEFAULT_LLM_API_URL) ? legacyUrl : '',
+                apiKey: legacyKey,
+                modelName: legacyModel,
+                temperature: null, frequency_penalty: null, presence_penalty: null,
+                repetition_penalty: null, length_penalty: null, maxOutputTokens: null,
+            });
+        }
+        return rows;
+    }
+
     _normalizeAdvancedSettings(raw) {
         const defaults = this._createDefaultAdvancedSettings();
-        if (!raw || typeof raw !== 'object') return defaults;
+        if (!raw || typeof raw !== 'object') {
+            // tw_stock_db客製: 2026-09-14——raw完全不存在通常代表「使用者
+            // 從來沒有動過Advance Settings的任何欄位」（不是真的第一次
+            // 使用，舊版單一組API KEY/URL/MODEL NAME是直接寫進localStorage、
+            // 不經過這個normalize流程存檔的，很可能兩者都存在）——
+            // _createDefaultAdvancedSettings()單純回傳內建預設row，不會
+            // migrate那些舊值，這裡额外呼叫_normalizeModelRows(null)把
+            // migration邏輯也套用上去，不然升級後這些使用者原本設定的
+            // 模型/URL/金鑰會憑空消失（只剩空白的內建預設清單）。
+            defaults.llmModelRows = this._normalizeModelRows(null);
+            return defaults;
+        }
         const customTools = Array.isArray(raw.customTools)
             ? raw.customTools
                 .map((tool, index) => this._normalizeCustomTool(tool, `custom_tool_${index + 1}`))
@@ -3046,6 +3164,7 @@ class FloatingAssistant {
         const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
         const batchConcurrencyNum = Number(raw.batchConcurrency);
         const fileCacheLimitMBNum = Number(raw.fileCacheLimitMB);
+        const llmModelRows = this._normalizeModelRows(raw.llmModelRows);
         return {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
@@ -3053,6 +3172,7 @@ class FloatingAssistant {
             aiCustomFunctions,
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
+            llmModelRows,
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
@@ -6201,39 +6321,107 @@ ${fnData.code}
         return sections.filter(Boolean).join('\n\n') || this.baseSystemPrompt;
     }
 
+    // tw_stock_db客製: 2026-09-14——見PRESET_MODEL_OPTIONS上方
+    // _buildDefaultModelRows()的說明。這裡是唯一讀取
+    // advancedSettings.llmModelRows的入口，順便處理「陣列意外變空」的
+    // 防禦（理論上_normalizeModelRows已經保證至少有內建預設，這裡只是
+    // 雙重保險，不依賴那邊沒出過的假設）。
+    _getModelRows() {
+        if (!Array.isArray(this.advancedSettings.llmModelRows) || !this.advancedSettings.llmModelRows.length) {
+            this.advancedSettings.llmModelRows = _buildDefaultModelRows();
+        }
+        return this.advancedSettings.llmModelRows;
+    }
+
+    // tw_stock_db客製: 2026-09-14——把單一row（可能大部分欄位留空）解析成
+    // 一次API呼叫真正需要的完整設定。「留空＝走我們預設的網址」：apiUrl/
+    // apiKey留空時退回舊有的全域fallback（this.LLM_BASE_URL_KEY／
+    // this.STORAGE_KEY這兩個localStorage欄位——雖然新版UI已經不再讓使用者
+    // 直接編輯它們，但仍然是「我們預設的網址/金鑰」這個概念的實際存放處：
+    // tw_stock_db自己的index.html會在訪客第一次造訪時把它們seed成部署好的
+    // Cloudflare Worker網址＋共用假金鑰，讓完全沒設定過的訪客也能直接用；
+    // 舊使用者升級時_normalizeModelRows()也會把原本存在這裡的值migrate成
+    // 第一筆row，這裡繼續讀取純粹是給「後面又新增的row」共用同一個退回值，
+    // 不是重新引入一條使用者編輯得到的路徑）。
+    //
+    // modelName以「openrouter/」開頭的row，代表要經Cloudflare Worker的
+    // /openrouter路由轉去openrouter.ai（見web/cloudflare-worker/worker.js
+    // 的handleOpenRouterProxy），不是直接打openrouter.ai——瀏覽器端不需要
+    // （也不應該）知道真正的openrouter API金鑰，worker那端會依
+    // env.OPENROUTER_API_KEY／env.OPENROUTER_API_KEY_DEFAULT解析，這裡只
+    // 需要把resolve出來的base URL（跟NVIDIA/一般row同一套「留空退回預設」
+    // 邏輯）加上/openrouter這個路徑片段，apiKey的解析完全不變（沿用一般
+    // row同一套「留空退回全域預設」，對tw_stock_db的訪客而言那個全域預設
+    // 剛好就是可以觸發worker共用金鑰路徑的假金鑰格式，不需要另外特殊處理）。
+    _resolveModelRowConfig(row) {
+        const modelName = String((row && row.modelName) || '').trim();
+        const isOpenRouter = /^openrouter\//i.test(modelName);
+        let apiUrl = String((row && row.apiUrl) || '').trim();
+        if (!apiUrl) apiUrl = (localStorage.getItem(this.LLM_BASE_URL_KEY) || '').trim() || DEFAULT_LLM_API_URL;
+        apiUrl = apiUrl.replace(/\/+$/, '');
+        if (isOpenRouter) apiUrl += '/openrouter';
+        let apiKey = String((row && row.apiKey) || '').trim();
+        if (!apiKey) apiKey = localStorage.getItem(this.STORAGE_KEY) || '';
+        // tw_stock_db客製: Number(null)===0（不是NaN！），一定要先擋掉
+        // null/undefined/空字串再轉數字，不然「留空＝不覆寫」的row會被誤判
+        // 成「明確填了0」，見_normalizeModelRow同樣的說明。
+        const toOverrideNum = (raw) => {
+            if (!row || raw == null || raw === '') return null;
+            const n = Number(raw);
+            return Number.isFinite(n) ? n : null;
+        };
+        const samplingOverrides = {};
+        for (const key of SAMPLING_PARAM_KEYS) {
+            samplingOverrides[key] = toOverrideNum(row ? row[key] : null);
+        }
+        const temperatureOverride = toOverrideNum(row ? row.temperature : null);
+        const maxTokensOverride = toOverrideNum(row ? row.maxOutputTokens : null);
+        return {
+            apiUrl, apiKey, apiModel: modelName,
+            temperature: temperatureOverride,
+            samplingOverrides,
+            maxOutputTokens: maxTokensOverride,
+        };
+    }
+
+    // tw_stock_db客製: 給benchmark/hermes反思/topic-transition偵測/RAG分段
+    // 摘要這類不參與per-row溫度/penalty覆寫的內部輔助呼叫用——維持原本
+    // 「固定用清單第一筆」的既有行為（回傳shape跟改動前一模一樣，這些呼叫
+    // 端完全不用改）。真正的main chat loop（_loopFetch/_loopFetchNative/
+    // _runSubAgentTask）改呼叫_getApiConfigForRow()取得完整per-row設定。
     _getApiConfig() {
-        const apiKey = localStorage.getItem(this.STORAGE_KEY);
-        let apiUrl = localStorage.getItem(this.LLM_BASE_URL_KEY) || 'https://integrate.api.nvidia.com/v1';
-        // tw_stock_db客製: 原本預設的 'openai/gpt-oss-120b' 在NVIDIA的NIM端點
-        // 上會整個請求卡住、永遠不回應（實測90秒仍無回應，不是慢，是完全不
-        // 回），導致沒自己設定模型的使用者(=大多數人，因為AI分頁預設用假
-        // 金鑰+這個預設模型)問任何問題都會卡住/最終fetch失敗。改用回應速度
-        // 快、能力也最強的 'nvidia/nemotron-3-super-120b-a12b'（2026-08調整，
-        // 見PRESET_MODEL_OPTIONS上方的各選項實測註記）。
-        let apiModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || 'nvidia/nemotron-3-super-120b-a12b';
-        return { apiKey, apiUrl, apiModel };
+        const rows = this._getModelRows();
+        const cfg = this._resolveModelRowConfig(rows[0]);
+        return { apiKey: cfg.apiKey, apiUrl: cfg.apiUrl, apiModel: cfg.apiModel };
     }
 
-    // tw_stock_db客製: 給「MODEL NAME留空時自動fallback」機制用——跟
-    // _getApiConfig()分開，是因為_getApiConfig()本來就會把空白欄位預設成
-    // 固定的第一個模型（給benchmark工具、原生探測等其他呼叫端用，維持
-    // 既有行為不變），這裡要看的是「使用者真的完全沒填」這個原始狀態，
-    // 才能判斷該不該啟動fallback，而不是每次都直接固定用第一個模型。
-    _isModelFieldBlank() {
-        return !(localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '').trim();
+    // tw_stock_db客製: 給main chat loop用——回傳指定index那個row的完整
+    // resolved設定（含temperature/samplingOverrides/maxOutputTokens），
+    // index超出範圍或省略時退回第一筆。
+    _getApiConfigForRow(index = 0) {
+        const rows = this._getModelRows();
+        const row = rows[index] || rows[0];
+        return Object.assign({ rowIndex: rows.indexOf(row) }, this._resolveModelRowConfig(row));
     }
 
-    // tw_stock_db客製: 只有this._autoFallbackActive（本輪對話一開始MODEL
-    // NAME留空）且status===404時才回傳下一個候選模型名稱，否則回傳null
-    // （呼叫端不換模型，照原本的邏輯處理這次錯誤）。this._autoFallbackIndex
-    // 是實例狀態，同一輪對話裡不管中途重試幾次都會往前推進、不會回頭，
-    // 直到清單用完或成功一次；下一次executeChat()才會重新從0開始（見
-    // executeChat()裡的說明）。
+    // tw_stock_db客製: 2026-09-14——原本「MODEL NAME留空時才自動fallback、
+    // 使用者自己指定了模型就完全不换」的規則，隨著改成「一個row代表一個
+    // model/llm」失去意義（row的modelName不可能留空，_normalizeModelRow會
+    // 直接丟棄）。新規則單純很多：只要清單還有下一筆row，就會往下試——row
+    // 的順序（可拖曳調整）本身就是fallback優先順序，使用者只留1筆row時
+    // 自然就完全不會fallback（沒有下一筆可試），跟舊行為「使用者自己指定
+    // 模型就不fallback」殊途同歸，但不用另外判斷「是不是使用者自己填的」。
+    // 只有status===404（模型/部署在這個端點上不存在）才觸發——跟舊行為
+    // 一致，5xx/網路例外是另一條「重試同一個模型」的既有機制，不在這裡
+    // 處理。回傳完整resolved config物件（不是只有模型名稱字串）：不同row
+    // 現在可能是完全不同的端點/金鑰，呼叫端換row時要連apiUrl/apiKey一起換，
+    // 不能只換模型名稱、沿用舊的URL/Key。
     _nextAutoFallbackModel(status, currentModel) {
         if (status !== 404 || !this._autoFallbackActive) return null;
-        if (this._autoFallbackIndex >= PRESET_MODEL_OPTIONS.length - 1) return null;
+        const rows = this._getModelRows();
+        if (this._autoFallbackIndex >= rows.length - 1) return null;
         this._autoFallbackIndex++;
-        return PRESET_MODEL_OPTIONS[this._autoFallbackIndex];
+        return Object.assign({ rowIndex: this._autoFallbackIndex }, this._resolveModelRowConfig(rows[this._autoFallbackIndex]));
     }
 
     // tw_stock_db客製: 使用者要求「在AI Assistant (Graph RAG)右邊顯示model
@@ -6244,7 +6432,7 @@ ${fnData.code}
         if (!el) return;
         el.textContent = isFallback ? `${apiModel}（自動）` : apiModel;
         el.title = isFallback
-            ? `MODEL NAME欄位留空，系統依內建清單順序自動選用；若目前這個模型無法使用(404)會自動改下一個。`
+            ? `目前使用第一筆model row；若這個模型無法使用(404)會自動依序改用下一筆row（可在Advance Settings拖曳調整順序）。`
             : '';
     }
 
@@ -7497,6 +7685,41 @@ ${sourceTool.handlerScript}
                 color: #94a3b8;
                 text-align: center;
             }
+            .ai-model-row {
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 8px 10px;
+                background: #0f172a;
+                margin-bottom: 8px;
+                cursor: grab;
+            }
+            .ai-model-row.dragging { opacity: 0.4; }
+            .ai-model-row.drag-over { border-color: #76b900; box-shadow: 0 0 0 1px #76b900; }
+            .ai-model-row-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 6px;
+            }
+            .ai-model-row-handle {
+                color: #64748b;
+                font-size: 14px;
+                user-select: none;
+            }
+            .ai-model-row-index {
+                font-size: 11px;
+                color: #94a3b8;
+                font-weight: bold;
+            }
+            .ai-model-row-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                gap: 6px 8px;
+            }
+            .ai-model-row-grid input {
+                padding: 6px 8px;
+                font-size: 12px;
+            }
             .ai-advanced-btn {
                 padding: 7px 12px;
                 border-radius: 8px;
@@ -7876,18 +8099,84 @@ ${sourceTool.handlerScript}
         `).join('');
     }
 
+    // tw_stock_db客製: 2026-09-14——渲染「Model 清單」目前的所有row。每次
+    // 呼叫都整包重新產生HTML（列表結構性變動——新增/刪除/拖曳排序——才會
+    // 呼叫這個函式；單純編輯某個欄位走事件代理直接更新資料，不重繪，避免
+    // 輸入框在打字過程中失焦/游標跳動，見_bindAdvancedSettingsEvents裡
+    // #ai-model-rows-list的input/change監聽器）。
+    _renderModelRowsList() {
+        const container = document.getElementById('ai-model-rows-list');
+        if (!container) return;
+        const rows = this._getModelRows();
+        container.innerHTML = rows.map((row, idx) => this._buildModelRowHtml(row, idx)).join('');
+    }
+
+    _buildModelRowHtml(row, idx) {
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
+        const numField = (key, label, placeholder) => `
+            <div>
+                <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">${label}</label>
+                <input type="number" step="0.1" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="${key}" placeholder="${placeholder}" value="${row[key] != null ? row[key] : ''}">
+            </div>`;
+        return `
+            <div class="ai-model-row" draggable="true" data-row-id="${row.id}">
+                <div class="ai-model-row-header">
+                    <span class="ai-model-row-handle" title="拖曳調整順序">⠿</span>
+                    <span class="ai-model-row-index">#${idx + 1}</span>
+                    <button type="button" class="ai-advanced-btn danger ai-model-row-delete" data-row-id="${row.id}" style="margin-left:auto; padding:2px 8px;">刪除</button>
+                </div>
+                <div class="ai-model-row-grid">
+                    <div>
+                        <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">API URL</label>
+                        <input type="text" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="apiUrl" placeholder="留空＝走我們預設的網址" value="${esc(row.apiUrl)}">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">API Key</label>
+                        <input type="password" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="apiKey" placeholder="留空＝走我們預設的金鑰" value="${esc(row.apiKey)}">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">Model Name</label>
+                        <input type="text" class="ai-advanced-input ai-model-row-input" list="ai-model-datalist" data-row-id="${row.id}" data-field="modelName" value="${esc(row.modelName)}">
+                    </div>
+                    ${numField('temperature', 'temperature', '預設0')}
+                    ${numField('frequency_penalty', 'frequency_penalty', '不送')}
+                    ${numField('presence_penalty', 'presence_penalty', '不送')}
+                    ${numField('repetition_penalty', 'repetition_penalty', '不送')}
+                    ${numField('length_penalty', 'length_penalty', '不送')}
+                    ${numField('maxOutputTokens', 'max tokens(單次上限)', '全域預設')}
+                </div>
+            </div>
+        `;
+    }
+
+    // tw_stock_db客製: 2026-09-14——單一欄位編輯的共用寫入邏輯，供
+    // #ai-model-rows-list的事件代理呼叫（見_bindAdvancedSettingsEvents）。
+    // apiUrl/apiKey/modelName是字串欄位，直接寫入（trim/合法性檢查交給
+    // _saveAdvancedSettings→_normalizeAdvancedSettings統一處理）；其餘
+    // MODEL_ROW_NUMERIC_FIELDS留空或非數字一律存null（=不覆寫，沿用全域
+    // 預設）。
+    _updateModelRowField(rowId, field, rawValue) {
+        const row = this._getModelRows().find(r => r.id === rowId);
+        if (!row) return;
+        if (field === 'apiUrl' || field === 'apiKey' || field === 'modelName') {
+            row[field] = String(rawValue == null ? '' : rawValue);
+        } else if (MODEL_ROW_NUMERIC_FIELDS.includes(field)) {
+            const trimmed = String(rawValue == null ? '' : rawValue).trim();
+            if (!trimmed) { row[field] = null; }
+            else { const n = Number(trimmed); row[field] = Number.isFinite(n) ? n : null; }
+        }
+        this._saveAdvancedSettings();
+        const firstRow = this._getModelRows()[0];
+        if (field === 'modelName' && firstRow && firstRow.id === rowId) {
+            this._updateHeaderModelName(firstRow.modelName, this._getModelRows().length > 1);
+        }
+    }
+
     _renderAdvancedSettings() {
-        // tw_stock_db客製: 2026-09-13使用者要求——API KEY/URL/MODEL NAME＋
-        // Hermes自我演化／slash選單／顯示追蹤這幾個欄位這次從快速設定面板
-        // 搬進Advance設定對話框，比照這個函式其餘欄位的既有慣例，每次開啟
-        // 對話框都重新同步一次目前的值（雖然這幾個欄位很少被其他地方改動，
-        // 但保持跟其他Advance欄位一致的「開啟時一定是最新值」行為）。
-        const inputKeyEl = document.getElementById('ai-input-key');
-        if (inputKeyEl) inputKeyEl.value = localStorage.getItem(this.STORAGE_KEY) || '';
-        const inputUrlEl = document.getElementById('ai-url');
-        if (inputUrlEl) inputUrlEl.value = localStorage.getItem(this.LLM_BASE_URL_KEY) || '';
-        const inputModelEl = document.getElementById('ai-model-name');
-        if (inputModelEl) inputModelEl.value = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '';
+        // tw_stock_db客製: 2026-09-14——API KEY/URL/MODEL NAME單一組欄位已經
+        // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
+        // 那份渲染，不用再手動同步三個input.value。
+        this._renderModelRowsList();
         const hermesChk = document.getElementById('ai-hermes-evolve-chk');
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
@@ -8306,12 +8595,13 @@ ${sourceTool.handlerScript}
                     this._saveAdvancedSettings();
                     this._syncFromAI();
                 }
-                const keyInput = document.getElementById('ai-input-key');
-                const urlInput = document.getElementById('ai-url');
-                const modelInput = document.getElementById('ai-model-name');
-                if (keyInput && typeof config.apiToken === 'string') keyInput.value = config.apiToken;
-                if (urlInput && typeof config.apiUrl === 'string') urlInput.value = config.apiUrl;
-                if (modelInput && typeof config.modelName === 'string') modelInput.value = config.modelName;
+                // tw_stock_db客製: 2026-09-14——舊版單一組apiUrl/apiToken/
+                // modelName已經沒有對應的input元素了（改成llmModelRows多筆
+                // row），上面localStorage.setItem的3行是給_normalizeModelRows()
+                // 的一次性migration退回值用（只有匯入的advancedSettings本身
+                // 沒帶llmModelRows的舊版存檔才會用到）；這裡不用再手動同步
+                // 任何input.value，_renderAdvancedSettings()呼叫的
+                // _renderModelRowsList()會自動反映最新的row清單。
                 this._renderAdvancedSettings();
                 alert('設定已成功匯入！');
             } catch (err) {
@@ -13902,26 +14192,25 @@ ${existingNodeSummaries}
      * 執行 Stream 對話循環
      */
     async executeChat(userText) {
-        const { apiKey, apiUrl } = this._getApiConfig();
-        let apiModel = this._getApiConfig().apiModel;
+        const rowCfg = this._getApiConfigForRow(0);
+        const { apiKey, apiUrl, apiModel } = rowCfg;
+        const genOverrides = { temperature: rowCfg.temperature, samplingOverrides: rowCfg.samplingOverrides, maxOutputTokens: rowCfg.maxOutputTokens };
         if (this.isResponding) {
             this._addSteeringMessage(userText);
             return;
         }
 
-        // tw_stock_db客製: MODEL NAME留空時的自動fallback——見PRESET_MODEL_OPTIONS
-        // 上方各模型的實測風險註記。每次使用者主動送出新訊息（這裡，不是
-        // 對話中途的重試）都重新從PRESET_MODEL_OPTIONS[0]開始，不接續上一輪
-        // fallback到的模型——呼應使用者「不要因為找到一個成功的就固定住」
+        // tw_stock_db客製: 2026-09-14——「一個row代表一個model/llm」，row的
+        // 排列順序（可拖曳調整）本身就是fallback優先順序，不再需要判斷
+        // 「使用者是不是自己填了model name」。每次使用者主動送出新訊息
+        // （這裡，不是對話中途的重試）都重新從第一筆row開始，不接續上一輪
+        // fallback到的row——呼應使用者「不要因為找到一個成功的就固定住」
         // 的要求：主力模型如果只是暫時404、後來恢復了，下一則新訊息會自動
         // 先試回主力模型。_loopFetch/_loopFetchNative遇到404時會依
-        // this._autoFallbackIndex往下試下一個（見那兩處的說明），只有MODEL
-        // NAME真的留空時才啟動，使用者自己指定了模型就完全不受影響。
-        this._autoFallbackActive = this._isModelFieldBlank();
-        if (this._autoFallbackActive) {
-            this._autoFallbackIndex = 0;
-            apiModel = PRESET_MODEL_OPTIONS[0];
-        }
+        // this._autoFallbackIndex往下試下一筆row（見_nextAutoFallbackModel
+        // 的說明），只有清單裡還有下一筆時才會真的換。
+        this._autoFallbackActive = this._getModelRows().length > 1;
+        this._autoFallbackIndex = 0;
         this._updateHeaderModelName(apiModel, this._autoFallbackActive);
 
         // tw_stock_db客製: toolCallMode==='auto'時，先確保這個apiUrl+apiModel
@@ -14050,7 +14339,7 @@ ${existingNodeSummaries}
         let aiFullResponseContent = "";
 
         try {
-            aiFullResponseContent = await this._loopFetch(apiKey, apiUrl, apiModel);
+            aiFullResponseContent = await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
         } finally {
             this._setRespondingState(false, '', this.stopRequested ? 'stopped' : 'completed');
             
@@ -14060,7 +14349,13 @@ ${existingNodeSummaries}
         }
     }
 
-    async _loopFetch(apiKey, apiUrl, apiModel, retryAttempt = 1) {
+    // tw_stock_db客製: 2026-09-14新增第5個參數genOverrides（可選，
+    // {temperature, samplingOverrides, maxOutputTokens}，null＝不覆寫，
+    // 沿用全域生成設定）——跟apiModel一樣用參數逐層往下傳，不用instance
+    // 層級的共用狀態（避免跟原本apiModel/retryAttempt同樣，遞迴/重試路徑
+    // 不小心互相污染；這個函式本身不會並行執行多份，但維持跟既有參數
+    // 同一種傳遞方式，風格一致、也不用擔心以後有人改成並行呼叫）。
+    async _loopFetch(apiKey, apiUrl, apiModel, retryAttempt = 1, genOverrides = null) {
         if (this.stopRequested) {
             this._log('🛑 已停止 AI 回應');
             return "";
@@ -14069,7 +14364,7 @@ ${existingNodeSummaries}
         // 是完全獨立的兩條邏輯（原生路徑需要非串流請求才能拿到完整的
         // tool_calls陣列），這裡分流。
         if (this._shouldUseNativeToolCalls(apiModel)) {
-            return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
+            return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
         }
         const chatBody = document.getElementById('ai-chat-body');
         const palette = this._getThemePalette();
@@ -14129,34 +14424,37 @@ ${existingNodeSummaries}
                     body: JSON.stringify({
                         model: apiModel,
                         messages: requestMessages,
-                        temperature: 0,
+                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : 0,
                         // tw_stock_db客製: 只送使用者有設定、且沒被目標端點拒絕過的
                         // 取樣參數（見_buildSamplingParamsBody），加上max_tokens替
                         // 輸出長度設硬上限——temperature=0的貪婪解碼在某些模型上
                         // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
                         // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
-                        ...this._buildSamplingParamsBody(),
+                        ...this._buildSamplingParamsBody(genOverrides && genOverrides.samplingOverrides),
                         // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——這裡一定是文字式
                         // [CALL:...]協定（函式最上面已經把原生tool_calls模型導去
                         // _loopFetchNative了），讓端點在模型正確收尾的當下就直接
                         // 截斷生成，不用等模型自己繼續往下編一段假的[TOOL RESULT]。
                         ...this._buildStopParamBody(),
-                        max_tokens: this._getGenerationSettings().maxOutputTokens,
+                        max_tokens: (genOverrides && genOverrides.maxOutputTokens != null) ? genOverrides.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
                         stream: true
                     })
                 });
 
                 if (!response.ok) {
-                    // tw_stock_db客製: MODEL NAME留空時的自動fallback——見
-                    // executeChat()裡this._autoFallbackActive的說明。只處理404
-                    // （模型/端點暫時下線），不處理其他4xx/5xx（那些通常是請求
-                    // 本身有問題，換模型也不會解決，交給下面既有的邏輯處理）。
-                    const nextFallbackModel = this._nextAutoFallbackModel(response.status, apiModel);
-                    if (nextFallbackModel) {
-                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallbackModel}`);
+                    // tw_stock_db客製: 見_nextAutoFallbackModel的說明——清單裡還有
+                    // 下一筆row時才會換，回傳的是完整resolved設定（不只是模型
+                    // 名稱），因為不同row現在可能是完全不同的端點/金鑰/生成參數，
+                    // 只處理404（模型/部署在這個端點上不存在），不處理其他4xx/5xx
+                    // （那些通常是請求本身有問題，換模型也不會解決，交給下面既有
+                    // 的邏輯處理）。
+                    const nextFallback = this._nextAutoFallbackModel(response.status, apiModel);
+                    if (nextFallback) {
+                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallback.apiModel}`);
                         streamDiv.remove();
-                        this._updateHeaderModelName(nextFallbackModel, true);
-                        return await this._loopFetch(apiKey, apiUrl, nextFallbackModel, retryAttempt);
+                        this._updateHeaderModelName(nextFallback.apiModel, true);
+                        return await this._loopFetch(nextFallback.apiKey, nextFallback.apiUrl, nextFallback.apiModel, retryAttempt,
+                            { temperature: nextFallback.temperature, samplingOverrides: nextFallback.samplingOverrides, maxOutputTokens: nextFallback.maxOutputTokens });
                     }
                     const errText = await response.text().catch(() => '');
                     // tw_stock_db客製: 400不一定是上下文太長——先檢查是不是某個
@@ -14168,11 +14466,11 @@ ${existingNodeSummaries}
                     const rejectedParam = this._detectRejectedSamplingParam(errText);
                     if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
                         streamDiv.remove();
-                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
                     if (this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
                         streamDiv.remove();
-                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt);
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
                     if (response.status === 400 || response.status === 413) {
                         streamDiv.remove();
@@ -14206,7 +14504,7 @@ ${existingNodeSummaries}
                         }
                         this._turnPruneCount++;
                         await this.pruneContext("Context Window Exception (Token Limit)");
-                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
                     }
                     throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
                 }
@@ -14405,7 +14703,7 @@ ${existingNodeSummaries}
 
                 // 若有執行任何工具，遞迴呼叫確保 AI 完成後續 Plan
                 if (invokedCount > 0) {
-                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1);
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
             } else {
                 // 完全沒有[CALL:的純文字回答，contentForMessage就是fullContent本身，
@@ -14430,7 +14728,7 @@ ${existingNodeSummaries}
             if (err.name === 'AbortError' || this.stopRequested) return "";
             if (retryAttempt < this.retryLimit) {
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
-                return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
             this._log("錯誤: " + err.message);
             return "";
@@ -14443,7 +14741,7 @@ ${existingNodeSummaries}
     // index累加的delta，重組複雜度高，這裡先用非串流換取正確性，使用者
     // 體感差異只是「這一輪沒有逐字跳出」，仍然有基本的loading等待感由
     // _setRespondingState負責）。
-    async _loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt = 1) {
+    async _loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt = 1, genOverrides = null) {
         if (this.stopRequested) {
             this._log('🛑 已停止 AI 回應');
             return "";
@@ -14485,10 +14783,10 @@ ${existingNodeSummaries}
                     body: JSON.stringify({
                         model: apiModel,
                         messages: requestMessages,
-                        temperature: 0,
+                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : 0,
                         // tw_stock_db客製: 跟 _loopFetch 同樣的理由，見那邊的說明。
-                        ...this._buildSamplingParamsBody(),
-                        max_tokens: this._getGenerationSettings().maxOutputTokens,
+                        ...this._buildSamplingParamsBody(genOverrides && genOverrides.samplingOverrides),
+                        max_tokens: (genOverrides && genOverrides.maxOutputTokens != null) ? genOverrides.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
                         stream: false,
                         // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具
                         // 註冊——根層級對話（這就是主對話迴圈本身）只送出
@@ -14501,20 +14799,21 @@ ${existingNodeSummaries}
                 });
 
                 if (!response.ok) {
-                    // tw_stock_db客製: 跟_loopFetch同樣的MODEL NAME留空自動fallback，
-                    // 見executeChat()/_nextAutoFallbackModel()的說明。
-                    const nextFallbackModel = this._nextAutoFallbackModel(response.status, apiModel);
-                    if (nextFallbackModel) {
-                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallbackModel}`);
-                        this._updateHeaderModelName(nextFallbackModel, true);
-                        return await this._loopFetchNative(apiKey, apiUrl, nextFallbackModel, retryAttempt);
+                    // tw_stock_db客製: 跟_loopFetch同樣的row fallback，見
+                    // _nextAutoFallbackModel()的說明。
+                    const nextFallback = this._nextAutoFallbackModel(response.status, apiModel);
+                    if (nextFallback) {
+                        this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallback.apiModel}`);
+                        this._updateHeaderModelName(nextFallback.apiModel, true);
+                        return await this._loopFetchNative(nextFallback.apiKey, nextFallback.apiUrl, nextFallback.apiModel, retryAttempt,
+                            { temperature: nextFallback.temperature, samplingOverrides: nextFallback.samplingOverrides, maxOutputTokens: nextFallback.maxOutputTokens });
                     }
                     const errText = await response.text().catch(() => '');
                     // tw_stock_db客製: 跟 _loopFetch 同樣的理由，先排除「取樣參數被
                     // 拒絕」這個可能性，見那邊的說明。
                     const rejectedParam = this._detectRejectedSamplingParam(errText);
                     if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
-                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt);
+                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
                     if (response.status === 400 || response.status === 413) {
                         // tw_stock_db客製: 跟 _loopFetch 同樣的理由，不能無條件遞迴
@@ -14532,7 +14831,7 @@ ${existingNodeSummaries}
                         }
                         this._turnPruneCount++;
                         await this.pruneContext("Context Window Exception (Token Limit)");
-                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
                     }
                     throw new Error("HTTP " + response.status + (errText ? (": " + errText.slice(0, 200)) : ""));
                 }
@@ -14605,13 +14904,13 @@ ${existingNodeSummaries}
                 this._renderMessageHistory();
             }
 
-            return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1);
+            return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
 
         } catch (err) {
             if (err.name === 'AbortError' || this.stopRequested) return "";
             if (retryAttempt < this.retryLimit) {
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
-                return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1);
+                return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
             this._log("錯誤: " + err.message);
             return "";
@@ -15129,21 +15428,27 @@ ${existingNodeSummaries}
     // runBatchSubAgents這個既有呼叫端只需要文字結論，取.text即可，不需要
     // 處理visual（批次分析本來就只收集短結論陣列，沒有渲染視覺內容的地方）。
     async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
-        const { apiKey, apiUrl } = this._getApiConfig();
         // tw_stock_db客製: 2026-09-07使用者要求子任務支援retry+model
-        // fallback——apiModel/useNative改成let，允許中途換成下一個候選模型
-        // 時重新指定/重新判斷（不同模型的原生tool_calls支援度可能不同，
-        // 換模型後不能沿用舊模型探測出來的useNative判斷）。這裡刻意用
-        // function-scope的區域變數（modelFieldBlank/fallbackIndex/
-        // transientRetryCount）自己管理狀態，不是共用
+        // fallback——apiModel/apiUrl/apiKey/useNative改成let，允許中途換成
+        // 下一筆row時重新指定/重新判斷（不同row現在可能是完全不同的端點/
+        // 金鑰/生成參數，原生tool_calls支援度也可能不同，換row後不能沿用
+        // 舊row探測出來的useNative判斷）。這裡刻意用function-scope的區域
+        // 變數（rowIndex/transientRetryCount）自己管理狀態，不是共用
         // this._autoFallbackActive/this._autoFallbackIndex那組instance-level
         // 狀態——那是給主對話（單一、序列執行）用的，子任務可能透過
         // runBatchSubAgents同時有好幾個並行執行，共用instance狀態會互相
         // 干擾，必須各自獨立（見下面錯誤處理段落的詳細說明）。
-        let apiModel = this._getApiConfig().apiModel;
+        // tw_stock_db客製: 2026-09-14——「一個row代表一個model/llm」，row
+        // 排列順序本身就是fallback優先順序，不再需要「MODEL NAME是否留空」
+        // 這個判斷（改動前用modelFieldBlank決定要不要fallback），只要清單
+        // 還有下一筆就會往下試，見下面錯誤處理段落。
+        const rows = this._getModelRows();
+        let rowIndex = 0;
+        let rowConfig = this._resolveModelRowConfig(rows[rowIndex]);
+        let apiModel = rowConfig.apiModel;
+        let apiUrl = rowConfig.apiUrl;
+        let apiKey = rowConfig.apiKey;
         let useNative = this._shouldUseNativeToolCalls(apiModel);
-        const modelFieldBlank = this._isModelFieldBlank();
-        let fallbackIndex = 0;
         let transientRetryCount = 0;
         // tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半才發現需要
         // 一個原本沒拿到的domain工具時，要能「原地」申請追加，不能跳出去重新
@@ -15243,9 +15548,9 @@ ${existingNodeSummaries}
             const body = {
                 model: apiModel,
                 messages,
-                temperature: 0,
-                ...this._buildSamplingParamsBody(),
-                max_tokens: this._getGenerationSettings().maxOutputTokens,
+                temperature: rowConfig.temperature != null ? rowConfig.temperature : 0,
+                ...this._buildSamplingParamsBody(rowConfig.samplingOverrides),
+                max_tokens: rowConfig.maxOutputTokens != null ? rowConfig.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
                 stream: false,
             };
             if (useNative) {
@@ -15276,16 +15581,15 @@ ${existingNodeSummaries}
             // 錯誤（HTTP 5xx、或這裡的網路例外）時原本直接放棄回報失敗，太
             // 脆弱：這類錯誤通常是端點/模型當下短暫過載或抖動，重試往往就
             // 好了。404（模型/部署在這個端點上根本不存在，重試同一個模型
-            // 沒有意義，直接換下一個候選模型）也歸在這裡一起處理，跟主對話
-            // 迴圈_nextAutoFallbackModel的判斷精神一致，但這裡刻意不共用
+            // 沒有意義，直接換下一筆row）也歸在這裡一起處理，跟主對話迴圈
+            // _nextAutoFallbackModel的判斷精神一致，但這裡刻意不共用
             // instance-level的_autoFallbackActive/_autoFallbackIndex（原因見
-            // 上面函式開頭的說明）。處理順序：(1)網路例外/5xx先重試同一個
-            // 模型（有次數上限，重試前等一小段時間），(2)重試次數用完、或
-            // 404不值得重試同一個模型時，若使用者沒有手動指定MODEL NAME就
-            // 換下一個候選模型（PRESET_MODEL_OPTIONS），(3)都不行了才真的
-            // 放棄回報失敗。這三種情況都用round--不消耗maxRounds，跟下面
-            // 既有的stop參數/取樣參數自我修復路徑同一個「基礎設施問題不算
-            // 一輪對話」原則。
+            // 上面函式開頭的說明）。處理順序：(1)網路例外/5xx先重試同一筆row
+            // （有次數上限，重試前等一小段時間），(2)重試次數用完、或404不值得
+            // 重試同一筆row時，清單裡還有下一筆就換下一筆row（url/key/生成
+            // 參數整組一起換，不是只換模型名稱），(3)都不行了才真的放棄回報
+            // 失敗。這三種情況都用round--不消耗maxRounds，跟下面既有的stop
+            // 參數/取樣參數自我修復路徑同一個「基礎設施問題不算一輪對話」原則。
             const isServerTransient = !!networkError || (response && response.status >= 500);
             const isModelUnavailable = response && response.status === 404;
             if (isServerTransient || isModelUnavailable) {
@@ -15297,9 +15601,12 @@ ${existingNodeSummaries}
                     round--;
                     continue;
                 }
-                if (modelFieldBlank && fallbackIndex < PRESET_MODEL_OPTIONS.length - 1) {
-                    fallbackIndex++;
-                    apiModel = PRESET_MODEL_OPTIONS[fallbackIndex];
+                if (rowIndex < rows.length - 1) {
+                    rowIndex++;
+                    rowConfig = this._resolveModelRowConfig(rows[rowIndex]);
+                    apiModel = rowConfig.apiModel;
+                    apiUrl = rowConfig.apiUrl;
+                    apiKey = rowConfig.apiKey;
                     useNative = this._shouldUseNativeToolCalls(apiModel);
                     transientRetryCount = 0;
                     this._log(`⚠️ 子任務改用下一個候選模型：${apiModel}`);
@@ -15612,7 +15919,7 @@ ${existingNodeSummaries}
                     <div class="ai-advanced-body">
                         <div class="ai-advanced-sidebar">
                             <div class="ai-advanced-cat active" data-cat="llm-basic">LLM 基礎設定</div>
-                            <div class="ai-advanced-cat" data-cat="llm-sampling">LLM 生成取樣參數</div>
+                            <div class="ai-advanced-cat" data-cat="llm-sampling">LLM Model 管理</div>
                             <div class="ai-advanced-cat" data-cat="llm-debug">LLM Debug</div>
                             <div class="ai-advanced-cat" data-cat="input">輸入</div>
                             <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
@@ -15625,17 +15932,6 @@ ${existingNodeSummaries}
                         </div>
                         <div class="ai-advanced-content">
                             <div class="ai-advanced-pane" data-pane="llm-basic">
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-input-key">API KEY</label>
-                                    <input type="password" id="ai-input-key" class="ai-advanced-input">
-                                    <label class="ai-advanced-label" for="ai-url">API URL</label>
-                                    <input type="text" id="ai-url" class="ai-advanced-input" placeholder='https://integrate.api.nvidia.com/v1'>
-                                    <label class="ai-advanced-label" for="ai-model-name">MODEL NAME</label>
-                                    <input type="text" id="ai-model-name" list="ai-model-datalist" class="ai-advanced-input" placeholder='留空＝依內建清單順序自動fallback'>
-                                    <datalist id="ai-model-datalist">
-                                        ${this._modelDatalistOptionsHtml()}
-                                    </datalist>
-                                </div>
                                 <div class="ai-advanced-stack">
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">
@@ -15653,9 +15949,20 @@ ${existingNodeSummaries}
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="llm-sampling">
                                 <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <label class="ai-advanced-label" style="margin:0;">Model 清單（拖曳⠿調整fallback順序）</label>
+                                        <button type="button" id="ai-model-row-add-btn" class="ai-advanced-btn primary">+ 新增 Model</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">每一筆代表一個獨立的model/llm，由上到下就是自動fallback的嘗試順序（拖曳⠿把手調整；同一輪對話一開始一律先試第一筆，遇到該模型404才依序往下換）。<b>API URL／API Key留空＝走我們預設的網址／金鑰</b>，只有Model Name是必填；溫度/懲罰參數/max tokens留空＝套用下面「全域預設」。Model Name以「openrouter/」開頭時，會改經Cloudflare Worker的/openrouter路由轉去OpenRouter（不是直接從瀏覽器打openrouter.ai），需要該Worker已部署/openrouter路由並設定OPENROUTER_API_KEY（或OPENROUTER_API_KEY_DEFAULT）密鑰才能真正運作，見web/cloudflare-worker/worker.js。</p>
+                                    <div id="ai-model-rows-list"></div>
+                                    <datalist id="ai-model-datalist">
+                                        ${this._modelDatalistOptionsHtml()}
+                                    </datalist>
+                                </div>
+                                <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-gen-context-window">模型上下文視窗（tokens，僅供參考顯示；實際壓縮時機由伺服器400/413回應觸發，不是靠這個數字主動估算）</label>
                                     <input type="number" min="512" step="512" id="ai-gen-context-window" class="ai-advanced-input">
-                                    <p class="ai-advanced-hint">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</p>
+                                    <p class="ai-advanced-hint">全域預設取樣參數（上面的model row本身留空的欄位會套用這裡；留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</p>
                                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
                                         ${SAMPLING_PARAM_KEYS.map(key => `
                                             <div>
@@ -16009,12 +16316,6 @@ ${existingNodeSummaries}
             </div>
         `;
 
-        const savedKey = localStorage.getItem(this.STORAGE_KEY);
-        if (savedKey) win.querySelector('#ai-input-key').value = savedKey;
-        let savedURL = localStorage.getItem(this.LLM_BASE_URL_KEY);
-        if (savedURL) win.querySelector('#ai-url').value = savedURL;
-        let savedModel = localStorage.getItem(this.LLM_MODEL_NAME_KEY);
-        if (savedModel) win.querySelector('#ai-model-name').value = savedModel;
         this._renderAdvancedSettings();
         this._applyThemeStyles();
     }
@@ -17266,9 +17567,6 @@ ${existingNodeSummaries}
 
     _initEventListeners() {
         const win = document.getElementById('ai-floating-window');
-        const inputKey = document.getElementById('ai-input-key');
-        const inputAiUrl = document.getElementById('ai-url');
-        const inputModelName = document.getElementById('ai-model-name');
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');
@@ -17414,22 +17712,98 @@ ${existingNodeSummaries}
             document.querySelectorAll('.ai-rag-row-check').forEach(cb => { cb.checked = e.target.checked; });
         });
 
-        inputKey.addEventListener('input', () => {
-            localStorage.setItem(this.STORAGE_KEY, inputKey.value.trim());
-        });
-        inputAiUrl.addEventListener('input', () => {
-            localStorage.setItem(this.LLM_BASE_URL_KEY, inputAiUrl.value.trim());
-        });
-        inputModelName.addEventListener('input', () => {
-            localStorage.setItem(this.LLM_MODEL_NAME_KEY, inputModelName.value.trim());
-            // tw_stock_db客製: 使用者手動打字時即時更新header小字提示，留空時
-            // 顯示「自動fallback候選清單第一個」而不是誤導成「已經固定用某個
-            // 模型」——真正選中哪個要等executeChat()送出下一輪對話才知道。
-            const trimmed = inputModelName.value.trim();
-            this._updateHeaderModelName(trimmed || `${PRESET_MODEL_OPTIONS[0]}起`, !trimmed);
-        });
-        // tw_stock_db客製: 面板剛開啟時的初始值，邏輯跟上面input監聽器一致。
-        this._updateHeaderModelName(inputModelName.value.trim() || `${PRESET_MODEL_OPTIONS[0]}起`, !inputModelName.value.trim());
+        // tw_stock_db客製: 2026-09-14——Model清單改成事件代理（見
+        // _renderModelRowsList/_buildModelRowHtml/_updateModelRowField）：
+        // url/key/數字欄位用'input'即時存檔但不重繪（重繪會讓輸入框
+        // 失焦/游標跳掉）；modelName刻意改用'change'（blur/Enter才觸發）
+        // 才存檔+重繪——如果用'input'，使用者刪光模型名稱準備重打時，
+        // 半路那個暫時空白的瞬間就會被_saveAdvancedSettings()的
+        // normalize邏輯判定為不合法、把整筆row憑空砍掉。刪除/新增/拖曳
+        // 排序這類結構性變動才需要重繪，見下面各自的handler。
+        const modelRowsList = document.getElementById('ai-model-rows-list');
+        if (modelRowsList) {
+            modelRowsList.addEventListener('input', (e) => {
+                const input = e.target.closest('.ai-model-row-input');
+                if (!input || input.dataset.field === 'modelName') return;
+                this._updateModelRowField(input.dataset.rowId, input.dataset.field, input.value);
+            });
+            modelRowsList.addEventListener('change', (e) => {
+                const input = e.target.closest('.ai-model-row-input');
+                if (!input || input.dataset.field !== 'modelName') return;
+                this._updateModelRowField(input.dataset.rowId, 'modelName', input.value);
+                this._renderModelRowsList();
+            });
+            modelRowsList.addEventListener('click', (e) => {
+                const delBtn = e.target.closest('.ai-model-row-delete');
+                if (!delBtn) return;
+                const rows = this._getModelRows();
+                if (rows.length <= 1) { alert('至少要保留一筆model。'); return; }
+                const idx = rows.findIndex(r => r.id === delBtn.dataset.rowId);
+                if (idx >= 0) rows.splice(idx, 1);
+                this._saveAdvancedSettings();
+                this._renderModelRowsList();
+            });
+            // tw_stock_db客製: 原生HTML5 drag & drop，沒有既有pattern可以沿用
+            // （這是這個專案第一個拖曳排序UI）——draggable設在整個row容器上
+            // （不是只有⠿把手，HTML5 DnD不容易限制成「只能從某個子元素觸發」，
+            // 手感上使用者從row背景/把手拖都能動，但輸入框本身的滑鼠事件
+            // 不受影響，仍然能正常點擊/選取文字，因為輸入框自己不是
+            // draggable、drag只會在mousedown落在row背景時才啟動）。
+            let dragRowId = null;
+            modelRowsList.addEventListener('dragstart', (e) => {
+                const rowEl = e.target.closest('.ai-model-row');
+                if (!rowEl) return;
+                dragRowId = rowEl.dataset.rowId;
+                rowEl.classList.add('dragging');
+                if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'move';
+                    try { e.dataTransfer.setData('text/plain', dragRowId); } catch (_) {}
+                }
+            });
+            modelRowsList.addEventListener('dragend', () => {
+                modelRowsList.querySelectorAll('.ai-model-row').forEach(el => el.classList.remove('dragging', 'drag-over'));
+                dragRowId = null;
+            });
+            modelRowsList.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const rowEl = e.target.closest('.ai-model-row');
+                if (!rowEl || !dragRowId || rowEl.dataset.rowId === dragRowId) return;
+                modelRowsList.querySelectorAll('.ai-model-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+                rowEl.classList.add('drag-over');
+            });
+            modelRowsList.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const rowEl = e.target.closest('.ai-model-row');
+                modelRowsList.querySelectorAll('.ai-model-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+                if (!rowEl || !dragRowId || rowEl.dataset.rowId === dragRowId) return;
+                const rows = this._getModelRows();
+                const fromIdx = rows.findIndex(r => r.id === dragRowId);
+                const toIdx = rows.findIndex(r => r.id === rowEl.dataset.rowId);
+                if (fromIdx < 0 || toIdx < 0) return;
+                const [moved] = rows.splice(fromIdx, 1);
+                rows.splice(toIdx, 0, moved);
+                this._saveAdvancedSettings();
+                this._renderModelRowsList();
+            });
+        }
+        const modelRowAddBtn = document.getElementById('ai-model-row-add-btn');
+        if (modelRowAddBtn) {
+            modelRowAddBtn.addEventListener('click', () => {
+                this._getModelRows().push({
+                    id: (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
+                    apiUrl: '', apiKey: '', modelName: 'new-model',
+                    temperature: null, frequency_penalty: null, presence_penalty: null,
+                    repetition_penalty: null, length_penalty: null, maxOutputTokens: null,
+                });
+                this._saveAdvancedSettings();
+                this._renderModelRowsList();
+            });
+        }
+        // tw_stock_db客製: 面板剛開啟前（建構子執行當下）的header初始值。
+        {
+            const rows0 = this._getModelRows();
+            this._updateHeaderModelName(rows0[0].modelName, rows0.length > 1);
+        }
 
         // tw_stock_db客製: 生成/取樣參數設定，跟上面API Key/URL/Model一樣採
         // 輸入即存的方式，不用另外按儲存鍵。

@@ -1615,6 +1615,128 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     `_getGenerationSettings().contextWindowTokens`確認為128000、
     `advancedSettings.maxImportedMeshTriangles`確認為100000。
 
+- **2026-09-14（深夜再追加）Model管理改成多筆row（一個row=一個model/llm）
+  ＋OpenRouter經Worker轉接**：使用者要求把單一組API KEY/URL/MODEL NAME＋
+  留空時依`PRESET_MODEL_OPTIONS`自動fallback的舊設計，改成多筆完整的
+  model row（各自可以有自己的URL/KEY/temperature/penalty/token上限），
+  可拖曳調整fallback順序、可新增/刪除；並要求`openrouter/`開頭的model
+  經Cloudflare Worker轉去OpenRouter，金鑰用worker端的
+  `OPENROUTER_API_KEY`／`OPENROUTER_API_KEY_DEFAULT`。
+  - **資料模型**：`advancedSettings.llmModelRows`（陣列，取代原本存在
+    `localStorage`的`floating_ai_api_key`/`floating_ai_base_url_key`/
+    `floating_ai_model_name_key`三個獨立key）。每筆row：
+    `{id, apiUrl, apiKey, modelName, temperature, frequency_penalty,
+    presence_penalty, repetition_penalty, length_penalty,
+    maxOutputTokens}`——`MODEL_ROW_NUMERIC_FIELDS`常數列出後6個數字欄位，
+    `modelName`必填（`_normalizeModelRow`空白直接丟棄整筆row），其餘留空
+    (`null`)＝不覆寫，沿用全域預設。`_buildDefaultModelRows()`（module-
+    level純函式，避免`_createDefaultAdvancedSettings()`呼叫時`this`還沒
+    完全初始化的疑慮）把`PRESET_MODEL_OPTIONS`（新增了`openrouter/free`
+    在最後一個）逐一轉成row，URL/KEY/生成參數全部留空。
+  - **一次性migration**：`_normalizeModelRows(rawRows)`——`rawRows`是
+    非空陣列就直接用（使用者自己的設定，含順序）；否則視為「第一次升級
+    到這個機制」，把`localStorage`裡舊的`floating_ai_model_name_key`（如果
+    有填過）連同對應的URL/Key搬進第一筆row，其餘用內建預設補滿。
+    ⚠️**實測抓到的真實bug**：`_normalizeAdvancedSettings(raw)`當`raw`
+    完全不存在（`localStorage`裡根本沒有`floating_ai_advanced_settings`
+    這個key——很多現實中的既有使用者符合這個情況，因為舊版單一組API
+    KEY/URL/MODEL NAME是直接寫進localStorage、不經過這個normalize流程
+    存檔的，使用者可能從來沒有觸發過advancedSettings的任何一次存檔）
+    原本會提早`return defaults`（`_createDefaultAdvancedSettings()`的
+    純預設值，不含migration），完全跳過migration邏輯——瀏覽器實測時才
+    抓到（模擬「localStorage有舊版model name但沒有advancedSettings
+    blob」，migration確實沒有生效）。修正：這個提早return分支也要呼叫
+    `this._normalizeModelRows(null)`覆寫`defaults.llmModelRows`。
+  - **`_resolveModelRowConfig(row)`**：把單一row（大部分欄位可能留空）
+    解析成一次API呼叫真正需要的完整設定
+    `{apiUrl, apiKey, apiModel, temperature, samplingOverrides,
+    maxOutputTokens}`。URL/Key留空時退回`this.LLM_BASE_URL_KEY`/
+    `this.STORAGE_KEY`這兩個舊localStorage欄位當「我們預設的網址/金鑰」
+    ——雖然新版UI不再讓使用者直接編輯它們，但tw_stock_db自己的
+    `index.html`會在訪客第一次造訪時把它們seed成部署好的Cloudflare
+    Worker網址＋共用假金鑰`tw_stock_db_api:{sessionId}`（見`index.html`
+    12440-12449行），讓完全沒設定過的訪客也能直接用；migration也會把
+    舊使用者存在這裡的值寫進第一筆row。`modelName`以`openrouter/`開頭
+    時，resolve出來的base URL加上`/openrouter`路徑片段（apiKey解析完全
+    不變，沿用一般row同一套邏輯——對tw_stock_db訪客而言那個全域預設
+    金鑰剛好就是能觸發worker共用金鑰路徑的假金鑰格式）。
+    ⚠️**實測抓到的第二個真實bug**：一開始這個函式（跟`_normalizeModelRow`）
+    直接對`row[key]`呼叫`Number(...)`判斷是否為合法數字，但
+    `Number(null) === 0`（不是`NaN`！）——導致所有「留空(null)代表不
+    覆寫」的欄位被誤判成「明確填了0」，瀏覽器實測時發現`resolveModelRowConfig`
+    回傳的`temperature`/`frequency_penalty`等本來該是`null`的欄位全部
+    變成`0`。修正：先判斷`raw == null || raw === ''`才決定要不要呼叫
+    `Number()`，兩處都修。
+  - **Fallback語意簡化**：舊版`_isModelFieldBlank()`（判斷MODEL NAME
+    欄位是否留空，只有留空才啟動自動fallback）整個刪除——row的
+    modelName不可能留空，改成單純「row排列順序本身就是fallback優先
+    順序」，只要清單還有下一筆就會往下試（列表只剩1筆時自然不會
+    fallback，跟舊行為「使用者自己指定模型就不fallback」殊途同歸）。
+    `_nextAutoFallbackModel(status, currentModel)`回傳值從純字串（模型
+    名稱）改成完整resolved config物件——不同row現在可能是完全不同的
+    端點/金鑰，換row時要整組一起換，不能像舊版只換模型名稱、沿用舊的
+    URL/Key。
+  - **per-row生成參數threading進main chat loop**：`_loopFetch`/
+    `_loopFetchNative`新增第5個參數`genOverrides`
+    （`{temperature, samplingOverrides, maxOutputTokens}`，`null`＝
+    不覆寫），跟既有的`apiModel`/`retryAttempt`一樣逐層往下傳過全部
+    遞迴呼叫點（約11處，含fallback換row／取樣參數被拒絕重試／400/413
+    壓縮重試／工具呼叫後接續／網路例外重試）；body組裝處把原本寫死的
+    `temperature: 0`改成`genOverrides?.temperature ?? 0`，
+    `_buildSamplingParamsBody()`新增可選的`rowOverrides`參數（per-row
+    填過值的欄位優先蓋過全域`advancedSettings.generation.samplingParams`），
+    `max_tokens`同理。`_runSubAgentTask`（子agent委派用，可能透過
+    `runBatchSubAgents`同時並行執行多份）改用function-scope區域變數
+    （`rowIndex`/`rowConfig`）追蹤目前用第幾筆row，刻意不共用instance
+    層級狀態（跟`_autoFallbackActive`/`_autoFallbackIndex`那組是給
+    「單一、序列執行」的主對話用的，並行子任務共用會互相污染）。
+    `_getApiConfig()`（給benchmark/hermes反思/topic-transition偵測/RAG
+    分段摘要這類不參與per-row覆寫的內部輔助呼叫用）維持原本
+    `{apiKey, apiUrl, apiModel}`三欄位shape、固定用第一筆row，這些呼叫端
+    完全不用改；新增`_getApiConfigForRow(index)`給需要完整per-row設定
+    的main chat loop用。
+  - **`handleOpenRouterProxy`**（`web/cloudflare-worker/worker.js`，緊接
+    在`handleNvidiaProxy`後面）：複製一份而不是抽共用函式（兩個服務的
+    金鑰/流量控管政策未來可能各自演變）。金鑰解析跟`handleNvidiaProxy`
+    對稱：假金鑰`tw_stock_db_api:{sessionId}`（沿用AI助理既有的共用金鑰
+    格式，不是openrouter專屬新格式）→`env.OPENROUTER_API_KEY`（含流量
+    控管，`checkAndIncrementRateLimit`的bucket key加`openrouter:`前綴，
+    跟NVIDIA共用同一個`RATE_LIMIT_KV`但額度各自獨立計算）；真金鑰原樣
+    轉發；空白→依序fallback `OPENROUTER_API_KEY_DEFAULT`→
+    `OPENROUTER_API_KEY`。轉發目標固定
+    `https://openrouter.ai/api/v1/chat/completions`。路由
+    `/openrouter/api`或`/openrouter/chat/completions`（對稱既有NVIDIA
+    路由同時接受`/api`跟`/chat/completions`兩種路徑）。
+  - **Advance Settings UI**：「LLM 生成取樣參數」分頁改名「LLM Model
+    管理」，內容整個換成`_renderModelRowsList()`/`_buildModelRowHtml()`
+    渲染的多筆row清單（⠿拖曳把手、#編號、刪除按鈕、9個欄位的
+    `.ai-model-row-grid`）＋「+新增Model」按鈕，下方保留原本的「全域
+    預設」取樣參數編輯區（row留空的欄位套用這裡，機制不變，只是多了
+    per-row覆寫層）；「LLM 基礎設定」分頁移除原本的API KEY/URL/MODEL
+    NAME三個input。事件綁定改用事件代理在`#ai-model-rows-list`容器上
+    （不逐row綁定，重繪不會丟失監聽器）：url/key/數字欄位用`input`事件
+    即時存檔但**不重繪**（重繪會讓輸入框失焦/游標跳掉）；modelName
+    刻意改用`change`事件（blur/Enter才觸發）才存檔+重繪——如果用
+    `input`，使用者刪光模型名稱準備重打時，中途那個暫時空白的瞬間會被
+    `_saveAdvancedSettings()`的normalize邏輯判定成不合法、把整筆row
+    憑空砍掉（瀏覽器實測驗證過這個時序：模擬先`input`清空、確認row數
+    不變，再`change`打完整名稱、確認正確更新且row還在）。拖曳排序用
+    原生HTML5 Drag and Drop（這個專案第一個拖曳UI，沒有既有pattern可
+    沿用）——`draggable="true"`設在整個row容器（不是只有⠿把手，HTML5
+    DnD不容易限制成「只能從子元素觸發」，但使用者從輸入框拖曳仍然正常
+    是文字選取，不會誤觸發row拖曳，因為拖曳只在mousedown落在row背景時
+    才啟動）。
+  - 實測（Browser工具，`new FloatingAssistant({})`+mock `fetch`，見上面
+    兩個bug的說明）：UI正確渲染9個預設row；`_resolveModelRowConfig`對
+    一般/openrouter row都正確解析（openrouter row的URL正確多了
+    `/openrouter`後綴）；新增/刪除（含「至少保留一筆」防呆）/拖曳排序
+    （`DataTransfer`+`DragEvent`模擬）都正確更新`llmModelRows`；
+    **端到端fallback測試**（mock `fetch`讓row-a回404、row-b成功）：
+    `executeChat`／`_runSubAgentTask`都正確從row-a換到row-b，連
+    URL／API Key／temperature／max_tokens都整組換成row-b自己的值；
+    migration測試（模擬localStorage有舊版設定但沒有advancedSettings
+    blob）確認正確migrate成第一筆row。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
