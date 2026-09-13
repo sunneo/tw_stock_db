@@ -1558,6 +1558,63 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     環境沒有真實Worker端點時，正確顯示「試聽失敗：...Failed to fetch」，
     按鈕正確恢復可點擊狀態，沒有拋出未捕捉例外。
 
+- **2026-09-14（晚上再追加）上下文視窗/三角形上限預設值調整＋Advance Settings
+  分頁重整**：使用者一次提出六點UI/預設值意見。
+  - `_createDefaultGenerationSettings().contextWindowTokens`：8192→128000
+    （理由：現在內建模型基礎大多有128K，8192明顯偏保守）。這個值本身只是
+    面板參考顯示用，`executeChat`早就不用它做主動預算判斷（見前面「移除
+    主動式預算檢查」的既有說明）——這次順便把面板label文字也改正確，之前
+    label寫「用來主動判斷何時該壓縮對話」是過時描述，跟code comment已經
+    講的事實不符。
+  - `SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES`：10000→100000，同步更新
+    `import_3d_model`工具description裡提到的數字。
+  - **Advance Settings分頁重整**（純HTML區塊搬動+cat清單調整——分頁切換是
+    `document.querySelectorAll('.ai-advanced-cat').forEach(cat=>{...
+    p.dataset.pane !== cat.dataset.cat...})`這種完全通用的比對，沒有任何
+    地方寫死分頁名稱字串，所以搬動內容不需要改任何額外JS邏輯）：
+    - 「一般」分頁（只有RULES.md一個欄位）整個移除，RULES.md textarea搬進
+      「LLM 基礎設定」分頁尾端。
+    - 「AI自製函式」分頁整個移除，內容（標題+「管理AI自製函式」按鈕+新增
+      的一行說明文字）搬進「自訂函式」分頁、排在Customize Functions編輯器
+      下方。
+    - 「自訂函式」分頁的Customize Functions編輯器旁新增「範例」按鈕
+      （`#ai-custom-functions-example-btn`），點擊時（若textarea已有內容會
+      先`confirm()`二次確認覆蓋）把`CUSTOM_FUNCTIONS_EXAMPLE`（module常數，
+      定義在`SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES`附近）寫進
+      `functionsInput.value`並dispatch一個`input`事件（讓既有的
+      `functionsInput.addEventListener('input',...)`原封不動處理存檔+
+      code editor高亮同步，不用重複寫一份儲存邏輯）。範例內容本身老實反映
+      現況：讀`_executeCustomTool`（6750行一帶）跟`_createAiFnCallable`
+      （3150行一帶）確認`advancedSettings.customFunctions`這個欄位目前
+      **完全沒有被注入到任何實際執行的`new Function`裡**——只有Skill的
+      `handlerScript`、AI自製函式的`code`會被組進各自的執行runner，
+      `customFunctions`只會被`_validateCustomScript`驗證一次（而那個驗證
+      函式本身早就是`return true`的no-op）。這是既有的、這次沒有觸碰的
+      技術債（欄位本身像是曾經規劃要當共用函式庫用，但串接從未完成）——
+      範例文案刻意寫成「這個欄位目前只是使用者自己的共用函式草稿，不會被
+      自動注入到執行環境」，避免對使用者做出錯誤的功能宣稱；如果之後要
+      讓這個欄位真正生效（例如把內容prepend進Skill/AI自製函式的runner
+      scope），屬於獨立的後續工作，這次範圍只到「加一個誠實的範例按鈕」。
+    - 「子Agent」分頁拆成三個：「子Agent」只留「多重子Agent模式」選擇＋
+      「啟用網路搜尋子Agent（browser_search）」兩塊；新增「多媒體」分頁
+      承接原本混在子Agent分頁裡的「影音處理子Agent」整塊（Whisper運算
+      裝置/CPU執行緒數/擷取聲音輸出格式/模型快取管理/燒錄字幕字級與位置）；
+      新增「語音設定」分頁承接兩塊「語音合成子Agent」設定（本地Kokoro
+      英文語音、API中文語音，含上一批`concat_audio`/speed批次剛做的試聽
+      按鈕與語速滑桿）——三個分頁的DOM id完全不變，純粹是外層`.ai-advanced-
+      pane`容器div的邊界重新劃分，事件綁定（`_bindAdvancedSettingsEvents`
+      裡讀取這些id的那些程式碼）完全不用改。
+  - 實測（Browser工具，`new FloatingAssistant({})`清空`advancedSettings`
+    localStorage後、`toggleWindow(true)`+`_openAdvancedModal()`）：分頁
+    清單確認為11個（LLM基礎設定/LLM生成取樣參數/LLM Debug/輸入/自訂函式/
+    Skill/RAG知識庫/子Agent/多媒體/語音設定/效能與限制），沒有「一般」跟
+    「AI自製函式」；LLM基礎設定分頁底部正確顯示RULES.md欄位；自訂函式分頁
+    正確顯示合併後的兩塊內容，點「範例」後textarea跟
+    `advancedSettings.customFunctions`都正確寫入範例文字；多媒體/語音設定/
+    子Agent三個分頁各自只顯示對應的子集內容（截圖逐一確認）；
+    `_getGenerationSettings().contextWindowTokens`確認為128000、
+    `advancedSettings.maxImportedMeshTriangles`確認為100000。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/

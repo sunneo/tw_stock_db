@@ -1008,7 +1008,29 @@ const SCENE3D_MAX_NBODY_PARTICLE_COUNT = 60;
 // _getMaxImportedMeshTriangles/_createDefaultAdvancedSettings，0代表
 // 使用者自己選擇不限制），這個常數只在使用者從未碰過那個設定時當退回值，
 // 不是寫死的硬限制。
-const SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES = 10000;
+const SCENE3D_DEFAULT_MAX_IMPORTED_MESH_TRIANGLES = 100000;
+// tw_stock_db客製: 2026-09-14——「自訂函式」分頁的「範例」按鈕插入的示範內容。
+// 這個欄位（advancedSettings.customFunctions）目前只會被_validateCustomScript
+// 驗證過一次（且那個驗證函式本身是no-op），並沒有被注入到Skill/AI自製函式的
+// 實際執行環境（見_executeCustomTool/_createAiFnCallable，只有各自的
+// handlerScript/code會被組進new Function執行），純粹是使用者自己的共用
+// 函式草稿/筆記用途——範例內容如實反映這點，不宣稱會被自動呼叫。
+const CUSTOM_FUNCTIONS_EXAMPLE = `// 範例：在這裡定義你自己常用的共用JS函式，方便撰寫Skill／AI自製函式時
+// 複製參考（這個欄位目前只是純文字草稿，不會被自動注入到執行環境）。
+
+function formatCurrency(amount) {
+    return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD' }).format(amount);
+}
+
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function daysBetween(dateStrA, dateStrB) {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    return Math.round((new Date(dateStrB) - new Date(dateStrA)) / msPerDay);
+}
+`;
 // tw_stock_db客製: 2026-09-05使用者實測回報——請AI畫「太陽-地球-月球系統
 // （軌道與節氣）」，AI自己編了一組完全不存在的頂層欄位`lines:`/`markers:`
 // （型態抄自render_chart的trend圖表資料格式：{from,to,color,label}）想畫
@@ -2816,7 +2838,7 @@ class FloatingAssistant {
     //   自己在設定面板手動重新啟用。
     _createDefaultGenerationSettings() {
         return {
-            contextWindowTokens: 8192,
+            contextWindowTokens: 128000,
             maxOutputTokens: 16384,
             samplingParams: {
                 frequency_penalty: { value: 0, disabled: false },
@@ -3598,7 +3620,7 @@ ${fnData.code}
         // 幾何形狀+單一材質顏色，不含貼圖/骨架動畫，三角形數量超過上限
         // 會直接報錯而不是硬做有損簡化。
         registerOptional('import_3d_model_attachment',
-            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過使用者設定的上限（Advanced Settings的maxImportedMeshTriangles，預設10000，0代表不限制）會被拒絕，若被拒絕請提醒使用者換更精簡的模型，或在Advanced Settings調高/解除上限。參數: {"file_id":"..."}',
+            '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過使用者設定的上限（Advanced Settings的maxImportedMeshTriangles，預設100000，0代表不限制）會被拒絕，若被拒絕請提醒使用者換更精簡的模型，或在Advanced Settings調高/解除上限。參數: {"file_id":"..."}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -15592,13 +15614,13 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-cat active" data-cat="llm-basic">LLM 基礎設定</div>
                             <div class="ai-advanced-cat" data-cat="llm-sampling">LLM 生成取樣參數</div>
                             <div class="ai-advanced-cat" data-cat="llm-debug">LLM Debug</div>
-                            <div class="ai-advanced-cat" data-cat="general">一般</div>
                             <div class="ai-advanced-cat" data-cat="input">輸入</div>
                             <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
                             <div class="ai-advanced-cat" data-cat="skills">Skill</div>
-                            <div class="ai-advanced-cat" data-cat="ai-functions">AI自製函式</div>
                             <div class="ai-advanced-cat" data-cat="rag">RAG 知識庫</div>
                             <div class="ai-advanced-cat" data-cat="subagent">子Agent</div>
+                            <div class="ai-advanced-cat" data-cat="multimedia">多媒體</div>
+                            <div class="ai-advanced-cat" data-cat="voice">語音設定</div>
                             <div class="ai-advanced-cat" data-cat="limits">效能與限制</div>
                         </div>
                         <div class="ai-advanced-content">
@@ -15624,10 +15646,14 @@ ${existingNodeSummaries}
                                         <label for="ai-slash-menu-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">輸入框打「/」時顯示可用指令選單</label>
                                     </div>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
+                                    <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
+                                </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="llm-sampling">
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
+                                    <label class="ai-advanced-label" for="ai-gen-context-window">模型上下文視窗（tokens，僅供參考顯示；實際壓縮時機由伺服器400/413回應觸發，不是靠這個數字主動估算）</label>
                                     <input type="number" min="512" step="512" id="ai-gen-context-window" class="ai-advanced-input">
                                     <p class="ai-advanced-hint">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</p>
                                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
@@ -15650,12 +15676,6 @@ ${existingNodeSummaries}
                                     <p class="ai-advanced-hint">預設隱藏，圖片結果不受影響。開啟後，除了主對話的工具呼叫/思考過程，委派給子Agent（delegate_to_subagent，不管是明確指定domain、自動路由、還是兩層領域路由）執行期間也會多顯示一張即時更新的進度卡片（判斷委派給哪個領域、每一輪呼叫了哪個工具、有沒有中途申請追加工具），方便觀察子Agent在忙什麼；關閉時子Agent一律維持完全靜默，跟這個設定新增前的行為一致。</p>
                                 </div>
                             </div>
-                            <div class="ai-advanced-pane hidden" data-pane="general">
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
-                                    <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
-                                </div>
-                            </div>
                             <div class="ai-advanced-pane hidden" data-pane="input">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音輸入（麥克風）</label>
@@ -15668,8 +15688,18 @@ ${existingNodeSummaries}
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
                                 <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-custom-functions-input">Customize Functions (JavaScript, private for AI)</label>
+                                    <div class="ai-advanced-tools-header">
+                                        <label class="ai-advanced-label" for="ai-custom-functions-input" style="margin:0;">Customize Functions (JavaScript, private for AI)</label>
+                                        <button type="button" id="ai-custom-functions-example-btn" class="ai-advanced-btn">範例</button>
+                                    </div>
                                     ${this._buildCodeEditorHtml('ai-custom-functions-input', 240)}
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">AI自製函式 (FromAI)</div>
+                                        <button type="button" id="ai-fn-manage-btn" class="ai-advanced-btn primary">管理AI自製函式</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">由AI透過 add_ai_function 工具建立、或你自己手動新增的函式，儲存於 FloatingAssistant.FromAI，可被 call_ai_function 工具呼叫。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="skills">
@@ -15685,14 +15715,6 @@ ${existingNodeSummaries}
                                     </div>
                                     <p class="ai-advanced-hint">每個Skill會自動註冊成同名的slash指令（例如Skill叫「my_skill」，輸入框直接打「/my_skill 參數」即可跳過AI判斷、直接本地執行，也會出現在「/」自動完成選單裡）——如果名稱撞到既有指令，既有的優先，這個Skill仍然只能靠AI自己判斷呼叫。這些Skill不會直接出現在主對話的工具清單裡，AI需要用到時會透過委派機制交給專門的子Agent查詢/呼叫——這樣Skill累積再多也不會拖慢/污染主對話。</p>
                                     <div id="ai-custom-tool-list" class="ai-tool-list"></div>
-                                </div>
-                            </div>
-                            <div class="ai-advanced-pane hidden" data-pane="ai-functions">
-                                <div class="ai-advanced-stack">
-                                    <div class="ai-advanced-tools-header">
-                                        <div class="ai-advanced-label" style="margin:0;">AI自製函式 (FromAI)</div>
-                                        <button type="button" id="ai-fn-manage-btn" class="ai-advanced-btn primary">管理AI自製函式</button>
-                                    </div>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="rag">
@@ -15730,6 +15752,8 @@ ${existingNodeSummaries}
                                     <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用上面的API URL">
                                     <p class="ai-advanced-hint">留空時會直接沿用目前設定的LLM API URL（如果那個Worker本身也有部署/browser-search路由的話，不需要另外填）；只有想用「跟LLM不同的另一個」Worker端點時才需要在這裡明確指定。</p>
                                 </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="multimedia">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">影音處理子Agent（transcribe_media／extract_audio）</label>
                                     <p class="ai-advanced-hint">影片/音檔的語音轉文字、擷取聲音，全部在瀏覽器端執行、不上傳。Whisper 模型（約 77MB）首次使用時從 HuggingFace 下載、瀏覽器自動快取。</p>
@@ -15761,6 +15785,8 @@ ${existingNodeSummaries}
                                     </select>
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="voice">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent（text_to_speech）—— 本地英文語音</label>
                                     <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字，只支援英文。模型本體（約90MB）首次使用時下載；選好預設語音後，第一次實際使用 text_to_speech 時會自動下載該語音（約522KB），不用另外手動安裝——下面直接點「試聽」就會下載並播放。</p>
@@ -17438,6 +17464,14 @@ ${existingNodeSummaries}
             this._saveAdvancedSettings();
             this._syncCodeEditor(functionsInput.closest('.ai-code-editor'));
         });
+        const customFunctionsExampleBtn = document.getElementById('ai-custom-functions-example-btn');
+        if (customFunctionsExampleBtn) {
+            customFunctionsExampleBtn.addEventListener('click', () => {
+                if (functionsInput.value.trim() && !confirm('目前內容會被範例覆蓋，確定要套用範例嗎？')) return;
+                functionsInput.value = CUSTOM_FUNCTIONS_EXAMPLE;
+                functionsInput.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+        }
         // tw_stock_db客製: 效能與限制分頁——之前fileCacheLimitMB/batchConcurrency
         // 只能靠匯出/匯入設定JSON調整，使用者反應「看不到」在哪裡設定匯入模型
         // 三角形上限，這裡補上實際輸入框。三個欄位都是「輸入即存」，跟API Key/
