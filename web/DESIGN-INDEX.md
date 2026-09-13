@@ -1400,6 +1400,37 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     Cache API存取都要搬過去，是更大幅度的架構調整），這次沒有做，如果
     使用者需要可以另外排一個計畫處理。
 
+- **2026-09-14（同一天追加）AI用SSML控制發音，Kokoro逐字唸出XML標記本身**：
+  上面那次「UI卡到Chrome跳出無回應對話框」的真正根因，使用者自己把送過來的
+  mp3檔案聽出逐字內容後才抓到——AI原本的意圖是幫「m m moon」的m配上「嗯」
+  的鼻音，用了SSML語法`<speak version="1.0" xml:lang="en-US">
+  <phoneme alphabet="ipa" ph="...">m</phoneme>...</speak>`包住文字，但
+  `text_to_speech`/`_synthesizeSpeech`從來沒有解析過SSML，`text`參數是
+  整段原封不動送進Kokoro`engine.generate()`——Kokoro不是SSML引擎，只會
+  把整段XML語法當純文字逐字唸出來（用ffmpeg把使用者附的mp3轉成波形圖
+  確認過：不是靜音，是連續24秒、一段接一段的字詞級語音活動，遠超過
+  「嗯嗯 moon」該有的長度，跟使用者自己聽出來的「Speak version equals
+  one...XML and S equals HTTP...」逐字對得上）。這解釋了為什麼這次剛好
+  卡到觸發Chrome的無回應偵測——文字被SSML標記撐長非常多倍，Kokoro的
+  WASM推論時間跟著大幅拉長。
+  - **`_synthesizeSpeech(text, voiceId, onProgress)`**（floating-assistant.js
+    ~4260）：在`t`（trim過的文字）算出來後，立刻用
+    `/<[a-zA-Z][\w:-]*(\s[^<>]*)?\/?>/`偵測看起來像XML/HTML標記的內容，
+    偵測到就直接`return {ok:false, error:'...'}`拒絕，不會再送進任何引擎
+    （本地Kokoro或API Edge TTS都受益，因為兩者都共用這個入口函式）。
+    失敗訊息明確告知不支援SSML、要求改用純文字/同音近似拼法（例如「嗯」
+    的鼻音可以嘗試英文擬聲拼法"Hmm"/"Mmm"）。
+  - `text_to_speech`工具的description同步補充明講「⚠️text必須是純文字，
+    不支援SSML/XML標記」，從源頭降低AI一開始就嘗試SSML的機率，不是只靠
+    事後偵測擋下來。
+  - 實測（Browser工具，真實呼叫）：完整重現使用者的SSML輸入
+    （`<speak version="1.0"...><phoneme alphabet="ipa" ph="n">m</phoneme>
+    ...</speak>`），確認被正確拒絕、錯誤訊息正確；刻意測一個容易誤判的
+    邊界案例`"3 < 5 and 10 > 2"`（含`<`/`>`但不是標記語法），確認**沒有**
+    被誤判成SSML、正常送進引擎合成成功（回傳真實`audio_file_id`）——正規
+    表示式要求`<`後面緊接英文字母（標記名稱起始字元），單純的比較運算子
+    不會誤觸發。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
