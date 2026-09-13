@@ -3859,7 +3859,7 @@ ${fnData.code}
         // 回報明確錯誤；英文→本地Kokoro），不會嘗試硬用錯的engine念錯的
         // 語言。
         registerOptional('text_to_speech',
-            `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的文字", "voice":"（選填）語音代號"}`,
+            `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。⚠️text必須是純文字，不支援SSML/XML標記（沒有<speak>、<phoneme alphabet="ipa" ph="...">這類語法）——這個引擎不會解析標記，只會把標記本身逐字唸出來（例如包一段<speak>會被唸成"speak version equals..."這種完全不是你要的內容），偵測到類似標記會直接回傳錯誤拒絕合成。需要控制特定發音（例如象聲詞、非標準拼法）時，改用同音近似的一般英文拼寫方式直接寫進text（例如要「嗯」的鼻音，可以嘗試"Hmm"或"Mmm"這類英文擬聲拼法），不要嘗試用IPA/SSML語法控制。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的純文字（不可含XML/SSML標記）", "voice":"（選填）語音代號"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4260,6 +4260,21 @@ ${fnData.code}
     async _synthesizeSpeech(text, voiceId, onProgress) {
         const t = String(text || '').trim();
         if (!t) return { ok: false, error: '沒有要念的文字' };
+        // tw_stock_db客製: 2026-09-14使用者實測回報的真實bug——AI有時會想用
+        // SSML（<speak>/<phoneme alphabet="ipa" ph="...">這類XML標記）試圖
+        // 控制發音，但這條pipeline（本地Kokoro／API Edge TTS）完全不支援
+        // SSML，text參數會整段原封不動餵給引擎，引擎只會把XML標記本身當成
+        // 純文字逐字唸出來（實測案例：使用者要「m m moon」裡的m唸成「嗯」，
+        // AI包了一段<speak version="1.0" ...><phoneme alphabet="ipa"
+        // ph="...">m</phoneme>...</speak>，結果被Kokoro逐字唸成"Speak
+        // version equals one point o XML and S equals HTTP..."，24秒完全
+        // 不是預期的內容，而且因為文字變超長還連帶讓UI卡到Chrome跳出「網頁
+        // 無回應」）。這裡在真正送進任何TTS引擎之前，先用一個寬鬆的XML/HTML
+        // 標記偵測擋下來，失敗要快（呼叫端可以立刻知道要改用純文字重試），
+        // 不要讓引擎默默把垃圾標記唸出一大段、浪費時間又產生錯誤內容的音檔。
+        if (/<[a-zA-Z][\w:-]*(\s[^<>]*)?\/?>/.test(t)) {
+            return { ok: false, error: '文字裡偵測到看起來像XML/SSML標記（例如<speak>、<phoneme>）——這個語音合成功能不支援SSML，只接受純文字，標記會被逐字唸出來造成錯誤的語音內容。請移除所有標記，只保留真正要念的純文字（需要控制特定發音時，改用同音近似的英文拼寫方式，不要用XML/SSML語法）。' };
+        }
         const isCjk = this._looksLikeCjkText(t);
         let voice = null;
         if (voiceId) {
