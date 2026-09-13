@@ -5,7 +5,39 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
-## 2026-09-14
+## 2026-09-14（下午）
+
+背景：使用者回報AI直接呼叫media_av子agent時被告知「沒有工具可以合併多個音檔」
+（實際貼了8個file_id的真實工具回應），另外對語音合成子Agent的設定UI提出三點
+意見：語音包安裝下拉選單多餘、想要試聽按鈕、想要調整語速；同一則訊息也要求
+中文語音API預設enable。
+
+1. **新增`concat_audio`工具**：`_concatAudioFiles`用`OfflineAudioContext`把多個
+   已上傳音檔依指定順序解碼、依序排程（`src.start(cursor)`、`cursor+=duration`）
+   混流成一軌後用既有`_encodeMp3`編碼，純瀏覽器端、不上傳。註冊進`media_av`
+   domain（`toolNames`加入、`systemPrompt`補一句明講不要回報做不到）。
+2. **`text_to_speech`新增`speed`參數（0.5~2.0）**：實測確認kokoro-js的
+   `engine.generate()`本來就支援`speed`參數（直接讀minified原始碼確認），Edge
+   TTS API這邊的Cloudflare Worker `/edge-tts`路由也早就支援`rate`欄位（讀
+   `worker.js`確認，不用改worker）——這次只需要把`speed`從`_synthesizeSpeech`
+   一路穿到本地Kokoro（含Worker版）跟API路徑（換算成`rate`百分比字串）兩條
+   pipeline。新增`advancedSettings.ttsDefaultSpeed`（預設1.0）當使用者沒指定
+   speed時的後備值。
+3. **`ttsApiEnabled`預設改成`true`**：`_createDefaultAdvancedSettings`與設定
+   normalize邏輯都改成「未設定＝啟用，只有明確存過`false`才維持關閉」，呼應
+   使用者「中文語音API幫我預設enable」的要求。
+4. **語音合成設定UI簡化＋新增試聽/語速**：移除「語音包管理」的安裝下拉選單＋
+   安裝按鈕（改成選好預設語音、第一次試聽/合成時自動下載，跟原本的自動下載
+   邏輯本來就一致，只是拿掉多餘的手動安裝步驟），本地/API語音的預設語音選單
+   旁都加一個「🔊 試聽」按鈕（`_previewTtsVoice`依語言挑一句簡短示範文字，
+   用目前語速合成後掛進既有的`_mountAudioPlayer`播放器），新增一個共用的語速
+   滑桿（0.5~2.0x）同時控制試聽跟`text_to_speech`預設語速。瀏覽器實測：本地
+   Kokoro試聽端到端跑通（真實模型合成、掛出播放器）；語速滑桿調到2.0x時實測
+   輸出音檔長度從2.78s變成1.61s（非線性但方向正確，跟先前session量到的
+   speed:1.5→1.61倍縮短一致）；API試聽在沒有真實Worker端點時正確顯示錯誤訊息、
+   不crash。
+
+## 2026-09-14（上午）
 
 背景：使用者要求`/media-text-to-speech`（以及mp3/wav/ogg類音檔）除了下載連結
 還要有真正的播放器；後續實測時發現並回報了兩個相關問題，一併修正。

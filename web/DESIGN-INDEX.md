@@ -1498,6 +1498,66 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     元素，是真的同一個DOM節點）還在、標記還在——證明live狀態真的被保留，
     不是被重新建立成一個「看起來一樣」的新節點。
 
+- **2026-09-14（同一天再追加）concat_audio工具 + 語速控制 + ttsApiEnabled預設
+  enable + 語音合成設定UI簡化**：使用者回報AI實際呼叫media_av時被告知「沒有
+  工具能合併多個音檔」（貼了真實工具回應，8個file_id），同一則訊息也要求
+  語音包安裝下拉選單太多餘（只要選預設語音）、要有試聽按鈕、要能調語速，
+  以及中文語音API要預設enable。
+  - **`_concatAudioFiles(fileArgs, onProgress)`**（floating-assistant.js，
+    `_encodeMp3`之後）：對每個file_id/檔名`_resolveUploadedFileRecord`＋
+    `_decodeAudioBuffer`解碼，用`OfflineAudioContext(numCh, totalFrames, sr)`
+    依序排程（`src.start(cursor)`後`cursor+=buf.duration`，不是疊加式混音，
+    是接續式串接）算出合併後的buffer，`_encodeMp3`編碼成MP3存進
+    `fileCache`。新增`concat_audio`工具，註冊進`SUBAGENT_DOMAIN_REGISTRY
+    .media_av`（`toolNames`加入、`systemPrompt`補一句「不要說做不到，也不要
+    自己憑空生一個沒有的工具」）。
+  - **`speed`參數整條pipeline**：`_synthesizeSpeech(text, voiceId, onProgress,
+    speed)`新增第4參數，clamp在0.5~2.0（沒給或超界時退回
+    `advancedSettings.ttsDefaultSpeed||1.0`）；本地Kokoro路徑一路傳到
+    `_synthesizeSpeechLocal`→`_synthesizeTtsChunk`→`_generateTtsInWorker`
+    （worker內`_ttsEngine.generate(text,{voice,speed})`）／main-thread
+    fallback（同樣傳`speed`給`engine.generate`）；API路徑
+    `_synthesizeSpeechViaApi`换算成`rate`百分比字串（`Math.round(speed*100-100)`
+    再補正負號跟`%`）送進POST body——**Cloudflare Worker `/edge-tts`路由本來
+    就支援`rate`欄位**（讀`cloudflare-worker/worker.js`確認：
+    `EDGE_TTS_PROSODY_PATTERN`驗證＋SSML `<prosody rate='...'>`組裝早就
+    寫好），這次沒有改worker.js，純粹是client端第一次開始送這個欄位。
+    `text_to_speech`工具schema新增`speed`參數並穿到callback。新增
+    `advancedSettings.ttsDefaultSpeed`（預設1.0，0.5~2.0驗證）。
+    ⚠️**已知限制**：`speed`對輸出時長的影響不是嚴格線性——實測2.0x只讓一段
+    2.78秒的音檔縮成1.61秒（約1.73倍，不是2倍），跟這個session先前對
+    `speed:1.5`的量測（約1.61倍縮短）方向一致，這是Kokoro自己的行為，不是
+    這次實作的bug。
+  - **`ttsApiEnabled`預設改`true`**：`_createDefaultAdvancedSettings`與
+    設定normalize邏輯（`raw.ttsApiEnabled !== false`取代`=== true`）都改成
+    「未設定值視為啟用，只有明確存過的`false`才維持關閉」——既有使用者
+    localStorage如果曾經存過`false`會維持關閉（尊重使用者曾經的明確選擇），
+    全新/清過設定的實例才會是`true`。
+  - **語音合成設定UI**（HTML約15722行區塊＋`_renderTtsVoicePanel`約5120行＋
+    事件綁定約17570行）：移除`#ai-tts-voice-install-select`+
+    `#ai-tts-voice-install-btn`（安裝下拉選單＋按鈕，連同對應事件綁定一起
+    刪除），保留`#ai-tts-voice-list`（已安裝語音包清單＋刪除按鈕）跟模型
+    快取占用/清除。本地語音跟API語音的預設語音`<select>`旁邊各加一個
+    「🔊 試聽」按鈕＋播放器slot（`#ai-tts-preview-btn`/
+    `#ai-tts-preview-player-slot`、`#ai-tts-api-preview-btn`/
+    `#ai-tts-api-preview-player-slot`），新增共用語速滑桿
+    `#ai-tts-default-speed`（0.5~2.0，`input`事件即時更新旁邊的數字標籤、
+    `change`事件才寫入`advancedSettings.ttsDefaultSpeed`）。新增
+    `_ttsPreviewSampleText(voiceId, isApi)`（依語言代號前綴挑一句簡短示範
+    文字：英文/中文台灣/中文中國/粵語/日文/韓文）＋`_previewTtsVoice(isApi,
+    btn, slotId)`（讀目前選定的語音+語速，呼叫`_synthesizeSpeech`→
+    `fileCache.get(audio_file_id)`拿到blob→`_mountAudioPlayer`掛進slot；
+    按鈕disabled+顯示進度文字，失敗時slot顯示紅字錯誤訊息、不crash）。
+  - 實測（Browser工具，`new FloatingAssistant({})`+`toggleWindow(true)`+
+    `_openAdvancedModal()`+點「子Agent」分類）：清掉localStorage後確認新
+    實例`advancedSettings.ttsApiEnabled`真的是`true`（先前殘留`false`的
+    localStorage會維持`false`，這是normalize邏輯設計如此，不是bug）；UI上
+    確認安裝下拉選單/按鈕已經消失、試聽按鈕+語速滑桿都正確出現；本地
+    Kokoro試聽**真實端到端跑通**（已快取的`af_heart`語音，真的合成出音檔、
+    掛出播放器，量到1.0x=2.78s／2.0x=1.61s印證speed生效）；API試聽在測試
+    環境沒有真實Worker端點時，正確顯示「試聽失敗：...Failed to fetch」，
+    按鈕正確恢復可點擊狀態，沒有拋出未捕捉例外。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
