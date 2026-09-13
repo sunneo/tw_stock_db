@@ -30,6 +30,18 @@
    修正為16才真的有效）。⚠️已知限制：這只解決編碼階段的卡頓，本地Kokoro
    TTS模型推論本身（WASM、CPU同步執行）仍可能造成短暫卡頓，徹底解決需要
    把Kokoro搬進Web Worker，這次沒有做。
+4. **AI用SSML控制發音，被Kokoro逐字唸出XML標記本身（使用者實測抓到、
+   自己聽出來的真實bug）**：使用者要「m m moon」裡的m發「嗯」音，AI試著用
+   `<speak><phoneme alphabet="ipa" ph="...">`這類SSML語法控制發音，但這條
+   TTS pipeline完全不支援SSML，把整段XML標記原封不動餵給Kokoro，結果被
+   逐字唸成「Speak version equals one point o XML and S equals HTTP...」
+   長達24秒——這也是問題3那次UI嚴重卡到Chrome跳出「網頁無回應」對話框的
+   直接原因（文字被SSML標記撐長很多倍，推論時間跟著大幅拉長）。修正：
+   `_synthesizeSpeech`在送進任何引擎之前，先用正規表示式偵測XML/HTML標記
+   （`<phoneme ...>`、`<speak ...>`等），偵測到就直接拒絕並回傳明確錯誤
+   （不接受SSML、要求改用純文字/同音近似拼法），不會再讓引擎默默把垃圾
+   標記唸出一大段音檔；`text_to_speech`工具的description也同步補充明講
+   不支援SSML。
 
 ## 2026-09-13
 
