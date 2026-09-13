@@ -5,6 +5,32 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
+## 2026-09-14
+
+背景：使用者要求`/media-text-to-speech`（以及mp3/wav/ogg類音檔）除了下載連結
+還要有真正的播放器；後續實測時發現並回報了兩個相關問題，一併修正。
+
+1. **音檔/影片內建播放器**：新增`_mountMediaPlayer`（這個專案第一個
+   `<audio>`/`<video>`元素）——play/pause、可拖曳進度條、回到開頭/跳到結尾、
+   目前秒數/總秒數顯示，樣式跟widget既有palette一致。`_downloadFile`交付卡片
+   （`_deliverExistingCacheFile`產生的下載訊息）現在音檔自動掛`_mountAudioPlayer`
+   （隱藏引擎+全自訂UI）、影片自動掛`_mountVideoPlayer`（可見畫面，
+   max-width 360px），兩者共用同一套控制邏輯。
+2. **AI直接呼叫媒體工具時檔案沒有交付到對話裡（使用者實測發現的真實bug）**：
+   `text_to_speech`/`transcribe_media`/`extract_audio`/`burn_subtitles`/
+   `compose_video`這5個工具的callback本身（AI在一般對話或透過`media_av`
+   domain委派時走的路徑）從來沒有呼叫過`_deliverExistingCacheFile`——只有
+   對應的5個`/media-*`斜線指令會交付檔案，AI自己呼叫工具時使用者完全看不到
+   下載連結/播放器，只看得到LLM用文字描述的file_id。新增
+   `_deliverToolResultFile`共用helper，5個工具現在都會自動交付檔案，不影響
+   斜線指令本身（走不同的程式碼路徑，不會重複交付）。
+3. **`/media-text-to-speech`會卡住UI一陣子**：找到並修正`_faLamejsEncode`
+   （純JS MP3編碼器）完全同步、沒有任何yield的問題，改成每16個chunk
+   `await`一次讓出主執行緒（第一版門檻設200，實測10秒音訊完全沒生效，
+   修正為16才真的有效）。⚠️已知限制：這只解決編碼階段的卡頓，本地Kokoro
+   TTS模型推論本身（WASM、CPU同步執行）仍可能造成短暫卡頓，徹底解決需要
+   把Kokoro搬進Web Worker，這次沒有做。
+
 ## 2026-09-13
 
 背景：使用者計畫把floating-assistant.js整合進piano-web（鋼琴多音軌編輯器），並

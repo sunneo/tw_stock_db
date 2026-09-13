@@ -1590,17 +1590,43 @@ function _faEncodeWav(audioBuffer) {
 // 兩處共用同一個編碼路徑，各自把來源（AudioBuffer / Kokoro產生的Float32
 // 樣本）轉成Int16聲道陣列後餵進來。lame的encodeBuffer/encodeBuffer(l,r)
 // 一次吃一個chunk（用官方範例的1152這個frame size），flush()拿最後剩餘的。
-function _faLamejsEncode(channelsInt16, sampleRate, bitrateKbps) {
+// tw_stock_db客製: 2026-09-14使用者回報/media-text-to-speech會卡住UI一段
+// 時間——這個迴圈原本完全同步、中間沒有任何yield，幾秒鐘的音訊要編碼成
+// 幾萬~幾十萬個PCM樣本，全部擠在同一個JS執行tick跑完，瀏覽器在這段時間
+// 完全沒機會重繪畫面/回應使用者操作（點擊、捲動都會卡住）。改成async、
+// 每處理滿YIELD_EVERY_CHUNKS個1152-sample chunk就await一次
+// setTimeout(resolve,0)，把控制權還給事件迴圈一下——實測不影響最終編碼
+// 結果（純粹把同一份運算切成很多小段分開跑，總運算量不變），只是讓長音訊
+// 編碼時瀏覽器仍然能回應。呼叫端本來就都在async函式裡（見下面兩個呼叫
+// 點），改成await即可，不需要額外處理。
+// ⚠️已知限制：這只解決了MP3編碼這一段的卡頓，本地Kokoro TTS本身的模型
+// 推論（engine.generate()，純WASM、CPU同步執行）仍然會佔用主執行緒一段
+// 時間，沒有一併解決——真正徹底解決需要把Kokoro搬進Web Worker執行，是
+// 更大幅度的架構調整，這次沒有做。
+async function _faLamejsEncode(channelsInt16, sampleRate, bitrateKbps) {
     const numCh = channelsInt16.length;
     const encoder = new lamejs.Mp3Encoder(numCh, sampleRate, bitrateKbps || 128);
     const chunkSize = 1152;
     const mp3Chunks = [];
     const total = channelsInt16[0].length;
+    // tw_stock_db客製: 2026-09-14實測修正——原本設200太高，1152-sample
+    // chunk在24000Hz下大約每秒20個chunk，一般TTS輸出只有幾秒鐘長，200這個
+    // 門檻幾乎不會被觸發到（等於没有真的在yield）。實測用OfflineAudioContext
+    // 產生10秒音訊編碼，200門檻下事件迴圈整段完全沒機會跑（0次interval
+    // tick）；每個chunk編碼約2ms，改成每16個chunk（約32ms）yield一次，能讓
+    // 長音訊編碼時瀏覽器仍然定期有機會重繪/回應，短音訊（多數TTS情境）也
+    // 至少能yield個幾次。
+    const YIELD_EVERY_CHUNKS = 16;
+    let chunkCount = 0;
     for (let i = 0; i < total; i += chunkSize) {
         const left = channelsInt16[0].subarray(i, i + chunkSize);
         const right = numCh > 1 ? channelsInt16[1].subarray(i, i + chunkSize) : undefined;
         const buf = numCh > 1 ? encoder.encodeBuffer(left, right) : encoder.encodeBuffer(left);
         if (buf.length > 0) mp3Chunks.push(buf);
+        chunkCount++;
+        if (chunkCount % YIELD_EVERY_CHUNKS === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
     }
     const end = encoder.flush();
     if (end.length > 0) mp3Chunks.push(end);
@@ -3718,7 +3744,9 @@ ${fnData.code}
                 // task 是 transcribe 不是 translate，講者夾英文時會照原樣保留。
                 const language = String(parsed.language || '').trim() === 'en' ? 'en' : 'zh';
                 try {
-                    return JSON.stringify(await this._transcribeMedia(record, language));
+                    const result = await this._transcribeMedia(record, language);
+                    await this._deliverToolResultFile(result, 'transcript_file_id', () => '📎 字幕/逐字稿檔（可當 burn_subtitles 的字幕來源）');
+                    return JSON.stringify(result);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
                 }
@@ -3740,7 +3768,9 @@ ${fnData.code}
                 const record = await this._resolveUploadedFileRecord(fileArg);
                 if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔' });
                 try {
-                    return JSON.stringify(await this._extractAudio(record));
+                    const result = await this._extractAudio(record);
+                    await this._deliverToolResultFile(result, 'audio_file_id', (r) => `📎 已擷取音軌：${r.filename}${r.sizeBytes != null ? `（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）` : ''}`);
+                    return JSON.stringify(result);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
                 }
@@ -3769,6 +3799,7 @@ ${fnData.code}
                         if (p.pct != null) this._log(`🎬 燒字幕中… ${p.pct}%（${p.frames} 幀）`);
                     });
                     if (r.ok) r.autoTranscribed = sub.autoTranscribed;
+                    await this._deliverToolResultFile(r, 'video_file_id', (res) => `📎 已燒好字幕：${res.filename}${res.sizeBytes != null ? `（${(res.sizeBytes / 1024 / 1024).toFixed(1)}MB）` : ''}${res.autoTranscribed ? '　字幕來自自動轉逐字稿' : ''}`);
                     return JSON.stringify(r);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
@@ -3803,10 +3834,12 @@ ${fnData.code}
                     if (cr) { try { captionSegments = _faParseSubtitleText(await cr.blob.text()); } catch (_) {} }
                 }
                 try {
-                    return JSON.stringify(await this._composeAnimationVideo({
+                    const result = await this._composeAnimationVideo({
                         animationYaml: yaml3d || yaml2d, is3d: !!yaml3d, audioRecord, captionSegments,
                         onProgress: (cur, total) => { if (cur % 30 === 0 || cur === total) this._log(`🎞️ 合成影片… ${Math.round((cur / total) * 100)}%`); },
-                    }));
+                    });
+                    await this._deliverToolResultFile(result, 'video_file_id', (r) => `📎 動畫版影片：${r.filename}${r.sizeBytes != null ? `（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）` : ''}`);
+                    return JSON.stringify(result);
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: {
@@ -3837,7 +3870,13 @@ ${fnData.code}
                     return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
-                    return JSON.stringify(await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m)));
+                    const result = await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m));
+                    const allVoices = TTS_VOICES.concat(TTS_API_VOICES);
+                    await this._deliverToolResultFile(result, 'audio_file_id', (r) => {
+                        const v = allVoices.find(vv => vv.id === r.voice);
+                        return `📎 已合成語音：${r.filename}（${r.durationSeconds}s，${(r.sizeBytes / 1024).toFixed(0)}KB，${v ? v.name : r.voice}）`;
+                    });
+                    return JSON.stringify(result);
                 } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
             },
             { type: 'object', properties: {
@@ -4116,7 +4155,7 @@ ${fnData.code}
         const numCh = Math.min(2, audioBuffer.numberOfChannels); // lamejs只支援mono/stereo
         const chans = [];
         for (let c = 0; c < numCh; c++) chans.push(_faFloat32ToInt16(audioBuffer.getChannelData(c)));
-        return _faLamejsEncode(chans, audioBuffer.sampleRate, bitrateKbps);
+        return await _faLamejsEncode(chans, audioBuffer.sampleRate, bitrateKbps);
     }
 
     // ============================================================
@@ -4272,7 +4311,7 @@ ${fnData.code}
         if (wantMp3) {
             try {
                 await this._ensureLamejsLoaded();
-                blob = _faLamejsEncode([_faFloat32ToInt16(merged)], TTS_SAMPLE_RATE, 128);
+                blob = await _faLamejsEncode([_faFloat32ToInt16(merged)], TTS_SAMPLE_RATE, 128);
                 ext = 'mp3'; mimeType = 'audio/mpeg';
             } catch (err) {
                 this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err));
@@ -12731,6 +12770,24 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
     }
 
+    // tw_stock_db客製: 2026-09-14使用者回報——AI在一般對話裡直接呼叫
+    // text_to_speech/extract_audio/transcribe_media/burn_subtitles/
+    // compose_video這幾個會產生檔案的工具時，原本只把JSON結果交回給LLM，
+    // LLM只能用文字描述檔案ID/檔名等資訊，使用者完全看不到下載連結（音檔
+    // 也就沒有播放器，見_mountAudioPlayer）——只有透過對應的/media-*斜線
+    // 指令（本地直接執行，不經過這幾個工具callback）才會呼叫
+    // _deliverExistingCacheFile。這裡抽一個共用helper，讓工具callback也
+    // 比照斜線指令，成功產生檔案後直接交付到對話裡，不是只讓LLM用文字轉述
+    // 一個使用者看不到、點不到的file_id。`noteBuilder(result)`用來組出跟
+    // 各自斜線指令一致的說明文字，`result`本身原封不動回傳（呼叫端還是要
+    // JSON.stringify(result)交回給LLM）。
+    async _deliverToolResultFile(result, fileIdKey, noteBuilder) {
+        if (result && result.ok && result[fileIdKey]) {
+            try { await this._deliverExistingCacheFile(result[fileIdKey], noteBuilder(result)); } catch (_) { /* 交付失敗不影響工具本身的回傳結果 */ }
+        }
+        return result;
+    }
+
     // /media-transcribe [<影片id或檔名>] [zh|en]
     async _handleMediaTranscribeCommand(argsText) {
         const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
@@ -15938,6 +15995,87 @@ ${existingNodeSummaries}
         container.appendChild(draftEl);
     }
 
+    // tw_stock_db客製: 2026-09-14使用者要求——mp3/wav/ogg這類音檔（見
+    // _faClassifyMediaFile分類）除了_downloadFile卡片本來就有的下載連結，
+    // 旁邊要有一個真正能播放的播放器：play/pause、可拖曳的進度條、回到開頭/
+    // 跳到結尾按鈕、顯示目前秒數/總秒數。這個專案目前完全沒有<audio>/
+    // <video>元素，這裡是第一個——刻意不用native controls（沒有「跳到結尾」
+    // 這種細節按鈕、樣式也沒辦法跟這個widget既有的palette風格一致），用
+    // <audio>/<video>當純播放引擎、UI全部自己刻，audio跟video共用完全同一套
+    // 控制邏輯（play/pause/seek/restart/toEnd/時間顯示），只差在video要
+    // 顯示畫面本身、audio可以整個隱藏——見_mountMediaPlayer。
+    // `container`是呼叫端已經準備好的空div，`blob`是已經套用正確MIME type
+    // 的Blob（見_downloadFile渲染分支，跟下載連結共用同一顆blob，不用重複
+    // 讀一次fileCache）。
+    _mountAudioPlayer(container, blob) {
+        this._mountMediaPlayer(container, blob, 'audio');
+    }
+
+    // tw_stock_db客製: 2026-09-14使用者追加要求——mp4也要有播放器，跟音檔
+    // 共用同一套控制邏輯（見_mountMediaPlayer），差別只在video元素本身要
+    // 顯示出來（畫面），且給一個合理的max-width避免撐爆對話泡泡寬度。
+    _mountVideoPlayer(container, blob) {
+        this._mountMediaPlayer(container, blob, 'video');
+    }
+
+    _mountMediaPlayer(container, blob, tag) {
+        const palette = this._getThemePalette();
+        const url = URL.createObjectURL(blob);
+        const isVideo = tag === 'video';
+        container.style.cssText = `margin-top:8px; padding:8px 10px; border-radius:8px; background:${palette.detailBg}; border:1px solid ${palette.inputBorder};`;
+        container.innerHTML = `
+            ${isVideo ? `<video class="ai-media-el" preload="metadata" style="display:block; width:100%; max-width:360px; max-height:280px; border-radius:6px; background:#000; margin-bottom:6px;"></video>` : `<audio class="ai-media-el" preload="metadata" style="display:none;"></audio>`}
+            <div style="display:flex; align-items:center; gap:6px;">
+                <button type="button" class="ai-media-restart" title="回到開頭" style="flex:0 0 auto; width:26px; height:26px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.inputBg}; color:${palette.inputText}; cursor:pointer; font-size:12px; line-height:1; padding:0;">⏮</button>
+                <button type="button" class="ai-media-playpause" title="播放" style="flex:0 0 auto; width:30px; height:30px; border-radius:999px; border:none; background:#76b900; color:#fff; cursor:pointer; font-size:13px; line-height:1; padding:0;">▶</button>
+                <button type="button" class="ai-media-toend" title="跳到結尾" style="flex:0 0 auto; width:26px; height:26px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.inputBg}; color:${palette.inputText}; cursor:pointer; font-size:12px; line-height:1; padding:0;">⏭</button>
+                <input type="range" class="ai-media-seek" min="0" max="0" step="0.01" value="0" style="flex:1; min-width:0; cursor:pointer;">
+                <span class="ai-media-time" style="flex:0 0 auto; font-size:11px; color:${palette.detailText}; white-space:nowrap; min-width:72px; text-align:right;">0:00 / 0:00</span>
+            </div>
+        `;
+        const mediaEl = container.querySelector('.ai-media-el');
+        const seekEl = container.querySelector('.ai-media-seek');
+        const timeEl = container.querySelector('.ai-media-time');
+        const playBtn = container.querySelector('.ai-media-playpause');
+        const restartBtn = container.querySelector('.ai-media-restart');
+        const toEndBtn = container.querySelector('.ai-media-toend');
+        mediaEl.src = url;
+
+        // tw_stock_db客製: 拖曳進度條時（input事件連續觸發）先只更新畫面上的
+        // 時間文字，不要每個像素都去設mediaEl.currentTime（會卡頓）；放開
+        // 滑鼠（change事件，值已經定案）才真的seek，同時暫停timeupdate覆寫
+        // seekEl.value，避免拖曳中被目前播放進度打斷。
+        let seeking = false;
+        const fmt = (s) => _faFormatTimestamp(Number.isFinite(s) ? s : 0);
+        const updateTimeLabel = () => {
+            timeEl.textContent = `${fmt(mediaEl.currentTime)} / ${fmt(mediaEl.duration || 0)}`;
+        };
+        mediaEl.addEventListener('loadedmetadata', () => {
+            seekEl.max = String(Number.isFinite(mediaEl.duration) ? mediaEl.duration : 0);
+            updateTimeLabel();
+        });
+        mediaEl.addEventListener('timeupdate', () => {
+            if (!seeking) seekEl.value = String(mediaEl.currentTime);
+            updateTimeLabel();
+        });
+        mediaEl.addEventListener('play', () => { playBtn.textContent = '⏸'; playBtn.title = '暫停'; });
+        mediaEl.addEventListener('pause', () => { playBtn.textContent = '▶'; playBtn.title = '播放'; });
+        mediaEl.addEventListener('ended', () => { playBtn.textContent = '▶'; playBtn.title = '播放'; });
+        playBtn.addEventListener('click', () => {
+            if (mediaEl.paused) mediaEl.play().catch(() => {}); else mediaEl.pause();
+        });
+        restartBtn.addEventListener('click', () => { mediaEl.currentTime = 0; updateTimeLabel(); });
+        toEndBtn.addEventListener('click', () => { mediaEl.currentTime = mediaEl.duration || 0; updateTimeLabel(); });
+        seekEl.addEventListener('input', () => {
+            seeking = true;
+            timeEl.textContent = `${fmt(Number(seekEl.value))} / ${fmt(mediaEl.duration || 0)}`;
+        });
+        seekEl.addEventListener('change', () => {
+            mediaEl.currentTime = Number(seekEl.value);
+            seeking = false;
+        });
+    }
+
     // tw_stock_db客製: 從 _renderMessageHistory() 拆出來的單則訊息渲染邏輯
     // （原本就是一個 forEach 內的大函式體，只是把 chatBody 換成參數化的
     // container），這樣同一套渲染規則可以重複用在「目前的訊息列表」跟
@@ -16000,6 +16138,9 @@ ${existingNodeSummaries}
         // 不能直接把URL字串存起來重用。
         if (msg._downloadFile) {
             const { id, filename, sizeBytes } = msg._downloadFile;
+            const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'other'
+            const isAudio = mediaKind === 'audio';
+            const isVideo = mediaKind === 'video';
             const fileWrap = document.createElement('div');
             fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
             const sizeLabel = sizeBytes != null
@@ -16008,9 +16149,11 @@ ${existingNodeSummaries}
             fileWrap.innerHTML = `
                 <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
                 <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
+                ${(isAudio || isVideo) ? '<div class="ai-media-player-slot"></div>' : ''}
             `;
             container.appendChild(fileWrap);
             const linkEl = fileWrap.querySelector('.ai-file-download-link');
+            const mediaSlot = (isAudio || isVideo) ? fileWrap.querySelector('.ai-media-player-slot') : null;
             this.fileCache.get(id).then(record => {
                 if (!record) throw new Error('not found');
                 // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
@@ -16030,6 +16173,14 @@ ${existingNodeSummaries}
                 linkEl.href = url;
                 linkEl.setAttribute('download', record.filename);
                 linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
+                // tw_stock_db客製: 2026-09-14使用者要求——mp3/wav/ogg這類音檔
+                // （後來追加：mp4這類影片也要）除了下載連結，旁邊要有一個
+                // 真正能播放的播放器（見_mountMediaPlayer）。這裡沿用同一顆
+                // blobWithType，不用重複讀一次fileCache。
+                if (mediaSlot) {
+                    if (isAudio) this._mountAudioPlayer(mediaSlot, blobWithType);
+                    else if (isVideo) this._mountVideoPlayer(mediaSlot, blobWithType);
+                }
             }).catch(() => {
                 linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
                 // tw_stock_db客製: 2026-09-11——原本改成 palette.detailBg 但沒動
