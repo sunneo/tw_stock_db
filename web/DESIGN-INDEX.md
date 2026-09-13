@@ -1321,6 +1321,85 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     `status`正確更新到「完成」；`showInternalTrace=false`時同樣委派一次，
     確認`fa.messages`筆數完全不變（維持原本零污染的靜默行為）。
 
+- **2026-09-14 音檔內建播放器（play/pause、可拖曳進度條、回到開頭/跳到結尾、
+  秒數顯示）**：使用者要求`/media-text-to-speech`（以及所有mp3/wav/ogg這類
+  音檔）除了下載連結，旁邊要有一個真正能播放的播放器。這是這個專案第一個
+  `<audio>`元素（探索時確認整份檔案先前完全沒有任何音檔播放UI）。
+  - **`_mountAudioPlayer(container, blob)`**（新函式，`_renderSingleMessage`
+    前面）：`container`是呼叫端準備好的空div，`blob`是已經套用正確MIME
+    type的Blob。刻意不用native`<audio controls>`（沒有「跳到結尾」這種細節
+    按鈕、樣式也沒辦法跟這個widget既有的palette風格一致）——用一個
+    `display:none`的`<audio>`當純播放引擎，UI（⏮回到開頭／▶⏸播放暫停／
+    ⏭跳到結尾／可拖曳的`<input type="range">`進度條／目前秒數-總秒數文字，
+    重用既有的`_faFormatTimestamp`格式化）全部自己刻，跟其餘widget按鈕同一套
+    `palette.inputBg`/`palette.inputBorder`/`#76b900`配色慣例。拖曳進度條時
+    `input`事件只更新畫面文字（避免每個像素都真的seek造成卡頓），放開滑鼠
+    （`change`事件）才真的設`audioEl.currentTime`，過程中用一個`seeking`旗標
+    暫停`timeupdate`覆寫進度條的值，避免拖曳中被目前播放進度打斷。
+  - **`_downloadFile`渲染分支**（`_renderSingleMessage`裡處理
+    `msg._downloadFile`的地方）：新增`_faClassifyMediaFile(filename) ===
+    'audio'`判斷，是音檔的話在下載按鈕旁邊多插一個空div（`.ai-audio-player-slot`），
+    等fileCache讀出blob（跟下載連結共用同一顆已經套用正確MIME type的
+    `blobWithType`，不用重複讀一次fileCache）後呼叫`_mountAudioPlayer`掛上去。
+    非音檔（PDF/PPTX/字幕等）完全不受影響，維持原本只有下載連結的卡片。
+    這個改動是通用的檔案交付路徑（`_deliverExistingCacheFile`→
+    `msg._downloadFile`），不只`/media-text-to-speech`受益，`extract_audio`
+    輸出的音檔、配音小幫手匯出的音軌等所有透過同一條路徑交付的音檔都會自動
+    有播放器，不用逐一修改各自的呼叫端。
+  - 實測（Browser工具，真實WAV檔，非mock）：用ffmpeg產生一個3秒440Hz測試
+    音，經`fileCache.put`+`_deliverExistingCacheFile`走完整條既有交付路徑，
+    確認播放器正確渲染（⏮▶⏭+進度條+時間文字）；`loadedmetadata`後
+    `duration`/`seekMax`/時間文字都正確顯示`0:03`；點擊播放按鈕確認
+    `audioEl.paused`變`false`、按鈕變⏸；再點一次確認暫停、按鈕變回▶；點
+    跳到結尾確認`currentTime`變成3（等於duration）；點回到開頭確認變回0；
+    模擬拖曳進度條（`input`事件觸發時畫面文字即時更新、`change`事件觸發時
+    `audioEl.currentTime`才真正改變）行為完全符合預期；下載連結本身沒有被
+    這次改動破壞（`href`仍是正確的blob URL、`download`屬性仍是正確檔名）；
+    回歸測試——PDF等非音檔檔案交付後確認`.ai-audio-el`元素數量沒有增加
+    （沒有誤觸發播放器）。
+
+  **同一批追加的三項修正**（使用者實測`/media-text-to-speech`後回報）：
+  - **AI直接呼叫媒體工具時檔案沒有交付**：探索後發現`_deliverExistingCacheFile`
+    只有`/media-*`斜線指令的handler（`_handleMediaTranscribeCommand`等5個）
+    會呼叫，`text_to_speech`/`transcribe_media`/`extract_audio`/
+    `burn_subtitles`/`compose_video`這5個**工具callback本身**（AI在一般對話
+    或透過`media_av`domain委派時實際呼叫的路徑）只是把JSON結果交回給LLM，
+    從來沒有呼叫過`_deliverExistingCacheFile`——LLM只能用文字描述
+    檔案ID/檔名，使用者完全看不到下載連結（更不用說播放器）。新增
+    `_deliverToolResultFile(result, fileIdKey, noteBuilder)`共用helper，
+    5個工具callback成功後都呼叫它，比照對應斜線指令的說明文字風格自動交付
+    檔案——不影響斜線指令本身（斜線指令走`_handleMediaXxxCommand`，直接呼叫
+    `_transcribeMedia`等底層函式，不經過這幾個工具callback，不會重複交付）。
+  - **mp4等影片也要有播放器**：`_mountAudioPlayer`重構成共用的
+    `_mountMediaPlayer(container, blob, tag)`（`tag`是`'audio'`或`'video'`），
+    audio/video共用完全同一套控制邏輯（play/pause/seek/restart/toEnd/時間
+    顯示），只差在`<video>`要`display:block`顯示畫面本身（給一個
+    `max-width:360px; max-height:280px`避免撐爆對話泡泡）、`<audio>`維持
+    `display:none`純引擎。`_downloadFile`渲染分支的`isAudio`判斷擴充成
+    `isAudio`/`isVideo`兩種，各自呼叫`_mountAudioPlayer`/`_mountVideoPlayer`
+    （兩個都是`_mountMediaPlayer`的薄wrapper）。實測：真實3秒MP4（ffmpeg
+    產生），`<video>`元素正確存在且`display!=='none'`（可見）；play/pause/
+    跳到結尾/回到開頭/`duration`讀取全部行為跟音檔播放器一致。
+  - **`/media-text-to-speech`會卡住UI一陣子**：探索確定主要（但非唯一）
+    可歸責的同步阻塞點是`_faLamejsEncode`（純JS lamejs MP3編碼器的
+    encode迴圈，原本完全同步、中間沒有任何yield）——改成`async function`，
+    每處理滿`YIELD_EVERY_CHUNKS`個chunk就`await`一次`setTimeout(resolve,0)`
+    把控制權還給事件迴圈。**第一次實作用200這個門檻，用真實
+    OfflineAudioContext產生10秒音訊實測發現完全沒有生效**（10秒音訊只有
+    ~208個chunk，200的門檻幾乎不會被觸發，等於没有真的在yield，
+    `eventLoopTicksDuringEncode`量到0）——改成16後同一測試量到11次
+    event loop tick，確認真的有在yield。呼叫端（`_encodeMp3`、
+    `_synthesizeSpeechLocal`裡的直接呼叫）改成`await _faLamejsEncode(...)`。
+    ⚠️**已知限制、如實告知**：這只解決了MP3編碼這一段的卡頓，本地Kokoro
+    TTS本身的模型推論（`engine.generate()`，純WASM、CPU同步執行、沒有搬進
+    Worker）仍然會佔用主執行緒一段時間，尤其是使用者實測回報的那個案例
+    （`bm_george`本地英文語音、短文字「嗯 嗯 moon」，合成出3.2秒音檔）——
+    短音檔的lamejs編碼本身耗時很短（10秒音訊全部編碼也才~450ms），推測
+    使用者感受到的卡頓主要來自Kokoro模型推論本身，不是lamejs；真正徹底
+    解決需要把Kokoro搬進Web Worker執行（模型載入、`generate()`呼叫、
+    Cache API存取都要搬過去，是更大幅度的架構調整），這次沒有做，如果
+    使用者需要可以另外排一個計畫處理。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
