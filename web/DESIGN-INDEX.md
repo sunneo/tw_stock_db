@@ -1143,6 +1143,67 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
 其他彈窗：`ai-tool-editor-modal`（Skill編輯）、`ai-fn-modal`/`ai-fn-editor-modal`
 （AI自製函式管理）、`ai-rag-modal`/`ai-rag-editor-modal`（RAG記憶管理）。
 
+- **2026-09-13 Skill（自訂工具）改走subagent domain委派，不再無條件掛根層級**：
+  使用者要求：AI要能透過subagent啟動Skill，而不是像原本那樣每個Skill都無條件
+  掛在根層級對話（`_getRootToolNames()`原本在`router`/`full`模式下也會
+  `.concat(this.advancedSettings.customTools.map(t=>t.name))`）——Skill越加越多
+  會塞爆根層級system prompt/tools、稀釋模型注意力。使用者明確澄清：**不是要
+  發明新的技能包格式**（一開始筆者誤以為要仿Claude官方Skill系統做一套全新的
+  bundle格式，被糾正「沒有不一樣，這個skill跟.skill,技能包一樣」）——這次動的
+  就是這個專案既有的Skill機制（Advance Settings「Skill」分頁的
+  `advancedSettings.customTools` + `.skill` zip匯出/匯入），格式完全不變，只改
+  「會不會無條件曝光在根層級」這件事。
+  - **`custom_skills`虛擬domain**（建構子，緊接`this.domains = Object.fromEntries(...)`
+    之後）：跟9/6~9/9做好的內建工具domain委派機制共用同一套`_delegateToSubagentDomain`/
+    `_routeTaskToDomains`/`_delegateToSubagentAuto`，差別只在`toolNames`故意用
+    **函式**（`() => this.advancedSettings.customTools.map(t => t.name)`）而不是
+    固定陣列，每次都即時讀`advancedSettings.customTools`——新增/編輯/刪除Skill
+    不用另外通知這個domain更新，永遠反映當下狀態。
+  - **`_resolveDomainToolNames(domain)`**（新helper）：`typeof domain.toolNames
+    === 'function' ? domain.toolNames() : domain.toolNames`，統一陣列化。取代
+    3處既有直接讀`domain.toolNames`/`d.toolNames`的地方
+    （`_delegateToSubagentDomain`、`_routeTaskToDomains`的目錄迴圈、
+    `_delegateToSubagentAuto`合併命中domain的toolNames）——這是唯一認得
+    `toolNames`可以是函式的地方，其餘既有domain的`toolNames`都還是固定陣列，
+    行為完全不受影響。`_routeTaskToDomains`的目錄迴圈跟
+    `_buildDelegateToSubagentDescription()`的full模式清單都加上「resolve出來是
+    空陣列就跳過」的過濾——使用者還沒建立任何Skill時，`custom_skills`不會出現在
+    路由子agent的目錄裡、也不會出現在full模式的根層級domain清單裡（不列一個
+    「這個領域目前沒有任何工具」的雜訊分類）。
+  - **`_getRootToolNames()`**：`router`/`full`分支拿掉`.concat(custom)`（Skill
+    不再無條件曝光，只能透過`custom_skills`domain委派觸及）；`'off'`模式（完全
+    不用subagent）維持`.concat(custom)`**不變**——這個模式本來就沒有委派機制，
+    Skill如果連根層級都拿掉會變成完全叫不到，跟其他內建工具在`'off'`模式下維持
+    直接掛根層級是同一個既有邏輯。
+  - **`_applyImportedSkillBundle({skillMdText, toolFileEntries, sourceLabel})`**
+    （新函式，從原本`_importSkillZip`裡抽出的共用核心）：解析`tools/*.js`（開頭
+    兩行`// name:`/`// description:`宣告）、跟內建工具同名則略過、跟既有
+    customTool同名則`confirm()`是否覆蓋、`SKILL.md`文字附加進`rulesMd`、存檔+
+    重繪+`_syncFromAI`。`toolFileEntries`是`[{path,text}]`中性形狀，zip/資料夾
+    來源都能餵進來，兩種匯入管道行為完全等價、不會有兩份平行維護風險。
+  - **`_importSkillFolder(dirHandle)`**（新函式，使用者要求的「系統上用專屬
+    資料夾」）：用File System Access API（`window.showDirectoryPicker()`）讀
+    `SKILL.md`+`tools/*.js`（`getFileHandle`/`getDirectoryHandle`/`entries()`），
+    走到同一個`_applyImportedSkillBundle`。**刻意不持久化授權、不自動重新掃描**
+    ——每次都是使用者主動點按鈕→選資料夾→立即匯入一次的單次動作，直接滿足
+    「避免被當成自動載入」的訴求，不需要額外的IndexedDB store/權限管理機制。
+    Advance Settings「Skill」分頁新增「從資料夾匯入」按鈕，`feature-detect
+    window.showDirectoryPicker`（僅Chrome/Edge支援，不支援時disable+title提示，
+    不是隱藏性功能缺失）；使用者在原生資料夾選擇對話框按取消丟出的`AbortError`
+    安靜略過不跳錯誤框。
+  - 實測（Browser工具，`new FloatingAssistant(...)`直接操作）：`custom_skills`
+    domain在空Skill時`_resolveDomainToolNames`回傳`[]`；新增一個假Skill後
+    `router`/`full`模式的`_getRootToolNames()`都不含它、`'off'`模式仍然含它
+    （回歸測試通過）；`full`模式`_buildDelegateToSubagentDescription()`正確列出
+    `custom_skills(使用者自訂技能(Skill))`；mock原生tool-calling走完整條
+    `_delegateToSubagentDomain('custom_skills', task)`，確認`body.tools`只包含
+    該Skill、真的執行到`_executeCustomTool`、正確回傳最終結論；mock一個假
+    `FileSystemDirectoryHandle`（實作`getFileHandle`/`getDirectoryHandle`/
+    `entries()`）呼叫`_importSkillFolder`，確認`rulesMd`/`customTools`正確更新、
+    跟真實`.zip`匯入（重構後）行為一致（無回歸）；mock路由子agent回應確認
+    `_routeTaskToDomains`的catalog正確包含`[custom_skills]`區塊、
+    `_delegateToSubagentAuto`正確合併出對應的`toolNames`/`systemPrompt`。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
