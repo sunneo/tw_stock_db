@@ -50,6 +50,18 @@ subagent機制撐得住這種規模、同時不污染主對話」這個主軸做
      的domain一次選齊，降低事後才發現不夠的機率（零額外LLM往返成本的prompt
      wording調整，不是加一輪驗證呼叫）。
 
+3. **快速設定面板整併進Advance設定對話框 + 子Agent執行進度可視化**
+   - 使用者回報：開啟「顯示工具呼叫追蹤與思考過程」後還是看不到委派出去的
+     子agent在忙什麼——因為`_runSubAgentTask`從以前開始就完全靜默執行，過程
+     故意不碰主對話的訊息陣列。新增`options.onProgress`回呼＋
+     `_createSubagentProgressWidget`，只在「顯示工具呼叫追蹤與思考過程」開啟
+     時才在對話裡顯示一張即時更新的進度卡片（判斷委派給哪個領域、每輪呼叫了
+     哪個工具、有沒有申請追加工具），關閉時維持完全靜默、零回歸。
+   - 同時把原本散落在⚙️快速設定面板的設定（API KEY/URL/MODEL NAME、生成/
+     取樣參數、Hermes自我演化、slash選單、顯示追蹤）全部搬進Advance設定
+     對話框，新增三個分頁放在最前面：「LLM 基礎設定」「LLM 生成取樣參數」
+     「LLM Debug」。快速設定面板整個移除，⚙️改成直接開啟Advance對話框。
+
 兩項今天都只做在`floating-assistant.js`這個共用引擎本身，piano-web實際要用
 （幫每個曲風`register_domain`帶`category`、累積曲風knowledge等）是piano-web
 之後自己要做的事，這次沒有處理piano-web的實際曲風資料/MIDI分類管線。

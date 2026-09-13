@@ -1278,6 +1278,49 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     上限測試——連續5次申請，前3次成功各自加入不同工具，第4/5次被正確擋下並
     回報明確錯誤，不會無限追加。
 
+- **2026-09-13 快速設定面板整併進Advance設定對話框 + 子Agent執行進度可視化**：
+  使用者回報開啟「顯示工具呼叫追蹤與思考過程」後還是看不到委派出去的子agent
+  在忙什麼；同一時間也要求把原本散落在快速設定面板（⚙️icon切出的小面板）的
+  設定全部收進Advance設定對話框，依「LLM基礎設定」/「LLM生成取樣參數」/
+  「LLM Debug」分成三個新分頁（放在最前面）。
+  - **UI整併**：移除`#ai-config-panel`（原本的快速設定面板）整個DOM
+    結構，API KEY/API URL/MODEL NAME（+datalist）、Hermes自我演化開關、
+    slash選單開關搬進新分頁`data-cat="llm-basic"`；模型上下文視窗+
+    `SAMPLING_PARAM_KEYS`取樣參數搬進`data-cat="llm-sampling"`；「顯示工具
+    呼叫追蹤與思考過程」搬進`data-cat="llm-debug"`（順便補上一段新hint文字
+    說明這個開關現在也會讓子agent委派期間顯示進度卡片）。這三個新分頁插在
+    既有分頁清單最前面，`llm-basic`取代`general`（RULES.md）成為預設開啟
+    的分頁。⚙️（`ai-btn-config`）原本是切換快速面板顯示、面板裡再點一次
+    「Advance」按鈕才會開完整設定，這次改成⚙️直接呼叫`_openAdvancedModal()`
+    ——「Advance」按鈕/快速面板整個不存在了。這些欄位沿用完全相同的DOM
+    id，既有的change/input事件綁定（存localStorage/`advancedSettings`）
+    完全不用改；`_renderAdvancedSettings()`新增這幾個欄位的「開啟對話框時
+    重新同步目前值」邏輯，跟其餘Advance欄位的既有慣例一致。移除欄位改用
+    `class="ai-advanced-input"`（Advance對話框既有的固定深色樣式，其他
+    Advance欄位本來就是這樣）取代原本因為在快速面板裡才需要的inline
+    palette顏色，連帶移除`_applyThemeStyles()`裡專門處理這幾個欄位主題色的
+    一大段死碼（`configPanel`元素已不存在，不移除的話這段程式碼會直接
+    throw、整個`_applyThemeStyles()`失效）。
+  - **子agent執行進度可視化**：新增`_runSubAgentTask`的`options.onProgress`
+    選填callback（在每輪開始/呼叫了哪個工具/`request_additional_tools`
+    申請追加工具的時機點呼叫，見這次同一批修改），
+    `_delegateToSubagentDomain`/`_delegateToSubagentAuto`新增
+    `_createSubagentProgressWidget(title)`——只在`showInternalTrace===true`
+    時才建立（沿用既有`_createProgressWidget`，轉逐字稿/燒字幕等長操作用的
+    同一套進度卡片機制），把`onProgress`接到`progress.update({status})`；
+    `_delegateToSubagentAuto`額外在路由階段（呼叫`_routeTaskToDomains`/
+    `_routeTaskHierarchical`之前/之後）也更新進度卡片，讓使用者連「正在
+    判斷該委派給哪個領域」都看得到，不只執行階段。`showInternalTrace`關閉
+    （預設）時完全不建立這個widget，子agent維持這次新增前的完全靜默行為，
+    零回歸風險。
+  - 實測（Browser工具，真實mock情境）：⚙️點擊直接開Advance對話框、預設
+    分頁是「LLM 基礎設定」；API KEY/URL/MODEL NAME正確從localStorage載入
+    顯示；三個新分頁切換正常；`_applyThemeStyles()`/`refreshTheme()`呼叫
+    不再拋錯（驗證死碼移除有效）；`showInternalTrace=true`時委派一次
+    domain，確認`fa.messages`真的多出一則`_progressWidget`訊息、
+    `status`正確更新到「完成」；`showInternalTrace=false`時同樣委派一次，
+    確認`fa.messages`筆數完全不變（維持原本零污染的靜默行為）。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
