@@ -1401,6 +1401,14 @@ const PRESET_MODEL_OPTIONS = [
 // 對這個host-agnostic元件本身而言是合理、無害的預設。
 const DEFAULT_LLM_API_URL = 'https://integrate.api.nvidia.com/v1';
 
+// tw_stock_db客製: 2026-09-14使用者明確要求——model row的temperature留空
+// (null，不覆寫)時，main chat loop（_loopFetch/_loopFetchNative）跟
+// _runSubAgentTask預設用0.1，不是原本的純貪婪解碼0。0.1還是非常接近
+// deterministic（幾乎不影響工具呼叫協定的穩定性），但比起完全的0，能降低
+// 「同一段輸出不斷重複」退化狀態的機率（見下面body組裝處的既有說明）——
+// _hasRepeatingTail偵測仍然保留當最後一道防線，不是拿掉。
+const DEFAULT_CHAT_TEMPERATURE = 0.1;
+
 // 每個model row除了apiUrl/apiKey/modelName（字串），其餘都是「留空(null)＝
 // 不覆寫、沿用全域生成設定」的數值型欄位，統一在這裡列出，_normalizeModelRow/
 // UI渲染/儲存都共用同一份清單，不用四處重複打欄位名稱。
@@ -8138,7 +8146,7 @@ ${sourceTool.handlerScript}
                         <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">Model Name</label>
                         <input type="text" class="ai-advanced-input ai-model-row-input" list="ai-model-datalist" data-row-id="${row.id}" data-field="modelName" value="${esc(row.modelName)}">
                     </div>
-                    ${numField('temperature', 'temperature', '預設0')}
+                    ${numField('temperature', 'temperature', '預設0.1')}
                     ${numField('frequency_penalty', 'frequency_penalty', '不送')}
                     ${numField('presence_penalty', 'presence_penalty', '不送')}
                     ${numField('repetition_penalty', 'repetition_penalty', '不送')}
@@ -8177,6 +8185,13 @@ ${sourceTool.handlerScript}
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
         this._renderModelRowsList();
+        // tw_stock_db客製: 2026-09-14使用者要求——RAG知識庫分頁原本只有一顆
+        // 「管理條件圖譜」按鈕，點了才彈出獨立modal顯示清單，多一次點擊才
+        // 看得到內容太麻煩。改成清單直接嵌進這個分頁本身（HTML已經把原本
+        // ai-rag-modal裡的搜尋列/操作列/表格整段搬進data-pane="rag"），
+        // 每次Advance設定對話框開啟/重繪都直接載入一次，不用再額外開啟
+        // 任何modal。
+        this._loadAndRenderRag();
         const hermesChk = document.getElementById('ai-hermes-evolve-chk');
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
@@ -8326,14 +8341,13 @@ ${sourceTool.handlerScript}
 
     // ---- RAG 記憶庫管理 ----
 
-    _openRagModal() {
-        const modal = document.getElementById('ai-rag-modal');
-        if (!modal) return;
-        modal.style.display = 'flex';
-        this._renderRagTable([]);
-        this._loadAndRenderRag();
-    }
-
+    // tw_stock_db客製: 2026-09-14——RAG清單已經直接嵌進「RAG 知識庫」分頁
+    // 本身（見_renderAdvancedSettings()呼叫的_loadAndRenderRag()），不再有
+    // 獨立的ai-rag-modal——_closeRagModal()保留成no-op（document.getElementById
+    // 找不到元素會安全地什麼都不做），是因為還有兩處既有的「點modal外側/按
+    // Escape關閉」邏輯引用它（見_initEventListeners裡ragModal相關的判斷式），
+    // 那兩處本身已經靠_isModalOpen(null)===false自然變成無效分支，保留這個
+    // 方法單純是避免那兩處呼叫時噴ReferenceError，不需要額外改動。
     _closeRagModal() {
         const modal = document.getElementById('ai-rag-modal');
         if (modal) modal.style.display = 'none';
@@ -14424,12 +14438,13 @@ ${existingNodeSummaries}
                     body: JSON.stringify({
                         model: apiModel,
                         messages: requestMessages,
-                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : 0,
+                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : DEFAULT_CHAT_TEMPERATURE,
                         // tw_stock_db客製: 只送使用者有設定、且沒被目標端點拒絕過的
                         // 取樣參數（見_buildSamplingParamsBody），加上max_tokens替
-                        // 輸出長度設硬上限——temperature=0的貪婪解碼在某些模型上
-                        // 容易卡進「同一段輸出不斷重複」的退化狀態，這兩者是預防，
-                        // 真正兜底的是下面串流迴圈裡的_hasRepeatingTail偵測。
+                        // 輸出長度設硬上限——見DEFAULT_CHAT_TEMPERATURE的說明，
+                        // 0.1接近deterministic但比純0更不容易卡進「同一段輸出不斷
+                        // 重複」的退化狀態，下面串流迴圈裡的_hasRepeatingTail偵測
+                        // 仍然是最後一道防線。
                         ...this._buildSamplingParamsBody(genOverrides && genOverrides.samplingOverrides),
                         // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——這裡一定是文字式
                         // [CALL:...]協定（函式最上面已經把原生tool_calls模型導去
@@ -14783,7 +14798,7 @@ ${existingNodeSummaries}
                     body: JSON.stringify({
                         model: apiModel,
                         messages: requestMessages,
-                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : 0,
+                        temperature: (genOverrides && genOverrides.temperature != null) ? genOverrides.temperature : DEFAULT_CHAT_TEMPERATURE,
                         // tw_stock_db客製: 跟 _loopFetch 同樣的理由，見那邊的說明。
                         ...this._buildSamplingParamsBody(genOverrides && genOverrides.samplingOverrides),
                         max_tokens: (genOverrides && genOverrides.maxOutputTokens != null) ? genOverrides.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
@@ -15548,7 +15563,7 @@ ${existingNodeSummaries}
             const body = {
                 model: apiModel,
                 messages,
-                temperature: rowConfig.temperature != null ? rowConfig.temperature : 0,
+                temperature: rowConfig.temperature != null ? rowConfig.temperature : DEFAULT_CHAT_TEMPERATURE,
                 ...this._buildSamplingParamsBody(rowConfig.samplingOverrides),
                 max_tokens: rowConfig.maxOutputTokens != null ? rowConfig.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
                 stream: false,
@@ -16026,10 +16041,40 @@ ${existingNodeSummaries}
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="rag">
                                 <div class="ai-advanced-stack">
-                                    <div class="ai-advanced-tools-header">
-                                        <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
-                                        <button type="button" id="ai-rag-manage-btn" class="ai-advanced-btn primary">管理條件圖譜</button>
+                                    <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
+                                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                        <input id="ai-rag-search-input" class="ai-advanced-input" type="text" placeholder="關鍵字搜尋或節點 ID..." style="flex:1; min-width:160px;">
+                                        <button type="button" id="ai-rag-search-btn" class="ai-advanced-btn">搜尋</button>
+                                        <button type="button" id="ai-rag-query-btn" class="ai-advanced-btn">圖譜語意檢索</button>
+                                        <button type="button" id="ai-rag-add-btn" class="ai-advanced-btn primary">新增節點</button>
                                     </div>
+                                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                        <label style="font-size:12px; color:#94a3b8; display:flex; align-items:center; gap:4px; cursor:pointer;">
+                                            <input type="checkbox" id="ai-rag-select-all"> 全選
+                                        </label>
+                                        <button type="button" id="ai-rag-delete-selected-btn" class="ai-advanced-btn danger">刪除選取</button>
+                                        <button type="button" id="ai-rag-export-btn" class="ai-advanced-btn">匯出資料</button>
+                                        <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">
+                                            匯入資料<input type="file" id="ai-rag-import-input" accept=".json" style="display:none;">
+                                        </label>
+                                        <span id="ai-rag-status" style="font-size:11px; color:#94a3b8; margin-left:4px;"></span>
+                                    </div>
+                                    <div class="ai-rag-table-wrap">
+                                        <table class="ai-rag-table">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width:32px;"></th>
+                                                    <th style="width:120px;">節點 ID</th>
+                                                    <th>內文 (含自動依賴與先決條件標記)</th>
+                                                    <th style="width:70px;">相關度</th>
+                                                    <th style="width:90px;">來源</th>
+                                                    <th style="width:150px;">時間</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="ai-rag-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                    <p class="ai-advanced-hint">雙擊節點內文行可編輯其依賴與先決條件。設定格式：<code>tags; deps:node_a,node_b; conds:環境==WebGPU</code></p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="subagent">
@@ -16238,50 +16283,6 @@ ${existingNodeSummaries}
                             <button type="button" id="ai-fn-editor-cancel" class="ai-advanced-btn">取消</button>
                             <button type="button" id="ai-fn-editor-save" class="ai-advanced-btn primary">儲存</button>
                         </div>
-                    </div>
-                </div>
-            </div>
-            <div id="ai-rag-modal" class="ai-advanced-overlay">
-                <div class="ai-advanced-dialog" style="width:min(960px, 96vw);">
-                    <div class="ai-advanced-row">
-                        <h3 style="margin:0; color:#76b900;">RAG 條件與依賴關係記憶圖譜管理</h3>
-                        <button type="button" id="ai-rag-modal-close" class="ai-advanced-btn">關閉</button>
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <input id="ai-rag-search-input" class="ai-advanced-input" type="text" placeholder="關鍵字搜尋或節點 ID..." style="flex:1; min-width:160px;">
-                        <button type="button" id="ai-rag-search-btn" class="ai-advanced-btn">搜尋</button>
-                        <button type="button" id="ai-rag-query-btn" class="ai-advanced-btn">圖譜語意檢索</button>
-                        <button type="button" id="ai-rag-add-btn" class="ai-advanced-btn primary">新增節點</button>
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <label style="font-size:12px; color:#94a3b8; display:flex; align-items:center; gap:4px; cursor:pointer;">
-                            <input type="checkbox" id="ai-rag-select-all"> 全選
-                        </label>
-                        <button type="button" id="ai-rag-delete-selected-btn" class="ai-advanced-btn danger">刪除選取</button>
-                        <button type="button" id="ai-rag-export-btn" class="ai-advanced-btn">匯出資料</button>
-                        <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">
-                            匯入資料<input type="file" id="ai-rag-import-input" accept=".json" style="display:none;">
-                        </label>
-                        <span id="ai-rag-status" style="font-size:11px; color:#94a3b8; margin-left:4px;"></span>
-                    </div>
-                    <div class="ai-rag-table-wrap">
-                        <table class="ai-rag-table">
-                            <thead>
-                                <tr>
-                                    <th style="width:32px;"></th>
-                                    <th style="width:120px;">節點 ID</th>
-                                    <th>內文 (含自動依賴與先決條件標記)</th>
-                                    <th style="width:70px;">相關度</th>
-                                    <th style="width:90px;">來源</th>
-                                    <th style="width:150px;">時間</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ai-rag-table-body"></tbody>
-                        </table>
-                    </div>
-                    <div class="ai-advanced-footer">
-                        <span style="font-size:12px; color:#94a3b8;">雙擊節點內文行可編輯其依賴與先決條件。設定格式：<code>tags; deps:node_a,node_b; conds:環境==WebGPU</code></span>
-                        <button type="button" id="ai-rag-modal-done" class="ai-advanced-btn primary">完成</button>
                     </div>
                 </div>
             </div>
@@ -17679,9 +17680,6 @@ ${existingNodeSummaries}
             if (file) this._importSettings(file);
             e.target.value = '';
         });
-        document.getElementById('ai-rag-manage-btn').onclick = () => this._openRagModal();
-        document.getElementById('ai-rag-modal-close').onclick = () => this._closeRagModal();
-        document.getElementById('ai-rag-modal-done').onclick = () => this._closeRagModal();
         document.getElementById('ai-rag-add-btn').onclick = () => this._openRagEditor(null);
         document.getElementById('ai-rag-editor-close').onclick = () => this._closeRagEditor();
         document.getElementById('ai-rag-editor-cancel').onclick = () => this._closeRagEditor();
