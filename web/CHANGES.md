@@ -5,6 +5,80 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
+## 2026-09-14（深夜）
+
+背景：使用者要求把「模型」設定從單一組API KEY/URL/MODEL NAME＋MODEL NAME
+留空時依內建清單自動fallback，改成好幾個column可以填的多筆管理方式（一個
+row代表一個model/llm，各自可以有自己的URL/KEY/temperature/penalty/token
+上限），可拖曳調整順序、可新增/刪除；並要求名稱以「openrouter/」開頭的
+model改經Cloudflare Worker轉去OpenRouter，API key用worker端的
+OPENROUTER_API_KEY／OPENROUTER_API_KEY_DEFAULT。
+
+1. **`advancedSettings.llmModelRows`取代單一組API KEY/URL/MODEL NAME**：
+   每筆row `{id, apiUrl, apiKey, modelName, temperature, frequency_penalty,
+   presence_penalty, repetition_penalty, length_penalty, maxOutputTokens}`，
+   除了modelName（必填），其餘留空(null)＝沿用全域預設（URL/Key沿用舊有的
+   localStorage全域fallback值，溫度/penalty/max_tokens沿用「LLM Model
+   管理」分頁下方的全域取樣設定）。內建預設清單＝原本的8個PRESET_MODEL_
+   OPTIONS＋新增的`openrouter/free`，一次性migration邏輯把既有使用者原本
+   存在localStorage的單一組API KEY/URL/MODEL NAME（如果有填過）搬進第一筆
+   row，升級後原本的設定不會憑空消失。
+2. **Fallback機制改成「一個row代表一個model/llm」**：row的排列順序（可
+   拖曳調整）本身就是fallback優先順序，不再需要判斷「MODEL NAME是否留空」
+   才啟動——同一輪對話一律先試第一筆，遇到該模型404才依序往下換，換row時
+   URL/Key/生成參數整組一起換（不是像舊版只換模型名稱、URL/Key固定）。
+   `_loopFetch`/`_loopFetchNative`新增第5個參數`genOverrides`
+   （temperature/samplingOverrides/maxOutputTokens），跟既有的apiModel/
+   retryAttempt一樣逐層往下傳；`_runSubAgentTask`（子agent委派用，可能
+   透過`runBatchSubAgents`並行執行多份）改用function-scope區域變數追蹤
+   目前用第幾筆row，不共用instance層級狀態，避免並行執行互相污染。
+3. **`openrouter/`開頭的model改經Worker轉接**：`_resolveModelRowConfig`
+   偵測到modelName以`openrouter/`開頭時，把resolve出來的base URL加上
+   `/openrouter`路徑片段（不是直接從瀏覽器打openrouter.ai）。Worker新增
+   `handleOpenRouterProxy`（`web/cloudflare-worker/worker.js`），跟既有
+   `handleNvidiaProxy`同一套「假金鑰`tw_stock_db_api:{sessionId}`→用
+   env.OPENROUTER_API_KEY（含流量控管）；真金鑰原樣轉發；空白→依序
+   fallback OPENROUTER_API_KEY_DEFAULT→OPENROUTER_API_KEY」的邏輯，轉發到
+   `https://openrouter.ai/api/v1/chat/completions`。
+4. **Advance Settings UI**：「LLM 生成取樣參數」分頁改名「LLM Model
+   管理」，內容換成可拖曳排序的model row清單（⠿拖曳把手、#編號、刪除
+   按鈕、9個欄位的grid）＋「+新增Model」按鈕，下方保留「全域預設」取樣
+   參數區塊（row留空的欄位會套用這裡，跟改動前的既有機制相同，只是多了
+   per-row覆寫層）。「LLM 基礎設定」分頁移除原本的API KEY/URL/MODEL
+   NAME三個欄位。事件綁定改用事件代理（url/key/數字欄位用`input`即時
+   存檔但不重繪；modelName刻意改用`change`才存檔+重繪，避免使用者刪光
+   模型名稱準備重打時，半路空白的瞬間被normalize邏輯判定成不合法整筆
+   row憑空消失）。
+5. **修正兩處`Number(null)`陷阱**：`_normalizeModelRow`跟
+   `_resolveModelRowConfig`一開始都直接對`row[key]`做`Number(...)`轉換，
+   但`Number(null)===0`（不是`NaN`！）——這代表所有「留空(null)代表不
+   覆寫」的欄位都會被誤判成「明確填了0」，整批預設row的溫度/penalty/
+   max_tokens全部變成0而不是真正留空、沿用全域預設。瀏覽器實測時才發現
+   （`_resolveModelRowConfig`回傳的`temperature`等本來該是`null`的欄位
+   全部顯示成`0`），改成先判斷`raw == null || raw === ''`才決定要不要
+   呼叫`Number()`，修正後重測全部正確回傳`null`。
+6. **另一個實測抓到的真實bug**：`_normalizeAdvancedSettings(raw)`當
+   `raw`完全不存在（`localStorage.getItem(ADVANCED_SETTINGS_KEY)`是
+   null，代表使用者從沒動過Advance Settings任何其他欄位——但舊版單一組
+   API KEY/URL/MODEL NAME是直接寫進localStorage、不經過這個normalize
+   流程存檔的，完全可能兩者都存在）原本會提早return
+   `_createDefaultAdvancedSettings()`，完全跳過migration邏輯，導致這類
+   使用者升級後原本設定的模型/URL/金鑰會憑空消失、只剩空白的內建預設
+   清單。修正：這個提早return分支也要呼叫`_normalizeModelRows(null)`
+   套用migration。
+7. 實測（Browser工具，`new FloatingAssistant({})`+mock `fetch`）：UI
+   渲染9個預設row（含openrouter/free）；`_resolveModelRowConfig`對一般
+   row/openrouter row都正確解析出URL/Key/溫度覆寫（openrouter row的URL
+   正確多了`/openrouter`後綴）；編輯欄位、新增row、刪除row（含「至少
+   保留一筆」防呆）、原生HTML5拖曳排序（用`DataTransfer`+`DragEvent`
+   模擬）全部正確更新`advancedSettings.llmModelRows`；**端到端fallback
+   測試**（mock `fetch`讓第一筆row回404、第二筆成功）：確認
+   `executeChat`／`_runSubAgentTask`都正確從row-a換到row-b，連
+   URL／API Key／temperature／max_tokens都跟著整組換成row-b自己的值
+   （不是只換模型名稱）；舊使用者migration（模擬localStorage裡有舊版
+   單一組API KEY/URL/MODEL NAME但沒有advancedSettings blob）確認正確
+   把原本的設定migrate成第一筆row。
+
 ## 2026-09-14（晚上）
 
 背景：使用者對Advance Settings面板提出一批UI/預設值調整意見：上下文視窗預設
