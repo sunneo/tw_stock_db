@@ -1431,6 +1431,73 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     表示式要求`<`後面緊接英文字母（標記名稱起始字元），單純的比較運算子
     不會誤觸發。
 
+- **2026-09-14（同一天再追加）Kokoro TTS搬進Web Worker + TTS草稿去重 +
+  重繪時保留播放器/3D視角狀態**：使用者明確要求把Kokoro本地TTS真正的深層
+  卡頓根因（模型推論`engine.generate()`，WASM、CPU、完全同步佔用主執行緒）
+  解決掉，不要只當「已知限制」帶過；同一則訊息也回報了兩個相關UI問題。
+  - **`FA_TTS_WORKER_SRC`+`_ensureTtsWorker`+`_generateTtsInWorker`**
+    （floating-assistant.js，worker常數在~1261、方法在`_ensureKokoroLoaded`
+    之後）：kokoro-js是ES module（jsDelivr `/+esm`動態`import()`載入，不是
+    UMD），必須用module worker（`new Worker(blobUrl,{type:'module'})`），
+    跟`FA_BURN_SUBTITLES_WORKER_SRC`同一種「module worker才能import()
+    ESM」的理由，但這次刻意設計成**持久化、可重複使用**的worker（不是
+    burn_subtitles那種單次terminate）——模型/kokoro-js模組都快取在worker
+    自己的global scope，同一個worker實例後續job直接重用、不用每次重新
+    下載/初始化。`_ensureTtsWorker`比照`_ensureModelImportWorker`的
+    job-tracking慣例（`worker._faJobs` Map、`isWorkerInfraFailure`旗標區分
+    「worker基礎設施壞了」vs「worker內部業務邏輯失敗」），額外加一個
+    `this._ttsWorkerBroken`旗標——3D匯入worker的既有慣例崩潰後不會清掉
+    快取的worker參照，下一次呼叫還是會拿到同一個死掉的worker、
+    postMessage送出去永遠沒有回應；TTS worker使用頻率遠高於3D匯入worker
+    （每次合成都用），這裡多做一步：崩潰後清掉快取，下次呼叫重新建立一個
+    全新worker。
+  - **`_synthesizeTtsChunk(text, voice, onProgress)`**（新函式，取代
+    `_synthesizeSpeechLocal`原本直接呼叫`engine.generate()`的地方）：優先
+    透過`_generateTtsInWorker`合成，只有`err.isWorkerInfraFailure===true`
+    才退回**完整保留**的main-thread`_getTtsEngine()`路徑（不是刪除，當
+    fallback）；業務邏輯錯誤（例如voice id不存在）不會有這個旗標，直接
+    照實拋出、不retry、不fallback。MP3編碼（`_faLamejsEncode`，前一天已經
+    改成會yield）刻意留在main thread不搬進worker——已經不是真正卡死UI的
+    元凶，縮小這次worker遷移的職責範圍以降低風險。
+  - **`_downloadFile`加入草稿去重**：`_markSupersededVisualDrafts`（原本
+    只覆蓋5個`_display*YAML/SVG`類型）新增一段處理`msg._downloadFile`，用
+    `` `_downloadFile:${_faClassifyMediaFile(filename)}` ``（例如
+    `_downloadFile:audio`）當kind key，套用完全同一套「同一輪內同kind只留
+    最後一個」邏輯——重構出共用的`markSuperseded(kind, idx)`內部函式讓
+    既有5個KIND_PROPS跟新的`_downloadFile`分支共用同一段標記邏輯，不是
+    複製一份。`_renderSingleMessage`的`_downloadFile`分支同步抽出
+    `buildDownloadFileCard(targetContainer)`內部函式，讓「一律顯示」跟
+    「收合草稿卡、展開才懶惰掛載」（`_renderSupersededDraftCard`）共用
+    同一份建構邏輯。
+  - **`this._liveWidgetCache = new WeakMap()`**（建構子，訊息物件→已掛載
+    wrapper DOM節點）：解決`_renderMessageHistory()`每次
+    `chatBody.innerHTML=''`整個重繪、打斷音檔/影片播放位置＋3D viewer
+    OrbitControls視角的問題。`_downloadFile`（音檔/影片播放器）跟
+    `_displayScene3DYaml`（3D場景）兩個分支最前面（在`_visualSuperseded`
+    判斷**之後**）都加上「有快取就直接重用DOM節點、不重新建立」的短路
+    判斷，建構完wrapper後把它存進快取。用WeakMap是關鍵：訊息物件被GC
+    （`pruneContext`真的拿掉訊息、不再有任何參照）時快取自動消失，不用
+    手動清理。**刻意只套用在這兩種「有live互動狀態」的widget類型**，不
+    擴及drawing/viewer/2D動畫（那些是靜態內容，沒有「播放位置」這種會被
+    重繪打斷的live狀態）。
+  - 實測（Browser工具，真實模型/真實worker，不是純mock）：Kokoro
+    model已在瀏覽器cache（今天稍早測試留下的），真的透過worker跑一次
+    完整合成（真實句子），確認拿到正確的Float32Array音訊結果；用
+    `setInterval` tick counter驗證main thread在worker執行期間**完全沒有
+    被卡住**（20ms interval，~23.7秒的合成期間量到1187次tick，對照今天
+    稍早驗證lamejs問題時「完全同步、0次tick」的量測方法一致，這次是
+    「完全不卡」的正面對照）；模擬`isWorkerInfraFailure`錯誤，確認
+    `_synthesizeTtsChunk`正確退回main-thread路徑、仍然成功合成出音檔；
+    模擬非infra的業務邏輯錯誤，確認**不會**被誤判成需要fallback、直接
+    照實拋出。連續呼叫`_deliverExistingCacheFile`兩次（模擬AI同一輪內
+    重新產生兩次），確認只有最後一個`_visualSuperseded===false`（正常
+    顯示）、前一個變成收合草稿卡（`showInternalTrace`關閉時完全不畫、
+    開啟才看得到收合卡片）。音檔播放器＋3D場景各自建一個訊息、渲染後
+    在DOM元素上打一個獨特標記、觸發`_renderMessageHistory()`模擬工具
+    呼叫觸發的重繪，確認重繪後**同一個物件參照**（不是內容相同的新
+    元素，是真的同一個DOM節點）還在、標記還在——證明live狀態真的被保留，
+    不是被重新建立成一個「看起來一樣」的新節點。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
