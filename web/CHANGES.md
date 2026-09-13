@@ -42,6 +42,24 @@
    （不接受SSML、要求改用純文字/同音近似拼法），不會再讓引擎默默把垃圾
    標記唸出一大段音檔；`text_to_speech`工具的description也同步補充明講
    不支援SSML。
+5. **Kokoro TTS搬進Web Worker，真正解決卡頓根因（不再只是已知限制）**：
+   模型推論`engine.generate()`（WASM、CPU、完全同步）原本佔用主執行緒，
+   這次搬進持久化的module worker（`FA_TTS_WORKER_SRC`），worker基礎設施
+   有問題時自動退回main thread（完整保留原本邏輯當fallback）。實測：真實
+   模型透過worker完整合成一次，main thread在~23.7秒合成期間完全沒被卡住
+   （interval tick正常持續觸發，對照問題3修lamejs前「完全卡住、0 tick」
+   的量測方法）。
+6. **同一輪內AI連續呼叫text_to_speech等工具，只保留最後一個結果**：延伸
+   既有「同一輪內同類型視覺輸出只留最後一次」機制（`_markSupersededVisualDrafts`）
+   到`_downloadFile`（音檔/影片/其他交付檔案），較早的版本自動收合成
+   草稿卡（預設隱藏），不會每次都各自顯示一張完整卡片。
+7. **AI回應中途重繪會打斷正在播放的音檔/影片、重設3D viewer視角**：
+   `_renderMessageHistory()`每次都整個清空重繪所有訊息，音檔/影片播放器
+   跟3D viewer完全沒有「這則訊息沒變、不用重新掛載」的判斷，每次工具呼叫
+   觸發的重繪都會讓播放位置歸零、3D視角被重設回預設值。新增
+   `this._liveWidgetCache`（WeakMap），這兩種「有live互動狀態」的widget
+   類型改成重用已掛載的DOM節點，不重新建立——實測確認重繪前後是**同一個
+   物件參照**，播放位置/3D視角真的被保留。
 
 ## 2026-09-13
 

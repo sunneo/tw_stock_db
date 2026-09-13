@@ -1258,6 +1258,56 @@ self.onmessage = async (e) => {
 };
 `;
 
+// tw_stock_db客製: 2026-09-14使用者要求——Kokoro本地TTS的模型推論
+// （engine.generate()，WASM、CPU、完全同步）原本跑在主執行緒，嚴重時會讓
+// Chrome跳出「網頁無回應」對話框（真實回報過的案例）。這裡搬進module
+// worker（kokoro-js是ES module，透過jsDelivr /+esm build動態import()載入，
+// 不是UMD、不能用classic worker的importScripts()，見_ensureTtsWorker的
+// 建立方式）。跟FA_BURN_SUBTITLES_WORKER_SRC同一種「module worker才能
+// import() ESM」的理由，但這裡刻意設計成**持久化、可重複使用**的worker
+// （不是burn_subtitles那種單次用完就terminate）——模型（`_ttsEngine`）跟
+// kokoro-js模組（`_kokoroModule`）都快取在worker自己的global scope裡，
+// 同一個worker實例的後續合成job會直接重用、不會每次都重新下載/初始化
+// 模型，跟主執行緒既有的this._ttsEngine快取邏輯精神一致。收
+// {jobId, type:'generate', text, voiceId, kokoroJsUrl, modelId, dtype}，
+// 回{type:'progress', message}（模型下載/就緒進度）多次 + 最後一次
+// {type:'result', ok, audio(Transferable ArrayBuffer)|error}。
+const FA_TTS_WORKER_SRC = `
+let _kokoroModule = null;
+let _ttsEngine = null;
+
+self.onmessage = async (e) => {
+    const d = e.data || {};
+    const jobId = d.jobId;
+    try {
+        if (d.type !== 'generate') {
+            self.postMessage({ jobId, type: 'result', ok: false, error: '未知的job類型: ' + d.type });
+            return;
+        }
+        if (!_ttsEngine) {
+            if (!_kokoroModule) _kokoroModule = await import(d.kokoroJsUrl);
+            _ttsEngine = await _kokoroModule.KokoroTTS.from_pretrained(d.modelId, {
+                dtype: d.dtype,
+                device: 'wasm',
+                progress_callback: (p) => {
+                    if (!p) return;
+                    if (p.status === 'progress' && p.file && p.total) {
+                        self.postMessage({ jobId, type: 'progress', message: '下載模型 ' + p.file + '：' + Math.round((p.loaded / p.total) * 100) + '%' });
+                    } else if (p.status === 'done' && p.file) {
+                        self.postMessage({ jobId, type: 'progress', message: '模型檔案就緒：' + p.file });
+                    }
+                },
+            });
+        }
+        const audio = await _ttsEngine.generate(d.text, { voice: d.voiceId });
+        const samples = audio.audio; // Float32Array，單聲道
+        self.postMessage({ jobId, type: 'result', ok: true, audio: samples.buffer }, [samples.buffer]);
+    } catch (err) {
+        self.postMessage({ jobId, type: 'result', ok: false, error: String((err && err.message) || err) });
+    }
+};
+`;
+
 // tw_stock_db客製: render_3d_scene自己的:description只留最常用欄位（見
 // 該工具註冊處），texture/particles/polygon/defs這四個進階主題移出來
 // 用get_3d_scene_topic(topic)按需查詢——跟計畫文件記錄的使用者要求
@@ -2254,6 +2304,21 @@ class FloatingAssistant {
         // 重新送回API，所以還是有真正縮減context的效果，只是使用者還能點開
         // 回顧，不會覺得對話「憑空消失」。
         this.archivedDisplayBlocks = [];
+        // tw_stock_db客製: 2026-09-14使用者回報——AI回應中途（例如同一輪
+        // 呼叫多個工具）觸發的_renderMessageHistory()整個清空chatBody重繪，
+        // 會打斷使用者正在播放的音檔/影片（見_mountMediaPlayer）、也會讓
+        // 3D viewer的OrbitControls視角被重設回YAML預設值（見_mount3DScene）
+        // ——這兩種widget都有「live互動狀態」，重新整個建立DOM節點就等於
+        // 狀態歸零。這個WeakMap（訊息物件→已經掛載好的最外層wrapper DOM
+        // 節點）讓_renderSingleMessage在偵測到同一則訊息先前已經掛載過時，
+        // 直接重用舊的DOM節點（連同裡面存活的<audio>/<video>/Three.js場景
+        // 狀態），不用重新建立。用WeakMap是關鍵：訊息物件本身被GC（例如
+        // pruneContext真的把訊息從this.messages/archivedDisplayBlocks拿掉、
+        // 不再有任何參照）時，快取項目自動跟著消失，不用手動清理。目前只用
+        // 在音檔/影片播放器＋3D viewer這兩種類型（見_renderSingleMessage
+        // 對應分支），其餘視覺widget（drawing/viewer/2D動畫）沒有「播放
+        // 位置」這種會被重繪打斷的live狀態，維持原本每次重新渲染的行為。
+        this._liveWidgetCache = new WeakMap();
         this._loadPersistedChatHistory();
         this.activeToolEditIndex = -1;
         
@@ -4182,6 +4247,89 @@ ${fnData.code}
         return this._kokoroLoadPromise;
     }
 
+    // tw_stock_db客製: 2026-09-14使用者要求——建立（或取回快取的）持久化
+    // TTS worker（見FA_TTS_WORKER_SRC）。跟`_ensureModelImportWorker`同一套
+    // 慣例：`worker._faJobs`是jobId→{resolve,reject,onProgress}的Map，
+    // `onerror`（worker本身崩潰，不是worker內部try/catch包得住的業務邏輯
+    // 錯誤）讓所有還在等待中的job都用`isWorkerInfraFailure:true`reject，
+    // 呼叫端據此決定要不要退回main thread（見_generateTtsInWorker的呼叫端
+    // `_synthesizeSpeechLocal`）。額外加一個`this._ttsWorkerBroken`旗標——
+    // 3D匯入worker的既有慣例（`_ensureModelImportWorker`）崩潰後不會清掉
+    // 快取的worker參照，下一次呼叫還是會拿到同一個死掉的worker、postMessage
+    // 送出去但永遠不會有回應（不是拋錯，是永遠pending）；TTS worker使用
+    // 頻率遠高於3D匯入worker（每次合成都用），這裡多做一步：崩潰後清掉快取，
+    // 下次呼叫重新建立一個全新worker，避免卡死在一個壞掉的worker上。
+    async _ensureTtsWorker() {
+        if (this._ttsWorker && !this._ttsWorkerBroken) return this._ttsWorker;
+        this._ttsWorkerBroken = false;
+        if (typeof Worker === 'undefined') {
+            const err = new Error('此環境不支援Web Worker');
+            err.isWorkerInfraFailure = true;
+            throw err;
+        }
+        try {
+            const blobUrl = URL.createObjectURL(new Blob([FA_TTS_WORKER_SRC], { type: 'application/javascript' }));
+            const worker = new Worker(blobUrl, { type: 'module' });
+            worker._faJobs = new Map();
+            worker.onmessage = (e) => {
+                const data = e.data || {};
+                const job = worker._faJobs.get(data.jobId);
+                if (!job) return;
+                if (data.type === 'progress') {
+                    if (job.onProgress) job.onProgress(data.message);
+                } else if (data.type === 'result') {
+                    worker._faJobs.delete(data.jobId);
+                    if (data.ok) job.resolve(data.audio);
+                    else job.reject(new Error(data.error));
+                }
+            };
+            worker.onerror = (e) => {
+                this._ttsWorkerBroken = true;
+                const infraErr = new Error('TTS worker發生未預期錯誤: ' + (e.message || e));
+                infraErr.isWorkerInfraFailure = true;
+                worker._faJobs.forEach((job) => job.reject(infraErr));
+                worker._faJobs.clear();
+            };
+            this._ttsWorker = worker;
+            return worker;
+        } catch (err) {
+            const wrapped = new Error('建立TTS worker失敗: ' + (err.message || err));
+            wrapped.isWorkerInfraFailure = true;
+            throw wrapped;
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-14——透過持久化TTS worker合成一段文字，回傳
+    // Float32Array（單聲道，TTS_SAMPLE_RATE）。失敗時如果是worker基礎設施
+    // 本身的問題（不支援Worker/建立失敗/worker崩潰），拋出的Error會帶
+    // isWorkerInfraFailure:true，呼叫端（_synthesizeSpeechLocal）依此決定
+    // 要不要退回main thread的_getTtsEngine路徑；worker內部try/catch包住的
+    // 業務邏輯錯誤（例如voice id不存在）不會有這個旗標，直接照實拋出、不
+    // retry、不fallback。
+    async _generateTtsInWorker(text, voiceId, onProgress) {
+        const worker = await this._ensureTtsWorker();
+        const jobId = (crypto.randomUUID ? crypto.randomUUID() : `tts_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+        return new Promise((resolve, reject) => {
+            worker._faJobs.set(jobId, { resolve, reject, onProgress });
+            try {
+                worker.postMessage({
+                    jobId,
+                    type: 'generate',
+                    text,
+                    voiceId,
+                    kokoroJsUrl: FA_ASSET_URLS.kokoroJs,
+                    modelId: TTS_MODEL_ID,
+                    dtype: TTS_DTYPE,
+                });
+            } catch (err) {
+                worker._faJobs.delete(jobId);
+                const wrapped = new Error('傳送資料給TTS worker失敗: ' + (err.message || err));
+                wrapped.isWorkerInfraFailure = true;
+                reject(wrapped);
+            }
+        }).then(buffer => new Float32Array(buffer));
+    }
+
     // 建立(或取回快取的)Kokoro TTS引擎。⚠️2026-09-12實測發現：這個模型走
     // WebGPU在部分環境會直接把GPU裝置卡死（onnxruntime-web的WebGPU
     // backend對Kokoro/StyleTTS2這個模型結構有問題，實測出現
@@ -4297,20 +4445,32 @@ ${fnData.code}
         return this._synthesizeSpeechLocal(t, voice, onProgress);
     }
 
-    async _synthesizeSpeechLocal(t, voice, onProgress) {
-        let engine;
+    // tw_stock_db客製: 2026-09-14使用者要求——優先透過持久化TTS worker合成
+    // （見_generateTtsInWorker，模型推論跑在Worker、不佔用主執行緒），只有
+    // worker基礎設施本身有問題（不支援Worker/建立失敗/worker崩潰，帶
+    // isWorkerInfraFailure:true）才退回原本的main-thread _getTtsEngine路徑
+    // （完整保留，當fallback，不是刪除）——業務邏輯錯誤（例如voice id不
+    // 存在）不會有這個旗標，直接照實拋出、不retry、不fallback。
+    async _synthesizeTtsChunk(text, voice, onProgress) {
         try {
-            engine = await this._getTtsEngine(onProgress);
+            return await this._generateTtsInWorker(text, voice.id, onProgress);
         } catch (err) {
-            return { ok: false, error: String(err.message || err) };
+            if (!err.isWorkerInfraFailure) throw err;
+            this._log('⚠️ TTS worker無法使用，改回主執行緒合成（可能會讓畫面短暫卡頓）：' + String(err.message || err));
         }
+        const engine = await this._getTtsEngine(onProgress);
+        const audio = await engine.generate(text, { voice: voice.id });
+        return audio.audio; // Float32Array, 單聲道, TTS_SAMPLE_RATE
+    }
+
+    async _synthesizeSpeechLocal(t, voice, onProgress) {
         const chunks = this._ttsChunkText(t);
         const parts = [];
         try {
             for (let i = 0; i < chunks.length; i++) {
                 if (onProgress && chunks.length > 1) onProgress(`合成中… 第 ${i + 1}/${chunks.length} 段`);
-                const audio = await engine.generate(chunks[i], { voice: voice.id });
-                parts.push(audio.audio); // Float32Array, 單聲道, TTS_SAMPLE_RATE
+                const samples = await this._synthesizeTtsChunk(chunks[i], voice, onProgress);
+                parts.push(samples);
             }
         } catch (err) {
             return { ok: false, error: '語音合成失敗：' + String(err && err.message || err) };
@@ -15975,15 +16135,26 @@ ${existingNodeSummaries}
     _markSupersededVisualDrafts(messages) {
         const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayViewerYaml', '_displayDataUrl', '_displayAnim2DYaml'];
         let lastIdxByKind = {};
+        const markSuperseded = (kind, idx) => {
+            if (lastIdxByKind[kind] !== undefined) {
+                Object.defineProperty(messages[lastIdxByKind[kind]], '_visualSuperseded', { value: true, enumerable: false, configurable: true });
+            }
+            Object.defineProperty(messages[idx], '_visualSuperseded', { value: false, enumerable: false, configurable: true });
+            lastIdxByKind[kind] = idx;
+        };
         messages.forEach((msg, idx) => {
             if (msg.role === 'user') { lastIdxByKind = {}; return; }
             for (const prop of KIND_PROPS) {
-                if (!msg[prop]) continue;
-                if (lastIdxByKind[prop] !== undefined) {
-                    Object.defineProperty(messages[lastIdxByKind[prop]], '_visualSuperseded', { value: true, enumerable: false, configurable: true });
-                }
-                Object.defineProperty(msg, '_visualSuperseded', { value: false, enumerable: false, configurable: true });
-                lastIdxByKind[prop] = idx;
+                if (msg[prop]) markSuperseded(prop, idx);
+            }
+            // tw_stock_db客製: 2026-09-14使用者要求——同一輪內AI連續呼叫
+            // text_to_speech（或其他會交付檔案的工具）好幾次時，只有「最後
+            // 一次」是真正要給使用者的最終結果，比照上面視覺草稿的既有邏輯
+            // 延伸：用_faClassifyMediaFile(filename)分類當kind key（例如
+            // `_downloadFile:audio`），同一輪內同一種檔案類型只留最後一個
+            // 「一律顯示」，較早的標記_visualSuperseded、改用收合草稿卡。
+            if (msg._downloadFile && msg._downloadFile.filename) {
+                markSuperseded(`_downloadFile:${_faClassifyMediaFile(msg._downloadFile.filename)}`, idx);
             }
         });
     }
@@ -16152,62 +16323,87 @@ ${existingNodeSummaries}
         // 分頁存活期間有效，所以每次渲染（含重新整理頁面後）都要重新產生，
         // 不能直接把URL字串存起來重用。
         if (msg._downloadFile) {
-            const { id, filename, sizeBytes } = msg._downloadFile;
-            const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'other'
-            const isAudio = mediaKind === 'audio';
-            const isVideo = mediaKind === 'video';
-            const fileWrap = document.createElement('div');
-            fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
-            const sizeLabel = sizeBytes != null
-                ? (sizeBytes >= 1024 * 1024 ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB` : `${(sizeBytes / 1024).toFixed(1)} KB`)
-                : '';
-            fileWrap.innerHTML = `
-                <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
-                <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
-                ${(isAudio || isVideo) ? '<div class="ai-media-player-slot"></div>' : ''}
-            `;
-            container.appendChild(fileWrap);
-            const linkEl = fileWrap.querySelector('.ai-file-download-link');
-            const mediaSlot = (isAudio || isVideo) ? fileWrap.querySelector('.ai-media-player-slot') : null;
-            this.fileCache.get(id).then(record => {
-                if (!record) throw new Error('not found');
-                // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
-                // 檔——PPTX(OOXML)內部結構本來就是zip壓縮檔，Blob經過IndexedDB
-                // 存取一輪後，record.blob自己的.type偶爾會遺失變成空字串（已知
-                // 瀏覽器/IndexedDB結構化複製的行為，不是每次都會發生），這時
-                // createObjectURL()產生的下載沒有明確MIME type可用，瀏覽器只能
-                // 用內容本身猜測，猜出zip格式（技術上沒錯，但不是使用者要的
-                // 結果）。record.mimeType是put()當初存進去、跟blob分開的獨立
-                // 欄位，一直都在但從沒被實際用來設定下載內容——這裡用它明確
-                // 重新包一次Blob，確保不管record.blob.type本身還在不在，下載
-                // 出去的內容一律帶正確的PPTX/PDF/Markdown MIME type。
-                const blobWithType = record.mimeType && record.blob.type !== record.mimeType
-                    ? new Blob([record.blob], { type: record.mimeType })
-                    : record.blob;
-                const url = URL.createObjectURL(blobWithType);
-                linkEl.href = url;
-                linkEl.setAttribute('download', record.filename);
-                linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
-                // tw_stock_db客製: 2026-09-14使用者要求——mp3/wav/ogg這類音檔
-                // （後來追加：mp4這類影片也要）除了下載連結，旁邊要有一個
-                // 真正能播放的播放器（見_mountMediaPlayer）。這裡沿用同一顆
-                // blobWithType，不用重複讀一次fileCache。
-                if (mediaSlot) {
-                    if (isAudio) this._mountAudioPlayer(mediaSlot, blobWithType);
-                    else if (isVideo) this._mountVideoPlayer(mediaSlot, blobWithType);
-                }
-            }).catch(() => {
-                linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
-                // tw_stock_db客製: 2026-09-11——原本改成 palette.detailBg 但沒動
-                // 到 <a> 內建的 color:#fff，light theme 下變成白字配淺底幾乎看不到
-                // （使用者回報）。改成透明底＋沿用泡泡本身的文字色＋琥珀色外框，
-                // 深淺色主題都有對比。
-                linkEl.style.background = 'transparent';
-                linkEl.style.color = palette.assistantText;
-                linkEl.style.border = '1px solid #f59e0b';
-                linkEl.style.fontWeight = 'normal';
-                linkEl.style.cursor = 'default';
-            });
+            // tw_stock_db客製: 2026-09-14使用者回報——AI回應中途（例如同一輪
+            // 呼叫多個工具）觸發的_renderMessageHistory()整個重繪，會打斷
+            // 使用者正在播放的音檔/影片（播放位置歸零、暫停）。這裡在重建
+            // 前先檢查快取——如果這則訊息先前已經掛載過（`this._liveWidgetCache`，
+            // 建構子初始化的WeakMap，見那裡的說明），直接重用同一個DOM節點
+            // （連同裡面`<audio>`/`<video>`目前的播放狀態），不重新呼叫
+            // fileCache.get()/建立新的blob URL/新的媒體元素。
+            if (this._liveWidgetCache.has(msg)) {
+                container.appendChild(this._liveWidgetCache.get(msg));
+                return;
+            }
+            // tw_stock_db客製: 2026-09-14使用者要求——同一輪內AI連續呼叫
+            // text_to_speech等工具好幾次時，只有最後一次是真正的最終結果
+            // （見_markSupersededVisualDrafts的_downloadFile延伸）。把整段
+            // 卡片建構邏輯抽成內部函式，這樣「一律顯示」跟「收合草稿卡、
+            // 展開才懶惰掛載」（_renderSupersededDraftCard）可以共用同一份
+            // 邏輯，不用維護兩份幾乎一樣的程式碼。
+            const buildDownloadFileCard = (targetContainer) => {
+                const { id, filename, sizeBytes } = msg._downloadFile;
+                const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'other'
+                const isAudio = mediaKind === 'audio';
+                const isVideo = mediaKind === 'video';
+                const fileWrap = document.createElement('div');
+                fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
+                const sizeLabel = sizeBytes != null
+                    ? (sizeBytes >= 1024 * 1024 ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB` : `${(sizeBytes / 1024).toFixed(1)} KB`)
+                    : '';
+                fileWrap.innerHTML = `
+                    <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
+                    <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
+                    ${(isAudio || isVideo) ? '<div class="ai-media-player-slot"></div>' : ''}
+                `;
+                targetContainer.appendChild(fileWrap);
+                const linkEl = fileWrap.querySelector('.ai-file-download-link');
+                const mediaSlot = (isAudio || isVideo) ? fileWrap.querySelector('.ai-media-player-slot') : null;
+                this.fileCache.get(id).then(record => {
+                    if (!record) throw new Error('not found');
+                    // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
+                    // 檔——PPTX(OOXML)內部結構本來就是zip壓縮檔，Blob經過IndexedDB
+                    // 存取一輪後，record.blob自己的.type偶爾會遺失變成空字串（已知
+                    // 瀏覽器/IndexedDB結構化複製的行為，不是每次都會發生），這時
+                    // createObjectURL()產生的下載沒有明確MIME type可用，瀏覽器只能
+                    // 用內容本身猜測，猜出zip格式（技術上沒錯，但不是使用者要的
+                    // 結果）。record.mimeType是put()當初存進去、跟blob分開的獨立
+                    // 欄位，一直都在但從沒被實際用來設定下載內容——這裡用它明確
+                    // 重新包一次Blob，確保不管record.blob.type本身還在不在，下載
+                    // 出去的內容一律帶正確的PPTX/PDF/Markdown MIME type。
+                    const blobWithType = record.mimeType && record.blob.type !== record.mimeType
+                        ? new Blob([record.blob], { type: record.mimeType })
+                        : record.blob;
+                    const url = URL.createObjectURL(blobWithType);
+                    linkEl.href = url;
+                    linkEl.setAttribute('download', record.filename);
+                    linkEl.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 4000), { once: true });
+                    // tw_stock_db客製: 2026-09-14使用者要求——mp3/wav/ogg這類音檔
+                    // （後來追加：mp4這類影片也要）除了下載連結，旁邊要有一個
+                    // 真正能播放的播放器（見_mountMediaPlayer）。這裡沿用同一顆
+                    // blobWithType，不用重複讀一次fileCache。
+                    if (mediaSlot) {
+                        if (isAudio) this._mountAudioPlayer(mediaSlot, blobWithType);
+                        else if (isVideo) this._mountVideoPlayer(mediaSlot, blobWithType);
+                    }
+                }).catch(() => {
+                    linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
+                    // tw_stock_db客製: 2026-09-11——原本改成 palette.detailBg 但沒動
+                    // 到 <a> 內建的 color:#fff，light theme 下變成白字配淺底幾乎看不到
+                    // （使用者回報）。改成透明底＋沿用泡泡本身的文字色＋琥珀色外框，
+                    // 深淺色主題都有對比。
+                    linkEl.style.background = 'transparent';
+                    linkEl.style.color = palette.assistantText;
+                    linkEl.style.border = '1px solid #f59e0b';
+                    linkEl.style.fontWeight = 'normal';
+                    linkEl.style.cursor = 'default';
+                });
+                return fileWrap;
+            };
+            if (msg._visualSuperseded) {
+                this._renderSupersededDraftCard(container, '檔案草稿', (inner) => { buildDownloadFileCard(inner); });
+                return;
+            }
+            this._liveWidgetCache.set(msg, buildDownloadFileCard(container));
             return;
         }
 
@@ -16326,6 +16522,16 @@ ${existingNodeSummaries}
                     this._renderSupersededDraftCard(container, '3D場景草稿', (inner) => { this._mount3DScene(inner, msg._displayScene3DYaml); });
                     return;
                 }
+                // tw_stock_db客製: 2026-09-14使用者回報——AI回應中途觸發的
+                // _renderMessageHistory()整個重繪，會讓3D viewer的
+                // OrbitControls視角被重設回YAML預設值。這裡重用已經掛載過的
+                // sceneWrap（見建構子_liveWidgetCache的說明），連同裡面存活
+                // 的Three.js場景/camera/OrbitControls狀態一起保留，不重新
+                // 呼叫_mount3DScene建立新的canvas/renderer。
+                if (this._liveWidgetCache.has(msg)) {
+                    container.appendChild(this._liveWidgetCache.get(msg));
+                    return;
+                }
                 const sceneWrap = document.createElement('div');
                 sceneWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
                 sceneWrap.innerHTML = `<div style="font-size: 12px; font-weight: bold; color: #6366f1; margin-bottom: 4px;">🧊 3D場景（可用滑鼠拖曳/滾輪縮放）</div>`;
@@ -16387,6 +16593,7 @@ ${existingNodeSummaries}
                     },
                 ]);
                 container.appendChild(sceneWrap);
+                this._liveWidgetCache.set(msg, sceneWrap);
                 this._mount3DScene(mountDiv, msg._displayScene3DYaml).then((handle) => {
                     if (handle) {
                         // tw_stock_db客製: 存活的handle（含snapshotDataUri）
