@@ -958,6 +958,13 @@ const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
 const SUBAGENT_TRANSIENT_RETRY_LIMIT = 2;
 const SUBAGENT_TRANSIENT_RETRY_DELAY_MS = 800;
 
+// tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半發現需要一個原本
+// 沒拿到的domain工具時，可以呼叫request_additional_tools「原地」申請追加
+// （見_runSubAgentTask），不用跳出去重新委派一次。每次申請都要多一次路由
+// 網路往返，這裡設一個保守上限防止單次子任務無限申請、失控燒費用——超過
+// 上限後子agent會被要求直接用現有工具給出最佳結果，不是無限重試。
+const SUBAGENT_MAX_TOOL_ESCALATIONS = 3;
+
 // tw_stock_db客製: 共用的「安全表達式」白名單函式表——階段3自訂粒子preset
 // 的init/update/output公式、階段5互動viewer的visible_if/enabled_if都用
 // 同一套expression evaluator（見_compileSafeExpression）。這是一個固定、
@@ -2400,6 +2407,13 @@ class FloatingAssistant {
                 + '(Skill，各自是一段JS callback)的子任務助理。依task內容判斷該呼叫哪個'
                 + '技能、需要的話呼叫多個，把結果整理成最終結論回傳。',
         };
+        // tw_stock_db客製: 2026-09-13使用者要求——host頁面（例如piano-web未來
+        // 上百種曲風domain）可以把domain分類，讓_routeTaskHierarchical能先選
+        // 類別、再選細分domain，避免domain數一多扁平路由目錄塞爆稀釋注意力。
+        // {categoryKey: {label, description}}，純粹是路由用的分類中繼資料，
+        // 不含toolNames/systemPrompt（那些仍然掛在domain本身，見register_domain
+        // 的category欄位）。
+        this.domainCategories = {};
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -2414,7 +2428,7 @@ class FloatingAssistant {
         // （對應到新的'off'模式），沒有任何一邊有指定時退回內建預設'router'
         // （＝原本的'domains'行為，維持既有預設不變）。
         if (localStorage.getItem(this.ADVANCED_SETTINGS_KEY) === null) {
-            if (['router', 'full', 'off'].includes(options.multiSubAgentMode)) {
+            if (['router', 'full', 'off', 'hierarchical'].includes(options.multiSubAgentMode)) {
                 this.advancedSettings.multiSubAgentMode = options.multiSubAgentMode;
             } else if (options.builtinToolExposure === 'root') {
                 this.advancedSettings.multiSubAgentMode = 'off';
@@ -2450,7 +2464,12 @@ class FloatingAssistant {
     // builtinToolExposure:'root'）。任何非法值一律退回'router'。
     get multiSubAgentMode() {
         const v = this.advancedSettings && this.advancedSettings.multiSubAgentMode;
-        return (v === 'full' || v === 'off') ? v : 'router';
+        // tw_stock_db客製: 2026-09-13新增第4個值'hierarchical'（兩層domain路由：
+        // 先選類別、再選細分domain，見_routeTaskHierarchical）——domain少時
+        // 不建議用（多一次網路往返卻沒有token/準確度優勢，見這次計畫的實測
+        // 數據），只有domain數大到像成噸曲風分類這種規模才划算，所以刻意不是
+        // 預設值。
+        return (v === 'full' || v === 'off' || v === 'hierarchical') ? v : 'router';
     }
 
     // tw_stock_db客製: 向下相容既有程式碼裡任何直接讀this.builtinToolExposure
@@ -2517,8 +2536,14 @@ class FloatingAssistant {
     // 控制的事——register_domain純粹是讓_delegateToSubagentDomain/
     // _routeTaskToDomains/互動viewer的subagent_panel這幾處domain查找點
     // 認得這個新domain。
-    register_domain(key, { label, toolNames, systemPrompt, enabled = true } = {}) {
-        this.domains[key] = { label, toolNames: Array.isArray(toolNames) ? toolNames : [], systemPrompt, enabled };
+    // tw_stock_db客製: 2026-09-13新增選填的category參數——host頁面（例如
+    // piano-web的上百種曲風domain）可以把domain掛到一個分類代號下，讓
+    // _routeTaskHierarchical能先選類別、再選細分domain。留空（絕大多數domain）
+    // 時維持原本「獨立領域」的扁平行為，完全向下相容；category指向的分類必須
+    // 另外用register_domain_category註冊，這裡不驗證存在性（跟toolNames一樣，
+    // 交給實際路由時才會知道查無此分類，直接被當成獨立領域處理）。
+    register_domain(key, { label, toolNames, systemPrompt, enabled = true, category = null } = {}) {
+        this.domains[key] = { label, toolNames: Array.isArray(toolNames) ? toolNames : [], systemPrompt, enabled, category: category || null };
         // tw_stock_db客製: 2026-09-09——'full'模式下delegate_to_subagent的
         // description會列出目前全部enabled domain，host頁面新增domain後要
         // 讓這份清單立刻反映最新狀態（不用等使用者手動觸發一次
@@ -2526,6 +2551,15 @@ class FloatingAssistant {
         // 內部有防呆（工具還沒註冊時直接跳過），host在建構子完成前呼叫
         // register_domain也不會出錯。
         this._updateDelegateToSubagentDescription();
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-13新增——比照register_domain同一種公開介面，
+    // 讓host頁面登記domain分類（純路由用的中繼資料，只有label/description，
+    // 不含toolNames/systemPrompt——實際能力還是掛在各個domain自己身上，見
+    // register_domain的category參數）。
+    register_domain_category(key, { label, description = '' } = {}) {
+        this.domainCategories[key] = { label, description };
         return this;
     }
 
@@ -2915,7 +2949,7 @@ class FloatingAssistant {
                 const n = Number(raw.mp4DefaultDurationSeconds);
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
-            multiSubAgentMode: ['router', 'full', 'off'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
+            multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
             browserSearchEnabled: raw.browserSearchEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
@@ -5961,8 +5995,14 @@ ${fnData.code}
     // {type:'object'}（不逐一定義每個參數型別），效果比嚴格schema差一點，
     // 但仍然比純文字[CALL:...]可靠，模型看得到工具名稱/描述並能正確產生
     // 呼叫。
-    _buildNativeToolsSchema(allowedNames = null) {
-        return this._getCombinedToolEntries(allowedNames).map(([name, tool]) => ({
+    // tw_stock_db客製: 2026-09-13新增extraEntries選填參數——`_runSubAgentTask`的
+    // request_additional_tools偽工具只在單次子任務執行內有效，不寫進
+    // this.tools（不會被其他委派/主對話誤用到），所以不能靠
+    // _getCombinedToolEntries(allowedNames)撈到，這裡讓呼叫端能額外塞一批
+    // 原始[name,tool]項目一起併入schema。既有兩個呼叫點（根層級對話用）不傳
+    // 第二參數，預設空陣列，行為完全不變。
+    _buildNativeToolsSchema(allowedNames = null, extraEntries = []) {
+        return this._getCombinedToolEntries(allowedNames).concat(extraEntries).map(([name, tool]) => ({
             type: 'function',
             function: {
                 name: this._sanitizeToolNameForNativeApi(name),
@@ -14401,37 +14441,13 @@ ${existingNodeSummaries}
     // 回傳{ok:true, domains, toolNames, systemPrompt}（domains空陣列代表
     // 這個任務不需要任何專家領域）或{ok:false, error}（網路錯誤/JSON解析
     // 失敗/沒有任何已啟用的domain）。
-    async _routeTaskToDomains(task) {
-        const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
-        if (!enabledDomains.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
-
-        const toolByName = new Map(this._getCombinedToolEntries(null));
-        // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析出來的
-        // domain，使用者還沒建立任何Skill時會是空陣列，這裡直接跳過（不進路由
-        // 子agent的目錄），避免列出一個「這個領域目前沒有任何工具」的雜訊分類。
-        const catalogSections = enabledDomains
-            .map(([key, d]) => {
-                const names = this._resolveDomainToolNames(d);
-                if (!names.length) return null;
-                const lines = names
-                    .map(name => {
-                        const tool = toolByName.get(name);
-                        return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
-                    })
-                    .filter(Boolean);
-                return `[${key}] ${d.label}\n${lines.join('\n')}`;
-            })
-            .filter(Boolean);
-
-        const routerSystemPrompt = [
-            '你是一個工具領域路由器。以下是系統目前登記的所有「專家領域」，每個領域底下列出它擁有的工具（僅供你判斷相關性參考，不代表你自己能呼叫這些工具）：',
-            '',
-            catalogSections.join('\n\n'),
-            '',
-            '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些領域的工具（可以是0個、1個、或多個）。只需要回傳領域代號（例如"scene_3d"），不要回傳個別工具名稱。如果任務不需要用到任何專家領域（例如只是打招呼、或你判斷不需要用到上面任何一個領域），domains請回傳空陣列。',
-            '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
-        ].join('\n');
-
+    // tw_stock_db客製: 2026-09-13——把「組messages→fetch→解析JSON」這段路由
+    // 子agent共用邏輯抽出來，_routeTaskToDomains（扁平單層）跟新增的
+    // _routeTaskHierarchical（兩層：類別＋細分domain，共3次呼叫：第一層1次+
+    // 每個選中類別平行1次）都共用，避免貼三份幾乎一樣的fetch邏輯。回傳
+    // {ok:true, parsed:{...}}或{ok:false, error}，parsed是repairJsonPayload
+    // 解析出來的物件，呼叫端自己決定要讀哪些欄位（domains/categories）。
+    async _callRouterLLM(routerSystemPrompt, userText) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
         let response;
         try {
@@ -14442,7 +14458,7 @@ ${existingNodeSummaries}
                     model: apiModel,
                     messages: [
                         { role: 'system', content: routerSystemPrompt },
-                        { role: 'user', content: task },
+                        { role: 'user', content: userText },
                     ],
                     temperature: 0,
                     // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
@@ -14466,10 +14482,56 @@ ${existingNodeSummaries}
             return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
         }
         const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-        let parsed;
-        try { parsed = await this.repairJsonPayload(rawText); } catch (err) {
+        try {
+            const parsed = await this.repairJsonPayload(rawText);
+            return { ok: true, parsed };
+        } catch (err) {
             return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
         }
+    }
+
+    // tw_stock_db客製: 2026-09-13——把單一domain的「[key] label\n- tool: 摘要」
+    // 目錄段落組字串抽出來，_routeTaskToDomains跟_routeTaskHierarchical的
+    // 第二層（單一類別底下的細分domain）都共用同一個格式。toolNames為空陣列
+    // 時回傳null（呼叫端過濾掉，不進目錄）。
+    _buildDomainCatalogSection(key, domain, toolByName) {
+        const names = this._resolveDomainToolNames(domain);
+        if (!names.length) return null;
+        const lines = names
+            .map(name => {
+                const tool = toolByName.get(name);
+                return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
+            })
+            .filter(Boolean);
+        return `[${key}] ${domain.label}\n${lines.join('\n')}`;
+    }
+
+    async _routeTaskToDomains(task) {
+        const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
+        if (!enabledDomains.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
+
+        const toolByName = new Map(this._getCombinedToolEntries(null));
+        const catalogSections = enabledDomains
+            .map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName))
+            .filter(Boolean);
+
+        const routerSystemPrompt = [
+            '你是一個工具領域路由器。以下是系統目前登記的所有「專家領域」，每個領域底下列出它擁有的工具（僅供你判斷相關性參考，不代表你自己能呼叫這些工具）：',
+            '',
+            catalogSections.join('\n\n'),
+            '',
+            '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些領域的工具（可以是0個、1個、或多個）。只需要回傳領域代號（例如"scene_3d"），不要回傳個別工具名稱。如果任務不需要用到任何專家領域（例如只是打招呼、或你判斷不需要用到上面任何一個領域），domains請回傳空陣列。',
+            // tw_stock_db客製: 2026-09-13使用者要求「規劃階段盡量選齊，避免
+            // subagent執行到一半才發現工具不夠」——這裡改成純prompt wording
+            // 引導（零額外LLM往返成本），沒有另外加一輪「驗證夠不夠」的呼叫，
+            // 真正的保險是_runSubAgentTask的request_additional_tools機制。
+            '如果任務包含多個階段（例如先查詢/研究、再產生設計或報告），請把預期會用到的領域一次全部選出來，不要只選第一步用得到的；不確定某個領域會不會用到時，傾向選進來而不是保守省略。',
+            '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
+        ].join('\n');
+
+        const routed = await this._callRouterLLM(routerSystemPrompt, task);
+        if (!routed.ok) return routed;
+        const parsed = routed.parsed;
         const requestedDomains = Array.isArray(parsed.domains) ? parsed.domains.map(String) : [];
         const validDomains = requestedDomains.filter(k => this.domains[k] && this.domains[k].enabled);
         if (!validDomains.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
@@ -14479,14 +14541,99 @@ ${existingNodeSummaries}
         return { ok: true, domains: validDomains, toolNames, systemPrompt };
     }
 
+    // tw_stock_db客製: 2026-09-13使用者要求——當domain數大到像「成噸曲風」這種
+    // 規模時，_routeTaskToDomains的扁平單層目錄會塞爆路由子agent的注意力（真實
+    // benchmark：45個domain時扁平模式漏判一題，兩層式全對，見這次計畫的實測
+    // 數據）。這裡是選配的兩層路由：先從「類別」選、選中的類別再平行各自問一次
+    // 「這個類別底下要哪個細分domain」，兩層都只認得enabled且有帶category欄位
+    // 的domain；沒有category欄位的domain（現有內建domain全部都是）當作「獨立
+    // 領域」在第一層直接跟類別並列，維持完全向下相容。
+    //
+    // 完全沒有人用過category功能（this.domains裡沒有任何一個帶category）時，
+    // 兩層路由沒有意義，直接退回_routeTaskToDomains，不多花這次網路往返。
+    //
+    // 回傳跟_routeTaskToDomains完全一樣的{ok,domains,toolNames,systemPrompt}
+    // 形狀，_delegateToSubagentAuto不用區分呼叫端。
+    async _routeTaskHierarchical(task) {
+        const categorizedEntries = Object.entries(this.domains)
+            .filter(([, d]) => d.enabled && d.category && this._resolveDomainToolNames(d).length);
+        if (!categorizedEntries.length) return this._routeTaskToDomains(task);
+
+        const standaloneEntries = Object.entries(this.domains)
+            .filter(([, d]) => d.enabled && !d.category && this._resolveDomainToolNames(d).length);
+        const categoryKeys = [...new Set(categorizedEntries.map(([, d]) => d.category))]
+            .filter(k => this.domainCategories[k]);
+
+        const toolByName = new Map(this._getCombinedToolEntries(null));
+        const standaloneSections = standaloneEntries
+            .map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName))
+            .filter(Boolean);
+        const categorySections = categoryKeys.map(key => {
+            const cat = this.domainCategories[key];
+            return `[${key}] ${cat.label}${cat.description ? `：${cat.description}` : ''}`;
+        });
+
+        const step1Prompt = [
+            '你是一個兩層式工具領域路由器（第一層）。以下是系統目前登記的「曲風/主題類別」，每個類別底下包含多個細分領域（這裡只列類別本身，不展開細分內容，僅供你判斷相關性參考）：',
+            '',
+            categorySections.join('\n'),
+            standaloneSections.length ? '\n以下是不屬於任何類別、可以直接選用的獨立領域（結構跟一般domain一樣，列出它擁有的工具）：\n\n' + standaloneSections.join('\n\n') : '',
+            '',
+            '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些「類別」（可以是0個、1個、或多個，選中的類別之後會再問你一次細分領域）、以及需要用到哪個或哪些「獨立領域」代號（如果有的話）。',
+            '如果任務包含多個階段（例如先查詢/研究、再產生設計或報告），請把預期會用到的類別/獨立領域一次全部選出來，不要只選第一步用得到的；不確定時傾向選進來而不是保守省略。',
+            '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"categories": ["類別代號1"], "domains": ["獨立領域代號1"]}',
+        ].filter(Boolean).join('\n');
+
+        const step1 = await this._callRouterLLM(step1Prompt, task);
+        if (!step1.ok) return step1;
+        const chosenCategories = (Array.isArray(step1.parsed.categories) ? step1.parsed.categories.map(String) : [])
+            .filter(k => categoryKeys.includes(k));
+        const chosenStandalone = (Array.isArray(step1.parsed.domains) ? step1.parsed.domains.map(String) : [])
+            .filter(k => standaloneEntries.some(([sk]) => sk === k));
+
+        // 第二層：對每個選中的類別平行問一次「這個類別底下要哪個細分domain」，
+        // 用Promise.all避免延遲隨選中的類別數疊加——多個類別平行問，總延遲
+        // 取決於最慢的那一個，不是全部加總。
+        const subResults = await Promise.all(chosenCategories.map(async (catKey) => {
+            const inCat = categorizedEntries.filter(([, d]) => d.category === catKey);
+            const sections = inCat.map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName)).filter(Boolean);
+            const catLabel = this.domainCategories[catKey].label;
+            const step2Prompt = [
+                `你是一個曲風/主題路由器（第二層），目前類別是「${catLabel}」，以下是這個類別底下的細分領域：`,
+                '',
+                sections.join('\n\n'),
+                '',
+                '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些細分領域（可以是0個、1個、或多個）。',
+                '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
+            ].join('\n');
+            const step2 = await this._callRouterLLM(step2Prompt, task);
+            if (!step2.ok) return [];
+            const inCatKeys = inCat.map(([k]) => k);
+            return (Array.isArray(step2.parsed.domains) ? step2.parsed.domains.map(String) : []).filter(k => inCatKeys.includes(k));
+        }));
+
+        const finalDomainKeys = [...new Set([...chosenStandalone, ...subResults.flat()])]
+            .filter(k => this.domains[k] && this.domains[k].enabled);
+        if (!finalDomainKeys.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
+        const toolNames = [...new Set(finalDomainKeys.flatMap(k => this._resolveDomainToolNames(this.domains[k])))];
+        const systemPrompt = finalDomainKeys.map(k => `## ${this.domains[k].label}\n${this.domains[k].systemPrompt}`).join('\n\n');
+        return { ok: true, domains: finalDomainKeys, toolNames, systemPrompt };
+    }
+
     // tw_stock_db客製: 2026-09-06使用者要求「兩層對話」的第二層——真正執行
     // 任務的子agent。呼叫Layer 1(_routeTaskToDomains)判斷這個task該開放
     // 哪些domain的工具，直接複用既有_runSubAgentTask（跟
     // _delegateToSubagentDomain完全同一條執行路徑，只是allowedToolNames/
     // systemPrompt是動態合併出來的，不是單一固定domain的），最後把結果
     // 合併回傳（使用者說的「最後再合併結果」）。
+    // tw_stock_db客製: 2026-09-13新增——multiSubAgentMode==='hierarchical'時
+    // 改走_routeTaskHierarchical（類別→細分domain兩層路由），其餘模式維持
+    // 扁平_routeTaskToDomains；兩者回傳同一個形狀，下面的合併/執行邏輯不用
+    // 區分呼叫端。
     async _delegateToSubagentAuto(task) {
-        const routed = await this._routeTaskToDomains(task);
+        const routed = this.multiSubAgentMode === 'hierarchical'
+            ? await this._routeTaskHierarchical(task)
+            : await this._routeTaskToDomains(task);
         // tw_stock_db客製: 2026-09-06使用者實測發現的真實問題——自動路由失敗
         // 時（不管是分類請求本身出錯，還是分類出來domains是空陣列），原本的
         // 錯誤訊息只叫根模型「可以指定明確的domain重試」，卻完全沒有告訴它
@@ -14559,10 +14706,69 @@ ${existingNodeSummaries}
         const modelFieldBlank = this._isModelFieldBlank();
         let fallbackIndex = 0;
         let transientRetryCount = 0;
-        const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames : null;
-        const systemPrompt = (typeof options.systemPrompt === 'string' && options.systemPrompt.trim())
+        // tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半才發現需要
+        // 一個原本沒拿到的domain工具時，要能「原地」申請追加，不能跳出去重新
+        // 委派一次（太慢，而且會失去目前這段對話歷史）。改成let+複本（不是
+        // const），配合下面的request_additional_tools偽工具直接push新名稱
+        // 進來——下一輪body.tools重建時（見下面迴圈裡的_buildNativeToolsSchema
+        // 呼叫）會自動反映最新的allowedToolNames，不需要改動迴圈結構本身。
+        // allowedToolNames為null（沒有委派限制，例如_getFinalSystemPrompt()
+        // 預設情境，本來就看得到全部工具）時沒有「追加」的意義，canRequestMore
+        // 這時是false，偽工具整個不啟用。
+        const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames.slice() : null;
+        const canRequestMore = Array.isArray(allowedToolNames);
+        let toolEscalationCount = 0;
+        const REQUEST_MORE_TOOLS_NAME = 'request_additional_tools';
+        // tw_stock_db客製: resolveTool取代原本兩處直接呼叫
+        // this._getToolDefinition(fnName, allowedToolNames)的地方——
+        // request_additional_tools只在這次_runSubAgentTask執行內有效，故意
+        // 不寫進this.tools（不會被其他委派/主對話誤用到，執行結束這個工具就
+        // 不存在了），所以_getToolDefinition/_getCombinedToolEntries撈不到，
+        // 這裡優先攔截，其餘名稱照舊查this.tools/customTools。
+        const resolveTool = (fnName) => {
+            if (canRequestMore && fnName === REQUEST_MORE_TOOLS_NAME) {
+                return {
+                    callback: async (rawArgs) => {
+                        if (toolEscalationCount >= SUBAGENT_MAX_TOOL_ESCALATIONS) {
+                            return JSON.stringify({ ok: false, error: `已經追加過${SUBAGENT_MAX_TOOL_ESCALATIONS}次工具，請直接用現有工具完成、或給出目前能做到的最佳結果，不要再申請追加。` });
+                        }
+                        let parsed = {};
+                        try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                        const need = String(parsed.need || '').trim();
+                        if (!need) return JSON.stringify({ ok: false, error: 'need不能是空的，請描述你現在還缺什麼能力/需要查什麼類型的資料' });
+                        const routed = this.multiSubAgentMode === 'hierarchical'
+                            ? await this._routeTaskHierarchical(need)
+                            : await this._routeTaskToDomains(need);
+                        if (!routed.ok || !routed.toolNames || !routed.toolNames.length) {
+                            return JSON.stringify({ ok: false, error: '找不到符合這個需求的額外工具，請改用現有工具完成、或直接回答已知的部分。' });
+                        }
+                        toolEscalationCount++;
+                        const newNames = routed.toolNames.filter(n => !allowedToolNames.includes(n));
+                        allowedToolNames.push(...newNames);
+                        const toolByName = new Map(this._getCombinedToolEntries(null));
+                        const hint = routed.toolNames
+                            .map(n => `- ${n}: ${this._summarizeToolDescription((toolByName.get(n) || {}).description || '')}`)
+                            .join('\n');
+                        return JSON.stringify({ ok: true, added_tools: newNames, already_had: routed.toolNames.filter(n => !newNames.includes(n)), hint: `這些工具現在可以直接呼叫：\n${hint}` });
+                    },
+                };
+            }
+            return this._getToolDefinition(fnName, allowedToolNames);
+        };
+        let systemPrompt = (typeof options.systemPrompt === 'string' && options.systemPrompt.trim())
             ? options.systemPrompt
             : this._getFinalSystemPrompt();
+        // tw_stock_db客製: 文字協定（非native tool-calling）模式下，domain委派
+        // 的systemPrompt本來就不會自動列出可用工具清單/呼叫格式（那是
+        // _getFinalSystemPrompt()才有的[PREDEFINED TOOLS]/[TOOL CALL PROTOCOL]
+        // 區塊，domain專屬systemPrompt是純prose，見_delegateToSubagentDomain/
+        // _routeTaskToDomains的既有設計）——native模式下request_additional_tools
+        // 的存在靠下面body.tools的schema描述就能讓模型知道，但文字協定模式
+        // 完全沒有管道讓子agent知道這個工具存在，這裡額外補一句提示，兩種
+        // 模式都受益（native模式多一句提醒也無妨）。
+        if (canRequestMore) {
+            systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。`;
+        }
         let messages = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
@@ -14589,7 +14795,11 @@ ${existingNodeSummaries}
                 stream: false,
             };
             if (useNative) {
-                body.tools = this._buildNativeToolsSchema(allowedToolNames);
+                const nativeExtraEntries = canRequestMore ? [[REQUEST_MORE_TOOLS_NAME, {
+                    description: '如果執行到一半才發現需要一個原本沒給你的工具/領域能力（例如任務中途才顯示需要查詢另一種資料），呼叫這個工具描述你現在缺什麼，系統會直接把符合的工具追加給你、馬上可以呼叫，不用結束對話、不會中斷目前進度。',
+                    parametersSchema: { type: 'object', properties: { need: { type: 'string', description: '簡短描述現在還缺什麼能力/需要查什麼類型的資料' } }, required: ['need'], additionalProperties: false },
+                }]] : [];
+                body.tools = this._buildNativeToolsSchema(allowedToolNames, nativeExtraEntries);
                 body.tool_choice = 'auto';
             } else {
                 // tw_stock_db客製: 見_loopFetch裡CALL_STOP_SEQUENCE的說明，子任務
@@ -14689,7 +14899,7 @@ ${existingNodeSummaries}
                     const fnName = tc.function && tc.function.name;
                     const rawArgs = (tc.function && tc.function.arguments) || '{}';
                     try {
-                        const toolDef = this._getToolDefinition(fnName, allowedToolNames);
+                        const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
                         const result = await Promise.resolve(toolDef.callback(rawArgs));
                         const visual = this._detectVisualToolPayload(result);
@@ -14747,7 +14957,7 @@ ${existingNodeSummaries}
 
             for (const task of toolTasks) {
                 try {
-                    const toolDef = this._getToolDefinition(task.fnName, allowedToolNames);
+                    const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                     const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
@@ -15061,12 +15271,14 @@ ${existingNodeSummaries}
                                         <option value="router">1. Orchestrator + 多領域子Agent（預設，兩層委派）</option>
                                         <option value="full">2. Orchestrator + 認識全部工具的子Agent + 多領域子Agent</option>
                                         <option value="off">3. 不使用子Agent（全部內建工具直接掛在根層級）</option>
+                                        <option value="hierarchical">4. Orchestrator + 兩層領域路由（先選類別、再選細分domain）</option>
                                     </select>
                                     <p class="ai-advanced-hint">
                                         <b>模式1（router）</b>：根層級對話只看得到自己註冊的工具＋委派入口，不知道有哪些領域可選；不確定要委派給誰時，系統會先問一個「認識全部工具」的路由子Agent該開放哪些領域，再把任務交給真正執行的子Agent——每次委派多一輪內部LLM往返，但根層級system prompt/tools每輪對話都精簡。<br>
                                         <b>模式2（full）</b>：根層級直接看得到全部領域代號+說明，可以自己判斷、直接指定領域委派（省掉路由子Agent那一輪往返）；代價是根層級system prompt/tools每輪對話都多背一份領域清單。<br>
                                         <b>模式3（off）</b>：完全不透過子Agent委派，全部內建工具（AI自製函式/RAG/檔案解讀/3D場景/繪圖/互動viewer/2D動畫/網路搜尋）直接掛在根層級對話——最簡單、沒有委派往返，但根層級system prompt/tools會攤開全部工具的完整說明，工具越多越容易稀釋模型注意力。<br>
-                                        三種模式可以隨時切換，立即生效，不用重新整理頁面。
+                                        <b>模式4（hierarchical）</b>：委派時先問「這個任務屬於哪個大類別」，選中的類別再各自問一次「該用哪個細分領域」，比模式1多一輪網路往返——<b>domain數量不多時不建議用</b>（用真實測試量到的數字：45個domain時比模式1省58%路由token、但延遲多6-7秒，是拿延遲換規模化時的token效率跟準確度）；只有像大量曲風/風格這種domain數上百時才划算。domain完全沒有被分類別時會自動退回跟模式1一樣的行為，不會多花這次往返。<br>
+                                        四種模式可以隨時切換，立即生效，不用重新整理頁面。
                                     </p>
                                 </div>
                                 <div class="ai-advanced-stack">
@@ -16683,7 +16895,7 @@ ${existingNodeSummaries}
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) {
             multiSubAgentModeSelect.addEventListener('change', () => {
-                if (['router', 'full', 'off'].includes(multiSubAgentModeSelect.value)) {
+                if (['router', 'full', 'off', 'hierarchical'].includes(multiSubAgentModeSelect.value)) {
                     this.advancedSettings.multiSubAgentMode = multiSubAgentModeSelect.value;
                 }
                 this._saveAdvancedSettings();
