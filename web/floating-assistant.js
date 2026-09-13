@@ -2383,6 +2383,23 @@ class FloatingAssistant {
         this.domains = Object.fromEntries(
             Object.entries(SUBAGENT_DOMAIN_REGISTRY).map(([k, v]) => [k, { ...v }])
         );
+        // tw_stock_db客製: 2026-09-13使用者要求——Advance Settings「Skill」分頁的
+        // 自訂技能(advancedSettings.customTools)本來無條件掛在根層級
+        // （_getRootToolNames），Skill越加越多就會把根層級system prompt/tools塞爆、
+        // 稀釋模型注意力。這裡補一個虛擬domain讓它們跟內建工具一樣走委派：
+        // toolNames刻意用函式（不是固定陣列），每次都即時讀
+        // this.advancedSettings.customTools，這樣使用者在Skill分頁新增/編輯/刪除
+        // 不用另外通知這個domain更新，永遠反映當下狀態（見_resolveDomainToolNames，
+        // 這是唯一認得toolNames可以是函式的地方，其餘既有domain的toolNames都還是
+        // 固定陣列，不受影響）。
+        this.domains.custom_skills = {
+            enabled: true,
+            label: '使用者自訂技能(Skill)',
+            toolNames: () => this.advancedSettings.customTools.map(t => t.name),
+            systemPrompt: '你是專門執行使用者在Advance Settings「Skill」分頁自訂的技能'
+                + '(Skill，各自是一段JS callback)的子任務助理。依task內容判斷該呼叫哪個'
+                + '技能、需要的話呼叫多個，把結果整理成最終結論回傳。',
+        };
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -5581,13 +5598,21 @@ ${fnData.code}
     // 的工具清單裡；get_tool_details維持存在（這是文字協定下任何模式都用得
     // 到的按需查詢機制，跟subagent機制無關，見get_tool_details註冊處的
     // 說明）。'router'/'full'兩種模式都回傳明確的allowlist：host頁面自己
-    // 註冊的工具＋customTools＋get_tool_details/delegate_to_subagent這兩個
-    // 核心plumbing，23個domain-gated的通用內建工具從這份清單排除，只能透過
+    // 註冊的工具＋get_tool_details/delegate_to_subagent這兩個核心plumbing，
+    // 23個domain-gated的通用內建工具從這份清單排除，只能透過
     // delegate_to_subagent間接觸及——工具本身仍然完整存在於this.tools，只是
     // 不出現在根層級的tools參數/文字協定清單裡。'router'跟'full'在這個方法
     // 裡回傳的清單完全一樣，兩者的差異在delegate_to_subagent工具本身的
     // description內容（見_buildDelegateToSubagentDescription），不是根層級
     // 看不看得到哪些工具名稱。
+    // tw_stock_db客製: 2026-09-13使用者要求——Advance Settings「Skill」分頁的
+    // 自訂技能(customTools)本來無條件加進'router'/'full'模式的根層級清單
+    // （`.concat(custom)`），Skill越加越多就會塞爆根層級system prompt/tools。
+    // 這裡改成：'off'模式（完全沒有subagent委派機制）維持原樣直接曝光在根層級
+    // （跟其他內建工具在'off'模式下的待遇一致，不然Skill在這個模式下會變成
+    // 完全叫不到）；'router'/'full'模式不再無條件加進根層級，改成透過建構子
+    // 新增的custom_skills虛擬domain（見建構子/_resolveDomainToolNames），只能
+    // 透過delegate_to_subagent委派給子agent按需查詢/呼叫。
     _getRootToolNames() {
         const mode = this.multiSubAgentMode;
         const custom = this.advancedSettings.customTools.map(t => t.name);
@@ -5596,7 +5621,7 @@ ${fnData.code}
             return allBuiltins.concat(custom);
         }
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
-        return rootBuiltins.concat(custom);
+        return rootBuiltins;
     }
 
     // tw_stock_db客製: 2026-09-09——multiSubAgentMode三態裡'router'跟'full'
@@ -5616,7 +5641,11 @@ ${fnData.code}
     _buildDelegateToSubagentDescription() {
         const base = '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
         if (this.multiSubAgentMode === 'full') {
-            const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
+            // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析的
+            // domain，使用者還沒建立任何Skill時要從這份清單隱藏（否則會列出一個
+            // 「這個領域目前沒有任何工具」的代號，根模型指定了也只會委派到空氣）。
+            const enabledDomains = Object.entries(this.domains)
+                .filter(([, d]) => d.enabled && this._resolveDomainToolNames(d).length > 0);
             const domainList = enabledDomains.map(([k, d]) => `${k}(${d.label})`).join('、');
             return base + ` 目前登記的專家領域代號：${domainList}。你已經知道這些領域代號，**建議直接在domain參數指定最相關的一個**（可以省下系統內部自動判斷那一輪額外往返）；如果任務同時橫跨好幾個領域、或你不確定該選哪一個，把domain留空，系統會自動判斷需要開放哪些領域的工具（可以一次判斷出多個）。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（建議指定上面列出的領域代號之一，不確定或橫跨多領域時可留空讓系統自動判斷）"}`;
         }
@@ -10975,6 +11004,64 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-13——把原本_importSkillZip裡「解析SKILL.md+
+    // tools/*.js、寫進rulesMd/customTools」那段共用邏輯抽出來，讓新增的
+    // _importSkillFolder（從本機資料夾匯入，不用先手動zip）能呼叫同一份邏輯，
+    // 兩種來源匯入結果完全等價、不會有兩份平行維護的風險。`toolFileEntries`是
+    // `[{path, text}]`——跟zip/資料夾都相容的中性形狀（zip來源path是
+    // entry.name，資料夾來源是`tools/${filename}`）。
+    async _applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel }) {
+        let skillMdImported = false;
+        const trimmedSkillMd = String(skillMdText || '').trim();
+        if (trimmedSkillMd) {
+            const existing = String(this.advancedSettings.rulesMd || '').trim();
+            this.advancedSettings.rulesMd = existing
+                ? `${existing}\n\n---\n[來自匯入的 Skill: ${sourceLabel}]\n${trimmedSkillMd}`
+                : trimmedSkillMd;
+            skillMdImported = true;
+        }
+
+        let importedToolCount = 0;
+        let skippedBuiltinCount = 0;
+        for (const entry of (toolFileEntries || [])) {
+            const text = entry.text;
+            const nameMatch = text.match(/^\s*\/\/\s*name:\s*(.+)$/mi);
+            const descMatch = text.match(/^\s*\/\/\s*description:\s*(.+)$/mi);
+            const fallbackName = entry.path.replace(/^tools\//i, '').replace(/\.js$/i, '');
+            const name = (nameMatch ? nameMatch[1] : fallbackName).trim();
+            const description = descMatch ? descMatch[1].trim() : '';
+            const handlerScript = text
+                .replace(/^\s*\/\/\s*name:.*$/mi, '')
+                .replace(/^\s*\/\/\s*description:.*$/mi, '')
+                .trim();
+            const normalized = this._normalizeCustomTool({ name, description, handlerScript });
+            if (!normalized) continue;
+
+            if (Object.prototype.hasOwnProperty.call(this.tools, normalized.name)) {
+                console.warn(`Skill匯入略過: "${normalized.name}" 與內建工具同名，不可覆蓋。`);
+                skippedBuiltinCount++;
+                continue;
+            }
+            const existingIndex = this.advancedSettings.customTools.findIndex(t => t.name === normalized.name);
+            if (existingIndex > -1) {
+                if (!confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
+                this.advancedSettings.customTools.splice(existingIndex, 1, normalized);
+            } else {
+                this.advancedSettings.customTools.push(normalized);
+            }
+            importedToolCount++;
+        }
+
+        this._saveAdvancedSettings();
+        this._renderAdvancedSettings();
+        this._syncFromAI();
+        const parts = [];
+        if (skillMdImported) parts.push('SKILL.md 已附加到 RULES.md');
+        parts.push(`匯入/更新 ${importedToolCount} 個 Skill 工具`);
+        if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
+        alert('Skill 匯入完成：' + parts.join('，'));
+    }
+
     async _importSkillZip(file) {
         if (!file) return;
         try {
@@ -10986,60 +11073,43 @@ ${sourceTool.handlerScript}
         try {
             const zip = await JSZip.loadAsync(file);
             const skillMdEntry = zip.file('SKILL.md');
-            let skillMdImported = false;
-            if (skillMdEntry) {
-                const skillMdText = (await skillMdEntry.async('string')).trim();
-                if (skillMdText) {
-                    const existing = String(this.advancedSettings.rulesMd || '').trim();
-                    this.advancedSettings.rulesMd = existing
-                        ? `${existing}\n\n---\n[來自匯入的 .skill: ${file.name}]\n${skillMdText}`
-                        : skillMdText;
-                    skillMdImported = true;
-                }
+            const skillMdText = skillMdEntry ? await skillMdEntry.async('string') : '';
+            const toolFileEntries = [];
+            for (const entry of zip.file(/^tools\/.+\.js$/i)) {
+                toolFileEntries.push({ path: entry.name, text: await entry.async('string') });
             }
-
-            const toolFiles = zip.file(/^tools\/.+\.js$/i);
-            let importedToolCount = 0;
-            let skippedBuiltinCount = 0;
-            for (const entry of toolFiles) {
-                const text = await entry.async('string');
-                const nameMatch = text.match(/^\s*\/\/\s*name:\s*(.+)$/mi);
-                const descMatch = text.match(/^\s*\/\/\s*description:\s*(.+)$/mi);
-                const fallbackName = entry.name.replace(/^tools\//i, '').replace(/\.js$/i, '');
-                const name = (nameMatch ? nameMatch[1] : fallbackName).trim();
-                const description = descMatch ? descMatch[1].trim() : '';
-                const handlerScript = text
-                    .replace(/^\s*\/\/\s*name:.*$/mi, '')
-                    .replace(/^\s*\/\/\s*description:.*$/mi, '')
-                    .trim();
-                const normalized = this._normalizeCustomTool({ name, description, handlerScript });
-                if (!normalized) continue;
-
-                if (Object.prototype.hasOwnProperty.call(this.tools, normalized.name)) {
-                    console.warn(`.skill匯入略過: "${normalized.name}" 與內建工具同名，不可覆蓋。`);
-                    skippedBuiltinCount++;
-                    continue;
-                }
-                const existingIndex = this.advancedSettings.customTools.findIndex(t => t.name === normalized.name);
-                if (existingIndex > -1) {
-                    if (!confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
-                    this.advancedSettings.customTools.splice(existingIndex, 1, normalized);
-                } else {
-                    this.advancedSettings.customTools.push(normalized);
-                }
-                importedToolCount++;
-            }
-
-            this._saveAdvancedSettings();
-            this._renderAdvancedSettings();
-            this._syncFromAI();
-            const parts = [];
-            if (skillMdImported) parts.push('SKILL.md 已附加到 RULES.md');
-            parts.push(`匯入/更新 ${importedToolCount} 個 Skill 工具`);
-            if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
-            alert('.skill 匯入完成：' + parts.join('，'));
+            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel: file.name });
         } catch (err) {
             alert('.skill 匯入失敗: ' + (err.message || err));
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-13使用者要求——「系統上可以用專屬資料夾避免被
+    // 當成自動載入的」：用File System Access API讓使用者直接選一個本機資料夾
+    // （結構跟.skill zip解開後一樣：根目錄SKILL.md+tools/*.js），不用先手動
+    // 打包成zip。刻意不持久化這次的資料夾授權、不做背景自動重新掃描——每次
+    // 都是使用者主動點按鈕→選資料夾→立即匯入一次的單次動作，不會有「這個
+    // 資料夾內容之後被自動載入」的疑慮。使用者在原生資料夾選擇對話框按取消時
+    // 瀏覽器丟出的是AbortError，安靜略過不跳錯誤框（跟瀏覽器原生行為一致）。
+    async _importSkillFolder(dirHandle) {
+        try {
+            let skillMdText = '';
+            try {
+                const f = await (await dirHandle.getFileHandle('SKILL.md')).getFile();
+                skillMdText = await f.text();
+            } catch (_) { /* 沒有SKILL.md就跳過，不是錯誤 */ }
+            const toolFileEntries = [];
+            try {
+                const toolsDir = await dirHandle.getDirectoryHandle('tools');
+                for await (const [name, handle] of toolsDir.entries()) {
+                    if (handle.kind === 'file' && /\.js$/i.test(name)) {
+                        toolFileEntries.push({ path: `tools/${name}`, text: await (await handle.getFile()).text() });
+                    }
+                }
+            } catch (_) { /* 沒有tools/資料夾就跳過 */ }
+            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel: dirHandle.name || '資料夾' });
+        } catch (err) {
+            if (err && err.name !== 'AbortError') alert('從資料夾匯入 Skill 失敗: ' + (err.message || err));
         }
     }
 
@@ -14120,6 +14190,16 @@ ${existingNodeSummaries}
     // 共用邏輯，讓互動viewer的subagent_panel元件（見_mountInteractiveViewer）
     // 可以呼叫同一套domain查找/委派邏輯，不用重複寫一份。回傳plain object
     // （不是JSON字串），呼叫端各自決定要不要JSON.stringify。
+    // tw_stock_db客製: 2026-09-13——新增custom_skills這個虛擬domain後，
+    // domain.toolNames不再保證是固定陣列（custom_skills故意用函式即時讀
+    // advancedSettings.customTools，見建構子），這裡統一解析成陣列，讓其餘
+    // 既有domain（toolNames本來就是固定陣列）跟這個新的動態domain都能正確處理，
+    // 不用在每個讀取點各自判斷型別。
+    _resolveDomainToolNames(domain) {
+        const raw = typeof domain.toolNames === 'function' ? domain.toolNames() : domain.toolNames;
+        return Array.isArray(raw) ? raw : [];
+    }
+
     async _delegateToSubagentDomain(domainKey, task) {
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
@@ -14131,7 +14211,7 @@ ${existingNodeSummaries}
         }
         try {
             const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
-                allowedToolNames: domain.toolNames,
+                allowedToolNames: this._resolveDomainToolNames(domain),
                 systemPrompt: domain.systemPrompt,
             });
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
@@ -14326,15 +14406,22 @@ ${existingNodeSummaries}
         if (!enabledDomains.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
 
         const toolByName = new Map(this._getCombinedToolEntries(null));
-        const catalogSections = enabledDomains.map(([key, d]) => {
-            const lines = (d.toolNames || [])
-                .map(name => {
-                    const tool = toolByName.get(name);
-                    return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
-                })
-                .filter(Boolean);
-            return `[${key}] ${d.label}\n${lines.join('\n')}`;
-        });
+        // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析出來的
+        // domain，使用者還沒建立任何Skill時會是空陣列，這裡直接跳過（不進路由
+        // 子agent的目錄），避免列出一個「這個領域目前沒有任何工具」的雜訊分類。
+        const catalogSections = enabledDomains
+            .map(([key, d]) => {
+                const names = this._resolveDomainToolNames(d);
+                if (!names.length) return null;
+                const lines = names
+                    .map(name => {
+                        const tool = toolByName.get(name);
+                        return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
+                    })
+                    .filter(Boolean);
+                return `[${key}] ${d.label}\n${lines.join('\n')}`;
+            })
+            .filter(Boolean);
 
         const routerSystemPrompt = [
             '你是一個工具領域路由器。以下是系統目前登記的所有「專家領域」，每個領域底下列出它擁有的工具（僅供你判斷相關性參考，不代表你自己能呼叫這些工具）：',
@@ -14387,7 +14474,7 @@ ${existingNodeSummaries}
         const validDomains = requestedDomains.filter(k => this.domains[k] && this.domains[k].enabled);
         if (!validDomains.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
 
-        const toolNames = [...new Set(validDomains.flatMap(k => this.domains[k].toolNames || []))];
+        const toolNames = [...new Set(validDomains.flatMap(k => this._resolveDomainToolNames(this.domains[k])))];
         const systemPrompt = validDomains.map(k => `## ${this.domains[k].label}\n${this.domains[k].systemPrompt}`).join('\n\n');
         return { ok: true, domains: validDomains, toolNames, systemPrompt };
     }
@@ -14944,9 +15031,10 @@ ${existingNodeSummaries}
                                             <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Skill</button>
                                             <button type="button" id="ai-skill-export-btn" class="ai-advanced-btn">匯出 .skill</button>
                                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入 .skill<input type="file" id="ai-skill-import-input" accept=".skill,.zip" style="display:none;"></label>
+                                            <button type="button" id="ai-skill-import-folder-btn" class="ai-advanced-btn">從資料夾匯入</button>
                                         </div>
                                     </div>
-                                    <p class="ai-advanced-hint">每個Skill會自動註冊成同名的slash指令（例如Skill叫「my_skill」，輸入框直接打「/my_skill 參數」即可跳過AI判斷、直接本地執行，也會出現在「/」自動完成選單裡）——如果名稱撞到既有指令，既有的優先，這個Skill仍然只能靠AI自己判斷呼叫。</p>
+                                    <p class="ai-advanced-hint">每個Skill會自動註冊成同名的slash指令（例如Skill叫「my_skill」，輸入框直接打「/my_skill 參數」即可跳過AI判斷、直接本地執行，也會出現在「/」自動完成選單裡）——如果名稱撞到既有指令，既有的優先，這個Skill仍然只能靠AI自己判斷呼叫。這些Skill不會直接出現在主對話的工具清單裡，AI需要用到時會透過委派機制交給專門的子Agent查詢/呼叫——這樣Skill累積再多也不會拖慢/污染主對話。</p>
                                     <div id="ai-custom-tool-list" class="ai-tool-list"></div>
                                 </div>
                             </div>
@@ -16436,6 +16524,23 @@ ${existingNodeSummaries}
             if (file) this._importSkillZip(file);
             e.target.value = '';
         });
+        // tw_stock_db客製: 2026-09-13——showDirectoryPicker只有Chrome/Edge支援
+        // （File System Access API），不支援時disable按鈕+title提示，不是隱藏性
+        // 的功能缺失。
+        const skillImportFolderBtn = document.getElementById('ai-skill-import-folder-btn');
+        if (typeof window.showDirectoryPicker !== 'function') {
+            skillImportFolderBtn.disabled = true;
+            skillImportFolderBtn.title = '此瀏覽器不支援選擇本機資料夾（僅Chrome/Edge支援），請改用匯入 .skill';
+        } else {
+            skillImportFolderBtn.onclick = async () => {
+                try {
+                    const dir = await window.showDirectoryPicker();
+                    await this._importSkillFolder(dir);
+                } catch (err) {
+                    if (err && err.name !== 'AbortError') alert('選擇資料夾失敗: ' + (err.message || err));
+                }
+            };
+        }
         document.getElementById('ai-tool-editor-close').onclick = () => this._closeToolEditor();
         document.getElementById('ai-tool-editor-cancel').onclick = () => this._closeToolEditor();
         document.getElementById('ai-fn-manage-btn').onclick = () => this._openAiFnModal();
