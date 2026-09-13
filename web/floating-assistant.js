@@ -721,13 +721,14 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'list_uploaded_files'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
-            '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。\n' +
+            '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。可以用speed參數調整語速。\n' +
+            '- concat_audio：把多個已上傳的音檔依指定順序串接成一個MP3——使用者要「把這幾段語音接起來」「合併成一個檔案」時用這個，不要說做不到，也不要自己憑空生一個沒有的工具。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
     // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
@@ -1299,7 +1300,7 @@ self.onmessage = async (e) => {
                 },
             });
         }
-        const audio = await _ttsEngine.generate(d.text, { voice: d.voiceId });
+        const audio = await _ttsEngine.generate(d.text, { voice: d.voiceId, speed: d.speed || 1.0 });
         const samples = audio.audio; // Float32Array，單聲道
         self.postMessage({ jobId, type: 'result', ok: true, audio: samples.buffer }, [samples.buffer]);
     } catch (err) {
@@ -2738,13 +2739,20 @@ class FloatingAssistant {
             // tw_stock_db客製: 2026-09-12——text_to_speech預設語音代號（見
             // TTS_VOICES）。
             ttsDefaultVoice: TTS_DEFAULT_VOICE,
-            // tw_stock_db客製: 2026-09-12——中文語音走API轉接（見/edge-tts
-            // 路由說明）。預設關閉（跟browserSearchEnabled同一個理由：文字
-            // 會離開瀏覽器送到Worker/Microsoft，不是本機執行，也需要Worker
-            // 有部署對應路由才能真正運作，開了但沒部署只會一直失敗）。
-            ttsApiEnabled: false,
+            // tw_stock_db客製: 2026-09-14使用者要求——預設開啟中文語音API
+            // （原本因為「文字會離開瀏覽器送到Worker/Microsoft、需要Worker
+            // 部署對應路由」這個理由預設關閉，跟browserSearchEnabled同一個
+            // 考量；這次使用者明確要求直接預設開啟，Worker端點已經部署驗證
+            // 過，不會一直失敗）。
+            ttsApiEnabled: true,
             ttsApiProxyUrl: '',
             ttsDefaultApiVoice: TTS_DEFAULT_API_VOICE,
+            // tw_stock_db客製: 2026-09-14使用者要求——語速控制（1.0＝正常
+            // 速度），本地Kokoro直接傳進engine.generate()的speed選項，API
+            // Edge TTS換算成SSML prosody rate百分比（見_synthesizeSpeechViaApi）。
+            // text_to_speech工具呼叫時沒指定speed就用這個當預設值，Advance
+            // Settings的試聽按鈕也用這個值。
+            ttsDefaultSpeed: 1.0,
             // tw_stock_db客製: 2026-09-12使用者要求——輸入框旁邊的🎤語音輸入
             // 按鈕，預設關閉（跟browserSearchEnabled同一個理由：要跳確認框
             // 才下載模型、要跟使用者要麥克風權限，不該預設就出現在畫面上）。
@@ -3050,9 +3058,19 @@ class FloatingAssistant {
             whisperDevicePreference: raw.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto',
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
-            ttsApiEnabled: raw.ttsApiEnabled === true,
+            // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
+            // `=== true`）：舊版settings沒有ttsApiEnabled這個欄位時
+            // （raw.ttsApiEnabled是undefined），現在會跟著新的預設值走
+            // （見_createDefaultAdvancedSettings，這次改成預設true），只有
+            // 使用者真的自己儲存過明確的false（主動關閉過）才會維持關閉，
+            // 尊重使用者自己的選擇。
+            ttsApiEnabled: raw.ttsApiEnabled !== false,
             ttsApiProxyUrl: String(raw.ttsApiProxyUrl || '').trim(),
             ttsDefaultApiVoice: TTS_API_VOICES.some(v => v.id === raw.ttsDefaultApiVoice) ? raw.ttsDefaultApiVoice : TTS_DEFAULT_API_VOICE,
+            ttsDefaultSpeed: (() => {
+                const n = Number(raw.ttsDefaultSpeed);
+                return Number.isFinite(n) && n >= 0.5 && n <= 2.0 ? n : 1.0;
+            })(),
             voiceInputEnabled: raw.voiceInputEnabled === true,
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
@@ -3924,7 +3942,7 @@ ${fnData.code}
         // 回報明確錯誤；英文→本地Kokoro），不會嘗試硬用錯的engine念錯的
         // 語言。
         registerOptional('text_to_speech',
-            `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。⚠️text必須是純文字，不支援SSML/XML標記（沒有<speak>、<phoneme alphabet="ipa" ph="...">這類語法）——這個引擎不會解析標記，只會把標記本身逐字唸出來（例如包一段<speak>會被唸成"speak version equals..."這種完全不是你要的內容），偵測到類似標記會直接回傳錯誤拒絕合成。需要控制特定發音（例如象聲詞、非標準拼法）時，改用同音近似的一般英文拼寫方式直接寫進text（例如要「嗯」的鼻音，可以嘗試"Hmm"或"Mmm"這類英文擬聲拼法），不要嘗試用IPA/SSML語法控制。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的純文字（不可含XML/SSML標記）", "voice":"（選填）語音代號"}`,
+            `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。⚠️text必須是純文字，不支援SSML/XML標記（沒有<speak>、<phoneme alphabet="ipa" ph="...">這類語法）——這個引擎不會解析標記，只會把標記本身逐字唸出來（例如包一段<speak>會被唸成"speak version equals..."這種完全不是你要的內容），偵測到類似標記會直接回傳錯誤拒絕合成。需要控制特定發音（例如象聲詞、非標準拼法）時，改用同音近似的一般英文拼寫方式直接寫進text（例如要「嗯」的鼻音，可以嘗試"Hmm"或"Mmm"這類英文擬聲拼法），不要嘗試用IPA/SSML語法控制。speed（選填，0.5~2.0，預設依使用者設定，通常是1.0）控制語速倍數，1.5＝快50%、0.8＝慢20%，本地Kokoro跟API都支援。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的純文字（不可含XML/SSML標記）", "voice":"（選填）語音代號", "speed":"（選填）語速倍數，0.5~2.0"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -3935,7 +3953,7 @@ ${fnData.code}
                     return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
-                    const result = await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m));
+                    const result = await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m), parsed.speed);
                     const allVoices = TTS_VOICES.concat(TTS_API_VOICES);
                     await this._deliverToolResultFile(result, 'audio_file_id', (r) => {
                         const v = allVoices.find(vv => vv.id === r.voice);
@@ -3947,7 +3965,28 @@ ${fnData.code}
             { type: 'object', properties: {
                 text: { type: 'string', description: '要念的文字' },
                 voice: { type: 'string', enum: TTS_VOICES.concat(TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
+                speed: { type: 'number', minimum: 0.5, maximum: 2.0, description: '（選填）語速倍數，0.5~2.0，留空用使用者設定的預設語速（通常是1.0）' },
             }, additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-14使用者要求——把多個已上傳的音檔（例如
+        // 分開好幾次text_to_speech的輸出）依指定順序串接成一個MP3。
+        registerOptional('concat_audio',
+            `把多個已上傳的音檔依指定順序串接合併成一個檔案，輸出MP3。純瀏覽器端解碼/合併/編碼，不上傳。適合把好幾段分開產生的語音（例如分批text_to_speech的輸出）接成一整段。回傳 {ok, audio_file_id, filename, durationSeconds, sizeBytes, fileCount}。參數: {"files":["file_id或檔名", ...]（至少2個，依這個順序串接）}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : [];
+                if (fileArgs.length < 2) return JSON.stringify({ ok: false, error: '至少需要2個檔案的file_id/檔名才能串接（files參數目前少於2個）' });
+                try {
+                    const result = await this._concatAudioFiles(fileArgs, (m) => this._log('🔗 ' + m));
+                    await this._deliverToolResultFile(result, 'audio_file_id', (r) => `📎 已合併 ${r.fileCount} 個音檔：${r.filename}（${r.durationSeconds}s，${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                files: { type: 'array', items: { type: 'string' }, description: '要依序串接的音檔file_id或檔名陣列，至少2個' },
+            }, required: ['files'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 2026-09-12使用者要求——「配音小幫手」。使用者說
@@ -4223,6 +4262,66 @@ ${fnData.code}
         return await _faLamejsEncode(chans, audioBuffer.sampleRate, bitrateKbps);
     }
 
+    // tw_stock_db客製: 2026-09-14使用者要求——把多個已上傳的音檔依指定順序
+    // 串接合併成一個MP3（例如把好幾段text_to_speech分開產生的音檔接成一個
+    // 完整故事）。跟_exportDubbedVideo（配音小幫手的混音邏輯）同一個
+    // OfflineAudioContext手法，差別是這裡是「依序排列不重疊」而不是
+    // 「疊加混音」——每個來源buffer從上一個結束的時間點開始播放。目標
+    // sample rate/聲道數取所有來源中的最大值（避免降低品質），
+    // AudioBufferSourceNode接到不同sample rate的context時瀏覽器會自動
+    // 重新取樣，不用自己手動處理。合併完直接重用既有_encodeMp3（跟
+    // extract_audio共用同一個MP3編碼路徑）。
+    async _concatAudioFiles(fileArgs, onProgress) {
+        const records = [];
+        for (const arg of fileArgs) {
+            const record = await this._resolveUploadedFileRecord(arg);
+            if (!record) return { ok: false, error: `找不到符合「${arg}」的已上傳檔案` };
+            records.push(record);
+        }
+        const buffers = [];
+        for (let i = 0; i < records.length; i++) {
+            if (onProgress) onProgress(`解碼第 ${i + 1}/${records.length} 個音檔…`);
+            try {
+                buffers.push(await this._decodeAudioBuffer(records[i].blob));
+            } catch (err) {
+                return { ok: false, error: `解碼「${records[i].filename}」失敗：${String(err.message || err)}` };
+            }
+        }
+        if (onProgress) onProgress('合併中…');
+        const sr = Math.max(...buffers.map(b => b.sampleRate));
+        const numCh = Math.max(1, ...buffers.map(b => b.numberOfChannels));
+        const totalDuration = buffers.reduce((sum, b) => sum + b.duration, 0);
+        let merged;
+        try {
+            const offline = new OfflineAudioContext(numCh, Math.max(1, Math.ceil(totalDuration * sr)), sr);
+            let cursor = 0;
+            for (const buf of buffers) {
+                const src = offline.createBufferSource();
+                src.buffer = buf;
+                src.connect(offline.destination);
+                src.start(cursor);
+                cursor += buf.duration;
+            }
+            merged = await offline.startRendering();
+        } catch (err) {
+            return { ok: false, error: '合併音軌失敗：' + String(err.message || err) };
+        }
+        let blob;
+        try {
+            blob = await this._encodeMp3(merged);
+        } catch (err) {
+            return { ok: false, error: 'MP3編碼失敗：' + String(err.message || err) };
+        }
+        const name = `合併音檔_${Date.now()}.mp3`;
+        let audioFileId;
+        try {
+            audioFileId = await this.fileCache.put(name, 'audio/mpeg', blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '儲存合併結果失敗：' + String(err.message || err) };
+        }
+        return { ok: true, audio_file_id: audioFileId, filename: name, durationSeconds: Math.round(merged.duration * 10) / 10, sizeBytes: blob.size, fileCount: records.length };
+    }
+
     // ============================================================
     // tw_stock_db客製: 2026-09-12——text_to_speech（語音合成）的實作。
     // Kokoro TTS（82M參數）跑在瀏覽器端，透過kokoro-js（內部用
@@ -4306,7 +4405,7 @@ ${fnData.code}
     // 要不要退回main thread的_getTtsEngine路徑；worker內部try/catch包住的
     // 業務邏輯錯誤（例如voice id不存在）不會有這個旗標，直接照實拋出、不
     // retry、不fallback。
-    async _generateTtsInWorker(text, voiceId, onProgress) {
+    async _generateTtsInWorker(text, voiceId, onProgress, speed) {
         const worker = await this._ensureTtsWorker();
         const jobId = (crypto.randomUUID ? crypto.randomUUID() : `tts_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
         return new Promise((resolve, reject) => {
@@ -4317,6 +4416,7 @@ ${fnData.code}
                     type: 'generate',
                     text,
                     voiceId,
+                    speed: speed || 1.0,
                     kokoroJsUrl: FA_ASSET_URLS.kokoroJs,
                     modelId: TTS_MODEL_ID,
                     dtype: TTS_DTYPE,
@@ -4405,9 +4505,14 @@ ${fnData.code}
     // Kokoro或API轉接，見TTS_VOICES/TTS_API_VOICES各自的engine欄位）；沒指定
     // voice時依文字內容自動選——CJK文字且API已啟用→API＋預設中文語音，CJK
     // 但API未啟用→明確錯誤（附啟用方式），非CJK→本地Kokoro預設語音。
-    async _synthesizeSpeech(text, voiceId, onProgress) {
+    // tw_stock_db客製: 2026-09-14使用者要求——語速控制。speed留空時用
+    // advancedSettings.ttsDefaultSpeed（1.0＝正常速度），範圍夾在0.5~2.0
+    // （本地Kokoro/API Edge TTS都用同一個範圍，避免極端值產生聽不懂的音）。
+    async _synthesizeSpeech(text, voiceId, onProgress, speed) {
         const t = String(text || '').trim();
         if (!t) return { ok: false, error: '沒有要念的文字' };
+        const speedNum = Number(speed);
+        const effectiveSpeed = Number.isFinite(speedNum) ? Math.max(0.5, Math.min(2.0, speedNum)) : (this.advancedSettings.ttsDefaultSpeed || 1.0);
         // tw_stock_db客製: 2026-09-14使用者實測回報的真實bug——AI有時會想用
         // SSML（<speak>/<phoneme alphabet="ipa" ph="...">這類XML標記）試圖
         // 控制發音，但這條pipeline（本地Kokoro／API Edge TTS）完全不支援
@@ -4440,9 +4545,9 @@ ${fnData.code}
             if (!this.advancedSettings.ttsApiEnabled) {
                 return { ok: false, error: `語音「${voice.id}」需要啟用中文語音API（Advance Settings「子Agent」分頁的「語音合成子Agent」區塊），目前是關閉的。` };
             }
-            return this._synthesizeSpeechViaApi(t, voice, onProgress);
+            return this._synthesizeSpeechViaApi(t, voice, onProgress, effectiveSpeed);
         }
-        return this._synthesizeSpeechLocal(t, voice, onProgress);
+        return this._synthesizeSpeechLocal(t, voice, onProgress, effectiveSpeed);
     }
 
     // tw_stock_db客製: 2026-09-14使用者要求——優先透過持久化TTS worker合成
@@ -4451,25 +4556,25 @@ ${fnData.code}
     // isWorkerInfraFailure:true）才退回原本的main-thread _getTtsEngine路徑
     // （完整保留，當fallback，不是刪除）——業務邏輯錯誤（例如voice id不
     // 存在）不會有這個旗標，直接照實拋出、不retry、不fallback。
-    async _synthesizeTtsChunk(text, voice, onProgress) {
+    async _synthesizeTtsChunk(text, voice, onProgress, speed) {
         try {
-            return await this._generateTtsInWorker(text, voice.id, onProgress);
+            return await this._generateTtsInWorker(text, voice.id, onProgress, speed);
         } catch (err) {
             if (!err.isWorkerInfraFailure) throw err;
             this._log('⚠️ TTS worker無法使用，改回主執行緒合成（可能會讓畫面短暫卡頓）：' + String(err.message || err));
         }
         const engine = await this._getTtsEngine(onProgress);
-        const audio = await engine.generate(text, { voice: voice.id });
+        const audio = await engine.generate(text, { voice: voice.id, speed: speed || 1.0 });
         return audio.audio; // Float32Array, 單聲道, TTS_SAMPLE_RATE
     }
 
-    async _synthesizeSpeechLocal(t, voice, onProgress) {
+    async _synthesizeSpeechLocal(t, voice, onProgress, speed) {
         const chunks = this._ttsChunkText(t);
         const parts = [];
         try {
             for (let i = 0; i < chunks.length; i++) {
                 if (onProgress && chunks.length > 1) onProgress(`合成中… 第 ${i + 1}/${chunks.length} 段`);
-                const samples = await this._synthesizeTtsChunk(chunks[i], voice, onProgress);
+                const samples = await this._synthesizeTtsChunk(chunks[i], voice, onProgress, speed);
                 parts.push(samples);
             }
         } catch (err) {
@@ -4532,7 +4637,7 @@ ${fnData.code}
     // 回傳的本來就已經是MP3，這裡不重新編碼，單純接起來）。串接完再用
     // _decodeAudioBuffer解碼一次拿精確duration（2026-09-12實測發現語速
     // 估計值誤差太大，直接解碼比較可靠，見下面的說明）。
-    async _synthesizeSpeechViaApi(t, voice, onProgress) {
+    async _synthesizeSpeechViaApi(t, voice, onProgress, speed) {
         const proxyUrl = String(this.advancedSettings.ttsApiProxyUrl || '').trim()
             || String(this.advancedSettings.browserSearchProxyUrl || '').trim()
             || this._getApiConfig().apiUrl;
@@ -4542,6 +4647,17 @@ ${fnData.code}
         const base = proxyUrl.replace(/\/$/, '');
         const lang = voice.id.split('-').slice(0, 2).join('-');
         const chunks = this._ttsChunkText(t, TTS_API_MAX_CHARS_PER_CHUNK);
+        // tw_stock_db客製: 2026-09-14使用者要求——語速控制。/edge-tts路由
+        // 本來就支援rate參數（SSML prosody rate的百分比字串，見worker.js
+        // EDGE_TTS_PROSODY_PATTERN /^[+-]?\d{1,3}(%|Hz)$/），只是
+        // floating-assistant.js這邊之前沒有傳過。speed是1.0=正常速度的
+        // 倍數，換算成「相對正常速度的百分比變化」：speed=1.5→"+50%"，
+        // speed=0.8→"-20%"。這是Worker自己組SSML時用的結構化參數，不是
+        // 使用者可以直接塞任意SSML字串進去，跟_synthesizeSpeech開頭那段
+        // SSML偵測擋下來的規則不衝突（那個擋的是text參數，這裡是獨立、
+        // 受控的數值參數）。
+        const ratePct = Math.round((Number(speed) || 1.0) * 100 - 100);
+        const rate = `${ratePct >= 0 ? '+' : ''}${ratePct}%`;
         const mp3Chunks = [];
         for (let i = 0; i < chunks.length; i++) {
             if (onProgress && chunks.length > 1) onProgress(`合成中（API）… 第 ${i + 1}/${chunks.length} 段`);
@@ -4552,7 +4668,7 @@ ${fnData.code}
                 resp = await fetch(base + '/edge-tts', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: chunks[i], voice: voice.id, lang }),
+                    body: JSON.stringify({ text: chunks[i], voice: voice.id, lang, rate }),
                     signal: controller.signal,
                 });
                 clearTimeout(timeoutId);
@@ -5002,7 +5118,6 @@ ${fnData.code}
     // Cache（見_listInstalledTtsVoices），不快取狀態，避免顯示跟實際快取
     // 內容不同步。
     async _renderTtsVoicePanel() {
-        const installSelect = document.getElementById('ai-tts-voice-install-select');
         const listEl = document.getElementById('ai-tts-voice-list');
         const defaultSelect = document.getElementById('ai-tts-default-voice');
         if (defaultSelect && !defaultSelect.options.length) {
@@ -5015,18 +5130,18 @@ ${fnData.code}
         }
         if (defaultApiSelect) defaultApiSelect.value = this.advancedSettings.ttsDefaultApiVoice;
         const apiEnabledChk = document.getElementById('ai-tts-api-enabled-chk');
-        if (apiEnabledChk) apiEnabledChk.checked = this.advancedSettings.ttsApiEnabled === true;
+        if (apiEnabledChk) apiEnabledChk.checked = this.advancedSettings.ttsApiEnabled !== false;
         const apiProxyUrlInput = document.getElementById('ai-tts-api-proxy-url');
         if (apiProxyUrlInput) apiProxyUrlInput.value = this.advancedSettings.ttsApiProxyUrl || '';
-        if (!installSelect || !listEl) return;
+        const speedSlider = document.getElementById('ai-tts-default-speed');
+        const speedLabel = document.getElementById('ai-tts-default-speed-label');
+        const speedVal = Number(this.advancedSettings.ttsDefaultSpeed) || 1.0;
+        if (speedSlider) speedSlider.value = String(speedVal);
+        if (speedLabel) speedLabel.textContent = speedVal.toFixed(2) + 'x';
+        if (!listEl) return;
         const installed = new Set(await this._listInstalledTtsVoices());
-        const notInstalled = TTS_VOICES.filter(v => !installed.has(v.id));
-        installSelect.innerHTML = notInstalled.length
-            ? notInstalled.map(v => `<option value="${v.id}">${v.name}（${v.lang}／${v.gender}）— ${v.id}</option>`).join('')
-            : '<option value="">（全部已安裝）</option>';
-        installSelect.disabled = !notInstalled.length;
         if (!installed.size) {
-            listEl.innerHTML = '<span>尚未安裝任何語音包（第一次使用 text_to_speech 時會自動安裝所選的那一個）。</span>';
+            listEl.innerHTML = '<span>尚未安裝任何語音包（選好上面的預設語音後，第一次試聽/合成時會自動下載）。</span>';
             return;
         }
         listEl.innerHTML = [...installed].sort().map(id => {
@@ -5034,6 +5149,48 @@ ${fnData.code}
             const label = v ? `${v.name}（${v.lang}／${v.gender}）— ${id}` : id;
             return `<span style="display:flex; align-items:center; gap:8px;">✅ ${label}<button type="button" class="ai-advanced-btn danger" data-tts-delete-voice="${id}" style="padding:1px 8px; margin-left:auto;">刪除</button></span>`;
         }).join('');
+    }
+
+    // tw_stock_db客製: 2026-09-14——語音試聽：依選定語音的語言挑一句簡短示範文字，
+    // 用目前的預設語速合成後掛進試聽用的播放器slot（沿用_mountAudioPlayer既有UI）。
+    _ttsPreviewSampleText(voiceId, isApi) {
+        if (!isApi) return 'Hello, this is a preview of this voice.';
+        if (/^zh-TW/.test(voiceId)) return '您好，這是這個語音的試聽範例。';
+        if (/^zh-CN/.test(voiceId)) return '你好，这是这个语音的试听范例。';
+        if (/^zh-HK/.test(voiceId) || /yue/i.test(voiceId)) return '你好，呢個係呢個語音嘅試聽範例。';
+        if (/^ja-JP/.test(voiceId)) return 'こんにちは、これはこの音声のプレビューです。';
+        if (/^ko-KR/.test(voiceId)) return '안녕하세요, 이것은 이 음성의 미리 듣기입니다.';
+        return 'Hello, this is a preview of this voice.';
+    }
+
+    async _previewTtsVoice(isApi, btn, slotId) {
+        const slot = document.getElementById(slotId);
+        if (!slot) return;
+        const voiceId = isApi
+            ? (document.getElementById('ai-tts-default-api-voice') || {}).value
+            : (document.getElementById('ai-tts-default-voice') || {}).value;
+        if (!voiceId) return;
+        const voice = isApi ? TTS_API_VOICES.find(v => v.id === voiceId) : TTS_VOICES.find(v => v.id === voiceId);
+        if (!voice) return;
+        const speedSlider = document.getElementById('ai-tts-default-speed');
+        const speed = speedSlider ? Number(speedSlider.value) : (this.advancedSettings.ttsDefaultSpeed || 1.0);
+        const text = this._ttsPreviewSampleText(voiceId, isApi);
+        const originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '合成中…';
+        slot.innerHTML = '';
+        try {
+            const result = await this._synthesizeSpeech(text, voiceId, (m) => { btn.textContent = m; }, speed);
+            if (!result.ok) throw new Error(result.error || '試聽合成失敗');
+            const record = await this.fileCache.get(result.audio_file_id);
+            if (!record) throw new Error('找不到剛合成的試聽音檔');
+            this._mountAudioPlayer(slot, record.blob);
+        } catch (err) {
+            slot.innerHTML = `<span class="ai-advanced-hint" style="color:#c0392b;">試聽失敗：${String(err.message || err)}</span>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalLabel;
+        }
     }
 
     // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀＝
@@ -15606,24 +15763,29 @@ ${existingNodeSummaries}
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent（text_to_speech）—— 本地英文語音</label>
-                                    <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字，只支援英文。模型本體（約90MB）首次使用時下載；每個語音（下面「語音包」）約522KB，各自獨立下載/快取，能個別安裝/刪除。</p>
+                                    <p class="ai-advanced-hint">Kokoro TTS 模型，瀏覽器端執行、不上傳文字，只支援英文。模型本體（約90MB）首次使用時下載；選好預設語音後，第一次實際使用 text_to_speech 時會自動下載該語音（約522KB），不用另外手動安裝——下面直接點「試聽」就會下載並播放。</p>
                                     <label class="ai-advanced-label" for="ai-tts-default-voice" style="font-weight:normal;">預設語音</label>
-                                    <select id="ai-tts-default-voice" class="ai-advanced-input"></select>
-                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <select id="ai-tts-default-voice" class="ai-advanced-input" style="flex:1; min-width:0;"></select>
+                                        <button type="button" id="ai-tts-preview-btn" class="ai-advanced-btn" style="padding:4px 10px; flex:0 0 auto; white-space:nowrap;">🔊 試聽</button>
+                                    </div>
+                                    <div id="ai-tts-preview-player-slot"></div>
+                                    <label class="ai-advanced-label" for="ai-tts-default-speed" style="font-weight:normal; margin-top:8px;">語速</label>
+                                    <div style="display:flex; align-items:center; gap:8px;">
+                                        <input type="range" id="ai-tts-default-speed" min="0.5" max="2" step="0.05" style="flex:1;">
+                                        <span id="ai-tts-default-speed-label" style="font-size:12px; min-width:42px; text-align:right;">1.00x</span>
+                                    </div>
+                                    <p class="ai-advanced-hint">1.0＝正常速度。套用在下面的試聽，也是AI呼叫text_to_speech沒指定speed參數時的預設語速。</p>
+                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px;">
                                         <span class="ai-advanced-hint" style="margin:0;">語音合成模型占用：<b id="ai-tts-model-cache-size">—</b></span>
                                         <button type="button" id="ai-tts-model-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
                                         <button type="button" id="ai-tts-model-cache-clear" class="ai-advanced-btn danger" style="padding:2px 8px;">清除模型快取</button>
-                                    </div>
-                                    <label class="ai-advanced-label" style="font-weight:normal; margin-top:8px;">語音包管理</label>
-                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                        <select id="ai-tts-voice-install-select" class="ai-advanced-input" style="flex:1; min-width:160px;"></select>
-                                        <button type="button" id="ai-tts-voice-install-btn" class="ai-advanced-btn" style="padding:2px 8px;">安裝</button>
                                     </div>
                                     <div id="ai-tts-voice-list" class="ai-advanced-hint" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
-                                    <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見 web/cloudflare-worker/README.md）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。預設關閉。</p>
+                                    <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見 web/cloudflare-worker/README.md）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-tts-api-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-tts-api-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用中文語音API</label>
@@ -15631,8 +15793,12 @@ ${existingNodeSummaries}
                                     <label class="ai-advanced-label" for="ai-tts-api-proxy-url" style="font-weight:normal; margin-top:4px;">Cloudflare Worker 端點網址</label>
                                     <input type="text" id="ai-tts-api-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用 browser_search 或 LLM 的 Worker 網址">
                                     <label class="ai-advanced-label" for="ai-tts-default-api-voice" style="font-weight:normal; margin-top:4px;">預設中文/其他語言語音</label>
-                                    <select id="ai-tts-default-api-voice" class="ai-advanced-input"></select>
-                                    <p class="ai-advanced-hint">API語音不用「安裝」，每次呼叫都是即時打API，不占用 persistentStorage。</p>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <select id="ai-tts-default-api-voice" class="ai-advanced-input" style="flex:1; min-width:0;"></select>
+                                        <button type="button" id="ai-tts-api-preview-btn" class="ai-advanced-btn" style="padding:4px 10px; flex:0 0 auto; white-space:nowrap;">🔊 試聽</button>
+                                    </div>
+                                    <div id="ai-tts-api-preview-player-slot"></div>
+                                    <p class="ai-advanced-hint">API語音不用「安裝」，每次呼叫都是即時打API，不占用 persistentStorage；試聽共用上面設定的語速。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="limits">
@@ -17442,19 +17608,24 @@ ${existingNodeSummaries}
                 this._refreshTtsCacheSizeDisplay();
             });
         }
-        const ttsVoiceInstallBtn = document.getElementById('ai-tts-voice-install-btn');
-        if (ttsVoiceInstallBtn) {
-            ttsVoiceInstallBtn.addEventListener('click', async () => {
-                const sel = document.getElementById('ai-tts-voice-install-select');
-                const voiceId = sel && sel.value;
-                if (!voiceId) return;
-                ttsVoiceInstallBtn.disabled = true;
-                ttsVoiceInstallBtn.textContent = '安裝中…';
-                const r = await this._installTtsVoice(voiceId);
-                ttsVoiceInstallBtn.disabled = false;
-                ttsVoiceInstallBtn.textContent = '安裝';
-                this._log(r.ok ? `✅ 已安裝語音包 ${voiceId}（${(r.sizeBytes / 1024).toFixed(0)}KB）` : `⚠️ 安裝語音包失敗：${r.error}`);
-                this._renderTtsVoicePanel();
+        const ttsPreviewBtn = document.getElementById('ai-tts-preview-btn');
+        if (ttsPreviewBtn) {
+            ttsPreviewBtn.addEventListener('click', () => this._previewTtsVoice(false, ttsPreviewBtn, 'ai-tts-preview-player-slot'));
+        }
+        const ttsApiPreviewBtn = document.getElementById('ai-tts-api-preview-btn');
+        if (ttsApiPreviewBtn) {
+            ttsApiPreviewBtn.addEventListener('click', () => this._previewTtsVoice(true, ttsApiPreviewBtn, 'ai-tts-api-preview-player-slot'));
+        }
+        const ttsDefaultSpeedSlider = document.getElementById('ai-tts-default-speed');
+        const ttsDefaultSpeedLabel = document.getElementById('ai-tts-default-speed-label');
+        if (ttsDefaultSpeedSlider) {
+            ttsDefaultSpeedSlider.addEventListener('input', () => {
+                if (ttsDefaultSpeedLabel) ttsDefaultSpeedLabel.textContent = Number(ttsDefaultSpeedSlider.value).toFixed(2) + 'x';
+            });
+            ttsDefaultSpeedSlider.addEventListener('change', () => {
+                const n = Number(ttsDefaultSpeedSlider.value);
+                this.advancedSettings.ttsDefaultSpeed = Number.isFinite(n) && n >= 0.5 && n <= 2.0 ? n : 1.0;
+                this._saveAdvancedSettings();
             });
         }
         const ttsVoiceListEl = document.getElementById('ai-tts-voice-list');
