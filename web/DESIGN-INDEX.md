@@ -1737,6 +1737,31 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     migration測試（模擬localStorage有舊版設定但沒有advancedSettings
     blob）確認正確migrate成第一筆row。
 
+- **2026-09-14（深夜再追加）RAG知識庫分頁直接嵌入清單＋temperature預設值
+  0→0.1**：使用者看截圖回報「RAG知識庫還要多按一下管理條件圖譜太麻煩」。
+  - 把原本獨立`ai-rag-modal`（搜尋列/操作列/表格）的HTML整段搬進
+    `data-pane="rag"`本身，`_renderAdvancedSettings()`新增一行
+    `this._loadAndRenderRag()`，打開設定就直接看到清單。移除`ai-rag-modal`
+    元素、`_openRagModal()`方法、跟3個會throw的按鈕事件綁定（元素已經不
+    存在，`.onclick=`賦值在null上會直接噴錯、讓整個widget初始化失敗，
+    這是編輯時必須同步清掉的部分，不是可以晚點再處理的細節）。單一節點的
+    新增/編輯仍維持獨立`ai-rag-editor-modal`（比照Skill清單「清單inline、
+    單項編輯用modal」的既有慣例，沒有動）。`_closeRagModal()`保留成
+    no-op，避免要同步改另外兩處「點modal外側/按Escape關閉」判斷式——那
+    兩處靠`ragModal`變數自然變成`null`、`_isModalOpen(null)===false`
+    自動失效，不用額外改動。
+  - 新增`DEFAULT_CHAT_TEMPERATURE = 0.1`常數，取代`_loopFetch`/
+    `_loopFetchNative`/`_runSubAgentTask`三處原本寫死的`temperature: 0`
+    row-留空-時退回值（row自己填了temperature仍優先用row的值）。理由：
+    既有comment早就記錄過temperature=0貪婪解碼容易卡進重複輸出退化狀態，
+    0.1幾乎一樣deterministic但能降低這個風險，`_hasRepeatingTail`偵測
+    仍是最後一道防線。UI的temperature欄位placeholder同步從「預設0」改成
+    「預設0.1」。
+  - 實測（Browser工具）：RAG分頁清單直接顯示、新增節點仍正確開啟獨立
+    modal、搜尋/全選無報錯；mock `fetch`跑一次真實`executeChat`確認
+    `_loopFetch`實際送出的`temperature`是`0.1`（另一筆`temperature:0`
+    請求經確認是既有、不受這次改動影響的原生tool_calls支援探測請求）。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
