@@ -6851,7 +6851,6 @@ ${sourceTool.handlerScript}
     _applyThemeStyles() {
         const win = document.getElementById('ai-floating-window');
         const header = document.getElementById('ai-window-header');
-        const configPanel = document.getElementById('ai-config-panel');
         const chatBody = document.getElementById('ai-chat-body');
         const autocomplete = document.getElementById('ai-autocomplete-bar');
         const inputWrap = document.getElementById('ai-input-wrap');
@@ -6864,25 +6863,13 @@ ${sourceTool.handlerScript}
         win.style.borderColor = palette.windowBorder;
         header.style.background = palette.headerBg;
         header.style.color = palette.headerText;
-        configPanel.style.background = palette.chatBg;
-        configPanel.style.color = palette.chatText;
-        configPanel.style.borderBottomColor = palette.windowBorder;
-        // tw_stock_db客製: API KEY/URL/MODEL NAME + 生成/取樣參數這幾個輸入框
-        // 是在_initUI()組innerHTML時用當下的palette寫死背景/文字色——如果
-        // 使用者是先開了AI視窗、之後才切換網頁的淺/深色主題，這裡不主動
-        // 同步的話，這幾個欄位的顏色會停留在視窗剛建立時的舊主題，跟其他
-        // 已經正確跟隨主題的元素（例如下面的inputText）不一致，看起來像是
-        // 顏色跑掉/讀不清楚。
-        const genDetailBox = configPanel.querySelector('#ai-gen-context-window')?.closest('div');
-        if (genDetailBox) {
-            genDetailBox.style.background = palette.detailBg;
-            genDetailBox.style.color = palette.detailText;
-        }
-        configPanel.querySelectorAll('#ai-input-key, #ai-url, #ai-model-name, #ai-gen-context-window, #ai-gen-max-output, [id^="ai-param-"]').forEach(el => {
-            el.style.background = palette.inputBg;
-            el.style.color = palette.inputText;
-            el.style.borderColor = palette.inputBorder;
-        });
+        // tw_stock_db客製: 2026-09-13——API KEY/URL/MODEL NAME＋生成/取樣參數＋
+        // Hermes/slash選單/trace開關這幾個欄位，這次從快速設定面板（已移除）
+        // 搬進Advance設定對話框，改用跟其餘Advance欄位一致的`.ai-advanced-input`
+        // CSS class（固定深色樣式，不隨頁面淺/深色主題切換），不再需要這裡
+        // 額外用JS依palette動態同步顏色——這段既有的特殊處理邏輯因此整段移除
+        // （原本是因為這幾個欄位當時還在快速設定面板、用inline style寫死當下
+        // palette顏色才需要的workaround，欄位本身搬過去之後這個問題不存在了）。
         chatBody.style.background = palette.chatBg;
         chatBody.style.color = palette.chatText;
         if (autocomplete) {
@@ -7497,6 +7484,23 @@ ${sourceTool.handlerScript}
     }
 
     _renderAdvancedSettings() {
+        // tw_stock_db客製: 2026-09-13使用者要求——API KEY/URL/MODEL NAME＋
+        // Hermes自我演化／slash選單／顯示追蹤這幾個欄位這次從快速設定面板
+        // 搬進Advance設定對話框，比照這個函式其餘欄位的既有慣例，每次開啟
+        // 對話框都重新同步一次目前的值（雖然這幾個欄位很少被其他地方改動，
+        // 但保持跟其他Advance欄位一致的「開啟時一定是最新值」行為）。
+        const inputKeyEl = document.getElementById('ai-input-key');
+        if (inputKeyEl) inputKeyEl.value = localStorage.getItem(this.STORAGE_KEY) || '';
+        const inputUrlEl = document.getElementById('ai-url');
+        if (inputUrlEl) inputUrlEl.value = localStorage.getItem(this.LLM_BASE_URL_KEY) || '';
+        const inputModelEl = document.getElementById('ai-model-name');
+        if (inputModelEl) inputModelEl.value = localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '';
+        const hermesChk = document.getElementById('ai-hermes-evolve-chk');
+        if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
+        const slashMenuChk = document.getElementById('ai-slash-menu-chk');
+        if (slashMenuChk) slashMenuChk.checked = this.advancedSettings.slashCommandMenuEnabled !== false;
+        const showTraceChk = document.getElementById('ai-show-trace-chk');
+        if (showTraceChk) showTraceChk.checked = this.advancedSettings.showInternalTrace === true;
         const rulesInput = document.getElementById('ai-rules-input');
         const functionsInput = document.getElementById('ai-custom-functions-input');
         if (rulesInput) rulesInput.value = this.advancedSettings.rulesMd || '';
@@ -14240,6 +14244,19 @@ ${existingNodeSummaries}
         return Array.isArray(raw) ? raw : [];
     }
 
+    // tw_stock_db客製: 2026-09-13使用者回報——開啟「顯示工具呼叫追蹤與思考
+    // 過程」後還是完全看不到委派出去的子agent在忙什麼（`_runSubAgentTask`
+    // 本身完全靜默、過程故意不碰this.messages）。這裡比照既有
+    // `_createProgressWidget`（轉逐字稿/燒字幕等長時間操作既有的進度卡片
+    // 模式）建一個進度widget，只在`showInternalTrace`開啟時才建立——預設
+    // （關閉）維持今天以前完全靜默的既有行為，使用者主動選擇要看內部細節時
+    // 才多顯示這個卡片，跟其餘4處trace區塊同一個「預設隱藏、開了才顯示」的
+    // 開關語意一致。
+    _createSubagentProgressWidget(title) {
+        if (this.advancedSettings.showInternalTrace !== true) return null;
+        return this._createProgressWidget(title);
+    }
+
     async _delegateToSubagentDomain(domainKey, task) {
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
@@ -14249,13 +14266,17 @@ ${existingNodeSummaries}
             const available = Object.entries(this.domains).filter(([, d]) => d.enabled).map(([k]) => k);
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
         }
+        const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`);
         try {
             const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: this._resolveDomainToolNames(domain),
                 systemPrompt: domain.systemPrompt,
+                onProgress: progress ? (status) => progress.update({ status }) : null,
             });
+            if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
         } catch (err) {
+            if (progress) progress.fail(String(err.message || err));
             return { ok: false, error: String(err.message || err) };
         }
     }
@@ -14631,6 +14652,7 @@ ${existingNodeSummaries}
     // 扁平_routeTaskToDomains；兩者回傳同一個形狀，下面的合併/執行邏輯不用
     // 區分呼叫端。
     async _delegateToSubagentAuto(task) {
+        const progress = this._createSubagentProgressWidget('🤖 自動判斷該委派給哪個領域…');
         const routed = this.multiSubAgentMode === 'hierarchical'
             ? await this._routeTaskHierarchical(task)
             : await this._routeTaskToDomains(task);
@@ -14649,22 +14671,28 @@ ${existingNodeSummaries}
             .filter(([, d]) => d.enabled)
             .map(([k, d]) => `${k}(${d.label})`);
         if (!routed.ok) {
+            if (progress) progress.fail(routed.error || '路由失敗');
             return Object.assign({}, routed, { available_domains: availableDomains });
         }
         if (!routed.domains.length) {
+            if (progress) progress.fail('判斷後認為不需要委派給任何領域');
             return {
                 ok: false,
                 error: `自動判斷後認為這個任務不需要用到任何專家領域，但如果你認為判斷錯誤（例如任務其實明顯屬於某個領域），請直接重新呼叫這個工具、改成明確指定domain參數重試（不要放棄委派、改成自己憑空編寫程式碼或答案）。`,
                 available_domains: availableDomains,
             };
         }
+        if (progress) progress.update({ status: `🤖 已選定領域：${routed.domains.join('、')}，開始執行…` });
         try {
             const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: routed.toolNames,
                 systemPrompt: routed.systemPrompt,
+                onProgress: progress ? (status) => progress.update({ status }) : null,
             });
+            if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domains: routed.domains }, subResult);
         } catch (err) {
+            if (progress) progress.fail(String(err.message || err));
             return { ok: false, error: String(err.message || err) };
         }
     }
@@ -14719,6 +14747,17 @@ ${existingNodeSummaries}
         const canRequestMore = Array.isArray(allowedToolNames);
         let toolEscalationCount = 0;
         const REQUEST_MORE_TOOLS_NAME = 'request_additional_tools';
+        // tw_stock_db客製: 2026-09-13使用者回報——開啟「顯示工具呼叫追蹤與
+        // 思考過程」後還是完全看不到子agent在忙什麼，因為_runSubAgentTask
+        // 一直以來都是完全靜默執行（見這次之前的探索：整個函式沒有任何
+        // this._log或訊息渲染），子agent自己的messages是區域變數、故意不碰
+        // this.messages，過程真的不會進主對話。這裡新增選填的
+        // options.onProgress(status)回呼，呼叫端（_delegateToSubagentDomain/
+        // _delegateToSubagentAuto）決定要不要接、接了要怎麼呈現（見那兩個
+        // 函式，用_createProgressWidget在對話裡顯示一個即時更新的進度卡片，
+        // 只在showInternalTrace開啟時才建立）——這裡只負責在關鍵時機點
+        // （每輪開始/呼叫了哪個工具/申請追加工具）呼叫一下，不管有沒有人在聽。
+        const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
         // tw_stock_db客製: resolveTool取代原本兩處直接呼叫
         // this._getToolDefinition(fnName, allowedToolNames)的地方——
         // request_additional_tools只在這次_runSubAgentTask執行內有效，故意
@@ -14736,15 +14775,18 @@ ${existingNodeSummaries}
                         try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                         const need = String(parsed.need || '').trim();
                         if (!need) return JSON.stringify({ ok: false, error: 'need不能是空的，請描述你現在還缺什麼能力/需要查什麼類型的資料' });
+                        if (onProgress) onProgress(`🔧 子agent申請追加工具：${need}`);
                         const routed = this.multiSubAgentMode === 'hierarchical'
                             ? await this._routeTaskHierarchical(need)
                             : await this._routeTaskToDomains(need);
                         if (!routed.ok || !routed.toolNames || !routed.toolNames.length) {
+                            if (onProgress) onProgress(`🔧 追加失敗：找不到符合「${need}」的工具`);
                             return JSON.stringify({ ok: false, error: '找不到符合這個需求的額外工具，請改用現有工具完成、或直接回答已知的部分。' });
                         }
                         toolEscalationCount++;
                         const newNames = routed.toolNames.filter(n => !allowedToolNames.includes(n));
                         allowedToolNames.push(...newNames);
+                        if (onProgress) onProgress(`🔧 已追加工具：${routed.toolNames.join('、')}`);
                         const toolByName = new Map(this._getCombinedToolEntries(null));
                         const hint = routed.toolNames
                             .map(n => `- ${n}: ${this._summarizeToolDescription((toolByName.get(n) || {}).description || '')}`)
@@ -14786,6 +14828,7 @@ ${existingNodeSummaries}
         let capturedVisual = null;
 
         for (let round = 0; round < maxRounds; round++) {
+            if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
             const body = {
                 model: apiModel,
                 messages,
@@ -14898,6 +14941,7 @@ ${existingNodeSummaries}
                 for (const tc of toolCalls) {
                     const fnName = tc.function && tc.function.name;
                     const rawArgs = (tc.function && tc.function.arguments) || '{}';
+                    if (onProgress) onProgress(`⚙️ 呼叫工具：${fnName}`);
                     try {
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
@@ -14956,6 +15000,7 @@ ${existingNodeSummaries}
             messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
 
             for (const task of toolTasks) {
+                if (onProgress) onProgress(`⚙️ 呼叫工具：${task.fnName}`);
                 try {
                     const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
@@ -15125,52 +15170,6 @@ ${existingNodeSummaries}
                     <span id="ai-btn-close" style="cursor:pointer;">❌</span>
                 </div>
             </div>
-            <div id="ai-config-panel" style="display:none; background: ${palette.chatBg}; color: ${palette.chatText}; padding: 10px; border-bottom: 1px solid ${palette.windowBorder};">
-                <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API KEY:</label>
-                <input type="password" id="ai-input-key" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};">
-                <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">API URL:</label>
-                <input type="text" id="ai-url" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='https://integrate.api.nvidia.com/v1'>
-                <label style="font-size:12px; font-weight:bold; display:block; margin-bottom:4px;">MODEL NAME:</label>
-                <input type="text" id="ai-model-name" list="ai-model-datalist" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};" placeholder='留空＝依內建清單順序自動fallback'>
-                <datalist id="ai-model-datalist">
-                    ${this._modelDatalistOptionsHtml()}
-                </datalist>
-
-                <details style="margin-top:8px;">
-                    <summary style="font-size:12px; font-weight:bold; cursor:pointer; user-select:none; color:${palette.detailText};">生成／取樣參數（點擊展開）</summary>
-                    <div style="margin-top:6px; padding:8px; background:${palette.detailBg}; color:${palette.detailText}; border-radius:6px;">
-                        <label style="font-size:11px; display:block; margin-bottom:2px;" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
-                        <input type="number" min="512" step="512" id="ai-gen-context-window" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; margin-bottom:6px; background:${palette.inputBg}; color:${palette.inputText};">
-                        <div style="font-size:11px; margin-bottom:2px;">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</div>
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
-                            ${SAMPLING_PARAM_KEYS.map(key => `
-                                <div>
-                                    <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
-                                    <input type="number" step="0.1" id="ai-param-${key}" style="width:100%; padding:4px; box-sizing:border-box; border:1px solid ${palette.inputBorder}; border-radius:4px; background:${palette.inputBg}; color:${palette.inputText};">
-                                </div>
-                            `).join('')}
-                        </div>
-                        <div id="ai-param-disabled-note" style="font-size:10px; color:#dd6b20; margin-top:6px;"></div>
-                    </div>
-                </details>
-
-                <div style="margin-top:8px; display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">
-                    <label for="ai-hermes-evolve-chk" style="font-size:12px; font-weight:bold; color:#8b5cf6; cursor:pointer; user-select:none;">開啟 RAG 本地條件圖譜自我演化</label>
-                </div>
-                <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
-                    <label for="ai-slash-menu-chk" style="font-size:12px; cursor:pointer; user-select:none; color:${palette.detailText};">輸入框打「/」時顯示可用指令選單</label>
-                </div>
-                <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" id="ai-show-trace-chk" ${this.advancedSettings.showInternalTrace === true ? 'checked' : ''} style="cursor:pointer;">
-                    <label for="ai-show-trace-chk" style="font-size:12px; cursor:pointer; user-select:none; color:${palette.detailText};">顯示工具呼叫追蹤與思考過程（預設隱藏，圖片結果不受影響）</label>
-                </div>
-
-                <div style="margin-top:10px;">
-                    <button id="ai-btn-advanced" type="button" style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; cursor:pointer;">Advance</button>
-                </div>
-            </div>
             <div id="ai-chat-body" style="flex:1; padding:15px; overflow-y:auto; background: ${palette.chatBg}; color: ${palette.chatText}; font-size: 14px;"></div>
             <div id="ai-autocomplete-bar" style="background:${palette.detailBg}; color:${palette.detailText}; font-size:11px; padding:4px 12px; display:none; border-top:1px solid ${palette.windowBorder};">
                 💡 按 <kbd style="background:#fff;padding:1px 3px;border:1px solid #ccc;border-radius:3px;">Tab</kbd> 自動補全: <span id="ai-suggest-text"></span>
@@ -15201,7 +15200,10 @@ ${existingNodeSummaries}
                     </div>
                     <div class="ai-advanced-body">
                         <div class="ai-advanced-sidebar">
-                            <div class="ai-advanced-cat active" data-cat="general">一般</div>
+                            <div class="ai-advanced-cat active" data-cat="llm-basic">LLM 基礎設定</div>
+                            <div class="ai-advanced-cat" data-cat="llm-sampling">LLM 生成取樣參數</div>
+                            <div class="ai-advanced-cat" data-cat="llm-debug">LLM Debug</div>
+                            <div class="ai-advanced-cat" data-cat="general">一般</div>
                             <div class="ai-advanced-cat" data-cat="input">輸入</div>
                             <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
                             <div class="ai-advanced-cat" data-cat="skills">Skill</div>
@@ -15211,7 +15213,55 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-cat" data-cat="limits">效能與限制</div>
                         </div>
                         <div class="ai-advanced-content">
-                            <div class="ai-advanced-pane" data-pane="general">
+                            <div class="ai-advanced-pane" data-pane="llm-basic">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-input-key">API KEY</label>
+                                    <input type="password" id="ai-input-key" class="ai-advanced-input">
+                                    <label class="ai-advanced-label" for="ai-url">API URL</label>
+                                    <input type="text" id="ai-url" class="ai-advanced-input" placeholder='https://integrate.api.nvidia.com/v1'>
+                                    <label class="ai-advanced-label" for="ai-model-name">MODEL NAME</label>
+                                    <input type="text" id="ai-model-name" list="ai-model-datalist" class="ai-advanced-input" placeholder='留空＝依內建清單順序自動fallback'>
+                                    <datalist id="ai-model-datalist">
+                                        ${this._modelDatalistOptionsHtml()}
+                                    </datalist>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-hermes-evolve-chk" ${hermesEvolveOn ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-hermes-evolve-chk" class="ai-advanced-label" style="margin:0; color:#8b5cf6; cursor:pointer;">開啟 RAG 本地條件圖譜自我演化</label>
+                                    </div>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-slash-menu-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">輸入框打「/」時顯示可用指令選單</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="llm-sampling">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-gen-context-window">模型上下文視窗（tokens，用來主動判斷何時該壓縮對話）</label>
+                                    <input type="number" min="512" step="512" id="ai-gen-context-window" class="ai-advanced-input">
+                                    <p class="ai-advanced-hint">取樣/重複懲罰參數（留空＝不送這個欄位；若被伺服器拒絕會自動排除並在對話中記錄）：</p>
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 8px;">
+                                        ${SAMPLING_PARAM_KEYS.map(key => `
+                                            <div>
+                                                <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
+                                                <input type="number" step="0.1" id="ai-param-${key}" class="ai-advanced-input">
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                    <div id="ai-param-disabled-note" style="font-size:10px; color:#dd6b20; margin-top:6px;"></div>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="llm-debug">
+                                <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-show-trace-chk" ${this.advancedSettings.showInternalTrace === true ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-show-trace-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">顯示工具呼叫追蹤與思考過程</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">預設隱藏，圖片結果不受影響。開啟後，除了主對話的工具呼叫/思考過程，委派給子Agent（delegate_to_subagent，不管是明確指定domain、自動路由、還是兩層領域路由）執行期間也會多顯示一張即時更新的進度卡片（判斷委派給哪個領域、每一輪呼叫了哪個工具、有沒有中途申請追加工具），方便觀察子Agent在忙什麼；關閉時子Agent一律維持完全靜默，跟這個設定新增前的行為一致。</p>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="general">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
                                     <textarea id="ai-rules-input" class="ai-advanced-textarea" placeholder="如果有內容，會附加到 system prompt 的開頭。"></textarea>
@@ -16655,7 +16705,6 @@ ${existingNodeSummaries}
         const inputAiUrl = document.getElementById('ai-url');
         const inputModelName = document.getElementById('ai-model-name');
         const inputText = document.getElementById('ai-input-text');
-        const configPanel = document.getElementById('ai-config-panel');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');
         const slashMenu = document.getElementById('ai-slash-menu');
@@ -16711,10 +16760,10 @@ ${existingNodeSummaries}
             if (!this.messages.length && !(this.archivedDisplayBlocks || []).length) return;
             if (confirm('確定要清除目前的對話紀錄嗎？這個動作無法復原。')) this._clearChatHistory();
         };
-        document.getElementById('ai-btn-config').onclick = () => {
-            configPanel.style.display = configPanel.style.display === 'none' ? 'block' : 'none';
-        };
-        document.getElementById('ai-btn-advanced').onclick = () => this._openAdvancedModal();
+        // tw_stock_db客製: 2026-09-13使用者要求——所有設定都收進Advance設定
+        // 對話框，不再有中間的快速設定面板（原本⚙️只是切換一個小面板、裡面
+        // 還要再點一次「Advance」才能到完整設定，現在⚙️直接開Advance）。
+        document.getElementById('ai-btn-config').onclick = () => this._openAdvancedModal();
         document.getElementById('ai-stop-response-btn').onclick = () => this._requestStopResponse();
         document.getElementById('ai-advanced-close').onclick = () => this._closeAdvancedModal();
         document.getElementById('ai-advanced-done').onclick = () => this._closeAdvancedModal();
