@@ -1204,6 +1204,80 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     `_routeTaskToDomains`的catalog正確包含`[custom_skills]`區塊、
     `_delegateToSubagentAuto`正確合併出對應的`toolNames`/`systemPrompt`。
 
+- **2026-09-13 兩層domain路由（類別→細分domain）+ subagent執行中動態追加工具**：
+  使用者計畫在piano-web新增「成噸」等級的subagent（音樂曲風分類，可能上百種），
+  擔心既有扁平單層路由（`_routeTaskToDomains`一次列出全部enabled domain的目錄）
+  在domain數大到這種規模時會塞爆路由子agent的注意力。用tw_stock_db既有的
+  `tw_stock_db_api:{sessionId}`共用金鑰模式對`nvidia/nemotron-3-super-120b-a12b`
+  做了真實LLM benchmark（3組規模：9/24/45個合成曲風domain，15個音樂類別）：
+  45個domain時，兩層式比扁平式**省58%路由token**（3654→1531）但**延遲多6.7秒**
+  （1991ms→8660ms，多一次序列化網路往返）；精準度測試（9道有標準答案的任務）
+  扁平模式**真的漏判一題**（民謠木吉他分解和弦，45個domain候選同時列出時對排序
+  較後面的domain注意力被稀釋），兩層式全對——這組實測數據直接決定了這次把兩層
+  路由做成**選配模式**（domain少時不建議用）而不是取代現有機制。
+  - **`this.domainCategories`**（建構子，`this.domains.custom_skills`賦值之後）：
+    新的instance-level登記表，`{categoryKey:{label,description}}`，純路由用
+    中繼資料，不含toolNames/systemPrompt。**`register_domain_category(key,
+    {label,description})`**（公開方法，比照`register_domain`同一種模式）。
+  - **`register_domain`新增選填的`category`參數**——domain掛到一個分類代號下
+    才會被兩層路由當成「細分domain」，留空（現有全部內建domain都是）維持原本
+    「獨立領域」扁平行為，完全向下相容。
+  - **`_routeTaskHierarchical(task)`**（新函式，跟`_routeTaskToDomains`同一層級）：
+    完全沒有任何domain帶`category`時直接委派給`_routeTaskToDomains`（不多花這次
+    網路往返）；否則第一層問「要哪個類別/哪個獨立領域」，選中的每個類別**平行**
+    （`Promise.all`）各自問一次「這個類別底下要哪個細分domain」——平行是關鍵，
+    延遲取決於最慢的那一個類別查詢，不是隨選中類別數疊加。回傳跟
+    `_routeTaskToDomains`完全同一個`{ok,domains,toolNames,systemPrompt}`形狀，
+    `_delegateToSubagentAuto`第一行依`multiSubAgentMode`分支呼叫哪一個，其餘
+    合併/執行邏輯不用區分呼叫端。
+  - **`_callRouterLLM(systemPrompt, userText)`**（新函式，從原本
+    `_routeTaskToDomains`裡抽出的共用fetch+解析邏輯）、
+    **`_buildDomainCatalogSection(key, domain, toolByName)`**（新函式，
+    `[key] label\n- tool: 摘要`這段目錄格式的共用建構）——`_routeTaskToDomains`
+    跟`_routeTaskHierarchical`的三次路由呼叫（第一層1次+每個選中類別平行1次）
+    都共用，避免貼三份幾乎一樣的邏輯。
+  - **規劃階段（使用者要求「避免subagent失敗了才請求」）**：兩個路由函式的
+    prompt都新增一句引導：「如果任務包含多個階段（例如先查詢/研究、再產生設計
+    或報告），請把預期會用到的領域一次全部選出來，不要只選第一步用得到的；
+    不確定時傾向選進來而不是保守省略」——刻意選擇**純prompt wording調整**（零
+    額外LLM往返成本），不是加一輪獨立的「驗證夠不夠」呼叫，跟使用者對速度的
+    顧慮一致；真正的保險是下一項機制。
+  - **`request_additional_tools`偽工具（使用者要求「執行中發現不夠，原地
+    追加，不要跳出去重跑」）**：`_runSubAgentTask`（floating-assistant.js
+    ~14680起）的`allowedToolNames`改成`let`+可變複本（原本是`const`）——
+    body.tools`在round迴圈裡每輪都重新用`allowedToolNames`重建，這個既有結構
+    天生就支援「中途擴充、下一輪自動反映」，不用改迴圈結構。新增`resolveTool`
+    區域函式，攔截`request_additional_tools`這個名稱（只在`allowedToolNames`
+    非null，即來自domain委派時啟用；`_getFinalSystemPrompt()`預設情境本來就
+    看得到全部工具，沒有「追加」的意義），callback內部呼叫
+    `_routeTaskHierarchical`或`_routeTaskToDomains`（依`multiSubAgentMode`）
+    找對應工具、直接`allowedToolNames.push(...newNames)`——**不是**巢狀呼叫
+    `delegate_to_subagent`重新委派（那樣要重建全新system prompt/對話歷史，
+    確實比較慢，是使用者明確要排除的做法）。`_buildNativeToolsSchema`新增
+    選填第二參數`extraEntries`（原始`[name,tool]`陣列），讓這個「只在這次
+    子任務執行內有效、不寫進`this.tools`」的偽工具也能出現在native
+    tool-calling的schema裡；文字協定模式下domain委派的systemPrompt本來就不會
+    自動列出工具清單（既有限制），這裡額外在systemPrompt後面補一句提示，讓
+    文字協定模式的子agent也知道這個機制存在。新增常數
+    `SUBAGENT_MAX_TOOL_ESCALATIONS = 3`防止單次子任務無限申請追加。這個機制
+    掛在`_runSubAgentTask`本身，扁平/兩層/明確指定domain三條路徑（分別呼叫
+    `_delegateToSubagentDomain`/`_delegateToSubagentAuto`的兩種路由）全部
+    自動受益，不用個別修改。
+  - **`multiSubAgentMode`新增第4個值`'hierarchical'`**：getter（原本
+    `router`/`full`/`off`三選一）、建構子選項驗證、
+    `_createDefaultAdvancedSettings`附近的enum陣列、UI change listener，共4處
+    都加上`'hierarchical'`；Advance Settings下拉選單新增第4個選項＋hint文字
+    （附上面實測的45個domain數字，明講「domain數量不多時不建議用」）。
+  - 實測（Browser工具，真實mock情境，非猜測）：沒有任何categorized domain時
+    `_routeTaskHierarchical`正確只打1次fetch（委派給扁平路由，不多花往返）；
+    註冊2個類別+3個曲風domain後，單一類別命中（2次呼叫）、多類別平行命中
+    （3次呼叫、正確合併toolNames/systemPrompt）都驗證正確；
+    `request_additional_tools`端對端測試——第一輪只給1個domain工具、model
+    呼叫追加工具、下一輪`body.tools`確認真的包含新舊工具、新工具真的能被
+    成功呼叫，全程只有1個`_runSubAgentTask`執行（沒有跳出去重跑）；追加次數
+    上限測試——連續5次申請，前3次成功各自加入不同工具，第4/5次被正確擋下並
+    回報明確錯誤，不會無限追加。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/
