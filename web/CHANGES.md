@@ -61,6 +61,50 @@ Point」；檔案讀寫API要支援列檔案/寫檔案/讀檔案/找檔案。
    片段；3個斜線指令都正確推送格式化訊息；permission變成非granted時
    UI正確顯示「重新授權」按鈕、工具呼叫正確回報明確的重新授權指示；
    重新命名（擋重複名稱）/刪除（confirm）UI互動都正確觸發底層store方法。
+7. **File Access Point ⇄ persistentStorage 二進位檔案橋接**（使用者回報
+   缺口：`fap_read_file`/`fap_write_file`只支援純文字，沒辦法把AI產生
+   的MP3等任何格式的二進位檔案搬進File Access Point）：新增
+   `fap_copy_from_storage`（persistentStorage→FAP，直接複製`record.blob`
+   保留二進位完整性，可選`move:true`變成真正移動；ref留空/以`/`結尾
+   自動沿用來源檔名）、`fap_copy_to_storage`（反方向，`fileCache.put`
+   讓fap_read_file讀不了的格式改用既有`parse_uploaded_file`等工具處理）、
+   `fap_download_url`（直接瀏覽器`fetch()`網址內容寫進FAP，不繞道
+   persistentStorage，受目標站CORS限制）。三者都經過真實檔案round-trip
+   實測（byte-for-byte比對），不是只測純文字。
+8. **`git_operations`——瀏覽器端git clone/pull/status/log/commit/push**
+   （使用者要求「幫我做成一個subagent，裡面專用來git操作」，並在
+   corsProxy策略/私有repo支援/write能力三個問題上明確選定：只用自己
+   部署的Cloudflare Worker，不用第三方proxy；公開私有repo都要支援，
+   私有repo的token由使用者自己在Advance Settings填入；要支援commit/push
+   不只是唯讀clone）：
+   - 新增`FapGitFs` class（把一個`FileSystemDirectoryHandle`包成
+     isomorphic-git要求的`fs.promises`介面，含`readlink`/`symlink`
+     stub——isomorphic-git執行期`bindFs()`無條件對這兩個也呼叫`.bind()`，
+     即使TypeScript型別把它們標成選填，缺了會在建構期就丟
+     `Cannot read properties of undefined (reading 'bind')`，這是讀
+     isomorphic-git原始碼才找到的細節，不是文件寫的）。
+   - `FA_ASSET_URLS`新增`bufferPolyfill`（真ESM，動態`import()`載入，
+     不能走`_faLoadScriptOnce`那套UMD注入）、`isomorphicGit`（UMD，
+     `window.git`）、`isomorphicGitHttp`（UMD，`window.GitHttp`）——
+     版本`1.42.2`經真實clone/log/status/add/commit流程實測驗證過，
+     不是猜的。
+   - 6個新AI工具（`git_clone`/`git_pull`/`git_status`/`git_log`/
+     `git_commit`/`git_push`）+ 新`git_operations` domain，操作對象
+     只有File Access Point資料夾（persistentStorage是單一blob儲存，
+     沒有「資料夾」概念，不支援）。corsProxy留空時退回目前AI端點
+     apiUrl（跟`browserSearchProxyUrl`同一套慣例），需要對應Worker
+     部署`/git-proxy`路由（見`tw_stock_db_code`私有repo的
+     `code/cloudflare-worker/worker.js`的`handleGitProxy`，本次一併
+     新增並push）。commit/push需要使用者先在Advance Settings「檔案
+     存取管理」分頁填入git作者名稱/信箱、以及有寫入權限的GitHub
+     Personal Access Token（私有repo/push都需要，公開repo唯讀clone/
+     pull不需要）。
+   - 實測：mock `FileSystemDirectoryHandle`+mock `window.git`/
+     `window.GitHttp`（isomorphic-git本身不在這個環境重跑一次真實
+     clone，那部分依賴先前開發驗證過的手動測試），確認6個方法正確
+     組出`dir`/`corsProxy`/`onAuth`參數、`_gitCommit`正確依
+     `statusMatrix`逐檔`add`/`remove`後才`commit`、`_resolveGitCorsProxyUrl`
+     正確組出`.../git-proxy`。
 
 ## 2026-09-14（深夜再追加）
 

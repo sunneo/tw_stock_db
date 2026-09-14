@@ -570,6 +570,148 @@ class FileAccessPointStore {
     }
 }
 
+// tw_stock_db客製: 2026-09-15使用者要求——git_operations domain（純瀏覽器端
+// git clone/pull/commit/push，用isomorphic-git）需要一個實作Node
+// `fs.promises`介面子集的物件，這個class把它接到一個File Access Point的
+// FileSystemDirectoryHandle上。isomorphic-git實際要求的介面（讀它的
+// FileSystem.js原始碼實測確認，不是文件上寫的——它的TypeScript型別把
+// readlink/symlink標成選填，但執行期`bindFs()`不管三七二十一都會對清單裡
+// 每個command呼叫`.bind()`，缺任何一個都會在建構期就丟
+// "Cannot read properties of undefined (reading 'bind')"）：readFile/
+// writeFile/unlink/readdir/mkdir/rmdir/stat/lstat/readlink/symlink，全部
+// 都要在`fs.promises`底下（不是`fs`本身）。readlink/symlink這個app用不到
+// （沒有symlink需求），做成一呼叫就丟ENOSYS的stub，滿足「一定要存在」的
+// 建構期檢查即可。
+//
+// 路徑處理刻意跟fap_*工具（_splitFapPath等）分開——那些是面對「使用者/AI
+// 輸入的字串」需要防禦'.'/'..'穿越，這裡是純粹的git內部路徑計算（git自己
+// 產生的路徑，不是外部輸入），過度防禦反而會讓git內部運算失敗（'.'其實
+// 常出現，例如git內部查詢repo根目錄本身時）。
+//
+// 已實測（見DESIGN-INDEX.md）：對真實公開repo跑過完整的clone→
+// 讀取檔案內容→log→建立新檔案→add→commit→再次log/statusMatrix，全部
+// 正確（用手刻的mock FileSystemDirectoryHandle驗證邏輯，行為模擬真實
+// File System Access API的getDirectoryHandle/getFileHandle/entries()/
+// removeEntry介面）。
+class FapGitFs {
+    constructor(rootDirHandle) {
+        this.root = rootDirHandle;
+        this.promises = {
+            readFile: (p, o) => this._readFile(p, o),
+            writeFile: (p, d) => this._writeFile(p, d),
+            unlink: (p) => this._unlink(p),
+            readdir: (p) => this._readdir(p),
+            mkdir: (p) => this._mkdir(p),
+            rmdir: (p) => this._rmdir(p),
+            stat: (p) => this._stat(p),
+            lstat: (p) => this._stat(p),
+            readlink: () => { const e = new Error('readlink not supported'); e.code = 'ENOSYS'; throw e; },
+            symlink: () => { const e = new Error('symlink not supported'); e.code = 'ENOSYS'; throw e; },
+        };
+    }
+
+    _parts(filepath) {
+        const s = String(filepath == null ? '' : filepath).trim();
+        if (!s || s === '.' || s === './' || s === '/') return [];
+        return s.split('/').filter(p => p && p !== '.');
+    }
+
+    async _resolveDirHandle(parts, { create = false } = {}) {
+        let dir = this.root;
+        for (const part of parts) dir = await dir.getDirectoryHandle(part, { create });
+        return dir;
+    }
+
+    _enoent(p) {
+        const err = new Error(`ENOENT: no such file or directory, '${p}'`);
+        err.code = 'ENOENT';
+        return err;
+    }
+
+    async _readFile(filepath, opts) {
+        const parts = this._parts(filepath);
+        const name = parts.pop();
+        if (name == null) throw this._enoent(filepath);
+        let dir;
+        try { dir = await this._resolveDirHandle(parts); } catch (_) { throw this._enoent(filepath); }
+        let fh;
+        try { fh = await dir.getFileHandle(name); } catch (_) { throw this._enoent(filepath); }
+        const file = await fh.getFile();
+        const buf = new Uint8Array(await file.arrayBuffer());
+        const encoding = typeof opts === 'string' ? opts : (opts && opts.encoding);
+        if (encoding === 'utf8') return new TextDecoder().decode(buf);
+        return buf;
+    }
+
+    async _writeFile(filepath, data) {
+        const parts = this._parts(filepath);
+        const name = parts.pop();
+        const dir = await this._resolveDirHandle(parts, { create: true });
+        const fh = await dir.getFileHandle(name, { create: true });
+        const writable = await fh.createWritable();
+        await writable.write(typeof data === 'string' ? new TextEncoder().encode(data) : data);
+        await writable.close();
+    }
+
+    async _unlink(filepath) {
+        const parts = this._parts(filepath);
+        const name = parts.pop();
+        const dir = await this._resolveDirHandle(parts);
+        await dir.removeEntry(name);
+    }
+
+    async _readdir(filepath) {
+        const parts = this._parts(filepath);
+        let dir;
+        try { dir = await this._resolveDirHandle(parts); } catch (_) { throw this._enoent(filepath); }
+        const names = [];
+        for await (const [name] of dir.entries()) names.push(name);
+        return names;
+    }
+
+    async _mkdir(filepath) {
+        const parts = this._parts(filepath);
+        await this._resolveDirHandle(parts, { create: true });
+    }
+
+    async _rmdir(filepath) {
+        const parts = this._parts(filepath);
+        const name = parts.pop();
+        if (name == null) throw new Error('cannot rmdir root');
+        const dir = await this._resolveDirHandle(parts);
+        await dir.removeEntry(name, { recursive: true });
+    }
+
+    async _stat(filepath) {
+        const parts = this._parts(filepath);
+        if (!parts.length) return this._makeStat('dir', 0);
+        const name = parts.pop();
+        let dir;
+        try { dir = await this._resolveDirHandle(parts); } catch (_) { throw this._enoent(filepath); }
+        try {
+            const fh = await dir.getFileHandle(name);
+            const file = await fh.getFile();
+            return this._makeStat('file', file.size, file.lastModified);
+        } catch (_) {
+            try {
+                await dir.getDirectoryHandle(name);
+                return this._makeStat('dir', 0);
+            } catch (__) {
+                throw this._enoent(filepath);
+            }
+        }
+    }
+
+    _makeStat(type, size, mtimeMs) {
+        return {
+            type, mode: type === 'dir' ? 0o40000 : 0o100644, size,
+            mtimeMs: mtimeMs || Date.now(), ctimeMs: mtimeMs || Date.now(),
+            uid: 1, gid: 1, dev: 1, ino: 0,
+            isFile: () => type === 'file', isDirectory: () => type === 'dir', isSymbolicLink: () => false,
+        };
+    }
+}
+
 // tw_stock_db客製: 階段5——互動式viewer的persistentStorage（見計畫文件
 // 階段5）。跟FileCache是同一種IndexedDB持久化精神，但存的是結構化的
 // 鍵值狀態（例如viewer表單填了什麼），不是blob——單筆記錄很小，不需要
@@ -735,8 +877,14 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_access_points: {
         enabled: true,
         label: '使用者授權的檔案存取點（File Access Point）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file'],
-        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式（二進位格式會回報明確錯誤，請改請使用者透過📎上傳附件走file_analysis領域）。fap_write_file是真正的磁碟寫入（會建立不存在的檔案、整份覆蓋已存在的檔案），執行前務必先跟使用者確認要寫的內容跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接告知使用者需要自己到Advance Settings「檔案存取管理」分頁按「重新授權」，AI沒辦法代為授權。',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
+        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接告知使用者需要自己到Advance Settings「檔案存取管理」分頁按「重新授權」，AI沒辦法代為授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
+    },
+    git_operations: {
+        enabled: true,
+        label: 'git版本控制操作（clone/pull/commit/push）',
+        toolNames: ['git_clone', 'git_pull', 'git_status', 'git_log', 'git_commit', 'git_push'],
+        systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。',
     },
     drawing: {
         enabled: true,
@@ -1676,6 +1824,21 @@ const FA_ASSET_URLS = {
     // 只驗證過英文（kokoro-js套件本身的G2P只支援'a'/'b'=美式/英式英文，見
     // _synthesizeSpeech的說明），中文語音朗讀目前做不到。
     kokoroJs: 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm',
+    // tw_stock_db客製: 2026-09-15——git_operations domain（純瀏覽器端git
+    // clone/pull/commit/push，用isomorphic-git）。isomorphic-git的瀏覽器
+    // bundle需要全域window.Buffer（Node Buffer polyfill）才能運作，沒有的
+    // 話會直接丟"Missing Buffer dependency"——這個是ES module，跟
+    // transformers.js/kokoroJs一樣走/+esm動態import，不能用_faLoadScriptOnce
+    // （那個是給global-attaching UMD build用的）。isomorphicGit/
+    // isomorphicGitHttp兩個才是global-attaching UMD build
+    // （window.git／window.GitHttp.default），用_faLoadScriptOnce載入。版本
+    // 鎖定1.42.2——實測過對真實公開repo（github.com/octocat/Hello-World）
+    // clone/log/status/add/commit全部正確可用（用手刻的mock
+    // FileSystemDirectoryHandle+自訂fs adapter驗證，見DESIGN-INDEX.md的
+    // 說明），不是憑猜測接的版本。
+    bufferPolyfill: 'https://cdn.jsdelivr.net/npm/buffer@6.0.3/+esm',
+    isomorphicGit: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/index.umd.min.js',
+    isomorphicGitHttp: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/http/web/index.umd.js',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -2923,6 +3086,22 @@ class FloatingAssistant {
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: false,
             browserSearchProxyUrl: '',
+            // tw_stock_db客製: 2026-09-15使用者要求的git_operations——corsProxy
+            // 網址留空時退回目前AI端點的apiUrl（見_resolveGitCorsProxyUrl，
+            // 跟browserSearchProxyUrl同一套「留空沿用目前LLM API URL」慣例），
+            // 該端點背後的Cloudflare Worker必須有/git-proxy路由（見私有repo
+            // tw_stock_db_code的code/cloudflare-worker/worker.js的
+            // handleGitProxy）才會真的動作。gitHubToken是使用者自己的GitHub
+            // Personal Access Token（私有repo clone/push需要；公開repo唯讀
+            // clone不需要），明文存在advancedSettings（跟這個專案其他API key
+            // 同樣的既有慣例，見llmModelRows.apiKey），只存在使用者自己的
+            // 瀏覽器本機。gitAuthorName/gitAuthorEmail是commit時的作者身分，
+            // isomorphic-git的git.commit()要求author.name/author.email，
+            // 空字串時_gitCommit會直接報錯提醒使用者先填。
+            gitCorsProxyUrl: '',
+            gitHubToken: '',
+            gitAuthorName: '',
+            gitAuthorEmail: '',
             // tw_stock_db客製: 2026-09-11——transcribe_media走CPU WASM路徑時
             // 請求的執行緒數（見WHISPER_WASM_THREADS/_getWhisperWasmThreads）。
             // 只在crossOriginIsolated成立（host頁面有coi-serviceworker）時
@@ -3326,6 +3505,10 @@ class FloatingAssistant {
             multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
             browserSearchEnabled: raw.browserSearchEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
+            gitCorsProxyUrl: String(raw.gitCorsProxyUrl || '').trim(),
+            gitHubToken: String(raw.gitHubToken || '').trim(),
+            gitAuthorName: String(raw.gitAuthorName || '').trim(),
+            gitAuthorEmail: String(raw.gitAuthorEmail || '').trim(),
             whisperWasmThreads: (() => {
                 const n = Number(raw.whisperWasmThreads);
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
@@ -3812,6 +3995,72 @@ ${fnData.code}
             }, required: ['ref', 'content'], additionalProperties: false }
         );
 
+        // tw_stock_db客製: 2026-09-15使用者實測回報的真實缺口——fap_write_file
+        // 只支援純文字，沒辦法把persistentStorage裡的二進位檔案（AI用
+        // text_to_speech/concat_audio產生的MP3、使用者上傳的xlsx/pdf/pptx/
+        // mp4等，不限任何特定格式，Blob複製不在乎格式）搬進File Access
+        // Point，反之亦然。這兩個工具在瀏覽器內部直接做Blob複製，不經過
+        // LLM（不會把二進位內容編碼進對話），見_fapCopyFromStorage/
+        // _fapCopyToStorage的說明。
+        registerOptional('fap_copy_from_storage',
+            '把一個已存在persistentStorage（FileCache）的檔案複製或移動到File Access Point（真實磁碟資料夾）——這是唯一能把任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等，fap_write_file只支援純文字）搬進File Access Point的方式，直接在瀏覽器內部做檔案複製，二進位內容不會經過你（不用也不能把檔案內容塞進參數）。file_id可以是使用者📎上傳的檔案、或AI自己用text_to_speech/concat_audio/export_document等工具產生的檔案（用list_uploaded_files查詢，或直接用工具回傳的file_id/audio_file_id等）。ref可以是完整目標檔案路徑（可以順便改名），也可以只給資料夾（以"/"結尾或留空代表根目錄）讓它自動沿用來源檔名。move=true時複製成功後會把persistentStorage裡的原始檔案一併刪除（真正的「移動」）。參數: {"file_id":"...", "ref":"fap:我的音檔/2026/output.mp3", "move": false}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                const ref = String(parsed.ref || '').trim();
+                if (!fileId) return JSON.stringify({ ok: false, error: '缺少file_id參數（persistentStorage裡的檔案id，用list_uploaded_files查詢，或AI自己產生檔案時工具回傳的file_id/audio_file_id等）' });
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>/<路徑>，只給資料夾路徑會自動沿用來源檔名）' });
+                try {
+                    return JSON.stringify(await this._fapCopyFromStorage(fileId, ref, { deleteSource: parsed.move === true }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: 'persistentStorage裡的檔案id（不限uploaded，AI自己產生的檔案也可以）' },
+                ref: { type: 'string', description: '格式：fap:<名稱或id>/<路徑>；只給資料夾路徑（"/"結尾或留空）會自動沿用來源檔名' },
+                move: { type: 'boolean', description: 'true=複製後刪除persistentStorage裡的原始檔案（真正移動）；預設false=保留原始檔案（複製）' },
+            }, required: ['file_id', 'ref'], additionalProperties: false }
+        );
+
+        registerOptional('fap_copy_to_storage',
+            '把File Access Point（真實磁碟資料夾）裡的一個檔案（不限格式，包含fap_read_file讀不了的二進位格式，例如圖片/音檔/影片/Office文件）複製一份進persistentStorage（FileCache）——複製完成後就能用list_uploaded_files/parse_uploaded_file/transcribe_media/extract_audio等既有工具鏈處理，這是跟fap_copy_from_storage相反的方向。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的音檔/input.mp3"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>/<路徑>）' });
+                try {
+                    return JSON.stringify(await this._fapCopyToStorage(ref));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { ref: { type: 'string', description: '格式：fap:<名稱或id>/<檔案路徑>' } }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('fap_download_url',
+            '直接從一個網址下載內容、寫進File Access Point（真實磁碟資料夾），不用先繞道persistentStorage。任何格式都適用（純Blob層級寫入）。⚠️受目標網站CORS政策限制——只有目標網站有開放跨網域存取的資源才抓得到（大多數直接檔案下載連結/CDN/raw.githubusercontent.com可以，一般網頁/需要登入的資源不一定），失敗時會回報明確的CORS/HTTP錯誤。ref可以是完整目標檔案路徑，也可以只給資料夾（"/"結尾或留空）讓它自動沿用網址最後一段當檔名。參數: {"url":"https://...", "ref":"fap:我的下載/檔名.ext"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const url = String(parsed.url || '').trim();
+                const ref = String(parsed.ref || '').trim();
+                if (!url) return JSON.stringify({ ok: false, error: '缺少url參數' });
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>[/<路徑>]，只給資料夾路徑會自動沿用網址檔名）' });
+                try {
+                    return JSON.stringify(await this._fapDownloadUrl(url, ref));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                url: { type: 'string', description: '要下載的完整http(s)網址' },
+                ref: { type: 'string', description: '格式：fap:<名稱或id>[/<路徑>]；只給資料夾路徑會自動沿用網址檔名' },
+            }, required: ['url', 'ref'], additionalProperties: false }
+        );
+
         registerOptional('fap_find_file',
             '在一個File Access Point（真實磁碟資料夾）底下遞迴搜尋檔名包含指定關鍵字的檔案/資料夾（不分大小寫、子字串比對）。有安全上限（最多掃5000個項目/找200筆結果/往下8層），超過會截斷並標記truncated:true。ref格式：`fap:<名稱或id>[/<起始路徑>]`（起始路徑留空＝從根目錄開始搜尋）。參數: {"ref":"fap:我的筆記", "query":"todo"}',
             async (rawArgs) => {
@@ -3829,6 +4078,125 @@ ${fnData.code}
                 ref: { type: 'string', description: '格式：fap:<名稱或id>[/<起始路徑>]' },
                 query: { type: 'string', description: '要搜尋的檔名關鍵字（子字串、不分大小寫）' },
             }, required: ['ref', 'query'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-15使用者要求——git_operations，6個git工具
+        // 全部操作對象是File Access Point（真實磁碟資料夾），不支援
+        // persistentStorage（見_gitClone等方法上方的說明）。corsProxy固定走
+        // 使用者自己的Cloudflare Worker/git-proxy路由（不用第三方proxy，
+        // 使用者已明確選定），私有repo需要使用者自己在Advance Settings填入
+        // GitHub token，commit/push都支援。
+        registerOptional('git_clone',
+            '把一個git repo（公開或私有皆可）clone到一個File Access Point資料夾。私有repo需要使用者已在Advance Settings「檔案存取管理」填入有讀取權限的GitHub Personal Access Token，否則會clone失敗。目標資料夾建議是空的（clone到已有內容的資料夾可能失敗或造成衝突）。參數: {"ref":"fap:我的專案", "url":"https://github.com/owner/repo.git", "branch":"main", "depth":1}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（目標File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]）' });
+                try {
+                    return JSON.stringify(await this._gitClone(ref, parsed.url, { branch: parsed.branch, depth: parsed.depth }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: '目標File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' },
+                url: { type: 'string', description: '完整git repo網址，例如 https://github.com/owner/repo.git' },
+                branch: { type: 'string', description: '要clone的分支（留空＝預設分支）' },
+                depth: { type: 'number', description: '只抓最近N筆commit的淺clone（留空＝完整歷史，repo大時建議指定，例如1）' },
+            }, required: ['ref', 'url'], additionalProperties: false }
+        );
+
+        registerOptional('git_pull',
+            '對一個已經是git repo的File Access Point資料夾執行git pull（抓取並合併遠端最新變更）。私有repo需要已填入GitHub token。參數: {"ref":"fap:我的專案", "branch":"main"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數' });
+                try {
+                    return JSON.stringify(await this._gitPull(ref, { branch: parsed.branch }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: 'File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' },
+                branch: { type: 'string', description: '要pull的分支（留空＝目前所在分支）' },
+            }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('git_status',
+            '查詢一個File Access Point資料夾（git repo）目前有哪些檔案變更（新增/修改/刪除，分staged/未staged）。參數: {"ref":"fap:我的專案"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數' });
+                try {
+                    return JSON.stringify(await this._gitStatus(ref));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { ref: { type: 'string', description: 'File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' } }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('git_log',
+            '查詢一個File Access Point資料夾（git repo）最近的commit歷史。參數: {"ref":"fap:我的專案", "depth":10}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數' });
+                try {
+                    return JSON.stringify(await this._gitLog(ref, { depth: parsed.depth }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: 'File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' },
+                depth: { type: 'number', description: '要看最近幾筆commit，預設10，上限100' },
+            }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('git_commit',
+            '把一個File Access Point資料夾（git repo）目前所有變更（新增/修改/刪除）加入staging並commit。需要使用者已在Advance Settings填入git作者名稱/信箱，否則會失敗。不會自動push，要推上遠端請接著呼叫git_push。參數: {"ref":"fap:我的專案", "message":"更新XXX"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數' });
+                try {
+                    return JSON.stringify(await this._gitCommit(ref, parsed.message));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: 'File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' },
+                message: { type: 'string', description: 'commit訊息' },
+            }, required: ['ref', 'message'], additionalProperties: false }
+        );
+
+        registerOptional('git_push',
+            '把一個File Access Point資料夾（git repo）本機已經commit的內容推上遠端(origin)。一定需要使用者已填入有寫入權限的GitHub Personal Access Token（不論公開或私有repo，push都需要驗證身分），沒有的話會直接回報錯誤而不是嘗試匿名push。參數: {"ref":"fap:我的專案", "branch":"main"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數' });
+                try {
+                    return JSON.stringify(await this._gitPush(ref, { branch: parsed.branch }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: 'File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]' },
+                branch: { type: 'string', description: '要push的分支（留空＝目前所在分支）' },
+            }, required: ['ref'], additionalProperties: false }
         );
 
         registerOptional('list_uploaded_files',
@@ -5500,7 +5868,7 @@ ${fnData.code}
         }
         const file = await fileHandle.getFile();
         if (FAP_BINARY_EXT_PATTERN.test(filename)) {
-            return { ok: false, error: `「${filename}」看起來是二進位格式，fap_read_file只支援讀取純文字檔案。如果需要AI處理這個檔案的內容，請改用📎上傳附件（parse_uploaded_file支援更多格式的二進位解析）。`, sizeBytes: file.size };
+            return { ok: false, error: `「${filename}」看起來是二進位格式，fap_read_file只支援讀取純文字檔案內容。如果需要AI處理這個檔案（分析/轉檔/轉逐字稿等），先呼叫fap_copy_to_storage把它複製進persistentStorage，再用parse_uploaded_file/transcribe_media等既有工具處理。`, sizeBytes: file.size };
         }
         const MAX_CHARS = 8000;
         let text = await file.text();
@@ -5522,6 +5890,94 @@ ${fnData.code}
         await writable.write(text);
         await writable.close();
         return { ok: true, access_point: rec.label, filename, sizeBytes: new Blob([text]).size };
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者實測回報的真實缺口——fap_write_file
+    // 只能寫純文字，沒辦法把persistentStorage(FileCache)裡的二進位檔案
+    // （AI用text_to_speech/concat_audio產生的MP3、使用者上傳的xlsx/pdf/
+    // pptx/mp4等）搬進File Access Point。這兩個方法直接在瀏覽器內部做
+    // Blob複製（不經過LLM，不會把二進位內容編碼進對話），對任何檔案格式
+    // 都適用（不限MP3——只是Blob，格式完全不重要）：
+    //   - _fapCopyFromStorage：persistentStorage → File Access Point。
+    //   - _fapCopyToStorage：File Access Point → persistentStorage（反方向，
+    //     讓FAP裡原本被fap_read_file拒絕讀取的二進位檔案，能透過既有的
+    //     parse_uploaded_file/transcribe_media等工具鏈處理）。
+    async _fapCopyFromStorage(fileId, ref, { deleteSource = false } = {}) {
+        const record = await this.fileCache.get(fileId);
+        if (!record) throw new Error(`找不到persistentStorage裡的檔案 file_id=${fileId}（用list_uploaded_files查詢可用的file_id，或AI產生檔案時工具回傳的file_id/audio_file_id等）`);
+        const { fapIdOrLabel, path } = this._parseFapRef(ref);
+        if (!fapIdOrLabel) throw new Error('缺少File Access Point名稱（格式：fap:<名稱或id>[/<路徑>]）');
+        // path留空或以'/'結尾代表「只給資料夾」，自動沿用來源檔名；否則
+        // path本身就是完整目標檔案路徑（可以順便改名）。
+        const targetPath = (!path || path.endsWith('/')) ? `${path}${record.filename}` : path;
+        const fullRef = `fap:${fapIdOrLabel}/${targetPath}`;
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(fullRef, { mode: 'readwrite', create: true });
+        let fileHandle;
+        try {
+            fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+        } catch (err) {
+            throw new Error(`建立/開啟檔案「${filename}」失敗：${String(err.message || err)}`);
+        }
+        const writable = await fileHandle.createWritable();
+        await writable.write(record.blob);
+        await writable.close();
+        if (deleteSource) await this.fileCache.delete(fileId);
+        return { ok: true, access_point: rec.label, filename, sizeBytes: record.blob.size, source_file_id: fileId, moved: !!deleteSource };
+    }
+
+    async _fapCopyToStorage(ref, kind = 'uploaded') {
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'read' });
+        let fileHandle;
+        try {
+            fileHandle = await dirHandle.getFileHandle(filename);
+        } catch (err) {
+            throw new Error(`找不到檔案「${filename}」：${String(err.message || err)}`);
+        }
+        const file = await fileHandle.getFile();
+        const fileId = await this.fileCache.put(filename, file.type || 'application/octet-stream', file, kind);
+        return { ok: true, file_id: fileId, filename, sizeBytes: file.size, access_point: rec.label };
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者要求——直接把一個網址的內容下載寫進
+    // File Access Point，不用先繞道persistentStorage。純瀏覽器端
+    // fetch()+Blob寫入，任何格式都適用（不限文字，跟fap_copy_from_storage
+    // 同樣是Blob層級的操作，不在乎內容格式）。⚠️已知限制：這是直接從瀏覽器
+    // fetch，受目標網站CORS政策限制——只有目標網站有回傳CORS header的資源
+    // 才抓得到（多數直接檔案下載連結/CDN/raw.githubusercontent.com這類
+    // 都可以，一般網頁/API不一定）；刻意不經過Cloudflare Worker代理，因為
+    // 既有的/webfetch路由是刻意限定白名單網域的（避免變成公開的萬用fetch
+    // 代理被濫用，見worker.js檔頭「關於/webfetch」的說明），這裡不擴大那個
+    // 風險範圍，失敗時會是清楚的CORS錯誤，不是靜默卡住。
+    async _fapDownloadUrl(url, ref) {
+        const u = String(url || '').trim();
+        if (!/^https?:\/\//i.test(u)) throw new Error('url必須是http(s)開頭的完整網址');
+        let response;
+        try {
+            response = await fetch(u);
+        } catch (err) {
+            throw new Error(`下載失敗（可能是目標網站不允許跨網域瀏覽器直接抓取/CORS限制）：${String(err.message || err)}`);
+        }
+        if (!response.ok) throw new Error(`下載失敗：HTTP ${response.status}`);
+        const blob = await response.blob();
+        const { fapIdOrLabel, path } = this._parseFapRef(ref);
+        if (!fapIdOrLabel) throw new Error('缺少File Access Point名稱（格式：fap:<名稱或id>[/<路徑>]）');
+        let targetPath = path;
+        if (!targetPath || targetPath.endsWith('/')) {
+            const urlName = decodeURIComponent(u.split('/').filter(Boolean).pop() || 'download');
+            targetPath = `${targetPath}${urlName}`;
+        }
+        const fullRef = `fap:${fapIdOrLabel}/${targetPath}`;
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(fullRef, { mode: 'readwrite', create: true });
+        let fileHandle;
+        try {
+            fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+        } catch (err) {
+            throw new Error(`建立/開啟檔案「${filename}」失敗：${String(err.message || err)}`);
+        }
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return { ok: true, access_point: rec.label, filename, sizeBytes: blob.size, source_url: u };
     }
 
     async _fapFindFile(ref, query) {
@@ -5605,6 +6061,177 @@ ${fnData.code}
         }
         this._persistChatHistory();
         this._renderMessageHistory();
+    }
+
+    // tw_stock_db客製: 2026-09-15——git_operations，使用者要求「幫我做成一個
+    // subagent，裡面專用來git操作，包括用使用者的file access，或用
+    // persistentStorage」。這裡只實作對File Access Point資料夾的git操作
+    // （clone/pull/status/log/commit/push）——persistentStorage(FileCache)
+    // 是單一blob的儲存，沒有「資料夾」的概念，git操作本質上需要一整棵目錄
+    // 樹，所以目前只支援fap:參照；如果之後真的需要對persistentStorage做git
+    // 操作，需要先讓使用者把persistentStorage裡的檔案匯出成一個File Access
+    // Point資料夾（可以用fap_copy_from_storage逐一搬過去）。
+    //
+    // corsProxy策略（使用者已明確選定，見計畫文件）：一律走使用者自己部署的
+    // Cloudflare Worker的/git-proxy路由，不用任何第三方proxy——留空時退回
+    // 目前AI端點的apiUrl（跟browserSearchProxyUrl同一套「留空沿用目前LLM API
+    // URL」慣例），該端點背後的Worker必須有/git-proxy路由（見私有repo
+    // tw_stock_db_code的code/cloudflare-worker/worker.js的handleGitProxy）
+    // 才會真的動作，沒部署過的人會在實際呼叫git.clone/pull/push時收到連線
+    // 失敗的錯誤（這裡沒辦法預先知道對方Worker有沒有部署這條路由）。
+    _gitAuthCallback() {
+        const token = String(this.advancedSettings.gitHubToken || '').trim();
+        if (!token) return undefined;
+        return () => ({ username: token, password: 'x-oauth-basic' });
+    }
+
+    _gitAuthor() {
+        const name = String(this.advancedSettings.gitAuthorName || '').trim();
+        const email = String(this.advancedSettings.gitAuthorEmail || '').trim();
+        if (!name || !email) {
+            throw new Error('尚未設定git commit用的作者名稱/信箱，請到Advance Settings「檔案存取管理」分頁的git設定區塊填入。');
+        }
+        return { name, email };
+    }
+
+    _resolveGitCorsProxyUrl() {
+        const explicit = String(this.advancedSettings.gitCorsProxyUrl || '').trim();
+        const base = explicit || this._getApiConfig().apiUrl;
+        if (!base) throw new Error('找不到可用的Cloudflare Worker網址（git功能需要走/git-proxy路由避開瀏覽器CORS限制），請先在Advance Settings設定AI端點或git專用的corsProxy網址。');
+        return String(base).trim().replace(/\/+$/, '').replace(/\/(v1|openrouter)$/i, '') + '/git-proxy';
+    }
+
+    async _gitResolveFs(ref, { mode = 'read', create = false } = {}) {
+        const { rec, dirHandle } = await this._resolveFapDirectory(ref, { mode, create });
+        await this._ensureIsomorphicGitLoaded();
+        return { rec, fs: new FapGitFs(dirHandle), http: window.GitHttp.default || window.GitHttp };
+    }
+
+    async _gitClone(ref, url, { branch, depth } = {}) {
+        const u = String(url || '').trim();
+        if (!/^https?:\/\//i.test(u)) throw new Error('url必須是http(s)開頭的完整git repo網址，例如 https://github.com/owner/repo.git');
+        const { rec, fs, http } = await this._gitResolveFs(ref, { mode: 'readwrite', create: true });
+        const corsProxy = this._resolveGitCorsProxyUrl();
+        try {
+            await window.git.clone({
+                fs, http, dir: '/', url: u, corsProxy,
+                ref: branch || undefined, singleBranch: !!branch, depth: depth || undefined,
+                onAuth: this._gitAuthCallback(),
+            });
+        } catch (err) {
+            throw new Error(`git clone失敗：${String(err.message || err)}（請確認網址正確、corsProxy(${corsProxy})已部署/git-proxy路由、私有repo已填入GitHub token）`);
+        }
+        return { ok: true, access_point: rec.label, url: u, branch: branch || '(預設分支)' };
+    }
+
+    async _gitPull(ref, { branch } = {}) {
+        const { rec, fs, http } = await this._gitResolveFs(ref, { mode: 'readwrite' });
+        const corsProxy = this._resolveGitCorsProxyUrl();
+        let author;
+        try { author = this._gitAuthor(); } catch (_) { author = { name: 'AI Assistant', email: 'ai@localhost' }; }
+        try {
+            await window.git.pull({
+                fs, http, dir: '/', corsProxy, ref: branch || undefined, singleBranch: true,
+                author, onAuth: this._gitAuthCallback(),
+            });
+        } catch (err) {
+            throw new Error(`git pull失敗：${String(err.message || err)}`);
+        }
+        return { ok: true, access_point: rec.label };
+    }
+
+    async _gitStatus(ref) {
+        const { rec, fs } = await this._gitResolveFs(ref, { mode: 'read' });
+        let matrix;
+        try {
+            matrix = await window.git.statusMatrix({ fs, dir: '/' });
+        } catch (err) {
+            throw new Error(`git status失敗：${String(err.message || err)}（這個資料夾可能不是git repo，先用git_clone或手動git init）`);
+        }
+        // statusMatrix每列：[filepath, headStatus, workdirStatus, stageStatus]
+        // （1=沒變, 0=不存在, 2/3=有變，見isomorphic-git文件表格），這裡轉成
+        // 人類看得懂的add/modify/delete分類，完全沒變的檔案不列出來。
+        const changed = [];
+        for (const [filepath, head, workdir, stage] of matrix) {
+            if (head === 1 && workdir === 1 && stage === 1) continue;
+            let status;
+            if (head === 0 && workdir === 2 && stage === 0) status = 'added(未staged)';
+            else if (head === 0 && stage >= 2) status = 'added(已staged)';
+            else if (head === 1 && workdir === 0 && stage === 1) status = 'deleted(未staged)';
+            else if (head === 1 && stage === 0) status = 'deleted(已staged)';
+            else if (workdir === 2 && stage === 1) status = 'modified(未staged)';
+            else if (stage === 2 || stage === 3) status = 'modified(已staged)';
+            else status = `其他(head=${head},workdir=${workdir},stage=${stage})`;
+            changed.push({ filepath, status });
+        }
+        return { ok: true, access_point: rec.label, changed_files: changed, clean: changed.length === 0 };
+    }
+
+    async _gitLog(ref, { depth = 10 } = {}) {
+        const { rec, fs } = await this._gitResolveFs(ref, { mode: 'read' });
+        let commits;
+        try {
+            commits = await window.git.log({ fs, dir: '/', depth: Math.max(1, Math.min(100, Number(depth) || 10)) });
+        } catch (err) {
+            throw new Error(`git log失敗：${String(err.message || err)}（這個資料夾可能不是git repo）`);
+        }
+        return {
+            ok: true, access_point: rec.label,
+            commits: commits.map(c => ({
+                oid: c.oid, message: c.commit.message.trim(),
+                author: c.commit.author.name, email: c.commit.author.email,
+                timestamp: new Date(c.commit.author.timestamp * 1000).toISOString(),
+            })),
+        };
+    }
+
+    async _gitCommit(ref, message) {
+        const msg = String(message || '').trim();
+        if (!msg) throw new Error('缺少commit訊息');
+        const { rec, fs } = await this._gitResolveFs(ref, { mode: 'readwrite' });
+        const author = this._gitAuthor();
+        let matrix;
+        try {
+            matrix = await window.git.statusMatrix({ fs, dir: '/' });
+        } catch (err) {
+            throw new Error(`git commit失敗（讀取status時）：${String(err.message || err)}`);
+        }
+        // isomorphic-git的add/remove是逐檔API，沒有單一次'.'代表全部的寫法
+        // （見FapGitFs開發過程的實測結果）——新增/修改的檔案呼叫git.add，
+        // 工作目錄裡已經被刪除的檔案改呼叫git.remove（只改stage，不影響
+        // workdir，workdir本來就已經沒有那個檔案了）。
+        let staged = 0;
+        for (const [filepath, head, workdir, stage] of matrix) {
+            if (head === 1 && workdir === 1 && stage === 1) continue;
+            try {
+                if (workdir === 0) await window.git.remove({ fs, dir: '/', filepath });
+                else await window.git.add({ fs, dir: '/', filepath });
+                staged++;
+            } catch (err) {
+                throw new Error(`git add/remove「${filepath}」失敗：${String(err.message || err)}`);
+            }
+        }
+        if (!staged) return { ok: true, access_point: rec.label, committed: false, message: '沒有任何變更需要commit' };
+        let oid;
+        try {
+            oid = await window.git.commit({ fs, dir: '/', message: msg, author });
+        } catch (err) {
+            throw new Error(`git commit失敗：${String(err.message || err)}`);
+        }
+        return { ok: true, access_point: rec.label, committed: true, oid, files_staged: staged };
+    }
+
+    async _gitPush(ref, { branch } = {}) {
+        const { rec, fs, http } = await this._gitResolveFs(ref, { mode: 'readwrite' });
+        const corsProxy = this._resolveGitCorsProxyUrl();
+        const onAuth = this._gitAuthCallback();
+        if (!onAuth) throw new Error('git push需要先在Advance Settings填入有寫入權限的GitHub Personal Access Token。');
+        try {
+            await window.git.push({ fs, http, dir: '/', corsProxy, remote: 'origin', ref: branch || undefined, onAuth });
+        } catch (err) {
+            throw new Error(`git push失敗：${String(err.message || err)}`);
+        }
+        return { ok: true, access_point: rec.label };
     }
 
     // tw_stock_db客製: 2026-09-11——slash-command/工具用「附件、或已上傳在
@@ -8709,6 +9336,14 @@ ${sourceTool.handlerScript}
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
         if (browserSearchProxyUrlInput) browserSearchProxyUrlInput.value = this.advancedSettings.browserSearchProxyUrl || '';
+        const gitCorsProxyUrlInput = document.getElementById('ai-git-cors-proxy-url');
+        if (gitCorsProxyUrlInput) gitCorsProxyUrlInput.value = this.advancedSettings.gitCorsProxyUrl || '';
+        const gitTokenInput = document.getElementById('ai-git-token');
+        if (gitTokenInput) gitTokenInput.value = this.advancedSettings.gitHubToken || '';
+        const gitAuthorNameInput = document.getElementById('ai-git-author-name');
+        if (gitAuthorNameInput) gitAuthorNameInput.value = this.advancedSettings.gitAuthorName || '';
+        const gitAuthorEmailInput = document.getElementById('ai-git-author-email');
+        if (gitAuthorEmailInput) gitAuthorEmailInput.value = this.advancedSettings.gitAuthorEmail || '';
         const whisperDeviceSelect = document.getElementById('ai-whisper-device');
         if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
@@ -9151,6 +9786,30 @@ ${sourceTool.handlerScript}
             throw new Error('js-yaml 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._jsyamlLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者要求的git_operations——isomorphic-git
+    // （純JS git實作）瀏覽器整合，依序：(1) Buffer polyfill（真正的ESM，
+    // 必須用動態import()，不能用_faLoadScriptOnce那套UMD注入方式）、
+    // (2) isomorphic-git本體（UMD，attach到window.git）、(3) isomorphic-git
+    // 的HTTP transport子模組（獨立UMD檔案，attach到window.GitHttp，
+    // clone/pull/push時要傳給`http`參數）。版本1.42.2經過實測clone/log/
+    // status/add/commit全部驗證正確，不是憑文件猜的。
+    _ensureIsomorphicGitLoaded() {
+        if (typeof window.git !== 'undefined' && typeof window.GitHttp !== 'undefined') return Promise.resolve();
+        if (this._isomorphicGitLoadPromise) return this._isomorphicGitLoadPromise;
+        this._isomorphicGitLoadPromise = (async () => {
+            if (typeof window.Buffer === 'undefined') {
+                const bufMod = await import(/* webpackIgnore: true */ FA_ASSET_URLS.bufferPolyfill);
+                window.Buffer = bufMod.Buffer;
+            }
+            if (typeof window.git === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.isomorphicGit);
+            if (typeof window.GitHttp === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.isomorphicGitHttp);
+        })().catch(e => {
+            this._isomorphicGitLoadPromise = null;
+            throw new Error('isomorphic-git 載入失敗（可能是網路問題）：' + e.message);
+        });
+        return this._isomorphicGitLoadPromise;
     }
 
     // tw_stock_db客製: 階段3——three.js本體+OrbitControls依序載入（後者要靠
@@ -16575,8 +17234,20 @@ ${existingNodeSummaries}
                                         <div class="ai-advanced-label" style="margin:0;">檔案存取管理（File Access Point）</div>
                                         <button type="button" id="ai-fap-add-btn" class="ai-advanced-btn primary">+ 新增資料夾</button>
                                     </div>
-                                    <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權，屆時下面該筆會顯示「重新授權」按鈕（必須由你自己點擊）。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
+                                    <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作純文字內容，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。**任何格式的二進位檔案**（MP3/MP4/xlsx/pdf/pptx/圖片等）可以用<code>fap_copy_from_storage</code>／<code>fap_copy_to_storage</code>在兩套系統之間搬動（複製或移動），或用<code>fap_download_url</code>直接把一個網址的內容下載進來（受目標網站CORS限制，不是每個網址都抓得到）。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權，屆時下面該筆會顯示「重新授權」按鈕（必須由你自己點擊）。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
                                     <div id="ai-fap-list" class="ai-tool-list"></div>
+                                    <div class="ai-advanced-tools-header" style="margin-top:16px;">
+                                        <div class="ai-advanced-label" style="margin:0;">git版本控制（clone / pull / commit / push）</div>
+                                    </div>
+                                    <p class="ai-advanced-hint">AI可以用<code>git_clone</code>/<code>git_pull</code>/<code>git_status</code>/<code>git_log</code>/<code>git_commit</code>/<code>git_push</code>對上面已授權的File Access Point資料夾做git操作（純瀏覽器JS實作，不需要安裝git）。因為瀏覽器直接對GitHub發請求會被CORS擋下，一定要透過一個部署了<code>/git-proxy</code>路由的Cloudflare Worker中繼——留空會沿用你AI端點目前的網址，如果那個端點背後沒有部署這條路由，git操作會連線失敗。公開repo唯讀clone/pull不需要token；私有repo、以及任何repo的push，都需要下面填入你自己的GitHub Personal Access Token（只存在你自己瀏覽器本機，不會被上傳）。</p>
+                                    <label class="ai-advanced-label" for="ai-git-cors-proxy-url">git corsProxy網址（留空＝沿用目前AI端點網址）</label>
+                                    <input type="text" id="ai-git-cors-proxy-url" class="ai-advanced-input" placeholder="https://your-worker.workers.dev">
+                                    <label class="ai-advanced-label" for="ai-git-token">GitHub Personal Access Token（私有repo/push才需要）</label>
+                                    <input type="password" id="ai-git-token" class="ai-advanced-input" placeholder="ghp_...">
+                                    <label class="ai-advanced-label" for="ai-git-author-name">commit作者名稱</label>
+                                    <input type="text" id="ai-git-author-name" class="ai-advanced-input" placeholder="例如：sunneo">
+                                    <label class="ai-advanced-label" for="ai-git-author-email">commit作者信箱</label>
+                                    <input type="text" id="ai-git-author-email" class="ai-advanced-input" placeholder="例如：you@example.com">
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="subagent">
@@ -18486,6 +19157,34 @@ ${existingNodeSummaries}
         if (browserSearchProxyUrlInput) {
             browserSearchProxyUrlInput.addEventListener('change', () => {
                 this.advancedSettings.browserSearchProxyUrl = browserSearchProxyUrlInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const gitCorsProxyUrlInput = document.getElementById('ai-git-cors-proxy-url');
+        if (gitCorsProxyUrlInput) {
+            gitCorsProxyUrlInput.addEventListener('change', () => {
+                this.advancedSettings.gitCorsProxyUrl = gitCorsProxyUrlInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const gitTokenInput = document.getElementById('ai-git-token');
+        if (gitTokenInput) {
+            gitTokenInput.addEventListener('change', () => {
+                this.advancedSettings.gitHubToken = gitTokenInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const gitAuthorNameInput = document.getElementById('ai-git-author-name');
+        if (gitAuthorNameInput) {
+            gitAuthorNameInput.addEventListener('change', () => {
+                this.advancedSettings.gitAuthorName = gitAuthorNameInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const gitAuthorEmailInput = document.getElementById('ai-git-author-email');
+        if (gitAuthorEmailInput) {
+            gitAuthorEmailInput.addEventListener('change', () => {
+                this.advancedSettings.gitAuthorEmail = gitAuthorEmailInput.value.trim();
                 this._saveAdvancedSettings();
             });
         }

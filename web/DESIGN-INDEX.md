@@ -88,6 +88,46 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
 
 ## 近期重大修改（2026-09-05/06這次工作階段新增，尚未整理進上面的階段分類）
 
+- **2026-09-15：File Access Point（真實磁碟資料夾授權）+ git_operations**
+  （完整背景見`CHANGES.md`同日條目）——
+  - `class FileAccessPointStore`（`class FileCache`結束後）：IndexedDB存
+    `{id,label,handle,addedAt}`，`handle`是`FileSystemDirectoryHandle`
+    本體（Chromium IndexedDB structured clone原生支援），這是「permission
+    永久化」的關鍵，重開頁面後用`handle.queryPermission()`唯讀確認授權
+    還在；失效時只能靠使用者自己點「重新授權」觸發`requestPermission()`
+    （transient activation硬限制，AI工具呼叫鏈滿足不了）。
+  - `fap:`定址格式（`_looksLikeFapRef`/`_parseFapRef`）是AI/斜線指令
+    區分persistentStorage(FileCache) vs File Access Point的唯一依據，
+    `_resolveUploadedFileRecord`開頭guard掉`fap:`格式直接回傳null。
+    核心resolver：`_resolveFapDirectory`/`_resolveFapFileParent`/
+    `_splitFapPath`（擋`.`/`..`）/`_checkFapPermission`。
+  - 純文字讀寫：`_fapListFiles`/`_fapReadFile`（拒絕`FAP_BINARY_EXT_PATTERN`）/
+    `_fapWriteFile`/`_fapFindFile`。二進位橋接（`fap_copy_from_storage`/
+    `fap_copy_to_storage`/`fap_download_url`）：直接搬`record.blob`/
+    `fileCache.put`/瀏覽器`fetch()`，不經過LLM編碼，保留位元組完整性。
+  - `git_operations`：`class FapGitFs`（`FileAccessPointStore`結束後）
+    把`FileSystemDirectoryHandle`包成isomorphic-git的`fs.promises`介面，
+    含`readlink`/`symlink` stub（isomorphic-git執行期`bindFs()`無條件
+    對這兩個也`.bind()`，缺了會在建構期就丟`Cannot read properties of
+    undefined (reading 'bind')`，讀原始碼才找到，TypeScript型別把它們
+    標成選填會誤導）。`_ensureIsomorphicGitLoaded`：Buffer polyfill走
+    動態`import()`（真ESM，不能用`_faLoadScriptOnce`的UMD注入方式），
+    isomorphic-git本體+http/web transport走`_faLoadScriptOnce`（UMD，
+    `window.git`/`window.GitHttp`），版本`1.42.2`經真實clone/log/status/
+    add/commit流程實測。6個方法`_gitClone`/`_gitPull`/`_gitStatus`/
+    `_gitLog`/`_gitCommit`/`_gitPush`＋`_resolveGitCorsProxyUrl`（留空
+    退回目前AI端點apiUrl，需要對應Worker有`/git-proxy`路由，見
+    `tw_stock_db_code`私有repo`code/cloudflare-worker/worker.js`的
+    `handleGitProxy`）＋`_gitAuthCallback`/`_gitAuthor`（讀
+    `advancedSettings.gitHubToken`/`gitAuthorName`/`gitAuthorEmail`，
+    Advance Settings「檔案存取管理」分頁UI）。`_gitCommit`依
+    `git.statusMatrix`逐檔`git.add`/`git.remove`（isomorphic-git沒有
+    單次`'.'`代表全部的寫法）後才`git.commit`。新`git_operations`
+    domain（6個工具、獨立於`file_access_points`domain）。
+  - 新Advance Settings分頁`data-cat="file-access"`：FAP清單
+    （`_renderFapList`）+ git設定區塊（corsProxy網址/token/作者名稱信箱）。
+    3個斜線指令`/fap-list`/`/fap-read`/`/fap-find`（`_handleFap*Command`）。
+
 - **全新子系統：2D多邊形動畫**（跟3D場景/互動viewer完全獨立，不共用場景圖/
   渲染邏輯，只共用`_encodeCanvasFramesToMp4`）——圓/矩形/多邊形/折線/文字/圖片
   六種shape類型（`TWODANIM_SHAPE_TYPES`）+ 六種動畫類型move/rotate/scale/fade/
