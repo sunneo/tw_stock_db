@@ -495,6 +495,81 @@ class FileCache {
     }
 }
 
+// tw_stock_db客製: 2026-09-15使用者要求——「檔案存取管理」，讓使用者把真實
+// 磁碟上的資料夾授權給AI讀寫（File System Access API，
+// `window.showDirectoryPicker()`），不同於FileCache那種「AI自己產生/使用者
+// 上傳進瀏覽器內部IndexedDB」的persistentStorage。這裡存的record是
+// `{id, label, handle}`——`handle`是FileSystemDirectoryHandle物件本身，
+// Chromium瀏覽器的IndexedDB用structured clone直接支援存這種handle（不是
+// 存路徑字串，路徑字串沒辦法拿回真正的檔案存取權），這是這個功能能夠
+// 「permission永久化」的關鍵：下次重新整理頁面，從IndexedDB讀回同一個
+// handle物件，用`handle.queryPermission()`（唯讀查詢，不用使用者手勢）
+// 檢查目前的授權狀態還在不在，通常還在（除非瀏覽器自己因為長時間沒用/
+// 清過網站資料而重置），不在的話再由使用者在設定面板按「重新授權」按鈕
+// （必須是真正的使用者點擊事件觸發`handle.requestPermission()`，這個API
+// 的設計要求「transient activation」，AI工具呼叫這種非同步、經過LLM
+// 往返的呼叫鏈沒辦法滿足這個條件，所以永遠只能由使用者親自在UI上按鈕
+// 重新授權，AI自己沒辦法靜默取得）。
+class FileAccessPointStore {
+    constructor(dbName = 'FloatingAssistantFAP') {
+        this.dbName = dbName;
+        this.storeName = 'access_points';
+        this.db = null;
+        this._ready = this._init();
+    }
+
+    _init() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.dbName, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    db.createObjectStore(this.storeName, { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async _tx(mode, fn) {
+        await this._ready;
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(this.storeName, mode);
+            const store = tx.objectStore(this.storeName);
+            const req = fn(store);
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async add(label, handle) {
+        const id = crypto.randomUUID ? crypto.randomUUID() : `fap_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        await this._tx('readwrite', s => s.put({ id, label, handle, addedAt: Date.now() }));
+        return id;
+    }
+
+    async getAll() {
+        return this._tx('readonly', s => s.getAll());
+    }
+
+    async get(id) {
+        return this._tx('readonly', s => s.get(id));
+    }
+
+    async rename(id, label) {
+        const rec = await this.get(id);
+        if (!rec) return false;
+        rec.label = label;
+        await this._tx('readwrite', s => s.put(rec));
+        return true;
+    }
+
+    async delete(id) {
+        return this._tx('readwrite', s => s.delete(id));
+    }
+}
+
 // tw_stock_db客製: 階段5——互動式viewer的persistentStorage（見計畫文件
 // 階段5）。跟FileCache是同一種IndexedDB持久化精神，但存的是結構化的
 // 鍵值狀態（例如viewer表單填了什麼），不是blob——單筆記錄很小，不需要
@@ -650,6 +725,18 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         label: '檔案解讀分析',
         toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
         systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+    },
+    // tw_stock_db客製: 2026-09-15使用者要求——跟file_analysis（上面那個，
+    // persistentStorage/FileCache裡的上傳檔案）是完全不同的兩套系統，
+    // 刻意分開domain：這裡是使用者在Advance Settings「檔案存取管理」分頁
+    // 主動授權的**真實磁碟資料夾**（File System Access API），檔案參照
+    // 一律用「fap:<名稱或id>[/<路徑>]」這個前綴格式，不會跟file_id/檔名
+    // 搞混。
+    file_access_points: {
+        enabled: true,
+        label: '使用者授權的檔案存取點（File Access Point）',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file'],
+        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式（二進位格式會回報明確錯誤，請改請使用者透過📎上傳附件走file_analysis領域）。fap_write_file是真正的磁碟寫入（會建立不存在的檔案、整份覆蓋已存在的檔案），執行前務必先跟使用者確認要寫的內容跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接告知使用者需要自己到Advance Settings「檔案存取管理」分頁按「重新授權」，AI沒辦法代為授權。',
     },
     drawing: {
         enabled: true,
@@ -1413,6 +1500,20 @@ const DEFAULT_CHAT_TEMPERATURE = 0.1;
 // 不覆寫、沿用全域生成設定」的數值型欄位，統一在這裡列出，_normalizeModelRow/
 // UI渲染/儲存都共用同一份清單，不用四處重複打欄位名稱。
 const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens'];
+
+// tw_stock_db客製: 2026-09-15——File Access Point（fap_find_file）遞迴搜尋的
+// 安全上限，避免使用者授權了一個極大的資料夾（例如整個使用者家目錄）時
+// 搜尋卡死/掃到天荒地老。三個上限任一觸發就停止，回傳目前已經找到的結果
+// 並標記truncated:true。
+const FAP_FIND_MAX_RESULTS = 200;
+const FAP_FIND_MAX_SCAN = 5000;
+const FAP_FIND_MAX_DEPTH = 8;
+// tw_stock_db客製: fap_read_file/fap_write_file鎖定純文字檔案（原始碼/
+// 筆記/設定檔/markdown等）——二進位格式（圖片/影片/office文件/壓縮檔等）
+// 請改用既有的📎上傳附件+parse_uploaded_file管道，那條路徑已經有處理各種
+// 二進位格式解析的邏輯，這裡刻意不重複發明一份，只用副檔名快速擋掉明顯
+// 不是文字的格式，讓錯誤訊息在真的去讀之前就先講清楚。
+const FAP_BINARY_EXT_PATTERN = /\.(png|jpe?g|gif|bmp|webp|svg|ico|mp3|mp4|wav|ogg|webm|mov|avi|mkv|pdf|zip|tar|gz|tgz|7z|rar|docx?|xlsx?|pptx?|exe|dll|so|bin|dat|db|sqlite3?|ttf|woff2?|eot|class|jar|wasm)$/i;
 
 // tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
 // PRESET_MODEL_OPTIONS（含新加的openrouter/free）逐一轉成row，URL/KEY/
@@ -2478,6 +2579,27 @@ class FloatingAssistant {
             '建立配音小幫手互動widget，針對影片的某個時間段（或整支字幕，留空時間段）逐句錄音/上傳音檔配音。時間格式可以是秒數或"分:秒"，例如 /media-dub-video 1:20-1:45',
             (argsText) => this._handleMediaDubVideoCommand(argsText)
         );
+        // tw_stock_db客製: 2026-09-15使用者要求——File Access Point（Advance
+        // Settings「檔案存取管理」分頁授權的真實磁碟資料夾）本地直接執行的
+        // 瀏覽/讀取/搜尋指令，不經過LLM。ref格式一律是「fap:<名稱或id>
+        // [/<路徑>]」，跟persistentStorage的file_id/檔名一眼可辨（見
+        // _looksLikeFapRef的說明）。寫入沒有對應的斜線指令，交給AI工具
+        // fap_write_file處理（見那個工具/domain systemPrompt的說明）。
+        this.register_slash_command(
+            '/fap-list', '<ref>',
+            '列出一個File Access Point（真實磁碟資料夾）某個路徑下的檔案/子資料夾。ref格式：fap:<名稱或id>[/<路徑>]，例如 /fap-list fap:我的筆記/2026',
+            (argsText) => this._handleFapListCommand(argsText)
+        );
+        this.register_slash_command(
+            '/fap-read', '<ref>',
+            '讀取File Access Point裡一個純文字檔案的內容。ref格式：fap:<名稱或id>/<檔案路徑>，例如 /fap-read fap:我的筆記/todo.txt',
+            (argsText) => this._handleFapReadCommand(argsText)
+        );
+        this.register_slash_command(
+            '/fap-find', '<ref> <關鍵字>',
+            '在File Access Point底下遞迴搜尋檔名包含關鍵字的檔案/資料夾。例如 /fap-find fap:我的筆記 todo',
+            (argsText) => this._handleFapFindCommand(argsText)
+        );
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -2538,6 +2660,9 @@ class FloatingAssistant {
         // 獨立20MB容量預算，不跟檔案上傳/AI匯出檔共用），另外疊加1天TTL（見
         // SEARCH_CACHE_TTL_MS/_getCachedSearchResult()）。
         this.searchCache = new FileCache('FloatingAssistantSearchCache_' + ragDbSuffix, SEARCH_CACHE_MAX_BYTES);
+        // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
+        // 跟fileCache/searchCache一樣依mount實例分開資料庫。
+        this.fileAccessPoints = new FileAccessPointStore('FloatingAssistantFAP_' + ragDbSuffix);
         this._searchCachePurgedOnce = false;
         // tw_stock_db客製: 階段5——互動viewer的結構化狀態儲存（見KVStore/
         // 計畫文件階段5），跟fileCache一樣依mount實例分開資料庫。
@@ -3610,6 +3735,102 @@ ${fnData.code}
         // （列出/解析），每個格式的細節解析邏輯藏在_parseUploadedFileContent
         // 內部依副檔名分派，不對AI逐一展開每種格式怎麼解析——呼應
         // SUBAGENT_DOMAIN_REGISTRY註解說的「主功能工具保持精簡」原則。
+        // tw_stock_db客製: 2026-09-15——File Access Point工具家族。使用者在
+        // Advance Settings「檔案存取管理」分頁授權真實磁碟資料夾給AI讀寫
+        // （File System Access API），跟persistentStorage（FileCache，
+        // list_uploaded_files/parse_uploaded_file那一套）是完全不同的兩個
+        // 系統——這裡的檔案參照一律用「fap:<名稱或id>[/<路徑>]」這個前綴
+        // 格式（見_looksLikeFapRef/_parseFapRef的說明），跟裸file_id/檔名
+        // 一眼就能分辨。
+        registerOptional('list_file_access_points',
+            '列出使用者目前已授權給AI讀寫的File Access Point（真實磁碟資料夾，不是persistentStorage）清單，含每個的授權狀態。無參數。要操作其中的檔案，用回傳的id或label組成`fap:<名稱或id>[/<路徑>]`格式的ref，交給fap_list_files/fap_read_file/fap_write_file/fap_find_file使用。',
+            async () => {
+                try {
+                    const all = await this.fileAccessPoints.getAll();
+                    const points = await Promise.all(all.map(async (r) => {
+                        let permission = 'unknown';
+                        try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
+                        return { id: r.id, label: r.label, permission };
+                    }));
+                    return JSON.stringify({ ok: true, access_points: points });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        registerOptional('fap_list_files',
+            '列出一個File Access Point（真實磁碟資料夾）底下某個路徑的檔案/子資料夾清單。ref格式：`fap:<名稱或id>[/<子路徑>]`（子路徑留空＝列根目錄）。不確定有哪些File Access Point可用時，先呼叫list_file_access_points查詢。參數: {"ref":"fap:我的筆記/2026"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>[/<路徑>]，用list_file_access_points查詢可用的名稱）' });
+                try {
+                    return JSON.stringify(await this._fapListFiles(ref));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { ref: { type: 'string', description: '格式：fap:<名稱或id>[/<路徑>]' } }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('fap_read_file',
+            '讀取一個File Access Point（真實磁碟資料夾）裡某個純文字檔案的內容（原始碼/筆記/設定檔/markdown等；圖片/影片/office文件/壓縮檔這類二進位格式不支援，會回報明確錯誤，請改用📎上傳附件+parse_uploaded_file）。超過8000字元會截斷（回傳裡truncated:true時代表被截斷）。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>/<路徑>）' });
+                try {
+                    return JSON.stringify(await this._fapReadFile(ref));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { ref: { type: 'string', description: '格式：fap:<名稱或id>/<檔案路徑>' } }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('fap_write_file',
+            '把文字內容寫入一個File Access Point（真實磁碟資料夾）裡的某個檔案——檔案不存在會自動建立（含中途缺的子資料夾），存在則整份覆蓋（不是附加）。這是真正的磁碟寫入，使用前務必跟使用者確認要寫的內容跟目標路徑。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt", "content":"...")}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>/<路徑>）' });
+                if (typeof parsed.content !== 'string') return JSON.stringify({ ok: false, error: '缺少content參數（要寫入的純文字內容，留空字串代表清空檔案）' });
+                try {
+                    return JSON.stringify(await this._fapWriteFile(ref, parsed.content));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: '格式：fap:<名稱或id>/<檔案路徑>' },
+                content: { type: 'string', description: '要寫入的純文字內容（整份覆蓋，不是附加）' },
+            }, required: ['ref', 'content'], additionalProperties: false }
+        );
+
+        registerOptional('fap_find_file',
+            '在一個File Access Point（真實磁碟資料夾）底下遞迴搜尋檔名包含指定關鍵字的檔案/資料夾（不分大小寫、子字串比對）。有安全上限（最多掃5000個項目/找200筆結果/往下8層），超過會截斷並標記truncated:true。ref格式：`fap:<名稱或id>[/<起始路徑>]`（起始路徑留空＝從根目錄開始搜尋）。參數: {"ref":"fap:我的筆記", "query":"todo"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>[/<路徑>]）' });
+                try {
+                    return JSON.stringify(await this._fapFindFile(ref, parsed.query));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: '格式：fap:<名稱或id>[/<起始路徑>]' },
+                query: { type: 'string', description: '要搜尋的檔名關鍵字（子字串、不分大小寫）' },
+            }, required: ['ref', 'query'], additionalProperties: false }
+        );
+
         registerOptional('list_uploaded_files',
             '列出使用者透過📎附件按鈕上傳、目前還在快取中的檔案清單（不含AI自己產生的匯出檔）。無參數。',
             async () => {
@@ -5160,6 +5381,232 @@ ${fnData.code}
         };
     }
 
+    // ============================================================
+    // 💡 File Access Point（真實磁碟資料夾讀寫，見FileAccessPointStore
+    //    類別上方的說明）
+    // ============================================================
+    // tw_stock_db客製: 2026-09-15——AI工具參數／斜線指令共用的唯一「檔案
+    // 參照」判斷依據：字串開頭是「fap:」代表指向使用者透過File Access
+    // Point授權的真實磁碟資料夾（不是persistentStorage），格式是
+    // `fap:<FAP的id或名稱>[/<相對路徑>]`（例如`fap:我的筆記`＝該FAP根
+    // 目錄、`fap:我的筆記/2026/todo.txt`＝底下的一個檔案）；不是這個格式
+    // 的字串（裸file_id或檔名）一律照舊走_resolveUploadedFileRecord()那套
+    // persistentStorage(FileCache)邏輯，兩套系統的呼叫端（AI工具callback／
+    // 斜線指令handler）都靠這一個前綴判斷，不用另外猜測字串屬於哪一邊。
+    _looksLikeFapRef(ref) {
+        return /^fap:/i.test(String(ref || '').trim());
+    }
+
+    _parseFapRef(ref) {
+        const s = String(ref || '').trim();
+        const rest = s.replace(/^fap:/i, '');
+        const slashIdx = rest.indexOf('/');
+        const fapIdOrLabel = (slashIdx === -1 ? rest : rest.slice(0, slashIdx)).trim();
+        const path = (slashIdx === -1 ? '' : rest.slice(slashIdx + 1)).trim();
+        return { fapIdOrLabel, path };
+    }
+
+    // 依id精確比對優先，找不到再依label做不分大小寫比對——讓使用者/AI可以
+    // 用好記的名稱取代UUID。
+    async _resolveFapAccessPoint(fapIdOrLabel) {
+        const all = await this.fileAccessPoints.getAll();
+        const byId = all.find(r => r.id === fapIdOrLabel);
+        if (byId) return byId;
+        const lower = String(fapIdOrLabel || '').toLowerCase();
+        const byLabel = all.find(r => String(r.label || '').toLowerCase() === lower);
+        if (byLabel) return byLabel;
+        throw new Error(`找不到File Access Point「${fapIdOrLabel}」，用list_file_access_points查詢目前已授權的清單。`);
+    }
+
+    // path traversal防禦：即使File System Access API本身理論上不會真的讓
+    // getDirectoryHandle('..')逃出授權目錄（沒有這個字面名稱的資料夾就是
+    // 直接失敗，不是真的往上跳一層），這裡還是先擋掉'.'/'..'這種片段，
+    // 多一層防禦深度、也讓錯誤訊息更明確。
+    _splitFapPath(path) {
+        const parts = String(path || '').split('/').map(p => p.trim()).filter(Boolean);
+        for (const p of parts) {
+            if (p === '.' || p === '..') throw new Error(`路徑裡不能有「${p}」這種片段。`);
+        }
+        return parts;
+    }
+
+    async _checkFapPermission(rec, mode = 'readwrite') {
+        let perm;
+        try {
+            perm = await rec.handle.queryPermission({ mode });
+        } catch (err) {
+            throw new Error(`檢查「${rec.label}」的存取權限時發生錯誤：${String(err.message || err)}`);
+        }
+        if (perm !== 'granted') {
+            throw new Error(`「${rec.label}」目前沒有${mode === 'readwrite' ? '讀寫' : '讀取'}權限（瀏覽器可能因為太久沒用而重置了授權），請到Advance Settings「檔案存取管理」分頁按「重新授權」（這一步必須由你親自點擊，AI沒辦法代為授權）。`);
+        }
+    }
+
+    // ref指向一個「目錄」（fap_list_files/fap_find_file用）：把path全部走
+    // 完，回傳該目錄本身的handle。
+    async _resolveFapDirectory(ref, { mode = 'read', create = false } = {}) {
+        const { fapIdOrLabel, path } = this._parseFapRef(ref);
+        if (!fapIdOrLabel) throw new Error('缺少File Access Point名稱（格式：fap:<名稱或id>[/<路徑>]）');
+        const rec = await this._resolveFapAccessPoint(fapIdOrLabel);
+        await this._checkFapPermission(rec, mode);
+        const parts = this._splitFapPath(path);
+        let dirHandle = rec.handle;
+        for (const part of parts) {
+            dirHandle = await dirHandle.getDirectoryHandle(part, { create });
+        }
+        return { rec, dirHandle, path };
+    }
+
+    // ref指向一個「檔案」（fap_read_file/fap_write_file用）：把path除了
+    // 最後一段之外都走完（當成資料夾），回傳「父資料夾handle + 檔名」，
+    // 讓呼叫端自己決定要getFileHandle讀還是{create:true}寫。
+    async _resolveFapFileParent(ref, { mode = 'readwrite', create = false } = {}) {
+        const { fapIdOrLabel, path } = this._parseFapRef(ref);
+        if (!fapIdOrLabel) throw new Error('缺少File Access Point名稱（格式：fap:<名稱或id>[/<路徑>]）');
+        const parts = this._splitFapPath(path);
+        if (!parts.length) throw new Error('這個操作需要指定檔案路徑（不能只給FAP名稱），格式：fap:<名稱或id>/<路徑/檔名>');
+        const filename = parts.pop();
+        const rec = await this._resolveFapAccessPoint(fapIdOrLabel);
+        await this._checkFapPermission(rec, mode);
+        let dirHandle = rec.handle;
+        for (const part of parts) {
+            dirHandle = await dirHandle.getDirectoryHandle(part, { create });
+        }
+        return { rec, dirHandle, filename };
+    }
+
+    async _fapListFiles(ref) {
+        const { rec, dirHandle, path } = await this._resolveFapDirectory(ref, { mode: 'read' });
+        const entries = [];
+        for await (const [name, handle] of dirHandle.entries()) {
+            if (handle.kind === 'file') {
+                const file = await handle.getFile();
+                entries.push({ name, type: 'file', sizeBytes: file.size });
+            } else {
+                entries.push({ name, type: 'directory' });
+            }
+        }
+        entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : (a.type === 'directory' ? -1 : 1)));
+        return { ok: true, access_point: rec.label, path, entries };
+    }
+
+    async _fapReadFile(ref) {
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'read' });
+        let fileHandle;
+        try {
+            fileHandle = await dirHandle.getFileHandle(filename);
+        } catch (err) {
+            throw new Error(`找不到檔案「${filename}」：${String(err.message || err)}`);
+        }
+        const file = await fileHandle.getFile();
+        if (FAP_BINARY_EXT_PATTERN.test(filename)) {
+            return { ok: false, error: `「${filename}」看起來是二進位格式，fap_read_file只支援讀取純文字檔案。如果需要AI處理這個檔案的內容，請改用📎上傳附件（parse_uploaded_file支援更多格式的二進位解析）。`, sizeBytes: file.size };
+        }
+        const MAX_CHARS = 8000;
+        let text = await file.text();
+        const truncated = text.length > MAX_CHARS;
+        if (truncated) text = text.slice(0, MAX_CHARS);
+        return { ok: true, access_point: rec.label, filename, sizeBytes: file.size, content: text, truncated };
+    }
+
+    async _fapWriteFile(ref, content) {
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'readwrite', create: true });
+        let fileHandle;
+        try {
+            fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+        } catch (err) {
+            throw new Error(`建立/開啟檔案「${filename}」失敗：${String(err.message || err)}`);
+        }
+        const writable = await fileHandle.createWritable();
+        const text = String(content == null ? '' : content);
+        await writable.write(text);
+        await writable.close();
+        return { ok: true, access_point: rec.label, filename, sizeBytes: new Blob([text]).size };
+    }
+
+    async _fapFindFile(ref, query) {
+        const { rec, dirHandle, path } = await this._resolveFapDirectory(ref, { mode: 'read' });
+        const q = String(query || '').trim().toLowerCase();
+        if (!q) throw new Error('缺少query參數（要搜尋的檔名關鍵字）');
+        const matches = [];
+        let scanned = 0;
+        const walk = async (handle, relPath, depth) => {
+            if (matches.length >= FAP_FIND_MAX_RESULTS || scanned >= FAP_FIND_MAX_SCAN || depth > FAP_FIND_MAX_DEPTH) return;
+            for await (const [name, childHandle] of handle.entries()) {
+                if (matches.length >= FAP_FIND_MAX_RESULTS || scanned >= FAP_FIND_MAX_SCAN) return;
+                scanned++;
+                const childRelPath = relPath ? `${relPath}/${name}` : name;
+                if (name.toLowerCase().includes(q)) {
+                    matches.push({ ref: `fap:${rec.label}/${childRelPath}`, name, type: childHandle.kind === 'file' ? 'file' : 'directory' });
+                }
+                if (childHandle.kind === 'directory' && depth < FAP_FIND_MAX_DEPTH) {
+                    await walk(childHandle, childRelPath, depth + 1);
+                }
+            }
+        };
+        await walk(dirHandle, path, 0);
+        return {
+            ok: true, access_point: rec.label, query, scanned, matches,
+            truncated: matches.length >= FAP_FIND_MAX_RESULTS || scanned >= FAP_FIND_MAX_SCAN,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-15——/fap-list /fap-read /fap-find這三個斜線
+    // 指令，本地直接執行、不經過AI，跟/media-*系列同一種既有模式。刻意
+    // 不做/fap-write斜線指令——用聊天輸入框打整份要寫入的檔案內容不是好
+    // UX，寫入留給AI工具（fap_write_file）本身，那邊AI可以先跟使用者確認
+    // 內容再動手，比使用者手動在slash指令裡塞一大段文字安全/自然很多。
+    async _handleFapListCommand(argsText) {
+        const ref = String(argsText || '').trim();
+        if (!ref) { this._log('⚠️ /fap-list：需要指定ref，格式 fap:<名稱或id>[/<路徑>]'); return; }
+        this.messages.push({ role: 'user', content: `📂 列出檔案：${ref}` });
+        try {
+            const result = await this._fapListFiles(ref);
+            const lines = result.entries.map(e => `${e.type === 'directory' ? '📁' : '📄'} ${e.name}${e.type === 'file' ? `（${(e.sizeBytes / 1024).toFixed(1)}KB）` : ''}`);
+            this._pushAssistantMessage(`**${result.access_point}**${result.path ? '/' + result.path : ''}\n\n${lines.length ? lines.join('\n') : '（空資料夾）'}`, null);
+        } catch (err) {
+            this._pushAssistantMessage(`⚠️ ${String(err.message || err)}`, null);
+        }
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    async _handleFapReadCommand(argsText) {
+        const ref = String(argsText || '').trim();
+        if (!ref) { this._log('⚠️ /fap-read：需要指定ref，格式 fap:<名稱或id>/<檔案路徑>'); return; }
+        this.messages.push({ role: 'user', content: `📄 讀取檔案：${ref}` });
+        try {
+            const result = await this._fapReadFile(ref);
+            if (!result.ok) {
+                this._pushAssistantMessage(`⚠️ ${result.error}`, null);
+            } else {
+                this._pushAssistantMessage(`**${result.access_point}/${result.filename}**（${(result.sizeBytes / 1024).toFixed(1)}KB${result.truncated ? '，已截斷' : ''}）\n\n\`\`\`\n${result.content}\n\`\`\``, null);
+            }
+        } catch (err) {
+            this._pushAssistantMessage(`⚠️ ${String(err.message || err)}`, null);
+        }
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    async _handleFapFindCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const ref = tokens.shift();
+        const query = tokens.join(' ');
+        if (!ref || !query) { this._log('⚠️ /fap-find：需要 <ref> <關鍵字>，例如 /fap-find fap:我的筆記 todo'); return; }
+        this.messages.push({ role: 'user', content: `🔍 搜尋檔案：${ref}「${query}」` });
+        try {
+            const result = await this._fapFindFile(ref, query);
+            const lines = result.matches.map(m => `${m.type === 'directory' ? '📁' : '📄'} \`${m.ref}\``);
+            const more = result.truncated ? '\n\n（已達搜尋上限，結果可能不完整）' : '';
+            this._pushAssistantMessage(`搜尋「${query}」共找到 ${result.matches.length} 筆：\n\n${lines.length ? lines.join('\n') : '（無符合結果）'}${more}`, null);
+        } catch (err) {
+            this._pushAssistantMessage(`⚠️ ${String(err.message || err)}`, null);
+        }
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
     // tw_stock_db客製: 2026-09-11——slash-command/工具用「附件、或已上傳在
     // fileCache的id/檔名」定位一個檔案。arg可以是：
     //   - 空字串 → 目前輸入框旁邊剛上傳完成的附件，沒有的話取最近上傳的檔案
@@ -5168,6 +5615,14 @@ ${fnData.code}
     //     子字串比對，多個符合時取最近上傳的）
     // 回傳fileCache record或null。kindFilter（選填）限定record.kind。
     async _resolveUploadedFileRecord(arg, { kindFilter = 'uploaded', consumePendingAttachment = false, preferAv = false } = {}) {
+        // tw_stock_db客製: 2026-09-15——arg是「fap:...」格式時，這一定是指向
+        // File Access Point（見_looksLikeFapRef的說明），不是這個函式負責
+        // 的persistentStorage(FileCache)——直接回傳null，不要浪費時間在
+        // fileCache裡逐一比對一個註定不會命中的字串。呼叫端（/media-*等既有
+        // 指令）收到null後會照現有邏輯回報「找不到符合的已上傳檔案」，語意
+        // 上也是對的：這些既有指令本來就只認persistentStorage，不支援FAP
+        // 路徑（FAP的檔案要先透過fap_read_file等工具/斜線指令操作）。
+        if (this._looksLikeFapRef(arg)) return null;
         const q = String(arg || '').trim();
         if (!q) {
             // preferAv：多個附件時優先挑影音檔（不要拿 .srt 之類的去當影片/音檔）
@@ -8107,6 +8562,41 @@ ${sourceTool.handlerScript}
         `).join('');
     }
 
+    // tw_stock_db客製: 2026-09-15——渲染「檔案存取管理」目前已授權的File
+    // Access Point清單。每一筆的permission狀態是即時查詢來的（不是快取值，
+    // handle.queryPermission()是唯讀查詢、不需要使用者手勢，每次開這個
+    // 分頁都重新問一次瀏覽器目前真正的狀態），沒有granted時顯示「重新
+    // 授權」按鈕——那個按鈕的click handler才是真正呼叫
+    // handle.requestPermission()的地方，必須是使用者親自點擊觸發（見
+    // FileAccessPointStore類別上方的說明）。
+    async _renderFapList() {
+        const list = document.getElementById('ai-fap-list');
+        if (!list) return;
+        const all = await this.fileAccessPoints.getAll();
+        if (!all.length) {
+            list.innerHTML = `<div class="ai-advanced-tool-empty">尚未授權任何資料夾。</div>`;
+            return;
+        }
+        const rows = await Promise.all(all.map(async (rec) => {
+            let permission = 'unknown';
+            try { permission = await rec.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
+            return { rec, permission };
+        }));
+        list.innerHTML = rows.map(({ rec, permission }) => `
+            <div class="ai-advanced-tool-item">
+                <div style="flex:1; min-width:0;">
+                    <div class="ai-advanced-tool-name">${this._escapeHtml(rec.label)}</div>
+                    <div class="ai-advanced-tool-desc">${permission === 'granted' ? '✅ 已授權' : '⚠️ 需要重新授權'}　·　ref: <code>fap:${this._escapeHtml(rec.label)}</code>　·　新增於 ${new Date(rec.addedAt).toLocaleDateString()}</div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    ${permission !== 'granted' ? `<button type="button" class="ai-advanced-btn primary" data-fap-regrant="${rec.id}">重新授權</button>` : ''}
+                    <button type="button" class="ai-advanced-btn" data-fap-rename="${rec.id}">重新命名</button>
+                    <button type="button" class="ai-advanced-btn danger" data-fap-delete="${rec.id}">移除</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
     // tw_stock_db客製: 2026-09-14——渲染「Model 清單」目前的所有row。每次
     // 呼叫都整包重新產生HTML（列表結構性變動——新增/刪除/拖曳排序——才會
     // 呼叫這個函式；單純編輯某個欄位走事件代理直接更新資料，不重繪，避免
@@ -8192,6 +8682,7 @@ ${sourceTool.handlerScript}
         // 每次Advance設定對話框開啟/重繪都直接載入一次，不用再額外開啟
         // 任何modal。
         this._loadAndRenderRag();
+        this._renderFapList();
         const hermesChk = document.getElementById('ai-hermes-evolve-chk');
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
@@ -15940,6 +16431,7 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
                             <div class="ai-advanced-cat" data-cat="skills">Skill</div>
                             <div class="ai-advanced-cat" data-cat="rag">RAG 知識庫</div>
+                            <div class="ai-advanced-cat" data-cat="file-access">檔案存取管理</div>
                             <div class="ai-advanced-cat" data-cat="subagent">子Agent</div>
                             <div class="ai-advanced-cat" data-cat="multimedia">多媒體</div>
                             <div class="ai-advanced-cat" data-cat="voice">語音設定</div>
@@ -16075,6 +16567,16 @@ ${existingNodeSummaries}
                                         </table>
                                     </div>
                                     <p class="ai-advanced-hint">雙擊節點內文行可編輯其依賴與先決條件。設定格式：<code>tags; deps:node_a,node_b; conds:環境==WebGPU</code></p>
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="file-access">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">檔案存取管理（File Access Point）</div>
+                                        <button type="button" id="ai-fap-add-btn" class="ai-advanced-btn primary">+ 新增資料夾</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權，屆時下面該筆會顯示「重新授權」按鈕（必須由你自己點擊）。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
+                                    <div id="ai-fap-list" class="ai-tool-list"></div>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="subagent">
@@ -17665,6 +18167,76 @@ ${existingNodeSummaries}
                     if (err && err.name !== 'AbortError') alert('選擇資料夾失敗: ' + (err.message || err));
                 }
             };
+        }
+        // tw_stock_db客製: 2026-09-15——「檔案存取管理」分頁，同一套
+        // showDirectoryPicker feature-detect模式，差別是這裡要求
+        // {mode:'readwrite'}（讀寫都要用到），且真正把handle存進
+        // fileAccessPoints（FileAccessPointStore，IndexedDB持久化），不是
+        // 像Skill資料夾匯入那樣一次性讀完就丟。
+        const fapAddBtn = document.getElementById('ai-fap-add-btn');
+        if (typeof window.showDirectoryPicker !== 'function') {
+            fapAddBtn.disabled = true;
+            fapAddBtn.title = '此瀏覽器不支援選擇本機資料夾（僅Chrome/Edge支援）';
+        } else {
+            fapAddBtn.onclick = async () => {
+                let dir;
+                try {
+                    dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+                } catch (err) {
+                    if (err && err.name !== 'AbortError') alert('選擇資料夾失敗: ' + (err.message || err));
+                    return;
+                }
+                let label = (prompt('幫這個資料夾取一個好記的名稱（AI會用這個名稱操作它）：', dir.name) || '').trim();
+                if (!label) label = dir.name;
+                const existing = await this.fileAccessPoints.getAll();
+                if (existing.some(r => r.label === label)) {
+                    label = `${label}_${Date.now().toString(36)}`;
+                }
+                await this.fileAccessPoints.add(label, dir);
+                await this._renderFapList();
+                this._log(`✅ 已授權資料夾「${label}」，AI可以用 fap:${label} 存取。`);
+            };
+        }
+        const fapList = document.getElementById('ai-fap-list');
+        if (fapList) {
+            fapList.addEventListener('click', async (e) => {
+                const regrantBtn = e.target.closest('[data-fap-regrant]');
+                if (regrantBtn) {
+                    const rec = await this.fileAccessPoints.get(regrantBtn.dataset.fapRegrant);
+                    if (!rec) return;
+                    try {
+                        const perm = await rec.handle.requestPermission({ mode: 'readwrite' });
+                        this._log(perm === 'granted' ? `✅ 已重新授權「${rec.label}」` : `⚠️ 「${rec.label}」授權被拒絕`);
+                    } catch (err) {
+                        alert('重新授權失敗: ' + (err.message || err));
+                    }
+                    await this._renderFapList();
+                    return;
+                }
+                const renameBtn = e.target.closest('[data-fap-rename]');
+                if (renameBtn) {
+                    const rec = await this.fileAccessPoints.get(renameBtn.dataset.fapRename);
+                    if (!rec) return;
+                    const newLabel = (prompt('新的名稱：', rec.label) || '').trim();
+                    if (!newLabel || newLabel === rec.label) return;
+                    const others = await this.fileAccessPoints.getAll();
+                    if (others.some(r => r.id !== rec.id && r.label === newLabel)) {
+                        alert(`名稱「${newLabel}」已經被另一個File Access Point使用，請換一個名稱。`);
+                        return;
+                    }
+                    await this.fileAccessPoints.rename(rec.id, newLabel);
+                    await this._renderFapList();
+                    return;
+                }
+                const deleteBtn = e.target.closest('[data-fap-delete]');
+                if (deleteBtn) {
+                    const rec = await this.fileAccessPoints.get(deleteBtn.dataset.fapDelete);
+                    if (!rec) return;
+                    if (!confirm(`移除授權「${rec.label}」？AI之後就不能再存取這個資料夾了（不會刪除資料夾本身或裡面的任何檔案）。`)) return;
+                    await this.fileAccessPoints.delete(rec.id);
+                    await this._renderFapList();
+                }
+            });
         }
         document.getElementById('ai-tool-editor-close').onclick = () => this._closeToolEditor();
         document.getElementById('ai-tool-editor-cancel').onclick = () => this._closeToolEditor();
