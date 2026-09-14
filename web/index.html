@@ -1712,7 +1712,7 @@ select:focus { outline: 2px solid var(--acc); }
      還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
      手動把這個版本號往上調（沒有build流程可以自動處理），格式用
      YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=bef2910f1c"></script>
+<script src="floating-assistant.js?v=dd6a43b08e"></script>
 <script>
   // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
   // markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/DOMPurify/
@@ -1763,7 +1763,7 @@ const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
 const DAILY_MANIFEST_URL = RAW + '/main/daily/manifest.json';
 
 /* 證交所的即時行情/休市日曆兩個來源都不回傳 CORS header，瀏覽器端無法直接
-   fetch()（實測過，見 web/cloudflare-worker/README.md），透過共用的
+   fetch()（實測過，見 tw_stock_db_code私有repo的code/cloudflare-worker/README.md），透過共用的
    Cloudflare Worker 代理轉發（該 Worker 同時也代理別的服務，/realtime
    /holiday 是專門加給這個網頁用的兩個路由）。留空會讓即時擷取功能
    （LiveFeed/TradingCalendar）整個自動關閉，不影響其他功能。 */
@@ -2060,8 +2060,8 @@ const IDB = (() => {
    CLOUD SYNC（雲端同步設定）——2026-08-23使用者要求，把整包 Settings
    同步到使用者自己架的 Google Apps Script + Google Sheet 後端，跨裝置
    共用同一份設定（自選股/備忘錄/圖表偏好等）。實際的讀寫請求都經過
-   Cloudflare Worker 的 /sheet-sync 路由中繼（見 code/cloudflare-worker/
-   worker.js 的 handleSheetSync），瀏覽器端完全不知道、也不需要知道
+   Cloudflare Worker 的 /sheet-sync 路由中繼（見 tw_stock_db_code私有repo的
+   code/cloudflare-worker/worker.js 的 handleSheetSync），瀏覽器端完全不知道、也不需要知道
    Apps Script的真實網址或任何加解密金鑰——那些細節都在Worker/Apps
    Script那一層，這裡純粹組請求/解析回應。
    ════════════════════════════════════════ */
@@ -4311,7 +4311,7 @@ const DBMgr = (() => {
 
   /* ── LiveFeed 用：本地是否已有某股某日的資料，以及把即時報價寫回同一張
      daily_prices 表（跟每日排程寫入的表/PK完全一樣，官方資料到了會自然
-     REPLACE 掉這裡寫的暫時值，見 web/cloudflare-worker/README.md 的說明）。 ── */
+     REPLACE 掉這裡寫的暫時值，見 tw_stock_db_code私有repo的code/cloudflare-worker/README.md 的說明）。 ── */
   function hasDailyRow(code, dateStr) {
     return query('SELECT 1 FROM daily_prices WHERE stock_code=? AND trade_date=? LIMIT 1', [code, dateStr]).length > 0;
   }
@@ -4497,7 +4497,7 @@ const LiveFeed = (() => {
     return isNaN(n) ? null : n;
   }
 
-  /* 抓 MIS 即時行情原始回應（見 web/cloudflare-worker/README.md 的欄位說明）。
+  /* 抓 MIS 即時行情原始回應（見 tw_stock_db_code私有repo的code/cloudflare-worker/README.md 的欄位說明）。
      只抓一次、原始 item 同時餵給「今天的日K」跟「走勢圖的逐筆」兩邊用，
      不用因為兩種用途各打一次證交所。 */
   async function fetchRawItem(code, market) {
@@ -4629,7 +4629,7 @@ const LiveFeed = (() => {
    更新，不夠即時。
 
    證交所 MIS 即時行情其實支援一次查多檔（ex_ch 用 `|` 分隔，見
-   web/cloudflare-worker/README.md），所以這裡改成：清單目前這一頁顯示的
+   tw_stock_db_code私有repo的code/cloudflare-worker/README.md），所以這裡改成：清單目前這一頁顯示的
    股票（不管是自選股、鎖股名單、類股、還是強勢股結果——只要是「一頁股票」
    都算），每 LIVE_POLL_MS 合併成一次請求問一次即時報價，跟 LiveFeed 完全
    獨立、不衝突（兩邊都是 INSERT OR REPLACE 進同一張表/PK，就算剛好都在
@@ -4720,7 +4720,7 @@ document.addEventListener('visibilitychange', () => {
    INTRADAY FEED  (走勢圖分頁：把 LiveFeed 既有的輪詢原始回應順便累積成
    當天的逐筆走勢，分桶成 5/20/60分K)
 
-   證交所沒有公開的個股歷史分K API（見 web/cloudflare-worker/README.md 的
+   證交所沒有公開的個股歷史分K API（見 tw_stock_db_code私有repo的code/cloudflare-worker/README.md 的
    CORS調查），單靠「這次打開網頁之後、LiveFeed 實際輪詢到的那些取樣點」，
    開盤後才打開網頁的話、或縮小(zoom out)想看前幾天，都沒資料可補。所以
    進走勢圖時另外用 Yahoo 股市的圖表 API（見 fetchYahooBackfill）補一份
@@ -4741,7 +4741,7 @@ const IntradayFeed = (() => {
   }
 
   /* 進走勢圖分頁/選股時呼叫：用 Yahoo 的分K墊開盤到現在這段證交所自己補
-     不回來的空白（見模組註解、web/cloudflare-worker/README.md）。抓近5個
+     不回來的空白（見模組註解、tw_stock_db_code私有repo的code/cloudflare-worker/README.md）。抓近5個
      交易日的1分K（而不是只有今天），縮小(zoom out)超出今天範圍時才能看到
      前幾天的走勢，不用整個限制在當天——反正 Chart 的分桶邏輯本來就是用
      完整日期+時間當 key（periodKeyOf('intraday')），跨日資料本來就不會
@@ -12426,7 +12426,7 @@ function renderAiTab() {
   if (aiConsoleInstance) return;
   // 使用者若還沒在AI設定面板自己填過API Key，預先塞一組
   // tw_stock_db_api:{sessionid} 假金鑰，讓Cloudflare Worker認得這個格式、
-  // 改用worker端藏著的真金鑰代打（見 web/cloudflare-worker/worker.js 的
+  // 改用worker端藏著的真金鑰代打（見 tw_stock_db_code私有repo的code/cloudflare-worker/worker.js 的
   // TW_STOCK_DB_KEY_PREFIX），使用者不用自己申請金鑰就能用。sessionid存在
   // localStorage重複使用，不是每次對話都換一個。使用者自己填過別的值就
   // 完全不動，尊重使用者的選擇。
@@ -12471,7 +12471,7 @@ function renderAiTab() {
     // tw_stock_db客製: 2026-09-09——browser_search子agent（見
     // floating-assistant.js的SUBAGENT_DOMAIN_REGISTRY.browser_search）預設
     // 關閉（使用者要自己在Advance Settings勾選啟用）。它需要的Cloudflare
-    // Worker端點（/browser-search路由，見web/cloudflare-worker/worker.js）
+    // Worker端點（/browser-search路由，見tw_stock_db_code私有repo的code/cloudflare-worker/worker.js）
     // 剛好跟這裡AI助理本來就在用的同一個worker是同一個部署，不需要在這裡
     // 額外傳browserSearchProxyUrl當初始預設值——browserSearchProxyUrl留空時
     // _browserSearch()會自動沿用目前的API URL（floating_ai_base_url_key，
