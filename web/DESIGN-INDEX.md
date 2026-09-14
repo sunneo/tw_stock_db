@@ -1762,6 +1762,62 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     `_loopFetch`實際送出的`temperature`是`0.1`（另一筆`temperature:0`
     請求經確認是既有、不受這次改動影響的原生tool_calls支援探測請求）。
 
+- **2026-09-15 File Access Point（授權真實磁碟資料夾給AI讀寫）**：使用者
+  要求新增「檔案存取管理」，可授權多個資料夾、權限永久化，AI/斜線指令要
+  能區分這套系統跟既有persistentStorage（FileCache）。
+  - **`class FileAccessPointStore`**（緊接在`class FileCache`後面）：
+    `{id, label, handle}`，`handle`是`FileSystemDirectoryHandle`本身
+    （Chromium IndexedDB structured clone原生支援存這種handle，不是存
+    路徑字串——路徑字串沒辦法拿回真正的檔案存取權，這是permission
+    永久化能成立的關鍵）。`this.fileAccessPoints`在建構子跟
+    `fileCache`/`searchCache`同一區塊初始化，依`ragDbSuffix`分資料庫。
+  - **`fap:<名稱或id>[/<路徑>]`統一定址格式**（`_looksLikeFapRef`/
+    `_parseFapRef`，在`_resolveFapAccessPoint`上方，緊接
+    `_fapFindFile`之前是`_resolveUploadedFileRecord`——刻意相鄰，方便
+    比對兩套系統的分野）：這是AI工具參數與斜線指令共用的唯一判斷依據。
+    `_resolveUploadedFileRecord`（既有persistentStorage解析函式）開頭
+    新增一行guard：`if (this._looksLikeFapRef(arg)) return null;`——
+    `/media-*`等既有指令收到FAP格式的字串時，不會浪費時間在fileCache裡
+    瞎找，直接照原有null-handling邏輯回報「找不到已上傳檔案」，語意
+    正確（這些既有指令本來就不支援FAP路徑）。
+  - **核心resolve/操作方法**（`_resolveFapAccessPoint`／
+    `_splitFapPath`(path traversal防禦，擋`.`/`..`片段)／
+    `_checkFapPermission`／`_resolveFapDirectory`(ref指向目錄)／
+    `_resolveFapFileParent`(ref指向檔案，回傳父目錄handle+檔名)／
+    `_fapListFiles`／`_fapReadFile`(純文字限定，二進位格式用
+    `FAP_BINARY_EXT_PATTERN`副檔名擋掉、8000字元截斷同`parse_uploaded_file`
+    慣例)／`_fapWriteFile`(整份覆蓋、`create:true`自動建立中途資料夾)／
+    `_fapFindFile`(遞迴搜尋，`FAP_FIND_MAX_RESULTS`=200／
+    `FAP_FIND_MAX_SCAN`=5000／`FAP_FIND_MAX_DEPTH`=8三個安全上限)）。
+  - **5個新AI工具**（`registerOptional`）+ 新domain
+    `file_access_points`：`list_file_access_points`/`fap_list_files`/
+    `fap_read_file`/`fap_write_file`/`fap_find_file`，工具description
+    裡明確教AI ref格式跟兩套系統的分界。
+  - **3個新斜線指令**：`/fap-list` `/fap-read` `/fap-find`（本地直接
+    執行不經過LLM，比照`/media-*`系列既有模式）；刻意不做`/fap-write`
+    （聊天輸入框打整份檔案內容不是好UX，寫入留給AI工具，可以先跟使用者
+    確認內容）。
+  - **Advance Settings新分頁「檔案存取管理」**（`data-cat="file-access"`，
+    排在RAG知識庫後面）：`_renderFapList()`即時查詢每筆的
+    `queryPermission()`狀態渲染；「+新增資料夾」用
+    `showDirectoryPicker({mode:'readwrite'})`（feature-detect僅Chrome/
+    Edge，比照既有Skill資料夾匯入`ai-skill-import-folder-btn`的
+    disable+title提示模式，見`_initEventListeners`裡緊鄰的程式碼）；
+    重新授權按鈕（僅permission非granted時顯示）呼叫
+    `handle.requestPermission()`——這是整個功能唯一「必須由使用者親自
+    點擊」的操作，AI工具呼叫的非同步鏈沒辦法滿足File System Access API
+    要求的transient activation，設計上就不會讓AI去嘗試這步。
+  - 實測（Browser工具）：因為原生資料夾選擇對話框無法被DOM自動化操作，
+    手刻一個mock `FileSystemDirectoryHandle`（實作`getDirectoryHandle`/
+    `getFileHandle`/`entries()`/`queryPermission`/`requestPermission`，
+    backing一個記憶體樹狀結構）直接注入`fileAccessPoints`store（繞開
+    IndexedDB沒辦法structured-clone純JS物件方法的限制）測試：list/read/
+    write/find四個操作、二進位格式拒絕、找不到檔案、路徑穿越防禦
+    （`..`/`.`）、5個工具透過真實`this.tools[...].callback()`路徑呼叫、
+    3個斜線指令訊息格式、permission失效時UI正確顯示重新授權按鈕＋工具
+    正確回報明確錯誤、重新命名（擋重複名稱）/刪除（confirm）UI互動，
+    全部正確。
+
 ## 常見任務 → 該看哪裡
 
 - **新增一個3D場景YAML欄位**：`_build3DGeometryForNode`/`_build3DMaterial`（幾何/

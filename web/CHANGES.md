@@ -5,6 +5,63 @@
 `DESIGN-INDEX.md`，這份文件只做濃縮版的「今天做了什麼、為什麼」，方便快速掃過
 歷史脈絡，不用整份翻`DESIGN-INDEX.md`。新的一天永遠加在最上面。
 
+## 2026-09-15
+
+背景：使用者要求Advance Settings新增「檔案存取管理」，可以新增多個要授權給
+AI讀寫的真實磁碟資料夾（File System Access API）、權限要永久化；AI與斜線
+指令要能區分「persistentStorage的file_id/檔名」跟「使用者授權的File Access
+Point」；檔案讀寫API要支援列檔案/寫檔案/讀檔案/找檔案。
+
+1. **`FileAccessPointStore`（新IndexedDB store）**：存`{id, label, handle}`，
+   `handle`是`FileSystemDirectoryHandle`物件本身（Chromium瀏覽器IndexedDB
+   用structured clone直接支援存這種handle）——這是「permission永久化」的
+   關鍵：重新整理頁面後從IndexedDB讀回同一個handle，用
+   `handle.queryPermission()`（唯讀查詢、不需要使用者手勢）檢查授權是否
+   還在；真的失效時（瀏覽器長時間沒用/清過網站資料），提供「重新授權」
+   按鈕讓使用者親自點擊觸發`handle.requestPermission()`——這一步依規範
+   一定要「transient activation」，AI工具呼叫這種經過LLM往返的非同步鏈
+   沒辦法滿足，設計上就是只能由使用者在UI上按。跟`fileCache`/
+   `searchCache`一樣依mount實例分開資料庫。
+2. **統一的`fap:`前綴定址格式，這是AI/斜線指令「自己區分」兩套系統的
+   唯一依據**：`fap:<FAP的id或名稱>[/<相對路徑>]`（例如`fap:我的筆記`＝
+   根目錄、`fap:我的筆記/2026/todo.txt`＝一個檔案）。`_looksLikeFapRef`/
+   `_parseFapRef`是唯一的判斷入口；`_resolveUploadedFileRecord`（既有
+   persistentStorage解析函式，`/media-*`等指令都在用）開頭新增一行
+   guard，遇到`fap:`格式直接回傳null（不浪費時間在fileCache裡瞎找一個
+   註定不會命中的字串），現有指令對FAP路徑會照原有邏輯回報「找不到
+   已上傳檔案」，語意正確（這些既有指令本來就不支援FAP，要用新的
+   `fap_*`工具/`/fap-*`指令）。
+3. **5個新AI工具**（`registerOptional`＋新增`file_access_points`
+   domain）：`list_file_access_points`（列出已授權清單含即時查詢的
+   permission狀態）、`fap_list_files`（列檔案）、`fap_read_file`（讀純
+   文字檔案，8000字元截斷同`parse_uploaded_file`慣例，二進位格式直接
+   拒絕並導向既有的📎上傳附件管道）、`fap_write_file`（寫入，整份覆蓋、
+   自動建立不存在的中途資料夾）、`fap_find_file`（遞迴搜尋檔名，安全
+   上限：最多掃5000項/找200筆結果/往下8層，超過標記truncated）。路徑
+   解析自己擋掉`.`/`..`片段（防禦深度，即使API本身理論上不會真的讓你
+   逃出授權目錄）。
+4. **3個新斜線指令**（本地直接執行、不經過LLM）：`/fap-list`
+   `/fap-read` `/fap-find`。刻意不做`/fap-write`——在聊天輸入框打整份
+   要寫入的內容不是好UX，寫入留給AI工具（可以先跟使用者確認內容再動手）。
+5. **Advance Settings新分頁「檔案存取管理」**：清單（`_renderFapList`）
+   顯示每個FAP的授權狀態/ref/新增時間，「+新增資料夾」呼叫
+   `showDirectoryPicker({mode:'readwrite'})`（feature-detect僅Chrome/Edge，
+   比照既有Skill資料夾匯入的disable+title提示模式）後存進store；每筆有
+   「重新授權」（僅在權限失效時顯示）/「重新命名」（擋重複名稱）/
+   「移除」（`confirm()`二次確認，說明不會刪除實際檔案）。
+6. 實測（Browser工具，因為原生資料夾選擇對話框無法被自動化操作，改用
+   手刻的mock `FileSystemDirectoryHandle`——實作`getDirectoryHandle`/
+   `getFileHandle`/`entries()`/`queryPermission`/`requestPermission`
+   這幾個介面方法、backing一個記憶體內的樹狀結構，繞過IndexedDB存不了
+   純JS物件方法的限制直接注入到store）：UI正確渲染授權清單/空狀態；
+   `fap_list_files`列根目錄與子目錄都正確；`fap_read_file`正確讀取純
+   文字、正確拒絕二進位（.png）、正確處理檔案不存在；`fap_write_file`
+   正確寫入既有檔案、正確自動建立多層不存在的中途資料夾；`fap_find_file`
+   遞迴搜尋正確找到兩層深度的同名檔案；路徑穿越防禦正確擋下`..`跟`.`
+   片段；3個斜線指令都正確推送格式化訊息；permission變成非granted時
+   UI正確顯示「重新授權」按鈕、工具呼叫正確回報明確的重新授權指示；
+   重新命名（擋重複名稱）/刪除（confirm）UI互動都正確觸發底層store方法。
+
 ## 2026-09-14（深夜再追加）
 
 背景：使用者看了截圖回報「RAG知識庫還要多按一下管理條件圖譜太麻煩，應該
