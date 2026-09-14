@@ -697,7 +697,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋子agent——查詢
     // Wikipedia/StackOverflow/GitHub/一般網頁(google)/SourceForge/CodeProject/
     // DeepWiki，全部透過一個Cloudflare Worker中繼（見
-    // web/cloudflare-worker/worker.js的/browser-search路由），瀏覽器端不直接對這些
+    // tw_stock_db_code私有repo的code/cloudflare-worker/worker.js的/browser-search路由），瀏覽器端不直接對這些
     // 外部網站發request（部分網站本來就沒開CORS、部分透過Worker統一做結果
     // 正規化/快取）。刻意預設enabled:false（跟其他內建domain不同）——這個
     // domain需要使用者自己部署Worker並在Advance Settings填入
@@ -801,7 +801,7 @@ const WHISPER_MODEL_BACKUP_PART_SIZE = 20 * 1024 * 1024;
 // 的model_type(style_text_to_speech_2)、kokoro-js的KokoroTTS也只認英文
 // voice代號——本地端（純瀏覽器、不上傳）目前沒有找到可驗證可靠的中文方案。
 // 2026-09-12使用者要求：中文改走API轉接層——透過Cloudflare Worker的
-// /edge-tts路由（見web/cloudflare-worker/worker.js）轉接Microsoft Edge
+// /edge-tts路由（見tw_stock_db_code私有repo的code/cloudflare-worker/worker.js）轉接Microsoft Edge
 // 瀏覽器內建的神經網路語音服務（免費、不用金鑰，但只接受Edge擴充功能
 // 情境的連線，瀏覽器JS沒辦法直接連，所以要Worker代為轉接）。這條路徑
 // ⚠️會把文字送到你設定的Worker端點（進而送到Microsoft），跟本地端Kokoro
@@ -859,7 +859,7 @@ const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個�
 const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
 
 // tw_stock_db客製: 2026-09-12——中文（及其他Kokoro本地不支援的語言）走API
-// 轉接（見上方大段說明＋web/cloudflare-worker/worker.js的/edge-tts路由）。
+// 轉接（見上方大段說明＋tw_stock_db_code私有repo的code/cloudflare-worker/worker.js的/edge-tts路由）。
 // 精選常用的Microsoft Edge神經網路語音（voice代號格式固定是
 // "xx-XX-NameNeural"，跟本地的Kokoro代號"xx_name"格式完全不同、可以直接
 // 用來判斷要走哪個engine，見_resolveTtsVoice）。這些voice不用「安裝」——
@@ -2791,7 +2791,7 @@ class FloatingAssistant {
             multiSubAgentMode: 'router',
             // tw_stock_db客製: browser_search子agent預設關閉——需要有一個部署
             // 了/browser-search路由的Cloudflare Worker（見
-            // web/cloudflare-worker/worker.js）才有作用，browserSearchProxyUrl
+            // tw_stock_db_code私有repo的code/cloudflare-worker/worker.js）才有作用，browserSearchProxyUrl
             // 留空時會自動沿用目前的LLM API URL（見_browserSearch），但如果
             // 那個端點背後根本沒有部署這條路由，一樣會查詢失敗——跟其他
             // 一開箱就能用的內建domain不同，不適合預設開啟（開了但沒有可用
@@ -4086,7 +4086,7 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-12——文字轉語音。英文走Kokoro TTS（純
         // 瀏覽器端、不上傳文字，見TTS_VOICES）；中文（或其他Kokoro不支援的
         // 語言）可選擇性走API轉接（見TTS_API_VOICES上方的完整說明＋
-        // web/cloudflare-worker/worker.js的/edge-tts路由）——⚠️這條路徑文字
+        // tw_stock_db_code私有repo的code/cloudflare-worker/worker.js的/edge-tts路由）——⚠️這條路徑文字
         // 會離開瀏覽器，預設關閉，需要使用者自己在設定啟用。voice留空時，
         // _synthesizeSpeech會依文字內容自動判斷（中文→API，若API未啟用會
         // 回報明確錯誤；英文→本地Kokoro），不會嘗試硬用錯的engine念錯的
@@ -4185,7 +4185,7 @@ ${fnData.code}
     // tw_stock_db客製: 2026-09-09——browser_search工具的實作，含
     // persistentStorage快取（1天TTL + LRU容量淘汰，見searchCache/
     // SEARCH_CACHE_TTL_MS/SEARCH_CACHE_MAX_BYTES的說明）跟呼叫Cloudflare
-    // Worker（web/cloudflare-worker/worker.js的/browser-search路由）取得
+    // Worker（tw_stock_db_code私有repo的code/cloudflare-worker/worker.js的/browser-search路由）取得
     // 未命中快取的來源。
     // ============================================================
 
@@ -4274,7 +4274,7 @@ ${fnData.code}
             // 留空時，預設直接沿用目前設定的LLM API網址（_getApiConfig().apiUrl）
             // 當Worker端點，不強制使用者另外填一次。多數情況下browser_search
             // 依賴的/browser-search路由，本來就會跟chat completions代理部署
-            // 在同一個Worker上（見web/cloudflare-worker/worker.js），這裡動態
+            // 在同一個Worker上（見tw_stock_db_code私有repo的code/cloudflare-worker/worker.js），這裡動態
             // 沿用apiUrl比host頁面在建構子固定寫死一份「快照」值更正確——
             // 使用者之後如果換了API網址，這裡也會跟著換，不會沿用一份過期的
             // 舊網址。如果apiUrl背後的端點其實沒有部署/browser-search這條
@@ -4780,7 +4780,7 @@ ${fnData.code}
     }
 
     // tw_stock_db客製: 2026-09-12——透過Cloudflare Worker的/edge-tts路由轉接
-    // Microsoft Edge神經網路語音（見web/cloudflare-worker/worker.js該路由的
+    // Microsoft Edge神經網路語音（見tw_stock_db_code私有repo的code/cloudflare-worker/worker.js該路由的
     // 說明＋TTS_API_VOICES上方那段「為什麼要走API」的完整說明）。⚠️這條路徑
     // 文字會離開瀏覽器；長文字依TTS_API_MAX_CHARS_PER_CHUNK切段逐段打API、
     // 把回傳的MP3位元組直接串接（不像本地Kokoro路徑要自己解碼混音——Worker
@@ -6353,7 +6353,7 @@ ${fnData.code}
     // 不是重新引入一條使用者編輯得到的路徑）。
     //
     // modelName以「openrouter/」開頭的row，代表要經Cloudflare Worker的
-    // /openrouter路由轉去openrouter.ai（見web/cloudflare-worker/worker.js
+    // /openrouter路由轉去openrouter.ai（見tw_stock_db_code私有repo的code/cloudflare-worker/worker.js
     // 的handleOpenRouterProxy），不是直接打openrouter.ai——瀏覽器端不需要
     // （也不應該）知道真正的openrouter API金鑰，worker那端會依
     // env.OPENROUTER_API_KEY／env.OPENROUTER_API_KEY_DEFAULT解析，這裡只
@@ -15968,7 +15968,7 @@ ${existingNodeSummaries}
                                         <label class="ai-advanced-label" style="margin:0;">Model 清單（拖曳⠿調整fallback順序）</label>
                                         <button type="button" id="ai-model-row-add-btn" class="ai-advanced-btn primary">+ 新增 Model</button>
                                     </div>
-                                    <p class="ai-advanced-hint">每一筆代表一個獨立的model/llm，由上到下就是自動fallback的嘗試順序（拖曳⠿把手調整；同一輪對話一開始一律先試第一筆，遇到該模型404才依序往下換）。<b>API URL／API Key留空＝走我們預設的網址／金鑰</b>，只有Model Name是必填；溫度/懲罰參數/max tokens留空＝套用下面「全域預設」。Model Name以「openrouter/」開頭時，會改經Cloudflare Worker的/openrouter路由轉去OpenRouter（不是直接從瀏覽器打openrouter.ai），需要該Worker已部署/openrouter路由並設定OPENROUTER_API_KEY（或OPENROUTER_API_KEY_DEFAULT）密鑰才能真正運作，見web/cloudflare-worker/worker.js。</p>
+                                    <p class="ai-advanced-hint">每一筆代表一個獨立的model/llm，由上到下就是自動fallback的嘗試順序（拖曳⠿把手調整；同一輪對話一開始一律先試第一筆，遇到該模型404才依序往下換）。<b>API URL／API Key留空＝走我們預設的網址／金鑰</b>，只有Model Name是必填；溫度/懲罰參數/max tokens留空＝套用下面「全域預設」。Model Name以「openrouter/」開頭時，會改經Cloudflare Worker的/openrouter路由轉去OpenRouter（不是直接從瀏覽器打openrouter.ai），需要該Worker已部署/openrouter路由並設定OPENROUTER_API_KEY（或OPENROUTER_API_KEY_DEFAULT）密鑰才能真正運作，路由實作細節見你自己部署的Cloudflare Worker原始碼。</p>
                                     <div id="ai-model-rows-list"></div>
                                     <datalist id="ai-model-datalist">
                                         ${this._modelDatalistOptionsHtml()}
@@ -16099,7 +16099,7 @@ ${existingNodeSummaries}
                                         <input type="checkbox" id="ai-browser-search-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-browser-search-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用「網路搜尋」子Agent（browser_search）</label>
                                     </div>
-                                    <p class="ai-advanced-hint">查詢Wikipedia／StackOverflow／GitHub／一般網頁／SourceForge／CodeProject／DeepWiki，結果透過下面設定的Cloudflare Worker端點取得並正規化，快取1天（跟檔案快取一樣是IndexedDB持久化＋LRU容量淘汰，額外疊加1天有效期限）。預設關閉——需要Worker有部署支援/browser-search路由（見 web/cloudflare-worker/worker.js）才能真正運作。</p>
+                                    <p class="ai-advanced-hint">查詢Wikipedia／StackOverflow／GitHub／一般網頁／SourceForge／CodeProject／DeepWiki，結果透過下面設定的Cloudflare Worker端點取得並正規化，快取1天（跟檔案快取一樣是IndexedDB持久化＋LRU容量淘汰，額外疊加1天有效期限）。預設關閉——需要Worker有部署支援/browser-search路由（見你自己部署的Cloudflare Worker原始碼）才能真正運作。</p>
                                     <label class="ai-advanced-label" for="ai-browser-search-proxy-url">Cloudflare Worker 端點網址</label>
                                     <input type="text" id="ai-browser-search-proxy-url" class="ai-advanced-input" placeholder="留空＝沿用上面的API URL">
                                     <p class="ai-advanced-hint">留空時會直接沿用目前設定的LLM API URL（如果那個Worker本身也有部署/browser-search路由的話，不需要另外填）；只有想用「跟LLM不同的另一個」Worker端點時才需要在這裡明確指定。</p>
@@ -16163,7 +16163,7 @@ ${existingNodeSummaries}
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
-                                    <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見 web/cloudflare-worker/README.md）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。</p>
+                                    <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見你自己部署的Cloudflare Worker原始碼的README說明）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-tts-api-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-tts-api-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用中文語音API</label>

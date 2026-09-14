@@ -402,7 +402,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
   - **新增`browser_search`內建domain**（預設`browserSearchEnabled:false`，
     需使用者自己在「子Agent」分頁勾選啟用）：查詢
     wiki/stackoverflow/github/google/sourceforge/codeproject/deepwiki，經
-    `web/cloudflare-worker/worker.js`的新路由`/browser-search`代打（wiki/
+    `tw_stock_db_code私有repo的code/cloudflare-worker/worker.js`的新路由`/browser-search`代打（wiki/
     stackoverflow/github打各自官方API；google/sourceforge/codeproject/
     deepwiki代打DuckDuckGo HTML介面+`site:`限制，是2026-09-09實測過各來源
     真實回應後才決定的做法，不是猜的——見worker.js檔頭「關於
@@ -446,7 +446,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     `parse_uploaded_file`/`summarize_large_text`處理，不是自己回答內容或
     把整段HTML塞進對話。persistentStorage寫入失敗時有防禦性fallback（退回
     直接回傳原始內容），不會讓整個工具直接失效。
-  - **`web/cloudflare-worker/worker.js`第一次進repo**：這個檔案先前只在
+  - **`tw_stock_db_code私有repo的code/cloudflare-worker/worker.js`第一次進repo**：這個檔案先前只在
     tw_stock_db的AI助理程式碼註解裡被提及（例如
     `checkAndIncrementRateLimit`），實際的Worker原始碼從沒進過這個repo
     （使用者透過對話貼出目前實際部署的版本）。已補進repo，同時整合了
@@ -794,7 +794,7 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     - 因為瀏覽器JS設不了`Origin`/`User-Agent`等自訂header、Microsoft的
       服務只接受特定Origin，改走Cloudflare Worker轉接（跟`/browser-search`
       同一個「瀏覽器做不到、Worker代勞」的既有模式）：新路由
-      `POST /edge-tts`（`web/cloudflare-worker/worker.js`的
+      `POST /edge-tts`（`tw_stock_db_code私有repo的code/cloudflare-worker/worker.js`的
       `handleEdgeTts`）——`fetch(msUrl, {headers:{Upgrade:'websocket',
       Origin:...}})`（Cloudflare官方文件記載的outbound WebSocket+自訂
       header手法）→`.webSocket.accept()`→送`speech.config`+`ssml`兩則
@@ -1695,7 +1695,7 @@ Advance設定彈窗：`ai-advanced-modal`、`ai-advanced-sidebar`/`.ai-advanced-
     `{apiKey, apiUrl, apiModel}`三欄位shape、固定用第一筆row，這些呼叫端
     完全不用改；新增`_getApiConfigForRow(index)`給需要完整per-row設定
     的main chat loop用。
-  - **`handleOpenRouterProxy`**（`web/cloudflare-worker/worker.js`，緊接
+  - **`handleOpenRouterProxy`**（`tw_stock_db_code私有repo的code/cloudflare-worker/worker.js`，緊接
     在`handleNvidiaProxy`後面）：複製一份而不是抽共用函式（兩個服務的
     金鑰/流量控管政策未來可能各自演變）。金鑰解析跟`handleNvidiaProxy`
     對稱：假金鑰`tw_stock_db_api:{sessionId}`（沿用AI助理既有的共用金鑰
