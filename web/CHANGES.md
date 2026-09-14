@@ -70,7 +70,7 @@ OPENROUTER_API_KEY／OPENROUTER_API_KEY_DEFAULT。
 3. **`openrouter/`開頭的model改經Worker轉接**：`_resolveModelRowConfig`
    偵測到modelName以`openrouter/`開頭時，把resolve出來的base URL加上
    `/openrouter`路徑片段（不是直接從瀏覽器打openrouter.ai）。Worker新增
-   `handleOpenRouterProxy`（`web/cloudflare-worker/worker.js`），跟既有
+   `handleOpenRouterProxy`（`tw_stock_db_code私有repo的code/cloudflare-worker/worker.js`），跟既有
    `handleNvidiaProxy`同一套「假金鑰`tw_stock_db_api:{sessionId}`→用
    env.OPENROUTER_API_KEY（含流量控管）；真金鑰原樣轉發；空白→依序
    fallback OPENROUTER_API_KEY_DEFAULT→OPENROUTER_API_KEY」的邏輯，轉發到
