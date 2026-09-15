@@ -947,9 +947,24 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     },
     file_analysis: {
         enabled: true,
-        label: '檔案解讀分析',
+        label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
         toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
-        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+        // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
+        // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
+        // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
+        // 詞有什麼玄妙的理解差異，是路由子agent選domain時的**字面關鍵字
+        // 碰撞**——這個domain的label是「檔案解讀分析」，跟使用者講的「解析」
+        // 高度字面相似，路由子agent很容易只選到這個domain（僅有
+        // list_uploaded_files/parse_uploaded_file，只認得persistentStorage
+        // 上傳檔案的file_id），完全漏掉真正該選的file_access_points domain
+        // （使用者授權的真實磁碟資料夾，這裡的StepAction資料夾屬於這一類）
+        // ——子agent進來後list_uploaded_files找不到任何符合的file_id，卡住
+        // 生不出答案。這裡在label加註提醒範圍限制（見上面label），並在這裡
+        // 明講：如果進來後發現file_id對不上（使用者講的其實是一個資料夾
+        // 路徑/別名，不是上傳檔案），要主動呼叫request_additional_tools
+        // 申請file_access_points領域的工具、原地繼續完成，不要因為
+        // list_uploaded_files找不到就直接放棄或勉強瞎猜。
+        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
     // tw_stock_db客製: 2026-09-15使用者要求——跟file_analysis（上面那個，
     // persistentStorage/FileCache裡的上傳檔案）是完全不同的兩套系統，
