@@ -12,6 +12,21 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     addByPath: (folderPath, label) => ipcRenderer.invoke("fa:roots:addByPath", { folderPath, label }),
     rename: (id, label) => ipcRenderer.invoke("fa:roots:rename", { id, label }),
     remove: (id) => ipcRenderer.invoke("fa:roots:remove", { id }),
+    // dialog.showOpenDialog在這台機器不會顯示（見main.js showFolderBrowserWindow
+    // 說明），這個是自己刻的資料夾瀏覽器視窗，回傳選中的絕對路徑字串或null。
+    browse: (startPath) => ipcRenderer.invoke("fa:roots:browse", { startPath }),
+  },
+  // window.prompt()在這個Electron build完全不會顯示（Electron本身從未實作這個
+  // API，不是這個app的bug），confirm()同樣不可靠——見bootstrap.js對
+  // window.prompt/confirm/alert的全域覆蓋，這三個用ipcRenderer.sendSync()
+  // （renderer執行緒真的會被阻塞到main行程把event.returnValue設好為止，即使
+  // main行程那端的handler內部是async、中間await了使用者在彈出視窗裡的操作）
+  // 讓呼叫端維持跟原生prompt()/confirm()/alert()一樣的同步呼叫語意，
+  // floating-assistant.js核心完全不用改。
+  dialogs: {
+    prompt: (message, defaultValue) => ipcRenderer.sendSync("fa:sync-prompt", { message, defaultValue }),
+    confirm: (message) => ipcRenderer.sendSync("fa:sync-confirm", { message }),
+    alert: (message) => ipcRenderer.sendSync("fa:sync-alert", { message }),
   },
   fs: {
     stat: (rootId, relPath) => ipcRenderer.invoke("fa:fs:stat", { rootId, relPath }),
