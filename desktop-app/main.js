@@ -107,19 +107,47 @@ async function findRoot(rootId) {
 // ---------- IPC: roots ----------
 ipcMain.handle("fa:roots:list", async () => listRoots());
 
-ipcMain.handle("fa:roots:add", async (_evt, { label } = {}) => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ["openDirectory", "createDirectory"],
-    title: "選擇要授權給AI直接讀寫的資料夾",
-  });
-  if (result.canceled || !result.filePaths.length) return null;
-  const rootPath = result.filePaths[0];
+async function registerRoot(rootPath, label) {
   const roots = await listRoots();
   const id = "root_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
   const rec = { id, label: label || path.basename(rootPath), rootPath, addedAt: Date.now() };
   roots.push(rec);
   await saveRoots(roots);
   return rec;
+}
+
+ipcMain.handle("fa:roots:add", async (_evt, { label } = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+    title: "選擇要授權給AI直接讀寫的資料夾",
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return registerRoot(result.filePaths[0], label);
+});
+
+// tw_stock_db客製: 2026-09-15使用者回報——floating-assistant.js核心內建的
+// 「+新增資料夾」按鈕（走window.showDirectoryPicker→這裡的fa:roots:add→
+// dialog.showOpenDialog）在他的環境點了完全沒反應，懷疑是這台機器（雙螢幕
+// 佈局，這次除錯過程也另外發現過螢幕座標系統混亂的問題）讓原生資料夾選擇
+// 對話框開到看不到的地方，或某種環境相容性問題——不管根本原因是什麼，
+// 使用者明確要求要有一個「跳過原生對話框，直接輸入路徑」的後路。這條路由
+// 完全不經過dialog.showOpenDialog，使用者自己在renderer的文字輸入框打
+// 絕對路徑，這裡只做「路徑真的存在且是資料夾」的驗證後直接註冊——跟
+// fa:roots:add共用同一個registerRoot()，註冊完的root跟透過原生對話框選的
+// 完全等價（renderer那邊的ElectronFapStore/floating-assistant.js的fap_*
+// 工具無從分辨兩者差異）。
+ipcMain.handle("fa:roots:addByPath", async (_evt, { folderPath, label } = {}) => {
+  const raw = String(folderPath || "").trim();
+  if (!raw) throw new Error("請輸入資料夾路徑");
+  const resolved = path.resolve(raw);
+  let st;
+  try {
+    st = await fs.stat(resolved);
+  } catch (err) {
+    throw new Error(`路徑不存在或無法存取：${resolved}`);
+  }
+  if (!st.isDirectory()) throw new Error(`這不是一個資料夾：${resolved}`);
+  return registerRoot(resolved, label);
 });
 
 ipcMain.handle("fa:roots:rename", async (_evt, { id, label }) => {
@@ -188,6 +216,75 @@ ipcMain.handle("fa:fs:remove", async (_evt, { rootId, relPath, recursive }) => {
 const MAX_EXEC_OUTPUT_BYTES = 2 * 1024 * 1024; // 2MB輸出上限，避免暴走程式塞爆記憶體
 const EXEC_TIMEOUT_MS = 120000; // 2分鐘逾時，避免卡死的程式讓工具呼叫永遠不回應
 
+function escapeHtmlForConfirmWindow(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// tw_stock_db客製: 2026-09-15使用者實測回報——`dialog.showMessageBox(mainWindow,
+// {...})`在他的環境（跟之前`dialog.showOpenDialog`的symptom一致）不會真的
+// 顯示出來：使用者勾了「每次執行前跳確認框」，AI呼叫run_command卻完全沒有
+// 任何對話框跳出來，後來確認是`await dialog.showMessageBox(...)`整個卡住
+// 沒有resolve（不是「跳過確認直接執行」，是原生對話框本身沒有真的顯示、
+// 卡在那裡等一個使用者看不到、點不到的視窗）。改成不依賴Electron`dialog`
+// 模組這個API，自己開一個真正的`BrowserWindow`（parent+modal:true，仍然是
+// 主行程完全掌控的內容，不是renderer可以繞過的東西——安全性質跟原本
+// `dialog.showMessageBox`一樣：使用者一定要真的點下「執行」才會繼續，
+// renderer/AI都無法跳過這一步）當作確認視窗，載入純字串組出來的`data:`
+// HTML（只有這個小視窗才開`nodeIntegration:true`，因為這裡100%是自己
+// 組的固定內容、不會載入任何CDN/AI產生的可執行內容，cmdLine/cwd顯示前有
+// 做HTML escape，不會有XSS風險）。
+function showExecConfirmWindow(cmdLine, cwd) {
+  return new Promise((resolve) => {
+    const responseChannel = `fa:exec-confirm-response:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const confirmWin = new BrowserWindow({
+      width: 560,
+      height: 280,
+      parent: mainWindow,
+      modal: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      title: "AI要求執行程式",
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+      },
+    });
+    confirmWin.setMenuBarVisibility(false);
+    let settled = false;
+    const finish = (allowed) => {
+      if (settled) return;
+      settled = true;
+      resolve(allowed);
+      if (!confirmWin.isDestroyed()) confirmWin.close();
+    };
+    ipcMain.once(responseChannel, (_evt, allowed) => finish(!!allowed));
+    confirmWin.on("closed", () => finish(false)); // 使用者直接關掉這個視窗＝視同拒絕
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; background:#161b22; color:#e5e7eb; margin:0; padding:20px; box-sizing:border-box; }
+      h3 { margin:0 0 12px 0; }
+      .detail { background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:10px 12px; font-size:12px; white-space:pre-wrap; word-break:break-all; margin-bottom:18px; }
+      .buttons { display:flex; justify-content:flex-end; gap:10px; }
+      button { padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
+      #deny { background:#21262d; color:#e5e7eb; border:1px solid #30363d; }
+      #allow { background:#c0392b; color:#fff; border:none; }
+    </style></head><body>
+      <h3>⚠️ AI要求執行程式</h3>
+      <div class="detail">指令：${escapeHtmlForConfirmWindow(cmdLine)}\n工作目錄：${escapeHtmlForConfirmWindow(cwd)}</div>
+      <div class="buttons">
+        <button id="deny">取消</button>
+        <button id="allow">執行</button>
+      </div>
+      <script>
+        const { ipcRenderer } = require("electron");
+        document.getElementById("deny").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, false);
+        document.getElementById("allow").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, true);
+      </script>
+    </body></html>`;
+    confirmWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  });
+}
+
 ipcMain.handle("fa:exec:getSettings", async () => getDesktopSettings());
 ipcMain.handle("fa:exec:setSettings", async (_evt, patch) => {
   const cur = await getDesktopSettings();
@@ -208,16 +305,8 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) =>
   }
   const cmdLine = `${command} ${(args || []).join(" ")}`.trim();
   if (settings.execConfirmRequired !== false) {
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: "warning",
-      buttons: ["取消", "執行"],
-      defaultId: 0,
-      cancelId: 0,
-      title: "AI要求執行程式",
-      message: "AI想要在這台電腦上執行以下指令，要允許嗎？",
-      detail: `指令：${cmdLine}\n工作目錄：${cwd}`,
-    });
-    if (response !== 1) {
+    const allowed = await showExecConfirmWindow(cmdLine, cwd);
+    if (!allowed) {
       throw new Error("使用者拒絕了這個執行請求。");
     }
   }
@@ -334,6 +423,24 @@ function createWindow() {
           console.log("[layout-debug] error: " + err);
         }
       }, 1000);
+    });
+  }
+  if (process.env.FA_DEBUG_EXEC_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          await saveDesktopSettings({ execEnabled: true, execConfirmRequired: true });
+          console.log("[exec-test] calling fa:exec:run directly, waiting for confirm window...");
+          const result = await mainWindow.webContents.executeJavaScript(`
+            window.desktopAPI.exec.run({ command: "cmd", args: ["/c", "echo hello-from-exec-test"] })
+              .then(r => ({ ok: true, result: r }))
+              .catch(e => ({ ok: false, error: String(e && e.message || e) }))
+          `);
+          console.log("[exec-test] result: " + JSON.stringify(result, null, 2));
+        } catch (err) {
+          console.log("[exec-test] error: " + err);
+        }
+      }, 1500);
     });
   }
 }

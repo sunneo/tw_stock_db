@@ -326,6 +326,61 @@ function patchCloudflareWording(root) {
   const secretsBtn = document.getElementById("topbar-secrets-btn");
   if (secretsBtn) secretsBtn.addEventListener("click", showSecretsDialog);
 
+  // tw_stock_db客製: 2026-09-15使用者回報——核心內建的「+新增資料夾」按鈕
+  // （走window.showDirectoryPicker→原生資料夾選擇對話框）在他的環境點了
+  // 完全沒反應，明確要求要有跳過原生對話框、直接輸入路徑的後路。跟
+  // showSecretsDialog同一種手刻modal寫法；新增成功後如果Advance Settings
+  // 剛好開著，順便呼叫fa._renderFapList()讓清單即時反映，不用使用者自己
+  // 關掉再打開設定才看得到剛新增的資料夾。
+  function showAddFolderDialog() {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:999999; display:flex; align-items:center; justify-content:center;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(520px,90vw); font-size:13px; font-family:inherit;";
+    box.innerHTML = `
+      <div style="font-weight:bold; font-size:15px; margin-bottom:14px;">📁 直接輸入路徑新增資料夾</div>
+      <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">跳過原生資料夾選擇對話框，直接授權一個本機資料夾路徑給AI直接讀寫。</p>
+      <label style="display:block; margin-bottom:12px;">
+        <div style="margin-bottom:4px; color:#93a4b8;">資料夾完整路徑</div>
+        <input type="text" id="addfolder-dlg-path" placeholder="例如 D:\\Downloads\\我的專案" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+      </label>
+      <label style="display:block; margin-bottom:8px;">
+        <div style="margin-bottom:4px; color:#93a4b8;">顯示名稱（選填，留空＝用資料夾本身的名稱）</div>
+        <input type="text" id="addfolder-dlg-label" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+      </label>
+      <div id="addfolder-dlg-error" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:6px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" id="addfolder-dlg-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; cursor:pointer; font-size:13px;">取消</button>
+        <button type="button" id="addfolder-dlg-save" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">新增</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    box.querySelector("#addfolder-dlg-cancel").addEventListener("click", close);
+    const pathInput = box.querySelector("#addfolder-dlg-path");
+    const errEl = box.querySelector("#addfolder-dlg-error");
+    const doSave = async () => {
+      const folderPath = pathInput.value.trim();
+      const label = box.querySelector("#addfolder-dlg-label").value.trim();
+      if (!folderPath) { errEl.textContent = "請輸入資料夾路徑"; return; }
+      try {
+        const rec = await window.desktopAPI.roots.addByPath(folderPath, label);
+        close();
+        if (typeof fa._renderFapList === "function") { try { await fa._renderFapList(); } catch (_) {} }
+        console.log(`已授權資料夾「${rec.label}」，AI可以用 fap:${rec.label} 存取。`);
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+      }
+    };
+    box.querySelector("#addfolder-dlg-save").addEventListener("click", doSave);
+    pathInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doSave(); });
+    pathInput.focus();
+  }
+  const addFolderBtn = document.getElementById("topbar-add-folder-btn");
+  if (addFolderBtn) addFolderBtn.addEventListener("click", showAddFolderDialog);
+
   // desktop_ops domain：run_command是這個桌面版新增的唯一「真的碰到系統
   // 層」的工具（檔案讀寫沿用既有fap_*工具，直接透過override後的
   // fileAccessPoints運作，不用另外重複造一套）。
