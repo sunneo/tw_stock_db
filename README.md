@@ -1,0 +1,5 @@
+# pyodide-backup
+
+Pyodide (CPython compiled to wasm32-emscripten) core runtime, npm package pyodide@314.0.7 (MPL-2.0, https://github.com/pyodide/pyodide). Only the core runtime is vendored here (interpreter + stdlib, ~13MB, classic global-attaching pyodide.js build — not pyodide.mjs, since pyodide.js's internal import(indexURL+'pyodide.asm.mjs') needs indexURL to be served with correct JS mimetypes, which raw.githubusercontent.com does not do; this branch is meant to be read through jsdelivr's GitHub-mirror mode (cdn.jsdelivr.net/gh/...), which does serve correct mimetypes, not fetched from raw.githubusercontent.com directly). Extra packages (numpy/pandas/etc.) are loaded on demand from the official CDN via micropip/loadPackage and are not part of this branch. Used by floating-assistant.js's python_execute tool as a fallback source when the official npm/jsDelivr mirror of the pyodide package is unreachable.
+
+Files split into 20MB parts where needed (see `pyodide-core/manifest.json`). This branch is force-pushed on regeneration — it holds exactly one binary asset, nothing else, and carries no history.
