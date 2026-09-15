@@ -18,7 +18,7 @@
 //     這個app的預設姿態）；一律用execFile（傳陣列參數，不經過shell），
 //     不用exec/shell:true，避免shell注入；有輸出大小上限與逾時。
 "use strict";
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const { execFile } = require("child_process");
@@ -276,15 +276,22 @@ ipcMain.handle("fa:shell:openExternal", async (_evt, url) => {
 // ---------- 視窗建立 ----------
 function createWindow() {
   // tw_stock_db客製: 2026-09-15使用者要求——桌面版是單一用途的全螢幕對話
-  // 視窗，不是「小工具疊在別的頁面上」的浮動widget，開啟時就該佔滿畫面
-  // （show:false+maximize()+show()這個順序是避免使用者看到「先出現小視窗、
-  // 再瞬間變大」那一瞬間的閃爍）。使用者仍然可以自己把視窗變小/移動（不是
-  // 鎖死的kiosk全螢幕），只是預設狀態是最大化。
+  // 視窗，不是「小工具疊在別的頁面上」的浮動widget，開啟時就該佔滿畫面。
+  // 一開始用show:false+ready-to-show裡呼叫maximize()+show()，實測（真的
+  // 跑起來截圖檢查）在這台機器上完全沒有效果，視窗還是維持建構時給的
+  // 預設大小——`maximize()`在視窗還沒真的show()之前呼叫，在Windows上是
+  // 已知會不穩定/沒有效果的時機點（原生視窗handle的工作區邊界要等視窗真的
+  // 被OS window manager map出來才會正確計算）。改成從一開始就直接用
+  // `screen.getPrimaryDisplay().workAreaSize`算出視窗大小、定位在(0,0)——
+  // 不依賴事後呼叫maximize()這個有時機競爭疑慮的API，第一幀畫面就已經是
+  // 正確的滿版大小，不會有「先小視窗再跳大」的閃爍，也不會受時機影響。
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width,
+    height,
+    x: 0,
+    y: 0,
     title: "FloatingAssistant",
-    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -294,11 +301,41 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.maximize();
-    mainWindow.show();
-  });
+  if (process.env.FA_DEBUG_CONSOLE) {
+    mainWindow.webContents.on("console-message", (_evt, level, message, line, sourceId) => {
+      console.log(`[renderer console] ${message} (${sourceId}:${line})`);
+    });
+  }
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  if (process.env.FA_DEBUG_LAYOUT) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const info = await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              const describe = (el) => {
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                const cs = getComputedStyle(el);
+                return { id: el.id, tag: el.tagName, rect: { w: r.width, h: r.height }, style: { width: cs.width, height: cs.height, position: cs.position, display: cs.display } };
+              };
+              return {
+                innerWidth, innerHeight,
+                html: describe(document.documentElement),
+                body: describe(document.body),
+                app: describe(document.getElementById('app')),
+                win: describe(document.getElementById('ai-floating-window')),
+                winInlineStyle: (document.getElementById('ai-floating-window') || {}).getAttribute && document.getElementById('ai-floating-window').getAttribute('style'),
+              };
+            })()
+          `);
+          console.log("[layout-debug] " + JSON.stringify(info, null, 2));
+        } catch (err) {
+          console.log("[layout-debug] error: " + err);
+        }
+      }, 1000);
+    });
+  }
 }
 
 app.whenReady().then(async () => {

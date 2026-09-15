@@ -274,26 +274,57 @@ function patchCloudflareWording(root) {
     if (!localStorage.getItem(fa.STORAGE_KEY)) localStorage.setItem(fa.STORAGE_KEY, "local-desktop-proxy");
   }
 
-  // 頂部列「🔑 設定API金鑰」——先用最簡單的prompt()輸入（不是完整表單），
-  // 讓使用者可以在不打開Advance Settings、不用碰任何檔案的情況下，把
-  // NVAPI_KEY/OPENROUTER_API_KEY寫進secrets.json。設定完成後重新整理
-  // 頁面套用（改動的是localStorage的LLM_BASE_URL_KEY seed邏輯，最單純
-  // 可靠的作法是重新走一次上面這段判斷，而不是嘗試就地更新已經建構好的
-  // model rows）。
-  const secretsBtn = document.getElementById("topbar-secrets-btn");
-  if (secretsBtn) {
-    secretsBtn.addEventListener("click", async () => {
-      const nvKey = prompt("NVIDIA API Key（NVAPI_KEY，留空＝不修改目前的值）：", "");
-      const orKey = prompt("OpenRouter API Key（OPENROUTER_API_KEY，留空＝不修改目前的值）：", "");
+  // 頂部列「🔑 設定API金鑰」——2026-09-15實測發現window.prompt()在這個
+  // Electron版本點了完全沒反應（不會丟錯誤、就是靜默沒有任何對話框跳出來），
+  // 改成手刻一個輕量modal（跟floating-assistant.js自己
+  // _showMp4ExportOptionsDialog/_showFapPermissionDialog同一種寫法：
+  // 全螢幕半透明遮罩+置中卡片），保證在任何Electron版本都可靠運作，不依賴
+  // 瀏覽器原生對話框。讓使用者可以在不打開Advance Settings、不用碰任何
+  // 檔案的情況下，把NVAPI_KEY/OPENROUTER_API_KEY寫進secrets.json。設定
+  // 完成後重新整理頁面套用（改動的是localStorage的LLM_BASE_URL_KEY seed
+  // 邏輯，最單純可靠的作法是重新走一次上面這段判斷，而不是嘗試就地更新
+  // 已經建構好的model rows）。
+  function showSecretsDialog() {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:999999; display:flex; align-items:center; justify-content:center;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(420px,90vw); font-size:13px; font-family:inherit;";
+    box.innerHTML = `
+      <div style="font-weight:bold; font-size:15px; margin-bottom:14px;">🔑 設定API金鑰</div>
+      <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">存在本機 secrets.json（不會顯示在畫面上、不會傳到renderer）。留空欄位不會修改目前已儲存的值。</p>
+      <label style="display:block; margin-bottom:12px;">
+        <div style="margin-bottom:4px; color:#93a4b8;">NVIDIA API Key（NVAPI_KEY）</div>
+        <input type="password" id="secrets-dlg-nvidia" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+      </label>
+      <label style="display:block; margin-bottom:18px;">
+        <div style="margin-bottom:4px; color:#93a4b8;">OpenRouter API Key（OPENROUTER_API_KEY）</div>
+        <input type="password" id="secrets-dlg-openrouter" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+      </label>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" id="secrets-dlg-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; cursor:pointer; font-size:13px;">取消</button>
+        <button type="button" id="secrets-dlg-save" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">儲存</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    box.querySelector("#secrets-dlg-cancel").addEventListener("click", close);
+    box.querySelector("#secrets-dlg-save").addEventListener("click", async () => {
+      const nvKey = box.querySelector("#secrets-dlg-nvidia").value.trim();
+      const orKey = box.querySelector("#secrets-dlg-openrouter").value.trim();
       const patch = {};
       if (nvKey) patch.NVAPI_KEY = nvKey;
       if (orKey) patch.OPENROUTER_API_KEY = orKey;
+      close();
       if (Object.keys(patch).length === 0) return;
       await window.desktopAPI.secrets.set(patch);
-      alert("已儲存。頁面即將重新整理套用設定。");
       location.reload();
     });
+    box.querySelector("#secrets-dlg-nvidia").focus();
   }
+  const secretsBtn = document.getElementById("topbar-secrets-btn");
+  if (secretsBtn) secretsBtn.addEventListener("click", showSecretsDialog);
 
   // desktop_ops domain：run_command是這個桌面版新增的唯一「真的碰到系統
   // 層」的工具（檔案讀寫沿用既有fap_*工具，直接透過override後的
