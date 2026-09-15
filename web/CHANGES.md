@@ -105,6 +105,43 @@ Point」；檔案讀寫API要支援列檔案/寫檔案/讀檔案/找檔案。
      組出`dir`/`corsProxy`/`onAuth`參數、`_gitCommit`正確依
      `statusMatrix`逐檔`add`/`remove`後才`commit`、`_resolveGitCorsProxyUrl`
      正確組出`.../git-proxy`。
+9. **實機驗證（使用者真的部署Worker後、用真實瀏覽器+真實GitHub repo跑一輪）
+   抓到並修好2個mock測試沒測出來的真bug，另外加了一個使用者當場回報的
+   UX改善**：
+   - **`worker.js`的`/git-proxy`**：一開始收到真實clone一路400——追出
+     isomorphic-git核心（`index.umd.min.js`的`Pr`函式）對「不是以`?`結尾」
+     的corsProxy，會在接上URL前**先把`https://`砍掉**（`corsProxy+'/'+
+     url.replace(/^https?:\/\//,'')`），worker原本寫死「一定要有
+     https://開頭」直接把這種正常請求擋掉。改成沒有scheme就自動補
+     `https://`，有scheme也照樣接受，兩種呼叫端慣例都相容。已重新commit
+     push到`tw_stock_db_code`（commit `a1fa161`），使用者需要重新部署
+     （已完成）。
+   - **`FapGitFs._unlink`/`_rmdir`**：修好worker後clone還是失敗在
+     `git.fetch()`內部——用monkey-patch包住`fs.promises`每個方法記錄呼叫
+     順序才抓到：isomorphic-git會嘗試`unlink('.git/shallow')`當清理步驟
+     （檔案通常本來就不存在），靠`err.code==='ENOENT'`判斷「本來就沒有、
+     不是真錯誤」安靜略過；但File System Access API的`removeEntry()`對
+     不存在的項目丟的是原生`DOMException`（`name:'NotFoundError'`，
+     legacy`.code`是數字8，不是字串'ENOENT'），isomorphic-git認不得，
+     把它當真正失敗直接中止整個clone/fetch。兩個方法補上跟
+     `_readFile`/`_stat`/`_readdir`一樣的`_enoent()`轉換。修完後
+     `git_clone`/`git_status`/`git_log`/`git_commit`/`git_pull`對真實
+     `octocat/Hello-World`repo全部跑通（`git_push`測了「沒填token時正確
+     擋下」，沒有實際推真的repo）。
+   - **UX改善（使用者當場反饋「configure這個路徑太遠」）**：`_checkFapPermission`
+     原本permission不是granted時直接丟錯誤、要求使用者先跳去Advance
+     Settings按「重新授權」。改成**當場跳一個輕量Modal**（新增
+     `_showFapPermissionDialog`，跟既有`_showMp4ExportOptionsDialog`
+     同一種Promise-based寫法）讓使用者原地點擊授權——`requestPermission()`
+     要求的「剛剛發生的真人點擊」在這裡自然滿足，工具呼叫會停在原地
+     等使用者回應，不用先跳頁面。同一個FAP同時有多個並發呼叫在等權限
+     時，共用同一個dialog（用`_fapPermissionDialogPromises` Map依
+     `${rec.id}:${mode}`去重，不會疊出好幾個一樣的視窗）。Advance
+     Settings裡原本的「重新授權」按鈕保留，給想主動先授權好的使用者用，
+     不是被取代。**已知限制**：這只是把「使用者要點的地方」搬近，
+     `requestPermission()`授權本身能維持多久（多久算「太久沒用」而被
+     重置）是Chrome自己的heuristic，這份改動沒有辦法、也沒有嘗試去
+     延長瀏覽器實際的授權持續時間。
 
 ## 2026-09-14（深夜再追加）
 
