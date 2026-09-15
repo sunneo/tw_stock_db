@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FloatingAssistant</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; font-family: -apple-system, "Segoe UI", sans-serif; }
+  #topbar {
+    display: flex; align-items: center; gap: 14px; padding: 6px 12px;
+    background: #161b22; border-bottom: 1px solid #30363d; color: #cbd5e1; font-size: 12px;
+  }
+  #topbar label { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+  #topbar .sep { flex: 1; }
+  #topbar .badge { padding: 2px 8px; border-radius: 10px; background: #1f2937; color: #93a4b7; }
+  #app { height: calc(100% - 33px); }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <span class="badge">🖥️ 桌面版（直接存取，不透過雲端）</span>
+    <label><input type="checkbox" id="topbar-exec-enabled"> 允許AI執行程式</label>
+    <label><input type="checkbox" id="topbar-exec-confirm" checked> 每次執行前跳確認框</label>
+    <span class="sep"></span>
+    <span id="topbar-proxy-status" class="badge">本地proxy：啟動中…</span>
+  </div>
+  <div id="app"></div>
+
+  <script src="floating-assistant.js"></script>
+  <script src="bootstrap.js"></script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+{
+  "name": "floating-assistant-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "floating-assistant.js 的Electron單機封裝——檔案存取直接授權（不用瀏覽器每次重新授權）、可執行本機程式的subagent、內建本地proxy取代Cloudflare Worker",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win portable",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.tw-stock-db.floating-assistant-desktop",
+    "productName": "FloatingAssistant",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "local-proxy.js",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
+      "category": "Utility"
+    },
+    "asar": true
+  }
+}
