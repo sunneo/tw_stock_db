@@ -1279,6 +1279,92 @@ function createWindow() {
       }, 1500);
     });
   }
+
+  // tw_stock_db客製: 2026-09-15新增——使用者用nvidia/nemotron-3-super-120b-a12b
+  // 實測回報「端點完全沒有回應任何內容」，追查發現根因是_loopFetch/
+  // _loopFetchNative裡判斷「這一輪是不是完全沒拿到任何東西、值得自動重試」
+  // 的條件原本額外要求finishReason==='stop'，但空回應常常帶著其他（或缺席
+  // 的）finish_reason，導致連第一次重試機會都沒有、直接把空白內容當成
+  // 「已完成」，使用者被迫手動重新輸入。這裡跟FA_DEBUG_TOOL_ERROR_TEST同一種
+  // 手法（mock window.fetch、真的跑一次_submitChatInput、在真實renderer/
+  // Electron環境裡驗證），驗證修好之後的兩個情境：(1)端點持續回空——要能
+  // 自動重試很多次、最後放棄時訊息裡要看得到真正的診斷資訊（不是空白警告）；
+  // (2)端點只有第一次回空、第二次就回真正內容——要能自動復原、使用者完全
+  // 不需要自己重新輸入。native路徑（tool_calls，非串流JSON）是使用者實際
+  // 撞到的路徑，這裡優先測這個。
+  if (process.env.FA_DEBUG_NETWORK_DEADEND_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              window.fa._clearChatHistory();
+              window.fa.advancedSettings.toolCallMode = 'native';
+              window.fa.advancedSettings.multiSubAgentMode = 'off';
+              window.fa._saveAdvancedSettings();
+              const emptyNative = () => new Response(JSON.stringify({
+                choices: [{ message: {}, finish_reason: 'error' }]
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+              const realNative = (text) => new Response(JSON.stringify({
+                choices: [{ message: { content: text }, finish_reason: 'stop' }]
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+              // 情境一：端點每次都回完全空白（模擬持續異常的端點）。
+              let callCount1 = 0;
+              const realFetch = window.fetch;
+              window.fetch = async () => { callCount1++; return emptyNative(); };
+              const input1 = document.getElementById('ai-input-text');
+              input1.value = '測試情境一：端點持續回空白';
+              await window.fa._submitChatInput(input1, null);
+              await new Promise(r => setTimeout(r, 6000));
+              window.fetch = realFetch;
+              const msgs1 = window.fa.messages.filter(m => m.role === 'assistant');
+              const last1 = msgs1[msgs1.length - 1];
+              const hasDiagInfo1 = !!(last1 && typeof last1.content === 'string' && last1.content.includes('診斷'));
+              const debugLogKinds1 = window.fa._networkDebugLog.map(e => e.kind);
+
+              // 順便驗證Advance設定「LLM Debug」分頁真的會把_networkDebugLog
+              // 畫出來（不只是資料層有記錄，UI也要看得到）。
+              window.fa._openAdvancedModal();
+              document.querySelector('#ai-advanced-modal .ai-advanced-cat[data-cat="llm-debug"]').click();
+              const panelEl = document.getElementById('ai-network-debug-list');
+              const panelHtml = panelEl ? panelEl.innerHTML : null;
+              const panelShowsHttpStatus = !!(panelHtml && panelHtml.includes('HTTP 200'));
+              const panelShowsEmptyIcon = !!(panelHtml && panelHtml.includes('⚠️'));
+              window.fa._closeAdvancedModal();
+
+              // 情境二：端點第一次回空白，第二次就回真正答案（模擬偶發異常）。
+              window.fa._clearChatHistory();
+              window.fa._networkDebugLog = [];
+              let callCount2 = 0;
+              window.fetch = async () => {
+                callCount2++;
+                if (callCount2 === 1) return emptyNative();
+                return realNative('測試情境二：這是真正的答案內容。');
+              };
+              const input2 = document.getElementById('ai-input-text');
+              input2.value = '測試情境二：端點第一次回空白、第二次恢復正常';
+              await window.fa._submitChatInput(input2, null);
+              await new Promise(r => setTimeout(r, 3000));
+              window.fetch = realFetch;
+              const msgs2 = window.fa.messages.filter(m => m.role === 'assistant');
+              const last2 = msgs2[msgs2.length - 1];
+              const recovered = !!(last2 && typeof last2.content === 'string' && last2.content.includes('測試情境二：這是真正的答案內容'));
+              const noWarningShown2 = !(last2 && typeof last2.content === 'string' && last2.content.includes('⚠️'));
+
+              return JSON.stringify({
+                scenario1_alwaysEmpty: { callCount: callCount1, hasDiagInfoInFinalMessage: hasDiagInfo1, finalMessagePreview: last1 ? String(last1.content).slice(0, 400) : null, debugLogEntryCount: debugLogKinds1.length, panelShowsHttpStatus, panelShowsEmptyIcon },
+                scenario2_recoversOnRetry: { callCount: callCount2, autoRecovered: recovered, noWarningShownToUser: noWarningShown2, finalMessagePreview: last2 ? String(last2.content).slice(0, 200) : null },
+              }, null, 2);
+            })()
+          `);
+          console.log("[network-deadend-test] result:\n" + result);
+        } catch (err) {
+          console.log("[network-deadend-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
