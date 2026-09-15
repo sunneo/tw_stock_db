@@ -1067,9 +1067,10 @@ function createWindow() {
     mainWindow.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
         try {
-          console.log("[hier-repro] switching multiSubAgentMode to hierarchical...");
+          console.log("[hier-repro] clearing persisted chat history (avoid contamination from earlier test runs)...");
           await mainWindow.webContents.executeJavaScript(`
             (() => {
+              window.fa._clearChatHistory();
               window.fa.advancedSettings.multiSubAgentMode = 'hierarchical';
               window.fa._saveAdvancedSettings();
               return window.fa.multiSubAgentMode;
@@ -1083,8 +1084,8 @@ function createWindow() {
               return window.fa._submitChatInput(input, null);
             })()
           `);
-          console.log("[hier-repro] waiting up to 180s for the full response (routing + delegation + many file reads + final answer)...");
-          await new Promise((r) => setTimeout(r, 180000));
+          console.log("[hier-repro] waiting up to 320s for the full response (deeper nested chain now: route -> subagent -> fs_list_files -> batch_process_items -> 20 parallel sub-subagents -> reduce -> root)...");
+          await new Promise((r) => setTimeout(r, 320000));
           const dump = await mainWindow.webContents.executeJavaScript(`
             JSON.stringify(window.fa.messages.slice(-60).map(m => ({
               role: m.role,
@@ -1132,6 +1133,40 @@ function createWindow() {
           console.log(`[batch-test] done in ${elapsedSec}s. result:\n` + result);
         } catch (err) {
           console.log("[batch-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+  // 一次性除錯hook：驗證2026-09-15新增的_domainGatedToolNames修補——直接
+  // 檢查_getRootToolNames()在router/hierarchical模式下，還看不看得到
+  // fs_read_file/run_command這類桌面專屬工具（修好之前：看得到，根模型可以
+  // 繞過delegate_to_subagent直接呼叫；修好之後：看不到，只能透過委派）。
+  if (process.env.FA_DEBUG_GATING_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              window.fa.advancedSettings.multiSubAgentMode = 'router';
+              window.fa._saveAdvancedSettings();
+              const rootNamesRouter = window.fa._getRootToolNames();
+              window.fa.advancedSettings.multiSubAgentMode = 'hierarchical';
+              window.fa._saveAdvancedSettings();
+              const rootNamesHier = window.fa._getRootToolNames();
+              window.fa.advancedSettings.multiSubAgentMode = 'off';
+              window.fa._saveAdvancedSettings();
+              const rootNamesOff = window.fa._getRootToolNames();
+              const watch = ['fs_read_file','fs_list_files','run_command','batch_process_items','tmux_start_session'];
+              return JSON.stringify({
+                router_stillExposed: watch.filter(n => rootNamesRouter.includes(n)),
+                hierarchical_stillExposed: watch.filter(n => rootNamesHier.includes(n)),
+                off_exposed_asExpected: watch.filter(n => rootNamesOff.includes(n)),
+              }, null, 2);
+            })()
+          `);
+          console.log("[gating-test] result:\n" + result);
+        } catch (err) {
+          console.log("[gating-test] error: " + err);
         }
       }, 1500);
     });
