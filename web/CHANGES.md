@@ -161,6 +161,20 @@ Point」；檔案讀寫API要支援列檔案/寫檔案/讀檔案/找檔案。
     反白且到底會夾住不繞回、Enter正確把選到的項目填進輸入框並關閉選單
     （不會意外送出訊息）；參數候選清單（argChoices）同一套鍵盤操作也
     正確；`/`不在開頭（例如"hello /apple world"）確認選單不會跳出來。
+11. **語音輸入(Whisper)的語言原本寫死'zh'，改成使用者可選**（使用者問
+    「可以選使用者的聲音是中文或英文嗎」）：新增
+    `advancedSettings.voiceInputLanguage`（預設`'zh'`，維持原行為不變），
+    Advance Settings「輸入」分頁「啟用語音輸入」下方新增「說話語言」
+    下拉選單（中文/English/自動偵測）。這個設定只是給Whisper模型的
+    口音/語言提示、幫助辨識準確度，**不是翻譯**——選English講英文，
+    辨識結果就是英文原文，不會被轉成中文（Whisper本身沒有「翻成任意
+    語言」的功能，`task:'translate'`只能把任何語言轉成英文，這裡刻意
+    不用）；使用者確認過這就是他要的行為（選中文語音、輸出自然就是
+    中文，不需要額外的翻譯步驟）。`_recognizeVoiceInput`裡'auto'時改傳
+    `null`給`_runWhisperWindowed`（該函式本來就是`if (language)`才設定
+    `opts.language`，空值＝讓pipeline自己偵測，沿用既有邏輯不用改）。
+    實測：mock`_runWhisperWindowed`捕捉實際傳入的language參數，'zh'/
+    'en'/'auto'三種設定分別正確得到'zh'/'en'/null。
 
 ## 2026-09-14（深夜再追加）
 
