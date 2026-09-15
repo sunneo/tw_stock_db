@@ -16050,12 +16050,34 @@ ${existingNodeSummaries}
                         invokedCount++;
                     } catch (err) {
                         console.error(`執行 ${task.fnName} 失敗:`, err);
-                        this.executeChat(`[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。`);
+                        // tw_stock_db客製: 2026-09-15使用者實測回報——這裡原本呼叫
+                        // `this.executeChat(...)`把錯誤文字當成「使用者剛打的新訊息」
+                        // 送出去，但當下this.isResponding還是true（還在同一輪回應
+                        // 處理中），executeChat()一看到isResponding===true就會走
+                        // `_addSteeringMessage()`那條路——把一個純粹的工具執行失敗
+                        // 回饋（模型呼叫了一個不存在的工具名稱，例如猜成
+                        // "list_directory"而不是真正的"fs_list_files"）誤判成
+                        // 「使用者中途插話、可能要改變方向」，跳出一大段引導AI
+                        // 判斷「使用者是不是要改變方向」的[Steering]系統訊息，
+                        // 完全搞錯情境、也讓對話卡住/使用者一頭霧水。改成跟同一個
+                        // 檔案裡其他兩處（子任務迴圈）完全一致的既有正確作法：
+                        // 直接把錯誤訊息push進this.messages當成一般的回饋，讓模型
+                        // 在下一輪自然看到、有機會換一個正確的工具名稱重試，不要
+                        // 誤觸發整個「使用者插話」機制。
+                        this.messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
+                        this._renderMessageHistory();
                     }
                 }
 
-                // 若有執行任何工具，遞迴呼叫確保 AI 完成後續 Plan
-                if (invokedCount > 0) {
+                // tw_stock_db客製: 見上面catch區塊的說明——原本用invokedCount>0
+                // 判斷要不要遞迴呼叫_loopFetch()讓AI看到工具結果繼續完成任務，
+                // 但invokedCount只在「成功」時才會++，如果這一輪的工具呼叫
+                // 全部失敗（例如模型連續猜錯好幾次工具名稱），invokedCount會是
+                // 0，導致完全不遞迴、對話直接卡住結束，模型連「看到失敗原因、
+                // 換個正確名稱重試」的機會都沒有。改成只要這一輪「有嘗試呼叫過
+                // 工具」（toolTasks.length>0）就遞迴，不論成功或失敗都要讓AI
+                // 看到結果繼續下去。
+                if (toolTasks.length > 0) {
                     return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
             } else {
