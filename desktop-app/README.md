@@ -171,6 +171,29 @@ export FA_BUILTIN_OPENROUTER_KEY="（選填）你的預設OPENROUTER_API_KEY"
 掛一把刻意設定低額度/免費層級、就算被公開抽取也能接受的金鑰，絕對不要
 用綁定真實付費帳號或高額度配額的金鑰。**
 
+## 內建bash/python執行環境
+
+`floating-assistant.js`（web/桌面版共用同一份引擎）內建`bash_execute`（busybox
+ash+coreutils編譯成wasm32-wasi，透過[wasi-sh](https://github.com/sunneo/wasi-sh)
+fork）跟`python_execute`（[Pyodide](https://github.com/pyodide/pyodide)，
+CPython編譯成wasm）兩個工具，讓AI能真的產生程式並在瀏覽器沙盒內執行，不是
+只能描述「這段程式應該做什麼」。兩者都完全不會碰到使用者電腦真正的檔案
+系統，也沒有對外網路連線能力。
+
+輸出檔案的存放位置有三層優先順序（`output_ref`參數控制，見
+`_persistExecutionOutputFiles`的說明）：`fap:<名稱>`存進File Access
+Point（任何平台）→ 桌面版可給真實磁碟絕對路徑直接存 → 兩者都沒給就存進
+persistentStorage。桌面版這兩個工具用到的wasm執行環境（busybox.wasm/
+Pyodide）會經本地proxy帶入（`advancedSettings.assetBackupProxyUrl`，
+bootstrap.js自動設定，跟`gitCorsProxyUrl`等三個既有proxy欄位同一套慣例）。
+
+**⚠️ 需要Electron 44+（Chromium 137+）**：`busybox.wasm`用到WASM exception
+handling（`exnref`）——這個特性Chrome到137版才穩定支援，桌面版原本鎖定的
+Electron 31（Chromium ~126）會直接`WebAssembly.compile()`失敗。這是這次
+新增bash_execute時才發現、也才把`package.json`的Electron依賴升級到44的
+真正原因，不是隨意升級——升級後已經重跑過現有的桌面版整合測試
+（`FA_DEBUG_*`系列），確認沒有引入其他回歸。
+
 ## 已知限制（如實告知）
 
 - **本地proxy只解決CORS，不解決「目標API本身要不要收你的金鑰/請求」**——
