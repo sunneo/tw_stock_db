@@ -48,8 +48,19 @@ if (-not $SkipInstall) {
 # setup, which can otherwise still fire even for a Windows-only build.
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 
+# --x64 is required here even though package.json's build.win.target
+# already lists arch:["x64"] - electron-builder's CLI target parsing (when
+# you pass --win <target> without an explicit arch flag) falls back to the
+# CURRENT NODE PROCESS's own process.arch, not the config file's arch list.
+# On a 32-bit Node.js install this silently packages for win32-ia32 instead
+# of x64, and since Electron dropped 32-bit Windows builds entirely (recent
+# versions don't publish an ia32 zip at all), that fails with a 404
+# downloading electron-vX.X.X-win32-ia32.zip - a confusing error that looks
+# unrelated to architecture at first glance. Passing --x64 explicitly
+# bypasses process.arch detection entirely, regardless of which Node.js
+# build (32-bit or 64-bit) is running this script.
 Write-Host "== electron-builder: packaging Windows portable executable ==" -ForegroundColor Cyan
-npx electron-builder --win portable
+npx electron-builder --win portable --x64
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "electron-builder failed. If the error mentions 'Cannot create symbolic link' while" -ForegroundColor Yellow
