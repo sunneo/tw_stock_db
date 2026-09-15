@@ -237,6 +237,24 @@ function patchCloudflareWording(root) {
   // this.fileAccessPoints.getAll()這個單一入口拿handle。
   fa.fileAccessPoints = new ElectronFapStore();
 
+  // tw_stock_db客製: 2026-09-15使用者回報「檔案存取管理」的重新命名／移除
+  // 按鈕完全沒作用——追查到floating-assistant.js核心那兩個按鈕分別是
+  // `prompt('新的名稱：', rec.label)`跟`confirm('移除授權...')`，而
+  // Electron從來沒有實作`window.prompt()`（呼叫了不會顯示任何東西、直接
+  // 回傳null，這是Electron本身的已知限制，不是這個app或floating-assistant.js
+  // 的bug），`window.confirm()`在這個build同樣不可靠。不能改
+  // floating-assistant.js本身（要維持host-agnostic，在真正瀏覽器裡這兩個
+  // API完全正常），改成在桌面版把這兩個全域函式整個蓋掉，底層呼叫
+  // preload.js暴露的`desktopAPI.dialogs.*`（用`ipcRenderer.sendSync`，
+  // renderer執行緒真的會被阻塞到main行程跳出modal視窗、使用者按下按鈕、
+  // 把`event.returnValue`設好為止——語意跟原生prompt()/confirm()一致，
+  // 呼叫端不用改寫成await）。這樣一來，不只檔案存取管理的重新命名/移除，
+  // 整個floating-assistant.js核心裡任何地方用到prompt()/confirm()/alert()
+  // 的既有功能，桌面版全部自動變成可靠可用，不用逐一去找、逐一改。
+  window.prompt = (message, defaultValue) => window.desktopAPI.dialogs.prompt(message, defaultValue);
+  window.confirm = (message) => window.desktopAPI.dialogs.confirm(message);
+  window.alert = (message) => { window.desktopAPI.dialogs.alert(message); };
+
   // 本地proxy設定：git_operations（isomorphic-git的http transport還是在
   // renderer用fetch()，仍然需要CORS繞道）跟browser_search/TTS API等既有
   // 「留空→退回目前AI端點apiUrl」的功能，一律指向本機的local-proxy.js，
@@ -342,7 +360,10 @@ function patchCloudflareWording(root) {
       <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">跳過原生資料夾選擇對話框，直接授權一個本機資料夾路徑給AI直接讀寫。</p>
       <label style="display:block; margin-bottom:12px;">
         <div style="margin-bottom:4px; color:#93a4b8;">資料夾完整路徑</div>
-        <input type="text" id="addfolder-dlg-path" placeholder="例如 D:\\Downloads\\我的專案" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="addfolder-dlg-path" placeholder="例如 D:\\Downloads\\我的專案" style="flex:1; min-width:0; box-sizing:border-box; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px;">
+          <button type="button" id="addfolder-dlg-browse" style="padding:6px 12px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; cursor:pointer; font-size:13px; white-space:nowrap;">瀏覽…</button>
+        </div>
       </label>
       <label style="display:block; margin-bottom:8px;">
         <div style="margin-bottom:4px; color:#93a4b8;">顯示名稱（選填，留空＝用資料夾本身的名稱）</div>
@@ -376,6 +397,18 @@ function patchCloudflareWording(root) {
     };
     box.querySelector("#addfolder-dlg-save").addEventListener("click", doSave);
     pathInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doSave(); });
+    // 瀏覽按鈕：dialog.showOpenDialog在這台機器不會顯示（同一個已知問題），
+    // 改叫main.js自己刻的資料夾瀏覽器視窗（desktopAPI.roots.browse），選定
+    // 後把絕對路徑直接填回文字輸入框，使用者仍然要按「新增」才會真的送出
+    // （瀏覽跟新增分開兩步，讓使用者有機會在送出前調整顯示名稱）。
+    box.querySelector("#addfolder-dlg-browse").addEventListener("click", async () => {
+      try {
+        const picked = await window.desktopAPI.roots.browse(pathInput.value.trim() || undefined);
+        if (picked) { pathInput.value = picked; errEl.textContent = ""; }
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+      }
+    });
     pathInput.focus();
   }
   const addFolderBtn = document.getElementById("topbar-add-folder-btn");

@@ -285,6 +285,230 @@ function showExecConfirmWindow(cmdLine, cwd) {
   });
 }
 
+// tw_stock_db客製: 2026-09-15使用者實測回報——floating-assistant.js核心到處
+// 用`window.prompt()`/`window.confirm()`問使用者（檔案存取管理的「重新
+// 命名」用prompt、「移除」用confirm，其餘散落在整個核心程式碼裡的一次性
+// 小型互動也是同一套），Electron從來沒有實作`window.prompt()`（這是
+// Electron本身長年的已知限制，不是這個app的bug——`alert`/`confirm`
+// Chromium有內建，`prompt`從來沒有），呼叫了不會顯示任何東西、直接回傳
+// null，讓使用者覺得「按了沒反應」。不能改floating-assistant.js本身（那個
+// 檔案要維持host-agnostic，在真正的瀏覽器裡prompt()/confirm()完全正常），
+// 所以在桌面版把這兩個全域函式**整個蓋掉**，改用跟上面showExecConfirmWindow
+// 同一種「自己開一個真正的BrowserWindow」機制——差別是prompt()/confirm()
+// 呼叫端期待的是**同步**回傳值（`const label = prompt(...);`接下來那行
+// 就要用到結果，不是Promise），所以renderer那端要改用
+// `ipcRenderer.sendSync()`（真的會讓renderer那個執行緒暫停，直到主行程
+// 把`event.returnValue`設好為止——即使主行程那端的handler內部是
+// `async`、中間await了顯示視窗等使用者互動的Promise，也完全沒問題，
+// sendSync在底層等的是「這個sync channel真的收到回覆」，不是「handler
+// 函式同步return」，這是Electron本身支援、有文件記載的合法用法）。
+function showTextInputWindow(message, defaultValue) {
+  return new Promise((resolve) => {
+    const responseChannel = `fa:prompt-response:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const win = new BrowserWindow({
+      width: 480, height: 220, parent: mainWindow, modal: true,
+      resizable: false, minimizable: false, maximizable: false,
+      title: "FloatingAssistant",
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    });
+    win.setMenuBarVisibility(false);
+    let settled = false;
+    const finish = (result) => { if (settled) return; settled = true; resolve(result); if (!win.isDestroyed()) win.close(); };
+    ipcMain.once(responseChannel, (_evt, result) => finish(result));
+    win.on("closed", () => finish(null));
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; background:#161b22; color:#e5e7eb; margin:0; padding:20px; box-sizing:border-box; }
+      p { margin:0 0 12px 0; font-size:13px; white-space:pre-wrap; }
+      input { width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:13px; margin-bottom:16px; }
+      .buttons { display:flex; justify-content:flex-end; gap:10px; }
+      button { padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; }
+      #ok { background:#3182ce; color:#fff; border:none; }
+    </style></head><body>
+      <p>${escapeHtmlForConfirmWindow(message)}</p>
+      <input type="text" id="val" value="${escapeHtmlForConfirmWindow(defaultValue || "")}">
+      <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok">確定</button>
+      </div>
+      <script>
+        const { ipcRenderer } = require("electron");
+        const input = document.getElementById("val");
+        const send = (v) => ipcRenderer.send(${JSON.stringify(responseChannel)}, v);
+        document.getElementById("cancel").onclick = () => send(null);
+        document.getElementById("ok").onclick = () => send(input.value);
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(input.value); });
+        input.focus();
+        input.select();
+      </script>
+    </body></html>`;
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  });
+}
+
+function showConfirmWindow(message) {
+  return new Promise((resolve) => {
+    const responseChannel = `fa:confirm-response:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const win = new BrowserWindow({
+      width: 480, height: 200, parent: mainWindow, modal: true,
+      resizable: false, minimizable: false, maximizable: false,
+      title: "FloatingAssistant",
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    });
+    win.setMenuBarVisibility(false);
+    let settled = false;
+    const finish = (result) => { if (settled) return; settled = true; resolve(result); if (!win.isDestroyed()) win.close(); };
+    ipcMain.once(responseChannel, (_evt, result) => finish(!!result));
+    win.on("closed", () => finish(false));
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; background:#161b22; color:#e5e7eb; margin:0; padding:20px; box-sizing:border-box; }
+      p { margin:0 0 18px 0; font-size:13px; white-space:pre-wrap; }
+      .buttons { display:flex; justify-content:flex-end; gap:10px; }
+      button { padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; }
+      #ok { background:#3182ce; color:#fff; border:none; }
+    </style></head><body>
+      <p>${escapeHtmlForConfirmWindow(message)}</p>
+      <div class="buttons">
+        <button id="cancel">取消</button>
+        <button id="ok">確定</button>
+      </div>
+      <script>
+        const { ipcRenderer } = require("electron");
+        document.getElementById("cancel").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, false);
+        document.getElementById("ok").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, true);
+      </script>
+    </body></html>`;
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  });
+}
+
+function showAlertWindow(message) {
+  return new Promise((resolve) => {
+    const responseChannel = `fa:alert-response:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const win = new BrowserWindow({
+      width: 480, height: 180, parent: mainWindow, modal: true,
+      resizable: false, minimizable: false, maximizable: false,
+      title: "FloatingAssistant",
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    });
+    win.setMenuBarVisibility(false);
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; resolve(); if (!win.isDestroyed()) win.close(); };
+    ipcMain.once(responseChannel, () => finish());
+    win.on("closed", () => finish());
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; background:#161b22; color:#e5e7eb; margin:0; padding:20px; box-sizing:border-box; }
+      p { margin:0 0 18px 0; font-size:13px; white-space:pre-wrap; }
+      .buttons { display:flex; justify-content:flex-end; }
+      button { padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px; background:#3182ce; color:#fff; border:none; }
+    </style></head><body>
+      <p>${escapeHtmlForConfirmWindow(message)}</p>
+      <div class="buttons"><button id="ok">確定</button></div>
+      <script>
+        const { ipcRenderer } = require("electron");
+        document.getElementById("ok").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)});
+      </script>
+    </body></html>`;
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  });
+}
+
+ipcMain.on("fa:sync-prompt", async (event, { message, defaultValue } = {}) => {
+  event.returnValue = await showTextInputWindow(message, defaultValue);
+});
+ipcMain.on("fa:sync-confirm", async (event, { message } = {}) => {
+  event.returnValue = await showConfirmWindow(message);
+});
+ipcMain.on("fa:sync-alert", async (event, { message } = {}) => {
+  await showAlertWindow(message);
+  event.returnValue = true;
+});
+
+// tw_stock_db客製: 2026-09-15使用者要求——「直接輸入路徑」對話框太難用，
+// 要有真的可以瀏覽的按鈕。不能用`dialog.showOpenDialog`（已知在這台機器
+// 不會顯示），改成自己刻一個最小可用的資料夾瀏覽器視窗——不是完整的檔案
+// 總管，只需要「列出目前目錄底下的子目錄、點進去、回上一層、選定目前
+// 目錄」這幾個操作。因為這個視窗100%是這裡自己組的固定內容（不會載入
+// 任何CDN/AI產生的內容），直接開`nodeIntegration:true`讓它自己
+// `require('fs')`列目錄，不需要另外設計一組IPC來回傳目錄清單。
+function showFolderBrowserWindow(startPath) {
+  return new Promise((resolve) => {
+    const responseChannel = `fa:folder-browser-response:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const win = new BrowserWindow({
+      width: 640, height: 480, parent: mainWindow, modal: true,
+      title: "選擇資料夾",
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    });
+    win.setMenuBarVisibility(false);
+    let settled = false;
+    const finish = (result) => { if (settled) return; settled = true; resolve(result); if (!win.isDestroyed()) win.close(); };
+    ipcMain.once(responseChannel, (_evt, result) => finish(result || null));
+    win.on("closed", () => finish(null));
+    const initialPathJson = JSON.stringify(startPath || app.getPath("home"));
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; background:#161b22; color:#e5e7eb; margin:0; padding:0; display:flex; flex-direction:column; height:100vh; box-sizing:border-box; }
+      #toolbar { padding:10px 14px; border-bottom:1px solid #30363d; display:flex; gap:8px; align-items:center; }
+      #pathInput { flex:1; padding:6px 8px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#e5e7eb; font-size:12px; }
+      #list { flex:1; overflow-y:auto; padding:6px 10px; }
+      .item { padding:7px 10px; border-radius:6px; cursor:pointer; font-size:13px; }
+      .item:hover { background:#21262d; }
+      #footer { padding:10px 14px; border-top:1px solid #30363d; display:flex; justify-content:flex-end; gap:8px; }
+      button { padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; }
+      #select { background:#3182ce; color:#fff; border:none; }
+      .err { color:#93a4b7; padding:10px 4px; font-size:12px; }
+    </style></head><body>
+      <div id="toolbar">
+        <button id="up">⬆ 上一層</button>
+        <input type="text" id="pathInput">
+        <button id="go">前往</button>
+      </div>
+      <div id="list"></div>
+      <div id="footer">
+        <button id="cancel">取消</button>
+        <button id="select">選擇這個資料夾</button>
+      </div>
+      <script>
+        const fs = require("fs");
+        const path = require("path");
+        const { ipcRenderer } = require("electron");
+        let current = ${initialPathJson};
+        const pathInput = document.getElementById("pathInput");
+        const list = document.getElementById("list");
+        function render() {
+          pathInput.value = current;
+          list.innerHTML = "";
+          let entries = [];
+          try {
+            entries = fs.readdirSync(current, { withFileTypes: true })
+              .filter((e) => { try { return e.isDirectory(); } catch (_) { return false; } })
+              .map((e) => e.name)
+              .sort((a, b) => a.localeCompare(b));
+          } catch (err) {
+            list.innerHTML = '<div class="err">無法讀取：' + String((err && err.message) || err) + '</div>';
+            return;
+          }
+          if (!entries.length) list.innerHTML = '<div class="err">（沒有子資料夾）</div>';
+          for (const name of entries) {
+            const div = document.createElement("div");
+            div.className = "item";
+            div.textContent = "\\uD83D\\uDCC1 " + name;
+            div.onclick = () => { current = path.join(current, name); render(); };
+            list.appendChild(div);
+          }
+        }
+        document.getElementById("up").onclick = () => { current = path.dirname(current); render(); };
+        document.getElementById("go").onclick = () => { current = pathInput.value.trim() || current; render(); };
+        pathInput.addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("go").click(); });
+        document.getElementById("cancel").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, null);
+        document.getElementById("select").onclick = () => ipcRenderer.send(${JSON.stringify(responseChannel)}, current);
+        render();
+      </script>
+    </body></html>`;
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  });
+}
+
+ipcMain.handle("fa:roots:browse", async (_evt, { startPath } = {}) => showFolderBrowserWindow(startPath));
+
 ipcMain.handle("fa:exec:getSettings", async () => getDesktopSettings());
 ipcMain.handle("fa:exec:setSettings", async (_evt, patch) => {
   const cur = await getDesktopSettings();
@@ -439,6 +663,32 @@ function createWindow() {
           console.log("[exec-test] result: " + JSON.stringify(result, null, 2));
         } catch (err) {
           console.log("[exec-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+  // 一次性除錯用hook（沿用FA_DEBUG_EXEC_TEST同一種模式）：Windows-MCP這類
+  // 螢幕自動化工具在這台機器上對「原始像素座標點擊」不可靠（這個桌面app的
+  // 齒輪/垃圾桶圖示不是有名稱的可存取元件，點不到），改用這個env var直接從
+  // main行程呼叫window.prompt/confirm/alert，驗證新的全域override＋
+  // showTextInputWindow/showConfirmWindow/showAlertWindow modal視窗真的會
+  // 彈出、可以互動、且呼叫端拿得到正確的回傳值。
+  if (process.env.FA_DEBUG_DIALOG_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          console.log("[dialog-test] calling window.prompt() directly, waiting for prompt window...");
+          const promptResult = await mainWindow.webContents.executeJavaScript(
+            `window.prompt("測試prompt：請輸入新名稱", "預設值ABC")`
+          );
+          console.log("[dialog-test] prompt result: " + JSON.stringify(promptResult));
+          console.log("[dialog-test] calling window.confirm() directly, waiting for confirm window...");
+          const confirmResult = await mainWindow.webContents.executeJavaScript(
+            `window.confirm("測試confirm：要移除授權「測試資料夾」嗎？")`
+          );
+          console.log("[dialog-test] confirm result: " + JSON.stringify(confirmResult));
+        } catch (err) {
+          console.log("[dialog-test] error: " + err);
         }
       }, 1500);
     });
