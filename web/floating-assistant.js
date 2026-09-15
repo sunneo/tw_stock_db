@@ -1080,6 +1080,25 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- start_dubbing_session：建立「配音小幫手」互動widget，讓使用者針對影片的某幾個時間段（自己指定的時間範圍，或整支的逐句字幕）錄音/上傳音檔配音，取代原本的聲音。使用者說類似「幫這支影片配音」「把1:20到1:45這段換成我的聲音」都呼叫這個工具。給ranges參數可以直接指定時間段（不需要字幕、速度快）；不給就用整支字幕（逐句一頁）。呼叫成功、widget建立好之後，接下來使用者自己在widget裡操作（錄音/上傳/重錄/試聽/換頁/輸出/結束），你不用再問要不要繼續、也不用描述後續步驟，直接告知widget已經準備好即可。\n' +
             '需要指定影片時可以用file_id或檔名，或留空用最近上傳的。⚠️這個工具依時間段數量可能要花一點處理時間（擷取關鍵影格），呼叫後要等真正的結果。',
     },
+    // tw_stock_db客製: 2026-09-16使用者要求——內建bash/python執行環境，讓AI
+    // 能真的產生程式並執行，不是只能描述「這段程式應該做什麼」。bash走
+    // busybox ash（見_ensureBashWasmLoaded/FA_ASSET_URLS.bashWasmJsBase的
+    // 說明），python走Pyodide（見_ensurePyodideLoaded），兩者都在瀏覽器
+    // 沙盒內執行，完全不接觸使用者真正的系統（跟desktop_ops的run_command
+    // 不同，run_command是真的在使用者帳號權限下執行系統指令，這裡不是）。
+    // C/nodejs（compile to wasm）使用者明確要求先不做，之後才加。
+    code_execution: {
+        enabled: true,
+        label: '程式執行環境（bash／python，瀏覽器沙盒內執行）',
+        toolNames: ['bash_execute', 'python_execute'],
+        systemPrompt: '你是一個專門執行程式的子任務助理，能力：\n' +
+            '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援），完全不會碰到使用者電腦的真實檔案系統。\n' +
+            '- python_execute：在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件如numpy/pandas可以在腳本裡用micropip.install()或import時自動載入，第一次載入某個套件會花一點時間）。\n' +
+            '兩者都用同一套輸入/輸出模型：\n' +
+            '  - input_files（選填）：{"相對路徑":"檔案內容"}，執行前寫進工作目錄（bash是/work/，python是/work/），腳本可以直接讀取。內容如果來自File Access Point/使用者上傳檔案，先用對應的讀取工具（fap_read_file/parse_uploaded_file等）取得文字內容再放進來，這個工具本身不會自己去讀取其他地方的檔案。\n' +
+            '  - output_ref（選填）：腳本執行完後，工作目錄底下新增/修改過的檔案要存去哪裡——給"fap:<名稱>[/<子路徑>]"存進使用者授權的File Access Point；桌面版另外可以給一個真實磁碟絕對路徑直接存到使用者資料夾；完全不給的話存進persistentStorage（回傳file_id，可以再用parse_uploaded_file等既有工具處理，或提示使用者下載）。三種都用得到時，優先問清楚使用者想要哪一種，不要自己隨便猜。\n' +
+            '回應包含stdout/stderr/exit_code（exit_code非0代表腳本執行失敗，把stderr內容照實轉告使用者，不要自己掰原因）跟output_files清單（每個檔案存到哪裡）。⚠️目前沒有硬性逾時中斷機制，腳本裡不要寫真正的無窮迴圈；也沒有網路存取能力（沙盒內對外連線一律失敗，需要下載外部資料時用browser_search/fetch_web_page等既有工具，不要在腳本裡自己wget/curl）。',
+    },
 };
 
 // tw_stock_db客製: 2026-09-11——transcribe_media工具用的Whisper設定。
@@ -2044,6 +2063,56 @@ const FA_ASSET_URLS = {
     // pdf.js官方測試用PDF能正確逐頁擷取文字）。
     pdfJs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
     pdfJsWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+    // tw_stock_db客製: 2026-09-16使用者要求——內建bash/python執行環境，讓AI
+    // 能真的產生程式並執行（bash script／python script），不是只能描述
+    // 「這段程式應該做什麼」。主要給純網頁版用（見bash_execute/python_execute
+    // 工具跟_resolveAssetProxyUrl的說明——desktop版改經本地proxy帶入，同一份
+    // 資源URL兩邊共用）。
+    //
+    // bash: wasi-sh（busybox 1.38.0的ash shell+coreutils編譯成wasm32-wasi，
+    // fork-free——busybox本身是multi-call單一binary，ash呼叫ls/cat/grep等
+    // 「外部指令」實際上是同一個wasm模組內部的函式呼叫，不是真的fork+exec，
+    // 這正是它能在WASI（沒有fork()）底下運作的關鍵，已實測在真實瀏覽器
+    // 驗證過pipe/redirect/mkdir/檔案讀寫都正常）。原始專案
+    // https://github.com/alganet/wasi-sh，fork到 https://github.com/sunneo/wasi-sh
+    // 留一份自己控制的來源（使用者要求「要選一個可以fork的作法」）。優先走
+    // jsDelivr鏡射npm套件（wasi-sh@0.11.0已發佈，jsDelivr自動鏡射任何npm
+    // 發佈版本，用原生import()讀取正常發佈的src/index.mjs+src/fs.mjs，
+    // jsDelivr對.mjs送出正確的JS mimetype，不需要任何workaround）；jsDelivr
+    // 掛掉時退回自家bash-wasm-backup分支（web/tools/build-asset-backup-branch.mjs
+    // 產生，跟whisper-model-backup同一套manifest.json+part切割慣例）——但這裡
+    // 放的不是原始的src/*.mjs樹，是預先用esbuild打包好的單一檔案
+    // wasi-sh.bundle.mjs（只保留run+memoryFs兩個匯出，已實測在真實瀏覽器
+    // 跑過），因為raw.githubusercontent.com對.mjs送出text/plain+nosniff，
+    // 瀏覽器的原生import()會直接拒絕執行——讀取端改成把這個檔案當純文字
+    // fetch()（fetch()本身不受mimetype限制），自己包一個帶正確
+    // type:'text/javascript'的Blob URL再import()，繞過host端錯誤的
+    // Content-Type（見_ensureBashWasmLoaded，跟_faLoadScriptOnce對付同一個
+    // raw.githubusercontent.com nosniff限制是同一個精神，只是那個是給傳統
+    // <script>標籤用、這裡是給ESM import()用）。busybox.wasm本身只是原始
+    // bytes（WebAssembly.compile自己吃，不經過瀏覽器的script執行路徑），
+    // 不受mimetype限制，兩邊來源都直接fetch()+arrayBuffer()即可。
+    bashWasmJsBase: 'https://cdn.jsdelivr.net/npm/wasi-sh@0.11.0/',
+    bashWasmBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/bash-wasm-backup/wasi-sh/',
+    // python: Pyodide（CPython編譯成wasm32-emscripten，業界標準的瀏覽器端
+    // Python），npm套件pyodide@314.0.7一樣直接吃jsDelivr的npm鏡射（classic
+    // global-attaching的pyodide.js，跟其餘vendored函式庫同一種
+    // _faLoadScriptOnce載入方式，不是ESM）。退路本來想直接指向自家
+    // pyodide-backup分支的raw.githubusercontent.com網址，但實測發現
+    // pyodide.js內部會自己執行`import(indexURL+'pyodide.asm.mjs')`（動態
+    // ESM import，繞過_faLoadScriptOnce的Blob URL workaround、直接用
+    // indexURL組出的原始網址），一樣會撞上raw.githubusercontent.com的
+    // nosniff限制而失敗——這裡改成透過jsDelivr的GitHub鏡射模式
+    // （cdn.jsdelivr.net/gh/<user>/<repo>@<branch>/<path>）讀取自家分支，
+    // 這個模式送出正確的JS mimetype（已實測確認），解決了indexURL指到哪裡
+    // 都要能被瀏覽器原生import()接受這個限制，同時仍然是「不依賴pyodide
+    // 官方npm發佈是否還在」的真正備份來源，只是兩個來源實際上都走jsDelivr
+    // 的傳輸層（風險：jsDelivr本身整個掛掉時兩邊都會失敗，這是這個技術
+    // 限制下的已知取捨，不是沒注意到）。只vendor核心執行環境~13MB：直譯器+
+    // stdlib，不含numpy/pandas這類額外套件——那些照Pyodide官方設計走
+    // micropip/loadPackage按需從官方CDN抓，不在這裡vendor整個套件生態。
+    pyodideJsBase: 'https://cdn.jsdelivr.net/npm/pyodide@314.0.7/',
+    pyodideBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@pyodide-backup/pyodide-core/',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -3333,6 +3402,17 @@ class FloatingAssistant {
             gitHubToken: '',
             gitAuthorName: '',
             gitAuthorEmail: '',
+            // tw_stock_db客製: 2026-09-16——bash_execute/python_execute要抓的
+            // wasm執行環境（jsDelivr鏡射的npm套件或自家backup分支，見
+            // FA_ASSET_URLS.bashWasmJsBase/pyodideJsBase的說明），留空時直接
+            // fetch()（一般瀏覽器部署，raw.githubusercontent.com/jsDelivr都
+            // 送出permissive CORS header，不需要繞道）；桌面版會由bootstrap.js
+            // 自動填成本地proxy網址（見_resolveAssetProxyUrl），這是使用者
+            // 明確要求的「單機板用assets從proxy來帶入」——跟desktop-app/
+            // local-proxy.js既有的通用/proxy/<url>路由對齊，同一套機制
+            // browserSearchProxyUrl/gitCorsProxyUrl也在用，只是這裡指到
+            // 不同的路由前綴。
+            assetBackupProxyUrl: '',
             // tw_stock_db客製: 2026-09-11——transcribe_media走CPU WASM路徑時
             // 請求的執行緒數（見WHISPER_WASM_THREADS/_getWhisperWasmThreads）。
             // 只在crossOriginIsolated成立（host頁面有coi-serviceworker）時
@@ -3775,6 +3855,7 @@ class FloatingAssistant {
             gitHubToken: String(raw.gitHubToken || '').trim(),
             gitAuthorName: String(raw.gitAuthorName || '').trim(),
             gitAuthorEmail: String(raw.gitAuthorEmail || '').trim(),
+            assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
                 const n = Number(raw.whisperWasmThreads);
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
@@ -4604,6 +4685,130 @@ ${fnData.code}
                 entry_path: { type: 'string', description: '（選填）壓縮檔內要摘要的項目路徑' },
                 focus: { type: 'string', description: '（選填）想特別關注的重點方向，會用來引導每個區塊的摘要' },
             }, required: ['file_id'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-16使用者要求——bash_execute/python_execute。
+        // 兩個工具共用同一套輸出處理（_persistExecutionOutputFiles，見那邊
+        // 三層優先順序的說明），各自的執行環境完全獨立（_ensureBashWasmLoaded
+        // /_ensurePyodideLoaded）。inputFilesParam的schema/驗證邏輯兩邊
+        // 一模一樣，抽成共用函式避免重複。
+        const parseExecutionInputFiles = (raw) => {
+            if (raw == null) return {};
+            if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('input_files必須是「相對路徑」→「檔案內容」的物件');
+            const out = {};
+            for (const [k, v] of Object.entries(raw)) out[String(k)] = String(v == null ? '' : v);
+            return out;
+        };
+        const executionToolSchema = {
+            type: 'object',
+            properties: {
+                script: { type: 'string', description: '要執行的腳本內容' },
+                input_files: { type: 'object', description: '選填，{"相對路徑":"檔案內容"}，執行前寫進工作目錄，腳本可以直接讀取' },
+                output_ref: { type: 'string', description: '選填，"fap:<名稱>[/<子路徑>]"存進File Access Point；桌面版可給真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）' },
+            },
+            required: ['script'],
+            additionalProperties: false,
+        };
+
+        registerOptional('bash_execute',
+            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援），完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）。腳本的工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案（含input_files原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "output_ref":"fap:我的專案/build"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const script = String(parsed.script || '');
+                if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
+                let inputFiles;
+                try { inputFiles = parseExecutionInputFiles(parsed.input_files); } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                let runtime;
+                try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                const seedFiles = {};
+                for (const [relPath, content] of Object.entries(inputFiles)) seedFiles['/work/' + relPath.replace(/^\/+/, '')] = content;
+                const store = runtime.memoryFs(seedFiles);
+                // tw_stock_db客製: 2026-09-16實測發現——memoryFs(files)只會幫「有
+                // 出現在files裡的路徑」自動建立父目錄，input_files留空時（沒有
+                // 任何/work/開頭的路徑）/work目錄本身根本不存在，腳本裡任何
+                // 「在/work底下建新檔案」的指令（例如echo hi > /work/x.txt）都會
+                // 直接失敗（sh: can't create ...: nonexistent directory）。不能
+                // 假設「腳本一定會先自己mkdir」，這裡明確確保/work一定存在。
+                try { store.mkdirSync('/work', { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
+                let result;
+                try {
+                    result = await runtime.run({ command: script, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: `執行失敗：${String(err.message || err)}` });
+                }
+                const outputFiles = this._walkMemoryFsDir(store, '/work');
+                let persisted;
+                try {
+                    persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode });
+                }
+                return JSON.stringify({
+                    ok: true, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode,
+                    output_destination: persisted.destination, output_files: persisted.files,
+                });
+            },
+            executionToolSchema
+        );
+
+        // tw_stock_db客製: pyodide.FS是Emscripten MEMFS——同步API、跟busybox
+        // 那邊的memoryFs是完全不同的實作，_walkMemoryFsDir不能直接重用，
+        // 這裡另外寫一個對應pyodide.FS介面的walk。stdout/stderr的擷取用
+        // Pyodide官方支援的setStdout/setStderr（batched callback），不是
+        // 靠python自己print再從某個地方讀回來。
+        registerOptional('python_execute',
+            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）。工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "output_ref":"fap:我的專案/results"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const script = String(parsed.script || '');
+                if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
+                let inputFiles;
+                try { inputFiles = parseExecutionInputFiles(parsed.input_files); } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                let pyodide;
+                try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                const stdoutChunks = [];
+                const stderrChunks = [];
+                pyodide.setStdout({ batched: (s) => stdoutChunks.push(s) });
+                pyodide.setStderr({ batched: (s) => stderrChunks.push(s) });
+                try {
+                    pyodide.FS.mkdirTree('/work');
+                    for (const [relPath, content] of Object.entries(inputFiles)) {
+                        const abs = '/work/' + relPath.replace(/^\/+/, '');
+                        const dir = abs.slice(0, abs.lastIndexOf('/'));
+                        if (dir && dir !== '/work') pyodide.FS.mkdirTree(dir);
+                        pyodide.FS.writeFile(abs, content);
+                    }
+                    let exitCode = 0;
+                    try {
+                        await pyodide.runPythonAsync(script);
+                    } catch (err) {
+                        exitCode = 1;
+                        stderrChunks.push(String(err && err.message || err));
+                    }
+                    const outputFiles = this._walkPyodideFsDir(pyodide, '/work');
+                    let persisted;
+                    try {
+                        persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
+                    } catch (err) {
+                        return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exit_code: exitCode });
+                    }
+                    return JSON.stringify({
+                        ok: true, stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exit_code: exitCode,
+                        output_destination: persisted.destination, output_files: persisted.files,
+                    });
+                } finally {
+                    // tw_stock_db客製: /work底下的檔案是這次呼叫累積下來的（下一次
+                    // python_execute如果沒有清掉，會看到上一次殘留的檔案）——每次
+                    // 呼叫結束都清空，讓每次呼叫的/work狀態可預期，跟bash_execute
+                    // 每次都是全新的memoryFs一致。
+                    try {
+                        for (const f of this._walkPyodideFsDir(pyodide, '/work')) pyodide.FS.unlink(f.absPath);
+                    } catch (_) {}
+                }
+            },
+            executionToolSchema
         );
 
         // tw_stock_db客製: 階段3——3D場景viewer（見_mount3DScene/計畫文件
@@ -10385,6 +10590,290 @@ ${sourceTool.handlerScript}
             pageTexts.push(content.items.map(it => it.str || '').join(' ').replace(/\s+/g, ' ').trim());
         }
         return { numPages: pdf.numPages, pageTexts };
+    }
+
+    // tw_stock_db客製: 2026-09-16——bash_execute/python_execute共用的資源
+    // 取用層。見advancedSettings.assetBackupProxyUrl宣告處的說明：留空時
+    // 直接fetch()（一般瀏覽器部署，jsDelivr/raw.githubusercontent.com都送出
+    // permissive CORS header，不需要繞道），桌面版由bootstrap.js填成本地
+    // proxy網址時，改經desktop-app/local-proxy.js既有的通用/proxy/<url>
+    // 路由轉發——跟_resolveGitCorsProxyUrl（git專用/git-proxy路由）同一套
+    // 「留空=直接、有填=經proxy」慣例，只是這裡指到不同的路由前綴。
+    _resolveAssetProxyUrl() {
+        const explicit = String(this.advancedSettings.assetBackupProxyUrl || '').trim();
+        if (!explicit) return '';
+        return explicit.replace(/\/+$/, '') + '/proxy/';
+    }
+
+    _viaAssetProxy(url) {
+        const proxyBase = this._resolveAssetProxyUrl();
+        return proxyBase ? proxyBase + url : url;
+    }
+
+    // tw_stock_db客製: 見FA_ASSET_URLS.bashWasmBackupBase/pyodideBackupBase
+    // 宣告處的說明——跟_prefetchWhisperModelFromRepo同一套manifest.json+
+    // part切割慣例的通用版：backupBase底下如果有manifest.json、且該檔案的
+    // parts是正整數，就照manifest指示的份數抓.partNNN合併；沒有manifest
+    // （或這個檔案的parts是null）時當成單檔直接抓。回傳ArrayBuffer，呼叫端
+    // 自己決定要當bytes（wasm）還是文字（JS runtime bundle）用。manifest
+    // 本身依backupBase快取（this._assetBackupManifestCache），同一次session
+    // 對同一個backupBase不會重複打manifest.json。
+    async _fetchAssetBackupFile(backupBase, relPath) {
+        if (!this._assetBackupManifestCache) this._assetBackupManifestCache = new Map();
+        let manifest = this._assetBackupManifestCache.get(backupBase);
+        if (manifest === undefined) {
+            try {
+                const r = await fetch(this._viaAssetProxy(backupBase + 'manifest.json'), { cache: 'no-cache' });
+                manifest = r.ok ? await r.json() : null;
+            } catch (_) { manifest = null; }
+            this._assetBackupManifestCache.set(backupBase, manifest);
+        }
+        const entry = manifest && Array.isArray(manifest.files) ? manifest.files.find(f => f.path === relPath) : null;
+        const partCount = entry && Number.isInteger(entry.parts) && entry.parts > 0 ? entry.parts : null;
+        if (partCount) {
+            const buffers = [];
+            for (let i = 0; i < partCount; i++) {
+                const partUrl = this._viaAssetProxy(backupBase + relPath + '.part' + String(i).padStart(3, '0'));
+                const r = await fetch(partUrl, { cache: 'no-cache' });
+                if (!r.ok) throw new Error(`${partUrl} → HTTP ${r.status}`);
+                buffers.push(await r.arrayBuffer());
+            }
+            const total = buffers.reduce((s, b) => s + b.byteLength, 0);
+            const merged = new Uint8Array(total);
+            let off = 0;
+            for (const b of buffers) { merged.set(new Uint8Array(b), off); off += b.byteLength; }
+            if (entry.size && merged.byteLength !== entry.size) {
+                throw new Error(`${relPath} 合併後大小不符（預期 ${entry.size}、實際 ${merged.byteLength}）`);
+            }
+            return merged.buffer;
+        }
+        const r = await fetch(this._viaAssetProxy(backupBase + relPath), { cache: 'no-cache' });
+        if (!r.ok) throw new Error(`${backupBase + relPath} → HTTP ${r.status}`);
+        return await r.arrayBuffer();
+    }
+
+    // 單純二進位資源（例如busybox.wasm）的「主要來源直接fetch，失敗才退到
+    // 自家backup分支」共用邏輯——不涉及script執行/mimetype問題，直接
+    // fetch()+arrayBuffer()即可，兩邊都一樣。
+    async _fetchAssetBytesWithBackup(primaryUrl, backupBase, relPath) {
+        try {
+            const r = await fetch(this._viaAssetProxy(primaryUrl), { cache: 'no-cache' });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return await r.arrayBuffer();
+        } catch (primaryErr) {
+            try {
+                return await this._fetchAssetBackupFile(backupBase, relPath);
+            } catch (backupErr) {
+                throw new Error(`抓 ${relPath} 失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+            }
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-16使用者要求——內建bash執行環境。見
+    // FA_ASSET_URLS.bashWasmJsBase的詳細說明：JS runtime主要來源走jsDelivr
+    // 的npm鏡射、用原生import()讀取（正確mimetype，不需要workaround）；
+    // 失敗時改抓自家bash-wasm-backup分支預先打包好的單一檔案
+    // wasi-sh.bundle.mjs，用fetch()當純文字讀出來、自己包一個
+    // type:'text/javascript'的Blob URL再import()——繞過
+    // raw.githubusercontent.com對.mjs送出text/plain+nosniff、原生import()
+    // 會直接拒絕執行的問題。回傳{run, memoryFs, wasmBytes}，快取在
+    // this._bashWasmRuntime，同一個session只會真的載入一次。
+    async _ensureBashWasmLoaded() {
+        if (this._bashWasmRuntime) return this._bashWasmRuntime;
+        if (this._bashWasmLoadPromise) return this._bashWasmLoadPromise;
+        this._bashWasmLoadPromise = (async () => {
+            let run, memoryFs;
+            try {
+                const [runMod, fsMod] = await Promise.all([
+                    import(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs')),
+                    import(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/fs.mjs')),
+                ]);
+                run = runMod.run;
+                memoryFs = fsMod.memoryFs;
+            } catch (primaryErr) {
+                let bundleBuffer;
+                try {
+                    bundleBuffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.bashWasmBackupBase, 'wasi-sh.bundle.mjs');
+                } catch (backupErr) {
+                    throw new Error(`bash 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+                }
+                const text = new TextDecoder('utf-8').decode(bundleBuffer);
+                const blob = new Blob([text], { type: 'text/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+                try {
+                    const mod = await import(blobUrl);
+                    run = mod.run;
+                    memoryFs = mod.memoryFs;
+                } finally {
+                    URL.revokeObjectURL(blobUrl);
+                }
+            }
+            const wasmBytes = await this._fetchAssetBytesWithBackup(
+                FA_ASSET_URLS.bashWasmJsBase + 'dist/busybox.wasm', FA_ASSET_URLS.bashWasmBackupBase, 'dist/busybox.wasm'
+            );
+            this._bashWasmRuntime = { run, memoryFs, wasmBytes };
+            return this._bashWasmRuntime;
+        })().catch(e => { this._bashWasmLoadPromise = null; throw e; });
+        return this._bashWasmLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-16使用者要求——內建python執行環境（Pyodide）。
+    // 見FA_ASSET_URLS.pyodideJsBase的詳細說明：跟其餘vendored函式庫同一種
+    // _faLoadScriptOnce載入方式（classic global-attaching的pyodide.js，
+    // 不是ESM），主要來源jsDelivr的npm鏡射失敗時，改走jsDelivr的GitHub
+    // 鏡射模式讀自家pyodide-backup分支（不是raw.githubusercontent.com直接
+    // 讀，因為pyodide.js內部自己會動態import(indexURL+'pyodide.asm.mjs')，
+    // indexURL指到哪裡就必須被瀏覽器原生import()接受，raw.githubusercontent.com
+    // 的nosniff會擋下這個內部呼叫、且我們沒有能力像bash那樣包一層workaround
+    // ——這個內部import()是pyodide.js自己執行的，不經過我們的程式碼）。
+    // loadPyodide()本身接受indexURL選項，pyodide內部所有相依檔案的抓取都是
+    // 對indexURL做字串接尾（例如indexURL+'python_stdlib.zip'），所以這裡
+    // 把indexURL設成「經過_viaAssetProxy處理過的完整base URL」，桌面版的
+    // 本地proxy轉發會自動對pyodide內部的每一個後續請求都生效，不需要另外
+    // 攔截處理。回傳的pyodide instance快取在this._pyodideInstance。
+    async _ensurePyodideLoaded() {
+        if (this._pyodideInstance) return this._pyodideInstance;
+        if (this._pyodideLoadPromise) return this._pyodideLoadPromise;
+        this._pyodideLoadPromise = (async () => {
+            let indexURL;
+            if (typeof loadPyodide !== 'function') {
+                try {
+                    await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase + 'pyodide.js'));
+                    indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase);
+                } catch (primaryErr) {
+                    try {
+                        await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase + 'pyodide.js'));
+                        indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase);
+                    } catch (backupErr) {
+                        throw new Error(`python 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+                    }
+                }
+            } else {
+                indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase);
+            }
+            this._pyodideInstance = await loadPyodide({ indexURL });
+            return this._pyodideInstance;
+        })().catch(e => { this._pyodideLoadPromise = null; throw e; });
+        return this._pyodideLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-16——bash_execute用，走busybox那份memoryFs的
+    // FileSystem介面（statSync/readdirSync/readSync，見wasi-sh的fs.d.mts）。
+    // S_IFMT/S_IFDIR是固定的POSIX常數（不是這個專案自訂的值，不需要額外
+    // export/import，直接寫死）。rootDir必須是絕對路徑、不能帶結尾斜線。
+    _walkMemoryFsDir(store, rootDir) {
+        const S_IFMT = 0o170000, S_IFDIR = 0o040000;
+        const out = [];
+        const walk = (dir) => {
+            let names;
+            try { names = store.readdirSync(dir); } catch (_) { return; }
+            for (const name of names) {
+                const p = dir === '/' ? '/' + name : dir + '/' + name;
+                const st = store.statSync(p);
+                if ((st.mode & S_IFMT) === S_IFDIR) {
+                    walk(p);
+                } else {
+                    const buf = new Uint8Array(st.size);
+                    store.readSync(p, buf, 0, st.size);
+                    out.push({ relPath: p.slice(rootDir.length + 1), bytes: buf });
+                }
+            }
+        };
+        walk(rootDir);
+        return out;
+    }
+
+    // python_execute用，走pyodide.FS（Emscripten MEMFS，同步API，跟上面
+    // memoryFs是完全不同的實作/介面，不能共用同一份walk）。absPath留給
+    // python_execute執行完後清空/work用（見那個工具finally區塊的說明）。
+    _walkPyodideFsDir(pyodide, rootDir) {
+        const out = [];
+        const walk = (dir) => {
+            let names;
+            try { names = pyodide.FS.readdir(dir); } catch (_) { return; }
+            for (const name of names) {
+                if (name === '.' || name === '..') continue;
+                const p = dir === '/' ? '/' + name : dir + '/' + name;
+                const st = pyodide.FS.stat(p);
+                if (pyodide.FS.isDir(st.mode)) {
+                    walk(p);
+                } else {
+                    out.push({ relPath: p.slice(rootDir.length + 1), absPath: p, bytes: pyodide.FS.readFile(p) });
+                }
+            }
+        };
+        walk(rootDir);
+        return out;
+    }
+
+    // tw_stock_db客製: 2026-09-16使用者要求的三層輸出目的地優先順序——
+    // bash_execute/python_execute共用。files: [{relPath, bytes:Uint8Array}]，
+    // outputRef: 使用者/AI給的output_ref參數（可能是undefined）。
+    //   1. output_ref以"fap:"開頭 → 寫進該File Access Point（跟fap_write_file
+    //      同一套_resolveFapFileParent/createWritable機制，任何平台都可用，
+    //      不限桌面版）。
+    //   2. output_ref是其他非空字串 → 只有桌面版（有fs_write_file工具，見
+    //      bootstrap.js的desktop_ops domain）才合法，當成真實磁碟絕對路徑
+    //      直接寫；純網頁版沒有這個工具，會回報明確錯誤而不是靜默失敗。
+    //   3. output_ref留空 → 存進persistentStorage（this.fileCache，跟AI
+    //      產生的其他檔案共用同一個LRU快取），回傳file_id讓後續工具/使用者
+    //      下載使用。
+    async _persistExecutionOutputFiles(files, outputRef) {
+        if (!files || !files.length) return { destination: 'none', files: [] };
+        const ref = String(outputRef || '').trim();
+        if (ref) {
+            if (/^fap:/i.test(ref)) {
+                const { fapIdOrLabel, path: basePath } = this._parseFapRef(ref);
+                if (!fapIdOrLabel) throw new Error('output_ref格式錯誤：缺少File Access Point名稱（格式："fap:<名稱或id>[/<子路徑>]"）');
+                const results = [];
+                for (const f of files) {
+                    const targetPath = (basePath ? basePath.replace(/\/+$/, '') + '/' : '') + f.relPath;
+                    const fullRef = `fap:${fapIdOrLabel}/${targetPath}`;
+                    const { dirHandle, filename } = await this._resolveFapFileParent(fullRef, { mode: 'readwrite', create: true });
+                    const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(new Blob([f.bytes]));
+                    await writable.close();
+                    results.push({ path: targetPath, sizeBytes: f.bytes.length });
+                }
+                return { destination: 'file_access_point', ref, files: results };
+            }
+            const fsWriteTool = this._getToolDefinition('fs_write_file');
+            if (!fsWriteTool) {
+                throw new Error(`output_ref「${ref}」不是"fap:"開頭的File Access Point格式，且目前環境沒有fs_write_file工具（只有桌面版才有直接寫真實磁碟路徑的能力）。請改用"fap:<名稱>"格式，或省略output_ref改存進persistentStorage。`);
+            }
+            const baseAbs = ref.replace(/[\\/]+$/, '');
+            const results = [];
+            for (const f of files) {
+                const targetAbsPath = baseAbs + '/' + f.relPath;
+                const resultJson = await fsWriteTool.callback(JSON.stringify({ path: targetAbsPath, content: this._bytesToBase64(f.bytes), encoding: 'base64' }));
+                const result = JSON.parse(resultJson);
+                if (!result.ok) throw new Error(`寫入 ${targetAbsPath} 失敗：${result.error}`);
+                results.push({ path: targetAbsPath, sizeBytes: f.bytes.length });
+            }
+            return { destination: 'desktop_folder', ref: baseAbs, files: results };
+        }
+        const results = [];
+        for (const f of files) {
+            const blob = new Blob([f.bytes]);
+            const filename = f.relPath.split('/').pop() || f.relPath;
+            const fileId = await this.fileCache.put(filename, 'application/octet-stream', blob, 'generated');
+            results.push({ path: f.relPath, file_id: fileId, sizeBytes: f.bytes.length });
+        }
+        return { destination: 'persistent_storage', files: results };
+    }
+
+    // Uint8Array→base64，用chunk餵String.fromCharCode.apply而不是
+    // btoa(String.fromCharCode(...bytes))直接展開——大檔案時spread/多參數
+    // 呼叫會撞到engine的call stack大小上限（實務上約6-12萬個參數就可能
+    // 爆掉，取決於瀏覽器），0x8000一批穩定不會超過任何瀏覽器的限制。
+    _bytesToBase64(bytes) {
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        return btoa(binary);
     }
 
     // tw_stock_db客製: 階段2（parse_uploaded_file解析yaml）+ 階段3（3D場景
