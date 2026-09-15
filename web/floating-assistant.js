@@ -3850,6 +3850,83 @@ class FloatingAssistant {
         if (this.domains.custom_skills) {
             this.domains.custom_skills.toolNames = () => this.advancedSettings.customTools.filter(t => !t.skillBundleId).map(t => t.name);
         }
+        this._syncSkillBundleSlashCommands();
+    }
+
+    // tw_stock_db客製: 2026-09-16使用者要求——技能包（Skill Bundle）也要比照
+    // 既有customTools「自動註冊成同名slash指令」（見_syncCustomToolSlashCommands
+    // 的說明），讓使用者可以直接打「/fable-method 一些補充內容」跳過AI自己
+    // 判斷要不要委派，直接觸發這個技能包扮演角色回答，不用先問一句「什麼是
+    // fable-method」再等AI自動路由（而且見_buildDomainCatalogSection的說明，
+    // 自動路由對純知識型技能包過去其實整個失效，這算是同一次修復的延伸——
+    // 除了修好自動路由，額外補上使用者自己也能明確觸發的路徑，兩者互補，
+    // 不是二選一）。跟customTools那份slash指令是完全獨立的兩組
+    // _autoFromSkillBundle旗標（不是共用_autoFromSkill），避免兩邊互相
+    // 清除對方註冊的entry；同一個名稱如果被別的來源（内建/host/customTools
+    // 那組自動機制）佔用，一樣不覆蓋，手動/其他自動來源優先。
+    _syncSkillBundleSlashCommands() {
+        if (this._skillBundleSlashCommandKeys) {
+            for (const key of this._skillBundleSlashCommandKeys) {
+                const entry = this.slashCommands.get(key);
+                if (entry && entry._autoFromSkillBundle) this.slashCommands.delete(key);
+            }
+        }
+        this._skillBundleSlashCommandKeys = new Set();
+        for (const bundle of this.advancedSettings.skillBundles) {
+            if (bundle.enabled === false) continue;
+            const key = '/' + String(bundle.name || '').trim().toLowerCase();
+            if (key === '/') continue;
+            const existing = this.slashCommands.get(key);
+            if (existing && !existing._autoFromSkillBundle) continue; // 已被非本機制佔用，不覆蓋
+            this.register_slash_command(
+                key,
+                '（技能包，選填補充內容）',
+                `技能包「${bundle.name}」——依知識/人設扮演回答`,
+                (argsText) => this._runSkillBundleAsSlashCommand(bundle, argsText)
+            );
+            const entry = this.slashCommands.get(key);
+            if (entry) entry._autoFromSkillBundle = true;
+            this._skillBundleSlashCommandKeys.add(key);
+        }
+    }
+
+    // tw_stock_db客製: 技能包被當成slash command直接觸發時的執行邏輯——跟
+    // customTools那條_runSkillAsSlashCommand不同，技能包沒有handlerScript
+    // 可以本地執行，本質是「請子agent依照這份知識/人設回答」，一定要走
+    // _delegateToSubagentDomain（跟明確指定domain委派完全同一條路徑，只是
+    // 跳過使用者自己打delegate_to_subagent這一步，直接用slash指令觸發）。
+    // argsText留空時給一個通用預設task，讓使用者可以單純打「/fable-method」
+    // 不帶任何補充內容也能問出「這個角色設定的內容大概是什麼」這類回應，
+    // 不會因為task是空字串而讓子agent不知道要做什麼。
+    async _runSkillBundleAsSlashCommand(bundle, argsText) {
+        this.messages.push({ role: 'user', content: `/${bundle.name}${argsText ? ' ' + argsText : ''}` });
+        this._renderMessageHistory();
+        const task = argsText || `請依照你的知識/人設，簡短介紹你自己（這個角色設定的重點內容），或如果使用者接下來會提問，先準備好用這份知識/角色回答。`;
+        const result = await this._delegateToSubagentDomain(`skill_${bundle.id}`, task);
+        const toolMsg = this._buildToolResultMessage(bundle.name, JSON.stringify(result), {});
+        this.messages.push(toolMsg);
+        // tw_stock_db客製: 2026-09-16使用者實測回報——「沒看到他的回應，這個
+        // 只出現在call」。追查發現：_buildToolResultMessage產生的是
+        // role:'tool'訊息，_renderSingleMessage對role:'tool'的既有規則是
+        // 「showInternalTrace關閉時整段隱藏」（視覺型結果如scene3d/drawing
+        // 另外有「一律顯示、不受這個開關影響」的規則，純文字答案沒有這層
+        // 保護）。這在「根模型自己呼叫delegate_to_subagent」這條正常路徑下
+        // 沒問題——根模型會讀到這個tool結果，自己再組一段使用者看得到的
+        // assistant回覆；但這個slash指令刻意跳過根模型（見上面
+        // _syncSkillBundleSlashCommands的說明——這正是它存在的意義，讓使用者
+        // 不用等AI自己判斷），少了「根模型讀tool結果、幫使用者組一段可見
+        // 回覆」這一步，導致子agent真正給出的角色扮演答案，使用者在預設
+        // 設定（showInternalTrace關閉）下完全看不到，只有主動開啟工具追蹤
+        // 才看得到、還是原始JSON格式，不是正常的對話回覆。這裡補上一則真正
+        // 的assistant訊息，把子agent的文字答案（或視覺結果的說明文字note）
+        // 直接當作可見回覆——視覺內容本身已經靠上面的tool訊息渲染，這裡
+        // 不重複貼視覺payload，只需要文字說明。
+        const visibleText = result.ok
+            ? (result.result || result.note || '（這個技能包沒有回傳任何文字內容）')
+            : `⚠️ 委派給「${bundle.name}」失敗：${result.error}`;
+        this._pushAssistantMessage(visibleText, null);
+        this._renderMessageHistory();
+        this._persistChatHistory();
     }
 
     // tw_stock_db客製: 2026-09-16——新增一個skillBundle的公開輔助方法，
@@ -18144,11 +18221,30 @@ ${existingNodeSummaries}
 
     // tw_stock_db客製: 2026-09-13——把單一domain的「[key] label\n- tool: 摘要」
     // 目錄段落組字串抽出來，_routeTaskToDomains跟_routeTaskHierarchical的
-    // 第二層（單一類別底下的細分domain）都共用同一個格式。toolNames為空陣列
-    // 時回傳null（呼叫端過濾掉，不進目錄）。
+    // 第二層（單一類別底下的細分domain）都共用同一個格式。
+    // tw_stock_db客製: 2026-09-16使用者實測回報——「Skill Sandbox」蒸餾出來
+    // 的純知識/角色扮演型技能包（例如把fable-method的SKILL.md整份貼進
+    // personaPrompt，沒有掛任何實裝工具，見_syncSkillBundleDomains的說明
+    // 「純粹依上面的知識/風格直接回答即可，不用勉強找工具呼叫」）完全無法
+    // 被delegate_to_subagent自動路由選中——使用者匯入了fable-method技能包、
+    // 知識/人設內容也確認正確貼上去了，問「skill的fable-method是什麼」卻
+    // 完全查不到。追查發現：這個函式原本toolNames為空陣列時直接回傳null，
+    // 呼叫端（_routeTaskToDomains/_routeTaskHierarchical）會把null整段濾掉、
+    // 不放進路由器看得到的目錄清單——這個null-when-empty的判斷是在Skill
+    // Sandbox出現之前寫的，當時所有domain都預期一定掛著工具，0工具通常代表
+    // 「這個domain還沒設定好、不該曝光」；但Skill Sandbox的核心賣點就是
+    // 「純知識、不需要工具」的技能包，這個既有防呆邏輯反而讓它的招牌用法
+    // （匯入一份SKILL.md當人設、完全不掛工具）永遠進不了路由器的候選清單，
+    // 使用者不管怎麼問都不可能被自動路由選中，只能用完全不可能記得住的
+    // 隨機skill_<uuid>代號手動指定——等於這個功能對「純知識」這個主要用途
+    // 形同失效。改成沒有工具時仍然列出這個domain（只是沒有工具清單那幾行，
+    // 換一句話明確告訴路由器「這是純知識/角色扮演領域，符合時一樣要選」），
+    // 讓路由器至少看得到這個domain存在、能夠選中它。
     _buildDomainCatalogSection(key, domain, toolByName) {
         const names = this._resolveDomainToolNames(domain);
-        if (!names.length) return null;
+        if (!names.length) {
+            return `[${key}] ${domain.label}（純知識/角色扮演型領域，沒有掛載工具——符合這個領域主題時仍然應該選它，子agent會直接依知識/人設回答）`;
+        }
         const lines = names
             .map(name => {
                 const tool = toolByName.get(name);
