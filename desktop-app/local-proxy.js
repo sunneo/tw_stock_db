@@ -27,8 +27,26 @@ const http = require("http");
 const https = require("https");
 const { URL } = require("url");
 
+// tw_stock_db客製: 2026-09-15使用者實測回報——同一個請求在Windows桌面版
+// 幾乎不會撞到「端點完全沒有回應任何內容」，Linux桌面版卻常常發生。追查
+// 這支本地proxy時發現：原本這裡連"content-length"都列進被剔除的request
+// header清單，導致轉發給上游（NVIDIA/OpenRouter）的POST請求完全沒有
+// Content-Length——`req.pipe(upstreamReq)`在沒有明確Content-Length時，
+// Node的http.request()會自動改用Transfer-Encoding: chunked送出請求本體。
+// 這裡轉發的是renderer端fetch()送來、完全沒有被這支proxy修改過的原始
+// body，原始請求本來就帶著正確的Content-Length（bytes數完全對得上，因為
+// 中間沒有任何轉碼/改寫），沒有任何理由要捨棄這個已知值、改用chunked
+// encoding重新編碼——這會讓一個「單一TCP連線裡幾個request/response
+// 交錯」在linux上更容易受OS層級socket/TLS堆疊的細微時序差異影響（chunked
+// encoding需要額外的分段/收尾標記，比起帶Content-Length的body解析更容易
+// 出現「上游還沒完全收到請求就提前判斷request結束/逾時」這類邊界情況），
+// 這極可能就是「Linux比Windows更容易撞到完全空白回應」的根因之一——
+// Windows/Linux的Node底層socket實作/計時器精度本來就有已知的細微差異，
+// chunked encoding對這類時序差異更敏感。修法：不要剔除content-length，
+// 讓它跟原始body一起原樣轉發，upstreamReq會直接用這個正確的
+// Content-Length送出請求，不再依賴chunked encoding。
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
-  "host", "origin", "referer", "connection", "content-length",
+  "host", "origin", "referer", "connection",
   // Node的http/https client（跟Cloudflare Workers的fetch()不一樣）預設
   // 不會自動解壓縮回應本體，只會原樣把壓縮過的bytes交給我們——我們這裡是
   // 單純pipe()轉發，沒有自己解壓縮，所以乾脆請上游不要壓縮，回應本體就是
@@ -192,8 +210,15 @@ function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-p
         }
       });
       server.listen(port, "127.0.0.1", () => {
-        log(`[local-proxy] 監聽 http://127.0.0.1:${port}`);
-        resolve({ server, port });
+        // tw_stock_db客製: 用server.address().port而不是閉包裡的port參數——
+        // 兩者在指定明確port時剛好相等，但如果呼叫端傳preferredPort:0
+        // （交給OS自動選一個可用port），閉包裡的port只會是原封不動的0，
+        // 回傳一個假的port號碼給呼叫端。目前唯一的呼叫端固定傳47891，不會
+        // 踩到這個差異，但用真正的listen結果回報才是正確、不會因為將來
+        // 改用0而悄悄壞掉。
+        const actualPort = server.address().port;
+        log(`[local-proxy] 監聽 http://127.0.0.1:${actualPort}`);
+        resolve({ server, port: actualPort });
       });
     };
     tryListen(preferredPort);
