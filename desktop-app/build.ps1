@@ -27,9 +27,22 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 }
 
+# This app is unsigned by design (see README "known limitations"), so
+# electron-builder never needs to discover a real signing identity.
+# Setting this also skips some of electron-builder's mac-signing-related
+# setup, which can otherwise still fire even for a Windows-only build.
+$env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+
 Write-Host "== electron-builder: packaging Windows portable executable ==" -ForegroundColor Cyan
 npx electron-builder --win portable
-if ($LASTEXITCODE -ne 0) { throw "electron-builder packaging failed" }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "electron-builder failed. If the error mentions 'Cannot create symbolic link' while" -ForegroundColor Yellow
+    Write-Host "extracting winCodeSign, that's a Windows permissions issue, not a project bug:" -ForegroundColor Yellow
+    Write-Host "enable Developer Mode (Settings > Privacy & security > For developers) and retry," -ForegroundColor Yellow
+    Write-Host "or run this script from an elevated (Administrator) PowerShell." -ForegroundColor Yellow
+    throw "electron-builder packaging failed"
+}
 
 Write-Host ""
 Write-Host "Done. The executable is in dist\ (single .exe, no installation needed)." -ForegroundColor Green
