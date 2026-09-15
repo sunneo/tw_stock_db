@@ -1265,6 +1265,29 @@ const SUBAGENT_RATE_LIMIT_RETRY_LIMIT = 12;
 const SUBAGENT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const SUBAGENT_RATE_LIMIT_MAX_DELAY_MS = 15000;
 
+// tw_stock_db客製: 2026-09-15使用者實測回報的真實案例——模型呼叫了
+// "list_directory"（業界很多AI工具生態系的通用命名慣例），但這個專案
+// 實際註冊的是"fs_list_files"，導致「找不到工具」錯誤；即使system prompt/
+// get_tool_details已經清楚列出正確名稱，較弱的模型仍然常常憑「常識」編出
+// 這類通用別名，且不一定能在下一輪自己修正（實測案例：這次呼叫失敗後，
+// 緊接著的下一輪直接變成完全空白回應，沒有機會看到修正提示）。與其每次
+// 都讓呼叫失敗、賭模型自己會不會修正，這裡直接容許這批常見別名——只有
+// 「別名對應的實際工具真的存在、且在目前允許呼叫的清單內」才會生效，見
+// _getToolDefinition()裡的使用方式；完全不影響「真的找不到工具」的既有
+// 錯誤處理。這份清單刻意只收錄業界泛用、非這個專案特有詞彙的別名（例如
+// 不收錄"fap_read_file"這種本專案自訂前綴的近似名稱，那種情況应该讓模型
+// 自己看get_tool_details修正，不是「通用命名慣例」的範疇）。
+const COMMON_TOOL_NAME_ALIASES = {
+    list_directory: 'fs_list_files', list_files: 'fs_list_files', ls: 'fs_list_files', listdir: 'fs_list_files',
+    read_file: 'fs_read_file', cat: 'fs_read_file', open_file: 'fs_read_file',
+    write_file: 'fs_write_file', save_file: 'fs_write_file',
+    find_file: 'fs_find_file', search_files: 'fs_find_file', glob: 'fs_find_file', find_files: 'fs_find_file',
+    delete_file: 'fs_remove', remove_file: 'fs_remove', rm: 'fs_remove', delete: 'fs_remove',
+    make_directory: 'fs_mkdir', mkdir: 'fs_mkdir', create_directory: 'fs_mkdir',
+    get_file_info: 'fs_stat', stat: 'fs_stat', file_info: 'fs_stat',
+    execute_command: 'run_command', run_shell: 'run_command', shell: 'run_command', bash: 'run_command', exec: 'run_command',
+};
+
 // tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半發現需要一個原本
 // 沒拿到的domain工具時，可以呼叫request_additional_tools「原地」申請追加
 // （見_runSubAgentTask），不用跳出去重新委派一次。每次申請都要多一次路由
@@ -7598,7 +7621,16 @@ ${fnData.code}
         const direct = entries.find(([toolName]) => toolName === name);
         if (direct) return direct[1];
         const byAlias = entries.find(([toolName]) => this._sanitizeToolNameForNativeApi(toolName) === name);
-        return byAlias ? byAlias[1] : null;
+        if (byAlias) return byAlias[1];
+        // 見COMMON_TOOL_NAME_ALIASES的說明——只有目前這個呼叫上下文真的有
+        // 對應的實際工具（存在於entries內，已經套用過allowedNames過濾）
+        // 才會生效，不會意外繞過domain委派的工具範圍限制。
+        const commonAliasTarget = COMMON_TOOL_NAME_ALIASES[name];
+        if (commonAliasTarget) {
+            const byCommonAlias = entries.find(([toolName]) => toolName === commonAliasTarget);
+            if (byCommonAlias) return byCommonAlias[1];
+        }
+        return null;
     }
 
     _isToolNameDuplicate(name, excludeIndex = -1) {
