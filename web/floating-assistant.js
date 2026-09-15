@@ -1700,7 +1700,16 @@ const DEFAULT_CHAT_TEMPERATURE = 0.1;
 // 每個model row除了apiUrl/apiKey/modelName（字串），其餘都是「留空(null)＝
 // 不覆寫、沿用全域生成設定」的數值型欄位，統一在這裡列出，_normalizeModelRow/
 // UI渲染/儲存都共用同一份清單，不用四處重複打欄位名稱。
-const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens'];
+// tw_stock_db客製: 2026-09-15使用者要求——批次每分鐘請求數上限要能「逐一
+// 設定」（每個model row/端點各自的rate limit不同，例如使用者實測的NVIDIA
+// 端點約40、OpenRouter免費額度只有20），不能只有單一全域數字。
+// requestsPerMinute沿用這裡既有的null-semantics（留空＝null＝不覆寫，
+// 沿用advancedSettings.batchRequestsPerMinute那個全域設定；使用者明確
+// 打了一個數字，包含0，才是「這個row自己的覆寫值」，0在這裡的意思是
+// 「這個row明確設定成不限制」，跟全域設定的0/留空=不限制是同一套語意，
+// 見_acquireBatchRateSlot()的說明），完全重用MODEL_ROW_NUMERIC_FIELDS
+// 既有的UI/儲存/正規化管線，不用另外刻一套。
+const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens', 'requestsPerMinute'];
 
 // tw_stock_db客製: 2026-09-15——File Access Point（fap_find_file）遞迴搜尋的
 // 安全上限，避免使用者授權了一個極大的資料夾（例如整個使用者家目錄）時
@@ -3638,8 +3647,13 @@ class FloatingAssistant {
     // 所有worker共用同一份時間戳記清單），刻意不用per-worker獨立節流，
     // 因為使用者要限制的是「這個端點整體」的請求速率，不是「每個worker各自」
     // 的速率。
-    async _acquireBatchRateSlot() {
-        const limit = Number(this.advancedSettings.batchRequestsPerMinute) || 0;
+    // tw_stock_db客製: 2026-09-15——rowLimit是呼叫端（runBatchSubAgents）
+    // 事先resolve好的「這個batch實際會打到哪個model row」的
+    // row.requestsPerMinute（見MODEL_ROW_NUMERIC_FIELDS的說明，
+    // null＝這個row沒有自己覆寫、沿用全域batchRequestsPerMinute；數字
+    // （含0）＝這個row自己的明確設定，直接蓋過全域值，不用再管全域數字）。
+    async _acquireBatchRateSlot(rowLimit) {
+        const limit = rowLimit != null ? Number(rowLimit) || 0 : (Number(this.advancedSettings.batchRequestsPerMinute) || 0);
         if (limit <= 0) return;
         if (!this._batchRateTimestamps) this._batchRateTimestamps = [];
         for (;;) {
@@ -9432,6 +9446,7 @@ ${sourceTool.handlerScript}
                     ${numField('repetition_penalty', 'repetition_penalty', '不送')}
                     ${numField('length_penalty', 'length_penalty', '不送')}
                     ${numField('maxOutputTokens', 'max tokens(單次上限)', '全域預設')}
+                    ${numField('requestsPerMinute', '批次每分鐘請求數上限', '留空=沿用全域設定')}
                 </div>
             </div>
         `;
@@ -17165,6 +17180,18 @@ ${existingNodeSummaries}
             ? Math.min(8, Math.round(Number(concurrency)))
             : this._getBatchConcurrency());
 
+        // tw_stock_db客製: 2026-09-15——這個batch實際會打到的端點是
+        // _runSubAgentTask內部固定從rows[0]開始嘗試（只有遇到暫時性錯誤/
+        // 模型不存在才會往下一筆row換），這裡在worker迴圈開始前先resolve
+        // 一次rows[0].requestsPerMinute，讓所有worker共用同一個「這個batch
+        // 這一輪實際端點」的rpm上限；如果之後真的觸發换row，該row可能有
+        // 不同的rpm設定，但那是既有fallback機制本身的例外情況，rate limit
+        // 只求「大部分時候貼合實際使用的端點」，不強求換row後即時重新resolve
+        // （換row本身已經是走過重試/backoff的少見情況，見_runSubAgentTask
+        // 的說明）。
+        const primaryRow = this._getModelRows()[0];
+        const rowRpm = primaryRow && primaryRow.requestsPerMinute != null ? primaryRow.requestsPerMinute : null;
+
         const results = new Array(list.length);
         let nextIdx = 0;
         let doneCount = 0;
@@ -17174,11 +17201,12 @@ ${existingNodeSummaries}
             while (nextIdx < list.length) {
                 const myIdx = nextIdx++;
                 const item = list[myIdx];
-                // 見_acquireBatchRateSlot()的說明——只在使用者設定了
-                // batchRequestsPerMinute（>0）時才會真的等待，預設完全不影響
-                // 既有行為/效能。故意放在「拿到myIdx之後、真正開始跑子任務
-                // 之前」，讓等待中的worker不會卡住其他worker去搶下一個index。
-                await this._acquireBatchRateSlot();
+                // 見_acquireBatchRateSlot()的說明——rowRpm非null時代表使用者
+                // 針對目前主要使用的model row自己設定過rpm（逐一設定，優先於
+                // 全域batchRequestsPerMinute）；兩者都沒設定時完全不影響既有
+                // 行為/效能。故意放在「拿到myIdx之後、真正開始跑子任務之前」，
+                // 讓等待中的worker不會卡住其他worker去搶下一個index。
+                await this._acquireBatchRateSlot(rowRpm);
                 const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
@@ -17626,7 +17654,7 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-batch-rpm">批次每分鐘請求數上限</label>
                                     <input type="number" id="ai-perf-batch-rpm" class="ai-advanced-input" min="0" max="1000">
-                                    <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。</p>
+                                    <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。這是所有model row共用的全域預設值；如果不同model row（不同端點）各自的rate limit不一樣，可以到上面「LLM Model 管理」分頁對個別row單獨填「批次每分鐘請求數上限」，該row有填時優先套用那個數字，不受這裡影響。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
