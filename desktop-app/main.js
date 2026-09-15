@@ -1518,6 +1518,63 @@ function createWindow() {
       }, 1500);
     });
   }
+
+  // tw_stock_db客製: 2026-09-15使用者實測回報——delegate_to_subagent自動路由
+  // （_callRouterLLM）在某些推理模型上撞到「這一輪回應是英文CoT散文（例如
+  // 開頭"We need to..."），不是JSON」，直接整個委派失敗、把原始JSON.parse
+  // 錯誤丟給使用者。修法：(1) max_tokens從200提高到1500給推理模型足夠
+  // 空間；(2) 就算這樣還是解析失敗，重試一次並附上「上一次沒輸出JSON」的
+  // 具體回饋。這裡直接測_callRouterLLM本身（不需要走完整的delegate_to_subagent
+  // /submitChatInput流程，這個函式的輸入輸出很單純：systemPrompt+userText
+  // 進，{ok,parsed}或{ok:false,error}出），驗證兩種情境：(1)第一次回傳
+  // 截斷CoT、第二次（重試）回傳合法JSON——應該最終成功且只打2次；(2)兩次
+  // 都回傳CoT散文——應該在第2次之後放棄、不會無限重試下去。
+  if (process.env.FA_DEBUG_ROUTER_JSON_RETRY_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const jsonResp = (obj, finishReason) => new Response(JSON.stringify({
+                choices: [{ message: { content: JSON.stringify(obj) }, finish_reason: finishReason || 'stop' }]
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+              const proseResp = (text, finishReason) => new Response(JSON.stringify({
+                choices: [{ message: { content: text }, finish_reason: finishReason || 'length' }]
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+              const out = {};
+              const realFetch = window.fetch;
+
+              // 情境一：第一次截斷CoT，第二次（重試）恢復成合法JSON。
+              let callCount1 = 0;
+              window.fetch = async () => {
+                callCount1++;
+                if (callCount1 === 1) return proseResp('We need to determine which domain this task belongs to. Looking at the task, it mentions files on disk', 'length');
+                return jsonResp({ domains: ['desktop_ops'] }, 'stop');
+              };
+              const r1 = await window.fa._callRouterLLM('你是路由器，只回答JSON', '解析D槽的檔案');
+              window.fetch = realFetch;
+              out.scenario1_recoversOnRetry = { callCount: callCount1, ok: r1.ok, domains: r1.parsed && r1.parsed.domains, error: r1.error };
+
+              // 情境二：兩次都是散文，應該在第2次之後放棄（不是無限重試）。
+              let callCount2 = 0;
+              window.fetch = async () => {
+                callCount2++;
+                return proseResp('We need to determine which domain this task belongs to, but I am not sure', 'stop');
+              };
+              const r2 = await window.fa._callRouterLLM('你是路由器，只回答JSON', '解析D槽的檔案');
+              window.fetch = realFetch;
+              out.scenario2_givesUpAfterOneRetry = { callCount: callCount2, ok: r2.ok, error: r2.error };
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[router-json-retry-test] result:\n" + result);
+        } catch (err) {
+          console.log("[router-json-retry-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
