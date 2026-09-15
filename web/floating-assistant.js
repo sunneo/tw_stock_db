@@ -991,8 +991,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     drawing: {
         enabled: true,
         label: '通用繪圖',
-        toolNames: ['render_drawing'],
-        systemPrompt: '你是一個專門畫向量圖（流程圖、示意圖、圖表、插畫等）的子任務助理，用render_drawing工具輸出SVG原始碼給使用者看。這不是股票K線圖表工具。SVG會被自動消毒過濾掉script/事件屬性，所以只能用純圖形元素（path/rect/circle/line/text等）表達，不能靠內嵌JS互動。畫完後只需要一兩句話簡短說明，不用重複整份SVG原始碼。',
+        toolNames: ['render_drawing', 'render_uml_diagram'],
+        systemPrompt: '你是一個專門畫向量圖（流程圖、示意圖、圖表、插畫等）的子任務助理。純手繪/插畫類用render_drawing直接輸出SVG原始碼；**UML圖、流程圖、序列圖、類別圖、狀態圖、甘特圖、心智圖這類有固定圖形語彙的結構化圖表，優先用render_uml_diagram（Mermaid語法）**，不要自己手刻SVG座標去畫方框箭頭，Mermaid語法簡潔、AI寫起來更準確、渲染出來的圖也會自動排版。這不是股票K線圖表工具。SVG都會被自動消毒過濾掉script/事件屬性，所以只能用純圖形元素表達，不能靠內嵌JS互動。畫完後只需要一兩句話簡短說明，不用重複整份SVG/Mermaid原始碼。',
     },
     scene_3d: {
         enabled: true,
@@ -1955,6 +1955,10 @@ const FA_ASSET_URLS = {
     // （見web/vendor/katex/README.md的說明）。
     katexCss: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css',
     jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+    // tw_stock_db客製: 2026-09-16使用者要求——UML/流程圖viewer用Mermaid語法。
+    // 固定用UMD build（掛window.mermaid），跟marked/pdfmake同一種<script>
+    // 依序載入模式，不用處理ES module的import graph。
+    mermaid: 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js',
     // tw_stock_db客製: 階段2（檔案解析sub agent）跟階段3（3D場景YAML描述）
     // 共用同一份js-yaml，理由跟redmine參考版本一致（見計畫文件）——同一個
     // vendored版本兩處共用，不重複vendor兩份。
@@ -2681,7 +2685,7 @@ function _faMarkdownToSlides(markdownText, heading) {
 // _captureVisualSnapshot。visualSnapshots是選填的{dataUrl,kind}陣列，
 // 沒有提供時行為完全不變（純文字/表格投影片）。
 function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
-    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', viewer_summary: '📝 互動表單內容' };
+    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容' };
     (visualSnapshots || []).forEach((snap) => {
         if (!snap) return;
         const s = addHeadingSlideBase(KIND_LABEL[snap.kind] || '視覺內容');
@@ -2740,6 +2744,19 @@ async function _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots) {
     return pres.write({ outputType: 'blob' });
 }
 
+// tw_stock_db客製: 2026-09-16——見_faMarkdownToPdfBlob裡使用處的說明，讀出
+// 一個data URL圖片實際的自然寬高，讓PDF嵌入能自己算出等比例縮放後的
+// width+height，不依賴pdfmake「只給width會自動等比例」這個沒有白紙黑字
+// 保證的內建行為。
+function _faGetImageNaturalSize(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => reject(new Error('無法讀取圖片尺寸'));
+        img.src = dataUrl;
+    });
+}
+
 async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
     await _faLoadScriptOnce(FA_ASSET_URLS.pdfmake);
     await _faLoadScriptOnce(FA_ASSET_URLS.pdfmakeFonts);
@@ -2779,19 +2796,38 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
     // tw_stock_db客製: 3D場景/繪圖截圖同樣以圖片content item加進去（見
     // _faAppendVisualSnapshotSlides在PPTX那邊的說明，這裡是PDF版本）。
     // 互動viewer是文字摘要（kind==='viewer_summary'），不是截圖。
-    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', viewer_summary: '📝 互動表單內容' };
-    (visualSnapshots || []).forEach((snap) => {
-        if (!snap) return;
+    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容' };
+    // tw_stock_db客製: 2026-09-16使用者明確立下的硬規則——「所有圖片嵌入
+    // pptx, pdf的時候，必須完全遵守一個規則：圖片必須等比例縮放」。這裡
+    // 原本只給image一個width（460），依賴pdfmake「只給width時會依圖片本身
+    // 比例自動算height」這個沒有白紙黑字保證的內建行為——改成自己用
+    // _faGetImageNaturalSize()讀出圖片實際的寬高，明確算出等比例縮放後的
+    // width+height兩個數字都給，不再依賴第三方函式庫的隱性行為。任何之後
+    // 新增的圖片嵌入（不管PPTX還是PDF）都要遵守同一條規則：PPTX用
+    // sizing:{type:'contain'}（見_faAppendVisualSnapshotSlides），PDF用
+    // 這裡這種「自己算出width+height兩個值都給」的做法，不能只給單邊尺寸
+    // 賭函式庫會自動處理。
+    for (const snap of (visualSnapshots || [])) {
+        if (!snap) continue;
         content.push({ text: VISUAL_KIND_LABEL[snap.kind] || '視覺內容', style: 'h2' });
         try {
             if (snap.kind === 'viewer_summary' && snap.text) {
                 content.push({ text: _faMdLiteToPlainText(snap.text), style: 'body' });
             } else if (snap.dataUrl) {
-                content.push({ image: snap.dataUrl, width: 460, alignment: 'center' });
+                const maxW = 460, maxH = 620; // PDF單頁可用寬高的保守經驗值，避免圖片本身太高被裁切
+                let imgOpts = { image: snap.dataUrl, width: maxW, alignment: 'center' };
+                try {
+                    const { w, h } = await _faGetImageNaturalSize(snap.dataUrl);
+                    if (w > 0 && h > 0) {
+                        const scale = Math.min(maxW / w, maxH / h, 1); // 不超過任一邊界，也不放大原本就小的圖
+                        imgOpts = { image: snap.dataUrl, width: Math.round(w * scale), height: Math.round(h * scale), alignment: 'center' };
+                    }
+                } catch (_) { /* 讀不到自然尺寸時退回只給width，讓pdfmake自己嘗試等比例縮放 */ }
+                content.push(imgOpts);
             }
         } catch (_) { /* 個別截圖/摘要嵌入失敗不影響其餘內容 */ }
         content.push({ text: '', margin: [0, 4, 0, 4] });
-    });
+    }
 
     // 深度掃過整個content樹，把pdfmake載入的CJK字型不涵蓋的全形標點換成
     // 安全等效字（見_faSanitizePdfText說明），所有text節點統一在這裡
@@ -3140,7 +3176,13 @@ class FloatingAssistant {
         // 固定陣列，不受影響）。
         this.domains.custom_skills = {
             enabled: true,
-            label: '使用者自訂技能(Skill)',
+            label: '使用者自訂技能(Skill，未分類)',
+            // tw_stock_db客製: 2026-09-16——見_syncSkillBundleDomains()的
+            // 說明，這裡先給一個未過濾的預設值，建構子稍後呼叫
+            // _syncSkillBundleDomains()時會把這個toolNames收斂成「只涵蓋
+            // 未分類（skillBundleId為null）的工具」，已經被分進某個
+            // skillBundle的工具改由各自的skill_<id>domain負責，避免同一個
+            // 工具同時出現在兩個domain裡造成路由混淆。
             toolNames: () => this.advancedSettings.customTools.map(t => t.name),
             systemPrompt: '你是專門執行使用者在Advance Settings「Skill」分頁自訂的技能'
                 + '(Skill，各自是一段JS callback)的子任務助理。依task內容判斷該呼叫哪個'
@@ -3153,6 +3195,18 @@ class FloatingAssistant {
         // 不含toolNames/systemPrompt（那些仍然掛在domain本身，見register_domain
         // 的category欄位）。
         this.domainCategories = {};
+        // tw_stock_db客製: 2026-09-16使用者要求「Skill Sandbox」——每個蒸餾出來
+        // 的skill（例如GPT Codex風格的coding skill）要能讓subagent真正「扮演」
+        // 具備那份知識的角色回答，不是只掛幾個JS工具。register_domain_category
+        // 先把這一整類domain歸進'user_skills'類別，供hierarchical模式的兩層
+        // 路由使用（使用者累積很多蒸餾skill時才用得到，數量少時完全不影響
+        // router/full模式的既有行為，見_routeTaskHierarchical對「完全沒有人用
+        // category」時自動退回扁平路由的既有邏輯）。_syncSkillBundleDomains()
+        // 依目前（剛從localStorage還原完成的）advancedSettings.skillBundles
+        // 產生對應的skill_<id>domain，並把custom_skills domain收斂成只涵蓋
+        // 未分類工具（見那個方法本身的說明）。
+        this.register_domain_category('user_skills', { label: '使用者自訂技能(Skill)' });
+        this._syncSkillBundleDomains();
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -3317,6 +3371,14 @@ class FloatingAssistant {
             rulesMd: '',
             customFunctions: '',
             customTools: [],
+            // tw_stock_db客製: 2026-09-16使用者要求「Skill Sandbox」——把
+            // 蒸餾出來的模型知識/風格（例如GPT Codex風格的coding skill）
+            // 變成一個subagent會真正扮演的persona，而不是只掛幾個JS工具。
+            // 每個skillBundle：{id, name, personaPrompt, enabled, createdAt}，
+            // customTools[].skillBundleId（選填，見下面正規化）標記這個工具
+            // 屬於哪個bundle，null/undefined＝未分類（向下相容既有工具，
+            // 見custom_skills domain）。見_syncSkillBundleDomains()的說明。
+            skillBundles: [],
             aiCustomFunctions: {},
             toolCallMode: 'auto', // tw_stock_db客製: 'auto' | 'native' | 'text'
             generation: this._createDefaultGenerationSettings(),
@@ -3726,7 +3788,78 @@ class FloatingAssistant {
         if (!normalized.handlerScript.trim()) {
             normalized.handlerScript = this._getDefaultToolHandlerScript();
         }
+        // tw_stock_db客製: 見skillBundles的說明——選填，null/undefined＝
+        // 未分類（向下相容既有沒有這個欄位的舊資料）。
+        const skillBundleId = String(tool.skillBundleId || '').trim();
+        normalized.skillBundleId = skillBundleId || null;
         return normalized;
+    }
+
+    // tw_stock_db客製: 2026-09-16——skillBundle的正規化，比照
+    // _normalizeCustomTool同樣的「防禦性檢查+給合理預設」模式。id留空的
+    // 項目直接丟棄（沒有id沒辦法跟customTools[].skillBundleId對應、也沒辦法
+    // 用來產生domain key，屬於損壞資料，不強行修補）。
+    _normalizeSkillBundle(bundle) {
+        if (!bundle || typeof bundle !== 'object') return null;
+        const id = String(bundle.id || '').trim();
+        if (!id) return null;
+        return {
+            id,
+            name: String(bundle.name || id).trim() || id,
+            personaPrompt: String(bundle.personaPrompt || '').replace(/\r\n/g, '\n'),
+            enabled: bundle.enabled !== false,
+            createdAt: Number.isFinite(Number(bundle.createdAt)) ? Number(bundle.createdAt) : Date.now(),
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-16——把skillBundle的personaPrompt包成一段
+    // 明確要求subagent「扮演」的system prompt。這是這次要修的核心缺口：
+    // 原本custom_skills domain完全沒有引用rulesMd/任何persona文字，委派
+    // 執行的子agent看不到使用者蒸餾進去的知識，「扮演」這件事在委派架構下
+    // 從來沒有真正生效過。沒有填personaPrompt時退回一句通用描述（不強迫
+    // 使用者一定要寫人設才能建立技能包，純工具型的技能包也合理）。
+    _buildSkillPersonaSystemPrompt(bundle) {
+        const persona = String(bundle.personaPrompt || '').trim();
+        const header = persona
+            ? `你現在要扮演具備以下知識/風格的專家子任務助理，請完全依照這份知識/風格回答，不要跳出這個角色設定：\n\n${persona}`
+            : `你是專門執行使用者自訂技能包「${bundle.name}」的子任務助理。`;
+        return header + '\n\n如果任務需要呼叫這個技能包底下的實裝工具，依task內容判斷該呼叫哪個、需要的話呼叫多個，把結果整理成最終結論回傳；如果這個技能包目前沒有掛任何實裝工具，純粹依上面的知識/風格直接回答即可，不用勉強找工具呼叫。';
+    }
+
+    // tw_stock_db客製: 2026-09-16——每個skillBundle同步成一個
+    // `skill_<id>`domain（見這次計畫的說明）。任何會改到skillBundles或
+    // customTools[].skillBundleId的入口（新增/刪除/改名bundle、工具編輯器
+    // 改變工具所屬bundle、.skill匯入）都要在改完後呼叫這個方法，比照既有
+    // _reregisterCustomTools()「先清舊entry、再逐一重新註冊」的既有慣例，
+    // 避免bundle被刪除/改id後domain殘留。
+    _syncSkillBundleDomains() {
+        Object.keys(this.domains).filter(k => k.startsWith('skill_')).forEach(k => delete this.domains[k]);
+        for (const bundle of this.advancedSettings.skillBundles) {
+            this.domains[`skill_${bundle.id}`] = {
+                enabled: bundle.enabled !== false,
+                label: bundle.name,
+                category: 'user_skills',
+                toolNames: () => this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).map(t => t.name),
+                systemPrompt: this._buildSkillPersonaSystemPrompt(bundle),
+            };
+        }
+        // custom_skills這個既有domain縮小範圍成「只涵蓋未分類（skillBundleId
+        // 為null/undefined）的Skill工具」，向下相容還沒被分進任何bundle的
+        // 既有customTools（例如舊使用者升級前就存在的工具），不會憑空消失
+        // 叫不到，也不會跟新的skill_<id>domain重複曝光同一個工具。
+        if (this.domains.custom_skills) {
+            this.domains.custom_skills.toolNames = () => this.advancedSettings.customTools.filter(t => !t.skillBundleId).map(t => t.name);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-16——新增一個skillBundle的公開輔助方法，
+    // UI（+新增技能包按鈕）跟_applyImportedSkillBundle（.skill匯入）共用。
+    _createSkillBundle(name, personaPrompt = '') {
+        const id = crypto.randomUUID ? crypto.randomUUID() : `skill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        this.advancedSettings.skillBundles.push({ id, name: String(name || id).trim() || id, personaPrompt: String(personaPrompt || ''), enabled: true, createdAt: Date.now() });
+        this._syncSkillBundleDomains();
+        this._saveAdvancedSettings();
+        return id;
     }
 
     // tw_stock_db客製: 2026-09-14——單一model row的正規化。除了modelName
@@ -3804,6 +3937,9 @@ class FloatingAssistant {
                 .map((tool, index) => this._normalizeCustomTool(tool, `custom_tool_${index + 1}`))
                 .filter(Boolean)
             : [];
+        const skillBundles = Array.isArray(raw.skillBundles)
+            ? raw.skillBundles.map(b => this._normalizeSkillBundle(b)).filter(Boolean)
+            : [];
         const aiCustomFunctions = (raw.aiCustomFunctions && typeof raw.aiCustomFunctions === 'object' && !Array.isArray(raw.aiCustomFunctions))
             ? Object.fromEntries(
                 Object.entries(raw.aiCustomFunctions)
@@ -3823,6 +3959,7 @@ class FloatingAssistant {
             rulesMd: String(raw.rulesMd || '').replace(/\r\n/g, '\n'),
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
+            skillBundles,
             aiCustomFunctions,
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
@@ -4919,6 +5056,49 @@ ${fnData.code}
                 return JSON.stringify({ type: 'drawing', svg: sanitized });
             },
             { type: 'object', properties: { svg: { type: 'string', description: '完整的<svg>...</svg>原始碼' } }, required: ['svg'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-16使用者要求——UML/流程圖viewer。跟
+        // render_drawing的差異是輸入是Mermaid語法（不是SVG原始碼），交給
+        // 真正的mermaid.render()轉成SVG（順便驗證語法——mermaid語法錯誤時
+        // 直接把它的錯誤訊息回傳給模型，讓模型看著錯誤修正語法重新呼叫，
+        // 比自己手刻語法驗證可靠很多），再走跟render_drawing同一套
+        // DOMPurify消毒後才顯示的既有安全機制。回傳的{type:'mermaid', svg}
+        // 走_detectVisualToolPayload/_buildToolResultMessage既有的視覺
+        // payload管線，畫面上會用_mountMermaidViewer渲染成可以拖曳平移/
+        // 滾輪縮放的互動檢視器（不是死的靜態圖），見那個函式的說明。
+        registerOptional('render_uml_diagram',
+            '用Mermaid語法畫一張UML/流程圖/序列圖/類別圖/狀態圖/甘特圖/心智圖等結構化圖表給使用者看，會在對話裡顯示成可以拖曳平移、滾輪縮放的互動檢視器（不是死的靜態圖），使用者可以另外匯出成SVG/PNG。Mermaid語法範例：flowchart TD\\n  A[開始]-->B{判斷}\\n  B--是-->C[結束]。語法錯誤時會直接回傳mermaid的錯誤訊息，請看著錯誤修正語法後重新呼叫。參數: {"mermaid":"完整的mermaid語法文字"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const mermaidSrc = String(parsed.mermaid || '').trim();
+                if (!mermaidSrc) return JSON.stringify({ ok: false, error: '缺少mermaid參數' });
+                try {
+                    await this._ensureMermaidLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                let rawSvg;
+                try {
+                    const renderId = `fa-mermaid-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                    const result = await window.mermaid.render(renderId, mermaidSrc);
+                    rawSvg = result.svg;
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: `Mermaid語法錯誤: ${String(err.message || err)}` });
+                }
+                try {
+                    await this._ensureDOMPurifyLoaded();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                const sanitized = DOMPurify.sanitize(rawSvg, { USE_PROFILES: { svg: true, svgFilters: true } });
+                if (!sanitized.trim()) {
+                    return JSON.stringify({ ok: false, error: 'SVG消毒後內容變成空的' });
+                }
+                return JSON.stringify({ type: 'mermaid', svg: sanitized });
+            },
+            { type: 'object', properties: { mermaid: { type: 'string', description: '完整的mermaid語法文字' } }, required: ['mermaid'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 階段5——互動式viewer（見_mountInteractiveViewer/
@@ -8584,6 +8764,9 @@ ${fnData.code}
             if (parsed && parsed.type === 'drawing' && typeof parsed.svg === 'string') {
                 return { type: 'drawing', svg: parsed.svg };
             }
+            if (parsed && parsed.type === 'mermaid' && typeof parsed.svg === 'string') {
+                return { type: 'mermaid', svg: parsed.svg };
+            }
             if (parsed && parsed.type === 'image' && typeof parsed.dataUrl === 'string') {
                 const meta = (parsed.meta && typeof parsed.meta === 'object') ? parsed.meta : null;
                 return meta ? { type: 'image', dataUrl: parsed.dataUrl, meta } : { type: 'image', dataUrl: parsed.dataUrl };
@@ -8644,6 +8827,7 @@ ${fnData.code}
         // 必要每輪都重新送給模型看一次已經畫好、使用者已經看到的圖。
         const scene3DYaml = visual && visual.type === 'scene3d' ? visual.yaml : null;
         const drawingSvg = visual && visual.type === 'drawing' ? visual.svg : null;
+        const mermaidSvg = visual && visual.type === 'mermaid' ? visual.svg : null;
         const viewerYaml = visual && visual.type === 'viewer' ? visual.yaml : null;
         const anim2DYaml = visual && visual.type === 'anim2d' ? visual.yaml : null;
 
@@ -8680,6 +8864,9 @@ ${fnData.code}
         } else if (drawingSvg) {
             msg.content = `[Tool ${fnName} 已產生一張向量圖，已直接顯示給使用者看，SVG原始碼不列入對話上下文]`;
             Object.defineProperty(msg, '_displayDrawingSvg', { value: drawingSvg, enumerable: false, configurable: true });
+        } else if (mermaidSvg) {
+            msg.content = `[Tool ${fnName} 已產生一個UML/流程圖(Mermaid)，已直接顯示給使用者看（可拖曳平移/滾輪縮放），SVG原始碼不列入對話上下文]`;
+            Object.defineProperty(msg, '_displayMermaidSvg', { value: mermaidSvg, enumerable: false, configurable: true });
         } else if (viewerYaml) {
             msg.content = `[Tool ${fnName} 已產生一個互動viewer，已直接顯示給使用者看，viewer YAML原始內容不列入對話上下文。如果之後要修改這個viewer，請先呼叫get_interactive_viewer_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
             Object.defineProperty(msg, '_displayViewerYaml', { value: viewerYaml, enumerable: false, configurable: true });
@@ -9851,10 +10038,17 @@ ${sourceTool.handlerScript}
         const nameInput = document.getElementById('ai-tool-name-input');
         const descInput = document.getElementById('ai-tool-desc-input');
         const scriptInput = document.getElementById('ai-tool-script-input');
+        const bundleSelect = document.getElementById('ai-tool-skill-bundle-select');
         if (!nameInput || !descInput || !scriptInput) return;
         nameInput.value = tool ? tool.name : this._createTimestampedToolName();
         descInput.value = tool ? tool.description : '';
         scriptInput.value = tool ? tool.handlerScript : this._getDefaultToolHandlerScript();
+        if (bundleSelect) {
+            const options = ['<option value="">（未分類）</option>']
+                .concat(this.advancedSettings.skillBundles.map(b => `<option value="${this._escapeHtml(b.id)}">${this._escapeHtml(b.name)}</option>`));
+            bundleSelect.innerHTML = options.join('');
+            bundleSelect.value = (tool && tool.skillBundleId) || '';
+        }
         modal.style.display = 'flex';
         this._syncCodeEditor(scriptInput.closest('.ai-code-editor'));
     }
@@ -9873,18 +10067,51 @@ ${sourceTool.handlerScript}
             list.innerHTML = `<div class="ai-advanced-tool-empty">尚未新增自訂 tool。</div>`;
             return;
         }
-        list.innerHTML = tools.map((tool, index) => `
+        list.innerHTML = tools.map((tool, index) => {
+            const bundle = tool.skillBundleId ? this.advancedSettings.skillBundles.find(b => b.id === tool.skillBundleId) : null;
+            const bundleLabel = bundle ? `技能包: ${this._escapeHtml(bundle.name)}` : '未分類';
+            return `
             <div class="ai-advanced-tool-item">
                 <div style="flex:1; min-width:0;">
                     <div class="ai-advanced-tool-name">${this._escapeHtml(tool.name)}</div>
-                    <div class="ai-advanced-tool-desc">${this._escapeHtml(tool.description || 'No description provided.')}</div>
+                    <div class="ai-advanced-tool-desc">${this._escapeHtml(tool.description || 'No description provided.')}　·　${bundleLabel}</div>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     <button type="button" class="ai-advanced-btn" data-tool-edit="${index}">修改</button>
                     <button type="button" class="ai-advanced-btn danger" data-tool-delete="${index}">刪除</button>
                 </div>
             </div>
-        `).join('');
+        `; }).join('');
+    }
+
+    // tw_stock_db客製: 2026-09-16——渲染「技能包(Skill Bundle)」清單。每一列
+    // 顯示名稱、啟用狀態、掛了幾個工具、有沒有填知識/人設，操作比照既有
+    // File Access Point清單的按鈕群模式（同一個視覺語言）。
+    _renderSkillBundleList() {
+        const list = document.getElementById('ai-skill-bundle-list');
+        if (!list) return;
+        const bundles = this.advancedSettings.skillBundles;
+        if (!bundles.length) {
+            list.innerHTML = `<div class="ai-advanced-tool-empty">尚未建立任何技能包。</div>`;
+            return;
+        }
+        list.innerHTML = bundles.map((bundle) => {
+            const toolCount = this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).length;
+            const hasPersona = String(bundle.personaPrompt || '').trim().length > 0;
+            return `
+            <div class="ai-advanced-tool-item">
+                <div style="flex:1; min-width:0;">
+                    <div class="ai-advanced-tool-name">${this._escapeHtml(bundle.name)}</div>
+                    <div class="ai-advanced-tool-desc">${bundle.enabled !== false ? '✅ 已啟用' : '⏸️ 已停用'}　·　${hasPersona ? '📖 已設定知識/人設' : '⚠️ 尚未填寫知識/人設'}　·　${toolCount} 個工具　·　ref: <code>skill_${this._escapeHtml(bundle.id)}</code></div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button type="button" class="ai-advanced-btn" data-skill-bundle-toggle="${bundle.id}">${bundle.enabled !== false ? '停用' : '啟用'}</button>
+                    <button type="button" class="ai-advanced-btn" data-skill-bundle-edit="${bundle.id}">編輯知識/人設</button>
+                    <button type="button" class="ai-advanced-btn" data-skill-bundle-export="${bundle.id}">匯出</button>
+                    <button type="button" class="ai-advanced-btn danger" data-skill-bundle-delete="${bundle.id}">刪除</button>
+                </div>
+            </div>
+        `; }).join('');
     }
 
     // tw_stock_db客製: 2026-09-15——渲染「檔案存取管理」目前已授權的File
@@ -10072,6 +10299,7 @@ ${sourceTool.handlerScript}
         this._refreshWhisperCacheSizeDisplay();
         this._refreshTtsCacheSizeDisplay();
         this._renderTtsVoicePanel();
+        this._renderSkillBundleList();
         this._renderCustomToolList();
         this._renderAiFnList();
         this._renderGenerationSettingsUI();
@@ -11987,6 +12215,27 @@ ${sourceTool.handlerScript}
             throw new Error('DOMPurify 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._dompurifyLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-16——UML/流程圖viewer用的Mermaid函式庫loader，
+    // 同樣獨立管理（不跟markdown/3D那些函式庫綁在一起）。securityLevel:
+    // 'strict'關閉mermaid自己對label裡html的容忍（減少潛在XSS途徑），渲染
+    // 完的SVG字串之後還會再經過DOMPurify消毒一次，雙重防禦，跟render_drawing
+    // 同樣的精神。
+    async _ensureMermaidLoaded() {
+        if (typeof window.mermaid === 'undefined') {
+            if (!this._mermaidLoadPromise) {
+                this._mermaidLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.mermaid).catch(e => {
+                    this._mermaidLoadPromise = null;
+                    throw new Error('Mermaid 載入失敗（可能是網路問題）：' + e.message);
+                });
+            }
+            await this._mermaidLoadPromise;
+        }
+        if (!this._mermaidInitialized) {
+            window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+            this._mermaidInitialized = true;
+        }
     }
 
     // ============================================================
@@ -13990,7 +14239,12 @@ ${sourceTool.handlerScript}
         return await record.blob.text();
     }
 
-    async _exportSkillZip() {
+    // tw_stock_db客製: 2026-09-16——新增選填的bundleId參數：有指定時只打包
+    // 該skillBundle的personaPrompt（當SKILL.md）+ 該bundle底下的工具（讓
+    // 「匯出單一個蒸餾skill、分享給別人匯入」這個情境成立，不會把使用者
+    // 全部技能包混在同一份zip裡）；留空維持舊行為（匯出全域rulesMd+未分類
+    // 的customTools），向下相容既有的「匯出設定」用法。
+    async _exportSkillZip(bundleId) {
         try {
             await this._ensureJSZipLoaded();
         } catch (err) {
@@ -13998,11 +14252,17 @@ ${sourceTool.handlerScript}
             return;
         }
         try {
+            const bundle = bundleId ? this.advancedSettings.skillBundles.find(b => b.id === bundleId) : null;
             const zip = new JSZip();
-            const rulesMd = String(this.advancedSettings.rulesMd || '').trim();
-            zip.file('SKILL.md', rulesMd || '# SKILL.md\n\n（尚未填寫 RULES.md 內容）\n');
+            const skillMd = bundle
+                ? String(bundle.personaPrompt || '').trim()
+                : String(this.advancedSettings.rulesMd || '').trim();
+            zip.file('SKILL.md', skillMd || '# SKILL.md\n\n（尚未填寫知識/人設內容）\n');
             const toolsFolder = zip.folder('tools');
-            this.advancedSettings.customTools.forEach(tool => {
+            const toolsToExport = bundle
+                ? this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id)
+                : this.advancedSettings.customTools.filter(t => !t.skillBundleId);
+            toolsToExport.forEach(tool => {
                 const safeName = String(tool.name || 'tool').replace(/[^a-zA-Z0-9_\-]/g, '_') || 'tool';
                 const description = String(tool.description || '').replace(/\r?\n/g, ' ');
                 const content = `// name: ${tool.name}\n// description: ${description}\n${tool.handlerScript || ''}\n`;
@@ -14012,7 +14272,7 @@ ${sourceTool.handlerScript}
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'tw-stock-db-assistant.skill';
+            a.download = bundle ? `${bundle.name.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'skill'}.skill` : 'tw-stock-db-assistant.skill';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -14028,16 +14288,15 @@ ${sourceTool.handlerScript}
     // 兩種來源匯入結果完全等價、不會有兩份平行維護的風險。`toolFileEntries`是
     // `[{path, text}]`——跟zip/資料夾都相容的中性形狀（zip來源path是
     // entry.name，資料夾來源是`tools/${filename}`）。
+    // tw_stock_db客製: 2026-09-16使用者要求「Skill Sandbox」——匯入的Skill
+    // 改成建立一個獨立的skillBundle（SKILL.md內容變成這個bundle的
+    // personaPrompt，委派時subagent會真正「扮演」這份知識，見
+    // _buildSkillPersonaSystemPrompt），不再無條件附加進全域rulesMd（那樣
+    // 會把不相關的蒸餾skill知識全部混在同一份文字裡、混在同一個domain）。
     async _applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel }) {
-        let skillMdImported = false;
+        const bundleName = (prompt('幫這個匯入的Skill技能包取一個名稱：', sourceLabel) || sourceLabel || '匯入的Skill').trim() || (sourceLabel || '匯入的Skill');
         const trimmedSkillMd = String(skillMdText || '').trim();
-        if (trimmedSkillMd) {
-            const existing = String(this.advancedSettings.rulesMd || '').trim();
-            this.advancedSettings.rulesMd = existing
-                ? `${existing}\n\n---\n[來自匯入的 Skill: ${sourceLabel}]\n${trimmedSkillMd}`
-                : trimmedSkillMd;
-            skillMdImported = true;
-        }
+        const bundleId = this._createSkillBundle(bundleName, trimmedSkillMd);
 
         let importedToolCount = 0;
         let skippedBuiltinCount = 0;
@@ -14060,6 +14319,7 @@ ${sourceTool.handlerScript}
                 skippedBuiltinCount++;
                 continue;
             }
+            normalized.skillBundleId = bundleId;
             const existingIndex = this.advancedSettings.customTools.findIndex(t => t.name === normalized.name);
             if (existingIndex > -1) {
                 if (!confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
@@ -14070,12 +14330,13 @@ ${sourceTool.handlerScript}
             importedToolCount++;
         }
 
+        this._syncSkillBundleDomains();
         this._saveAdvancedSettings();
         this._renderAdvancedSettings();
         this._syncFromAI();
-        const parts = [];
-        if (skillMdImported) parts.push('SKILL.md 已附加到 RULES.md');
-        parts.push(`匯入/更新 ${importedToolCount} 個 Skill 工具`);
+        const parts = [`已建立技能包「${bundleName}」`];
+        if (trimmedSkillMd) parts.push('已套用SKILL.md知識/人設');
+        parts.push(`匯入 ${importedToolCount} 個工具`);
         if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
         alert('Skill 匯入完成：' + parts.join('，'));
     }
@@ -14646,6 +14907,62 @@ ${existingNodeSummaries}
         });
     }
 
+    // tw_stock_db客製: 2026-09-16使用者要求——UML/流程圖viewer要在對話裡是
+    // 「可以拖曳平移、滾輪縮放的互動檢視器」，不是死的靜態圖。svgText已經
+    // 在render_uml_diagram工具callback裡經過DOMPurify消毒，這裡直接
+    // innerHTML是安全的，跟既有_displayDrawingSvg同樣的既有慣例（見那裡的
+    // 說明），不需要再消毒一次。這個函式本身不需要回傳一個「持續存活」的
+    // handle——SVG是靜態內容，事件監聽器綁完就結束，跟_displayDrawingSvg
+    // 目前的處理複雜度相近，只是多了pan/zoom互動層；匯出/檢視原始碼按鈕
+    // 直接對msg._displayMermaidSvg操作，不需要透過這個函式的回傳值。
+    _mountMermaidViewer(container, svgText) {
+        const viewport = document.createElement('div');
+        viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:1px solid rgba(0,0,0,0.1); cursor:grab;';
+        const inner = document.createElement('div');
+        inner.style.cssText = 'position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform;';
+        inner.innerHTML = svgText;
+        viewport.appendChild(inner);
+
+        let x = 20, y = 20, scale = 1;
+        const applyTransform = () => { inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; };
+        applyTransform();
+
+        let dragging = false, dragStartX = 0, dragStartY = 0, originX = 0, originY = 0;
+        viewport.addEventListener('mousedown', (e) => {
+            dragging = true; dragStartX = e.clientX; dragStartY = e.clientY; originX = x; originY = y;
+            viewport.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            x = originX + (e.clientX - dragStartX);
+            y = originY + (e.clientY - dragStartY);
+            applyTransform();
+        });
+        window.addEventListener('mouseup', () => { dragging = false; viewport.style.cursor = 'grab'; });
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
+            scale = Math.max(0.2, Math.min(5, scale * factor));
+            applyTransform();
+        }, { passive: false });
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'position:absolute; right:6px; bottom:6px; display:flex; gap:4px; z-index:2;';
+        const mkBtn = (label, title, onClick) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = label; b.title = title;
+            b.style.cssText = 'border:none; background:rgba(255,255,255,0.92); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; box-shadow:0 1px 3px rgba(0,0,0,0.2);';
+            b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+            return b;
+        };
+        controls.appendChild(mkBtn('🔍+', '放大', () => { scale = Math.min(5, scale * 1.2); applyTransform(); }));
+        controls.appendChild(mkBtn('🔍-', '縮小', () => { scale = Math.max(0.2, scale / 1.2); applyTransform(); }));
+        controls.appendChild(mkBtn('⟲', '重設視角', () => { x = 20; y = 20; scale = 1; applyTransform(); }));
+        viewport.appendChild(controls);
+
+        container.appendChild(viewport);
+    }
+
     // 依訊息的顯示型態（圖片/3D場景/繪圖）截出一張PNG data URL。3D場景優先
     // 用目前存活的_scene3DHandle（畫面上正在跑的那個canvas實例，見
     // _renderSingleMessage掛載scene3d的地方）直接截圖，沒有存活的handle
@@ -14676,6 +14993,13 @@ ${existingNodeSummaries}
         if (msg._displayDrawingSvg) {
             try {
                 return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayDrawingSvg, 800), kind: 'drawing' };
+            } catch (_) {
+                return null;
+            }
+        }
+        if (msg._displayMermaidSvg) {
+            try {
+                return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayMermaidSvg, 900), kind: 'mermaid' };
             } catch (_) {
                 return null;
             }
@@ -18786,6 +19110,14 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-pane hidden" data-pane="skills">
                                 <div class="ai-advanced-stack">
                                     <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">技能包（Skill Bundle）</div>
+                                        <button type="button" id="ai-skill-bundle-add-btn" class="ai-advanced-btn primary">+ 新增技能包</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">把蒸餾出來的模型知識/風格（例如「GPT Codex風格的coding skill」）寫成一段知識/人設文字，委派給這個技能包時，子agent會真正「扮演」具備這份知識的角色回答，不只是掛幾個工具。每個技能包各自是一個獨立的委派領域（domain），AI可以自動判斷該用哪一個、或你在對話裡明確指定。下面「Skill（自訂工具）」清單裡的每個工具都可以指定歸屬到某個技能包（編輯工具時選擇），沒有指定的工具維持「未分類」，用同一套委派機制但不帶任何知識/人設。</p>
+                                    <div id="ai-skill-bundle-list" class="ai-tool-list"></div>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
                                         <div class="ai-advanced-label" style="margin:0;">Skill（自訂工具 / Custom Tools）</div>
                                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                                             <button type="button" id="ai-tool-add-btn" class="ai-advanced-btn primary">新增 Skill</button>
@@ -18796,6 +19128,29 @@ ${existingNodeSummaries}
                                     </div>
                                     <p class="ai-advanced-hint">每個Skill會自動註冊成同名的slash指令（例如Skill叫「my_skill」，輸入框直接打「/my_skill 參數」即可跳過AI判斷、直接本地執行，也會出現在「/」自動完成選單裡）——如果名稱撞到既有指令，既有的優先，這個Skill仍然只能靠AI自己判斷呼叫。這些Skill不會直接出現在主對話的工具清單裡，AI需要用到時會透過委派機制交給專門的子Agent查詢/呼叫——這樣Skill累積再多也不會拖慢/污染主對話。</p>
                                     <div id="ai-custom-tool-list" class="ai-tool-list"></div>
+                                </div>
+                            </div>
+                            <div id="ai-skill-bundle-editor-modal" class="ai-advanced-overlay">
+                                <div class="ai-advanced-dialog" style="width:min(860px, 94vw);">
+                                    <div class="ai-advanced-row">
+                                        <h3 style="margin:0; color:#76b900;">編輯技能包知識/人設</h3>
+                                        <button type="button" id="ai-skill-bundle-editor-close" class="ai-advanced-btn">關閉</button>
+                                    </div>
+                                    <div class="ai-advanced-stack">
+                                        <label class="ai-advanced-label" for="ai-skill-bundle-name-input">名稱</label>
+                                        <input id="ai-skill-bundle-name-input" class="ai-advanced-input" type="text">
+                                    </div>
+                                    <div class="ai-advanced-stack">
+                                        <label class="ai-advanced-label" for="ai-skill-bundle-persona-input">知識 / 人設（子agent會被要求完全依照這份內容扮演回答）</label>
+                                        <textarea id="ai-skill-bundle-persona-input" class="ai-advanced-textarea" style="min-height:260px; font-family:monospace;" placeholder="例如：你精通Python/TypeScript，寫程式風格參考GPT Codex：偏好簡潔、有型別註記、附上單元測試範例……"></textarea>
+                                    </div>
+                                    <div class="ai-advanced-footer">
+                                        <span style="font-size:12px; color:#94a3b8;">留空的話，這個技能包只靠掛載的工具運作，不會有額外的知識/人設。</span>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                            <button type="button" id="ai-skill-bundle-editor-cancel" class="ai-advanced-btn">取消</button>
+                                            <button type="button" id="ai-skill-bundle-editor-save" class="ai-advanced-btn primary">儲存</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="rag">
@@ -19014,6 +19369,11 @@ ${existingNodeSummaries}
                     <div class="ai-advanced-stack">
                         <label class="ai-advanced-label" for="ai-tool-desc-input">Description</label>
                         <textarea id="ai-tool-desc-input" class="ai-advanced-textarea" style="min-height:100px;"></textarea>
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <label class="ai-advanced-label" for="ai-tool-skill-bundle-select">所屬技能包（Skill Bundle）</label>
+                        <select id="ai-tool-skill-bundle-select" class="ai-advanced-input"></select>
+                        <p class="ai-advanced-hint">選「未分類」的話，這個工具會跟其他未分類工具共用同一個委派領域；選一個技能包的話，委派給那個技能包時，子agent會連同該技能包的知識/人設一起看到（見「Skill」分頁上方的技能包清單）。</p>
                     </div>
                     <div class="ai-advanced-stack">
                         <label class="ai-advanced-label" for="ai-tool-script-input">Handler Script (JavaScript)</label>
@@ -19478,7 +19838,7 @@ ${existingNodeSummaries}
     // 會把所有視覺訊息的旗標重新算過一次（configurable:true可以覆寫），
     // 不會有殘留的舊狀態。
     _markSupersededVisualDrafts(messages) {
-        const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayViewerYaml', '_displayDataUrl', '_displayAnim2DYaml'];
+        const KIND_PROPS = ['_displayScene3DYaml', '_displayDrawingSvg', '_displayMermaidSvg', '_displayViewerYaml', '_displayDataUrl', '_displayAnim2DYaml'];
         let lastIdxByKind = {};
         const markSuperseded = (kind, idx) => {
             if (lastIdxByKind[kind] !== undefined) {
@@ -20013,6 +20373,45 @@ ${existingNodeSummaries}
                 return;
             }
 
+            // tw_stock_db客製: 2026-09-16使用者要求——UML/流程圖viewer，同樣
+            // 「一律顯示、不受showInternalTrace開關影響」原則，SVG在存進
+            // _displayMermaidSvg之前已經在render_uml_diagram工具callback裡
+            // 經過DOMPurify消毒。跟繪圖卡片的差異是用_mountMermaidViewer
+            // （可拖曳平移/滾輪縮放）取代直接innerHTML靜態顯示，並且
+            // _appendCardExportButton多帶一個PNG選項（drawing卡片沒有這個
+            // 選項是既有設計，這裡是新增功能，使用者明確要求「圖要可以
+            // export成svg, png」，SVG已經由_appendCardSourceButtons的下載
+            // 原始碼按鈕涵蓋，這裡補PNG）。
+            if (msg._displayMermaidSvg) {
+                if (msg._visualSuperseded) {
+                    this._renderSupersededDraftCard(container, 'UML/流程圖草稿', (inner) => { this._mountMermaidViewer(inner, msg._displayMermaidSvg); });
+                    return;
+                }
+                const mermaidWrap = document.createElement('div');
+                mermaidWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
+                const mermaidLabel = document.createElement('div');
+                mermaidLabel.style.cssText = 'font-size: 12px; font-weight: bold; color: #dd6b20; margin-bottom: 4px;';
+                mermaidLabel.textContent = '📊 UML/流程圖（可拖曳平移、滾輪縮放）';
+                mermaidWrap.appendChild(mermaidLabel);
+                this._mountMermaidViewer(mermaidWrap, msg._displayMermaidSvg);
+                const mermaidFooter = document.createElement('div');
+                mermaidFooter.style.cssText = 'display:flex; justify-content:flex-end; gap:4px; margin-top:4px;';
+                mermaidWrap.appendChild(mermaidFooter);
+                this._appendCardSourceButtons(mermaidFooter, mermaidWrap, () => msg._displayMermaidSvg, 'uml_diagram', 'svg');
+                this._appendCardExportButton(mermaidFooter, async () => {
+                    try { return { dataUrl: await this._rasterizeSvgToDataUrl(msg._displayMermaidSvg, 900), kind: 'mermaid' }; } catch (_) { return null; }
+                }, 'UML流程圖', [{
+                    fmt: 'png', label: '🖼️ PNG',
+                    getBlobFn: async () => {
+                        const dataUrl = await this._rasterizeSvgToDataUrl(msg._displayMermaidSvg, 1200);
+                        const blob = await (await fetch(dataUrl)).blob();
+                        return { blob, ext: 'png', mimeType: 'image/png' };
+                    },
+                }]);
+                container.appendChild(mermaidWrap);
+                return;
+            }
+
             // tw_stock_db客製: 階段5——互動viewer，同樣「一律顯示、不受
             // showInternalTrace開關影響」原則。掛載是非同步的（要載入
             // js-yaml），先同步插入容器保住訊息順序。
@@ -20537,6 +20936,86 @@ ${existingNodeSummaries}
         });
         document.getElementById('ai-tool-add-btn').onclick = () => this._openToolEditor(-1);
         document.getElementById('ai-skill-export-btn').onclick = () => this._exportSkillZip();
+        // tw_stock_db客製: 2026-09-16——「技能包(Skill Bundle)」清單的事件
+        // 綁定。編輯知識/人設用一個獨立的小彈窗（不是code editor，純文字），
+        // this.activeSkillBundleEditId記住目前正在編輯哪個bundle（-1或空字串
+        // 都代表「還沒開始編輯任何一個」，儲存時找不到對應id就直接return，
+        // 防禦性寫法避免彈窗殘留舊狀態時誤寫到錯的bundle）。
+        document.getElementById('ai-skill-bundle-add-btn').onclick = () => {
+            const name = (prompt('幫這個技能包取一個名稱（例如「GPT Codex風格coding skill」）：', '') || '').trim();
+            if (!name) return;
+            this._createSkillBundle(name, '');
+            this._renderSkillBundleList();
+            this._log(`✅ 已建立技能包「${name}」，可以點「編輯知識/人設」填入蒸餾出來的知識內容。`);
+        };
+        const skillBundleList = document.getElementById('ai-skill-bundle-list');
+        if (skillBundleList) {
+            skillBundleList.addEventListener('click', (event) => {
+                const toggleBtn = event.target.closest('[data-skill-bundle-toggle]');
+                if (toggleBtn) {
+                    const bundle = this.advancedSettings.skillBundles.find(b => b.id === toggleBtn.dataset.skillBundleToggle);
+                    if (!bundle) return;
+                    bundle.enabled = bundle.enabled === false ? true : false;
+                    this._syncSkillBundleDomains();
+                    this._saveAdvancedSettings();
+                    this._renderSkillBundleList();
+                    return;
+                }
+                const editBtn = event.target.closest('[data-skill-bundle-edit]');
+                if (editBtn) {
+                    const bundle = this.advancedSettings.skillBundles.find(b => b.id === editBtn.dataset.skillBundleEdit);
+                    if (!bundle) return;
+                    this.activeSkillBundleEditId = bundle.id;
+                    document.getElementById('ai-skill-bundle-name-input').value = bundle.name;
+                    document.getElementById('ai-skill-bundle-persona-input').value = bundle.personaPrompt || '';
+                    document.getElementById('ai-skill-bundle-editor-modal').style.display = 'flex';
+                    return;
+                }
+                const exportBtn = event.target.closest('[data-skill-bundle-export]');
+                if (exportBtn) {
+                    this._exportSkillZip(exportBtn.dataset.skillBundleExport);
+                    return;
+                }
+                const deleteBtn = event.target.closest('[data-skill-bundle-delete]');
+                if (deleteBtn) {
+                    const bundle = this.advancedSettings.skillBundles.find(b => b.id === deleteBtn.dataset.skillBundleDelete);
+                    if (!bundle) return;
+                    if (!confirm(`刪除技能包「${bundle.name}」？底下的工具不會被刪除，會改回「未分類」狀態。`)) return;
+                    this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter(b => b.id !== bundle.id);
+                    this.advancedSettings.customTools.forEach(t => { if (t.skillBundleId === bundle.id) t.skillBundleId = null; });
+                    this._syncSkillBundleDomains();
+                    this._saveAdvancedSettings();
+                    this._renderSkillBundleList();
+                    this._renderCustomToolList();
+                    return;
+                }
+            });
+        }
+        const skillBundleEditorModal = document.getElementById('ai-skill-bundle-editor-modal');
+        const closeSkillBundleEditor = () => {
+            if (skillBundleEditorModal) skillBundleEditorModal.style.display = 'none';
+            this.activeSkillBundleEditId = null;
+        };
+        document.getElementById('ai-skill-bundle-editor-close').onclick = closeSkillBundleEditor;
+        document.getElementById('ai-skill-bundle-editor-cancel').onclick = closeSkillBundleEditor;
+        if (skillBundleEditorModal) {
+            skillBundleEditorModal.addEventListener('click', (event) => {
+                if (event.target === skillBundleEditorModal) closeSkillBundleEditor();
+            });
+        }
+        document.getElementById('ai-skill-bundle-editor-save').onclick = () => {
+            const bundle = this.advancedSettings.skillBundles.find(b => b.id === this.activeSkillBundleEditId);
+            if (!bundle) { closeSkillBundleEditor(); return; }
+            const newName = document.getElementById('ai-skill-bundle-name-input').value.trim();
+            if (!newName) { alert('名稱不能為空。'); return; }
+            bundle.name = newName;
+            bundle.personaPrompt = document.getElementById('ai-skill-bundle-persona-input').value;
+            this._syncSkillBundleDomains();
+            this._saveAdvancedSettings();
+            this._renderSkillBundleList();
+            this._log(`✅ 已更新技能包「${newName}」的知識/人設。`);
+            closeSkillBundleEditor();
+        };
         document.getElementById('ai-skill-import-input').addEventListener('change', (e) => {
             const file = e.target.files && e.target.files[0];
             if (file) this._importSkillZip(file);
@@ -21093,18 +21572,22 @@ ${existingNodeSummaries}
                 alert(err.message);
                 return;
             }
+            const bundleSelect = document.getElementById('ai-tool-skill-bundle-select');
             const nextTool = this._normalizeCustomTool({
                 name,
                 description: toolDescInput.value,
-                handlerScript: toolScriptInput.value
+                handlerScript: toolScriptInput.value,
+                skillBundleId: bundleSelect ? bundleSelect.value : null,
             }, name);
             if (this.activeToolEditIndex >= 0) {
                 this.advancedSettings.customTools.splice(this.activeToolEditIndex, 1, nextTool);
             } else {
                 this.advancedSettings.customTools.push(nextTool);
             }
+            this._syncSkillBundleDomains();
             this._saveAdvancedSettings();
             this._renderCustomToolList();
+            this._renderSkillBundleList();
             this._closeToolEditor();
             this._log("已儲存自訂工具: " + name);
         };
@@ -21183,8 +21666,10 @@ ${existingNodeSummaries}
             if (!tool) return;
             if (!confirm("確定刪除自訂 tool「" + tool.name + "」嗎？")) return;
             this.advancedSettings.customTools.splice(index, 1);
+            this._syncSkillBundleDomains();
             this._saveAdvancedSettings();
             this._renderCustomToolList();
+            this._renderSkillBundleList();
             this._log("已刪除自訂工具: " + tool.name);
         });
         document.getElementById('ai-fn-list').addEventListener('click', event => {
