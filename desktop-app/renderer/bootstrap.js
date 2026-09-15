@@ -661,7 +661,12 @@ function patchCloudflareWording(root) {
       if (level.length <= 1 || combinedLen <= ANALYZE_LARGE_FILE_REDUCE_CHARS) {
         if (level.length === 1 && depth === 0) return { finalText: level[0], reduceDepth: depth };
         const finalPrompt = `以下是針對任務「${instruction}」，依照原始檔案順序切出的多份分析結果（共${level.length}份，可能已經是前幾輪濃縮過的中繼結果），請統整成一份完整、連貫、依序涵蓋每一份重點的最終結果，不要遺漏任何一份提到的具體內容，也不要重複贅述：\n\n${level.map((t, i) => `【第${i + 1}份】\n${t}`).join("\n\n")}`;
-        const finalResult = await fa._runSubAgentTask(finalPrompt);
+        // tw_stock_db客製: 這一次呼叫是繞過runBatchSubAgents直接呼叫
+        // _runSubAgentTask，一樣要帶上rpm設定才會被同一個端點的限流計入，
+        // 邏輯跟runBatchSubAgents裡resolve rowRpm的方式一致。
+        const primaryRow = (fa._getModelRows() || [])[0];
+        const rowRpm = primaryRow && primaryRow.requestsPerMinute != null ? primaryRow.requestsPerMinute : null;
+        const finalResult = await fa._runSubAgentTask(finalPrompt, undefined, { rateLimitPerMinute: rowRpm });
         return { finalText: finalResult.text, reduceDepth: depth + 1 };
       }
       const groups = [];
