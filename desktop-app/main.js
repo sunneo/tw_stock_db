@@ -812,6 +812,39 @@ function createWindow() {
       }, 1500);
     });
   }
+  // 一次性除錯hook：直接從main行程觸發「打開Advance設定→切到桌面版設定
+  // 分頁」，繞過Windows-MCP對這個app齒輪圖示點不準的既有限制，驗證2026-
+  // 09-15新增的「桌面版設定」分頁（🔑設定API金鑰/允許AI執行程式/每次執行
+  // 前跳確認框三個控制項搬過去之後）真的有正確插入、切分頁互動正常。
+  if (process.env.FA_DEBUG_ADV_SETTINGS_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          console.log("[adv-settings-test] opening advanced modal + switching to desktop-app pane...");
+          const info = await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              document.getElementById('ai-btn-config').click();
+              const cat = document.querySelector('.ai-advanced-cat[data-cat="desktop-app"]');
+              if (cat) cat.click();
+              const pane = document.querySelector('.ai-advanced-pane[data-pane="desktop-app"]');
+              return {
+                catFound: !!cat,
+                paneFound: !!pane,
+                paneHidden: pane ? pane.classList.contains('hidden') : null,
+                secretsBtnInPane: !!(pane && pane.querySelector('#topbar-secrets-btn')),
+                execEnabledInPane: !!(pane && pane.querySelector('#topbar-exec-enabled')),
+                execConfirmInPane: !!(pane && pane.querySelector('#topbar-exec-confirm')),
+                topbarStillHasThem: !!document.querySelector('#topbar #topbar-secrets-btn'),
+              };
+            })()
+          `);
+          console.log("[adv-settings-test] result: " + JSON.stringify(info, null, 2));
+        } catch (err) {
+          console.log("[adv-settings-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {

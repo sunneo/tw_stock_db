@@ -586,7 +586,7 @@ function patchCloudflareWording(root) {
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
     systemPrompt:
-      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command可以執行真正的本機程式/指令，這個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在應用程式頂部列開啟「允許AI執行程式」這個工具才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
+      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command可以執行真正的本機程式/指令，這個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」這個工具才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
   });
 
   // ---- 頂部列：執行程式開關 ----
@@ -614,6 +614,67 @@ function patchCloudflareWording(root) {
     new MutationObserver(() => patchCloudflareWording(advancedModal)).observe(advancedModal, {
       childList: true, subtree: true, characterData: true,
     });
+  }
+
+  // tw_stock_db客製: 2026-09-15使用者要求——把原本擠在頂部列的「🔑設定API
+  // 金鑰」「允許AI執行程式」「每次執行前跳確認框」搬進Advance設定，只留
+  // 「📁直接輸入路徑新增資料夾」在外層。floating-assistant.js核心沒有提供
+  // 「host自己註冊一個新Advance設定分頁」的公開API（.ai-advanced-cat/
+  // .ai-advanced-pane是核心render_time寫死的一組side-by-side分頁），所以
+  // 這裡直接在既有.ai-advanced-sidebar/.ai-advanced-content容器裡手動插入
+  // 一組新的cat/pane節點（跟核心既有分頁同一個class命名空間，視覺上完全
+  // 一致），並自己複製核心「切分頁」的toggle邏輯接上這個新按鈕的click——
+  // 核心原本的分頁click listener是在modal初次render時對「當時存在」的
+  // .ai-advanced-cat逐一綁定，這個新節點是事後插入的，不會自動被核心的
+  // listener覆蓋到，所以需要自己補一份；反過來，使用者點擊「既有」分頁時，
+  // 核心的click handler內部用的是即時查詢的`document.querySelectorAll(
+  // '.ai-advanced-pane')`（不是初次render時的snapshot），所以會自動正確
+  // 把這個新pane一併隱藏，不用擔心切到別的分頁時這個新pane還留在畫面上。
+  // 三個被搬移的控制項（按鈕/checkbox）直接用appendChild整個節點搬過去
+  // （不是重新建立/複製），id、既有的click/change事件監聽器完全不受影響。
+  if (advancedModal) {
+    const sidebar = advancedModal.querySelector(".ai-advanced-sidebar");
+    const content = advancedModal.querySelector(".ai-advanced-content");
+    const relocatedContainer = document.getElementById("topbar-relocated-controls");
+    if (sidebar && content && relocatedContainer) {
+      const cat = document.createElement("div");
+      cat.className = "ai-advanced-cat";
+      cat.dataset.cat = "desktop-app";
+      cat.textContent = "桌面版設定";
+      sidebar.insertBefore(cat, sidebar.firstChild);
+
+      const pane = document.createElement("div");
+      pane.className = "ai-advanced-pane hidden";
+      pane.dataset.pane = "desktop-app";
+      pane.innerHTML = `
+        <div class="ai-advanced-stack">
+          <label class="ai-advanced-label">API 金鑰</label>
+          <p class="ai-advanced-hint">NVIDIA／OpenRouter金鑰存在本機secrets.json，不會出現在畫面上、也不會傳到聊天內容——按下面按鈕即可設定，桌面版不需要另外部署雲端Worker。</p>
+          <div id="desktop-settings-secrets-slot"></div>
+        </div>
+        <div class="ai-advanced-stack">
+          <label class="ai-advanced-label">程式執行權限</label>
+          <p class="ai-advanced-hint">AI是否可以透過run_command在這台電腦上直接執行程式/指令——執行本身風險最高，預設每次執行前都會跳出原生確認視窗，顯示完整指令內容，由你親自按「執行」才會真的跑。</p>
+          <div id="desktop-settings-exec-slot" style="display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+      `;
+      content.appendChild(pane);
+
+      pane.querySelector("#desktop-settings-secrets-slot").appendChild(document.getElementById("topbar-secrets-btn"));
+      const execSlot = pane.querySelector("#desktop-settings-exec-slot");
+      // exec-enabled/exec-confirm的<label>本身包住checkbox+文字，整個搬過去
+      // 即可，樣式沿用.ai-advanced-label的checkbox常見排版（inline-flex）。
+      const execEnabledLabel = document.getElementById("topbar-exec-enabled").closest("label");
+      const execConfirmLabel = document.getElementById("topbar-exec-confirm").closest("label");
+      if (execEnabledLabel) { execEnabledLabel.style.cssText = "display:flex; align-items:center; gap:6px; cursor:pointer;"; execSlot.appendChild(execEnabledLabel); }
+      if (execConfirmLabel) { execConfirmLabel.style.cssText = "display:flex; align-items:center; gap:6px; cursor:pointer;"; execSlot.appendChild(execConfirmLabel); }
+      relocatedContainer.remove();
+
+      cat.addEventListener("click", () => {
+        advancedModal.querySelectorAll(".ai-advanced-cat").forEach((c) => c.classList.toggle("active", c === cat));
+        advancedModal.querySelectorAll(".ai-advanced-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== cat.dataset.cat));
+      });
+    }
   }
 
   // ---- 桌面版是單一用途、永遠鋪滿視窗的對話介面，不是「可以收合成小藥丸
