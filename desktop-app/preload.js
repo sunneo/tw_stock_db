@@ -64,6 +64,16 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     setSettings: (patch) => ipcRenderer.invoke("fa:exec:setSettings", patch),
     run: (opts) => ipcRenderer.invoke("fa:exec:run", opts),
   },
+  // 2026-09-15使用者明確要求「執行指令也要有有bash, tmux的能力」——POSIX
+  // 限定（見main.js requireTmuxAvailable），Windows呼叫會得到明確的錯誤
+  // 訊息而不是靜默失敗。
+  tmux: {
+    start: (name, command, cwd) => ipcRenderer.invoke("fa:tmux:start", { name, command, cwd }),
+    sendKeys: (name, keys, enter) => ipcRenderer.invoke("fa:tmux:sendKeys", { name, keys, enter }),
+    capture: (name, lines) => ipcRenderer.invoke("fa:tmux:capture", { name, lines }),
+    list: () => ipcRenderer.invoke("fa:tmux:list"),
+    kill: (name) => ipcRenderer.invoke("fa:tmux:kill", { name }),
+  },
   config: {
     getLocalProxyPort: () => ipcRenderer.invoke("fa:config:getLocalProxyPort"),
   },

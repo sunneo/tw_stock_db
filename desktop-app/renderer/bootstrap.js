@@ -419,7 +419,7 @@ function patchCloudflareWording(root) {
   // fileAccessPoints運作，不用另外重複造一套）。
   fa.register_openai_tool(
     "run_command",
-    "在使用者這台電腦上直接執行一個程式/指令（子行程）——例如跑腳本、編譯、執行測試、開啟其他應用程式。這是風險最高的工具：整體功能預設關閉，需要使用者自己在應用程式頂部列勾選「允許AI執行程式」才能呼叫；預設每次呼叫都會跳出原生確認對話框，顯示完整指令與工作目錄，由使用者當場按「執行」才會真的跑（除非使用者自己在頂部列關閉這個確認）。執行前務必先用自然語言跟使用者確認清楚要跑的指令、參數、預期效果，不要自作主張執行任何有破壞性或不可逆的指令（刪除檔案、格式化、部署到正式環境、對外發送資料等）——這類操作應該建議使用者自己手動執行，而不是透過這個工具代勞。參數: {\"command\":\"node\",\"args\":[\"script.js\"],\"root_ref\":\"fap:我的專案\",\"cwd\":\".\"}",
+    `在使用者這台電腦上直接執行一個程式/指令——真的透過shell執行（${window.desktopAPI.platform.isWindows ? "依序嘗試Git Bash／PowerShell／cmd.exe，找得到哪個就用哪個" : "/bin/bash"}），管線(|)、重導向(>/>>)、&&、萬用字元等shell語法都可以直接用，也可以是像「跑腳本、編譯、執行測試、開啟其他應用程式」這類單一指令。command可以是完整的一整行指令（含參數），也可以只給執行檔名稱、參數另外放args陣列（兩種都支援）。這是風險最高的工具：整體功能預設關閉，需要使用者自己在Advance設定的「桌面版設定」分頁勾選「允許AI執行程式」才能呼叫；預設每次呼叫都會跳出原生確認對話框，顯示完整指令與工作目錄，由使用者當場按「執行」才會真的跑。執行前務必先用自然語言跟使用者確認清楚要跑的指令、參數、預期效果，不要自作主張執行任何有破壞性或不可逆的指令（刪除檔案、格式化、部署到正式環境、對外發送資料等）——這類操作應該建議使用者自己手動執行，而不是透過這個工具代勞。參數: {"command":"ls -la /some/path"} 或 {"command":"node","args":["script.js"],"cwd_abs":"/home/user/project"}`,
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
@@ -441,6 +441,7 @@ function patchCloudflareWording(root) {
           command,
           args: Array.isArray(parsed.args) ? parsed.args.map(String) : [],
           cwdRel: parsed.cwd || ".",
+          cwdAbs: parsed.cwd_abs || null,
         });
         return JSON.stringify(result);
       } catch (err) {
@@ -450,10 +451,11 @@ function patchCloudflareWording(root) {
     {
       type: "object",
       properties: {
-        command: { type: "string", description: "要執行的程式名稱或路徑" },
-        args: { type: "array", items: { type: "string" }, description: "命令列參數陣列（不要拼成一整串字串，每個參數要獨立成陣列元素，不會經過shell解析）" },
-        root_ref: { type: "string", description: "選填，格式fap:<名稱或id>，指定工作目錄要在哪個已授權資料夾底下；留空則用使用者家目錄" },
+        command: { type: "string", description: "要執行的完整指令行（可含參數/管線/重導向等shell語法），或只給執行檔名稱（參數另外放args）" },
+        args: { type: "array", items: { type: "string" }, description: "選填，命令列參數陣列（跟command分開給時用；會自動加上正確的shell引號後接在command後面）" },
+        root_ref: { type: "string", description: "選填，格式fap:<名稱或id>，指定工作目錄要在哪個已授權資料夾底下；跟cwd_abs擇一使用，都留空則用使用者家目錄" },
         cwd: { type: "string", description: "選填，相對於root_ref資料夾的子路徑，當作實際工作目錄" },
+        cwd_abs: { type: "string", description: "選填，直接指定工作目錄的絕對路徑，不受任何root範圍限制（跟fs_*系列同樣的無限制精神）；有給的話優先於root_ref/cwd" },
       },
       required: ["command"],
       additionalProperties: false,
@@ -575,18 +577,87 @@ function patchCloudflareWording(root) {
     fsToolSchema({ recursive: { type: "boolean", description: "刪除的是非空資料夾時要傳true，否則會失敗" } })
   );
 
+  // tw_stock_db客製: 2026-09-15使用者明確要求「執行指令也要有有bash, tmux
+  // 的能力」——run_command每次呼叫都是獨立、跑完就結束的子行程，沒辦法讓
+  // 一個長時間執行/互動式程式（開發伺服器、REPL等）跨越多次工具呼叫維持
+  // 狀態。tmux讓AI可以開一個具名session、之後分好幾次送鍵入/讀畫面，模擬
+  // 真人打開一個終端機視窗持續操作。POSIX限定（main.js的
+  // requireTmuxAvailable），Windows上呼叫會得到明確的「這個平台不支援」
+  // 錯誤，不是靜默失敗。
+  const tmuxToolBase = { type: "object", properties: { name: { type: "string", description: "tmux session名稱（自己取一個好記的，例如dev-server）" } }, required: ["name"], additionalProperties: false };
+  fa.register_openai_tool(
+    "tmux_start_session",
+    "開一個新的tmux具名session（背景執行，不會卡住對話），可選擇性在session裡直接跑一個初始指令（例如啟動一個開發伺服器）。之後用tmux_send_keys送指令進去、tmux_capture_pane讀畫面內容。跟run_command一樣需要「允許AI執行程式」已開啟，且預設會跳確認視窗。參數: {\"name\":\"dev-server\",\"command\":\"npm run dev\",\"cwd\":\"/home/user/project\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.tmux.start(parsed.name, parsed.command, parsed.cwd);
+        return JSON.stringify(r);
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    { ...tmuxToolBase, properties: { ...tmuxToolBase.properties, command: { type: "string", description: "選填，session建立後立刻執行的初始指令" }, cwd: { type: "string", description: "選填，session的工作目錄絕對路徑，留空則用使用者家目錄" } } }
+  );
+  fa.register_openai_tool(
+    "tmux_send_keys",
+    "把一段按鍵/指令送進一個已經存在的tmux session（模擬在終端機裡打字+按Enter）。跟run_command一樣需要確認。參數: {\"name\":\"dev-server\",\"keys\":\"ls -la\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.tmux.sendKeys(parsed.name, parsed.keys, parsed.enter !== false);
+        return JSON.stringify(r);
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    { ...tmuxToolBase, properties: { ...tmuxToolBase.properties, keys: { type: "string", description: "要送進去的按鍵/指令內容" }, enter: { type: "boolean", description: "選填，送出後是否自動按Enter，預設true" } }, required: ["name", "keys"] }
+  );
+  fa.register_openai_tool(
+    "tmux_capture_pane",
+    "讀取一個tmux session目前畫面上的文字內容（純讀取，不會執行/改變任何東西，不需要確認視窗）。參數: {\"name\":\"dev-server\",\"lines\":200}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.tmux.capture(parsed.name, parsed.lines);
+        return JSON.stringify(r);
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    { ...tmuxToolBase, properties: { ...tmuxToolBase.properties, lines: { type: "number", description: "選填，往回讀取的行數（含scrollback），預設只讀目前畫面" } } }
+  );
+  fa.register_openai_tool(
+    "tmux_list_sessions",
+    "列出目前所有tmux session名稱（純讀取，不需要確認視窗）。無參數。",
+    async () => {
+      try { return JSON.stringify(await window.desktopAPI.tmux.list()); }
+      catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    { type: "object", properties: {}, additionalProperties: false }
+  );
+  fa.register_openai_tool(
+    "tmux_kill_session",
+    "結束並移除一個tmux session（裡面還在跑的程式會一併被終止）。跟run_command一樣需要確認。參數: {\"name\":\"dev-server\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try { return JSON.stringify(await window.desktopAPI.tmux.kill(parsed.name)); }
+      catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    tmuxToolBase
+  );
+
   const platformLabel = window.desktopAPI.platform.isWindows ? "Windows" : (window.desktopAPI.platform.isMac ? "macOS" : "Linux");
   fa.register_domain("desktop_ops", {
     enabled: true,
     label: "本機直接檔案存取與程式執行（桌面版限定）",
     toolNames: [
       "run_command",
+      "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
       "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
     systemPrompt:
-      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command可以執行真正的本機程式/指令，這個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」這個工具才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
+      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
   });
 
   // ---- 頂部列：執行程式開關 ----
