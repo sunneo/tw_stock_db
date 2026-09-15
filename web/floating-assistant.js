@@ -3095,6 +3095,18 @@ class FloatingAssistant {
             // 都可能吃不消，見worker.js的checkAndIncrementRateLimit），使用者
             // 可以在設定面板調整，_getBatchConcurrency()會夾在1~8之間。
             batchConcurrency: 4,
+            // tw_stock_db客製: 2026-09-15使用者實測回報——併發數只控制「同時
+            // 有幾個子任務在跑」，不等於「每分鐘打出去幾個請求」：一個batch
+            // 開始時，N個worker幾乎同時發出各自第一個請求，就算N不大也可能
+            // 瞬間超過端點的requests-per-minute限制（使用者實測的兩個真實
+            // 例子：NVIDIA端點約40 req/min，OpenRouter免費額度只有20 req/min
+            // 、50 req/day，後者batch隨便跑幾項就會整個爆掉）。0＝不限制
+            // （沿用之前的行為，預設不變），>0時_acquireBatchRateSlot()會用
+            // 滑動視窗把「這一分鐘內已經開始的batch項目數」夾在這個數字以下，
+            // 超過就讓後面的worker排隊等，而不是全部一次噴出去再靠429重試
+            // 收拾——兩者是互補關係：這個設定盡量避免一開始就撞牆，
+            // SUBAGENT_RATE_LIMIT_*那套retry/backoff是撞牆之後的最後防線。
+            batchRequestsPerMinute: 0,
             // tw_stock_db客製: AI助理產生檔案（PDF/PPTX/Markdown）的持久化LRU
             // 快取容量上限，見 FileCache/generateAndDeliverFile()。超過上限
             // 時自動刪掉最久沒被存取的檔案，使用者可在Advanced Settings調整。
@@ -3535,6 +3547,7 @@ class FloatingAssistant {
             : {};
         const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
         const batchConcurrencyNum = Number(raw.batchConcurrency);
+        const batchRequestsPerMinuteNum = Number(raw.batchRequestsPerMinute);
         const fileCacheLimitMBNum = Number(raw.fileCacheLimitMB);
         const llmModelRows = this._normalizeModelRows(raw.llmModelRows);
         return {
@@ -3546,6 +3559,10 @@ class FloatingAssistant {
             generation: this._normalizeGenerationSettings(raw.generation),
             llmModelRows,
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
+            // 0＝不限制（預設，向下相容既有行為），>0才夾住（不設上限——使用者
+            // 端點的實際rpm上限差異很大，例如免費OpenRouter只有20，交給使用者
+            // 自己依端點填合理值，不像batchConcurrency那樣需要防炸而夾在8）。
+            batchRequestsPerMinute: Number.isFinite(batchRequestsPerMinuteNum) && batchRequestsPerMinuteNum > 0 ? Math.round(batchRequestsPerMinuteNum) : 0,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
             showInternalTrace: raw.showInternalTrace === true,
@@ -3611,6 +3628,31 @@ class FloatingAssistant {
     _getBatchConcurrency() {
         const n = Number(this.advancedSettings.batchConcurrency);
         return Number.isFinite(n) && n > 0 ? Math.min(8, Math.round(n)) : 4;
+    }
+
+    // tw_stock_db客製: 見batchRequestsPerMinute設定項的說明——用滑動視窗
+    // （不是固定分鐘桶，比較不會在分鐘邊界一次放行一整批）把runBatchSubAgents
+    // 的worker「開始處理下一項」這個動作節流在設定的requests-per-minute
+    // 以下。0（未設定）時直接return，完全不影響既有行為/效能。
+    // this._batchRateTimestamps是instance-level的共用狀態（同一個batch的
+    // 所有worker共用同一份時間戳記清單），刻意不用per-worker獨立節流，
+    // 因為使用者要限制的是「這個端點整體」的請求速率，不是「每個worker各自」
+    // 的速率。
+    async _acquireBatchRateSlot() {
+        const limit = Number(this.advancedSettings.batchRequestsPerMinute) || 0;
+        if (limit <= 0) return;
+        if (!this._batchRateTimestamps) this._batchRateTimestamps = [];
+        for (;;) {
+            const now = Date.now();
+            this._batchRateTimestamps = this._batchRateTimestamps.filter(t => now - t < 60000);
+            if (this._batchRateTimestamps.length < limit) {
+                this._batchRateTimestamps.push(now);
+                return;
+            }
+            const oldest = this._batchRateTimestamps[0];
+            const waitMs = Math.max(50, 60000 - (now - oldest) + 50);
+            await new Promise(r => setTimeout(r, waitMs));
+        }
     }
 
     _loadAdvancedSettings() {
@@ -9445,6 +9487,8 @@ ${sourceTool.handlerScript}
         if (perfFileCacheMbInput) perfFileCacheMbInput.value = this.advancedSettings.fileCacheLimitMB;
         const perfBatchConcurrencyInput = document.getElementById('ai-perf-batch-concurrency');
         if (perfBatchConcurrencyInput) perfBatchConcurrencyInput.value = this.advancedSettings.batchConcurrency;
+        const perfBatchRpmInput = document.getElementById('ai-perf-batch-rpm');
+        if (perfBatchRpmInput) perfBatchRpmInput.value = this.advancedSettings.batchRequestsPerMinute || '';
         const perfMaxMeshTrianglesInput = document.getElementById('ai-perf-max-mesh-triangles');
         if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
         const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
@@ -17130,6 +17174,11 @@ ${existingNodeSummaries}
             while (nextIdx < list.length) {
                 const myIdx = nextIdx++;
                 const item = list[myIdx];
+                // 見_acquireBatchRateSlot()的說明——只在使用者設定了
+                // batchRequestsPerMinute（>0）時才會真的等待，預設完全不影響
+                // 既有行為/效能。故意放在「拿到myIdx之後、真正開始跑子任務
+                // 之前」，讓等待中的worker不會卡住其他worker去搶下一個index。
+                await this._acquireBatchRateSlot();
                 const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
@@ -17572,7 +17621,12 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-batch-concurrency">批次併發數</label>
                                     <input type="number" id="ai-perf-batch-concurrency" class="ai-advanced-input" min="1" max="20">
-                                    <p class="ai-advanced-hint">批次工具呼叫（例如一次分析多檔股票）同時進行的併發數量，太大可能一次炸出過多併發請求。</p>
+                                    <p class="ai-advanced-hint">批次工具呼叫（例如一次分析多檔股票、或桌面版的batch_process_items）同時進行的併發數量，太大可能一次炸出過多併發請求。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-batch-rpm">批次每分鐘請求數上限</label>
+                                    <input type="number" id="ai-perf-batch-rpm" class="ai-advanced-input" min="0" max="1000">
+                                    <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
@@ -19350,6 +19404,16 @@ ${existingNodeSummaries}
             perfBatchConcurrencyInput.addEventListener('input', () => {
                 const n = Number(perfBatchConcurrencyInput.value);
                 if (Number.isFinite(n) && n > 0) this.advancedSettings.batchConcurrency = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        const perfBatchRpmInput = document.getElementById('ai-perf-batch-rpm');
+        if (perfBatchRpmInput) {
+            perfBatchRpmInput.addEventListener('input', () => {
+                // 0/留空＝不限制，是使用者刻意要的預設值（向下相容），跟
+                // maxImportedMeshTriangles同一種「n>=0才接受」判斷方式。
+                const n = Number(perfBatchRpmInput.value);
+                if (Number.isFinite(n) && n >= 0) this.advancedSettings.batchRequestsPerMinute = Math.round(n);
                 this._saveAdvancedSettings();
             });
         }
