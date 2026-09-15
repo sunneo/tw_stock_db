@@ -16474,44 +16474,77 @@ ${existingNodeSummaries}
     // 解析出來的物件，呼叫端自己決定要讀哪些欄位（domains/categories）。
     async _callRouterLLM(routerSystemPrompt, userText) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
-        let response;
-        try {
-            response = await fetch(`${apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: apiModel,
-                    messages: [
-                        { role: 'system', content: routerSystemPrompt },
-                        { role: 'user', content: userText },
-                    ],
-                    temperature: 0,
-                    // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
-                    // 夾一個很小的max_tokens上限（不跟主對話共用
-                    // _getGenerationSettings().maxOutputTokens，那是給正常
-                    // 回覆用的，通常設定得比這裡需要的大很多），避免模型
-                    // 意外跑出一大段文字浪費時間/費用。
-                    max_tokens: 200,
-                    stream: false,
-                }),
-            });
-        } catch (err) {
-            return { ok: false, error: `路由子任務網路錯誤: ${err.message}` };
-        }
-        if (!response.ok) {
-            const errText = await response.text().catch(() => '');
-            return { ok: false, error: `路由子任務API錯誤(${response.status}): ${errText.slice(0, 300)}` };
-        }
-        let data;
-        try { data = await response.json(); } catch (err) {
-            return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
-        }
-        const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-        try {
-            const parsed = await this.repairJsonPayload(rawText);
-            return { ok: true, parsed };
-        } catch (err) {
-            return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
+        // tw_stock_db客製: 2026-09-15使用者用/benchmark-model實測回報——這個
+        // 路由呼叫完全沒有重試，端點暫時性錯誤（500/502/503這類過載/抖動，或
+        // 429 rate limit）一撞到就直接整個委派失敗，回報「路由子任務API錯誤
+        // (503): ...」給使用者，即使只要重試一次往往就會成功。
+        // _runSubAgentTask（Layer 2執行子agent）早就有這一套重試機制（一般
+        // 5xx/網路例外走SUBAGENT_TRANSIENT_RETRY_LIMIT，429走更寬鬆的
+        // SUBAGENT_RATE_LIMIT_*，見那邊的說明），但Layer 1路由（這個函式）
+        // 從一開始就是獨立的單次fetch、沒有共用到那套邏輯——這裡補上同一組
+        // 重試常數/退避策略，兩層委派現在都有一致的容錯能力。
+        let transientRetryCount = 0;
+        for (;;) {
+            let response;
+            let networkError = null;
+            try {
+                response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: [
+                            { role: 'system', content: routerSystemPrompt },
+                            { role: 'user', content: userText },
+                        ],
+                        temperature: 0,
+                        // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
+                        // 夾一個很小的max_tokens上限（不跟主對話共用
+                        // _getGenerationSettings().maxOutputTokens，那是給正常
+                        // 回覆用的，通常設定得比這裡需要的大很多），避免模型
+                        // 意外跑出一大段文字浪費時間/費用。
+                        max_tokens: 200,
+                        stream: false,
+                    }),
+                });
+            } catch (err) {
+                networkError = err;
+            }
+            const isRateLimited = !!(response && response.status === 429);
+            const isServerTransient = !!networkError || (response && response.status >= 500) || isRateLimited;
+            if (isServerTransient) {
+                const retryLimit = isRateLimited ? SUBAGENT_RATE_LIMIT_RETRY_LIMIT : SUBAGENT_TRANSIENT_RETRY_LIMIT;
+                if (transientRetryCount < retryLimit) {
+                    transientRetryCount++;
+                    let delayMs = SUBAGENT_TRANSIENT_RETRY_DELAY_MS;
+                    if (isRateLimited) {
+                        const retryAfterHeader = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null;
+                        const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+                        delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+                            ? retryAfterSec * 1000
+                            : Math.min(SUBAGENT_RATE_LIMIT_MAX_DELAY_MS, SUBAGENT_RATE_LIMIT_BASE_DELAY_MS * transientRetryCount) + Math.round(Math.random() * 500);
+                    }
+                    await new Promise(r => setTimeout(r, delayMs));
+                    continue;
+                }
+                const statusLabel = networkError ? `網路錯誤: ${networkError.message}` : `HTTP ${response.status}`;
+                return { ok: false, error: `路由子任務API錯誤(${statusLabel})（已重試${transientRetryCount}次仍失敗）` };
+            }
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                return { ok: false, error: `路由子任務API錯誤(${response.status}): ${errText.slice(0, 300)}` };
+            }
+            let data;
+            try { data = await response.json(); } catch (err) {
+                return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
+            }
+            const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+            try {
+                const parsed = await this.repairJsonPayload(rawText);
+                return { ok: true, parsed };
+            } catch (err) {
+                return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
+            }
         }
     }
 
