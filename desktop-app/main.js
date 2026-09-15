@@ -42,6 +42,36 @@ const SETTINGS_FILE = () => path.join(USER_DATA_DIR(), "desktop-settings.json");
 // 存成JSON（不要.env），格式：{"NVAPI_KEY":"...","OPENROUTER_API_KEY":"..."}。
 const SECRETS_FILE = () => path.join(USER_DATA_DIR(), "secrets.json");
 
+// tw_stock_db客製: 2026-09-15使用者要求——新使用者第一次打開app時如果完全
+// 沒設定過金鑰，體驗很差（要先知道NVAPI_KEY是什麼、去哪申請）。使用者
+// 明確要求做法要跟Cloudflare Worker（tw_stock_db_code私有repo的
+// code/cloudflare-worker/worker.js）「多人共用一把雲端金鑰」同一種精神：
+// 內建一把預設/免費額度的key，讓沒設定過的人也能直接用，使用者自己在
+// Advance Settings填的key（存進SECRETS_FILE()）永遠優先覆蓋。
+//
+// 跟Worker那個情境的關鍵差異：Worker的金鑰只活在Cloudflare伺服器端環境，
+// 瀏覽器端永遠看不到；這支main.js整支原始碼會被electron-builder打包進
+// 使用者實際下載的app（asar可以被解開，Node/Electron本身讀asar內容也是
+// 完全透明的），所以**任何寫死在這支檔案裡的字面字串金鑰，等於是公開給
+// 每一個拿到這個app的人**——不能比照「金鑰只在私有repo/伺服器端」的
+// 安全假設。使用者明確要求金鑰不要寫死在原始碼裡、改成建置時從環境變數
+// 注入：build.sh/build.ps1會在打包前，把建置機器上的
+// FA_BUILTIN_NVAPI_KEY/FA_BUILTIN_OPENROUTER_KEY（例如從CI secrets、或
+// 建置者自己shell的環境變數）寫進這個JSON檔、一起打包進app——金鑰的
+// 實際值全程不進git history、也不出現在這支.js原始碼裡，只活在建置當下
+// 的環境變數跟最終打包出去的app資源檔裡。即使如此，這把key本質上還是
+// 「隨app一起公開發布」，只適合掛一把刻意低額度/免費層級、算被公開洩漏
+// 也能接受的key，不要用綁真實付費帳號的金鑰（見README.md的說明）。
+// 找不到這個檔案（開發模式/沒設定過建置環境變數）時視同沒有內建金鑰，
+// 不影響既有行為——使用者一樣要自己填Advance Settings或secrets.json。
+const BUILTIN_SECRETS_FILE = path.join(__dirname, "builtin-secrets.json");
+let builtinSecretsCache = null;
+async function getBuiltinSecrets() {
+  if (builtinSecretsCache) return builtinSecretsCache;
+  builtinSecretsCache = await readJsonSafe(BUILTIN_SECRETS_FILE, {});
+  return builtinSecretsCache;
+}
+
 let mainWindow = null;
 let localProxyPort = null;
 
@@ -72,16 +102,20 @@ async function saveDesktopSettings(settings) {
   await writeJsonSafe(SETTINGS_FILE(), settings);
 }
 
-// 環境變數優先（給想用CI/系統層級設定的使用者），檔案是主要途徑（使用者
-// 要求的「server configure」，人可以直接編輯這個JSON檔）。回傳的物件只
-// 在主行程內部使用——絕對不要整個回傳給renderer，IPC只回報「有沒有設定」
-// 的布林值（見下面fa:secrets:status），真正的金鑰值只有local-proxy.js
-// 組請求header時才會讀取。
+// 優先順序：環境變數（給想用CI/系統層級設定的使用者）> SECRETS_FILE()
+// （使用者要求的「server configure」，人可以直接編輯這個JSON檔，也是
+// 🔑設定API金鑰對話框實際寫入的地方）> BUILTIN_SECRETS_FILE（見上面
+// getBuiltinSecrets()的說明，打包時才產生的內建預設/免費額度金鑰，使用者
+// 自己設定過的值永遠覆蓋它）。回傳的物件只在主行程內部使用——絕對不要
+// 整個回傳給renderer，IPC只回報「有沒有設定」的布林值（見下面
+// fa:secrets:status），真正的金鑰值只有local-proxy.js組請求header時才會
+// 讀取。
 async function getSecrets() {
   const fromFile = await readJsonSafe(SECRETS_FILE(), {});
+  const builtin = await getBuiltinSecrets();
   return {
-    NVAPI_KEY: process.env.NVAPI_KEY || fromFile.NVAPI_KEY || "",
-    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || fromFile.OPENROUTER_API_KEY || "",
+    NVAPI_KEY: process.env.NVAPI_KEY || fromFile.NVAPI_KEY || builtin.NVAPI_KEY || "",
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || fromFile.OPENROUTER_API_KEY || builtin.OPENROUTER_API_KEY || "",
   };
 }
 async function saveSecrets(patch) {
@@ -1365,9 +1399,143 @@ function createWindow() {
       }, 1500);
     });
   }
+
+  // tw_stock_db客製: 2026-09-15使用者實測回報兩個UI問題——(1)「設定API
+  // 金鑰」對話框在Advance設定打開時點了要先關掉Advance設定才看得到（見
+  // bootstrap.js showSecretsDialog的說明：z-index比.ai-advanced-overlay低，
+  // 疊在下面），(2)桌面版完全沒有主題切換入口、Advance設定畫面本身也是
+  // 寫死深色不隨主題變化。這裡同一種手法驗證修好之後的結果：真的在
+  // Advance設定開著的狀態下點出secrets對話框，用elementFromPoint確認
+  // 它的按鈕真的在最上層點得到（不是只檢查z-index數值，數值對但DOM
+  // 結構/overflow設錯一樣點不到）；切換主題後確認<html data-theme>跟著
+  // 變、且Advance設定對話框本身的computed background-color真的换了色
+  // （不是只換了聊天面板，那樣就不算「cover到configure畫面本身」）。
+  if (process.env.FA_DEBUG_UI_FIXES_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+
+              // ---- 情境一：Advance設定開著時，secrets對話框要疊在最上層、
+              // 真的點得到（不是只靠z-index數字看起來對）。----
+              window.fa._openAdvancedModal();
+              document.querySelector('#ai-advanced-modal .ai-advanced-cat[data-cat="desktop-app"]').click();
+              document.getElementById('topbar-secrets-btn').click();
+              await new Promise(r => setTimeout(r, 100));
+              const saveBtn = document.getElementById('secrets-dlg-save');
+              out.secretsDialogRendered = !!saveBtn;
+              if (saveBtn) {
+                const rect = saveBtn.getBoundingClientRect();
+                const topElement = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                out.secretsSaveBtnIsClickable = topElement === saveBtn || saveBtn.contains(topElement);
+                document.getElementById('secrets-dlg-cancel').click();
+              }
+              window.fa._closeAdvancedModal();
+
+              // ---- 情境二：主題切換要在主畫面（topbar）就有入口，且要真的
+              // cover到Advance設定本身（不是只換聊天面板）。----
+              const themeBtn = document.getElementById('topbar-theme-toggle');
+              out.themeToggleExistsOnMainScreen = !!themeBtn;
+              const before = document.documentElement.getAttribute('data-theme');
+              themeBtn.click();
+              const after = document.documentElement.getAttribute('data-theme');
+              out.themeAttributeToggled = before !== after;
+              out.themeAfterToggle = after;
+              window.fa._openAdvancedModal();
+              const dialogBg = getComputedStyle(document.querySelector('.ai-advanced-dialog')).backgroundColor;
+              const labelColor = getComputedStyle(document.querySelector('.ai-advanced-label')).color;
+              window.fa._closeAdvancedModal();
+              themeBtn.click(); // 切回去，恢復原本狀態
+              window.fa._openAdvancedModal();
+              const dialogBgOther = getComputedStyle(document.querySelector('.ai-advanced-dialog')).backgroundColor;
+              window.fa._closeAdvancedModal();
+              out.advancedDialogBgFollowsTheme = dialogBg !== dialogBgOther;
+              out.advancedDialogBgWhenAfterTheme = dialogBg;
+              out.advancedDialogBgWhenBeforeTheme = dialogBgOther;
+              out.labelColorSample = labelColor;
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[ui-fixes-test] result:\n" + result);
+        } catch (err) {
+          console.log("[ui-fixes-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+
+  // tw_stock_db客製: 2026-09-15使用者要求——把PDF讀取能力加進共用的
+  // floating-assistant.js（parse_uploaded_file/summarize_large_text，見
+  // _extractPdfPageTexts/_ensurePdfJsLoaded）。這裡用兩份手刻、byte-accurate
+  // 的最小合法PDF（不依賴網路下載測試樣本檔，pdftotext已經在本機驗證過
+  // 兩份都是合法PDF、內容符合預期——見/tmp scratchpad的make_test_pdf.js）：
+  // 一份有真正文字層（"Hello PDF World Page One"），一份只有一個實心矩形、
+  // 完全沒有文字操作（模擬掃描/純圖片PDF），驗證兩條路徑都對——文字層
+  // 正確擷取，無文字層時回傳note而不是誤導成解析失敗。
+  if (process.env.FA_DEBUG_PDF_PARSE_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const TEXT_PDF_B64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMjAwXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTUgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiAyMCAxNTAgVGQgKEhlbGxvIFBERiBXb3JsZCBQYWdlIE9uZSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQxNgolJUVPRg==";
+              const BLANK_PDF_B64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMjAwXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMjUgPj4Kc3RyZWFtCjAgMCAwIHJnIDEwIDEwIDUwIDUwIHJlIGYKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM4NgolJUVPRg==";
+              const b64ToBlob = (b64, type) => {
+                const bin = atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                return new Blob([bytes], { type });
+              };
+              const out = {};
+
+              const textFileId = await window.fa.fileCache.put('hello.pdf', 'application/pdf', b64ToBlob(TEXT_PDF_B64, 'application/pdf'), 'uploaded');
+              const parseTool = window.fa._getToolDefinition('parse_uploaded_file');
+              const parseResult = JSON.parse(await parseTool.callback(JSON.stringify({ file_id: textFileId })));
+              out.textPdf_parseResult = parseResult;
+              out.textPdf_fullTextContainsExpected = !!(parseResult.fullText && parseResult.fullText.includes('Hello PDF World Page One'));
+              out.textPdf_pageCountCorrect = parseResult.pageCount === 1;
+
+              const textRecord = await window.fa.fileCache.get(textFileId);
+              const fullText = await window.fa._getFullTextFromUploadedFile(textRecord, null);
+              out.textPdf_getFullText_matches = fullText.includes('Hello PDF World Page One');
+
+              const blankFileId = await window.fa.fileCache.put('scanned.pdf', 'application/pdf', b64ToBlob(BLANK_PDF_B64, 'application/pdf'), 'uploaded');
+              const blankParseResult = JSON.parse(await parseTool.callback(JSON.stringify({ file_id: blankFileId })));
+              out.blankPdf_parseResult = blankParseResult;
+              out.blankPdf_hasScanNote = !!(blankParseResult.note && blankParseResult.note.includes('掃描'));
+              out.blankPdf_fullTextIsEmpty = !blankParseResult.fullText || blankParseResult.fullText.trim() === '';
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[pdf-parse-test] result:\n" + result);
+        } catch (err) {
+          console.log("[pdf-parse-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
+  // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
+  // > SECRETS_FILE() > BUILTIN_SECRETS_FILE），這是純main行程邏輯，不需要
+  // renderer/BrowserWindow，跟其餘FA_DEBUG_*測試（都要透過executeJavaScript
+  // 操作renderer）不同，直接在這裡呼叫getSecrets()三次、每次疊加一層更高
+  // 優先權的來源，確認每一步驟回傳的值符合預期的覆蓋順序。
+  if (process.env.FA_DEBUG_BUILTIN_SECRETS_TEST) {
+    const out = {};
+    out.step1_builtinOnly = await getSecrets();
+    await saveSecrets({ NVAPI_KEY: "user-set-key-123" });
+    out.step2_userSecretsFileOverridesBuiltin = await getSecrets();
+    process.env.NVAPI_KEY = "env-var-key-456";
+    out.step3_envVarOverridesEverything = await getSecrets();
+    delete process.env.NVAPI_KEY;
+    console.log("[builtin-secrets-test] result:\n" + JSON.stringify(out, null, 2));
+  }
   try {
     const { port } = await startLocalProxy({
       preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 47891,

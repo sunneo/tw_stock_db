@@ -143,11 +143,41 @@ target——雙擊直接跑，不用安裝、不會在系統裡留下安裝紀�
 跨平台編譯（例如在Linux上打包Windows版）electron-builder需要系統裝好
 `wine`，容易踩雷，建議直接在對應的作業系統上各自打包。
 
+### 內建金鑰（選填，給新使用者的免額度預設值）
+
+`main.js`的`getSecrets()`優先順序是：環境變數（執行時）>
+`secrets.json`（使用者透過🔑設定API金鑰對話框存的值）>
+**打包時內建的預設金鑰**。這個優先順序保證使用者自己填過的金鑰永遠有效，
+內建金鑰只在完全沒設定過的情況下當作退路，讓全新使用者不用先申請/填自己
+的金鑰就能直接試用。
+
+要內建金鑰，打包**之前**在建置機器的shell設定：
+
+```bash
+export FA_BUILTIN_NVAPI_KEY="你的預設/免額度NVAPI_KEY"
+export FA_BUILTIN_OPENROUTER_KEY="（選填）你的預設OPENROUTER_API_KEY"
+./build.sh   # 或 Windows 上先 $env:FA_BUILTIN_NVAPI_KEY="..." 再 .\build.ps1
+```
+
+`build.sh`/`build.ps1`會在打包前把這兩個環境變數寫進`builtin-secrets.json`
+（`.gitignore`排除、不進版控），跟著這次打包結果一起輸出到`dist/`；沒設定
+這兩個環境變數時會寫出一份空物件，等同完全沒有這個機制，不影響既有行為。
+
+**⚠️ 這把金鑰本質上是公開的，不是真正的密鑰**：跟Cloudflare Worker「金鑰
+只活在伺服器端、瀏覽器永遠看不到」的模型完全不同，這裡的`main.js`會整支
+被`electron-builder`打包進使用者實際下載的`.exe`/`.AppImage`（`asar`可以
+被解開，Node/Electron讀asar內容本身也是完全透明的）——只要有人拿到打包
+出來的app，就等於拿到`builtin-secrets.json`裡的完整金鑰內容。**只適合
+掛一把刻意設定低額度/免費層級、就算被公開抽取也能接受的金鑰，絕對不要
+用綁定真實付費帳號或高額度配額的金鑰。**
+
 ## 已知限制（如實告知）
 
 - **本地proxy只解決CORS，不解決「目標API本身要不要收你的金鑰/請求」**——
-  使用者還是要在Advance Settings填自己真實有效的API金鑰/URL，這個app不
-  提供任何金鑰。
+  使用者還是要在Advance Settings填自己真實有效的API金鑰/URL；打包時如果
+  建置者有設定`FA_BUILTIN_NVAPI_KEY`/`FA_BUILTIN_OPENROUTER_KEY`（見下面
+  「內建金鑰」），沒填過自己金鑰的使用者會退回用那把內建金鑰，使用者自己
+  填的值永遠優先覆蓋。
 - **`run_command`沒有沙盒**——它就是真的在使用者帳號權限下執行程式，跟
   使用者自己開終端機打指令的風險等級一樣；預設的「每次確認」只是降低
   「AI自己想執行就執行」的機率，不是安全沙盒，使用者拒絕/關閉確認之後

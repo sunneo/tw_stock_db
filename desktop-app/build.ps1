@@ -21,6 +21,21 @@ Set-Location $PSScriptRoot
 Write-Host "== Syncing floating-assistant.js (canonical source: ..\web\floating-assistant.js) ==" -ForegroundColor Cyan
 Copy-Item -Path "..\web\floating-assistant.js" -Destination "renderer\floating-assistant.js" -Force
 
+# Bakes in a default/free-tier key so first-time users don't need to supply
+# their own before the app is usable; anything the user sets themselves
+# (Advance Settings / secrets.json) always overrides it (see main.js
+# getSecrets()). The key value is read only from this build machine's
+# environment (FA_BUILTIN_NVAPI_KEY / FA_BUILTIN_OPENROUTER_KEY, e.g. CI
+# secrets) - it is never hardcoded in source. If those env vars are unset,
+# this writes an empty object, which is a no-op (same behavior as before
+# this feature existed).
+Write-Host "== Generating builtin-secrets.json (from FA_BUILTIN_NVAPI_KEY / FA_BUILTIN_OPENROUTER_KEY) ==" -ForegroundColor Cyan
+$builtinSecrets = @{
+    NVAPI_KEY         = if ($env:FA_BUILTIN_NVAPI_KEY) { $env:FA_BUILTIN_NVAPI_KEY } else { "" }
+    OPENROUTER_API_KEY = if ($env:FA_BUILTIN_OPENROUTER_KEY) { $env:FA_BUILTIN_OPENROUTER_KEY } else { "" }
+}
+$builtinSecrets | ConvertTo-Json | Set-Content -Path "builtin-secrets.json" -Encoding utf8
+
 if (-not $SkipInstall) {
     Write-Host "== npm install ==" -ForegroundColor Cyan
     npm install
