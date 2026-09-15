@@ -3,5 +3,8 @@ dist/
 renderer/floating-assistant.js
 # tw_stock_db客製: 見build.sh/build.ps1的說明——打包時從建置機器的
 # FA_BUILTIN_NVAPI_KEY/FA_BUILTIN_OPENROUTER_KEY環境變數產生，故意不進
-# 版控（金鑰值只活在CI/建置者自己的shell環境，不進git history）。
+# 版控（金鑰值只活在CI/建置者自己的shell環境，不進git history）。也排除
+# 編輯器手動編輯這個檔案時可能自動產生的備份檔（例如某些編輯器的.bak/.orig
+# 慣例）——內容一樣是真實金鑰，同樣不該進版控。
 builtin-secrets.json
+builtin-secrets.json.*

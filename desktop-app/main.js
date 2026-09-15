@@ -1611,6 +1611,71 @@ function createWindow() {
       }, 1500);
     });
   }
+
+  // tw_stock_db客製: 2026-09-16使用者實測回報「Failed to fetch」連續失敗
+  // 10次——見bootstrap.js那段regex修法的說明：本地proxy隨機port化之後，
+  // 原本「只seed一次LLM_BASE_URL_KEY」的邏輯讓localStorage永遠卡住第一次
+  // 啟動時的port，之後每次app重開（proxy換新port）都在打一個沒有任何
+  // process監聽的舊port。這裡分兩階段驗證，靠同一個--user-data-dir跨兩次
+  // 真正的app啟動（見呼叫端bash腳本）：
+  //   PHASE1（FA_DEBUG_STALE_PORT_PHASE1）：讓bootstrap.js正常seed一次，
+  //     再故意把localStorage改寫成「看起來像我們自己seed過、但port錯誤」
+  //     的網址，模擬上一次啟動用的是不同（舊）port。
+  //   PHASE2（FA_DEBUG_STALE_PORT_PHASE2）：重新啟動（這次local-proxy會
+  //     綁到不同的隨機port），確認bootstrap.js真的把localStorage改寫成
+  //     「這一次」真正的port，而不是维持PHASE1故意寫入的錯誤值；另外驗證
+  //     使用者「自訂」網址（不符合我們自己seed格式）不會被覆寫。
+  if (process.env.FA_DEBUG_STALE_PORT_PHASE1) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              out.seededUrlAfterFreshStart = localStorage.getItem(window.fa.LLM_BASE_URL_KEY);
+              // 模擬「上一次啟動用的是不同的隨機port」——故意寫一個格式對、
+              // 但port號碼刻意錯誤的值。
+              localStorage.setItem(window.fa.LLM_BASE_URL_KEY, 'http://127.0.0.1:1/nvidia');
+              out.staleUrlInjected = localStorage.getItem(window.fa.LLM_BASE_URL_KEY);
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[stale-port-phase1] result:\n" + result);
+        } catch (err) {
+          console.log("[stale-port-phase1] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+  if (process.env.FA_DEBUG_STALE_PORT_PHASE2) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              out.urlAfterSecondStart = localStorage.getItem(window.fa.LLM_BASE_URL_KEY);
+              out.actualCurrentProxyPort = await window.desktopAPI.config.getLocalProxyPort();
+              out.urlPortMatchesCurrentProxyPort = out.urlAfterSecondStart === ('http://127.0.0.1:' + out.actualCurrentProxyPort + '/nvidia');
+
+              // 驗證使用者自訂網址不會被覆寫。
+              localStorage.setItem(window.fa.LLM_BASE_URL_KEY, 'https://my-own-custom-endpoint.example.com/v1');
+              // 重新走一次跟bootstrap.js一樣的判斷邏輯（不重開app，直接呼叫
+              // 同一段判斷式驗證邏輯本身，因為重開一次app太重）。
+              const currentApiUrl = localStorage.getItem(window.fa.LLM_BASE_URL_KEY);
+              const looksLikeOurOwnSeededProxyUrl = !currentApiUrl || /^https?:\\/\\/127\\.0\\.0\\.1:\\d+\\/nvidia$/.test(currentApiUrl);
+              out.customUrlWouldBeOverwritten = looksLikeOurOwnSeededProxyUrl;
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[stale-port-phase2] result:\n" + result);
+        } catch (err) {
+          console.log("[stale-port-phase2] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
