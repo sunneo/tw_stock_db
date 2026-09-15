@@ -1214,12 +1214,45 @@ const SUBAGENT_DELEGATE_MAX_ROUNDS = 20;
 const SUBAGENT_TRANSIENT_RETRY_LIMIT = 2;
 const SUBAGENT_TRANSIENT_RETRY_DELAY_MS = 800;
 
+// tw_stock_db客製: 2026-09-15使用者實測回報——新增的batch_process_items
+// （map-reduce式平行處理多個檔案，見那個工具的說明）一開平行度就很容易
+// 撞到HTTP 429（端點的rate limit，不是伺服器真的壞掉），但上面的
+// isServerTransient判斷只認>=500，429完全沒被當成「值得重試」的暫時性
+// 錯誤，導致20個檔案的批次裡，只要有幾個worker剛好撞在同一個時間窗口，
+// 就會直接失敗回報「[子任務失敗: HTTP 429]」，即使絕大多數同批次的其他
+// 檔案都成功了。429本質上就是「現在太密集，等一下再打」，比一般伺服器
+// 錯誤更值得重試（不是端點壞掉，只是需要放慢），這裡給429獨立、更寬鬆的
+// 重試次數與遞增等待時間（+隨機jitter避免同一批worker在退避後又同時撞在
+// 一起），並且優先信任端點回傳的Retry-After header（如果有的話）。
+const SUBAGENT_RATE_LIMIT_RETRY_LIMIT = 5;
+const SUBAGENT_RATE_LIMIT_BASE_DELAY_MS = 2000;
+const SUBAGENT_RATE_LIMIT_MAX_DELAY_MS = 15000;
+
 // tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半發現需要一個原本
 // 沒拿到的domain工具時，可以呼叫request_additional_tools「原地」申請追加
 // （見_runSubAgentTask），不用跳出去重新委派一次。每次申請都要多一次路由
 // 網路往返，這裡設一個保守上限防止單次子任務無限申請、失控燒費用——超過
 // 上限後子agent會被要求直接用現有工具給出最佳結果，不是無限重試。
 const SUBAGENT_MAX_TOOL_ESCALATIONS = 3;
+
+// tw_stock_db客製: 2026-09-15使用者回報——桌面版委派給desktop_ops domain
+// 處理「解析資料夾裡面每個內容」這類需要很多輪工具呼叫的大任務時，偶爾會
+// 整個子任務只印出一段思考過程（或一個殘缺片段）就結束，明明前面好幾輪
+// 工具呼叫都成功、資料都拿到了。追查後發現：_runSubAgentTask完全沒有
+// AI_REASONING_DEADEND_PROMPT這套「偵測到這一輪模型只輸出了思考過程、
+// 沒有真正內容也沒有工具呼叫時，自動請它重講一次」的復原機制——那套機制
+// 目前只存在於主對話迴圈(_loopFetch/_loopFetchNative)，_runSubAgentTask
+// 是後來才加的第二條獨立迴圈，這個防護網從一開始就沒有被搬過去。結果是：
+// 主對話遇到推理模型（例如nvidia/nemotron-3-super-120b-a12b）偶爾把整段
+// 思考塞進reasoning_content、content留空的狀況，會自動重試撐過去；但同一個
+// 現象發生在被委派的子任務（delegate_to_subagent／batch_analyze_stocks
+// 底層都是_runSubAgentTask）身上，會被當成「這輪沒有工具呼叫」直接落到
+// 「已經是最終答案」的分支，把空字串／殘缺內容當成子任務的最終結論回傳、
+// 直接結束——任務越長（越多輪工具呼叫），撞到這一輪的機率越高，且沒有任何
+// 重試機會，一次就整個子任務作廢，跟main loop「這只是眾多輪次裡的一輪、
+// 撐過去就好」的容錯完全不對稱。這個常數是子任務版本的重試上限，量級比照
+// SUBAGENT_MAX_TOOL_ESCALATIONS。
+const SUBAGENT_MAX_REASONING_DEADEND_RETRIES = 3;
 
 // tw_stock_db客製: 共用的「安全表達式」白名單函式表——階段3自訂粒子preset
 // 的init/update/output公式、階段5互動viewer的visible_if/enabled_if都用
@@ -1667,7 +1700,16 @@ const DEFAULT_CHAT_TEMPERATURE = 0.1;
 // 每個model row除了apiUrl/apiKey/modelName（字串），其餘都是「留空(null)＝
 // 不覆寫、沿用全域生成設定」的數值型欄位，統一在這裡列出，_normalizeModelRow/
 // UI渲染/儲存都共用同一份清單，不用四處重複打欄位名稱。
-const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens'];
+// tw_stock_db客製: 2026-09-15使用者要求——批次每分鐘請求數上限要能「逐一
+// 設定」（每個model row/端點各自的rate limit不同，例如使用者實測的NVIDIA
+// 端點約40、OpenRouter免費額度只有20），不能只有單一全域數字。
+// requestsPerMinute沿用這裡既有的null-semantics（留空＝null＝不覆寫，
+// 沿用advancedSettings.batchRequestsPerMinute那個全域設定；使用者明確
+// 打了一個數字，包含0，才是「這個row自己的覆寫值」，0在這裡的意思是
+// 「這個row明確設定成不限制」，跟全域設定的0/留空=不限制是同一套語意，
+// 見_acquireBatchRateSlot()的說明），完全重用MODEL_ROW_NUMERIC_FIELDS
+// 既有的UI/儲存/正規化管線，不用另外刻一套。
+const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens', 'requestsPerMinute'];
 
 // tw_stock_db客製: 2026-09-15——File Access Point（fap_find_file）遞迴搜尋的
 // 安全上限，避免使用者授權了一個極大的資料夾（例如整個使用者家目錄）時
@@ -3062,6 +3104,18 @@ class FloatingAssistant {
             // 都可能吃不消，見worker.js的checkAndIncrementRateLimit），使用者
             // 可以在設定面板調整，_getBatchConcurrency()會夾在1~8之間。
             batchConcurrency: 4,
+            // tw_stock_db客製: 2026-09-15使用者實測回報——併發數只控制「同時
+            // 有幾個子任務在跑」，不等於「每分鐘打出去幾個請求」：一個batch
+            // 開始時，N個worker幾乎同時發出各自第一個請求，就算N不大也可能
+            // 瞬間超過端點的requests-per-minute限制（使用者實測的兩個真實
+            // 例子：NVIDIA端點約40 req/min，OpenRouter免費額度只有20 req/min
+            // 、50 req/day，後者batch隨便跑幾項就會整個爆掉）。0＝不限制
+            // （沿用之前的行為，預設不變），>0時_acquireBatchRateSlot()會用
+            // 滑動視窗把「這一分鐘內已經開始的batch項目數」夾在這個數字以下，
+            // 超過就讓後面的worker排隊等，而不是全部一次噴出去再靠429重試
+            // 收拾——兩者是互補關係：這個設定盡量避免一開始就撞牆，
+            // SUBAGENT_RATE_LIMIT_*那套retry/backoff是撞牆之後的最後防線。
+            batchRequestsPerMinute: 0,
             // tw_stock_db客製: AI助理產生檔案（PDF/PPTX/Markdown）的持久化LRU
             // 快取容量上限，見 FileCache/generateAndDeliverFile()。超過上限
             // 時自動刪掉最久沒被存取的檔案，使用者可在Advanced Settings調整。
@@ -3502,6 +3556,7 @@ class FloatingAssistant {
             : {};
         const toolCallMode = ['auto', 'native', 'text'].includes(raw.toolCallMode) ? raw.toolCallMode : 'auto';
         const batchConcurrencyNum = Number(raw.batchConcurrency);
+        const batchRequestsPerMinuteNum = Number(raw.batchRequestsPerMinute);
         const fileCacheLimitMBNum = Number(raw.fileCacheLimitMB);
         const llmModelRows = this._normalizeModelRows(raw.llmModelRows);
         return {
@@ -3513,6 +3568,10 @@ class FloatingAssistant {
             generation: this._normalizeGenerationSettings(raw.generation),
             llmModelRows,
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
+            // 0＝不限制（預設，向下相容既有行為），>0才夾住（不設上限——使用者
+            // 端點的實際rpm上限差異很大，例如免費OpenRouter只有20，交給使用者
+            // 自己依端點填合理值，不像batchConcurrency那樣需要防炸而夾在8）。
+            batchRequestsPerMinute: Number.isFinite(batchRequestsPerMinuteNum) && batchRequestsPerMinuteNum > 0 ? Math.round(batchRequestsPerMinuteNum) : 0,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
             showInternalTrace: raw.showInternalTrace === true,
@@ -3578,6 +3637,36 @@ class FloatingAssistant {
     _getBatchConcurrency() {
         const n = Number(this.advancedSettings.batchConcurrency);
         return Number.isFinite(n) && n > 0 ? Math.min(8, Math.round(n)) : 4;
+    }
+
+    // tw_stock_db客製: 見batchRequestsPerMinute設定項的說明——用滑動視窗
+    // （不是固定分鐘桶，比較不會在分鐘邊界一次放行一整批）把runBatchSubAgents
+    // 的worker「開始處理下一項」這個動作節流在設定的requests-per-minute
+    // 以下。0（未設定）時直接return，完全不影響既有行為/效能。
+    // this._batchRateTimestamps是instance-level的共用狀態（同一個batch的
+    // 所有worker共用同一份時間戳記清單），刻意不用per-worker獨立節流，
+    // 因為使用者要限制的是「這個端點整體」的請求速率，不是「每個worker各自」
+    // 的速率。
+    // tw_stock_db客製: 2026-09-15——rowLimit是呼叫端（runBatchSubAgents）
+    // 事先resolve好的「這個batch實際會打到哪個model row」的
+    // row.requestsPerMinute（見MODEL_ROW_NUMERIC_FIELDS的說明，
+    // null＝這個row沒有自己覆寫、沿用全域batchRequestsPerMinute；數字
+    // （含0）＝這個row自己的明確設定，直接蓋過全域值，不用再管全域數字）。
+    async _acquireBatchRateSlot(rowLimit) {
+        const limit = rowLimit != null ? Number(rowLimit) || 0 : (Number(this.advancedSettings.batchRequestsPerMinute) || 0);
+        if (limit <= 0) return;
+        if (!this._batchRateTimestamps) this._batchRateTimestamps = [];
+        for (;;) {
+            const now = Date.now();
+            this._batchRateTimestamps = this._batchRateTimestamps.filter(t => now - t < 60000);
+            if (this._batchRateTimestamps.length < limit) {
+                this._batchRateTimestamps.push(now);
+                return;
+            }
+            const oldest = this._batchRateTimestamps[0];
+            const waitMs = Math.max(50, 60000 - (now - oldest) + 50);
+            await new Promise(r => setTimeout(r, waitMs));
+        }
     }
 
     _loadAdvancedSettings() {
@@ -9357,6 +9446,7 @@ ${sourceTool.handlerScript}
                     ${numField('repetition_penalty', 'repetition_penalty', '不送')}
                     ${numField('length_penalty', 'length_penalty', '不送')}
                     ${numField('maxOutputTokens', 'max tokens(單次上限)', '全域預設')}
+                    ${numField('requestsPerMinute', '批次每分鐘請求數上限', '留空=沿用全域設定')}
                 </div>
             </div>
         `;
@@ -9412,6 +9502,8 @@ ${sourceTool.handlerScript}
         if (perfFileCacheMbInput) perfFileCacheMbInput.value = this.advancedSettings.fileCacheLimitMB;
         const perfBatchConcurrencyInput = document.getElementById('ai-perf-batch-concurrency');
         if (perfBatchConcurrencyInput) perfBatchConcurrencyInput.value = this.advancedSettings.batchConcurrency;
+        const perfBatchRpmInput = document.getElementById('ai-perf-batch-rpm');
+        if (perfBatchRpmInput) perfBatchRpmInput.value = this.advancedSettings.batchRequestsPerMinute || '';
         const perfMaxMeshTrianglesInput = document.getElementById('ai-perf-max-mesh-triangles');
         if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
         const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
@@ -16441,44 +16533,77 @@ ${existingNodeSummaries}
     // 解析出來的物件，呼叫端自己決定要讀哪些欄位（domains/categories）。
     async _callRouterLLM(routerSystemPrompt, userText) {
         const { apiKey, apiUrl, apiModel } = this._getApiConfig();
-        let response;
-        try {
-            response = await fetch(`${apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: apiModel,
-                    messages: [
-                        { role: 'system', content: routerSystemPrompt },
-                        { role: 'user', content: userText },
-                    ],
-                    temperature: 0,
-                    // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
-                    // 夾一個很小的max_tokens上限（不跟主對話共用
-                    // _getGenerationSettings().maxOutputTokens，那是給正常
-                    // 回覆用的，通常設定得比這裡需要的大很多），避免模型
-                    // 意外跑出一大段文字浪費時間/費用。
-                    max_tokens: 200,
-                    stream: false,
-                }),
-            });
-        } catch (err) {
-            return { ok: false, error: `路由子任務網路錯誤: ${err.message}` };
-        }
-        if (!response.ok) {
-            const errText = await response.text().catch(() => '');
-            return { ok: false, error: `路由子任務API錯誤(${response.status}): ${errText.slice(0, 300)}` };
-        }
-        let data;
-        try { data = await response.json(); } catch (err) {
-            return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
-        }
-        const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-        try {
-            const parsed = await this.repairJsonPayload(rawText);
-            return { ok: true, parsed };
-        } catch (err) {
-            return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
+        // tw_stock_db客製: 2026-09-15使用者用/benchmark-model實測回報——這個
+        // 路由呼叫完全沒有重試，端點暫時性錯誤（500/502/503這類過載/抖動，或
+        // 429 rate limit）一撞到就直接整個委派失敗，回報「路由子任務API錯誤
+        // (503): ...」給使用者，即使只要重試一次往往就會成功。
+        // _runSubAgentTask（Layer 2執行子agent）早就有這一套重試機制（一般
+        // 5xx/網路例外走SUBAGENT_TRANSIENT_RETRY_LIMIT，429走更寬鬆的
+        // SUBAGENT_RATE_LIMIT_*，見那邊的說明），但Layer 1路由（這個函式）
+        // 從一開始就是獨立的單次fetch、沒有共用到那套邏輯——這裡補上同一組
+        // 重試常數/退避策略，兩層委派現在都有一致的容錯能力。
+        let transientRetryCount = 0;
+        for (;;) {
+            let response;
+            let networkError = null;
+            try {
+                response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: [
+                            { role: 'system', content: routerSystemPrompt },
+                            { role: 'user', content: userText },
+                        ],
+                        temperature: 0,
+                        // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
+                        // 夾一個很小的max_tokens上限（不跟主對話共用
+                        // _getGenerationSettings().maxOutputTokens，那是給正常
+                        // 回覆用的，通常設定得比這裡需要的大很多），避免模型
+                        // 意外跑出一大段文字浪費時間/費用。
+                        max_tokens: 200,
+                        stream: false,
+                    }),
+                });
+            } catch (err) {
+                networkError = err;
+            }
+            const isRateLimited = !!(response && response.status === 429);
+            const isServerTransient = !!networkError || (response && response.status >= 500) || isRateLimited;
+            if (isServerTransient) {
+                const retryLimit = isRateLimited ? SUBAGENT_RATE_LIMIT_RETRY_LIMIT : SUBAGENT_TRANSIENT_RETRY_LIMIT;
+                if (transientRetryCount < retryLimit) {
+                    transientRetryCount++;
+                    let delayMs = SUBAGENT_TRANSIENT_RETRY_DELAY_MS;
+                    if (isRateLimited) {
+                        const retryAfterHeader = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null;
+                        const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+                        delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+                            ? retryAfterSec * 1000
+                            : Math.min(SUBAGENT_RATE_LIMIT_MAX_DELAY_MS, SUBAGENT_RATE_LIMIT_BASE_DELAY_MS * transientRetryCount) + Math.round(Math.random() * 500);
+                    }
+                    await new Promise(r => setTimeout(r, delayMs));
+                    continue;
+                }
+                const statusLabel = networkError ? `網路錯誤: ${networkError.message}` : `HTTP ${response.status}`;
+                return { ok: false, error: `路由子任務API錯誤(${statusLabel})（已重試${transientRetryCount}次仍失敗）` };
+            }
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                return { ok: false, error: `路由子任務API錯誤(${response.status}): ${errText.slice(0, 300)}` };
+            }
+            let data;
+            try { data = await response.json(); } catch (err) {
+                return { ok: false, error: `路由子任務回應不是合法JSON: ${err.message}` };
+            }
+            const rawText = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+            try {
+                const parsed = await this.repairJsonPayload(rawText);
+                return { ok: true, parsed };
+            } catch (err) {
+                return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
+            }
         }
     }
 
@@ -16803,6 +16928,10 @@ ${existingNodeSummaries}
         // 以及_delegateToSubagentDomain/_delegateToSubagentAuto的
         // _mergeSubAgentResultForDisplay）決定要不要原封不動傳回主對話。
         let capturedVisual = null;
+        // 見SUBAGENT_MAX_REASONING_DEADEND_RETRIES的說明——跟toolEscalationCount
+        // 一樣是這次_runSubAgentTask執行內的區域狀態，不消耗maxRounds（用
+        // round--），有獨立、較小的上限防止真的跳針的模型無限重試燒費用。
+        let reasoningDeadendRetries = 0;
 
         for (let round = 0; round < maxRounds; round++) {
             if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
@@ -16851,14 +16980,29 @@ ${existingNodeSummaries}
             // 參數整組一起換，不是只換模型名稱），(3)都不行了才真的放棄回報
             // 失敗。這三種情況都用round--不消耗maxRounds，跟下面既有的stop
             // 參數/取樣參數自我修復路徑同一個「基礎設施問題不算一輪對話」原則。
-            const isServerTransient = !!networkError || (response && response.status >= 500);
+            const isRateLimited = !!(response && response.status === 429);
+            const isServerTransient = !!networkError || (response && response.status >= 500) || isRateLimited;
             const isModelUnavailable = response && response.status === 404;
             if (isServerTransient || isModelUnavailable) {
                 const statusLabel = networkError ? `網路錯誤: ${networkError.message}` : `HTTP ${response.status}`;
-                if (isServerTransient && transientRetryCount < SUBAGENT_TRANSIENT_RETRY_LIMIT) {
+                // 見SUBAGENT_RATE_LIMIT_RETRY_LIMIT的說明——429是「太密集、
+                // 等一下再打」，跟真的伺服器錯誤分開處理：更寬鬆的重試次數、
+                // 優先信任端點的Retry-After header，沒有的話用隨重試次數遞增
+                // （+隨機jitter避免同批worker退避後又同時撞在一起）的等待
+                // 時間，而不是固定800ms。
+                const retryLimit = isRateLimited ? SUBAGENT_RATE_LIMIT_RETRY_LIMIT : SUBAGENT_TRANSIENT_RETRY_LIMIT;
+                if (isServerTransient && transientRetryCount < retryLimit) {
                     transientRetryCount++;
-                    this._log(`⚠️ 子任務暫時性錯誤(${statusLabel})，${SUBAGENT_TRANSIENT_RETRY_DELAY_MS}ms後重試第${transientRetryCount}次…`);
-                    await new Promise(r => setTimeout(r, SUBAGENT_TRANSIENT_RETRY_DELAY_MS));
+                    let delayMs = SUBAGENT_TRANSIENT_RETRY_DELAY_MS;
+                    if (isRateLimited) {
+                        const retryAfterHeader = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null;
+                        const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+                        delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+                            ? retryAfterSec * 1000
+                            : Math.min(SUBAGENT_RATE_LIMIT_MAX_DELAY_MS, SUBAGENT_RATE_LIMIT_BASE_DELAY_MS * transientRetryCount) + Math.round(Math.random() * 500);
+                    }
+                    this._log(`⚠️ 子任務暫時性錯誤(${statusLabel})，${delayMs}ms後重試第${transientRetryCount}次…`);
+                    await new Promise(r => setTimeout(r, delayMs));
                     round--;
                     continue;
                 }
@@ -16914,6 +17058,29 @@ ${existingNodeSummaries}
 
             const rawContent = message.content || '';
             const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+            // tw_stock_db客製: 見SUBAGENT_MAX_REASONING_DEADEND_RETRIES的說明——
+            // 把主對話迴圈既有的AI_REASONING_DEADEND_PROMPT復原機制搬過來這裡。
+            // 判斷條件跟主迴圈（_loopFetchNative的lastRoundWasReasoningDeadEnd）
+            // 完全一致：沒有工具呼叫、content是空的、但reasoning_content有實質
+            // 內容（>20字，排除只是隻字片語的雜訊）——代表這一輪模型「想了但
+            // 沒有真的產出答案」，直接請它照AI_REASONING_DEADEND_PROMPT的指示
+            // 重講一次，不消耗maxRounds（round--），有自己獨立的重試上限。
+            const reasoningContent = message.reasoning_content || '';
+            if (!toolCalls.length && !rawContent.trim() && reasoningContent.trim().length > 20) {
+                if (reasoningDeadendRetries < SUBAGENT_MAX_REASONING_DEADEND_RETRIES) {
+                    reasoningDeadendRetries++;
+                    if (onProgress) onProgress(`↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${reasoningDeadendRetries}次）…`);
+                    messages.push({ role: 'assistant', content: '（這一輪只完成了內部思考，沒有輸出最終內容）' });
+                    messages.push({ role: 'user', content: AI_REASONING_DEADEND_PROMPT });
+                    round--;
+                    continue;
+                }
+                // 重試次數用完仍然是純思考——不要靜默吞掉，讓使用者知道子任務
+                // 是撞到這個已知的模型行為才失敗，而不是一個難以理解的空白回應
+                // 或殘缺片段（例如只有一個孤立的"["），方便判斷要不要換個模型。
+                return { text: `[子任務失敗: AI重複${SUBAGENT_MAX_REASONING_DEADEND_RETRIES}次只輸出思考過程、沒有給出實際內容或工具呼叫，可能是這個模型在這個任務量下不穩定，建議換一個模型或縮小任務範圍再試]`, visual: capturedVisual };
+            }
 
             if (useNative && toolCalls.length) {
                 messages.push(Object.assign({ role: 'assistant', content: this._stripInlineBase64(rawContent) }, { tool_calls: toolCalls }));
@@ -17013,6 +17180,18 @@ ${existingNodeSummaries}
             ? Math.min(8, Math.round(Number(concurrency)))
             : this._getBatchConcurrency());
 
+        // tw_stock_db客製: 2026-09-15——這個batch實際會打到的端點是
+        // _runSubAgentTask內部固定從rows[0]開始嘗試（只有遇到暫時性錯誤/
+        // 模型不存在才會往下一筆row換），這裡在worker迴圈開始前先resolve
+        // 一次rows[0].requestsPerMinute，讓所有worker共用同一個「這個batch
+        // 這一輪實際端點」的rpm上限；如果之後真的觸發换row，該row可能有
+        // 不同的rpm設定，但那是既有fallback機制本身的例外情況，rate limit
+        // 只求「大部分時候貼合實際使用的端點」，不強求換row後即時重新resolve
+        // （換row本身已經是走過重試/backoff的少見情況，見_runSubAgentTask
+        // 的說明）。
+        const primaryRow = this._getModelRows()[0];
+        const rowRpm = primaryRow && primaryRow.requestsPerMinute != null ? primaryRow.requestsPerMinute : null;
+
         const results = new Array(list.length);
         let nextIdx = 0;
         let doneCount = 0;
@@ -17022,6 +17201,12 @@ ${existingNodeSummaries}
             while (nextIdx < list.length) {
                 const myIdx = nextIdx++;
                 const item = list[myIdx];
+                // 見_acquireBatchRateSlot()的說明——rowRpm非null時代表使用者
+                // 針對目前主要使用的model row自己設定過rpm（逐一設定，優先於
+                // 全域batchRequestsPerMinute）；兩者都沒設定時完全不影響既有
+                // 行為/效能。故意放在「拿到myIdx之後、真正開始跑子任務之前」，
+                // 讓等待中的worker不會卡住其他worker去搶下一個index。
+                await this._acquireBatchRateSlot(rowRpm);
                 const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
@@ -17464,7 +17649,12 @@ ${existingNodeSummaries}
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-batch-concurrency">批次併發數</label>
                                     <input type="number" id="ai-perf-batch-concurrency" class="ai-advanced-input" min="1" max="20">
-                                    <p class="ai-advanced-hint">批次工具呼叫（例如一次分析多檔股票）同時進行的併發數量，太大可能一次炸出過多併發請求。</p>
+                                    <p class="ai-advanced-hint">批次工具呼叫（例如一次分析多檔股票、或桌面版的batch_process_items）同時進行的併發數量，太大可能一次炸出過多併發請求。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-batch-rpm">批次每分鐘請求數上限</label>
+                                    <input type="number" id="ai-perf-batch-rpm" class="ai-advanced-input" min="0" max="1000">
+                                    <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。這是所有model row共用的全域預設值；如果不同model row（不同端點）各自的rate limit不一樣，可以到上面「LLM Model 管理」分頁對個別row單獨填「批次每分鐘請求數上限」，該row有填時優先套用那個數字，不受這裡影響。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
@@ -19242,6 +19432,16 @@ ${existingNodeSummaries}
             perfBatchConcurrencyInput.addEventListener('input', () => {
                 const n = Number(perfBatchConcurrencyInput.value);
                 if (Number.isFinite(n) && n > 0) this.advancedSettings.batchConcurrency = Math.round(n);
+                this._saveAdvancedSettings();
+            });
+        }
+        const perfBatchRpmInput = document.getElementById('ai-perf-batch-rpm');
+        if (perfBatchRpmInput) {
+            perfBatchRpmInput.addEventListener('input', () => {
+                // 0/留空＝不限制，是使用者刻意要的預設值（向下相容），跟
+                // maxImportedMeshTriangles同一種「n>=0才接受」判斷方式。
+                const n = Number(perfBatchRpmInput.value);
+                if (Number.isFinite(n) && n >= 0) this.advancedSettings.batchRequestsPerMinute = Math.round(n);
                 this._saveAdvancedSettings();
             });
         }
