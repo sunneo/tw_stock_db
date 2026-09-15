@@ -1178,6 +1178,44 @@ function createWindow() {
       }, 1500);
     });
   }
+  // 一次性除錯hook：驗證2026-09-15新增的「逐一設定rpm」——LLM Model管理
+  // 分頁每個row是否真的渲染出新欄位、輸入後是否正確寫回row.requestsPerMinute、
+  // runBatchSubAgents是否正確resolve並傳給_acquireBatchRateSlot。
+  if (process.env.FA_DEBUG_ROW_RPM_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              document.getElementById('ai-btn-config').click();
+              document.querySelector('.ai-advanced-cat[data-cat="llm-sampling"]').click();
+              await new Promise(r => setTimeout(r, 200));
+              const row = window.fa._getModelRows()[0];
+              const input = document.querySelector('input[data-row-id="' + row.id + '"][data-field="requestsPerMinute"]');
+              const fieldFound = !!input;
+              let updatedValue = null;
+              if (input) {
+                input.value = '3';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 100));
+                updatedValue = window.fa._getModelRows()[0].requestsPerMinute;
+              }
+              const start = Date.now();
+              const timestamps = [];
+              for (let i = 0; i < 5; i++) {
+                await window.fa._acquireBatchRateSlot(window.fa._getModelRows()[0].requestsPerMinute);
+                timestamps.push(Date.now() - start);
+              }
+              return JSON.stringify({ fieldFound, updatedValue, timestamps, note: 'with row limit=3, 5th acquire should wait until ~60s after the 1st (sliding window), so timestamps[4] should jump' });
+            })()
+          `);
+          console.log("[row-rpm-test] result:\n" + result);
+        } catch (err) {
+          console.log("[row-rpm-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
