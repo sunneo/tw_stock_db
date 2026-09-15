@@ -477,18 +477,49 @@ function patchCloudflareWording(root) {
     required: ["path"],
     additionalProperties: false,
   });
+  // tw_stock_db客製: 2026-09-15使用者實測回報——單一大檔案（30KB+文字，例如
+  // 一份完整XML/文件說明）用fs_read_file整份塞回對話後，根模型收到這麼大一包
+  // tool result常常直接reasoning-deadend（只輸出思考過程、生不出最終回覆）。
+  // 既有的「批次分段」機制（batch_process_items）只解決「多個檔案」的情境，
+  // 「單一大檔案」完全沒有對應機制——使用者明確要求「大檔案解析都要採用
+  // chunks」。這裡讓fs_read_file自己對純文字內容做字元分段：預設一次最多
+  // 回傳FS_READ_DEFAULT_CHUNK_CHARS字元，超過的部分要AI自己帶offset續讀，
+  // 每次都回傳明確的chunk/hasMore/nextOffset中繼資料+提示文字，讓AI知道
+  // 「這只是片段，不要當作已經拿到全部內容就直接作答」。base64（疑似二進位）
+  // 內容不做這個字元切割（語意不同，維持整包回傳）。
+  const FS_READ_DEFAULT_CHUNK_CHARS = 6000;
   fa.register_openai_tool(
     "fs_read_file",
-    "直接讀取這台電腦上任意路徑的檔案內容，不需要先授權/註冊資料夾。純文字檔案（原始碼/設定檔/markdown等）直接回傳文字；偵測到疑似二進位內容（含NUL byte）時自動改回傳base64（並標註likely_binary），不會像fap_read_file那樣直接拒絕。參數: {\"path\":\"/home/user/notes.txt\"}",
+    "直接讀取這台電腦上任意路徑的檔案內容，不需要先授權/註冊資料夾。純文字檔案（原始碼/設定檔/markdown等）直接回傳文字；偵測到疑似二進位內容（含NUL byte）時自動改回傳base64（並標註likely_binary），不會像fap_read_file那樣直接拒絕。**大檔案會自動分段**：純文字內容超過約" + FS_READ_DEFAULT_CHUNK_CHARS + "字元時，一次只回傳一段（回應裡的chunk.hasMore/chunk.nextOffset會告訴你有沒有更多、下一段從哪裡開始），需要更多內容時帶offset參數再呼叫一次；每讀完一段就把重點摘要記下來，不要等所有段落都讀完才動筆、也不要把每段原始全文都留在對話裡。參數: {\"path\":\"/home/user/notes.txt\",\"offset\":0,\"maxChars\":6000}",
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
       try {
         const r = await window.desktopAPI.rawfs.readFile(parsed.path, parsed.encoding);
+        if (r && typeof r.text === "string" && !r.likely_binary) {
+          const fullText = r.text;
+          const totalChars = fullText.length;
+          const offset = Number.isFinite(Number(parsed.offset)) && Number(parsed.offset) > 0 ? Math.floor(Number(parsed.offset)) : 0;
+          const maxChars = Number.isFinite(Number(parsed.maxChars)) && Number(parsed.maxChars) > 0 ? Math.floor(Number(parsed.maxChars)) : FS_READ_DEFAULT_CHUNK_CHARS;
+          if (totalChars > maxChars || offset > 0) {
+            const chunkText = fullText.slice(offset, offset + maxChars);
+            const nextOffset = offset + chunkText.length;
+            const hasMore = nextOffset < totalChars;
+            return JSON.stringify({
+              ok: true, ...r, text: chunkText,
+              chunk: { offset, length: chunkText.length, totalChars, hasMore, nextOffset: hasMore ? nextOffset : null },
+              note: hasMore ? `這是第${offset}~${nextOffset}字元的片段（全檔共${totalChars}字元），還有更多內容，需要的話帶offset=${nextOffset}再呼叫一次。` : `這是最後一段（第${offset}~${nextOffset}字元，全檔共${totalChars}字元）。`,
+            });
+          }
+        }
         return JSON.stringify({ ok: true, ...r });
       } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
     },
-    fsToolSchema({ encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" } })
+    fsToolSchema({
+      encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" },
+      offset: { type: "number", description: "選填，從第幾個字元開始讀（0-based）。續讀大檔案時，帶上一次回應chunk.nextOffset的值。預設0。" },
+      maxChars: { type: "number", description: `選填，這次最多回傳幾個字元。預設${FS_READ_DEFAULT_CHUNK_CHARS}。` },
+    })
   );
   fa.register_openai_tool(
     "fs_write_file",
@@ -591,6 +622,137 @@ function patchCloudflareWording(root) {
         concurrency: { type: "number", description: "選填，同時執行幾個子任務（1-8），留空用系統預設批次並行度" },
       },
       required: ["items", "instruction"],
+      additionalProperties: false,
+    }
+  );
+  // tw_stock_db客製: 2026-09-15使用者實測回報——單一大檔案（30KB+純文字）
+  // 整份塞進fs_read_file的tool result後，根模型常常直接reasoning-deadend
+  // （只輸出思考過程、生不出最終回覆），使用者對此明確表達強烈不滿並要求：
+  // 「大檔案解析都要採用chunks」「不論LLM model能力怎麼樣都可以達到解析
+  // 完整的檔案的內容」「送出去的subagent自己可以切chunks，回收的時候找
+  // 地方放，最後gather/reduce的時候，如果內容太大，自己也分chunks去合併」。
+  // 這裡新增analyze_large_file：單一檔案版的map-reduce（batch_process_items
+  // 是「多檔案」版本，這個是「單一大檔案內部切塊」版本，底層共用同一個
+  // runBatchSubAgents引擎，語意一致）——
+  //   1. Map: 讀完整檔，按字元數切成固定大小區塊，每個區塊各自是一個獨立、
+  //      平行、會被retry/model-fallback（見_runSubAgentTask既有機制）的
+  //      子任務，不共用彼此的對話歷史，天生涵蓋全文、不依賴AI自己記得要
+  //      繼續讀下一段。
+  //   2. 每個區塊的原始子任務結果（連同offset/區塊原文）存進
+  //      fa._largeFileAnalysisJobs（純JS Map，活在app記憶體裡，不會進到
+  //      任何LLM對話上下文）——這就是使用者說的「回收的時候找地方放」，
+  //      需要回頭查某個區塊的細節時用get_large_file_analysis_chunk按需
+  //      查詢，不用整包塞回對話。
+  //   3. Reduce: 把M個區塊結果的『精簡結論』依序合併——如果全部串起來還是
+  //      超過REDUCE_CHUNK_CHARS，不會一次全部塞給模型合併，而是先分組、
+  //      每組各自再跑一次runBatchSubAgents濃縮成一段，遞迴這個「分組→
+  //      濃縮」的過程直到收斂成一份（或夠小可以一次合併），這就是使用者
+  //      要求的「reduce階段內容太大時，自己也分chunks去合併」——不管檔案
+  //      多大、多少個區塊，最終一定會收斂成一份完整結果，不會因為某一次
+  //      合併呼叫本身內容太大而卡住/失敗。
+  fa._largeFileAnalysisJobs = fa._largeFileAnalysisJobs || new Map();
+  const ANALYZE_LARGE_FILE_CHUNK_CHARS = 6000;
+  const ANALYZE_LARGE_FILE_REDUCE_CHARS = 6000;
+  async function reduceChunkVerdicts(fa, verdictTexts, instruction) {
+    let level = verdictTexts.slice();
+    let depth = 0;
+    while (true) {
+      const combinedLen = level.reduce((s, t) => s + t.length, 0);
+      if (level.length <= 1 || combinedLen <= ANALYZE_LARGE_FILE_REDUCE_CHARS) {
+        if (level.length === 1 && depth === 0) return { finalText: level[0], reduceDepth: depth };
+        const finalPrompt = `以下是針對任務「${instruction}」，依照原始檔案順序切出的多份分析結果（共${level.length}份，可能已經是前幾輪濃縮過的中繼結果），請統整成一份完整、連貫、依序涵蓋每一份重點的最終結果，不要遺漏任何一份提到的具體內容，也不要重複贅述：\n\n${level.map((t, i) => `【第${i + 1}份】\n${t}`).join("\n\n")}`;
+        const finalResult = await fa._runSubAgentTask(finalPrompt);
+        return { finalText: finalResult.text, reduceDepth: depth + 1 };
+      }
+      const groups = [];
+      let cur = [];
+      let curLen = 0;
+      for (const t of level) {
+        if (cur.length && curLen + t.length > ANALYZE_LARGE_FILE_REDUCE_CHARS) { groups.push(cur); cur = []; curLen = 0; }
+        cur.push(t);
+        curLen += t.length;
+      }
+      if (cur.length) groups.push(cur);
+      const groupItems = groups.map((g, i) => `【合併群組${i + 1}／共${groups.length}組，內含${g.length}份分析結果】\n${g.map((t, j) => `- 第${j + 1}份：${t}`).join("\n")}`);
+      const batchResult = await fa.runBatchSubAgents(
+        groupItems,
+        `以下是針對任務「${instruction}」，多份分析結果的其中一組，請把這組結果濃縮成一段連貫摘要，保留具體數據/名稱/關鍵細節，不要只給空泛結論。`
+      );
+      level = batchResult.map(r => r.verdict);
+      depth++;
+    }
+  }
+  fa.register_openai_tool(
+    "analyze_large_file",
+    `完整解析「單一」大檔案的全部內容——不論檔案多大、不論目前使用的LLM模型能力/穩定度如何，都保證涵蓋檔案從頭到尾每一段內容（內部會自動切成固定大小區塊，各區塊獨立平行處理、各自重試，不依賴單次模型呼叫的穩定度；彙整階段內容太大時也會自動分組遞迴濃縮，不會因為單次合併內容過大而失敗）。**任何時候使用者要求完整解析/摘要/分析一個可能較大的檔案（尤其大於數KB、或使用者明確提到大檔案/完整內容），都應該優先用這個工具，不要自己用fs_read_file手動分段讀取再逐段記憶**（那樣依賴你自己記得要繼續讀下一段、且大量原始內容會塞進對話歷史，正是造成模型當機的原因）。這個工具只回傳最終彙整結果；如果之後需要查某個特定區塊的原始分析細節，用get_large_file_analysis_chunk按job_id查詢。參數: {"path":"/home/user/big.xml","instruction":"摘要這份檔案的用途、結構與關鍵內容"}`,
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      const path = parsed.path;
+      const instruction = String(parsed.instruction || "").trim();
+      if (!path) return JSON.stringify({ ok: false, error: "缺少path" });
+      if (!instruction) return JSON.stringify({ ok: false, error: "缺少instruction（描述要對這個檔案做什麼分析/摘要）" });
+      let fileResult;
+      try { fileResult = await window.desktopAPI.rawfs.readFile(path, "auto"); }
+      catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+      if (!fileResult || typeof fileResult.text !== "string" || fileResult.likely_binary) {
+        return JSON.stringify({ ok: false, error: "這個工具只支援純文字檔案的完整分段解析，偵測到疑似二進位內容，請改用fs_read_file。" });
+      }
+      const fullText = fileResult.text;
+      const chunkChars = Number.isFinite(Number(parsed.chunkChars)) && Number(parsed.chunkChars) > 0 ? Math.floor(Number(parsed.chunkChars)) : ANALYZE_LARGE_FILE_CHUNK_CHARS;
+      const offsets = [];
+      for (let i = 0; i < fullText.length; i += chunkChars) offsets.push(i);
+      if (!offsets.length) return JSON.stringify({ ok: true, path, totalChars: 0, totalChunks: 0, finalText: "（檔案是空的）" });
+      const chunkTexts = offsets.map(o => fullText.slice(o, o + chunkChars));
+      const items = chunkTexts.map((t, i) => `【區塊${i + 1}/${offsets.length}（第${offsets[i]}~${offsets[i] + t.length}字元）】\n${t}`);
+      let mapResults;
+      try {
+        mapResults = await fa.runBatchSubAgents(items, `這是檔案「${path}」其中一個區塊（已標明第幾區塊/字元範圍），請只針對這個區塊的內容執行以下任務，不要假設看得到檔案其他部分，也不要提到「這只是一部分」這類後設說明：${instruction}`, parsed.concurrency);
+      } catch (err) {
+        return JSON.stringify({ ok: false, error: `區塊分析失敗: ${String(err.message || err)}` });
+      }
+      const jobId = `lfa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      fa._largeFileAnalysisJobs.set(jobId, {
+        path, instruction, createdAt: Date.now(),
+        chunks: mapResults.map((r, i) => ({ index: i, offset: offsets[i], text: chunkTexts[i], verdict: r.verdict })),
+      });
+      const reduced = await reduceChunkVerdicts(fa, mapResults.map(r => r.verdict), instruction);
+      return JSON.stringify({
+        ok: true, path, totalChars: fullText.length, totalChunks: offsets.length,
+        job_id: jobId, finalText: reduced.finalText,
+        note: `已切成${offsets.length}個區塊各自分析後彙整（彙整遞迴深度${reduced.reduceDepth}）。需要查特定區塊的原始分析時用get_large_file_analysis_chunk({"job_id":"${jobId}","chunk_index":0})。`,
+      });
+    },
+    {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "絕對路徑" },
+        instruction: { type: "string", description: "要對這個檔案做什麼分析/摘要/擷取，例如「摘要這份檔案的用途、結構與關鍵內容」" },
+        chunkChars: { type: "number", description: `選填，每個區塊的字元數，預設${ANALYZE_LARGE_FILE_CHUNK_CHARS}` },
+        concurrency: { type: "number", description: "選填，同時處理幾個區塊（1-8），留空用系統預設" },
+      },
+      required: ["path", "instruction"],
+      additionalProperties: false,
+    }
+  );
+  fa.register_openai_tool(
+    "get_large_file_analysis_chunk",
+    "查詢analyze_large_file某次執行中，某個特定區塊的原始分析結果與原文片段（按需查詢，不會自動出現在analyze_large_file的回應裡，避免污染對話歷史）。參數: {\"job_id\":\"lfa_...\",\"chunk_index\":0}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      const job = fa._largeFileAnalysisJobs.get(String(parsed.job_id || ""));
+      if (!job) return JSON.stringify({ ok: false, error: "找不到這個job_id（可能是打錯，或app重新啟動後記憶體已清空）" });
+      const idx = Number(parsed.chunk_index);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= job.chunks.length) {
+        return JSON.stringify({ ok: false, error: `chunk_index超出範圍，這個job共有${job.chunks.length}個區塊（0~${job.chunks.length - 1}）` });
+      }
+      return JSON.stringify({ ok: true, path: job.path, totalChunks: job.chunks.length, chunk: job.chunks[idx] });
+    },
+    {
+      type: "object",
+      properties: { job_id: { type: "string" }, chunk_index: { type: "number" } },
+      required: ["job_id", "chunk_index"],
       additionalProperties: false,
     }
   );
@@ -697,7 +859,7 @@ function patchCloudflareWording(root) {
       "run_command",
       "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
       "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
-      "batch_process_items",
+      "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
@@ -735,7 +897,7 @@ function patchCloudflareWording(root) {
     "run_command",
     "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
     "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
-    "batch_process_items",
+    "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
   // ---- 頂部列：執行程式開關 ----
