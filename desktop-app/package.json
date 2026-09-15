@@ -24,18 +24,21 @@
       "main.js",
       "preload.js",
       "local-proxy.js",
-      "renderer/**/*"
+      "renderer/**/*",
+      "build/icon.png"
     ],
     "win": {
       "target": [
         { "target": "portable", "arch": ["x64"] }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "linux": {
       "target": [
         { "target": "AppImage", "arch": ["x64"] }
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "build/icon.png"
     },
     "asar": true
   }

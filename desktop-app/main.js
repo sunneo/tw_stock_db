@@ -904,6 +904,13 @@ function createWindow() {
     x: 0,
     y: 0,
     title: "FloatingAssistant",
+    // build/icon.png是執行時的視窗/工作列圖示（Linux尤其吃這個，AppImage
+    // 桌面捷徑本身的圖示是另外由package.json的build.linux.icon決定，兩者
+    // 都要設，缺一個就會出現「桌面捷徑圖示對，但開啟後工作列圖示變回
+    // Electron預設」這種不一致）；Windows下打包後的exe圖示是由
+    // build.win.icon（build/icon.ico）烘進執行檔本身決定，這裡主要影響
+    // `npm start`開發模式下的視窗圖示。
+    icon: path.join(__dirname, "build", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

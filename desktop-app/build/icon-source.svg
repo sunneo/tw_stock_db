@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c2530"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fd400"/>
+      <stop offset="1" stop-color="#5c8f00"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#bg)"/>
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="none" stroke="#2b3542" stroke-width="4"/>
+
+  <path d="M 130 168
+           Q 130 128 170 128
+           L 342 128
+           Q 382 128 382 168
+           L 382 272
+           Q 382 312 342 312
+           L 236 312
+           L 176 366
+           L 184 312
+           L 170 312
+           Q 130 312 130 272
+           Z"
+        fill="url(#bubble)"/>
+
+  <circle cx="192" cy="220" r="15" fill="#0d1117"/>
+  <circle cx="256" cy="220" r="15" fill="#0d1117"/>
+  <circle cx="320" cy="220" r="15" fill="#0d1117"/>
+
+  <g fill="#ffffff">
+    <path d="M 372 340
+             L 384 372
+             L 416 384
+             L 384 396
+             L 372 428
+             L 360 396
+             L 328 384
+             L 360 372
+             Z"/>
+  </g>
+  <g fill="#e8ffb0">
+    <path d="M 128 358
+             L 135 376
+             L 153 383
+             L 135 390
+             L 128 408
+             L 121 390
+             L 103 383
+             L 121 376
+             Z"/>
+  </g>
+</svg>
