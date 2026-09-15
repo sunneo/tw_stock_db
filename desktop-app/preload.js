@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   roots: {
     list: () => ipcRenderer.invoke("fa:roots:list"),
     add: (label) => ipcRenderer.invoke("fa:roots:add", { label }),
+    addByPath: (folderPath, label) => ipcRenderer.invoke("fa:roots:addByPath", { folderPath, label }),
     rename: (id, label) => ipcRenderer.invoke("fa:roots:rename", { id, label }),
     remove: (id) => ipcRenderer.invoke("fa:roots:remove", { id }),
   },
