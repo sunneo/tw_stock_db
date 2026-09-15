@@ -653,11 +653,25 @@ class FapGitFs {
         await writable.close();
     }
 
+    // isomorphic-git內部會用「刪除一個可能本來就不存在的檔案」當成清理步驟
+    // 的一部分（例如fetch()前刪.git/shallow），靠`err.code==='ENOENT'`
+    // 判斷「本來就沒有，不是真的錯誤」而安靜略過——File System Access API
+    // 對「刪除不存在的項目」丟出的是原生`DOMException`（name:'NotFoundError'，
+    // legacy `.code`是數字8，不是字串'ENOENT'），isomorphic-git認不得，會
+    // 把它當成真正的失敗直接中止整個git.fetch()/git.commit()。2026-09-15
+    // 實測（真實clone一路失敗在`unlink('.git/shallow')`)才抓到這個落差，
+    // 這裡跟_readFile/_stat/_readdir一樣，統一轉成`_enoent()`。
     async _unlink(filepath) {
         const parts = this._parts(filepath);
         const name = parts.pop();
-        const dir = await this._resolveDirHandle(parts);
-        await dir.removeEntry(name);
+        let dir;
+        try { dir = await this._resolveDirHandle(parts); } catch (_) { throw this._enoent(filepath); }
+        try {
+            await dir.removeEntry(name);
+        } catch (err) {
+            if (err && err.name === 'NotFoundError') throw this._enoent(filepath);
+            throw err;
+        }
     }
 
     async _readdir(filepath) {
@@ -678,8 +692,14 @@ class FapGitFs {
         const parts = this._parts(filepath);
         const name = parts.pop();
         if (name == null) throw new Error('cannot rmdir root');
-        const dir = await this._resolveDirHandle(parts);
-        await dir.removeEntry(name, { recursive: true });
+        let dir;
+        try { dir = await this._resolveDirHandle(parts); } catch (_) { throw this._enoent(filepath); }
+        try {
+            await dir.removeEntry(name, { recursive: true });
+        } catch (err) {
+            if (err && err.name === 'NotFoundError') throw this._enoent(filepath);
+            throw err;
+        }
     }
 
     async _stat(filepath) {
@@ -878,13 +898,13 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         enabled: true,
         label: '使用者授權的檔案存取點（File Access Point）',
         toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
-        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接告知使用者需要自己到Advance Settings「檔案存取管理」分頁按「重新授權」，AI沒辦法代為授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
+        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
     },
     git_operations: {
         enabled: true,
         label: 'git版本控制操作（clone/pull/commit/push）',
         toolNames: ['git_clone', 'git_pull', 'git_status', 'git_log', 'git_commit', 'git_push'],
-        systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。',
+        systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。這些工具跟fap_*系列共用同一套File Access Point權限機制——目標資料夾如果沒有授權，呼叫時會自動跳出授權對話框讓使用者當場點擊，呼叫會停在那裡等回應，不用先叫使用者去Advance Settings。',
     },
     drawing: {
         enabled: true,
@@ -5798,6 +5818,14 @@ ${fnData.code}
         return parts;
     }
 
+    // tw_stock_db客製: 2026-09-15使用者實測回報——每次權限失效都要求使用者
+    // 先跳去Advance Settings「檔案存取管理」分頁才能重新授權，這個路徑太遠
+    // （尤其使用者當下正在跟AI對話、只是想繼續手上的操作）。改成AI工具呼叫
+    // 當下如果發現權限不是granted，**直接在畫面上跳一個小dialog**讓使用者
+    // 就地點擊授權——`requestPermission()`要求「剛剛發生的真人點擊」
+    // （transient activation），這裡「跳出來、當場點」完全符合，不需要繞去
+    // 設定頁面。同一個FAP同時有多個並發的AI工具呼叫在等權限時，共用同一個
+    // dialog（不會疊出好幾個一樣的視窗）。
     async _checkFapPermission(rec, mode = 'readwrite') {
         let perm;
         try {
@@ -5805,9 +5833,61 @@ ${fnData.code}
         } catch (err) {
             throw new Error(`檢查「${rec.label}」的存取權限時發生錯誤：${String(err.message || err)}`);
         }
-        if (perm !== 'granted') {
-            throw new Error(`「${rec.label}」目前沒有${mode === 'readwrite' ? '讀寫' : '讀取'}權限（瀏覽器可能因為太久沒用而重置了授權），請到Advance Settings「檔案存取管理」分頁按「重新授權」（這一步必須由你親自點擊，AI沒辦法代為授權）。`);
+        if (perm === 'granted') return;
+        if (!this._fapPermissionDialogPromises) this._fapPermissionDialogPromises = new Map();
+        const dialogKey = `${rec.id}:${mode}`;
+        let pending = this._fapPermissionDialogPromises.get(dialogKey);
+        if (!pending) {
+            pending = this._showFapPermissionDialog(rec, mode).finally(() => {
+                this._fapPermissionDialogPromises.delete(dialogKey);
+            });
+            this._fapPermissionDialogPromises.set(dialogKey, pending);
         }
+        const granted = await pending;
+        if (!granted) {
+            throw new Error(`「${rec.label}」目前沒有${mode === 'readwrite' ? '讀寫' : '讀取'}權限——使用者在授權對話框裡選擇了拒絕，或沒有完成授權。`);
+        }
+    }
+
+    // 回傳Promise<boolean>：true=使用者同意並成功取得授權，false=拒絕/取消/
+    // 授權請求本身失敗。跟_showMp4ExportOptionsDialog同一種輕量Modal寫法。
+    _showFapPermissionDialog(rec, mode) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000020; display:flex; align-items:center; justify-content:center;';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(340px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
+            box.innerHTML = `
+                <div style="font-weight:bold; font-size:14px; margin-bottom:10px;">🔐 需要資料夾授權</div>
+                <div style="margin-bottom:16px; line-height:1.5;">AI想要${mode === 'readwrite' ? '讀寫' : '讀取'}「<b>${this._escapeHtml(rec.label)}</b>」這個File Access Point資料夾，但瀏覽器目前沒有授權（可能是太久沒用被重置了）。要允許嗎？</div>
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button type="button" id="fa-fapperm-deny" style="padding:6px 14px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer; font-size:13px;">拒絕</button>
+                    <button type="button" id="fa-fapperm-allow" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">授權</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            let settled = false;
+            const cleanup = () => overlay.remove();
+            const deny = () => { if (settled) return; settled = true; cleanup(); resolve(false); };
+            const allow = async () => {
+                if (settled) return;
+                const allowBtn = box.querySelector('#fa-fapperm-allow');
+                allowBtn.disabled = true;
+                allowBtn.textContent = '授權中…';
+                let result = 'denied';
+                try {
+                    result = await rec.handle.requestPermission({ mode });
+                } catch (_) { /* 使用者取消原生授權提示等，視同拒絕 */ }
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(result === 'granted');
+            };
+            box.querySelector('#fa-fapperm-deny').addEventListener('click', deny);
+            box.querySelector('#fa-fapperm-allow').addEventListener('click', allow);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) deny(); });
+        });
     }
 
     // ref指向一個「目錄」（fap_list_files/fap_find_file用）：把path全部走
@@ -17234,7 +17314,7 @@ ${existingNodeSummaries}
                                         <div class="ai-advanced-label" style="margin:0;">檔案存取管理（File Access Point）</div>
                                         <button type="button" id="ai-fap-add-btn" class="ai-advanced-btn primary">+ 新增資料夾</button>
                                     </div>
-                                    <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作純文字內容，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。**任何格式的二進位檔案**（MP3/MP4/xlsx/pdf/pptx/圖片等）可以用<code>fap_copy_from_storage</code>／<code>fap_copy_to_storage</code>在兩套系統之間搬動（複製或移動），或用<code>fap_download_url</code>直接把一個網址的內容下載進來（受目標網站CORS限制，不是每個網址都抓得到）。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權，屆時下面該筆會顯示「重新授權」按鈕（必須由你自己點擊）。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
+                                    <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作純文字內容，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。**任何格式的二進位檔案**（MP3/MP4/xlsx/pdf/pptx/圖片等）可以用<code>fap_copy_from_storage</code>／<code>fap_copy_to_storage</code>在兩套系統之間搬動（複製或移動），或用<code>fap_download_url</code>直接把一個網址的內容下載進來（受目標網站CORS限制，不是每個網址都抓得到）。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權——不用特地跑來這裡點，AI下次要用到時會直接在畫面上跳一個小視窗讓你當場點擊同意；這裡的「重新授權」按鈕留著給你想主動先授權好、不想等AI用到時才處理的情況。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
                                     <div id="ai-fap-list" class="ai-tool-list"></div>
                                     <div class="ai-advanced-tools-header" style="margin-top:16px;">
                                         <div class="ai-advanced-label" style="margin:0;">git版本控制（clone / pull / commit / push）</div>
