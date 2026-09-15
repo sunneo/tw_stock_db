@@ -174,3 +174,12 @@ target——雙擊直接跑，不用安裝、不會在系統裡留下安裝紀�
   實際曝險對這個專案很低，維持現有版本是刻意的選擇，不是忘了處理。真的
   想升級到最新版，請先把本機Node.js升級到22以上再試，不要用`--force`
   硬升版本卻維持舊Node。
+- **`electron-builder`打包Windows版時可能出現`Cannot create symbolic
+  link`失敗**（發生在解壓縮`winCodeSign`——一個electron-builder內部共用
+  setup會下載的macOS簽章工具包，即使只打包Windows版也會抓，這個包裡的
+  `.dylib`檔本身就是用symlink打包的，是electron-builder本身已知的行為，
+  不是這個專案的bug）——Windows預設不允許一般使用者帳號建立symbolic
+  link，需要先在「設定 > 隱私權與安全性 > 開發人員專用」把「開發人員
+  模式」打開，或改用系統管理員權限執行這個腳本。`build.ps1`已經設定
+  `CSC_IDENTITY_AUTO_DISCOVERY=false`（這個app本來就沒有簽章，不需要
+  electron-builder嘗試找簽章憑證），失敗時也會印出這個提示。
