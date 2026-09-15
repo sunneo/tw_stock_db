@@ -27,6 +27,13 @@ const { startLocalProxy } = require("./local-proxy.js");
 const USER_DATA_DIR = () => app.getPath("userData");
 const ROOTS_FILE = () => path.join(USER_DATA_DIR(), "fap-roots.json");
 const SETTINGS_FILE = () => path.join(USER_DATA_DIR(), "desktop-settings.json");
+// tw_stock_db客製: 2026-09-15使用者要求——「server configure」讓NVAPI_KEY/
+// OpenRouter key只存在主行程這一側（renderer/localStorage完全看不到真正
+// 的金鑰值），呼應worker.js既有的handleNvidiaProxy/handleOpenRouterProxy
+// 那套「client端只送假金鑰、真金鑰在server端注入」設計，只是這裡的
+// 「server」換成本機Electron主行程，不需要真的部署雲端服務。使用者要求
+// 存成JSON（不要.env），格式：{"NVAPI_KEY":"...","OPENROUTER_API_KEY":"..."}。
+const SECRETS_FILE = () => path.join(USER_DATA_DIR(), "secrets.json");
 
 let mainWindow = null;
 let localProxyPort = null;
@@ -56,6 +63,25 @@ async function getDesktopSettings() {
 }
 async function saveDesktopSettings(settings) {
   await writeJsonSafe(SETTINGS_FILE(), settings);
+}
+
+// 環境變數優先（給想用CI/系統層級設定的使用者），檔案是主要途徑（使用者
+// 要求的「server configure」，人可以直接編輯這個JSON檔）。回傳的物件只
+// 在主行程內部使用——絕對不要整個回傳給renderer，IPC只回報「有沒有設定」
+// 的布林值（見下面fa:secrets:status），真正的金鑰值只有local-proxy.js
+// 組請求header時才會讀取。
+async function getSecrets() {
+  const fromFile = await readJsonSafe(SECRETS_FILE(), {});
+  return {
+    NVAPI_KEY: process.env.NVAPI_KEY || fromFile.NVAPI_KEY || "",
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || fromFile.OPENROUTER_API_KEY || "",
+  };
+}
+async function saveSecrets(patch) {
+  const cur = await readJsonSafe(SECRETS_FILE(), {});
+  const next = { ...cur, ...patch };
+  await writeJsonSafe(SECRETS_FILE(), next);
+  return next;
 }
 
 // path traversal防禦：把rootPath跟relPath解析成絕對路徑後，確認結果路徑
@@ -215,6 +241,30 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) =>
   });
 });
 
+// ---------- IPC: API金鑰（server configure） ----------
+// 刻意只回報「有沒有設定」，不回傳實際金鑰值——renderer沒有必要、也不應該
+// 看到真正的NVAPI_KEY/OPENROUTER_API_KEY內容，這些值只在local-proxy.js
+// 組轉發請求的header時，於主行程內部讀取使用。
+ipcMain.handle("fa:secrets:status", async () => {
+  const secrets = await getSecrets();
+  return {
+    nvidia: !!secrets.NVAPI_KEY,
+    openrouter: !!secrets.OPENROUTER_API_KEY,
+    secretsFile: SECRETS_FILE(),
+  };
+});
+// set是唯一允許renderer「送出」金鑰值的方向（使用者自己在UI打進去要儲存），
+// 不是讀取——資料流向跟fa:secrets:status完全相反，各自只開放單一方向。
+ipcMain.handle("fa:secrets:set", async (_evt, patch) => {
+  const allowedKeys = ["NVAPI_KEY", "OPENROUTER_API_KEY"];
+  const filtered = {};
+  for (const k of allowedKeys) {
+    if (typeof patch[k] === "string") filtered[k] = patch[k].trim();
+  }
+  await saveSecrets(filtered);
+  return true;
+});
+
 // ---------- IPC: 其他 ----------
 ipcMain.handle("fa:config:getLocalProxyPort", async () => localProxyPort);
 ipcMain.handle("fa:shell:openExternal", async (_evt, url) => {
@@ -225,10 +275,16 @@ ipcMain.handle("fa:shell:openExternal", async (_evt, url) => {
 
 // ---------- 視窗建立 ----------
 function createWindow() {
+  // tw_stock_db客製: 2026-09-15使用者要求——桌面版是單一用途的全螢幕對話
+  // 視窗，不是「小工具疊在別的頁面上」的浮動widget，開啟時就該佔滿畫面
+  // （show:false+maximize()+show()這個順序是避免使用者看到「先出現小視窗、
+  // 再瞬間變大」那一瞬間的閃爍）。使用者仍然可以自己把視窗變小/移動（不是
+  // 鎖死的kiosk全螢幕），只是預設狀態是最大化。
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 800,
+    width: 1280,
+    height: 860,
     title: "FloatingAssistant",
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -238,6 +294,10 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.maximize();
+    mainWindow.show();
+  });
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
@@ -245,6 +305,7 @@ app.whenReady().then(async () => {
   try {
     const { port } = await startLocalProxy({
       preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 47891,
+      getSecrets,
       onLog: (m) => console.log(m),
     });
     localProxyPort = port;
