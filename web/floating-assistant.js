@@ -848,10 +848,26 @@ const MAX_AUTO_CONTINUE_ROUNDS = 40;
 // 情況下模型只輸出思考過程、生不出答案，肇因很可能是內容量本身壓垮了這次
 // 請求，而不是模型偶發不穩定；繼續原封不動重送同樣大小的內容
 // （AI_REASONING_DEADEND_PROMPT）大機率再次失敗，應該先pruneContext壓縮掉
-// 這輪過大的內容再重試。這個門檻值只是「多大算異常大」的粗略經驗值（字元數
-// 是tokens的粗略上界估計，中英混雜文字通常token數比字元數少，門檻刻意抓
-// 保守一點，避免正常大小的內容也被誤判觸發不必要的壓縮）。
-const REASONING_DEADEND_LARGE_CONTEXT_CHARS = 20000;
+// 這輪過大的內容再重試。
+// tw_stock_db客製: 2026-09-15使用者再次明確要求——「我們的做法要可以滿足
+// 小模型，當換到token足夠的大模型也要可以自己self-adaptive」：這個門檻
+// 值不能是寫死的固定數字（小模型會太寬鬆、大模型又會太保守），要跟著
+// 使用者已經在效能設定裡填的contextWindowTokens（每個model row的真實
+// 上下文容量，使用者自己設定，見_getGenerationSettings）按比例縮放——見
+// 下面_getReasoningDeadendContextThresholdChars()。這裡只留一個絕對下限
+// （不管contextWindowTokens填多小，也不要低於這個字元數才觸發，避免
+// 使用者不小心把contextWindowTokens填成一個很小的數字時，正常大小的
+// 內容也被誤判）。
+const REASONING_DEADEND_LARGE_CONTEXT_CHARS_FLOOR = 20000;
+// tw_stock_db客製: 字元數是tokens的粗略估計，中英混雜文字通常「每token
+// 平均字元數」落在這個量級（CJK接近1-2、英文接近4，這裡抓一個中庸值），
+// 門檻刻意抓保守一點（只用contextWindowTokens的一半），避免正常大小的
+// 內容也被誤判觸發不必要的壓縮——真正的上限交給伺服器自己的400/413判斷
+// （見_loopFetch/_loopFetchNative頂端「原本有一個主動式預算檢查」的說明，
+// 這裡的門檻只是「思考當機時，這次的內容是不是明顯偏大」的粗略分類，不是
+// 精確的token計算）。
+const REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE = 3;
+const REASONING_DEADEND_CONTEXT_WINDOW_FRACTION = 0.5;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
 // tw_stock_db客製: 2026-08-25使用者實測案例——推理模型（例如
 // nemotron-3-super-120b-a12b）偶爾會在reasoning_content吐完一大段思考後
@@ -3370,6 +3386,29 @@ class FloatingAssistant {
             this.advancedSettings.generation = this._createDefaultGenerationSettings();
         }
         return this.advancedSettings.generation;
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者明確要求——「我們的做法要可以滿足
+    // 小模型，當換到token足夠的大模型也要可以自己self-adaptive」，這個
+    // 原則不只適用於reasoning-deadend的判斷門檻，也適用於任何「一次應該
+    // 塞多少原始內容給模型」的決定（例如桌面版fs_read_file/analyze_large_
+    // file的分段大小）——都應該跟著使用者自己填的contextWindowTokens
+    // （每個model row的真實上下文容量）按比例縮放，而不是寫死一個固定
+    // 數字。這裡是共用的核心公式，`fraction`依用途不同給不同保守程度
+    // （fraction越小＝越保留headroom給system prompt/工具schema/對話歷史
+    // 等其他也要佔用context的東西），`floorChars`是不管contextWindowTokens
+    // 填多小都不該低於的絕對下限，避免使用者設定不慎造成過度保守。
+    _getAdaptiveContentBudgetChars(fraction, floorChars) {
+        const contextWindowTokens = Number(this._getGenerationSettings().contextWindowTokens) || 0;
+        const scaled = contextWindowTokens * fraction * REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE;
+        return Math.max(floorChars, Math.round(scaled));
+    }
+
+    // 見_getAdaptiveContentBudgetChars()的說明——這裡檢查的是「整個request
+    // body」，本身已經包含system prompt/工具schema/完整對話歷史，用較大的
+    // fraction（拿contextWindowTokens的一半當門檻）。
+    _getReasoningDeadendContextThresholdChars() {
+        return this._getAdaptiveContentBudgetChars(REASONING_DEADEND_CONTEXT_WINDOW_FRACTION, REASONING_DEADEND_LARGE_CONTEXT_CHARS_FLOOR);
     }
 
     // tw_stock_db客製: 只把「使用者有填值、且沒被標記為已拒絕」的取樣參數
@@ -8209,6 +8248,31 @@ ${fnData.code}
             }
         } catch (_) { /* 不是圖片/3D場景/viewer/2D動畫payload，走一般文字流程 */ }
         return null;
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者實測回報+要求——「claude也不曾遇到
+    // 這樣啊，應該解決小模型的缺點」：部分較弱/實作不完整的模型在原生
+    // tool_calls協定下，偶爾會回傳缺少（或空字串）id的tool_calls項目
+    // （正常應該每一個都有一個唯一id，供後續對應的role:'tool'訊息用
+    // tool_call_id回指）。`_buildToolResultMessage`原本只在「工具結果」
+    // 那一側補一個合成id（見那裡的說明），但如果ASSISTANT訊息自己的
+    // tool_calls[].id本身就是空的，JSON.stringify序列化整個request body
+    // 時，這個空欄位會直接從輸出JSON裡消失，導致端點回報「missing field
+    // tool_call_id」（這正是使用者實測遇到的錯誤，之前被400/413分支誤判
+    // 成「上下文太長」反覆嘗試壓縮，其實跟內容大小完全無關）。修法是在
+    // 「收到API回應、要真的使用這批tool_calls之前」就地幫每一個缺id的
+    // 項目補上合成id——這樣assistant訊息的tool_calls[].id、跟後續
+    // _buildToolResultMessage()產生的tool結果的tool_call_id，兩邊用的是
+    // 同一個值（因為後面呼叫端都是讀同一個tc.id），不會有一邊補、一邊沒補
+    // 造成的不一致，從根本解決這個class的錯誤，不只是治標。
+    _ensureToolCallIds(toolCalls) {
+        if (!Array.isArray(toolCalls)) return toolCalls;
+        for (const tc of toolCalls) {
+            if (tc && !tc.id) {
+                tc.id = `call_synth_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+            }
+        }
+        return toolCalls;
     }
 
     _buildToolResultMessage(fnName, result, extra) {
@@ -15279,7 +15343,7 @@ ${existingNodeSummaries}
                     if (!message) { messages.push({ role: 'assistant', content: '[回應格式異常]' }); break; }
                     roundFinishReason = choice.finish_reason;
                     rawContent = message.content || '';
-                    toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+                    toolCalls = this._ensureToolCallIds(Array.isArray(message.tool_calls) ? message.tool_calls : []);
                 } else {
                     // 跟_loopFetch同一套串流解析＋邊收邊偵測重複輸出退化的邏輯
                     // （見_hasRepeatingTail），差別只是這裡沒有即時DOM顯示。
@@ -16075,9 +16139,10 @@ ${existingNodeSummaries}
                 // 會出現，不會卡死。
                 if (lastRoundWasReasoningDeadEnd && this._turnPruneCount < this.maxPruneRetriesPerTurn) {
                     const requestSizeChars = JSON.stringify(requestMessages).length;
-                    if (requestSizeChars >= REASONING_DEADEND_LARGE_CONTEXT_CHARS) {
+                    const threshold = this._getReasoningDeadendContextThresholdChars();
+                    if (requestSizeChars >= threshold) {
                         this._turnPruneCount++;
-                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
+                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元，門檻${Math.round(threshold)}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
                         streamDiv.remove();
                         await this.pruneContext('Reasoning Dead-End (Oversized Context)');
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
@@ -16370,7 +16435,7 @@ ${existingNodeSummaries}
                 // <think>標籤。
                 if (message.reasoning_content) reasoningAccum += message.reasoning_content;
                 finalContent += message.content || '';
-                toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+                toolCalls = this._ensureToolCallIds(Array.isArray(message.tool_calls) ? message.tool_calls : []);
 
                 const roundFinishReason = data.choices[0].finish_reason;
                 if (toolCalls.length) break; // 已經拿到工具呼叫，不需要（也不該）再接續
@@ -16396,9 +16461,10 @@ ${existingNodeSummaries}
                 // 無窮的「壓縮→還是失敗→又壓縮」迴圈。
                 if (lastRoundWasReasoningDeadEnd && this._turnPruneCount < this.maxPruneRetriesPerTurn) {
                     const requestSizeChars = JSON.stringify(requestMessages).length;
-                    if (requestSizeChars >= REASONING_DEADEND_LARGE_CONTEXT_CHARS) {
+                    const threshold = this._getReasoningDeadendContextThresholdChars();
+                    if (requestSizeChars >= threshold) {
                         this._turnPruneCount++;
-                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
+                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元，門檻${Math.round(threshold)}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
                         await this.pruneContext('Reasoning Dead-End (Oversized Context)');
                         return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
@@ -17319,7 +17385,7 @@ ${existingNodeSummaries}
             if (!message) return { text: '[子任務失敗: 回應格式異常]', visual: capturedVisual };
 
             const rawContent = message.content || '';
-            const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+            const toolCalls = this._ensureToolCallIds(Array.isArray(message.tool_calls) ? message.tool_calls : []);
 
             // tw_stock_db客製: 見SUBAGENT_MAX_REASONING_DEADEND_RETRIES的說明——
             // 把主對話迴圈既有的AI_REASONING_DEADEND_PROMPT復原機制搬過來這裡。
