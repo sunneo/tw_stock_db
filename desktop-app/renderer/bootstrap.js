@@ -483,14 +483,23 @@ function patchCloudflareWording(root) {
   // 既有的「批次分段」機制（batch_process_items）只解決「多個檔案」的情境，
   // 「單一大檔案」完全沒有對應機制——使用者明確要求「大檔案解析都要採用
   // chunks」。這裡讓fs_read_file自己對純文字內容做字元分段：預設一次最多
-  // 回傳FS_READ_DEFAULT_CHUNK_CHARS字元，超過的部分要AI自己帶offset續讀，
+  // 回傳getAdaptiveFsReadChunkChars()算出的字元數（跟著模型上下文容量
+  // 自動調整，見下面定義），超過的部分要AI自己帶offset續讀，
   // 每次都回傳明確的chunk/hasMore/nextOffset中繼資料+提示文字，讓AI知道
   // 「這只是片段，不要當作已經拿到全部內容就直接作答」。base64（疑似二進位）
   // 內容不做這個字元切割（語意不同，維持整包回傳）。
-  const FS_READ_DEFAULT_CHUNK_CHARS = 6000;
+  // tw_stock_db客製: 2026-09-15使用者明確要求——「我們的做法要可以滿足
+  // 小模型，當換到token足夠的大模型也要可以自己self-adaptive」：這個
+  // 預設分段大小不能寫死，要跟著使用者自己在效能設定填的contextWindowTokens
+  // （每個model row的真實上下文容量）按比例縮放——複用floating-assistant.js
+  // 核心新增的_getAdaptiveContentBudgetChars()共用公式（fraction=0.1，
+  // 保留大部分window給system prompt/工具schema/對話歷史；floor=6000維持
+  // 小模型原本就驗證過的安全預設值不變）。每次呼叫都重新計算（不是模組
+  // 載入時算一次），使用者中途調整設定立刻反映。
+  const getAdaptiveFsReadChunkChars = () => fa._getAdaptiveContentBudgetChars(0.1, 6000);
   fa.register_openai_tool(
     "fs_read_file",
-    "直接讀取這台電腦上任意路徑的檔案內容，不需要先授權/註冊資料夾。純文字檔案（原始碼/設定檔/markdown等）直接回傳文字；偵測到疑似二進位內容（含NUL byte）時自動改回傳base64（並標註likely_binary），不會像fap_read_file那樣直接拒絕。**大檔案會自動分段**：純文字內容超過約" + FS_READ_DEFAULT_CHUNK_CHARS + "字元時，一次只回傳一段（回應裡的chunk.hasMore/chunk.nextOffset會告訴你有沒有更多、下一段從哪裡開始），需要更多內容時帶offset參數再呼叫一次；每讀完一段就把重點摘要記下來，不要等所有段落都讀完才動筆、也不要把每段原始全文都留在對話裡。參數: {\"path\":\"/home/user/notes.txt\",\"offset\":0,\"maxChars\":6000}",
+    "直接讀取這台電腦上任意路徑的檔案內容，不需要先授權/註冊資料夾。純文字檔案（原始碼/設定檔/markdown等）直接回傳文字；偵測到疑似二進位內容（含NUL byte）時自動改回傳base64（並標註likely_binary），不會像fap_read_file那樣直接拒絕。**大檔案會自動分段**：純文字內容超過門檻時，一次只回傳一段（回應裡的chunk.hasMore/chunk.nextOffset會告訴你有沒有更多、下一段從哪裡開始，實際門檻依目前模型的上下文容量設定自動調整），需要更多內容時帶offset參數再呼叫一次；每讀完一段就把重點摘要記下來，不要等所有段落都讀完才動筆、也不要把每段原始全文都留在對話裡。參數: {\"path\":\"/home/user/notes.txt\",\"offset\":0,\"maxChars\":6000}",
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
@@ -500,7 +509,7 @@ function patchCloudflareWording(root) {
           const fullText = r.text;
           const totalChars = fullText.length;
           const offset = Number.isFinite(Number(parsed.offset)) && Number(parsed.offset) > 0 ? Math.floor(Number(parsed.offset)) : 0;
-          const maxChars = Number.isFinite(Number(parsed.maxChars)) && Number(parsed.maxChars) > 0 ? Math.floor(Number(parsed.maxChars)) : FS_READ_DEFAULT_CHUNK_CHARS;
+          const maxChars = Number.isFinite(Number(parsed.maxChars)) && Number(parsed.maxChars) > 0 ? Math.floor(Number(parsed.maxChars)) : getAdaptiveFsReadChunkChars();
           if (totalChars > maxChars || offset > 0) {
             const chunkText = fullText.slice(offset, offset + maxChars);
             const nextOffset = offset + chunkText.length;
@@ -518,7 +527,7 @@ function patchCloudflareWording(root) {
     fsToolSchema({
       encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" },
       offset: { type: "number", description: "選填，從第幾個字元開始讀（0-based）。續讀大檔案時，帶上一次回應chunk.nextOffset的值。預設0。" },
-      maxChars: { type: "number", description: `選填，這次最多回傳幾個字元。預設${FS_READ_DEFAULT_CHUNK_CHARS}。` },
+      maxChars: { type: "number", description: `選填，這次最多回傳幾個字元。預設依目前模型的上下文容量設定自動調整（目前約${getAdaptiveFsReadChunkChars()}）。` },
     })
   );
   fa.register_openai_tool(
@@ -651,14 +660,18 @@ function patchCloudflareWording(root) {
   //      多大、多少個區塊，最終一定會收斂成一份完整結果，不會因為某一次
   //      合併呼叫本身內容太大而卡住/失敗。
   fa._largeFileAnalysisJobs = fa._largeFileAnalysisJobs || new Map();
-  const ANALYZE_LARGE_FILE_CHUNK_CHARS = 6000;
-  const ANALYZE_LARGE_FILE_REDUCE_CHARS = 6000;
+  // tw_stock_db客製: 見getAdaptiveFsReadChunkChars()同一段說明——這裡的
+  // map/reduce分段大小同樣要跟著contextWindowTokens自動調整，不是寫死的
+  // 固定數字，每次呼叫時重新計算。
+  const getAdaptiveMapChunkChars = () => fa._getAdaptiveContentBudgetChars(0.1, 6000);
+  const getAdaptiveReduceChunkChars = () => fa._getAdaptiveContentBudgetChars(0.1, 6000);
   async function reduceChunkVerdicts(fa, verdictTexts, instruction) {
     let level = verdictTexts.slice();
     let depth = 0;
     while (true) {
+      const reduceChunkChars = getAdaptiveReduceChunkChars();
       const combinedLen = level.reduce((s, t) => s + t.length, 0);
-      if (level.length <= 1 || combinedLen <= ANALYZE_LARGE_FILE_REDUCE_CHARS) {
+      if (level.length <= 1 || combinedLen <= reduceChunkChars) {
         if (level.length === 1 && depth === 0) return { finalText: level[0], reduceDepth: depth };
         const finalPrompt = `以下是針對任務「${instruction}」，依照原始檔案順序切出的多份分析結果（共${level.length}份，可能已經是前幾輪濃縮過的中繼結果），請統整成一份完整、連貫、依序涵蓋每一份重點的最終結果，不要遺漏任何一份提到的具體內容，也不要重複贅述：\n\n${level.map((t, i) => `【第${i + 1}份】\n${t}`).join("\n\n")}`;
         // tw_stock_db客製: 這一次呼叫是繞過runBatchSubAgents直接呼叫
@@ -673,7 +686,7 @@ function patchCloudflareWording(root) {
       let cur = [];
       let curLen = 0;
       for (const t of level) {
-        if (cur.length && curLen + t.length > ANALYZE_LARGE_FILE_REDUCE_CHARS) { groups.push(cur); cur = []; curLen = 0; }
+        if (cur.length && curLen + t.length > reduceChunkChars) { groups.push(cur); cur = []; curLen = 0; }
         cur.push(t);
         curLen += t.length;
       }
@@ -704,7 +717,7 @@ function patchCloudflareWording(root) {
         return JSON.stringify({ ok: false, error: "這個工具只支援純文字檔案的完整分段解析，偵測到疑似二進位內容，請改用fs_read_file。" });
       }
       const fullText = fileResult.text;
-      const chunkChars = Number.isFinite(Number(parsed.chunkChars)) && Number(parsed.chunkChars) > 0 ? Math.floor(Number(parsed.chunkChars)) : ANALYZE_LARGE_FILE_CHUNK_CHARS;
+      const chunkChars = Number.isFinite(Number(parsed.chunkChars)) && Number(parsed.chunkChars) > 0 ? Math.floor(Number(parsed.chunkChars)) : getAdaptiveMapChunkChars();
       const offsets = [];
       for (let i = 0; i < fullText.length; i += chunkChars) offsets.push(i);
       if (!offsets.length) return JSON.stringify({ ok: true, path, totalChars: 0, totalChunks: 0, finalText: "（檔案是空的）" });
@@ -733,7 +746,7 @@ function patchCloudflareWording(root) {
       properties: {
         path: { type: "string", description: "絕對路徑" },
         instruction: { type: "string", description: "要對這個檔案做什麼分析/摘要/擷取，例如「摘要這份檔案的用途、結構與關鍵內容」" },
-        chunkChars: { type: "number", description: `選填，每個區塊的字元數，預設${ANALYZE_LARGE_FILE_CHUNK_CHARS}` },
+        chunkChars: { type: "number", description: `選填，每個區塊的字元數，預設依目前模型的上下文容量設定自動調整（目前約${getAdaptiveMapChunkChars()}）` },
         concurrency: { type: "number", description: "選填，同時處理幾個區塊（1-8），留空用系統預設" },
       },
       required: ["path", "instruction"],
