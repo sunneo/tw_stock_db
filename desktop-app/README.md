@@ -162,3 +162,15 @@ target——雙擊直接跑，不用安裝、不會在系統裡留下安裝紀�
   只到「本機打包成可執行的單一檔案」。
 - `main.js`裡的本機代理埠號預設`47891`，被佔用時會自動往上找（最多試
   20個），實際埠號透過IPC回報給renderer，不需要使用者自己處理。
+- **不要對這個資料夾跑`npm audit fix --force`**——實測過會把
+  `electron`/`electron-builder`跳到需要Node.js `>=22.12.0`的版本
+  （`electron@44.x`/`electron-builder@26.15.x`），如果本機Node版本較舊
+  （例如16.x），`npm install`會在`electron-winstaller`等套件的安裝腳本
+  卡死失敗（`vendor/7z-*.exe`不存在之類的ENOENT），而且這通常不是單一
+  套件壞掉、是整條依賴鏈的安裝腳本在不相容的Node版本下沒能正常跑完。
+  `npm audit`目前在這個範圍報的高風險項目集中在`electron-updater`的
+  自動更新流程與`dmg-builder`/`tar`的封存檔解壓縮路徑——這個專案沒有設定
+  `publish`/autoUpdater、也不會解壓縮任何不受信任的封存檔，這些CVE的
+  實際曝險對這個專案很低，維持現有版本是刻意的選擇，不是忘了處理。真的
+  想升級到最新版，請先把本機Node.js升級到22以上再試，不要用`--force`
+  硬升版本卻維持舊Node。
