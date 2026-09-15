@@ -6,6 +6,17 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopAPI", {
+  // preload script本身一直都有Node的`process`可用（跟renderer的
+  // contextIsolation無關，只有preload/main才看得到），這裡直接同步暴露
+  // 平台資訊——2026-09-15使用者要求desktop_ops domain要知道自己現在跑在
+  // Windows還是Linux(/macOS)，才能決定要用`dir`還是`ls`、要不要提供
+  // tmux（POSIX限定工具）等。純靜態資訊，不用IPC往返。
+  platform: {
+    name: process.platform,
+    isWindows: process.platform === "win32",
+    isLinux: process.platform === "linux",
+    isMac: process.platform === "darwin",
+  },
   roots: {
     list: () => ipcRenderer.invoke("fa:roots:list"),
     add: (label) => ipcRenderer.invoke("fa:roots:add", { label }),
@@ -35,6 +46,18 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     readFile: (rootId, relPath, encoding) => ipcRenderer.invoke("fa:fs:readFile", { rootId, relPath, encoding }),
     writeFile: (rootId, relPath, payload) => ipcRenderer.invoke("fa:fs:writeFile", { rootId, relPath, ...payload }),
     remove: (rootId, relPath, recursive) => ipcRenderer.invoke("fa:fs:remove", { rootId, relPath, recursive }),
+  },
+  // 2026-09-15使用者明確要求「桌面版不應該有任何限制」——這組跟上面的
+  // `fs`（root-scoped，先授權才能碰）並存，直接吃絕對路徑，main.js的
+  // fa:rawfs:*完全不做root範圍檢查，唯一邊界是OS本身的檔案權限。
+  rawfs: {
+    stat: (path) => ipcRenderer.invoke("fa:rawfs:stat", { path }),
+    readdir: (path) => ipcRenderer.invoke("fa:rawfs:readdir", { path }),
+    mkdir: (path) => ipcRenderer.invoke("fa:rawfs:mkdir", { path }),
+    readFile: (path, encoding) => ipcRenderer.invoke("fa:rawfs:readFile", { path, encoding }),
+    writeFile: (path, payload) => ipcRenderer.invoke("fa:rawfs:writeFile", { path, ...payload }),
+    remove: (path, recursive) => ipcRenderer.invoke("fa:rawfs:remove", { path, recursive }),
+    find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
   },
   exec: {
     getSettings: () => ipcRenderer.invoke("fa:exec:getSettings"),
