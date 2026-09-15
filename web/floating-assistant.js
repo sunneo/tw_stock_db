@@ -1237,7 +1237,15 @@ const SUBAGENT_TRANSIENT_RETRY_DELAY_MS = 800;
 // 錯誤更值得重試（不是端點壞掉，只是需要放慢），這裡給429獨立、更寬鬆的
 // 重試次數與遞增等待時間（+隨機jitter避免同一批worker在退避後又同時撞在
 // 一起），並且優先信任端點回傳的Retry-After header（如果有的話）。
-const SUBAGENT_RATE_LIMIT_RETRY_LIMIT = 5;
+// tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——即使設定了rpm，
+// 平行子任務仍撞到429，這時舊行為是重試次數用完就直接「換下一個候選
+// 模型」，使用者明確表示這不合理（429純粹是節流問題，換模型不能解決，
+// 換了只是把同樣的問題丟給另一個可能完全沒有配額資訊的端點）。現在429
+// 已經改成獨立分支、永遠只等待重試、不會落到換row的邏輯（見
+// _runSubAgentTask內的isRateLimited分支），這個常數變成「429情境下唯一的
+// 存活機會」，數字刻意抓寬鬆一點（原本5次只是「多試幾次就放棄換模型」的
+// 過渡值，不是真正的存活上限）。
+const SUBAGENT_RATE_LIMIT_RETRY_LIMIT = 12;
 const SUBAGENT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const SUBAGENT_RATE_LIMIT_MAX_DELAY_MS = 15000;
 
@@ -3674,24 +3682,50 @@ class FloatingAssistant {
     // 所有worker共用同一份時間戳記清單），刻意不用per-worker獨立節流，
     // 因為使用者要限制的是「這個端點整體」的請求速率，不是「每個worker各自」
     // 的速率。
-    // tw_stock_db客製: 2026-09-15——rowLimit是呼叫端（runBatchSubAgents）
-    // 事先resolve好的「這個batch實際會打到哪個model row」的
+    // tw_stock_db客製: 2026-09-15——rowLimit是呼叫端（runBatchSubAgents／
+    // _runSubAgentTask）事先resolve好的「這次實際會打到哪個model row」的
     // row.requestsPerMinute（見MODEL_ROW_NUMERIC_FIELDS的說明，
     // null＝這個row沒有自己覆寫、沿用全域batchRequestsPerMinute；數字
     // （含0）＝這個row自己的明確設定，直接蓋過全域值，不用再管全域數字）。
-    async _acquireBatchRateSlot(rowLimit) {
+    // tw_stock_db客製: 2026-09-15使用者明確要求——「同樣的API Key對同一個
+    // 節點應該頻率是一起算的」「除非我有混和不同api key」：原本用單一個
+    // 全域this._batchRateTimestamps陣列，等於「不管實際打到哪個端點/用哪把
+    // key，全部共用同一份計數」——如果使用者混用了兩個不同金鑰/端點的row
+    // （例如同時有nvidia跟openrouter兩筆row），這樣會錯誤地讓兩個完全獨立
+    // 的配額互相排擠；但同一把key打同一個節點時（包含_runSubAgentTask內部
+    // 因為5xx/404 fallback換了row、但換到的剛好是同一個端點+key的情況），
+    // 又必須真的算在一起，不能各自獨立開新視窗，否則會低估真實打到那個
+    // 節點的請求數、繼續撞429。這裡改成用`${apiUrl}|${apiKey}`當key，維護
+    // 一個Map<endpointKey, timestamps[]>，天生同時滿足「不同端點/key各自
+    // 獨立限流」跟「同一個端點/key不管從哪個呼叫路徑打過去都算同一份」
+    // 兩個要求。endpointKey留空時退回舊的單一全域視窗（給還沒特別指定
+    // 端點識別的呼叫端相容）。
+    // tw_stock_db客製: 2026-09-15使用者回報「按下停止，平行的subagent應該
+    // 要一起停掉」「目前按下去停不掉」——這個等待迴圈最久單次要等到接近
+    // 60秒（視窗剩餘時間），如果使用者這時候按了停止，不檢查的話還是會
+    // 傻傻等完才把控制權還給呼叫端。這裡在每次進入等待前後都檢查
+    // this.stopRequested，真的被按了就丟一個帶特殊旗標的Error，呼叫端
+    // （_runSubAgentTask/runBatchSubAgents）攔截這個旗標當成「使用者要求
+    // 停止」處理，不是真正的失敗。
+    async _acquireBatchRateSlot(rowLimit, endpointKey) {
         const limit = rowLimit != null ? Number(rowLimit) || 0 : (Number(this.advancedSettings.batchRequestsPerMinute) || 0);
         if (limit <= 0) return;
-        if (!this._batchRateTimestamps) this._batchRateTimestamps = [];
+        if (!this._batchRateTimestampsByEndpoint) this._batchRateTimestampsByEndpoint = new Map();
+        const key = endpointKey || '__default__';
         for (;;) {
+            if (this.stopRequested) { const err = new Error('使用者已停止'); err.isStopped = true; throw err; }
             const now = Date.now();
-            this._batchRateTimestamps = this._batchRateTimestamps.filter(t => now - t < 60000);
-            if (this._batchRateTimestamps.length < limit) {
-                this._batchRateTimestamps.push(now);
+            const filtered = (this._batchRateTimestampsByEndpoint.get(key) || []).filter(t => now - t < 60000);
+            this._batchRateTimestampsByEndpoint.set(key, filtered);
+            if (filtered.length < limit) {
+                filtered.push(now);
                 return;
             }
-            const oldest = this._batchRateTimestamps[0];
-            const waitMs = Math.max(50, 60000 - (now - oldest) + 50);
+            const oldest = filtered[0];
+            // 見上面說明——等待時間切成較短的區塊、每醒來一次就重新檢查
+            // stopRequested，而不是一次睡滿剩餘時間，這樣使用者按下停止後
+            // 最多幾秒內就能真正中止，不用等到這個視窗結束。
+            const waitMs = Math.min(2000, Math.max(50, 60000 - (now - oldest) + 50));
             await new Promise(r => setTimeout(r, waitMs));
         }
     }
@@ -9919,15 +9953,73 @@ ${sourceTool.handlerScript}
             modelName: localStorage.getItem(this.LLM_MODEL_NAME_KEY) || '',
             advancedSettings: JSON.parse(JSON.stringify(this.advancedSettings))
         };
-        const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+        this._downloadTextFile('ai-assistant-settings.json', JSON.stringify(config, null, 2), 'application/json');
+    }
+
+    // tw_stock_db客製: 2026-09-15使用者要求——「單機版可以有設定輸出所有
+    // 對話in json/markdown?」。匯出範圍刻意涵蓋「還在對話歷史裡的
+    // this.messages」＋「已經被pruneContext/話題轉移封存掉的
+    // this.archivedDisplayBlocks」兩部分，依原始順序合併——單純只匯出
+    // this.messages的話，使用者其實看到的是一段被壓縮過的摘要，看不到
+    // 真正完整的原始逐字對話，跟「輸出所有對話」的訴求不符。
+    _collectFullConversationForExport() {
+        const blocks = Array.isArray(this.archivedDisplayBlocks) ? this.archivedDisplayBlocks : [];
+        const archivedMessages = blocks.flatMap(b => Array.isArray(b.messages) ? b.messages : []);
+        return archivedMessages.concat(Array.isArray(this.messages) ? this.messages : []);
+    }
+
+    _downloadTextFile(filename, content, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'ai-assistant-settings.json';
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+    }
+
+    _exportConversationAsJson() {
+        const payload = {
+            exportedAt: new Date().toISOString(),
+            messages: this._collectFullConversationForExport(),
+        };
+        this._downloadTextFile(`ai-conversation-${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+    }
+
+    // tw_stock_db客製: role→標題/圖示對照，跟既有訊息渲染（_renderSingleMessage）
+    // 大致對齊但不追求逐一還原畫面上的摺疊/視覺元件呈現——Markdown匯出的
+    // 目的是給人閱讀/存檔的純文字紀錄，不是重現互動UI。
+    _formatMessageForMarkdownExport(msg) {
+        if (!msg || typeof msg !== 'object') return '';
+        const role = msg.role;
+        if (role === 'system') return ''; // 系統prompt/歷史摘要不是「對話」本身，匯出時略過
+        const roleLabel = role === 'user' ? '### 👤 使用者'
+            : role === 'assistant' ? '### 🤖 AI'
+            : role === 'tool' ? '### 🔧 工具結果'
+            : `### ${role}`;
+        const lines = [roleLabel];
+        const rawContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
+        // tw_stock_db客製: 見_stripInlineBase64的既有說明——避免整段base64
+        // 圖片/音檔資料把Markdown檔案撐到動輒幾MB、又完全無法閱讀。
+        const cleaned = this._stripInlineBase64(rawContent || '').trim();
+        if (cleaned) lines.push(cleaned);
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+            for (const tc of msg.tool_calls) {
+                const fnName = tc.function && tc.function.name;
+                const fnArgs = tc.function && tc.function.arguments;
+                lines.push(`\n\`[呼叫工具: ${fnName}(${fnArgs || ''})]\``);
+            }
+        }
+        return lines.join('\n\n');
+    }
+
+    _exportConversationAsMarkdown() {
+        const all = this._collectFullConversationForExport();
+        const header = `# 對話紀錄匯出\n\n匯出時間：${new Date().toLocaleString('zh-TW')}\n`;
+        const body = all.map(m => this._formatMessageForMarkdownExport(m)).filter(Boolean).join('\n\n---\n\n');
+        this._downloadTextFile(`ai-conversation-${Date.now()}.md`, `${header}\n${body}\n`, 'text/markdown');
     }
 
     _importSettings(file) {
@@ -16963,6 +17055,11 @@ ${existingNodeSummaries}
         let apiKey = rowConfig.apiKey;
         let useNative = this._shouldUseNativeToolCalls(apiModel);
         let transientRetryCount = 0;
+        // tw_stock_db客製: 見SUBAGENT_RATE_LIMIT_RETRY_LIMIT的說明——429獨立
+        // 計數，不跟transientRetryCount共用（transientRetryCount在換row時
+        // 會被歸零，但429分支現在永遠不換row，需要自己一路累加到真正的
+        // 存活上限，不會因為任何原因被重置）。
+        let rateLimitRetryCount = 0;
         // tw_stock_db客製: 2026-09-13使用者要求——子agent執行到一半才發現需要
         // 一個原本沒拿到的domain工具時，要能「原地」申請追加，不能跳出去重新
         // 委派一次（太慢，而且會失去目前這段對話歷史）。改成let+複本（不是
@@ -16974,6 +17071,19 @@ ${existingNodeSummaries}
         // 這時是false，偽工具整個不啟用。
         const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames.slice() : null;
         const canRequestMore = Array.isArray(allowedToolNames);
+        // tw_stock_db客製: 2026-09-15使用者實測回報——即使把某個model row的
+        // 「批次每分鐘請求數上限」設定成40，實際還是撞到429。追查後發現：
+        // runBatchSubAgents原本只在「每個item開始跑之前」呼叫一次
+        // _acquireBatchRateSlot，但一個item（=一次_runSubAgentTask執行）內部
+        // 可能因為工具呼叫、reasoning-deadend重試、malformed-call重試等原因
+        // 觸發不只一次真正的HTTP請求——這些後續請求完全沒有再經過限流，
+        // concurrency一多，真實打到端點的請求數就會悄悄超過使用者設定的
+        // rpm。這裡改成options.rateLimitPerMinute（由runBatchSubAgents傳入，
+        // 一般delegate_to_subagent呼叫端不傳、維持無限流的既有行為），在
+        // 迴圈裡「每一次真正要送出fetch之前」都呼叫一次_acquireBatchRateSlot
+        // ——這樣不管一個item內部實際觸發了幾次HTTP請求，全部都會被同一組
+        // 滑動視窗限流器計入，真實請求速率才會確實貼合使用者設定的值。
+        const rateLimitPerMinute = options.rateLimitPerMinute != null ? options.rateLimitPerMinute : null;
         let toolEscalationCount = 0;
         const REQUEST_MORE_TOOLS_NAME = 'request_additional_tools';
         // tw_stock_db客製: 2026-09-13使用者回報——開啟「顯示工具呼叫追蹤與
@@ -17064,6 +17174,10 @@ ${existingNodeSummaries}
         let malformedCallRetries = 0;
 
         for (let round = 0; round < maxRounds; round++) {
+            // tw_stock_db客製: 見_acquireBatchRateSlot()同一段說明——使用者
+            // 按下停止時，平行跑的子任務要一起停掉，不能只有根對話迴圈認得
+            // stopRequested。這裡是每一輪真正送出請求前的第一道檢查點。
+            if (this.stopRequested) return { text: '[已停止]', visual: capturedVisual };
             if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
             const body = {
                 model: apiModel,
@@ -17086,6 +17200,12 @@ ${existingNodeSummaries}
                 Object.assign(body, this._buildStopParamBody());
             }
 
+            // tw_stock_db客製: 見rateLimitPerMinute宣告處的說明——每一次真正
+            // 送出fetch之前都要經過限流，不能只在item開始時擋一次。
+            // rateLimitPerMinute為null（一般非批次的delegate_to_subagent呼叫）
+            // 時_acquireBatchRateSlot內部本來就會退回讀全域設定或直接放行，
+            // 行為不變。
+            if (rateLimitPerMinute != null) await this._acquireBatchRateSlot(rateLimitPerMinute, `${apiUrl}|${apiKey}`);
             let response = null;
             let networkError = null;
             try {
@@ -17111,28 +17231,40 @@ ${existingNodeSummaries}
             // 失敗。這三種情況都用round--不消耗maxRounds，跟下面既有的stop
             // 參數/取樣參數自我修復路徑同一個「基礎設施問題不算一輪對話」原則。
             const isRateLimited = !!(response && response.status === 429);
-            const isServerTransient = !!networkError || (response && response.status >= 500) || isRateLimited;
+            const isServerTransient = !!networkError || (response && response.status >= 500);
             const isModelUnavailable = response && response.status === 404;
+            // tw_stock_db客製: 2026-09-15使用者明確要求——「429應該要等、
+            // retry，而且在處理parallel subagent應該要考慮到設定值」「這種
+            // give up並不是無法連線，不是頻率問題，不接受換model的作法」。
+            // 429獨立成自己的分支：純粹放慢速度、一路等待重試，永遠不會落到
+            // 下面「換下一筆候選row」的邏輯——因為換模型完全不能解決「這個
+            // 端點現在太密集」這件事，換了只是把同樣的節流問題丟給另一個
+            // 可能配額/狀況完全不同的端點。真正該做的是確保_acquireBatchRateSlot
+            // 有確實把這個端點/key的每一次實際請求都算進去（見rateLimitPerMinute
+            // 宣告處的說明），這裡的重試只是最後一道防線（例如使用者剛調低
+            // rpm設定、還沒被其他並行呼叫端感知到，或多個獨立的批次任務短暫
+            // 疊在一起）。
+            if (isRateLimited) {
+                if (rateLimitRetryCount < SUBAGENT_RATE_LIMIT_RETRY_LIMIT) {
+                    rateLimitRetryCount++;
+                    const retryAfterHeader = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null;
+                    const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+                    const delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+                        ? retryAfterSec * 1000
+                        : Math.min(SUBAGENT_RATE_LIMIT_MAX_DELAY_MS, SUBAGENT_RATE_LIMIT_BASE_DELAY_MS * rateLimitRetryCount) + Math.round(Math.random() * 500);
+                    this._log(`⚠️ 子任務撞到429（請求太密集），${delayMs}ms後重試第${rateLimitRetryCount}次…（純粹放慢速度重試，不會切換模型）`);
+                    await new Promise(r => setTimeout(r, delayMs));
+                    round--;
+                    continue;
+                }
+                return { text: `[子任務失敗: 持續撞到429速率限制，已重試${SUBAGENT_RATE_LIMIT_RETRY_LIMIT}次仍失敗。請確認rpm設定是否符合端點實際限制，或稍後再試。]`, visual: capturedVisual };
+            }
             if (isServerTransient || isModelUnavailable) {
                 const statusLabel = networkError ? `網路錯誤: ${networkError.message}` : `HTTP ${response.status}`;
-                // 見SUBAGENT_RATE_LIMIT_RETRY_LIMIT的說明——429是「太密集、
-                // 等一下再打」，跟真的伺服器錯誤分開處理：更寬鬆的重試次數、
-                // 優先信任端點的Retry-After header，沒有的話用隨重試次數遞增
-                // （+隨機jitter避免同批worker退避後又同時撞在一起）的等待
-                // 時間，而不是固定800ms。
-                const retryLimit = isRateLimited ? SUBAGENT_RATE_LIMIT_RETRY_LIMIT : SUBAGENT_TRANSIENT_RETRY_LIMIT;
-                if (isServerTransient && transientRetryCount < retryLimit) {
+                if (isServerTransient && transientRetryCount < SUBAGENT_TRANSIENT_RETRY_LIMIT) {
                     transientRetryCount++;
-                    let delayMs = SUBAGENT_TRANSIENT_RETRY_DELAY_MS;
-                    if (isRateLimited) {
-                        const retryAfterHeader = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null;
-                        const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
-                        delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-                            ? retryAfterSec * 1000
-                            : Math.min(SUBAGENT_RATE_LIMIT_MAX_DELAY_MS, SUBAGENT_RATE_LIMIT_BASE_DELAY_MS * transientRetryCount) + Math.round(Math.random() * 500);
-                    }
-                    this._log(`⚠️ 子任務暫時性錯誤(${statusLabel})，${delayMs}ms後重試第${transientRetryCount}次…`);
-                    await new Promise(r => setTimeout(r, delayMs));
+                    this._log(`⚠️ 子任務暫時性錯誤(${statusLabel})，${SUBAGENT_TRANSIENT_RETRY_DELAY_MS}ms後重試第${transientRetryCount}次…`);
+                    await new Promise(r => setTimeout(r, SUBAGENT_TRANSIENT_RETRY_DELAY_MS));
                     round--;
                     continue;
                 }
@@ -17330,12 +17462,12 @@ ${existingNodeSummaries}
         // tw_stock_db客製: 2026-09-15——這個batch實際會打到的端點是
         // _runSubAgentTask內部固定從rows[0]開始嘗試（只有遇到暫時性錯誤/
         // 模型不存在才會往下一筆row換），這裡在worker迴圈開始前先resolve
-        // 一次rows[0].requestsPerMinute，讓所有worker共用同一個「這個batch
-        // 這一輪實際端點」的rpm上限；如果之後真的觸發换row，該row可能有
-        // 不同的rpm設定，但那是既有fallback機制本身的例外情況，rate limit
-        // 只求「大部分時候貼合實際使用的端點」，不強求換row後即時重新resolve
-        // （換row本身已經是走過重試/backoff的少見情況，見_runSubAgentTask
-        // 的說明）。
+        // 一次rows[0].requestsPerMinute，當作這個batch的rpm設定傳給每個
+        // _runSubAgentTask呼叫（見rateLimitPerMinute/_acquireBatchRateSlot
+        // 的說明——實際限流現在改成在_runSubAgentTask內部「每一次真正送出
+        // fetch之前」執行，不是在這裡「每個item開始前」執行一次就算數，這樣
+        // 一個item內部不管因為工具呼叫/重試觸發幾次真正的HTTP請求，全部都會
+        // 被計入同一個端點的配額，不會悄悄超過使用者設定的rpm）。
         const primaryRow = this._getModelRows()[0];
         const rowRpm = primaryRow && primaryRow.requestsPerMinute != null ? primaryRow.requestsPerMinute : null;
 
@@ -17345,15 +17477,12 @@ ${existingNodeSummaries}
         this._log(`↻ 批次分析開始：共${list.length}項，同時執行${n}個子任務…`);
 
         const worker = async () => {
-            while (nextIdx < list.length) {
+            // tw_stock_db客製: 見_acquireBatchRateSlot()的說明——使用者按下
+            // 停止時，這裡也要停止「認領下一個item」，不是只讓已經在跑的
+            // item自然結束。放在while條件裡，每次要拿新item前都會重新檢查。
+            while (nextIdx < list.length && !this.stopRequested) {
                 const myIdx = nextIdx++;
                 const item = list[myIdx];
-                // 見_acquireBatchRateSlot()的說明——rowRpm非null時代表使用者
-                // 針對目前主要使用的model row自己設定過rpm（逐一設定，優先於
-                // 全域batchRequestsPerMinute）；兩者都沒設定時完全不影響既有
-                // 行為/效能。故意放在「拿到myIdx之後、真正開始跑子任務之前」，
-                // 讓等待中的worker不會卡住其他worker去搶下一個index。
-                await this._acquireBatchRateSlot(rowRpm);
                 const prompt = `${instruction}\n\n這次只需要處理這一項：${item}。回答要精簡（2-4句話為原則），先講結論、再附一句關鍵理由，不需要完整的多段式分析架構。`;
                 let verdict;
                 try {
@@ -17361,9 +17490,9 @@ ${existingNodeSummaries}
                     // {text, visual}，這裡只需要文字結論，取.text即可（批次分析
                     // 本來就只收集短結論陣列，沒有渲染視覺內容的地方，不需要
                     // 處理visual欄位）。
-                    verdict = (await this._runSubAgentTask(prompt)).text;
+                    verdict = (await this._runSubAgentTask(prompt, undefined, { rateLimitPerMinute: rowRpm })).text;
                 } catch (err) {
-                    verdict = `[子任務例外: ${err.message}]`;
+                    verdict = err && err.isStopped ? '[已停止]' : `[子任務例外: ${err.message}]`;
                 }
                 results[myIdx] = { item, verdict };
                 doneCount++;
@@ -17372,7 +17501,15 @@ ${existingNodeSummaries}
         };
 
         await Promise.all(Array.from({ length: n }, () => worker()));
-        this._log(`✅ 批次分析完成，共${list.length}項。`);
+        this._log(this.stopRequested ? '🛑 批次分析已停止。' : `✅ 批次分析完成，共${list.length}項。`);
+        // tw_stock_db客製: 提前停止時，還沒被任何worker認領到的項目
+        // results[idx]會是undefined（陣列稀疏），呼叫端（batch_process_items/
+        // analyze_large_file）目前都是直接map/reduce這個陣列，undefined項目
+        // 補一個明確的「已停止」標記，避免呼叫端在.verdict上意外拋出
+        // TypeError。
+        for (let i = 0; i < results.length; i++) {
+            if (!results[i]) results[i] = { item: list[i], verdict: '[已停止，尚未執行]' };
+        }
         return results;
     }
 
@@ -17821,6 +17958,8 @@ ${existingNodeSummaries}
                             <span style="font-size:12px; color:#94a3b8;">全部內容以 JSON 格式儲存在 persistent localStorage。</span>
                             <button type="button" id="ai-settings-export-btn" class="ai-advanced-btn">匯出設定</button>
                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入設定<input type="file" id="ai-settings-import-input" accept=".json" style="display:none;"></label>
+                            <button type="button" id="ai-conversation-export-json-btn" class="ai-advanced-btn">匯出對話(JSON)</button>
+                            <button type="button" id="ai-conversation-export-md-btn" class="ai-advanced-btn">匯出對話(Markdown)</button>
                         </div>
                         <button type="button" id="ai-advanced-done" class="ai-advanced-btn primary">完成</button>
                     </div>
@@ -19393,6 +19532,8 @@ ${existingNodeSummaries}
         document.getElementById('ai-fn-editor-close').onclick = () => this._closeAiFnEditor();
         document.getElementById('ai-fn-editor-cancel').onclick = () => this._closeAiFnEditor();
         document.getElementById('ai-settings-export-btn').onclick = () => this._exportSettings();
+        document.getElementById('ai-conversation-export-json-btn').onclick = () => this._exportConversationAsJson();
+        document.getElementById('ai-conversation-export-md-btn').onclick = () => this._exportConversationAsMarkdown();
         document.getElementById('ai-settings-import-input').addEventListener('change', (e) => {
             const file = e.target.files && e.target.files[0];
             if (file) this._importSettings(file);
