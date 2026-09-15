@@ -94,8 +94,15 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     `{id,label,handle,addedAt}`，`handle`是`FileSystemDirectoryHandle`
     本體（Chromium IndexedDB structured clone原生支援），這是「permission
     永久化」的關鍵，重開頁面後用`handle.queryPermission()`唯讀確認授權
-    還在；失效時只能靠使用者自己點「重新授權」觸發`requestPermission()`
-    （transient activation硬限制，AI工具呼叫鏈滿足不了）。
+    還在；失效時`_checkFapPermission`會直接跳出`_showFapPermissionDialog`
+    （2026-09-15加，仿`_showMp4ExportOptionsDialog`同一種Promise-based
+    輕量Modal）讓使用者當場點擊觸發`requestPermission()`（transient
+    activation硬限制——一定要剛剛發生的真人點擊，AI工具呼叫鏈本身滿足
+    不了，但「當場跳出來使用者馬上點」符合），呼叫端（fap_*/git_*全部
+    工具）就停在原地等使用者回應。同一FAP同時多個並發呼叫在等權限時，
+    用`_fapPermissionDialogPromises` Map依`${rec.id}:${mode}`去重共用
+    同一個dialog。Advance Settings的「重新授權」按鈕保留（給想主動先
+    授權的使用者），不是被取代。
   - `fap:`定址格式（`_looksLikeFapRef`/`_parseFapRef`）是AI/斜線指令
     區分persistentStorage(FileCache) vs File Access Point的唯一依據，
     `_resolveUploadedFileRecord`開頭guard掉`fap:`格式直接回傳null。
@@ -127,6 +134,16 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
   - 新Advance Settings分頁`data-cat="file-access"`：FAP清單
     （`_renderFapList`）+ git設定區塊（corsProxy網址/token/作者名稱信箱）。
     3個斜線指令`/fap-list`/`/fap-read`/`/fap-find`（`_handleFap*Command`）。
+  - **2026-09-15實機驗證抓到的2個真bug**（mock測試沒測出來，都是「真的
+    在真實瀏覽器+真實deployed Worker+真實GitHub repo」跑才發現）：(1)
+    `worker.js`的`handleGitProxy`原本要求目標URL一定要有`https://`開頭，
+    但isomorphic-git核心（`Pr`函式）對非`?`結尾的corsProxy會先把scheme
+    砍掉才接上去，導致每次都400——改成沒有scheme就自動補`https://`。
+    (2) `FapGitFs._unlink`/`_rmdir`直接讓File System Access API的原生
+    `NotFoundError` DOMException（`.code`是數字8）穿透，isomorphic-git
+    認不得（要字串'ENOENT'），導致`git.fetch()`清理`.git/shallow`那步
+    直接中止整個clone——補上跟`_readFile`/`_stat`/`_readdir`一致的
+    `_enoent()`轉換。
 
 - **全新子系統：2D多邊形動畫**（跟3D場景/互動viewer完全獨立，不共用場景圖/
   渲染邏輯，只共用`_encodeCanvasFramesToMp4`）——圓/矩形/多邊形/折線/文字/圖片
