@@ -705,6 +705,39 @@ function patchCloudflareWording(root) {
       `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
   });
 
+  // tw_stock_db客製: 2026-09-15使用者實測回報（Linux桌面版真實對話記錄）——
+  // 即使multiSubAgentMode設成'router'/'hierarchical'，根模型還是直接呼叫了
+  // fs_list_files/fs_read_file、逐一sequentially讀了好幾個檔案，完全沒有
+  // 透過delegate_to_subagent委派，也完全沒用到batch_process_items，最後在
+  // 根層級對話本身（不是_runSubAgentTask）撞上「這一輪模型只輸出思考過程」
+  // 而放棄。追查發現：core的`_getRootToolNames()`只會排除靠
+  // `_registerBuiltinAiTools()`內部`registerOptional`包裝註冊、進而被記錄進
+  // `this._domainGatedToolNames`的25個內建工具——這裡用公開的
+  // `register_openai_tool()`API註冊的run_command/tmux_*/fs_*/
+  // batch_process_items從來沒有被加進那個Set，所以即使已經用
+  // `register_domain('desktop_ops', {...})`把它們歸進一個domain，它們仍然
+  // 跟一般host工具一樣無條件曝光在根層級——`register_domain`只是告訴
+  // delegate_to_subagent「委派到這個domain時可以用哪些工具」，從來不會反過來
+  // 「因為被歸進某個domain，就該從根層級隱藏」，這兩件事必須分開做，先前
+  // 漏掉了後者。這裡比照core內部`registerOptional`的機制，手動把這些工具
+  // 名稱加進`fa._domainGatedToolNames`（雖然是`_`開頭的instance屬性、不是
+  // 正式公開API，但目前沒有其他公開管道能做到「host自己註冊的工具也要
+  // domain-gated」，等floating-assistant.js之後補上正式API再改用那個）。
+  // 加了這個之後，根模型在router/full/hierarchical模式下就完全看不到、
+  // 叫不到這些工具，只能透過delegate_to_subagent委派給desktop_ops
+  // domain——這樣一來batch_process_items的map-reduce設計才會真正被強制
+  // 用上，不會再被根模型繞過去直接sequentially呼叫fs_read_file。
+  // 'off'模式（完全沒有subagent委派）不受影響：_getRootToolNames()對
+  // mode==='off'的分支本來就無視_domainGatedToolNames、回傳全部工具，這組
+  // 桌面工具在'off'模式下維持原本「直接掛根層級」的行為，跟其他domain-gated
+  // 工具的既有規則完全一致。
+  [
+    "run_command",
+    "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
+    "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
+    "batch_process_items",
+  ].forEach((name) => fa._domainGatedToolNames.add(name));
+
   // ---- 頂部列：執行程式開關 ----
   const settings = await window.desktopAPI.exec.getSettings();
   const execEnabledChk = document.getElementById("topbar-exec-enabled");
