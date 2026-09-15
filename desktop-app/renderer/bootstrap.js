@@ -256,6 +256,45 @@ function patchCloudflareWording(root) {
     proxyStatusEl.style.color = "#f87171";
   }
 
+  // tw_stock_db客製: 2026-09-15使用者要求的「server configure」——
+  // NVAPI_KEY/OPENROUTER_API_KEY存在main.js管理的本機secrets.json，
+  // renderer完全看不到實際金鑰值（desktopAPI.secrets.status()只回報有/
+  // 沒有設定）。有設定NVIDIA金鑰時，把`floating_ai_base_url_key`
+  // seed成本地proxy的`/nvidia`路由——這是跟tw_stock_db的index.html完全
+  // 同一招（它seed成自己部署的Cloudflare Worker網址），對
+  // _resolveModelRowConfig()而言只是「留空的row退回哪個網址」的問題，
+  // 不需要改floating-assistant.js一行。apiKey留空即可（local-proxy.js
+  // 會用真金鑰蓋掉client端送出的Authorization，client端填什麼都無所謂），
+  // 這裡仍填一個無意義的占位字串，單純避免其他程式碼把「空字串apiKey」
+  // 誤判成「使用者完全沒有設定過」而顯示額外的提示。
+  let secretsStatus = { nvidia: false, openrouter: false };
+  try { secretsStatus = await window.desktopAPI.secrets.status(); } catch (_) {}
+  if (port && secretsStatus.nvidia && !localStorage.getItem(fa.LLM_BASE_URL_KEY)) {
+    localStorage.setItem(fa.LLM_BASE_URL_KEY, `http://127.0.0.1:${port}/nvidia`);
+    if (!localStorage.getItem(fa.STORAGE_KEY)) localStorage.setItem(fa.STORAGE_KEY, "local-desktop-proxy");
+  }
+
+  // 頂部列「🔑 設定API金鑰」——先用最簡單的prompt()輸入（不是完整表單），
+  // 讓使用者可以在不打開Advance Settings、不用碰任何檔案的情況下，把
+  // NVAPI_KEY/OPENROUTER_API_KEY寫進secrets.json。設定完成後重新整理
+  // 頁面套用（改動的是localStorage的LLM_BASE_URL_KEY seed邏輯，最單純
+  // 可靠的作法是重新走一次上面這段判斷，而不是嘗試就地更新已經建構好的
+  // model rows）。
+  const secretsBtn = document.getElementById("topbar-secrets-btn");
+  if (secretsBtn) {
+    secretsBtn.addEventListener("click", async () => {
+      const nvKey = prompt("NVIDIA API Key（NVAPI_KEY，留空＝不修改目前的值）：", "");
+      const orKey = prompt("OpenRouter API Key（OPENROUTER_API_KEY，留空＝不修改目前的值）：", "");
+      const patch = {};
+      if (nvKey) patch.NVAPI_KEY = nvKey;
+      if (orKey) patch.OPENROUTER_API_KEY = orKey;
+      if (Object.keys(patch).length === 0) return;
+      await window.desktopAPI.secrets.set(patch);
+      alert("已儲存。頁面即將重新整理套用設定。");
+      location.reload();
+    });
+  }
+
   // desktop_ops domain：run_command是這個桌面版新增的唯一「真的碰到系統
   // 層」的工具（檔案讀寫沿用既有fap_*工具，直接透過override後的
   // fileAccessPoints運作，不用另外重複造一套）。
@@ -340,6 +379,30 @@ function patchCloudflareWording(root) {
       childList: true, subtree: true, characterData: true,
     });
   }
+
+  // ---- 桌面版是單一用途、永遠鋪滿視窗的對話介面，不是「可以收合成小藥丸
+  // 再點開」的浮動widget（那套機制刻意被關掉，見上面buttonStyle:'display:
+  // none'）——既有的❌關閉鈕（#ai-btn-close）點下去只會呼叫toggleWindow()
+  // 把整個對話框藏起來，但因為藥丸按鈕不存在，使用者會完全沒有辦法在app
+  // 裡面把它找回來。桌面版直接把這顆按鈕藏掉，不給使用者按到的機會——
+  // 要離開對話就是關閉整個應用程式視窗（工作列/Alt+F4），不是「關掉對話
+  // 本身」。
+  const closeBtn = document.getElementById("ai-btn-close");
+  if (closeBtn) closeBtn.style.display = "none";
+
+  // ---- Advance Settings本來就已經是「全螢幕深色遮罩+置中卡片」的彈出式
+  // 對話框（見floating-assistant.js的.ai-advanced-overlay/.ai-advanced-dialog
+  // 樣式），不是塞在小視窗裡的內嵌面板——桌面版把卡片寬度從960px放寬到
+  // 1200px，搭配現在預設最大化的主視窗，視覺上會更接近「彈出一個獨立
+  // 對話視窗」的感覺。這裡刻意不做成真正獨立的OS視窗（第二個BrowserWindow）
+  // ——那需要另外設計跨行程狀態同步（advancedSettings目前只活在這個
+  // renderer的記憶體裡），複雜度高很多；如果這個视覺效果還不夠、真的需要
+  // 獨立視窗，需要另外討論再做。
+  const style = document.createElement("style");
+  style.textContent = `
+    .ai-advanced-dialog { width: min(1200px, 96vw) !important; }
+  `;
+  document.head.appendChild(style);
 
   fa.toggleWindow();
 })();

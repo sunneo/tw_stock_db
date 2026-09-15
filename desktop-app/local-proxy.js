@@ -8,12 +8,17 @@
 // 慣例對齊，不用改floating-assistant.js任何一行）就能繞過CORS，不需要
 // 依賴使用者自己部署/維護一個Cloudflare Worker，也不需要任何雲端服務。
 //
-// 這個代理本身不做任何「共用假金鑰→真金鑰」的替換（那是tw_stock_db給多人
-// 共用一把NVIDIA/OpenRouter金鑰用的設計，見handleNvidiaProxy的
-// tw_stock_db_api:{sessionId}慣例）——桌面版是單人使用，使用者在Advance
-// Settings直接填自己的真實API金鑰，這個代理單純負責「轉發+補CORS header」，
-// 不經手、不記錄任何金鑰內容。
+// 2026-09-15使用者追加要求——「server configure」：NVAPI_KEY/OPENROUTER_API_KEY
+// 存在main.js管理的本機secrets.json（使用者要求JSON格式，不要.env），
+// renderer完全看不到實際金鑰值（IPC只回報有沒有設定，見main.js的
+// fa:secrets:status）。這裡新增`/nvidia/*`、`/openrouter/*`兩條「固定
+// 上游、自動注入Authorization」的路由，呼應worker.js的
+// handleNvidiaProxy/handleOpenRouterProxy——差別是那邊是多人共用一把雲端
+// 金鑰、用假金鑰字串當身分識別，這裡是單人本機使用，金鑰對應關係單純
+// （這個Electron app只有一個使用者），renderer送什麼Authorization都會被
+// 這裡的真金鑰蓋掉，不需要共用假金鑰那套識別機制。
 //
+
 // 路徑格式跟worker.js的handleGitProxy完全對齊（同一次實機測試修好的bug
 // 也一併帶過來）：目標URL可以帶完整scheme，也可以省略（isomorphic-git在
 // corsProxy不是以"?"結尾時，會先把https://砍掉才接上去，這裡一樣自動補回）。
@@ -48,11 +53,12 @@ function setCorsHeaders(res, req) {
   res.setHeader("Access-Control-Expose-Headers", "*");
 }
 
-function handleProxyRequest(req, res, targetUrlRaw) {
+function handleProxyRequest(req, res, targetUrlRaw, overrideHeaders) {
   let targetUrl;
   try {
     targetUrl = new URL(stripScheme(targetUrlRaw));
   } catch (err) {
+    setCorsHeaders(res, req);
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "invalid target url: " + String(err.message || err) }));
     return;
@@ -66,6 +72,10 @@ function handleProxyRequest(req, res, targetUrlRaw) {
     outHeaders[key] = value;
   }
   outHeaders.host = targetUrl.host;
+  // /nvidia、/openrouter用這個蓋掉client端送來的Authorization（renderer端
+  // floating-assistant.js的apiKey欄位填什麼都無所謂，真正的金鑰只在這裡
+  // 才會被加上去）。
+  if (overrideHeaders) Object.assign(outHeaders, overrideHeaders);
 
   const upstreamReq = client.request(
     {
@@ -101,11 +111,53 @@ function handleProxyRequest(req, res, targetUrlRaw) {
   }
 }
 
+// FIXED_UPSTREAM_ROUTES：固定上游+自動注入金鑰的路由，跟通用/proxy/*不同
+// （那個目標URL由client決定，這裡目標host是寫死的，client只能決定host
+// 之後的path）。getSecrets是main.js傳進來的async callback，每次請求都重新
+// 讀一次（不是啟動時snapshot一份），這樣使用者透過fa:secrets:set更新金鑰
+// 後，下一個請求就會生效，不用重開app。
+//
+// 路徑巢狀是刻意對齊floating-assistant.js既有的_resolveModelRowConfig()
+// URL組法（不是我自己發明的慣例）：一般row直接用`<seed base>/chat/completions`，
+// modelName開頭是"openrouter/"的row則是`<seed base>/openrouter/chat/completions`
+// ——也就是說OpenRouter永遠是「巢狀在NVIDIA base底下」，不是平行的獨立
+// 路由，這裡的/nvidia/*handler要自己判斷restPath開頭是不是"openrouter/"
+// 再決定轉發去哪個真正的上游，不能各自獨立成/nvidia、/openrouter兩條頂層
+// 路由（一開始這樣寫過，實際測URL組出來對不上，改成現在這樣）。
+function buildFixedUpstreamHandler(getSecrets) {
+  return async (req, res, restPath) => {
+    let upstreamBase = "https://integrate.api.nvidia.com/v1";
+    let secretEnvKey = "NVAPI_KEY";
+    let actualRestPath = restPath;
+    if (restPath === "openrouter" || restPath.startsWith("openrouter/")) {
+      upstreamBase = "https://openrouter.ai/api/v1";
+      secretEnvKey = "OPENROUTER_API_KEY";
+      actualRestPath = restPath.slice("openrouter".length).replace(/^\/+/, "");
+    }
+    const secrets = (await getSecrets()) || {};
+    const key = secrets[secretEnvKey];
+    if (!key) {
+      setCorsHeaders(res, req);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: `尚未設定${secretEnvKey}。請在secrets.json填入這個值（或透過應用程式頂部列「設定API金鑰」按鈕）後重新送出請求，不需要重開app。`,
+      }));
+      return;
+    }
+    const targetUrl = upstreamBase.replace(/\/+$/, "") + "/" + actualRestPath.replace(/^\/+/, "");
+    handleProxyRequest(req, res, targetUrl, { authorization: `Bearer ${key}` });
+  };
+}
+
 // prefix：這個server要回應的路徑前綴清單（例如["/proxy/", "/git-proxy/"]），
 // 每個前綴之後接的就是目標URL。回傳實際監聽的port（EADDRINUSE時自動往上找
-// 下一個，直到找到可用的，最多嘗試20次）。
-function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-proxy/"], onLog } = {}) {
+// 下一個，直到找到可用的，最多嘗試20次）。getSecrets（選填）：
+// async()=>{NVAPI_KEY,OPENROUTER_API_KEY}，提供時才會開放/nvidia這條固定
+// 上游路由（openrouter巢狀在它底下，見buildFixedUpstreamHandler說明）。
+function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-proxy/"], getSecrets, onLog } = {}) {
   const log = onLog || (() => {});
+  const nvidiaHandler = getSecrets ? buildFixedUpstreamHandler(getSecrets) : null;
+
   const server = http.createServer((req, res) => {
     if (req.method === "OPTIONS") {
       setCorsHeaders(res, req);
@@ -113,10 +165,15 @@ function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-p
       res.end();
       return;
     }
+    if (nvidiaHandler && req.url.startsWith("/nvidia/")) {
+      nvidiaHandler(req, res, req.url.slice("/nvidia/".length));
+      return;
+    }
     const matchedPrefix = prefixes.find((p) => req.url.startsWith(p));
     if (!matchedPrefix) {
+      setCorsHeaders(res, req);
       res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "unknown route, expected one of: " + prefixes.join(", ") }));
+      res.end(JSON.stringify({ error: "unknown route, expected one of: " + prefixes.concat(["/nvidia/", "/nvidia/openrouter/"]).join(", ") }));
       return;
     }
     const targetUrlRaw = req.url.slice(matchedPrefix.length);
