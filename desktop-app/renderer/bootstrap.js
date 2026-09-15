@@ -460,16 +460,133 @@ function patchCloudflareWording(root) {
     }
   );
 
+  // tw_stock_db客製: 2026-09-15使用者明確要求桌面版檔案存取「不應該有任何
+  // 限制」——fap_*系列工具維持原本「先授權root、只能碰授權範圍」的模型
+  // （給使用者想維持範圍控管時用），這裡新增一組平行的fs_*工具，直接吃
+  // 絕對路徑、完全不做root範圍檢查（main.js的fa:rawfs:*），唯一邊界是OS
+  // 帳號本身的檔案權限。兩組工具都掛在desktop_ops domain底下，AI依情境
+  // 自行選用——已知在某個FAP root底下操作優先用fap_*（語意上跟使用者在
+  // 「檔案存取管理」看到的授權清單一致），需要碰觸未授權路徑（例如使用者
+  // 只分享了父資料夾、AI需要讀它底下沒被逐一列在roots.json裡的子資料夾）
+  // 時改用fs_*，不用先叫使用者去新增一個新的root。
+  const fsToolSchema = (extra) => ({
+    type: "object",
+    properties: { path: { type: "string", description: "絕對路徑（或相對於使用者家目錄的路徑）" }, ...extra },
+    required: ["path"],
+    additionalProperties: false,
+  });
+  fa.register_openai_tool(
+    "fs_read_file",
+    "直接讀取這台電腦上任意路徑的檔案內容，不需要先授權/註冊資料夾。純文字檔案（原始碼/設定檔/markdown等）直接回傳文字；偵測到疑似二進位內容（含NUL byte）時自動改回傳base64（並標註likely_binary），不會像fap_read_file那樣直接拒絕。參數: {\"path\":\"/home/user/notes.txt\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.rawfs.readFile(parsed.path, parsed.encoding);
+        return JSON.stringify({ ok: true, ...r });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema({ encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" } })
+  );
+  fa.register_openai_tool(
+    "fs_write_file",
+    "直接寫入這台電腦上任意路徑的檔案（不存在會自動建立，含父資料夾），不需要先授權/註冊資料夾。寫入前務必先跟使用者確認要寫的內容/目標路徑，不要自作主張覆蓋重要檔案。參數: {\"path\":\"/home/user/out.txt\",\"content\":\"...\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const payload = parsed.encoding === "base64" ? { base64: String(parsed.content ?? "") } : { text: String(parsed.content ?? "") };
+        const r = await window.desktopAPI.rawfs.writeFile(parsed.path, payload);
+        return JSON.stringify({ ok: true, ...r });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema({
+      content: { type: "string", description: "要寫入的內容" },
+      encoding: { type: "string", enum: ["text", "base64"], description: "選填，content是base64編碼的二進位內容時傳'base64'；預設text" },
+    })
+  );
+  fa.register_openai_tool(
+    "fs_list_files",
+    "列出這台電腦上任意路徑（資料夾）底下的檔案/子資料夾，不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/Shared/KeywordDocs/StepAction\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const entries = await window.desktopAPI.rawfs.readdir(parsed.path);
+        return JSON.stringify({ ok: true, path: parsed.path, entries });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema()
+  );
+  fa.register_openai_tool(
+    "fs_stat",
+    "查詢這台電腦上任意路徑的中繼資料（是檔案還是資料夾、大小、修改時間），不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/notes.txt\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const st = await window.desktopAPI.rawfs.stat(parsed.path);
+        return JSON.stringify({ ok: true, ...st });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema()
+  );
+  fa.register_openai_tool(
+    "fs_find_file",
+    "在這台電腦上任意路徑底下遞迴搜尋檔名符合pattern（正規表示式，不分大小寫）的檔案/資料夾，不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/project\",\"pattern\":\"\\\\.ya?ml$\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const results = await window.desktopAPI.rawfs.find(parsed.path, parsed.pattern, parsed.max_depth, parsed.max_results);
+        return JSON.stringify({ ok: true, results });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema({
+      pattern: { type: "string", description: "檔名比對用的正規表示式（不分大小寫），例如 \\\\.ya?ml$" },
+      max_depth: { type: "number", description: "選填，最大遞迴深度，預設8" },
+      max_results: { type: "number", description: "選填，最多回傳幾筆，預設200" },
+    })
+  );
+  fa.register_openai_tool(
+    "fs_mkdir",
+    "直接在這台電腦上任意路徑建立資料夾（含父資料夾，已存在則不報錯），不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/new-folder\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.rawfs.mkdir(parsed.path);
+        return JSON.stringify({ ok: true, ...r });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema()
+  );
+  fa.register_openai_tool(
+    "fs_remove",
+    "直接刪除這台電腦上任意路徑的檔案/資料夾，不需要先授權/註冊資料夾。這是破壞性操作，執行前務必先跟使用者確認清楚要刪的確切路徑，不要自作主張刪除。參數: {\"path\":\"/home/user/tmp-file.txt\",\"recursive\":false}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      try {
+        const r = await window.desktopAPI.rawfs.remove(parsed.path, !!parsed.recursive);
+        return JSON.stringify({ ok: true, ...r });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    fsToolSchema({ recursive: { type: "boolean", description: "刪除的是非空資料夾時要傳true，否則會失敗" } })
+  );
+
+  const platformLabel = window.desktopAPI.platform.isWindows ? "Windows" : (window.desktopAPI.platform.isMac ? "macOS" : "Linux");
   fa.register_domain("desktop_ops", {
     enabled: true,
     label: "本機直接檔案存取與程式執行（桌面版限定）",
     toolNames: [
       "run_command",
+      "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
     systemPrompt:
-      "你是桌面版FloatingAssistant專用的子任務助理，操作對象是使用者透過原生資料夾選擇對話框授權的本機資料夾（桌面版是「直接存取」，一經授權就能直接讀寫，不像瀏覽器版每次都要重新確認權限）。檔案讀寫沿用fap_*系列工具（ref格式`fap:<名稱或id>[/<路徑>]`）；run_command可以執行真正的本機程式/指令，這個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在應用程式頂部列開啟「允許AI執行程式」這個工具才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。",
+      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command可以執行真正的本機程式/指令，這個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在應用程式頂部列開啟「允許AI執行程式」這個工具才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
   });
 
   // ---- 頂部列：執行程式開關 ----

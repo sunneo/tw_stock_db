@@ -7,21 +7,28 @@
 //     preload.js用contextBridge刻意暴露出去的窄接口跟這裡的IPC handler
 //     溝通——即使renderer被XSS或載到惡意CDN內容，也不能直接讀寫檔案/
 //     執行程式，一定要經過這裡的白名單式IPC handler。
-//   - 「檔案直接存取」不是「無限制存取整台電腦」：每個IPC fs handler都先
-//     用`resolveWithinRoot()`確認目標路徑真的落在使用者自己用原生資料夾
-//     選擇對話框授權過的某個root目錄底下，才會真的碰磁碟——這一層檢查
-//     刻意放在主行程（不是renderer），因為renderer的JS理論上可能被繞過，
-//     主行程是唯一真正管得住系統呼叫的地方。
-//   - 「執行程式」（child_process）是最危險的能力，預設要求每次執行前
-//     都跳原生confirm對話框（execConfirmRequired，存在settings.json，
-//     使用者可以在renderer的頂部列關掉，但這是使用者自己的選擇，不是
-//     這個app的預設姿態）；一律用execFile（傳陣列參數，不經過shell），
-//     不用exec/shell:true，避免shell注入；有輸出大小上限與逾時。
+//   - 「檔案直接存取」有兩層：預設走`fap_*`工具＋`resolveWithinRoot()`，
+//     只能碰使用者自己用原生資料夾選擇對話框（或直接輸入路徑）明確授權過
+//     的root目錄；2026-09-15使用者明確要求桌面版「不應該有任何限制」，
+//     額外加上一組`fs_*`raw filesystem工具（`fa:rawfs:*` IPC），完全不做
+//     root範圍檢查，可以直接讀寫這台電腦上任何`rootPath`使用者帳號有OS
+//     權限碰到的路徑——這是使用者自己選的取捨（見AskUserQuestion紀錄：
+//     「完全不限制：整台電腦任何路徑」），不是預設行為，只有桌面版有、
+//     不影響web部署（floating-assistant.js核心完全沒有這個能力）。
+//   - 「執行程式」（child_process）與「檔案寫入/刪除」（含raw fs）都要求
+//     `execEnabled`/`settings.execEnabled`先被使用者在頂部列打開才能用；
+//     預設也要求每次執行前跳原生confirm對話框（execConfirmRequired，存在
+//     settings.json，使用者可以自己在頂部列關掉，但這是使用者自己的
+//     選擇，不是這個app的預設姿態）。2026-09-15使用者要求`run_command`
+//     要有真正的bash/shell能力（管線、重導向、&&等），改用真的shell
+//     （POSIX是`/bin/bash -c`，Windows是`cmd.exe /d /c`）執行——這比原本
+//     `execFile`（陣列參數、不經過shell）多了shell注入的風險面，是使用者
+//     明確要求、拿confirm對話框當唯一防線換來的能力，不是預設偷偷放寬。
 "use strict";
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
 
 const USER_DATA_DIR = () => app.getPath("userData");
@@ -210,6 +217,95 @@ ipcMain.handle("fa:fs:remove", async (_evt, { rootId, relPath, recursive }) => {
   const target = resolveWithinRoot(rec.rootPath, relPath);
   await fs.rm(target, { recursive: !!recursive, force: true });
   return true;
+});
+
+// ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
+// 明確要求「桌面版不應該有任何限制」——這組handler直接吃使用者/AI給的
+// 絕對路徑，不透過fap_*那套「先授權root、再用相對路徑」的模型，唯一的
+// 邊界就是OS本身的檔案權限（這個Electron process的執行帳號有沒有權限碰
+// 那個路徑）。跟fa:fs:*（root-scoped）並存，不是取代——Advance Settings
+// 「檔案存取管理」清單/既有fap_*工具仍然是原本的授權模型，這組是額外提供
+// 給desktop_ops domain的無限制工具，讀寫都不需要先在roots.json登記。
+function detectLikelyBinary(buf) {
+  // 簡單啟發式：前8KB內出現NUL byte就視為二進位——文字檔案(含UTF-8多語言
+  // 內容)幾乎不會有NUL byte，這是業界常見(例如git/diff)判斷二進位的方式。
+  const sample = buf.subarray(0, 8192);
+  for (let i = 0; i < sample.length; i++) {
+    if (sample[i] === 0) return true;
+  }
+  return false;
+}
+
+ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
+  const target = path.resolve(String(p || ""));
+  const st = await fs.stat(target);
+  return { path: target, isDirectory: st.isDirectory(), isFile: st.isFile(), size: st.size, mtimeMs: st.mtimeMs };
+});
+
+ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
+  const target = path.resolve(String(p || ""));
+  const entries = await fs.readdir(target, { withFileTypes: true });
+  return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
+});
+
+ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
+  const target = path.resolve(String(p || ""));
+  const buf = await fs.readFile(target);
+  if (encoding === "base64") return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length };
+  if (detectLikelyBinary(buf)) {
+    return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length, likelyBinary: true };
+  }
+  return { path: target, text: buf.toString("utf8"), sizeBytes: buf.length };
+});
+
+ipcMain.handle("fa:rawfs:writeFile", async (_evt, { path: p, text, base64 } = {}) => {
+  const target = path.resolve(String(p || ""));
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const buf = base64 != null ? Buffer.from(base64, "base64") : Buffer.from(String(text ?? ""), "utf8");
+  await fs.writeFile(target, buf);
+  return { ok: true, path: target, sizeBytes: buf.length };
+});
+
+ipcMain.handle("fa:rawfs:mkdir", async (_evt, { path: p } = {}) => {
+  const target = path.resolve(String(p || ""));
+  await fs.mkdir(target, { recursive: true });
+  return { ok: true, path: target };
+});
+
+ipcMain.handle("fa:rawfs:remove", async (_evt, { path: p, recursive } = {}) => {
+  const target = path.resolve(String(p || ""));
+  await fs.rm(target, { recursive: !!recursive, force: true });
+  return { ok: true, path: target };
+});
+
+// 遞迴搜尋檔名（不比對內容），深度/結果數都有上限避免掃到整個磁碟卡死。
+async function findFilesRecursive(startDir, pattern, maxDepth, maxResults, out, depth) {
+  if (out.length >= maxResults || depth > maxDepth) return;
+  let entries;
+  try {
+    entries = await fs.readdir(startDir, { withFileTypes: true });
+  } catch (_) {
+    return; // 沒有權限/已被刪除的目錄，安靜略過，不中斷整個搜尋
+  }
+  for (const e of entries) {
+    if (out.length >= maxResults) return;
+    const full = path.join(startDir, e.name);
+    if (pattern.test(e.name)) out.push({ path: full, isDirectory: e.isDirectory(), isFile: e.isFile() });
+    if (e.isDirectory()) await findFilesRecursive(full, pattern, maxDepth, maxResults, out, depth + 1);
+  }
+}
+
+ipcMain.handle("fa:rawfs:find", async (_evt, { path: p, pattern, maxDepth, maxResults } = {}) => {
+  const startDir = path.resolve(String(p || ""));
+  let regex;
+  try {
+    regex = new RegExp(String(pattern || ""), "i");
+  } catch (err) {
+    throw new Error(`不合法的pattern（正規表示式）：${String(err.message || err)}`);
+  }
+  const out = [];
+  await findFilesRecursive(startDir, regex, Number(maxDepth) > 0 ? Number(maxDepth) : 8, Number(maxResults) > 0 ? Number(maxResults) : 200, out, 0);
+  return out;
 });
 
 // ---------- IPC: 執行本機程式 ----------
@@ -517,6 +613,28 @@ ipcMain.handle("fa:exec:setSettings", async (_evt, patch) => {
   return next;
 });
 
+// tw_stock_db客製: 2026-09-15使用者實際遇到的bug——AI呼叫run_command時把
+// 整條指令（含參數與路徑）都塞進單一`command`字串、`args`留空（例如
+// `{"command":"ls -la /home/.../StepAction/"}`），execFile不經過shell，
+// 會把這一整串含空白的文字當成「執行檔名稱」直接去spawn，真實世界沒有
+// 這個檔名的檔案，直接ENOENT——這跟File Access Point的root範圍限制是
+//完全不同的兩回事（run_command本來就不吃FAP的root範圍檢查）。這裡加一個
+// 保守、不引入shell的修補：`args`是空的、且`command`裡有空白時，用簡單
+// 的、認識雙引號/單引號的分詞器自己切出「程式名稱＋參數陣列」，行為上仍然
+// 等同execFile(陣列參數)，**不會**解釋管線(|)/重導向(>)/&&等shell語法
+// （那需要真的呼叫shell，是更大的能力升級，複雜度與風險都不同，這裡先
+// 只解決「AI塞了一整行進command卻忘記拆args」這個具體、常見的呼叫失誤）。
+function splitCommandLineIfNeeded(command, args) {
+  if (Array.isArray(args) && args.length) return { program: command, args };
+  const s = String(command || "").trim();
+  if (!s.includes(" ")) return { program: s, args: [] };
+  const tokens = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(s)) !== null) tokens.push(m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]));
+  return { program: tokens[0] || s, args: tokens.slice(1) };
+}
+
 ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) => {
   const settings = await getDesktopSettings();
   if (!settings.execEnabled) {
@@ -527,7 +645,8 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) =>
     const rec = await findRoot(rootId);
     cwd = resolveWithinRoot(rec.rootPath, cwdRel || ".");
   }
-  const cmdLine = `${command} ${(args || []).join(" ")}`.trim();
+  const { program, args: finalArgs } = splitCommandLineIfNeeded(command, args);
+  const cmdLine = `${program} ${finalArgs.join(" ")}`.trim();
   if (settings.execConfirmRequired !== false) {
     const allowed = await showExecConfirmWindow(cmdLine, cwd);
     if (!allowed) {
@@ -536,8 +655,8 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) =>
   }
   return new Promise((resolve) => {
     execFile(
-      command,
-      args || [],
+      program,
+      finalArgs,
       { cwd, timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_EXEC_OUTPUT_BYTES, windowsHide: true },
       (error, stdout, stderr) => {
         resolve({
