@@ -30,6 +30,19 @@
   <div id="topbar">
     <span class="badge">🖥️ 桌面版（直接存取，不透過雲端）</span>
     <button type="button" id="topbar-add-folder-btn" title="直接輸入資料夾路徑授權（跳過原生資料夾選擇對話框，適合原生對話框沒反應/開到看不到的地方時使用）">📁 直接輸入路徑新增資料夾</button>
+    <!--
+      tw_stock_db客製: 2026-09-15使用者要求——主題切換要放在主畫面（不是
+      藏進Advance設定裡才找得到），而且要真的cover到Configure(Advance設定)
+      畫面本身（見floating-assistant.js新增的html[data-theme="light"]
+      .ai-advanced-*系列override，本來Advance設定整個對話框是寫死深色、
+      完全不受<html data-theme>影響）。這顆按鈕本身只負責切換<html
+      data-theme>屬性+存localStorage，實際換色邏輯：聊天面板走
+      floating-assistant.js既有的_getThemePalette()/MutationObserver機制，
+      Advance設定走上面新增的CSS override，topbar自己的深色外觀維持不變
+      （topbar是應用程式chrome本身，不是floating-assistant.js管的內容，
+      這裡刻意不跟著換，避免看起來像切一半）。
+    -->
+    <button type="button" id="topbar-theme-toggle" title="切換淺色／深色主題">🌙 深色</button>
     <span class="sep"></span>
     <span id="topbar-proxy-status" class="badge">本地proxy：啟動中…</span>
   </div>

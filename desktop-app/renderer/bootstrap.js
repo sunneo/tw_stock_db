@@ -225,12 +225,44 @@ function patchCloudflareWording(root) {
 // 4. 建構FloatingAssistant、套用桌面版override、註冊desktop_ops domain。
 // ---------------------------------------------------------------------
 (async function main() {
+  // tw_stock_db客製: 2026-09-15使用者要求——主題切換要放在主畫面。桌面版
+  // 原本完全沒有設定過<html data-theme>，floating-assistant.js核心的
+  // _isLightTheme()預設規則是「data-theme !== 'dark' 就算淺色」，等於
+  // 聊天面板永遠是淺色，卻疊在topbar自己寫死的深色chrome（index.html的
+  // #topbar background:#0d1117）底下，兩者對不上、也完全沒有入口可以
+  // 切換——這裡在建構FloatingAssistant之前（避免第一次畫面出現後才套用
+  // 造成的閃爍）就先套用使用者上次選的主題，預設'dark'（配合topbar既有的
+  // 深色外觀，第一次使用者體感才會一致，不是「一半深一半淺」）。
+  const THEME_STORAGE_KEY = "fa_desktop_theme_preference";
+  const applyTheme = (theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+    const btn = document.getElementById("topbar-theme-toggle");
+    if (btn) btn.textContent = theme === "light" ? "☀️ 淺色" : "🌙 深色";
+  };
+  applyTheme(localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark");
+
   const fa = new FloatingAssistant({
     mountSelector: "#app",
     buttonStyle: "display:none;",
     windowStyle: "position:static; width:100%; height:100%; max-height:none; box-shadow:none; z-index:1;",
   });
   window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
+
+  // ---- 主題切換（見上面applyTheme的說明）----
+  const themeToggleBtn = document.getElementById("topbar-theme-toggle");
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener("click", () => {
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+      applyTheme(next);
+      // tw_stock_db客製: refreshTheme()是floating-assistant.js核心公開方法
+      // （見那邊的說明），負責把所有用_getThemePalette()決定顏色的既有DOM
+      // 節點（聊天面板本身）重新套用一次——Advance設定那邊改用CSS
+      // html[data-theme="light"]屬性選擇器直接跟著<html>屬性變化自動套用，
+      // 不需要JS介入。
+      fa.refreshTheme();
+    });
+  }
 
   // 檔案存取直接存取override：整個FAP store換成IPC版本，其餘fap_*工具/
   // git_operations完全不用改，因為它們只透過_resolveFapAccessPoint→
@@ -292,19 +324,25 @@ function patchCloudflareWording(root) {
     if (!localStorage.getItem(fa.STORAGE_KEY)) localStorage.setItem(fa.STORAGE_KEY, "local-desktop-proxy");
   }
 
-  // 頂部列「🔑 設定API金鑰」——2026-09-15實測發現window.prompt()在這個
-  // Electron版本點了完全沒反應（不會丟錯誤、就是靜默沒有任何對話框跳出來），
-  // 改成手刻一個輕量modal（跟floating-assistant.js自己
+  // 「🔑 設定API金鑰」——2026-09-15實測發現window.prompt()在這個Electron
+  // 版本點了完全沒反應（不會丟錯誤、就是靜默沒有任何對話框跳出來），改成
+  // 手刻一個輕量modal（跟floating-assistant.js自己
   // _showMp4ExportOptionsDialog/_showFapPermissionDialog同一種寫法：
   // 全螢幕半透明遮罩+置中卡片），保證在任何Electron版本都可靠運作，不依賴
-  // 瀏覽器原生對話框。讓使用者可以在不打開Advance Settings、不用碰任何
-  // 檔案的情況下，把NVAPI_KEY/OPENROUTER_API_KEY寫進secrets.json。設定
-  // 完成後重新整理頁面套用（改動的是localStorage的LLM_BASE_URL_KEY seed
-  // 邏輯，最單純可靠的作法是重新走一次上面這段判斷，而不是嘗試就地更新
-  // 已經建構好的model rows）。
+  // 瀏覽器原生對話框。設定完成後重新整理頁面套用（改動的是localStorage的
+  // LLM_BASE_URL_KEY seed邏輯，最單純可靠的作法是重新走一次上面這段判斷，
+  // 而不是嘗試就地更新已經建構好的model rows）。
+  // tw_stock_db客製: 2026-09-15使用者實測回報——這顆按鈕後來被搬進Advance
+  // 設定的「桌面版設定」分頁（見下面把DOM節點appendChild過去那段），但這裡
+  // 的z-index(999999)從一開始就比floating-assistant.js核心.ai-advanced-overlay
+  // 的z-index(1000001)低，導致這個overlay雖然真的有被建立、插進
+  // document.body，卻被Advance設定的遮罩蓋在下面，畫面上完全看不到、
+  // 也點不到，使用者必須先關掉Advance設定才會「突然看得到」——不是沒開啟，
+  // 是被疊在下面。改成比.ai-advanced-overlay更高，不管將來這顆按鈕擺在
+  // 哪個z-index層級的容器裡，都保證疊在最上層。
   function showSecretsDialog() {
     const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:999999; display:flex; align-items:center; justify-content:center;";
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000002; display:flex; align-items:center; justify-content:center;";
     const box = document.createElement("div");
     box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(420px,90vw); font-size:13px; font-family:inherit;";
     box.innerHTML = `
@@ -352,7 +390,10 @@ function patchCloudflareWording(root) {
   // 關掉再打開設定才看得到剛新增的資料夾。
   function showAddFolderDialog() {
     const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:999999; display:flex; align-items:center; justify-content:center;";
+    // tw_stock_db客製: 見showSecretsDialog同樣位置的說明——跟那邊同樣的理由，
+    // 統一用比.ai-advanced-overlay(1000001)更高的z-index，避免將來這顆
+    // 按鈕也被搬進Advance設定裡時，重蹈同一個「疊在下面點不到」的問題。
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000002; display:flex; align-items:center; justify-content:center;";
     const box = document.createElement("div");
     box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(520px,90vw); font-size:13px; font-family:inherit;";
     box.innerHTML = `
