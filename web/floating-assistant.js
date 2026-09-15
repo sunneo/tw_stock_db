@@ -868,6 +868,22 @@ const REASONING_DEADEND_LARGE_CONTEXT_CHARS_FLOOR = 20000;
 // 精確的token計算）。
 const REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE = 3;
 const REASONING_DEADEND_CONTEXT_WINDOW_FRACTION = 0.5;
+// tw_stock_db客製: 2026-09-15使用者強烈反映——同一個問題原封不動連續送了
+// 4次，前3次AI都秒回「放棄」，第4次才正常執行。使用者原話：「這是app自己
+// 要cover，不是拋給user去try and error」「為什麼要使用者自己發出？」。
+// 問題根因：MAX_AUTO_CONTINUE_ROUNDS(40)那套重試，是「同一輪對話裡反覆
+// 用AI_REASONING_DEADEND_PROMPT請同一個already-poisoned的request重講」
+// ——如果模型這一輪真正的問題不是「講一半停住」而是更根本的（端點瞬間
+// 異常、或這次的訊息組合對這個模型來說很難處理），40次重試的都是幾乎
+// 一樣的request，很容易全部一起失敗，最後只留給使用者「自己重新送出
+// 一模一樣的訊息」這個唯一還有效的選項——而「重新送出」之所以有效，
+// 純粹是因為它是一次全新、獨立的request/retryAttempt，運氣好連上就過了。
+// 既然「使用者手動重新送出同一句話」這個動作本身就是唯一有效的解法，
+// 那就把這個動作自動化：40輪內部重試仍然回到deadend狀態時，不要直接
+// 放棄顯示警告，改成把整個這一輪對話當作一次全新嘗試（retryAttempt+1）
+// 重新來一次——這跟使用者自己刪掉訊息重打是同一件事，只是由app自己做，
+// 不需要使用者插手。有限次數（不是無限重試，燒費用的安全閥門）。
+const FULL_TURN_DEADEND_RETRY_LIMIT = 3;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
 // tw_stock_db客製: 2026-08-25使用者實測案例——推理模型（例如
 // nemotron-3-super-120b-a12b）偶爾會在reasoning_content吐完一大段思考後
@@ -16209,11 +16225,27 @@ ${existingNodeSummaries}
             }
             if (repetitionCut) textSpan.innerText = fullContent;
 
+            // tw_stock_db客製: 見FULL_TURN_DEADEND_RETRY_LIMIT的說明——40輪
+            // 內部重試（同一個request反覆用AI_REASONING_DEADEND_PROMPT請
+            // 重講）仍然卡在deadend狀態時，不要直接顯示放棄訊息把問題丟給
+            // 使用者自己重新送出——把整個這一輪當成一次全新嘗試重新來過
+            // （retryAttempt+1，內部所有計數器都會在新的一次呼叫裡重新歸
+            // 零），這正是使用者自己手動刪掉重打一次在做的事，只是由app
+            // 自動執行。只在「完全沒有真正答案」（lastRoundWasReasoningDeadEnd）
+            // 時才這樣做——'length'截斷的情況已經有真實內容、只是很長，
+            // 不該丟棄重來。
+            if (!repetitionCut && lastRoundWasReasoningDeadEnd && retryAttempt <= FULL_TURN_DEADEND_RETRY_LIMIT) {
+                this._log(`⚠️ 這一輪反覆重試仍然沒有取得真正答案，自動當作全新嘗試重新送出這一輪對話（第${retryAttempt}次全新嘗試）…`);
+                streamDiv.remove();
+                return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
+            }
+
             // tw_stock_db客製: 走到這裡如果finishReason還是'length'、或還卡在
             // lastRoundWasReasoningDeadEnd狀態，代表已經自動接續到
             // MAX_AUTO_CONTINUE_ROUNDS上限仍未寫完（極端情況，例如端點異常或
-            // 模型卡在某種輸出模式），才需要提醒使用者——正常情況下自動接續
-            // 機制會在使用者沒感覺到的狀況下把內容拼完整。
+            // 模型卡在某種輸出模式），且（若是deadend）已經連全新嘗試都用完了
+            // FULL_TURN_DEADEND_RETRY_LIMIT次，才需要提醒使用者——正常情況下
+            // 自動接續/全新嘗試機制會在使用者沒感覺到的狀況下把內容拼完整。
             if (!repetitionCut && (finishReason === 'length' || lastRoundWasReasoningDeadEnd)) {
                 // tw_stock_db客製: 使用者明確否決過「換一個模型試試」這個建議
                 // （見REASONING_DEADEND_LARGE_CONTEXT_CHARS的說明），這裡拿掉，
@@ -16538,9 +16570,20 @@ ${existingNodeSummaries}
             // 說明）——reasoningAccum只存進非可枚舉的_reasoningDisplay屬性，
             // 不接進finalContent/msg.content，避免模型的內部推理草稿被永久
             // 疊進送給API的對話歷史、造成context愈滾愈大。
-            // tw_stock_db客製: 只有觸及安全上限仍未寫完才提醒使用者，正常情況
-            // 下自動接續機制會無聲把內容拼完整，見_loopFetch串流路徑同樣的
-            // 說明。
+            // tw_stock_db客製: 見_loopFetch串流路徑FULL_TURN_DEADEND_RETRY_LIMIT
+            // 的詳細說明——同樣的邏輯搬過來這裡：40輪內部重試仍是deadend時，
+            // 先當作全新嘗試自動重來，不要直接把問題丟給使用者自己重新送出。
+            // _loopFetchNative是非串流的，這個階段還沒建立任何訊息/DOM元素
+            // （_pushAssistantMessage要等這裡判斷完才會呼叫），不需要額外
+            // 清理UI，直接遞迴即可。
+            if (hitContinueCap && lastRoundWasReasoningDeadEnd && retryAttempt <= FULL_TURN_DEADEND_RETRY_LIMIT) {
+                this._log(`⚠️ 這一輪反覆重試仍然沒有取得真正答案，自動當作全新嘗試重新送出這一輪對話（第${retryAttempt}次全新嘗試）…`);
+                return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
+            }
+
+            // tw_stock_db客製: 只有觸及安全上限仍未寫完、且（若是deadend）已經
+            // 連全新嘗試都用完才提醒使用者，正常情況下自動接續/全新嘗試機制
+            // 會無聲把內容拼完整，見_loopFetch串流路徑同樣的說明。
             if (hitContinueCap) {
                 finalContent += lastRoundWasReasoningDeadEnd
                     ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程或完全沒有回應、沒有真正的答案內容（可能是端點異常或這次任務範圍太大）。** 可以直接追問一次，或縮小這次要處理的範圍再試。'
