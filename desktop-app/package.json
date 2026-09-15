@@ -25,7 +25,8 @@
       "preload.js",
       "local-proxy.js",
       "renderer/**/*",
-      "build/icon.png"
+      "build/icon.png",
+      "builtin-secrets.json"
     ],
     "win": {
       "target": [
