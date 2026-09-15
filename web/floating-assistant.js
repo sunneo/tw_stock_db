@@ -15998,6 +15998,13 @@ ${existingNodeSummaries}
             let repetitionCut = false;
             let autoContinueRounds = 0; // tw_stock_db客製: 見MAX_AUTO_CONTINUE_ROUNDS說明
             let lastRoundWasReasoningDeadEnd = false; // 見AI_REASONING_DEADEND_PROMPT說明
+            // tw_stock_db客製: 2026-09-15使用者明確反映——「我覺得缺乏debug
+            // message，一切都是瞎猜」：光靠一句「端點完全沒有回應任何內容」
+            // 的warning，使用者（跟我事後看transcript）都沒有任何實際線索能
+            // 判斷「這一輪到底發生了什麼」——是HTTP狀態碼不是200、是response
+            // body本身格式就有問題、還是單純choices是空陣列？這裡記錄每一輪
+            // 實際觀察到的關鍵事實（不是猜測），最後放進給使用者看的訊息裡。
+            let lastRoundDiag = null;
 
             // tw_stock_db客製: 外層迴圈＝自動接續。第一輪送使用者真正的對話
             // 歷史；若這一輪在還沒講完時就被max_tokens截斷
@@ -16015,6 +16022,7 @@ ${existingNodeSummaries}
                             { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
                         ]);
 
+                const roundStartTime = Date.now();
                 const controller = this._createAbortController();
                 const response = await fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
@@ -16174,6 +16182,17 @@ ${existingNodeSummaries}
                 }
 
                 finishReason = roundFinishReason;
+                // tw_stock_db客製: 見lastRoundDiag宣告處的說明——記錄這一輪
+                // 實際觀察到的事實（不是事後猜測），response.status/content-type
+                // 能直接排除「其實是HTTP錯誤/回應格式根本不是SSE」這類可能性。
+                lastRoundDiag = {
+                    httpStatus: response.status,
+                    contentType: (response.headers && typeof response.headers.get === 'function') ? response.headers.get('content-type') : null,
+                    finishReason: roundFinishReason,
+                    contentChars: fullContent.length,
+                    reasoningChars: reasoningContent.length,
+                    elapsedMs: Date.now() - roundStartTime,
+                };
                 if (repetitionCut) break;
 
                 // tw_stock_db客製: 見AI_REASONING_DEADEND_PROMPT說明——某些推理
@@ -16238,9 +16257,14 @@ ${existingNodeSummaries}
                 // 讓使用者不用手動追問。安全上限見MAX_AUTO_CONTINUE_ROUNDS。
                 autoContinueRounds++;
                 if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) break;
-                this._log(lastRoundWasReasoningDeadEnd
+                // tw_stock_db客製: 見lastRoundDiag宣告處的說明——使用者要求
+                // 不要只有籠統的警告文字，這裡把這一輪實際觀察到的事實
+                // （HTTP狀態/content-type/耗時）一起印出來，不用等到最後
+                // 放棄才看得到，也方便使用者/事後看log的人邊發生邊判斷。
+                this._log((lastRoundWasReasoningDeadEnd
                     ? `↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${autoContinueRounds}次）…`
-                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
+                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`)
+                    + (lastRoundDiag ? ` [診斷: HTTP ${lastRoundDiag.httpStatus}, content-type=${lastRoundDiag.contentType || '未知'}, finish_reason=${lastRoundDiag.finishReason}, 耗時${lastRoundDiag.elapsedMs}ms]` : ''));
             }
             if (repetitionCut) textSpan.innerText = fullContent;
 
@@ -16269,9 +16293,17 @@ ${existingNodeSummaries}
                 // tw_stock_db客製: 使用者明確否決過「換一個模型試試」這個建議
                 // （見REASONING_DEADEND_LARGE_CONTEXT_CHARS的說明），這裡拿掉，
                 // 改成建議縮小範圍/直接追問，不再暗示換模型能解決。
-                fullContent += lastRoundWasReasoningDeadEnd
+                // tw_stock_db客製: 見lastRoundDiag宣告處的說明——使用者明確
+                // 反映「缺乏debug message，一切都是瞎猜」，這裡把最後一輪
+                // 實際觀察到的事實（不是猜測）附在警告訊息裡，讓使用者/事後
+                // 看transcript的人能直接判斷是不是HTTP狀態異常、回應格式不對
+                // 等具體原因，不用只憑一句籠統警告文字猜。
+                const diagSuffix = lastRoundDiag
+                    ? `\n\n🔍 診斷資訊：最後一輪 HTTP ${lastRoundDiag.httpStatus}，content-type=${lastRoundDiag.contentType || '未知'}，finish_reason=${lastRoundDiag.finishReason}，該輪耗時${lastRoundDiag.elapsedMs}ms，累積content=${lastRoundDiag.contentChars}字元／reasoning=${lastRoundDiag.reasoningChars}字元，共嘗試${autoContinueRounds}輪內部重試 + 第${retryAttempt}次全新嘗試。`
+                    : '';
+                fullContent += (lastRoundWasReasoningDeadEnd
                     ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程或完全沒有回應、沒有真正的答案內容（可能是端點異常或這次任務範圍太大）。** 可以直接追問一次，或縮小這次要處理的範圍再試。'
-                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
+                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。') + diagSuffix;
             }
 
             // tw_stock_db客製: reasoningContent只存進非可枚舉的_reasoningDisplay
@@ -16446,6 +16478,7 @@ ${existingNodeSummaries}
             let hitContinueCap = false;
             let toolCalls = [];
             let lastRoundWasReasoningDeadEnd = false; // 見AI_REASONING_DEADEND_PROMPT說明
+            let lastRoundDiag = null; // 見_loopFetch串流路徑lastRoundDiag的說明
 
             // tw_stock_db客製: 跟_loopFetch串流路徑同樣的自動接續機制（見那邊
             // 詳細說明）——finish_reason==='length'代表這一次API呼叫被max_tokens
@@ -16465,6 +16498,7 @@ ${existingNodeSummaries}
                             { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
                         ]);
 
+                const roundStartTime = Date.now();
                 const controller = this._createAbortController();
                 const response = await fetch(`${apiUrl}/chat/completions`, {
                     method: 'POST',
@@ -16541,6 +16575,14 @@ ${existingNodeSummaries}
                 toolCalls = this._ensureToolCallIds(Array.isArray(message.tool_calls) ? message.tool_calls : []);
 
                 const roundFinishReason = data.choices[0].finish_reason;
+                lastRoundDiag = {
+                    httpStatus: response.status,
+                    contentType: (response.headers && typeof response.headers.get === 'function') ? response.headers.get('content-type') : null,
+                    finishReason: roundFinishReason,
+                    contentChars: finalContent.length,
+                    reasoningChars: reasoningAccum.length,
+                    elapsedMs: Date.now() - roundStartTime,
+                };
                 if (toolCalls.length) break; // 已經拿到工具呼叫，不需要（也不該）再接續
 
                 // tw_stock_db客製: 見AI_REASONING_DEADEND_PROMPT說明——某些推理
@@ -16580,9 +16622,12 @@ ${existingNodeSummaries}
 
                 autoContinueRounds++;
                 if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) { hitContinueCap = true; break; }
-                this._log(lastRoundWasReasoningDeadEnd
+                // tw_stock_db客製: 見_loopFetch串流路徑同樣位置的說明——附上
+                // 這一輪實際觀察到的事實，不要只留籠統警告文字。
+                this._log((lastRoundWasReasoningDeadEnd
                     ? `↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${autoContinueRounds}次）…`
-                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`);
+                    : `↻ 回覆超過單次長度上限，自動請AI接續（第${autoContinueRounds}次）…`)
+                    + (lastRoundDiag ? ` [診斷: HTTP ${lastRoundDiag.httpStatus}, content-type=${lastRoundDiag.contentType || '未知'}, finish_reason=${lastRoundDiag.finishReason}, 耗時${lastRoundDiag.elapsedMs}ms]` : ''));
             }
 
             // tw_stock_db客製: 跟_loopFetch串流路徑同樣的理由（見那邊的詳細
@@ -16604,9 +16649,14 @@ ${existingNodeSummaries}
             // 連全新嘗試都用完才提醒使用者，正常情況下自動接續/全新嘗試機制
             // 會無聲把內容拼完整，見_loopFetch串流路徑同樣的說明。
             if (hitContinueCap) {
-                finalContent += lastRoundWasReasoningDeadEnd
+                // tw_stock_db客製: 見_loopFetch串流路徑lastRoundDiag同樣位置的
+                // 說明。
+                const diagSuffix = lastRoundDiag
+                    ? `\n\n🔍 診斷資訊：最後一輪 HTTP ${lastRoundDiag.httpStatus}，content-type=${lastRoundDiag.contentType || '未知'}，finish_reason=${lastRoundDiag.finishReason}，該輪耗時${lastRoundDiag.elapsedMs}ms，累積content=${lastRoundDiag.contentChars}字元／reasoning=${lastRoundDiag.reasoningChars}字元，共嘗試${autoContinueRounds}輪內部重試 + 第${retryAttempt}次全新嘗試。`
+                    : '';
+                finalContent += (lastRoundWasReasoningDeadEnd
                     ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程或完全沒有回應、沒有真正的答案內容（可能是端點異常或這次任務範圍太大）。** 可以直接追問一次，或縮小這次要處理的範圍再試。'
-                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
+                    : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。') + diagSuffix;
             }
 
             this._pushAssistantMessage(finalContent, reasoningAccum, toolCalls.length ? { tool_calls: toolCalls } : {});
@@ -17514,19 +17564,27 @@ ${existingNodeSummaries}
             // 沒有真的產出答案」，直接請它照AI_REASONING_DEADEND_PROMPT的指示
             // 重講一次，不消耗maxRounds（round--），有自己獨立的重試上限。
             const reasoningContent = message.reasoning_content || '';
-            if (!toolCalls.length && !rawContent.trim() && reasoningContent.trim().length > 20) {
+            // tw_stock_db客製: 見_loopFetch/_loopFetchNative裡isCompletelyEmpty
+            // 的詳細說明——這裡原本只認reasoningContent.trim().length>20，
+            // 完全沒有任何輸出（連思考過程都沒有）的情況會直接漏接、落到下面
+            // 「沒有工具呼叫」分支被當成合法的空白最終答案吞掉，跟主對話迴圈
+            // 曾經有過的同一個漏洞一致，這裡補齊同樣的放寬條件。
+            const isSubagentCompletelyEmpty = !toolCalls.length && !rawContent.trim() && !reasoningContent.trim();
+            if (!toolCalls.length && !rawContent.trim() && (reasoningContent.trim().length > 20 || isSubagentCompletelyEmpty)) {
                 if (reasoningDeadendRetries < SUBAGENT_MAX_REASONING_DEADEND_RETRIES) {
                     reasoningDeadendRetries++;
-                    if (onProgress) onProgress(`↻ 這一輪只輸出了思考過程、沒有產出答案，自動請AI直接回答（第${reasoningDeadendRetries}次）…`);
+                    if (onProgress) onProgress(`↻ 這一輪只輸出了思考過程或完全沒有回應，自動請AI直接回答（第${reasoningDeadendRetries}次）…`);
                     messages.push({ role: 'assistant', content: '（這一輪只完成了內部思考，沒有輸出最終內容）' });
                     messages.push({ role: 'user', content: AI_REASONING_DEADEND_PROMPT });
                     round--;
                     continue;
                 }
-                // 重試次數用完仍然是純思考——不要靜默吞掉，讓使用者知道子任務
-                // 是撞到這個已知的模型行為才失敗，而不是一個難以理解的空白回應
-                // 或殘缺片段（例如只有一個孤立的"["），方便判斷要不要換個模型。
-                return { text: `[子任務失敗: AI重複${SUBAGENT_MAX_REASONING_DEADEND_RETRIES}次只輸出思考過程、沒有給出實際內容或工具呼叫，可能是這個模型在這個任務量下不穩定，建議換一個模型或縮小任務範圍再試]`, visual: capturedVisual };
+                // tw_stock_db客製: 重試次數用完仍然是空/純思考——不要靜默吞掉，
+                // 讓使用者知道子任務是撞到這個已知的模型行為才失敗。使用者
+                // 明確否決過「建議換一個模型」這個方向（見
+                // REASONING_DEADEND_LARGE_CONTEXT_CHARS的說明），這裡拿掉；
+                // 也附上跟主對話迴圈同樣格式的診斷事實，不要只留籠統文字。
+                return { text: `[子任務失敗: AI重複${SUBAGENT_MAX_REASONING_DEADEND_RETRIES}次只輸出思考過程或完全沒有回應、沒有給出實際內容或工具呼叫。🔍 診斷：HTTP ${response.status}，reasoning長度=${reasoningContent.length}字元，建議縮小這次委派的任務範圍再試]`, visual: capturedVisual };
             }
 
             if (useNative && toolCalls.length) {
