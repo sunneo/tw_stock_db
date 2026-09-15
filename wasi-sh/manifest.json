@@ -1,0 +1,36 @@
+{
+  "generated_at": "2026-09-15T17:39:31.895Z",
+  "part_size": 20971520,
+  "files": [
+    {
+      "path": "LICENSE-busybox-GPL2.txt",
+      "size": 18348,
+      "sha256": "bbfc9843646d483c334664f651c208b9839626891d8f17604db2146962f43548",
+      "parts": null
+    },
+    {
+      "path": "LICENSE-wasi-sh-ISC.txt",
+      "size": 776,
+      "sha256": "c95f4e49ce231afb27e8c7d93066d312ff6c045ca983afd2de806c373e78f0f0",
+      "parts": null
+    },
+    {
+      "path": "SOURCE.json",
+      "size": 129,
+      "sha256": "99e8a8b25e21e365312e25d7d4448dc94dc72b9f0d731763a4a24aada3e143f4",
+      "parts": null
+    },
+    {
+      "path": "dist/busybox.wasm",
+      "size": 375884,
+      "sha256": "195b770af8fad458de09144abd3cc3e688a9a83907ca90f7938a253253dfb9b3",
+      "parts": null
+    },
+    {
+      "path": "wasi-sh.bundle.mjs",
+      "size": 75595,
+      "sha256": "fc97b5451a70a858175f904b7ba6f785055ac815f17da55b778e110274add6d6",
+      "parts": null
+    }
+  ]
+}
