@@ -142,6 +142,25 @@ Point」；檔案讀寫API要支援列檔案/寫檔案/讀檔案/找檔案。
      `requestPermission()`授權本身能維持多久（多久算「太久沒用」而被
      重置）是Chrome自己的heuristic，這份改動沒有辦法、也沒有嘗試去
      延長瀏覽器實際的授權持續時間。
+10. **斜線指令選單支援鍵盤上下鍵選取＋Enter套用**（使用者要求）：
+    `_wireSlashCommandMenu`新增`selectedIndex`狀態，選單重繪（指令名稱
+    匹配、或參數argChoices候選清單）時預設選第一項並反白（用
+    `palette.detailBg`當反白底色，跟theme一致）；掛出
+    `this._slashMenuMoveSelection(delta)`（上下移動，夾在頭尾不會繞回）／
+    `this._slashMenuConfirmSelection()`（套用目前選到的，跟滑鼠點擊
+    共用同一份`applyItem`邏輯，只把值填進輸入框、不自動送出，讓使用者
+    確認/補打剩下的參數後自己再按一次Enter才是真的送出）給
+    `_initEventListeners()`裡既有那個統一處理Tab/ArrowUp/ArrowDown/Enter
+    的keydown監聽器呼叫——三個按鍵在選單開著時最前面就攔截掉、不落到
+    原本「瀏覽指令歷史」/「送出訊息」的邏輯。另外確認了使用者提到的
+    另外兩點其實既有邏輯已經正確：指令跟後面的說明文字本來就是用第一個
+    空白分隔（`argsText = textToSend.slice(firstToken.length).trim()`）；
+    `/`不在開頭就不算斜線指令（選單顯示`renderMenu`跟實際送出時的執行
+    `_submitChatInput`都是`startsWith('/')`才算），這兩點沒有改動。
+    Browser工具實測：`/`+部分字元時預設反白第一項、ArrowDown正確移動
+    反白且到底會夾住不繞回、Enter正確把選到的項目填進輸入框並關閉選單
+    （不會意外送出訊息）；參數候選清單（argChoices）同一套鍵盤操作也
+    正確；`/`不在開頭（例如"hello /apple world"）確認選單不會跳出來。
 
 ## 2026-09-14（深夜再追加）
 

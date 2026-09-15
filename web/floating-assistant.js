@@ -18679,7 +18679,52 @@ ${existingNodeSummaries}
         if (!slashMenu) return;
         const palette = this._getThemePalette();
 
-        const hide = () => { slashMenu.style.display = 'none'; slashMenu.innerHTML = ''; };
+        // tw_stock_db客製: 2026-09-15使用者要求——選單開著時可以用鍵盤上下鍵
+        // 移動選取（預設選第一個），Enter直接套用目前選到的項目（跟滑鼠點擊
+        // 同一份邏輯，見下面applyItem），不用一定要伸手去點滑鼠。實際的
+        // 按鍵攔截寫在_initEventListeners()那個統一處理Tab/ArrowUp/ArrowDown/
+        // Enter的keydown監聽器裡（那邊本來就掌管這幾個鍵、也才看得到要不要
+        // 蓋掉原本「瀏覽指令歷史」/「送出訊息」的行為），這裡只需要把
+        // 「選單開著嗎」「移動選取」「套用目前選到的」這三個操作以instance
+        // 方法的形式暴露出去（this._slashMenuMoveSelection/
+        // this._slashMenuConfirmSelection），兩邊共用同一份selectedIndex
+        // 狀態，不要各自維護一份導致不同步。
+        let selectedIndex = 0;
+        const getItems = () => Array.from(slashMenu.querySelectorAll('.ai-slash-item'));
+        const applyHighlight = () => {
+            getItems().forEach((el, i) => { el.style.background = i === selectedIndex ? palette.detailBg : 'transparent'; });
+        };
+        this._slashMenuMoveSelection = (delta) => {
+            const els = getItems();
+            if (!els.length) return;
+            selectedIndex = Math.max(0, Math.min(els.length - 1, selectedIndex + delta));
+            applyHighlight();
+            els[selectedIndex].scrollIntoView({ block: 'nearest' });
+        };
+        // 選定一個項目（鍵盤Enter或滑鼠點擊都走這裡）：只把值填進輸入框、
+        // 不自動送出——跟原本滑鼠點擊的行為完全一致，讓使用者確認/補打
+        // 完剩下的參數後自己再按一次Enter才是真的送出，避免指令需要參數
+        // 卻被提早、空著參數就執行。
+        const applyItem = (item) => {
+            if (!item) return;
+            if (item.dataset.cmd) {
+                inputText.value = item.dataset.cmd + ' ';
+            } else if (item.dataset.argValue !== undefined) {
+                const val = inputText.value;
+                const firstSpace = val.indexOf(' ');
+                const cmdPart = val.slice(0, firstSpace);
+                const restText = val.slice(firstSpace + 1);
+                const tokens = restText.split(/\s+/);
+                const argIndex = Number(item.dataset.argIndex);
+                tokens[argIndex] = item.dataset.argValue;
+                inputText.value = `${cmdPart} ${tokens.slice(0, argIndex + 1).join(' ')} `;
+            }
+            hide();
+            inputText.focus();
+        };
+        this._slashMenuConfirmSelection = () => applyItem(getItems()[selectedIndex]);
+
+        const hide = () => { slashMenu.style.display = 'none'; slashMenu.innerHTML = ''; selectedIndex = 0; };
 
         // tw_stock_db客製: 2026-08-28使用者要求——指令名稱打完、開始打參數時，
         // 如果該指令有宣告argChoices（見register_slash_command的說明），顯示
@@ -18708,6 +18753,8 @@ ${existingNodeSummaries}
                 </div>
             `).join('');
             slashMenu.style.display = 'block';
+            selectedIndex = 0;
+            applyHighlight();
             return true;
         };
 
@@ -18729,6 +18776,8 @@ ${existingNodeSummaries}
                 </div>
             `).join('');
             slashMenu.style.display = 'block';
+            selectedIndex = 0;
+            applyHighlight();
         };
 
         inputText.addEventListener('input', renderMenu);
@@ -18736,26 +18785,12 @@ ${existingNodeSummaries}
 
         slashMenu.addEventListener('mousedown', (e) => {
             // mousedown（而不是click）先於textarea的blur觸發，避免blur把選單
-            // 關掉之後click事件才發生、選不到東西。
+            // 關掉之後click事件才發生、選不到東西。滑鼠點擊跟鍵盤Enter選定
+            // 共用同一份applyItem邏輯（上面已定義）。
             const item = e.target.closest('.ai-slash-item');
             if (!item) return;
             e.preventDefault();
-            if (item.dataset.cmd) {
-                inputText.value = item.dataset.cmd + ' ';
-            } else if (item.dataset.argValue !== undefined) {
-                // 把「目前正在打的那個參數token」換成選中的值，前面已經打完的
-                // 參數(如果有)原封不動保留。
-                const val = inputText.value;
-                const firstSpace = val.indexOf(' ');
-                const cmdPart = val.slice(0, firstSpace);
-                const restText = val.slice(firstSpace + 1);
-                const tokens = restText.split(/\s+/);
-                const argIndex = Number(item.dataset.argIndex);
-                tokens[argIndex] = item.dataset.argValue;
-                inputText.value = `${cmdPart} ${tokens.slice(0, argIndex + 1).join(' ')} `;
-            }
-            hide();
-            inputText.focus();
+            applyItem(item);
         });
 
         document.addEventListener('click', (e) => {
@@ -19562,6 +19597,25 @@ ${existingNodeSummaries}
                 return;
             }
 
+            // tw_stock_db客製: 2026-09-15使用者要求——「/」指令選單開著時，
+            // 上下鍵/Enter要拿去操作選單本身（移動選取/套用選到的項目），
+            // 不能被下面既有的「瀏覽指令歷史」/「送出訊息」邏輯搶走，所以
+            // 三個分支最前面都先檢查選單是不是開著，是的話直接攔截、不落到
+            // 原本的行為。_slashMenuMoveSelection/_slashMenuConfirmSelection
+            // 是_wireSlashCommandMenu()掛在this上的方法（跟滑鼠點擊共用同一份
+            // 選定邏輯，見該函式說明）。
+            if (e.key === 'ArrowUp' && slashMenu.style.display === 'block') {
+                e.preventDefault();
+                this._slashMenuMoveSelection(-1);
+                return;
+            }
+
+            if (e.key === 'ArrowDown' && slashMenu.style.display === 'block') {
+                e.preventDefault();
+                this._slashMenuMoveSelection(1);
+                return;
+            }
+
             if (e.key === 'ArrowUp') {
                 if (currentVal === '' || this.historyIndex > -1) {
                     e.preventDefault();
@@ -19587,6 +19641,12 @@ ${existingNodeSummaries}
                         suggestBar.style.display = 'block';
                     }
                 }
+                return;
+            }
+
+            if (e.key === 'Enter' && slashMenu.style.display === 'block') {
+                e.preventDefault();
+                this._slashMenuConfirmSelection();
                 return;
             }
 
