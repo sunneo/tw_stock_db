@@ -902,6 +902,10 @@ const REASONING_DEADEND_CONTEXT_WINDOW_FRACTION = 0.5;
 // 重新來一次——這跟使用者自己刪掉訊息重打是同一件事，只是由app自己做，
 // 不需要使用者插手。有限次數（不是無限重試，燒費用的安全閥門）。
 const FULL_TURN_DEADEND_RETRY_LIMIT = 3;
+// tw_stock_db客製: 見_recordNetworkDebug的說明——環狀緩衝上限，避免長時間
+// 使用後這份記錄無限增長吃記憶體，只保留最近幾十筆已經足夠排查「最近這幾輪
+// 到底發生了什麼」。
+const NETWORK_DEBUG_LOG_MAX = 50;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
 // tw_stock_db客製: 2026-08-25使用者實測案例——推理模型（例如
 // nemotron-3-super-120b-a12b）偶爾會在reasoning_content吐完一大段思考後
@@ -2992,6 +2996,20 @@ class FloatingAssistant {
    遇到超大文章、書籍或長程式碼時，你可以調用 \`rag_chunk_document\` 工具在背景進行語意切分，建立 dependencies 以免 context 混亂。`;
 
         this.advancedSettings = this._loadAdvancedSettings();
+        // tw_stock_db客製: 2026-09-15使用者實測回報「一切都是瞎猜」——
+        // lastRoundDiag（見_loopFetch/_loopFetchNative）原本只在單一fleeting
+        // 的ai-status-log那一行文字裡出現過一次，下一輪請求就被蓋掉，使用者
+        // 想事後排查「這個端點是不是常常這樣」完全沒有歷史可查。這裡另外存
+        // 一份不會被覆寫的環狀記錄（見_recordNetworkDebug/_renderNetworkDebugLog），
+        // 在Advance設定「LLM Debug」分頁常駐顯示。這支floating-assistant.js
+        // 是web版跟desktop-app版共用的同一份原始碼（desktop-app/build.sh開頭
+        // 就是`cp ../web/floating-assistant.js renderer/floating-assistant.js`，
+        // web/floating-assistant.js才是canonical來源，desktop-app/renderer/
+        // floating-assistant.js是建置時的複本、本身也被desktop-app/.gitignore
+        // 排除在版控外），這個面板兩邊都會有；只是desktop-app版更容易撞到
+        // 「端點完全沒有回應」（見local-proxy.js關於Linux上chunked encoding
+        // 時序問題的說明），所以這裡優先拿桌面版當實測環境。
+        this._networkDebugLog = [];
         this._syncFromAI();
         
         const ragDbSuffix = String(options.ragDbSuffix || 'default').replace(/[^a-zA-Z0-9_\-]/g, '_');
@@ -9732,6 +9750,17 @@ ${sourceTool.handlerScript}
         if (slashMenuChk) slashMenuChk.checked = this.advancedSettings.slashCommandMenuEnabled !== false;
         const showTraceChk = document.getElementById('ai-show-trace-chk');
         if (showTraceChk) showTraceChk.checked = this.advancedSettings.showInternalTrace === true;
+        // tw_stock_db客製: 見_recordNetworkDebug的說明——modal每次開啟都要
+        // 補畫一次目前累積的記錄（不是只有新記錄進來時才畫，不然modal關掉
+        // 又開，畫面會是空的直到下一輪請求）。
+        this._renderNetworkDebugLog();
+        const networkDebugClearBtn = document.getElementById('ai-network-debug-clear-btn');
+        if (networkDebugClearBtn) {
+            networkDebugClearBtn.onclick = () => {
+                this._networkDebugLog = [];
+                this._renderNetworkDebugLog();
+            };
+        }
         const rulesInput = document.getElementById('ai-rules-input');
         const functionsInput = document.getElementById('ai-custom-functions-input');
         if (rulesInput) rulesInput.value = this.advancedSettings.rulesMd || '';
@@ -16256,15 +16285,36 @@ ${existingNodeSummaries}
                 // 一瞬間馬上」跳出「只輸出了思考過程」的警告——但事實上連
                 // 思考過程都沒有，純粹是這一輪請求完全沒拿到任何內容，理應
                 // 比「有思考沒答案」更需要重試，卻反而完全沒有重試機會。這裡
-                // 把條件放寬成「finishReason是'stop'（正常結束、不是使用者
-                // 主動中止或某種例外）且content完全是空的」就一律當deadend
-                // 重試，不再要求一定要有實質的reasoningContent——「完全沒回應」
-                // 跟「有想但沒答案」用同一套重試機制處理，只是下面顯示的訊息
-                // 文字要分開講清楚，不要把「完全沒回應」誤植成「只輸出了思考
-                // 過程」。
+                // 把條件放寬成「content完全是空的」就一律當deadend重試，不再
+                // 要求一定要有實質的reasoningContent。
+                // tw_stock_db客製: 2026-09-15使用者用nvidia/nemotron-3-super-120b-a12b
+                // 實測回報——上面這段2026-09-15稍早的修法仍然不夠寬：還額外
+                // 要求finishReason === 'stop'才算deadend，但「端點真的什麼都
+                // 沒回」的情況，finishReason常常根本不是'stop'——串流中途斷線
+                // （見local-proxy.js關於Linux上chunked encoding時序問題的說明）
+                // 時SSE可能完全沒有送出帶finish_reason的最後一個chunk，
+                // roundFinishReason就停在初始值null；也可能端點回傳某種非
+                // 標準/非'stop'的finish_reason（例如空字串、'error'等）。這些
+                // 情況原本都不符合`isCompletelyEmpty && finishReason === 'stop'`，
+                // 直接在下一行`if (finishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;`
+                // 跳出迴圈，等於連一次重試機會都沒有，使用者看到的就是這裡
+                // 開頭說明過的、完全沒有診斷資訊的空白警告——「一切都是瞎猜」
+                // 的症狀又用另一種finish_reason重現了一次。既然這個條件本來
+                // 就是「content跟reasoning都真的是空的」（isCompletelyEmpty
+                // 本身已經是最嚴格的判斷依據），finishReason是什麼值根本不
+                // 影響「這一輪沒拿到任何東西、值得重試」這個判斷，乾脆整段
+                // 拿掉對finishReason的額外要求——不管端點回報'stop'、空字串、
+                // 還是完全沒回報，只要真的沒拿到任何內容就重試，讓使用者要求
+                // 的「AI要自己retry」而不是被迫手動重新輸入。
                 const isCompletelyEmpty = !fullContent.trim() && !reasoningContent.trim();
-                lastRoundWasReasoningDeadEnd = !fullContent.trim() && (reasoningContent.trim().length > 20 || (isCompletelyEmpty && finishReason === 'stop'));
+                lastRoundWasReasoningDeadEnd = !fullContent.trim() && (reasoningContent.trim().length > 20 || isCompletelyEmpty);
                 if (finishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
+                this._recordNetworkDebug({
+                    apiUrl, kind: isCompletelyEmpty ? 'empty' : (finishReason === 'length' ? 'length' : 'ok'),
+                    httpStatus: lastRoundDiag.httpStatus, contentType: lastRoundDiag.contentType, finishReason: lastRoundDiag.finishReason,
+                    elapsedMs: lastRoundDiag.elapsedMs, contentChars: lastRoundDiag.contentChars, reasoningChars: lastRoundDiag.reasoningChars,
+                    retryAttempt, autoContinueRound: autoContinueRounds + 1, note: apiModel,
+                });
 
                 // tw_stock_db客製: 見REASONING_DEADEND_LARGE_CONTEXT_CHARS說明——
                 // 使用者明確要求「這種give up要分辨是不是token太大」：換模型對
@@ -16497,11 +16547,26 @@ ${existingNodeSummaries}
         } catch (err) {
             streamDiv.remove();
             if (err.name === 'AbortError' || this.stopRequested) return "";
+            // tw_stock_db客製: 2026-09-15使用者實測回報——這裡是fetch()本身
+            // 丟例外的路徑（不是端點回了空內容，是連請求都沒能正常完成，
+            // 例如桌面版本地proxy連不上、TLS/socket中途斷線、回應根本不是
+            // 合法JSON）。原本重試次數用完後只呼叫_log()寫進畫面最下面那條
+            // 單行、隨時會被下一則訊息蓋掉的狀態列，從來沒有真正的訊息被
+            // push進this.messages/畫面——使用者會看到「送出後畫面上什麼都
+            // 沒發生」，比_renderSingleMessage那句空白警告還讓人困惑（至少
+            // 那句還有一個訊息泡泡可以看）。這裡補上_recordNetworkDebug（讓
+            // Advance設定「LLM Debug」分頁看得到這次真正的例外內容），重試
+            // 次數用完時額外push一則帶錯誤內容的assistant訊息，不再讓使用者
+            // 對著空白畫面猜發生了什麼事。
+            this._recordNetworkDebug({ apiUrl, kind: 'error', errorMessage: err.message, retryAttempt, note: apiModel });
             if (retryAttempt < this.retryLimit) {
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
                 return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
             this._log("錯誤: " + err.message);
+            const content = `⚠️ **這一輪請求完全無法完成，不是端點回應空白，是連線本身失敗**（已重試${this.retryLimit}次）。\n\n🔍 診斷資訊：${this._escapeHtml(String(err.message || err))}\n\n若這是桌面版且錯誤內容像是連線被拒絕，可能是本機proxy(local-proxy.js)沒有正常啟動，可以重新開啟應用程式，或到 Advance 設定「LLM Debug」分頁查看最近的請求記錄。`;
+            this._pushAssistantMessage(content, null);
+            this._renderMessageHistory();
             return "";
         }
     }
@@ -16642,9 +16707,26 @@ ${existingNodeSummaries}
                 // 說明——同樣放寬成「完全沒有任何內容+思考」也算deadend、一律
                 // 給重試機會，不再要求一定要有實質reasoningAccum，避免使用者
                 // 回報的「一送出馬上就給放棄訊息、完全沒有重試」情況。
+                // tw_stock_db客製: 2026-09-15使用者用nvidia/nemotron-3-super-120b-a12b
+                // 實測回報——同一個問題在native tool-call路徑一樣存在：這裡
+                // 原本也額外要求roundFinishReason === 'stop'才算deadend，非
+                // 串流的一次性JSON回應一樣可能帶著空字串/null/非'stop'的
+                // finish_reason回來（不是靠SSE分段送，但上游本身回傳的
+                // finish_reason欄位值不受這裡控制），一樣會在完全沒拿到任何
+                // 內容時被這個過嚴的條件擋下、連第一次重試機會都沒有，使用者
+                // 只能自己手動重新輸入。理由跟_loopFetch串流路徑那邊完全一樣
+                // （見那邊的詳細說明）——isCompletelyEmptyNative本身已經是
+                // 「content跟reasoning都真的是空的」這個最嚴格判斷依據，不需要
+                // 再疊加finish_reason的限制，整段拿掉。
                 const isCompletelyEmptyNative = !finalContent.trim() && !reasoningAccum.trim();
-                lastRoundWasReasoningDeadEnd = !finalContent.trim() && (reasoningAccum.trim().length > 20 || (isCompletelyEmptyNative && roundFinishReason === 'stop'));
+                lastRoundWasReasoningDeadEnd = !finalContent.trim() && (reasoningAccum.trim().length > 20 || isCompletelyEmptyNative);
                 if (roundFinishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
+                this._recordNetworkDebug({
+                    apiUrl, kind: isCompletelyEmptyNative ? 'empty' : (roundFinishReason === 'length' ? 'length' : 'ok'),
+                    httpStatus: lastRoundDiag.httpStatus, contentType: lastRoundDiag.contentType, finishReason: lastRoundDiag.finishReason,
+                    elapsedMs: lastRoundDiag.elapsedMs, contentChars: lastRoundDiag.contentChars, reasoningChars: lastRoundDiag.reasoningChars,
+                    retryAttempt, autoContinueRound: autoContinueRounds + 1, note: apiModel,
+                });
 
                 // tw_stock_db客製: 見_loopFetch串流路徑REASONING_DEADEND_LARGE_
                 // CONTEXT_CHARS的詳細說明——使用者明確要求「這種give up要分辨
@@ -16733,11 +16815,18 @@ ${existingNodeSummaries}
 
         } catch (err) {
             if (err.name === 'AbortError' || this.stopRequested) return "";
+            // tw_stock_db客製: 見_loopFetch串流路徑同樣位置的詳細說明——跟那邊
+            // 同樣的理由，native路徑（非串流）一樣要記錄診斷、重試次數用完時
+            // 一樣要push一則真正看得到的錯誤訊息，不能只寫進會被蓋掉的狀態列。
+            this._recordNetworkDebug({ apiUrl, kind: 'error', errorMessage: err.message, retryAttempt, note: apiModel });
             if (retryAttempt < this.retryLimit) {
                 await this._sleep(this.retryBaseDelayMs * retryAttempt);
                 return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
             this._log("錯誤: " + err.message);
+            const content = `⚠️ **這一輪請求完全無法完成，不是端點回應空白，是連線本身失敗**（已重試${this.retryLimit}次）。\n\n🔍 診斷資訊：${this._escapeHtml(String(err.message || err))}\n\n若這是桌面版且錯誤內容像是連線被拒絕，可能是本機proxy(local-proxy.js)沒有正常啟動，可以重新開啟應用程式，或到 Advance 設定「LLM Debug」分頁查看最近的請求記錄。`;
+            this._pushAssistantMessage(content, null);
+            this._renderMessageHistory();
             return "";
         }
     }
@@ -18002,6 +18091,14 @@ ${existingNodeSummaries}
                                     </div>
                                     <p class="ai-advanced-hint">預設隱藏，圖片結果不受影響。開啟後，除了主對話的工具呼叫/思考過程，委派給子Agent（delegate_to_subagent，不管是明確指定domain、自動路由、還是兩層領域路由）執行期間也會多顯示一張即時更新的進度卡片（判斷委派給哪個領域、每一輪呼叫了哪個工具、有沒有中途申請追加工具），方便觀察子Agent在忙什麼；關閉時子Agent一律維持完全靜默，跟這個設定新增前的行為一致。</p>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                                        <label class="ai-advanced-label" style="margin:0;">🌐 網路請求診斷記錄</label>
+                                        <button type="button" id="ai-network-debug-clear-btn" class="ai-advanced-btn">清除記錄</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">每一輪送出的請求實際觀察到的事實（HTTP狀態／finish_reason／耗時／收到的字數／是不是完全空白／連線例外訊息），即時更新，最多保留最近${NETWORK_DEBUG_LOG_MAX}筆。遇到「端點完全沒有回應任何內容」時可以直接來這裡看最後幾筆的實際狀況，不用只憑那句警告文字猜。</p>
+                                    <div id="ai-network-debug-list" style="max-height:220px; overflow-y:auto; font-family:monospace; font-size:11px; background:${palette.detailBg}; color:${palette.detailText}; border:1px solid ${palette.inputBorder}; border-radius:6px; padding:6px 8px;"></div>
+                                </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="input">
                                 <div class="ai-advanced-stack">
@@ -18374,6 +18471,69 @@ ${existingNodeSummaries}
     _log(msg) {
         const el = document.getElementById('ai-status-log');
         if (el) el.innerText = msg;
+    }
+
+    // tw_stock_db客製: 2026-09-15新增——桌面版本地proxy(local-proxy.js)是
+    // 「端點完全沒有回應任何內容」這類狀況最常見的成因之一（見local-proxy.js
+    // 開頭關於chunked encoding的說明），但使用者完全沒有管道能自己確認
+    // 「這一輪到底發生了什麼」，只能回報症狀讓我事後看transcript猜。這裡
+    // 記錄每一輪實際觀察到的請求事實（不是猜測），存一份環狀緩衝（最多
+    // NETWORK_DEBUG_LOG_MAX筆，超過自動丟掉最舊的），在Advance設定「LLM
+    // Debug」分頁常駐顯示，即時更新（modal開著時每筆新記錄都會立刻重繪，
+    // 不用關掉重開才看得到）。entry欄位:
+    //   kind: 'ok'（正常拿到內容）/ 'length'（被max_tokens截斷，自動接續中）
+    //         / 'empty'（這一輪完全沒有content也沒有reasoning）/ 'error'（fetch
+    //         本身丟例外，例如本地proxy連不上）
+    //   httpStatus/contentType/finishReason/elapsedMs/contentChars/reasoningChars:
+    //         見_loopFetch/_loopFetchNative的lastRoundDiag，同樣的事實
+    //   retryAttempt/autoContinueRound: 這是第幾次「全新嘗試」/第幾次「同一
+    //         嘗試內的自動接續輪」，方便判斷是不是同一個請求卡住重試很多次
+    //   apiHost: apiUrl的host部分（不含path），127.0.0.1開頭代表有經過
+    //         desktop-app本機proxy，方便判斷問題是不是出在這層轉發
+    //   note: 額外訊息（例如錯誤內容前段）
+    _recordNetworkDebug(entry) {
+        let apiHost = '';
+        try { apiHost = entry.apiUrl ? new URL(entry.apiUrl).host : ''; } catch (_) { apiHost = entry.apiUrl || ''; }
+        this._networkDebugLog.push(Object.assign({ t: Date.now(), apiHost }, entry));
+        if (this._networkDebugLog.length > NETWORK_DEBUG_LOG_MAX) {
+            this._networkDebugLog.splice(0, this._networkDebugLog.length - NETWORK_DEBUG_LOG_MAX);
+        }
+        this._renderNetworkDebugLog();
+    }
+
+    // tw_stock_db客製: 只有Advance設定modal目前真的開著、且面板存在於DOM時
+    // 才重繪——_recordNetworkDebug在對話進行中可能被頻繁呼叫（自動接續/
+    // 自動重試每一輪都會記一筆），modal沒開時完全不用碰DOM。
+    _renderNetworkDebugLog() {
+        const listEl = document.getElementById('ai-network-debug-list');
+        if (!listEl) return;
+        if (!this._networkDebugLog.length) {
+            listEl.innerHTML = '<div style="opacity:0.6;">尚無記錄，送出一則訊息後這裡會即時顯示每一輪請求的實際狀況。</div>';
+            return;
+        }
+        const kindStyle = {
+            ok: { icon: '✅', color: '#2f855a' },
+            length: { icon: '✂️', color: '#3182ce' },
+            empty: { icon: '⚠️', color: '#dd6b20' },
+            error: { icon: '❌', color: '#e53e3e' },
+        };
+        listEl.innerHTML = this._networkDebugLog.slice().reverse().map((e) => {
+            const s = kindStyle[e.kind] || { icon: 'ℹ️', color: '#4a5568' };
+            const time = new Date(e.t).toLocaleTimeString('zh-TW', { hour12: false });
+            const parts = [];
+            if (e.httpStatus != null) parts.push(`HTTP ${e.httpStatus}`);
+            if (e.apiHost) parts.push(`host=${this._escapeHtml(e.apiHost)}`);
+            if (e.contentType) parts.push(`ct=${this._escapeHtml(String(e.contentType).slice(0, 40))}`);
+            if (e.finishReason !== undefined) parts.push(`finish=${e.finishReason || '（無）'}`);
+            if (e.elapsedMs != null) parts.push(`${e.elapsedMs}ms`);
+            if (e.contentChars != null) parts.push(`content=${e.contentChars}字`);
+            if (e.reasoningChars != null) parts.push(`reasoning=${e.reasoningChars}字`);
+            if (e.retryAttempt != null) parts.push(`嘗試#${e.retryAttempt}`);
+            if (e.autoContinueRound != null) parts.push(`接續輪#${e.autoContinueRound}`);
+            if (e.errorMessage) parts.push(`error=${this._escapeHtml(String(e.errorMessage).slice(0, 160))}`);
+            if (e.note) parts.push(this._escapeHtml(String(e.note).slice(0, 160)));
+            return `<div style="padding:3px 0; border-bottom:1px solid rgba(128,128,128,0.15); color:${s.color};">${s.icon} <b>${time}</b> ${parts.join(' · ')}</div>`;
+        }).join('');
     }
 
     // tw_stock_db客製: 判斷聊天視窗目前的捲動位置是不是「已經在底部附近」
