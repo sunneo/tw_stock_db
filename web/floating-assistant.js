@@ -3156,6 +3156,13 @@ class FloatingAssistant {
             // 按鈕，預設關閉（跟browserSearchEnabled同一個理由：要跳確認框
             // 才下載模型、要跟使用者要麥克風權限，不該預設就出現在畫面上）。
             voiceInputEnabled: false,
+            // tw_stock_db客製: 2026-09-15使用者要求——語音輸入(Whisper)原本
+            // 語言寫死'zh'，改成使用者可選'zh'/'en'/'auto'。這只是給Whisper
+            // 的口音/語言提示（幫助辨識準確度），不是翻譯——選en講英文，
+            // 辨識結果就是英文原文，不會被轉成中文（Whisper本身沒有「翻成
+            // 任意語言」的功能，只有task:'translate'能把任何語言轉成英文，
+            // 這裡刻意不用，維持「辨識結果=你實際講的語言」的直覺行為）。
+            voiceInputLanguage: 'zh',
             // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀（見
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
@@ -3550,6 +3557,7 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n >= 0.5 && n <= 2.0 ? n : 1.0;
             })(),
             voiceInputEnabled: raw.voiceInputEnabled === true,
+            voiceInputLanguage: ['zh', 'en', 'auto'].includes(raw.voiceInputLanguage) ? raw.voiceInputLanguage : 'zh',
             subtitleFontScale: (() => {
                 const n = Number(raw.subtitleFontScale);
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
@@ -9412,6 +9420,8 @@ ${sourceTool.handlerScript}
         if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
         const voiceInputEnabledChk = document.getElementById('ai-voice-input-enabled-chk');
         if (voiceInputEnabledChk) voiceInputEnabledChk.checked = this.advancedSettings.voiceInputEnabled === true;
+        const voiceInputLangSelect = document.getElementById('ai-voice-input-lang');
+        if (voiceInputLangSelect) voiceInputLangSelect.value = this.advancedSettings.voiceInputLanguage || 'zh';
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
         if (browserSearchEnabledChk) browserSearchEnabledChk.checked = this.advancedSettings.browserSearchEnabled === true;
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
@@ -14304,8 +14314,12 @@ ${existingNodeSummaries}
     // （WebGPU可用先試WebGPU、失敗退CPU，或使用者在設定選了「只用CPU」），
     // 共用同一個Whisper transcriber/模型快取；用_runWhisperWindowed而不是
     // 單純呼叫一次transcriber，是為了跟transcribe_media一致地處理「錄超過
-    // 30秒」的情況（正常口述輸入通常不會這麼長，但這裡不假設）。辨識預設
-    // 中文，跟這個專案其餘語音功能的既有決策一致（不做語言自動偵測）。
+    // 30秒」的情況（正常口述輸入通常不會這麼長，但這裡不假設）。語言取自
+    // advancedSettings.voiceInputLanguage（2026-09-15使用者要求可選，原本
+    // 寫死'zh'）——這只是給模型的口音/語言提示，幫助辨識準確度，不是翻譯，
+    // 辨識出來的文字語言會跟實際講的語言一致（選en講英文，結果就是英文
+    // 原文）；'auto'時不傳language參數給transformers.js pipeline，讓它自己
+    // 偵測（見_runWhisperWindowed的`if (language) opts.language = language;`）。
     async _recognizeVoiceInput(blob, btn, inputText) {
         btn.disabled = true;
         btn.textContent = '⏳';
@@ -14316,11 +14330,13 @@ ${existingNodeSummaries}
             const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu';
             const wantWebGpu = !cpuOnly && await this._isWebGpuAvailable();
             const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
+            const configuredLang = this.advancedSettings.voiceInputLanguage || 'zh';
+            const whisperLang = configuredLang === 'auto' ? null : configuredLang;
             let result = null, lastErr = null;
             for (const device of deviceOrder) {
                 try {
                     const transcriber = await this._getWhisperTranscriber(device, (m) => { btn.title = m; });
-                    result = await this._runWhisperWindowed(transcriber, audio.pcm, 'zh', device, () => {});
+                    result = await this._runWhisperWindowed(transcriber, audio.pcm, whisperLang, device, () => {});
                     break;
                 } catch (err) {
                     lastErr = err;
@@ -17237,6 +17253,13 @@ ${existingNodeSummaries}
                                         <input type="checkbox" id="ai-voice-input-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-voice-input-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用語音輸入</label>
                                     </div>
+                                    <label class="ai-advanced-label" for="ai-voice-input-lang" style="font-weight:normal; margin-top:8px;">說話語言</label>
+                                    <select id="ai-voice-input-lang" class="ai-advanced-input">
+                                        <option value="zh">中文</option>
+                                        <option value="en">English</option>
+                                        <option value="auto">自動偵測</option>
+                                    </select>
+                                    <p class="ai-advanced-hint">告訴Whisper模型你講的是哪種語言，幫助辨識準確度——不是翻譯，辨識出來的文字語言會跟你實際講的語言一致（選中文、講中文，辨識結果就是中文；選English、講英文，結果就是英文原文，不會被翻譯成中文）。「自動偵測」讓模型自己判斷，通常準確度會比明確指定語言稍低。</p>
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="functions">
@@ -19259,6 +19282,15 @@ ${existingNodeSummaries}
                 this.advancedSettings.voiceInputEnabled = !!voiceInputEnabledChk.checked;
                 this._saveAdvancedSettings();
                 this._updateVoiceInputButtonVisibility();
+            });
+        }
+        const voiceInputLangSelect = document.getElementById('ai-voice-input-lang');
+        if (voiceInputLangSelect) {
+            voiceInputLangSelect.addEventListener('change', () => {
+                if (['zh', 'en', 'auto'].includes(voiceInputLangSelect.value)) {
+                    this.advancedSettings.voiceInputLanguage = voiceInputLangSelect.value;
+                }
+                this._saveAdvancedSettings();
             });
         }
         const browserSearchEnabledChk = document.getElementById('ai-browser-search-enabled-chk');
