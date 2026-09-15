@@ -144,6 +144,12 @@ index.html第7911行）批次呼叫`register_openai_tool`掛進tw_stock_db自己
     認不得（要字串'ENOENT'），導致`git.fetch()`清理`.git/shallow`那步
     直接中止整個clone——補上跟`_readFile`/`_stat`/`_readdir`一致的
     `_enoent()`轉換。
+  - **斜線指令選單鍵盤操作**：`_wireSlashCommandMenu`（~18678）新增
+    `selectedIndex`+`applyHighlight`/`moveSelection`/`applyItem`，掛出
+    `this._slashMenuMoveSelection`/`this._slashMenuConfirmSelection`給
+    `_initEventListeners()`的統一keydown監聽器（Tab/ArrowUp/ArrowDown/
+    Enter原本掌管指令歷史瀏覽/送出訊息的那個）呼叫，選單開著時
+    ArrowUp/ArrowDown/Enter三鍵最前面就攔截、不落到原本行為。
 
 - **全新子系統：2D多邊形動畫**（跟3D場景/互動viewer完全獨立，不共用場景圖/
   渲染邏輯，只共用`_encodeCanvasFramesToMp4`）——圓/矩形/多邊形/折線/文字/圖片
