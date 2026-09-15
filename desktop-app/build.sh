@@ -35,15 +35,23 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   npm install
 fi
 
+# tw_stock_db客製: 2026-09-16——電腦上Windows桌面版build.ps1遇到的真實案例
+# ——electron-builder的CLI用「--win/--linux <target>」這種寫法時，沒有明講
+# arch旗標的話會退回讀「目前跑這支script的Node process自己的process.arch」，
+# 不是package.json裡build.win/linux.target設定的arch陣列（那組設定在這種
+# 呼叫方式下形同沒用）。跑這支script的Node剛好是32位元組建時，會悄悄打包
+# 成ia32版本，而新版Electron早就不再發布Windows/Linux的32位元組建，載到
+# 一半才用一個看起來毫不相干的404錯誤失敗。明確加上--x64繞過process.arch
+# 偵測，不管跑這支script的Node本身是32/64位元都一律打包x64。
 TARGET="${1:-linux}"
 case "$TARGET" in
   linux)
     echo "== electron-builder 打包 Linux AppImage =="
-    npx electron-builder --linux AppImage
+    npx electron-builder --linux AppImage --x64
     ;;
   win)
     echo "== electron-builder 打包 Windows portable exe（跨平台編譯，需要系統已裝wine）=="
-    npx electron-builder --win portable
+    npx electron-builder --win portable --x64
     ;;
   *)
     echo "未知的目標平台：$TARGET（可用 linux 或 win）" >&2
