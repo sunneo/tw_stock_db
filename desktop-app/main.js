@@ -613,64 +613,244 @@ ipcMain.handle("fa:exec:setSettings", async (_evt, patch) => {
   return next;
 });
 
-// tw_stock_db客製: 2026-09-15使用者實際遇到的bug——AI呼叫run_command時把
-// 整條指令（含參數與路徑）都塞進單一`command`字串、`args`留空（例如
-// `{"command":"ls -la /home/.../StepAction/"}`），execFile不經過shell，
-// 會把這一整串含空白的文字當成「執行檔名稱」直接去spawn，真實世界沒有
-// 這個檔名的檔案，直接ENOENT——這跟File Access Point的root範圍限制是
-//完全不同的兩回事（run_command本來就不吃FAP的root範圍檢查）。這裡加一個
-// 保守、不引入shell的修補：`args`是空的、且`command`裡有空白時，用簡單
-// 的、認識雙引號/單引號的分詞器自己切出「程式名稱＋參數陣列」，行為上仍然
-// 等同execFile(陣列參數)，**不會**解釋管線(|)/重導向(>)/&&等shell語法
-// （那需要真的呼叫shell，是更大的能力升級，複雜度與風險都不同，這裡先
-// 只解決「AI塞了一整行進command卻忘記拆args」這個具體、常見的呼叫失誤）。
-function splitCommandLineIfNeeded(command, args) {
-  if (Array.isArray(args) && args.length) return { program: command, args };
-  const s = String(command || "").trim();
-  if (!s.includes(" ")) return { program: s, args: [] };
-  const tokens = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(s)) !== null) tokens.push(m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]));
-  return { program: tokens[0] || s, args: tokens.slice(1) };
+// tw_stock_db客製: 2026-09-15使用者明確要求「單機版就是可以編輯、測試、
+// 執行」——run_command要有真正的bash/shell能力（管線、重導向、&&、AI把
+// 整條指令塞進單一command字串也要能跑，見下方splitCommandLineIfNeeded的
+// 說明），而不是原本execFile(陣列參數、不經過shell)那種只能單一執行檔+
+// 固定參數陣列的形式。真正修好這個bug的根本方式就是交給一個真的shell去
+// 解析——POSIX找/bin/bash（不存在才退回/bin/sh），Windows依序找Git Bash→
+// PowerShell→cmd.exe（使用者明確指定的優先順序：「windows用powershell,
+// 找看有沒有gitbash, 或用cmd」——這裡解讀成「三選一，優先用能提供bash
+// 語意的Git Bash，找不到才退而求其次」，因為使用者同一則訊息也明確要求
+// 「bash的能力」，Git Bash是三者中唯一能真正給出bash語法的選項）。
+// 安全性不是靠「不給shell」，是靠既有的execEnabled開關＋每次執行前顯示
+// 完整指令內容的confirm視窗（使用者必須親自點「執行」）——這條防線在這次
+// 改動前後完全沒變，shell能力是使用者在這個防線之上明確要求換來的。
+const { existsSync } = require("fs");
+const { execFileSync } = require("child_process");
+
+// tw_stock_db客製: 一開始用寫死的幾條C:\Program Files\Git\...路徑找Git
+// Bash，實測在這台開發機上完全找不到——Git實際裝在`J:\Program
+// Files\Git\`（非標準磁碟機代號），寫死路徑的做法在「Git裝在C碟以外」的
+// 機器上一律失效。改成呼叫Windows內建的`where`指令動態找出所有名為
+// bash.exe的可執行檔，再從結果裡挑路徑含「Git」的那個——刻意排開
+// `C:\Windows\System32\bash.exe`／`...\WindowsApps\bash.exe`這兩個WSL
+// launcher stub（呼叫它們會嘗試啟動WSL發行版，不是使用者要的「Git Bash」，
+// 沒裝WSL發行版時甚至會直接跳出Windows市集頁面，完全不是預期行為）。
+function findExecutableCandidates(exeName) {
+  try {
+    const out = execFileSync("where", [exeName], { windowsHide: true, encoding: "utf8" });
+    return out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
 }
 
-ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel }) => {
+let cachedWindowsShell = null;
+function resolveWindowsShell() {
+  if (cachedWindowsShell) return cachedWindowsShell;
+  const bashCandidates = findExecutableCandidates("bash.exe").filter((p) => { try { return existsSync(p); } catch (_) { return false; } });
+  const gitBash = bashCandidates.find((p) => /\\Git\\/i.test(p)) || bashCandidates.find((p) => !/\\(System32|WindowsApps)\\/i.test(p));
+  if (gitBash) {
+    cachedWindowsShell = { name: "git-bash", file: gitBash, buildArgs: (cmd) => ["-c", cmd] };
+  } else {
+    // PowerShell幾乎必然存在（Windows 7+內建），當作第二選擇；真的連
+    // powershell.exe都叫不動時（極端環境），最後才退到cmd.exe。注意：
+    // Windows內建的powershell.exe是5.1版，不支援`&&`/`||`語法鏈接
+    // （那是PowerShell 7+/pwsh.exe才有的功能）——這是已知限制，如實告知：
+    // 找不到Git Bash時，AI下的`&&`鏈接指令在這個fallback下會失敗，
+    // 使用者可以安裝Git for Windows（連帶附上Git Bash）來解除這個限制。
+    cachedWindowsShell = { name: "powershell", file: "powershell.exe", buildArgs: (cmd) => ["-NoProfile", "-NonInteractive", "-Command", cmd] };
+  }
+  return cachedWindowsShell;
+}
+
+function buildShellSpawnArgs(fullCommandLine) {
+  if (process.platform === "win32") {
+    const shell = resolveWindowsShell();
+    return { file: shell.file, args: shell.buildArgs(fullCommandLine) };
+  }
+  const bash = existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
+  return { file: bash, args: ["-c", fullCommandLine] };
+}
+
+// AI呼叫run_command時，`command`可能已經是完整指令行（含參數/管線等，AI
+// 常見的塞法，過去曾因為execFile不經過shell而ENOENT），也可能是乾淨的
+// 執行檔名稱+獨立args陣列——兩種都支援，有args就用平台對應的shell-quote
+// 規則組回一行，交給上面真正的shell解析（管線/重導向/&&等語法從這裡開始
+// 就能正常使用）。
+function shellQuoteArg(arg, isWindows) {
+  const s = String(arg);
+  if (isWindows) {
+    if (!/[\s"^&|<>()]/.test(s)) return s;
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  if (!/[^A-Za-z0-9_\/:=.,@%+-]/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildFullCommandLine(command, args) {
+  const isWindows = process.platform === "win32";
+  if (Array.isArray(args) && args.length) {
+    return `${command} ${args.map((a) => shellQuoteArg(a, isWindows)).join(" ")}`;
+  }
+  return String(command || "").trim();
+}
+
+function runShellCommand(fullCommandLine, cwd) {
+  return new Promise((resolve) => {
+    let spawnSpec;
+    try {
+      spawnSpec = buildShellSpawnArgs(fullCommandLine);
+    } catch (err) {
+      resolve({ ok: false, exitCode: -1, signal: null, stdout: "", stderr: "", timedOut: false, errorMessage: String(err.message || err) });
+      return;
+    }
+    let child;
+    try {
+      child = spawn(spawnSpec.file, spawnSpec.args, { cwd, windowsHide: true });
+    } catch (err) {
+      resolve({ ok: false, exitCode: -1, signal: null, stdout: "", stderr: "", timedOut: false, errorMessage: String(err.message || err) });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      resolve({
+        ok: false, exitCode: -1, signal: null,
+        stdout: stdout.slice(0, 200000), stderr: stderr.slice(0, 200000),
+        timedOut: true, errorMessage: `執行逾時（超過 ${EXEC_TIMEOUT_MS / 1000} 秒），已強制中止。`,
+      });
+    }, EXEC_TIMEOUT_MS);
+    child.stdout.on("data", (d) => { if (stdout.length < MAX_EXEC_OUTPUT_BYTES) stdout += d.toString("utf8"); });
+    child.stderr.on("data", (d) => { if (stderr.length < MAX_EXEC_OUTPUT_BYTES) stderr += d.toString("utf8"); });
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: false, exitCode: -1, signal: null, stdout: "", stderr: "", timedOut: false, errorMessage: String(err.message || err) });
+    });
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        ok: code === 0, exitCode: code == null ? -1 : code, signal: signal || null,
+        stdout: stdout.slice(0, 200000), stderr: stderr.slice(0, 200000),
+        timedOut: false, errorMessage: code === 0 ? null : `命令結束，exit code ${code}`,
+      });
+    });
+  });
+}
+
+// 共用confirm gate：run_command與下面的tmux_*工具都是「真的執行東西」，
+// 統一走同一個execEnabled檢查＋同一個confirm視窗（顯示同樣格式的指令/
+// 工作目錄），不要各自重複一份判斷邏輯。
+async function execConfirmGate(cmdLineForDisplay, cwdForDisplay) {
   const settings = await getDesktopSettings();
   if (!settings.execEnabled) {
-    throw new Error("執行程式功能目前未啟用，請在應用程式頂部列開啟「允許AI執行程式」。");
+    throw new Error("執行程式功能目前未啟用，請在Advance設定的「桌面版設定」分頁開啟「允許AI執行程式」。");
   }
+  if (settings.execConfirmRequired !== false) {
+    const allowed = await showExecConfirmWindow(cmdLineForDisplay, cwdForDisplay);
+    if (!allowed) throw new Error("使用者拒絕了這個執行請求。");
+  }
+}
+
+ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel, cwdAbs } = {}) => {
   let cwd = app.getPath("home");
-  if (rootId) {
+  if (cwdAbs) {
+    cwd = cwdAbs; // 配合fs_*系列unrestricted工具，允許直接指定絕對路徑當cwd，不受root限制
+  } else if (rootId) {
     const rec = await findRoot(rootId);
     cwd = resolveWithinRoot(rec.rootPath, cwdRel || ".");
   }
-  const { program, args: finalArgs } = splitCommandLineIfNeeded(command, args);
-  const cmdLine = `${program} ${finalArgs.join(" ")}`.trim();
-  if (settings.execConfirmRequired !== false) {
-    const allowed = await showExecConfirmWindow(cmdLine, cwd);
-    if (!allowed) {
-      throw new Error("使用者拒絕了這個執行請求。");
-    }
+  const fullCommandLine = buildFullCommandLine(command, args);
+  if (!fullCommandLine) throw new Error("缺少要執行的指令內容");
+  await execConfirmGate(fullCommandLine, cwd);
+  return runShellCommand(fullCommandLine, cwd);
+});
+
+// ---------- IPC: tmux（持久化/互動式session，2026-09-15使用者明確要求 ----------
+// 「執行指令也要有有bash, tmux的能力」——run_command每次呼叫都是獨立、
+// 跑完就結束的子行程，沒辦法維持一個長時間執行/互動式程式（例如開發伺服器、
+// REPL）跨越多次工具呼叫的狀態。tmux（POSIX限定，Windows沒有對應工具，
+// 呼叫時會得到明確的「這個平台不支援」錯誤，不是silently失敗）讓AI可以
+// 開一個具名session、之後分好幾次send-keys/capture-pane，模擬真人打開一個
+// 終端機視窗持續操作。三個「會改變狀態/等同執行任意指令」的操作
+// （start/send-keys/kill）都走跟run_command同一個execConfirmGate；純讀取
+// 的list/capture不用confirm（不會讓任何新東西被執行），但仍要求
+// execEnabled已開啟（tmux本身也是一種「執行程式」能力）。
+function isTmuxAvailable() {
+  return process.platform !== "win32";
+}
+function requireTmuxAvailable() {
+  if (!isTmuxAvailable()) {
+    throw new Error("tmux是POSIX（Linux/macOS）限定工具，這台電腦是Windows，沒有這個能力。Windows上請改用run_command，或改用長時間執行時搭配輪詢的方式。");
   }
-  return new Promise((resolve) => {
-    execFile(
-      program,
-      finalArgs,
-      { cwd, timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_EXEC_OUTPUT_BYTES, windowsHide: true },
-      (error, stdout, stderr) => {
-        resolve({
-          ok: !error || error.code === undefined,
-          exitCode: error && typeof error.code === "number" ? error.code : (error ? -1 : 0),
-          signal: (error && error.signal) || null,
-          stdout: String(stdout || "").slice(0, 200000),
-          stderr: String(stderr || "").slice(0, 200000),
-          timedOut: !!(error && error.killed),
-          errorMessage: error ? String(error.message || error) : null,
-        });
-      }
-    );
+}
+function execFileP(file, args, opts) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_EXEC_OUTPUT_BYTES, windowsHide: true, ...opts }, (error, stdout, stderr) => {
+      if (error && error.code === "ENOENT") { reject(new Error("找不到tmux，請先在這台電腦安裝tmux（例如 apt install tmux / brew install tmux）。")); return; }
+      resolve({ ok: !error, exitCode: error ? (typeof error.code === "number" ? error.code : -1) : 0, stdout: String(stdout || ""), stderr: String(stderr || ""), errorMessage: error ? String(error.message || error) : null });
+    });
   });
+}
+
+ipcMain.handle("fa:tmux:start", async (_evt, { name, command, cwd } = {}) => {
+  requireTmuxAvailable();
+  const sessionName = String(name || "").trim();
+  if (!sessionName) throw new Error("缺少session名稱");
+  const workDir = cwd ? path.resolve(String(cwd)) : app.getPath("home");
+  const displayCmd = `tmux new-session -d -s ${sessionName}${command ? ` "${command}"` : ""}`;
+  await execConfirmGate(displayCmd, workDir);
+  const tmuxArgs = ["new-session", "-d", "-s", sessionName, "-c", workDir];
+  if (command) tmuxArgs.push(String(command));
+  return execFileP("tmux", tmuxArgs);
+});
+
+ipcMain.handle("fa:tmux:sendKeys", async (_evt, { name, keys, enter } = {}) => {
+  requireTmuxAvailable();
+  const sessionName = String(name || "").trim();
+  if (!sessionName) throw new Error("缺少session名稱");
+  const keysStr = String(keys || "");
+  await execConfirmGate(`tmux send-keys -t ${sessionName} ${keysStr}${enter !== false ? " <Enter>" : ""}`, `(tmux session: ${sessionName})`);
+  const tmuxArgs = ["send-keys", "-t", sessionName, keysStr];
+  if (enter !== false) tmuxArgs.push("Enter");
+  return execFileP("tmux", tmuxArgs);
+});
+
+ipcMain.handle("fa:tmux:capture", async (_evt, { name, lines } = {}) => {
+  requireTmuxAvailable();
+  const settings = await getDesktopSettings();
+  if (!settings.execEnabled) throw new Error("執行程式功能目前未啟用，請在Advance設定的「桌面版設定」分頁開啟「允許AI執行程式」。");
+  const sessionName = String(name || "").trim();
+  if (!sessionName) throw new Error("缺少session名稱");
+  const tmuxArgs = ["capture-pane", "-t", sessionName, "-p"];
+  if (Number(lines) > 0) tmuxArgs.push("-S", `-${Number(lines)}`);
+  return execFileP("tmux", tmuxArgs);
+});
+
+ipcMain.handle("fa:tmux:list", async () => {
+  requireTmuxAvailable();
+  const settings = await getDesktopSettings();
+  if (!settings.execEnabled) throw new Error("執行程式功能目前未啟用，請在Advance設定的「桌面版設定」分頁開啟「允許AI執行程式」。");
+  const r = await execFileP("tmux", ["list-sessions"]);
+  if (!r.ok && /no server running|no sessions/i.test(r.stderr || "")) return { ok: true, exitCode: 0, stdout: "", stderr: "", errorMessage: null };
+  return r;
+});
+
+ipcMain.handle("fa:tmux:kill", async (_evt, { name } = {}) => {
+  requireTmuxAvailable();
+  const sessionName = String(name || "").trim();
+  if (!sessionName) throw new Error("缺少session名稱");
+  await execConfirmGate(`tmux kill-session -t ${sessionName}`, `(tmux session: ${sessionName})`);
+  return execFileP("tmux", ["kill-session", "-t", sessionName]);
 });
 
 // ---------- IPC: API金鑰（server configure） ----------
@@ -841,6 +1021,38 @@ function createWindow() {
           console.log("[adv-settings-test] result: " + JSON.stringify(info, null, 2));
         } catch (err) {
           console.log("[adv-settings-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+  // 一次性除錯hook：驗證2026-09-15新增的「真正shell」能力（Git Bash/
+  // PowerShell/cmd.exe，依平台+可用性自動選擇）——用&&串接兩個echo，
+  // 這種語法用原本的execFile(陣列參數、不經過shell)完全不可能跑得動，
+  // 能得到兩行輸出才代表真的換成shell執行、不是換湯不換藥。同時也用會
+  // 造成ENOENT的「整條指令塞進command、args留空」呼叫方式，驗證這次真的
+  // 修好使用者實際回報的那個bug。
+  if (process.env.FA_DEBUG_SHELL_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          await saveDesktopSettings({ execEnabled: true, execConfirmRequired: false });
+          console.log("[shell-test] running: echo step1 && echo step2 ...");
+          const r1 = await mainWindow.webContents.executeJavaScript(
+            `window.desktopAPI.exec.run({ command: "echo step1 && echo step2" }).then(r => JSON.stringify(r))`
+          );
+          console.log("[shell-test] chained result: " + r1);
+          console.log("[shell-test] running the reported failure pattern: full command line (with args/spaces) stuffed into command, args empty...");
+          const r2 = await mainWindow.webContents.executeJavaScript(
+            `window.desktopAPI.exec.run({ command: "echo hello from a full command line with spaces" }).then(r => JSON.stringify(r))`
+          );
+          console.log("[shell-test] full-line-in-command result: " + r2);
+          console.log("[shell-test] calling tmux_start via desktopAPI.tmux.start (should cleanly report unsupported on this platform)...");
+          const r3 = await mainWindow.webContents.executeJavaScript(
+            `window.desktopAPI.tmux.start("test-session", null, null).then(r => JSON.stringify({ ok: true, r })).catch(e => JSON.stringify({ ok: false, error: String(e && e.message || e) }))`
+          );
+          console.log("[shell-test] tmux result: " + r3);
+        } catch (err) {
+          console.log("[shell-test] error: " + err);
         }
       }, 1500);
     });
