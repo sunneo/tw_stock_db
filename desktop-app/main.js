@@ -1057,6 +1057,85 @@ function createWindow() {
       }, 1500);
     });
   }
+  // 一次性除錯hook：重現使用者回報的「subagent模式4(hierarchical)+桌面版
+  // 讀/列檔案，只輸出思考過程」問題。直接把multiSubAgentMode切成
+  // 'hierarchical'、透過_submitChatInput實際送一則會觸發desktop_ops
+  // domain委派（fs_list_files）的訊息，等回應跑完後印出完整的
+  // fa.messages內容（含role/content/tool_calls/reasoning等欄位），藉此
+  // 看清楚回應到底停在哪一步、有沒有真的呼叫到工具。
+  if (process.env.FA_DEBUG_HIER_REPRO) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          console.log("[hier-repro] switching multiSubAgentMode to hierarchical...");
+          await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              window.fa.advancedSettings.multiSubAgentMode = 'hierarchical';
+              window.fa._saveAdvancedSettings();
+              return window.fa.multiSubAgentMode;
+            })()
+          `);
+          console.log("[hier-repro] sending the user's real reported request (multi-file folder parse)...");
+          await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              const input = document.getElementById('ai-input-text');
+              input.value = ${JSON.stringify('解析一下 D:\\Downloads\\SRC\\IDE_QaRobotZ-docs\\KeywordDocs\\StepAction 每個檔案內容')};
+              return window.fa._submitChatInput(input, null);
+            })()
+          `);
+          console.log("[hier-repro] waiting up to 180s for the full response (routing + delegation + many file reads + final answer)...");
+          await new Promise((r) => setTimeout(r, 180000));
+          const dump = await mainWindow.webContents.executeJavaScript(`
+            JSON.stringify(window.fa.messages.slice(-60).map(m => ({
+              role: m.role,
+              content: typeof m.content === 'string' ? m.content.slice(0, 2000) : m.content,
+              tool_calls: m.tool_calls,
+              reasoning_content: m.reasoning_content ? String(m.reasoning_content).slice(0, 500) : undefined,
+              _isThinking: m._isThinking,
+              _visualSuperseded: m._visualSuperseded,
+            })), null, 2)
+          `);
+          console.log("[hier-repro] last messages dump:\n" + dump);
+        } catch (err) {
+          console.log("[hier-repro] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+  // 一次性除錯hook：直接呼叫新增的batch_process_items工具本身（不透過
+  // 根模型自己判斷要不要用它——那是prompt引導、不是保證，這裡要驗證的是
+  // 「這個工具機制本身接線正確」），對StepAction資料夾裡的20個真實XML檔案
+  // 做map-reduce式平行處理，確認：(1)每個檔案真的各自獨立的子任務處理、
+  // 不會共用/累積同一份對話歷史，(2)全部檔案都成功產出結果，(3)不會像
+  // 循序逐一呼叫fs_read_file那樣，20個檔案就把單一子任務的maxRounds(20)
+  // 直接用完、來不及產出結論。
+  if (process.env.FA_DEBUG_BATCH_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const startedAt = Date.now();
+          console.log("[batch-test] calling batch_process_items tool directly against the real StepAction folder (20 files)...");
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const listRaw = await window.fa.tools['fs_list_files'].callback(JSON.stringify({ path: 'D:/Downloads/SRC/IDE_QaRobotZ-docs/KeywordDocs/StepAction' }));
+              const listed = JSON.parse(listRaw);
+              const paths = listed.entries.filter(e => e.isFile).map(e => 'D:/Downloads/SRC/IDE_QaRobotZ-docs/KeywordDocs/StepAction/' + e.name);
+              const raw = await window.fa.tools['batch_process_items'].callback(JSON.stringify({
+                items: paths,
+                instruction: '用fs_read_file讀取這個檔案的內容（純文字XML），一句話摘要這個keyword的用途。',
+                concurrency: 4,
+              }));
+              return JSON.stringify({ fileCount: paths.length, raw: JSON.parse(raw) });
+            })()
+          `);
+          const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+          console.log(`[batch-test] done in ${elapsedSec}s. result:\n` + result);
+        } catch (err) {
+          console.log("[batch-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
