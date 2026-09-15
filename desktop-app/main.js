@@ -1594,8 +1594,18 @@ app.whenReady().then(async () => {
     console.log("[builtin-secrets-test] result:\n" + JSON.stringify(out, null, 2));
   }
   try {
+    // tw_stock_db客製: 2026-09-15使用者要求——改成預設交給OS隨機挑一個可用
+    // port（preferredPort:0），不再固定猜47891。原本固定port+衝突時遞增最多
+    // 20次的設計，在47891剛好被別的行程占用、或上一次app沒有乾淨結束、
+    // socket處於TIME_WAIT還沒真正釋放時，啟動會變得不確定（有時候要往上
+    // 跳好幾個port才成功）；改用0讓OS直接挑一個保證當下可用的port，
+    // 啟動更穩定。renderer端本來就是透過fa:config:getLocalProxyPort這個IPC
+    // 動態查詢實際綁定到的port（見bootstrap.js），從頭到尾沒有任何地方
+    // 寫死假設47891，可以放心改。FA_DESKTOP_PROXY_PORT環境變數仍然保留
+    // 當escape hatch，需要固定port（例如防火牆規則寫死允許某個port）時
+    // 還是可以用它指定。
     const { port } = await startLocalProxy({
-      preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 47891,
+      preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 0,
       getSecrets,
       onLog: (m) => console.log(m),
     });
