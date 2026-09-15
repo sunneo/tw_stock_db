@@ -509,7 +509,7 @@ function patchCloudflareWording(root) {
   );
   fa.register_openai_tool(
     "fs_list_files",
-    "列出這台電腦上任意路徑（資料夾）底下的檔案/子資料夾，不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/Shared/KeywordDocs/StepAction\"}",
+    "列出這台電腦上任意路徑（資料夾）底下的檔案/子資料夾，不需要先授權/註冊資料夾。**如果列出的檔案數量較多（大致抓3-5個以上）、且任務需要逐一讀取/處理每一個檔案**，不要自己一個個sequentially呼叫fs_read_file——改用batch_process_items把每個檔案獨立委派給平行子任務處理，避免把所有檔案內容塞進同一個對話歷史。參數: {\"path\":\"/home/user/Shared/KeywordDocs/StepAction\"}",
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
@@ -535,7 +535,7 @@ function patchCloudflareWording(root) {
   );
   fa.register_openai_tool(
     "fs_find_file",
-    "在這台電腦上任意路徑底下遞迴搜尋檔名符合pattern（正規表示式，不分大小寫）的檔案/資料夾，不需要先授權/註冊資料夾。參數: {\"path\":\"/home/user/project\",\"pattern\":\"\\\\.ya?ml$\"}",
+    "在這台電腦上任意路徑底下遞迴搜尋檔名符合pattern（正規表示式，不分大小寫）的檔案/資料夾，不需要先授權/註冊資料夾。**如果搜尋結果數量較多、且任務需要逐一讀取/處理每一個檔案**，改用batch_process_items平行處理，不要自己逐一sequentially呼叫fs_read_file。參數: {\"path\":\"/home/user/project\",\"pattern\":\"\\\\.ya?ml$\"}",
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
@@ -549,6 +549,50 @@ function patchCloudflareWording(root) {
       max_depth: { type: "number", description: "選填，最大遞迴深度，預設8" },
       max_results: { type: "number", description: "選填，最多回傳幾筆，預設200" },
     })
+  );
+
+  // tw_stock_db客製: 2026-09-15使用者要求——「大量解析檔案需求，要batch且
+  // 開多個subagent去個別讀取，最後再reduce/gather結果，避免context
+  // overflow」，並要求這個能力要generic、AI要自己知道數量多時該這樣做。
+  // floating-assistant.js核心早就有這個map-reduce引擎——runBatchSubAgents
+  // （目前只透過web/index.html的batch_analyze_stocks工具包成「批次分析
+  // 股票」，引擎本身刻意跟股票無關，見那個函式的既有註解）：把一份items
+  // 清單拆成N個獨立、平行執行的_runSubAgentTask，**每個子任務都是全新、
+  // 彼此獨立的對話（只看得到自己負責的那一項），不會共用/累積成長中的
+  // 訊息歷史**——這正是避免context overflow的關鍵，跟「用同一個子agent
+  // 依序sequentially讀N個檔案、訊息歷史越疊越長」是完全不同的兩種做法。
+  // 這裡直接複用這個既有引擎（零核心改動），包成desktop_ops專用的
+  // batch_process_items工具，讓一個原本可能要sequentially呼叫N次
+  // fs_read_file、把N個檔案內容都塞進同一個對話歷史的任務，改成N個獨立
+  // 平行子任務（map），完成後只需要處理N份精簡結論（reduce，由呼叫這個
+  // 工具的AI自己統整，不需要再重新讀取原始檔案內容）。
+  fa.register_openai_tool(
+    "batch_process_items",
+    "把一份「項目清單」（最常見是檔案絕對路徑，但也可以是任何字串識別碼，依instruction決定怎麼處理）拆成多個獨立、平行執行的子任務（map階段）：每個子任務只看得到自己負責的那一項，彼此互不干擾、不會共用對話歷史，處理完回傳一段精簡結論。全部完成後回傳{item, verdict}陣列給你，由你自己統整成最終報告（reduce/gather階段）——不需要、也不應該再重新讀取每個項目的完整原始內容。**這是avoid context overflow的標準做法：任何時候你發現要對「多個獨立項目」（尤其是多個檔案）逐一做同性質的處理/摘要/分析，且項目數量較多（大致抓3-5個以上），都應該優先用這個工具，而不是自己一個個sequentially呼叫fs_read_file等工具把所有原始內容都累積進同一個對話歷史**——那樣容易造成上下文快速膨脹，增加模型只回覆思考過程、沒有給出實際結論的機率（處理量越大，風險越高）。參數: {\"items\":[\"/abs/path/file1.xml\",\"/abs/path/file2.xml\"],\"instruction\":\"用fs_read_file讀取這個檔案的內容，摘要它的用途、格式與關鍵欄位\",\"concurrency\":4}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      const items = Array.isArray(parsed.items) ? parsed.items.map(String) : [];
+      if (!items.length) return JSON.stringify({ ok: false, error: "缺少items陣列（至少一個要處理的項目，例如檔案絕對路徑）" });
+      const instruction = String(parsed.instruction || "").trim();
+      if (!instruction) return JSON.stringify({ ok: false, error: "缺少instruction（描述每個項目要做什麼處理，例如'用fs_read_file讀取這個檔案的內容並摘要'）" });
+      try {
+        const results = await fa.runBatchSubAgents(items, instruction, parsed.concurrency);
+        return JSON.stringify({ ok: true, results });
+      } catch (err) {
+        return JSON.stringify({ ok: false, error: String(err.message || err) });
+      }
+    },
+    {
+      type: "object",
+      properties: {
+        items: { type: "array", items: { type: "string" }, description: "要平行處理的項目清單（通常是檔案絕對路徑，可先用fs_list_files/fs_find_file取得）" },
+        instruction: { type: "string", description: "每個項目的子任務要做什麼（例如「用fs_read_file讀取這個檔案的內容，摘要它的用途與關鍵內容」）；子agent會自動被提醒「這次只需要處理這一項：<item>」，不用自己在instruction裡重複這句" },
+        concurrency: { type: "number", description: "選填，同時執行幾個子任務（1-8），留空用系統預設批次並行度" },
+      },
+      required: ["items", "instruction"],
+      additionalProperties: false,
+    }
   );
   fa.register_openai_tool(
     "fs_mkdir",
@@ -653,11 +697,12 @@ function patchCloudflareWording(root) {
       "run_command",
       "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
       "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
+      "batch_process_items",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
     systemPrompt:
-      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
+      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作前仍要跟使用者確認清楚內容與目標路徑。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高，執行前一定要先跟使用者確認清楚指令內容，且使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因）。`,
   });
 
   // ---- 頂部列：執行程式開關 ----
