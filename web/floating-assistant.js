@@ -16114,7 +16114,24 @@ ${existingNodeSummaries}
                 // 'length'，但fullContent到目前為止還是空的、只有reasoningContent
                 // 有大量內容，代表這一輪「想了但沒有真的產出答案」，也要當成
                 // 需要重試，不能只認'length'。
-                lastRoundWasReasoningDeadEnd = !fullContent.trim() && reasoningContent.trim().length > 20;
+                // tw_stock_db客製: 2026-09-15使用者實測回報——原本這裡要求
+                // reasoningContent.trim().length > 20才算deadend，導致一種
+                // 更糟的情況完全沒被抓到：端點/模型這一輪整個沒吐出任何東西
+                // （content跟reasoning都是空的，不是「想了但沒寫答案」，是
+                // 「根本沒回應」），因為完全不符合這個條件、連第一次重試的
+                // 機會都沒有，直接在收到第一個空回應的瞬間就把空內容當成
+                // 「已完成」推進到訊息渲染，畫面上使用者看到的是「輸出的下
+                // 一瞬間馬上」跳出「只輸出了思考過程」的警告——但事實上連
+                // 思考過程都沒有，純粹是這一輪請求完全沒拿到任何內容，理應
+                // 比「有思考沒答案」更需要重試，卻反而完全沒有重試機會。這裡
+                // 把條件放寬成「finishReason是'stop'（正常結束、不是使用者
+                // 主動中止或某種例外）且content完全是空的」就一律當deadend
+                // 重試，不再要求一定要有實質的reasoningContent——「完全沒回應」
+                // 跟「有想但沒答案」用同一套重試機制處理，只是下面顯示的訊息
+                // 文字要分開講清楚，不要把「完全沒回應」誤植成「只輸出了思考
+                // 過程」。
+                const isCompletelyEmpty = !fullContent.trim() && !reasoningContent.trim();
+                lastRoundWasReasoningDeadEnd = !fullContent.trim() && (reasoningContent.trim().length > 20 || (isCompletelyEmpty && finishReason === 'stop'));
                 if (finishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
 
                 // tw_stock_db客製: 見REASONING_DEADEND_LARGE_CONTEXT_CHARS說明——
@@ -16166,8 +16183,11 @@ ${existingNodeSummaries}
             // 模型卡在某種輸出模式），才需要提醒使用者——正常情況下自動接續
             // 機制會在使用者沒感覺到的狀況下把內容拼完整。
             if (!repetitionCut && (finishReason === 'length' || lastRoundWasReasoningDeadEnd)) {
+                // tw_stock_db客製: 使用者明確否決過「換一個模型試試」這個建議
+                // （見REASONING_DEADEND_LARGE_CONTEXT_CHARS的說明），這裡拿掉，
+                // 改成建議縮小範圍/直接追問，不再暗示換模型能解決。
                 fullContent += lastRoundWasReasoningDeadEnd
-                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程、沒有真正的答案內容（可能是端點異常或模型卡在某種輸出模式）。** 可以直接追問一次，或換一個模型試試。'
+                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程或完全沒有回應、沒有真正的答案內容（可能是端點異常或這次任務範圍太大）。** 可以直接追問一次，或縮小這次要處理的範圍再試。'
                     : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
@@ -16447,7 +16467,12 @@ ${existingNodeSummaries}
                 // 也要當成需要重試，不能只認'length'（否則使用者只會看到一則
                 // 「這一輪模型只輸出了思考過程」的警告，而不是像length截斷一樣
                 // 自動重試）。
-                lastRoundWasReasoningDeadEnd = !finalContent.trim() && reasoningAccum.trim().length > 20;
+                // tw_stock_db客製: 見_loopFetch串流路徑isCompletelyEmpty的詳細
+                // 說明——同樣放寬成「完全沒有任何內容+思考」也算deadend、一律
+                // 給重試機會，不再要求一定要有實質reasoningAccum，避免使用者
+                // 回報的「一送出馬上就給放棄訊息、完全沒有重試」情況。
+                const isCompletelyEmptyNative = !finalContent.trim() && !reasoningAccum.trim();
+                lastRoundWasReasoningDeadEnd = !finalContent.trim() && (reasoningAccum.trim().length > 20 || (isCompletelyEmptyNative && roundFinishReason === 'stop'));
                 if (roundFinishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
 
                 // tw_stock_db客製: 見_loopFetch串流路徑REASONING_DEADEND_LARGE_
@@ -16486,7 +16511,7 @@ ${existingNodeSummaries}
             // 說明。
             if (hitContinueCap) {
                 finalContent += lastRoundWasReasoningDeadEnd
-                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程、沒有真正的答案內容（可能是端點異常或模型卡在某種輸出模式）。** 可以直接追問一次，或換一個模型試試。'
+                    ? '\n\n---\n⚠️ **已自動請AI直接回答多次，但這一輪模型每次都只產出思考過程或完全沒有回應、沒有真正的答案內容（可能是端點異常或這次任務範圍太大）。** 可以直接追問一次，或縮小這次要處理的範圍再試。'
                     : '\n\n---\n⚠️ **已自動請AI接續多次仍未寫完，這裡先停下來（可能內容真的很長，或端點異常）。** 可以直接追問「請繼續」。';
             }
 
@@ -19191,8 +19216,15 @@ ${existingNodeSummaries}
             // （常見成因：單次回覆上限提前用完，模型還在「思考」階段就被
             // 截斷，沒機會寫出最終答案）。改成講清楚發生了什麼、建議怎麼
             // 處理，不要只留一句容易被誤會成「這就是回覆內容」的短語。
-            const answerText = thinking.answer ||
-                '⚠️ 這一輪模型只輸出了思考過程，沒有產生最終文字回覆（可能是單次回覆上限提前用完，或端點異常）。可以點上面「🧠 思考過程」查看，或直接追問一次。';
+            // tw_stock_db客製: 2026-09-15使用者實測回報——這句話原本不管
+            // 「有思考過程但沒寫答案」還是「連思考過程都沒有、完全沒回應」
+            // 都用同一句「只輸出了思考過程」，後者情況下這句話本身就是錯的
+            // （沒有思考過程可看，卻叫使用者去點「🧠 思考過程」）。見
+            // _loopFetch/_loopFetchNative裡isCompletelyEmpty的說明——這裡
+            // 依有沒有思考過程內容分開講清楚實際發生了什麼。
+            const answerText = thinking.answer || (thinking.thinking && thinking.thinking.trim()
+                ? '⚠️ 這一輪模型只輸出了思考過程，沒有產生最終文字回覆（可能是單次回覆上限提前用完，或端點異常）。可以點上面「🧠 思考過程」查看，或直接追問一次。'
+                : '⚠️ 這一輪端點完全沒有回應任何內容（不是模型在思考，是這次請求真的什麼都沒拿到，通常是端點暫時異常）。已嘗試自動重試，若持續發生可以直接追問一次，或確認端點狀態。');
             // tw_stock_db客製: markdown函式庫載入完成前，先用純文字顯示（不
             // 讓使用者等），載入完成後這則訊息會在下一次_renderMessageHistory()
             // 重新整批渲染時自動變成排版過的版本（見下面的排程重繪邏輯）。
