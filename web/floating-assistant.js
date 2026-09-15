@@ -2028,6 +2028,22 @@ const FA_ASSET_URLS = {
     bufferPolyfill: 'https://cdn.jsdelivr.net/npm/buffer@6.0.3/+esm',
     isomorphicGit: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/index.umd.min.js',
     isomorphicGitHttp: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/http/web/index.umd.js',
+    // tw_stock_db客製: 2026-09-15使用者要求——parse_uploaded_file/
+    // summarize_large_text原本完全不認得pdf（掉進_parseUploadedFileContent
+    // 最後那段「當純文字讀」的fallback，對二進位PDF內容只會讀出亂碼，
+    // 不是明確報錯也不是真的解析），新增PDF文字擷取能力。用Mozilla官方
+    // pdf.js的legacy UMD build（global-attaching：window.pdfjsLib，跟jszip/
+    // js-yaml同一種載入方式，見_ensurePdfJsLoaded）。pdf.js的文字擷取只走
+    // Worker執行（GlobalWorkerOptions.workerSrc必須設定，否則
+    // getDocument().promise會直接reject"no `GlobalWorkerOptions.workerSrc`
+    // specified"），worker script不能用_faLoadScriptOnce那種<script>標籤
+    // 注入（worker需要獨立的Worker執行context），改用_faFetchScriptText
+    // 抓文字內容再包Blob URL交給new Worker()——跟FA_3D_IMPORT_WORKER_SRC
+    // 現有的worker建立手法一致（見_ensurePdfJsLoaded）。版本鎖定3.11.174
+    // （cdnjs上仍有維護的較新穩定版，legacy build相容性較廣，實測過對
+    // pdf.js官方測試用PDF能正確逐頁擷取文字）。
+    pdfJs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+    pdfJsWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -4522,7 +4538,7 @@ ${fnData.code}
         );
 
         registerOptional('parse_uploaded_file',
-            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}',
+            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -4553,7 +4569,7 @@ ${fnData.code}
         // 都能直接用這個工具處理，不需要每個內容來源各自重新發明一套「大型
         // 內容怎麼摘要」的邏輯。
         registerOptional('summarize_large_text',
-            '把一個已存進persistentStorage的大型文字內容（使用者上傳的檔案，或AI自己透過fetch_web_page等工具抓回來存進去的網頁內容——這類內容一樣會出現在list_uploaded_files清單裡）分段摘要——不論原始內容多長，都會自動切成多個區塊各自摘要、再彙整成一份涵蓋全文重點的最終摘要，不像parse_uploaded_file遇到超長純文字內容時會直接截斷丟棄後面的部分。壓縮檔（zip/tar/tgz）必須指定entry_path指定要摘要哪個內部檔案，不能對整個壓縮檔本身摘要；xlsx/docx/pptx這類二進位格式請改用parse_uploaded_file取得結構化內容，這個工具只適合純文字/HTML/Markdown/JSON這類本質上是一大段文字的內容。內容越長，處理時間越久（每個區塊都是一次LLM往返），不是瞬間完成。參數: {"file_id":"...", "entry_path":"（選填，壓縮檔用）", "focus":"（選填）你想特別關注的重點方向，會用來引導每個區塊的摘要方向"}',
+            '把一個已存進persistentStorage的大型文字內容（使用者上傳的檔案，或AI自己透過fetch_web_page等工具抓回來存進去的網頁內容——這類內容一樣會出現在list_uploaded_files清單裡）分段摘要——不論原始內容多長，都會自動切成多個區塊各自摘要、再彙整成一份涵蓋全文重點的最終摘要，不像parse_uploaded_file遇到超長純文字內容時會直接截斷丟棄後面的部分。壓縮檔（zip/tar/tgz）必須指定entry_path指定要摘要哪個內部檔案，不能對整個壓縮檔本身摘要；xlsx/docx/pptx這類二進位格式請改用parse_uploaded_file取得結構化內容。pdf視為長文字文件支援：會逐頁擷取文字、完整涵蓋全文不截斷（比parse_uploaded_file固定只看前12000字元更適合長文件），純掃描/圖片PDF因為沒有文字層（不支援OCR）擷取不到內容。內容越長，處理時間越久（每個區塊都是一次LLM往返），不是瞬間完成。參數: {"file_id":"...", "entry_path":"（選填，壓縮檔用）", "focus":"（選填）你想特別關注的重點方向，會用來引導每個區塊的摘要方向"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -9330,6 +9346,51 @@ ${sourceTool.handlerScript}
                 flex-direction: column;
                 gap: 10px;
             }
+            /* tw_stock_db客製: 2026-09-15使用者要求——Advance設定（.ai-advanced-*
+               開頭的整個對話框，含RAG表格/model row/code editor等子元件）
+               原本是寫死的深色配色，跟聊天面板本身（_getThemePalette()隨
+               <html data-theme>即時切換）完全脫節，切成淺色主題後設定畫面
+               還是一片深色，等於「主題切換沒有真的cover到configure畫面」。
+               這裡疊加一組[data-theme="light"]的淺色override（attribute
+               selector本身specificity就比上面單純的class選擇器高，不用
+               依賴書寫順序），基礎的深色規則維持不變當作預設/深色主題外觀，
+               不影響既有web部署在data-theme未設定或='dark'時的既有視覺。 */
+            html[data-theme="light"] .ai-advanced-overlay { background: rgba(15, 23, 42, 0.45); }
+            html[data-theme="light"] .ai-advanced-dialog { background: #ffffff; color: #1e293b; border-color: #cbd5e1; box-shadow: 0 18px 50px rgba(15,23,42,0.18); }
+            html[data-theme="light"] .ai-advanced-body { border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-advanced-sidebar { background: #f1f5f9; border-right-color: #cbd5e1; }
+            html[data-theme="light"] .ai-advanced-cat { color: #475569; }
+            html[data-theme="light"] .ai-advanced-cat:hover { background: #e2e8f0; }
+            html[data-theme="light"] .ai-advanced-cat.active { background: #e2e8f0; color: #0f172a; }
+            html[data-theme="light"] .ai-advanced-hint { color: #64748b; }
+            html[data-theme="light"] .ai-advanced-label { color: #1d4ed8; }
+            html[data-theme="light"] .ai-advanced-textarea,
+            html[data-theme="light"] .ai-advanced-input { background: #f8fafc; color: #0f172a; border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-code-editor { background: #f8fafc; border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-code-editor-lines { background: #f1f5f9; color: #94a3b8; }
+            html[data-theme="light"] .ai-code-editor-highlight { color: #0f172a; }
+            html[data-theme="light"] .ai-code-editor-input { caret-color: #0f172a; text-shadow: 0 0 0 #0f172a; }
+            html[data-theme="light"] .ai-token-keyword { color: #1d4ed8; }
+            html[data-theme="light"] .ai-token-string { color: #15803d; }
+            html[data-theme="light"] .ai-token-number { color: #b91c1c; }
+            html[data-theme="light"] .ai-token-comment { color: #64748b; }
+            html[data-theme="light"] .ai-advanced-tool-item,
+            html[data-theme="light"] .ai-model-row { background: #f8fafc; border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-advanced-tool-name { color: #0f172a; }
+            html[data-theme="light"] .ai-advanced-tool-desc { color: #334155; }
+            html[data-theme="light"] .ai-advanced-tool-empty { border-color: #cbd5e1; color: #64748b; }
+            html[data-theme="light"] .ai-model-row-handle,
+            html[data-theme="light"] .ai-model-row-index { color: #64748b; }
+            html[data-theme="light"] .ai-advanced-btn { background: #e2e8f0; border-color: #cbd5e1; color: #0f172a; }
+            html[data-theme="light"] .ai-advanced-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+            html[data-theme="light"] .ai-advanced-btn.danger { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+            html[data-theme="light"] .ai-rag-table th { background: #f1f5f9; color: #1d4ed8; }
+            html[data-theme="light"] .ai-rag-table td { border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-rag-table tr:nth-child(even) td { background: #f8fafc; }
+            html[data-theme="light"] .ai-rag-table tr:hover td { background: #e2e8f0; }
+            html[data-theme="light"] .ai-rag-table-wrap { border-color: #cbd5e1; }
+            html[data-theme="light"] .ai-rag-score { color: #15803d; }
+            html[data-theme="light"] .ai-rag-id { color: #b91c1c; }
             @keyframes fa-spin {
                 from { transform: rotate(0deg); }
                 to { transform: rotate(360deg); }
@@ -10280,6 +10341,50 @@ ${sourceTool.handlerScript}
             throw new Error('JSZip 載入失敗（可能是網路問題）：' + e.message);
         });
         return this._jszipLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-15——PDF文字擷取，見FA_ASSET_URLS.pdfJs的
+    // 說明。主程式庫用_faLoadScriptOnce（跟jszip同一種<script>注入方式），
+    // worker script改用_faFetchScriptText抓純文字內容再自己包Blob URL交給
+    // GlobalWorkerOptions.workerSrc——worker執行在獨立context，不能像主程式
+    // 庫那樣直接注入<script>標籤，這裡跟FA_3D_IMPORT_WORKER_SRC既有的worker
+    // 建立手法（Blob+new Worker()）保持一致。兩步驟包在同一個
+    // this._pdfJsLoadPromise裡，呼叫端不用關心先後順序。
+    _ensurePdfJsLoaded() {
+        if (typeof pdfjsLib !== 'undefined' && pdfjsLib.GlobalWorkerOptions.workerSrc) return Promise.resolve();
+        if (this._pdfJsLoadPromise) return this._pdfJsLoadPromise;
+        this._pdfJsLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.pdfJs)
+            .then(() => _faFetchScriptText(FA_ASSET_URLS.pdfJsWorker))
+            .then((workerText) => {
+                const blob = new Blob([workerText], { type: 'application/javascript' });
+                pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+            })
+            .catch(e => {
+                this._pdfJsLoadPromise = null;
+                throw new Error('PDF 解析所需的外部程式庫載入失敗（可能是網路問題）：' + e.message);
+            });
+        return this._pdfJsLoadPromise;
+    }
+
+    // tw_stock_db客製: _parseUploadedFileContent（截斷預覽）跟
+    // _getFullTextFromUploadedFile（summarize_large_text用、要求完整全文）
+    // 共用同一份逐頁文字擷取邏輯，只有「要不要截斷」這件事在各自呼叫端
+    // 決定，避免兩處各自重複一份pdf.js呼叫細節。掃描型/純圖片PDF（沒有
+    // 文字層，例如整份是掃描件）每一頁的文字內容天生就是空字串——這是
+    // 合法的結構事實（pdf.js本身沒有OCR能力，這裡也不做），不是錯誤，
+    // 呼叫端（_parseUploadedFileContent）會在偵測到這種情況時附上提示，
+    // 不是直接當成解析失敗。
+    async _extractPdfPageTexts(blob) {
+        await this._ensurePdfJsLoaded();
+        const buffer = await blob.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const pageTexts = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            pageTexts.push(content.items.map(it => it.str || '').join(' ').replace(/\s+/g, ' ').trim());
+        }
+        return { numPages: pdf.numPages, pageTexts };
     }
 
     // tw_stock_db客製: 階段2（parse_uploaded_file解析yaml）+ 階段3（3D場景
@@ -13303,6 +13408,22 @@ ${sourceTool.handlerScript}
                 await this._ensureJSZipLoaded();
                 return await this._parsePptxZip(await JSZip.loadAsync(record.blob));
             }
+            if (format === 'pdf') {
+                const { numPages, pageTexts } = await this._extractPdfPageTexts(record.blob);
+                const fullText = pageTexts.join('\n\n');
+                // tw_stock_db客製: 見_extractPdfPageTexts的說明——掃描型/純圖片
+                // PDF每頁文字天生是空字串，這不是解析失敗，但使用者/AI容易誤會
+                // 「怎麼什麼都沒擷取到」，這裡明確講出這個結構事實，不要只回傳
+                // 一個空字串讓人自己猜。
+                const looksScanImageOnly = numPages > 0 && fullText.length < numPages * 2;
+                return {
+                    ok: true, format: 'pdf', pageCount: numPages,
+                    fullText: fullText.length > 12000 ? fullText.slice(0, 12000) + '\n…(截斷)' : fullText,
+                    note: looksScanImageOnly
+                        ? `這份PDF共${numPages}頁，但幾乎沒有擷取到任何文字——很可能是掃描件/純圖片PDF（沒有文字層），這個工具不支援OCR，無法讀取圖片裡的文字內容。`
+                        : undefined,
+                };
+            }
             if (format === 'csv') {
                 return { ok: true, format: 'csv', ...this._parseCsvText(await record.blob.text()) };
             }
@@ -13346,6 +13467,12 @@ ${sourceTool.handlerScript}
     // 「原始文字」這個概念，直接讀blob文字只會拿到亂碼，不在這裡處理——
     // 呼叫端（summarize_large_text工具description）已經明確引導使用者對
     // 這類格式改用parse_uploaded_file。
+    // tw_stock_db客製: 2026-09-15使用者要求新增PDF支援——跟xlsx/docx/pptx
+    // 不同，PDF本質上就是一份分頁的文字文件（有機會很長，正是
+    // summarize_large_text存在的理由），不屬於「沒有原始文字概念」那一類，
+    // 這裡另外接上_extractPdfPageTexts()回傳完整逐頁文字接起來、完全不
+    // 截斷，讓大型PDF也能透過summarize_large_text的分段map-reduce機制
+    // 涵蓋全文，不像parse_uploaded_file固定只看前12000字元。
     async _getFullTextFromUploadedFile(record, entryPath) {
         const format = this._detectFileFormat(record.filename);
         if (format === 'zip') {
@@ -13366,6 +13493,10 @@ ${sourceTool.handlerScript}
         }
         if (['xlsx', 'docx', 'pptx'].includes(format)) {
             throw new Error(`${format}是二進位格式，沒有「原始文字」可以摘要，請改用parse_uploaded_file取得結構化內容`);
+        }
+        if (format === 'pdf') {
+            const { pageTexts } = await this._extractPdfPageTexts(record.blob);
+            return pageTexts.join('\n\n');
         }
         return await record.blob.text();
     }
