@@ -325,7 +325,27 @@ function patchCloudflareWording(root) {
   // 誤判成「使用者完全沒有設定過」而顯示額外的提示。
   let secretsStatus = { nvidia: false, openrouter: false };
   try { secretsStatus = await window.desktopAPI.secrets.status(); } catch (_) {}
-  if (port && secretsStatus.nvidia && !localStorage.getItem(fa.LLM_BASE_URL_KEY)) {
+  // tw_stock_db客製: 2026-09-16使用者實測回報——「Failed to fetch」連續失敗
+  // 10次。追查發現：本地proxy改成每次啟動隨機挑一個可用port（見
+  // cc3c2de「Let the local proxy pick a random free port」），但這裡原本
+  // 用`!localStorage.getItem(fa.LLM_BASE_URL_KEY)`當「要不要seed」的判斷——
+  // 這個guard的原意是「使用者自己改過就不要覆蓋」，在port固定寫死47891的
+  // 年代是安全的（seed過一次之後，之後每次啟動seed的值都跟已經存在的值
+  // 完全一樣，這個guard形同虛設）；但port隨機化之後，這個「只seed一次」
+  // 的邏輯讓localStorage永遠卡住第一次啟動時的（隨機）port號碼，之後
+  // 每次app重開、proxy換了新的隨機port，renderer卻還在打舊port——舊port
+  // 已經沒有任何process在監聽，每個LLM請求都在TCP連線階段就直接失敗
+  // （connection refused），對應到_loopFetch/_loopFetchNative的
+  // catch區塊，重試10次後放棄、顯示「連線本身失敗」。改成用正規表示式
+  // 判斷目前存的值「看起來像不像是我們自己先前seed過的本地proxy網址」
+  // （固定是`http://127.0.0.1:<任意port>/nvidia`這個形狀）——是的話，
+  // 代表這不是使用者自己刻意填的真實外部端點，每次啟動都可以放心覆寫成
+  // 目前這次真正綁定到的port；使用者如果真的自己改成別的網址（例如自己
+  // 部署的雲端端點），就不會符合這個形狀，維持原本「不覆蓋使用者自訂值」
+  // 的行為不變。
+  const currentApiUrl = localStorage.getItem(fa.LLM_BASE_URL_KEY);
+  const looksLikeOurOwnSeededProxyUrl = !currentApiUrl || /^https?:\/\/127\.0\.0\.1:\d+\/nvidia$/.test(currentApiUrl);
+  if (port && secretsStatus.nvidia && looksLikeOurOwnSeededProxyUrl) {
     localStorage.setItem(fa.LLM_BASE_URL_KEY, `http://127.0.0.1:${port}/nvidia`);
     if (!localStorage.getItem(fa.STORAGE_KEY)) localStorage.setItem(fa.STORAGE_KEY, "local-desktop-proxy");
   }
