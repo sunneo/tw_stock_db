@@ -8057,6 +8057,25 @@ ${fnData.code}
         return { ok: false, error: lastError, errorPosition };
     }
 
+    // tw_stock_db客製: 2026-09-15使用者實測回報——即使domain-gating正確運作、
+    // 子agent隔離也正確運作，使用者仍然遇到根對話context膨脹到最終彙整
+    // 那一輪思考當機。追查後發現：這個防護網原本只顧到「單一工具結果不能
+    // 太大」的情境（例如fs_read_file現在會自動分段），但delegate_to_subagent
+    // 本身的回傳結果完全沒有這層限制——如果模型選擇分好幾次呼叫
+    // delegate_to_subagent（例如一個檔案委派一次，而不是照system prompt指示
+    // 把整批任務包進同一次task描述），每次委派的子agent結論都會原封不動塞
+    // 回根對話的this.messages，幾次委派累積下來一樣會讓根對話大到讓最終
+    // 彙整那一輪思考當機——子agent隔離只保護「子agent自己執行過程」的context，
+    // 保護不到「委派結果傳回根對話」這一步。這裡加上通用的字元數上限（不分
+    // 是哪個工具，delegate_to_subagent/fs_read_file/任何工具都受同一個保護），
+    // 跟_getReasoningDeadendContextThresholdChars()同樣的self-adaptive精神
+    // ——依contextWindowTokens自動縮放，小模型保守、大模型寬鬆。
+    _truncateToolResultForContext(text) {
+        const limit = this._getAdaptiveContentBudgetChars(0.15, 8000);
+        if (text.length <= limit) return text;
+        return text.slice(0, limit) + `\n\n[結果過長已自動截斷：原始長度${text.length}字元，只保留前${limit}字元。如果這是委派子任務的結論，代表子任務本身回覆得太長，之後委派時請提醒子agent回答精簡一點；如果是讀取檔案，改用支援自動分段/map-reduce的方式（例如analyze_large_file）取得完整內容，不要靠單次工具結果塞下全部原始內容。]`;
+    }
+
     _formatToolResult(result, toolName) {
         // tw_stock_db客製: _pushToolResultMessage()已經專門處理過
         // {type:'image',dataUrl}這個結構化圖片payload了，這裡是走到這個函式
@@ -8064,7 +8083,7 @@ ${fnData.code}
         // 內容剛好不是嚴格合法JSON），或工具直接回傳了帶base64的字串，還是
         // 可能有大段base64混在裡面，用_stripInlineBase64()兜底清掉，避免
         // 意外塞進送給模型的訊息內容裡（見那個函式的說明）。
-        if (typeof result === 'string') return this._stripInlineBase64(result);
+        if (typeof result === 'string') return this._truncateToolResultForContext(this._stripInlineBase64(result));
         if (typeof result === 'undefined') return `[Tool 回傳成功] ${toolName} 執行完成`;
         try {
             // tw_stock_db客製: 原本用 JSON.stringify(result, null, 2) 美化縮排，
@@ -8072,9 +8091,9 @@ ${fnData.code}
             // 幫助，純粹浪費token（實測同一份300筆OHLCV資料，美化版比壓縮版
             // 多耗費約23%字元數）。畫面上的<details>區塊本身就是等寬字型+
             // 自動換行，壓縮後照樣可讀。
-            return this._stripInlineBase64(JSON.stringify(result));
+            return this._truncateToolResultForContext(this._stripInlineBase64(JSON.stringify(result)));
         } catch (err) {
-            return this._stripInlineBase64(String(result));
+            return this._truncateToolResultForContext(this._stripInlineBase64(String(result)));
         }
     }
 
