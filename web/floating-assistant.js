@@ -543,10 +543,28 @@ class FileAccessPointStore {
         });
     }
 
-    async add(label, handle) {
+    // tw_stock_db客製: 2026-09-15使用者明確要求——「我加入什麼資料夾路徑，
+    // 要可以用1.host完整路徑描述 2.用fap描述 3.用別名描述」。瀏覽器
+    // File System Access API本身基於安全考量完全不會把資料夾的真實絕對
+    // 路徑暴露給JS（`FileSystemDirectoryHandle`只給得到資料夾自己的名稱，
+    // 例如"StepAction"，給不出"/home/user/.../StepAction"這種完整路徑）——
+    // 這是平台限制，不是這裡能繞過的漏洞。要讓AI真的能用「使用者描述的
+    // host完整路徑」比對出正確的File Access Point，只能請使用者在授權當下
+    // 順便自己打一次真實路徑存起來，之後才有東西可以比對。realPathHint
+    // 純粹是使用者自行輸入的提示字串，不影響實際存取邏輯（真正的存取都是
+    // 透過handle本身），留空完全不影響既有行為。
+    async add(label, handle, realPathHint = '') {
         const id = crypto.randomUUID ? crypto.randomUUID() : `fap_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        await this._tx('readwrite', s => s.put({ id, label, handle, addedAt: Date.now() }));
+        await this._tx('readwrite', s => s.put({ id, label, handle, realPathHint: String(realPathHint || '').trim(), addedAt: Date.now() }));
         return id;
+    }
+
+    async setRealPathHint(id, hint) {
+        const rec = await this.get(id);
+        if (!rec) return false;
+        rec.realPathHint = String(hint || '').trim();
+        await this._tx('readwrite', s => s.put(rec));
+        return true;
     }
 
     async getAll() {
@@ -943,7 +961,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         enabled: true,
         label: '使用者授權的檔案存取點（File Access Point）',
         toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
-        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/permission），再用fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
+        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/real_path_hint/permission）。**使用者描述要操作哪個資料夾時，可能用三種方式講，你都要能對應到正確的File Access Point，不要因為使用者沒有直接講「fap:」開頭就放棄**：1) 直接講完整路徑（例如「/home/user/Shared/StepAction」或「D:\\Projects\\StepAction」）——比對每個access point的real_path_hint欄位，找出使用者講的路徑跟哪個real_path_hint相同、或使用者的路徑是以某個real_path_hint結尾/該real_path_hint是使用者路徑的子路徑；2) 直接用「fap:名稱」格式；3) 只講別名/資料夾名稱（例如「StepAction」）——比對label欄位。real_path_hint是使用者自己選填的，不是每個access point都一定有填，如果比對不到任何一個，才明確告知使用者「目前沒有找到對應的已授權資料夾，可以到Advance Settings的檔案存取管理新增，或者告訴我正確的別名」，不要一開始就用「沒有權限」這種話直接拒絕、也不要跳過list_file_access_points直接放棄。找到對應的access point後，用它的label或id組成「fap:<名稱或id>[/<路徑>]」格式的ref，交給fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
     },
     git_operations: {
         enabled: true,
@@ -4182,14 +4200,14 @@ ${fnData.code}
         // 格式（見_looksLikeFapRef/_parseFapRef的說明），跟裸file_id/檔名
         // 一眼就能分辨。
         registerOptional('list_file_access_points',
-            '列出使用者目前已授權給AI讀寫的File Access Point（真實磁碟資料夾，不是persistentStorage）清單，含每個的授權狀態。無參數。要操作其中的檔案，用回傳的id或label組成`fap:<名稱或id>[/<路徑>]`格式的ref，交給fap_list_files/fap_read_file/fap_write_file/fap_find_file使用。',
+            '列出使用者目前已授權給AI讀寫的File Access Point（真實磁碟資料夾，不是persistentStorage）清單，含每個的授權狀態、別名(label)、以及使用者自己選填的real_path_hint（這個資料夾在使用者電腦上的完整真實路徑，使用者跟AI描述任務時可能會直接講這個完整路徑而不是別名，一定要拿這份清單的real_path_hint去比對，不要只比對label）。無參數。要操作其中的檔案，用回傳的id或label組成`fap:<名稱或id>[/<路徑>]`格式的ref，交給fap_list_files/fap_read_file/fap_write_file/fap_find_file使用。',
             async () => {
                 try {
                     const all = await this.fileAccessPoints.getAll();
                     const points = await Promise.all(all.map(async (r) => {
                         let permission = 'unknown';
                         try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
-                        return { id: r.id, label: r.label, permission };
+                        return { id: r.id, label: r.label, real_path_hint: r.realPathHint || null, permission };
                     }));
                     return JSON.stringify({ ok: true, access_points: points });
                 } catch (err) {
@@ -7592,7 +7610,19 @@ ${fnData.code}
     // 用到，但仍然照算不特別處理（維持this.tools['delegate_to_subagent']本身
     // 的description是合理的字串，不留空字串）。
     _buildDelegateToSubagentDescription() {
-        const base = '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
+        // tw_stock_db客製: 2026-09-15使用者實測回報的真實案例——使用者講了
+        // 一個真實磁碟路徑（例如"/home/user/Shared/StepAction"），根模型
+        // 完全沒有嘗試委派/查詢，直接憑自己訓練時的通用常識回答「我沒有權限
+        // 存取你電腦上的檔案系統」，即使使用者其實已經在Advance Settings
+        // 「檔案存取管理」授權了對應的資料夾（File Access Point）。根因是
+        // 原本這裡只寫「檔案解讀」，根模型很容易理解成「只能解讀使用者貼上來
+        // 的文字/上傳的檔案」，而不會聯想到「這個app其實支援存取使用者自己
+        // 授權過的真實磁碟資料夾」——這是這個app特有、不是LLM訓練時就知道的
+        // 能力，必須明講出來，不能只用「檔案解讀」這種模稜兩可、容易被套用
+        // 通用常識誤判的字眼。明確點出「即使使用者講的是電腦上的真實路徑」
+        // 也要先委派查詢，不要用「我沒有檔案系統存取權限」這種通用AI常識
+        // 直接回絕使用者。
+        const base = '把不屬於你自己直接負責範圍的任務委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。適用範圍包含（但不限於）：檔案解讀（含使用者自己上傳的檔案，**也包含使用者已經在「檔案存取管理」授權過的電腦上真實磁碟資料夾**——即使使用者這樣描述任務：直接講一個電腦上的完整路徑、或只講一個資料夾別名，都可能對應到一個已授權的資料夾，**一律先委派查詢，不要用「我沒有檔案系統存取權限」這種通用常識直接回絕使用者**，畢竟你不知道使用者是否已經授權）、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋等。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
         if (this.multiSubAgentMode === 'full') {
             // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析的
             // domain，使用者還沒建立任何Skill時要從這份清單隱藏（否則會列出一個
@@ -9582,11 +9612,12 @@ ${sourceTool.handlerScript}
             <div class="ai-advanced-tool-item">
                 <div style="flex:1; min-width:0;">
                     <div class="ai-advanced-tool-name">${this._escapeHtml(rec.label)}</div>
-                    <div class="ai-advanced-tool-desc">${permission === 'granted' ? '✅ 已授權' : '⚠️ 需要重新授權'}　·　ref: <code>fap:${this._escapeHtml(rec.label)}</code>　·　新增於 ${new Date(rec.addedAt).toLocaleDateString()}</div>
+                    <div class="ai-advanced-tool-desc">${permission === 'granted' ? '✅ 已授權' : '⚠️ 需要重新授權'}　·　ref: <code>fap:${this._escapeHtml(rec.label)}</code>　·　新增於 ${new Date(rec.addedAt).toLocaleDateString()}${rec.realPathHint ? `　·　完整路徑: <code>${this._escapeHtml(rec.realPathHint)}</code>` : '　·　<span style="color:#f59e0b;">未設定完整路徑提示（跟AI描述真實路徑時可能認不出來）</span>'}</div>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     ${permission !== 'granted' ? `<button type="button" class="ai-advanced-btn primary" data-fap-regrant="${rec.id}">重新授權</button>` : ''}
                     <button type="button" class="ai-advanced-btn" data-fap-rename="${rec.id}">重新命名</button>
+                    <button type="button" class="ai-advanced-btn" data-fap-edit-path="${rec.id}">${rec.realPathHint ? '編輯' : '設定'}完整路徑</button>
                     <button type="button" class="ai-advanced-btn danger" data-fap-delete="${rec.id}">移除</button>
                 </div>
             </div>
@@ -19727,9 +19758,14 @@ ${existingNodeSummaries}
                 if (existing.some(r => r.label === label)) {
                     label = `${label}_${Date.now().toString(36)}`;
                 }
-                await this.fileAccessPoints.add(label, dir);
+                // tw_stock_db客製: 見FileAccessPointStore.add()的說明——瀏覽器
+                // API本身給不出真實路徑，這裡讓使用者自己選擇性補一個，之後
+                // 才能直接用host完整路徑跟AI描述（AI會比對這個提示字串），
+                // 不是必填，取消/留空完全不影響這個FAP能不能正常使用。
+                const realPathHint = (prompt('（選填）這個資料夾在你電腦上的完整路徑是？填了之後，之後可以直接跟AI講完整路徑，AI會自動比對到這個資料夾（不填也完全沒關係，之後隨時可以在「檔案存取管理」補填）：', '') || '').trim();
+                await this.fileAccessPoints.add(label, dir, realPathHint);
                 await this._renderFapList();
-                this._log(`✅ 已授權資料夾「${label}」，AI可以用 fap:${label} 存取。`);
+                this._log(`✅ 已授權資料夾「${label}」，AI可以用 fap:${label} 存取${realPathHint ? `，或直接說完整路徑「${realPathHint}」` : ''}。`);
             };
         }
         const fapList = document.getElementById('ai-fap-list');
@@ -19760,6 +19796,16 @@ ${existingNodeSummaries}
                         return;
                     }
                     await this.fileAccessPoints.rename(rec.id, newLabel);
+                    await this._renderFapList();
+                    return;
+                }
+                const editPathBtn = e.target.closest('[data-fap-edit-path]');
+                if (editPathBtn) {
+                    const rec = await this.fileAccessPoints.get(editPathBtn.dataset.fapEditPath);
+                    if (!rec) return;
+                    const newHint = prompt('這個資料夾在你電腦上的完整路徑（留空可以清除既有設定）：', rec.realPathHint || '');
+                    if (newHint === null) return; // 使用者按取消
+                    await this.fileAccessPoints.setRealPathHint(rec.id, newHint);
                     await this._renderFapList();
                     return;
                 }
