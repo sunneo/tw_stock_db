@@ -1,26 +1,35 @@
-# FloatingAssistant桌面版 - Windows打包腳本
-# 產生單一GUI執行檔（electron-builder的portable target），不需要安裝、
-# 雙擊就能跑。用法：
-#   .\build.ps1            # 完整流程：同步引擎 + npm install + 打包
-#   .\build.ps1 -SkipInstall  # 跳過npm install（node_modules已存在時可加速）
+# FloatingAssistant desktop build script (Windows).
+# Produces a single portable GUI executable via electron-builder's
+# "portable" target - no installer, just run the .exe.
+#
+# Usage:
+#   .\build.ps1              # full flow: sync engine + npm install + package
+#   .\build.ps1 -SkipInstall # skip npm install (faster if node_modules is already good)
+#
+# Note: this file is kept plain-ASCII on purpose. Windows PowerShell 5.1
+# reads .ps1 files without a BOM using the system's ANSI codepage, so
+# non-ASCII (e.g. Chinese) text in string literals here can get misread
+# and corrupt the script (seen once as a "string missing terminator"
+# parse error). Comments/messages in other project files (JS/HTML) are
+# fine since Node and Chromium are UTF-8-native.
 param(
     [switch]$SkipInstall
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-Write-Host "== 同步 floating-assistant.js（canonical來源：..\web\floating-assistant.js）==" -ForegroundColor Cyan
+Write-Host "== Syncing floating-assistant.js (canonical source: ..\web\floating-assistant.js) ==" -ForegroundColor Cyan
 Copy-Item -Path "..\web\floating-assistant.js" -Destination "renderer\floating-assistant.js" -Force
 
 if (-not $SkipInstall) {
     Write-Host "== npm install ==" -ForegroundColor Cyan
     npm install
-    if ($LASTEXITCODE -ne 0) { throw "npm install 失敗" }
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 }
 
-Write-Host "== electron-builder 打包 Windows portable 執行檔 ==" -ForegroundColor Cyan
+Write-Host "== electron-builder: packaging Windows portable executable ==" -ForegroundColor Cyan
 npx electron-builder --win portable
-if ($LASTEXITCODE -ne 0) { throw "electron-builder 打包失敗" }
+if ($LASTEXITCODE -ne 0) { throw "electron-builder packaging failed" }
 
 Write-Host ""
-Write-Host "完成！執行檔在 dist\ 目錄底下（*.exe，單一檔案、免安裝）。" -ForegroundColor Green
+Write-Host "Done. The executable is in dist\ (single .exe, no installation needed)." -ForegroundColor Green
