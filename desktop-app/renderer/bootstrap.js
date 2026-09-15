@@ -299,6 +299,12 @@ function patchCloudflareWording(root) {
     fa.advancedSettings.gitCorsProxyUrl = localBase;
     fa.advancedSettings.browserSearchProxyUrl = localBase;
     fa.advancedSettings.ttsApiProxyUrl = localBase;
+    // tw_stock_db客製: 2026-09-16使用者要求——單機板的bash_execute/
+    // python_execute執行環境（busybox.wasm／Pyodide）改經本地proxy帶入，
+    // 見floating-assistant.js的_resolveAssetProxyUrl/FA_ASSET_URLS.bashWasmJsBase
+    // 的說明。跟其餘三個proxy欄位同一種「留空=直接fetch，有填=經本地proxy」
+    // 慣例，只是指到local-proxy.js既有的/proxy/<url>通用路由。
+    fa.advancedSettings.assetBackupProxyUrl = localBase;
     fa._saveAdvancedSettings();
     if (proxyStatusEl) proxyStatusEl.textContent = `本地proxy：127.0.0.1:${port}`;
   } else if (proxyStatusEl) {

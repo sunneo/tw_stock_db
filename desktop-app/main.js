@@ -1575,6 +1575,42 @@ function createWindow() {
       }, 1500);
     });
   }
+
+  // tw_stock_db客製: 2026-09-16——驗證bash_execute/python_execute在桌面版
+  // 真的透過本地proxy（local-proxy.js既有的/proxy/<url>通用路由）帶入
+  // busybox.wasm/Pyodide，不是繞過proxy直接連。見bootstrap.js把
+  // advancedSettings.assetBackupProxyUrl設成本地proxy網址那段的說明。
+  if (process.env.FA_DEBUG_CODE_EXEC_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              out.assetBackupProxyUrlSet = !!(window.fa.advancedSettings.assetBackupProxyUrl && window.fa.advancedSettings.assetBackupProxyUrl.includes('127.0.0.1'));
+
+              const bashTool = window.fa._getToolDefinition('bash_execute');
+              const bashRes = JSON.parse(await bashTool.callback(JSON.stringify({
+                script: 'echo hello from desktop bash; echo done > /work/out.txt',
+              })));
+              out.bash = bashRes;
+
+              const pyTool = window.fa._getToolDefinition('python_execute');
+              const pyRes = JSON.parse(await pyTool.callback(JSON.stringify({
+                script: "print('hello from desktop python')\\nwith open('/work/out.txt','w') as f:\\n    f.write('py done')",
+              })));
+              out.python = pyRes;
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[code-exec-test] result:\n" + result);
+        } catch (err) {
+          console.log("[code-exec-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
