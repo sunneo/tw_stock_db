@@ -1216,6 +1216,69 @@ function createWindow() {
       }, 1500);
     });
   }
+  // 一次性除錯hook：驗證2026-09-15使用者實測回報的bug——_loopFetch文字式
+  // 協定分支裡，工具呼叫失敗（例如模型呼叫了一個不存在的工具名稱）時原本
+  // 誤呼叫`this.executeChat(errorText)`，被當成「使用者插話」觸發
+  // [Steering]機制。用mock fetch確定性地重現這個情境（第一輪回傳
+  // `[CALL: list_directory({...})]`——一個真實不存在的工具名稱，第二輪
+  // 回傳一段正常文字），不依賴真實模型會不會剛好猜錯工具名稱。
+  if (process.env.FA_DEBUG_TOOL_ERROR_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              window.fa._clearChatHistory();
+              // 這台機器設定的端點原生支援tool_calls，_ensureNativeToolSupportProbed
+              // 的探測結果會讓executeChat()走_loopFetchNative而不是要測試的
+              // _loopFetch文字協定分支——強制切成'text'協定，才會真的走到
+              // 剛才修好的那段程式碼。
+              window.fa.advancedSettings.toolCallMode = 'text';
+              window.fa.advancedSettings.multiSubAgentMode = 'off';
+              window.fa._saveAdvancedSettings();
+              // 文字協定分支走的是SSE串流解析（見_loopFetch的說明：
+              // response.body.getReader()逐段解 "data: {...}\\n\\n"），不是
+              // 單純的await response.json()——第一次mock用plain JSON body
+              // 導致串流解析器完全讀不到任何"data: "行、rawContent變成空字串，
+              // 這裡改成真的組一個符合格式的SSE ReadableStream。
+              const sse = (text, finishReason) => {
+                const encoder = new TextEncoder();
+                const body = new ReadableStream({
+                  start(controller) {
+                    controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] }) + '\\n\\n'));
+                    controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason || 'stop' }] }) + '\\n\\n'));
+                    controller.enqueue(encoder.encode('data: [DONE]\\n\\n'));
+                    controller.close();
+                  }
+                });
+                return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+              };
+              let callCount = 0;
+              const realFetch = window.fetch;
+              window.fetch = async (url, opts) => {
+                callCount++;
+                if (callCount === 1) return sse('[CALL: list_directory({"path":"/tmp"})]');
+                return sse('測試完成：已改用正確工具重試並得到最終答案。');
+              };
+              const input = document.getElementById('ai-input-text');
+              input.value = '這是一個會觸發工具呼叫失敗的測試訊息';
+              await window.fa._submitChatInput(input, null);
+              await new Promise(r => setTimeout(r, 3000));
+              window.fetch = realFetch;
+              const msgs = window.fa.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 300) : m.content }));
+              const hasSteering = msgs.some(m => typeof m.content === 'string' && m.content.startsWith('[Steering]'));
+              const hasToolErrorFeedback = msgs.some(m => typeof m.content === 'string' && m.content.includes('執行失敗') && m.content.includes('找不到工具'));
+              const finalAnswer = msgs.find(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('測試完成'));
+              return JSON.stringify({ callCount, hasSteering, hasToolErrorFeedback, finalAnswerFound: !!finalAnswer, allMessages: msgs }, null, 2);
+            })()
+          `);
+          console.log("[tool-error-test] result:\n" + result);
+        } catch (err) {
+          console.log("[tool-error-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
 }
 
 app.whenReady().then(async () => {
