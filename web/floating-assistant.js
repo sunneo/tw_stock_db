@@ -839,6 +839,19 @@ const CALL_STOP_SEQUENCE = ')]';
 // MAX_AUTO_CONTINUE_ROUNDS次（純粹是防止端點異常/模型跳針導致無限迴圈
 // 燒費用的安全上限，不是真正的長度限制）。
 const MAX_AUTO_CONTINUE_ROUNDS = 40;
+// tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「這種give up要
+// 分辨是不是token太大」，且明確否決「換模型」這個方向（使用者原話：
+// 「switching model沒有意義!」「我不是叫你switching model!」「這種give up
+// 並不是無法連線，不是頻率問題，不接受換model的作法」）。真正的訊號是：
+// 這一輪送出去的對話內容（JSON.stringify(requestMessages).length）本身是否
+// 已經異常大——例如一次塞進去一個30KB+的fs_read_file原始檔案內容——這種
+// 情況下模型只輸出思考過程、生不出答案，肇因很可能是內容量本身壓垮了這次
+// 請求，而不是模型偶發不穩定；繼續原封不動重送同樣大小的內容
+// （AI_REASONING_DEADEND_PROMPT）大機率再次失敗，應該先pruneContext壓縮掉
+// 這輪過大的內容再重試。這個門檻值只是「多大算異常大」的粗略經驗值（字元數
+// 是tokens的粗略上界估計，中英混雜文字通常token數比字元數少，門檻刻意抓
+// 保守一點，避免正常大小的內容也被誤判觸發不必要的壓縮）。
+const REASONING_DEADEND_LARGE_CONTEXT_CHARS = 20000;
 const AI_AUTO_CONTINUE_PROMPT = '[系統提示] 上一則回覆因為單次輸出長度上限被截斷，請直接接續上一段未完成的內容繼續寫下去，不要重複已經說過的部分，也不要加任何開場白、道歉語或「以下接續」之類的提示語。';
 // tw_stock_db客製: 2026-08-25使用者實測案例——推理模型（例如
 // nemotron-3-super-120b-a12b）偶爾會在reasoning_content吐完一大段思考後
@@ -1253,6 +1266,20 @@ const SUBAGENT_MAX_TOOL_ESCALATIONS = 3;
 // 撐過去就好」的容錯完全不對稱。這個常數是子任務版本的重試上限，量級比照
 // SUBAGENT_MAX_TOOL_ESCALATIONS。
 const SUBAGENT_MAX_REASONING_DEADEND_RETRIES = 3;
+
+// tw_stock_db客製: 2026-09-15使用者提供真實transcript發現的另一種子任務
+// 失敗模式（跟上面的reasoning-deadend是不同成因，不能用同一套重試機制蓋掉）
+// ——某些模型偶爾不遵守[CALL: tool_name(args)]語法，改用純文字「描述」它
+// 想呼叫哪個工具，例如直接輸出一段JSON prose：
+// {"tool":"fs_read_file","arguments":{"path":"..."}}或
+// {"action":"fs_read_file","path":"..."}。這種輸出rawContent非空、
+// toolTasks.length===0，原本的邏輯會把它當成「模型给出的最終文字答案」
+// 直接回傳給上層——但這段文字明顯只是「打算呼叫工具」的描述、不是真的
+// 任務結論，結果是上層把這段JSON當成真正資料使用（例如以為已經拿到檔案
+// 內容），任務品質嚴重劣化卻沒有任何錯誤訊號。這個常數是偵測到這個模式時
+// 的重試上限——不能設太大（多半是模型當下的输出習慣問題，重試太多次也不
+// 會突然學會正確語法），只是給一次「被系統糾正」的機會。
+const SUBAGENT_MAX_MALFORMED_CALL_RETRIES = 2;
 
 // tw_stock_db客製: 共用的「安全表達式」白名單函式表——階段3自訂粒子preset
 // 的init/update/output公式、階段5互動viewer的visible_if/enabled_if都用
@@ -15934,6 +15961,37 @@ ${existingNodeSummaries}
                 lastRoundWasReasoningDeadEnd = !fullContent.trim() && reasoningContent.trim().length > 20;
                 if (finishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
 
+                // tw_stock_db客製: 見REASONING_DEADEND_LARGE_CONTEXT_CHARS說明——
+                // 使用者明確要求「這種give up要分辨是不是token太大」：換模型對
+                // 這個症狀沒有意義（使用者已明確否決），真正該做的是判斷這一輪
+                // 送出去的內容是不是本來就異常大（例如一次塞進去一個30KB+的
+                // fs_read_file原始檔案內容）——這種情況下模型思考當機的真正
+                // 原因很可能是內容量本身，不是模型不穩定，繼續用同樣大小的
+                // 內容重試（AI_REASONING_DEADEND_PROMPT）大機率會再次失敗，
+                // 應該先pruneContext壓縮掉這輪過大的內容再重試，而不是原封不動
+                // 重送。內容量正常時（單純模型偶發思考當機）維持原本直接重試
+                // 的行為，不做不必要的壓縮。
+                // tw_stock_db客製: 使用者實測回報——這個壓縮呼叫本身也是打同一個
+                // 端點/模型的一般請求，如果真正的成因不是「內容太大」而是模型
+                // /端點本身有問題，壓縮呼叫一樣會失敗或同樣卡住，若不設上限會
+                // 變成「壓縮→還是失敗→又壓縮」的無窮迴圈（使用者實際觀察到
+                // 連續壓縮好幾次）。這裡刻意共用既有400/413路徑的同一個
+                // _turnPruneCount/maxPruneRetriesPerTurn計數器（同一輪對話的
+                // 壓縮總次數上限，不分觸發原因），而不是另開一個獨立、無上限
+                // 的計數——次數用完就不再嘗試壓縮，落回下面既有的「直接重試到
+                // MAX_AUTO_CONTINUE_ROUNDS」路徑，最終該給的誠實放棄訊息還是
+                // 會出現，不會卡死。
+                if (lastRoundWasReasoningDeadEnd && this._turnPruneCount < this.maxPruneRetriesPerTurn) {
+                    const requestSizeChars = JSON.stringify(requestMessages).length;
+                    if (requestSizeChars >= REASONING_DEADEND_LARGE_CONTEXT_CHARS) {
+                        this._turnPruneCount++;
+                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
+                        streamDiv.remove();
+                        await this.pruneContext('Reasoning Dead-End (Oversized Context)');
+                        return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
+                    }
+                }
+
                 // tw_stock_db客製: 這一輪被max_tokens截斷——不是內容有問題，
                 // 是「這一次API呼叫」的長度上限到了，自動用「請接續」重送一次，
                 // 讓使用者不用手動追問。安全上限見MAX_AUTO_CONTINUE_ROUNDS。
@@ -16234,6 +16292,25 @@ ${existingNodeSummaries}
                 // 自動重試）。
                 lastRoundWasReasoningDeadEnd = !finalContent.trim() && reasoningAccum.trim().length > 20;
                 if (roundFinishReason !== 'length' && !lastRoundWasReasoningDeadEnd) break;
+
+                // tw_stock_db客製: 見_loopFetch串流路徑REASONING_DEADEND_LARGE_
+                // CONTEXT_CHARS的詳細說明——使用者明確要求「這種give up要分辨
+                // 是不是token太大」且明確否決換模型的做法：這一輪送出的內容
+                // 異常大時，思考當機的真正原因很可能是內容量本身，先
+                // pruneContext壓縮掉過大的內容再重試，而不是原封不動繼續重送
+                // 同樣大小的內容（那樣大機率再次失敗）；內容量正常時維持原本
+                // 直接重試的行為。跟串流路徑同樣理由，共用_turnPruneCount/
+                // maxPruneRetriesPerTurn上限，避免壓縮呼叫本身也失敗時形成
+                // 無窮的「壓縮→還是失敗→又壓縮」迴圈。
+                if (lastRoundWasReasoningDeadEnd && this._turnPruneCount < this.maxPruneRetriesPerTurn) {
+                    const requestSizeChars = JSON.stringify(requestMessages).length;
+                    if (requestSizeChars >= REASONING_DEADEND_LARGE_CONTEXT_CHARS) {
+                        this._turnPruneCount++;
+                        this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
+                        await this.pruneContext('Reasoning Dead-End (Oversized Context)');
+                        return await this._loopFetchNative(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
+                    }
+                }
 
                 autoContinueRounds++;
                 if (autoContinueRounds >= MAX_AUTO_CONTINUE_ROUNDS) { hitContinueCap = true; break; }
@@ -16835,6 +16912,34 @@ ${existingNodeSummaries}
     // 只看得到文字轉述——見_mergeSubAgentResultForDisplay的說明。
     // runBatchSubAgents這個既有呼叫端只需要文字結論，取.text即可，不需要
     // 處理visual（批次分析本來就只收集短結論陣列，沒有渲染視覺內容的地方）。
+    // tw_stock_db客製: 2026-09-15使用者提供真實transcript發現的偵測——見
+    // SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明。用寬鬆的方式判斷「這段文字
+    // 是不是在描述一個工具呼叫」：去掉可能的markdown code fence包裝後，整段
+    // 必須是一個能被JSON.parse解析的物件，且帶有看起來像工具名稱的欄位
+    // （tool/name/action/function.name其中之一）、且帶有看起來像參數的欄位
+    // （arguments/args/parameters/path/input其中之一）——這兩個條件都成立
+    // 且欄位值命中availableToolNames清單裡的實際工具名稱時，才判定為「描述
+    // 而非真的呼叫」，避免誤判正常的、剛好也是JSON格式的最終答案（例如使用者
+    // 就是要JSON格式輸出時）。
+    _looksLikeDescribedToolCallJson(text, availableToolNames) {
+        const trimmed = String(text || '').trim();
+        if (!trimmed) return null;
+        const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+        const candidate = (fenceMatch ? fenceMatch[1] : trimmed).trim();
+        if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null;
+        let parsed;
+        try { parsed = JSON.parse(candidate); } catch (_) { return null; }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+        const toolName = parsed.tool || parsed.name || parsed.action
+            || (parsed.function && typeof parsed.function === 'object' && parsed.function.name);
+        if (typeof toolName !== 'string' || !toolName.trim()) return null;
+        if (Array.isArray(availableToolNames) && availableToolNames.length && !availableToolNames.includes(toolName)) return null;
+        const hasArgLikeField = parsed.arguments !== undefined || parsed.args !== undefined
+            || parsed.parameters !== undefined || parsed.path !== undefined || parsed.input !== undefined
+            || (parsed.function && typeof parsed.function === 'object' && parsed.function.arguments !== undefined);
+        if (!hasArgLikeField) return null;
+        return toolName;
+    }
     async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
         // tw_stock_db客製: 2026-09-07使用者要求子任務支援retry+model
         // fallback——apiModel/apiUrl/apiKey/useNative改成let，允許中途換成
@@ -16954,6 +17059,9 @@ ${existingNodeSummaries}
         // 一樣是這次_runSubAgentTask執行內的區域狀態，不消耗maxRounds（用
         // round--），有獨立、較小的上限防止真的跳針的模型無限重試燒費用。
         let reasoningDeadendRetries = 0;
+        // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
+        // 一樣不消耗maxRounds，獨立計數。
+        let malformedCallRetries = 0;
 
         for (let round = 0; round < maxRounds; round++) {
             if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
@@ -17162,6 +17270,23 @@ ${existingNodeSummaries}
 
             if (!toolTasks.length) {
                 const finalText = this._stripInlineBase64(rawContent).trim();
+                // tw_stock_db客製: 見_looksLikeDescribedToolCallJson/
+                // SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——先擋一次「模型用
+                // JSON文字描述工具呼叫、而不是真的用[CALL:...]語法呼叫」的情況，
+                // 不要把這段文字當成任務的最終結論直接回傳給上層（上層會誤以為
+                // 已經拿到真實資料）。
+                const describedTool = this._looksLikeDescribedToolCallJson(finalText, allowedToolNames);
+                if (describedTool && malformedCallRetries < SUBAGENT_MAX_MALFORMED_CALL_RETRIES) {
+                    malformedCallRetries++;
+                    if (onProgress) onProgress(`↻ 偵測到用文字描述工具呼叫「${describedTool}」而非真的呼叫，請AI改正語法（第${malformedCallRetries}次）…`);
+                    messages.push({ role: 'assistant', content: finalText });
+                    messages.push({
+                        role: 'user',
+                        content: `[系統提示] 你剛才用一段JSON文字描述要呼叫工具「${describedTool}」，但這不是系統真正認得的呼叫語法，這個工具並沒有被執行，你也還沒有拿到任何真實結果。請改用正確語法重新呼叫：[CALL: ${describedTool}(這裡放JSON格式的參數物件)]，例如[CALL: ${describedTool}({"path":"..."})]。不要再用純文字描述你打算做什麼。`,
+                    });
+                    round--;
+                    continue;
+                }
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
 
