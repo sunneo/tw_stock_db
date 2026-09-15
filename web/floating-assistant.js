@@ -17235,6 +17235,28 @@ ${existingNodeSummaries}
         // 從一開始就是獨立的單次fetch、沒有共用到那套邏輯——這裡補上同一組
         // 重試常數/退避策略，兩層委派現在都有一致的容錯能力。
         let transientRetryCount = 0;
+        // tw_stock_db客製: 2026-09-15使用者實測回報——某些推理模型（觀察到的
+        // 症狀：回應內容開頭是"We need to..."這類英文CoT敘述，不是JSON）在
+        // 這個路由分類請求裡，並沒有把思考過程走reasoning_content獨立欄位，
+        // 而是直接寫進content本身；配上原本寫死200的max_tokens（下面說明的
+        // 「路由回應應該只有幾個字」對非推理模型成立，但推理模型要先把整段
+        // CoT想完才輪得到寫JSON，200 tokens常常連CoT都還沒寫完就被截斷），
+        // 兩者疊加的結果是content永遠只拿到一段不完整、非JSON的CoT前段，
+        // repairJsonPayload（就算它本身已經有直接解析/tokenizer修復/LLM修復
+        // /部分載入四層fallback，見那邊的說明）對「完全沒有任何JSON結構、
+        // 純粹是英文散文」這種輸入無論如何都無法修復，最終整個委派直接失敗、
+        // 把原始JSON.parse錯誤訊息丟給使用者，使用者只能自己重新輸入一次
+        // （運氣好換一次生成就過了）。這裡跟主對話迴圈
+        // （_loopFetch/_loopFetchNative的AI_REASONING_DEADEND_PROMPT/
+        // isCompletelyEmpty機制）同樣的精神修好：(1) max_tokens從200提高到
+        // 1500，給推理模型足夠空間先想完再回答，不是一味依賴重試；(2) 萬一
+        // 提高額度後這一輪仍然解析失敗（模型可能單純把整段回覆都寫成散文，
+        // 不是被截斷），不要像原本一樣直接放棄，改成再送一次、這次額外
+        // 附上「上一次沒有輸出合法JSON」的具體回饋+更強硬的格式要求，給
+        // 模型一次自我修正的機會——只重試一次（jsonRetryUsed旗標），避免
+        // 對一個穩定拒絕輸出JSON的模型無限重試下去。
+        let jsonRetryUsed = false;
+        let effectiveUserText = userText;
         for (;;) {
             let response;
             let networkError = null;
@@ -17246,15 +17268,15 @@ ${existingNodeSummaries}
                         model: apiModel,
                         messages: [
                             { role: 'system', content: routerSystemPrompt },
-                            { role: 'user', content: userText },
+                            { role: 'user', content: effectiveUserText },
                         ],
                         temperature: 0,
-                        // tw_stock_db客製: 路由回應應該只有幾個字的JSON，這裡刻意
-                        // 夾一個很小的max_tokens上限（不跟主對話共用
-                        // _getGenerationSettings().maxOutputTokens，那是給正常
-                        // 回覆用的，通常設定得比這裡需要的大很多），避免模型
-                        // 意外跑出一大段文字浪費時間/費用。
-                        max_tokens: 200,
+                        // tw_stock_db客製: 路由回應本身應該只有幾個字的JSON，但
+                        // 見上面jsonRetryUsed宣告處的說明——這個上限要給推理
+                        // 模型足夠空間先完整想過一輪CoT才輪得到輸出JSON，不能
+                        // 只以「答案本身很短」估算，200太容易讓推理模型連CoT
+                        // 都還沒寫完就被硬截斷、永遠生不出JSON。
+                        max_tokens: 1500,
                         stream: false,
                     }),
                 });
@@ -17294,6 +17316,14 @@ ${existingNodeSummaries}
                 const parsed = await this.repairJsonPayload(rawText);
                 return { ok: true, parsed };
             } catch (err) {
+                // tw_stock_db客製: 見jsonRetryUsed宣告處的說明——提高max_tokens
+                // 後仍然拿到無法修復的非JSON內容時，最後一次機會：明確把上一次
+                // 的失敗內容回饋給模型、要求這次只輸出JSON，而不是直接放棄。
+                if (!jsonRetryUsed) {
+                    jsonRetryUsed = true;
+                    effectiveUserText = `${userText}\n\n[系統提示] 你上一次的回覆不是合法的JSON（開頭片段："${rawText.slice(0, 80).replace(/"/g, "'")}"），可能是因為輸出了推理過程或其他文字。這次請直接輸出符合要求格式的JSON物件本身，不要有任何開場白、解釋、markdown標記或推理過程。`;
+                    continue;
+                }
                 return { ok: false, error: `無法解析路由子任務的回應: ${err.message}` };
             }
         }
