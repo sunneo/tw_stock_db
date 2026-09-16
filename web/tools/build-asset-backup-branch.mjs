@@ -11,9 +11,20 @@
 // C compiler to wasm/nodejs等執行環境）都用同一支工具，不用每次照抄一份
 // whisper那樣的專用腳本。
 //
+// 2026-09-16補充：使用者這次要求「新工具（jq-wasm/xq用的XML parser）共用
+// 1個新branch」，跟「一個binary一個branch」的既有規則並存——差別是「這次
+// 新增的這幾個小工具彼此共用1個新branch」，不是要推翻既有bash-wasm-backup/
+// pyodide-backup各自獨立的既有安排。這裡新增支援：`--source`/`--subdir`
+// 可以重複出現多組（依出現順序配對，每個`--source`開一組新的pair、緊接著
+// 的`--subdir`填進同一組），全部pair各自切割+產生manifest到各自的
+// `staging/<subdir>/`，但只做**一次**`--orphan`+commit，讓多個工具的內容
+// 一起進同一個single-commit分支。只給一組`--source`/`--subdir`時行為跟
+// 改動前完全一樣（現有bash-wasm-backup/pyodide-backup的重建流程不受影響）。
+//
 // 用法：
 //   node web/tools/build-asset-backup-branch.mjs --source <dir> --branch <name> --subdir <name>
 //     # 只切割+產生manifest到staging，不碰git
+//   ... --source <dir2> --subdir <name2>   # 可重複多組，全部進同一個branch
 //   ... --commit    # 額外建好orphan分支並commit（不push）
 //   ... --commit --push   # 連force-push一起做（會動到公開repo，慎用）
 //   ... --part-size <bytes>   # 選填，預設20MB（20*1024*1024）
@@ -25,7 +36,7 @@
 // 合併邏輯，不用為每個新資源各自刻一份解析程式碼。
 // ============================================================
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile, rm, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, writeFile, rm, readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,19 +46,24 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_PART_SIZE = 20 * 1024 * 1024;
 
 function parseArgs(argv) {
-    const out = { commit: false, push: false, partSize: DEFAULT_PART_SIZE, readme: '' };
+    const out = { commit: false, push: false, partSize: DEFAULT_PART_SIZE, readme: '', pairs: [] };
+    let current = null;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
-        if (a === '--source') out.source = argv[++i];
-        else if (a === '--branch') out.branch = argv[++i];
-        else if (a === '--subdir') out.subdir = argv[++i];
+        if (a === '--source') {
+            current = { source: argv[++i], subdir: null };
+            out.pairs.push(current);
+        } else if (a === '--subdir') {
+            if (!current) { console.error('用法錯誤：--subdir 必須緊接在對應的 --source 之後'); process.exit(1); }
+            current.subdir = argv[++i];
+        } else if (a === '--branch') out.branch = argv[++i];
         else if (a === '--part-size') out.partSize = Number(argv[++i]);
         else if (a === '--readme') out.readme = argv[++i];
         else if (a === '--commit') out.commit = true;
         else if (a === '--push') out.push = true;
     }
-    if (!out.source || !out.branch || !out.subdir) {
-        console.error('用法: node build-asset-backup-branch.mjs --source <dir> --branch <name> --subdir <name> [--part-size N] [--commit] [--push] [--readme "..."]');
+    if (!out.branch || !out.pairs.length || out.pairs.some(p => !p.source || !p.subdir)) {
+        console.error('用法: node build-asset-backup-branch.mjs --source <dir> --branch <name> --subdir <name> [--source <dir2> --subdir <name2> ...] [--part-size N] [--commit] [--push] [--readme "..."]');
         process.exit(1);
     }
     return out;
@@ -73,14 +89,11 @@ async function walkFiles(dir, base = dir) {
     return out;
 }
 
-async function main() {
-    const opts = parseArgs(process.argv.slice(2));
-    const sourceDir = path.resolve(opts.source);
-    const staging = path.join(__dirname, `_asset-backup-staging-${opts.branch}`);
-    const stageSub = path.join(staging, opts.subdir);
-
-    console.log(`# 資源備份分支建置：${opts.branch}（來源：${sourceDir}）`);
-    await rm(staging, { recursive: true, force: true });
+// 把一組{source,subdir}切割+產生manifest，寫進staging/<subdir>/底下。
+// 回傳這組的統計數字，給main()彙總log用。
+async function stageOnePair(pair, staging, partSize) {
+    const sourceDir = path.resolve(pair.source);
+    const stageSub = path.join(staging, pair.subdir);
     await mkdir(stageSub, { recursive: true });
 
     const relFiles = (await walkFiles(sourceDir)).sort();
@@ -95,33 +108,53 @@ async function main() {
         const entry = { path: rel, size: buf.length, sha256, parts: null };
         const destPath = path.join(stageSub, rel);
         await mkdir(path.dirname(destPath), { recursive: true });
-        if (buf.length > opts.partSize) {
-            const n = Math.ceil(buf.length / opts.partSize);
+        if (buf.length > partSize) {
+            const n = Math.ceil(buf.length / partSize);
             for (let i = 0; i < n; i++) {
-                const slice = buf.subarray(i * opts.partSize, (i + 1) * opts.partSize);
+                const slice = buf.subarray(i * partSize, (i + 1) * partSize);
                 await writeFile(destPath + '.part' + String(i).padStart(3, '0'), slice);
             }
             entry.parts = n;
-            console.log(`  ${rel}: ${(buf.length / 1048576).toFixed(2)} MB → 切成 ${n} 份`);
+            console.log(`  [${pair.subdir}] ${rel}: ${(buf.length / 1048576).toFixed(2)} MB → 切成 ${n} 份`);
         } else {
             await writeFile(destPath, buf);
-            console.log(`  ${rel}: ${(buf.length / 1048576).toFixed(2)} MB`);
+            console.log(`  [${pair.subdir}] ${rel}: ${(buf.length / 1048576).toFixed(2)} MB`);
         }
         manifestFiles.push(entry);
     }
 
     const manifest = {
         generated_at: new Date().toISOString(),
-        part_size: opts.partSize,
+        part_size: partSize,
         files: manifestFiles,
     };
     await writeFile(path.join(stageSub, 'manifest.json'), JSON.stringify(manifest, null, 2));
-    await writeFile(path.join(staging, 'README.md'),
-        `# ${opts.branch}\n\n${opts.readme || `Single-commit binary asset backup, generated by build-asset-backup-branch.mjs from ${path.basename(sourceDir)}.`}\n\n` +
-        `Files split into ${(opts.partSize / 1048576).toFixed(0)}MB parts where needed (see \`${opts.subdir}/manifest.json\`). ` +
-        `This branch is force-pushed on regeneration — it holds exactly one binary asset, nothing else, and carries no history.\n`);
+    return { subdir: pair.subdir, sourceDir, totalBytes, fileCount: relFiles.length, generatedAt: manifest.generated_at };
+}
 
-    console.log(`\n# staging 完成：${staging}（合計 ${(totalBytes / 1048576).toFixed(1)} MB，${relFiles.length} 個檔案）`);
+async function main() {
+    const opts = parseArgs(process.argv.slice(2));
+    const staging = path.join(__dirname, `_asset-backup-staging-${opts.branch}`);
+
+    console.log(`# 資源備份分支建置：${opts.branch}（${opts.pairs.length} 組來源）`);
+    await rm(staging, { recursive: true, force: true });
+
+    const results = [];
+    for (const pair of opts.pairs) {
+        results.push(await stageOnePair(pair, staging, opts.partSize));
+    }
+
+    const generatedAt = new Date().toISOString();
+    const summaryLines = results.map(r => `- \`${r.subdir}/\`：來源 ${path.basename(r.sourceDir)}，${r.fileCount} 個檔案，${(r.totalBytes / 1048576).toFixed(1)} MB`);
+    await writeFile(path.join(staging, 'README.md'),
+        `# ${opts.branch}\n\n${opts.readme || 'Single-commit binary asset backup, generated by build-asset-backup-branch.mjs.'}\n\n` +
+        `這個branch可能同時裝著多個彼此獨立的小型資源（各自一個子資料夾），每個子資料夾底下都有自己的\`manifest.json\`（切成${(opts.partSize / 1048576).toFixed(0)}MB份數，需要時才切）：\n\n` +
+        summaryLines.join('\n') + '\n\n' +
+        `This branch is force-pushed on regeneration — it carries no history, only the current snapshot of the resources listed above.\n`);
+
+    const totalBytes = results.reduce((s, r) => s + r.totalBytes, 0);
+    const totalFiles = results.reduce((s, r) => s + r.fileCount, 0);
+    console.log(`\n# staging 完成：${staging}（合計 ${(totalBytes / 1048576).toFixed(1)} MB，${totalFiles} 個檔案，${results.length} 組來源）`);
 
     if (!opts.commit) {
         console.log(`\n下一步：加 --commit 建 orphan 分支，再加 --push 才會 force-push。`);
@@ -135,10 +168,12 @@ async function main() {
     sh('git', ['clone', '--no-checkout', '--depth', '1', originUrl, tmpClone]);
     sh('git', ['-C', tmpClone, 'checkout', '--orphan', opts.branch]);
     sh('git', ['-C', tmpClone, 'rm', '-rf', '--quiet', '--ignore-unmatch', '.']);
-    sh('cp', ['-r', stageSub, path.join(tmpClone, opts.subdir)]);
+    for (const pair of opts.pairs) {
+        sh('cp', ['-r', path.join(staging, pair.subdir), path.join(tmpClone, pair.subdir)]);
+    }
     await writeFile(path.join(tmpClone, 'README.md'), await readFile(path.join(staging, 'README.md')));
     sh('git', ['-C', tmpClone, 'add', '-A']);
-    sh('git', ['-C', tmpClone, 'commit', '-m', `${opts.branch} — ${manifest.generated_at}`]);
+    sh('git', ['-C', tmpClone, 'commit', '-m', `${opts.branch} — ${generatedAt}`]);
     console.log(`\n# orphan 分支 ${opts.branch} 已在 ${tmpClone} 建好並 commit`);
 
     if (opts.push) {
