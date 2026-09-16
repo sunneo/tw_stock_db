@@ -819,14 +819,20 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
     /^deepseek-/i,
 ];
 
-// tw_stock_db客製: 這四個是唯一會被UI暴露、可以送進chat completions
-// request body的取樣/重複懲罰參數鍵名（frequency_penalty/presence_penalty
-// 是OpenAI標準欄位；repetition_penalty/length_penalty是vLLM/HF
-// text-generation-inference常見但非標準的擴充欄位，不是每個OpenAI相容端點
-// 都認得）。集中定義成常數，是因為_buildSamplingParamsBody()、
-// _detectRejectedSamplingParam()、設定面板UI三處都要用同一份清單，避免
-// 三邊各自硬寫一份、改一個忘了改另一個。
-const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty'];
+// tw_stock_db客製: 這六個是唯一會被UI暴露、可以送進chat completions
+// request body的取樣/重複懲罰/推理參數鍵名（frequency_penalty/presence_penalty
+// /top_p是OpenAI標準欄位；repetition_penalty/length_penalty是vLLM/HF
+// text-generation-inference常見但非標準的擴充欄位；reasoning_budget是部分
+// 推理模型端點（例如支援可調整思考長度的推理模型）用來限制內部思考token
+// 數量的擴充欄位——這幾個不是每個OpenAI相容端點都認得）。集中定義成常數，
+// 是因為_buildSamplingParamsBody()、_detectRejectedSamplingParam()、設定
+// 面板UI三處都要用同一份清單，避免三邊各自硬寫一份、改一個忘了改另一個。
+// tw_stock_db客製: 2026-09-17使用者要求新增top_p/reasoning_budget——這兩個
+// 完全比照既有四個參數的「留空＝不送、被端點拒絕就自動排除」機制，不用
+// 另外寫特殊邏輯，直接加進這份清單，_buildSamplingParamsBody/
+// _detectRejectedSamplingParam/全域設定面板UI/per-row覆寫（見
+// MODEL_ROW_NUMERIC_FIELDS）全部自動生效。
+const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'top_p', 'reasoning_budget'];
 
 // tw_stock_db客製: 端點回報「這個參數不認得」時常見的錯誤訊息關鍵字，
 // _detectRejectedSamplingParam()跟_isStopParamRejected()共用同一份清單
@@ -1024,6 +1030,28 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         label: 'AI自製函式管理',
         toolNames: ['list_ai_functions', 'call_ai_function', 'add_ai_function', 'delete_ai_function'],
         systemPrompt: '你是一個專門管理AI自製函式(FromAI)的子任務助理——列舉/呼叫/新增/刪除使用者透過對話讓AI自己定義出來的JS函式。根據使用者的實際需求選用對應工具，完成後用一兩句話簡短說明結果，不用重複整段程式碼內容。',
+        // tw_stock_db客製: 2026-09-17使用者回報——他自己建了一個叫
+        // getTodayTime的AI自製函式，AI完全不會去呼叫。根因：路由器（不管
+        // 是根層級模式2直接看domain目錄、還是模式1/4的路由子agent）看到的
+        // 這個domain說明永遠只有上面那4個meta-tool（list/call/add/delete）
+        // 的固定文字，完全不知道使用者實際建立了哪些函式、能做什麼——
+        // "getTodayTime"這個名字/描述從來沒有出現在任何路由器讀得到的地方，
+        // 自然不可能被選中。這裡用dynamicNote即時把目前實際存在的自製函式
+        // 清單（名稱+描述）補進domain目錄，見_resolveDomainDynamicNote/
+        // _buildDomainCatalogSection/_resolveDomainSystemPrompt——router的
+        // 目錄跟真正執行的子agent的system prompt都會看到同一份最新清單，
+        // 不用先呼叫list_ai_functions才知道有什麼可用。用method shorthand
+        // （不是箭頭函式）是因為呼叫端用.call(this)綁定FloatingAssistant
+        // 實例（見_resolveDomainDynamicNote）——這個物件本身在建構子裡是
+        // 用shallow spread複製進this.domains，箭頭函式在module層級定義時
+        // 抓不到之後才存在的instance this。
+        dynamicNote() {
+            const fns = this.advancedSettings.aiCustomFunctions || {};
+            const names = Object.keys(fns);
+            if (!names.length) return '（使用者目前還沒有建立任何自製函式）';
+            return '使用者目前已經建立以下自製函式（用call_ai_function({"name":"...","args":{...}})呼叫）——只要任務主題符合其中任何一個，都應該優先委派這個領域直接呼叫它，不用自己重新實作同樣的邏輯：\n'
+                + names.map(n => `  - ${n}: ${fns[n].description || '(沒有描述)'}`).join('\n');
+        },
     },
     rag_management: {
         enabled: true,
@@ -1048,7 +1076,19 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         enabled: false,
         label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/Google新聞/SourceForge/CodeProject/DeepWiki）',
         toolNames: ['browser_search'],
-        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點。',
+        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點——system prompt最前面已經提供真實的系統時鐘日期，拿它跟搜尋結果的時間點比對，不要用自己訓練資料的截止日期當基準。',
+        // tw_stock_db客製: 2026-09-17使用者回報「browser_search不會被選中」
+        // ——路由器（_buildDomainCatalogSection）過去只看得到上面這個
+        // domain的label+_summarizeToolDescription()把browser_search工具
+        // 說明硬切到36個字元的結果，「時事/最新新聞該用news來源」這類
+        // 「什麼時候該選我」的關鍵引導完全被切掉、或根本埋在只有委派後才讀
+        // 得到的systemPrompt裡，路由器看不到。這裡額外補一句路由器專用的
+        // 「何時該選我」提示（跟_summarizeToolDescription那段參數說明分開，
+        // 不受36字元截斷影響）。同時明講「單純問今天幾號不用來這裡」——
+        // 避免使用者原本遇到的另一個問題重演：純日期問題被導去搜尋，卻因為
+        // 搜尋結果快取1天而答出過期日期（見_getCurrentDateTimeContext，
+        // 現在系統prompt已經直接提供真實日期，不需要搜尋就能回答）。
+        dynamicNote: '路由建議：任何跟「最近/最新/現在的新聞、時事、或訓練資料截止日之後才會發生的事」有關的查詢，都應該考慮委派這個領域用news/google等來源查證，不要只憑自己的訓練資料默默回答、也不要因為「不確定」就跳過搜尋。但單純問「今天幾月幾號/現在幾點/星期幾」不需要委派這裡——system prompt最前面已經提供真實系統時鐘日期時間，直接回答即可，這裡查到的搜尋結果反而可能是最多1天前的舊快取，拿它回答日期問題比不查還更可能出錯。',
     },
     // tw_stock_db客製: 2026-09-11使用者要求的「帶聲音的影片」影音處理子agent。
     // 目前有的工具：transcribe_media（語音轉逐字稿，Whisper base中英雙語，
@@ -1856,7 +1896,7 @@ const DEFAULT_CHAT_TEMPERATURE = 0.1;
 // 「這個row明確設定成不限制」，跟全域設定的0/留空=不限制是同一套語意，
 // 見_acquireBatchRateSlot()的說明），完全重用MODEL_ROW_NUMERIC_FIELDS
 // 既有的UI/儲存/正規化管線，不用另外刻一套。
-const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'maxOutputTokens', 'requestsPerMinute'];
+const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'top_p', 'reasoning_budget', 'maxOutputTokens', 'requestsPerMinute'];
 
 // tw_stock_db客製: 2026-09-15——File Access Point（fap_find_file）遞迴搜尋的
 // 安全上限，避免使用者授權了一個極大的資料夾（例如整個使用者家目錄）時
@@ -3262,6 +3302,18 @@ class FloatingAssistant {
 2. 【長文章組織切塊】：
    遇到超大文章、書籍或長程式碼時，你可以調用 \`rag_chunk_document\` 工具在背景進行語意切分，建立 dependencies 以免 context 混亂。`;
 
+        // tw_stock_db客製: 2026-09-17使用者要求——桌面版執行時要在system
+        // prompt明確提醒模型「這是可以真的存取本機檔案的桌面程式」，不要
+        // 誤以為自己只是個網頁小工具、遇到存檔/讀檔/跑指令這類要求就先入
+        // 為主回答「我做不到」。這個引擎本身要維持host-agnostic（純網頁版
+        // 部署完全沒有真實檔案/系統存取能力，講這句話在網頁版反而是誤導），
+        // 所以這裡只留一個空字串+公開setter（見setEnvironmentNote），實際
+        // 內容由host bootstrap自己決定要不要注入、注入什麼——桌面版
+        // bootstrap.js會呼叫fa.setEnvironmentNote(...)，純網頁版完全不呼叫、
+        // 維持空字串，_getGroundingContext()裡空字串會被filter(Boolean)濾掉，
+        // 不會在system prompt留下多餘的空行。
+        this.environmentNote = '';
+
         this.advancedSettings = this._loadAdvancedSettings();
         // tw_stock_db客製: 2026-09-15使用者實測回報「一切都是瞎猜」——
         // lastRoundDiag（見_loopFetch/_loopFetchNative）原本只在單一fleeting
@@ -3447,7 +3499,19 @@ class FloatingAssistant {
     setSystemPrompt(prompt) {
         this.baseSystemPrompt = prompt;
         this._refreshSystemPromptMessage();
-        return this; 
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-17——host（例如desktop-app/renderer/bootstrap.js）
+    // 用這個把「執行環境的固有事實」（例如「這是有真實檔案存取能力的桌面
+    // app」）交給引擎放進每一輪system prompt，跟setSystemPrompt()那個給
+    // 使用者編輯人設用的baseSystemPrompt分開——這句話不是人設、使用者不該
+    // 在Advance Settings的系統提示編輯器裡看到/誤刪它，且要讓_runSubAgentTask
+    // 委派出去的子agent也看得到（見_getGroundingContext()），不是只有根對話。
+    setEnvironmentNote(note) {
+        this.environmentNote = String(note || '').trim();
+        this._refreshSystemPromptMessage();
+        return this;
     }
 
     // tw_stock_db客製: 2026-08-26使用者實測發現的真實回歸——把
@@ -3750,6 +3814,14 @@ class FloatingAssistant {
                 // （0/0/1），只有這個是帶意見的非中性預設（0.3會強烈偏好
                 // 短輸出），本來就不該預設送出。想用的人可以到設定面板自己填。
                 length_penalty: { value: null, disabled: false },
+                // tw_stock_db客製: 2026-09-17——top_p/reasoning_budget預設值都是
+                // null（不送這個欄位），跟length_penalty同樣理由：top_p沒有
+                // 一個放諸四海皆準的中性值（不同模型的預設值本來就不一樣，
+                // 貿然送一個我們自己猜的數字，可能反而蓋掉端點本來更適合這個
+                // 模型的預設），reasoning_budget更是只有部分推理模型端點認得
+                // 的擴充欄位，兩者都是「想用的人自己去設定面板填」，不主動送。
+                top_p: { value: null, disabled: false },
+                reasoning_budget: { value: null, disabled: false },
             },
             // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——只用在文字式[CALL:...]
             // 協定，被目標端點拒絕過(偵測到400+關鍵字)就記住，之後不再送這個
@@ -8584,10 +8656,44 @@ ${fnData.code}
         return summary;
     }
 
+    // tw_stock_db客製: 2026-09-17使用者回報——不管是根對話還是任何子Agent，
+    // 完全沒有管道知道「現在真正的日期時間」，連問「今天幾月幾號」都會
+    // 鬼打牆（模型只能瞎猜訓練資料的截止日、或被迫呼叫browser_search卻
+    // 因為搜尋結果快取而answer出過期的日期，例如搜尋出2025/08/24但實際上
+    // 早就2026年了——browser_search domain本身也沒有一個「現在幾點」的
+    // 基準可以拿來判斷搜尋結果是不是舊快取）。這裡補一個唯一、共用的
+    // 系統時鐘資訊區塊：根對話透過_getFinalSystemPrompt()取得，委派給
+    // domain的子Agent（不管是明確指定domain、_delegateToSubagentAuto扁平
+    // 路由、還是_routeTaskHierarchical兩層路由）透過_runSubAgentTask把它
+    // 疊加在domain專屬systemPrompt最前面取得（見_runSubAgentTask，那條
+    // 路徑完全繞過_getFinalSystemPrompt()，需要另外補）——兩邊共用同一份
+    // 文字，不會因為委派路徑不同而有些子Agent知道日期、有些不知道。
+    _getCurrentDateTimeContext() {
+        const now = new Date();
+        const weekday = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
+        const pad = (n) => String(n).padStart(2, '0');
+        let tz = '';
+        try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_) { /* 部分環境可能沒有Intl.DateTimeFormat時區資訊，不影響其餘欄位 */ }
+        return `[系統時鐘] 現在的實際日期時間是：${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日（星期${weekday}）${pad(now.getHours())}:${pad(now.getMinutes())}${tz ? `，時區 ${tz}` : ''}。這是作業系統時鐘提供的絕對正確數值，不是你的訓練資料、也不用猜測或搜尋——任何「今天幾號/現在幾點/星期幾/距離現在多久」這類問題直接用這個數值回答；判斷搜尋結果、快取內容、或任何帶時間戳記的資料是否過期時，也要拿這個數值當基準，不要用自己訓練資料裡的截止日期當「現在」。`;
+    }
+
+    // tw_stock_db客製: 2026-09-17——把「不管走哪條路徑、每一輪system prompt
+    // 都該有的固定事實」集中成一個入口：系統時鐘（見上面
+    // _getCurrentDateTimeContext）+ host注入的環境事實（見
+    // setEnvironmentNote，例如桌面版的「這是有真實檔案存取能力的桌面app」）。
+    // _getFinalSystemPrompt()（根對話）跟_runSubAgentTask()（domain委派，
+    // 那條路徑完全繞過_getFinalSystemPrompt()）都呼叫這一個函式，之後如果
+    // 還有新的「每輪都該知道」的事實，只要改這裡一個地方，兩條路徑會一起
+    // 生效，不會重演「日期只有根對話知道、子agent不知道」這種不同步。
+    _getGroundingContext() {
+        return [this._getCurrentDateTimeContext(), this.environmentNote].filter(Boolean).join('\n\n');
+    }
+
     _getFinalSystemPrompt() {
         const sections = [];
         const rulesMd = String(this.advancedSettings.rulesMd || '').trim();
         const basePrompt = String(this.baseSystemPrompt || '').trim();
+        sections.push(this._getGroundingContext());
         // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——文字協定
         // 模式下的[PREDEFINED TOOLS]清單也要套用同一份根層級過濾（跟原生模式
         // 的_buildNativeToolsSchema(this._getRootToolNames())是同一個過濾邏輯，
@@ -10712,10 +10818,15 @@ ${sourceTool.handlerScript}
 
     _buildModelRowHtml(row, idx) {
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
-        const numField = (key, label, placeholder) => `
+        // tw_stock_db客製: 2026-09-17——reasoning_budget是token數量（通常是
+        // 幾百到幾千的整數），step沿用其餘penalty類參數的0.1會讓上下箭頭
+        // 按鈕的增減量顯得莫名其妙（打字輸入不受影響，純粹是箭頭按鈕的
+        // 體驗），這裡讓呼叫端可以選填step，其餘既有call site不傳就維持
+        // 原本的0.1，不影響既有欄位。
+        const numField = (key, label, placeholder, step = '0.1') => `
             <div>
                 <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">${label}</label>
-                <input type="number" step="0.1" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="${key}" placeholder="${placeholder}" value="${row[key] != null ? row[key] : ''}">
+                <input type="number" step="${step}" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="${key}" placeholder="${placeholder}" value="${row[key] != null ? row[key] : ''}">
             </div>`;
         return `
             <div class="ai-model-row" draggable="true" data-row-id="${row.id}">
@@ -10738,10 +10849,12 @@ ${sourceTool.handlerScript}
                         <input type="text" class="ai-advanced-input ai-model-row-input" list="ai-model-datalist" data-row-id="${row.id}" data-field="modelName" value="${esc(row.modelName)}">
                     </div>
                     ${numField('temperature', 'temperature', '預設0.1')}
+                    ${numField('top_p', 'top_p', '不送')}
                     ${numField('frequency_penalty', 'frequency_penalty', '不送')}
                     ${numField('presence_penalty', 'presence_penalty', '不送')}
                     ${numField('repetition_penalty', 'repetition_penalty', '不送')}
                     ${numField('length_penalty', 'length_penalty', '不送')}
+                    ${numField('reasoning_budget', 'reasoning_budget', '不送（推理token數上限）', '1')}
                     ${numField('maxOutputTokens', 'max tokens(單次上限)', '全域預設')}
                     ${numField('requestsPerMinute', '批次每分鐘請求數上限', '留空=沿用全域設定')}
                 </div>
@@ -19049,7 +19162,7 @@ ${existingNodeSummaries}
         try {
             const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: this._resolveDomainToolNames(domain),
-                systemPrompt: domain.systemPrompt,
+                systemPrompt: this._resolveDomainSystemPrompt(domain),
                 onProgress: progress ? (status) => progress.update({ status }) : null,
             });
             if (progress) progress.finish('完成');
@@ -19374,10 +19487,37 @@ ${existingNodeSummaries}
     // 形同失效。改成沒有工具時仍然列出這個domain（只是沒有工具清單那幾行，
     // 換一句話明確告訴路由器「這是純知識/角色扮演領域，符合時一樣要選」），
     // 讓路由器至少看得到這個domain存在、能夠選中它。
+    // tw_stock_db客製: 2026-09-17使用者回報——domain目錄（路由器唯一看得到
+    // 的資訊）只有靜態的label+工具清單，像ai_functions這種「底下實際能力
+    // 完全由使用者動態新增/刪除」的domain，路由器永遠看不到使用者自己
+    // 建立的函式叫什麼名字、能做什麼（例如使用者建立了一個getTodayTime，
+    // 路由器只看得到"list_ai_functions/call_ai_function/..."這4個管理用
+    // meta-tool的說明，完全不知道getTodayTime存在，自然不會選這個domain）。
+    // dynamicNote讓domain定義可以掛一個函式（或直接一段字串），在建立目錄
+    // 當下才即時求值，把「這個domain底下實際有什麼」補進路由器看得到的
+    // 文字裡；同一份內容也透過_resolveDomainSystemPrompt()疊加進真正執行
+    // 的子Agent的system prompt，兩邊用同一份資料來源，不會不同步。
+    _resolveDomainDynamicNote(domain) {
+        // .call(this)——domain物件本身是建構子用shallow spread從
+        // SUBAGENT_DOMAIN_REGISTRY複製出來的（見this.domains =
+        // Object.fromEntries(...{...v}...)），dynamicNote若寫成一般
+        // function（例如ai_functions用method shorthand），不綁定的話
+        // 呼叫時的this會是domain物件本身，不是FloatingAssistant實例，
+        // 讀不到this.advancedSettings。
+        const note = typeof domain.dynamicNote === 'function' ? domain.dynamicNote.call(this) : domain.dynamicNote;
+        return String(note || '').trim();
+    }
+
+    _resolveDomainSystemPrompt(domain) {
+        const note = this._resolveDomainDynamicNote(domain);
+        return note ? `${domain.systemPrompt}\n\n${note}` : domain.systemPrompt;
+    }
+
     _buildDomainCatalogSection(key, domain, toolByName) {
         const names = this._resolveDomainToolNames(domain);
+        const note = this._resolveDomainDynamicNote(domain);
         if (!names.length) {
-            return `[${key}] ${domain.label}（純知識/角色扮演型領域，沒有掛載工具——符合這個領域主題時仍然應該選它，子agent會直接依知識/人設回答）`;
+            return `[${key}] ${domain.label}（純知識/角色扮演型領域，沒有掛載工具——符合這個領域主題時仍然應該選它，子agent會直接依知識/人設回答）` + (note ? `\n${note}` : '');
         }
         const lines = names
             .map(name => {
@@ -19385,7 +19525,7 @@ ${existingNodeSummaries}
                 return tool ? `- ${name}: ${this._summarizeToolDescription(tool.description)}` : null;
             })
             .filter(Boolean);
-        return `[${key}] ${domain.label}\n${lines.join('\n')}`;
+        return `[${key}] ${domain.label}\n${lines.join('\n')}` + (note ? `\n${note}` : '');
     }
 
     async _routeTaskToDomains(task) {
@@ -19419,7 +19559,7 @@ ${existingNodeSummaries}
         if (!validDomains.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
 
         const toolNames = [...new Set(validDomains.flatMap(k => this._resolveDomainToolNames(this.domains[k])))];
-        const systemPrompt = validDomains.map(k => `## ${this.domains[k].label}\n${this.domains[k].systemPrompt}`).join('\n\n');
+        const systemPrompt = validDomains.map(k => `## ${this.domains[k].label}\n${this._resolveDomainSystemPrompt(this.domains[k])}`).join('\n\n');
         return { ok: true, domains: validDomains, toolNames, systemPrompt };
     }
 
@@ -19498,7 +19638,7 @@ ${existingNodeSummaries}
             .filter(k => this.domains[k] && this.domains[k].enabled);
         if (!finalDomainKeys.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
         const toolNames = [...new Set(finalDomainKeys.flatMap(k => this._resolveDomainToolNames(this.domains[k])))];
-        const systemPrompt = finalDomainKeys.map(k => `## ${this.domains[k].label}\n${this.domains[k].systemPrompt}`).join('\n\n');
+        const systemPrompt = finalDomainKeys.map(k => `## ${this.domains[k].label}\n${this._resolveDomainSystemPrompt(this.domains[k])}`).join('\n\n');
         return { ok: true, domains: finalDomainKeys, toolNames, systemPrompt };
     }
 
@@ -19710,8 +19850,14 @@ ${existingNodeSummaries}
             }
             return this._getToolDefinition(fnName, allowedToolNames);
         };
+        // tw_stock_db客製: 2026-09-17——domain專屬systemPrompt這條路徑完全
+        // 繞過_getFinalSystemPrompt()（見上面_getFinalSystemPrompt說明的
+        // 那段），必須在這裡另外補一次_getGroundingContext()（系統時鐘+host
+        // 注入的環境事實），不然委派出去的子Agent（不管是明確指定domain還是
+        // 自動路由）永遠不知道現在幾號、也不知道自己其實是在有真實檔案存取
+        // 能力的桌面app裡執行。
         let systemPrompt = (typeof options.systemPrompt === 'string' && options.systemPrompt.trim())
-            ? options.systemPrompt
+            ? `${this._getGroundingContext()}\n\n${options.systemPrompt}`
             : this._getFinalSystemPrompt();
         // tw_stock_db客製: 文字協定（非native tool-calling）模式下，domain委派
         // 的systemPrompt本來就不會自動列出可用工具清單/呼叫格式（那是
@@ -20282,7 +20428,7 @@ ${existingNodeSummaries}
                                         ${SAMPLING_PARAM_KEYS.map(key => `
                                             <div>
                                                 <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
-                                                <input type="number" step="0.1" id="ai-param-${key}" class="ai-advanced-input">
+                                                <input type="number" step="${key === 'reasoning_budget' ? '1' : '0.1'}" id="ai-param-${key}" class="ai-advanced-input">
                                             </div>
                                         `).join('')}
                                     </div>
