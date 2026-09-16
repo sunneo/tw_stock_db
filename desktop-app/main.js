@@ -174,13 +174,22 @@ async function patchDesktopSettings(patch) {
 //      生效的明確選擇，不是單次session的暫時覆寫，直到使用者自己再換一次
 //      或那個資料夾被刪掉為止。
 //   2. 從來沒手動選過、或選過的資料夾已經不存在時，退回
-//      resolveDefaultWorkspaceFolder()：優先用process.cwd()（讓使用者
-//      習慣「cd到某個專案資料夾再啟動app」的用法能直接生效），但GUI
-//      啟動（雙擊捷徑/圖示）時cwd常常是app自己的安裝目錄或任意位置，不是
-//      使用者真正在工作的資料夾——這種情況判斷不出來是「使用者刻意cd
-//      過去的」還是「作業系統隨便給的」，退回使用者根目錄(app.getPath
-//      ("home"))當保底，不會意外把對話/設定寫進安裝目錄（可能沒有寫入
-//      權限，也不是使用者會預期找到這些檔案的地方）。
+//      resolveDefaultWorkspaceFolder()：打包後（app.isPackaged，AppImage/
+//      portable exe這種一般使用者實際在用的產物）一律直接用使用者根目錄
+//      (app.getPath("home"))，不嘗試從process.cwd()猜——雙擊圖示啟動時
+//      cwd是作業系統/檔案總管/桌面環境給的，不同發行版、不同啟動方式（雙擊
+//      vs 從終端機執行、甚至同一個AppImage重建/搬到別的資料夾後再雙擊）
+//      給的值本來就不保證一致，也沒有可靠的方法從cwd本身分辨「這是使用者
+//      刻意選的工作資料夾」還是「系統隨便給的」（2026-09-17使用者實測
+//      回報的bug：AppImage關閉重開後，剛匯入的Skill看起來憑空消失——用
+//      FA_DEBUG_SKILL_PERSIST_TEST排除了persistence本身遺失資料的可能，
+//      根因正是這裡：兩次啟動被導去了兩個不同的資料夾，各自讀到自己一份
+//      .floating-assistant/localStorage.json，舊資料其實原封不動留在原本
+//      的資料夾裡，只是沒讀到）。開發模式（app.isPackaged===false，
+//      `cd desktop-app && npm start`／`electron .`）維持優先用
+//      process.cwd()的行為——那才是開發者自己選的資料夾，值得信任；GUI
+//      啟動時同樣退回使用者根目錄當保底，不會意外把對話/設定寫進安裝目錄
+//      （可能沒有寫入權限，也不是使用者會預期找到這些檔案的地方）。
 // ============================================================
 const WORKSPACE_DIR_NAME = ".floating-assistant";
 const WORKSPACE_STORAGE_FILENAME = "localStorage.json";
@@ -207,6 +216,32 @@ function looksLikeAppOwnOrSystemLocation(cwd) {
 }
 
 function resolveDefaultWorkspaceFolder() {
+  // tw_stock_db客製: 2026-09-17使用者回報——Linux AppImage「關閉再重新
+  // 打開」之後，剛匯入的Skill（含附加參考檔案）不見了。用
+  // FA_DEBUG_SKILL_PERSIST_TEST實測排除：不是persistence/skillFileCache
+  // 資料真的遺失（同一個cwd+同一個--user-data-dir重啟兩次，skill bundle
+  // 連同附加檔案內容完全正確保留）——問題出在這個函式本身太信任
+  // process.cwd()。「cd到專案資料夾再啟動app」這種深思熟慮的用法只存在
+  // 於開發模式（`cd desktop-app && npm start`／`electron .`），那時候cwd
+  // 是開發者自己選的，值得信任；但app.isPackaged===true（AppImage/
+  // portable exe這種打包後的產物）時，使用者根本沒有主動「cd」這個動作
+  // ——cwd是雙擊圖示當下，作業系統/檔案總管/桌面環境給的，不同發行版、
+  // 不同啟動方式（雙擊 vs 從終端機`./xxx.AppImage`、甚至同一個AppImage
+  // 重新打包/搬到別的資料夾後再雙擊）給的值本來就不保證一致，也沒有
+  // 可靠的方法從cwd本身分辨「這是使用者刻意選的工作資料夾」還是「系統
+  // 隨便給的」。原本的looksLikeAppOwnOrSystemLocation()只排除掉cwd剛好
+  // 等於app自己資源路徑這一種明確案例，涵蓋不到「打包後的cwd本來就不
+  // 穩定」這個更根本的問題——這正是使用者這次遇到的情況：兩次啟動很可能
+  // 被導去了兩個不同的資料夾，各自讀到自己那份.floating-assistant/
+  // localStorage.json，看起來像「資料不見了」，其實舊資料原封不動留在
+  // 原本那個資料夾裡，只是這次沒讀到。
+  // 修法：打包後一律直接用穩定的家目錄，不再嘗試從cwd猜——這樣同一台
+  // 電腦、同一個使用者帳號，不管重建/搬移/用哪種方式重新啟動AppImage，
+  // 永遠解析到同一個資料夾，行為可預期。開發模式維持原本cwd優先的行為
+  // 不變。使用者永遠可以透過Advance Settings「切換資料夾」明確覆寫這個
+  // 預設值（見resolveActiveWorkspaceFolder，那個持續生效的手動選擇優先權
+  // 比這個函式高，不受這次改動影響）。
+  if (app.isPackaged) return app.getPath("home");
   const cwd = process.cwd();
   if (!looksLikeAppOwnOrSystemLocation(cwd)) return cwd;
   return app.getPath("home");
@@ -1933,6 +1968,64 @@ function createWindow() {
           console.log("[workspace-test] result:\n" + result);
         } catch (err) {
           console.log("[workspace-test] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+
+  // tw_stock_db客製: 2026-09-17使用者回報——Linux AppImage「關閉再重新打開」
+  // 之後，剛匯入的Skill（含附加參考檔案）不見了。要先分辨清楚根因是
+  // (a) advancedSettings.skillBundles/skillFileCache這兩份持久化資料本身
+  // 在重啟後真的遺失了（程式碼bug），還是(b)兩次啟動實際上被
+  // resolveActiveWorkspaceFolder()解析到不同的工作區資料夾（例如AppImage
+  // 每次啟動時檔案總管給的process.cwd()不穩定），單純讀到了不同的
+  // .floating-assistant/localStorage.json，舊資料其實還在原地——這兩種
+  // 根因的修法完全不同，用同一個--user-data-dir+同一個cwd跑兩次
+  // （分兩個process，模擬「關掉AppImage再重開」）就能直接排除掉(b)，
+  // 只留(a)：FA_DEBUG_SKILL_PERSIST_TEST=create先建立一個帶附加檔案的
+  // skill bundle並確認寫入；下一次啟動用FA_DEBUG_SKILL_PERSIST_TEST=verify
+  // 檢查advancedSettings.skillBundles跟skillFileCache裡的實際檔案內容是否
+  // 還在。
+  if (process.env.FA_DEBUG_SKILL_PERSIST_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const phase = process.env.FA_DEBUG_SKILL_PERSIST_TEST;
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wsInfo = await window.desktopAPI.workspace.get();
+              out.resolvedFolder = wsInfo.folder;
+              const phase = ${JSON.stringify(phase)};
+              if (phase === 'create') {
+                const bundleId = window.fa._createSkillBundle('persist-test-skill', 'test persona content');
+                const bundle = window.fa.advancedSettings.skillBundles.find(b => b.id === bundleId);
+                const blob = new Blob(['hello world file content'], { type: 'text/plain' });
+                await window.fa.skillFileCache.put('references/test.md', 'text/plain', blob, 'skill_file', bundleId + '::references/test.md');
+                bundle.files = [{ path: 'references/test.md', sizeBytes: blob.size, mimeType: 'text/plain' }];
+                window.fa._syncSkillBundleDomains();
+                window.fa._saveAdvancedSettings();
+                out.bundleId = bundleId;
+                out.filesAfterCreate = bundle.files;
+                out.skillBundlesCountAfterCreate = window.fa.advancedSettings.skillBundles.length;
+                await new Promise(r => setTimeout(r, 800));
+              } else {
+                out.skillBundlesCount = window.fa.advancedSettings.skillBundles.length;
+                out.skillBundles = window.fa.advancedSettings.skillBundles.map(b => ({ id: b.id, name: b.name, personaPrompt: b.personaPrompt, files: b.files }));
+                if (out.skillBundles.length) {
+                  const b = out.skillBundles[0];
+                  const key = b.id + '::' + ((b.files && b.files[0]) ? b.files[0].path : '');
+                  const rec = await window.fa.skillFileCache.get(key);
+                  out.fileRecordFound = !!rec;
+                  out.fileContentText = rec ? await rec.blob.text() : null;
+                }
+              }
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[skill-persist-test] result:\n" + result);
+        } catch (err) {
+          console.log("[skill-persist-test] error: " + err);
         }
       }, 1500);
     });
