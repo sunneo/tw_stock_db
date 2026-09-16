@@ -78,7 +78,13 @@ let localProxyPort = null;
 // ---------- roots（使用者授權的直接存取資料夾）持久化 ----------
 async function readJsonSafe(file, fallback) {
   try {
-    return JSON.parse(await fs.readFile(file, "utf8"));
+    // Windows PowerShell 5.1的`Set-Content -Encoding utf8`（build.ps1用來產生
+    // builtin-secrets.json）跟Windows記事本手動存檔都會在檔案開頭加UTF-8 BOM
+    // (﻿)，但JSON.parse不會自動去除BOM、遇到就直接丟SyntaxError——沒有
+    // 這行的話，整個檔案會被此函式的catch吞掉、悄悄當成空物件{}回傳，內建
+    // 金鑰因此永遠讀不到卻沒有任何錯誤訊息可查。
+    const text = (await fs.readFile(file, "utf8")).replace(/^﻿/, "");
+    return JSON.parse(text);
   } catch (_) {
     return fallback;
   }
