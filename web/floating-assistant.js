@@ -1090,14 +1090,15 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     code_execution: {
         enabled: true,
         label: '程式執行環境（bash／python，瀏覽器沙盒內執行）',
-        toolNames: ['bash_execute', 'python_execute'],
+        toolNames: ['bash_execute', 'python_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script'],
         systemPrompt: '你是一個專門執行程式的子任務助理，能力：\n' +
-            '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援），完全不會碰到使用者電腦的真實檔案系統。\n' +
-            '- python_execute：在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件如numpy/pandas可以在腳本裡用micropip.install()或import時自動載入，第一次載入某個套件會花一點時間）。\n' +
+            '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援，額外認得python/python3/jq/xq/column/split這幾個按需下載的指令），完全不會碰到使用者電腦的真實檔案系統。\n' +
+            '- python_execute：在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件如numpy/pandas可以在腳本裡用micropip.install()或import時自動載入，第一次載入某個套件會花一點時間；支援subprocess.run()回頭呼叫shell/其他python腳本）。\n' +
             '兩者都用同一套輸入/輸出模型：\n' +
             '  - input_files（選填）：{"相對路徑":"檔案內容"}，執行前寫進工作目錄（bash是/work/，python是/work/），腳本可以直接讀取。內容如果來自File Access Point/使用者上傳檔案，先用對應的讀取工具（fap_read_file/parse_uploaded_file等）取得文字內容再放進來，這個工具本身不會自己去讀取其他地方的檔案。\n' +
             '  - output_ref（選填）：腳本執行完後，工作目錄底下新增/修改過的檔案要存去哪裡——給"fap:<名稱>[/<子路徑>]"存進使用者授權的File Access Point；桌面版另外可以給一個真實磁碟絕對路徑直接存到使用者資料夾；完全不給的話存進persistentStorage（回傳file_id，可以再用parse_uploaded_file等既有工具處理，或提示使用者下載）。三種都用得到時，優先問清楚使用者想要哪一種，不要自己隨便猜。\n' +
-            '回應包含stdout/stderr/exit_code（exit_code非0代表腳本執行失敗，把stderr內容照實轉告使用者，不要自己掰原因）跟output_files清單（每個檔案存到哪裡）。⚠️目前沒有硬性逾時中斷機制，腳本裡不要寫真正的無窮迴圈；也沒有網路存取能力（沙盒內對外連線一律失敗，需要下載外部資料時用browser_search/fetch_web_page等既有工具，不要在腳本裡自己wget/curl）。',
+            '回應包含stdout/stderr/exit_code（exit_code非0代表腳本執行失敗，把stderr內容照實轉告使用者，不要自己掰原因）跟output_files清單（每個檔案存到哪裡）。⚠️目前沒有硬性逾時中斷機制，腳本裡不要寫真正的無窮迴圈；也沒有網路存取能力（沙盒內對外連線一律失敗，需要下載外部資料時用browser_search/fetch_web_page等既有工具，不要在腳本裡自己wget/curl）。\n' +
+            '**腳本重用（register_saved_script/list_saved_scripts/get_saved_script）**：評估到使用者的需求需要背景執行、要跑大量運算/公式、或看起來未來還會被問到類似情境時，不要每次都重新寫一遍腳本——動手寫之前先呼叫list_saved_scripts看有沒有現成可用的（可以直接用get_saved_script取回內容、透過input_files帶進bash_execute/python_execute執行）；確認一段新腳本可以正確執行、判斷值得未來重複使用之後，呼叫register_saved_script存起來（連同一段清楚描述「做什麼、什麼情境該重用」的description，之後才找得回來）。三個工具跟bash_execute/python_execute共用同一套output_ref語意（留空=persistentStorage、fap:<名稱>[/<路徑>]=使用者指定或共用的資料夾）——存進persistentStorage的有100MB自動LRU額度，不用自己操心空間；存進File Access Point沒有這個上限。',
     },
 };
 
@@ -1902,6 +1903,21 @@ const SANDBOX_COMMAND_REGISTRY = {
     column:  { kind: 'column' },
     split:   { kind: 'split' },
 };
+
+// tw_stock_db客製: 2026-09-16使用者要求——AI要知道「評估到任務需要背景
+// 執行/大量運算/未來可能重複用到」時，該把bash/python腳本存下來（連同
+// metadata）供之後查詢重用，不要每次都重新寫一遍（見register_saved_script/
+// list_saved_scripts/get_saved_script三個工具）。存進persistentStorage的
+// 腳本用獨立的savedScriptCache（見建構子），有自己的LRU容量上限——跟
+// skillFileCache同樣的理由，不跟fileCache（上傳附件/AI匯出檔案，「用完可丟」
+// 的暫存資料）共用同一個淘汰池，避免不相關的活動把使用者特意要求保留、
+// 之後還要查詢重用的腳本擠掉。使用者明確要求預設100MB。存進File Access
+// Point（使用者指定/共用的真實磁碟資料夾）則不受這個上限限制，交給使用者
+// 自己的磁碟空間管理。
+const SAVED_SCRIPT_CACHE_MAX_BYTES = 100 * 1024 * 1024;
+// persistentStorage manifest用固定id存取（不是隨機UUID），保證每次都能
+// 找到/覆寫同一筆紀錄，不用另外維護一份「manifest放在哪個id」的對照表。
+const SAVED_SCRIPT_MANIFEST_ID = '_scripts_manifest';
 
 // tw_stock_db客製: 2026-09-16使用者明確要求——python腳本裡`import subprocess`
 // 呼叫`subprocess.run(['python3','x.py'])`／`subprocess.run(['sh','-c','...'])`
@@ -3267,6 +3283,11 @@ class FloatingAssistant {
         // 使用者刻意匯入、期望長期保留的skill參考資料語意不同，共用會有
         // 「最近上傳幾個大檔案，結果把skill的參考資料擠掉」的風險。
         this.skillFileCache = new FileCache('FloatingAssistantSkillFiles_' + ragDbSuffix, SKILL_FILE_CACHE_MAX_BYTES);
+        // tw_stock_db客製: 2026-09-16——register_saved_script/list_saved_scripts/
+        // get_saved_script（見SAVED_SCRIPT_CACHE_MAX_BYTES的說明）存進
+        // persistentStorage的可重用腳本，獨立的FileCache實例（獨立LRU
+        // 淘汰池，理由跟skillFileCache同一段說明）。
+        this.savedScriptCache = new FileCache('FloatingAssistantSavedScripts_' + ragDbSuffix, SAVED_SCRIPT_CACHE_MAX_BYTES);
         // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
         // 跟fileCache/searchCache一樣依mount實例分開資料庫。
         this.fileAccessPoints = new FileAccessPointStore('FloatingAssistantFAP_' + ragDbSuffix);
@@ -5247,6 +5268,115 @@ ${fnData.code}
                 }
             },
             executionToolSchema
+        );
+
+        // tw_stock_db客製: 2026-09-16使用者要求——「當使用者的需求經過評估，
+        // 需要背景執行、需要跑大量的公式，AI可以建立script到persistentStorage
+        // 或share的資料夾或使用者指定的資料夾，並建立metadata來重複使用」。
+        // register_saved_script/list_saved_scripts/get_saved_script三個工具
+        // 讓bash_execute/python_execute寫出來、測過的腳本能被登記成一份可
+        // 查詢的清單，下次遇到類似需求先查有沒有現成的，不用每次重寫。
+        // output_ref跟bash_execute/python_execute同一套語意（留空=
+        // persistentStorage，fap:<名稱>[/<路徑>]=使用者指定/共用的真實
+        // 磁碟資料夾），manifest存放位置：persistentStorage用固定id
+        // （SAVED_SCRIPT_MANIFEST_ID）存進savedScriptCache；fap則是跟腳本
+        // 同一層資料夾底下的_scripts_manifest.json（不同子資料夾可以各自
+        // 有獨立的清單，呼應使用者可能本來就會依專案分資料夾整理的習慣）。
+        registerOptional('register_saved_script',
+            '把一段已經測試過、值得未來重複使用的bash/python腳本存起來，連同描述性metadata登記進一份可查詢的清單。**評估到使用者的需求需要背景執行、要跑大量運算/公式、或看起來未來還會被問到類似問題時，應該主動用這個工具把腳本存下來，不要每次都重新寫一遍**。存進persistentStorage時有100MB的LRU額度（滿了自動清掉最久沒被list_saved_scripts/get_saved_script存取的舊腳本，不用手動管理）；存進File Access Point（使用者指定/共用的真實磁碟資料夾）沒有這個上限，交給使用者自己的磁碟空間管理。這個工具只負責存腳本本體+metadata，不會執行它——存之前應該已經用bash_execute/python_execute測過確認可以正確執行。參數: {"name":"唯一識別名稱","description":"這個腳本做什麼、什麼情境該重用它（愈具體愈好，之後靠這段文字判斷要不要重用）","language":"python或bash","code":"完整腳本內容","entry_file":"（選填）檔名，預設依language自動產生<name>.py或.sh","args_hint":"（選填）怎麼呼叫/帶什麼參數的簡短提示","tags":["（選填）分類標籤"],"output_ref":"（選填）留空=persistentStorage，或fap:<名稱或id>/<資料夾路徑>"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const name = String(parsed.name || '').trim();
+                const description = String(parsed.description || '').trim();
+                const language = String(parsed.language || '').trim().toLowerCase();
+                const code = String(parsed.code || '');
+                if (!name) return JSON.stringify({ ok: false, error: '缺少name參數' });
+                if (!description) return JSON.stringify({ ok: false, error: '缺少description參數（之後要靠這段文字判斷該不該重用，不能留空）' });
+                if (language !== 'python' && language !== 'bash') return JSON.stringify({ ok: false, error: 'language必須是"python"或"bash"' });
+                if (!code.trim()) return JSON.stringify({ ok: false, error: '缺少code參數' });
+                const entryFile = String(parsed.entry_file || '').trim() || `${name}.${language === 'python' ? 'py' : 'sh'}`;
+                const argsHint = String(parsed.args_hint || '').trim();
+                const tags = Array.isArray(parsed.tags) ? parsed.tags.map(String) : [];
+                const entry = { name, description, language, entry_file: entryFile, args_hint: argsHint, tags, updated_at: new Date().toISOString() };
+                try {
+                    const loc = await this._resolveSavedScriptLocation(parsed.output_ref);
+                    if (loc.kind === 'persistent') {
+                        await this.savedScriptCache.put(entryFile, language === 'python' ? 'text/x-python' : 'text/x-shellscript', new Blob([code]), 'saved_script', this._savedScriptContentId(name));
+                        const manifest = await this._readSavedScriptManifestPersistent();
+                        this._upsertSavedScriptManifestEntry(manifest, entry);
+                        await this._writeSavedScriptManifestPersistent(manifest);
+                        return JSON.stringify({ ok: true, location: 'persistentStorage', entry });
+                    }
+                    const manifestRef = this._savedScriptManifestRef(loc);
+                    const scriptRef = this._savedScriptFileRef(loc, entryFile);
+                    await this._fapWriteFile(scriptRef, code);
+                    const manifest = await this._readSavedScriptManifestFap(manifestRef);
+                    this._upsertSavedScriptManifestEntry(manifest, entry);
+                    await this._fapWriteFile(manifestRef, JSON.stringify(manifest, null, 2));
+                    return JSON.stringify({ ok: true, location: scriptRef, entry });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' }, description: { type: 'string' },
+                    language: { type: 'string', enum: ['python', 'bash'] },
+                    code: { type: 'string' }, entry_file: { type: 'string' }, args_hint: { type: 'string' },
+                    tags: { type: 'array', items: { type: 'string' } }, output_ref: { type: 'string' },
+                },
+                required: ['name', 'description', 'language', 'code'],
+                additionalProperties: false,
+            }
+        );
+        registerOptional('list_saved_scripts',
+            '列出已經用register_saved_script存過的可重用bash/python腳本（只回傳metadata，不含完整程式碼——需要實際內容時再用get_saved_script查單一筆）。**評估到使用者需求可能之前已經處理過類似情境時，先呼叫這個查一下，不要每次都重新寫腳本**。參數: {"output_ref":"（選填）留空=查persistentStorage，或fap:<名稱或id>/<資料夾路徑>"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const loc = await this._resolveSavedScriptLocation(parsed.output_ref);
+                    const manifest = loc.kind === 'persistent'
+                        ? await this._readSavedScriptManifestPersistent()
+                        : await this._readSavedScriptManifestFap(this._savedScriptManifestRef(loc));
+                    if (!manifest.scripts.length) return JSON.stringify({ ok: true, scripts: [], note: '目前這個位置沒有任何已存的可重用腳本。' });
+                    return JSON.stringify({ ok: true, scripts: manifest.scripts });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { output_ref: { type: 'string' } }, additionalProperties: false }
+        );
+        registerOptional('get_saved_script',
+            '取回一個用register_saved_script存過的腳本完整內容（先用list_saved_scripts確認有哪些名稱可用）。參數: {"name":"腳本名稱","output_ref":"（選填）留空=persistentStorage，或fap:<名稱或id>/<資料夾路徑>，要跟當初register_saved_script用的output_ref一致"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const name = String(parsed.name || '').trim();
+                if (!name) return JSON.stringify({ ok: false, error: '缺少name參數' });
+                try {
+                    const loc = await this._resolveSavedScriptLocation(parsed.output_ref);
+                    const manifest = loc.kind === 'persistent'
+                        ? await this._readSavedScriptManifestPersistent()
+                        : await this._readSavedScriptManifestFap(this._savedScriptManifestRef(loc));
+                    const entry = manifest.scripts.find(s => s.name === name);
+                    if (!entry) return JSON.stringify({ ok: false, error: `找不到已存的腳本「${name}」，用list_saved_scripts查詢可用名稱。` });
+                    if (loc.kind === 'persistent') {
+                        const record = await this.savedScriptCache.get(this._savedScriptContentId(name));
+                        if (!record) return JSON.stringify({ ok: false, error: 'metadata存在但檔案內容遺失（可能是LRU額度不夠被清掉了），需要重新用register_saved_script存一次。' });
+                        return JSON.stringify({ ok: true, entry, code: await record.blob.text() });
+                    }
+                    const scriptRef = this._savedScriptFileRef(loc, entry.entry_file);
+                    const r = await this._fapReadFile(scriptRef);
+                    if (!r.ok) return JSON.stringify({ ok: false, error: r.error || '讀取腳本檔案失敗' });
+                    return JSON.stringify({ ok: true, entry, code: r.content, truncated: r.truncated });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { name: { type: 'string' }, output_ref: { type: 'string' } }, required: ['name'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 階段3——3D場景viewer（見_mount3DScene/計畫文件
@@ -11877,6 +12007,73 @@ ${sourceTool.handlerScript}
     //   3. output_ref留空 → 存進persistentStorage（this.fileCache，跟AI
     //      產生的其他檔案共用同一個LRU快取），回傳file_id讓後續工具/使用者
     //      下載使用。
+    // tw_stock_db客製: 2026-09-16——register_saved_script/list_saved_scripts/
+    // get_saved_script共用的輔助方法（見那三個工具註冊處的說明）。這裡把
+    // output_ref解析成「要存去哪裡」，跟_persistExecutionOutputFiles的
+    // output_ref語意保持一致（留空=persistentStorage，fap:<名稱>[/<路徑>]=
+    // File Access Point），但這裡回傳的是「一個資料夾」（腳本檔名由
+    // entry_file另外決定），不是像output_ref在bash_execute裡那樣直接對應
+    // 到單一輸出檔案的完整路徑。
+    async _resolveSavedScriptLocation(outputRef) {
+        const ref = String(outputRef || '').trim();
+        if (!ref) return { kind: 'persistent' };
+        if (!/^fap:/i.test(ref)) throw new Error('output_ref格式錯誤，必須是空字串（persistentStorage）或"fap:<名稱或id>[/<路徑>]"');
+        const { fapIdOrLabel, path } = this._parseFapRef(ref);
+        if (!fapIdOrLabel) throw new Error('缺少File Access Point名稱（格式：fap:<名稱或id>[/<路徑>]）');
+        return { kind: 'fap', fapIdOrLabel, dirPath: path.replace(/\/+$/, '') };
+    }
+
+    // persistentStorage用固定、由name衍生的id（不是隨機UUID）存腳本本體，
+    // 保證同一個name每次register_saved_script都能正確覆蓋、get_saved_script
+    // 每次都能正確找到，不用另外維護「name→id」對照表。
+    _savedScriptContentId(name) {
+        return `script:${name}`;
+    }
+
+    // fap模式下manifest固定放在「這個資料夾底下」，跟腳本本體同一層——不同
+    // 子資料夾可以各自有獨立的manifest，呼應使用者可能本來就會依專案分
+    // 資料夾整理的習慣。
+    _savedScriptManifestRef(loc) {
+        return `fap:${loc.fapIdOrLabel}/${loc.dirPath ? loc.dirPath + '/' : ''}_scripts_manifest.json`;
+    }
+    _savedScriptFileRef(loc, entryFile) {
+        return `fap:${loc.fapIdOrLabel}/${loc.dirPath ? loc.dirPath + '/' : ''}${entryFile}`;
+    }
+
+    async _readSavedScriptManifestPersistent() {
+        const record = await this.savedScriptCache.get(SAVED_SCRIPT_MANIFEST_ID);
+        if (!record) return { scripts: [] };
+        try {
+            const parsed = JSON.parse(await record.blob.text());
+            return (parsed && Array.isArray(parsed.scripts)) ? parsed : { scripts: [] };
+        } catch (_) {
+            return { scripts: [] };
+        }
+    }
+    async _writeSavedScriptManifestPersistent(manifest) {
+        await this.savedScriptCache.put('_scripts_manifest.json', 'application/json', new Blob([JSON.stringify(manifest, null, 2)]), 'saved_script_manifest', SAVED_SCRIPT_MANIFEST_ID);
+    }
+    // fap的manifest檔案第一次還不存在（or所在資料夾還沒建立）時，
+    // _fapReadFile/_resolveFapFileParent會直接throw（沒有create:true）——
+    // 這裡當成「這個位置目前還沒有任何已存腳本」處理，不是真正的錯誤。
+    async _readSavedScriptManifestFap(manifestRef) {
+        try {
+            const r = await this._fapReadFile(manifestRef);
+            if (!r.ok) return { scripts: [] };
+            const parsed = JSON.parse(r.content);
+            return (parsed && Array.isArray(parsed.scripts)) ? parsed : { scripts: [] };
+        } catch (_) {
+            return { scripts: [] };
+        }
+    }
+    // 依name更新既有entry、或新增一筆（新增時額外補created_at，更新時
+    // 保留原本的created_at，只有updated_at會跟著entry參數本身的值更新）。
+    _upsertSavedScriptManifestEntry(manifest, entry) {
+        const idx = manifest.scripts.findIndex(s => s.name === entry.name);
+        if (idx > -1) manifest.scripts[idx] = Object.assign({}, manifest.scripts[idx], entry);
+        else manifest.scripts.push(Object.assign({ created_at: entry.updated_at }, entry));
+    }
+
     async _persistExecutionOutputFiles(files, outputRef) {
         if (!files || !files.length) return { destination: 'none', files: [] };
         const ref = String(outputRef || '').trim();
