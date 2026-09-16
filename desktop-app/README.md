@@ -148,35 +148,48 @@ FloatingAssistant.exe -p "..." --output-format md               # 原始markdown
   標題/粗體轉成終端機可讀的樣式）；`--output-format`可以改成`json`/
   `toon`/`md`三種其他格式。
 
-### Windows下的輸出穩定性（`-p`自動切換console模式副本）
+### Windows下的輸出穩定性（`-p`自動透過`cmd.exe`重新執行自己）
 
-Windows打包出來的`.exe`預設是GUI subsystem（雙擊直接開視窗、不會閃一個黑
-底命令列視窗）——但實測發現GUI subsystem的行程從cmd.exe/PowerShell執行時，
-即使程式邏輯本身完全正確，stdout/stderr在很多情況下還是不可靠、輸出會整個
-消失（這是Windows平台本身行之有年的已知限制，不是這個app的bug）。
+**根因**（實測驗證，不是猜測——用真實的GUI/console subsystem測試程式配合
+碼表量測過）：Windows打包出來的`.exe`是GUI subsystem（雙擊直接開視窗、不會
+閃一個黑底命令列視窗）；PowerShell對GUI subsystem`.exe`的command
+invocation（`& '...'`或裸執行）**不會等待它執行完成**——量測結果：對一個
+內部`sleep`3秒的GUI subsystem測試程式，PowerShell的下一行指令在0.005秒左右
+就先執行了，完全沒有等，這才是`-p`「看起來像是沒有等程式執行完、完全沒有
+回應」的真正根因。
 
-**使用者不需要處理這個細節，只需要照舊執行同一個`.exe`**：打包流程
-（`build/afterPack.js`）會在GUI版`.exe`旁邊自動多產生一份PE header被改成
-console subsystem的副本（檔名固定是`<原本檔名>-cli.exe`，跟GUI版打包成
-同一個portable單檔，使用者不會另外看到這個檔案）。執行時main.js偵測到
-`-p`就會自動在背景把參數轉發給這份console副本執行（`stdio:'inherit'`直接
-接上目前的終端機），跑完再用同樣的exit code結束——使用者全程只需要記得
-一個`.exe`檔名，雙擊照常開GUI、加`-p`照常在終端機看到輸出。
+**使用者不需要處理這個細節，只需要照舊執行同一個`.exe`**：main.js偵測到
+Windows已打包環境下的`-p`，會自動透過`cmd.exe /c`重新執行「同一個」`.exe`
+自己（`cmd.exe`本身是console subsystem，量測驗證：PowerShell對console
+subsystem子行程本來就會正確等待+relay stdio——這正是平常從PowerShell呼叫
+`git`/`node`等一般console工具時的日常行為，沒有特殊之處；`cmd.exe`自己對
+它的GUI subsystem子行程一樣正確等待+relay stdio，兩段接起來的整條鏈路都
+實測驗證過確實可靠），跑完再用同樣的exit code結束——使用者全程只需要記得
+一個`.exe`檔名，雙擊照常開GUI、加`-p`照常在終端機看到輸出，不用等、不用
+猜輸出跑去哪了。
 
-- 這個機制只在**打包後的正式.exe**生效（`build/afterPack.js`是
-  electron-builder的post-pack hook，只在`build.ps1`/`build.sh`打包時跑）；
-  **開發模式**（`npm start -- -p "..."`/`electron . -p "..."`）沒有這份
-  console副本，Windows下`-p`的輸出穩定性沒有這層保護，這是已知限制（開發
-  模式主要給改程式碼的人用，不是這次要解決的一般使用情境）。
+- 使用者的prompt/輸出格式透過環境變數（`FA_CLI_PROMPT`/
+  `FA_CLI_OUTPUT_FORMAT`）傳給重新執行的那個行程，**不會**放進`cmd.exe`
+  的command line字串裡——已實測驗證環境變數可以完整、安全地帶過任意文字
+  （含中文、含`&`/`|`這類`cmd.exe`本來會特殊解讀的符號）不會被誤判/corrupt，
+  `cmd.exe`的command line裡只放我們自己完全掌控、不含任何使用者輸入的token
+  （`.exe`自己的路徑），避免prompt文字剛好包含這類符號時出現command注入
+  風險。
+- 這個機制只在**打包後（`app.isPackaged`）的Windows正式.exe**生效；
+  **開發模式**（`npm start -- -p "..."`/`electron . -p "..."`）下
+  `process.execPath`是electron開發用binary本身，重新執行它沒有意義，會
+  維持原本行程內執行，Windows開發模式下`-p`可能仍然看不到輸出，這是已知
+  限制（開發模式主要給改程式碼的人用，不是這次要解決的一般使用情境）。
 - Linux（AppImage）/macOS的終端機沒有這個GUI/console subsystem的差異，
-  `-p`本來就能在同一個行程內正常輸出，不需要、也不會產生這份console副本
-  （`build/afterPack.js`只在`context.electronPlatformName === 'win32'`
-  時動作）。
-- 技術細節：PE header的Subsystem欄位（`IMAGE_OPTIONAL_HEADER`起點+68
-  bytes）從GUI(2)改成console(3)的2 bytes patch，`build/pe-subsystem-patch.js`
-  只改這2 bytes、不動其餘內容，也不重算PE checksum（一般使用者模式.exe
-  執行不會強制驗證這個checksum）。這是多個「Electron GUI app也想支援CLI
-  模式」專案共用的既有作法，不是這次發明的黑魔法。
+  `-p`本來就能在同一個行程內正常輸出（AppImage版本實測過），不會觸發這個
+  轉發機制。
+- 這個修法取代了一開始嘗試的另一個方向（把GUI版.exe複製一份、PE header
+  patch成console subsystem、spawn那份副本執行）——實測那個方向會失敗：
+  父行程（GUI subsystem，從PowerShell執行）本身沒有從PowerShell拿到可靠的
+  console handle，spawn console subsystem子行程時，Windows的預設行為是
+  「幫沒有可用console的console subsystem行程新開一個console視窗」，變成
+  跳出一個新console閃一下就消失，比原本更糟——已經拿掉那個方向，改用這裡
+  實測驗證過真的可行的`cmd.exe`轉發做法。
 
 ## 打包成單一執行檔
 
