@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-09-16T05:20:44.656Z",
+  "part_size": 20971520,
+  "files": [
+    {
+      "path": "fxparser.min.js",
+      "size": 64839,
+      "sha256": "c76c500f69dc99804ae429524f55e417497e1cef45f6e04089d022a3dc1a6395",
+      "parts": null
+    }
+  ]
+}

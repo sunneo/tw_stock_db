@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-09-16T05:20:44.652Z",
+  "part_size": 20971520,
+  "files": [
+    {
+      "path": "browser.mjs",
+      "size": 499,
+      "sha256": "7512b5315c38da9f68f6b069c25a5b0c4463d012e7617417b2c9638dc561489e",
+      "parts": null
+    },
+    {
+      "path": "build/jq.wasm",
+      "size": 928824,
+      "sha256": "27d493c06601e9cbc7112ef4198ee71a0dc3e9c9a4a1754e73888841da6c450a",
+      "parts": null
+    },
+    {
+      "path": "chunk-OUKQZV2W.mjs",
+      "size": 128843,
+      "sha256": "d63835e42a143dea377d6da2ac32a6749974aa735e3bda9a4577d6226d39a9b2",
+      "parts": null
+    }
+  ]
+}
