@@ -323,6 +323,20 @@ function patchCloudflareWording(root) {
   });
   window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
 
+  // tw_stock_db客製: 2026-09-17使用者回報——模型常常把自己當成純網頁小
+  // 工具，遇到「幫我存這個檔案」「讀取我電腦上的XX」這類要求會先入為主
+  // 回答「我做不到」，即使desktop_ops domain(見下面register_domain)早就
+  // 有run_command/fs_*/tmux_*這些真的能碰到本機檔案系統的工具——問題是
+  // 那段詳細說明只有「被委派到desktop_ops domain之後」才看得到，根對話
+  // 完全不知道這件事、也就不會主動考慮委派過去。這裡用引擎提供的公開
+  // setEnvironmentNote()（跟setSystemPrompt那個給使用者編輯人設用的
+  // baseSystemPrompt分開，見floating-assistant.js的說明）把這個環境事實
+  // 放進每一輪system prompt（根對話+委派出去的子agent都看得到，見
+  // _getGroundingContext），純網頁版完全不呼叫這個方法，維持host-agnostic。
+  fa.setEnvironmentNote(
+    "[執行環境] 你現在執行在桌面版(Electron)應用程式裡，不是只能碰對話文字的純網頁小工具——有能力透過delegate_to_subagent委派給desktop_ops領域，直接讀寫這台電腦上使用者帳號權限碰得到的任何真實檔案、執行系統指令(run_command)、操作持久化終端機session(tmux_*)。使用者要求存檔案、讀取本機資料、跑指令、或做任何「這台電腦上」的操作時，不要假設自己做不到就直接拒絕或回答「我沒有檔案存取能力」——應該考慮委派desktop_ops處理，實際權限/確認機制由那邊的工具自己把關。"
+  );
+
   // ---- 主題切換（見上面applyTheme的說明）----
   const themeToggleBtn = document.getElementById("topbar-theme-toggle");
   if (themeToggleBtn) {
