@@ -79,9 +79,19 @@
 //      不受影響（絕大多數內建工具都是這種情況），只有不符合API規定格式
 //      的名稱才會產生一個穩定的短雜湊別名送給原生API，_getToolDefinition
 //      同時接受原始名稱或別名反查；所有[CALL:...]解析regex加上Unicode
-//      屬性字元類（\p{L}\p{N}_ + u旗標）取代原本的[a-zA-Z0-9_]，讓文字式
+//      屬性字元類（\p{L}\p{N}_- + u旗標）取代原本的[a-zA-Z0-9_]，讓文字式
 //      慣例也能正確解析中文函式名稱。這是通用的聊天widget穩定性修正，
 //      跟股票資料無關。
+//      tw_stock_db客製: 2026-09-17使用者實測回報——Skill Sandbox動態註冊的
+//      read_skill_file__<bundleId>（bundleId是crypto.randomUUID()，形如
+//      c3658fa6-d104-4438-bfb5-fbf116d117f0，含連字號）在文字協定模式下
+//      完全叫不動：模型正確輸出了[CALL: read_skill_file__c3658fa6-d104-...
+//      ({})]，但上面這行comment講的\p{L}\p{N}_字元類從來沒有把連字號算
+//      進去（明明第75行就寫了原生API規定的function.name格式本來就允許
+//      連字號^[a-zA-Z0-9_-]{1,64}$，這裡當初升級Unicode時漏掉了），regex
+//      在遇到第一個"-"時就吃不下去、整個nameMatch直接match失敗，模型的
+//      呼叫被當成純文字晾在那裡、什麼都沒執行，使用者只看得到呼叫文字
+//      本身「卡住不動」。加上連字號後（[\p{L}\p{N}_-]+）修好。
 // ============================================================
 
 // ============================================================
@@ -17815,7 +17825,7 @@ ${existingNodeSummaries}
 
                 // 文字式[CALL:...]慣例，跟_loopFetch的救援路徑同一套邏輯（見
                 // _extractBalancedCallArgs的說明）。
-                const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
+                const regex = /\[CALL:\s*([\p{L}\p{N}_-]+)\(([\s\S]*?)\)(?=\]|$)/gu;
                 let match; const toolTasks = []; let lastMatchEnd = -1;
                 while ((match = regex.exec(rawContent)) !== null) {
                     toolTasks.push({ fnName: match[1], fnArgsRaw: match[2].trim() });
@@ -17829,7 +17839,7 @@ ${existingNodeSummaries}
                 } else {
                     const callStart = rawContent.indexOf('[CALL:');
                     if (callStart > -1) {
-                        const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
+                        const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_-]+)\s*\(/u);
                         if (nameMatch) {
                             const openParenIdx = callStart + nameMatch[0].length - 1;
                             const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
@@ -18692,7 +18702,7 @@ ${existingNodeSummaries}
                 // 方案 A: 使用進階 Regex 嘗試批次抓取（只有模型每個[CALL:...]都
                 // 有乖乖用')]'正確收尾時才抓得到——這是行為良好的模型的正常
                 // 多工具呼叫路徑）
-                const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
+                const regex = /\[CALL:\s*([\p{L}\p{N}_-]+)\(([\s\S]*?)\)(?=\]|$)/gu;
                 let match;
                 const toolTasks = [];
                 let lastMatchEnd = -1;
@@ -18734,7 +18744,7 @@ ${existingNodeSummaries}
                 // 接著編造的所有內容整段丟棄，讓下一輪對話基於真正的工具
                 // 結果重新產生，而不是順著一整串自我幻想的假資料繼續編。
                 if (toolTasks.length === 0) {
-                    const nameMatch = fullContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
+                    const nameMatch = fullContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_-]+)\s*\(/u);
                     if (nameMatch) {
                         const openParenIdx = callStart + nameMatch[0].length - 1;
                         const { content, endIndex } = this._extractBalancedCallArgs(fullContent, openParenIdx);
@@ -20101,7 +20111,7 @@ ${existingNodeSummaries}
             // RESULT/推理文字/後續呼叫污染），這裡簡化重寫一份而不是共用同一個
             // helper，是因為子任務訊息陣列是區域變數，跟_loopFetch操作
             // this.messages/fullContent的方式不同，硬要共用反而更複雜。
-            const regex = /\[CALL:\s*([\p{L}\p{N}_]+)\(([\s\S]*?)\)(?=\]|$)/gu;
+            const regex = /\[CALL:\s*([\p{L}\p{N}_-]+)\(([\s\S]*?)\)(?=\]|$)/gu;
             let match;
             const toolTasks = [];
             let lastMatchEnd = -1;
@@ -20118,7 +20128,7 @@ ${existingNodeSummaries}
             } else {
                 const callStart = rawContent.indexOf('[CALL:');
                 if (callStart > -1) {
-                    const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_]+)\s*\(/u);
+                    const nameMatch = rawContent.slice(callStart).match(/^\[CALL:\s*([\p{L}\p{N}_-]+)\s*\(/u);
                     if (nameMatch) {
                         const openParenIdx = callStart + nameMatch[0].length - 1;
                         const { content, endIndex } = this._extractBalancedCallArgs(rawContent, openParenIdx);
