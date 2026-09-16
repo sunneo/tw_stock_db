@@ -28,6 +28,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
+const fsSync = require("fs");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
 const cliFormat = require("./cli-format.js");
@@ -1978,10 +1979,20 @@ async function runCliPrompt({ prompt, outputFormat }) {
   // CLI模式「預設全都是auto，不詢問」——蓋在bootstrap.js既有覆蓋之上，
   // 確保跳的是這裡的auto版本，不是GUI的原生對話框版本（那個在隱藏視窗裡
   // 會直接卡死，使用者也看不到）。
+  // tw_stock_db客製: 2026-09-16真機實測（Linux AppImage）發現的真實bug——
+  // executeJavaScript()回傳值＝腳本最後一句「表達式」的值，最後一行
+  // `window.prompt = () => null;`是assignment expression，其值就是剛指派
+  // 的那個function本身，Electron要把這個回傳值透過內部IPC送回main行程時
+  // functions無法被structured clone，直接拋
+  // 「Error: An object could not be cloned.」（在Linux下有終端機可以看到
+  // 這個錯誤；Windows下因為另一個獨立的console輸出問題被整個吞掉、表現成
+  // 「完全沒有回應」）。修法很單純：最後補一行`undefined;`，讓整個腳本的
+  // 回傳值是可以被clone的undefined，不是function。
   await win.webContents.executeJavaScript(`
     window.confirm = () => true;
     window.alert = () => {};
     window.prompt = () => null;
+    undefined;
   `);
 
   const submitScript = `
@@ -2052,7 +2063,70 @@ async function runCliPrompt({ prompt, outputFormat }) {
   return formatted;
 }
 
+// tw_stock_db客製: 2026-09-16使用者要求——「讓使用者只看到一個程式，執行時
+// 就自己切」：使用者實際雙擊/執行的永遠是同一個GUI版.exe，`-p`模式下這裡
+// 會在背後偵測有沒有build時（見build/afterPack.js）順便產生的console
+// subsystem副本（檔名固定是同目錄下`<這次執行的exe檔名>-cli.exe`），
+// 有的話就把所有參數原封不動轉發給那份副本執行（`stdio:'inherit'`讓它
+// 直接接上目前這個終端機的stdin/stdout/stderr——console subsystem的行程
+// 這樣做是Windows loader明確支援、行之有年的標準行為，不像GUI subsystem
+// 行程那樣即使技術上繼承了handle、實測仍常常整個吃掉輸出），等它跑完後
+// 用同樣的exit code結束這個(GUI subsystem)父行程。用FA_CLI_RELAUNCHED
+// 環境變數旗標避免子行程（執行的是同一份main.js/同一份程式碼）又重新判斷
+// 一次觸發無限遞迴。只在Windows、真的有`-p`、還沒被轉發過時才做——Linux/
+// macOS的終端機沒有這個GUI/console subsystem的差異，`-p`已經能在同一個
+// 行程內正常輸出（AppImage版本實測過），不需要、也沒有這份console副本。
+// dev模式（`electron .`，`app.isPackaged`是false）同樣沒有這份副本
+// （afterPack只在electron-builder打包時才會產生），會優雅地退回原本
+// 行程內執行（README已知限制：dev模式下Windows的`-p`可能仍然看不到輸出，
+// 只有打包後的正式.exe才有這個修正）。
+function _resolveConsoleCompanionExePath() {
+  if (process.platform !== "win32" || !app.isPackaged) return null;
+  const dir = path.dirname(process.execPath);
+  const ext = path.extname(process.execPath) || ".exe";
+  const base = path.basename(process.execPath, ext);
+  const candidate = path.join(dir, `${base}-cli${ext}`);
+  try {
+    fsSync.accessSync(candidate, fsSync.constants.X_OK);
+    return candidate;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _relaunchAsConsoleCompanion(companionPath) {
+  return new Promise((resolve) => {
+    const child = spawn(companionPath, process.argv.slice(1), {
+      stdio: "inherit",
+      windowsHide: false,
+      env: { ...process.env, FA_CLI_RELAUNCHED: "1" },
+    });
+    child.on("exit", (code) => resolve(code == null ? 1 : code));
+    child.on("error", (err) => {
+      console.error("[cli] 無法啟動console模式副本：" + String((err && err.message) || err));
+      resolve(1);
+    });
+  });
+}
+
 app.whenReady().then(async () => {
+  // tw_stock_db客製: 2026-09-16——見上面_resolveConsoleCompanionExePath的
+  // 說明，這個轉發判斷要在任何其他初始化（本地proxy等）之前做，避免父
+  // 行程（只是個轉發器，接下來什麼都不用做）白白啟動一份完全用不到的
+  // 本地proxy——真正的執行全部交給子行程（子行程會自己走完整套
+  // app.whenReady()流程，含它自己的本地proxy）。
+  if (cliArgs.prompt != null && !process.env.FA_CLI_RELAUNCHED) {
+    const companionPath = _resolveConsoleCompanionExePath();
+    if (companionPath) {
+      const exitCode = await _relaunchAsConsoleCompanion(companionPath);
+      app.exit(exitCode);
+      return;
+    }
+    // 找不到console companion（dev模式，或使用者拿到的是這次修正之前打包
+    // 的舊版）——不中斷，往下走原本流程，在這個(GUI subsystem)行程內
+    // 執行，Windows下可能還是看不到輸出，這是已知限制。
+  }
+
   // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
   // > SECRETS_FILE() > BUILTIN_SECRETS_FILE），這是純main行程邏輯，不需要
   // renderer/BrowserWindow，跟其餘FA_DEBUG_*測試（都要透過executeJavaScript
