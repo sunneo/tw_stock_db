@@ -239,9 +239,28 @@ PowerShell裸執行時，本身就拿不到一個可靠、能往下傳遞的cons
 ```powershell
 .\build.ps1
 ```
-輸出在`dist\win-unpacked\`（一個資料夾，不是單一檔案，見上面「Windows
-平台限制」一節說明為什麼）。裡面執行`FloatingAssistant.exe`：雙擊開GUI；
-從終端機加`-p`執行CLI模式。不用安裝、不會在系統裡留下安裝紀錄。
+一次跑完會在`dist\`產生**兩種輸出**（用electron-builder內建、成熟的
+「nsis」target，不是自己土炮的機制）：
+
+- **`FloatingAssistant Setup <版本>.exe`**——真正的Windows安裝程式：
+  執行後跳安裝精靈（可以選安裝目錄）、完成後會在桌面跟「開始」功能表
+  建立捷徑（指向`FloatingAssistantApp.exe`，雙擊開GUI跟平常一樣，不用
+  透過launcher），也會在Windows的「新增或移除程式」正確登記、可以正常
+  解除安裝。`-p`則是進到安裝目錄底下執行`FloatingAssistant.exe`（這個
+  沒有捷徑——它是終端機工具，不是拿來雙擊的東西，習慣的話可以自己把
+  安裝目錄加進PATH）。
+- **`dist\win-unpacked\`**——跟之前一樣的免安裝資料夾版本，適合不想動
+  系統安裝紀錄的情境，裡面執行`FloatingAssistant.exe`：雙擊開GUI、
+  加`-p`用CLI模式都可以。
+
+兩者背後是同一份`FloatingAssistantApp.exe`+`FloatingAssistant.exe`
+（`build/afterPack.js`只會複製一次launcher，`nsis`/`dir`兩個target共用
+同一次封裝，不會build兩次整個app）。
+
+**已知缺口**：`build/icon.ico`/`build/icon.png`目前不存在於這個工作目錄
+（跟這次改動無關的既有問題，見更早的commit紀錄），所以安裝出來的捷徑/
+安裝程式目前用的是Electron的預設圖示，不是這個app自己的圖示——之後補上
+圖示檔案即可，跟這次的installer/launcher機制完全無關。
 
 **Linux**（AppImage）：
 ```bash
