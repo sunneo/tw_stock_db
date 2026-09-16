@@ -124,30 +124,29 @@ npm start
 跟`claude -p "..."`類似，桌面版可以不開GUI視窗、直接從命令列丟一句prompt
 進去執行、拿到結果就結束。
 
-**Windows使用者請一律執行`FloatingAssistant-cli.exe`**（不是
-`FloatingAssistant.exe`）——原因見下方「Windows平台限制」一節，這是實測
+**Windows使用者請一律執行`FloatingAssistant.exe`**（一個獨立build出來的
+launcher，跟真正的Electron app`FloatingAssistantApp.exe`放在同一個資料夾，
+使用者只需要記得執行前者）——原因見下方「Windows平台限制」一節，這是實測
 驗證過唯一可靠的做法。Linux/macOS沒有這個問題，直接執行原本那個檔案即可。
 
 ```bash
-FloatingAssistant-cli.exe -p "幫我查一下台積電最近的股價"     # Windows
+FloatingAssistant.exe -p "幫我查一下台積電最近的股價"          # Windows
 ./FloatingAssistant.AppImage -p "幫我查一下台積電最近的股價"  # Linux
-FloatingAssistant-cli.exe -p "/media-list-voices"                 # 支援slash command
-FloatingAssistant-cli.exe -p "..." --output-format json            # 結構化JSON
-FloatingAssistant-cli.exe -p "..." --output-format toon            # TOON（比JSON省token）
-FloatingAssistant-cli.exe -p "..." --output-format md               # 原始markdown，不轉成ASCII
+FloatingAssistant.exe -p "/media-list-voices"                 # 支援slash command
+FloatingAssistant.exe -p "..." --output-format json            # 結構化JSON
+FloatingAssistant.exe -p "..." --output-format toon            # TOON（比JSON省token）
+FloatingAssistant.exe -p "..." --output-format md               # 原始markdown，不轉成ASCII
 ```
 
-**`FloatingAssistant-cli.exe`不帶`-p`直接執行（雙擊或裸執行）等同於執行GUI
-版**——它會自動轉交給`FloatingAssistant.exe`並立即結束自己，畫面上只會看到
-黑底console視窗閃一下、GUI就開了。也就是說：Windows下可以只記得
-`FloatingAssistant-cli.exe`這一個檔名，不管是要開GUI還是要用`-p`，這個檔案
-都能處理；`FloatingAssistant.exe`（純GUI版）仍然保留在同一個資料夾，是
-給`FloatingAssistant-cli.exe`內部呼叫用的，使用者不需要直接執行它，但也
-可以直接執行它（效果跟雙擊`FloatingAssistant-cli.exe`一樣，只是不會有那
-一閃而過的黑視窗）。
+**`FloatingAssistant.exe`不帶`-p`直接執行（雙擊或裸執行）等同於開GUI**——
+它會spawn旁邊的`FloatingAssistantApp.exe`（detached）並立即結束自己，畫面
+上只會看到黑底console視窗閃一下、GUI就開了。使用者全程只需要記得
+`FloatingAssistant.exe`這一個檔名；`FloatingAssistantApp.exe`是真正的
+Electron app本體，不需要直接執行它。
 
-（開發模式對應`npm start -- -p "..."`或`electron . -p "..."`——dev模式沒有
-`-cli.exe`這份console副本，見下方已知限制。）
+（開發模式對應`npm start -- -p "..."`或`electron . -p "..."`——dev模式直接
+跑`electron .`，沒有經過launcher，Windows開發模式下`-p`可能仍然看不到
+輸出，見下方已知限制。）
 
 - **跟GUI共用workspace**：沿用既有的「依目前資料夾/使用者手動選過的資料夾」
   判斷邏輯（見下方「架構」章節），在同一個資料夾底下執行CLI模式看得到跟
@@ -163,20 +162,20 @@ FloatingAssistant-cli.exe -p "..." --output-format md               # 原始mark
   標題/粗體轉成終端機可讀的樣式）；`--output-format`可以改成`json`/
   `toon`/`md`三種其他格式。
 
-### Windows平台限制：為什麼需要`FloatingAssistant-cli.exe`這份獨立檔案
+### Windows平台限制：為什麼需要`FloatingAssistant.exe`這支獨立launcher
 
 這一節記錄的是**在真實Windows機器上實際測試、逐步排除掉的三個方向**，不是
 事前的理論分析——每個方向都真的build出來、真的在PowerShell/cmd裡執行過，
-包括失敗的那兩個，如實記錄下來避免之後又重踩同一個坑。
+包括失敗的那三個，如實記錄下來避免之後又重踩同一個坑。
 
 **根因**（用真實的GUI/console subsystem測試程式配合碼表量測過）：Windows
-打包出來的.exe預設是GUI subsystem（雙擊直接開視窗，這是為了不要每次雙擊
-都閃一個黑底命令列視窗）；PowerShell對GUI subsystem`.exe`的command
-invocation（`& '...'`或裸執行）**不會等待它執行完成**——量測結果：對一個
-內部`sleep`3秒的GUI subsystem測試程式，PowerShell下一行指令在0.005秒左右
-就先執行了，完全沒有等。這是根本問題：**GUI subsystem的行程被PowerShell
-裸執行時，本身就拿不到一個可靠、能往下傳遞的console handle**——不管接下來
-做什麼，只要還是從這個「起點」出發，都會卡在同一個地方：
+打包出來的Electron app預設是GUI subsystem（雙擊直接開視窗，這是為了不要
+每次雙擊都閃一個黑底命令列視窗）；PowerShell對GUI subsystem`.exe`的
+command invocation（`& '...'`或裸執行）**不會等待它執行完成**——量測結果：
+對一個內部`sleep`3秒的GUI subsystem測試程式，PowerShell下一行指令在
+0.005秒左右就先執行了，完全沒有等。這是根本問題：**GUI subsystem的行程被
+PowerShell裸執行時，本身就拿不到一個可靠、能往下傳遞的console handle**——
+不管接下來做什麼，只要還是從這個「起點」出發，都會卡在同一個地方：
 
 1. ❌ **第一次嘗試**：GUI版.exe自己在`-p`時偵測到，spawn一份PE header被
    patch成console subsystem的副本、`stdio:'inherit'`。失敗——父行程本身
@@ -188,33 +187,49 @@ invocation（`& '...'`或裸執行）**不會等待它執行完成**——量測
    消失」的失敗，根因跟第一次一樣：父行程（發起`cmd.exe /c`呼叫的那個
    GUI subsystem行程本身）就沒有東西可以往下relay，中間多繞一手`cmd.exe`
    並不會無中生有出一個可靠的console handle。
-3. ✅ **目前採用的做法**：不要讓GUI subsystem的行程去relay給任何人。改成
-   **build流程額外產生一份PE header被patch成console subsystem的獨立檔案
-   `FloatingAssistant-cli.exe`**（跟GUI版共用同一份`resources/app.asar`，
-   只有PE header的Subsystem欄位不同——見`build/pe-subsystem-patch.js`），
-   使用者的PowerShell/cmd**直接**執行這個檔案（不透過任何GUI subsystem的
-   中間行程），這樣它才是「PowerShell的直接子行程」，才拿得到真正可靠的
-   console handle——這是唯一在真機上實測成功、`-p`真的能正確印出AI回覆的
-   做法。`FloatingAssistant-cli.exe`偵測到沒有`-p`時，會反過來spawn GUI版
-   `FloatingAssistant.exe`（detached、不需要relay任何console輸出，GUI
-   本來就不需要console），自己立刻結束——這個方向沒有同樣的失敗模式，因為
-   GUI行程不需要繼承任何console東西。
+3. ❌ **第三次嘗試**：不複製額外的檔案，直接把electron-builder產生的**唯一
+   那一份**.exe本身patch成console subsystem，沒帶`-p`時呼叫`FreeConsole()`
+   把黑視窗關掉再照常開GUI——這次在`dist\win-unpacked\`資料夾內直接執行
+   確認可以動（`-p`會印出正確結果），但透過electron-builder的「portable」
+   （單一自解壓縮.exe）打包格式重新測試時失敗了：等了25秒仍然完全沒有
+   輸出。根因研判是portable target的自解壓縮外殼本身也是一個GUI subsystem
+   行程（NSIS-based），重新引入了跟第1、2次一樣的問題——這點沒有100%
+   確認到底層細節（沒有繼續深究，因為使用者已經明確要求換方向），只知道
+   這個格式測試失敗了。
+4. ✅ **目前採用的做法（使用者明確指定：改用PyInstaller）**：完全不要讓
+   Electron app自己處理任何console subsystem的事——`FloatingAssistantApp.exe`
+   維持electron-builder預設的GUI subsystem、完全不patch，跟一般沒有CLI
+   模式的Electron app一樣單純。另外用**PyInstaller**（真正的編譯器/
+   linker，不是事後改PE header的byte patch）從`launcher/launcher.py`
+   build出一支**真正**是console subsystem的`FloatingAssistant.exe`
+   （`--onefile --console`），放在跟`FloatingAssistantApp.exe`同一個資料夾
+   ——使用者的PowerShell/cmd**直接**執行這個launcher（不透過任何GUI
+   subsystem的中間行程），它天生就有可靠的console，往下呼叫
+   `FloatingAssistantApp.exe`（`-p`時inherit stdio、等待、回傳exit code；
+   沒有`-p`時detached spawn、立刻結束）完全不會重蹈前三次失敗的問題，
+   因為relay的來源這次真的有東西可以relay。
 
-**這也是為什麼Windows打包格式從electron-builder的「portable」（單一自解
-壓縮.exe）改成「dir」（純資料夾）**：portable target的自解壓縮外殼本身也是
-一個GUI subsystem行程，會重新引入跟上面第1、2次嘗試一樣的問題（自解壓縮
-外殼本身就沒有可靠console handle可以往下relay給解壓縮出來的實際程式）。
-「dir」target沒有自解壓縮這一層，`FloatingAssistant-cli.exe`才能真正是
-PowerShell的直接子行程。
-
-- 這個機制只在**打包後（`build/afterPack.js`只在electron-builder打包
-  Windows時跑）**的正式build生效；**開發模式**（`npm start -- -p "..."`/
-  `electron . -p "..."`）沒有這份console副本，Windows開發模式下`-p`可能
-  仍然看不到輸出，這是已知限制（開發模式主要給改程式碼的人用）。
+- 這個機制只在**打包後**的正式build生效（`build.ps1`會自動用PyInstaller
+  build`launcher/launcher.py`並複製進`dist\win-unpacked\`）；**開發模式**
+  （`npm start -- -p "..."`/`electron . -p "..."`）不會經過launcher，
+  Windows開發模式下`-p`可能仍然看不到輸出，這是已知限制（開發模式主要給
+  改程式碼的人用）。
 - Linux（AppImage）/macOS的終端機沒有這個GUI/console subsystem的差異，
-  `-p`本來就能在同一個行程內正常輸出（AppImage版本實測過），不需要、也
-  不會產生`-cli`這份副本（`build/afterPack.js`只在
-  `context.electronPlatformName === 'win32'`時動作）。
+  `-p`本來就能在同一個行程內正常輸出（AppImage版本實測過），不需要任何
+  launcher。
+- 需要Windows機器上有**Python**（`build.ps1`會自動偵測、缺PyInstaller時
+  自動`pip install pyinstaller`）——這是新增的build時依賴，只影響打包
+  流程本身，跟打包完的.exe完全無關（PyInstaller把Python直譯器整個打包進
+  `FloatingAssistant.exe`裡，使用者執行時不需要另外安裝Python）。
+- **`dist\FloatingAssistant.exe`是真正單一的一個檔案**：`build.ps1`用
+  PyInstaller的`--add-data`把整個`dist\win-unpacked\`（electron-builder
+  產生的完整Electron app，含`FloatingAssistantApp.exe`跟所有DLL/資源）
+  打包進這支.exe裡面，PyInstaller的`--onefile`bootloader會在**每次執行**
+  自動解壓縮到一個暫存資料夾（`%TEMP%`底下）再從那裡執行——**已知取捨**：
+  這代表每次啟動（不管是雙擊開GUI還是`-p`）都要重新解壓縮一次約250MB的
+  內容，會比之前「資料夾裡兩個檔案、不用每次解壓縮」的版面多幾秒鐘的
+  啟動延遲，這是PyInstaller`--onefile`沒有跨執行快取機制的固有限制，換來
+  的是使用者真的只需要記得/發布一個檔案。
 
 ## 打包成單一執行檔
 
@@ -222,13 +237,11 @@ PowerShell的直接子行程。
 ```powershell
 .\build.ps1
 ```
-輸出在`dist\win-unpacked\`目錄（electron-builder的`dir`
-target——是一個資料夾，不是單一檔案；改用`dir`而不是原本的`portable`
-target的原因見上面「Windows平台限制」一節）。裡面有兩個可執行檔：
-`FloatingAssistant.exe`（GUI）跟`FloatingAssistant-cli.exe`（console
-subsystem版，`-p`跟一般雙擊開GUI都用這個）。要發布給別人，把整個
-`win-unpacked`資料夾（可以重新命名）壓成zip即可，不用安裝、不會在系統裡
-留下安裝紀錄。
+輸出是`dist\FloatingAssistant.exe`——單一一個檔案，直接發布/複製這一個
+檔案即可，不用安裝、不會在系統裡留下安裝紀錄。雙擊開GUI；從終端機加
+`-p`執行CLI模式，見上面「Windows平台限制」一節了解為什麼需要這樣、以及
+啟動延遲的已知取捨。（`dist\win-unpacked\`是中間產物，內容已經被打包進
+最終的.exe裡面，不需要另外發布它。）
 
 **Linux**（AppImage）：
 ```bash

@@ -1,6 +1,12 @@
 node_modules/
 dist/
 renderer/floating-assistant.js
+# PyInstaller build artifacts for launcher/launcher.py (build.ps1/build.sh
+# regenerate these; launcher.py itself is the tracked source).
+launcher/build/
+launcher/dist/
+launcher/*.spec
+launcher/__pycache__/
 # tw_stock_db客製: 2026-09-16——每個工作區資料夾（cwd）底下的對話/設定
 # 資料（見main.js的fa:workspace:*/bootstrap.js的localStorage代理）。
 # 正常情況下cwd=desktop-app本身會被looksLikeAppOwnOrSystemLocation()
