@@ -24,6 +24,7 @@
       "main.js",
       "preload.js",
       "local-proxy.js",
+      "cli-format.js",
       "renderer/**/*",
       "build/icon.png",
       "builtin-secrets.json"
