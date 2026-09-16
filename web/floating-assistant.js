@@ -9914,6 +9914,23 @@ ${sourceTool.handlerScript}
             historyPanel.style.background = palette.windowBg;
             historyPanel.style.borderColor = palette.inputBorder;
         }
+        // tw_stock_db客製: 2026-09-16使用者實測回報——切換主題時📎附加檔案／
+        // 🎤語音輸入這兩顆按鈕顏色沒有跟著變，要重開才會套用。跟上面
+        // historyBtn同一個根因（_initUI()組innerHTML時用當下palette寫死
+        // inline style，之後沒有任何地方會重新同步），這裡一併補上，同一種
+        // 三個樣式屬性（borderColor/background/color）同步方式。
+        const attachBtn = document.getElementById('ai-attach-btn');
+        if (attachBtn) {
+            attachBtn.style.borderColor = palette.inputBorder;
+            attachBtn.style.background = palette.detailBg;
+            attachBtn.style.color = palette.detailText;
+        }
+        const micBtn = document.getElementById('ai-mic-btn');
+        if (micBtn) {
+            micBtn.style.borderColor = palette.inputBorder;
+            micBtn.style.background = palette.detailBg;
+            micBtn.style.color = palette.detailText;
+        }
         inputWrap.style.background = palette.windowBg;
         inputWrap.style.borderTopColor = palette.windowBorder;
         inputText.style.background = palette.inputBg;
