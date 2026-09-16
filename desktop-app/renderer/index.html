@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>FloatingAssistant</title>
 <style>
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0d1117; font-family: -apple-system, "Segoe UI", sans-serif; }
+  html, body { margin: 0; padding: 0; width: 100%; height: calc(100% - 10px); background: #0d1117; font-family: -apple-system, "Segoe UI", sans-serif; overflow: hidden;}
   #topbar {
     display: flex; align-items: center; gap: 14px; padding: 6px 12px;
     background: #161b22; border-bottom: 1px solid #30363d; color: #cbd5e1; font-size: 12px;
@@ -28,8 +28,8 @@
     （bootstrap.js抓到後才會appendChild搬走），不是刪除。
   -->
   <div id="topbar">
-    <span class="badge">🖥️ 桌面版（直接存取，不透過雲端）</span>
-    <button type="button" id="topbar-add-folder-btn" title="直接輸入資料夾路徑授權（跳過原生資料夾選擇對話框，適合原生對話框沒反應/開到看不到的地方時使用）">📁 直接輸入路徑新增資料夾</button>
+    <span class="badge" style="display:none; visibility: hidden;">🖥️ 桌面版（直接存取，不透過雲端）</span>
+    <button type="button" id="topbar-add-folder-btn" title="直接輸入資料夾路徑授權（跳過原生資料夾選擇對話框，適合原生對話框沒反應/開到看不到的地方時使用）" style="display:none; visibility: hidden;">📁 直接輸入路徑新增資料夾</button>
     <!--
       tw_stock_db客製: 2026-09-15使用者要求——主題切換要放在主畫面（不是
       藏進Advance設定裡才找得到），而且要真的cover到Configure(Advance設定)
