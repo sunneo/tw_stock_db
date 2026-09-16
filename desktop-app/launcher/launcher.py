@@ -25,19 +25,18 @@
 #   - Without -p: spawns FloatingAssistantApp.exe detached (no console
 #     needed at all for GUI mode) and exits immediately itself.
 #
-# 2026-09-16: user wants a genuinely single distributable file, not a folder
-# with two executables. build.ps1 now bundles the entire Electron app
-# (dist\win-unpacked\) into this PyInstaller build via --add-data, under a
-# subfolder named "app". PyInstaller's --onefile bootloader (a real compiled
-# C stub, already confirmed console-subsystem by reading the PE header)
-# extracts that bundled data to a fresh temp folder (sys._MEIPASS) every
-# time this exe runs, before any of this Python code executes - so
-# FloatingAssistantApp.exe is found there, not next to this script. Known
-# tradeoff (told to the user directly, not hidden): the whole ~250MB app
-# gets re-extracted to a temp folder on every single launch (PyInstaller
-# onefile has no built-in cross-run cache), so both GUI and -p launches pay
-# a multi-second extraction delay that a plain multi-file folder wouldn't
-# have. Kept as a loose-folder fallback too (checks next to the launcher's
+# 2026-09-16: tried making this genuinely single-file by having build.ps1
+# bundle the whole Electron app (dist\win-unpacked\) into this PyInstaller
+# build via --add-data, self-extracting to sys._MEIPASS on every launch.
+# `-p` worked through that, but the GUI window came up blank - Chromium
+# logged disk_cache/GPU cache creation failures, almost certainly tied to
+# running FloatingAssistantApp.exe out of a fresh PyInstaller temp
+# extraction folder each time. Reverted (not deep-dived further) back to
+# the loose-folder layout below, which is the one configuration verified
+# working for both -p and the GUI. Left the sys._MEIPASS check in as a
+# fallback in case bundling is revisited later, but build.ps1 currently
+# does NOT pass --add-data, so it never triggers in the shipped build.
+# Kept as a loose-folder fallback too (checks next to the launcher's
 # own exe first) so the same script also works when the app sits beside it
 # unbundled, e.g. for local testing.
 import os

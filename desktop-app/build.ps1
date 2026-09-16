@@ -113,14 +113,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "electron-builder packaging failed"
 }
 
-# tw_stock_db客製: 2026-09-16使用者要求「單一執行檔」——build
-# launcher/launcher.py成一個獨立、真正是console subsystem的.exe
-# （PyInstaller自己的bootloader，不是事後改PE header的byte patch），並用
-# --add-data把整個dist\win-unpacked\（剛剛electron-builder產生的完整
-# Electron app）打包進這支.exe裡面，PyInstaller的--onefile bootloader
-# 會在每次執行時自動解壓縮到一個暫存資料夾再執行——使用者最後只會拿到、
-# 只需要執行**這一個檔案**（見launcher/launcher.py開頭的完整說明，包含
-# 這個做法「每次啟動都要重新解壓縮~250MB」的已知取捨）。
+# tw_stock_db客製: 2026-09-16——曾經嘗試用--add-data把整個dist\win-unpacked\
+# 打包進launcher.exe裡面做成真正的單一檔案，實測`-p`確實work，但GUI模式
+# 開出來是一片空白（devtools/console看得到Chromium的disk_cache/GPU cache
+# 建立失敗錯誤——`Unable to create cache`/`Gpu Cache Creation failed`，
+# 研判是PyInstaller onefile每次執行都解壓縮到一個新的暫存資料夾，這個
+# 路徑下Chromium的cache/GPU shader cache寫入失敗，連帶讓畫面無法正確
+# render；`-p`用的隱藏視窗不需要真的畫出東西，所以沒受影響、還能正確拿到
+# AI回覆）。這個問題沒有進一步深究根因就先改回來——build出獨立的
+# launcher.exe跟electron-builder的app資料夾放在同一個資料夾（不embed），
+# 這是唯一同時驗證過`-p`跟GUI都正常的組合。
 Write-Host "== Building FloatingAssistant.exe launcher (PyInstaller) ==" -ForegroundColor Cyan
 $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 if (-not $pythonCmd) {
@@ -146,23 +148,18 @@ try {
     # line as plain text so real PyInstaller progress/errors are still
     # visible. $LASTEXITCODE is still checked below, same as every other
     # native call in this script - a genuine build failure is still caught.
-    #
-    # --add-data "..\dist\win-unpacked;app" embeds the whole Electron app
-    # folder under an "app" subfolder inside the bundle (Windows --add-data
-    # syntax is SRC;DEST); launcher.py looks for
-    # sys._MEIPASS\app\FloatingAssistantApp.exe at runtime.
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
-    python -m PyInstaller --onefile --console --name FloatingAssistant --add-data "..\dist\win-unpacked;app" --distpath dist --workpath build --specpath . launcher.py 2>&1 | ForEach-Object { Write-Host $_ }
+    python -m PyInstaller --onefile --console --name FloatingAssistant --distpath dist --workpath build --specpath . launcher.py 2>&1 | ForEach-Object { Write-Host $_ }
     $ErrorActionPreference = $prevEap
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 } finally {
     Pop-Location
 }
-Copy-Item -Path "launcher\dist\FloatingAssistant.exe" -Destination "dist\FloatingAssistant.exe" -Force
+Copy-Item -Path "launcher\dist\FloatingAssistant.exe" -Destination "dist\win-unpacked\FloatingAssistant.exe" -Force
 
 Write-Host ""
-Write-Host "Done. dist\FloatingAssistant.exe is the single file to distribute -" -ForegroundColor Green
-Write-Host "double-click it for the GUI, or run it with -p from a terminal for CLI mode." -ForegroundColor Green
-Write-Host "(dist\win-unpacked\ is an intermediate build artifact, embedded inside that" -ForegroundColor Green
-Write-Host ".exe - you don't need to distribute it separately.)" -ForegroundColor Green
+Write-Host "Done. The app folder is dist\win-unpacked\. Run FloatingAssistant.exe in" -ForegroundColor Green
+Write-Host "there for everything - double-click for the GUI, or run it with -p from a" -ForegroundColor Green
+Write-Host "terminal for CLI mode. To distribute, zip that whole folder (FloatingAssistantApp.exe" -ForegroundColor Green
+Write-Host "and its resources need to stay next to FloatingAssistant.exe)." -ForegroundColor Green
