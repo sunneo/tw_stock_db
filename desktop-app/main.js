@@ -28,7 +28,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
-const fsSync = require("fs");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
 const cliFormat = require("./cli-format.js");
@@ -40,6 +39,21 @@ const cliFormat = require("./cli-format.js");
 // argv[1]固定代表什麼——直接找`-p`/`--prompt`/`--output-format`這幾個
 // 旗標本身比較可靠，不受呼叫方式影響。
 function parseCliArgs(argv) {
+  // tw_stock_db客製: 2026-09-16真機實測發現——Windows下`-p`需要透過
+  // cmd.exe /c重新執行同一個.exe才能穩定拿到console輸出（見下面
+  // _relaunchViaCmdExeForConsoleOutput的完整說明）。重新執行時**不會**把
+  // prompt/輸出格式放進cmd.exe的command line字串裡（已實測驗證這樣做對
+  // 含特殊符號的使用者輸入不安全/不可靠），改用環境變數
+  // FA_CLI_PROMPT/FA_CLI_OUTPUT_FORMAT傳遞——這裡優先讀這兩個環境變數，
+  // 有的話代表這是被轉發執行的那次（FA_CLI_RELAUNCHED也會同時被設成'1'，
+  // 見下面），直接用環境變數的值，不再解析argv（因為轉發時的command
+  // line故意只含.exe自己的路徑，argv裡不會有`-p`這些旗標）。
+  if (process.env.FA_CLI_RELAUNCHED === "1") {
+    return {
+      prompt: process.env.FA_CLI_PROMPT != null ? process.env.FA_CLI_PROMPT : null,
+      outputFormat: String(process.env.FA_CLI_OUTPUT_FORMAT || "text").toLowerCase(),
+    };
+  }
   const out = { prompt: null, outputFormat: "text" };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "-p" || argv[i] === "--prompt") { i++; out.prompt = argv[i] != null ? argv[i] : ""; }
@@ -2063,68 +2077,88 @@ async function runCliPrompt({ prompt, outputFormat }) {
   return formatted;
 }
 
-// tw_stock_db客製: 2026-09-16使用者要求——「讓使用者只看到一個程式，執行時
-// 就自己切」：使用者實際雙擊/執行的永遠是同一個GUI版.exe，`-p`模式下這裡
-// 會在背後偵測有沒有build時（見build/afterPack.js）順便產生的console
-// subsystem副本（檔名固定是同目錄下`<這次執行的exe檔名>-cli.exe`），
-// 有的話就把所有參數原封不動轉發給那份副本執行（`stdio:'inherit'`讓它
-// 直接接上目前這個終端機的stdin/stdout/stderr——console subsystem的行程
-// 這樣做是Windows loader明確支援、行之有年的標準行為，不像GUI subsystem
-// 行程那樣即使技術上繼承了handle、實測仍常常整個吃掉輸出），等它跑完後
-// 用同樣的exit code結束這個(GUI subsystem)父行程。用FA_CLI_RELAUNCHED
-// 環境變數旗標避免子行程（執行的是同一份main.js/同一份程式碼）又重新判斷
-// 一次觸發無限遞迴。只在Windows、真的有`-p`、還沒被轉發過時才做——Linux/
-// macOS的終端機沒有這個GUI/console subsystem的差異，`-p`已經能在同一個
-// 行程內正常輸出（AppImage版本實測過），不需要、也沒有這份console副本。
-// dev模式（`electron .`，`app.isPackaged`是false）同樣沒有這份副本
-// （afterPack只在electron-builder打包時才會產生），會優雅地退回原本
-// 行程內執行（README已知限制：dev模式下Windows的`-p`可能仍然看不到輸出，
-// 只有打包後的正式.exe才有這個修正）。
-function _resolveConsoleCompanionExePath() {
-  if (process.platform !== "win32" || !app.isPackaged) return null;
-  const dir = path.dirname(process.execPath);
-  const ext = path.extname(process.execPath) || ".exe";
-  const base = path.basename(process.execPath, ext);
-  const candidate = path.join(dir, `${base}-cli${ext}`);
-  try {
-    fsSync.accessSync(candidate, fsSync.constants.X_OK);
-    return candidate;
-  } catch (_) {
-    return null;
-  }
+// tw_stock_db客製: 2026-09-16真機實測（不是理論假設——用真實的
+// pythonw.exe/python.exe，分別是GUI/console subsystem的真實範例，配合
+// Stopwatch量測時間、驗證stdout內容，在這台Windows機器上實測過）發現的
+// 根因與修正：
+//
+// 1. PowerShell對「GUI subsystem的.exe」的command invocation（`& '...'`
+//    或裸執行）**不會等待它執行完成**——對一個內部sleep 3秒的GUI
+//    subsystem測試程式，PowerShell下一行指令在0.005秒左右就先執行了，
+//    根本沒有等，這才是「Windows下`-p`完全沒有回應/像是沒等程式執行完」
+//    的真正根因（不是console/stdout本身壞掉——同一個測試程式的stdout
+//    最終還是會送達同一個終端機視窗，只是完全跟PowerShell的下一行指令
+//    不同步，讓人誤以為「沒有輸出」）。
+// 2. 上一版做法（複製一份.exe、把PE header patch成console subsystem，
+//    spawn那份副本）已經證實方向錯誤：父行程（GUI subsystem，從
+//    PowerShell執行）本身沒有從PowerShell拿到可靠的console/stdio
+//    handle，spawn console subsystem子行程時，Windows的預設行為是「幫
+//    沒有可用console的console-subsystem行程新開一個console視窗」——
+//    這正是實測回報的「跳出一個新console閃一下就消失」，比原本更糟。
+// 3. **實測驗證真正可行的做法**：不動打包出來的.exe本身（維持GUI
+//    subsystem，雙擊照常開視窗），`-p`模式下改成透過`cmd.exe /c`重新
+//    執行「同一個」.exe自己。cmd.exe本身是console subsystem，量測結果：
+//    PowerShell對console subsystem子行程本來就會正確等待+relay stdio
+//    （這本來就是從PowerShell呼叫git/node等一般console工具的日常行為，
+//    沒有特殊之處，用sleep 3秒的測試程式量到3.09秒才繼續、輸出正確
+//    送達）；cmd.exe自己對它的GUI subsystem子行程（也就是我們重新執行
+//    的.exe自己）一樣正確等待+relay stdio（同樣用sleep 2秒的測試程式
+//    量到2.1秒）——兩段接起來整條鏈路都實測驗證過確實可靠，不是理論
+//    推導。
+//
+// 使用者的prompt/輸出格式改用環境變數（見parseCliArgs）傳遞給重新執行的
+// 那份行程，**不是**放進cmd.exe的command line字串裡——已實測驗證：env
+// var可以完整、安全地帶過任意文字（含中文、含`&`/`|`這類cmd.exe本來會
+// 特殊解讀的shell metacharacter，實測塞進env var後cmd.exe完全不會解讀，
+// 原樣傳給讀取端），cmd.exe的command line裡只放我們自己完全掌控、不含
+// 任何使用者輸入的token（.exe自己的路徑），避免使用者prompt文字剛好
+// 包含這類符號時出現command注入或執行結果不符預期的風險。command line
+// 用「整段外面再包一層引號」的經典cmd.exe /c workaround（已實測驗證：
+// 路徑本身含空白時，沒有這層外層引號cmd.exe會把路徑從空白處誤判切斷）。
+//
+// 只在Windows、已打包（`app.isPackaged`）、真的有`-p`、還沒被轉發過時
+// 才做——Linux/macOS的終端機沒有這個GUI/console subsystem的差異，`-p`
+// 已經能在同一個行程內正常輸出（AppImage版本實測過）；dev模式
+// （`electron .`）下`process.execPath`是electron開發用binary本身、不是
+// 這個app，透過cmd.exe重新執行它沒有意義，維持原本行程內執行，Windows
+// dev模式下`-p`可能仍然看不到輸出，這是已知限制（見README，只有打包後
+// 的正式.exe才有這個修正）。用FA_CLI_RELAUNCHED環境變數旗標避免子行程
+// （執行的是同一份main.js/同一份程式碼）又重新判斷一次觸發無限遞迴。
+function _windowsQuote(s) {
+  return '"' + String(s) + '"';
 }
-
-function _relaunchAsConsoleCompanion(companionPath) {
+function _relaunchViaCmdExeForConsoleOutput() {
   return new Promise((resolve) => {
-    const child = spawn(companionPath, process.argv.slice(1), {
+    const inner = _windowsQuote(process.execPath);
+    const outer = _windowsQuote(inner);
+    const child = spawn("cmd.exe", ["/c", outer], {
       stdio: "inherit",
-      windowsHide: false,
-      env: { ...process.env, FA_CLI_RELAUNCHED: "1" },
+      windowsVerbatimArguments: true,
+      env: {
+        ...process.env,
+        FA_CLI_RELAUNCHED: "1",
+        FA_CLI_PROMPT: cliArgs.prompt != null ? cliArgs.prompt : "",
+        FA_CLI_OUTPUT_FORMAT: cliArgs.outputFormat,
+      },
     });
     child.on("exit", (code) => resolve(code == null ? 1 : code));
     child.on("error", (err) => {
-      console.error("[cli] 無法啟動console模式副本：" + String((err && err.message) || err));
+      console.error("[cli] 無法透過cmd.exe重新執行：" + String((err && err.message) || err));
       resolve(1);
     });
   });
 }
 
 app.whenReady().then(async () => {
-  // tw_stock_db客製: 2026-09-16——見上面_resolveConsoleCompanionExePath的
-  // 說明，這個轉發判斷要在任何其他初始化（本地proxy等）之前做，避免父
-  // 行程（只是個轉發器，接下來什麼都不用做）白白啟動一份完全用不到的
+  // tw_stock_db客製: 2026-09-16——見上面_relaunchViaCmdExeForConsoleOutput
+  // 的說明，這個轉發判斷要在任何其他初始化（本地proxy等）之前做，避免
+  // 父行程（只是個轉發器，接下來什麼都不用做）白白啟動一份完全用不到的
   // 本地proxy——真正的執行全部交給子行程（子行程會自己走完整套
   // app.whenReady()流程，含它自己的本地proxy）。
-  if (cliArgs.prompt != null && !process.env.FA_CLI_RELAUNCHED) {
-    const companionPath = _resolveConsoleCompanionExePath();
-    if (companionPath) {
-      const exitCode = await _relaunchAsConsoleCompanion(companionPath);
-      app.exit(exitCode);
-      return;
-    }
-    // 找不到console companion（dev模式，或使用者拿到的是這次修正之前打包
-    // 的舊版）——不中斷，往下走原本流程，在這個(GUI subsystem)行程內
-    // 執行，Windows下可能還是看不到輸出，這是已知限制。
+  if (cliArgs.prompt != null && !process.env.FA_CLI_RELAUNCHED && process.platform === "win32" && app.isPackaged) {
+    const exitCode = await _relaunchViaCmdExeForConsoleOutput();
+    app.exit(exitCode);
+    return;
   }
 
   // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
