@@ -8886,6 +8886,66 @@ ${fnData.code}
         return toolCalls;
     }
 
+    // tw_stock_db客製: 2026-09-16使用者實測回報——即使_ensureToolCallIds()
+    // 已經在「這一輪剛收到的API回應」當下補過tool_calls[].id，仍然實測到
+    // HTTP 400 "missing field `tool_call_id`"反覆發生，而且連續觸發
+    // pruneContext()壓縮3次都沒有解決（如果單純是「這一輪新收到的tool_calls
+    // 缺id」，第一次補過就該解決，不會壓縮3次都一樣）——代表問題不是「這一輪
+    // 新收到的」，而是this.messages長期累積下來、本來就存在結構性不完整的
+    // assistant.tool_calls/role:'tool'配對（最可能的成因：這個修復加進來
+    // 之前就已經persist在localStorage的舊對話歷史，之後每次載入這個分頁都
+    // 帶著這個壞掉的配對）。_ensureToolCallIds()只補「這一輪」，沒有能力
+    // 回頭修好已經存在於this.messages裡的舊訊息，所以問題會一直卡著、無論
+    // 重試幾次都一樣。
+    //
+    // 這裡新增送出前的最後一道防線：對「即將送出的messages陣列複本」（不改
+    // this.messages本身，畫面顯示的歷史內容不受影響，見下面說明）逐一檢查
+    // assistant.tool_calls跟role:'tool'訊息是否兩兩對齊——(1)任何role:'tool'
+    // 訊息的tool_call_id如果在緊接著前一則assistant訊息的tool_calls[]裡找
+    // 不到對應項目（缺tool_call_id、或對不到任何id），代表是孤兒訊息，直接
+    // 從陣列移除（不管怎麼補id都不可能讓端點接受一個對不上的孤兒回覆，移除
+    // 是唯一能讓請求恢復合法的做法）；(2)任何assistant訊息的tool_calls[]裡，
+    // 如果找不到緊接著的對應role:'tool'回覆，代表這個tool_call本身不完整，
+    // 把它從tool_calls陣列拿掉（拿光了整個欄位就直接刪除，訊息退化成一般
+    // 純文字assistant訊息，不留下一個空陣列）。這個方法不會被這次修復自動
+    // 呼叫、也不會回寫this.messages——呼叫端在組出requestMessages時才呼叫它
+    // 產生一份「保證乾淨」的副本送出，使用者在畫面上看到的訊息歷史完全不受
+    // 影響，純粹是請求層的自我修復（呼應[[feedback_app_must_self_heal]]：
+    // 暫時性/結構性問題不該讓使用者自己「清除對話」才能繼續）。
+    _sanitizeToolCallPairing(messages) {
+        if (!Array.isArray(messages)) return messages;
+        const cleaned = [];
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (msg && msg.role === 'tool') {
+                const prev = cleaned.length ? cleaned[cleaned.length - 1] : null;
+                const prevIds = (prev && prev.role === 'assistant' && Array.isArray(prev.tool_calls))
+                    ? new Set(prev.tool_calls.map(tc => tc && tc.id))
+                    : new Set();
+                if (!msg.tool_call_id || !prevIds.has(msg.tool_call_id)) continue; // 孤兒tool訊息，跳過
+                cleaned.push(msg);
+                continue;
+            }
+            if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+                this._ensureToolCallIds(msg.tool_calls);
+                const repliedIds = new Set();
+                for (let j = i + 1; j < messages.length && messages[j] && messages[j].role === 'tool'; j++) {
+                    if (messages[j].tool_call_id) repliedIds.add(messages[j].tool_call_id);
+                }
+                const keptCalls = msg.tool_calls.filter(tc => repliedIds.has(tc && tc.id));
+                if (keptCalls.length !== msg.tool_calls.length) {
+                    const patched = Object.assign({}, msg);
+                    if (keptCalls.length) patched.tool_calls = keptCalls;
+                    else delete patched.tool_calls;
+                    cleaned.push(patched);
+                    continue;
+                }
+            }
+            cleaned.push(msg);
+        }
+        return cleaned;
+    }
+
     _buildToolResultMessage(fnName, result, extra) {
         const visual = this._detectVisualToolPayload(result);
         const imageDataUrl = visual && visual.type === 'image' ? visual.dataUrl : null;
@@ -17109,14 +17169,16 @@ ${existingNodeSummaries}
             // finish_reason，或觸及安全上限。this.messages本身不會被中間輪
             // 汙染，只有全部接續完成後才把最終合併結果push進去一則。
             while (true) {
-                const requestMessages = autoContinueRounds === 0
+                // tw_stock_db客製: 見_sanitizeToolCallPairing()的說明——送出前
+                // 最後修一次tool_calls/tool訊息配對，不動this.messages本身。
+                const requestMessages = this._sanitizeToolCallPairing(autoContinueRounds === 0
                     ? this.messages
                     : lastRoundWasReasoningDeadEnd
                         ? this.messages.concat([{ role: 'user', content: AI_REASONING_DEADEND_PROMPT }])
                         : this.messages.concat([
                             { role: 'assistant', content: fullContent },
                             { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
-                        ]);
+                        ]));
 
                 const roundStartTime = Date.now();
                 const controller = this._createAbortController();
@@ -17618,7 +17680,9 @@ ${existingNodeSummaries}
             // 非length的finish_reason或觸及安全上限，而不是每次都直接顯示
             // 截斷警告要求使用者手動追問。
             while (true) {
-                const requestMessages = autoContinueRounds === 0
+                // tw_stock_db客製: 見_sanitizeToolCallPairing()的說明——送出前
+                // 最後修一次tool_calls/tool訊息配對，不動this.messages本身。
+                const requestMessages = this._sanitizeToolCallPairing(autoContinueRounds === 0
                     ? this.messages
                     : lastRoundWasReasoningDeadEnd
                         // tw_stock_db客製: 死路重試沒有「上一段未完成的內容」可以
@@ -17628,7 +17692,7 @@ ${existingNodeSummaries}
                         : this.messages.concat([
                             { role: 'assistant', content: finalContent },
                             { role: 'user', content: AI_AUTO_CONTINUE_PROMPT }
-                        ]);
+                        ]));
 
                 const roundStartTime = Date.now();
                 const controller = this._createAbortController();
@@ -18621,7 +18685,9 @@ ${existingNodeSummaries}
             if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
             const body = {
                 model: apiModel,
-                messages,
+                // tw_stock_db客製: 見_sanitizeToolCallPairing()的說明——同一道
+                // 防線也套用在子任務自己的訊息陣列上，不動`messages`本身。
+                messages: this._sanitizeToolCallPairing(messages),
                 temperature: rowConfig.temperature != null ? rowConfig.temperature : DEFAULT_CHAT_TEMPERATURE,
                 ...this._buildSamplingParamsBody(rowConfig.samplingOverrides),
                 max_tokens: rowConfig.maxOutputTokens != null ? rowConfig.maxOutputTokens : this._getGenerationSettings().maxOutputTokens,
