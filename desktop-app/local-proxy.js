@@ -26,6 +26,7 @@
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
+const { handleBrowserSearch } = require("./browser-search.js");
 
 // tw_stock_db客製: 2026-09-15使用者實測回報——同一個請求在Windows桌面版
 // 幾乎不會撞到「端點完全沒有回應任何內容」，Linux桌面版卻常常發生。追查
@@ -185,6 +186,20 @@ function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-p
     }
     if (nvidiaHandler && req.url.startsWith("/nvidia/")) {
       nvidiaHandler(req, res, req.url.slice("/nvidia/".length));
+      return;
+    }
+    // tw_stock_db客製: 2026-09-17使用者要求——browser_search工具原本設計成
+    // 打Cloudflare Worker的/browser-search路由，但桌面版bootstrap.js早就
+    // 把browserSearchProxyUrl seed成這支本地proxy的base URL（見
+    // bootstrap.js第389行），這裡卻一直沒有對應的實作，導致每次呼叫都落進
+    // 下面的「unknown route」404分支。使用者明確要求桌面版不要依賴任何
+    // Cloudflare Worker/雲端服務——這裡直接在本機實作（見browser-search.js，
+    // 完整語意port自worker.js的handleBrowserSearch），Node環境沒有瀏覽器
+    // 的CORS限制，不需要任何代理繞道就能直接打Wikipedia/StackExchange/
+    // GitHub/DuckDuckGo/Google News這些上游。
+    if (req.method === "POST" && req.url === "/browser-search") {
+      setCorsHeaders(res, req);
+      handleBrowserSearch(req, res);
       return;
     }
     const matchedPrefix = prefixes.find((p) => req.url.startsWith(p));
