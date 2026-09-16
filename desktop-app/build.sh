@@ -66,21 +66,18 @@ case "$TARGET" in
     npx electron-builder --linux AppImage --x64
     ;;
   win)
-    # tw_stock_db客製: 2026-09-16在真實Windows機器上實測後改的——原本用
-    # electron-builder的「portable」target（單一自解壓縮.exe），但`-p`
-    # 在這個格式下無法穩定運作：portable target的自解壓縮外殼本身也是
-    # GUI subsystem行程，從PowerShell裸執行時完全沒有可靠的console
-    # handle可以往下relay（實測用真的GUI/console subsystem測試程式配合
-    # 碼表量過：PowerShell在~5毫秒內就把控制權還給下一行指令，完全沒有
-    # 等；讓這個沒有console handle的行程spawn一個console subsystem子
-    # 行程，Windows的預設行為是幫子行程另外開一個全新、看不到的console
-    # 視窗，不是接上使用者看得到的那個）。改用「dir」target（電腦上的
-    # 一個資料夾，沒有自解壓縮這一層），main.js搭配build/afterPack.js
-    # 自動產生的FloatingAssistant-cli.exe（PE header patch成console
-    # subsystem的副本）直接放在同一個資料夾，使用者直接執行它——這是
-    # 唯一實測驗證過真的可靠的情境（沒有中間GUI subsystem行程relay給
-    # 別的行程這一步）。
-    echo "== electron-builder 打包 Windows app資料夾（跨平台編譯，需要系統已裝wine）=="
+    # tw_stock_db客製: 2026-09-16——完整說明見launcher/launcher.py開頭的
+    # comment跟build.ps1同一段：Windows下`-p`需要一支獨立、真正build成
+    # console subsystem的launcher（launcher/launcher.py，用PyInstaller），
+    # 放在跟electron-builder打包出來的FloatingAssistantApp.exe同一個資料夾
+    # ——PyInstaller不支援跨平台cross-compile（沒辦法在Linux上build出
+    # Windows的console subsystem .exe），所以這裡只打包Electron app本身
+    # 那一半（`dir`target，資料夾裡是FloatingAssistantApp.exe），launcher
+    # 那支.exe仍然要在真正的Windows機器上另外build（`cd launcher && pip
+    # install pyinstaller && python -m PyInstaller --onefile --console
+    # --name FloatingAssistant launcher.py`），再手動複製進同一個資料夾。
+    # 強烈建議直接在Windows上用build.ps1，會自動處理這整個流程。
+    echo "== electron-builder 打包 Windows app資料夾（跨平台編譯，需要系統已裝wine；launcher.exe需要另外在Windows上build，見上方註解）=="
     npx electron-builder --win dir --x64
     ;;
   *)

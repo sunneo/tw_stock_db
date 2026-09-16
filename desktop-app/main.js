@@ -52,38 +52,20 @@ if (cliArgs.prompt != null && !["text", "json", "toon", "md"].includes(cliArgs.o
   process.exit(1);
 }
 
-// tw_stock_db客製: 2026-09-16真機實測驗證過的兩個獨立事實（不是理論假設）：
-//   1. `dist/win-unpacked/FloatingAssistant-cli.exe`（跟GUI版完全同一份
-//      main.js/asar，唯一差異是build/pe-subsystem-patch.js把PE header的
-//      Subsystem欄位從GUI(2)改成console(3)）直接執行`-p`，真的在使用者的
-//      PowerShell視窗裡正確印出AI回覆——使用者本人在真機上確認過。
-//   2. `FloatingAssistant.exe`（GUI版，沒有patch過）雙擊照常正常開視窗。
-// 兩個各自獨立驗證過都work之後，這裡是使用者要求的「前導程式」邏輯：
-// 讓console版（已證實可以正確接上終端機）當成使用者唯一需要記得執行的
-// 進入點——沒有帶`-p`時，代表使用者是雙擊/裸執行想要GUI，這裡立刻
-// spawn旁邊的GUI版.exe（detached、stdio:'ignore'，GUI模式本來就不需要
-// 任何console輸出，這個方向完全不會重蹈前兩次「GUI subsystem父行程
-// 沒有可靠console handle可以relay給子行程」的覆轍——這裡方向相反，是
-// 已證實真的有valid console的console subsystem行程去啟動不需要console
-// 的GUI行程，沒有相同的失敗模式），然後自己立刻結束（`app.exit(0)`），
-// 讓使用者只看到「開了一下黑視窗、GUI就跳出來了」，不用手動記兩個檔名。
-// 帶`-p`時，這個console版直接在自己行程內處理（就是已經證實work的
-// 既有runCliPrompt流程，完全不用再spawn/relay任何東西）。
-//
-// 只在：Windows、已打包、檔名符合`-cli.exe`（build流程產生的console
-// 版命名慣例）、且沒有`-p`時才觸發——GUI版.exe本身檔名不含`-cli`，這段
-// 邏輯對它是no-op（雙擊GUI版行為完全不變）；Linux/macOS/dev模式同樣
-// no-op（`app.isPackaged`為false，或平台不是win32）。
-if (process.platform === "win32" && app.isPackaged && /-cli\.exe$/i.test(process.execPath) && cliArgs.prompt == null) {
-  const guiExePath = process.execPath.replace(/-cli\.exe$/i, ".exe");
-  try {
-    const child = spawn(guiExePath, [], { detached: true, stdio: "ignore" });
-    child.unref();
-  } catch (err) {
-    console.error("[launcher] 無法啟動GUI版本：" + String((err && err.message) || err));
-  }
-  app.exit(0);
-}
+// tw_stock_db客製: 2026-09-16使用者要求改用PyInstaller做前導程式（見
+// `launcher/launcher.py`）——這支main.js（打包後叫`FloatingAssistantApp.exe`，
+// 見package.json的`win.executableName`）本身完全不用再處理任何console
+// subsystem/PE header的事，維持electron-builder預設的GUI subsystem、
+// 完全不patch。真正的「使用者實際執行的那一個檔案」是`launcher/`底下
+// 那支獨立、用PyInstaller真正build成console subsystem的`FloatingAssistant.exe`
+// ——它偵測到`-p`時自己在console subsystem的行程內直接呼叫這個.exe（inherit
+// stdio，因為launcher本身是被使用者shell直接執行、有真正可靠的console，
+// 往下relay給這裡沒有任何問題）；沒有`-p`時detached呼叫這個.exe開GUI。
+// 這裡完全不需要知道/處理任何console相關邏輯，跟一般沒有CLI模式的Electron
+// app完全一樣。（先前兩版做法——GUI版.exe自己spawn一份PE header被patch
+// 過的console副本、或透過cmd.exe轉發、或把這份.exe本身patch成console
+// subsystem再呼叫FreeConsole()——都在真機上重現過真正的失敗，已經拿掉，
+// 詳見launcher/launcher.py開頭的說明與README。）
 
 const USER_DATA_DIR = () => app.getPath("userData");
 const ROOTS_FILE = () => path.join(USER_DATA_DIR(), "fap-roots.json");

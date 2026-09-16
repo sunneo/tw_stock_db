@@ -1,24 +1,26 @@
 # FloatingAssistant desktop build script (Windows).
-# Produces an unpacked folder (electron-builder's "dir" target) containing
-# two executables that share the same resources: FloatingAssistant.exe
-# (GUI, double-click as usual) and FloatingAssistant-cli.exe (same app,
-# PE header patched to console subsystem by build/afterPack.js - run this
-# one for everything from a terminal, including `-p`).
+# Produces dist\win-unpacked\, a folder containing FloatingAssistantApp.exe
+# (the Electron app itself, plain default GUI subsystem, unmodified) and
+# FloatingAssistant.exe (a small PyInstaller-built console-subsystem
+# launcher - the file users actually run, for both GUI and `-p` use).
 #
-# 2026-09-16: this used to produce a single self-extracting "portable" .exe
-# via electron-builder's "portable" target. Switched away from that after
-# live testing on real Windows hardware proved `-p` fundamentally cannot
-# work reliably through that format: the portable target's self-extracting
-# wrapper is itself a GUI-subsystem process, and a GUI-subsystem process
-# launched bare from PowerShell never receives a usable console handle to
-# relay to anything it spawns (confirmed with timed tests against real
-# GUI/console-subsystem binaries - PowerShell returns control in ~5ms
-# without waiting, and spawning a console-subsystem child from that
-# process gets Windows to allocate it a new, invisible console window
-# instead of attaching to the visible one). The "dir" target avoids this
-# entirely: there's no self-extraction step, so FloatingAssistant-cli.exe
-# is a plain console-subsystem process launched directly by the user's own
-# shell, which is the one scenario that's actually been verified to work.
+# 2026-09-16 history (kept so this isn't re-litigated): three earlier
+# designs all tried to make ONE Electron .exe handle both GUI and `-p`
+# by having a GUI-subsystem process spawn or relaunch a console-subsystem
+# one (a copied/PE-patched binary, relaunching via cmd.exe /c, or patching
+# the app's own exe in place). All three failed identically on real
+# hardware: a new, invisible console window flashed and vanished instead
+# of showing output, because a GUI-subsystem process launched bare from
+# PowerShell never receives a usable console handle in the first place -
+# so it has nothing valid to relay to any child, regardless of what it
+# spawns or how. The fix that actually works: don't make the Electron app
+# solve this at all. FloatingAssistant.exe is a genuinely, separately
+# compiled console-subsystem executable (PyInstaller's own bootloader, not
+# a byte-patched Electron binary) - launched directly by the user's shell,
+# it has a real console of its own, and relaying that to
+# FloatingAssistantApp.exe (whether for -p or to open the GUI) works
+# because the relaying process itself actually has something valid to
+# relay. See launcher/launcher.py for the full explanation.
 #
 # Usage:
 #   .\build.ps1              # full flow: sync engine + npm install + package
@@ -111,8 +113,56 @@ if ($LASTEXITCODE -ne 0) {
     throw "electron-builder packaging failed"
 }
 
+# tw_stock_db客製: 2026-09-16使用者要求「單一執行檔」——build
+# launcher/launcher.py成一個獨立、真正是console subsystem的.exe
+# （PyInstaller自己的bootloader，不是事後改PE header的byte patch），並用
+# --add-data把整個dist\win-unpacked\（剛剛electron-builder產生的完整
+# Electron app）打包進這支.exe裡面，PyInstaller的--onefile bootloader
+# 會在每次執行時自動解壓縮到一個暫存資料夾再執行——使用者最後只會拿到、
+# 只需要執行**這一個檔案**（見launcher/launcher.py開頭的完整說明，包含
+# 這個做法「每次啟動都要重新解壓縮~250MB」的已知取捨）。
+Write-Host "== Building FloatingAssistant.exe launcher (PyInstaller) ==" -ForegroundColor Cyan
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pythonCmd) {
+    throw "python not found on PATH - required to build the launcher (pip install pyinstaller after installing Python)."
+}
+python -m PyInstaller --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "PyInstaller not found - installing it now (pip install pyinstaller) ..." -ForegroundColor Cyan
+    $prevEap2 = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    python -m pip install pyinstaller 2>&1 | ForEach-Object { Write-Host $_ }
+    $ErrorActionPreference = $prevEap2
+    if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+}
+Push-Location launcher
+try {
+    # PyInstaller writes normal INFO-level progress to stderr; with the
+    # script-wide $ErrorActionPreference = "Stop", PowerShell 5.1 wraps
+    # every stderr line from a native command into a NativeCommandError
+    # and - worse - throws on it even though the build itself succeeds.
+    # "SilentlyContinue" avoids both the throw and the misleading red
+    # error-record noise; ForEach-Object { Write-Host $_ } re-prints each
+    # line as plain text so real PyInstaller progress/errors are still
+    # visible. $LASTEXITCODE is still checked below, same as every other
+    # native call in this script - a genuine build failure is still caught.
+    #
+    # --add-data "..\dist\win-unpacked;app" embeds the whole Electron app
+    # folder under an "app" subfolder inside the bundle (Windows --add-data
+    # syntax is SRC;DEST); launcher.py looks for
+    # sys._MEIPASS\app\FloatingAssistantApp.exe at runtime.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    python -m PyInstaller --onefile --console --name FloatingAssistant --add-data "..\dist\win-unpacked;app" --distpath dist --workpath build --specpath . launcher.py 2>&1 | ForEach-Object { Write-Host $_ }
+    $ErrorActionPreference = $prevEap
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
+} finally {
+    Pop-Location
+}
+Copy-Item -Path "launcher\dist\FloatingAssistant.exe" -Destination "dist\FloatingAssistant.exe" -Force
+
 Write-Host ""
-Write-Host "Done. The app folder is in dist\win-unpacked\. Distribute that whole folder" -ForegroundColor Green
-Write-Host "(zip it). Run FloatingAssistant-cli.exe for everything - double-click for the" -ForegroundColor Green
-Write-Host "GUI, or run it with -p from a terminal for CLI mode. FloatingAssistant.exe is" -ForegroundColor Green
-Write-Host "the plain GUI-only binary FloatingAssistant-cli.exe hands off to." -ForegroundColor Green
+Write-Host "Done. dist\FloatingAssistant.exe is the single file to distribute -" -ForegroundColor Green
+Write-Host "double-click it for the GUI, or run it with -p from a terminal for CLI mode." -ForegroundColor Green
+Write-Host "(dist\win-unpacked\ is an intermediate build artifact, embedded inside that" -ForegroundColor Green
+Write-Host ".exe - you don't need to distribute it separately.)" -ForegroundColor Green
