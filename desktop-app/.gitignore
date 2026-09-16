@@ -8,3 +8,8 @@ renderer/floating-assistant.js
 # 慣例）——內容一樣是真實金鑰，同樣不該進版控。
 builtin-secrets.json
 builtin-secrets.json.*
+
+# 同理：build.bat是使用者自己本機用來設定FA_BUILTIN_NVAPI_KEY/
+# FA_BUILTIN_OPENROUTER_KEY再呼叫build.ps1的捷徑腳本，裡面直接寫死真實金鑰
+# 明文，只留在本機、不進版控。
+build.bat
