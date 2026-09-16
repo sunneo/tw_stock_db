@@ -1871,6 +1871,15 @@ const FAP_FIND_MAX_DEPTH = 8;
 // 不是文字的格式，讓錯誤訊息在真的去讀之前就先講清楚。
 const FAP_BINARY_EXT_PATTERN = /\.(png|jpe?g|gif|bmp|webp|svg|ico|mp3|mp4|wav|ogg|webm|mov|avi|mkv|pdf|zip|tar|gz|tgz|7z|rar|docx?|xlsx?|pptx?|exe|dll|so|bin|dat|db|sqlite3?|ttf|woff2?|eot|class|jar|wasm)$/i;
 
+// tw_stock_db客製: 2026-09-16使用者要求——Skill匯入/匯出要能像Claude一樣
+// 保留完整資料夾結構（references/scripts/等），這些安全上限跟上面
+// FAP_FIND_MAX_*同一種「先給一個合理保守值」的精神：避免使用者不小心匯入
+// 一個超大的.skill zip/資料夾時，單次匯入卡死或把skillFileCache塞爆。
+const SKILL_FILE_CACHE_MAX_BYTES = 100 * 1024 * 1024; // skillFileCache獨立額度，跟fileCache（上傳附件/AI匯出檔案）分開淘汰
+const SKILL_IMPORT_MAX_EXTRA_FILES = 300;   // 單次匯入最多收多少份「額外檔案」（references/scripts等，不含SKILL.md/tools/*.js）
+const SKILL_IMPORT_MAX_FILE_BYTES = 20 * 1024 * 1024; // 單一額外檔案大小上限
+const SKILL_IMPORT_MAX_DEPTH = 10;          // 資料夾來源遞迴掃描深度上限
+
 // tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
 // PRESET_MODEL_OPTIONS（含新加的openrouter/free）逐一轉成row，URL/KEY/
 // 生成參數全部留空（代表沿用「我們預設的網址」／全域生成設定，openrouter/
@@ -3147,6 +3156,13 @@ class FloatingAssistant {
         // 獨立20MB容量預算，不跟檔案上傳/AI匯出檔共用），另外疊加1天TTL（見
         // SEARCH_CACHE_TTL_MS/_getCachedSearchResult()）。
         this.searchCache = new FileCache('FloatingAssistantSearchCache_' + ragDbSuffix, SEARCH_CACHE_MAX_BYTES);
+        // tw_stock_db客製: 2026-09-16——Skill匯入時額外檔案（references/
+        // scripts/等，見_applyImportedSkillBundle）的內容儲存，同樣是獨立的
+        // FileCache實例、獨立IndexedDB資料庫——刻意不跟this.fileCache共用同一
+        // 個LRU淘汰池：那個池子裝的是「用完可丟」的上傳附件/AI匯出檔案，跟
+        // 使用者刻意匯入、期望長期保留的skill參考資料語意不同，共用會有
+        // 「最近上傳幾個大檔案，結果把skill的參考資料擠掉」的風險。
+        this.skillFileCache = new FileCache('FloatingAssistantSkillFiles_' + ragDbSuffix, SKILL_FILE_CACHE_MAX_BYTES);
         // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
         // 跟fileCache/searchCache一樣依mount實例分開資料庫。
         this.fileAccessPoints = new FileAccessPointStore('FloatingAssistantFAP_' + ragDbSuffix);
@@ -3809,6 +3825,18 @@ class FloatingAssistant {
             personaPrompt: String(bundle.personaPrompt || '').replace(/\r\n/g, '\n'),
             enabled: bundle.enabled !== false,
             createdAt: Number.isFinite(Number(bundle.createdAt)) ? Number(bundle.createdAt) : Date.now(),
+            // tw_stock_db客製: 2026-09-16使用者要求——匯入的.skill像Claude
+            // 一樣可以帶references/scripts等任意巢狀資料夾，這裡只存中繼資料
+            // （路徑/大小/mime），實際內容存在獨立的this.skillFileCache
+            // （見建構子），跟rulesMd/personaPrompt這種小文字欄位分開，不會
+            // 把大檔案內容也塞進要persist的advancedSettings JSON blob裡。
+            files: Array.isArray(bundle.files)
+                ? bundle.files.map(f => ({
+                      path: String((f && f.path) || '').trim(),
+                      sizeBytes: Number.isFinite(Number(f && f.sizeBytes)) ? Number(f.sizeBytes) : 0,
+                      mimeType: String((f && f.mimeType) || '').trim(),
+                  })).filter(f => f.path)
+                : [],
         };
     }
 
@@ -3823,7 +3851,16 @@ class FloatingAssistant {
         const header = persona
             ? `你現在要扮演具備以下知識/風格的專家子任務助理，請完全依照這份知識/風格回答，不要跳出這個角色設定：\n\n${persona}`
             : `你是專門執行使用者自訂技能包「${bundle.name}」的子任務助理。`;
-        return header + '\n\n如果任務需要呼叫這個技能包底下的實裝工具，依task內容判斷該呼叫哪個、需要的話呼叫多個，把結果整理成最終結論回傳；如果這個技能包目前沒有掛任何實裝工具，純粹依上面的知識/風格直接回答即可，不用勉強找工具呼叫。';
+        let systemPrompt = header + '\n\n如果任務需要呼叫這個技能包底下的實裝工具，依task內容判斷該呼叫哪個、需要的話呼叫多個，把結果整理成最終結論回傳；如果這個技能包目前沒有掛任何實裝工具，純粹依上面的知識/風格直接回答即可，不用勉強找工具呼叫。';
+        // tw_stock_db客製: 2026-09-16使用者要求——像Claude一樣支援漸進式揭露
+        // (progressive disclosure)：這裡只條列檔案「有什麼」，不把內容塞進
+        // system prompt本身（那樣會讓persona prompt暴增），需要細節時才呼叫
+        // read_skill_file__<id>（見_syncSkillBundleDomains）主動讀取全文。
+        if (bundle.files && bundle.files.length) {
+            systemPrompt += `\n\n這個技能包還附帶以下參考資料/腳本檔案（內容不在這段文字裡，需要時才呼叫read_skill_file__${bundle.id}讀取，不要假裝已經知道內容）：\n`
+                + bundle.files.map(f => `- ${f.path}`).join('\n');
+        }
+        return systemPrompt;
     }
 
     // tw_stock_db客製: 2026-09-16——每個skillBundle同步成一個
@@ -3834,12 +3871,60 @@ class FloatingAssistant {
     // 避免bundle被刪除/改id後domain殘留。
     _syncSkillBundleDomains() {
         Object.keys(this.domains).filter(k => k.startsWith('skill_')).forEach(k => delete this.domains[k]);
+        // tw_stock_db客製: 2026-09-16——見下面主迴圈的說明，先清掉上一輪
+        // 動態註冊的read_skill_file__<id>工具，避免bundle被刪除/改名後殘留
+        // 叫不到內容的孤兒工具（跟上面清掉skill_*domain同一個「先清舊entry、
+        // 再重新註冊」慣例）。
+        (this._skillFileToolNames || new Set()).forEach(name => { delete this.tools[name]; });
+        this._skillFileToolNames = new Set();
         for (const bundle of this.advancedSettings.skillBundles) {
+            const toolName = `read_skill_file__${bundle.id}`;
+            if (bundle.files && bundle.files.length) {
+                this._skillFileToolNames.add(toolName);
+                // tw_stock_db客製: 2026-09-16使用者要求——每個技能包各自的
+                // 參考資料/腳本檔案要能被委派到的subagent按需讀取（漸進式
+                // 揭露，見_buildSkillPersonaSystemPrompt）。這裡故意每個
+                // bundle動態註冊「各自專屬」的讀檔工具（名稱本身就綁定
+                // bundle.id），不是共用一個工具+skill_bundle_id參數——模型
+                // 完全不需要知道/填任何ID，直接照system prompt給的工具名稱
+                // 呼叫即可，沒有「打錯ID」的風險。
+                this.register_openai_tool(toolName,
+                    `讀取技能包「${bundle.name}」附帶的參考資料/腳本檔案的完整內容（這些檔案的內容不在你的system prompt裡，需要時才呼叫這個工具讀取，不要假裝已經知道內容）。可用路徑：${bundle.files.map(f => f.path).join('、')}。大檔案會自動分段，回應的chunk.hasMore/chunk.nextOffset會告訴你有沒有更多、下一段從哪裡開始。參數: {"path":"references/xxx.md","offset":0}`,
+                    async (rawArgs) => {
+                        let parsed = {};
+                        try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                        const path = String(parsed.path || '').trim();
+                        const fileEntry = bundle.files.find(f => f.path === path);
+                        if (!fileEntry) return JSON.stringify({ ok: false, error: `找不到路徑「${path}」，可用路徑：${bundle.files.map(f => f.path).join('、')}` });
+                        const record = await this.skillFileCache.get(`${bundle.id}::${path}`);
+                        if (!record) return JSON.stringify({ ok: false, error: '檔案內容遺失（可能是儲存空間被清除），請重新匯入這個技能包' });
+                        const fullText = await record.blob.text();
+                        const totalChars = fullText.length;
+                        const offset = Number.isFinite(Number(parsed.offset)) && Number(parsed.offset) > 0 ? Math.floor(Number(parsed.offset)) : 0;
+                        const maxChars = Number.isFinite(Number(parsed.maxChars)) && Number(parsed.maxChars) > 0 ? Math.floor(Number(parsed.maxChars)) : this._getAdaptiveContentBudgetChars(0.1, 6000);
+                        const chunkText = fullText.slice(offset, offset + maxChars);
+                        const nextOffset = offset + chunkText.length;
+                        const hasMore = nextOffset < totalChars;
+                        return JSON.stringify({
+                            ok: true, path, text: chunkText,
+                            chunk: { offset, length: chunkText.length, totalChars, hasMore, nextOffset: hasMore ? nextOffset : null },
+                            note: hasMore ? `這是第${offset}~${nextOffset}字元的片段（全檔共${totalChars}字元），還有更多內容，需要的話帶offset=${nextOffset}再呼叫一次。` : `這是最後一段（第${offset}~${nextOffset}字元，全檔共${totalChars}字元）。`,
+                        });
+                    },
+                    { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'number' }, maxChars: { type: 'number' } }, required: ['path'], additionalProperties: false }
+                );
+            } else {
+                delete this.tools[toolName];
+            }
             this.domains[`skill_${bundle.id}`] = {
                 enabled: bundle.enabled !== false,
                 label: bundle.name,
                 category: 'user_skills',
-                toolNames: () => this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).map(t => t.name),
+                toolNames: () => {
+                    const names = this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).map(t => t.name);
+                    if (bundle.files && bundle.files.length) names.push(toolName);
+                    return names;
+                },
                 systemPrompt: this._buildSkillPersonaSystemPrompt(bundle),
             };
         }
@@ -10235,11 +10320,22 @@ ${sourceTool.handlerScript}
         list.innerHTML = bundles.map((bundle) => {
             const toolCount = this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).length;
             const hasPersona = String(bundle.personaPrompt || '').trim().length > 0;
+            const files = bundle.files || [];
             return `
             <div class="ai-advanced-tool-item">
                 <div style="flex:1; min-width:0;">
                     <div class="ai-advanced-tool-name">${this._escapeHtml(bundle.name)}</div>
-                    <div class="ai-advanced-tool-desc">${bundle.enabled !== false ? '✅ 已啟用' : '⏸️ 已停用'}　·　${hasPersona ? '📖 已設定知識/人設' : '⚠️ 尚未填寫知識/人設'}　·　${toolCount} 個工具　·　ref: <code>skill_${this._escapeHtml(bundle.id)}</code></div>
+                    <div class="ai-advanced-tool-desc">${bundle.enabled !== false ? '✅ 已啟用' : '⏸️ 已停用'}　·　${hasPersona ? '📖 已設定知識/人設' : '⚠️ 尚未填寫知識/人設'}　·　${toolCount} 個工具${files.length ? `　·　📎 ${files.length} 個附加檔案` : ''}　·　ref: <code>skill_${this._escapeHtml(bundle.id)}</code></div>
+                    ${files.length ? `
+                    <details style="margin-top:6px; font-size:12px;">
+                        <summary style="cursor:pointer; color:var(--ai-text-secondary,#8a94a6);">檔案清單</summary>
+                        ${files.map(f => `
+                            <div style="display:flex; justify-content:space-between; gap:8px; padding:2px 0;">
+                                <code style="word-break:break-all;">${this._escapeHtml(f.path)}</code>
+                                <button type="button" class="ai-advanced-btn danger" style="padding:1px 6px; font-size:11px;" data-skill-file-delete="${bundle.id}::${this._escapeHtml(f.path)}">✕</button>
+                            </div>
+                        `).join('')}
+                    </details>` : ''}
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     <button type="button" class="ai-advanced-btn" data-skill-bundle-toggle="${bundle.id}">${bundle.enabled !== false ? '停用' : '啟用'}</button>
@@ -14405,6 +14501,17 @@ ${sourceTool.handlerScript}
                 const content = `// name: ${tool.name}\n// description: ${description}\n${tool.handlerScript || ''}\n`;
                 toolsFolder.file(`${safeName}.js`, content);
             });
+            // tw_stock_db客製: 2026-09-16使用者要求——把匯入時存進skillFileCache
+            // 的額外檔案（references/scripts/等任意巢狀路徑）原樣重建回zip，
+            // 達到跟Claude skill格式一樣的完整往返(round-trip)能力。沒有指定
+            // bundleId的舊行為（匯出全域rulesMd+未分類customTools）沒有對應的
+            // files清單，維持完全不變。
+            if (bundle && bundle.files && bundle.files.length) {
+                for (const f of bundle.files) {
+                    const record = await this.skillFileCache.get(`${bundle.id}::${f.path}`);
+                    if (record) zip.file(f.path, record.blob);
+                }
+            }
             const blob = await zip.generateAsync({ type: 'blob' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -14430,7 +14537,21 @@ ${sourceTool.handlerScript}
     // personaPrompt，委派時subagent會真正「扮演」這份知識，見
     // _buildSkillPersonaSystemPrompt），不再無條件附加進全域rulesMd（那樣
     // 會把不相關的蒸餾skill知識全部混在同一份文字裡、混在同一個domain）。
-    async _applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel }) {
+    // tw_stock_db客製: 2026-09-16——輕量的副檔名→MIME對照表，只給skillFileCache
+    // 存放額外檔案時用，跟FAP_BINARY_EXT_PATTERN一樣不追求完整的MIME sniffing，
+    // 純粹讓read_skill_file__<id>之後回傳/匯出時有個合理的mimeType可用。
+    _guessMimeFromSkillFilePath(path) {
+        const ext = String(path || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+        const map = {
+            md: 'text/markdown', markdown: 'text/markdown', txt: 'text/plain',
+            py: 'text/x-python', sh: 'text/x-shellscript', js: 'text/javascript',
+            json: 'application/json', yaml: 'text/yaml', yml: 'text/yaml',
+            csv: 'text/csv', html: 'text/html', css: 'text/css',
+        };
+        return (ext && map[ext[1]]) || '';
+    }
+
+    async _applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel }) {
         const bundleName = (prompt('幫這個匯入的Skill技能包取一個名稱：', sourceLabel) || sourceLabel || '匯入的Skill').trim() || (sourceLabel || '匯入的Skill');
         const trimmedSkillMd = String(skillMdText || '').trim();
         const bundleId = this._createSkillBundle(bundleName, trimmedSkillMd);
@@ -14467,6 +14588,25 @@ ${sourceTool.handlerScript}
             importedToolCount++;
         }
 
+        // tw_stock_db客製: 2026-09-16使用者要求——匯入時把SKILL.md/tools/*.js
+        // 以外的所有檔案（references/*.md、scripts/*.py等任意巢狀路徑）存進
+        // skillFileCache，讓委派時的subagent能透過read_skill_file__<id>按需
+        // 讀取（見_syncSkillBundleDomains），匯出時也能原樣重建回zip（見
+        // _exportSkillZip）——這是這次要補的核心：像Claude一樣完整保留
+        // skill的資料夾結構，不再只認SKILL.md+tools/*.js兩種東西。
+        const files = [];
+        let skippedOversizeCount = 0;
+        for (const entry of (extraFileEntries || []).slice(0, SKILL_IMPORT_MAX_EXTRA_FILES)) {
+            if (!entry.blob || entry.blob.size > SKILL_IMPORT_MAX_FILE_BYTES) { skippedOversizeCount++; continue; }
+            const mimeType = entry.blob.type || this._guessMimeFromSkillFilePath(entry.path);
+            await this.skillFileCache.put(entry.path, mimeType, entry.blob, 'skill_file', `${bundleId}::${entry.path}`);
+            files.push({ path: entry.path, sizeBytes: entry.blob.size, mimeType });
+        }
+        if (files.length) {
+            const bundle = this.advancedSettings.skillBundles.find(b => b.id === bundleId);
+            if (bundle) bundle.files = files;
+        }
+
         this._syncSkillBundleDomains();
         this._saveAdvancedSettings();
         this._renderAdvancedSettings();
@@ -14475,6 +14615,8 @@ ${sourceTool.handlerScript}
         if (trimmedSkillMd) parts.push('已套用SKILL.md知識/人設');
         parts.push(`匯入 ${importedToolCount} 個工具`);
         if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
+        if (files.length) parts.push(`附帶 ${files.length} 個參考資料/腳本檔案`);
+        if (skippedOversizeCount) parts.push(`略過 ${skippedOversizeCount} 個超過大小上限的檔案`);
         alert('Skill 匯入完成：' + parts.join('，'));
     }
 
@@ -14494,7 +14636,17 @@ ${sourceTool.handlerScript}
             for (const entry of zip.file(/^tools\/.+\.js$/i)) {
                 toolFileEntries.push({ path: entry.name, text: await entry.async('string') });
             }
-            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel: file.name });
+            // tw_stock_db客製: 2026-09-16——zip.files是扁平的「完整路徑→entry」
+            // 字典（含資料夾entry，dir:true），這裡多掃一輪把SKILL.md/tools/*.js
+            // 以外剩下的全部收進extraFileEntries（references/scripts/任意巢狀
+            // 資料夾都在內），交給_applyImportedSkillBundle統一存進
+            // skillFileCache，達到完整保留原始資料夾結構的目的。
+            const extraFileEntries = [];
+            for (const [path, entry] of Object.entries(zip.files)) {
+                if (entry.dir || path === 'SKILL.md' || /^tools\/.+\.js$/i.test(path)) continue;
+                extraFileEntries.push({ path, blob: await entry.async('blob') });
+            }
+            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel: file.name });
         } catch (err) {
             alert('.skill 匯入失敗: ' + (err.message || err));
         }
@@ -14507,6 +14659,22 @@ ${sourceTool.handlerScript}
     // 都是使用者主動點按鈕→選資料夾→立即匯入一次的單次動作，不會有「這個
     // 資料夾內容之後被自動載入」的疑慮。使用者在原生資料夾選擇對話框按取消時
     // 瀏覽器丟出的是AbortError，安靜略過不跳錯誤框（跟瀏覽器原生行為一致）。
+    // tw_stock_db客製: 2026-09-16——遞迴走訪整個資料夾（不只表層），收集
+    // 每一個檔案的相對路徑+handle，讓_importSkillFolder能像zip來源一樣收到
+    // references/scripts等任意巢狀路徑的檔案。depth用SKILL_IMPORT_MAX_DEPTH
+    // 擋掉異常深的巢狀（防禦性上限，跟FAP_FIND_MAX_DEPTH同一種精神）。
+    async *_walkSkillFolderFiles(dirHandle, prefix = '', depth = 0) {
+        if (depth > SKILL_IMPORT_MAX_DEPTH) return;
+        for await (const [name, handle] of dirHandle.entries()) {
+            const relPath = prefix ? `${prefix}/${name}` : name;
+            if (handle.kind === 'file') {
+                yield { path: relPath, handle };
+            } else if (handle.kind === 'directory') {
+                yield* this._walkSkillFolderFiles(handle, relPath, depth + 1);
+            }
+        }
+    }
+
     async _importSkillFolder(dirHandle) {
         try {
             let skillMdText = '';
@@ -14523,7 +14691,15 @@ ${sourceTool.handlerScript}
                     }
                 }
             } catch (_) { /* 沒有tools/資料夾就跳過 */ }
-            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, sourceLabel: dirHandle.name || '資料夾' });
+            // tw_stock_db客製: 2026-09-16——遞迴收集SKILL.md/tools/*.js以外的
+            // 全部檔案（references/scripts/任意巢狀資料夾），跟zip來源走同一份
+            // _applyImportedSkillBundle共用邏輯，兩種匯入方式結果完全等價。
+            const extraFileEntries = [];
+            for await (const { path, handle } of this._walkSkillFolderFiles(dirHandle)) {
+                if (path === 'SKILL.md' || /^tools\/.+\.js$/i.test(path)) continue;
+                extraFileEntries.push({ path, blob: await handle.getFile() });
+            }
+            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel: dirHandle.name || '資料夾' });
         } catch (err) {
             if (err && err.name !== 'AbortError') alert('從資料夾匯入 Skill 失敗: ' + (err.message || err));
         }
@@ -21138,11 +21314,35 @@ ${existingNodeSummaries}
                     this._exportSkillZip(exportBtn.dataset.skillBundleExport);
                     return;
                 }
+                // tw_stock_db客製: 2026-09-16——單獨刪除某個技能包底下的一個
+                // 附加檔案，不用整個bundle重新匯入。key格式是`${bundleId}::${path}`
+                // （用第一個`::`切開，因為path本身可能含`/`但不會含`::`）。
+                const skillFileDeleteBtn = event.target.closest('[data-skill-file-delete]');
+                if (skillFileDeleteBtn) {
+                    const key = skillFileDeleteBtn.dataset.skillFileDelete;
+                    const sep = key.indexOf('::');
+                    if (sep < 0) return;
+                    const bundleId = key.slice(0, sep);
+                    const path = key.slice(sep + 2);
+                    const bundle = this.advancedSettings.skillBundles.find(b => b.id === bundleId);
+                    if (!bundle) return;
+                    this.skillFileCache.delete(key).catch(() => {});
+                    bundle.files = (bundle.files || []).filter(f => f.path !== path);
+                    this._syncSkillBundleDomains();
+                    this._saveAdvancedSettings();
+                    this._renderSkillBundleList();
+                    return;
+                }
                 const deleteBtn = event.target.closest('[data-skill-bundle-delete]');
                 if (deleteBtn) {
                     const bundle = this.advancedSettings.skillBundles.find(b => b.id === deleteBtn.dataset.skillBundleDelete);
                     if (!bundle) return;
-                    if (!confirm(`刪除技能包「${bundle.name}」？底下的工具不會被刪除，會改回「未分類」狀態。`)) return;
+                    if (!confirm(`刪除技能包「${bundle.name}」？底下的工具不會被刪除，會改回「未分類」狀態；附加的參考資料/腳本檔案會一併刪除。`)) return;
+                    // tw_stock_db客製: 2026-09-16——跟工具的非破壞性刪除不同：
+                    // 附加檔案是這個技能包專屬的參考資料，沒有「退回未分類、
+                    // 被別的技能包重新認領」的使用情境，刪除bundle時一併清掉，
+                    // 避免skillFileCache累積永遠沒人再讀得到的孤兒檔案。
+                    (bundle.files || []).forEach(f => { this.skillFileCache.delete(`${bundle.id}::${f.path}`).catch(() => {}); });
                     this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter(b => b.id !== bundle.id);
                     this.advancedSettings.customTools.forEach(t => { if (t.skillBundleId === bundle.id) t.skillBundleId = null; });
                     this._syncSkillBundleDomains();
