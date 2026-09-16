@@ -1,8 +1,14 @@
 # FloatingAssistant desktop build script (Windows).
-# Produces dist\win-unpacked\, a folder containing FloatingAssistantApp.exe
-# (the Electron app itself, plain default GUI subsystem, unmodified) and
-# FloatingAssistant.exe (a small PyInstaller-built console-subsystem
-# launcher - the file users actually run, for both GUI and `-p` use).
+# Produces two things in dist\:
+#   - A proper Windows installer ('FloatingAssistant Setup <version>.exe',
+#     electron-builder's "nsis" target) - installs, uninstalls via
+#     Windows' Add/Remove Programs, creates Desktop + Start Menu shortcuts.
+#   - dist\win-unpacked\, the same app as a plain no-install folder.
+# Both contain FloatingAssistantApp.exe (the Electron app itself, plain
+# default GUI subsystem, unmodified) and FloatingAssistant.exe (a small
+# PyInstaller-built console-subsystem launcher - run this one from a
+# terminal for `-p`; shortcuts point at FloatingAssistantApp.exe directly
+# since GUI use never needs the launcher).
 #
 # 2026-09-16 history (kept so this isn't re-litigated): three earlier
 # designs all tried to make ONE Electron .exe handle both GUI and `-p`
@@ -102,17 +108,6 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 # unrelated to architecture at first glance. Passing --x64 explicitly
 # bypasses process.arch detection entirely, regardless of which Node.js
 # build (32-bit or 64-bit) is running this script.
-Write-Host "== electron-builder: packaging Windows app folder ==" -ForegroundColor Cyan
-npx electron-builder --win dir --x64
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "electron-builder failed. If the error mentions 'Cannot create symbolic link' while" -ForegroundColor Yellow
-    Write-Host "extracting winCodeSign, that's a Windows permissions issue, not a project bug:" -ForegroundColor Yellow
-    Write-Host "enable Developer Mode (Settings > Privacy & security > For developers) and retry," -ForegroundColor Yellow
-    Write-Host "or run this script from an elevated (Administrator) PowerShell." -ForegroundColor Yellow
-    throw "electron-builder packaging failed"
-}
-
 # tw_stock_db客製: 2026-09-16——曾經嘗試用--add-data把整個dist\win-unpacked\
 # 打包進launcher.exe裡面做成真正的單一檔案，實測`-p`確實work，但GUI模式
 # 開出來是一片空白（devtools/console看得到Chromium的disk_cache/GPU cache
@@ -120,9 +115,13 @@ if ($LASTEXITCODE -ne 0) {
 # 研判是PyInstaller onefile每次執行都解壓縮到一個新的暫存資料夾，這個
 # 路徑下Chromium的cache/GPU shader cache寫入失敗，連帶讓畫面無法正確
 # render；`-p`用的隱藏視窗不需要真的畫出東西，所以沒受影響、還能正確拿到
-# AI回覆）。這個問題沒有進一步深究根因就先改回來——build出獨立的
-# launcher.exe跟electron-builder的app資料夾放在同一個資料夾（不embed），
-# 這是唯一同時驗證過`-p`跟GUI都正常的組合。
+# AI回覆）。這個問題沒有進一步深究根因就先改回來——launcher.exe改成獨立
+# build，用electron-builder的afterPack hook（build/afterPack.js）複製進
+# electron-builder自己產生的app資料夾（不embed），這是唯一同時驗證過`-p`
+# 跟GUI都正常的組合。
+#
+# launcher要在electron-builder之前先build好，afterPack hook才找得到來源
+# 檔案去複製。
 Write-Host "== Building FloatingAssistant.exe launcher (PyInstaller) ==" -ForegroundColor Cyan
 $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 if (-not $pythonCmd) {
@@ -156,10 +155,35 @@ try {
 } finally {
     Pop-Location
 }
-Copy-Item -Path "launcher\dist\FloatingAssistant.exe" -Destination "dist\win-unpacked\FloatingAssistant.exe" -Force
+
+# tw_stock_db客製: 2026-09-16使用者要求——一個真正的Windows安裝包（可以
+# 安裝、安裝後可以移除、在桌面跟開始功能表建立捷徑），用electron-builder
+# 內建、成熟的「nsis」target（不是這次自己土炮的任何機制）。跟既有的
+# 「dir」target（免安裝、直接執行的資料夾版本）在同一次呼叫裡一起產生
+# ——CLI用`--win nsis dir --x64`（空白分隔多個target），不是分別呼叫兩次
+# （electron-builder同一個platform+arch的多個target會共用同一次unpack，
+# 只會觸發一次afterPack，不會把launcher複製兩次也不會重複打包整個app）。
+# NSIS安裝精靈的捷徑會指向`FloatingAssistantApp.exe`（真正的GUI app本體，
+# 未經修改，桌面/開始功能表雙擊本來就只需要GUI，不需要透過launcher）；
+# `-p`需要的launcher仍然一起裝進安裝目錄，只是沒有快捷方式，習慣終端機
+# 操作的使用者自己導覽到安裝目錄（或加進PATH）執行`FloatingAssistant.exe`。
+Write-Host "== electron-builder: packaging Windows installer + app folder ==" -ForegroundColor Cyan
+npx electron-builder --win nsis dir --x64
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "electron-builder failed. If the error mentions 'Cannot create symbolic link' while" -ForegroundColor Yellow
+    Write-Host "extracting winCodeSign, that's a Windows permissions issue, not a project bug:" -ForegroundColor Yellow
+    Write-Host "enable Developer Mode (Settings > Privacy & security > For developers) and retry," -ForegroundColor Yellow
+    Write-Host "or run this script from an elevated (Administrator) PowerShell." -ForegroundColor Yellow
+    throw "electron-builder packaging failed"
+}
 
 Write-Host ""
-Write-Host "Done. The app folder is dist\win-unpacked\. Run FloatingAssistant.exe in" -ForegroundColor Green
-Write-Host "there for everything - double-click for the GUI, or run it with -p from a" -ForegroundColor Green
-Write-Host "terminal for CLI mode. To distribute, zip that whole folder (FloatingAssistantApp.exe" -ForegroundColor Green
-Write-Host "and its resources need to stay next to FloatingAssistant.exe)." -ForegroundColor Green
+Write-Host "Done. Two outputs in dist\:" -ForegroundColor Green
+Write-Host "  - 'FloatingAssistant Setup <version>.exe' - the installer. Run it, choose an" -ForegroundColor Green
+Write-Host "    install directory, finish - creates Desktop + Start Menu shortcuts and an" -ForegroundColor Green
+Write-Host "    uninstall entry in Windows' Add/Remove Programs. -p works from the install" -ForegroundColor Green
+Write-Host "    directory's FloatingAssistant.exe (no shortcut for that, by design - it's a" -ForegroundColor Green
+Write-Host "    terminal tool, not something you double-click)." -ForegroundColor Green
+Write-Host "  - win-unpacked\ - the same app as a plain folder, no install needed. Run" -ForegroundColor Green
+Write-Host "    FloatingAssistant.exe in there for everything (GUI or -p)." -ForegroundColor Green
