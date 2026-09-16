@@ -221,27 +221,27 @@ PowerShell裸執行時，本身就拿不到一個可靠、能往下傳遞的cons
   自動`pip install pyinstaller`）——這是新增的build時依賴，只影響打包
   流程本身，跟打包完的.exe完全無關（PyInstaller把Python直譯器整個打包進
   `FloatingAssistant.exe`裡，使用者執行時不需要另外安裝Python）。
-- **`dist\FloatingAssistant.exe`是真正單一的一個檔案**：`build.ps1`用
-  PyInstaller的`--add-data`把整個`dist\win-unpacked\`（electron-builder
-  產生的完整Electron app，含`FloatingAssistantApp.exe`跟所有DLL/資源）
-  打包進這支.exe裡面，PyInstaller的`--onefile`bootloader會在**每次執行**
-  自動解壓縮到一個暫存資料夾（`%TEMP%`底下）再從那裡執行——**已知取捨**：
-  這代表每次啟動（不管是雙擊開GUI還是`-p`）都要重新解壓縮一次約250MB的
-  內容，會比之前「資料夾裡兩個檔案、不用每次解壓縮」的版面多幾秒鐘的
-  啟動延遲，這是PyInstaller`--onefile`沒有跨執行快取機制的固有限制，換來
-  的是使用者真的只需要記得/發布一個檔案。
+- **這不是單一檔案，是一個資料夾（`dist\win-unpacked\`）**：裡面有
+  `FloatingAssistant.exe`（launcher）+ `FloatingAssistantApp.exe`（真正的
+  Electron app）+ Electron/Chromium的DLL跟資源檔——這些檔案要維持在同一個
+  資料夾底下、彼此相對位置不變，launcher才找得到app。**曾經嘗試過**把整個
+  app資料夾用PyInstaller的`--add-data`打包進`FloatingAssistant.exe`裡做成
+  真正的單一檔案（讓它在每次執行時自動解壓縮到暫存資料夾）——`-p`確實可以
+  正常運作，但**GUI視窗會整個空白**（Chromium在暫存資料夾路徑下的
+  disk cache/GPU cache建立失敗，`-p`用的隱藏視窗不需要真的畫面渲染所以
+  沒事，但可見的GUI視窗因為render失敗變成空白），沒有繼續深究根因就先改
+  回資料夾形式——這是目前唯一同時驗證過`-p`跟GUI都正常的組合。要發布給
+  別人，把整個`win-unpacked`資料夾（可以重新命名）壓成zip即可。
 
-## 打包成單一執行檔
+## 打包
 
 **Windows**（在Windows機器上，PowerShell）：
 ```powershell
 .\build.ps1
 ```
-輸出是`dist\FloatingAssistant.exe`——單一一個檔案，直接發布/複製這一個
-檔案即可，不用安裝、不會在系統裡留下安裝紀錄。雙擊開GUI；從終端機加
-`-p`執行CLI模式，見上面「Windows平台限制」一節了解為什麼需要這樣、以及
-啟動延遲的已知取捨。（`dist\win-unpacked\`是中間產物，內容已經被打包進
-最終的.exe裡面，不需要另外發布它。）
+輸出在`dist\win-unpacked\`（一個資料夾，不是單一檔案，見上面「Windows
+平台限制」一節說明為什麼）。裡面執行`FloatingAssistant.exe`：雙擊開GUI；
+從終端機加`-p`執行CLI模式。不用安裝、不會在系統裡留下安裝紀錄。
 
 **Linux**（AppImage）：
 ```bash
