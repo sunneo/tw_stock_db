@@ -1,6 +1,13 @@
 node_modules/
 dist/
 renderer/floating-assistant.js
+# tw_stock_db客製: 2026-09-16——每個工作區資料夾（cwd）底下的對話/設定
+# 資料（見main.js的fa:workspace:*/bootstrap.js的localStorage代理）。
+# 正常情況下cwd=desktop-app本身會被looksLikeAppOwnOrSystemLocation()
+# 擋掉、退回使用者家目錄，不該真的寫進這裡；純粹當防呆——萬一開發時用
+# 某種cwd邊界情況（例如非標準的啟動方式）繞過了那個判斷，也不會不小心
+# 把本機對話紀錄/API金鑰commit進版控。
+.floating-assistant/
 # tw_stock_db客製: 見build.sh/build.ps1的說明——打包時從建置機器的
 # FA_BUILTIN_NVAPI_KEY/FA_BUILTIN_OPENROUTER_KEY環境變數產生，故意不進
 # 版控（金鑰值只活在CI/建置者自己的shell環境，不進git history）。也排除

@@ -87,4 +87,22 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   shell: {
     openExternal: (url) => ipcRenderer.invoke("fa:shell:openExternal", url),
   },
+  // tw_stock_db客製: 2026-09-16使用者要求桌面版「在不同資料夾執行」時
+  // 各自獨立的對話+設定——見main.js fa:workspace:*系列handler的說明。
+  // init()只在app啟動、bootstrap.js建構FloatingAssistant之前呼叫一次；
+  // persist()是bootstrap.js的window.localStorage代理每次setItem/
+  // removeItem/clear都會呼叫的寫入端；switch()是Advance Settings「切換
+  // 工作區資料夾」那顆按鈕觸發的動作。全部走一般的invoke（非同步）——
+  // 跟window.prompt/confirm/alert那組不一樣，這裡完全不需要
+  // sendSync/event.returnValue那套同步阻塞機制：初始載入bootstrap.js的
+  // main() IIFE本來就是async、建構FloatingAssistant之前已經在await別的
+  // IPC了，之後的讀取（localStorage.getItem）全部從renderer自己維護的
+  // 記憶體快照回答，不需要每次都往main行程跑一趟，見bootstrap.js的
+  // 說明。
+  workspace: {
+    init: () => ipcRenderer.invoke("fa:workspace:init"),
+    get: () => ipcRenderer.invoke("fa:workspace:get"),
+    persist: (data) => ipcRenderer.invoke("fa:workspace:persist", { data }),
+    switchTo: (newFolder, copiedData) => ipcRenderer.invoke("fa:workspace:switch", { newFolder, copiedData }),
+  },
 });

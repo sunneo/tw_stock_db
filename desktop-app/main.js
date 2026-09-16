@@ -107,6 +107,142 @@ async function getDesktopSettings() {
 async function saveDesktopSettings(settings) {
   await writeJsonSafe(SETTINGS_FILE(), settings);
 }
+// tw_stock_db客製: 2026-09-16——getDesktopSettings()/saveDesktopSettings()
+// 既有的呼叫端（execEnabled/execConfirmRequired那兩處）都是整包物件覆寫，
+// 不是merge——沿用同一份settings.json新增activeWorkspaceFolder欄位時，
+// 直接照抄那個模式會把對方沒帶到的欄位洗掉（例如儲存workspace資料夾時
+// 意外把execEnabled重設成預設值）。這個patch版本先讀現有內容、
+// 再淺層合併，任何呼叫端只要用這個而不是原本兩個直接覆寫的函式，就不用
+// 自己記得每次都要先讀一次舊值。
+async function patchDesktopSettings(patch) {
+  const cur = await getDesktopSettings();
+  const next = { ...cur, ...patch };
+  await saveDesktopSettings(next);
+  return next;
+}
+
+// ============================================================
+// tw_stock_db客製: 2026-09-16使用者要求——桌面版要能在不同資料夾底下
+// 運作，每個資料夾各自獨立的對話紀錄+設定（存在該資料夾底下的隱藏子
+// 資料夾`.floating-assistant/localStorage.json`），而不是像目前這樣
+// 全部使用者共用同一份USER_DATA_DIR() profile。呼應
+// web/floating-assistant.js核心「完全不知道桌面版存在」的host-agnostic
+// 設計——不改floating-assistant.js任何一行，改成在bootstrap.js把整個
+// `window.localStorage`換掉（跟window.prompt/confirm/alert同一招，見
+// 那邊的說明），底層改用這裡的IPC讀寫這支JSON檔，floating-assistant.js
+// 既有的幾十處`localStorage.getItem/setItem`呼叫完全不用碰、自動生效。
+//
+// 「目前使用哪個工作區資料夾」判斷順序：
+//   1. desktop-settings.json裡使用者透過Advance Settings手動選過的
+//      activeWorkspaceFolder（如果那個資料夾還存在的話）——這是一個持續
+//      生效的明確選擇，不是單次session的暫時覆寫，直到使用者自己再換一次
+//      或那個資料夾被刪掉為止。
+//   2. 從來沒手動選過、或選過的資料夾已經不存在時，退回
+//      resolveDefaultWorkspaceFolder()：優先用process.cwd()（讓使用者
+//      習慣「cd到某個專案資料夾再啟動app」的用法能直接生效），但GUI
+//      啟動（雙擊捷徑/圖示）時cwd常常是app自己的安裝目錄或任意位置，不是
+//      使用者真正在工作的資料夾——這種情況判斷不出來是「使用者刻意cd
+//      過去的」還是「作業系統隨便給的」，退回使用者根目錄(app.getPath
+//      ("home"))當保底，不會意外把對話/設定寫進安裝目錄（可能沒有寫入
+//      權限，也不是使用者會預期找到這些檔案的地方）。
+// ============================================================
+const WORKSPACE_DIR_NAME = ".floating-assistant";
+const WORKSPACE_STORAGE_FILENAME = "localStorage.json";
+function workspaceStorageFile(folder) {
+  return path.join(folder, WORKSPACE_DIR_NAME, WORKSPACE_STORAGE_FILENAME);
+}
+
+// tw_stock_db客製: 判斷cwd「看起來像不像使用者自己選的工作資料夾」——跟
+// app自己的程式碼/資源位置比對（開發模式`cd desktop-app && npm start`
+// 的專案根目錄、或打包後.exe/AppImage解壓縮/資源所在目錄），或乾脆是
+// 檔案系統根目錄（/、C:\這類，幾乎不可能是使用者真正想用的工作資料夾），
+// 符合任一種都當作「這不是使用者刻意選的」訊號，交給呼叫端退回home。
+// 這是啟發式判斷（這個專案裡沒有其他地方處理過這個問題，見這次研究時的
+// 確認），不是100%準確，但已經涵蓋最常見的「GUI雙擊啟動」情境。
+function looksLikeAppOwnOrSystemLocation(cwd) {
+  const resolved = path.resolve(cwd);
+  if (resolved === path.parse(resolved).root) return true;
+  const candidates = [
+    app.getAppPath(),
+    process.resourcesPath ? path.dirname(process.resourcesPath) : null,
+    __dirname,
+  ].filter(Boolean).map((p) => path.resolve(p));
+  return candidates.some((c) => resolved === c);
+}
+
+function resolveDefaultWorkspaceFolder() {
+  const cwd = process.cwd();
+  if (!looksLikeAppOwnOrSystemLocation(cwd)) return cwd;
+  return app.getPath("home");
+}
+
+// tw_stock_db客製: 每次app啟動只解析一次（見fa:workspace:init），之後
+// fa:workspace:persist/fa:workspace:switch都讀寫同一個記憶體變數，不用
+// 每次都重新走一次「使用者有沒有手動選過」的判斷邏輯。
+let activeWorkspaceFolder = null;
+
+async function resolveActiveWorkspaceFolder() {
+  const settings = await getDesktopSettings();
+  const saved = typeof settings.activeWorkspaceFolder === "string" ? settings.activeWorkspaceFolder.trim() : "";
+  if (saved) {
+    try {
+      const st = await fs.stat(saved);
+      if (st.isDirectory()) return saved;
+    } catch (_) {
+      // 資料夾已經不存在（可能被移動/刪除/外接硬碟沒接上）——退回預設值，
+      // 不要直接報錯讓app整個起不來。
+    }
+  }
+  return resolveDefaultWorkspaceFolder();
+}
+
+ipcMain.handle("fa:workspace:init", async () => {
+  activeWorkspaceFolder = await resolveActiveWorkspaceFolder();
+  const data = await readJsonSafe(workspaceStorageFile(activeWorkspaceFolder), {});
+  return { folder: activeWorkspaceFolder, data };
+});
+
+ipcMain.handle("fa:workspace:get", async () => {
+  return { folder: activeWorkspaceFolder || (await resolveActiveWorkspaceFolder()) };
+});
+
+// tw_stock_db客製: renderer端的window.localStorage代理（見bootstrap.js）
+// 每次setItem/removeItem/clear都會把「目前完整的key-value快照」（不是單一
+// 一個key的增量）送過來整包覆寫這個資料夾的localStorage.json——這裡故意
+// 不做read-modify-write（讀舊檔案、改一個key、寫回去），因為renderer端
+// 自己就維護著一份完整、即時的記憶體快照（每次都是single source of
+// truth），整包覆寫比read-modify-write更不容易因為並發呼叫順序問題產生
+// 不一致的中間狀態；renderer端(bootstrap.js)自己也會把連續呼叫串成一個
+// promise chain確保送達main行程的順序，這裡不用再處理排隊。
+ipcMain.handle("fa:workspace:persist", async (_evt, { data } = {}) => {
+  if (!activeWorkspaceFolder) return { ok: false, error: "尚未初始化工作區" };
+  await writeJsonSafe(workspaceStorageFile(activeWorkspaceFolder), data || {});
+  return { ok: true };
+});
+
+// tw_stock_db客製: 使用者要求「如果目前已經有設定，在裡面改folder，就
+// copy configure過去，但是對話清除」——這裡只負責機械式的動作：把
+// copiedData（呼叫端/renderer已經先過濾掉對話相關的key，只留設定類的
+// key，見bootstrap.js那邊_WORKSPACE_SETTINGS_KEYS的說明）寫進新資料夾，
+// 更新「目前使用哪個工作區」的持續性設定，回傳新資料夾路徑讓renderer
+// 重新整理頁面套用——「要保留哪些key、清除哪些key」這個判斷完全交給
+// renderer端（它才知道CHAT_HISTORY_KEY/ADVANCED_SETTINGS_KEY等實際key
+// 名稱，這裡刻意不寫死任何floating-assistant.js的key常數，維持
+// host-agnostic的分工原則）。
+ipcMain.handle("fa:workspace:switch", async (_evt, { newFolder, copiedData } = {}) => {
+  const target = String(newFolder || "").trim();
+  if (!target) return { ok: false, error: "缺少newFolder參數" };
+  try {
+    const st = await fs.stat(target);
+    if (!st.isDirectory()) return { ok: false, error: `「${target}」不是資料夾` };
+  } catch (err) {
+    return { ok: false, error: `無法存取「${target}」：${String(err.message || err)}` };
+  }
+  await writeJsonSafe(workspaceStorageFile(target), copiedData || {});
+  activeWorkspaceFolder = target;
+  await patchDesktopSettings({ activeWorkspaceFolder: target });
+  return { ok: true, folder: target };
+});
 
 // 優先順序：環境變數（給想用CI/系統層級設定的使用者）> SECRETS_FILE()
 // （使用者要求的「server configure」，人可以直接編輯這個JSON檔，也是
@@ -1678,6 +1814,77 @@ function createWindow() {
           console.log("[stale-port-phase2] result:\n" + result);
         } catch (err) {
           console.log("[stale-port-phase2] error: " + err);
+        }
+      }, 1500);
+    });
+  }
+
+  // tw_stock_db客製: 2026-09-16——驗證每資料夾獨立的對話/設定儲存（見
+  // fa:workspace:*系列handler跟bootstrap.js window.localStorage代理的
+  // 說明）。真正的端到端驗證（cwd-based資料夾偵測、跨行程重開後資料還在）
+  // 靠呼叫端bash腳本用不同cwd啟動好幾次真正的app來做（見呼叫端說明）；
+  // 這個測試只驗證單次啟動內：(1) 解析出來的workspace資料夾符合預期、
+  // (2) window.localStorage真的是代理物件（不是原生的）、(3) 寫入的資料
+  // 真的能透過desktopAPI.workspace.get()對應的資料夾路徑在磁碟上查到、
+  // (4) 切換工作區資料夾時「設定複製、對話清除」的邏輯正確執行。
+  if (process.env.FA_DEBUG_WORKSPACE_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const result = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wsInfo = await window.desktopAPI.workspace.get();
+              out.resolvedFolder = wsInfo.folder;
+
+              // 寫入一些測試資料，確認localStorage代理真的把值存進去、
+              // 讀得出來（in-memory快照+已經非同步送去main行程persist）。
+              localStorage.setItem('__workspace_test_key__', 'hello-workspace');
+              out.readBack = localStorage.getItem('__workspace_test_key__');
+              out.notWindowNativeStorage = window.localStorage !== Storage.prototype && typeof window.localStorage.getItem === 'function' && !(window.localStorage instanceof Storage);
+
+              // 驗證Advance Settings「桌面版設定」分頁真的顯示出正確的
+              // 工作區資料夾路徑（不是只有底層IPC資料正確，UI也要正確）。
+              window.fa._openAdvancedModal();
+              document.querySelector('#ai-advanced-modal .ai-advanced-cat[data-cat="desktop-app"]').click();
+              const pathEl = document.getElementById('desktop-workspace-folder-path');
+              out.uiShowsCorrectFolder = pathEl ? pathEl.textContent === wsInfo.folder : false;
+              out.uiFolderPathText = pathEl ? pathEl.textContent : null;
+              const switchBtnExists = !!document.getElementById('desktop-workspace-switch-btn');
+              out.switchButtonExists = switchBtnExists;
+              window.fa._closeAdvancedModal();
+
+              // 給非同步的persist一點時間完成，確認磁碟上真的有這個值
+              // （呼叫端bash會直接讀檔案內容核對）。
+              await new Promise(r => setTimeout(r, 500));
+
+              // 測試切換工作區：設定類key應該被複製、對話類key應該被清除。
+              window.fa.advancedSettings.gitHubToken = 'test-token-should-copy';
+              window.fa._saveAdvancedSettings();
+              window.fa.messages.push({ role: 'user', content: 'this message should NOT survive a workspace switch' });
+              window.fa._persistChatHistory();
+              await new Promise(r => setTimeout(r, 300));
+
+              const targetFolder = ${JSON.stringify(process.env.FA_DEBUG_WORKSPACE_SWITCH_TARGET || "")};
+              if (targetFolder) {
+                const CHAT_KEYS = new Set([window.fa.CHAT_HISTORY_KEY, window.fa.HISTORY_KEY].filter(Boolean));
+                const copiedData = {};
+                // 沒有直接暴露bootstrap.js內部的workspaceCache給外部，這裡改用
+                // 跟它同一套邏輯：掃過目前所有localStorage key自己重建。
+                for (let i = 0; i < localStorage.length; i++) {
+                  const k = localStorage.key(i);
+                  if (!CHAT_KEYS.has(k)) copiedData[k] = localStorage.getItem(k);
+                }
+                const switchResult = await window.desktopAPI.workspace.switchTo(targetFolder, copiedData);
+                out.switchResult = switchResult;
+              }
+
+              return JSON.stringify(out, null, 2);
+            })()
+          `);
+          console.log("[workspace-test] result:\n" + result);
+        } catch (err) {
+          console.log("[workspace-test] error: " + err);
         }
       }, 1500);
     });

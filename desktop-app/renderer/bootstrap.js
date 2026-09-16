@@ -100,16 +100,16 @@ class ElectronDirectFileHandle {
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const st = await window.desktopAPI.fs.stat(this.rootId, this.relPath);
-    const blob = new Blob([bytes]);
-    return {
-      name: this.name,
-      type: "",
-      size: st.size,
-      lastModified: st.mtimeMs,
-      arrayBuffer: () => blob.arrayBuffer(),
-      text: () => blob.text(),
-      slice: (...a) => blob.slice(...a),
-    };
+    // tw_stock_db客製: 2026-09-16修bug——這裡原本回傳一個duck-type物件
+    // （帶`arrayBuffer: () => blob.arrayBuffer()`這種函式屬性），大部分
+    // 呼叫端（.text()/.arrayBuffer()/.slice()）用起來沒問題，但Skill資料夾
+    // 匯入（_importSkillFolder）會把這個物件整包塞進IndexedDB
+    // （FileCache.put，見floating-assistant.js），structured clone
+    // algorithm不能複製函式，直接丟出`could not be cloned`。改回傳真正的
+    // File實體（Blob的子類別，原生支援structured clone），這裡跟
+    // JSZip.loadAsync().file().async('blob')回傳的真Blob就完全等價，
+    // 桌面版資料夾匯入才會跟zip/.skill匯入行為一致。
+    return new File([bytes], this.name, { lastModified: st.mtimeMs });
   }
   async createWritable() {
     const chunks = [];
@@ -225,6 +225,81 @@ function patchCloudflareWording(root) {
 // 4. 建構FloatingAssistant、套用桌面版override、註冊desktop_ops domain。
 // ---------------------------------------------------------------------
 (async function main() {
+  // tw_stock_db客製: 2026-09-16使用者要求——桌面版要能在不同資料夾底下
+  // 運作，每個資料夾各自獨立的對話紀錄+設定（見main.js fa:workspace:*
+  // 系列handler的完整說明：判斷順序/預設資料夾邏輯都寫在那邊，這裡只管
+  // renderer端這一半）。這一步必須是整個main() IIFE最先做、且要await
+  // 完成才能繼續——下面new FloatingAssistant()建構子本身就會同步呼叫
+  // 好幾次localStorage.getItem/setItem（還原對話紀錄/Advance設定/指令
+  // 輸入history，見那邊建構子的說明），如果先建構完才換掉
+  // window.localStorage（跟下面window.prompt/confirm/alert那組「先建構、
+  // 後覆寫」的順序不一樣，不能照抄），建構子這幾次讀寫會打到瀏覽器原生
+  // localStorage（永遠是空的、也不會真的被存檔），使用者會發現「明明就在
+  // 這個資料夾、卻看不到任何之前的對話/設定」。
+  const workspaceInit = await window.desktopAPI.workspace.init();
+  let activeWorkspaceFolder = workspaceInit.folder;
+  const workspaceCache = new Map(Object.entries(workspaceInit.data || {}));
+  // tw_stock_db客製: 寫入排隊成一條promise chain，保證main行程收到的
+  // 寫入順序跟這裡呼叫setItem/removeItem/clear的順序一致——main.js
+  // fa:workspace:persist選擇「整包覆寫、不做read-modify-write」是為了
+  // 避免並發寫入互相覆蓋，前提是這裡真的按照呼叫順序把每次的完整快照
+  // 送過去，不能讓後一次呼叫的invoke先於前一次抵達main行程（fire-and-
+  // forget的話，理論上有機會因為IPC/事件迴圈排程而不按順序抵達）。
+  let workspaceWriteChain = Promise.resolve();
+  const persistWorkspace = () => {
+    workspaceWriteChain = workspaceWriteChain.then(() =>
+      window.desktopAPI.workspace.persist(Object.fromEntries(workspaceCache))
+    );
+    return workspaceWriteChain;
+  };
+  // tw_stock_db客製: 整個換掉window.localStorage（跟下面window.prompt/
+  // confirm/alert同一招），floating-assistant.js核心幾十處既有的
+  // localStorage.getItem/setItem/removeItem呼叫完全不用改一行、自動變成
+  // 「這個資料夾專屬」。讀取一律從這裡的記憶體快照（workspaceCache，
+  // 開機時從main行程一次載入，見上面）回答，不用每次都IPC往返；寫入才
+  // 需要非同步通知main行程落地到磁碟——localStorage.setItem()本來就
+  // 不要求真的等到「已經寫進磁碟」才返回（瀏覽器原生實作也是這樣），
+  // 這正是這裡不需要像window.prompt那樣用sendSync同步阻塞的原因。
+  // tw_stock_db客製: `window.localStorage`在現代瀏覽器/Electron是
+  // 只有getter、沒有setter的存取器屬性（定義在Window.prototype上）——
+  // 直接`window.localStorage = {...}`這樣單純賦值，在"use strict"模式下
+  // 會直接丟`TypeError: Cannot set property localStorage of #<Window>
+  // which has only a getter`（實測撞過，不是理論上的風險），一定要用
+  // Object.defineProperty()明確蓋掉這個屬性描述子（configurable+
+  // writable:true，之後如果需要還能再次覆寫/還原）才能真正換掉。
+  // window.prompt/confirm/alert沒有這個問題是因為它們本來就是Window
+  // 原型鏈上的一般（可寫）方法，不是像localStorage/sessionStorage這種
+  // 特殊的存取器屬性。
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem(key) {
+        const v = workspaceCache.get(String(key));
+        return v === undefined ? null : v;
+      },
+      setItem(key, value) {
+        workspaceCache.set(String(key), String(value));
+        persistWorkspace();
+      },
+      removeItem(key) {
+        workspaceCache.delete(String(key));
+        persistWorkspace();
+      },
+      clear() {
+        workspaceCache.clear();
+        persistWorkspace();
+      },
+      key(index) {
+        const keys = [...workspaceCache.keys()];
+        return index >= 0 && index < keys.length ? keys[index] : null;
+      },
+      get length() {
+        return workspaceCache.size;
+      },
+    },
+  });
+
   // tw_stock_db客製: 2026-09-15使用者要求——主題切換要放在主畫面。桌面版
   // 原本完全沒有設定過<html data-theme>，floating-assistant.js核心的
   // _isLightTheme()預設規則是「data-theme !== 'dark' 就算淺色」，等於
@@ -1053,6 +1128,14 @@ function patchCloudflareWording(root) {
           <p class="ai-advanced-hint">AI是否可以透過run_command在這台電腦上直接執行程式/指令——執行本身風險最高，預設每次執行前都會跳出原生確認視窗，顯示完整指令內容，由你親自按「執行」才會真的跑。</p>
           <div id="desktop-settings-exec-slot" style="display:flex; flex-direction:column; gap:8px;"></div>
         </div>
+        <div class="ai-advanced-stack">
+          <label class="ai-advanced-label">工作區資料夾</label>
+          <p class="ai-advanced-hint">對話紀錄跟這裡的所有設定都存在這個資料夾底下的隱藏子資料夾<code>.floating-assistant</code>裡，不同資料夾各自獨立。預設是啟動當下的目錄（例如從終端機<code>cd</code>到某個專案再啟動）；GUI捷徑啟動時目錄常常不是你真正在用的資料夾，可以在這裡手動切換。切換資料夾時，目前的設定（金鑰／模型清單／偏好等）會複製過去，但目前的對話紀錄不會帶過去——新資料夾一律是全新的對話。</p>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <code id="desktop-workspace-folder-path" style="flex:1; min-width:200px; padding:6px 8px; background:rgba(0,0,0,0.2); border-radius:6px; font-size:12px; word-break:break-all;"></code>
+            <button type="button" id="desktop-workspace-switch-btn" class="ai-advanced-btn">切換資料夾…</button>
+          </div>
+        </div>
       `;
       content.appendChild(pane);
 
@@ -1065,6 +1148,42 @@ function patchCloudflareWording(root) {
       if (execEnabledLabel) { execEnabledLabel.style.cssText = "display:flex; align-items:center; gap:6px; cursor:pointer;"; execSlot.appendChild(execEnabledLabel); }
       if (execConfirmLabel) { execConfirmLabel.style.cssText = "display:flex; align-items:center; gap:6px; cursor:pointer;"; execSlot.appendChild(execConfirmLabel); }
       relocatedContainer.remove();
+
+      const workspacePathEl = pane.querySelector("#desktop-workspace-folder-path");
+      if (workspacePathEl) workspacePathEl.textContent = activeWorkspaceFolder;
+      const workspaceSwitchBtn = pane.querySelector("#desktop-workspace-switch-btn");
+      if (workspaceSwitchBtn) {
+        workspaceSwitchBtn.addEventListener("click", async () => {
+          const picked = await window.desktopAPI.roots.browse(activeWorkspaceFolder);
+          if (!picked || picked === activeWorkspaceFolder) return;
+          // tw_stock_db客製: 使用者原話「如果目前已經有設定，在裡面改
+          // folder，就copy configure過去，但是對話清除」——這裡決定哪些
+          // key算「設定」（複製）、哪些算「對話」（清除），只有這裡需要
+          // 知道floating-assistant.js的實際key常數（main.js刻意不寫死
+          // 任何一個，見fa:workspace:switch的說明，維持host-agnostic
+          // 分工原則）：CHAT_HISTORY_KEY（訊息本體）／HISTORY_KEY（打過
+          // 的指令輸入歷史）算「對話」，清除；其餘（Advance設定、legacy
+          // 單一API欄位、model benchmark卡片、原生tool_calls探測快取等）
+          // 都算「設定」，複製過去。
+          const ok = window.confirm(
+            `確定要切換工作區資料夾嗎？\n\n新資料夾：\n${picked}\n\n` +
+            `目前的設定（API金鑰／模型清單／偏好設定等）會複製過去，` +
+            `但目前的對話紀錄不會帶過去（新資料夾會是全新的對話）。這個動作無法復原，確定要繼續嗎？`
+          );
+          if (!ok) return;
+          const CHAT_RELATED_KEYS = new Set([fa.CHAT_HISTORY_KEY, fa.HISTORY_KEY].filter(Boolean));
+          const copiedData = {};
+          for (const [k, v] of workspaceCache.entries()) {
+            if (!CHAT_RELATED_KEYS.has(k)) copiedData[k] = v;
+          }
+          const result = await window.desktopAPI.workspace.switchTo(picked, copiedData);
+          if (!result.ok) {
+            window.alert(`切換工作區資料夾失敗：${result.error}`);
+            return;
+          }
+          location.reload();
+        });
+      }
 
       cat.addEventListener("click", () => {
         advancedModal.querySelectorAll(".ai-advanced-cat").forEach((c) => c.classList.toggle("active", c === cat));
