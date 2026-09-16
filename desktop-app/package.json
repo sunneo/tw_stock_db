@@ -24,6 +24,7 @@
       "main.js",
       "preload.js",
       "local-proxy.js",
+      "browser-search.js",
       "cli-format.js",
       "renderer/**/*",
       "build/icon.png",
