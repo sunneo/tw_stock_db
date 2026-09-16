@@ -2219,7 +2219,17 @@ const FA_ASSET_URLS = {
     // 大型資源維持各自獨立不動）。
     jqWasmJsBase: 'https://cdn.jsdelivr.net/npm/jq-wasm@3.0.0-jq-1.8.2/',
     xmlParserJsBase: 'https://cdn.jsdelivr.net/npm/fast-xml-parser@5.11.1/lib/fxparser.min.js',
-    shellToolsBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/shell-tools-backup/',
+    // tw_stock_db客製: 2026-09-16——刻意用jsDelivr的GitHub鏡射模式
+    // （cdn.jsdelivr.net/gh/user/repo@branch/path），不是
+    // raw.githubusercontent.com直接讀，理由跟pyodideBackupBase完全一樣：
+    // jq-wasm的瀏覽器ESM build是browser.mjs+chunk-*.mjs+build/jq.wasm三個
+    // 檔案彼此用relative import互相參照，raw.githubusercontent.com送出
+    // text/plain+nosniff會讓原生import()直接拒絕執行、也沒辦法像單一檔案
+    // 的wasi-sh bundle那樣包Blob URL繞過（Blob URL沒有對應的相對路徑基準，
+    // relative import會解析失敗）——jsDelivr鏡射送出正確的JS mimetype，
+    // 原生import()可以直接用，兩個檔案間的relative import也能正確解析回
+    // 同一個鏡射網址底下的其他檔案。
+    shellToolsBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@shell-tools-backup/',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -11323,20 +11333,22 @@ ${sourceTool.handlerScript}
                 const mod = await import(this._viaAssetProxy(FA_ASSET_URLS.jqWasmJsBase + 'dist/browser.mjs'));
                 loadJq = mod.loadJq;
             } catch (primaryErr) {
-                let buffer;
+                // tw_stock_db客製: 2026-09-16——jq-wasm的瀏覽器ESM build是
+                // browser.mjs+chunk-*.mjs+build/jq.wasm三個檔案彼此用相對
+                // 路徑import，不能像單一檔案的wasi-sh.bundle.mjs那樣先fetch
+                // 成文字包Blob URL再import()——relative import是相對「這個
+                // 模組自己的URL」解析，Blob URL沒有對應的相對路徑基準，會
+                // 直接解析失敗。改用跟pyodideBackupBase同一招：jsDelivr的
+                // GitHub鏡射模式（cdn.jsdelivr.net/gh/user/repo@branch/path）
+                // 讀自家分支，這個模式送出正確的JS mimetype，原生import()
+                // 可以直接用、relative import也能正確解析回同一個鏡射網址
+                // 底下的其他檔案（不是raw.githubusercontent.com那種
+                // nosniff會擋native import()的來源）。
                 try {
-                    buffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.shellToolsBackupBase, 'jq-wasm/browser.mjs');
+                    const mod = await import(this._viaAssetProxy(FA_ASSET_URLS.shellToolsBackupBase + 'jq-wasm/browser.mjs'));
+                    loadJq = mod.loadJq;
                 } catch (backupErr) {
                     throw new Error(`jq 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
-                }
-                const text = new TextDecoder('utf-8').decode(buffer);
-                const blob = new Blob([text], { type: 'text/javascript' });
-                const blobUrl = URL.createObjectURL(blob);
-                try {
-                    const mod = await import(blobUrl);
-                    loadJq = mod.loadJq;
-                } finally {
-                    URL.revokeObjectURL(blobUrl);
                 }
             }
             this._jqInstance = await loadJq();
