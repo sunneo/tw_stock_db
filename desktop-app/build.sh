@@ -3,7 +3,7 @@
 # 預設打包Linux AppImage（單一可執行檔，不需要安裝，加上執行權限就能跑）。
 # 用法：
 #   ./build.sh            # 打包 Linux AppImage
-#   ./build.sh win        # 打包 Windows portable exe（跨平台編譯需要wine，
+#   ./build.sh win        # 打包 Windows app資料夾（跨平台編譯需要wine，
 #                          # 建議直接在Windows上用build.ps1，比較不會踩雷）
 #   SKIP_INSTALL=1 ./build.sh   # 跳過npm install
 set -euo pipefail
@@ -66,8 +66,22 @@ case "$TARGET" in
     npx electron-builder --linux AppImage --x64
     ;;
   win)
-    echo "== electron-builder 打包 Windows portable exe（跨平台編譯，需要系統已裝wine）=="
-    npx electron-builder --win portable --x64
+    # tw_stock_db客製: 2026-09-16在真實Windows機器上實測後改的——原本用
+    # electron-builder的「portable」target（單一自解壓縮.exe），但`-p`
+    # 在這個格式下無法穩定運作：portable target的自解壓縮外殼本身也是
+    # GUI subsystem行程，從PowerShell裸執行時完全沒有可靠的console
+    # handle可以往下relay（實測用真的GUI/console subsystem測試程式配合
+    # 碼表量過：PowerShell在~5毫秒內就把控制權還給下一行指令，完全沒有
+    # 等；讓這個沒有console handle的行程spawn一個console subsystem子
+    # 行程，Windows的預設行為是幫子行程另外開一個全新、看不到的console
+    # 視窗，不是接上使用者看得到的那個）。改用「dir」target（電腦上的
+    # 一個資料夾，沒有自解壓縮這一層），main.js搭配build/afterPack.js
+    # 自動產生的FloatingAssistant-cli.exe（PE header patch成console
+    # subsystem的副本）直接放在同一個資料夾，使用者直接執行它——這是
+    # 唯一實測驗證過真的可靠的情境（沒有中間GUI subsystem行程relay給
+    # 別的行程這一步）。
+    echo "== electron-builder 打包 Windows app資料夾（跨平台編譯，需要系統已裝wine）=="
+    npx electron-builder --win dir --x64
     ;;
   *)
     echo "未知的目標平台：$TARGET（可用 linux 或 win）" >&2
