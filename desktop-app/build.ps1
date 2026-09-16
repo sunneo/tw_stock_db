@@ -24,17 +24,40 @@ Copy-Item -Path "..\web\floating-assistant.js" -Destination "renderer\floating-a
 # Bakes in a default/free-tier key so first-time users don't need to supply
 # their own before the app is usable; anything the user sets themselves
 # (Advance Settings / secrets.json) always overrides it (see main.js
-# getSecrets()). The key value is read only from this build machine's
+# getSecrets()). The key value normally comes from this build machine's
 # environment (FA_BUILTIN_NVAPI_KEY / FA_BUILTIN_OPENROUTER_KEY, e.g. CI
-# secrets) - it is never hardcoded in source. If those env vars are unset,
-# this writes an empty object, which is a no-op (same behavior as before
-# this feature existed).
-Write-Host "== Generating builtin-secrets.json (from FA_BUILTIN_NVAPI_KEY / FA_BUILTIN_OPENROUTER_KEY) ==" -ForegroundColor Cyan
-$builtinSecrets = @{
-    NVAPI_KEY         = if ($env:FA_BUILTIN_NVAPI_KEY) { $env:FA_BUILTIN_NVAPI_KEY } else { "" }
-    OPENROUTER_API_KEY = if ($env:FA_BUILTIN_OPENROUTER_KEY) { $env:FA_BUILTIN_OPENROUTER_KEY } else { "" }
+# secrets) - it is never hardcoded in source.
+#
+# 2026-09-16 user-reported bug: propagating these env vars through a
+# `cmd /c "set X=Y && ... && powershell -File build.ps1"` one-liner didn't
+# reliably reach this script on their machine - the packaged app came out
+# with no builtin key even though the vars looked correctly set on the
+# command line. Root cause of THAT specific failure was never pinned down
+# (could be env var propagation through the nested cmd/powershell hop, could
+# be something else) - but rather than keep chasing it, the user explicitly
+# asked for a direct, foolproof place to just type the key in. So: if
+# neither env var is set AND builtin-secrets.json already exists (e.g. you
+# hand-edited it), leave it alone instead of unconditionally overwriting it
+# with an empty object. That gives a second, always-reliable path: open
+# `builtin-secrets.json` in this folder, fill in NVAPI_KEY/OPENROUTER_API_KEY
+# by hand, save, then build WITHOUT setting the env vars - your manual values
+# survive the build. Setting the env vars still works and still takes
+# precedence (regenerates the file every time), for anyone who prefers that
+# route (e.g. CI).
+Write-Host "== Generating builtin-secrets.json (from FA_BUILTIN_NVAPI_KEY / FA_BUILTIN_OPENROUTER_KEY, or a hand-edited file) ==" -ForegroundColor Cyan
+if ($env:FA_BUILTIN_NVAPI_KEY -or $env:FA_BUILTIN_OPENROUTER_KEY) {
+    $builtinSecrets = @{
+        NVAPI_KEY         = if ($env:FA_BUILTIN_NVAPI_KEY) { $env:FA_BUILTIN_NVAPI_KEY } else { "" }
+        OPENROUTER_API_KEY = if ($env:FA_BUILTIN_OPENROUTER_KEY) { $env:FA_BUILTIN_OPENROUTER_KEY } else { "" }
+    }
+    $builtinSecrets | ConvertTo-Json | Set-Content -Path "builtin-secrets.json" -Encoding utf8
+    Write-Host "Wrote builtin-secrets.json from environment variables." -ForegroundColor Cyan
+} elseif (Test-Path "builtin-secrets.json") {
+    Write-Host "Env vars not set - keeping existing builtin-secrets.json as-is (e.g. a hand-edited key)." -ForegroundColor Cyan
+} else {
+    '{"NVAPI_KEY":"","OPENROUTER_API_KEY":""}' | Set-Content -Path "builtin-secrets.json" -Encoding utf8
+    Write-Host "No env vars and no existing file - wrote an empty builtin-secrets.json (edit it by hand to bake in a key; future builds without the env vars will keep your edits)." -ForegroundColor Cyan
 }
-$builtinSecrets | ConvertTo-Json | Set-Content -Path "builtin-secrets.json" -Encoding utf8
 
 if (-not $SkipInstall) {
     Write-Host "== npm install ==" -ForegroundColor Cyan
