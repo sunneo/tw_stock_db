@@ -9931,6 +9931,18 @@ ${sourceTool.handlerScript}
             micBtn.style.background = palette.detailBg;
             micBtn.style.color = palette.detailText;
         }
+        // tw_stock_db客製: 2026-09-16使用者實測回報——切換到淺色主題時
+        // #ai-header-model-name（標題列的模型名稱小字）跟#ai-response-indicator
+        // （輸入框下方「✅ 已完成」狀態文字）不容易看清楚。同一個根因：兩者
+        // 都是_initUI()組innerHTML時用當下palette.detailText寫死inline
+        // style，如果一開始是用深色主題mount（見bootstrap.js預設'dark'的
+        // 說明），detailText會是深色主題那組淺灰色（給深色背景看的），切到
+        // 淺色主題後這個顏色留在原地沒有更新，淺灰字疊在白色背景上對比度
+        // 明顯不足。
+        const headerModelName = document.getElementById('ai-header-model-name');
+        if (headerModelName) headerModelName.style.color = palette.detailText;
+        const responseIndicator = document.getElementById('ai-response-indicator');
+        if (responseIndicator) responseIndicator.style.color = palette.detailText;
         inputWrap.style.background = palette.windowBg;
         inputWrap.style.borderTopColor = palette.windowBorder;
         inputText.style.background = palette.inputBg;
@@ -20513,7 +20525,7 @@ ${existingNodeSummaries}
                     </div>
                     <div class="ai-advanced-footer">
                         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                            <span style="font-size:12px; color:#94a3b8;">全部內容以 JSON 格式儲存在 persistent localStorage。</span>
+                            <span class="ai-advanced-hint" style="font-size:12px;">全部內容以 JSON 格式儲存在 persistent localStorage。</span>
                             <button type="button" id="ai-settings-export-btn" class="ai-advanced-btn">匯出設定</button>
                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入設定<input type="file" id="ai-settings-import-input" accept=".json" style="display:none;"></label>
                             <button type="button" id="ai-conversation-export-json-btn" class="ai-advanced-btn">匯出對話(JSON)</button>
