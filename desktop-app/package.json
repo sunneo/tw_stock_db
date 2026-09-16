@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist:win": "electron-builder --win portable",
+    "dist:win": "electron-builder --win dir",
     "dist:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
@@ -29,9 +29,10 @@
       "build/icon.png",
       "builtin-secrets.json"
     ],
+    "afterPack": "build/afterPack.js",
     "win": {
       "target": [
-        { "target": "portable", "arch": ["x64"] }
+        { "target": "dir", "arch": ["x64"] }
       ],
       "icon": "build/icon.ico"
     },

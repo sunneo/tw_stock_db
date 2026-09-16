@@ -1,6 +1,24 @@
 # FloatingAssistant desktop build script (Windows).
-# Produces a single portable GUI executable via electron-builder's
-# "portable" target - no installer, just run the .exe.
+# Produces an unpacked folder (electron-builder's "dir" target) containing
+# two executables that share the same resources: FloatingAssistant.exe
+# (GUI, double-click as usual) and FloatingAssistant-cli.exe (same app,
+# PE header patched to console subsystem by build/afterPack.js - run this
+# one for everything from a terminal, including `-p`).
+#
+# 2026-09-16: this used to produce a single self-extracting "portable" .exe
+# via electron-builder's "portable" target. Switched away from that after
+# live testing on real Windows hardware proved `-p` fundamentally cannot
+# work reliably through that format: the portable target's self-extracting
+# wrapper is itself a GUI-subsystem process, and a GUI-subsystem process
+# launched bare from PowerShell never receives a usable console handle to
+# relay to anything it spawns (confirmed with timed tests against real
+# GUI/console-subsystem binaries - PowerShell returns control in ~5ms
+# without waiting, and spawning a console-subsystem child from that
+# process gets Windows to allocate it a new, invisible console window
+# instead of attaching to the visible one). The "dir" target avoids this
+# entirely: there's no self-extraction step, so FloatingAssistant-cli.exe
+# is a plain console-subsystem process launched directly by the user's own
+# shell, which is the one scenario that's actually been verified to work.
 #
 # Usage:
 #   .\build.ps1              # full flow: sync engine + npm install + package
@@ -82,8 +100,8 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 # unrelated to architecture at first glance. Passing --x64 explicitly
 # bypasses process.arch detection entirely, regardless of which Node.js
 # build (32-bit or 64-bit) is running this script.
-Write-Host "== electron-builder: packaging Windows portable executable ==" -ForegroundColor Cyan
-npx electron-builder --win portable --x64
+Write-Host "== electron-builder: packaging Windows app folder ==" -ForegroundColor Cyan
+npx electron-builder --win dir --x64
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "electron-builder failed. If the error mentions 'Cannot create symbolic link' while" -ForegroundColor Yellow
@@ -94,4 +112,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "Done. The executable is in dist\ (single .exe, no installation needed)." -ForegroundColor Green
+Write-Host "Done. The app folder is in dist\win-unpacked\. Distribute that whole folder" -ForegroundColor Green
+Write-Host "(zip it). Run FloatingAssistant-cli.exe for everything - double-click for the" -ForegroundColor Green
+Write-Host "GUI, or run it with -p from a terminal for CLI mode. FloatingAssistant.exe is" -ForegroundColor Green
+Write-Host "the plain GUI-only binary FloatingAssistant-cli.exe hands off to." -ForegroundColor Green

@@ -122,17 +122,32 @@ npm start
 ## CLI模式：`-p` 非互動執行
 
 跟`claude -p "..."`類似，桌面版可以不開GUI視窗、直接從命令列丟一句prompt
-進去執行、拿到結果就結束：
+進去執行、拿到結果就結束。
+
+**Windows使用者請一律執行`FloatingAssistant-cli.exe`**（不是
+`FloatingAssistant.exe`）——原因見下方「Windows平台限制」一節，這是實測
+驗證過唯一可靠的做法。Linux/macOS沒有這個問題，直接執行原本那個檔案即可。
 
 ```bash
-FloatingAssistant.exe -p "幫我查一下台積電最近的股價"
-FloatingAssistant.exe -p "/media-list-voices"                 # 支援slash command
-FloatingAssistant.exe -p "..." --output-format json            # 結構化JSON
-FloatingAssistant.exe -p "..." --output-format toon            # TOON（比JSON省token）
-FloatingAssistant.exe -p "..." --output-format md               # 原始markdown，不轉成ASCII
+FloatingAssistant-cli.exe -p "幫我查一下台積電最近的股價"     # Windows
+./FloatingAssistant.AppImage -p "幫我查一下台積電最近的股價"  # Linux
+FloatingAssistant-cli.exe -p "/media-list-voices"                 # 支援slash command
+FloatingAssistant-cli.exe -p "..." --output-format json            # 結構化JSON
+FloatingAssistant-cli.exe -p "..." --output-format toon            # TOON（比JSON省token）
+FloatingAssistant-cli.exe -p "..." --output-format md               # 原始markdown，不轉成ASCII
 ```
 
-（開發模式對應`npm start -- -p "..."`或`electron . -p "..."`。）
+**`FloatingAssistant-cli.exe`不帶`-p`直接執行（雙擊或裸執行）等同於執行GUI
+版**——它會自動轉交給`FloatingAssistant.exe`並立即結束自己，畫面上只會看到
+黑底console視窗閃一下、GUI就開了。也就是說：Windows下可以只記得
+`FloatingAssistant-cli.exe`這一個檔名，不管是要開GUI還是要用`-p`，這個檔案
+都能處理；`FloatingAssistant.exe`（純GUI版）仍然保留在同一個資料夾，是
+給`FloatingAssistant-cli.exe`內部呼叫用的，使用者不需要直接執行它，但也
+可以直接執行它（效果跟雙擊`FloatingAssistant-cli.exe`一樣，只是不會有那
+一閃而過的黑視窗）。
+
+（開發模式對應`npm start -- -p "..."`或`electron . -p "..."`——dev模式沒有
+`-cli.exe`這份console副本，見下方已知限制。）
 
 - **跟GUI共用workspace**：沿用既有的「依目前資料夾/使用者手動選過的資料夾」
   判斷邏輯（見下方「架構」章節），在同一個資料夾底下執行CLI模式看得到跟
@@ -148,48 +163,58 @@ FloatingAssistant.exe -p "..." --output-format md               # 原始markdown
   標題/粗體轉成終端機可讀的樣式）；`--output-format`可以改成`json`/
   `toon`/`md`三種其他格式。
 
-### Windows下的輸出穩定性（`-p`自動透過`cmd.exe`重新執行自己）
+### Windows平台限制：為什麼需要`FloatingAssistant-cli.exe`這份獨立檔案
 
-**根因**（實測驗證，不是猜測——用真實的GUI/console subsystem測試程式配合
-碼表量測過）：Windows打包出來的`.exe`是GUI subsystem（雙擊直接開視窗、不會
-閃一個黑底命令列視窗）；PowerShell對GUI subsystem`.exe`的command
+這一節記錄的是**在真實Windows機器上實際測試、逐步排除掉的三個方向**，不是
+事前的理論分析——每個方向都真的build出來、真的在PowerShell/cmd裡執行過，
+包括失敗的那兩個，如實記錄下來避免之後又重踩同一個坑。
+
+**根因**（用真實的GUI/console subsystem測試程式配合碼表量測過）：Windows
+打包出來的.exe預設是GUI subsystem（雙擊直接開視窗，這是為了不要每次雙擊
+都閃一個黑底命令列視窗）；PowerShell對GUI subsystem`.exe`的command
 invocation（`& '...'`或裸執行）**不會等待它執行完成**——量測結果：對一個
-內部`sleep`3秒的GUI subsystem測試程式，PowerShell的下一行指令在0.005秒左右
-就先執行了，完全沒有等，這才是`-p`「看起來像是沒有等程式執行完、完全沒有
-回應」的真正根因。
+內部`sleep`3秒的GUI subsystem測試程式，PowerShell下一行指令在0.005秒左右
+就先執行了，完全沒有等。這是根本問題：**GUI subsystem的行程被PowerShell
+裸執行時，本身就拿不到一個可靠、能往下傳遞的console handle**——不管接下來
+做什麼，只要還是從這個「起點」出發，都會卡在同一個地方：
 
-**使用者不需要處理這個細節，只需要照舊執行同一個`.exe`**：main.js偵測到
-Windows已打包環境下的`-p`，會自動透過`cmd.exe /c`重新執行「同一個」`.exe`
-自己（`cmd.exe`本身是console subsystem，量測驗證：PowerShell對console
-subsystem子行程本來就會正確等待+relay stdio——這正是平常從PowerShell呼叫
-`git`/`node`等一般console工具時的日常行為，沒有特殊之處；`cmd.exe`自己對
-它的GUI subsystem子行程一樣正確等待+relay stdio，兩段接起來的整條鏈路都
-實測驗證過確實可靠），跑完再用同樣的exit code結束——使用者全程只需要記得
-一個`.exe`檔名，雙擊照常開GUI、加`-p`照常在終端機看到輸出，不用等、不用
-猜輸出跑去哪了。
+1. ❌ **第一次嘗試**：GUI版.exe自己在`-p`時偵測到，spawn一份PE header被
+   patch成console subsystem的副本、`stdio:'inherit'`。失敗——父行程本身
+   沒有可靠console handle可以relay，Windows的預設行為是幫子行程另開一個
+   全新、使用者看不到的console視窗，畫面上只會看到一個視窗閃一下就消失。
+2. ❌ **第二次嘗試**：GUI版.exe自己在`-p`時透過`cmd.exe /c`重新執行「同一個」
+   .exe。理論上`cmd.exe`是console subsystem、應該能正確relay——但實際
+   在使用者機器上測試，還是出現同一種「跳出一個新console視窗、閃一下就
+   消失」的失敗，根因跟第一次一樣：父行程（發起`cmd.exe /c`呼叫的那個
+   GUI subsystem行程本身）就沒有東西可以往下relay，中間多繞一手`cmd.exe`
+   並不會無中生有出一個可靠的console handle。
+3. ✅ **目前採用的做法**：不要讓GUI subsystem的行程去relay給任何人。改成
+   **build流程額外產生一份PE header被patch成console subsystem的獨立檔案
+   `FloatingAssistant-cli.exe`**（跟GUI版共用同一份`resources/app.asar`，
+   只有PE header的Subsystem欄位不同——見`build/pe-subsystem-patch.js`），
+   使用者的PowerShell/cmd**直接**執行這個檔案（不透過任何GUI subsystem的
+   中間行程），這樣它才是「PowerShell的直接子行程」，才拿得到真正可靠的
+   console handle——這是唯一在真機上實測成功、`-p`真的能正確印出AI回覆的
+   做法。`FloatingAssistant-cli.exe`偵測到沒有`-p`時，會反過來spawn GUI版
+   `FloatingAssistant.exe`（detached、不需要relay任何console輸出，GUI
+   本來就不需要console），自己立刻結束——這個方向沒有同樣的失敗模式，因為
+   GUI行程不需要繼承任何console東西。
 
-- 使用者的prompt/輸出格式透過環境變數（`FA_CLI_PROMPT`/
-  `FA_CLI_OUTPUT_FORMAT`）傳給重新執行的那個行程，**不會**放進`cmd.exe`
-  的command line字串裡——已實測驗證環境變數可以完整、安全地帶過任意文字
-  （含中文、含`&`/`|`這類`cmd.exe`本來會特殊解讀的符號）不會被誤判/corrupt，
-  `cmd.exe`的command line裡只放我們自己完全掌控、不含任何使用者輸入的token
-  （`.exe`自己的路徑），避免prompt文字剛好包含這類符號時出現command注入
-  風險。
-- 這個機制只在**打包後（`app.isPackaged`）的Windows正式.exe**生效；
-  **開發模式**（`npm start -- -p "..."`/`electron . -p "..."`）下
-  `process.execPath`是electron開發用binary本身，重新執行它沒有意義，會
-  維持原本行程內執行，Windows開發模式下`-p`可能仍然看不到輸出，這是已知
-  限制（開發模式主要給改程式碼的人用，不是這次要解決的一般使用情境）。
+**這也是為什麼Windows打包格式從electron-builder的「portable」（單一自解
+壓縮.exe）改成「dir」（純資料夾）**：portable target的自解壓縮外殼本身也是
+一個GUI subsystem行程，會重新引入跟上面第1、2次嘗試一樣的問題（自解壓縮
+外殼本身就沒有可靠console handle可以往下relay給解壓縮出來的實際程式）。
+「dir」target沒有自解壓縮這一層，`FloatingAssistant-cli.exe`才能真正是
+PowerShell的直接子行程。
+
+- 這個機制只在**打包後（`build/afterPack.js`只在electron-builder打包
+  Windows時跑）**的正式build生效；**開發模式**（`npm start -- -p "..."`/
+  `electron . -p "..."`）沒有這份console副本，Windows開發模式下`-p`可能
+  仍然看不到輸出，這是已知限制（開發模式主要給改程式碼的人用）。
 - Linux（AppImage）/macOS的終端機沒有這個GUI/console subsystem的差異，
-  `-p`本來就能在同一個行程內正常輸出（AppImage版本實測過），不會觸發這個
-  轉發機制。
-- 這個修法取代了一開始嘗試的另一個方向（把GUI版.exe複製一份、PE header
-  patch成console subsystem、spawn那份副本執行）——實測那個方向會失敗：
-  父行程（GUI subsystem，從PowerShell執行）本身沒有從PowerShell拿到可靠的
-  console handle，spawn console subsystem子行程時，Windows的預設行為是
-  「幫沒有可用console的console subsystem行程新開一個console視窗」，變成
-  跳出一個新console閃一下就消失，比原本更糟——已經拿掉那個方向，改用這裡
-  實測驗證過真的可行的`cmd.exe`轉發做法。
+  `-p`本來就能在同一個行程內正常輸出（AppImage版本實測過），不需要、也
+  不會產生`-cli`這份副本（`build/afterPack.js`只在
+  `context.electronPlatformName === 'win32'`時動作）。
 
 ## 打包成單一執行檔
 
@@ -197,8 +222,13 @@ subsystem子行程本來就會正確等待+relay stdio——這正是平常從Po
 ```powershell
 .\build.ps1
 ```
-輸出在`dist\`目錄，是單一`.exe`（electron-builder的`portable`
-target——雙擊直接跑，不用安裝、不會在系統裡留下安裝紀錄）。
+輸出在`dist\win-unpacked\`目錄（electron-builder的`dir`
+target——是一個資料夾，不是單一檔案；改用`dir`而不是原本的`portable`
+target的原因見上面「Windows平台限制」一節）。裡面有兩個可執行檔：
+`FloatingAssistant.exe`（GUI）跟`FloatingAssistant-cli.exe`（console
+subsystem版，`-p`跟一般雙擊開GUI都用這個）。要發布給別人，把整個
+`win-unpacked`資料夾（可以重新命名）壓成zip即可，不用安裝、不會在系統裡
+留下安裝紀錄。
 
 **Linux**（AppImage）：
 ```bash
