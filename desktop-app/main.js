@@ -2005,9 +2005,22 @@ async function runCliPrompt({ prompt, outputFormat }) {
           else { stableRounds = 0; lastCount = cur; }
         }
       } else {
-        await new Promise((resolve) => {
-          const iv = setInterval(() => { if (!fa.isResponding) { clearInterval(iv); resolve(); } }, 200);
-        });
+        // tw_stock_db客製: 2026-09-16使用者回報「-p沒有等主對話回應結束」
+        // 後修正——先等isResponding真的變成true（確認executeChat真的已經
+        // 開始跑，_setRespondingState(true,...)是executeChat開頭第一步、
+        // 沒有任何await擋在前面，理論上應該是同步就會生效，這裡仍多一層
+        // 保險等待，避免任何未預期的時序讓下面的輪詢在請求還沒真正開始時
+        // 就誤判成「已經結束」），再等它變回false（回應真正結束，含多輪
+        // 工具呼叫/subagent委派全部跑完）。加一個10分鐘安全上限，避免
+        // 端點異常/模型跳針時無限期卡住不結束行程。
+        const becameActiveDeadline = Date.now() + 5000;
+        while (!fa.isResponding && Date.now() < becameActiveDeadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        const doneDeadline = Date.now() + 10 * 60 * 1000;
+        while (fa.isResponding && Date.now() < doneDeadline) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
       }
 
       const newMessages = fa.messages.slice(beforeCount);
@@ -2032,10 +2045,11 @@ async function runCliPrompt({ prompt, outputFormat }) {
     toolCalls: turnResult.toolCalls,
     elapsedMs: Date.now() - startedAt,
   };
-  console.log(cliFormat.formatResult(result, outputFormat));
+  const formatted = cliFormat.formatResult(result, outputFormat);
 
   cliWindowWebContentsId = null;
   win.destroy();
+  return formatted;
 }
 
 app.whenReady().then(async () => {
@@ -2080,12 +2094,29 @@ app.whenReady().then(async () => {
   // 完整說明）。跟一般GUI流程共用上面剛啟動好的本地proxy，不重複一份。
   if (cliArgs.prompt != null) {
     let exitCode = 0;
+    let text = "";
     try {
-      await runCliPrompt(cliArgs);
+      text = await runCliPrompt(cliArgs);
     } catch (err) {
-      console.error(String((err && err.stack) || err));
+      text = String((err && err.stack) || err);
       exitCode = 1;
     }
+    // tw_stock_db客製: 2026-09-16使用者回報「-p完全沒有輸出、一瞬間就
+    // 結束」——根因是console.log()在Windows下（stdout不是TTY時，例如
+    // 從cmd.exe這種console-subsystem父行程呼叫這支GUI-subsystem的.exe）
+    // 底層寫入是非同步的，緊接著呼叫app.exit()會在那次寫入真正送到OS
+    // 之前就強制結束行程，導致輸出整個遺失（不是「沒有等回應」，是回應
+    // 已經等到了、只是印出來的當下就被exit()截斷）。修正成用
+    // stream.write(..., callback)明確等寫入完成的callback觸發後才
+    // app.exit()；額外加一個安全上限（避免在某些環境callback異常不觸發
+    // 時整個CLI卡住不結束）。
+    const stream = exitCode === 0 ? process.stdout : process.stderr;
+    await new Promise((resolve) => {
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      const fallback = setTimeout(done, 3000);
+      stream.write(text + "\n", () => { clearTimeout(fallback); done(); });
+    });
     app.exit(exitCode);
     return;
   }
