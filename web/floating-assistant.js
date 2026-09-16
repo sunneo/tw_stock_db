@@ -3029,6 +3029,23 @@ class FloatingAssistant {
         this._exportRag = this._exportRag.bind(this);
 
         this.options = options || {};
+        // tw_stock_db客製: 2026-09-16使用者實測回報——啟動時直接崩潰
+        // 「Cannot read properties of undefined (reading 'has')」，堆疊指向
+        // _getRootToolNames()讀this._domainGatedToolNames.has(n)。追查發現：
+        // 這個Set原本只在_registerBuiltinAiTools()（建構子後段才呼叫）的
+        // 第一行初始化，但_syncSkillBundleDomains()（建構子前段就會呼叫一次，
+        // 見下面「使用者自訂技能」那段）在技能包帶有files（參考資料/腳本，
+        // 見_syncSkillBundleDomains裡的read_skill_file__<id>動態工具註冊）時
+        // 會呼叫register_openai_tool()，而register_openai_tool內部會觸發
+        // _refreshSystemPromptMessage→_getFinalSystemPrompt→_getRootToolNames
+        // ——這條路徑在_registerBuiltinAiTools()真正執行之前就可能被觸發，
+        // 讀到還沒初始化的_domainGatedToolNames直接炸掉整個建構子（使用者
+        // 匯入過帶檔案的技能包時必定會撞到，不是罕見edge case）。改成在
+        // 建構子最前面就先初始化成空Set——_registerBuiltinAiTools()稍後仍然
+        // 會執行`this._domainGatedToolNames = new Set()`重新指派一個新的空
+        // Set（那裡的行為完全不變，只是這裡先確保「在那之前的任何時間點」
+        // 這個屬性都是可安全讀取的Set，不會是undefined）。
+        this._domainGatedToolNames = new Set();
         this.LLM_BASE_URL_KEY = "floating_ai_base_url_key";
         this.LLM_MODEL_NAME_KEY = "floating_ai_model_name_key";
         this.STORAGE_KEY = "floating_ai_api_key";
@@ -20913,6 +20930,19 @@ ${existingNodeSummaries}
 
     _renderMessageHistory() {
         const chatBody = document.getElementById('ai-chat-body');
+        // tw_stock_db客製: 2026-09-16使用者實測回報——啟動時崩潰
+        // 「Cannot read properties of null (reading 'scrollTop')」。追查
+        // 發現：建構子裡_syncSkillBundleDomains()（技能包帶files時會呼叫
+        // register_openai_tool，見那個方法的說明）跑在_initUI()（真正建立
+        // #ai-chat-body這個DOM節點）之前，這個時間點呼叫
+        // register_openai_tool會觸發_refreshSystemPromptMessage→
+        // _refreshSystemPromptMessageHistory→這裡，chatBody當下還不存在。
+        // 不需要在DOM都還沒建好時勉強渲染——_registerBuiltinAiTools()稍後
+        // 一樣會透過registerOptional()註冊一大串工具、同樣觸發這條刷新路徑，
+        // 那時候_initUI()已經跑完、DOM已經存在，畫面會在那之後正確重繪，
+        // 這裡提早的這一次直接跳過即可，不會讓使用者的對話紀錄永遠沒有
+        // 顯示出來。
+        if (!chatBody) return;
         const palette = this._getThemePalette();
         this._applyThemeStyles();
         // tw_stock_db客製: 這個函式會整個清空chatBody重繪（innerHTML=''），
