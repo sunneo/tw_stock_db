@@ -1880,6 +1880,86 @@ const SKILL_IMPORT_MAX_EXTRA_FILES = 300;   // 單次匯入最多收多少份「
 const SKILL_IMPORT_MAX_FILE_BYTES = 20 * 1024 * 1024; // 單一額外檔案大小上限
 const SKILL_IMPORT_MAX_DEPTH = 10;          // 資料夾來源遞迴掃描深度上限
 
+// tw_stock_db客製: 2026-09-16使用者要求——bash_execute的沙盒shell額外認得
+// 這幾個指令，讓python/jq/xq可以直接出現在shell管線裡（例如`python fib.py |
+// jq .`）。**這是「找不到指令就試著抓」這個按需下載機制唯一合法的來源清單**
+// ——只有列在這裡的指令名稱才會被bash_execute辨識成host builtin，未列出的
+// 名稱維持shell原生「command not found」，不會對任何外部來源（GitHub/npm/
+// PyPI等）做動態查詢/下載，這是刻意的安全邊界（使用者明確否決「對任意指令
+// 名稱去外部任意來源動態解析」的做法）。新增指令一律先自己mirror進
+// shell-tools-backup分支、在這裡登記，不接受執行時任意來源解析。
+// kind='pyodide'：python/python3橋接（_runPythonBuiltin，見_ensurePyodideLoaded）。
+// kind='jq'：真正的jq 1.8.2 wasm（_runJqBuiltin，見_ensureJqLoaded）。
+// kind='xq'：XML→物件（fast-xml-parser）再套用jq引擎（_runXqBuiltin）。
+// kind='column'/'split'：busybox這個build實測缺的兩個applet，補一個同步JS
+// 版本（見_runColumnBuiltin/_runSplitBuiltin）——不是「按需下載」的情境
+// （純本地JS函式，沒有額外資源要抓），只是借用同一個登記表+分派機制。
+const SANDBOX_COMMAND_REGISTRY = {
+    python:  { kind: 'pyodide' },
+    python3: { kind: 'pyodide' },
+    jq:      { kind: 'jq' },
+    xq:      { kind: 'xq' },
+    column:  { kind: 'column' },
+    split:   { kind: 'split' },
+};
+
+// tw_stock_db客製: 2026-09-16使用者明確要求——python腳本裡`import subprocess`
+// 呼叫`subprocess.run(['python3','x.py'])`／`subprocess.run(['sh','-c','...'])`
+// 要真的能動，且呼叫端寫法要是真正的`subprocess.run(...)`（不用改寫成
+// `await`）。這段monkeypatch在Pyodide instance第一次載入時執行一次（見
+// _ensurePyodideLoaded），改寫`subprocess.run`/`subprocess.Popen`改呼叫
+// `_fa_shell_bridge`（見_pyodideBridgeRunShell/_pyodideBridgeRunPython）。
+// 關鍵：`asyncio.run(...)`包住呼叫async JS函式，靠Pyodide本身的JSPI支援
+// （已實測確認pyodide@314.0.7支援）讓一個普通`def`同步函式看起來像在
+// 「阻塞等待」，底層其實是suspend/resume整個wasm堆疊等Promise resolve，
+// 不會卡死JS主執行緒——這正是Pyodide官方文件說的`requests.get()`那個模式
+// （同步外觀、非同步底層），不是我們自己發明的hack。
+// Popen只做communicate()/wait()這種「等到完成才回傳」的簡化包裝，不支援
+// 真正的背景/非阻塞行程控制——跟wasi-sh shell本身「no fork/exec, no job
+// control」既有限制在python這層的自然延伸，是已知限制，不是縮水。
+const PYODIDE_SUBPROCESS_SHIM_SRC = `
+import subprocess, asyncio, json as _fa_json
+import _fa_shell_bridge
+
+def _fa_run(argv, *args, input=None, capture_output=True, text=True, check=False, **kwargs):
+    if isinstance(argv, str):
+        argv = argv.split()
+    argv = list(argv)
+    argv0 = argv[0] if argv else ''
+    stdin_bytes = None
+    if input is not None:
+        stdin_bytes = input.encode() if isinstance(input, str) else input
+    if argv0 in ('python', 'python3'):
+        with open(argv[1]) as f:
+            script_text = f.read()
+        r = asyncio.run(_fa_shell_bridge.runPython(script_text, stdin_bytes))
+    else:
+        r = asyncio.run(_fa_shell_bridge.runShell(_fa_json.dumps(argv), stdin_bytes))
+    stdout = r.stdout if text else (r.stdout.encode() if r.stdout is not None else None)
+    stderr = r.stderr if text else (r.stderr.encode() if r.stderr is not None else None)
+    proc = subprocess.CompletedProcess(argv, r.returncode, stdout, stderr)
+    if check and r.returncode != 0:
+        raise subprocess.CalledProcessError(r.returncode, argv, stdout, stderr)
+    return proc
+
+subprocess.run = _fa_run
+
+class _FaPopen:
+    def __init__(self, argv, *a, stdin=None, **kw):
+        self._r = _fa_run(argv, input=stdin, **kw)
+        self.returncode = self._r.returncode
+        self.stdout = self._r.stdout
+        self.stderr = self._r.stderr
+    def communicate(self, input=None):
+        return (self.stdout, self.stderr)
+    def wait(self, timeout=None):
+        return self.returncode
+    def poll(self):
+        return self.returncode
+
+subprocess.Popen = _FaPopen
+`;
+
 // tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
 // PRESET_MODEL_OPTIONS（含新加的openrouter/free）逐一轉成row，URL/KEY/
 // 生成參數全部留空（代表沿用「我們預設的網址」／全域生成設定，openrouter/
@@ -2126,6 +2206,20 @@ const FA_ASSET_URLS = {
     // micropip/loadPackage按需從官方CDN抓，不在這裡vendor整個套件生態。
     pyodideJsBase: 'https://cdn.jsdelivr.net/npm/pyodide@314.0.7/',
     pyodideBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@pyodide-backup/pyodide-core/',
+    // tw_stock_db客製: 2026-09-16使用者要求——bash_execute的shell要能直接
+    // 認得python/jq/xq/column/split這幾個指令（見SANDBOX_COMMAND_REGISTRY）。
+    // jq-wasm是真正的jq 1.8.2編譯成wasm（不是語意相近的簡化重寫版），瀏覽器
+    // ESM build在dist/browser.mjs，用原生import()讀取（跟busybox那份
+    // src/index.mjs同一種載入方式）。fast-xml-parser是純JS、同步、UMD
+    // build（lib/fxparser.min.js，掛window.XMLParser），跟其餘classic
+    // global-attaching函式庫（pyodide.js等）同一種_faLoadScriptOnce載入方式。
+    // 這兩個新工具體積都遠小於busybox.wasm/pyodide整包，備份分支刻意跟既有
+    // bashWasmBackupBase/pyodideBackupBase分開，共用一支新的
+    // shellToolsBackupBase（已跟使用者確認：新工具共用1個新branch，既有兩支
+    // 大型資源維持各自獨立不動）。
+    jqWasmJsBase: 'https://cdn.jsdelivr.net/npm/jq-wasm@3.0.0-jq-1.8.2/',
+    xmlParserJsBase: 'https://cdn.jsdelivr.net/npm/fast-xml-parser@5.11.1/lib/fxparser.min.js',
+    shellToolsBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/shell-tools-backup/',
 };
 
 // tw_stock_db客製: 2026-09-11——burn_subtitles的字幕外觀預設值。尺寸/邊距
@@ -5010,7 +5104,7 @@ ${fnData.code}
         };
 
         registerOptional('bash_execute',
-            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援），完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）。腳本的工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案（含input_files原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "output_ref":"fap:我的專案/build"}',
+            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援），完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案（含input_files原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "output_ref":"fap:我的專案/build"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5030,11 +5124,50 @@ ${fnData.code}
                 // 直接失敗（sh: can't create ...: nonexistent directory）。不能
                 // 假設「腳本一定會先自己mkdir」，這裡明確確保/work一定存在。
                 try { store.mkdirSync('/work', { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
+                // tw_stock_db客製: 2026-09-16使用者要求——shell要能直接認得
+                // python/jq/xq/column/split這幾個指令，且要「按需下載」。
+                // 實測發現這次釘住的wasi-sh@0.11.0的host builtins handler
+                // 必須是同步函式（suspendable/async builtin會被拒絕），所以
+                // 不能在shell真正執行到那一行時才臨時await載入引擎——改成
+                // 先用簡單的word-boundary正則掃一次script文字，只await那幾個
+                // 真的用到的loader（對使用者體感完全一樣：沒用到的指令一律
+                // 不下載），resolve好之後才組出純同步的builtins map。
+                const neededCommands = Object.keys(SANDBOX_COMMAND_REGISTRY).filter(name => (
+                    new RegExp(`(^|[\\s;|&()\`])${name}(?=[\\s;|&()\`]|$)`).test(script)
+                ));
+                const resolvedEngines = {};
+                for (const name of neededCommands) {
+                    const kind = SANDBOX_COMMAND_REGISTRY[name].kind;
+                    try {
+                        if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._ensurePyodideLoaded();
+                        if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
+                        if (kind === 'xq') {
+                            if (!resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
+                            if (!resolvedEngines.xmlParser) resolvedEngines.xmlParser = await this._ensureXqXmlParserLoaded();
+                        }
+                    } catch (err) {
+                        return JSON.stringify({ ok: false, error: `指令「${name}」需要的執行環境載入失敗：${String(err.message || err)}` });
+                    }
+                }
+                const builtins = {};
+                for (const name of neededCommands) {
+                    builtins[name] = (ctx) => this._runSandboxBuiltinCommand(SANDBOX_COMMAND_REGISTRY[name].kind, ctx, resolvedEngines);
+                }
+                // tw_stock_db客製: 2026-09-16——見_pyodideBridgeRunShell的說明。
+                // python builtin內部如果透過subprocess.run(['sh','-c',...])
+                // 呼叫回shell，要沿用這次呼叫用的同一個store（同一個/work
+                // 視角），不能各自開一個獨立的memoryFs——用一個簡單的堆疊
+                // 讓巢狀呼叫找得到「目前最外層在用哪個store」，執行完一定要
+                // pop（用try/finally保證），不管有沒有例外。
+                const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+                fsStack.push(store);
                 let result;
                 try {
-                    result = await runtime.run({ command: script, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true });
+                    result = await runtime.run({ command: script, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true, builtins });
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: `執行失敗：${String(err.message || err)}` });
+                } finally {
+                    fsStack.pop();
                 }
                 const outputFiles = this._walkMemoryFsDir(store, '/work');
                 let persisted;
@@ -5057,7 +5190,7 @@ ${fnData.code}
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
         registerOptional('python_execute',
-            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）。工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "output_ref":"fap:我的專案/results"}',
+            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）。工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "output_ref":"fap:我的專案/results"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5067,10 +5200,6 @@ ${fnData.code}
                 try { inputFiles = parseExecutionInputFiles(parsed.input_files); } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
                 let pyodide;
                 try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
-                const stdoutChunks = [];
-                const stderrChunks = [];
-                pyodide.setStdout({ batched: (s) => stdoutChunks.push(s) });
-                pyodide.setStderr({ batched: (s) => stderrChunks.push(s) });
                 try {
                     pyodide.FS.mkdirTree('/work');
                     for (const [relPath, content] of Object.entries(inputFiles)) {
@@ -5079,22 +5208,22 @@ ${fnData.code}
                         if (dir && dir !== '/work') pyodide.FS.mkdirTree(dir);
                         pyodide.FS.writeFile(abs, content);
                     }
-                    let exitCode = 0;
-                    try {
-                        await pyodide.runPythonAsync(script);
-                    } catch (err) {
-                        exitCode = 1;
-                        stderrChunks.push(String(err && err.message || err));
-                    }
+                    // tw_stock_db客製: 2026-09-16——改用_runPyodideScriptAsync
+                    // （見那邊的說明）取代直接呼叫pyodide.setStdout/setStderr/
+                    // runPythonAsync——這裡的stack-based捕捉機制是這次新增的
+                    // subprocess橋接（python腳本裡`subprocess.run(...)`）能
+                    // 正確巢狀運作的必要條件，python_execute本身的既有行為
+                    // （不隔離globals、支援top-level await）完全不變。
+                    const { stdout, stderr, returncode: exitCode } = await this._runPyodideScriptAsync(pyodide, script, null);
                     const outputFiles = this._walkPyodideFsDir(pyodide, '/work');
                     let persisted;
                     try {
                         persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                     } catch (err) {
-                        return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exit_code: exitCode });
+                        return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout, stderr, exit_code: exitCode });
                     }
                     return JSON.stringify({
-                        ok: true, stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exit_code: exitCode,
+                        ok: true, stdout, stderr, exit_code: exitCode,
                         output_destination: persisted.destination, output_files: persisted.files,
                     });
                 } finally {
@@ -11178,6 +11307,80 @@ ${sourceTool.handlerScript}
         return this._bashWasmLoadPromise;
     }
 
+    // tw_stock_db客製: 2026-09-16使用者要求——bash_execute的shell要能認得jq
+    // 指令（見SANDBOX_COMMAND_REGISTRY）。jq-wasm的瀏覽器ESM build是單一檔案
+    // dist/browser.mjs，跟busybox那份src/index.mjs同一種「主要來源原生
+    // import()，失敗才退到自家分支+Blob URL繞過nosniff」載入模式。
+    // `loadJq()`（模組匯出的函式）本身是async初始化一次，拿到的instance
+    // `.json(input, filter)`是同步呼叫——這裡只快取instance（`this._jqInstance`），
+    // 同步呼叫留給_runJqBuiltin/_runXqBuiltin自己做。
+    async _ensureJqLoaded() {
+        if (this._jqInstance) return this._jqInstance;
+        if (this._jqLoadPromise) return this._jqLoadPromise;
+        this._jqLoadPromise = (async () => {
+            let loadJq;
+            try {
+                const mod = await import(this._viaAssetProxy(FA_ASSET_URLS.jqWasmJsBase + 'dist/browser.mjs'));
+                loadJq = mod.loadJq;
+            } catch (primaryErr) {
+                let buffer;
+                try {
+                    buffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.shellToolsBackupBase, 'jq-wasm/browser.mjs');
+                } catch (backupErr) {
+                    throw new Error(`jq 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+                }
+                const text = new TextDecoder('utf-8').decode(buffer);
+                const blob = new Blob([text], { type: 'text/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+                try {
+                    const mod = await import(blobUrl);
+                    loadJq = mod.loadJq;
+                } finally {
+                    URL.revokeObjectURL(blobUrl);
+                }
+            }
+            this._jqInstance = await loadJq();
+            return this._jqInstance;
+        })().catch(e => { this._jqLoadPromise = null; throw e; });
+        return this._jqLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-16使用者要求——bash_execute的shell要能認得xq
+    // 指令（XML→物件再套用jq引擎查詢）。fast-xml-parser是純JS、同步、UMD
+    // build，跟pyodide.js同一種classic global-attaching載入方式（掛
+    // window.XMLParser）。xq同時需要這個XML parser**跟**jq引擎（見
+    // _ensureJqLoaded），呼叫端（bash_execute的pre-scan+resolve那段）兩個
+    // 都要await，這裡只負責XML parser本身。
+    async _ensureXqXmlParserLoaded() {
+        if (this._xqXmlParserCtor) return this._xqXmlParserCtor;
+        if (this._xqXmlParserLoadPromise) return this._xqXmlParserLoadPromise;
+        this._xqXmlParserLoadPromise = (async () => {
+            if (typeof XMLParser !== 'function') {
+                try {
+                    await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.xmlParserJsBase));
+                } catch (primaryErr) {
+                    try {
+                        await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.shellToolsBackupBase + 'xml-parser/fxparser.min.js'));
+                    } catch (backupErr) {
+                        throw new Error(`xq 的XML parser載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+                    }
+                }
+            }
+            // tw_stock_db客製: 2026-09-16實測發現——這個瀏覽器環境透過
+            // Blob URL + classic <script>載入fxparser.min.js後，
+            // `window.XMLParser`實際變成`{default: 真正的建構子}`這種
+            // ESM-interop包裝形狀（`Object.prototype.toString`回報
+            // `[object Module]`），不是預期的UMD單純global attach——不確定
+            // 是這個函式庫的UMD wrapper在偵測環境時走到哪個分支、還是瀏覽器
+            // 本身對這個Blob內容做了模組化處理，但兩種情況都用`.default`
+            // 拿真正的建構子即可，多一層防禦不假設一定拿到函式。
+            this._xqXmlParserCtor = (typeof XMLParser === 'function') ? XMLParser : (XMLParser && XMLParser.default);
+            if (typeof this._xqXmlParserCtor !== 'function') throw new Error('XMLParser載入後型別異常，無法取得建構子');
+            return this._xqXmlParserCtor;
+        })().catch(e => { this._xqXmlParserLoadPromise = null; throw e; });
+        return this._xqXmlParserLoadPromise;
+    }
+
     // tw_stock_db客製: 2026-09-16使用者要求——內建python執行環境（Pyodide）。
     // 見FA_ASSET_URLS.pyodideJsBase的詳細說明：跟其餘vendored函式庫同一種
     // _faLoadScriptOnce載入方式（classic global-attaching的pyodide.js，
@@ -11212,10 +11415,393 @@ ${sourceTool.handlerScript}
             } else {
                 indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase);
             }
-            this._pyodideInstance = await loadPyodide({ indexURL });
+            const instance = await loadPyodide({ indexURL });
+            // tw_stock_db客製: 2026-09-16——見PYODIDE_SUBPROCESS_SHIM_SRC的
+            // 說明。只在instance第一次載入時裝一次：先掛_fa_shell_bridge這個
+            // JS module給python的`import _fa_shell_bridge`用（registerJsModule
+            // 註冊的是一個可以`import <name>`的頂層模組，**不是**`from js
+            // import <name>`——已實測確認前者才對，後者會拋
+            // `ImportError: cannot import name ... from 'js'`），再跑一次
+            // monkeypatch腳本改寫subprocess.run/Popen。**先存進區域變數
+            // `instance`、只有這兩步都成功才指派給`this._pyodideInstance`**
+            // ——避免shim install失敗時，一個「已經loadPyodide()成功、但
+            // subprocess monkeypatch沒裝上」的半初始化instance被快取住，
+            // 讓後續呼叫誤以為已經完整可用（實測踩過這個坑：第一次shim
+            // install失敗後，第二次呼叫直接讀到快取、完全沒有重試）。
+            instance.registerJsModule('_fa_shell_bridge', {
+                runShell: (argvJson, stdinBytes) => this._pyodideBridgeRunShell(argvJson, stdinBytes),
+                runPython: (scriptText, stdinBytes) => this._pyodideBridgeRunPython(scriptText, stdinBytes),
+            });
+            instance.runPython(PYODIDE_SUBPROCESS_SHIM_SRC);
+            this._pyodideInstance = instance;
             return this._pyodideInstance;
-        })().catch(e => { this._pyodideLoadPromise = null; throw e; });
+        })().catch(e => { this._pyodideLoadPromise = null; this._pyodideInstance = null; throw e; });
         return this._pyodideLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-16——見PYODIDE_SUBPROCESS_SHIM_SRC/計畫3.5節
+    // 的說明。`_fa_shell_bridge.runShell`給python monkeypatch過的
+    // `subprocess.run(['sh','-c','...'])`／非python指令用，重用
+    // _ensureBashWasmLoaded()跑一次wasi-sh。**`fs`要用哪個store**：
+    // `_activeSandboxFsStack`最上層有值就沿用它（代表這次呼叫是從
+    // bash_execute的shell委派給python builtin、python builtin又透過
+    // subprocess呼叫回shell——三層都應該看到同一個`/work`），是空的（例如
+    // python_execute獨立工具，不是從bash_execute巢狀進來的）就開一個全新的
+    // 暫時memoryFs。用`args`（不是`command`字串）直接傳原始argv，繞過shell
+    // 重新解析引號的風險（已實測`args:['sh','-c','ls /work']`能正確運作）。
+    async _pyodideBridgeRunShell(argvJson, stdinBytes) {
+        let argv;
+        try { argv = JSON.parse(argvJson); } catch (_) { argv = []; }
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            return { stdout: '', stderr: String(err.message || err), returncode: 1 };
+        }
+        const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+        const store = fsStack.length ? fsStack[fsStack.length - 1] : runtime.memoryFs({});
+        const stdinArr = stdinBytes ? new Uint8Array(stdinBytes.toJs ? stdinBytes.toJs() : stdinBytes) : undefined;
+        try {
+            const result = await runtime.run({ args: argv, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true, stdin: stdinArr });
+            return { stdout: result.stdout, stderr: result.stderr, returncode: result.exitCode };
+        } catch (err) {
+            return { stdout: '', stderr: String(err.message || err), returncode: 1 };
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-16——`_fa_shell_bridge.runPython`給python
+    // monkeypatch過的`subprocess.run(['python3','x.py'])`用，巢狀呼叫
+    // Pyodide本身（同一個instance）——用`_runPyodideScriptAsync`（見下面）
+    // 而不是直接呼叫`runPythonAsync`，確保stdout/stderr/stdin正確用
+    // stack-based方式跟外層呼叫（可能是_runPythonBuiltin，也可能是更外層
+    // 的subprocess呼叫）疊起來、不互相污染，也給子腳本獨立的globals
+    // （模擬「這是一個獨立的subprocess，不是共用namespace」的真實語意）。
+    async _pyodideBridgeRunPython(scriptText, stdinBytes) {
+        let pyodide;
+        try { pyodide = await this._ensurePyodideLoaded(); } catch (err) {
+            return { stdout: '', stderr: String(err.message || err), returncode: 1 };
+        }
+        const stdinArr = stdinBytes ? new Uint8Array(stdinBytes.toJs ? stdinBytes.toJs() : stdinBytes) : null;
+        return await this._runPyodideScriptAsync(pyodide, scriptText, stdinArr, { isolatedGlobals: true });
+    }
+
+    // tw_stock_db客製: 2026-09-16——見上面兩個bridge函式的說明。
+    // stdout/stderr/stdin用「JS陣列堆疊、單一穩定dispatcher」的方式做，
+    // 不是每次呼叫都重新setStdout（Pyodide的setStdout/setStderr/setStdin
+    // 是instance全域設定，直接覆蓋沒有辦法「還原成呼叫前的狀態」，巢狀
+    // 呼叫——shell→python builtin→subprocess→python——如果每層都直接
+    // setStdout，內層呼叫結束後外層會錯接到已經沒人在用的舊collector）。
+    // dispatcher只裝一次（idempotent），之後每次執行只是push/pop陣列，
+    // 天然對應到JS呼叫堆疊本身的巢狀順序，不用自己刻額外的還原邏輯。
+    _ensurePyodideIoStacksInstalled(pyodide) {
+        if (this._pyodideStdoutStack) return;
+        this._pyodideStdoutStack = [];
+        this._pyodideStderrStack = [];
+        this._pyodideStdinStack = [];
+        pyodide.setStdout({ batched: (s) => {
+            const top = this._pyodideStdoutStack[this._pyodideStdoutStack.length - 1];
+            if (top) top.push(s);
+        } });
+        pyodide.setStderr({ batched: (s) => {
+            const top = this._pyodideStderrStack[this._pyodideStderrStack.length - 1];
+            if (top) top.push(s);
+        } });
+        pyodide.setStdin({ stdin: () => {
+            const top = this._pyodideStdinStack[this._pyodideStdinStack.length - 1];
+            return top ? top() : null;
+        } });
+    }
+
+    // tw_stock_db客製: 2026-09-16——給_runPythonBuiltin（wasi-sh host
+    // builtin，見計畫2/3節）用的**同步**版本——host builtin handler不能
+    // await，這裡用`pyodide.runPython`（不是`runPythonAsync`），代價是這條
+    // 路徑不支援top-level await（python_execute獨立工具不受影響，維持
+    // runPythonAsync）。
+    _runPyodideScriptSync(pyodide, scriptText, stdinBytes) {
+        this._ensurePyodideIoStacksInstalled(pyodide);
+        const stdoutChunks = [], stderrChunks = [];
+        this._pyodideStdoutStack.push(stdoutChunks);
+        this._pyodideStderrStack.push(stderrChunks);
+        let stdinSent = !stdinBytes;
+        this._pyodideStdinStack.push(() => { if (stdinSent) return null; stdinSent = true; return stdinBytes; });
+        let returncode = 0;
+        try {
+            pyodide.runPython(scriptText);
+        } catch (err) {
+            stderrChunks.push(String(err && err.message || err));
+            returncode = 1;
+        } finally {
+            this._pyodideStdoutStack.pop();
+            this._pyodideStderrStack.pop();
+            this._pyodideStdinStack.pop();
+        }
+        return {
+            stdout: stdoutChunks.length ? stdoutChunks.join('\n') + '\n' : '',
+            stderr: stderrChunks.length ? stderrChunks.join('\n') + '\n' : '',
+            returncode,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-16——給subprocess橋接（_pyodideBridgeRunPython）
+    // 跟python_execute工具共用的**async**版本，可以`await`。
+    // `isolatedGlobals:true`給子腳本獨立的globals（模擬真的subprocess，
+    // 不共用呼叫端腳本的變數，見_pyodideBridgeRunPython的說明）；
+    // python_execute維持既有行為（不隔離，跟這次修改前一致，避免不必要的
+    // 行為變化），只借用這裡的stack-based stdout/stderr/stdin機制。
+    async _runPyodideScriptAsync(pyodide, scriptText, stdinBytes, { isolatedGlobals = false } = {}) {
+        this._ensurePyodideIoStacksInstalled(pyodide);
+        const stdoutChunks = [], stderrChunks = [];
+        this._pyodideStdoutStack.push(stdoutChunks);
+        this._pyodideStderrStack.push(stderrChunks);
+        let stdinSent = !stdinBytes;
+        this._pyodideStdinStack.push(() => { if (stdinSent) return null; stdinSent = true; return stdinBytes; });
+        let returncode = 0;
+        try {
+            const options = isolatedGlobals ? { globals: pyodide.toPy({}) } : undefined;
+            await pyodide.runPythonAsync(scriptText, options);
+        } catch (err) {
+            stderrChunks.push(String(err && err.message || err));
+            returncode = 1;
+        } finally {
+            this._pyodideStdoutStack.pop();
+            this._pyodideStderrStack.pop();
+            this._pyodideStdinStack.pop();
+        }
+        return {
+            stdout: stdoutChunks.length ? stdoutChunks.join('\n') + '\n' : '',
+            stderr: stderrChunks.length ? stderrChunks.join('\n') + '\n' : '',
+            returncode,
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-16——見SANDBOX_COMMAND_REGISTRY/計畫階段1的
+    // 說明。這是host builtins的統一分派點（純同步，見bash_execute裡
+    // 「先掃描→預先resolve→組出同步builtins map」那段），resolved是
+    // `{pyodide?, jq?, xmlParser?}`——只有這次腳本真的用到的才會有值。
+    _runSandboxBuiltinCommand(kind, ctx, resolved) {
+        try {
+            if (kind === 'pyodide') return this._runPythonBuiltin(ctx, resolved.pyodide);
+            if (kind === 'jq') return this._runJqBuiltin(ctx, resolved.jq);
+            if (kind === 'xq') return this._runXqBuiltin(ctx, resolved.jq, resolved.xmlParser);
+            if (kind === 'column') return this._runColumnBuiltin(ctx);
+            if (kind === 'split') return this._runSplitBuiltin(ctx);
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(String((err && err.message) || err) + '\n'));
+            return 1;
+        }
+        return 127;
+    }
+
+    // tw_stock_db客製: 2026-09-16——`ctx.fs`是wasi-sh的高層同步介面
+    // （`{resolve,read,write,exists,stat,list,mkdir,remove}`，已實測確認，
+    // 跟`_walkMemoryFsDir`用的低層`store.readdirSync/statSync/readSync`是
+    // 不同的API——host builtin拿到的是`ctx.fs`這個高層介面，不是原始
+    // store），這裡另外寫一個對應的walk，給python builtin橋接`/work`到
+    // `pyodide.FS`用。
+    _walkCtxFsDir(fsApi, rootDir) {
+        const out = [];
+        const walk = (dir) => {
+            let names;
+            try { names = fsApi.list(dir); } catch (_) { return; }
+            for (const name of names) {
+                const p = dir === '/' ? '/' + name : dir + '/' + name;
+                let st;
+                try { st = fsApi.stat(p); } catch (_) { continue; }
+                if (st && st.type === 'directory') walk(p);
+                else out.push({ relPath: p.slice(rootDir.length + 1), absPath: p, bytes: fsApi.read(p) });
+            }
+        };
+        walk(rootDir);
+        return out;
+    }
+
+    // tw_stock_db客製: 2026-09-16——python/python3橋接（同步，見計畫3節，
+    // host builtin handler不能await，pyodide是呼叫端已經resolve好的
+    // instance）。ctx.argv[1]是.py檔路徑；跨檔案系統橋接是「執行前把ctx.fs
+    // 的/work整包同步進pyodide.FS、執行後反向整包同步回ctx.fs」，兩邊API
+    // 都是同步呼叫，橋接本身不需要await。
+    _runPythonBuiltin(ctx, pyodide) {
+        const scriptPath = ctx.argv[1];
+        if (!scriptPath) { ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: missing script path\n`)); return 2; }
+        let scriptText;
+        try {
+            scriptText = new TextDecoder('utf-8').decode(ctx.fs.read(scriptPath));
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: ${scriptPath}: ${String(err.message || err)}\n`));
+            return 127;
+        }
+        // 橋接前先清空pyodide.FS的/work，避免看到上一次呼叫（或
+        // python_execute）殘留的舊檔案（跟python_execute既有的清理慣例
+        // 一致，見那個工具finally區塊的說明）。
+        try {
+            pyodide.FS.mkdirTree('/work');
+            for (const f of this._walkPyodideFsDir(pyodide, '/work')) pyodide.FS.unlink(f.absPath);
+        } catch (_) {}
+        for (const f of this._walkCtxFsDir(ctx.fs, '/work')) {
+            const abs = '/work/' + f.relPath;
+            const dir = abs.slice(0, abs.lastIndexOf('/'));
+            if (dir && dir !== '/work') pyodide.FS.mkdirTree(dir);
+            pyodide.FS.writeFile(abs, f.bytes);
+        }
+        const stdinBytes = ctx.stdin() || null;
+        const { stdout, stderr, returncode } = this._runPyodideScriptSync(pyodide, scriptText, stdinBytes && stdinBytes.length ? stdinBytes : null);
+        // 執行後反向把pyodide.FS的/work寫回ctx.fs，讓pipeline下一段的busybox
+        // 指令、或最後bash_execute回傳的output_files看得到python新增/
+        // 修改的檔案。
+        for (const f of this._walkPyodideFsDir(pyodide, '/work')) {
+            try { ctx.fs.write('/work/' + f.relPath, f.bytes); } catch (_) {}
+        }
+        // tw_stock_db客製: 2026-09-16實測發現——_runPythonBuiltin跟
+        // python_execute共用同一個pyodide instance（因此共用同一份
+        // pyodide.FS），如果這裡不清掉剛剛寫進pyodide.FS的/work，下一次
+        // 呼叫python_execute時會看到這次bash_execute留下的殘留檔案（實測
+        // 案例：python_execute的output_files裡出現一個從沒透過input_files
+        // 給過的舊檔案）。已經複製回ctx.fs了，pyodide.FS這份可以放心清掉。
+        try {
+            for (const f of this._walkPyodideFsDir(pyodide, '/work')) pyodide.FS.unlink(f.absPath);
+        } catch (_) {}
+        if (stdout) ctx.stdout(new TextEncoder().encode(stdout));
+        if (stderr) ctx.stderr(new TextEncoder().encode(stderr));
+        return returncode;
+    }
+
+    // tw_stock_db客製: 2026-09-16——jq橋接（同步，jqInstance是呼叫端已經
+    // resolve好的instance，`.json(input, filter)`本身就是同步API）。讀輸入：
+    // argv裡filter之後如果還有非flag的檔名參數，從ctx.fs讀；否則讀stdin當
+    // UTF-8 JSON文字。這次只支援-r/-c/-s三個最常用旗標，其餘旗標留待有
+    // 實際需求時再補（見計畫已知限制）。
+    _runJqBuiltin(ctx, jqInstance) {
+        const argv = ctx.argv.slice(1);
+        const flags = { raw: false, compact: false, slurp: false };
+        const positional = [];
+        for (const a of argv) {
+            if (a === '-r' || a === '--raw-output') flags.raw = true;
+            else if (a === '-c' || a === '--compact-output') flags.compact = true;
+            else if (a === '-s' || a === '--slurp') flags.slurp = true;
+            else positional.push(a);
+        }
+        const filter = positional[0];
+        if (!filter) { ctx.stderr(new TextEncoder().encode('jq: 缺少filter運算式\n')); return 2; }
+        let inputText;
+        if (positional[1]) {
+            try { inputText = new TextDecoder('utf-8').decode(ctx.fs.read(positional[1])); }
+            catch (err) { ctx.stderr(new TextEncoder().encode(`jq: ${positional[1]}: ${String(err.message || err)}\n`)); return 2; }
+        } else {
+            inputText = new TextDecoder('utf-8').decode(ctx.stdin());
+        }
+        return this._applyJqFilterAndWriteOutput(jqInstance, inputText, filter, flags, ctx);
+    }
+
+    // tw_stock_db客製: 2026-09-16——xq橋接（同步）：XML→物件（fast-xml-parser）
+    // 後重用_applyJqFilterAndWriteOutput這段既有邏輯（跟jq的差異只在輸入怎麼
+    // parse成物件），不重複實作一份filter/輸出格式化邏輯。
+    _runXqBuiltin(ctx, jqInstance, XmlParserCtor) {
+        const argv = ctx.argv.slice(1);
+        const flags = { raw: false, compact: false, slurp: false };
+        const positional = [];
+        for (const a of argv) {
+            if (a === '-r' || a === '--raw-output') flags.raw = true;
+            else if (a === '-c' || a === '--compact-output') flags.compact = true;
+            else if (a === '-s' || a === '--slurp') flags.slurp = true;
+            else positional.push(a);
+        }
+        const filter = positional[0];
+        if (!filter) { ctx.stderr(new TextEncoder().encode('xq: 缺少filter運算式\n')); return 2; }
+        let xmlText;
+        if (positional[1]) {
+            try { xmlText = new TextDecoder('utf-8').decode(ctx.fs.read(positional[1])); }
+            catch (err) { ctx.stderr(new TextEncoder().encode(`xq: ${positional[1]}: ${String(err.message || err)}\n`)); return 2; }
+        } else {
+            xmlText = new TextDecoder('utf-8').decode(ctx.stdin());
+        }
+        let dataObj;
+        try {
+            const parser = new XmlParserCtor();
+            dataObj = parser.parse(xmlText);
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`xq: XML解析失敗: ${String(err.message || err)}\n`));
+            return 1;
+        }
+        return this._applyJqFilterAndWriteOutput(jqInstance, JSON.stringify(dataObj), filter, flags, ctx);
+    }
+
+    // tw_stock_db客製: 2026-09-16——jq/xq共用：parse輸入JSON文字→套用
+    // filter→依flags格式化輸出。
+    _applyJqFilterAndWriteOutput(jqInstance, inputText, filter, flags, ctx) {
+        let parsedInput;
+        try {
+            parsedInput = flags.slurp
+                ? inputText.trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+                : JSON.parse(inputText);
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`jq: 輸入不是合法JSON: ${String(err.message || err)}\n`));
+            return 2;
+        }
+        let results;
+        try {
+            results = jqInstance.json(parsedInput, filter);
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`jq: ${String(err.message || err)}\n`));
+            return 3;
+        }
+        const lines = (Array.isArray(results) ? results : [results]).map(v => {
+            if (flags.raw && typeof v === 'string') return v;
+            return flags.compact ? JSON.stringify(v) : JSON.stringify(v, null, 2);
+        });
+        ctx.stdout(new TextEncoder().encode(lines.length ? lines.join('\n') + '\n' : ''));
+        return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-16——busybox這個build沒有column這個applet
+    // （實測確認），補一個同步JS版本，先支援使用者原始範例用到的`-t`
+    // （表格對齊）。純本地運算，不需要任何額外資源/下載。
+    _runColumnBuiltin(ctx) {
+        const isTableMode = ctx.argv.includes('-t');
+        const text = new TextDecoder('utf-8').decode(ctx.stdin());
+        const lines = text.split('\n');
+        if (lines.length && lines[lines.length - 1] === '') lines.pop();
+        if (!isTableMode) {
+            ctx.stdout(new TextEncoder().encode(lines.join('\n') + (lines.length ? '\n' : '')));
+            return 0;
+        }
+        const rows = lines.map(l => l.trim().split(/\s+/).filter(Boolean));
+        const colCount = rows.reduce((n, r) => Math.max(n, r.length), 0);
+        const widths = new Array(colCount).fill(0);
+        for (const row of rows) row.forEach((cell, i) => { widths[i] = Math.max(widths[i], cell.length); });
+        const out = rows.map(row => row.map((cell, i) => i === row.length - 1 ? cell : cell.padEnd(widths[i])).join('  ')).join('\n');
+        ctx.stdout(new TextEncoder().encode(out + (rows.length ? '\n' : '')));
+        return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-16——busybox這個build沒有split這個applet
+    // （實測確認），補一個同步JS版本，先支援最常見的`-l N <file> [prefix]`
+    // （每N行一個檔案）。輸出檔名用數字後綴（`<prefix>000`/`<prefix>001`...），
+    // 不是真正split的字母後綴慣例，簡化實作、不影響核心可用性。
+    _runSplitBuiltin(ctx) {
+        const argv = ctx.argv.slice(1);
+        let linesPerFile = 1000;
+        const positional = [];
+        for (let i = 0; i < argv.length; i++) {
+            if (argv[i] === '-l' && argv[i + 1]) { linesPerFile = parseInt(argv[++i], 10) || 1000; }
+            else positional.push(argv[i]);
+        }
+        const inputPath = positional[0];
+        const prefix = positional[1] || 'x';
+        let text;
+        try {
+            text = inputPath ? new TextDecoder('utf-8').decode(ctx.fs.read(inputPath)) : new TextDecoder('utf-8').decode(ctx.stdin());
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`split: ${inputPath}: ${String(err.message || err)}\n`));
+            return 2;
+        }
+        const lines = text.split('\n');
+        if (lines.length && lines[lines.length - 1] === '') lines.pop();
+        let chunkIndex = 0;
+        for (let i = 0; i < lines.length; i += linesPerFile) {
+            const chunk = lines.slice(i, i + linesPerFile).join('\n') + '\n';
+            const outPath = `${prefix}${String(chunkIndex).padStart(3, '0')}`;
+            try { ctx.fs.write(outPath, new TextEncoder().encode(chunk)); } catch (_) {}
+            chunkIndex++;
+        }
+        return 0;
     }
 
     // tw_stock_db客製: 2026-09-16——bash_execute用，走busybox那份memoryFs的
