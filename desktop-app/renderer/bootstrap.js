@@ -1217,4 +1217,13 @@ function patchCloudflareWording(root) {
   document.head.appendChild(style);
 
   fa.toggleWindow();
+
+  // tw_stock_db客製: 2026-09-16使用者要求——CLI模式(`-p`，見main.js
+  // runCliPrompt的說明)需要知道「這個main() IIFE整個跑完了、fa已經建構好
+  // 且run_command等工具都註冊完」才能安全送prompt/覆蓋window.confirm等，
+  // 單純輪詢`window.fa`存不存在不夠（IIFE中間就已經`window.fa = fa`，
+  // 但proxy設定/secrets/run_command註冊等後續步驟那時候都還沒跑完）。這個
+  // flag是整個IIFE最後一行才設，純粹是給CLI模式輪詢用的完成訊號，不影響
+  // GUI既有的任何行為/順序。
+  window.__faBootstrapReady = true;
 })();

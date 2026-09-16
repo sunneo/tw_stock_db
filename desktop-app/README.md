@@ -119,6 +119,35 @@ npm start
 （跳過npm install，只做同步floating-assistant.js的步驟），再手動
 `npm start`。
 
+## CLI模式：`-p` 非互動執行
+
+跟`claude -p "..."`類似，桌面版可以不開GUI視窗、直接從命令列丟一句prompt
+進去執行、拿到結果就結束：
+
+```bash
+FloatingAssistant.exe -p "幫我查一下台積電最近的股價"
+FloatingAssistant.exe -p "/media-list-voices"                 # 支援slash command
+FloatingAssistant.exe -p "..." --output-format json            # 結構化JSON
+FloatingAssistant.exe -p "..." --output-format toon            # TOON（比JSON省token）
+FloatingAssistant.exe -p "..." --output-format md               # 原始markdown，不轉成ASCII
+```
+
+（開發模式對應`npm start -- -p "..."`或`electron . -p "..."`。）
+
+- **跟GUI共用workspace**：沿用既有的「依目前資料夾/使用者手動選過的資料夾」
+  判斷邏輯（見下方「架構」章節），在同一個資料夾底下執行CLI模式看得到跟
+  GUI一樣的對話紀錄/設定。
+- **預設全部自動、不彈確認框**：`允許AI執行程式`的執行前確認、File Access
+  Point權限對話框等，只要功能本身已經在Advance Settings開啟，CLI模式一律
+  自動放行（隱藏視窗裡跳原生對話框使用者也看不到）——`execEnabled`這道
+  安全邊界本身不受影響，沒開就是沒開。
+- **GUI互動卡片（3D場景/Mermaid/繪圖/互動viewer/配音小幫手等）在CLI模式
+  下不會呈現**，只會拿到AI回覆的文字結論——這類工具本來就需要真人在畫面
+  上操作，CLI模式沒有畫面可以操作，屬於這個模式先天的能力邊界。
+- 輸出預設是formatted過的純文字＋ASCII art（markdown表格會畫成方框表格，
+  標題/粗體轉成終端機可讀的樣式）；`--output-format`可以改成`json`/
+  `toon`/`md`三種其他格式。
+
 ## 打包成單一執行檔
 
 **Windows**（在Windows機器上，PowerShell）：

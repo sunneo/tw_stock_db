@@ -30,6 +30,27 @@ const path = require("path");
 const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
+const cliFormat = require("./cli-format.js");
+
+// tw_stock_db客製: 2026-09-16使用者要求——桌面版CLI模式：`-p 'prompt'`
+// 非互動執行、`--output-format text|json|toon|md`控制輸出格式（見
+// runCliPrompt的完整說明）。開發模式`electron .`跟打包後.exe，process.argv
+// 前幾個元素的意義不同（electron本身路徑/`.`/exe路徑），不去猜argv[0]/
+// argv[1]固定代表什麼——直接找`-p`/`--prompt`/`--output-format`這幾個
+// 旗標本身比較可靠，不受呼叫方式影響。
+function parseCliArgs(argv) {
+  const out = { prompt: null, outputFormat: "text" };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-p" || argv[i] === "--prompt") { i++; out.prompt = argv[i] != null ? argv[i] : ""; }
+    else if (argv[i] === "--output-format") { i++; out.outputFormat = String(argv[i] || "text").toLowerCase(); }
+  }
+  return out;
+}
+const cliArgs = parseCliArgs(process.argv);
+if (cliArgs.prompt != null && !["text", "json", "toon", "md"].includes(cliArgs.outputFormat)) {
+  console.error(`未知的 --output-format「${cliArgs.outputFormat}」，只支援 text/json/toon/md`);
+  process.exit(1);
+}
 
 const USER_DATA_DIR = () => app.getPath("userData");
 const ROOTS_FILE = () => path.join(USER_DATA_DIR(), "fap-roots.json");
@@ -923,14 +944,26 @@ function runShellCommand(fullCommandLine, cwd) {
   });
 }
 
+// tw_stock_db客製: 2026-09-16使用者要求——CLI模式(`-p`，見runCliPrompt)
+// 「預設全都是auto，不詢問」，run_command/tmux這幾個「真的執行東西」的
+// 工具在CLI模式下不該跳原生confirm視窗（隱藏視窗裡跳出來的對話框使用者
+// 根本看不到、也點不到，會直接卡死等不到回應）。cliWindowWebContentsId
+// 記錄CLI隱藏視窗自己的webContents id（runCliPrompt建立視窗時設定），
+// execConfirmGate收到的senderWebContentsId跟這個相符時直接跳過confirm
+// 視窗——**execEnabled這道安全邊界本身不受影響**，使用者沒開就是沒開，
+// CLI模式只跳過「已經開啟時還要不要每次跳確認框」這一步，不是連
+// execEnabled都自動繞過。
+let cliWindowWebContentsId = null;
+
 // 共用confirm gate：run_command與下面的tmux_*工具都是「真的執行東西」，
 // 統一走同一個execEnabled檢查＋同一個confirm視窗（顯示同樣格式的指令/
 // 工作目錄），不要各自重複一份判斷邏輯。
-async function execConfirmGate(cmdLineForDisplay, cwdForDisplay) {
+async function execConfirmGate(cmdLineForDisplay, cwdForDisplay, senderWebContentsId) {
   const settings = await getDesktopSettings();
   if (!settings.execEnabled) {
     throw new Error("執行程式功能目前未啟用，請在Advance設定的「桌面版設定」分頁開啟「允許AI執行程式」。");
   }
+  if (cliWindowWebContentsId != null && senderWebContentsId === cliWindowWebContentsId) return;
   if (settings.execConfirmRequired !== false) {
     const allowed = await showExecConfirmWindow(cmdLineForDisplay, cwdForDisplay);
     if (!allowed) throw new Error("使用者拒絕了這個執行請求。");
@@ -947,7 +980,7 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel, cwdA
   }
   const fullCommandLine = buildFullCommandLine(command, args);
   if (!fullCommandLine) throw new Error("缺少要執行的指令內容");
-  await execConfirmGate(fullCommandLine, cwd);
+  await execConfirmGate(fullCommandLine, cwd, _evt.sender.id);
   return runShellCommand(fullCommandLine, cwd);
 });
 
@@ -984,7 +1017,7 @@ ipcMain.handle("fa:tmux:start", async (_evt, { name, command, cwd } = {}) => {
   if (!sessionName) throw new Error("缺少session名稱");
   const workDir = cwd ? path.resolve(String(cwd)) : app.getPath("home");
   const displayCmd = `tmux new-session -d -s ${sessionName}${command ? ` "${command}"` : ""}`;
-  await execConfirmGate(displayCmd, workDir);
+  await execConfirmGate(displayCmd, workDir, _evt.sender.id);
   const tmuxArgs = ["new-session", "-d", "-s", sessionName, "-c", workDir];
   if (command) tmuxArgs.push(String(command));
   return execFileP("tmux", tmuxArgs);
@@ -995,7 +1028,7 @@ ipcMain.handle("fa:tmux:sendKeys", async (_evt, { name, keys, enter } = {}) => {
   const sessionName = String(name || "").trim();
   if (!sessionName) throw new Error("缺少session名稱");
   const keysStr = String(keys || "");
-  await execConfirmGate(`tmux send-keys -t ${sessionName} ${keysStr}${enter !== false ? " <Enter>" : ""}`, `(tmux session: ${sessionName})`);
+  await execConfirmGate(`tmux send-keys -t ${sessionName} ${keysStr}${enter !== false ? " <Enter>" : ""}`, `(tmux session: ${sessionName})`, _evt.sender.id);
   const tmuxArgs = ["send-keys", "-t", sessionName, keysStr];
   if (enter !== false) tmuxArgs.push("Enter");
   return execFileP("tmux", tmuxArgs);
@@ -1025,7 +1058,7 @@ ipcMain.handle("fa:tmux:kill", async (_evt, { name } = {}) => {
   requireTmuxAvailable();
   const sessionName = String(name || "").trim();
   if (!sessionName) throw new Error("缺少session名稱");
-  await execConfirmGate(`tmux kill-session -t ${sessionName}`, `(tmux session: ${sessionName})`);
+  await execConfirmGate(`tmux kill-session -t ${sessionName}`, `(tmux session: ${sessionName})`, _evt.sender.id);
   return execFileP("tmux", ["kill-session", "-t", sessionName]);
 });
 
@@ -1891,6 +1924,120 @@ function createWindow() {
   }
 }
 
+// tw_stock_db客製: 2026-09-16使用者要求——桌面版CLI模式：`-p 'prompt'`
+// 非互動執行一次、印結果、結束，不開GUI視窗。設計重點（詳見計畫文件）：
+//   1. 隱藏視窗（show:false）載入跟GUI完全一樣的renderer/index.html，
+//      重用同一套bootstrap.js/FloatingAssistant引擎——不是另外刻一套
+//      「CLI專用」的簡化邏輯，slash command/工具/subagent委派全部原封
+//      不動可用。
+//   2. `跟GUI共用workspace`是既有的fa:workspace:init()機制本來就會做的事
+//      （見那個handler的說明：使用者手動選過的資料夾優先，否則用CLI啟動
+//      當下的process.cwd()）——這裡完全不用額外處理，bootstrap.js本來就
+//      會在建構FloatingAssistant之前呼叫它。
+//   3. 等`window.__faBootstrapReady`（bootstrap.js整個IIFE跑完的訊號，見
+//      那邊的說明）才送prompt，確保run_command等工具、Advance設定都已經
+//      就緒。
+//   4. 送prompt前蓋一層CLI專屬的window.confirm/alert/prompt（蓋在
+//      bootstrap.js既有的原生對話框版本之上，讓GUI對話框在隱藏視窗裡
+//      不會被觸發、也不會卡住等不到回應）；run_command類工具走
+//      cliWindowWebContentsId這個獨立的bypass（見execConfirmGate的說明）。
+//   5. 一般訊息輪詢`fa.isResponding`；slash command用「訊息則數穩定」
+//      近似完成訊號（見計畫已知限制）。
+//   6. 只讀最後一則assistant訊息的`.content`當結果文字——GUI widget的
+//      實際payload本來就存在非可枚舉的`msg._display*`屬性、不會混進
+//      `.content`，CLI模式天生就只看得到純文字結論，不需要另外過濾。
+async function runCliPrompt({ prompt, outputFormat }) {
+  const startedAt = Date.now();
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: true,
+    },
+  });
+  cliWindowWebContentsId = win.webContents.id;
+
+  await new Promise((resolve, reject) => {
+    win.webContents.once("did-finish-load", resolve);
+    win.webContents.once("did-fail-load", (_e, code, desc) => reject(new Error(`renderer載入失敗: ${desc} (${code})`)));
+    win.loadFile(path.join(__dirname, "renderer", "index.html"));
+  });
+
+  // bootstrap.js的main() IIFE是async、有好幾個await（workspace init、
+  // proxy設定、secrets查詢...），要等它整個跑完（見那邊新增的
+  // window.__faBootstrapReady旗標）才能安全操作window.fa。
+  await win.webContents.executeJavaScript(`
+    new Promise((resolve) => {
+      const iv = setInterval(() => { if (window.__faBootstrapReady) { clearInterval(iv); resolve(); } }, 50);
+    })
+  `);
+
+  // CLI模式「預設全都是auto，不詢問」——蓋在bootstrap.js既有覆蓋之上，
+  // 確保跳的是這裡的auto版本，不是GUI的原生對話框版本（那個在隱藏視窗裡
+  // 會直接卡死，使用者也看不到）。
+  await win.webContents.executeJavaScript(`
+    window.confirm = () => true;
+    window.alert = () => {};
+    window.prompt = () => null;
+  `);
+
+  const submitScript = `
+    (async () => {
+      const fa = window.fa;
+      const promptText = ${JSON.stringify(prompt)};
+      const beforeCount = fa.messages.length;
+      const isSlash = promptText.trim().startsWith('/');
+
+      const fakeInput = document.createElement('textarea');
+      fakeInput.value = promptText;
+      fa._submitChatInput(fakeInput, null);
+
+      if (isSlash) {
+        let lastCount = fa.messages.length, stableRounds = 0;
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 300));
+          const cur = fa.messages.length;
+          if (cur === lastCount) { stableRounds++; if (stableRounds >= 3) break; }
+          else { stableRounds = 0; lastCount = cur; }
+        }
+      } else {
+        await new Promise((resolve) => {
+          const iv = setInterval(() => { if (!fa.isResponding) { clearInterval(iv); resolve(); } }, 200);
+        });
+      }
+
+      const newMessages = fa.messages.slice(beforeCount);
+      const lastAssistant = [...fa.messages].reverse().find((m) => m.role === 'assistant');
+      const toolCalls = newMessages
+        .filter((m) => m.role === 'assistant' && Array.isArray(m.tool_calls))
+        .flatMap((m) => m.tool_calls.map((tc) => tc.function && tc.function.name).filter(Boolean));
+      const rowCfg = fa._getApiConfigForRow ? fa._getApiConfigForRow(0) : {};
+      return {
+        response: (lastAssistant && lastAssistant.content) || '（沒有取得任何回應內容）',
+        toolCalls,
+        model: rowCfg.apiModel || null,
+      };
+    })()
+  `;
+  const turnResult = await win.webContents.executeJavaScript(submitScript);
+
+  const result = {
+    prompt,
+    response: turnResult.response,
+    model: turnResult.model,
+    toolCalls: turnResult.toolCalls,
+    elapsedMs: Date.now() - startedAt,
+  };
+  console.log(cliFormat.formatResult(result, outputFormat));
+
+  cliWindowWebContentsId = null;
+  win.destroy();
+}
+
 app.whenReady().then(async () => {
   // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
   // > SECRETS_FILE() > BUILTIN_SECRETS_FILE），這是純main行程邏輯，不需要
@@ -1927,6 +2074,22 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error("[main] 本地proxy啟動失敗（git/搜尋等需要CORS繞道的功能會受影響）：", err);
   }
+
+  // tw_stock_db客製: 2026-09-16使用者要求——CLI模式：有`-p`就非互動跑完
+  // 這一次prompt、印結果、結束行程，完全不開GUI視窗（見runCliPrompt的
+  // 完整說明）。跟一般GUI流程共用上面剛啟動好的本地proxy，不重複一份。
+  if (cliArgs.prompt != null) {
+    let exitCode = 0;
+    try {
+      await runCliPrompt(cliArgs);
+    } catch (err) {
+      console.error(String((err && err.stack) || err));
+      exitCode = 1;
+    }
+    app.exit(exitCode);
+    return;
+  }
+
   createWindow();
 
   app.on("activate", () => {
