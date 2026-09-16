@@ -148,6 +148,36 @@ FloatingAssistant.exe -p "..." --output-format md               # 原始markdown
   標題/粗體轉成終端機可讀的樣式）；`--output-format`可以改成`json`/
   `toon`/`md`三種其他格式。
 
+### Windows下的輸出穩定性（`-p`自動切換console模式副本）
+
+Windows打包出來的`.exe`預設是GUI subsystem（雙擊直接開視窗、不會閃一個黑
+底命令列視窗）——但實測發現GUI subsystem的行程從cmd.exe/PowerShell執行時，
+即使程式邏輯本身完全正確，stdout/stderr在很多情況下還是不可靠、輸出會整個
+消失（這是Windows平台本身行之有年的已知限制，不是這個app的bug）。
+
+**使用者不需要處理這個細節，只需要照舊執行同一個`.exe`**：打包流程
+（`build/afterPack.js`）會在GUI版`.exe`旁邊自動多產生一份PE header被改成
+console subsystem的副本（檔名固定是`<原本檔名>-cli.exe`，跟GUI版打包成
+同一個portable單檔，使用者不會另外看到這個檔案）。執行時main.js偵測到
+`-p`就會自動在背景把參數轉發給這份console副本執行（`stdio:'inherit'`直接
+接上目前的終端機），跑完再用同樣的exit code結束——使用者全程只需要記得
+一個`.exe`檔名，雙擊照常開GUI、加`-p`照常在終端機看到輸出。
+
+- 這個機制只在**打包後的正式.exe**生效（`build/afterPack.js`是
+  electron-builder的post-pack hook，只在`build.ps1`/`build.sh`打包時跑）；
+  **開發模式**（`npm start -- -p "..."`/`electron . -p "..."`）沒有這份
+  console副本，Windows下`-p`的輸出穩定性沒有這層保護，這是已知限制（開發
+  模式主要給改程式碼的人用，不是這次要解決的一般使用情境）。
+- Linux（AppImage）/macOS的終端機沒有這個GUI/console subsystem的差異，
+  `-p`本來就能在同一個行程內正常輸出，不需要、也不會產生這份console副本
+  （`build/afterPack.js`只在`context.electronPlatformName === 'win32'`
+  時動作）。
+- 技術細節：PE header的Subsystem欄位（`IMAGE_OPTIONAL_HEADER`起點+68
+  bytes）從GUI(2)改成console(3)的2 bytes patch，`build/pe-subsystem-patch.js`
+  只改這2 bytes、不動其餘內容，也不重算PE checksum（一般使用者模式.exe
+  執行不會強制驗證這個checksum）。這是多個「Electron GUI app也想支援CLI
+  模式」專案共用的既有作法，不是這次發明的黑魔法。
+
 ## 打包成單一執行檔
 
 **Windows**（在Windows機器上，PowerShell）：

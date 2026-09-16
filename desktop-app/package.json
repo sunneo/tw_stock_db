@@ -29,6 +29,7 @@
       "build/icon.png",
       "builtin-secrets.json"
     ],
+    "afterPack": "build/afterPack.js",
     "win": {
       "target": [
         { "target": "portable", "arch": ["x64"] }
