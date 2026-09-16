@@ -4346,6 +4346,16 @@ const DBMgr = (() => {
     )[0] || null;
   }
 
+  /* getPrevClose(個股)的指數版本——走勢圖的即時漲跌要跟「昨收」比，不是
+     跟當天/當個交易時段的第一筆比，兩者用同一個查詢邏輯，只是換一張表。 */
+  function getMarketIndexPrevClose(indexCode, dateStr) {
+    const rows = query(
+      'SELECT close FROM market_index WHERE index_code=? AND trade_date<? ORDER BY trade_date DESC LIMIT 1',
+      [indexCode, dateStr]
+    );
+    return rows.length ? rows[0].close : null;
+  }
+
   function getBatchSparklines(codes, days = 20) {
     if (!codes.length) return {};
     const ph      = codes.map(() => '?').join(',');
@@ -4409,7 +4419,7 @@ const DBMgr = (() => {
     getSectors, getStocksBySector, getSectorRotation, getVolumeRankingReference, getWatchlistStocks, searchStocks, getPrevClose,
     computeStrongCurrent, computeStrongXQ, evaluateStrongSignalForStock, computePatternScreenLive, evaluatePatternForStock,
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
-    getMarketIndexHistory, getMarketIndexLatest,
+    getMarketIndexHistory, getMarketIndexLatest, getMarketIndexPrevClose,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
     isReady: () => !!db,
   };
@@ -10465,7 +10475,7 @@ function renderChartInfoLine(history, liveBadge) {
   R.chartInfoMeta.textContent = `最後 ${last.trade_date}` + (liveBadge ? '　🔴即時' : '');
 }
 
-function renderIntradayInfoLine(rows, isIndex) {
+function renderIntradayInfoLine(rows, isIndex, code) {
   if (!rows.length) {
     clearChartInfoLine();
     R.chartInfoPrice.textContent = isIndex
@@ -10477,8 +10487,16 @@ function renderIntradayInfoLine(rows, isIndex) {
   const first = rows[0];
   const t = (last.trade_date.split('T')[1] || '').slice(0, 8);
   const badge = isIndex ? '' : '　🔴即時'; // 美股指數走勢圖純靠 Yahoo backfill，沒有 LiveFeed 即時輪詢
-  const changeAmt = (first && first.close != null && last.close != null) ? +(last.close - first.close).toFixed(2) : null;
-  const changePct = (changeAmt != null && first.close) ? (changeAmt / first.close * 100) : null;
+  // tw_stock_db客製: 2026-09-16使用者糾正——走勢圖右邊即時漲跌要跟「昨收」
+  // 比，不是跟「這個交易時段第一筆(等同開盤價)」比，兩者在有跳空時會差
+  // 很多。昨收＝這個交易時段日期之前最近一筆收盤（個股/指數各自查對應表，
+  // 跟清單畫面/K線圖漲跌停判斷同一套邏輯，見DBMgr.getPrevClose）。
+  const sessionDate = (first.trade_date || '').slice(0, 10);
+  const prevClose = sessionDate
+    ? (isIndex ? DBMgr.getMarketIndexPrevClose(code, sessionDate) : DBMgr.getPrevClose(code, sessionDate))
+    : null;
+  const changeAmt = (prevClose != null && last.close != null) ? +(last.close - prevClose).toFixed(2) : null;
+  const changePct = (changeAmt != null && prevClose) ? (changeAmt / prevClose * 100) : null;
   setChartInfoChange(changeAmt, changePct);
   R.chartInfoPrice.textContent = last.close != null ? `現價 ${last.close.toFixed(2)}` : '';
   R.chartInfoMeta.textContent = `最後 ${t}　累積 ${rows.length} 筆${badge}`;
@@ -10618,7 +10636,7 @@ async function renderIntradaySourceChart(opts = {}) {
      guard 說明）。 */
   Chart.setMoreHistoryAvailable(false);
   Chart.setData(rows, { period: 'intraday', intradayMinutes: mins, preserveView: !!opts.preserveView });
-  renderIntradayInfoLine(rows, isIndex);
+  renderIntradayInfoLine(rows, isIndex, code);
 }
 
 /* 依目前 currentChartSource + chartMode 畫出對應的圖表；selectStock/
