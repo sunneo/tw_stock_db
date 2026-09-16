@@ -15461,6 +15461,53 @@ ${sourceTool.handlerScript}
         alert('Skill 匯入完成：' + parts.join('，'));
     }
 
+    // tw_stock_db客製: 2026-09-16——純JS MD5（RFC 1321），沒有依賴任何
+    // 外部函式庫也不用crypto.subtle（瀏覽器SubtleCrypto本來就不支援
+    // MD5）。只用在_importSkillZip去除副檔名後預設名稱變成空白時，用檔案
+    // 內容產生一個穩定、跟這個檔案綁定的後備名稱（SKILL-{md5}），純粹是
+    // 個防碰撞的識別字串，不是任何安全/驗證用途，MD5在這裡完全夠用。
+    _md5Hex(buffer) {
+        const rotl = (x, c) => (x << c) | (x >>> (32 - c));
+        const s = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+            5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+            4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+            6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
+        const K = new Int32Array(64);
+        for (let i = 0; i < 64; i++) K[i] = (Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296)) | 0;
+        let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+        const bytes = new Uint8Array(buffer);
+        const bitLen = bytes.length * 8;
+        const padLen = ((bytes.length + 8) >> 6) * 64 + 64;
+        const padded = new Uint8Array(padLen);
+        padded.set(bytes);
+        padded[bytes.length] = 0x80;
+        const dv = new DataView(padded.buffer);
+        dv.setUint32(padLen - 8, bitLen >>> 0, true);
+        dv.setUint32(padLen - 4, Math.floor(bitLen / 4294967296), true);
+        for (let chunkStart = 0; chunkStart < padded.length; chunkStart += 64) {
+            const M = new Int32Array(16);
+            for (let i = 0; i < 16; i++) M[i] = dv.getInt32(chunkStart + i * 4, true);
+            let A = a0, B = b0, C = c0, D = d0;
+            for (let i = 0; i < 64; i++) {
+                let F, g;
+                if (i < 16) { F = (B & C) | (~B & D); g = i; }
+                else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+                else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+                else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+                F = (F + A + K[i] + M[g]) | 0;
+                A = D; D = C; C = B;
+                B = (B + rotl(F, s[i])) | 0;
+            }
+            a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+        }
+        const toHex = (n) => {
+            const b4 = new Uint8Array(4);
+            new DataView(b4.buffer).setInt32(0, n, true);
+            return [...b4].map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+        return toHex(a0) + toHex(b0) + toHex(c0) + toHex(d0);
+    }
+
     async _importSkillZip(file) {
         if (!file) return;
         try {
@@ -15487,7 +15534,13 @@ ${sourceTool.handlerScript}
                 if (entry.dir || path === 'SKILL.md' || /^tools\/.+\.js$/i.test(path)) continue;
                 extraFileEntries.push({ path, blob: await entry.async('blob') });
             }
-            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel: file.name });
+            // tw_stock_db客製: 2026-09-16使用者要求——預設名稱要去掉.skill/.zip
+            // 副檔名（原本直接用file.name，使用者取名時得自己手動刪掉），去掉後
+            // 如果剩下空白（例如檔名本來就是「.skill」），改用內容的MD5當後備
+            // 名稱，確保還是有一個穩定、不會跟其他匯入撞名的預設值。
+            const strippedName = String(file.name || '').replace(/\.(skill|zip)$/i, '').trim();
+            const sourceLabel = strippedName || `SKILL-${this._md5Hex(await file.arrayBuffer())}`;
+            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel });
         } catch (err) {
             alert('.skill 匯入失敗: ' + (err.message || err));
         }
