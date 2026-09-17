@@ -121,7 +121,7 @@ function decodeDdgHref(rawHref) {
 // 的`class="...result__snippet..." ...>SNIPPET</a>`（摘要）——用「這個標題
 // 連結到下一個標題連結之間」當一個搜尋結果的範圍（regex不擅長配對巢狀
 // <div>，這是務實的邊界近似，不是完整HTML parser）。
-async function duckDuckGoSearch(rawQuery, siteFilter) {
+async function duckDuckGoHtmlSearch(rawQuery, siteFilter) {
   const query = siteFilter ? `site:${siteFilter} ${rawQuery}` : rawQuery;
   const resp = await fetchWithTimeout("https://html.duckduckgo.com/html/", {
     method: "POST",
@@ -148,6 +148,66 @@ async function duckDuckGoSearch(rawQuery, siteFilter) {
     items.push({ title, url: decodeDdgHref(cur.href), snippet: snippetMatch ? stripHtml(snippetMatch[1]) : "" });
   }
   return items;
+}
+
+// tw_stock_db客製: 2026-09-17使用者回報「browser search的duck duck go有
+// 問題，沒辦法真正查資料」——html.duckduckgo.com/html/這個介面在某些網路
+// 環境/IP信譽下會被anomaly-detection擋下（見上面既有的風險說明），
+// lite.duckduckgo.com/lite/是DuckDuckGo自己維護給純文字瀏覽器/腳本用的
+// 極簡版介面（多年來HTML結構刻意保持穩定），跟html.duckduckgo.com是
+// 完全獨立的兩個服務端點，被擋的網路環境不一定兩邊同時被擋，值得當
+// 備援重試一次，而不是主要介面一失敗就直接放棄。GET
+// （不是POST，這是lite介面本身的協定）＋一樣的regex近似解析手法
+// （class="result-link"是標題連結、緊接著的class="result-snippet"是
+// 摘要）。
+async function duckDuckGoLiteSearch(rawQuery, siteFilter) {
+  const query = siteFilter ? `site:${siteFilter} ${rawQuery}` : rawQuery;
+  const resp = await fetchWithTimeout(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
+    headers: { "User-Agent": BROWSER_SEARCH_UA },
+  });
+  if (!resp.ok) throw new Error(`DuckDuckGo Lite介面 HTTP ${resp.status}`);
+  const html = await resp.text();
+
+  const titleRe = /<a[^>]*class="[^"]*\bresult-link\b[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+  const matches = [];
+  let m;
+  while ((m = titleRe.exec(html))) {
+    matches.push({ href: m[1], titleHtml: m[2], end: titleRe.lastIndex });
+  }
+  const items = [];
+  for (let i = 0; i < matches.length && items.length < BROWSER_SEARCH_RESULT_LIMIT; i++) {
+    const cur = matches[i];
+    const title = stripHtml(cur.titleHtml);
+    if (!title) continue;
+    const segEnd = i + 1 < matches.length ? matches[i + 1].end : html.length;
+    const segment = html.slice(cur.end, segEnd);
+    const snippetMatch = /class="[^"]*\bresult-snippet\b[^"]*"[^>]*>([\s\S]*?)<\/td>/.exec(segment);
+    items.push({ title, url: decodeDdgHref(cur.href), snippet: snippetMatch ? stripHtml(snippetMatch[1]) : "" });
+  }
+  return items;
+}
+
+// tw_stock_db客製: 2026-09-17——兩個獨立介面都試過一次才真的放棄：主要的
+// html.duckduckgo.com優先（結果通常比較豐富），拿到0筆結果時（可能是真的
+// 查無資料，也可能是被擋下的JS challenge頁——沒辦法從結果本身分辨，見
+// duckDuckGoHtmlSearch的regex對challenge頁本來就抓不到任何
+// `result__a`class，安全地回傳空陣列，不會誤判/崩潰）才退回lite介面重試
+// 一次。任一介面本身丟出例外（網路錯誤/逾時）時也視同0筆，繼續嘗試下一個
+// 介面，最後真的兩邊都失敗才把最後一個例外往外拋。
+async function duckDuckGoSearch(rawQuery, siteFilter) {
+  let primaryError = null;
+  try {
+    const primary = await duckDuckGoHtmlSearch(rawQuery, siteFilter);
+    if (primary.length) return primary;
+  } catch (err) {
+    primaryError = err;
+  }
+  try {
+    return await duckDuckGoLiteSearch(rawQuery, siteFilter);
+  } catch (err) {
+    if (primaryError) throw primaryError;
+    throw err;
+  }
 }
 
 const searchGoogle = (query) => duckDuckGoSearch(query, null);
