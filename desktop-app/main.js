@@ -2108,6 +2108,7 @@ async function runCliPrompt({ prompt, outputFormat }) {
       const promptText = ${JSON.stringify(prompt)};
       const beforeCount = fa.messages.length;
       const isSlash = promptText.trim().startsWith('/');
+      let timedOut = false;
 
       const fakeInput = document.createElement('textarea');
       fakeInput.value = promptText;
@@ -2116,12 +2117,20 @@ async function runCliPrompt({ prompt, outputFormat }) {
       if (isSlash) {
         let lastCount = fa.messages.length, stableRounds = 0;
         const deadline = Date.now() + 60000;
+        let stabilized = false;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 300));
           const cur = fa.messages.length;
-          if (cur === lastCount) { stableRounds++; if (stableRounds >= 3) break; }
+          if (cur === lastCount) { stableRounds++; if (stableRounds >= 3) { stabilized = true; break; } }
           else { stableRounds = 0; lastCount = cur; }
         }
+        // tw_stock_db客製: 2026-09-17使用者回報——slash command分支原本
+        // 「訊息則數穩定」判斷完全沒有逾時偵測，60秒跑完deadline時
+        // stabilized永遠是false卻被無聲無息當成正常結束，回傳當下手邊
+        // 剛好累積到的訊息（可能是還在委派中途的殘缺內容）。跟下面
+        // non-slash分支統一用timedOut旗標讓main行程明確回報逾時，而不是
+        // 悄悄印出可能不完整的內容。
+        if (!stabilized) timedOut = true;
       } else {
         // tw_stock_db客製: 2026-09-16使用者回報「-p沒有等主對話回應結束」
         // 後修正——先等isResponding真的變成true（確認executeChat真的已經
@@ -2139,6 +2148,17 @@ async function runCliPrompt({ prompt, outputFormat }) {
         while (fa.isResponding && Date.now() < doneDeadline) {
           await new Promise((r) => setTimeout(r, 200));
         }
+        // tw_stock_db客製: 2026-09-17使用者回報「有時AI會直接結束，只回
+        // "["，進去GUI才知道又出錯，只出現思考」——根因是上面這個迴圈
+        // 到達doneDeadline時fa.isResponding可能仍然是true（真的卡住/跳針
+        // 中，不是正常結束），改動前完全沒有分辨「isResponding自然變false」
+        // 跟「等到deadline逾時、isResponding還是true」這兩種情況，逾時
+        // 當下不管訊息裡累積了什麼半成品內容（可能只是模型剛開始輸出
+        // [CALL:...這種文字協定呼叫、字都還沒打完），一律照樣當成「這就是
+        // 最終回答」印出去——使用者看到的就是一個看似正常結束、實則毫無
+        // 意義的殘缺輸出（例如單一個"["字元），完全沒有線索知道其實是
+        // 逾時，只能之後另外開GUI才發現那個對話其實還卡在「思考」。
+        if (fa.isResponding) timedOut = true;
       }
 
       const newMessages = fa.messages.slice(beforeCount);
@@ -2151,14 +2171,37 @@ async function runCliPrompt({ prompt, outputFormat }) {
         response: (lastAssistant && lastAssistant.content) || '（沒有取得任何回應內容）',
         toolCalls,
         model: rowCfg.apiModel || null,
+        timedOut,
       };
     })()
   `;
-  const turnResult = await win.webContents.executeJavaScript(submitScript);
+  // tw_stock_db客製: 2026-09-17使用者回報「-p仍沒有等待，我無法從command
+  // line知道AI是不是回應完畢了」——上面的等待邏輯本身其實是正確的（見
+  // 2026-09-16那次已經修過一次），問題是整個等待期間（最長可能到10分鐘）
+  // main行程完全靜默、終端機畫面上什麼都不會變，使用者從外面觀察完全
+  // 無法分辨「還在正常等待」跟「已經卡死」，體感上就是「感覺沒在等待」。
+  // 這裡在Node端（不是renderer的executeJavaScript腳本裡——那整段是單一次
+  // await、中途沒有機會回傳控制權印進度）另外開一個setInterval，每5秒印
+  // 一行進度到stderr（不影響stdout——最終結果格式化輸出仍然只有那一行，
+  // 不會污染想要直接解析/管線處理輸出的使用者），讓使用者看得到行程還
+  // 活著、正在等第幾秒。
+  let heartbeatSeconds = 0;
+  const heartbeat = setInterval(() => {
+    heartbeatSeconds += 5;
+    process.stderr.write(`⏳ 等待 AI 回應中…（已經過 ${heartbeatSeconds} 秒）\n`);
+  }, 5000);
+  let turnResult;
+  try {
+    turnResult = await win.webContents.executeJavaScript(submitScript);
+  } finally {
+    clearInterval(heartbeat);
+  }
 
   const result = {
     prompt,
-    response: turnResult.response,
+    response: turnResult.timedOut
+      ? `[CLI逾時：AI在時間上限內沒有真正回應完畢（可能卡在某個工具呼叫/subagent委派，或端點異常導致模型跳針），以下是逾時當下手邊累積到的殘缺內容，不代表完整回答，請改用GUI檢查這個工作區資料夾的對話紀錄以取得真實狀況：\n\n${turnResult.response}]`
+      : turnResult.response,
     model: turnResult.model,
     toolCalls: turnResult.toolCalls,
     elapsedMs: Date.now() - startedAt,
@@ -2167,7 +2210,7 @@ async function runCliPrompt({ prompt, outputFormat }) {
 
   cliWindowWebContentsId = null;
   win.destroy();
-  return formatted;
+  return { text: formatted, timedOut: !!turnResult.timedOut };
 }
 
 app.whenReady().then(async () => {
@@ -2214,7 +2257,13 @@ app.whenReady().then(async () => {
     let exitCode = 0;
     let text = "";
     try {
-      text = await runCliPrompt(cliArgs);
+      const cliResult = await runCliPrompt(cliArgs);
+      text = cliResult.text;
+      // tw_stock_db客製: 2026-09-17——見runCliPrompt裡timedOut的說明：逾時
+      // 時輸出內容已經明講是殘缺的，這裡額外用非0 exit code反映「這次沒有
+      // 真的成功」，讓使用者/呼叫這支CLI的腳本能用exit code分辨，不用自己
+      // 解析輸出文字裡有沒有出現"逾時"這個關鍵字。
+      if (cliResult.timedOut) exitCode = 1;
     } catch (err) {
       text = String((err && err.stack) || err);
       exitCode = 1;
