@@ -1172,11 +1172,12 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         label: '程式執行環境（bash／python，瀏覽器沙盒內執行）',
         toolNames: ['bash_execute', 'python_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script'],
         systemPrompt: '你是一個專門執行程式的子任務助理，能力：\n' +
-            '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援，額外認得python/python3/jq/xq/column/split這幾個按需下載的指令），完全不會碰到使用者電腦的真實檔案系統。\n' +
+            '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援，額外認得python/python3/jq/xq/column/split這幾個按需下載的指令）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦的真實檔案系統。\n' +
             '- python_execute：在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件如numpy/pandas可以在腳本裡用micropip.install()或import時自動載入，第一次載入某個套件會花一點時間；支援subprocess.run()回頭呼叫shell/其他python腳本）。\n' +
             '兩者都用同一套輸入/輸出模型：\n' +
             '  - input_files（選填）：{"相對路徑":"檔案內容"}，執行前寫進工作目錄（bash是/work/，python是/work/），腳本可以直接讀取。內容如果來自File Access Point/使用者上傳檔案，先用對應的讀取工具（fap_read_file/parse_uploaded_file等）取得文字內容再放進來，這個工具本身不會自己去讀取其他地方的檔案。\n' +
-            '  - output_ref（選填）：腳本執行完後，工作目錄底下新增/修改過的檔案要存去哪裡——給"fap:<名稱>[/<子路徑>]"存進使用者授權的File Access Point；桌面版另外可以給一個真實磁碟絕對路徑直接存到使用者資料夾；完全不給的話存進persistentStorage（回傳file_id，可以再用parse_uploaded_file等既有工具處理，或提示使用者下載）。三種都用得到時，優先問清楚使用者想要哪一種，不要自己隨便猜。\n' +
+            '  - real_input_files（選填）：{"相對路徑":"這台電腦上的真實絕對路徑，或\\"fap:<名稱或id>[/<路徑>]\\"參照使用者已授權的File Access Point"}，執行前會自動讀取這些真實檔案「目前」的內容再寫進工作目錄——**任務裡提到一個真實檔案（例如絕對路徑"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案）、尤其使用者說「我改過了」這種暗示要讀最新版本的情境時，一定要用這個參數把它讀進來再執行，不要直接回答「我不能存取你的真實檔案系統」就放棄任務——真正的存取是在這裡呼叫端內部完成的，你不需要另外申請其他領域的工具、也不需要使用者自己貼上程式碼**。兩種格式各自需要對應的能力才能用，只有兩者都用不上時才會得到明確錯誤（訊息會建議改用另一種格式），不要看到一種格式不通就直接放棄。\n' +
+            '  - output_ref（選填）：腳本執行完後，工作目錄底下新增/修改過的檔案要存去哪裡——給"fap:<名稱>[/<子路徑>]"存進使用者授權的File Access Point；如果目前環境已經提供對應能力，也可以給一個真實磁碟絕對路徑直接存到那個位置；完全不給的話存進persistentStorage（回傳file_id，可以再用parse_uploaded_file等既有工具處理，或提示使用者下載）。幾種都用得到時，優先問清楚使用者想要哪一種，不要自己隨便猜。\n' +
             '回應包含stdout/stderr/exit_code（exit_code非0代表腳本執行失敗，把stderr內容照實轉告使用者，不要自己掰原因）跟output_files清單（每個檔案存到哪裡）。⚠️目前沒有硬性逾時中斷機制，腳本裡不要寫真正的無窮迴圈；也沒有網路存取能力（沙盒內對外連線一律失敗，需要下載外部資料時用browser_search/fetch_web_page等既有工具，不要在腳本裡自己wget/curl）。\n' +
             '**腳本重用（register_saved_script/list_saved_scripts/get_saved_script）**：評估到使用者的需求需要背景執行、要跑大量運算/公式、或看起來未來還會被問到類似情境時，不要每次都重新寫一遍腳本——動手寫之前先呼叫list_saved_scripts看有沒有現成可用的（可以直接用get_saved_script取回內容、透過input_files帶進bash_execute/python_execute執行）；確認一段新腳本可以正確執行、判斷值得未來重複使用之後，呼叫register_saved_script存起來（連同一段清楚描述「做什麼、什麼情境該重用」的description，之後才找得回來）。三個工具跟bash_execute/python_execute共用同一套output_ref語意（留空=persistentStorage、fap:<名稱>[/<路徑>]=使用者指定或共用的資料夾）——存進persistentStorage的有100MB自動LRU額度，不用自己操心空間；存進File Access Point沒有這個上限。',
     },
@@ -3591,6 +3592,47 @@ class FloatingAssistant {
         return this;
     }
 
+    // tw_stock_db客製: 2026-09-17使用者要求——「補充資料也可以透過override
+    // 跟外掛」：host可以幫任一個domain（內建的或host自己register_domain()
+    // 新增的都可以）掛一段補充說明，跟setEnvironmentNote()同一種「host
+    // 注入host專屬事實，不寫死進引擎本身」的精神，差別只在作用範圍——這裡
+    // 是domain層級（只有委派到這個domain的路由器/子agent看得到，見
+    // _resolveDomainDynamicNote/_buildDomainCatalogSection/
+    // _resolveDomainSystemPrompt，這個方法只是那個既有dynamicNote欄位的
+    // 公開設定入口，host不需要知道dynamicNote這個內部欄位名稱），
+    // setEnvironmentNote是全域層級（每一輪system prompt都看得到）。note
+    // 可以是字串、也可以是函式（每次委派/路由當下才即時求值，例如想回報
+    // 「現在有哪些相關真實檔案」這種動態內容——見ai_functions domain的
+    // dynamicNote範例）。domain代號打錯時直接丟錯誤，不要讓host以為設定
+    // 生效了、實際上卻默默沒有作用。
+    setDomainNote(domainKey, note) {
+        const domain = this.domains[domainKey];
+        if (!domain) throw new Error(`setDomainNote: domain "${domainKey}" 不存在`);
+        domain.dynamicNote = note;
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——第三層、也是最細的override
+    // 粒度：單一工具自己的description（模型透過原生tool_calls/
+    // get_tool_details看到的那段文字，跟domain層級的dynamicNote/systemPrompt
+    // 是不同的東西——一個工具可能被好幾個domain共用，這裡改的是工具本身，
+    // 不特定於某個domain）。直接用register_openai_tool()整個重新註冊也做
+    // 得到同樣的事，但呼叫端要自己先讀出既有callback/schema再原封不動
+    // 傳回去，容易漏東西；這個方法只換description、保留原本的
+    // callback/schema，呼叫端只需要知道「工具名稱」+「要接在原本
+    // description後面的補充文字」。extraText是字串（不像
+    // setDomainNote的note支援函式——工具description目前沒有「每次呼叫
+    // 都要重新求值」的使用情境，不需要那個彈性，維持簡單）。工具名稱打錯
+    // 時直接丟錯誤，理由同setDomainNote。
+    appendToolDescription(toolName, extraText) {
+        const tool = this.tools[toolName];
+        if (!tool) throw new Error(`appendToolDescription: 工具 "${toolName}" 不存在`);
+        const suffix = String(extraText || '').trim();
+        if (suffix) tool.description = `${tool.description}\n\n${suffix}`;
+        this._refreshSystemPromptMessage();
+        return this;
+    }
+
     // tw_stock_db客製: 2026-08-26使用者實測發現的真實回歸——把
     // nemotron-3-super-120b-a12b修好切到原生tool_calls模式後（見
     // PRESET_MODEL_TOOLCALL_SUPPORT/_probeNativeToolSupport的說明），
@@ -3685,6 +3727,12 @@ class FloatingAssistant {
             // _buildDefaultModelRows()的說明，取代原本單一組API KEY/URL/
             // MODEL NAME的設計。
             llmModelRows: _buildDefaultModelRows(),
+            // tw_stock_db客製: 2026-09-17使用者要求——相同url+model name、
+            // 不同api key的row自動分組round-robin（見_computeModelRowGroups）
+            // 這個總開關，預設開啟（延續目前已經上線、測過的行為），使用者
+            // 可以在LLM Model管理分頁的checkbox關掉，關掉後每筆row一律各自
+            // 獨立、不自動合併分組，即使url+model完全相同。
+            modelGroupingEnabled: true,
             // tw_stock_db客製: batch_analyze_stocks工具（見runBatchSubAgents）
             // 同時開幾個子任務並行執行——太小沒有平行效益，太大容易一次炸開
             // 太多併發請求（共用金鑰的NVIDIA端點/Cloudflare Worker流量控管
@@ -4472,6 +4520,12 @@ class FloatingAssistant {
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
             llmModelRows,
+            // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
+            // 的modelGroupingEnabled說明。舊使用者localStorage裡沒有這個
+            // 欄位（raw.modelGroupingEnabled是undefined）時預設true，跟這個
+            // 功能上線時「本來就是自動開啟」的既有行為一致，不會悄悄改變
+            // 已經在用的使用者的行為。
+            modelGroupingEnabled: raw.modelGroupingEnabled !== false,
             batchConcurrency: Number.isFinite(batchConcurrencyNum) && batchConcurrencyNum > 0 ? Math.round(batchConcurrencyNum) : 4,
             // 0＝不限制（預設，向下相容既有行為），>0才夾住（不設上限——使用者
             // 端點的實際rpm上限差異很大，例如免費OpenRouter只有20，交給使用者
@@ -5320,7 +5374,7 @@ ${fnData.code}
         // parse_uploaded_file/summarize_large_text/rag_chunk_document處理），
         // 不需要另外發明一套平行的「網頁內容」儲存機制。
         registerOptional('fetch_web_page',
-            '抓取一個網頁的完整內容，轉成方便閱讀的Markdown文字後存進persistentStorage（跟使用者上傳檔案一樣會出現在list_uploaded_files清單裡）。browser_search只回傳標題+極短摘要，想深入了解某篇特定文章/頁面的完整內容時用這個工具抓下來，再視需要用parse_uploaded_file看細節、或內容很長時用summarize_large_text分段摘要。需要桌面版本地代理服務、或使用者自己部署且已設定好/proxy路由的Cloudflare Worker才能運作（避開瀏覽器CORS限制），若回傳「找不到可用的CORS代理」錯誤，如實告知使用者這個限制，不要假裝抓取成功。只支援伺服器端直接回傳HTML的網頁，抓不到內容通常代表目標網頁完全靠JS動態渲染（例如SPA），這種情況也如實告知使用者，不要編造內容。參數: {"url":"https://..."}',
+            '抓取一個網頁的完整內容，轉成方便閱讀的Markdown文字後存進persistentStorage（跟使用者上傳檔案一樣會出現在list_uploaded_files清單裡）。browser_search只回傳標題+極短摘要，想深入了解某篇特定文章/頁面的完整內容時用這個工具抓下來，再視需要用parse_uploaded_file看細節、或內容很長時用summarize_large_text分段摘要。需要目前環境已經提供CORS代理能力才能運作，若回傳「找不到可用的CORS代理」錯誤，如實告知使用者這個限制，不要假裝抓取成功。只支援伺服器端直接回傳HTML的網頁，抓不到內容通常代表目標網頁完全靠JS動態渲染（例如SPA），這種情況也如實告知使用者，不要編造內容。參數: {"url":"https://..."}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -5425,26 +5479,86 @@ ${fnData.code}
             for (const [k, v] of Object.entries(raw)) out[String(k)] = String(v == null ? '' : v);
             return out;
         };
+        // tw_stock_db客製: 2026-09-17使用者實測回報——請AI「用python emulator
+        // 執行/home/user/xxx.py（使用者已經改過的真實檔案）」，委派給
+        // code_execution domain的子agent直接放棄、回「我不能存取你的真實
+        // 檔案系統」。根因：這個domain的input_files說明只教了怎麼帶File
+        // Access Point/上傳檔案的內容，完全沒提「還有真實檔案這個選項」；
+        // desktop的fs_read_file/web的File Access Point雖然真的都能讀，但
+        // code_execution子agent預設拿不到那些工具，也沒有嘗試
+        // request_additional_tools去申請、就直接放棄了。output_ref其實
+        // 早就對稱支援「給一個真實路徑」當輸出目的地（見那個參數說明），
+        // 這裡補上輸入端的對稱能力——real_input_files讓呼叫端直接給一組
+        // 「工作目錄相對檔名→真實檔案參照」，這裡在JS執行層內部直接取得
+        // 內容（不經過LLM的tool-calling協定，所以不受code_execution
+        // domain沒有掛載對應工具這件事限制，跟_persistExecutionOutputFiles
+        // 寫入端的做法完全對稱），讀到的內容跟input_files合併後一起寫進
+        // /work，子agent完全不需要知道「要先申請其他domain的工具」這種
+        // 跨domain細節，也不需要額外一輪委派。
+        // tw_stock_db客製: 2026-09-17使用者明確要求——「應該是在真的無法
+        // 存取到才可以發錯誤」：不能只認「真實磁碟絕對路徑」這一種格式就
+        // 判定「這個環境沒有能力」，純網頁版雖然沒有能讀任意絕對路徑的
+        // 工具，但File Access Point（使用者已經授權過的資料夾，"fap:<名稱
+        // 或id>[/<路徑>]"格式）在web/desktop都能用——這裡依參照格式分流：
+        // "fap:"開頭的走_fapReadFile()（跟fap_read_file工具同一份實作，
+        // web/desktop都可用），其餘當成絕對路徑走fs_read_file（只有提供
+        // 這個工具的環境才有），只有兩種格式對應的機制都用不上時才真的丟
+        // 錯誤，且錯誤訊息會建議改用另一種格式，不是單純說「不支援」。
+        const resolveRealInputFiles = async (raw) => {
+            if (raw == null) return {};
+            if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('real_input_files必須是「相對路徑」→「這台電腦上的真實絕對路徑，或"fap:<名稱或id>[/<路徑>]"參照」的物件');
+            const entries = Object.entries(raw);
+            if (!entries.length) return {};
+            const out = {};
+            for (const [relPath, rawRef] of entries) {
+                const ref = String(rawRef);
+                if (/^fap:/i.test(ref)) {
+                    let result;
+                    try {
+                        result = await this._fapReadFile(ref);
+                    } catch (err) {
+                        throw new Error(`讀取「${ref}」失敗：${String(err.message || err)}`);
+                    }
+                    if (!result.ok) throw new Error(`讀取「${ref}」失敗：${result.error}`);
+                    out[String(relPath)] = String(result.content || '');
+                    continue;
+                }
+                const fsReadTool = this._getToolDefinition('fs_read_file');
+                if (!fsReadTool) {
+                    throw new Error(`「${ref}」看起來是一個真實磁碟絕對路徑，但目前環境沒有可以直接讀取任意路徑的工具。如果這個檔案在使用者已經授權的File Access Point底下，改用"fap:<名稱或id>[/<路徑>]"格式重試；否則請改用input_files直接附上檔案內容。`);
+                }
+                const resultJson = await fsReadTool.callback(JSON.stringify({ path: ref }));
+                const result = JSON.parse(resultJson);
+                if (!result.ok) throw new Error(`讀取真實檔案「${ref}」失敗：${result.error}`);
+                if (result.likely_binary) throw new Error(`「${ref}」偵測為二進位內容，real_input_files目前只支援純文字檔案`);
+                out[String(relPath)] = String(result.text || '');
+            }
+            return out;
+        };
         const executionToolSchema = {
             type: 'object',
             properties: {
                 script: { type: 'string', description: '要執行的腳本內容' },
                 input_files: { type: 'object', description: '選填，{"相對路徑":"檔案內容"}，執行前寫進工作目錄，腳本可以直接讀取' },
-                output_ref: { type: 'string', description: '選填，"fap:<名稱>[/<子路徑>]"存進File Access Point；桌面版可給真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）' },
+                real_input_files: { type: 'object', description: '選填：{"工作目錄相對檔名":"真實絕對路徑，或\'fap:<名稱或id>[/<路徑>]\'參照使用者已授權的File Access Point"}，執行前會先讀取這些真實檔案的目前內容再寫進工作目錄（跟input_files合併，鍵名衝突時以這裡為準）。兩種格式各自需要對應的能力才能用，只有兩者都用不上時才會得到明確錯誤。' },
+                output_ref: { type: 'string', description: '選填，"fap:<名稱>[/<子路徑>]"存進File Access Point；如果目前環境已經提供對應能力，也可以直接給一個真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）' },
             },
             required: ['script'],
             additionalProperties: false,
         };
 
         registerOptional('bash_execute',
-            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援），完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案（含input_files原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "output_ref":"fap:我的專案/build"}',
+            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案（含輸入檔案原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/build"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const script = String(parsed.script || '');
                 if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
                 let inputFiles;
-                try { inputFiles = parseExecutionInputFiles(parsed.input_files); } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                try {
+                    inputFiles = parseExecutionInputFiles(parsed.input_files);
+                    Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
+                } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
                 let runtime;
                 try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 const seedFiles = {};
@@ -5523,14 +5637,17 @@ ${fnData.code}
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
         registerOptional('python_execute',
-            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。完全不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）。工作目錄是/work，input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "output_ref":"fap:我的專案/results"}',
+            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const script = String(parsed.script || '');
                 if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
                 let inputFiles;
-                try { inputFiles = parseExecutionInputFiles(parsed.input_files); } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                try {
+                    inputFiles = parseExecutionInputFiles(parsed.input_files);
+                    Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
+                } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
                 let pyodide;
                 try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 try {
@@ -9164,10 +9281,20 @@ ${fnData.code}
         const rows = this._getModelRows();
         const groups = [];
         const keyToGroup = new Map();
+        // tw_stock_db客製: 2026-09-17使用者回報「沒看到group」——追查發現
+        // 兩個問題：(1) 使用者原始要求本來就是「打勾後」才分群，這個總開關
+        // 一直沒做，畫面上完全沒有地方可以確認/控制這個功能存不存在，見
+        // 下面modelGroupingEnabled；(2) 就算兩筆row在使用者眼裡「看起來
+        // 一樣」，原本直接比對row.apiUrl原始字串，同一個網址只差一個結尾
+        // 斜線（"https://x/v1" vs "https://x/v1/"）就會被當成不同組，這種
+        // 差異在UI上幾乎看不出來、卻會讓自動分群完全偵測不到——這裡先去除
+        // 結尾斜線再比對，讓「看起來一樣的網址」真的被視為一樣。
+        const enabled = this.advancedSettings.modelGroupingEnabled !== false;
         for (const row of rows) {
-            const key = row.standalone
+            const normalizedUrl = String(row.apiUrl || '').trim().replace(/\/+$/, '');
+            const key = (!enabled || row.standalone)
                 ? `standalone:${row.id}`
-                : `auto:${String(row.apiUrl || '').trim()}||${String(row.modelName || '').trim()}`;
+                : `auto:${normalizedUrl}||${String(row.modelName || '').trim()}`;
             let group = keyToGroup.get(key);
             if (!group) {
                 group = { key, rows: [] };
@@ -11323,7 +11450,7 @@ ${sourceTool.handlerScript}
             </div>`;
         return `
             <div class="ai-model-row" draggable="true" data-row-id="${row.id}">
-                <div class="ai-model-row-header">
+                <div class="ai-model-row-header" style="flex-wrap:wrap; row-gap:4px;">
                     <span class="ai-model-row-handle" title="拖曳調整順序">⠿</span>
                     <span class="ai-model-row-index">#${idx + 1}</span>
                     ${groupInfo && groupInfo.groupSize > 1
@@ -11333,6 +11460,13 @@ ${sourceTool.handlerScript}
                             ? `<span class="ai-advanced-btn" style="padding:1px 6px; font-size:10px; cursor:default;" title="這個row已經手動移出自動分組，即使跟其他row url+model相同也不會被合併">獨立（已移出群組）</span>
                                <button type="button" class="ai-advanced-btn ai-model-row-toggle-standalone" data-row-id="${row.id}" style="padding:1px 6px; font-size:10px;" title="重新加入自動分組——如果有其他row url+model跟這筆相同，會合併成同一組round-robin輪流">加入群組</button>`
                             : '')}
+                    <span style="font-size:11px; color:#94a3b8;" title="${row.abilityTags && row.abilityTags.testedAt ? `上次測試時間：${new Date(row.abilityTags.testedAt).toLocaleString('zh-TW')}` : '按右邊的Benchmark按鈕測試這個row有沒有原生tool call/vision(圖片理解)能力'}">${
+                        (row.abilityTags && row.abilityTags.testing) ? '⏳ 測試中…'
+                        : (row.abilityTags && row.abilityTags.testedAt)
+                            ? ([row.abilityTags.toolCall ? '🔧 Tool Call' : null, row.abilityTags.vision ? '👁️ Vision' : null].filter(Boolean).join('　') || '（皆不支援）')
+                            : '尚未測試'
+                    }</span>
+                    <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
                     <button type="button" class="ai-advanced-btn danger ai-model-row-delete" data-row-id="${row.id}" style="margin-left:auto; padding:2px 8px;">刪除</button>
                 </div>
                 <div class="ai-model-row-grid">
@@ -11347,18 +11481,6 @@ ${sourceTool.handlerScript}
                     <div>
                         <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">Model Name</label>
                         <input type="text" class="ai-advanced-input ai-model-row-input" list="ai-model-datalist" data-row-id="${row.id}" data-field="modelName" value="${esc(row.modelName)}">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">能力標籤</label>
-                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                            <span style="font-size:11px; color:#94a3b8;" title="${row.abilityTags && row.abilityTags.testedAt ? `上次測試時間：${new Date(row.abilityTags.testedAt).toLocaleString('zh-TW')}` : '按右邊的Benchmark按鈕測試這個row有沒有原生tool call/vision(圖片理解)能力'}">${
-                                (row.abilityTags && row.abilityTags.testing) ? '⏳ 測試中…'
-                                : (row.abilityTags && row.abilityTags.testedAt)
-                                    ? ([row.abilityTags.toolCall ? '🔧 Tool Call' : null, row.abilityTags.vision ? '👁️ Vision' : null].filter(Boolean).join('　') || '（皆不支援）')
-                                    : '尚未測試'
-                            }</span>
-                            <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
-                        </div>
                     </div>
                     ${numField('temperature', 'temperature', '預設0.1')}
                     ${numField('top_p', 'top_p', '不送')}
@@ -11422,6 +11544,8 @@ ${sourceTool.handlerScript}
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
         this._renderModelRowsList();
+        const modelGroupingEnabledChk = document.getElementById('ai-model-grouping-enabled-chk');
+        if (modelGroupingEnabledChk) modelGroupingEnabledChk.checked = this.advancedSettings.modelGroupingEnabled !== false;
         // tw_stock_db客製: 2026-09-14使用者要求——RAG知識庫分頁原本只有一顆
         // 「管理條件圖譜」按鈕，點了才彈出獨立modal顯示清單，多一次點擊才
         // 看得到內容太麻煩。改成清單直接嵌進這個分頁本身（HTML已經把原本
@@ -12789,7 +12913,7 @@ ${sourceTool.handlerScript}
             }
             const fsWriteTool = this._getToolDefinition('fs_write_file');
             if (!fsWriteTool) {
-                throw new Error(`output_ref「${ref}」不是"fap:"開頭的File Access Point格式，且目前環境沒有fs_write_file工具（只有桌面版才有直接寫真實磁碟路徑的能力）。請改用"fap:<名稱>"格式，或省略output_ref改存進persistentStorage。`);
+                throw new Error(`output_ref「${ref}」不是"fap:"開頭的File Access Point格式，且目前環境沒有可以直接寫入真實磁碟路徑的工具。請改用"fap:<名稱>"格式，或省略output_ref改存進persistentStorage。`);
             }
             const baseAbs = ref.replace(/[\\/]+$/, '');
             const results = [];
@@ -21004,6 +21128,11 @@ ${existingNodeSummaries}
                                         <button type="button" id="ai-model-row-add-btn" class="ai-advanced-btn primary">+ 新增 Model</button>
                                     </div>
                                     <p class="ai-advanced-hint">每一筆代表一個獨立的model/llm，由上到下就是自動fallback的嘗試順序（拖曳⠿把手調整；同一輪對話一開始一律先試第一筆，遇到該模型404才依序往下換）。<b>API URL／API Key留空＝走我們預設的網址／金鑰</b>，只有Model Name是必填；溫度/懲罰參數/max tokens留空＝套用下面「全域預設」。Model Name以「openrouter/」開頭時，會改經Cloudflare Worker的/openrouter路由轉去OpenRouter（不是直接從瀏覽器打openrouter.ai），需要該Worker已部署/openrouter路由並設定OPENROUTER_API_KEY（或OPENROUTER_API_KEY_DEFAULT）密鑰才能真正運作，路由實作細節見你自己部署的Cloudflare Worker原始碼。</p>
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-model-grouping-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-model-grouping-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用自動分群（相同API URL+Model Name、不同API Key的row自動round-robin輪流用）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">關掉後每一筆row一律各自獨立，即使API URL+Model Name完全相同也不會被合併分組。開啟時符合的row會在下面各自顯示「🔗 群組N」標記；「API URL」比對時結尾的斜線差異會被忽略，但其餘字元（含大小寫）必須完全一致才會被視為同一組。</p>
                                     <div id="ai-model-rows-list"></div>
                                     <datalist id="ai-model-datalist">
                                         ${this._modelDatalistOptionsHtml()}
@@ -23429,6 +23558,18 @@ ${existingNodeSummaries}
                 // _saveAdvancedSettings()內部統一同步，不在checkbox handler
                 // 裡另外呼叫一次）。
                 this._saveAdvancedSettings();
+            });
+        }
+        const modelGroupingEnabledChk = document.getElementById('ai-model-grouping-enabled-chk');
+        if (modelGroupingEnabledChk) {
+            modelGroupingEnabledChk.addEventListener('change', () => {
+                this.advancedSettings.modelGroupingEnabled = !!modelGroupingEnabledChk.checked;
+                this._saveAdvancedSettings();
+                // tw_stock_db客製: 2026-09-17——跟其餘checkbox不同，這個開關
+                // 直接影響每個row要不要顯示「🔗 群組N」標記，切換當下要立刻
+                // 重繪整份model row清單，不能只靠下次開啟Advance Settings才
+                // 反映最新狀態。
+                this._renderModelRowsList();
             });
         }
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
