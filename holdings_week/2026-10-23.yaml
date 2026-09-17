@@ -1,0 +1,10 @@
+report_type: "holdings_week"
+title: "本週持股分析"
+generated_at: "2026-10-23T18:27:28"
+disclaimer: "技術面框架推演，非投資建議"
+slides:
+  - type: "title"
+    title: "2026-10-23 本週持股分析"
+    subtitle: "鎖股名單資料日期：2026-10-23"
+  - type: "notice"
+    text: "目前沒有可診斷的鎖股名單資料（該份鎖股名單尚未產生，或本次讀不到檔案）"
