@@ -13,3 +13,22 @@
 # `git -C ../videos-嗨投資-desktop-app/desktop-app show desktop-app:renderer/floating-assistant.js > web/floating-assistant.js`
 # 同步一份即可。
 web/floating-assistant.js
+
+# tw_stock_db客製: 2026-09-17使用者要求——daily/daily-chip/reports/watchlist
+# 這四類股市更新資料改成各自獨立的force-push分支（理由跟上面floating-
+# assistant.js完全一樣：這幾類資料每天/每次執行都會自動commit好幾次，把
+# main分支的commit log淹沒，讓「網頁本體實際改了什麼」很難從commit歷史看
+# 出來），main分支不再追蹤這四個目錄；2026-09-17後續使用者進一步要求連
+# 過去的歷史commit都要清除，已經用git filter-repo重寫main整個分支的歷史
+# +force push，這四個目錄現在完全不存在於main的任何commit（包含歷史）。
+#
+# 本地端的run_daily_update.py/sync_to_github.py仍然會繼續把資料寫進這四個
+# 目錄（當作推送到新分支前的本地暫存區，也給其他本地流程讀取），只是不再
+# `git add`/commit這些內容——見sync/push_branch_snapshot.py。網頁版改成從
+# raw.githubusercontent.com/sunneo/tw_stock_db/{daily,daily-chip,watchlist,
+# reports}分支直接抓取（見web/index.html的RAW/DAILY_MANIFEST_URL等常數），
+# 不再依賴main分支底下的這幾個資料夾。
+/daily/
+/daily-chip/
+/reports/
+/watchlist/
