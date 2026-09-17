@@ -1,0 +1,15 @@
+# tw_stock_db客製: 2026-09-17使用者要求——floating-assistant.js（AI引擎本體）
+# 改成以desktop-app分支的renderer/floating-assistant.js為唯一canonical
+# 來源（直接在那邊編輯/commit/push），main分支不再持有這個檔案的實體副本
+# ——main分支的web/index.html改成執行時從desktop-app分支的raw URL fetch
+# 這個檔案內容再執行（見index.html裡既有sql.js的fetch+Blob載入模式，
+# 這次套用同一招）。理由：這個檔案改動頻率非常高，如果main持續追蹤它，
+# 每次AI引擎的修改都會在main分支留下一筆跟「網頁本體」無關的commit，
+# 把main的commit log弄得很亂，不容易看出網頁本體實際的變更歷史。
+#
+# 本機開發仍然可以保留這個檔案（方便離線快速測試，不用每次都真的連網
+# fetch），只是不會被git追蹤、不會進main分支的commit——本機檔案要更新到
+# 桌面版最新版本時，自己手動跑
+# `git -C ../videos-嗨投資-desktop-app/desktop-app show desktop-app:renderer/floating-assistant.js > web/floating-assistant.js`
+# 同步一份即可。
+web/floating-assistant.js
