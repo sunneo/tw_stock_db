@@ -3307,9 +3307,18 @@ class FloatingAssistant {
         // [/<路徑>]」，跟persistentStorage的file_id/檔名一眼可辨（見
         // _looksLikeFapRef的說明）。寫入沒有對應的斜線指令，交給AI工具
         // fap_write_file處理（見那個工具/domain systemPrompt的說明）。
+        // tw_stock_db客製: 2026-09-17使用者要求——三個指令的第一個參數(ref)
+        // 都要有自動完成（目前已授權的FAP清單），見_syncFapSlashCommandArgChoices
+        // ——那個方法會在這裡先跑一次初始值、之後檔案存取管理清單有異動
+        // （新增/移除/重新命名FAP）時再重新呼叫一次刷新，register_slash_command
+        // 的argChoices本身是註冊當下就固定的陣列，不是每次都重新求值，
+        // 所以需要這樣手動同步（跟_syncCustomToolSlashCommands()同一種
+        // 既有模式）。/fap-list刻意把hint改成「[ref]」（方括號代表選填）
+        // 呼應_handleFapListCommand現在留空ref時會列出所有FAP，不再是
+        // 必填參數。
         this.register_slash_command(
-            '/fap-list', '<ref>',
-            '列出一個File Access Point（真實磁碟資料夾）某個路徑下的檔案/子資料夾。ref格式：fap:<名稱或id>[/<路徑>]，例如 /fap-list fap:我的筆記/2026',
+            '/fap-list', '[ref]',
+            '列出一個File Access Point（真實磁碟資料夾）某個路徑下的檔案/子資料夾；留空ref則列出目前所有已授權的File Access Point。ref格式：fap:<名稱或id>[/<路徑>]，例如 /fap-list fap:我的筆記/2026',
             (argsText) => this._handleFapListCommand(argsText)
         );
         this.register_slash_command(
@@ -3322,6 +3331,7 @@ class FloatingAssistant {
             '在File Access Point底下遞迴搜尋檔名包含關鍵字的檔案/資料夾。例如 /fap-find fap:我的筆記 todo',
             (argsText) => this._handleFapFindCommand(argsText)
         );
+        this._syncFapSlashCommandArgChoices();
         this.retryLimit = 10;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
@@ -5051,12 +5061,7 @@ ${fnData.code}
             '列出使用者目前已授權給AI讀寫的File Access Point（真實磁碟資料夾，不是persistentStorage）清單，含每個的授權狀態、別名(label)、以及使用者自己選填的real_path_hint（這個資料夾在使用者電腦上的完整真實路徑，使用者跟AI描述任務時可能會直接講這個完整路徑而不是別名，一定要拿這份清單的real_path_hint去比對，不要只比對label）。無參數。要操作其中的檔案，用回傳的id或label組成`fap:<名稱或id>[/<路徑>]`格式的ref，交給fap_list_files/fap_read_file/fap_write_file/fap_find_file使用。',
             async () => {
                 try {
-                    const all = await this.fileAccessPoints.getAll();
-                    const points = await Promise.all(all.map(async (r) => {
-                        let permission = 'unknown';
-                        try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
-                        return { id: r.id, label: r.label, real_path_hint: r.realPathHint || null, permission };
-                    }));
+                    const points = await this._listAllFapAccessPoints();
                     return JSON.stringify({ ok: true, access_points: points });
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
@@ -7461,6 +7466,49 @@ ${fnData.code}
         return { rec, dirHandle, filename };
     }
 
+    // tw_stock_db客製: 2026-09-17使用者要求——list_file_access_points工具跟
+    // /fap-list斜線指令（留空ref時）現在共用同一份邏輯，抽成這個方法，不要
+    // 讓兩邊分別各自維護一份permission查詢+欄位組裝。也給_syncFapSlashCommandArgChoices
+    // 用來組出「fap:<label>」這種可以直接貼進/fap-list /fap-read /fap-find
+    // 參數的自動完成候選清單。
+    // tw_stock_db客製: 2026-09-17使用者要求——/fap-list /fap-read /fap-find
+    // 的第一個參數(ref)要有自動完成，候選值是目前已授權的FAP（見
+    // renderArgMenu/register_slash_command的argChoices說明）。這三個指令
+    // 共用同一份候選清單（都是「先給一個FAP的ref」開頭），只是fap-find
+    // 後面還多一個自由輸入的關鍵字參數，不需要（也沒有）候選值。
+    // argChoices是註冊當下就固定的靜態陣列，不會每次打字都重新求值，
+    // 所以FAP清單異動時要主動呼叫這個方法重新整個覆寫一次——呼叫端見
+    // _renderFapList()（FAP新增/移除/重新命名/重新授權後唯一、共用的
+    // 重繪入口）。直接改slashCommands Map裡既有entry的argChoices欄位，
+    // 不透過register_slash_command()整個重新註冊——那樣還要重複一份
+    // hint/desc/handler，容易漂移；這裡只換掉需要動態更新的那個欄位。
+    async _syncFapSlashCommandArgChoices() {
+        let choices = [];
+        try {
+            const points = await this._listAllFapAccessPoints();
+            choices = points.map(p => ({
+                value: `fap:${p.label}`,
+                label: p.real_path_hint ? `${p.label}（${p.real_path_hint}）` : p.label,
+            }));
+        } catch (_) {
+            // FAP store可能還沒初始化完成（建構子早期呼叫時）或查詢失敗——
+            // 靜默留空陣列即可，指令本身照樣能用，只是這次沒有候選值可選。
+        }
+        for (const key of ['/fap-list', '/fap-read', '/fap-find']) {
+            const entry = this.slashCommands.get(key);
+            if (entry) entry.argChoices = [choices];
+        }
+    }
+
+    async _listAllFapAccessPoints() {
+        const all = await this.fileAccessPoints.getAll();
+        return Promise.all(all.map(async (r) => {
+            let permission = 'unknown';
+            try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
+            return { id: r.id, label: r.label, real_path_hint: r.realPathHint || null, permission };
+        }));
+    }
+
     async _fapListFiles(ref) {
         const { rec, dirHandle, path } = await this._resolveFapDirectory(ref, { mode: 'read' });
         const entries = [];
@@ -7630,9 +7678,28 @@ ${fnData.code}
     // 不做/fap-write斜線指令——用聊天輸入框打整份要寫入的檔案內容不是好
     // UX，寫入留給AI工具（fap_write_file）本身，那邊AI可以先跟使用者確認
     // 內容再動手，比使用者手動在slash指令裡塞一大段文字安全/自然很多。
+    // tw_stock_db客製: 2026-09-17使用者要求——/fap-list不帶ref時，不要再
+    // 直接報錯要求使用者填參數，改成列出目前所有已授權的File Access
+    // Point本身（跟list_file_access_points工具同一份資料來源，見
+    // _listAllFapAccessPoints）——這樣使用者不用先去Advance Settings的
+    // 「檔案存取管理」分頁看名稱，可以直接在對話框打/fap-list就找到自己
+    // 要接著操作哪一個。帶了ref才是原本「列出這個FAP底下的檔案/子資料夾」
+    // 的行為，不變。
     async _handleFapListCommand(argsText) {
         const ref = String(argsText || '').trim();
-        if (!ref) { this._log('⚠️ /fap-list：需要指定ref，格式 fap:<名稱或id>[/<路徑>]'); return; }
+        if (!ref) {
+            this.messages.push({ role: 'user', content: '📂 列出已授權的File Access Point' });
+            try {
+                const points = await this._listAllFapAccessPoints();
+                const lines = points.map(p => `📁 **${p.label}**（\`fap:${p.label}\`）${p.real_path_hint ? `\n　　${p.real_path_hint}` : ''}　[${p.permission === 'granted' ? '已授權' : p.permission === 'prompt' ? '需要重新授權' : p.permission}]`);
+                this._pushAssistantMessage(lines.length ? lines.join('\n\n') : '目前還沒有任何已授權的File Access Point，可以到 Advance Settings 的「檔案存取管理」分頁新增。', null);
+            } catch (err) {
+                this._pushAssistantMessage(`⚠️ ${String(err.message || err)}`, null);
+            }
+            this._persistChatHistory();
+            this._renderMessageHistory();
+            return;
+        }
         this.messages.push({ role: 'user', content: `📂 列出檔案：${ref}` });
         try {
             const result = await this._fapListFiles(ref);
@@ -11376,6 +11443,15 @@ ${sourceTool.handlerScript}
     // handle.requestPermission()的地方，必須是使用者親自點擊觸發（見
     // FileAccessPointStore類別上方的說明）。
     async _renderFapList() {
+        // tw_stock_db客製: 2026-09-17使用者要求——/fap-list /fap-read /fap-find
+        // 這三個斜線指令的ref參數自動完成候選值要跟著FAP清單異動（新增/
+        // 移除/重新命名/重新授權）即時更新，見_syncFapSlashCommandArgChoices
+        // 的說明。這裡是FAP清單真正有變動時唯一、共用的重繪入口（新增/
+        // 移除/重新命名/重新授權後都會呼叫這個函式），放在這裡一次涵蓋
+        // 所有異動來源，不用在每個按鈕handler各自補一次。刻意放在最前面、
+        // 不受下面`if (!list) return`影響——就算Advance Settings面板目前
+        // 沒開著、DOM元素抓不到，自動完成候選值一樣要跟著更新。
+        this._syncFapSlashCommandArgChoices();
         const list = document.getElementById('ai-fap-list');
         if (!list) return;
         const all = await this.fileAccessPoints.getAll();
