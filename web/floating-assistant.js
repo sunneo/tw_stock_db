@@ -3480,6 +3480,7 @@ class FloatingAssistant {
             }
         }
         this._syncBrowserSearchDomainEnabled();
+        this._syncRagLookupDomainEnabled();
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
@@ -3529,6 +3530,20 @@ class FloatingAssistant {
     _syncBrowserSearchDomainEnabled() {
         if (this.domains.browser_search) {
             this.domains.browser_search.enabled = !!(this.advancedSettings && this.advancedSettings.browserSearchEnabled);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——rag_lookup這個domain的enabled
+    // 狀態同樣不寫死，跟著Advance Settings的ragEnabled即時同步（同一套
+    // 「建構子跑一次、_saveAdvancedSettings()裡使用者改變checkbox時再跑
+    // 一次」機制，見_syncBrowserSearchDomainEnabled）。關閉時rag_query_graph
+    // 工具本身還在（registerOptional註冊過，_domainGatedToolNames集合裡也
+    // 有），但因為domain.enabled變false，_routeTaskToDomains/
+    // _delegateToSubagentDomain/根層級domain目錄都不會再列出/選中這個
+    // domain，等於rag_lookup整個從AI視角消失，不用另外改任何委派邏輯。
+    _syncRagLookupDomainEnabled() {
+        if (this.domains.rag_lookup) {
+            this.domains.rag_lookup.enabled = !!(this.advancedSettings && this.advancedSettings.ragEnabled);
         }
     }
 
@@ -3706,6 +3721,18 @@ class FloatingAssistant {
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
             browserSearchEnabled: false,
             browserSearchProxyUrl: '',
+            // tw_stock_db客製: 2026-09-17使用者明確要求——RAG（rag_lookup
+            // domain的rag_query_graph、以及主對話迴圈每一輪自動觸發的
+            // 「Hermes歷史記憶喚醒」ragSystem.query，見_loopFetch/
+            // _loopFetchNative共用的那段🧠註解區塊）預設關閉：每一輪對話
+            // 額外的查詢/依賴鏈拉取有實質overhead，多數使用者根本沒有經營
+            // 過知識圖譜內容，預設開啟只是白白多花時間卻沒有實際效益。跟
+            // browserSearchEnabled同一套「domain的enabled旗標跟著這個
+            // 設定值即時同步」機制（見_syncRagLookupDomainEnabled），差別
+            // 是browser_search預設關閉是因為需要額外部署才能用，這裡預設
+            // 關閉純粹是效能/實用性考量——RAG本身不需要任何額外部署，使用者
+            // 隨時可以自己在Advance Settings「RAG知識庫」分頁打開。
+            ragEnabled: false,
             // tw_stock_db客製: 2026-09-15使用者要求的git_operations——corsProxy
             // 網址留空時退回目前AI端點的apiUrl（見_resolveGitCorsProxyUrl，
             // 跟browserSearchProxyUrl同一套「留空沿用目前LLM API URL」慣例），
@@ -4416,6 +4443,14 @@ class FloatingAssistant {
             multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
             browserSearchEnabled: raw.browserSearchEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
+            // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
+            // 的ragEnabled說明。舊使用者localStorage裡完全沒有這個欄位時
+            // （raw.ragEnabled是undefined），代表這份設定是在這次改動之前
+            // 存的——維持既有行為不變（等同true，RAG原本就是無條件開啟的），
+            // 不要讓這次改動悄悄替他們關掉本來就在用的功能；只有明確存過
+            // false（使用者自己關過，或這次之後新安裝的預設值）才是true===
+            // false的情況。
+            ragEnabled: raw.ragEnabled !== false,
             gitCorsProxyUrl: String(raw.gitCorsProxyUrl || '').trim(),
             gitHubToken: String(raw.gitHubToken || '').trim(),
             gitAuthorName: String(raw.gitAuthorName || '').trim(),
@@ -4549,6 +4584,7 @@ class FloatingAssistant {
         // delegate_to_subagent工具description的實際文字內容（'router'/'full'
         // 兩種模式的描述不同，見_buildDelegateToSubagentDescription）。
         this._syncBrowserSearchDomainEnabled();
+        this._syncRagLookupDomainEnabled();
         this._updateDelegateToSubagentDescription();
         // tw_stock_db客製: 2026-09-09使用者要求Skill自動註冊成slash-command
         // ——customTools可能剛被新增/修改/刪除/匯入（Skill編輯器/.skill匯入/
@@ -4715,6 +4751,16 @@ ${fnData.code}
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const queryText = String(parsed.query || '').trim();
                 if (!queryText) return JSON.stringify({ ok: false, error: '缺少 query 參數' });
+                // tw_stock_db客製: 2026-09-17——正常情況下rag_lookup domain
+                // 停用時，路由層根本不會把這個工具委派出去（見
+                // _syncRagLookupDomainEnabled），這裡是defense-in-depth，
+                // 跟_browserSearch()同一套寫法：萬一有呼叫端繞過domain
+                // gating直接叫這個工具（例如舊的對話歷史殘留的tool call、
+                // 或host頁面自己拿到工具實例直接呼叫），也不會在RAG關閉時
+                // 意外動到ragSystem。
+                if (!this.advancedSettings.ragEnabled) {
+                    return JSON.stringify({ ok: false, error: 'RAG知識庫目前未啟用，請先到Advance Settings的「RAG知識庫」分頁開啟。' });
+                }
                 const topK = Number(parsed.top_k) > 0 ? Number(parsed.top_k) : 3;
                 try {
                     const results = await this.ragSystem.query(queryText, topK);
@@ -10975,6 +11021,8 @@ ${sourceTool.handlerScript}
         // 每次Advance設定對話框開啟/重繪都直接載入一次，不用再額外開啟
         // 任何modal。
         this._loadAndRenderRag();
+        const ragEnabledChk = document.getElementById('ai-rag-enabled-chk');
+        if (ragEnabledChk) ragEnabledChk.checked = this.advancedSettings.ragEnabled === true;
         this._renderFapList();
         const hermesChk = document.getElementById('ai-hermes-evolve-chk');
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
@@ -18315,34 +18363,42 @@ ${existingNodeSummaries}
         // ============================================================
         // 🧠 【RAG 記憶圖譜喚醒與遞迴依賴拉取】：對話前提取整個前置依賴鏈
         // ============================================================
-        try {
-            const resolvedChain = await this.ragSystem.query(userText, 3);
-            
-            this.messages = this.messages.filter(m => !m.content.startsWith('[Hermes 歷史記憶喚醒]'));
+        // tw_stock_db客製: 2026-09-17使用者要求RAG預設關閉——這個區塊每一輪
+        // 對話都會無條件執行一次ragSystem.query()，是實質的overhead來源
+        // 之一（即使使用者從來沒經營過知識圖譜、圖譜是空的，也還是要付出
+        // 這次查詢的開銷）。ragEnabled關閉時整段跳過，但清掉舊
+        // [Hermes 歷史記憶喚醒]訊息這行維持執行（不放進if裡）——如果使用者
+        // 是「對話中途」才把RAG關掉，之前已經喚醒、還殘留在對話歷史裡的
+        // 舊記憶訊息應該照樣被清掉，不要因為關閉RAG反而讓舊訊息卡住不清。
+        this.messages = this.messages.filter(m => !m.content.startsWith('[Hermes 歷史記憶喚醒]'));
+        if (this.advancedSettings.ragEnabled) {
+            try {
+                const resolvedChain = await this.ragSystem.query(userText, 3);
 
-            if (resolvedChain.length > 0) {
-                const memoryContent = resolvedChain.map(s => {
-                    let typeLabel = '累積技能(Skill)';
-                    if (s.tags && s.tags.includes('user_preference')) typeLabel = '習慣偏好';
-                    if (s.tags && s.tags.includes('document_section')) typeLabel = '章節總結';
+                if (resolvedChain.length > 0) {
+                    const memoryContent = resolvedChain.map(s => {
+                        let typeLabel = '累積技能(Skill)';
+                        if (s.tags && s.tags.includes('user_preference')) typeLabel = '習慣偏好';
+                        if (s.tags && s.tags.includes('document_section')) typeLabel = '章節總結';
 
-                    const scoreLabel = s.score > 0 ? "直接命中相似度: " + (s.score * 100).toFixed(1) + "%" : 'Prerequisite 依賴鏈拉入';
-                    const condLabel = (s.preConditions && s.preConditions.length > 0) ? "\n(前置條件: " + s.preConditions.join(', ') + ")" : '';
-                    const depLabel = (s.dependencies && s.dependencies.length > 0) ? "\n(依賴關係: " + s.dependencies.join(' -> ') + " -> " + s.id + ")" : '';
+                        const scoreLabel = s.score > 0 ? "直接命中相似度: " + (s.score * 100).toFixed(1) + "%" : 'Prerequisite 依賴鏈拉入';
+                        const condLabel = (s.preConditions && s.preConditions.length > 0) ? "\n(前置條件: " + s.preConditions.join(', ') + ")" : '';
+                        const depLabel = (s.dependencies && s.dependencies.length > 0) ? "\n(依賴關係: " + s.dependencies.join(' -> ') + " -> " + s.id + ")" : '';
 
-                    return "【節點 ID: " + s.id + " (" + typeLabel + " · " + scoreLabel + ")" + condLabel + depLabel + "】:\n" + s.content;
-                }).join('\n\n');
+                        return "【節點 ID: " + s.id + " (" + typeLabel + " · " + scoreLabel + ")" + condLabel + depLabel + "】:\n" + s.content;
+                    }).join('\n\n');
 
-                this.messages.splice(1, 0, {
-                    role: 'system',
-                    content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}`
-                });
-                
-                this._log("🧠 圖譜機制已喚醒 " + resolvedChain.length + " 個依賴知識/文章切片節點");
-                this._renderMessageHistory();
+                    this.messages.splice(1, 0, {
+                        role: 'system',
+                        content: `[Hermes 歷史記憶喚醒]\n檢索到以下相互關聯的「知識/章節推論依賴圖譜鏈」。某些節點雖然沒有直接與輸入字面匹配，但它是被命中節點的前置 Prerequisites 必要脈絡！請結合以下鏈條回答問題：\n\n${memoryContent}`
+                    });
+
+                    this._log("🧠 圖譜機制已喚醒 " + resolvedChain.length + " 個依賴知識/文章切片節點");
+                    this._renderMessageHistory();
+                }
+            } catch (err) {
+                console.error("圖譜喚醒出錯:", err);
             }
-        } catch (err) {
-            console.error("圖譜喚醒出錯:", err);
         }
 
         if (userText && !this.commandHistory.includes(userText)) {
@@ -20619,6 +20675,13 @@ ${existingNodeSummaries}
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="rag">
                                 <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-rag-enabled-chk" style="cursor:pointer;">
+                                        <label for="ai-rag-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用 RAG（rag_lookup 子Agent + 每輪對話自動喚醒歷史記憶）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">預設關閉——每一輪對話都會多花一次知識圖譜查詢，對大多數沒有經營知識圖譜內容的使用者只有overhead、沒有實際效益。關閉時rag_lookup這個領域完全不會出現在委派/路由的候選清單裡（AI看不到它存在），下面的節點管理功能仍然可以照常瀏覽/編輯，只是AI自己不會在對話中查詢或自動喚醒。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
                                     <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
                                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                                         <input id="ai-rag-search-input" class="ai-advanced-input" type="text" placeholder="關鍵字搜尋或節點 ID..." style="flex:1; min-width:160px;">
@@ -22886,6 +22949,18 @@ ${existingNodeSummaries}
         if (browserSearchEnabledChk) {
             browserSearchEnabledChk.addEventListener('change', () => {
                 this.advancedSettings.browserSearchEnabled = !!browserSearchEnabledChk.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const ragEnabledChk = document.getElementById('ai-rag-enabled-chk');
+        if (ragEnabledChk) {
+            ragEnabledChk.addEventListener('change', () => {
+                this.advancedSettings.ragEnabled = !!ragEnabledChk.checked;
+                // tw_stock_db客製: _saveAdvancedSettings()裡已經會呼叫
+                // _syncRagLookupDomainEnabled()，這裡不用重複呼叫——跟
+                // browserSearchEnabledChk同一套慣例（那邊也只靠
+                // _saveAdvancedSettings()內部統一同步，不在checkbox handler
+                // 裡另外呼叫一次）。
                 this._saveAdvancedSettings();
             });
         }
