@@ -18538,6 +18538,24 @@ ${existingNodeSummaries}
         this._autoFallbackActive = this._getModelRows().length > 1;
         this._updateHeaderModelName(apiModel, this._autoFallbackActive);
 
+        // tw_stock_db客製: 2026-09-17使用者實測回報（桌面版CLI `-p`「有時AI
+        // 會直接結束，只回'['，進去GUI才知道又出錯，只出現思考」）——追查
+        // 發現這裡的說明文字本身講的是舊版行為（"_setRespondingState(true)
+        // 是executeChat開頭第一步、沒有任何await擋在前面"，見這段下面
+        // _checkTopicTransition呼叫處的既有註解），但實際程式碼早就不是
+        // 這樣了：_setRespondingState(true)原本被放在下面
+        // _ensureNativeToolSupportProbed()這個await之後，而那個探測本身
+        // 對「第一次遇到的apiUrl+apiModel組合」可以真的花到45秒
+        // （_probeNativeToolSupport自己的逾時上限）才會resolve——這整段
+        // 期間this.isResponding還是false，任何靠isResponding判斷「AI是否
+        // 正在回應」的邏輯（CLI的-p等待迴圈、GUI重複送出的防呆判斷）都會
+        // 誤判成「沒有在忙」。實測用一個永遠不回應的假端點重現：CLI的
+        // 「等isResponding變true」迴圈５秒後放棄，回傳一個空白/殘缺結果，
+        // 但探測請求其實還在背景繼續跑。搬到這裡（_getInitialFallbackConfig
+        // 之後、任何await之前）才是真正符合原本設計意圖的位置。
+        this.responseElapsedMs = 0;
+        this._setRespondingState(true);
+
         // tw_stock_db客製: toolCallMode==='auto'時，先確保這個apiUrl+apiModel
         // 組合已經探測過是否支援原生tool_calls（見_ensureNativeToolSupportProbed
         // 的說明）——只有第一次真的會打一次探測請求，之後都是讀快取，不會
@@ -18611,9 +18629,10 @@ ${existingNodeSummaries}
         // _pushToolResultMessage()：圖片類工具結果不再把base64塞進送給
         // LLM的內容），交給reactive路徑處理已經足夠、也更準確（伺服器
         // 自己知道真正的token限制是多少，不用我們用字元數瞎猜）。
-
-        this.responseElapsedMs = 0;
-        this._setRespondingState(true);
+        // tw_stock_db客製: 2026-09-17——this.responseElapsedMs=0/
+        // this._setRespondingState(true)搬到上面_getInitialFallbackConfig()
+        // 之後、_ensureNativeToolSupportProbed()之前了（見那邊的說明），
+        // 這裡不再重複呼叫一次。
 
         await this._checkTopicTransition(userText);
         if (this.stopRequested) return;
