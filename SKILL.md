@@ -99,7 +99,7 @@ https://github.com/sunneo/tw_stock_db
   `raw.githubusercontent.com/sunneo/tw_stock_db/daily/{日期}/{檔名}.csv` 抓取，欄位與
   `tw-stock-db` 的 schema 完全對應。另有 `manifest.json`（md5清單，供網頁端判斷內容
   有沒有變）。**只保留「本月」資料**（跨月的舊資料夾不在這個分支的 working tree 裡，
-  只留在 `db-snapshot` 分支的月度快照），**只需要最近幾天資料時，優先用這個分支**，
+  只留在 `db-monthly` 分支的月度快照），**只需要最近幾天資料時，優先用這個分支**，
   不用整包 clone。
 
 - **`daily-chip` 分支 — 盤後籌碼資料（三大法人買賣超等，force push只保留最新單一
@@ -140,11 +140,34 @@ https://github.com/sunneo/tw_stock_db
   這個分支**只在需要完整歷史（例如長天期均線、回測）時才 clone**，平常分析用 `daily`
   分支的每日 CSV 即可，避免不必要的頻寬與時間成本。
 
+- **`db-monthly` 分支 — 網頁優化用逐月封存快照（一般 incremental commit，會累積
+  歷史，不 force push）**
+  內容：`db/core.db`（股票/類股清單，全量但很小，每次都重新產生）、
+  `db/monthly/<yyyy>/<mm>.db`（daily_prices/technical_indicators/market_index
+  當月資料，過去月份封存後不再變動）、`db/monthly-chip/<yyyy>/<mm>.db`（三大法人
+  買賣超/股權分布/強制集保，同樣按月封存）、`db/by-id/<代碼前2碼>/<yyyy-mm>.db`
+  （個股維度的優化快照）、以及對應的 `manifest.json`/`availability/*.json`。
+
+  > **2026-09-18 修正的既有bug**：這幾類資料原本跟完整 `tw_stock.db` 的 part 檔
+  > 共用 `db-snapshot` 分支——但 `db-snapshot` 是 orphan commit + force push
+  > （每月整個分支重來一次），導致這裡逐月累積的 commit 歷史每次都被連根拔起，
+  > 只剩「重置當下剛好重新產生」的那一兩個月倖存（本地磁碟其實一直保留完整
+  > 2024-07 起的歷史，只是沒有真的推上 git）。改成獨立的 `db-monthly` 分支後，
+  > 用一般 incremental commit 累積歷史，不再受 `db-snapshot` 的月度重置波及。
+  > `db-snapshot` 分支維持原樣，只放完整 `tw_stock.db` 的 part 檔，理由不變
+  > （避免完整資料庫的 git 歷史無限增長）。
+
+  取得方式：跟 `daily`/`watchlist`/`reports` 一樣直接用
+  `raw.githubusercontent.com/sunneo/tw_stock_db/db-monthly/<路徑>` 抓取單一檔案，
+  不需要整包 clone；`db/monthly/manifest.json`/`db/monthly-chip/manifest.json`
+  記錄每個月份檔案的 sha256/大小，可用來確認資料完整。
+
 ### 使用建議（依任務類型選擇資料來源）
 
 - 選股 / 鎖股名單 / 最近幾天的持股追蹤 → 讀 `daily` 分支 `{最近幾天日期}/*.csv`、
   `watchlist` 分支的鎖股/強勢股 JSON
 - 需要完整歷史（回測、長天期均線、季線判斷等） → clone `db-snapshot` 分支 + `merge_db.py`
+  （或直接抓 `db-monthly` 分支對應月份的 `db/monthly/<yyyy>/<mm>.db`，不用整包 clone）
 - 每次分析前先確認資料的最新交易日期，避免使用過期快照
 - 若 GitHub 當下抓不到、或找不到對應日期的資料，才退回請使用者手動上傳 `tw_stock.db`
 
@@ -192,7 +215,13 @@ GitHub repo 的 `daily` 分支每個交易日收盤後會更新一份 `{日期}/
 - `db-snapshot` 分支每月被 force push 覆蓋，不要依賴其 commit 歷史，只信任最新一次 commit。
 - `daily`/`daily-chip`/`watchlist`/`reports` 這四個分支（2026-09-17起）也都是每次更新
   就 force push、只保留最新單一commit，同樣不要依賴其 commit 歷史；`daily`/`daily-chip`
-  只保留「本月」working tree內容，跨月的舊資料只在 `db-snapshot` 分支的月度快照裡。
+  只保留「本月」working tree內容，跨月的舊資料只在 `db-monthly` 分支的月度快照裡。
+  `watchlist`/`reports` 的 force push 是**累積式**的（2026-09-18修正）：每次呼叫只會
+  疊加/覆蓋這次給的檔案，其餘既有內容原封不動保留，不會像單純orphan重來那樣把
+  同一次執行裡「更早呼叫」推上去的內容覆蓋消失。
+- `db-monthly` 分支（2026-09-18新增）用一般 incremental commit，**會**累積歷史
+  （不是force push單一commit），因為這裡的月度快照本來就是「封存後不再變動」的
+  不可變資料，保留歷史沒有無限增長疑慮，也不需要每次都重新上傳全部月份。
 - 少數股票（例如 6174、8111）因公司名稱含 Big5/CP950 無法解碼的罕見字，`stock_name`
   會顯示亂碼字元，屬 TWSE 資料源本身限制，非本系統錯誤。
 
