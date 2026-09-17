@@ -844,6 +844,27 @@ const NATIVE_TOOLCALL_MODEL_PATTERNS = [
 // MODEL_ROW_NUMERIC_FIELDS）全部自動生效。
 const SAMPLING_PARAM_KEYS = ['frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'top_p', 'reasoning_budget'];
 
+// tw_stock_db客製: 2026-09-17使用者要求新增reasoning_effort——OpenAI
+// o-series/部分推理模型端點慣用的字串enum參數('minimal'/'low'/'medium'/
+// 'high'，不是每個端點都認得全部四種，能不能用哪一種完全看目標端點自己的
+// 文件），跟reasoning_budget（數量型，token數上限）語意不同、不能混在
+// SAMPLING_PARAM_KEYS那份純數值清單裡（_buildSamplingParamsBody/
+// _detectRejectedSamplingParam兩個函式本身完全型別無關、原封不動組進
+// body[key]，這兩處不用改；只有_normalizeGenerationSettings的Number()
+// 轉換、全域設定面板UI要渲染成<select>而不是<input type=number>、
+// per-row覆寫的_normalizeModelRow/_updateModelRowField/
+// _resolveModelRowConfig這幾處需要對這個key特殊處理，見各自呼叫點的
+// isStringSamplingParam()判斷）。
+const STRING_SAMPLING_PARAM_KEYS = ['reasoning_effort'];
+const REASONING_EFFORT_OPTIONS = ['', 'minimal', 'low', 'medium', 'high'];
+function isStringSamplingParam(key) {
+    return STRING_SAMPLING_PARAM_KEYS.includes(key);
+}
+// _buildSamplingParamsBody/_detectRejectedSamplingParam/全域設定面板UI的
+// SAMPLING_PARAM_KEYS.forEach迴圈都改成走這份合併清單，兩種參數共用同一套
+// 「留空＝不送、被端點拒絕就自動排除」管線，只在型別相關的少數幾處分岔。
+const ALL_SAMPLING_PARAM_KEYS = [...SAMPLING_PARAM_KEYS, ...STRING_SAMPLING_PARAM_KEYS];
+
 // tw_stock_db客製: 端點回報「這個參數不認得」時常見的錯誤訊息關鍵字，
 // _detectRejectedSamplingParam()跟_isStopParamRejected()共用同一份清單
 // （沒有統一標準的provider錯誤格式，只能盡力而為關鍵字比對）。
@@ -1907,6 +1928,11 @@ const DEFAULT_CHAT_TEMPERATURE = 0.1;
 // 見_acquireBatchRateSlot()的說明），完全重用MODEL_ROW_NUMERIC_FIELDS
 // 既有的UI/儲存/正規化管線，不用另外刻一套。
 const MODEL_ROW_NUMERIC_FIELDS = ['temperature', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'length_penalty', 'top_p', 'reasoning_budget', 'maxOutputTokens', 'requestsPerMinute'];
+// tw_stock_db客製: 2026-09-17——per-row覆寫裡唯一的字串enum欄位
+// （reasoning_effort），跟上面MODEL_ROW_NUMERIC_FIELDS分開一份清單，
+// 因為_normalizeModelRow/_updateModelRowField對「留空＝不覆寫、其餘存
+// 原始字串」的處理方式跟數值欄位的Number()轉換不同，需要各自的迴圈。
+const MODEL_ROW_STRING_FIELDS = ['reasoning_effort'];
 
 // tw_stock_db客製: 2026-09-15——File Access Point（fap_find_file）遞迴搜尋的
 // 安全上限，避免使用者授權了一個極大的資料夾（例如整個使用者家目錄）時
@@ -3832,6 +3858,10 @@ class FloatingAssistant {
                 // 的擴充欄位，兩者都是「想用的人自己去設定面板填」，不主動送。
                 top_p: { value: null, disabled: false },
                 reasoning_budget: { value: null, disabled: false },
+                // tw_stock_db客製: 2026-09-17——reasoning_effort同理，預設null
+                // （不送）：不是每個端點都支援這個字串enum，且'high'這種較
+                // 積極的預設值會平白拉高延遲/花費，想用的人自己在設定面板選。
+                reasoning_effort: { value: null, disabled: false },
             },
             // tw_stock_db客製: 見CALL_STOP_SEQUENCE說明——只用在文字式[CALL:...]
             // 協定，被目標端點拒絕過(偵測到400+關鍵字)就記住，之後不再送這個
@@ -3849,11 +3879,18 @@ class FloatingAssistant {
         };
         const rawSp = (raw.samplingParams && typeof raw.samplingParams === 'object') ? raw.samplingParams : {};
         const samplingParams = {};
-        for (const key of SAMPLING_PARAM_KEYS) {
+        for (const key of ALL_SAMPLING_PARAM_KEYS) {
             const entry = rawSp[key];
-            const num = entry && entry.value != null && entry.value !== '' ? Number(entry.value) : null;
+            let value = null;
+            if (isStringSamplingParam(key)) {
+                const str = entry && entry.value != null ? String(entry.value).trim() : '';
+                value = str ? str : null;
+            } else {
+                const num = entry && entry.value != null && entry.value !== '' ? Number(entry.value) : null;
+                value = Number.isFinite(num) ? num : null;
+            }
             samplingParams[key] = {
-                value: Number.isFinite(num) ? num : null,
+                value,
                 disabled: !!(entry && entry.disabled),
             };
         }
@@ -3909,7 +3946,7 @@ class FloatingAssistant {
     _buildSamplingParamsBody(rowOverrides = null) {
         const sp = this._getGenerationSettings().samplingParams || {};
         const body = {};
-        for (const key of SAMPLING_PARAM_KEYS) {
+        for (const key of ALL_SAMPLING_PARAM_KEYS) {
             const rowVal = rowOverrides ? rowOverrides[key] : null;
             if (rowVal != null) { body[key] = rowVal; continue; }
             const entry = sp[key];
@@ -3932,7 +3969,7 @@ class FloatingAssistant {
         if (!errText) return null;
         const lower = String(errText).toLowerCase();
         if (!PARAM_REJECTION_HINTS.some(h => lower.includes(h))) return null;
-        for (const key of SAMPLING_PARAM_KEYS) {
+        for (const key of ALL_SAMPLING_PARAM_KEYS) {
             if (lower.includes(key)) return key;
         }
         return null;
@@ -4270,6 +4307,11 @@ class FloatingAssistant {
             const raw = row[key];
             const n = (raw == null || raw === '') ? NaN : Number(raw);
             normalized[key] = Number.isFinite(n) ? n : null;
+        }
+        for (const key of MODEL_ROW_STRING_FIELDS) {
+            const raw = row[key];
+            const str = raw == null ? '' : String(raw).trim();
+            normalized[key] = str || null;
         }
         return normalized;
     }
@@ -8813,9 +8855,21 @@ ${fnData.code}
             const n = Number(raw);
             return Number.isFinite(n) ? n : null;
         };
+        // tw_stock_db客製: 2026-09-17——reasoning_effort是字串enum，不能套用
+        // 上面toOverrideNum那套Number()轉換（Number('high')是NaN，會被誤判
+        // 成「沒填」），這裡跟SAMPLING_PARAM_KEYS分開處理：留空/undefined＝
+        // null（不覆寫，退回全域設定），其餘原樣trim後帶入。
+        const toOverrideStr = (raw) => {
+            if (!row || raw == null) return null;
+            const str = String(raw).trim();
+            return str || null;
+        };
         const samplingOverrides = {};
         for (const key of SAMPLING_PARAM_KEYS) {
             samplingOverrides[key] = toOverrideNum(row ? row[key] : null);
+        }
+        for (const key of STRING_SAMPLING_PARAM_KEYS) {
+            samplingOverrides[key] = toOverrideStr(row ? row[key] : null);
         }
         const temperatureOverride = toOverrideNum(row ? row.temperature : null);
         const maxTokensOverride = toOverrideNum(row ? row.maxOutputTokens : null);
@@ -10838,6 +10892,16 @@ ${sourceTool.handlerScript}
                 <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">${label}</label>
                 <input type="number" step="${step}" class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="${key}" placeholder="${placeholder}" value="${row[key] != null ? row[key] : ''}">
             </div>`;
+        // tw_stock_db客製: 2026-09-17使用者要求新增reasoning_effort——字串
+        // enum，跟numField那組數值input不同語意，用<select>呈現，'不送'
+        // 這個選項對應留空/null（跟其餘參數「留空＝不覆寫」一致）。
+        const selectField = (key, label, options) => `
+            <div>
+                <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">${label}</label>
+                <select class="ai-advanced-input ai-model-row-input" data-row-id="${row.id}" data-field="${key}">
+                    ${options.map(opt => `<option value="${opt}" ${(row[key] || '') === opt ? 'selected' : ''}>${opt || '（不送，沿用全域）'}</option>`).join('')}
+                </select>
+            </div>`;
         return `
             <div class="ai-model-row" draggable="true" data-row-id="${row.id}">
                 <div class="ai-model-row-header">
@@ -10865,6 +10929,7 @@ ${sourceTool.handlerScript}
                     ${numField('repetition_penalty', 'repetition_penalty', '不送')}
                     ${numField('length_penalty', 'length_penalty', '不送')}
                     ${numField('reasoning_budget', 'reasoning_budget', '不送（推理token數上限）', '1')}
+                    ${selectField('reasoning_effort', 'reasoning_effort', REASONING_EFFORT_OPTIONS)}
                     ${numField('maxOutputTokens', 'max tokens(單次上限)', '全域預設')}
                     ${numField('requestsPerMinute', '批次每分鐘請求數上限', '留空=沿用全域設定')}
                 </div>
@@ -10887,6 +10952,9 @@ ${sourceTool.handlerScript}
             const trimmed = String(rawValue == null ? '' : rawValue).trim();
             if (!trimmed) { row[field] = null; }
             else { const n = Number(trimmed); row[field] = Number.isFinite(n) ? n : null; }
+        } else if (MODEL_ROW_STRING_FIELDS.includes(field)) {
+            const trimmed = String(rawValue == null ? '' : rawValue).trim();
+            row[field] = trimmed || null;
         }
         this._saveAdvancedSettings();
         const firstRow = this._getModelRows()[0];
@@ -10985,7 +11053,7 @@ ${sourceTool.handlerScript}
         const ctxInput = document.getElementById('ai-gen-context-window');
         if (ctxInput) ctxInput.value = gen.contextWindowTokens;
         const disabledKeys = [];
-        SAMPLING_PARAM_KEYS.forEach(key => {
+        ALL_SAMPLING_PARAM_KEYS.forEach(key => {
             const input = document.getElementById(`ai-param-${key}`);
             const entry = gen.samplingParams[key];
             if (input) {
@@ -20441,6 +20509,14 @@ ${existingNodeSummaries}
                                                 <input type="number" step="${key === 'reasoning_budget' ? '1' : '0.1'}" id="ai-param-${key}" class="ai-advanced-input">
                                             </div>
                                         `).join('')}
+                                        ${STRING_SAMPLING_PARAM_KEYS.map(key => `
+                                            <div>
+                                                <label style="display:block; font-size:10px; margin-bottom:2px;" for="ai-param-${key}">${key}</label>
+                                                <select id="ai-param-${key}" class="ai-advanced-input">
+                                                    ${REASONING_EFFORT_OPTIONS.map(opt => `<option value="${opt}">${opt || '（不送）'}</option>`).join('')}
+                                                </select>
+                                            </div>
+                                        `).join('')}
                                     </div>
                                     <div id="ai-param-disabled-note" style="font-size:10px; color:#dd6b20; margin-top:6px;"></div>
                                 </div>
@@ -22697,13 +22773,13 @@ ${existingNodeSummaries}
                 this._saveAdvancedSettings();
             });
         }
-        SAMPLING_PARAM_KEYS.forEach(key => {
+        ALL_SAMPLING_PARAM_KEYS.forEach(key => {
             const input = document.getElementById(`ai-param-${key}`);
             if (!input) return;
             input.addEventListener('input', () => {
                 const raw = input.value.trim();
                 const entry = this._getGenerationSettings().samplingParams[key];
-                entry.value = raw === '' ? null : Number(raw);
+                entry.value = raw === '' ? null : (isStringSamplingParam(key) ? raw : Number(raw));
                 // 使用者自己重新輸入值，代表想再試一次，即使之前被伺服器拒絕過
                 // 也重新啟用——不然使用者改了值卻永遠送不出去會很困惑。
                 entry.disabled = false;
