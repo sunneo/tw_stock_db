@@ -1,0 +1,4720 @@
+report_type: "holdings_nextday"
+title: "隔日持股分析"
+generated_at: "2026-10-20T18:18:01"
+disclaimer: "技術面框架推演，非投資建議"
+slides:
+  - type: "title"
+    title: "2026-10-20 隔日持股分析"
+    subtitle: "鎖股名單資料日期：2026-10-20"
+  - type: "stock_diagnosis"
+    stock_code: "5475"
+    stock_name: "德宏"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 228.5
+      ma:
+        5: 207.6
+        10: 202.8
+        20: 191.85
+        60: 172.61
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 228.5
+      recent_low: 180.0
+      prior_high: 203.5
+      prior_low: 168.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 9.86
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 13559382
+      vol_ma5: 7199516.0
+      vol_ratio: 1.88
+      label: "達攻擊量標準（1.88倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 323741.0
+      mom_pct: 27.1
+      yoy_pct: 227.61
+      cum_pct: 176.92
+    entry_exit:
+      trend_stop: "跌破月線(MA20=191.85)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-09"
+            price: 203.5
+            type: "高點"
+          - date: "2026-09-17"
+            price: 168.0
+            type: "低點"
+          - date: "2026-10-12"
+            price: 215.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 35.5
+          target: 179.5
+          note: "前一段跌幅 35.5（203.5→168.0），從反彈高點 215.0 等幅扣減 = 179.5"
+        equal_measure:
+          amplitude: 47.0
+          breakout_ref: 228.5
+          target: 275.5
+          note: "近期高低點價差 47.0（168.0→215.0），從突破參考價 228.5 等幅加計 = 275.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 8
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4566"
+    stock_name: "時碩工業"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 85.8
+      ma:
+        5: 79.7
+        10: 78.21
+        20: 74.77
+        60: 70.03
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 88.2
+      recent_low: 73.6
+      prior_high: 78.6
+      prior_low: 62.6
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 6.98
+      is_red: true
+      upper_wick_pct_of_range: 28.2
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 10981506
+      vol_ma5: 5659916.0
+      vol_ratio: 1.94
+      label: "達攻擊量標準（1.94倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 667193.0
+      mom_pct: 11.95
+      yoy_pct: 44.56
+      cum_pct: 23.41
+    entry_exit:
+      trend_stop: "跌破月線(MA20=74.77)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-08"
+            price: 74.5
+            type: "低點"
+          - date: "2026-10-12"
+            price: 79.8
+            type: "高點"
+          - date: "2026-10-15"
+            price: 73.6
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 5.3
+          target: 78.9
+          note: "前一段漲幅 5.3（74.5→79.8），從回檔低點 73.6 等幅加計 = 78.9"
+        equal_measure:
+          amplitude: 6.2
+          breakout_ref: 85.8
+          target: 92.0
+          note: "近期高低點價差 6.2（73.6→79.8），從突破參考價 85.8 等幅加計 = 92.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 8
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4770"
+    stock_name: "上品"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 285.0
+      ma:
+        5: 275.5
+        10: 273.15
+        20: 271.93
+        60: 237.54
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 293.5
+      recent_low: 263.0
+      prior_high: 295.0
+      prior_low: 219.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 6.94
+      is_red: true
+      upper_wick_pct_of_range: 31.5
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 1969831
+      vol_ma5: 957403.0
+      vol_ratio: 2.06
+      label: "達攻擊量標準（2.06倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 579281.0
+      mom_pct: 17.74
+      yoy_pct: 69.02
+      cum_pct: 7.77
+    entry_exit:
+      trend_stop: "跌破月線(MA20=271.93)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-06"
+            price: 265.0
+            type: "低點"
+          - date: "2026-10-08"
+            price: 288.5
+            type: "高點"
+          - date: "2026-10-13"
+            price: 265.5
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 23.5
+          target: 289.0
+          note: "前一段漲幅 23.5（265.0→288.5），從回檔低點 265.5 等幅加計 = 289.0"
+        equal_measure:
+          amplitude: 23.0
+          breakout_ref: 288.5
+          target: 311.5
+          note: "近期高低點價差 23.0（265.5→288.5），從突破參考價 288.5 等幅加計 = 311.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 8
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "8213"
+    stock_name: "志超"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 41.0
+      ma:
+        5: 39.66
+        10: 38.63
+        20: 36.07
+        60: 33.39
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 41.75
+      recent_low: 33.85
+      prior_high: 34.75
+      prior_low: 31.85
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.59
+      is_red: true
+      upper_wick_pct_of_range: 25.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 5213070
+      vol_ma5: 3247246.0
+      vol_ratio: 1.61
+      label: "達攻擊量標準（1.61倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 2194091.0
+      mom_pct: 4.46
+      yoy_pct: 50.59
+      cum_pct: 20.81
+    entry_exit:
+      trend_stop: "跌破月線(MA20=36.07)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-22"
+            price: 33.6
+            type: "高點"
+          - date: "2026-09-29"
+            price: 32.8
+            type: "低點"
+          - date: "2026-10-14"
+            price: 41.75
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 0.8
+          target: 40.95
+          note: "前一段跌幅 0.8（33.6→32.8），從反彈高點 41.75 等幅扣減 = 40.95"
+        equal_measure:
+          amplitude: 8.95
+          breakout_ref: 41.75
+          target: 50.7
+          note: "近期高低點價差 8.95（32.8→41.75），從突破參考價 41.75 等幅加計 = 50.7"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 8
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2377"
+    stock_name: "微星"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 164.5
+      ma:
+        5: 160.5
+        10: 158.0
+        20: 156.2
+        60: 152.19
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 167.5
+      recent_low: 152.0
+      prior_high: 170.5
+      prior_low: 144.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.46
+      is_red: true
+      upper_wick_pct_of_range: 25.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 12403193
+      vol_ma5: 9520658.0
+      vol_ratio: 1.3
+      label: "達攻擊量標準（1.30倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 19910016.0
+      mom_pct: 12.53
+      yoy_pct: 1.83
+      cum_pct: -5.49
+    entry_exit:
+      trend_stop: "跌破月線(MA20=156.2)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 150.0
+            type: "低點"
+          - date: "2026-10-05"
+            price: 159.0
+            type: "高點"
+          - date: "2026-10-13"
+            price: 152.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 9.0
+          target: 161.0
+          note: "前一段漲幅 9.0（150.0→159.0），從回檔低點 152.0 等幅加計 = 161.0"
+        equal_measure:
+          amplitude: 7.0
+          breakout_ref: 164.5
+          target: 171.5
+          note: "近期高低點價差 7.0（152.0→159.0），從突破參考價 164.5 等幅加計 = 171.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 8
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3114"
+    stock_name: "好德"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 41.9
+      ma:
+        5: 40.73
+        10: 39.9
+        20: 37.37
+        60: 34.07
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 47.95
+      recent_low: 36.7
+      prior_high: 43.6
+      prior_low: 29.1
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 5.41
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 921826
+      vol_ma5: 2073343.0
+      vol_ratio: 0.44
+      label: "未達攻擊量標準（0.44倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 265229.0
+      mom_pct: 8.48
+      yoy_pct: 8.71
+      cum_pct: 4.86
+    entry_exit:
+      trend_stop: "跌破月線(MA20=37.37)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-10"
+            price: 29.1
+            type: "低點"
+          - date: "2026-10-06"
+            price: 47.95
+            type: "高點"
+          - date: "2026-10-13"
+            price: 36.7
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 18.85
+          target: 55.55
+          note: "前一段漲幅 18.85（29.1→47.95），從回檔低點 36.7 等幅加計 = 55.55"
+        equal_measure:
+          amplitude: 11.25
+          breakout_ref: 47.95
+          target: 59.2
+          note: "近期高低點價差 11.25（36.7→47.95），從突破參考價 47.95 等幅加計 = 59.2"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4720"
+    stock_name: "德淵"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 26.6
+      ma:
+        5: 25.48
+        10: 25.05
+        20: 22.38
+        60: 19.92
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 27.65
+      recent_low: 23.15
+      prior_high: 23.0
+      prior_low: 17.85
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 11.3
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 10919754
+      vol_ma5: 7253715.0
+      vol_ratio: 1.51
+      label: "達攻擊量標準（1.51倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 391985.0
+      mom_pct: 9.65
+      yoy_pct: 32.97
+      cum_pct: 16.37
+    entry_exit:
+      trend_stop: "跌破月線(MA20=22.38)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-21"
+            price: 20.2
+            type: "高點"
+          - date: "2026-10-01"
+            price: 19.0
+            type: "低點"
+          - date: "2026-10-12"
+            price: 27.65
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 1.2
+          target: 26.45
+          note: "前一段跌幅 1.2（20.2→19.0），從反彈高點 27.65 等幅扣減 = 26.45"
+        equal_measure:
+          amplitude: 8.65
+          breakout_ref: 27.65
+          target: 36.3
+          note: "近期高低點價差 8.65（19.0→27.65），從突破參考價 27.65 等幅加計 = 36.3"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3483"
+    stock_name: "力致"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 95.5
+      ma:
+        5: 89.46
+        10: 85.82
+        20: 81.85
+        60: 77.1
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 95.5
+      recent_low: 78.5
+      prior_high: 84.8
+      prior_low: 73.3
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 9.9
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 3804624
+      vol_ma5: 2133246.0
+      vol_ratio: 1.78
+      label: "達攻擊量標準（1.78倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 654897.0
+      mom_pct: 4.48
+      yoy_pct: -27.85
+      cum_pct: -10.5
+    entry_exit:
+      trend_stop: "跌破月線(MA20=81.85)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-05"
+            price: 84.8
+            type: "高點"
+          - date: "2026-10-08"
+            price: 78.5
+            type: "低點"
+          - date: "2026-10-14"
+            price: 94.8
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 6.3
+          target: 88.5
+          note: "前一段跌幅 6.3（84.8→78.5），從反彈高點 94.8 等幅扣減 = 88.5"
+        equal_measure:
+          amplitude: 16.3
+          breakout_ref: 95.5
+          target: 111.8
+          note: "近期高低點價差 16.3（78.5→94.8），從突破參考價 95.5 等幅加計 = 111.8"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6689"
+    stock_name: "伊雲谷"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 73.0
+      ma:
+        5: 68.3
+        10: 65.78
+        20: 65.18
+        60: 63.03
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 75.5
+      recent_low: 62.2
+      prior_high: 74.7
+      prior_low: 60.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 6.41
+      is_red: true
+      upper_wick_pct_of_range: 36.2
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 2079372
+      vol_ma5: 1362070.0
+      vol_ratio: 1.53
+      label: "達攻擊量標準（1.53倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1131911.0
+      mom_pct: -4.66
+      yoy_pct: 6.15
+      cum_pct: 3.99
+    entry_exit:
+      trend_stop: "跌破月線(MA20=65.18)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-22"
+            price: 63.8
+            type: "低點"
+          - date: "2026-10-02"
+            price: 65.2
+            type: "高點"
+          - date: "2026-10-08"
+            price: 62.2
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 1.4
+          target: 63.6
+          note: "前一段漲幅 1.4（63.8→65.2），從回檔低點 62.2 等幅加計 = 63.6"
+        equal_measure:
+          amplitude: 3.0
+          breakout_ref: 73.0
+          target: 76.0
+          note: "近期高低點價差 3.0（62.2→65.2），從突破參考價 73.0 等幅加計 = 76.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5465"
+    stock_name: "富驊"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 38.05
+      ma:
+        5: 36.62
+        10: 35.17
+        20: 33.66
+        60: 26.88
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 39.5
+      recent_low: 32.2
+      prior_high: 36.95
+      prior_low: 23.55
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 6.28
+      is_red: true
+      upper_wick_pct_of_range: 38.7
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 2240172
+      vol_ma5: 1782371.0
+      vol_ratio: 1.26
+      label: "達攻擊量標準（1.26倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 476932.0
+      mom_pct: 16.16
+      yoy_pct: 36.78
+      cum_pct: -26.0
+    entry_exit:
+      trend_stop: "跌破月線(MA20=33.66)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-29"
+            price: 36.95
+            type: "高點"
+          - date: "2026-10-12"
+            price: 32.2
+            type: "低點"
+          - date: "2026-10-14"
+            price: 39.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 4.75
+          target: 34.25
+          note: "前一段跌幅 4.75（36.95→32.2），從反彈高點 39.0 等幅扣減 = 34.25"
+        equal_measure:
+          amplitude: 6.8
+          breakout_ref: 39.0
+          target: 45.8
+          note: "近期高低點價差 6.8（32.2→39.0），從突破參考價 39.0 等幅加計 = 45.8"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4577"
+    stock_name: "達航科技"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 105.0
+      ma:
+        5: 95.86
+        10: 92.57
+        20: 90.24
+        60: 83.25
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 108.5
+      recent_low: 84.9
+      prior_high: 97.9
+      prior_low: 82.2
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.45
+      is_red: true
+      upper_wick_pct_of_range: 35.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.45%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 5016895
+      vol_ma5: 1676677.0
+      vol_ratio: 2.99
+      label: "達攻擊量標準（2.99倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 100474.0
+      mom_pct: 36.58
+      yoy_pct: 55.23
+      cum_pct: 50.44
+    entry_exit:
+      trend_stop: "跌破月線(MA20=90.24)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-29"
+            price: 83.5
+            type: "低點"
+          - date: "2026-10-01"
+            price: 94.6
+            type: "高點"
+          - date: "2026-10-13"
+            price: 84.9
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 11.1
+          target: 96.0
+          note: "前一段漲幅 11.1（83.5→94.6），從回檔低點 84.9 等幅加計 = 96.0"
+        equal_measure:
+          amplitude: 9.7
+          breakout_ref: 105.0
+          target: 114.7
+          note: "近期高低點價差 9.7（84.9→94.6），從突破參考價 105.0 等幅加計 = 114.7"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6141"
+    stock_name: "柏承"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 59.7
+      ma:
+        5: 55.52
+        10: 53.99
+        20: 52.62
+        60: 46.75
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 64.2
+      recent_low: 50.0
+      prior_high: 55.5
+      prior_low: 47.8
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.19
+      is_red: true
+      upper_wick_pct_of_range: 57.7
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.19%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 10904123
+      vol_ma5: 4580115.0
+      vol_ratio: 2.38
+      label: "達攻擊量標準（2.38倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 265648.0
+      mom_pct: -2.58
+      yoy_pct: 74.24
+      cum_pct: 36.86
+    entry_exit:
+      trend_stop: "跌破月線(MA20=52.62)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 54.4
+            type: "高點"
+          - date: "2026-10-07"
+            price: 50.0
+            type: "低點"
+          - date: "2026-10-12"
+            price: 55.3
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 4.4
+          target: 50.9
+          note: "前一段跌幅 4.4（54.4→50.0），從反彈高點 55.3 等幅扣減 = 50.9"
+        equal_measure:
+          amplitude: 5.3
+          breakout_ref: 59.7
+          target: 65.0
+          note: "近期高低點價差 5.3（50.0→55.3），從突破參考價 59.7 等幅加計 = 65.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4533"
+    stock_name: "協易機"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 26.85
+      ma:
+        5: 26.39
+        10: 26.01
+        20: 25.68
+        60: 25.54
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 27.9
+      recent_low: 25.15
+      prior_high: 26.0
+      prior_low: 24.05
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.94
+      is_red: true
+      upper_wick_pct_of_range: 75.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.94%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1454687
+      vol_ma5: 1032035.0
+      vol_ratio: 1.41
+      label: "達攻擊量標準（1.41倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 440251.0
+      mom_pct: 27.89
+      yoy_pct: 28.19
+      cum_pct: 0.78
+    entry_exit:
+      trend_stop: "跌破月線(MA20=25.68)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-05"
+            price: 26.0
+            type: "高點"
+          - date: "2026-10-06"
+            price: 25.15
+            type: "低點"
+          - date: "2026-10-14"
+            price: 27.3
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 0.85
+          target: 26.45
+          note: "前一段跌幅 0.85（26.0→25.15），從反彈高點 27.3 等幅扣減 = 26.45"
+        equal_measure:
+          amplitude: 2.15
+          breakout_ref: 27.3
+          target: 29.45
+          note: "近期高低點價差 2.15（25.15→27.3），從突破參考價 27.3 等幅加計 = 29.45"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6245"
+    stock_name: "立端"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 90.1
+      ma:
+        5: 89.34
+        10: 88.56
+        20: 87.88
+        60: 83.9
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 91.0
+      recent_low: 85.3
+      prior_high: 90.6
+      prior_low: 77.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.9
+      is_red: true
+      upper_wick_pct_of_range: 45.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.90%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1058155
+      vol_ma5: 820941.0
+      vol_ratio: 1.29
+      label: "達攻擊量標準（1.29倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 799736.0
+      mom_pct: -0.34
+      yoy_pct: 4.56
+      cum_pct: 18.29
+    entry_exit:
+      trend_stop: "跌破月線(MA20=87.88)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 84.3
+            type: "低點"
+          - date: "2026-10-06"
+            price: 90.9
+            type: "高點"
+          - date: "2026-10-12"
+            price: 85.3
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 6.6
+          target: 91.9
+          note: "前一段漲幅 6.6（84.3→90.9），從回檔低點 85.3 等幅加計 = 91.9"
+        equal_measure:
+          amplitude: 5.6
+          breakout_ref: 90.9
+          target: 96.5
+          note: "近期高低點價差 5.6（85.3→90.9），從突破參考價 90.9 等幅加計 = 96.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 7
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "8437"
+    stock_name: "大地-KY"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 15.2
+      ma:
+        5: 13.97
+        10: 12.46
+        20: 11.24
+        60: 9.86
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 16.25
+      recent_low: 10.15
+      prior_high: 11.0
+      prior_low: 8.8
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 8.57
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 281186
+      vol_ma5: 603736.0
+      vol_ratio: 0.47
+      label: "未達攻擊量標準（0.47倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 36609.0
+      mom_pct: 134.04
+      yoy_pct: 47.48
+      cum_pct: 3.4
+    entry_exit:
+      trend_stop: "跌破月線(MA20=11.24)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-16"
+            price: 8.8
+            type: "低點"
+          - date: "2026-10-06"
+            price: 12.1
+            type: "高點"
+          - date: "2026-10-12"
+            price: 10.15
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 3.3
+          target: 13.45
+          note: "前一段漲幅 3.3（8.8→12.1），從回檔低點 10.15 等幅加計 = 13.45"
+        equal_measure:
+          amplitude: 1.95
+          breakout_ref: 15.2
+          target: 17.15
+          note: "近期高低點價差 1.95（10.15→12.1），從突破參考價 15.2 等幅加計 = 17.15"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2328"
+    stock_name: "廣宇"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 50.9
+      ma:
+        5: 49.17
+        10: 48.76
+        20: 48.07
+        60: 46.14
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 53.9
+      recent_low: 47.2
+      prior_high: 48.55
+      prior_low: 44.85
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.95
+      is_red: true
+      upper_wick_pct_of_range: 55.6
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 15360975
+      vol_ma5: 5202967.0
+      vol_ratio: 2.95
+      label: "達攻擊量標準（2.95倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 2440683.0
+      mom_pct: 12.68
+      yoy_pct: 34.3
+      cum_pct: -3.3
+    entry_exit:
+      trend_stop: "跌破月線(MA20=48.07)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-06"
+            price: 49.6
+            type: "高點"
+          - date: "2026-10-08"
+            price: 47.8
+            type: "低點"
+          - date: "2026-10-14"
+            price: 50.2
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 1.8
+          target: 48.4
+          note: "前一段跌幅 1.8（49.6→47.8），從反彈高點 50.2 等幅扣減 = 48.4"
+        equal_measure:
+          amplitude: 2.4
+          breakout_ref: 50.9
+          target: 53.3
+          note: "近期高低點價差 2.4（47.8→50.2），從突破參考價 50.9 等幅加計 = 53.3"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4976"
+    stock_name: "佳凌"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 39.55
+      ma:
+        5: 39.3
+        10: 39.17
+        20: 37.71
+        60: 37.34
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 44.1
+      recent_low: 36.35
+      prior_high: 40.0
+      prior_low: 34.55
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.81
+      is_red: true
+      upper_wick_pct_of_range: 60.8
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 5605061
+      vol_ma5: 5241082.0
+      vol_ratio: 1.07
+      label: "未達攻擊量標準（1.07倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 93720.0
+      mom_pct: -5.93
+      yoy_pct: 14.97
+      cum_pct: 4.08
+    entry_exit:
+      trend_stop: "跌破月線(MA20=37.71)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 40.0
+            type: "高點"
+          - date: "2026-09-24"
+            price: 35.0
+            type: "低點"
+          - date: "2026-10-13"
+            price: 44.1
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 5.0
+          target: 39.1
+          note: "前一段跌幅 5.0（40.0→35.0），從反彈高點 44.1 等幅扣減 = 39.1"
+        equal_measure:
+          amplitude: 9.1
+          breakout_ref: 44.1
+          target: 53.2
+          note: "近期高低點價差 9.1（35.0→44.1），從突破參考價 44.1 等幅加計 = 53.2"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6782"
+    stock_name: "視陽"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 262.5
+      ma:
+        5: 254.3
+        10: 245.4
+        20: 242.03
+        60: 225.02
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 264.5
+      recent_low: 229.0
+      prior_high: 250.0
+      prior_low: 219.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.58
+      is_red: true
+      upper_wick_pct_of_range: 14.8
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 714561
+      vol_ma5: 700019.0
+      vol_ratio: 1.02
+      label: "未達攻擊量標準（1.02倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 495173.0
+      mom_pct: 1.11
+      yoy_pct: 14.87
+      cum_pct: 25.3
+    entry_exit:
+      trend_stop: "跌破月線(MA20=242.03)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-29"
+            price: 230.5
+            type: "低點"
+          - date: "2026-09-30"
+            price: 243.0
+            type: "高點"
+          - date: "2026-10-05"
+            price: 228.5
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 12.5
+          target: 241.0
+          note: "前一段漲幅 12.5（230.5→243.0），從回檔低點 228.5 等幅加計 = 241.0"
+        equal_measure:
+          amplitude: 14.5
+          breakout_ref: 262.5
+          target: 277.0
+          note: "近期高低點價差 14.5（228.5→243.0），從突破參考價 262.5 等幅加計 = 277.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "1802"
+    stock_name: "台玻"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 67.4
+      ma:
+        5: 66.0
+        10: 64.47
+        20: 61.73
+        60: 58.05
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 70.6
+      recent_low: 58.8
+      prior_high: 61.7
+      prior_low: 56.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.12
+      is_red: true
+      upper_wick_pct_of_range: 66.7
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 203719334
+      vol_ma5: 165224936.0
+      vol_ratio: 1.23
+      label: "達攻擊量標準（1.23倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 4967803.0
+      mom_pct: 8.18
+      yoy_pct: 34.11
+      cum_pct: 18.69
+    entry_exit:
+      trend_stop: "跌破月線(MA20=61.73)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-15"
+            price: 56.0
+            type: "低點"
+          - date: "2026-09-17"
+            price: 61.7
+            type: "高點"
+          - date: "2026-09-24"
+            price: 56.6
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 5.7
+          target: 62.3
+          note: "前一段漲幅 5.7（56.0→61.7），從回檔低點 56.6 等幅加計 = 62.3"
+        equal_measure:
+          amplitude: 5.1
+          breakout_ref: 67.4
+          target: 72.5
+          note: "近期高低點價差 5.1（56.6→61.7），從突破參考價 67.4 等幅加計 = 72.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6909"
+    stock_name: "創控"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 47.95
+      ma:
+        5: 47.32
+        10: 46.03
+        20: 44.3
+        60: 41.85
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 50.2
+      recent_low: 42.9
+      prior_high: 45.0
+      prior_low: 39.35
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.74
+      is_red: true
+      upper_wick_pct_of_range: 36.7
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.74%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 662540
+      vol_ma5: 1324591.0
+      vol_ratio: 0.5
+      label: "未達攻擊量標準（0.50倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 94668.0
+      mom_pct: 56.27
+      yoy_pct: 150.94
+      cum_pct: 15.71
+    entry_exit:
+      trend_stop: "跌破月線(MA20=44.3)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 40.9
+            type: "低點"
+          - date: "2026-10-05"
+            price: 45.0
+            type: "高點"
+          - date: "2026-10-08"
+            price: 42.9
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 4.1
+          target: 47.0
+          note: "前一段漲幅 4.1（40.9→45.0），從回檔低點 42.9 等幅加計 = 47.0"
+        equal_measure:
+          amplitude: 2.1
+          breakout_ref: 47.95
+          target: 50.05
+          note: "近期高低點價差 2.1（42.9→45.0），從突破參考價 47.95 等幅加計 = 50.05"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2889"
+    stock_name: "國票金"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 16.95
+      ma:
+        5: 16.86
+        10: 16.66
+        20: 16.61
+        60: 16.18
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 17.25
+      recent_low: 16.0
+      prior_high: 17.5
+      prior_low: 15.9
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.89
+      is_red: true
+      upper_wick_pct_of_range: 42.9
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 0.89%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 10926463
+      vol_ma5: 8210033.0
+      vol_ratio: 1.33
+      label: "達攻擊量標準（1.33倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1196319.0
+      mom_pct: -11.85
+      yoy_pct: 23.86
+      cum_pct: 83.59
+    entry_exit:
+      trend_stop: "跌破月線(MA20=16.61)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-11"
+            price: 16.25
+            type: "低點"
+          - date: "2026-09-18"
+            price: 17.5
+            type: "高點"
+          - date: "2026-10-05"
+            price: 15.9
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 1.25
+          target: 17.15
+          note: "前一段漲幅 1.25（16.25→17.5），從回檔低點 15.9 等幅加計 = 17.15"
+        equal_measure:
+          amplitude: 1.6
+          breakout_ref: 17.5
+          target: 19.1
+          note: "近期高低點價差 1.6（15.9→17.5），從突破參考價 17.5 等幅加計 = 19.1"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3305"
+    stock_name: "昇貿"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 113.5
+      ma:
+        5: 110.4
+        10: 109.95
+        20: 107.6
+        60: 107.45
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 121.0
+      recent_low: 102.5
+      prior_high: 112.5
+      prior_low: 98.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.44
+      is_red: true
+      upper_wick_pct_of_range: 93.8
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.44%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 9474714
+      vol_ma5: 4677911.0
+      vol_ratio: 2.03
+      label: "達攻擊量標準（2.03倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1428792.0
+      mom_pct: 2.97
+      yoy_pct: 46.33
+      cum_pct: 59.52
+    entry_exit:
+      trend_stop: "跌破月線(MA20=107.6)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 101.0
+            type: "低點"
+          - date: "2026-10-06"
+            price: 111.5
+            type: "高點"
+          - date: "2026-10-15"
+            price: 102.5
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 10.5
+          target: 113.0
+          note: "前一段漲幅 10.5（101.0→111.5），從回檔低點 102.5 等幅加計 = 113.0"
+        equal_measure:
+          amplitude: 9.0
+          breakout_ref: 113.5
+          target: 122.5
+          note: "近期高低點價差 9.0（102.5→111.5），從突破參考價 113.5 等幅加計 = 122.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5469"
+    stock_name: "瀚宇博"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 85.5
+      ma:
+        5: 83.94
+        10: 82.68
+        20: 78.39
+        60: 74.05
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 91.5
+      recent_low: 78.0
+      prior_high: 78.4
+      prior_low: 70.9
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.23
+      is_red: true
+      upper_wick_pct_of_range: 87.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.23%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 8846778
+      vol_ma5: 5329659.0
+      vol_ratio: 1.66
+      label: "達攻擊量標準（1.66倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 7125411.0
+      mom_pct: 8.9
+      yoy_pct: 36.25
+      cum_pct: 26.16
+    entry_exit:
+      trend_stop: "跌破月線(MA20=78.39)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-17"
+            price: 75.9
+            type: "高點"
+          - date: "2026-09-24"
+            price: 72.4
+            type: "低點"
+          - date: "2026-10-12"
+            price: 85.5
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 3.5
+          target: 82.0
+          note: "前一段跌幅 3.5（75.9→72.4），從反彈高點 85.5 等幅扣減 = 82.0"
+        equal_measure:
+          amplitude: 13.1
+          breakout_ref: 85.5
+          target: 98.6
+          note: "近期高低點價差 13.1（72.4→85.5），從突破參考價 85.5 等幅加計 = 98.6"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3045"
+    stock_name: "台灣大"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 130.5
+      ma:
+        5: 129.8
+        10: 126.5
+        20: 124.45
+        60: 118.29
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 133.0
+      recent_low: 121.5
+      prior_high: 125.5
+      prior_low: 116.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.56
+      is_red: true
+      upper_wick_pct_of_range: 20.0
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 1.56%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 7462735
+      vol_ma5: 11006424.0
+      vol_ratio: 0.68
+      label: "未達攻擊量標準（0.68倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 17411550.0
+      mom_pct: 3.75
+      yoy_pct: 10.35
+      cum_pct: 5.35
+    entry_exit:
+      trend_stop: "跌破月線(MA20=124.45)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-18"
+            price: 125.5
+            type: "高點"
+          - date: "2026-09-30"
+            price: 118.0
+            type: "低點"
+          - date: "2026-10-15"
+            price: 133.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 7.5
+          target: 125.5
+          note: "前一段跌幅 7.5（125.5→118.0），從反彈高點 133.0 等幅扣減 = 125.5"
+        equal_measure:
+          amplitude: 15.0
+          breakout_ref: 133.0
+          target: 148.0
+          note: "近期高低點價差 15.0（118.0→133.0），從突破參考價 133.0 等幅加計 = 148.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3005"
+    stock_name: "神基"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 123.0
+      ma:
+        5: 121.4
+        10: 119.95
+        20: 118.75
+        60: 116.34
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 125.0
+      recent_low: 116.5
+      prior_high: 120.0
+      prior_low: 112.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.36
+      is_red: true
+      upper_wick_pct_of_range: 33.3
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 3596440
+      vol_ma5: 3415412.0
+      vol_ratio: 1.05
+      label: "未達攻擊量標準（1.05倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 3946673.0
+      mom_pct: 2.22
+      yoy_pct: 16.34
+      cum_pct: 10.7
+    entry_exit:
+      trend_stop: "跌破月線(MA20=118.75)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-07"
+            price: 112.0
+            type: "低點"
+          - date: "2026-09-20"
+            price: 120.0
+            type: "高點"
+          - date: "2026-09-24"
+            price: 116.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 8.0
+          target: 124.0
+          note: "前一段漲幅 8.0（112.0→120.0），從回檔低點 116.0 等幅加計 = 124.0"
+        equal_measure:
+          amplitude: 4.0
+          breakout_ref: 123.0
+          target: 127.0
+          note: "近期高低點價差 4.0（116.0→120.0），從突破參考價 123.0 等幅加計 = 127.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3693"
+    stock_name: "營邦"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 721.0
+      ma:
+        5: 719.8
+        10: 719.6
+        20: 708.4
+        60: 615.08
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 789.0
+      recent_low: 658.0
+      prior_high: 748.0
+      prior_low: 633.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.41
+      is_red: true
+      upper_wick_pct_of_range: 60.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 2318276
+      vol_ma5: 1937926.0
+      vol_ratio: 1.2
+      label: "未達攻擊量標準（1.20倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1537099.0
+      mom_pct: 21.34
+      yoy_pct: 138.93
+      cum_pct: 37.66
+    entry_exit:
+      trend_stop: "跌破月線(MA20=708.4)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-01"
+            price: 643.0
+            type: "低點"
+          - date: "2026-10-08"
+            price: 789.0
+            type: "高點"
+          - date: "2026-10-13"
+            price: 691.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 146.0
+          target: 837.0
+          note: "前一段漲幅 146.0（643.0→789.0），從回檔低點 691.0 等幅加計 = 837.0"
+        equal_measure:
+          amplitude: 98.0
+          breakout_ref: 789.0
+          target: 887.0
+          note: "近期高低點價差 98.0（691.0→789.0），從突破參考價 789.0 等幅加計 = 887.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6148"
+    stock_name: "驊宏資"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 39.85
+      ma:
+        5: 39.24
+        10: 38.53
+        20: 38.37
+        60: 32.18
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 44.3
+      recent_low: 36.35
+      prior_high: 42.1
+      prior_low: 27.55
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.44
+      is_red: true
+      upper_wick_pct_of_range: 38.7
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 3753912
+      vol_ma5: 7562899.0
+      vol_ratio: 0.5
+      label: "未達攻擊量標準（0.50倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 58769.0
+      mom_pct: -0.76
+      yoy_pct: 4.05
+      cum_pct: -31.0
+    entry_exit:
+      trend_stop: "跌破月線(MA20=38.37)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-09"
+            price: 27.55
+            type: "低點"
+          - date: "2026-09-21"
+            price: 42.1
+            type: "高點"
+          - date: "2026-10-05"
+            price: 36.3
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 14.55
+          target: 50.85
+          note: "前一段漲幅 14.55（27.55→42.1），從回檔低點 36.3 等幅加計 = 50.85"
+        equal_measure:
+          amplitude: 5.8
+          breakout_ref: 42.1
+          target: 47.9
+          note: "近期高低點價差 5.8（36.3→42.1），從突破參考價 42.1 等幅加計 = 47.9"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5309"
+    stock_name: "系統電"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 70.0
+      ma:
+        5: 69.82
+        10: 69.52
+        20: 63.66
+        60: 55.86
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 75.6
+      recent_low: 63.9
+      prior_high: 69.0
+      prior_low: 48.05
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.45
+      is_red: true
+      upper_wick_pct_of_range: 40.5
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.45%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 7672954
+      vol_ma5: 10449740.0
+      vol_ratio: 0.73
+      label: "未達攻擊量標準（0.73倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 367005.0
+      mom_pct: 12.04
+      yoy_pct: 17.87
+      cum_pct: 10.42
+    entry_exit:
+      trend_stop: "跌破月線(MA20=63.66)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-14"
+            price: 48.05
+            type: "低點"
+          - date: "2026-10-13"
+            price: 75.6
+            type: "高點"
+          - date: "2026-10-15"
+            price: 67.7
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 27.55
+          target: 95.25
+          note: "前一段漲幅 27.55（48.05→75.6），從回檔低點 67.7 等幅加計 = 95.25"
+        equal_measure:
+          amplitude: 7.9
+          breakout_ref: 75.6
+          target: 83.5
+          note: "近期高低點價差 7.9（67.7→75.6），從突破參考價 75.6 等幅加計 = 83.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3013"
+    stock_name: "晟銘電"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 95.6
+      ma:
+        5: 95.54
+        10: 95.34
+        20: 91.3
+        60: 86.65
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 99.3
+      recent_low: 89.0
+      prior_high: 94.5
+      prior_low: 81.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.63
+      is_red: true
+      upper_wick_pct_of_range: 80.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.63%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 4057021
+      vol_ma5: 3989282.0
+      vol_ratio: 1.02
+      label: "未達攻擊量標準（1.02倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1101274.0
+      mom_pct: 17.17
+      yoy_pct: 7.57
+      cum_pct: 20.24
+    entry_exit:
+      trend_stop: "跌破月線(MA20=91.3)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 87.2
+            type: "高點"
+          - date: "2026-10-13"
+            price: 89.0
+            type: "低點"
+          - date: "2026-10-14"
+            price: 99.3
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: -1.8
+          target: 101.1
+          note: "前一段跌幅 -1.8（87.2→89.0），從反彈高點 99.3 等幅扣減 = 101.1"
+        equal_measure:
+          amplitude: 10.3
+          breakout_ref: 99.3
+          target: 109.6
+          note: "近期高低點價差 10.3（89.0→99.3），從突破參考價 99.3 等幅加計 = 109.6"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3592"
+    stock_name: "瑞鼎"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 250.5
+      ma:
+        5: 249.5
+        10: 243.4
+        20: 236.93
+        60: 231.0
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 259.0
+      recent_low: 232.0
+      prior_high: 241.5
+      prior_low: 217.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.2
+      is_red: true
+      upper_wick_pct_of_range: 38.5
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.20%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 353674
+      vol_ma5: 891349.0
+      vol_ratio: 0.4
+      label: "未達攻擊量標準（0.40倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 2251964.0
+      mom_pct: 1.76
+      yoy_pct: 26.31
+      cum_pct: 10.06
+    entry_exit:
+      trend_stop: "跌破月線(MA20=236.93)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 220.5
+            type: "低點"
+          - date: "2026-10-01"
+            price: 241.5
+            type: "高點"
+          - date: "2026-10-13"
+            price: 232.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 21.0
+          target: 253.0
+          note: "前一段漲幅 21.0（220.5→241.5），從回檔低點 232.0 等幅加計 = 253.0"
+        equal_measure:
+          amplitude: 9.5
+          breakout_ref: 250.5
+          target: 260.0
+          note: "近期高低點價差 9.5（232.0→241.5），從突破參考價 250.5 等幅加計 = 260.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5340"
+    stock_name: "建榮"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 95.7
+      ma:
+        5: 94.58
+        10: 92.99
+        20: 87.63
+        60: 80.47
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 105.5
+      recent_low: 84.9
+      prior_high: 88.8
+      prior_low: 79.8
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.74
+      is_red: false
+      upper_wick_pct_of_range: 68.9
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 30617420
+      vol_ma5: 16299410.0
+      vol_ratio: 1.88
+      label: "達攻擊量標準（1.88倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 286708.0
+      mom_pct: 0.65
+      yoy_pct: 46.69
+      cum_pct: 30.0
+    entry_exit:
+      trend_stop: "跌破月線(MA20=87.63)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 86.5
+            type: "高點"
+          - date: "2026-10-01"
+            price: 80.3
+            type: "低點"
+          - date: "2026-10-12"
+            price: 102.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 6.2
+          target: 95.8
+          note: "前一段跌幅 6.2（86.5→80.3），從反彈高點 102.0 等幅扣減 = 95.8"
+        equal_measure:
+          amplitude: 21.7
+          breakout_ref: 102.0
+          target: 123.7
+          note: "近期高低點價差 21.7（80.3→102.0），從突破參考價 102.0 等幅加計 = 123.7"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2504"
+    stock_name: "國產"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 32.0
+      ma:
+        5: 31.86
+        10: 31.76
+        20: 31.34
+        60: 31.25
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 32.15
+      recent_low: 30.65
+      prior_high: 31.6
+      prior_low: 30.45
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.95
+      is_red: true
+      upper_wick_pct_of_range: 12.5
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 0.95%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 2250404
+      vol_ma5: 1900549.0
+      vol_ratio: 1.18
+      label: "未達攻擊量標準（1.18倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1880943.0
+      mom_pct: 14.51
+      yoy_pct: -2.29
+      cum_pct: -7.55
+    entry_exit:
+      trend_stop: "跌破月線(MA20=31.34)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-30"
+            price: 30.45
+            type: "低點"
+          - date: "2026-10-13"
+            price: 32.15
+            type: "高點"
+          - date: "2026-10-15"
+            price: 31.45
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 1.7
+          target: 33.15
+          note: "前一段漲幅 1.7（30.45→32.15），從回檔低點 31.45 等幅加計 = 33.15"
+        equal_measure:
+          amplitude: 0.7
+          breakout_ref: 32.15
+          target: 32.85
+          note: "近期高低點價差 0.7（31.45→32.15），從突破參考價 32.15 等幅加計 = 32.85"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "8074"
+    stock_name: "鉅橡"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 61.1
+      ma:
+        5: 57.48
+        10: 56.75
+        20: 54.51
+        60: 53.75
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 66.1
+      recent_low: 53.0
+      prior_high: 58.3
+      prior_low: 48.85
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.53
+      is_red: false
+      upper_wick_pct_of_range: 28.8
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 9314920
+      vol_ma5: 2744608.0
+      vol_ratio: 3.39
+      label: "達攻擊量標準（3.39倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 137475.0
+      mom_pct: 0.94
+      yoy_pct: 19.29
+      cum_pct: 21.95
+    entry_exit:
+      trend_stop: "跌破月線(MA20=54.51)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-15"
+            price: 48.85
+            type: "低點"
+          - date: "2026-10-07"
+            price: 59.5
+            type: "高點"
+          - date: "2026-10-13"
+            price: 53.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 10.65
+          target: 63.65
+          note: "前一段漲幅 10.65（48.85→59.5），從回檔低點 53.0 等幅加計 = 63.65"
+        equal_measure:
+          amplitude: 6.5
+          breakout_ref: 61.1
+          target: 67.6
+          note: "近期高低點價差 6.5（53.0→59.5），從突破參考價 61.1 等幅加計 = 67.6"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4924"
+    stock_name: "欣厚-KY"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 21.05
+      ma:
+        5: 19.72
+        10: 17.93
+        20: 17.1
+        60: 12.94
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 21.4
+      recent_low: 14.3
+      prior_high: 18.75
+      prior_low: 12.3
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 12.27
+      is_red: true
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 729575
+      vol_ma5: 937724.0
+      vol_ratio: 0.78
+      label: "未達攻擊量標準（0.78倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 69385.0
+      mom_pct: -1.44
+      yoy_pct: 15.14
+      cum_pct: 6.16
+    entry_exit:
+      trend_stop: "跌破月線(MA20=17.1)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-14"
+            price: 12.3
+            type: "低點"
+          - date: "2026-09-22"
+            price: 18.75
+            type: "高點"
+          - date: "2026-10-06"
+            price: 14.3
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 6.45
+          target: 20.75
+          note: "前一段漲幅 6.45（12.3→18.75），從回檔低點 14.3 等幅加計 = 20.75"
+        equal_measure:
+          amplitude: 4.45
+          breakout_ref: 21.05
+          target: 25.5
+          note: "近期高低點價差 4.45（14.3→18.75），從突破參考價 21.05 等幅加計 = 25.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3498"
+    stock_name: "陽程"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 239.5
+      ma:
+        5: 236.5
+        10: 235.45
+        20: 225.05
+        60: 182.82
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 257.0
+      recent_low: 222.5
+      prior_high: 236.5
+      prior_low: 173.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.27
+      is_red: true
+      upper_wick_pct_of_range: 67.9
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.27%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 3862364
+      vol_ma5: 4293601.0
+      vol_ratio: 0.9
+      label: "未達攻擊量標準（0.90倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 373560.0
+      mom_pct: 3.95
+      yoy_pct: 283.62
+      cum_pct: 169.95
+    entry_exit:
+      trend_stop: "跌破月線(MA20=225.05)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-29"
+            price: 235.0
+            type: "高點"
+          - date: "2026-10-02"
+            price: 212.0
+            type: "低點"
+          - date: "2026-10-06"
+            price: 257.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 23.0
+          target: 234.0
+          note: "前一段跌幅 23.0（235.0→212.0），從反彈高點 257.0 等幅扣減 = 234.0"
+        equal_measure:
+          amplitude: 45.0
+          breakout_ref: 257.0
+          target: 302.0
+          note: "近期高低點價差 45.0（212.0→257.0），從突破參考價 257.0 等幅加計 = 302.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6499"
+    stock_name: "益安"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 82.2
+      ma:
+        5: 82.28
+        10: 81.02
+        20: 78.52
+        60: 70.36
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 87.5
+      recent_low: 78.2
+      prior_high: 82.0
+      prior_low: 68.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.97
+      is_red: false
+      upper_wick_pct_of_range: 0.0
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 391574
+      vol_ma5: 581057.0
+      vol_ratio: 0.67
+      label: "未達攻擊量標準（0.67倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 231522.0
+      mom_pct: 508.13
+      yoy_pct: 513.14
+      cum_pct: 74.98
+    entry_exit:
+      trend_stop: "跌破月線(MA20=78.52)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 71.9
+            type: "低點"
+          - date: "2026-10-01"
+            price: 82.0
+            type: "高點"
+          - date: "2026-10-07"
+            price: 78.2
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 10.1
+          target: 88.3
+          note: "前一段漲幅 10.1（71.9→82.0），從回檔低點 78.2 等幅加計 = 88.3"
+        equal_measure:
+          amplitude: 3.8
+          breakout_ref: 82.2
+          target: 86.0
+          note: "近期高低點價差 3.8（78.2→82.0），從突破參考價 82.2 等幅加計 = 86.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4542"
+    stock_name: "科嶠"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 375.0
+      ma:
+        5: 361.8
+        10: 352.25
+        20: 340.73
+        60: 295.48
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 401.5
+      recent_low: 317.0
+      prior_high: 365.0
+      prior_low: 249.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.34
+      is_red: false
+      upper_wick_pct_of_range: 29.7
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 5038515
+      vol_ma5: 2758315.0
+      vol_ratio: 1.83
+      label: "達攻擊量標準（1.83倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 72426.0
+      mom_pct: -41.56
+      yoy_pct: -7.59
+      cum_pct: 45.99
+    entry_exit:
+      trend_stop: "跌破月線(MA20=340.73)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-08"
+            price: 317.0
+            type: "低點"
+          - date: "2026-10-13"
+            price: 390.0
+            type: "高點"
+          - date: "2026-10-15"
+            price: 325.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 73.0
+          target: 398.0
+          note: "前一段漲幅 73.0（317.0→390.0），從回檔低點 325.0 等幅加計 = 398.0"
+        equal_measure:
+          amplitude: 65.0
+          breakout_ref: 390.0
+          target: 455.0
+          note: "近期高低點價差 65.0（325.0→390.0），從突破參考價 390.0 等幅加計 = 455.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3062"
+    stock_name: "建漢"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 22.65
+      ma:
+        5: 22.39
+        10: 22.37
+        20: 22.33
+        60: 21.12
+      above_ma20: true
+      ma_alignment: "多排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 23.4
+      recent_low: 21.6
+      prior_high: 23.2
+      prior_low: 20.1
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.03
+      is_red: true
+      upper_wick_pct_of_range: 62.5
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 3315304
+      vol_ma5: 4090551.0
+      vol_ratio: 0.81
+      label: "未達攻擊量標準（0.81倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 253400.0
+      mom_pct: -25.89
+      yoy_pct: -38.77
+      cum_pct: -3.04
+    entry_exit:
+      trend_stop: "跌破月線(MA20=22.33)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-15"
+            price: 20.1
+            type: "低點"
+          - date: "2026-09-22"
+            price: 23.2
+            type: "高點"
+          - date: "2026-10-15"
+            price: 21.6
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 3.1
+          target: 24.7
+          note: "前一段漲幅 3.1（20.1→23.2），從回檔低點 21.6 等幅加計 = 24.7"
+        equal_measure:
+          amplitude: 1.6
+          breakout_ref: 23.2
+          target: 24.8
+          note: "近期高低點價差 1.6（21.6→23.2），從突破參考價 23.2 等幅加計 = 24.8"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做多"
+    lock_score: 3
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "1590"
+    stock_name: "亞德客-KY"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 1110.0
+      ma:
+        5: 1154.0
+        10: 1178.0
+        20: 1196.5
+        60: 1337.75
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 1255.0
+      recent_low: 1105.0
+      prior_high: 1420.0
+      prior_low: 1135.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.06
+      is_red: false
+      upper_wick_pct_of_range: 11.1
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 1530982
+      vol_ma5: 853984.0
+      vol_ratio: 1.79
+      label: "達攻擊量標準（1.79倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 3810653.0
+      mom_pct: 2.78
+      yoy_pct: 26.6
+      cum_pct: 33.19
+    entry_exit:
+      trend_stop: "跌破月線(MA20=1196.5)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-22"
+            price: 1285.0
+            type: "高點"
+          - date: "2026-09-29"
+            price: 1135.0
+            type: "低點"
+          - date: "2026-10-08"
+            price: 1255.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 150.0
+          target: 1105.0
+          note: "前一段跌幅 150.0（1285.0→1135.0），從反彈高點 1255.0 等幅扣減 = 1105.0"
+        equal_measure:
+          amplitude: 120.0
+          breakout_ref: 1255.0
+          target: 1375.0
+          note: "近期高低點價差 120.0（1135.0→1255.0），從突破參考價 1255.0 等幅加計 = 1375.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "8210"
+    stock_name: "勤誠"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 801.0
+      ma:
+        5: 826.8
+        10: 846.4
+        20: 865.4
+        60: 948.77
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 894.0
+      recent_low: 799.0
+      prior_high: 988.0
+      prior_low: 822.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.23
+      is_red: false
+      upper_wick_pct_of_range: 54.5
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.23%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 583410
+      vol_ma5: 984567.0
+      vol_ratio: 0.59
+      label: "未達攻擊量標準（0.59倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 2475728.0
+      mom_pct: 0.76
+      yoy_pct: 13.75
+      cum_pct: 46.27
+    entry_exit:
+      trend_stop: "跌破月線(MA20=865.4)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-01"
+            price: 822.0
+            type: "低點"
+          - date: "2026-10-05"
+            price: 907.0
+            type: "高點"
+          - date: "2026-10-13"
+            price: 828.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 85.0
+          target: 913.0
+          note: "前一段漲幅 85.0（822.0→907.0），從回檔低點 828.0 等幅加計 = 913.0"
+        equal_measure:
+          amplitude: 79.0
+          breakout_ref: 907.0
+          target: 986.0
+          note: "近期高低點價差 79.0（828.0→907.0），從突破參考價 907.0 等幅加計 = 986.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2812"
+    stock_name: "台中銀"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 18.5
+      ma:
+        5: 18.68
+        10: 18.7
+        20: 18.83
+        60: 19.1
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 18.95
+      recent_low: 18.45
+      prior_high: 20.0
+      prior_low: 18.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.27
+      is_red: false
+      upper_wick_pct_of_range: 50.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.27%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 9275893
+      vol_ma5: 11316600.0
+      vol_ratio: 0.82
+      label: "未達攻擊量標準（0.82倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1781456.0
+      mom_pct: -9.82
+      yoy_pct: -0.03
+      cum_pct: 14.76
+    entry_exit:
+      trend_stop: "跌破月線(MA20=18.83)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-05"
+            price: 18.5
+            type: "低點"
+          - date: "2026-10-07"
+            price: 18.95
+            type: "高點"
+          - date: "2026-10-13"
+            price: 18.45
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 0.45
+          target: 18.9
+          note: "前一段漲幅 0.45（18.5→18.95），從回檔低點 18.45 等幅加計 = 18.9"
+        equal_measure:
+          amplitude: 0.5
+          breakout_ref: 18.95
+          target: 19.45
+          note: "近期高低點價差 0.5（18.45→18.95），從突破參考價 18.95 等幅加計 = 19.45"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4749"
+    stock_name: "新應材"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 725.0
+      ma:
+        5: 733.6
+        10: 748.6
+        20: 751.55
+        60: 758.73
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 810.0
+      recent_low: 712.0
+      prior_high: 825.0
+      prior_low: 701.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.68
+      is_red: false
+      upper_wick_pct_of_range: 82.8
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.68%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 485829
+      vol_ma5: 603323.0
+      vol_ratio: 0.81
+      label: "未達攻擊量標準（0.81倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 430720.0
+      mom_pct: -11.18
+      yoy_pct: 11.82
+      cum_pct: 19.88
+    entry_exit:
+      trend_stop: "跌破月線(MA20=751.55)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 717.0
+            type: "低點"
+          - date: "2026-10-05"
+            price: 812.0
+            type: "高點"
+          - date: "2026-10-15"
+            price: 712.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 95.0
+          target: 807.0
+          note: "前一段漲幅 95.0（717.0→812.0），從回檔低點 712.0 等幅加計 = 807.0"
+        equal_measure:
+          amplitude: 100.0
+          breakout_ref: 812.0
+          target: 912.0
+          note: "近期高低點價差 100.0（712.0→812.0），從突破參考價 812.0 等幅加計 = 912.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4966"
+    stock_name: "譜瑞-KY"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 524.0
+      ma:
+        5: 538.0
+        10: 547.9
+        20: 559.6
+        60: 566.52
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 574.0
+      recent_low: 522.0
+      prior_high: 586.0
+      prior_low: 521.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.13
+      is_red: false
+      upper_wick_pct_of_range: 45.5
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 1.13%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 233848
+      vol_ma5: 679762.0
+      vol_ratio: 0.34
+      label: "未達攻擊量標準（0.34倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1503134.0
+      mom_pct: 13.29
+      yoy_pct: -8.35
+      cum_pct: -1.65
+    entry_exit:
+      trend_stop: "跌破月線(MA20=559.6)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-08-28"
+            price: 599.0
+            type: "高點"
+          - date: "2026-09-14"
+            price: 521.0
+            type: "低點"
+          - date: "2026-09-22"
+            price: 586.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 78.0
+          target: 508.0
+          note: "前一段跌幅 78.0（599.0→521.0），從反彈高點 586.0 等幅扣減 = 508.0"
+        equal_measure:
+          amplitude: 65.0
+          breakout_ref: 586.0
+          target: 651.0
+          note: "近期高低點價差 65.0（521.0→586.0），從突破參考價 586.0 等幅加計 = 651.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4123"
+    stock_name: "晟德"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 29.9
+      ma:
+        5: 30.58
+        10: 30.85
+        20: 30.95
+        60: 32.74
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭高底底高（多頭）"
+      recent_high: 31.6
+      recent_low: 29.85
+      prior_high: 31.5
+      prior_low: 27.85
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.33
+      is_red: false
+      upper_wick_pct_of_range: 50.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.33%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 584254
+      vol_ma5: 963137.0
+      vol_ratio: 0.61
+      label: "未達攻擊量標準（0.61倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 173539.0
+      mom_pct: 14.96
+      yoy_pct: 33.31
+      cum_pct: 23.5
+    entry_exit:
+      trend_stop: "跌破月線(MA20=30.95)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 31.5
+            type: "高點"
+          - date: "2026-10-06"
+            price: 30.6
+            type: "低點"
+          - date: "2026-10-12"
+            price: 31.6
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 0.9
+          target: 30.7
+          note: "前一段跌幅 0.9（31.5→30.6），從反彈高點 31.6 等幅扣減 = 30.7"
+        equal_measure:
+          amplitude: 1.0
+          breakout_ref: 31.6
+          target: 32.6
+          note: "近期高低點價差 1.0（30.6→31.6），從突破參考價 31.6 等幅加計 = 32.6"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 6
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5314"
+    stock_name: "世紀*"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 26.2
+      ma:
+        5: 26.43
+        10: 26.85
+        20: 27.61
+        60: 35.44
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 29.6
+      recent_low: 24.65
+      prior_high: 46.8
+      prior_low: 25.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.73
+      is_red: false
+      upper_wick_pct_of_range: 15.2
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 25272193
+      vol_ma5: 27503352.0
+      vol_ratio: 0.92
+      label: "未達攻擊量標準（0.92倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 472835.0
+      mom_pct: 1.62
+      yoy_pct: 45.71
+      cum_pct: 133.07
+    entry_exit:
+      trend_stop: "跌破月線(MA20=27.61)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 25.0
+            type: "低點"
+          - date: "2026-10-01"
+            price: 31.65
+            type: "高點"
+          - date: "2026-10-15"
+            price: 24.65
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 6.65
+          target: 31.3
+          note: "前一段漲幅 6.65（25.0→31.65），從回檔低點 24.65 等幅加計 = 31.3"
+        equal_measure:
+          amplitude: 7.0
+          breakout_ref: 31.65
+          target: 38.65
+          note: "近期高低點價差 7.0（24.65→31.65），從突破參考價 31.65 等幅加計 = 38.65"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4764"
+    stock_name: "雙鍵"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 166.5
+      ma:
+        5: 180.0
+        10: 190.65
+        20: 192.82
+        60: 219.44
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 218.0
+      recent_low: 166.5
+      prior_high: 233.5
+      prior_low: 175.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 4.31
+      is_red: false
+      upper_wick_pct_of_range: 28.6
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 1019462
+      vol_ma5: 857615.0
+      vol_ratio: 1.19
+      label: "未達攻擊量標準（1.19倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 227052.0
+      mom_pct: -15.24
+      yoy_pct: -9.92
+      cum_pct: 23.28
+    entry_exit:
+      trend_stop: "跌破月線(MA20=192.82)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 223.5
+            type: "高點"
+          - date: "2026-09-29"
+            price: 175.0
+            type: "低點"
+          - date: "2026-10-07"
+            price: 218.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 48.5
+          target: 169.5
+          note: "前一段跌幅 48.5（223.5→175.0），從反彈高點 218.0 等幅扣減 = 169.5"
+        equal_measure:
+          amplitude: 43.0
+          breakout_ref: 218.0
+          target: 261.0
+          note: "近期高低點價差 43.0（175.0→218.0），從突破參考價 218.0 等幅加計 = 261.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6515"
+    stock_name: "穎崴"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 4960.0
+      ma:
+        5: 5190.0
+        10: 5494.0
+        20: 5739.75
+        60: 6270.33
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 6285.0
+      recent_low: 4945.0
+      prior_high: 8260.0
+      prior_low: 5530.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.88
+      is_red: false
+      upper_wick_pct_of_range: 19.2
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 425716
+      vol_ma5: 529350.0
+      vol_ratio: 0.8
+      label: "未達攻擊量標準（0.80倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1250373.0
+      mom_pct: -26.69
+      yoy_pct: 87.72
+      cum_pct: 96.67
+    entry_exit:
+      trend_stop: "跌破月線(MA20=5739.75)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-22"
+            price: 5530.0
+            type: "低點"
+          - date: "2026-10-06"
+            price: 6285.0
+            type: "高點"
+          - date: "2026-10-08"
+            price: 5445.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 755.0
+          target: 6200.0
+          note: "前一段漲幅 755.0（5530.0→6285.0），從回檔低點 5445.0 等幅加計 = 6200.0"
+        equal_measure:
+          amplitude: 840.0
+          breakout_ref: 6285.0
+          target: 7125.0
+          note: "近期高低點價差 840.0（5445.0→6285.0），從突破參考價 6285.0 等幅加計 = 7125.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4303"
+    stock_name: "信立"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 30.55
+      ma:
+        5: 31.52
+        10: 31.56
+        20: 32.76
+        60: 38.75
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 33.4
+      recent_low: 30.55
+      prior_high: 38.35
+      prior_low: 32.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 3.17
+      is_red: false
+      upper_wick_pct_of_range: 9.1
+      upper_wick_exceeds_body: false
+      passes: true
+      reason: null
+    volume_price:
+      volume: 769396
+      vol_ma5: 585342.0
+      vol_ratio: 1.31
+      label: "達攻擊量標準（1.31倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 144852.0
+      mom_pct: -2.5
+      yoy_pct: 65.94
+      cum_pct: 17.46
+    entry_exit:
+      trend_stop: "跌破月線(MA20=32.76)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-18"
+            price: 36.05
+            type: "高點"
+          - date: "2026-10-07"
+            price: 31.15
+            type: "低點"
+          - date: "2026-10-13"
+            price: 33.4
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 4.9
+          target: 28.5
+          note: "前一段跌幅 4.9（36.05→31.15），從反彈高點 33.4 等幅扣減 = 28.5"
+        equal_measure:
+          amplitude: 2.25
+          breakout_ref: 33.4
+          target: 35.65
+          note: "近期高低點價差 2.25（31.15→33.4），從突破參考價 33.4 等幅加計 = 35.65"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2359"
+    stock_name: "所羅門"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 118.0
+      ma:
+        5: 120.8
+        10: 123.8
+        20: 126.45
+        60: 136.97
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 131.0
+      recent_low: 117.0
+      prior_high: 144.0
+      prior_low: 125.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.67
+      is_red: false
+      upper_wick_pct_of_range: 33.3
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 1.67%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 820022
+      vol_ma5: 1194856.0
+      vol_ratio: 0.69
+      label: "未達攻擊量標準（0.69倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 324793.0
+      mom_pct: 17.74
+      yoy_pct: 16.69
+      cum_pct: 5.92
+    entry_exit:
+      trend_stop: "跌破月線(MA20=126.45)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 140.5
+            type: "高點"
+          - date: "2026-09-24"
+            price: 126.0
+            type: "低點"
+          - date: "2026-10-05"
+            price: 131.5
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 14.5
+          target: 117.0
+          note: "前一段跌幅 14.5（140.5→126.0），從反彈高點 131.5 等幅扣減 = 117.0"
+        equal_measure:
+          amplitude: 5.5
+          breakout_ref: 131.5
+          target: 137.0
+          note: "近期高低點價差 5.5（126.0→131.5），從突破參考價 131.5 等幅加計 = 137.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "3028"
+    stock_name: "增你強"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 59.5
+      ma:
+        5: 61.24
+        10: 62.05
+        20: 62.31
+        60: 63.94
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 64.4
+      recent_low: 59.2
+      prior_high: 64.8
+      prior_low: 60.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.34
+      is_red: false
+      upper_wick_pct_of_range: 64.3
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.34%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 994679
+      vol_ma5: 1226911.0
+      vol_ratio: 0.81
+      label: "未達攻擊量標準（0.81倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 5995442.0
+      mom_pct: -10.95
+      yoy_pct: 46.85
+      cum_pct: 89.03
+    entry_exit:
+      trend_stop: "跌破月線(MA20=62.31)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-22"
+            price: 63.7
+            type: "高點"
+          - date: "2026-09-24"
+            price: 61.5
+            type: "低點"
+          - date: "2026-10-05"
+            price: 64.8
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 2.2
+          target: 62.6
+          note: "前一段跌幅 2.2（63.7→61.5），從反彈高點 64.8 等幅扣減 = 62.6"
+        equal_measure:
+          amplitude: 3.3
+          breakout_ref: 64.8
+          target: 68.1
+          note: "近期高低點價差 3.3（61.5→64.8），從突破參考價 64.8 等幅加計 = 68.1"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "1810"
+    stock_name: "和成"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 22.75
+      ma:
+        5: 23.16
+        10: 23.26
+        20: 23.6
+        60: 24.36
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 24.15
+      recent_low: 22.7
+      prior_high: 24.6
+      prior_low: 23.4
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.22
+      is_red: false
+      upper_wick_pct_of_range: 77.8
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.22%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1017260
+      vol_ma5: 1388889.0
+      vol_ratio: 0.73
+      label: "未達攻擊量標準（0.73倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 351684.0
+      mom_pct: 2.43
+      yoy_pct: 4.73
+      cum_pct: -5.23
+    entry_exit:
+      trend_stop: "跌破月線(MA20=23.6)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-15"
+            price: 23.4
+            type: "低點"
+          - date: "2026-09-30"
+            price: 24.6
+            type: "高點"
+          - date: "2026-10-13"
+            price: 23.1
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 1.2
+          target: 24.3
+          note: "前一段漲幅 1.2（23.4→24.6），從回檔低點 23.1 等幅加計 = 24.3"
+        equal_measure:
+          amplitude: 1.5
+          breakout_ref: 24.6
+          target: 26.1
+          note: "近期高低點價差 1.5（23.1→24.6），從突破參考價 24.6 等幅加計 = 26.1"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6023"
+    stock_name: "元大期"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 82.1
+      ma:
+        5: 82.94
+        10: 83.55
+        20: 84.88
+        60: 85.0
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 84.9
+      recent_low: 81.6
+      prior_high: 88.7
+      prior_low: 82.6
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.12
+      is_red: false
+      upper_wick_pct_of_range: 25.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.12%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 515580
+      vol_ma5: 542178.0
+      vol_ratio: 0.95
+      label: "未達攻擊量標準（0.95倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 313160.0
+      mom_pct: -9.08
+      yoy_pct: -6.94
+      cum_pct: 36.23
+    entry_exit:
+      trend_stop: "跌破月線(MA20=84.88)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-08"
+            price: 82.6
+            type: "低點"
+          - date: "2026-09-17"
+            price: 88.7
+            type: "高點"
+          - date: "2026-10-05"
+            price: 83.7
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 6.1
+          target: 89.8
+          note: "前一段漲幅 6.1（82.6→88.7），從回檔低點 83.7 等幅加計 = 89.8"
+        equal_measure:
+          amplitude: 5.0
+          breakout_ref: 88.7
+          target: 93.7
+          note: "近期高低點價差 5.0（83.7→88.7），從突破參考價 88.7 等幅加計 = 93.7"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2465"
+    stock_name: "麗臺"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 82.8
+      ma:
+        5: 84.14
+        10: 85.94
+        20: 88.61
+        60: 89.04
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 92.4
+      recent_low: 82.2
+      prior_high: 107.0
+      prior_low: 87.4
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.24
+      is_red: false
+      upper_wick_pct_of_range: 93.1
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.24%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 758466
+      vol_ma5: 1285099.0
+      vol_ratio: 0.59
+      label: "未達攻擊量標準（0.59倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1063596.0
+      mom_pct: -9.91
+      yoy_pct: -25.43
+      cum_pct: 109.34
+    entry_exit:
+      trend_stop: "跌破月線(MA20=88.61)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-24"
+            price: 87.8
+            type: "低點"
+          - date: "2026-10-02"
+            price: 94.2
+            type: "高點"
+          - date: "2026-10-12"
+            price: 82.2
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 6.4
+          target: 88.6
+          note: "前一段漲幅 6.4（87.8→94.2），從回檔低點 82.2 等幅加計 = 88.6"
+        equal_measure:
+          amplitude: 12.0
+          breakout_ref: 94.2
+          target: 106.2
+          note: "近期高低點價差 12.0（82.2→94.2），從突破參考價 94.2 等幅加計 = 106.2"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "5381"
+    stock_name: "光譜"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 21.0
+      ma:
+        5: 21.14
+        10: 21.46
+        20: 22.52
+        60: 23.55
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 23.3
+      recent_low: 20.2
+      prior_high: 25.4
+      prior_low: 22.55
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.94
+      is_red: false
+      upper_wick_pct_of_range: 50.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.94%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 579916
+      vol_ma5: 525995.0
+      vol_ratio: 1.1
+      label: "未達攻擊量標準（1.10倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 174520.0
+      mom_pct: 33.09
+      yoy_pct: 13.24
+      cum_pct: -10.19
+    entry_exit:
+      trend_stop: "跌破月線(MA20=22.52)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-21"
+            price: 23.05
+            type: "低點"
+          - date: "2026-09-30"
+            price: 23.85
+            type: "高點"
+          - date: "2026-10-13"
+            price: 21.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 0.8
+          target: 21.8
+          note: "前一段漲幅 0.8（23.05→23.85），從回檔低點 21.0 等幅加計 = 21.8"
+        equal_measure:
+          amplitude: 2.85
+          breakout_ref: 23.85
+          target: 26.7
+          note: "近期高低點價差 2.85（21.0→23.85），從突破參考價 23.85 等幅加計 = 26.7"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 5
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2208"
+    stock_name: "台船"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 17.95
+      ma:
+        5: 18.12
+        10: 18.29
+        20: 18.69
+        60: 18.93
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 18.7
+      recent_low: 17.7
+      prior_high: 19.7
+      prior_low: 18.45
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.0
+      is_red: false
+      upper_wick_pct_of_range: 60.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.00%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1894458
+      vol_ma5: 3115689.0
+      vol_ratio: 0.61
+      label: "未達攻擊量標準（0.61倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 1731762.0
+      mom_pct: -17.66
+      yoy_pct: 14.61
+      cum_pct: -16.87
+    entry_exit:
+      trend_stop: "跌破月線(MA20=18.69)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-10"
+            price: 18.7
+            type: "低點"
+          - date: "2026-09-23"
+            price: 19.7
+            type: "高點"
+          - date: "2026-10-06"
+            price: 18.4
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 1.0
+          target: 19.4
+          note: "前一段漲幅 1.0（18.7→19.7），從回檔低點 18.4 等幅加計 = 19.4"
+        equal_measure:
+          amplitude: 1.3
+          breakout_ref: 19.7
+          target: 21.0
+          note: "近期高低點價差 1.3（18.4→19.7），從突破參考價 19.7 等幅加計 = 21.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "8464"
+    stock_name: "億豐"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 358.5
+      ma:
+        5: 365.7
+        10: 367.2
+        20: 367.95
+        60: 372.28
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 376.5
+      recent_low: 352.0
+      prior_high: 387.0
+      prior_low: 360.0
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.7
+      is_red: true
+      upper_wick_pct_of_range: 43.5
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 1.70%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 671425
+      vol_ma5: 766902.0
+      vol_ratio: 0.88
+      label: "未達攻擊量標準（0.88倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 2661849.0
+      mom_pct: -5.46
+      yoy_pct: 13.46
+      cum_pct: 6.36
+    entry_exit:
+      trend_stop: "跌破月線(MA20=367.95)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-23"
+            price: 382.0
+            type: "高點"
+          - date: "2026-10-06"
+            price: 360.0
+            type: "低點"
+          - date: "2026-10-15"
+            price: 376.5
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 22.0
+          target: 354.5
+          note: "前一段跌幅 22.0（382.0→360.0），從反彈高點 376.5 等幅扣減 = 354.5"
+        equal_measure:
+          amplitude: 16.5
+          breakout_ref: 376.5
+          target: 393.0
+          note: "近期高低點價差 16.5（360.0→376.5），從突破參考價 376.5 等幅加計 = 393.0"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2836"
+    stock_name: "高雄銀"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 11.95
+      ma:
+        5: 12.05
+        10: 12.05
+        20: 12.1
+        60: 12.11
+      above_ma20: false
+      ma_alignment: "交叉混雜"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 12.2
+      recent_low: 11.95
+      prior_high: 13.0
+      prior_low: 11.95
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.0
+      is_red: false
+      upper_wick_pct_of_range: 100.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.00%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1748268
+      vol_ma5: 1750335.0
+      vol_ratio: 1.0
+      label: "未達攻擊量標準（1.00倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 381566.0
+      mom_pct: -9.76
+      yoy_pct: -12.19
+      cum_pct: 8.57
+    entry_exit:
+      trend_stop: "跌破月線(MA20=12.1)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-05"
+            price: 11.95
+            type: "低點"
+          - date: "2026-10-07"
+            price: 12.15
+            type: "高點"
+          - date: "2026-10-12"
+            price: 12.0
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 0.2
+          target: 12.2
+          note: "前一段漲幅 0.2（11.95→12.15），從回檔低點 12.0 等幅加計 = 12.2"
+        equal_measure:
+          amplitude: 0.15
+          breakout_ref: 12.15
+          target: 12.3
+          note: "近期高低點價差 0.15（12.0→12.15），從突破參考價 12.15 等幅加計 = 12.3"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "2442"
+    stock_name: "新美齊"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 13.55
+      ma:
+        5: 13.76
+        10: 13.85
+        20: 14.2
+        60: 16.96
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 14.15
+      recent_low: 13.45
+      prior_high: 18.16
+      prior_low: 13.95
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.37
+      is_red: true
+      upper_wick_pct_of_range: 50.0
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 0.37%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 751743
+      vol_ma5: 771502.0
+      vol_ratio: 0.97
+      label: "未達攻擊量標準（0.97倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 27904.0
+      mom_pct: 13.51
+      yoy_pct: -52.73
+      cum_pct: 354.16
+    entry_exit:
+      trend_stop: "跌破月線(MA20=14.2)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-16"
+            price: 14.05
+            type: "低點"
+          - date: "2026-09-20"
+            price: 16.05
+            type: "高點"
+          - date: "2026-10-06"
+            price: 13.7
+            type: "低點"
+        n_measure:
+          direction: "多頭"
+          amplitude: 2.0
+          target: 15.7
+          note: "前一段漲幅 2.0（14.05→16.05），從回檔低點 13.7 等幅加計 = 15.7"
+        equal_measure:
+          amplitude: 2.35
+          breakout_ref: 16.05
+          target: 18.4
+          note: "近期高低點價差 2.35（13.7→16.05），從突破參考價 16.05 等幅加計 = 18.4"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4564"
+    stock_name: "元翎"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 15.75
+      ma:
+        5: 15.85
+        10: 15.86
+        20: 15.98
+        60: 16.32
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "盤整/不明確"
+      recent_high: 16.15
+      recent_low: 15.55
+      prior_high: 16.5
+      prior_low: 15.45
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 0.32
+      is_red: true
+      upper_wick_pct_of_range: 25.0
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 0.32%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 487057
+      vol_ma5: 558544.0
+      vol_ratio: 0.87
+      label: "未達攻擊量標準（0.87倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 59026.0
+      mom_pct: -0.13
+      yoy_pct: -26.44
+      cum_pct: -28.6
+    entry_exit:
+      trend_stop: "跌破月線(MA20=15.98)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-01"
+            price: 16.5
+            type: "高點"
+          - date: "2026-10-06"
+            price: 15.6
+            type: "低點"
+          - date: "2026-10-12"
+            price: 16.1
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 0.9
+          target: 15.2
+          note: "前一段跌幅 0.9（16.5→15.6），從反彈高點 16.1 等幅扣減 = 15.2"
+        equal_measure:
+          amplitude: 0.5
+          breakout_ref: 16.1
+          target: 16.6
+          note: "近期高低點價差 0.5（15.6→16.1），從突破參考價 16.1 等幅加計 = 16.6"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6177"
+    stock_name: "達麗"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 45.35
+      ma:
+        5: 45.57
+        10: 45.75
+        20: 46.23
+        60: 47.25
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 46.85
+      recent_low: 44.9
+      prior_high: 50.4
+      prior_low: 45.15
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.0
+      is_red: true
+      upper_wick_pct_of_range: 47.1
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "實體僅 1.00%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 1419300
+      vol_ma5: 991633.0
+      vol_ratio: 1.43
+      label: "達攻擊量標準（1.43倍基本量，>=1.2倍門檻）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 897353.0
+      mom_pct: -19.12
+      yoy_pct: 249.5
+      cum_pct: 315.54
+    entry_exit:
+      trend_stop: "跌破月線(MA20=46.23)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-10-01"
+            price: 47.2
+            type: "高點"
+          - date: "2026-10-06"
+            price: 45.05
+            type: "低點"
+          - date: "2026-10-13"
+            price: 46.85
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 2.15
+          target: 44.7
+          note: "前一段跌幅 2.15（47.2→45.05），從反彈高點 46.85 等幅扣減 = 44.7"
+        equal_measure:
+          amplitude: 1.8
+          breakout_ref: 46.85
+          target: 48.65
+          note: "近期高低點價差 1.8（45.05→46.85），從突破參考價 46.85 等幅加計 = 48.65"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 4
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "6451"
+    stock_name: "訊芯-KY"
+    market: "TWSE"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 352.5
+      ma:
+        5: 366.5
+        10: 389.25
+        20: 407.38
+        60: 418.46
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 441.5
+      recent_low: 343.0
+      prior_high: 487.5
+      prior_low: 393.5
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 2.76
+      is_red: false
+      upper_wick_pct_of_range: 46.2
+      upper_wick_exceeds_body: false
+      passes: false
+      reason: "上影線過長（超過實體長度或K棒全長40%），代表盤中一度走強但收盤前被壓回，力竭/賣壓警訊，即使價格站上關鍵價位也視為無效突破"
+    volume_price:
+      volume: 949117
+      vol_ma5: 1286499.0
+      vol_ratio: 0.74
+      label: "未達攻擊量標準（0.74倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 716714.0
+      mom_pct: 3.59
+      yoy_pct: 39.93
+      cum_pct: 5.34
+    entry_exit:
+      trend_stop: "跌破月線(MA20=407.38)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-20"
+            price: 487.5
+            type: "高點"
+          - date: "2026-09-29"
+            price: 408.5
+            type: "低點"
+          - date: "2026-10-05"
+            price: 446.0
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 79.0
+          target: 367.0
+          note: "前一段跌幅 79.0（487.5→408.5），從反彈高點 446.0 等幅扣減 = 367.0"
+        equal_measure:
+          amplitude: 37.5
+          breakout_ref: 446.0
+          target: 483.5
+          note: "近期高低點價差 37.5（408.5→446.0），從突破參考價 446.0 等幅加計 = 483.5"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 3
+    intraday_snapshot: false
+  - type: "stock_diagnosis"
+    stock_code: "4534"
+    stock_name: "慶騰"
+    market: "TPEx"
+    as_of_date: "2026-10-20"
+    available: true
+    position:
+      close: 28.35
+      ma:
+        5: 28.64
+        10: 29.38
+        20: 30.12
+        60: 30.51
+      above_ma20: false
+      ma_alignment: "空排"
+    trend:
+      label: "頭頭低底底低（空頭）"
+      recent_high: 32.9
+      recent_low: 27.2
+      prior_high: 34.8
+      prior_low: 27.25
+    pattern:
+      status: "not_automated"
+      note: "型態本體（頭肩底/W底/箱型收斂等）辨識尚未自動化。SKILL.md明訂型態本體須人工/圖形覆核，不可只憑數字指標判定型態成立，建議實際檢視K線圖的形狀與對稱性。"
+    kbar_quality:
+      body_pct: 1.56
+      is_red: false
+      upper_wick_pct_of_range: 61.8
+      upper_wick_exceeds_body: true
+      passes: false
+      reason: "實體僅 1.56%，未達2%門檻（十字線/變盤線等小實體K棒，不具趨勢延續力）"
+    volume_price:
+      volume: 263825
+      vol_ma5: 507720.0
+      vol_ratio: 0.52
+      label: "未達攻擊量標準（0.52倍基本量）"
+    market_linkage:
+      sox: "費城半導體（2026-10-19）收11316.34，單日+1.61%，跌破月線"
+      dji: "道瓊工業指數（2026-10-19）收51966.03，單日-0.07%，站上月線"
+      note: "半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI（見SKILL美股連動判讀規則）"
+    monthly_revenue:
+      data_month: "2026-09"
+      revenue_this_month: 99506.0
+      mom_pct: 5.56
+      yoy_pct: 44.66
+      cum_pct: 34.87
+    entry_exit:
+      trend_stop: "跌破月線(MA20=30.12)視為趨勢停損，不論盈虧應出場"
+      pct_stop_range: "5%-7%（百分比停損，見entry_exit_rules.md）"
+      measured_move:
+        available: true
+        swing_points_used:
+          - date: "2026-09-02"
+            price: 30.8
+            type: "高點"
+          - date: "2026-09-15"
+            price: 27.25
+            type: "低點"
+          - date: "2026-09-22"
+            price: 34.8
+            type: "高點"
+        n_measure:
+          direction: "空頭"
+          amplitude: 3.55
+          target: 31.25
+          note: "前一段跌幅 3.55（30.8→27.25），從反彈高點 34.8 等幅扣減 = 31.25"
+        equal_measure:
+          amplitude: 7.55
+          breakout_ref: 34.8
+          target: 42.35
+          note: "近期高低點價差 7.55（27.25→34.8），從突破參考價 34.8 等幅加計 = 42.35"
+      target_price_note: "以上目標價是用近期機械式偵測到的轉折高低點套公式算出，型態本體（頭肩底/W底等形狀、頸線位置）是否真的成立仍需人工看圖確認，不是自動選股訊號（見pattern_recognition.md、entry_exit_rules.md）。"
+    risk_note: "以上為技術面框架推演，非投資建議；型態本體與缺口位判讀尚未自動化，最終進出場決策仍須人工覆核K線圖。"
+    lock_direction: "做空"
+    lock_score: 3
+    intraday_snapshot: false
