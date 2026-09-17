@@ -1795,11 +1795,12 @@ select:focus { outline: 2px solid var(--acc); }
 /* ════════════════════════════════════════
    CONSTANTS
    ════════════════════════════════════════ */
-const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
+const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/refs/heads';
 /* 網頁優化用的小型快照：db/core.db（股票清單，很小）+ db/monthly/<yyyy>/<mm>.db
    （逐月資料，過去月份封存後不再變動），取代整份 300MB+ tw_stock.db 的下載方式。
    見 tw-stock-db/sync/monthly_snapshot.py。 */
-const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
+
+const WEB_MANIFEST_URL = RAW + '/db-monthly/db/monthly/manifest.json';
 /* daily/ 逐日增量CSV的md5清單，每個日期每個檔案一筆，見
    tw-stock-db/sync/sync_to_github.py::update_daily_manifest()。DBMgr.syncDaily
    每次同步都要把當月從1號開始重新掃過一遍（見該函式說明），沒有這份manifest
@@ -3205,7 +3206,7 @@ const DBMgr = (() => {
     if (hasStockMonthLocally(code, label)) return;
     const bucket = code.slice(0, 2);
     try {
-      const resp = await fetch(`${RAW}/db-snapshot/db/by-id/${bucket}/${label}.db`);
+      const resp = await fetch(`${RAW}/db-monthly/db/by-id/${bucket}/${label}.db`);
       if (resp.ok) {
         const buf = await resp.arrayBuffer();
         await mergeStockMonthBytes(buf);
@@ -3227,7 +3228,7 @@ const DBMgr = (() => {
   async function ensureCoreLoaded(onProgress) {
     if (!webManifest) await fetchWebManifest();
     onProgress?.('下載股票清單…', 8);
-    const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${webManifest.core.path}`, webManifest.core.sha256);
+    const buf = await fetchBytesWithRetry(`${RAW}/db-monthly/${webManifest.core.path}`, webManifest.core.sha256);
     await mergeCoreBytes(buf);
   }
 
@@ -3242,7 +3243,7 @@ const DBMgr = (() => {
       if (!entry) continue; // not published yet (e.g. brand-new current month)
       try {
         onProgress?.(`下載 ${label} 月資料…`);
-        const buf = await fetchBytesWithRetry(`${RAW}/db-snapshot/${entry.path}`, entry.sha256);
+        const buf = await fetchBytesWithRetry(`${RAW}/db-monthly/${entry.path}`, entry.sha256);
         await mergeMonthlyBytes(buf);
         loadedMonths.add(label);
         schedulePersist();
@@ -9128,9 +9129,10 @@ function sparkline(closes, w = 60, h = 20, responsive = false) {
       要抓哪幾個月），只在真的要看數字時才付這筆流量。
    ════════════════════════════════════════ */
 const ChipStore = (() => {
-  const CHIP_MANIFEST_URL = RAW + '/db-snapshot/db/monthly-chip/manifest.json';
-  const AVAIL_INDEX_URL = RAW + '/db-snapshot/db/monthly-chip/availability/index.json';
-  const AVAIL_YEAR_URL = year => `${RAW}/db-snapshot/db/monthly-chip/availability/${year}.json`;
+  //https://raw.githubusercontent.com/sunneo/tw_stock_db/refs/heads/db-monthly/db/monthly-chip/availability/index.json
+  const CHIP_MANIFEST_URL = RAW + '/db-monthly/db/monthly-chip/manifest.json';
+  const AVAIL_INDEX_URL = RAW + '/db-monthly/db/monthly-chip/availability/index.json';
+  const AVAIL_YEAR_URL = year => `${RAW}/db-monthly/db/monthly-chip/availability/${year}.json`;
   const NUM_FIELDS = new Set([
     'foreign_net', 'foreign_dealer_net', 'trust_net', 'dealer_net', 'total_net',
     'tier', 'holders', 'shares', 'pct',
@@ -9192,7 +9194,7 @@ const ChipStore = (() => {
     const entry = (manifest.months || []).find(m => m.label === label);
     if (!entry) { monthCache.set(label, null); return null; }
     await ensureSqlLib();
-    const buf = await fetchBytes(`${RAW}/db-snapshot/${entry.path}`, entry.sha256);
+    const buf = await fetchBytes(`${RAW}/db-monthly/${entry.path}`, entry.sha256);
     const tmp = new sqlLib.Database(new Uint8Array(buf));
     let data;
     try {
@@ -9309,7 +9311,21 @@ const ChipStore = (() => {
         const data = await loadMonth(l);
         if (!data) continue;
         institutional.push(...data.institutional.filter(r => r.stock_code === code));
+      } catch (e) {
+        console.warn(`盤後資訊 ${l} 下載/解析失敗：`, e.message);
+        partialErrors.push(l);
+      }
+      try {
+        const data = await loadMonth(l);
+        if (!data) continue;
         shareholding.push(...data.shareholding.filter(r => r.stock_code === code));
+      } catch (e) {
+        console.warn(`盤後資訊 ${l} 下載/解析失敗：`, e.message);
+        partialErrors.push(l);
+      }
+      try {
+        const data = await loadMonth(l);
+        if (!data) continue;
         custody.push(...data.custody.filter(r => r.stock_code === code));
       } catch (e) {
         console.warn(`盤後資訊 ${l} 下載/解析失敗：`, e.message);
