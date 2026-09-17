@@ -1884,23 +1884,20 @@ const SCENE3D_TOPIC_DOCS = {
 //   4. nvidia/nemotron-3-nano-30b-a3b：同上，實測過完整流程兩次都失敗
 //      （一次誤把系統提示範例文字當真呼叫、一次直接空白回應），跟上面
 //      兩個模型同樣的已知風險。
-//   5. meta/llama-3.3-70b-instruct：能力較強，回應較慢(~18秒)，實測穩定。
-//   6. openai/gpt-oss-120b：早期（見_getApiConfig()的說明）實測在NVIDIA
-//      NIM端點上完整對話會整個卡住90秒以上沒有任何回應；2026-08-21用
-//      _probeNativeToolSupport()重新探測時反而秒回，研判是端點狀況不
-//      穩定、不是模型本身必然有問題，但仍保留這個已知風險紀錄。
-//   7. openai/gpt-oss-20b：2026-08-21探測回應快（<1秒）。
-//   8. meta/llama-3.1-8b-instruct：實測<1秒回應，最快但能力較弱，排在
-//      清單最後，是最後的安全網。
+//   5. openai/gpt-oss-20b：2026-08-21探測回應快（<1秒）。
+// tw_stock_db客製: 2026-09-17使用者實測回報——meta/llama-3.3-70b-instruct/
+// meta/llama-3.1-8b-instruct/openai/gpt-oss-120b這三個原本內建的預設
+// model row，目前在NVIDIA NIM端點上已經失效（不是上面第2-4點那種「偶爾
+// 卡住/報錯」的暫時性風險，是模型本身已經下架/查無此模型），繼續當成新
+// 使用者的預設值只會讓每個全新安裝都內建3筆一定會失敗的row。移除這三個，
+// 保留使用者實測過仍然有效的其餘項目；openrouter/free維持在清單最後
+// 當保底（不依賴NVIDIA NIM本身的可用性）。
 const PRESET_MODEL_OPTIONS = [
     'nvidia/nemotron-3-super-120b-a12b',
     'nvidia/nemotron-3.5-lightning-30b-a3b',
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
     'nvidia/nemotron-3-nano-30b-a3b',
-    'meta/llama-3.3-70b-instruct',
-    'openai/gpt-oss-120b',
     'openai/gpt-oss-20b',
-    'meta/llama-3.1-8b-instruct',
     'openrouter/free',
 ];
 
@@ -2089,9 +2086,9 @@ function _buildDefaultModelRows() {
 // 端點逐一探測過的結果（2026-08-21，透過使用者自己設定的Cloudflare Worker
 // 端點測試），直接寫死在這裡，_shouldUseNativeToolCalls()/
 // _ensureNativeToolSupportProbed()會優先查這份表，命中就直接用、不再對
-// 這8個內建模型另外打探測請求——省下每個使用者自己在瀏覽器裡各測一次的
-// 重複網路成本。使用者自訂的模型（不在這份表裡）不受影響，一樣照原本的
-// 邏輯即時探測。
+// 表裡列出的這幾個內建模型另外打探測請求——省下每個使用者自己在瀏覽器裡
+// 各測一次的重複網路成本。使用者自訂的模型（不在這份表裡）不受影響，
+// 一樣照原本的邏輯即時探測。
 // 2026-08-25修正：原本這裡把nvidia/nemotron-3-super-120b-a12b跟
 // meta/llama-3.3-70b-instruct都寫死false，但兩者的false都是探測本身的
 // bug造成的偽陰性，不是真的不支援——見_probeNativeToolSupport()的說明，
@@ -2103,13 +2100,16 @@ function _buildDefaultModelRows() {
 // 改成不寫死在這份表裡，讓它們用修正後的探測邏輯重新測一次、把真正結果
 // 存回快取（見NATIVE_TOOL_SUPPORT_CACHE_KEY版本號同步往上加一層，確保
 // 不會沿用舊探測留下的錯誤快取值）。
+// tw_stock_db客製: 2026-09-17——openai/gpt-oss-120b/meta/llama-3.1-8b-instruct
+// 這兩筆連同PRESET_MODEL_OPTIONS一起移除（見那邊的說明：模型本身已經在
+// NVIDIA NIM端點上失效，不是單純tool-call支援與否的問題），這份表只保留
+// 還在PRESET_MODEL_OPTIONS清單裡的項目，避免留著兩筆永遠不會再被查詢到
+// 的孤兒紀錄。
 const PRESET_MODEL_TOOLCALL_SUPPORT = {
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
     'nvidia/nemotron-3-nano-30b-a3b': false,
-    'openai/gpt-oss-120b': false,
     'openai/gpt-oss-20b': true,
-    'meta/llama-3.1-8b-instruct': true,
 };
 
 // ============================================================
