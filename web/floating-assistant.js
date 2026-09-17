@@ -1106,8 +1106,17 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     browser_search: {
         enabled: false,
         label: '網路搜尋（Wiki/StackOverflow/GitHub/網頁/Google新聞/SourceForge/CodeProject/DeepWiki）',
-        toolNames: ['browser_search'],
-        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得資料（結果經過Cloudflare Worker正規化成標題+連結+摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。查完後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要文字。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點——system prompt最前面已經提供真實的系統時鐘日期，拿它跟搜尋結果的時間點比對，不要用自己訓練資料的截止日期當基準。',
+        toolNames: ['browser_search', 'fetch_web_page'],
+        // tw_stock_db客製: 2026-09-17使用者回報「問AI'最新LLM model'，他
+        // 沒辦到」——browser_search本身只回傳標題+極短摘要（見那個工具自己
+        // 的description），遇到需要具體細節（例如「最新LLM model有哪些」
+        // 這種答案需要看過完整文章內容才答得出來的問題），光憑摘要根本
+        // 答不出有意義的內容。加上fetch_web_page（見那個工具的
+        // description，用DOMParser把HTML轉成可讀Markdown存進
+        // persistentStorage）到這個domain，明確教子agent「search找候選
+        // 連結→fetch_web_page深入讀最相關的1-2篇」這個兩階段流程，不要
+        // 查完摘要就直接用摘要本身的隻字片語湊答案。
+        systemPrompt: '你是一個專門執行網路搜尋的子任務助理，用browser_search工具查詢外部網站取得候選資料（結果只有標題+連結+極短摘要，不是完整網頁內容）。根據使用者的實際需求選擇合適的sources（不確定就用預設的全部來源）——**時事/最新新聞/「今天/最近發生了什麼」這類需要時效性的查詢一定要包含news來源**，google來源是一般網頁搜尋，沒有新聞時效性概念，對這類查詢效果很差。**如果任務需要具體細節、數據、或完整脈絡（不是三言兩語的摘要就能回答），單靠browser_search的短摘要通常不夠**——這時候要用fetch_web_page把最相關的1-2個連結實際抓下來讀完整內容再回答，不要只憑摘要片語瞎猜/湊答案；fetch_web_page抓不到內容時（可能是純JS渲染的頁面，或這個環境的CORS代理沒設定好）如實告知使用者這個限制，不要假裝有讀到內容。最後用你自己的話總結重點+列出最相關的幾個連結，不要整段貼上原始摘要或抓回來的網頁全文。這個工具的結果可能因為快取而不是最新的（快取生命週期1天），如果使用者明確要求「最新」資訊且結果看起來像是舊快取，可以提醒使用者這點——system prompt最前面已經提供真實的系統時鐘日期，拿它跟搜尋結果的時間點比對，不要用自己訓練資料的截止日期當基準。',
         // tw_stock_db客製: 2026-09-17使用者回報「browser_search不會被選中」
         // ——路由器（_buildDomainCatalogSection）過去只看得到上面這個
         // domain的label+_summarizeToolDescription()把browser_search工具
@@ -5293,6 +5302,68 @@ ${fnData.code}
             }, required: ['file_id'], additionalProperties: false }
         );
 
+        // tw_stock_db客製: 2026-09-17使用者回報——問AI「最新LLM model」這種
+        // 需要深入某篇文章/頁面完整內容（不只是browser_search回傳的標題+
+        // 摘要）才答得好的問題，AI辦不到。追查發現根因：好幾個domain的
+        // systemPrompt/description本來就一直提到「AI用fetch_web_page抓回來
+        // 存的網頁內容」（例如file_analysis/rag_management的systemPrompt、
+        // summarize_large_text的description），但這個工具從來沒有被真的
+        // 註冊過——AI被教育成「有這個能力」，實際呼叫時卻找不到這個工具，
+        // 自然辦不到。這裡補上真正的實作：透過_resolveWebFetchProxyUrl()
+        // 走desktop本地代理的通用/proxy路由（或使用者自己部署好/proxy路由
+        // 的Cloudflare Worker）避開瀏覽器CORS限制抓回原始HTML，再用瀏覽器
+        // 原生DOMParser（不需要任何額外套件，Electron renderer/一般瀏覽器
+        // 都內建，等同Python的BeautifulSoup4角色）解析、濾掉
+        // script/style/nav/header/footer/廣告類雜訊，轉成方便閱讀的
+        // Markdown文字，存進跟使用者上傳檔案同一份fileCache（kind:'uploaded'，
+        // 所以也會出現在list_uploaded_files清單裡，跟既有文件一樣可以用
+        // parse_uploaded_file/summarize_large_text/rag_chunk_document處理），
+        // 不需要另外發明一套平行的「網頁內容」儲存機制。
+        registerOptional('fetch_web_page',
+            '抓取一個網頁的完整內容，轉成方便閱讀的Markdown文字後存進persistentStorage（跟使用者上傳檔案一樣會出現在list_uploaded_files清單裡）。browser_search只回傳標題+極短摘要，想深入了解某篇特定文章/頁面的完整內容時用這個工具抓下來，再視需要用parse_uploaded_file看細節、或內容很長時用summarize_large_text分段摘要。需要桌面版本地代理服務、或使用者自己部署且已設定好/proxy路由的Cloudflare Worker才能運作（避開瀏覽器CORS限制），若回傳「找不到可用的CORS代理」錯誤，如實告知使用者這個限制，不要假裝抓取成功。只支援伺服器端直接回傳HTML的網頁，抓不到內容通常代表目標網頁完全靠JS動態渲染（例如SPA），這種情況也如實告知使用者，不要編造內容。參數: {"url":"https://..."}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const url = String(parsed.url || '').trim();
+                if (!/^https?:\/\//i.test(url)) return JSON.stringify({ ok: false, error: 'url必須是http(s)開頭的完整網址' });
+                let proxyBase;
+                try {
+                    proxyBase = this._resolveWebFetchProxyUrl();
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+                try {
+                    const resp = await fetch(proxyBase + url, { headers: { Accept: 'text/html' } });
+                    if (!resp.ok) return JSON.stringify({ ok: false, error: `抓取失敗：HTTP ${resp.status}` });
+                    const contentType = resp.headers.get('content-type') || '';
+                    if (contentType && !/text\/html|application\/xhtml/i.test(contentType)) {
+                        return JSON.stringify({ ok: false, error: `這個網址回傳的不是HTML網頁（content-type: ${contentType}），這個工具只處理網頁內容` });
+                    }
+                    const html = await resp.text();
+                    const { title, markdown } = this._extractReadableContentFromHtml(html);
+                    if (!markdown.trim()) {
+                        return JSON.stringify({ ok: false, error: '這個網頁沒有擷取到任何可讀文字內容——可能是完全靠JavaScript動態渲染的頁面（例如SPA），伺服器端回傳的原始HTML本身沒有實際內容' });
+                    }
+                    const blob = new Blob([markdown], { type: 'text/markdown' });
+                    const safeTitle = (title || new URL(url).hostname).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+                    const fileId = await this.fileCache.put(`${safeTitle}.md`, 'text/markdown', blob, 'uploaded');
+                    return JSON.stringify({
+                        ok: true,
+                        file_id: fileId,
+                        title: title || url,
+                        url,
+                        sizeChars: markdown.length,
+                        preview: markdown.slice(0, 500) + (markdown.length > 500 ? '…（完整內容請用parse_uploaded_file或summarize_large_text搭配這個file_id查看）' : ''),
+                    });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                url: { type: 'string', description: '要抓取的網頁完整網址，須以http(s)://開頭' },
+            }, required: ['url'], additionalProperties: false }
+        );
+
         // tw_stock_db客製: 2026-09-09使用者明確要求——「不論多大的文章都可以
         // 分段summary，無論是upload、webfetch，或任何現有AI整合到的情境」。
         // parse_uploaded_file對純文字類內容超過8000字元直接截斷丟棄（見
@@ -7529,6 +7600,91 @@ ${fnData.code}
         const base = explicit || this._getApiConfig().apiUrl;
         if (!base) throw new Error('找不到可用的Cloudflare Worker網址（git功能需要走/git-proxy路由避開瀏覽器CORS限制），請先在Advance Settings設定AI端點或git專用的corsProxy網址。');
         return String(base).trim().replace(/\/+$/, '').replace(/\/(v1|openrouter)$/i, '') + '/git-proxy';
+    }
+
+    // tw_stock_db客製: 2026-09-17——fetch_web_page跟git clone/pull/push是
+    // 同一種CORS繞道需求，直接沿用同一個gitCorsProxyUrl設定值當base（使用者
+    // 不用為了「抓網頁」這個新能力另外多填一次設定），只是路徑後綴換成
+    // 桌面版local-proxy.js本來就有支援的通用/proxy（見那邊的
+    // handleProxyRequest，跟/git-proxy不同，這條是單純的原樣轉發，沒有
+    // isomorphic-git的smart HTTP協定特殊處理），desktop-app完全不需要
+    // 額外的後端改動；web部署則要看使用者自己的Cloudflare Worker有沒有
+    // 部署對應的/proxy路由（跟browser_search/git一樣，沒部署就是使用者
+    // 自己的環境限制，不是這裡的bug，呼叫端會如實回報連線錯誤)。
+    _resolveWebFetchProxyUrl() {
+        const explicit = String(this.advancedSettings.gitCorsProxyUrl || '').trim();
+        const base = explicit || this._getApiConfig().apiUrl;
+        if (!base) throw new Error('找不到可用的CORS代理網址（抓取外部網頁需要走/proxy路由避開瀏覽器CORS限制），請先在Advance Settings設定AI端點或git專用的corsProxy網址。');
+        return String(base).trim().replace(/\/+$/, '').replace(/\/(v1|openrouter)$/i, '') + '/proxy/';
+    }
+
+    // tw_stock_db客製: 2026-09-17——fetch_web_page專用的HTML→可讀Markdown
+    // 轉換，扮演使用者要求的「beautifulsoup4」角色：不用額外npm套件/CDN
+    // 依賴，直接用瀏覽器（含Electron renderer）原生內建的DOMParser把抓回來
+    // 的原始HTML字串解析成真正的DOM樹，先移除script/style/nav/header/
+    // footer/aside/表單/svg這些幾乎必然是雜訊而非正文的元素，優先在
+    // <article>/<main>裡找正文（找不到才退回整個<body>），再遞迴走訪把
+    // 標題/段落/清單/連結轉成對應的Markdown語法，其餘保留成一般文字。
+    // 目標是「讓AI讀得懂重點」，不是完整還原原始網頁的每一個排版細節。
+    _extractReadableContentFromHtml(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const titleEl = doc.querySelector('title');
+        const title = titleEl ? titleEl.textContent.replace(/\s+/g, ' ').trim() : '';
+        doc.querySelectorAll('script, style, noscript, nav, header, footer, aside, svg, form, iframe, [aria-hidden="true"]').forEach(el => el.remove());
+        const root = doc.querySelector('article') || doc.querySelector('main') || doc.body;
+        if (!root) return { title, markdown: '' };
+
+        const blocks = [];
+        let inlineBuffer = [];
+        const flushInline = () => {
+            const text = inlineBuffer.join('').replace(/[ \t]+/g, ' ').trim();
+            if (text) blocks.push(text);
+            inlineBuffer = [];
+        };
+        const BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'tr', 'table', 'thead', 'tbody', 'blockquote', 'ul', 'ol', 'pre']);
+        const walk = (node) => {
+            if (node.nodeType === 3 /* Node.TEXT_NODE */) {
+                const text = node.textContent.replace(/\s+/g, ' ');
+                if (text.trim() || inlineBuffer.length) inlineBuffer.push(text);
+                return;
+            }
+            if (node.nodeType !== 1 /* Node.ELEMENT_NODE */) return;
+            const tag = node.tagName.toLowerCase();
+            if (/^h[1-6]$/.test(tag)) {
+                flushInline();
+                const text = node.textContent.replace(/\s+/g, ' ').trim();
+                if (text) blocks.push('#'.repeat(Number(tag[1])) + ' ' + text);
+                return;
+            }
+            if (tag === 'br') { inlineBuffer.push('\n'); return; }
+            if (tag === 'li') {
+                flushInline();
+                const savedBuffer = inlineBuffer;
+                inlineBuffer = [];
+                for (const child of node.childNodes) walk(child);
+                const text = inlineBuffer.join('').replace(/[ \t]+/g, ' ').trim();
+                inlineBuffer = savedBuffer;
+                if (text) blocks.push('- ' + text);
+                return;
+            }
+            if (tag === 'a') {
+                const href = node.getAttribute('href');
+                const text = node.textContent.replace(/\s+/g, ' ').trim();
+                if (text) inlineBuffer.push(/^https?:\/\//i.test(href || '') ? `[${text}](${href})` : text);
+                return;
+            }
+            if (BLOCK_TAGS.has(tag)) {
+                flushInline();
+                for (const child of node.childNodes) walk(child);
+                flushInline();
+                return;
+            }
+            for (const child of node.childNodes) walk(child);
+        };
+        walk(root);
+        flushInline();
+        const markdown = blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+        return { title, markdown };
     }
 
     async _gitResolveFs(ref, { mode = 'read', create = false } = {}) {
