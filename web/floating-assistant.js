@@ -4364,6 +4364,26 @@ class FloatingAssistant {
         // 從不送進request body），單獨處理，預設false（=正常參與自動分組，
         // 沒有標記過的既有使用者row行為完全不變）。
         normalized.standalone = row.standalone === true;
+        // tw_stock_db客製: 2026-09-17使用者要求的benchmark按鈕結果——跟
+        // standalone一樣是額外的本地狀態欄位，不屬於MODEL_ROW_NUMERIC_FIELDS
+        // /MODEL_ROW_STRING_FIELDS，這裡單獨保存（見_benchmarkModelRow）。
+        // 使用者明確要求「上完標籤要記錄起來，也可以被export到設定、從
+        // 設定import這個紀錄」——因為這個欄位就活在llmModelRows底下的row
+        // 物件裡，既有的_exportSettings()/_importSettings()（整包
+        // JSON.stringify(this.advancedSettings)）完全不用額外改動就會
+        // 自動涵蓋，只要這裡的normalize不要把它濾掉即可。只接受
+        // {toolCall, vision, testedAt}都是合法型別的物件，格式不對的舊/
+        // 壞資料一律當成「還沒測試過」（undefined），不強行修補猜測。
+        if (row.abilityTags && typeof row.abilityTags === 'object'
+            && typeof row.abilityTags.toolCall === 'boolean'
+            && typeof row.abilityTags.vision === 'boolean'
+            && Number.isFinite(Number(row.abilityTags.testedAt))) {
+            normalized.abilityTags = {
+                toolCall: row.abilityTags.toolCall,
+                vision: row.abilityTags.vision,
+                testedAt: Number(row.abilityTags.testedAt),
+            };
+        }
         return normalized;
     }
 
@@ -9169,6 +9189,94 @@ ${fnData.code}
         }
     }
 
+    // tw_stock_db客製: 2026-09-17使用者要求的benchmark功能——用Canvas畫一張
+    // 純色測試圖（不用手刻/硬塞任何base64常數，瀏覽器/Electron都有Canvas
+    // API，畫完直接toDataURL()匯出成PNG data URI），拿來測這個apiUrl+
+    // apiModel組合認不認得OpenAI相容的多模態content格式
+    // （[{type:'text'},{type:'image_url'}]）。純色圖是刻意選擇——不需要
+    // 模型有多精細的視覺理解能力，只要它「真的有看圖」就該答對顏色，
+    // 答錯或答非所問（含完全不理會圖片、只回應文字部分）都可以合理判定
+    // 為不支援/支援不完整，跟_probeNativeToolSupport用結構化的tool_calls
+    // 欄位判斷是同一種「用最小可行的明確訊號测試，不要求模型多聰明」的
+    // 設計精神。
+    _generateTestColorImageDataUrl(colorHex) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = colorHex;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/png');
+    }
+
+    async _probeVisionSupport(apiKey, apiUrl, apiModel) {
+        try {
+            const controller = this._createAbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
+            const imageDataUrl = this._generateTestColorImageDataUrl('#ff0000');
+            let response;
+            try {
+                response = await fetch(`${apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: apiModel,
+                        messages: [
+                            { role: 'system', content: 'You are a capability test harness. Reply with exactly one English color name word, nothing else.' },
+                            { role: 'user', content: [
+                                { type: 'text', text: 'What single solid color fills this entire image? Reply with exactly one English color word, for example "red".' },
+                                { type: 'image_url', image_url: { url: imageDataUrl } },
+                            ] },
+                        ],
+                        temperature: 0,
+                        max_tokens: 4096,
+                        stream: false,
+                    }),
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+            if (!response.ok) return false;
+            const data = await response.json();
+            const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').toLowerCase();
+            return content.includes('red') || content.includes('紅') || content.includes('红');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——LLM Models清單裡每個row旁邊
+    // 一顆Benchmark按鈕，單獨測試該row（不影響其他row），測完把結果存回
+    // row.abilityTags（見_normalizeModelRow），標籤旁邊自動顯示對應圖示。
+    // 故意不透過_ensureNativeToolSupportProbed()那份快取——使用者主動按
+    // 「測試」代表想要一次真正的、當下的探測結果，不要因為之前（可能是很
+    // 久以前、模型端可能已經升級過）探測過就直接回傳舊快取；但測完之後
+    // 仍然回頭更新那份快取（見下面），讓benchmark的結果同時也讓主對話的
+    // 原生tool_calls判斷受益，不用之後再重新探測一次。
+    async _benchmarkModelRow(rowId) {
+        const row = this._getModelRows().find(r => r.id === rowId);
+        if (!row) return;
+        const cfg = this._resolveModelRowConfig(row);
+        row.abilityTags = Object.assign({}, row.abilityTags, { testing: true });
+        this._renderModelRowsList();
+        try {
+            const [toolCall, vision] = await Promise.all([
+                this._probeNativeToolSupport(cfg.apiKey, cfg.apiUrl, cfg.apiModel),
+                this._probeVisionSupport(cfg.apiKey, cfg.apiUrl, cfg.apiModel),
+            ]);
+            row.abilityTags = { toolCall, vision, testedAt: Date.now() };
+            if (!this._nativeToolSupportCache) this._nativeToolSupportCache = this._loadNativeToolSupportCache();
+            this._nativeToolSupportCache[this._nativeProbeCacheKey(cfg.apiUrl, cfg.apiModel)] = toolCall;
+            this._saveNativeToolSupportCache();
+        } catch (err) {
+            row.abilityTags = { toolCall: false, vision: false, testedAt: Date.now() };
+            this._log(`⚠️ Benchmark「${cfg.apiModel}」時發生錯誤: ${String(err.message || err)}`);
+        }
+        this._saveAdvancedSettings();
+        this._renderModelRowsList();
+    }
+
     // tw_stock_db客製: 探測結果的快取入口——同一個apiUrl+apiModel組合只會
     //真的送一次探測請求，之後都直接讀快取（記憶體+localStorage雙層，見
     // NATIVE_TOOL_SUPPORT_CACHE_KEY的說明），不會每一輪對話都重新打一次。
@@ -11083,6 +11191,18 @@ ${sourceTool.handlerScript}
                     <div>
                         <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">Model Name</label>
                         <input type="text" class="ai-advanced-input ai-model-row-input" list="ai-model-datalist" data-row-id="${row.id}" data-field="modelName" value="${esc(row.modelName)}">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:10px; margin-bottom:2px; color:#94a3b8;">能力標籤</label>
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:#94a3b8;" title="${row.abilityTags && row.abilityTags.testedAt ? `上次測試時間：${new Date(row.abilityTags.testedAt).toLocaleString('zh-TW')}` : '按右邊的Benchmark按鈕測試這個row有沒有原生tool call/vision(圖片理解)能力'}">${
+                                (row.abilityTags && row.abilityTags.testing) ? '⏳ 測試中…'
+                                : (row.abilityTags && row.abilityTags.testedAt)
+                                    ? ([row.abilityTags.toolCall ? '🔧 Tool Call' : null, row.abilityTags.vision ? '👁️ Vision' : null].filter(Boolean).join('　') || '（皆不支援）')
+                                    : '尚未測試'
+                            }</span>
+                            <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
+                        </div>
                     </div>
                     ${numField('temperature', 'temperature', '預設0.1')}
                     ${numField('top_p', 'top_p', '不送')}
@@ -22928,6 +23048,11 @@ ${existingNodeSummaries}
                 const toggleStandaloneBtn = e.target.closest('.ai-model-row-toggle-standalone');
                 if (toggleStandaloneBtn) {
                     this._toggleModelRowStandalone(toggleStandaloneBtn.dataset.rowId);
+                    return;
+                }
+                const benchmarkBtn = e.target.closest('.ai-model-row-benchmark-btn');
+                if (benchmarkBtn) {
+                    this._benchmarkModelRow(benchmarkBtn.dataset.rowId);
                     return;
                 }
             });
