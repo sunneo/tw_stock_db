@@ -3158,11 +3158,28 @@ class FloatingAssistant {
         // 資料。
         this.NATIVE_TOOL_SUPPORT_CACHE_KEY = "floating_ai_native_tool_support_cache_v2";
         this._nativeToolSupportCache = null; // lazy load，見_ensureNativeToolSupportProbed()
-        // tw_stock_db客製: MODEL NAME留空時的自動fallback狀態，見
-        // executeChat()/_nextAutoFallbackModel()的說明，每輪新對話開始時
-        // 由executeChat()重新設定。
+        // tw_stock_db客製: 自動fallback狀態，見executeChat()/
+        // _getInitialFallbackConfig()/_nextAutoFallbackModel()的說明，每輪
+        // 新對話開始時由executeChat()重新設定（_autoFallbackGroups/
+        // GroupIndex/GroupAttempts三個在_getInitialFallbackConfig()裡才會
+        // 第一次賦值，這裡不用預先初始化，跟_autoFallbackActive一樣只是
+        // 讓建構子當下就有這個實例屬性存在，避免第一次讀取前是undefined）。
         this._autoFallbackActive = false;
-        this._autoFallbackIndex = 0;
+        // tw_stock_db客製: 2026-09-17使用者要求——「相同url(含空白)+相同
+        // model name、不同api key」的model row要能當成一組，發request時用
+        // round-robin輪流選key（多人各自提供api key時最大化回應速度）。
+        // 這個Map是唯一的round-robin狀態來源，key是group key（見
+        // _computeModelRowGroups），value是這組下一次要用的index——刻意是
+        // instance-level、單一共用（不是每次呼叫各自獨立的區域變數），因為
+        // 使用者明確要求「concurrency使用時也要依序以round robin的順序取」
+        // ：同一組底下不管是序列對話還是batch_analyze_stocks平行跑好幾個
+        // 子任務，全部呼叫端都要共用同一個計數器，才能把負載平均打散到
+        // 每一把key上，不是各自從頭數。真正的「這次故障重試要不要換到
+        // 下一組」狀態（cascade進度）反而要各自獨立，那部分維持既有作法：
+        // 主對話用this._autoFallbackGroupIndex/GroupAttempts（單一序列執行，
+        // 見executeChat/_nextAutoFallbackModel），_runSubAgentTask用
+        // function-scope區域變數（可能多個並行執行，見那邊的說明）。
+        this._modelGroupRoundRobin = new Map();
 
         this.tools = {};
         this.FromAI = {};
@@ -4340,6 +4357,13 @@ class FloatingAssistant {
             const str = raw == null ? '' : String(raw).trim();
             normalized[key] = str || null;
         }
+        // tw_stock_db客製: 2026-09-17使用者要求的分組機制——standalone是
+        // 布林欄位，不屬於MODEL_ROW_NUMERIC_FIELDS/MODEL_ROW_STRING_FIELDS
+        // 任何一份清單（那兩份都是「留空＝不覆寫、用來組request body的取樣
+        // 參數」語意，standalone純粹是「要不要參與自動分組」的本地UI狀態，
+        // 從不送進request body），單獨處理，預設false（=正常參與自動分組，
+        // 沒有標記過的既有使用者row行為完全不變）。
+        normalized.standalone = row.standalone === true;
         return normalized;
     }
 
@@ -8940,10 +8964,71 @@ ${fnData.code}
 
     // tw_stock_db客製: 給main chat loop用——回傳指定index那個row的完整
     // resolved設定（含temperature/samplingOverrides/maxOutputTokens），
-    // index超出範圍或省略時退回第一筆。
+    // index超出範圍或省略時退回第一筆。目前唯一呼叫端是benchmark（見
+    // register_openai_tool旁的_benchmarkModelRow），main chat loop的「第一次
+    // 嘗試」已經改用_getInitialFallbackConfig()（見下面），不再固定用
+    // 清單第一筆——同一組（url+model相同、key不同）的row現在會round-robin
+    // 輪流當「這次的第一筆」。
     _getApiConfigForRow(index = 0) {
         const rows = this._getModelRows();
         const row = rows[index] || rows[0];
+        return Object.assign({ rowIndex: rows.indexOf(row) }, this._resolveModelRowConfig(row));
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——「相同url(含空白)+相同model
+    // name、不同api key」的多筆row要能自動被視為同一組，group內round-robin
+    // 輪流用；group內全部都失敗才換下一組（group2/group3...），完全獨立、
+    // 沒有跟其他row共用url+model的row，等於自己單獨一組（跟改動前的行為
+    // 完全等價）。row.standalone===true時強制獨立成自己的一組，即使跟其他
+    // row剛好url+model相同也不會被自動併入（使用者手動「移出群組」用），
+    // 見_buildModelRowHtml/「移出群組」按鈕。回傳的陣列順序＝每組第一個
+    // 成員在原始rows陣列裡第一次出現的順序，維持「row排列順序＝fallback
+    // 優先順序」這個既有直覺不變。
+    _computeModelRowGroups() {
+        const rows = this._getModelRows();
+        const groups = [];
+        const keyToGroup = new Map();
+        for (const row of rows) {
+            const key = row.standalone
+                ? `standalone:${row.id}`
+                : `auto:${String(row.apiUrl || '').trim()}||${String(row.modelName || '').trim()}`;
+            let group = keyToGroup.get(key);
+            if (!group) {
+                group = { key, rows: [] };
+                keyToGroup.set(key, group);
+                groups.push(group);
+            }
+            group.rows.push(row);
+        }
+        return groups;
+    }
+
+    // tw_stock_db客製: 2026-09-17——同一組底下round-robin選一筆row，用
+    // this._modelGroupRoundRobin這個單一共用計數器（見建構子那段說明）
+    // ——不管是序列對話還是batch_analyze_stocks的多個並行子任務同時打同一
+    // 組，都從同一份計數器讀→+1，天然把負載平均打散到組內每一把key上，
+    // 不會因為呼叫端各自獨立計數而全部都從index 0開始、實質上只用到組內
+    // 第一把key。
+    _pickRowFromGroup(group) {
+        const counter = this._modelGroupRoundRobin.get(group.key) || 0;
+        const row = group.rows[counter % group.rows.length];
+        this._modelGroupRoundRobin.set(group.key, counter + 1);
+        return row;
+    }
+
+    // tw_stock_db客製: 2026-09-17——取代原本executeChat()裡固定的
+    // this._getApiConfigForRow(0)：「這次對話的第一次嘗試」現在是「第一組
+    // 裡round-robin輪到的那一筆」，不是永遠固定用清單第一筆row。同時建立
+    // 這次「故障cascade」要用的狀態（this._autoFallbackGroupIndex/
+    // GroupAttempts），供_nextAutoFallbackModel()接續判斷要不要換下一筆/
+    // 下一組。
+    _getInitialFallbackConfig() {
+        const groups = this._computeModelRowGroups();
+        this._autoFallbackGroups = groups;
+        this._autoFallbackGroupIndex = 0;
+        this._autoFallbackGroupAttempts = 1;
+        const row = this._pickRowFromGroup(groups[0]);
+        const rows = this._getModelRows();
         return Object.assign({ rowIndex: rows.indexOf(row) }, this._resolveModelRowConfig(row));
     }
 
@@ -8959,12 +9044,26 @@ ${fnData.code}
     // 處理。回傳完整resolved config物件（不是只有模型名稱字串）：不同row
     // 現在可能是完全不同的端點/金鑰，呼叫端換row時要連apiUrl/apiKey一起換，
     // 不能只換模型名稱、沿用舊的URL/Key。
+    // tw_stock_db客製: 2026-09-17使用者要求群組化——「group內的都失敗才找
+    // group2/group3」：this._autoFallbackGroupAttempts記錄目前這一組已經
+    // 試過幾筆（由_pickRowFromGroup()實際挑出、不是理論上的組內成員數，
+    // 但兩者在一次cascade裡不會超過group.rows.length次），還沒到組內
+    // 成員數時繼續在同一組裡round-robin換下一把key；已經到了才真的換下
+    // 一組、attempts歸零重新數。
     _nextAutoFallbackModel(status, currentModel) {
         if (status !== 404 || !this._autoFallbackActive) return null;
+        const groups = this._autoFallbackGroups || (this._autoFallbackGroups = this._computeModelRowGroups());
+        let group = groups[this._autoFallbackGroupIndex];
+        if (this._autoFallbackGroupAttempts >= group.rows.length) {
+            this._autoFallbackGroupIndex++;
+            if (this._autoFallbackGroupIndex >= groups.length) return null;
+            group = groups[this._autoFallbackGroupIndex];
+            this._autoFallbackGroupAttempts = 0;
+        }
+        this._autoFallbackGroupAttempts++;
+        const row = this._pickRowFromGroup(group);
         const rows = this._getModelRows();
-        if (this._autoFallbackIndex >= rows.length - 1) return null;
-        this._autoFallbackIndex++;
-        return Object.assign({ rowIndex: this._autoFallbackIndex }, this._resolveModelRowConfig(rows[this._autoFallbackIndex]));
+        return Object.assign({ rowIndex: rows.indexOf(row) }, this._resolveModelRowConfig(row));
     }
 
     // tw_stock_db客製: 使用者要求「在AI Assistant (Graph RAG)右邊顯示model
@@ -10923,10 +11022,20 @@ ${sourceTool.handlerScript}
         const container = document.getElementById('ai-model-rows-list');
         if (!container) return;
         const rows = this._getModelRows();
-        container.innerHTML = rows.map((row, idx) => this._buildModelRowHtml(row, idx)).join('');
+        // tw_stock_db客製: 2026-09-17使用者要求——每個row旁邊要顯示它目前
+        // 被自動分到哪一組（相同url+model name會被視為同一組，round-robin
+        // 輪流用，見_computeModelRowGroups），只算一次groups、映射成
+        // rowId→{groupNumber, groupSize}，不要每個row各自呼叫一次
+        // _computeModelRowGroups()（那樣N筆row要重算N次同樣的分組結果）。
+        const groups = this._computeModelRowGroups();
+        const groupInfoByRowId = new Map();
+        groups.forEach((group, gi) => {
+            group.rows.forEach(r => groupInfoByRowId.set(r.id, { groupNumber: gi + 1, groupSize: group.rows.length }));
+        });
+        container.innerHTML = rows.map((row, idx) => this._buildModelRowHtml(row, idx, groupInfoByRowId.get(row.id))).join('');
     }
 
-    _buildModelRowHtml(row, idx) {
+    _buildModelRowHtml(row, idx, groupInfo) {
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s));
         // tw_stock_db客製: 2026-09-17——reasoning_budget是token數量（通常是
         // 幾百到幾千的整數），step沿用其餘penalty類參數的0.1會讓上下箭頭
@@ -10953,6 +11062,13 @@ ${sourceTool.handlerScript}
                 <div class="ai-model-row-header">
                     <span class="ai-model-row-handle" title="拖曳調整順序">⠿</span>
                     <span class="ai-model-row-index">#${idx + 1}</span>
+                    ${groupInfo && groupInfo.groupSize > 1
+                        ? `<span class="ai-advanced-btn" style="padding:1px 6px; font-size:10px; cursor:default; background:#334155;" title="url+model name相同的row會自動歸成同一組，round-robin輪流用不同api key">🔗 群組${groupInfo.groupNumber}（${groupInfo.groupSize}把key輪流）</span>
+                           <button type="button" class="ai-advanced-btn ai-model-row-toggle-standalone" data-row-id="${row.id}" style="padding:1px 6px; font-size:10px;" title="移出群組後這個row不會再被自動分組round-robin，永遠當成獨立一組">移出群組</button>`
+                        : (row.standalone
+                            ? `<span class="ai-advanced-btn" style="padding:1px 6px; font-size:10px; cursor:default;" title="這個row已經手動移出自動分組，即使跟其他row url+model相同也不會被合併">獨立（已移出群組）</span>
+                               <button type="button" class="ai-advanced-btn ai-model-row-toggle-standalone" data-row-id="${row.id}" style="padding:1px 6px; font-size:10px;" title="重新加入自動分組——如果有其他row url+model跟這筆相同，會合併成同一組round-robin輪流">加入群組</button>`
+                            : '')}
                     <button type="button" class="ai-advanced-btn danger ai-model-row-delete" data-row-id="${row.id}" style="margin-left:auto; padding:2px 8px;">刪除</button>
                 </div>
                 <div class="ai-model-row-grid">
@@ -11007,6 +11123,22 @@ ${sourceTool.handlerScript}
         if (field === 'modelName' && firstRow && firstRow.id === rowId) {
             this._updateHeaderModelName(firstRow.modelName, this._getModelRows().length > 1);
         }
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——「也能assign group或remove
+    // from group」：自動分組（相同url+model name）是預設行為，這裡讓使用者
+    // 對單一row切換standalone旗標退出/重新加入自動分組，不做任意手動把
+    // 不同url/model的row硬湊成一組那種完全自由的分組（那樣group key就不再
+    // 對應「同一個模型的多把key」這個唯一用途，round-robin輪流打不同模型
+    // 沒有意義）。用獨立方法而不是塞進_updateModelRowField()——那個方法
+    // 專門處理「讀input.value字串」這種語意，布林toggle按鈕天生不是那種
+    // 形狀，硬套反而語意不清楚。
+    _toggleModelRowStandalone(rowId) {
+        const row = this._getModelRows().find(r => r.id === rowId);
+        if (!row) return;
+        row.standalone = !row.standalone;
+        this._saveAdvancedSettings();
+        this._renderModelRowsList();
     }
 
     _renderAdvancedSettings() {
@@ -18259,9 +18391,6 @@ ${existingNodeSummaries}
      * 執行 Stream 對話循環
      */
     async executeChat(userText) {
-        const rowCfg = this._getApiConfigForRow(0);
-        const { apiKey, apiUrl, apiModel } = rowCfg;
-        const genOverrides = { temperature: rowCfg.temperature, samplingOverrides: rowCfg.samplingOverrides, maxOutputTokens: rowCfg.maxOutputTokens };
         if (this.isResponding) {
             this._addSteeringMessage(userText);
             return;
@@ -18270,14 +18399,23 @@ ${existingNodeSummaries}
         // tw_stock_db客製: 2026-09-14——「一個row代表一個model/llm」，row的
         // 排列順序（可拖曳調整）本身就是fallback優先順序，不再需要判斷
         // 「使用者是不是自己填了model name」。每次使用者主動送出新訊息
-        // （這裡，不是對話中途的重試）都重新從第一筆row開始，不接續上一輪
-        // fallback到的row——呼應使用者「不要因為找到一個成功的就固定住」
+        // （這裡，不是對話中途的重試）都重新從第一組開始，不接續上一輪
+        // fallback到的組——呼應使用者「不要因為找到一個成功的就固定住」
         // 的要求：主力模型如果只是暫時404、後來恢復了，下一則新訊息會自動
         // 先試回主力模型。_loopFetch/_loopFetchNative遇到404時會依
-        // this._autoFallbackIndex往下試下一筆row（見_nextAutoFallbackModel
-        // 的說明），只有清單裡還有下一筆時才會真的換。
+        // this._autoFallbackGroupIndex/GroupAttempts往下試下一筆row/下一組
+        // （見_nextAutoFallbackModel的說明），只有清單裡還有下一筆/下一組時
+        // 才會真的換。
+        // tw_stock_db客製: 2026-09-17——_getInitialFallbackConfig()會實際
+        // 消耗一次round-robin計數（見_pickRowFromGroup），必須放在上面
+        // isResponding的提早return之後才呼叫，不然使用者在AI回應中途又
+        // 送出一則訊息（觸發_addSteeringMessage、這次呼叫其實不會真的發起
+        // 新request）也會平白多轉一次round-robin，悄悄跳過組內某一把key
+        // 的輪值機會。
+        const rowCfg = this._getInitialFallbackConfig();
+        const { apiKey, apiUrl, apiModel } = rowCfg;
+        const genOverrides = { temperature: rowCfg.temperature, samplingOverrides: rowCfg.samplingOverrides, maxOutputTokens: rowCfg.maxOutputTokens };
         this._autoFallbackActive = this._getModelRows().length > 1;
-        this._autoFallbackIndex = 0;
         this._updateHeaderModelName(apiModel, this._autoFallbackActive);
 
         // tw_stock_db客製: toolCallMode==='auto'時，先確保這個apiUrl+apiModel
@@ -19886,18 +20024,28 @@ ${existingNodeSummaries}
         // 下一筆row時重新指定/重新判斷（不同row現在可能是完全不同的端點/
         // 金鑰/生成參數，原生tool_calls支援度也可能不同，換row後不能沿用
         // 舊row探測出來的useNative判斷）。這裡刻意用function-scope的區域
-        // 變數（rowIndex/transientRetryCount）自己管理狀態，不是共用
-        // this._autoFallbackActive/this._autoFallbackIndex那組instance-level
-        // 狀態——那是給主對話（單一、序列執行）用的，子任務可能透過
-        // runBatchSubAgents同時有好幾個並行執行，共用instance狀態會互相
-        // 干擾，必須各自獨立（見下面錯誤處理段落的詳細說明）。
+        // 變數（groupIndex/groupAttempts/transientRetryCount）自己管理
+        // 「這次cascade進行到哪裡」的狀態，不是共用
+        // this._autoFallbackActive/this._autoFallbackGroupIndex那組
+        // instance-level狀態——那是給主對話（單一、序列執行）用的，子任務
+        // 可能透過runBatchSubAgents同時有好幾個並行執行，共用cascade進度
+        // 狀態會互相干擾，必須各自獨立（見下面錯誤處理段落的詳細說明）。
+        // 但「同一組內round-robin選哪一把key」這件事刻意反過來——用
+        // this._modelGroupRoundRobin這個真正共用的instance-level計數器（見
+        // _pickRowFromGroup），這樣才能讓多個並行子任務打同一組時把負載
+        // 平均打散到組內每一把key上，這是2026-09-17使用者明確要求的效果
+        // （「多個人提供不同api key，最大化回應速度」），跟上面「cascade
+        // 進度各自獨立」並不矛盾：一個是「這次失敗重試該不該換組」的個人
+        // 進度，一個是「這一次該用組內哪一把key」的全域輪值，兩者本來就是
+        // 不同層次的狀態。
         // tw_stock_db客製: 2026-09-14——「一個row代表一個model/llm」，row
         // 排列順序本身就是fallback優先順序，不再需要「MODEL NAME是否留空」
         // 這個判斷（改動前用modelFieldBlank決定要不要fallback），只要清單
         // 還有下一筆就會往下試，見下面錯誤處理段落。
-        const rows = this._getModelRows();
-        let rowIndex = 0;
-        let rowConfig = this._resolveModelRowConfig(rows[rowIndex]);
+        const groups = this._computeModelRowGroups();
+        let groupIndex = 0;
+        let groupAttempts = 1;
+        let rowConfig = this._resolveModelRowConfig(this._pickRowFromGroup(groups[groupIndex]));
         let apiModel = rowConfig.apiModel;
         let apiUrl = rowConfig.apiUrl;
         let apiKey = rowConfig.apiKey;
@@ -20124,19 +20272,31 @@ ${existingNodeSummaries}
                     round--;
                     continue;
                 }
-                if (rowIndex < rows.length - 1) {
-                    rowIndex++;
-                    rowConfig = this._resolveModelRowConfig(rows[rowIndex]);
-                    apiModel = rowConfig.apiModel;
-                    apiUrl = rowConfig.apiUrl;
-                    apiKey = rowConfig.apiKey;
-                    useNative = this._shouldUseNativeToolCalls(apiModel);
-                    transientRetryCount = 0;
-                    this._log(`⚠️ 子任務改用下一個候選模型：${apiModel}`);
-                    round--;
-                    continue;
+                // tw_stock_db客製: 2026-09-17使用者要求群組化——「group內的都
+                // 失敗才找group2/group3」：groupAttempts還沒到目前這組的
+                // 成員數時，先在同一組裡round-robin換下一把key；到了才真的
+                // 換下一組、attempts歸零重新數。跟_nextAutoFallbackModel()
+                // 是同一套邏輯，這裡是子任務自己的區域變數版本（見上面
+                // groupIndex/groupAttempts宣告處的說明）。
+                let group = groups[groupIndex];
+                if (groupAttempts >= group.rows.length) {
+                    groupIndex++;
+                    if (groupIndex >= groups.length) {
+                        return { text: `[子任務失敗: ${statusLabel}（已重試/嘗試切換候選模型仍失敗）]`, visual: capturedVisual };
+                    }
+                    group = groups[groupIndex];
+                    groupAttempts = 0;
                 }
-                return { text: `[子任務失敗: ${statusLabel}（已重試/嘗試切換候選模型仍失敗）]`, visual: capturedVisual };
+                groupAttempts++;
+                rowConfig = this._resolveModelRowConfig(this._pickRowFromGroup(group));
+                apiModel = rowConfig.apiModel;
+                apiUrl = rowConfig.apiUrl;
+                apiKey = rowConfig.apiKey;
+                useNative = this._shouldUseNativeToolCalls(apiModel);
+                transientRetryCount = 0;
+                this._log(`⚠️ 子任務改用下一個候選模型：${apiModel}`);
+                round--;
+                continue;
             }
             if (!response.ok) {
                 const errText = await response.text().catch(() => '');
@@ -22756,13 +22916,20 @@ ${existingNodeSummaries}
             });
             modelRowsList.addEventListener('click', (e) => {
                 const delBtn = e.target.closest('.ai-model-row-delete');
-                if (!delBtn) return;
-                const rows = this._getModelRows();
-                if (rows.length <= 1) { alert('至少要保留一筆model。'); return; }
-                const idx = rows.findIndex(r => r.id === delBtn.dataset.rowId);
-                if (idx >= 0) rows.splice(idx, 1);
-                this._saveAdvancedSettings();
-                this._renderModelRowsList();
+                if (delBtn) {
+                    const rows = this._getModelRows();
+                    if (rows.length <= 1) { alert('至少要保留一筆model。'); return; }
+                    const idx = rows.findIndex(r => r.id === delBtn.dataset.rowId);
+                    if (idx >= 0) rows.splice(idx, 1);
+                    this._saveAdvancedSettings();
+                    this._renderModelRowsList();
+                    return;
+                }
+                const toggleStandaloneBtn = e.target.closest('.ai-model-row-toggle-standalone');
+                if (toggleStandaloneBtn) {
+                    this._toggleModelRowStandalone(toggleStandaloneBtn.dataset.rowId);
+                    return;
+                }
             });
             // tw_stock_db客製: 原生HTML5 drag & drop，沒有既有pattern可以沿用
             // （這是這個專案第一個拖曳排序UI）——draggable設在整個row容器上
