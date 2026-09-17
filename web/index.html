@@ -2233,10 +2233,12 @@ const MemoStore = (() => {
      nextday  watchlist/watchlist-nextday.json      平日收盤後產生的「隔日」名單
    ════════════════════════════════════════ */
 const LockList = (() => {
+  // 2026-09-17：watchlist/從main分支的子目錄改成獨立的watchlist分支（檔案
+  // 直接在分支根目錄，不再有watchlist/這層子目錄），path只留檔名。
   const SOURCES = {
-    week:     { path: 'watchlist/watchlist.json',              cacheKey: 'lockdata_week_v1' },
-    intraday: { path: 'watchlist/watchlist-intermediate.json', cacheKey: 'lockdata_intraday_v1' },
-    nextday:  { path: 'watchlist/watchlist-nextday.json',       cacheKey: 'lockdata_nextday_v1' },
+    week:     { path: 'watchlist.json',              cacheKey: 'lockdata_week_v1' },
+    intraday: { path: 'watchlist-intermediate.json', cacheKey: 'lockdata_intraday_v1' },
+    nextday:  { path: 'watchlist-nextday.json',       cacheKey: 'lockdata_nextday_v1' },
   };
   const state = {}; // { [source]: { data, byCode } }
 
@@ -2253,7 +2255,7 @@ const LockList = (() => {
     try { cached = await IDB.get('meta', cacheKey); } catch {}
     let data;
     try {
-      const res = await fetch(RAW + '/main/' + path, { cache: 'no-store' });
+      const res = await fetch(RAW + '/watchlist/' + path, { cache: 'no-store' });
       if (res.ok) {
         data = await res.json();
         IDB.set('meta', cacheKey, data).catch(() => {});
@@ -2912,13 +2914,15 @@ const ReportStore = (() => {
 
   async function fetchReport(type) {
     if (type in cache) return cache[type];
-    const path = `reports/${type}/latest.yaml`;
+    // 2026-09-17：reports/從main分支的子目錄改成獨立的reports分支（檔案
+    // 直接在分支根目錄，不再有reports/這層子目錄），path不再帶reports/前綴。
+    const path = `${type}/latest.yaml`;
     const cacheKey = 'report_' + type + '_v1';
     let cached = null;
     try { cached = await IDB.get('meta', cacheKey); } catch {}
     let data = null;
     try {
-      const res = await fetch(RAW + '/main/' + path, { cache: 'no-store' });
+      const res = await fetch(RAW + '/reports/' + path, { cache: 'no-store' });
       if (res.ok) {
         const text = await res.text();
         data = YamlLite.parse(text);
