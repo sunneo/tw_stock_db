@@ -151,16 +151,46 @@ class SimpleEmbeddingEngine {
         Object.values(vec2).forEach(v => { norm2 += v * v; });
         return (norm1 && norm2) ? dot / (Math.sqrt(norm1) * Math.sqrt(norm2)) : 0;
     }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——「model裡面可以加上embedding
+    // model」：真正的embedding API回傳的是稠密浮點數陣列（例如1536維），跟
+    // 上面embed()產生的稀疏term->weight字典（TF-IDF）是完全不同的資料形狀，
+    // 不能共用cosineSimilarity()那個針對物件鍵值walk的版本，另外提供這個
+    // 陣列版本給IndexedDBRAGSystem.query()在有真正embedding model時使用
+    // （見該方法說明）。
+    cosineSimilarityVec(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+        const len = Math.min(a.length, b.length);
+        let dot = 0, normA = 0, normB = 0;
+        for (let i = 0; i < len; i++) {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+        return (normA && normB) ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
+    }
 }
 
 // ============================================================
 // IndexedDBRAGSystem — 具備 LRU 淘汰與有向無環圖 (DAG) 的 Graph-RAG 系統
 // ============================================================
 class IndexedDBRAGSystem {
-    constructor(dbName = 'FloatingAssistantRAG', maxBytes = 50 * 1024 * 1024) { // 預設 50MB 空間限制
+    // tw_stock_db客製: 2026-09-17使用者要求——「做chromadb/RAG需要embedding，
+    // 應優先考慮embedding model」：這個類別本身刻意保持跟FloatingAssistant
+    // 解耦（不直接引用this.tools/this.advancedSettings這類host專屬欄位），
+    // 所以用選填的第三個參數注入一個「有沒有設定真正embedding model」的
+    // 查詢函式，跟chipsProvider/onTableRendered同一種依賴注入精神。
+    // embeddingProvider(text)是async function，回傳{vector:number[],
+    // modelKey:string}（modelKey用來判斷某筆記錄快取的向量是不是用同一個
+    // embedding model算出來的，換了model要重新計算）或null（代表目前沒有
+    // 設定/呼叫失敗，這次退回內建TF-IDF近似算法，見query()裡的判斷）。
+    // 沒有提供這個參數時（例如未來有其他host想沿用這個類別）行為完全
+    // 不變，永遠使用TF-IDF。
+    constructor(dbName = 'FloatingAssistantRAG', maxBytes = 50 * 1024 * 1024, options = {}) { // 預設 50MB 空間限制
         this.dbName = dbName;
         this.storeName = 'rag_records';
         this.maxBytes = maxBytes;
+        this.embeddingProvider = typeof options.embeddingProvider === 'function' ? options.embeddingProvider : null;
         this.db = null;
         this.engine = new SimpleEmbeddingEngine();
         this._ready = this._init();
@@ -231,17 +261,31 @@ class IndexedDBRAGSystem {
     // 儲存/更新圖譜節點
     async add(content, meta = {}) {
         const recordId = meta.id || `node_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-        const record = { 
+        const record = {
             id: recordId,
-            content: String(content || ''), 
-            timestamp: Date.now(), 
+            content: String(content || ''),
+            timestamp: Date.now(),
             lastAccessed: Date.now(),
             dependencies: Array.isArray(meta.dependencies) ? meta.dependencies : [], // 前置依賴節點 ID 清單
             preConditions: Array.isArray(meta.preConditions) ? meta.preConditions : [], // 觸發先決條件
             source: meta.source || 'manual',
             tags: meta.tags || 'skill'
         };
-        
+        // tw_stock_db客製: 2026-09-17使用者要求——有設定embedding model時，
+        // 新增節點當下就順便算好向量存起來，query()才不用每次檢索都重新
+        // 對全部記錄各打一次embedding API（見query()的說明）。呼叫失敗（例如
+        // 網路問題/API額度）不擋住新增本身，就只是這筆記錄先沒有快取向量，
+        // 下次query()會嘗試補算。
+        if (this.embeddingProvider) {
+            try {
+                const result = await this.embeddingProvider(record.content);
+                if (result && Array.isArray(result.vector)) {
+                    record.embeddingVec = result.vector;
+                    record.embeddingModel = result.modelKey;
+                }
+            } catch (_) { /* 靜默略過，退回下次query()時的TF-IDF或補算 */ }
+        }
+
         const recordSize = this._estimateSize(record);
         await this._checkAndPruneLRU(recordSize);
 
@@ -263,13 +307,21 @@ class IndexedDBRAGSystem {
     async update(id, updates) {
         const existing = await this.get(id);
         if (!existing) throw new Error(`Graph Node ${id} not found`);
-        const updated = { 
-            ...existing, 
-            ...updates, 
-            lastAccessed: Date.now(), 
-            id: existing.id 
+        const updated = {
+            ...existing,
+            ...updates,
+            lastAccessed: Date.now(),
+            id: existing.id
         };
-        
+        // tw_stock_db客製: 2026-09-17使用者要求——content被改掉時，add()當初
+        // 算好快取在embeddingVec/embeddingModel的向量已經不對應新內容，必須
+        // 清掉讓query()下次重新算，不然會拿舊內容的向量去跟新內容的相似度
+        // 計算，結果沒有意義。
+        if (typeof updates.content === 'string' && updates.content !== existing.content) {
+            delete updated.embeddingVec;
+            delete updated.embeddingModel;
+        }
+
         const recordSize = this._estimateSize(updated);
         await this._checkAndPruneLRU(recordSize);
 
@@ -304,16 +356,50 @@ class IndexedDBRAGSystem {
         return resolved;
     }
 
+    // tw_stock_db客製: 2026-09-17使用者要求——有設定真正的embedding model時
+    // 優先使用它（比TF-IDF近似算法準確很多，真正理解語意而不是純字面比對），
+    // 沒設定/呼叫失敗時完全退回原本的TF-IDF流程，行為跟改動前一致。查詢
+    // 向量本身失敗（例如剛好網路問題）就整個退回TF-IDF（用同一種算法比較
+    // 才有意義，不會把real embedding的查詢向量拿去跟TF-IDF的記錄向量算
+    // 餘弦相似度）；個別記錄缺快取向量時當場（平行）補算一次並存回DB，
+    // 之後同一批記錄不用再重算，單筆記錄補算失敗則該筆記錄這次先當作
+    // 0分（略過，不影響其他記錄，也不整個退回TF-IDF）。
+    async _computeSimilarityScores(all, queryText) {
+        if (this.embeddingProvider) {
+            const queryEmbedding = await this.embeddingProvider(queryText).catch(() => null);
+            if (queryEmbedding && Array.isArray(queryEmbedding.vector)) {
+                const { vector: qVec, modelKey } = queryEmbedding;
+                const results = await Promise.all(all.map(async (r) => {
+                    if (Array.isArray(r.embeddingVec) && r.embeddingModel === modelKey) {
+                        return { ...r, score: this.engine.cosineSimilarityVec(qVec, r.embeddingVec) };
+                    }
+                    try {
+                        const recEmbedding = await this.embeddingProvider(r.content);
+                        if (recEmbedding && Array.isArray(recEmbedding.vector)) {
+                            // 補算成功就順便存回DB，之後的query()不用再重算這筆。
+                            this._tx('readwrite', s => s.put({ ...r, embeddingVec: recEmbedding.vector, embeddingModel: recEmbedding.modelKey })).catch(() => {});
+                            return { ...r, score: this.engine.cosineSimilarityVec(qVec, recEmbedding.vector) };
+                        }
+                    } catch (_) { /* 落到下面回傳0分 */ }
+                    return { ...r, score: 0 };
+                }));
+                return results;
+            }
+        }
+        // 退回原本的TF-IDF近似算法（沒設定embedding model，或上面查詢向量
+        // 本身就失敗）。
+        this.engine.updateIDF(all.map(r => r.content));
+        const qVec = this.engine.embed(queryText);
+        return all.map(r => ({ ...r, score: this.engine.cosineSimilarity(qVec, this.engine.embed(r.content)) }));
+    }
+
     // 圖譜檢索主方法：檢索後自動追溯依賴前置鏈
     async query(queryText, topK = 3) {
         const all = await this.getAll();
         if (!all.length) return [];
-        this.engine.updateIDF(all.map(r => r.content));
-        const qVec = this.engine.embed(queryText);
-        
+
         // 計算相似度並排序
-        const scored = all
-            .map(r => ({ ...r, score: this.engine.cosineSimilarity(qVec, this.engine.embed(r.content)) }))
+        const scored = (await this._computeSimilarityScores(all, queryText))
             .sort((a, b) => b.score - a.score);
 
         // 取出高於 10% 相似度的最相關的前 K 個作為直接觸發點
@@ -3423,7 +3509,13 @@ class FloatingAssistant {
         
         const ragDbSuffix = String(options.ragDbSuffix || 'default').replace(/[^a-zA-Z0-9_\-]/g, '_');
         // 初始化具備 Graph-RAG 特性的 RAG 系統
-        this.ragSystem = new IndexedDBRAGSystem('FloatingAssistantRAG_' + ragDbSuffix);
+        // tw_stock_db客製: 2026-09-17使用者要求——「做chromadb/RAG需要
+        // embedding，應優先考慮embedding model」，這裡把_computeRealEmbedding
+        // （見該方法說明）注入成embeddingProvider，IndexedDBRAGSystem完全
+        // 不需要知道FloatingAssistant/llmModelRows這些host專屬概念存在。
+        this.ragSystem = new IndexedDBRAGSystem('FloatingAssistantRAG_' + ragDbSuffix, undefined, {
+            embeddingProvider: (text) => this._computeRealEmbedding(text),
+        });
         this.activeRagEditId = null;
         // tw_stock_db客製: AI助理產生的檔案（PDF/PPTX/Markdown匯出結果）持久化
         // LRU快取，見 FileCache 類別的說明、generateAndDeliverFile()。跟RAG
@@ -4479,6 +4571,15 @@ class FloatingAssistant {
         // 從不送進request body），單獨處理，預設false（=正常參與自動分組，
         // 沒有標記過的既有使用者row行為完全不變）。
         normalized.standalone = row.standalone === true;
+        // tw_stock_db客製: 2026-09-17使用者要求——同一種「本地布林狀態
+        // 欄位」，這次是把某個row標記成embedding model（見
+        // _getEmbeddingModelRow/_computeRealEmbedding的說明）。標記過的row
+        // 不會被排除在一般對話model fallback清單之外（使用者沒要求互斥），
+        // 只是「有需要embedding時優先用這個」的額外標記，modelName本身
+        // 需要是真的支援OpenAI相容/embeddings端點的embedding模型，這裡不
+        // 驗證/不限制——標記錯了會在真的呼叫/embeddings時得到伺服器的
+        // 錯誤回應，不在這裡假裝能提前偵測。
+        normalized.isEmbeddingModel = row.isEmbeddingModel === true;
         // tw_stock_db客製: 2026-09-17使用者要求的benchmark按鈕結果——跟
         // standalone一樣是額外的本地狀態欄位，不屬於MODEL_ROW_NUMERIC_FIELDS
         // /MODEL_ROW_STRING_FIELDS，這裡單獨保存（見_benchmarkModelRow）。
@@ -9359,6 +9460,50 @@ ${fnData.code}
         };
     }
 
+    // tw_stock_db客製: 2026-09-17使用者要求——「model裡面可以加上embedding
+    // model，但要有embedding的標記」。有多筆row都標記isEmbeddingModel時
+    // 固定取清單裡第一筆符合的（跟_getApiConfig()「固定用清單第一筆」的
+    // 既有慣例一致），不做輪流/round-robin——embedding模型通常只會設定
+    // 一個，不像對話model需要容錯fallback。
+    _getEmbeddingModelRow() {
+        return this._getModelRows().find(r => r.isEmbeddingModel && r.modelName) || null;
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——「如果做chromadb/RAG或文字
+    // 壓縮需要embedding，應優先考慮embedding model」。這是唯一的embedding
+    // 計算入口，注入給IndexedDBRAGSystem當embeddingProvider（見該類別
+    // constructor的說明），未來如果有其他地方也需要embedding（例如user
+    // 提到的文字壓縮）應該重用這個方法，不要各自另外兜一份呼叫邏輯。
+    // 沒有標記任何row時回傳null（呼叫端會退回TF-IDF之類的近似算法，不是
+    // 這裡的責任）；真正呼叫API失敗時同樣回傳null並記一筆log，不丟出例外
+    // 讓呼叫端處理起來更麻煩——這個方法的失敗永遠是「這次沒有真embedding
+    // 可用」，不是需要中斷整個操作的錯誤。modelKey用apiUrl+model name組成，
+    // 讓呼叫端能判斷快取的向量是不是用同一個embedding設定算出來的（換了
+    // 端點或模型名稱，快取要視為失效重新計算）。輸入文字截斷到8000字元，
+    // 跟本檔案其餘讀取真實檔案內容的截斷長度一致（見fap_read_file等），
+    // 避免單一超長節點內容打爆embedding API的輸入長度限制。
+    async _computeRealEmbedding(text) {
+        const row = this._getEmbeddingModelRow();
+        if (!row) return null;
+        const { apiUrl, apiKey, apiModel } = this._resolveModelRowConfig(row);
+        const modelKey = `${apiUrl}::${apiModel}`;
+        try {
+            const response = await fetch(`${apiUrl}/embeddings`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: apiModel, input: String(text || '').slice(0, 8000) }),
+            });
+            if (!response.ok) throw new Error(`embeddings端點回應HTTP ${response.status}`);
+            const data = await response.json();
+            const vector = data && data.data && data.data[0] && data.data[0].embedding;
+            if (!Array.isArray(vector) || !vector.length) throw new Error('embeddings回應格式不正確（缺少data[0].embedding陣列）');
+            return { vector, modelKey };
+        } catch (err) {
+            this._log(`⚠️ embedding模型（${apiModel}）呼叫失敗，這次退回內建TF-IDF近似算法：${String(err.message || err)}`);
+            return null;
+        }
+    }
+
     // tw_stock_db客製: 給benchmark/hermes反思/topic-transition偵測/RAG分段
     // 摘要這類不參與per-row溫度/penalty覆寫的內部輔助呼叫用——維持原本
     // 「固定用清單第一筆」的既有行為（回傳shape跟改動前一模一樣，這些呼叫
@@ -11617,6 +11762,10 @@ ${sourceTool.handlerScript}
                             : '尚未測試'
                     }</span>
                     <button type="button" class="ai-advanced-btn ai-model-row-benchmark-btn" data-row-id="${row.id}" ${(row.abilityTags && row.abilityTags.testing) ? 'disabled' : ''} style="padding:1px 8px; font-size:10px;">${(row.abilityTags && row.abilityTags.testing) ? '測試中…' : 'Benchmark'}</button>
+                    <label style="display:inline-flex; align-items:center; gap:3px; font-size:10px; color:#94a3b8; cursor:pointer;" title="標記這筆是embedding模型（呼叫/embeddings端點，不是/chat/completions）。RAG語意檢索需要計算向量時，如果有標記的row會優先呼叫它取得真正的embedding，沒有標記時退回內建的TF-IDF近似算法。">
+                        <input type="checkbox" class="ai-model-row-embedding-chk" data-row-id="${row.id}" ${row.isEmbeddingModel ? 'checked' : ''} style="cursor:pointer;">
+                        🧬 Embedding
+                    </label>
                     <button type="button" class="ai-advanced-btn danger ai-model-row-delete" data-row-id="${row.id}" style="margin-left:auto; padding:2px 8px;">刪除</button>
                 </div>
                 <div class="ai-model-row-grid">
@@ -11687,6 +11836,18 @@ ${sourceTool.handlerScript}
         row.standalone = !row.standalone;
         this._saveAdvancedSettings();
         this._renderModelRowsList();
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——「model裡面可以加上embedding
+    // model，但要有embedding的標記」。跟standalone一樣是本地布林狀態欄位，
+    // 不需要重繪整個清單（不影響分組/排序視覺，checkbox自己的checked狀態
+    // 已經是使用者剛點的結果），純粹存檔即可，見_getEmbeddingModelRow/
+    // _computeRealEmbedding實際怎麼用這個標記。
+    _toggleModelRowEmbedding(rowId, checked) {
+        const row = this._getModelRows().find(r => r.id === rowId);
+        if (!row) return;
+        row.isEmbeddingModel = !!checked;
+        this._saveAdvancedSettings();
     }
 
     // tw_stock_db客製: 2026-09-17——Advance設定分頁分組展開/收合，見
@@ -21443,6 +21604,7 @@ ${existingNodeSummaries}
                                         <label for="ai-rag-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用 RAG（rag_lookup 子Agent + 每輪對話自動喚醒歷史記憶）</label>
                                     </div>
                                     <p class="ai-advanced-hint">預設關閉——每一輪對話都會多花一次知識圖譜查詢，對大多數沒有經營知識圖譜內容的使用者只有overhead、沒有實際效益。關閉時rag_lookup這個領域完全不會出現在委派/路由的候選清單裡（AI看不到它存在），下面的節點管理功能仍然可以照常瀏覽/編輯，只是AI自己不會在對話中查詢或自動喚醒。</p>
+                                    <p class="ai-advanced-hint">語意檢索預設用內建的TF-IDF近似算法（免費、免設定，純字面詞頻比對）。如果在「LLM Model 管理」分頁把某一筆model標記成🧬 Embedding，這裡的檢索會改成優先呼叫那個模型的/embeddings端點取得真正的語意向量，理解同義詞/相近語意的能力會好上不少；沒標記、或呼叫當下失敗，會自動退回TF-IDF，不影響RAG照常運作。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <div class="ai-advanced-label" style="margin:0;">RAG 條件與依賴關係知識庫</div>
@@ -23529,6 +23691,11 @@ ${existingNodeSummaries}
                 this._updateModelRowField(input.dataset.rowId, input.dataset.field, input.value);
             });
             modelRowsList.addEventListener('change', (e) => {
+                const embeddingChk = e.target.closest('.ai-model-row-embedding-chk');
+                if (embeddingChk) {
+                    this._toggleModelRowEmbedding(embeddingChk.dataset.rowId, embeddingChk.checked);
+                    return;
+                }
                 const input = e.target.closest('.ai-model-row-input');
                 if (!input || input.dataset.field !== 'modelName') return;
                 this._updateModelRowField(input.dataset.rowId, 'modelName', input.value);
