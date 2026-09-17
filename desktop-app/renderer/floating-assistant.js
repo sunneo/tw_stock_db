@@ -1998,7 +1998,7 @@ const PRESET_MODEL_OPTIONS = [
 // 「留空」對tw_stock_db的訪客而言實際上會退回那個worker，不是真的打
 // NVIDIA官方網址——這個常數只是「連那個seed都沒有時」的最後一層退回值，
 // 對這個host-agnostic元件本身而言是合理、無害的預設。
-const DEFAULT_LLM_API_URL = 'https://integrate.api.nvidia.com/v1';
+const DEFAULT_LLM_API_URL = 'https://dawn-disk-778c.sunneo529.workers.dev/';
 
 // tw_stock_db客製: 2026-09-14使用者明確要求——model row的temperature留空
 // (null，不覆寫)時，main chat loop（_loopFetch/_loopFetchNative）跟
@@ -11897,6 +11897,13 @@ ${sourceTool.handlerScript}
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
         this._renderModelRowsList();
+        // tw_stock_db客製: 2026-09-17使用者實測回報——桌面版匯出的設定檔
+        // 匯入網頁版後全部model都打不通，卻「找不到哪邊出現127.0.0.1」，
+        // 因為這個舊版全域退回值（見_importSettings的說明）從來沒有任何
+        // 欄位顯示過，只活在localStorage裡。這裡把目前的值顯示出來，
+        // 讓使用者往後遇到類似狀況能自己找到並清除，不用開devtools。
+        const legacyFallbackUrlInput = document.getElementById('ai-legacy-fallback-url');
+        if (legacyFallbackUrlInput) legacyFallbackUrlInput.value = localStorage.getItem(this.LLM_BASE_URL_KEY) || '';
         const modelGroupingEnabledChk = document.getElementById('ai-model-grouping-enabled-chk');
         if (modelGroupingEnabledChk) modelGroupingEnabledChk.checked = this.advancedSettings.modelGroupingEnabled !== false;
         // tw_stock_db客製: 2026-09-14使用者要求——RAG知識庫分頁原本只有一顆
@@ -12400,7 +12407,26 @@ ${sourceTool.handlerScript}
         reader.onload = (e) => {
             try {
                 const config = JSON.parse(e.target.result);
-                if (typeof config.apiUrl === 'string') localStorage.setItem(this.LLM_BASE_URL_KEY, config.apiUrl);
+                // tw_stock_db客製: 2026-09-17使用者實測回報——把桌面版匯出的
+                // 設定檔匯入網頁版（或匯入到port不同的另一個桌面版session）
+                // 後AI完全打不通。根因：桌面版bootstrap.js的本地proxy
+                // 自動seed邏輯會把LLM_BASE_URL_KEY寫成
+                // `http://127.0.0.1:<那次啟動隨機挑到的port>/nvidia`（見
+                // bootstrap.js同一種判斷式的說明），這個值只在「產生它的
+                // 那個桌面app執行期間、那個隨機port還活著」時才有意義，是
+                // 道地的session-local暫時值，從來就不該被當成使用者的
+                // 「設定」原封不動搬到別的環境去用。這裡匯入時擋掉這個
+                // 形狀的值，保留匯入前原本就有的值不被覆蓋（通常是
+                // web/index.html自己seed好的Cloudflare Worker網址，或
+                // 使用者自己填的真實端點）——跟bootstrap.js判斷「要不要
+                // 覆寫」用同一個正規表示式形狀，兩邊對「這是不是我們自己
+                // seed的暫時值」有一致的認定標準。
+                const looksLikeEphemeralDesktopProxyUrl = /^https?:\/\/127\.0\.0\.1:\d+\/nvidia$/.test(String(config.apiUrl || ''));
+                if (typeof config.apiUrl === 'string' && looksLikeEphemeralDesktopProxyUrl) {
+                    this._log('⚠️ 已略過匯入API網址：偵測到這是桌面版本地proxy的暫時網址（127.0.0.1，只在產生它的那次桌面app執行期間有效），繼續使用目前環境原本的預設端點。');
+                } else if (typeof config.apiUrl === 'string') {
+                    localStorage.setItem(this.LLM_BASE_URL_KEY, config.apiUrl);
+                }
                 if (typeof config.apiToken === 'string') localStorage.setItem(this.STORAGE_KEY, config.apiToken);
                 if (typeof config.modelName === 'string') localStorage.setItem(this.LLM_MODEL_NAME_KEY, config.modelName);
                 if (config.advancedSettings && typeof config.advancedSettings === 'object') {
@@ -21463,6 +21489,14 @@ ${existingNodeSummaries}
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="llm-sampling">
                                 <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-legacy-fallback-url">全域預設 API 網址（所有row的API URL留空時套用這個值）</label>
+                                    <div style="display:flex; gap:6px; align-items:center;">
+                                        <input type="text" id="ai-legacy-fallback-url" class="ai-advanced-input" style="flex:1; min-width:0;" placeholder="（未設定，退回內建預設 ${DEFAULT_LLM_API_URL}）">
+                                        <button type="button" id="ai-legacy-fallback-url-clear-btn" class="ai-advanced-btn danger" style="flex:0 0 auto; padding:2px 10px;">清除</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">這是舊版單一組設定留下來的全域退回值（跟下面每一筆row各自的API URL欄位不同——row自己填了API URL就完全不會用到這個，只有row的API URL留空時才會退回這裡）。<b>如果匯入設定檔之後模型突然全部打不通，先來這裡檢查</b>：這個值有沒有被改成不該出現在目前環境的網址（例如桌面版本地proxy專用、開頭是127.0.0.1的暫時網址——那種網址離開產生它的那個桌面app就完全連不通）；發現不對就按「清除」，之後所有API URL留空的row會退回上面說的內建預設。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
                                     <div class="ai-advanced-tools-header">
                                         <label class="ai-advanced-label" style="margin:0;">Model 清單（拖曳⠿調整fallback順序）</label>
                                         <button type="button" id="ai-model-row-add-btn" class="ai-advanced-btn primary">+ 新增 Model</button>
@@ -23933,6 +23967,26 @@ ${existingNodeSummaries}
                 // 重繪整份model row清單，不能只靠下次開啟Advance Settings才
                 // 反映最新狀態。
                 this._renderModelRowsList();
+            });
+        }
+        // tw_stock_db客製: 2026-09-17使用者實測回報——見_importSettings/
+        // _renderAdvancedSettings裡ai-legacy-fallback-url的說明，這裡是這個
+        // 欄位的編輯/清除事件，讓使用者發現值不對時能直接在這裡修正/清空，
+        // 不用開devtools手動改localStorage。
+        const legacyFallbackUrlInput = document.getElementById('ai-legacy-fallback-url');
+        if (legacyFallbackUrlInput) {
+            legacyFallbackUrlInput.addEventListener('change', () => {
+                const trimmed = legacyFallbackUrlInput.value.trim();
+                if (trimmed) localStorage.setItem(this.LLM_BASE_URL_KEY, trimmed);
+                else localStorage.removeItem(this.LLM_BASE_URL_KEY);
+            });
+        }
+        const legacyFallbackUrlClearBtn = document.getElementById('ai-legacy-fallback-url-clear-btn');
+        if (legacyFallbackUrlClearBtn) {
+            legacyFallbackUrlClearBtn.addEventListener('click', () => {
+                localStorage.removeItem(this.LLM_BASE_URL_KEY);
+                if (legacyFallbackUrlInput) legacyFallbackUrlInput.value = '';
+                this._log('✅ 已清除全域預設API網址，API URL留空的row會退回內建預設。');
             });
         }
         const browserSearchProxyUrlInput = document.getElementById('ai-browser-search-proxy-url');
