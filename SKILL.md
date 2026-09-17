@@ -82,13 +82,46 @@ https://github.com/sunneo/tw_stock_db
 
 ### 分支結構
 
-- **`main` 分支 — 逐日增量資料（每個交易日更新一次）**
-  路徑：`daily/{日期}/`（例如 `daily/2026-07-24/`），每個資料夾內有 4 個 CSV：
+> **2026-09-17 更新**：`daily`/`daily-chip`/`reports`/`watchlist` 這四類資料已經從
+> `main` 分支搬到各自獨立的分支（理由跟 `db-snapshot` 完全一樣：避免 `main` 的
+> commit log 被高頻自動更新淹沒，`main` 分支現在只保留網頁本體/程式碼的commit）。
+> **舊的 URL 慣例（`.../main/daily/...`、`.../main/watchlist/...` 等）已經失效**，
+> 一律改成「分支名稱本身取代原本 `main/` 這一段」，見下方各分支說明。
+
+- **`daily` 分支 — 逐日增量資料（每個交易日更新一次，force push只保留最新單一
+  commit，沒有歷史）**
+  路徑：`{日期}/`（例如 `2026-07-24/`，**不再有 `daily/` 這層子目錄**——分支
+  名稱本身就是原本的目錄名），每個資料夾內有 4-5 個 CSV：
   `stocks.csv`（當天股票基本清單，全量）、`daily_prices.csv`（當天全部個股OHLCV）、
-  `technical_indicators.csv`（當天全部個股技術指標）、`market_index.csv`（大盤/櫃買指數）。
-  每個 CSV 可直接用 `raw.githubusercontent.com/sunneo/tw_stock_db/main/daily/{日期}/{檔名}.csv`
-  抓取，欄位與 `tw-stock-db` 的 schema 完全對應。**只需要最近幾天資料時，優先用這個分支**，
+  `technical_indicators.csv`（當天全部個股技術指標）、`market_index.csv`（大盤/櫃買
+  指數，含 SOX/SPX/NASDAQ/DJI 四個美股觀察指標）、`intraday_quotes.csv`（當天有跑過
+  盤中擷取才會有）。每個 CSV 可直接用
+  `raw.githubusercontent.com/sunneo/tw_stock_db/daily/{日期}/{檔名}.csv` 抓取，欄位與
+  `tw-stock-db` 的 schema 完全對應。另有 `manifest.json`（md5清單，供網頁端判斷內容
+  有沒有變）。**只保留「本月」資料**（跨月的舊資料夾不在這個分支的 working tree 裡，
+  只留在 `db-snapshot` 分支的月度快照），**只需要最近幾天資料時，優先用這個分支**，
   不用整包 clone。
+
+- **`daily-chip` 分支 — 盤後籌碼資料（三大法人買賣超等，force push只保留最新單一
+  commit）**
+  路徑：`{日期}/`（同上，不再有 `daily-chip/` 這層子目錄），內含
+  `institutional_by_stock.csv`（三大法人個股別買賣超）、`mandatory_custody.csv`等。
+  三大法人資料常常延遲公佈，同一分支內最近10個日曆天都會持續回補更新。同樣只保留
+  「本月」。
+
+- **`watchlist` 分支 — 鎖股/強勢股名單（每次更新都 force push，只保留最新單一
+  commit，沒有歷史）**
+  路徑：**檔案直接在分支根目錄**（不再有 `watchlist/` 這層子目錄），例如
+  `raw.githubusercontent.com/sunneo/tw_stock_db/watchlist/pattern_screen.json`、
+  `.../watchlist/strong_stocks_current.json` 改成
+  `raw.githubusercontent.com/sunneo/tw_stock_db/pattern_screen.json`、
+  `.../strong_stocks_current.json`。內容永遠是「最新一次」的鎖股/強勢股名單，
+  沒有歷史版本可回溯。
+
+- **`reports` 分支 — 分析報告（盤前焦點、大盤、持股分析等 yaml，force push只保留
+  最新單一commit）**
+  路徑：**檔案直接在分支根目錄**（不再有 `reports/` 這層子目錄），例如
+  `premarket/latest.yaml`、`market/2026-09-17.yaml` 等。
 
 - **`db-snapshot` 分支 — 完整資料庫快照（每月覆蓋一次，不留歷史）**
   內容為 `tw_stock.db` 切成 **5 個 64MB 以內的 part 檔**（`tw_stock.db.part000` ~ `part004`），
@@ -104,25 +137,27 @@ https://github.com/sunneo/tw_stock_db
   ```
   合併後即為完整 `tw_stock.db`（約2年歷史，含近2年 daily_prices / technical_indicators）。
   **此流程已實際測試成功**（clone + merge + checksum 驗證通過，資料庫可正常查詢）。
-  這個分支**只在需要完整歷史（例如長天期均線、回測）時才 clone**，平常分析用 `main`
+  這個分支**只在需要完整歷史（例如長天期均線、回測）時才 clone**，平常分析用 `daily`
   分支的每日 CSV 即可，避免不必要的頻寬與時間成本。
 
 ### 使用建議（依任務類型選擇資料來源）
 
-- 選股 / 鎖股名單 / 最近幾天的持股追蹤 → 讀 `main` 分支 `daily/{最近幾天日期}/*.csv`
+- 選股 / 鎖股名單 / 最近幾天的持股追蹤 → 讀 `daily` 分支 `{最近幾天日期}/*.csv`、
+  `watchlist` 分支的鎖股/強勢股 JSON
 - 需要完整歷史（回測、長天期均線、季線判斷等） → clone `db-snapshot` 分支 + `merge_db.py`
 - 每次分析前先確認資料的最新交易日期，避免使用過期快照
 - 若 GitHub 當下抓不到、或找不到對應日期的資料，才退回請使用者手動上傳 `tw_stock.db`
 
 ### 分析節奏：每日 vs 每週（重要）
 
-GitHub repo 的 `main` 分支每個交易日收盤後會新增一份 `daily/{日期}/`，資料庫是持續累積的，
+GitHub repo 的 `daily` 分支每個交易日收盤後會更新一份 `{日期}/`（force push單一commit，
+只保留本月），資料庫是持續累積的，
 因此分析工作預設分成兩種節奏，依使用者的請求判斷該用哪一種：
 
 **每日節奏（當日收盤後的輕量複查）**
 - 觸發時機：使用者說「更新選股」「今天結果」「複查鎖股名單」等當日性用語。
 - 流程：
-  1. 檢查 `daily/{今天日期}/` 是否已存在（GitHub 更新通常在台股收盤 13:30 之後才會出現，
+  1. 檢查 `daily` 分支的 `{今天日期}/` 是否已存在（GitHub 更新通常在台股收盤 13:30 之後才會出現，
      盤中查詢請改用 claude-in-chrome 抓 `tw.stock.yahoo.com` 即時報價，不要空等 daily 更新）。
   2. 只拉當天的 4 個 CSV，upsert 進本地資料庫（不需要整包重下載或重 clone `db-snapshot`）。
   3. 直接執行 `python analysis/generate_holdings_report.py <鎖股清單.json> --compare-new`
@@ -155,6 +190,9 @@ GitHub repo 的 `main` 分支每個交易日收盤後會新增一份 `daily/{日
 
 - 資料源為 Yahoo Finance，法人買賣超/融資融券等籌碼面資料尚未納入。
 - `db-snapshot` 分支每月被 force push 覆蓋，不要依賴其 commit 歷史，只信任最新一次 commit。
+- `daily`/`daily-chip`/`watchlist`/`reports` 這四個分支（2026-09-17起）也都是每次更新
+  就 force push、只保留最新單一commit，同樣不要依賴其 commit 歷史；`daily`/`daily-chip`
+  只保留「本月」working tree內容，跨月的舊資料只在 `db-snapshot` 分支的月度快照裡。
 - 少數股票（例如 6174、8111）因公司名稱含 Big5/CP950 無法解碼的罕見字，`stock_name`
   會顯示亂碼字元，屬 TWSE 資料源本身限制，非本系統錯誤。
 
@@ -166,8 +204,8 @@ GitHub repo 的 `main` 分支每個交易日收盤後會新增一份 `daily/{日
 那樣既慢又浪費大量 token，而且每次人工分析的判斷邏輯可能有微妙落差，跟腳本結果對不上。
 
 執行前提（「本週＋完整資料庫＋當日資料」）：先確認資料庫是最新狀態——本機
-`tw_stock.db` 已經跑過當天的 `run_daily_update.py`，或至少 GitHub `main` 分支
-`daily/{今天日期}/` 已同步；資料不是最新時，先執行 `python run_daily_update.py`
+`tw_stock.db` 已經跑過當天的 `run_daily_update.py`，或至少 GitHub `daily` 分支
+`{今天日期}/` 已同步；資料不是最新時，先執行 `python run_daily_update.py`
 （會自動更新股票清單/大盤/個股OHLCV/技術指標含RS值/每日報告），再跑下面的腳本。
 
 | 使用者需求 | 指令 | 說明 |

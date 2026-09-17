@@ -1800,13 +1800,19 @@ const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
    （逐月資料，過去月份封存後不再變動），取代整份 300MB+ tw_stock.db 的下載方式。
    見 tw-stock-db/sync/monthly_snapshot.py。 */
 const WEB_MANIFEST_URL = RAW + '/db-snapshot/db/monthly/manifest.json';
-/* daily/ 逐日增量CSV（main分支）的md5清單，每個日期每個檔案一筆，見
+/* daily/ 逐日增量CSV的md5清單，每個日期每個檔案一筆，見
    tw-stock-db/sync/sync_to_github.py::update_daily_manifest()。DBMgr.syncDaily
    每次同步都要把當月從1號開始重新掃過一遍（見該函式說明），沒有這份manifest
    的話「重新掃過」等於「重新下載當月每一天的每個檔案」，即使內容根本沒變—
    —用這份manifest比對md5，內容沒變就完全跳過下載，只有真的被後端修正過的
-   日期才會重抓（見 applyDaily 的 manifestDates 參數）。 */
-const DAILY_MANIFEST_URL = RAW + '/main/daily/manifest.json';
+   日期才會重抓（見 applyDaily 的 manifestDates 參數）。
+   2026-09-17：daily/改成獨立force-push分支（不再是main分支底下的子目錄），
+   URL從 /main/daily/... 改成 /daily/...（分支名稱本身取代原本main/daily
+   兩層路徑）。本機的checksum快取（dailyChecksumCache）是用「日期+檔名」當
+   key，不是用URL/分支名稱當key，所以這次分支搬遷不會讓使用者被迫重新下載
+   已經同步過的daily資料——只要manifest.json算出來的md5跟本機快取相同，
+   applyDaily()一樣會跳過下載，只有真的變動的檔案才會重抓。 */
+const DAILY_MANIFEST_URL = RAW + '/daily/manifest.json';
 
 /* 證交所的即時行情/休市日曆兩個來源都不回傳 CORS header，瀏覽器端無法直接
    fetch()（實測過，見 tw_stock_db_code私有repo的code/cloudflare-worker/README.md），透過共用的
@@ -2361,8 +2367,12 @@ const VolumeRanking = (() => {
       if (csvRes.ok) {
         ({ byCode, lastTs } = parseHfIntradayCSV(await csvRes.text()));
       } else {
-        // 格式/分支切換前的歷史日期，往下相容main分支的舊格式
-        const jsonlRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+        // 格式/分支切換前的歷史日期，往下相容daily分支的舊格式（2026-09-17：
+        // daily/從main分支搬到獨立的daily分支，這裡同步改路徑；daily分支
+        // 只保留「本月」資料，跟main分支改之前prune_stale_daily_folders的
+        // 既有保留範圍一致，不影響這個fallback原本就只對「近期」舊格式
+        // 日期有效的行為）
+        const jsonlRes = await fetch(`${RAW}/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
         if (!jsonlRes.ok) return null;
         ({ byCode, lastTs } = parseHfIntradayJSONL(await jsonlRes.text()));
       }
@@ -2480,7 +2490,7 @@ const PatternScreen = (() => {
     const todayStr = taipeiDateStr();
     if (cache && cache.queriedFor === todayStr && !forceRefresh) return cache;
     try {
-      const res = await fetch(`${RAW}/main/watchlist/pattern_screen.json`, { cache: 'no-store' });
+      const res = await fetch(`${RAW}/watchlist/pattern_screen.json`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       cache = {
@@ -2591,7 +2601,7 @@ async function fetchIntradayTicksForStock(dateStr, code) {
         if (rowCode === code && ts && price !== '') ticks.push({ ts, price: Number(price) });
       }
     } else {
-      const jsonlRes = await fetch(`${RAW}/main/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
+      const jsonlRes = await fetch(`${RAW}/daily/${dateStr}/hf_intraday.jsonl`, { cache: 'no-store' });
       if (!jsonlRes.ok) return null;
       for (const line of (await jsonlRes.text()).split('\n')) {
         if (!line.trim()) continue;
@@ -3404,7 +3414,7 @@ const DBMgr = (() => {
      「今天」，否則今天稍早資料還沒上架時同步過一次，晚上資料真的上架了
      也不會再抓）。 */
   async function applyDaily(date, onProgress, manifestDates, checksumCache) {
-    const base  = `${RAW}/main/daily/${date}`;
+    const base  = `${RAW}/daily/${date}`;
     const files = [
       ['stocks',               'stocks'],
       ['daily_prices',         'daily_prices'],
@@ -9206,7 +9216,7 @@ const ChipStore = (() => {
   async function loadTodayCsv(tableFile) {
     const today = taipeiDateStr();
     try {
-      const res = await fetch(`${RAW}/main/daily-chip/${today}/${tableFile}`, { cache: 'no-store' });
+      const res = await fetch(`${RAW}/daily-chip/${today}/${tableFile}`, { cache: 'no-store' });
       if (!res.ok) return [];
       const text = await res.text();
       const lines = text.trim().split('\n');
@@ -10390,7 +10400,7 @@ async function collectVolumeRankingNow(maxStocks = 60) {
   }
   for (const file of ['strong_stocks_current.json', 'strong_stocks_xq.json']) {
     try {
-      const res = await fetch(`${RAW}/main/watchlist/${file}`, { cache: 'no-store' });
+      const res = await fetch(`${RAW}/watchlist/${file}`, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         pushCodes((data.data || []).map((r) => String(r['代碼'])).filter(Boolean));
