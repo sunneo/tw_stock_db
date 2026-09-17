@@ -1,6 +1,11 @@
 node_modules/
 dist/
-renderer/floating-assistant.js
+# tw_stock_db客製: 2026-09-17使用者要求——renderer/floating-assistant.js
+# 不再是build時從../web/複製過去的gitignored副本，這個desktop-app分支
+# 本身現在是floating-assistant.js唯一的canonical來源（直接在這裡編輯、
+# commit、push），main分支的web/index.html改成執行時從這個分支的raw URL
+# fetch這個檔案（見web/index.html第1687行一帶的既有sql.js載入模式，套用
+# 同一招）。main分支不再持有這個檔案的實體副本。
 # PyInstaller build artifacts for launcher/launcher.py (build.ps1/build.sh
 # regenerate these; launcher.py itself is the tracked source).
 launcher/build/

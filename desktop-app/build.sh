@@ -9,8 +9,12 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-echo "== 同步 floating-assistant.js（canonical來源：../web/floating-assistant.js）=="
-cp ../web/floating-assistant.js renderer/floating-assistant.js
+# tw_stock_db客製: 2026-09-17使用者要求——renderer/floating-assistant.js
+# 不再是build時從../web/複製過去的副本，這個desktop-app分支本身現在是
+# floating-assistant.js唯一的canonical來源（直接在這裡編輯/commit/push），
+# main分支的web/index.html改成執行時從這個分支的raw URL fetch這個檔案
+# （見web/index.html的window.__floatingAssistantJsReady）。這裡不再需要
+# 任何複製步驟。
 
 # tw_stock_db客製: 2026-09-15使用者要求——內建一把預設/免費額度金鑰，讓
 # 新使用者不用先申請/填自己的NVAPI_KEY才能用，使用者自己填的值永遠優先

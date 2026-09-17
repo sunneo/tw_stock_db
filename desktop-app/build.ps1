@@ -44,8 +44,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-Write-Host "== Syncing floating-assistant.js (canonical source: ..\web\floating-assistant.js) ==" -ForegroundColor Cyan
-Copy-Item -Path "..\web\floating-assistant.js" -Destination "renderer\floating-assistant.js" -Force
+# tw_stock_db客製: 2026-09-17使用者要求——renderer/floating-assistant.js
+# 不再是build時從../web/複製過去的副本，這個desktop-app分支本身現在是
+# floating-assistant.js唯一的canonical來源（直接在這裡編輯/commit/push），
+# main分支的web/index.html改成執行時從這個分支的raw URL fetch這個檔案
+# （見web/index.html的window.__floatingAssistantJsReady）。這裡不再需要
+# 任何複製步驟。
 
 # Bakes in a default/free-tier key so first-time users don't need to supply
 # their own before the app is usable; anything the user sets themselves
