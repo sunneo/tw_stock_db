@@ -1705,42 +1705,88 @@ select:focus { outline: 2px solid var(--acc); }
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
      載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
      才會 new FloatingAssistant()，見 renderAiTab 的一次性初始化guard。
-     tw_stock_db客製: 這裡刻意加了?v=版本號做cache-busting——瀏覽器/CDN對
-     這種沒有內建版本查詢字串的<script src>常常會積極快取，之前這個
-     AI助理密集修過好幾輪bug，每次修完都要靠使用者自己記得手動強制重新
-     整理才會真的載到新版，很容易誤以為「同一個bug還沒修好」，實際上是
-     還在跑修好之前的舊快取版本。之後每次修改floating-assistant.js都要
-     手動把這個版本號往上調（沒有build流程可以自動處理），格式用
-     YYYYMMDD-序號，同一天多次修改就把序號往上加。 -->
-<script src="floating-assistant.js?v=be5aeb35fe"></script>
+
+     tw_stock_db客製: 2026-09-17使用者要求——floating-assistant.js改成以
+     desktop-app分支的renderer/floating-assistant.js為唯一canonical來源
+     （直接在那邊編輯/commit/push），main分支不再持有這個檔案的實體副本
+     （理由：這個檔案改動頻率很高，main持續追蹤它的話，每次AI引擎的修改
+     都會在main留下一筆跟「網頁本體」無關的commit）。不能直接用
+     <script src=絕對網址>：跟上面sql.js（vendor-assets分支）同一個既有
+     限制——實測raw.githubusercontent.com每個檔案的回應都帶
+     Content-Type: text/plain + X-Content-Type-Options: nosniff，瀏覽器
+     會拒絕把回應當成<script>執行，四連發直接<script src>實測全部失敗，
+     fetch()對完全同一個網址卻100%成功（fetch()本身不受回應MIME類型
+     限制）。改成fetch()抓下內容→包成Blob（自己指定正確MIME type）→用
+     Blob URL當<script src>，繞過這個限制，完全比照上面sql.js的既有做法
+     （見1687行一帶）。
+
+     ?v=版本號做cache-busting——瀏覽器/CDN對沒有版本查詢字串的URL常常會
+     積極快取，之前這個AI助理密集修過好幾輪bug，每次修完都要靠使用者
+     自己記得手動強制重新整理才會真的載到新版，很容易誤以為「同一個bug
+     還沒修好」，實際上是還在跑修好之前的舊快取版本。之後每次修改
+     desktop-app分支的renderer/floating-assistant.js都要手動把這個版本號
+     往上調（沒有build流程可以自動處理），格式用YYYYMMDD-序號，同一天
+     多次修改就把序號往上加。
+
+     既有的AI助理本來就是使用者點進AI分頁才`new FloatingAssistant()`
+     （renderAiTab的一次性初始化guard）的lazy-init設計，正好適合這次改成
+     非同步等待——不像sql.js需要在頁面一開始DBMgr.init()就緒，AI助理本來
+     就有「使用者點擊才初始化」這個既有延遲，改成await一個Promise完全不
+     影響使用者體感。renderAiTab()裡實際new FloatingAssistant()那段、跟
+     下面這個FloatingAssistant.setAssetUrls呼叫，都要等這個Promise
+     resolve才能執行——見renderAiTab()裡對應的await寫法。
+
+     ⚠️URL裡的"desktop-app"出現兩次不是打錯字：實測`git ls-tree`/commit
+     log確認過，`sunneo/tw_stock_db`這個repo的實際git root其實在
+     `videos-嗨投資-desktop-app`那一層，`desktop-app`分支底下的
+     Electron app本體是放在**這個repo自己的**`desktop-app/`子資料夾
+     （不是branch名稱跟資料夾名稱剛好一樣這麼單純），所以完整路徑是
+     `.../desktop-app`(分支名)`/desktop-app`(子資料夾)`/renderer/
+     floating-assistant.js`——已實測驗證`curl`拿掉其中一個`desktop-app`
+     會是404，兩個都要保留。 -->
 <script>
-  // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js匯出PPTX/PDF/
-  // markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/CJK字型/marked/DOMPurify/
-  // KaTeX/JSZip）原本都指向公開CDN，改成覆寫成這個repo自己vendor的版本（見
-  // web/vendor/README.md），PPT/PDF等匯出功能才不會因為CDN當下打不到/被擋而
-  // 失敗。這些資源放在獨立的vendor-assets分支（只有一個commit，不佔main分支
-  // 一般commit歷史），所以一律用絕對網址，不能用相對路徑。放在<script src=
-  // floating-assistant.js>之後、任何new FloatingAssistant()實例化之前執行即可
-  // （AI助理面板是使用者真的點進AI分頁才會延遲初始化，見renderAiTab），
-  // FA_ASSET_URLS只有被覆寫的鍵值會改變，其餘鍵值繼續用floating-assistant.js
-  // 內建的CDN網址當備援。
-  (function () {
-    const VENDOR = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor';
-    if (typeof FloatingAssistant !== 'undefined' && FloatingAssistant.setAssetUrls) {
-      FloatingAssistant.setAssetUrls({
-        pptxgenjs: `${VENDOR}/pptxgenjs/pptxgen.bundle.js`,
-        pdfmake: `${VENDOR}/pdfmake/pdfmake.min.js`,
-        pdfmakeFonts: `${VENDOR}/pdfmake/vfs_fonts.js`,
-        cjkFontRegular: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-400-normal.ttf`,
-        cjkFontBold: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-700-normal.ttf`,
-        marked: `${VENDOR}/marked/marked.min.js`,
-        dompurify: `${VENDOR}/dompurify/purify.min.js`,
-        katexJs: `${VENDOR}/katex/katex.min.js`,
-        katexCss: `${VENDOR}/katex/katex.min.css`,
-        jszip: `${VENDOR}/jszip/jszip.min.js`,
-      });
-    }
-  })();
+  window.__floatingAssistantJsReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/desktop-app/renderer/floating-assistant.js?v=be5aeb35fe')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(text => new Promise((resolve, reject) => {
+      const blob = new Blob([text], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+      const s = document.createElement('script');
+      s.src = blobUrl;
+      s.onload = () => {
+        URL.revokeObjectURL(blobUrl);
+        // tw_stock_db客製: 2026-08-28使用者要求——floating-assistant.js
+        // 匯出PPTX/PDF/markdown渲染用到的外部函式庫（pptxgenjs/pdfmake/
+        // CJK字型/marked/DOMPurify/KaTeX/JSZip）原本都指向公開CDN，改成
+        // 覆寫成這個repo自己vendor的版本（見web/vendor/README.md），
+        // PPT/PDF等匯出功能才不會因為CDN當下打不到/被擋而失敗。這段
+        // 原本是緊接在<script src=floating-assistant.js>後面的獨立
+        // <script>區塊、同步執行；現在floating-assistant.js改成非同步
+        // fetch載入，這段必須搬進同一個onload callback裡才能確保
+        // FloatingAssistant類別已經真的定義好，不然typeof檢查會一直
+        // 是'undefined'、這段覆寫永遠不會生效（改動時發現的真實風險，
+        // 不是理論假設）。FA_ASSET_URLS只有被覆寫的鍵值會改變，其餘
+        // 鍵值繼續用floating-assistant.js內建的CDN網址當備援。
+        const VENDOR = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor';
+        if (typeof FloatingAssistant !== 'undefined' && FloatingAssistant.setAssetUrls) {
+          FloatingAssistant.setAssetUrls({
+            pptxgenjs: `${VENDOR}/pptxgenjs/pptxgen.bundle.js`,
+            pdfmake: `${VENDOR}/pdfmake/pdfmake.min.js`,
+            pdfmakeFonts: `${VENDOR}/pdfmake/vfs_fonts.js`,
+            cjkFontRegular: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-400-normal.ttf`,
+            cjkFontBold: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-700-normal.ttf`,
+            marked: `${VENDOR}/marked/marked.min.js`,
+            dompurify: `${VENDOR}/dompurify/purify.min.js`,
+            katexJs: `${VENDOR}/katex/katex.min.js`,
+            katexCss: `${VENDOR}/katex/katex.min.css`,
+            jszip: `${VENDOR}/jszip/jszip.min.js`,
+          });
+        }
+        resolve();
+      };
+      s.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error('floating-assistant.js 執行失敗')); };
+      document.head.appendChild(s);
+    }))
+    .catch(e => { throw new Error('floating-assistant.js 載入失敗：' + e.message); });
 </script>
 
 <script>
@@ -12431,8 +12477,16 @@ function renderDiagnosisSourceChart(opts = {}) {
    AI助理分頁（見 floating-assistant.js + AI_CAPABILITIES）
    ════════════════════════════════════════ */
 let aiConsoleInstance = null; // FloatingAssistant 只初始化一次，之後切分頁進出都沿用同一個實例
+// tw_stock_db客製: 2026-09-17——floating-assistant.js改成非同步fetch載入
+// （見window.__floatingAssistantJsReady），renderAiTab()變成async function
+// 之後，這個旗標防止「使用者快速切換分頁兩次、第一次的await還沒resolve
+// 第二次呼叫就先進來」時，aiConsoleInstance還是null（第一次還沒指派完）、
+// 兩次呼叫都通過既有guard、各自await同一個Promise、resolve後都各自new一次
+// FloatingAssistant()——用這個旗標在await之前就先擋住第二次呼叫，不是
+// 等aiConsoleInstance指派完才擋（那時已經太晚）。
+let aiTabInitializing = false;
                                // （它自己管理對話歷史/RAG/IndexedDB，重新new會遺失對話紀錄）。
-function renderAiTab() {
+async function renderAiTab() {
   if (!Settings.get('aiAssistantEnabled')) {
     R.aiTabPanel.innerHTML = '<div class="diag-empty">AI助理尚未啟用，請到設定裡的「AI助理」分頁勾選啟用。</div>';
     return;
@@ -12440,8 +12494,11 @@ function renderAiTab() {
   // 已經初始化過，畫面是mount在容器裡持續存在的，不用每次進分頁重建；
   // 建議操作訊息只在完全沒有對話/使用者輸入/suggest時才插入（見
   // floating-assistant.js的insertSuggestionChipsMessage()），單純切回這個
-  // 分頁不用做任何事。
-  if (aiConsoleInstance) return;
+  // 分頁不用做任何事。aiTabInitializing擋住「上一次呼叫的await還沒
+  // resolve、aiConsoleInstance還是null」這段期間的重複呼叫，見上面宣告
+  // 處的說明。
+  if (aiConsoleInstance || aiTabInitializing) return;
+  aiTabInitializing = true;
   // 使用者若還沒在AI設定面板自己填過API Key，預先塞一組
   // tw_stock_db_api:{sessionid} 假金鑰，讓Cloudflare Worker認得這個格式、
   // 改用worker端藏著的真金鑰代打（見 tw_stock_db_code私有repo的code/cloudflare-worker/worker.js 的
@@ -12465,6 +12522,19 @@ function renderAiTab() {
   }
   if (!localStorage.getItem('floating_ai_base_url_key')) {
     localStorage.setItem('floating_ai_base_url_key', TWSE_PROXY_BASE);
+  }
+  // tw_stock_db客製: 2026-09-17——floating-assistant.js現在是從
+  // desktop-app分支非同步fetch載入（見開頭<script>裡的
+  // window.__floatingAssistantJsReady），這裡要等它真的載完、
+  // FloatingAssistant類別真的存在，才能往下new——失敗時（網路問題/
+  // GitHub暫時打不到）要把aiTabInitializing重設回false，不然使用者
+  // 再進一次這個分頁會被guard卡住、永遠沒有機會重試。
+  try {
+    await window.__floatingAssistantJsReady;
+  } catch (err) {
+    aiTabInitializing = false;
+    R.aiTabPanel.innerHTML = `<div class="diag-empty">AI引擎載入失敗：${String(err && err.message || err)}（可能是網路問題，重新整理頁面或切換分頁再試一次）</div>`;
+    return;
   }
   // floating-assistant.js的「anchored」模式預設只在容器裡放一顆小按鈕，
   // 對話視窗要點按鈕才會展開、而且是絕對定位疊在按鈕下方一小塊，z-index
