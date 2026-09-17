@@ -3080,6 +3080,23 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
     });
 }
 
+// tw_stock_db客製: 2026-09-17使用者要求——Advance設定分頁太多、要分組
+// 展開/收合（AI一組/多媒體一組/桌面程式單機一組）。cats是分到這一組的
+// data-cat清單，順序即側欄顯示順序；「自訂函式」「檔案存取管理」使用者
+// 確認一併歸類到AI組（都是給AI用的能力，跟host是web還是桌面版無關）。
+// desktop組cats刻意留空陣列——目前沒有任何真正桌面專屬的設定項目，
+// 這一組只是先把容器/收合UI建好，等以後真的有桌面專屬設定時再填入；
+// 純網頁版不需要看到這個空group，所以預設visible:false，只有bootstrap.js
+// 呼叫setAdvancedSettingsGroupVisible('desktop', true)才會顯示（見該方法
+// 說明），呼應本次work session確立的「host專屬行為一律靠override注入、
+// 不要讓共用引擎自己猜host是誰」原則——這裡引擎完全不檢查
+// window.desktopAPI之類的全域變數，純粹由host自己決定要不要打開。
+const ADVANCED_SETTINGS_GROUPS = {
+    ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'file-access', 'subagent', 'limits'], visible: true },
+    multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice'], visible: true },
+    desktop: { label: '桌面程式/單機', cats: [], visible: false },
+};
+
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
@@ -3448,6 +3465,21 @@ class FloatingAssistant {
         this.domains = Object.fromEntries(
             Object.entries(SUBAGENT_DOMAIN_REGISTRY).map(([k, v]) => [k, { ...v }])
         );
+        // tw_stock_db客製: 2026-09-17——同一套「複製module常數成instance-level
+        // 欄位」模式，這次是Advance設定分組（見ADVANCED_SETTINGS_GROUPS/
+        // setAdvancedSettingsGroupVisible），讓每個FloatingAssistant實例可以各自
+        // 獨立開關「桌面程式/單機」這個群組要不要顯示。收合狀態不特地持久化
+        // （純UI小狀態，reload後全部預設展開即可，不值得多一份localStorage）。
+        this._advancedSettingsGroups = Object.fromEntries(
+            Object.entries(ADVANCED_SETTINGS_GROUPS).map(([k, v]) => [k, { ...v, cats: [...v.cats] }])
+        );
+        this._advancedSettingsGroupCollapsed = {};
+        // tw_stock_db客製: 2026-09-17——側欄現在會被_renderAdvancedSettings()
+        // 反覆重建innerHTML（因為要能反映setAdvancedSettingsGroupVisible()
+        // 隨時切換群組可見度），所以「目前選到哪個分頁」不能只靠DOM上的
+        // .active class（重建就消失），要記在instance欄位上，見
+        // _buildAdvancedSettingsSidebarHtml()。
+        this._advancedSettingsActiveCat = 'llm-basic';
         // tw_stock_db客製: 2026-09-13使用者要求——Advance Settings「Skill」分頁的
         // 自訂技能(advancedSettings.customTools)本來無條件掛在根層級
         // （_getRootToolNames），Skill越加越多就會把根層級system prompt/tools塞爆、
@@ -3640,6 +3672,22 @@ class FloatingAssistant {
         const suffix = String(extraText || '').trim();
         if (suffix) tool.description = `${tool.description}\n\n${suffix}`;
         this._refreshSystemPromptMessage();
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-17使用者要求——Advance設定分組後，「桌面程式/
+    // 單機」這一組目前是空的（見ADVANCED_SETTINGS_GROUPS），純網頁版不該
+    // 看到它；host（例如desktop-app的bootstrap.js）可以呼叫這個方法打開它。
+    // 跟setEnvironmentNote/setDomainNote/appendToolDescription同一種精神：
+    // 引擎本身不猜/不檢查自己是不是跑在桌面版，一律由host主動宣告。目前
+    // 只用得到'desktop'這個key，但沿用「group代號打錯直接丟錯誤」的既有
+    // 慣例，避免host以為呼叫生效、實際上卻打錯字默默沒作用。如果Advance
+    // 設定視窗當下已經是開著的，直接重繪一次讓視覺立刻反映。
+    setAdvancedSettingsGroupVisible(groupKey, visible) {
+        const group = this._advancedSettingsGroups[groupKey];
+        if (!group) throw new Error(`setAdvancedSettingsGroupVisible: group "${groupKey}" 不存在`);
+        group.visible = !!visible;
+        if (this._isModalOpen(document.getElementById('ai-advanced-modal'))) this._renderAdvancedSettings();
         return this;
     }
 
@@ -10800,6 +10848,26 @@ ${sourceTool.handlerScript}
                 color: #f8fafc;
                 font-weight: bold;
             }
+            .ai-advanced-group-header {
+                padding: 8px 12px;
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 0.03em;
+                color: #64748b;
+                cursor: pointer;
+                user-select: none;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .ai-advanced-group-header:hover { background: #1e293b; color: #94a3b8; }
+            .ai-advanced-group-arrow { font-size: 9px; }
+            .ai-advanced-group-empty {
+                padding: 8px 12px;
+                font-size: 11px;
+                color: #64748b;
+                font-style: italic;
+            }
             .ai-advanced-content {
                 flex: 1;
                 min-width: 0;
@@ -10997,10 +11065,13 @@ ${sourceTool.handlerScript}
                 }
                 .ai-advanced-sidebar {
                     width: 100%;
-                    display: flex;
-                    flex-wrap: wrap;
                     border-right: none;
                     border-bottom: 1px solid #334155;
+                }
+                .ai-advanced-group { width: 100%; }
+                .ai-advanced-group-cats {
+                    display: flex;
+                    flex-wrap: wrap;
                 }
                 .ai-advanced-cat {
                     border-left: none;
@@ -11064,6 +11135,9 @@ ${sourceTool.handlerScript}
             html[data-theme="light"] .ai-advanced-cat { color: #475569; }
             html[data-theme="light"] .ai-advanced-cat:hover { background: #e2e8f0; }
             html[data-theme="light"] .ai-advanced-cat.active { background: #e2e8f0; color: #0f172a; }
+            html[data-theme="light"] .ai-advanced-group-header { color: #64748b; }
+            html[data-theme="light"] .ai-advanced-group-header:hover { background: #e2e8f0; color: #334155; }
+            html[data-theme="light"] .ai-advanced-group-empty { color: #94a3b8; }
             html[data-theme="light"] .ai-advanced-hint { color: #64748b; }
             html[data-theme="light"] .ai-advanced-label { color: #1d4ed8; }
             html[data-theme="light"] .ai-advanced-textarea,
@@ -11615,7 +11689,49 @@ ${sourceTool.handlerScript}
         this._renderModelRowsList();
     }
 
+    // tw_stock_db客製: 2026-09-17——Advance設定分頁分組展開/收合，見
+    // ADVANCED_SETTINGS_GROUPS/setAdvancedSettingsGroupVisible的說明。獨立
+    // 抽成方法是因為要被兩處呼叫：_initUI()第一次組出整個視窗HTML時、跟
+    // _renderAdvancedSettings()每次重繪時（讓visible/collapsed狀態隨時反映
+    // 到畫面，不用等重新整理頁面）。cat的中文標籤集中寫在這裡，跟
+    // ADVANCED_SETTINGS_GROUPS的cats清單（只放代號）分開，避免同一個
+    // 標籤字串要維護兩份。
+    _buildAdvancedSettingsCatLabels() {
+        return {
+            'llm-basic': 'LLM 基礎設定', 'llm-sampling': 'LLM Model 管理', 'llm-debug': 'LLM Debug',
+            'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
+            'file-access': '檔案存取管理', 'subagent': '子Agent', 'multimedia': '多媒體',
+            'voice': '語音設定', 'limits': '效能與限制',
+        };
+    }
+
+    _buildAdvancedSettingsSidebarHtml() {
+        const catLabels = this._buildAdvancedSettingsCatLabels();
+        const activeCat = this._advancedSettingsActiveCat || 'llm-basic';
+        return Object.entries(this._advancedSettingsGroups).map(([groupKey, group]) => {
+            if (!group.visible) return '';
+            const collapsed = !!this._advancedSettingsGroupCollapsed[groupKey];
+            const catsHtml = group.cats.length
+                ? group.cats.map(cat => `<div class="ai-advanced-cat${cat === activeCat ? ' active' : ''}" data-cat="${this._escapeAttr(cat)}">${this._escapeHtml(catLabels[cat] || cat)}</div>`).join('')
+                : `<div class="ai-advanced-group-empty">（尚無設定項目）</div>`;
+            return `
+                <div class="ai-advanced-group">
+                    <div class="ai-advanced-group-header" data-group="${this._escapeAttr(groupKey)}">
+                        <span>${this._escapeHtml(group.label)}</span>
+                        <span class="ai-advanced-group-arrow">${collapsed ? '▸' : '▾'}</span>
+                    </div>
+                    <div class="ai-advanced-group-cats"${collapsed ? ' style="display:none;"' : ''}>${catsHtml}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
     _renderAdvancedSettings() {
+        // tw_stock_db客製: 2026-09-17——每次重繪都重建側欄，讓
+        // setAdvancedSettingsGroupVisible()隨時呼叫都能反映到畫面（見該方法
+        // 說明），不用等下一次整個視窗重新初始化。
+        const sidebarEl = document.getElementById('ai-advanced-sidebar');
+        if (sidebarEl) sidebarEl.innerHTML = this._buildAdvancedSettingsSidebarHtml();
         // tw_stock_db客製: 2026-09-14——API KEY/URL/MODEL NAME單一組欄位已經
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
@@ -21166,20 +21282,7 @@ ${existingNodeSummaries}
                         <button type="button" id="ai-advanced-close" class="ai-advanced-btn">關閉</button>
                     </div>
                     <div class="ai-advanced-body">
-                        <div class="ai-advanced-sidebar">
-                            <div class="ai-advanced-cat active" data-cat="llm-basic">LLM 基礎設定</div>
-                            <div class="ai-advanced-cat" data-cat="llm-sampling">LLM Model 管理</div>
-                            <div class="ai-advanced-cat" data-cat="llm-debug">LLM Debug</div>
-                            <div class="ai-advanced-cat" data-cat="input">輸入</div>
-                            <div class="ai-advanced-cat" data-cat="functions">自訂函式</div>
-                            <div class="ai-advanced-cat" data-cat="skills">Skill</div>
-                            <div class="ai-advanced-cat" data-cat="rag">RAG 知識庫</div>
-                            <div class="ai-advanced-cat" data-cat="file-access">檔案存取管理</div>
-                            <div class="ai-advanced-cat" data-cat="subagent">子Agent</div>
-                            <div class="ai-advanced-cat" data-cat="multimedia">多媒體</div>
-                            <div class="ai-advanced-cat" data-cat="voice">語音設定</div>
-                            <div class="ai-advanced-cat" data-cat="limits">效能與限制</div>
-                        </div>
+                        <div class="ai-advanced-sidebar" id="ai-advanced-sidebar">${this._buildAdvancedSettingsSidebarHtml()}</div>
                         <div class="ai-advanced-content">
                             <div class="ai-advanced-pane" data-pane="llm-basic">
                                 <div class="ai-advanced-stack">
@@ -21460,6 +21563,16 @@ ${existingNodeSummaries}
                                     </select>
                                     <p class="ai-advanced-hint">字級 0.052 大約是常見影片字幕的大小；1080p 影片就是約 56px。其餘外觀（白字黑邊、半透明底、置中換行）用內建預設。</p>
                                 </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
+                                    <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
+                                    <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-perf-mp4-duration">匯出MP4影片預設秒數</label>
+                                    <input type="number" id="ai-perf-mp4-duration" class="ai-advanced-input" min="1" step="1">
+                                    <p class="ai-advanced-hint">3D場景/2D動畫匯出MP4時的預設總秒數（沒有上限，數字越大匯出越慢、檔案也越大），匯出當下仍會跳出視窗讓你臨時調整這次要匯出多長。</p>
+                                </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="voice">
                                 <div class="ai-advanced-stack">
@@ -21517,16 +21630,6 @@ ${existingNodeSummaries}
                                     <label class="ai-advanced-label" for="ai-perf-batch-rpm">批次每分鐘請求數上限</label>
                                     <input type="number" id="ai-perf-batch-rpm" class="ai-advanced-input" min="0" max="1000">
                                     <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。這是所有model row共用的全域預設值；如果不同model row（不同端點）各自的rate limit不一樣，可以到上面「LLM Model 管理」分頁對個別row單獨填「批次每分鐘請求數上限」，該row有填時優先套用那個數字，不受這裡影響。</p>
-                                </div>
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-perf-max-mesh-triangles">匯入3D模型三角形數量上限</label>
-                                    <input type="number" id="ai-perf-max-mesh-triangles" class="ai-advanced-input" min="0" step="1">
-                                    <p class="ai-advanced-hint">STL/OBJ/3MF/FBX匯入時的三角形數量上限，超過會被拒絕；填 0 代表不限制（掃描級/CAD高面數模型也會嘗試匯入，可能拖慢畫面）。</p>
-                                </div>
-                                <div class="ai-advanced-stack">
-                                    <label class="ai-advanced-label" for="ai-perf-mp4-duration">匯出MP4影片預設秒數</label>
-                                    <input type="number" id="ai-perf-mp4-duration" class="ai-advanced-input" min="1" step="1">
-                                    <p class="ai-advanced-hint">3D場景/2D動畫匯出MP4時的預設總秒數（沒有上限，數字越大匯出越慢、檔案也越大），匯出當下仍會跳出視窗讓你臨時調整這次要匯出多長。</p>
                                 </div>
                             </div>
                         </div>
@@ -23126,14 +23229,31 @@ ${existingNodeSummaries}
         // tw_stock_db客製: Advance設定改版面太長、找不到設定為分頁式（比照
         // web/index.html的#settings-modal .modal-cat/.modal-pane同一套互動模式，
         // 這裡是floating-assistant自己的獨立CSS命名空間ai-advanced-*）。
-        document.querySelectorAll('#ai-advanced-modal .ai-advanced-cat').forEach(cat => {
-            cat.addEventListener('click', () => {
+        // tw_stock_db客製: 2026-09-17——側欄改成_buildAdvancedSettingsSidebarHtml()
+        // 動態產生、每次_renderAdvancedSettings()都可能整個重建innerHTML
+        // （見該方法說明），原本逐一綁在個別.ai-advanced-cat上的listener
+        // 重建後就會消失，改成綁在不會被重建的父層.ai-advanced-sidebar上、
+        // 用事件代理（event delegation）處理，同時這裡也一併處理新增的
+        // 群組展開/收合標題列點擊。
+        const advancedSidebarEl = document.getElementById('ai-advanced-sidebar');
+        if (advancedSidebarEl) {
+            advancedSidebarEl.addEventListener('click', (event) => {
+                const groupHeader = event.target.closest('.ai-advanced-group-header');
+                if (groupHeader) {
+                    const groupKey = groupHeader.dataset.group;
+                    this._advancedSettingsGroupCollapsed[groupKey] = !this._advancedSettingsGroupCollapsed[groupKey];
+                    advancedSidebarEl.innerHTML = this._buildAdvancedSettingsSidebarHtml();
+                    return;
+                }
+                const cat = event.target.closest('.ai-advanced-cat');
+                if (!cat) return;
+                this._advancedSettingsActiveCat = cat.dataset.cat;
                 document.querySelectorAll('#ai-advanced-modal .ai-advanced-cat').forEach(c => c.classList.toggle('active', c === cat));
                 document.querySelectorAll('#ai-advanced-modal .ai-advanced-pane').forEach(p =>
                     p.classList.toggle('hidden', p.dataset.pane !== cat.dataset.cat)
                 );
             });
-        });
+        }
         document.getElementById('ai-tool-add-btn').onclick = () => this._openToolEditor(-1);
         document.getElementById('ai-skill-export-btn').onclick = () => this._exportSkillZip();
         // tw_stock_db客製: 2026-09-16——「技能包(Skill Bundle)」清單的事件

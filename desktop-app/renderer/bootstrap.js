@@ -374,6 +374,14 @@ function patchCloudflareWording(root) {
     "[桌面版補充] 已經內建本地代理服務(local-proxy.js)，不需要另外部署Cloudflare Worker即可直接使用。"
   );
 
+  // tw_stock_db客製: 2026-09-17使用者要求——Advance設定分組後多了一個
+  // 「桌面程式/單機」群組（見floating-assistant.js的ADVANCED_SETTINGS_GROUPS/
+  // setAdvancedSettingsGroupVisible說明），目前還沒有任何真正桌面專屬的
+  // 設定項目、群組本身是空的，但先把容器打開，等以後真的有桌面專屬設定
+  // （例如#3 xterm的sandbox後端切換）時就能直接加進去，不用再補這一行。
+  // 純網頁版沒有呼叫這個方法，該群組維持隱藏（引擎預設值）。
+  fa.setAdvancedSettingsGroupVisible("desktop", true);
+
   // ---- 主題切換（見上面applyTheme的說明）----
   const themeToggleBtn = document.getElementById("topbar-theme-toggle");
   if (themeToggleBtn) {
