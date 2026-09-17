@@ -333,8 +333,45 @@ function patchCloudflareWording(root) {
   // baseSystemPrompt分開，見floating-assistant.js的說明）把這個環境事實
   // 放進每一輪system prompt（根對話+委派出去的子agent都看得到，見
   // _getGroundingContext），純網頁版完全不呼叫這個方法，維持host-agnostic。
+  // tw_stock_db客製: 2026-09-17使用者實測回報——就算有這段note，實務上還是
+  // 「有時候會忘記」（同一個使用者直接提醒一次「你是desktop app」，模型
+  // 才想起來要用fs_read_file）。追查過_refreshSystemPromptMessage()/
+  // _getGroundingContext()的程式碼本身：不管是全新對話、還原自舊對話紀錄
+  // 的system message、還是委派出去的子agent，這段note都確實有正確送進去
+  // （寫了真實的Electron環境測試＋單元測試逐一驗證過，不是code層級的
+  // bug）——問題出在原本這段文字只講抽象的「domain」概念（"desktop_ops
+  // 領域"），模型讀到「幫我算XX、跑一段程式」這類乍看跟「檔案」無關的
+  // 請求時，不會主動聯想到這句話跟這次任務有關；只有使用者的訊息裡明確
+  // 出現「檔案」「儲存」這類字眼時才會觸發聯想。改成直接點名實際工具
+  // 名稱（fs_read_file/fs_write_file/run_command）跟一個「乍看跟檔案無關
+  // 但其實需要」的具體反例（提到絕對路徑，即使只是要「執行」或「計算」）
+  // ——具體的工具名稱+反例比抽象概念更容易讓模型在非典型措辭下也聯想到
+  // 這件事適用，這是prompt salience的調整，不是邏輯bug。
   fa.setEnvironmentNote(
-    "[執行環境] 你現在執行在桌面版(Electron)應用程式裡，不是只能碰對話文字的純網頁小工具——有能力透過delegate_to_subagent委派給desktop_ops領域，直接讀寫這台電腦上使用者帳號權限碰得到的任何真實檔案、執行系統指令(run_command)、操作持久化終端機session(tmux_*)。使用者要求存檔案、讀取本機資料、跑指令、或做任何「這台電腦上」的操作時，不要假設自己做不到就直接拒絕或回答「我沒有檔案存取能力」——應該考慮委派desktop_ops處理，實際權限/確認機制由那邊的工具自己把關。"
+    "[執行環境] 你現在執行在桌面版(Electron)應用程式裡，不是只能碰對話文字的純網頁小工具——有能力透過delegate_to_subagent委派給desktop_ops領域，直接呼叫fs_read_file/fs_write_file/fs_list_files等工具讀寫這台電腦上使用者帳號權限碰得到的任何真實檔案、用run_command執行系統指令、用tmux_*操作持久化終端機session。這件事不是只有「使用者明講要存檔/讀檔」時才相關——任何時候只要任務裡出現一個真實磁碟絕對路徑（例如\"/home/user/xxx.py\"），即使表面上是要你「執行」「計算」「跑一下」看起來跟檔案無關，也代表你需要先取得那個路徑目前的真實內容，不要假設自己做不到就直接拒絕或回答「我沒有檔案存取能力/只能在隔離沙盒裡運作」——委派給code_execution執行程式時同理，那個domain的bash_execute/python_execute工具本身有real_input_files參數可以直接指定真實絕對路徑、不需要另外委派desktop_ops。"
+  );
+
+  // tw_stock_db客製: 2026-09-17使用者要求——web/floating-assistant.js（web/
+  // desktop共用引擎）裡bash_execute/python_execute/fetch_web_page這幾個
+  // 工具的description本來直接寫死提到「桌面版」/「純網頁版」，使用者
+  // 明確要求共用檔案不該出現特定host的字眼、這類補充說明要走override/
+  // 外掛機制注入——這裡用引擎新提供的appendToolDescription()（跟
+  // setEnvironmentNote/setDomainNote同一批公開API，見floating-assistant.js
+  // 裡三個方法各自的說明）把「這台桌面app具體怎麼支援real_input_files/
+  // output_ref/CORS代理」這些桌面專屬細節，從host端補充到工具description
+  // 後面，引擎本身的文字維持完全host中立（只描述「如果目前環境有提供
+  // 這個能力」，不假設也不排除任何host）。
+  fa.appendToolDescription(
+    "bash_execute",
+    "[桌面版補充] real_input_files會透過fs_read_file讀取這台電腦上的真實檔案；output_ref可以直接給一個真實磁碟絕對路徑，會透過fs_write_file寫入。"
+  );
+  fa.appendToolDescription(
+    "python_execute",
+    "[桌面版補充] real_input_files會透過fs_read_file讀取這台電腦上的真實檔案；output_ref可以直接給一個真實磁碟絕對路徑，會透過fs_write_file寫入。"
+  );
+  fa.appendToolDescription(
+    "fetch_web_page",
+    "[桌面版補充] 已經內建本地代理服務(local-proxy.js)，不需要另外部署Cloudflare Worker即可直接使用。"
   );
 
   // ---- 主題切換（見上面applyTheme的說明）----
