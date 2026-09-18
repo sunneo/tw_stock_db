@@ -1111,6 +1111,23 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['git_clone', 'git_pull', 'git_status', 'git_log', 'git_commit', 'git_push'],
         systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。這些工具跟fap_*系列共用同一套File Access Point權限機制——目標資料夾如果沒有授權，呼叫時會自動跳出授權對話框讓使用者當場點擊，呼叫會停在那裡等回應，不用先叫使用者去Advance Settings。',
     },
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——新增
+    // 「研究」domain，跟file_access_points/git_operations/桌面版desktop_ops
+    // 這幾個「真的會動手寫入/執行」的domain刻意分開：這個domain只給讀取類
+    // 工具（fap_write_file/fap_copy_from_storage/fap_download_url、桌面版
+    // 的fs_write_file/fs_remove/run_command都不在這裡），系統提示的第一件
+    // 事是判斷使用者要的是「修改/實作」還是「分析/理解」，前者要主動指出
+    // 該改委派給有寫入能力的domain，不要越權動手改。desktop限定的fs_*讀取
+    // 工具跟目前workspace目錄提示由bootstrap.js在fa建構完成後用
+    // register_domain()疊加（見該檔案「research」domain擴充那段的說明），
+    // 這裡先定義web+desktop都適用的基礎版本（FAP唯讀工具+既有的檔案摘要
+    // 工具），讓網頁版一樣能用。
+    research: {
+        enabled: true,
+        label: '研究／程式碼與檔案分析（唯讀，不修改/不執行）',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
+        systemPrompt: '你是一個專門做「研究/分析」的子任務助理——讀懂一批檔案（原始碼、文件、設定檔）並產出理解/報告，刻意不給任何寫入/執行類工具（不能寫入File Access Point、不能執行程式）。**收到任務的第一件事：判斷使用者真正想要的是「修改/實作」還是「分析/理解」**。如果任務明顯是要新增功能、修bug、改程式碼、寫新檔案，那不是這個domain該做的事——直接在回應裡明確指出「這個任務需要實際修改/執行，不是單純分析」，讓委派端知道應該改委派給有寫入能力的domain（File Access Point用file_access_points，桌面版真實磁碟用desktop_ops），不要自己勉強上，也不要因為手上沒有寫入工具就直接放棄不回答。如果任務是要看懂/摘要/抓出設計脈絡/找出可能的問題點，才是這個domain的範圍：先用list_file_access_points/fap_list_files摸清楚有哪些檔案跟目錄結構，再用fap_read_file/fap_find_file實際讀取內容——大檔案改用summarize_large_text，不要自己手動分段閱讀；使用者上傳的檔案用list_uploaded_files/parse_uploaded_file。花時間多讀、多思考再給出有條理的分析結論，不要只憑檔名/目錄結構猜測內容、也不要看了一兩個檔案就倉促下結論。',
+    },
     drawing: {
         enabled: true,
         label: '通用繪圖',

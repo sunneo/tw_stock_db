@@ -1140,6 +1140,29 @@ function patchCloudflareWording(root) {
     "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
+  // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——
+  // floating-assistant.js的SUBAGENT_DOMAIN_REGISTRY已經定義了web+desktop
+  // 都適用的「research」domain基礎版（FAP唯讀工具），這裡疊加桌面版限定
+  // 的唯讀真實檔案系統工具（fs_read_file/fs_list_files/fs_find_file/
+  // fs_stat——刻意不含fs_write_file/fs_remove/run_command，這個domain的
+  // 精神就是「只讀不動手」）。用「先讀現有toolNames、合併、整段
+  // register_domain()寫回去」的方式疊加，不是憑空覆寫——這樣才不會把
+  // floating-assistant.js已經定義好的FAP工具跟systemPrompt整段蓋掉，跟
+  // desktop_ops是全新domain（可以直接整段定義）不同，這裡是在既有domain
+  // 上疊加桌面限定能力。fs_*這幾個名稱已經在上面被加進_domainGatedToolNames
+  // 了（跟desktop_ops共用同一份桌面工具，不用再加一次）。
+  {
+    const baseResearch = fa.domains.research || { toolNames: [], systemPrompt: '' };
+    const desktopReadOnlyTools = ["fs_read_file", "fs_list_files", "fs_find_file", "fs_stat"];
+    fa.register_domain("research", {
+      enabled: true,
+      label: baseResearch.label || '研究／程式碼與檔案分析（唯讀，不修改/不執行）',
+      toolNames: [...new Set([...(baseResearch.toolNames || []), ...desktopReadOnlyTools])],
+      systemPrompt: baseResearch.systemPrompt + `\n\n[桌面版補充] 這台電腦目前跑的是${platformLabel}，除了FAP唯讀工具，也可以用fs_read_file/fs_list_files/fs_find_file/fs_stat直接讀取任意真實磁碟絕對路徑（不需要先授權/註冊資料夾）——同樣是唯讀，這個domain完全沒有fs_write_file/fs_remove/run_command。任務裡如果提到相對路徑、或沒有明確給出根目錄，先參考目前的workspace目錄（見下面動態補充的實際路徑）當作起點。`,
+    });
+    fa.setDomainNote("research", () => `目前workspace目錄：${activeWorkspaceFolder || '（尚未設定）'}`);
+  }
+
   // ---- 頂部列：執行程式開關 ----
   const settings = await window.desktopAPI.exec.getSettings();
   const execEnabledChk = document.getElementById("topbar-exec-enabled");
