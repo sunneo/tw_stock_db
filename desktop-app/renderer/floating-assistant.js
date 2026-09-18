@@ -4083,6 +4083,14 @@ class FloatingAssistant {
             // systemPrompt, enabled}。見_syncCustomDomains()怎麼把這些轉成
             // 真正的register_domain()呼叫。
             customDomains: [],
+            // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第7項）
+            // ——「主domain偏好」，見_getDomainPreferenceNote()/
+            // _getDomainPreferenceRoutingHint()的說明：留空key＝沒有偏好
+            // （既有行為，不影響任何人）；設定後同時影響(1)路由權重——多個
+            // 領域都符合、界線不明確時優先偏向這個領域(2)回應風格——這個
+            // 領域相關的任務，AI應該優先寫檔案/實際操作，不要把程式碼當
+            // 聊天內容直接貼在對話裡當答案。
+            primaryDomainPreference: '',
             // tw_stock_db客製: 2026-09-16使用者要求「Skill Sandbox」——把
             // 蒸餾出來的模型知識/風格（例如GPT Codex風格的coding skill）
             // 變成一個subagent會真正扮演的persona，而不是只掛幾個JS工具。
@@ -4983,6 +4991,7 @@ class FloatingAssistant {
             customTools,
             skillBundles,
             customDomains,
+            primaryDomainPreference: String(raw.primaryDomainPreference || '').trim(),
             aiCustomFunctions,
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
@@ -9679,8 +9688,30 @@ ${fnData.code}
     // 那條路徑完全繞過_getFinalSystemPrompt()）都呼叫這一個函式，之後如果
     // 還有新的「每輪都該知道」的事實，只要改這裡一個地方，兩條路徑會一起
     // 生效，不會重演「日期只有根對話知道、子agent不知道」這種不同步。
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第7項）——
+    // 「主domain偏好」的回應風格那一半：跟setEnvironmentNote同一種「每輪
+    // 都該知道的事實」，放進_getGroundingContext()讓根對話跟每個
+    // 委派出去的子agent都看得到（不是只影響被選中的那個domain本身，因為
+    // 使用者的意圖是「整體回應風格」偏向實際動手，不是狹義的「只有這個
+    // domain才這樣做」）。留空key（沒有偏好，預設值）或key對不到任何目前
+    // 存在的domain時直接回傳空字串，維持既有行為不變。
+    _getDomainPreferenceNote() {
+        const key = String(this.advancedSettings.primaryDomainPreference || '').trim();
+        if (!key || !this.domains[key]) return '';
+        const label = this.domains[key].label || key;
+        return `[主領域偏好] 使用者設定的主要偏好領域是「${label}」。跟這個領域相關的任務，優先採取實際行動完成（寫檔案/呼叫工具/實際操作），不要只是把程式碼、腳本、或最終結果貼在對話文字裡當作答案交差。`;
+    }
+
+    // 路由用的版本（措辭不同，focus在「選哪個domain」而不是「回應風格」），
+    // _routeTaskToDomains/_routeTaskHierarchical的router prompt共用。
+    _getDomainPreferenceRoutingHint() {
+        const key = String(this.advancedSettings.primaryDomainPreference || '').trim();
+        if (!key || !this.domains[key]) return '';
+        return `\n使用者設定了主要偏好領域：[${key}] ${this.domains[key].label || key}。如果任務同時符合多個領域、界線不是很明確時，優先偏向選擇這個領域。`;
+    }
+
     _getGroundingContext() {
-        return [this._getCurrentDateTimeContext(), this.environmentNote].filter(Boolean).join('\n\n');
+        return [this._getCurrentDateTimeContext(), this.environmentNote, this._getDomainPreferenceNote()].filter(Boolean).join('\n\n');
     }
 
     _getFinalSystemPrompt() {
@@ -11936,8 +11967,18 @@ ${sourceTool.handlerScript}
         descInput.value = tool ? tool.description : '';
         scriptInput.value = tool ? tool.handlerScript : this._getDefaultToolHandlerScript();
         if (bundleSelect) {
+            // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第6項）——
+            // 「choose domain（像MediaWiki的category一樣，可選現有的、也可以
+            // create new）」。這裡的「domain」對應到既有的Skill Bundle（每個
+            // skill bundle本身就是一個skill_<id> domain，見
+            // _syncSkillBundleDomains），選單本來就是「選現有的」，這裡補上
+            // MediaWiki風格的「打新名稱直接建立」——選單最後加一個特殊選項，
+            // 選中時觸發下面_wireEventListeners()裡的change handler跳
+            // prompt()問名稱、當場建立新skill bundle並自動選中它，不用先跳出
+            // 編輯器去「Skill」分頁另外建立再回來選。
             const options = ['<option value="">（未分類）</option>']
-                .concat(this.advancedSettings.skillBundles.map(b => `<option value="${this._escapeHtml(b.id)}">${this._escapeHtml(b.name)}</option>`));
+                .concat(this.advancedSettings.skillBundles.map(b => `<option value="${this._escapeHtml(b.id)}">${this._escapeHtml(b.name)}</option>`))
+                .concat(['<option value="__create_new__">➕ 建立新的技能包(Domain)...</option>']);
             bundleSelect.innerHTML = options.join('');
             bundleSelect.value = (tool && tool.skillBundleId) || '';
         }
@@ -11958,10 +11999,22 @@ ${sourceTool.handlerScript}
     // 介面，混進這裡的通用清單只會造成兩份UI互相打架/困惑，使用者該去
     // 「Skill」分頁管理技能包本身。
     _renderDomainList() {
-        const list = document.getElementById('ai-domain-list');
-        if (!list) return;
         const customKeys = new Set(this.advancedSettings.customDomains.map(d => d.key));
         const entries = Object.entries(this.domains).filter(([key]) => !key.startsWith('skill_'));
+        // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第7項）——
+        // 「主Domain偏好」選單的候選值就是目前存在的domain，跟下面的domain
+        // 清單共用同一份entries、同一個重繪時機（domain新增/刪除/改名後，
+        // 這個選單也該跟著更新候選值），放在同一個方法裡處理。
+        const preferenceSelect = document.getElementById('ai-primary-domain-preference');
+        if (preferenceSelect) {
+            const currentPref = this.advancedSettings.primaryDomainPreference || '';
+            const options = ['<option value="">（沒有偏好）</option>']
+                .concat(entries.map(([key, d]) => `<option value="${this._escapeAttr(key)}">${this._escapeHtml(d.label || key)}</option>`));
+            preferenceSelect.innerHTML = options.join('');
+            preferenceSelect.value = entries.some(([key]) => key === currentPref) ? currentPref : '';
+        }
+        const list = document.getElementById('ai-domain-list');
+        if (!list) return;
         if (!entries.length) { list.innerHTML = `<div class="ai-advanced-tool-empty">目前沒有任何domain。</div>`; return; }
         list.innerHTML = entries.map(([key, d]) => {
             const isCustom = customKeys.has(key);
@@ -22433,6 +22486,7 @@ ${existingNodeSummaries}
             // 引導（零額外LLM往返成本），沒有另外加一輪「驗證夠不夠」的呼叫，
             // 真正的保險是_runSubAgentTask的request_additional_tools機制。
             '如果任務包含多個階段（例如先查詢/研究、再產生設計或報告），請把預期會用到的領域一次全部選出來，不要只選第一步用得到的；不確定某個領域會不會用到時，傾向選進來而不是保守省略。',
+            this._getDomainPreferenceRoutingHint(),
             '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
         ].join('\n');
 
@@ -22488,6 +22542,7 @@ ${existingNodeSummaries}
             '',
             '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些「類別」（可以是0個、1個、或多個，選中的類別之後會再問你一次細分領域）、以及需要用到哪個或哪些「獨立領域」代號（如果有的話）。',
             '如果任務包含多個階段（例如先查詢/研究、再產生設計或報告），請把預期會用到的類別/獨立領域一次全部選出來，不要只選第一步用得到的；不確定時傾向選進來而不是保守省略。',
+            this._getDomainPreferenceRoutingHint(),
             '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"categories": ["類別代號1"], "domains": ["獨立領域代號1"]}',
         ].filter(Boolean).join('\n');
 
@@ -23543,6 +23598,11 @@ ${existingNodeSummaries}
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="domains">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label" for="ai-primary-domain-preference">主Domain偏好</label>
+                                    <select id="ai-primary-domain-preference" class="ai-advanced-input"></select>
+                                    <p class="ai-advanced-hint">設定後同時影響兩件事：(1) 委派時的路由權重——任務同時符合多個領域、界線不明確時優先偏向這個領域；(2) 回應風格——跟這個領域相關的任務，AI會優先寫檔案/實際操作，不會只把程式碼或結果貼在對話文字裡當作答案。留空＝沒有偏好（預設，不影響任何行為）。</p>
+                                </div>
                                 <div class="ai-advanced-stack">
                                     <div style="display:flex; align-items:center; justify-content:space-between;">
                                         <label class="ai-advanced-label" style="margin:0;">目前的Domain（委派/路由的專家領域）</label>
@@ -25435,6 +25495,25 @@ ${existingNodeSummaries}
             });
         }
         document.getElementById('ai-tool-add-btn').onclick = () => this._openToolEditor(-1);
+        // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第6項）——
+        // 見_openToolEditor()裡「➕ 建立新的技能包(Domain)...」選項的說明，
+        // 選中這個特殊值時當場跳prompt()問名稱、建立新skill bundle並自動
+        // 選中它（MediaWiki風格「打新名稱直接建立」，不用先跳出編輯器）。
+        const toolBundleSelect = document.getElementById('ai-tool-skill-bundle-select');
+        if (toolBundleSelect) {
+            toolBundleSelect.addEventListener('change', () => {
+                if (toolBundleSelect.value !== '__create_new__') return;
+                const name = (prompt('幫這個新技能包(Domain)取一個名稱：', '') || '').trim();
+                if (!name) { toolBundleSelect.value = ''; return; }
+                const newId = this._createSkillBundle(name, ''); // 內部已經呼叫過_syncSkillBundleDomains()/_saveAdvancedSettings()
+                this._renderSkillBundleList();
+                const options = ['<option value="">（未分類）</option>']
+                    .concat(this.advancedSettings.skillBundles.map(b => `<option value="${this._escapeHtml(b.id)}">${this._escapeHtml(b.name)}</option>`))
+                    .concat(['<option value="__create_new__">➕ 建立新的技能包(Domain)...</option>']);
+                toolBundleSelect.innerHTML = options.join('');
+                toolBundleSelect.value = newId;
+            });
+        }
         document.getElementById('ai-skill-export-btn').onclick = () => this._exportSkillZip();
         // tw_stock_db客製: 2026-09-16——「技能包(Skill Bundle)」清單的事件
         // 綁定。編輯知識/人設用一個獨立的小彈窗（不是code editor，純文字），
@@ -25652,6 +25731,13 @@ ${existingNodeSummaries}
         // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
         // Domain管理UI的按鈕/事件代理，跟上面Skill Custom Tool編輯器同一套
         // 「開/關modal、儲存、清單用事件代理處理edit/delete/toggle」慣例。
+        const primaryDomainPreferenceSelect = document.getElementById('ai-primary-domain-preference');
+        if (primaryDomainPreferenceSelect) {
+            primaryDomainPreferenceSelect.addEventListener('change', () => {
+                this.advancedSettings.primaryDomainPreference = primaryDomainPreferenceSelect.value;
+                this._saveAdvancedSettings();
+            });
+        }
         document.getElementById('ai-domain-add-btn').onclick = () => this._openDomainEditor(null);
         document.getElementById('ai-domain-editor-close').onclick = () => this._closeDomainEditor();
         document.getElementById('ai-domain-editor-cancel').onclick = () => this._closeDomainEditor();
@@ -26233,11 +26319,18 @@ ${existingNodeSummaries}
                 return;
             }
             const bundleSelect = document.getElementById('ai-tool-skill-bundle-select');
+            // tw_stock_db客製: 防禦性寫法——正常流程下change handler會在建立
+            // 新技能包後立刻把選單值換成真正的id，'__create_new__'這個字面
+            // 值理論上不會存到這裡；萬一使用者用prompt()取消建立卻選單值
+            // 沒被reset就直接按儲存，這裡當成未分類，不要把這個無意義的字串
+            // 存成skillBundleId（會讓工具在任何domain底下都篩選不到，悄悄
+            // 消失叫不到）。
+            const bundleIdValue = bundleSelect && bundleSelect.value !== '__create_new__' ? bundleSelect.value : '';
             const nextTool = this._normalizeCustomTool({
                 name,
                 description: toolDescInput.value,
                 handlerScript: toolScriptInput.value,
-                skillBundleId: bundleSelect ? bundleSelect.value : null,
+                skillBundleId: bundleIdValue,
             }, name);
             if (this.activeToolEditIndex >= 0) {
                 this.advancedSettings.customTools.splice(this.activeToolEditIndex, 1, nextTool);
