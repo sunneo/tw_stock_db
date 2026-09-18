@@ -26,6 +26,7 @@
 //     明確要求、拿confirm對話框當唯一防線換來的能力，不是預設偷偷放寬。
 "use strict";
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
+app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 const path = require("path");
 const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
@@ -1179,12 +1180,51 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  // tw_stock_db客製: 2026-09-18使用者要求的xterm終端機功能——wasi-sh的
+  // spawn()（互動式shell session，見floating-assistant.js規劃中的terminal
+  // widget）需要SharedArrayBuffer，瀏覽器只有在頁面「cross-origin isolated」
+  // 時才會啟用這個API（安全考量，避免Spectre類側路攻擊）。這裡幫每個
+  // 回應補上COOP/COEP標頭是啟用cross-origin isolation的標準作法（跟
+  // web/index.html在GitHub Pages上用coi-serviceworker做同一件事），
+  // webRequest對file://載入的回應確實會觸發（實測確認onHeadersReceived
+  // 真的有被呼叫、標頭也真的被加上去）。**但實測發現這樣還不夠**：
+  // Electron的BrowserWindow用loadFile()載入file://頁面時，即使補上這兩個
+  // 標頭，`crossOriginIsolated`仍然是false（用一次性debug hook
+  // FA_DEBUG_COI_TEST實測確認）——file://的origin模型似乎不會走到瀏覽器
+  // 正常計算cross-origin isolation狀態的那條路徑，跟http(s)://不一樣。
+  // 加上`app.commandLine.appendSwitch('enable-features','SharedArrayBuffer')`
+  // 之後SharedArrayBuffer建構子確實出現了，但crossOriginIsolated依然是
+  // false——而wasi-sh的spawn()明確檢查`crossOriginIsolated===false`就直接
+  // 拒絕執行，所以目前這樣還不足以讓spawn()真正動起來。這兩行（COOP/COEP
+  // 標頭+SharedArrayBuffer feature flag）保留著當作已知必要但不足的兩塊
+  // 拼圖，真正解法很可能需要不再用loadFile()/file://載入（例如改用
+  // 自訂protocol.handle()註冊的scheme，或本機HTTP server＋loadURL）——
+  // 這是會影響開機載入流程的架構層決定，還沒有實作，見跟使用者的討論。
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Cross-Origin-Opener-Policy": ["same-origin"],
+        "Cross-Origin-Embedder-Policy": ["require-corp"],
+      },
+    });
+  });
   if (process.env.FA_DEBUG_CONSOLE) {
     mainWindow.webContents.on("console-message", (_evt, level, message, line, sourceId) => {
       console.log(`[renderer console] ${message} (${sourceId}:${line})`);
     });
   }
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  if (process.env.FA_DEBUG_COI_TEST) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        const info = await mainWindow.webContents.executeJavaScript(
+          `JSON.stringify({ sab: typeof SharedArrayBuffer, coi: typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : null })`
+        );
+        console.log("[coi-test] " + info);
+      }, 500);
+    });
+  }
   if (process.env.FA_DEBUG_LAYOUT) {
     mainWindow.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
