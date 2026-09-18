@@ -13034,12 +13034,21 @@ ${sourceTool.handlerScript}
         if (cmdName === 'help') {
             session.term.write([
                 '內建指令：cd/pwd/clear/exit/help（這幾個在JS層處理，維護跨指令的工作目錄狀態）',
+                'ask-floating-ai-assistant [--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
                 '⚠️top目前還沒有對應的bundle（見registerTerminalProgram），會回報「找不到這個指令」',
             ].join('\r\n') + '\r\n');
             return;
         }
         if (cmdName === 'cd') { await this._terminalCd(session, restArgs || '/work'); return; }
+        // tw_stock_db客製: 2026-09-18使用者要求——「xterm環境要新增一個虛擬的
+        // 程式自動註冊在PATH內，叫做ask-floating-ai-assistant」「行為相當於
+        // FloatingAssistantApp -p」「這是一個獨特的功能，在網頁的虛擬環境內
+        // 可以利用LLM Model來回應，做些特別的程式或判斷」。跟cd/pwd同一種
+        // JS層攔截（不是真的丟給busybox執行，busybox裡沒有、也不可能有這個
+        // 指令），因為這裡要做的事（打一次LLM API、等回應）完全不是busybox
+        // shell的能力範圍，攔截在這裡直接處理最直接。
+        if (cmdName === 'ask-floating-ai-assistant') { await this._terminalAskAI(session, restArgs); return; }
 
         let bundleMod = null;
         try {
@@ -13104,6 +13113,81 @@ ${sourceTool.handlerScript}
             session.cwd = result.stdout.trim();
         } else {
             session.term.write(`\x1b[31mcd: ${target}: 找不到這個目錄\x1b[0m\r\n`);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——ask-floating-ai-assistant虛擬
+    // 指令的實際處理。使用者實測回報+多次糾正確立的最終規格：
+    // (1)「那個回應500是不被接受的」「他的邏輯必須跟FloatingAssistantApp
+    //     本體一樣」「跟floating-assistant.js一樣」——失敗要有跟主對話一樣
+    //     的重試耐受度，不能一撞到暫時性錯誤就放棄。
+    // (2)「體驗上必須完全跟cli版本一致」，追問後確認：cli模式
+    //     （FloatingAssistantApp -p）實際上跑的是完整agentic loop（會叫
+    //     工具、多輪對話），不是單次純文字問答——「需要完整agentic loop，
+    //     跟_runSubAgentTask同等級」。
+    // 這兩點合起來，最忠實的做法不是自己另外兜一份重試/agentic邏輯，而是
+    // 直接重用delegate_to_subagent工具本身在domain留空時呼叫的同一個方法
+    // ——_delegateToSubagentAuto()：自動路由到相關領域、真正呼叫
+    // _runSubAgentTask()（多輪、可呼叫工具、同一套retryLimit/組內
+    // round-robin fallback），回傳格式跟這個方法的其他呼叫端完全一致。
+    // 這裡完全不用自己管理重試/工具/路由——那些全部是_delegateToSubagentAuto
+    // 既有的責任，跟主對話用的是同一份實作，天然滿足「一致」的要求。
+    // 等待期間的心跳訊息（灰階、模擬「思考都在stderr」的視覺效果）刻意
+    // 抄main.js runCliPrompt()的CLI心跳格式（每5秒一次、同樣的文字），
+    // 呼應「完全跟cli版本一致」這個明確要求。
+    async _terminalAskAI(session, argsText) {
+        let format = 'text';
+        let rest = String(argsText || '');
+        const formatMatch = rest.match(/^--format[=\s]+(\S+)\s*/);
+        if (formatMatch) {
+            format = formatMatch[1].toLowerCase();
+            rest = rest.slice(formatMatch[0].length);
+        }
+        const prompt = rest.trim();
+        if (!prompt) {
+            session.term.write('usage: ask-floating-ai-assistant [--format text|json] <問題文字>\r\n');
+            return;
+        }
+        if (format !== 'text' && format !== 'json') {
+            session.term.write(`\x1b[31mask-floating-ai-assistant: 不支援的格式「${format}」，只支援text/json\x1b[0m\r\n`);
+            return;
+        }
+
+        const startedAt = Date.now();
+        let heartbeatSeconds = 0;
+        const heartbeat = setInterval(() => {
+            heartbeatSeconds += 5;
+            session.term.write(`\x1b[90m[thinking] ⏳ 等待 AI 回應中…（已經過 ${heartbeatSeconds} 秒）\x1b[0m\r\n`);
+        }, 5000);
+
+        let delegated;
+        try {
+            delegated = await this._delegateToSubagentAuto(prompt);
+        } catch (err) {
+            clearInterval(heartbeat);
+            session.term.write(`\x1b[31mask-floating-ai-assistant: ${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        clearInterval(heartbeat);
+
+        if (!delegated.ok) {
+            session.term.write(`\x1b[31mask-floating-ai-assistant: ${delegated.error || '未知錯誤'}\x1b[0m\r\n`);
+            return;
+        }
+        const answer = String(delegated.result != null ? delegated.result : (delegated.note || '')).trim();
+        if (!answer) {
+            session.term.write('\x1b[33mask-floating-ai-assistant: 沒有取得任何文字結果（可以重打一次試試）\x1b[0m\r\n');
+            return;
+        }
+        if (format === 'json') {
+            const envelope = {
+                ok: true, prompt, response: answer,
+                domains: Array.isArray(delegated.domains) ? delegated.domains : [],
+                elapsed_ms: Date.now() - startedAt,
+            };
+            session.term.write(JSON.stringify(envelope) + '\r\n');
+        } else {
+            session.term.write(answer + '\r\n');
         }
     }
 

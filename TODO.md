@@ -23,7 +23,8 @@
 - [ ] `top`：因為沒有其他process可列，考慮直接不做或做一個只顯示假資訊/session資訊的版本——**還沒開始**
 - [ ] 新Configure分頁：xterm設定——字體、字體大小、column數、可回捲行數、要不要scroll to output、佈景主題（system跟隨外部theme／ubuntu／powershell／黑底白字／白底黑字）——**目前完全沒有UI，字體/大小/主題都是寫死的預設值**
 - [ ] 終端機後端切換設定：優先WASM模擬器 vs 使用者真實系統shell（網頁版只能選模擬器）——**目前只有WASM emulator這一條路徑，真實系統shell backend還沒做**；使用者已確認：真實shell backend走真正的OS pty，vim/top/less應該原生就能動，不需要這裡的intercept/bundle機制
-- [ ] 新增虛擬CLI工具`ask-floating-ai-assistant`，自動註冊在xterm環境的PATH裡：行為等同`FloatingAssistantApp -p`，可指定回應格式[text,json]，阻塞等待回應，所有思考過程走stderr；WASM模擬器跟真實shell都要能用到——**還沒開始**，架構上應該做成一個JS層攔截的指令（跟cd/pwd同一種模式），不是真的丟進busybox執行
+- [x] `ask-floating-ai-assistant`：JS層攔截指令（`_terminalAskAI`），`[--format text|json] <問題>`語法。**設計經過兩次使用者糾正定案**：一開始做成獨立單次LLM問答（`_runIsolatedLlmCompletion`，無重試），使用者回報「那個回應500是不被接受的」+「他的邏輯必須跟FloatingAssistantApp本體一樣/跟floating-assistant.js一樣」+「體驗上必須完全跟cli版本一致」（追問確認：cli模式其實跑的是完整agentic loop，會叫工具、多輪對話，「跟_runSubAgentTask同等級」）。改成直接重用`delegate_to_subagent`工具domain留空時呼叫的同一個方法`_delegateToSubagentAuto()`（自動路由＋`_runSubAgentTask`的多輪/工具呼叫/`this.retryLimit`同一套重試），`_runIsolatedLlmCompletion`整個刪除。等待期間的心跳訊息刻意抄`main.js`的`runCliPrompt()`CLI心跳格式（每5秒一次、同樣文字），呼應「完全跟cli版本一致」。`--format json`輸出格式（ok/prompt/response/domains/elapsed_ms）比照`cli-format.js`的欄位精神。已驗證：一般問答、`--format json`（確認旗標不會混進prompt文字）、路由失敗錯誤、空結果警告、心跳確實每5秒觸發一次且完成後正確清除（沒有殘留interval）。**WASM emulator已支援；真實shell backend還沒做（backend本身都還沒做）**
+- [ ] 終端機資源管理：一個對話裡可能同時存在多個`/run-terminal`嵌入的session（每個都是一個活的xterm.js instance），長對話裡要有政策控制，避免無限制累積吃資源（使用者原話：「避免產生無數多的terminal shell loop吃光畫面的資源」）。**已確認**：在xterm Configure分頁裡設定，選項是viewport內／不限制／數量上限（預設3）／only on focus，**預設值是only on focus**（只有真的聚焦互動時才算「活的」，其餘session畫面內容保留但暫停/不佔用主動資源）。跟上面的xterm Configure分頁一起做，**還沒開始實作**
 
 ## Phase 3 — Domain / Subagent 架構
 
