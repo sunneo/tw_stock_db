@@ -2381,6 +2381,22 @@ const FA_ASSET_URLS = {
     // 不受mimetype限制，兩邊來源都直接fetch()+arrayBuffer()即可。
     bashWasmJsBase: 'https://cdn.jsdelivr.net/npm/wasi-sh@0.11.0/',
     bashWasmBackupBase: 'https://raw.githubusercontent.com/sunneo/tw_stock_db/bash-wasm-backup/wasi-sh/',
+    // tw_stock_db客製: 2026-09-18使用者網頁版實測回報——vim/less/top這些
+    // terminal-programs/*.mjs bundle在desktop版用相對路徑import()沒問題
+    // （floating-assistant.js跟這些檔案同一個真實目錄），但網頁版的
+    // floating-assistant.js是fetch()回來的文字包成Blob URL當<script src>
+    // 執行的（見web/index.html的說明），blob: URL沒有路徑階層可以拿來解析
+    // 相對路徑，相對import()在那個環境下100%失敗（"Failed to resolve
+    // module specifier"）。這裡當退路：跟web/index.html載入
+    // floating-assistant.js本體同一個repo/branch/子資料夾路徑規則（見該檔案
+    // 說明——分支名跟repo自己的子資料夾剛好都叫desktop-app，不是打錯字），
+    // 差別是這裡用jsDelivr的GitHub CDN（/gh/user/repo@branch/path），不是
+    // raw.githubusercontent.com——已實測curl確認content-type是
+    // application/javascript，import()可以直接吃，不需要再像wasi-sh backup
+    // 那樣額外包Blob URL繞過nosniff。見_ensureTerminalProgramLoaded()的
+    // 使用方式：相對路徑失敗時才退到這裡，桌面版平常用不到、不會多打這個
+    // 網路請求。
+    terminalProgramsBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@desktop-app/desktop-app/renderer/',
     // python: Pyodide（CPython編譯成wasm32-emscripten，業界標準的瀏覽器端
     // Python），npm套件pyodide@314.0.7一樣直接吃jsDelivr的npm鏡射（classic
     // global-attaching的pyodide.js，跟其餘vendored函式庫同一種
@@ -12896,11 +12912,32 @@ ${sourceTool.handlerScript}
         // 相對路徑（內建bundle）或使用者自己註冊的其他絕對網址則原樣
         // 使用者可能刻意指到一個不需要proxy的位置，這裡只挑http(s)://
         // 開頭的才轉，不是所有絕對網址都轉。
-        const resolvedUrl = /^https?:\/\//i.test(url) ? this._viaAssetProxy(url) : url;
-        const mod = await import(/* webpackIgnore: true */ resolvedUrl);
-        if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
-        this._terminalProgramModules[name] = mod;
-        return mod;
+        if (/^https?:\/\//i.test(url)) {
+            const mod = await import(/* webpackIgnore: true */ this._viaAssetProxy(url));
+            if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
+            this._terminalProgramModules[name] = mod;
+            return mod;
+        }
+        // tw_stock_db客製: 2026-09-18使用者網頁版實測回報——上面這條相對
+        // 路徑在desktop版正常（floating-assistant.js跟terminal-programs/
+        // 同一個真實目錄），但網頁版floating-assistant.js是blob: URL執行的
+        // （見FA_ASSET_URLS.terminalProgramsBackupBase的說明），相對
+        // import()一律失敗。這裡先照原樣試一次相對路徑（桌面版最常見、
+        // 不多打一次網路請求），失敗才退到FA_ASSET_URLS.terminalProgramsBackupBase
+        // 這個絕對CDN網址，兩種host環境最後都能載到同一份bundle內容。
+        try {
+            const mod = await import(/* webpackIgnore: true */ url);
+            if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
+            this._terminalProgramModules[name] = mod;
+            return mod;
+        } catch (relErr) {
+            const relPath = url.replace(/^\.\//, '');
+            const fallbackUrl = this._viaAssetProxy(FA_ASSET_URLS.terminalProgramsBackupBase + relPath);
+            const mod = await import(/* webpackIgnore: true */ fallbackUrl);
+            if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
+            this._terminalProgramModules[name] = mod;
+            return mod;
+        }
     }
 
     // tw_stock_db客製: 2026-09-18使用者明確糾正——/run-terminal「不是要
@@ -12943,7 +12980,7 @@ ${sourceTool.handlerScript}
             fsStore: null,
             cwd: '/work',
             history: [], historyIndex: 0,
-            line: '',
+            line: '', cursorPos: 0,
             activeProgram: null,
             ended: false,
             startedAt: Date.now(), // top.mjs用來顯示這個session的存活時間（沒有真正的系統uptime可以顯示）
@@ -12975,39 +13012,72 @@ ${sourceTool.handlerScript}
         if (!session.activeProgram) this._writeTerminalPrompt(session);
     }
 
+    // 純粹回傳prompt的文字本身（不含前導\r\n），跟_redrawTerminalLine()
+    // 共用——兩處都要組出一模一樣的prompt文字，寫兩份容易漏改。
+    _terminalPromptText(session) {
+        return `\x1b[32m${session.cwd}\x1b[0m $ `;
+    }
+
     _writeTerminalPrompt(session) {
         if (session.ended) return;
-        session.term.write(`\r\n\x1b[32m${session.cwd}\x1b[0m $ `);
+        session.term.write(`\r\n${this._terminalPromptText(session)}`);
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者實測回報——左右鍵/Home/End都沒有
+    // 作用，改內容中間只能backspace到那個位置再重打。改成維護
+    // session.cursorPos（游標在session.line裡的index），每次編輯/游標
+    // 移動都整行重繪：`\r`回到行首、重寫prompt+目前整行內容、`\x1b[K`
+    // 清掉尾端可能殘留的舊字元（例如刪字元後新內容比舊內容短），最後用
+    // `\x1b[{n}D`把游標移回正確位置。整行重繪不是最有效率的做法，但邏輯
+    // 簡單、不會累積ANSI位移誤差，終端機輸入行通常很短，重繪成本可忽略。
+    _redrawTerminalLine(session) {
+        const line = session.line;
+        const cursorPos = Math.max(0, Math.min(line.length, session.cursorPos));
+        let out = '\r' + this._terminalPromptText(session) + line + '\x1b[K';
+        const back = line.length - cursorPos;
+        if (back > 0) out += `\x1b[${back}D`;
+        session.term.write(out);
     }
 
     // tw_stock_db客製: 2026-09-18——見_mountTerminalWidget的說明，這裡是
     // 唯一的鍵盤輸入入口。session.activeProgram存在時（vim/less這類全螢幕
     // bundle接管畫面時）整段原始輸入直接轉給它自己處理（見
     // TERMINAL_PROGRAM_BUNDLES的ctx.readKey()說明），不做任何行編輯——
-    // bundle自己決定怎麼解讀鍵盤輸入。沒有bundle接管時，這裡自己實作最
-    // 基本的行編輯（印字元/backspace/Enter/Ctrl+C/上下鍵翻歷史），刻意
-    // 不支援左右鍵移動游標到行中間插入——那需要維護游標位置跟重繪行尾
-    // 字元，這個版本先不做，要修改已經打的內容只能backspace到那個位置
-    // 再重打。
+    // bundle自己決定怎麼解讀鍵盤輸入。沒有bundle接管時，這裡自己實作行
+    // 編輯（印字元/backspace/Delete/Enter/Ctrl+C/上下鍵翻歷史/左右鍵移動
+    // 游標/Home/End/Tab補全）。
     async _handleTerminalInput(session, data) {
+        session.lastActiveAt = Date.now();
         if (session.activeProgram) { session.activeProgram.feed(data); return; }
+        if (session.cursorPos == null) session.cursorPos = session.line.length;
         if (data === '\r') {
             session.term.write('\r\n');
             const line = session.line;
-            session.line = '';
+            session.line = ''; session.cursorPos = 0;
             if (line.trim()) session.history.push(line);
             session.historyIndex = session.history.length;
             await this._runTerminalCommand(session, line);
             if (!session.activeProgram) this._writeTerminalPrompt(session);
             return;
         }
-        if (data === '\x7f' || data === '\b') {
-            if (session.line.length) { session.line = session.line.slice(0, -1); session.term.write('\b \b'); }
+        if (data === '\x7f' || data === '\b') { // Backspace：刪游標左邊那個字元
+            if (session.cursorPos > 0) {
+                session.line = session.line.slice(0, session.cursorPos - 1) + session.line.slice(session.cursorPos);
+                session.cursorPos--;
+                this._redrawTerminalLine(session);
+            }
+            return;
+        }
+        if (data === '\x1b[3~') { // Delete：刪游標右邊那個字元
+            if (session.cursorPos < session.line.length) {
+                session.line = session.line.slice(0, session.cursorPos) + session.line.slice(session.cursorPos + 1);
+                this._redrawTerminalLine(session);
+            }
             return;
         }
         if (data === '\x03') { // Ctrl+C
             session.term.write('^C');
-            session.line = '';
+            session.line = ''; session.cursorPos = 0;
             this._writeTerminalPrompt(session);
             return;
         }
@@ -13022,15 +13092,110 @@ ${sourceTool.handlerScript}
             }
             return;
         }
-        if (data.length && data.charCodeAt(0) < 32) return; // 其餘控制字元（左右鍵等）目前忽略
-        session.line += data;
-        session.term.write(data);
+        if (data === '\x1b[D') { // 左鍵
+            if (session.cursorPos > 0) { session.cursorPos--; this._redrawTerminalLine(session); }
+            return;
+        }
+        if (data === '\x1b[C') { // 右鍵
+            if (session.cursorPos < session.line.length) { session.cursorPos++; this._redrawTerminalLine(session); }
+            return;
+        }
+        // tw_stock_db客製: 2026-09-18使用者實測回報——Home/End鍵沒作用。
+        // 不同終端環境送出的escape sequence不完全一樣，xterm.js預設鍵盤
+        // 映射送`\x1b[H`/`\x1b[F`，較舊的VT220風格送`\x1b[1~`/`\x1b[4~`，
+        // 兩種都接受。
+        if (data === '\x1b[H' || data === '\x1b[1~') { // Home
+            session.cursorPos = 0;
+            this._redrawTerminalLine(session);
+            return;
+        }
+        if (data === '\x1b[F' || data === '\x1b[4~') { // End
+            session.cursorPos = session.line.length;
+            this._redrawTerminalLine(session);
+            return;
+        }
+        if (data === '\t') { // Tab：指令/檔名補全
+            await this._handleTerminalTabComplete(session);
+            return;
+        }
+        if (data.length && data.charCodeAt(0) < 32) return; // 其餘控制字元目前忽略
+        // 一般可見字元：插入到游標位置（不一定是行尾）。
+        session.line = session.line.slice(0, session.cursorPos) + data + session.line.slice(session.cursorPos);
+        session.cursorPos += data.length;
+        this._redrawTerminalLine(session);
     }
 
     _setTerminalLine(session, newLine) {
-        if (session.line.length) session.term.write('\b \b'.repeat(session.line.length));
         session.line = newLine;
-        session.term.write(newLine);
+        session.cursorPos = newLine.length;
+        this._redrawTerminalLine(session);
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者實測回報——「沒有tab complete」。
+    // 只支援補全游標在行尾這個最常見情境（游標在行中間時Tab目前不做事，
+    // 避免處理「補全結果要插入行中間、還要重新計算剩餘文字」這種複雜度）。
+    // 第一個word（前面沒有空白）補全指令名稱（shell內建/busybox applet/
+    // 已登記bundle三份清單，跟`which`/`/bin`佔位檔案同一份資料來源）；
+    // 其餘word補全目前工作目錄（或補全字串裡自帶的子目錄前綴）底下的
+    // 檔名，直接讀session.fsStore的readdirSync()。單一候選直接補完
+    // （指令補完後多加一個空白，檔名不會，因為使用者可能還要接續打
+    // `/`進入子目錄）；多個候選比照bash「先印出所有選項，同時補到
+    // 候選共同的最長前綴」的行為，不用等第二次按Tab才列出來。
+    async _handleTerminalTabComplete(session) {
+        if (session.cursorPos !== session.line.length) return;
+        const line = session.line;
+        const lastSpace = line.lastIndexOf(' ');
+        const isFirstWord = lastSpace === -1;
+        const partial = isFirstWord ? line : line.slice(lastSpace + 1);
+        let matches;
+        let dirPrefix = '';
+        if (isFirstWord) {
+            const candidates = [
+                ...TERMINAL_SHELL_BUILTINS,
+                ...TERMINAL_BUSYBOX_APPLETS,
+                ...Object.keys(this._terminalProgramBundles || {}),
+            ];
+            matches = [...new Set(candidates.filter(c => c.startsWith(partial)))].sort();
+        } else {
+            const slashIdx = partial.lastIndexOf('/');
+            const dirPart = slashIdx === -1 ? '' : partial.slice(0, slashIdx + 1);
+            const namePrefix = slashIdx === -1 ? partial : partial.slice(slashIdx + 1);
+            dirPrefix = dirPart;
+            let runtime;
+            try { runtime = await this._ensureBashWasmLoaded(); } catch (_) { return; }
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const absDir = this._terminalResolvePath(session.cwd, dirPart || '.');
+            let entries;
+            try { entries = fsStore.readdirSync(absDir); } catch (_) { entries = []; }
+            matches = entries.filter(name => name.startsWith(namePrefix)).sort().map(name => dirPrefix + name);
+        }
+        if (!matches.length) return;
+        if (matches.length === 1) {
+            const completion = matches[0];
+            const remainder = completion.slice(partial.length);
+            session.line = line + remainder + (isFirstWord ? ' ' : '');
+            session.cursorPos = session.line.length;
+            this._redrawTerminalLine(session);
+            return;
+        }
+        session.term.write('\r\n' + matches.join('  '));
+        const commonPrefix = this._terminalLongestCommonPrefix(matches);
+        if (commonPrefix.length > partial.length) {
+            session.line = line + commonPrefix.slice(partial.length);
+            session.cursorPos = session.line.length;
+        }
+        session.term.write('\r\n');
+        this._redrawTerminalLine(session);
+    }
+
+    _terminalLongestCommonPrefix(strings) {
+        if (!strings.length) return '';
+        let prefix = strings[0];
+        for (const s of strings.slice(1)) {
+            while (prefix && !s.startsWith(prefix)) prefix = prefix.slice(0, -1);
+            if (!prefix) break;
+        }
+        return prefix;
     }
 
     // tw_stock_db客製: 2026-09-18——單一入口，依指令名稱判斷要不要JS層
@@ -13088,6 +13253,30 @@ ${sourceTool.handlerScript}
             if (!scriptFile) { session.term.write(`usage: ${cmdName} <script檔案> [參數...]\r\n`); return; }
             await this._terminalRunScriptFile(session, scriptFile, scriptParts.slice(1).join(' '));
             return;
+        }
+        // tw_stock_db客製: 2026-09-18使用者實測回報——`/bin/ask-floating-ai-assistant`
+        // 這種完整路徑被誤判成「使用者寫的script，要chmod +x才能執行」，
+        // 回報「權限不足」。根因：/bin、/usr/bin底下塞的是_ensureTerminalFsStore()
+        // 造的空白佔位檔案（純粹給ls探索用，見該方法說明），不是真的可執行
+        // 內容，用下面「讀檔案內容當script執行」那條路徑毫無意義。真實系統
+        // 上/bin/ls這種路徑本來就直接是核心工具本身，不需要（也不會被要求）
+        // chmod——這裡比照辦理：`/bin/<name>`或`/usr/bin/<name>`只要
+        // `<name>`是已知的shell內建/busybox applet/bundle，直接當成打了
+        // `<name>`本身，原樣遞迴回_runTerminalCommand()（cd/pwd/which/
+        // ask-floating-ai-assistant這些JS層攔截、busybox applet、bundle
+        // 全部涵蓋），完全略過下面的chmod權限檢查；只有指到/bin、/usr/bin
+        // 以外、或指到不在這三份清單裡的名稱，才會落到下面「當使用者腳本」
+        // 的原有判斷。
+        const binPathMatch = cmdName.match(/^\/(?:usr\/)?bin\/([^/]+)$/);
+        if (binPathMatch) {
+            const knownName = binPathMatch[1];
+            const isKnown = TERMINAL_SHELL_BUILTINS.includes(knownName)
+                || TERMINAL_BUSYBOX_APPLETS.includes(knownName)
+                || !!(this._terminalProgramBundles && this._terminalProgramBundles[knownName]);
+            if (isKnown) {
+                await this._runTerminalCommand(session, knownName + (restArgs ? ' ' + restArgs : ''));
+                return;
+            }
         }
         // tw_stock_db客製: 2026-09-18——`./script.sh`或帶路徑的檔案名稱：
         // 模擬真實shell「靠x bit決定能不能直接執行」的體驗（chmod +x見上）。
@@ -22926,6 +23115,17 @@ ${existingNodeSummaries}
             // 使用者辛苦錄的東西全部白錄，所以一定要進這個既有的持久化機制，
             // 不能像_progressWidget那樣當作純ephemeral狀態。
             const dubbingMap = {};
+            // tw_stock_db客製: 2026-09-18使用者實測回報——「把它refresh後
+            // 裡面終端機消失了」。_displayTerminal（見_handleRunTerminalCommand）
+            // 跟_displayDataUrl同一個理由被設成不可枚舉，JSON.stringify
+            // (this.messages)不會序列化到它，重新整理頁面後這個flag就
+            // 整個消失、_renderSingleMessage自然不會再掛載終端機widget。
+            // 同一套「非可枚舉屬性額外存一份」作法：只存{initialCommand}
+            // 這個很小的旗標本身，不是整個xterm scrollback/session狀態
+            // ——重新整理後會重新掛載成一個全新的terminal session（跟原本
+            // /run-terminal剛叫出來時一樣），不是還原到重整前的操作記錄，
+            // 但至少widget本身不會憑空消失。
+            const terminalMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
@@ -22937,6 +23137,7 @@ ${existingNodeSummaries}
                 if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
                 if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
+                if (m._displayTerminal) terminalMap[i] = m._displayTerminal;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -22950,6 +23151,7 @@ ${existingNodeSummaries}
                     if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                     if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
+                    if (m._displayTerminal) terminalMap[`${bi}:${mi}`] = m._displayTerminal;
                 });
             });
             localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
@@ -22965,6 +23167,7 @@ ${existingNodeSummaries}
                 viewerMap,
                 anim2dMap,
                 dubbingMap,
+                terminalMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -23050,6 +23253,12 @@ ${existingNodeSummaries}
                 Object.entries(data.dubbingMap).forEach(([key, dubbingState]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_dubbingWidget', { value: dubbingState, enumerable: false, writable: true, configurable: true });
+                });
+            }
+            if (data.terminalMap) {
+                Object.entries(data.terminalMap).forEach(([key, terminalFlag]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayTerminal', { value: terminalFlag, enumerable: false, configurable: true });
                 });
             }
         } catch (err) {
