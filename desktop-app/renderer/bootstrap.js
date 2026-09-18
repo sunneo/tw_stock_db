@@ -361,6 +361,27 @@ function patchCloudflareWording(root) {
   // output_ref/CORS代理」這些桌面專屬細節，從host端補充到工具description
   // 後面，引擎本身的文字維持完全host中立（只描述「如果目前環境有提供
   // 這個能力」，不假設也不排除任何host）。
+  // tw_stock_db客製: 2026-09-18使用者要求的輕量stopgap——上面的
+  // setEnvironmentNote()已經是「不是code bug、是prompt salience調整」的
+  // 既有修復（見該處說明的完整追查過程），這裡加第二個獨立訊號通道：
+  // 直接把同一件事也補在delegate_to_subagent工具自己的description後面
+  // （跟bash_execute/python_execute的補充同一種host-override機制，不是
+  // 改floating-assistant.js本身——那個工具描述本身完全host中立，不該
+  // 寫死「桌面版」字眼）。根模型每次考慮「這次該呼叫哪個工具」時，
+  // delegate_to_subagent自己的description是會被直接看到的一級資訊，跟
+  // environmentNote（掛在system prompt另一段）是兩個獨立的資訊來源——
+  // 同一個關鍵事實出現在兩個地方，比只出現一次更不容易被模型的注意力
+  // 忽略，尤其是在environmentNote前面已經疊了很多其他內容的長對話中。
+  // tw_stock_db客製: 2026-09-18——delegate_to_subagent這個工具的description
+  // 會被引擎自己在register_domain()/_saveAdvancedSettings()時整段程式化
+  // 重建（見_updateDelegateToSubagentDescription()），一度讓這裡append的
+  // 補充文字活不過下一次重建——已經在引擎層修好（appendToolDescription()
+  // 現在會記住補充內容，重建時自動重新接上，見該方法的說明），這裡呼叫
+  // 順序不再重要，跟其餘工具一樣直接放在這裡即可。
+  fa.appendToolDescription(
+    "delegate_to_subagent",
+    "[桌面版補充] 這是唯一的桌面本機操作入口：domain留空、task裡描述「讀寫這台電腦上的真實檔案／執行系統指令／操作終端機session」，系統會自動委派給desktop_ops領域（fs_read_file/fs_write_file/fs_list_files/run_command/tmux_*）。任何時候task內容裡出現一個真實磁碟絕對路徑，即使表面上只是要「執行」「計算」「跑一下」，也代表需要委派過去先取得那個路徑的真實內容——不要假設自己只能操作對話文字、不要直接回答「我沒有檔案存取能力」。"
+  );
   fa.appendToolDescription(
     "bash_execute",
     "[桌面版補充] real_input_files會透過fs_read_file讀取這台電腦上的真實檔案；output_ref可以直接給一個真實磁碟絕對路徑，會透過fs_write_file寫入。"

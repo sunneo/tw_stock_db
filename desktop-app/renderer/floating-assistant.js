@@ -3557,6 +3557,11 @@ class FloatingAssistant {
         this.domains = Object.fromEntries(
             Object.entries(SUBAGENT_DOMAIN_REGISTRY).map(([k, v]) => [k, { ...v }])
         );
+        // tw_stock_db客製: 2026-09-18——見appendToolDescription()的說明，記錄
+        // host對每個工具append過的補充文字，讓少數會被引擎自己程式化重建
+        // description的工具（目前只有delegate_to_subagent）重建時能重新
+        // 接上這些補充內容，不會被整段覆寫沖掉。
+        this._appendedToolDescriptionSuffixes = {};
         // tw_stock_db客製: 2026-09-17——同一套「複製module常數成instance-level
         // 欄位」模式，這次是Advance設定分組（見ADVANCED_SETTINGS_GROUPS/
         // setAdvancedSettingsGroupVisible），讓每個FloatingAssistant實例可以各自
@@ -3772,11 +3777,29 @@ class FloatingAssistant {
     // setDomainNote的note支援函式——工具description目前沒有「每次呼叫
     // 都要重新求值」的使用情境，不需要那個彈性，維持簡單）。工具名稱打錯
     // 時直接丟錯誤，理由同setDomainNote。
+    // tw_stock_db客製: 2026-09-18使用者實測回報的真實回歸——delegate_to_subagent
+    // 是目前唯一一個description會被引擎自己程式化整段重新產生的工具（見
+    // _updateDelegateToSubagentDescription/_buildDelegateToSubagentDescription，
+    // 每次register_domain()或_saveAdvancedSettings()都會觸發，後者幾乎任何
+    // 設定變動都會呼叫），host這裡append上去的補充文字活不過下一次那種
+    // 重建——跟Advance Settings sidebar那個「先插入、之後被整個重建覆蓋」
+    // 的regression（見registerAdvancedSettingsTab的說明）是同一種模式。
+    // 這裡把每個工具host append過的補充文字另外記一份在
+    // this._appendedToolDescriptionSuffixes，_updateDelegateToSubagentDescription
+    // 重建時會讀這份記錄、重新接在後面（見該方法），確保無論呼叫順序或
+    // 之後被呼叫幾次，host補充的內容都不會消失。這個記錄本身跟
+    // tool.description字串同步更新、不是另外的真相來源，一般工具（沒有
+    // 被程式化重建過）完全不受影響，多存一份純粹是為了那些「會被重建」的
+    // 少數工具的保險。
     appendToolDescription(toolName, extraText) {
         const tool = this.tools[toolName];
         if (!tool) throw new Error(`appendToolDescription: 工具 "${toolName}" 不存在`);
         const suffix = String(extraText || '').trim();
-        if (suffix) tool.description = `${tool.description}\n\n${suffix}`;
+        if (suffix) {
+            this._appendedToolDescriptionSuffixes[toolName] =
+                (this._appendedToolDescriptionSuffixes[toolName] ? this._appendedToolDescriptionSuffixes[toolName] + '\n\n' : '') + suffix;
+            tool.description = `${tool.description}\n\n${suffix}`;
+        }
         this._refreshSystemPromptMessage();
         return this;
     }
@@ -5229,8 +5252,20 @@ ${fnData.code}
         // 「保持所有LLM Model都可以知道這些原則，只做逐層披露」的要求——
         // 根模型不需要（也看不到）domain代號字串或個別工具規格，只需要知道
         // 這個委派入口存在、大致能處理哪類任務。
+        // tw_stock_db客製: 2026-09-18發現——這裡原本寫死一段description字串，
+        // 但這個工具的description實際上會被_updateDelegateToSubagentDescription()
+        // （建構完成後，任何一次register_domain()呼叫都會觸發，見該方法/
+        // _buildDelegateToSubagentDescription()的說明）整段覆寫，寫死在這裡
+        // 的文字只在「還沒有任何host呼叫過register_domain()」這個轉瞬即逝的
+        // 瞬間有效——實測發現web/desktop兩邊的host都一定會呼叫
+        // register_domain()（各自的股票/桌面專屬domain），所以這裡原本的
+        // 文字其實從來沒有真正被模型看到過，維護兩份幾乎一樣但不完全一樣的
+        // 文字反而容易誤導未來的維護者以為改這裡就有效。改成直接呼叫
+        // 同一個_buildDelegateToSubagentDescription()，確保只有一份真正
+        // 「當下生效」的來源——「已安裝的skill呼叫得很薄弱」的實際修復是
+        // 在該方法的base字串裡加上使用者自訂技能包/工具的提示，不是這裡。
         this.register_openai_tool('delegate_to_subagent',
-            '把不屬於你自己直接負責範圍的任務（例如檔案解讀、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理等）委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。不確定該用哪個領域時把domain留空，系統會依task內容自動判斷該開放哪些工具，一次可以判斷出多個領域一起開放給同一個子agent；已經明確知道領域代號時可以直接指定domain跳過自動判斷。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫——系統會自動判斷這一次task需要開放哪些領域的工具，拆成多次呼叫只會浪費更多輪對話。**如果子agent回傳的result本身是一個問題/請求你確認某件事**（例如它猶豫要不要執行某個操作、想先跟使用者核對細節），代表這件事還沒有真的做完——把這個問題原封不動轉述給使用者、明確說明「這一步還沒有實際執行」，然後停在這裡等使用者真正回覆，不要自己代替使用者回答「好、可以」然後假裝任務已經完成或已經在繼續處理；使用者如果在委派前的原始請求裡已經把要做的事講得夠明確，子agent通常不需要再問一次，如果它還是問了，同樣要如實轉述、不要幫忙作答。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（選填）領域代號"}',
+            this._buildDelegateToSubagentDescription(),
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -9261,7 +9296,20 @@ ${fnData.code}
         // 通用常識誤判的字眼。明確點出「即使使用者講的是電腦上的真實路徑」
         // 也要先委派查詢，不要用「我沒有檔案系統存取權限」這種通用AI常識
         // 直接回絕使用者。
-        const base = '把不屬於你自己直接負責範圍的任務委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。適用範圍包含（但不限於）：檔案解讀（含使用者自己上傳的檔案，**也包含使用者已經在「檔案存取管理」授權過的電腦上真實磁碟資料夾**——即使使用者這樣描述任務：直接講一個電腦上的完整路徑、或只講一個資料夾別名，都可能對應到一個已授權的資料夾，**一律先委派查詢，不要用「我沒有檔案系統存取權限」這種通用常識直接回絕使用者**，畢竟你不知道使用者是否已經授權）、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋等。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
+        // tw_stock_db客製: 2026-09-18使用者實測回報——「已安裝的skill呼叫得
+        // 很薄弱」，追查發現根因跟上面那個案例是同一種問題：router
+        // （_buildDomainCatalogSection/_routeTaskToDomains）本身早就看得到
+        // 使用者建立的skill_<id>這些domain，問題出在更早一關——這段
+        // description（根模型決定要不要呼叫delegate_to_subagent時唯一看
+        // 得到的資訊）完全沒提到使用者自己匯入/建立的技能包(Skill Bundle)/
+        // 自訂工具，只列了內建的3D場景/繪圖/RAG/AI自製函式這幾類，根模型
+        // 讀到「這不是這個工具負責的範圍」就直接憑自己的通用知識回答，
+        // router連機會都沒有——這解釋了為什麼skill明明裝好、知識/人設也
+        // 確認貼對了，還是常常被跳過。加一句明確提到技能包/自訂工具，並給
+        // 出「看到不熟悉的特定名詞/流程、通用知識答不出來時優先試著委派」
+        // 這個判斷原則（不列出實際skill名稱，維持既有的分層揭露/root
+        // system prompt精簡原則）。
+        const base = '把不屬於你自己直接負責範圍的任務委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。適用範圍包含（但不限於）：檔案解讀（含使用者自己上傳的檔案，**也包含使用者已經在「檔案存取管理」授權過的電腦上真實磁碟資料夾**——即使使用者這樣描述任務：直接講一個電腦上的完整路徑、或只講一個資料夾別名，都可能對應到一個已授權的資料夾，**一律先委派查詢，不要用「我沒有檔案系統存取權限」這種通用常識直接回絕使用者**，畢竟你不知道使用者是否已經授權）、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋、**使用者自己匯入/建立的技能包(Skill Bundle)或自訂工具**等。**這個工具也是使用者自訂技能唯一的觸發入口**——如果使用者提到一個你不熟悉的特定名詞、流程、代號、或指名要用「XX方法/XX skill」，很可能對應到使用者自己設定好的技能包，先試著委派（domain留空讓系統自動判斷）比直接用通用知識回答或說「我不知道」更正確；只有明確判斷任務單純、跟任何專業領域/自訂技能都無關時才略過委派。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
         if (this.multiSubAgentMode === 'full') {
             // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析的
             // domain，使用者還沒建立任何Skill時要從這份清單隱藏（否則會列出一個
@@ -9276,7 +9324,14 @@ ${fnData.code}
 
     _updateDelegateToSubagentDescription() {
         if (this.tools && this.tools.delegate_to_subagent) {
-            this.tools.delegate_to_subagent.description = this._buildDelegateToSubagentDescription();
+            // tw_stock_db客製: 2026-09-18使用者實測回報的真實回歸——見
+            // appendToolDescription()的說明，這裡整段重新產生description時
+            // 一定要重新接上host透過appendToolDescription('delegate_to_subagent',
+            // ...)補充過的文字，不然host補充的內容（例如桌面版的「這是唯一
+            // 的桌面本機操作入口」提醒）活不過下一次register_domain()或
+            // _saveAdvancedSettings()（幾乎任何設定變動都會觸發後者）。
+            const suffix = this._appendedToolDescriptionSuffixes.delegate_to_subagent;
+            this.tools.delegate_to_subagent.description = this._buildDelegateToSubagentDescription() + (suffix ? `\n\n${suffix}` : '');
         }
     }
 
