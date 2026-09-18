@@ -4738,20 +4738,14 @@ class FloatingAssistant {
     // 改到advancedSettings.customDomains的入口（Domain管理UI的新增/修改/
     // 刪除/啟用切換）都要在改完後呼叫這個方法。
     _syncCustomDomains() {
-        // tw_stock_db客製: 這裡不能無條件delete——如果這個key本來就是
-        // SUBAGENT_DOMAIN_REGISTRY裡的內建domain（使用者透過編輯器覆寫過
-        // 它的描述/工具，見_saveDomainEditor()的說明——任何domain的key都
-        // 統一寫進customDomains，不分內建/自訂），移除這筆覆寫紀錄時應該
-        // 「還原成內建預設值」，不是把整個domain憑空刪掉。只有真正全新的
-        // 自訂key（不在SUBAGENT_DOMAIN_REGISTRY裡）才是整個delete。host
-        // 註冊的domain（例如桌面版的desktop_ops，不在這個module常數裡）
-        // 如果被覆寫過又刪除覆寫，這裡沒有原始值可以還原，只能整個delete
-        // ——這是已知的邊界情況，host通常會在下次啟動時重新register_domain
-        // 一次，不是永久性的資料遺失。
-        (this._customDomainKeysRegistered || new Set()).forEach(k => {
-            if (SUBAGENT_DOMAIN_REGISTRY[k]) this.domains[k] = { ...SUBAGENT_DOMAIN_REGISTRY[k] };
-            else delete this.domains[k];
-        });
+        // tw_stock_db客製: 2026-09-18使用者明確要求「內建的domain不提供
+        // 修改，只能檢視」——編輯器只有真正自訂的domain才能存檔（見
+        // _openDomainEditor()的viewOnly邏輯），advancedSettings.customDomains
+        // 因此只會包含使用者自己建立的全新domain key，不可能出現內建
+        // domain的覆寫版本，這裡單純delete即可，不需要「還原成內建預設值」
+        // 那一層分支（先前版本有這個分支，糾正設計後變成永遠不會走到的
+        // 死程式碼，這裡連同判斷邏輯一起移除，不留著）。
+        (this._customDomainKeysRegistered || new Set()).forEach(k => { delete this.domains[k]; });
         this._customDomainKeysRegistered = new Set();
         for (const d of this.advancedSettings.customDomains) {
             const toolNames = d.toolNamesText.split('\n').map(s => s.trim()).filter(Boolean);
@@ -12030,7 +12024,7 @@ ${sourceTool.handlerScript}
                     <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
                         <input type="checkbox" data-domain-toggle="${this._escapeAttr(key)}" ${d.enabled ? 'checked' : ''} style="cursor:pointer;"> 啟用
                     </label>
-                    <button type="button" class="ai-advanced-btn" data-domain-edit="${this._escapeAttr(key)}">修改</button>
+                    <button type="button" class="ai-advanced-btn" data-domain-edit="${this._escapeAttr(key)}">${isCustom ? '修改' : '檢視'}</button>
                     ${isCustom ? `<button type="button" class="ai-advanced-btn danger" data-domain-delete="${this._escapeAttr(key)}">刪除</button>` : ''}
                 </div>
             </div>`;
@@ -12038,10 +12032,18 @@ ${sourceTool.handlerScript}
     }
 
     // key＝null代表新增；非null時，如果目前是customDomains裡的一筆就帶入
-    // 原始資料，否則是內建/host註冊的domain，帶入目前live的this.domains
-    // 內容（toolNames若是函式/getter動態值，退回空清單——那種domain本來就
-    // 不是設計給使用者手動編輯工具清單的，例如skill_<id>已經被上面的
-    // _renderDomainList過濾掉，理論上不會走到這裡）。
+    // 原始資料（可編輯），否則是內建/host註冊的domain，帶入目前live的
+    // this.domains內容並強制唯讀（見下面viewOnly）——toolNames若是函式/
+    // getter動態值，退回空清單顯示，那種domain本來就不是設計給使用者手動
+    // 編輯工具清單的（例如skill_<id>已經被上面的_renderDomainList過濾掉，
+    // 理論上不會走到這裡）。
+    // tw_stock_db客製: 2026-09-18使用者明確要求——「內建的domain不提供修改，
+    // 只能檢視」，糾正了原本「內建domain也能編輯、儲存時記一筆覆寫、刪除
+    // 時還原成內建預設值」的設計。判斷標準：這個key有沒有出現在
+    // advancedSettings.customDomains裡——有＝使用者自己建立的domain，可以
+    // 完整編輯；沒有＝內建或host註冊的domain（不分是不是在module常數
+    // SUBAGENT_DOMAIN_REGISTRY裡，桌面版desktop_ops這種host執行期註冊的
+    // 一樣算），一律唯讀，只能看不能存。
     _openDomainEditor(key) {
         const modal = document.getElementById('ai-domain-editor-modal');
         if (!modal) return;
@@ -12049,6 +12051,7 @@ ${sourceTool.handlerScript}
         const isNew = !key;
         const custom = key ? this.advancedSettings.customDomains.find(d => d.key === key) : null;
         const live = key ? this.domains[key] : null;
+        const viewOnly = !isNew && !custom;
         const keyInput = document.getElementById('ai-domain-key-input');
         const labelInput = document.getElementById('ai-domain-label-input');
         const categoryInput = document.getElementById('ai-domain-category-input');
@@ -12056,9 +12059,14 @@ ${sourceTool.handlerScript}
         const promptInput = document.getElementById('ai-domain-prompt-input');
         const enabledChk = document.getElementById('ai-domain-enabled-chk');
         const reviseResult = document.getElementById('ai-domain-ai-revise-result');
+        const titleEl = document.getElementById('ai-domain-editor-title');
+        const saveBtn = document.getElementById('ai-domain-editor-save');
         if (reviseResult) reviseResult.textContent = '';
+        if (titleEl) titleEl.textContent = viewOnly ? '檢視 Domain（內建，不能修改）' : (isNew ? '新增 Domain' : '編輯 Domain');
+        if (saveBtn) saveBtn.style.display = viewOnly ? 'none' : '';
+        [keyInput, labelInput, categoryInput, toolsInput, promptInput, enabledChk].forEach((el) => { if (el) el.disabled = viewOnly; });
         keyInput.value = key || '';
-        keyInput.disabled = !isNew; // 建立後不能改key，改key等於建一個新domain、舊key的委派關係會斷掉
+        keyInput.disabled = viewOnly || !isNew; // 建立後也不能改key，改key等於建一個新domain、舊key的委派關係會斷掉
         if (custom) {
             labelInput.value = custom.label;
             categoryInput.value = custom.category || '';
@@ -12083,10 +12091,11 @@ ${sourceTool.handlerScript}
         this.activeDomainEditKey = null;
     }
 
-    // tw_stock_db客製: 儲存邏輯統一寫進advancedSettings.customDomains（不論
-    // 這個key原本是內建domain還是全新自訂domain）——見_syncCustomDomains()
-    // 的說明，那裡負責把這份清單真正register_domain()進this.domains，並在
-    // 這筆entry被刪除時決定要「整個移除」還是「還原成內建預設值」。
+    // tw_stock_db客製: 2026-09-18使用者明確要求「內建的domain不提供修改，
+    // 只能檢視」——只有真正自訂的domain（_openDomainEditor()判斷
+    // viewOnly===false）才會走到這裡，Save按鈕在viewOnly時直接隱藏，UI上
+    // 沒有路徑能對內建domain呼叫這個方法。存進advancedSettings.customDomains，
+    // 見_syncCustomDomains()把這份清單真正register_domain()進this.domains。
     _saveDomainEditor() {
         const keyInput = document.getElementById('ai-domain-key-input');
         const labelInput = document.getElementById('ai-domain-label-input');
@@ -12116,7 +12125,9 @@ ${sourceTool.handlerScript}
     }
 
     _deleteDomain(key) {
-        if (!confirm(`確定要刪除domain「${key}」嗎？${this.domains[key] && SUBAGENT_DOMAIN_REGISTRY[key] ? '（這是內建domain的自訂覆寫，刪除後會還原成內建預設值）' : ''}`)) return;
+        // tw_stock_db客製: UI上刪除按鈕本來就只出現在自訂domain（見
+        // _renderDomainList），內建domain完全沒有路徑能呼叫到這裡。
+        if (!confirm(`確定要刪除domain「${key}」嗎？`)) return;
         this.advancedSettings.customDomains = this.advancedSettings.customDomains.filter(d => d.key !== key);
         this._saveAdvancedSettings();
         this._syncCustomDomains();
@@ -23608,7 +23619,7 @@ ${existingNodeSummaries}
                                         <label class="ai-advanced-label" style="margin:0;">目前的Domain（委派/路由的專家領域）</label>
                                         <button type="button" id="ai-domain-add-btn" class="ai-advanced-btn">+ 新增Domain</button>
                                     </div>
-                                    <p class="ai-advanced-hint">內建domain（含host自己註冊的，例如桌面版的desktop_ops）不能刪除，但可以關閉啟用或修改描述/工具清單；使用者自建的domain可以自由編輯/刪除。</p>
+                                    <p class="ai-advanced-hint">內建domain（含host自己註冊的，例如桌面版的desktop_ops）不提供修改/刪除，只能檢視描述/工具清單、或關閉啟用；使用者自建的domain可以自由編輯/刪除。</p>
                                     <div id="ai-domain-list"></div>
                                 </div>
                                 <div class="ai-advanced-stack">
@@ -23810,7 +23821,7 @@ ${existingNodeSummaries}
             <div id="ai-domain-editor-modal" class="ai-advanced-overlay">
                 <div class="ai-advanced-dialog" style="width:min(860px, 94vw);">
                     <div class="ai-advanced-row">
-                        <h3 style="margin:0; color:#76b900;">編輯 Domain</h3>
+                        <h3 id="ai-domain-editor-title" style="margin:0; color:#76b900;">編輯 Domain</h3>
                         <button type="button" id="ai-domain-editor-close" class="ai-advanced-btn">關閉</button>
                     </div>
                     <div class="ai-advanced-stack">
