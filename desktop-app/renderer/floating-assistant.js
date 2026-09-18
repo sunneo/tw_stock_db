@@ -3008,7 +3008,7 @@ function _faMarkdownToSlides(markdownText, heading) {
 // _captureVisualSnapshot。visualSnapshots是選填的{dataUrl,kind}陣列，
 // 沒有提供時行為完全不變（純文字/表格投影片）。
 function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
-    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容' };
+    const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容', terminal: '🖥️ 終端機記錄' };
     (visualSnapshots || []).forEach((snap) => {
         if (!snap) return;
         const s = addHeadingSlideBase(KIND_LABEL[snap.kind] || '視覺內容');
@@ -3016,7 +3016,10 @@ function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshot
             // tw_stock_db客製: 互動viewer是文字摘要（kind==='viewer_summary'，
             // 見_summarizeViewerStateForExport），不是截圖——表單填寫內容用
             // 文字呈現比像素截圖更有報告價值。其餘kind都是dataUrl截圖。
-            if (snap.kind === 'viewer_summary' && snap.text) {
+            // tw_stock_db客製: 2026-09-18——終端機（kind==='terminal'，見
+            // _captureTerminalScreenText）同樣是純文字，跟viewer_summary
+            // 共用這個文字render分支。
+            if ((snap.kind === 'viewer_summary' || snap.kind === 'terminal') && snap.text) {
                 s.addText(_faMdLiteToPlainText(snap.text), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3 });
             } else if (snap.dataUrl) {
                 s.addImage({ data: snap.dataUrl, x: 1.5, y: 1.3, w: 10.3, h: 5.7, sizing: { type: 'contain', w: 10.3, h: 5.7 } });
@@ -3119,7 +3122,7 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
     // tw_stock_db客製: 3D場景/繪圖截圖同樣以圖片content item加進去（見
     // _faAppendVisualSnapshotSlides在PPTX那邊的說明，這裡是PDF版本）。
     // 互動viewer是文字摘要（kind==='viewer_summary'），不是截圖。
-    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容' };
+    const VISUAL_KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容', terminal: '🖥️ 終端機記錄' };
     // tw_stock_db客製: 2026-09-16使用者明確立下的硬規則——「所有圖片嵌入
     // pptx, pdf的時候，必須完全遵守一個規則：圖片必須等比例縮放」。這裡
     // 原本只給image一個width（460），依賴pdfmake「只給width時會依圖片本身
@@ -3134,7 +3137,7 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
         if (!snap) continue;
         content.push({ text: VISUAL_KIND_LABEL[snap.kind] || '視覺內容', style: 'h2' });
         try {
-            if (snap.kind === 'viewer_summary' && snap.text) {
+            if ((snap.kind === 'viewer_summary' || snap.kind === 'terminal') && snap.text) {
                 content.push({ text: _faMdLiteToPlainText(snap.text), style: 'body' });
             } else if (snap.dataUrl) {
                 const maxW = 460, maxH = 620; // PDF單頁可用寬高的保守經驗值，避免圖片本身太高被裁切
@@ -13100,7 +13103,17 @@ ${sourceTool.handlerScript}
         return this._terminalSessionIsLive(session) ? 1000 : 5000;
     }
 
-    async _mountTerminalWidget(container, initialCommand) {
+    // tw_stock_db客製: 2026-09-18使用者要求——「refresh的時候要恢復畫面，
+    // 但不用保留process狀態，就讓終端機的command恢復等待輸入」。msg是這個
+    // 終端機widget對應的訊息物件（選填，測試/其他呼叫端沒有msg也完全能
+    // 動，只是不會有持久化/回放功能）——存進session.msg讓之後每次指令
+    // 執行完（見_persistTerminalSnapshot）能把目前畫面內容寫回
+    // msg._displayTerminal.savedScreen再觸發_persistChatHistory()。如果
+    // msg._displayTerminal已經帶有savedScreen（代表這是重新整理頁面後的
+    // 重新掛載，不是第一次開），先把這段畫面回放印出來，再照常開一個全新
+    // 的session/prompt——不嘗試恢復WASM shell的process狀態（那本來就沒有
+    // 真的被持久化過、也沒必要，使用者原話「不用保留process狀態」）。
+    async _mountTerminalWidget(container, initialCommand, msg) {
         await this._ensureXtermLoaded();
         const termSettings = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
         const term = new Terminal({
@@ -13128,6 +13141,7 @@ ${sourceTool.handlerScript}
             hasFocus: true,
             inViewport: true,
             lastActiveAt: Date.now(),
+            msg: msg || null,
         };
         container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
 
@@ -13147,6 +13161,11 @@ ${sourceTool.handlerScript}
         }
 
         term.write('WASM沙盒終端機（busybox ash）。輸入 help 看內建指令，exit 結束這個session。\r\n');
+        const savedScreen = msg && msg._displayTerminal && msg._displayTerminal.savedScreen;
+        if (savedScreen) {
+            term.write(savedScreen.replace(/\n/g, '\r\n'));
+            term.write('\r\n\x1b[90m[以上是重新整理前保留的畫面內容——這是全新的session，不是恢復原本執行到一半的程式，需要的指令請重新輸入]\x1b[0m');
+        }
         term.onData((data) => { if (!session.ended) this._handleTerminalInput(session, data); });
 
         if (initialCommand) {
@@ -13169,6 +13188,7 @@ ${sourceTool.handlerScript}
         session.historyIndex = session.history.length;
         await this._runTerminalCommand(session, initialCommand);
         if (!session.activeProgram) this._writeTerminalPrompt(session);
+        await this._persistTerminalSnapshot(session);
     }
 
     // 純粹回傳prompt的文字本身（不含前導\r\n），跟_redrawTerminalLine()
@@ -13180,6 +13200,59 @@ ${sourceTool.handlerScript}
     _writeTerminalPrompt(session) {
         if (session.ended) return;
         session.term.write(`\r\n${this._terminalPromptText(session)}`);
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「用類似rotatelog的方式(如果
+    // 有捲動上限)」擷取終端機畫面文字。xterm.js的scrollback設定本身已經是
+    // 一個環狀緩衝區（超過scrollback的舊行會被自動丟棄，見Configure分頁的
+    // scrollback說明），所以讀取整個buffer.active本身就已經自動遵守這個
+    // 「捲動上限」；這裡再疊加一層獨立的MAX_CAPTURE_LINES上限（跟xterm
+    // 本身的scrollback設定無關），避免使用者把scrollback設得很大時，
+    // 存進localStorage的持久化快照也跟著變得很肥——持久化快照的目的只是
+    // 「重新整理後看得到最近的畫面回顧」，不需要跟即時互動時的scrollback
+    // 一樣大。
+    _captureTerminalScreenText(session) {
+        const MAX_CAPTURE_LINES = 500;
+        const term = session.term;
+        const buf = term.buffer.active;
+        const total = buf.length;
+        const start = Math.max(0, total - MAX_CAPTURE_LINES);
+        const lines = [];
+        for (let i = start; i < total; i++) {
+            const line = buf.getLine(i);
+            if (line) lines.push(line.translateToString(true));
+        }
+        // xterm畫面底部常常墊了一堆空白行填滿目前的終端機高度，去掉尾端
+        // 連續空行，捕捉到的內容才不會被這些空白行拉得比實際輸出還長。
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        return lines.join('\n');
+    }
+
+    // 每個指令執行完（回到prompt）都呼叫一次，把目前畫面快照寫回
+    // session.msg._displayTerminal.savedScreen並觸發一次_persistChatHistory()
+    // ——這是「重新整理頁面後恢復畫面」的唯一資料來源（見_mountTerminalWidget
+    // 裡讀savedScreen的那段）。刻意不是每個按鍵都存一次（太頻繁，每次都要
+    // 重新序列化整個對話含所有訊息，成本不小），指令執行完這個「自然的
+    // 完成點」頻率剛好，使用者原話也只要求「refresh的時候要恢復畫面」，
+    // 不是逐字元即時同步。
+    async _persistTerminalSnapshot(session) {
+        if (!session.msg) return;
+        // tw_stock_db客製: 2026-09-18實測發現——xterm.js的term.write()是
+        // 非同步佇列處理（官方文件：寫入的資料在背景處理，要知道什麼時候
+        // 真的處理完要用write()的callback參數），不是同步寫進buffer。
+        // 這裡先前直接同步讀term.buffer.active，會讀到「指令輸出還沒真的
+        // 進到buffer」的舊畫面（實測捕捉到的savedScreen漏掉了剛執行完的
+        // 指令輸出跟新的prompt）。寫一個空字串＋callback，因為xterm內部
+        // 佇列是FIFO，這個callback保證觸發時，前面所有排隊的write()
+        // （含指令輸出/prompt本身）都已經真的處理進buffer，之後再讀
+        // buffer.active才是可靠的。
+        await new Promise((resolve) => session.term.write('', resolve));
+        const savedScreen = this._captureTerminalScreenText(session);
+        Object.defineProperty(session.msg, '_displayTerminal', {
+            value: { ...(session.msg._displayTerminal || {}), savedScreen },
+            enumerable: false, configurable: true,
+        });
+        this._persistChatHistory();
     }
 
     // tw_stock_db客製: 2026-09-18使用者實測回報——左右鍵/Home/End都沒有
@@ -13217,6 +13290,7 @@ ${sourceTool.handlerScript}
             session.historyIndex = session.history.length;
             await this._runTerminalCommand(session, line);
             if (!session.activeProgram) this._writeTerminalPrompt(session);
+            await this._persistTerminalSnapshot(session);
             return;
         }
         if (data === '\x7f' || data === '\b') { // Backspace：刪游標左邊那個字元
@@ -24025,15 +24099,37 @@ ${existingNodeSummaries}
                 container.appendChild(this._liveWidgetCache.get(msg));
                 return;
             }
+            // tw_stock_db客製: 2026-09-18使用者實測回報「外面保留的框太小」
+            // ——640x360加大到900x480（max-width:95%維持不變，小螢幕還是會
+            // 自動夾住）。
             const wrap = document.createElement('div');
-            wrap.style.cssText = 'margin-bottom:12px; max-width:95%; width:640px;';
+            wrap.style.cssText = 'margin-bottom:12px; max-width:95%; width:900px;';
             wrap.innerHTML = `
-                <div style="font-size:12px; font-weight:bold; color:#76b900; margin-bottom:4px;">🖥️ 終端機（WASM沙盒 busybox ash）</div>
-                <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:360px; border:1px solid ${palette.windowBorder};"></div>
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                    <div style="font-size:12px; font-weight:bold; color:#76b900;">🖥️ 終端機（WASM沙盒 busybox ash）</div>
+                    <div class="ai-terminal-export-slot"></div>
+                </div>
+                <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:480px; border:1px solid ${palette.windowBorder};"></div>
             `;
             container.appendChild(wrap);
             this._liveWidgetCache.set(msg, wrap);
-            this._mountTerminalWidget(wrap.querySelector('.ai-terminal-embed'), msg._displayTerminal.initialCommand);
+            const terminalEmbedEl = wrap.querySelector('.ai-terminal-embed');
+            // tw_stock_db客製: 2026-09-18使用者要求——「它沒有export成pptx的
+            // 能力」。getSnapshotFn故意用lazy lookup（點擊當下才讀
+            // terminalEmbedEl._terminalSession，不是這裡建立按鈕當下就捕捉）
+            // ——_mountTerminalWidget()是非同步的，這裡呼叫當下session可能
+            // 還沒建立好，但使用者真的點擊匯出時一定早就掛載完成了。
+            this._appendCardExportButton(wrap.querySelector('.ai-terminal-export-slot'), async () => {
+                const session = terminalEmbedEl._terminalSession;
+                if (!session) return null;
+                // tw_stock_db客製: 跟_persistTerminalSnapshot同一個理由——
+                // term.write()非同步佇列處理，先drain一次才能保證讀到的
+                // buffer內容是最新的（見該方法的詳細說明）。
+                await new Promise((resolve) => session.term.write('', resolve));
+                const text = this._captureTerminalScreenText(session);
+                return text ? { kind: 'terminal', text } : null;
+            }, '終端機記錄', []);
+            this._mountTerminalWidget(terminalEmbedEl, msg._displayTerminal.initialCommand, msg);
             return;
         }
 
