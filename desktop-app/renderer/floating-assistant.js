@@ -3566,6 +3566,20 @@ class FloatingAssistant {
             Object.entries(ADVANCED_SETTINGS_GROUPS).map(([k, v]) => [k, { ...v, cats: [...v.cats] }])
         );
         this._advancedSettingsGroupCollapsed = {};
+        // tw_stock_db客製: 2026-09-18使用者實測回報——桌面版的「桌面版設定」
+        // 分頁（🔑設定API金鑰/程式執行權限/工作區資料夾）憑空消失。根因：
+        // bootstrap.js原本是在頁面載入當下手動把一個.ai-advanced-cat節點
+        // insertBefore塞進.ai-advanced-sidebar（見該檔案的說明），但這個
+        // sidebar分組功能上線後，_renderAdvancedSettings()每次都會整個
+        // 重建sidebarEl.innerHTML（見_buildAdvancedSettingsSidebarHtml），
+        // 手動插入的節點只活過第一次重繪就被沖掉——而_renderAdvancedSettings()
+        // 幾乎任何設定變動都會觸發，等於分頁在使用者眼前「憑空消失」。
+        // 這裡補上registerAdvancedSettingsTab()這個公開方法，讓host能把
+        // 額外的cat納入某個既有group的cats清單（因此會被
+        // _buildAdvancedSettingsSidebarHtml()每次重繪都正確涵蓋，不會再被
+        // 沖掉），對應的pane內容/label記在這兩個instance欄位裡。
+        this._advancedSettingsExtraCatLabels = {};
+        this._advancedSettingsExtraCatPaneReady = new Set();
         // tw_stock_db客製: 2026-09-17——側欄現在會被_renderAdvancedSettings()
         // 反覆重建innerHTML（因為要能反映setAdvancedSettingsGroupVisible()
         // 隨時切換群組可見度），所以「目前選到哪個分頁」不能只靠DOM上的
@@ -3779,6 +3793,46 @@ class FloatingAssistant {
         const group = this._advancedSettingsGroups[groupKey];
         if (!group) throw new Error(`setAdvancedSettingsGroupVisible: group "${groupKey}" 不存在`);
         group.visible = !!visible;
+        if (this._isModalOpen(document.getElementById('ai-advanced-modal'))) this._renderAdvancedSettings();
+        return this;
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者實測回報的真實回歸修復——桌面版
+    // bootstrap.js原本是自己動手把一個.ai-advanced-cat節點insertBefore塞進
+    // .ai-advanced-sidebar，這個sidebar分組上線後每次_renderAdvancedSettings()
+    // 都會整個重建sidebarEl.innerHTML（見_buildAdvancedSettingsSidebarHtml），
+    // 手動插入的節點活不過第一次重繪，導致桌面版設定分頁憑空消失（
+    // _renderAdvancedSettings()幾乎任何設定變動都會觸發，不是罕見情境）。
+    // 這是跟setEnvironmentNote/setDomainNote/appendToolDescription/
+    // setAdvancedSettingsGroupVisible同一批的host-override公開API：host
+    // 可以把一個額外的cat永久掛進某個既有group的cats清單（因此每次重繪
+    // 都會被_buildAdvancedSettingsSidebarHtml()正確涵蓋，不會再被沖掉）。
+    // paneContent可以是HTML字串（設innerHTML）、也可以是一個已經組好、
+    // 掛著真實click/change事件監聽器的DOM節點（appendChild整個搬進去，
+    // 監聽器不受影響）——桌面版需要「搬移既有真實DOM元素」（例如topbar上
+    // 原本就掛著secrets.set()呼叫的按鈕）這種用法，純字串innerHTML做不到。
+    // 對應的pane只在第一次呼叫時真正建立一次（用this._advancedSettingsExtraCatPaneReady
+    // 這個Set記錄，避免同一個catKey被呼叫兩次時整個pane被覆寫/搬移的節點
+    // 憑空消失），group/catKey打錯字時直接丟錯誤，理由同其餘override方法。
+    registerAdvancedSettingsTab(groupKey, catKey, label, paneContent) {
+        const group = this._advancedSettingsGroups[groupKey];
+        if (!group) throw new Error(`registerAdvancedSettingsTab: group "${groupKey}" 不存在`);
+        if (!catKey || typeof catKey !== 'string') throw new Error('registerAdvancedSettingsTab: catKey必須是非空字串');
+        if (!group.cats.includes(catKey)) group.cats.push(catKey);
+        this._advancedSettingsExtraCatLabels[catKey] = String(label || catKey);
+        const content = document.querySelector('#ai-advanced-modal .ai-advanced-content');
+        if (content && !this._advancedSettingsExtraCatPaneReady.has(catKey)) {
+            let pane = content.querySelector(`.ai-advanced-pane[data-pane="${catKey}"]`);
+            if (!pane) {
+                pane = document.createElement('div');
+                pane.className = 'ai-advanced-pane hidden';
+                pane.dataset.pane = catKey;
+                content.appendChild(pane);
+            }
+            if (paneContent instanceof Node) pane.appendChild(paneContent);
+            else if (paneContent != null) pane.innerHTML = String(paneContent);
+            this._advancedSettingsExtraCatPaneReady.add(catKey);
+        }
         if (this._isModalOpen(document.getElementById('ai-advanced-modal'))) this._renderAdvancedSettings();
         return this;
     }
@@ -11863,6 +11917,10 @@ ${sourceTool.handlerScript}
             'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
             'file-access': '檔案存取管理', 'subagent': '子Agent', 'multimedia': '多媒體',
             'voice': '語音設定', 'limits': '效能與限制',
+            // tw_stock_db客製: 2026-09-18——host透過registerAdvancedSettingsTab()
+            // 額外註冊的cat標籤（見該方法說明），跟內建cat共用同一份查詢
+            // 入口，讓_buildAdvancedSettingsSidebarHtml()不用知道兩者的差異。
+            ...this._advancedSettingsExtraCatLabels,
         };
     }
 
