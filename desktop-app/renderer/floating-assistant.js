@@ -22526,15 +22526,40 @@ ${existingNodeSummaries}
     //
     // 回傳跟_routeTaskToDomains完全一樣的{ok,domains,toolNames,systemPrompt}
     // 形狀，_delegateToSubagentAuto不用區分呼叫端。
+    // tw_stock_db客製: 2026-09-18使用者實測回報「兩層路由會找不到語音」，
+    // 追查後發現這裡有兩個真的bug（跟media_av本身無關——它category留空、
+    // 有掛工具，不會被這兩個bug直接影響，但同一個session只要有任何一個
+    // domain踩中下面任一個bug，就會把_routeTaskHierarchical從「完全沒人用
+    // category時的扁平退回」（見上面第22525行附近的說明）切換成真正跑兩層
+    // 路由，連帶讓media_av這種本來穩定運作的domain改用不同的prompt排版
+    // 呈現，行為跟著變得不穩定）：
+    // (1) domain的category是隨便打的字串、從來沒有用register_domain_category()
+    //     註冊過（例如剛上線的Domain管理UI，使用者可以在編輯器自由輸入
+    //     category文字，完全沒有驗證），原本的寫法會讓這個domain同時被
+    //     categorizedEntries跟standaloneEntries兩邊都排除——不屬於任何
+    //     category（category不存在於this.domainCategories），也不算
+    //     standalone（!d.category是false，因為category欄位本身確實有值，
+    //     只是這個值沒被註冊過），整個domain對路由器完全隱形。跟
+    //     register_domain()自己文件裡的說明（見上面該方法「category指向
+    //     的分類必須另外用register_domain_category註冊，這裡不驗證存在性
+    //     ...直接被當成獨立領域處理」）矛盾——這裡改成明確檢查
+    //     this.domainCategories[d.category]是否真的存在，不存在就退回
+    //     standalone，兌現文件裡承諾的行為。
+    // (2) 純知識型domain（沒有掛任何工具，例如Skill Sandbox裡純粹靠知識/
+    //     人設回答、沒有掛實裝工具的技能包）原本要求
+    //     _resolveDomainToolNames(d).length，兩邊filter都會把它排除——
+    //     跟_buildDomainCatalogSection()明確支援零工具domain（見該方法
+    //     「純知識/角色扮演型領域...符合時仍然應該選它」的說明）、跟扁平
+    //     版_routeTaskToDomains()完全沒有這個工具數量限制互相矛盾。這裡
+    //     拿掉這個條件，跟扁平模式的既有行為一致。
     async _routeTaskHierarchical(task) {
         const categorizedEntries = Object.entries(this.domains)
-            .filter(([, d]) => d.enabled && d.category && this._resolveDomainToolNames(d).length);
+            .filter(([, d]) => d.enabled && d.category && this.domainCategories[d.category]);
         if (!categorizedEntries.length) return this._routeTaskToDomains(task);
 
         const standaloneEntries = Object.entries(this.domains)
-            .filter(([, d]) => d.enabled && !d.category && this._resolveDomainToolNames(d).length);
-        const categoryKeys = [...new Set(categorizedEntries.map(([, d]) => d.category))]
-            .filter(k => this.domainCategories[k]);
+            .filter(([, d]) => d.enabled && !(d.category && this.domainCategories[d.category]));
+        const categoryKeys = [...new Set(categorizedEntries.map(([, d]) => d.category))];
 
         const toolByName = new Map(this._getCombinedToolEntries(null));
         const standaloneSections = standaloneEntries
