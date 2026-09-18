@@ -3220,7 +3220,7 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
 // 不要讓共用引擎自己猜host是誰」原則——這裡引擎完全不檢查
 // window.desktopAPI之類的全域變數，純粹由host自己決定要不要打開。
 const ADVANCED_SETTINGS_GROUPS = {
-    ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'file-access', 'subagent', 'limits'], visible: true },
+    ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'file-access', 'subagent', 'domains', 'limits'], visible: true },
     multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice'], visible: true },
     // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——獨立
     // 成一個群組（不塞進AI群組底下），因為/run-terminal是桌面/網頁共用的
@@ -3763,6 +3763,11 @@ class FloatingAssistant {
         // 未分類工具（見那個方法本身的說明）。
         this.register_domain_category('user_skills', { label: '使用者自訂技能(Skill)' });
         this._syncSkillBundleDomains();
+        // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
+        // 依目前（剛從localStorage還原完成的）advancedSettings.customDomains
+        // 把使用者自建的domain真正register_domain()進this.domains，見該方法
+        // 的說明。
+        this._syncCustomDomains();
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -4069,6 +4074,15 @@ class FloatingAssistant {
             rulesMd: '',
             customFunctions: '',
             customTools: [],
+            // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）
+            // ——使用者自建的domain（跟內建的SUBAGENT_DOMAIN_REGISTRY/host
+            // 用register_domain()註冊的domain分開存放，才知道哪些domain
+            // 可以被使用者從Domain管理UI刪除）。每筆：{key, label, category,
+            // toolNamesText（使用者輸入的原始多行文字，存這個而不是已經
+            // split好的陣列，讓編輯器可以原樣回填使用者的排版/註解），
+            // systemPrompt, enabled}。見_syncCustomDomains()怎麼把這些轉成
+            // 真正的register_domain()呼叫。
+            customDomains: [],
             // tw_stock_db客製: 2026-09-16使用者要求「Skill Sandbox」——把
             // 蒸餾出來的模型知識/風格（例如GPT Codex風格的coding skill）
             // 變成一個subagent會真正扮演的persona，而不是只掛幾個JS工具。
@@ -4560,6 +4574,25 @@ class FloatingAssistant {
         return normalized;
     }
 
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——比照
+    // _normalizeCustomTool同樣的「防禦性檢查+給合理預設」模式。key沒有的
+    // 項目直接丟棄（沒有key沒辦法對應到this.domains、也沒辦法在編輯器裡
+    // 分辨是修改哪一筆）。toolNamesText保留使用者的原始多行輸入（見
+    // _syncCustomDomains()怎麼split成真正的toolNames陣列）。
+    _normalizeCustomDomain(domain, fallbackKey) {
+        if (!domain || typeof domain !== 'object') return null;
+        const key = String(domain.key || fallbackKey || '').trim();
+        if (!key) return null;
+        return {
+            key,
+            label: String(domain.label || key).trim(),
+            category: String(domain.category || '').trim() || null,
+            toolNamesText: String(domain.toolNamesText || '').replace(/\r\n/g, '\n'),
+            systemPrompt: String(domain.systemPrompt || '').trim(),
+            enabled: domain.enabled !== false,
+        };
+    }
+
     // tw_stock_db客製: 2026-09-16——skillBundle的正規化，比照
     // _normalizeCustomTool同樣的「防禦性檢查+給合理預設」模式。id留空的
     // 項目直接丟棄（沒有id沒辦法跟customTools[].skillBundleId對應、也沒辦法
@@ -4685,6 +4718,40 @@ class FloatingAssistant {
             this.domains.custom_skills.toolNames = () => this.advancedSettings.customTools.filter(t => !t.skillBundleId).map(t => t.name);
         }
         this._syncSkillBundleSlashCommands();
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項的Domain
+    // 管理UI）——跟_syncSkillBundleDomains同一種「先清掉上一輪自己註冊的、
+    // 再從目前設定重新整批註冊」慣例，差別是這裡的domain key是使用者自訂
+    // （不像skill_<id>有固定前綴可以篩選），所以額外用
+    // this._customDomainKeysRegistered這個Set記住「上一輪實際註冊過哪些
+    // key」，才知道哪些要在這輪先delete乾淨（避免使用者改key/刪除domain
+    // 後，this.domains裡殘留一個叫不到、也管理不到的孤兒domain）。任何會
+    // 改到advancedSettings.customDomains的入口（Domain管理UI的新增/修改/
+    // 刪除/啟用切換）都要在改完後呼叫這個方法。
+    _syncCustomDomains() {
+        // tw_stock_db客製: 這裡不能無條件delete——如果這個key本來就是
+        // SUBAGENT_DOMAIN_REGISTRY裡的內建domain（使用者透過編輯器覆寫過
+        // 它的描述/工具，見_saveDomainEditor()的說明——任何domain的key都
+        // 統一寫進customDomains，不分內建/自訂），移除這筆覆寫紀錄時應該
+        // 「還原成內建預設值」，不是把整個domain憑空刪掉。只有真正全新的
+        // 自訂key（不在SUBAGENT_DOMAIN_REGISTRY裡）才是整個delete。host
+        // 註冊的domain（例如桌面版的desktop_ops，不在這個module常數裡）
+        // 如果被覆寫過又刪除覆寫，這裡沒有原始值可以還原，只能整個delete
+        // ——這是已知的邊界情況，host通常會在下次啟動時重新register_domain
+        // 一次，不是永久性的資料遺失。
+        (this._customDomainKeysRegistered || new Set()).forEach(k => {
+            if (SUBAGENT_DOMAIN_REGISTRY[k]) this.domains[k] = { ...SUBAGENT_DOMAIN_REGISTRY[k] };
+            else delete this.domains[k];
+        });
+        this._customDomainKeysRegistered = new Set();
+        for (const d of this.advancedSettings.customDomains) {
+            const toolNames = d.toolNamesText.split('\n').map(s => s.trim()).filter(Boolean);
+            this.register_domain(d.key, {
+                label: d.label, toolNames, systemPrompt: d.systemPrompt, enabled: d.enabled, category: d.category,
+            });
+            this._customDomainKeysRegistered.add(d.key);
+        }
     }
 
     // tw_stock_db客製: 2026-09-16使用者要求——技能包（Skill Bundle）也要比照
@@ -4892,6 +4959,9 @@ class FloatingAssistant {
         const skillBundles = Array.isArray(raw.skillBundles)
             ? raw.skillBundles.map(b => this._normalizeSkillBundle(b)).filter(Boolean)
             : [];
+        const customDomains = Array.isArray(raw.customDomains)
+            ? raw.customDomains.map((d, index) => this._normalizeCustomDomain(d, `custom_domain_${index + 1}`)).filter(Boolean)
+            : [];
         const aiCustomFunctions = (raw.aiCustomFunctions && typeof raw.aiCustomFunctions === 'object' && !Array.isArray(raw.aiCustomFunctions))
             ? Object.fromEntries(
                 Object.entries(raw.aiCustomFunctions)
@@ -4912,6 +4982,7 @@ class FloatingAssistant {
             customFunctions: String(raw.customFunctions || '').replace(/\r\n/g, '\n'),
             customTools,
             skillBundles,
+            customDomains,
             aiCustomFunctions,
             toolCallMode,
             generation: this._normalizeGenerationSettings(raw.generation),
@@ -11880,6 +11951,226 @@ ${sourceTool.handlerScript}
         this.activeToolEditIndex = -1;
     }
 
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
+    // 「目前subagent domain清單UI」+「Domain管理UI：內建domain（不可刪除）
+    // ＋使用者自建」。刻意排除skill_<id>這幾個自動產生的domain（見
+    // _syncSkillBundleDomains）——那些已經有自己專屬的「Skill」分頁管理
+    // 介面，混進這裡的通用清單只會造成兩份UI互相打架/困惑，使用者該去
+    // 「Skill」分頁管理技能包本身。
+    _renderDomainList() {
+        const list = document.getElementById('ai-domain-list');
+        if (!list) return;
+        const customKeys = new Set(this.advancedSettings.customDomains.map(d => d.key));
+        const entries = Object.entries(this.domains).filter(([key]) => !key.startsWith('skill_'));
+        if (!entries.length) { list.innerHTML = `<div class="ai-advanced-tool-empty">目前沒有任何domain。</div>`; return; }
+        list.innerHTML = entries.map(([key, d]) => {
+            const isCustom = customKeys.has(key);
+            const badge = isCustom ? '自訂' : '內建';
+            const badgeColor = isCustom ? '#0ea5e9' : '#94a3b8';
+            return `
+            <div class="ai-advanced-tool-item">
+                <div style="flex:1; min-width:0;">
+                    <div class="ai-advanced-tool-name">${this._escapeHtml(d.label || key)} <span style="font-size:10px; color:${badgeColor}; border:1px solid ${badgeColor}; border-radius:4px; padding:0 4px;">${badge}</span> <code style="font-size:11px; color:#94a3b8;">${this._escapeHtml(key)}</code></div>
+                    <div class="ai-advanced-tool-desc">${d.enabled ? '啟用中' : '已停用'}${d.category ? `　·　類別: ${this._escapeHtml(d.category)}` : ''}</div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                    <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
+                        <input type="checkbox" data-domain-toggle="${this._escapeAttr(key)}" ${d.enabled ? 'checked' : ''} style="cursor:pointer;"> 啟用
+                    </label>
+                    <button type="button" class="ai-advanced-btn" data-domain-edit="${this._escapeAttr(key)}">修改</button>
+                    ${isCustom ? `<button type="button" class="ai-advanced-btn danger" data-domain-delete="${this._escapeAttr(key)}">刪除</button>` : ''}
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    // key＝null代表新增；非null時，如果目前是customDomains裡的一筆就帶入
+    // 原始資料，否則是內建/host註冊的domain，帶入目前live的this.domains
+    // 內容（toolNames若是函式/getter動態值，退回空清單——那種domain本來就
+    // 不是設計給使用者手動編輯工具清單的，例如skill_<id>已經被上面的
+    // _renderDomainList過濾掉，理論上不會走到這裡）。
+    _openDomainEditor(key) {
+        const modal = document.getElementById('ai-domain-editor-modal');
+        if (!modal) return;
+        this.activeDomainEditKey = key || null;
+        const isNew = !key;
+        const custom = key ? this.advancedSettings.customDomains.find(d => d.key === key) : null;
+        const live = key ? this.domains[key] : null;
+        const keyInput = document.getElementById('ai-domain-key-input');
+        const labelInput = document.getElementById('ai-domain-label-input');
+        const categoryInput = document.getElementById('ai-domain-category-input');
+        const toolsInput = document.getElementById('ai-domain-tools-input');
+        const promptInput = document.getElementById('ai-domain-prompt-input');
+        const enabledChk = document.getElementById('ai-domain-enabled-chk');
+        const reviseResult = document.getElementById('ai-domain-ai-revise-result');
+        if (reviseResult) reviseResult.textContent = '';
+        keyInput.value = key || '';
+        keyInput.disabled = !isNew; // 建立後不能改key，改key等於建一個新domain、舊key的委派關係會斷掉
+        if (custom) {
+            labelInput.value = custom.label;
+            categoryInput.value = custom.category || '';
+            toolsInput.value = custom.toolNamesText;
+            promptInput.value = custom.systemPrompt;
+            enabledChk.checked = custom.enabled !== false;
+        } else if (live) {
+            labelInput.value = live.label || key;
+            categoryInput.value = live.category || '';
+            toolsInput.value = Array.isArray(live.toolNames) ? live.toolNames.join('\n') : '';
+            promptInput.value = typeof live.systemPrompt === 'string' ? live.systemPrompt : '';
+            enabledChk.checked = live.enabled !== false;
+        } else {
+            labelInput.value = ''; categoryInput.value = ''; toolsInput.value = ''; promptInput.value = ''; enabledChk.checked = true;
+        }
+        modal.style.display = 'flex';
+    }
+
+    _closeDomainEditor() {
+        const modal = document.getElementById('ai-domain-editor-modal');
+        if (modal) modal.style.display = 'none';
+        this.activeDomainEditKey = null;
+    }
+
+    // tw_stock_db客製: 儲存邏輯統一寫進advancedSettings.customDomains（不論
+    // 這個key原本是內建domain還是全新自訂domain）——見_syncCustomDomains()
+    // 的說明，那裡負責把這份清單真正register_domain()進this.domains，並在
+    // 這筆entry被刪除時決定要「整個移除」還是「還原成內建預設值」。
+    _saveDomainEditor() {
+        const keyInput = document.getElementById('ai-domain-key-input');
+        const labelInput = document.getElementById('ai-domain-label-input');
+        const categoryInput = document.getElementById('ai-domain-category-input');
+        const toolsInput = document.getElementById('ai-domain-tools-input');
+        const promptInput = document.getElementById('ai-domain-prompt-input');
+        const enabledChk = document.getElementById('ai-domain-enabled-chk');
+        const key = String(keyInput.value || '').trim();
+        if (!key) { alert('請填寫代號（key）。'); return; }
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) { alert('代號只能用英文字母/數字/底線，且不能以數字開頭（跟其他工具/domain代號同一套慣例）。'); return; }
+        const isNewKeyCollision = !this.activeDomainEditKey && this.domains[key];
+        if (isNewKeyCollision) { alert(`代號「${key}」已經被其他domain使用，請換一個。`); return; }
+        const entry = {
+            key, label: String(labelInput.value || key).trim() || key,
+            category: String(categoryInput.value || '').trim() || null,
+            toolNamesText: toolsInput.value,
+            systemPrompt: String(promptInput.value || '').trim(),
+            enabled: enabledChk.checked,
+        };
+        const existingIndex = this.advancedSettings.customDomains.findIndex(d => d.key === key);
+        if (existingIndex >= 0) this.advancedSettings.customDomains[existingIndex] = entry;
+        else this.advancedSettings.customDomains.push(entry);
+        this._saveAdvancedSettings();
+        this._syncCustomDomains();
+        this._closeDomainEditor();
+        this._renderDomainList();
+    }
+
+    _deleteDomain(key) {
+        if (!confirm(`確定要刪除domain「${key}」嗎？${this.domains[key] && SUBAGENT_DOMAIN_REGISTRY[key] ? '（這是內建domain的自訂覆寫，刪除後會還原成內建預設值）' : ''}`)) return;
+        this.advancedSettings.customDomains = this.advancedSettings.customDomains.filter(d => d.key !== key);
+        this._saveAdvancedSettings();
+        this._syncCustomDomains();
+        this._renderDomainList();
+    }
+
+    _toggleDomainEnabled(key, enabled) {
+        if (!this.domains[key]) return;
+        this.domains[key].enabled = enabled;
+        // tw_stock_db客製: 直接切列表上的checkbox是「快速開關」，不需要每次
+        // 都跳完整編輯器——但如果這個key本來就已經有customDomains覆寫（使用者
+        // 之前編輯過描述/工具），順手一起更新那筆紀錄的enabled欄位，不然
+        // 下次_syncCustomDomains()重新整批註冊時會被那筆舊紀錄的enabled值蓋回去。
+        const existing = this.advancedSettings.customDomains.find(d => d.key === key);
+        if (existing) { existing.enabled = enabled; this._saveAdvancedSettings(); }
+        this._updateDelegateToSubagentDescription();
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第4項）——
+    // 「Domain描述欄位旁AI revise按鈕：跳對話框，讓LLM檢查這段描述會不會
+    // 影響選擇時的權重」。直接重用_callRouterLLM（純文字分類請求，不需要
+    // agentic loop/工具呼叫），把「這個domain的描述」跟「系統裡其他domain
+    // 的label+描述摘要」一起丟給LLM，請它specifically檢查有沒有字面關鍵字
+    // 跟其他domain撞在一起（這正是這次session前面file_analysis/
+    // file_access_points那次真實bug的根因，見TODO.md的說明），而不是只
+    // 泛泛檢查文字品質。
+    async _reviseDomainDescriptionWithAI() {
+        const keyInput = document.getElementById('ai-domain-key-input');
+        const labelInput = document.getElementById('ai-domain-label-input');
+        const promptInput = document.getElementById('ai-domain-prompt-input');
+        const btn = document.getElementById('ai-domain-ai-revise-btn');
+        const resultEl = document.getElementById('ai-domain-ai-revise-result');
+        const key = String(keyInput.value || '').trim() || '(尚未命名)';
+        const label = String(labelInput.value || '').trim() || key;
+        const description = String(promptInput.value || '').trim();
+        if (!description) { if (resultEl) resultEl.textContent = '請先填一些描述內容再請AI檢查。'; return; }
+        const otherDomains = Object.entries(this.domains)
+            .filter(([k]) => k !== key && !k.startsWith('skill_'))
+            .map(([k, d]) => `- [${k}] ${d.label || k}`)
+            .join('\n');
+        const reviewPrompt = [
+            '你是一個檢查「domain路由描述」品質的助理。系統用一段自然語言描述（label+systemPrompt）判斷使用者的任務該委派給哪個domain，如果描述用詞跟其他domain的名稱/描述字面上太相似（關鍵字碰撞），路由子agent容易選錯domain。',
+            '',
+            `要檢查的domain：[${key}] ${label}`,
+            `它的描述內容：\n${description}`,
+            '',
+            '系統裡其他domain的代號+名稱：',
+            otherDomains || '（沒有其他domain）',
+            '',
+            '請检查：(1)這段描述有沒有跟其他domain的名稱/常見措辭字面上容易混淆的地方 (2)描述有沒有清楚交代「這個domain負責什麼、不負責什麼」的邊界 (3)有沒有明顯冗餘/矛盾的地方。用繁體中文條列式簡短列出發現的問題（如果完全沒問題，直接說「沒有發現明顯問題」）。',
+            '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"findings": "條列式檢查結果的純文字（用\\n分隔每一點）"}',
+        ].join('\n');
+        btn.disabled = true; btn.textContent = '⏳ 檢查中…';
+        if (resultEl) resultEl.textContent = '';
+        try {
+            const result = await this._callRouterLLM('你是一個嚴謹、簡潔的文字審閱助理，嚴格只輸出要求的JSON格式。', reviewPrompt);
+            if (resultEl) resultEl.textContent = result.ok ? String((result.parsed && result.parsed.findings) || '（沒有取得檢查結果）') : `檢查失敗：${result.error}`;
+        } catch (err) {
+            if (resultEl) resultEl.textContent = `檢查失敗：${String(err.message || err)}`;
+        } finally {
+            btn.disabled = false; btn.textContent = '🤖 AI revise';
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第5項）——
+    // 「Domain管理UI「AI Dry Run」：輸入框+按鈕，模擬目前這個LLM model
+    // 面對某個假設性需求會路由到哪個domain、原因是什麼」。直接重用
+    // _routeTaskToDomains()/_routeTaskHierarchical()（跟真正委派時完全
+    // 同一套路由邏輯，模擬結果才有意義），但不會接著真的呼叫
+    // _runSubAgentTask執行——單純顯示路由決策本身。另外用一個帶
+    // "reasoning"欄位的路由prompt變體問一次「為什麼」，讓使用者看得到理由
+    // ——production的_routeTaskToDomains故意不問理由（省一輪token成本），
+    // 這裡是診斷用途，多花一點token換一個可讀的解釋是值得的。
+    async _dryRunDomainRouting() {
+        const input = document.getElementById('ai-domain-dryrun-input');
+        const btn = document.getElementById('ai-domain-dryrun-btn');
+        const resultEl = document.getElementById('ai-domain-dryrun-result');
+        const task = String(input.value || '').trim();
+        if (!task) { if (resultEl) resultEl.textContent = '請先輸入一個假設性的任務描述。'; return; }
+        btn.disabled = true; btn.textContent = '⏳ 模擬中…';
+        if (resultEl) resultEl.textContent = '';
+        try {
+            const routed = this.multiSubAgentMode === 'hierarchical'
+                ? await this._routeTaskHierarchical(task)
+                : await this._routeTaskToDomains(task);
+            if (!routed.ok) { resultEl.textContent = `路由失敗：${routed.error}`; return; }
+            if (!routed.domains.length) { resultEl.textContent = '判斷結果：不需要委派給任何domain（根模型會自己直接回答）。'; return; }
+            const domainLabels = routed.domains.map(k => `[${k}] ${this.domains[k] ? this.domains[k].label : '(未知)'}`).join('、');
+            let reasonText = '';
+            try {
+                const reasonPrompt = [
+                    `任務描述：${task}`,
+                    `剛剛的路由判斷選中了：${domainLabels}`,
+                    '請用一兩句話簡短說明為什麼會選中這個/這些domain（可以參考它們的名稱/工具用途）。',
+                    '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"reasoning": "一兩句話的理由"}',
+                ].join('\n');
+                const reasonResult = await this._callRouterLLM('你是一個簡潔的說明助理，嚴格只輸出要求的JSON格式。', reasonPrompt);
+                reasonText = reasonResult.ok ? String((reasonResult.parsed && reasonResult.parsed.reasoning) || '') : '';
+            } catch (_) { /* 理由說明失敗不影響主要的路由結果顯示 */ }
+            resultEl.textContent = `會路由到：${domainLabels}${reasonText ? `\n理由：${reasonText}` : ''}`;
+        } catch (err) {
+            resultEl.textContent = `模擬失敗：${String(err.message || err)}`;
+        } finally {
+            btn.disabled = false; btn.textContent = '🔬 模擬路由';
+        }
+    }
+
     _renderCustomToolList() {
         const list = document.getElementById('ai-custom-tool-list');
         if (!list) return;
@@ -12154,7 +12445,7 @@ ${sourceTool.handlerScript}
             'llm-basic': 'LLM 基礎設定', 'llm-sampling': 'LLM Model 管理', 'llm-debug': 'LLM Debug',
             'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
             'file-access': '檔案存取管理', 'subagent': '子Agent', 'multimedia': '多媒體',
-            'voice': '語音設定', 'limits': '效能與限制', 'terminal': 'xterm 終端機',
+            'voice': '語音設定', 'limits': '效能與限制', 'terminal': 'xterm 終端機', 'domains': 'Domain 管理',
             // tw_stock_db客製: 2026-09-18——host透過registerAdvancedSettingsTab()
             // 額外註冊的cat標籤（見該方法說明），跟內建cat共用同一份查詢
             // 入口，讓_buildAdvancedSettingsSidebarHtml()不用知道兩者的差異。
@@ -12212,6 +12503,7 @@ ${sourceTool.handlerScript}
         const ragEnabledChk = document.getElementById('ai-rag-enabled-chk');
         if (ragEnabledChk) ragEnabledChk.checked = this.advancedSettings.ragEnabled === true;
         this._renderFapList();
+        this._renderDomainList();
         const hermesChk = document.getElementById('ai-hermes-evolve-chk');
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
@@ -23250,6 +23542,23 @@ ${existingNodeSummaries}
                                     <p class="ai-advanced-hint">留空時會直接沿用目前設定的LLM API URL（如果那個Worker本身也有部署/browser-search路由的話，不需要另外填）；只有想用「跟LLM不同的另一個」Worker端點時才需要在這裡明確指定。</p>
                                 </div>
                             </div>
+                            <div class="ai-advanced-pane hidden" data-pane="domains">
+                                <div class="ai-advanced-stack">
+                                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                                        <label class="ai-advanced-label" style="margin:0;">目前的Domain（委派/路由的專家領域）</label>
+                                        <button type="button" id="ai-domain-add-btn" class="ai-advanced-btn">+ 新增Domain</button>
+                                    </div>
+                                    <p class="ai-advanced-hint">內建domain（含host自己註冊的，例如桌面版的desktop_ops）不能刪除，但可以關閉啟用或修改描述/工具清單；使用者自建的domain可以自由編輯/刪除。</p>
+                                    <div id="ai-domain-list"></div>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">AI Dry Run：模擬路由結果</label>
+                                    <p class="ai-advanced-hint">輸入一個假設性的任務描述，看看目前這個LLM model會路由到哪個/哪些domain、理由是什麼——不會真的執行任何工具，純粹模擬路由判斷。</p>
+                                    <textarea id="ai-domain-dryrun-input" class="ai-advanced-textarea" style="min-height:60px;" placeholder="例如：幫我讀取D槽的一份Excel報表並整理成摘要"></textarea>
+                                    <button type="button" id="ai-domain-dryrun-btn" class="ai-advanced-btn">🔬 模擬路由</button>
+                                    <div id="ai-domain-dryrun-result" class="ai-advanced-hint" style="white-space:pre-wrap; margin-top:6px;"></div>
+                                </div>
+                            </div>
                             <div class="ai-advanced-pane hidden" data-pane="multimedia">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">影音處理子Agent（transcribe_media／extract_audio）</label>
@@ -23434,6 +23743,51 @@ ${existingNodeSummaries}
                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button type="button" id="ai-tool-editor-cancel" class="ai-advanced-btn">取消</button>
                             <button type="button" id="ai-tool-editor-save" class="ai-advanced-btn primary">儲存</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="ai-domain-editor-modal" class="ai-advanced-overlay">
+                <div class="ai-advanced-dialog" style="width:min(860px, 94vw);">
+                    <div class="ai-advanced-row">
+                        <h3 style="margin:0; color:#76b900;">編輯 Domain</h3>
+                        <button type="button" id="ai-domain-editor-close" class="ai-advanced-btn">關閉</button>
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <label class="ai-advanced-label" for="ai-domain-key-input">代號（key，委派時用這個識別，建立後不能修改）</label>
+                        <input id="ai-domain-key-input" class="ai-advanced-input" type="text" placeholder="例如：my_custom_domain">
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <label class="ai-advanced-label" for="ai-domain-label-input">顯示名稱（label）</label>
+                        <input id="ai-domain-label-input" class="ai-advanced-input" type="text">
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <label class="ai-advanced-label" for="ai-domain-category-input">類別（選填，兩層路由用，留空＝獨立領域）</label>
+                        <input id="ai-domain-category-input" class="ai-advanced-input" type="text">
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <label class="ai-advanced-label" for="ai-domain-tools-input">工具名稱清單（一行一個，必須是已經註冊過的工具名稱）</label>
+                        <textarea id="ai-domain-tools-input" class="ai-advanced-textarea" style="min-height:80px; font-family:monospace;" placeholder="render_drawing&#10;render_uml_diagram"></textarea>
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <label class="ai-advanced-label" for="ai-domain-prompt-input" style="margin:0;">描述／System Prompt（委派給這個domain時，子agent會看到這段內容）</label>
+                            <button type="button" id="ai-domain-ai-revise-btn" class="ai-advanced-btn" style="padding:2px 8px; white-space:nowrap;">🤖 AI revise</button>
+                        </div>
+                        <textarea id="ai-domain-prompt-input" class="ai-advanced-textarea" style="min-height:140px;"></textarea>
+                        <div id="ai-domain-ai-revise-result" class="ai-advanced-hint" style="white-space:pre-wrap;"></div>
+                    </div>
+                    <div class="ai-advanced-stack">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="ai-domain-enabled-chk" style="cursor:pointer;">
+                            <label for="ai-domain-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用</label>
+                        </div>
+                    </div>
+                    <div class="ai-advanced-footer">
+                        <span style="font-size:12px; color:#94a3b8;">工具名稱不驗證是否真的存在，委派給不存在工具的domain會在實際執行時才報錯。</span>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button type="button" id="ai-domain-editor-cancel" class="ai-advanced-btn">取消</button>
+                            <button type="button" id="ai-domain-editor-save" class="ai-advanced-btn primary">儲存</button>
                         </div>
                     </div>
                 </div>
@@ -25295,6 +25649,28 @@ ${existingNodeSummaries}
         }
         document.getElementById('ai-tool-editor-close').onclick = () => this._closeToolEditor();
         document.getElementById('ai-tool-editor-cancel').onclick = () => this._closeToolEditor();
+        // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
+        // Domain管理UI的按鈕/事件代理，跟上面Skill Custom Tool編輯器同一套
+        // 「開/關modal、儲存、清單用事件代理處理edit/delete/toggle」慣例。
+        document.getElementById('ai-domain-add-btn').onclick = () => this._openDomainEditor(null);
+        document.getElementById('ai-domain-editor-close').onclick = () => this._closeDomainEditor();
+        document.getElementById('ai-domain-editor-cancel').onclick = () => this._closeDomainEditor();
+        document.getElementById('ai-domain-editor-save').onclick = () => this._saveDomainEditor();
+        document.getElementById('ai-domain-ai-revise-btn').onclick = () => this._reviseDomainDescriptionWithAI();
+        document.getElementById('ai-domain-dryrun-btn').onclick = () => this._dryRunDomainRouting();
+        const domainListEl = document.getElementById('ai-domain-list');
+        if (domainListEl) {
+            domainListEl.addEventListener('click', (event) => {
+                const editBtn = event.target.closest('[data-domain-edit]');
+                if (editBtn) { this._openDomainEditor(editBtn.dataset.domainEdit); return; }
+                const deleteBtn = event.target.closest('[data-domain-delete]');
+                if (deleteBtn) { this._deleteDomain(deleteBtn.dataset.domainDelete); return; }
+            });
+            domainListEl.addEventListener('change', (event) => {
+                const toggle = event.target.closest('[data-domain-toggle]');
+                if (toggle) this._toggleDomainEnabled(toggle.dataset.domainToggle, toggle.checked);
+            });
+        }
         document.getElementById('ai-fn-manage-btn').onclick = () => this._openAiFnModal();
         document.getElementById('ai-fn-modal-close').onclick = () => this._closeAiFnModal();
         document.getElementById('ai-fn-modal-done').onclick = () => this._closeAiFnModal();
