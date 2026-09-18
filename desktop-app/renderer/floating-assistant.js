@@ -3250,7 +3250,7 @@ const TERMINAL_BUSYBOX_APPLETS = [
 // 檔案，不是額外的一份指令白名單管制。
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
-    'ask-floating-ai-assistant',
+    'ask-floating-ai-assistant', 'sync',
 ];
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -13391,6 +13391,8 @@ ${sourceTool.handlerScript}
                 'sh/bash <script檔案> [參數...]：執行一個shell script檔案；也可以先chmod +x再用./script.sh直接執行',
                 'time <指令...>：量測指令的牆鐘執行時間（沙盒沒有行程概念，user/sys欄位只是格式佔位，不是真的CPU時間）',
                 'ls /bin、ls /usr/bin：列出目前這個沙盒有哪些內建指令可以用',
+                '/mnt/<FAP別名>：存取已授權的File Access Point（真實磁碟資料夾），第一次cd/ls進去才會讀取內容',
+                'sync [FAP別名]：把/mnt底下的變更寫回真正的FAP（不會自動flush，留空＝全部已讀取過的都flush）',
                 'ask-floating-ai-assistant [--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
                 'top：只顯示這個終端機session自己（沒有真正的process可以列），每秒重繪，按q離開',
@@ -13400,6 +13402,10 @@ ${sourceTool.handlerScript}
         if (cmdName === 'cd') { await this._terminalCd(session, restArgs || '/work'); return; }
         if (cmdName === 'which') { await this._terminalWhich(session, restArgs); return; }
         if (cmdName === 'chmod') { await this._terminalChmod(session, restArgs); return; }
+        // tw_stock_db客製: 2026-09-18使用者要求——「做個sync指令來確實
+        // flush」，見_terminalSync()的說明。JS層攔截（跟chmod同一種理由：
+        // busybox裡沒有、也不可能有這個「把/mnt掛載寫回真實FAP」的能力）。
+        if (cmdName === 'sync') { await this._terminalSync(session, restArgs); return; }
         // tw_stock_db客製: 2026-09-18使用者實測回報——「我在裡面寫shell檔案
         // 目前沒辦法變成執行檔」「要有bash, sh程式可以用來呼叫執行」。wasi-sh
         // 的ash本身不能fork/exec，「A command name containing a slash is
@@ -13510,7 +13516,7 @@ ${sourceTool.handlerScript}
             // TERMINAL_BUSYBOX_APPLETS/已登記bundle這三份清單有哪些名字，
             // 實際呼叫still是_runTerminalCommand()的攔截判斷或busybox
             // applet dispatch，不是靠這裡的檔案內容。
-            const seedFiles = { '/work/.keep': '' };
+            const seedFiles = { '/work/.keep': '', '/mnt/.keep': '' };
             const discoverableNames = new Set([
                 ...TERMINAL_SHELL_BUILTINS,
                 ...TERMINAL_BUSYBOX_APPLETS,
@@ -13525,7 +13531,29 @@ ${sourceTool.handlerScript}
                 seedFiles[`/bin/${name}`] = '';
                 seedFiles[`/usr/bin/${name}`] = '';
             }
+            // tw_stock_db客製: 2026-09-18使用者要求——「我怎麼看到使用者的
+            // FAP」「ls /，仍沒看到mnt」。這裡只塞每個目前已經granted的FAP
+            // 一個空目錄佔位（`/mnt/<label>/.keep`），讓`ls /mnt`一開始就能
+            // 看到有哪些FAP可以用——實際檔案內容故意不在這裡塞（可能很大、
+            // 每次開終端機都要等所有FAP整個讀完太慢），而是lazy hydrate：
+            // 第一次有指令真的提到`/mnt/<label>`時才整個讀進來（見
+            // _hydrateReferencedFapMounts）。session.fapLabels記住這裡看到
+            // 的名單，之後的lazy-hydrate掃描只需要比對這份清單，不用每次
+            // 指令都重新查一次FAP store。只列permission已經是granted的——
+            // 還沒授權的FAP如果也列出來，使用者一cd進去就會跳permission
+            // dialog，在終端機情境下太突兀，維持「先在Advance
+            // Settings或一般對話裡把權限點過一次，才會出現在/mnt」的行為。
+            session.fapLabels = [];
+            try {
+                const points = await this._listAllFapAccessPoints();
+                for (const p of points) {
+                    if (p.permission !== 'granted') continue;
+                    session.fapLabels.push(p.label);
+                    seedFiles[`/mnt/${p.label}/.keep`] = '';
+                }
+            } catch (_) { /* FAP store可能還沒初始化完成，維持空清單即可 */ }
             session.fsStore = runtime.memoryFs(seedFiles);
+            session.fapHydrated = new Set();
         }
         return session.fsStore;
     }
@@ -13554,6 +13582,135 @@ ${sourceTool.handlerScript}
         const stack = [];
         for (const part of parts) { if (part === '..') stack.pop(); else stack.push(part); }
         return '/' + stack.join('/');
+    }
+
+    _writeBytesToTerminalFs(fsStore, absPath, bytes) {
+        try { fsStore.unlinkSync(absPath); } catch (_) { /* 不存在就直接建立 */ }
+        fsStore.createFileSync(absPath);
+        fsStore.writeSync(absPath, bytes, 0);
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「我怎麼看到使用者的FAP」。
+    // WASM沙盒版的/mnt掛載採用者確認的「hydrate-and-flush」模式（跟wasi-sh
+    // README自己給OPFS/真實資料夾這類非同步後端的建議做法同一個精神）：
+    // 第一次真的有指令提到`/mnt/<label>`時，才把整個FAP目錄樹非同步讀進
+    // 沙盒fs（見_hydrateReferencedFapMounts），不是session一開始就全部讀完
+    // （可能很大、拖慢每次開終端機的速度）。故意繞過_fapReadFile/_fapWriteFile
+    // （那兩個是給LLM文字互動用的既有工具，只支援純文字+8000字元截斷+
+    // 二進位格式直接拒絕），改用rec.handle這個真正的FileSystemDirectoryHandle
+    // 讀寫原始bytes，任何格式的檔案都能正確掛載。
+    async _hydrateFapMount(session, fsStore, label) {
+        if (session.fapHydrated.has(label)) return;
+        session.fapHydrated.add(label); // 先標記，避免同一次掃描裡的巢狀/並發呼叫重複hydrate
+        let rec;
+        try {
+            rec = await this._resolveFapAccessPoint(label);
+            await this._checkFapPermission(rec, 'read');
+        } catch (err) {
+            session.fapHydrated.delete(label);
+            throw err;
+        }
+        const walk = async (dirHandle, relPath) => {
+            for await (const [name, handle] of dirHandle.entries()) {
+                const childRel = relPath ? `${relPath}/${name}` : name;
+                const absPath = `/mnt/${label}/${childRel}`;
+                if (handle.kind === 'directory') {
+                    try { fsStore.mkdirSync(absPath, { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
+                    await walk(handle, childRel);
+                } else {
+                    const file = await handle.getFile();
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    this._writeBytesToTerminalFs(fsStore, absPath, bytes);
+                }
+            }
+        };
+        await walk(rec.handle, '');
+    }
+
+    // 一段shell指令文字（或cd的target）裡如果提到某個目前已知的FAP掛載點
+    // 但還沒hydrate過，這裡統一掃描+觸發——_runTerminalShellLine/_terminalCd/
+    // _terminalRunScriptFile三個run()呼叫點共用，不用各自重複判斷邏輯。
+    async _hydrateReferencedFapMounts(session, fsStore, text) {
+        if (!session.fapLabels || !session.fapLabels.length) return;
+        for (const label of session.fapLabels) {
+            if (session.fapHydrated.has(label)) continue;
+            if (text.includes(`/mnt/${label}`)) {
+                await this._hydrateFapMount(session, fsStore, label);
+            }
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「做個sync指令來確實flush」
+    // （而不是每個指令執行完自動flush）。刻意不做diff/dirty-tracking：
+    // 每次sync無條件把整個`/mnt/<label>`子樹目前的內容寫回真正的FAP，
+    // 邏輯簡單、不會因為hash/mtime判斷漏掉真正的變更（這個沙盒fs本來就
+    // 沒有真正的mtime可以拿來判斷，見wasi-sh README「No symlinks,
+    // permissions, or timestamps」）。已知限制：只會新增/覆寫，不會把
+    // 沙盒裡刪除的檔案同步刪除真正的FAP檔案（自動同步刪除使用者真實磁碟
+    // 檔案風險較高，這裡刻意不做，需要真的清掉的話請直接對真實資料夾
+    // 操作）。
+    async _terminalSync(session, argsText) {
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        const arg = String(argsText || '').trim();
+        let targets;
+        if (!arg) {
+            targets = [...session.fapHydrated];
+            if (!targets.length) { session.term.write('sync: 目前沒有任何/mnt掛載被讀取過，沒有東西需要flush（先cd進去或ls過才會hydrate）\r\n'); return; }
+        } else {
+            const label = arg.replace(/^\/mnt\//, '').split('/')[0];
+            if (!session.fapHydrated.has(label)) {
+                session.term.write(`\x1b[31msync: 「${label}」還沒被讀取過（先cd進去或ls過才有東西可以flush）\x1b[0m\r\n`);
+                return;
+            }
+            targets = [label];
+        }
+        for (const label of targets) {
+            let rec;
+            try {
+                rec = await this._resolveFapAccessPoint(label);
+                await this._checkFapPermission(rec, 'readwrite');
+            } catch (err) {
+                session.term.write(`\x1b[31msync ${label}: ${String(err.message || err)}\x1b[0m\r\n`);
+                continue;
+            }
+            let count = 0;
+            const errors = [];
+            const walk = async (dirHandle, relPath, absDir) => {
+                let names;
+                try { names = fsStore.readdirSync(absDir); } catch (_) { return; }
+                for (const name of names) {
+                    if (name === '.keep') continue;
+                    const childRel = relPath ? `${relPath}/${name}` : name;
+                    const childAbs = `${absDir}/${name}`;
+                    let stat;
+                    try { stat = fsStore.statSync(childAbs); } catch (_) { continue; }
+                    const isDirectory = (stat.mode & 0o170000) === 0o040000; // S_IFMT/S_IFDIR，見wasi-sh fs.mjs的isDir()
+                    if (isDirectory) {
+                        try {
+                            const subDirHandle = await dirHandle.getDirectoryHandle(name, { create: true });
+                            await walk(subDirHandle, childRel, childAbs);
+                        } catch (err) { errors.push(`${childRel}: ${String(err.message || err)}`); }
+                    } else {
+                        try {
+                            const buf = new Uint8Array(stat.size);
+                            fsStore.readSync(childAbs, buf, 0, stat.size);
+                            const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+                            const writable = await fileHandle.createWritable();
+                            await writable.write(buf);
+                            await writable.close();
+                            count++;
+                        } catch (err) { errors.push(`${childRel}: ${String(err.message || err)}`); }
+                    }
+                }
+            };
+            await walk(rec.handle, '', `/mnt/${label}`);
+            session.term.write(`sync ${label}: 已寫回${count}個檔案${errors.length ? `，${errors.length}個失敗：\r\n  ${errors.join('\r\n  ')}` : ''}\r\n`);
+        }
     }
 
     // tw_stock_db客製: 2026-09-18使用者實測回報——「/usr/bin也沒有python3,
@@ -13595,6 +13752,10 @@ ${sourceTool.handlerScript}
             return;
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        try { await this._hydrateReferencedFapMounts(session, fsStore, line); } catch (err) {
+            session.term.write(`\x1b[31mFAP掛載讀取失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`;
         let builtins;
         try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
@@ -13632,6 +13793,10 @@ ${sourceTool.handlerScript}
             return;
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        try { await this._hydrateReferencedFapMounts(session, fsStore, target); } catch (err) {
+            session.term.write(`\x1b[31mFAP掛載讀取失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; cd ${this._shQuote(target)} && pwd`;
         let result;
         try {
@@ -13722,6 +13887,10 @@ ${sourceTool.handlerScript}
             return;
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        try { await this._hydrateReferencedFapMounts(session, fsStore, filename); } catch (err) {
+            session.term.write(`\x1b[31mFAP掛載讀取失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
         const abs = this._terminalResolvePath(session.cwd, filename);
         let text;
         try {
@@ -13731,6 +13900,10 @@ ${sourceTool.handlerScript}
             text = new TextDecoder('utf-8').decode(buf);
         } catch (_) {
             session.term.write(`\x1b[31mbash: ${filename}: 找不到這個檔案\x1b[0m\r\n`);
+            return;
+        }
+        try { await this._hydrateReferencedFapMounts(session, fsStore, text); } catch (err) {
+            session.term.write(`\x1b[31mFAP掛載讀取失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
         const args = String(argsText || '').trim().split(/\s+/).filter(Boolean);
