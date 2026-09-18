@@ -3204,6 +3204,7 @@ const TERMINAL_PROGRAM_BUNDLES = {
     more: './terminal-programs/pager.mjs',
     vi: './terminal-programs/editor.mjs',
     vim: './terminal-programs/editor.mjs',
+    top: './terminal-programs/top.mjs',
 };
 
 // tw_stock_db客製: 2026-09-18使用者實測回報——終端機裡沒有`which`、也沒有
@@ -12945,6 +12946,7 @@ ${sourceTool.handlerScript}
             line: '',
             activeProgram: null,
             ended: false,
+            startedAt: Date.now(), // top.mjs用來顯示這個session的存活時間（沒有真正的系統uptime可以顯示）
         };
         container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
 
@@ -13066,7 +13068,7 @@ ${sourceTool.handlerScript}
                 'ls /bin、ls /usr/bin：列出目前這個沙盒有哪些內建指令可以用',
                 'ask-floating-ai-assistant [--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
-                '⚠️top目前還沒有對應的bundle（見registerTerminalProgram），會回報「找不到這個指令」',
+                'top：只顯示這個終端機session自己（沒有真正的process可以列），每秒重繪，按q離開',
             ].join('\r\n') + '\r\n');
             return;
         }
@@ -13425,11 +13427,30 @@ ${sourceTool.handlerScript}
         const ctx = {
             write: (text) => session.term.write(String(text).replace(/\n/g, '\r\n')),
             readKey: () => new Promise((resolve) => { resolveKey = resolve; }),
+            // tw_stock_db客製: 2026-09-18新增，為top.mjs這類需要「沒按鍵也要
+            // 定時自動重繪」的bundle準備——readKey()只在真的按鍵時resolve，
+            // 沒有逾時機制；這裡另外提供一個逾時版本，共用同一個resolveKey
+            // 變數（跟readKey()一樣由program.feed()觸發），逾時時resolve(null)
+            // 讓呼叫端自己判斷要不要當成「這輪沒有按鍵、重繪一次」。
+            readKeyOrTimeout: (ms) => new Promise((resolve) => {
+                let settled = false;
+                const timer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true; resolveKey = null; resolve(null);
+                }, ms);
+                resolveKey = (data) => {
+                    if (settled) return;
+                    settled = true; clearTimeout(timer); resolve(data);
+                };
+            }),
             fs: async () => this._ensureTerminalFsStore(session, await this._ensureBashWasmLoaded()),
             cwd: session.cwd,
             args: argsText ? argsText.split(/\s+/) : [],
             cols: session.term.cols,
             rows: session.term.rows,
+            // tw_stock_db客製: 2026-09-18新增，top.mjs用來顯示這個終端機
+            // session活了多久（沒有真正的系統/process uptime可以顯示）。
+            sessionStartedAt: session.startedAt,
             // tw_stock_db客製: 2026-09-18——同一個bundle可能被多個指令名稱
             // 共用（例如less/more都指向pager.mjs），bundle自己組錯誤訊息時
             // 應該印使用者實際打的名稱，不要寫死成bundle內部認定的「主要」
