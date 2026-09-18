@@ -16,8 +16,11 @@
 - [x] xterm.js載入（`FA_ASSET_URLS.xtermJs`/`xtermCss`，UMD build，跟其餘CDN函式庫同一種lazy-load模式）
 - [x] Shell loop（JS實作的行編輯：印字/backspace/Enter/Ctrl+C/上下鍵翻歷史；`cd`/`pwd`/`clear`/`exit`/`help`這五個JS層攔截處理，維護跨指令的虛擬cwd狀態；其餘指令交給`run()`+`onOutput`即時串流輸出）
 - [x] `/run-terminal` slash command：不加參數＝只開互動終端機；加參數＝開啟後直接執行；已在slash指令選單可見
-- [x] Terminal program bundle機制（`registerTerminalProgram()`/`_ensureTerminalProgramLoaded()`）：vim/less/top這類指令設計成可外掛抓回來的獨立bundle（呼應使用者原話），不寫死進floating-assistant.js。**目前`TERMINAL_PROGRAM_BUNDLES`registry是空的——機制已驗證可運作（載入/dispatch/接管鍵盤輸入都測過），但vim/less/top/more還沒有實際bundle內容，打這幾個指令目前會被busybox回報「not found」**
-- [ ] 實作真正的vim-like/less-like/more-like bundle（JS host builtin，不是busybox原生binary——原生的在這個沙盒沒有fork/exec，README明確排除在scope外）。`top`因為沒有其他process可列，考慮直接不做或做一個只顯示假資訊的版本
+- [x] ~~popup modal~~ → 使用者明確糾正：「不是要popup modal，是要嵌入對話的互動widget」。改成跟3D場景/音檔播放器同一種模式：`_handleRunTerminalCommand()`推一則帶`_displayTerminal`（非可枚舉，不會送進API payload）旗標的訊息，`_renderSingleMessage`偵測到時掛載xterm.js進訊息卡片，用既有的`this._liveWidgetCache`（WeakMap）讓widget在`_renderMessageHistory()`整個重繪時重用同一個節點、session狀態（scrollback/游標/歷史/虛擬cwd）不會歸零。每次`/run-terminal`呼叫都是對話裡獨立一則、可以同時存在多個session（已驗證）。原本的singleton `this._terminalSession`＋`_openTerminalModal`/`_closeTerminalModal`整套拿掉，改成`_mountTerminalWidget(container, initialCommand)`＋所有shell方法都改成顯式接收`session`參數，不再讀取單一全域欄位。`exit`不再是「關閉視窗」，只是標記`session.ended`、停止接受鍵盤輸入，畫面內容留著供之後回顧。
+- [x] Terminal program bundle機制（`registerTerminalProgram()`/`_ensureTerminalProgramLoaded()`）：vim/less/top這類指令設計成可外掛抓回來的獨立bundle（呼應使用者原話），不寫死進floating-assistant.js。bundle檔案放在`desktop-app/renderer/terminal-programs/`，用相對路徑`import()`（跟CDN絕對網址分開處理，見`_ensureTerminalProgramLoaded`裡的判斷）
+- [x] `less`/`more`（共用`terminal-programs/pager.mjs`）：翻頁瀏覽文字檔，space/f下頁、b上頁、j/k或↑↓單行、g/G頭尾、q離開。已驗證：分頁/邊界clamp/離開回到shell/檔案不存在的錯誤處理都測過
+- [x] `vi`/`vim`（共用`terminal-programs/editor.mjs`）：極簡modal editor——normal mode（hjkl/方向鍵移動、`i`/`a`進insert、`x`刪字元、`dd`刪行、`0`/`$`行首/行尾、`:`進command mode）、insert mode（打字/Enter換行/Backspace，Esc返回normal）、command mode（`:w`存檔、`:wq`存檔離開、`:q`/`:q!`離開）。已驗證：新檔案建立、insert打字、存檔、reopen驗證內容、`x`刪字元、`:q!`正確放棄未存檔變更
+- [ ] `top`：因為沒有其他process可列，考慮直接不做或做一個只顯示假資訊/session資訊的版本——**還沒開始**
 - [ ] 新Configure分頁：xterm設定——字體、字體大小、column數、可回捲行數、要不要scroll to output、佈景主題（system跟隨外部theme／ubuntu／powershell／黑底白字／白底黑字）——**目前完全沒有UI，字體/大小/主題都是寫死的預設值**
 - [ ] 終端機後端切換設定：優先WASM模擬器 vs 使用者真實系統shell（網頁版只能選模擬器）——**目前只有WASM emulator這一條路徑，真實系統shell backend還沒做**；使用者已確認：真實shell backend走真正的OS pty，vim/top/less應該原生就能動，不需要這裡的intercept/bundle機制
 - [ ] 新增虛擬CLI工具`ask-floating-ai-assistant`，自動註冊在xterm環境的PATH裡：行為等同`FloatingAssistantApp -p`，可指定回應格式[text,json]，阻塞等待回應，所有思考過程走stderr；WASM模擬器跟真實shell都要能用到——**還沒開始**，架構上應該做成一個JS層攔截的指令（跟cd/pwd同一種模式），不是真的丟進busybox執行
