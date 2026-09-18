@@ -1148,34 +1148,23 @@ function patchCloudflareWording(root) {
 
   // tw_stock_db客製: 2026-09-15使用者要求——把原本擠在頂部列的「🔑設定API
   // 金鑰」「允許AI執行程式」「每次執行前跳確認框」搬進Advance設定，只留
-  // 「📁直接輸入路徑新增資料夾」在外層。floating-assistant.js核心沒有提供
-  // 「host自己註冊一個新Advance設定分頁」的公開API（.ai-advanced-cat/
-  // .ai-advanced-pane是核心render_time寫死的一組side-by-side分頁），所以
-  // 這裡直接在既有.ai-advanced-sidebar/.ai-advanced-content容器裡手動插入
-  // 一組新的cat/pane節點（跟核心既有分頁同一個class命名空間，視覺上完全
-  // 一致），並自己複製核心「切分頁」的toggle邏輯接上這個新按鈕的click——
-  // 核心原本的分頁click listener是在modal初次render時對「當時存在」的
-  // .ai-advanced-cat逐一綁定，這個新節點是事後插入的，不會自動被核心的
-  // listener覆蓋到，所以需要自己補一份；反過來，使用者點擊「既有」分頁時，
-  // 核心的click handler內部用的是即時查詢的`document.querySelectorAll(
-  // '.ai-advanced-pane')`（不是初次render時的snapshot），所以會自動正確
-  // 把這個新pane一併隱藏，不用擔心切到別的分頁時這個新pane還留在畫面上。
-  // 三個被搬移的控制項（按鈕/checkbox）直接用appendChild整個節點搬過去
-  // （不是重新建立/複製），id、既有的click/change事件監聽器完全不受影響。
+  // 「📁直接輸入路徑新增資料夾」在外層。
+  // tw_stock_db客製: 2026-09-18使用者實測回報的真實回歸修復——這裡原本是
+  // 自己動手把.ai-advanced-cat節點insertBefore塞進.ai-advanced-sidebar，
+  // Advance設定分組功能（AI/多媒體/桌面程式單機三組，可展開收合）上線後，
+  // 每次_renderAdvancedSettings()都會整個重建sidebar的innerHTML，手動插入
+  // 的節點活不過第一次重繪，導致這個分頁憑空消失（_renderAdvancedSettings()
+  // 幾乎任何設定變動都會觸發，不是罕見情境）。改用引擎新提供的
+  // fa.registerAdvancedSettingsTab(groupKey, catKey, label, paneElement)——
+  // 跟setEnvironmentNote/setDomainNote/appendToolDescription同一批
+  // host-override公開API，這裡把整份pane內容（含真實搬移過來、監聽器
+  // 完全不受影響的按鈕/checkbox）掛進本來就是空的'desktop'這一組（見
+  // ADVANCED_SETTINGS_GROUPS，桌面程式/單機專屬設定的容器），之後每次
+  // sidebar重繪都會正確涵蓋這個cat，不會再被沖掉。
   if (advancedModal) {
-    const sidebar = advancedModal.querySelector(".ai-advanced-sidebar");
-    const content = advancedModal.querySelector(".ai-advanced-content");
     const relocatedContainer = document.getElementById("topbar-relocated-controls");
-    if (sidebar && content && relocatedContainer) {
-      const cat = document.createElement("div");
-      cat.className = "ai-advanced-cat";
-      cat.dataset.cat = "desktop-app";
-      cat.textContent = "桌面版設定";
-      sidebar.insertBefore(cat, sidebar.firstChild);
-
+    if (relocatedContainer) {
       const pane = document.createElement("div");
-      pane.className = "ai-advanced-pane hidden";
-      pane.dataset.pane = "desktop-app";
       pane.innerHTML = `
         <div class="ai-advanced-stack">
           <label class="ai-advanced-label">API 金鑰</label>
@@ -1196,7 +1185,6 @@ function patchCloudflareWording(root) {
           </div>
         </div>
       `;
-      content.appendChild(pane);
 
       pane.querySelector("#desktop-settings-secrets-slot").appendChild(document.getElementById("topbar-secrets-btn"));
       const execSlot = pane.querySelector("#desktop-settings-exec-slot");
@@ -1244,10 +1232,7 @@ function patchCloudflareWording(root) {
         });
       }
 
-      cat.addEventListener("click", () => {
-        advancedModal.querySelectorAll(".ai-advanced-cat").forEach((c) => c.classList.toggle("active", c === cat));
-        advancedModal.querySelectorAll(".ai-advanced-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== cat.dataset.cat));
-      });
+      fa.registerAdvancedSettingsTab("desktop", "desktop-app", "桌面版設定", pane);
     }
   }
 
