@@ -3206,6 +3206,31 @@ const TERMINAL_PROGRAM_BUNDLES = {
     vim: './terminal-programs/editor.mjs',
 };
 
+// tw_stock_db客製: 2026-09-18使用者實測回報——終端機裡沒有`which`、也沒有
+// `/bin`/`/usr/bin`可以探索內建什麼程式。這份清單抄自wasi-sh@0.11.0
+// README的「The toolbox」章節（busybox 1.38.0 ash-plus-applets編譯進這個
+// wasm的實際applet集合，不是完整busybox），只用來（1）餵`which`判斷
+// 一個名稱是不是busybox applet、(2)在_ensureTerminalFsStore()裡塞進
+// /bin、/usr/bin底下當佔位檔案讓`ls /bin`能看到。真正執行still都是交給
+// _runTerminalShellLine()丟給run()，這裡不重新實作任何applet本身。
+const TERMINAL_BUSYBOX_APPLETS = [
+    'cat', 'ls', 'stat', 'touch', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'find', 'du', 'mktemp',
+    'grep', 'sed', 'awk', 'sort', 'uniq', 'cut', 'tr', 'head', 'tail', 'wc', 'seq', 'paste',
+    'fold', 'tac', 'expr', 'hexdump', 'xxd',
+    'md5sum', 'sha1sum', 'sha256sum', 'cksum', 'crc32',
+    'date', 'env', 'printenv', 'basename', 'dirname', 'realpath', 'test', 'printf', 'getopt',
+    'uname', 'nproc', 'stty',
+];
+
+// JS層攔截的shell內建指令（跟busybox applet分開列，因為這些是
+// _runTerminalCommand()自己處理、不會丟進run()的那幾個，含這次新加的
+// which/chmod/time/sh/bash）。同樣只用於`which`回報+說明文字+/bin佔位
+// 檔案，不是額外的一份指令白名單管制。
+const TERMINAL_SHELL_BUILTINS = [
+    'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
+    'ask-floating-ai-assistant',
+];
+
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
@@ -13034,6 +13059,11 @@ ${sourceTool.handlerScript}
         if (cmdName === 'help') {
             session.term.write([
                 '內建指令：cd/pwd/clear/exit/help（這幾個在JS層處理，維護跨指令的工作目錄狀態）',
+                'which <指令...>：查一個名稱是shell內建/程式bundle/busybox applet，還是根本沒有',
+                'chmod <mode> <檔案...>：標記/取消檔案的可執行位元（這個沙盒不追蹤真實權限，只在session內記錄）',
+                'sh/bash <script檔案> [參數...]：執行一個shell script檔案；也可以先chmod +x再用./script.sh直接執行',
+                'time <指令...>：量測指令的牆鐘執行時間（沙盒沒有行程概念，user/sys欄位只是格式佔位，不是真的CPU時間）',
+                'ls /bin、ls /usr/bin：列出目前這個沙盒有哪些內建指令可以用',
                 'ask-floating-ai-assistant [--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
                 '⚠️top目前還沒有對應的bundle（見registerTerminalProgram），會回報「找不到這個指令」',
@@ -13041,6 +13071,63 @@ ${sourceTool.handlerScript}
             return;
         }
         if (cmdName === 'cd') { await this._terminalCd(session, restArgs || '/work'); return; }
+        if (cmdName === 'which') { await this._terminalWhich(session, restArgs); return; }
+        if (cmdName === 'chmod') { await this._terminalChmod(session, restArgs); return; }
+        // tw_stock_db客製: 2026-09-18使用者實測回報——「我在裡面寫shell檔案
+        // 目前沒辦法變成執行檔」「要有bash, sh程式可以用來呼叫執行」。wasi-sh
+        // 的ash本身不能fork/exec，「A command name containing a slash is
+        // always not found」（README原話，`./x.sh`/`/bin/tool`都一樣），
+        // 所以sh/bash在這裡不是丟給busybox執行，是JS層直接讀檔案內容、
+        // 用run()當一個新script執行（跟_runTerminalShellLine同一條路徑，
+        // 只是command換成檔案內容），變相繞過「沒有exec」這個限制。
+        if (cmdName === 'sh' || cmdName === 'bash') {
+            const scriptParts = restArgs.split(/\s+/).filter(Boolean);
+            const scriptFile = scriptParts[0];
+            if (!scriptFile) { session.term.write(`usage: ${cmdName} <script檔案> [參數...]\r\n`); return; }
+            await this._terminalRunScriptFile(session, scriptFile, scriptParts.slice(1).join(' '));
+            return;
+        }
+        // tw_stock_db客製: 2026-09-18——`./script.sh`或帶路徑的檔案名稱：
+        // 模擬真實shell「靠x bit決定能不能直接執行」的體驗（chmod +x見上）。
+        // 只認含斜線的名稱（`./x`、`/work/x`、`sub/x`），跟真實bash一樣不會
+        // 把cwd隱含進PATH——沒斜線的裸名稱一律照舊交給busybox/bundle判斷。
+        if (cmdName.includes('/')) {
+            let runtime;
+            try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+                session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+                return;
+            }
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const abs = this._terminalResolvePath(session.cwd, cmdName);
+            let exists = true;
+            try { fsStore.statSync(abs); } catch (_) { exists = false; }
+            if (!exists) {
+                session.term.write(`\x1b[31mbash: ${cmdName}: 找不到這個檔案\x1b[0m\r\n`);
+                return;
+            }
+            if (!session.execMarks || !session.execMarks.has(abs)) {
+                session.term.write(`\x1b[31mbash: ${cmdName}: 權限不足（用chmod +x先授權可執行）\x1b[0m\r\n`);
+                return;
+            }
+            await this._terminalRunScriptFile(session, cmdName, restArgs);
+            return;
+        }
+        // tw_stock_db客製: 2026-09-18使用者要求——量測指令執行時間（見上面
+        // help文字的說明：沒有真正的user/sys CPU時間可量，只有牆鐘時間）。
+        // 用遞迴呼叫_runTerminalCommand()本身包住目標指令，所以`time`可以
+        // 套在任何其他指令前面，包含管線（`time ls | wc -l`會整條交給
+        // _runTerminalShellLine，時間量的是整條管線）。
+        if (cmdName === 'time') {
+            if (!restArgs) { session.term.write('usage: time <指令...>\r\n'); return; }
+            const startedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+            await this._runTerminalCommand(session, restArgs);
+            const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
+            const totalSeconds = elapsedMs / 1000;
+            const mins = Math.floor(totalSeconds / 60);
+            const secs = (totalSeconds - mins * 60).toFixed(3);
+            session.term.write(`\r\n\x1b[90mreal\t${mins}m${secs}s\r\nuser\t0m0.000s\r\nsys\t0m0.000s\x1b[0m\r\n`);
+            return;
+        }
         // tw_stock_db客製: 2026-09-18使用者要求——「xterm環境要新增一個虛擬的
         // 程式自動註冊在PATH內，叫做ask-floating-ai-assistant」「行為相當於
         // FloatingAssistantApp -p」「這是一個獨特的功能，在網頁的虛擬環境內
@@ -13063,12 +13150,42 @@ ${sourceTool.handlerScript}
     }
 
     async _ensureTerminalFsStore(session, runtime) {
-        if (!session.fsStore) session.fsStore = runtime.memoryFs({ '/work/.keep': '' });
+        if (!session.fsStore) {
+            // tw_stock_db客製: 2026-09-18使用者實測回報——「至少讓我有
+            // /bin, /usr/bin可以知道內建什麼程式」。這幾個檔案是純佔位符
+            // （內容都是空字串），不是真的可執行檔——沙盒本身沒有exec，
+            // 這裡的用途只是讓`ls /bin`能探索到TERMINAL_SHELL_BUILTINS/
+            // TERMINAL_BUSYBOX_APPLETS/已登記bundle這三份清單有哪些名字，
+            // 實際呼叫still是_runTerminalCommand()的攔截判斷或busybox
+            // applet dispatch，不是靠這裡的檔案內容。
+            const seedFiles = { '/work/.keep': '' };
+            const discoverableNames = new Set([
+                ...TERMINAL_SHELL_BUILTINS,
+                ...TERMINAL_BUSYBOX_APPLETS,
+                ...Object.keys(this._terminalProgramBundles || {}),
+            ]);
+            for (const name of discoverableNames) {
+                seedFiles[`/bin/${name}`] = '';
+                seedFiles[`/usr/bin/${name}`] = '';
+            }
+            session.fsStore = runtime.memoryFs(seedFiles);
+        }
         return session.fsStore;
     }
 
     _shQuote(str) {
         return `'${String(str).replace(/'/g, "'\\''")}'`;
+    }
+
+    // pager.mjs/editor.mjs裡也各自有一份一模一樣的resolvePath——那两个是
+    // 獨立ESM bundle（見TERMINAL_PROGRAM_BUNDLES），沒有辦法共用這裡的
+    // private method，故意留著兩份小重複而不是硬拉一個共用模組。
+    _terminalResolvePath(cwd, target) {
+        const raw = target.startsWith('/') ? target : `${cwd}/${target}`;
+        const parts = raw.split('/').filter((x) => x && x !== '.');
+        const stack = [];
+        for (const part of parts) { if (part === '..') stack.pop(); else stack.push(part); }
+        return '/' + stack.join('/');
     }
 
     async _runTerminalShellLine(session, line) {
@@ -13113,6 +13230,108 @@ ${sourceTool.handlerScript}
             session.cwd = result.stdout.trim();
         } else {
             session.term.write(`\x1b[31mcd: ${target}: 找不到這個目錄\x1b[0m\r\n`);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「裡面沒有which…沒有知道
+    // 指令的地方」。wasi-sh的busybox applet集合裡沒有`which`這個applet
+    // （README的toolbox清單沒列，`command -v`/`type`才是它內建的等價功能），
+    // 所以在JS層自己實作，答案來源就是TERMINAL_SHELL_BUILTINS/
+    // TERMINAL_BUSYBOX_APPLETS/this._terminalProgramBundles這三份既有清單
+    // （跟/bin、/usr/bin的佔位檔案同一份資料來源，見_ensureTerminalFsStore）。
+    async _terminalWhich(session, argsText) {
+        const names = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        if (!names.length) { session.term.write('usage: which <指令名稱...>\r\n'); return; }
+        for (const name of names) {
+            if (TERMINAL_SHELL_BUILTINS.includes(name)) {
+                session.term.write(`${name}: shell內建指令（JS層攔截）\r\n`);
+            } else if (this._terminalProgramBundles && this._terminalProgramBundles[name]) {
+                session.term.write(`${name}: 終端機程式bundle（${this._terminalProgramBundles[name]}）\r\n`);
+            } else if (TERMINAL_BUSYBOX_APPLETS.includes(name)) {
+                session.term.write(`${name}: busybox applet\r\n`);
+            } else {
+                session.term.write(`${name}: 找不到這個指令\r\n`);
+            }
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「shell檔案目前沒辦法變成
+    // 執行檔」「要有…chmod +x」。這個WASM沙盒的fs不追蹤真實uid/gid/mode
+    // （wasi-sh README「No symlinks, permissions, or timestamps in the
+    // sandbox FS」），所以chmod在這裡不是真的改檔案系統屬性——是在session
+    // 層自己記一份「哪些絕對路徑被標成executable」（session.execMarks），
+    // 只用來讓下面`./script.sh`那條路徑執行判斷知道使用者「授權」過，
+    // 跟真正的x bit精神一致，只是儲存位置換了。mode解析刻意保守：只認
+    // 常見的`+x`/`u+x`/`a+x`（含`-x`撤銷）跟數字mode（任何一位是奇數就
+    // 視為有x bit），不追求完整重現chmod的完整語法。
+    async _terminalChmod(session, argsText) {
+        const parts = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        if (parts.length < 2) { session.term.write('usage: chmod <mode> <檔案...>\r\n'); return; }
+        const mode = parts[0];
+        const targets = parts.slice(1);
+        const grants = /^\+?x$/.test(mode) || /^[augo]*\+.*x/.test(mode)
+            || (/^[0-7]{3,4}$/.test(mode) && mode.split('').some((d) => Number(d) % 2 === 1));
+        const revokes = /^-x$/.test(mode) || /^[augo]*-.*x/.test(mode);
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        session.execMarks = session.execMarks || new Set();
+        for (const target of targets) {
+            const abs = this._terminalResolvePath(session.cwd, target);
+            try {
+                fsStore.statSync(abs);
+            } catch (_) {
+                session.term.write(`\x1b[31mchmod: ${target}: 找不到這個檔案\x1b[0m\r\n`);
+                continue;
+            }
+            if (revokes) session.execMarks.delete(abs);
+            else if (grants) session.execMarks.add(abs);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「要有bash, sh程式可以用來
+    // 呼叫執行」。busybox ash本身沒有fork/exec（wasi-sh README「A command
+    // name containing a slash is always "not found"」），沒辦法靠`sh
+    // /work/x.sh`這種寫法真的執行另一個腳本——這裡改成JS層自己讀出檔案
+    // 內容當文字，跟_runTerminalShellLine同一種做法（整段文字當command
+    // 丟給run()），變相繞過「沒有exec」這個限制。`sh`/`bash`兩個指令名稱
+    // 跟`./script.sh`（見_runTerminalCommand裡含斜線的分支）共用這個helper。
+    async _terminalRunScriptFile(session, filename, argsText) {
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        const abs = this._terminalResolvePath(session.cwd, filename);
+        let text;
+        try {
+            const stat = fsStore.statSync(abs);
+            const buf = new Uint8Array(stat.size);
+            fsStore.readSync(abs, buf, 0, stat.size);
+            text = new TextDecoder('utf-8').decode(buf);
+        } catch (_) {
+            session.term.write(`\x1b[31mbash: ${filename}: 找不到這個檔案\x1b[0m\r\n`);
+            return;
+        }
+        const args = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const setArgs = args.length ? `set -- ${args.map((a) => this._shQuote(a)).join(' ')}; ` : '';
+        const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${setArgs}${text}`;
+        try {
+            await runtime.run({
+                command: script,
+                fs: fsStore,
+                wasm: runtime.wasmBytes.slice(0),
+                inline: true,
+                onOutput: (bytes, _channel) => {
+                    session.term.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
+                },
+            });
+        } catch (err) {
+            session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
         }
     }
 
