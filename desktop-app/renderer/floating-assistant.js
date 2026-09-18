@@ -3435,7 +3435,15 @@ class FloatingAssistant {
             (argsText) => this._handleFapFindCommand(argsText)
         );
         this._syncFapSlashCommandArgChoices();
-        this.retryLimit = 10;
+        // tw_stock_db客製: 2026-09-18使用者手動調整——原本retryLimit=10、
+        // maxPruneRetriesPerTurn=3對長任務太保守，使用者要求「不該經常發生
+        // 超過上限迴圈就無法完成」「網路不穩定不該是LLM停擺的原因」，希望
+        // 任務能像單次長時間任務一樣做到底、由使用者自己按Stop中斷，不是
+        // 系統自己在中途放棄。調高這兩個上限（不是真的無限——真無限需要
+        // 移除上限機制本身，使用者目前只要求數字調大，這裡照使用者實測
+        // 驗證過的數值調整：曾用這個設定讓nvidia ultra 550model連續跑
+        // 1小時23分鐘完成一次分析、沒有中途卡住）。
+        this.retryLimit = 30;
         this.retryBaseDelayMs = 800;
         this.retryMaxDelayMs = 4000;
         // tw_stock_db客製: retryLimit/retryAttempt原本是設計來擋「連續」
@@ -3448,7 +3456,7 @@ class FloatingAssistant {
         // retryAttempt之外、真正計算「這一輪使用者對話總共觸發過幾次
         // pruneContext」的計數器，不會被工具呼叫成功重設，只在executeChat()
         // 每次真正開始新一輪對話時歸零，才能確實擋住這種迴圈。
-        this.maxPruneRetriesPerTurn = 3;
+        this.maxPruneRetriesPerTurn = 10;
         this._turnPruneCount = 0;
         // tw_stock_db客製: 這一輪對話使用者真正打的原始文字，executeChat()
         // 一開始就存進來，pruneContext()重新接回問題時固定用這個，不會
