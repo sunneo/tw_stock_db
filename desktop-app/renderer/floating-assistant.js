@@ -3202,6 +3202,11 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
 const ADVANCED_SETTINGS_GROUPS = {
     ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'file-access', 'subagent', 'limits'], visible: true },
     multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice'], visible: true },
+    // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——獨立
+    // 成一個群組（不塞進AI群組底下），因為/run-terminal是桌面/網頁共用的
+    // 一個功能本身，不是「AI相關」的子設定，跟multimedia群組同一種「功能
+    // 本身自成一類」的分法。
+    terminal: { label: '終端機', cats: ['terminal'], visible: true },
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 
@@ -3247,6 +3252,17 @@ const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
     'ask-floating-ai-assistant',
 ];
+
+// tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
+// （system跟隨外部theme／ubuntu／powershell／黑底白字／白底黑字）。
+// 'system'刻意不在這裡——它是動態的，跟著_getThemePalette()（整個App的
+// 亮/暗模式）算，不是固定色票，見_getTerminalXtermTheme()的說明。
+const TERMINAL_THEME_PRESETS = {
+    ubuntu: { background: '#300a24', foreground: '#eeeeec', cursor: '#eeeeec' },
+    powershell: { background: '#012456', foreground: '#eeedf0', cursor: '#eeedf0' },
+    'black-white': { background: '#000000', foreground: '#ffffff', cursor: '#ffffff' },
+    'white-black': { background: '#ffffff', foreground: '#000000', cursor: '#000000' },
+};
 
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
@@ -4200,6 +4216,36 @@ class FloatingAssistant {
             // _getSubtitleStyle）。fontScale＝字級占影片高度的比例。
             subtitleFontScale: SUBTITLE_DEFAULT_STYLE.fontScale,
             subtitlePosition: SUBTITLE_DEFAULT_STYLE.position,
+            // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——
+            // /run-terminal這個嵌入式終端機widget的外觀跟資源管理政策，見
+            // Advance Settings「終端機」分頁+_mountTerminalWidget()的套用
+            // 方式。
+            terminal: {
+                fontFamily: 'monospace, monospace',
+                fontSize: 13,
+                // 0＝不覆寫，沿用xterm.js自己的預設欄數（80）；使用者填正數
+                // 才會真的傳進new Terminal({cols})。
+                cols: 0,
+                scrollback: 1000,
+                // 新輸出進來時要不要強制捲到最底部——關掉的話，使用者正在
+                // 往上捲看歷史輸出時不會被新輸出打斷、強制拉回底部（見
+                // _runTerminalShellLine/_terminalRunScriptFile的onOutput）。
+                scrollToOutputEnabled: true,
+                // 'system'（跟著整個App目前亮/暗模式，見_getTerminalXtermTheme）
+                // ／'ubuntu'／'powershell'／'black-white'／'white-black'
+                // （TERMINAL_THEME_PRESETS）。
+                theme: 'system',
+                // tw_stock_db客製: 見_terminalSessionIsLive()的說明——
+                // 'focus'（預設，只有目前有鍵盤焦點的終端機session以正常
+                // 頻率背景重繪，例如top的每秒刷新，其餘throttle成較低頻率）
+                // ／'viewport'（同樣道理但依「目前是否捲動到可視範圍內」
+                // 判斷）／'count'（只有最近互動過的N個session維持正常頻率，
+                // N＝resourceCountLimit）／'unlimited'（完全不節流）。使用者
+                // 原話：「避免產生無數多的terminal shell loop吃光畫面的
+                // 資源」，確認預設only on focus。
+                resourcePolicy: 'focus',
+                resourceCountLimit: 3,
+            },
         };
     }
 
@@ -4920,6 +4966,29 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n >= 0.02 && n <= 0.15 ? n : SUBTITLE_DEFAULT_STYLE.fontScale;
             })(),
             subtitlePosition: (raw.subtitlePosition === 'top' || raw.subtitlePosition === 'bottom') ? raw.subtitlePosition : SUBTITLE_DEFAULT_STYLE.position,
+            terminal: this._normalizeTerminalSettings(raw.terminal),
+        };
+    }
+
+    // tw_stock_db客製: 2026-09-18——見_createDefaultAdvancedSettings()的
+    // terminal欄位說明，獨立成一個方法純粹是欄位比較多，跟其餘散在
+    // return物件裡的單一欄位正規化比起來，拆出來比較好讀。
+    _normalizeTerminalSettings(raw) {
+        const defaults = this._createDefaultAdvancedSettings().terminal;
+        if (!raw || typeof raw !== 'object') return defaults;
+        const fontSizeNum = Number(raw.fontSize);
+        const colsNum = Number(raw.cols);
+        const scrollbackNum = Number(raw.scrollback);
+        const countLimitNum = Number(raw.resourceCountLimit);
+        return {
+            fontFamily: String(raw.fontFamily || '').trim() || defaults.fontFamily,
+            fontSize: Number.isFinite(fontSizeNum) && fontSizeNum >= 8 && fontSizeNum <= 32 ? Math.round(fontSizeNum) : defaults.fontSize,
+            cols: Number.isFinite(colsNum) && colsNum >= 0 ? Math.round(colsNum) : defaults.cols,
+            scrollback: Number.isFinite(scrollbackNum) && scrollbackNum >= 0 ? Math.round(scrollbackNum) : defaults.scrollback,
+            scrollToOutputEnabled: raw.scrollToOutputEnabled !== false,
+            theme: ['system', ...Object.keys(TERMINAL_THEME_PRESETS)].includes(raw.theme) ? raw.theme : defaults.theme,
+            resourcePolicy: ['focus', 'viewport', 'count', 'unlimited'].includes(raw.resourcePolicy) ? raw.resourcePolicy : defaults.resourcePolicy,
+            resourceCountLimit: Number.isFinite(countLimitNum) && countLimitNum >= 1 ? Math.round(countLimitNum) : defaults.resourceCountLimit,
         };
     }
 
@@ -12065,7 +12134,7 @@ ${sourceTool.handlerScript}
             'llm-basic': 'LLM 基礎設定', 'llm-sampling': 'LLM Model 管理', 'llm-debug': 'LLM Debug',
             'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
             'file-access': '檔案存取管理', 'subagent': '子Agent', 'multimedia': '多媒體',
-            'voice': '語音設定', 'limits': '效能與限制',
+            'voice': '語音設定', 'limits': '效能與限制', 'terminal': 'xterm 終端機',
             // tw_stock_db客製: 2026-09-18——host透過registerAdvancedSettingsTab()
             // 額外註冊的cat標籤（見該方法說明），跟內建cat共用同一份查詢
             // 入口，讓_buildAdvancedSettingsSidebarHtml()不用知道兩者的差異。
@@ -12154,6 +12223,25 @@ ${sourceTool.handlerScript}
         if (perfMaxMeshTrianglesInput) perfMaxMeshTrianglesInput.value = this.advancedSettings.maxImportedMeshTriangles;
         const perfMp4DurationInput = document.getElementById('ai-perf-mp4-duration');
         if (perfMp4DurationInput) perfMp4DurationInput.value = this.advancedSettings.mp4DefaultDurationSeconds;
+        // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁欄位
+        // 回填，見_createDefaultAdvancedSettings()的terminal欄位說明。
+        const term = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
+        const terminalFontFamilyInput = document.getElementById('ai-terminal-font-family');
+        if (terminalFontFamilyInput) terminalFontFamilyInput.value = term.fontFamily;
+        const terminalFontSizeInput = document.getElementById('ai-terminal-font-size');
+        if (terminalFontSizeInput) terminalFontSizeInput.value = term.fontSize;
+        const terminalColsInput = document.getElementById('ai-terminal-cols');
+        if (terminalColsInput) terminalColsInput.value = term.cols || '';
+        const terminalScrollbackInput = document.getElementById('ai-terminal-scrollback');
+        if (terminalScrollbackInput) terminalScrollbackInput.value = term.scrollback;
+        const terminalScrollToOutputChk = document.getElementById('ai-terminal-scroll-to-output-chk');
+        if (terminalScrollToOutputChk) terminalScrollToOutputChk.checked = term.scrollToOutputEnabled !== false;
+        const terminalThemeSelect = document.getElementById('ai-terminal-theme');
+        if (terminalThemeSelect) terminalThemeSelect.value = term.theme;
+        const terminalResourcePolicySelect = document.getElementById('ai-terminal-resource-policy');
+        if (terminalResourcePolicySelect) terminalResourcePolicySelect.value = term.resourcePolicy;
+        const terminalResourceCountLimitInput = document.getElementById('ai-terminal-resource-count-limit');
+        if (terminalResourceCountLimitInput) terminalResourceCountLimitInput.value = term.resourceCountLimit;
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
         const voiceInputEnabledChk = document.getElementById('ai-voice-input-enabled-chk');
@@ -12967,11 +13055,61 @@ ${sourceTool.handlerScript}
     // 依附對象，不需要另外一個Map——container這個節點本身要嘛跟著訊息一起
     // 存活（正常情況），要嘛整個訊息被pruneContext真的丟棄時透過
     // WeakMap一起消失，生命週期天然一致。
+    // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——
+    // 'system'主題跟著整個App目前的亮/暗模式走（不是固定色票，
+    // TERMINAL_THEME_PRESETS故意不收錄它），其餘四種是固定色票。
+    _getTerminalXtermTheme() {
+        const themeKey = (this.advancedSettings.terminal && this.advancedSettings.terminal.theme) || 'system';
+        if (themeKey === 'system') {
+            const palette = this._getThemePalette();
+            return { background: palette.chatBg, foreground: palette.chatText, cursor: palette.chatText };
+        }
+        return TERMINAL_THEME_PRESETS[themeKey] || TERMINAL_THEME_PRESETS['black-white'];
+    }
+
+    // tw_stock_db客製: 2026-09-18使用者要求——「一個對話中的terminal要有
+    // 資源管理」「避免產生無數多的terminal shell loop吃光畫面的資源」。
+    // 直接查DOM（`.ai-terminal-embed`元素本身就存著`._terminalSession`，
+    // 見_mountTerminalWidget）取得目前實際掛載中的session，不另外維護一份
+    // instance-level registry——訊息被pruneContext壓縮/清除對話時，DOM
+    // 節點會跟著訊息一起消失，這裡自然就不會再看到它，不需要額外清理，
+    // 也不會像維護一個Set那樣持有已經沒人看得到的session物件、阻止GC。
+    _getMountedTerminalSessions() {
+        return Array.from(document.querySelectorAll('.ai-terminal-embed'))
+            .map(el => el._terminalSession)
+            .filter(Boolean);
+    }
+
+    // 這個session目前算不算「活的」（該用正常頻率背景重繪，而不是放慢）。
+    _terminalSessionIsLive(session) {
+        const policy = (this.advancedSettings.terminal && this.advancedSettings.terminal.resourcePolicy) || 'focus';
+        if (policy === 'unlimited') return true;
+        if (policy === 'viewport') return session.inViewport !== false;
+        if (policy === 'count') {
+            const limit = Math.max(1, Number(this.advancedSettings.terminal.resourceCountLimit) || 3);
+            const ranked = this._getMountedTerminalSessions().sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
+            return ranked.slice(0, limit).includes(session);
+        }
+        return session.hasFocus === true; // 'focus'（預設）
+    }
+
+    // top.mjs這類需要定時背景重繪的bundle呼叫的節流間隔：活的session維持
+    // 原本的1秒節奏，被節流的session放慢到5秒，省下不必要的重繪/計時器
+    // 喚醒次數。
+    _terminalIdleRefreshMs(session) {
+        return this._terminalSessionIsLive(session) ? 1000 : 5000;
+    }
+
     async _mountTerminalWidget(container, initialCommand) {
         await this._ensureXtermLoaded();
+        const termSettings = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
         const term = new Terminal({
-            convertEol: true, cursorBlink: true, fontFamily: 'monospace, monospace', fontSize: 13,
-            theme: { background: '#1e1e1e', foreground: '#e2e8f0' },
+            convertEol: true, cursorBlink: true,
+            fontFamily: termSettings.fontFamily || 'monospace, monospace',
+            fontSize: termSettings.fontSize || 13,
+            scrollback: termSettings.scrollback != null ? termSettings.scrollback : 1000,
+            ...(termSettings.cols > 0 ? { cols: termSettings.cols } : {}),
+            theme: this._getTerminalXtermTheme(),
         });
         term.open(container);
 
@@ -12984,8 +13122,29 @@ ${sourceTool.handlerScript}
             activeProgram: null,
             ended: false,
             startedAt: Date.now(), // top.mjs用來顯示這個session的存活時間（沒有真正的系統uptime可以顯示）
+            // tw_stock_db客製: 見_terminalSessionIsLive()的說明——資源管理
+            // 政策依這三個欄位判斷「這個session目前算不算活的」。剛掛載時
+            // 通常是使用者剛叫出來，預設當作有焦點/在可視範圍內。
+            hasFocus: true,
+            inViewport: true,
+            lastActiveAt: Date.now(),
         };
         container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
+
+        // tw_stock_db客製: xterm.js的Terminal本身沒有公開onFocus/onBlur
+        // event（不像onData），改監聽term.textarea（xterm.js內部用來接收
+        // 鍵盤輸入的隱藏<textarea>）這個真實DOM節點的原生focus/blur事件，
+        // 保證跨版本都能拿到。
+        if (term.textarea) {
+            term.textarea.addEventListener('focus', () => { session.hasFocus = true; session.lastActiveAt = Date.now(); });
+            term.textarea.addEventListener('blur', () => { session.hasFocus = false; });
+        }
+        if (typeof IntersectionObserver !== 'undefined') {
+            const observer = new IntersectionObserver((entries) => {
+                for (const entry of entries) session.inViewport = entry.isIntersecting;
+            }, { threshold: 0.1 });
+            observer.observe(container);
+        }
 
         term.write('WASM沙盒終端機（busybox ash）。輸入 help 看內建指令，exit 結束這個session。\r\n');
         term.onData((data) => { if (!session.ended) this._handleTerminalInput(session, data); });
@@ -13154,6 +13313,7 @@ ${sourceTool.handlerScript}
                 ...TERMINAL_SHELL_BUILTINS,
                 ...TERMINAL_BUSYBOX_APPLETS,
                 ...Object.keys(this._terminalProgramBundles || {}),
+                ...Object.keys(SANDBOX_COMMAND_REGISTRY),
             ];
             matches = [...new Set(candidates.filter(c => c.startsWith(partial)))].sort();
         } else {
@@ -13272,7 +13432,8 @@ ${sourceTool.handlerScript}
             const knownName = binPathMatch[1];
             const isKnown = TERMINAL_SHELL_BUILTINS.includes(knownName)
                 || TERMINAL_BUSYBOX_APPLETS.includes(knownName)
-                || !!(this._terminalProgramBundles && this._terminalProgramBundles[knownName]);
+                || !!(this._terminalProgramBundles && this._terminalProgramBundles[knownName])
+                || !!SANDBOX_COMMAND_REGISTRY[knownName];
             if (isKnown) {
                 await this._runTerminalCommand(session, knownName + (restArgs ? ' ' + restArgs : ''));
                 return;
@@ -13354,6 +13515,11 @@ ${sourceTool.handlerScript}
                 ...TERMINAL_SHELL_BUILTINS,
                 ...TERMINAL_BUSYBOX_APPLETS,
                 ...Object.keys(this._terminalProgramBundles || {}),
+                // tw_stock_db客製: 2026-09-18使用者實測回報——「/usr/bin也
+                // 沒有python3, python」。這幾個是SANDBOX_COMMAND_REGISTRY
+                // 登記的「按需下載」host builtins（見_buildTerminalSandboxBuiltins），
+                // 跟busybox applet/bundle一樣值得在/bin出現讓使用者探索到。
+                ...Object.keys(SANDBOX_COMMAND_REGISTRY),
             ]);
             for (const name of discoverableNames) {
                 seedFiles[`/bin/${name}`] = '';
@@ -13368,6 +13534,17 @@ ${sourceTool.handlerScript}
         return `'${String(str).replace(/'/g, "'\\''")}'`;
     }
 
+    // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——「要不要
+    // scroll to output」開關（預設開）。開啟時每次有新輸出都強制捲到最
+    // 底部（tail -f的體感）；關閉時單純write()，尊重使用者目前手動往上捲
+    // 看歷史輸出的位置，不會被新輸出打斷、強制拉回底部。兩個run()呼叫端
+    // （_runTerminalShellLine/_terminalRunScriptFile）共用這個helper。
+    _terminalWriteOutput(session, text) {
+        session.term.write(text);
+        const enabled = !this.advancedSettings.terminal || this.advancedSettings.terminal.scrollToOutputEnabled !== false;
+        if (enabled && typeof session.term.scrollToBottom === 'function') session.term.scrollToBottom();
+    }
+
     // pager.mjs/editor.mjs裡也各自有一份一模一樣的resolvePath——那两个是
     // 獨立ESM bundle（見TERMINAL_PROGRAM_BUNDLES），沒有辦法共用這裡的
     // private method，故意留著兩份小重複而不是硬拉一個共用模組。
@@ -13379,6 +13556,38 @@ ${sourceTool.handlerScript}
         return '/' + stack.join('/');
     }
 
+    // tw_stock_db客製: 2026-09-18使用者實測回報——「/usr/bin也沒有python3,
+    // python」。根因：bash_execute工具（同一個run()引擎）本來就有替
+    // python/python3/jq/xq/column/split這幾個指令按需下載對應執行環境、
+    // 註冊成host builtins的機制（見SANDBOX_COMMAND_REGISTRY/上面
+    // bash_execute實作），但終端機這幾個run()呼叫點（_runTerminalShellLine/
+    // _terminalCd/_terminalRunScriptFile）從來沒有比照辦理，從一開始就沒有
+    // 這些builtins可用。這裡抽出跟bash_execute完全同一套邏輯（word-boundary
+    // 正則掃描script文字→只await真的用到的引擎→組成純同步的builtins
+    // map——wasi-sh的host builtins handler必須是同步函式，不能臨時await，
+    // 見bash_execute那邊的說明），三個呼叫點共用。
+    async _buildTerminalSandboxBuiltins(script) {
+        const neededCommands = Object.keys(SANDBOX_COMMAND_REGISTRY).filter(name => (
+            new RegExp(`(^|[\\s;|&()\`])${name}(?=[\\s;|&()\`]|$)`).test(script)
+        ));
+        if (!neededCommands.length) return {};
+        const resolvedEngines = {};
+        for (const name of neededCommands) {
+            const kind = SANDBOX_COMMAND_REGISTRY[name].kind;
+            if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._ensurePyodideLoaded();
+            if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
+            if (kind === 'xq') {
+                if (!resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
+                if (!resolvedEngines.xmlParser) resolvedEngines.xmlParser = await this._ensureXqXmlParserLoaded();
+            }
+        }
+        const builtins = {};
+        for (const name of neededCommands) {
+            builtins[name] = (ctx) => this._runSandboxBuiltinCommand(SANDBOX_COMMAND_REGISTRY[name].kind, ctx, resolvedEngines);
+        }
+        return builtins;
+    }
+
     async _runTerminalShellLine(session, line) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
@@ -13387,18 +13596,32 @@ ${sourceTool.handlerScript}
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`;
+        let builtins;
+        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
+            session.term.write(`\x1b[31m指令需要的執行環境載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        // tw_stock_db客製: 見bash_execute那邊_activeSandboxFsStack的說明——
+        // python builtin內部如果透過subprocess.run(['sh','-c',...])呼叫回
+        // shell，要沿用同一個store（同一個/work視角），這個堆疊就是給
+        // _pyodideBridgeRunShell找「目前最外層在用哪個store」用的。
+        const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+        fsStack.push(fsStore);
         try {
             await runtime.run({
                 command: script,
                 fs: fsStore,
                 wasm: runtime.wasmBytes.slice(0),
                 inline: true,
+                builtins,
                 onOutput: (bytes, _channel) => {
-                    session.term.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
+                    this._terminalWriteOutput(session, new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
                 },
             });
         } catch (err) {
             session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
+        } finally {
+            fsStack.pop();
         }
     }
 
@@ -13438,6 +13661,8 @@ ${sourceTool.handlerScript}
                 session.term.write(`${name}: shell內建指令（JS層攔截）\r\n`);
             } else if (this._terminalProgramBundles && this._terminalProgramBundles[name]) {
                 session.term.write(`${name}: 終端機程式bundle（${this._terminalProgramBundles[name]}）\r\n`);
+            } else if (SANDBOX_COMMAND_REGISTRY[name]) {
+                session.term.write(`${name}: 按需下載的host builtin（第一次用到才會載入對應的執行環境）\r\n`);
             } else if (TERMINAL_BUSYBOX_APPLETS.includes(name)) {
                 session.term.write(`${name}: busybox applet\r\n`);
             } else {
@@ -13511,18 +13736,28 @@ ${sourceTool.handlerScript}
         const args = String(argsText || '').trim().split(/\s+/).filter(Boolean);
         const setArgs = args.length ? `set -- ${args.map((a) => this._shQuote(a)).join(' ')}; ` : '';
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${setArgs}${text}`;
+        let builtins;
+        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
+            session.term.write(`\x1b[31m指令需要的執行環境載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+        fsStack.push(fsStore);
         try {
             await runtime.run({
                 command: script,
                 fs: fsStore,
                 wasm: runtime.wasmBytes.slice(0),
                 inline: true,
+                builtins,
                 onOutput: (bytes, _channel) => {
-                    session.term.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
+                    this._terminalWriteOutput(session, new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
                 },
             });
         } catch (err) {
             session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
+        } finally {
+            fsStack.pop();
         }
     }
 
@@ -13535,13 +13770,24 @@ ${sourceTool.handlerScript}
     //     （FloatingAssistantApp -p）實際上跑的是完整agentic loop（會叫
     //     工具、多輪對話），不是單次純文字問答——「需要完整agentic loop，
     //     跟_runSubAgentTask同等級」。
-    // 這兩點合起來，最忠實的做法不是自己另外兜一份重試/agentic邏輯，而是
-    // 直接重用delegate_to_subagent工具本身在domain留空時呼叫的同一個方法
-    // ——_delegateToSubagentAuto()：自動路由到相關領域、真正呼叫
-    // _runSubAgentTask()（多輪、可呼叫工具、同一套retryLimit/組內
-    // round-robin fallback），回傳格式跟這個方法的其他呼叫端完全一致。
-    // 這裡完全不用自己管理重試/工具/路由——那些全部是_delegateToSubagentAuto
-    // 既有的責任，跟主對話用的是同一份實作，天然滿足「一致」的要求。
+    // 第一版改成呼叫_delegateToSubagentAuto()，但使用者接著實測回報
+    // 「hi」「現在幾點」這類不需要任何專家領域的簡單問題，一律得到「自動
+    // 判斷後認為這個任務不需要用到任何專家領域…請改成明確指定domain參數
+    // 重試」這個拒絕訊息，完全答不出來。根因：_delegateToSubagentAuto()
+    // 是設計給delegate_to_subagent這個「工具」用的——它的呼叫端是根模型
+    // 本身，根模型才是真正決定「該不該委派」的那一層，`_delegateToSubagentAuto`
+    // 判斷不需要委派時，正確反應是把這個結論交還給根模型讓它自己回答，
+    // 不是真的無路可走。但ask-floating-ai-assistant這裡沒有「根模型」可以
+    // 接住這個拒絕——它自己就應該是那個根模型層級。真正對應main.js
+    // runCliPrompt()（`-p`）行為的其實不是_delegateToSubagentAuto，是
+    // `fa._submitChatInput()`背後那個「看得到全部工具+主system prompt」
+    // 的根層級agentic loop——而_runSubAgentTask()在options.allowedToolNames
+    // 留空（null）時，本來就是同一種「看得到全部工具+主system prompt」
+    // 行為（見該方法開頭的說明），不需要domain路由這一層閘門。這裡改成
+    // 直接呼叫_runSubAgentTask(prompt, SUBAGENT_DELEGATE_MAX_ROUNDS)（不傳
+    // allowedToolNames/systemPrompt），讓它自己決定要不要呼叫
+    // delegate_to_subagent（依然是它看得到的工具之一）或直接回答——「hi」
+    // 這種問題就會直接被回答，不會再卡在「沒有適合的領域」。
     // 等待期間的心跳訊息（灰階、模擬「思考都在stderr」的視覺效果）刻意
     // 抄main.js runCliPrompt()的CLI心跳格式（每5秒一次、同樣的文字），
     // 呼應「完全跟cli版本一致」這個明確要求。
@@ -13570,9 +13816,9 @@ ${sourceTool.handlerScript}
             session.term.write(`\x1b[90m[thinking] ⏳ 等待 AI 回應中…（已經過 ${heartbeatSeconds} 秒）\x1b[0m\r\n`);
         }, 5000);
 
-        let delegated;
+        let result;
         try {
-            delegated = await this._delegateToSubagentAuto(prompt);
+            result = await this._runSubAgentTask(prompt, SUBAGENT_DELEGATE_MAX_ROUNDS);
         } catch (err) {
             clearInterval(heartbeat);
             session.term.write(`\x1b[31mask-floating-ai-assistant: ${String(err.message || err)}\x1b[0m\r\n`);
@@ -13580,11 +13826,7 @@ ${sourceTool.handlerScript}
         }
         clearInterval(heartbeat);
 
-        if (!delegated.ok) {
-            session.term.write(`\x1b[31mask-floating-ai-assistant: ${delegated.error || '未知錯誤'}\x1b[0m\r\n`);
-            return;
-        }
-        const answer = String(delegated.result != null ? delegated.result : (delegated.note || '')).trim();
+        const answer = String((result && result.text) || '').trim();
         if (!answer) {
             session.term.write('\x1b[33mask-floating-ai-assistant: 沒有取得任何文字結果（可以重打一次試試）\x1b[0m\r\n');
             return;
@@ -13592,7 +13834,6 @@ ${sourceTool.handlerScript}
         if (format === 'json') {
             const envelope = {
                 ok: true, prompt, response: answer,
-                domains: Array.isArray(delegated.domains) ? delegated.domains : [],
                 elapsed_ms: Date.now() - startedAt,
             };
             session.term.write(JSON.stringify(envelope) + '\r\n');
@@ -13640,6 +13881,11 @@ ${sourceTool.handlerScript}
             // tw_stock_db客製: 2026-09-18新增，top.mjs用來顯示這個終端機
             // session活了多久（沒有真正的系統/process uptime可以顯示）。
             sessionStartedAt: session.startedAt,
+            // tw_stock_db客製: 2026-09-18使用者要求的終端機資源管理——
+            // bundle不需要知道政策細節（focus/viewport/count/unlimited），
+            // 只需要問「我這次背景重繪應該等多久」，實際判斷邏輯集中在
+            // _terminalIdleRefreshMs()/_terminalSessionIsLive()。
+            idleRefreshMs: () => this._terminalIdleRefreshMs(session),
             // tw_stock_db客製: 2026-09-18——同一個bundle可能被多個指令名稱
             // 共用（例如less/more都指向pager.mjs），bundle自己組錯誤訊息時
             // 應該印使用者實際打的名稱，不要寫死成bundle內部認定的「主要」
@@ -22841,6 +23087,47 @@ ${existingNodeSummaries}
                                     <p class="ai-advanced-hint">批次工具呼叫每分鐘最多對API端點發出幾個新請求，留空或0＝不限制。併發數只控制「同時有幾個在跑」，不等於「每分鐘打幾個請求」——如果你的端點/金鑰有明確的rate limit（例如免費OpenRouter額度常見20/分鐘、每日50個），把這裡設成略低於那個數字，可以避免一開始就整批撞上429，而不是每個都靠重試機制事後收拾。這是所有model row共用的全域預設值；如果不同model row（不同端點）各自的rate limit不一樣，可以到上面「LLM Model 管理」分頁對個別row單獨填「批次每分鐘請求數上限」，該row有填時優先套用那個數字，不受這裡影響。</p>
                                 </div>
                             </div>
+                            <div class="ai-advanced-pane hidden" data-pane="terminal">
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">/run-terminal 外觀</label>
+                                    <p class="ai-advanced-hint">下面的設定套用在下一次開啟/run-terminal終端機時（已經開啟的既有終端機不會即時變更外觀，避免正在互動時畫面突然重排）。</p>
+                                    <label class="ai-advanced-label" for="ai-terminal-font-family" style="font-weight:normal;">字體</label>
+                                    <input type="text" id="ai-terminal-font-family" class="ai-advanced-input" placeholder="monospace, monospace">
+                                    <label class="ai-advanced-label" for="ai-terminal-font-size" style="font-weight:normal; margin-top:8px;">字體大小 (px)</label>
+                                    <input type="number" id="ai-terminal-font-size" class="ai-advanced-input" min="8" max="32" step="1">
+                                    <label class="ai-advanced-label" for="ai-terminal-cols" style="font-weight:normal; margin-top:8px;">欄數 (columns)</label>
+                                    <input type="number" id="ai-terminal-cols" class="ai-advanced-input" min="0" step="1" placeholder="0＝使用xterm.js預設值（80）">
+                                    <label class="ai-advanced-label" for="ai-terminal-scrollback" style="font-weight:normal; margin-top:8px;">可回捲行數 (scrollback)</label>
+                                    <input type="number" id="ai-terminal-scrollback" class="ai-advanced-input" min="0" step="1">
+                                    <div style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+                                        <input type="checkbox" id="ai-terminal-scroll-to-output-chk" style="cursor:pointer;">
+                                        <label for="ai-terminal-scroll-to-output-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">有新輸出時自動捲到最底部</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">關掉的話，正在往上捲看歷史輸出時不會被新輸出打斷、強制拉回底部。</p>
+                                    <label class="ai-advanced-label" for="ai-terminal-theme" style="font-weight:normal; margin-top:8px;">佈景主題</label>
+                                    <select id="ai-terminal-theme" class="ai-advanced-input">
+                                        <option value="system">system（跟隨目前App的亮/暗模式）</option>
+                                        <option value="ubuntu">ubuntu（Ubuntu終端機經典紫）</option>
+                                        <option value="powershell">powershell（PowerShell經典藍）</option>
+                                        <option value="black-white">黑底白字</option>
+                                        <option value="white-black">白底黑字</option>
+                                    </select>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <label class="ai-advanced-label">終端機資源管理</label>
+                                    <p class="ai-advanced-hint">一次對話裡可能同時存在多個/run-terminal終端機（每個都是一個活的xterm.js instance），這裡控制哪些session維持正常背景重繪頻率（例如top指令的每秒刷新）、哪些自動放慢頻率省資源——不影響手動輸入指令，只影響「沒有你操作時，畫面自己在背景更新」的頻率。</p>
+                                    <label class="ai-advanced-label" for="ai-terminal-resource-policy" style="font-weight:normal;">政策</label>
+                                    <select id="ai-terminal-resource-policy" class="ai-advanced-input">
+                                        <option value="focus">only on focus（預設，只有目前有鍵盤焦點的終端機維持正常頻率）</option>
+                                        <option value="viewport">viewport內（只有目前捲動到可視範圍內的終端機維持正常頻率）</option>
+                                        <option value="count">數量上限（只有最近互動過的N個維持正常頻率）</option>
+                                        <option value="unlimited">不限制（全部終端機都維持正常頻率）</option>
+                                    </select>
+                                    <label class="ai-advanced-label" for="ai-terminal-resource-count-limit" style="font-weight:normal; margin-top:8px;">數量上限政策的N</label>
+                                    <input type="number" id="ai-terminal-resource-count-limit" class="ai-advanced-input" min="1" step="1">
+                                    <p class="ai-advanced-hint">只有選「數量上限」政策時才有作用。</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="ai-advanced-footer">
@@ -24967,6 +25254,59 @@ ${existingNodeSummaries}
                 const n = Number(perfMp4DurationInput.value);
                 if (Number.isFinite(n) && n > 0) this.advancedSettings.mp4DefaultDurationSeconds = Math.max(1, Math.round(n));
                 this._saveAdvancedSettings();
+            });
+        }
+        // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——見
+        // _createDefaultAdvancedSettings()的terminal欄位/_normalizeTerminalSettings()
+        // 說明，這裡統一用一個小helper更新this.advancedSettings.terminal的
+        // 單一欄位再存檔，避免8個欄位各寫一次「讀舊值、複製、改一個欄位、
+        // 存回去」的重複樣板。
+        const updateTerminalSetting = (patch) => {
+            this.advancedSettings.terminal = { ...(this.advancedSettings.terminal || {}), ...patch };
+            this._saveAdvancedSettings();
+        };
+        const terminalFontFamilyInput = document.getElementById('ai-terminal-font-family');
+        if (terminalFontFamilyInput) {
+            terminalFontFamilyInput.addEventListener('input', () => updateTerminalSetting({ fontFamily: terminalFontFamilyInput.value }));
+        }
+        const terminalFontSizeInput = document.getElementById('ai-terminal-font-size');
+        if (terminalFontSizeInput) {
+            terminalFontSizeInput.addEventListener('input', () => {
+                const n = Number(terminalFontSizeInput.value);
+                if (Number.isFinite(n)) updateTerminalSetting({ fontSize: n });
+            });
+        }
+        const terminalColsInput = document.getElementById('ai-terminal-cols');
+        if (terminalColsInput) {
+            terminalColsInput.addEventListener('input', () => {
+                const n = Number(terminalColsInput.value);
+                updateTerminalSetting({ cols: Number.isFinite(n) && n >= 0 ? n : 0 });
+            });
+        }
+        const terminalScrollbackInput = document.getElementById('ai-terminal-scrollback');
+        if (terminalScrollbackInput) {
+            terminalScrollbackInput.addEventListener('input', () => {
+                const n = Number(terminalScrollbackInput.value);
+                if (Number.isFinite(n) && n >= 0) updateTerminalSetting({ scrollback: n });
+            });
+        }
+        const terminalScrollToOutputChk = document.getElementById('ai-terminal-scroll-to-output-chk');
+        if (terminalScrollToOutputChk) {
+            terminalScrollToOutputChk.addEventListener('change', () => updateTerminalSetting({ scrollToOutputEnabled: terminalScrollToOutputChk.checked }));
+        }
+        const terminalThemeSelect = document.getElementById('ai-terminal-theme');
+        if (terminalThemeSelect) {
+            terminalThemeSelect.addEventListener('change', () => updateTerminalSetting({ theme: terminalThemeSelect.value }));
+        }
+        const terminalResourcePolicySelect = document.getElementById('ai-terminal-resource-policy');
+        if (terminalResourcePolicySelect) {
+            terminalResourcePolicySelect.addEventListener('change', () => updateTerminalSetting({ resourcePolicy: terminalResourcePolicySelect.value }));
+        }
+        const terminalResourceCountLimitInput = document.getElementById('ai-terminal-resource-count-limit');
+        if (terminalResourceCountLimitInput) {
+            terminalResourceCountLimitInput.addEventListener('input', () => {
+                const n = Number(terminalResourceCountLimitInput.value);
+                if (Number.isFinite(n) && n >= 1) updateTerminalSetting({ resourceCountLimit: n });
             });
         }
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');

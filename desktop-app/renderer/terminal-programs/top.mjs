@@ -37,7 +37,11 @@ export async function run(ctx) {
 
     for (;;) {
         draw();
-        const key = await ctx.readKeyOrTimeout(1000);
+        // tw_stock_db客製: 2026-09-18使用者要求的終端機資源管理——沒有
+        // ctx.idleRefreshMs時（例如更舊的host）退回原本固定1秒，兩者都
+        // 支援才不會讓這個bundle綁死特定版本的floating-assistant.js。
+        const waitMs = typeof ctx.idleRefreshMs === 'function' ? ctx.idleRefreshMs() : 1000;
+        const key = await ctx.readKeyOrTimeout(waitMs);
         if (key === null) continue; // 逾時＝這一輪沒有按鍵，單純重繪
         if (key === 'q' || key === '\x03') return;
     }
