@@ -25,8 +25,69 @@
 "use strict";
 const http = require("http");
 const https = require("https");
+const fs = require("fs");
+const path = require("path");
 const { URL } = require("url");
 const { handleBrowserSearch } = require("./browser-search.js");
+
+// tw_stock_db客製: 2026-09-18使用者要求的xterm終端機功能——wasi-sh的
+// spawn()（互動式shell session）需要頁面`crossOriginIsolated===true`，
+// 實測發現Electron用loadFile()載入file://頁面時，不管補多少COOP/COEP
+// 標頭都無法讓crossOriginIsolated變成true（見main.js同一批註解的完整
+// 追查過程），file://的origin模型走不到瀏覽器正常計算cross-origin
+// isolation狀態的路徑。解法：改成把renderer/底下的靜態檔案（index.html/
+// floating-assistant.js/bootstrap.js等）直接從這支本來就在跑的本地
+// server用真正的http://127.0.0.1:<port>網址提供，main.js改用loadURL()
+// 載入這個網址而不是loadFile()——http(s)://是「正常」origin，COOP/COEP
+// 標頭在這裡才會真的被瀏覽器採信。
+const RENDERER_DIR = path.join(__dirname, "renderer");
+const STATIC_MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".wasm": "application/wasm",
+};
+
+// tw_stock_db客製: 見上面RENDERER_DIR的說明——這裡是實際的靜態檔案
+// handler。requestPath是req.url解碼、去掉query string之後的路徑；
+// path.normalize+檢查resolve後的絕對路徑是否仍在RENDERER_DIR底下，擋掉
+// `/../../etc/passwd`這類path traversal（跟其餘/proxy等路由不同，這裡是
+// 直接讀取本機檔案系統，必須自己做這層防護，不能只依賴Node內建行為）。
+// 每個回應都補上COOP/COEP標頭：跨越cross-origin isolation門檻的關鍵
+// 就是「載入頁面本身」這個HTML document的回應要帶這兩個標頭，其餘（JS/
+// CSS等次要資源）帶不帶理論上不影響isolation狀態本身，但這裡全部一致
+// 補上，行為單純、不用逐個資源判斷要不要加。
+function serveStaticFile(req, res, requestPath) {
+  const decoded = decodeURIComponentSafe(requestPath.split("?")[0]);
+  const relPath = decoded === "/" ? "/index.html" : decoded;
+  const resolved = path.normalize(path.join(RENDERER_DIR, relPath));
+  if (!resolved.startsWith(RENDERER_DIR + path.sep) && resolved !== RENDERER_DIR) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "forbidden path" }));
+    return;
+  }
+  fs.readFile(resolved, (err, data) => {
+    if (err) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not found: " + relPath }));
+      return;
+    }
+    const ext = path.extname(resolved).toLowerCase();
+    res.writeHead(200, {
+      "Content-Type": STATIC_MIME_TYPES[ext] || "application/octet-stream",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    });
+    res.end(data);
+  });
+}
 
 // tw_stock_db客製: 2026-09-15使用者實測回報——同一個請求在Windows桌面版
 // 幾乎不會撞到「端點完全沒有回應任何內容」，Linux桌面版卻常常發生。追查
@@ -204,6 +265,16 @@ function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-p
     }
     const matchedPrefix = prefixes.find((p) => req.url.startsWith(p));
     if (!matchedPrefix) {
+      // tw_stock_db客製: 2026-09-18——見serveStaticFile/RENDERER_DIR的說明，
+      // 任何不符合上面幾個特殊路由的GET請求，一律當成renderer/底下的靜態
+      // 檔案來服務（main.js改用loadURL()載入這個server、不再用loadFile()/
+      // file://，見那邊的完整說明）。只接受GET/HEAD——POST/PUT等其餘方法
+      // 打到這裡代表打錯路徑，維持原本「unknown route」錯誤訊息比較清楚，
+      // 不要誤判成靜態檔案請求後端回404卻讓人誤以為是proxy路由本身錯了。
+      if (req.method === "GET" || req.method === "HEAD") {
+        serveStaticFile(req, res, req.url);
+        return;
+      }
       setCorsHeaders(res, req);
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "unknown route, expected one of: " + prefixes.concat(["/nvidia/", "/nvidia/openrouter/"]).join(", ") }));
