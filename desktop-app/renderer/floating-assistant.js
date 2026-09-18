@@ -3192,11 +3192,19 @@ const ADVANCED_SETTINGS_GROUPS = {
 // tw_stock_db客製: 2026-09-18使用者要求——見registerTerminalProgram/
 // _ensureTerminalProgramLoaded的說明，vim/less/top這類WASM沙盒原生跑不
 // 起來的全螢幕互動程式，各自是一個可外掛抓回來的bundle，不寫死進這個
-// 檔案。目前還沒有任何實際bundle部署（見TODO.md Phase 2），這裡先留空
-// 物件——名稱打對但bundle還沒部署好時，_ensureTerminalProgramLoaded()
-// 找不到URL會回傳null，呼叫端據此回報「這個指令目前還沒有對應的bundle」
-// 而不是誤導成「指令打錯字」。
-const TERMINAL_PROGRAM_BUNDLES = {};
+// 檔案本身，只在這裡登記「指令名稱→bundle網址」。相對路徑（不是http(s)://
+// 開頭）會照瀏覽器dynamic import()的既有規則、相對於目前頁面（load
+// floating-assistant.js的那個index.html）解析——這幾個bundle檔案跟
+// floating-assistant.js放在同一個renderer/目錄下的terminal-programs/
+// 子資料夾，所以用'./terminal-programs/xxx.mjs'這種相對寫法就會正確
+// 對到桌面版render目錄底下的實際檔案；less/more共用同一份pager.mjs
+// （對使用者而言兩個名稱幾乎沒有語意差異，這個簡化版pager不需要區分）。
+const TERMINAL_PROGRAM_BUNDLES = {
+    less: './terminal-programs/pager.mjs',
+    more: './terminal-programs/pager.mjs',
+    vi: './terminal-programs/editor.mjs',
+    vim: './terminal-programs/editor.mjs',
+};
 
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
@@ -3451,14 +3459,17 @@ class FloatingAssistant {
         );
         this._syncFapSlashCommandArgChoices();
         // tw_stock_db客製: 2026-09-18使用者要求——xterm終端機widget的觸發
-        // 入口（見_openTerminalModal/_ensureXtermLoaded的說明）。不加參數＝
-        // 只開互動終端機；加參數＝開啟後直接把這段文字當一行指令執行（等同
-        // 打開後手動輸入這行再按Enter），呼應使用者原話「加參數就是嵌入
-        // 可互動的xterm並執行」。
+        // 入口（見_handleRunTerminalCommand/_mountTerminalWidget/
+        // _ensureXtermLoaded的說明）。不加參數＝只開互動終端機；加參數＝
+        // 開啟後直接把這段文字當一行指令執行（等同打開後手動輸入這行再按
+        // Enter），呼應使用者原話「加參數就是嵌入可互動的xterm並執行」。
+        // 使用者明確糾正過：這不是彈出視窗，是嵌入對話訊息流的widget（跟
+        // 3D場景/音檔播放器同一種模式），每次呼叫都是對話裡新的一則、各自
+        // 獨立的session。
         this.register_slash_command(
             '/run-terminal', '[指令]',
-            '開啟一個嵌入式終端機（WASM沙盒，busybox ash，不需要真實系統shell）。留空只開啟互動終端機；帶一段指令則開啟後直接執行它。',
-            (argsText) => this._openTerminalModal(String(argsText || '').trim())
+            '在對話裡嵌入一個互動終端機（WASM沙盒，busybox ash，不需要真實系統shell）。留空只開啟互動終端機；帶一段指令則開啟後直接執行它。',
+            (argsText) => this._handleRunTerminalCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-18使用者手動調整——原本retryLimit=10、
         // maxPruneRetriesPerTurn=3對長任務太保守，使用者要求「不該經常發生
@@ -12814,7 +12825,8 @@ ${sourceTool.handlerScript}
     // 鍵盤輸入直接畫面；不是的話交給既有的run()（bash_execute已經在用的
     // 同一個函式，純批次執行、完全不需要SharedArrayBuffer/COOP/COEP，見
     // run.mjs開頭的說明）。cd因為run()每次呼叫都是全新、無狀態的wasm
-    // instance，需要另外用this._terminalCwd追蹤、每次呼叫前手動cd過去。
+    // instance，需要另外用session.cwd追蹤、每次呼叫前手動cd過去（見
+    // _terminalCd/_runTerminalShellLine的說明）。
     async _ensureXtermLoaded() {
         if (this._xtermLoaded) return;
         if (this._xtermLoadPromise) return this._xtermLoadPromise;
@@ -12850,153 +12862,148 @@ ${sourceTool.handlerScript}
         if (this._terminalProgramModules[name]) return this._terminalProgramModules[name];
         const url = this._terminalProgramBundles[name];
         if (!url) return null;
-        const mod = await import(/* webpackIgnore: true */ this._viaAssetProxy(url));
+        // tw_stock_db客製: 2026-09-18發現——_viaAssetProxy()是設計給外部CDN
+        // 絕對網址用的（透過本地proxy的/proxy/<url>繞CORS，見該方法說明），
+        // 對這裡內建的terminal-programs/*.mjs這種同源相對路徑套用反而會
+        // 組出一個把相對路徑硬塞進/proxy/<url>的無意義網址。只有真正的
+        // http(s)://絕對網址才需要（也才應該）經過_viaAssetProxy，同源
+        // 相對路徑（內建bundle）或使用者自己註冊的其他絕對網址則原樣
+        // 使用者可能刻意指到一個不需要proxy的位置，這裡只挑http(s)://
+        // 開頭的才轉，不是所有絕對網址都轉。
+        const resolvedUrl = /^https?:\/\//i.test(url) ? this._viaAssetProxy(url) : url;
+        const mod = await import(/* webpackIgnore: true */ resolvedUrl);
         if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
         this._terminalProgramModules[name] = mod;
         return mod;
     }
 
-    // tw_stock_db客製: 2026-09-18——終端機視窗，同一種self-contained overlay
-    // 寫法（跟_showFapPermissionDialog同一種document.createElement手刻，不
-    // 走_initUI()那個巨大的模板字串——這個widget夠獨立、犯不著把已經很大
-    // 的模板再撐大）。同一時間只允許一個session（this._terminalSession），
-    // 已經開著時再呼叫只是focus＋（如果帶了新指令）執行它，不會疊開第二個
-    // 視窗。initialCommand對應/run-terminal帶參數時的行為。
-    async _openTerminalModal(initialCommand) {
-        await this._ensureXtermLoaded();
-        if (this._terminalSession) {
-            this._terminalSession.term.focus();
-            if (initialCommand) await this._runTerminalInitialCommand(initialCommand);
-            return;
-        }
-        const palette = this._getThemePalette();
-        const overlay = document.createElement('div');
-        overlay.id = 'ai-terminal-overlay';
-        overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000030; display:flex; align-items:center; justify-content:center;';
-        const box = document.createElement('div');
-        box.style.cssText = `background:#1e1e1e; border-radius:10px; padding:10px; width:min(900px,94vw); height:min(560px,86vh); box-shadow:0 12px 40px rgba(0,0,0,0.4); display:flex; flex-direction:column; border:1px solid ${palette.windowBorder};`;
-        box.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; color:#ccc; font-family:monospace; font-size:12px; flex:0 0 auto;">
-                <span>🖥️ Terminal（WASM沙盒 busybox ash——vim/less/top/more目前尚未支援，見說明）</span>
-                <button type="button" id="ai-terminal-close" style="background:none; border:1px solid #555; border-radius:4px; color:#ccc; cursor:pointer; font-size:13px; padding:2px 8px;">✕ 關閉</button>
-            </div>
-            <div id="ai-terminal-xterm" style="flex:1; min-height:0;"></div>
-        `;
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
+    // tw_stock_db客製: 2026-09-18使用者明確糾正——/run-terminal「不是要
+    // popup modal，是要嵌入對話的互動widget」。改成跟3D場景/音檔播放器
+    // 同一種「嵌入對話訊息」模式（見建構子this._liveWidgetCache的說明、
+    // _renderSingleMessage裡msg._displayTerminal的分支）：推一則帶
+    // _displayTerminal旗標的assistant訊息，_renderSingleMessage偵測到時
+    // 建立卡片容器＋呼叫_mountTerminalWidget()把xterm.js掛進去；重新渲染
+    // 訊息歷史（切主題、同一輪其他工具呼叫觸發的重繪）時透過
+    // _liveWidgetCache重用同一個已掛載節點，session狀態（游標位置、指令
+    // 歷史、目前工作目錄、xterm scrollback）不會被重置——原本singleton
+    // this._terminalSession（同時只能開一個）也拿掉了，現在每個
+    // /run-terminal呼叫各自是對話裡獨立的一則訊息/一個session，可以同時
+    // 存在多個，跟使用者可以連續問好幾次3D場景各自獨立一樣。
+    _handleRunTerminalCommand(argsText) {
+        const initialCommand = String(argsText || '').trim();
+        this.messages.push({ role: 'user', content: initialCommand ? `🖥️ /run-terminal ${initialCommand}` : '🖥️ /run-terminal' });
+        const msg = this._pushAssistantMessage('🖥️ 終端機（WASM沙盒 busybox ash）', null);
+        Object.defineProperty(msg, '_displayTerminal', { value: { initialCommand }, enumerable: false, configurable: true });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
 
+    // tw_stock_db客製: 2026-09-18——真正把xterm.js掛進_renderSingleMessage
+    // 建立好的容器裡、建立這個訊息專屬的session狀態。container本身（呼叫端
+    // 傳進來、快取在_liveWidgetCache裡的DOM節點）就是session狀態存活的
+    // 依附對象，不需要另外一個Map——container這個節點本身要嘛跟著訊息一起
+    // 存活（正常情況），要嘛整個訊息被pruneContext真的丟棄時透過
+    // WeakMap一起消失，生命週期天然一致。
+    async _mountTerminalWidget(container, initialCommand) {
+        await this._ensureXtermLoaded();
         const term = new Terminal({
             convertEol: true, cursorBlink: true, fontFamily: 'monospace, monospace', fontSize: 13,
             theme: { background: '#1e1e1e', foreground: '#e2e8f0' },
         });
-        term.open(box.querySelector('#ai-terminal-xterm'));
-        term.focus();
+        term.open(container);
 
-        this._terminalSession = {
-            term, overlay,
+        const session = {
+            term,
             fsStore: null,
             cwd: '/work',
             history: [], historyIndex: 0,
             line: '',
             activeProgram: null,
+            ended: false,
         };
+        container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
 
-        box.querySelector('#ai-terminal-close').addEventListener('click', () => this._closeTerminalModal());
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) this._closeTerminalModal(); });
-
-        term.write('WASM沙盒終端機（busybox ash）。輸入 help 看內建指令，exit 或右上角關閉離開。\r\n');
-        term.onData((data) => this._handleTerminalInput(data));
+        term.write('WASM沙盒終端機（busybox ash）。輸入 help 看內建指令，exit 結束這個session。\r\n');
+        term.onData((data) => { if (!session.ended) this._handleTerminalInput(session, data); });
 
         if (initialCommand) {
-            await this._runTerminalInitialCommand(initialCommand);
+            await this._runTerminalInitialCommand(session, initialCommand);
         } else {
-            this._writeTerminalPrompt();
+            this._writeTerminalPrompt(session);
         }
     }
 
-    // tw_stock_db客製: 2026-09-18——/run-terminal帶參數、或終端機已經開著時
-    // 再帶參數呼叫一次的共用路徑：直接呼叫_runTerminalCommand()（不透過
-    // _handleTerminalInput('\r')那條「讀s.line」的鍵盤事件路徑，因為這裡
-    // 根本沒有經過鍵盤輸入去填s.line——這是先前一版的bug，initialCommand
-    // 有被畫面echo出來，卻因為s.line還是空字串，Enter鍵路徑實際執行的是
-    // 空白指令，使用者輸入的內容完全沒被真正送進shell執行）。
-    async _runTerminalInitialCommand(initialCommand) {
-        const s = this._terminalSession;
-        this._writeTerminalPrompt();
-        s.term.write(initialCommand + '\r\n');
-        if (initialCommand.trim()) s.history.push(initialCommand);
-        s.historyIndex = s.history.length;
-        await this._runTerminalCommand(initialCommand);
-        if (!s.activeProgram) this._writeTerminalPrompt();
+    // tw_stock_db客製: 2026-09-18——/run-terminal帶參數時的共用路徑：直接
+    // 呼叫_runTerminalCommand()（不透過_handleTerminalInput('\r')那條
+    // 「讀session.line」的鍵盤事件路徑，因為這裡根本沒有經過鍵盤輸入去填
+    // session.line——這是先前一版的bug，initialCommand有被畫面echo出來，
+    // 卻因為session.line還是空字串，Enter鍵路徑實際執行的是空白指令，
+    // 使用者輸入的內容完全沒被真正送進shell執行）。
+    async _runTerminalInitialCommand(session, initialCommand) {
+        this._writeTerminalPrompt(session);
+        session.term.write(initialCommand + '\r\n');
+        if (initialCommand.trim()) session.history.push(initialCommand);
+        session.historyIndex = session.history.length;
+        await this._runTerminalCommand(session, initialCommand);
+        if (!session.activeProgram) this._writeTerminalPrompt(session);
     }
 
-    _closeTerminalModal() {
-        const s = this._terminalSession;
-        if (!s) return;
-        s.overlay.remove();
-        s.term.dispose();
-        this._terminalSession = null;
+    _writeTerminalPrompt(session) {
+        if (session.ended) return;
+        session.term.write(`\r\n\x1b[32m${session.cwd}\x1b[0m $ `);
     }
 
-    _writeTerminalPrompt() {
-        const s = this._terminalSession;
-        if (!s) return;
-        s.term.write(`\r\n\x1b[32m${s.cwd}\x1b[0m $ `);
-    }
-
-    // tw_stock_db客製: 2026-09-18——見_openTerminalModal的說明，這裡是唯一的
-    // 鍵盤輸入入口。s.activeProgram存在時（vim/less這類全螢幕bundle接管畫面
-    // 時）整段原始輸入直接轉給它自己處理（見TERMINAL_PROGRAM_BUNDLES的
-    // ctx.readKey()說明），不做任何行編輯——bundle自己決定怎麼解讀鍵盤輸入。
-    // 沒有bundle接管時，這裡自己實作最基本的行編輯（印字元/backspace/
-    // Enter/Ctrl+C/上下鍵翻歷史），刻意不支援左右鍵移動游標到行中間插入
-    // ——那需要維護游標位置跟重繪行尾字元，這個版本先不做，要修改已經打
-    // 的內容只能backspace到那個位置再重打。
-    async _handleTerminalInput(data) {
-        const s = this._terminalSession;
-        if (!s) return;
-        if (s.activeProgram) { s.activeProgram.feed(data); return; }
+    // tw_stock_db客製: 2026-09-18——見_mountTerminalWidget的說明，這裡是
+    // 唯一的鍵盤輸入入口。session.activeProgram存在時（vim/less這類全螢幕
+    // bundle接管畫面時）整段原始輸入直接轉給它自己處理（見
+    // TERMINAL_PROGRAM_BUNDLES的ctx.readKey()說明），不做任何行編輯——
+    // bundle自己決定怎麼解讀鍵盤輸入。沒有bundle接管時，這裡自己實作最
+    // 基本的行編輯（印字元/backspace/Enter/Ctrl+C/上下鍵翻歷史），刻意
+    // 不支援左右鍵移動游標到行中間插入——那需要維護游標位置跟重繪行尾
+    // 字元，這個版本先不做，要修改已經打的內容只能backspace到那個位置
+    // 再重打。
+    async _handleTerminalInput(session, data) {
+        if (session.activeProgram) { session.activeProgram.feed(data); return; }
         if (data === '\r') {
-            s.term.write('\r\n');
-            const line = s.line;
-            s.line = '';
-            if (line.trim()) s.history.push(line);
-            s.historyIndex = s.history.length;
-            await this._runTerminalCommand(line);
-            if (!s.activeProgram) this._writeTerminalPrompt();
+            session.term.write('\r\n');
+            const line = session.line;
+            session.line = '';
+            if (line.trim()) session.history.push(line);
+            session.historyIndex = session.history.length;
+            await this._runTerminalCommand(session, line);
+            if (!session.activeProgram) this._writeTerminalPrompt(session);
             return;
         }
         if (data === '\x7f' || data === '\b') {
-            if (s.line.length) { s.line = s.line.slice(0, -1); s.term.write('\b \b'); }
+            if (session.line.length) { session.line = session.line.slice(0, -1); session.term.write('\b \b'); }
             return;
         }
         if (data === '\x03') { // Ctrl+C
-            s.term.write('^C');
-            s.line = '';
-            this._writeTerminalPrompt();
+            session.term.write('^C');
+            session.line = '';
+            this._writeTerminalPrompt(session);
             return;
         }
         if (data === '\x1b[A') { // 上鍵：往回翻歷史
-            if (s.historyIndex > 0) { s.historyIndex--; this._setTerminalLine(s.history[s.historyIndex]); }
+            if (session.historyIndex > 0) { session.historyIndex--; this._setTerminalLine(session, session.history[session.historyIndex]); }
             return;
         }
         if (data === '\x1b[B') { // 下鍵：往新翻歷史
-            if (s.historyIndex < s.history.length) {
-                s.historyIndex++;
-                this._setTerminalLine(s.historyIndex === s.history.length ? '' : s.history[s.historyIndex]);
+            if (session.historyIndex < session.history.length) {
+                session.historyIndex++;
+                this._setTerminalLine(session, session.historyIndex === session.history.length ? '' : session.history[session.historyIndex]);
             }
             return;
         }
         if (data.length && data.charCodeAt(0) < 32) return; // 其餘控制字元（左右鍵等）目前忽略
-        s.line += data;
-        s.term.write(data);
+        session.line += data;
+        session.term.write(data);
     }
 
-    _setTerminalLine(newLine) {
-        const s = this._terminalSession;
-        if (s.line.length) s.term.write('\b \b'.repeat(s.line.length));
-        s.line = newLine;
-        s.term.write(newLine);
+    _setTerminalLine(session, newLine) {
+        if (session.line.length) session.term.write('\b \b'.repeat(session.line.length));
+        session.line = newLine;
+        session.term.write(newLine);
     }
 
     // tw_stock_db客製: 2026-09-18——單一入口，依指令名稱判斷要不要JS層
@@ -13005,59 +13012,64 @@ ${sourceTool.handlerScript}
     // 函式，純批次執行）。cd/pwd/clear/exit這幾個之所以要JS層攔截而不是
     // 單純交給busybox自己的builtin：run()每次呼叫都是全新、無狀態的wasm
     // instance，busybox自己的cd只在那一次呼叫內有效、呼叫結束就消失，
-    // 必須靠這裡的this._terminalSession.cwd在JS層自己維護跨指令的狀態。
-    async _runTerminalCommand(rawLine) {
-        const s = this._terminalSession;
+    // 必須靠這裡的session.cwd在JS層自己維護跨指令的狀態。
+    async _runTerminalCommand(session, rawLine) {
         const trimmed = String(rawLine || '').trim();
         if (!trimmed) return;
         const firstSpace = trimmed.indexOf(' ');
         const cmdName = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
         const restArgs = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
 
-        if (cmdName === 'clear') { s.term.clear(); return; }
-        if (cmdName === 'exit') { this._closeTerminalModal(); return; }
-        if (cmdName === 'pwd') { s.term.write(s.cwd + '\r\n'); return; }
+        if (cmdName === 'clear') { session.term.clear(); return; }
+        // tw_stock_db客製: 2026-09-18——嵌入對話的widget沒有「關閉視窗」這個
+        // 概念（訊息本身還是對話歷史的一部分，不會被移除），exit改成標記
+        // session.ended、停止接受後續鍵盤輸入，畫面上的內容維持原樣供之後
+        // 回顧，跟音檔播放完畢後player本身還留著同一種精神。
+        if (cmdName === 'exit') {
+            session.ended = true;
+            session.term.write('\r\n\x1b[90m[session已結束]\x1b[0m');
+            return;
+        }
+        if (cmdName === 'pwd') { session.term.write(session.cwd + '\r\n'); return; }
         if (cmdName === 'help') {
-            s.term.write([
+            session.term.write([
                 '內建指令：cd/pwd/clear/exit/help（這幾個在JS層處理，維護跨指令的工作目錄狀態）',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
-                '⚠️vim/vi/top/less/more目前還沒有對應的bundle（見registerTerminalProgram），會回報「找不到這個指令」',
+                '⚠️top目前還沒有對應的bundle（見registerTerminalProgram），會回報「找不到這個指令」',
             ].join('\r\n') + '\r\n');
             return;
         }
-        if (cmdName === 'cd') { await this._terminalCd(restArgs || '/work'); return; }
+        if (cmdName === 'cd') { await this._terminalCd(session, restArgs || '/work'); return; }
 
         let bundleMod = null;
         try {
             bundleMod = await this._ensureTerminalProgramLoaded(cmdName);
         } catch (err) {
-            s.term.write(`\x1b[31m${cmdName}: bundle載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\x1b[31m${cmdName}: bundle載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
-        if (bundleMod) { await this._runTerminalProgramBundle(bundleMod, cmdName, restArgs); return; }
+        if (bundleMod) { await this._runTerminalProgramBundle(session, bundleMod, cmdName, restArgs); return; }
 
-        await this._runTerminalShellLine(trimmed);
+        await this._runTerminalShellLine(session, trimmed);
     }
 
-    async _ensureTerminalFsStore(runtime) {
-        const s = this._terminalSession;
-        if (!s.fsStore) s.fsStore = runtime.memoryFs({ '/work/.keep': '' });
-        return s.fsStore;
+    async _ensureTerminalFsStore(session, runtime) {
+        if (!session.fsStore) session.fsStore = runtime.memoryFs({ '/work/.keep': '' });
+        return session.fsStore;
     }
 
     _shQuote(str) {
         return `'${String(str).replace(/'/g, "'\\''")}'`;
     }
 
-    async _runTerminalShellLine(line) {
-        const s = this._terminalSession;
+    async _runTerminalShellLine(session, line) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
-            s.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
-        const fsStore = await this._ensureTerminalFsStore(runtime);
-        const script = `cd ${this._shQuote(s.cwd)} 2>/dev/null; ${line}`;
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`;
         try {
             await runtime.run({
                 command: script,
@@ -13065,65 +13077,69 @@ ${sourceTool.handlerScript}
                 wasm: runtime.wasmBytes.slice(0),
                 inline: true,
                 onOutput: (bytes, _channel) => {
-                    s.term.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
+                    session.term.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
                 },
             });
         } catch (err) {
-            s.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
         }
     }
 
-    async _terminalCd(target) {
-        const s = this._terminalSession;
+    async _terminalCd(session, target) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
-            s.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
-        const fsStore = await this._ensureTerminalFsStore(runtime);
-        const script = `cd ${this._shQuote(s.cwd)} 2>/dev/null; cd ${this._shQuote(target)} && pwd`;
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; cd ${this._shQuote(target)} && pwd`;
         let result;
         try {
             result = await runtime.run({ command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true });
         } catch (err) {
-            s.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
         if (result.exitCode === 0 && result.stdout.trim()) {
-            s.cwd = result.stdout.trim();
+            session.cwd = result.stdout.trim();
         } else {
-            s.term.write(`\x1b[31mcd: ${target}: 找不到這個目錄\x1b[0m\r\n`);
+            session.term.write(`\x1b[31mcd: ${target}: 找不到這個目錄\x1b[0m\r\n`);
         }
     }
 
     // tw_stock_db客製: 2026-09-18——見registerTerminalProgram的說明，把
     // session交給bundle接管。ctx.write()輸出、ctx.readKey()等下一個按鍵
-    // （s.activeProgram.feed()會resolve它）、ctx.fs/ctx.cwd讓bundle能跟
-    // 同一個session的檔案系統/工作目錄互動、ctx.cols/ctx.rows是目前終端機
-    // 尺寸（less/vim這類全螢幕程式需要知道畫面多大才能正確分頁/畫游標）。
-    // bundle的run(ctx) resolve時代表程式結束，把控制權交還一般的行編輯。
-    async _runTerminalProgramBundle(mod, name, argsText) {
-        const s = this._terminalSession;
+    // （session.activeProgram.feed()會resolve它）、ctx.fs/ctx.cwd讓bundle
+    // 能跟同一個session的檔案系統/工作目錄互動、ctx.cols/ctx.rows是目前
+    // 終端機尺寸（less/vim這類全螢幕程式需要知道畫面多大才能正確分頁/畫
+    // 游標）。bundle的run(ctx) resolve時代表程式結束，把控制權交還一般的
+    // 行編輯。
+    async _runTerminalProgramBundle(session, mod, name, argsText) {
         let resolveKey = null;
         const program = {
             feed: (data) => { if (resolveKey) { const r = resolveKey; resolveKey = null; r(data); } },
         };
         const ctx = {
-            write: (text) => s.term.write(String(text).replace(/\n/g, '\r\n')),
+            write: (text) => session.term.write(String(text).replace(/\n/g, '\r\n')),
             readKey: () => new Promise((resolve) => { resolveKey = resolve; }),
-            fs: async () => this._ensureTerminalFsStore(await this._ensureBashWasmLoaded()),
-            cwd: s.cwd,
+            fs: async () => this._ensureTerminalFsStore(session, await this._ensureBashWasmLoaded()),
+            cwd: session.cwd,
             args: argsText ? argsText.split(/\s+/) : [],
-            cols: s.term.cols,
-            rows: s.term.rows,
+            cols: session.term.cols,
+            rows: session.term.rows,
+            // tw_stock_db客製: 2026-09-18——同一個bundle可能被多個指令名稱
+            // 共用（例如less/more都指向pager.mjs），bundle自己組錯誤訊息時
+            // 應該印使用者實際打的名稱，不要寫死成bundle內部認定的「主要」
+            // 名稱。
+            name,
         };
-        s.activeProgram = program;
+        session.activeProgram = program;
         try {
             await mod.run(ctx);
         } catch (err) {
-            s.term.write(`\r\n\x1b[31m${name}: ${String(err.message || err)}\x1b[0m\r\n`);
+            session.term.write(`\r\n\x1b[31m${name}: ${String(err.message || err)}\x1b[0m\r\n`);
         } finally {
-            s.activeProgram = null;
+            session.activeProgram = null;
         }
     }
 
@@ -23001,6 +23017,30 @@ ${existingNodeSummaries}
             const wrap = document.createElement('div');
             wrap.innerHTML = this._renderBenchmarkReportHtml(msg._benchmarkReport);
             container.appendChild(wrap.firstElementChild);
+            return;
+        }
+
+        // tw_stock_db客製: 2026-09-18使用者要求——/run-terminal嵌入對話的
+        // 終端機widget（見_handleRunTerminalCommand/_mountTerminalWidget的
+        // 說明），跟3D場景/音檔播放器同一種「先檢查_liveWidgetCache重用
+        // 已掛載節點（含xterm scrollback/游標/指令歷史/虛擬cwd等live狀態）
+        // 、沒有才建立新的」模式——不這樣做的話，同一輪對話裡其他工具呼叫
+        // 觸發的_renderMessageHistory()整個重繪會讓終端機畫面/session狀態
+        // 憑空歸零，使用者剛打的指令/正在跑的vim都會不見。
+        if (msg._displayTerminal) {
+            if (this._liveWidgetCache.has(msg)) {
+                container.appendChild(this._liveWidgetCache.get(msg));
+                return;
+            }
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'margin-bottom:12px; max-width:95%; width:640px;';
+            wrap.innerHTML = `
+                <div style="font-size:12px; font-weight:bold; color:#76b900; margin-bottom:4px;">🖥️ 終端機（WASM沙盒 busybox ash）</div>
+                <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:360px; border:1px solid ${palette.windowBorder};"></div>
+            `;
+            container.appendChild(wrap);
+            this._liveWidgetCache.set(msg, wrap);
+            this._mountTerminalWidget(wrap.querySelector('.ai-terminal-embed'), msg._displayTerminal.initialCommand);
             return;
         }
 
