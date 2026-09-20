@@ -1096,6 +1096,44 @@ function patchCloudflareWording(root) {
     }
   );
 
+
+  // tw_stock_db客製: 2026-09-21——coding暫存工作區：專案複製到系統暫存資料夾＋git init，
+  // 修改/測試都在那裡做，確認後才deploy回使用者資料夾（見coding-workspace.js）。
+  fa.register_openai_tool(
+    "coding_workspace",
+    "程式設計任務的暫存工作區。action: open（source=使用者專案資料夾絕對路徑，可選subpath只複製子資料夾；複製到系統暫存資料夾並git init，回傳workspace_path與要告訴使用者的tell_user；已存在就接續）、status（cwd_abs=workspace_path，列出還沒轉移的新增/修改/刪除）、deploy（cwd_abs=workspace_path；dry_run:true只預覽；轉移回使用者資料夾，逐檔備份、寫入、讀回比對；使用者原檔在這段期間被改過會列為conflicts不覆蓋，force:true才強制）、discard（cwd_abs=workspace_path，刪除暫存區）。",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      const api = window.desktopAPI.codingWorkspace;
+      const ws = String(parsed.cwd_abs || parsed.workspace_path || "").trim();
+      try {
+        let r;
+        if (parsed.action === "open") {
+          const src = String(parsed.source || parsed.source_path || "").trim();
+          if (!src) return JSON.stringify({ ok: false, error: "缺少source（使用者專案資料夾的絕對路徑）" });
+          r = await api.open(src, { subpath: parsed.subpath });
+        } else if (parsed.action === "status") r = await api.status(ws);
+        else if (parsed.action === "deploy") r = await api.deploy(ws, { dryRun: !!parsed.dry_run, force: !!parsed.force });
+        else if (parsed.action === "discard") r = await api.discard(ws);
+        else return JSON.stringify({ ok: false, error: "action必須是open/status/deploy/discard" });
+        return JSON.stringify(r);
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["open", "status", "deploy", "discard"] },
+        source: { type: "string", description: "open：使用者專案資料夾的絕對路徑" },
+        subpath: { type: "string", description: "open：選填，只複製這個子資料夾（專案太大時用）" },
+        cwd_abs: { type: "string", description: "status/deploy/discard：workspace_path" },
+        dry_run: { type: "boolean" }, force: { type: "boolean" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    }
+  );
+
   // coding_task_state：狀態機本體已搬進floating-assistant.js（_codingStateAction，
   // 網頁版共用同一份邏輯），這裡只負責提供桌面版的檔案io（rawfs絕對路徑）。
   const joinP = (base, ...parts) => [String(base).replace(/[\\/]+$/, ""), ...parts].join("/");
@@ -1239,7 +1277,7 @@ function patchCloudflareWording(root) {
       "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "run_command",
-      "apply_git_patch", "git_inspect", "coding_task_state",
+      "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
     ],
     systemPrompt: fa._buildCodingSystemPrompt({ kind: "desktop", platformLabel }),
   });
@@ -1275,7 +1313,7 @@ function patchCloudflareWording(root) {
     "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
     "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
     "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
-    "apply_git_patch", "git_inspect", "coding_task_state",
+    "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
   // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——
