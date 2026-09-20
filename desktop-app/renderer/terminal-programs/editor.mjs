@@ -110,12 +110,53 @@ export async function run(ctx) {
         return null;
     };
 
+    // 方向鍵/Home/End/PageUp/PageDown/Delete各終端機的編碼不完全一樣（CSI、SS3、VT220
+    // 數字碼），統一轉成名稱，insert/normal兩個模式共用。
+    const KEYMAP = {
+        '\x1b[A': 'up', '\x1bOA': 'up', '\x1b[B': 'down', '\x1bOB': 'down',
+        '\x1b[C': 'right', '\x1bOC': 'right', '\x1b[D': 'left', '\x1bOD': 'left',
+        '\x1b[H': 'home', '\x1bOH': 'home', '\x1b[1~': 'home', '\x1b[7~': 'home',
+        '\x1b[F': 'end', '\x1bOF': 'end', '\x1b[4~': 'end', '\x1b[8~': 'end',
+        '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown', '\x1b[3~': 'delete',
+    };
+    const pageSize = Math.max(1, bodyRows - 1);
+    const navigate = (name) => {
+        if (name === 'up') state.row--;
+        else if (name === 'down') state.row++;
+        else if (name === 'left') {
+            if (state.col > 0) state.col--;
+            else if (state.mode === 'insert' && state.row > 0) { state.row--; state.col = state.lines[state.row].length; }
+        } else if (name === 'right') {
+            const len = state.lines[state.row].length;
+            if (state.col < len - (state.mode === 'insert' ? 0 : 1)) state.col++;
+            else if (state.mode === 'insert' && state.row < state.lines.length - 1) { state.row++; state.col = 0; }
+        } else if (name === 'home') state.col = 0;
+        else if (name === 'end') state.col = state.mode === 'insert' ? state.lines[state.row].length : Math.max(0, state.lines[state.row].length - 1);
+        else if (name === 'pageup') { state.row = Math.max(0, state.row - pageSize); state.scrollTop = Math.max(0, state.scrollTop - pageSize); }
+        else if (name === 'pagedown') { state.row = Math.min(state.lines.length - 1, state.row + pageSize); state.scrollTop = Math.min(Math.max(0, state.lines.length - 1), state.scrollTop + pageSize); }
+        else return false;
+        return true;
+    };
+    const deleteAtCursor = () => {
+        const line = state.lines[state.row];
+        if (state.col < line.length) { state.lines[state.row] = line.slice(0, state.col) + line.slice(state.col + 1); state.modified = true; }
+        else if (state.mode === 'insert' && state.row < state.lines.length - 1) { state.lines[state.row] += state.lines[state.row + 1]; state.lines.splice(state.row + 1, 1); state.modified = true; }
+    };
+
     draw();
     for (;;) {
         const key = await ctx.readKey();
+        if (key === null || key === undefined) continue;
+        const nav = KEYMAP[key];
 
         if (state.mode === 'insert') {
-            if (key === '\x1b') { state.mode = 'normal'; if (state.col > 0) state.col--; }
+            if (nav === 'delete') deleteAtCursor();
+            else if (nav) navigate(nav);
+            else if (key === '\t') {
+                const line = state.lines[state.row];
+                state.lines[state.row] = line.slice(0, state.col) + '    ' + line.slice(state.col);
+                state.col += 4; state.modified = true;
+            } else if (key === '\x1b') { state.mode = 'normal'; if (state.col > 0) state.col--; }
             else if (key === '\r') {
                 const line = state.lines[state.row];
                 const before = line.slice(0, state.col);
@@ -151,17 +192,30 @@ export async function run(ctx) {
                 else state.lines[0] = '';
                 state.modified = true;
                 state.pendingKey = '';
-            } else if (key === 'd') {
-                state.pendingKey = 'd';
+            } else if (state.pendingKey === 'g' && key === 'g') {
+                state.row = 0; state.col = 0; state.pendingKey = '';
+            } else if (key === 'd' || key === 'g') {
+                state.pendingKey = key;
                 continue; // 不重畫、等下一個鍵
             } else {
                 state.pendingKey = '';
-                if (key === 'h' || key === '\x1b[D') state.col--;
-                else if (key === 'l' || key === '\x1b[C') state.col++;
-                else if (key === 'j' || key === '\x1b[B') state.row++;
-                else if (key === 'k' || key === '\x1b[A') state.row--;
+                if (nav === 'delete') { deleteAtCursor(); }
+                else if (nav) navigate(nav);
+                else if (key === 'h') state.col--;
+                else if (key === 'l') state.col++;
+                else if (key === 'j') state.row++;
+                else if (key === 'k') state.row--;
                 else if (key === '0') state.col = 0;
                 else if (key === '$') state.col = Math.max(0, state.lines[state.row].length - 1);
+                else if (key === 'G') { state.row = state.lines.length - 1; state.col = 0; }
+                else if (key === '\x06') navigate('pagedown');
+                else if (key === '\x02') navigate('pageup');
+                else if (key === '\x04') { state.row = Math.min(state.lines.length - 1, state.row + Math.floor(pageSize / 2)); }
+                else if (key === '\x15') { state.row = Math.max(0, state.row - Math.floor(pageSize / 2)); }
+                else if (key === 'A') { state.col = state.lines[state.row].length; enterInsert(false); }
+                else if (key === 'I') { state.col = 0; enterInsert(false); }
+                else if (key === 'o') { state.lines.splice(state.row + 1, 0, ''); state.row++; state.col = 0; state.modified = true; enterInsert(false); }
+                else if (key === 'O') { state.lines.splice(state.row, 0, ''); state.col = 0; state.modified = true; enterInsert(false); }
                 else if (key === 'i') enterInsert(false);
                 else if (key === 'a') enterInsert(true);
                 else if (key === 'x') {
