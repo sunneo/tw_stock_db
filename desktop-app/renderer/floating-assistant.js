@@ -932,7 +932,9 @@ function _faBuildCodingSystemPrompt(env = {}) {
     const ctxHead = desktop ? `這台電腦目前跑的是${env.platformLabel || ''}。` : '你執行在瀏覽器裡（網頁版），檔案透過使用者授權的File Access Point存取，git用純JS實作，測試在瀏覽器內的bash/python沙盒執行。';
     return `你是FloatingAssistant專門處理「程式設計」任務的子任務助理——分析需求、讀懂既有原始碼、產出設計計畫與TODO清單、依序實作、跑測試、修bug。${ctxHead}**因為目前接的AI模型能力有限，你必須嚴格照下面的固定流程逐步執行，每個步驟都要真的做完（呼叫對應工具拿到真實結果）才能進下一步，不能跳步驟、不能憑記憶或猜測代替實際讀取/執行。** 所有工具的cwd_abs參數都填${rootDesc}（task裡沒講清楚就先問使用者，不要瞎猜）。
 
-**步驟0：讀取既有狀態（每次開始都要做）**：先呼叫coding_task_state({"cwd_abs":"...","action":"get"})。
+**步驟0-A：建立暫存工作區（每次開始都要做，第一個動作）**：先呼叫coding_workspace({"action":"open","source":"<使用者專案資料夾>"})——不管專案本身有沒有git，系統都會把它複製一份到暫存區並在那裡git init，**所有修改、測試、還原都只在暫存區進行，確認沒問題才轉移回使用者的資料夾**。回傳的workspace_path就是之後**所有工具**（coding_task_state、apply_git_patch、git_inspect、git_commit、coding_read_file、coding_run_check、coding_run_tests、run_command的cwd）使用的cwd_abs——從這一步起絕對不要再對使用者的原資料夾直接操作。**開啟後立刻用一句話告訴使用者暫存檔放在哪裡**（回傳的tell_user照實轉述，含workspace_path）。回傳resumed:true代表接續先前還沒轉移的工作區。
+
+**步驟0：讀取既有狀態（每次開始都要做）**：接著呼叫coding_task_state({"cwd_abs":"<workspace_path>","action":"get"})。
 - exists:false → 全新任務，進步驟1。
 - 有既有狀態、phase不是"done" → 有任務正在進行中，先讀懂todos目前進度。判斷這次收到的是：(a)對現有計畫的補充/修改/中途插入的新要求（steering）——用add_todo把新要求插進清單（使用者明講「馬上/優先/先做這個」才用position:"now"，否則用"next"排在目前項目後面），然後從next_todo_id接著做；(b)完全不相關的新任務——明確告訴使用者目前有進行中的任務（引用title與進度），詢問要先完成它還是另開，不要自己擅自捨棄舊任務；(c)單純「繼續」——直接從next_todo_id接著做，不要重新規劃。
 - phase是"done" → 視為全新任務，進步驟1。
@@ -961,7 +963,7 @@ ${step4}
  g) 通過：coding_task_state action:complete_todo（必附design_summary、source_locations、entry_points，會自動append到DESIGN-INDEX.md），接著${commit}。進下一項。
  h) 不通過：根據真正的錯誤訊息分析（不要臆測），回b)，同一項目一樣最多3輪。
 
-**步驟6：收尾**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
+**步驟6：收尾與轉移**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。**接著把成果轉移回使用者資料夾**：先coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>","dry_run":true})預覽會新增/修改/刪除哪些檔案與衝突（使用者的原檔在這段期間又被改過就會列為衝突，不會被覆蓋），確認合理後再coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>"})正式轉移；轉移是逐檔寫入並讀回比對，**回傳的applied/verified才算數，沒有applied就不能說已經寫入使用者的資料夾**。有conflicts就如實告訴使用者哪些檔案沒轉移、為什麼，由使用者決定要不要force。回報時附上：暫存區路徑、轉移了哪些檔案、備份位置（backup_dir）。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
 
 **輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。`;
 }
@@ -1401,7 +1403,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -3543,6 +3545,778 @@ const ADVANCED_SETTINGS_GROUPS = {
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
 // 跟domain本身（browser_control）無關；見_runSubAgentTask。
+// tw_stock_db客製: 2026-09-21——Web Worker版multiprocessing，見FloatingAssistant._mpBridge的說明。
+const FA_MP_SHIM_PY = String.raw`import sys, types, os, io, json, pickle, math, contextlib, traceback
+import js
+from pyodide.ffi import to_js, can_run_sync, run_sync
+
+try:
+    import _fa_mp
+except ImportError:
+    _fa_mp = None
+
+_IN_WORKER = hasattr(js, "importScripts")
+_warned = {"seq": False}
+_HINT_SHARED = "Web Worker 之間不共用記憶體：請用 Pool.map / apply_async 的回傳值，或用 multiprocessing.Queue（worker 端只能 put）彙整結果。"
+
+
+def _parallel_ok():
+    if _IN_WORKER or _fa_mp is None:
+        return False
+    try:
+        return bool(can_run_sync())
+    except Exception:
+        return False
+
+
+def _warn_sequential():
+    if _warned["seq"]:
+        return
+    _warned["seq"] = True
+    where = "在 worker 內" if _IN_WORKER else "這個執行模式（例如 shell 的 python 指令）無法等待 Web Worker"
+    sys.stderr.write("[multiprocessing] " + where + "，改以單一執行緒依序執行（結果相同、沒有平行加速）。要真正平行請用 python_execute 工具。\n")
+
+
+def cpu_count():
+    try:
+        n = int(js.navigator.hardwareConcurrency)
+        return max(1, min(n, 8))
+    except Exception:
+        return 2
+
+
+def _collect_files(limit=2000000):
+    out, total = {}, 0
+    for root, dirs, files in os.walk("/work"):
+        for f in files:
+            if not f.endswith((".py", ".json", ".txt", ".csv", ".md", ".yaml", ".yml", ".cfg", ".ini")):
+                continue
+            p = os.path.join(root, f)
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    t = fh.read()
+            except Exception:
+                continue
+            total += len(t)
+            if total > limit:
+                return out
+            out[p] = t
+    return out
+
+
+def _main_script():
+    s = sys.modules["__main__"].__dict__.get("__fa_script__", "")
+    if not s:
+        raise RuntimeError("multiprocessing：找不到主程式碼（請用 python_execute 工具執行完整腳本）")
+    return s
+
+
+def _submit(tasks, n):
+    payloads = [pickle.dumps(t, protocol=4) for t in tasks]
+    return _fa_mp.submit(_main_script(), json.dumps(_collect_files()), os.getcwd(), to_js(payloads), int(n))
+
+
+class _RemoteTraceback(Exception):
+    def __init__(self, tb):
+        self.tb = tb
+
+    def __str__(self):
+        return self.tb
+
+
+def _unpack(r):
+    if r.get("stdout"):
+        sys.stdout.write(r["stdout"])
+    if r.get("stderr"):
+        sys.stderr.write(r["stderr"])
+    if r["ok"]:
+        return pickle.loads(bytes(r["result"]))
+    exc = None
+    if r.get("result") is not None:
+        try:
+            exc = pickle.loads(bytes(r["result"]))
+        except Exception:
+            exc = None
+    if not isinstance(exc, BaseException):
+        exc = RuntimeError(str(r.get("error_type", "Error")) + ": " + str(r.get("message", "")))
+    exc.__cause__ = _RemoteTraceback('\n"""\n' + str(r.get("tb", "")) + '"""')
+    raise exc
+
+
+def _wait(promise):
+    return [x.to_py() if hasattr(x, "to_py") else x for x in run_sync(promise).to_py()]
+
+
+def _run_inline(kind, func, items, kwargs):
+    if kind == "call":
+        return func(*items, **kwargs)
+    return [func(*a, **kwargs) for a in items]
+
+
+class AsyncResult:
+    def __init__(self, pool, kind, func, items, kwargs, callback=None, error_callback=None, single=True):
+        self._pool = pool
+        self._single = single
+        self._callback, self._error_callback = callback, error_callback
+        self._done, self._value, self._exc = False, None, None
+        self._promise = None
+        self._items = items
+        if pool._parallel():
+            try:
+                self._promise = _submit([(kind, func, items, kwargs)], pool._n)
+            except Exception as e:
+                self._promise, self._exc, self._done = None, e, True
+        else:
+            _warn_sequential()
+            try:
+                self._value = _run_inline(kind, func, items, kwargs)
+            except BaseException as e:
+                self._exc = e
+            self._done = True
+        self._finish_callbacks_pending = True
+
+    def _resolve(self):
+        if not self._done:
+            try:
+                self._value = _unpack(_wait(self._promise)[0])
+            except BaseException as e:
+                self._exc = e
+            self._done = True
+        if self._finish_callbacks_pending:
+            self._finish_callbacks_pending = False
+            if self._exc is None and self._callback:
+                self._callback(self._value)
+            if self._exc is not None and self._error_callback:
+                self._error_callback(self._exc)
+
+    def get(self, timeout=None):
+        self._resolve()
+        if self._exc is not None:
+            raise self._exc
+        return self._value
+
+    def wait(self, timeout=None):
+        self._resolve()
+
+    def ready(self):
+        if self._done:
+            return True
+        return bool(getattr(self._promise, "settled", False))
+
+    def successful(self):
+        if not self.ready():
+            raise ValueError("result not ready")
+        self._resolve()
+        return self._exc is None
+
+
+class Pool:
+    _inline = False
+
+    def __init__(self, processes=None, initializer=None, initargs=(), maxtasksperchild=None, context=None):
+        self._n = processes or cpu_count()
+        if self._n < 1:
+            raise ValueError("Number of processes must be at least 1")
+        self._initializer, self._initargs = initializer, initargs
+        self._pending = []
+        self._closed = False
+        if initializer is not None and not self._parallel():
+            initializer(*initargs)
+
+    def _parallel(self):
+        return (not self._inline) and _parallel_ok()
+
+    def _wrap(self, func):
+        if self._initializer is None:
+            return func
+        return _InitWrapper(func, self._initializer, self._initargs)
+
+    def apply(self, func, args=(), kwds=None):
+        return self.apply_async(func, args, kwds or {}).get()
+
+    def apply_async(self, func, args=(), kwds=None, callback=None, error_callback=None):
+        r = AsyncResult(self, "call", self._wrap(func), tuple(args), kwds or {}, callback, error_callback)
+        self._pending.append(r)
+        return r
+
+    def _chunks(self, items, chunksize):
+        if not chunksize:
+            chunksize = max(1, math.ceil(len(items) / (self._n * 4)))
+        return [items[i:i + chunksize] for i in range(0, len(items), chunksize)]
+
+    def _map_chunks(self, func, arg_tuples, chunksize):
+        func = self._wrap(func)
+        chunks = self._chunks(list(arg_tuples), chunksize)
+        if not chunks:
+            return []
+        if self._parallel():
+            promise = _submit([("chunk", func, c, {}) for c in chunks], self._n)
+            return [_unpack(r) for r in _wait(promise)]
+        _warn_sequential()
+        return [_run_inline("chunk", func, c, {}) for c in chunks]
+
+    def map(self, func, iterable, chunksize=None):
+        out = []
+        for part in self._map_chunks(func, [(x,) for x in iterable], chunksize):
+            out.extend(part)
+        return out
+
+    def starmap(self, func, iterable, chunksize=None):
+        out = []
+        for part in self._map_chunks(func, [tuple(a) for a in iterable], chunksize):
+            out.extend(part)
+        return out
+
+    def map_async(self, func, iterable, chunksize=None, callback=None, error_callback=None):
+        items = [(x,) for x in iterable]
+        return AsyncResult(self, "chunk", self._wrap(func), items, {}, callback, error_callback)
+
+    def starmap_async(self, func, iterable, chunksize=None, callback=None, error_callback=None):
+        items = [tuple(a) for a in iterable]
+        return AsyncResult(self, "chunk", self._wrap(func), items, {}, callback, error_callback)
+
+    def imap(self, func, iterable, chunksize=1):
+        results = [self.apply_async(func, (x,)) for x in iterable]
+        for r in results:
+            yield r.get()
+
+    def imap_unordered(self, func, iterable, chunksize=1):
+        results = [self.apply_async(func, (x,)) for x in iterable]
+        if not self._parallel():
+            for r in results:
+                yield r.get()
+            return
+        pending = list(results)
+        while pending:
+            ready = [r for r in pending if r.ready()]
+            if not ready:
+                idx = int(run_sync(_fa_mp.race(to_js([r._promise for r in pending]))))
+                ready = [pending[idx]]
+            for r in ready:
+                pending.remove(r)
+                yield r.get()
+
+    def close(self):
+        self._closed = True
+
+    def terminate(self):
+        self._closed = True
+
+    def join(self):
+        for r in self._pending:
+            try:
+                r._resolve()
+            except BaseException:
+                pass
+        self._pending = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.terminate()
+
+
+class _InitWrapper:
+    def __init__(self, func, initializer, initargs):
+        self.func, self.initializer, self.initargs = func, initializer, initargs
+
+    def __call__(self, *a, **k):
+        g = sys.modules["__main__"].__dict__
+        if not g.get("__fa_pool_inited__"):
+            self.initializer(*self.initargs)
+            g["__fa_pool_inited__"] = True
+        return self.func(*a, **k)
+
+
+class ThreadPool(Pool):
+    _inline = True
+
+
+class _Current:
+    name = "MainProcess"
+    pid = 1
+    daemon = False
+
+
+def current_process():
+    return _Current()
+
+
+class Process:
+    _count = 0
+
+    def __init__(self, group=None, target=None, name=None, args=(), kwargs=None, *, daemon=None):
+        Process._count += 1
+        self._target, self._args, self._kwargs = target, tuple(args), dict(kwargs or {})
+        self.name = name or "Process-%d" % Process._count
+        self.daemon = daemon
+        self.exitcode = None
+        self.pid = None
+        self._promise = None
+        self._started = False
+
+    def run(self):
+        if self._target:
+            self._target(*self._args, **self._kwargs)
+
+    def start(self):
+        if self._started:
+            raise AssertionError("cannot start a process twice")
+        self._started = True
+        self.pid = 1000 + Process._count
+        if _parallel_ok():
+            try:
+                self._promise = _submit([("call", _proc_entry, (self._target, self._args, self._kwargs), {})], cpu_count())
+            except Exception:
+                raise
+        else:
+            _warn_sequential()
+            try:
+                self.run()
+                self.exitcode = 0
+            except SystemExit as e:
+                self.exitcode = e.code if isinstance(e.code, int) else 1
+            except BaseException:
+                traceback.print_exc()
+                self.exitcode = 1
+
+    def join(self, timeout=None):
+        if self._promise is not None and self.exitcode is None:
+            try:
+                _unpack(_wait(self._promise)[0])
+                self.exitcode = 0
+            except SystemExit as e:
+                self.exitcode = e.code if isinstance(e.code, int) else 1
+            except BaseException as e:
+                sys.stderr.write("Process %s:\n%s\n" % (self.name, "".join(traceback.format_exception(type(e), e, e.__traceback__))))
+                self.exitcode = 1
+
+    def is_alive(self):
+        if not self._started or self.exitcode is not None:
+            return False
+        if self._promise is not None and getattr(self._promise, "settled", False):
+            self.join()
+            return False
+        return self._promise is not None
+
+    def terminate(self):
+        pass
+
+    kill = terminate
+
+    def close(self):
+        pass
+
+
+def _proc_entry(target, args, kwargs):
+    if target:
+        target(*args, **kwargs)
+
+
+class Queue:
+    def __init__(self, maxsize=0):
+        self._qid = None if _fa_mp is None else str(_fa_mp.newQueue())
+        self._local = []
+
+    def put(self, obj, block=True, timeout=None):
+        if _fa_mp is None or _IN_WORKER:
+            self._local.append(obj)
+            return
+        _fa_mp.qput(self._qid, to_js(pickle.dumps(obj, protocol=4)))
+
+    put_nowait = put
+
+    def get(self, block=True, timeout=None):
+        if self._local:
+            return self._local.pop(0)
+        if _fa_mp is None or _IN_WORKER:
+            raise NotImplementedError(_HINT_SHARED)
+        ms = -1 if (block and timeout is None) else int((timeout or 0) * 1000)
+        if not block:
+            ms = 0
+        if not _parallel_ok():
+            r = _fa_mp.qtry(self._qid)
+        else:
+            r = run_sync(_fa_mp.qget(self._qid, ms))
+        if r is None or r is js.undefined:
+            import queue as _q
+            raise _q.Empty()
+        return pickle.loads(bytes(r.to_py()))
+
+    def get_nowait(self):
+        return self.get(False)
+
+    def qsize(self):
+        return len(self._local) + (int(_fa_mp.qsize(self._qid)) if _fa_mp is not None and not _IN_WORKER else 0)
+
+    def empty(self):
+        return self.qsize() == 0
+
+    def full(self):
+        return False
+
+    def close(self):
+        pass
+
+    def join_thread(self):
+        pass
+
+    def cancel_join_thread(self):
+        pass
+
+    def __reduce__(self):
+        return (_QueueRef, (self._qid,))
+
+
+JoinableQueue = Queue
+SimpleQueue = Queue
+
+
+class _QueueRef:
+    def __init__(self, qid):
+        self._qid = qid
+
+    def put(self, obj, block=True, timeout=None):
+        data = pickle.dumps(obj, protocol=4)
+        js.postMessage(to_js({"type": "qput", "qid": self._qid, "data": data}, dict_converter=js.Object.fromEntries))
+
+    put_nowait = put
+
+    def get(self, *a, **k):
+        raise NotImplementedError("worker 端的 Queue 只能 put；" + _HINT_SHARED)
+
+    get_nowait = get
+
+    def empty(self):
+        raise NotImplementedError(_HINT_SHARED)
+
+    qsize = empty
+
+    def close(self):
+        pass
+
+    def task_done(self):
+        pass
+
+    def join(self):
+        pass
+
+
+def _unsupported(name):
+    def f(*a, **k):
+        raise NotImplementedError("multiprocessing." + name + " 在瀏覽器沙盒不可用。" + _HINT_SHARED)
+    return f
+
+
+Value = _unsupported("Value")
+Array = _unsupported("Array")
+Manager = _unsupported("Manager")
+Pipe = _unsupported("Pipe")
+shared_memory = None
+
+
+def Lock():
+    import threading
+    return threading.Lock()
+
+
+def RLock():
+    import threading
+    return threading.RLock()
+
+
+def Event():
+    import threading
+    return threading.Event()
+
+
+def Semaphore(v=1):
+    import threading
+    return threading.Semaphore(v)
+
+
+def freeze_support():
+    pass
+
+
+def set_start_method(method=None, force=False):
+    pass
+
+
+def get_start_method(allow_none=False):
+    return "spawn"
+
+
+def get_context(method=None):
+    return sys.modules["multiprocessing"]
+
+
+def active_children():
+    return []
+
+
+def parent_process():
+    return None
+
+
+# ---------- concurrent.futures ----------
+import concurrent.futures as _cf
+from concurrent.futures._base import DoneAndNotDoneFutures
+
+
+class _PFuture:
+    def __init__(self, executor, fn, args, kwargs):
+        self._exc = None
+        self._value = None
+        self._done = False
+        self._callbacks = []
+        self._promise = None
+        if executor._parallel():
+            self._promise = _submit([("call", fn, args, kwargs)], executor._n)
+        else:
+            _warn_sequential()
+            try:
+                self._value = fn(*args, **kwargs)
+            except BaseException as e:
+                self._exc = e
+            self._done = True
+
+    def _resolve(self):
+        if not self._done:
+            try:
+                self._value = _unpack(_wait(self._promise)[0])
+            except BaseException as e:
+                self._exc = e
+            self._done = True
+            for cb in self._callbacks:
+                cb(self)
+            self._callbacks = []
+
+    def result(self, timeout=None):
+        self._resolve()
+        if self._exc is not None:
+            raise self._exc
+        return self._value
+
+    def exception(self, timeout=None):
+        self._resolve()
+        return self._exc
+
+    def done(self):
+        return self._done or bool(getattr(self._promise, "settled", False))
+
+    def running(self):
+        return not self.done()
+
+    def cancelled(self):
+        return False
+
+    def cancel(self):
+        return False
+
+    def add_done_callback(self, fn):
+        if self._done:
+            fn(self)
+        else:
+            self._callbacks.append(fn)
+
+
+class ProcessPoolExecutor:
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+        self._n = max_workers or cpu_count()
+        self._initializer, self._initargs = initializer, initargs
+        if initializer is not None and not self._parallel():
+            initializer(*initargs)
+
+    def _parallel(self):
+        return _parallel_ok()
+
+    def submit(self, fn, *args, **kwargs):
+        if self._initializer is not None:
+            fn = _InitWrapper(fn, self._initializer, self._initargs)
+        return _PFuture(self, fn, args, kwargs)
+
+    def map(self, fn, *iterables, timeout=None, chunksize=1):
+        futs = [self.submit(fn, *a) for a in zip(*iterables)]
+        return (f.result() for f in futs)
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class ThreadPoolExecutor(ProcessPoolExecutor):
+    def _parallel(self):
+        return False
+
+
+_orig_as_completed = _cf.as_completed
+_orig_wait = _cf.wait
+
+
+def _as_completed(fs, timeout=None):
+    fs = list(fs)
+    if not all(isinstance(f, _PFuture) for f in fs):
+        yield from _orig_as_completed(fs, timeout)
+        return
+    pending = list(fs)
+    while pending:
+        ready = [f for f in pending if f.done()]
+        if not ready:
+            proms = [f._promise for f in pending if f._promise is not None]
+            idx = int(run_sync(_fa_mp.race(to_js(proms))))
+            ready = [pending[idx]]
+        for f in ready:
+            pending.remove(f)
+            f._resolve()
+            yield f
+
+
+def _wait_futures(fs, timeout=None, return_when=_cf.ALL_COMPLETED):
+    fs = list(fs)
+    if not all(isinstance(f, _PFuture) for f in fs):
+        return _orig_wait(fs, timeout, return_when)
+    if return_when == _cf.FIRST_COMPLETED:
+        for f in _as_completed(fs):
+            break
+    else:
+        for f in fs:
+            f._resolve()
+    done = {f for f in fs if f.done()}
+    return DoneAndNotDoneFutures(done, set(fs) - done)
+
+
+_cf.ProcessPoolExecutor = ProcessPoolExecutor
+_cf.ThreadPoolExecutor = ThreadPoolExecutor
+_cf.as_completed = _as_completed
+_cf.wait = _wait_futures
+
+# ---------- 註冊成 multiprocessing 模組 ----------
+_mod = types.ModuleType("multiprocessing")
+for _k, _v in list(globals().items()):
+    if _k in ("Pool", "Process", "Queue", "JoinableQueue", "SimpleQueue", "Value", "Array", "Manager", "Pipe", "Lock", "RLock", "Event", "Semaphore",
+              "cpu_count", "freeze_support", "set_start_method", "get_start_method", "get_context", "current_process", "active_children", "parent_process", "AsyncResult"):
+        setattr(_mod, _k, _v)
+_mod.__path__ = []
+_pool_mod = types.ModuleType("multiprocessing.pool")
+_pool_mod.Pool = Pool
+_pool_mod.ThreadPool = ThreadPool
+_pool_mod.AsyncResult = AsyncResult
+_mod.pool = _pool_mod
+_mod.TimeoutError = TimeoutError
+sys.modules["multiprocessing"] = _mod
+sys.modules["multiprocessing.pool"] = _pool_mod
+`;
+const FA_MP_WORKER_PY = String.raw`import sys, os, io, json, pickle, traceback, contextlib
+import js
+from pyodide.ffi import to_js
+
+
+def fa_mp_setup(script, files_json, cwd):
+    files = json.loads(files_json)
+    for path, text in files.items():
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    if cwd:
+        os.makedirs(cwd, exist_ok=True)
+        os.chdir(cwd)
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+    ns = sys.modules["__main__"].__dict__
+    for k in [k for k in list(ns) if not k.startswith("__")]:
+        del ns[k]
+    ns["__name__"] = "__mp_main__"
+    ns["__fa_in_worker__"] = True
+    ns["__fa_script__"] = script
+    sink = io.StringIO()
+    err = ""
+    try:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            exec(compile(script, "<main>", "exec"), ns)
+    except SystemExit:
+        pass
+    except BaseException:
+        err = traceback.format_exc()
+    ns["__name__"] = "__main__"
+    return err
+
+
+def _pack(d):
+    return to_js(d, dict_converter=js.Object.fromEntries)
+
+
+def _apply(kind, func, items, kwargs):
+    if kind == "call":
+        return func(*items, **kwargs)
+    return [func(*a, **kwargs) for a in items]
+
+
+def fa_mp_run(payload):
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        kind, func, items, kwargs = pickle.loads(bytes(payload.to_py()))
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            res = _apply(kind, func, items, kwargs)
+        return _pack({"ok": True, "result": pickle.dumps(res, protocol=4), "stdout": out.getvalue(), "stderr": err.getvalue()})
+    except BaseException as e:
+        tb = traceback.format_exc()
+        blob = None
+        try:
+            blob = pickle.dumps(e, protocol=4)
+            pickle.loads(blob)
+        except Exception:
+            blob = None
+        d = {"ok": False, "error_type": type(e).__name__, "message": str(e), "tb": tb, "stdout": out.getvalue(), "stderr": err.getvalue()}
+        if blob is not None:
+            d["result"] = blob
+        return _pack(d)
+`;
+function faMpWorkerMain() {
+    let py = null, mod = null, curKey = null, setupErr = '';
+    self.onmessage = async (ev) => {
+        const m = ev.data;
+        try {
+            if (m.type === 'boot') {
+                const loader = (await import(m.indexURL + 'pyodide.mjs')).loadPyodide;
+                py = await loader({ indexURL: m.indexURL });
+                py.globals.set('_fa_src_worker', m.workerPy);
+                py.globals.set('_fa_src_shim', m.shimPy);
+                py.runPython([
+                    'import sys, types',
+                    "for _n, _s in (('_fa_mp_worker', _fa_src_worker), ('_fa_mp_impl', _fa_src_shim)):",
+                    '    _m = types.ModuleType(_n); sys.modules[_n] = _m',
+                    "    exec(compile(_s, '<' + _n + '>', 'exec'), _m.__dict__)",
+                    'del _fa_src_worker, _fa_src_shim',
+                ].join(String.fromCharCode(10)));
+                mod = py.pyimport('_fa_mp_worker');
+                self.postMessage({ type: 'ready' });
+                return;
+            }
+            if (m.type === 'task') {
+                if (m.scriptKey !== curKey) { setupErr = String(mod.fa_mp_setup(m.script, m.files, m.cwd) || ''); curKey = m.scriptKey; }
+                const res = mod.fa_mp_run(m.payload);
+                if (res && res.ok === false && setupErr) res.message = String(res.message || '') + ' [主程式載入時的錯誤：' + setupErr.split(String.fromCharCode(10)).slice(-3).join(' | ') + ']';
+                const transfer = [];
+                if (res && res.result && res.result.buffer) transfer.push(res.result.buffer);
+                self.postMessage({ type: 'result', tid: m.tid, res }, transfer);
+            }
+        } catch (err) {
+            const msg = String((err && err.message) || err);
+            if (m.type === 'boot') self.postMessage({ type: 'fatal', error: msg });
+            else self.postMessage({ type: 'result', tid: m.tid, res: { ok: false, error_type: 'WorkerError', message: msg, tb: String((err && err.stack) || msg), stdout: '', stderr: '' } });
+        }
+    };
+}
+const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_type_text', 'browser_press_key'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_mouse/browser_type_text操作、browser_screenshot截圖給使用者看；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -6414,6 +7188,24 @@ ${fnData.code}
             }),
             { type: 'object', properties: { cwd_abs: codingRootSchema, paths: { type: 'array', items: { type: 'string' } } }, required: ['cwd_abs', 'paths'], additionalProperties: false }
         );
+        registerOptional('coding_workspace',
+            '程式設計任務的暫存工作區（網頁版）。action: open（source=使用者專案資料夾的File Access Point參照 fap:名稱/子路徑，可選subpath只複製子資料夾；把專案複製一份到瀏覽器內部儲存OPFS並git init，回傳workspace_path=fap:ws-...與要告訴使用者的tell_user；已存在就接續）、status（cwd_abs=workspace_path，列出還沒轉移的新增/修改/刪除）、deploy（cwd_abs=workspace_path；dry_run:true只預覽；轉移回使用者資料夾，逐檔備份、寫入、讀回比對；使用者原檔在這段期間被改過會列為conflicts不覆蓋，force:true才強制）、discard（cwd_abs=workspace_path，刪除暫存區）。',
+            codingWrap(async (parsed) => {
+                const ws = String(parsed.cwd_abs || parsed.workspace_path || '').trim();
+                if (parsed.action === 'open') return this._codingWsOpen({ source: parsed.source || parsed.source_path, subpath: parsed.subpath });
+                if (parsed.action === 'status') return this._codingWsStatus(ws);
+                if (parsed.action === 'deploy') return this._codingWsDeploy(ws, { dryRun: !!parsed.dry_run, force: !!parsed.force });
+                if (parsed.action === 'discard') return this._codingWsDiscard(ws);
+                return { ok: false, error: 'action必須是open/status/deploy/discard' };
+            }),
+            { type: 'object', properties: {
+                action: { type: 'string', enum: ['open', 'status', 'deploy', 'discard'] },
+                source: { type: 'string', description: 'open：使用者專案資料夾，格式fap:<名稱或id>[/<子路徑>]' },
+                subpath: { type: 'string', description: 'open：選填，只複製這個子資料夾（專案太大時用）' },
+                cwd_abs: { type: 'string', description: 'status/deploy/discard：workspace_path（fap:ws-...）' },
+                dry_run: { type: 'boolean' }, force: { type: 'boolean' },
+            }, required: ['action'], additionalProperties: false }
+        );
         // ==== CODING-TOOLS-END ====
 
         // ==== SKILLS-BC-TOOLS-BEGIN ====
@@ -6820,7 +7612,7 @@ ${fnData.code}
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
         registerOptional('python_execute',
-            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}',
+            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}**平行運算**：multiprocessing（Pool.map/starmap/apply_async/imap_unordered、Process、Queue）與concurrent.futures.ProcessPoolExecutor可以用——底層是瀏覽器Web Worker（每個worker一份獨立Pyodide，不共用記憶體，所以Value/Array/Manager/Pipe不能用，改用Pool回傳值或Queue彙整結果）；規則跟真實multiprocessing一樣：進入點要放在`if __name__ == \'__main__\':`底下，交給worker的函式必須是模組最上層定義的具名函式（lambda/巢狀函式無法pickle）。shell裡的`python`指令無法等待worker，會自動改成單執行緒依序執行（結果相同、沒有加速）。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -8524,6 +9316,8 @@ ${fnData.code}
         const lower = String(fapIdOrLabel || '').toLowerCase();
         const byLabel = all.find(r => String(r.label || '').toLowerCase() === lower);
         if (byLabel) return byLabel;
+        const wsRec = await this._opfsWorkspaceRecord(fapIdOrLabel);
+        if (wsRec) return wsRec;
         throw new Error(`找不到File Access Point「${fapIdOrLabel}」，用list_file_access_points查詢目前已授權的清單。`);
     }
 
@@ -8684,7 +9478,7 @@ ${fnData.code}
             let permission = 'unknown';
             try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
             return { id: r.id, label: r.label, real_path_hint: r.realPathHint || null, permission };
-        }));
+        })).then(async (list) => list.concat(await this._opfsListWorkspaces()));
     }
 
     async _fapListFiles(ref) {
@@ -9137,7 +9931,7 @@ ${fnData.code}
         const msg = String(message || '').trim();
         if (!msg) throw new Error('缺少commit訊息');
         const { rec, fs } = await this._gitResolveFs(ref, { mode: 'readwrite' });
-        const author = this._gitAuthor();
+        const author = /^ws-/i.test(rec.label) ? { name: 'Floating AI Assistant', email: 'fa@localhost' } : this._gitAuthor();
         let matrix;
         try {
             matrix = await window.git.statusMatrix({ fs, dir: '/' });
@@ -9600,6 +10394,204 @@ ${fnData.code}
             } catch (e) { results.push({ path: p, ok: false, checked: true, error: String(e.message || e) }); }
         }
         return { ok: results.every((r) => r.ok), results };
+    }
+
+    // ---- coding暫存工作區（網頁版）----
+    // tw_stock_db客製: 2026-09-21——把使用者授權的專案資料夾複製一份到瀏覽器內部儲存（OPFS），
+    // 在那裡git init、apply patch、跑測試，確認後才deploy回使用者的資料夾。OPFS資料夾以
+    // `fap:ws-<slug>`這種內部File Access Point的形式出現，所以既有的fap_*/git/coding_*工具原封不動可用。
+    // 桌面版對應實作見desktop-app/coding-workspace.js（同樣的「基準清單manifest」演算法）。
+    async _opfsWsRoot() {
+        if (!navigator.storage || !navigator.storage.getDirectory) throw new Error('這個瀏覽器不支援OPFS（瀏覽器內部儲存），無法建立暫存工作區');
+        return (await navigator.storage.getDirectory()).getDirectoryHandle('fa-coding-ws', { create: true });
+    }
+    async _opfsWorkspaceRecord(label) {
+        const m = /^ws-(.+)$/i.exec(String(label || ''));
+        if (!m) return null;
+        try {
+            const dir = await (await this._opfsWsRoot()).getDirectoryHandle(m[1]);
+            return { id: `opfs:${m[1]}`, label: `ws-${m[1]}`, handle: dir, realPathHint: '瀏覽器內部暫存（OPFS，不在你的硬碟上）' };
+        } catch (_) { return null; }
+    }
+    async _opfsListWorkspaces() {
+        const out = [];
+        try {
+            const root = await this._opfsWsRoot();
+            for await (const [name, h] of root.entries()) if (h.kind === 'directory') out.push({ id: `opfs:${name}`, label: `ws-${name}`, real_path_hint: '瀏覽器內部暫存（OPFS，不在你的硬碟上）', permission: 'granted' });
+        } catch (_) { /* 沒有OPFS就沒有暫存工作區 */ }
+        return out;
+    }
+    async _wsSha1(buf) {
+        const d = await crypto.subtle.digest('SHA-1', buf);
+        return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    async _wsWalk(dirHandle, onFile, { skipInternal = true } = {}) {
+        const ignore = new Set(['.git', 'node_modules', '.floating-assistant', '__pycache__', '.venv', 'venv', 'dist', 'build', 'target', '.next', '.cache', 'coverage', '.pytest_cache', '.mypy_cache']);
+        const skipped = [];
+        const rec = async (dir, rel) => {
+            for await (const [name, h] of dir.entries()) {
+                const r = rel ? `${rel}/${name}` : name;
+                if (h.kind === 'directory') { if (skipInternal && ignore.has(name)) { skipped.push(r); continue; } await rec(h, r); }
+                else await onFile(h, r);
+            }
+        };
+        await rec(dirHandle, '');
+        return skipped;
+    }
+    async _wsNavigate(dirHandle, relPath, create) {
+        const parts = relPath.split('/'); const name = parts.pop();
+        let d = dirHandle;
+        for (const p of parts) d = await d.getDirectoryHandle(p, { create: !!create });
+        return { d, name };
+    }
+    async _wsReadBytes(dirHandle, relPath) {
+        try { const { d, name } = await this._wsNavigate(dirHandle, relPath, false); return new Uint8Array(await (await (await d.getFileHandle(name)).getFile()).arrayBuffer()); }
+        catch (e) { if (e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError')) return null; throw e; }
+    }
+    async _wsWriteBytes(dirHandle, relPath, bytes) {
+        const { d, name } = await this._wsNavigate(dirHandle, relPath, true);
+        const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+        await w.write(bytes); await w.close();
+    }
+    async _wsReadJson(dirHandle, relPath) {
+        const b = await this._wsReadBytes(dirHandle, relPath);
+        if (!b) return null;
+        try { return JSON.parse(new TextDecoder().decode(b)); } catch (_) { return null; }
+    }
+    async _wsHashTree(dirHandle) {
+        const seed = await this._wsSha1(new TextEncoder().encode('.floating-assistant/\n'));
+        const out = {};
+        await this._wsWalk(dirHandle, async (h, rel) => {
+            const h1 = await this._wsSha1(await (await h.getFile()).arrayBuffer());
+            if (rel === '.gitignore' && h1 === seed) return; // 我們自己種的.gitignore不算使用者的修改
+            out[rel] = h1;
+        });
+        return out;
+    }
+    async _codingWsOpen({ source, subpath }) {
+        const srcRef = String(source || '').trim();
+        if (!/^fap:/i.test(srcRef)) return { ok: false, error: 'source必須是File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]（用list_file_access_points查看）' };
+        const { rec, dirHandle, path } = await this._resolveFapDirectory(srcRef, { mode: 'read' });
+        if (/^ws-/i.test(rec.label)) return { ok: false, error: '來源不能是暫存工作區本身' };
+        const sourceRef = `fap:${rec.label}${path ? '/' + path : ''}`;
+        const hash8 = (await this._wsSha1(new TextEncoder().encode(sourceRef.toLowerCase()))).slice(0, 8);
+        const slug = `${(rec.label + (path ? '-' + path.replace(/\//g, '-') : '')).replace(/[^\w.-]+/g, '_').slice(0, 40)}-${hash8}`;
+        const label = `ws-${slug}`;
+        const root = await this._opfsWsRoot();
+        let ws = null;
+        try { ws = await root.getDirectoryHandle(slug); } catch (_) {}
+        if (ws) {
+            const meta = await this._wsReadJson(ws, '.floating-assistant/workspace.json');
+            if (meta && meta.source_ref === sourceRef) {
+                const st = await this._codingWsStatus(`fap:${label}`);
+                return Object.assign({}, st, { resumed: true, tell_user: `沿用先前建立的暫存工作區 fap:${label}（瀏覽器內部儲存OPFS；還沒轉移回原資料夾的修改都還在）。` });
+            }
+            await root.removeEntry(slug, { recursive: true });
+        }
+        ws = await root.getDirectoryHandle(slug, { create: true });
+        let start = dirHandle;
+        if (subpath) for (const p of this._splitFapPath(subpath)) start = await start.getDirectoryHandle(p);
+        const prefix = subpath ? this._splitFapPath(subpath).join('/') + '/' : '';
+        const manifest = {}; let files = 0, bytes = 0, tooBig = false;
+        const skipped = await this._wsWalk(start, async (h, rel) => {
+            if (tooBig) return;
+            const buf = await (await h.getFile()).arrayBuffer();
+            files++; bytes += buf.byteLength;
+            if (files > 5000 || bytes > 100 * 1024 * 1024) { tooBig = true; return; }
+            await this._wsWriteBytes(ws, prefix + rel, new Uint8Array(buf));
+            manifest[prefix + rel] = await this._wsSha1(buf);
+        });
+        if (tooBig) { await root.removeEntry(slug, { recursive: true }); return { ok: false, error: '專案太大（超過5000個檔案或100MB），請用subpath只複製要處理的子資料夾。' }; }
+        await this._wsWriteBytes(ws, '.floating-assistant/ws-manifest.json', new TextEncoder().encode(JSON.stringify(manifest)));
+        await this._wsWriteBytes(ws, '.floating-assistant/workspace.json', new TextEncoder().encode(JSON.stringify({ source_ref: sourceRef, subpath: subpath || '', created: new Date().toISOString() })));
+        await this._wsWriteBytes(ws, '.gitignore', new TextEncoder().encode('.floating-assistant/\n'));
+        const wsRef = `fap:${label}`;
+        const { fs } = await this._gitResolveFs(wsRef, { mode: 'readwrite' });
+        await window.git.init({ fs, dir: '/', defaultBranch: 'main' });
+        const commit = await this._gitCommit(wsRef, `baseline: copy of ${sourceRef}`);
+        return {
+            ok: true, workspace_path: wsRef, source_path: sourceRef, files_copied: files, bytes_copied: bytes, skipped_dirs: skipped.slice(0, 20),
+            git_baseline_committed: !!(commit && commit.committed !== false),
+            tell_user: `已建立暫存工作區 ${wsRef}（放在瀏覽器內部儲存OPFS，不是你硬碟上看得到的資料夾；清除網站資料會消失。已複製「${sourceRef}」並git init）。所有修改與測試都在暫存區進行，確認沒問題後才會轉移回你的資料夾，原資料夾在那之前不會被動到。`,
+            next: '之後所有apply_git_patch / git_inspect / git_commit / coding_read_file / coding_run_* / coding_task_state的cwd_abs（ref）都改用workspace_path；完成後用coding_workspace action:deploy轉移回原資料夾。',
+        };
+    }
+    async _codingWsMeta(wsRef) {
+        const { rec, dirHandle, path } = await this._resolveFapDirectory(wsRef, { mode: 'readwrite' });
+        if (!/^ws-/i.test(rec.label) || path) return null;
+        const meta = await this._wsReadJson(dirHandle, '.floating-assistant/workspace.json');
+        return meta ? { ws: dirHandle, meta, label: rec.label } : null;
+    }
+    async _codingWsDiff(ws) {
+        const manifest = (await this._wsReadJson(ws, '.floating-assistant/ws-manifest.json')) || {};
+        const now = await this._wsHashTree(ws);
+        const added = [], modified = [], deleted = [];
+        for (const [p, h] of Object.entries(now)) { if (!(p in manifest)) added.push(p); else if (manifest[p] !== h) modified.push(p); }
+        for (const p of Object.keys(manifest)) if (!(p in now)) deleted.push(p);
+        return { manifest, now, added, modified, deleted };
+    }
+    async _codingWsStatus(wsRef) {
+        const info = await this._codingWsMeta(wsRef);
+        if (!info) return { ok: false, error: `${wsRef} 不是暫存工作區（要是 fap:ws-... 這種參照）` };
+        const d = await this._codingWsDiff(info.ws);
+        const src = await this._resolveFapDirectory(info.meta.source_ref, { mode: 'read' });
+        const sourceChanged = [];
+        for (const p of [...d.modified, ...d.deleted]) {
+            const b = await this._wsReadBytes(src.dirHandle, p);
+            if (!b || (await this._wsSha1(b)) !== d.manifest[p]) sourceChanged.push(p);
+        }
+        return { ok: true, workspace_path: wsRef, source_path: info.meta.source_ref, pending: { added: d.added.slice(0, 100), modified: d.modified.slice(0, 100), deleted: d.deleted.slice(0, 100), counts: { added: d.added.length, modified: d.modified.length, deleted: d.deleted.length } }, source_changed_since_copy: sourceChanged.slice(0, 50) };
+    }
+    async _codingWsDeploy(wsRef, { dryRun, force } = {}) {
+        const info = await this._codingWsMeta(wsRef);
+        if (!info) return { ok: false, error: `${wsRef} 不是暫存工作區` };
+        const { dirHandle: src } = await this._resolveFapDirectory(info.meta.source_ref, { mode: 'readwrite' });
+        const d = await this._codingWsDiff(info.ws);
+        const plan = [], conflicts = [];
+        for (const p of [...d.added, ...d.modified, ...d.deleted]) {
+            const kind = d.added.includes(p) ? 'add' : d.modified.includes(p) ? 'modify' : 'delete';
+            const cur = await this._wsReadBytes(src, p);
+            const curHash = cur ? await this._wsSha1(cur) : null;
+            if (curHash === (d.now[p] || null)) continue;
+            if (curHash !== (d.manifest[p] || null) && !force) { conflicts.push({ path: p, kind, reason: kind === 'add' ? '原資料夾已經有不同內容的同名檔案' : '原資料夾的這個檔案在你開始修改後又被別人改過' }); continue; }
+            plan.push({ path: p, kind });
+        }
+        if (dryRun) return { ok: true, dry_run: true, workspace_path: wsRef, source_path: info.meta.source_ref, would_apply: plan, conflicts };
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupBase = `.floating-assistant/backups/deploy-${ts}`;
+        const applied = [], failed = [];
+        for (const it of plan) {
+            try {
+                const old = await this._wsReadBytes(src, it.path);
+                if (old) await this._wsWriteBytes(src, `${backupBase}/${it.path}`, old);
+                if (it.kind === 'delete') {
+                    const { d: pd, name } = await this._wsNavigate(src, it.path, false);
+                    await pd.removeEntry(name);
+                    if (await this._wsReadBytes(src, it.path)) throw new Error('刪除後檔案仍存在');
+                } else {
+                    const buf = await this._wsReadBytes(info.ws, it.path);
+                    await this._wsWriteBytes(src, it.path, buf);
+                    const back = await this._wsReadBytes(src, it.path);
+                    if (!back || (await this._wsSha1(back)) !== (await this._wsSha1(buf))) throw new Error('寫入後讀回內容不一致');
+                }
+                applied.push(it);
+            } catch (err) { failed.push({ path: it.path, error: String(err.message || err) }); }
+        }
+        const m = (!conflicts.length && !failed.length) ? d.now : Object.assign({}, d.manifest);
+        if (conflicts.length || failed.length) for (const it of applied) { if (it.kind === 'delete') delete m[it.path]; else m[it.path] = d.now[it.path]; }
+        await this._wsWriteBytes(info.ws, '.floating-assistant/ws-manifest.json', new TextEncoder().encode(JSON.stringify(m)));
+        return {
+            ok: !conflicts.length && !failed.length, workspace_path: wsRef, source_path: info.meta.source_ref, applied, conflicts, failed,
+            backup_dir: applied.length ? `${info.meta.source_ref}/${backupBase}` : null,
+            verified: '每個寫入的檔案都已讀回並比對內容一致',
+            note: conflicts.length ? '有檔案因為原資料夾也被改過而沒有轉移；請告訴使用者，確認要以暫存區為準時再用force:true重新deploy。' : undefined,
+        };
+    }
+    async _codingWsDiscard(wsRef) {
+        const info = await this._codingWsMeta(wsRef);
+        if (!info) return { ok: false, error: `${wsRef} 不是暫存工作區，不會刪除` };
+        await (await this._opfsWsRoot()).removeEntry(info.label.replace(/^ws-/i, ''), { recursive: true });
+        return { ok: true, discarded: wsRef };
     }
     // ==== CODING-METHODS-END ====
 
@@ -14760,6 +15752,8 @@ ${sourceTool.handlerScript}
     async _handleTerminalInput(session, data) {
         session.lastActiveAt = Date.now();
         if (session.activeProgram) { session.activeProgram.feed(data); return; }
+        // 指令執行中（例如第一次cd進大的/mnt資料夾要讀很久）忽略鍵盤輸入，避免第二個指令跟第一個交錯執行
+        if (session.busy && data !== '\x03') return;
         if (session.cursorPos == null) session.cursorPos = session.line.length;
         if (data === '\r') {
             session.term.write('\r\n');
@@ -14767,7 +15761,12 @@ ${sourceTool.handlerScript}
             session.line = ''; session.cursorPos = 0;
             if (line.trim()) session.history.push(line);
             session.historyIndex = session.history.length;
-            await this._runTerminalCommand(session, line);
+            session.busy = true;
+            try { await this._runTerminalCommand(session, line); }
+            catch (err) { session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m
+
+`); }
+            finally { session.busy = false; }
             if (!session.activeProgram) this._writeTerminalPrompt(session);
             await this._persistTerminalSnapshot(session);
             return;
@@ -15152,6 +16151,16 @@ ${sourceTool.handlerScript}
     // （那兩個是給LLM文字互動用的既有工具，只支援純文字+8000字元截斷+
     // 二進位格式直接拒絕），改用rec.handle這個真正的FileSystemDirectoryHandle
     // 讀寫原始bytes，任何格式的檔案都能正確掛載。
+    _fnv1a(bytes) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+        return `${h.toString(16)}:${bytes.length}`;
+    }
+
+    // tw_stock_db客製: 2026-09-21使用者要求——沙盒的/mnt/<label>跟真實資料夾要「雙向」同步：
+    // session.fapManifest[label][相對路徑] = {size, mtime, hash} 記錄「上次同步時」真實檔案的
+    // 狀態與沙盒內容的雜湊，pull/push都靠它判斷「哪一邊改過」：只有一邊改過就直接套用到另一邊，
+    // 兩邊都改過視為衝突（保留沙盒、回報，不覆蓋任何一邊）。
     async _hydrateFapMount(session, fsStore, label) {
         if (session.fapHydrated.has(label)) return;
         session.fapHydrated.add(label); // 先標記，避免同一次掃描裡的巢狀/並發呼叫重複hydrate
@@ -15163,6 +16172,11 @@ ${sourceTool.handlerScript}
             session.fapHydrated.delete(label);
             throw err;
         }
+        if (!session.fapManifest) session.fapManifest = {};
+        const manifest = session.fapManifest[label] = {};
+        session.term.write(`\x1b[90m正在讀取 /mnt/${label} …\x1b[0m
+
+`);
         const walk = async (dirHandle, relPath) => {
             for await (const [name, handle] of dirHandle.entries()) {
                 const childRel = relPath ? `${relPath}/${name}` : name;
@@ -15174,34 +16188,190 @@ ${sourceTool.handlerScript}
                     const file = await handle.getFile();
                     const bytes = new Uint8Array(await file.arrayBuffer());
                     this._writeBytesToTerminalFs(fsStore, absPath, bytes);
+                    manifest[childRel] = { size: file.size, mtime: file.lastModified, hash: this._fnv1a(bytes) };
+                }
+            }
+        };
+        try { await walk(rec.handle, ''); } catch (err) { session.fapHydrated.delete(label); delete session.fapManifest[label]; throw err; }
+        session.term.write(`\x1b[90m已讀取 ${Object.keys(manifest).length} 個檔案\x1b[0m
+
+`);
+        if (!session.fapPullAt) session.fapPullAt = {};
+        session.fapPullAt[label] = Date.now();
+    }
+
+    _terminalSandboxFileBytes(fsStore, abs) {
+        const stat = fsStore.statSync(abs);
+        const buf = new Uint8Array(stat.size);
+        fsStore.readSync(abs, buf, 0, stat.size);
+        return buf;
+    }
+    _terminalIsDir(fsStore, abs) {
+        try { return (fsStore.statSync(abs).mode & 0o170000) === 0o040000; } catch (_) { return false; }
+    }
+
+    // 真實資料夾 → 沙盒：新增的檔案/資料夾補進來、真實檔案被改過（沙盒那份沒動過）就更新、真實檔案被刪了
+    // （沙盒那份沒動過）就跟著刪。回傳 {added, updated, removed, conflicts[]}。
+    async _terminalPullFap(session, fsStore, label) {
+        const rec = await this._resolveFapAccessPoint(label);
+        await this._checkFapPermission(rec, 'read');
+        const manifest = session.fapManifest[label] || (session.fapManifest[label] = {});
+        const res = { added: 0, updated: 0, removed: 0, conflicts: [] };
+        const seen = new Set();
+        const walk = async (dirHandle, relPath) => {
+            for await (const [name, handle] of dirHandle.entries()) {
+                const rel = relPath ? `${relPath}/${name}` : name;
+                const abs = `/mnt/${label}/${rel}`;
+                if (handle.kind === 'directory') {
+                    if (!this._terminalIsDir(fsStore, abs)) { try { fsStore.mkdirSync(abs, { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {} }
+                    await walk(handle, rel);
+                    continue;
+                }
+                seen.add(rel);
+                const file = await handle.getFile();
+                const m = manifest[rel];
+                let sandboxHash = null;
+                try { sandboxHash = this._fnv1a(this._terminalSandboxFileBytes(fsStore, abs)); } catch (_) {}
+                if (!m) {
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    const h = this._fnv1a(bytes);
+                    if (sandboxHash !== null && sandboxHash !== h) { res.conflicts.push(`${rel}（沙盒和真實資料夾各自新增了不同內容的同名檔案）`); continue; }
+                    if (sandboxHash === null) { this._writeBytesToTerminalFs(fsStore, abs, bytes); res.added++; }
+                    manifest[rel] = { size: file.size, mtime: file.lastModified, hash: h };
+                } else if (file.size !== m.size || file.lastModified !== m.mtime) {
+                    if (sandboxHash !== null && sandboxHash !== m.hash) { res.conflicts.push(`${rel}（沙盒和真實資料夾都改過）`); continue; }
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    this._writeBytesToTerminalFs(fsStore, abs, bytes);
+                    manifest[rel] = { size: file.size, mtime: file.lastModified, hash: this._fnv1a(bytes) };
+                    res.updated++;
                 }
             }
         };
         await walk(rec.handle, '');
+        for (const rel of Object.keys(manifest)) {
+            if (seen.has(rel)) continue;
+            const abs = `/mnt/${label}/${rel}`;
+            let sandboxHash = null;
+            try { sandboxHash = this._fnv1a(this._terminalSandboxFileBytes(fsStore, abs)); } catch (_) {}
+            if (sandboxHash === null) { delete manifest[rel]; continue; }
+            if (sandboxHash === manifest[rel].hash) { try { fsStore.unlinkSync(abs); } catch (_) {} delete manifest[rel]; res.removed++; }
+            else res.conflicts.push(`${rel}（真實資料夾已刪除，但沙盒裡有你改過的版本，已保留）`);
+        }
+        session.fapPullAt[label] = Date.now();
+        return res;
     }
 
-    // 一段shell指令文字（或cd的target）裡如果提到某個目前已知的FAP掛載點
-    // 但還沒hydrate過，這裡統一掃描+觸發——_runTerminalShellLine/_terminalCd/
-    // _terminalRunScriptFile三個run()呼叫點共用，不用各自重複判斷邏輯。
+    // 沙盒 → 真實資料夾：只寫「跟上次同步時內容不同」的檔案與新檔案（不再無條件全部覆寫），並在寫入前
+    // 確認真實檔案沒有在這段期間被別人改過（改過就當衝突略過）。propagateDelete=true 才會把沙盒裡刪掉的檔案
+    // 一併刪除真實檔案（預設不刪，避免誤刪使用者真實資料）。
+    async _terminalPushFap(session, fsStore, label, { propagateDelete = false } = {}) {
+        const rec = await this._resolveFapAccessPoint(label);
+        await this._checkFapPermission(rec, 'readwrite');
+        const manifest = session.fapManifest[label] || (session.fapManifest[label] = {});
+        const res = { written: 0, deleted: 0, conflicts: [], errors: [], notPropagatedDeletes: 0 };
+        const present = new Set();
+        const walk = async (dirHandle, relPath, absDir) => {
+            let names;
+            try { names = fsStore.readdirSync(absDir); } catch (_) { return; }
+            for (const name of names) {
+                if (name === '.keep') continue;
+                const rel = relPath ? `${relPath}/${name}` : name;
+                const abs = `${absDir}/${name}`;
+                if (this._terminalIsDir(fsStore, abs)) {
+                    try { await walk(await dirHandle.getDirectoryHandle(name, { create: true }), rel, abs); }
+                    catch (err) { res.errors.push(`${rel}: ${String(err.message || err)}`); }
+                    continue;
+                }
+                present.add(rel);
+                try {
+                    const bytes = this._terminalSandboxFileBytes(fsStore, abs);
+                    const h = this._fnv1a(bytes);
+                    const m = manifest[rel];
+                    if (m && m.hash === h) continue; // 沙盒沒改過
+                    let cur = null;
+                    try { cur = await (await dirHandle.getFileHandle(name)).getFile(); } catch (_) {}
+                    if (cur && (!m || cur.size !== m.size || cur.lastModified !== m.mtime)) {
+                        const curHash = this._fnv1a(new Uint8Array(await cur.arrayBuffer()));
+                        if (curHash === h) { manifest[rel] = { size: cur.size, mtime: cur.lastModified, hash: h }; continue; }
+                        res.conflicts.push(`${rel}（真實資料夾的檔案也被改過，未覆蓋）`);
+                        continue;
+                    }
+                    const fh = await dirHandle.getFileHandle(name, { create: true });
+                    const w = await fh.createWritable();
+                    await w.write(bytes);
+                    await w.close();
+                    const after = await fh.getFile();
+                    manifest[rel] = { size: after.size, mtime: after.lastModified, hash: h };
+                    res.written++;
+                } catch (err) { res.errors.push(`${rel}: ${String(err.message || err)}`); }
+            }
+        };
+        await walk(rec.handle, '', `/mnt/${label}`);
+        for (const rel of Object.keys(manifest)) {
+            if (present.has(rel)) continue;
+            if (!propagateDelete) { res.notPropagatedDeletes++; continue; }
+            try {
+                const parts = rel.split('/'); const fname = parts.pop();
+                let d = rec.handle;
+                for (const p of parts) d = await d.getDirectoryHandle(p);
+                await d.removeEntry(fname);
+                delete manifest[rel];
+                res.deleted++;
+            } catch (err) { res.errors.push(`${rel}: ${String(err.message || err)}`); }
+        }
+        return res;
+    }
+
+    // 每次跑指令前呼叫：(1) 重新掃描已授權的FAP清單——重新授權/新增的資料夾馬上出現在/mnt，不用重開終端機；
+    // (2) 指令（含cwd、以及相對路徑參數）碰到某個/mnt/<label>時才hydrate，已經hydrate過的則自動從真實資料夾
+    // 拉最新內容（有節流，資料夾很大時自動放慢，避免每個指令都掃一次）。相對路徑（cd mnt; cd label; ls）也
+    // 會以cwd解析成絕對路徑判斷，不再只認「/mnt/…」這種寫法。
     async _hydrateReferencedFapMounts(session, fsStore, text) {
+        await this._refreshTerminalFapLabels(session, fsStore);
         if (!session.fapLabels || !session.fapLabels.length) return;
+        const candidates = [String(text || '')];
+        const cwd = session.cwd || '/';
+        candidates.push(cwd);
+        for (const tok of String(text || '').split(/\s+/)) {
+            const t = tok.replace(/^["']|["']$/g, '');
+            if (!t || t.startsWith('-')) continue;
+            candidates.push(this._terminalResolvePath(cwd, t));
+        }
         for (const label of session.fapLabels) {
-            if (session.fapHydrated.has(label)) continue;
-            if (text.includes(`/mnt/${label}`)) {
-                await this._hydrateFapMount(session, fsStore, label);
+            const prefix = `/mnt/${label}`;
+            const hit = candidates.some((c) => c === prefix || c.startsWith(prefix + '/') || c.includes(prefix));
+            if (!hit) continue;
+            if (!session.fapHydrated.has(label)) { await this._hydrateFapMount(session, fsStore, label); continue; }
+            const cost = (session.fapPullCost && session.fapPullCost[label]) || 0;
+            const minGap = Math.max(4000, cost * 10);
+            if (Date.now() - ((session.fapPullAt && session.fapPullAt[label]) || 0) < minGap) continue;
+            const t0 = Date.now();
+            try { await this._terminalPullFap(session, fsStore, label); } catch (_) { /* 拉不到就沿用沙盒現況，不擋指令 */ }
+            if (!session.fapPullCost) session.fapPullCost = {};
+            session.fapPullCost[label] = Date.now() - t0;
+        }
+    }
+
+    async _refreshTerminalFapLabels(session, fsStore) {
+        if (session.fapLabelsAt && Date.now() - session.fapLabelsAt < 2000) return;
+        session.fapLabelsAt = Date.now();
+        let points;
+        try { points = await this._listAllFapAccessPoints(); } catch (_) { return; }
+        const known = new Set(session.fapLabels || []);
+        const granted = new Set();
+        for (const p of points) {
+            if (p.permission !== 'granted') continue;
+            granted.add(p.label);
+            if (!known.has(p.label)) {
+                (session.fapLabels = session.fapLabels || []).push(p.label);
+                try { fsStore.mkdirSync(`/mnt/${p.label}`, { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
+                try { this._writeBytesToTerminalFs(fsStore, `/mnt/${p.label}/.keep`, new Uint8Array(0)); } catch (_) {}
             }
         }
     }
 
-    // tw_stock_db客製: 2026-09-18使用者要求——「做個sync指令來確實flush」
-    // （而不是每個指令執行完自動flush）。刻意不做diff/dirty-tracking：
-    // 每次sync無條件把整個`/mnt/<label>`子樹目前的內容寫回真正的FAP，
-    // 邏輯簡單、不會因為hash/mtime判斷漏掉真正的變更（這個沙盒fs本來就
-    // 沒有真正的mtime可以拿來判斷，見wasi-sh README「No symlinks,
-    // permissions, or timestamps」）。已知限制：只會新增/覆寫，不會把
-    // 沙盒裡刪除的檔案同步刪除真正的FAP檔案（自動同步刪除使用者真實磁碟
-    // 檔案風險較高，這裡刻意不做，需要真的清掉的話請直接對真實資料夾
-    // 操作）。
+    // sync：雙向。`sync`＝先pull再push所有已讀取過的掛載；`sync <label>`只處理一個；
+    // 選項 --pull 只從真實資料夾更新沙盒、--push 只把沙盒寫回、--delete 讓沙盒裡刪掉的檔案也刪除真實檔案。
     async _terminalSync(session, argsText) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
@@ -15209,60 +16379,48 @@ ${sourceTool.handlerScript}
             return;
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
-        const arg = String(argsText || '').trim();
+        session.fapLabelsAt = 0;
+        await this._refreshTerminalFapLabels(session, fsStore);
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const flags = new Set(tokens.filter((t) => t.startsWith('--')));
+        const arg = tokens.find((t) => !t.startsWith('--')) || '';
+        const doPull = !flags.has('--push');
+        const doPush = !flags.has('--pull');
         let targets;
         if (!arg) {
+            for (const label of session.fapLabels || []) { // 沒讀過的也一併載入，讓「重新授權後馬上看得到」
+                if (!session.fapHydrated.has(label)) { try { await this._hydrateFapMount(session, fsStore, label); } catch (_) {} }
+            }
             targets = [...session.fapHydrated];
-            if (!targets.length) { session.term.write('sync: 目前沒有任何/mnt掛載被讀取過，沒有東西需要flush（先cd進去或ls過才會hydrate）\r\n'); return; }
+            if (!targets.length) { session.term.write('sync: 目前沒有已授權的File Access Point可以同步\r\n'); return; }
         } else {
             const label = arg.replace(/^\/mnt\//, '').split('/')[0];
-            if (!session.fapHydrated.has(label)) {
-                session.term.write(`\x1b[31msync: 「${label}」還沒被讀取過（先cd進去或ls過才有東西可以flush）\x1b[0m\r\n`);
+            if (!(session.fapLabels || []).includes(label)) {
+                session.term.write(`\x1b[31msync: 找不到已授權的「${label}」（到Advance Settings確認授權狀態）\x1b[0m\r\n`);
                 return;
+            }
+            if (!session.fapHydrated.has(label)) {
+                try { await this._hydrateFapMount(session, fsStore, label); } catch (err) { session.term.write(`\x1b[31msync ${label}: ${String(err.message || err)}\x1b[0m\r\n`); return; }
             }
             targets = [label];
         }
         for (const label of targets) {
-            let rec;
+            const parts = [];
             try {
-                rec = await this._resolveFapAccessPoint(label);
-                await this._checkFapPermission(rec, 'readwrite');
-            } catch (err) {
-                session.term.write(`\x1b[31msync ${label}: ${String(err.message || err)}\x1b[0m\r\n`);
-                continue;
-            }
-            let count = 0;
-            const errors = [];
-            const walk = async (dirHandle, relPath, absDir) => {
-                let names;
-                try { names = fsStore.readdirSync(absDir); } catch (_) { return; }
-                for (const name of names) {
-                    if (name === '.keep') continue;
-                    const childRel = relPath ? `${relPath}/${name}` : name;
-                    const childAbs = `${absDir}/${name}`;
-                    let stat;
-                    try { stat = fsStore.statSync(childAbs); } catch (_) { continue; }
-                    const isDirectory = (stat.mode & 0o170000) === 0o040000; // S_IFMT/S_IFDIR，見wasi-sh fs.mjs的isDir()
-                    if (isDirectory) {
-                        try {
-                            const subDirHandle = await dirHandle.getDirectoryHandle(name, { create: true });
-                            await walk(subDirHandle, childRel, childAbs);
-                        } catch (err) { errors.push(`${childRel}: ${String(err.message || err)}`); }
-                    } else {
-                        try {
-                            const buf = new Uint8Array(stat.size);
-                            fsStore.readSync(childAbs, buf, 0, stat.size);
-                            const fileHandle = await dirHandle.getFileHandle(name, { create: true });
-                            const writable = await fileHandle.createWritable();
-                            await writable.write(buf);
-                            await writable.close();
-                            count++;
-                        } catch (err) { errors.push(`${childRel}: ${String(err.message || err)}`); }
-                    }
+                if (doPull) {
+                    const r = await this._terminalPullFap(session, fsStore, label);
+                    parts.push(`從真實資料夾更新：新增${r.added}、更新${r.updated}、刪除${r.removed}`);
+                    for (const c of r.conflicts) parts.push(`  ⚠ 衝突：${c}`);
                 }
-            };
-            await walk(rec.handle, '', `/mnt/${label}`);
-            session.term.write(`sync ${label}: 已寫回${count}個檔案${errors.length ? `，${errors.length}個失敗：\r\n  ${errors.join('\r\n  ')}` : ''}\r\n`);
+                if (doPush) {
+                    const r = await this._terminalPushFap(session, fsStore, label, { propagateDelete: flags.has('--delete') });
+                    parts.push(`寫回真實資料夾：寫入${r.written}個檔案${flags.has('--delete') ? `、刪除${r.deleted}個` : ''}`);
+                    if (r.notPropagatedDeletes && !flags.has('--delete')) parts.push(`  ℹ 有${r.notPropagatedDeletes}個檔案在沙盒裡被刪除，未同步刪除真實檔案（要刪請用 sync --delete）`);
+                    for (const c of r.conflicts) parts.push(`  ⚠ 衝突：${c}`);
+                    for (const e of r.errors) parts.push(`  ✗ 失敗：${e}`);
+                }
+            } catch (err) { parts.push(`\x1b[31m${String(err.message || err)}\x1b[0m`); }
+            session.term.write(`sync ${label}:\r\n  ${parts.join('\r\n  ')}\r\n`);
         }
     }
 
@@ -15756,11 +16914,139 @@ ${sourceTool.handlerScript}
                 runPython: (scriptText, stdinBytes) => this._pyodideBridgeRunPython(scriptText, stdinBytes),
             });
             instance.runPython(PYODIDE_SUBPROCESS_SHIM_SRC);
+            this._pyodideIndexURL = indexURL;
+            instance.registerJsModule('_fa_mp', this._mpBridge());
+            this._mpInstallShim(instance);
             this._pyodideInstance = instance;
             return this._pyodideInstance;
         })().catch(e => { this._pyodideLoadPromise = null; this._pyodideInstance = null; throw e; });
         return this._pyodideLoadPromise;
     }
+
+    // ==== MP-METHODS-BEGIN ====
+    // tw_stock_db客製: 2026-09-21使用者要求——Pyodide把_multiprocessing整個拿掉了，python腳本用
+    // multiprocessing.Pool/Process/Queue、concurrent.futures.ProcessPoolExecutor會直接ImportError。
+    // 這裡用瀏覽器的Web Worker補上：每個worker各自載入一份Pyodide，主執行緒的python透過
+    // pyodide.ffi.run_sync（JSPI）等待worker完成（`_fa_mp`是註冊給python `import`的JS橋，
+    // `_fa_mp_impl`是python端的multiprocessing替代實作，見FA_MP_SHIM_PY）。
+    // 限制：只有async執行路徑（python_execute）能真正平行；shell裡的`python`指令是同步呼叫、
+    // 無法等待worker，會自動退回「單執行緒依序執行」（結果相同、沒有加速，並印出提示）。
+    _mpBridge() {
+        if (this._mpBridgeObj) return this._mpBridgeObj;
+        const self = this;
+        const queues = new Map();
+        let qseq = 0;
+        const getQ = (id) => { let q = queues.get(id); if (!q) queues.set(id, q = { items: [], waiters: [] }); return q; };
+        this._mpQueuePush = (qid, bytes) => {
+            const q = getQ(qid);
+            const w = q.waiters.shift();
+            if (w) { clearTimeout(w.t); w.resolve(bytes); } else q.items.push(bytes);
+        };
+        this._mpBridgeObj = {
+            newQueue: () => 'q' + (++qseq),
+            qput: (qid, bytes) => self._mpQueuePush(qid, bytes),
+            qsize: (qid) => getQ(qid).items.length,
+            qtry: (qid) => { const q = getQ(qid); return q.items.length ? q.items.shift() : undefined; },
+            qget: (qid, ms) => new Promise((resolve) => {
+                const q = getQ(qid);
+                if (q.items.length) return resolve(q.items.shift());
+                if (ms === 0) return resolve(undefined);
+                const w = { resolve, t: null };
+                if (ms > 0) w.t = setTimeout(() => { const i = q.waiters.indexOf(w); if (i >= 0) q.waiters.splice(i, 1); resolve(undefined); }, ms);
+                q.waiters.push(w);
+            }),
+            race: (promises) => Promise.race(Array.from(promises).map((p, i) => Promise.resolve(p).then(() => i))),
+            submit: (script, filesJson, cwd, payloads, n) => {
+                const p = self._mpSubmit(String(script), String(filesJson), String(cwd), Array.from(payloads), Number(n) || 1);
+                p.settled = false;
+                p.then(() => { p.settled = true; }, () => { p.settled = true; });
+                return p;
+            },
+        };
+        return this._mpBridgeObj;
+    }
+
+    _mpInstallShim(instance) {
+        instance.globals.set('_fa_mp_src', FA_MP_SHIM_PY);
+        instance.runPython("import sys, types" + String.fromCharCode(10)
+            + "_m = types.ModuleType('_fa_mp_impl'); sys.modules['_fa_mp_impl'] = _m" + String.fromCharCode(10)
+            + "exec(compile(_fa_mp_src, '<fa_mp>', 'exec'), _m.__dict__)" + String.fromCharCode(10)
+            + "del _fa_mp_src, _m");
+    }
+
+    _mpWorkerCap() { return Math.max(2, Math.min(8, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4)); }
+
+    async _mpCreateWorker() {
+        if (!this._pyodideIndexURL) throw new Error('Pyodide尚未載入，無法建立worker');
+        const blobUrl = URL.createObjectURL(new Blob(['(' + faMpWorkerMain.toString() + ')()'], { type: 'text/javascript' }));
+        const worker = new Worker(blobUrl, { type: 'module' });
+        const rec = { worker, busy: false, scriptKey: null, pending: new Map(), dead: null };
+        rec.ready = new Promise((resolve, reject) => {
+            worker.onmessage = (ev) => {
+                const m = ev.data || {};
+                if (m.type === 'ready') resolve();
+                else if (m.type === 'fatal') { rec.dead = m.error; reject(new Error(m.error)); for (const p of rec.pending.values()) p.reject(new Error(m.error)); rec.pending.clear(); }
+                else if (m.type === 'qput') this._mpQueuePush(m.qid, m.data);
+                else if (m.type === 'result') { const p = rec.pending.get(m.tid); if (p) { rec.pending.delete(m.tid); p.resolve(m.res); } }
+            };
+            worker.onerror = (e) => { const msg = String((e && e.message) || 'worker error'); rec.dead = msg; reject(new Error(msg)); for (const p of rec.pending.values()) p.reject(new Error(msg)); rec.pending.clear(); };
+        });
+        worker.postMessage({ type: 'boot', indexURL: new URL(this._pyodideIndexURL, location.href).href, workerPy: FA_MP_WORKER_PY, shimPy: FA_MP_SHIM_PY });
+        await rec.ready;
+        return rec;
+    }
+
+    async _mpAcquire() {
+        if (!this._mpWorkers) { this._mpWorkers = []; this._mpWaiters = []; }
+        const idle = this._mpWorkers.find((w) => !w.busy && !w.dead);
+        if (idle) { idle.busy = true; return idle; }
+        if (this._mpWorkers.filter((w) => !w.dead).length < this._mpWorkerCap()) {
+            const placeholder = { busy: true, creating: true };
+            this._mpWorkers.push(placeholder);
+            try {
+                const rec = await this._mpCreateWorker();
+                this._mpWorkers[this._mpWorkers.indexOf(placeholder)] = rec;
+                rec.busy = true;
+                return rec;
+            } catch (err) {
+                this._mpWorkers.splice(this._mpWorkers.indexOf(placeholder), 1);
+                throw err;
+            }
+        }
+        return new Promise((resolve) => this._mpWaiters.push(resolve));
+    }
+
+    _mpRelease(rec) {
+        rec.busy = false;
+        const next = this._mpWaiters && this._mpWaiters.shift();
+        if (next) { rec.busy = true; next(rec); }
+    }
+
+    async _mpRunTask(msg) {
+        const rec = await this._mpAcquire();
+        try {
+            const tid = `t${(this._mpTid = (this._mpTid || 0) + 1)}`;
+            const p = new Promise((resolve, reject) => rec.pending.set(tid, { resolve, reject }));
+            rec.worker.postMessage({ type: 'task', tid, scriptKey: msg.scriptKey, script: rec.scriptKey === msg.scriptKey ? '' : msg.script, files: rec.scriptKey === msg.scriptKey ? '' : msg.files, cwd: msg.cwd, payload: msg.payload });
+            rec.scriptKey = msg.scriptKey;
+            return await p;
+        } finally { this._mpRelease(rec); }
+    }
+
+    async _mpSubmit(script, filesJson, cwd, payloads, n) {
+        const scriptKey = `${script.length}:${this._fnv1a(new TextEncoder().encode(script))}:${filesJson.length}:${this._fnv1a(new TextEncoder().encode(filesJson))}`;
+        const results = new Array(payloads.length);
+        let next = 0;
+        const runner = async () => {
+            while (next < payloads.length) {
+                const i = next++;
+                results[i] = await this._mpRunTask({ scriptKey, script, files: filesJson, cwd, payload: payloads[i] });
+            }
+        };
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(n, payloads.length)) }, runner));
+        return results;
+    }
+    // ==== MP-METHODS-END ====
 
     // tw_stock_db客製: 2026-09-16——見PYODIDE_SUBPROCESS_SHIM_SRC/計畫3.5節
     // 的說明。`_fa_shell_bridge.runShell`給python monkeypatch過的
@@ -15879,6 +17165,7 @@ ${sourceTool.handlerScript}
         let returncode = 0;
         try {
             const options = isolatedGlobals ? { globals: pyodide.toPy({}) } : undefined;
+            if (!isolatedGlobals) pyodide.globals.set('__fa_script__', scriptText);
             await pyodide.runPythonAsync(scriptText, options);
         } catch (err) {
             stderrChunks.push(String(err && err.message || err));
@@ -19851,6 +21138,44 @@ ${sourceTool.handlerScript}
         this._syncStopButton();
     }
 
+    // tw_stock_db客製: 2026-09-21使用者回報——gpt-oss:120b常常「假裝已經寫入」：完全沒呼叫寫入工具，
+    // 卻在回覆裡說東西已經寫到某個檔案。這裡是外部驗證：記錄這一輪有沒有任何「成功的寫入類工具呼叫」
+    // （_noteWriteEvidence），最終回覆如果宣稱已寫入/儲存/建立檔案、卻沒有任何成功紀錄
+    // （_fakeWriteNudge），就把回覆退回去、要求真的呼叫工具或如實說沒寫，最多攔兩次。
+    _noteWriteEvidence(store, fnName, result) {
+        if (!store || !FA_WRITE_EVIDENCE_TOOLS.has(fnName)) return;
+        let ok = true;
+        try {
+            const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+            if (parsed && typeof parsed === 'object') {
+                if (parsed.ok === false || parsed.error) ok = false;
+                if (fnName === 'coding_workspace' && parsed.dry_run) ok = false;
+                if (parsed.committed === false || parsed.applied === false) ok = false;
+            }
+        } catch (_) { /* 非JSON的結果視為成功 */ }
+        if (ok) store.n = (store.n || 0) + 1;
+    }
+    _detectFakeWriteClaim(text) {
+        const t = String(text || '').replace(/```[\s\S]*?```/g, ' ');
+        if (!t.trim()) return false;
+        const negation = /(尚未|還沒|沒有辦法|無法|未能|失敗|如果|是否|要不要|需要我|可以幫你|可以為你|將會|會把|建議你|如需|若要|請問|想要我)/;
+        const zh1 = /(已(經)?|成功|均已|皆已|順利)[^。\n]{0,16}?(寫入|寫進|寫到|儲存|存入|存到|存成|另存|建立了?|新增了?|輸出(到|至|成)|匯出(到|至|成)|產生了?|更新了?|修改了?|轉移(到|至|回))[^。\n]{0,80}?(檔|\.\w{1,5}\b|fap:|[A-Za-z]:\\|\/[\w.-]+|資料夾|路徑)/;
+        const zh2 = /(檔案|文件|資料|內容|結果|報告)[^。\n]{0,30}?(已(經)?|成功)[^。\n]{0,8}?(寫入|儲存|存入|存到|建立|輸出|匯出|更新)/;
+        const en = /\b(has|have|been|successfully)?\s*(saved|written|wrote|created|exported|updated)\b[^.\n]{0,40}\b(to|at|as|in|into)\b[^.\n]{0,80}(\.\w{1,5}\b|fap:|\/[\w.-]+)/i;
+        for (const line of t.split(/(?<=[。！!\n])|(?<=\.)(?=\s)/)) {
+            if (negation.test(line)) continue;
+            if (zh1.test(line) || zh2.test(line) || en.test(line)) return true;
+        }
+        return false;
+    }
+    _fakeWriteNudge(text, store, counterHolder) {
+        if (!store || (store.n || 0) > 0) return null;
+        if ((counterHolder.count || 0) >= 2) return null;
+        if (!this._detectFakeWriteClaim(text)) return null;
+        counterHolder.count = (counterHolder.count || 0) + 1;
+        return '[系統驗證] 你剛才的回覆宣稱已經寫入／儲存／建立了檔案，但這一輪沒有任何一次「成功的寫入類工具呼叫」紀錄（fap_write_file、fs_write_file、apply_git_patch、git_commit、coding_workspace deploy 等都沒有成功回傳）。文字宣稱不算數——檔案實際上沒有被寫入。請現在二選一：(1)真的呼叫對應的寫入工具，並用讀取/列出檔案的工具確認內容確實存在，再回報實際結果；(2)如果做不到，直接如實告訴使用者「還沒有寫入」以及原因。在工具回傳成功之前，不要再說已經寫入。';
+    }
+
     // tw_stock_db客製: 2026-08-28使用者要求「加強」——原本這裡只是把使用者
     // 插進來的文字原封不動塞進一則[Steering]系統訊息，模型看到之後要怎麼
     // 處理完全靠自己猜。跟Claude Code自己處理「使用者在執行中途插話」的
@@ -22209,6 +23534,8 @@ ${existingNodeSummaries}
         // 送出一則訊息（觸發_addSteeringMessage、這次呼叫其實不會真的發起
         // 新request）也會平白多轉一次round-robin，悄悄跳過組內某一把key
         // 的輪值機會。
+        this._writeEvidence = { n: 0 };
+        this._fakeWriteGuard = { count: 0 };
         const rowCfg = this._getInitialFallbackConfig();
         const { apiKey, apiUrl, apiModel } = rowCfg;
         const genOverrides = { temperature: rowCfg.temperature, samplingOverrides: rowCfg.samplingOverrides, maxOutputTokens: rowCfg.maxOutputTokens };
@@ -22844,6 +24171,7 @@ ${existingNodeSummaries}
                         this._log(`執行工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                         const result = await Promise.resolve(toolDefinition.callback(JSON.stringify(parsedArgs)));
+                        this._noteWriteEvidence(this._writeEvidence, task.fnName, result);
 
                         this._pushToolResultMessage(task.fnName, result);
                         this._renderMessageHistory();
@@ -22895,6 +24223,15 @@ ${existingNodeSummaries}
             // markdown文字，要等到送出下一則訊息、整批重繪時才會補上格式，
             // 造成「markdown完全沒作用」的錯覺。這裡在確定沒有後續工具呼叫
             // 要處理時，主動補一次重繪，讓格式化立刻生效。
+            {
+                const nudge = this._fakeWriteNudge(fullContent, this._writeEvidence, this._fakeWriteGuard || (this._fakeWriteGuard = { count: 0 }));
+                if (nudge) {
+                    this._log('🛡️ 偵測到「宣稱已寫入、但沒有任何成功的寫入工具呼叫」，已退回請AI重做。');
+                    this.messages.push({ role: 'system', content: nudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
+            }
             this._renderMessageHistory();
             return fullContent;
 
@@ -23146,6 +24483,13 @@ ${existingNodeSummaries}
             this._pushAssistantMessage(finalContent, reasoningAccum, toolCalls.length ? { tool_calls: toolCalls } : {});
 
             if (!toolCalls.length) {
+                const nudge = this._fakeWriteNudge(finalContent, this._writeEvidence, this._fakeWriteGuard || (this._fakeWriteGuard = { count: 0 }));
+                if (nudge) {
+                    this._log('🛡️ 偵測到「宣稱已寫入、但沒有任何成功的寫入工具呼叫」，已退回請AI重做。');
+                    this.messages.push({ role: 'system', content: nudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
                 this._renderMessageHistory();
                 return finalContent;
             }
@@ -23159,6 +24503,7 @@ ${existingNodeSummaries}
                     if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
                     this._log(`執行工具（原生）: ${fnName}`);
                     const result = await Promise.resolve(toolDefinition.callback(rawArgs));
+                    this._noteWriteEvidence(this._writeEvidence, fnName, result);
                     this._pushToolResultMessage(fnName, result, { tool_call_id: tc.id });
                 } catch (err) {
                     console.error(`執行 ${fnName} 失敗:`, err);
@@ -24020,6 +25365,8 @@ ${existingNodeSummaries}
         // 一樣是這次_runSubAgentTask執行內的區域狀態，不消耗maxRounds（用
         // round--），有獨立、較小的上限防止真的跳針的模型無限重試燒費用。
         let reasoningDeadendRetries = 0;
+        const writeEvidence = { n: 0 };
+        const fakeWriteGuard = { count: 0 };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
         // 一樣不消耗maxRounds，獨立計數。
         let malformedCallRetries = 0;
@@ -24242,6 +25589,7 @@ ${existingNodeSummaries}
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
                         const result = await Promise.resolve(toolDef.callback(rawArgs));
+                        this._noteWriteEvidence(writeEvidence, fnName, result);
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
                         messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
@@ -24307,6 +25655,14 @@ ${existingNodeSummaries}
                     round--;
                     continue;
                 }
+                const fakeNudge = this._fakeWriteNudge(finalText, writeEvidence, fakeWriteGuard);
+                if (fakeNudge) {
+                    if (onProgress) onProgress('🛡️ 偵測到「宣稱已寫入、但沒有成功的寫入工具呼叫」，退回請AI重做');
+                    messages.push({ role: 'assistant', content: finalText });
+                    messages.push({ role: 'user', content: fakeNudge });
+                    round--;
+                    continue;
+                }
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
 
@@ -24319,6 +25675,7 @@ ${existingNodeSummaries}
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
                     const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                    this._noteWriteEvidence(writeEvidence, task.fnName, result);
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;
                     messages.push(this._buildToolResultMessage(task.fnName, result));
