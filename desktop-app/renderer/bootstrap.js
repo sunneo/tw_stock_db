@@ -1418,6 +1418,18 @@ function patchCloudflareWording(root) {
     }
   }
 
+  // tw_stock_db客製: 2026-09-20——瀏覽器控制：桌面版不是Chrome，沒有網頁版那條
+  // window.postMessage橋，改成透過主行程的本機服務（main.js fa:bc:*，擴充功能主動來輪詢）。
+  if (window.desktopAPI && window.desktopAPI.browserControl) {
+    const bcApi = window.desktopAPI.browserControl;
+    fa.setBrowserControlTransport({
+      kind: "desktop",
+      call: (cmd, args, timeoutMs) => bcApi.call(cmd, args, timeoutMs),
+      getStatus: () => bcApi.status(),
+      regenerateToken: () => bcApi.regenerateToken(),
+    });
+  }
+
   // ---- 桌面版是單一用途、永遠鋪滿視窗的對話介面，不是「可以收合成小藥丸
   // 再點開」的浮動widget（那套機制刻意被關掉，見上面buttonStyle:'display:
   // none'）——既有的❌關閉鈕（#ai-btn-close）點下去只會呼叫toggleWindow()
