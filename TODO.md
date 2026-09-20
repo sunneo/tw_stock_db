@@ -71,3 +71,12 @@
 - 問題：steering只寫進根 this.messages，委派中的 _runSubAgentTask 用區域messages，長時間子任務完全收不到插話。
 - 修正：_addSteeringMessage 另存 this._steeringLog；_runSubAgentTask 每輪開頭把新的steering以user訊息注入自己的messages（並在進度卡顯示）。根層仍保留原 [Steering]，子任務回來後根模型也看得到。
 - 限制：子agent正在等待單次LLM回應或長工具時要等該輪結束才看得到；未在真實長任務上驗證，只做語法檢查。
+
+## Phase 5：skills domain＋Chrome 瀏覽器控制（2026-09-20）
+
+- [x] `skills` domain（建立Claude格式skill）：`skill_create`（驗證name/description、組frontmatter、scripts/references檔案、dry_run/overwrite/download/save_to）、`skill_list`、`skill_read`；建立後即為app內skillBundle（Skill分頁可管理）、可匯出.skill。真實瀏覽器驗證：非法name/含claude被擋、dry_run警告未被引用的檔案、重複名稱需overwrite、匯出zip內容正確。
+- [x] Chrome擴充功能 `Floating AI Assitant(Chrome Extension)`（`web/browser-control-extension/`，MV3）：分頁群組、分頁、導覽、捲動、截圖（含整頁）、滑鼠（click/雙擊/右鍵/移動/滾輪/拖曳）、鍵盤（文字含中文/按鍵/組合鍵）、取頁面文字與可互動元素座標。**只能操作助理自己開的分頁**；網頁版需在擴充功能彈出視窗「允許目前網站」，桌面版需配對碼。用Edge 153載入擴充功能實測全部指令（網頁橋＋桌面輪詢兩條路徑）。
+- [x] 引擎工具＋`browser_control` domain（14個browser_*工具）；截圖以`{type:'image'}`直接顯示給使用者，模型端靠get_page_text/get_elements（純文字模型也能操作）。
+- [x] 設定 → 「瀏覽器控制」分頁：「在瀏覽器測試連線」（未安裝／未允許／成功三種狀態）、「[get extension]」下載zip並展開安裝教學；桌面版多一個配對碼區塊（複製／重新產生／連線狀態）。
+- [x] 桌面版：`desktop-app/browser-control-server.js`（127.0.0.1:17923，X-FA-Token驗證，CORS只放行chrome-extension://）＋`fa:bc:*` IPC＋bootstrap.js `setBrowserControlTransport`。擴充功能檔案放在`web/browser-control-extension/`（網頁與桌面版共用；引擎依序試部署目錄、raw GitHub後備網址）。
+- 限制：Chrome 137+正式版已停用`--load-extension`，自動化測試改用Edge；正式安裝走「載入未封裝項目」。截圖/滑鼠/鍵盤使用chrome.debugger，操作時會出現「正在偵錯此瀏覽器」提示列。未用真實LLM跑過整段agent流程。
