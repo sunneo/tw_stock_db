@@ -687,7 +687,8 @@ class FileAccessPointStore {
 
 // tw_stock_db客製: 2026-09-20——見_runPythonBuiltin。純Python程式碼字串，由pyodide.runPython執行。
 const FA_PY_RUN_PRELUDE = `
-import sys, os, importlib
+import sys, os, importlib, json
+sys.argv = json.loads(__fa_argv_json)
 os.makedirs('/work', exist_ok=True)
 os.chdir('/work')
 _d = os.path.dirname(__fa_script_abs) or '/work'
@@ -703,6 +704,7 @@ __file__ = __fa_script_abs
 `;
 const FA_PY_RUN_POSTLUDE = `
 import sys, os
+sys.argv = ['']
 for _n, _m in list(sys.modules.items()):
     _f = getattr(_m, '__file__', None) or ''
     if _f.startswith('/work/'):
@@ -17287,10 +17289,11 @@ ${sourceTool.handlerScript}
         const relInWork = scriptAbs.startsWith('/work/') ? scriptAbs : '/work/' + scriptPath.replace(/^\.\//, '');
         try {
             pyodide.globals.set('__fa_script_abs', relInWork);
+            pyodide.globals.set('__fa_argv_json', JSON.stringify([scriptPath, ...ctx.argv.slice(2).map(String)]));
             pyodide.runPython(FA_PY_RUN_PRELUDE);
         } catch (_) {}
         const { stdout, stderr, returncode } = this._runPyodideScriptSync(pyodide, scriptText, stdinBytes && stdinBytes.length ? stdinBytes : null);
-        try { pyodide.runPython(FA_PY_RUN_POSTLUDE); pyodide.globals.delete('__fa_script_abs'); } catch (_) {}
+        try { pyodide.runPython(FA_PY_RUN_POSTLUDE); pyodide.globals.delete('__fa_script_abs'); pyodide.globals.delete('__fa_argv_json'); } catch (_) {}
         // 執行後反向把pyodide.FS的/work寫回ctx.fs，讓pipeline下一段的busybox
         // 指令、或最後bash_execute回傳的output_files看得到python新增/
         // 修改的檔案。
