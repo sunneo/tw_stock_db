@@ -684,6 +684,289 @@ class FileAccessPointStore {
     }
 }
 
+
+// tw_stock_db客製: 2026-09-20——見_runPythonBuiltin。純Python程式碼字串，由pyodide.runPython執行。
+const FA_PY_RUN_PRELUDE = `
+import sys, os, importlib
+os.makedirs('/work', exist_ok=True)
+os.chdir('/work')
+_d = os.path.dirname(__fa_script_abs) or '/work'
+for _p in (_d, '/work'):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+for _n, _m in list(sys.modules.items()):
+    _f = getattr(_m, '__file__', None) or ''
+    if _f.startswith('/work/'):
+        del sys.modules[_n]
+importlib.invalidate_caches()
+__file__ = __fa_script_abs
+`;
+const FA_PY_RUN_POSTLUDE = `
+import sys, os
+for _n, _m in list(sys.modules.items()):
+    _f = getattr(_m, '__file__', None) or ''
+    if _f.startswith('/work/'):
+        del sys.modules[_n]
+sys.path[:] = [_p for _p in sys.path if not str(_p).startswith('/work')]
+os.chdir('/')
+globals().pop('__file__', None)
+`;
+// ==== CODING-HELPERS-BEGIN ====
+// tw_stock_db客製: 2026-09-20使用者要求coding domain網頁版也要能用——網頁版沒有
+// 真的git執行檔（桌面版用`git apply`），這裡是純JS的unified diff解析/套用/產生，
+// 給apply_git_patch與git_inspect(diff)的網頁實作用。刻意比真正的git apply寬鬆
+// 兩件事（弱模型最常犯的兩種錯）：(1)不信任hunk header裡的行數（`@@ -a,b +c,d @@`
+// 的b/d常常數錯），一律從實際hunk內容重新計算；(2)舊行號可以有偏差，會在整個檔案裡
+// 找「內容完全吻合」的位置（離header行號最近者優先）。但**內容本身不做模糊比對**——
+// context/被刪除行必須跟檔案目前內容逐字一致（次要比對只容忍行尾空白差異），
+// 對不上就整批拒絕，不會亂套。
+function _faCodingSplitLines(text) {
+    const s = String(text == null ? '' : text);
+    const eol = /\r\n/.test(s) ? '\r\n' : '\n';
+    const norm = s.replace(/\r\n/g, '\n');
+    if (norm === '') return { lines: [], eol, endsWithNewline: false };
+    const endsWithNewline = norm.endsWith('\n');
+    const lines = norm.split('\n');
+    if (endsWithNewline) lines.pop();
+    return { lines, eol, endsWithNewline };
+}
+
+function _faCodingJoinLines(lines, eol, endsWithNewline) {
+    if (!lines.length) return '';
+    return lines.join(eol) + (endsWithNewline ? eol : '');
+}
+
+function _faParseUnifiedDiff(patchText, strip = 1) {
+    const raw = String(patchText == null ? '' : patchText).replace(/\r\n/g, '\n').split('\n');
+    // 弱模型常把patch包在```diff ... ```裡，先剝掉最外層的fence。
+    while (raw.length && !raw[0].trim()) raw.shift();
+    if (raw.length && /^```/.test(raw[0].trim())) raw.shift();
+    while (raw.length && !raw[raw.length - 1].trim()) raw.pop();
+    if (raw.length && /^```\s*$/.test(raw[raw.length - 1].trim())) raw.pop();
+
+    const cleanPath = (p) => {
+        let s = String(p).trim().replace(/\t.*$/, '');
+        if (s === '/dev/null') return null;
+        if (/^"(.*)"$/.test(s)) s = s.slice(1, -1);
+        const parts = s.split('/');
+        for (let i = 0; i < strip && parts.length > 1; i++) parts.shift();
+        return parts.join('/');
+    };
+    const files = [];
+    const errors = [];
+    let file = null;
+    let hunk = null;
+    const startFile = () => { file = { oldPath: undefined, newPath: undefined, hunks: [] }; files.push(file); hunk = null; };
+    for (let i = 0; i < raw.length; i++) {
+        const line = raw[i];
+        if (/^diff --git /.test(line)) { startFile(); continue; }
+        if (/^(index |new file mode|deleted file mode|old mode|new mode|similarity index|Binary files )/.test(line)) {
+            if (/^Binary files /.test(line)) errors.push(`第${i + 1}行：不支援二進位檔案的patch`);
+            continue;
+        }
+        if (/^rename (from|to) /.test(line)) { errors.push(`第${i + 1}行：不支援rename，請用「刪除舊檔＋新增新檔」兩個patch表達`); continue; }
+        if (/^--- /.test(line) && i + 1 < raw.length && /^\+\+\+ /.test(raw[i + 1])) {
+            if (!file || file.newPath !== undefined || file.hunks.length) startFile();
+            file.oldPath = cleanPath(line.slice(4));
+            file.newPath = cleanPath(raw[i + 1].slice(4));
+            i++;
+            hunk = null;
+            continue;
+        }
+        const hm = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+        if (hm) {
+            if (!file) { errors.push(`第${i + 1}行：@@ hunk出現在任何 --- / +++ 檔頭之前`); continue; }
+            hunk = { oldStart: Number(hm[1]), lines: [], headerLine: i + 1 };
+            file.hunks.push(hunk);
+            continue;
+        }
+        if (!hunk) {
+            if (line.trim() === '' || /^(#|=+$)/.test(line)) continue;
+            errors.push(`第${i + 1}行：這一行不在任何hunk裡，也不是合法的檔頭（「${line.slice(0, 60)}」）`);
+            continue;
+        }
+        if (line.startsWith('\\')) continue; // \ No newline at end of file
+        const c = line[0];
+        if (c === ' ' || c === '-' || c === '+') hunk.lines.push({ t: c, s: line.slice(1) });
+        else if (line === '') hunk.lines.push({ t: ' ', s: '' }); // 弱模型常把空白context行的開頭空白吃掉
+        else errors.push(`第${i + 1}行：hunk內每一行必須以空白（context）、- 或 + 開頭，但這行是「${line.slice(0, 60)}」`);
+    }
+    for (const f of files) {
+        f.isNew = f.oldPath === null && f.newPath != null;
+        f.isDelete = f.newPath === null && f.oldPath != null;
+        f.path = f.newPath != null ? f.newPath : f.oldPath;
+        // hunk尾端的空context行（patch字串結尾多出來的換行造成）不算內容，修剪掉
+        for (const h of f.hunks) {
+            while (h.lines.length && h.lines[h.lines.length - 1].t === ' ' && h.lines[h.lines.length - 1].s === '' && h.lines.length > 1) {
+                const prev = h.lines[h.lines.length - 2];
+                if (prev.t === ' ' && prev.s === '') h.lines.pop(); else break;
+            }
+        }
+        if (f.path == null || f.path === '') errors.push('有一個檔案區段缺少檔案路徑（--- / +++ 檔頭）');
+        else if (!f.hunks.length && !f.isDelete) errors.push(`檔案「${f.path}」沒有任何@@ hunk`);
+    }
+    if (!files.length && !errors.length) errors.push('看不到任何檔案區段：patch必須以 --- a/路徑 與 +++ b/路徑 檔頭開始');
+    return { files, errors };
+}
+
+// 在lines裡依序套用hunks，回傳{ok,lines}或{ok:false,error}。
+function _faApplyHunksToLines(lines, hunks, path) {
+    const out = lines.slice();
+    let delta = 0;      // 前面hunk造成的行數位移（新-舊）
+    let lastEnd = 0;    // 下一個hunk不能從這行以前開始（hunk必須依序、不重疊）
+    const norm = (s) => s.replace(/\s+$/, '');
+    for (let hi = 0; hi < hunks.length; hi++) {
+        const h = hunks[hi];
+        const oldSide = h.lines.filter(l => l.t !== '+').map(l => l.s);
+        const newSide = h.lines.filter(l => l.t !== '-').map(l => l.s);
+        const expected = Math.max(0, h.oldStart - 1) + delta;
+        let at = -1;
+        if (!oldSide.length) {
+            at = Math.min(Math.max(expected + (h.oldStart > 0 ? 1 : 0), lastEnd), out.length);
+        } else {
+            const maxStart = out.length - oldSide.length;
+            const tryMatch = (cmp) => {
+                for (let d = 0, maxD = Math.max(out.length, expected); d <= maxD; d++) {
+                    for (const idx of (d === 0 ? [expected] : [expected - d, expected + d])) {
+                        if (idx < lastEnd || idx < 0 || idx > maxStart) continue;
+                        let ok = true;
+                        for (let k = 0; k < oldSide.length; k++) if (!cmp(out[idx + k], oldSide[k])) { ok = false; break; }
+                        if (ok) return idx;
+                    }
+                }
+                return -1;
+            };
+            at = tryMatch((a, b) => a === b);
+            if (at === -1) at = tryMatch((a, b) => norm(a) === norm(b));
+            if (at === -1) {
+                const around = Math.min(Math.max(expected, 0), Math.max(out.length - 1, 0));
+                const from = Math.max(0, around - 3), to = Math.min(out.length, around + Math.max(oldSide.length, 4) + 3);
+                const actual = out.slice(from, to).map((s, k) => `${String(from + k + 1).padStart(4)}| ${s}`).join('\n');
+                return {
+                    ok: false,
+                    error: `error: patch failed: ${path}:${h.oldStart}\nerror: 第${hi + 1}個hunk（@@ -${h.oldStart}）的舊內容（context行＋被刪除行）在檔案裡找不到逐字吻合的位置。\nhunk預期的舊內容：\n${oldSide.slice(0, 8).map(s => '     | ' + s).join('\n')}${oldSide.length > 8 ? '\n     | …' : ''}\n檔案目前在第${from + 1}~${to}行附近的實際內容：\n${actual || '(檔案是空的)'}\n請重新用讀檔工具取得最新內容，逐字複製context行後重寫patch。`,
+                };
+            }
+        }
+        out.splice(at, oldSide.length, ...newSide);
+        delta += newSide.length - oldSide.length;
+        lastEnd = at + newSide.length;
+    }
+    return { ok: true, lines: out };
+}
+
+// 行級unified diff產生器（LCS，先修剪共同前後綴縮小規模）。用於網頁版git_inspect(diff)。
+function _faMakeUnifiedDiff(oldText, newText, path, context = 3) {
+    const a = _faCodingSplitLines(oldText).lines;
+    const b = _faCodingSplitLines(newText).lines;
+    let pre = 0;
+    while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+    let suf = 0;
+    while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+    const am = a.slice(pre, a.length - suf), bm = b.slice(pre, b.length - suf);
+    if (am.length * bm.length > 4000000) {
+        return `--- a/${path}\n+++ b/${path}\n（差異範圍太大，無法產生行級diff：舊${a.length}行→新${b.length}行，第${pre + 1}行開始不同）\n`;
+    }
+    const n = am.length, m = bm.length;
+    const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = am[i] === bm[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const ops = []; // {t, s}
+    for (let k = 0; k < pre; k++) ops.push({ t: ' ', s: a[k] });
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+        if (am[i] === bm[j]) { ops.push({ t: ' ', s: am[i] }); i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ t: '-', s: am[i] }); i++; }
+        else { ops.push({ t: '+', s: bm[j] }); j++; }
+    }
+    while (i < n) ops.push({ t: '-', s: am[i++] });
+    while (j < m) ops.push({ t: '+', s: bm[j++] });
+    for (let k = a.length - suf; k < a.length; k++) ops.push({ t: ' ', s: a[k] });
+    const changed = ops.map((o, idx) => (o.t !== ' ' ? idx : -1)).filter(x => x >= 0);
+    if (!changed.length) return '';
+    const hunks = [];
+    let cur = null;
+    for (const idx of changed) {
+        const from = Math.max(0, idx - context), to = Math.min(ops.length, idx + context + 1);
+        if (cur && from <= cur.to) cur.to = to; else { cur = { from, to }; hunks.push(cur); }
+    }
+    let oldLine = 1, newLine = 1, opIdx = 0;
+    let out = `--- a/${path}\n+++ b/${path}\n`;
+    for (const h of hunks) {
+        while (opIdx < h.from) { if (ops[opIdx].t !== '+') oldLine++; if (ops[opIdx].t !== '-') newLine++; opIdx++; }
+        const body = ops.slice(h.from, h.to);
+        const oc = body.filter(o => o.t !== '+').length, nc = body.filter(o => o.t !== '-').length;
+        out += `@@ -${oc ? oldLine : oldLine - 1},${oc} +${nc ? newLine : newLine - 1},${nc} @@\n`;
+        for (const o of body) out += o.t + o.s + '\n';
+        while (opIdx < h.to) { if (ops[opIdx].t !== '+') oldLine++; if (ops[opIdx].t !== '-') newLine++; opIdx++; }
+    }
+    return out;
+}
+
+// coding domain的system prompt：桌面版跟網頁版共用同一套固定流程，只有「用什麼工具讀檔/
+// 跑測試/commit」這幾處不同，所以做成純函式產生（domain的systemPrompt必須是靜態字串，
+// 不能是函式）。env: {kind:'desktop'|'web', platformLabel}
+function _faBuildCodingSystemPrompt(env = {}) {
+    const desktop = env.kind === 'desktop';
+    const rootDesc = desktop
+        ? '目標專案資料夾的絕對路徑'
+        : '目標專案資料夾的File Access Point參照（格式`fap:<名稱或id>[/<子路徑>]`，這個資料夾視為git repo根目錄；用list_file_access_points查有哪些已授權資料夾）';
+    const readStep = desktop
+        ? '用fs_read_file讀取'
+        : '用coding_read_file讀取（回傳的每行前面`  12| `是行號，只是幫你計算hunk位置用，**不是檔案內容，patch的context行絕對不可以包含它**）';
+    const listTools = desktop ? 'fs_list_files/fs_find_file' : 'fap_list_files/fap_find_file';
+    const parallelHint = desktop ? '（多檔案改用batch_process_items、大檔案用analyze_large_file，不要自己逐一sequentially讀爆對話歷史）' : '（檔案很多時只讀跟任務相關的，不要整個專案逐檔讀）';
+    const step2 = desktop
+        ? '**步驟2：確認環境**：git_inspect({"mode":"status"})。回應顯示不是git repo時，在回覆裡明確詢問使用者要不要初始化，不要自己默默git init（除非使用者已明講要建立新repo，才可以用run_command跑git init）。'
+        : '**步驟2：確認環境**：git_inspect({"mode":"status"})。回應顯示不是git repo（is_git_repo:false）時，在回覆裡明確詢問使用者要不要初始化，不要自己默默初始化（除非使用者已明講要建立新repo，才可以呼叫git_inspect({"mode":"init"})）。沒有git的話apply_git_patch仍然能用，但restore只能還原到自動備份的上一版、git_commit也無法使用。';
+    const step3 = desktop
+        ? '**步驟3：決定測試指令與語法/編譯檢查指令**：task已明講就直接用；否則用fs_read_file確認專案工具鏈（package.json的scripts.test、pytest.ini/pyproject.toml、Cargo.toml、go.mod、Makefile的test target）；判斷不出來就直接問使用者，**不要編一個不存在的指令**。同時決定一個更輕量的語法/編譯檢查指令（JS：node --check <檔案>；TS：tsc --noEmit；Python：python -m py_compile <檔案>；Go：go build ./...；Rust：cargo check）——每次套用patch後、跑完整測試前先跑它，便宜很多。'
+        : '**步驟3：決定測試與語法檢查方式**：網頁版沒有真實shell，測試在瀏覽器沙盒裡跑：coding_run_tests({"cwd_abs":...,"script":"python test_calc.py"})會把專案的文字檔複製進沙盒/work後執行你給的bash腳本（支援python/python3、jq、grep/sed/awk等；`python -m unittest`這類-m寫法不支援，請直接執行測試腳本檔）；語法檢查用coding_run_check({"cwd_abs":...,"paths":["src/x.py"]})（支援.py/.js/.mjs/.json/.sh）。**沙盒沒有node、沒有網路**：專案是JS/TS而且沒有能用python/sh跑的測試時，測試無法真的執行——這種情況要誠實告知使用者「網頁版無法執行這個專案的測試」，只做語法檢查加人工檢視，並在complete_todo的design_summary註明「未經實際執行測試」，**絕對不可以假裝測試通過**。task已明講測試方式就照做；判斷不出來就直接問使用者，不要編一個不存在的指令。';
+    const step4 = desktop
+        ? '**步驟4：baseline**：先用run_command跑一次測試指令，記下真實通過/失敗狀態，不要假設專案原本全綠。'
+        : '**步驟4：baseline**：能跑測試時先用coding_run_tests跑一次，記下真實通過/失敗狀態，不要假設專案原本全綠；不能跑就跳過並在後面如實註明。';
+    const checkCmd = desktop ? '跑步驟3的語法/編譯檢查' : '用coding_run_check檢查剛改的檔案';
+    const runTests = desktop ? '跑測試指令' : '用coding_run_tests跑測試（無法跑時照步驟3誠實註明）';
+    const commit = desktop
+        ? '用run_command執行git add -A與git commit -m "簡述"（一項一個commit）'
+        : '用git_commit({"ref":"<cwd_abs>","message":"簡述"})（會自動加入所有變更；一項一個commit；如果回報缺少git作者名稱/信箱，如實轉告使用者去Advance Settings設定，不要卡住整個流程，跳過commit繼續下一項並在最後回報）';
+    const ctxHead = desktop ? `這台電腦目前跑的是${env.platformLabel || ''}。` : '你執行在瀏覽器裡（網頁版），檔案透過使用者授權的File Access Point存取，git用純JS實作，測試在瀏覽器內的bash/python沙盒執行。';
+    return `你是FloatingAssistant專門處理「程式設計」任務的子任務助理——分析需求、讀懂既有原始碼、產出設計計畫與TODO清單、依序實作、跑測試、修bug。${ctxHead}**因為目前接的AI模型能力有限，你必須嚴格照下面的固定流程逐步執行，每個步驟都要真的做完（呼叫對應工具拿到真實結果）才能進下一步，不能跳步驟、不能憑記憶或猜測代替實際讀取/執行。** 所有工具的cwd_abs參數都填${rootDesc}（task裡沒講清楚就先問使用者，不要瞎猜）。
+
+**步驟0：讀取既有狀態（每次開始都要做）**：先呼叫coding_task_state({"cwd_abs":"...","action":"get"})。
+- exists:false → 全新任務，進步驟1。
+- 有既有狀態、phase不是"done" → 有任務正在進行中，先讀懂todos目前進度。判斷這次收到的是：(a)對現有計畫的補充/修改/中途插入的新要求（steering）——用add_todo把新要求插進清單（使用者明講「馬上/優先/先做這個」才用position:"now"，否則用"next"排在目前項目後面），然後從next_todo_id接著做；(b)完全不相關的新任務——明確告訴使用者目前有進行中的任務（引用title與進度），詢問要先完成它還是另開，不要自己擅自捨棄舊任務；(c)單純「繼續」——直接從next_todo_id接著做，不要重新規劃。
+- phase是"done" → 視為全新任務，進步驟1。
+
+**步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
+## 需求分析（使用者實際要什麼、有沒有隱含限制）
+## 現況（相關原始碼位置）（哪些檔案/函式相關、目前怎麼運作）
+## 設計方案（打算怎麼改、為什麼、取捨）
+## TODO List（編號清單；**每項要小到「一次patch＋一次測試」能完成**，不要把整個需求塞成一項）
+## 測試計畫（怎麼驗證、用什麼指令）
+寫完後呼叫coding_task_state action:init（title/requirements/design/todos）存檔——沒存檔就沒有東西可以中斷後恢復。
+
+${step2}
+
+${step3}
+
+${step4}
+
+**步驟5：逐一實作TODO項目（每項重複下面子迴圈）**：
+ a) coding_task_state action:update_todo把這項設成in_progress。
+ b) **要改的檔案一定要先重新${readStep}「現在」的真實內容**——絕對不要用記憶中或前幾輪的舊版本當基礎，尤其這個檔案前面已經被patch過。
+ c) 基於最新內容手寫標準unified diff（--- a/路徑、+++ b/路徑、@@ hunk header、每個hunk前後至少3行context；context行與被刪除行要逐字複製原檔案內容，含縮排），呼叫apply_git_patch。**這是唯一允許修改程式碼的方式**，也不可以用request_additional_tools去申請fs_write_file之類的寫入工具來繞過。新增檔案用--- /dev/null；刪除檔案用+++ /dev/null。
+ d) 套用失敗（ok:false）：仔細讀stderr判斷是context對不上、路徑錯誤或格式不對，回到b)重新讀檔、重寫patch，不要原封不動重送。**同一項目最多重試3輪**；第3輪仍失敗就update_todo標成blocked並在notes寫清楚卡在哪，跳到下一個不相依的項目，不要卡死整個任務。
+ e) 套用成功：先${checkCmd}，再用git_inspect({"mode":"diff"})確認實際變更符合預期——不要只因為ok:true就跳過。**語法檢查失敗時，先git_inspect({"mode":"restore","path":"..."})把該檔案還原到上次commit（或自動備份）的乾淨狀態，再回b)重來，不要在壞掉的版本上疊加下一個patch。**
+ f) ${runTests}，**完整讀stdout/stderr文字判斷是否真的通過，不能只看exit_code**。然後呼叫coding_task_state action:record_test_result存檔（todo_id/command/stdout/stderr/passed）。
+ g) 通過：coding_task_state action:complete_todo（必附design_summary、source_locations、entry_points，會自動append到DESIGN-INDEX.md），接著${commit}。進下一項。
+ h) 不通過：根據真正的錯誤訊息分析（不要臆測），回b)，同一項目一樣最多3輪。
+
+**步驟6：收尾**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
+
+**輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。`;
+}
+// ==== CODING-HELPERS-END ====
+
 // tw_stock_db客製: 2026-09-15使用者要求——git_operations domain（純瀏覽器端
 // git clone/pull/commit/push，用isomorphic-git）需要一個實作Node
 // `fs.promises`介面子集的物件，這個class把它接到一個File Access Point的
@@ -1110,6 +1393,16 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         label: 'git版本控制操作（clone/pull/commit/push）',
         toolNames: ['git_clone', 'git_pull', 'git_status', 'git_log', 'git_commit', 'git_push'],
         systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。這些工具跟fap_*系列共用同一套File Access Point權限機制——目標資料夾如果沒有授權，呼叫時會自動跳出授權對話框讓使用者當場點擊，呼叫會停在那裡等回應，不用先叫使用者去Advance Settings。',
+    },
+    // tw_stock_db客製: 2026-09-20使用者要求（TODO.md Phase 4）——程式設計domain，網頁版＋
+    // 桌面版共用同一套固定流程（狀態機/Plan Template/git patch），專為弱模型設計。網頁版用
+    // File Access Point＋isomorphic-git＋瀏覽器內bash/python沙盒；桌面版由bootstrap.js用
+    // register_domain('coding')覆蓋成真的git＋run_command版本。刻意沒有任何直接寫檔工具。
+    coding: {
+        enabled: true,
+        label: '程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復）',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests'],
+        systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——新增
     // 「研究」domain，跟file_access_points/git_operations/桌面版desktop_ops
@@ -2351,6 +2644,8 @@ const FA_ASSET_URLS = {
     bufferPolyfill: 'https://cdn.jsdelivr.net/npm/buffer@6.0.3/+esm',
     isomorphicGit: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/index.umd.min.js',
     isomorphicGitHttp: 'https://cdn.jsdelivr.net/npm/isomorphic-git@1.42.2/http/web/index.umd.js',
+    // coding_run_check檢查.js/.mjs語法用（純JS parser，不執行程式碼）
+    acornJs: 'https://cdn.jsdelivr.net/npm/acorn@8.12.1/dist/acorn.js',
     // tw_stock_db客製: 2026-09-15使用者要求——parse_uploaded_file/
     // summarize_large_text原本完全不認得pdf（掉進_parseUploadedFileContent
     // 最後那段「當純文字讀」的fallback，對二進位PDF內容只會讀出亂碼，
@@ -5802,6 +6097,92 @@ ${fnData.code}
             }, required: ['ref', 'message'], additionalProperties: false }
         );
 
+        // ==== CODING-TOOLS-BEGIN ====
+        // tw_stock_db客製: 2026-09-20 coding domain網頁版工具（TODO.md Phase 4）。桌面版
+        // 由bootstrap.js用同名工具（真的git）覆蓋apply_git_patch/git_inspect/coding_task_state。
+        const codingCap = (r) => {
+            const max = this._getAdaptiveContentBudgetChars(0.15, 8000);
+            const out = { ...r };
+            for (const k of ['stdout', 'stderr', 'content']) {
+                if (typeof out[k] === 'string' && out[k].length > max) { out[k] = out[k].slice(0, max) + `\n…（已截斷，原本${r[k].length}字元）`; out.truncated = true; }
+            }
+            return out;
+        };
+        const codingRoot = async (parsed) => {
+            const ref = this._codingRefFromArgs(parsed);
+            if (!ref) throw new Error('缺少cwd_abs（目標專案資料夾的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]）');
+            return { ref, io: await this._codingFapIo(ref) };
+        };
+        const codingRootSchema = { type: 'string', description: '目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]' };
+        const codingWrap = (fn) => async (rawArgs) => {
+            let parsed = {};
+            try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+            try { return JSON.stringify(codingCap(await fn(parsed))); }
+            catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+        };
+
+        registerOptional('coding_read_file',
+            '讀取專案裡一個純文字/原始碼檔案的**完整**內容（不像fap_read_file固定截斷在8000字元），每行前面附行號方便計算patch的hunk位置。大檔案自動分段，has_more/next_start_line告訴你下一段從哪開始。參數: {"cwd_abs":"fap:我的專案","path":"src/calc.js","start_line":1,"line_numbers":true}',
+            codingWrap(async (parsed) => {
+                const { io } = await codingRoot(parsed);
+                if (!parsed.path) return { ok: false, error: '缺少path（相對於專案資料夾的檔案路徑）' };
+                return this._codingReadFile(io, String(parsed.path), { startLine: parsed.start_line, lineNumbers: parsed.line_numbers !== false });
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, path: { type: 'string' }, start_line: { type: 'number' }, line_numbers: { type: 'boolean' } }, required: ['cwd_abs', 'path'], additionalProperties: false }
+        );
+
+        registerOptional('apply_git_patch',
+            '把一份unified diff（git diff格式）套用到專案——**修改程式碼的唯一入口**。會先完整檢查（乾跑）：任何一個hunk對不上，整份patch都不會套用、檔案完全不動，並把錯誤原因（含檔案目前的實際內容）放在stderr，請讀stderr、用coding_read_file重讀最新內容後重寫patch。格式：`--- a/路徑`／`+++ b/路徑`、`@@ -起始行,行數 +起始行,行數 @@`、每個hunk前後至少3行未變更context（以一個空白開頭，逐字複製原檔）、刪除行`-`開頭、新增行`+`開頭；新增檔案用`--- /dev/null`、刪除檔案用`+++ /dev/null`。會拒絕把檔案清空成0 bytes的patch。參數: {"cwd_abs":"fap:我的專案","patch":"--- a/src/x.js\\n+++ b/src/x.js\\n@@ -1,3 +1,3 @@\\n ...","check_only":false}',
+            codingWrap(async (parsed) => {
+                const { io } = await codingRoot(parsed);
+                if (!parsed.patch) return { ok: false, error: '缺少patch內容' };
+                return this._codingApplyPatch(io, String(parsed.patch), { checkOnly: !!parsed.check_only, strip: parsed.strip == null ? 1 : parsed.strip });
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, patch: { type: 'string', description: '完整的unified diff文字' }, check_only: { type: 'boolean', description: '選填，true=只乾跑驗證不套用' }, strip: { type: 'number', description: '選填，去掉路徑前幾層（a/ b/前綴），預設1' } }, required: ['cwd_abs', 'patch'], additionalProperties: false }
+        );
+
+        registerOptional('git_inspect',
+            '查看專案git狀態或還原檔案。mode: status（未commit的變更/是不是git repo）、diff（未commit的實際變更，可用path限定單一檔案）、log（最近commit）、restore（把path還原到最後一次commit；沒有git或檔案不在commit裡時改用apply_git_patch套用前的自動備份）、init（初始化git repo，**要先問過使用者**）。參數: {"cwd_abs":"fap:我的專案","mode":"diff","path":"src/x.js"}',
+            codingWrap(async (parsed) => {
+                const { ref, io } = await codingRoot(parsed);
+                return this._codingGitInspect(io, ref, { mode: parsed.mode || 'status', path: parsed.path, maxCommits: parsed.max_commits });
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, mode: { type: 'string', enum: ['status', 'diff', 'log', 'restore', 'init'] }, path: { type: 'string' }, max_commits: { type: 'number' } }, required: ['cwd_abs'], additionalProperties: false }
+        );
+
+        registerOptional('coding_task_state',
+            '管理程式設計任務的持久化狀態（TODO清單／目前階段／設計索引），存在專案資料夾的.floating-assistant/coding-task-state.json、DESIGN-INDEX.md、tests/。**處理coding任務前第一件事永遠是action:get讀取真實狀態，不要假設記得之前做到哪。** action：get；init（title,requirements,design=照Plan Template寫的設計文字,todos=[{text,files_hint}]）；add_todo（text,position=now|next|end，使用者中途插隊要求用now）；update_todo（id,status=pending|in_progress|blocked,notes）；complete_todo（id,design_summary,source_locations[],entry_points[]，標記完成並自動append DESIGN-INDEX.md）；record_test_result（todo_id,command,stdout,stderr,passed）；set_phase（phase=requirements_analysis|design|planning|executing|blocked|done）。參數: {"cwd_abs":"fap:我的專案","action":"get"}',
+            codingWrap(async (parsed) => {
+                const { ref, io } = await codingRoot(parsed);
+                return this._codingStateRun(ref, parsed, io);
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, action: { type: 'string', enum: ['get', 'init', 'add_todo', 'update_todo', 'complete_todo', 'record_test_result', 'set_phase'] } }, required: ['cwd_abs', 'action'], additionalProperties: true }
+        );
+
+        registerOptional('coding_run_tests',
+            '在瀏覽器內的bash/python沙盒執行測試：把專案的文字檔（排除.git/node_modules等，單檔≤300KB、總量≤4MB）複製進沙盒/work後，執行你給的bash腳本（工作目錄已在/work）。支援python/python3（直接執行測試腳本檔，`python -m ...`不支援）、jq、grep/sed/awk等。**沒有node、沒有網路**——JS/TS專案的測試在這裡跑不了，要誠實告知使用者。沙盒內的修改不會寫回專案。參數: {"cwd_abs":"fap:我的專案","script":"python test_calc.py"}',
+            codingWrap(async (parsed) => {
+                const { io } = await codingRoot(parsed);
+                const script = String(parsed.script || '').trim();
+                if (!script) return { ok: false, error: '缺少script（要在沙盒/work執行的bash腳本，例如 python test_calc.py）' };
+                const r = await this._codingRunInSandbox(io, script);
+                return { ok: true, ...r, note: 'ok只代表腳本有執行；測試是否通過請讀stdout/stderr文字與exit_code（0通常代表成功，但不保證）。' };
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, script: { type: 'string', description: '要執行的bash腳本，例如 python test_calc.py 或 sh run_tests.sh' } }, required: ['cwd_abs', 'script'], additionalProperties: false }
+        );
+
+        registerOptional('coding_run_check',
+            '對指定檔案做語法檢查（不執行程式）：.py（Python ast）、.js/.mjs/.cjs（acorn）、.json、.sh（sh -n）。其他副檔名會回報「不支援檢查」。參數: {"cwd_abs":"fap:我的專案","paths":["src/calc.py","config.json"]}',
+            codingWrap(async (parsed) => {
+                const { io } = await codingRoot(parsed);
+                const paths = Array.isArray(parsed.paths) ? parsed.paths.map(String) : (parsed.path ? [String(parsed.path)] : []);
+                if (!paths.length) return { ok: false, error: '缺少paths（要檢查的檔案路徑陣列）' };
+                return this._codingSyntaxCheck(io, paths);
+            }),
+            { type: 'object', properties: { cwd_abs: codingRootSchema, paths: { type: 'array', items: { type: 'string' } } }, required: ['cwd_abs', 'paths'], additionalProperties: false }
+        );
+        // ==== CODING-TOOLS-END ====
+
         registerOptional('git_push',
             '把一個File Access Point資料夾（git repo）本機已經commit的內容推上遠端(origin)。一定需要使用者已填入有寫入權限的GitHub Personal Access Token（不論公開或私有repo，push都需要驗證身分），沒有的話會直接回報錯誤而不是嘗試匿名push。參數: {"ref":"fap:我的專案", "branch":"main"}',
             async (rawArgs) => {
@@ -8498,6 +8879,427 @@ ${fnData.code}
         }
         return { ok: true, access_point: rec.label };
     }
+
+    // ==== CODING-METHODS-BEGIN ====
+    // tw_stock_db客製: 2026-09-20 coding domain（TODO.md Phase 4）。桌面版跟網頁版
+    // 共用「狀態機」(_codingStateAction)，各自提供一個io物件
+    // {readText(rel), writeText(rel,text), remove(rel), listNames(relDir), describe(rel)}
+    // 隔離檔案存取方式：桌面版用rawfs絕對路徑（bootstrap.js組io），網頁版用File Access
+    // Point的DirectoryHandle（_codingFapIo）。網頁版另外有apply_git_patch/git_inspect/
+    // coding_read_file/coding_run_*的純JS實作；桌面版這幾個工具由bootstrap.js用同名工具
+    // 覆蓋成「真的git」版本。
+    _buildCodingSystemPrompt(env) { return _faBuildCodingSystemPrompt(env); }
+
+    _codingRefFromArgs(parsed) {
+        return String((parsed && (parsed.cwd_abs || parsed.project_ref || parsed.ref)) || '').trim();
+    }
+
+    async _codingFapIo(ref) {
+        if (!/^fap:/i.test(ref)) throw new Error('網頁版的cwd_abs必須是File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]（用list_file_access_points查看有哪些已授權資料夾）');
+        const { rec, dirHandle } = await this._resolveFapDirectory(ref, { mode: 'readwrite' });
+        const self = this;
+        const walk = async (rel, create) => {
+            const parts = self._splitFapPath(rel);
+            const name = parts.pop();
+            let d = dirHandle;
+            for (const p of parts) d = await d.getDirectoryHandle(p, { create: !!create });
+            return { d, name };
+        };
+        const notFound = (e) => e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError');
+        return {
+            kind: 'fap', label: rec.label, dirHandle,
+            async readText(rel) {
+                try { const { d, name } = await walk(rel, false); return await (await (await d.getFileHandle(name)).getFile()).text(); }
+                catch (e) { if (notFound(e)) return null; throw e; }
+            },
+            async writeText(rel, text) {
+                const { d, name } = await walk(rel, true);
+                const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+                await w.write(String(text)); await w.close();
+            },
+            async remove(rel) { const { d, name } = await walk(rel, false); await d.removeEntry(name); },
+            async listNames(relDir) {
+                try {
+                    let d = dirHandle;
+                    for (const p of self._splitFapPath(relDir)) d = await d.getDirectoryHandle(p);
+                    const out = []; for await (const [n] of d.entries()) out.push(n); return out;
+                } catch (e) { if (notFound(e)) return []; throw e; }
+            },
+            describe(rel) { return `fap:${rec.label}/${rel}`; },
+        };
+    }
+
+    // ---- coding_task_state（狀態機，桌面/網頁共用）----
+    _codingPaths() {
+        return { state: '.floating-assistant/coding-task-state.json', index: 'DESIGN-INDEX.md', testsDir: 'tests' };
+    }
+
+    async _codingStateRun(key, parsed, io) {
+        if (!this._codingStateLocks) this._codingStateLocks = new Map();
+        const prev = this._codingStateLocks.get(key) || Promise.resolve();
+        const run = prev.then(() => this._codingStateAction(parsed, io)).catch((err) => ({ ok: false, error: String(err.message || err) }));
+        this._codingStateLocks.set(key, run.catch(() => {}));
+        return run;
+    }
+
+    async _codingStateAction(parsed, io) {
+        const PHASES = ['requirements_analysis', 'design', 'planning', 'executing', 'blocked', 'done'];
+        const STATUSES = ['pending', 'in_progress', 'blocked', 'done'];
+        const paths = this._codingPaths();
+        const nowIso = () => new Date().toISOString();
+        const strArr = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : (v ? [String(v).trim()] : []));
+        const action = String(parsed.action || '').trim();
+
+        let state = null, loadError = null;
+        const text = await io.readText(paths.state);
+        if (text != null) {
+            try { state = JSON.parse(text); } catch (e) { loadError = `狀態檔不是合法JSON（${e.message}）。可用git_inspect restore還原${paths.state}，或用action:init加force:true重建。`; }
+            if (!loadError && (!state || !Array.isArray(state.todos) || typeof state.phase !== 'string')) loadError = '狀態檔結構不完整（缺todos陣列或phase）。可用git_inspect restore還原，或用action:init加force:true重建。';
+            if (loadError) state = null;
+        }
+        if (loadError && action !== 'init') return { ok: false, error: loadError };
+
+        const save = async () => { state.updated_at = nowIso(); await io.writeText(paths.state, JSON.stringify(state, null, 2)); };
+        const summarize = () => {
+            // 依清單順序取第一個未完成項目（steering用position:"now"插隊時，被暫停的
+            // in_progress項目會排在插隊項目後面，所以不能無條件優先挑in_progress）。
+            const cur = state.todos.find((t) => t.status === 'in_progress' || t.status === 'pending') || null;
+            return {
+                title: state.title, phase: state.phase, requirements: state.requirements, design: state.design,
+                todos: state.todos, next_todo_id: cur ? cur.id : null,
+                counts: STATUSES.reduce((o, s) => ({ ...o, [s]: state.todos.filter((t) => t.status === s).length }), {}),
+                steering_log: state.steering_log || [], test_runs: (state.test_runs || []).slice(-10),
+            };
+        };
+
+        if (action === 'get') {
+            if (!state) return { ok: true, exists: false, note: '這個專案還沒有進行中的coding任務狀態，請走步驟1（需求分析＋設計）再action:init建立。' };
+            const idx = await io.readText(paths.index);
+            return { ok: true, exists: true, state: summarize(), design_index_tail: idx ? idx.slice(-3000) : null };
+        }
+
+        if (action === 'init') {
+            const title = String(parsed.title || '').trim();
+            const todosIn = Array.isArray(parsed.todos) ? parsed.todos : [];
+            if (!title) return { ok: false, error: 'init需要title' };
+            if (!String(parsed.design || '').trim()) return { ok: false, error: 'init需要design（照Plan Template結構寫的設計計畫文字）' };
+            const todos = todosIn.map((t, i) => ({
+                id: i + 1, text: String((t && t.text) || t || '').trim(), status: 'pending', notes: '', files_hint: strArr(t && t.files_hint),
+            })).filter((t) => t.text);
+            if (!todos.length) return { ok: false, error: 'init需要至少一個todos項目（每項要有text）' };
+            if (state && state.phase !== 'done' && !parsed.force) {
+                return { ok: false, error: `已經有進行中的任務「${state.title}」（phase=${state.phase}），不能覆蓋。要改動現有計畫請用add_todo/update_todo；確定要丟掉重來才加force:true。` };
+            }
+            state = {
+                title, phase: 'executing', requirements: String(parsed.requirements || '').trim(), design: String(parsed.design),
+                todos, steering_log: [], test_runs: [], created_at: nowIso(), updated_at: nowIso(),
+            };
+            await save();
+            if ((await io.readText(paths.index)) == null) await io.writeText(paths.index, '# DESIGN-INDEX\n\n由coding domain自動維護：每完成一個TODO項目就append一筆（設計摘要／原始碼位置／程式入口），供中斷後恢復與快速掌握脈絡。\n');
+            return { ok: true, state: summarize() };
+        }
+
+        if (!state) return { ok: false, error: '沒有進行中的任務狀態，請先action:init' };
+
+        if (action === 'add_todo') {
+            const text2 = String(parsed.text || '').trim();
+            if (!text2) return { ok: false, error: 'add_todo需要text' };
+            const position = ['now', 'next', 'end'].includes(parsed.position) ? parsed.position : 'next';
+            const todo = { id: Math.max(0, ...state.todos.map((t) => t.id)) + 1, text: text2, status: 'pending', notes: '', files_hint: strArr(parsed.files_hint) };
+            const firstOpen = state.todos.findIndex((t) => t.status !== 'done');
+            const inProg = state.todos.findIndex((t) => t.status === 'in_progress');
+            let at;
+            if (position === 'end' || firstOpen === -1) at = state.todos.length;
+            else if (position === 'now') at = firstOpen;
+            else at = inProg !== -1 ? inProg + 1 : firstOpen + 1; // "next"＝排在「正在做/下一個要做的那項」之後
+            if (position === 'now' && inProg !== -1) {
+                // 插隊：暫停目前進行中的項目（退回pending並留註記），插隊項目先做
+                state.todos[inProg].status = 'pending';
+                state.todos[inProg].notes = (state.todos[inProg].notes ? state.todos[inProg].notes + ' ' : '') + `（被插隊暫停，先處理#${todo.id}，完成後回來繼續）`;
+            }
+            state.todos.splice(at, 0, todo);
+            state.steering_log.push({ at: nowIso(), position, note: text2 });
+            if (state.phase === 'done') state.phase = 'executing';
+            await save();
+            return { ok: true, added: todo, state: summarize() };
+        }
+
+        const findTodo = () => state.todos.find((t) => t.id === Number(parsed.id));
+
+        if (action === 'update_todo') {
+            const t = findTodo();
+            if (!t) return { ok: false, error: `找不到id=${parsed.id}的TODO，現有id：${state.todos.map((x) => x.id).join(',')}` };
+            if (parsed.status != null) {
+                if (parsed.status === 'done') return { ok: false, error: '標記完成請用complete_todo（需要附設計摘要/原始碼位置/程式入口，才會更新DESIGN-INDEX）' };
+                if (!STATUSES.includes(parsed.status)) return { ok: false, error: `status必須是${STATUSES.join('／')}其中之一` };
+                t.status = parsed.status;
+            }
+            if (parsed.notes != null) t.notes = String(parsed.notes);
+            await save();
+            return { ok: true, updated: t };
+        }
+
+        if (action === 'complete_todo') {
+            const t = findTodo();
+            if (!t) return { ok: false, error: `找不到id=${parsed.id}的TODO，現有id：${state.todos.map((x) => x.id).join(',')}` };
+            const summary = String(parsed.design_summary || '').trim();
+            const locs = strArr(parsed.source_locations);
+            const entries = strArr(parsed.entry_points);
+            if (!summary || !locs.length || !entries.length) {
+                return { ok: false, error: 'complete_todo必須附design_summary（這項做了什麼設計）、source_locations（改了哪些檔案:行號/函式）、entry_points（要從哪個函式/指令開始追這個改動）——三者都不能空，這是DESIGN-INDEX的內容來源。' };
+            }
+            t.status = 'done'; t.completed_at = nowIso();
+            const entry = `\n## [TODO#${t.id}] ${t.text}\n- 完成時間：${t.completed_at}\n- 設計摘要：${summary}\n- 原始碼位置：\n${locs.map((l) => `  - ${l}`).join('\n')}\n- 程式入口：\n${entries.map((e) => `  - ${e}`).join('\n')}\n`;
+            const idx = (await io.readText(paths.index)) || '# DESIGN-INDEX\n';
+            await io.writeText(paths.index, idx.replace(/\s*$/, '\n') + entry);
+            const allDone = state.todos.every((x) => x.status === 'done');
+            await save();
+            return { ok: true, completed: t, design_index: io.describe(paths.index), all_done: allDone, state: summarize() };
+        }
+
+        if (action === 'record_test_result') {
+            const stamp = nowIso().replace(/[:.]/g, '-');
+            const tid = parsed.todo_id != null ? `todo${parsed.todo_id}` : 'general';
+            const rel = `${paths.testsDir}/${stamp}-${tid}.log`;
+            const body = `# 測試結果 ${nowIso()}\ntodo: ${parsed.todo_id ?? '-'}\ncommand: ${parsed.command || '-'}\npassed: ${!!parsed.passed}\n\n## stdout\n${parsed.stdout || ''}\n\n## stderr\n${parsed.stderr || ''}\n`;
+            await io.writeText(rel, body);
+            state.test_runs = state.test_runs || [];
+            state.test_runs.push({ at: nowIso(), todo_id: parsed.todo_id ?? null, passed: !!parsed.passed, file: io.describe(rel) });
+            await save();
+            return { ok: true, saved_to: io.describe(rel) };
+        }
+
+        if (action === 'set_phase') {
+            if (!PHASES.includes(parsed.phase)) return { ok: false, error: `phase必須是${PHASES.join('／')}其中之一` };
+            state.phase = parsed.phase;
+            await save();
+            return { ok: true, phase: state.phase };
+        }
+
+        return { ok: false, error: `未知的action「${action}」，可用：get／init／add_todo／update_todo／complete_todo／record_test_result／set_phase` };
+    }
+
+    // ---- apply_git_patch（網頁版純JS實作；桌面版由bootstrap.js用真的git apply覆蓋）----
+    async _codingBackupDir(io) {
+        const names = await io.listNames('.git');
+        return names.length ? '.git/fa-backups' : '.floating-assistant/backups';
+    }
+
+    async _codingBackupWrite(io, path, text) {
+        const base = `${await this._codingBackupDir(io)}/${path}`;
+        const stamp = Date.now();
+        await io.writeText(`${base}/${stamp}.bak`, text);
+        // 每個檔案只留最近5份備份
+        const names = (await io.listNames(base)).filter((n) => /\.bak$/.test(n)).sort();
+        for (const old of names.slice(0, Math.max(0, names.length - 5))) { try { await io.remove(`${base}/${old}`); } catch (_) {} }
+    }
+
+    async _codingApplyPatch(io, patchText, { checkOnly = false, strip = 1 } = {}) {
+        const fail = (stage, msg) => ({ ok: false, stage, applied: false, exitCode: 1, stdout: '', stderr: msg, timedOut: false, errorMessage: `命令結束，exit code 1` });
+        if (!String(patchText || '').trim()) return fail('validate', 'patch內容是空的');
+        const parsed = _faParseUnifiedDiff(patchText, Math.max(0, Number(strip) || 0));
+        if (parsed.errors.length) return fail('check', parsed.errors.map((e) => `error: ${e}`).join('\n'));
+        const plans = [];
+        const errs = [];
+        const seen = new Set();
+        for (const f of parsed.files) {
+            if (seen.has(f.path)) { errs.push(`error: 檔案「${f.path}」在patch裡出現了兩次，請把同一個檔案的所有hunk合併在同一個 --- / +++ 區段底下`); continue; }
+            seen.add(f.path);
+            let cur;
+            try { cur = await io.readText(f.path); } catch (e) { errs.push(`error: ${f.path}: 讀取失敗（${String(e.message || e)}）`); continue; }
+            if (f.isNew) {
+                if (cur !== null && cur.trim() !== '') { errs.push(`error: ${f.path}: already exists in working directory（要修改既有檔案請用 --- a/${f.path} 檔頭，不是 /dev/null）`); continue; }
+                const r = _faApplyHunksToLines([], f.hunks, f.path);
+                if (!r.ok) { errs.push(r.error); continue; }
+                plans.push({ path: f.path, action: 'create', oldText: null, newText: _faCodingJoinLines(r.lines, '\n', true) });
+                continue;
+            }
+            if (cur === null) { errs.push(`error: ${f.path}: No such file or directory（檔案不存在；要新增檔案請用 --- /dev/null 檔頭）`); continue; }
+            const sp = _faCodingSplitLines(cur);
+            const r = _faApplyHunksToLines(sp.lines, f.hunks, f.path);
+            if (!r.ok) { errs.push(r.error); continue; }
+            if (f.isDelete) {
+                if (r.lines.length) { errs.push(`error: ${f.path}: 刪除檔案的hunk沒有涵蓋整個檔案內容（套用後還剩${r.lines.length}行）`); continue; }
+                plans.push({ path: f.path, action: 'delete', oldText: cur, newText: null });
+                continue;
+            }
+            const newText = _faCodingJoinLines(r.lines, sp.eol, sp.endsWithNewline || !sp.lines.length);
+            if (newText === '' && cur !== '') { errs.push(`error: ${f.path}: 套用結果會把檔案清空（0 bytes）——這幾乎一定是patch寫錯，已拒絕。真的要刪除整個檔案請用 +++ /dev/null`); continue; }
+            plans.push({ path: f.path, action: 'modify', oldText: cur, newText });
+        }
+        if (errs.length) return fail('check', errs.join('\n'));
+        const summary = plans.map((p) => `${p.action} ${p.path}`).join('\n');
+        if (checkOnly) return { ok: true, stage: 'check', applied: false, exitCode: 0, stdout: summary, stderr: '', timedOut: false, errorMessage: null, note: 'dry-run驗證成功，尚未真的套用（check_only=true）' };
+        // 全部檢查都過了才開始寫（先備份原內容，供restore在沒有git時使用）
+        for (const p of plans) {
+            if (p.oldText !== null) { try { await this._codingBackupWrite(io, p.path, p.oldText); } catch (_) { /* 備份失敗不阻擋套用，restore時會如實說沒有備份 */ } }
+            if (p.action === 'delete') await io.remove(p.path); else await io.writeText(p.path, p.newText);
+        }
+        return { ok: true, stage: 'apply', applied: true, exitCode: 0, stdout: summary, stderr: '', timedOut: false, errorMessage: null };
+    }
+
+    // ---- git_inspect（網頁版：isomorphic-git + 純JS diff）----
+    async _codingGitInspect(io, ref, { mode, path: subPath, maxCommits } = {}) {
+        const { fs } = await this._gitResolveFs(ref, { mode: 'readwrite' });
+        const g = window.git;
+        const bad = (msg) => ({ ok: false, exitCode: 1, stdout: '', stderr: msg, errorMessage: msg });
+        const isRepo = async () => { try { await fs.promises.stat('/.git'); return true; } catch (_) { return false; } };
+        const headOid = async () => { try { return await g.resolveRef({ fs, dir: '/', ref: 'HEAD' }); } catch (_) { return null; } };
+        const readHead = async (filepath) => {
+            const oid = await headOid();
+            if (!oid) return null;
+            try { const { blob } = await g.readBlob({ fs, dir: '/', oid, filepath }); return new TextDecoder().decode(blob); } catch (_) { return null; }
+        };
+        if (mode === 'init') {
+            if (await isRepo()) return { ok: true, exitCode: 0, stdout: '已經是git repo，不需要初始化', stderr: '' };
+            await g.init({ fs, dir: '/', defaultBranch: 'main' });
+            return { ok: true, exitCode: 0, stdout: '已在這個資料夾初始化git repo（分支main）', stderr: '' };
+        }
+        if (!(await isRepo())) {
+            if (mode === 'restore') return this._codingRestoreFromBackup(io, subPath);
+            return { ...bad('fatal: not a git repository（這個資料夾還不是git repo，可以呼叫git_inspect({"mode":"init"})，但要先問過使用者）'), is_git_repo: false };
+        }
+        if (mode === 'log') {
+            const commits = await g.log({ fs, dir: '/', depth: Math.max(1, Math.min(100, Number(maxCommits) || 20)) }).catch(() => []);
+            return { ok: true, exitCode: 0, stdout: commits.map((c) => `${c.oid.slice(0, 7)} ${c.commit.message.trim().split('\n')[0]}`).join('\n') || '（還沒有任何commit）', stderr: '' };
+        }
+        const matrix = await g.statusMatrix({ fs, dir: '/' });
+        // apply_git_patch的自動備份（.floating-assistant/backups）不算使用者的變更，status/diff都排除
+        const changed = matrix.filter(([fp, h, w, s]) => !(h === 1 && w === 1 && s === 1) && !/^\.floating-assistant\/backups\//.test(fp));
+        if (mode === 'diff') {
+            let out = '';
+            for (const [filepath, head, workdir] of changed) {
+                if (subPath && filepath !== subPath && !filepath.startsWith(String(subPath).replace(/\/?$/, '/'))) continue;
+                if (/^\.floating-assistant\//.test(filepath) || filepath === 'DESIGN-INDEX.md' || /^tests\/\d{4}-/.test(filepath)) continue;
+                const oldText = head === 0 ? '' : (await readHead(filepath)) || '';
+                const newText = workdir === 0 ? '' : (await io.readText(filepath)) || '';
+                out += _faMakeUnifiedDiff(oldText, newText, filepath);
+            }
+            return { ok: true, exitCode: 0, stdout: out || '（沒有未commit的變更）', stderr: '' };
+        }
+        if (mode === 'restore') {
+            if (!subPath) return bad('restore模式需要path參數');
+            const headText = await readHead(subPath);
+            if (headText === null) return this._codingRestoreFromBackup(io, subPath, '這個檔案不在最後一次commit裡（可能是新增的檔案）');
+            await io.writeText(subPath, headText);
+            return { ok: true, exitCode: 0, stdout: `已把 ${subPath} 還原到最後一次commit的內容`, stderr: '', source: 'git HEAD' };
+        }
+        const text = changed.map(([fp, h, w]) => `${h === 0 ? '??' : (w === 0 ? ' D' : ' M')} ${fp}`).join('\n');
+        return { ok: true, exitCode: 0, stdout: text || '沒有任何變更（working tree clean）', stderr: '', is_git_repo: true, changed_files: changed.map(([fp]) => fp) };
+    }
+
+    async _codingRestoreFromBackup(io, path, reason) {
+        if (!path) return { ok: false, exitCode: 1, stdout: '', stderr: 'restore模式需要path參數', errorMessage: 'restore模式需要path參數' };
+        const base = `${await this._codingBackupDir(io)}/${path}`;
+        const names = (await io.listNames(base)).filter((n) => /\.bak$/.test(n)).sort();
+        if (!names.length) {
+            const msg = `${reason ? reason + '，且' : ''}沒有找到 ${path} 的自動備份，無法還原`;
+            return { ok: false, exitCode: 1, stdout: '', stderr: msg, errorMessage: msg };
+        }
+        const text = await io.readText(`${base}/${names[names.length - 1]}`);
+        await io.writeText(path, text == null ? '' : text);
+        return { ok: true, exitCode: 0, stdout: `已從自動備份還原 ${path}（最近一次apply_git_patch套用前的內容）`, stderr: '', source: 'backup' };
+    }
+
+    // ---- coding_read_file（完整文字＋行號，不像fap_read_file固定截斷在8000字元）----
+    async _codingReadFile(io, path, { startLine = 1, lineNumbers = true } = {}) {
+        const text = await io.readText(path);
+        if (text === null) return { ok: false, error: `找不到檔案：${path}` };
+        if (FAP_BINARY_EXT_PATTERN.test(path)) return { ok: false, error: `「${path}」看起來是二進位檔案，不能當程式碼讀取` };
+        const { lines } = _faCodingSplitLines(text);
+        const budget = this._getAdaptiveContentBudgetChars(0.1, 6000);
+        const start = Math.max(1, Math.floor(Number(startLine) || 1));
+        const out = [];
+        let used = 0, i = start - 1;
+        for (; i < lines.length; i++) {
+            const row = lineNumbers ? `${String(i + 1).padStart(5)}| ${lines[i]}` : lines[i];
+            if (used + row.length + 1 > budget && out.length) break;
+            out.push(row); used += row.length + 1;
+        }
+        const hasMore = i < lines.length;
+        return {
+            ok: true, path, total_lines: lines.length, start_line: start, end_line: start - 1 + out.length,
+            has_more: hasMore, next_start_line: hasMore ? i + 1 : null,
+            content: out.join('\n'),
+            note: (lineNumbers ? '每行前面的「行號|」只是輔助計算hunk位置，不是檔案內容，寫patch時不可以包含。' : '') + (hasMore ? `還有更多內容，需要的話帶start_line=${i + 1}再呼叫一次。` : ''),
+        };
+    }
+
+    // ---- coding_run_tests / coding_run_check（瀏覽器內bash/python沙盒）----
+    async _codingRunInSandbox(io, script, { onlyPaths = null } = {}) {
+        const runtime = await this._ensureBashWasmLoaded();
+        const SKIP_DIRS = new Set(['.git', 'node_modules', '.floating-assistant', '__pycache__', '.venv', 'venv', 'dist', 'build', '.idea', '.vscode']);
+        const LIMITS = { files: 500, fileBytes: 300 * 1024, totalBytes: 4 * 1024 * 1024 };
+        const seed = {}; const skipped = []; let total = 0, count = 0;
+        const add = (rel, text, size) => {
+            if (size > LIMITS.fileBytes || count >= LIMITS.files || total + size > LIMITS.totalBytes) { skipped.push(rel); return; }
+            seed['/work/' + rel] = text; total += size; count++;
+        };
+        if (onlyPaths) {
+            for (const rel of onlyPaths) { const t = await io.readText(rel); if (t !== null) add(rel, t, t.length); }
+        } else {
+            const walk = async (dir, prefix) => {
+                for await (const [name, h] of dir.entries()) {
+                    if (h.kind === 'directory') { if (!SKIP_DIRS.has(name)) await walk(h, prefix + name + '/'); }
+                    else if (!FAP_BINARY_EXT_PATTERN.test(name)) { const f = await h.getFile(); if (f.size > LIMITS.fileBytes) { skipped.push(prefix + name); continue; } add(prefix + name, await f.text(), f.size); }
+                }
+            };
+            await walk(io.dirHandle, '');
+        }
+        const store = runtime.memoryFs(seed);
+        try { store.mkdirSync('/work', { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
+        // 跟bash_execute同一套按需載入python/jq等指令的做法（見那邊的說明）
+        const needed = Object.keys(SANDBOX_COMMAND_REGISTRY).filter((n) => new RegExp(`(^|[\\s;|&()\`])${n}(?=[\\s;|&()\`]|$)`).test(script));
+        const engines = {};
+        for (const n of needed) {
+            const kind = SANDBOX_COMMAND_REGISTRY[n].kind;
+            if (kind === 'pyodide' && !engines.pyodide) engines.pyodide = await this._ensurePyodideLoaded();
+            if (kind === 'jq' && !engines.jq) engines.jq = await this._ensureJqLoaded();
+            if (kind === 'xq') { if (!engines.jq) engines.jq = await this._ensureJqLoaded(); if (!engines.xmlParser) engines.xmlParser = await this._ensureXqXmlParserLoaded(); }
+        }
+        const builtins = {};
+        for (const n of needed) builtins[n] = (ctx) => this._runSandboxBuiltinCommand(SANDBOX_COMMAND_REGISTRY[n].kind, ctx, engines);
+        const stack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+        stack.push(store);
+        let result;
+        try { result = await runtime.run({ command: 'cd /work && ' + script, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true, builtins }); }
+        finally { stack.pop(); }
+        return { stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode, files_loaded: count, skipped_files: skipped };
+    }
+
+    async _codingSyntaxCheck(io, paths) {
+        const results = [];
+        for (const p of paths) {
+            const text = await io.readText(p);
+            if (text === null) { results.push({ path: p, ok: false, checked: true, error: '檔案不存在' }); continue; }
+            const ext = (p.match(/\.([^./]+)$/) || [])[1] ? p.match(/\.([^./]+)$/)[1].toLowerCase() : '';
+            try {
+                if (ext === 'json') { JSON.parse(text); results.push({ path: p, ok: true, checked: true }); }
+                else if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) {
+                    if (typeof window.acorn === 'undefined') await _faLoadScriptOnce(FA_ASSET_URLS.acornJs);
+                    const opts = { ecmaVersion: 'latest', allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, locations: true };
+                    let err1 = null;
+                    try { window.acorn.parse(text, { ...opts, sourceType: 'module' }); } catch (e) { err1 = e; }
+                    if (err1) { try { window.acorn.parse(text, { ...opts, sourceType: 'script' }); err1 = null; } catch (e) { err1 = err1; } }
+                    results.push(err1 ? { path: p, ok: false, checked: true, error: `${err1.message}` } : { path: p, ok: true, checked: true });
+                }
+                else if (ext === 'py') {
+                    const py = await this._ensurePyodideLoaded();
+                    py.globals.set('__fa_src', text);
+                    try { py.runPython('import ast\nast.parse(__fa_src)'); results.push({ path: p, ok: true, checked: true }); }
+                    catch (e) { results.push({ path: p, ok: false, checked: true, error: String(e.message || e).split('\n').filter(Boolean).slice(-3).join(' | ') }); }
+                    finally { try { py.globals.delete('__fa_src'); } catch (_) {} }
+                }
+                else if (ext === 'sh' || ext === 'bash') {
+                    const r = await this._codingRunInSandbox(io, `sh -n '${p.replace(/'/g, "'\\''")}'`, { onlyPaths: [p] });
+                    results.push(r.exit_code === 0 ? { path: p, ok: true, checked: true } : { path: p, ok: false, checked: true, error: (r.stderr || r.stdout || '').trim() });
+                }
+                else results.push({ path: p, ok: true, checked: false, note: `網頁版不支援檢查 .${ext || '(無副檔名)'}（可檢查：.py/.js/.mjs/.json/.sh）` });
+            } catch (e) { results.push({ path: p, ok: false, checked: true, error: String(e.message || e) }); }
+        }
+        return { ok: results.every((r) => r.ok), results };
+    }
+    // ==== CODING-METHODS-END ====
 
     // tw_stock_db客製: 2026-09-11——slash-command/工具用「附件、或已上傳在
     // fileCache的id/檔名」定位一個檔案。arg可以是：
@@ -14822,8 +15624,11 @@ ${sourceTool.handlerScript}
                 const p = dir === '/' ? '/' + name : dir + '/' + name;
                 let st;
                 try { st = fsApi.stat(p); } catch (_) { continue; }
-                if (st && st.type === 'directory') walk(p);
-                else out.push({ relPath: p.slice(rootDir.length + 1), absPath: p, bytes: fsApi.read(p) });
+                // 實測ctx.fs.stat()回傳的目錄type是'dir'（不是'directory'），原本只認
+                // 'directory'會把子目錄當檔案讀（read回null→後面.subarray炸掉），
+                // 只要/work底下有任何子資料夾，python builtin就整個失敗。
+                if (st && (st.type === 'dir' || st.type === 'directory')) walk(p);
+                else out.push({ relPath: p.slice(rootDir.length + 1), absPath: p, bytes: fsApi.read(p) || new Uint8Array(0) });
             }
         };
         walk(rootDir);
@@ -14838,12 +15643,27 @@ ${sourceTool.handlerScript}
     _runPythonBuiltin(ctx, pyodide) {
         const scriptPath = ctx.argv[1];
         if (!scriptPath) { ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: missing script path\n`)); return 2; }
+        // tw_stock_db客製: 2026-09-20（coding domain測試用）——相對路徑要能解析：
+        // 實測shell的cwd未必是/work（`python hello.py`原本直接失敗），依序試
+        // 原樣、cwd相對、/work相對三種，第一個讀得到的為準。
         let scriptText;
-        try {
-            scriptText = new TextDecoder('utf-8').decode(ctx.fs.read(scriptPath));
-        } catch (err) {
-            ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: ${scriptPath}: ${String(err.message || err)}\n`));
-            return 127;
+        let scriptAbs = scriptPath;
+        {
+            const candidates = scriptPath.startsWith('/') ? [scriptPath] : [scriptPath, `${String(ctx.cwd || '/work').replace(/\/$/, '')}/${scriptPath}`, `/work/${scriptPath}`];
+            let lastErr = null;
+            for (const cand of candidates) {
+                try {
+                    const bytes = ctx.fs.read(cand);
+                    if (!bytes) throw new Error('No such file or directory');
+                    scriptText = new TextDecoder('utf-8').decode(bytes);
+                    scriptAbs = cand;
+                    break;
+                } catch (err) { lastErr = err; }
+            }
+            if (scriptText === undefined) {
+                ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: ${scriptPath}: ${String((lastErr && lastErr.message) || lastErr)}\n`));
+                return 127;
+            }
         }
         // 橋接前先清空pyodide.FS的/work，避免看到上一次呼叫（或
         // python_execute）殘留的舊檔案（跟python_execute既有的清理慣例
@@ -14859,7 +15679,18 @@ ${sourceTool.handlerScript}
             pyodide.FS.writeFile(abs, f.bytes);
         }
         const stdinBytes = ctx.stdin() || null;
+        // tw_stock_db客製: 2026-09-20——讓腳本行為像真的`python script.py`：cwd設成
+        // /work、腳本所在目錄放進sys.path（測試腳本`from calc import add`才找得到
+        // 同專案的模組）、設定__file__；並清掉上一次執行從/work載入的模組快取，否則
+        // 改過的原始碼會被舊的sys.modules遮住，測試結果就是假的。執行後還原，不影響
+        // 共用同一個pyodide instance的python_execute。
+        const relInWork = scriptAbs.startsWith('/work/') ? scriptAbs : '/work/' + scriptPath.replace(/^\.\//, '');
+        try {
+            pyodide.globals.set('__fa_script_abs', relInWork);
+            pyodide.runPython(FA_PY_RUN_PRELUDE);
+        } catch (_) {}
         const { stdout, stderr, returncode } = this._runPyodideScriptSync(pyodide, scriptText, stdinBytes && stdinBytes.length ? stdinBytes : null);
+        try { pyodide.runPython(FA_PY_RUN_POSTLUDE); pyodide.globals.delete('__fa_script_abs'); } catch (_) {}
         // 執行後反向把pyodide.FS的/work寫回ctx.fs，讓pipeline下一段的busybox
         // 指令、或最後bash_execute回傳的output_files看得到python新增/
         // 修改的檔案。
