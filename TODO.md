@@ -66,3 +66,8 @@
 
 - [x] 開著「顯示工具呼叫追蹤與思考過程」時，AI回應期間正在展開檢視的區塊會被收起來——根因：每一輪工具呼叫都會觸發`_renderMessageHistory()`整個清空chatBody重繪，`<details>`每次都是重新建立（預設收起）。新增`_bindDetailOpenState(detailEl, owner, kind)`，把展開狀態記在「訊息物件」的WeakMap上（訊息被丟棄自動回收），重繪建立`<details>`時還原並持續追蹤toggle；套用在工具呼叫追蹤（原生function call與`[CALL:]`兩種）、工具結果、思考過程、已封存對話五處。已在真實瀏覽器驗證：展開兩個區塊後連續重繪兩次仍維持展開、手動收起後重繪維持收起、追加新訊息不影響既有區塊狀態。**未涵蓋**：`_renderSupersededDraftCard`（草稿卡，內容是懶惰掛載，本來就會依展開才建立）。
 
+
+### Steering 轉送給子agent（2026-09-20）
+- 問題：steering只寫進根 this.messages，委派中的 _runSubAgentTask 用區域messages，長時間子任務完全收不到插話。
+- 修正：_addSteeringMessage 另存 this._steeringLog；_runSubAgentTask 每輪開頭把新的steering以user訊息注入自己的messages（並在進度卡顯示）。根層仍保留原 [Steering]，子任務回來後根模型也看得到。
+- 限制：子agent正在等待單次LLM回應或長工具時要等該輪結束才看得到；未在真實長任務上驗證，只做語法檢查。

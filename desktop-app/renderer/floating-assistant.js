@@ -19569,6 +19569,10 @@ ${sourceTool.handlerScript}
                 `如果確實需要改變方向，才調整接下來的行動去回應這則新訊息，並視情況告知使用者你做了` +
                 `什麼調整。`,
         });
+        // 委派中的子agent用自己的區域messages陣列，看不到this.messages；
+        // 另存一份給_runSubAgentTask每輪開頭取用。
+        if (!this._steeringLog) this._steeringLog = [];
+        this._steeringLog.push(steeringText);
         this._renderMessageHistory();
         this._log('🧭 已加入 Steering 指令，AI 會在下一輪回應中優先處理。');
     }
@@ -23710,11 +23714,26 @@ ${existingNodeSummaries}
         // 一樣不消耗maxRounds，獨立計數。
         let malformedCallRetries = 0;
 
+        // 使用者在子agent執行期間送出的steering，每輪開頭轉送給它（見_addSteeringMessage）。
+        let steeringSeen = (this._steeringLog || []).length;
+
         for (let round = 0; round < maxRounds; round++) {
             // tw_stock_db客製: 見_acquireBatchRateSlot()同一段說明——使用者
             // 按下停止時，平行跑的子任務要一起停掉，不能只有根對話迴圈認得
             // stopRequested。這裡是每一輪真正送出請求前的第一道檢查點。
             if (this.stopRequested) return { text: '[已停止]', visual: capturedVisual };
+            if (this._steeringLog && this._steeringLog.length > steeringSeen) {
+                const fresh = this._steeringLog.slice(steeringSeen);
+                steeringSeen = this._steeringLog.length;
+                for (const t of fresh) {
+                    messages.push({
+                        role: 'user',
+                        content: `[Steering] 使用者在你執行這個子任務的途中插入了新訊息：「${t}」\n` +
+                            `請先判斷是否需要改變方向、調整優先順序或先回應。需要就立刻照做；不需要就照原計畫繼續，不用特別提起。`,
+                    });
+                    if (onProgress) onProgress(`🧭 收到使用者插入的指示：${t.length > 40 ? t.slice(0, 40) + '…' : t}`);
+                }
+            }
             if (onProgress) onProgress(`💭 第 ${round + 1} 輪思考中…`);
             const body = {
                 model: apiModel,
