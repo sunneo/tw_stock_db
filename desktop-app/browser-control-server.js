@@ -7,9 +7,9 @@ const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { spawn, execFileSync } = require("child_process");
 
 const DEFAULT_PORT = 17923;
-const CONNECTED_WINDOW_MS = 35000;
 
 function createBrowserControlServer({ userDataDir, onLog }) {
   const log = onLog || (() => {});
@@ -29,6 +29,8 @@ function createBrowserControlServer({ userDataDir, onLog }) {
   const waiters = [];
   const pending = new Map();
   let lastPoll = 0;
+  let lastSeen = 0;
+  let launching = null;
   let extVersion = "";
   let port = 0;
   let serverError = "";
@@ -75,7 +77,7 @@ function createBrowserControlServer({ userDataDir, onLog }) {
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) { res.writeHead(401, headers()); res.end(); return; }
     const url = new URL(req.url, "http://127.0.0.1");
     if (req.method === "GET" && url.pathname === "/bc/poll") {
-      lastPoll = Date.now();
+      lastPoll = lastSeen = Date.now();
       extVersion = url.searchParams.get("v") || extVersion;
       const wait = Math.min(Math.max(Number(url.searchParams.get("wait")) || 20000, 1000), 25000);
       const w = { res, headers, done: false, timer: null };
@@ -87,7 +89,7 @@ function createBrowserControlServer({ userDataDir, onLog }) {
         res.writeHead(204, headers());
         res.end();
       }, wait);
-      req.on("close", () => { if (!w.done) { w.done = true; clearTimeout(w.timer); const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); } });
+      req.on("close", () => { lastSeen = Date.now(); if (!w.done) { w.done = true; clearTimeout(w.timer); const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); } });
       waiters.push(w);
       deliver();
       return;
@@ -96,6 +98,7 @@ function createBrowserControlServer({ userDataDir, onLog }) {
       try {
         const body = JSON.parse(await readBody(req, 40 * 1024 * 1024));
         const p = pending.get(body.id);
+        lastSeen = Date.now();
         if (p) { pending.delete(body.id); clearTimeout(p.timer); p.resolve(body.result); }
         res.writeHead(200, headers({ "Content-Type": "application/json" }));
         res.end("{}");
@@ -121,19 +124,67 @@ function createBrowserControlServer({ userDataDir, onLog }) {
     });
   }
 
-  function connected() { return Date.now() - lastPoll < CONNECTED_WINDOW_MS; }
+  // 有一條還開著的長輪詢＝擴充功能活著；瀏覽器被關掉時那條連線會斷，約5秒內就判定離線
+  // （不用等舊的35秒），才能盡快觸發自動開啟 Chrome。
+  function connected() { return waiters.some((w) => !w.done) || Date.now() - lastSeen < 5000; }
 
-  function call(cmd, args, timeoutMs) {
-    if (serverError) return Promise.resolve({ ok: false, error: serverError });
-    if (!connected()) return Promise.resolve({ ok: false, error: "NOT_CONNECTED", note: "Chrome 擴充功能尚未連線到桌面版。請確認已安裝擴充功能、貼上配對碼並儲存（設定 → 瀏覽器控制）。" });
+  function findChrome() {
+    const cands = [];
+    if (process.env.FA_BROWSER_CONTROL_BROWSER) cands.push(process.env.FA_BROWSER_CONTROL_BROWSER);
+    if (process.platform === "win32") {
+      const roots = [process.env["ProgramFiles"], process.env["ProgramFiles(x86)"], process.env["LOCALAPPDATA"]].filter(Boolean);
+      for (const r of roots) cands.push(path.join(r, "Google", "Chrome", "Application", "chrome.exe"));
+      for (const r of roots) cands.push(path.join(r, "Microsoft", "Edge", "Application", "msedge.exe"));
+    } else if (process.platform === "darwin") {
+      cands.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "/Applications/Chromium.app/Contents/MacOS/Chromium");
+    } else {
+      for (const n of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "microsoft-edge"]) {
+        try { const p = execFileSync("which", [n], { encoding: "utf8" }).trim(); if (p) cands.push(p); } catch (_) {}
+      }
+    }
+    return cands.find((c) => { try { return fs.existsSync(c); } catch (_) { return false; } }) || "";
+  }
+
+  // 單機版：擴充功能沒連上時，試著把 Chrome 開起來（擴充功能隨瀏覽器啟動就會來連線），最多等 25 秒。
+  function ensureBrowser() {
+    if (connected()) return Promise.resolve({ launched: false });
+    if (launching) return launching;
+    launching = (async () => {
+      const exe = findChrome();
+      if (!exe) return { launched: false, error: "找不到 Chrome（也沒有 Edge），請手動開啟瀏覽器" };
+      try {
+        const child = spawn(exe, [], { detached: true, stdio: "ignore" });
+        child.on("error", () => {});
+        child.unref();
+      } catch (err) { return { launched: false, error: "無法啟動瀏覽器：" + String((err && err.message) || err) }; }
+      log("[browser-control] 擴充功能未連線，已嘗試開啟瀏覽器：" + exe);
+      const end = Date.now() + 25000;
+      while (Date.now() < end) {
+        if (connected()) return { launched: true, browser: path.basename(exe) };
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      return { launched: true, error: "已開啟瀏覽器，但擴充功能 25 秒內沒有連上（是否已安裝並貼上配對碼？）" };
+    })().finally(() => { launching = null; });
+    return launching;
+  }
+
+  async function call(cmd, args, timeoutMs) {
+    if (serverError) return { ok: false, error: serverError };
+    let launchInfo = null;
+    if (!connected()) {
+      launchInfo = await ensureBrowser();
+      if (!connected()) return { ok: false, error: "NOT_CONNECTED", note: (launchInfo.error ? launchInfo.error + "。" : "") + "Chrome 擴充功能尚未連線到桌面版。請確認已安裝擴充功能、貼上配對碼並儲存（設定 → 瀏覽器控制）。" };
+    }
     const id = crypto.randomUUID();
     const ms = Math.min(Math.max(Number(timeoutMs) || 30000, 2000), 120000);
-    return new Promise((resolve) => {
+    const result = await new Promise((resolve) => {
       const timer = setTimeout(() => { pending.delete(id); resolve({ ok: false, error: `擴充功能 ${Math.round(ms / 1000)} 秒內沒有回應` }); }, ms);
       pending.set(id, { resolve, timer });
       queue.push({ id, cmd, args: args || {} });
       deliver();
     });
+    if (launchInfo && launchInfo.launched && result && typeof result === "object") result.browser_launched = true;
+    return result;
   }
 
   function status() {
