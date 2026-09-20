@@ -3108,6 +3108,9 @@ function _faLoadScriptOnce(url) {
     const p = fetch(url)
         .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
         .then(text => new Promise((resolve, reject) => {
+            // 回應是一句很短、完全沒有程式碼特徵的文字（例如Cloudflare Worker沒有這條路由時的catch-all
+            // 「Worker運作正常。」）——不是JavaScript，直接當載入失敗，不要包成script執行。
+            if (text.length < 300 && !/[;{}=]/.test(text)) { reject(new Error('回應內容不是JavaScript：' + text.slice(0, 40))); return; }
             const blob = new Blob([text], { type: 'application/javascript' });
             const blobUrl = URL.createObjectURL(blob);
             const s = document.createElement('script');
@@ -15436,7 +15439,13 @@ ${sourceTool.handlerScript}
         if (this._xtermLoadPromise) return this._xtermLoadPromise;
         this._xtermLoadPromise = (async () => {
             await Promise.all([
-                (typeof Terminal === 'undefined') ? _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.xtermJs)) : Promise.resolve(),
+                (typeof Terminal === 'undefined')
+                    ? _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.xtermJs)).catch((err) => {
+                        // 設了assetBackupProxyUrl但那個Worker沒有/proxy/路由（或暫時打不到）時，退回直連CDN
+                        if (this._viaAssetProxy(FA_ASSET_URLS.xtermJs) === FA_ASSET_URLS.xtermJs) throw err;
+                        return _faLoadScriptOnce(FA_ASSET_URLS.xtermJs);
+                    })
+                    : Promise.resolve(),
                 document.getElementById('ai-xterm-style') ? Promise.resolve() : _faLoadStyleOnce(FA_ASSET_URLS.xtermCss, null, 'ai-xterm-style'),
             ]);
             this._xtermLoaded = true;
