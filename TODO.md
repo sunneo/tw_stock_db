@@ -62,3 +62,7 @@
 - [x] **測試中抓到的既有bug（順手修掉，`bash_execute`也受惠）**：(1)`_walkCtxFsDir`把目錄的`stat().type`（實測是`'dir'`）誤判成檔案去讀（回null→`.subarray`炸掉）——只要`/work`底下有任何子資料夾，`python`指令就整個失敗；(2)`python <相對路徑>`在shell cwd不是`/work`時找不到腳本；(3)python builtin沒設cwd/`sys.path`/`__file__`，測試腳本`from calc import add`永遠`ModuleNotFoundError`，且同一個pyodide instance會沿用上一次從`/work`載入的模組快取，改過的原始碼被舊模組遮住、測試結果是假的——改成執行前設cwd＋腳本目錄進sys.path＋`__file__`並清掉`/work`來源的模組快取，執行後還原。
 - [ ] **尚未驗證**：真實網頁版（`web/index.html`）從`desktop-app`分支fetch這份引擎後、由各家弱模型實際走完整流程的遵從度；真實`showDirectoryPicker`授權的FAP（測試用的是mock DirectoryHandle）；`acornJs`目前只走CDN，沒有比照其他函式庫做GitHub備份分支。
 
+## 零星bug修復（2026-09-20）
+
+- [x] 開著「顯示工具呼叫追蹤與思考過程」時，AI回應期間正在展開檢視的區塊會被收起來——根因：每一輪工具呼叫都會觸發`_renderMessageHistory()`整個清空chatBody重繪，`<details>`每次都是重新建立（預設收起）。新增`_bindDetailOpenState(detailEl, owner, kind)`，把展開狀態記在「訊息物件」的WeakMap上（訊息被丟棄自動回收），重繪建立`<details>`時還原並持續追蹤toggle；套用在工具呼叫追蹤（原生function call與`[CALL:]`兩種）、工具結果、思考過程、已封存對話五處。已在真實瀏覽器驗證：展開兩個區塊後連續重繪兩次仍維持展開、手動收起後重繪維持收起、追加新訊息不影響既有區塊狀態。**未涵蓋**：`_renderSupersededDraftCard`（草稿卡，內容是懶惰掛載，本來就會依展開才建立）。
+

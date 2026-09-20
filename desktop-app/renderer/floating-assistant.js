@@ -25168,7 +25168,7 @@ ${existingNodeSummaries}
                 block.messages.forEach(m => this._renderSingleMessage(m, chatBody, palette));
                 return;
             }
-            const archiveEl = document.createElement('details');
+            const archiveEl = this._bindDetailOpenState(document.createElement('details'), block, 'archive');
             archiveEl.style.cssText = `margin-bottom: 12px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #94a3b8; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
             const summaryEl = document.createElement('summary');
             summaryEl.style.cssText = 'font-weight: bold; outline: none; user-select: none; cursor: pointer;';
@@ -25234,6 +25234,20 @@ ${existingNodeSummaries}
     // 視覺訊息改用這個helper：預設完全不畫（受showInternalTrace開關控制，
     // 跟其他內部過程一致），開關打開時才顯示一個收合的草稿卡，展開時才
     // 用mountFn懶惰掛載（沒人點開就不用花資源真的去建立3D場景/表單）。
+    // 使用者回報：AI回應期間（開著「顯示工具呼叫追蹤與思考過程」）每一輪工具呼叫都會觸發
+    // _renderMessageHistory()整個清空重繪，正在展開檢視的<details>全被重建成收起狀態。
+    // 這裡把每個<details>的展開狀態記在「訊息物件」上（WeakMap，訊息被丟棄就自動回收），
+    // 重繪時建立<details>後呼叫這個方法還原＋持續追蹤。kind區分同一則訊息裡的不同區塊。
+    _bindDetailOpenState(detailEl, owner, kind) {
+        if (!owner || typeof owner !== 'object') return detailEl;
+        if (!this._detailOpenStates) this._detailOpenStates = new WeakMap();
+        let kinds = this._detailOpenStates.get(owner);
+        if (!kinds) { kinds = new Set(); this._detailOpenStates.set(owner, kinds); }
+        if (kinds.has(kind)) detailEl.open = true;
+        detailEl.addEventListener('toggle', () => { if (detailEl.open) kinds.add(kind); else kinds.delete(kind); });
+        return detailEl;
+    }
+
     _renderSupersededDraftCard(container, label, mountFn) {
         if (this.advancedSettings.showInternalTrace !== true) return;
         const palette = this._getThemePalette();
@@ -25527,7 +25541,7 @@ ${existingNodeSummaries}
         // 模式的摺疊呈現方式，避免畫面出現一個空白的AI回覆泡泡。
         if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
             if (this.advancedSettings.showInternalTrace !== true) return;
-            const detailEl = document.createElement('details');
+            const detailEl = this._bindDetailOpenState(document.createElement('details'), msg, 'toolcalls');
             detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
             const callsText = msg.tool_calls.map(tc => `${tc.function?.name}(${tc.function?.arguments || ''})`).join('\n');
             detailEl.innerHTML = `
@@ -25541,7 +25555,7 @@ ${existingNodeSummaries}
         // 💡 情況一：如果訊息是 AI 輸出的 Tool 呼叫指令，例如 [CALL: xxx(...)]
         if (msg.role === 'assistant' && msg.content.trim().startsWith('[CALL:')) {
             if (this.advancedSettings.showInternalTrace !== true) return;
-            const detailEl = document.createElement('details');
+            const detailEl = this._bindDetailOpenState(document.createElement('details'), msg, 'toolcalls');
             detailEl.style = `margin-bottom: 12px; font-size: 12px; background: #edf2f7; border-left: 4px solid #4a5568; border-radius: 6px; padding: 6px 10px; color: #4a5568; max-width: 95%; cursor: pointer;`;
             detailEl.innerHTML = `
                 <summary style="font-weight: bold; outline: none; user-select: none;">⚙️ 觸發本地工具呼叫 (點擊展開)</summary>
@@ -25985,7 +25999,7 @@ ${existingNodeSummaries}
                 textColor = "#5b21b6";
             }
 
-            const detailEl = document.createElement('details');
+            const detailEl = this._bindDetailOpenState(document.createElement('details'), msg, 'result');
             detailEl.style = `margin-bottom: 12px; font-size: 12px; background: ${bgColor}; border-left: 4px solid ${borderCol}; border-radius: 6px; padding: 6px 10px; color: ${textColor}; max-width: 95%; cursor: pointer;`;
             detailEl.innerHTML = `
                 <summary style="font-weight: bold; outline: none; user-select: none;">${title} (點擊展開)</summary>
@@ -26013,7 +26027,7 @@ ${existingNodeSummaries}
                 ? { thinking: msg._reasoningDisplay, answer: msg.content }
                 : this._extractThinkingContent(msg.content);
             if (thinking.thinking && this.advancedSettings.showInternalTrace === true) {
-                const detailEl = document.createElement('details');
+                const detailEl = this._bindDetailOpenState(document.createElement('details'), msg, 'thinking');
                 detailEl.style = `margin-bottom: 8px; font-size: 12px; background: ${palette.detailBg}; border-left: 4px solid #6366f1; border-radius: 6px; padding: 6px 10px; color: ${palette.detailText}; max-width: 95%;`;
                 detailEl.innerHTML = `<summary style="font-weight: bold; outline: none; user-select: none;">🧠 思考過程 (點擊展開)</summary>`;
                 const thinkDiv = document.createElement('div');
