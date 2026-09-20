@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Floating AI Assitant</title>
+<style>
+  body { font: 13px/1.5 system-ui, "Microsoft JhengHei", sans-serif; width: 340px; margin: 0; padding: 12px; color: #1f2937; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  h2 { font-size: 12px; margin: 14px 0 4px; color: #475569; }
+  button { font: inherit; padding: 4px 10px; cursor: pointer; }
+  input { font: inherit; padding: 3px 6px; box-sizing: border-box; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .row input { flex: 1; min-width: 0; }
+  .muted { color: #64748b; font-size: 12px; }
+  .ok { color: #15803d; } .bad { color: #b91c1c; }
+  ul { list-style: none; padding: 0; margin: 4px 0; }
+  li { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Floating AI Assitant(Chrome Extension)</h1>
+<div class="muted" id="ver"></div>
+
+<h2>網頁版：允許的網站</h2>
+<div class="muted">只有你加入的網站，才能讓 Floating AI Assistant 控制這個瀏覽器。</div>
+<div class="row"><span id="cur" class="muted" style="flex:1;word-break:break-all"></span><button id="toggle">允許目前網站</button></div>
+<ul id="allowed"></ul>
+
+<h2>桌面版：連線設定</h2>
+<div class="muted">在桌面版設定的「瀏覽器控制」分頁複製配對碼貼到這裡。</div>
+<div class="row"><input id="token" type="password" placeholder="配對碼"><button id="save">儲存</button></div>
+<div class="row"><span class="muted">連接埠</span><input id="port" type="number" style="max-width:90px"></div>
+<div id="dstatus" class="muted"></div>
+
+<script src="popup.js"></script>
+</body>
+</html>
