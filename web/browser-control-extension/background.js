@@ -10,7 +10,8 @@
 // 不能讀取或操作使用者原本開著的其他分頁。
 
 const VERSION = "1.0.0";
-const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+const AI_GROUP_TITLE = "AI Controlled";
+const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- 設定 / 狀態 ----------
@@ -44,13 +45,26 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   }
 });
 
-async function needTab(a) {
+// 找不到分頁（沒給 tab_id、已被關掉、或不是助理建立的）一律無條件開新分頁，不回錯誤。
+async function needTab(a, ctx) {
   const tabId = Number(a && a.tab_id);
-  if (!Number.isInteger(tabId)) throw new Error("缺少 tab_id（先用 browser_create_tab / browser_list_tabs 取得）");
   const m = await getManaged();
-  if (!m.tabs.has(tabId)) throw new Error(`分頁 ${tabId} 不是由助理建立的，基於安全考量不能操作。請用 browser_create_tab 開一個新分頁。`);
-  try { return { tabId, tab: await chrome.tabs.get(tabId) }; }
-  catch (_) { await unmarkTab(tabId); throw new Error(`分頁 ${tabId} 已經被關閉`); }
+  if (Number.isInteger(tabId) && m.tabs.has(tabId)) {
+    try { return { tabId, tab: await chrome.tabs.get(tabId) }; } catch (_) { await unmarkTab(tabId); }
+  } else if (!Number.isInteger(tabId)) {
+    let blank = null;
+    for (const id of [...m.tabs].reverse()) {
+      try {
+        const t = await chrome.tabs.get(id);
+        if (t.url && !/^about:blank/.test(t.url)) return { tabId: id, tab: t };
+        if (!blank) blank = { tabId: id, tab: t };
+      } catch (_) { await unmarkTab(id); }
+    }
+    if (blank) return blank;
+  }
+  const { tab } = await createAiTab(a && a.url ? a.url : "about:blank", false);
+  if (ctx) ctx.recovered = { requested_tab_id: Number.isInteger(tabId) ? tabId : null, new_tab_id: tab.id };
+  return { tabId: tab.id, tab };
 }
 
 // ---------- debugger（滑鼠/鍵盤/截圖用真實輸入事件） ----------
@@ -99,23 +113,32 @@ function tabInfo(t) {
   return { tab_id: t.id, group_id: t.groupId >= 0 ? t.groupId : null, title: t.title || "", url: t.url || t.pendingUrl || "", active: !!t.active, status: t.status };
 }
 
-async function createTabInGroup(url, groupSpec, active) {
-  const windowId = await targetWindowId();
+// 所有助理開的分頁都放進同一個「AI Controlled」分頁群組，讓使用者一眼看出哪些是 AI 在控制的。
+async function findAiGroup() {
+  const m = await getManaged();
+  for (const [gid, title] of Object.entries(m.groups)) {
+    if (title !== AI_GROUP_TITLE) continue;
+    try { const g = await chrome.tabGroups.get(Number(gid)); return { id: Number(gid), windowId: g.windowId }; }
+    catch (_) { delete m.groups[gid]; await saveManaged(m); }
+  }
+  return null;
+}
+async function placeInAiGroup(tabIds, windowId) {
+  const existing = await findAiGroup();
+  if (existing) { await chrome.tabs.group({ tabIds, groupId: existing.id }); return existing.id; }
+  const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+  await chrome.tabGroups.update(groupId, { title: AI_GROUP_TITLE, color: AI_GROUP_COLOR, collapsed: false });
+  const m = await getManaged();
+  m.groups[String(groupId)] = AI_GROUP_TITLE;
+  await saveManaged(m);
+  return groupId;
+}
+async function createAiTab(url, active) {
+  const existing = await findAiGroup();
+  const windowId = existing ? existing.windowId : await targetWindowId();
   const tab = await chrome.tabs.create({ url: normUrl(url), active: !!active, windowId });
   await markTab(tab.id);
-  let groupId = null;
-  if (groupSpec) {
-    const m = await getManaged();
-    if (groupSpec.group_id != null && m.groups[String(groupSpec.group_id)] != null) groupId = Number(groupSpec.group_id);
-    else if (groupSpec.group_title) {
-      for (const [gid, title] of Object.entries(m.groups)) {
-        if (title === groupSpec.group_title) {
-          try { await chrome.tabGroups.get(Number(gid)); groupId = Number(gid); break; } catch (_) {}
-        }
-      }
-    }
-  }
-  if (groupId != null) await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  const groupId = await placeInAiGroup([tab.id], windowId);
   return { tab, groupId };
 }
 
@@ -125,31 +148,23 @@ const commands = {
   },
 
   async tab_group_create(a) {
-    const title = String(a.title || "AI").slice(0, 60);
-    const color = GROUP_COLORS.includes(a.color) ? a.color : "blue";
     const urls = Array.isArray(a.urls) && a.urls.length ? a.urls : [a.url || "about:blank"];
-    const windowId = await targetWindowId();
     const tabIds = [];
+    let groupId = null;
     for (let i = 0; i < Math.min(urls.length, 20); i++) {
-      const t = await chrome.tabs.create({ url: normUrl(urls[i]), active: i === 0 && !!a.active, windowId });
-      await markTab(t.id);
-      tabIds.push(t.id);
+      const r = await createAiTab(urls[i], i === 0 && !!a.active);
+      tabIds.push(r.tab.id);
+      groupId = r.groupId;
     }
-    const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
-    await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
-    const m = await getManaged();
-    m.groups[String(groupId)] = title;
-    await saveManaged(m);
     if (a.wait !== false) await Promise.all(tabIds.map((id) => waitLoad(id, 15000)));
     const tabs = await Promise.all(tabIds.map((id) => chrome.tabs.get(id).then(tabInfo)));
-    return { group_id: groupId, title, color, tabs };
+    return { group_id: groupId, title: AI_GROUP_TITLE, tabs, note: "所有助理開的分頁都放在同一個「" + AI_GROUP_TITLE + "」分頁群組（已存在就直接加進去）" };
   },
 
   async tab_create(a) {
-    const { tab, groupId } = await createTabInGroup(a.url, { group_id: a.group_id, group_title: a.group_title }, a.active);
+    const { tab, groupId } = await createAiTab(a.url, a.active);
     if (a.wait !== false) await waitLoad(tab.id, 15000);
-    const t = await chrome.tabs.get(tab.id);
-    return Object.assign(tabInfo(t), { group_id: groupId, note: groupId == null && (a.group_id != null || a.group_title) ? "找不到指定的分頁群組，已建立獨立分頁（請先用 browser_create_tab_group 建立群組）" : undefined });
+    return Object.assign(tabInfo(await chrome.tabs.get(tab.id)), { group_id: groupId, group_title: AI_GROUP_TITLE });
   },
 
   async tab_list() {
@@ -174,14 +189,16 @@ const commands = {
       await chrome.tabs.remove(tabs.map((t) => t.id).filter((id) => m.tabs.has(id)));
       return { closed: tabs.length };
     }
-    const { tabId } = await needTab(a);
-    await chrome.tabs.remove(tabId);
+    const tabId = Number(a.tab_id);
+    const m = await getManaged();
+    if (!Number.isInteger(tabId) || !m.tabs.has(tabId)) return { closed: 0, note: "這個分頁已經不存在或不是助理開的，不需要關閉" };
+    try { await chrome.tabs.remove(tabId); } catch (_) {}
     await unmarkTab(tabId);
     return { closed: 1 };
   },
 
-  async tab_navigate(a) {
-    const { tabId } = await needTab(a);
+  async tab_navigate(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     if (a.action === "back") await chrome.tabs.goBack(tabId);
     else if (a.action === "forward") await chrome.tabs.goForward(tabId);
     else if (a.action === "reload") await chrome.tabs.reload(tabId);
@@ -190,15 +207,15 @@ const commands = {
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
-  async tab_activate(a) {
-    const { tabId, tab } = await needTab(a);
+  async tab_activate(a, ctx) {
+    const { tabId, tab } = await needTab(a, ctx);
     await chrome.tabs.update(tabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
-  async scroll(a) {
-    const { tabId } = await needTab(a);
+  async scroll(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     const [r] = await chrome.scripting.executeScript({
       target: { tabId },
       args: [String(a.direction || "down"), a.amount != null ? Number(a.amount) : null, a.selector ? String(a.selector) : null],
@@ -224,8 +241,8 @@ const commands = {
     return res;
   },
 
-  async screenshot(a) {
-    const { tabId } = await needTab(a);
+  async screenshot(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) {
       await chrome.tabs.update(tabId, { active: true });
@@ -251,8 +268,8 @@ const commands = {
     return { data_url: "data:image/jpeg;base64," + shot.data, width, height, url: tab.url || "", title: tab.title || "", note: "座標以這張圖的像素為準（左上角=0,0），可直接給 browser_mouse 的 x/y" };
   },
 
-  async mouse(a) {
-    const { tabId } = await needTab(a);
+  async mouse(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     await dbg(tabId);
     const action = String(a.action || "click");
     const x = Number(a.x), y = Number(a.y);
@@ -285,8 +302,8 @@ const commands = {
     return { ok: true, action, x, y };
   },
 
-  async type_text(a) {
-    const { tabId } = await needTab(a);
+  async type_text(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     await dbg(tabId);
     const text = String(a.text == null ? "" : a.text);
     if (a.selector) {
@@ -305,8 +322,8 @@ const commands = {
     return { ok: true, typed_chars: text.length, submitted: !!a.submit };
   },
 
-  async press_key(a) {
-    const { tabId } = await needTab(a);
+  async press_key(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     await dbg(tabId);
     const key = String(a.key || "");
     if (!key) throw new Error("缺少 key（例如 Enter、Tab、Escape、ArrowDown、a）");
@@ -314,8 +331,8 @@ const commands = {
     return { ok: true, key, modifiers: a.modifiers || [] };
   },
 
-  async get_page_text(a) {
-    const { tabId } = await needTab(a);
+  async get_page_text(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     const max = Math.min(Math.max(Number(a.max_chars) || 12000, 500), 100000);
     const [r] = await chrome.scripting.executeScript({
       target: { tabId }, args: [max],
@@ -328,8 +345,101 @@ const commands = {
     return r.result;
   },
 
-  async get_elements(a) {
-    const { tabId } = await needTab(a);
+  async get_page_structure(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    const limit = Math.min(Math.max(Number(a.max_chars) || 15000, 1000), 100000);
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId }, args: [limit],
+      func: (limit) => {
+        const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "SVG", "IFRAME", "TEMPLATE", "CANVAS"]);
+        const CHROME_REGIONS = new Set(["NAV", "FOOTER", "ASIDE", "HEADER"]);
+        const root = document.querySelector("main,[role=main],article") || document.body;
+        const usingBody = root === document.body;
+        const clean = (t) => String(t || "").replace(/\s+/g, " ").trim();
+        const visible = (el) => { const st = getComputedStyle(el); return st.display !== "none" && st.visibility !== "hidden"; };
+        const headings = [], tables = [], skippedRegions = [];
+        let out = "", truncated = false;
+        const push = (s) => { if (out.length >= limit) { truncated = true; return; } out += s; };
+        function inline(el) {
+          let s = "";
+          for (const n of el.childNodes) {
+            if (n.nodeType === 3) { s += n.nodeValue; continue; }
+            if (n.nodeType !== 1 || SKIP.has(n.tagName) || !visible(n)) continue;
+            const t = n.tagName;
+            const inner = inline(n);
+            if (t === "A") { const h = n.href || ""; const c = clean(inner); s += c && /^https?:/i.test(h) ? "[" + c + "](" + h + ")" : inner; }
+            else if (t === "STRONG" || t === "B") s += clean(inner) ? "**" + clean(inner) + "**" : "";
+            else if (t === "CODE") s += clean(inner) ? "`" + clean(inner) + "`" : "";
+            else if (t === "BR") s += " ";
+            else if (t === "IMG") s += n.alt ? "[圖: " + clean(n.alt) + "]" : "";
+            else s += inner;
+          }
+          return s;
+        }
+        const blockTags = new Set(["P", "DIV", "SECTION", "ARTICLE", "MAIN", "UL", "OL", "LI", "TABLE", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "FORM", "DL", "FIGURE", "DETAILS", "HEADER", "FOOTER", "NAV", "ASIDE"]);
+        function table(el) {
+          const rows = [...el.querySelectorAll("tr")].slice(0, 40).map((tr) => [...tr.children].filter((c) => c.tagName === "TD" || c.tagName === "TH").map((c) => clean(c.innerText).slice(0, 80)));
+          if (!rows.length) return;
+          const headerRow = el.querySelector("thead tr") || (el.querySelector("tr th") ? el.querySelector("tr") : null);
+          const headers = headerRow ? [...headerRow.children].map((c) => clean(c.innerText).slice(0, 80)) : [];
+          const body = headers.length ? rows.slice(1) : rows;
+          const cap = el.querySelector("caption");
+          tables.push({ caption: cap ? clean(cap.innerText) : "", headers, rows: body, row_count: el.querySelectorAll("tr").length });
+          const w = Math.max(...rows.map((r) => r.length));
+          const line = (r) => "| " + Array.from({ length: w }, (_, i) => r[i] || "").join(" | ") + " |";
+          push("\n" + line(headers.length ? headers : rows[0]) + "\n| " + Array.from({ length: w }, () => "---").join(" | ") + " |\n");
+          for (const r of headers.length ? rows.slice(1) : rows.slice(1)) push(line(r) + "\n");
+          push("\n");
+        }
+        function walk(el) {
+          let buf = "";
+          const flush = () => { const t = clean(buf); if (t) push(t + "\n\n"); buf = ""; };
+          for (const n of el.childNodes) {
+            if (out.length >= limit) { truncated = true; return; }
+            if (n.nodeType === 3) { buf += n.nodeValue; continue; }
+            if (n.nodeType !== 1 || SKIP.has(n.tagName) || !visible(n)) continue;
+            const t = n.tagName;
+            if (usingBody && CHROME_REGIONS.has(t)) { flush(); skippedRegions.push(t.toLowerCase() + (n.id ? "#" + n.id : "")); continue; }
+            if (/^H[1-6]$/.test(t)) { flush(); const text = clean(inline(n)); if (text) { headings.push({ level: Number(t[1]), text: text.slice(0, 120) }); push("#".repeat(Number(t[1])) + " " + text + "\n\n"); } }
+            else if (t === "UL" || t === "OL") { flush(); let i = 0; for (const li of n.children) { if (li.tagName !== "LI" || !visible(li)) continue; i++; const text = clean(inline(li)).slice(0, 400); if (text) push((t === "OL" ? i + ". " : "- ") + text + "\n"); } push("\n"); }
+            else if (t === "TABLE") { flush(); table(n); }
+            else if (t === "PRE") { flush(); push("```\n" + (n.innerText || "").slice(0, 2000) + "\n```\n\n"); }
+            else if (t === "BLOCKQUOTE") { flush(); const text = clean(inline(n)); if (text) push("> " + text + "\n\n"); }
+            else if (t === "FORM") { flush(); }
+            else if (blockTags.has(t)) { flush(); walk(n); }
+            else buf += inline({ childNodes: [n] });
+          }
+          flush();
+        }
+        walk(root);
+        const seen = new Set(), links = [];
+        for (const a of root.querySelectorAll("a[href]")) {
+          if (!/^https?:/i.test(a.href) || seen.has(a.href) || !visible(a)) continue;
+          const text = clean(a.innerText || a.getAttribute("aria-label"));
+          if (!text) continue;
+          seen.add(a.href);
+          links.push({ text: text.slice(0, 80), href: a.href.slice(0, 200) });
+          if (links.length >= 80) break;
+        }
+        const forms = [...document.forms].slice(0, 5).map((f) => ({
+          action: (f.action || "").slice(0, 150), method: (f.method || "get").toLowerCase(),
+          fields: [...f.elements].filter((e) => e.name || e.id).slice(0, 30).map((e) => {
+            const lab = e.labels && e.labels[0] ? clean(e.labels[0].innerText) : "";
+            const o = { tag: e.tagName.toLowerCase(), type: e.type || undefined, name: e.name || e.id, label: lab || undefined, placeholder: e.placeholder || undefined, required: e.required || undefined };
+            if (e.tagName === "SELECT") o.options = [...e.options].slice(0, 10).map((x) => clean(x.text));
+            return o;
+          }),
+        }));
+        const md = document.querySelector('meta[name="description"]');
+        return { url: location.href, title: document.title, lang: document.documentElement.lang || undefined, description: md ? md.content : undefined, content_root: usingBody ? "body" : root.tagName.toLowerCase(), skipped_regions: skippedRegions.slice(0, 8), headings: headings.slice(0, 60), markdown: out.trim(), tables: tables.slice(0, 10), links, forms, truncated, scroll_y: Math.round(window.scrollY), scroll_height: document.documentElement.scrollHeight };
+      },
+    });
+    if (!r || !r.result) throw new Error("無法讀取此頁面（可能是受保護頁面）");
+    return r.result;
+  },
+
+  async get_elements(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
     const max = Math.min(Math.max(Number(a.max) || 60, 5), 200);
     const [r] = await chrome.scripting.executeScript({
       target: { tabId }, args: [max, a.viewport_only !== false],
@@ -391,8 +501,21 @@ async function pressKey(tabId, key, mods) {
 async function exec(cmd, args) {
   const fn = commands[cmd];
   if (!fn) return { ok: false, error: "未知的指令：" + cmd };
-  try { return Object.assign({ ok: true }, await fn(args || {})); }
-  catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+  const ctx = {};
+  try {
+    const r = await fn(args || {}, ctx);
+    const out = Object.assign({ ok: true }, r);
+    if (ctx.recovered) {
+      out.tab_recovered = ctx.recovered;
+      out.recovery_note = "找不到指定的分頁，已自動在「" + AI_GROUP_TITLE + "」群組開了新分頁（tab_id=" + ctx.recovered.new_tab_id + "），後續請用這個 tab_id。";
+    }
+    return out;
+  }
+  catch (err) {
+    const out = { ok: false, error: String((err && err.message) || err) };
+    if (ctx.recovered) { out.tab_recovered = ctx.recovered; out.recovery_note = "指定的分頁不存在，已在「" + AI_GROUP_TITLE + "」群組開了新的空白分頁（tab_id=" + ctx.recovered.new_tab_id + "），請先用 browser_navigate 前往網址再操作。"; }
+    return out;
+  }
 }
 
 // ---------- 入口 1：網頁版（content-bridge.js） ----------
