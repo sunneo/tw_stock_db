@@ -64,6 +64,12 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     setSettings: (patch) => ipcRenderer.invoke("fa:exec:setSettings", patch),
     run: (opts) => ipcRenderer.invoke("fa:exec:run", opts),
   },
+  // coding domain專用（TODO.md Phase 4）：語意跟rawfs的byte級檔案操作不同
+  // （dry-run、hunk診斷、repo層級操作），獨立命名空間。
+  git: {
+    applyPatch: (cwdAbs, patch, opts) => ipcRenderer.invoke("fa:git:applyPatch", { cwdAbs, patch, ...(opts || {}) }),
+    inspect: (cwdAbs, mode, opts) => ipcRenderer.invoke("fa:git:inspect", { cwdAbs, mode, ...(opts || {}) }),
+  },
   // 2026-09-15使用者明確要求「執行指令也要有有bash, tmux的能力」——POSIX
   // 限定（見main.js requireTmuxAvailable），Windows呼叫會得到明確的錯誤
   // 訊息而不是靜默失敗。

@@ -348,7 +348,7 @@ function patchCloudflareWording(root) {
   // ——具體的工具名稱+反例比抽象概念更容易讓模型在非典型措辭下也聯想到
   // 這件事適用，這是prompt salience的調整，不是邏輯bug。
   fa.setEnvironmentNote(
-    "[執行環境] 你現在執行在桌面版(Electron)應用程式裡，不是只能碰對話文字的純網頁小工具——有能力透過delegate_to_subagent委派給desktop_ops領域，直接呼叫fs_read_file/fs_write_file/fs_list_files等工具讀寫這台電腦上使用者帳號權限碰得到的任何真實檔案、用run_command執行系統指令、用tmux_*操作持久化終端機session。這件事不是只有「使用者明講要存檔/讀檔」時才相關——任何時候只要任務裡出現一個真實磁碟絕對路徑（例如\"/home/user/xxx.py\"），即使表面上是要你「執行」「計算」「跑一下」看起來跟檔案無關，也代表你需要先取得那個路徑目前的真實內容，不要假設自己做不到就直接拒絕或回答「我沒有檔案存取能力/只能在隔離沙盒裡運作」——委派給code_execution執行程式時同理，那個domain的bash_execute/python_execute工具本身有real_input_files參數可以直接指定真實絕對路徑、不需要另外委派desktop_ops。"
+    "[執行環境] 你現在執行在桌面版(Electron)應用程式裡，不是只能碰對話文字的純網頁小工具——有能力透過delegate_to_subagent委派給desktop_ops領域，直接呼叫fs_read_file/fs_write_file/fs_list_files等工具讀寫這台電腦上使用者帳號權限碰得到的任何真實檔案、用run_command執行系統指令、用tmux_*操作持久化終端機session。這件事不是只有「使用者明講要存檔/讀檔」時才相關——任何時候只要任務裡出現一個真實磁碟絕對路徑（例如\"/home/user/xxx.py\"），即使表面上是要你「執行」「計算」「跑一下」看起來跟檔案無關，也代表你需要先取得那個路徑目前的真實內容，不要假設自己做不到就直接拒絕或回答「我沒有檔案存取能力/只能在隔離沙盒裡運作」——委派給code_execution執行程式時同理，那個domain的bash_execute/python_execute工具本身有real_input_files參數可以直接指定真實絕對路徑、不需要另外委派desktop_ops。**寫程式/改bug/實作功能/重構這類程式設計任務，改委派給coding領域**（它有固定流程：讀狀態→設計計畫→git patch修改→語法檢查→測試→commit，並把進度寫進專案的DESIGN-INDEX.md可中斷後恢復；不要用desktop_ops的fs_write_file直接改寫程式碼）。"
   );
 
   // tw_stock_db客製: 2026-09-17使用者要求——web/floating-assistant.js（web/
@@ -380,7 +380,7 @@ function patchCloudflareWording(root) {
   // 順序不再重要，跟其餘工具一樣直接放在這裡即可。
   fa.appendToolDescription(
     "delegate_to_subagent",
-    "[桌面版補充] 這是唯一的桌面本機操作入口：domain留空、task裡描述「讀寫這台電腦上的真實檔案／執行系統指令／操作終端機session」，系統會自動委派給desktop_ops領域（fs_read_file/fs_write_file/fs_list_files/run_command/tmux_*）。任何時候task內容裡出現一個真實磁碟絕對路徑，即使表面上只是要「執行」「計算」「跑一下」，也代表需要委派過去先取得那個路徑的真實內容——不要假設自己只能操作對話文字、不要直接回答「我沒有檔案存取能力」。"
+    "[桌面版補充] 這是唯一的桌面本機操作入口：domain留空、task裡描述「讀寫這台電腦上的真實檔案／執行系統指令／操作終端機session」，系統會自動委派給desktop_ops領域（fs_read_file/fs_write_file/fs_list_files/run_command/tmux_*）。任何時候task內容裡出現一個真實磁碟絕對路徑，即使表面上只是要「執行」「計算」「跑一下」，也代表需要委派過去先取得那個路徑的真實內容——不要假設自己只能操作對話文字、不要直接回答「我沒有檔案存取能力」。但「寫程式/修bug/實作功能」類任務不要走這個入口，明確指定domain為coding（固定流程＋git patch＋可恢復的TODO狀態）。"
   );
   fa.appendToolDescription(
     "bash_execute",
@@ -1023,6 +1023,274 @@ function patchCloudflareWording(root) {
     fsToolSchema({ recursive: { type: "boolean", description: "刪除的是非空資料夾時要傳true，否則會失敗" } })
   );
 
+  // ─── coding domain專用工具（TODO.md Phase 4）────────────────────────────
+  // 設計原則：模型太弱，不能依賴它記住進度/自己組對的git指令/手寫合法JSON
+  // 狀態檔——狀態外部化成檔案、寫入只走結構化action，工具本身擁有格式跟驗證。
+  const capGitOutput = (r) => {
+    if (!r || typeof r !== "object") return r;
+    const max = fa._getAdaptiveContentBudgetChars(0.15, 8000);
+    const out = { ...r };
+    for (const k of ["stdout", "stderr"]) {
+      if (typeof out[k] === "string" && out[k].length > max) {
+        out[k] = out[k].slice(0, max) + `\n…（已截斷，原本${r[k].length}字元）`;
+        out.truncated = true;
+      }
+    }
+    return out;
+  };
+
+  fa.register_openai_tool(
+    "apply_git_patch",
+    "用git apply套用一份unified diff（git diff格式）到指定git repo——**修改程式碼的唯一入口**。內部一定先做`git apply --check`乾跑：乾跑失敗時完全不會碰任何檔案，並把git原始錯誤文字放在stderr回傳（例如context對不上、路徑錯誤），請仔細讀stderr、重新用fs_read_file讀取檔案「最新」內容後重寫patch，不要原封不動重送。patch格式要求：`--- a/路徑`／`+++ b/路徑`檔頭、`@@ -起始行,行數 +起始行,行數 @@` hunk header、每個hunk前後至少3行未變更的context行（以一個空白開頭）、刪除行以`-`開頭、新增行以`+`開頭；新增檔案用`--- /dev/null`＋`+++ b/路徑`。參數: {\"cwd_abs\":\"/home/user/project\",\"patch\":\"--- a/src/x.js\\n+++ b/src/x.js\\n@@ -1,3 +1,3 @@\\n ...\",\"check_only\":false}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      if (!parsed.cwd_abs) return JSON.stringify({ ok: false, error: "缺少cwd_abs（git repo的絕對路徑）" });
+      if (!parsed.patch) return JSON.stringify({ ok: false, error: "缺少patch內容" });
+      try {
+        const r = await window.desktopAPI.git.applyPatch(String(parsed.cwd_abs), String(parsed.patch), {
+          checkOnly: !!parsed.check_only,
+          strip: parsed.strip,
+        });
+        return JSON.stringify(capGitOutput(r));
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        cwd_abs: { type: "string", description: "目標git repo（或其子資料夾）的絕對路徑" },
+        patch: { type: "string", description: "完整的unified diff文字" },
+        check_only: { type: "boolean", description: "選填，true=只乾跑驗證、不真的套用。預設false（乾跑通過後直接套用）" },
+        strip: { type: "number", description: "選填，git apply -p<n>，預設1（對應標準的a/ b/前綴）" },
+      },
+      required: ["cwd_abs", "patch"],
+      additionalProperties: false,
+    }
+  );
+
+  fa.register_openai_tool(
+    "git_inspect",
+    "唯讀查看git repo狀態，或把單一檔案還原到最後一次commit的乾淨狀態。mode: status（目前變更/是不是git repo）、diff（未commit的實際變更內容，可用path限定單一檔案、staged=true看已staged的）、log（最近commit，max_commits預設20）、restore（`git checkout -- <path>`，把path那個檔案還原到最後一次commit——檔案被patch弄壞/語法檢查失敗時用，還原後再重新讀檔重寫patch，不要在壞掉的版本上疊加）。參數: {\"cwd_abs\":\"/home/user/project\",\"mode\":\"diff\",\"path\":\"src/x.js\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      if (!parsed.cwd_abs) return JSON.stringify({ ok: false, error: "缺少cwd_abs" });
+      try {
+        const r = await window.desktopAPI.git.inspect(String(parsed.cwd_abs), parsed.mode || "status", {
+          path: parsed.path, staged: !!parsed.staged, maxCommits: parsed.max_commits,
+        });
+        return JSON.stringify(capGitOutput(r));
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        cwd_abs: { type: "string", description: "git repo的絕對路徑" },
+        mode: { type: "string", enum: ["status", "diff", "log", "restore"], description: "預設status" },
+        path: { type: "string", description: "選填，diff限定單一檔案；restore模式必填（要還原哪個檔案）" },
+        staged: { type: "boolean", description: "選填，diff模式：true=看已staged的變更" },
+        max_commits: { type: "number", description: "選填，log模式最多列幾筆，預設20" },
+      },
+      required: ["cwd_abs"],
+      additionalProperties: false,
+    }
+  );
+
+  // coding_task_state：狀態機本體。狀態檔＋DESIGN-INDEX.md＋tests/都放在
+  // 目標專案資料夾底下（不是app userData），換機器/換session都能靠讀檔恢復。
+  const CODING_PHASES = ["requirements_analysis", "design", "planning", "executing", "blocked", "done"];
+  const CODING_TODO_STATUSES = ["pending", "in_progress", "blocked", "done"];
+  const codingStateLocks = new Map(); // cwd → Promise鏈，避免平行子任務同時讀改寫同一份狀態檔
+  const joinP = (base, ...parts) => [String(base).replace(/[\\/]+$/, ""), ...parts].join("/");
+  const codingPaths = (cwd) => ({
+    state: joinP(cwd, ".floating-assistant", "coding-task-state.json"),
+    index: joinP(cwd, "DESIGN-INDEX.md"),
+    testsDir: joinP(cwd, "tests"),
+  });
+  const readTextOrNull = async (p) => {
+    try { const r = await window.desktopAPI.rawfs.readFile(p); return typeof r.text === "string" ? r.text : null; }
+    catch (_) { return null; }
+  };
+  const writeText = (p, text) => window.desktopAPI.rawfs.writeFile(p, { text });
+  const nowIso = () => new Date().toISOString();
+  const strArr = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : (v ? [String(v).trim()] : []));
+
+  async function loadCodingState(paths) {
+    const text = await readTextOrNull(paths.state);
+    if (text == null) return { state: null };
+    let state;
+    try { state = JSON.parse(text); }
+    catch (e) { return { error: `狀態檔不是合法JSON（${e.message}）。可用git_inspect restore還原${paths.state}，或用action:init加force:true重建。` }; }
+    if (!state || !Array.isArray(state.todos) || typeof state.phase !== "string") {
+      return { error: `狀態檔結構不完整（缺todos陣列或phase）。可用git_inspect restore還原，或用action:init加force:true重建。` };
+    }
+    return { state };
+  }
+  const saveCodingState = (paths, state) => {
+    state.updated_at = nowIso();
+    return writeText(paths.state, JSON.stringify(state, null, 2));
+  };
+  const summarizeCodingState = (state) => {
+    // 依清單順序取第一個未完成項目（steering用position:"now"插隊時，被暫停的
+    // in_progress項目會排在插隊項目後面，所以不能無條件優先挑in_progress）。
+    const cur = state.todos.find((t) => t.status === "in_progress" || t.status === "pending") || null;
+    return {
+      title: state.title, phase: state.phase, requirements: state.requirements, design: state.design,
+      todos: state.todos, next_todo_id: cur ? cur.id : null,
+      counts: CODING_TODO_STATUSES.reduce((o, s) => ({ ...o, [s]: state.todos.filter((t) => t.status === s).length }), {}),
+      steering_log: state.steering_log || [], test_runs: (state.test_runs || []).slice(-10),
+    };
+  };
+
+  async function codingStateAction(parsed) {
+    const cwd = String(parsed.cwd_abs || "").trim();
+    if (!cwd) return { ok: false, error: "缺少cwd_abs（目標專案資料夾的絕對路徑）" };
+    const action = String(parsed.action || "").trim();
+    const paths = codingPaths(cwd);
+    const loaded = await loadCodingState(paths);
+    if (loaded.error && action !== "init") return { ok: false, error: loaded.error };
+    const state = loaded.state;
+
+    if (action === "get") {
+      if (!state) return { ok: true, exists: false, note: "這個專案還沒有進行中的coding任務狀態，請走步驟1（需求分析＋設計）再action:init建立。" };
+      const idx = await readTextOrNull(paths.index);
+      return { ok: true, exists: true, state: summarizeCodingState(state), design_index_tail: idx ? idx.slice(-3000) : null };
+    }
+
+    if (action === "init") {
+      const title = String(parsed.title || "").trim();
+      const todosIn = Array.isArray(parsed.todos) ? parsed.todos : [];
+      if (!title) return { ok: false, error: "init需要title" };
+      if (!String(parsed.design || "").trim()) return { ok: false, error: "init需要design（照Plan Template結構寫的設計計畫文字）" };
+      const todos = todosIn.map((t, i) => ({
+        id: i + 1, text: String((t && t.text) || t || "").trim(), status: "pending", notes: "",
+        files_hint: strArr(t && t.files_hint),
+      })).filter((t) => t.text);
+      if (!todos.length) return { ok: false, error: "init需要至少一個todos項目（每項要有text）" };
+      if (state && state.phase !== "done" && !parsed.force) {
+        return { ok: false, error: `已經有進行中的任務「${state.title}」（phase=${state.phase}），不能覆蓋。要改動現有計畫請用add_todo/update_todo；確定要丟掉重來才加force:true。` };
+      }
+      const fresh = {
+        title, phase: "executing", requirements: String(parsed.requirements || "").trim(), design: String(parsed.design),
+        todos, steering_log: [], test_runs: [], created_at: nowIso(), updated_at: nowIso(),
+      };
+      await saveCodingState(paths, fresh);
+      const existingIdx = await readTextOrNull(paths.index);
+      if (existingIdx == null) await writeText(paths.index, `# DESIGN-INDEX\n\n由coding domain自動維護：每完成一個TODO項目就append一筆（設計摘要／原始碼位置／程式入口），供中斷後恢復與快速掌握脈絡。\n`);
+      return { ok: true, state: summarizeCodingState(fresh) };
+    }
+
+    if (!state) return { ok: false, error: "沒有進行中的任務狀態，請先action:init" };
+
+    if (action === "add_todo") {
+      const text = String(parsed.text || "").trim();
+      if (!text) return { ok: false, error: "add_todo需要text" };
+      const position = ["now", "next", "end"].includes(parsed.position) ? parsed.position : "next";
+      const todo = { id: Math.max(0, ...state.todos.map((t) => t.id)) + 1, text, status: "pending", notes: "", files_hint: strArr(parsed.files_hint) };
+      const firstOpen = state.todos.findIndex((t) => t.status !== "done");
+      const inProg = state.todos.findIndex((t) => t.status === "in_progress");
+      let at;
+      if (position === "end" || firstOpen === -1) at = state.todos.length;
+      else if (position === "now") at = firstOpen;
+      else at = inProg !== -1 ? inProg + 1 : firstOpen + 1; // "next"＝排在「正在做/下一個要做的那項」之後
+      if (position === "now" && inProg !== -1) {
+        // 插隊：暫停目前進行中的項目（退回pending並留註記），插隊項目先做
+        state.todos[inProg].status = "pending";
+        state.todos[inProg].notes = (state.todos[inProg].notes ? state.todos[inProg].notes + " " : "") + `（被插隊暫停，先處理#${todo.id}，完成後回來繼續）`;
+      }
+      state.todos.splice(at, 0, todo);
+      state.steering_log.push({ at: nowIso(), position, note: text });
+      if (state.phase === "done") state.phase = "executing";
+      await saveCodingState(paths, state);
+      return { ok: true, added: todo, state: summarizeCodingState(state) };
+    }
+
+    const findTodo = () => state.todos.find((t) => t.id === Number(parsed.id));
+
+    if (action === "update_todo") {
+      const t = findTodo();
+      if (!t) return { ok: false, error: `找不到id=${parsed.id}的TODO，現有id：${state.todos.map((x) => x.id).join(",")}` };
+      if (parsed.status != null) {
+        if (parsed.status === "done") return { ok: false, error: "標記完成請用complete_todo（需要附設計摘要/原始碼位置/程式入口，才會更新DESIGN-INDEX）" };
+        if (!CODING_TODO_STATUSES.includes(parsed.status)) return { ok: false, error: `status必須是${CODING_TODO_STATUSES.join("／")}其中之一` };
+        t.status = parsed.status;
+      }
+      if (parsed.notes != null) t.notes = String(parsed.notes);
+      await saveCodingState(paths, state);
+      return { ok: true, updated: t };
+    }
+
+    if (action === "complete_todo") {
+      const t = findTodo();
+      if (!t) return { ok: false, error: `找不到id=${parsed.id}的TODO，現有id：${state.todos.map((x) => x.id).join(",")}` };
+      const summary = String(parsed.design_summary || "").trim();
+      const locs = strArr(parsed.source_locations);
+      const entries = strArr(parsed.entry_points);
+      if (!summary || !locs.length || !entries.length) {
+        return { ok: false, error: "complete_todo必須附design_summary（這項做了什麼設計）、source_locations（改了哪些檔案:行號/函式）、entry_points（要從哪個函式/指令開始追這個改動）——三者都不能空，這是DESIGN-INDEX的內容來源。" };
+      }
+      t.status = "done"; t.completed_at = nowIso();
+      const entry = `\n## [TODO#${t.id}] ${t.text}\n- 完成時間：${t.completed_at}\n- 設計摘要：${summary}\n- 原始碼位置：\n${locs.map((l) => `  - ${l}`).join("\n")}\n- 程式入口：\n${entries.map((e) => `  - ${e}`).join("\n")}\n`;
+      const idx = (await readTextOrNull(paths.index)) || `# DESIGN-INDEX\n`;
+      await writeText(paths.index, idx.replace(/\s*$/, "\n") + entry);
+      const allDone = state.todos.every((x) => x.status === "done");
+      await saveCodingState(paths, state);
+      return { ok: true, completed: t, design_index: paths.index, all_done: allDone, state: summarizeCodingState(state) };
+    }
+
+    if (action === "record_test_result") {
+      const stamp = nowIso().replace(/[:.]/g, "-");
+      const tid = parsed.todo_id != null ? `todo${parsed.todo_id}` : "general";
+      const file = joinP(paths.testsDir, `${stamp}-${tid}.log`);
+      const body = `# 測試結果 ${nowIso()}\ntodo: ${parsed.todo_id ?? "-"}\ncommand: ${parsed.command || "-"}\npassed: ${!!parsed.passed}\n\n## stdout\n${parsed.stdout || ""}\n\n## stderr\n${parsed.stderr || ""}\n`;
+      await writeText(file, body);
+      state.test_runs = state.test_runs || [];
+      state.test_runs.push({ at: nowIso(), todo_id: parsed.todo_id ?? null, passed: !!parsed.passed, file });
+      await saveCodingState(paths, state);
+      return { ok: true, saved_to: file };
+    }
+
+    if (action === "set_phase") {
+      if (!CODING_PHASES.includes(parsed.phase)) return { ok: false, error: `phase必須是${CODING_PHASES.join("／")}其中之一` };
+      state.phase = parsed.phase;
+      await saveCodingState(paths, state);
+      return { ok: true, phase: state.phase };
+    }
+
+    return { ok: false, error: `未知的action「${action}」，可用：get／init／add_todo／update_todo／complete_todo／record_test_result／set_phase` };
+  }
+
+  fa.register_openai_tool(
+    "coding_task_state",
+    "管理程式設計任務的持久化狀態（TODO清單／目前階段／設計索引），存在目標專案資料夾的.floating-assistant/coding-task-state.json、DESIGN-INDEX.md、tests/。**處理coding任務前第一件事永遠是action:get讀取真實狀態，不要假設記得之前做到哪。** action：get（讀狀態，沒有時exists:false）；init（title,requirements,design=照Plan Template寫的設計文字,todos=[{text,files_hint}]，建立新任務）；add_todo（text,position=now|next|end，插入新TODO；使用者中途插隊要求用now）；update_todo（id,status=pending|in_progress|blocked,notes）；complete_todo（id,design_summary,source_locations[],entry_points[]，標記完成並自動append DESIGN-INDEX.md）；record_test_result（todo_id,command,stdout,stderr,passed，存進tests/）；set_phase（phase=requirements_analysis|design|planning|executing|blocked|done）。參數: {\"cwd_abs\":\"/home/user/project\",\"action\":\"get\"}",
+    async (rawArgs) => {
+      let parsed = {};
+      try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      const key = String(parsed.cwd_abs || "");
+      const prev = codingStateLocks.get(key) || Promise.resolve();
+      const run = prev.then(() => codingStateAction(parsed)).catch((err) => ({ ok: false, error: String(err.message || err) }));
+      codingStateLocks.set(key, run.catch(() => {}));
+      return JSON.stringify(await run);
+    },
+    {
+      type: "object",
+      properties: {
+        cwd_abs: { type: "string", description: "目標專案資料夾的絕對路徑" },
+        action: { type: "string", enum: ["get", "init", "add_todo", "update_todo", "complete_todo", "record_test_result", "set_phase"] },
+        title: { type: "string" }, requirements: { type: "string" }, design: { type: "string" },
+        todos: { type: "array", items: { type: "object", properties: { text: { type: "string" }, files_hint: { type: "array", items: { type: "string" } } } } },
+        force: { type: "boolean" },
+        text: { type: "string" }, position: { type: "string", enum: ["now", "next", "end"] }, files_hint: { type: "array", items: { type: "string" } },
+        id: { type: "number" }, status: { type: "string", enum: ["pending", "in_progress", "blocked"] }, notes: { type: "string" },
+        design_summary: { type: "string" }, source_locations: { type: "array", items: { type: "string" } }, entry_points: { type: "array", items: { type: "string" } },
+        todo_id: { type: "number" }, command: { type: "string" }, stdout: { type: "string" }, stderr: { type: "string" }, passed: { type: "boolean" },
+        phase: { type: "string", enum: CODING_PHASES },
+      },
+      required: ["cwd_abs", "action"],
+      additionalProperties: true,
+    }
+  );
+
   // tw_stock_db客製: 2026-09-15使用者明確要求「執行指令也要有有bash, tmux
   // 的能力」——run_command每次呼叫都是獨立、跑完就結束的子行程，沒辦法讓
   // 一個長時間執行/互動式程式（開發伺服器、REPL等）跨越多次工具呼叫維持
@@ -1104,7 +1372,60 @@ function patchCloudflareWording(root) {
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
     ],
     systemPrompt:
-      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作如果內容/目標路徑是你自己推測/發明出來的（使用者沒有講清楚），要先跟使用者確認清楚；**但如果委派給你的task裡已經明確講清楚要寫什麼內容、寫到哪個路徑（例如使用者原始請求就指定了確切的資料夾、檔名、腳本內容/用途），代表使用者已經確認過了，直接執行即可，不要多此一舉再問一次「請問我可以嗎」**——這種情況下你唯一該做的是實際呼叫fs_write_file/run_command把事情做完，然後回報結果；反覆問同一個已經被明確授權的問題，只會讓使用者以為你完全沒有動作、在敷衍了事。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高：指令內容是你自己推測/發明出來的時候，執行前要先跟使用者確認清楚；**如果使用者的原始請求已經明確講清楚要跑什麼（例如指定了要產生並執行的具體腳本），就不需要再多問一次，直接呼叫run_command即可**——真正的人工把關是呼叫當下跳出的原生確認對話框（使用者當場按「執行」才會真的跑），不是你自己在文字裡先問一輪。使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因，這種情況下如實告知使用者去哪裡開啟，不要自己瞎猜原因）。`,
+      `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作如果內容/目標路徑是你自己推測/發明出來的（使用者沒有講清楚），要先跟使用者確認清楚；**但如果委派給你的task裡已經明確講清楚要寫什麼內容、寫到哪個路徑（例如使用者原始請求就指定了確切的資料夾、檔名、腳本內容/用途），代表使用者已經確認過了，直接執行即可，不要多此一舉再問一次「請問我可以嗎」**——這種情況下你唯一該做的是實際呼叫fs_write_file/run_command把事情做完，然後回報結果；反覆問同一個已經被明確授權的問題，只會讓使用者以為你完全沒有動作、在敷衍了事。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高：指令內容是你自己推測/發明出來的時候，執行前要先跟使用者確認清楚；**如果使用者的原始請求已經明確講清楚要跑什麼（例如指定了要產生並執行的具體腳本），就不需要再多問一次，直接呼叫run_command即可**——真正的人工把關是呼叫當下跳出的原生確認對話框（使用者當場按「執行」才會真的跑），不是你自己在文字裡先問一輪。使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因，這種情況下如實告知使用者去哪裡開啟，不要自己瞎猜原因）。
+
+**寫程式/修bug/實作功能/重構這類程式設計任務不是這個domain的工作**——那類任務要用coding領域的固定流程（git patch修改、語法檢查、測試、可恢復的TODO狀態），不要在這裡用fs_write_file直接改寫程式碼；如果收到這類任務，在回覆裡明確指出應改委派給coding領域。`,
+  });
+
+
+  // ─── coding domain（TODO.md Phase 4）──────────────────────────────────
+  // 專為弱模型（nemotron/gpt-oss/qwen/gemma）設計：狀態外部化成檔案、
+  // 修改一律走git patch、流程逐步強制。刻意沒有fs_write_file/fs_remove——
+  // 模型手上沒有能繞過patch流程的工具。
+  fa.register_domain("coding", {
+    enabled: true,
+    label: "程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復，桌面版限定）",
+    toolNames: [
+      "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat",
+      "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
+      "run_command",
+      "apply_git_patch", "git_inspect", "coding_task_state",
+    ],
+    systemPrompt:
+      `你是桌面版FloatingAssistant專門處理「程式設計」任務的子任務助理——分析需求、讀懂既有原始碼、產出設計計畫與TODO清單、依序實作、跑測試、修bug。這台電腦目前跑的是${platformLabel}。**因為目前接的AI模型能力有限，你必須嚴格照下面的固定流程逐步執行，每個步驟都要真的做完（呼叫對應工具拿到真實結果）才能進下一步，不能跳步驟、不能憑記憶或猜測代替實際讀取/執行。** 所有工具的cwd_abs參數都填目標專案資料夾的絕對路徑（task裡沒講清楚就先問使用者，不要瞎猜）。
+
+**步驟0：讀取既有狀態（每次開始都要做）**：先呼叫coding_task_state({"cwd_abs":"...","action":"get"})。
+- exists:false → 全新任務，進步驟1。
+- 有既有狀態、phase不是"done" → 有任務正在進行中，先讀懂todos目前進度。判斷這次收到的是：(a)對現有計畫的補充/修改/中途插入的新要求（steering）——用add_todo把新要求插進清單（使用者明講「馬上/優先/先做這個」才用position:"now"，否則用"next"排在目前項目後面），然後繼續處理目前進行中的項目；(b)完全不相關的新任務——明確告訴使用者目前有進行中的任務（引用title與進度），詢問要先完成它還是另開，不要自己擅自捨棄舊任務。若是(c)單純「繼續」，直接從next_todo_id接著做，不要重新規劃。
+- phase是"done" → 視為全新任務，進步驟1。
+
+**步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用fs_list_files/fs_find_file/fs_read_file摸清楚相關既有原始碼（多檔案改用batch_process_items、大檔案用analyze_large_file，不要自己逐一sequentially讀爆對話歷史）。**設計計畫一定要照這個固定結構寫**：
+## 需求分析（使用者實際要什麼、有沒有隱含限制）
+## 現況（相關原始碼位置）（哪些檔案/函式相關、目前怎麼運作）
+## 設計方案（打算怎麼改、為什麼、取捨）
+## TODO List（編號清單；**每項要小到「一次patch＋一次測試」能完成**，不要把整個需求塞成一項）
+## 測試計畫（怎麼驗證、用什麼指令）
+寫完後呼叫coding_task_state action:init（title/requirements/design/todos）存檔——沒存檔就沒有東西可以中斷後恢復。
+
+**步驟2：確認環境**：git_inspect({"mode":"status"})。回應顯示不是git repo時，在回覆裡明確詢問使用者要不要初始化，不要自己默默git init（除非使用者已明講要建立新repo，才可以用run_command跑git init）。
+
+**步驟3：決定測試指令與語法/編譯檢查指令**：task已明講就直接用；否則用fs_read_file確認專案工具鏈（package.json的scripts.test、pytest.ini/pyproject.toml、Cargo.toml、go.mod、Makefile的test target）；判斷不出來就直接問使用者，**不要編一個不存在的指令**。同時決定一個更輕量的語法/編譯檢查指令（JS：node --check <檔案>；TS：tsc --noEmit；Python：python -m py_compile <檔案>；Go：go build ./...；Rust：cargo check）——每次套用patch後、跑完整測試前先跑它，便宜很多。
+
+**步驟4：baseline**：先用run_command跑一次測試指令，記下真實通過/失敗狀態，不要假設專案原本全綠。
+
+**步驟5：逐一實作TODO項目（每項重複下面子迴圈）**：
+ a) coding_task_state action:update_todo把這項設成in_progress。
+ b) **要改的檔案一定要先重新fs_read_file取得「現在」的真實內容**——絕對不要用記憶中或前幾輪的舊版本當基礎，尤其這個檔案前面已經被patch過。
+ c) 基於最新內容手寫標準unified diff（--- a/路徑、+++ b/路徑、@@ hunk header、每個hunk前後至少3行context），呼叫apply_git_patch。**這是唯一允許修改程式碼的方式**，也不可以用request_additional_tools去申請fs_write_file之類的寫入工具來繞過。
+ d) 套用失敗（ok:false）：仔細讀stderr（git原始錯誤）判斷是context對不上、路徑錯誤或格式不對，回到b)重新讀檔、重寫patch，不要原封不動重送。**同一項目最多重試3輪**；第3輪仍失敗就update_todo標成blocked並在notes寫清楚卡在哪，跳到下一個不相依的項目，不要卡死整個任務。
+ e) 套用成功：先跑步驟3的語法/編譯檢查，再用git_inspect({"mode":"diff"})確認實際變更符合預期——不要只因為ok:true就跳過。**語法檢查失敗時，先git_inspect({"mode":"restore","path":"..."})把該檔案還原到上次commit的乾淨狀態，再回b)重來，不要在壞掉的版本上疊加下一個patch。**
+ f) 跑測試指令，**完整讀stdout/stderr文字判斷是否真的通過，不能只看exit_code**。然後呼叫coding_task_state action:record_test_result存檔（todo_id/command/stdout/stderr/passed）。
+ g) 通過：coding_task_state action:complete_todo（必附design_summary、source_locations、entry_points，會自動append到DESIGN-INDEX.md），接著用run_command執行git add -A與git commit -m "簡述"（一項一個commit）。進下一項。
+ h) 不通過：根據真正的錯誤訊息分析（不要臆測），回b)，同一項目一樣最多3輪。
+
+**步驟6：收尾**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
+
+**輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。`,
   });
 
   // tw_stock_db客製: 2026-09-15使用者實測回報（Linux桌面版真實對話記錄）——
@@ -1138,6 +1459,7 @@ function patchCloudflareWording(root) {
     "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
     "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
     "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
+    "apply_git_patch", "git_inspect", "coding_task_state",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
   // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——
@@ -1158,7 +1480,7 @@ function patchCloudflareWording(root) {
       enabled: true,
       label: baseResearch.label || '研究／程式碼與檔案分析（唯讀，不修改/不執行）',
       toolNames: [...new Set([...(baseResearch.toolNames || []), ...desktopReadOnlyTools])],
-      systemPrompt: baseResearch.systemPrompt + `\n\n[桌面版補充] 這台電腦目前跑的是${platformLabel}，除了FAP唯讀工具，也可以用fs_read_file/fs_list_files/fs_find_file/fs_stat直接讀取任意真實磁碟絕對路徑（不需要先授權/註冊資料夾）——同樣是唯讀，這個domain完全沒有fs_write_file/fs_remove/run_command。任務裡如果提到相對路徑、或沒有明確給出根目錄，先參考目前的workspace目錄（見下面動態補充的實際路徑）當作起點。`,
+      systemPrompt: baseResearch.systemPrompt + `\n\n[桌面版補充] 這台電腦目前跑的是${platformLabel}，除了FAP唯讀工具，也可以用fs_read_file/fs_list_files/fs_find_file/fs_stat直接讀取任意真實磁碟絕對路徑（不需要先授權/註冊資料夾）——同樣是唯讀，這個domain完全沒有fs_write_file/fs_remove/run_command。**如果任務其實是要寫程式/修bug/實作功能，要明確指出應改委派給coding領域（有git patch＋測試＋可恢復進度的固定流程），不是desktop_ops。**任務裡如果提到相對路徑、或沒有明確給出根目錄，先參考目前的workspace目錄（見下面動態補充的實際路徑）當作起點。`,
     });
     fa.setDomainNote("research", () => `目前workspace目錄：${activeWorkspaceFolder || '（尚未設定）'}`);
   }

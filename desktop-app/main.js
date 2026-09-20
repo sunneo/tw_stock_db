@@ -28,6 +28,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 const path = require("path");
+const os = require("os");
 const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
@@ -1033,6 +1034,64 @@ ipcMain.handle("fa:exec:run", async (_evt, { rootId, command, args, cwdRel, cwdA
   if (!fullCommandLine) throw new Error("缺少要執行的指令內容");
   await execConfirmGate(fullCommandLine, cwd, _evt.sender.id);
   return runShellCommand(fullCommandLine, cwd);
+});
+
+// ---------- IPC: git patch（coding domain專用，見TODO.md Phase 4）----------
+// 刻意不經過execConfirmGate：apply_git_patch的效果完全bounded（套用前
+// 一律先git apply --check乾跑，失敗時完全不碰任何檔案），風險層級跟
+// fs_write_file（本來就無confirm）相同，不是run_command那種任意程式
+// 執行；git_inspect是純讀取（或restore還原到已知好狀態）。如果這兩個
+// 也要跳原生確認框，patch→test的自動迭代每一輪都要跳窗，「固定流程
+// 自動執行」的目標就無法達成。跑測試指令本身仍然走run_command的既有gate。
+async function resolveExistingDir(cwdAbs) {
+  const cwd = path.resolve(String(cwdAbs || ""));
+  const st = await fs.stat(cwd).catch(() => null);
+  if (!st || !st.isDirectory()) return { error: `目標路徑不存在或不是資料夾：${cwd}` };
+  return { cwd };
+}
+
+ipcMain.handle("fa:git:applyPatch", async (_evt, { cwdAbs, patch, checkOnly, strip } = {}) => {
+  const dir = await resolveExistingDir(cwdAbs);
+  if (dir.error) return { ok: false, stage: "validate", applied: false, errorMessage: dir.error };
+  const patchText = String(patch || "");
+  if (!patchText.trim()) return { ok: false, stage: "validate", applied: false, errorMessage: "patch內容是空的" };
+  const p = Number.isFinite(Number(strip)) ? Math.max(0, Math.floor(Number(strip))) : 1;
+  // 放系統暫存目錄、不放專案裡，避免弄髒working tree/被誤git add。
+  const tmpFile = path.join(os.tmpdir(), `fa-patch-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
+  await fs.writeFile(tmpFile, patchText.endsWith("\n") ? patchText : patchText + "\n", "utf8");
+  // Windows下runShellCommand優先走Git Bash，反斜線路徑會被bash吃掉（實測
+  // 「can't open patch 'C:UserssunneoAppData...'」），git本身三種shell都吃
+  // 正斜線，統一轉成正斜線傳給指令。
+  const tmpArg = tmpFile.split("\\").join("/");
+  try {
+    const checkResult = await runShellCommand(buildFullCommandLine("git", ["apply", "--check", `-p${p}`, tmpArg]), dir.cwd);
+    if (!checkResult.ok) return { ...checkResult, ok: false, stage: "check", applied: false };
+    if (checkOnly) return { ...checkResult, ok: true, stage: "check", applied: false, note: "dry-run驗證成功，尚未真的套用（check_only=true）" };
+    const applyResult = await runShellCommand(buildFullCommandLine("git", ["apply", `-p${p}`, tmpArg]), dir.cwd);
+    return { ...applyResult, stage: "apply", applied: applyResult.ok };
+  } finally {
+    await fs.rm(tmpFile, { force: true }).catch(() => {});
+  }
+});
+
+ipcMain.handle("fa:git:inspect", async (_evt, { cwdAbs, mode, path: subPath, staged, maxCommits } = {}) => {
+  const dir = await resolveExistingDir(cwdAbs);
+  if (dir.error) return { ok: false, errorMessage: dir.error };
+  let args;
+  if (mode === "diff") {
+    args = ["diff"];
+    if (staged) args.push("--cached");
+    if (subPath) args.push("--", String(subPath));
+  } else if (mode === "log") {
+    const n = Number.isFinite(Number(maxCommits)) && Number(maxCommits) > 0 ? Math.floor(Number(maxCommits)) : 20;
+    args = ["log", "--oneline", "-n", String(n)];
+  } else if (mode === "restore") {
+    if (!subPath) return { ok: false, errorMessage: "restore模式需要path參數" };
+    args = ["checkout", "--", String(subPath)];
+  } else {
+    args = ["status"];
+  }
+  return runShellCommand(buildFullCommandLine("git", args), dir.cwd);
 });
 
 // ---------- IPC: tmux（持久化/互動式session，2026-09-15使用者明確要求 ----------
