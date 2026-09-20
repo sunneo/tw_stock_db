@@ -33,6 +33,7 @@ const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
 const cliFormat = require("./cli-format.js");
+const codingWs = require("./coding-workspace.js");
 const { createBrowserControlServer, DEFAULT_PORT: BC_DEFAULT_PORT } = require("./browser-control-server.js");
 
 // tw_stock_db客製: 2026-09-16使用者要求——桌面版CLI模式：`-p 'prompt'`
@@ -1074,6 +1075,12 @@ ipcMain.handle("fa:git:applyPatch", async (_evt, { cwdAbs, patch, checkOnly, str
     await fs.rm(tmpFile, { force: true }).catch(() => {});
   }
 });
+
+// tw_stock_db客製: 2026-09-21——coding domain暫存工作區，見coding-workspace.js。
+ipcMain.handle("fa:codingws:open", async (_e, a = {}) => codingWs.openWorkspace({ sourceAbs: a.sourceAbs, subpath: a.subpath }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
+ipcMain.handle("fa:codingws:status", async (_e, a = {}) => codingWs.workspaceStatus({ workspaceAbs: a.workspaceAbs }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
+ipcMain.handle("fa:codingws:deploy", async (_e, a = {}) => codingWs.deployWorkspace({ workspaceAbs: a.workspaceAbs, dryRun: !!a.dryRun, force: !!a.force }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
+ipcMain.handle("fa:codingws:discard", async (_e, a = {}) => codingWs.discardWorkspace({ workspaceAbs: a.workspaceAbs }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
 
 // tw_stock_db客製: 2026-09-20——瀏覽器控制（Chrome擴充功能）本機服務，見browser-control-server.js。
 let bcServer = null;

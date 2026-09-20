@@ -66,6 +66,12 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   },
   // coding domain專用（TODO.md Phase 4）：語意跟rawfs的byte級檔案操作不同
   // （dry-run、hunk診斷、repo層級操作），獨立命名空間。
+  codingWorkspace: {
+    open: (sourceAbs, opts) => ipcRenderer.invoke("fa:codingws:open", { sourceAbs, ...(opts || {}) }),
+    status: (workspaceAbs) => ipcRenderer.invoke("fa:codingws:status", { workspaceAbs }),
+    deploy: (workspaceAbs, opts) => ipcRenderer.invoke("fa:codingws:deploy", { workspaceAbs, ...(opts || {}) }),
+    discard: (workspaceAbs) => ipcRenderer.invoke("fa:codingws:discard", { workspaceAbs }),
+  },
   browserControl: {
     call: (cmd, args, timeoutMs) => ipcRenderer.invoke("fa:bc:call", { cmd, args, timeoutMs }),
     status: () => ipcRenderer.invoke("fa:bc:status"),
