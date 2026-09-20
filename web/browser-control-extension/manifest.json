@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Floating AI Assitant(Chrome Extension)",
+  "version": "1.0.0",
+  "description": "讓 Floating AI Assistant 控制這個瀏覽器：建立分頁群組與分頁、捲動、截圖、滑鼠與鍵盤輸入。只能操作由助理自己建立的分頁。",
+  "minimum_chrome_version": "110",
+  "icons": { "192": "icon-192.png", "512": "icon-512.png" },
+  "permissions": ["tabs", "tabGroups", "scripting", "debugger", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Floating AI Assitant", "default_popup": "popup.html", "default_icon": { "192": "icon-192.png" } },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-bridge.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

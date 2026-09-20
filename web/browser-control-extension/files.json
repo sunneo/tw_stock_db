@@ -1,0 +1,4 @@
+{
+  "name": "Floating-AI-Assitant-Chrome-Extension",
+  "files": ["manifest.json", "background.js", "content-bridge.js", "popup.html", "popup.js", "icon-192.png", "icon-512.png", "README.md"]
+}

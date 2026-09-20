@@ -33,6 +33,7 @@ const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy } = require("./local-proxy.js");
 const cliFormat = require("./cli-format.js");
+const { createBrowserControlServer, DEFAULT_PORT: BC_DEFAULT_PORT } = require("./browser-control-server.js");
 
 // tw_stock_db客製: 2026-09-16使用者要求——桌面版CLI模式：`-p 'prompt'`
 // 非互動執行、`--output-format text|json|toon|md`控制輸出格式（見
@@ -1073,6 +1074,12 @@ ipcMain.handle("fa:git:applyPatch", async (_evt, { cwdAbs, patch, checkOnly, str
     await fs.rm(tmpFile, { force: true }).catch(() => {});
   }
 });
+
+// tw_stock_db客製: 2026-09-20——瀏覽器控制（Chrome擴充功能）本機服務，見browser-control-server.js。
+let bcServer = null;
+ipcMain.handle("fa:bc:call", async (_evt, { cmd, args, timeoutMs } = {}) => (bcServer ? bcServer.call(String(cmd || ""), args, timeoutMs) : { ok: false, error: "瀏覽器控制服務尚未啟動" }));
+ipcMain.handle("fa:bc:status", async () => (bcServer ? bcServer.status() : { port: 0, token: "", connected: false, serverError: "服務尚未啟動" }));
+ipcMain.handle("fa:bc:regenerateToken", async () => (bcServer ? bcServer.regenerateToken() : ""));
 
 ipcMain.handle("fa:git:inspect", async (_evt, { cwdAbs, mode, path: subPath, staged, maxCommits } = {}) => {
   const dir = await resolveExistingDir(cwdAbs);
@@ -2313,6 +2320,12 @@ async function runCliPrompt({ prompt, outputFormat }) {
 }
 
 app.whenReady().then(async () => {
+  try {
+    bcServer = createBrowserControlServer({ userDataDir: USER_DATA_DIR(), onLog: (m) => console.log(m) });
+    await bcServer.start(Number(process.env.FA_BROWSER_CONTROL_PORT) || BC_DEFAULT_PORT);
+  } catch (err) {
+    console.error("[main] 瀏覽器控制服務啟動失敗：", err);
+  }
   // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
   // > SECRETS_FILE() > BUILTIN_SECRETS_FILE），這是純main行程邏輯，不需要
   // renderer/BrowserWindow，跟其餘FA_DEBUG_*測試（都要透過executeJavaScript

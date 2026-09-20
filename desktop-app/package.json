@@ -26,6 +26,7 @@
       "local-proxy.js",
       "browser-search.js",
       "cli-format.js",
+      "browser-control-server.js",
       "renderer/**/*",
       "build/icon.png",
       "builtin-secrets.json"
