@@ -80,3 +80,10 @@
 - [x] 設定 → 「瀏覽器控制」分頁：「在瀏覽器測試連線」（未安裝／未允許／成功三種狀態）、「[get extension]」下載zip並展開安裝教學；桌面版多一個配對碼區塊（複製／重新產生／連線狀態）。
 - [x] 桌面版：`desktop-app/browser-control-server.js`（127.0.0.1:17923，X-FA-Token驗證，CORS只放行chrome-extension://）＋`fa:bc:*` IPC＋bootstrap.js `setBrowserControlTransport`。擴充功能檔案放在`web/browser-control-extension/`（網頁與桌面版共用；引擎依序試部署目錄、raw GitHub後備網址）。
 - 限制：Chrome 137+正式版已停用`--load-extension`，自動化測試改用Edge；正式安裝走「載入未封裝項目」。截圖/滑鼠/鍵盤使用chrome.debugger，操作時會出現「正在偵錯此瀏覽器」提示列。未用真實LLM跑過整段agent流程。
+
+### Phase 5 追加：AI Controlled 群組／自動補分頁／自動開Chrome／全domain注入／結構化讀頁（2026-09-20）
+- [x] 所有助理開的分頁一律放進單一「AI Controlled」分頁群組（已存在就加入、不存在就建；tab_group_create 的 title/color 不再有作用）。實測：兩次 tab_group_create＋tab_create 後 groups 只有一個。
+- [x] 找不到分頁（tab_id 過期／被關／沒給）一律無條件在群組開新分頁，回傳 `tab_recovered.new_tab_id`；沒給 tab_id 時優先用最近一個非空白分頁；tab_close 找不到則 closed:0 不報錯。
+- [x] 桌面版：擴充功能沒連上時 `browser-control-server.js` 自動找 Chrome（後備 Edge，可用 `FA_BROWSER_CONTROL_BROWSER` 指定路徑）啟動並等最多 25 秒，連上後才執行指令（用假瀏覽器腳本驗證：第一次呼叫觸發啟動並成功、第二次不重啟）。連線判定改為看長輪詢是否還開著，瀏覽器被關約 5 秒內判定離線。
+- [x] 設定 → 瀏覽器控制多一個「啟用瀏覽器控制」勾選；啟用時 `_runSubAgentTask` 把 15 個 browser_* 工具與一段習慣提示注入**所有**子agent（跟 browser_search 一樣有 enable 就全都認識）。實測系統提示有注入。
+- [x] 新工具 `browser_get_page_structure`：標題階層、Markdown正文（含清單/表格/連結）、tables、links、forms，自動略過 nav/footer；提示要求 AI 讀網頁優先用它、回答時結論→條列/表格→來源連結。
