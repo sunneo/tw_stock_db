@@ -4321,6 +4321,10 @@ function faMpWorkerMain() {
         }
     };
 }
+// tw_stock_db客製: 2026-09-21——弱模型會「不停重複委派同一件事」（實例：燒錄字幕連續委派十幾次，每次都成功、
+// 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
+// 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
+const FA_DEDUP_TOOLS = new Set(['delegate_to_subagent', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
 const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_type_text', 'browser_press_key'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_mouse/browser_type_text操作、browser_screenshot截圖給使用者看；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
@@ -21150,6 +21154,50 @@ ${sourceTool.handlerScript}
         this._syncStopButton();
     }
 
+    _dedupTokens(text) {
+        return new Set(String(text || '').toLowerCase().split(/[^\p{L}\p{N}_.]+/u).filter(Boolean));
+    }
+    _dedupText(name, rawArgs) {
+        if (name === 'delegate_to_subagent') {
+            try { const a = JSON.parse(rawArgs); return `${a.domain || ''} ${a.task || ''}`; } catch (_) { /* 解析失敗就用原字串 */ }
+        }
+        return String(rawArgs || '');
+    }
+    // 同一輪(log)內，若同一個昂貴工具「先前已成功」且內容相似度夠高，回傳那筆紀錄；否則null。
+    _findDuplicateToolCall(log, name, rawArgs) {
+        if (!log || !FA_DEDUP_TOOLS.has(name)) return null;
+        const cur = this._dedupTokens(this._dedupText(name, rawArgs));
+        if (!cur.size) return null;
+        const threshold = name === 'delegate_to_subagent' ? 0.6 : 0.95;
+        for (const prev of log.calls) {
+            if (prev.name !== name || !prev.ok) continue;
+            let inter = 0;
+            for (const t of cur) if (prev.tokens.has(t)) inter++;
+            const union = cur.size + prev.tokens.size - inter;
+            if (union && inter / union >= threshold) return prev;
+        }
+        return null;
+    }
+    // 包住工具執行：重複呼叫直接回傳「已做過」的提示，不真的再跑一次；否則執行並記錄結果。
+    async _callToolGuarded(log, name, rawArgs, run) {
+        const dup = this._findDuplicateToolCall(log, name, rawArgs);
+        if (dup) {
+            log.blocked = (log.blocked || 0) + 1;
+            this._log(`🛡️ 已攔下重複呼叫 ${name}（這一輪第${log.blocked}次）：內容跟先前已成功的呼叫幾乎相同。`);
+            if (log.blocked >= 2 && log === this._toolCallLog) this._forceNoTools = true;
+            return JSON.stringify({
+                ok: true, duplicate_call_blocked: true,
+                message: `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
+                previous_result: String(dup.resultText).slice(0, 1500),
+            });
+        }
+        const result = await run();
+        let ok = true;
+        try { const parsed = typeof result === 'string' ? JSON.parse(result) : result; if (parsed && (parsed.ok === false || parsed.error)) ok = false; } catch (_) { /* 非JSON視為成功 */ }
+        if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
+        return result;
+    }
+
     // tw_stock_db客製: 2026-09-21使用者回報——gpt-oss:120b常常「假裝已經寫入」：完全沒呼叫寫入工具，
     // 卻在回覆裡說東西已經寫到某個檔案。這裡是外部驗證：記錄這一輪有沒有任何「成功的寫入類工具呼叫」
     // （_noteWriteEvidence），最終回覆如果宣稱已寫入/儲存/建立檔案、卻沒有任何成功紀錄
@@ -23548,6 +23596,8 @@ ${existingNodeSummaries}
         // 的輪值機會。
         this._writeEvidence = { n: 0 };
         this._fakeWriteGuard = { count: 0 };
+        this._toolCallLog = { calls: [], blocked: 0 };
+        this._forceNoTools = false;
         const rowCfg = this._getInitialFallbackConfig();
         const { apiKey, apiUrl, apiModel } = rowCfg;
         const genOverrides = { temperature: rowCfg.temperature, samplingOverrides: rowCfg.samplingOverrides, maxOutputTokens: rowCfg.maxOutputTokens };
@@ -24182,7 +24232,7 @@ ${existingNodeSummaries}
 
                         this._log(`執行工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
-                        const result = await Promise.resolve(toolDefinition.callback(JSON.stringify(parsedArgs)));
+                        const result = await this._callToolGuarded(this._toolCallLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDefinition.callback(JSON.stringify(parsedArgs))));
                         this._noteWriteEvidence(this._writeEvidence, task.fnName, result);
 
                         this._pushToolResultMessage(task.fnName, result);
@@ -24337,7 +24387,7 @@ ${existingNodeSummaries}
                         // 22個通用內建工具改成只透過delegate_to_subagent間接
                         // 觸及（見_getRootToolNames/_registerBuiltinAiTools的說明）。
                         tools: this._buildNativeToolsSchema(this._getRootToolNames()),
-                        tool_choice: 'auto'
+                        tool_choice: this._forceNoTools ? 'none' : 'auto'
                     })
                 });
 
@@ -24514,7 +24564,7 @@ ${existingNodeSummaries}
                     const toolDefinition = this._getToolDefinition(fnName);
                     if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
                     this._log(`執行工具（原生）: ${fnName}`);
-                    const result = await Promise.resolve(toolDefinition.callback(rawArgs));
+                    const result = await this._callToolGuarded(this._toolCallLog, fnName, rawArgs, () => Promise.resolve(toolDefinition.callback(rawArgs)));
                     this._noteWriteEvidence(this._writeEvidence, fnName, result);
                     this._pushToolResultMessage(fnName, result, { tool_call_id: tc.id });
                 } catch (err) {
@@ -25379,6 +25429,7 @@ ${existingNodeSummaries}
         let reasoningDeadendRetries = 0;
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
+        const subToolLog = { calls: [], blocked: 0 };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
         // 一樣不消耗maxRounds，獨立計數。
         let malformedCallRetries = 0;
@@ -25600,7 +25651,7 @@ ${existingNodeSummaries}
                     try {
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
-                        const result = await Promise.resolve(toolDef.callback(rawArgs));
+                        const result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback(rawArgs)));
                         this._noteWriteEvidence(writeEvidence, fnName, result);
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
@@ -25686,7 +25737,7 @@ ${existingNodeSummaries}
                     const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
-                    const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                    const result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs))));
                     this._noteWriteEvidence(writeEvidence, task.fnName, result);
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;

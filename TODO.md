@@ -100,3 +100,5 @@
 - 起因：一台裝了 ESET 的電腦把新版判為 Suspicious。這次改動不保證解決，需要對方偵測名稱/路徑才能確認原因。
 
 - [x] 桌面版本機 proxy 補上 `/edge-tts`（中文/粵語/日文/韓文語音）：`desktop-app/edge-tts.js` 移植自 Cloudflare Worker，用主行程內建 WebSocket 連 Microsoft 語音服務。原本本機 proxy 從來沒有這條路由（只有 Worker 有），所以 inprocess/http 兩種模式打過來都是 unknown route。真的 Electron 兩種模式都實測拿到 MP3（`_synthesizeSpeechViaApi` 端到端，長度 2.9 秒）。
+
+- [x] **重複委派防護**（實例：燒錄字幕連續委派十幾次，每次成功、每次都產生30MB影片、始終不給最終回覆）：同一輪對話裡，昂貴/有副作用的工具（delegate_to_subagent、burn_subtitles、transcribe_media…）若「先前已成功且內容相似（delegate 用 domain+task 詞彙相似度≥0.6）」，第二次起不再真的執行，改回傳上次結果並要求模型整理成最終回覆；同輪攔下第2次後主對話改 `tool_choice:none` 強制收尾。根對話（原生＋文字協定）與子agent都有。用假LLM驗證：4次委派（3次同一件事＋1次不同的事）只真的執行2次。
