@@ -105,3 +105,5 @@
 
 - [x] **編修附件＋輸出下載卡片**：`bash_execute`/`python_execute` 新增 `attachment_files`（{工作目錄檔名: 附件file_id或檔名}，也可給id陣列；二進位檔也行），執行後「新增或內容有變」的檔案存回 persistentStorage 並直接在對話顯示下載卡片（最多5張；原封不動的輸入檔不算產出）。實測：srt 校正、二進位 256 bytes 附件讀取、bash/python 兩邊、找不到附件時明確報錯。
 - [x] **分頁讀取**：`fap_read_file`、`parse_uploaded_file`（純文字、zip/tar 項目、PDF 文字）新增 `offset`/`max_chars`/`start_line`/`max_lines`，回傳 `has_more`/`next_offset`/行號資訊；預設頁大小依模型內容窗口自適應（實測預設約3.8萬字元）、盡量停在行尾。精準編修（程式碼、字幕）要分頁讀完整份，不用 summarize。順帶修掉 `real_input_files` 讀 FAP 檔案被靜默截斷在8000字元的 bug。實測 9萬字元檔案分頁串接後與原檔完全相同。
+
+- [x] **`fap_apply_patch`**（改File Access Point檔案「某幾行」，用unified diff）：all-or-nothing、內容對不上時回傳實際內容供重寫、可 `check_only` 乾跑、新增檔案用 `/dev/null`、自動備份、**寫完逐檔讀回比對**（不一致就還原）、回傳 `first_changed_line`/`total_lines_after` 供讀回確認。同一套 `_codingApplyPatch`（順便讓 coding 的 apply_git_patch 也有讀回驗證）。`file_access_points` domain 提示改成「精準編修一律 patch、fap_write_file 只用來新增或整份重寫」。實測：srt 改一行、子資料夾當根、新增檔案、錯誤 context 被擋且不動檔案。

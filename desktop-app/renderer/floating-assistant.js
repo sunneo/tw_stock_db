@@ -1389,8 +1389,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_access_points: {
         enabled: true,
         label: '使用者授權的檔案存取點（File Access Point）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
-        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/real_path_hint/permission）。**使用者描述要操作哪個資料夾時，可能用三種方式講，你都要能對應到正確的File Access Point，不要因為使用者沒有直接講「fap:」開頭就放棄**：1) 直接講完整路徑（例如「/home/user/Shared/StepAction」或「D:\\Projects\\StepAction」）——比對每個access point的real_path_hint欄位，找出使用者講的路徑跟哪個real_path_hint相同、或使用者的路徑是以某個real_path_hint結尾/該real_path_hint是使用者路徑的子路徑；2) 直接用「fap:名稱」格式；3) 只講別名/資料夾名稱（例如「StepAction」）——比對label欄位。real_path_hint是使用者自己選填的，不是每個access point都一定有填，如果比對不到任何一個，才明確告知使用者「目前沒有找到對應的已授權資料夾，可以到Advance Settings的檔案存取管理新增，或者告訴我正確的別名」，不要一開始就用「沒有權限」這種話直接拒絕、也不要跳過list_file_access_points直接放棄。找到對應的access point後，用它的label或id組成「fap:<名稱或id>[/<路徑>]」格式的ref，交給fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_apply_patch', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
+        systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/real_path_hint/permission）。**使用者描述要操作哪個資料夾時，可能用三種方式講，你都要能對應到正確的File Access Point，不要因為使用者沒有直接講「fap:」開頭就放棄**：1) 直接講完整路徑（例如「/home/user/Shared/StepAction」或「D:\\Projects\\StepAction」）——比對每個access point的real_path_hint欄位，找出使用者講的路徑跟哪個real_path_hint相同、或使用者的路徑是以某個real_path_hint結尾/該real_path_hint是使用者路徑的子路徑；2) 直接用「fap:名稱」格式；3) 只講別名/資料夾名稱（例如「StepAction」）——比對label欄位。real_path_hint是使用者自己選填的，不是每個access point都一定有填，如果比對不到任何一個，才明確告知使用者「目前沒有找到對應的已授權資料夾，可以到Advance Settings的檔案存取管理新增，或者告訴我正確的別名」，不要一開始就用「沒有權限」這種話直接拒絕、也不要跳過list_file_access_points直接放棄。找到對應的access point後，用它的label或id組成「fap:<名稱或id>[/<路徑>]」格式的ref，交給fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。**要改既有檔案的某幾行（程式碼、字幕、設定檔）一律用fap_apply_patch（unified diff，跟git patch同格式），不要用fap_write_file整份覆寫**：流程=fap_read_file分頁（offset/start_line）把要改的區段讀完整→照讀到的內容手寫diff（context行逐字複製）→fap_apply_patch（可先check_only:true乾跑）→再fap_read_file讀回修改處確認結構正確；patch失敗（ok:false）就看stderr、重新讀檔後重寫，不要直接改用整份覆寫。fap_write_file只用在新增檔案，或使用者明確要求整份重寫。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
     },
     git_operations: {
         enabled: true,
@@ -4325,7 +4325,7 @@ function faMpWorkerMain() {
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
 const FA_DEDUP_TOOLS = new Set(['delegate_to_subagent', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
-const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
+const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_type_text', 'browser_press_key'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_mouse/browser_type_text操作、browser_screenshot截圖給使用者看；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -6912,6 +6912,30 @@ ${fnData.code}
                 start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
                 max_lines: { type: 'integer', description: '選填：這次最多讀幾行' },
             }, required: ['ref'], additionalProperties: false }
+        );
+
+        registerOptional('fap_apply_patch',
+            '用unified diff（跟git diff同格式）修改File Access Point裡既有檔案的**某幾行**，不用整份覆寫——精準編修（程式碼、字幕、設定檔）的唯一正確方式，比fap_write_file安全：內容對不上時整份patch都不會套用（all-or-nothing）、套用後逐檔讀回比對、原內容自動備份。流程：(1)用fap_read_file分頁（offset/start_line）把要改的區段完整讀出來 (2)照讀到的內容手寫diff：`--- a/路徑`、`+++ b/路徑`、`@@ -起始行,行數 +起始行,行數 @@`，每個hunk前後至少3行context，context行與被刪除行必須逐字複製原檔內容（含縮排/標點），fap_read_file的行號只是輔助、不可寫進diff；新增檔案用`--- /dev/null` (3)呼叫本工具（可先check_only:true乾跑） (4)成功後用fap_read_file(start_line=回傳的first_changed_line附近)讀回修改處確認結構正確。失敗（ok:false）時照stderr重新讀檔、重寫patch，不要改用整份覆寫。ref是patch路徑的根資料夾：fap:<名稱或id>[/<子資料夾>]，patch裡的路徑相對於它。參數: {"ref":"fap:我的專案","patch":"--- a/src/a.js\\n+++ b/src/a.js\\n@@ -3,3 +3,3 @@\\n ...","check_only":false}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const ref = String(parsed.ref || '').trim();
+                if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>[/<子資料夾>]，patch路徑的根資料夾）' });
+                if (!String(parsed.patch || '').trim()) return JSON.stringify({ ok: false, error: '缺少patch內容' });
+                try {
+                    const io = await this._codingFapIo(ref);
+                    const r = await this._codingApplyPatch(io, String(parsed.patch), { checkOnly: !!parsed.check_only, strip: parsed.strip == null ? 1 : parsed.strip });
+                    return JSON.stringify(r);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                ref: { type: 'string', description: 'patch路徑的根資料夾，格式：fap:<名稱或id>[/<子資料夾>]' },
+                patch: { type: 'string', description: '完整的unified diff文字（以換行結尾）' },
+                check_only: { type: 'boolean', description: '選填：true=只乾跑驗證，不真的寫入' },
+                strip: { type: 'integer', description: '選填：去掉路徑前綴的層數，預設1（對應a/ b/）' },
+            }, required: ['ref', 'patch'], additionalProperties: false }
         );
 
         registerOptional('fap_write_file',
@@ -10330,11 +10354,29 @@ ${fnData.code}
         const summary = plans.map((p) => `${p.action} ${p.path}`).join('\n');
         if (checkOnly) return { ok: true, stage: 'check', applied: false, exitCode: 0, stdout: summary, stderr: '', timedOut: false, errorMessage: null, note: 'dry-run驗證成功，尚未真的套用（check_only=true）' };
         // 全部檢查都過了才開始寫（先備份原內容，供restore在沒有git時使用）
+        const written = [];
         for (const p of plans) {
             if (p.oldText !== null) { try { await this._codingBackupWrite(io, p.path, p.oldText); } catch (_) { /* 備份失敗不阻擋套用，restore時會如實說沒有備份 */ } }
             if (p.action === 'delete') await io.remove(p.path); else await io.writeText(p.path, p.newText);
+            written.push(p);
+            // 寫完立刻讀回比對：不能只相信「寫入沒丟例外」
+            const back = p.action === 'delete' ? null : await io.readText(p.path);
+            const okBack = p.action === 'delete' ? (await io.readText(p.path)) === null : back === p.newText;
+            if (!okBack) {
+                for (const w of written) { try { if (w.oldText === null) await io.remove(w.path); else await io.writeText(w.path, w.oldText); } catch (_) { /* 盡力還原 */ } }
+                return fail('verify', `error: ${p.path}: 寫入後讀回的內容跟預期不一致，已把這次patch動過的檔案還原到套用前的內容`);
+            }
         }
-        return { ok: true, stage: 'apply', applied: true, exitCode: 0, stdout: summary, stderr: '', timedOut: false, errorMessage: null };
+        const files = plans.map((p) => {
+            let firstChanged = null;
+            if (p.action === 'modify') {
+                const a = _faCodingSplitLines(p.oldText).lines, b = _faCodingSplitLines(p.newText).lines;
+                let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++;
+                firstChanged = i + 1;
+            }
+            return { path: p.path, action: p.action, first_changed_line: firstChanged, total_lines_after: p.newText === null ? 0 : _faCodingSplitLines(p.newText).lines.length };
+        });
+        return { ok: true, stage: 'apply', applied: true, exitCode: 0, stdout: summary, stderr: '', timedOut: false, errorMessage: null, verified: '已逐檔讀回比對，內容與預期一致', files };
     }
 
     // ---- git_inspect（網頁版：isomorphic-git + 純JS diff）----
