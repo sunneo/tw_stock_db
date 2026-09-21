@@ -1104,8 +1104,11 @@ let bcServer = null;
 let bcStarting = null;
 // 2026-09-21: 本機服務改成「第一次真的用到瀏覽器控制才啟動」，沒用這個功能的人app啟動後不會多開任何監聽埠
 // （之前每次啟動都開，防毒軟體的啟發式判斷容易因此把整個app當成可疑）。
+// inprocess建置預設完全不開埠；使用者在設定明確勾選「啟用瀏覽器控制」（renderer透過fa:bc:setEnabled通知）
+// 之後才開這個給Chrome擴充功能連的本機HTTP服務，關掉勾選就關閉監聽。http建置維持「用到才啟動」。
+let bcEnabled = PROXY_MODE !== "inprocess";
 function ensureBcServer() {
-  if (PROXY_MODE === "inprocess") return Promise.reject(new Error("這個版本是「不開本機監聽埠」的建置（PROXY_MODE=inprocess），瀏覽器控制需要本機HTTP服務，所以不可用。要使用請改用預設（http）模式重新建置。"));
+  if (!bcEnabled) return Promise.reject(new Error("這個版本預設不開本機監聽埠。要使用瀏覽器控制，請先到設定 → 瀏覽器控制勾選「啟用瀏覽器控制」（勾選後才會開一個只綁 127.0.0.1、需要配對碼的本機服務）。"));
   if (bcServer) return Promise.resolve(bcServer);
   if (!bcStarting) {
     bcStarting = (async () => {
@@ -1119,6 +1122,12 @@ function ensureBcServer() {
 }
 ipcMain.handle("fa:bc:call", async (_evt, { cmd, args, timeoutMs } = {}) => { try { return (await ensureBcServer()).call(String(cmd || ""), args, timeoutMs); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
 ipcMain.handle("fa:bc:status", async () => { try { return (await ensureBcServer()).status(); } catch (err) { return { port: 0, token: "", connected: false, serverError: String((err && err.message) || err) }; } });
+ipcMain.handle("fa:bc:setEnabled", async (_evt, on) => {
+  if (PROXY_MODE !== "inprocess") return { ok: true, enabled: true };
+  bcEnabled = !!on;
+  if (!bcEnabled && bcServer) { try { bcServer.stop(); } catch (_) {} bcServer = null; bcStarting = null; }
+  return { ok: true, enabled: bcEnabled };
+});
 ipcMain.handle("fa:bc:regenerateToken", async () => { try { return (await ensureBcServer()).regenerateToken(); } catch (_) { return ""; } });
 
 ipcMain.handle("fa:git:inspect", async (_evt, { cwdAbs, mode, path: subPath, staged, maxCommits } = {}) => {

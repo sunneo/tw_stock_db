@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     call: (cmd, args, timeoutMs) => ipcRenderer.invoke("fa:bc:call", { cmd, args, timeoutMs }),
     status: () => ipcRenderer.invoke("fa:bc:status"),
     regenerateToken: () => ipcRenderer.invoke("fa:bc:regenerateToken"),
+    setEnabled: (on) => ipcRenderer.invoke("fa:bc:setEnabled", !!on),
   },
   git: {
     applyPatch: (cwdAbs, patch, opts) => ipcRenderer.invoke("fa:git:applyPatch", { cwdAbs, patch, ...(opts || {}) }),
