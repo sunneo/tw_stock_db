@@ -6893,19 +6893,25 @@ ${fnData.code}
         );
 
         registerOptional('fap_read_file',
-            '讀取一個File Access Point（真實磁碟資料夾）裡某個純文字檔案的內容（原始碼/筆記/設定檔/markdown等；圖片/影片/office文件/壓縮檔這類二進位格式不支援，會回報明確錯誤，請改用📎上傳附件+parse_uploaded_file）。超過8000字元會截斷（回傳裡truncated:true時代表被截斷）。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt"}',
+            '讀取一個File Access Point（真實磁碟資料夾）裡某個純文字檔案的內容（原始碼/筆記/設定檔/markdown等；圖片/影片/office文件/壓縮檔這類二進位格式不支援，會回報明確錯誤，請改用📎上傳附件+parse_uploaded_file）。超過8000字元會截斷（回傳裡truncated:true時代表被截斷）。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt"}**分頁讀取**：回傳has_more:true表示還沒讀完，用offset（字元）或start_line（行號）搭配max_chars/max_lines繼續讀到完整份；要精準編修程式碼、字幕這類內容時一定要把整份讀完，不可以用摘要代替。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
                 if (!ref) return JSON.stringify({ ok: false, error: '缺少ref參數（格式：fap:<名稱或id>/<路徑>）' });
                 try {
-                    return JSON.stringify(await this._fapReadFile(ref));
+                    return JSON.stringify(await this._fapReadFile(ref, { offset: parsed.offset, maxChars: parsed.max_chars, startLine: parsed.start_line, maxLines: parsed.max_lines }));
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
                 }
             },
-            { type: 'object', properties: { ref: { type: 'string', description: '格式：fap:<名稱或id>/<檔案路徑>' } }, required: ['ref'], additionalProperties: false }
+            { type: 'object', properties: {
+                ref: { type: 'string', description: '格式：fap:<名稱或id>/<檔案路徑>' },
+                offset: { type: 'integer', description: '選填：從第幾個字元開始讀（分頁用，預設0）' },
+                max_chars: { type: 'integer', description: '選填：這次最多讀幾個字元（預設依模型內容窗口自適應）' },
+                start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
+                max_lines: { type: 'integer', description: '選填：這次最多讀幾行' },
+            }, required: ['ref'], additionalProperties: false }
         );
 
         registerOptional('fap_write_file',
@@ -7321,7 +7327,7 @@ ${fnData.code}
         );
 
         registerOptional('parse_uploaded_file',
-            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}',
+            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -7331,12 +7337,16 @@ ${fnData.code}
                 if (!record || record.kind !== 'uploaded') {
                     return JSON.stringify({ ok: false, error: `找不到上傳檔案 file_id=${fileId}（可能已被淘汰或這不是使用者上傳的檔案）` });
                 }
-                const result = await this._parseUploadedFileContent(record, { entryPath: parsed.entry_path });
+                const result = await this._parseUploadedFileContent(record, { entryPath: parsed.entry_path, offset: parsed.offset, maxChars: parsed.max_chars, startLine: parsed.start_line, maxLines: parsed.max_lines });
                 return JSON.stringify(Object.assign({ filename: record.filename }, result));
             },
             { type: 'object', properties: {
                 file_id: { type: 'string', description: '要解析的檔案id，用list_uploaded_files取得' },
                 entry_path: { type: 'string', description: '（選填）壓縮檔內要抽取內容的項目路徑' },
+                offset: { type: 'integer', description: '選填：純文字/壓縮檔項目/PDF文字從第幾個字元開始讀（分頁用，預設0）' },
+                max_chars: { type: 'integer', description: '選填：這次最多讀幾個字元（預設依模型內容窗口自適應）' },
+                start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
+                max_lines: { type: 'integer', description: '選填：這次最多讀幾行' },
             }, required: ['file_id'], additionalProperties: false }
         );
 
@@ -7499,7 +7509,7 @@ ${fnData.code}
                 if (/^fap:/i.test(ref)) {
                     let result;
                     try {
-                        result = await this._fapReadFile(ref);
+                        result = await this._fapReadFile(ref, { all: true });
                     } catch (err) {
                         throw new Error(`讀取「${ref}」失敗：${String(err.message || err)}`);
                     }
@@ -7519,11 +7529,52 @@ ${fnData.code}
             }
             return out;
         };
+        // tw_stock_db客製: 2026-09-21使用者要求——讓腳本能直接編修📎附件：attachment_files是
+        // {"工作目錄相對檔名":"附件file_id或檔名"}（也可以給file_id陣列，檔名沿用附件原名），
+        // 這裡在JS層直接從persistentStorage(FileCache)取出原始bytes（二進位檔也行）寫進/work，
+        // 不經過LLM的tool-calling協定。產出的檔案預設存回persistentStorage並直接顯示下載卡片。
+        const resolveAttachmentFiles = async (raw) => {
+            if (raw == null) return {};
+            let pairs;
+            if (Array.isArray(raw)) pairs = raw.map((ref) => [null, ref]);
+            else if (typeof raw === 'object') pairs = Object.entries(raw);
+            else throw new Error('attachment_files必須是「工作目錄相對檔名」→「附件file_id或檔名」的物件（或file_id陣列）');
+            const out = {};
+            let total = 0;
+            for (const [relName, ref] of pairs) {
+                const key = String(ref || '').trim();
+                let rec = null;
+                try { rec = await this.fileCache.get(key); } catch (_) { /* 不是有效id，退回用檔名找 */ }
+                if (!rec) rec = await this._resolveUploadedFileRecord(key, { kindFilter: null });
+                if (!rec || !rec.blob) throw new Error(`找不到附件「${key}」（用list_uploaded_files查詢目前可用的file_id/檔名）`);
+                total += rec.blob.size;
+                if (total > 100 * 1024 * 1024) throw new Error('attachment_files總大小超過100MB');
+                out[String(relName || rec.filename).replace(/^\/+/, '')] = new Uint8Array(await rec.blob.arrayBuffer());
+            }
+            return out;
+        };
+        const executionInputHashes = (files) => {
+            const h = {};
+            for (const [k, v] of Object.entries(files)) h[k.replace(/^\/+/, '')] = this._fnv1a(typeof v === 'string' ? new TextEncoder().encode(v) : v);
+            return h;
+        };
+        // 輸出=/work底下「新增或內容有變」的檔案；原封不動的輸入檔（尤其是附件）不算產出，不重複存、不出卡片。
+        const filterChangedOutputs = (files, inputHashes) => files.filter((f) => inputHashes[f.relPath] !== this._fnv1a(f.bytes));
+        const deliverOutputCards = async (persisted) => {
+            let delivered = 0;
+            if (persisted && persisted.destination === 'persistent_storage') {
+                for (const f of persisted.files.slice(0, 5)) {
+                    try { await this._deliverExistingCacheFile(f.file_id, `📎 產出檔案：${f.path}（${(f.sizeBytes / 1024).toFixed(f.sizeBytes < 102400 ? 1 : 0)}KB）`); delivered++; } catch (_) { /* 卡片失敗不影響結果 */ }
+                }
+            }
+            return delivered;
+        };
         const executionToolSchema = {
             type: 'object',
             properties: {
                 script: { type: 'string', description: '要執行的腳本內容' },
                 input_files: { type: 'object', description: '選填，{"相對路徑":"檔案內容"}，執行前寫進工作目錄，腳本可以直接讀取' },
+                attachment_files: { type: 'object', description: '選填：{"工作目錄相對檔名":"📎附件的file_id或檔名"}（也可給file_id陣列），執行前把附件的原始內容（二進位檔也行）放進工作目錄讓腳本編修；產出的新檔案/修改過的檔案會存回persistentStorage並直接顯示下載卡片給使用者' },
                 real_input_files: { type: 'object', description: '選填：{"工作目錄相對檔名":"真實絕對路徑，或\'fap:<名稱或id>[/<路徑>]\'參照使用者已授權的File Access Point"}，執行前會先讀取這些真實檔案的目前內容再寫進工作目錄（跟input_files合併，鍵名衝突時以這裡為準）。兩種格式各自需要對應的能力才能用，只有兩者都用不上時才會得到明確錯誤。' },
                 output_ref: { type: 'string', description: '選填，"fap:<名稱>[/<子路徑>]"存進File Access Point；如果目前環境已經提供對應能力，也可以直接給一個真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）' },
             },
@@ -7532,7 +7583,7 @@ ${fnData.code}
         };
 
         registerOptional('bash_execute',
-            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案（含輸入檔案原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/build"}',
+            '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案（含輸入檔案原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/build"}**編修使用者的📎附件**：用attachment_files參數（{"工作目錄相對檔名":"附件file_id或檔名"}，二進位檔也行，file_id用list_uploaded_files查）把附件放進工作目錄，腳本讀取、修改後寫回同名檔案（或寫成新檔案）即可；執行完畢後，「新增或內容有變」的檔案會存回persistentStorage並直接在對話裡顯示下載卡片給使用者（原封不動的輸入檔不會重複產出），你只需要用一兩句話說明改了什麼、不要把整份檔案內容貼回對話。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -7542,7 +7593,9 @@ ${fnData.code}
                 try {
                     inputFiles = parseExecutionInputFiles(parsed.input_files);
                     Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
+                    Object.assign(inputFiles, await resolveAttachmentFiles(parsed.attachment_files));
                 } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                const inputHashes = executionInputHashes(inputFiles);
                 let runtime;
                 try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 const seedFiles = {};
@@ -7600,16 +7653,17 @@ ${fnData.code}
                 } finally {
                     fsStack.pop();
                 }
-                const outputFiles = this._walkMemoryFsDir(store, '/work');
+                const outputFiles = filterChangedOutputs(this._walkMemoryFsDir(store, '/work'), inputHashes);
                 let persisted;
                 try {
                     persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode });
                 }
+                const deliveredCards = await deliverOutputCards(persisted);
                 return JSON.stringify({
                     ok: true, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode,
-                    output_destination: persisted.destination, output_files: persisted.files,
+                    output_destination: persisted.destination, output_files: persisted.files, download_cards_shown: deliveredCards,
                 });
             },
             executionToolSchema
@@ -7621,7 +7675,7 @@ ${fnData.code}
         // Pyodide官方支援的setStdout/setStderr（batched callback），不是
         // 靠python自己print再從某個地方讀回來。
         registerOptional('python_execute',
-            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}**平行運算**：multiprocessing（Pool.map/starmap/apply_async/imap_unordered、Process、Queue）與concurrent.futures.ProcessPoolExecutor可以用——底層是瀏覽器Web Worker（每個worker一份獨立Pyodide，不共用記憶體，所以Value/Array/Manager/Pipe不能用，改用Pool回傳值或Queue彙整結果）；規則跟真實multiprocessing一樣：進入點要放在`if __name__ == \'__main__\':`底下，交給worker的函式必須是模組最上層定義的具名函式（lambda/巢狀函式無法pickle）。shell裡的`python`指令無法等待worker，會自動改成單執行緒依序執行（結果相同、沒有加速）。',
+            '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}**平行運算**：multiprocessing（Pool.map/starmap/apply_async/imap_unordered、Process、Queue）與concurrent.futures.ProcessPoolExecutor可以用——底層是瀏覽器Web Worker（每個worker一份獨立Pyodide，不共用記憶體，所以Value/Array/Manager/Pipe不能用，改用Pool回傳值或Queue彙整結果）；規則跟真實multiprocessing一樣：進入點要放在`if __name__ == \'__main__\':`底下，交給worker的函式必須是模組最上層定義的具名函式（lambda/巢狀函式無法pickle）。shell裡的`python`指令無法等待worker，會自動改成單執行緒依序執行（結果相同、沒有加速）。**編修使用者的📎附件**：用attachment_files參數（{"工作目錄相對檔名":"附件file_id或檔名"}，二進位檔也行，file_id用list_uploaded_files查）把附件放進工作目錄，腳本讀取、修改後寫回同名檔案（或寫成新檔案）即可；執行完畢後，「新增或內容有變」的檔案會存回persistentStorage並直接在對話裡顯示下載卡片給使用者（原封不動的輸入檔不會重複產出），你只需要用一兩句話說明改了什麼、不要把整份檔案內容貼回對話。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -7631,7 +7685,9 @@ ${fnData.code}
                 try {
                     inputFiles = parseExecutionInputFiles(parsed.input_files);
                     Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
+                    Object.assign(inputFiles, await resolveAttachmentFiles(parsed.attachment_files));
                 } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
+                const inputHashes = executionInputHashes(inputFiles);
                 let pyodide;
                 try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 try {
@@ -7649,16 +7705,17 @@ ${fnData.code}
                     // 正確巢狀運作的必要條件，python_execute本身的既有行為
                     // （不隔離globals、支援top-level await）完全不變。
                     const { stdout, stderr, returncode: exitCode } = await this._runPyodideScriptAsync(pyodide, script, null);
-                    const outputFiles = this._walkPyodideFsDir(pyodide, '/work');
+                    const outputFiles = filterChangedOutputs(this._walkPyodideFsDir(pyodide, '/work'), inputHashes);
                     let persisted;
                     try {
                         persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                     } catch (err) {
                         return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout, stderr, exit_code: exitCode });
                     }
+                    const deliveredCards = await deliverOutputCards(persisted);
                     return JSON.stringify({
                         ok: true, stdout, stderr, exit_code: exitCode,
-                        output_destination: persisted.destination, output_files: persisted.files,
+                        output_destination: persisted.destination, output_files: persisted.files, download_cards_shown: deliveredCards,
                     });
                 } finally {
                     // tw_stock_db客製: /work底下的檔案是這次呼叫累積下來的（下一次
@@ -9505,7 +9562,45 @@ ${fnData.code}
         return { ok: true, access_point: rec.label, path, entries };
     }
 
-    async _fapReadFile(ref) {
+    // tw_stock_db客製: 2026-09-21使用者要求——fap_read_file/parse_uploaded_file原本固定只回傳前8000字元，
+    // 精準編修（程式碼、字幕）需要把整份讀完，不能靠摘要。這個helper提供分頁：offset(字元)或start_line(行號)
+    // 決定從哪開始，max_chars/max_lines決定一次讀多少（預設依模型內容窗口自適應），盡量停在行尾不切斷一行；
+    // 回傳has_more/next_offset讓呼叫端接著讀。
+    _pageText(text, o = {}) {
+        text = String(text == null ? '' : text);
+        const total = text.length;
+        const budget = Math.max(200, Math.min(200000, Math.floor(Number(o.maxChars) || this._getAdaptiveContentBudgetChars(0.1, 8000))));
+        let start = 0;
+        if (o.startLine != null && Number(o.startLine) >= 1) {
+            const target = Math.floor(Number(o.startLine));
+            let idx = 0, line = 1;
+            while (line < target) { const nl = text.indexOf('\n', idx); if (nl < 0) { idx = total; break; } idx = nl + 1; line++; }
+            start = idx;
+        } else start = Math.max(0, Math.min(total, Math.floor(Number(o.offset) || 0)));
+        let end = Math.min(total, start + budget);
+        if (o.maxLines != null && Number(o.maxLines) > 0) {
+            let cnt = 0, idx = start;
+            const want = Math.floor(Number(o.maxLines));
+            while (idx < total && cnt < want) { const nl = text.indexOf('\n', idx); if (nl < 0) { idx = total; break; } idx = nl + 1; cnt++; }
+            end = Math.min(end, idx);
+        } else if (end < total) {
+            const nl = text.lastIndexOf('\n', end - 1);
+            if (nl > start) end = nl + 1;
+        }
+        const content = text.slice(start, end);
+        const count = (str) => { let n = 0; for (let i = str.indexOf('\n'); i >= 0; i = str.indexOf('\n', i + 1)) n++; return n; };
+        const startLineNo = count(text.slice(0, start)) + 1;
+        const endLineNo = startLineNo + count(content) - (content.endsWith('\n') ? 1 : 0);
+        const hasMore = end < total;
+        return {
+            content, offset: start, returned_chars: content.length, total_chars: total,
+            start_line: startLineNo, end_line: Math.max(startLineNo, endLineNo), total_lines: count(text) + (text.endsWith('\n') ? 0 : 1),
+            has_more: hasMore, next_offset: hasMore ? end : null,
+            page_hint: hasMore ? `還沒讀完（${end}/${total}字元）：用offset=${end}（或start_line=${Math.max(startLineNo, endLineNo) + 1}）繼續讀，精準編修一定要讀完整份，不要用摘要代替。` : undefined,
+        };
+    }
+
+    async _fapReadFile(ref, opts = {}) {
         const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'read' });
         let fileHandle;
         try {
@@ -9517,11 +9612,10 @@ ${fnData.code}
         if (FAP_BINARY_EXT_PATTERN.test(filename)) {
             return { ok: false, error: `「${filename}」看起來是二進位格式，fap_read_file只支援讀取純文字檔案內容。如果需要AI處理這個檔案（分析/轉檔/轉逐字稿等），先呼叫fap_copy_to_storage把它複製進persistentStorage，再用parse_uploaded_file/transcribe_media等既有工具處理。`, sizeBytes: file.size };
         }
-        const MAX_CHARS = 8000;
-        let text = await file.text();
-        const truncated = text.length > MAX_CHARS;
-        if (truncated) text = text.slice(0, MAX_CHARS);
-        return { ok: true, access_point: rec.label, filename, sizeBytes: file.size, content: text, truncated };
+        const text = await file.text();
+        if (opts.all) return { ok: true, access_point: rec.label, filename, sizeBytes: file.size, content: text, truncated: false, total_chars: text.length };
+        const page = this._pageText(text, opts);
+        return { ok: true, access_point: rec.label, filename, sizeBytes: file.size, ...page, truncated: page.has_more };
     }
 
     async _fapWriteFile(ref, content) {
@@ -20659,7 +20753,7 @@ ${sourceTool.handlerScript}
                     const entry = zip.file(entryPath);
                     if (!entry) return { ok: false, error: `zip內找不到項目: ${entryPath}` };
                     const text = await entry.async('string');
-                    return { ok: true, format: 'zip_entry', entryPath, content: text.length > 20000 ? text.slice(0, 20000) + '\n…(截斷)' : text };
+                    return { ok: true, format: 'zip_entry', entryPath, ...this._pageText(text, opts) };
                 }
                 const entries = Object.keys(zip.files).map(name => ({ name, isDir: zip.files[name].dir }));
                 return { ok: true, format: 'zip', entries };
@@ -20671,7 +20765,7 @@ ${sourceTool.handlerScript}
                     const raw = this._extractTarEntry(parsed, entryPath);
                     if (!raw) return { ok: false, error: `${format}內找不到項目: ${entryPath}` };
                     const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
-                    return { ok: true, format: `${format}_entry`, entryPath, content: text.length > 20000 ? text.slice(0, 20000) + '\n…(截斷)' : text };
+                    return { ok: true, format: `${format}_entry`, entryPath, ...this._pageText(text, opts) };
                 }
                 return { ok: true, format, entries: parsed.entries.map(e => ({ name: e.name, size: e.size, isDir: e.isDir })) };
             }
@@ -20695,9 +20789,10 @@ ${sourceTool.handlerScript}
                 // 「怎麼什麼都沒擷取到」，這裡明確講出這個結構事實，不要只回傳
                 // 一個空字串讓人自己猜。
                 const looksScanImageOnly = numPages > 0 && fullText.length < numPages * 2;
+                const pdfPage = this._pageText(fullText, opts);
                 return {
                     ok: true, format: 'pdf', pageCount: numPages,
-                    fullText: fullText.length > 12000 ? fullText.slice(0, 12000) + '\n…(截斷)' : fullText,
+                    fullText: pdfPage.content, offset: pdfPage.offset, total_chars: pdfPage.total_chars, has_more: pdfPage.has_more, next_offset: pdfPage.next_offset, page_hint: pdfPage.page_hint,
                     note: looksScanImageOnly
                         ? `這份PDF共${numPages}頁，但幾乎沒有擷取到任何文字——很可能是掃描件/純圖片PDF（沒有文字層），這個工具不支援OCR，無法讀取圖片裡的文字內容。`
                         : undefined,
@@ -20732,7 +20827,7 @@ ${sourceTool.handlerScript}
             }
             // txt/md/markdown/log/js等純文字類，直接回傳（js刻意只當文字讀，
             // 絕不執行——見計畫文件的安全立場）。
-            return { ok: true, format: format || 'text', content: text.length > 8000 ? text.slice(0, 8000) + `\n…(截斷，共${text.length}字元)` : text };
+            return { ok: true, format: format || 'text', ...this._pageText(text, opts) };
         } catch (err) {
             return { ok: false, error: String(err.message || err) };
         }
