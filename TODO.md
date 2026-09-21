@@ -107,3 +107,5 @@
 - [x] **分頁讀取**：`fap_read_file`、`parse_uploaded_file`（純文字、zip/tar 項目、PDF 文字）新增 `offset`/`max_chars`/`start_line`/`max_lines`，回傳 `has_more`/`next_offset`/行號資訊；預設頁大小依模型內容窗口自適應（實測預設約3.8萬字元）、盡量停在行尾。精準編修（程式碼、字幕）要分頁讀完整份，不用 summarize。順帶修掉 `real_input_files` 讀 FAP 檔案被靜默截斷在8000字元的 bug。實測 9萬字元檔案分頁串接後與原檔完全相同。
 
 - [x] **`fap_apply_patch`**（改File Access Point檔案「某幾行」，用unified diff）：all-or-nothing、內容對不上時回傳實際內容供重寫、可 `check_only` 乾跑、新增檔案用 `/dev/null`、自動備份、**寫完逐檔讀回比對**（不一致就還原）、回傳 `first_changed_line`/`total_lines_after` 供讀回確認。同一套 `_codingApplyPatch`（順便讓 coding 的 apply_git_patch 也有讀回驗證）。`file_access_points` domain 提示改成「精準編修一律 patch、fap_write_file 只用來新增或整份重寫」。實測：srt 改一行、子資料夾當根、新增檔案、錯誤 context 被擋且不動檔案。
+
+- [x] **`attachment_apply_patch`**（📎純文字附件的 patch 式精準編修）：同一套 `_codingApplyPatch`（all-or-nothing、對不上回傳實際內容、讀回比對），成功後另存成「.已修改」新附件並顯示下載卡片（`in_place:true` 才覆寫原附件），保留 CRLF；二進位附件明確拒絕並指向 `attachment_files`。`file_analysis` domain 提示要求：修改先分頁讀完整份、不可用 summarize、用 patch、讀回確認。實測 srt 修改、乾跑、錯誤 context、in_place、二進位/找不到/缺參數。

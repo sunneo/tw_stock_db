@@ -1362,7 +1362,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1378,7 +1378,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         // 路徑/別名，不是上傳檔案），要主動呼叫request_additional_tools
         // 申請file_access_points領域的工具、原地繼續完成，不要因為
         // list_uploaded_files找不到就直接放棄或勉強瞎猜。
-        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。**使用者要求「修改/校正/編修」純文字附件（程式碼、字幕、設定檔）時**：先用parse_uploaded_file分頁（offset/start_line）把整份讀完（精準編修不可用summarize_large_text代替），再照讀到的內容手寫unified diff，用attachment_apply_patch套用（修改後的內容會自動存成新附件並顯示下載卡片），套用後用parse_uploaded_file讀回修改處確認結構正確；patch失敗就照回傳的實際內容重寫，不要改成整份重新生成。二進位附件（xlsx/docx等）改用bash_execute/python_execute的attachment_files。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
     // tw_stock_db客製: 2026-09-15使用者要求——跟file_analysis（上面那個，
     // persistentStorage/FileCache裡的上傳檔案）是完全不同的兩套系統，
@@ -4325,7 +4325,7 @@ function faMpWorkerMain() {
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
 const FA_DEDUP_TOOLS = new Set(['delegate_to_subagent', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
-const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
+const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_type_text', 'browser_press_key'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_mouse/browser_type_text操作、browser_screenshot截圖給使用者看；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -6936,6 +6936,29 @@ ${fnData.code}
                 check_only: { type: 'boolean', description: '選填：true=只乾跑驗證，不真的寫入' },
                 strip: { type: 'integer', description: '選填：去掉路徑前綴的層數，預設1（對應a/ b/）' },
             }, required: ['ref', 'patch'], additionalProperties: false }
+        );
+
+        registerOptional('attachment_apply_patch',
+            '用unified diff（跟git diff同格式）修改使用者📎上傳的**純文字附件**（程式碼、字幕srt、設定檔、markdown…）的某幾行，不用整份重寫——精準編修附件的方式：內容對不上時整份patch都不套用（all-or-nothing）並回傳實際內容供重寫，套用後讀回比對。成功後修改後的內容存成新的附件（檔名加「.已修改」，原附件不動；in_place:true才覆寫原附件）並直接在對話顯示下載卡片，你只需要用一兩句話說明改了什麼。流程：(1)用parse_uploaded_file分頁（offset/start_line）把要改的區段完整讀出來（精準編修不可用summarize代替） (2)照讀到的內容手寫diff：`--- a/檔名`、`+++ b/檔名`、`@@ -起始行,行數 +起始行,行數 @@`，每個hunk前後至少3行context，context行與被刪除行必須逐字複製原檔內容 (3)呼叫本工具（可先check_only:true乾跑） (4)用回傳的first_changed_line讀回確認。二進位附件（xlsx/docx/圖片…）不能用patch，改用bash_execute/python_execute的attachment_files。參數: {"file_id":"附件id","patch":"--- a/Goofy.srt\\n+++ b/Goofy.srt\\n@@ -1,4 +1,4 @@\\n ...","check_only":false,"in_place":false}（多個附件用file_ids陣列，patch裡每個檔案各一段）',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                if (!String(parsed.patch || '').trim()) return JSON.stringify({ ok: false, error: '缺少patch內容' });
+                try {
+                    const ids = Array.isArray(parsed.file_ids) && parsed.file_ids.length ? parsed.file_ids : [parsed.file_id];
+                    return JSON.stringify(await this._attachmentApplyPatch(String(parsed.patch), { fileIds: ids, checkOnly: !!parsed.check_only, inPlace: !!parsed.in_place, strip: parsed.strip == null ? 1 : parsed.strip }));
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: '要修改的附件id（用list_uploaded_files取得）' },
+                file_ids: { type: 'array', items: { type: 'string' }, description: '選填：同時修改多個附件時用這個（patch裡每個檔案各一段）' },
+                patch: { type: 'string', description: '完整的unified diff文字（以換行結尾）' },
+                check_only: { type: 'boolean', description: '選填：true=只乾跑驗證，不產生新檔案' },
+                in_place: { type: 'boolean', description: '選填：true=覆寫原附件（預設false，另存成「.已修改」新附件）' },
+                strip: { type: 'integer', description: '選填：去掉路徑前綴的層數，預設1（對應a/ b/）' },
+            }, required: [], additionalProperties: false }
         );
 
         registerOptional('fap_write_file',
@@ -10315,6 +10338,62 @@ ${fnData.code}
         // 每個檔案只留最近5份備份
         const names = (await io.listNames(base)).filter((n) => /\.bak$/.test(n)).sort();
         for (const old of names.slice(0, Math.max(0, names.length - 5))) { try { await io.remove(`${base}/${old}`); } catch (_) {} }
+    }
+
+    // tw_stock_db客製: 2026-09-21——📎附件的「patch式精準編修」：把附件（純文字：程式碼、字幕、設定檔…）
+    // 讀進一個記憶體版的io，套用同一套_codingApplyPatch（all-or-nothing、內容對不上回傳實際內容、讀回比對），
+    // 成功後把修改後的內容存成新的附件檔案（預設不動原檔；in_place=true才覆寫同一個file_id）並顯示下載卡片。
+    async _attachmentApplyPatch(patchText, { fileIds = [], checkOnly = false, inPlace = false, strip = 1 } = {}) {
+        const ids = (Array.isArray(fileIds) ? fileIds : [fileIds]).map((x) => String(x || '').trim()).filter(Boolean);
+        if (!ids.length) return { ok: false, error: '缺少file_id（用list_uploaded_files查詢附件的file_id；要同時改多個附件可以給file_ids陣列）' };
+        const store = new Map();
+        const recs = new Map();
+        for (const id of ids) {
+            let rec = null;
+            try { rec = await this.fileCache.get(id); } catch (_) { /* 不是有效id，退回用檔名找 */ }
+            if (!rec) rec = await this._resolveUploadedFileRecord(id, { kindFilter: null });
+            if (!rec || !rec.blob) return { ok: false, error: `找不到附件「${id}」（用list_uploaded_files查詢目前可用的file_id/檔名）` };
+            if (FAP_BINARY_EXT_PATTERN.test(rec.filename)) return { ok: false, error: `「${rec.filename}」是二進位格式，不能用patch修改；請改用bash_execute/python_execute的attachment_files參數用腳本處理。` };
+            const text = await rec.blob.text();
+            if (text.includes(String.fromCharCode(0))) return { ok: false, error: `「${rec.filename}」含有二進位內容（NUL字元），不能用patch修改。` };
+            store.set(rec.filename, text);
+            recs.set(rec.filename, rec);
+        }
+        // patch裡的路徑（去掉a/ b/前綴後）只要跟某個附件的檔名相符就行；只有一個附件時，路徑不符也自動對到它
+        const resolveName = (path) => {
+            if (store.has(path)) return path;
+            const base = String(path).split('/').pop();
+            if (store.has(base)) return base;
+            if (store.size === 1 && !/\.floating-assistant\//.test(path)) return [...store.keys()][0];
+            return path;
+        };
+        const io = {
+            async readText(rel) { return store.has(resolveName(rel)) ? store.get(resolveName(rel)) : null; },
+            async writeText(rel, text) { store.set(resolveName(rel), text); },
+            async remove(rel) { store.delete(resolveName(rel)); },
+            async listNames() { return []; },
+            describe(rel) { return `附件:${rel}`; },
+        };
+        const before = new Map(store);
+        const r = await this._codingApplyPatch(io, patchText, { checkOnly, strip });
+        if (!r.ok || checkOnly) return r;
+        const results = [];
+        for (const [name, text] of store) {
+            if (/^\.floating-assistant\//.test(name) || before.get(name) === text) continue;
+            const orig = recs.get(name);
+            const blob = new Blob([text], { type: (orig && orig.mimeType) || 'text/plain' });
+            let newId;
+            if (inPlace && orig) { newId = orig.id; await this.fileCache.put(name, orig.mimeType || 'text/plain', blob, orig.kind || 'uploaded', orig.id); }
+            else {
+                const dot = name.lastIndexOf('.');
+                const newName = dot > 0 ? `${name.slice(0, dot)}.已修改${name.slice(dot)}` : `${name}.已修改`;
+                newId = await this.fileCache.put(newName, (orig && orig.mimeType) || 'text/plain', blob, 'uploaded');
+            }
+            const saved = await this.fileCache.get(newId);
+            try { await this._deliverExistingCacheFile(newId, `📎 已修改的附件：${saved ? saved.filename : name}${inPlace ? '（已覆寫原附件）' : '（原附件保持不變）'}`); } catch (_) { /* 卡片失敗不影響結果 */ }
+            results.push({ original_file_id: orig ? orig.id : null, new_file_id: newId, filename: saved ? saved.filename : name, in_place: !!(inPlace && orig), sizeBytes: blob.size });
+        }
+        return Object.assign({}, r, { attachments: results, note: results.length ? '已存成附件並顯示下載卡片；要確認修改結果請用parse_uploaded_file讀回（start_line=files[].first_changed_line）。' : undefined });
     }
 
     async _codingApplyPatch(io, patchText, { checkOnly = false, strip = 1 } = {}) {
