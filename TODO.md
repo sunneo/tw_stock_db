@@ -98,3 +98,5 @@
 - [x] `PROXY_MODE=http|inprocess`（build.ps1 `-ProxyMode` / build.sh `PROXY_MODE` / 環境變數 `FA_PROXY_MODE`，寫入 `build-config.json`）。inprocess 用 `protocol.handle("fa-local")` 直接在主行程跑同一份 `local-proxy.js` 路由，沒有 TCP 監聽埠。用真的 Electron 44（把 dist/win-unpacked 的 asar 換成原始碼資料夾）兩種模式都實測：GET、POST（含中文、Authorization 原樣轉發）、串流回應（分段到達）、OPTIONS、內建 NVIDIA 金鑰路由真的回 200、seed 網址正確。
 - [x] 瀏覽器控制的本機服務改成第一次用到才啟動（沒用這功能的人 app 啟動後不再多開埠）；inprocess 模式下瀏覽器控制明確回報不可用。
 - 起因：一台裝了 ESET 的電腦把新版判為 Suspicious。這次改動不保證解決，需要對方偵測名稱/路徑才能確認原因。
+
+- [x] 桌面版本機 proxy 補上 `/edge-tts`（中文/粵語/日文/韓文語音）：`desktop-app/edge-tts.js` 移植自 Cloudflare Worker，用主行程內建 WebSocket 連 Microsoft 語音服務。原本本機 proxy 從來沒有這條路由（只有 Worker 有），所以 inprocess/http 兩種模式打過來都是 unknown route。真的 Electron 兩種模式都實測拿到 MP3（`_synthesizeSpeechViaApi` 端到端，長度 2.9 秒）。

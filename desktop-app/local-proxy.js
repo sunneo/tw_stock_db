@@ -29,6 +29,7 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const { handleBrowserSearch } = require("./browser-search.js");
+const { handleEdgeTts } = require("./edge-tts.js");
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm終端機功能——wasi-sh的
 // spawn()（互動式shell session）需要頁面`crossOriginIsolated===true`，
@@ -256,6 +257,13 @@ function buildRequestListener({ prefixes = ["/proxy/", "/git-proxy/"], getSecret
     // 完整語意port自worker.js的handleBrowserSearch），Node環境沒有瀏覽器
     // 的CORS限制，不需要任何代理繞道就能直接打Wikipedia/StackExchange/
     // GitHub/DuckDuckGo/Google News這些上游。
+    // 2026-09-21：中文/粵語/日文/韓文語音（Microsoft Edge神經網路語音）——原本只有Cloudflare Worker有這條
+    // /edge-tts路由，本機proxy一直沒實作，桌面版打過來只會得到unknown route。見edge-tts.js。
+    if (req.method === "POST" && req.url === "/edge-tts") {
+      setCorsHeaders(res, req);
+      handleEdgeTts(req, res).catch((err) => { if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: String((err && err.message) || err) })); });
+      return;
+    }
     if (req.method === "POST" && req.url === "/browser-search") {
       setCorsHeaders(res, req);
       handleBrowserSearch(req, res);
