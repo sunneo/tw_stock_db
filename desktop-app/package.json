@@ -25,6 +25,7 @@
       "preload.js",
       "local-proxy.js",
       "browser-search.js",
+      "edge-tts.js",
       "cli-format.js",
       "browser-control-server.js",
       "coding-workspace.js",
