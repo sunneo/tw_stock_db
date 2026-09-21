@@ -28,6 +28,7 @@
       "cli-format.js",
       "browser-control-server.js",
       "coding-workspace.js",
+      "build-config.json",
       "renderer/**/*",
       "build/icon.png",
       "builtin-secrets.json"

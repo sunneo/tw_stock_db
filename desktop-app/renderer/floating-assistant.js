@@ -15195,7 +15195,7 @@ ${sourceTool.handlerScript}
                 // 使用者自己填的真實端點）——跟bootstrap.js判斷「要不要
                 // 覆寫」用同一個正規表示式形狀，兩邊對「這是不是我們自己
                 // seed的暫時值」有一致的認定標準。
-                const looksLikeEphemeralDesktopProxyUrl = /^https?:\/\/127\.0\.0\.1:\d+\/nvidia$/.test(String(config.apiUrl || ''));
+                const looksLikeEphemeralDesktopProxyUrl = /^(https?:\/\/127\.0\.0\.1:\d+|fa-local:\/\/app)\/nvidia$/.test(String(config.apiUrl || ''));
                 if (typeof config.apiUrl === 'string' && looksLikeEphemeralDesktopProxyUrl) {
                     this._log('⚠️ 已略過匯入API網址：偵測到這是桌面版本地proxy的暫時網址（127.0.0.1，只在產生它的那次桌面app執行期間有效），繼續使用目前環境原本的預設端點。');
                 } else if (typeof config.apiUrl === 'string') {
@@ -28735,8 +28735,7 @@ ${existingNodeSummaries}
             await tr.regenerateToken();
             bcRefreshDesktop();
         });
-        bcRefreshDesktop();
-        this._bcRefreshDesktopUi = bcRefreshDesktop;
+        this._bcRefreshDesktopUi = () => { const box = document.getElementById('ai-bc-desktop-box'); if (box && box.offsetParent) return bcRefreshDesktop(); };
         setInterval(() => { const box = document.getElementById('ai-bc-desktop-box'); if (box && box.offsetParent) bcRefreshDesktop(); }, 3000);
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) {

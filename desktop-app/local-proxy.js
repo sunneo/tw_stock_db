@@ -234,11 +234,9 @@ function buildFixedUpstreamHandler(getSecrets) {
 // 下一個，直到找到可用的，最多嘗試20次）。getSecrets（選填）：
 // async()=>{NVAPI_KEY,OPENROUTER_API_KEY}，提供時才會開放/nvidia這條固定
 // 上游路由（openrouter巢狀在它底下，見buildFixedUpstreamHandler說明）。
-function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-proxy/"], getSecrets, onLog } = {}) {
-  const log = onLog || (() => {});
+function buildRequestListener({ prefixes = ["/proxy/", "/git-proxy/"], getSecrets } = {}) {
   const nvidiaHandler = getSecrets ? buildFixedUpstreamHandler(getSecrets) : null;
-
-  const server = http.createServer((req, res) => {
+  return (req, res) => {
     if (req.method === "OPTIONS") {
       setCorsHeaders(res, req);
       res.writeHead(204);
@@ -282,7 +280,12 @@ function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-p
     }
     const targetUrlRaw = req.url.slice(matchedPrefix.length);
     handleProxyRequest(req, res, decodeURIComponentSafe(targetUrlRaw));
-  });
+  };
+}
+
+function startLocalProxy({ preferredPort = 47891, prefixes = ["/proxy/", "/git-proxy/"], getSecrets, onLog } = {}) {
+  const log = onLog || (() => {});
+  const server = http.createServer(buildRequestListener({ prefixes, getSecrets }));
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
@@ -318,4 +321,67 @@ function decodeURIComponentSafe(s) {
   return s;
 }
 
-module.exports = { startLocalProxy };
+// 2026-09-21：in-process模式（不開任何TCP監聽埠）。同一份路由邏輯（buildRequestListener）
+// 改由Electron的自訂protocol（main.js註冊的fa-local://）接進來：把fetch Request轉成
+// Node風格的req/res（Readable/Writable），listener照舊寫入res，這邊再把res變成Response
+// 串流回去。listener完全不用改，兩種模式行為一致（含串流回應/SSE）。
+function createInProcessFetchHandler({ prefixes, getSecrets } = {}) {
+  const { Readable, Writable } = require("stream");
+  const listener = buildRequestListener({ prefixes, getSecrets });
+  return async function handle(request) {
+    const url = new URL(request.url);
+    const headers = {};
+    request.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+    // 請求本體先整份讀進來、補上明確的content-length再往上游送（跟http模式一樣不走chunked encoding，
+    // 見HOP_BY_HOP_REQUEST_HEADERS上面關於Linux空白回應的說明）；LLM請求的JSON本體不大。
+    const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.body;
+    let bodyBuf = null;
+    if (hasBody) {
+      bodyBuf = Buffer.from(await request.arrayBuffer());
+      headers["content-length"] = String(bodyBuf.length);
+    }
+    const req = bodyBuf ? Readable.from([bodyBuf]) : new Readable({ read() { this.push(null); } });
+    req.method = request.method;
+    req.url = url.pathname + url.search;
+    req.headers = headers;
+
+    return new Promise((resolve) => {
+      const respHeaders = new Headers();
+      let status = 200;
+      let started = false;
+      let writer = null;
+      let streamCtrl = null;
+      const stream = new ReadableStream({ start(c) { streamCtrl = c; } });
+      const begin = () => {
+        if (started) return;
+        started = true;
+        const bodyless = request.method === "HEAD" || status === 204 || status === 304;
+        resolve(new Response(bodyless ? null : stream, { status, headers: respHeaders }));
+        if (bodyless) { try { streamCtrl.close(); } catch (_) {} }
+      };
+      const setHeader = (k, v) => {
+        respHeaders.delete(k);
+        if (Array.isArray(v)) for (const x of v) respHeaders.append(k, String(x)); else respHeaders.set(k, String(v));
+      };
+      const res = new Writable({
+        write(chunk, _enc, cb) { begin(); try { streamCtrl.enqueue(new Uint8Array(chunk)); } catch (_) {} cb(); },
+        final(cb) { begin(); try { streamCtrl.close(); } catch (_) {} cb(); },
+      });
+      res.setHeader = setHeader;
+      res.getHeader = (k) => respHeaders.get(k);
+      res.headersSent = false;
+      res.writeHead = (code, hdrs) => {
+        status = code;
+        if (hdrs) for (const [k, v] of Object.entries(hdrs)) if (v !== undefined) setHeader(k, v);
+        res.headersSent = true;
+        begin();
+        return res;
+      };
+      Object.defineProperty(res, "statusCode", { get: () => status, set: (v) => { status = v; } });
+      try { listener(req, res); }
+      catch (err) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: String((err && err.message) || err) })); }
+    });
+  };
+}
+
+module.exports = { startLocalProxy, createInProcessFetchHandler };
