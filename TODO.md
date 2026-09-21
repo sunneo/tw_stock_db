@@ -102,3 +102,6 @@
 - [x] 桌面版本機 proxy 補上 `/edge-tts`（中文/粵語/日文/韓文語音）：`desktop-app/edge-tts.js` 移植自 Cloudflare Worker，用主行程內建 WebSocket 連 Microsoft 語音服務。原本本機 proxy 從來沒有這條路由（只有 Worker 有），所以 inprocess/http 兩種模式打過來都是 unknown route。真的 Electron 兩種模式都實測拿到 MP3（`_synthesizeSpeechViaApi` 端到端，長度 2.9 秒）。
 
 - [x] **重複委派防護**（實例：燒錄字幕連續委派十幾次，每次成功、每次都產生30MB影片、始終不給最終回覆）：同一輪對話裡，昂貴/有副作用的工具（delegate_to_subagent、burn_subtitles、transcribe_media…）若「先前已成功且內容相似（delegate 用 domain+task 詞彙相似度≥0.6）」，第二次起不再真的執行，改回傳上次結果並要求模型整理成最終回覆；同輪攔下第2次後主對話改 `tool_choice:none` 強制收尾。根對話（原生＋文字協定）與子agent都有。用假LLM驗證：4次委派（3次同一件事＋1次不同的事）只真的執行2次。
+
+- [x] **編修附件＋輸出下載卡片**：`bash_execute`/`python_execute` 新增 `attachment_files`（{工作目錄檔名: 附件file_id或檔名}，也可給id陣列；二進位檔也行），執行後「新增或內容有變」的檔案存回 persistentStorage 並直接在對話顯示下載卡片（最多5張；原封不動的輸入檔不算產出）。實測：srt 校正、二進位 256 bytes 附件讀取、bash/python 兩邊、找不到附件時明確報錯。
+- [x] **分頁讀取**：`fap_read_file`、`parse_uploaded_file`（純文字、zip/tar 項目、PDF 文字）新增 `offset`/`max_chars`/`start_line`/`max_lines`，回傳 `has_more`/`next_offset`/行號資訊；預設頁大小依模型內容窗口自適應（實測預設約3.8萬字元）、盡量停在行尾。精準編修（程式碼、字幕）要分頁讀完整份，不用 summarize。順帶修掉 `real_input_files` 讀 FAP 檔案被靜默截斷在8000字元的 bug。實測 9萬字元檔案分頁串接後與原檔完全相同。
