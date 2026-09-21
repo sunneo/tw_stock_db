@@ -39,7 +39,14 @@
 # parse error). Comments/messages in other project files (JS/HTML) are
 # fine since Node and Chromium are UTF-8-native.
 param(
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    # Local proxy transport: "http" (default, listens on 127.0.0.1) or "inprocess"
+    # (no TCP port at all; same routes served inside the app via the fa-local://
+    # protocol). Can also be set with the FA_PROXY_MODE environment variable.
+    # NOTE: "inprocess" disables Browser Control (the Chrome extension needs a
+    # local HTTP port). See main.js PROXY_MODE.
+    [ValidateSet("", "http", "inprocess")]
+    [string]$ProxyMode = ""
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -88,6 +95,11 @@ if ($env:FA_BUILTIN_NVAPI_KEY -or $env:FA_BUILTIN_OPENROUTER_KEY) {
     '{"NVAPI_KEY":"","OPENROUTER_API_KEY":""}' | Set-Content -Path "builtin-secrets.json" -Encoding utf8
     Write-Host "No env vars and no existing file - wrote an empty builtin-secrets.json (edit it by hand to bake in a key; future builds without the env vars will keep your edits)." -ForegroundColor Cyan
 }
+
+if (-not $ProxyMode) { $ProxyMode = if ($env:FA_PROXY_MODE) { $env:FA_PROXY_MODE.ToLower() } else { "http" } }
+if ($ProxyMode -ne "http" -and $ProxyMode -ne "inprocess") { throw "ProxyMode must be http or inprocess (got: $ProxyMode)" }
+Write-Host "== Local proxy mode: $ProxyMode (writing build-config.json) ==" -ForegroundColor Cyan
+('{"proxyMode": "' + $ProxyMode + '"}') | Set-Content -Path "build-config.json" -Encoding utf8
 
 if (-not $SkipInstall) {
     Write-Host "== npm install ==" -ForegroundColor Cyan

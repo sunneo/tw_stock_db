@@ -448,9 +448,10 @@ function patchCloudflareWording(root) {
   // 不需要使用者自己申請/部署Cloudflare Worker、也不用網路連線到任何
   // 第三方代理。
   const port = await window.desktopAPI.config.getLocalProxyPort();
+  const localProxyBase = window.desktopAPI.config.getLocalProxyBase ? await window.desktopAPI.config.getLocalProxyBase() : (port ? `http://127.0.0.1:${port}` : null);
   const proxyStatusEl = document.getElementById("topbar-proxy-status");
-  if (port) {
-    const localBase = `http://127.0.0.1:${port}`;
+  if (localProxyBase) {
+    const localBase = localProxyBase;
     fa.advancedSettings.gitCorsProxyUrl = localBase;
     fa.advancedSettings.browserSearchProxyUrl = localBase;
     fa.advancedSettings.ttsApiProxyUrl = localBase;
@@ -461,7 +462,7 @@ function patchCloudflareWording(root) {
     // 慣例，只是指到local-proxy.js既有的/proxy/<url>通用路由。
     fa.advancedSettings.assetBackupProxyUrl = localBase;
     fa._saveAdvancedSettings();
-    if (proxyStatusEl) proxyStatusEl.textContent = `本地proxy：127.0.0.1:${port}`;
+    if (proxyStatusEl) proxyStatusEl.textContent = port ? `本地proxy：127.0.0.1:${port}` : `本地proxy：in-process（沒有開監聽埠）`;
   } else if (proxyStatusEl) {
     proxyStatusEl.textContent = "本地proxy：啟動失敗（git/搜尋等功能可能無法使用）";
     proxyStatusEl.style.color = "#f87171";
@@ -499,9 +500,9 @@ function patchCloudflareWording(root) {
   // 部署的雲端端點），就不會符合這個形狀，維持原本「不覆蓋使用者自訂值」
   // 的行為不變。
   const currentApiUrl = localStorage.getItem(fa.LLM_BASE_URL_KEY);
-  const looksLikeOurOwnSeededProxyUrl = !currentApiUrl || /^https?:\/\/127\.0\.0\.1:\d+\/nvidia$/.test(currentApiUrl);
-  if (port && secretsStatus.nvidia && looksLikeOurOwnSeededProxyUrl) {
-    localStorage.setItem(fa.LLM_BASE_URL_KEY, `http://127.0.0.1:${port}/nvidia`);
+  const looksLikeOurOwnSeededProxyUrl = !currentApiUrl || /^(https?:\/\/127\.0\.0\.1:\d+|fa-local:\/\/app)\/nvidia$/.test(currentApiUrl);
+  if (localProxyBase && secretsStatus.nvidia && looksLikeOurOwnSeededProxyUrl) {
+    localStorage.setItem(fa.LLM_BASE_URL_KEY, `${localProxyBase}/nvidia`);
     if (!localStorage.getItem(fa.STORAGE_KEY)) localStorage.setItem(fa.STORAGE_KEY, "local-desktop-proxy");
   }
 

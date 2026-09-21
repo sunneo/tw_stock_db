@@ -385,3 +385,21 @@ Electron 31（Chromium ~126）會直接`WebAssembly.compile()`失敗。這是這
   模式」打開，或改用系統管理員權限執行這個腳本。`build.ps1`已經設定
   `CSC_IDENTITY_AUTO_DISCOVERY=false`（這個app本來就沒有簽章，不需要
   electron-builder嘗試找簽章憑證），失敗時也會印出這個提示。
+
+## 本機 proxy 傳輸模式（build 時選）
+
+預設 `http`：app 啟動時在 `127.0.0.1` 開一個隨機埠，renderer 打 `http://127.0.0.1:<port>/proxy/...`。
+`inprocess`：**完全不開 TCP 埠**，同一份路由邏輯（`local-proxy.js`）改掛在 Electron 自訂協定 `fa-local://app/` 上、在主行程內處理，
+行為（含串流回應、金鑰注入、CORS）跟 http 模式一致。代價：「瀏覽器控制」（Chrome 擴充功能要連本機 HTTP）在這個模式不可用。
+適合會被防毒軟體針對「本機監聽埠」誤判的環境。
+
+選擇方式（寫入 `build-config.json`，打包進 app；執行時也可用環境變數 `FA_PROXY_MODE` 臨時覆寫）：
+
+```
+# Windows
+powershell -ExecutionPolicy Bypass -File .uild.ps1 -ProxyMode inprocess
+# 或 set FA_PROXY_MODE=inprocess 之後照常執行 build.bat / build.ps1
+
+# Linux
+PROXY_MODE=inprocess ./build.sh linux
+```

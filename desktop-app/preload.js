@@ -93,6 +93,8 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   },
   config: {
     getLocalProxyPort: () => ipcRenderer.invoke("fa:config:getLocalProxyPort"),
+    getLocalProxyBase: () => ipcRenderer.invoke("fa:config:getLocalProxyBase"),
+    getProxyMode: () => ipcRenderer.invoke("fa:config:getProxyMode"),
   },
   // status()只回報有沒有設定（布林值），set()是renderer唯一能把金鑰值送進
   // 主行程的方向——真正的NVAPI_KEY/OPENROUTER_API_KEY內容不會被讀回

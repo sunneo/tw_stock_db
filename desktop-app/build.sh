@@ -50,6 +50,17 @@ else
   echo "沒有設定環境變數、也沒有既有檔案，寫出空的 builtin-secrets.json（可以直接手動編輯這個檔案填入金鑰，之後build不設環境變數也會保留）。"
 fi
 
+# 本機proxy傳輸模式：http（預設，在127.0.0.1開監聽埠）或inprocess（完全不開TCP埠，同一份路由改由
+# fa-local://自訂協定在app內處理；「瀏覽器控制」在這個模式不可用）。
+# 用法：PROXY_MODE=inprocess ./build.sh [linux|win]（也可用FA_PROXY_MODE環境變數）
+PROXY_MODE="${PROXY_MODE:-${FA_PROXY_MODE:-http}}"
+if [[ "$PROXY_MODE" != "http" && "$PROXY_MODE" != "inprocess" ]]; then
+  echo "PROXY_MODE只能是http或inprocess（收到：$PROXY_MODE）" >&2
+  exit 1
+fi
+echo "== 本機proxy模式：$PROXY_MODE（寫入 build-config.json）=="
+printf '{"proxyMode": "%s"}\n' "$PROXY_MODE" > build-config.json
+
 if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   echo "== npm install =="
   npm install

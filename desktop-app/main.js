@@ -25,13 +25,29 @@
 //     `execFile`（陣列參數、不經過shell）多了shell注入的風險面，是使用者
 //     明確要求、拿confirm對話框當唯一防線換來的能力，不是預設偷偷放寬。
 "use strict";
-const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require("electron");
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 const path = require("path");
 const os = require("os");
 const fs = require("fs/promises");
 const { execFile, spawn } = require("child_process");
-const { startLocalProxy } = require("./local-proxy.js");
+const { startLocalProxy, createInProcessFetchHandler } = require("./local-proxy.js");
+
+// 2026-09-21：本機proxy的兩種傳輸模式，由建置腳本（build.ps1/build.sh的-ProxyMode / PROXY_MODE）寫進
+// build-config.json決定，也可以用環境變數FA_PROXY_MODE臨時覆寫：
+//   http      （預設）在127.0.0.1開一個HTTP監聽埠，renderer打 http://127.0.0.1:<port>/proxy/...
+//   inprocess 不開任何TCP埠；同一份路由邏輯掛在Electron自訂協定 fa-local://app/ 上（在主行程內處理）
+// 兩種模式共用 local-proxy.js 的同一份路由邏輯，只有傳輸方式不同。in-process 模式沒有HTTP埠，所以
+// 「瀏覽器控制」（Chrome擴充功能要連本機HTTP）在這個模式下不可用。
+const PROXY_MODE = (() => {
+  let cfg = {};
+  try { cfg = require("./build-config.json"); } catch (_) { /* 沒有設定檔就用預設 */ }
+  return String(process.env.FA_PROXY_MODE || cfg.proxyMode || "http").toLowerCase() === "inprocess" ? "inprocess" : "http";
+})();
+const LOCAL_PROXY_SCHEME = "fa-local";
+protocol.registerSchemesAsPrivileged([
+  { scheme: LOCAL_PROXY_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
+]);
 const cliFormat = require("./cli-format.js");
 const codingWs = require("./coding-workspace.js");
 const { createBrowserControlServer, DEFAULT_PORT: BC_DEFAULT_PORT } = require("./browser-control-server.js");
@@ -114,6 +130,7 @@ async function getBuiltinSecrets() {
 
 let mainWindow = null;
 let localProxyPort = null;
+let localProxyBase = null;
 
 // ---------- roots（使用者授權的直接存取資料夾）持久化 ----------
 async function readJsonSafe(file, fallback) {
@@ -1084,9 +1101,25 @@ ipcMain.handle("fa:codingws:discard", async (_e, a = {}) => codingWs.discardWork
 
 // tw_stock_db客製: 2026-09-20——瀏覽器控制（Chrome擴充功能）本機服務，見browser-control-server.js。
 let bcServer = null;
-ipcMain.handle("fa:bc:call", async (_evt, { cmd, args, timeoutMs } = {}) => (bcServer ? bcServer.call(String(cmd || ""), args, timeoutMs) : { ok: false, error: "瀏覽器控制服務尚未啟動" }));
-ipcMain.handle("fa:bc:status", async () => (bcServer ? bcServer.status() : { port: 0, token: "", connected: false, serverError: "服務尚未啟動" }));
-ipcMain.handle("fa:bc:regenerateToken", async () => (bcServer ? bcServer.regenerateToken() : ""));
+let bcStarting = null;
+// 2026-09-21: 本機服務改成「第一次真的用到瀏覽器控制才啟動」，沒用這個功能的人app啟動後不會多開任何監聽埠
+// （之前每次啟動都開，防毒軟體的啟發式判斷容易因此把整個app當成可疑）。
+function ensureBcServer() {
+  if (PROXY_MODE === "inprocess") return Promise.reject(new Error("這個版本是「不開本機監聽埠」的建置（PROXY_MODE=inprocess），瀏覽器控制需要本機HTTP服務，所以不可用。要使用請改用預設（http）模式重新建置。"));
+  if (bcServer) return Promise.resolve(bcServer);
+  if (!bcStarting) {
+    bcStarting = (async () => {
+      const srv = createBrowserControlServer({ userDataDir: USER_DATA_DIR(), onLog: (m) => console.log(m) });
+      await srv.start(Number(process.env.FA_BROWSER_CONTROL_PORT) || BC_DEFAULT_PORT);
+      bcServer = srv;
+      return srv;
+    })().catch((err) => { bcStarting = null; throw err; });
+  }
+  return bcStarting;
+}
+ipcMain.handle("fa:bc:call", async (_evt, { cmd, args, timeoutMs } = {}) => { try { return (await ensureBcServer()).call(String(cmd || ""), args, timeoutMs); } catch (err) { return { ok: false, error: String((err && err.message) || err) }; } });
+ipcMain.handle("fa:bc:status", async () => { try { return (await ensureBcServer()).status(); } catch (err) { return { port: 0, token: "", connected: false, serverError: String((err && err.message) || err) }; } });
+ipcMain.handle("fa:bc:regenerateToken", async () => { try { return (await ensureBcServer()).regenerateToken(); } catch (_) { return ""; } });
 
 ipcMain.handle("fa:git:inspect", async (_evt, { cwdAbs, mode, path: subPath, staged, maxCommits } = {}) => {
   const dir = await resolveExistingDir(cwdAbs);
@@ -1212,6 +1245,8 @@ ipcMain.handle("fa:secrets:set", async (_evt, patch) => {
 
 // ---------- IPC: 其他 ----------
 ipcMain.handle("fa:config:getLocalProxyPort", async () => localProxyPort);
+ipcMain.handle("fa:config:getLocalProxyBase", async () => localProxyBase);
+ipcMain.handle("fa:config:getProxyMode", async () => PROXY_MODE);
 ipcMain.handle("fa:shell:openExternal", async (_evt, url) => {
   if (!/^https?:\/\//i.test(String(url))) throw new Error("只允許開啟http(s)網址");
   await shell.openExternal(url);
@@ -2327,12 +2362,6 @@ async function runCliPrompt({ prompt, outputFormat }) {
 }
 
 app.whenReady().then(async () => {
-  try {
-    bcServer = createBrowserControlServer({ userDataDir: USER_DATA_DIR(), onLog: (m) => console.log(m) });
-    await bcServer.start(Number(process.env.FA_BROWSER_CONTROL_PORT) || BC_DEFAULT_PORT);
-  } catch (err) {
-    console.error("[main] 瀏覽器控制服務啟動失敗：", err);
-  }
   // tw_stock_db客製: 2026-09-15——驗證getSecrets()的優先順序鏈（環境變數
   // > SECRETS_FILE() > BUILTIN_SECRETS_FILE），這是純main行程邏輯，不需要
   // renderer/BrowserWindow，跟其餘FA_DEBUG_*測試（都要透過executeJavaScript
@@ -2359,12 +2388,19 @@ app.whenReady().then(async () => {
     // 寫死假設47891，可以放心改。FA_DESKTOP_PROXY_PORT環境變數仍然保留
     // 當escape hatch，需要固定port（例如防火牆規則寫死允許某個port）時
     // 還是可以用它指定。
-    const { port } = await startLocalProxy({
-      preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 0,
-      getSecrets,
-      onLog: (m) => console.log(m),
-    });
-    localProxyPort = port;
+    if (PROXY_MODE === "inprocess") {
+      protocol.handle(LOCAL_PROXY_SCHEME, createInProcessFetchHandler({ prefixes: ["/proxy/", "/git-proxy/"], getSecrets }));
+      localProxyBase = `${LOCAL_PROXY_SCHEME}://app`;
+      console.log(`[local-proxy] in-process模式，沒有開TCP埠：${localProxyBase}`);
+    } else {
+      const { port } = await startLocalProxy({
+        preferredPort: Number(process.env.FA_DESKTOP_PROXY_PORT) || 0,
+        getSecrets,
+        onLog: (m) => console.log(m),
+      });
+      localProxyPort = port;
+      localProxyBase = `http://127.0.0.1:${port}`;
+    }
   } catch (err) {
     console.error("[main] 本地proxy啟動失敗（git/搜尋等需要CORS繞道的功能會受影響）：", err);
   }
