@@ -28677,6 +28677,7 @@ ${existingNodeSummaries}
         if (bcEnabledChk) bcEnabledChk.addEventListener('change', () => {
             this.advancedSettings.browserControlEnabled = !!bcEnabledChk.checked;
             this._saveAdvancedSettings();
+            if (this._bcTransport && typeof this._bcTransport.setEnabled === 'function') this._bcTransport.setEnabled(bcEnabledChk.checked);
         });
         const bcTestBtn = document.getElementById('ai-bc-test-btn');
         const bcGetBtn = document.getElementById('ai-bc-get-btn');

@@ -1466,7 +1466,9 @@ function patchCloudflareWording(root) {
       call: (cmd, args, timeoutMs) => bcApi.call(cmd, args, timeoutMs),
       getStatus: () => bcApi.status(),
       regenerateToken: () => bcApi.regenerateToken(),
+      setEnabled: (on) => bcApi.setEnabled(on),
     });
+    bcApi.setEnabled(!!fa.advancedSettings.browserControlEnabled);
   }
 
   // ---- 桌面版是單一用途、永遠鋪滿視窗的對話介面，不是「可以收合成小藥丸
