@@ -2013,7 +2013,13 @@ const VIEWER_PACKAGE_KIND = 'ai_chat_viewer_package';
 // 內容轉成data URL文字再寫進YAML（未來如果要簡化這個步驟，可以另外加一個
 // 「讀取上傳檔案回傳data URL」的工具，這次先只做渲染端的支援）。
 const TWODANIM_SHAPE_TYPES = new Set(['circle', 'rect', 'polygon', 'line', 'text', 'image']);
-const TWODANIM_ANIMATION_TYPES = new Set(['move', 'rotate', 'scale', 'fade', 'orbit', 'keyframes']);
+// tw_stock_db客製: 2026-09-22使用者明確要求——把影片轉成逐格動畫時「不要
+// 用opacity動畫模擬切換」，要真正的硬切換（任何時刻畫布上永遠只有一張圖
+// 在畫，不是疊多層shape靠opacity交叉淡化）。新增'frames'動畫類型：跟
+// 'keyframes'一樣是shape自己的animation，但作用對象是image shape的src
+// 本身（不是position/rotation/scale/opacity），每個時間點直接切換成
+// 對應的圖片，不做任何插值/淡化，見_build2DAnimatorForShape的實作。
+const TWODANIM_ANIMATION_TYPES = new Set(['move', 'rotate', 'scale', 'fade', 'orbit', 'keyframes', 'frames']);
 const TWODANIM_KNOWN_TOP_LEVEL_KEYS = new Set(['title', 'width', 'height', 'background', 'duration', 'shapes']);
 
 // tw_stock_db客製: 2026-09-05使用者實測回報——STL/OBJ/3MF/FBX從上傳到轉成
@@ -4720,8 +4726,8 @@ class FloatingAssistant {
             (argsText) => this._handleMediaToAnimatedGifCommand(argsText)
         );
         this.register_slash_command(
-            '/media-to-animation', '[<影片id或檔名>] [<開始>-<結束>] [影格間隔秒]',
-            '把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（逐格擷取畫面，內嵌成JPEG data URL，用opacity切換模擬逐格播放），可以用/import-2d-animation-attachment匯入播放或再手動編修。留空時間範圍＝整支影片；間隔秒留空預設0.5秒。',
+            '/media-to-animation', '[<影片id或檔名>] [<開始>-<結束>] [fps=N] [frames=N] [width=N] [quality=N] [loop] [fade]',
+            '把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（逐格擷取畫面，內嵌成JPEG data URL），預設單一shape硬切換顯示哪一格、沒有opacity動畫；可以用/import-2d-animation-attachment匯入播放或再手動編修。留空時間範圍＝整支影片；fps留空預設5（每秒幾格，越高越流暢但檔案越大）；frames=最多幾格(預設60)、width=輸出寬度px(預設320)、quality=JPEG品質0.3~0.95(預設0.75)、loop=循環播放、fade=改用舊版opacity交叉淡化風格。',
             (argsText) => this._handleMediaToAnimationCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-12使用者要求——文字轉語音。英文走本地
@@ -8594,7 +8600,7 @@ ${fnData.code}
         );
 
         registerOptional('convert_video_to_animation',
-            `把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（不是渲染你自己設計的動畫，是把真實影片逐格轉成YAML描述的flipbook動畫：每個影格擷取成JPEG圖片內嵌成data URL、疊在同一個位置，用opacity的keyframes動畫在對應時間窗切換顯示哪一格）。存進persistentStorage並回傳 {ok, animation_file_id, filename, frames, durationSeconds}。⚠️每個影格都是內嵌base64圖片，間隔太密/範圍太長YAML檔案會暴增，frame_interval預設0.5秒、frames數量有上限（超過會自動停在上限），需要更流暢時可以縮小frame_interval但要注意檔案大小。輸出的YAML可以直接用get_2d_animation_yaml風格的工具或/import-2d-animation-attachment匯入播放，也可以再手動編修。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，留空＝整支影片", "frame_interval":（選填，秒，預設0.5）, "max_frames":（選填，預設60，最高120）, "loop":（選填布林，是否循環播放）}`,
+            `把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（不是渲染你自己設計的動畫，是把真實影片逐格轉成YAML描述的flipbook動畫：每個影格擷取成JPEG圖片內嵌成data URL）。預設（opacity_transition:false）用單一shape+硬切換src，任何時刻只有一張圖、沒有opacity動畫；opacity_transition:true則改用舊版做法（多個shape疊在一起靠opacity的keyframes交叉淡化切換，柔和過渡風格）。存進persistentStorage並回傳 {ok, animation_file_id, filename, frames, fps, durationSeconds}。⚠️每個影格都是內嵌base64圖片，取樣率太高/範圍太長YAML檔案會暴增，fps/frame_interval可以自己在「流暢度」跟「檔案大小」之間取捨，frames數量有上限（超過會自動停在上限）。輸出的YAML可以直接用get_2d_animation_yaml風格的工具或/import-2d-animation-attachment匯入播放，也可以再手動編修。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，留空＝整支影片", "fps":（選填，每秒幾格，預設5，跟frame_interval擇一）, "frame_interval":（選填，秒，跟fps擇一）, "max_frames":（選填，預設60，最高200）, "max_width":（選填，輸出寬度px，預設320）, "quality":（選填，JPEG品質0.3~0.95，預設0.75）, "loop":（選填布林，是否循環播放）, "opacity_transition":（選填布林，true＝用舊版opacity交叉淡化，預設false＝硬切換無opacity動畫）}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -8605,11 +8611,15 @@ ${fnData.code}
                 try {
                     const result = await this._convertVideoToFlipbookAnimation(record, {
                         start: range ? range.start : undefined, end: range ? range.end : undefined,
+                        fps: Number.isFinite(Number(parsed.fps)) ? Number(parsed.fps) : undefined,
                         frameInterval: Number.isFinite(Number(parsed.frame_interval)) ? Number(parsed.frame_interval) : undefined,
                         maxFrames: Number.isFinite(Number(parsed.max_frames)) ? Number(parsed.max_frames) : undefined,
+                        maxWidth: Number.isFinite(Number(parsed.max_width)) ? Number(parsed.max_width) : undefined,
+                        quality: Number.isFinite(Number(parsed.quality)) ? Number(parsed.quality) : undefined,
                         loop: !!parsed.loop,
+                        opacityTransition: !!parsed.opacity_transition,
                     });
-                    await this._deliverToolResultFile(result, 'animation_file_id', (r) => `📎 已轉成2D動畫YAML：${r.filename}${r.frames != null ? `（${r.frames}個影格）` : ''}`);
+                    await this._deliverToolResultFile(result, 'animation_file_id', (r) => `📎 已轉成2D動畫YAML：${r.filename}${r.frames != null ? `（${r.frames}個影格，${r.fps}fps）` : ''}`);
                     return JSON.stringify(result);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
@@ -8620,9 +8630,13 @@ ${fnData.code}
                 range: { type: 'string', description: '（選填）"開始-結束"，留空＝整支影片' },
                 start_seconds: { description: '（選填，跟range擇一）開始時間' },
                 end_seconds: { description: '（選填，跟range擇一）結束時間' },
-                frame_interval: { type: 'number', description: '（選填）每隔幾秒擷取一個影格，預設0.5' },
-                max_frames: { type: 'number', description: '（選填）最多擷取幾個影格，預設60，最高120' },
+                fps: { type: 'number', description: '（選填）每秒擷取幾個影格，預設5，跟frame_interval擇一（fps優先）' },
+                frame_interval: { type: 'number', description: '（選填）每隔幾秒擷取一個影格，跟fps擇一' },
+                max_frames: { type: 'number', description: '（選填）最多擷取幾個影格，預設60，最高200' },
+                max_width: { type: 'number', description: '（選填）輸出影格寬度(px)，預設320，最高640' },
+                quality: { type: 'number', description: '（選填）JPEG壓縮品質0.3~0.95，預設0.75，越高畫質越好但檔案越大' },
                 loop: { type: 'boolean', description: '（選填）是否循環播放，預設false' },
+                opacity_transition: { type: 'boolean', description: '（選填）true＝用舊版多shape疊加+opacity交叉淡化（柔和過渡）；預設false＝單一shape硬切換src，沒有opacity動畫' },
             }, additionalProperties: false }
         );
 
@@ -11698,18 +11712,21 @@ ${fnData.code}
     // tw_stock_db客製: 2026-09-22使用者要求——「video轉成yaml描述的動畫，
     // 可能裡面很多svg或jpg」（media-to-animation）：把影片轉成這個app既有
     // 的2D動畫YAML格式（見TWODANIM_SHAPE_TYPES/_validate2DAnimationYaml），
-    // 不是另外發明一套新格式。做法：從影片依固定間隔（frame_interval秒，
-    // 預設0.5秒＝2fps，動畫YAML內嵌base64圖片、間隔太密會讓檔案暴增）擷取
-    // 關鍵影格轉成JPEG data URL，每個影格各自建一個type:'image'的shape、
-    // 疊在同一個座標，靠animation.type:'keyframes'對opacity做「瞬間切換」
-    // （這一幀的時間窗opacity=1、其餘時間opacity=0），達成逐格播放的flipbook
-    // 效果——這是2D動畫YAML既有schema唯一支援「內容隨時間改變」的動畫類型
-    // （keyframes只能內插position/rotation/scale/opacity，不能切換src），
-    // 不需要修改渲染器就能播放。使用者原話提到「可能裡面很多svg」，但這個
-    // schema的image shape的src欄位本身就是純字串（data URL或http(s)網址），
-    // 沒有限制一定要是點陣圖——如果之後需要向量化，可以另外接圖片轉SVG
-    // 的流程再把src換成image/svg+xml的data URL，shape本身的欄位不用改；
-    // 這一版先用JPEG（向量化準確度/成本不是這次要解決的問題）。
+    // 不是另外發明一套新格式。做法：從影片依固定間隔（frame_interval秒或
+    // fps，動畫YAML內嵌base64圖片、取樣太密會讓檔案暴增）擷取關鍵影格轉成
+    // JPEG data URL。預設（opacity_transition:false）用新的'frames'動畫
+    // 類型：單一image shape，animation直接切換src本身，任何時刻畫布上
+    // 永遠只有一張圖，不透明度全程是1——使用者明確要求「不要有opacity動畫」
+    // （對照他在另一套系統做同類功能時，opacity交叉淡化在過渡瞬間會透出
+    // 背景色，即使我們這邊透過調整淡出時機修好了那個瀏覽器可見的症狀，
+    // 使用者仍然希望從根本上不要有opacity動畫這個機制）。opacity_transition
+    // :true時退回舊版做法：每個影格各自建一個shape疊在同一座標，靠
+    // animation.type:'keyframes'對opacity做「瞬間切換」模擬柔和交叉淡化，
+    // 保留給想要那種視覺風格的人選用。使用者原話提到「可能裡面很多svg」，
+    // 但這個schema的image shape的src欄位本身就是純字串（data URL或http(s)
+    // 網址），沒有限制一定要是點陣圖——如果之後需要向量化，可以另外接圖片
+    // 轉SVG的流程再把src換成image/svg+xml的data URL，shape本身的欄位不用
+    // 改；這一版先用JPEG（向量化準確度/成本不是這次要解決的問題）。
     async _convertVideoToFlipbookAnimation(record, opts = {}) {
         let MB, input, track;
         try {
@@ -11722,9 +11739,18 @@ ${fnData.code}
         const start = Math.max(0, Number.isFinite(opts.start) ? opts.start : 0);
         const end = Number.isFinite(opts.end) && opts.end > start ? opts.end : (totalDur > start ? totalDur : start + 5);
         if (totalDur > 0 && start >= totalDur) { try { input.dispose && input.dispose(); } catch (_) {} return { ok: false, error: `開始時間（${start}秒）超過影片總長（${totalDur.toFixed(2)}秒）` }; }
-        const interval = Math.max(0.1, Math.min(5, Number.isFinite(opts.frameInterval) ? opts.frameInterval : 0.5));
+        // tw_stock_db客製: 2026-09-22使用者要求更多可調參數——fps是比
+        // frame_interval更直覺的寫法（「一秒取幾張」vs「隔幾秒取一張」），
+        // 兩者擇一提供、fps優先；預設從0.5秒(2fps)調快成0.2秒(5fps)，原本
+        // 2fps使用者實測回報「原本影片fps很高，變成這個後像是一秒取樣
+        // 一張」，播放起來太不流暢。quality是JPEG壓縮品質，開放調整方便
+        // 在畫質跟YAML檔案大小之間自己取捨。
+        const interval = Number.isFinite(opts.fps) && opts.fps > 0
+            ? Math.max(0.05, Math.min(5, 1 / opts.fps))
+            : Math.max(0.05, Math.min(5, Number.isFinite(opts.frameInterval) ? opts.frameInterval : 0.2));
+        const quality = Math.max(0.3, Math.min(0.95, Number.isFinite(opts.quality) ? opts.quality : 0.75));
         const maxWidth = Math.max(64, Math.min(640, Number.isFinite(opts.maxWidth) ? opts.maxWidth : 320));
-        const maxFrames = Math.max(2, Math.min(120, Number.isFinite(opts.maxFrames) ? opts.maxFrames : 60)); // 每幀都是內嵌base64，張數上限避免YAML暴增到幾十MB
+        const maxFrames = Math.max(2, Math.min(200, Number.isFinite(opts.maxFrames) ? opts.maxFrames : 60)); // 每幀都是內嵌base64，張數上限避免YAML暴增到幾十MB
         const srcW = track.displayWidth || maxWidth, srcH = track.displayHeight || maxWidth;
         const width = Math.min(maxWidth, srcW);
         const height = Math.max(1, Math.round(srcH * (width / srcW)));
@@ -11738,7 +11764,7 @@ ${fnData.code}
             for (let i = 0; i < timestamps.length; i++) {
                 const frame = await cursor.advanceTo(timestamps[i]);
                 if (!frame) break;
-                const blob = await this._canvasElementToBlob(frame.canvas, 'image/jpeg', 0.72);
+                const blob = await this._canvasElementToBlob(frame.canvas, 'image/jpeg', quality);
                 const dataUrl = await new Promise((resolve, reject) => {
                     const reader = new FileReader();
                     reader.onload = () => resolve(String(reader.result || ''));
@@ -11754,55 +11780,70 @@ ${fnData.code}
         }
         if (!frames.length) return { ok: false, error: '沒有擷取到任何畫面（時間範圍可能超出影片實際長度）' };
         const totalDurLocal = Math.max(frames[frames.length - 1].t + interval, interval);
-        const EPS = Math.min(0.05, interval * 0.1);
-        // tw_stock_db客製: 2026-09-22使用者回報（對照他在另一套系統做同樣
-        // 功能時踩過的坑）——原本淡入淡出窗口設計錯誤：frame_i的「淡出」
-        // 排在[winEnd-EPS, winEnd]（winEnd之前），而frame_{i+1}的「淡入」
-        // 排在[winStart-EPS, winStart]＝同一個[winEnd-EPS, winEnd]窗口
-        // （因為winEnd_i===winStart_{i+1}）——兩者在同一個時間窗裡同時只有
-        // 部分opacity，疊加合成時會露出背景色（使用者在Redmine那邊的類似
-        // 實作是黑/白背景，這裡是background:'#000000'，同一種成因）：兩張
-        // 都不透明時，opacity 0.5+0.5會在標準alpha合成下透出25%背景，不是
-        // 乾淨的交叉淡化。
-        // 修法：把每個frame的「淡出」窗口移到winEnd「之後」（[winEnd,
-        // winEnd+EPS]），不是winEnd之前。這樣在[winStart-EPS, winStart]
-        // 這段窗口裡，只有「正在淡入的這一幀」opacity<1，畫面上一幀
-        // （陣列順序在前、繪製在下層）此時仍是opacity=1完全不透明，淡入
-        // 的這一幀疊上去看到的是「上一幀」而不是背景色；到了winStart（＝
-        // 上一幀的winEnd）這一幀準時到達opacity=1完全不透明、把下面所有
-        // 東西整個蓋住，上一幀才開始它自己的「淡出」，但這時已經被蓋住、
-        // 根本看不到，不會有任何背景色外露的瞬間。
-        const shapes = frames.map((f, i) => {
-            const isLast = i === frames.length - 1;
-            const winStart = f.t, winEnd = isLast ? totalDurLocal : frames[i + 1].t;
-            const kfs = [{ t: 0, opacity: i === 0 ? 1 : 0 }];
-            if (winStart > 0) kfs.push({ t: Math.max(0, winStart - EPS), opacity: 0 }, { t: winStart, opacity: 1 });
-            // 最後一格不淡出（不循環時維持顯示在最後一幀，不是黑畫面）；
-            // 其餘影格在winEnd「之後」才淡出（見上方說明），此時已經被
-            // 下一格完全蓋住，不會露出背景色。
-            if (isLast) kfs.push({ t: winEnd, opacity: 1 });
-            else kfs.push({ t: winEnd, opacity: 1 }, { t: Math.min(totalDurLocal, winEnd + EPS), opacity: 0 });
-            return {
-                // tw_stock_db客製: 2026-09-22使用者回報畫面只出現在左上角一個
-                // 角落——2D動畫渲染器的_draw2DShape把position當成shape的
-                // 「中心點」（ctx.translate到position後用-width/2,-height/2
-                // 畫圖，跟circle/rect同一套錨點慣例），不是左上角。原本給
-                // position:[0,0]會讓每格圖片的中心對齊到畫布左上角(0,0)，
-                // 畫布可視範圍只會看到圖片右下1/4——改成畫布中心
-                // [width/2, height/2]，圖片才會剛好蓋滿整個width x height
-                // 畫布。
-                id: `frame_${i}`, type: 'image', src: f.dataUrl, width, height,
-                position: [width / 2, height / 2], opacity: i === 0 ? 1 : 0,
-                animation: { type: 'keyframes', loop: !!opts.loop, keyframes: kfs },
-            };
-        });
+        // tw_stock_db客製: 2026-09-22使用者回報畫面只出現在左上角一個
+        // 角落——2D動畫渲染器的_draw2DShape把position當成shape的「中心點」
+        // （ctx.translate到position後用-width/2,-height/2畫圖，跟
+        // circle/rect同一套錨點慣例），不是左上角，任何shape都要用畫布中心
+        // [width/2, height/2]，圖片才會剛好蓋滿整個width x height畫布。
+        const centerPos = [width / 2, height / 2];
+        const useOpacity = !!opts.opacityTransition;
+        let shapes;
+        if (useOpacity) {
+            // tw_stock_db客製: 2026-09-22——舊版做法：每個影格各自建一個
+            // shape疊在同一座標，靠animation.type:'keyframes'對opacity做
+            // 「瞬間切換」模擬柔和交叉淡化。使用者明確要求預設不要用這個
+            // （見上方函式說明），但opacity_transition:true時仍然保留給
+            // 想要這種視覺風格的人選用。淡出窗口刻意排在winEnd「之後」
+            // （不是之前）：這樣淡出的當下已經被下一格（畫在上層、準時在
+            // winEnd到達完全不透明）整個蓋住，不會有兩張圖同時半透明疊加、
+            // 透出背景色的瞬間（真實環境測過，逐幀分析確認沒有黑幀外露）。
+            const EPS = Math.min(0.05, interval * 0.1);
+            shapes = frames.map((f, i) => {
+                const isLast = i === frames.length - 1;
+                const winStart = f.t, winEnd = isLast ? totalDurLocal : frames[i + 1].t;
+                const kfs = [{ t: 0, opacity: i === 0 ? 1 : 0 }];
+                if (winStart > 0) kfs.push({ t: Math.max(0, winStart - EPS), opacity: 0 }, { t: winStart, opacity: 1 });
+                if (isLast) kfs.push({ t: winEnd, opacity: 1 });
+                else kfs.push({ t: winEnd, opacity: 1 }, { t: Math.min(totalDurLocal, winEnd + EPS), opacity: 0 });
+                return {
+                    id: `frame_${i}`, type: 'image', src: f.dataUrl, width, height,
+                    position: centerPos, opacity: i === 0 ? 1 : 0,
+                    animation: { type: 'keyframes', loop: !!opts.loop, keyframes: kfs },
+                };
+            });
+        } else {
+            // tw_stock_db客製: 2026-09-22使用者明確要求「不要有opacity動畫」
+            // ——單一shape+新的'frames'動畫類型（見TWODANIM_ANIMATION_TYPES/
+            // _build2DAnimatorForShape）直接切換src本身，任何時刻畫布上永遠
+            // 只有一張圖在畫，opacity全程維持1，完全不會有兩張圖同時半透明
+            // 疊加的情況，也不需要winEnd+EPS那個為了opacity交叉淡化才需要的
+            // 位移技巧。frames陣列最後補一個跟最後一格相同src、時間點在
+            // totalDurLocal的標記，讓最後一格能撐滿一個interval的顯示時間
+            // （loop:true時循環週期才正確，loop:false時單純讓查找邏輯在
+            // 播放到尾端後continues停在最後一格，不是黑畫面）。
+            shapes = [{
+                id: 'flipbook', type: 'image', src: frames[0].dataUrl, width, height,
+                position: centerPos, opacity: 1,
+                animation: {
+                    type: 'frames', loop: !!opts.loop,
+                    frames: frames.map((f) => ({ t: f.t, src: f.dataUrl })).concat([{ t: totalDurLocal, src: frames[frames.length - 1].dataUrl }]),
+                },
+            }];
+        }
         const anim = { title: String(record.filename || '影片動畫'), width, height, background: '#000000', duration: totalDurLocal, shapes };
         await this._ensureJsYamlLoaded();
         const yamlText = jsyaml.dump(anim, { lineWidth: -1 });
         const base = String(record.filename || 'video').replace(/\.[^.]+$/, '');
         const filename = `${base}.2danim.yaml`;
         const yamlFileId = await this.fileCache.put(filename, 'application/x-yaml', new Blob([yamlText], { type: 'application/x-yaml' }), 'uploaded');
-        return { ok: true, animation_file_id: yamlFileId, filename, frames: frames.length, width, height, frameInterval: interval, durationSeconds: totalDurLocal, note: '每個影格是內嵌base64 JPEG的image shape，用keyframes動畫的opacity瞬間切換達成逐格播放（2D動畫YAML目前不支援直接內插切換src）；可以用/import-2d-animation-attachment或parse_uploaded_file+render_2d_animation播放/檢視這份YAML。' };
+        return {
+            ok: true, animation_file_id: yamlFileId, filename, frames: frames.length, width, height,
+            fps: Math.round((1 / interval) * 100) / 100, frameInterval: interval, quality, durationSeconds: totalDurLocal,
+            opacityTransition: useOpacity,
+            note: useOpacity
+                ? '每個影格是內嵌base64 JPEG的image shape，用keyframes動畫的opacity交叉淡化切換（opacity_transition:true，柔和過渡風格）；可以用/import-2d-animation-attachment或parse_uploaded_file+render_2d_animation播放/檢視這份YAML。'
+                : '單一image shape+新的frames動畫類型硬切換src（任何時刻只有一張圖，沒有opacity動畫）；可以用/import-2d-animation-attachment或parse_uploaded_file+render_2d_animation播放/檢視這份YAML。',
+        };
     }
 
     // 建立配音小幫手：頁面(segments)來源有兩種——(1) explicitRanges：使用者
@@ -19334,6 +19375,14 @@ ${sourceTool.handlerScript}
         if (s.animation && typeof s.animation === 'object' && s.animation.type && !TWODANIM_ANIMATION_TYPES.has(s.animation.type)) {
             return `${where} 的animation.type未知: "${s.animation.type}"（合法值：${[...TWODANIM_ANIMATION_TYPES].join('/')}）`;
         }
+        if (s.animation && s.animation.type === 'frames') {
+            if (!Array.isArray(s.animation.frames) || !s.animation.frames.length) return `${where} 的frames動畫缺少非空的frames陣列（每個元素要有t數字與src字串）`;
+            for (const f of s.animation.frames) {
+                if (!f || typeof f !== 'object' || !Number.isFinite(f.t) || typeof f.src !== 'string' || !f.src) {
+                    return `${where} 的frames動畫的frames陣列裡有元素缺少t(數字)或src(字串)`;
+                }
+            }
+        }
         return null;
     }
 
@@ -19492,6 +19541,26 @@ ${sourceTool.handlerScript}
                 if (Number.isFinite(a.opacity) && Number.isFinite(b.opacity)) state.opacity = lerp(a.opacity, b.opacity);
             };
         }
+        // tw_stock_db客製: 2026-09-22使用者明確要求——影片轉逐格動畫不要用
+        // opacity模擬切換，要真正的硬切換：這個動畫類型直接改state.src
+        // 本身（image shape實際畫出來的圖片來源），不對任何數值做內插，
+        // 任何時刻只會有一張圖片是「目前的src」，不透明度全程維持1（沿用
+        // shape自己的opacity欄位，不強制蓋掉），畫面上永遠只有一張圖在畫，
+        // 不會有兩張圖同時半透明疊加、透出背景色的問題（跟'keyframes'動畫
+        // 用同一套「t落在哪個區間」查找邏輯，差別是不內插、直接採用區間
+        // 起點的值）。
+        if (type === 'frames') {
+            const list = Array.isArray(anim.frames) ? anim.frames.slice().sort((a, b) => a.t - b.t) : [];
+            if (!list.length) return null;
+            const totalDur = list[list.length - 1].t;
+            const loop = anim.loop === true;
+            return (t) => {
+                const localT = loop && totalDur > 0 ? (t % totalDur) : t;
+                let i = 0;
+                while (i < list.length - 1 && list[i + 1].t <= localT) i++;
+                state.src = list[i].src;
+            };
+        }
         return null;
     }
 
@@ -19524,6 +19593,13 @@ ${sourceTool.handlerScript}
         shapeDefs.forEach((def) => {
             if (def.type === 'image' && def.src) srcs.add(def.src);
             if (def.fill_image) srcs.add(def.fill_image);
+            // tw_stock_db客製: 2026-09-22——'frames'動畫（見_build2DAnimatorForShape）
+            // 切換的圖片來源不是shape.src而是animation.frames[].src，這些
+            // 也要一併預先載入，不然切到還沒載入過的frame會被_draw2DShape
+            // 優雅退回成灰色佔位方塊。
+            if (def.animation && def.animation.type === 'frames' && Array.isArray(def.animation.frames)) {
+                def.animation.frames.forEach((f) => { if (f && f.src) srcs.add(f.src); });
+            }
         });
         const images = {};
         await Promise.all([...srcs].map(async (src) => { images[src] = await this._load2DImageAsync(src); }));
@@ -24159,15 +24235,40 @@ ${existingNodeSummaries}
     }
 
     // /media-to-animation [<影片id或檔名>] [<開始>-<結束>] [影格間隔秒]
-    async _handleMediaToAnimationCommand(argsText) {
+    // tw_stock_db客製: 2026-09-22使用者要求更多可調參數（取樣率/範圍/要不要
+    // opacity動畫）——slash指令原本用「最後一個純數字token＝interval秒」
+    // 的簡易寫法，跟新增的fps等參數混在一起容易誤判，改成明確的key=value
+    // token（跟時間範圍token同時並存、不限順序），bare的loop/fade/hard三個
+    // flag也支援：loop＝循環播放，fade＝改用舊版opacity交叉淡化，
+    // hard（預設值，可省略不打）＝新版硬切換無opacity動畫。
+    _parseMediaToAnimationTokens(argsText) {
         const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
-        let interval = null;
-        if (tokens.length && /^\d+(\.\d+)?$/.test(tokens[tokens.length - 1]) && Number(tokens[tokens.length - 1]) <= 5) {
-            interval = Number(tokens.pop());
-        }
+        const opts = {};
+        const rest = [];
         let range = null;
-        if (tokens.length && (range = this._parseDubRangeToken(tokens[tokens.length - 1]))) tokens.pop();
-        const fileArg = tokens.join(' ');
+        for (const tok of tokens) {
+            const m = /^(fps|interval|frames|width|quality)=([\d.]+)$/i.exec(tok);
+            if (m) {
+                const key = m[1].toLowerCase(), val = Number(m[2]);
+                if (key === 'fps') opts.fps = val;
+                else if (key === 'interval') opts.frameInterval = val;
+                else if (key === 'frames') opts.maxFrames = val;
+                else if (key === 'width') opts.maxWidth = val;
+                else if (key === 'quality') opts.quality = val;
+                continue;
+            }
+            if (/^loop$/i.test(tok)) { opts.loop = true; continue; }
+            if (/^(fade|opacity)$/i.test(tok)) { opts.opacityTransition = true; continue; }
+            if (/^hard$/i.test(tok)) { opts.opacityTransition = false; continue; }
+            const r = this._parseDubRangeToken(tok);
+            if (r && !range) { range = r; continue; }
+            rest.push(tok);
+        }
+        return { opts, range, fileArg: rest.join(' ') };
+    }
+
+    async _handleMediaToAnimationCommand(argsText) {
+        const { opts, range, fileArg } = this._parseMediaToAnimationTokens(argsText);
         const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
         if (!record) { this._log(fileArg ? `⚠️ /media-to-animation：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-to-animation：目前沒有附加、也沒有最近上傳過的影片'); return; }
         this.messages.push({ role: 'user', content: `🖼️ 轉2D動畫YAML${range ? `（${_faFormatTimestamp(range.start)}-${_faFormatTimestamp(range.end)}）` : ''}：${record.filename}` });
@@ -24175,7 +24276,7 @@ ${existingNodeSummaries}
         prog.update({ status: '讀取影片畫面…' });
         let result;
         try {
-            result = await this._convertVideoToFlipbookAnimation(record, { start: range ? range.start : undefined, end: range ? range.end : undefined, frameInterval: interval || undefined, onProgress: (m) => prog.update({ status: m }) });
+            result = await this._convertVideoToFlipbookAnimation(record, Object.assign({ start: range ? range.start : undefined, end: range ? range.end : undefined }, opts, { onProgress: (m) => prog.update({ status: m }) }));
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
