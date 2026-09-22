@@ -13235,9 +13235,20 @@ ${fnData.code}
                 // 常見回覆是道歉/說看不到圖片這類制式文字，這裡順手抓幾個常見
                 // 特徵，判定失敗就換下一個row，不要把這種回覆當成正確的圖片
                 // 描述回傳給使用者。
+                // tw_stock_db客製: 2026-09-22真實環境實測抓到的bug——原本寫
+                // `row.abilityTags && row.abilityTags.vision !== true`，但
+                // 幾乎所有row在使用者從來沒按過Benchmark時abilityTags就是
+                // null，`null && ...`永遠是false，導致這個refusal判斷形同
+                // 虛設：實測openai/gpt-oss-20b真的回了「抱歉，我目前無法
+                // 直接查看圖片內容」這種制式拒答，卻因為這個條件短路被直接
+                // 當成「成功」回傳給使用者。改成只有「已經明確確認vision:true」
+                // 才略過這個檢查（信任已驗證過的model，即使回覆語氣剛好像
+                // 道歉開頭也不誤判），其餘情況（未測過/確認不支援）一律套用
+                // refusal檢查。
                 const looksLikeRefusal = /^(i'?m sorry|i cannot|i can't|i am unable|as an ai|抱歉|我無法|我不能|我看不到|無法看到|沒有(?:辦法)?(?:看到|讀取)圖片)/i.test(content);
-                if (looksLikeRefusal && row.abilityTags && row.abilityTags.vision !== true) { errors.push(`${cfg.apiModel}: 回覆內容像是看不懂圖片`); continue; }
-                return { description: content, modelUsed: cfg.apiModel, visionConfirmed: !!(row.abilityTags && row.abilityTags.vision === true) };
+                const visionConfirmed = !!(row.abilityTags && row.abilityTags.vision === true);
+                if (looksLikeRefusal && !visionConfirmed) { errors.push(`${cfg.apiModel}: 回覆內容像是看不懂圖片`); continue; }
+                return { description: content, modelUsed: cfg.apiModel, visionConfirmed };
             } catch (err) {
                 errors.push(`${cfg.apiModel}: ${String((err && err.message) || err)}`);
             }
