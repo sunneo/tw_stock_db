@@ -19672,17 +19672,36 @@ ${sourceTool.handlerScript}
             drawFrame((frameIndex / 60) % duration);
             frameIndex++;
         };
+        // tw_stock_db客製: 2026-09-22使用者回報CPU消耗——原本這個rAF迴圈
+        // 不管canvas有沒有捲出可視範圍外都會一直畫下去，對話串一長、疊了
+        // 好幾張動畫卡片就會持續佔用CPU（瀏覽器分頁被切到背景時rAF天生會
+        // 被節流/暫停，但「分頁還在前景、這張卡片只是被捲到看不到」這種
+        // 情境瀏覽器不會幫忙處理）。用IntersectionObserver盯著canvas：捲出
+        // 可視範圍就不再排下一幀（已經排定的這一幀還是會畫完，只是不會再
+        // 排下一個），捲回來才重新啟動；沒有IntersectionObserver的環境
+        // （理論上現代瀏覽器都有）優雅退回原本「一律持續畫」的行為。
+        let visible = true;
+        let rafId = null;
         const loop = () => {
+            rafId = null;
             if (stopped) return;
             renderOnce();
-            requestAnimationFrame(loop);
+            if (visible) rafId = requestAnimationFrame(loop);
         };
-        loop();
+        let observer = null;
+        if (typeof IntersectionObserver !== 'undefined') {
+            observer = new IntersectionObserver((entries) => {
+                visible = entries[entries.length - 1].isIntersecting;
+                if (visible && rafId == null && !stopped) rafId = requestAnimationFrame(loop);
+            }, { threshold: 0 });
+            observer.observe(canvas);
+        }
+        loop(); // 第一幀同步畫出來（跟原本行為一致，不用等下一個animation frame）
 
         return {
             canvas, warnings,
             title: (typeof animDef.title === 'string' && animDef.title.trim()) ? animDef.title.trim() : null,
-            stop: () => { stopped = true; },
+            stop: () => { stopped = true; if (rafId != null) cancelAnimationFrame(rafId); if (observer) observer.disconnect(); },
             // 匯出前快轉到動畫中段（duration的一半），比起永遠抓第0幀的初始
             // 姿態更能代表「動畫進行中」的畫面，跟3D場景snapshotDataUri的
             // 「快轉90幀」是同一個目的、不同的實作方式（2D動畫本身有明確的
