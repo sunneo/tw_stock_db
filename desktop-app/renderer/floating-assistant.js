@@ -967,7 +967,9 @@ ${step4}
 
 **步驟6：收尾與轉移**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。**接著把成果轉移回使用者資料夾**：先coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>","dry_run":true})預覽會新增/修改/刪除哪些檔案與衝突（使用者的原檔在這段期間又被改過就會列為衝突，不會被覆蓋），確認合理後再coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>"})正式轉移；轉移是逐檔寫入並讀回比對，**回傳的applied/verified才算數，沒有applied就不能說已經寫入使用者的資料夾**。有conflicts就如實告訴使用者哪些檔案沒轉移、為什麼，由使用者決定要不要force。回報時附上：暫存區路徑、轉移了哪些檔案、備份位置（backup_dir）。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
 
-**輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。`;
+**輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。
+
+**另一種驗證環境（選用）**：如果需要一個使用者也看得到、可以持續互動觀察的環境（不只是單次批次執行）：terminal_create建立一個WASM沙盒終端機（會直接顯示在對話裡）、terminal_cp_to把workspace_path底下要驗證的檔案複製進去、terminal_run執行指令拿到exit_code/stdout/stderr、需要時terminal_cp_from把產出的檔案取出來。這是${runTests}/${checkCmd}之外的另一個選擇，適合「使用者想親眼看過程」或需要逐步下多個指令觀察中間結果的情境；純粹要跑一次測試拿結果，步驟5的既有流程已經夠用，不用每個TODO項目都特地開一個終端機。`;
 }
 // ==== CODING-HELPERS-END ====
 
@@ -1405,7 +1407,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -4447,7 +4449,7 @@ function faMpWorkerMain() {
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
 const FA_DEDUP_TOOLS = new Set(['delegate_to_subagent', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
-const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text']);
+const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from']);
 const BROWSER_CONTROL_TOOL_NAMES = ['browser_status', 'browser_create_tab_group', 'browser_create_tab', 'browser_list_tabs', 'browser_navigate', 'browser_close', 'browser_activate_tab', 'browser_scroll', 'browser_screenshot', 'browser_get_page_text', 'browser_get_page_structure', 'browser_get_elements', 'browser_mouse', 'browser_type_text', 'browser_press_key'];
 const BROWSER_CONTROL_HINT = '\n\n【瀏覽器控制已啟用】你另外有browser_*工具可以操控使用者的Chrome（先browser_status確認連線）：所有分頁一律放在同一個「AI Controlled」分頁群組（browser_create_tab/browser_create_tab_group會自動放進去）；找不到分頁（tab_id過期或被關掉）就直接開新分頁，不要回報失敗；用browser_get_page_structure（首選，結構化）/browser_get_elements讀頁面、browser_mouse/browser_type_text操作、browser_screenshot截圖給使用者看；不要輸入密碼/付款資料，登入或付款頁面交還使用者。需要查網頁、看網站實際畫面、操作網頁時優先使用；讀完網頁後回答時盡量結構化（結論→條列/表格→來源連結），不要貼整段原文。';
 const FA_BROWSER_EXTENSION_FALLBACK_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app/web/browser-control-extension/';
@@ -8638,6 +8640,141 @@ ${fnData.code}
                 loop: { type: 'boolean', description: '（選填）是否循環播放，預設false' },
                 opacity_transition: { type: 'boolean', description: '（選填）true＝用舊版多shape疊加+opacity交叉淡化（柔和過渡）；預設false＝單一shape硬切換src，沒有opacity動畫' },
             }, additionalProperties: false }
+        );
+
+        // ============================================================
+        // tw_stock_db客製: 2026-09-23使用者要求——讓/run-terminal的WASM沙盒
+        // 終端機（xterm.js+busybox ash，見_mountTerminalWidget）能被AI
+        // 當成一個「可以設計程式、實際跑起來驗證」的工作環境：可建立/列出
+        // /對指定terminal下指令拿exit code/讀畫面文字/搬檔案進出。全部
+        // 工具共用_resolveTerminalSession(id_or_name)定址，跟_terminalRun
+        // Command/_resolveTerminalCopySource等核心方法（見上方定義）。
+        // ============================================================
+        registerOptional('terminal_create',
+            '建立一個新的WASM沙盒終端機（busybox ash，跟/run-terminal同一種，會直接顯示在對話裡讓使用者也看得到），回傳{ok, id, name}供之後terminal_run/terminal_get_text/terminal_cp_*等工具指定使用。可以順便給一個初始指令直接執行。參數: {"name":"（選填）自訂名稱，不給會自動編號term-N", "initial_command":"（選填）建立後立刻執行的指令"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const r = await this._createTerminalForAI({ name: parsed.name, initialCommand: parsed.initial_command });
+                    return JSON.stringify({ ok: true, ...r });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                name: { type: 'string', description: '（選填）自訂終端機名稱，不給會自動編號term-N' },
+                initial_command: { type: 'string', description: '（選填）建立後立刻執行的指令' },
+            }, additionalProperties: false }
+        );
+
+        registerOptional('terminal_list',
+            '列出目前對話裡所有active的終端機（id/name/目前工作目錄等）。terminal關閉的判斷方式是DOM是否還掛著（使用者手動關閉、或對話紀錄被壓縮清除都會讓它從清單消失，不需要額外的關閉動作）。',
+            async () => {
+                const sessions = this._getMountedTerminalSessions();
+                return JSON.stringify({ ok: true, terminals: sessions.map((s) => ({ id: s.id, name: s.name, cwd: s.cwd, has_focus: !!s.hasFocus, last_active_at: s.lastActiveAt })) });
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        registerOptional('terminal_run',
+            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
+                if (!session) return JSON.stringify({ ok: false, error });
+                if (!String(parsed.command || '').trim()) return JSON.stringify({ ok: false, error: '缺少command參數' });
+                try {
+                    const result = await this._terminalRunCommand(session, String(parsed.command), { outputFile: parsed.output_file, stderrFile: parsed.stderr_file });
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                id_or_name: { type: 'string', description: '目標terminal的id或name（terminal_list查詢）' },
+                command: { type: 'string', description: '要執行的bash指令（同一個session的cwd/檔案系統狀態會延續）' },
+                output_file: { type: 'string', description: '（選填）把這次的stdout額外寫進沙盒內這個路徑' },
+                stderr_file: { type: 'string', description: '（選填）把這次的stderr額外寫進沙盒內這個路徑' },
+            }, required: ['id_or_name', 'command'], additionalProperties: false }
+        );
+
+        registerOptional('terminal_get_text',
+            '取得指定終端機目前畫面上顯示的文字內容（最近約500行scrollback），用來確認畫面實際長什麼樣子（例如互動式程式的輸出、或使用者自己手動打的指令跟結果）。',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
+                if (!session) return JSON.stringify({ ok: false, error });
+                try {
+                    await new Promise((resolve) => session.term.write('', resolve));
+                    const text = this._captureTerminalScreenText(session);
+                    return JSON.stringify({ ok: true, id: session.id, name: session.name, text });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: { id_or_name: { type: 'string', description: '目標terminal的id或name' } }, required: ['id_or_name'], additionalProperties: false }
+        );
+
+        registerOptional('terminal_cp_to',
+            '把一個檔案複製進指定終端機的沙盒檔案系統（絕對路徑或資料夾，是資料夾的話沿用來源檔名）。來源(src)三選一：fap:<名稱或id>/<路徑>（File Access Point）、附件的file_id或檔名（list_uploaded_files查詢）、或（僅桌面版）真實磁碟的絕對路徑。參數: {"id_or_name":"目標terminal", "src":"來源", "dst_path":"沙盒內的絕對路徑或資料夾"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
+                if (!session) return JSON.stringify({ ok: false, error });
+                if (!String(parsed.dst_path || '').trim()) return JSON.stringify({ ok: false, error: '缺少dst_path參數（沙盒內的絕對路徑或資料夾）' });
+                try {
+                    const { bytes, filename, sourceLabel } = await this._resolveTerminalCopySource(parsed.src);
+                    let runtime;
+                    try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                    const fsStore = await this._ensureTerminalFsStore(session, runtime);
+                    let dst = String(parsed.dst_path).trim();
+                    const abs0 = this._terminalResolvePath(session.cwd, dst);
+                    const isDirLike = /\/$/.test(dst) || this._terminalIsDir(fsStore, abs0);
+                    const abs = isDirLike ? (abs0.endsWith('/') ? abs0 + filename : abs0 + '/' + filename) : abs0;
+                    this._writeBytesToTerminalFs(fsStore, abs, bytes);
+                    return JSON.stringify({ ok: true, source: sourceLabel, terminal: session.name, dst_path: abs, sizeBytes: bytes.length });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                id_or_name: { type: 'string', description: '目標terminal的id或name' },
+                src: { type: 'string', description: '來源：fap:<名稱或id>/<路徑>、附件file_id/檔名、或（桌面版）真實絕對路徑' },
+                dst_path: { type: 'string', description: '沙盒內的絕對路徑或資料夾（資料夾用來源檔名）' },
+            }, required: ['id_or_name', 'src', 'dst_path'], additionalProperties: false }
+        );
+
+        registerOptional('terminal_cp_from',
+            '從指定終端機的沙盒檔案系統取出一個檔案。dst留空＝存成附件並直接在對話顯示下載卡片給使用者；dst也可以指定fap:<名稱或id>/<路徑或資料夾>（存進File Access Point）或（僅桌面版）真實磁碟的絕對路徑/資料夾。參數: {"id_or_name":"來源terminal", "src_path":"沙盒內的絕對路徑", "dst":"（選填）目的地"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
+                if (!session) return JSON.stringify({ ok: false, error });
+                if (!String(parsed.src_path || '').trim()) return JSON.stringify({ ok: false, error: '缺少src_path參數（沙盒內要取出的絕對路徑）' });
+                try {
+                    let runtime;
+                    try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                    const fsStore = await this._ensureTerminalFsStore(session, runtime);
+                    const abs = this._terminalResolvePath(session.cwd, String(parsed.src_path));
+                    const bytes = this._terminalSandboxFileBytes(fsStore, abs);
+                    if (!bytes) return JSON.stringify({ ok: false, error: `terminal「${session.name}」的沙盒裡找不到檔案：${abs}` });
+                    const filenameHint = abs.split('/').pop() || 'file';
+                    const result = await this._writeTerminalCopyDestination(parsed.dst, bytes, filenameHint, 'application/octet-stream');
+                    return JSON.stringify({ ok: true, terminal: session.name, src_path: abs, sizeBytes: bytes.length, ...result });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                id_or_name: { type: 'string', description: '來源terminal的id或name' },
+                src_path: { type: 'string', description: '沙盒內要取出的絕對路徑' },
+                dst: { type: 'string', description: '（選填）目的地：fap:<名稱或id>/<路徑或資料夾>、（桌面版）真實絕對路徑/資料夾；留空＝存成附件並顯示下載卡片' },
+            }, required: ['id_or_name', 'src_path'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 2026-09-11——「從聲音產生新的動畫影片」：把一段
@@ -16568,13 +16705,68 @@ ${sourceTool.handlerScript}
     // this._terminalSession（同時只能開一個）也拿掉了，現在每個
     // /run-terminal呼叫各自是對話裡獨立的一則訊息/一個session，可以同時
     // 存在多個，跟使用者可以連續問好幾次3D場景各自獨立一樣。
+    // tw_stock_db客製: 2026-09-23使用者要求——terminal要能被AI/外部用id或
+    // name定址，slash指令也要能順手取名（不取的話自動編號term-N），跟
+    // _createTerminalForAI（AI工具用的建立路徑）共用同一個id/name賦予
+    // 邏輯，兩條路徑建出來的terminal行為完全一致、都能被terminal_list/
+    // terminal_run等工具找到。`name=xxx`要放最前面，後面才是初始指令，
+    // 例如`/run-terminal name=build npm run build`。
     _handleRunTerminalCommand(argsText) {
-        const initialCommand = String(argsText || '').trim();
-        this.messages.push({ role: 'user', content: initialCommand ? `🖥️ /run-terminal ${initialCommand}` : '🖥️ /run-terminal' });
-        const msg = this._pushAssistantMessage('🖥️ 終端機（WASM沙盒 busybox ash）', null);
-        Object.defineProperty(msg, '_displayTerminal', { value: { initialCommand }, enumerable: false, configurable: true });
+        let text = String(argsText || '').trim();
+        let name = null;
+        const m = /^name=(\S+)\s*/.exec(text);
+        if (m) { name = m[1]; text = text.slice(m[0].length); }
+        const initialCommand = text;
+        const id = (crypto.randomUUID ? crypto.randomUUID() : `term_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+        const finalName = name || `term-${(this._terminalNameCounter = (this._terminalNameCounter || 0) + 1)}`;
+        this.messages.push({ role: 'user', content: initialCommand ? `🖥️ /run-terminal ${argsText}` : '🖥️ /run-terminal' });
+        const msg = this._pushAssistantMessage(`🖥️ 終端機「${finalName}」（WASM沙盒 busybox ash）`, null);
+        Object.defineProperty(msg, '_displayTerminal', { value: { id, name: finalName, initialCommand }, enumerable: false, configurable: true });
         this._persistChatHistory();
         this._renderMessageHistory();
+    }
+
+    // tw_stock_db客製: 2026-09-23——AI工具版的terminal建立（terminal_create），
+    // 跟slash指令共用id/name賦予邏輯，但_mountTerminalWidget是非同步、
+    // _renderSingleMessage呼叫它時沒有await（見那裡的說明：xterm.js可能
+    // 還在載入），這裡在push訊息+觸發重繪之後輪詢_getMountedTerminalSessions()
+    // 直到剛剛指定的id真的掛載完成才回傳，確保AI呼叫完這個工具後緊接著
+    // 呼叫terminal_run/terminal_get_text一定找得到這個session，不會出現
+    // 「剛建立就說找不到terminal」的competing race。
+    async _createTerminalForAI({ name, initialCommand } = {}) {
+        const id = (crypto.randomUUID ? crypto.randomUUID() : `term_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+        const finalName = String(name || '').trim() || `term-${(this._terminalNameCounter = (this._terminalNameCounter || 0) + 1)}`;
+        const cmd = String(initialCommand || '').trim();
+        this.messages.push({ role: 'user', content: cmd ? `🖥️ 建立終端機「${finalName}」並執行：${cmd}` : `🖥️ 建立終端機「${finalName}」` });
+        const msg = this._pushAssistantMessage(`🖥️ 終端機「${finalName}」（WASM沙盒 busybox ash）`, null);
+        Object.defineProperty(msg, '_displayTerminal', { value: { id, name: finalName, initialCommand: cmd }, enumerable: false, configurable: true });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            const found = this._getMountedTerminalSessions().find((s) => s.id === id);
+            if (found) return { id, name: finalName };
+            await new Promise((r) => setTimeout(r, 100));
+        }
+        throw new Error('終端機掛載逾時（可能是xterm.js/bash執行環境載入失敗，檢查網路連線）');
+    }
+
+    // tw_stock_db客製: 2026-09-23——terminal_run/terminal_get_text/
+    // terminal_cp_*這幾個新工具共用的「用id或name找到目前掛載中的session」
+    // 邏輯。id一定唯一（uuid）；name不強制唯一（使用者/AI可能取重複的
+    // 名字），撞到多個同名時明講「有歧義」並列出對應的id，不靜默猜一個
+    // ——這是刻意的設計，寧可讓呼叫端（AI）多一輪用id重試，也不要因為
+    // 猜錯session而對錯的terminal下指令。
+    _resolveTerminalSession(idOrName) {
+        const key = String(idOrName || '').trim();
+        if (!key) return { error: '缺少terminal的id或name（用terminal_list查詢目前active的terminal）' };
+        const sessions = this._getMountedTerminalSessions();
+        const byId = sessions.find((s) => s.id === key);
+        if (byId) return { session: byId };
+        const byName = sessions.filter((s) => s.name === key);
+        if (byName.length === 1) return { session: byName[0] };
+        if (byName.length > 1) return { error: `名稱「${key}」對應到${byName.length}個terminal，請改用id（用terminal_list查詢）：${byName.map((s) => s.id).join('、')}` };
+        return { error: `找不到id或name是「${key}」的terminal（用terminal_list查詢目前active的terminal，可能已經被使用者關閉/對話紀錄被壓縮清除）` };
     }
 
     // tw_stock_db客製: 2026-09-18——真正把xterm.js掛進_renderSingleMessage
@@ -16651,7 +16843,20 @@ ${sourceTool.handlerScript}
         });
         term.open(container);
 
+        // tw_stock_db客製: 2026-09-23使用者要求——terminal要能被AI/外部用
+        // id或name定址（list_terminals/terminal_run/terminal_cp_*等新工具）。
+        // 原本完全沒有id概念（見_getMountedTerminalSessions的說明，靠DOM
+        // query取得目前掛載的session清單）。id/name優先讀msg._displayTerminal
+        // 裡已經指定好的值（_createTerminalForAI/_handleRunTerminalCommand
+        // 在push訊息當下就先決定好，這樣呼叫端在_mountTerminalWidget真的
+        // 完成掛載之前就已經知道之後要用哪個id去找），沒有才自己生一組——
+        // id全域唯一（uuid），name預設是遞增的term-N（AI/使用者也可以自訂），
+        // 兩者都不用強制唯一（_resolveTerminalSession找到多個同名時會明講
+        // 「有歧義，請改用id」，不會靜默挑一個）。
+        const displayTerminal = (msg && msg._displayTerminal) || {};
         const session = {
+            id: displayTerminal.id || (crypto.randomUUID ? crypto.randomUUID() : `term_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
+            name: displayTerminal.name || `term-${(this._terminalNameCounter = (this._terminalNameCounter || 0) + 1)}`,
             term,
             fsStore: null,
             cwd: '/work',
@@ -17551,30 +17756,211 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-23使用者實測terminal_run回報——原本這個
+    // 方法只會寫錯誤到畫面上、沒有回傳任何結果，_terminalRunCommand（AI
+    // 工具terminal_run用）沒辦法知道cd有沒有成功、也就沒辦法正確更新
+    // 回傳給AI的exit_code。改成明確回傳{ok, cwd, error}，互動輸入路徑
+    // （_handleTerminalInput）維持原本「不管回傳值、錯誤已經寫到畫面上」
+    // 的用法不變，_terminalRunCommand則改用這個回傳值判斷cd是否成功、
+    // 順便真的更新session.cwd（這是這個方法本來就在做的事，兩條路徑
+    // 現在共用同一份邏輯，不會出現「互動打cd有效、AI呼叫terminal_run
+    // 跑cd卻沒有更新cwd」這種不一致）。
     async _terminalCd(session, target) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
-            session.term.write(`\x1b[31m${String(err.message || err)}\x1b[0m\r\n`);
-            return;
+            const msg = String(err.message || err);
+            session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
+            return { ok: false, error: msg };
         }
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
         try { await this._hydrateReferencedFapMounts(session, fsStore, target); } catch (err) {
-            session.term.write(`\x1b[31mFAP掛載讀取失敗：${String(err.message || err)}\x1b[0m\r\n`);
-            return;
+            const msg = `FAP掛載讀取失敗：${String(err.message || err)}`;
+            session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
+            return { ok: false, error: msg };
         }
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; cd ${this._shQuote(target)} && pwd`;
         let result;
         try {
             result = await runtime.run({ command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true });
         } catch (err) {
-            session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
-            return;
+            const msg = `執行失敗：${String(err.message || err)}`;
+            session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
+            return { ok: false, error: msg };
         }
         if (result.exitCode === 0 && result.stdout.trim()) {
             session.cwd = result.stdout.trim();
-        } else {
-            session.term.write(`\x1b[31mcd: ${target}: 找不到這個目錄\x1b[0m\r\n`);
+            return { ok: true, cwd: session.cwd };
         }
+        const msg = `cd: ${target}: 找不到這個目錄`;
+        session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
+        return { ok: false, error: msg };
+    }
+
+    // tw_stock_db客製: 2026-09-23使用者要求——terminal要能被AI從外部指定
+    // id/name執行指令、拿到exit code，也要能同時把輸出導入沙盒fs裡的檔案。
+    // 跟互動輸入（_runTerminalShellLine，onData觸發、只把輸出印到畫面、
+    // 不回傳結構化結果）是兩條平行路徑，這裡刻意共用同一個runtime.run()
+    // 呼叫模式（cd session.cwd接指令、同一份builtins/FAP掛載邏輯），差別
+    // 是：(1)同時用onOutput即時印到畫面＋自己accumulate成stdout/stderr
+    // 字串（不能只信任result.stdout/stderr——_runTerminalShellLine那邊
+    // 從沒驗證過同時給onOutput時這兩個欄位還會不會照常填，這裡用accumulate
+    // 的版本保底，channel分不出來時全部歸進stdout）(2)回傳{ok,exit_code,
+    // stdout,stderr}讓工具callback可以直接包成JSON回給AI。
+    async _terminalRunCommand(session, line, opts = {}) {
+        // tw_stock_db客製: 2026-09-23真實環境實測發現的落差——每次run()都是
+        // 全新無狀態wasm instance，跟互動輸入完全一樣的限制（見_terminalCd
+        // 上方說明），單獨一個`cd <path>`要另外特殊處理才能真的更新
+        // session.cwd（不是靠一般的runtime.run()，那個只在那次呼叫內有效、
+        // 呼叫結束就消失）。跟互動輸入路徑（_runTerminalCommand的
+        // cmdName==='cd'判斷）用同一套「整行就是單純的cd指令」偵測邏輯，
+        // 確保terminal_run跟使用者自己在畫面上打字行為一致。**限制**：跟
+        // 互動輸入一樣，只有「整行單純是cd」才會被偵測到並真的持續影響
+        // 之後的cwd；`cd x && y`這種複合指令裡的cd不會被偵測、也不會更新
+        // session.cwd（這個沙盒沒有真正的shell parser，是JS層的簡單字串
+        // 判斷），需要換資料夾時請用單獨一次terminal_run呼叫只下cd，跟
+        // 下一個指令分開呼叫。
+        const trimmedLine = String(line || '').trim();
+        const firstSp = trimmedLine.indexOf(' ');
+        const cmdNameOnly = firstSp === -1 ? trimmedLine : trimmedLine.slice(0, firstSp);
+        if (cmdNameOnly === 'cd') {
+            const target = firstSp === -1 ? '/work' : trimmedLine.slice(firstSp + 1).trim() || '/work';
+            const r = await this._terminalCd(session, target);
+            return r.ok ? { ok: true, exit_code: 0, stdout: r.cwd + '\n', stderr: '' } : { ok: true, exit_code: 1, stdout: '', stderr: r.error + '\n' };
+        }
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        try { await this._hydrateReferencedFapMounts(session, fsStore, line); } catch (err) {
+            return { ok: false, error: `FAP掛載讀取失敗：${String(err.message || err)}` };
+        }
+        const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`;
+        let builtins;
+        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
+            return { ok: false, error: `指令需要的執行環境載入失敗：${String(err.message || err)}` };
+        }
+        const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
+        fsStack.push(fsStore);
+        let outBuf = '', errBuf = '';
+        let result;
+        try {
+            result = await runtime.run({
+                command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true, builtins,
+                onOutput: (bytes, channel) => {
+                    const text = new TextDecoder().decode(bytes);
+                    if (channel === 'stderr') errBuf += text; else outBuf += text;
+                    if (opts.streamToWidget !== false) this._terminalWriteOutput(session, text.replace(/\n/g, '\r\n'));
+                    session.lastActiveAt = Date.now();
+                },
+            });
+        } catch (err) {
+            return { ok: false, error: `執行失敗：${String(err.message || err)}` };
+        } finally {
+            fsStack.pop();
+        }
+        const stdout = outBuf || result.stdout || '';
+        const stderr = errBuf || result.stderr || '';
+        // tw_stock_db客製: 使用者要求「也可以讓terminal將輸出導入檔案，並
+        // 取得stdout, stderr」——不是靠shell的>重導向語法（那樣會讓輸出
+        // 從onOutput/result裡消失，AI就拿不到stdout了），而是JS層直接把
+        // 已經accumulate好的文字內容寫進沙盒fs的目標路徑，兩者不衝突。
+        if (opts.outputFile) {
+            try {
+                const abs = this._terminalResolvePath(session.cwd, opts.outputFile);
+                this._writeBytesToTerminalFs(fsStore, abs, new TextEncoder().encode(stdout));
+            } catch (err) { /* 寫入失敗不影響已經拿到的stdout/stderr結果，讓呼叫端自己決定要不要重試 */ }
+        }
+        if (opts.stderrFile) {
+            try {
+                const abs = this._terminalResolvePath(session.cwd, opts.stderrFile);
+                this._writeBytesToTerminalFs(fsStore, abs, new TextEncoder().encode(stderr));
+            } catch (err) { /* 同上 */ }
+        }
+        return { ok: true, exit_code: result.exitCode, stdout, stderr };
+    }
+
+    // tw_stock_db客製: 2026-09-23——terminal_cp_to/terminal_cp_from共用的
+    // 「來源/目的地是fap:還是真實絕對路徑」解析＋位元組級讀寫。FAP的
+    // fap_read_file只支援純文字（見FAP_BINARY_EXT_PATTERN那段既有限制），
+    // 這裡不能沿用——直接操作FileSystemFileHandle拿Blob，不限格式。
+    async _readFapFileBytes(ref) {
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'read' });
+        let fileHandle;
+        try { fileHandle = await dirHandle.getFileHandle(filename); }
+        catch (err) { throw new Error(`找不到檔案「${filename}」：${String(err.message || err)}`); }
+        const file = await fileHandle.getFile();
+        return { bytes: new Uint8Array(await file.arrayBuffer()), filename, mimeType: file.type || 'application/octet-stream', accessPoint: rec.label };
+    }
+    async _writeFapFileBytes(ref, bytes, mimeType) {
+        const { rec, dirHandle, filename } = await this._resolveFapFileParent(ref, { mode: 'readwrite', create: true });
+        let fileHandle;
+        try { fileHandle = await dirHandle.getFileHandle(filename, { create: true }); }
+        catch (err) { throw new Error(`建立/開啟檔案「${filename}」失敗：${String(err.message || err)}`); }
+        const writable = await fileHandle.createWritable();
+        await writable.write(new Blob([bytes], { type: mimeType || 'application/octet-stream' }));
+        await writable.close();
+        return { access_point: rec.label, filename, sizeBytes: bytes.length };
+    }
+
+    // tw_stock_db客製: 2026-09-23——terminal_cp_to的來源可以是fap:<...>、
+    // 附件file_id/檔名、或（桌面版）真實絕對路徑，三選一自動判斷，跟
+    // 使用者原話「來源可以是fap, 真實檔案，也可以接attachment」對應。
+    // 判斷順序：fap:前綴最明確先判；接著試attachment（file_id精準比對，
+    // 找不到才用_resolveUploadedFileRecord模糊比對檔名）；都不是才當作
+    // 桌面版的真實絕對路徑（網頁版沒有window.desktopAPI，會在這一步
+    // 明確報錯，不會誤把一個字串當路徑送出去卻靜默失敗）。
+    async _resolveTerminalCopySource(src) {
+        const s = String(src || '').trim();
+        if (!s) throw new Error('缺少來源（src）：可以是fap:<名稱或id>/<路徑>、附件file_id/檔名，或（桌面版）真實絕對路徑');
+        if (/^fap:/i.test(s)) {
+            const r = await this._readFapFileBytes(s);
+            return { bytes: r.bytes, filename: r.filename, mimeType: r.mimeType, sourceLabel: `FAP「${r.accessPoint}」${s}` };
+        }
+        let rec = null;
+        try { rec = await this.fileCache.get(s); } catch (_) { /* 不是有效id，繼續往下試 */ }
+        if (!rec) { try { rec = await this._resolveUploadedFileRecord(s, { kindFilter: null }); } catch (_) { /* 也不是附件，當作真實路徑 */ } }
+        if (rec && rec.blob) {
+            return { bytes: new Uint8Array(await rec.blob.arrayBuffer()), filename: rec.filename, mimeType: rec.mimeType || 'application/octet-stream', sourceLabel: `附件「${rec.filename}」` };
+        }
+        if (!window.desktopAPI || !window.desktopAPI.rawfs) {
+            throw new Error(`找不到附件「${s}」，且網頁版不支援讀取真實磁碟路徑（桌面版才支援）——請用list_uploaded_files查file_id，或用fap:<名稱或id>/<路徑>`);
+        }
+        const r = await window.desktopAPI.rawfs.readFile(s, 'base64');
+        if (!r || r.base64 == null) throw new Error(`讀取真實檔案「${s}」失敗`);
+        const bin = atob(r.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const filename = s.split(/[\\/]/).pop() || 'file';
+        return { bytes, filename, mimeType: 'application/octet-stream', sourceLabel: `真實檔案「${s}」` };
+    }
+
+    // tw_stock_db客製: 2026-09-23——terminal_cp_from的目的地（dst，選填）
+    // 跟來源同一套三選一（fap:.../真實絕對路徑/留空＝存成附件+對話下載
+    // 卡片），對應使用者原話「從terminal取得file如果dst沒有寫，就是變成
+    // 聊天中可以下載的方式」。
+    async _writeTerminalCopyDestination(dst, bytes, filenameHint, mimeType) {
+        const d = String(dst || '').trim();
+        if (!d) {
+            const fileId = await this.fileCache.put(filenameHint, mimeType || 'application/octet-stream', new Blob([bytes], { type: mimeType || 'application/octet-stream' }), 'uploaded');
+            await this._deliverExistingCacheFile(fileId, `📎 從終端機取得：${filenameHint}（${(bytes.length / 1024).toFixed(bytes.length < 1024 * 100 ? 1 : 0)}KB）`);
+            return { destination: 'chat_download', file_id: fileId, filename: filenameHint };
+        }
+        if (/^fap:/i.test(d)) {
+            const { fapIdOrLabel, path } = this._parseFapRef(d);
+            if (!fapIdOrLabel) throw new Error('dst的FAP格式不對，需要fap:<名稱或id>[/<路徑或資料夾>]');
+            const targetPath = (!path || path.endsWith('/')) ? `${path}${filenameHint}` : path;
+            const r = await this._writeFapFileBytes(`fap:${fapIdOrLabel}/${targetPath}`, bytes, mimeType);
+            return { destination: 'fap', ...r };
+        }
+        if (!window.desktopAPI || !window.desktopAPI.rawfs) throw new Error('網頁版不支援寫入真實磁碟路徑（桌面版才支援）');
+        const isDirLike = /[\\/]$/.test(d);
+        let targetPath = d;
+        if (isDirLike) targetPath = d + filenameHint;
+        else { try { const st = await window.desktopAPI.rawfs.stat(d); if (st && st.isDirectory) targetPath = d.replace(/[\\/]+$/, '') + '/' + filenameHint; } catch (_) { /* 不存在就當成完整檔案路徑 */ } }
+        let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const r = await window.desktopAPI.rawfs.writeFile(targetPath, { base64: btoa(bin) });
+        return { destination: 'real_file', path: r.path, sizeBytes: r.sizeBytes };
     }
 
     // tw_stock_db客製: 2026-09-18使用者要求——「裡面沒有which…沒有知道
@@ -28561,10 +28947,14 @@ ${existingNodeSummaries}
             // 自動夾住）。
             const wrap = document.createElement('div');
             wrap.style.cssText = 'margin-bottom:12px; max-width:95%; width:900px;';
+            const terminalName = msg._displayTerminal.name ? this._escapeHtml(msg._displayTerminal.name) : '';
             wrap.innerHTML = `
                 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
-                    <div style="font-size:12px; font-weight:bold; color:#76b900;">🖥️ 終端機（WASM沙盒 busybox ash）</div>
-                    <div class="ai-terminal-export-slot"></div>
+                    <div style="font-size:12px; font-weight:bold; color:#76b900;">🖥️ 終端機${terminalName ? `「${terminalName}」` : ''}（WASM沙盒 busybox ash）</div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <div class="ai-terminal-transfer-slot"></div>
+                        <div class="ai-terminal-export-slot"></div>
+                    </div>
                 </div>
                 <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:480px; border:1px solid ${palette.windowBorder};"></div>
             `;
