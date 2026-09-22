@@ -3431,28 +3431,37 @@ async function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSn
             } else if (snap.dataUrl) {
                 // tw_stock_db客製: 2026-09-22使用者要求——原本不管圖片本身是
                 // 直的還是橫的，一律塞進同一個固定的橫向10.3x5.7方框（靠
-                // sizing:{type:'contain'}等比例縮放不變形），直式（高>寬）
-                // 的圖片因此被縮得很小、方框左右留下大片空白浪費版面。改成
-                // 先讀圖片實際寬高（_faGetImageNaturalSize，跟PDF那邊同一
-                // 個函式），依長寬比選一個「浪費空間比較少」的方框形狀：
-                // 明顯直式改用較窄的方框（貼近直式版面，示意左右版面）、
-                // 明顯橫式維持原本較寬的方框（上下版面）、接近正方形用
-                // 居中的正方形方框；三種情況最終仍然靠sizing:{type:'contain'}
-                // 做真正的等比例縮放，這裡只是先幫圖片選一個比較合身的容器。
+                // sizing:{type:'contain'}宣稱會等比例縮放）。**實測發現
+                // sizing:{type:'contain'}並不會真的等比例縮放**——用真實
+                // Electron+python-pptx/LibreOffice渲染驗證，400x900的直式
+                // 測試圖丟進6.2x5.7的方框後，畫面呈現的是被拉伸成接近方框
+                // 比例的長方形，不是保留原始比例、置中留白的效果（pptxgenjs
+                // 這個選項的實際行為跟文件描述的字面意思對不上，不能信任）。
+                // 改成完全不依賴sizing選項：自己讀圖片實際寬高
+                // （_faGetImageNaturalSize，跟PDF那邊同一個函式）、自己算出
+                // 「不超過可用範圍」的等比例縮放後寬高，直接把這個算好的
+                // 寬高當成addImage本身的w/h（不是外框的w/h）——跟PDF路徑
+                // 「自己算出width+height兩個值都給，不依賴函式庫自動處理」
+                // 是同一個做法，這樣不管pptxgenjs的sizing選項實際行為是什麼
+                // 都不影響結果。長寬比仍然用來決定「最大可用寬度」（明顯
+                // 直式的圖給較窄的可用寬度、明顯橫式的給較寬的），避免直式
+                // 圖片因為可用寬度設太大而在計算等比例縮放時被寬度而不是
+                // 高度卡住、反而縮得比預期小。
                 const SLIDE_W = 13.3, SLIDE_H = 7.5, TOP = 1.3, BOTTOM_MARGIN = 0.5;
                 const maxAvailH = SLIDE_H - TOP - BOTTOM_MARGIN;
+                let natural = null;
+                try { natural = await _faGetImageNaturalSize(snap.dataUrl); } catch (_) { /* 讀不到自然尺寸時退回下面的保底方框 */ }
                 let boxW = 10.3, boxH = maxAvailH;
-                try {
-                    const { w, h } = await _faGetImageNaturalSize(snap.dataUrl);
-                    if (w > 0 && h > 0) {
-                        const ratio = w / h;
-                        if (ratio <= 0.8) boxW = 6.2; // 明顯直式：窄方框，減少左右留白
-                        else if (ratio >= 1.3) boxW = 10.3; // 明顯橫式：維持原本寬方框
-                        else boxW = 7.6; // 接近正方形
-                    }
-                } catch (_) { /* 讀不到自然尺寸時退回原本固定的橫向方框 */ }
+                if (natural && natural.w > 0 && natural.h > 0) {
+                    const ratio = natural.w / natural.h;
+                    const maxW = ratio <= 0.8 ? 6.2 : (ratio >= 1.3 ? 10.3 : 7.6);
+                    const scale = Math.min(maxW / natural.w, maxAvailH / natural.h, 1); // 不放大原本就小的圖
+                    boxW = natural.w * scale;
+                    boxH = natural.h * scale;
+                }
                 const boxX = (SLIDE_W - boxW) / 2;
-                s.addImage({ data: snap.dataUrl, x: boxX, y: TOP, w: boxW, h: maxAvailH, sizing: { type: 'contain', w: boxW, h: maxAvailH } });
+                const boxY = TOP + Math.max(0, (maxAvailH - boxH) / 2);
+                s.addImage({ data: snap.dataUrl, x: boxX, y: boxY, w: boxW, h: boxH });
             }
         } catch (_) { /* 個別截圖/摘要嵌入失敗不影響其餘投影片 */ }
     }
