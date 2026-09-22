@@ -109,3 +109,10 @@
 - [x] **`fap_apply_patch`**（改File Access Point檔案「某幾行」，用unified diff）：all-or-nothing、內容對不上時回傳實際內容供重寫、可 `check_only` 乾跑、新增檔案用 `/dev/null`、自動備份、**寫完逐檔讀回比對**（不一致就還原）、回傳 `first_changed_line`/`total_lines_after` 供讀回確認。同一套 `_codingApplyPatch`（順便讓 coding 的 apply_git_patch 也有讀回驗證）。`file_access_points` domain 提示改成「精準編修一律 patch、fap_write_file 只用來新增或整份重寫」。實測：srt 改一行、子資料夾當根、新增檔案、錯誤 context 被擋且不動檔案。
 
 - [x] **`attachment_apply_patch`**（📎純文字附件的 patch 式精準編修）：同一套 `_codingApplyPatch`（all-or-nothing、對不上回傳實際內容、讀回比對），成功後另存成「.已修改」新附件並顯示下載卡片（`in_place:true` 才覆寫原附件），保留 CRLF；二進位附件明確拒絕並指向 `attachment_files`。`file_analysis` domain 提示要求：修改先分頁讀完整份、不可用 summarize、用 patch、讀回確認。實測 srt 修改、乾跑、錯誤 context、in_place、二進位/找不到/缺參數。
+
+- [x] **browser-control extension 跟上 Redmine 移植時實測到的CDP輸入問題**：使用者把同一套瀏覽器控制邏輯移植到 Redmine 時，實測發現4個CDP合成輸入的坑，逐一對照本專案`web/browser-control-extension/background.js`檢查：
+  - **背景分頁收不到合成輸入**（確認我方也有這個坑，已修）：`mouse`/`type_text`/`press_key`三個會送合成滑鼠鍵盤事件的指令，改成先呼叫新增的`ensureForeground(tabId)`把分頁切到前景（`chrome.tabs.update({active:true})`+`chrome.windows.update({focused:true})`+等待200ms）再送CDP指令；`screenshot`/`scroll`這類唯讀操作維持背景可用不受影響。
+  - **CDP點擊不保證元素拿到焦點**（確認我方也有這個坑，已修）：`mouse`的click/double_click/right_click動作送出後，額外補一次`document.elementFromPoint(x,y).focus()`，避免點擊後緊接著`type_text`打不進去。
+  - **keyDown帶text造成打字重複**（防範性跟上，我方原本用單一`keyDown`+`text`、不是造成重複的那種寫法，但改成業界標準的`rawKeyDown`（不帶text）+ 單獨`char`事件（只有它帶text）+`keyUp`，跟Puppeteer同一套模式，避免未來版本的Chrome出現同樣的重複插入）：`pressKey()`。
+  - **executeScript參數帶undefined觸發「unserializable value」**：確認我方`scroll`/`mouse`/`type_text`/`get_page_text`/`get_page_structure`/`get_elements`的`args`陣列一律用`null`或已驗證過的值，沒有這個坑，不用改。
+  - 同步更新到 `D:\Downloads\videos-嗨投資\web\browser-control-extension\background.js`（main 分支，未push）。`node --check`語法驗證通過；未在真實Chrome擴充功能重新載入實測（背景分頁/點擊focus這兩項行為差異在真實瀏覽器才看得出來，建議使用者下次用到瀏覽器控制時留意）。
