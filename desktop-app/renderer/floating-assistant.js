@@ -11783,8 +11783,16 @@ ${fnData.code}
             if (isLast) kfs.push({ t: winEnd, opacity: 1 });
             else kfs.push({ t: winEnd, opacity: 1 }, { t: Math.min(totalDurLocal, winEnd + EPS), opacity: 0 });
             return {
+                // tw_stock_db客製: 2026-09-22使用者回報畫面只出現在左上角一個
+                // 角落——2D動畫渲染器的_draw2DShape把position當成shape的
+                // 「中心點」（ctx.translate到position後用-width/2,-height/2
+                // 畫圖，跟circle/rect同一套錨點慣例），不是左上角。原本給
+                // position:[0,0]會讓每格圖片的中心對齊到畫布左上角(0,0)，
+                // 畫布可視範圍只會看到圖片右下1/4——改成畫布中心
+                // [width/2, height/2]，圖片才會剛好蓋滿整個width x height
+                // 畫布。
                 id: `frame_${i}`, type: 'image', src: f.dataUrl, width, height,
-                position: [0, 0], opacity: i === 0 ? 1 : 0,
+                position: [width / 2, height / 2], opacity: i === 0 ? 1 : 0,
                 animation: { type: 'keyframes', loop: !!opts.loop, keyframes: kfs },
             };
         });
