@@ -1552,7 +1552,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'list_uploaded_files'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
@@ -1560,6 +1560,8 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
             '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。可以用speed參數調整語速。\n' +
             '- concat_audio：把多個已上傳的音檔依指定順序串接成一個MP3——使用者要「把這幾段語音接起來」「合併成一個檔案」時用這個，不要說做不到，也不要自己憑空生一個沒有的工具。\n' +
+            '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
+            '- convert_video_to_animation：把整支影片或其中一段時間範圍逐格轉成這個app的2D動畫YAML格式（不是你自己設計動畫，是真實影片畫面內嵌成JPEG逐格播放），每個影格都是內嵌base64圖片，間隔太密/範圍太長檔案會暴增，需要提醒使用者控制範圍。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
     // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
@@ -1569,9 +1571,11 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     video_editing: {
         enabled: true,
         label: '影片編修（配音）',
-        toolNames: ['start_dubbing_session', 'list_uploaded_files'],
+        toolNames: ['start_dubbing_session', 'extract_clip_range', 'extract_clip_range_audio', 'list_uploaded_files'],
         systemPrompt: '你是一個專門編修影片內容的子任務助理。目前能做的事：\n' +
             '- start_dubbing_session：建立「配音小幫手」互動widget，讓使用者針對影片的某幾個時間段（自己指定的時間範圍，或整支的逐句字幕）錄音/上傳音檔配音，取代原本的聲音。使用者說類似「幫這支影片配音」「把1:20到1:45這段換成我的聲音」都呼叫這個工具。給ranges參數可以直接指定時間段（不需要字幕、速度快）；不給就用整支字幕（逐句一頁）。呼叫成功、widget建立好之後，接下來使用者自己在widget裡操作（錄音/上傳/重錄/試聽/換頁/輸出/結束），你不用再問要不要繼續、也不用描述後續步驟，直接告知widget已經準備好即可。\n' +
+            '- extract_clip_range：擷取指定時間範圍的畫面+聲音，輸出一段新的MP4——使用者要「剪一段」「截取1:20到1:45這段」都用這個。\n' +
+            '- extract_clip_range_audio：只擷取指定時間範圍的聲音（不含畫面），輸出音檔。\n' +
             '需要指定影片時可以用file_id或檔名，或留空用最近上傳的。⚠️這個工具依時間段數量可能要花一點處理時間（擷取關鍵影格），呼叫後要等真正的結果。',
     },
     // tw_stock_db客製: 2026-09-16使用者要求——內建bash/python執行環境，讓AI
@@ -2211,6 +2215,44 @@ self.onmessage = async (e) => {
 };
 `;
 
+// tw_stock_db客製: 2026-09-22使用者要求——「擷取指定時間的影片跟聲音」
+// （media-extract-clip-range），要輸出一段真正的MP4（影像+聲音都要），
+// 跟FA_BURN_SUBTITLES_WORKER_SRC同一種module worker（Mediabunny動態
+// import ESM），差別是這裡不逐幀畫布繪製（不需要OffscreenCanvas疊字幕），
+// 純粹靠Mediabunny的Conversion.init({trim:{start,end}})做時間範圍裁切；
+// video:{}/audio:{}（跟burn_subtitles的audio:{}同一種寫法，代表「保留
+// 這個軌、不做自訂逐幀處理」，讓Mediabunny盡量走快速的stream copy而不是
+// 整段重新解碼/編碼）。
+const FA_CLIP_EXTRACT_WORKER_SRC = `
+let _mb = null;
+self.onmessage = async (e) => {
+    const d = e.data || {};
+    const jobId = d.jobId;
+    try {
+        if (!_mb) _mb = await import(d.mediabunnyUrl);
+        const MB = _mb;
+        const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(d.videoBlob) });
+        const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+        const conversion = await MB.Conversion.init({
+            input: input,
+            output: output,
+            video: {},
+            audio: {},
+            trim: { start: d.start, end: d.end },
+        });
+        if (!conversion.isValid) {
+            self.postMessage({ jobId: jobId, type: 'result', ok: false, error: '無法裁切這個影片（' + JSON.stringify(conversion.discardedTracks || []).slice(0, 300) + '）' });
+            return;
+        }
+        await conversion.execute();
+        const buf = output.target.buffer;
+        self.postMessage({ jobId: jobId, type: 'result', ok: true, buffer: buf }, [buf]);
+    } catch (err) {
+        self.postMessage({ jobId: jobId, type: 'result', ok: false, error: String((err && err.message) || err) });
+    }
+};
+`;
+
 // tw_stock_db客製: 2026-09-14使用者要求——Kokoro本地TTS的模型推論
 // （engine.generate()，WASM、CPU、完全同步）原本跑在主執行緒，嚴重時會讓
 // Chrome跳出「網頁無回應」對話框（真實回報過的案例）。這裡搬進module
@@ -2652,6 +2694,11 @@ const FA_ASSET_URLS = {
     // 只驗證過英文（kokoro-js套件本身的G2P只支援'a'/'b'=美式/英式英文，見
     // _synthesizeSpeech的說明），中文語音朗讀目前做不到。
     kokoroJs: 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm',
+    // tw_stock_db客製: 2026-09-22使用者要求——影片轉動態GIF用的純JS GIF
+    // 編碼器（瀏覽器沒有原生API可以編碼動態GIF）。gifenc輕量、零相依、
+    // API簡單（quantize量化調色盤＋applyPalette轉索引色＋writeFrame逐幀
+    // 寫入），ES module，跟mediabunny/kokoro-js一樣走/+esm動態import。
+    gifenc: 'https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm',
     // tw_stock_db客製: 2026-09-15——git_operations domain（純瀏覽器端git
     // clone/pull/commit/push，用isomorphic-git）。isomorphic-git的瀏覽器
     // bundle需要全域window.Buffer（Node Buffer polyfill）才能運作，沒有的
@@ -4644,6 +4691,29 @@ class FloatingAssistant {
             '/media-burn-subtitles', '[<影片id或檔名>] [<字幕檔id或檔名>] [zh|en]',
             '把字幕燒進影片輸出新MP4（硬字幕、瀏覽器端、不上傳）。字幕檔留空＝自動先轉逐字稿（預設中文，要英文才加 en）；影片留空＝用最近上傳的',
             (argsText) => this._handleMediaBurnSubtitlesCommand(argsText)
+        );
+        // tw_stock_db客製: 2026-09-22使用者要求新增的4個media指令。時間範圍
+        // 格式跟/media-dub-video一致：<開始>-<結束>，可以是秒數或"分:秒"，
+        // 例如 1:20-1:45。
+        this.register_slash_command(
+            '/media-extract-clip-range', '[<影片id或檔名>] <開始>-<結束>',
+            '擷取影片指定時間範圍的畫面+聲音，輸出一段新的MP4（瀏覽器端Mediabunny裁切，不重新編碼、不上傳）。時間範圍必填，例如 /media-extract-clip-range 1:20-1:45',
+            (argsText) => this._handleMediaExtractClipRangeCommand(argsText)
+        );
+        this.register_slash_command(
+            '/media-extract-clip-range-audio', '[<影片id或檔名>] <開始>-<結束>',
+            '只擷取影片/音檔指定時間範圍的聲音（不含畫面），輸出音檔（瀏覽器端解碼，不上傳；預設MP3，可在設定改WAV）。時間範圍必填，例如 /media-extract-clip-range-audio 1:20-1:45',
+            (argsText) => this._handleMediaExtractClipRangeAudioCommand(argsText)
+        );
+        this.register_slash_command(
+            '/media-to-animated-gif', '[<影片id或檔名>] [<開始>-<結束>] [fps]',
+            '把影片（或其中一段時間範圍）轉成動態GIF（瀏覽器端逐幀量化編碼，不上傳）。留空時間範圍＝整支影片；fps留空預設10（GIF對幀率/尺寸很敏感，不建議太高）。',
+            (argsText) => this._handleMediaToAnimatedGifCommand(argsText)
+        );
+        this.register_slash_command(
+            '/media-to-animation', '[<影片id或檔名>] [<開始>-<結束>] [影格間隔秒]',
+            '把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（逐格擷取畫面，內嵌成JPEG data URL，用opacity切換模擬逐格播放），可以用/import-2d-animation-attachment匯入播放或再手動編修。留空時間範圍＝整支影片；間隔秒留空預設0.5秒。',
+            (argsText) => this._handleMediaToAnimationCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-12使用者要求——文字轉語音。英文走本地
         // Kokoro；中文走可選的API轉接（見TTS_API_VOICES上方說明），<聲音
@@ -8417,6 +8487,136 @@ ${fnData.code}
             }, additionalProperties: false }
         );
 
+        // tw_stock_db客製: 2026-09-22使用者要求新增的4個影音工具，時間參數
+        // 統一支援兩種寫法：range（"開始-結束"字串，例如"1:20-1:45"）或
+        // start_seconds/end_seconds（數字，也接受"1:20"這種字串）。
+        const resolveMediaRangeArgs = (parsed) => {
+            if (parsed.range) {
+                const r = this._parseDubRangeToken(String(parsed.range).trim());
+                if (r) return r;
+            }
+            const s = this._parseTimeValue(parsed.start_seconds != null ? parsed.start_seconds : parsed.start);
+            const e = this._parseTimeValue(parsed.end_seconds != null ? parsed.end_seconds : parsed.end);
+            if (s == null || e == null || !(e > s)) return null;
+            return { start: s, end: e };
+        };
+
+        registerOptional('extract_clip_range',
+            `擷取影片指定時間範圍的畫面+聲音，輸出一段新的MP4到persistentStorage（瀏覽器端Mediabunny裁切，盡量走快速stream copy不重新編碼，不上傳）。回傳 {ok, video_file_id, filename, startSeconds, endSeconds, sizeBytes}。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"開始-結束，例如1:20-1:45（跟start_seconds/end_seconds擇一）", "start_seconds":數字或"分:秒"字串, "end_seconds":數字或"分:秒"字串}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg);
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
+                const range = resolveMediaRangeArgs(parsed);
+                if (!range) return JSON.stringify({ ok: false, error: '缺少或無法解析時間範圍（給range="開始-結束"，或start_seconds/end_seconds）' });
+                try {
+                    const result = await this._extractClipRange(record, range.start, range.end);
+                    await this._deliverToolResultFile(result, 'video_file_id', (r) => `📎 已擷取片段：${r.filename}${r.sizeBytes != null ? `（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）` : ''}`);
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝用最近上傳的' },
+                range: { type: 'string', description: '"開始-結束"，例如"1:20-1:45"（跟start_seconds/end_seconds擇一）' },
+                start_seconds: { description: '開始時間（數字秒，或"分:秒"字串）' },
+                end_seconds: { description: '結束時間（數字秒，或"分:秒"字串）' },
+            }, additionalProperties: false }
+        );
+
+        registerOptional('extract_clip_range_audio',
+            `只擷取影片/音檔指定時間範圍的聲音（不含畫面），輸出一個獨立音檔到persistentStorage（瀏覽器端Web Audio API解碼+切割，不上傳；預設MP3省空間）。回傳 {ok, audio_file_id, filename, startSeconds, endSeconds, durationSeconds, sizeBytes}。參數: {"file":"file_id或檔名（留空＝最近上傳的）", "range":"開始-結束，例如1:20-1:45（跟start_seconds/end_seconds擇一）", "start_seconds":數字或"分:秒"字串, "end_seconds":數字或"分:秒"字串}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(fileArg);
+                if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔' });
+                const range = resolveMediaRangeArgs(parsed);
+                if (!range) return JSON.stringify({ ok: false, error: '缺少或無法解析時間範圍（給range="開始-結束"，或start_seconds/end_seconds）' });
+                try {
+                    const result = await this._extractAudioClipRange(record, range.start, range.end);
+                    await this._deliverToolResultFile(result, 'audio_file_id', (r) => `📎 已擷取聲音片段：${r.filename}${r.sizeBytes != null ? `（${(r.sizeBytes / 1024).toFixed(0)}KB）` : ''}`);
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: '影片/音檔的file_id或檔名；留空＝用最近上傳的' },
+                range: { type: 'string', description: '"開始-結束"，例如"1:20-1:45"（跟start_seconds/end_seconds擇一）' },
+                start_seconds: { description: '開始時間（數字秒，或"分:秒"字串）' },
+                end_seconds: { description: '結束時間（數字秒，或"分:秒"字串）' },
+            }, additionalProperties: false }
+        );
+
+        registerOptional('convert_to_animated_gif',
+            `把影片（或其中一段時間範圍）轉成動態GIF存進persistentStorage（瀏覽器端逐幀量化編碼，不上傳）。回傳 {ok, gif_file_id, filename, frames, width, height, fps, sizeBytes}。GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px（避免產生出幾十MB的GIF）；需要更清楚時可以調高max_width，但檔案會變大很多。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，例如1:20-1:45，留空＝整支影片", "fps":（選填，預設10，最高30）, "max_width":（選填，預設480，最高960）}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg);
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
+                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs(parsed) : null;
+                try {
+                    const result = await this._convertVideoToAnimatedGif(record, {
+                        start: range ? range.start : undefined, end: range ? range.end : undefined,
+                        fps: Number.isFinite(Number(parsed.fps)) ? Number(parsed.fps) : undefined,
+                        maxWidth: Number.isFinite(Number(parsed.max_width)) ? Number(parsed.max_width) : undefined,
+                    });
+                    await this._deliverToolResultFile(result, 'gif_file_id', (r) => `📎 已轉成GIF：${r.filename}${r.sizeBytes != null ? `（${r.width}x${r.height}，${r.fps}fps，${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）` : ''}`);
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝用最近上傳的' },
+                range: { type: 'string', description: '（選填）"開始-結束"，例如"1:20-1:45"，留空＝整支影片' },
+                start_seconds: { description: '（選填，跟range擇一）開始時間' },
+                end_seconds: { description: '（選填，跟range擇一）結束時間' },
+                fps: { type: 'number', description: '（選填）輸出幀率，預設10，最高30' },
+                max_width: { type: 'number', description: '（選填）輸出最大寬度(px)，預設480，最高960' },
+            }, additionalProperties: false }
+        );
+
+        registerOptional('convert_video_to_animation',
+            `把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（不是渲染你自己設計的動畫，是把真實影片逐格轉成YAML描述的flipbook動畫：每個影格擷取成JPEG圖片內嵌成data URL、疊在同一個位置，用opacity的keyframes動畫在對應時間窗切換顯示哪一格）。存進persistentStorage並回傳 {ok, animation_file_id, filename, frames, durationSeconds}。⚠️每個影格都是內嵌base64圖片，間隔太密/範圍太長YAML檔案會暴增，frame_interval預設0.5秒、frames數量有上限（超過會自動停在上限），需要更流暢時可以縮小frame_interval但要注意檔案大小。輸出的YAML可以直接用get_2d_animation_yaml風格的工具或/import-2d-animation-attachment匯入播放，也可以再手動編修。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，留空＝整支影片", "frame_interval":（選填，秒，預設0.5）, "max_frames":（選填，預設60，最高120）, "loop":（選填布林，是否循環播放）}`,
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg);
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
+                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs(parsed) : null;
+                try {
+                    const result = await this._convertVideoToFlipbookAnimation(record, {
+                        start: range ? range.start : undefined, end: range ? range.end : undefined,
+                        frameInterval: Number.isFinite(Number(parsed.frame_interval)) ? Number(parsed.frame_interval) : undefined,
+                        maxFrames: Number.isFinite(Number(parsed.max_frames)) ? Number(parsed.max_frames) : undefined,
+                        loop: !!parsed.loop,
+                    });
+                    await this._deliverToolResultFile(result, 'animation_file_id', (r) => `📎 已轉成2D動畫YAML：${r.filename}${r.frames != null ? `（${r.frames}個影格）` : ''}`);
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝用最近上傳的' },
+                range: { type: 'string', description: '（選填）"開始-結束"，留空＝整支影片' },
+                start_seconds: { description: '（選填，跟range擇一）開始時間' },
+                end_seconds: { description: '（選填，跟range擇一）結束時間' },
+                frame_interval: { type: 'number', description: '（選填）每隔幾秒擷取一個影格，預設0.5' },
+                max_frames: { type: 'number', description: '（選填）最多擷取幾個影格，預設60，最高120' },
+                loop: { type: 'boolean', description: '（選填）是否循環播放，預設false' },
+            }, additionalProperties: false }
+        );
+
         // tw_stock_db客製: 2026-09-11——「從聲音產生新的動畫影片」：把一段
         // 你設計的2D/3D動畫 + 一個音軌 + 對齊音軌的字幕，合成成有聲MP4
         // （見_composeAnimationVideo）。搭配 transcribe_media（拿逐字稿當
@@ -8759,6 +8959,23 @@ ${fnData.code}
             throw new Error('影音函式庫(Mediabunny)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
         });
         return this._mediabunnyLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-22——gifenc（純JS GIF編碼器）載入，
+    // media-to-animated-gif用，跟_ensureMediabunnyLoaded同一種動態import
+    // 快取模式。
+    async _ensureGifencLoaded() {
+        if (this._gifencModule) return this._gifencModule;
+        if (this._gifencLoadPromise) return this._gifencLoadPromise;
+        this._gifencLoadPromise = (async () => {
+            const mod = await import(/* webpackIgnore: true */ FA_ASSET_URLS.gifenc);
+            this._gifencModule = mod;
+            return mod;
+        })().catch(err => {
+            this._gifencLoadPromise = null;
+            throw new Error('GIF編碼函式庫(gifenc)載入失敗（可能是網路問題或CDN異動）：' + (err && err.message || err));
+        });
+        return this._gifencLoadPromise;
     }
 
     // tw_stock_db客製: 2026-09-12——lamejs（純JS MP3編碼器）載入，
@@ -11210,6 +11427,96 @@ ${fnData.code}
         }
     }
 
+    // tw_stock_db客製: 2026-09-22使用者要求——「擷取指定時間的影片跟聲音」
+    // （media-extract-clip-range）：把影片裁切成[start,end]這段時間範圍，
+    // 輸出一段新的MP4（影像+聲音都保留）。整條pipeline跑在module worker
+    // 裡（見FA_CLIP_EXTRACT_WORKER_SRC），跟_burnSubtitles同一種worker
+    // 生命週期管理（單次用完terminate），差別是這裡不需要OffscreenCanvas
+    // （沒有逐幀畫布繪製），純粹靠Mediabunny的trim選項做時間範圍裁切。
+    async _extractClipRange(videoRecord, startSec, endSec) {
+        if (typeof Worker === 'undefined') {
+            return { ok: false, error: '這個瀏覽器不支援 Web Worker，無法擷取影片片段。請用較新的 Chrome/Edge/Safari。' };
+        }
+        if (!(startSec >= 0) || !(endSec > startSec)) {
+            return { ok: false, error: `時間範圍不合法（開始${startSec}秒、結束${endSec}秒）：結束時間必須大於開始時間，開始時間不能小於0` };
+        }
+        let worker;
+        try {
+            const blobUrl = URL.createObjectURL(new Blob([FA_CLIP_EXTRACT_WORKER_SRC], { type: 'application/javascript' }));
+            worker = new Worker(blobUrl, { type: 'module' });
+        } catch (err) {
+            return { ok: false, error: '建立擷取片段 worker 失敗：' + String(err.message || err) };
+        }
+        const jobId = 'clip_' + Date.now();
+        try {
+            const result = await new Promise((resolve, reject) => {
+                worker.onmessage = (e) => {
+                    const dd = e.data || {};
+                    if (dd.jobId !== jobId || dd.type !== 'result') return;
+                    resolve(dd);
+                };
+                worker.onerror = (e) => reject(new Error('擷取片段 worker 錯誤：' + (e.message || e)));
+                worker.postMessage({ jobId, mediabunnyUrl: FA_ASSET_URLS.mediabunny, videoBlob: videoRecord.blob, start: startSec, end: endSec });
+            });
+            if (!result.ok) return { ok: false, error: result.error };
+            const outBlob = new Blob([result.buffer], { type: 'video/mp4' });
+            const base = String(videoRecord.filename || 'video').replace(/\.[^.]+$/, '');
+            const outName = `${base}.片段_${_faFormatTimestamp(startSec)}-${_faFormatTimestamp(endSec)}.mp4`;
+            const outId = await this.fileCache.put(outName, 'video/mp4', outBlob, 'uploaded');
+            return { ok: true, video_file_id: outId, filename: outName, startSeconds: startSec, endSeconds: endSec, sizeBytes: outBlob.size };
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        } finally {
+            try { worker.terminate(); } catch (_) {}
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求——「擷取指定時間的聲音」
+    // （media-extract-clip-range-audio）：只要聲音、不要影像，不需要
+    // Mediabunny/worker這麼重的pipeline——直接沿用_extractAudio已經在用
+    // 的_decodeAudioBuffer（Web Audio API decodeAudioData，會自動從mp4/mov
+    // 抽出音軌），解碼出完整AudioBuffer後在記憶體裡按取樣點切出[start,end]
+    // 這段（同取樣率，不需要重新取樣），再走跟_extractAudio一樣的
+    // MP3(預設)/WAV編碼選擇。
+    async _extractAudioClipRange(record, startSec, endSec) {
+        this._log('🔊 解碼「' + record.filename + '」的音軌以擷取片段…');
+        let audioBuffer;
+        try {
+            audioBuffer = await this._decodeAudioBuffer(record.blob);
+        } catch (err) {
+            return { ok: false, error: String(err.message || err) };
+        }
+        const dur = audioBuffer.duration;
+        const s = Math.max(0, Math.min(dur, startSec));
+        const e = Math.max(s, Math.min(dur, endSec));
+        if (e <= s) return { ok: false, error: `時間範圍不合法（開始${s.toFixed(2)}秒、結束${e.toFixed(2)}秒，音軌總長${dur.toFixed(2)}秒）` };
+        const sr = audioBuffer.sampleRate, ch = audioBuffer.numberOfChannels;
+        const startFrame = Math.floor(s * sr);
+        const frameCount = Math.max(1, Math.min(audioBuffer.length - startFrame, Math.ceil((e - s) * sr)));
+        const AC = (typeof AudioContext !== 'undefined') ? AudioContext : window.webkitAudioContext;
+        const tmpCtx = new AC();
+        let sliced;
+        try {
+            sliced = tmpCtx.createBuffer(ch, frameCount, sr);
+            for (let c = 0; c < ch; c++) {
+                sliced.copyToChannel(audioBuffer.getChannelData(c).subarray(startFrame, startFrame + frameCount), c);
+            }
+        } finally {
+            try { tmpCtx.close && tmpCtx.close(); } catch (_) {}
+        }
+        const base = String(record.filename || 'media').replace(/\.[^.]+$/, '');
+        const wantMp3 = this.advancedSettings.extractAudioFormat !== 'wav';
+        let blob, ext, mimeType;
+        if (wantMp3) {
+            try { blob = await this._encodeMp3(sliced); ext = 'mp3'; mimeType = 'audio/mpeg'; }
+            catch (err) { this._log('⚠️ MP3編碼失敗，改用WAV：' + String(err && err.message || err)); }
+        }
+        if (!blob) { blob = _faEncodeWav(sliced); ext = 'wav'; mimeType = 'audio/wav'; }
+        const filename = `${base}.片段_${_faFormatTimestamp(s)}-${_faFormatTimestamp(e)}.${ext}`;
+        const audioFileId = await this.fileCache.put(filename, mimeType, blob, 'uploaded');
+        return { ok: true, audio_file_id: audioFileId, filename, startSeconds: s, endSeconds: e, durationSeconds: e - s, sampleRate: sr, channels: ch, sizeBytes: blob.size };
+    }
+
     // tw_stock_db客製: 2026-09-11——把「字幕來源」(subtitle參數，可以是
     // .srt/逐字稿檔的file_id或檔名，或留空)解析成segments。留空時自動先跑
     // transcribe_media轉一份。回傳{ok, segments, autoTranscribed, error}。
@@ -11310,6 +11617,157 @@ ${fnData.code}
             },
             async close() { try { await iterator.return(); } catch (_) {} },
         };
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求——「轉成gif」（media-to-animated-gif）。
+    // 瀏覽器沒有原生API能編碼動態GIF，用gifenc（純JS、零相依）逐幀量化
+    // 調色盤+寫入。畫面來源跟配音小幫手/compose_video同一套（Mediabunny
+    // CanvasSink循序解碼+_createVideoFrameCursor，不用<video>+seek），只是
+    // 輸出目標從MP4換成GIF。GIF檔案大小對幀率/尺寸極敏感，預設fps=10、
+    // 最大寬度480px（可由呼叫端調整），避免使用者沒指定時產生出動輒幾十MB
+    // 的GIF。
+    async _convertVideoToAnimatedGif(record, opts = {}) {
+        let MB, input, track;
+        try {
+            ({ MB, input, track } = await this._getMediabunnyVideoTrack(record.blob));
+        } catch (err) {
+            return { ok: false, error: '無法讀取影片畫面：' + String(err.message || err) };
+        }
+        let totalDur = 0;
+        try { totalDur = await input.computeDuration(); } catch (_) {}
+        const start = Math.max(0, Number.isFinite(opts.start) ? opts.start : 0);
+        const end = Number.isFinite(opts.end) && opts.end > start ? opts.end : (totalDur > start ? totalDur : start + 5);
+        if (totalDur > 0 && start >= totalDur) return { ok: false, error: `開始時間（${start}秒）超過影片總長（${totalDur.toFixed(2)}秒）` };
+        const fps = Math.max(1, Math.min(30, Number.isFinite(opts.fps) ? opts.fps : 10));
+        const maxWidth = Math.max(64, Math.min(960, Number.isFinite(opts.maxWidth) ? opts.maxWidth : 480));
+        const srcW = track.displayWidth || maxWidth, srcH = track.displayHeight || maxWidth;
+        const width = Math.min(maxWidth, srcW);
+        const height = Math.max(1, Math.round(srcH * (width / srcW)));
+        let gifencMod;
+        try {
+            gifencMod = await this._ensureGifencLoaded();
+        } catch (err) {
+            try { input.dispose && input.dispose(); } catch (_) {}
+            return { ok: false, error: String(err.message || err) };
+        }
+        const { GIFEncoder, quantize, applyPalette } = gifencMod;
+        const gif = GIFEncoder();
+        const sink = new MB.CanvasSink(track, { width, height, fit: 'fill' });
+        const cursor = this._createVideoFrameCursor(sink);
+        const totalFrames = Math.max(1, Math.round((end - start) * fps));
+        const delayMs = Math.round(1000 / fps);
+        let framesWritten = 0;
+        try {
+            for (let i = 0; i < totalFrames; i++) {
+                const t = start + i / fps;
+                const frame = await cursor.advanceTo(t);
+                if (!frame) break; // 影片在這個時間點之前就已經播完
+                const ctx2d = frame.canvas.getContext('2d');
+                const { data } = ctx2d.getImageData(0, 0, width, height);
+                const palette = quantize(data, 256);
+                const index = applyPalette(data, palette);
+                gif.writeFrame(index, width, height, { palette, delay: delayMs });
+                framesWritten++;
+                if (opts.onProgress && (i === totalFrames - 1 || i % Math.max(1, Math.round(totalFrames / 20)) === 0)) {
+                    opts.onProgress(`轉換GIF… ${Math.round(((i + 1) / totalFrames) * 100)}%（${i + 1}/${totalFrames}幀）`);
+                }
+            }
+        } finally {
+            await cursor.close();
+            try { input.dispose && input.dispose(); } catch (_) {}
+        }
+        if (!framesWritten) return { ok: false, error: '沒有擷取到任何畫面（時間範圍可能超出影片實際長度）' };
+        gif.finish();
+        const bytes = gif.bytes();
+        const blob = new Blob([bytes], { type: 'image/gif' });
+        const base = String(record.filename || 'video').replace(/\.[^.]+$/, '');
+        const filename = `${base}.gif`;
+        const gifFileId = await this.fileCache.put(filename, 'image/gif', blob, 'uploaded');
+        return { ok: true, gif_file_id: gifFileId, filename, frames: framesWritten, width, height, fps, startSeconds: start, endSeconds: end, sizeBytes: blob.size };
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求——「video轉成yaml描述的動畫，
+    // 可能裡面很多svg或jpg」（media-to-animation）：把影片轉成這個app既有
+    // 的2D動畫YAML格式（見TWODANIM_SHAPE_TYPES/_validate2DAnimationYaml），
+    // 不是另外發明一套新格式。做法：從影片依固定間隔（frame_interval秒，
+    // 預設0.5秒＝2fps，動畫YAML內嵌base64圖片、間隔太密會讓檔案暴增）擷取
+    // 關鍵影格轉成JPEG data URL，每個影格各自建一個type:'image'的shape、
+    // 疊在同一個座標，靠animation.type:'keyframes'對opacity做「瞬間切換」
+    // （這一幀的時間窗opacity=1、其餘時間opacity=0），達成逐格播放的flipbook
+    // 效果——這是2D動畫YAML既有schema唯一支援「內容隨時間改變」的動畫類型
+    // （keyframes只能內插position/rotation/scale/opacity，不能切換src），
+    // 不需要修改渲染器就能播放。使用者原話提到「可能裡面很多svg」，但這個
+    // schema的image shape的src欄位本身就是純字串（data URL或http(s)網址），
+    // 沒有限制一定要是點陣圖——如果之後需要向量化，可以另外接圖片轉SVG
+    // 的流程再把src換成image/svg+xml的data URL，shape本身的欄位不用改；
+    // 這一版先用JPEG（向量化準確度/成本不是這次要解決的問題）。
+    async _convertVideoToFlipbookAnimation(record, opts = {}) {
+        let MB, input, track;
+        try {
+            ({ MB, input, track } = await this._getMediabunnyVideoTrack(record.blob));
+        } catch (err) {
+            return { ok: false, error: '無法讀取影片畫面：' + String(err.message || err) };
+        }
+        let totalDur = 0;
+        try { totalDur = await input.computeDuration(); } catch (_) {}
+        const start = Math.max(0, Number.isFinite(opts.start) ? opts.start : 0);
+        const end = Number.isFinite(opts.end) && opts.end > start ? opts.end : (totalDur > start ? totalDur : start + 5);
+        if (totalDur > 0 && start >= totalDur) { try { input.dispose && input.dispose(); } catch (_) {} return { ok: false, error: `開始時間（${start}秒）超過影片總長（${totalDur.toFixed(2)}秒）` }; }
+        const interval = Math.max(0.1, Math.min(5, Number.isFinite(opts.frameInterval) ? opts.frameInterval : 0.5));
+        const maxWidth = Math.max(64, Math.min(640, Number.isFinite(opts.maxWidth) ? opts.maxWidth : 320));
+        const maxFrames = Math.max(2, Math.min(120, Number.isFinite(opts.maxFrames) ? opts.maxFrames : 60)); // 每幀都是內嵌base64，張數上限避免YAML暴增到幾十MB
+        const srcW = track.displayWidth || maxWidth, srcH = track.displayHeight || maxWidth;
+        const width = Math.min(maxWidth, srcW);
+        const height = Math.max(1, Math.round(srcH * (width / srcW)));
+        const timestamps = [];
+        for (let t = start; t < end && timestamps.length < maxFrames; t += interval) timestamps.push(t);
+        if (!timestamps.length) timestamps.push(start);
+        const sink = new MB.CanvasSink(track, { width, height, fit: 'fill' });
+        const cursor = this._createVideoFrameCursor(sink);
+        const frames = [];
+        try {
+            for (let i = 0; i < timestamps.length; i++) {
+                const frame = await cursor.advanceTo(timestamps[i]);
+                if (!frame) break;
+                const blob = await this._canvasElementToBlob(frame.canvas, 'image/jpeg', 0.72);
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result || ''));
+                    reader.onerror = () => reject(reader.error || new Error('讀取影格失敗'));
+                    reader.readAsDataURL(blob);
+                });
+                frames.push({ t: timestamps[i] - start, dataUrl });
+                if (opts.onProgress) opts.onProgress(`擷取影格… ${i + 1}/${timestamps.length}`);
+            }
+        } finally {
+            await cursor.close();
+            try { input.dispose && input.dispose(); } catch (_) {}
+        }
+        if (!frames.length) return { ok: false, error: '沒有擷取到任何畫面（時間範圍可能超出影片實際長度）' };
+        const totalDurLocal = Math.max(frames[frames.length - 1].t + interval, interval);
+        const EPS = Math.min(0.05, interval * 0.1);
+        const shapes = frames.map((f, i) => {
+            const isLast = i === frames.length - 1;
+            const winStart = f.t, winEnd = isLast ? totalDurLocal : frames[i + 1].t;
+            const kfs = [{ t: 0, opacity: i === 0 ? 1 : 0 }];
+            if (winStart > 0) kfs.push({ t: Math.max(0, winStart - EPS), opacity: 0 }, { t: winStart, opacity: 1 });
+            // 最後一格不淡出（不循環時維持顯示在最後一幀，不是黑畫面）；
+            // 其餘影格在winEnd淡出，讓下一格接手顯示。
+            if (isLast) kfs.push({ t: winEnd, opacity: 1 });
+            else kfs.push({ t: Math.max(winStart, winEnd - EPS), opacity: 1 }, { t: winEnd, opacity: 0 });
+            return {
+                id: `frame_${i}`, type: 'image', src: f.dataUrl, width, height,
+                position: [0, 0], opacity: i === 0 ? 1 : 0,
+                animation: { type: 'keyframes', loop: !!opts.loop, keyframes: kfs },
+            };
+        });
+        const anim = { title: String(record.filename || '影片動畫'), width, height, background: '#000000', duration: totalDurLocal, shapes };
+        await this._ensureJsYamlLoaded();
+        const yamlText = jsyaml.dump(anim, { lineWidth: -1 });
+        const base = String(record.filename || 'video').replace(/\.[^.]+$/, '');
+        const filename = `${base}.2danim.yaml`;
+        const yamlFileId = await this.fileCache.put(filename, 'application/x-yaml', new Blob([yamlText], { type: 'application/x-yaml' }), 'uploaded');
+        return { ok: true, animation_file_id: yamlFileId, filename, frames: frames.length, width, height, frameInterval: interval, durationSeconds: totalDurLocal, note: '每個影格是內嵌base64 JPEG的image shape，用keyframes動畫的opacity瞬間切換達成逐格播放（2D動畫YAML目前不支援直接內插切換src）；可以用/import-2d-animation-attachment或parse_uploaded_file+render_2d_animation播放/檢視這份YAML。' };
     }
 
     // 建立配音小幫手：頁面(segments)來源有兩種——(1) explicitRanges：使用者
@@ -23561,6 +24019,104 @@ ${existingNodeSummaries}
         await this._deliverExistingCacheFile(
             result.video_file_id,
             `📎 已燒好字幕：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）${result.autoTranscribed ? '　字幕來自自動轉逐字稿' : ''}`);
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求新增的4個media指令，都沿用既有
+    // /media-*指令共同的骨架（progress widget＋_resolveUploadedFileRecord
+    // 找來源檔案＋呼叫核心方法＋_deliverExistingCacheFile交付結果），時間
+    // 範圍token解析沿用_parseDubRangeToken（跟/media-dub-video同一套
+    // "開始-結束"格式，例如1:20-1:45）。
+
+    // /media-extract-clip-range [<影片id或檔名>] <開始>-<結束>
+    async _handleMediaExtractClipRangeCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let range = null;
+        if (tokens.length && (range = this._parseDubRangeToken(tokens[tokens.length - 1]))) tokens.pop();
+        if (!range) { this._log('⚠️ /media-extract-clip-range：請提供時間範圍，例如 /media-extract-clip-range 1:20-1:45'); return; }
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
+        if (!record) { this._log(fileArg ? `⚠️ /media-extract-clip-range：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-extract-clip-range：目前沒有附加、也沒有最近上傳過的影片'); return; }
+        this.messages.push({ role: 'user', content: `✂️ 擷取片段（${_faFormatTimestamp(range.start)}-${_faFormatTimestamp(range.end)}）：${record.filename}` });
+        const prog = this._createProgressWidget(`擷取片段：${record.filename}`);
+        prog.update({ status: '裁切中（WebCodecs）…' });
+        let result;
+        try { result = await this._extractClipRange(record, range.start, range.end); }
+        catch (err) { result = { ok: false, error: String(err && err.message || err) }; }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB`);
+        await this._deliverExistingCacheFile(result.video_file_id, `📎 已擷取片段：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+    }
+
+    // /media-extract-clip-range-audio [<影片id或檔名>] <開始>-<結束>
+    async _handleMediaExtractClipRangeAudioCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let range = null;
+        if (tokens.length && (range = this._parseDubRangeToken(tokens[tokens.length - 1]))) tokens.pop();
+        if (!range) { this._log('⚠️ /media-extract-clip-range-audio：請提供時間範圍，例如 /media-extract-clip-range-audio 1:20-1:45'); return; }
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
+        if (!record) { this._log(fileArg ? `⚠️ /media-extract-clip-range-audio：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-extract-clip-range-audio：目前沒有附加、也沒有最近上傳過的影片/音檔'); return; }
+        this.messages.push({ role: 'user', content: `✂️🔊 擷取聲音片段（${_faFormatTimestamp(range.start)}-${_faFormatTimestamp(range.end)}）：${record.filename}` });
+        const prog = this._createProgressWidget(`擷取聲音片段：${record.filename}`);
+        prog.update({ status: '解碼音軌中…' });
+        let result;
+        try { result = await this._extractAudioClipRange(record, range.start, range.end); }
+        catch (err) { result = { ok: false, error: String(err && err.message || err) }; }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.durationSeconds.toFixed(1)}s，${(result.sizeBytes / 1024).toFixed(0)}KB`);
+        await this._deliverExistingCacheFile(result.audio_file_id, `📎 已擷取聲音片段：${result.filename}（${(result.sizeBytes / 1024).toFixed(0)}KB）`);
+    }
+
+    // /media-to-animated-gif [<影片id或檔名>] [<開始>-<結束>] [fps]
+    async _handleMediaToAnimatedGifCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let fps = null;
+        if (tokens.length && /^\d+(\.\d+)?$/.test(tokens[tokens.length - 1]) && Number(tokens[tokens.length - 1]) <= 30) {
+            fps = Number(tokens.pop());
+        }
+        let range = null;
+        if (tokens.length && (range = this._parseDubRangeToken(tokens[tokens.length - 1]))) tokens.pop();
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
+        if (!record) { this._log(fileArg ? `⚠️ /media-to-animated-gif：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-to-animated-gif：目前沒有附加、也沒有最近上傳過的影片'); return; }
+        this.messages.push({ role: 'user', content: `🎞️ 轉GIF${range ? `（${_faFormatTimestamp(range.start)}-${_faFormatTimestamp(range.end)}）` : ''}：${record.filename}` });
+        const prog = this._createProgressWidget(`轉GIF：${record.filename}`);
+        prog.update({ status: '讀取影片畫面…' });
+        let result;
+        try {
+            result = await this._convertVideoToAnimatedGif(record, { start: range ? range.start : undefined, end: range ? range.end : undefined, fps: fps || undefined, onProgress: (m) => prog.update({ status: m }) });
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.frames} 幀，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB`);
+        await this._deliverExistingCacheFile(result.gif_file_id, `📎 已轉成GIF：${result.filename}（${result.width}x${result.height}，${result.fps}fps，${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+    }
+
+    // /media-to-animation [<影片id或檔名>] [<開始>-<結束>] [影格間隔秒]
+    async _handleMediaToAnimationCommand(argsText) {
+        const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        let interval = null;
+        if (tokens.length && /^\d+(\.\d+)?$/.test(tokens[tokens.length - 1]) && Number(tokens[tokens.length - 1]) <= 5) {
+            interval = Number(tokens.pop());
+        }
+        let range = null;
+        if (tokens.length && (range = this._parseDubRangeToken(tokens[tokens.length - 1]))) tokens.pop();
+        const fileArg = tokens.join(' ');
+        const record = await this._resolveUploadedFileRecord(fileArg, { consumePendingAttachment: true, preferAv: true });
+        if (!record) { this._log(fileArg ? `⚠️ /media-to-animation：找不到符合「${fileArg}」的已上傳檔案` : '⚠️ /media-to-animation：目前沒有附加、也沒有最近上傳過的影片'); return; }
+        this.messages.push({ role: 'user', content: `🖼️ 轉2D動畫YAML${range ? `（${_faFormatTimestamp(range.start)}-${_faFormatTimestamp(range.end)}）` : ''}：${record.filename}` });
+        const prog = this._createProgressWidget(`轉2D動畫：${record.filename}`);
+        prog.update({ status: '讀取影片畫面…' });
+        let result;
+        try {
+            result = await this._convertVideoToFlipbookAnimation(record, { start: range ? range.start : undefined, end: range ? range.end : undefined, frameInterval: interval || undefined, onProgress: (m) => prog.update({ status: m }) });
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：${result.frames} 個影格`);
+        await this._deliverExistingCacheFile(result.animation_file_id, `📎 已轉成2D動畫YAML：${result.filename}（${result.frames}個影格，${result.durationSeconds.toFixed(1)}s）。可以用 /import-2d-animation-attachment 直接匯入播放。`);
     }
 
     // /media-text-to-speech <文字…> [聲音代號]
