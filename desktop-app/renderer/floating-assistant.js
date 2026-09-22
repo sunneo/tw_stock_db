@@ -7332,9 +7332,54 @@ ${fnData.code}
             { tab_id: tabIdProp, direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom', 'left', 'right'] }, amount: { type: 'number' }, selector: { type: 'string' } }, []);
         bcTool('browser_screenshot', 'screenshot', '對分頁截圖（畫面會直接顯示給使用者；你這邊只拿到尺寸與標題，看不到像素，所以要看頁面內容請用browser_get_page_text / browser_get_elements）。full_page:true截整頁（最高8000px）。',
             { tab_id: tabIdProp, full_page: { type: 'boolean' }, quality: { type: 'integer' } }, [], 45000);
-        bcTool('browser_get_page_text', 'get_page_text', '取得分頁的可見文字內容（innerText），含目前捲動位置。', { tab_id: tabIdProp, max_chars: { type: 'integer' } }, []);
-        bcTool('browser_get_page_structure', 'get_page_structure', '以結構化方式讀取分頁內容（讀網頁的首選）：回傳標題階層(headings)、Markdown格式的正文(markdown，含標題/清單/表格/連結)、表格資料(tables，含欄位名稱與列)、連結清單(links)、表單欄位(forms)。自動避開導覽列/頁尾等雜訊。max_chars預設15000。',
-            { tab_id: tabIdProp, max_chars: { type: 'integer' } }, []);
+        // tw_stock_db客製: 2026-09-22使用者要求——原本這兩個工具是「一次讀完
+        // +max_chars硬截斷」，長文章讀不完也接不下去。改成跟fap_read_file/
+        // parse_uploaded_file同一套分頁契約（offset/start_line/max_chars/
+        // max_lines，回傳has_more/next_offset），實際分頁邏輯在擴充功能端
+        // 的pageText()（web/browser-control-extension/background.js）。
+        const pageParamsProps = {
+            offset: { type: 'integer', description: '選填：從第幾個字元開始讀（分頁用，預設0）' },
+            max_chars: { type: 'integer', description: '選填：這次最多讀幾個字元（預設12000）' },
+            start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
+            max_lines: { type: 'integer', description: '選填：這次最多讀幾行' },
+        };
+        bcTool('browser_get_page_text', 'get_page_text', '取得分頁的可見文字內容（innerText），含目前捲動位置。**分頁讀取**：回傳has_more:true代表還沒讀完，用offset（或start_line）繼續讀，長文章要分頁讀完整份，不要只看第一段就下結論。',
+            Object.assign({ tab_id: tabIdProp }, pageParamsProps), []);
+        // tw_stock_db客製: 2026-09-22使用者要求「圖文穿插」——原本圖片只會
+        // 收斂成markdown裡的"[圖: alt]"文字，圖片實際內容完全看不到。這裡
+        // 不用通用的bcTool（純轉發），改成自訂callback：先照常呼叫
+        // get_page_structure拿到images清單（擴充功能端新增的欄位，見
+        // background.js），interpret_images:true時再逐張呼叫
+        // interpret_image用的同一套_interpretImageWithVisionModel補上
+        // description欄位——沒有可用的vision model、或某張圖片解讀失敗，
+        // 該張圖片就只留description_error，不影響其他圖片/整體結果。
+        registerOptional('browser_get_page_structure',
+            '以結構化方式讀取分頁內容（讀網頁的首選）：回傳標題階層(headings)、Markdown格式的正文(markdown，含標題/清單/表格/連結)、表格資料(tables，含欄位名稱與列)、連結清單(links)、圖片清單(images，含src/alt)、表單欄位(forms)。自動避開導覽列/頁尾等雜訊。**分頁讀取**：markdown欄位回傳has_more:true代表還沒讀完，用offset（或start_line）繼續讀，長文章要分頁讀完整份。**圖文穿插**：interpret_images:true時，會對前幾張圖片（interpret_images_count，預設5、最多10）自動呼叫vision model，把解讀結果填進images[].description（沒有配置支援讀圖的model、或該張圖片解讀失敗會是images[].description_error，不影響其他張）；這會增加額外的網路請求/延遲，圖片不是頁面重點時不要開。',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                let result;
+                try { result = this._bcShapeResult('get_page_structure', await this._bcCall('get_page_structure', parsed, 30000)); }
+                catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+                if (parsed.interpret_images && result && Array.isArray(result.images) && result.images.length) {
+                    const n = Math.max(1, Math.min(10, Number(parsed.interpret_images_count) || 5));
+                    for (const img of result.images.slice(0, n)) {
+                        try {
+                            const { dataUrl } = await this._resolveImageInputForInterpretation({ imageUrl: img.src });
+                            const vres = await this._interpretImageWithVisionModel(dataUrl, img.alt ? `這張圖片的alt文字是「${img.alt}」，請描述圖片實際內容（如果圖片裡有文字，也請列出來）。` : undefined);
+                            img.description = vres.description;
+                        } catch (err) {
+                            img.description_error = String(err.message || err);
+                        }
+                    }
+                }
+                return JSON.stringify(result);
+            },
+            { type: 'object', properties: Object.assign({ tab_id: tabIdProp }, pageParamsProps, {
+                interpret_images: { type: 'boolean', description: '選填：true時對前幾張圖片自動呼叫vision model補上description（見上方工具說明）' },
+                interpret_images_count: { type: 'integer', description: '選填：搭配interpret_images，要解讀前幾張圖片，預設5、最多10' },
+            }), required: [], additionalProperties: false }
+        );
         bcTool('browser_get_elements', 'get_elements', '列出分頁上可互動的元素（連結、按鈕、輸入框…）與其中心座標x,y，用來決定browser_mouse要點哪裡。預設只列目前可視區內的元素，viewport_only:false列全頁。',
             { tab_id: tabIdProp, max: { type: 'integer' }, viewport_only: { type: 'boolean' } }, []);
         bcTool('browser_mouse', 'mouse', '控制滑鼠（真實輸入事件）。action: click/double_click/right_click/move/wheel/drag/down/up。x,y是分頁可視區的像素座標（來自browser_get_elements）。drag需要to_x,to_y；wheel用delta_y。',

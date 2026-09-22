@@ -81,6 +81,48 @@ async function dbg(tabId) {
 }
 const send = (tabId, method, params) => chrome.debugger.sendCommand({ tabId }, method, params || {});
 
+// tw_stock_db客製: 2026-09-22使用者要求——瀏覽器讀取（get_page_text/
+// get_page_structure）原本是「一次讀完＋max_chars硬截斷」，長文章讀到
+// 一半就沒了，也沒辦法接著讀。跟桌面版FAP/附件系統既有的
+// _pageText（floating-assistant.js）同一套分頁契約：offset/start_line
+// 決定起點，max_chars/max_lines決定這次讀多少，回傳has_more/next_offset
+// 讓呼叫端接著讀，盡量停在行尾不切斷一行。這裡獨立重寫一份（不是
+// import那邊的實作）——瀏覽器擴充功能是完全獨立的沙盒環境，沒有辦法
+// require/共用floating-assistant.js的程式碼。
+function pageText(text, o = {}) {
+  text = String(text == null ? "" : text);
+  const total = text.length;
+  const budget = Math.max(500, Math.min(150000, Math.floor(Number(o.maxChars) || 12000)));
+  let start;
+  if (o.startLine != null && Number(o.startLine) >= 1) {
+    const target = Math.floor(Number(o.startLine));
+    let idx = 0, line = 1;
+    while (line < target) { const nl = text.indexOf("\n", idx); if (nl < 0) { idx = total; break; } idx = nl + 1; line++; }
+    start = idx;
+  } else start = Math.max(0, Math.min(total, Math.floor(Number(o.offset) || 0)));
+  let end = Math.min(total, start + budget);
+  if (o.maxLines != null && Number(o.maxLines) > 0) {
+    let cnt = 0, idx = start;
+    const want = Math.floor(Number(o.maxLines));
+    while (idx < total && cnt < want) { const nl = text.indexOf("\n", idx); if (nl < 0) { idx = total; break; } idx = nl + 1; cnt++; }
+    end = Math.min(end, idx);
+  } else if (end < total) {
+    const nl = text.lastIndexOf("\n", end - 1);
+    if (nl > start) end = nl + 1;
+  }
+  const content = text.slice(start, end);
+  const count = (s) => { let n = 0; for (let i = s.indexOf("\n"); i >= 0; i = s.indexOf("\n", i + 1)) n++; return n; };
+  const startLineNo = count(text.slice(0, start)) + 1;
+  const endLineNo = startLineNo + count(content) - (content.endsWith("\n") ? 1 : 0);
+  const hasMore = end < total;
+  return {
+    text: content, offset: start, returned_chars: content.length, total_chars: total,
+    start_line: startLineNo, end_line: Math.max(startLineNo, endLineNo),
+    has_more: hasMore, next_offset: hasMore ? end : null,
+    page_hint: hasMore ? `還沒讀完（${end}/${total}字元）：用offset=${end}繼續讀，長文章要分頁讀完整份，不要只看第一段就下結論。` : undefined,
+  };
+}
+
 // tw_stock_db客製: 2026-09-22——移植到Redmine時實測發現背景分頁（active:false）幾乎每次都收不到
 // 合成滑鼠/鍵盤事件（screenshot/scroll等唯讀操作則不受影響，維持背景可用），所以真的要打字/點擊/
 // 按鍵前一律先把分頁切到前景，等一小段時間讓頁面真正拿到焦點再送CDP指令。
@@ -359,21 +401,29 @@ const commands = {
 
   async get_page_text(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    const max = Math.min(Math.max(Number(a.max_chars) || 12000, 500), 100000);
+    // 頁面內只抓一次「完整」文字（上限50萬字元防止極端病態頁面），真正
+    // 分頁交回background.js做（見上面pageText），不在注入的頁面腳本裡
+    // 重複實作一份分頁邏輯。
     const [r] = await chrome.scripting.executeScript({
-      target: { tabId }, args: [max],
-      func: (limit) => {
+      target: { tabId },
+      func: () => {
         const t = (document.body && document.body.innerText) || "";
-        return { url: location.href, title: document.title, text: t.slice(0, limit), total_chars: t.length, truncated: t.length > limit, scroll_y: Math.round(window.scrollY), scroll_height: document.documentElement.scrollHeight, viewport_height: window.innerHeight };
+        return { url: location.href, title: document.title, full_text: t.slice(0, 500000), scroll_y: Math.round(window.scrollY), scroll_height: document.documentElement.scrollHeight, viewport_height: window.innerHeight };
       },
     });
     if (!r || !r.result) throw new Error("無法讀取此頁面（可能是受保護頁面）");
-    return r.result;
+    const { full_text, ...meta } = r.result;
+    const page = pageText(full_text, { offset: a.offset, maxChars: a.max_chars, startLine: a.start_line, maxLines: a.max_lines });
+    return Object.assign(meta, { text: page.text, offset: page.offset, returned_chars: page.returned_chars, total_chars: page.total_chars, start_line: page.start_line, end_line: page.end_line, has_more: page.has_more, next_offset: page.next_offset, page_hint: page.page_hint });
   },
 
   async get_page_structure(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    const limit = Math.min(Math.max(Number(a.max_chars) || 15000, 1000), 100000);
+    // tw_stock_db客製: 2026-09-22使用者要求——原本這裡的limit是「這次呼叫
+    // 最多回傳幾個字元」，用來在頁面腳本裡邊組字串邊截斷；改成分頁模式後
+    // 頁面腳本要先組出「完整」markdown（上限30萬字元防病態頁面），實際
+    // 分頁交回background.js的pageText統一處理（跟get_page_text同一套）。
+    const limit = 300000;
     const [r] = await chrome.scripting.executeScript({
       target: { tabId }, args: [limit],
       func: (limit) => {
@@ -456,12 +506,30 @@ const commands = {
             return o;
           }),
         }));
+        // tw_stock_db客製: 2026-09-22使用者要求——原本圖片只在inline()裡
+        // 收斂成"[圖: alt]"文字，圖片本身的URL整個遺失，沒辦法接著讓vision
+        // model解讀圖片內容。額外收集頁面上實際看得到的圖片URL清單（跟
+        // links同一種篩選邏輯：可視、去重、有上限），呼叫端（floating-
+        // assistant.js的browser_get_page_structure工具）如果想要圖文穿插
+        // 解讀，就是靠這個images清單逐一叫interpret_image。
+        const seenImg = new Set(), images = [];
+        for (const img of root.querySelectorAll("img[src]")) {
+          const src = img.currentSrc || img.src || "";
+          if (!/^https?:/i.test(src) || seenImg.has(src) || !visible(img)) continue;
+          const r2 = img.getBoundingClientRect();
+          if (r2.width < 32 || r2.height < 32) continue; // 濾掉小圖示/追蹤像素
+          seenImg.add(src);
+          images.push({ src: src.slice(0, 300), alt: clean(img.alt).slice(0, 150) });
+          if (images.length >= 30) break;
+        }
         const md = document.querySelector('meta[name="description"]');
-        return { url: location.href, title: document.title, lang: document.documentElement.lang || undefined, description: md ? md.content : undefined, content_root: usingBody ? "body" : root.tagName.toLowerCase(), skipped_regions: skippedRegions.slice(0, 8), headings: headings.slice(0, 60), markdown: out.trim(), tables: tables.slice(0, 10), links, forms, truncated, scroll_y: Math.round(window.scrollY), scroll_height: document.documentElement.scrollHeight };
+        return { url: location.href, title: document.title, lang: document.documentElement.lang || undefined, description: md ? md.content : undefined, content_root: usingBody ? "body" : root.tagName.toLowerCase(), skipped_regions: skippedRegions.slice(0, 8), headings: headings.slice(0, 60), markdown: out.trim(), tables: tables.slice(0, 10), links, images, forms, scroll_y: Math.round(window.scrollY), scroll_height: document.documentElement.scrollHeight };
       },
     });
     if (!r || !r.result) throw new Error("無法讀取此頁面（可能是受保護頁面）");
-    return r.result;
+    const { markdown, ...rest } = r.result;
+    const page = pageText(markdown, { offset: a.offset, maxChars: a.max_chars, startLine: a.start_line, maxLines: a.max_lines });
+    return Object.assign(rest, { markdown: page.text, offset: page.offset, returned_chars: page.returned_chars, total_chars: page.total_chars, start_line: page.start_line, end_line: page.end_line, has_more: page.has_more, next_offset: page.next_offset, page_hint: page.page_hint });
   },
 
   async get_elements(a, ctx) {
