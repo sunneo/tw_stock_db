@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     writeFile: (path, payload) => ipcRenderer.invoke("fa:rawfs:writeFile", { path, ...payload }),
     remove: (path, recursive) => ipcRenderer.invoke("fa:rawfs:remove", { path, recursive }),
     find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
+    listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
   },
   exec: {
     getSettings: () => ipcRenderer.invoke("fa:exec:getSettings"),

@@ -576,6 +576,26 @@ ipcMain.handle("fa:rawfs:find", async (_evt, { path: p, pattern, maxDepth, maxRe
   return out;
 });
 
+// 給「終端機檔案傳輸」GUI的Computer分頁用——列出可以當瀏覽起點的磁碟機/根目錄。
+// win32下逐一嘗試A-Z槽（fs.stat失敗代表槽不存在，安靜跳過），非win32直接回傳"/"。
+ipcMain.handle("fa:rawfs:listDrives", async () => {
+  if (process.platform === "win32") {
+    const drives = [];
+    for (let code = 65; code <= 90; code++) {
+      const letter = String.fromCharCode(code);
+      const root = `${letter}:\\`;
+      try {
+        await fs.stat(root);
+        drives.push({ path: root, label: `${letter}:` });
+      } catch (_) {
+        // 槽不存在，略過
+      }
+    }
+    return drives;
+  }
+  return [{ path: "/", label: "/" }];
+});
+
 // ---------- IPC: 執行本機程式 ----------
 const MAX_EXEC_OUTPUT_BYTES = 2 * 1024 * 1024; // 2MB輸出上限，避免暴走程式塞爆記憶體
 const EXEC_TIMEOUT_MS = 120000; // 2分鐘逾時，避免卡死的程式讓工具呼叫永遠不回應

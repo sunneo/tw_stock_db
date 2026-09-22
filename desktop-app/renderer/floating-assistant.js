@@ -17963,6 +17963,376 @@ ${sourceTool.handlerScript}
         return { destination: 'real_file', path: r.path, sizeBytes: r.sizeBytes };
     }
 
+    // tw_stock_db客製: 2026-09-23使用者要求——終端機widget旁的檔案傳輸GUI，
+    // 體驗比照FileZilla：左邊是外部來源（可切換[當下聊天]/[FAP]/
+    // [Working Directory]/[Computer]，後兩個只有桌面版window.desktopAPI
+    // 存在時才顯示），右邊固定是這個terminal session的沙盒檔案系統
+    // （從/開始，完整讀寫刪權限，不做root範圍限制）。複製兩個方向都直接
+    // 重用terminal_cp_to/terminal_cp_from背後那套
+    // _resolveTerminalCopySource/_writeTerminalCopyDestination（src/dst都是
+    // 字串：fap:.../真實絕對路徑/附件id/空字串代表聊天下載）——GUI只是把
+    // 「使用者目前瀏覽到哪、勾選了誰」轉成這些函式已經認得的字串格式，
+    // 不重新發明一套複製邏輯。刻意只支援檔案（不支援資料夾）多選複製/
+    // 刪除——遞迴複製/刪除資料夾的邊界案例（FAP的removeEntry({recursive})
+    // 、沙盒fsStore有沒有rmdirSync、真實磁碟的巢狀覆蓋問題）超出這次需求
+    // 範圍，資料夾在這個dialog裡只能點進去瀏覽，不能勾選。
+    _appendTerminalTransferButton(container, getSessionFn) {
+        if (!container) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.title = '檔案傳輸（在聊天/FAP/工作目錄/電腦 與 這個終端機之間互傳檔案）';
+        btn.textContent = '🔀';
+        btn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; line-height:1.4;';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const session = getSessionFn();
+            if (!session) return;
+            this._openTerminalTransferDialog(session);
+        });
+        container.appendChild(btn);
+    }
+
+    _ttFormatSize(bytes) {
+        const n = Number(bytes) || 0;
+        if (n < 1024) return `${n}B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+        return `${(n / 1024 / 1024).toFixed(1)}MB`;
+    }
+
+    async _openTerminalTransferDialog(session) {
+        const hasDesktop = !!(window.desktopAPI && window.desktopAPI.rawfs && window.desktopAPI.workspace);
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); }
+        catch (err) { this._pushAssistantMessage(`❌ 終端機沙盒尚未就緒：${String(err.message || err)}`, null); return; }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+
+        const state = {
+            leftTab: 'chat',
+            leftFapLabel: null, leftFapPath: [],
+            leftAbsRoot: null, leftAbsPath: null, // workdir/computer共用；computer的leftAbsRoot為null代表停在「選磁碟機」畫面
+            leftSelected: new Set(),
+            rightPath: '/',
+            rightSelected: new Set(),
+        };
+        const joinAbsPath = (base, name) => `${String(base || '').replace(/[\\/]+$/, '')}/${name}`;
+
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#fff; border-radius:10px; width:min(1100px,96vw); height:min(680px,90vh); display:flex; flex-direction:column; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,0.4);';
+        box.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid #e0e0e0; flex:none;">
+                <div style="font-weight:bold; font-size:14px; color:#222;">📁 檔案傳輸 — 終端機「${this._escapeHtml(session.name)}」</div>
+                <button type="button" class="ai-tt-close" style="border:none; background:transparent; font-size:18px; cursor:pointer; line-height:1; color:#333;">✕</button>
+            </div>
+            <div style="display:flex; flex:1; min-height:0;">
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid #e0e0e0;">
+                    <div class="ai-tt-left-tabs" style="display:flex; gap:2px; padding:6px 8px 0; flex:none;"></div>
+                    <div class="ai-tt-left-crumbs" style="padding:6px 10px; font-size:11px; color:#666; border-bottom:1px solid #eee; flex:none; overflow-x:auto; white-space:nowrap;"></div>
+                    <div class="ai-tt-left-list" style="flex:1; overflow:auto; padding:4px; color:#222;"></div>
+                    <div style="padding:6px 10px; border-top:1px solid #eee; flex:none;">
+                        <button type="button" class="ai-tt-left-delete" style="font-size:12px; padding:4px 10px; border:1px solid #d33; color:#d33; background:#fff; border-radius:6px; cursor:pointer;">🗑 刪除選取</button>
+                    </div>
+                </div>
+                <div style="width:64px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;">
+                    <button type="button" class="ai-tt-to-right" title="複製到終端機" style="font-size:20px; width:44px; height:36px; border-radius:6px; border:1px solid #ccc; background:#f7f7f7; cursor:pointer;">→</button>
+                    <button type="button" class="ai-tt-to-left" title="複製到左邊" style="font-size:20px; width:44px; height:36px; border-radius:6px; border:1px solid #ccc; background:#f7f7f7; cursor:pointer;">←</button>
+                </div>
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+                    <div style="padding:6px 8px 0; font-size:12px; font-weight:bold; color:#76b900; flex:none;">🖥️ 終端機（/ 開始，完整權限）</div>
+                    <div class="ai-tt-right-crumbs" style="padding:6px 10px; font-size:11px; color:#666; border-bottom:1px solid #eee; flex:none; overflow-x:auto; white-space:nowrap;"></div>
+                    <div class="ai-tt-right-list" style="flex:1; overflow:auto; padding:4px; color:#222;"></div>
+                    <div style="padding:6px 10px; border-top:1px solid #eee; flex:none;">
+                        <button type="button" class="ai-tt-right-delete" style="font-size:12px; padding:4px 10px; border:1px solid #d33; color:#d33; background:#fff; border-radius:6px; cursor:pointer;">🗑 刪除選取</button>
+                    </div>
+                </div>
+            </div>
+            <div class="ai-tt-status" style="padding:6px 14px; font-size:12px; color:#888; border-top:1px solid #eee; flex:none; min-height:16px;"></div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        const tabsEl = box.querySelector('.ai-tt-left-tabs');
+        const crumbsEl = box.querySelector('.ai-tt-left-crumbs');
+        const listEl = box.querySelector('.ai-tt-left-list');
+        const rCrumbsEl = box.querySelector('.ai-tt-right-crumbs');
+        const rListEl = box.querySelector('.ai-tt-right-list');
+        const statusEl = box.querySelector('.ai-tt-status');
+        const setStatus = (text, isError) => { statusEl.textContent = text || ''; statusEl.style.color = isError ? '#d33' : '#888'; };
+
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        document.addEventListener('keydown', onKey);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        box.querySelector('.ai-tt-close').addEventListener('click', close);
+
+        const tabs = [
+            { key: 'chat', label: '💬 當下聊天' },
+            { key: 'fap', label: '🔗 FAP' },
+            ...(hasDesktop ? [{ key: 'workdir', label: '📂 Working Directory' }, { key: 'computer', label: '💻 Computer' }] : []),
+        ];
+        const paintTabs = () => {
+            tabsEl.querySelectorAll('.ai-tt-tab').forEach((x) => {
+                const active = x.dataset.key === state.leftTab;
+                x.style.background = active ? '#333' : '#f5f5f5';
+                x.style.color = active ? '#fff' : '#333';
+            });
+        };
+        tabsEl.innerHTML = tabs.map(t => `<button type="button" class="ai-tt-tab" data-key="${t.key}" style="font-size:11px; padding:4px 8px; border:1px solid #ccc; border-radius:6px 6px 0 0; cursor:pointer;">${t.label}</button>`).join('');
+        paintTabs();
+        tabsEl.querySelectorAll('.ai-tt-tab').forEach((b) => {
+            b.addEventListener('click', () => {
+                state.leftTab = b.dataset.key;
+                state.leftFapLabel = null; state.leftFapPath = [];
+                state.leftAbsRoot = null; state.leftAbsPath = null;
+                state.leftSelected.clear();
+                paintTabs();
+                renderLeft();
+            });
+        });
+
+        // ---- 左邊列表：依leftTab分別讀取，回傳統一格式 [{key,name,isDir,isRoot,sizeBytes,sub,rootPath}] ----
+        const listLeftEntries = async () => {
+            if (state.leftTab === 'chat') {
+                const all = await this.fileCache.getAll();
+                all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                return all.map(r => ({ key: r.id, name: r.filename, isDir: false, sizeBytes: r.sizeBytes, sub: r.kind === 'uploaded' ? '📎附件' : '🤖產生' }));
+            }
+            if (state.leftTab === 'fap') {
+                if (!state.leftFapLabel) {
+                    const points = await this._listAllFapAccessPoints();
+                    return points.filter(p => p.permission === 'granted').map(p => ({ key: `__root__${p.label}`, name: p.label, isDir: true, isRoot: true }));
+                }
+                const ref = `fap:${state.leftFapLabel}/${state.leftFapPath.join('/')}`;
+                const result = await this._fapListFiles(ref);
+                return result.entries.map(e => ({ key: e.name, name: e.name, isDir: e.type === 'directory', sizeBytes: e.sizeBytes }));
+            }
+            if (state.leftTab === 'workdir' && state.leftAbsRoot == null) {
+                const ws = await window.desktopAPI.workspace.get();
+                state.leftAbsRoot = ws.folder; state.leftAbsPath = ws.folder;
+            }
+            if (state.leftTab === 'computer' && state.leftAbsRoot == null) {
+                const drives = await window.desktopAPI.rawfs.listDrives();
+                return drives.map(d => ({ key: `__root__${d.path}`, name: d.label, isDir: true, isRoot: true, rootPath: d.path }));
+            }
+            const entries = await window.desktopAPI.rawfs.readdir(state.leftAbsPath);
+            entries.sort((a, b) => (a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : (a.isDirectory ? -1 : 1)));
+            return entries.map(e => ({ key: e.name, name: e.name, isDir: e.isDirectory }));
+        };
+        const listRightEntries = () => {
+            let names = [];
+            try { names = fsStore.readdirSync(state.rightPath); } catch (_) { names = []; }
+            const out = names.map((name) => {
+                const abs = this._terminalResolvePath(state.rightPath, name);
+                let isDir = false, sizeBytes = 0;
+                try { const st = fsStore.statSync(abs); isDir = this._terminalIsDir(fsStore, abs); sizeBytes = st.size; } catch (_) {}
+                return { key: name, name, isDir, sizeBytes, abs };
+            });
+            out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1)));
+            return out;
+        };
+
+        // ---- 麵包屑（左邊依tab、右邊固定用/分隔）----
+        const leftCrumbSegments = () => {
+            if (state.leftTab === 'chat') return [{ label: '📎 附件／產生的檔案' }];
+            if (state.leftTab === 'fap') {
+                const segs = [{ label: '所有FAP', onClick: () => { state.leftFapLabel = null; state.leftFapPath = []; } }];
+                if (state.leftFapLabel) {
+                    segs.push({ label: state.leftFapLabel, onClick: () => { state.leftFapPath = []; } });
+                    state.leftFapPath.forEach((p, i) => segs.push({ label: p, onClick: () => { state.leftFapPath = state.leftFapPath.slice(0, i + 1); } }));
+                }
+                return segs;
+            }
+            const segs = [];
+            if (state.leftTab === 'computer') segs.push({ label: '💻 磁碟機', onClick: () => { state.leftAbsRoot = null; state.leftAbsPath = null; } });
+            if (state.leftAbsRoot) {
+                segs.push({ label: state.leftTab === 'computer' ? state.leftAbsRoot : '工作目錄', onClick: () => { state.leftAbsPath = state.leftAbsRoot; } });
+                const rel = state.leftAbsPath.slice(state.leftAbsRoot.length).replace(/^[\\/]+/, '');
+                const parts = rel ? rel.split(/[\\/]+/).filter(Boolean) : [];
+                let acc = state.leftAbsRoot;
+                parts.forEach((p) => {
+                    acc = joinAbsPath(acc, p);
+                    const fixedAcc = acc;
+                    segs.push({ label: p, onClick: () => { state.leftAbsPath = fixedAcc; } });
+                });
+            }
+            return segs;
+        };
+        const rightCrumbSegments = () => {
+            const parts = state.rightPath.split('/').filter(Boolean);
+            const segs = [{ label: '/', onClick: () => { state.rightPath = '/'; } }];
+            let acc = '';
+            parts.forEach((p) => {
+                acc += `/${p}`;
+                const fixedAcc = acc;
+                segs.push({ label: p, onClick: () => { state.rightPath = fixedAcc; } });
+            });
+            return segs;
+        };
+        const renderCrumbs = (el, segments, onJump) => {
+            el.innerHTML = '';
+            segments.forEach((s, i) => {
+                const span = document.createElement('span');
+                span.textContent = s.label;
+                span.style.cssText = `cursor:${s.onClick ? 'pointer' : 'default'}; color:${i === segments.length - 1 ? '#333' : '#0a5fd6'};`;
+                if (s.onClick) span.addEventListener('click', async () => { s.onClick(); await onJump(); });
+                el.appendChild(span);
+                if (i < segments.length - 1) el.appendChild(document.createTextNode(' / '));
+            });
+        };
+
+        // ---- 列表列（兩邊共用；資料夾只能點進去瀏覽，不給勾選）----
+        const renderRows = (el, entries, selectedSet, onNavigate) => {
+            el.innerHTML = '';
+            if (!entries.length) { el.innerHTML = '<div style="padding:10px; font-size:12px; color:#999;">（空）</div>'; return; }
+            for (const e of entries) {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex; align-items:center; gap:6px; padding:4px 6px; font-size:12px; border-radius:4px; cursor:pointer;';
+                row.addEventListener('mouseenter', () => { row.style.background = '#f0f0f0'; });
+                row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.disabled = !!(e.isDir || e.isRoot);
+                cb.checked = selectedSet.has(e.key);
+                cb.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    if (cb.checked) selectedSet.add(e.key); else selectedSet.delete(e.key);
+                });
+                const icon = document.createElement('span');
+                icon.textContent = e.isDir || e.isRoot ? '📁' : '📄';
+                const name = document.createElement('span');
+                name.style.cssText = 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                name.textContent = e.name + (e.sub ? `（${e.sub}）` : '');
+                const size = document.createElement('span');
+                size.style.cssText = 'color:#999; font-size:11px; flex:none;';
+                size.textContent = e.isDir || e.isRoot ? '' : this._ttFormatSize(e.sizeBytes);
+                row.appendChild(cb); row.appendChild(icon); row.appendChild(name); row.appendChild(size);
+                row.addEventListener('click', () => {
+                    if (e.isDir || e.isRoot) onNavigate(e);
+                    else { cb.checked = !cb.checked; if (cb.checked) selectedSet.add(e.key); else selectedSet.delete(e.key); }
+                });
+                el.appendChild(row);
+            }
+        };
+
+        const renderLeft = async () => {
+            listEl.innerHTML = '<div style="padding:10px; font-size:12px; color:#999;">載入中...</div>';
+            try {
+                const entries = await listLeftEntries();
+                renderCrumbs(crumbsEl, leftCrumbSegments(), renderLeft);
+                renderRows(listEl, entries, state.leftSelected, async (e) => {
+                    if (state.leftTab === 'fap') {
+                        if (e.isRoot) { state.leftFapLabel = e.name; state.leftFapPath = []; }
+                        else state.leftFapPath.push(e.name);
+                    } else if (state.leftTab === 'computer' && e.isRoot) {
+                        state.leftAbsRoot = e.rootPath; state.leftAbsPath = e.rootPath;
+                    } else {
+                        state.leftAbsPath = joinAbsPath(state.leftAbsPath, e.name);
+                    }
+                    await renderLeft();
+                });
+            } catch (err) {
+                listEl.innerHTML = `<div style="padding:10px; font-size:12px; color:#d33;">讀取失敗：${this._escapeHtml(String(err.message || err))}</div>`;
+                renderCrumbs(crumbsEl, leftCrumbSegments(), renderLeft);
+            }
+        };
+        const renderRight = async () => {
+            const entries = listRightEntries();
+            renderCrumbs(rCrumbsEl, rightCrumbSegments(), renderRight);
+            renderRows(rListEl, entries, state.rightSelected, async (e) => {
+                state.rightPath = e.abs;
+                await renderRight();
+            });
+        };
+
+        const currentLeftSrcRef = (entryKey) => {
+            if (state.leftTab === 'chat') return entryKey;
+            if (state.leftTab === 'fap') return `fap:${state.leftFapLabel}/${[...state.leftFapPath, entryKey].join('/')}`;
+            return joinAbsPath(state.leftAbsPath, entryKey);
+        };
+        const currentLeftDestDir = () => {
+            if (state.leftTab === 'fap') return `fap:${state.leftFapLabel}/${state.leftFapPath.join('/')}/`;
+            return `${String(state.leftAbsPath || '').replace(/[\\/]+$/, '')}/`;
+        };
+        const leftDestReady = () => {
+            if (state.leftTab === 'chat') return true;
+            if (state.leftTab === 'fap') return !!state.leftFapLabel;
+            return !!state.leftAbsPath;
+        };
+
+        box.querySelector('.ai-tt-to-right').addEventListener('click', async () => {
+            const items = [...state.leftSelected];
+            if (!items.length) { setStatus('請先在左邊勾選要複製的檔案', true); return; }
+            let done = 0, failed = 0;
+            for (const key of items) {
+                try {
+                    const src = currentLeftSrcRef(key);
+                    const { bytes, filename } = await this._resolveTerminalCopySource(src);
+                    const abs = this._terminalResolvePath(state.rightPath, filename);
+                    this._writeBytesToTerminalFs(fsStore, abs, bytes);
+                    done++;
+                } catch (err) { failed++; setStatus(`「${key}」複製失敗：${String(err.message || err)}`, true); }
+            }
+            state.leftSelected.clear();
+            setStatus(`完成：成功${done}個${failed ? `，失敗${failed}個` : ''}`, !!failed);
+            await renderRight();
+        });
+        box.querySelector('.ai-tt-to-left').addEventListener('click', async () => {
+            const items = [...state.rightSelected];
+            if (!items.length) { setStatus('請先在右邊勾選要複製的檔案', true); return; }
+            if (!leftDestReady()) { setStatus('請先在左邊選好目的地資料夾', true); return; }
+            let done = 0, failed = 0;
+            for (const key of items) {
+                try {
+                    const abs = this._terminalResolvePath(state.rightPath, key);
+                    const bytes = this._terminalSandboxFileBytes(fsStore, abs);
+                    const dst = state.leftTab === 'chat' ? '' : currentLeftDestDir();
+                    await this._writeTerminalCopyDestination(dst, bytes, key, 'application/octet-stream');
+                    done++;
+                } catch (err) { failed++; setStatus(`「${key}」複製失敗：${String(err.message || err)}`, true); }
+            }
+            state.rightSelected.clear();
+            setStatus(`完成：成功${done}個${failed ? `，失敗${failed}個` : ''}`, !!failed);
+            await renderLeft();
+        });
+        box.querySelector('.ai-tt-left-delete').addEventListener('click', async () => {
+            const items = [...state.leftSelected];
+            if (!items.length) { setStatus('請先勾選要刪除的項目', true); return; }
+            if (state.leftTab === 'chat') { setStatus('聊天附件／產生的檔案不支援在這裡刪除', true); return; }
+            if (!confirm(`確定要刪除選取的 ${items.length} 個檔案？此動作無法復原。`)) return;
+            let done = 0, failed = 0;
+            for (const key of items) {
+                try {
+                    if (state.leftTab === 'fap') {
+                        const { dirHandle } = await this._resolveFapDirectory(`fap:${state.leftFapLabel}/${state.leftFapPath.join('/')}`, { mode: 'readwrite' });
+                        await dirHandle.removeEntry(key);
+                    } else {
+                        await window.desktopAPI.rawfs.remove(joinAbsPath(state.leftAbsPath, key), false);
+                    }
+                    done++;
+                } catch (err) { failed++; setStatus(`「${key}」刪除失敗：${String(err.message || err)}`, true); }
+            }
+            state.leftSelected.clear();
+            setStatus(`刪除完成：成功${done}個${failed ? `，失敗${failed}個` : ''}`, !!failed);
+            await renderLeft();
+        });
+        box.querySelector('.ai-tt-right-delete').addEventListener('click', async () => {
+            const items = [...state.rightSelected];
+            if (!items.length) { setStatus('請先勾選要刪除的項目', true); return; }
+            if (!confirm(`確定要刪除選取的 ${items.length} 個檔案？此動作無法復原。`)) return;
+            for (const key of items) {
+                const abs = this._terminalResolvePath(state.rightPath, key);
+                try { fsStore.unlinkSync(abs); } catch (_) {}
+            }
+            state.rightSelected.clear();
+            setStatus(`刪除完成：${items.length}個`);
+            await renderRight();
+        });
+
+        await renderLeft();
+        await renderRight();
+    }
+
     // tw_stock_db客製: 2026-09-18使用者要求——「裡面沒有which…沒有知道
     // 指令的地方」。wasi-sh的busybox applet集合裡沒有`which`這個applet
     // （README的toolbox清單沒列，`command -v`/`type`才是它內建的等價功能），
@@ -28976,6 +29346,12 @@ ${existingNodeSummaries}
                 const text = this._captureTerminalScreenText(session);
                 return text ? { kind: 'terminal', text } : null;
             }, '終端機記錄', []);
+            // tw_stock_db客製: 2026-09-23使用者要求的檔案傳輸GUI按鈕（見
+            // _appendTerminalTransferButton/_openTerminalTransferDialog）——
+            // 跟匯出按鈕同一個lazy-lookup理由：這裡呼叫當下_mountTerminalWidget
+            // 可能還沒建立好session，點擊當下才讀terminalEmbedEl._terminalSession
+            // 一定已經掛載完成。
+            this._appendTerminalTransferButton(wrap.querySelector('.ai-terminal-transfer-slot'), () => terminalEmbedEl._terminalSession);
             this._mountTerminalWidget(terminalEmbedEl, msg._displayTerminal.initialCommand, msg);
             return;
         }
