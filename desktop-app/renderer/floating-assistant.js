@@ -11755,15 +11755,33 @@ ${fnData.code}
         if (!frames.length) return { ok: false, error: '沒有擷取到任何畫面（時間範圍可能超出影片實際長度）' };
         const totalDurLocal = Math.max(frames[frames.length - 1].t + interval, interval);
         const EPS = Math.min(0.05, interval * 0.1);
+        // tw_stock_db客製: 2026-09-22使用者回報（對照他在另一套系統做同樣
+        // 功能時踩過的坑）——原本淡入淡出窗口設計錯誤：frame_i的「淡出」
+        // 排在[winEnd-EPS, winEnd]（winEnd之前），而frame_{i+1}的「淡入」
+        // 排在[winStart-EPS, winStart]＝同一個[winEnd-EPS, winEnd]窗口
+        // （因為winEnd_i===winStart_{i+1}）——兩者在同一個時間窗裡同時只有
+        // 部分opacity，疊加合成時會露出背景色（使用者在Redmine那邊的類似
+        // 實作是黑/白背景，這裡是background:'#000000'，同一種成因）：兩張
+        // 都不透明時，opacity 0.5+0.5會在標準alpha合成下透出25%背景，不是
+        // 乾淨的交叉淡化。
+        // 修法：把每個frame的「淡出」窗口移到winEnd「之後」（[winEnd,
+        // winEnd+EPS]），不是winEnd之前。這樣在[winStart-EPS, winStart]
+        // 這段窗口裡，只有「正在淡入的這一幀」opacity<1，畫面上一幀
+        // （陣列順序在前、繪製在下層）此時仍是opacity=1完全不透明，淡入
+        // 的這一幀疊上去看到的是「上一幀」而不是背景色；到了winStart（＝
+        // 上一幀的winEnd）這一幀準時到達opacity=1完全不透明、把下面所有
+        // 東西整個蓋住，上一幀才開始它自己的「淡出」，但這時已經被蓋住、
+        // 根本看不到，不會有任何背景色外露的瞬間。
         const shapes = frames.map((f, i) => {
             const isLast = i === frames.length - 1;
             const winStart = f.t, winEnd = isLast ? totalDurLocal : frames[i + 1].t;
             const kfs = [{ t: 0, opacity: i === 0 ? 1 : 0 }];
             if (winStart > 0) kfs.push({ t: Math.max(0, winStart - EPS), opacity: 0 }, { t: winStart, opacity: 1 });
             // 最後一格不淡出（不循環時維持顯示在最後一幀，不是黑畫面）；
-            // 其餘影格在winEnd淡出，讓下一格接手顯示。
+            // 其餘影格在winEnd「之後」才淡出（見上方說明），此時已經被
+            // 下一格完全蓋住，不會露出背景色。
             if (isLast) kfs.push({ t: winEnd, opacity: 1 });
-            else kfs.push({ t: Math.max(winStart, winEnd - EPS), opacity: 1 }, { t: winEnd, opacity: 0 });
+            else kfs.push({ t: winEnd, opacity: 1 }, { t: Math.min(totalDurLocal, winEnd + EPS), opacity: 0 });
             return {
                 id: `frame_${i}`, type: 'image', src: f.dataUrl, width, height,
                 position: [0, 0], opacity: i === 0 ? 1 : 0,
@@ -24136,7 +24154,27 @@ ${existingNodeSummaries}
         }
         if (!result.ok) { prog.fail(result.error); return; }
         prog.finish(`完成：${result.frames} 個影格`);
-        await this._deliverExistingCacheFile(result.animation_file_id, `📎 已轉成2D動畫YAML：${result.filename}（${result.frames}個影格，${result.durationSeconds.toFixed(1)}s）。可以用 /import-2d-animation-attachment 直接匯入播放。`);
+        // tw_stock_db客製: 2026-09-22使用者回報——原本用_deliverExistingCacheFile
+        // 只會顯示一個純文字的下載卡片（.yaml不屬於_faClassifyMediaFile認得
+        // 的video/audio/image任何一種，不會掛播放器），跟其他三個/media-*
+        // 指令（extract_clip_range輸出mp4會自動掛video player、
+        // extract_clip_range_audio輸出mp3會自動掛audio player、
+        // to-animated-gif輸出gif本身就是會自動播放的動畫圖片）比起來，
+        // 唯獨這個指令沒有「產出後直接在對話裡看得到效果」。改成跟
+        // /import-2d-animation-attachment同一種做法：讀回YAML文字內容，
+        // 用_buildToolResultMessage包成_displayAnim2DYaml，直接掛真正會
+        // 播放的2D動畫檢視器（連帶自動有下載/匯出成MP4等按鈕，不需要另外
+        // 疊一張下載卡片）。
+        const yamlRecord = await this.fileCache.get(result.animation_file_id);
+        const yamlText = yamlRecord ? await yamlRecord.blob.text() : null;
+        if (yamlText) {
+            const msg = this._buildToolResultMessage('convert_video_to_animation', JSON.stringify({ type: 'anim2d', yaml: yamlText }), {});
+            this.messages.push(msg);
+            this._persistChatHistory();
+            this._renderMessageHistory();
+        } else {
+            await this._deliverExistingCacheFile(result.animation_file_id, `📎 已轉成2D動畫YAML：${result.filename}（${result.frames}個影格，${result.durationSeconds.toFixed(1)}s）`);
+        }
     }
 
     // /media-text-to-speech <文字…> [聲音代號]
