@@ -119,7 +119,11 @@
 
 ## Phase 7：Mermaid互動檢視／圖片縮圖+lightbox／vision model自動路由／瀏覽器分頁讀取／PPTX排版修正／4個影片剪輯指令（2026-09-22）
 
-⚠️ 這個Phase規模較大，且**這次只做了`node --check`語法驗證**，沒有在真實瀏覽器/Electron手動操作驗證（跟前面Phase一貫要求的「真實環境驗證」不同，是這次的例外，需要使用者實際用過才能確認行為正確）。
+- [x] **真實Electron實測補做**：複製`dist/win-unpacked`+把`resources/app.asar`換成當下原始碼（跟既有慣例一樣），用`--remote-debugging-port`+Playwright CDP連線，對著使用者真實設定（含真的LLM API金鑰）逐一實測，抓到並修正兩個真實bug：
+  - **PPTX圖片等比例縮放實際上會被拉伸**：`sizing:{type:'contain', w, h}`原本以為會等比例縮放，用python-pptx讀出的shape尺寸+LibreOffice渲染成PDF截圖驗證，發現400x900直式測試圖被拉伸成接近方框比例（約1.09:1，應為0.444:1）——這個pptxgenjs選項的實際行為跟文件描述對不上。改成自己算好等比例縮放後的寬高直接當shape本身的w/h（不靠sizing選項），修正後python-pptx讀出的比例精確等於原圖比例（直式0.444、橫式3.0都對）。
+  - **interpret_image的refusal過濾對「沒Benchmark過的model」完全沒作用**：真實8個model row（全部`abilityTags`是`null`，沒人按過Benchmark）實測，`openai/gpt-oss-20b`真的回了「抱歉，我目前無法直接查看圖片內容」這種制式拒答，卻因為`row.abilityTags && ...`在abilityTags是null時永遠短路成false，被直接當成「成功」回傳給使用者。改成只有「已確認vision:true」才略過檢查，修正後正確cascade到`openrouter/free`，對一張「綠色圓形+紅色正方形」測試圖給出精確描述（形狀/顏色/位置關係全對）。
+  - 其餘功能實測全部正確：mermaid viewer（focus-gated滾輪縮放、scrollbar、拖曳）、圖片lightbox（4個來源縮圖、點擊開啟、切換原始尺寸、Esc關閉）、PPTX文字溢出修正（長段落正確切成多張投影片+fit:shrink安全網）、PPTX表格自動跨頁+repeat表頭（40列表格正確切成兩張、表頭重複）、`extract_clip_range`（真的用Mediabunny trim裁出3秒H.264/AAC MP4）、`extract_clip_range_audio`（正確裁出3秒MP3）、`convert_to_animated_gif`（正確輸出15幀動態GIF）、`convert_video_to_animation`（輸出的YAML通過`_validate2DAnimationYaml`、keyframes結構正確、能在對話裡掛載播放）、瀏覽器讀取分頁（`pageText()`邏輯抽出來用Node跑過offset串接重建/start_line/max_lines/邊界案例等測項全過）、`browser_get_page_structure`的`interpret_images`（mock `_bcCall`模擬真實擴充功能回應，端到端跑通vision解讀並填回`images[].description`）。
+  - **未涵蓋**：真實Chrome擴充功能配對流程（`browser_control`整條連線，只mock了`_bcCall`測試桌面端邏輯，沒有真的安裝擴充功能配對）。
 
 - [x] **Mermaid/UML檢視器**（`_mountMermaidViewer`）：新增假scrollbar（依內容真實尺寸與目前pan/zoom狀態換算thumb大小/位置，純視覺指示，不可拖曳）；滾輪縮放改成「focused」（點過這個圖表）才生效，避免使用者滾動對話串時滑鼠經過圖表就被吃掉wheel事件變成縮放，外框顏色+提示文字給明確視覺回饋。
 - [x] **圖片統一縮圖+lightbox**：新增`_openImageLightbox`（點縮圖彈出原圖，可再點一次切換縮小置中/原始尺寸，背景/✕/Esc關閉）+`_wireImageLightboxDelegation`（掛在`#ai-chat-body`的delegated click listener，只掛一次）。四個來源都套用`ai-img-thumb`class：AI回覆markdown裡的圖片URL（覆寫marked的image renderer）、tool回傳截圖(`_displayDataUrl`)、`_downloadFile`下載卡片新增image分類+縮圖預覽、使用者📎圖片附件在訊息裡從純文字chip補上縮圖。
