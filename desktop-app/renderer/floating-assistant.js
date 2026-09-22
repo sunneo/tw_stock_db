@@ -2831,6 +2831,7 @@ function _faClassifyMediaFile(filename) {
     if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'mpg', 'mpeg', '3gp', 'ogv'].includes(e)) return 'video';
     if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'flac', 'opus', 'weba', 'wma'].includes(e)) return 'audio';
     if (['srt', 'vtt', 'ass', 'ssa', 'sbv'].includes(e)) return 'subtitle';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico'].includes(e)) return 'image';
     return 'other';
 }
 
@@ -14102,6 +14103,35 @@ ${sourceTool.handlerScript}
         ]).then(() => {
             if (typeof marked !== 'undefined' && marked.setOptions) {
                 marked.setOptions({ gfm: true, breaks: true });
+                // tw_stock_db客製: 2026-09-22使用者要求——AI回覆markdown裡的
+                // 圖片URL（![alt](url)）原本是marked內建渲染器直接輸出原尺寸
+                // <img>，長圖會把對話泡泡撐得很大。改成統一縮圖尺寸＋
+                // class="ai-img-thumb"，點一下走_openImageLightbox彈出原圖
+                // （監聽器見_wireImageLightboxDelegation，是delegated on
+                // #ai-chat-body，這裡不用另外綁）。marked 12.x的renderer
+                // 方法簽章是單一token物件({href,title,text})，這裡同時相容
+                // 舊版「多個positional參數」簽章，避免CDN以後升級版本時整段
+                // 圖片渲染悄悄失效。
+                if (!this._faMarkedImageRendererWired) {
+                    this._faMarkedImageRendererWired = true;
+                    const self = this;
+                    marked.use({
+                        renderer: {
+                            image(hrefOrToken, titleArg, textArg) {
+                                let href, title, text;
+                                if (hrefOrToken && typeof hrefOrToken === 'object') {
+                                    href = hrefOrToken.href; title = hrefOrToken.title; text = hrefOrToken.text;
+                                } else {
+                                    href = hrefOrToken; title = titleArg; text = textArg;
+                                }
+                                const safeHref = self._escapeAttr(String(href || ''));
+                                const alt = self._escapeHtml(String(text || ''));
+                                const titleAttr = title ? ` title="${self._escapeAttr(String(title))}"` : '';
+                                return `<img src="${safeHref}" alt="${alt}"${titleAttr} class="ai-img-thumb" data-full-src="${safeHref}" loading="lazy" style="max-width:100%; max-height:260px; border-radius:6px; cursor:zoom-in; display:block; margin:6px 0;">`;
+                            },
+                        },
+                    });
+                }
             }
         }).catch(err => {
             console.warn('Markdown/KaTeX函式庫載入失敗，AI回覆將以純文字顯示:', err);
@@ -21893,18 +21923,76 @@ ${existingNodeSummaries}
     // 直接對msg._displayMermaidSvg操作，不需要透過這個函式的回傳值。
     _mountMermaidViewer(container, svgText) {
         const viewport = document.createElement('div');
-        viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:1px solid rgba(0,0,0,0.1); cursor:grab;';
+        viewport.tabIndex = 0;
+        viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:2px solid rgba(0,0,0,0.1); cursor:grab; outline:none; transition:border-color 0.15s;';
         const inner = document.createElement('div');
         inner.style.cssText = 'position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform;';
         inner.innerHTML = svgText;
         viewport.appendChild(inner);
 
         let x = 20, y = 20, scale = 1;
-        const applyTransform = () => { inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; };
+        // tw_stock_db客製: 2026-09-22使用者要求——只有「focused」（點過這個
+        // 圖表）才讓滾輪控制縮放，避免使用者在對話串裡滾動、滑鼠剛好經過
+        // 圖表但還沒點進去，滾輪就被吃掉變成縮放而不是頁面捲動。focused
+        // 狀態用點擊/失焦切換，並用外框顏色給明確的視覺提示。
+        let focused = false;
+        const hint = document.createElement('div');
+        hint.textContent = '點一下即可用滾輪縮放、拖曳可平移';
+        hint.style.cssText = 'position:absolute; left:8px; top:6px; z-index:2; font-size:11px; padding:2px 8px; border-radius:999px; background:rgba(0,0,0,0.55); color:#fff; pointer-events:none; transition:opacity 0.2s;';
+        viewport.appendChild(hint);
+        const setFocused = (v) => {
+            focused = v;
+            viewport.style.borderColor = v ? '#3b82f6' : 'rgba(0,0,0,0.1)';
+            hint.style.opacity = v ? '0' : '1';
+        };
+
+        // 內容原始尺寸（transform不影響layout，offsetWidth/Height量到的一律
+        // 是scale=1時的真實尺寸），用來算scrollbar的thumb大小/位置。
+        const contentW = inner.offsetWidth || 1;
+        const contentH = inner.offsetHeight || 1;
+
+        const hTrack = document.createElement('div');
+        hTrack.style.cssText = 'position:absolute; left:2px; right:12px; bottom:3px; height:6px; border-radius:3px; background:rgba(0,0,0,0.08); z-index:1; pointer-events:none;';
+        const hThumb = document.createElement('div');
+        hThumb.style.cssText = 'position:absolute; top:0; height:100%; border-radius:3px; background:rgba(0,0,0,0.32);';
+        hTrack.appendChild(hThumb);
+        const vTrack = document.createElement('div');
+        vTrack.style.cssText = 'position:absolute; top:2px; bottom:12px; right:3px; width:6px; border-radius:3px; background:rgba(0,0,0,0.08); z-index:1; pointer-events:none;';
+        const vThumb = document.createElement('div');
+        vThumb.style.cssText = 'position:absolute; left:0; width:100%; border-radius:3px; background:rgba(0,0,0,0.32);';
+        vTrack.appendChild(vThumb);
+        viewport.appendChild(hTrack);
+        viewport.appendChild(vTrack);
+
+        const updateScrollbars = () => {
+            const vw = viewport.clientWidth, vh = viewport.clientHeight;
+            const totalW = contentW * scale, totalH = contentH * scale;
+            const showH = totalW > vw + 1, showV = totalH > vh + 1;
+            hTrack.style.display = showH ? 'block' : 'none';
+            vTrack.style.display = showV ? 'block' : 'none';
+            if (showH) {
+                const trackW = hTrack.clientWidth;
+                const thumbW = Math.max(24, Math.min(trackW, (vw / totalW) * trackW));
+                const maxLeft = trackW - thumbW;
+                const left = Math.max(0, Math.min(maxLeft, (-x / (totalW - vw || 1)) * maxLeft));
+                hThumb.style.width = thumbW + 'px';
+                hThumb.style.left = left + 'px';
+            }
+            if (showV) {
+                const trackH = vTrack.clientHeight;
+                const thumbH = Math.max(24, Math.min(trackH, (vh / totalH) * trackH));
+                const maxTop = trackH - thumbH;
+                const top = Math.max(0, Math.min(maxTop, (-y / (totalH - vh || 1)) * maxTop));
+                vThumb.style.height = thumbH + 'px';
+                vThumb.style.top = top + 'px';
+            }
+        };
+        const applyTransform = () => { inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; updateScrollbars(); };
         applyTransform();
 
         let dragging = false, dragStartX = 0, dragStartY = 0, originX = 0, originY = 0;
         viewport.addEventListener('mousedown', (e) => {
+            setFocused(true);
             dragging = true; dragStartX = e.clientX; dragStartY = e.clientY; originX = x; originY = y;
             viewport.style.cursor = 'grabbing';
         });
@@ -21915,7 +22003,9 @@ ${existingNodeSummaries}
             applyTransform();
         });
         window.addEventListener('mouseup', () => { dragging = false; viewport.style.cursor = 'grab'; });
+        document.addEventListener('mousedown', (e) => { if (focused && !viewport.contains(e.target)) setFocused(false); });
         viewport.addEventListener('wheel', (e) => {
+            if (!focused) return; // 沒點過這個圖表，讓滾輪事件正常冒泡去捲動對話
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
             scale = Math.max(0.2, Math.min(5, scale * factor));
@@ -21923,12 +22013,12 @@ ${existingNodeSummaries}
         }, { passive: false });
 
         const controls = document.createElement('div');
-        controls.style.cssText = 'position:absolute; right:6px; bottom:6px; display:flex; gap:4px; z-index:2;';
+        controls.style.cssText = 'position:absolute; right:6px; bottom:14px; display:flex; gap:4px; z-index:3;';
         const mkBtn = (label, title, onClick) => {
             const b = document.createElement('button');
             b.type = 'button'; b.textContent = label; b.title = title;
             b.style.cssText = 'border:none; background:rgba(255,255,255,0.92); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; box-shadow:0 1px 3px rgba(0,0,0,0.2);';
-            b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+            b.addEventListener('click', (e) => { e.stopPropagation(); setFocused(true); onClick(); });
             return b;
         };
         controls.appendChild(mkBtn('🔍+', '放大', () => { scale = Math.min(5, scale * 1.2); applyTransform(); }));
@@ -21937,6 +22027,55 @@ ${existingNodeSummaries}
         viewport.appendChild(controls);
 
         container.appendChild(viewport);
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求——對話裡任何來源的圖片（AI回覆
+    // markdown裡的圖片URL、📎附件縮圖、下載卡片縮圖）點一下縮圖都要能彈出
+    // 原尺寸檢視。統一用這一個lightbox實作+一個delegated click listener
+    // （見_wireImageLightboxDelegation），畫面上只需要幫<img>加上
+    // class="ai-img-thumb"+data-full-src，不用每個掛載點各自重複寫一份
+    // 彈窗邏輯。點背景/按✕/按Esc都可以關閉；再點一次圖片本身在「縮小置中」
+    // 跟「原始尺寸（可捲動）」間切換，方便看清楚細節。
+    _openImageLightbox(src, altText) {
+        if (!src) return;
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,0.82); display:flex; align-items:center; justify-content:center; cursor:zoom-out; overflow:auto; padding:24px; box-sizing:border-box;';
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = altText || '';
+        let natural = false;
+        const applyImgStyle = () => {
+            img.style.cssText = natural
+                ? 'max-width:none; max-height:none; border-radius:4px; box-shadow:0 4px 24px rgba(0,0,0,0.5); cursor:zoom-out;'
+                : 'max-width:90vw; max-height:90vh; object-fit:contain; border-radius:4px; box-shadow:0 4px 24px rgba(0,0,0,0.5); cursor:zoom-in; margin:auto;';
+        };
+        applyImgStyle();
+        img.addEventListener('click', (e) => { e.stopPropagation(); natural = !natural; applyImgStyle(); });
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button'; closeBtn.textContent = '✕'; closeBtn.title = '關閉';
+        closeBtn.style.cssText = 'position:fixed; right:18px; top:14px; z-index:1; border:none; background:rgba(255,255,255,0.15); color:#fff; width:36px; height:36px; border-radius:50%; font-size:18px; cursor:pointer;';
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        closeBtn.addEventListener('click', close);
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        document.addEventListener('keydown', onKey);
+        overlay.appendChild(img);
+        overlay.appendChild(closeBtn);
+        document.body.appendChild(overlay);
+    }
+
+    // 一次性掛在#ai-chat-body上的delegated click listener——不管訊息history
+    // 重繪幾次都只掛一次（chatBody元素本身不會被銷毀重建，見
+    // _renderMessageHistory只清空innerHTML），比每個縮圖各自綁click簡單、
+    // 也不會有前面mermaid viewer那種「每次重繪多留一份監聽器」的疑慮。
+    _wireImageLightboxDelegation(chatBody) {
+        if (chatBody._faImgLightboxWired) return;
+        chatBody._faImgLightboxWired = true;
+        chatBody.addEventListener('click', (e) => {
+            const thumb = e.target.closest('.ai-img-thumb');
+            if (!thumb) return;
+            this._openImageLightbox(thumb.getAttribute('data-full-src') || thumb.src, thumb.alt);
+        });
     }
 
     // 依訊息的顯示型態（圖片/3D場景/繪圖）截出一張PNG data URL。3D場景優先
@@ -27145,6 +27284,7 @@ ${existingNodeSummaries}
         // 這裡提早的這一次直接跳過即可，不會讓使用者的對話紀錄永遠沒有
         // 顯示出來。
         if (!chatBody) return;
+        this._wireImageLightboxDelegation(chatBody);
         const palette = this._getThemePalette();
         this._applyThemeStyles();
         // tw_stock_db客製: 這個函式會整個清空chatBody重繪（innerHTML=''），
@@ -27472,9 +27612,10 @@ ${existingNodeSummaries}
             // 邏輯，不用維護兩份幾乎一樣的程式碼。
             const buildDownloadFileCard = (targetContainer) => {
                 const { id, filename, sizeBytes } = msg._downloadFile;
-                const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'other'
+                const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'image' | 'other'
                 const isAudio = mediaKind === 'audio';
                 const isVideo = mediaKind === 'video';
+                const isImage = mediaKind === 'image';
                 const fileWrap = document.createElement('div');
                 fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
                 const sizeLabel = sizeBytes != null
@@ -27482,12 +27623,14 @@ ${existingNodeSummaries}
                     : '';
                 fileWrap.innerHTML = `
                     <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
+                    ${isImage ? '<div class="ai-image-thumb-slot" style="margin-bottom:8px;"></div>' : ''}
                     <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
                     ${(isAudio || isVideo) ? '<div class="ai-media-player-slot"></div>' : ''}
                 `;
                 targetContainer.appendChild(fileWrap);
                 const linkEl = fileWrap.querySelector('.ai-file-download-link');
                 const mediaSlot = (isAudio || isVideo) ? fileWrap.querySelector('.ai-media-player-slot') : null;
+                const imageSlot = isImage ? fileWrap.querySelector('.ai-image-thumb-slot') : null;
                 this.fileCache.get(id).then(record => {
                     if (!record) throw new Error('not found');
                     // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
@@ -27514,6 +27657,14 @@ ${existingNodeSummaries}
                     if (mediaSlot) {
                         if (isAudio) this._mountAudioPlayer(mediaSlot, blobWithType);
                         else if (isVideo) this._mountVideoPlayer(mediaSlot, blobWithType);
+                    }
+                    // tw_stock_db客製: 2026-09-22使用者要求——「image fap」類的
+                    // 下載卡片（例如產出/修改過的圖片附件）也要顯示縮圖、點一下
+                    // 彈出原圖，不是只有一個下載連結。跟音訊/影片播放器一樣沿用
+                    // 同一顆blobWithType，不用重複讀一次fileCache。
+                    if (imageSlot) {
+                        const thumbUrl = URL.createObjectURL(blobWithType);
+                        imageSlot.innerHTML = `<img src="${thumbUrl}" class="ai-img-thumb" data-full-src="${this._escapeAttr(thumbUrl)}" alt="${this._escapeHtml(record.filename)}" style="max-width:100%; max-height:220px; border-radius:6px; cursor:zoom-in; display:block;">`;
                     }
                 }).catch(() => {
                     linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
@@ -27590,7 +27741,7 @@ ${existingNodeSummaries}
                 imgWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
                 imgWrap.innerHTML = `
                     <div style="font-size: 12px; font-weight: bold; color: #319795; margin-bottom: 4px;">🖼️ 圖表截圖</div>
-                    <img src="${imagePayload.dataUrl}" style="max-width: 100%; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);">
+                    <img src="${imagePayload.dataUrl}" class="ai-img-thumb" data-full-src="${this._escapeAttr(imagePayload.dataUrl)}" style="max-width: 100%; max-height:260px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.1); cursor:zoom-in;">
                 `;
                 container.appendChild(imgWrap);
                 return;
@@ -28018,6 +28169,30 @@ ${existingNodeSummaries}
         if (msg.role === 'user') {
             div.style.cssText += `background: ${palette.userBg}; color: ${palette.userText}; margin-left: auto; border-right: 4px solid #3182ce;`;
             div.innerHTML = `<b>You:</b> ${msg.content}`;
+            // tw_stock_db客製: 2026-09-22使用者要求——訊息裡提到的📎附件
+            // （`[附件：檔名（file_id=xxx）]`這個既有標記格式，見
+            // _submitChatInput組attachmentNote的地方）如果是圖片，額外顯示
+            // 縮圖＋可點放大，不是只有一串純文字檔名看不出內容。用正則掃
+            // msg.content裡的file_id=...，非同步查fileCache，只有真的是
+            // image/*的附件才補上縮圖（非圖片附件維持純文字不變，不用另外
+            // 判斷格式）。
+            const attachedImageIds = [...String(msg.content || '').matchAll(/file_id=([A-Za-z0-9_-]+)/g)].map(m => m[1]);
+            if (attachedImageIds.length) {
+                const thumbRow = document.createElement('div');
+                thumbRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;';
+                div.appendChild(thumbRow);
+                attachedImageIds.forEach((id) => {
+                    this.fileCache.get(id).then((rec) => {
+                        if (!rec || !rec.mimeType || !rec.mimeType.startsWith('image/')) return;
+                        const url = URL.createObjectURL(rec.blob);
+                        const img = document.createElement('img');
+                        img.src = url; img.alt = rec.filename; img.className = 'ai-img-thumb';
+                        img.setAttribute('data-full-src', url);
+                        img.style.cssText = 'max-width:120px; max-height:120px; border-radius:6px; cursor:zoom-in; object-fit:cover; border:1px solid rgba(0,0,0,0.15);';
+                        thumbRow.appendChild(img);
+                    }).catch(() => {});
+                });
+            }
         } else {
             // tw_stock_db客製: 優先讀非可枚舉的_reasoningDisplay屬性（見
             // _loopFetch/_loopFetchNative的說明，這樣msg.content本身是乾淨
