@@ -81,6 +81,19 @@ async function dbg(tabId) {
 }
 const send = (tabId, method, params) => chrome.debugger.sendCommand({ tabId }, method, params || {});
 
+// tw_stock_db客製: 2026-09-22——移植到Redmine時實測發現背景分頁（active:false）幾乎每次都收不到
+// 合成滑鼠/鍵盤事件（screenshot/scroll等唯讀操作則不受影響，維持背景可用），所以真的要打字/點擊/
+// 按鍵前一律先把分頁切到前景，等一小段時間讓頁面真正拿到焦點再送CDP指令。
+async function ensureForeground(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.active) {
+    await chrome.tabs.update(tabId, { active: true });
+    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (_) { /* 視窗可能已關閉或無法取得焦點，不阻擋後續操作 */ }
+    await sleep(200);
+  }
+  return tab;
+}
+
 async function waitLoad(tabId, timeoutMs) {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
@@ -270,6 +283,7 @@ const commands = {
 
   async mouse(a, ctx) {
     const { tabId } = await needTab(a, ctx);
+    await ensureForeground(tabId);
     await dbg(tabId);
     const action = String(a.action || "click");
     const x = Number(a.x), y = Number(a.y);
@@ -298,12 +312,23 @@ const commands = {
         await ev("mouseReleased", { clickCount: i });
       }
     } else throw new Error("不支援的 action：" + action + "（click/double_click/right_click/move/down/up/wheel/drag）");
+    if (action === "click" || action === "double_click" || action === "right_click") {
+      // tw_stock_db客製: 2026-09-22——Redmine實測發現CDP的合成點擊不保證讓元素真的拿到焦點
+      // （尤其是自訂元件），點完緊接著type_text常打不進去；點擊後額外補一次真正的.focus()。
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId }, args: [x, y],
+          func: (px, py) => { const el = document.elementFromPoint(px, py); if (el && typeof el.focus === "function") el.focus(); },
+        });
+      } catch (_) { /* 受保護頁面或無法注入時，點擊本身已送出，不阻擋結果 */ }
+    }
     await sleep(150);
     return { ok: true, action, x, y };
   },
 
   async type_text(a, ctx) {
     const { tabId } = await needTab(a, ctx);
+    await ensureForeground(tabId);
     await dbg(tabId);
     const text = String(a.text == null ? "" : a.text);
     if (a.selector) {
@@ -324,6 +349,7 @@ const commands = {
 
   async press_key(a, ctx) {
     const { tabId } = await needTab(a, ctx);
+    await ensureForeground(tabId);
     await dbg(tabId);
     const key = String(a.key || "");
     if (!key) throw new Error("缺少 key（例如 Enter、Tab、Escape、ArrowDown、a）");
@@ -494,7 +520,11 @@ async function pressKey(tabId, key, mods) {
   const withText = def.text && !(modifiers & 6);
   const base = { modifiers, key: def.key || (def.text === "\r" ? "Enter" : key.length === 1 ? key : key), code: def.code, windowsVirtualKeyCode: def.vk, nativeVirtualKeyCode: def.vk };
   const cmd = modifiers & 6 && key.length === 1 ? EDIT_COMMANDS[key.toLowerCase()] : null;
-  await send(tabId, "Input.dispatchKeyEvent", Object.assign({ type: withText ? "keyDown" : "rawKeyDown" }, base, withText ? { text: def.text } : {}, cmd ? { commands: [cmd] } : {}));
+  // tw_stock_db客製: 2026-09-22——Redmine實測發現keyDown事件本身帶text參數時，Chrome有時會
+  // 連同後續的char事件一起插入文字，造成重複輸入（"test"變"tteesstt"）；改成rawKeyDown（不帶
+  // text）+ 單獨的char事件（只有它帶text）+ keyUp，文字只在char事件出現一次，不會重複。
+  await send(tabId, "Input.dispatchKeyEvent", Object.assign({ type: "rawKeyDown" }, base, cmd ? { commands: [cmd] } : {}));
+  if (withText) await send(tabId, "Input.dispatchKeyEvent", Object.assign({ type: "char", text: def.text }, base));
   await send(tabId, "Input.dispatchKeyEvent", Object.assign({ type: "keyUp" }, base));
 }
 
