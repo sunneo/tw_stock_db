@@ -3241,13 +3241,34 @@ function _faSplitMarkdownSections(text) {
     return sections.map(s => ({ title: s.title, body: s.body.join('\n').trim() }));
 }
 
+// tw_stock_db客製: 2026-09-22使用者回報投影片文字會重疊/溢出——原本只在
+// 「段落之間」（空行分隔）判斷要不要切到下一張投影片，單一段落本身超過
+// maxChars（AI整段沒換行）完全不會被切，整段塞進一張投影片固定大小的
+// 文字框，超出框高的部分在PowerPoint裡視覺上會蓋出框外/超出投影片邊界。
+// 這裡補上「單一段落也要在maxChars內切」：先照單行(\n)切，單行仍然太長
+// 再照字元數硬切，確保任何一個chunk都不會遠超過maxChars。
 function _faChunkTextByLength(body, maxChars) {
     const paras = String(body || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    const splitOversizedPara = (p) => {
+        if (p.length <= maxChars) return [p];
+        const lines = p.split('\n');
+        const out = [];
+        let buf = '';
+        for (const line of lines) {
+            const candidate = buf ? buf + '\n' + line : line;
+            if (candidate.length > maxChars && buf) { out.push(buf); buf = line; } else buf = candidate;
+            while (buf.length > maxChars) { out.push(buf.slice(0, maxChars)); buf = buf.slice(maxChars); }
+        }
+        if (buf) out.push(buf);
+        return out;
+    };
     const chunks = [];
     let cur = '', curLen = 0;
-    for (const p of paras) {
-        if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
-        cur += (cur ? '\n\n' : '') + p; curLen += p.length;
+    for (const rawP of paras) {
+        for (const p of splitOversizedPara(rawP)) {
+            if (curLen && curLen + p.length + 2 > maxChars) { chunks.push(cur); cur = ''; curLen = 0; }
+            cur += (cur ? '\n\n' : '') + p; curLen += p.length;
+        }
     }
     if (cur || !chunks.length) chunks.push(cur);
     return chunks;
@@ -3346,10 +3367,10 @@ function _faMarkdownToSlides(markdownText, heading) {
 // 截圖，見FloatingAssistant.prototype._collectTurnVisualSnapshots/
 // _captureVisualSnapshot。visualSnapshots是選填的{dataUrl,kind}陣列，
 // 沒有提供時行為完全不變（純文字/表格投影片）。
-function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
+async function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots) {
     const KIND_LABEL = { image: '🖼️ 圖表', scene3d: '🧊 3D場景', drawing: '🎨 繪圖', mermaid: '📊 UML/流程圖', viewer_summary: '📝 互動表單內容', terminal: '🖥️ 終端機記錄' };
-    (visualSnapshots || []).forEach((snap) => {
-        if (!snap) return;
+    for (const snap of (visualSnapshots || [])) {
+        if (!snap) continue;
         const s = addHeadingSlideBase(KIND_LABEL[snap.kind] || '視覺內容');
         try {
             // tw_stock_db客製: 互動viewer是文字摘要（kind==='viewer_summary'，
@@ -3359,12 +3380,35 @@ function _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshot
             // _captureTerminalScreenText）同樣是純文字，跟viewer_summary
             // 共用這個文字render分支。
             if ((snap.kind === 'viewer_summary' || snap.kind === 'terminal') && snap.text) {
-                s.addText(_faMdLiteToPlainText(snap.text), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3 });
+                s.addText(_faMdLiteToPlainText(snap.text), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 14, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3, fit: 'shrink' });
             } else if (snap.dataUrl) {
-                s.addImage({ data: snap.dataUrl, x: 1.5, y: 1.3, w: 10.3, h: 5.7, sizing: { type: 'contain', w: 10.3, h: 5.7 } });
+                // tw_stock_db客製: 2026-09-22使用者要求——原本不管圖片本身是
+                // 直的還是橫的，一律塞進同一個固定的橫向10.3x5.7方框（靠
+                // sizing:{type:'contain'}等比例縮放不變形），直式（高>寬）
+                // 的圖片因此被縮得很小、方框左右留下大片空白浪費版面。改成
+                // 先讀圖片實際寬高（_faGetImageNaturalSize，跟PDF那邊同一
+                // 個函式），依長寬比選一個「浪費空間比較少」的方框形狀：
+                // 明顯直式改用較窄的方框（貼近直式版面，示意左右版面）、
+                // 明顯橫式維持原本較寬的方框（上下版面）、接近正方形用
+                // 居中的正方形方框；三種情況最終仍然靠sizing:{type:'contain'}
+                // 做真正的等比例縮放，這裡只是先幫圖片選一個比較合身的容器。
+                const SLIDE_W = 13.3, SLIDE_H = 7.5, TOP = 1.3, BOTTOM_MARGIN = 0.5;
+                const maxAvailH = SLIDE_H - TOP - BOTTOM_MARGIN;
+                let boxW = 10.3, boxH = maxAvailH;
+                try {
+                    const { w, h } = await _faGetImageNaturalSize(snap.dataUrl);
+                    if (w > 0 && h > 0) {
+                        const ratio = w / h;
+                        if (ratio <= 0.8) boxW = 6.2; // 明顯直式：窄方框，減少左右留白
+                        else if (ratio >= 1.3) boxW = 10.3; // 明顯橫式：維持原本寬方框
+                        else boxW = 7.6; // 接近正方形
+                    }
+                } catch (_) { /* 讀不到自然尺寸時退回原本固定的橫向方框 */ }
+                const boxX = (SLIDE_W - boxW) / 2;
+                s.addImage({ data: snap.dataUrl, x: boxX, y: TOP, w: boxW, h: maxAvailH, sizing: { type: 'contain', w: boxW, h: maxAvailH } });
             }
         } catch (_) { /* 個別截圖/摘要嵌入失敗不影響其餘投影片 */ }
-    });
+    }
 }
 
 async function _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots) {
@@ -3398,13 +3442,23 @@ async function _faMarkdownToPptxBlob(markdownText, heading, visualSnapshots) {
                 text: String(c ?? ''),
                 options: { color: FA_EXPORT_PALETTE.txt, fontSize: 11, fill: { color: ri % 2 === 0 ? FA_EXPORT_PALETTE.white : FA_EXPORT_PALETTE.tileGray } },
             })));
-            s.addTable([headerRow, ...bodyRows], { x: 0.6, y: 1.3, w: 12.1, autoPage: false, border: { type: 'solid', color: FA_EXPORT_PALETTE.border, pt: 0.5 } });
+            // tw_stock_db客製: 2026-09-22使用者要求——原本autoPage:false明確
+            // 關掉pptxgenjs自帶的表格跨頁機制，一張投影片塞不下的長表格會
+            // 直接溢出投影片邊界（看不到的列，不是切到下一頁）。改成打開
+            // autoPage（pptxgenjs自己會估算表格實際渲染高度是否超過這張
+            // 投影片剩餘空間，超過就自動另外加一張投影片接續），
+            // autoPageRepeatHeader讓每張延續的投影片都重複第一列(headerRow)
+            // 當表頭，不用自己手動切表格/複製表頭。延續出來的投影片是
+            // pptxgenjs內部直接addSlide()產生，不會套用addHeadingSlideBase
+            // 的白底＋標題列樣式，這是目前這個函式庫版本的既有限制，但至少
+            // 資料完整不會被裁掉。
+            s.addTable([headerRow, ...bodyRows], { x: 0.6, y: 1.3, w: 12.1, autoPage: true, autoPageRepeatHeader: true, autoPageHeaderRows: 1, border: { type: 'solid', color: FA_EXPORT_PALETTE.border, pt: 0.5 } });
         } else {
-            s.addText(_faMdLiteToPlainText(slide.body), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 15, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3 });
+            s.addText(_faMdLiteToPlainText(slide.body), { x: 0.6, y: 1.3, w: 12.1, h: 5.7, fontFace: 'Calibri', fontSize: 15, color: FA_EXPORT_PALETTE.txt, align: 'left', valign: 'top', lineSpacingMultiple: 1.3, fit: 'shrink' });
         }
     });
 
-    _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots);
+    await _faAppendVisualSnapshotSlides(pres, addHeadingSlideBase, visualSnapshots);
 
     return pres.write({ outputType: 'blob' });
 }
