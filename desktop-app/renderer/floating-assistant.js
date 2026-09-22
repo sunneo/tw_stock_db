@@ -1362,7 +1362,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1378,7 +1378,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         // 路徑/別名，不是上傳檔案），要主動呼叫request_additional_tools
         // 申請file_access_points領域的工具、原地繼續完成，不要因為
         // list_uploaded_files找不到就直接放棄或勉強瞎猜。
-        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。**使用者要求「修改/校正/編修」純文字附件（程式碼、字幕、設定檔）時**：先用parse_uploaded_file分頁（offset/start_line）把整份讀完（精準編修不可用summarize_large_text代替），再照讀到的內容手寫unified diff，用attachment_apply_patch套用（修改後的內容會自動存成新附件並顯示下載卡片），套用後用parse_uploaded_file讀回修改處確認結構正確；patch失敗就照回傳的實際內容重寫，不要改成整份重新生成。二進位附件（xlsx/docx等）改用bash_execute/python_execute的attachment_files。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。**使用者要求「修改/校正/編修」純文字附件（程式碼、字幕、設定檔）時**：先用parse_uploaded_file分頁（offset/start_line）把整份讀完（精準編修不可用summarize_large_text代替），再照讀到的內容手寫unified diff，用attachment_apply_patch套用（修改後的內容會自動存成新附件並顯示下載卡片），套用後用parse_uploaded_file讀回修改處確認結構正確；patch失敗就照回傳的實際內容重寫，不要改成整份重新生成。二進位附件（xlsx/docx等）改用bash_execute/python_execute的attachment_files。**圖片附件（png/jpg/gif/webp等）不要用parse_uploaded_file讀**（會直接告訴你改叫下面這個工具）：用interpret_image({"file_id":"..."})實際解讀圖片內容，內部會自動挑選支援讀圖(vision)的model，不用自己判斷哪個model支援；想確認特定細節時把question參數換成具體問題（例如「這張圖表最高點在哪一天」），比只要求「描述這張圖」更準確。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
     },
     // tw_stock_db客製: 2026-09-15使用者要求——跟file_analysis（上面那個，
     // persistentStorage/FileCache裡的上傳檔案）是完全不同的兩套系統，
@@ -2368,6 +2368,11 @@ const FAP_FIND_MAX_DEPTH = 8;
 // 二進位格式解析的邏輯，這裡刻意不重複發明一份，只用副檔名快速擋掉明顯
 // 不是文字的格式，讓錯誤訊息在真的去讀之前就先講清楚。
 const FAP_BINARY_EXT_PATTERN = /\.(png|jpe?g|gif|bmp|webp|svg|ico|mp3|mp4|wav|ogg|webm|mov|avi|mkv|pdf|zip|tar|gz|tgz|7z|rar|docx?|xlsx?|pptx?|exe|dll|so|bin|dat|db|sqlite3?|ttf|woff2?|eot|class|jar|wasm)$/i;
+// tw_stock_db客製: 2026-09-22——_detectFileFormat()回傳的是不含開頭句點的
+// 純副檔名（例如"png"），跟FAP_BINARY_EXT_PATTERN（比對完整檔名、含句點）
+// 用途不同，這裡另外開一個比對「格式字串本身」的圖片副檔名清單，給
+// _parseUploadedFileContent/interpret_image共用判斷「這是不是圖片」。
+const FA_IMAGE_EXT_PATTERN = /^(png|jpe?g|gif|bmp|webp|svg|avif|ico)$/i;
 
 // tw_stock_db客製: 2026-09-16使用者要求——Skill匯入/匯出要能像Claude一樣
 // 保留完整資料夾結構（references/scripts/等），這些安全上限跟上面
@@ -7396,6 +7401,38 @@ ${fnData.code}
                 start_line: { type: 'integer', description: '選填：從第幾行開始讀（1起算，優先於offset）' },
                 max_lines: { type: 'integer', description: '選填：這次最多讀幾行' },
             }, required: ['file_id'], additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-22使用者要求——圖片附件/FAP圖片/圖片URL
+        // 的解讀能力。parse_uploaded_file遇到圖片會直接引導改叫這個工具
+        // （見_parseUploadedFileContent的圖片分支）。實作本身自動挑選LLM
+        // Models清單裡支援vision的model（見_orderedVisionCandidateRows/
+        // _interpretImageWithVisionModel的說明），不需要使用者/AI自己指定
+        // 要用哪個model。FAP裡的圖片沒有file_id，要先呼叫fap_copy_to_storage
+        // 把它複製進persistentStorage拿到file_id，再用這個工具——跟FAP對
+        // 二進位檔案既有的處理方式（fap_read_file/attachment_apply_patch
+        // 遇到二進位都是同樣的引導）一致，不另外開一條路。
+        registerOptional('interpret_image',
+            '請AI實際「看」一張圖片並用文字描述/回答關於這張圖片的問題（附件圖片、File Access Point裡的圖片、或圖片URL都支援）。內部會自動從目前設定的LLM Models清單挑一個支援讀圖(vision)的model來解讀，呼叫端不用（也不需要）自己判斷哪個model支援讀圖。三種輸入來源三選一：file_id（📎附件或AI產生的圖片，用list_uploaded_files查）、fap_ref搭配需要先呼叫fap_copy_to_storage複製成file_id（File Access Point本身不支援直接讀二進位圖片內容）、image_url（http(s)網址或data:image/...開頭的data URL，遠端URL可能受目標網站CORS限制而失敗）。question選填，不給的話預設請model詳細描述圖片內容（含圖片裡的文字）；想確認特定細節時直接問具體問題（例如「這張圖表股價的最高點在哪一天」「這是什麼型態的K線圖」）比只說「描述這張圖」更準確。參數: {"file_id":"..."} 或 {"image_url":"https://..."}，可加 {"question":"..."}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileId = String(parsed.file_id || '').trim();
+                const imageUrl = String(parsed.image_url || '').trim();
+                if (!fileId && !imageUrl) return JSON.stringify({ ok: false, error: '需要提供file_id或image_url其中之一' });
+                try {
+                    const { dataUrl, label } = await this._resolveImageInputForInterpretation({ fileId: fileId || null, imageUrl: imageUrl || null });
+                    const result = await this._interpretImageWithVisionModel(dataUrl, parsed.question);
+                    return JSON.stringify({ ok: true, source: label, model_used: result.modelUsed, vision_confirmed: result.visionConfirmed, description: result.description });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                file_id: { type: 'string', description: '要解讀的圖片file_id（用list_uploaded_files取得；FAP裡的圖片請先用fap_copy_to_storage複製成file_id）' },
+                image_url: { type: 'string', description: '要解讀的圖片網址（http(s)開頭），跟file_id擇一提供' },
+                question: { type: 'string', description: '選填：想問關於這張圖片的具體問題，不給的話預設要求詳細描述圖片內容' },
+            }, required: [], additionalProperties: false }
         );
 
         // tw_stock_db客製: 2026-09-17使用者回報——問AI「最新LLM model」這種
@@ -12527,6 +12564,119 @@ ${fnData.code}
         }
         this._saveAdvancedSettings();
         this._renderModelRowsList();
+    }
+
+    // tw_stock_db客製: 2026-09-22使用者要求——圖片附件/File Access Point
+    // 圖片/圖片URL的「解讀」要挑選LLM Models清單裡真的支援讀圖(vision)的
+    // model row，委派給subagent時也要以支援讀圖的model為主。這裡把model
+    // rows依「已知支援vision」＞「還沒Benchmark過、未知」＞「已知確定不
+    // 支援vision」排序（穩定排序，同一等級內維持原本清單順序＝使用者自訂
+    // 的優先順序），interpret_image照這個順序依序嘗試，第一個成功的就是
+    // 結果——不是只挑第一名就固定用它，這樣即使使用者完全沒按過Benchmark
+    // 按鈕（abilityTags還是undefined），也至少會照原本清單順序試，不會
+    // 因為「沒人測過vision」就完全無法使用這個功能。
+    _orderedVisionCandidateRows() {
+        const rows = this._getModelRows();
+        const rank = (row) => {
+            const v = row.abilityTags && row.abilityTags.vision;
+            if (v === true) return 0;
+            if (v === false) return 2;
+            return 1; // 沒測過/未知
+        };
+        return rows.map((row, idx) => ({ row, idx })).sort((a, b) => (rank(a.row) - rank(b.row)) || (a.idx - b.idx)).map(x => x.row);
+    }
+
+    _blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(reader.error || new Error('讀取圖片內容失敗'));
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    // tw_stock_db客製: 2026-09-22——interpret_image工具的三種輸入來源統一
+    // 解析成一個data URL：file_id走既有的persistentStorage(FileCache)；
+    // File Access Point的圖片一律要求先fap_copy_to_storage成file_id（跟
+    // _fapReadFile既有的二進位擋下規則、指向的既有workflow一致，不另外
+    // 開一條FAP直接讀二進位的路徑）；image_url走跟_fapDownloadUrl同一種
+    // 直接fetch（同樣可能受目標網站CORS限制，錯誤訊息比照既有寫法講清楚）。
+    async _resolveImageInputForInterpretation({ fileId, imageUrl }) {
+        if (fileId) {
+            const rec = await this.fileCache.get(String(fileId).trim());
+            if (!rec || !rec.blob) throw new Error(`找不到附件 file_id=${fileId}（用list_uploaded_files查詢目前可用的file_id）`);
+            if (!rec.mimeType || !rec.mimeType.startsWith('image/')) throw new Error(`「${rec.filename}」不是圖片格式（mimeType=${rec.mimeType || '未知'}），interpret_image只接受圖片檔案`);
+            return { dataUrl: await this._blobToDataUrl(rec.blob), label: rec.filename };
+        }
+        if (imageUrl) {
+            const u = String(imageUrl).trim();
+            if (/^data:image\//i.test(u)) return { dataUrl: u, label: '(data URL)' };
+            if (!/^https?:\/\//i.test(u)) throw new Error('image_url必須是http(s)開頭的網址，或data:image/...開頭的data URL');
+            let response;
+            try { response = await fetch(u); } catch (err) { throw new Error(`讀取圖片失敗（可能是目標網站不允許跨網域瀏覽器直接抓取/CORS限制）：${String(err.message || err)}`); }
+            if (!response.ok) throw new Error(`讀取圖片失敗：HTTP ${response.status}`);
+            const blob = await response.blob();
+            if (!blob.type || !blob.type.startsWith('image/')) throw new Error(`這個網址回傳的內容不是圖片（Content-Type=${blob.type || '未知'}）`);
+            return { dataUrl: await this._blobToDataUrl(blob), label: u };
+        }
+        throw new Error('需要提供file_id或image_url其中之一（FAP裡的圖片請先呼叫fap_copy_to_storage複製成file_id）');
+    }
+
+    // tw_stock_db客製: 2026-09-22——實際送一張圖片給支援vision的model解讀，
+    // 依_orderedVisionCandidateRows()的順序逐一嘗試，某個row失敗（額度用
+    // 完/該端點真的不支援/暫時異常）就換下一個，不是只試一次就放棄；跟
+    // _probeVisionSupport同一種OpenAI相容的多模態content格式
+    // ([{type:'text'},{type:'image_url'}])，差別是這裡要真正的描述文字
+    // 結果，不是只判斷對錯，所以max_tokens給比較寬裕的值、也不強制
+    // temperature=0。
+    async _interpretImageWithVisionModel(dataUrl, question) {
+        const candidates = this._orderedVisionCandidateRows();
+        if (!candidates.length) throw new Error('目前沒有設定任何LLM Model，請先到進階設定新增至少一筆');
+        const prompt = String(question || '').trim() || '詳細描述這張圖片的內容（如果圖片裡有文字，請把文字內容也完整列出來）。';
+        const errors = [];
+        for (const row of candidates) {
+            const cfg = this._resolveModelRowConfig(row);
+            try {
+                const controller = this._createAbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 60000);
+                let response;
+                try {
+                    response = await fetch(`${cfg.apiUrl}/chat/completions`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model: cfg.apiModel,
+                            messages: [
+                                { role: 'user', content: [
+                                    { type: 'text', text: prompt },
+                                    { type: 'image_url', image_url: { url: dataUrl } },
+                                ] },
+                            ],
+                            temperature: 0.2,
+                            max_tokens: 2048,
+                            stream: false,
+                        }),
+                    });
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+                if (!response.ok) { errors.push(`${cfg.apiModel}: HTTP ${response.status}`); continue; }
+                const data = await response.json();
+                const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').trim();
+                if (!content) { errors.push(`${cfg.apiModel}: 回覆是空的`); continue; }
+                // tw_stock_db客製: 沒被標記過vision:true的model如果完全不懂圖片，
+                // 常見回覆是道歉/說看不到圖片這類制式文字，這裡順手抓幾個常見
+                // 特徵，判定失敗就換下一個row，不要把這種回覆當成正確的圖片
+                // 描述回傳給使用者。
+                const looksLikeRefusal = /^(i'?m sorry|i cannot|i can't|i am unable|as an ai|抱歉|我無法|我不能|我看不到|無法看到|沒有(?:辦法)?(?:看到|讀取)圖片)/i.test(content);
+                if (looksLikeRefusal && row.abilityTags && row.abilityTags.vision !== true) { errors.push(`${cfg.apiModel}: 回覆內容像是看不懂圖片`); continue; }
+                return { description: content, modelUsed: cfg.apiModel, visionConfirmed: !!(row.abilityTags && row.abilityTags.vision === true) };
+            } catch (err) {
+                errors.push(`${cfg.apiModel}: ${String((err && err.message) || err)}`);
+            }
+        }
+        throw new Error(`所有model都無法解讀這張圖片：${errors.join('；')}。建議到進階設定的LLM Models清單，對確定支援讀圖的model按「Benchmark」測試一次。`);
     }
 
     // tw_stock_db客製: 探測結果的快取入口——同一個apiUrl+apiModel組合只會
@@ -20896,6 +21046,19 @@ ${sourceTool.handlerScript}
     async _parseUploadedFileContent(record, opts = {}) {
         const format = this._detectFileFormat(record.filename);
         const entryPath = typeof opts.entryPath === 'string' && opts.entryPath ? opts.entryPath : null;
+        // tw_stock_db客製: 2026-09-22使用者回報——圖片附件（png/jpg/…）原本
+        // 完全沒有特別處理，會掉進最下面「當純文字讀」的預設分支，把二進位
+        // bytes硬讀成text()（亂碼），回傳一堆看不懂的內容給AI，等於圖片
+        // 附件從來沒被正確解讀過。圖片內容本身不是「可分頁的文字」，改成
+        // 明確引導AI改叫interpret_image（會自動挑一個經過Benchmark測出
+        // 支援讀圖的model row，見_interpretImageWithVisionModel），不要在
+        // 這裡直接嘗試讀出亂碼文字。
+        if (FA_IMAGE_EXT_PATTERN.test(format)) {
+            return {
+                ok: true, format: 'image', mimeType: record.mimeType || '', sizeBytes: record.blob.size,
+                note: `這是圖片檔案，parse_uploaded_file不支援直接解讀圖片內容。請改呼叫interpret_image工具（file_id="${record.id || ''}"，可搭配question參數指定想問的問題，例如「描述這張圖片」「圖裡的文字是什麼」），會自動挑選支援讀圖(vision)的model解讀。`,
+            };
+        }
         try {
             if (format === 'zip') {
                 await this._ensureJSZipLoaded();
