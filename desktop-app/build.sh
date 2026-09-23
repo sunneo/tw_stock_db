@@ -11,10 +11,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 # tw_stock_db客製: 2026-09-17使用者要求——renderer/floating-assistant.js
 # 不再是build時從../web/複製過去的副本，這個desktop-app分支本身現在是
-# floating-assistant.js唯一的canonical來源（直接在這裡編輯/commit/push），
-# main分支的web/index.html改成執行時從這個分支的raw URL fetch這個檔案
-# （見web/index.html的window.__floatingAssistantJsReady）。這裡不再需要
-# 任何複製步驟。
+# floating-assistant.js唯一的canonical來源，main分支的web/index.html改成
+# 執行時從這個分支的raw URL fetch這個檔案（見web/index.html的
+# window.__floatingAssistantJsReady）。
+#
+# tw_stock_db客製: 2026-09-24使用者要求——上面這句「canonical來源」現在
+# 精確地說是指renderer/src/floating-assistant.js（真正手動編輯/commit的
+# 原始碼，檔案有點大，2MB+），renderer/floating-assistant.js／
+# renderer/floating-assistant.min.js兩個則是build-assistant.js壓縮出來的
+# 產出（內容一致）——桌面版index.html跟網頁版的raw URL fetch路徑都刻意
+# 沒變，所以「不需要複製步驟」這句話仍然成立，只是現在多了「npm install
+# 之後要跑一次build-assistant.js壓縮」這一步，見下面。
 
 # tw_stock_db客製: 2026-09-15使用者要求——內建一把預設/免費額度金鑰，讓
 # 新使用者不用先申請/填自己的NVAPI_KEY才能用，使用者自己填的值永遠優先
@@ -65,6 +72,9 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   echo "== npm install =="
   npm install
 fi
+
+echo "== 壓縮 renderer/src/floating-assistant.js -> renderer/floating-assistant.js／.min.js =="
+node build-assistant.js
 
 # tw_stock_db客製: 2026-09-16——電腦上Windows桌面版build.ps1遇到的真實案例
 # ——electron-builder的CLI用「--win/--linux <target>」這種寫法時，沒有明講

@@ -53,10 +53,16 @@ Set-Location $PSScriptRoot
 
 # tw_stock_db客製: 2026-09-17使用者要求——renderer/floating-assistant.js
 # 不再是build時從../web/複製過去的副本，這個desktop-app分支本身現在是
-# floating-assistant.js唯一的canonical來源（直接在這裡編輯/commit/push），
-# main分支的web/index.html改成執行時從這個分支的raw URL fetch這個檔案
-# （見web/index.html的window.__floatingAssistantJsReady）。這裡不再需要
-# 任何複製步驟。
+# floating-assistant.js唯一的canonical來源，main分支的web/index.html改成
+# 執行時從這個分支的raw URL fetch這個檔案（見web/index.html的
+# window.__floatingAssistantJsReady）。
+#
+# tw_stock_db客製: 2026-09-24使用者要求——「canonical來源」現在精確地說
+# 是指renderer/src/floating-assistant.js（真正手動編輯/commit的原始碼），
+# renderer/floating-assistant.js／renderer/floating-assistant.min.js是
+# build-assistant.js壓縮出來的產出（內容一致）——桌面版index.html跟網頁版
+# 的raw URL fetch路徑都刻意沒變，仍然不需要複製步驟，只是npm install之後
+# 多了一次壓縮，見下面。
 
 # Bakes in a default/free-tier key so first-time users don't need to supply
 # their own before the app is usable; anything the user sets themselves
@@ -106,6 +112,10 @@ if (-not $SkipInstall) {
     npm install
     if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 }
+
+Write-Host "== Minifying renderer/src/floating-assistant.js -> renderer/floating-assistant.js / .min.js ==" -ForegroundColor Cyan
+node build-assistant.js
+if ($LASTEXITCODE -ne 0) { throw "build-assistant.js failed" }
 
 # This app is unsigned by design (see README "known limitations"), so
 # electron-builder never needs to discover a real signing identity.

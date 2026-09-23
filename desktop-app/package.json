@@ -5,14 +5,20 @@
   "description": "floating-assistant.js 的Electron單機封裝——檔案存取直接授權（不用瀏覽器每次重新授權）、可執行本機程式的subagent、內建本地proxy取代Cloudflare Worker",
   "main": "main.js",
   "scripts": {
+    "build:assistant": "node build-assistant.js",
+    "prestart": "npm run build:assistant",
     "start": "electron .",
+    "prepack": "npm run build:assistant",
     "pack": "electron-builder --dir",
+    "predist:win": "npm run build:assistant",
     "dist:win": "electron-builder --win dir",
+    "predist:linux": "npm run build:assistant",
     "dist:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
     "electron": "^44.4.0",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "terser": "^5.51.2"
   },
   "build": {
     "appId": "com.tw-stock-db.floating-assistant-desktop",
@@ -31,6 +37,7 @@
       "coding-workspace.js",
       "build-config.json",
       "renderer/**/*",
+      "!renderer/src/**",
       "build/icon.png",
       "builtin-secrets.json"
     ],
