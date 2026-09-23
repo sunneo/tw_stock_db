@@ -316,10 +316,35 @@ function patchCloudflareWording(root) {
   };
   applyTheme(localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark");
 
+  // tw_stock_db客製: 2026-09-23使用者回報——桌面版的/suggest永遠是空的，
+  // 因為chipsProvider（見floating-assistant.js的insertSuggestionChipsMessage）
+  // 從來沒有在這裡接過：web版（tw_stock_db/index.html）的buildAiSuggestionChips
+  // 整份是股票分析業務邏輯（目前選中的股票→持股診斷/備忘錄），桌面版是
+  // 通用助理，沒有「目前選中的股票」這個概念，直接套用會全部空白。這裡
+  // 改成桌面版自己的建議內容，取這個session已經真的做出來、驗證過的能力
+  // （coding domain的git patch工作流、終端機、影音剪輯），不是憑空編。
+  // 有設定Working Directory時，第一個建議帶入實際資料夾名稱，呼應web版
+  // 「代入目前選中的股票」同一種「讓建議跟使用者目前狀態相關」的精神。
+  const buildDesktopSuggestionChips = () => {
+    const chips = [];
+    const folderName = activeWorkspaceFolder ? activeWorkspaceFolder.split(/[\\/]/).filter(Boolean).pop() : "";
+    if (folderName) {
+      chips.push({ label: `分析「${folderName}」`, text: `幫我看看目前工作目錄「${folderName}」裡的程式碼，簡單說明專案結構跟主要功能` });
+      chips.push({ label: "委派coding修bug/寫功能", text: "我要委派coding domain在目前工作目錄裡分析並修一個bug（或加一個小功能），全程用git patch方式改程式碼，改完幫我跑測試確認" });
+    } else {
+      chips.push({ label: "設定工作目錄", text: "我要怎麼切換Working Directory到我的專案資料夾？" });
+    }
+    chips.push({ label: "開一個終端機", text: "幫我開一個終端機（/run-terminal），示範寫一個小程式並實際執行驗證給我看" });
+    chips.push({ label: "影片轉動畫/GIF", text: "幫我把最近上傳的影片轉成動態GIF，或轉成這個app的2D動畫YAML格式" });
+    chips.push({ label: "瀏覽器控制", text: "幫我用瀏覽器控制工具打開一個網頁，讀取上面的內容給我看" });
+    return chips;
+  };
+
   const fa = new FloatingAssistant({
     mountSelector: "#app",
     buttonStyle: "display:none;",
     windowStyle: "position:static; width:100%; height:100%; max-height:none; box-shadow:none; z-index:1;",
+    chipsProvider: buildDesktopSuggestionChips,
   });
   window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
 
