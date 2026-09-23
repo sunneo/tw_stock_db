@@ -4796,6 +4796,24 @@ class FloatingAssistant {
             '在對話裡嵌入一個互動終端機（WASM沙盒，busybox ash，不需要真實系統shell）。留空只開啟互動終端機；帶一段指令則開啟後直接執行它。',
             (argsText) => this._handleRunTerminalCommand(argsText)
         );
+        // tw_stock_db客製: 2026-09-23使用者要求——terminal_cp_to/terminal_cp_from
+        // 這兩個AI工具是domain-gated（只有委派到coding domain的子agent看得
+        // 到），使用者自己想手動搬檔案進出終端機卻不想開AI，也不想開🔀GUI
+        // 對話框時，需要一個直接打指令的管道，跟/run-terminal同一種「不經過
+        // AI，直接呼叫底層方法」的本地指令。共用_resolveTerminalCopySource/
+        // _writeTerminalCopyDestination/_resolveTerminalSession，不重新寫
+        // 一套邏輯。name=xxx留空時如果剛好只有一個終端機開著就自動選它，
+        // 有多個才要求明講，跟_handleRunTerminalCommand的name=前綴同一種寫法。
+        this.register_slash_command(
+            '/run-terminal-cp-to', '[name=xxx] <來源> <目的地路徑>',
+            '把一個檔案複製進終端機的沙盒檔案系統。來源可以是fap:<名稱>/<路徑>、附件file_id/檔名、或（桌面版）真實絕對路徑；目的地是沙盒內的絕對路徑或資料夾。name=留空時，目前只開一個終端機才會自動選用，開多個要明講。',
+            (argsText) => this._handleTerminalCpToCommand(argsText)
+        );
+        this.register_slash_command(
+            '/run-terminal-cp-from', '[name=xxx] <沙盒內路徑> [目的地]',
+            '從終端機的沙盒檔案系統取出一個檔案。目的地留空＝存成附件並在對話顯示下載卡片；也可以是fap:<名稱>/<路徑或資料夾>或（桌面版）真實絕對路徑/資料夾。name=規則同/run-terminal-cp-to。',
+            (argsText) => this._handleTerminalCpFromCommand(argsText)
+        );
         // tw_stock_db客製: 2026-09-18使用者手動調整——原本retryLimit=10、
         // maxPruneRetriesPerTurn=3對長任務太保守，使用者要求「不該經常發生
         // 超過上限迴圈就無法完成」「網路不穩定不該是LLM停擺的原因」，希望
@@ -16726,6 +16744,78 @@ ${sourceTool.handlerScript}
         this._renderMessageHistory();
     }
 
+    // tw_stock_db客製: 2026-09-23使用者要求——terminal_cp_to/terminal_cp_from
+    // 兩個AI工具是domain-gated（只有coding domain的子agent看得到），使用者
+    // 自己想手動搬檔案卻不想找AI、也不想開🔀GUI對話框時的直接指令入口，
+    // 跟_handleRunTerminalCommand同一種「name=前綴+不經過AI」寫法。兩個
+    // slash指令共用這個「找目標terminal」helper：name=有給就精準定址（跟
+    // _resolveTerminalSession一致，撞到多個同名會明講歧義）；沒給時，目前
+    // 只開一個終端機才自動選用，開多個必須明講，避免猜錯目標悄悄複製到
+    // 錯的terminal。
+    _resolveTerminalCpTarget(name) {
+        if (name) return this._resolveTerminalSession(name);
+        const sessions = this._getMountedTerminalSessions();
+        if (sessions.length === 1) return { session: sessions[0] };
+        if (!sessions.length) return { error: '目前沒有開啟中的終端機，請先用/run-terminal開一個' };
+        return { error: `目前有${sessions.length}個終端機在跑（${sessions.map((s) => s.name).join('、')}），請用name=<名稱>指定要對哪一個操作` };
+    }
+
+    // /run-terminal-cp-to [name=xxx] <來源> <目的地路徑>
+    async _handleTerminalCpToCommand(argsText) {
+        let text = String(argsText || '').trim();
+        let name = null;
+        const m = /^name=(\S+)\s*/.exec(text);
+        if (m) { name = m[1]; text = text.slice(m[0].length); }
+        const tokens = text.trim().split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) { this._log('⚠️ /run-terminal-cp-to：需要來源與目的地兩個參數，例如 /run-terminal-cp-to fap:我的資料夾/a.txt /work/'); return; }
+        const src = tokens[0];
+        const dstPath = tokens.slice(1).join(' ');
+        const { session, error } = this._resolveTerminalCpTarget(name);
+        if (!session) { this._log(`⚠️ /run-terminal-cp-to：${error}`); return; }
+        this.messages.push({ role: 'user', content: `📥 /run-terminal-cp-to ${argsText}` });
+        try {
+            const { bytes, filename, sourceLabel } = await this._resolveTerminalCopySource(src);
+            const runtime = await this._ensureBashWasmLoaded();
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const abs0 = this._terminalResolvePath(session.cwd, dstPath);
+            const isDirLike = /\/$/.test(dstPath) || this._terminalIsDir(fsStore, abs0);
+            const abs = isDirLike ? (abs0.endsWith('/') ? abs0 + filename : `${abs0}/${filename}`) : abs0;
+            this._writeBytesToTerminalFs(fsStore, abs, bytes);
+            this._pushAssistantMessage(`📥 已複製${sourceLabel}到終端機「${session.name}」：${abs}（${(bytes.length / 1024).toFixed(bytes.length < 1024 * 100 ? 1 : 0)}KB）`, null);
+        } catch (err) {
+            this._pushAssistantMessage(`❌ /run-terminal-cp-to失敗：${String(err.message || err)}`, null);
+        }
+    }
+
+    // /run-terminal-cp-from [name=xxx] <沙盒內路徑> [目的地]
+    async _handleTerminalCpFromCommand(argsText) {
+        let text = String(argsText || '').trim();
+        let name = null;
+        const m = /^name=(\S+)\s*/.exec(text);
+        if (m) { name = m[1]; text = text.slice(m[0].length); }
+        const tokens = text.trim().split(/\s+/).filter(Boolean);
+        if (!tokens.length) { this._log('⚠️ /run-terminal-cp-from：需要沙盒內的來源路徑，例如 /run-terminal-cp-from /work/out.txt'); return; }
+        const srcPath = tokens[0];
+        const dst = tokens.slice(1).join(' ');
+        const { session, error } = this._resolveTerminalCpTarget(name);
+        if (!session) { this._log(`⚠️ /run-terminal-cp-from：${error}`); return; }
+        try {
+            const runtime = await this._ensureBashWasmLoaded();
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const abs = this._terminalResolvePath(session.cwd, srcPath);
+            const bytes = this._terminalSandboxFileBytes(fsStore, abs);
+            if (!bytes) { this._log(`⚠️ /run-terminal-cp-from：終端機「${session.name}」的沙盒裡找不到檔案：${abs}`); return; }
+            this.messages.push({ role: 'user', content: `📤 /run-terminal-cp-from ${argsText}` });
+            const filenameHint = abs.split('/').pop() || 'file';
+            const result = await this._writeTerminalCopyDestination(dst, bytes, filenameHint, 'application/octet-stream');
+            if (result.destination !== 'chat_download') {
+                this._pushAssistantMessage(`📤 已從終端機「${session.name}」取出${abs}到${result.destination === 'fap' ? `FAP「${result.access_point}」${result.filename}` : result.path}（${(bytes.length / 1024).toFixed(bytes.length < 1024 * 100 ? 1 : 0)}KB）`, null);
+            }
+        } catch (err) {
+            this._pushAssistantMessage(`❌ /run-terminal-cp-from失敗：${String(err.message || err)}`, null);
+        }
+    }
+
     // tw_stock_db客製: 2026-09-23——AI工具版的terminal建立（terminal_create），
     // 跟slash指令共用id/name賦予邏輯，但_mountTerminalWidget是非同步、
     // _renderSingleMessage呼叫它時沒有await（見那裡的說明：xterm.js可能
@@ -17343,22 +17433,25 @@ ${sourceTool.handlerScript}
                 seedFiles[`/usr/bin/${name}`] = '';
             }
             // tw_stock_db客製: 2026-09-18使用者要求——「我怎麼看到使用者的
-            // FAP」「ls /，仍沒看到mnt」。這裡只塞每個目前已經granted的FAP
-            // 一個空目錄佔位（`/mnt/<label>/.keep`），讓`ls /mnt`一開始就能
-            // 看到有哪些FAP可以用——實際檔案內容故意不在這裡塞（可能很大、
-            // 每次開終端機都要等所有FAP整個讀完太慢），而是lazy hydrate：
-            // 第一次有指令真的提到`/mnt/<label>`時才整個讀進來（見
-            // _hydrateReferencedFapMounts）。session.fapLabels記住這裡看到
-            // 的名單，之後的lazy-hydrate掃描只需要比對這份清單，不用每次
-            // 指令都重新查一次FAP store。只列permission已經是granted的——
-            // 還沒授權的FAP如果也列出來，使用者一cd進去就會跳permission
-            // dialog，在終端機情境下太突兀，維持「先在Advance
-            // Settings或一般對話裡把權限點過一次，才會出現在/mnt」的行為。
+            // FAP」「ls /，仍沒看到mnt」。這裡只塞每個FAP一個空目錄佔位
+            // （`/mnt/<label>/.keep`），讓`ls /mnt`一開始就能看到有哪些FAP
+            // 可以用——實際檔案內容故意不在這裡塞（可能很大、每次開終端機
+            // 都要等所有FAP整個讀完太慢），而是lazy hydrate：第一次有指令
+            // 真的提到`/mnt/<label>`時才整個讀進來（見_hydrateReferencedFapMounts）。
+            // session.fapLabels記住這裡看到的名單，之後的lazy-hydrate掃描
+            // 只需要比對這份清單，不用每次指令都重新查一次FAP store。
+            // tw_stock_db客製: 2026-09-23使用者要求修正——原本這裡只列
+            // permission已經是granted的（理由是「還沒授權的FAP如果也列
+            // 出來，使用者一cd進去就會跳permission dialog，在終端機情境下
+            // 太突兀」），但使用者明確要求失去授權的FAP也要能被看到/cd到，
+            // 一touch/access就跳授權要求（而不是完全隱藏、使用者根本不知道
+            // 曾經有這個FAP存在）。改成不篩permission，一律列出——
+            // _hydrateFapMount本來就會呼叫_checkFapPermission，權限不是
+            // granted時自動跳授權對話框，這裡不用另外寫觸發邏輯。
             session.fapLabels = [];
             try {
                 const points = await this._listAllFapAccessPoints();
                 for (const p of points) {
-                    if (p.permission !== 'granted') continue;
                     session.fapLabels.push(p.label);
                     seedFiles[`/mnt/${p.label}/.keep`] = '';
                 }
@@ -17617,10 +17710,10 @@ ${sourceTool.handlerScript}
         let points;
         try { points = await this._listAllFapAccessPoints(); } catch (_) { return; }
         const known = new Set(session.fapLabels || []);
-        const granted = new Set();
+        // tw_stock_db客製: 2026-09-23同_ensureTerminalFsStore的修正——不再
+        // 篩permission，失去授權的FAP也要出現在/mnt，cd進去時
+        // _hydrateFapMount會自動跳授權對話框。
         for (const p of points) {
-            if (p.permission !== 'granted') continue;
-            granted.add(p.label);
             if (!known.has(p.label)) {
                 (session.fapLabels = session.fapLabels || []).push(p.label);
                 try { fsStore.mkdirSync(`/mnt/${p.label}`, { uid: 0, gid: 0, mode: 0o755 }); } catch (_) {}
@@ -18101,7 +18194,13 @@ ${sourceTool.handlerScript}
             if (state.leftTab === 'fap') {
                 if (!state.leftFapLabel) {
                     const points = await this._listAllFapAccessPoints();
-                    return points.filter(p => p.permission === 'granted').map(p => ({ key: `__root__${p.label}`, name: p.label, isDir: true, isRoot: true }));
+                    // tw_stock_db客製: 2026-09-23使用者要求——失去授權（瀏覽器
+                    // 重置File System Access API的permission）的FAP不再從清單
+                    // 隱藏，改成照樣列出＋標註「需要重新授權」；點進去時
+                    // _fapListFiles內部本來就會呼叫_checkFapPermission，權限
+                    // 不是granted就自動跳授權對話框（跟_hydrateFapMount同一套
+                    // 機制），這裡不用另外寫觸發邏輯。
+                    return points.map(p => ({ key: `__root__${p.label}`, name: p.label, isDir: true, isRoot: true, sub: p.permission === 'granted' ? undefined : '🔒需要重新授權' }));
                 }
                 const ref = `fap:${state.leftFapLabel}/${state.leftFapPath.join('/')}`;
                 const result = await this._fapListFiles(ref);
