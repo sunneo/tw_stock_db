@@ -10011,10 +10011,16 @@ ${fnData.code}
 
     // 回傳Promise<boolean>：true=使用者同意並成功取得授權，false=拒絕/取消/
     // 授權請求本身失敗。跟_showMp4ExportOptionsDialog同一種輕量Modal寫法。
+    // tw_stock_db客製: 2026-09-23使用者回報——z-index:1000020比終端機檔案
+    // 傳輸GUI（_openTerminalTransferDialog）、圖片lightbox等後來加的
+    // 全螢幕overlay（都用2147483000）低，授權對話框會被擋在後面、使用者
+    // 完全看不到、點不到，卡住整個流程。授權對話框語意上一定要蓋過任何
+    // 其他畫面（使用者非回應不可才能繼續），改用2147483647（32-bit
+    // z-index的實務安全上限），確保永遠在最上層。
     _showFapPermissionDialog(rec, mode) {
         return new Promise((resolve) => {
             const overlay = document.createElement('div');
-            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000020; display:flex; align-items:center; justify-content:center;';
+            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2147483647; display:flex; align-items:center; justify-content:center;';
             const box = document.createElement('div');
             box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(340px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
             box.innerHTML = `
