@@ -10433,7 +10433,7 @@ ${fnData.code}
         for await (const [name, handle] of dirHandle.entries()) {
             if (handle.kind === 'file') {
                 const file = await handle.getFile();
-                entries.push({ name, type: 'file', sizeBytes: file.size });
+                entries.push({ name, type: 'file', sizeBytes: file.size, lastModified: file.lastModified });
             } else {
                 entries.push({ name, type: 'directory' });
             }
@@ -18998,6 +18998,15 @@ ${sourceTool.handlerScript}
             leftSelected: new Set(),
             rightPath: '/',
             rightSelected: new Set(),
+            // tw_stock_db客製: 2026-09-25使用者要求——「transfer的gui要顯示
+            // 名稱/size/last modified time，而且要可以排序，要像table一樣
+            // 可以adjust column size」。左右兩邊各自獨立一份排序欄位/方向、
+            // 欄寬（px），因為左邊隨tab切換資料型態差異很大（chat/fap/
+            // workdir/computer），使用者可能想針對不同來源分別調整。
+            leftSort: { col: 'name', dir: 'asc' },
+            rightSort: { col: 'name', dir: 'asc' },
+            leftColWidths: { size: 76, modified: 132 },
+            rightColWidths: { size: 76, modified: 132 },
         };
         const joinAbsPath = (base, name) => `${String(base || '').replace(/[\\/]+$/, '')}/${name}`;
 
@@ -19014,7 +19023,8 @@ ${sourceTool.handlerScript}
                 <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid #e0e0e0;">
                     <div class="ai-tt-left-tabs" style="display:flex; gap:2px; padding:6px 8px 0; flex:none;"></div>
                     <div class="ai-tt-left-crumbs" style="padding:6px 10px; font-size:11px; color:#666; border-bottom:1px solid #eee; flex:none; overflow-x:auto; white-space:nowrap;"></div>
-                    <div class="ai-tt-left-list" style="flex:1; overflow:auto; padding:4px; color:#222;"></div>
+                    <div class="ai-tt-left-header" style="flex:none; overflow:hidden;"></div>
+                    <div class="ai-tt-left-list" style="flex:1; overflow:auto; padding:0 4px; color:#222;"></div>
                     <div style="padding:6px 10px; border-top:1px solid #eee; flex:none;">
                         <button type="button" class="ai-tt-left-delete" style="font-size:12px; padding:4px 10px; border:1px solid #d33; color:#d33; background:#fff; border-radius:6px; cursor:pointer;">🗑 刪除選取</button>
                     </div>
@@ -19026,7 +19036,8 @@ ${sourceTool.handlerScript}
                 <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
                     <div style="padding:6px 8px 0; font-size:12px; font-weight:bold; color:#76b900; flex:none;">🖥️ 終端機（/ 開始，完整權限）</div>
                     <div class="ai-tt-right-crumbs" style="padding:6px 10px; font-size:11px; color:#666; border-bottom:1px solid #eee; flex:none; overflow-x:auto; white-space:nowrap;"></div>
-                    <div class="ai-tt-right-list" style="flex:1; overflow:auto; padding:4px; color:#222;"></div>
+                    <div class="ai-tt-right-header" style="flex:none; overflow:hidden;"></div>
+                    <div class="ai-tt-right-list" style="flex:1; overflow:auto; padding:0 4px; color:#222;"></div>
                     <div style="padding:6px 10px; border-top:1px solid #eee; flex:none;">
                         <button type="button" class="ai-tt-right-delete" style="font-size:12px; padding:4px 10px; border:1px solid #d33; color:#d33; background:#fff; border-radius:6px; cursor:pointer;">🗑 刪除選取</button>
                     </div>
@@ -19039,8 +19050,10 @@ ${sourceTool.handlerScript}
 
         const tabsEl = box.querySelector('.ai-tt-left-tabs');
         const crumbsEl = box.querySelector('.ai-tt-left-crumbs');
+        const headerEl = box.querySelector('.ai-tt-left-header');
         const listEl = box.querySelector('.ai-tt-left-list');
         const rCrumbsEl = box.querySelector('.ai-tt-right-crumbs');
+        const rHeaderEl = box.querySelector('.ai-tt-right-header');
         const rListEl = box.querySelector('.ai-tt-right-list');
         const statusEl = box.querySelector('.ai-tt-status');
         const setStatus = (text, isError) => { statusEl.textContent = text || ''; statusEl.style.color = isError ? '#d33' : '#888'; };
@@ -19077,11 +19090,28 @@ ${sourceTool.handlerScript}
         });
 
         // ---- 左邊列表：依leftTab分別讀取，回傳統一格式 [{key,name,isDir,isRoot,sizeBytes,sub,rootPath}] ----
+        // tw_stock_db客製: 2026-09-25使用者要求——排序/欄寬都是使用者自己
+        // 調整的UI狀態，不該混在各資料來源各自的預設排序邏輯裡；改成每個
+        // listXxxEntries只負責回傳「name/isDir/isRoot/sizeBytes/mtime」
+        // 這組統一欄位（沒有的資料來源給null，例如沙盒fs本來就沒有時間戳、
+        // FAP存取點/磁碟機這種「資料夾容器」本身沒有size/mtime意義），實際
+        // 排序統一由applySort依state.leftSort/rightSort決定，資料夾/root
+        // 永遠排最前面（既有UX慣例不變），同類型底下才依使用者選的欄位排序。
+        const compareEntries = (a, b, sort) => {
+            const aDir = !!(a.isDir || a.isRoot), bDir = !!(b.isDir || b.isRoot);
+            if (aDir !== bDir) return aDir ? -1 : 1;
+            let cmp;
+            if (sort.col === 'size') cmp = (a.sizeBytes || 0) - (b.sizeBytes || 0);
+            else if (sort.col === 'modified') cmp = (a.mtime || 0) - (b.mtime || 0);
+            else cmp = String(a.name).localeCompare(String(b.name));
+            return sort.dir === 'asc' ? cmp : -cmp;
+        };
+        const applySort = (entries, sort) => { entries.sort((a, b) => compareEntries(a, b, sort)); return entries; };
+
         const listLeftEntries = async () => {
             if (state.leftTab === 'chat') {
                 const all = await this.fileCache.getAll();
-                all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-                return all.map(r => ({ key: r.id, name: r.filename, isDir: false, sizeBytes: r.sizeBytes, sub: r.kind === 'uploaded' ? '📎附件' : '🤖產生' }));
+                return all.map(r => ({ key: r.id, name: r.filename, isDir: false, sizeBytes: r.sizeBytes, mtime: r.createdAt || null, sub: r.kind === 'uploaded' ? '📎附件' : '🤖產生' }));
             }
             if (state.leftTab === 'fap') {
                 if (!state.leftFapLabel) {
@@ -19096,7 +19126,7 @@ ${sourceTool.handlerScript}
                 }
                 const ref = `fap:${state.leftFapLabel}/${state.leftFapPath.join('/')}`;
                 const result = await this._fapListFiles(ref);
-                return result.entries.map(e => ({ key: e.name, name: e.name, isDir: e.type === 'directory', sizeBytes: e.sizeBytes }));
+                return result.entries.map(e => ({ key: e.name, name: e.name, isDir: e.type === 'directory', sizeBytes: e.sizeBytes, mtime: e.lastModified || null }));
             }
             if (state.leftTab === 'workdir' && state.leftAbsRoot == null) {
                 const ws = await window.desktopAPI.workspace.get();
@@ -19107,20 +19137,21 @@ ${sourceTool.handlerScript}
                 return drives.map(d => ({ key: `__root__${d.path}`, name: d.label, isDir: true, isRoot: true, rootPath: d.path }));
             }
             const entries = await window.desktopAPI.rawfs.readdir(state.leftAbsPath);
-            entries.sort((a, b) => (a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : (a.isDirectory ? -1 : 1)));
-            return entries.map(e => ({ key: e.name, name: e.name, isDir: e.isDirectory }));
+            return entries.map(e => ({ key: e.name, name: e.name, isDir: e.isDirectory, sizeBytes: e.size, mtime: e.mtimeMs || null }));
         };
         const listRightEntries = () => {
             let names = [];
             try { names = fsStore.readdirSync(state.rightPath); } catch (_) { names = []; }
-            const out = names.map((name) => {
+            // tw_stock_db客製: 沙盒fs（wasi-sh memoryFs）沒有時間戳（見
+            // _terminalRunScriptFile上方對這個沙盒限制的既有說明），
+            // mtime一律是null，「Modified」欄位顯示「—」是如實反映這個
+            // 沙盒本身的限制，不是漏做。
+            return names.map((name) => {
                 const abs = this._terminalResolvePath(state.rightPath, name);
                 let isDir = false, sizeBytes = 0;
                 try { const st = fsStore.statSync(abs); isDir = this._terminalIsDir(fsStore, abs); sizeBytes = st.size; } catch (_) {}
-                return { key: name, name, isDir, sizeBytes, abs };
+                return { key: name, name, isDir, sizeBytes, mtime: null, abs };
             });
-            out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1)));
-            return out;
         };
 
         // ---- 麵包屑（左邊依tab、右邊固定用/分隔）----
@@ -19173,12 +19204,69 @@ ${sourceTool.handlerScript}
         };
 
         // ---- 列表列（兩邊共用；資料夾只能點進去瀏覽，不給勾選）----
-        const renderRows = (el, entries, selectedSet, onNavigate) => {
+        // tw_stock_db客製: 2026-09-25使用者要求——「transfer的gui要顯示
+        // 名稱/size/last modified time，而且要可以排序，要像table一樣可以
+        // adjust column size」。用CSS Grid讓header跟每一列共用同一份
+        // `grid-template-columns`（checkbox/icon固定寬、名稱`1fr`自動撐開、
+        // 大小/修改時間可拖拉調整），欄位標籤點擊切換排序（同一欄再點一次
+        // 反向，換欄預設asc），拖拉欄位標籤右緣的handle即時調整寬度——
+        // 直接mutate `colWidths`（跟`state.leftColWidths`/`rightColWidths`
+        // 共用同一個物件參照，重新開對話框前都會記得使用者上次調整的寬度）。
+        const ttGridTemplate = (colWidths) => `18px 18px minmax(60px,1fr) ${colWidths.size}px ${colWidths.modified}px`;
+        const ttApplyColWidths = (headerEl2, listEl2, colWidths) => {
+            const tpl = ttGridTemplate(colWidths);
+            headerEl2.style.gridTemplateColumns = tpl;
+            listEl2.querySelectorAll(':scope > .ai-tt-row').forEach((row) => { row.style.gridTemplateColumns = tpl; });
+        };
+        const _ttFormatMtime = (ms) => {
+            if (!ms) return '—';
+            try { return new Date(ms).toLocaleString(); } catch (_) { return '—'; }
+        };
+        const renderHeader = (headerEl2, listEl2, sort, colWidths, onSortChange) => {
+            headerEl2.innerHTML = '';
+            headerEl2.style.cssText = `display:grid; grid-template-columns:${ttGridTemplate(colWidths)}; gap:6px; padding:4px 6px; font-size:11px; font-weight:bold; color:#555; border-bottom:1px solid #ddd; user-select:none;`;
+            headerEl2.appendChild(document.createElement('div'));
+            headerEl2.appendChild(document.createElement('div'));
+            const mkCell = (label, col, resizable) => {
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'position:relative; display:flex; align-items:center; overflow:hidden;';
+                const btn = document.createElement('span');
+                btn.style.cssText = 'cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                btn.textContent = label + (sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '');
+                btn.addEventListener('click', () => onSortChange(col));
+                wrap.appendChild(btn);
+                if (resizable) {
+                    const handle = document.createElement('div');
+                    handle.style.cssText = 'position:absolute; right:-5px; top:0; bottom:0; width:10px; cursor:col-resize; z-index:1;';
+                    handle.addEventListener('mousedown', (ev) => {
+                        ev.preventDefault(); ev.stopPropagation();
+                        const startX = ev.clientX;
+                        const startWidth = colWidths[col];
+                        const onMove = (mv) => {
+                            colWidths[col] = Math.max(40, Math.min(400, startWidth + (mv.clientX - startX)));
+                            ttApplyColWidths(headerEl2, listEl2, colWidths);
+                        };
+                        const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                        document.addEventListener('mousemove', onMove);
+                        document.addEventListener('mouseup', onUp);
+                    });
+                    wrap.appendChild(handle);
+                }
+                return wrap;
+            };
+            headerEl2.appendChild(mkCell('名稱', 'name', false));
+            headerEl2.appendChild(mkCell('大小', 'size', true));
+            headerEl2.appendChild(mkCell('修改時間', 'modified', true));
+        };
+
+        const renderRows = (el, entries, selectedSet, sort, colWidths, onNavigate) => {
             el.innerHTML = '';
             if (!entries.length) { el.innerHTML = '<div style="padding:10px; font-size:12px; color:#999;">（空）</div>'; return; }
-            for (const e of entries) {
+            const tpl = ttGridTemplate(colWidths);
+            for (const e of applySort(entries.slice(), sort)) {
                 const row = document.createElement('div');
-                row.style.cssText = 'display:flex; align-items:center; gap:6px; padding:4px 6px; font-size:12px; border-radius:4px; cursor:pointer;';
+                row.className = 'ai-tt-row';
+                row.style.cssText = `display:grid; grid-template-columns:${tpl}; gap:6px; align-items:center; padding:4px 6px; font-size:12px; border-radius:4px; cursor:pointer;`;
                 row.addEventListener('mouseenter', () => { row.style.background = '#f0f0f0'; });
                 row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
                 const cb = document.createElement('input');
@@ -19192,12 +19280,15 @@ ${sourceTool.handlerScript}
                 const icon = document.createElement('span');
                 icon.textContent = e.isDir || e.isRoot ? '📁' : '📄';
                 const name = document.createElement('span');
-                name.style.cssText = 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                name.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
                 name.textContent = e.name + (e.sub ? `（${e.sub}）` : '');
                 const size = document.createElement('span');
-                size.style.cssText = 'color:#999; font-size:11px; flex:none;';
+                size.style.cssText = 'color:#999; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
                 size.textContent = e.isDir || e.isRoot ? '' : this._ttFormatSize(e.sizeBytes);
-                row.appendChild(cb); row.appendChild(icon); row.appendChild(name); row.appendChild(size);
+                const modified = document.createElement('span');
+                modified.style.cssText = 'color:#999; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                modified.textContent = e.isRoot ? '' : _ttFormatMtime(e.mtime);
+                row.appendChild(cb); row.appendChild(icon); row.appendChild(name); row.appendChild(size); row.appendChild(modified);
                 row.addEventListener('click', () => {
                     if (e.isDir || e.isRoot) onNavigate(e);
                     else { cb.checked = !cb.checked; if (cb.checked) selectedSet.add(e.key); else selectedSet.delete(e.key); }
@@ -19211,7 +19302,11 @@ ${sourceTool.handlerScript}
             try {
                 const entries = await listLeftEntries();
                 renderCrumbs(crumbsEl, leftCrumbSegments(), renderLeft);
-                renderRows(listEl, entries, state.leftSelected, async (e) => {
+                renderHeader(headerEl, listEl, state.leftSort, state.leftColWidths, (col) => {
+                    state.leftSort = { col, dir: state.leftSort.col === col && state.leftSort.dir === 'asc' ? 'desc' : 'asc' };
+                    renderLeft();
+                });
+                renderRows(listEl, entries, state.leftSelected, state.leftSort, state.leftColWidths, async (e) => {
                     if (state.leftTab === 'fap') {
                         if (e.isRoot) { state.leftFapLabel = e.name; state.leftFapPath = []; }
                         else state.leftFapPath.push(e.name);
@@ -19230,7 +19325,11 @@ ${sourceTool.handlerScript}
         const renderRight = async () => {
             const entries = listRightEntries();
             renderCrumbs(rCrumbsEl, rightCrumbSegments(), renderRight);
-            renderRows(rListEl, entries, state.rightSelected, async (e) => {
+            renderHeader(rHeaderEl, rListEl, state.rightSort, state.rightColWidths, (col) => {
+                state.rightSort = { col, dir: state.rightSort.col === col && state.rightSort.dir === 'asc' ? 'desc' : 'asc' };
+                renderRight();
+            });
+            renderRows(rListEl, entries, state.rightSelected, state.rightSort, state.rightColWidths, async (e) => {
                 state.rightPath = e.abs;
                 await renderRight();
             });
