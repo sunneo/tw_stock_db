@@ -1161,4 +1161,57 @@ branch裡可能同時放好幾個檔案」的情境，例如`clang.wasm`+`lld.wa
 文件描述就能確定會動）；`autoconf`除非使用者有其他更務實的替代方案（例如只
 需要支援固定幾個常見巨集、不追求完整autoconf.m4f相容），否則目前判斷投入產出
 比不佳，建議先擱置。
+
+### 19.6 bugfix：`;`分隔的複合指令裡，JS攔截指令不是第一個詞就失效
+
+**症狀**（使用者實測回報）：互動輸入`echo "hi"; sleep 5; echo "hi2"`，`sleep`
+回報`sh: line 0: sleep: not found`，前後的`echo`正常執行。
+
+**根因**：`sleep`/`curl`/`wget`/`httping`（`TERMINAL_SHELL_BUILTINS`）與`make`
+（`TERMINAL_PROGRAM_BUNDLES`）都是在指令送進WASM busybox**之前**被JS層攔截的
+（§19.1/19.3已說明wasi-sh的host-builtin API要求同步callback、做不到`await
+fetch()`/`setTimeout`，所以這幾個指令沒辦法走`SANDBOX_COMMAND_REGISTRY`）。
+但攔截判斷本身只看**整行字串的第一個詞**是否等於已知指令名——`echo "hi";
+sleep 5; echo "hi2"`整行第一個詞是`echo`，於是完全不觸發攔截，整行原封不動
+丟進WASM busybox執行，而busybox裡根本沒有`sleep`這個applet（也沒有`curl`/
+`wget`/`httping`/`make`），所以只有`sleep`本身失敗，前後真正由busybox執行的
+`echo`不受影響。這個沙盒是WASM單執行緒＋`crossOriginIsolated`不可用（見文件
+開頭「互動限制」章節），沒有真正的shell parser可以在既有架構下「原生」處理
+`;`——只能在JS層自己做一層簡化的複合指令拆解。
+
+**修法**：新增兩個共用method（`_terminalSplitTopLevelSemicolons`/
+`_terminalGroupCompoundLine`），對整行做quote-aware（單/雙引號內的`;`不拆）
+的頂層`;`拆解，再依`TERMINAL_COMPOUND_INTERCEPT_NAMES`（涵蓋`cd`/`pwd`/
+`clear`/`exit`/`help`/`which`/`chmod`/`time`/`ask-floating-ai-assistant`/
+`sync`/`sleep`/`curl`/`wget`/`httping`/`make`，刻意不含`less`/`vi`/`top`等
+互動式program bundle、也不含`sh`/`bash`腳本執行）判斷每個segment的第一個詞，
+把「JS攔截」segment跟「純WASM」segment分組——連續的純WASM segment合併成
+一個script、用同一次`runtime.run()`呼叫執行（保留`export X=1; echo $X`這類
+同一個wasm shell instance內共享狀態的既有語意），JS攔截segment各自獨立執行。
+
+**兩條路徑都要改**（這是這次bugfix的重點，之前修`terminal_run`繞過JS攔截
+的bug時就踩過同一種「兩條路徑要分開改」的坑，見上方Errors記錄）：
+- 互動輸入路徑`_runTerminalCommand(session, rawLine)`：分組後，JS類segment
+  遞迴呼叫自己、WASM類segment批次丟給`_runTerminalShellLine`，group數量
+  ≤1（絕大多數單一指令的情況）時完全落回原本邏輯，不影響既有行為。
+- `terminal_run` AI工具路徑`_terminalRunCommand(session, line, opts)`：
+  同樣的分組判斷，JS類segment遞迴呼叫自己（`cd`的session.cwd更新、
+  sleep/curl/wget/httping/make的`_terminalCaptureWrites`回傳結構都在遞迴
+  裡沿用既有邏輯，不用重寫），WASM類segment合併後呼叫新抽出的
+  `_terminalRunWasmLine(session, line, opts)`（把原本內嵌在
+  `_terminalRunCommand`裡「真的送進WASM執行」那一段搬出來的獨立method，
+  單一指令的fallthrough跟複合指令分組後的WASM批次共用同一份邏輯）。
+  `opts.outputFile`/`opts.stderrFile`在複合指令情境下**不會**逐個group
+  各寫一次，而是等整條複合指令跑完、累積好完整的stdout/stderr之後在
+  `_terminalRunCommand`層級統一寫一次。
+
+**驗證**（真實Electron，非mock）：`terminal_run`跑
+`echo "hi"; sleep 1; echo "hi2"`確認exit_code=0、stdout含前後兩個echo、
+實際delay≥0.9秒；同樣方式驗證`curl`/`make`夾在`;`中間也正常執行（含`make`
+真的產出`out.txt`）；`export X=1; echo $X`（純WASM、不含任何JS攔截指令的
+複合行）確認回傳`1`，證明沒有破壞既有的同一wasm instance共享狀態語意；
+互動輸入路徑同樣重跑一次`echo "hi3"; sleep 1; echo "hi4"`與
+`export Y=2; echo $Y`，透過`terminal_get_text`讀回畫面文字確認結果一致。
+全部測試通過。
+
 | `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
