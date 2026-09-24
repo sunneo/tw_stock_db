@@ -1214,4 +1214,87 @@ sleep 5; echo "hi2"`整行第一個詞是`echo`，於是完全不觸發攔截，
 `export Y=2; echo $Y`，透過`terminal_get_text`讀回畫面文字確認結果一致。
 全部測試通過。
 
+### 19.7 §19.6之後：control-structure-aware拆分 + 真正註冊成host builtin
+
+§19.6上線後，使用者立刻用兩個更進階的情境測出兩個新落差，這裡一併記錄
+（都是同一次追加修正裡處理的）：
+
+**落差1：naive `;`拆分器不懂`for`/`while`/`if`/`case`本身也用`;`當語法**
+
+使用者實測：`for i in \`seq 1 10\`;do date;sleep 2; done;`——`sleep`回報
+`sh: line 5: sleep: not found`，`done`也報語法錯誤。根因：§19.6的
+`_terminalSplitTopLevelSemicolons`只追蹤quote狀態，不知道`for ...;do ...;
+done`這種控制結構的`;`是語法本身的一部分，不是頂層指令分隔符——naive拆分
+把`sleep 2`從迴圈中間挖出來單獨執行，留下`for ...;do date`（缺done）跟孤立
+的`done`兩段給WASM，兩段都變成語法錯誤。
+
+修法：額外追蹤一個「控制結構巢狀深度」計數器，掃描到`for`/`while`/`until`/
+`if`/`case`這幾個開頭關鍵字+1、掃到`done`/`fi`/`esac`收尾關鍵字-1（`do`/
+`then`/`else`/`elif`/`in`不改變深度，它們一定出現在已經+1的區塊裡面，靠
+對應的收尾關鍵字收尾即可），只有深度為0時的頂層`;`才真的拆開；同時追蹤
+`(`/`)`跟`{`/`}`的巢狀深度、backtick開關狀態，避免子shell/command
+substitution裡的`;`被誤判成頂層分隔符。這是簡化版的關鍵字比對（只算深度、
+不驗證for跟done是不是真的配對正確），對合法shell語法已經足夠正確。
+
+**落差2：`sleep`/`curl`/`wget`/`httping`就算不被naive拆分器搞壞，busybox
+本身還是不認得這幾個指令——`./script.sh`腳本內容整段送進WASM時完全碰不到
+pre-interception層**
+
+即使落差1修好、for迴圈整段完整送進WASM執行，`sleep`還是「not found」——因為
+busybox本身沒有這個applet，pre-interception（TERMINAL_SHELL_BUILTINS）
+只在「這一行第一個詞」就是`sleep`時才生效，迴圈本體/腳本檔案內容從來不會
+變成「這一行第一個詞」。使用者接著實測`./test.sh`（腳本內容是`for...do...
+sleep 1...done`）同樣得到「not found」，並明確要求：「我希望sleep要成為
+/usr/bin的程式」「可以跟ask-floating-ai-assistant一樣」「要讓這個bash可以
+註冊bin，並讓那些binary實際上可以被外面的js engine handle」。
+
+修法：把`sleep`/`curl`/`wget`/`httping`**額外**註冊進`SANDBOX_COMMAND_
+REGISTRY`（跟`python`/`jq`/`xq`/`m4`同一套host builtin機制——busybox自己
+parse到這個指令名稱時就會呼叫對應的JS實作，不是JS層攔截），這樣不管是
+互動輸入單行、`terminal_run`單行、`;`複合指令、for/while/if迴圈本體、還是
+`./script.sh`腳本內容，只要文字裡出現這幾個字，`_buildTerminalSandboxBuiltins`
+的word-boundary掃描都會抓到並注入對應的host builtin。原本的JS層
+pre-interception（async、不卡UI）保留不動，仍是「這一行第一個詞」情境的
+優先路徑；host builtin只補上pre-interception完全碰不到的情境。
+
+跟`_runPyodideScriptSync`（host builtin不能await，python也有一份專門給
+builtin路徑用的同步版本）同一個限制、同一種付出代價的方式：
+- **`_runSleepBuiltin`**：改用真的同步busy-wait（`while (Date.now() <
+  deadline) {}`），會**真的凍結整個分頁**（不只terminal widget，連瀏覽器
+  repaint都卡住），上限刻意收緊到30秒（pre-interception路徑的`_terminalSleep`
+  上限是3600秒/1小時），避免腳本/迴圈裡不小心睡太久讓分頁長時間沒回應。
+- **`_runCurlBuiltin`/`_runWgetBuiltin`/`_runHttpingBuiltin`**：改用同步
+  `XMLHttpRequest`（`xhr.open(method,url,false)`）取代`fetch()`。同步XHR
+  規格限制`responseType`只能是空字串或`'text'`（設`'arraybuffer'`會直接
+  拋`InvalidAccessError`），所以這條路徑**只能正確處理文字內容**（JSON/
+  HTML/純文字），二進位下載用這條路徑會因文字編碼往返而毀損位元組——真的
+  要下載二進位檔案，請用互動輸入或terminal_run最上層直接打`curl -o`/
+  `wget -O`（走pre-interception的`_terminalHttpFetch`，正確拿到
+  ArrayBuffer）。`_terminalParseCurlArgs`/`_terminalParseWgetArgs`/
+  `_terminalParseHttpingArgs`把原本內嵌在async方法裡的旗標解析抽成共用
+  函式，pre-interception（tokens來自`_terminalTokenizeArgs`）跟host
+  builtin（tokens直接是`ctx.argv.slice(1)`，wasi-sh自己已經拆好詞）兩條
+  路徑共用同一份解析邏輯，避免之後各自修改而行為漂移。
+
+**追加發現的另外兩個「terminal_run缺互動路徑既有邏輯」的落差**（跟前面
+`sleep`/`curl`/`wget`/`httping`/`make`同一種bug類別，測試§19.7情境時順手
+發現順手修）：`chmod`（設`session.execMarks`，讓`./script.sh`能被判定
+「已授權可執行」）跟`sh`/`bash <script>`（不需要先chmod +x）原本都只接進
+互動輸入路徑，`terminal_run`呼叫會得到「not found」。以及`./script.sh`
+本身（含斜線的檔名，互動路徑原本就有判斷、`terminal_run`完全沒有）——這三個
+一併補進`_terminalRunCommand`，用同一個`_terminalCaptureWrites`模式包裝成
+結構化回傳。`_terminalGroupCompoundLine`的分組判斷也額外加上「含斜線的
+指令名」條件（不能只靠固定名稱Set.has()，腳本檔名是使用者自己取的），並把
+`sh`/`bash`加進`TERMINAL_COMPOUND_INTERCEPT_NAMES`。
+
+**驗證**（真實Electron，非mock）：使用者原始回報的逐字指令`for i in
+\`seq 1 10\`;do date;sleep 2; done;`互動輸入下去，10次迭代、每次真的delay
+2秒（總耗時~20秒），不再有command not found/syntax error；`./test.sh`
+（`chmod +x`後執行，腳本內容是含`sleep`的for迴圈）透過`terminal_run`正確
+執行且delay真實生效；`curl`嵌在腳本裡正確抓到文字內容；`sh script.sh`
+（不chmod）透過`terminal_run`正確執行；巢狀for迴圈（控制深度計數器正確性）
+正確跑出4種組合；`export X=1; echo $X`（純WASM複合行）跟純`echo "hi";
+sleep 1; echo "hi2"`（無控制結構的一般複合行）兩個既有回歸案例都沒有被
+破壞。全部測試通過。
+
 | `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
