@@ -3042,6 +3042,9 @@ function _faClassifyMediaFile(filename) {
     if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'flac', 'opus', 'weba', 'wma'].includes(e)) return 'audio';
     if (['srt', 'vtt', 'ass', 'ssa', 'sbv'].includes(e)) return 'subtitle';
     if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico'].includes(e)) return 'image';
+    // tw_stock_db客製: 2026-09-24使用者要求——附件貼上PDF要有viewer可以看，
+    // 跟image縮圖同一種「分類出來才知道要不要顯示可互動UI」的用法。
+    if (e === 'pdf') return 'pdf';
     return 'other';
 }
 
@@ -7796,7 +7799,7 @@ ${fnData.code}
         );
 
         registerOptional('parse_uploaded_file',
-            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。**PDF文字跟圖片是分開解析的**：預設只解析文字（速度快），如果PDF裡有圖表/圖片需要理解內容，帶interpret_images:true重新呼叫——有圖片的頁面會被整頁截圖（不是逐一還原內嵌圖片，比較可靠），截圖先以「[圖片區塊：第N頁截圖｜file_id=...]」佔位標籤插入該頁文字，interpret_images:true時才會真的呼叫vision model描述內容並附加在佔位標籤後面（interpret_images_count控制最多對幾頁截圖做vision描述，避免每頁都跑vision太慢，預設3）；回應的pageImages欄位列出每張截圖的file_id/是否已描述，之後也可以直接拿file_id呼叫interpret_image單獨補問。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
+            '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。**PDF文字跟圖片是分開解析的**：預設只解析文字（速度快），如果PDF裡有圖表/圖片需要理解內容，帶interpret_images:true重新呼叫——有圖片的頁面會被整頁截圖（不是逐一還原內嵌圖片，比較可靠），截圖先以「[圖片區塊：第N頁截圖｜file_id=...]」佔位標籤插入該頁文字，interpret_images:true時才會真的呼叫vision model描述內容並附加在佔位標籤後面（interpret_images_count控制最多對幾頁截圖做vision描述，避免每頁都跑vision太慢，預設3）；回應的pageImages欄位列出每張截圖的file_id/是否已描述，之後也可以直接拿file_id呼叫interpret_image單獨補問。**有密碼保護的PDF**：呼叫這個工具時如果偵測到需要密碼，會在畫面上自動跳出密碼輸入框讓使用者當場輸入（跟File Access Point權限不足時的行為一致），這次工具呼叫會停在那裡等使用者輸入完成，不需要事先知道密碼或另外處理，使用者輸入錯誤會再跳一次、取消輸入則工具回報明確錯誤。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -16689,6 +16692,151 @@ ${sourceTool.handlerScript}
         return this._pdfJsLoadPromise;
     }
 
+    // tw_stock_db客製: 2026-09-24使用者要求——解析/檢視有密碼保護的PDF。
+    // pdf.js在沒給password（或給錯）時，getDocument(...).promise會reject一個
+    // PasswordException（.code是1=NEED_PASSWORD第一次要求輸入、2=INCORRECT_
+    // PASSWORD代表剛剛輸入的密碼是錯的），跟`_checkFapPermission`遇到權限
+    // 不足時「當場跳一個dialog、await使用者輸入」同一種模式——這裡也是
+    // 跳密碼輸入框、拿到密碼後帶著重試，最多重試5次避免使用者不斷猜錯時
+    // 卡死。parse_uploaded_file這類工具呼叫、跟PDF viewer都共用這個方法，
+    // 不要各自處理一次密碼流程。
+    async _loadPdfDocument(blob, opts = {}) {
+        await this._ensurePdfJsLoaded();
+        const buffer = await blob.arrayBuffer();
+        let password;
+        let wrongPassword = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+                // tw_stock_db客製: 2026-09-24實測發現——pdf.js的getDocument({data})
+                // 會把傳入的ArrayBuffer transfer給worker（讀取後原本這份buffer會
+                // 變成長度0的detached狀態），第一次嘗試（沒密碼或密碼錯）失敗後，
+                // 直接重用同一個buffer變數重試，實際上是把一份已經被掏空的
+                // buffer再送一次，不會再拋出正確的PasswordException、後續流程
+                // 直接卡死（使用者輸入完密碼後對話框沒有反應）。每次呼叫前用
+                // buffer.slice(0)複製一份全新、未被detach的ArrayBuffer解決。
+                const dataForThisAttempt = buffer.slice(0);
+                const task = password != null ? pdfjsLib.getDocument({ data: dataForThisAttempt, password }) : pdfjsLib.getDocument({ data: dataForThisAttempt });
+                return await task.promise;
+            } catch (err) {
+                const isPasswordError = err && (err.name === 'PasswordException' || /password/i.test(String(err.message || '')));
+                if (!isPasswordError) throw err;
+                const INCORRECT = (typeof pdfjsLib !== 'undefined' && pdfjsLib.PasswordResponses && pdfjsLib.PasswordResponses.INCORRECT_PASSWORD) || 2;
+                wrongPassword = err.code === INCORRECT;
+                password = await this._promptPdfPassword({ wrongPassword, filename: opts.filename });
+                if (password == null) throw new Error('這份PDF有密碼保護，未輸入密碼（使用者取消）');
+            }
+        }
+        throw new Error('PDF密碼輸入失敗次數過多，已放棄');
+    }
+
+    // 回傳Promise<string|null>：使用者輸入的密碼字串，null=取消。跟
+    // _showFapPermissionDialog同一種輕量Modal寫法，z-index用最上層，避免
+    // 被檔案傳輸GUI等其他畫面擋住（同一個教訓，見_showFapPermissionDialog
+    // 的說明）。
+    _promptPdfPassword({ wrongPassword, filename } = {}) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2147483647; display:flex; align-items:center; justify-content:center;';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(360px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
+            box.innerHTML = `
+                <div style="font-weight:bold; font-size:14px; margin-bottom:10px;">🔒 這份PDF需要密碼${filename ? `「${this._escapeHtml(filename)}」` : ''}</div>
+                ${wrongPassword ? '<div style="color:#d33; margin-bottom:8px;">密碼不正確，請再試一次。</div>' : ''}
+                <input type="password" class="ai-pdf-pw-input" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #ccc; border-radius:6px; margin-bottom:14px; font-size:13px;" placeholder="輸入PDF密碼">
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button type="button" class="ai-pdf-pw-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer; font-size:13px;">取消</button>
+                    <button type="button" class="ai-pdf-pw-ok" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">確定</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            const input = box.querySelector('.ai-pdf-pw-input');
+            setTimeout(() => input.focus(), 0);
+            let settled = false;
+            const cleanup = () => overlay.remove();
+            const submit = () => { if (settled) return; settled = true; cleanup(); resolve(input.value); };
+            const cancel = () => { if (settled) return; settled = true; cleanup(); resolve(null); };
+            box.querySelector('.ai-pdf-pw-ok').addEventListener('click', submit);
+            box.querySelector('.ai-pdf-pw-cancel').addEventListener('click', cancel);
+            input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') cancel(); });
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+        });
+    }
+
+    // tw_stock_db客製: 2026-09-24使用者要求——附件貼上PDF要有viewer可以看
+    // （跟圖片縮圖+lightbox同一種「不是只能下載，要能直接看內容」的訴求）。
+    // 用pdf.js的page.render()把當前頁畫到<canvas>，上一頁/下一頁/頁碼/
+    // 縮放，遇到密碼保護的PDF由_loadPdfDocument內部自動跳密碼輸入框——
+    // 呼叫這個方法之前不需要先判斷是否有密碼，流程一致。
+    async _openPdfViewer(blob, filename) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#3a3a3a; border-radius:10px; width:min(900px,96vw); height:min(90vh,1100px); display:flex; flex-direction:column; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,0.5);';
+        box.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 14px; background:#222; flex:none;">
+                <div style="color:#fff; font-size:13px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📄 ${this._escapeHtml(filename || 'PDF')}</div>
+                <button type="button" class="ai-pdfv-close" style="border:none; background:transparent; color:#fff; font-size:18px; cursor:pointer; line-height:1;">✕</button>
+            </div>
+            <div class="ai-pdfv-body" style="flex:1; overflow:auto; display:flex; align-items:flex-start; justify-content:center; padding:16px;">
+                <div style="color:#ccc; font-size:13px;">載入中…</div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding:8px; background:#222; flex:none;">
+                <button type="button" class="ai-pdfv-prev" style="padding:4px 12px; border-radius:6px; border:none; background:#555; color:#fff; cursor:pointer;">◀ 上一頁</button>
+                <span class="ai-pdfv-pageinfo" style="color:#fff; font-size:13px; min-width:80px; text-align:center;">-</span>
+                <button type="button" class="ai-pdfv-next" style="padding:4px 12px; border-radius:6px; border:none; background:#555; color:#fff; cursor:pointer;">下一頁 ▶</button>
+                <span style="width:1px; height:20px; background:#555; margin:0 4px;"></span>
+                <button type="button" class="ai-pdfv-zoomout" style="padding:4px 12px; border-radius:6px; border:none; background:#555; color:#fff; cursor:pointer;">－</button>
+                <span class="ai-pdfv-zoominfo" style="color:#fff; font-size:13px; min-width:44px; text-align:center;">100%</span>
+                <button type="button" class="ai-pdfv-zoomin" style="padding:4px 12px; border-radius:6px; border:none; background:#555; color:#fff; cursor:pointer;">＋</button>
+            </div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        document.addEventListener('keydown', onKey);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        box.querySelector('.ai-pdfv-close').addEventListener('click', close);
+
+        const bodyEl = box.querySelector('.ai-pdfv-body');
+        const pageInfoEl = box.querySelector('.ai-pdfv-pageinfo');
+        const zoomInfoEl = box.querySelector('.ai-pdfv-zoominfo');
+        const state = { pdf: null, pageNum: 1, scale: 1.2, rendering: false };
+
+        const renderPage = async () => {
+            if (!state.pdf || state.rendering) return;
+            state.rendering = true;
+            try {
+                const page = await state.pdf.getPage(state.pageNum);
+                const viewport = page.getViewport({ scale: state.scale });
+                let canvas = bodyEl.querySelector('canvas');
+                if (!canvas) { canvas = document.createElement('canvas'); bodyEl.innerHTML = ''; bodyEl.appendChild(canvas); }
+                canvas.width = Math.round(viewport.width);
+                canvas.height = Math.round(viewport.height);
+                canvas.style.cssText = 'background:#fff; box-shadow:0 2px 12px rgba(0,0,0,0.4);';
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                pageInfoEl.textContent = `${state.pageNum} / ${state.pdf.numPages}`;
+                zoomInfoEl.textContent = `${Math.round(state.scale / 1.2 * 100)}%`;
+            } catch (err) {
+                bodyEl.innerHTML = `<div style="color:#f87171; font-size:13px;">頁面render失敗：${this._escapeHtml(String(err.message || err))}</div>`;
+            } finally {
+                state.rendering = false;
+            }
+        };
+        box.querySelector('.ai-pdfv-prev').addEventListener('click', () => { if (state.pdf && state.pageNum > 1) { state.pageNum--; renderPage(); } });
+        box.querySelector('.ai-pdfv-next').addEventListener('click', () => { if (state.pdf && state.pageNum < state.pdf.numPages) { state.pageNum++; renderPage(); } });
+        box.querySelector('.ai-pdfv-zoomin').addEventListener('click', () => { state.scale = Math.min(state.scale * 1.2, 1.2 * 4); renderPage(); });
+        box.querySelector('.ai-pdfv-zoomout').addEventListener('click', () => { state.scale = Math.max(state.scale / 1.2, 1.2 * 0.4); renderPage(); });
+
+        try {
+            state.pdf = await this._loadPdfDocument(blob, { filename });
+            await renderPage();
+        } catch (err) {
+            bodyEl.innerHTML = `<div style="color:#f87171; font-size:13px;">PDF載入失敗：${this._escapeHtml(String(err.message || err))}</div>`;
+        }
+    }
+
     // tw_stock_db客製: _parseUploadedFileContent（截斷預覽）跟
     // _getFullTextFromUploadedFile（summarize_large_text用、要求完整全文）
     // 共用同一份逐頁文字擷取邏輯，只有「要不要截斷」這件事在各自呼叫端
@@ -16697,10 +16845,8 @@ ${sourceTool.handlerScript}
     // 合法的結構事實（pdf.js本身沒有OCR能力，這裡也不做），不是錯誤，
     // 呼叫端（_parseUploadedFileContent）會在偵測到這種情況時附上提示，
     // 不是直接當成解析失敗。
-    async _extractPdfPageTexts(blob) {
-        await this._ensurePdfJsLoaded();
-        const buffer = await blob.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    async _extractPdfPageTexts(blob, opts = {}) {
+        const pdf = await this._loadPdfDocument(blob, opts);
         const pageTexts = [];
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
@@ -16724,9 +16870,7 @@ ${sourceTool.handlerScript}
     // 拿到file_id，讓placeholder裡的file_id之後還能被interpret_image引用
     // （即使這次沒有interpretImages:true，之後也能單獨對某一頁截圖再問）。
     async _extractPdfPageContentWithImages(blob, opts = {}) {
-        await this._ensurePdfJsLoaded();
-        const buffer = await blob.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const pdf = await this._loadPdfDocument(blob, opts);
         const interpretImages = !!opts.interpretImages;
         const interpretBudget = Number.isFinite(Number(opts.interpretImagesCount)) && Number(opts.interpretImagesCount) > 0
             ? Math.floor(Number(opts.interpretImagesCount)) : 3;
@@ -22950,9 +23094,9 @@ ${sourceTool.handlerScript}
                 // vision描述，見該方法的完整說明。
                 let numPages, pageTexts, pageImages;
                 if (opts.interpretImages) {
-                    ({ numPages, pageTexts, pageImages } = await this._extractPdfPageContentWithImages(record.blob, opts));
+                    ({ numPages, pageTexts, pageImages } = await this._extractPdfPageContentWithImages(record.blob, { ...opts, filename: record.filename }));
                 } else {
-                    ({ numPages, pageTexts } = await this._extractPdfPageTexts(record.blob));
+                    ({ numPages, pageTexts } = await this._extractPdfPageTexts(record.blob, { filename: record.filename }));
                 }
                 const fullText = pageTexts.join('\n\n');
                 // tw_stock_db客製: 見_extractPdfPageTexts的說明——掃描型/純圖片
@@ -23041,7 +23185,7 @@ ${sourceTool.handlerScript}
             throw new Error(`${format}是二進位格式，沒有「原始文字」可以摘要，請改用parse_uploaded_file取得結構化內容`);
         }
         if (format === 'pdf') {
-            const { pageTexts } = await this._extractPdfPageTexts(record.blob);
+            const { pageTexts } = await this._extractPdfPageTexts(record.blob, { filename: record.filename });
             return pageTexts.join('\n\n');
         }
         return await record.blob.text();
@@ -29786,10 +29930,11 @@ ${existingNodeSummaries}
             // 邏輯，不用維護兩份幾乎一樣的程式碼。
             const buildDownloadFileCard = (targetContainer) => {
                 const { id, filename, sizeBytes } = msg._downloadFile;
-                const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'image' | 'other'
+                const mediaKind = _faClassifyMediaFile(filename); // 'audio' | 'video' | 'subtitle' | 'image' | 'pdf' | 'other'
                 const isAudio = mediaKind === 'audio';
                 const isVideo = mediaKind === 'video';
                 const isImage = mediaKind === 'image';
+                const isPdf = mediaKind === 'pdf';
                 const fileWrap = document.createElement('div');
                 fileWrap.style.cssText = `margin-bottom: 12px; padding: 10px 14px; border-radius: 6px; max-width: 85%; background: ${palette.assistantBg}; color: ${palette.assistantText}; border-left: 4px solid #76b900;`;
                 const sizeLabel = sizeBytes != null
@@ -29799,12 +29944,14 @@ ${existingNodeSummaries}
                     <div style="margin-bottom:6px;"><b>🤖 AI:</b> ${msg.content || ''}</div>
                     ${isImage ? '<div class="ai-image-thumb-slot" style="margin-bottom:8px;"></div>' : ''}
                     <a class="ai-file-download-link" href="javascript:void(0)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#76b900;color:#fff;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">📥 下載 ${filename}${sizeLabel ? `（${sizeLabel}）` : ''}</a>
+                    ${isPdf ? '<button type="button" class="ai-pdf-view-btn" style="margin-left:6px; display:inline-flex;align-items:center;gap:4px;padding:6px 12px;background:transparent;color:inherit;border:1px solid rgba(0,0,0,0.2);border-radius:6px;cursor:pointer;font-size:13px;">🔍 檢視PDF</button>' : ''}
                     ${(isAudio || isVideo) ? '<div class="ai-media-player-slot"></div>' : ''}
                 `;
                 targetContainer.appendChild(fileWrap);
                 const linkEl = fileWrap.querySelector('.ai-file-download-link');
                 const mediaSlot = (isAudio || isVideo) ? fileWrap.querySelector('.ai-media-player-slot') : null;
                 const imageSlot = isImage ? fileWrap.querySelector('.ai-image-thumb-slot') : null;
+                const pdfViewBtn = isPdf ? fileWrap.querySelector('.ai-pdf-view-btn') : null;
                 this.fileCache.get(id).then(record => {
                     if (!record) throw new Error('not found');
                     // tw_stock_db客製: 使用者實測回報PPTX下載被瀏覽器/系統誤判成zip
@@ -29839,6 +29986,12 @@ ${existingNodeSummaries}
                     if (imageSlot) {
                         const thumbUrl = URL.createObjectURL(blobWithType);
                         imageSlot.innerHTML = `<img src="${thumbUrl}" class="ai-img-thumb" data-full-src="${this._escapeAttr(thumbUrl)}" alt="${this._escapeHtml(record.filename)}" style="max-width:100%; max-height:220px; border-radius:6px; cursor:zoom-in; display:block;">`;
+                    }
+                    // tw_stock_db客製: 2026-09-24使用者要求——AI產生/取得的PDF也要
+                    // 能直接檢視，不是只有下載。點開才真的載入pdf.js（見
+                    // _openPdfViewer），密碼保護的PDF由該方法內部自動跳密碼框。
+                    if (pdfViewBtn) {
+                        pdfViewBtn.addEventListener('click', () => this._openPdfViewer(blobWithType, record.filename));
                     }
                 }).catch(() => {
                     linkEl.textContent = '⚠️ 檔案已不在快取中（可能已被自動清除或超過容量上限被淘汰）';
@@ -30357,7 +30510,21 @@ ${existingNodeSummaries}
                 div.appendChild(thumbRow);
                 attachedImageIds.forEach((id) => {
                     this.fileCache.get(id).then((rec) => {
-                        if (!rec || !rec.mimeType || !rec.mimeType.startsWith('image/')) return;
+                        if (!rec) return;
+                        // tw_stock_db客製: 2026-09-24使用者要求——PDF附件也要有viewer
+                        // 可以看，不是只有純文字檔名。跟圖片縮圖同一段掃描邏輯，
+                        // 只是PDF用「可點的檔案chip」而不是縮圖（每次重繪都要重新
+                        // render頁面當縮圖成本較高，點開才真的載入pdf.js划算）。
+                        if (rec.mimeType === 'application/pdf' || _faClassifyMediaFile(rec.filename) === 'pdf') {
+                            const chip = document.createElement('button');
+                            chip.type = 'button';
+                            chip.textContent = `📄 ${rec.filename}`;
+                            chip.style.cssText = 'display:inline-flex; align-items:center; gap:4px; padding:5px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.15); background:rgba(255,255,255,0.5); cursor:pointer; font-size:12px; color:inherit;';
+                            chip.addEventListener('click', () => this._openPdfViewer(rec.blob, rec.filename));
+                            thumbRow.appendChild(chip);
+                            return;
+                        }
+                        if (!rec.mimeType || !rec.mimeType.startsWith('image/')) return;
                         const url = URL.createObjectURL(rec.blob);
                         const img = document.createElement('img');
                         img.src = url; img.alt = rec.filename; img.className = 'ai-img-thumb';
