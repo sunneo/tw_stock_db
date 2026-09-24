@@ -2604,7 +2604,20 @@ const SANDBOX_COMMAND_REGISTRY = {
     xq:      { kind: 'xq' },
     column:  { kind: 'column' },
     split:   { kind: 'split' },
+    // tw_stock_db客製: 2026-09-25使用者要求的「build essential」一部分——
+    // 找不到任何現成的瀏覽器WASM移植版GNU m4（實際查證過，不存在），跟
+    // column/split同一種「純本地JS重新實作、不需要下載」的處理方式，不是
+    // 「按需下載」的情境（見_runM4Builtin），刻意跟pyodide/jq/xq分開註記。
+    m4:      { kind: 'm4' },
 };
+
+// _runM4Builtin/_m4Expand用——m4語言本身認得的builtin巨集名稱（不含使用者
+// 自己define的），判斷「這個識別字要不要被當成巨集呼叫」時要跟
+// defines這個使用者巨集表分開查（見_m4Expand的isKnown判斷）。
+const M4_BUILTIN_NAMES = new Set([
+    'define', 'undefine', 'defn', 'ifdef', 'ifelse', 'dnl', 'changequote',
+    'include', 'len', 'index', 'substr', 'translit', 'shift', 'eval', 'dumpdef',
+]);
 
 // tw_stock_db客製: 2026-09-16使用者要求——AI要知道「評估到任務需要背景
 // 執行/大量運算/未來可能重複用到」時，該把bash/python腳本存下來（連同
@@ -4623,6 +4636,11 @@ const TERMINAL_PROGRAM_BUNDLES = {
     vi: './terminal-programs/editor.mjs',
     vim: './terminal-programs/editor.mjs',
     top: './terminal-programs/top.mjs',
+    // tw_stock_db客製: 2026-09-25使用者要求的「build essential」——GNU make
+    // 沒有找到任何可用的瀏覽器WASM移植版（實際查證過，不存在），所以跟
+    // vi/less/top同一種做法：純JS手刻一份簡化版（見make.mjs開頭的範圍/
+    // 限制說明，不是完整GNU make相容），不依賴外部WASM下載。
+    make: './terminal-programs/make.mjs',
 };
 
 // tw_stock_db客製: 2026-09-18使用者實測回報——終端機裡沒有`which`、也沒有
@@ -4648,6 +4666,10 @@ const TERMINAL_BUSYBOX_APPLETS = [
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
     'ask-floating-ai-assistant', 'sync',
+    // tw_stock_db客製: 2026-09-25使用者要求——sleep（busybox applet清單裡沒有）、
+    // curl/wget/httping（非同步網路請求，SANDBOX_COMMAND_REGISTRY那條host
+    // builtin路徑要求同步callback做不到，見_runTerminalCommand裡的說明）。
+    'sleep', 'curl', 'wget', 'httping',
 ];
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -8913,7 +8935,7 @@ ${fnData.code}
         );
 
         registerOptional('terminal_run',
-            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
+            `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（-o/-O可指定沙盒內輸出檔案，網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——這幾個都不是真的busybox applet，是JS層攔截實作的，不能跟其他指令用管線接（例如'curl url | jq'不會生效），用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -17832,6 +17854,21 @@ ${sourceTool.handlerScript}
         // 指令），因為這裡要做的事（打一次LLM API、等回應）完全不是busybox
         // shell的能力範圍，攔截在這裡直接處理最直接。
         if (cmdName === 'ask-floating-ai-assistant') { await this._terminalAskAI(session, restArgs); return; }
+        // tw_stock_db客製: 2026-09-25使用者要求——sleep/curl/wget/httping。這幾個
+        // JS層攔截的理由各不同：sleep純粹是JS setTimeout，busybox applet清單裡
+        // 根本沒有（wasi-sh 0.11.0沒編進這個applet）；curl/wget/httping的核心
+        // 動作（fetch()）是非同步、而SANDBOX_COMMAND_REGISTRY那條路徑（§見
+        // _buildTerminalSandboxBuiltins的說明）要求host builtin必須是**同步**
+        // callback（wasi-sh的host-builtin handler API不支援async），沒辦法用
+        // 那套機制做真的網路請求——所以跟ask-floating-ai-assistant同一種處理
+        // 方式：JS層直接攔截、直接await，換來的代價是**不能放進shell管線/
+        // 重導向**（`curl url | jq .`這種寫法不會生效，因為根本沒有送進WASM
+        // shell的parser）。用-o/-O/--output這類旗標指定輸出檔案來彌補沒有`>`
+        // 重導向的缺口，貼近真實curl/wget本來就有的用法。
+        if (cmdName === 'sleep') { await this._terminalSleep(session, restArgs); return; }
+        if (cmdName === 'curl') { await this._terminalCurl(session, restArgs); return; }
+        if (cmdName === 'wget') { await this._terminalWget(session, restArgs); return; }
+        if (cmdName === 'httping') { await this._terminalHttping(session, restArgs); return; }
 
         let bundleMod = null;
         try {
@@ -18356,6 +18393,28 @@ ${sourceTool.handlerScript}
             const target = firstSp === -1 ? '/work' : trimmedLine.slice(firstSp + 1).trim() || '/work';
             const r = await this._terminalCd(session, target);
             return r.ok ? { ok: true, exit_code: 0, stdout: r.cwd + '\n', stderr: '' } : { ok: true, exit_code: 1, stdout: '', stderr: r.error + '\n' };
+        }
+        // tw_stock_db客製: 2026-09-25使用者實測發現的落差——sleep/curl/wget/
+        // httping/make這幾個是跟`ask-floating-ai-assistant`同一種JS層攔截
+        // （見_runTerminalCommand的說明，不會真的丟進run()），但`cd`是這裡
+        // **唯一**特別處理的攔截指令，其餘全部直接落到run()送進WASM busybox
+        // ——busybox裡根本沒有這幾個指令（sleep不是busybox applet、curl/wget/
+        // httping/make是JS實作），AI呼叫terminal_run執行這幾個指令原本會
+        // 得到「command not found」，跟使用者自己在畫面上打字的行為不一致。
+        // 這裡補上同一批攔截，讓terminal_run跟互動輸入用同一套邏輯執行。
+        const restArgsForBuiltin = firstSp === -1 ? '' : trimmedLine.slice(firstSp + 1);
+        const JS_INTERCEPTED_WITH_CAPTURE = { sleep: '_terminalSleep', curl: '_terminalCurl', wget: '_terminalWget', httping: '_terminalHttping' };
+        if (JS_INTERCEPTED_WITH_CAPTURE[cmdNameOnly]) {
+            const captured = await this._terminalCaptureWrites(session, () => this[JS_INTERCEPTED_WITH_CAPTURE[cmdNameOnly]](session, restArgsForBuiltin));
+            return captured.hadError
+                ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
+                : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
+        }
+        if (cmdNameOnly === 'make') {
+            const captured = await this._terminalCaptureWrites(session, () => this._terminalRunMakeViaTool(session, restArgsForBuiltin));
+            return captured.hadError
+                ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
+                : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
         }
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
@@ -19072,6 +19131,252 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-25使用者要求——terminal_run工具呼叫
+    // sleep/curl/wget/httping/make要能拿到結構化{stdout,stderr,exit_code}
+    // （AI工具的既有慣例），但這幾個方法本身是為互動輸入設計的，直接寫
+    // `session.term.write(...)`。與其把每一處write都改成先塞進一個buffer
+    // 陣列再看要不要真的寫（改動範圍大、容易漏改），改成**暫時替換**
+    // `session.term.write`成一個「先記錄、再呼叫原本的write」的wrapper，
+    // 呼叫完método後還原——畫面上使用者一樣即時看得到輸出（沒有改變任何
+    // 使用者體感），AI額外拿到這次呼叫期間所有輸出的純文字副本。用
+    // `\x1b[31m`（這幾個方法一致採用的錯誤色）字串偵測「這次有沒有印過
+    // 錯誤」，用來決定exit_code——不是真正逐行區分stdout/stderr，是簡化
+    // 判斷，不是縮水（這個沙盒本來就沒有真正分開的兩個串流概念，見
+    // _terminalRunCommand其餘分支的既有作法）。
+    async _terminalCaptureWrites(session, fn) {
+        const orig = session.term.write.bind(session.term);
+        let buf = '';
+        session.term.write = (text) => { buf += String(text); return orig(text); };
+        try {
+            await fn();
+        } finally {
+            session.term.write = orig;
+        }
+        const hadError = /\x1b\[31m/.test(buf);
+        const text = buf.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r\n/g, '\n');
+        return { text, hadError };
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者要求——terminal_run要能跑make（不只
+    // 互動輸入）。make.mjs不用ctx.readKey/readKeyOrTimeout（跟less/vi/top
+    // 不同，不會等鍵盤輸入），所以可以安全地在沒有真人按鍵的情境下跑到
+    // 結束，不會卡死——這是隻有make特別處理、其餘program bundle
+    // （less/vi/vim/top）不透過terminal_run執行的原因：那幾個一定要等鍵盤
+    // 輸入，AI呼叫terminal_run沒有辦法送出按鍵，會直接卡住整個呼叫。
+    async _terminalRunMakeViaTool(session, argsText) {
+        let bundleMod;
+        try { bundleMod = await this._ensureTerminalProgramLoaded('make'); }
+        catch (err) { session.term.write(`\x1b[31mmake: bundle載入失敗：${String(err.message || err)}\x1b[0m\r\n`); return; }
+        if (!bundleMod) { session.term.write('\x1b[31mmake: 找不到make這個program bundle\x1b[0m\r\n'); return; }
+        const ctx = {
+            write: (text) => session.term.write(String(text).replace(/\n/g, '\r\n')),
+            fs: async () => this._ensureTerminalFsStore(session, await this._ensureBashWasmLoaded()),
+            runShell: (line) => this._terminalRunCommand(session, line, {}),
+            cwd: session.cwd,
+            args: argsText ? argsText.split(/\s+/) : [],
+            name: 'make',
+        };
+        try { await bundleMod.run(ctx); }
+        catch (err) { session.term.write(`\r\n\x1b[31mmake: ${String(err.message || err)}\x1b[0m\r\n`); }
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者要求。sleep沒有互動需求，單純setTimeout；
+    // 支援s/m/h單位（跟真實sleep一致），上限3600秒——這個沙盒沒有Ctrl+C中斷
+    // 執行中指令的機制（見_handleTerminalInput的busy guard，執行期間不接受
+    // 新指令），刻意設上限避免打錯數字後卡死整個session太久。
+    async _terminalSleep(session, argsText) {
+        const arg = String(argsText || '').trim();
+        if (!arg) { session.term.write('usage: sleep <秒數>[s|m|h]\r\n'); return; }
+        const m = arg.match(/^(\d+(?:\.\d+)?)(s|m|h)?$/i);
+        if (!m) { session.term.write(`\x1b[31msleep: 不合法的時間長度「${arg}」\x1b[0m\r\n`); return; }
+        let seconds = parseFloat(m[1]);
+        const unit = (m[2] || 's').toLowerCase();
+        if (unit === 'm') seconds *= 60; else if (unit === 'h') seconds *= 3600;
+        const MAX_SECONDS = 3600;
+        if (seconds > MAX_SECONDS) {
+            session.term.write(`\x1b[33msleep: 最多接受${MAX_SECONDS}秒（1小時），已自動縮短（沙盒沒有Ctrl+C中斷執行中指令的機制，避免打錯數字卡死太久）\x1b[0m\r\n`);
+            seconds = MAX_SECONDS;
+        }
+        await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+    }
+
+    // curl/wget/httping共用的簡易shell詞法拆解（支援單/雙引號包住含空白的
+    // 值，例如curl -H "Content-Type: application/json"），不是完整shell語法
+    // （不支援跳脫字元、變數展開——那些本來就已經在_runTerminalCommand之前
+    // 由使用者輸入的原始文字決定，這裡只負責把一行文字拆成token陣列）。
+    _terminalTokenizeArgs(text) {
+        const tokens = [];
+        let cur = '', inS = false, inD = false;
+        const s = String(text || '');
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (inS) { if (c === "'") inS = false; else cur += c; continue; }
+            if (inD) { if (c === '"') inD = false; else cur += c; continue; }
+            if (c === "'") { inS = true; continue; }
+            if (c === '"') { inD = true; continue; }
+            if (/\s/.test(c)) { if (cur) { tokens.push(cur); cur = ''; } continue; }
+            cur += c;
+        }
+        if (cur) tokens.push(cur);
+        return tokens;
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者要求——curl/wget/httping共用的網路請求
+    // 底層，一律經過_viaAssetProxy()（既有的通用/proxy/<url>轉發，desktop
+    // 版走local-proxy.js、網頁版走使用者部署的Cloudflare Worker，見
+    // _resolveAssetProxyUrl的說明）——跟git_operations/資源備援用的是同一套
+    // 機制，不是新發明的網路層。沒有設定assetBackupProxyUrl時_viaAssetProxy
+    // 會原樣回傳網址（直接fetch()），大部分外部網站沒有permissive CORS
+    // header會直接失敗，這裡失敗訊息主動提示去哪裡設定代理，不要讓使用者
+    // 自己猜為什麼curl一個外部網址會失敗。
+    async _terminalHttpFetch(method, urlStr, { headers, body, timeoutMs } = {}) {
+        let target;
+        try { target = new URL(urlStr); } catch (_) { throw new Error(`不合法的網址：${urlStr}`); }
+        const proxied = this._viaAssetProxy(target.href);
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timer = (controller && timeoutMs) ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        try {
+            const resp = await fetch(proxied, { method, headers, body, signal: controller ? controller.signal : undefined });
+            const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+            return { resp, elapsedMs };
+        } catch (err) {
+            const hint = this._resolveAssetProxyUrl()
+                ? ''
+                : '（提示：跨網域請求常被瀏覽器CORS擋下，可在Advance Settings填assetBackupProxyUrl讓請求改走本機proxy/Cloudflare Worker繞過——git功能/資源備援下載也是走同一個設定）';
+            throw new Error(`連線失敗：${String(err.message || err)}${hint}`);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    // curl的常用旗標子集：-X/-H/-d/-o/-I/-i/-s/-L（-L是no-op，fetch()本來就會
+    // 自動跟隨redirect）。**不支援shell管線/重導向**（見_runTerminalCommand
+    // 裡curl的攔截說明），用-o指定輸出檔案彌補沒有`>`的缺口。
+    async _terminalCurl(session, argsText) {
+        const tokens = this._terminalTokenizeArgs(argsText);
+        let method = null, outFile = null, includeHeaders = false, headOnly = false, silent = false, data = null;
+        const headers = {}; let url = null;
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t === '-X' || t === '--request') { method = tokens[++i]; }
+            else if (t === '-H' || t === '--header') {
+                const h = tokens[++i] || ''; const idx = h.indexOf(':');
+                if (idx > 0) headers[h.slice(0, idx).trim()] = h.slice(idx + 1).trim();
+            }
+            else if (t === '-d' || t === '--data' || t === '--data-raw') {
+                data = tokens[++i]; if (!method) method = 'POST';
+                if (!headers['Content-Type']) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            }
+            else if (t === '-o' || t === '--output') { outFile = tokens[++i]; }
+            else if (t === '-I' || t === '--head') { headOnly = true; method = method || 'HEAD'; }
+            else if (t === '-i' || t === '--include') { includeHeaders = true; }
+            else if (t === '-s' || t === '-sS' || t === '--silent') { silent = true; }
+            else if (t === '-L' || t === '--location') { /* no-op：fetch()本來就跟隨redirect */ }
+            else if (t.startsWith('-')) { /* 不認得的旗標忽略，不要因此整個失敗 */ }
+            else if (!url) url = t;
+        }
+        if (!url) { session.term.write('usage: curl [-X METHOD] [-H "K: V"] [-d data] [-o file] [-I] [-i] [-s] <url>\r\n'); return; }
+        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+        method = method || 'GET';
+        let resp, elapsedMs;
+        try {
+            ({ resp, elapsedMs } = await this._terminalHttpFetch(method, url, { headers, body: data, timeoutMs: 30000 }));
+        } catch (err) { session.term.write(`\x1b[31mcurl: ${String(err.message || err)}\x1b[0m\r\n`); return; }
+        if (includeHeaders || headOnly) {
+            session.term.write(`HTTP/1.1 ${resp.status} ${resp.statusText}\r\n`);
+            resp.headers.forEach((v, k) => session.term.write(`${k}: ${v}\r\n`));
+            session.term.write('\r\n');
+        }
+        if (headOnly) { if (!silent) session.term.write(`\x1b[90m（${elapsedMs.toFixed(0)}ms）\x1b[0m\r\n`); return; }
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (outFile) {
+            const runtime = await this._ensureBashWasmLoaded();
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const abs = this._terminalResolvePath(session.cwd, outFile);
+            this._writeBytesToTerminalFs(fsStore, abs, bytes);
+            if (!silent) session.term.write(`\x1b[90m已寫入 ${abs}（${bytes.length} bytes，${resp.status} ${resp.statusText}，${elapsedMs.toFixed(0)}ms）\x1b[0m\r\n`);
+        } else {
+            const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+            session.term.write(text.replace(/\n/g, '\r\n'));
+            if (!/\n$/.test(text)) session.term.write('\r\n');
+        }
+    }
+
+    // wget的常用旗標子集：-O/-q。沒給-O時依網址最後一段路徑猜檔名（跟真實
+    // wget行為一致），存進目前session.cwd。
+    async _terminalWget(session, argsText) {
+        const tokens = this._terminalTokenizeArgs(argsText);
+        let outFile = null, quiet = false, url = null;
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t === '-O' || t === '--output-document') outFile = tokens[++i];
+            else if (t === '-q' || t === '--quiet') quiet = true;
+            else if (t.startsWith('-')) { /* 忽略 */ }
+            else if (!url) url = t;
+        }
+        if (!url) { session.term.write('usage: wget [-O file] [-q] <url>\r\n'); return; }
+        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+        if (!outFile) {
+            const last = url.split('/').filter(Boolean).pop() || 'index.html';
+            outFile = (last.split('?')[0] || 'index.html') || 'index.html';
+        }
+        if (!quiet) session.term.write(`--${new Date().toISOString()}--  ${url}\r\n`);
+        let resp, elapsedMs;
+        try {
+            ({ resp, elapsedMs } = await this._terminalHttpFetch('GET', url, { timeoutMs: 60000 }));
+        } catch (err) { session.term.write(`\x1b[31mwget: ${String(err.message || err)}\x1b[0m\r\n`); return; }
+        if (!resp.ok) { session.term.write(`\x1b[31mwget: ${resp.status} ${resp.statusText}\x1b[0m\r\n`); return; }
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        const runtime = await this._ensureBashWasmLoaded();
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        const abs = this._terminalResolvePath(session.cwd, outFile);
+        this._writeBytesToTerminalFs(fsStore, abs, bytes);
+        if (!quiet) {
+            session.term.write(`HTTP request sent, awaiting response... ${resp.status} ${resp.statusText}\r\n`);
+            session.term.write(`Length: ${bytes.length} bytes\r\n`);
+            session.term.write(`Saving to: '${abs}'\r\n\r\n`);
+            session.term.write(`${abs} saved [${bytes.length}/${bytes.length}]（${elapsedMs.toFixed(0)}ms）\r\n`);
+        }
+    }
+
+    // httping的簡化版：預設HEAD請求（跟真實httping預設行為一致），依序量測
+    // 每次round-trip時間，最後印min/avg/max摘要（比照ping的統計格式）。
+    // 沒有真正的Ctrl+C中斷（跟sleep同一個限制），改用-c限制次數（預設5、
+    // 上限50）避免無窮迴圈。
+    async _terminalHttping(session, argsText) {
+        const tokens = this._terminalTokenizeArgs(argsText);
+        let count = 5, intervalMs = 1000, url = null;
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t === '-c') count = Math.max(1, Math.min(50, parseInt(tokens[++i], 10) || 5));
+            else if (t === '-i') intervalMs = Math.max(100, Math.round((parseFloat(tokens[++i]) || 1) * 1000));
+            else if (t.startsWith('-')) { /* 忽略 */ }
+            else if (!url) url = t;
+        }
+        if (!url) { session.term.write('usage: httping [-c count] [-i interval秒] <url>\r\n'); return; }
+        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+        session.term.write(`HTTPING ${url}\r\n`);
+        const samples = [];
+        for (let seq = 0; seq < count; seq++) {
+            let resp, elapsedMs, errMsg = null;
+            try { ({ resp, elapsedMs } = await this._terminalHttpFetch('HEAD', url, { timeoutMs: 10000 })); }
+            catch (err) { errMsg = String(err.message || err); }
+            if (errMsg) {
+                session.term.write(`seq=${seq} \x1b[31mfailed: ${errMsg}\x1b[0m\r\n`);
+            } else {
+                samples.push(elapsedMs);
+                session.term.write(`connected to ${url}: seq=${seq} status=${resp.status} time=${elapsedMs.toFixed(1)} ms\r\n`);
+            }
+            if (seq < count - 1) await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        if (samples.length) {
+            const min = Math.min(...samples), max = Math.max(...samples);
+            const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+            session.term.write(`\x1b[90m--- ${url} httping statistics ---\r\n${count} requests, ${samples.length} succeeded, ${count - samples.length} failed\r\nround-trip min/avg/max = ${min.toFixed(1)}/${avg.toFixed(1)}/${max.toFixed(1)} ms\x1b[0m\r\n`);
+        }
+    }
+
     // tw_stock_db客製: 2026-09-18——見registerTerminalProgram的說明，把
     // session交給bundle接管。ctx.write()輸出、ctx.readKey()等下一個按鍵
     // （session.activeProgram.feed()會resolve它）、ctx.fs/ctx.cwd讓bundle
@@ -19104,6 +19409,13 @@ ${sourceTool.handlerScript}
                 };
             }),
             fs: async () => this._ensureTerminalFsStore(session, await this._ensureBashWasmLoaded()),
+            // tw_stock_db客製: 2026-09-25使用者要求的make.mjs用——執行一個
+            // recipe指令（跟terminal_run AI工具共用同一個_terminalRunCommand，
+            // 輸出一樣即時串流進畫面、也拿得到exit_code，make才能正確判斷
+            // 「這個recipe指令失敗要停下來」）。這是program bundle ctx契約
+            // 第一次需要真的執行shell指令的情境（less/vi/top都不需要），
+            // 之後如果有其他bundle也想跑指令，直接重用這個欄位，不用再擴充。
+            runShell: (line) => this._terminalRunCommand(session, line, {}),
             cwd: session.cwd,
             args: argsText ? argsText.split(/\s+/) : [],
             cols: session.term.cols,
@@ -19539,6 +19851,7 @@ ${sourceTool.handlerScript}
             if (kind === 'xq') return this._runXqBuiltin(ctx, resolved.jq, resolved.xmlParser);
             if (kind === 'column') return this._runColumnBuiltin(ctx);
             if (kind === 'split') return this._runSplitBuiltin(ctx);
+            if (kind === 'm4') return this._runM4Builtin(ctx);
         } catch (err) {
             ctx.stderr(new TextEncoder().encode(String((err && err.message) || err) + '\n'));
             return 1;
@@ -19788,6 +20101,299 @@ ${sourceTool.handlerScript}
             chunkIndex++;
         }
         return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者要求的「build essential」（tcc/gcc、
+    // make、m4、autoconf）之一。查證過沒有任何現成、可靠的瀏覽器WASM移植版
+    // GNU m4（跟column/split一樣，純本地JS重寫一份，不是下載某個WASM套件），
+    // 支援一個實用但**不是100% GNU m4相容**的核心子集：
+    // define/undefine/defn/ifdef/ifelse/dnl/changequote/include/len/substr/
+    // index/eval/shift/translit/dumpdef，遞迴巨集展開（輸出會被重新掃描，
+    // 這是m4語意的核心，用遞迴呼叫_m4Expand()天然達成）。**明確不支援**：
+    // divert/undivert（輸出分流）、regexp/patsubst（正規表示式相關，m4的
+    // regex語法跟JS不同，要轉譯風險高，這個版本乾脆不做）、eval()只支援
+    // 基本四則運算/比較/邏輯運算子（不支援m4完整的運算子優先權表與進位制
+    // 前綴）。這個子集足以應付autoconf巨集庫常見用法（define/ifelse/
+    // ifdef/include這幾個用得最頻繁），複雜的巨集庫（真正的autoconf.m4f）
+    // 沒有實測過能不能完整跑通。
+    _runM4Builtin(ctx) {
+        const argv = ctx.argv.slice(1);
+        const files = [];
+        const defines = new Map(); // name -> {params:null（用$1.."$9"取代，不強制參數個數）, body:string}
+        for (let i = 0; i < argv.length; i++) {
+            const a = argv[i];
+            if (a === '-D' || a === '--define') { this._m4ApplyDefineFlag(defines, argv[++i]); }
+            else if (a.startsWith('-D')) { this._m4ApplyDefineFlag(defines, a.slice(2)); }
+            else if (a === '-U' || a === '--undefine') { defines.delete(argv[++i]); }
+            else if (!a.startsWith('-')) { files.push(a); }
+        }
+        let input;
+        if (files.length) {
+            const texts = [];
+            for (const f of files) {
+                try { texts.push(new TextDecoder('utf-8').decode(ctx.fs.read(f))); }
+                catch (err) { ctx.stderr(new TextEncoder().encode(`m4: ${f}: ${String(err.message || err)}\n`)); return 1; }
+            }
+            input = texts.join('');
+        } else {
+            input = new TextDecoder('utf-8').decode(ctx.stdin());
+        }
+        let output;
+        try {
+            output = this._m4Expand(input, defines, { open: '`', close: "'" }, ctx, 0);
+        } catch (err) {
+            ctx.stderr(new TextEncoder().encode(`m4: ${String(err.message || err)}\n`));
+            return 1;
+        }
+        ctx.stdout(new TextEncoder().encode(output));
+        return 0;
+    }
+
+    _m4ApplyDefineFlag(defines, spec) {
+        spec = String(spec || '');
+        const eq = spec.indexOf('=');
+        const name = eq >= 0 ? spec.slice(0, eq) : spec;
+        const val = eq >= 0 ? spec.slice(eq + 1) : '';
+        if (name) defines.set(name, { body: val });
+    }
+
+    // 核心遞迴展開。depth純粹防止巨集互相遞迴定義造成的無窮迴圈（真實m4也有
+    // 類似的保護，上限給寬鬆一點的1000層）。quoteState是{open,close}，
+    // changequote()會就地修改這個物件（同一次m4呼叫全程共用，跟真實m4的
+    // 全域quote狀態一致）。
+    _m4Expand(text, defines, quoteState, ctx, depth) {
+        if (depth > 1000) throw new Error('巨集展開層數過深（可能是遞迴定義），已中止');
+        let out = '';
+        let i = 0;
+        const n = text.length;
+        while (i < n) {
+            // dnl：丟棄到下一個換行字元（含換行本身），不重新掃描。
+            if (text.startsWith('dnl', i) && !/[A-Za-z0-9_]/.test(text[i - 1] || '') && !/[A-Za-z0-9_]/.test(text[i + 3] || '')) {
+                const nl = text.indexOf('\n', i);
+                i = nl === -1 ? n : nl + 1;
+                continue;
+            }
+            if (text.startsWith(quoteState.open, i)) {
+                let depth2 = 1, j = i + quoteState.open.length;
+                while (j < n && depth2 > 0) {
+                    if (text.startsWith(quoteState.open, j)) { depth2++; j += quoteState.open.length; }
+                    else if (text.startsWith(quoteState.close, j)) { depth2--; if (depth2 > 0) j += quoteState.close.length; else break; }
+                    else j++;
+                }
+                if (depth2 !== 0) throw new Error('quote沒有正確閉合');
+                out += text.slice(i + quoteState.open.length, j);
+                i = j + quoteState.close.length;
+                continue;
+            }
+            const c = text[i];
+            if (/[A-Za-z_]/.test(c)) {
+                let j = i + 1;
+                while (j < n && /[A-Za-z0-9_]/.test(text[j])) j++;
+                const name = text.slice(i, j);
+                let args = null;
+                let afterArgsIdx = j;
+                if (text[j] === '(') {
+                    const parsed = this._m4ParseArgs(text, j, quoteState);
+                    args = parsed.args;
+                    afterArgsIdx = parsed.end;
+                }
+                const isKnown = defines.has(name) || M4_BUILTIN_NAMES.has(name);
+                if (!isKnown) { out += name; i = j; continue; }
+                const rawArgs = args || [];
+                const expandedArgs = rawArgs.map((a) => this._m4Expand(a, defines, quoteState, ctx, depth + 1));
+                const expansion = this._m4InvokeMacro(name, rawArgs, expandedArgs, defines, quoteState, ctx, depth);
+                out += this._m4Expand(expansion, defines, quoteState, ctx, depth + 1);
+                i = afterArgsIdx;
+                continue;
+            }
+            out += c; i++;
+        }
+        return out;
+    }
+
+    // 解析`(`之後、對應`)`為止的引數列表（頂層逗號分隔，nested括號/quote都
+    // 要正確跳過，不能誤判成頂層逗號）。回傳{args:[原始未展開文字,...], end:
+    // 對應`)`後一個字元的index}——回傳的args是**原始文字**，展開與否由
+    // 呼叫端（_m4Expand）決定，因為m4巨集的每個引數要展開幾次、什麼時機
+    // 展開，是由巨集本身（例如ifelse比較用的是未展開文字）決定，不能在
+    // 這裡統一先展開。
+    _m4ParseArgs(text, openParenIdx, quoteState) {
+        const n = text.length;
+        let i = openParenIdx + 1;
+        const args = [];
+        let cur = '';
+        let parenDepth = 0;
+        while (i < n) {
+            if (text.startsWith(quoteState.open, i)) {
+                let qd = 1, j = i + quoteState.open.length;
+                const start = i;
+                while (j < n && qd > 0) {
+                    if (text.startsWith(quoteState.open, j)) { qd++; j += quoteState.open.length; }
+                    else if (text.startsWith(quoteState.close, j)) { qd--; j += quoteState.close.length; }
+                    else j++;
+                }
+                cur += text.slice(start, j);
+                i = j;
+                continue;
+            }
+            const c = text[i];
+            if (c === '(') { parenDepth++; cur += c; i++; continue; }
+            if (c === ')') {
+                if (parenDepth === 0) {
+                    if (cur.length || args.length) args.push(cur);
+                    return { args, end: i + 1 };
+                }
+                parenDepth--; cur += c; i++; continue;
+            }
+            if (c === ',' && parenDepth === 0) { args.push(cur); cur = ''; i++; continue; }
+            cur += c; i++;
+        }
+        throw new Error('括號沒有正確閉合');
+    }
+
+    // 實際執行一個巨集呼叫（builtin或使用者define過的）。rawArgs是未展開的
+    // 原始文字（ifelse/define的第二個參數要用這個，避免body在define當下就
+    // 被展開一次——真實m4的行為是body只在「被呼叫時」才展開，不是define時）；
+    // expandedArgs是已經展開過的版本（大部分其他builtin/一般巨集呼叫的引數
+    // 要用這個）。
+    _m4InvokeMacro(name, rawArgs, expandedArgs, defines, quoteState, ctx, depth) {
+        switch (name) {
+            case 'define': {
+                if (!rawArgs.length) return '';
+                const macroName = this._m4UnquoteRaw(rawArgs[0], quoteState).trim();
+                defines.set(macroName, { body: this._m4UnquoteRaw(rawArgs[1] || '', quoteState) });
+                return '';
+            }
+            case 'undefine': { for (const a of rawArgs) defines.delete(this._m4UnquoteRaw(a, quoteState).trim()); return ''; }
+            case 'defn': {
+                const d = defines.get(this._m4UnquoteRaw(rawArgs[0] || '', quoteState).trim());
+                return d ? quoteState.open + d.body + quoteState.close : '';
+            }
+            case 'ifdef': {
+                const nm = this._m4UnquoteRaw(rawArgs[0] || '', quoteState).trim();
+                const has = defines.has(nm) || M4_BUILTIN_NAMES.has(nm);
+                return has ? this._m4UnquoteRaw(rawArgs[1] || '', quoteState) : this._m4UnquoteRaw(rawArgs[2] || '', quoteState);
+            }
+            case 'ifelse': {
+                // ifelse(a,b,then[,a2,b2,then2...,else]) —— 真實m4支援多組
+                // a,b,then鏈式比對，最後多餘一個參數當else，這裡完整支援。
+                // a/b是要拿來比較的「值」，本來就該展開（例如
+                // ifelse(VERSION,3,...)裡VERSION是巨集）；then/else分支只
+                // 剝掉外層一層quote、不能先展開（要交還給外層_m4Expand重新
+                // 掃描時才展開，語意才會跟define的body一致——這是踩過的真實
+                // bug，見_m4UnquoteRaw的說明）。
+                let idx = 0;
+                while (idx + 2 < rawArgs.length) {
+                    const a = this._m4Expand(rawArgs[idx], defines, quoteState, ctx, depth + 1);
+                    const b = this._m4Expand(rawArgs[idx + 1], defines, quoteState, ctx, depth + 1);
+                    if (a === b) return this._m4UnquoteRaw(rawArgs[idx + 2] || '', quoteState);
+                    idx += 3;
+                }
+                return idx < rawArgs.length ? this._m4UnquoteRaw(rawArgs[idx], quoteState) : '';
+            }
+            case 'changequote': {
+                quoteState.open = expandedArgs[0] || '`';
+                quoteState.close = expandedArgs[1] || "'";
+                return '';
+            }
+            case 'include': {
+                if (!ctx || !ctx.fs) return '';
+                let bytes;
+                try { bytes = ctx.fs.read(expandedArgs[0]); } catch (_) { throw new Error(`include: 找不到檔案「${expandedArgs[0]}」`); }
+                if (!bytes) throw new Error(`include: 找不到檔案「${expandedArgs[0]}」`);
+                return new TextDecoder('utf-8').decode(bytes);
+            }
+            case 'len': return String((expandedArgs[0] || '').length);
+            case 'index': return String((expandedArgs[0] || '').indexOf(expandedArgs[1] || ''));
+            case 'substr': {
+                const s = expandedArgs[0] || '';
+                const from = Number(expandedArgs[1]) || 0;
+                const len = expandedArgs[2] != null ? Number(expandedArgs[2]) : undefined;
+                return len == null ? s.slice(from) : s.slice(from, from + len);
+            }
+            case 'translit': {
+                const s = expandedArgs[0] || '', from = expandedArgs[1] || '', to = expandedArgs[2] || '';
+                let result = '';
+                for (const ch of s) {
+                    const idx = from.indexOf(ch);
+                    if (idx === -1) result += ch;
+                    else if (idx < to.length) result += to[idx];
+                    // idx存在但to比from短——對應字元被刪除（跟真實translit行為一致）
+                }
+                return result;
+            }
+            case 'shift': return expandedArgs.slice(1).map((a, i) => i === 0 ? a : a).join(',');
+            case 'eval': return String(this._m4EvalExpr(expandedArgs[0] || '0'));
+            case 'dumpdef': {
+                const names = rawArgs.length ? rawArgs.map((a) => this._m4UnquoteRaw(a, quoteState).trim()) : [...defines.keys()];
+                const lines = names.map((nm) => `${nm}:\t${defines.has(nm) ? defines.get(nm).body : '(builtin)'}`);
+                if (ctx) ctx.stderr(new TextEncoder().encode(lines.join('\n') + '\n'));
+                return '';
+            }
+            default: {
+                // 使用者用define()定義過的一般巨集：把$1.."$9"/$0/$#/$*/$@替換成
+                // 呼叫時的引數（用展開過的版本，符合一般巨集「引數先展開才代入」
+                // 的行為——define/ifelse是特例，上面已經個別處理過）。
+                const d = defines.get(name);
+                if (!d) return '';
+                let body = d.body;
+                body = body.replace(/\$#/g, String(expandedArgs.length));
+                body = body.replace(/\$\*/g, expandedArgs.join(','));
+                body = body.replace(/\$@/g, expandedArgs.map((a) => quoteState.open + a + quoteState.close).join(','));
+                body = body.replace(/\$0/g, name);
+                body = body.replace(/\$(\d)/g, (_m, d1) => expandedArgs[Number(d1) - 1] || '');
+                return body;
+            }
+        }
+    }
+
+    // eval()的算式求值：只接受數字/+-*/%/比較(==,!=,<,<=,>,>=)/邏輯(&&,||,!)/
+    // 括號/空白，白名單正規表示式先驗證過才丟進Function()執行——不是任意
+    // JS eval（沒有其他字元能通過白名單，不會有程式碼注入風險）。不支援m4
+    // 完整的位元運算/進位制前綴（0x/0這類），只涵蓋autoconf巨集常見的整數
+    // 四則運算與比較。
+    _m4EvalExpr(expr) {
+        const cleaned = String(expr || '0').trim();
+        if (!/^[0-9+\-*/%()<>=!&|.\s]*$/.test(cleaned)) throw new Error(`eval: 不支援的運算式「${expr}」`);
+        let js = cleaned.replace(/([^=!<>])=([^=])/g, '$1==$2');
+        try {
+            // eslint-disable-next-line no-new-func
+            const fn = new Function(`"use strict"; return (${js});`);
+            const result = fn();
+            return typeof result === 'boolean' ? (result ? 1 : 0) : Math.trunc(Number(result) || 0);
+        } catch (err) {
+            throw new Error(`eval: 算式錯誤「${expr}」：${String(err.message || err)}`);
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-25踩到的真實bug——_m4ParseArgs回傳的raw引數
+    // **保留**quote分隔字元本身（它的職責只是正確找出頂層逗號/右括號的
+    // 位置，不負責解讀quote語意，見該方法上方的說明），define/ifelse/ifdef
+    // 這幾個「引數要保持未展開」的巨集，如果直接把帶著quote字元的raw文字
+    // 存起來/傳回去，之後被交回_m4Expand()重新掃描時，最外層那個quote會把
+    // 整段內容吃成「一段引號內文字」，導致巨集呼叫完全不會被展開——實測
+    // 案例：`define(FACT, \`ifelse($1,0,1,\`eval(...)\`)')FACT(5)`這種
+    // 遞迴巨集（教科書等級的m4 factorial測試）原本完全展開失敗，整段
+    // ifelse(...)原封不動被當成字面文字印出來。這個方法剝掉「剛好包住整段
+    // 引數」的最外層一組quote（真實m4的reader也是這樣：quote只在「被讀取」
+    // 時剝一層，不做任何展開），中間巢狀的quote保持原樣（那些是有意保留給
+    // 更內層再次讀取時才剝的）。不是整段都被單一quote包住時（例如引數裡
+    // 前後有非quote的文字）原樣傳回，不強行剝除。
+    _m4UnquoteRaw(raw, quoteState) {
+        const s = String(raw || '');
+        if (!s.startsWith(quoteState.open) || !s.endsWith(quoteState.close)) return s;
+        if (s.length < quoteState.open.length + quoteState.close.length) return s;
+        let depth = 0, i = 0;
+        const n = s.length;
+        while (i < n) {
+            if (s.startsWith(quoteState.open, i)) { depth++; i += quoteState.open.length; }
+            else if (s.startsWith(quoteState.close, i)) {
+                depth--;
+                if (depth === 0) return i + quoteState.close.length === n ? s.slice(quoteState.open.length, n - quoteState.close.length) : s;
+                i += quoteState.close.length;
+            } else i++;
+        }
+        return s;
     }
 
     // tw_stock_db客製: 2026-09-16——bash_execute用，走busybox那份memoryFs的
