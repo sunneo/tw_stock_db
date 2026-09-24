@@ -2609,6 +2609,26 @@ const SANDBOX_COMMAND_REGISTRY = {
     // column/split同一種「純本地JS重新實作、不需要下載」的處理方式，不是
     // 「按需下載」的情境（見_runM4Builtin），刻意跟pyodide/jq/xq分開註記。
     m4:      { kind: 'm4' },
+    // tw_stock_db客製: 2026-09-25使用者實測回報——sleep/curl/wget/httping
+    // 原本只有「送進WASM之前的JS層攔截」（TERMINAL_SHELL_BUILTINS）這一條
+    // 路，只在「這一行的第一個詞」就是這些指令時才生效，`for`/`while`/`if`
+    // 迴圈本體、`./script.sh`腳本內容整段送進WASM busybox的情境完全碰不到
+    // （busybox自己沒有這幾個applet，回報command not found）。使用者明講
+    // 「我希望sleep要成為/usr/bin的程式」「可以跟ask-floating-ai-assistant
+    // 一樣」「要讓這個bash可以註冊bin，並讓那些binary實際上可以被外面的js
+    // engine handle」——這裡額外把這幾個也註冊成host builtin，busybox自己
+    // parse到這幾個指令名稱時就會呼叫對應的JS實作（見_runSleepBuiltin/
+    // _runCurlBuiltin/_runWgetBuiltin/_runHttpingBuiltin），不再侷限於
+    // 「這一整行第一個詞」。跟pyodide/jq/xq/m4同一個限制：host builtin
+    // handler不能await，這幾個的同步版本各自付出對應代價（sleep改真的
+    // busy-wait阻塞、curl/wget/httping改同步XMLHttpRequest只能處理文字內容），
+    // 詳見各自實作前的說明。原本的JS層pre-interception（TERMINAL_SHELL_
+    // BUILTINS，async、不卡UI）保留不動，仍然是「這一行第一個詞就是這些
+    // 指令」時的優先路徑，這裡只是補上pre-interception完全碰不到的情境。
+    sleep:   { kind: 'sleep' },
+    curl:    { kind: 'curl' },
+    wget:    { kind: 'wget' },
+    httping: { kind: 'httping' },
 };
 
 // _runM4Builtin/_m4Expand用——m4語言本身認得的builtin巨集名稱（不含使用者
@@ -4683,6 +4703,7 @@ const TERMINAL_SHELL_BUILTINS = [
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
     'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make',
+    'sh', 'bash',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -17762,20 +17783,61 @@ ${sourceTool.handlerScript}
     // 修的是無條件的`;`。互動式的program bundle（less/vi/vim/top，會接管
     // 鍵盤輸入）也刻意不在這裡處理，維持原本「必須是這一行唯一/最後一個
     // 指令」的行為，避免範圍擴大到還沒測過的情境。
+    //
+    // tw_stock_db客製: 2026-09-25使用者實測回報的第二個真實bug——上面這段
+    // quote-aware拆`;`邏輯**沒有考慮`for`/`while`/`until`/`if`/`case`這類
+    // 控制結構本身就會用`;`當作語法的一部分**（例如`for i in \`seq 1 10\`;
+    // do date;sleep 2; done;`），原本的邏輯看到裡面的`sleep`就把它從整段
+    // for迴圈中間挖出來單獨執行，留下`for ...;do date`（缺`done`）跟孤立的
+    // `done`兩段給WASM busybox，兩段都變成語法錯誤（`unexpected end of
+    // file (expecting "done")`／`unexpected "done"`）。修法：額外追蹤一個
+    // 「控制結構巢狀深度」計數器，掃描到`for`/`while`/`until`/`if`/`case`
+    // 這幾個開頭關鍵字就+1、掃到`done`/`fi`/`esac`這幾個收尾關鍵字就-1，
+    // 只有深度為0時的頂層`;`才會真的拆開（`do`/`then`/`else`/`elif`/`in`
+    // 不改變深度，它們一定出現在已經+1的區塊裡面，靠對應的done/fi/esac
+    // 收尾即可，不需要另外配對）。同時追蹤`(`/`)`跟`{`/`}`的巢狀深度、
+    // backtick（``` ` ```）的開關狀態，深度>0或在backtick裡面時同樣不拆
+    // （子shell`(...)`/`{ ...; }`分組、command substitution裡的`;`都不是
+    // 這一行真正的頂層分隔符）。這是簡化版的關鍵字比對（單純算深度、不驗證
+    // for跟done是不是真的配對正確），對合法的shell語法來說已經足夠正確，
+    // 不追求完整shell parser的語法驗證能力。
     _terminalSplitTopLevelSemicolons(line) {
+        const CTRL_OPEN = new Set(['for', 'while', 'until', 'if', 'case']);
+        const CTRL_CLOSE = new Set(['done', 'fi', 'esac']);
         const parts = [];
         let cur = '';
-        let inS = false, inD = false;
+        let inS = false, inD = false, inBacktick = false;
+        let parenDepth = 0, braceDepth = 0, ctrlDepth = 0;
+        let wordBuf = '';
+        const flushWord = () => {
+            if (!wordBuf) return;
+            if (CTRL_OPEN.has(wordBuf)) ctrlDepth++;
+            else if (CTRL_CLOSE.has(wordBuf)) ctrlDepth = Math.max(0, ctrlDepth - 1);
+            wordBuf = '';
+        };
         const s = String(line || '');
         for (let i = 0; i < s.length; i++) {
             const c = s[i];
             if (inS) { cur += c; if (c === "'") inS = false; continue; }
             if (inD) { cur += c; if (c === '"') inD = false; continue; }
-            if (c === "'") { inS = true; cur += c; continue; }
-            if (c === '"') { inD = true; cur += c; continue; }
-            if (c === ';') { parts.push(cur); cur = ''; continue; }
+            if (inBacktick) { cur += c; if (c === '`') inBacktick = false; continue; }
+            if (c === "'") { flushWord(); inS = true; cur += c; continue; }
+            if (c === '"') { flushWord(); inD = true; cur += c; continue; }
+            if (c === '`') { flushWord(); inBacktick = true; cur += c; continue; }
+            if (c === '(') { flushWord(); parenDepth++; cur += c; continue; }
+            if (c === ')') { flushWord(); parenDepth = Math.max(0, parenDepth - 1); cur += c; continue; }
+            if (c === '{') { flushWord(); braceDepth++; cur += c; continue; }
+            if (c === '}') { flushWord(); braceDepth = Math.max(0, braceDepth - 1); cur += c; continue; }
+            if (/[A-Za-z0-9_.\-\/]/.test(c)) { wordBuf += c; cur += c; continue; }
+            flushWord();
+            if (c === ';' && ctrlDepth === 0 && parenDepth === 0 && braceDepth === 0) {
+                parts.push(cur);
+                cur = '';
+                continue;
+            }
             cur += c;
         }
+        flushWord();
         parts.push(cur);
         return parts.map((p) => p.trim()).filter(Boolean);
     }
@@ -17788,7 +17850,12 @@ ${sourceTool.handlerScript}
         for (const seg of segments) {
             const sp = seg.indexOf(' ');
             const firstWord = sp === -1 ? seg : seg.slice(0, sp);
-            if (TERMINAL_COMPOUND_INTERCEPT_NAMES.has(firstWord)) {
+            // tw_stock_db客製: 2026-09-25——`./script.sh`/`/work/x.sh`/`sub/x`
+            // 這種含斜線的檔名沒辦法靠固定名稱清單Set.has()比對（檔名是
+            // 使用者自己取的），額外用「含斜線」當判斷條件——跟cd/chmod/
+            // sh/bash同一類「busybox本身做不到、一定要JS層攔截」的指令，
+            // 見_terminalRunCommand裡對應的slash-script分支說明。
+            if (TERMINAL_COMPOUND_INTERCEPT_NAMES.has(firstWord) || firstWord.includes('/')) {
                 flushWasm();
                 groups.push({ type: 'js', text: seg });
             } else {
@@ -18536,6 +18603,59 @@ ${sourceTool.handlerScript}
         }
         if (cmdNameOnly === 'make') {
             const captured = await this._terminalCaptureWrites(session, () => this._terminalRunMakeViaTool(session, restArgsForBuiltin));
+            return captured.hadError
+                ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
+                : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
+        }
+        // tw_stock_db客製: 2026-09-25測試複合指令腳本情境時發現的另一個真實
+        // 落差——`chmod`（設session.execMarks，讓`./script.sh`能真的被判定
+        // 「已授權可執行」）原本只接進互動輸入路徑（_runTerminalCommand的
+        // cmdName==='chmod'判斷），`terminal_run`呼叫`chmod +x x.sh`會直接
+        // 落到WASM busybox（沒有這個指令）得到「chmod: not found」，AI沒辦法
+        // 透過terminal_run自己完成「chmod +x後./script.sh」這個很常見的流程。
+        // 跟sleep/curl/wget/httping/make同一種修法補上。
+        if (cmdNameOnly === 'chmod') {
+            const captured = await this._terminalCaptureWrites(session, () => this._terminalChmod(session, restArgsForBuiltin));
+            return captured.hadError
+                ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
+                : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
+        }
+        // tw_stock_db客製: 2026-09-25——同一個落差，`sh`/`bash <script>`
+        // （不需要先chmod +x、直接把檔案內容當script執行）也只有互動輸入
+        // 路徑有實作，補上terminal_run對應版本。
+        if (cmdNameOnly === 'sh' || cmdNameOnly === 'bash') {
+            const scriptParts = restArgsForBuiltin.split(/\s+/).filter(Boolean);
+            const scriptFile = scriptParts[0];
+            if (!scriptFile) return { ok: true, exit_code: 2, stdout: '', stderr: `usage: ${cmdNameOnly} <script檔案> [參數...]\n` };
+            const captured = await this._terminalCaptureWrites(session, () => this._terminalRunScriptFile(session, scriptFile, scriptParts.slice(1).join(' ')));
+            return captured.hadError
+                ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
+                : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
+        }
+        // tw_stock_db客製: 2026-09-25測試腳本情境時發現的另一個真實落差——
+        // `./script.sh`／帶路徑的檔名，互動輸入路徑（_runTerminalCommand）
+        // 原本就有判斷（含斜線的cmdName、檢查session.execMarks是否已經
+        // chmod +x、找不到/沒授權時各自報錯），但terminal_run從一開始就沒有
+        // 對應邏輯——busybox本身「含斜線的指令名一律not found」（wasi-sh
+        // README的既有限制，見_terminalRunScriptFile上方說明），直接落到
+        // _terminalRunWasmLine送進WASM會得到「not found」，AI沒辦法透過
+        // terminal_run執行`chmod +x`過的腳本。跟chmod/make同一種修法，
+        // _terminalRunScriptFile只會寫輸出到畫面，用_terminalCaptureWrites
+        // 包一層拿到結構化結果。
+        if (cmdNameOnly.includes('/')) {
+            let runtime;
+            try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+                return { ok: false, error: String(err.message || err) };
+            }
+            const fsStore = await this._ensureTerminalFsStore(session, runtime);
+            const abs = this._terminalResolvePath(session.cwd, cmdNameOnly);
+            let exists = true;
+            try { fsStore.statSync(abs); } catch (_) { exists = false; }
+            if (!exists) return { ok: true, exit_code: 127, stdout: '', stderr: `bash: ${cmdNameOnly}: 找不到這個檔案\n` };
+            if (!session.execMarks || !session.execMarks.has(abs)) {
+                return { ok: true, exit_code: 126, stdout: '', stderr: `bash: ${cmdNameOnly}: 權限不足（用chmod +x先授權可執行）\n` };
+            }
+            const captured = await this._terminalCaptureWrites(session, () => this._terminalRunScriptFile(session, cmdNameOnly, restArgsForBuiltin));
             return captured.hadError
                 ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
                 : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
@@ -19387,11 +19507,52 @@ ${sourceTool.handlerScript}
         }
     }
 
+    // tw_stock_db客製: 2026-09-25——給_runCurlBuiltin/_runWgetBuiltin/
+    // _runHttpingBuiltin（wasi-sh host builtin，見SANDBOX_COMMAND_REGISTRY
+    // 那段說明）用的**同步**版本，跟_runPyodideScriptSync同一個理由：host
+    // builtin handler不能await，`fetch()`是非同步API做不到，改用同步
+    // XMLHttpRequest（`xhr.open(method, url, false)`）。**已知限制**：規格
+    // 規定同步XHR的`responseType`只能是空字串或`'text'`（設成`'arraybuffer'`
+    // 會直接拋`InvalidAccessError`），所以這條路徑只能正確處理文字內容
+    // （JSON/HTML/純文字），二進位下載（圖片/wasm等）用這條路徑會因為文字
+    // 編碼往返而毀損位元組——真正要下載二進位檔案，請用互動輸入或
+    // terminal_run最上層直接打`curl -o`/`wget -O`（走pre-interception的
+    // _terminalHttpFetch，正確拿到ArrayBuffer），這裡在_runCurlBuiltin/
+    // _runWgetBuiltin的訊息裡會明講這個限制，不假裝二進位下載也支援。
+    _terminalHttpFetchSync(method, urlStr, { headers, body } = {}) {
+        let target;
+        try { target = new URL(urlStr); } catch (_) { throw new Error(`不合法的網址：${urlStr}`); }
+        const proxied = this._viaAssetProxy(target.href);
+        const xhr = new XMLHttpRequest();
+        const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        const hint = this._resolveAssetProxyUrl()
+            ? ''
+            : '（提示：跨網域請求常被瀏覽器CORS擋下，可在Advance Settings填assetBackupProxyUrl讓請求改走本機proxy/Cloudflare Worker繞過）';
+        try {
+            xhr.open(method, proxied, false);
+            if (headers) {
+                for (const k of Object.keys(headers)) {
+                    try { xhr.setRequestHeader(k, headers[k]); } catch (_) { /* 部分header瀏覽器不給自訂（如Host），忽略 */ }
+                }
+            }
+            xhr.send(body || null);
+        } catch (err) {
+            throw new Error(`連線失敗：${String(err.message || err)}${hint}`);
+        }
+        const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+        if (xhr.status === 0) throw new Error(`連線失敗：網路錯誤或被CORS擋下${hint}`);
+        return { xhr, elapsedMs };
+    }
+
     // curl的常用旗標子集：-X/-H/-d/-o/-I/-i/-s/-L（-L是no-op，fetch()本來就會
     // 自動跟隨redirect）。**不支援shell管線/重導向**（見_runTerminalCommand
     // 裡curl的攔截說明），用-o指定輸出檔案彌補沒有`>`的缺口。
-    async _terminalCurl(session, argsText) {
-        const tokens = this._terminalTokenizeArgs(argsText);
+    // tw_stock_db客製: 2026-09-25——抽出成獨立的tokens陣列解析函式，讓
+    // async pre-interception路徑（_terminalCurl，tokens來自_terminalTokenizeArgs）
+    // 跟sync host builtin路徑（_runCurlBuiltin，tokens直接是ctx.argv.slice(1)，
+    // wasi-sh自己已經拆好詞）共用同一份解析邏輯，避免兩條路徑的旗標判斷
+    // 之後各自修改而行為漂移。
+    _terminalParseCurlArgs(tokens) {
         let method = null, outFile = null, includeHeaders = false, headOnly = false, silent = false, data = null;
         const headers = {}; let url = null;
         for (let i = 0; i < tokens.length; i++) {
@@ -19413,9 +19574,13 @@ ${sourceTool.handlerScript}
             else if (t.startsWith('-')) { /* 不認得的旗標忽略，不要因此整個失敗 */ }
             else if (!url) url = t;
         }
-        if (!url) { session.term.write('usage: curl [-X METHOD] [-H "K: V"] [-d data] [-o file] [-I] [-i] [-s] <url>\r\n'); return; }
-        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+        if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
         method = method || 'GET';
+        return { method, outFile, includeHeaders, headOnly, silent, data, headers, url };
+    }
+    async _terminalCurl(session, argsText) {
+        const { method, outFile, includeHeaders, headOnly, silent, data, headers, url } = this._terminalParseCurlArgs(this._terminalTokenizeArgs(argsText));
+        if (!url) { session.term.write('usage: curl [-X METHOD] [-H "K: V"] [-d data] [-o file] [-I] [-i] [-s] <url>\r\n'); return; }
         let resp, elapsedMs;
         try {
             ({ resp, elapsedMs } = await this._terminalHttpFetch(method, url, { headers, body: data, timeoutMs: 30000 }));
@@ -19442,8 +19607,10 @@ ${sourceTool.handlerScript}
 
     // wget的常用旗標子集：-O/-q。沒給-O時依網址最後一段路徑猜檔名（跟真實
     // wget行為一致），存進目前session.cwd。
-    async _terminalWget(session, argsText) {
-        const tokens = this._terminalTokenizeArgs(argsText);
+    // tw_stock_db客製: 2026-09-25——跟_terminalParseCurlArgs同理，抽出共用
+    // 解析函式給async（_terminalWget）跟sync host builtin（_runWgetBuiltin）
+    // 兩條路徑用。
+    _terminalParseWgetArgs(tokens) {
         let outFile = null, quiet = false, url = null;
         for (let i = 0; i < tokens.length; i++) {
             const t = tokens[i];
@@ -19452,12 +19619,16 @@ ${sourceTool.handlerScript}
             else if (t.startsWith('-')) { /* 忽略 */ }
             else if (!url) url = t;
         }
-        if (!url) { session.term.write('usage: wget [-O file] [-q] <url>\r\n'); return; }
-        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-        if (!outFile) {
+        if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+        if (url && !outFile) {
             const last = url.split('/').filter(Boolean).pop() || 'index.html';
             outFile = (last.split('?')[0] || 'index.html') || 'index.html';
         }
+        return { outFile, quiet, url };
+    }
+    async _terminalWget(session, argsText) {
+        const { outFile, quiet, url } = this._terminalParseWgetArgs(this._terminalTokenizeArgs(argsText));
+        if (!url) { session.term.write('usage: wget [-O file] [-q] <url>\r\n'); return; }
         if (!quiet) session.term.write(`--${new Date().toISOString()}--  ${url}\r\n`);
         let resp, elapsedMs;
         try {
@@ -19481,8 +19652,10 @@ ${sourceTool.handlerScript}
     // 每次round-trip時間，最後印min/avg/max摘要（比照ping的統計格式）。
     // 沒有真正的Ctrl+C中斷（跟sleep同一個限制），改用-c限制次數（預設5、
     // 上限50）避免無窮迴圈。
-    async _terminalHttping(session, argsText) {
-        const tokens = this._terminalTokenizeArgs(argsText);
+    // tw_stock_db客製: 2026-09-25——跟_terminalParseCurlArgs同理，抽出共用
+    // 解析函式給async（_terminalHttping）跟sync host builtin
+    // （_runHttpingBuiltin）兩條路徑用。
+    _terminalParseHttpingArgs(tokens) {
         let count = 5, intervalMs = 1000, url = null;
         for (let i = 0; i < tokens.length; i++) {
             const t = tokens[i];
@@ -19491,8 +19664,12 @@ ${sourceTool.handlerScript}
             else if (t.startsWith('-')) { /* 忽略 */ }
             else if (!url) url = t;
         }
+        if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+        return { count, intervalMs, url };
+    }
+    async _terminalHttping(session, argsText) {
+        const { count, intervalMs, url } = this._terminalParseHttpingArgs(this._terminalTokenizeArgs(argsText));
         if (!url) { session.term.write('usage: httping [-c count] [-i interval秒] <url>\r\n'); return; }
-        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
         session.term.write(`HTTPING ${url}\r\n`);
         const samples = [];
         for (let seq = 0; seq < count; seq++) {
@@ -19989,6 +20166,10 @@ ${sourceTool.handlerScript}
             if (kind === 'column') return this._runColumnBuiltin(ctx);
             if (kind === 'split') return this._runSplitBuiltin(ctx);
             if (kind === 'm4') return this._runM4Builtin(ctx);
+            if (kind === 'sleep') return this._runSleepBuiltin(ctx);
+            if (kind === 'curl') return this._runCurlBuiltin(ctx);
+            if (kind === 'wget') return this._runWgetBuiltin(ctx);
+            if (kind === 'httping') return this._runHttpingBuiltin(ctx);
         } catch (err) {
             ctx.stderr(new TextEncoder().encode(String((err && err.message) || err) + '\n'));
             return 1;
@@ -20284,6 +20465,115 @@ ${sourceTool.handlerScript}
         }
         ctx.stdout(new TextEncoder().encode(output));
         return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-25——sleep的sync host builtin版本（見
+    // SANDBOX_COMMAND_REGISTRY那段說明）。host builtin不能await/setTimeout，
+    // 要真的讓後面的指令等待，只能同步busy-wait阻塞整個分頁（跟`_terminalSleep`
+    // 用setTimeout、不卡UI是不同等級的代價）。上限刻意收緊到30秒（互動輸入
+    // 最上層pre-interception路徑的_terminalSleep上限是3600秒/1小時），避免
+    // 使用者在迴圈/腳本裡不小心睡太久讓整個分頁長時間沒回應。
+    _runSleepBuiltin(ctx) {
+        const arg = String(ctx.argv[1] || '').trim();
+        if (!arg) { ctx.stderr(new TextEncoder().encode('usage: sleep <秒數>[s|m|h]\n')); return 2; }
+        const m = arg.match(/^(\d+(?:\.\d+)?)(s|m|h)?$/i);
+        if (!m) { ctx.stderr(new TextEncoder().encode(`sleep: 不合法的時間長度「${arg}」\n`)); return 1; }
+        let seconds = parseFloat(m[1]);
+        const unit = (m[2] || 's').toLowerCase();
+        if (unit === 'm') seconds *= 60; else if (unit === 'h') seconds *= 3600;
+        const MAX_SECONDS_BUILTIN = 30;
+        if (seconds > MAX_SECONDS_BUILTIN) {
+            ctx.stderr(new TextEncoder().encode(`sleep: 腳本/迴圈內的sleep是同步阻塞版本，最多接受${MAX_SECONDS_BUILTIN}秒（已自動縮短；互動輸入最上層打sleep沒有這個限制，上限是1小時）\n`));
+            seconds = MAX_SECONDS_BUILTIN;
+        }
+        const deadline = Date.now() + seconds * 1000;
+        while (Date.now() < deadline) { /* 同步busy-wait：host builtin不能await/setTimeout */ }
+        return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-25——curl的sync host builtin版本，跟
+    // _terminalCurl共用_terminalParseCurlArgs解析邏輯，網路層改走
+    // _terminalHttpFetchSync（同步XHR，只能處理文字內容，見該方法上方的
+    // 限制說明）。
+    _runCurlBuiltin(ctx) {
+        const { method, outFile, includeHeaders, headOnly, silent, data, headers, url } = this._terminalParseCurlArgs(ctx.argv.slice(1));
+        if (!url) { ctx.stderr(new TextEncoder().encode('usage: curl [-X METHOD] [-H "K: V"] [-d data] [-o file] [-I] [-i] [-s] <url>\n')); return 2; }
+        let xhr, elapsedMs;
+        try { ({ xhr, elapsedMs } = this._terminalHttpFetchSync(method, url, { headers, body: data })); }
+        catch (err) { ctx.stderr(new TextEncoder().encode(`curl: ${String(err.message || err)}\n`)); return 1; }
+        const headChunks = [];
+        if (includeHeaders || headOnly) {
+            headChunks.push(`HTTP/1.1 ${xhr.status} ${xhr.statusText}\n`);
+            headChunks.push((xhr.getAllResponseHeaders() || '').replace(/\r\n/g, '\n'));
+            headChunks.push('\n');
+        }
+        if (headOnly) {
+            ctx.stdout(new TextEncoder().encode(headChunks.join('')));
+            if (!silent) ctx.stderr(new TextEncoder().encode(`（${elapsedMs.toFixed(0)}ms，同步host builtin版本，只支援文字內容）\n`));
+            return (xhr.status >= 200 && xhr.status < 400) ? 0 : 1;
+        }
+        const text = xhr.responseText || '';
+        if (outFile) {
+            try {
+                ctx.fs.write(outFile, new TextEncoder().encode(text));
+                if (!silent) ctx.stderr(new TextEncoder().encode(`已寫入 ${outFile}（${text.length} chars文字，${xhr.status} ${xhr.statusText}，${elapsedMs.toFixed(0)}ms，同步版本只支援文字內容）\n`));
+            } catch (err) { ctx.stderr(new TextEncoder().encode(`curl: 寫入${outFile}失敗：${String(err.message || err)}\n`)); return 1; }
+        } else {
+            ctx.stdout(new TextEncoder().encode(headChunks.join('') + text));
+        }
+        return (xhr.status >= 200 && xhr.status < 400) ? 0 : 1;
+    }
+
+    // tw_stock_db客製: 2026-09-25——wget的sync host builtin版本，跟
+    // _terminalWget共用_terminalParseWgetArgs解析邏輯。同樣只能正確處理
+    // 文字內容（見_terminalHttpFetchSync的限制說明）。
+    _runWgetBuiltin(ctx) {
+        const { outFile, quiet, url } = this._terminalParseWgetArgs(ctx.argv.slice(1));
+        if (!url) { ctx.stderr(new TextEncoder().encode('usage: wget [-O file] [-q] <url>\n')); return 2; }
+        let xhr, elapsedMs;
+        try { ({ xhr, elapsedMs } = this._terminalHttpFetchSync('GET', url, {})); }
+        catch (err) { ctx.stderr(new TextEncoder().encode(`wget: ${String(err.message || err)}\n`)); return 1; }
+        if (xhr.status < 200 || xhr.status >= 400) { ctx.stderr(new TextEncoder().encode(`wget: ${xhr.status} ${xhr.statusText}\n`)); return 1; }
+        const text = xhr.responseText || '';
+        try { ctx.fs.write(outFile, new TextEncoder().encode(text)); }
+        catch (err) { ctx.stderr(new TextEncoder().encode(`wget: 寫入${outFile}失敗：${String(err.message || err)}\n`)); return 1; }
+        if (!quiet) {
+            ctx.stderr(new TextEncoder().encode(`HTTP request sent, awaiting response... ${xhr.status} ${xhr.statusText}\nLength: ${text.length} chars文字（同步版本只支援文字內容）\nSaving to: '${outFile}'\n\n${outFile} saved（${elapsedMs.toFixed(0)}ms）\n`));
+        }
+        return 0;
+    }
+
+    // tw_stock_db客製: 2026-09-25——httping的sync host builtin版本，跟
+    // _terminalHttping共用_terminalParseHttpingArgs解析邏輯。量測用的HEAD
+    // request不需要讀response body，不受_terminalHttpFetchSync的文字內容
+    // 限制影響。interval等待一樣只能用busy-wait（跟_runSleepBuiltin同一個
+    // 限制），這裡用較小的interval上限（見_terminalParseHttpingArgs本身的
+    // 100ms下限/1000ms預設），累積阻塞時間通常遠低於sleep的30秒上限，不另外
+    // 收緊。
+    _runHttpingBuiltin(ctx) {
+        const { count, intervalMs, url } = this._terminalParseHttpingArgs(ctx.argv.slice(1));
+        if (!url) { ctx.stderr(new TextEncoder().encode('usage: httping [-c count] [-i interval秒] <url>\n')); return 2; }
+        const outChunks = [`HTTPING ${url}\n`];
+        const samples = [];
+        for (let seq = 0; seq < count; seq++) {
+            let xhr, elapsedMs, errMsg = null;
+            try { ({ xhr, elapsedMs } = this._terminalHttpFetchSync('HEAD', url, {})); }
+            catch (err) { errMsg = String(err.message || err); }
+            if (errMsg) {
+                outChunks.push(`seq=${seq} failed: ${errMsg}\n`);
+            } else {
+                samples.push(elapsedMs);
+                outChunks.push(`connected to ${url}: seq=${seq} status=${xhr.status} time=${elapsedMs.toFixed(1)} ms\n`);
+            }
+            if (seq < count - 1) { const deadline = Date.now() + intervalMs; while (Date.now() < deadline) { /* 同步busy-wait */ } }
+        }
+        if (samples.length) {
+            const min = Math.min(...samples), max = Math.max(...samples);
+            const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+            outChunks.push(`--- ${url} httping statistics ---\n${count} requests, ${samples.length} succeeded, ${count - samples.length} failed\nround-trip min/avg/max = ${min.toFixed(1)}/${avg.toFixed(1)}/${max.toFixed(1)} ms\n`);
+        }
+        ctx.stdout(new TextEncoder().encode(outChunks.join('')));
+        return samples.length ? 0 : 1;
     }
 
     _m4ApplyDefineFlag(defines, spec) {
