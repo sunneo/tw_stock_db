@@ -4672,6 +4672,19 @@ const TERMINAL_SHELL_BUILTINS = [
     'sleep', 'curl', 'wget', 'httping',
 ];
 
+// tw_stock_db客製: 2026-09-25使用者實測回報的真實bug（見
+// _terminalGroupCompoundLine的完整說明）——這份清單是「這個名稱出現在
+// `;`分隔的複合指令裡的任何一段時，也要被正確辨識成JS攔截指令」的白名單，
+// 跟TERMINAL_SHELL_BUILTINS/TERMINAL_PROGRAM_BUNDLES**刻意分開維護**：
+// 互動式的program bundle（less/vi/vim/top）跟script執行（sh/bash）故意
+// 不放進來，維持「必須是這一行唯一/最後一個指令」的既有行為，避免這次
+// 修復的範圍擴大到還沒測過的情境（less/vi這類會接管鍵盤輸入的程式混在`;`
+// 複合指令中間執行，語意/測試成本都高出很多）。
+const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
+    'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
+    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make',
+]);
+
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
 // （system跟隨外部theme／ubuntu／powershell／黑底白字／白底黑字）。
 // 'system'刻意不在這裡——它是動態的，跟著_getThemePalette()（整個App的
@@ -17725,9 +17738,82 @@ ${sourceTool.handlerScript}
     // 單純交給busybox自己的builtin：run()每次呼叫都是全新、無狀態的wasm
     // instance，busybox自己的cd只在那一次呼叫內有效、呼叫結束就消失，
     // 必須靠這裡的session.cwd在JS層自己維護跨指令的狀態。
+    // tw_stock_db客製: 2026-09-25使用者實測回報的真實bug——`echo "hi"; sleep
+    // 5; echo "hi2"`這種一行多指令（用`;`接起來）的`sleep`會得到「sleep:
+    // not found」。根因：JS層攔截的判斷只看「這一整行的第一個字」是不是
+    // 已知指令（`cmdName === 'sleep'`這種），`echo "hi"; sleep 5; echo
+    // "hi2"`第一個字是`echo`，不是`sleep`，整行原封不動被送進真正的WASM
+    // busybox（busybox自己會正確解析`;`，但busybox裡根本沒有`sleep`這個
+    // applet，也不知道`curl`/`wget`/`httping`/`make`——這些全部是JS層才有
+    // 的指令），所以中間那段報「not found」。
+    //
+    // 修法：quote-aware地把整行依頂層`;`拆開，**只把真的是JS攔截指令的
+    // 片段抽出來個別處理**，連續的「非JS攔截」片段維持合併成一批、一次
+    // 送進同一個`runtime.run()`（這是關鍵：不能每個片段各自獨立呼叫
+    // `run()`，那樣會讓`export X=1; echo $X`這種靠同一個shell
+    // instance共享狀態的複合指令跟著壞掉——WASM shell instance是無狀態的、
+    // 呼叫一結束環境變數就消失了，見_ensureBashWasmLoaded上方的說明）。
+    // 完全沒有JS攔截指令的行（絕大多數情況）分組結果只有一組、型別是
+    // 'wasm'，行為跟修之前完全一樣，不會有任何回歸風險。
+    //
+    // 刻意不處理`&&`/`||`（條件式，要看上一段的exit code才能決定要不要跑
+    // 下一段，牽涉到_runTerminalCommand目前沒有回傳值的介面要跟著改，範圍
+    // 更大）——這是延續既有`cd x && y`已知限制的同一個類別，只是這次額外
+    // 修的是無條件的`;`。互動式的program bundle（less/vi/vim/top，會接管
+    // 鍵盤輸入）也刻意不在這裡處理，維持原本「必須是這一行唯一/最後一個
+    // 指令」的行為，避免範圍擴大到還沒測過的情境。
+    _terminalSplitTopLevelSemicolons(line) {
+        const parts = [];
+        let cur = '';
+        let inS = false, inD = false;
+        const s = String(line || '');
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (inS) { cur += c; if (c === "'") inS = false; continue; }
+            if (inD) { cur += c; if (c === '"') inD = false; continue; }
+            if (c === "'") { inS = true; cur += c; continue; }
+            if (c === '"') { inD = true; cur += c; continue; }
+            if (c === ';') { parts.push(cur); cur = ''; continue; }
+            cur += c;
+        }
+        parts.push(cur);
+        return parts.map((p) => p.trim()).filter(Boolean);
+    }
+
+    _terminalGroupCompoundLine(line) {
+        const segments = this._terminalSplitTopLevelSemicolons(line);
+        const groups = [];
+        let wasmBatch = [];
+        const flushWasm = () => { if (wasmBatch.length) { groups.push({ type: 'wasm', text: wasmBatch.join('; ') }); wasmBatch = []; } };
+        for (const seg of segments) {
+            const sp = seg.indexOf(' ');
+            const firstWord = sp === -1 ? seg : seg.slice(0, sp);
+            if (TERMINAL_COMPOUND_INTERCEPT_NAMES.has(firstWord)) {
+                flushWasm();
+                groups.push({ type: 'js', text: seg });
+            } else {
+                wasmBatch.push(seg);
+            }
+        }
+        flushWasm();
+        return groups;
+    }
+
     async _runTerminalCommand(session, rawLine) {
-        const trimmed = String(rawLine || '').trim();
-        if (!trimmed) return;
+        const trimmedRaw = String(rawLine || '').trim();
+        if (!trimmedRaw) return;
+        // tw_stock_db客製: 見_terminalGroupCompoundLine上方的完整說明——只有
+        // 真的含有JS攔截指令的複合行才會被拆開逐段執行，單純一般指令（含
+        // `;`與否都一樣）維持原本整行一次送進WASM shell的行為。
+        const groups = this._terminalGroupCompoundLine(trimmedRaw);
+        if (groups.length > 1) {
+            for (const g of groups) {
+                if (session.ended) return;
+                await (g.type === 'js' ? this._runTerminalCommand(session, g.text) : this._runTerminalShellLine(session, g.text));
+            }
+            return;
+        }
+        const trimmed = trimmedRaw;
         const firstSpace = trimmed.indexOf(' ');
         const cmdName = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
         const restArgs = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
@@ -18387,6 +18473,44 @@ ${sourceTool.handlerScript}
         // 判斷），需要換資料夾時請用單獨一次terminal_run呼叫只下cd，跟
         // 下一個指令分開呼叫。
         const trimmedLine = String(line || '').trim();
+        // tw_stock_db客製: 2026-09-25使用者實測發現——terminal_run跟互動輸入
+        // 一樣，`;`分隔的複合指令只看整行第一個字，sleep/curl/wget/httping/
+        // make這幾個JS攔截指令一旦不是整行第一個詞就會落到wasm busybox執行、
+        // 變成command not found（跟互動輸入路徑同一個根因）。這裡用跟
+        // _runTerminalCommand（互動路徑）同一套_terminalGroupCompoundLine
+        // 分組邏輯：JS攔截的segment遞迴呼叫自己（session狀態如cwd共用、
+        // 保持一致），純wasm segment合併成一批丟進_terminalRunWasmLine，
+        // 保留同一個wasm shell instance內`export X=1; echo $X`這類共享狀態
+        // 的語意。outputFile/stderrFile只在整條複合指令跑完後對累積好的
+        // stdout/stderr套用一次，不會被拆成每個group各寫一次。
+        const groups = this._terminalGroupCompoundLine(trimmedLine);
+        if (groups.length > 1) {
+            let stdout = '', stderr = '', exitCode = 0;
+            for (const g of groups) {
+                const r = g.type === 'js'
+                    ? await this._terminalRunCommand(session, g.text, { streamToWidget: opts.streamToWidget })
+                    : await this._terminalRunWasmLine(session, g.text, { streamToWidget: opts.streamToWidget });
+                if (!r.ok) return r;
+                stdout += r.stdout || '';
+                stderr += r.stderr || '';
+                exitCode = r.exit_code;
+            }
+            if (opts.outputFile || opts.stderrFile) {
+                try {
+                    const runtime = await this._ensureBashWasmLoaded();
+                    const fsStore = await this._ensureTerminalFsStore(session, runtime);
+                    if (opts.outputFile) {
+                        const abs = this._terminalResolvePath(session.cwd, opts.outputFile);
+                        this._writeBytesToTerminalFs(fsStore, abs, new TextEncoder().encode(stdout));
+                    }
+                    if (opts.stderrFile) {
+                        const abs = this._terminalResolvePath(session.cwd, opts.stderrFile);
+                        this._writeBytesToTerminalFs(fsStore, abs, new TextEncoder().encode(stderr));
+                    }
+                } catch (err) { /* 寫入失敗不影響已經拿到的stdout/stderr結果，讓呼叫端自己決定要不要重試 */ }
+            }
+            return { ok: true, exit_code: exitCode, stdout, stderr };
+        }
         const firstSp = trimmedLine.indexOf(' ');
         const cmdNameOnly = firstSp === -1 ? trimmedLine : trimmedLine.slice(0, firstSp);
         if (cmdNameOnly === 'cd') {
@@ -18416,6 +18540,19 @@ ${sourceTool.handlerScript}
                 ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
                 : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
         }
+        return this._terminalRunWasmLine(session, line, opts);
+    }
+
+    // tw_stock_db客製: 2026-09-25從_terminalRunCommand抽出——單一command字串
+    // 真的送進WASM busybox執行的部分（原本是_terminalRunCommand唯一的落地
+    // 邏輯），現在有兩個呼叫來源：(1)_terminalRunCommand本身處理單一、非
+    // 複合指令時的fallthrough (2)複合指令（含`;`）分組後，每一批連續的
+    // 非JS攔截segment合併成一個script丟進來這裡執行一次，藉此保留同一個
+    // wasm shell instance內`export X=1; echo $X`這類共享狀態的語意（見
+    // _terminalGroupCompoundLine的分組邏輯）。opts.outputFile/stderrFile
+    // 在複合指令情境下不會傳進來（改由_terminalRunCommand在整條複合指令
+    // 跑完後對累積好的stdout/stderr統一寫檔一次），避免每個group各寫一次。
+    async _terminalRunWasmLine(session, line, opts = {}) {
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
             return { ok: false, error: String(err.message || err) };
