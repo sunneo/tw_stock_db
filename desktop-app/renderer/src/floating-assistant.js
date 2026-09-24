@@ -4728,6 +4728,19 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'sh', 'bash',
 ]);
 
+// tw_stock_db客製: 2026-09-25使用者最終要求——不再靠wasi-sh的host builtin
+// busy-wait硬扛sleep等指令的凍結問題（官方README證實host builtin無法
+// await，無解），改成自己寫的shell控制流程parser+async執行器（見
+// _terminalRunShellText/_terminalExecShellNode）直接dispatch這幾個「虛擬
+// 指令」，不再透過wasi-sh的host builtin機制——這份清單就是這個新執行器
+// 認得的虛擬指令名稱（跟TERMINAL_COMPOUND_INTERCEPT_NAMES刻意分開維護：
+// 那份是「這一行第一個詞要不要被pre-interception攔截」，這份是「解析出來
+// 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
+// batch」，兩者語意不同）。
+const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set([
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make',
+]);
+
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
 // （system跟隨外部theme／ubuntu／powershell／黑底白字／白底黑字）。
 // 'system'刻意不在這裡——它是動態的，跟著_getThemePalette()（整個App的
@@ -17889,6 +17902,566 @@ ${sourceTool.handlerScript}
         return groups;
     }
 
+    // ============================================================
+    // tw_stock_db客製: 2026-09-25使用者最終要求——不要再靠wasi-sh的host
+    // builtin busy-wait硬扛（會真的凍結整個renderer，實測+官方README
+    // 「Handlers must be synchronous」證實無解），也不要spawn()/cross-origin
+    // isolation（使用者明確否決、不想大改整個執行核心）。改成自己寫一個
+    // 真正的shell控制流程parser（recursive-descent，巢狀深度由遞迴天然
+    // 處理，不是regex/關鍵字計數猜測——不會有「不知道會有幾層」的問題）+
+    // async執行器：`;`/`&&`/`||`/`for`/`while`/`if`這幾個控制結構完全由
+    // 我們自己parse+執行，每個statement之間天然有一個await邊界，瀏覽器
+    // 事件迴圈才有機會真的repaint。
+    //
+    // 虛擬指令（sleep/curl/wget/httping/date/ask-floating-ai-assistant/
+    // make）在這個執行器裡直接呼叫既有的async JS實作（本來就是setTimeout/
+    // fetch/XHR，不需要busy-wait，也不需要host builtin的同步限制）；不是
+    // 虛擬指令的一般指令（ls/cat/grep/echo/python/jq...）維持委派給
+    // wasi-sh的_terminalRunWasmLine執行——**而且是連續的非虛擬指令合併成
+    // 一批一次送進同一個wasi-sh呼叫**（跟_terminalGroupCompoundLine同一個
+    // 保守原則：避免拆得太細讓`export X=1; echo $X`這類依賴同一個shell
+    // instance共享狀態的用法失效），只有真的需要JS層介入的節點（虛擬指令、
+    // for/while/if、pipeline等我們不支援的語法）才會單獨成一個await步驟。
+    //
+    // parser遇到自己不支援的語法（pipeline多階段、subshell、case、
+    // function等）會把那一段整段fallback成Opaque節點、原封不動送進
+    // wasi-sh——跟修改前完全一樣的行為，零風險，只有我們支援的子集才會被
+    // 拆解成統一的async執行路徑。
+    //
+    // 整合方式刻意保守：**不動**既有的`_terminalGroupCompoundLine`頂層
+    // 分組邏輯（cd/chmod/sh/bash/斜線腳本這些已經測過、低風險的JS攔截
+    // 判斷完全不變），只把原本「wasm batch group直接送進wasi-sh」跟「完全
+    // 沒有JS攔截指令時的整行fallthrough」這兩個地方，改成呼叫這裡的
+    // `_terminalRunShellText`——這正是for/while迴圈本體/script檔案內容
+    // 當初被當成一個不透明整塊送進WASM、導致sleep凍結整個分頁的根源，
+    // 現在改由我們自己的parser/executor接手這一層。
+    // ============================================================
+
+    // ---- 詞法掃描：quote-aware，產生word/標點符號token流 ----
+    _terminalLexShell(text) {
+        const s = String(text || '');
+        const tokens = [];
+        let i = 0;
+        const n = s.length;
+        while (i < n) {
+            const c = s[i];
+            if (c === ' ' || c === '\t' || c === '\r') { i++; continue; }
+            if (c === '#') { while (i < n && s[i] !== '\n') i++; continue; }
+            if (c === '\\' && s[i + 1] === '\n') { i += 2; continue; }
+            if (c === '\n') { tokens.push({ t: '\n', pos: i, end: i + 1 }); i++; continue; }
+            if (c === ';') { tokens.push({ t: ';', pos: i, end: i + 1 }); i++; continue; }
+            if (c === '&' && s[i + 1] === '&') { tokens.push({ t: '&&', pos: i, end: i + 2 }); i += 2; continue; }
+            if (c === '|' && s[i + 1] === '|') { tokens.push({ t: '||', pos: i, end: i + 2 }); i += 2; continue; }
+            if (c === '|') { tokens.push({ t: '|', pos: i, end: i + 1 }); i++; continue; }
+            if (c === '(') { tokens.push({ t: '(', pos: i, end: i + 1 }); i++; continue; }
+            if (c === ')') { tokens.push({ t: ')', pos: i, end: i + 1 }); i++; continue; }
+            if (c === '&') { tokens.push({ t: '&', pos: i, end: i + 1 }); i++; continue; }
+            const start = i;
+            let inS = false, inD = false, inBt = false;
+            while (i < n) {
+                const ch = s[i];
+                if (inS) { if (ch === "'") inS = false; i++; continue; }
+                if (inD) { if (ch === '"') inD = false; i++; continue; }
+                if (inBt) { if (ch === '`') inBt = false; i++; continue; }
+                if (ch === "'") { inS = true; i++; continue; }
+                if (ch === '"') { inD = true; i++; continue; }
+                if (ch === '`') { inBt = true; i++; continue; }
+                if (ch === '\\' && i + 1 < n) { i += 2; continue; }
+                if (/[\s;&|()\n]/.test(ch)) break;
+                i++;
+            }
+            if (i === start) { i++; continue; }
+            tokens.push({ t: 'word', v: s.slice(start, i), pos: start, end: i });
+        }
+        tokens.push({ t: 'eof', pos: n, end: n });
+        return tokens;
+    }
+
+    // ---- $VAR/${VAR}展開（我們自己追蹤的env，跟busybox自己的變數空間
+    // 分開——非虛擬指令送進wasi-sh時另外用env前綴告訴busybox）----
+    _terminalExpandDollar(s, i, env) {
+        if (s[i + 1] === '{') {
+            const end = s.indexOf('}', i + 2);
+            if (end === -1) return { text: '$', next: i + 1 };
+            const name = s.slice(i + 2, end);
+            return { text: env[name] != null ? String(env[name]) : '', next: end + 1 };
+        }
+        if (s[i + 1] === '(') {
+            let depth = 1, j = i + 2;
+            while (j < s.length && depth > 0) { if (s[j] === '(') depth++; else if (s[j] === ')') depth--; j++; }
+            return { text: s.slice(i, j), next: j, dynamic: true };
+        }
+        const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s.slice(i + 1));
+        if (!m) return { text: '$', next: i + 1 };
+        const name = m[0];
+        return { text: env[name] != null ? String(env[name]) : '', next: i + 1 + name.length };
+    }
+    _terminalExpandWord(rawWord, env) {
+        let out = '', hasDynamic = false;
+        const s = String(rawWord || '');
+        let i = 0;
+        while (i < s.length) {
+            const c = s[i];
+            if (c === "'") {
+                i++;
+                while (i < s.length && s[i] !== "'") { out += s[i]; i++; }
+                i++; continue;
+            }
+            if (c === '"') {
+                i++;
+                while (i < s.length && s[i] !== '"') {
+                    if (s[i] === '\\' && i + 1 < s.length) { out += s[i + 1]; i += 2; continue; }
+                    if (s[i] === '$') { const r = this._terminalExpandDollar(s, i, env); out += r.text; hasDynamic = hasDynamic || !!r.dynamic; i = r.next; continue; }
+                    out += s[i]; i++;
+                }
+                i++; continue;
+            }
+            if (c === '`') { hasDynamic = true; out += c; i++; continue; }
+            if (c === '\\' && i + 1 < s.length) { out += s[i + 1]; i += 2; continue; }
+            if (c === '$') { const r = this._terminalExpandDollar(s, i, env); out += r.text; hasDynamic = hasDynamic || !!r.dynamic; i = r.next; continue; }
+            out += c; i++;
+        }
+        return { text: out, hasDynamic };
+    }
+    _terminalBuildEnvPrefix(env) {
+        const keys = Object.keys(env || {});
+        if (!keys.length) return '';
+        return keys.map((k) => `${k}=${this._shQuote(String(env[k]))}`).join(' ') + '; ';
+    }
+
+    // ---- 遞迴下降parser：Sequence/AndOr/For/While/If/SimpleCommand/Opaque
+    // ----（遇到我們不支援的語法就整段fallback成Opaque，交回wasi-sh處理，
+    // 不強求100%語法覆蓋）
+    _terminalParseShellSource(text) {
+        const src = String(text || '');
+        const tokens = this._terminalLexShell(src);
+        let pos = 0;
+        const peek = () => tokens[pos];
+        const peekWord = () => { const t = tokens[pos]; return t && t.t === 'word' ? t.v : null; };
+        const skipNewlines = () => { while (peek() && peek().t === '\n') pos++; };
+        const skipSeparators = () => { let saw = false; while (peek() && (peek().t === ';' || peek().t === '\n')) { pos++; saw = true; } return saw; };
+
+        const findMatchingKeywordEnd = (openWords, closeWords, startIdx) => {
+            // 從startIdx開始（已經消耗掉開頭關鍵字），找同深度的收尾關鍵字，
+            // 回傳該收尾token的index（不消耗），找不到回傳-1。
+            let depth = 0, j = startIdx;
+            while (j < tokens.length && tokens[j].t !== 'eof') {
+                if (tokens[j].t === 'word') {
+                    const w = tokens[j].v;
+                    if (openWords.has(w)) depth++;
+                    else if (closeWords.has(w)) { if (depth === 0) return j; depth--; }
+                }
+                j++;
+            }
+            return -1;
+        };
+
+        const makeOpaqueTo = (endTokIdx) => {
+            const startTok = tokens[pos];
+            const endTok = endTokIdx != null ? tokens[endTokIdx] : tokens[pos];
+            const srcStart = startTok ? startTok.pos : 0;
+            const srcEnd = endTok ? endTok.pos : srcStart;
+            const node = { type: 'Opaque', srcText: src.slice(srcStart, srcEnd).trim() };
+            if (endTokIdx != null) pos = endTokIdx; else pos++;
+            return node;
+        };
+
+        const parseSimpleCommand = () => {
+            const startTok = tokens[pos];
+            const assignments = [];
+            const argvWords = [];
+            while (peek() && peek().t === 'word') {
+                const w = peek().v;
+                // tw_stock_db客製: 2026-09-25實測發現的真實bug——`echo done`
+                // 這種把done/do/then等關鍵字當成「普通參數」的合法用法，原本
+                // 會被這裡誤判成「遇到控制關鍵字就停止掃描argv」，導致
+                // `done`這個字直接消失（argvWords永遠不會包含它）。真實shell
+                // 語法裡，關鍵字只有在**新statement的開頭**（也就是`;`/`\n`
+                // 分隔符之後）才有特殊意義——這正是外層parseSequenceInner的
+                // STOP_WORDS檢查已經在做的事（在呼叫parseAndOr之前，檢查
+                // 「下一個token是不是關鍵字」），不需要在這裡（同一個
+                // SimpleCommand的argv掃描迴圈裡）重複、而且是錯誤地再做一次
+                // ——一個合法的SimpleCommand本來就是「連續word token直到遇到
+                // 分隔符」，不應該因為某個word剛好長得像關鍵字就提前中斷。
+                if (!argvWords.length) {
+                    const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(w);
+                    if (m) { assignments.push({ name: m[1], valueWordSrc: m[2] }); pos++; continue; }
+                }
+                argvWords.push(w);
+                pos++;
+            }
+            const endTok = tokens[pos];
+            const srcEnd = endTok ? endTok.pos : src.length;
+            const srcText = src.slice(startTok ? startTok.pos : 0, srcEnd).trim();
+            if (!assignments.length && !argvWords.length) return null;
+            return { type: 'SimpleCommand', assignments, argvWords, srcText };
+        };
+
+        const parseCompoundOrSimple = () => {
+            const w = peekWord();
+            if (w === 'for') return parseFor();
+            if (w === 'while' || w === 'until') return parseWhile(w === 'until');
+            if (w === 'if') return parseIf();
+            if (peek() && peek().t === '(') {
+                const openIdx = pos;
+                let depth = 0, j = pos;
+                while (j < tokens.length && tokens[j].t !== 'eof') {
+                    if (tokens[j].t === '(') depth++;
+                    else if (tokens[j].t === ')') { depth--; if (depth === 0) { j++; break; } }
+                    j++;
+                }
+                pos = openIdx;
+                return makeOpaqueTo(j < tokens.length ? j : null);
+            }
+            return parseSimpleCommand();
+        };
+
+        const parseFor = () => {
+            const startPos = pos;
+            pos++; // 'for'
+            const varTok = peek();
+            if (!varTok || varTok.t !== 'word' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(varTok.v)) { pos = startPos; return fallbackStatement(); }
+            const varName = varTok.v;
+            pos++;
+            if (peekWord() !== 'in') { pos = startPos; return fallbackStatement(); }
+            pos++;
+            const listWords = [];
+            while (peek() && peek().t === 'word' && peek().v !== 'do') { listWords.push(peek().v); pos++; }
+            skipSeparators();
+            if (peekWord() !== 'do') { pos = startPos; return fallbackStatement(); }
+            const doIdx = pos;
+            pos++;
+            const doneIdx = findMatchingKeywordEnd(new Set(['for', 'while', 'until', 'if']), new Set(['done']), pos);
+            if (doneIdx === -1) { pos = startPos; return fallbackStatement(); }
+            const bodySrc = src.slice(tokens[doIdx].end, tokens[doneIdx].pos);
+            let body;
+            try { body = this._terminalParseShellSource(bodySrc); } catch (_) { body = { type: 'Opaque', srcText: bodySrc.trim() }; }
+            pos = doneIdx + 1;
+            return { type: 'For', varName, listWords, body };
+        };
+
+        const parseWhile = (isUntil) => {
+            const startPos = pos;
+            pos++; // 'while'/'until'
+            const condStartIdx = pos;
+            // 找condition結尾：頂層（未進入巢狀for/while/if）第一個'do'
+            let depth = 0, j = pos;
+            while (j < tokens.length && tokens[j].t !== 'eof') {
+                if (tokens[j].t === 'word') {
+                    const w = tokens[j].v;
+                    if (w === 'for' || w === 'while' || w === 'until' || w === 'if') depth++;
+                    else if (w === 'done' || w === 'fi') depth--;
+                    else if (w === 'do' && depth === 0) break;
+                }
+                j++;
+            }
+            if (j >= tokens.length || tokens[j].t === 'eof') { pos = startPos; return fallbackStatement(); }
+            const condSrc = src.slice(tokens[condStartIdx] ? tokens[condStartIdx].pos : 0, tokens[j].pos).trim().replace(/;\s*$/, '');
+            const doIdx = j;
+            pos = doIdx + 1;
+            const doneIdx = findMatchingKeywordEnd(new Set(['for', 'while', 'until', 'if']), new Set(['done']), pos);
+            if (doneIdx === -1) { pos = startPos; return fallbackStatement(); }
+            const bodySrc = src.slice(tokens[doIdx].end, tokens[doneIdx].pos);
+            let body;
+            try { body = this._terminalParseShellSource(bodySrc); } catch (_) { body = { type: 'Opaque', srcText: bodySrc.trim() }; }
+            pos = doneIdx + 1;
+            return { type: 'While', condSrc, isUntil: !!isUntil, body };
+        };
+
+        const parseIf = () => {
+            const startPos = pos;
+            pos++; // 'if'
+            const branches = [];
+            let elseBody = null;
+            for (;;) {
+                const condStartIdx = pos;
+                let depth = 0, j = pos;
+                while (j < tokens.length && tokens[j].t !== 'eof') {
+                    if (tokens[j].t === 'word') {
+                        const w = tokens[j].v;
+                        if (w === 'for' || w === 'while' || w === 'until' || w === 'if') depth++;
+                        else if (w === 'done' || w === 'fi') depth--;
+                        else if (w === 'then' && depth === 0) break;
+                    }
+                    j++;
+                }
+                if (j >= tokens.length || tokens[j].t === 'eof') { pos = startPos; return fallbackStatement(); }
+                const condSrc = src.slice(tokens[condStartIdx] ? tokens[condStartIdx].pos : 0, tokens[j].pos).trim().replace(/;\s*$/, '');
+                pos = j + 1; // 跳過then
+                const stopIdx = findMatchingKeywordEnd(new Set(['for', 'while', 'until', 'if']), new Set(['elif', 'else', 'fi']), pos);
+                if (stopIdx === -1) { pos = startPos; return fallbackStatement(); }
+                const bodySrc = src.slice(tokens[j].end, tokens[stopIdx].pos);
+                let body;
+                try { body = this._terminalParseShellSource(bodySrc); } catch (_) { body = { type: 'Opaque', srcText: bodySrc.trim() }; }
+                branches.push({ condSrc, body });
+                const stopWord = tokens[stopIdx].v;
+                if (stopWord === 'elif') { pos = stopIdx + 1; continue; }
+                if (stopWord === 'else') {
+                    pos = stopIdx + 1;
+                    const fiIdx = findMatchingKeywordEnd(new Set(['for', 'while', 'until', 'if']), new Set(['fi']), pos);
+                    if (fiIdx === -1) { pos = startPos; return fallbackStatement(); }
+                    const elseSrc = src.slice(tokens[stopIdx].end, tokens[fiIdx].pos);
+                    try { elseBody = this._terminalParseShellSource(elseSrc); } catch (_) { elseBody = { type: 'Opaque', srcText: elseSrc.trim() }; }
+                    pos = fiIdx + 1;
+                } else {
+                    pos = stopIdx + 1; // 'fi'
+                }
+                break;
+            }
+            return { type: 'If', branches, elseBody };
+        };
+
+        const fallbackStatement = () => {
+            // parser放棄理解目前這個statement（語法超出支援子集），找下一個
+            // 頂層`;`/`\n`/eof當結尾，整段當Opaque交回wasi-sh，跟修改前的
+            // 行為一致，不強行解析。
+            const startTok = tokens[pos];
+            let depth = 0, j = pos;
+            while (j < tokens.length && tokens[j].t !== 'eof') {
+                const tk = tokens[j];
+                if (tk.t === '(') depth++;
+                else if (tk.t === ')') depth = Math.max(0, depth - 1);
+                else if (tk.t === 'word' && ['for', 'while', 'until', 'if', 'case'].includes(tk.v)) depth++;
+                else if (tk.t === 'word' && ['done', 'fi', 'esac'].includes(tk.v)) depth = Math.max(0, depth - 1);
+                else if (depth === 0 && (tk.t === ';' || tk.t === '\n')) break;
+                j++;
+            }
+            const srcStart = startTok ? startTok.pos : 0;
+            const srcEnd = tokens[j] ? tokens[j].pos : src.length;
+            pos = j;
+            return { type: 'Opaque', srcText: src.slice(srcStart, srcEnd).trim() };
+        };
+
+        const parsePipeline = () => {
+            const first = parseCompoundOrSimple();
+            if (!first) return null;
+            if (peek() && peek().t === '|') {
+                const startSrcText = first.srcText != null ? first.srcText : '';
+                let lastEnd = tokens[pos - 1] ? tokens[pos - 1].end : (src.length);
+                while (peek() && peek().t === '|') {
+                    pos++;
+                    const seg = parseCompoundOrSimple();
+                    lastEnd = tokens[pos - 1] ? tokens[pos - 1].end : lastEnd;
+                    if (!seg) break;
+                }
+                // 找到這個statement在原始碼裡的起點（用first節點沒有記錄起點，
+                // 保守做法：從目前累積文字重新組字串，用` | `接起來即可，
+                // pipeline本來就不需要保留原始間距的語意正確性）。
+                const rebuilt = startSrcText; // 至少保留第一段；其餘由於已經是Opaque/SimpleCommand，直接整段重新用原始文字比較安全
+                void rebuilt;
+                const srcStart = first.__pipelineStart != null ? first.__pipelineStart : null;
+                void srcStart;
+                return { type: 'Opaque', srcText: src.slice(first.__tokStart != null ? first.__tokStart : 0, lastEnd).trim() || startSrcText };
+            }
+            return first;
+        };
+
+        const parseAndOr = () => {
+            const left = parsePipeline();
+            if (!left) return null;
+            const items = [{ node: left, op: null }];
+            while (peek() && (peek().t === '&&' || peek().t === '||')) {
+                const op = tokens[pos].t; pos++;
+                skipNewlines();
+                const right = parsePipeline();
+                if (!right) break;
+                items.push({ node: right, op });
+            }
+            if (items.length === 1) return left;
+            return { type: 'AndOr', items };
+        };
+
+        const STOP_WORDS = new Set(['do', 'done', 'then', 'elif', 'else', 'fi']);
+        const parseSequenceInner = () => {
+            const parts = [];
+            skipNewlines();
+            while (peek() && peek().t !== 'eof' && !(peek().t === 'word' && STOP_WORDS.has(peek().v))) {
+                const before = pos;
+                const node = parseAndOr();
+                if (!node) { if (pos === before) pos++; break; }
+                parts.push(node);
+                if (!skipSeparators()) break;
+                skipNewlines();
+            }
+            return { type: 'Sequence', parts };
+        };
+
+        return parseSequenceInner();
+    }
+
+    // ---- for迴圈的動態清單展開（``seq``或其他command substitution）：
+    // 借一次wasi-sh的echo呼叫讓busybox自己做真正、正確的展開，不自己重寫
+    // glob/算術/變數展開語意 ----
+    async _terminalEvalForLoopList(session, listWords, env) {
+        const hasDynamic = listWords.some((w) => /[`$]/.test(w));
+        if (!hasDynamic) return listWords.map((w) => this._terminalExpandWord(w, env).text);
+        const prefix = this._terminalBuildEnvPrefix(env);
+        const r = await this._terminalRunWasmLine(session, `${prefix}echo ${listWords.join(' ')}`, { streamToWidget: false });
+        if (r.ok) return String(r.stdout || '').trim().split(/\s+/).filter(Boolean);
+        return listWords.map((w) => this._terminalExpandWord(w, env).text);
+    }
+
+    // ---- date的inline版本（重用_runDateBuiltin的核心邏輯，接到
+    // session.term.write而不是host builtin的ctx.stdout/stderr）----
+    async _terminalDateInline(session, args) {
+        const chunks = [];
+        const ctx = {
+            argv: ['date', ...args],
+            stdout: (bytes) => { chunks.push(new TextDecoder().decode(bytes)); },
+            stderr: (bytes) => { chunks.push('\x1b[31m' + new TextDecoder().decode(bytes) + '\x1b[0m'); },
+        };
+        this._runDateBuiltin(ctx);
+        session.term.write(chunks.join('').replace(/\n/g, '\r\n'));
+    }
+
+    // ---- async執行器：走AST，虛擬指令直接await既有async實作，非虛擬指令
+    // 合併成批次委派給wasi-sh（_terminalRunWasmLine），statement之間天然
+    // 有await邊界，事件迴圈才有機會repaint/處理使用者輸入 ----
+    _terminalIsVirtualCommandWord(rawWord) {
+        return TERMINAL_VIRTUAL_SCRIPT_COMMANDS.has(rawWord);
+    }
+    async _terminalExecSimpleCommand(session, node, env, opts) {
+        for (const a of node.assignments) env[a.name] = this._terminalExpandWord(a.valueWordSrc, env).text;
+        if (!node.argvWords.length) return { exitCode: 0, stdout: '', stderr: '' };
+        const rawCmdName = node.argvWords[0];
+        if (this._terminalIsVirtualCommandWord(rawCmdName)) {
+            const expandedArgv = node.argvWords.map((w) => this._terminalExpandWord(w, env).text);
+            const cmdName = expandedArgv[0];
+            // tw_stock_db客製: 2026-09-25實測發現——`sleep`/`ask-floating-ai-
+            // assistant`/`make`不像curl/wget/httping會用_terminalTokenizeArgs
+            // 重新quote-aware拆解，是直接把整段argsText當純文字用（sleep是
+            // 整段trim後拿去比對數字regex，ask-floating-ai-assistant整段
+            // trim後直接當prompt文字）——如果這裡先shQuote再接起來，這些
+            // 指令會看到多出來的字面quote字元（例如`sleep 1`變成
+            // `sleep: 不合法的時間長度「'1'」`）。只有curl/wget/httping
+            // 這幾個內部真的會再tokenize的才需要shQuote保留多字組合的引數
+            // 邊界（例如curl -H "Content-Type: ..."的值本身含空白）。
+            const restArgsRaw = expandedArgv.slice(1).join(' ');
+            const restArgsQuoted = expandedArgv.slice(1).map((a) => this._shQuote(a)).join(' ');
+            const captured = await this._terminalCaptureWrites(session, async () => {
+                if (cmdName === 'sleep') await this._terminalSleep(session, restArgsRaw);
+                else if (cmdName === 'curl') await this._terminalCurl(session, restArgsQuoted);
+                else if (cmdName === 'wget') await this._terminalWget(session, restArgsQuoted);
+                else if (cmdName === 'httping') await this._terminalHttping(session, restArgsQuoted);
+                else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
+                else if (cmdName === 'ask-floating-ai-assistant') await this._terminalAskAI(session, restArgsRaw);
+                else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
+            });
+            return { exitCode: captured.hadError ? 1 : 0, stdout: captured.text, stderr: captured.hadError ? captured.text : '' };
+        }
+        const prefix = this._terminalBuildEnvPrefix(env);
+        const r = await this._terminalRunWasmLine(session, prefix + node.srcText, { streamToWidget: opts.streamToWidget, stdin: this._terminalConsumeStdinOpt(opts) });
+        return r.ok ? { exitCode: r.exit_code, stdout: r.stdout, stderr: r.stderr } : { exitCode: 1, stdout: '', stderr: String(r.error || '') };
+    }
+    // tw_stock_db客製: 2026-09-25——給_pyodideBridgeRunShell這種帶stdin
+    // 注入需求的呼叫端用。opts.stdin只應該被「第一個」真的執行到的leaf
+    // wasi-sh呼叫消耗掉（跟真實shell「一份stdin只能被讀一次」的語意接近；
+    // 我們不追求完全精確重現，只求常見的「腳本開頭讀一次stdin」情境正確），
+    // 取用後立刻清空，避免同一份bytes被後續多個batch/statement重複注入。
+    _terminalConsumeStdinOpt(opts) {
+        if (!opts || !opts.stdin) return undefined;
+        const s = opts.stdin;
+        opts.stdin = undefined;
+        return s;
+    }
+    async _terminalExecShellNode(session, node, env, opts) {
+        switch (node.type) {
+            case 'Sequence': {
+                let exitCode = 0, stdout = '', stderr = '';
+                let batch = [];
+                const flushBatch = async () => {
+                    if (!batch.length) return;
+                    const prefix = this._terminalBuildEnvPrefix(env);
+                    const text = prefix + batch.join('; ');
+                    batch = [];
+                    const r = await this._terminalRunWasmLine(session, text, { streamToWidget: opts.streamToWidget, stdin: this._terminalConsumeStdinOpt(opts) });
+                    exitCode = r.ok ? r.exit_code : 1;
+                    stdout += r.ok ? r.stdout : ''; stderr += r.ok ? r.stderr : String(r.error || '');
+                };
+                for (const part of node.parts) {
+                    if (session.ended) break;
+                    if (part.type === 'SimpleCommand' && !part.argvWords.length && part.assignments.length) {
+                        for (const a of part.assignments) env[a.name] = this._terminalExpandWord(a.valueWordSrc, env).text;
+                        continue;
+                    }
+                    if (part.type === 'SimpleCommand' && part.argvWords.length && !this._terminalIsVirtualCommandWord(part.argvWords[0]) && !part.assignments.length) {
+                        batch.push(part.srcText);
+                        continue;
+                    }
+                    await flushBatch();
+                    const r = await this._terminalExecShellNode(session, part, env, opts);
+                    exitCode = r.exitCode; stdout += r.stdout; stderr += r.stderr;
+                }
+                await flushBatch();
+                return { exitCode, stdout, stderr };
+            }
+            case 'AndOr': {
+                let exitCode = 0, stdout = '', stderr = '';
+                for (const { node: n, op } of node.items) {
+                    if (op === '&&' && exitCode !== 0) continue;
+                    if (op === '||' && exitCode === 0) continue;
+                    const r = await this._terminalExecShellNode(session, n, env, opts);
+                    exitCode = r.exitCode; stdout += r.stdout; stderr += r.stderr;
+                }
+                return { exitCode, stdout, stderr };
+            }
+            case 'For': {
+                const items = await this._terminalEvalForLoopList(session, node.listWords, env);
+                let exitCode = 0, stdout = '', stderr = '';
+                for (const item of items) {
+                    if (session.ended) break;
+                    env[node.varName] = item;
+                    const r = await this._terminalExecShellNode(session, node.body, env, opts);
+                    exitCode = r.exitCode; stdout += r.stdout; stderr += r.stderr;
+                }
+                return { exitCode, stdout, stderr };
+            }
+            case 'While': {
+                let exitCode = 0, stdout = '', stderr = '';
+                let guard = 0;
+                for (;;) {
+                    if (session.ended || ++guard > 100000) break;
+                    const prefix = this._terminalBuildEnvPrefix(env);
+                    const condR = await this._terminalRunWasmLine(session, prefix + node.condSrc, { streamToWidget: false });
+                    const condMet = condR.ok && (node.isUntil ? condR.exit_code !== 0 : condR.exit_code === 0);
+                    if (!condMet) break;
+                    const r = await this._terminalExecShellNode(session, node.body, env, opts);
+                    exitCode = r.exitCode; stdout += r.stdout; stderr += r.stderr;
+                }
+                return { exitCode, stdout, stderr };
+            }
+            case 'If': {
+                for (const br of node.branches) {
+                    const prefix = this._terminalBuildEnvPrefix(env);
+                    const condR = await this._terminalRunWasmLine(session, prefix + br.condSrc, { streamToWidget: false });
+                    if (condR.ok && condR.exit_code === 0) return await this._terminalExecShellNode(session, br.body, env, opts);
+                }
+                if (node.elseBody) return await this._terminalExecShellNode(session, node.elseBody, env, opts);
+                return { exitCode: 0, stdout: '', stderr: '' };
+            }
+            case 'SimpleCommand':
+                return await this._terminalExecSimpleCommand(session, node, env, opts);
+            case 'Opaque': {
+                if (!node.srcText) return { exitCode: 0, stdout: '', stderr: '' };
+                const prefix = this._terminalBuildEnvPrefix(env);
+                const r = await this._terminalRunWasmLine(session, prefix + node.srcText, { streamToWidget: opts.streamToWidget, stdin: this._terminalConsumeStdinOpt(opts) });
+                return r.ok ? { exitCode: r.exit_code, stdout: r.stdout, stderr: r.stderr } : { exitCode: 1, stdout: '', stderr: String(r.error || '') };
+            }
+            default:
+                return { exitCode: 0, stdout: '', stderr: '' };
+        }
+    }
+
+    // ---- 統一入口：parse成AST後執行，取代直接把整段文字丟給wasi-sh。
+    // parser本身丟例外時（不應該發生，但求穩）整段退回舊行為。----
+    async _terminalRunShellText(session, text, opts = {}) {
+        let ast;
+        try { ast = this._terminalParseShellSource(text); }
+        catch (_) { return this._terminalRunWasmLine(session, text, opts); }
+        const r = await this._terminalExecShellNode(session, ast, {}, opts);
+        return { ok: true, exit_code: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+    }
+
     async _runTerminalCommand(session, rawLine) {
         const trimmedRaw = String(rawLine || '').trim();
         if (!trimmedRaw) return;
@@ -17899,7 +18472,7 @@ ${sourceTool.handlerScript}
         if (groups.length > 1) {
             for (const g of groups) {
                 if (session.ended) return;
-                await (g.type === 'js' ? this._runTerminalCommand(session, g.text) : this._runTerminalShellLine(session, g.text));
+                await (g.type === 'js' ? this._runTerminalCommand(session, g.text) : this._terminalRunShellText(session, g.text, {}));
             }
             return;
         }
@@ -18072,7 +18645,7 @@ ${sourceTool.handlerScript}
         }
         if (bundleMod) { await this._runTerminalProgramBundle(session, bundleMod, cmdName, restArgs); return; }
 
-        await this._runTerminalShellLine(session, trimmed);
+        await this._terminalRunShellText(session, trimmed, {});
     }
 
     async _ensureTerminalFsStore(session, runtime) {
@@ -18685,7 +19258,7 @@ ${sourceTool.handlerScript}
             for (const g of groups) {
                 const r = g.type === 'js'
                     ? await this._terminalRunCommand(session, g.text, { streamToWidget: opts.streamToWidget })
-                    : await this._terminalRunWasmLine(session, g.text, { streamToWidget: opts.streamToWidget });
+                    : await this._terminalRunShellText(session, g.text, { streamToWidget: opts.streamToWidget });
                 if (!r.ok) return r;
                 stdout += r.stdout || '';
                 stderr += r.stderr || '';
@@ -18799,7 +19372,7 @@ ${sourceTool.handlerScript}
                 ? { ok: true, exit_code: 1, stdout: '', stderr: captured.text }
                 : { ok: true, exit_code: 0, stdout: captured.text, stderr: '' };
         }
-        return this._terminalRunWasmLine(session, line, opts);
+        return this._terminalRunShellText(session, line, opts);
     }
 
     // tw_stock_db客製: 2026-09-25從_terminalRunCommand抽出——單一command字串
@@ -18830,7 +19403,7 @@ ${sourceTool.handlerScript}
         let outBuf = '', errBuf = '';
         let result;
         try {
-            result = await runtime.run({
+            const runOpts = {
                 command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true, builtins,
                 onOutput: (bytes, channel) => {
                     const text = new TextDecoder().decode(bytes);
@@ -18838,7 +19411,13 @@ ${sourceTool.handlerScript}
                     if (opts.streamToWidget !== false) this._terminalWriteOutput(session, text.replace(/\n/g, '\r\n'));
                     session.lastActiveAt = Date.now();
                 },
-            });
+            };
+            // tw_stock_db客製: 2026-09-25——給_pyodideBridgeRunShell這種帶
+            // stdin注入需求的呼叫端用（python的subprocess.run(input=...)
+            // 回頭呼叫shell）。只有真的有傳opts.stdin時才加這個欄位，一般
+            // 終端機呼叫（互動輸入/terminal_run）不受影響。
+            if (opts.stdin) runOpts.stdin = opts.stdin;
+            result = await runtime.run(runOpts);
         } catch (err) {
             return { ok: false, error: `執行失敗：${String(err.message || err)}` };
         } finally {
@@ -19519,29 +20098,18 @@ ${sourceTool.handlerScript}
         }
         const args = String(argsText || '').trim().split(/\s+/).filter(Boolean);
         const setArgs = args.length ? `set -- ${args.map((a) => this._shQuote(a)).join(' ')}; ` : '';
-        const script = this._terminalRewriteBuiltinPaths(`cd ${this._shQuote(session.cwd)} 2>/dev/null; ${setArgs}${text}`);
-        let builtins;
-        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
-            session.term.write(`\x1b[31m指令需要的執行環境載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
-            return;
-        }
-        const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
-        fsStack.push(fsStore);
+        // tw_stock_db客製: 2026-09-25使用者最終要求——腳本內容不再整段當成
+        // 一個不透明blob丟給wasi-sh的單次run()（那正是for/while迴圈裡的
+        // sleep會凍結整個分頁的根源），改成跟其他呼叫點一樣走
+        // _terminalRunShellText（見該方法上方的完整說明：自己的parser+
+        // async執行器，虛擬指令直接await、其餘批次委派給wasi-sh）。
+        // _terminalRunWasmLine（新執行器的leaf）本身已經會處理
+        // _ensureBashWasmLoaded/_ensureTerminalFsStore/FAP掛載/sandbox
+        // builtins/fsStack push-pop，這裡不用重複做。
         try {
-            await runtime.run({
-                command: script,
-                fs: fsStore,
-                wasm: runtime.wasmBytes.slice(0),
-                inline: true,
-                builtins,
-                onOutput: (bytes, _channel) => {
-                    this._terminalWriteOutput(session, new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'));
-                },
-            });
+            await this._terminalRunShellText(session, `${setArgs}${text}`, { streamToWidget: true });
         } catch (err) {
             session.term.write(`\x1b[31m執行失敗：${String(err.message || err)}\x1b[0m\r\n`);
-        } finally {
-            fsStack.pop();
         }
     }
 
@@ -20291,11 +20859,34 @@ ${sourceTool.handlerScript}
         const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
         const store = fsStack.length ? fsStack[fsStack.length - 1] : runtime.memoryFs({});
         const stdinArr = stdinBytes ? new Uint8Array(stdinBytes.toJs ? stdinBytes.toJs() : stdinBytes) : undefined;
-        let builtins;
-        try { builtins = await this._buildTerminalSandboxBuiltins(argv.join(' ')); } catch (_) { builtins = {}; }
+        // tw_stock_db客製: 2026-09-25使用者要求——「外面的使用者未必只用
+        // bash，也可能用很多層python去處理」「他必須可以接受任何設計而且
+        // 不該卡住」。python的subprocess.run(['sh','-c','for...sleep...
+        // done'])這種巢狀呼叫，原本直接送進wasi-sh的runtime.run({args})，
+        // 完全繞過_terminalRunShellText/_terminalExecShellNode這個新的
+        // async執行器，還是會撞回host builtin busy-wait凍結的老問題。改成
+        // 跟終端機三個呼叫點一樣統一走新引擎——用一個沒有真正畫面的「假
+        // session」（term.write是no-op，這條路徑本來就是程式化取得
+        // stdout/stderr，不是給人看的終端機widget），沙盒fs直接沿用目前
+        // 呼叫堆疊最外層那個store（維持「巢狀呼叫看到同一份/work」的既有
+        // 語意，等同這個方法原本的store解析邏輯）。argv是`sh -c SCRIPT`
+        // 形式時取SCRIPT原文（保留完整shell語法給新引擎parse）；其餘情況
+        // （例如直接args:['sleep','5']）重新組成一行文字送進去，新引擎的
+        // SimpleCommand處理邏輯跟原本argv-based呼叫在語意上等價。
+        const text = (argv[0] === 'sh' && argv[1] === '-c')
+            ? String(argv[2] || '')
+            : argv.map((a) => this._shQuote(a)).join(' ');
+        const fakeSession = {
+            term: { write: () => {} },
+            cwd: '/work',
+            ended: false,
+            fapLabels: null,
+            fapHydrated: new Set(),
+            fsStore: store,
+        };
         try {
-            const result = await runtime.run({ args: argv, fs: store, wasm: runtime.wasmBytes.slice(0), inline: true, stdin: stdinArr, builtins });
-            return { stdout: result.stdout, stderr: result.stderr, returncode: result.exitCode };
+            const r = await this._terminalRunShellText(fakeSession, text, { streamToWidget: false, stdin: stdinArr });
+            return { stdout: r.stdout || '', stderr: r.stderr || '', returncode: r.ok ? r.exit_code : 1 };
         } catch (err) {
             return { stdout: '', stderr: String(err.message || err), returncode: 1 };
         }
@@ -20724,9 +21315,18 @@ ${sourceTool.handlerScript}
     // tw_stock_db客製: 2026-09-25——sleep的sync host builtin版本（見
     // SANDBOX_COMMAND_REGISTRY那段說明）。host builtin不能await/setTimeout，
     // 要真的讓後面的指令等待，只能同步busy-wait阻塞整個分頁（跟`_terminalSleep`
-    // 用setTimeout、不卡UI是不同等級的代價）。上限刻意收緊到30秒（互動輸入
-    // 最上層pre-interception路徑的_terminalSleep上限是3600秒/1小時），避免
-    // 使用者在迴圈/腳本裡不小心睡太久讓整個分頁長時間沒回應。
+    // 用setTimeout、不卡UI是不同等級的代價）。
+    //
+    // tw_stock_db客製: 2026-09-25使用者實測回報「整個分頁完全凍結、事後一次
+    // 印出一堆」——原本上限30秒太寬鬆，使用者要求的「像vim/top一樣可以suspend
+    // 但保持互動」需要wasi-sh的spawn()（Worker+SharedArrayBuffer+Atomics.wait，
+    // 見DESIGN文件§19.10的完整查證），但使用者明確否決這個方向（不要cross-origin
+    // isolation、不想大改整個終端機執行核心）。查證結果很明確：wasi-sh的host
+    // builtin「Handlers must be synchronous...there is nothing to await into」
+    // （wasi-sh官方README原文），run()模式下沒有任何方法能讓sleep真的不阻塞
+    // 又保留delay效果——這是這個函式庫的硬限制，不是我們能繞過的。在維持
+    // run()架構、不上spawn()的前提下，唯一能做的緩解是把上限壓得更低（30→2秒），
+    // 縮短最壞情況的凍結時間，不再嘗試假裝能兩全。
     _runSleepBuiltin(ctx) {
         const arg = String(ctx.argv[1] || '').trim();
         if (!arg) { ctx.stderr(new TextEncoder().encode('usage: sleep <秒數>[s|m|h]\n')); return 2; }
@@ -20735,9 +21335,9 @@ ${sourceTool.handlerScript}
         let seconds = parseFloat(m[1]);
         const unit = (m[2] || 's').toLowerCase();
         if (unit === 'm') seconds *= 60; else if (unit === 'h') seconds *= 3600;
-        const MAX_SECONDS_BUILTIN = 30;
+        const MAX_SECONDS_BUILTIN = 2;
         if (seconds > MAX_SECONDS_BUILTIN) {
-            ctx.stderr(new TextEncoder().encode(`sleep: 腳本/迴圈內的sleep是同步阻塞版本，最多接受${MAX_SECONDS_BUILTIN}秒（已自動縮短；互動輸入最上層打sleep沒有這個限制，上限是1小時）\n`));
+            ctx.stderr(new TextEncoder().encode(`sleep: 腳本/迴圈內的sleep是同步阻塞版本（會真的凍結整個分頁，wasi-sh的host builtin無法await，這是函式庫本身的限制），最多接受${MAX_SECONDS_BUILTIN}秒（已自動縮短；互動輸入最上層打sleep沒有這個限制，上限是1小時）\n`));
             seconds = MAX_SECONDS_BUILTIN;
         }
         const deadline = Date.now() + seconds * 1000;
@@ -20819,7 +21419,10 @@ ${sourceTool.handlerScript}
                 samples.push(elapsedMs);
                 outChunks.push(`connected to ${url}: seq=${seq} status=${xhr.status} time=${elapsedMs.toFixed(1)} ms\n`);
             }
-            if (seq < count - 1) { const deadline = Date.now() + intervalMs; while (Date.now() < deadline) { /* 同步busy-wait */ } }
+            // tw_stock_db客製: 2026-09-25——跟_runSleepBuiltin同一個理由，
+            // busy-wait版本的等待上限也要壓低（不能沿用_terminalHttping
+            // async版本沒有上限的-i設定），避免-i設定太大的值時凍結太久。
+            if (seq < count - 1) { const deadline = Date.now() + Math.min(intervalMs, 2000); while (Date.now() < deadline) { /* 同步busy-wait */ } }
         }
         if (samples.length) {
             const min = Math.min(...samples), max = Math.max(...samples);

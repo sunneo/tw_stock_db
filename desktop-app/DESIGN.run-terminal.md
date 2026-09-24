@@ -1297,6 +1297,64 @@ builtin路徑用的同步版本）同一個限制、同一種付出代價的方�
 sleep 1; echo "hi2"`（無控制結構的一般複合行）兩個既有回歸案例都沒有被
 破壞。全部測試通過。
 
+### 19.10 §19.7的busy-wait凍結問題：查證spawn()、確認host builtin無解、壓低上限止血
+
+§19.7上線後，使用者實測回報「整個分頁完全失去回應，然後一口氣印出一堆」——
+`_runSleepBuiltin`的同步busy-wait不只讓`session.term.write`的輸出延後可見，
+是**真的凍結整個renderer process**（不只terminal widget，連瀏覽器repaint
+都卡住），因為busy-wait期間JS主執行緒完全不會把控制權還給事件迴圈，瀏覽器
+沒有任何機會重繪畫面——所有echo/date的輸出其實都正確依序寫進xterm.js的
+內部buffer了，只是要等到整個`runtime.run()`呼叫真正結束、JS主執行緒終於
+返回事件迴圈，畫面才會一次性重繪、看起來像「事後一口氣印出一堆」。
+
+使用者要求「像vim/top一樣可以suspend但保持互動」，並具體提出「做成suspend
+thread，向interpreter申請下次叫醒thread的要求」——這精準對應到一個真實
+存在的機制：wasi-sh除了目前用的`run()`（單次同步呼叫）之外，還有一個
+`spawn()`模式，**在Worker裡跑整個shell、用SharedArrayBuffer+Atomics.wait
+實現真正的blocking read**（讀取wasi-sh官方README原文確認，不是憑空猜測）——
+在這個模式下，busy-wait只會卡住Worker執行緒，主執行緒（xterm.js/畫面渲染）
+完全不受影響，是`vim`/`top`要求鍵盤輸入時「畫面不動但仍可互動」那種suspend
+語意的真正對應實作。**但`spawn()`需要cross-origin isolation
+（COOP/COEP header）才能用SharedArrayBuffer**，而且要從`run()`換成
+`spawn()`是重寫整個終端機執行核心的量級（不是小補丁：所有`_terminalRun*`
+方法、host builtins註冊機制、fs store交握都要改成spawn()的持久session
+模型）。使用者明確否決這個方向——不要cross-origin isolation、不想做這麼大的
+架構異動。
+
+同時也**明確驗證了host builtin真的無法async**：直接讀取wasi-sh官方README
+（`https://cdn.jsdelivr.net/npm/wasi-sh@0.11.0/README.md`，不是猜測或沿用
+舊註解）原文寫得非常清楚——「Handlers must be synchronous. The guest is a
+synchronous wasm stack frame below the call — there is nothing to await
+into. Returning a promise is reported as an error rather than silently
+succeeding at exit 0.」在維持`run()`架構的前提下，這是函式庫本身的硬限制，
+沒有任何寫法能繞過。
+
+**決定**：不追加spawn()（使用者否決），在`run()`架構下老實接受這個限制，
+把busy-wait能造成的最壞凍結時間壓到最低——`_runSleepBuiltin`的
+`MAX_SECONDS_BUILTIN`從30秒降到**2秒**，`_runHttpingBuiltin`的請求間隔
+busy-wait也同樣加上2秒上限（原本沿用`_terminalParseHttpingArgs`的`-i`
+設定完全沒有上限）。互動輸入最上層的async版本（`_terminalSleep`，
+setTimeout、不卡UI）完全不受影響，上限仍是原本的3600秒/1小時。
+
+**`ask-floating-ai-assistant`的同一類問題，但決定不修**：使用者同時回報
+`ask-floating-ai-assistant`在script裡也是「not found」（跟sleep/curl一樣
+從沒被註冊進`SANDBOX_COMMAND_REGISTRY`）。但**這裡刻意不比照curl/wget/
+httping的做法**（改寫成同步XHR host builtin）——`ask-floating-ai-assistant`
+底層呼叫的是`_runSubAgentTask`，一個可能要好幾輪LLM API呼叫、耗時10-60秒
+以上的agent loop，不是curl那種「一次HTTP request」的等級。如果做成同步
+busy-wait host builtin，凍結時間會遠比sleep的worst case更長、更嚴重，
+直接違背這次修busy-wait問題的初衷。維持現狀：`ask-floating-ai-assistant`
+跟`vim`/`less`/`top`一樣是**只能在最上層互動輸入才能用**的指令（同一類
+「需要真的suspend、但這個沙盒沒有能力在不凍結的前提下suspend」的限制），
+在script/迴圈裡使用會得到busybox的「not found」——這是如實的架構限制，
+不是遺漏。
+
+**驗證**（真實Electron）：`for i in 1; do echo start; sleep 5; echo end;
+done`確認`sleep 5`被正確壓到~2秒（`elapsed~2.0`）且stderr出現縮短警告文字；
+`sleep 1`（低於新上限）在for迴圈裡確認仍正確delay且沒有警告訊息；§19.6/
+19.7/19.9既有的所有回歸測試（for迴圈、script檔案、date時區、巢狀迴圈、
+`export`/`echo`共享狀態）重跑全部通過，沒有因為調降上限而破壞既有行為。
+
 ### 19.8 `/usr/bin/sleep`絕對路徑呼叫＋python subprocess橋接漏wire builtins
 
 §19.7上線後，使用者又測出`/usr/bin/sleep`（完整路徑呼叫，不是裸名稱）在
@@ -1389,5 +1447,139 @@ strftime規格表。
 現在都正確顯示本地時間（原本§19.6/19.7測試transcript裡出現的UTC時間戳記，
 這次重跑後全部變成GMT+8）；`echo "the date command shows local time now"`
 這種提到"date"單字的一般文字資料沒有被誤改。
+
+### 19.11 徹底解法：自己寫的shell控制流程parser+async執行器，取代busy-wait
+
+§19.10把busy-wait上限壓到2秒後，使用者實測回報「整個分頁完全失去回應，
+然後一口氣印出一堆」還是存在（只是縮短了，沒有真正解決），並且明確否決
+「這是函式庫限制」這個說法——「我們不要依賴別人寫好但是有瑕疵的」「你應該
+做的是把它做成suspend thread，向interpreter申請下次叫醒thread的要求」
+「讓他就像是vim一樣！vim, top，你可以保持使用者沒有往前，terminal繼續在
+那邊，但還是可以互動」。
+
+**關鍵洞察**：`vim`/`top`這幾個`TERMINAL_PROGRAM_BUNDLES`本來就是「suspend
+但保持互動」的真正實作——它們是在WASM執行**之前**就被JS層攔截、整個接管的
+獨立ESM模組，用`await ctx.readKey()`真正async等待下一個按鍵，完全不涉及
+wasi-sh的host builtin同步限制。`sleep`/`curl`/`date`/`ask-floating-ai-
+assistant`當初會卡在busy-wait，不是因為「這些指令本質上做不到」，是因為
+它們被送進`SANDBOX_COMMAND_REGISTRY`（wasi-sh host builtin，官方README
+證實`Handlers must be synchronous`，無解）——**根本問題是`for`/`while`
+迴圈本體、script檔案內容，整段被當成一個不透明blob送進wasi-sh單一次
+`runtime.run()`呼叫**，busybox自己的shell parser在處理這段文字時，遇到
+`sleep`只能透過host builtin同步呼叫，沒有其他路徑。
+
+**解法**：自己寫一個真正的shell控制流程parser（recursive-descent，巢狀
+深度由遞迴天然處理，不是regex/關鍵字計數——不會有「不知道會有幾層」的
+問題，這是使用者對§19.9之前那些regex-based修法的直接批評）+async執行器，
+完全取代「把for/while迴圈本體整段丟給wasi-sh」這個做法：
+
+- **`_terminalLexShell(text)`**：quote-aware詞法掃描，產生word/`;`/`\n`/
+  `&&`/`||`/`|`/`(`/`)`/eof token流。
+- **`_terminalParseShellSource(text)`**：遞迴下降parser，支援`Sequence`
+  （`;`/`\n`分隔）、`AndOr`（`&&`/`||`）、`For`（`for VAR in LIST; do
+  BODY; done`）、`While`/`Until`、`If`/`elif`/`else`/`fi`、`SimpleCommand`
+  （含`VAR=value`賦值）。**遇到自己不支援的語法**（pipeline多階段、
+  subshell`(...)`、`case`、function等）**整段fallback成`Opaque`節點、
+  原封不動送回wasi-sh**——跟修改前完全一樣的行為，零風險，只有支援的子集
+  才會被拆解。`for`/`while`/`if`的body用巢狀深度計數找到對應的
+  `done`/`fi`（`findMatchingKeywordEnd`），這個計數只用來**定位邊界**、
+  不嘗試理解內部語意，body文字本身遞迴丟回`_terminalParseShellSource`
+  自己parse——巢狀深度由函式呼叫的call stack天然處理，不是自己維護一個
+  深度計數器貫穿整段文字（這正是使用者批評的那種寫法）。
+- **`_terminalExecShellNode(session, node, env, opts)`**：async執行器，
+  走AST。**虛擬指令**（`TERMINAL_VIRTUAL_SCRIPT_COMMANDS`：`sleep`/
+  `curl`/`wget`/`httping`/`date`/`ask-floating-ai-assistant`/`make`）
+  在`SimpleCommand`節點裡被辨識到時，**直接`await`既有的async JS實作**
+  （`_terminalSleep`本來就是`setTimeout`、`_terminalAskAI`本來就是
+  `fetch`+`_runSubAgentTask`，完全不需要busy-wait，也不受wasi-sh host
+  builtin同步限制——因為它們根本不再是host builtin，是我們自己的JS函式
+  直接被我們自己的執行器呼叫）。**非虛擬指令**（`ls`/`cat`/`grep`/
+  `python`/`jq`...）委派給`_terminalRunWasmLine`（既有的wasi-sh
+  `run()`封裝，重用busybox真正、正確的coreutils，不重寫）——而且
+  `Sequence`執行時**連續的非虛擬SimpleCommand會合併成一批**（跟
+  `_terminalGroupCompoundLine`同一個保守原則）一次送進`_terminalRunWasmLine`
+  ，避免`export X=1; echo $X`這類依賴同一個wasi-sh instance共享狀態的
+  用法被拆得太細而失效。`For`迴圈的清單展開（`` `seq A B` ``這種動態
+  清單）借一次`echo LIST`的wasi-sh呼叫讓busybox自己做真正、正確的展開，
+  不自己重寫glob/算術/變數展開語意。
+- **`_terminalRunShellText(session, text, opts)`**：統一入口，parse+
+  執行，取代原本三個呼叫點（`_runTerminalShellLine`互動leaf、
+  `_terminalRunWasmLine`AI工具leaf、`_terminalRunScriptFile`）各自把
+  整段文字塞進一次`runtime.run()`的做法。**整合方式刻意保守**：不動既有
+  `_terminalGroupCompoundLine`的頂層`;`分組邏輯（cd/chmod/sh/bash/斜線
+  腳本這些已經測過的JS攔截判斷完全不變），只把原本「wasm batch group
+  直接送進wasi-sh」跟「完全沒有JS攔截指令時的整行fallthrough」這兩個
+  地方改呼叫`_terminalRunShellText`——這正是for/while迴圈本體/script
+  檔案內容當初被當成不透明整塊送進WASM的根源。
+
+**`_pyodideBridgeRunShell`（python `subprocess.run(['sh','-c',...])`
+橋接）也一併改用新引擎**：使用者明確提醒「外面的使用者未必只用bash，也
+可能用很多層python去處理」「他必須可以接受任何設計而且不該卡住」——原本
+這個橋接直接呼叫`runtime.run({args:argv})`，完全繞過新引擎，python巢狀
+呼叫shell仍會撞回busy-wait凍結。改成建構一個沒有真正畫面的「假session」
+（`term.write`是no-op，這條路徑本來就是程式化取得stdout/stderr）餵給
+`_terminalRunShellText`，`stdin`注入（python `subprocess.run(input=...)`）
+改成`opts.stdin`參數，用**消耗一次**的語意只餵給第一個真的執行到的leaf
+wasi-sh呼叫（`_terminalConsumeStdinOpt`），近似真實shell「一份stdin只能
+被讀一次」的語意。
+
+**`TERMINAL_VIRTUAL_SCRIPT_COMMANDS`是這次確立的通用「註冊host-backed
+虛擬指令」機制**（使用者原話：「這個ask-floating-assistant跟sleep只是一個
+超級無敵小的目標，讓我確認你的register/handle能不能inject，能否設計出
+裡面有binary，實際上是host幫跑」）——未來要新增任何「由host（JS/Electron）
+實際執行、但在shell裡看起來像一個指令」的虛擬指令，只需要：(1)把名稱加進
+`TERMINAL_VIRTUAL_SCRIPT_COMMANDS`（2)在`_terminalExecSimpleCommand`的
+dispatch裡加一個分支(3)實作一個async JS函式，這個新指令就會自動在互動
+輸入/`terminal_run`/複合指令/`for`/`while`/`if`/script檔案/python
+subprocess橋接**全部情境**下正確運作，不需要為每個新指令重新踩一次這次
+sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
+
+**踩到的真實bug（實測抓到，已修正）**：parser的`parseSimpleCommand`一開始
+用「遇到`CTRL_KEYWORDS`（`for`/`while`/`if`/`then`/`elif`/`else`/`fi`/
+`do`/`done`/`in`）就停止掃描argv」的邏輯，誤判`echo done`這種把`done`
+當成**普通參數**（不是控制關鍵字）的合法用法——`done`會被直接吃掉、完全
+不出現在`argvWords`裡，`echo done`實際輸出變成空字串。根因：真實shell的
+關鍵字只有在**新statement開頭**（分隔符之後）才有特殊意義，不是「這個word
+剛好長得像關鍵字就要停」——`parseSequenceInner`的`STOP_WORDS`檢查已經在
+正確的位置（呼叫`parseAndOr`之前）做這件事，`parseSimpleCommand`內部
+不需要、也不應該重複這個判斷。修法：直接移除`parseSimpleCommand`裡這段
+錯誤的提前中斷邏輯，SimpleCommand的argv掃描單純「連續word token直到遇到
+分隔符」，不再對關鍵字字面文字特殊處理。
+
+**驗證**（真實Electron，非mock，这是這次修法最重要的驗證項目）：
+1. **不再凍結**：fire-and-forget方式送出`for i in 1 2 3 4 5; do echo
+   x-$i; date; sleep 1; done`（不等待完成），每隔0.4-0.7秒對頁面做一次
+   `page.evaluate('() => 1+1')`量測回應時間——**整個5秒執行期間，每次
+   evaluate的回應時間穩定在3-6ms**（跟迴圈執行前後完全一樣），從未出現
+   busy-wait版本會有的數百至數千毫秒延遲，證實主執行緒真的沒有被阻塞、
+   瀏覽器repaint/事件處理完全正常。
+2. **輸出真的是漸進式的**（不是最後一次性印出）：同一個fire-and-forget
+   測試，終端機畫面上的內容隨時間逐步增加，不是卡住5秒後一次性全部出現。
+3. **ask-floating-ai-assistant現在可以在script裡跑**（使用者原始回報的
+   bug）：`./aiscript.sh`（內容含`ask-floating-ai-assistant "say the
+   single word: PONG"`夾在兩個echo中間）透過`terminal_run`正確執行，
+   AI真的回了"PONG"，前後兩個echo都正確輸出，耗時1.37秒（真實LLM
+   round-trip時間，不是假的），不再是「not found」。
+4. **python subprocess橋接不再繞過新引擎**：`subprocess.run(['sh','-c',
+   'sleep 1; echo hello...'])`透過`_pyodideBridgeRunShell`確認真的delay
+   ~1秒且正確拿到stdout（延續§19.8已經驗證過的builtins wiring，這次額外
+   確認改用新引擎後行為沒有退化）。
+5. `echo done`（讓parser的關鍵字誤判bug現形的最小重現案例）確認正確輸出
+   `done`，不再是空字串。
+6. §19.6～§19.10累積的所有回歸測試（for迴圈語法/腳本檔案/`/usr/bin/sleep`
+   絕對路徑/`date`時區/巢狀for迴圈/`export`+`echo`共享狀態/簡單複合行）
+   全部重跑一次，確認這次架構級重寫沒有破壞任何既有行為。
+
+**已知限制（如實記錄，不是100%的shell parser，不追求）**：pipeline多階段
+（`cmd1 | cmd2`）、subshell`(...)`、`case`、shell function定義、複雜參數
+展開（`${VAR:-default}`）、算術`$((...))`——這些不在parser支援的子集內，
+遇到時整段fallback成`Opaque`交回wasi-sh（維持修改前的行為，只是那段文字
+如果剛好含有虛擬指令，還是會回到busy-wait的舊限制，這是刻意的、有明確
+理由的範圍界線，不是遺漏）。`while`迴圈的condition每次迭代都要真的呼叫
+一次wasi-sh（`_terminalRunWasmLine`檢查exit_code），沒有像`for`迴圈清單
+展開那樣可以完全避開；虛擬指令的參數展開（`_terminalExpandWord`）只處理
+常見的`$VAR`/`${VAR}`/單雙引號，不支援巢狀`$(...)`command substitution
+出現在虛擬指令的參數裡（例如`sleep $(compute_delay)`不會被正確展開，會
+原樣當成字面文字，這是實務上極少見的用法）。
 
 | `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
