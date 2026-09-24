@@ -1297,4 +1297,97 @@ builtin路徑用的同步版本）同一個限制、同一種付出代價的方�
 sleep 1; echo "hi2"`（無控制結構的一般複合行）兩個既有回歸案例都沒有被
 破壞。全部測試通過。
 
+### 19.8 `/usr/bin/sleep`絕對路徑呼叫＋python subprocess橋接漏wire builtins
+
+§19.7上線後，使用者又測出`/usr/bin/sleep`（完整路徑呼叫，不是裸名稱）在
+`./test.sh`裡還是「not found」，並提出兩個關鍵問題：「這已經是真正的指令了
+可以讓他是程式就好？」「如果我把gcc/python弄進來，用exec sleep或執行一個
+shell裡面有sleep，這不就又壞了？」。
+
+**根因**：wasi-sh的busybox「指令名稱只要含斜線，一律視為外部檔案路徑、
+直接not found，完全不會查host builtins表」（這個沙盒沒有真正的fork/exec
+能力）——這不是「builtin沒註冊好」，是busybox自己刻意跳過builtin查表這一步，
+即使`sleep`已經是host builtin，`/usr/bin/sleep`還是會被busybox的「含斜線
+一律not found」邏輯攔下。使用者的第二個問題點出一個更深、且**真實存在**的
+落差：全檔案掃過一輪`runtime.run(`的呼叫點（共7處），發現`_pyodideBridgeRunShell`
+（python`subprocess.run(['sh','-c',...])`回頭呼叫shell的橋接）**完全沒有
+wire builtins**——就算之後真的把python接進來，`subprocess.run(['sleep','5'])`
+回頭經過這裡，連裸名稱`sleep`都會「not found」，不是路徑問題，是這個呼叫點
+從一開始就沒把builtins map傳進`runtime.run()`。
+
+**修法**：新增`_terminalRewriteBuiltinPaths(text)`——quote-aware（沿用
+`_terminalSplitTopLevelSemicolons`同一套逐字元掃描+quote狀態追蹤，避免
+誤改`echo "path is /usr/bin/sleep as literal text"`這種資料字串，這是
+第一版純正則寫法實測踩到的真實bug，之後才改成逐字元版本）地把`/usr/bin/
+<name>`／`/bin/<name>`這種完整路徑呼叫（只對SANDBOX_COMMAND_REGISTRY
+登記過的名稱）改回裸名稱，讓它們回到busybox「查host builtins表」這條正常
+路徑。**在整個檔案裡每一個把文字/argv送進`runtime.run()`執行的呼叫點都套用**
+（`bash_execute`工具、`_codingRunInSandbox`、三個終端機script組裝點
+`_terminalRunWasmLine`/`_runTerminalShellLine`/`_terminalRunScriptFile`、
+以及`_pyodideBridgeRunShell`——這個順便一起補上原本完全沒有的builtins
+wiring，直接回應使用者「python/gcc接進來會不會又壞」的疑慮）；`argv`陣列
+形式（`_pyodideBridgeRunShell`用`args`不是`command`）則對每個元素分別套用
+同一個rewrite函式。
+
+**追加發現的第三個落差（跟上面兩個修法互相衝突）**：`/usr/bin/sleep`／
+`/bin/sleep`如果是**直接打在互動輸入/terminal_run最上層**（不是藏在script
+檔案內容裡），會先被既有的「含斜線＝使用者自己的script檔案，檢查chmod +x」
+判斷搶先攔截（因為`/bin`、`/usr/bin`底下那些是純佔位符空檔案，從沒被
+chmod +x過，得到誤導性的「權限不足」），根本輪不到`_terminalRewriteBuiltinPaths`
+生效（那個只套用在「整段script文字送進WASM之前」，這裡整行還沒送進WASM）。
+修法：在`_runTerminalCommand`（互動）跟`_terminalRunCommand`（AI工具）的
+「當成使用者script檔案」判斷之前，先檢查這個路徑是不是剛好對到一個真的
+有host builtin的名稱，是的話改寫成裸名稱、遞迴走回正常判斷。
+
+**驗證**（真實Electron）：`/usr/bin/sleep`嵌在腳本裡、`/bin/sleep`直接打在
+`terminal_run`最上層都正確delay且不再「not found」／「權限不足」；
+`echo "path is /usr/bin/sleep as a literal string"`確認資料字串沒有被
+誤改；python`subprocess.run(['sh','-c','sleep 1; echo hello...'])`確認
+真的delay 1秒且正確拿到stdout（證實`_pyodideBridgeRunShell`的builtins
+wiring修好了）；先前§19.6/19.7的所有回歸案例重跑一次全部通過。
+
+### 19.9 `date`跟瀏覽器時區一致
+
+使用者要求「terminal的date要跟我瀏覽器的timezone一致」——`date`是真的
+busybox applet，但這個WASM環境沒有真正的tzdata，一律印UTC。
+
+**第一次嘗試（失敗，如實記錄）**：直接註冊`date: {kind:'date'}`進
+`SANDBOX_COMMAND_REGISTRY`，用JS的`Date`/`Intl`（天生就是瀏覽器本地時區）
+實作`_runDateBuiltin`。**實測證實host builtins沒辦法蓋過同名的busybox
+內建applet**——`date`/`date -u`/`date -I`全部還是busybox原本的行為（`-I`
+甚至報busybox自己格式的錯誤訊息"unrecognized option"，證明新builtin被
+完全忽略）。這是這個檔案第一次嘗試用host builtin蓋過既有busybox applet同名
+指令，確認**行不通**。
+
+**修法**：改註冊成`__fa_date`（保證不跟任何busybox applet撞名的內部別名），
+新增`TERMINAL_APPLET_OVERRIDE_ALIASES = { date: '__fa_date' }`，並擴充
+`_terminalRewriteBuiltinPaths`同一套quote-aware掃描，額外處理「裸名稱本身
+就跟busybox內建撞名」這種情境——把指令位置出現的裸`date`改寫成`__fa_date`
+（使用者畫面上看到的、AI收到的都還是原始`date`，改寫只發生在送進wasi-sh
+執行的文字副本），這樣`__fa_date`底下註冊的host builtin就會被busybox
+dispatch到（因為`__fa_date`根本不是busybox認得的applet名稱，直接落到
+host builtins表查詢）。因為`_terminalRewriteBuiltinPaths`已經wire進
+**所有**`runtime.run()`文字/script組裝點（見§19.8），這個修法**不需要**
+額外的JS層pre-interception或`TERMINAL_COMPOUND_INTERCEPT_NAMES`項目就能
+統一涵蓋互動輸入/terminal_run/複合指令/for迴圈本體/script檔案內容全部情境
+——比sleep/curl/wget/httping當初的修法（需要pre-interception+host
+builtin+compound-line分組三層）更簡單，因為`date`是純計算、不需要真的
+async I/O或阻塞，host builtin本身已經足夠，只差busybox applet名稱衝突
+這一關。
+
+`_runDateBuiltin`支援常用旗標子集：`-u`/`--utc`（強制UTC）、`-d`/`--date`
+/`--date=`（解析指定日期字串，用JS原生`Date`解析）、`+FORMAT`（strftime
+風格子集：`%Y%m%d%H%M%S%a%A%b%B%p%j%n%%%z`）、`-I`/`--iso-8601`。明確不
+支援`-s`（設定系統時間，沙盒沒有意義）、`-r`（讀檔案mtime）、完整GNU
+strftime規格表。
+
+**驗證**（真實Electron）：瀏覽器時區確認是`Asia/Taipei`（offset 480分鐘/
++8小時）；`date`（裸）輸出`Fri Sep 25 02:38:21 GMT+8 2026`，跟瀏覽器
+`new Date().toString()`的本地時間一致（原本是UTC 18:38:21，正確差8小時）；
+`date -u`正確強制印UTC；`+FORMAT`跟`-I`都正確帶`+0800`/`+08:00`offset；
+`-d`解析固定日期字串正確；for迴圈本體跟`./script.sh`腳本內容裡的`date`
+現在都正確顯示本地時間（原本§19.6/19.7測試transcript裡出現的UTC時間戳記，
+這次重跑後全部變成GMT+8）；`echo "the date command shows local time now"`
+這種提到"date"單字的一般文字資料沒有被誤改。
+
 | `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
