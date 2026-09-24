@@ -513,7 +513,15 @@ ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
 ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
   const target = path.resolve(String(p || ""));
   const entries = await fs.readdir(target, { withFileTypes: true });
-  return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
+  return Promise.all(entries.map(async (e) => {
+    const base = { name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() };
+    try {
+      const st = await fs.stat(path.join(target, e.name));
+      return { ...base, size: st.size, mtimeMs: st.mtimeMs };
+    } catch (_) {
+      return base;
+    }
+  }));
 });
 
 ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
