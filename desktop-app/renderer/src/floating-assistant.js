@@ -1392,7 +1392,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1601,7 +1601,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'list_uploaded_files'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
@@ -1610,6 +1610,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。可以用speed參數調整語速。\n' +
             '- concat_audio：把多個已上傳的音檔依指定順序串接成一個MP3——使用者要「把這幾段語音接起來」「合併成一個檔案」時用這個，不要說做不到，也不要自己憑空生一個沒有的工具。\n' +
             '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
+            '- extract_video_frames：擷取影片指定時間點的畫面存成圖片（file_id），搭配interpret_image看內容、compare_images跟其他圖片（例如投影片裡抽出來的圖）比對，就能靠畫面內容找出該剪哪一段時間，再用extract_clip_range剪出來。先粗取樣（例如每30秒一張）比對，再對候選附近加密縮小範圍。\n' +
             '- convert_video_to_animation：把整支影片或其中一段時間範圍逐格轉成這個app的2D動畫YAML格式（不是你自己設計動畫，是真實影片畫面內嵌成JPEG逐格播放），每個影格都是內嵌base64圖片，間隔太密/範圍太長檔案會暴增，需要提醒使用者控制範圍。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
@@ -6758,7 +6759,7 @@ class FloatingAssistant {
             return out;
         }
         if (cmd === 'screenshot' && typeof r.data_url === 'string') {
-            return { type: 'image', dataUrl: r.data_url, meta: { url: r.url, title: r.title, width: r.width, height: r.height, note: r.note } };
+            return { type: 'image', dataUrl: r.data_url, meta: { url: r.url, title: r.title, width: r.width, height: r.height, note: r.note, region_applied: r.region_applied || undefined } };
         }
         const { ok, ...rest } = r;
         return Object.assign({ ok: true }, rest);
@@ -7968,8 +7969,67 @@ ${fnData.code}
         bcTool('browser_activate_tab', 'tab_activate', '把分頁切到前景（讓使用者看到）。', { tab_id: tabIdProp }, []);
         bcTool('browser_scroll', 'scroll', '在分頁內捲動。direction: down/up/top/bottom/left/right；amount是像素（預設約一個畫面的80%）；selector可指定要捲動的容器。回傳目前scroll_y、是否已到底。',
             { tab_id: tabIdProp, direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom', 'left', 'right'] }, amount: { type: 'number' }, selector: { type: 'string' } }, []);
-        bcTool('browser_screenshot', 'screenshot', '對分頁截圖（畫面會直接顯示給使用者；你這邊只拿到尺寸與標題，看不到像素，所以要看頁面內容請用browser_get_page_text / browser_get_elements）。full_page:true截整頁（最高8000px）。',
-            { tab_id: tabIdProp, full_page: { type: 'boolean' }, quality: { type: 'integer' } }, [], 45000);
+        // tw_stock_db客製: 2026-09-26使用者要求——截圖要能「框選範圍(region
+        // clip)」，而且AI要能真的看到截圖內容：region（分頁可視區內的像素
+        // 座標，full_page:true時是整頁座標）、scale放大小範圍；save:true把
+        // 截圖存成file_id（可餵給compare_images/interpret_image）；
+        // interpret:true（＋question）直接用vision model看這張截圖並把描述
+        // 帶進回傳的meta（meta會進模型看得到的content，圖片本身不會）。
+        // region需要新版擴充功能（background.js的screenshot有region支援）：
+        // 舊版會忽略region回整張畫面，擴充功能回傳region_applied才算生效，
+        // 沒有的話在meta.warning講清楚，不要讓AI以為截到的是指定範圍。
+        registerOptional('browser_screenshot',
+            '對分頁截圖（畫面會顯示給使用者）。預設你只拿到尺寸與標題、看不到像素；**要讓自己看到截圖內容，帶interpret:true（可加question指定想看什麼）**，會用支援讀圖的model看這張圖並把描述放在回傳的description。region:{x,y,width,height}只截指定範圍（座標是分頁可視區像素、左上角0,0，跟browser_get_elements的座標同一套；full_page:true時改用整頁座標），scale(1~3)可放大小範圍讓文字更清楚。save:true把截圖存成圖片檔案（回傳file_id，之後可用compare_images跟其他圖片比對）。full_page:true截整頁（最高8000px）。要看頁面文字內容仍優先用browser_get_page_structure / browser_get_page_text。',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const region = parsed.region && typeof parsed.region === 'object' ? {
+                        x: Number(parsed.region.x), y: Number(parsed.region.y),
+                        width: Number(parsed.region.width), height: Number(parsed.region.height),
+                    } : null;
+                    if (region && !(Number.isFinite(region.x) && Number.isFinite(region.y) && region.width > 0 && region.height > 0)) {
+                        return JSON.stringify({ ok: false, error: 'region需要{x,y,width,height}四個數字，width/height要大於0' });
+                    }
+                    const callArgs = Object.assign({}, parsed);
+                    delete callArgs.interpret; delete callArgs.question; delete callArgs.save;
+                    if (region) callArgs.region = region; else delete callArgs.region;
+                    const result = this._bcShapeResult('screenshot', await this._bcCall('screenshot', callArgs, 45000));
+                    if (!result || result.type !== 'image') return JSON.stringify(result);
+                    if (region && !(result.meta && result.meta.region_applied)) {
+                        result.meta.warning = '擴充功能版本太舊，不支援region：這張是整個畫面/整頁而不是指定範圍。請告訴使用者重新載入最新版擴充功能（web/browser-control-extension）。';
+                    }
+                    if (parsed.save || parsed.interpret) {
+                        const blob = await (await fetch(result.dataUrl)).blob();
+                        const shotName = `screenshot_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+                        result.meta.file_id = await this.fileCache.put(shotName, blob.type || 'image/jpeg', blob, 'uploaded');
+                        result.meta.filename = shotName;
+                    }
+                    if (parsed.interpret) {
+                        try {
+                            const r = await this._interpretImageWithVisionModel(result.dataUrl, parsed.question);
+                            result.meta.description = r.description;
+                            result.meta.model_used = r.modelUsed;
+                        } catch (err) {
+                            result.meta.interpret_error = String(err.message || err);
+                        }
+                    }
+                    return JSON.stringify(result);
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                tab_id: tabIdProp,
+                full_page: { type: 'boolean' },
+                quality: { type: 'integer' },
+                region: { type: 'object', description: '只截這個範圍：{x,y,width,height}（像素，左上角0,0）', properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } } },
+                scale: { type: 'number', description: '（選填）放大倍率1~3，搭配region放大小範圍' },
+                save: { type: 'boolean', description: '（選填）把截圖存成圖片檔案，回傳file_id' },
+                interpret: { type: 'boolean', description: '（選填）true＝用vision model實際看這張截圖，描述放在回傳的description' },
+                question: { type: 'string', description: '（選填）搭配interpret，想問這張截圖的具體問題' },
+            }, additionalProperties: false }
+        );
         // tw_stock_db客製: 2026-09-22使用者要求——原本這兩個工具是「一次讀完
         // +max_chars硬截斷」，長文章讀不完也接不下去。改成跟fap_read_file/
         // parse_uploaded_file同一套分頁契約（offset/start_line/max_chars/
@@ -8118,6 +8178,83 @@ ${fnData.code}
                 image_url: { type: 'string', description: '要解讀的圖片網址（http(s)開頭），跟file_id擇一提供' },
                 question: { type: 'string', description: '選填：想問關於這張圖片的具體問題，不給的話預設要求詳細描述圖片內容' },
             }, required: [], additionalProperties: false }
+        );
+
+        // ============================================================
+        // tw_stock_db客製: 2026-09-26使用者要求——「讓AI從投影片擷取出圖片，
+        // 接著比較圖片，從圖片知道自己要怎麼clip哪個range」。四個工具串成
+        // 一條流程：extract_pptx_images（投影片→圖片file_id）、
+        // extract_video_frames（影片指定時間點→圖片file_id）、
+        // compare_images（多張圖片一起交給vision model比較）、
+        // browser_screenshot的region/interpret（見bcTool區）。擷出來的圖片
+        // 都存進fileCache（kind:'uploaded'），file_id可以直接餵給
+        // interpret_image/compare_images。
+        // ============================================================
+        registerOptional('extract_pptx_images',
+            '把已上傳的pptx投影片裡「嵌入的圖片」逐張抽出來，存成圖片檔案（回傳每張的slide投影片編號、順序、file_id），之後可以用interpret_image/compare_images讀圖或比較。**只抽得出嵌入的圖片（png/jpg/gif/webp/svg），抽不出「整張投影片的渲染畫面」**（文字/圖形/表格不會變成圖片）；emf/wmf/tif等瀏覽器不支援的格式會列在skipped。參數: {"file":"pptx的file_id或檔名，留空用最近上傳的","slides":"（選填）投影片範圍例如\"2-5\"或\"3\"，預設全部","max_images":"（選填）最多抽幾張，預設30，最高80"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(fileArg);
+                if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的檔案` : '沒有可用的pptx（請先上傳）' });
+                if (this._detectFileFormat(record.filename) !== 'pptx') return JSON.stringify({ ok: false, error: `「${record.filename}」不是pptx檔案` });
+                try { return JSON.stringify(await this._extractPptxImages(record, parsed)); }
+                catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: 'pptx的file_id或檔名；留空＝最近上傳的' },
+                slides: { type: 'string', description: '（選填）投影片範圍，例如"3"或"2-5"，預設全部' },
+                max_images: { type: 'integer', description: '（選填）最多抽幾張，預設30，最高80' },
+            }, additionalProperties: false }
+        );
+        registerOptional('compare_images',
+            '把2~6張圖片「一起」交給支援讀圖(vision)的model比較（相同點/差異、哪一張符合某個描述、哪一張對應哪一張），比分別呼叫interpret_image再自己對照準確。圖片來源：file_id（📎附件、extract_pptx_images/extract_video_frames/browser_screenshot產生的圖片）或http(s)圖片網址，混用也可以。典型用途：拿投影片裡抽出的圖，跟影片幾個時間點的畫面比對，找出投影片圖片出現在影片的哪個時間，再用extract_clip_range剪那一段。參數: {"images":["file_id或網址",...],"question":"（選填）想比較什麼，例如\"圖1（投影片）跟哪一張影格畫面最像？\""}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const items = Array.isArray(parsed.images) ? parsed.images.map((x) => String(x || '').trim()).filter(Boolean) : [];
+                if (items.length < 2) return JSON.stringify({ ok: false, error: 'images至少要給2張（file_id或圖片網址）' });
+                if (items.length > 6) return JSON.stringify({ ok: false, error: 'images最多6張，太多張請分批比較（例如先各自縮小候選範圍）' });
+                try {
+                    const dataUrls = [], labels = [];
+                    for (const it of items) {
+                        const isUrl = /^(https?:\/\/|data:image\/)/i.test(it);
+                        const r = await this._resolveImageInputForInterpretation(isUrl ? { imageUrl: it } : { fileId: it });
+                        dataUrls.push(r.dataUrl);
+                        labels.push(r.label && r.label.length > 60 ? r.label.slice(0, 57) + '…' : r.label);
+                    }
+                    const result = await this._interpretImageWithVisionModel(dataUrls, parsed.question, labels);
+                    return JSON.stringify({ ok: true, images: items.map((id, i) => ({ label: `圖${i + 1}`, source: labels[i], ref: id })), model_used: result.modelUsed, vision_confirmed: result.visionConfirmed, comparison: result.description });
+                } catch (err) {
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            { type: 'object', properties: {
+                images: { type: 'array', items: { type: 'string' }, description: '2~6個圖片來源：file_id或http(s)圖片網址；回答會用「圖1、圖2…」（照這個順序）稱呼它們' },
+                question: { type: 'string', description: '（選填）想比較什麼；不給就做一般的相同點/差異比較' },
+            }, required: ['images'], additionalProperties: false }
+        );
+        registerOptional('extract_video_frames',
+            '擷取已上傳影片在「指定時間點」的畫面，每個時間點存成一張JPEG圖片（回傳每張的時間與file_id），之後可以用interpret_image看內容、或用compare_images跟其他圖片（例如投影片裡的圖）比對，找出內容對應的時間範圍。用關鍵影格查詢，長影片取幾個點也很快。參數: {"video":"影片file_id或檔名，留空用最近上傳的","times":[10,"1:20",95.5],"max_width":"（選填）輸出寬度px，預設640，範圍160~1280","quality":"（選填）JPEG品質0.3~0.95，預設0.8"}。times最多24個；不確定內容在哪時，先每隔一段時間（例如每30秒）取樣，比對後再對候選附近加密取樣縮小範圍。',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
+                const record = await this._resolveUploadedFileRecord(videoArg);
+                if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
+                const times = (Array.isArray(parsed.times) ? parsed.times : [parsed.times]).map((t) => this._parseTimeValue(t)).filter((t) => t != null && t >= 0);
+                if (!times.length) return JSON.stringify({ ok: false, error: '缺少times（秒數或"1:20"這種寫法的陣列）' });
+                if (times.length > 24) return JSON.stringify({ ok: false, error: 'times最多24個，請分批取樣' });
+                try { return JSON.stringify(await this._extractVideoFrames(record, times, parsed)); }
+                catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                video: { type: 'string', description: '影片的file_id或檔名；留空＝最近上傳的' },
+                times: { type: 'array', items: {}, description: '要擷取畫面的時間點陣列，秒數或"1:20"/"0:01:20"字串，最多24個' },
+                max_width: { type: 'integer', description: '（選填）輸出寬度px，預設640，範圍160~1280' },
+                quality: { type: 'number', description: '（選填）JPEG品質0.3~0.95，預設0.8' },
+            }, required: ['times'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 2026-09-17使用者回報——問AI「最新LLM model」這種
@@ -13967,10 +14104,22 @@ ${fnData.code}
     // ([{type:'text'},{type:'image_url'}])，差別是這裡要真正的描述文字
     // 結果，不是只判斷對錯，所以max_tokens給比較寬裕的值、也不強制
     // temperature=0。
-    async _interpretImageWithVisionModel(dataUrl, question) {
+    // tw_stock_db客製: 2026-09-26使用者要求「比較圖片」——dataUrl也可以傳
+    // 陣列（compare_images用），多張時每張圖前面加一行「圖N」文字標籤，讓
+    // 模型能在回答裡明確指出是哪一張；只有一張時行為跟原本完全一樣。
+    async _interpretImageWithVisionModel(dataUrl, question, labels) {
         const candidates = this._orderedVisionCandidateRows();
         if (!candidates.length) throw new Error('目前沒有設定任何LLM Model，請先到進階設定新增至少一筆');
-        const prompt = String(question || '').trim() || '詳細描述這張圖片的內容（如果圖片裡有文字，請把文字內容也完整列出來）。';
+        const dataUrls = Array.isArray(dataUrl) ? dataUrl : [dataUrl];
+        const multi = dataUrls.length > 1;
+        const prompt = String(question || '').trim() || (multi
+            ? '比較這幾張圖片：逐一簡述每張的內容，再說明它們的相同點與差異。'
+            : '詳細描述這張圖片的內容（如果圖片裡有文字，請把文字內容也完整列出來）。');
+        const imageParts = [];
+        dataUrls.forEach((u, i) => {
+            if (multi) imageParts.push({ type: 'text', text: `圖${i + 1}${labels && labels[i] ? `（${labels[i]}）` : ''}：` });
+            imageParts.push({ type: 'image_url', image_url: { url: u } });
+        });
         const errors = [];
         for (const row of candidates) {
             const cfg = this._resolveModelRowConfig(row);
@@ -13988,11 +14137,11 @@ ${fnData.code}
                             messages: [
                                 { role: 'user', content: [
                                     { type: 'text', text: prompt },
-                                    { type: 'image_url', image_url: { url: dataUrl } },
+                                    ...imageParts,
                                 ] },
                             ],
                             temperature: 0.2,
-                            max_tokens: 2048,
+                            max_tokens: multi ? 3072 : 2048,
                             stream: false,
                         }),
                     });
@@ -25424,6 +25573,104 @@ _result
         );
         const fullText = paragraphs.join('\n');
         return { ok: true, paragraphs: paragraphs.slice(0, 300), fullText: fullText.length > 12000 ? fullText.slice(0, 12000) + '\n…(截斷)' : fullText };
+    }
+
+    // tw_stock_db客製: 2026-09-26——extract_pptx_images實作。每張投影片的
+    // ppt/slides/_rels/slideN.xml.rels列出它引用的媒體（Relationship Type
+    // 以/image結尾，Target像"../media/image3.png"），依投影片XML裡
+    // r:embed出現的順序輸出，同一張投影片重複引用同一個檔案只抽一次。
+    async _extractPptxImages(record, opts = {}) {
+        await this._ensureJSZipLoaded();
+        const zip = await JSZip.loadAsync(record.blob);
+        const slideFiles = Object.keys(zip.files)
+            .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+            .sort((a, b) => Number(a.match(/slide(\d+)/)[1]) - Number(b.match(/slide(\d+)/)[1]));
+        if (!slideFiles.length) return { ok: false, error: '找不到任何投影片（ppt/slides/*.xml），可能不是有效的pptx' };
+        let from = 1, to = slideFiles.length;
+        const rangeText = String(opts.slides == null ? '' : opts.slides).trim();
+        if (rangeText) {
+            const m = rangeText.match(/^(\d+)\s*(?:-|~|到)?\s*(\d+)?$/);
+            if (!m) return { ok: false, error: `slides格式不對：「${rangeText}」（請給"3"或"2-5"）` };
+            from = Number(m[1]); to = m[2] ? Number(m[2]) : from;
+            if (to < from) [from, to] = [to, from];
+        }
+        const maxImages = Math.max(1, Math.min(80, Number(opts.max_images) || 30));
+        const mimeByExt = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+        const base = String(record.filename || 'slides').replace(/\.pptx$/i, '');
+        const images = [], skipped = [];
+        let truncated = false;
+        for (const f of slideFiles) {
+            const slideNo = Number(f.match(/slide(\d+)/)[1]);
+            if (slideNo < from || slideNo > to) continue;
+            const relsFile = zip.file(`ppt/slides/_rels/slide${slideNo}.xml.rels`);
+            if (!relsFile) continue;
+            const relDoc = new DOMParser().parseFromString(await relsFile.async('string'), 'application/xml');
+            const relMap = {};
+            for (const r of Array.from(relDoc.getElementsByTagName('Relationship'))) {
+                if (/\/image$/.test(r.getAttribute('Type') || '')) relMap[r.getAttribute('Id')] = r.getAttribute('Target') || '';
+            }
+            const slideXml = await zip.file(f).async('string');
+            const embedIds = [];
+            for (const m of slideXml.matchAll(/r:(?:embed|link)="([^"]+)"/g)) if (relMap[m[1]] && !embedIds.includes(m[1])) embedIds.push(m[1]);
+            let idx = 0;
+            const seenTargets = new Set();
+            for (const rid of embedIds) {
+                const target = relMap[rid];
+                const path = target.startsWith('/') ? target.slice(1) : ('ppt/slides/' + target).replace(/[^/]+\/\.\.\//g, '');
+                if (seenTargets.has(path)) continue;
+                seenTargets.add(path);
+                const entry = zip.file(path);
+                const ext = (path.split('.').pop() || '').toLowerCase();
+                if (!entry) { skipped.push({ slide: slideNo, path, reason: '檔案不存在' }); continue; }
+                if (!mimeByExt[ext]) { skipped.push({ slide: slideNo, path, reason: `不支援的圖片格式.${ext}` }); continue; }
+                if (images.length >= maxImages) { truncated = true; continue; }
+                idx++;
+                const blob = new Blob([await entry.async('uint8array')], { type: mimeByExt[ext] });
+                const filename = `${base}_slide${slideNo}_img${idx}.${ext}`;
+                const fileId = await this.fileCache.put(filename, mimeByExt[ext], blob, 'uploaded');
+                images.push({ slide: slideNo, index: idx, file_id: fileId, filename, mime: mimeByExt[ext], size_bytes: blob.size });
+            }
+        }
+        if (!images.length) return { ok: true, images: [], skipped, note: '指定的投影片範圍內沒有可抽出的嵌入圖片（可能整頁都是文字/圖形，這個工具抽不出投影片的渲染畫面）' };
+        return { ok: true, source: record.filename, image_count: images.length, images, skipped, truncated, note: truncated ? `已達max_images上限（${maxImages}），後面的圖片沒有抽出，可用slides縮小範圍分批抽` : undefined };
+    }
+
+    // tw_stock_db客製: 2026-09-26——extract_video_frames實作。用
+    // canvasesAtTimestamps稀疏查詢（跟配音關鍵影格同一種做法），不用循序
+    // 解碼整支影片；結果照傳入時間順序輸出，超出影片長度的時間點標記在
+    // failed。
+    async _extractVideoFrames(record, times, opts = {}) {
+        let MB, input, track;
+        try { ({ MB, input, track } = await this._getMediabunnyVideoTrack(record.blob)); }
+        catch (err) { return { ok: false, error: '無法讀取影片畫面：' + String(err.message || err) }; }
+        let totalDur = 0;
+        try { totalDur = await input.computeDuration(); } catch (_) {}
+        const maxWidth = Math.max(160, Math.min(1280, Number(opts.max_width) || 640));
+        const q = Number(opts.quality);
+        const quality = Math.max(0.3, Math.min(0.95, opts.quality != null && Number.isFinite(q) ? q : 0.8));
+        const width = Math.min(maxWidth, track.displayWidth || maxWidth);
+        const base = String(record.filename || 'video').replace(/\.[^.]+$/, '');
+        const frames = [], failed = [];
+        try {
+            const sink = new MB.CanvasSink(track, { width });
+            const valid = times.filter((t) => {
+                if (totalDur > 0 && t > totalDur) { failed.push({ time: t, reason: `超過影片總長（${totalDur.toFixed(1)}秒）` }); return false; }
+                return true;
+            });
+            let i = 0;
+            for await (const wrapped of sink.canvasesAtTimestamps(valid)) {
+                const t = valid[i++];
+                if (!wrapped) { failed.push({ time: t, reason: '該時間點沒有畫面' }); continue; }
+                const blob = await this._canvasElementToBlob(wrapped.canvas, 'image/jpeg', quality);
+                const filename = `${base}_${t.toFixed(1)}s.jpg`;
+                const fileId = await this.fileCache.put(filename, 'image/jpeg', blob, 'uploaded');
+                frames.push({ time: t, file_id: fileId, filename, size_bytes: blob.size });
+            }
+        } finally {
+            try { input.dispose && input.dispose(); } catch (_) {}
+        }
+        if (!frames.length) return { ok: false, error: '沒有擷取到任何畫面', failed };
+        return { ok: true, source: record.filename, duration_seconds: totalDur || undefined, frame_count: frames.length, frames, failed, note: '每張file_id可用interpret_image看內容，或用compare_images跟其他圖片一起比對。' };
     }
 
     // pptx是zip-based OOXML：每張投影片是ppt/slides/slideN.xml，文字跑在

@@ -111,6 +111,15 @@ categories:
         platforms: [web, desktop]
         samples: ["這張截圖裡的錯誤訊息是什麼意思？"]
         updated: 2026-09-26
+      - id: image-compare
+        name: 圖片比較與投影片抽圖
+        summary: 把 pptx 投影片裡嵌入的圖片抽出來，或把多張圖片（含影片截幀、瀏覽器截圖）一起交給讀圖模型比較。
+        how: { tools: [extract_pptx_images, compare_images] }
+        platforms: [web, desktop]
+        samples: ["把這份 pptx 每張投影片裡的圖片抽出來", "比較這兩張圖有什麼不同"]
+        updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "新增 extract_pptx_images／compare_images／extract_video_frames，browser_screenshot 支援 region 與 interpret" }
       - id: file-access-points
         name: 授權資料夾存取（File Access Point）
         summary: 授權一個真實資料夾後，助理可以列出、讀取、搜尋、寫入修補其中的檔案。
@@ -244,6 +253,15 @@ categories:
         platforms: [web, desktop]
         samples: ["/media-extract-clip-range 1:20-1:45"]
         updated: 2026-09-26
+      - id: media-frames
+        name: 擷取影片指定時間的畫面
+        summary: 取影片幾個時間點的畫面存成圖片；搭配圖片比較，可以用投影片圖片找出對應的影片時間再剪出來。
+        how: { tools: [extract_video_frames, compare_images, extract_clip_range] }
+        platforms: [web, desktop]
+        samples: ["每 30 秒取一張這支影片的畫面", "拿投影片第 3 頁的圖，找出它出現在影片的哪個時間，並把那一段剪出來"]
+        updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "新增 extract_pptx_images／compare_images／extract_video_frames，browser_screenshot 支援 region 與 interpret" }
       - id: media-gif
         name: 影片轉動態 GIF
         summary: 把影片或其中一段轉成動態 GIF，可指定每秒幀數。
@@ -301,12 +319,13 @@ categories:
       - id: browser-control
         name: 瀏覽器控制
         summary: 控制你的 Chrome：分頁群組、分頁、捲動、截圖、滑鼠鍵盤（桌面版，需安裝擴充功能）。
-        how: { domain: browser_control, tools: [browser_get_page_structure] }
+        how: { domain: browser_control, tools: [browser_get_page_structure, browser_screenshot] }
         platforms: [desktop]
-        samples: ["用瀏覽器控制開啟 https://tw.news.yahoo.com/ ，說明今天的最新新聞"]
+        samples: ["用瀏覽器控制開啟 https://tw.news.yahoo.com/ ，說明今天的最新新聞", "截取頁面上方 800x400 的範圍，並說明畫面內容"]
         updated: 2026-09-26
         history:
           - { date: 2026-09-26, note: "範例改成開 Yahoo 新聞；/ai-features 的範例後面附「▶ 送出」連結可直接送出" }
+          - { date: 2026-09-26, note: "新增 extract_pptx_images／compare_images／extract_video_frames，browser_screenshot 支援 region 與 interpret" }
 
   - id: research
     name: 研究分析

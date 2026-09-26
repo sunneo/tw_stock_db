@@ -112,6 +112,16 @@
 - 範例：
   - `這張截圖裡的錯誤訊息是什麼意思？`
 
+### 圖片比較與投影片抽圖（`image-compare`）
+
+把 pptx 投影片裡嵌入的圖片抽出來，或把多張圖片（含影片截幀、瀏覽器截圖）一起交給讀圖模型比較。
+
+- 可用平台：網頁版、桌面版
+- AI 工具：`extract_pptx_images`、`compare_images`
+- 範例：
+  - `把這份 pptx 每張投影片裡的圖片抽出來`
+  - `比較這兩張圖有什麼不同`
+
 ### 授權資料夾存取（File Access Point）（`file-access-points`）
 
 授權一個真實資料夾後，助理可以列出、讀取、搜尋、寫入修補其中的檔案。
@@ -294,6 +304,16 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 範例：
   - `/media-extract-clip-range 1:20-1:45`
 
+### 擷取影片指定時間的畫面（`media-frames`）
+
+取影片幾個時間點的畫面存成圖片；搭配圖片比較，可以用投影片圖片找出對應的影片時間再剪出來。
+
+- 可用平台：網頁版、桌面版
+- AI 工具：`extract_video_frames`、`compare_images`、`extract_clip_range`
+- 範例：
+  - `每 30 秒取一張這支影片的畫面`
+  - `拿投影片第 3 頁的圖，找出它出現在影片的哪個時間，並把那一段剪出來`
+
 ### 影片轉動態 GIF（`media-gif`）
 
 把影片或其中一段轉成動態 GIF，可指定每秒幀數。
@@ -375,9 +395,10 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 
 - 可用平台：桌面版
 - 子代理人領域：`browser_control`
-- AI 工具：`browser_get_page_structure`
+- AI 工具：`browser_get_page_structure`、`browser_screenshot`
 - 範例：
   - `用瀏覽器控制開啟 https://tw.news.yahoo.com/ ，說明今天的最新新聞`
+  - `截取頁面上方 800x400 的範圍，並說明畫面內容`
 
 ## 研究分析
 
