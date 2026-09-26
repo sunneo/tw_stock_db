@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI 助理</title>
+<style>
+  :root {
+    --bar-bg: #161b22; --bar-border: #30363d; --bar-fg: #cbd5e1;
+    --btn-bg: #21262d; --btn-hover: #30363d; --page-bg: #0d1117;
+  }
+  html[data-theme="light"] {
+    --bar-bg: #f3f4f6; --bar-border: #d1d5db; --bar-fg: #374151;
+    --btn-bg: #ffffff; --btn-hover: #e5e7eb; --page-bg: #ffffff;
+  }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--page-bg);
+    font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+    overflow: hidden;
+  }
+  body { display: flex; flex-direction: column; }
+  #topbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+    padding: 6px 12px; padding-top: max(6px, env(safe-area-inset-top, 0px));
+    background: var(--bar-bg); border-bottom: 1px solid var(--bar-border);
+    color: var(--bar-fg); font-size: 12px;
+  }
+  #topbar .title { font-weight: 600; }
+  #topbar .sep { flex: 1; }
+  #topbar .badge { padding: 2px 8px; border-radius: 10px; background: var(--btn-bg); color: var(--bar-fg); }
+  #topbar button, #topbar a.btn {
+    background: var(--btn-bg); color: var(--bar-fg); border: 1px solid var(--bar-border);
+    border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; text-decoration: none;
+  }
+  #topbar button:hover, #topbar a.btn:hover { background: var(--btn-hover); }
+  /* mount元素一定要有inline style="display:block"，否則floating-assistant.js
+     會套用預設的inline-flex，寬度縮成剛好包住內容而不是撐滿（桌面版踩過的坑）。 */
+  #app { flex: 1 1 auto; min-height: 0; width: 100%; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  #load-error { padding: 16px; color: #f87171; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <span class="title">🤖 AI 助理</span>
+    <span class="sep"></span>
+    <span id="status" class="badge">載入 AI 引擎中…</span>
+    <a class="btn" href="../" title="回到股市追蹤主頁">📈 股市主頁</a>
+    <button type="button" id="theme-toggle" title="切換淺色／深色主題">🌙 深色</button>
+  </div>
+  <div id="app" style="display:block;"></div>
+
+<script>
+'use strict';
+/* aiweb：整頁都是 floating-assistant 的獨立入口，不載入任何股市資料
+   （不碰 sql.js／DBMgr／GitHub 上的 daily、db-monthly 等分支），
+   只為了「想測試、使用 AI 但不想等股票資料下載」。
+   版面比照桌面版（desktop-app/renderer/index.html）：上方一條 topbar，
+   下面 #app 撐滿。AI 引擎本身跟主頁一樣，從 desktop-app 分支即時抓取。 */
+
+const RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
+const VENDOR = RAW + '/vendor-assets/vendor';
+const WORKER_BASE = 'https://dawn-disk-778c.sunneo529.workers.dev';
+const THEME_KEY = 'fa_aiweb_theme_preference';
+
+// ---- 主題：在 new FloatingAssistant 之前先套用，避免畫面出現後才換色閃爍 ----
+const themeBtn = document.getElementById('theme-toggle');
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  themeBtn.textContent = theme === 'light' ? '☀️ 淺色' : '🌙 深色';
+}
+function readSavedTheme() {
+  try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'; }
+  catch (_) { return 'dark'; }
+}
+applyTheme(readSavedTheme());
+
+// ---- 跟主頁一樣：沒填過自己的金鑰就預填 worker 代打用的 session 金鑰 ----
+// 用同樣的 localStorage key，主頁跟 aiweb（同一個 origin）共用同一份 AI 設定。
+try {
+  if (!localStorage.getItem('floating_ai_api_key')) {
+    let sid = localStorage.getItem('tw_stock_db_ai_session_id');
+    if (!sid) { sid = crypto.randomUUID(); localStorage.setItem('tw_stock_db_ai_session_id', sid); }
+    localStorage.setItem('floating_ai_api_key', `tw_stock_db_api:${sid}`);
+  }
+  if (!localStorage.getItem('floating_ai_base_url_key')) {
+    localStorage.setItem('floating_ai_base_url_key', WORKER_BASE);
+  }
+} catch (_) { /* 隱私模式等情況下 localStorage 不可用，仍可使用 AI 設定面板手動填 */ }
+
+// ---- 載入 floating-assistant.js（raw.githubusercontent.com 回傳 text/plain +
+// nosniff，不能直接 <script src>；fetch 文字→Blob→blob URL，主頁同一招）----
+function loadAssistantScript() {
+  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(text => new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = () => { URL.revokeObjectURL(url); resolve(); };
+      s.onerror = () => { URL.revokeObjectURL(url); reject(new Error('floating-assistant.js 執行失敗')); };
+      document.head.appendChild(s);
+    }));
+}
+
+function showError(msg) {
+  document.getElementById('status').textContent = '載入失敗';
+  document.getElementById('app').innerHTML =
+    `<div id="load-error">AI 引擎載入失敗：${String(msg).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}<br>可能是網路問題，請<a href="" onclick="location.reload();return false;">重新整理</a>再試。</div>`;
+}
+
+loadAssistantScript().then(() => {
+  if (typeof FloatingAssistant === 'undefined') throw new Error('FloatingAssistant 未定義');
+  if (FloatingAssistant.setAssetUrls) {
+    // 匯出 PPTX/PDF 等用的外部函式庫，改用 repo 自己 vendor 的版本（同主頁）。
+    FloatingAssistant.setAssetUrls({
+      pptxgenjs: `${VENDOR}/pptxgenjs/pptxgen.bundle.js`,
+      pdfmake: `${VENDOR}/pdfmake/pdfmake.min.js`,
+      pdfmakeFonts: `${VENDOR}/pdfmake/vfs_fonts.js`,
+      cjkFontRegular: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-400-normal.ttf`,
+      cjkFontBold: `${VENDOR}/fonts-noto-sans-tc/chinese-traditional-700-normal.ttf`,
+      marked: `${VENDOR}/marked/marked.min.js`,
+      dompurify: `${VENDOR}/dompurify/purify.min.js`,
+      katexJs: `${VENDOR}/katex/katex.min.js`,
+      katexCss: `${VENDOR}/katex/katex.min.css`,
+      jszip: `${VENDOR}/jszip/jszip.min.js`,
+    });
+  }
+
+  const fa = new FloatingAssistant({
+    mountSelector: '#app',
+    buttonStyle: 'display:none;',
+    windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:0; z-index:1;',
+  });
+  window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
+  fa.toggleWindow(); // 這頁本來就該一直展開
+
+  themeBtn.addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
+    applyTheme(next);
+    fa.refreshTheme(); // 已建立的聊天面板節點需要主動重新套色
+  });
+
+  document.getElementById('status').textContent = '就緒';
+}).catch(showError);
+</script>
+</body>
+</html>
