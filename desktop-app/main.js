@@ -504,14 +504,28 @@ function detectLikelyBinary(buf) {
   return false;
 }
 
+// tw_stock_db客製: 2026-09-26使用者實測回報——弱模型把路徑講成 C:\\Users\\...
+// （JSON跳脫被重複套用，實際字串變成連續兩個反斜線），子agent照樣拿去讀就
+// 「目錄不存在」，AI還誤以為檔案真的不在，整個任務卡死。Windows下路徑分隔字元
+// 連續多個反斜線本來就沒有意義（開頭的UNC路徑除外），一律收斂成單一個，
+// 也順手拿掉AI常多加的一對引號。
+function rawFsPath(p) {
+  let s = String(p || "").trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (process.platform === "win32") {
+    const unc = /^\\\\(?=[^\\])/.test(s) ? "\\\\" : "";
+    s = unc + s.slice(unc.length).replace(/\\{2,}/g, "\\");
+  }
+  return s;
+}
+
 ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   const st = await fs.stat(target);
   return { path: target, isDirectory: st.isDirectory(), isFile: st.isFile(), size: st.size, mtimeMs: st.mtimeMs };
 });
 
 ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   const entries = await fs.readdir(target, { withFileTypes: true });
   return Promise.all(entries.map(async (e) => {
     const base = { name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() };
@@ -525,7 +539,7 @@ ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
 });
 
 ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   const buf = await fs.readFile(target);
   if (encoding === "base64") return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length };
   if (detectLikelyBinary(buf)) {
@@ -535,7 +549,7 @@ ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => 
 });
 
 ipcMain.handle("fa:rawfs:writeFile", async (_evt, { path: p, text, base64 } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   await fs.mkdir(path.dirname(target), { recursive: true });
   const buf = base64 != null ? Buffer.from(base64, "base64") : Buffer.from(String(text ?? ""), "utf8");
   await fs.writeFile(target, buf);
@@ -543,13 +557,13 @@ ipcMain.handle("fa:rawfs:writeFile", async (_evt, { path: p, text, base64 } = {}
 });
 
 ipcMain.handle("fa:rawfs:mkdir", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   await fs.mkdir(target, { recursive: true });
   return { ok: true, path: target };
 });
 
 ipcMain.handle("fa:rawfs:remove", async (_evt, { path: p, recursive } = {}) => {
-  const target = path.resolve(String(p || ""));
+  const target = path.resolve(rawFsPath(p));
   await fs.rm(target, { recursive: !!recursive, force: true });
   return { ok: true, path: target };
 });
@@ -572,7 +586,7 @@ async function findFilesRecursive(startDir, pattern, maxDepth, maxResults, out, 
 }
 
 ipcMain.handle("fa:rawfs:find", async (_evt, { path: p, pattern, maxDepth, maxResults } = {}) => {
-  const startDir = path.resolve(String(p || ""));
+  const startDir = path.resolve(rawFsPath(p));
   let regex;
   try {
     regex = new RegExp(String(pattern || ""), "i");
