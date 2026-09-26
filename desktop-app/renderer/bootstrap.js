@@ -525,9 +525,11 @@ function patchCloudflareWording(root) {
     });
   }
 
+  const UPDATE_IDLE_LABEL = "🔁 檢查更新";
+
   async function checkForUpdate({ silent } = {}) {
     if (!updateBtn) return;
-    if (!silent) setUpdateBtnLabel("🔄 檢查中…", { disabled: true });
+    if (!silent) setUpdateBtnLabel("🔁 檢查中…", { disabled: true });
     try {
       const info = await window.desktopAPI.update.check();
       if (!info || !info.ok) throw new Error((info && info.error) || "檢查更新失敗");
@@ -535,21 +537,23 @@ function patchCloudflareWording(root) {
         pendingUpdateInfo = info;
         setUpdateBtnLabel("⬆️ 發現新版本", { highlight: true });
         if (updateDot) updateDot.style.display = "block";
+        console.log(`[live-update] 發現新版本 ${info.remoteVersion || "?"}（目前 ${info.currentVersion || "?"}），變動檔案：${info.changedFiles.join("、")}`);
         if (!silent) showUpdateDialog(info);
       } else {
         pendingUpdateInfo = null;
         if (updateDot) updateDot.style.display = "none";
-        setUpdateBtnLabel("🔄 檢查更新");
-        if (!silent) { setUpdateBtnLabel("✅ 已是最新版本"); setTimeout(() => setUpdateBtnLabel("🔄 檢查更新"), 3000); }
+        setUpdateBtnLabel(UPDATE_IDLE_LABEL);
+        console.log(`[live-update] 已是最新版本（${info.currentVersion || "?"}）`);
+        if (!silent) { setUpdateBtnLabel("✅ 已是最新版本"); setTimeout(() => setUpdateBtnLabel(UPDATE_IDLE_LABEL), 3000); }
       }
     } catch (err) {
       // tw_stock_db客製: 跟festival theme同一種「下載失敗就靜默、不影響
       // 任何既有功能」的精神——開機自動檢查(silent)完全不打擾使用者，只有
       // 使用者自己按按鈕手動檢查時才會看到錯誤字樣（幾秒後恢復成預設文字）。
-      setUpdateBtnLabel(silent ? "🔄 檢查更新" : "⚠️ 檢查更新失敗");
+      setUpdateBtnLabel(silent ? UPDATE_IDLE_LABEL : "⚠️ 檢查更新失敗");
+      console.log(`[live-update] 檢查更新失敗：${String((err && err.message) || err)}`);
       if (!silent) {
-        console.log(`[live-update] 檢查更新失敗：${String((err && err.message) || err)}`);
-        setTimeout(() => setUpdateBtnLabel("🔄 檢查更新"), 4000);
+        setTimeout(() => setUpdateBtnLabel(UPDATE_IDLE_LABEL), 4000);
       }
     }
   }
