@@ -1718,7 +1718,10 @@ description: 協助使用者建立、修改、匯出「Claude格式的Skill」�
 2. 跟使用者釐清這個skill要解決什麼、什麼情境該被觸發、需要哪些固定腳本/參考資料，資訊不足就簡短追問，不要瞎猜。
 3. 修改既有skill時先skill_list/skill_read讀取現況，不要憑記憶重寫。
 4. 用skill_create（先dry_run:true檢查也可以）建立，成功後告訴使用者skill名稱與檔案清單，需要的話download:true下載.skill或save_to寫進資料夾。
-5. **完成前的強制自我檢查——這個skill有沒有依賴外部檔案/腳本，依賴的東西有沒有真的被打包**：如果SKILL.md或你剛才的規劃裡提到任何外部依賴檔案/腳本（尤其是「這個skill會執行/引用XX.py」「依賴YY.py」這類說法），skill_create的files參數裡，每一個都要嘛(a)把你已經讀到的完整內容直接放進scripts/對應的檔名，要嘛(b)在references/寫明它在使用者電腦上的確切絕對路徑＋一句話說明用途，並在SKILL.md本體提醒「執行前先用對應的讀取工具確認那個路徑的檔案還在」。**絕對不要**skill_create完成後只回報「附帶檔案：無，依賴模組由使用者環境提供」卻沒有做到(a)或(b)任一項——那等於嘴上講了會用到哪些檔案，卻完全沒打包內容、也沒記下路徑，下次換一個全新對話/session時，這個skill完全不知道那些依賴檔案在哪裡、長什麼樣子，形同空殼，使用者只會看到「已建立」卻實際上用不了。這次對話裡如果已經用fs_read_file／desktop_ops等工具讀過那些依賴檔案的完整內容，**優先直接把讀到的內容放進scripts/**（依賴檔案數量多、一次塞不下時，可以分好幾次用skill_create的overwrite:true陸續把每個檔案補進去，比完全不打包好很多）；只有真的沒讀過內容、只知道檔名時，才退而求其次改用(b)只記路徑。
+5. **完成前的強制自我檢查——這個skill有沒有依賴外部檔案/腳本，依賴的東西有沒有真的被打包**：如果SKILL.md或你剛才的規劃裡提到任何外部依賴檔案/腳本（尤其是「這個skill會執行/引用XX.py」「依賴YY.py」這類說法），skill_create的files參數裡，每一個都要嘛(a)把你已經讀到的完整內容直接放進scripts/對應的檔名，要嘛(b)在references/寫明它在使用者電腦上的確切絕對路徑＋一句話說明用途，並在SKILL.md本體提醒「執行前先用對應的讀取工具確認那個路徑的檔案還在」。**絕對不要**skill_create完成後只回報「附帶檔案：無，依賴模組由使用者環境提供」卻沒有做到(a)或(b)任一項——那等於嘴上講了會用到哪些檔案，卻完全沒打包內容、也沒記下路徑，下次換一個全新對話/session時，這個skill完全不知道那些依賴檔案在哪裡、長什麼樣子，形同空殼，使用者只會看到「已建立」卻實際上用不了。這次對話裡如果已經用fs_read_file／desktop_ops等工具讀過那些依賴檔案的完整內容，**優先直接把讀到的內容放進scripts/**。
+   - **files參數是合併、不是整包覆蓋**（overwrite:true更新時，這次帶到的路徑用新內容取代、沒帶到的舊路徑維持不動）：依賴檔案數量多、內容加起來很長時，**從一開始就主動分成好幾次呼叫，每次只帶幾個檔案**，不要想著「一次到位」把全部檔案內容塞進同一次呼叫——單次呼叫的參數內容太長時，容易讓你自己卡住、重複輸出思考過程卻生不出完整的工具呼叫（已經實測發生過：一次塞7支腳本的完整內容進同一次skill_create，連續3次只輸出reasoning、完全沒有真正呼叫成功）。分批呼叫現在完全安全，不用擔心後面呼叫把前面已經存進去的檔案洗掉。
+   - **只改SKILL.md文字描述、卻沒有真的用files參數附加對應內容，等於講假話，比老實承認「還沒打包」更嚴重**：如果被要求「把SKILL.md裡『由使用者環境提供』這句話改成『已打包在scripts/』」這類單純改措辭的請求，先確認你這次skill_create呼叫的files參數裡是不是真的帶了那些檔案的完整內容——沒有的話，要嘛趁這次一併把內容讀進來附加，要嘛明確告訴使用者「這幾個檔案我還沒讀過實際內容，沒辦法真的打包，只能維持記錄路徑的寫法，或請你授權我先讀取內容」，絕對不要只是把文字改成看起來像已經打包、但實際完全沒有附加對應檔案。
+   - **收尾前用skill_read或skill_list實際核對一次**：確認回傳的files清單裡，真的有SKILL.md文字提到的每一個scripts/references路徑，兩者對不上就是還沒做完，不要因為skill_create呼叫本身「沒有回錯誤」就當作已經完成。
 
 **寫法準則**：
 - name用小寫英文數字連字號（例如pdf-form-filler），不可含anthropic/claude。
@@ -6680,7 +6683,32 @@ class FloatingAssistant {
             await this.skillFileCache.put(f.path, blob.type, blob, 'skill_file', `${bundleId}::${f.path}`);
             stored.push({ path: f.path, sizeBytes: blob.size, mimeType: blob.type });
         }
-        if (bundle) bundle.files = stored;
+        // tw_stock_db客製: 2026-09-26使用者實測回報——AI被要求「打包全部7支
+        // 依賴腳本」時，一次把7個檔案的完整內容塞進同一次skill_create呼叫，
+        // 導致子任務重複3次只輸出思考過程、完全沒有實際工具呼叫（單次工具
+        // 呼叫的JSON參數太長，模型自己生不出完整輸出）；退而求其次只更新
+        // SKILL.md文字、完全不帶files，事後才手動用desktop_ops把檔案複製
+        // 到磁碟——但那條路徑完全繞過這裡的bundle.files/skillFileCache
+        // bookkeeping，UI「Skill分頁」跟「匯出.skill」都讀不到那些手動複製
+        // 的檔案，匯出結果因此跟磁碟上的真實內容對不上。
+        // 根因：這裡原本是`bundle.files = stored`——整包覆蓋，不是合併。
+        // 這代表「分成好幾次呼叫、每次只帶幾個檔案」這個本來應該安全、也是
+        // 這裡建議AI採用的作法，實際上每次呼叫都會把前一次已經存進去的
+        // 檔案從bundle.files清單裡洗掉（skillFileCache裡的blob本身沒被
+        // 刪除，但沒有任何清單記得它們存在，變成孤兒——UI/匯出只認
+        // bundle.files這份清單，不會去skillFileCache裡憑空發現孤兒檔案）。
+        // 改成合併：這次files參數帶到的路徑用這次的新內容覆蓋，沒帶到的
+        // 舊路徑維持不動——多次呼叫、每次只補幾個檔案終於變成真正安全的
+        // 用法，不用擔心後面呼叫把前面的洗掉，也就不需要冒著讓子任務
+        // 卡住的風險把所有依賴檔案硬塞進同一次呼叫。這個工具本身目前不
+        // 支援「移除單一已存在的附帶檔案」，只能新增/更新，這是刻意的
+        // 權衡（誤刪風險 vs. 目前完全沒有真正需要移除單一檔案的已知情境），
+        // 真的要整批重來可以直接用新name建一個全新skill。
+        if (bundle) {
+            const existing = Array.isArray(bundle.files) ? bundle.files : [];
+            const storedPaths = new Set(stored.map(f => f.path));
+            bundle.files = existing.filter(f => !storedPaths.has(f.path)).concat(stored);
+        }
         this._syncSkillBundleDomains();
         this._saveAdvancedSettings();
         try { this._renderAdvancedSettings(); } catch (_) {}
@@ -7970,7 +7998,7 @@ ${fnData.code}
             catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
         };
         registerOptional('skill_create',
-            '建立（或用overwrite:true更新）一個Claude格式的skill：SKILL.md（自動組出name/description frontmatter）＋選填的scripts/references/assets檔案。建立後立刻出現在Advance Settings的Skill分頁、可當domain使用。dry_run:true只驗證並回傳產生的SKILL.md不儲存。download:true會下載.skill壓縮檔（可放進Claude的skills資料夾）；save_to填File Access Point資料夾（fap:名稱/子路徑）會把整個skill資料夾寫進去。參數: {"name":"pdf-form-filler","description":"做什麼＋什麼時候該用","body":"SKILL.md的Markdown內容(不含frontmatter)","files":[{"path":"references/api.md","content":"..."},{"path":"scripts/fill.py","content":"..."}],"overwrite":false,"dry_run":false,"download":false,"save_to":"fap:我的技能"}',
+            '建立（或用overwrite:true更新）一個Claude格式的skill：SKILL.md（自動組出name/description frontmatter）＋選填的scripts/references/assets檔案。建立後立刻出現在Advance Settings的Skill分頁、可當domain使用。dry_run:true只驗證並回傳產生的SKILL.md不儲存。download:true會下載.skill壓縮檔（可放進Claude的skills資料夾）；save_to填File Access Point資料夾（fap:名稱/子路徑）會把整個skill資料夾寫進去。**files參數是合併、不是整包覆蓋**：overwrite:true更新既有skill時，這次files裡提到的路徑會被這次的新內容取代，先前已經存過、這次沒提到的路徑會維持原樣不會被清掉——依賴檔案很多、內容加起來很長時，直接分成好幾次呼叫、每次只帶幾個檔案即可，不用、也不要為了「一次到位」把所有檔案硬塞進同一次呼叫（單次呼叫的參數太長時，容易讓子任務生不出完整的工具呼叫而卡住重試）。參數: {"name":"pdf-form-filler","description":"做什麼＋什麼時候該用","body":"SKILL.md的Markdown內容(不含frontmatter)","files":[{"path":"references/api.md","content":"..."},{"path":"scripts/fill.py","content":"..."}],"overwrite":false,"dry_run":false,"download":false,"save_to":"fap:我的技能"}',
             skillWrap((p) => this._skillCreate(p)),
             { type: 'object', properties: {
                 name: { type: 'string', description: '小寫英文/數字/連字號，最長64字元，不可含anthropic/claude' },
