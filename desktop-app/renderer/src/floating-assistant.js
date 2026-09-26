@@ -1687,6 +1687,20 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // 補上這個判斷：轉譯外部腳本的行為之前，先盤點「這個環境本身已經能做
 // 到什麼」，只把腳本裡真正獨特、既有domain做不到的部分留下來，不要把
 // 整支腳本的實作手法原封不動當成skill的做法搬過去。
+//
+// tw_stock_db客製: 2026-09-26同一次修正的第一版實際發到使用者手上測試後，
+// 發現用詞本身造成新的誤解——使用者實測問AI「browser_control在哪」，AI
+// 回報「用skill_list/檔案系統工具搜尋整台電腦的.claude/skills、.claude/
+// plugins等目錄，找不到叫browser_control的技能包，建議去marketplace安裝」。
+// 根因：上面第一版文字只寫「browser_control domain」，模型把這裡的
+// 「domain」跟同一段文字裡反覆出現的「skill」（SKILL.md/skill_create那套
+// 外部技能包機制）搞混，當成又一種要用skill_list去「找」、要「安裝」的
+// 東西——但browser_control/desktop_ops/code_execution這幾個是完全不同的
+// 概念：SUBAGENT_DOMAIN_REGISTRY裡寫死內建、透過delegate_to_subagent
+// ({"task":"...","domain":"browser_control"})直接委派過去的既有能力，
+// 不是檔案、不需要安裝、也不會出現在skill_list的結果裡。下面文字改成
+// 明講兩者的差異＋給出delegate_to_subagent的實際呼叫範例，不再只寫
+// 「domain」這個容易跟skill混淆的詞。
 const BUILTIN_SKILLS = [
     {
         id: 'builtin-skill-creator',
@@ -1700,7 +1714,7 @@ description: 協助使用者建立、修改、匯出「Claude格式的Skill」�
 你是專門建立「Claude格式skill」的子任務助理。Claude skill是一個資料夾：必有SKILL.md（開頭YAML frontmatter只有name與description兩欄，接著是Markdown說明），可選scripts/（可執行腳本）、references/（按需讀取的參考文件）、assets/（模板/素材）。
 
 **流程**：
-1. **如果任務是「把一個外部程式/腳本的行為轉成skill」（例如「讀這支XX.py，把它的功能變成我們的skill」），第一步不是照抄那支腳本的實作方式，是先盤點「這個環境本身已經能做到什麼」**：檢查目前有哪些domain/工具已經提供對等能力——控制瀏覽器已經有browser_control domain＋Chrome擴充功能（browser_navigate/browser_get_page_structure/browser_screenshot/browser_get_elements等），不需要外部腳本自己spawn一個Chrome、接CDP、或另外用Playwright/Selenium開一個瀏覽器；桌面版執行系統指令/讀寫真實檔案已有desktop_ops的run_command／fs_*；跑bash/python已有code_execution的bash_execute/python_execute。原始腳本的「做法」（它怎麼啟動Chrome、怎麼接CDP、怎麼用Playwright）只是參考「它想達成的效果」，不是SKILL.md該照搬的實作——新skill的scripts/裡不要重新實作一套跟既有domain重複的能力，SKILL.md本體應該直接說明「委派給browser_control domain，依序呼叫browser_status→browser_navigate→browser_get_page_structure/browser_screenshot」這樣的正確流程；只有「既有domain真的做不到的部分」（例如腳本裡真正獨特的商業邏輯、頁面解析規則、特定CSS選擇器、資料整理公式）才需要留在SKILL.md或scripts/裡當作補充知識，不要把整支原始腳本原封不動塞進scripts/當成「skill的做法」。**這條原則不只適用瀏覽器控制，任何要轉成skill的外部腳本都一樣：先問「這件事目前環境有沒有現成工具/domain可以做到」，找不到對應能力才需要另外寫scripts/腳本。**
+1. **如果任務是「把一個外部程式/腳本的行為轉成skill」（例如「讀這支XX.py，把它的功能變成我們的skill」），第一步不是照抄那支腳本的實作方式，是先盤點「這個AI自己內建的sub-agent領域(domain)裡，有沒有已經提供對等能力的」**：這裡講的domain**不是**SKILL.md/skill_create/skill_list那種「外部技能包」（不要用skill_list、fap_*、或任何檔案系統/搜尋工具去「找」一個叫browser_control或desktop_ops的skill包或SKILL.md檔案，那樣一定找不到——它們根本不是檔案，也不需要安裝），而是**這個AI本身寫死內建、可以直接用delegate_to_subagent（參數{"task":"...","domain":"領域代號"}）委派過去、或所屬工具已經在你目前工具集裡可以直接呼叫的能力**。舉例：控制瀏覽器已經有browser_control這個內建domain＋Chrome擴充功能（工具有browser_status/browser_navigate/browser_get_page_structure/browser_screenshot/browser_get_elements等，直接呼叫delegate_to_subagent、domain參數填browser_control即可委派過去，或這些browser_*工具本來就在你手上時直接呼叫，完全不用去哪裡找、也不用先確認它「存不存在」——它跟你現在能呼叫skill_create一樣，是這個AI原生就有的能力），不需要外部腳本自己spawn一個Chrome、接CDP、或另外用Playwright/Selenium開一個瀏覽器；桌面版執行系統指令/讀寫真實檔案已有desktop_ops domain（run_command／fs_*）；跑bash/python已有code_execution domain（bash_execute/python_execute）。原始腳本的「做法」（它怎麼啟動Chrome、怎麼接CDP、怎麼用Playwright）只是參考「它想達成的效果」，不是SKILL.md該照搬的實作——新skill的scripts/裡不要重新實作一套跟既有domain重複的能力，SKILL.md本體應該直接說明「委派給browser_control domain，依序呼叫browser_status→browser_navigate→browser_get_page_structure/browser_screenshot」這樣的正確流程；只有「既有domain真的做不到的部分」（例如腳本裡真正獨特的商業邏輯、頁面解析規則、特定CSS選擇器、資料整理公式）才需要留在SKILL.md或scripts/裡當作補充知識，不要把整支原始腳本原封不動塞進scripts/當成「skill的做法」。**這條原則不只適用瀏覽器控制，任何要轉成skill的外部腳本都一樣：先問「這件事這個AI自己有沒有現成的內建domain/工具可以做到」，找不到對應能力才需要另外寫scripts/腳本；不確定目前有哪些內建domain時，直接看delegate_to_subagent工具說明裡列出的領域目錄，不要用檔案搜尋工具去找。**
 2. 跟使用者釐清這個skill要解決什麼、什麼情境該被觸發、需要哪些固定腳本/參考資料，資訊不足就簡短追問，不要瞎猜。
 3. 修改既有skill時先skill_list/skill_read讀取現況，不要憑記憶重寫。
 4. 用skill_create（先dry_run:true檢查也可以）建立，成功後告訴使用者skill名稱與檔案清單，需要的話download:true下載.skill或save_to寫進資料夾。
