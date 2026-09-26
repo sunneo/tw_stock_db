@@ -99,7 +99,7 @@
 
 - 可用平台：網頁版、桌面版
 - 子代理人領域：`file_analysis`
-- AI 工具：`list_uploaded_files`、`parse_uploaded_file`、`summarize_large_text`
+- AI 工具：`list_uploaded_files`、`parse_uploaded_file`、`summarize_large_text`、`attachment_apply_patch`
 - 範例：
   - `幫我看剛上傳的 xlsx，整理成重點表格`
 
@@ -119,7 +119,7 @@
 - 可用平台：網頁版、桌面版
 - 斜線指令：`/fap-list`、`/fap-read`、`/fap-find`
 - 子代理人領域：`file_access_points`
-- AI 工具：`list_file_access_points`、`fap_list_files`、`fap_read_file`、`fap_find_file`、`fap_write_file`、`fap_apply_patch`
+- AI 工具：`list_file_access_points`、`fap_list_files`、`fap_read_file`、`fap_find_file`、`fap_write_file`、`fap_apply_patch`、`fap_copy_from_storage`、`fap_copy_to_storage`、`fap_download_url`
 - 範例：
   - `/fap-list`
   - `/fap-read fap:我的筆記/todo.txt`
@@ -131,7 +131,7 @@
 
 - 可用平台：桌面版
 - 子代理人領域：`desktop_ops`
-- AI 工具：`run_command`、`fs_read_file`、`fs_write_file`、`fs_list_files`、`tmux_start_session`
+- AI 工具：`run_command`、`fs_read_file`、`fs_write_file`、`fs_list_files`、`fs_find_file`、`fs_stat`、`fs_mkdir`、`fs_remove`、`tmux_start_session`、`tmux_send_keys`、`tmux_capture_pane`、`tmux_list_sessions`、`tmux_kill_session`、`batch_process_items`、`analyze_large_file`、`get_large_file_analysis_chunk`
 - 範例：
   - `列出這個資料夾最大的 10 個檔案`
   - `在背景開一個 tmux 跑這個腳本`
@@ -233,7 +233,7 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 可用平台：網頁版、桌面版
 - 斜線指令：`/import-viewer-attachment`
 - 子代理人領域：`interactive_component`
-- AI 工具：`render_interactive_viewer`、`get_interactive_viewer_yaml`、`get_viewer_state`、`set_viewer_state`
+- AI 工具：`render_interactive_viewer`、`get_interactive_viewer_yaml`、`get_viewer_state`、`set_viewer_state`、`import_interactive_viewer_attachment`
 - 範例：
   - `做一個三步驟的新手引導精靈`
 

@@ -97,10 +97,12 @@ categories:
       - id: file-analysis
         name: 上傳檔案解讀
         summary: 解讀你上傳的 csv／xlsx／json／markdown／yaml／docx／pptx／log 等檔案，也能解開 zip／tar／tgz；大檔會自動分段摘要。
-        how: { domain: file_analysis, tools: [list_uploaded_files, parse_uploaded_file, summarize_large_text] }
+        how: { domain: file_analysis, tools: [list_uploaded_files, parse_uploaded_file, summarize_large_text, attachment_apply_patch] }
         platforms: [web, desktop]
         samples: ["幫我看剛上傳的 xlsx，整理成重點表格"]
         updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "清冊補列16個原始碼已有的工具（fs_*/tmux_*/fap_copy_*/attachment_apply_patch等）" }
       - id: image-interpret
         name: 圖片理解
         summary: 描述或解讀上傳的圖片內容（圖表、截圖、照片）。
@@ -111,17 +113,21 @@ categories:
       - id: file-access-points
         name: 授權資料夾存取（File Access Point）
         summary: 授權一個真實資料夾後，助理可以列出、讀取、搜尋、寫入修補其中的檔案。
-        how: { slash: ["/fap-list", "/fap-read", "/fap-find"], domain: file_access_points, tools: [list_file_access_points, fap_list_files, fap_read_file, fap_find_file, fap_write_file, fap_apply_patch] }
+        how: { slash: ["/fap-list", "/fap-read", "/fap-find"], domain: file_access_points, tools: [list_file_access_points, fap_list_files, fap_read_file, fap_find_file, fap_write_file, fap_apply_patch, fap_copy_from_storage, fap_copy_to_storage, fap_download_url] }
         platforms: [web, desktop]
         samples: ["/fap-list", "/fap-read fap:我的筆記/todo.txt", "/fap-find fap:我的筆記 todo"]
         updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "清冊補列16個原始碼已有的工具（fs_*/tmux_*/fap_copy_*/attachment_apply_patch等）" }
       - id: desktop-ops
         name: 本機檔案與指令執行
         summary: 直接讀寫本機檔案、執行系統指令、開 tmux 工作階段（桌面版限定，需在設定允許）。
-        how: { domain: desktop_ops, tools: [run_command, fs_read_file, fs_write_file, fs_list_files, tmux_start_session] }
+        how: { domain: desktop_ops, tools: [run_command, fs_read_file, fs_write_file, fs_list_files, fs_find_file, fs_stat, fs_mkdir, fs_remove, tmux_start_session, tmux_send_keys, tmux_capture_pane, tmux_list_sessions, tmux_kill_session, batch_process_items, analyze_large_file, get_large_file_analysis_chunk] }
         platforms: [desktop]
         samples: ["列出這個資料夾最大的 10 個檔案", "在背景開一個 tmux 跑這個腳本"]
         updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "清冊補列16個原始碼已有的工具（fs_*/tmux_*/fap_copy_*/attachment_apply_patch等）" }
 
   - id: coding
     name: 程式設計與版本控制
@@ -191,10 +197,12 @@ categories:
       - id: interactive-viewer
         name: 互動元件
         summary: 產生多頁表單、引導頁、教學畫面等可互動的介面，可保存狀態並匯出封裝檔。
-        how: { slash: ["/import-viewer-attachment"], domain: interactive_component, tools: [render_interactive_viewer, get_interactive_viewer_yaml, get_viewer_state, set_viewer_state] }
+        how: { slash: ["/import-viewer-attachment"], domain: interactive_component, tools: [render_interactive_viewer, get_interactive_viewer_yaml, get_viewer_state, set_viewer_state, import_interactive_viewer_attachment] }
         platforms: [web, desktop]
         samples: ["做一個三步驟的新手引導精靈"]
         updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "清冊補列16個原始碼已有的工具（fs_*/tmux_*/fap_copy_*/attachment_apply_patch等）" }
       - id: animation-2d
         name: 2D 動畫
         summary: 用多邊形描述 2D 動畫並播放，也能匯入動畫檔。
