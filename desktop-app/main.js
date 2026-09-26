@@ -1393,6 +1393,34 @@ const BASELINE_MANIFEST_FILE = path.join(__dirname, "renderer", "update-manifest
 function md5Hex(buf) {
   return crypto.createHash("md5").update(buf).digest("hex");
 }
+// tw_stock_db客製: 2026-09-26使用者實測回報（Windows打包版）——apply()原本
+// 用`fs.cp(path.join(__dirname, "renderer"), overrideRendererDir, {recursive:true})`
+// 整份複製baseline renderer/到覆蓋目錄，開發模式(`electron .`，__dirname
+// 直接指向真實磁碟資料夾)測試完全正常，但打包後（__dirname指進
+// app.asar內部）在使用者機器上直接丟出`ENOENT, renderer not found in
+// ...\app.asar`。追查是Electron官方文件本身明講的已知限制：`fs.cp()`／
+// `fs.copyFile()`這系列API在底層是直接呼叫作業系統層級的copy syscall
+// （libuv的uv_fs_copyfile），完全繞過Electron替Node `fs`模組動的手腳
+// （那個手腳只攔截`readFile`/`readdir`/`stat`這類「讀」API，讓它們能看懂
+// asar虛擬路徑）——asar對作業系統而言根本不是一個真正的目錄，所以繞過
+// JS層shim直接呼叫OS syscall的`fs.cp`自然找不到`renderer`這個「目錄」。
+// 開發模式測試呼叫得到只是因為那時候__dirname根本沒有指進任何asar
+// 檔案，不是這個bug被修好了。改成這支純JS層的遞迴複製（只用readdir／
+// mkdir／readFile／writeFile，全部是Electron asar shim有支援的「讀」
+// API），兩種模式下都能正常運作。
+async function copyDirRecursive(srcDir, destDir) {
+  await fs.mkdir(destDir, { recursive: true });
+  const entries = await fs.readdir(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      await fs.writeFile(destPath, await fs.readFile(srcPath));
+    }
+  }
+}
 async function md5OfFile(file) {
   try { return md5Hex(await fs.readFile(file)); } catch (_) { return null; }
 }
@@ -1515,7 +1543,7 @@ ipcMain.handle("fa:update:apply", async () => {
     if (!local.overrideActive) {
       await fs.rm(LIVE_PATCH_DIR(), { recursive: true, force: true }).catch(() => {});
       await fs.mkdir(LIVE_PATCH_DIR(), { recursive: true });
-      await fs.cp(path.join(__dirname, "renderer"), overrideRendererDir, { recursive: true });
+      await copyDirRecursive(path.join(__dirname, "renderer"), overrideRendererDir);
     }
 
     for (const relPath of toFetch) {
