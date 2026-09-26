@@ -1288,6 +1288,10 @@ const CALL_STOP_SEQUENCE = ')]';
 // MAX_AUTO_CONTINUE_ROUNDS次（純粹是防止端點異常/模型跳針導致無限迴圈
 // 燒費用的安全上限，不是真正的長度限制）。
 const MAX_AUTO_CONTINUE_ROUNDS = 40;
+// tw_stock_db客製: 2026-09-26——節慶套版（見_applyFestivalTheme）。festival-themes分支永遠只有一個
+// commit、每個套版<=1MB；options.festivalThemeBaseUrl可以覆寫下載位置（測試/自架用）。
+const FA_FESTIVAL_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/festival-themes';
+const FA_FESTIVAL_MAX_BYTES = 1024 * 1024;
 // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「這種give up要
 // 分辨是不是token太大」，且明確否決「換模型」這個方向（使用者原話：
 // 「switching model沒有意義!」「我不是叫你switching model!」「這種give up
@@ -5411,6 +5415,8 @@ class FloatingAssistant {
         this._syncCodingDomainSettings();
         this._initUI();
         this._initEventListeners();
+        this._applyFestivalTheme().catch(() => {});
+        this._startFestivalTimer();
         this._registerBuiltinAiTools();
         this._updateDelegateToSubagentDescription();
         this._syncCustomToolSlashCommands();
@@ -5859,6 +5865,8 @@ class FloatingAssistant {
             // 不論這個設定都一律要先問，見_faBuildCodingSystemPrompt的步驟7）。
             codingDomainEnabled: true,
             codingPublishMode: 'ask',
+            // tw_stock_db客製: 2026-09-26使用者要求——台灣節慶套版（Configure > LLM基礎設定），預設開啟。
+            festivalThemeEnabled: true,
             // tw_stock_db客製: 2026-09-16——bash_execute/python_execute要抓的
             // wasm執行環境（jsDelivr鏡射的npm套件或自家backup分支，見
             // FA_ASSET_URLS.bashWasmJsBase/pyodideJsBase的說明），留空時直接
@@ -6961,6 +6969,7 @@ class FloatingAssistant {
             youtubeChannelId: String(raw.youtubeChannelId || '').trim(),
             codingDomainEnabled: raw.codingDomainEnabled !== false,
             codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
+            festivalThemeEnabled: raw.festivalThemeEnabled !== false,
             assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
                 const n = Number(raw.whisperWasmThreads);
@@ -15147,6 +15156,309 @@ ${sourceTool.handlerScript}
         this._renderMessageHistory();
     }
 
+    // ==== FESTIVAL-THEMES-BEGIN ====
+    // tw_stock_db客製: 2026-09-26使用者要求——依台灣行事曆（連假也算同一個節慶）自動換上
+    // 節慶套版，網頁版／桌面版／aiweb共用。套版放在獨立的festival-themes分支（永遠只有
+    // 一個commit，說明見該分支的README.md），從raw.githubusercontent.com下載：
+    //   calendar.json（一天最多抓一次）→ 依「今天(Asia/Taipei)」挑出生效節慶 →
+    //   theme.json → 只抓「今天那一格」的top/bottom/body三個svg（每個套版上限1MB）。
+    // 三個區域：top（標題列往下垂掛：鞭炮/燈籠/月亮…，越接近節日越豐富）、body（對話區
+    // 低透明度花紋）、bottom（視窗底邊一排小物）。在Configure > LLM基礎設定可以開關，
+    // 預設開啟。下載失敗就用本機快取，沒有快取就靜默不套用，不影響任何功能。
+    _festivalBase() {
+        return String(this.options.festivalThemeBaseUrl || FA_FESTIVAL_BASE).replace(/\/+$/, '');
+    }
+
+    _festivalDayNum(str) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || ''));
+        return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000 : NaN;
+    }
+
+    _festivalToday() {
+        if (this._festivalPreviewDate) return this._festivalPreviewDate;
+        try {
+            return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+        } catch (_) {
+            const d = new Date(Date.now() + 8 * 3600 * 1000);
+            return d.toISOString().slice(0, 10);
+        }
+    }
+
+    _festivalCacheGet(key) {
+        try { return localStorage.getItem(key); } catch (_) { return null; }
+    }
+
+    _festivalCacheSet(key, value) {
+        try { localStorage.setItem(key, value); } catch (_) { /* 額度滿了就算了，下次重新下載 */ }
+    }
+
+    async _festivalFetchText(path) {
+        const resp = await fetch(`${this._festivalBase()}/${path}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} ${path}`);
+        const text = await resp.text();
+        if (text.length > FA_FESTIVAL_MAX_BYTES) throw new Error(`${path} 超過1MB上限`);
+        return text;
+    }
+
+    async _festivalLoadCalendar() {
+        const today = this._festivalToday();
+        const realDay = this._festivalPreviewDate ? '' : today;
+        const cached = this._festivalCacheGet('fa_festival_calendar');
+        let cachedObj = null;
+        try { cachedObj = cached ? JSON.parse(cached) : null; } catch (_) { cachedObj = null; }
+        if (cachedObj && cachedObj.data && (this._festivalPreviewDate || cachedObj.day === realDay)) return cachedObj.data;
+        try {
+            const data = JSON.parse(await this._festivalFetchText('calendar.json'));
+            if (data && Array.isArray(data.festivals)) {
+                this._festivalCacheSet('fa_festival_calendar', JSON.stringify({ day: this._festivalToday(), data }));
+                return data;
+            }
+        } catch (err) {
+            this._log && this._log(`節慶套版行事曆下載失敗（${String(err.message || err)}），改用本機快取。`);
+        }
+        return cachedObj && cachedObj.data ? cachedObj.data : null;
+    }
+
+    // 找出「今天」生效的節慶：start-lead <= 今天 <= end，priority大者優先；同分取離開始日較近的。
+    _festivalPick(calendar, todayStr) {
+        const today = this._festivalDayNum(todayStr);
+        if (!calendar || !Array.isArray(calendar.festivals) || !Number.isFinite(today)) return null;
+        let best = null;
+        for (const f of calendar.festivals) {
+            const s = this._festivalDayNum(f.start), e = this._festivalDayNum(f.end), lead = Number(f.lead) || 0;
+            if (!Number.isFinite(s) || !Number.isFinite(e) || today < s - lead || today > e) continue;
+            const cand = { festival: f, offset: today - s, dayInFestival: today - s + 1, totalDays: e - s + 1 };
+            if (!best || (f.priority || 0) > (best.festival.priority || 0)
+                || ((f.priority || 0) === (best.festival.priority || 0) && Math.abs(cand.offset) < Math.abs(best.offset))) best = cand;
+        }
+        return best;
+    }
+
+    _festivalPickFrame(frames, offset) {
+        if (!Array.isArray(frames) || !frames.length) return null;
+        let chosen = frames[0];
+        for (const fr of frames) if (fr.offset <= offset) chosen = fr;
+        return chosen;
+    }
+
+    async _festivalAsset(themeId, version, file) {
+        const key = `fa_festival_asset::${themeId}@${version}::${file}`;
+        const cached = this._festivalCacheGet(key);
+        if (cached) return cached;
+        const text = await this._festivalFetchText(`themes/${themeId}/${file}`);
+        this._festivalCacheSet(key, text);
+        return text;
+    }
+
+    async _festivalLoadTheme(pick, calendar) {
+        const themeId = pick.festival.theme;
+        const idx = (calendar.themes || []).find((t) => t.id === themeId) || {};
+        if (Number(idx.sizeBytes) > FA_FESTIVAL_MAX_BYTES) throw new Error(`套版 ${themeId} 超過1MB上限，不套用`);
+        const version = idx.version || 1;
+        const tKey = `fa_festival_theme::${themeId}@${version}`;
+        let themeText = this._festivalCacheGet(tKey);
+        if (!themeText) { themeText = await this._festivalFetchText(`themes/${themeId}/theme.json`); this._festivalCacheSet(tKey, themeText); }
+        const theme = JSON.parse(themeText);
+        if (Number(theme.sizeBytes) > FA_FESTIVAL_MAX_BYTES) throw new Error(`套版 ${themeId} 超過1MB上限，不套用`);
+        const regions = theme.regions || {};
+        const files = {};
+        const topF = this._festivalPickFrame(regions.top && regions.top.frames, pick.offset);
+        const botF = this._festivalPickFrame(regions.bottom && regions.bottom.frames, pick.offset);
+        if (topF) files.top = topF.asset;
+        if (botF) files.bottom = botF.asset;
+        if (regions.body && regions.body.asset) files.body = regions.body.asset;
+        const assets = {};
+        await Promise.all(Object.entries(files).map(async ([region, file]) => {
+            try { assets[region] = await this._festivalAsset(themeId, version, file); } catch (_) { /* 某一區抓不到就只少那一區 */ }
+        }));
+        return { theme, assets };
+    }
+
+    _festivalSvgUrl(svgText) {
+        return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}")`;
+    }
+
+    _clearFestivalTheme() {
+        ['ai-festival-style', 'ai-festival-top', 'ai-festival-bottom', 'ai-festival-banner', 'ai-festival-particles'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        });
+        this._festivalState = null;
+        this._festivalKey = '';
+        this._updateFestivalStatusText();
+    }
+
+    // 套用（或清除）今天的節慶套版；同一天同一格重複呼叫不會重做。
+    async _applyFestivalTheme({ force = false } = {}) {
+        if (this._festivalApplying) { this._festivalReapply = true; return; }
+        this._festivalApplying = true;
+        try {
+            if (this.advancedSettings.festivalThemeEnabled === false) { this._clearFestivalTheme(); return; }
+            const win = document.getElementById('ai-floating-window');
+            if (!win) return;
+            const calendar = await this._festivalLoadCalendar();
+            const pick = calendar ? this._festivalPick(calendar, this._festivalToday()) : null;
+            if (!pick) { this._clearFestivalTheme(); return; }
+            const key = `${pick.festival.id}|${pick.offset}`;
+            if (!force && key === this._festivalKey && document.getElementById('ai-festival-style')) return;
+            const loaded = await this._festivalLoadTheme(pick, calendar);
+            if (this.advancedSettings.festivalThemeEnabled === false) return;
+            this._festivalState = { pick, theme: loaded.theme, assets: loaded.assets };
+            this._festivalKey = key;
+            this._renderFestivalTheme();
+        } catch (err) {
+            this._log && this._log(`節慶套版套用失敗：${String(err.message || err)}`);
+        } finally {
+            this._festivalApplying = false;
+            if (this._festivalReapply) { this._festivalReapply = false; this._applyFestivalTheme({ force }).catch(() => {}); }
+        }
+    }
+
+    _renderFestivalTheme() {
+        const st = this._festivalState;
+        const win = document.getElementById('ai-floating-window');
+        if (!st || !win) return;
+        // 桌面版視窗是static（inline還留著一個沒作用的top:calc(100% + 6px)），單純改成relative會讓top生效、
+        // 整個視窗被推到畫面外，所以一併把top/left歸零。
+        if (getComputedStyle(win).position === 'static') { win.style.position = 'relative'; win.style.top = 'auto'; win.style.left = 'auto'; }
+        const { theme, assets, pick } = st;
+        const accent = theme.accent || '#76b900';
+        let style = document.getElementById('ai-festival-style');
+        if (!style) { style = document.createElement('style'); style.id = 'ai-festival-style'; document.head.appendChild(style); }
+        const bodyUrl = assets.body ? this._festivalSvgUrl(assets.body) : 'none';
+        style.textContent = `
+            #ai-floating-window #ai-chat-body { background-image: ${bodyUrl} !important; background-size: 240px 240px !important; }
+            #ai-floating-window #ai-send-btn { background: ${accent} !important; }
+            #ai-floating-window { box-shadow: 0 6px 24px rgba(0,0,0,0.15), 0 0 0 1px ${accent}55 !important; }
+            #ai-festival-top, #ai-festival-bottom { position: absolute; pointer-events: none; background-repeat: no-repeat; z-index: 4; }
+            #ai-festival-top { top: 0; left: min(420px, 45%); right: 96px; height: 90px; background-position: right top; background-size: auto 100%; }
+            #ai-festival-bottom { bottom: 0; right: 0; width: 55%; height: 46px; background-position: right bottom; background-size: auto 100%; z-index: 1; }
+            #ai-chat-body > *:not(#ai-festival-particles) { position: relative; z-index: 1; }
+            #ai-festival-particles { position: sticky; top: 0; height: var(--fa-h, 300px); margin: 0 -15px calc(-1 * var(--fa-h, 300px)); overflow: hidden; pointer-events: none; z-index: 0; }
+            #ai-festival-particles span { position: absolute; top: -24px; opacity: .55; animation: ai-festival-fall linear infinite; }
+            @keyframes ai-festival-fall { from { transform: translateY(0) rotate(0deg); } to { transform: translateY(calc(var(--fa-h, 300px) + 40px)) rotate(240deg); } }
+            @media (prefers-reduced-motion: reduce) { #ai-festival-particles { display: none; } }
+        `;
+        const region = (id, svg) => {
+            let el = document.getElementById(id);
+            if (!svg) { if (el) el.remove(); return; }
+            if (!el) { el = document.createElement('div'); el.id = id; win.appendChild(el); }
+            el.style.backgroundImage = this._festivalSvgUrl(svg);
+        };
+        region('ai-festival-top', assets.top);
+        region('ai-festival-bottom', assets.bottom);
+        this._ensureFestivalParticles(document.getElementById('ai-chat-body'));
+        this._renderFestivalBanner(win, theme, pick);
+        this._updateFestivalStatusText();
+    }
+
+    // tw_stock_db客製: 2026-09-26使用者要求「落下的東西不要蓋到使用者的對話泡泡」——飄落小物放在對話區
+    // 「裡面」最底層（sticky、高度歸零不佔版面），所有訊息（泡泡都有不透明底色）疊在它上面，所以只會在
+    // 沒有內容的空白處看到。_renderMessageHistory()每次會清空chatBody，所以重繪後要再補回來。
+    _ensureFestivalParticles(chatBody) {
+        const st = this._festivalState;
+        if (!chatBody) return;
+        let box = document.getElementById('ai-festival-particles');
+        const p = st && st.theme && st.theme.particles;
+        if (!p || !Array.isArray(p.emoji) || !p.emoji.length) { if (box) box.remove(); return; }
+        if (box && box.parentElement === chatBody && chatBody.firstChild === box) { box.style.setProperty('--fa-h', `${chatBody.clientHeight}px`); return; }
+        if (box) box.remove();
+        box = document.createElement('div');
+        box.id = 'ai-festival-particles';
+        box.style.setProperty('--fa-h', `${chatBody.clientHeight || 300}px`);
+        const n = Math.max(0, Math.min(16, Number(p.count) || 8));
+        for (let i = 0; i < n; i++) {
+            const span = document.createElement('span');
+            span.textContent = p.emoji[i % p.emoji.length];
+            span.style.left = `${(i * 97 / n + (i * 37) % 11)}%`;
+            span.style.fontSize = `${12 + (i * 5) % 9}px`;
+            span.style.animationDuration = `${14 + (i * 7) % 12}s`;
+            span.style.animationDelay = `${-((i * 3) % 14)}s`;
+            box.appendChild(span);
+        }
+        chatBody.insertBefore(box, chatBody.firstChild);
+        if (typeof ResizeObserver !== 'undefined' && !this._festivalResizeObs) {
+            this._festivalResizeObs = new ResizeObserver(() => {
+                const b = document.getElementById('ai-festival-particles');
+                const c = document.getElementById('ai-chat-body');
+                if (b && c) b.style.setProperty('--fa-h', `${c.clientHeight}px`);
+            });
+            this._festivalResizeObs.observe(chatBody);
+        }
+    }
+
+    _renderFestivalBanner(win, theme, pick) {
+        let banner = document.getElementById('ai-festival-banner');
+        const dismissKey = `fa_festival_dismissed::${pick.festival.id}::${this._festivalToday()}`;
+        if (this._festivalCacheGet(dismissKey) === '1') { if (banner) banner.remove(); return; }
+        const header = document.getElementById('ai-window-header');
+        if (!header) return;
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'ai-festival-banner';
+            header.insertAdjacentElement('afterend', banner);
+        }
+        const dayText = pick.offset < 0 ? `再 ${-pick.offset} 天` : (pick.totalDays > 1 ? `連假第 ${pick.dayInFestival} 天` : '');
+        banner.textContent = '';
+        const text = document.createElement('span');
+        text.style.cssText = 'flex:1; min-width:0;';
+        text.textContent = `${theme.greeting || pick.festival.name}${dayText ? `（${pick.festival.name}，${dayText}）` : ''}`;
+        const close = document.createElement('span');
+        close.textContent = '✕';
+        close.title = '今天不再顯示';
+        close.style.cssText = 'cursor:pointer; margin-left:8px; opacity:.7;';
+        close.addEventListener('click', () => { this._festivalCacheSet(dismissKey, '1'); banner.remove(); });
+        banner.appendChild(text);
+        banner.appendChild(close);
+        this._syncFestivalColors();
+    }
+
+    // 主題（淺色/深色）切換時只需要換橫幅顏色，圖案本身淺深兩種底色都看得到。
+    _syncFestivalColors() {
+        const st = this._festivalState;
+        const banner = document.getElementById('ai-festival-banner');
+        if (!st || !banner) return;
+        const c = (this._isLightTheme() ? st.theme.light : st.theme.dark) || {};
+        banner.style.cssText = `display:flex; align-items:center; padding:5px 12px; font-size:12px; background:${c.bannerBg || '#eee'}; color:${c.bannerText || '#333'}; border-bottom:1px solid ${c.border || '#ccc'};`;
+    }
+
+    _updateFestivalStatusText() {
+        const el = document.getElementById('ai-festival-status');
+        if (!el) return;
+        const st = this._festivalState;
+        if (this.advancedSettings.festivalThemeEnabled === false) el.textContent = '已關閉';
+        else if (!st) el.textContent = '今天沒有節慶（或尚未下載到套版）';
+        else {
+            const p = st.pick;
+            el.textContent = `目前：${p.festival.name}（${p.offset < 0 ? `再${-p.offset}天` : (p.totalDays > 1 ? `連假第${p.dayInFestival}天` : '當天')}）${this._festivalPreviewDate ? ` ［預覽 ${this._festivalPreviewDate}］` : ''}`;
+        }
+    }
+
+    // 公開：預覽某一天的套版，例如 fa.previewFestival('2026-09-20')、fa.previewFestival('mid-autumn@-5')
+    // （套版id@offset，offset＝今天−連假第一天）；不帶參數＝取消預覽。
+    async previewFestival(arg) {
+        if (!arg) this._festivalPreviewDate = '';
+        else if (/^\d{4}-\d{2}-\d{2}$/.test(String(arg))) this._festivalPreviewDate = String(arg);
+        else {
+            const m = /^([a-z0-9-]+)@(-?\d+)$/.exec(String(arg));
+            const calendar = await this._festivalLoadCalendar();
+            const fest = m && calendar ? (calendar.festivals || []).find((f) => f.theme === m[1]) : null;
+            if (!fest) throw new Error(`找不到套版「${arg}」（格式：YYYY-MM-DD 或 套版id@offset）`);
+            const d = new Date((this._festivalDayNum(fest.start) + Number(m[2])) * 86400000);
+            this._festivalPreviewDate = d.toISOString().slice(0, 10);
+        }
+        await this._applyFestivalTheme({ force: true });
+        return this._festivalState ? `${this._festivalState.pick.festival.id} offset=${this._festivalState.pick.offset}` : null;
+    }
+
+    _startFestivalTimer() {
+        if (this._festivalTimer) return;
+        const tick = () => { this._applyFestivalTheme().catch(() => {}); };
+        this._festivalTimer = setInterval(tick, 30 * 60 * 1000);
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+    }
+    // ==== FESTIVAL-THEMES-END ====
+
     _getThemePalette() {
         if (this._isLightTheme()) {
             return {
@@ -15274,6 +15586,7 @@ ${sourceTool.handlerScript}
         status.style.background = palette.statusBg;
         status.style.color = palette.statusText;
         this._syncTerminalEmbedBorder(palette);
+        this._syncFestivalColors();
     }
 
     // tw_stock_db客製: 2026-09-26使用者實測回報——先切淺色、refresh、再切深色，
@@ -16584,6 +16897,9 @@ ${sourceTool.handlerScript}
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
         if (slashMenuChk) slashMenuChk.checked = this.advancedSettings.slashCommandMenuEnabled !== false;
+        const festivalChk = document.getElementById('ai-festival-chk');
+        if (festivalChk) festivalChk.checked = this.advancedSettings.festivalThemeEnabled !== false;
+        this._updateFestivalStatusText();
         const showTraceChk = document.getElementById('ai-show-trace-chk');
         if (showTraceChk) showTraceChk.checked = this.advancedSettings.showInternalTrace === true;
         // tw_stock_db客製: 見_recordNetworkDebug的說明——modal每次開啟都要
@@ -31361,6 +31677,12 @@ ${existingNodeSummaries}
                                         <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-slash-menu-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">輸入框打「/」時顯示可用指令選單</label>
                                     </div>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-festival-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用台灣節慶套版（春節、元宵、端午、中秋、國慶、聖誕…依台灣行事曆自動換裝，連假期間都算同一個節慶）</label>
+                                        <span id="ai-festival-status" class="ai-advanced-hint" style="margin:0;"></span>
+                                    </div>
+                                    <p class="ai-advanced-hint">套版從 GitHub 的 festival-themes 分支下載（每個套版不超過 1MB，一天只抓一次，離線用本機快取）；越接近節日畫面越豐富（例如中秋前月亮從新月漸盈到滿月、春節前逐漸高掛鞭炮）。</p>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-rules-input">RULES.md</label>
@@ -32358,6 +32680,7 @@ ${existingNodeSummaries}
         const wasNearBottomForRerender = this._isNearBottom(chatBody);
         const prevScrollTopForRerender = chatBody.scrollTop;
         chatBody.innerHTML = '';
+        this._ensureFestivalParticles(chatBody);
 
         // tw_stock_db客製: pruneContext()壓縮上下文時，被移出this.messages
         // 的原始訊息存在archivedDisplayBlocks裡（純粹給畫面用，不會回頭餵
@@ -33710,6 +34033,14 @@ ${existingNodeSummaries}
             hermesChkBx.addEventListener('change', (e) => {
                 localStorage.setItem(this.HERMES_AUTO_EVOLVE_KEY, String(e.target.checked));
                 this._log("🤖 Hermes 圖譜進化功能已" + (e.target.checked ? '開啟' : '關閉'));
+            });
+        }
+        const festivalChkBx = document.getElementById('ai-festival-chk');
+        if (festivalChkBx) {
+            festivalChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.festivalThemeEnabled = e.target.checked;
+                this._saveAdvancedSettings();
+                this._applyFestivalTheme({ force: true }).catch(() => {});
             });
         }
         const slashMenuChkBx = document.getElementById('ai-slash-menu-chk');
