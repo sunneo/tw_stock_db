@@ -1424,11 +1424,27 @@ async function copyDirRecursive(srcDir, destDir) {
 async function md5OfFile(file) {
   try { return md5Hex(await fs.readFile(file)); } catch (_) { return null; }
 }
+// tw_stock_db客製: 2026-09-26使用者實測回報——force push新版本到
+// desktop-app-patch分支之後，點「檢查更新」一開始還是回報「已是最新
+// 版本」，隔一段時間才終於抓到新版本。`fetch(url, {cache:"no-store"})`
+// 的`cache`選項只影響Node/Electron這一端自己會不會快取回應，完全不會
+// 讓raw.githubusercontent.com前面的CDN（Fastly）跳過它自己的邊緣快取——
+// 同一個URL（分支+路徑不變，只有底層git blob變了）在force push後的
+// 一小段時間內，不同地區的CDN節點很可能還在回應舊的快取內容，這是這個
+// 環境本身的限制、不是bug，但完全可以用「幫每次請求的URL加上一個不重複
+// 的查詢字串」這個標準cache-busting技巧繞過——不同URL對CDN而言是不同的
+//快取key，一定會打到origin重新抓最新內容。這裡集中加在
+// fetchUpdateResource()這個唯一的抓取入口，manifest.json／個別檔案的
+// 下載都會自動套用，不用個別呼叫端各自處理。
+function withCacheBuster(url) {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}_cb=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 async function fetchUpdateResource(url, { maxBytes = LIVE_PATCH_MAX_FILE_BYTES } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LIVE_PATCH_FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: controller.signal, cache: "no-store" });
+    const resp = await fetch(withCacheBuster(url), { signal: controller.signal, cache: "no-store" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.byteLength > maxBytes) throw new Error(`回應超過上限（${maxBytes} bytes）：${url}`);
