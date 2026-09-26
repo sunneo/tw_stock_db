@@ -477,17 +477,29 @@ function patchCloudflareWording(root) {
   function showUpdateDialog(info) {
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000002; display:flex; align-items:center; justify-content:center;";
+    // tw_stock_db客製: 2026-09-26使用者要求——notes是使用者自己在
+    // desktop-app-patch發佈時手寫的單一版本說明（不是把跳過的每個中間
+    // 版本notes疊加起來——這個分支永遠是force push的完整快照、不是patch
+    // chain，dialog只會顯示「目前這次抓到的最新一份」notes，不會隨著
+    // 落後的版本數增加而變長），但單一版本的notes本身長度沒有上限，
+    // 加上小視窗/小螢幕的情況，原本整個box沒有任何高度限制，notes一長
+    // 就可能把下面的按鈕擠出視窗看不到、按不到。改成：標題固定在最上面、
+    // 「目前版本→新版本」＋notes＋「會更新N個檔案」這段內容包進一個有
+    // max-height+overflow-y:auto的獨立捲動區，錯誤訊息＋取消/立即更新
+    // 按鈕固定留在捲動區外面，不管notes多長都看得到、按得到。
     const box = document.createElement("div");
-    box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(460px,90vw); font-size:13px; font-family:inherit;";
+    box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(460px,90vw); max-height:80vh; display:flex; flex-direction:column; font-size:13px; font-family:inherit;";
     const escapeHtml = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
     const notesHtml = info.notes ? `<p style="color:#93a4b7; white-space:pre-wrap; line-height:1.5; margin:0 0 14px 0;">${escapeHtml(info.notes)}</p>` : "";
     box.innerHTML = `
-      <div style="font-weight:bold; font-size:15px; margin-bottom:10px;">⬆️ 發現新版本</div>
-      <p style="color:#93a4b7; margin:0 0 10px 0; line-height:1.5;">目前版本：${escapeHtml(info.currentVersion || "?")} → 新版本：${escapeHtml(info.remoteVersion || "?")}</p>
-      ${notesHtml}
-      <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">會更新 ${info.changedFiles.length} 個前端檔案（${escapeHtml(info.changedFiles.join("、"))}），套用後立即生效，不用重新安裝或重開整個應用程式。</p>
-      <div id="update-dlg-error" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:6px;"></div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div style="font-weight:bold; font-size:15px; margin-bottom:10px; flex:0 0 auto;">⬆️ 發現新版本</div>
+      <div style="overflow-y:auto; flex:1 1 auto; min-height:0;">
+        <p style="color:#93a4b7; margin:0 0 10px 0; line-height:1.5;">目前版本：${escapeHtml(info.currentVersion || "?")} → 新版本：${escapeHtml(info.remoteVersion || "?")}</p>
+        ${notesHtml}
+        <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">會更新 ${info.changedFiles.length} 個前端檔案（${escapeHtml(info.changedFiles.join("、"))}），套用後立即生效，不用重新安裝或重開整個應用程式。</p>
+      </div>
+      <div id="update-dlg-error" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:6px; flex:0 0 auto;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; flex:0 0 auto;">
         <button type="button" id="update-dlg-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; cursor:pointer; font-size:13px;">取消</button>
         <button type="button" id="update-dlg-apply" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">立即更新</button>
       </div>
