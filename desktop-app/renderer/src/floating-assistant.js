@@ -15741,13 +15741,23 @@ ${sourceTool.handlerScript}
         input.type = 'text'; input.value = current; input.className = 'cl-rename';
         el.replaceWith(input);
         input.focus(); input.select();
+        // tw_stock_db客製: 2026-09-26使用者實測回報——AI執行中（每一步「委派給…」都會存檔、重繪清單），
+        // 正在左邊清單重新命名的輸入框會被整個重繪弄掉，注音輸入法組字也跟著被打斷。重新命名進行中
+        // 一律不重繪清單（_renderChatList看到_chatRenaming就先記下「待重繪」），結束後再補一次。
+        this._chatRenaming = true;
         let done = false;
         const finish = (commit) => {
             if (done) return; done = true;
+            this._chatRenaming = false;
+            this._chatListSig = null;
             const v = input.value.replace(/\s+/g, ' ').trim();
             if (commit && v && v !== current) onCommit(v); else this._renderChatList();
         };
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); e.stopPropagation(); });
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.isComposing || e.keyCode === 229) return; // 注音/拼音組字中，Enter是選字不是送出
+            if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false);
+        });
         input.addEventListener('blur', () => finish(true));
         input.addEventListener('click', (e) => e.stopPropagation());
     }
@@ -15762,6 +15772,10 @@ ${sourceTool.handlerScript}
         const list = document.getElementById('ai-chatlist-list');
         const idx = this._chatIndex;
         if (!list || !idx) return;
+        if (this._chatRenaming) return; // 正在重新命名：不能動這個清單的DOM
+        const sig = JSON.stringify([idx.currentId, idx.groups.map((g) => [g.id, g.name, !!g.collapsed]), idx.chats.map((c) => [c.id, c.title, c.groupId || '', this._chatTimeText(c.updatedAt)])]);
+        if (sig === this._chatListSig && list.firstChild) return; // 沒有實質變化（AI每一步存檔都會呼叫這裡）
+        this._chatListSig = sig;
         list.textContent = '';
         const chatEl = (c, nested) => {
             const el = document.createElement('div');
