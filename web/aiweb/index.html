@@ -94,7 +94,7 @@ try {
 // ⚠️ ?v= 版本號必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=5b72b49d61')
+  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=6ebfe49fbc')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
@@ -134,6 +134,8 @@ loadAssistantScript().then(() => {
     mountSelector: '#app',
     buttonStyle: 'display:none;',
     windowStyle: 'position:static; width:100%; height:100%; max-height:none; box-shadow:none; border-radius:0; z-index:1;',
+    // 左邊可收合、可分群組的對話清單（每個對話各有訊息，存在瀏覽器persistentStorage）。台股頁（web/index.html）不開。
+    chatList: true,
   });
   window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
   fa.toggleWindow(); // 這頁本來就該一直展開
