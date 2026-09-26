@@ -42,6 +42,7 @@ categories:
         updated: 2026-09-26
         history:
           - { date: 2026-09-26, note: "內建 /suggest 至少列出 AI 功能總覽；新增 /ai-features 與 feature_guide 功能說明子代理人" }
+          - { date: 2026-09-26, note: "範例改成開 Yahoo 新聞；/ai-features 的範例後面附「▶ 送出」連結可直接送出" }
       - id: subagent-delegation
         name: 專家子代理人分工
         summary: 複雜任務會自動委派給專門領域的子代理人（檔案解讀、3D、繪圖、影音、程式設計…），只把結論帶回主對話，不污染上下文。
@@ -302,8 +303,10 @@ categories:
         summary: 控制你的 Chrome：分頁群組、分頁、捲動、截圖、滑鼠鍵盤（桌面版，需安裝擴充功能）。
         how: { domain: browser_control, tools: [browser_get_page_structure] }
         platforms: [desktop]
-        samples: ["用瀏覽器控制打開一個網頁，把內容讀給我聽"]
+        samples: ["用瀏覽器控制開啟 https://tw.news.yahoo.com/ ，說明今天的最新新聞"]
         updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "範例改成開 Yahoo 新聞；/ai-features 的範例後面附「▶ 送出」連結可直接送出" }
 
   - id: research
     name: 研究分析

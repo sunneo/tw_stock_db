@@ -377,7 +377,7 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 子代理人領域：`browser_control`
 - AI 工具：`browser_get_page_structure`
 - 範例：
-  - `用瀏覽器控制打開一個網頁，把內容讀給我聽`
+  - `用瀏覽器控制開啟 https://tw.news.yahoo.com/ ，說明今天的最新新聞`
 
 ## 研究分析
 
