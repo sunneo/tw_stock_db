@@ -1296,17 +1296,27 @@ function patchCloudflareWording(root) {
   // 專為弱模型（nemotron/gpt-oss/qwen/gemma）設計：狀態外部化成檔案、
   // 修改一律走git patch、流程逐步強制。刻意沒有fs_write_file/fs_remove——
   // 模型手上沒有能繞過patch流程的工具。
+  // tw_stock_db客製: 2026-09-25使用者要求——新增評估（browser_search／
+  // fetch_web_page查github/codeproject/wiki背景知識）＋發佈（build/deploy/
+  // commit/push）流程；enabled改成讀advancedSettings.codingDomainEnabled
+  // （Skill分頁的開關，見floating-assistant.js的_syncCodingDomainSettings），
+  // 不再寫死true，這樣使用者停用時桌面版也會確實停用，不會被這裡的
+  // register_domain呼叫覆蓋回true。_codingEnv是給_syncCodingDomainSettings
+  // 之後重新產生systemPrompt用的附加欄位（register_domain本身不認得這個
+  // 欄位，呼叫後才手動補上，不受它覆蓋物件的影響）。
+  const codingEnv = { kind: "desktop", platformLabel };
   fa.register_domain("coding", {
-    enabled: true,
-    label: "程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復，桌面版限定）",
+    enabled: fa.advancedSettings.codingDomainEnabled !== false,
+    label: "程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復，桌面版限定）",
     toolNames: [
       "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
-      "run_command",
+      "run_command", "browser_search", "fetch_web_page",
       "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
     ],
-    systemPrompt: fa._buildCodingSystemPrompt({ kind: "desktop", platformLabel }),
+    systemPrompt: fa._buildCodingSystemPrompt(Object.assign({}, codingEnv, { publishMode: fa.advancedSettings.codingPublishMode === "auto" ? "auto" : "ask" })),
   });
+  fa.domains.coding._codingEnv = codingEnv;
 
   // tw_stock_db客製: 2026-09-15使用者實測回報（Linux桌面版真實對話記錄）——
   // 即使multiSubAgentMode設成'router'/'hierarchical'，根模型還是直接呼叫了

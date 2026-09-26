@@ -42,7 +42,21 @@ async function main() {
   if (!fs.existsSync(SRC_PATH)) {
     throw new Error(`找不到原始碼：${SRC_PATH}`);
   }
-  const code = fs.readFileSync(SRC_PATH, "utf8");
+  let code = fs.readFileSync(SRC_PATH, "utf8");
+
+  // 2026-09-26使用者要求——AI功能清冊：features/ai-features.yaml是唯一維護
+  // 入口，這裡先驗證（清冊格式＋跟原始碼比對有沒有寫錯/漏掉的工具與斜線
+  // 指令）、重新產生features/FEATURES.md與ai-features.json，再把精簡版JSON
+  // 內嵌進壓縮輸出（取代src裡的`/*__FA_AI_FEATURES__*/null`佔位符，src本身
+  // 不會被改）。清冊有錯誤時直接中止建置，避免把過期/錯誤的功能說明發出去。
+  const features = require("./scripts/ai-features.js");
+  if (!features.check()) throw new Error("功能清冊檢查失敗，請先修正 features/ai-features.yaml（見上方錯誤）");
+  const slimCatalog = features.build();
+  const PLACEHOLDER = "/*__FA_AI_FEATURES__*/null";
+  if (!code.includes(PLACEHOLDER)) throw new Error(`src裡找不到功能清冊佔位符 ${PLACEHOLDER}`);
+  // 用function當replacement，避免JSON裡的$字元被當成replace的特殊樣式
+  code = code.replace(PLACEHOLDER, () => JSON.stringify(slimCatalog));
+
   const result = await minify(code, {
     compress: {
       drop_console: false,
