@@ -32,11 +32,29 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { minify } = require("terser");
 
 const SRC_PATH = path.join(__dirname, "renderer", "src", "floating-assistant.js");
 const OUT_PATH = path.join(__dirname, "renderer", "floating-assistant.js");
 const MIN_PATH = path.join(__dirname, "renderer", "floating-assistant.min.js");
+const BOOTSTRAP_PATH = path.join(__dirname, "renderer", "bootstrap.js");
+const INDEX_HTML_PATH = path.join(__dirname, "renderer", "index.html");
+// tw_stock_db客製: 2026-09-26使用者要求的桌面版「檢查更新」／live update
+// 功能，見main.js「Live Update」區塊的完整設計說明——這份manifest就是
+// 使用者原話「本身也要預留一個manifest file代表自己當下的特性」指的那份
+// 本機基準檔：每次建置時對這四個檔案（跟package.json/electron-builder
+// 「files」清單裡實際會被打包、且允許被live-update覆蓋的renderer前端
+// 檔案完全一致）算md5、寫成JSON，隨其餘建置產物一起commit——不是main.js
+// 執行期現算，執行期只在需要「自我完整性檢查」時才對覆蓋目錄裡的檔案
+// 現算md5，基準本身固定用這份建置時的快照。
+const UPDATE_MANIFEST_PATH = path.join(__dirname, "renderer", "update-manifest.json");
+const LIVE_PATCH_ALLOWED_FILES = [
+  "renderer/index.html",
+  "renderer/bootstrap.js",
+  "renderer/floating-assistant.js",
+  "renderer/floating-assistant.min.js",
+];
 
 async function main() {
   if (!fs.existsSync(SRC_PATH)) {
@@ -83,6 +101,44 @@ async function main() {
     `  - ${path.relative(__dirname, OUT_PATH)}\n` +
     `  - ${path.relative(__dirname, MIN_PATH)}`
   );
+
+  writeUpdateManifest();
+}
+
+// LIVE_PATCH_ALLOWED_FILES四個檔案裡，floating-assistant.js／
+// floating-assistant.min.js是上面剛寫入的壓縮輸出（跟main.js「Live
+// Update」比對用的內容完全一致）；bootstrap.js／index.html這支腳本完全
+// 不會去改，直接讀目前commit在renderer/底下的原始內容算md5即可。
+function writeUpdateManifest() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+  const fileContents = {
+    "renderer/index.html": fs.readFileSync(INDEX_HTML_PATH),
+    "renderer/bootstrap.js": fs.readFileSync(BOOTSTRAP_PATH),
+    "renderer/floating-assistant.js": fs.readFileSync(OUT_PATH),
+    "renderer/floating-assistant.min.js": fs.readFileSync(MIN_PATH),
+  };
+  // files是純{相對路徑: md5 hex}的扁平字串map——刻意跟main.js
+  // state.json的files欄位同一種形狀（不是{md5,...}物件），因為
+  // computeEffectiveLocalManifest()會直接把這份baseline.files跟
+  // state.files用物件展開語法({...baseline.files, ...state.files})
+  // 疊加合併，兩邊形狀不一致的話合併結果會一部分是字串、一部分是物件，
+  // 後續md5比對會整個失效。sizes另外開一個獨立map放，不混進files。
+  const files = {};
+  const sizes = {};
+  for (const relPath of LIVE_PATCH_ALLOWED_FILES) {
+    const buf = fileContents[relPath];
+    files[relPath] = crypto.createHash("md5").update(buf).digest("hex");
+    sizes[relPath] = buf.byteLength;
+  }
+  const manifest = {
+    schema: 1,
+    baseVersion: pkg.version,
+    generatedAt: new Date().toISOString(),
+    files,
+    sizes,
+  };
+  fs.writeFileSync(UPDATE_MANIFEST_PATH, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  console.log(`[build-assistant] 已寫入 ${path.relative(__dirname, UPDATE_MANIFEST_PATH)}（live-update本機基準manifest）`);
 }
 
 main().catch((err) => {

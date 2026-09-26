@@ -446,6 +446,122 @@ function patchCloudflareWording(root) {
     });
   }
 
+  // ---- Live Update（桌面版限定「🔄 檢查更新」，見main.js「Live Update」
+  // 區塊的完整設計說明：manifest-diff比對＋整檔覆蓋式renderer前端熱更新，
+  // 不涉及安裝檔本身、不需要重開整個app）----
+  // tw_stock_db客製: 2026-09-26使用者要求——右上角要有desktop-only的
+  // check update圖示，可以live update。check()/apply()/reload()三個IPC
+  // 分開（見preload.js該處說明）：check()純讀取，開機時可以靜默呼叫一次
+  // 完全沒有副作用；apply()下載＋落地檔案但不換頁，讓使用者在modal裡
+  // 看得到「更新完成」；使用者按下之後才呼叫reload()真的換頁。
+  const updateBtn = document.getElementById("topbar-update-btn");
+  const updateLabel = document.getElementById("topbar-update-label");
+  const updateDot = document.getElementById("topbar-update-dot");
+  let pendingUpdateInfo = null;
+
+  function setUpdateBtnLabel(text, opts) {
+    if (!updateBtn || !updateLabel) return;
+    const o = opts || {};
+    updateBtn.disabled = !!o.disabled;
+    updateBtn.style.opacity = o.disabled ? "0.6" : "1";
+    updateBtn.style.background = o.highlight ? "#3182ce" : "";
+    updateBtn.style.color = o.highlight ? "#fff" : "";
+    updateBtn.style.borderColor = o.highlight ? "#3182ce" : "";
+    updateLabel.textContent = text;
+  }
+
+  // 跟showSecretsDialog/showAddFolderDialog同一種手刻modal寫法（全螢幕
+  // 半透明遮罩+置中卡片、z-index 1000002蓋過.ai-advanced-overlay），
+  // 顯示遠端manifest.json帶的version/notes/變動檔案清單，使用者確認後
+  // 才真的呼叫apply()下載＋落地。
+  function showUpdateDialog(info) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000002; display:flex; align-items:center; justify-content:center;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:#161b22; color:#e5e7eb; border:1px solid #30363d; border-radius:10px; padding:20px 22px; width:min(460px,90vw); font-size:13px; font-family:inherit;";
+    const escapeHtml = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+    const notesHtml = info.notes ? `<p style="color:#93a4b7; white-space:pre-wrap; line-height:1.5; margin:0 0 14px 0;">${escapeHtml(info.notes)}</p>` : "";
+    box.innerHTML = `
+      <div style="font-weight:bold; font-size:15px; margin-bottom:10px;">⬆️ 發現新版本</div>
+      <p style="color:#93a4b7; margin:0 0 10px 0; line-height:1.5;">目前版本：${escapeHtml(info.currentVersion || "?")} → 新版本：${escapeHtml(info.remoteVersion || "?")}</p>
+      ${notesHtml}
+      <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">會更新 ${info.changedFiles.length} 個前端檔案（${escapeHtml(info.changedFiles.join("、"))}），套用後立即生效，不用重新安裝或重開整個應用程式。</p>
+      <div id="update-dlg-error" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:6px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" id="update-dlg-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e5e7eb; cursor:pointer; font-size:13px;">取消</button>
+        <button type="button" id="update-dlg-apply" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">立即更新</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    box.querySelector("#update-dlg-cancel").addEventListener("click", close);
+    const errEl = box.querySelector("#update-dlg-error");
+    box.querySelector("#update-dlg-apply").addEventListener("click", async () => {
+      const applyBtn = box.querySelector("#update-dlg-apply");
+      const cancelBtn = box.querySelector("#update-dlg-cancel");
+      applyBtn.disabled = true;
+      cancelBtn.disabled = true;
+      applyBtn.textContent = "更新中…";
+      errEl.textContent = "";
+      try {
+        const result = await window.desktopAPI.update.apply();
+        if (!result || !result.ok) throw new Error((result && result.error) || "更新失敗");
+        pendingUpdateInfo = null;
+        if (updateDot) updateDot.style.display = "none";
+        applyBtn.textContent = "✅ 已完成，重新載入中…";
+        setUpdateBtnLabel("✅ 已更新", { disabled: true });
+        setTimeout(async () => {
+          close();
+          await window.desktopAPI.update.reload();
+        }, 800);
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+        applyBtn.disabled = false;
+        cancelBtn.disabled = false;
+        applyBtn.textContent = "立即更新";
+      }
+    });
+  }
+
+  async function checkForUpdate({ silent } = {}) {
+    if (!updateBtn) return;
+    if (!silent) setUpdateBtnLabel("🔄 檢查中…", { disabled: true });
+    try {
+      const info = await window.desktopAPI.update.check();
+      if (!info || !info.ok) throw new Error((info && info.error) || "檢查更新失敗");
+      if (info.hasUpdate) {
+        pendingUpdateInfo = info;
+        setUpdateBtnLabel("⬆️ 發現新版本", { highlight: true });
+        if (updateDot) updateDot.style.display = "block";
+        if (!silent) showUpdateDialog(info);
+      } else {
+        pendingUpdateInfo = null;
+        if (updateDot) updateDot.style.display = "none";
+        setUpdateBtnLabel("🔄 檢查更新");
+        if (!silent) { setUpdateBtnLabel("✅ 已是最新版本"); setTimeout(() => setUpdateBtnLabel("🔄 檢查更新"), 3000); }
+      }
+    } catch (err) {
+      // tw_stock_db客製: 跟festival theme同一種「下載失敗就靜默、不影響
+      // 任何既有功能」的精神——開機自動檢查(silent)完全不打擾使用者，只有
+      // 使用者自己按按鈕手動檢查時才會看到錯誤字樣（幾秒後恢復成預設文字）。
+      setUpdateBtnLabel(silent ? "🔄 檢查更新" : "⚠️ 檢查更新失敗");
+      if (!silent) {
+        console.log(`[live-update] 檢查更新失敗：${String((err && err.message) || err)}`);
+        setTimeout(() => setUpdateBtnLabel("🔄 檢查更新"), 4000);
+      }
+    }
+  }
+
+  if (updateBtn) {
+    updateBtn.addEventListener("click", () => {
+      if (pendingUpdateInfo) { showUpdateDialog(pendingUpdateInfo); return; }
+      checkForUpdate({ silent: false });
+    });
+    checkForUpdate({ silent: true }).catch(() => {});
+  }
+
   // 檔案存取直接存取override：整個FAP store換成IPC版本，其餘fap_*工具/
   // git_operations完全不用改，因為它們只透過_resolveFapAccessPoint→
   // this.fileAccessPoints.getAll()這個單一入口拿handle。

@@ -117,6 +117,16 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   shell: {
     openExternal: (url) => ipcRenderer.invoke("fa:shell:openExternal", url),
   },
+  // tw_stock_db客製: 2026-09-26使用者要求的桌面版限定「檢查更新」／
+  // live update，見main.js的「Live Update」區塊說明——check()只讀
+  // manifest.json比對，apply()實際下載＋落地覆蓋檔案，reload()把主視窗
+  // 導向套用後的路徑（三步分開，讓renderer可以在apply()完成後先顯示
+  // 「更新完成」，使用者按確認才觸發reload()換頁，不會畫面突然被換掉）。
+  update: {
+    check: () => ipcRenderer.invoke("fa:update:check"),
+    apply: () => ipcRenderer.invoke("fa:update:apply"),
+    reload: () => ipcRenderer.invoke("fa:update:reload"),
+  },
   // tw_stock_db客製: 2026-09-16使用者要求桌面版「在不同資料夾執行」時
   // 各自獨立的對話+設定——見main.js fa:workspace:*系列handler的說明。
   // init()只在app啟動、bootstrap.js建構FloatingAssistant之前呼叫一次；

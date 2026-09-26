@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "baseVersion": "0.1.0",
+  "generatedAt": "2026-09-26T14:58:38.960Z",
+  "files": {
+    "renderer/index.html": "53508f5086a5fc22cbcf9f5187d4018e",
+    "renderer/bootstrap.js": "c278cff81d277120f2a8291af136b7fa",
+    "renderer/floating-assistant.js": "4e9fa1894cbc2ad4323120a5f3a364a7",
+    "renderer/floating-assistant.min.js": "4e9fa1894cbc2ad4323120a5f3a364a7"
+  },
+  "sizes": {
+    "renderer/index.html": 5741,
+    "renderer/bootstrap.js": 139288,
+    "renderer/floating-assistant.js": 1121415,
+    "renderer/floating-assistant.min.js": 1121415
+  }
+}
