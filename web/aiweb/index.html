@@ -37,6 +37,8 @@
   /* mount元素一定要有inline style="display:block"，否則floating-assistant.js
      會套用預設的inline-flex，寬度縮成剛好包住內容而不是撐滿（桌面版踩過的坑）。 */
   #app { flex: 1 1 auto; min-height: 0; width: 100%; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  /* 這頁本來就該一直展開，❌ 關閉鈕點下去只會收合、整頁變空白，隱藏（主頁、桌面版同作法） */
+  #ai-btn-close { display: none !important; }
   #load-error { padding: 16px; color: #f87171; font-size: 14px; }
 </style>
 </head>
