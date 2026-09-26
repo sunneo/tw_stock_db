@@ -308,6 +308,19 @@ const commands = {
     const vp = m.cssVisualViewport || m.visualViewport;
     const params = { format: "jpeg", quality: Math.min(95, Math.max(30, Number(a.quality) || 70)) };
     let width, height;
+    // 2026-09-26：region={x,y,width,height}只截指定範圍（非full_page時座標是可視區像素、
+    // 左上角0,0，跟browser_mouse/browser_get_elements同一套；full_page時是整頁座標），
+    // scale(1~3)放大。回傳region_applied讓呼叫端確認這個版本真的支援。
+    const rg = a.region && typeof a.region === "object" ? a.region : null;
+    if (rg && Number(rg.width) > 0 && Number(rg.height) > 0) {
+      const scale = Math.min(3, Math.max(1, Number(a.scale) || 1));
+      const rx = Math.max(0, Number(rg.x) || 0), ry = Math.max(0, Number(rg.y) || 0);
+      const rw = Math.round(Number(rg.width)), rh = Math.min(Math.round(Number(rg.height)), 8000);
+      if (a.full_page) params.captureBeyondViewport = true;
+      params.clip = { x: a.full_page ? rx : vp.pageX + rx, y: a.full_page ? ry : vp.pageY + ry, width: rw, height: rh, scale };
+      const shot = await send(tabId, "Page.captureScreenshot", params);
+      return { data_url: "data:image/jpeg;base64," + shot.data, width: Math.round(rw * scale), height: Math.round(rh * scale), region_applied: { x: rx, y: ry, width: rw, height: rh, scale }, url: tab.url || "", title: tab.title || "", note: "這是指定範圍的截圖（已套用scale），圖內座標=(該點-region左上角)*scale，跟原分頁座標不同，點擊請用原分頁座標" };
+    }
     if (a.full_page) {
       const cs = m.cssContentSize || m.contentSize;
       width = Math.round(cs.width);
