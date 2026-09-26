@@ -1,0 +1,42 @@
+{
+ "schema": 1,
+ "id": "military",
+ "name": "軍人節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "軍人節快樂！感謝國軍保家衛國 🇹🇼（9/3）",
+ "accent": "#5c7f3a",
+ "light": {
+  "bannerBg": "#eef3e6",
+  "bannerText": "#3b5423",
+  "border": "#b5c98f"
+ },
+ "dark": {
+  "bannerBg": "#1f2a14",
+  "bannerText": "#d7e8b8",
+  "border": "#4a6630"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": null,
+ "sizeBytes": 8748
+}

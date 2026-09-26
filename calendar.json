@@ -1,0 +1,495 @@
+{
+ "schema": 2,
+ "timezone": "Asia/Taipei",
+ "note": "日期依政府行政機關辦公日曆表；lead=連假前幾天先換上套版；priority 大者優先。詳見 README.md",
+ "themes": [
+  {
+   "id": "new-year",
+   "name": "元旦・跨年・開國紀念日",
+   "version": 3,
+   "lead": 3,
+   "sizeBytes": 55298
+  },
+  {
+   "id": "lunar-new-year",
+   "name": "農曆春節",
+   "version": 3,
+   "lead": 7,
+   "sizeBytes": 64383
+  },
+  {
+   "id": "lantern",
+   "name": "元宵節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 11094
+  },
+  {
+   "id": "valentine",
+   "name": "情人節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 4871
+  },
+  {
+   "id": "peace",
+   "name": "和平紀念日",
+   "version": 3,
+   "lead": 1,
+   "sizeBytes": 6173
+  },
+  {
+   "id": "spring",
+   "name": "兒童節・清明節",
+   "version": 3,
+   "lead": 2,
+   "sizeBytes": 18916
+  },
+  {
+   "id": "labor",
+   "name": "勞動節",
+   "version": 3,
+   "lead": 1,
+   "sizeBytes": 19359
+  },
+  {
+   "id": "mother",
+   "name": "母親節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 9460
+  },
+  {
+   "id": "dragon-boat",
+   "name": "端午節",
+   "version": 3,
+   "lead": 4,
+   "sizeBytes": 19920
+  },
+  {
+   "id": "qixi",
+   "name": "七夕情人節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 5477
+  },
+  {
+   "id": "father",
+   "name": "父親節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 6064
+  },
+  {
+   "id": "military",
+   "name": "軍人節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 8748
+  },
+  {
+   "id": "teachers",
+   "name": "教師節",
+   "version": 3,
+   "lead": 2,
+   "sizeBytes": 13185
+  },
+  {
+   "id": "mid-autumn",
+   "name": "中秋節・教師節",
+   "version": 3,
+   "lead": 15,
+   "sizeBytes": 111573
+  },
+  {
+   "id": "national",
+   "name": "國慶日",
+   "version": 3,
+   "lead": 5,
+   "sizeBytes": 39092
+  },
+  {
+   "id": "restoration",
+   "name": "光復節",
+   "version": 3,
+   "lead": 2,
+   "sizeBytes": 17209
+  },
+  {
+   "id": "halloween",
+   "name": "萬聖節",
+   "version": 3,
+   "lead": 0,
+   "sizeBytes": 8148
+  },
+  {
+   "id": "christmas",
+   "name": "聖誕節・行憲紀念日",
+   "version": 3,
+   "lead": 14,
+   "sizeBytes": 80943
+  }
+ ],
+ "festivals": [
+  {
+   "id": "new-year-2026",
+   "theme": "new-year",
+   "name": "元旦",
+   "start": "2026-01-01",
+   "end": "2026-01-01",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 3
+  },
+  {
+   "id": "lunar-new-year-2026",
+   "theme": "lunar-new-year",
+   "name": "農曆春節",
+   "start": "2026-02-14",
+   "end": "2026-02-22",
+   "priority": 100,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 7
+  },
+  {
+   "id": "valentine-2026",
+   "theme": "valentine",
+   "name": "情人節",
+   "start": "2026-02-14",
+   "end": "2026-02-14",
+   "priority": 40,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）",
+   "lead": 0
+  },
+  {
+   "id": "peace-2026",
+   "theme": "peace",
+   "name": "和平紀念日",
+   "start": "2026-02-27",
+   "end": "2026-03-01",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 1
+  },
+  {
+   "id": "lantern-2026",
+   "theme": "lantern",
+   "name": "元宵節",
+   "start": "2026-03-03",
+   "end": "2026-03-03",
+   "priority": 60,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：農曆正月十五",
+   "lead": 0
+  },
+  {
+   "id": "spring-2026",
+   "theme": "spring",
+   "name": "兒童節・清明節",
+   "start": "2026-04-03",
+   "end": "2026-04-06",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 2
+  },
+  {
+   "id": "labor-2026",
+   "theme": "labor",
+   "name": "勞動節",
+   "start": "2026-05-01",
+   "end": "2026-05-03",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 1
+  },
+  {
+   "id": "mother-2026",
+   "theme": "mother",
+   "name": "母親節",
+   "start": "2026-05-10",
+   "end": "2026-05-10",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：5月第2個星期日",
+   "lead": 0
+  },
+  {
+   "id": "dragon-boat-2026",
+   "theme": "dragon-boat",
+   "name": "端午節",
+   "start": "2026-06-19",
+   "end": "2026-06-21",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 4
+  },
+  {
+   "id": "father-2026",
+   "theme": "father",
+   "name": "父親節",
+   "start": "2026-08-08",
+   "end": "2026-08-08",
+   "priority": 55,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：台灣父親節固定 8/8（諧音「爸爸」）",
+   "lead": 0
+  },
+  {
+   "id": "qixi-2026",
+   "theme": "qixi",
+   "name": "七夕情人節",
+   "start": "2026-08-19",
+   "end": "2026-08-19",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：農曆七月初七",
+   "lead": 0
+  },
+  {
+   "id": "military-2026",
+   "theme": "military",
+   "name": "軍人節",
+   "start": "2026-09-03",
+   "end": "2026-09-03",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：台灣軍人節固定 9/3",
+   "lead": 0
+  },
+  {
+   "id": "mid-autumn-2026",
+   "theme": "mid-autumn",
+   "name": "中秋節・教師節",
+   "start": "2026-09-25",
+   "end": "2026-09-28",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 15
+  },
+  {
+   "id": "national-2026",
+   "theme": "national",
+   "name": "國慶日",
+   "start": "2026-10-09",
+   "end": "2026-10-11",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 5
+  },
+  {
+   "id": "restoration-2026",
+   "theme": "restoration",
+   "name": "臺灣光復暨金門古寧頭大捷紀念日",
+   "start": "2026-10-24",
+   "end": "2026-10-26",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 2
+  },
+  {
+   "id": "halloween-2026",
+   "theme": "halloween",
+   "name": "萬聖節",
+   "start": "2026-10-31",
+   "end": "2026-10-31",
+   "priority": 45,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）",
+   "lead": 0
+  },
+  {
+   "id": "christmas-2026",
+   "theme": "christmas",
+   "name": "聖誕節・行憲紀念日",
+   "start": "2026-12-25",
+   "end": "2026-12-27",
+   "priority": 90,
+   "source": "行政院核定115年(2026)政府行政機關辦公日曆表",
+   "lead": 14
+  },
+  {
+   "id": "new-year-2027",
+   "theme": "new-year",
+   "name": "跨年・開國紀念日",
+   "start": "2026-12-31",
+   "end": "2027-01-03",
+   "priority": 95,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 3
+  },
+  {
+   "id": "lunar-new-year-2027",
+   "theme": "lunar-new-year",
+   "name": "農曆春節",
+   "start": "2027-02-04",
+   "end": "2027-02-10",
+   "priority": 100,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 7
+  },
+  {
+   "id": "valentine-2027",
+   "theme": "valentine",
+   "name": "情人節",
+   "start": "2027-02-14",
+   "end": "2027-02-14",
+   "priority": 40,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）",
+   "lead": 0
+  },
+  {
+   "id": "lantern-2027",
+   "theme": "lantern",
+   "name": "元宵節",
+   "start": "2027-02-20",
+   "end": "2027-02-20",
+   "priority": 60,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：農曆正月十五",
+   "lead": 0
+  },
+  {
+   "id": "peace-2027",
+   "theme": "peace",
+   "name": "和平紀念日",
+   "start": "2027-02-27",
+   "end": "2027-03-01",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 1
+  },
+  {
+   "id": "spring-2027",
+   "theme": "spring",
+   "name": "兒童節・清明節",
+   "start": "2027-04-03",
+   "end": "2027-04-06",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 2
+  },
+  {
+   "id": "labor-2027",
+   "theme": "labor",
+   "name": "勞動節",
+   "start": "2027-04-30",
+   "end": "2027-05-02",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 1
+  },
+  {
+   "id": "mother-2027",
+   "theme": "mother",
+   "name": "母親節",
+   "start": "2027-05-09",
+   "end": "2027-05-09",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：5月第2個星期日",
+   "lead": 0
+  },
+  {
+   "id": "dragon-boat-2027",
+   "theme": "dragon-boat",
+   "name": "端午節",
+   "start": "2027-06-09",
+   "end": "2027-06-09",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 4
+  },
+  {
+   "id": "qixi-2027",
+   "theme": "qixi",
+   "name": "七夕情人節",
+   "start": "2027-08-08",
+   "end": "2027-08-08",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：農曆七月初七（2027 與父親節同一天，以父親節為主）",
+   "lead": 0
+  },
+  {
+   "id": "father-2027",
+   "theme": "father",
+   "name": "父親節",
+   "start": "2027-08-08",
+   "end": "2027-08-08",
+   "priority": 55,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：台灣父親節固定 8/8（諧音「爸爸」）",
+   "lead": 0
+  },
+  {
+   "id": "military-2027",
+   "theme": "military",
+   "name": "軍人節",
+   "start": "2027-09-03",
+   "end": "2027-09-03",
+   "priority": 50,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）：台灣軍人節固定 9/3",
+   "lead": 0
+  },
+  {
+   "id": "mid-autumn-2027",
+   "theme": "mid-autumn",
+   "name": "中秋節",
+   "start": "2027-09-15",
+   "end": "2027-09-15",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 15
+  },
+  {
+   "id": "teachers-2027",
+   "theme": "teachers",
+   "name": "教師節",
+   "start": "2027-09-28",
+   "end": "2027-09-28",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表：教師節放假但不成連假",
+   "lead": 2
+  },
+  {
+   "id": "national-2027",
+   "theme": "national",
+   "name": "國慶日",
+   "start": "2027-10-09",
+   "end": "2027-10-11",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 5
+  },
+  {
+   "id": "restoration-2027",
+   "theme": "restoration",
+   "name": "臺灣光復暨金門古寧頭大捷紀念日",
+   "start": "2027-10-23",
+   "end": "2027-10-25",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 2
+  },
+  {
+   "id": "halloween-2027",
+   "theme": "halloween",
+   "name": "萬聖節",
+   "start": "2027-10-31",
+   "end": "2027-10-31",
+   "priority": 45,
+   "source": "依節日規則推算（農曆／母親節等非放假節慶）",
+   "lead": 0
+  },
+  {
+   "id": "christmas-2027",
+   "theme": "christmas",
+   "name": "聖誕節・行憲紀念日",
+   "start": "2027-12-24",
+   "end": "2027-12-26",
+   "priority": 90,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 14
+  },
+  {
+   "id": "new-year-2028",
+   "theme": "new-year",
+   "name": "跨年・開國紀念日",
+   "start": "2027-12-31",
+   "end": "2028-01-02",
+   "priority": 95,
+   "source": "行政院核定116年(2027)政府行政機關辦公日曆表",
+   "lead": 3
+  }
+ ]
+}

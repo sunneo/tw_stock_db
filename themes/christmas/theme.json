@@ -1,0 +1,113 @@
+{
+ "schema": 1,
+ "id": "christmas",
+ "name": "聖誕節・行憲紀念日",
+ "version": 3,
+ "lead": 14,
+ "greeting": "聖誕快樂！Merry Christmas 🎄　12/25 也是行憲紀念日 🇹🇼",
+ "accent": "#c92a2a",
+ "light": {
+  "bannerBg": "#fdecec",
+  "bannerText": "#8a1c1c",
+  "border": "#e8a3a3"
+ },
+ "dark": {
+  "bannerBg": "#2b1a1a",
+  "bannerText": "#ffd6d6",
+  "border": "#7a2b2b"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -14,
+     "asset": "top-m14.svg"
+    },
+    {
+     "offset": -12,
+     "asset": "top-m12.svg"
+    },
+    {
+     "offset": -10,
+     "asset": "top-m10.svg"
+    },
+    {
+     "offset": -8,
+     "asset": "top-m8.svg"
+    },
+    {
+     "offset": -6,
+     "asset": "top-m6.svg"
+    },
+    {
+     "offset": -5,
+     "asset": "top-m5.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "top-m3.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -14,
+     "asset": "bottom-m14.svg"
+    },
+    {
+     "offset": -12,
+     "asset": "bottom-m12.svg"
+    },
+    {
+     "offset": -10,
+     "asset": "bottom-m10.svg"
+    },
+    {
+     "offset": -8,
+     "asset": "bottom-m8.svg"
+    },
+    {
+     "offset": -6,
+     "asset": "bottom-m6.svg"
+    },
+    {
+     "offset": -5,
+     "asset": "bottom-m5.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "bottom-m3.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "❄️",
+   "🎄",
+   "⭐"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 80943
+}

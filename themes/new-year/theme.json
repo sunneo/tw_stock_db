@@ -1,0 +1,73 @@
+{
+ "schema": 1,
+ "id": "new-year",
+ "name": "元旦・跨年・開國紀念日",
+ "version": 3,
+ "lead": 3,
+ "greeting": "新年快樂！Happy New Year 🎆（開國紀念日）",
+ "accent": "#2b6cb0",
+ "light": {
+  "bannerBg": "#e7f0fb",
+  "bannerText": "#1a3f6b",
+  "border": "#9cc0e8"
+ },
+ "dark": {
+  "bannerBg": "#16283f",
+  "bannerText": "#cfe4ff",
+  "border": "#2f5686"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -3,
+     "asset": "top-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -3,
+     "asset": "bottom-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🎆",
+   "✨",
+   "🎉"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 55298
+}

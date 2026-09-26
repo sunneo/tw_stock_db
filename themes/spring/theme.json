@@ -1,0 +1,65 @@
+{
+ "schema": 1,
+ "id": "spring",
+ "name": "兒童節・清明節",
+ "version": 3,
+ "lead": 2,
+ "greeting": "兒童節快樂！清明連假出遊、掃墓請平安 🌸",
+ "accent": "#2f9e6f",
+ "light": {
+  "bannerBg": "#eefaf3",
+  "bannerText": "#1f6b4a",
+  "border": "#9fd8bb"
+ },
+ "dark": {
+  "bannerBg": "#16302a",
+  "bannerText": "#c9f2dc",
+  "border": "#2f6b55"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🌸",
+   "🎈",
+   "🌿"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 18916
+}

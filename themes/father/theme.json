@@ -1,0 +1,49 @@
+{
+ "schema": 1,
+ "id": "father",
+ "name": "父親節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "父親節快樂！謝謝爸爸 👔（台灣的父親節是 8/8）",
+ "accent": "#1c7ed6",
+ "light": {
+  "bannerBg": "#e7f1fc",
+  "bannerText": "#154a80",
+  "border": "#9cc4ee"
+ },
+ "dark": {
+  "bannerBg": "#14283f",
+  "bannerText": "#cfe4ff",
+  "border": "#2b5b8f"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "👔",
+   "⭐",
+   "💙"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 6064
+}

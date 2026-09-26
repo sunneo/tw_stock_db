@@ -1,0 +1,49 @@
+{
+ "schema": 1,
+ "id": "qixi",
+ "name": "七夕情人節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "七夕情人節快樂！🌌",
+ "accent": "#7048e8",
+ "light": {
+  "bannerBg": "#f1ecfd",
+  "bannerText": "#43239e",
+  "border": "#bfaaf3"
+ },
+ "dark": {
+  "bannerBg": "#241a45",
+  "bannerText": "#dccfff",
+  "border": "#5a44a8"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "⭐",
+   "💜",
+   "✨"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 5477
+}

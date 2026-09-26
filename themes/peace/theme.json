@@ -1,0 +1,50 @@
+{
+ "schema": 1,
+ "id": "peace",
+ "name": "和平紀念日",
+ "version": 3,
+ "lead": 1,
+ "greeting": "二二八和平紀念日：記取歷史，珍惜和平 🕊️",
+ "accent": "#4a7c59",
+ "light": {
+  "bannerBg": "#eef4f0",
+  "bannerText": "#2f5240",
+  "border": "#a9c4b4"
+ },
+ "dark": {
+  "bannerBg": "#1b2a22",
+  "bannerText": "#cfe6d8",
+  "border": "#3c5f4a"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": null,
+ "sizeBytes": 6173
+}

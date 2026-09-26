@@ -1,0 +1,81 @@
+{
+ "schema": 1,
+ "id": "dragon-boat",
+ "name": "端午節",
+ "version": 3,
+ "lead": 4,
+ "greeting": "端午節安康！吃粽子、划龍舟 🐉",
+ "accent": "#2f9e44",
+ "light": {
+  "bannerBg": "#ecf8ee",
+  "bannerText": "#1e6a2e",
+  "border": "#a3d9ac"
+ },
+ "dark": {
+  "bannerBg": "#15301c",
+  "bannerText": "#cdf3d2",
+  "border": "#2f6b3a"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -4,
+     "asset": "top-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "top-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -4,
+     "asset": "bottom-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "bottom-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🥟",
+   "🌿",
+   "🐉"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 19920
+}

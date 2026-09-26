@@ -1,0 +1,49 @@
+{
+ "schema": 1,
+ "id": "valentine",
+ "name": "情人節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "情人節快樂 💝",
+ "accent": "#e64980",
+ "light": {
+  "bannerBg": "#fff0f6",
+  "bannerText": "#9c1f52",
+  "border": "#f3a6c4"
+ },
+ "dark": {
+  "bannerBg": "#3b1526",
+  "bannerText": "#ffd0e3",
+  "border": "#8a2b57"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "💗",
+   "💕",
+   "✨"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 4871
+}

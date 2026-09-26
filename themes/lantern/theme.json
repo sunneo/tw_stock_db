@@ -1,0 +1,48 @@
+{
+ "schema": 1,
+ "id": "lantern",
+ "name": "元宵節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "元宵節快樂！猜燈謎、吃湯圓 🏮",
+ "accent": "#e8590c",
+ "light": {
+  "bannerBg": "#fff3e6",
+  "bannerText": "#8a3a08",
+  "border": "#f0b98a"
+ },
+ "dark": {
+  "bannerBg": "#3a2210",
+  "bannerText": "#ffd8a8",
+  "border": "#8a5a2b"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🏮",
+   "✨"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 11094
+}

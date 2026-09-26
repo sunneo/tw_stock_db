@@ -1,0 +1,88 @@
+{
+ "schema": 1,
+ "id": "national",
+ "name": "國慶日",
+ "version": 3,
+ "lead": 5,
+ "greeting": "中華民國國慶日快樂！🇹🇼",
+ "accent": "#1c4fa1",
+ "light": {
+  "bannerBg": "#e8eefa",
+  "bannerText": "#12356f",
+  "border": "#9db6e6"
+ },
+ "dark": {
+  "bannerBg": "#14223d",
+  "bannerText": "#d3e0ff",
+  "border": "#2b4a86"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -5,
+     "asset": "top-m5.svg"
+    },
+    {
+     "offset": -4,
+     "asset": "top-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "top-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -5,
+     "asset": "bottom-m5.svg"
+    },
+    {
+     "offset": -4,
+     "asset": "bottom-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "bottom-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "✨",
+   "🎆"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 39092
+}

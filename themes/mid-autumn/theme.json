@@ -1,0 +1,193 @@
+{
+ "schema": 1,
+ "id": "mid-autumn",
+ "name": "中秋節・教師節",
+ "version": 3,
+ "lead": 15,
+ "greeting": "中秋節快樂！月圓人團圓 🥮 教師節也謝謝老師 🌕",
+ "accent": "#f08c00",
+ "light": {
+  "bannerBg": "#fff4e0",
+  "bannerText": "#8a4b00",
+  "border": "#f2c983"
+ },
+ "dark": {
+  "bannerBg": "#382614",
+  "bannerText": "#ffe3a8",
+  "border": "#8a6220"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -15,
+     "asset": "top-m15.svg"
+    },
+    {
+     "offset": -14,
+     "asset": "top-m14.svg"
+    },
+    {
+     "offset": -13,
+     "asset": "top-m13.svg"
+    },
+    {
+     "offset": -12,
+     "asset": "top-m12.svg"
+    },
+    {
+     "offset": -11,
+     "asset": "top-m11.svg"
+    },
+    {
+     "offset": -10,
+     "asset": "top-m10.svg"
+    },
+    {
+     "offset": -9,
+     "asset": "top-m9.svg"
+    },
+    {
+     "offset": -8,
+     "asset": "top-m8.svg"
+    },
+    {
+     "offset": -7,
+     "asset": "top-m7.svg"
+    },
+    {
+     "offset": -6,
+     "asset": "top-m6.svg"
+    },
+    {
+     "offset": -5,
+     "asset": "top-m5.svg"
+    },
+    {
+     "offset": -4,
+     "asset": "top-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "top-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    },
+    {
+     "offset": 1,
+     "asset": "top-p1.svg"
+    },
+    {
+     "offset": 2,
+     "asset": "top-p2.svg"
+    },
+    {
+     "offset": 3,
+     "asset": "top-p3.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -15,
+     "asset": "bottom-m15.svg"
+    },
+    {
+     "offset": -14,
+     "asset": "bottom-m14.svg"
+    },
+    {
+     "offset": -13,
+     "asset": "bottom-m13.svg"
+    },
+    {
+     "offset": -12,
+     "asset": "bottom-m12.svg"
+    },
+    {
+     "offset": -11,
+     "asset": "bottom-m11.svg"
+    },
+    {
+     "offset": -10,
+     "asset": "bottom-m10.svg"
+    },
+    {
+     "offset": -9,
+     "asset": "bottom-m9.svg"
+    },
+    {
+     "offset": -8,
+     "asset": "bottom-m8.svg"
+    },
+    {
+     "offset": -7,
+     "asset": "bottom-m7.svg"
+    },
+    {
+     "offset": -6,
+     "asset": "bottom-m6.svg"
+    },
+    {
+     "offset": -5,
+     "asset": "bottom-m5.svg"
+    },
+    {
+     "offset": -4,
+     "asset": "bottom-m4.svg"
+    },
+    {
+     "offset": -3,
+     "asset": "bottom-m3.svg"
+    },
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    },
+    {
+     "offset": 1,
+     "asset": "bottom-p1.svg"
+    },
+    {
+     "offset": 2,
+     "asset": "bottom-p2.svg"
+    },
+    {
+     "offset": 3,
+     "asset": "bottom-p3.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🌕",
+   "✨",
+   "🥮"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 111573
+}

@@ -1,0 +1,55 @@
+{
+ "schema": 1,
+ "id": "labor",
+ "name": "勞動節",
+ "version": 3,
+ "lead": 1,
+ "greeting": "勞動節快樂，辛苦了！💪",
+ "accent": "#1c7ed6",
+ "light": {
+  "bannerBg": "#e7f1fc",
+  "bannerText": "#154a80",
+  "border": "#9cc4ee"
+ },
+ "dark": {
+  "bannerBg": "#14283f",
+  "bannerText": "#cfe4ff",
+  "border": "#2b5b8f"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "✨"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 19359
+}

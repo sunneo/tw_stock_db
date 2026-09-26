@@ -1,0 +1,65 @@
+{
+ "schema": 1,
+ "id": "teachers",
+ "name": "教師節",
+ "version": 3,
+ "lead": 2,
+ "greeting": "教師節快樂！謝謝老師 📚（9/28，孔子誕辰紀念日）",
+ "accent": "#e8590c",
+ "light": {
+  "bannerBg": "#fff3e6",
+  "bannerText": "#8a3a08",
+  "border": "#f0b98a"
+ },
+ "dark": {
+  "bannerBg": "#3a2210",
+  "bannerText": "#ffd8a8",
+  "border": "#8a5a2b"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": -2,
+     "asset": "top-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "top-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": -2,
+     "asset": "bottom-m2.svg"
+    },
+    {
+     "offset": -1,
+     "asset": "bottom-m1.svg"
+    },
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "📚",
+   "✏️",
+   "⭐"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 13185
+}

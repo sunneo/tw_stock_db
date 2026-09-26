@@ -1,0 +1,49 @@
+{
+ "schema": 1,
+ "id": "halloween",
+ "name": "萬聖節",
+ "version": 3,
+ "lead": 0,
+ "greeting": "萬聖節快樂！Trick or Treat 🎃",
+ "accent": "#f76707",
+ "light": {
+  "bannerBg": "#fff1e6",
+  "bannerText": "#8a3a08",
+  "border": "#f3b48a"
+ },
+ "dark": {
+  "bannerBg": "#2a1a10",
+  "bannerText": "#ffd0a8",
+  "border": "#8a4a20"
+ },
+ "regions": {
+  "top": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "top-p0.svg"
+    }
+   ]
+  },
+  "bottom": {
+   "frames": [
+    {
+     "offset": 0,
+     "asset": "bottom-p0.svg"
+    }
+   ]
+  },
+  "body": {
+   "asset": "body.svg"
+  }
+ },
+ "particles": {
+  "emoji": [
+   "🎃",
+   "🦇",
+   "👻"
+  ],
+  "count": 10
+ },
+ "sizeBytes": 8148
+}

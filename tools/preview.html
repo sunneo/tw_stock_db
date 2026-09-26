@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<!-- 預覽套版：在 branch 根目錄跑 `python -m http.server 8936`，開 http://127.0.0.1:8936/tools/preview.html?c=mid-autumn:-15,-8,0,2;lunar-new-year:-7,0 （格式 套版id:offset,offset;…，offset=今天-連假第一天） -->
+<style>
+  body { margin: 0; background: #0d1117; font: 12px sans-serif; color: #9aa; }
+  .row { display: flex; gap: 10px; margin: 8px; flex-wrap: wrap; }
+  .win { position: relative; width: 880px; height: 150px; border: 1px solid #333; overflow: hidden; }
+  .win.light { background: #f4f6f8; }
+  .win.dark { background: #11151c; }
+  .hdr { position: absolute; top: 0; left: 0; right: 0; height: 34px; background: #1a2130; color: #7fbf00; font-weight: bold; padding: 9px 10px; box-sizing: border-box; }
+  .light .hdr { background: #e6ebf1; }
+  .top { position: absolute; top: 0; left: min(420px, 45%); right: 96px; height: 90px; background-repeat: no-repeat; background-position: right top; background-size: auto 100%; pointer-events: none; }
+  .bot { position: absolute; bottom: 0; right: 0; height: 46px; width: 55%; background-repeat: no-repeat; background-position: right bottom; background-size: auto 100%; pointer-events: none; }
+  .body { position: absolute; top: 34px; bottom: 0; left: 0; right: 0; }
+  .lab { position: absolute; left: 6px; bottom: 4px; color: #888; }
+</style>
+<div id="root"></div>
+<script>
+const cases = (new URLSearchParams(location.search).get('c') || 'mid-autumn:-15,-8,0,2').split(';');
+const root = document.getElementById('root');
+(async () => {
+  for (const c of cases) {
+    const [tid, offs] = c.split(':');
+    const th = await (await fetch('../themes/' + tid + '/theme.json')).json();
+    const row = document.createElement('div'); row.className = 'row'; root.appendChild(row);
+    for (const o of offs.split(',').map(Number)) {
+      for (const mode of ['dark', 'light']) {
+        const pick = (frames) => { let f = frames[0]; for (const x of frames) if (x.offset <= o) f = x; return f.asset; };
+        const url = (a) => `url(../themes/${tid}/${a})`;
+        const d = document.createElement('div'); d.className = 'win ' + mode;
+        d.innerHTML = `<div class="body" style="background-image:${url(th.regions.body.asset)}"></div><div class="hdr">AI Assistant</div>` +
+          `<div class="top" style="background-image:${url(pick(th.regions.top.frames))}"></div><div class="bot" style="background-image:${url(pick(th.regions.bottom.frames))}"></div><span class="lab">${tid} offset ${o} ${mode}</span>`;
+        row.appendChild(d);
+      }
+    }
+  }
+})();
+</script>
