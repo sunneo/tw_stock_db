@@ -755,6 +755,19 @@ function patchCloudflareWording(root) {
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
       try {
         const r = await window.desktopAPI.rawfs.readFile(parsed.path, parsed.encoding);
+        // tw_stock_db客製: 2026-09-26——依行號讀取一段（start_line/max_lines），配合fs_grep定位；大檔案只讀需要的函式/區段，
+        // 不必整檔分段全部讀（使用者實測：39K字元檔案分5次委派讀取，整個流程拖了30分鐘）。
+        if (r && typeof r.text === "string" && !r.likely_binary && Number.isFinite(Number(parsed.start_line)) && Number(parsed.start_line) > 0) {
+          const allLines = r.text.split(/\r?\n/);
+          const startLine = Math.floor(Number(parsed.start_line));
+          const wantLines = Number.isFinite(Number(parsed.max_lines)) && Number(parsed.max_lines) > 0 ? Math.floor(Number(parsed.max_lines)) : 80;
+          let slice = allLines.slice(startLine - 1, startLine - 1 + wantLines);
+          let text = slice.join("\n");
+          const cap = getAdaptiveFsReadChunkChars();
+          if (text.length > cap) { text = text.slice(0, cap); slice = text.split("\n"); }
+          const endLine = startLine + slice.length - 1;
+          return JSON.stringify({ ok: true, path: r.path, text, lines: { start: startLine, end: endLine, total: allLines.length, hasMore: endLine < allLines.length, nextStartLine: endLine < allLines.length ? endLine + 1 : null } });
+        }
         if (r && typeof r.text === "string" && !r.likely_binary) {
           const fullText = r.text;
           const totalChars = fullText.length;
@@ -777,6 +790,8 @@ function patchCloudflareWording(root) {
     fsToolSchema({
       encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" },
       offset: { type: "number", description: "選填，從第幾個字元開始讀（0-based）。續讀大檔案時，帶上一次回應chunk.nextOffset的值。預設0。" },
+      start_line: { type: "number", description: "選填，從第幾行開始讀（1起算），配合max_lines只讀一段；用fs_grep找到行號後用這個讀那一段，比整檔分段讀快得多。" },
+      max_lines: { type: "number", description: "選填，搭配start_line：最多讀幾行，預設80。" },
       maxChars: { type: "number", description: `選填，這次最多回傳幾個字元。預設依目前模型的上下文容量設定自動調整（目前約${getAdaptiveFsReadChunkChars()}）。` },
     })
   );
@@ -1282,7 +1297,7 @@ function patchCloudflareWording(root) {
     toolNames: [
       "run_command",
       "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
-      "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
+      "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_grep", "fs_stat", "fs_mkdir", "fs_remove",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "fap_write_file", "fap_read_file", "fap_list_files", "fap_find_file",
       "fap_copy_from_storage", "fap_copy_to_storage", "list_file_access_points",
@@ -1290,7 +1305,9 @@ function patchCloudflareWording(root) {
     systemPrompt:
       `你是桌面版FloatingAssistant專用的子任務助理。這台電腦目前跑的是${platformLabel}，下指令/挑工具時要符合這個平台的慣例（例如${window.desktopAPI.platform.isWindows ? "路徑分隔字元是反斜線、列目錄用dir、環境變數用%VAR%或$env:VAR" : "路徑分隔字元是斜線、列目錄用ls、環境變數用$VAR"}）。\n\n檔案存取有兩組工具：fap_*系列操作使用者已明確授權（在「檔案存取管理」清單裡）的資料夾，ref格式\`fap:<名稱或id>[/<路徑>]\`；fs_*系列（fs_read_file/fs_write_file/fs_list_files/fs_find_file/fs_stat/fs_mkdir/fs_remove）直接吃絕對路徑，完全不需要先授權/註冊資料夾，能讀寫這台電腦上任何fs_*呼叫端OS帳號有權限碰到的路徑——使用者已經明確要求桌面版檔案存取不應該有範圍限制，這是刻意設計，不是漏洞；即使使用者只分享了一個父資料夾，AI也可以直接用fs_*工具存取它底下任何子路徑，不用要求使用者額外新增授權。寫入/刪除操作如果內容/目標路徑是你自己推測/發明出來的（使用者沒有講清楚），要先跟使用者確認清楚；**但如果委派給你的task裡已經明確講清楚要寫什麼內容、寫到哪個路徑（例如使用者原始請求就指定了確切的資料夾、檔名、腳本內容/用途），代表使用者已經確認過了，直接執行即可，不要多此一舉再問一次「請問我可以嗎」**——這種情況下你唯一該做的是實際呼叫fs_write_file/run_command把事情做完，然後回報結果；反覆問同一個已經被明確授權的問題，只會讓使用者以為你完全沒有動作、在敷衍了事。\n\n**重要：處理「多個檔案/多個獨立項目」的任務時，先判斷數量。** 用fs_list_files/fs_find_file列出清單後，如果需要逐一讀取/處理的項目數量較多（大致抓3-5個以上），一定要改用batch_process_items把每個項目獨立委派給平行子任務處理（map），自己再統整這些精簡結論（reduce）——絕對不要自己一個個sequentially呼叫fs_read_file，把所有檔案的完整原始內容都累積進同一個對話歷史。這不只是效率考量：這個對話歷史是有限的，逐一累積大量檔案內容容易造成上下文快速膨脹，明顯提高模型某一輪只給出內部思考、沒有實際結論就結束的機率（處理的檔案越多，風險越高）。項目數量少（1-2個）時直接自己讀取即可，不需要為了一兩個檔案就特地委派。\n\nrun_command會透過真正的shell執行（${window.desktopAPI.platform.isWindows ? "Git Bash/PowerShell/cmd.exe，依序嘗試" : "bash"}），管線/重導向/&&等shell語法都能用，一次性、跑完就結束；tmux_*系列（tmux_start_session/tmux_send_keys/tmux_capture_pane/tmux_list_sessions/tmux_kill_session，僅Linux/macOS）則是持久化的具名session，適合需要跨多次工具呼叫維持狀態的情境（長時間執行的伺服器、REPL互動等），Windows上呼叫會直接回報不支援。這幾個工具風險最高：指令內容是你自己推測/發明出來的時候，執行前要先跟使用者確認清楚；**如果使用者的原始請求已經明確講清楚要跑什麼（例如指定了要產生並執行的具體腳本），就不需要再多問一次，直接呼叫run_command即可**——真正的人工把關是呼叫當下跳出的原生確認對話框（使用者當場按「執行」才會真的跑），不是你自己在文字裡先問一輪。使用者必須已經在Advance設定（⚙️）的「桌面版設定」分頁開啟「允許AI執行程式」才能真正執行（沒開啟時呼叫會直接失敗並清楚說明原因，這種情況下如實告知使用者去哪裡開啟，不要自己瞎猜原因）。
 
-**寫程式/修bug/實作功能/重構這類程式設計任務不是這個domain的工作**——那類任務要用coding領域的固定流程（git patch修改、語法檢查、測試、可恢復的TODO狀態），不要在這裡用fs_write_file直接改寫程式碼；如果收到這類任務，在回覆裡明確指出應改委派給coding領域。`,
+**寫程式/修bug/實作功能/重構這類程式設計任務不是這個domain的工作**——那類任務要用coding領域的固定流程（git patch修改、語法檢查、測試、可恢復的TODO狀態），不要在這裡用fs_write_file直接改寫程式碼；如果收到這類任務，在回覆裡明確指出應改委派給coding領域。
+
+**辦公室文件類任務（週報、簡報、投影片、pptx/docx/xlsx、套用範本、合併多人內容成一份報告）也不是這個domain的工作**——那類任務要用office_report領域的固定流程（先找現成腳本直接執行、用python當主軸、產出後一定驗證：pptx_inspect＋逐頁轉圖比對），收到時在回覆裡明確指出應改委派給office_report領域。**讀大檔案時先用fs_grep定位、再用fs_read_file的start_line/max_lines讀那一段，不要整份分段全讀。**`,
   });
 
 
@@ -1311,7 +1328,7 @@ function patchCloudflareWording(root) {
     enabled: fa.advancedSettings.codingDomainEnabled !== false,
     label: "程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復，桌面版限定）",
     toolNames: [
-      "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat",
+      "fs_read_file", "fs_list_files", "fs_find_file", "fs_grep", "fs_stat",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "run_command", "browser_search", "fetch_web_page",
       "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
@@ -1319,6 +1336,188 @@ function patchCloudflareWording(root) {
     systemPrompt: fa._buildCodingSystemPrompt(Object.assign({}, codingEnv, { publishMode: fa.advancedSettings.codingPublishMode === "auto" ? "auto" : "ask" })),
   });
   fa.domains.coding._codingEnv = codingEnv;
+
+  // ─── 辦公室報告 domain（office_report）──────────────────────────────────
+  // tw_stock_db客製: 2026-09-26使用者實測回報「建立投影片週報的有點離譜，用別的AI 30幾分鐘做不完」，
+  // 匯出的對話紀錄顯示三個根因：(1)弱模型不斷「委派子agent把39K字元的deck_xml_tools.py每8000字元
+  // 讀一次」，讀完又被歷史摘要（300 tokens）洗掉、重讀，來回上百則訊息；(2)使用者自己的
+  // 現成報告產生流程第一次其實就跑成功了，後來卻被AI「另寫一支python-pptx腳本重做」，圖片全丟；
+  // (3)完全沒有驗證（檔案大小、素材是否還在、逐頁截圖比對）就回報完成。
+  // 這個domain給辦公室文件類任務（週報/簡報/pptx/docx/xlsx）一套固定流程＋三個專用工具：
+  // fs_grep（不用整檔讀就能定位）、pptx_inspect（不靠AI就能驗證大小/頁數/master數/圖片數/斷掉的關聯）、
+  // office_export_slide_images（PowerPoint逐頁轉圖，配合compare_images比對）。
+  const officeParseJson = async (rawArgs) => {
+    let parsed = {};
+    try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+    return parsed;
+  };
+  const b64ToBytes = (b64) => {
+    const bin = atob(String(b64 || ""));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  };
+
+  fa.register_openai_tool(
+    "fs_grep",
+    "在檔案（或資料夾底下的文字檔）裡用正規表示式搜尋，只回傳符合的行（含行號與前後幾行）——**讀大檔案（超過8000字元的程式碼/設定/yaml）找某個函式或設定時，一律先用這個定位，再用fs_read_file的start_line/max_lines只讀那一段，不要把整個檔案分段全部讀完**。參數: {\"path\":\"檔案或資料夾絕對路徑\",\"pattern\":\"def prune_unused|autoCompress\",\"context\":2,\"max_matches\":40,\"file_pattern\":\"\\\\.py$\"}。path是資料夾時會遞迴搜尋（file_pattern選填，正規表示式篩檔名，預設常見文字檔）。",
+    async (rawArgs) => {
+      const p = await officeParseJson(rawArgs);
+      try {
+        if (!p.path || !p.pattern) return JSON.stringify({ ok: false, error: "需要path與pattern" });
+        let re;
+        try { re = new RegExp(String(p.pattern), p.ignore_case === false ? "" : "i"); }
+        catch (err) { return JSON.stringify({ ok: false, error: `pattern不是合法的正規表示式：${String(err.message || err)}` }); }
+        const ctx = Math.max(0, Math.min(5, Number.isFinite(Number(p.context)) ? Math.floor(Number(p.context)) : 2));
+        const maxMatches = Math.max(1, Math.min(200, Number.isFinite(Number(p.max_matches)) ? Math.floor(Number(p.max_matches)) : 40));
+        const st = await window.desktopAPI.rawfs.stat(p.path);
+        let files = [];
+        if (st.isDirectory) {
+          const filePat = String(p.file_pattern || "\\.(py|js|mjs|ts|tsx|json|ya?ml|md|txt|ps1|bat|sh|cfg|ini|toml|xml|html|css|csv)$");
+          const found = await window.desktopAPI.rawfs.find(p.path, filePat, 6, 300);
+          files = found.filter((f) => f.isFile).map((f) => f.path).slice(0, 80);
+        } else files = [st.path];
+        const budget = Math.max(3000, getAdaptiveFsReadChunkChars());
+        const out = [];
+        let matches = 0, scanned = 0, used = 0, truncated = false;
+        for (const file of files) {
+          let r;
+          try { r = await window.desktopAPI.rawfs.readFile(file); } catch (_) { continue; }
+          if (!r || typeof r.text !== "string" || r.likelyBinary || r.likely_binary) continue;
+          scanned++;
+          const lines = r.text.split(/\r?\n/);
+          for (let i = 0; i < lines.length && matches < maxMatches; i++) {
+            if (!re.test(lines[i])) continue;
+            matches++;
+            const from = Math.max(0, i - ctx), to = Math.min(lines.length - 1, i + ctx);
+            const block = `${file}:${i + 1}\n` + lines.slice(from, to + 1).map((l, k) => `${from + k + 1}${from + k === i ? ">" : "|"} ${l.length > 300 ? l.slice(0, 300) + "…" : l}`).join("\n");
+            if (used + block.length > budget) { truncated = true; break; }
+            out.push(block); used += block.length + 2;
+          }
+          if (matches >= maxMatches || truncated) break;
+        }
+        return JSON.stringify({ ok: true, files_scanned: scanned, matches, truncated: truncated || matches >= maxMatches, result: out.join("\n\n") || "（沒有符合的行）", note: matches ? "要看更多上下文，用fs_read_file帶start_line與max_lines讀那一段。" : undefined });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "檔案或資料夾的絕對路徑" },
+        pattern: { type: "string", description: "要搜尋的正規表示式（預設不分大小寫）" },
+        context: { type: "integer", description: "選填：每個符合行前後各帶幾行，預設2，最多5" },
+        max_matches: { type: "integer", description: "選填：最多回傳幾筆，預設40" },
+        file_pattern: { type: "string", description: "選填：path是資料夾時，篩檔名的正規表示式" },
+        ignore_case: { type: "boolean", description: "選填：預設true" },
+      },
+      required: ["path", "pattern"],
+      additionalProperties: false,
+    }
+  );
+
+  fa.register_openai_tool(
+    "pptx_inspect",
+    "不靠AI、直接解析一份pptx的結構並做完整性檢查：檔案大小、投影片/master/layout/theme數量、圖片數與總大小、**斷掉的關聯（指向不存在的檔案＝圖片/背景會消失）**、沒被引用的多餘素材、每頁標題與圖片數、是否有背景圖。產生或修改投影片後**一定要對輸出檔跑這個**，並跟來源檔比較（大小合理嗎？圖片還在嗎？master是不是暴增？），有問題就修好再回報，不可以沒驗證就說完成。參數: {\"path\":\"C:\\\\Users\\\\...\\\\report.pptx\"}",
+    async (rawArgs) => {
+      const p = await officeParseJson(rawArgs);
+      try {
+        if (!p.path) return JSON.stringify({ ok: false, error: "缺少path" });
+        const st = await window.desktopAPI.rawfs.stat(p.path);
+        if (!st.isFile) return JSON.stringify({ ok: false, error: "path不是檔案" });
+        if (st.size > 300 * 1024 * 1024) return JSON.stringify({ ok: false, error: "檔案超過300MB，這個工具不處理" });
+        const r = await window.desktopAPI.rawfs.readFile(p.path, "base64");
+        const info = await fa._inspectPptx(b64ToBytes(r.base64), st.path);
+        info.file_size_bytes = st.size;
+        return JSON.stringify({ ok: true, path: st.path, ...info });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: { path: { type: "string", description: "pptx檔案的絕對路徑" } },
+      required: ["path"],
+      additionalProperties: false,
+    }
+  );
+
+  fa.register_openai_tool(
+    "office_export_slide_images",
+    "用這台電腦的PowerPoint把pptx每一頁輸出成PNG圖片（需要已安裝PowerPoint、且已在設定允許AI執行程式），再把前幾頁匯入成可用的file_id——之後用compare_images把「輸出檔的某一頁」跟「來源/範本的對應頁」放在一起比對（背景圖、版面、圖片有沒有消失），或用interpret_image看某一頁的內容。**投影片類輸出完成後，逐頁（或至少關鍵頁）比對是必做的驗證。**參數: {\"path\":\"pptx絕對路徑\",\"out_dir\":\"（選填）輸出資料夾，預設放在pptx旁邊的<檔名>_slides\",\"import_max\":（選填）最多匯入幾頁成file_id，預設12}",
+    async (rawArgs) => {
+      const p = await officeParseJson(rawArgs);
+      try {
+        if (!p.path) return JSON.stringify({ ok: false, error: "缺少path" });
+        const src = String((await window.desktopAPI.rawfs.stat(p.path)).path);
+        const outDir = String(p.out_dir || src.replace(/\.pptx?$/i, "") + "_slides");
+        await window.desktopAPI.rawfs.mkdir(outDir);
+        const fwd = (s) => String(s).replace(/\\/g, "/");
+        const q = (s) => fwd(s).replace(/'/g, "''");
+        const ps1 = `$ErrorActionPreference = 'Stop'\n$app = New-Object -ComObject PowerPoint.Application\ntry {\n  $pres = $app.Presentations.Open('${q(src)}', -1, 0, 0)\n  $pres.Export('${q(outDir)}', 'PNG', 1280, 720)\n  $pres.Close()\n} finally { $app.Quit() }\n`;
+        const ps1Path = fwd(outDir) + "/_export_slides.ps1";
+        await window.desktopAPI.rawfs.writeFile(ps1Path, { text: ps1 });
+        const run = await window.desktopAPI.exec.run({ rootId: null, command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${ps1Path}"`, args: [], cwdRel: ".", cwdAbs: fwd(outDir) });
+        const entries = await window.desktopAPI.rawfs.readdir(outDir);
+        const num = (n) => Number((String(n).match(/(\d+)\.[a-z]+$/i) || [])[1] || 0);
+        const images = entries.filter((e) => e.isFile && /\.(png|jpg|jpeg)$/i.test(e.name)).sort((a, b) => num(a.name) - num(b.name));
+        if (!images.length) {
+          return JSON.stringify({ ok: false, error: "沒有輸出任何圖片（沒有安裝PowerPoint、沒開啟允許AI執行程式、或PowerPoint被使用者拒絕）", exec: { ok: run && run.ok, exitCode: run && run.exitCode, stderr: String((run && run.stderr) || "").slice(0, 500), errorMessage: run && run.errorMessage } });
+        }
+        const importMax = Math.max(0, Math.min(40, Number.isFinite(Number(p.import_max)) ? Math.floor(Number(p.import_max)) : 12));
+        const slides = [];
+        for (const e of images) {
+          const rec = { slide: num(e.name), path: fwd(outDir) + "/" + e.name, size_bytes: e.size };
+          if (slides.length < importMax) {
+            try {
+              const rr = await window.desktopAPI.rawfs.readFile(rec.path, "base64");
+              rec.file_id = await fa.fileCache.put(`${src.split(/[\\/]/).pop().replace(/\.pptx?$/i, "")}_slide${rec.slide}.png`, "image/png", new Blob([b64ToBytes(rr.base64)], { type: "image/png" }), "uploaded");
+            } catch (_) { /* 這一頁匯入失敗就只有路徑 */ }
+          }
+          slides.push(rec);
+        }
+        return JSON.stringify({ ok: true, out_dir: outDir, slide_count: slides.length, slides, note: "有file_id的頁面可直接給compare_images/interpret_image；其餘頁面用path。" });
+      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "pptx檔案的絕對路徑" },
+        out_dir: { type: "string", description: "選填：圖片輸出資料夾" },
+        import_max: { type: "integer", description: "選填：最多匯入幾頁成file_id（預設12，最多40）" },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    }
+  );
+
+  const officePrompt = `你是桌面版FloatingAssistant專門處理「辦公室報告」的子任務助理——週報、簡報、投影片、pptx/docx/xlsx、套用範本（template）、把多人的內容合併成一份報告。這台電腦目前跑的是${platformLabel}。**目前接的AI模型能力有限，所以你必須嚴格照下面的固定流程做，每一步都要真的呼叫工具拿到結果，不能憑印象、不能跳步驟。**
+
+**鐵則（違反就是錯，使用者已經為此抱怨過）**
+1. **使用者的資料夾裡如果已經有產生報告的現成腳本／流程（例如名稱像產生報告、build、make的python/ps1/bat腳本、README、config範例），一律「直接執行它」**：只改設定檔裡該改的（日期、資料夾路徑）然後跑；**絕對不要自己另外重寫一支產生邏輯**（例如自己用python-pptx重做一份）。使用者說「按照template建立」「整個重作」＝重新執行那條流程，不是修補既有輸出、更不是改寫流程。
+2. **python當主軸**：複製/合併/重排/清理投影片、處理檔案，全部用python腳本（或使用者現成的工具）確定性地完成；AI只在需要判斷、截圖、寫摘要文字的地方介入。**「僅複製slide」的需求＝不調整版面、不重新壓縮圖片、不改字型，原樣搬**。
+3. **讀大檔案（超過8000字元）不要分段整份讀，也不要委派別人讀**：先用fs_grep找關鍵字/函式定位，再用fs_read_file的start_line＋max_lines只讀那一段。整份39K字元的檔案分5次讀是最浪費時間的做法。
+4. **修現成流程的bug時做最小修改**：fs_grep定位→讀那個函式→用小段python或patch改→重跑→驗證；不要重寫整個工具。
+5. **每次產出都必須驗證，沒驗證就不能說完成**：
+   a) 對輸出檔跑pptx_inspect：檔案大小合理嗎（跟來源檔加總比，暴跌代表素材掉了）？頁數對嗎？圖片數/圖片總大小還在嗎？broken_relationships是不是0（不是0＝圖片或背景會消失）？master/layout有沒有暴增（暴增會讓檔案難以開啟）？
+   b) 有PowerPoint時，用office_export_slide_images把輸出檔逐頁轉圖，再用compare_images把「輸出的某一頁」跟「來源/範本的對應頁」放在一起比（背景圖、版面、圖片還在嗎）。至少比對封面、分節頁、每位成員的第一頁。
+   c) 發現問題就回頭修流程再重跑，不要把有問題的檔案當成果交出去。
+6. 需要瀏覽器截圖（例如專案管理系統、儀表板、內部網站的頁面）這類要操作Chrome的部分，你沒有瀏覽器工具——在回報裡明確寫出「這一步需要委派瀏覽器控制領域」，不要自己假裝完成或跳過不講。
+
+**固定流程**
+步驟1 摸清楚環境：用fs_list_files看工作資料夾、範本、來源資料夾（例如各人提供內容的來源資料夾）、現成腳本；看README/config範例決定怎麼跑。一次列出來，不要一個檔案一個檔案問。
+步驟2 決定做法：有現成流程→照鐵則1執行；沒有才自己寫python腳本。把要執行的完整指令想清楚再跑。
+步驟3 執行：用run_command執行（Windows路徑在指令裡用正斜線或加引號；輸出檔放在使用者指定的資料夾）。長輸出只看關鍵行，不要把整段輸出貼回來。
+步驟4 驗證（鐵則5）。
+步驟5 回報：一段精簡文字——產出檔路徑、驗證結果的具體數字（頁數/檔案大小/圖片數/斷掉的關聯數）、哪些步驟沒做到以及原因。不要貼整份檔案內容或程式碼。`;
+  fa.register_domain("office_report", {
+    enabled: true,
+    label: "辦公室報告／簡報／投影片（週報、pptx・docx・xlsx、套用範本、複製投影片、驗證輸出，桌面版限定）",
+    toolNames: [
+      "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_grep", "fs_write_file", "fs_mkdir",
+      "run_command", "pptx_inspect", "office_export_slide_images",
+      "extract_pptx_images", "compare_images", "interpret_image", "list_uploaded_files", "parse_uploaded_file",
+    ],
+    systemPrompt: officePrompt,
+  });
+  ["fs_grep", "pptx_inspect", "office_export_slide_images"].forEach((name) => fa._domainGatedToolNames.add(name));
+
 
   // tw_stock_db客製: 2026-09-15使用者實測回報（Linux桌面版真實對話記錄）——
   // 即使multiSubAgentMode設成'router'/'hierarchical'，根模型還是直接呼叫了
