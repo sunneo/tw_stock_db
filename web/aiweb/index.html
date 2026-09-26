@@ -94,7 +94,7 @@ try {
 // ⚠️ ?v= 版本號必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=7897af50fa')
+  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=bb6f05846d')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
