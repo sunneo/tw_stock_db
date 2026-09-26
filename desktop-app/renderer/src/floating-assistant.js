@@ -15124,6 +15124,18 @@ ${sourceTool.handlerScript}
         inputText.style.borderColor = palette.inputBorder;
         status.style.background = palette.statusBg;
         status.style.color = palette.statusText;
+        this._syncTerminalEmbedBorder(palette);
+    }
+
+    // tw_stock_db客製: 2026-09-26使用者實測回報——先切淺色、refresh、再切深色，
+    // /run-terminal終端機外框（.ai-terminal-embed）仍是白色。終端機widget是
+    // 用_liveWidgetCache重用已掛載節點（見_displayTerminal渲染處），border在
+    // 第一次建立時用當下palette寫進inline style，之後主題切換不會重建，必須
+    // 主動同步（同一個根因：上面historyBtn等元件）。
+    _syncTerminalEmbedBorder(palette = this._getThemePalette()) {
+        document.querySelectorAll('.ai-terminal-embed').forEach((el) => {
+            el.style.borderColor = palette.windowBorder;
+        });
     }
 
     _ensureAdvancedStyles() {
@@ -17704,6 +17716,23 @@ ${sourceTool.handlerScript}
             theme: this._getTerminalXtermTheme(),
         });
         term.open(container);
+
+        // tw_stock_db客製: 2026-09-26使用者實測回報——終端機畫面沒有填滿外框
+        // 高度（480px的外框裡xterm只佔預設24列）。沒有引入FitAddon，直接用
+        // 實際渲染出來的單列高度（.xterm-screen高度/目前列數）推算能塞幾列，
+        // 只調整列數不動欄數（使用者可能自己在設定指定了cols）。容器大小
+        // 改變（視窗縮放、卸載又掛回）時用ResizeObserver重新套用。
+        const fitTermRows = () => {
+            const screenEl = container.querySelector('.xterm-screen');
+            if (!screenEl || !term.rows || !screenEl.offsetHeight) return;
+            const cellH = screenEl.offsetHeight / term.rows;
+            const cs = getComputedStyle(container);
+            const innerH = container.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+            const rows = Math.max(2, Math.floor(innerH / cellH));
+            if (rows !== term.rows) term.resize(term.cols, rows);
+        };
+        requestAnimationFrame(fitTermRows);
+        if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => fitTermRows()).observe(container);
 
         // tw_stock_db客製: 2026-09-23使用者要求——terminal要能被AI/外部用
         // id或name定址（list_terminals/terminal_run/terminal_cp_*等新工具）。
@@ -32261,7 +32290,10 @@ ${existingNodeSummaries}
         // 憑空歸零，使用者剛打的指令/正在跑的vim都會不見。
         if (msg._displayTerminal) {
             if (this._liveWidgetCache.has(msg)) {
-                container.appendChild(this._liveWidgetCache.get(msg));
+                const cachedWrap = this._liveWidgetCache.get(msg);
+                container.appendChild(cachedWrap);
+                const cachedEmbed = cachedWrap.querySelector('.ai-terminal-embed');
+                if (cachedEmbed) cachedEmbed.style.borderColor = palette.windowBorder;
                 return;
             }
             // tw_stock_db客製: 2026-09-18使用者實測回報「外面保留的框太小」
