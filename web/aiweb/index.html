@@ -48,8 +48,60 @@
     <span class="sep"></span>
     <span id="status" class="badge">載入 AI 引擎中…</span>
     <button type="button" id="theme-toggle" title="切換淺色／深色主題">🌙 深色</button>
+    <!-- tw_stock_db客製: 2026-09-26使用者要求——網頁版右上角要有「取得桌面版」的
+         連結。預設先指到GitHub Releases頁（安全的後備連結，純HTML屬性、
+         不依賴任何JS，就算下面的偵測腳本或floating-assistant.js都載入
+         失敗，這顆按鈕仍然看得到、按得到，使用者自己在release頁挑檔案）；
+         下面的detectDesktopAppAsset()腳本會盡力把href換成「依作業系統
+         判斷出來的、當下最新release的確切安裝檔」直接下載連結（見該腳本
+         說明），失敗就維持這個後備連結不變。 -->
+    <a class="btn" id="get-desktop-app" href="https://github.com/sunneo/tw_stock_db/releases" target="_blank" rel="noopener noreferrer" title="下載桌面版 FloatingAssistant（Windows／Linux 安裝檔）">💻 取得 Desktop App</a>
   </div>
   <div id="app" style="display:block;"></div>
+
+<script>
+'use strict';
+/* tw_stock_db客製: 2026-09-26使用者要求——「取得 Desktop App」按鈕要依
+   訪客的作業系統，直接連到「當下最新一個release」對應的安裝檔（不要寫死
+   版本號，之後每次發新版release，這裡都不用跟著改）。electron-builder的
+   artifactName預設會把版本號嵌進檔名（例如FloatingAssistant.Setup.0.1.0.exe、
+   FloatingAssistant-0.1.0.AppImage），沒辦法用GitHub提供的
+   `releases/latest/download/<固定檔名>`這個免API捷徑（那個捷徑要求檔名
+   在每次release都完全一樣）——改成呼叫GitHub REST API的
+   `/releases/latest`（公開repo的唯讀GET請求不需要認證，GitHub本身有開
+   Access-Control-Allow-Origin: *，瀏覽器端直接fetch即可，不需要經過
+   worker/proxy），拿到最新release實際的assets清單，依副檔名(.exe／
+   .AppImage)配對出對應這次作業系統的真正下載連結。這段刻意跟下面載入
+   floating-assistant.js那整段完全獨立（不共用任何函式、不依賴AI引擎
+   是否載入成功）——即使GitHub API呼叫失敗（額度用完、離線等），
+   <a id="get-desktop-app">本來就有寫死的靜態href（連到releases首頁），
+   使用者退而求其次還是找得到下載頁，不會完全連不到任何東西。 */
+(function detectDesktopAppAsset() {
+  var link = document.getElementById('get-desktop-app');
+  if (!link) return;
+  var ua = navigator.userAgent || '';
+  var platform = navigator.platform || '';
+  var isWindows = /Win/i.test(ua) || /Win/i.test(platform);
+  // navigator.userAgent在ChromeOS/Android等其他平台也可能含"Linux"，這裡
+  // 明確排除Android；ChromeOS沒有對應安裝檔，落到下面「未偵測到支援平台」
+  // 的分支，保留原本的releases首頁連結，不會亂配一個不能用的檔案。
+  var isLinux = /Linux/i.test(ua) && !/Android/i.test(ua);
+  if (!isWindows && !isLinux) return; // 不支援的平台（macOS/其他）：維持原本releases首頁連結
+
+  fetch('https://api.github.com/repos/sunneo/tw_stock_db/releases/latest')
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (release) {
+      var assets = (release && release.assets) || [];
+      var pattern = isWindows ? /\.exe$/i : /\.AppImage$/i;
+      var asset = assets.find(function (a) { return pattern.test(a.name || ''); });
+      if (!asset) return; // 這個release沒有對應平台的安裝檔，維持原本releases首頁連結
+      link.href = asset.browser_download_url;
+      link.title = '下載 ' + asset.name + '（' + (release.tag_name || '最新版') + '）';
+      link.textContent = isWindows ? '💻 下載 Desktop App（Windows）' : '💻 下載 Desktop App（Linux）';
+    })
+    .catch(function () { /* 保留原本寫死的releases首頁連結，不用另外提示錯誤 */ });
+})();
+</script>
 
 <script>
 'use strict';
@@ -94,7 +146,7 @@ try {
 // ⚠️ ?v= 版本號必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=aa6ed10e85')
+  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=16ce9cea26')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
