@@ -133,6 +133,17 @@ Only the four paths listed above are ever read from the remote manifest or downl
 * `state.baselineVersion` is compared against the current install's `update-manifest.json.baseVersion` — if a user reinstalled a newer build, any leftover `live-patch` override from an older install is treated as stale and ignored (the override directory is rebuilt from scratch on the next successful update instead of being reused).
 * This mechanism intentionally trusts the repository owner's own `desktop-app-patch` branch (same trust boundary as the rest of this repo) — the md5 checks guard against transport corruption and manifest typos, not against a compromised GitHub account. There is no code signing at this layer, matching the rest of this project's current security posture (see `README.md`).
 
+### AppImage version arbitration (Linux only)
+
+The Live Update mechanism above only hot‑patches the four renderer files — it deliberately never touches `main.js`/`preload.js` or the AppImage binary itself (see the "why not electron‑updater" note at the top of this section). On Linux, that leaves a real gap specific to AppImage packaging: unlike the NSIS installer (which upgrades in place at a fixed install directory), an AppImage is a standalone file a user typically re‑downloads to an arbitrary path (e.g. `~/Downloads/`), leaving the old `.AppImage` file, desktop shortcut, and "recent files" entry all still pointing at the stale build with no way to know a newer one exists on the same machine.
+
+`main.js`'s "AppImage 版本仲裁" block (right after the Live Update IPC handlers) addresses just that narrow problem — it is **not** a real AppImage self‑updater (it never downloads, verifies, or replaces an `.AppImage` file):
+
+* Only activates when `process.env.APPIMAGE` is set (the AppImage runtime always sets this to the real path of the currently‑running `.AppImage` file; `npm start`, Windows and macOS never set it, so this is a no‑op everywhere else). Skipped entirely in CLI mode (`-p`), since it can block on a confirmation dialog and CLI usage must stay non‑interactive.
+* On every interactive launch, registers `{path, baseVersion}` for the current `.AppImage` in `~/.local/share/floating-assistant-desktop/appimage-registry.json` (`baseVersion` reuses the same `renderer/update-manifest.json` baseline version the Live Update diff already computes — no separate version source to keep in sync). Entries whose file no longer exists on disk are pruned on every run (self‑cleaning).
+* If another registered `.AppImage` has a strictly newer `baseVersion` and still exists on disk, shows a confirm dialog naming that file and its version. Choosing to switch `spawn()`s that other `.AppImage` (detached) and quits the current process; choosing not to leaves everything untouched and starts normally.
+* The confirm dialog reuses the existing hand‑rolled `showConfirmWindow()` (a real `BrowserWindow` loading a `data:` URL), **not** Electron's `dialog.showMessageBox` — this codebase has already hit `dialog.showMessageBox`/`showOpenDialog` silently hanging without displaying anything on at least one real user's machine (see `showExecConfirmWindow`'s comment in `main.js`), so every user‑facing confirmation in this app goes through that same proven mechanism instead.
+
 ---  
 
 ## 🚀 Usage  
