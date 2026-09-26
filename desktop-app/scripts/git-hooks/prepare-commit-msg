@@ -1,0 +1,10 @@
+#!/bin/sh
+# 把這次 commit 新增的 AI 功能修改紀錄（features/ai-features.yaml 的 history）
+# 自動附加到 commit message 結尾。啟用方式見 features/README.md。
+# $1 = commit message 檔案，$2 = 來源（merge/squash 等情況不處理）
+case "$2" in merge|squash) exit 0 ;; esac
+ROOT="$(git rev-parse --show-toplevel)"
+BLOCK="$(node "$ROOT/desktop-app/scripts/ai-features.js" staged-msg 2>/dev/null)"
+[ -z "$BLOCK" ] && exit 0
+grep -q '^Features:' "$1" && exit 0
+printf '\n%s\n' "$BLOCK" >> "$1"

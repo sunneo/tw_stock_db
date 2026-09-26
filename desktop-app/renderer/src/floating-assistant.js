@@ -932,6 +932,17 @@ function _faBuildCodingSystemPrompt(env = {}) {
         ? '用run_command執行git add -A與git commit -m "簡述"（一項一個commit）'
         : '用git_commit({"ref":"<cwd_abs>","message":"簡述"})（會自動加入所有變更；一項一個commit；如果回報缺少git作者名稱/信箱，如實轉告使用者去Advance Settings設定，不要卡住整個流程，跳過commit繼續下一項並在最後回報）';
     const ctxHead = desktop ? `這台電腦目前跑的是${env.platformLabel || ''}。` : '你執行在瀏覽器裡（網頁版），檔案透過使用者授權的File Access Point存取，git用純JS實作，測試在瀏覽器內的bash/python沙盒執行。';
+    const publishMode = env.publishMode === 'auto' ? 'auto' : 'ask';
+    const pushGuidance = publishMode === 'auto'
+        ? '這是使用者自己在設定裡選的「發佈後自動push」偏好：build成功、測試通過、commit完成後可以直接繼續push，不用每次額外詢問使用者。'
+        : '目前是預設的「先問我」偏好：commit完成後不要自動push，在這次任務的最終回覆裡列出commit摘要，明確問使用者現在要不要push。';
+    const buildStep = desktop
+        ? '用run_command執行；build失敗就照真實錯誤訊息回報，不要視為已完成'
+        : '網頁版沒有真實node/網路環境，通常沒辦法真的執行——誠實告知使用者「網頁版沙盒無法執行build，請自行在本機驗證」並跳過，不要假裝執行過';
+    const publishCommit = desktop
+        ? '用run_command執行git add -A、git commit -m "簡述"（步驟5如果已經逐項commit過、這裡沒有新變更就跳過）'
+        : '用git_commit({"ref":"<使用者原資料夾的fap參照>","message":"簡述"})（步驟5如果已經逐項commit過workspace、這裡沒有新變更就跳過）';
+    const publishPush = desktop ? 'git push' : 'git_push';
     return `你是FloatingAssistant專門處理「程式設計」任務的子任務助理——分析需求、讀懂既有原始碼、產出設計計畫與TODO清單、依序實作、跑測試、修bug。${ctxHead}**因為目前接的AI模型能力有限，你必須嚴格照下面的固定流程逐步執行，每個步驟都要真的做完（呼叫對應工具拿到真實結果）才能進下一步，不能跳步驟、不能憑記憶或猜測代替實際讀取/執行。** 所有工具的cwd_abs參數都填${rootDesc}（task裡沒講清楚就先問使用者，不要瞎猜）。
 
 **步驟0-A：建立暫存工作區（每次開始都要做，第一個動作）**：先呼叫coding_workspace({"action":"open","source":"<使用者專案資料夾>"})——不管專案本身有沒有git，系統都會把它複製一份到暫存區並在那裡git init，**所有修改、測試、還原都只在暫存區進行，確認沒問題才轉移回使用者的資料夾**。回傳的workspace_path就是之後**所有工具**（coding_task_state、apply_git_patch、git_inspect、git_commit、coding_read_file、coding_run_check、coding_run_tests、run_command的cwd）使用的cwd_abs——從這一步起絕對不要再對使用者的原資料夾直接操作。**開啟後立刻用一句話告訴使用者暫存檔放在哪裡**（回傳的tell_user照實轉述，含workspace_path）。回傳resumed:true代表接續先前還沒轉移的工作區。
@@ -941,7 +952,10 @@ function _faBuildCodingSystemPrompt(env = {}) {
 - 有既有狀態、phase不是"done" → 有任務正在進行中，先讀懂todos目前進度。判斷這次收到的是：(a)對現有計畫的補充/修改/中途插入的新要求（steering）——用add_todo把新要求插進清單（使用者明講「馬上/優先/先做這個」才用position:"now"，否則用"next"排在目前項目後面），然後從next_todo_id接著做；(b)完全不相關的新任務——明確告訴使用者目前有進行中的任務（引用title與進度），詢問要先完成它還是另開，不要自己擅自捨棄舊任務；(c)單純「繼續」——直接從next_todo_id接著做，不要重新規劃。
 - phase是"done" → 視為全新任務，進步驟1。
 
+**步驟1-A：評估（背景調查，視需要才做）**：先靠已知線索判斷——讀懂使用者的任務描述、相關既有原始碼、（有的話）coding_task_state裡的舊紀錄，通常這樣就足夠規劃設計，不用額外查資料。**只有當任務涉及不熟悉的函式庫/框架版本差異、少見的錯誤訊息、業界最佳實踐比較、或使用者明確要求調查/研究時**，才呼叫browser_search主動搜尋背景知識（sources建議包含github、codeproject、wiki、deepwiki、stackoverflow這幾個技術類來源），找到有用的候選連結後用fetch_web_page讀完整內容，不要只憑search回傳的短摘要就下結論。**這兩個工具如果回報網路搜尋功能未設定/未啟用，直接跳過這一步、改用你已知的知識繼續評估即可，不要因此卡住整個任務**。調查到的重點整理成2-5條精簡摘要，供下面設計計畫的「背景調查」小節使用；沒有做調查就不用寫這小節，不要硬湊內容。
+
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
+## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
 ## 需求分析（使用者實際要什麼、有沒有隱含限制）
 ## 現況（相關原始碼位置）（哪些檔案/函式相關、目前怎麼運作）
 ## 設計方案（打算怎麼改、為什麼、取捨）
@@ -965,7 +979,12 @@ ${step4}
  g) 通過：coding_task_state action:complete_todo（必附design_summary、source_locations、entry_points，會自動append到DESIGN-INDEX.md），接著${commit}。進下一項。
  h) 不通過：根據真正的錯誤訊息分析（不要臆測），回b)，同一項目一樣最多3輪。
 
-**步驟6：收尾與轉移**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。**接著把成果轉移回使用者資料夾**：先coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>","dry_run":true})預覽會新增/修改/刪除哪些檔案與衝突（使用者的原檔在這段期間又被改過就會列為衝突，不會被覆蓋），確認合理後再coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>"})正式轉移；轉移是逐檔寫入並讀回比對，**回傳的applied/verified才算數，沒有applied就不能說已經寫入使用者的資料夾**。有conflicts就如實告訴使用者哪些檔案沒轉移、為什麼，由使用者決定要不要force。回報時附上：暫存區路徑、轉移了哪些檔案、備份位置（backup_dir）。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**絕對不要git push**，除非使用者明確要求。不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
+**步驟6：收尾與轉移**：全部項目處理完（含blocked的）→ coding_task_state action:set_phase設成done。**接著把成果轉移回使用者資料夾**：先coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>","dry_run":true})預覽會新增/修改/刪除哪些檔案與衝突（使用者的原檔在這段期間又被改過就會列為衝突，不會被覆蓋），確認合理後再coding_workspace({"action":"deploy","cwd_abs":"<workspace_path>"})正式轉移；轉移是逐檔寫入並讀回比對，**回傳的applied/verified才算數，沒有applied就不能說已經寫入使用者的資料夾**。有conflicts就如實告訴使用者哪些檔案沒轉移、為什麼，由使用者決定要不要force。回報時附上：暫存區路徑、轉移了哪些檔案、備份位置（backup_dir）。用一段精簡文字回報：完成哪些、哪些blocked及原因、幾個commit、測試最終狀態（含「哪些沒辦法實際執行測試」）。**build／deploy／commit／push留到下面步驟7處理，這裡不要自己先做。**不要把完整diff/程式碼貼回對話——DESIGN-INDEX.md與git歷史就是完整記錄。
+
+**步驟7：發佈（Build／Deploy／Commit／Push）**：一定要在步驟6把成果轉移回使用者資料夾之後才做這一步（${desktop ? '桌面版本來就是直接在使用者的真實資料夾操作' : '網頁版是轉移回原本的fap:來源資料夾，不是workspace_path'}），不要在暫存區裡執行build/deploy。
+1. **偵測build指令**：比照步驟3的判斷方式，看專案本身有沒有定義建置指令（package.json的scripts.build、Makefile的build target、Cargo.toml搭配cargo build --release、go build等）——**找不到就跳過，絕對不要自己發明一個不存在的指令**。找到就${buildStep}。
+2. **偵測deploy指令**（例如package.json的scripts.deploy、或使用者這次任務裡明確講清楚的部署方式）：只有明確偵測到才嘗試，且**一定要先在這次任務的回覆裡列出偵測到的完整指令內容，等使用者這一輪明確同意才能執行**——這一步可能把東西發佈到正式環境/外部服務，後果比push更大，不論下面的發佈偏好設定為何，永遠要先問，沒有自動模式。找不到deploy指令就跳過，不要勉強套用build指令代替。
+3. **commit＋push**：${publishCommit}。${pushGuidance}push之前一定要先確認commit內容正確（用git_inspect({"mode":"diff"})或git_inspect({"mode":"log"})看過），呼叫${publishPush}失敗（例如缺Personal Access Token/沒有寫入權限）時，如實把錯誤內容轉告使用者，不要重試或假裝成功。
 
 **輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。
 
@@ -1354,6 +1373,15 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 // 細節一次攤平進主工具的description或一次註冊一大排工具——目的是讓被委派
 // 的子任務system prompt/tools schema本身保持精簡，不會因為工具描述太長
 // 稀釋掉模型的注意力、增加幻覺機率。
+// tw_stock_db客製: 2026-09-26使用者要求——AI功能清冊。資料來源是
+// features/ai-features.yaml（唯一的維護入口），build-assistant.js建置時把
+// 精簡後的JSON內嵌到下面這個位置（取代`null`），所以網頁版、桌面版、aiweb
+// 三邊載入的都是同一份、不用另外fetch。沒有經過建置直接跑src原始碼時這裡是
+// null，功能說明相關的入口（/ai-features、/suggest的功能總覽、feature_guide）
+// 會安靜地退化成「沒有清冊」，不影響其他功能。也可以用建構子選項
+// featuresCatalog覆寫（host頁面想自己提供內容時）。
+const FA_AI_FEATURES_CATALOG = /*__FA_AI_FEATURES__*/null;
+
 const SUBAGENT_DOMAIN_REGISTRY = {
     rag_lookup: {
         enabled: true,
@@ -1400,14 +1428,24 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         toolNames: ['git_clone', 'git_pull', 'git_status', 'git_log', 'git_commit', 'git_push'],
         systemPrompt: '你是一個專門在瀏覽器內做git操作（純JS實作isomorphic-git，沒有真的shell/git執行檔）的子任務助理，操作對象一律是使用者已授權的File Access Point（真實磁碟資料夾，用「fap:<名稱或id>[/<子路徑>]」格式指定），不支援persistentStorage（那是單一blob儲存，沒有資料夾的概念）。git_clone可以clone公開或私有repo（私有repo需要使用者已在Advance Settings填入有讀取權限的GitHub Personal Access Token，沒有的話會失敗並清楚回報）；git_pull抓取合併遠端最新變更；git_status查目前有哪些檔案變更；git_log看commit歷史；git_commit把目前所有變更加入staging並commit（需要使用者已填入git作者名稱/信箱）；git_push把本機commit推上遠端（一定需要有寫入權限的token，不會嘗試匿名push）。commit/push都是有實際後果的操作（會改變使用者本機檔案/推上遠端repo），執行前務必先跟使用者確認清楚要commit/push的內容跟目標repo，不要自作主張。所有這些操作都要透過使用者自己部署的Cloudflare Worker轉發（避開瀏覽器CORS限制），如果使用者還沒部署或corsProxy設定有誤，工具會回報連線失敗，這種情況下告知使用者需要檢查Cloudflare Worker部署與corsProxy設定，不是重複嘗試就能解決。這些工具跟fap_*系列共用同一套File Access Point權限機制——目標資料夾如果沒有授權，呼叫時會自動跳出授權對話框讓使用者當場點擊，呼叫會停在那裡等回應，不用先叫使用者去Advance Settings。',
     },
+    // tw_stock_db客製: 2026-09-26使用者要求——專門用來說明「這個助理有哪些功能、
+    // 怎麼用、有什麼範例」的子代理人。內容一律來自功能清冊（list_ai_features
+    // 工具，資料就是features/ai-features.yaml），不憑印象回答，這樣新增功能
+    // 時只要維護清冊，說明就會跟著更新。
+    feature_guide: {
+        enabled: true,
+        label: '功能說明（介紹這個助理有哪些功能、怎麼使用、附範例；回答「你會做什麼」「怎麼用XX」「有沒有XX功能」這類問題）',
+        toolNames: ['list_ai_features'],
+        systemPrompt: '你是這個AI助理的「功能說明」專員，負責向使用者介紹助理有哪些功能、怎麼使用。一律先呼叫list_ai_features查功能清冊（可用category、id或query縮小範圍），只根據查到的內容回答，不要憑印象編造功能、指令或範例。回答時：(1)先用一兩句話說明能做什麼；(2)給出可以直接照著用的斜線指令或範例句子（清冊的samples）；(3)如果清冊標示該功能只有桌面版或只有網頁版，要明講，並告訴使用者目前這個環境不能用時可以改用什麼；(4)使用者問的是整體有哪些功能時，依分類條列，每個功能一行；(5)清冊查不到的就直接說「目前功能清單裡沒有這個功能」，不要硬答。',
+    },
     // tw_stock_db客製: 2026-09-20使用者要求（TODO.md Phase 4）——程式設計domain，網頁版＋
     // 桌面版共用同一套固定流程（狀態機/Plan Template/git patch），專為弱模型設計。網頁版用
     // File Access Point＋isomorphic-git＋瀏覽器內bash/python沙盒；桌面版由bootstrap.js用
     // register_domain('coding')覆蓋成真的git＋run_command版本。刻意沒有任何直接寫檔工具。
     coding: {
         enabled: true,
-        label: '程式設計（需求分析／設計計畫／git patch實作／語法檢查／測試／修bug，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from'],
+        label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -2731,6 +2769,60 @@ class _FaPopen:
         return self.returncode
 
 subprocess.Popen = _FaPopen
+`;
+
+// tw_stock_db客製: 2026-09-25使用者要求——在Pyodide裡跑真正的上游yt-dlp
+// （不是每次YouTube更新就手動改寫成JS，那是無底洞的維護負擔；yt-dlp本身
+// 沒有硬性依賴，靠這裡的橋接+定期micropip重裝就能跟上YouTube的變化）。
+// yt-dlp預設用的`Urllib`request handler在Pyodide裡沒有真正的socket，會直接
+// 撞`OSError: Protocol not available`——這裡用yt-dlp官方文件記載的
+// `@register_rh`/`@register_preference`擴充點（不是monkeypatch內部實作
+// 細節，版本相容性更好）註冊一個用`_fa_yt_http_bridge`（見_ytDlpHttpBridge，
+// 底層是_terminalHttpFetch，會自動經過_viaAssetProxy的CORS繞過）的host
+// builtin替代handler。**已實測驗證**：直接呼叫`fetch()`對YouTube網域一定會
+// 被CORS擋下（瀏覽器對跨來源請求的既有限制，不是這個橋接的bug），必須透過
+// 這個app既有的proxy機制。`_check_extensions`刻意把yt-dlp可能夾帶的
+// cookiejar/timeout/legacy_ssl/keep_header_casing這幾個延伸選項直接忽略
+// （pop掉、不驗證）——我們的下載情境（已通過本人頻道/CC授權驗證的公開影片）
+// 用不到這幾個進階功能，選擇寬鬆接受而不是嚴格拒絕，避免yt-dlp某些request
+// 附帶這些延伸資訊時被validate()擋下、意外fallback回沒有網路能力的
+// Urllib（實測踩過這個坑：光靠`@register_preference`給高分還不夠，
+// validate()階段的extension檢查是在preference排序**之後**的獨立關卡）。
+const PYODIDE_YTDLP_BRIDGE_SRC = `
+import io, json as _fa_json3, asyncio
+from yt_dlp.networking.common import RequestHandler, Response, register_rh, register_preference, Features
+import _fa_yt_http_bridge
+
+@register_rh
+class FaYtFetchRH(RequestHandler):
+    RH_NAME = 'fafetch'
+    _SUPPORTED_URL_SCHEMES = ('http', 'https')
+    _SUPPORTED_PROXY_SCHEMES = ('http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h')
+    _SUPPORTED_FEATURES = tuple(Features)
+
+    def _check_extensions(self, extensions):
+        extensions.pop('cookiejar', None)
+        extensions.pop('timeout', None)
+        extensions.pop('legacy_ssl', None)
+        extensions.pop('keep_header_casing', None)
+
+    def _send(self, request):
+        headers = dict(request.headers)
+        data = request.data
+        if data is not None and not isinstance(data, (bytes, bytearray)):
+            data = data.read() if hasattr(data, 'read') else b''.join(data)
+        r = asyncio.run(_fa_yt_http_bridge.request(request.url, request.method, _fa_json3.dumps(headers), data))
+        body_bytes = bytes(r.body.to_py()) if hasattr(r.body, 'to_py') else bytes(r.body)
+        return Response(
+            fp=io.BytesIO(body_bytes),
+            url=r.url,
+            headers=_fa_json3.loads(r.headersJson),
+            status=r.status,
+        )
+
+@register_preference(FaYtFetchRH)
+def _fa_prefer_ytfetch(handler, request):
+    return 1000
 `;
 
 // tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
@@ -4911,6 +5003,15 @@ class FloatingAssistant {
             '重新顯示建議操作（例如換了股票之後想看新的建議）',
             () => this.insertSuggestionChipsMessage()
         );
+        // tw_stock_db客製: 2026-09-26使用者要求——直接列出功能清冊（不經過
+        // LLM，立即顯示，也不花token）。內容來自功能清冊（見
+        // FA_AI_FEATURES_CATALOG），要問「怎麼做才好」這類需要判斷的問題
+        // 則交給feature_guide子代理人。
+        this.register_slash_command(
+            '/ai-features', '[<分類id|功能id|關鍵字>]',
+            '列出助理的所有功能（依分類）；帶分類id或功能id可以看詳細用法與範例，例如 /ai-features media',
+            (argsText) => this.showAiFeatures(argsText)
+        );
         // tw_stock_db客製: 2026-09-05使用者要求——如果剛好附加了一個3D場景
         // YAML檔案（或最近上傳過），不用麻煩AI，直接用這個指令本地開啟
         // 顯示，完全不經過LLM/API呼叫。跟/benchmark-model同一種「屬於這個
@@ -5306,6 +5407,7 @@ class FloatingAssistant {
         }
         this._syncBrowserSearchDomainEnabled();
         this._syncRagLookupDomainEnabled();
+        this._syncCodingDomainSettings();
         this._initUI();
         this._initEventListeners();
         this._registerBuiltinAiTools();
@@ -5344,6 +5446,31 @@ class FloatingAssistant {
     // 內容跟根層級system prompt要不要多列一份domain清單）。
     get builtinToolExposure() {
         return this.multiSubAgentMode === 'off' ? 'root' : 'domains';
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者要求——coding domain（程式設計）新增
+    // 「評估／發佈」流程，發佈階段的commit後要不要自動push要跟著Advance
+    // Settings的codingPublishMode（'ask'預設/'auto'）走，同時整個coding
+    // domain要能像skill-creator一樣在Skill分頁被看到並enable/disable
+    // （codingDomainEnabled）。跟_syncBrowserSearchDomainEnabled同一個理由：
+    // coding domain的systemPrompt是_faBuildCodingSystemPrompt()這個純函式
+    // 產生的靜態字串，SUBAGENT_DOMAIN_REGISTRY又是module層級常數（模組載入
+    // 時就算好一次，早於任何FloatingAssistant instance/advancedSettings存在），
+    // 沒辦法讓它「活著」跟著使用者之後改的設定值變動——必須在建構子跑一次、
+    // _saveAdvancedSettings()使用者改變設定時再跑一次，主動重新產生
+    // systemPrompt字串蓋回this.domains.coding.systemPrompt。
+    // 桌面版（bootstrap.js用register_domain('coding',{...})整個蓋掉這個
+    // domain物件）在那次呼叫之後，會額外把{kind:'desktop',platformLabel}存
+    // 進this.domains.coding._codingEnv這個附加欄位（register_domain本身只認
+    // {label,toolNames,systemPrompt,enabled,category}，不會自己清掉物件上
+    // 之後才手動加的其他屬性），這裡讀不到_codingEnv時預設當作網頁版
+    // ({kind:'web'})，兩邊共用同一個_syncCodingDomainSettings()。
+    _syncCodingDomainSettings() {
+        const d = this.domains.coding;
+        if (!d) return;
+        d.enabled = this.advancedSettings.codingDomainEnabled !== false;
+        const env = d._codingEnv || { kind: 'web' };
+        d.systemPrompt = _faBuildCodingSystemPrompt(Object.assign({}, env, { publishMode: this.advancedSettings.codingPublishMode === 'auto' ? 'auto' : 'ask' }));
     }
 
     // tw_stock_db客製: browser_search這個domain的enabled狀態不是寫死的
@@ -5716,6 +5843,21 @@ class FloatingAssistant {
             gitHubToken: '',
             gitAuthorName: '',
             gitAuthorEmail: '',
+            // tw_stock_db客製: 2026-09-25——youtube_download工具用（見該工具
+            // 註冊處的完整說明）。兩個都必填才會讓下載範圍驗證生效：
+            // youtubeDataApiKey是YouTube Data API v3金鑰（Google Cloud
+            // Console免費申請），youtubeChannelId是使用者自己的頻道ID，
+            // 用來比對影片的uploader是不是本人——故意不做「沒填時的降級
+            // 驗證」，避免留一條容易被繞過的路徑。
+            youtubeDataApiKey: '',
+            youtubeChannelId: '',
+            // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
+            // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
+            // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
+            // 問使用者要不要push；'auto'：測試通過就直接push，deploy類指令
+            // 不論這個設定都一律要先問，見_faBuildCodingSystemPrompt的步驟7）。
+            codingDomainEnabled: true,
+            codingPublishMode: 'ask',
             // tw_stock_db客製: 2026-09-16——bash_execute/python_execute要抓的
             // wasm執行環境（jsDelivr鏡射的npm套件或自家backup分支，見
             // FA_ASSET_URLS.bashWasmJsBase/pyodideJsBase的說明），留空時直接
@@ -6814,6 +6956,10 @@ class FloatingAssistant {
             gitHubToken: String(raw.gitHubToken || '').trim(),
             gitAuthorName: String(raw.gitAuthorName || '').trim(),
             gitAuthorEmail: String(raw.gitAuthorEmail || '').trim(),
+            youtubeDataApiKey: String(raw.youtubeDataApiKey || '').trim(),
+            youtubeChannelId: String(raw.youtubeChannelId || '').trim(),
+            codingDomainEnabled: raw.codingDomainEnabled !== false,
+            codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
             assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
                 const n = Number(raw.whisperWasmThreads);
@@ -6967,6 +7113,7 @@ class FloatingAssistant {
         // 兩種模式的描述不同，見_buildDelegateToSubagentDescription）。
         this._syncBrowserSearchDomainEnabled();
         this._syncRagLookupDomainEnabled();
+        this._syncCodingDomainSettings();
         this._updateDelegateToSubagentDescription();
         // tw_stock_db客製: 2026-09-09使用者要求Skill自動註冊成slash-command
         // ——customTools可能剛被新增/修改/刪除/匯入（Skill編輯器/.skill匯入/
@@ -7272,6 +7419,32 @@ ${fnData.code}
                 return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
             },
             { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
+        );
+
+        // tw_stock_db客製: 2026-09-26使用者要求——功能說明子代理人（feature_guide
+        // domain）的唯一工具：查功能清冊。清冊內容見FA_AI_FEATURES_CATALOG。
+        registerOptional('list_ai_features',
+            '查詢這個助理的功能清冊（分類、功能名稱、說明、怎麼用、範例、目前平台能不能用）。不帶參數＝列出全部分類與功能的精簡清單；帶category或id＝該分類／該功能的完整用法與範例；帶query＝用關鍵字搜尋。參數: {"category":"media"} 或 {"id":"media-transcribe"} 或 {"query":"字幕"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const result = this._queryFeatures(parsed);
+                if (!result) return JSON.stringify({ ok: false, error: '這個版本沒有內嵌功能清冊' });
+                if (!result.categories.length) return JSON.stringify({ ok: true, platform: result.platform, categories: [], note: '功能清單裡沒有符合的功能' });
+                const slim = f => ({ id: f.id, name: f.name, summary: f.summary, available: f.available, platforms: f.platforms });
+                return JSON.stringify({
+                    ok: true, platform: result.platform,
+                    categories: result.categories.map(c => ({
+                        id: c.id, name: c.name, summary: c.summary,
+                        features: result.detail ? c.features : c.features.map(slim),
+                    })),
+                });
+            },
+            { type: 'object', properties: {
+                category: { type: 'string', description: '分類id，例如media、coding、visual' },
+                id: { type: 'string', description: '功能id，例如media-transcribe' },
+                query: { type: 'string', description: '關鍵字（比對名稱、說明、範例、工具名、指令）' },
+            }, additionalProperties: false }
         );
 
         // tw_stock_db客製: sub agent委派框架的入口工具（見計畫階段1）。刻意
@@ -8337,6 +8510,68 @@ ${fnData.code}
         // persistentStorage，fap:<名稱>[/<路徑>]=使用者指定/共用的真實
         // 磁碟資料夾），manifest存放位置：persistentStorage用固定id
         // （SAVED_SCRIPT_MANIFEST_ID）存進savedScriptCache；fap則是跟腳本
+        // tw_stock_db客製: 2026-09-25使用者要求——「貼上一大段文字，AI可以
+        // 幫我解析跟下載youtube，產生persistent store的下載方塊」。**使用者
+        // 已明確確認的硬性範圍限制**：只下載(a)使用者自己頻道的影片、或
+        // (b) YouTube授權欄位是Creative Commons的影片，其餘一律跳過並說明
+        // 原因，不做無限制下載（見_youtubeCheckLicenseAndOwnership的完整
+        // 說明）。底層用Pyodide跑真正的上游yt-dlp（不是每次YouTube更新就
+        // 手動改寫成JS），只能抓到progressive格式（沒有ffmpeg沒辦法mux
+        // DASH高畫質音視訊分離串流，這是明確的品質上限）。
+        registerOptional('youtube_download',
+            '從一段文字裡解析出YouTube連結（或直接給連結陣列），驗證每個影片是否符合下載範圍後下載：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因（不支援下載任意版權影片）。需要先在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）——沒設定會直接回報要先去設定。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fromText = this._youtubeExtractVideoIds(parsed.text);
+                const fromUrls = Array.isArray(parsed.urls) ? parsed.urls.flatMap((u) => this._youtubeExtractVideoIds(String(u))) : [];
+                const videoIds = Array.from(new Set([...fromText, ...fromUrls]));
+                if (!videoIds.length) return JSON.stringify({ ok: false, error: '沒有從text/urls裡解析出任何YouTube連結（支援youtube.com/watch?v=、youtu.be/、/embed/、/shorts/這幾種格式）' });
+                const progress = this._createProgressWidget('YouTube 下載');
+                try {
+                    progress.update({ pct: 5, status: `解析到${videoIds.length}支影片，驗證下載範圍中...` });
+                    let checks;
+                    try {
+                        checks = await this._youtubeCheckLicenseAndOwnership(videoIds);
+                    } catch (err) {
+                        progress.fail(String(err.message || err));
+                        return JSON.stringify({ ok: false, error: String(err.message || err) });
+                    }
+                    const allowed = videoIds.filter((id) => checks[id] && checks[id].ok);
+                    const skipped = videoIds.filter((id) => !checks[id] || !checks[id].ok)
+                        .map((id) => ({ video_id: id, reason: (checks[id] && checks[id].reason) || '未知原因', title: checks[id] && checks[id].title }));
+                    const downloaded = [];
+                    const failed = [];
+                    for (let i = 0; i < allowed.length; i++) {
+                        const id = allowed[i];
+                        const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
+                        progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
+                        try {
+                            const { title, ext, bytes } = await this._youtubeDownloadOne(id);
+                            const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+                            const blob = new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'application/octet-stream' });
+                            const delivered = await this.generateAndDeliverFile(blob, `${safeTitle}.${ext}`, blob.type);
+                            downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id });
+                        } catch (err) {
+                            failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
+                        }
+                    }
+                    progress.finish(`完成：成功${downloaded.length}支、跳過${skipped.length}支、失敗${failed.length}支`);
+                    return JSON.stringify({ ok: true, downloaded, skipped, failed, note: '只能下載progressive格式（沒有ffmpeg，沒辦法合併DASH分離的高畫質音視訊串流）。' });
+                } catch (err) {
+                    progress.fail(String(err.message || err));
+                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                }
+            },
+            {
+                type: 'object',
+                properties: {
+                    text: { type: 'string', description: '含有YouTube連結的一段文字，會自動抓出裡面所有連結' },
+                    urls: { type: 'array', items: { type: 'string' }, description: '直接給YouTube連結陣列' },
+                },
+                additionalProperties: false,
+            }
+        );
         // 同一層資料夾底下的_scripts_manifest.json（不同子資料夾可以各自
         // 有獨立的清單，呼應使用者可能本來就會依專案分資料夾整理的習慣）。
         registerOptional('register_saved_script',
@@ -16252,6 +16487,14 @@ ${sourceTool.handlerScript}
         if (gitAuthorNameInput) gitAuthorNameInput.value = this.advancedSettings.gitAuthorName || '';
         const gitAuthorEmailInput = document.getElementById('ai-git-author-email');
         if (gitAuthorEmailInput) gitAuthorEmailInput.value = this.advancedSettings.gitAuthorEmail || '';
+        const youtubeApiKeyInput = document.getElementById('ai-youtube-api-key');
+        if (youtubeApiKeyInput) youtubeApiKeyInput.value = this.advancedSettings.youtubeDataApiKey || '';
+        const youtubeChannelIdInput = document.getElementById('ai-youtube-channel-id');
+        if (youtubeChannelIdInput) youtubeChannelIdInput.value = this.advancedSettings.youtubeChannelId || '';
+        const codingDomainEnabledInput = document.getElementById('ai-coding-domain-enabled');
+        if (codingDomainEnabledInput) codingDomainEnabledInput.checked = this.advancedSettings.codingDomainEnabled !== false;
+        const codingPublishModeSelect = document.getElementById('ai-coding-publish-mode');
+        if (codingPublishModeSelect) codingPublishModeSelect.value = this.advancedSettings.codingPublishMode === 'auto' ? 'auto' : 'ask';
         const whisperDeviceSelect = document.getElementById('ai-whisper-device');
         if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
@@ -20699,6 +20942,179 @@ ${sourceTool.handlerScript}
             return this._pyodideInstance;
         })().catch(e => { this._pyodideLoadPromise = null; this._pyodideInstance = null; throw e; });
         return this._pyodideLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-25——yt-dlp的HTTP網路橋接（見
+    // PYODIDE_YTDLP_BRIDGE_SRC的完整說明），底層直接重用_terminalHttpFetch
+    // （已經支援真正的ArrayBuffer二進位回應+自訂header+timeout，且自動
+    // 經過_viaAssetProxy的CORS繞過——跟終端機curl/wget用的是同一套機制，
+    // 不是重新發明一個網路層）。
+    _ytDlpHttpBridge() {
+        if (this._ytDlpHttpBridgeObj) return this._ytDlpHttpBridgeObj;
+        this._ytDlpHttpBridgeObj = {
+            request: async (url, method, headersJson, bodyBytes) => {
+                let headers = {};
+                try { headers = JSON.parse(headersJson || '{}'); } catch (_) {}
+                delete headers['Accept-Encoding']; delete headers['accept-encoding'];
+                const { resp } = await this._terminalHttpFetch(method, url, {
+                    headers,
+                    body: bodyBytes && bodyBytes.length ? bodyBytes : undefined,
+                    timeoutMs: 60000,
+                });
+                const buf = new Uint8Array(await resp.arrayBuffer());
+                const respHeaders = {};
+                resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+                return { status: resp.status, url: resp.url, headersJson: JSON.stringify(respHeaders), body: buf };
+            },
+        };
+        return this._ytDlpHttpBridgeObj;
+    }
+
+    // tw_stock_db客製: 2026-09-25——yt-dlp的lazy-load（跟python/jq/m4等指令
+    // 同一種「只在真的用到才載入」原則，使用者明確要求「僅在用到相對需要的
+    // 功能再接」）。**只在_pyodideInstance已經存在的情況下額外掛yt-dlp**
+    // （呼叫_ensurePyodideLoaded()確保基礎環境先就緒），跟_mpInstallShim
+    // 同一種「先存區域變數、全部步驟成功才設定完成旗標」的保守寫法，避免
+    // 半成功狀態被誤判成已就緒。`ssl`是Pyodide unvendor掉的stdlib套件，
+    // 要跟`micropip`一起明確`loadPackage`；yt-dlp本身透過micropip從PyPI
+    // 安裝（這個app第一次安裝任意PyPI套件，已實測確認yt-dlp沒有硬性C
+    // extension依賴、可以在Pyodide裡正常import）。
+    async _ensureYtDlpLoaded() {
+        if (this._ytDlpReady) return this._pyodideInstance;
+        if (this._ytDlpLoadPromise) return this._ytDlpLoadPromise;
+        this._ytDlpLoadPromise = (async () => {
+            const instance = await this._ensurePyodideLoaded();
+            try {
+                await instance.loadPackage(['ssl', 'micropip']);
+            } catch (err) {
+                throw new Error(`Python基礎套件（ssl/micropip）載入失敗：${String(err.message || err)}`);
+            }
+            instance.registerJsModule('_fa_yt_http_bridge', this._ytDlpHttpBridge());
+            try {
+                await instance.runPythonAsync(PYODIDE_YTDLP_BRIDGE_SRC);
+            } catch (err) {
+                throw new Error(`YouTube網路橋接註冊失敗：${String(err.message || err)}`);
+            }
+            try {
+                const micropip = instance.pyimport('micropip');
+                await micropip.install('yt-dlp');
+                await instance.runPythonAsync('import yt_dlp');
+            } catch (err) {
+                throw new Error(`yt-dlp安裝/載入失敗：${String(err.message || err)}`);
+            }
+            this._ytDlpReady = true;
+            return instance;
+        })().catch(e => { this._ytDlpLoadPromise = null; this._ytDlpReady = false; throw e; });
+        return this._ytDlpLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-25——從貼上的文字裡抓YouTube連結（
+    // youtube.com/watch?v=、youtu.be/、/embed/、/shorts/ 四種常見格式），
+    // 讓AI可以直接把使用者貼的一整段文字丟進來，不用自己手動一個個抄連結。
+    _youtubeExtractVideoIds(text) {
+        const ids = [];
+        const seen = new Set();
+        const s = String(text || '');
+        const patterns = [
+            /youtube\.com\/watch\?(?:[^\s"'<>]*&)?v=([A-Za-z0-9_-]{11})/g,
+            /youtu\.be\/([A-Za-z0-9_-]{11})/g,
+            /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/g,
+            /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/g,
+        ];
+        for (const re of patterns) {
+            let m;
+            while ((m = re.exec(s))) { if (!seen.has(m[1])) { seen.add(m[1]); ids.push(m[1]); } }
+        }
+        return ids;
+    }
+
+    // tw_stock_db客製: 2026-09-25使用者明確確認的硬性範圍限制——只下載(a)
+    // 使用者自己頻道的影片，或(b) YouTube授權欄位是Creative Commons的影片，
+    // 其餘一律跳過並說明原因，不做無限制下載。用YouTube Data API v3的
+    // videos.list（part=snippet,status）一次查最多50個ID，同時拿到
+    // channelId（跟使用者設定的youtubeChannelId比對）跟license（比對是否
+    // 為'creativeCommon'）。**兩個advancedSettings欄位都是必填**——沒設定
+    // 就直接報錯，不做「沒有金鑰時的降級驗證」（故意不留一條容易被繞過的
+    // 驗證路徑）。
+    async _youtubeCheckLicenseAndOwnership(videoIds) {
+        const apiKey = String(this.advancedSettings.youtubeDataApiKey || '').trim();
+        const myChannelId = String(this.advancedSettings.youtubeChannelId || '').trim();
+        if (!apiKey || !myChannelId) {
+            throw new Error('請先在Advance Settings設定「YouTube Data API金鑰」與「我的YouTube頻道ID」，這個工具才能驗證下載範圍（只允許本人頻道或Creative Commons授權的影片）。');
+        }
+        const results = {};
+        for (let i = 0; i < videoIds.length; i += 50) {
+            const batch = videoIds.slice(i, i + 50);
+            const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,status&id=${batch.join(',')}&key=${encodeURIComponent(apiKey)}`;
+            let resp;
+            try {
+                ({ resp } = await this._terminalHttpFetch('GET', url, { timeoutMs: 20000 }));
+            } catch (err) {
+                throw new Error(`YouTube Data API呼叫失敗：${String(err.message || err)}`);
+            }
+            if (!resp.ok) {
+                const bodyText = await resp.text().catch(() => '');
+                throw new Error(`YouTube Data API回傳錯誤：HTTP ${resp.status}${bodyText ? '：' + bodyText.slice(0, 300) : ''}`);
+            }
+            const data = await resp.json();
+            const found = new Set();
+            for (const item of (data.items || [])) {
+                found.add(item.id);
+                const isOwnChannel = item.snippet && item.snippet.channelId === myChannelId;
+                const isCC = item.status && item.status.license === 'creativeCommon';
+                results[item.id] = {
+                    ok: !!(isOwnChannel || isCC),
+                    title: item.snippet ? item.snippet.title : null,
+                    channelId: item.snippet ? item.snippet.channelId : null,
+                    license: item.status ? item.status.license : null,
+                    reason: isOwnChannel ? '本人頻道' : (isCC ? 'Creative Commons授權' : '跳過：非本人頻道且非Creative Commons授權'),
+                };
+            }
+            for (const id of batch) {
+                if (!found.has(id)) results[id] = { ok: false, reason: '跳過：YouTube Data API查無此影片（可能已下架/設為不公開/ID錯誤）' };
+            }
+        }
+        return results;
+    }
+
+    // tw_stock_db客製: 2026-09-25——實際下載一支已通過驗證的影片。**只抓
+    // progressive格式**（單一檔案已經muxed好audio+video，格式選擇字串
+    // 'best[ext=mp4]/best'會優先選這種）——這個沙盒沒有ffmpeg，沒辦法mux
+    // DASH分離的高畫質音視訊串流，這是明確的品質上限，不是bug（等
+    // ffmpeg.wasm接上後可以放寬）。
+    async _youtubeDownloadOne(videoId) {
+        const instance = await this._ensureYtDlpLoaded();
+        const script = `
+import yt_dlp, json as _fa_json4
+ydl_opts = {
+    'quiet': True, 'no_warnings': True, 'skip_download': True,
+    'format': 'best[ext=mp4]/best',
+}
+_result = None
+with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    info = ydl.extract_info('https://www.youtube.com/watch?v=${videoId}', download=False)
+    fmt_url = info.get('url')
+    if not fmt_url and info.get('formats'):
+        fmt_url = info['formats'][-1].get('url')
+    _result = _fa_json4.dumps({
+        'title': info.get('title'),
+        'ext': info.get('ext') or 'mp4',
+        'url': fmt_url,
+    })
+_result
+`;
+        let infoJson;
+        try {
+            infoJson = await instance.runPythonAsync(script);
+        } catch (err) {
+            throw new Error(`yt-dlp解析影片資訊失敗：${String(err.message || err)}`);
+        }
+        const info = JSON.parse(infoJson);
+        if (!info.url) throw new Error('yt-dlp沒有解析出可下載的媒體網址（可能沒有progressive格式可用）');
+        const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });
+        if (!resp.ok) throw new Error(`下載媒體檔案失敗：HTTP ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+        return { title: info.title || videoId, ext: info.ext || 'mp4', bytes: new Uint8Array(buf) };
     }
 
     // ==== MP-METHODS-BEGIN ====
@@ -30702,6 +31118,21 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-pane hidden" data-pane="skills">
                                 <div class="ai-advanced-stack">
                                     <div class="ai-advanced-tools-header">
+                                        <div class="ai-advanced-label" style="margin:0;">🏛️ 內建 Domain：程式設計（評估／設計／實作／測試／發佈）</div>
+                                        <label style="display:inline-flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+                                            <input type="checkbox" id="ai-coding-domain-enabled">啟用
+                                        </label>
+                                    </div>
+                                    <p class="ai-advanced-hint">跟Skill Bundle是不同機制（這是app內建、有固定流程狀態機的coding domain，不是靠這裡的技能包/自訂工具堆出來），放在這裡是方便你統一管理啟用/停用。停用後AI不會再把程式設計任務委派給這個domain。</p>
+                                    <label class="ai-advanced-label" for="ai-coding-publish-mode">發佈偏好（測試通過、commit完成後）</label>
+                                    <select id="ai-coding-publish-mode" class="ai-advanced-input">
+                                        <option value="ask">先問我要不要push（預設，較安全）</option>
+                                        <option value="auto">自動push，不用每次問</option>
+                                    </select>
+                                    <p class="ai-advanced-hint">不論這裡選哪個，會把東西發佈到正式環境/外部服務的deploy類指令一律會先列出內容等你確認，不受這個設定影響——只有「commit完成後要不要接著push」這一步會照這裡的偏好走。</p>
+                                </div>
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
                                         <div class="ai-advanced-label" style="margin:0;">技能包（Skill Bundle）</div>
                                         <button type="button" id="ai-skill-bundle-add-btn" class="ai-advanced-btn primary">+ 新增技能包</button>
                                     </div>
@@ -30811,6 +31242,14 @@ ${existingNodeSummaries}
                                     <input type="text" id="ai-git-author-name" class="ai-advanced-input" placeholder="例如：sunneo">
                                     <label class="ai-advanced-label" for="ai-git-author-email">commit作者信箱</label>
                                     <input type="text" id="ai-git-author-email" class="ai-advanced-input" placeholder="例如：you@example.com">
+                                    <div class="ai-advanced-tools-header" style="margin-top:16px;">
+                                        <div class="ai-advanced-label" style="margin:0;">YouTube下載（youtube_download工具）</div>
+                                    </div>
+                                    <p class="ai-advanced-hint">AI可以用<code>youtube_download</code>解析貼上的文字裡的YouTube連結並下載——**只允許下載你自己頻道的影片，或YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並說明原因，不支援下載任意版權影片。這兩個欄位都要填才能用：金鑰請到<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>免費申請YouTube Data API v3金鑰；頻道ID是你自己YouTube頻道的ID（在YouTube工作室的「設定→頻道→進階設定」可以查到，用來比對影片上傳者是不是你本人）。</p>
+                                    <label class="ai-advanced-label" for="ai-youtube-api-key">YouTube Data API金鑰</label>
+                                    <input type="password" id="ai-youtube-api-key" class="ai-advanced-input" placeholder="AIza...">
+                                    <label class="ai-advanced-label" for="ai-youtube-channel-id">我的YouTube頻道ID</label>
+                                    <input type="text" id="ai-youtube-channel-id" class="ai-advanced-input" placeholder="UC...">
                                 </div>
                             </div>
                             <div class="ai-advanced-pane hidden" data-pane="subagent">
@@ -32724,8 +33163,116 @@ ${existingNodeSummaries}
     // contextProvider是同一種模式）取得建議內容。點擊chip只會把文字填進
     // 輸入框（不自動送出），讓使用者可以先看一眼/改字再送，比較不會誤觸發
     // 要花token或會產生檔案的動作（例如「口頭+pptx」）。
+    // tw_stock_db客製: 2026-09-26使用者反饋「內建的/suggest是空的」——
+    // host沒有提供chipsProvider（例如aiweb）時原本什麼都不會顯示。現在
+    // 建議操作 = host自己的chips + 內建的AI功能總覽入口（清冊有內容時）。
+    // host有提供自己的chips時只多附一顆「AI功能總覽」，不搶版面；完全
+    // 沒有host chips時才額外把每個分類各列一顆，讓使用者一進來就能看到
+    // 助理能做什麼。
+    _getSuggestionChips() {
+        const host = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
+        return host.concat(this._buildFeatureChips(host.length === 0));
+    }
+
+    _buildFeatureChips(includeCategories) {
+        const catalog = this.getFeaturesCatalog();
+        if (!catalog) return [];
+        const chips = [{ label: '🧭 AI功能總覽', text: '/ai-features' }];
+        if (includeCategories) {
+            for (const c of catalog.categories) {
+                const names = c.features.filter(f => f.available).slice(0, 3).map(f => f.name).join('、');
+                chips.push({ label: `${c.name}：${names || c.summary}`, text: `/ai-features ${c.id}` });
+            }
+        }
+        return chips;
+    }
+
+    // 功能清冊（見上面FA_AI_FEATURES_CATALOG的說明）。每個功能多帶一個
+    // available：清冊的platforms寫的是「哪些平台有這個功能」，這裡對照目前
+    // 實際跑的平台（桌面版有window.desktopAPI，可用options.platform覆寫）
+    // 算出來，不把桌面版限定的功能藏起來——使用者問到時要能明確告訴他
+    // 「這個要桌面版」，而不是假裝沒這回事。
+    getFeaturesCatalog() {
+        const raw = this.options.featuresCatalog || FA_AI_FEATURES_CATALOG;
+        if (!raw || !Array.isArray(raw.categories)) return null;
+        const platform = this.options.platform
+            || ((typeof window !== 'undefined' && window.desktopAPI) ? 'desktop' : 'web');
+        return {
+            schema: raw.schema,
+            platform,
+            categories: raw.categories.map(c => ({
+                id: c.id, name: c.name, summary: c.summary,
+                features: (c.features || []).map(f => Object.assign({}, f, {
+                    available: !f.platforms || !f.platforms.length || f.platforms.includes(platform),
+                })),
+            })),
+        };
+    }
+
+    // list_ai_features工具跟/ai-features斜線指令共用的查詢：id（功能id或
+    // 分類id）優先，其次query關鍵字（比對名稱/說明/範例/工具名/指令），都沒給
+    // 就回全部分類的精簡清單。
+    _queryFeatures({ id, category, query } = {}) {
+        const catalog = this.getFeaturesCatalog();
+        if (!catalog) return null;
+        const key = String(id || category || '').trim().toLowerCase();
+        const q = String(query || '').trim().toLowerCase();
+        let cats = catalog.categories;
+        let detail = false;
+        if (key) {
+            const byCat = cats.filter(c => c.id.toLowerCase() === key);
+            if (byCat.length) { cats = byCat; detail = true; }
+            else {
+                cats = cats.map(c => Object.assign({}, c, { features: c.features.filter(f => f.id.toLowerCase() === key) }))
+                    .filter(c => c.features.length);
+                detail = true;
+            }
+        } else if (q) {
+            const hay = f => [f.name, f.summary, f.id, ...(f.samples || []), ...[].concat((f.how || {}).slash || [], (f.how || {}).tools || [], (f.how || {}).domain || [])]
+                .join(' ').toLowerCase();
+            cats = cats.map(c => Object.assign({}, c, { features: c.features.filter(f => hay(f).includes(q)) }))
+                .filter(c => c.features.length);
+            detail = true;
+        }
+        return { platform: catalog.platform, detail, categories: cats };
+    }
+
+    _formatFeaturesMarkdown(result, argsText) {
+        if (!result) return '目前沒有可用的功能清冊（這個版本沒有內嵌 features/ai-features.yaml）。';
+        if (!result.categories.length) return `功能清單裡找不到「${argsText}」。輸入 /ai-features 看全部分類。`;
+        const platLabel = { web: '網頁版', desktop: '桌面版' };
+        const lines = [];
+        if (!result.detail) lines.push(`🧭 **AI 功能總覽**（目前是${platLabel[result.platform] || result.platform}）`, '');
+        for (const c of result.categories) {
+            lines.push(`### ${c.name}（\`${c.id}\`）`, c.summary || '');
+            for (const f of c.features) {
+                const tag = f.available ? '' : `（僅${(f.platforms || []).map(p => platLabel[p] || p).join('、')}）`;
+                lines.push(`- **${f.name}**（\`${f.id}\`）${tag}：${f.summary}`);
+                if (result.detail) {
+                    const how = f.how || {};
+                    if (how.slash) lines.push(`  - 斜線指令：${[].concat(how.slash).map(s => '`' + s + '`').join('、')}`);
+                    if (how.ui) lines.push(`  - 介面入口：${[].concat(how.ui).join('、')}`);
+                    for (const s of (f.samples || [])) lines.push(`  - 範例：\`${s}\``);
+                }
+            }
+            lines.push('');
+        }
+        if (!result.detail) lines.push('輸入 `/ai-features <分類id或功能id>` 可以看詳細用法跟範例，例如 `/ai-features media`。');
+        return lines.join('\n');
+    }
+
+    showAiFeatures(argsText) {
+        const arg = String(argsText || '').trim();
+        const isId = arg && !/\s/.test(arg);
+        const result = this._queryFeatures(isId ? { id: arg } : (arg ? { query: arg } : {}));
+        const fallback = (result && isId && !result.categories.length) ? this._queryFeatures({ query: arg }) : result;
+        this.messages.push({ role: 'assistant', content: this._formatFeaturesMarkdown(fallback, arg) });
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
     insertSuggestionChipsMessage() {
-        const chips = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
+        const chips = this._getSuggestionChips();
         if (!chips.length) return;
         const content = '💡 建議操作（點擊可以快速填入輸入框）：\n' + chips.map(c => `- ${c.label || c.text}`).join('\n');
         const msg = { role: 'assistant', content };
@@ -32755,7 +33302,7 @@ ${existingNodeSummaries}
             if (!this.messages.length) this.insertSuggestionChipsMessage();
             return; // 已經有其他對話內容，不打斷，什麼都不做
         }
-        const chips = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
+        const chips = this._getSuggestionChips();
         if (!chips.length) return;
         const content = '💡 建議操作（點擊可以快速填入輸入框）：\n' + chips.map(c => `- ${c.label || c.text}`).join('\n');
         onlyMsg.content = content;
@@ -33574,6 +34121,34 @@ ${existingNodeSummaries}
         if (gitCorsProxyUrlInput) {
             gitCorsProxyUrlInput.addEventListener('change', () => {
                 this.advancedSettings.gitCorsProxyUrl = gitCorsProxyUrlInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const youtubeApiKeyInput = document.getElementById('ai-youtube-api-key');
+        if (youtubeApiKeyInput) {
+            youtubeApiKeyInput.addEventListener('change', () => {
+                this.advancedSettings.youtubeDataApiKey = youtubeApiKeyInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const youtubeChannelIdInput = document.getElementById('ai-youtube-channel-id');
+        if (youtubeChannelIdInput) {
+            youtubeChannelIdInput.addEventListener('change', () => {
+                this.advancedSettings.youtubeChannelId = youtubeChannelIdInput.value.trim();
+                this._saveAdvancedSettings();
+            });
+        }
+        const codingDomainEnabledInput = document.getElementById('ai-coding-domain-enabled');
+        if (codingDomainEnabledInput) {
+            codingDomainEnabledInput.addEventListener('change', () => {
+                this.advancedSettings.codingDomainEnabled = !!codingDomainEnabledInput.checked;
+                this._saveAdvancedSettings();
+            });
+        }
+        const codingPublishModeSelect = document.getElementById('ai-coding-publish-mode');
+        if (codingPublishModeSelect) {
+            codingPublishModeSelect.addEventListener('change', () => {
+                this.advancedSettings.codingPublishMode = codingPublishModeSelect.value === 'auto' ? 'auto' : 'ask';
                 this._saveAdvancedSettings();
             });
         }
