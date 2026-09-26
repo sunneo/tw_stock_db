@@ -74,15 +74,28 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
    "
 
    # 3) 純git plumbing組一個全新commit（不checkout、不動目前工作目錄），force push
+   #    commit訊息用-F讀檔案、不要用-m內嵌多行字串——這個環境的Bash工具
+   #    會把多行指令重新包一層eval，實測過多行的-m "..."字串會被壓扁/
+   #    弄亂換行，導致commit-tree收到奇怪的參數組合直接報錯
+   #    「fatal: must give exactly one tree」（tree hash本身是對的，
+   #    問題出在-m那段字串被wrapper弄壞），所以commit訊息一律先寫進
+   #    一個檔案再用-F帶進去，不要在同一行對TREE/COMMIT變數做長字串插值。
+   cat > /tmp/patch-commit-msg.txt <<'MSG'
+desktop-app-patch: v3 - <這次改了什麼>
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+MSG
    export GIT_DIR=$(git rev-parse --git-dir)   # repo根目錄的.git
    export GIT_WORK_TREE="$PATCH_DIR"
    export GIT_INDEX_FILE=/tmp/patch-index      # 用你自己的scratchpad路徑
    rm -f "$GIT_INDEX_FILE"
    (cd "$PATCH_DIR" && git add -A)
    TREE=$(cd "$PATCH_DIR" && git write-tree)
-   COMMIT=$(cd "$PATCH_DIR" && git commit-tree "$TREE" -m "desktop-app-patch: v3 - <這次改了什麼>")
-   git update-ref refs/heads/desktop-app-patch "$COMMIT"
+   echo "tree=[$TREE] len=${#TREE}"   # 務必檢查len=40，不是40代表變數被污染了
+   COMMIT=$(cd "$PATCH_DIR" && git commit-tree "$TREE" -F /tmp/patch-commit-msg.txt)
+   echo "commit=[$COMMIT] len=${#COMMIT}"
    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+   git update-ref refs/heads/desktop-app-patch "$COMMIT"
    git push --force origin desktop-app-patch:desktop-app-patch
    ```
 
@@ -90,9 +103,9 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 
 6. **驗證真的發佈成功**：
    ```bash
-   curl -sS "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch/manifest.json"
+   curl -sS "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch/manifest.json?_cb=$(date +%s)"
    ```
-   確認version／notes／files的md5是這次剛build出來的值（跟`desktop-app/renderer/update-manifest.json`裡的md5逐一比對）。
+   確認version／notes／files的md5是這次剛build出來的值（跟`desktop-app/renderer/update-manifest.json`裡的md5逐一比對）。**URL後面的`?_cb=...`不是裝飾——raw.githubusercontent.com前面的CDN（Fastly）在force push之後一小段時間內，不同節點仍可能回應舊的快取內容，同一個URL重複curl可能還是拿到舊manifest；查詢字串不同會被CDN當成不同的快取key，一定會打到origin**。main.js的`fetchUpdateResource()`（`fa:update:check`/`fa:update:apply`的下載入口）已經內建同樣的cache-buster，使用者端不用自己處理；但你自己手動驗證發佈結果時，記得query string也要跟著換（每次都用當下時間戳），不要一直重複打同一個URL卻懷疑「怎麼還是舊的」。
 
 ## 一定要做的驗證：不只是「壓縮完看起來沒錯」
 
