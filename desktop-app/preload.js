@@ -60,6 +60,15 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
     listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
   },
+  // 對話清單（左邊chat list）的檔案儲存，見main.js的fa:chats:*。
+  chats: {
+    dir: () => ipcRenderer.invoke("fa:chats:dir"),
+    readIndex: () => ipcRenderer.invoke("fa:chats:readIndex"),
+    writeIndex: (text) => ipcRenderer.invoke("fa:chats:writeIndex", { text }),
+    read: (id) => ipcRenderer.invoke("fa:chats:read", { id }),
+    write: (id, text) => ipcRenderer.invoke("fa:chats:write", { id, text }),
+    delete: (id) => ipcRenderer.invoke("fa:chats:delete", { id }),
+  },
   exec: {
     getSettings: () => ipcRenderer.invoke("fa:exec:getSettings"),
     setSettings: (patch) => ipcRenderer.invoke("fa:exec:setSettings", patch),
