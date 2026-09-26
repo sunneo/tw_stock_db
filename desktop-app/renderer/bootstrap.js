@@ -533,6 +533,14 @@ function patchCloudflareWording(root) {
     try {
       const info = await window.desktopAPI.update.check();
       if (!info || !info.ok) throw new Error((info && info.error) || "檢查更新失敗");
+      // tw_stock_db客製: 2026-09-26使用者要求——「已是最新版本」這幾個字
+      // 本身看不出「最新」是指哪個版本，發生過force push新patch之後（見
+      // main.js的withCacheBuster()說明，CDN短暫回應舊內容）畫面卻還是
+      // 顯示「已是最新版本」、讓使用者無從判斷這是真的沒有更新還是抓到
+      // 舊快取——把currentVersion/remoteVersion直接放進按鈕title（hover
+      // 就看得到，不受setUpdateBtnLabel()幾秒後恢復預設文字影響）跟
+      // 「已是最新版本」那句話本身，兩種狀態都看得出目前實際比對到的版本。
+      updateBtn.title = `目前版本：${info.currentVersion || "?"}｜伺服器版本：${info.remoteVersion || "?"}`;
       if (info.hasUpdate) {
         pendingUpdateInfo = info;
         setUpdateBtnLabel("⬆️ 發現新版本", { highlight: true });
@@ -544,7 +552,7 @@ function patchCloudflareWording(root) {
         if (updateDot) updateDot.style.display = "none";
         setUpdateBtnLabel(UPDATE_IDLE_LABEL);
         console.log(`[live-update] 已是最新版本（${info.currentVersion || "?"}）`);
-        if (!silent) { setUpdateBtnLabel("✅ 已是最新版本"); setTimeout(() => setUpdateBtnLabel(UPDATE_IDLE_LABEL), 3000); }
+        if (!silent) { setUpdateBtnLabel(`✅ 已是最新版本（v${info.currentVersion || "?"}）`); setTimeout(() => setUpdateBtnLabel(UPDATE_IDLE_LABEL), 4000); }
       }
     } catch (err) {
       // tw_stock_db客製: 跟festival theme同一種「下載失敗就靜默、不影響
