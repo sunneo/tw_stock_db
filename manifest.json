@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "version": "3",
+  "publishedAt": "2026-09-26T16:26:57.641Z",
+  "notes": "「已是最新版本」現在會顯示實際版本號（目前版本/伺服器版本，滑鼠移到按鈕上也看得到），方便判斷是不是CDN短暫快取造成的誤報。",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "f3f2da7ccbc8576988d1d33740dc0590"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "7d513070baab21975554a305e385adc7"
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "7d513070baab21975554a305e385adc7"
+    }
+  }
+}
