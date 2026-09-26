@@ -14308,7 +14308,7 @@ ${fnData.code}
     _truncateToolResultForContext(text) {
         const limit = this._getAdaptiveContentBudgetChars(0.15, 8000);
         if (text.length <= limit) return text;
-        return text.slice(0, limit) + `\n\n[結果過長已自動截斷：原始長度${text.length}字元，只保留前${limit}字元。如果這是委派子任務的結論，代表子任務本身回覆得太長，之後委派時請提醒子agent回答精簡一點；如果是讀取檔案，改用支援自動分段/map-reduce的方式（例如analyze_large_file）取得完整內容，不要靠單次工具結果塞下全部原始內容。]`;
+        return text.slice(0, limit) + `\n\n[結果過長已自動截斷：原始長度${text.length}字元，只保留前${limit}字元。**不要用一樣的方式再委派/再呼叫一次，結果同樣會被截斷。** 需要看被截掉的部分時：如果是檔案內容，自己直接用fs_read_file（或fap_read_file）帶offset分段讀（從offset=${limit}附近接著讀，回傳has_more:true就繼續），很長又只需要分析/摘要時改用analyze_large_file；如果是委派子任務的結論，改成請子agent只回傳你真正需要的重點或指定片段，或把任務拆小分次委派。]`;
     }
 
     _formatToolResult(result, toolName) {
@@ -26224,6 +26224,17 @@ _result
         this._syncStopButton();
     }
 
+    // tw_stock_db客製: 2026-09-26使用者要求「desktop必須always auto agent mode」
+    // ——桌面版是單機的自主代理人：弱模型（例如qwen3.6-claude4.7:35b-a3b）
+    // 容易講一句就停、或撞到防護網就收工（實測：使用者被迫連打三次「繼續」，
+    // 還罵「請不要一直停止，我們是agent mode」）。桌面版一律放寬各種
+    // 「提早收工」的上限（重複呼叫的判定門檻、攔截後強制關工具的門檻、
+    // 「說要做卻沒做」的退回次數、子任務回合數），讓AI盡可能自己做到完成；
+    // 網頁版維持原本比較保守的數字。
+    _isAutoAgentMode() {
+        if (this.options && this.options.platform) return this.options.platform === 'desktop';
+        return typeof window !== 'undefined' && !!window.desktopAPI;
+    }
     _dedupTokens(text) {
         return new Set(String(text || '').toLowerCase().split(/[^\p{L}\p{N}_.]+/u).filter(Boolean));
     }
@@ -26238,15 +26249,22 @@ _result
         if (!log || !FA_DEDUP_TOOLS.has(name)) return null;
         const cur = this._dedupTokens(this._dedupText(name, rawArgs));
         if (!cur.size) return null;
-        const threshold = name === 'delegate_to_subagent' ? 0.6 : 0.95;
+        const threshold = name === 'delegate_to_subagent' ? (this._isAutoAgentMode() ? 0.85 : 0.6) : 0.95;
+        // tw_stock_db客製: 2026-09-26——「表面成功、實質沒有結果」（例如子agent回「這幾個檔案
+        // 不存在，請問你知道位置嗎」）不是真的成功：先前直接被當成成功、之後幾乎相同
+        // 的重試全被攔下並叫AI「整理成最終回覆」，AI就卡死（使用者實測：AI明明手上
+        // 有別的做法卻被擋）。這類結果（soft）允許重試，同樣內容累積3次才攔。
+        let softFails = 0, lastSoft = null;
         for (const prev of log.calls) {
-            if (prev.name !== name || !prev.ok) continue;
+            if (prev.name !== name || (!prev.ok && !prev.soft)) continue;
             let inter = 0;
             for (const t of cur) if (prev.tokens.has(t)) inter++;
             const union = cur.size + prev.tokens.size - inter;
-            if (union && inter / union >= threshold) return prev;
+            if (!(union && inter / union >= threshold)) continue;
+            if (prev.ok) return prev;
+            softFails++; lastSoft = prev;
         }
-        return null;
+        return softFails >= 3 ? lastSoft : null;
     }
     // 包住工具執行：重複呼叫直接回傳「已做過」的提示，不真的再跑一次；否則執行並記錄結果。
     async _callToolGuarded(log, name, rawArgs, run) {
@@ -26254,17 +26272,29 @@ _result
         if (dup) {
             log.blocked = (log.blocked || 0) + 1;
             this._log(`🛡️ 已攔下重複呼叫 ${name}（這一輪第${log.blocked}次）：內容跟先前已成功的呼叫幾乎相同。`);
-            if (log.blocked >= 2 && log === this._toolCallLog) this._forceNoTools = true;
+            if (log.blocked >= (this._isAutoAgentMode() ? 8 : 2) && log === this._toolCallLog) this._forceNoTools = true;
             return JSON.stringify({
                 ok: true, duplicate_call_blocked: true,
-                message: `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
+                message: dup.soft ? `你在這一輪已經用幾乎相同的內容呼叫過 ${name} 3次，每次都沒有得到有用的結果（最後一次如下）。不要再用同樣的做法：請換一個做法（例如自己直接用fs_list_files/fs_read_file確認路徑是否正確、把任務講得更具體、或拆成更小的步驟），做不到就如實告訴使用者卡在哪裡。` : `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
                 previous_result: String(dup.resultText).slice(0, 1500),
             });
         }
         const result = await run();
         let ok = true;
         try { const parsed = typeof result === 'string' ? JSON.parse(result) : result; if (parsed && (parsed.ok === false || parsed.error)) ok = false; } catch (_) { /* 非JSON視為成功 */ }
-        if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
+        // tw_stock_db客製: 2026-09-26使用者實測回報「結果被截斷後AI不停停下來」——
+        // 委派結果太長會被_truncateToolResultForContext截掉，原本這裡還是把它當成
+        // 「已成功」記進去，AI照截斷提示換個說法再試一次，就被判成重複呼叫攔下、
+        // 連續攔兩次還會_forceNoTools關掉所有工具，AI只能講一句「讓我取得完整內容」
+        // 就結束。被截斷的結果是不完整的，不算成功，允許AI換做法重試。
+        if (ok && typeof result === 'string' && result.length > this._getAdaptiveContentBudgetChars(0.15, 8000)) ok = false;
+        let soft = false;
+        if (ok && name === 'delegate_to_subagent' && typeof result === 'string') {
+            let inner = result;
+            try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
+            if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
+        }
+        if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
 
@@ -26297,6 +26327,23 @@ _result
             if (zh1.test(line) || zh2.test(line) || en.test(line)) return true;
         }
         return false;
+    }
+    // tw_stock_db客製: 2026-09-26使用者實測回報——AI回一句「結果還是被截斷了，讓我用
+    // 不同方式取得完整內容。」就結束這一輪，沒有呼叫任何工具，使用者只看到它
+    // 「不停的停止」。跟_fakeWriteNudge同一種外部驗證：最終回覆很短、最後一句
+    // 開頭是「讓我／我來／接下來…」加上動作動詞、卻沒有任何工具呼叫，就退回請它
+    // 真的做或如實說做不到；桌面版（auto agent mode）每一輪最多6次、網頁版2次，
+    // 工具被強制關掉（_forceNoTools）時不攔。
+    _unfulfilledIntentNudge(text, counterHolder) {
+        if (this._forceNoTools || !counterHolder || (counterHolder.count || 0) >= (this._isAutoAgentMode() ? 6 : 2)) return null;
+        const t = String(text || '').trim();
+        if (!t || t.length > 240 || /[？?]\s*$/.test(t)) return null;
+        const clauses = t.split(/[，,。！!；;\n]/).map((x) => x.trim()).filter(Boolean);
+        const starts = clauses.some((c) => /^(?:好的[，,、]?\s*|了解[，,、]?\s*|OK[，,、]?\s*)?(?:讓我|我來|我先|我將|我會|接下來(?:我)?(?:會|要|來)?|現在(?:我)?(?:來|要|就))/.test(c));
+        const verbs = /(讀取|讀完|取得|查看|檢查|確認|執行|呼叫|重新|分段|繼續|再試|再讀|截取|開啟|搜尋|查詢|下載|寫入|修改|修復|建立|處理|嘗試|用不同|開始|分析|對照|整理|進行|接著)/.test(t);
+        if (!starts || !verbs) return null;
+        counterHolder.count = (counterHolder.count || 0) + 1;
+        return '[系統提示] 你剛才說了接下來要做什麼，但這一輪沒有呼叫任何工具就結束了，使用者看到的只是一句「讓我…」然後停住。你是agent，要自己一路做到完成：請現在就呼叫對應的工具去做（被截斷的檔案內容請改用fs_read_file帶offset分段讀，不要重複委派同樣的任務）；如果實際上做不到或沒有可用的工具，直接明說做不到的原因、已經完成的部分與缺少的部分，不要只講「讓我…」就結束。';
     }
     _fakeWriteNudge(text, store, counterHolder) {
         if (!store || (store.n || 0) > 0) return null;
@@ -28918,6 +28965,7 @@ ${existingNodeSummaries}
         // 的輪值機會。
         this._writeEvidence = { n: 0 };
         this._fakeWriteGuard = { count: 0 };
+        this._intentGuard = { count: 0 };
         this._toolCallLog = { calls: [], blocked: 0 };
         this._forceNoTools = false;
         const rowCfg = this._getInitialFallbackConfig();
@@ -29615,6 +29663,13 @@ ${existingNodeSummaries}
                     this._renderMessageHistory();
                     return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
+                const intentNudge = this._unfulfilledIntentNudge(fullContent, this._intentGuard || (this._intentGuard = { count: 0 }));
+                if (intentNudge) {
+                    this._log('🛡️ 偵測到「說要做某件事卻沒有呼叫任何工具就結束」，已退回請AI真的去做。');
+                    this.messages.push({ role: 'system', content: intentNudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
             }
             this._renderMessageHistory();
             return fullContent;
@@ -29871,6 +29926,13 @@ ${existingNodeSummaries}
                 if (nudge) {
                     this._log('🛡️ 偵測到「宣稱已寫入、但沒有任何成功的寫入工具呼叫」，已退回請AI重做。');
                     this.messages.push({ role: 'system', content: nudge });
+                    this._renderMessageHistory();
+                    return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
+                const intentNudge = this._unfulfilledIntentNudge(finalContent, this._intentGuard || (this._intentGuard = { count: 0 }));
+                if (intentNudge) {
+                    this._log('🛡️ 偵測到「說要做某件事卻沒有呼叫任何工具就結束」，已退回請AI真的去做。');
+                    this.messages.push({ role: 'system', content: intentNudge });
                     this._renderMessageHistory();
                     return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
@@ -30751,6 +30813,7 @@ ${existingNodeSummaries}
         let reasoningDeadendRetries = 0;
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
+        const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0 };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
         // 一樣不消耗maxRounds，獨立計數。
@@ -30759,6 +30822,7 @@ ${existingNodeSummaries}
         // 使用者在子agent執行期間送出的steering，每輪開頭轉送給它（見_addSteeringMessage）。
         let steeringSeen = (this._steeringLog || []).length;
 
+        if (this._isAutoAgentMode()) maxRounds = Math.round(maxRounds * 2);
         for (let round = 0; round < maxRounds; round++) {
             // tw_stock_db客製: 見_acquireBatchRateSlot()同一段說明——使用者
             // 按下停止時，平行跑的子任務要一起停掉，不能只有根對話迴圈認得
@@ -31048,6 +31112,14 @@ ${existingNodeSummaries}
                     round--;
                     continue;
                 }
+                const subIntentNudge = this._unfulfilledIntentNudge(finalText, intentGuard);
+                if (subIntentNudge) {
+                    if (onProgress) onProgress('🛡️ 偵測到「說要做卻沒呼叫工具就結束」，退回請AI真的去做');
+                    messages.push({ role: 'assistant', content: finalText });
+                    messages.push({ role: 'user', content: subIntentNudge });
+                    round--;
+                    continue;
+                }
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
 
@@ -31070,7 +31142,7 @@ ${existingNodeSummaries}
             }
             // 迴圈繼續下一輪，讓模型看到工具結果後給出最終結論
         }
-        return { text: '[子任務超過最大回合數仍未給出結論]', visual: capturedVisual };
+        return { text: `[子任務用完了${maxRounds}個回合仍未給出最終結論（不是失敗，是還沒做完）。請不要再委派一模一樣的任務：把還沒做完的部分拆成更小的子任務再委派，或由你自己直接用工具完成。]`, visual: capturedVisual };
     }
 
     // tw_stock_db客製: batch_analyze_stocks工具的實作入口（見web/index.html
