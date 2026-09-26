@@ -15524,6 +15524,8 @@ ${sourceTool.handlerScript}
             html[data-theme="light"] .ai-model-row-index { color: #64748b; }
             html[data-theme="light"] .ai-advanced-btn { background: #e2e8f0; border-color: #cbd5e1; color: #0f172a; }
             html[data-theme="light"] .ai-advanced-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+            .ai-advanced-btn.ai-model-group-badge { background: #334155; }
+            html[data-theme="light"] .ai-advanced-btn.ai-model-group-badge { background: #dbeafe; border-color: #93c5fd; color: #1e3a8a; }
             html[data-theme="light"] .ai-advanced-btn.danger { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
             html[data-theme="light"] .ai-rag-table th { background: #f1f5f9; color: #1d4ed8; }
             html[data-theme="light"] .ai-rag-table td { border-color: #cbd5e1; }
@@ -16257,7 +16259,7 @@ ${sourceTool.handlerScript}
                     <span class="ai-model-row-handle" title="拖曳調整順序">⠿</span>
                     <span class="ai-model-row-index">#${idx + 1}</span>
                     ${groupInfo && groupInfo.groupSize > 1
-                        ? `<span class="ai-advanced-btn" style="padding:1px 6px; font-size:10px; cursor:default; background:#334155;" title="url+model name相同的row會自動歸成同一組，round-robin輪流用不同api key">🔗 群組${groupInfo.groupNumber}（${groupInfo.groupSize}把key輪流）</span>
+                        ? `<span class="ai-advanced-btn ai-model-group-badge" style="padding:1px 6px; font-size:10px; cursor:default;" title="url+model name相同的row會自動歸成同一組，round-robin輪流用不同api key">🔗 群組${groupInfo.groupNumber}（${groupInfo.groupSize}把key輪流）</span>
                            <button type="button" class="ai-advanced-btn ai-model-row-toggle-standalone" data-row-id="${row.id}" style="padding:1px 6px; font-size:10px;" title="移出群組後這個row不會再被自動分組round-robin，永遠當成獨立一組">移出群組</button>`
                         : (row.standalone
                             ? `<span class="ai-advanced-btn" style="padding:1px 6px; font-size:10px; cursor:default;" title="這個row已經手動移出自動分組，即使跟其他row url+model相同也不會被合併">獨立（已移出群組）</span>
