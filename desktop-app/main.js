@@ -568,6 +568,47 @@ ipcMain.handle("fa:rawfs:remove", async (_evt, { path: p, recursive } = {}) => {
   return { ok: true, path: target };
 });
 
+// tw_stock_db客製: 2026-09-26使用者要求——對話清單（左邊的chat list）在單機版存成檔案，位置是
+// app.getPath("userData")/chats/（Windows：C:\Users\<使用者>\AppData\Roaming\floating-assistant-desktop\chats\）：
+//   index.json        清單索引（群組、每個對話的標題/所屬群組/時間、目前選到哪一個）
+//   <對話id>.json     每個對話各一個檔案（訊息內容）
+// 寫入一律「先寫暫存檔再rename」，寫到一半當機也不會弄壞原本的檔案。
+const CHATS_DIR = () => path.join(USER_DATA_DIR(), "chats");
+function chatFilePath(id) {
+  const safe = String(id || "");
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(safe)) throw new Error("不合法的對話id");
+  return path.join(CHATS_DIR(), `${safe}.json`);
+}
+async function atomicWriteText(file, text) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, String(text ?? ""), "utf8");
+  await fs.rename(tmp, file);
+}
+async function readTextOrNull(file) {
+  try {
+    return await fs.readFile(file, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+ipcMain.handle("fa:chats:dir", async () => CHATS_DIR());
+ipcMain.handle("fa:chats:readIndex", async () => readTextOrNull(path.join(CHATS_DIR(), "index.json")));
+ipcMain.handle("fa:chats:writeIndex", async (_evt, { text } = {}) => {
+  await atomicWriteText(path.join(CHATS_DIR(), "index.json"), text);
+  return { ok: true };
+});
+ipcMain.handle("fa:chats:read", async (_evt, { id } = {}) => readTextOrNull(chatFilePath(id)));
+ipcMain.handle("fa:chats:write", async (_evt, { id, text } = {}) => {
+  await atomicWriteText(chatFilePath(id), text);
+  return { ok: true };
+});
+ipcMain.handle("fa:chats:delete", async (_evt, { id } = {}) => {
+  await fs.rm(chatFilePath(id), { force: true });
+  return { ok: true };
+});
+
 // 遞迴搜尋檔名（不比對內容），深度/結果數都有上限避免掃到整個磁碟卡死。
 async function findFilesRecursive(startDir, pattern, maxDepth, maxResults, out, depth) {
   if (out.length >= maxResults || depth > maxDepth) return;

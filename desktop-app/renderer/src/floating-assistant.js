@@ -4869,6 +4869,9 @@ class FloatingAssistant {
     }
 
     constructor(options = {}) {
+        // tw_stock_db客製: 2026-09-26——host用options.chatList:true開啟左邊對話清單（桌面版、aiweb；台股頁不開），
+        // 見_buildChatListUI。要在最前面決定，因為後面的載入/初始化流程都看這個旗標。
+        this._chatListEnabled = !!(options && options.chatList);
         // --- 核心方法強制綁定實例 (防禦 Context 遺失 Bug) ---
         this.toggleWindow = this.toggleWindow.bind(this);
         this._log = this._log.bind(this);
@@ -5417,6 +5420,7 @@ class FloatingAssistant {
         this._initEventListeners();
         this._applyFestivalTheme().catch(() => {});
         this._startFestivalTimer();
+        if (this._chatListEnabled) this._chatListInit().catch((err) => console.warn('對話清單初始化失敗:', err));
         this._registerBuiltinAiTools();
         this._updateDelegateToSubagentDescription();
         this._syncCustomToolSlashCommands();
@@ -5425,7 +5429,7 @@ class FloatingAssistant {
         // ——this.messages在上面_loadPersistedChatHistory()已經還原過，這裡
         // 看到的長度就是使用者實際的對話狀態。見insertSuggestionChipsMessage()
         // 的說明。
-        if (!this.messages.length) this.insertSuggestionChipsMessage();
+        if (!this.messages.length && !this._chatListEnabled) this.insertSuggestionChipsMessage();
     }
 
     // tw_stock_db客製: 2026-09-09——multiSubAgentMode三態的存取入口，永遠讀
@@ -15459,6 +15463,566 @@ ${sourceTool.handlerScript}
     }
     // ==== FESTIVAL-THEMES-END ====
 
+    // ==== CHAT-LIST-BEGIN ====
+    // tw_stock_db客製: 2026-09-26使用者要求——單機版與aiweb左邊有「可收合、可分群組」的對話清單，
+    // 可以切換對話（每個對話各有自己的訊息）、刪除、右鍵重新命名／移到群組／匯出Markdown・JSON。
+    // 這是host用options.chatList:true開啟的override：台股頁（web/index.html）不開，維持原本單一對話。
+    // 儲存位置：
+    //   單機版  → 檔案，app.getPath("userData")/chats/（Windows：C:\Users\<使用者>\AppData\Roaming\
+    //             floating-assistant-desktop\chats\），index.json＋每個對話一個<id>.json（見main.js的fa:chats:*）
+    //   aiweb  → 瀏覽器的persistentStorage（IndexedDB，並要求navigator.storage.persist()），不寫檔案
+    // 每個對話的內容格式跟原本單一對話的localStorage存檔完全一樣（_persistChatHistory的blob），
+    // 只是換了儲存位置；第一次啟動會把舊的單一對話搬成清單裡的第一個對話。
+    _chatBackend() {
+        if (this._chatBackendObj) return this._chatBackendObj;
+        const api = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.chats;
+        if (api) {
+            this._chatBackendObj = {
+                kind: 'files',
+                readIndex: () => api.readIndex(), writeIndex: (t) => api.writeIndex(t),
+                read: (id) => api.read(id), write: (id, t) => api.write(id, t), del: (id) => api.delete(id),
+            };
+        } else {
+            const suffix = String(this.options.ragDbSuffix || 'default').replace(/[^a-zA-Z0-9_\-]/g, '_');
+            const cache = new FileCache('FloatingAssistantChats_' + suffix, 64 * 1024 * 1024 * 1024);
+            try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) { /* 拿不到持久化授權就算了 */ }
+            const readText = async (id) => { const rec = await cache.get(id); return rec && rec.blob ? await rec.blob.text() : null; };
+            const writeText = (id, t) => cache.put(id, 'application/json', new Blob([t], { type: 'application/json' }), 'chat', id);
+            this._chatBackendObj = {
+                kind: 'persistentStorage',
+                readIndex: () => readText('chat-index'), writeIndex: (t) => writeText('chat-index', t),
+                read: (id) => readText('chat:' + id), write: (id, t) => writeText('chat:' + id, t), del: (id) => cache.delete('chat:' + id),
+            };
+        }
+        return this._chatBackendObj;
+    }
+
+    _chatNewId(prefix) { return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`; }
+
+    _saveChatIndex() {
+        if (!this._chatIndex) return Promise.resolve();
+        return Promise.resolve(this._chatBackend().writeIndex(JSON.stringify(this._chatIndex))).catch((err) => console.warn('對話清單索引存檔失敗:', err));
+    }
+
+    _chatEntry(id) { return this._chatIndex && this._chatIndex.chats.find((c) => c.id === id); }
+
+    _writeChatBlob(jsonText) {
+        if (!this._chatListEnabled) { localStorage.setItem(this.CHAT_HISTORY_KEY, jsonText); return; }
+        if (!this._chatListReady || !this._chatIndex) return;
+        this._chatPending = { id: this._chatIndex.currentId, text: jsonText };
+        this._touchCurrentChatMeta();
+        clearTimeout(this._chatWriteTimer);
+        this._chatWriteTimer = setTimeout(() => { this._flushChatWrite(); }, 350);
+    }
+
+    async _flushChatWrite() {
+        clearTimeout(this._chatWriteTimer);
+        const pending = this._chatPending;
+        this._chatPending = null;
+        if (!pending) return;
+        try {
+            await this._chatBackend().write(pending.id, pending.text);
+            await this._saveChatIndex();
+        } catch (err) {
+            console.warn('對話存檔失敗:', err);
+            this._log && this._log(`⚠️ 對話存檔失敗：${String((err && err.message) || err)}`);
+        }
+    }
+
+    _touchCurrentChatMeta() {
+        const entry = this._chatEntry(this._chatIndex.currentId);
+        if (!entry) return;
+        entry.updatedAt = Date.now();
+        if (!entry.title || entry.title === '新對話') {
+            const firstUser = this.messages.find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
+            if (firstUser) {
+                const t = firstUser.content.replace(/\s+/g, ' ').trim().slice(0, 28);
+                if (t) { entry.title = t; this._renderChatList(); return; }
+            }
+        }
+        this._renderChatList();
+    }
+
+    // 把一份對話存檔內容套用成「目前對話」（清掉舊狀態再載入）。
+    _applyChatBlob(raw) {
+        this.messages = [];
+        this.archivedDisplayBlocks = [];
+        this.topicData.currentTopic = '無（新對話開始）';
+        if (raw) this._loadPersistedChatHistory(raw);
+    }
+
+    async _chatListInit() {
+        const be = this._chatBackend();
+        let idx = null;
+        try { const text = await be.readIndex(); idx = text ? JSON.parse(text) : null; } catch (err) { console.warn('對話清單索引讀取失敗:', err); }
+        if (!idx || !Array.isArray(idx.chats)) {
+            idx = { version: 1, currentId: '', sidebarCollapsed: false, groups: [], chats: [] };
+            let legacy = null;
+            try { legacy = localStorage.getItem(this.CHAT_HISTORY_KEY); } catch (_) { legacy = null; }
+            const id = this._chatNewId('c');
+            const now = Date.now();
+            let legacyTitle = '先前的對話';
+            try {
+                const first = legacy && (JSON.parse(legacy).messages || []).find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
+                if (first) legacyTitle = first.content.replace(/\s+/g, ' ').trim().slice(0, 28);
+            } catch (_) { /* 解析不了就用預設標題 */ }
+            idx.chats.push({ id, title: legacy ? legacyTitle : '新對話', groupId: null, createdAt: now, updatedAt: now });
+            idx.currentId = id;
+            if (legacy) {
+                try { await be.write(id, legacy); localStorage.removeItem(this.CHAT_HISTORY_KEY); } catch (err) { console.warn('舊對話搬移失敗:', err); }
+            }
+        }
+        if (!Array.isArray(idx.groups)) idx.groups = [];
+        if (!idx.chats.length) idx.chats.push({ id: this._chatNewId('c'), title: '新對話', groupId: null, createdAt: Date.now(), updatedAt: Date.now() });
+        if (!idx.chats.some((c) => c.id === idx.currentId)) idx.currentId = idx.chats[0].id;
+        this._chatIndex = idx;
+        let raw = null;
+        try { raw = await be.read(idx.currentId); } catch (err) { console.warn('對話讀取失敗:', err); }
+        this._applyChatBlob(raw);
+        this._chatListReady = true;
+        if (typeof idx.sidebarCollapsed !== 'boolean') idx.sidebarCollapsed = false;
+        this._syncChatListVisibility();
+        this._renderChatList();
+        if (!this.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); this._scrollChatToBottom(); }
+        await this._saveChatIndex();
+        window.addEventListener('beforeunload', () => { this._flushChatWrite(); });
+    }
+
+    _scrollChatToBottom() {
+        const body = document.getElementById('ai-chat-body');
+        if (body) body.scrollTop = body.scrollHeight;
+    }
+
+    _chatBusy() {
+        if (this.isResponding) {
+            this._log && this._log('⏳ AI 回應中，請先按 Stop 或等它完成，再切換／新增／刪除對話。');
+            return true;
+        }
+        return false;
+    }
+
+    async _chatSwitch(id) {
+        if (!this._chatListReady || id === this._chatIndex.currentId || this._chatBusy() || this._chatSwitching) return;
+        this._chatSwitching = true;
+        try {
+            await this._flushChatWrite();
+            let raw = null;
+            try { raw = await this._chatBackend().read(id); } catch (err) { console.warn('對話讀取失敗:', err); }
+            this._chatIndex.currentId = id;
+            this._applyChatBlob(raw);
+            this._renderChatList();
+            if (!this.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); this._scrollChatToBottom(); }
+            await this._saveChatIndex();
+        } finally { this._chatSwitching = false; }
+    }
+
+    async _chatNew(groupId = null) {
+        if (!this._chatListReady || this._chatBusy() || this._chatSwitching) return;
+        const cur = this._chatEntry(this._chatIndex.currentId);
+        const hasUser = this.messages.some((m) => m.role === 'user');
+        if (cur && !hasUser) { // 目前這個就是空的新對話，不要再堆一個空的
+            if (groupId && cur.groupId !== groupId) { cur.groupId = groupId; this._renderChatList(); await this._saveChatIndex(); }
+            const input = document.getElementById('ai-input-text'); if (input) input.focus();
+            return;
+        }
+        this._chatSwitching = true;
+        try {
+            await this._flushChatWrite();
+            const id = this._chatNewId('c');
+            const now = Date.now();
+            this._chatIndex.chats.push({ id, title: '新對話', groupId, createdAt: now, updatedAt: now });
+            this._chatIndex.currentId = id;
+            const g = groupId && this._chatIndex.groups.find((x) => x.id === groupId);
+            if (g) g.collapsed = false;
+            this._applyChatBlob(null);
+            this._renderChatList();
+            this.insertSuggestionChipsMessage();
+            if (!this.messages.length) this._renderMessageHistory();
+            await this._saveChatIndex();
+            const input = document.getElementById('ai-input-text'); if (input) input.focus();
+        } finally { this._chatSwitching = false; }
+    }
+
+    async _chatDelete(id) {
+        const entry = this._chatEntry(id);
+        if (!entry || this._chatBusy() || this._chatSwitching) return;
+        if (!confirm(`刪除對話「${entry.title}」？這個動作無法復原。`)) return;
+        const wasCurrent = id === this._chatIndex.currentId;
+        this._chatIndex.chats = this._chatIndex.chats.filter((c) => c.id !== id);
+        try { await this._chatBackend().del(id); } catch (err) { console.warn('對話檔案刪除失敗:', err); }
+        if (wasCurrent) {
+            this._chatPending = null; clearTimeout(this._chatWriteTimer);
+            const next = this._chatIndex.chats.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+            if (next) {
+                this._chatIndex.currentId = next.id;
+                let raw = null;
+                try { raw = await this._chatBackend().read(next.id); } catch (_) { raw = null; }
+                this._applyChatBlob(raw);
+                if (!this.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); this._scrollChatToBottom(); }
+            } else {
+                const nid = this._chatNewId('c'); const now = Date.now();
+                this._chatIndex.chats.push({ id: nid, title: '新對話', groupId: null, createdAt: now, updatedAt: now });
+                this._chatIndex.currentId = nid;
+                this._applyChatBlob(null);
+                this.insertSuggestionChipsMessage();
+            }
+        }
+        this._renderChatList();
+        await this._saveChatIndex();
+    }
+
+    _chatRename(id, title) {
+        const entry = this._chatEntry(id);
+        const t = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (!entry || !t) return;
+        entry.title = t;
+        this._renderChatList();
+        this._saveChatIndex();
+    }
+
+    _chatMove(id, groupId) {
+        const entry = this._chatEntry(id);
+        if (!entry) return;
+        entry.groupId = groupId || null;
+        const g = groupId && this._chatIndex.groups.find((x) => x.id === groupId);
+        if (g) g.collapsed = false;
+        this._renderChatList();
+        this._saveChatIndex();
+    }
+
+    _chatGroupCreate() {
+        const g = { id: this._chatNewId('g'), name: '新群組', collapsed: false };
+        this._chatIndex.groups.push(g);
+        this._renderChatList();
+        this._saveChatIndex();
+        this._chatInlineRename(`[data-group-id="${g.id}"] .cl-title`, g.name, (name) => { g.name = name; this._renderChatList(); this._saveChatIndex(); });
+    }
+
+    _chatGroupDelete(id) {
+        const g = this._chatIndex.groups.find((x) => x.id === id);
+        if (!g) return;
+        const n = this._chatIndex.chats.filter((c) => c.groupId === id).length;
+        if (!confirm(`刪除群組「${g.name}」？${n ? `裡面的 ${n} 個對話會保留、移到「未分組」。` : ''}`)) return;
+        this._chatIndex.chats.forEach((c) => { if (c.groupId === id) c.groupId = null; });
+        this._chatIndex.groups = this._chatIndex.groups.filter((x) => x.id !== id);
+        this._renderChatList();
+        this._saveChatIndex();
+    }
+
+    async _chatExportById(id, fmt) {
+        const entry = this._chatEntry(id);
+        if (!entry) return;
+        await this._flushChatWrite();
+        let messages;
+        if (id === this._chatIndex.currentId) messages = this._collectFullConversationForExport();
+        else {
+            let data = {};
+            try { const raw = await this._chatBackend().read(id); data = raw ? JSON.parse(raw) : {}; } catch (_) { data = {}; }
+            const blocks = Array.isArray(data.archivedDisplayBlocks) ? data.archivedDisplayBlocks : [];
+            messages = blocks.flatMap((b) => (Array.isArray(b.messages) ? b.messages : [])).concat(Array.isArray(data.messages) ? data.messages : []);
+        }
+        if (fmt === 'md') this._exportConversationAsMarkdown(messages, entry.title); else this._exportConversationAsJson(messages, entry.title);
+    }
+
+    _chatInlineRename(selector, current, onCommit) {
+        const el = document.querySelector(`#ai-chatlist-list ${selector}`);
+        if (!el) return;
+        const input = document.createElement('input');
+        input.type = 'text'; input.value = current; input.className = 'cl-rename';
+        el.replaceWith(input);
+        input.focus(); input.select();
+        let done = false;
+        const finish = (commit) => {
+            if (done) return; done = true;
+            const v = input.value.replace(/\s+/g, ' ').trim();
+            if (commit && v && v !== current) onCommit(v); else this._renderChatList();
+        };
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); e.stopPropagation(); });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('click', (e) => e.stopPropagation());
+    }
+
+    _chatTimeText(ts) {
+        const d = new Date(ts || Date.now());
+        const p = (n) => String(n).padStart(2, '0');
+        return new Date().toDateString() === d.toDateString() ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+    }
+
+    _renderChatList() {
+        const list = document.getElementById('ai-chatlist-list');
+        const idx = this._chatIndex;
+        if (!list || !idx) return;
+        list.textContent = '';
+        const chatEl = (c, nested) => {
+            const el = document.createElement('div');
+            el.className = `cl-item${c.id === idx.currentId ? ' active' : ''}${nested ? ' nested' : ''}`;
+            el.dataset.chatId = c.id; el.draggable = true;
+            const t = document.createElement('span'); t.className = 'cl-title'; t.textContent = c.title || '新對話'; t.title = c.title || '';
+            const time = document.createElement('span'); time.className = 'cl-time'; time.textContent = this._chatTimeText(c.updatedAt);
+            el.appendChild(t); el.appendChild(time);
+            return el;
+        };
+        const byTime = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+        for (const g of idx.groups) {
+            const members = idx.chats.filter((c) => c.groupId === g.id).sort(byTime);
+            const head = document.createElement('div');
+            head.className = 'cl-group'; head.dataset.groupId = g.id;
+            const arrow = document.createElement('span'); arrow.textContent = g.collapsed ? '▸' : '▾';
+            const name = document.createElement('span'); name.className = 'cl-title'; name.textContent = `📁 ${g.name}`; name.title = g.name;
+            const count = document.createElement('span'); count.className = 'cl-count'; count.textContent = String(members.length);
+            head.appendChild(arrow); head.appendChild(name); head.appendChild(count);
+            list.appendChild(head);
+            if (!g.collapsed) members.forEach((c) => list.appendChild(chatEl(c, true)));
+        }
+        idx.chats.filter((c) => !c.groupId || !idx.groups.some((g) => g.id === c.groupId)).sort(byTime).forEach((c) => list.appendChild(chatEl(c, false)));
+    }
+
+    _syncChatListVisibility() {
+        const side = document.getElementById('ai-chatlist');
+        if (side && this._chatIndex) {
+            side.classList.toggle('collapsed', !!this._chatIndex.sidebarCollapsed);
+            side.style.width = `${this._chatListClampWidth(this._chatIndex.sidebarWidth || 250)}px`;
+        }
+    }
+
+    _chatListClampWidth(w) {
+        const win = document.getElementById('ai-floating-window');
+        const max = Math.max(200, Math.min(640, (win ? win.clientWidth : 900) - 280));
+        return Math.round(Math.max(170, Math.min(max, Number(w) || 250)));
+    }
+
+    // 拖曳中間的分隔線調整左邊清單寬度；寬度存進索引（下次啟動還原），雙擊分隔線還原成預設250。
+    _wireChatListResizer(resizer, side, win) {
+        resizer.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const startX = e.clientX, startW = side.offsetWidth;
+            resizer.classList.add('dragging');
+            const prevSelect = document.body.style.userSelect;
+            document.body.style.userSelect = 'none';
+            const move = (ev) => { side.style.width = `${this._chatListClampWidth(startW + ev.clientX - startX)}px`; };
+            const up = () => {
+                document.removeEventListener('mousemove', move, true);
+                document.removeEventListener('mouseup', up, true);
+                resizer.classList.remove('dragging');
+                document.body.style.userSelect = prevSelect;
+                if (this._chatIndex) { this._chatIndex.sidebarWidth = side.offsetWidth; this._saveChatIndex(); }
+            };
+            document.addEventListener('mousemove', move, true);
+            document.addEventListener('mouseup', up, true);
+        });
+        resizer.addEventListener('dblclick', () => {
+            side.style.width = '250px';
+            if (this._chatIndex) { this._chatIndex.sidebarWidth = 250; this._saveChatIndex(); }
+        });
+        window.addEventListener('resize', () => { if (side.style.width) side.style.width = `${this._chatListClampWidth(side.offsetWidth)}px`; });
+    }
+
+    _chatListToggle() {
+        if (!this._chatIndex) return;
+        this._chatIndex.sidebarCollapsed = !this._chatIndex.sidebarCollapsed;
+        this._syncChatListVisibility();
+        this._saveChatIndex();
+    }
+
+    _showChatMenu(x, y, items) {
+        this._closeChatMenu();
+        const win = document.getElementById('ai-floating-window');
+        if (!win) return;
+        const menu = document.createElement('div');
+        menu.id = 'ai-cl-menu';
+        for (const it of items) {
+            if (it.sep) { const s = document.createElement('div'); s.className = 'sep'; menu.appendChild(s); continue; }
+            const row = document.createElement('div');
+            row.className = `mi${it.danger ? ' danger' : ''}${it.label && it.label.startsWith('　') ? ' sub' : ''}`;
+            row.textContent = it.label;
+            row.addEventListener('click', (e) => { e.stopPropagation(); this._closeChatMenu(); it.run(); });
+            menu.appendChild(row);
+        }
+        win.appendChild(menu);
+        const w = menu.offsetWidth, h = menu.offsetHeight;
+        menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+        menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+        const close = () => { this._closeChatMenu(); };
+        this._chatMenuClose = () => { document.removeEventListener('mousedown', outside, true); document.removeEventListener('keydown', esc, true); window.removeEventListener('blur', close); };
+        const outside = (e) => { if (!menu.contains(e.target)) close(); };
+        const esc = (e) => { if (e.key === 'Escape') close(); };
+        document.addEventListener('mousedown', outside, true);
+        document.addEventListener('keydown', esc, true);
+        window.addEventListener('blur', close);
+    }
+
+    _closeChatMenu() {
+        if (this._chatMenuClose) { this._chatMenuClose(); this._chatMenuClose = null; }
+        const m = document.getElementById('ai-cl-menu');
+        if (m) m.remove();
+    }
+
+    _onChatListContextMenu(e) {
+        e.preventDefault();
+        const idx = this._chatIndex;
+        if (!idx) return;
+        const item = e.target.closest('.cl-item'), head = e.target.closest('.cl-group');
+        if (item) {
+            const id = item.dataset.chatId;
+            const entry = this._chatEntry(id);
+            const groupItems = [{ label: '　未分組', run: () => this._chatMove(id, null) }].concat(idx.groups.map((g) => ({ label: `　📁 ${g.name}`, run: () => this._chatMove(id, g.id) })));
+            this._showChatMenu(e.clientX, e.clientY, [
+                { label: '重新命名', run: () => this._chatInlineRename(`[data-chat-id="${id}"] .cl-title`, entry ? entry.title : '', (v) => this._chatRename(id, v)) },
+                { label: '匯出為 Markdown', run: () => this._chatExportById(id, 'md') },
+                { label: '匯出為 JSON', run: () => this._chatExportById(id, 'json') },
+                { sep: true },
+                { label: '移到群組：', run: () => {} },
+                ...groupItems,
+                { label: '　＋ 新群組並移入', run: () => { const g = { id: this._chatNewId('g'), name: '新群組', collapsed: false }; idx.groups.push(g); this._chatMove(id, g.id); this._chatInlineRename(`[data-group-id="${g.id}"] .cl-title`, g.name, (name) => { g.name = name; this._renderChatList(); this._saveChatIndex(); }); } },
+                { sep: true },
+                { label: '刪除對話', danger: true, run: () => this._chatDelete(id) },
+            ]);
+        } else if (head) {
+            const gid = head.dataset.groupId;
+            const g = idx.groups.find((x) => x.id === gid);
+            this._showChatMenu(e.clientX, e.clientY, [
+                { label: '在這個群組新增對話', run: () => this._chatNew(gid) },
+                { label: '重新命名群組', run: () => this._chatInlineRename(`[data-group-id="${gid}"] .cl-title`, g ? g.name : '', (v) => { if (g) { g.name = v; this._renderChatList(); this._saveChatIndex(); } }) },
+                { sep: true },
+                { label: '刪除群組（對話保留）', danger: true, run: () => this._chatGroupDelete(gid) },
+            ]);
+        } else {
+            this._showChatMenu(e.clientX, e.clientY, [
+                { label: '新對話', run: () => this._chatNew(null) },
+                { label: '新群組', run: () => this._chatGroupCreate() },
+            ]);
+        }
+    }
+
+    _wireChatListEvents(side) {
+        const list = side.querySelector('#ai-chatlist-list');
+        side.querySelector('[data-act="new"]').addEventListener('click', () => this._chatNew(null));
+        side.querySelector('[data-act="group"]').addEventListener('click', () => this._chatGroupCreate());
+        list.addEventListener('click', (e) => {
+            if (e.target.closest('.cl-rename')) return;
+            const item = e.target.closest('.cl-item'), head = e.target.closest('.cl-group');
+            if (item) this._chatSwitch(item.dataset.chatId);
+            else if (head) {
+                const g = this._chatIndex.groups.find((x) => x.id === head.dataset.groupId);
+                if (g) { g.collapsed = !g.collapsed; this._renderChatList(); this._saveChatIndex(); }
+            }
+        });
+        list.addEventListener('dblclick', (e) => {
+            const item = e.target.closest('.cl-item'), head = e.target.closest('.cl-group');
+            if (item) { const id = item.dataset.chatId; const en = this._chatEntry(id); this._chatInlineRename(`[data-chat-id="${id}"] .cl-title`, en ? en.title : '', (v) => this._chatRename(id, v)); }
+            else if (head) { const gid = head.dataset.groupId; const g = this._chatIndex.groups.find((x) => x.id === gid); if (g) this._chatInlineRename(`[data-group-id="${gid}"] .cl-title`, g.name, (v) => { g.name = v; this._renderChatList(); this._saveChatIndex(); }); }
+        });
+        list.addEventListener('contextmenu', (e) => this._onChatListContextMenu(e));
+        // 拖曳：把對話拖到群組標題上＝移進該群組；拖到空白處＝移出群組
+        list.addEventListener('dragstart', (e) => {
+            const item = e.target.closest('.cl-item');
+            if (!item) return;
+            e.dataTransfer.setData('text/plain', item.dataset.chatId);
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        const clearDrop = () => list.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop'));
+        list.addEventListener('dragover', (e) => {
+            e.preventDefault(); clearDrop();
+            const head = e.target.closest('.cl-group');
+            if (head) head.classList.add('drop');
+        });
+        list.addEventListener('dragleave', (e) => { if (e.target === list) clearDrop(); });
+        list.addEventListener('drop', (e) => {
+            e.preventDefault(); clearDrop();
+            const id = e.dataTransfer.getData('text/plain');
+            if (!id || !this._chatEntry(id)) return;
+            const head = e.target.closest('.cl-group');
+            this._chatMove(id, head ? head.dataset.groupId : null);
+        });
+    }
+
+    // 建立左邊對話清單：把「對話區＋輸入區」包進右側欄位，左邊放清單；標題列左邊加一顆☰收合鈕。
+    _buildChatListUI(win) {
+        if (document.getElementById('ai-chatlist')) return;
+        const header = document.getElementById('ai-window-header');
+        const main = document.createElement('div');
+        main.id = 'ai-chat-main';
+        main.style.cssText = 'flex:1; display:flex; flex-direction:column; min-width:0; min-height:0;';
+        ['ai-chat-body', 'ai-autocomplete-bar', 'ai-input-wrap', 'ai-status-log'].forEach((id) => { const el = document.getElementById(id); if (el) main.appendChild(el); });
+        const side = document.createElement('div');
+        side.id = 'ai-chatlist';
+        side.innerHTML = `
+            <div class="cl-head"><button type="button" class="cl-btn" data-act="new">＋ 新對話</button><button type="button" class="cl-btn" data-act="group">＋ 群組</button></div>
+            <div class="cl-list" id="ai-chatlist-list"></div>
+            <div class="cl-hint">右鍵：重新命名／移到群組／匯出／刪除</div>`;
+        const row = document.createElement('div');
+        row.id = 'ai-main-row';
+        row.style.cssText = 'flex:1; display:flex; min-height:0; min-width:0;';
+        const resizer = document.createElement('div');
+        resizer.id = 'ai-chatlist-resizer';
+        resizer.title = '拖曳調整寬度（雙擊還原）';
+        row.appendChild(side); row.appendChild(resizer); row.appendChild(main);
+        if (header) {
+            header.insertAdjacentElement('afterend', row);
+            const first = header.firstElementChild;
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex; align-items:center; gap:8px; min-width:0;';
+            const toggle = document.createElement('span');
+            toggle.id = 'ai-chatlist-toggle'; toggle.textContent = '☰'; toggle.title = '展開／收合對話清單';
+            toggle.style.cssText = 'cursor:pointer; font-size:16px; padding:0 4px; user-select:none;';
+            toggle.addEventListener('click', () => this._chatListToggle());
+            header.insertBefore(wrap, first);
+            wrap.appendChild(toggle);
+            if (first) wrap.appendChild(first);
+        } else win.appendChild(row);
+        if (!document.getElementById('ai-chatlist-style')) {
+            const style = document.createElement('style');
+            style.id = 'ai-chatlist-style';
+            style.textContent = `
+                #ai-chatlist { width: 250px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; box-sizing: border-box; background: var(--cl-bg); color: var(--cl-text); border-right: 1px solid var(--cl-border); font-size: 13px; }
+                #ai-chatlist.collapsed { display: none; }
+                #ai-chatlist-resizer { flex: 0 0 5px; cursor: col-resize; background: transparent; margin-left: -3px; z-index: 2; }
+                #ai-chatlist-resizer:hover, #ai-chatlist-resizer.dragging { background: var(--cl-accent); opacity: .55; }
+                #ai-chatlist.collapsed + #ai-chatlist-resizer { display: none; }
+                #ai-chatlist .cl-head { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--cl-border); }
+                #ai-chatlist .cl-btn { flex: 1; padding: 5px 6px; border: 1px solid var(--cl-border); background: transparent; color: var(--cl-text); border-radius: 6px; cursor: pointer; font-size: 12px; }
+                #ai-chatlist .cl-btn:hover { background: var(--cl-hover); }
+                #ai-chatlist .cl-list { flex: 1; overflow-y: auto; padding: 6px; min-height: 0; }
+                #ai-chatlist .cl-hint { padding: 6px 8px; font-size: 11px; color: var(--cl-muted); border-top: 1px solid var(--cl-border); }
+                #ai-chatlist .cl-group { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; cursor: pointer; font-weight: bold; color: var(--cl-muted); user-select: none; margin-top: 4px; }
+                #ai-chatlist .cl-group.drop { outline: 2px dashed var(--cl-accent); }
+                #ai-chatlist .cl-count { font-size: 10px; font-weight: normal; }
+                #ai-chatlist .cl-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; margin: 1px 0; }
+                #ai-chatlist .cl-item.nested { margin-left: 14px; }
+                #ai-chatlist .cl-group:hover, #ai-chatlist .cl-item:hover { background: var(--cl-hover); }
+                #ai-chatlist .cl-item.active { background: var(--cl-active); }
+                #ai-chatlist .cl-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                #ai-chatlist .cl-time { font-size: 10px; color: var(--cl-muted); flex: 0 0 auto; }
+                #ai-chatlist .cl-rename { flex: 1; min-width: 0; width: 100%; box-sizing: border-box; padding: 3px 6px; border: 1px solid var(--cl-accent); border-radius: 4px; background: var(--cl-bg); color: var(--cl-text); font-size: 13px; }
+                #ai-cl-menu { position: fixed; z-index: 2147483000; min-width: 190px; background: var(--cl-bg); color: var(--cl-text); border: 1px solid var(--cl-border); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-size: 13px; }
+                #ai-cl-menu .mi { padding: 6px 10px; cursor: pointer; border-radius: 5px; white-space: nowrap; }
+                #ai-cl-menu .mi:hover { background: var(--cl-hover); }
+                #ai-cl-menu .mi.danger { color: #e5484d; }
+                #ai-cl-menu .sep { height: 1px; background: var(--cl-border); margin: 4px 0; }
+            `;
+            document.head.appendChild(style);
+        }
+        this._wireChatListEvents(side);
+        this._wireChatListResizer(resizer, side, win);
+        ['ai-conversation-export-json-btn', 'ai-conversation-export-md-btn'].forEach((id) => { const b = document.getElementById(id); if (b) b.style.display = 'none'; });
+        if (win.clientWidth && win.clientWidth < 640) side.classList.add('collapsed');
+        this._syncChatListColors();
+    }
+
+    _syncChatListColors() {
+        const win = document.getElementById('ai-floating-window');
+        if (!win || !this._chatListEnabled) return;
+        const p = this._getThemePalette();
+        win.style.setProperty('--cl-bg', p.detailBg);
+        win.style.setProperty('--cl-text', p.chatText);
+        win.style.setProperty('--cl-muted', p.detailText);
+        win.style.setProperty('--cl-border', p.windowBorder);
+        win.style.setProperty('--cl-hover', 'rgba(127,127,127,.16)');
+        win.style.setProperty('--cl-active', 'rgba(118,185,0,.24)');
+        win.style.setProperty('--cl-accent', '#76b900');
+    }
+    // ==== CHAT-LIST-END ====
+
     _getThemePalette() {
         if (this._isLightTheme()) {
             return {
@@ -15587,6 +16151,7 @@ ${sourceTool.handlerScript}
         status.style.color = palette.statusText;
         this._syncTerminalEmbedBorder(palette);
         this._syncFestivalColors();
+        this._syncChatListColors();
     }
 
     // tw_stock_db客製: 2026-09-26使用者實測回報——先切淺色、refresh、再切深色，
@@ -17368,12 +17933,19 @@ ${sourceTool.handlerScript}
         URL.revokeObjectURL(url);
     }
 
-    _exportConversationAsJson() {
+    // messagesOverride/titlePart：對話清單右鍵匯出用（匯出指定的那個對話，檔名帶標題）；不帶＝匯出目前對話。
+    _exportConversationAsJson(messagesOverride, titlePart) {
         const payload = {
             exportedAt: new Date().toISOString(),
-            messages: this._collectFullConversationForExport(),
+            ...(titlePart ? { title: titlePart } : {}),
+            messages: messagesOverride || this._collectFullConversationForExport(),
         };
-        this._downloadTextFile(`ai-conversation-${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+    }
+
+    _exportFileTitle(title) {
+        const t = String(title || '').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 30);
+        return t ? `${t}-` : '';
     }
 
     // tw_stock_db客製: role→標題/圖示對照，跟既有訊息渲染（_renderSingleMessage）
@@ -17403,11 +17975,11 @@ ${sourceTool.handlerScript}
         return lines.join('\n\n');
     }
 
-    _exportConversationAsMarkdown() {
-        const all = this._collectFullConversationForExport();
-        const header = `# 對話紀錄匯出\n\n匯出時間：${new Date().toLocaleString('zh-TW')}\n`;
+    _exportConversationAsMarkdown(messagesOverride, titlePart) {
+        const all = messagesOverride || this._collectFullConversationForExport();
+        const header = `# ${titlePart ? `對話：${titlePart}` : '對話紀錄匯出'}\n\n匯出時間：${new Date().toLocaleString('zh-TW')}\n`;
         const body = all.map(m => this._formatMessageForMarkdownExport(m)).filter(Boolean).join('\n\n---\n\n');
-        this._downloadTextFile(`ai-conversation-${Date.now()}.md`, `${header}\n${body}\n`, 'text/markdown');
+        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${Date.now()}.md`, `${header}\n${body}\n`, 'text/markdown');
     }
 
     _importSettings(file) {
@@ -32320,6 +32892,7 @@ ${existingNodeSummaries}
             </div>
         `;
 
+        if (this._chatListEnabled) this._buildChatListUI(win);
         this._renderAdvancedSettings();
         this._applyThemeStyles();
     }
@@ -32510,7 +33083,7 @@ ${existingNodeSummaries}
                     if (m._displayTerminal) terminalMap[`${bi}:${mi}`] = m._displayTerminal;
                 });
             });
-            localStorage.setItem(this.CHAT_HISTORY_KEY, JSON.stringify({
+            this._writeChatBlob(JSON.stringify({
                 messages: this.messages,
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
                 imageMap,
@@ -32530,9 +33103,11 @@ ${existingNodeSummaries}
         }
     }
 
-    _loadPersistedChatHistory() {
+    _loadPersistedChatHistory(rawOverride) {
         try {
-            const raw = localStorage.getItem(this.CHAT_HISTORY_KEY);
+            // 對話清單模式：建構子這次不從localStorage載入，改由_chatListInit()非同步載入目前選到的對話。
+            if (this._chatListEnabled && rawOverride === undefined) return;
+            const raw = rawOverride !== undefined ? rawOverride : localStorage.getItem(this.CHAT_HISTORY_KEY);
             if (!raw) return;
             const data = JSON.parse(raw);
             if (Array.isArray(data.messages)) this.messages = data.messages;
@@ -32642,7 +33217,8 @@ ${existingNodeSummaries}
         // 轉移話題」。清除對話在語意上就等於「回到全新對話開始」，這裡一併
         // 重設回建構子的初始值，維持跟「完全沒有對話」狀態一致。
         this.topicData.currentTopic = "無（新對話開始）";
-        localStorage.removeItem(this.CHAT_HISTORY_KEY);
+        if (this._chatListEnabled) this._writeChatBlob(JSON.stringify({ messages: [], archivedDisplayBlocks: [] }));
+        else localStorage.removeItem(this.CHAT_HISTORY_KEY);
         // insertSuggestionChipsMessage()在chipsProvider沒回傳任何建議時會
         // 直接return、不會呼叫_renderMessageHistory()——這裡不能依賴它一定
         // 會重繪，得自己確保清空後的畫面（不管有沒有插入建議訊息）一定會

@@ -345,6 +345,8 @@ function patchCloudflareWording(root) {
     buttonStyle: "display:none;",
     windowStyle: "position:static; width:100%; height:100%; max-height:none; box-shadow:none; z-index:1;",
     chipsProvider: buildDesktopSuggestionChips,
+    // 2026-09-26使用者要求：桌面版（跟aiweb）左邊有可收合、可分群組的對話清單；台股頁不開。
+    chatList: true,
   });
   window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
 
