@@ -6328,7 +6328,7 @@ class FloatingAssistant {
         // (progressive disclosure)：這裡只條列檔案「有什麼」，不把內容塞進
         // system prompt本身（那樣會讓persona prompt暴增），需要細節時才呼叫
         // read_skill_file__<id>（見_syncSkillBundleDomains）主動讀取全文。
-        if (bundle.files && bundle.files.length) {
+        if (bundle.files && bundle.files.length && !bundle.filesLost) {
             systemPrompt += `\n\n這個技能包還附帶以下參考資料/腳本檔案（內容不在這段文字裡，需要時才呼叫read_skill_file__${bundle.id}讀取，不要假裝已經知道內容）：\n`
                 + bundle.files.map(f => `- ${f.path}`).join('\n');
         }
@@ -6410,10 +6410,15 @@ class FloatingAssistant {
                         let parsed = {};
                         try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                         const path = String(parsed.path || '').trim();
+                        // tw_stock_db客製: 2026-09-26——技能包的參考檔內容只存在這台機器的skillFileCache（匯出/匯入設定不會帶
+                        // 檔案本體），換一台機器匯入設定後檔案清單還在、內容卻是空的。使用者實測：AI一輪內平行呼叫12次
+                        // 全部失敗、後面幾輪又重試。第一次發現遺失就記下來，之後直接回同一句明確指示，不再查、也叫模型別再試。
+                        const lostMsg = `這個技能包（${bundle.name}）的參考檔內容不在這台電腦上（可能是換機器匯入設定、或儲存空間被清除）。**不要再嘗試讀取這個技能包的任何檔案**——直接憑你已知的資訊繼續完成任務；做不到的部分如實告訴使用者「需要重新匯入這個技能包（.skill）」。`;
+                        if (bundle.filesLost) return JSON.stringify({ ok: false, error: lostMsg });
                         const fileEntry = bundle.files.find(f => f.path === path);
                         if (!fileEntry) return JSON.stringify({ ok: false, error: `找不到路徑「${path}」，可用路徑：${bundle.files.map(f => f.path).join('、')}` });
                         const record = await this.skillFileCache.get(`${bundle.id}::${path}`);
-                        if (!record) return JSON.stringify({ ok: false, error: '檔案內容遺失（可能是儲存空間被清除），請重新匯入這個技能包' });
+                        if (!record) { bundle.filesLost = true; return JSON.stringify({ ok: false, error: lostMsg }); }
                         const fullText = await record.blob.text();
                         const totalChars = fullText.length;
                         const offset = Number.isFinite(Number(parsed.offset)) && Number(parsed.offset) > 0 ? Math.floor(Number(parsed.offset)) : 0;
@@ -14318,8 +14323,13 @@ ${fnData.code}
     // 是哪個工具，delegate_to_subagent/fs_read_file/任何工具都受同一個保護），
     // 跟_getReasoningDeadendContextThresholdChars()同樣的self-adaptive精神
     // ——依contextWindowTokens自動縮放，小模型保守、大模型寬鬆。
+    // tw_stock_db客製: 2026-09-26——桌面版（auto agent mode）單一工具結果的上限放寬（0.25/16000），
+    // 8000字元的上限讓一份稍大的檔案變成好幾輪「被截斷→再讀一段」，使用者實測因此拖了很久。
+    _toolResultBudgetChars() {
+        return this._isAutoAgentMode() ? this._getAdaptiveContentBudgetChars(0.25, 16000) : this._getAdaptiveContentBudgetChars(0.15, 8000);
+    }
     _truncateToolResultForContext(text) {
-        const limit = this._getAdaptiveContentBudgetChars(0.15, 8000);
+        const limit = this._toolResultBudgetChars();
         if (text.length <= limit) return text;
         return text.slice(0, limit) + `\n\n[結果過長已自動截斷：原始長度${text.length}字元，只保留前${limit}字元。**不要用一樣的方式再委派/再呼叫一次，結果同樣會被截斷。** 需要看被截掉的部分時：如果是檔案內容，自己直接用fs_read_file（或fap_read_file）帶offset分段讀（從offset=${limit}附近接著讀，回傳has_more:true就繼續），很長又只需要分析/摘要時改用analyze_large_file；如果是委派子任務的結論，改成請子agent只回傳你真正需要的重點或指定片段，或把任務拆小分次委派。]`;
     }
@@ -26561,6 +26571,68 @@ _result
         return { ok: true, source: record.filename, duration_seconds: totalDur || undefined, frame_count: frames.length, frames, failed, note: '每張file_id可用interpret_image看內容，或用compare_images跟其他圖片一起比對。' };
     }
 
+    // tw_stock_db客製: 2026-09-26——pptx_inspect（桌面版辦公室報告domain，見bootstrap.js）的實作：不靠AI、直接解析
+    // pptx（OOXML zip）做完整性檢查。重點是「斷掉的關聯」（.rels指向zip裡不存在的檔案＝圖片/背景消失）、
+    // master/layout暴增（複製投影片沒清理會讓檔案難以開啟）、沒被引用的多餘素材、每頁圖片數/背景圖。
+    async _inspectPptx(bytes, filename) {
+        await this._ensureJSZipLoaded();
+        const zip = await JSZip.loadAsync(bytes);
+        const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir);
+        const has = new Set(names);
+        const numSort = (a, b) => Number((a.match(/(\d+)\.xml$/) || [])[1] || 0) - Number((b.match(/(\d+)\.xml$/) || [])[1] || 0);
+        const slideFiles = names.filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort(numSort);
+        const count = (re) => names.filter((n) => re.test(n)).length;
+        const media = names.filter((n) => /^ppt\/media\//.test(n));
+        let mediaBytes = 0;
+        const mediaSize = {};
+        for (const n of media) { const u = await zip.file(n).async('uint8array'); mediaSize[n] = u.length; mediaBytes += u.length; }
+        const norm = (p) => { const out = []; for (const seg of p.split('/')) { if (seg === '..') out.pop(); else if (seg && seg !== '.') out.push(seg); } return out.join('/'); };
+        const broken = [], referenced = new Set();
+        for (const relName of names.filter((n) => /\.rels$/.test(n))) {
+            const text = await zip.file(relName).async('string');
+            const doc = new DOMParser().parseFromString(text, 'application/xml');
+            const partDir = relName.replace(/_rels\/[^/]+$/, '');
+            const sourcePart = partDir + relName.split('/').pop().replace(/\.rels$/, '');
+            for (const r of Array.from(doc.getElementsByTagName('Relationship'))) {
+                if ((r.getAttribute('TargetMode') || '') === 'External') continue;
+                const target = r.getAttribute('Target') || '';
+                const resolved = target.startsWith('/') ? target.slice(1) : norm(partDir + target);
+                referenced.add(resolved);
+                if (!has.has(resolved) && broken.length < 40) broken.push({ from: sourcePart, missing: resolved, type: (r.getAttribute('Type') || '').split('/').pop() });
+            }
+        }
+        const brokenTotal = broken.length;
+        const orphanMedia = media.filter((n) => !referenced.has(n));
+        const orphanBytes = orphanMedia.reduce((s, n) => s + (mediaSize[n] || 0), 0);
+        const presXml = zip.file('ppt/presentation.xml') ? await zip.file('ppt/presentation.xml').async('string') : '';
+        const sldIdCount = (presXml.match(/<p:sldId\s/g) || []).length;
+        const slides = [];
+        for (const f of slideFiles.slice(0, 80)) {
+            const xml = await zip.file(f).async('string');
+            const relFile = zip.file(`ppt/slides/_rels/${f.split('/').pop()}.rels`);
+            const relXml = relFile ? await relFile.async('string') : '';
+            const layout = (relXml.match(/slideLayouts\/(slideLayout\d+\.xml)/) || [])[1] || '';
+            const title = (xml.match(/<a:t>([^<]*)<\/a:t>/) || [])[1] || '';
+            slides.push({ n: Number((f.match(/slide(\d+)/) || [])[1]), title: title.slice(0, 40), pictures: (xml.match(/<p:pic[\s>]/g) || []).length, background_image: /<p:bg>[\s\S]*?r:embed=/.test(xml), layout });
+        }
+        const masters = count(/^ppt\/slideMasters\/slideMaster\d+\.xml$/), layouts = count(/^ppt\/slideLayouts\/slideLayout\d+\.xml$/), themes = count(/^ppt\/theme\/theme\d+\.xml$/);
+        const issues = [];
+        if (brokenTotal) issues.push(`有 ${brokenTotal}${brokenTotal >= 40 ? '+' : ''} 個關聯指向不存在的檔案（圖片/背景可能消失，PowerPoint也可能要求修復）`);
+        if (masters > 15) issues.push(`master 有 ${masters} 個（複製投影片沒清理造成，容易讓檔案難以開啟）`);
+        if (sldIdCount && sldIdCount !== slideFiles.length) issues.push(`presentation.xml 列了 ${sldIdCount} 張投影片，但 zip 裡有 ${slideFiles.length} 個投影片檔（有孤兒或缺檔）`);
+        if (orphanMedia.length && orphanBytes > 0.3 * Math.max(1, mediaBytes)) issues.push(`有 ${orphanMedia.length} 個沒被引用的素材、共 ${(orphanBytes / 1048576).toFixed(1)}MB（檔案被多餘素材撐大）`);
+        if (slideFiles.length && !media.length && !slides.some((s) => s.pictures)) issues.push('整份沒有任何圖片素材（如果來源有圖片，代表素材掉了）');
+        return {
+            slide_count: slideFiles.length, masters, layouts, themes,
+            media_count: media.length, media_bytes: mediaBytes,
+            unreferenced_media: { count: orphanMedia.length, bytes: orphanBytes },
+            broken_relationships: broken.slice(0, 15), broken_relationship_count: brokenTotal,
+            slides_with_pictures: slides.filter((s) => s.pictures > 0).length, slides_with_background_image: slides.filter((s) => s.background_image).length,
+            slides, slides_truncated: slideFiles.length > 80,
+            issues, verdict: issues.length ? '有問題，請修正後重跑並再檢查' : '結構完整（沒有斷掉的關聯、master 數量正常）',
+        };
+    }
+
     // pptx是zip-based OOXML：每張投影片是ppt/slides/slideN.xml，文字跑在
     // <a:t>裡，依slideN數字順序輸出每張投影片的文字內容陣列。
     async _parsePptxZip(zip) {
@@ -27175,7 +27247,7 @@ _result
         // 「已成功」記進去，AI照截斷提示換個說法再試一次，就被判成重複呼叫攔下、
         // 連續攔兩次還會_forceNoTools關掉所有工具，AI只能講一句「讓我取得完整內容」
         // 就結束。被截斷的結果是不完整的，不算成功，允許AI換做法重試。
-        if (ok && typeof result === 'string' && result.length > this._getAdaptiveContentBudgetChars(0.15, 8000)) ok = false;
+        if (ok && typeof result === 'string' && result.length > this._toolResultBudgetChars()) ok = false;
         let soft = false;
         if (ok && name === 'delegate_to_subagent' && typeof result === 'string') {
             let inner = result;
@@ -27336,7 +27408,15 @@ _result
         // 任務重新來一遍（重新呼叫同樣的工具），反而更快又把新context填滿、
         // 再次觸發壓縮，形成「一直撞到限制→重做」的迴圈（見下面重新接回
         // 使用者提問時的說明，兩處是同一個問題的兩面）。
-        const summaryPrompt = `請將以下對話內容進行深度摘要與壓縮，字數限制在 300 個 Token 內。請保留：(1)使用者的原始意圖與具體需求 (2)已經呼叫過哪些工具、傳了什麼參數、取得了什麼關鍵結果（例如已經查到的股票代號、已經產生的圖表）(3)目前任務進行到哪個階段、還缺什麼才能給出最終答案。這份摘要會被當成「已完成的工作記錄」交給下一輪繼續，重點是讓下一輪不需要重新呼叫已經呼叫過的工具：\n\n${JSON.stringify(chatToCompress)}`;
+        // tw_stock_db客製: 2026-09-26使用者實測回報「建立投影片週報30幾分鐘做不完」——匯出的對話顯示每壓縮一次
+        // 就把「使用者中途的更正」「已經跑成功的指令」「產出檔案在哪」全洗掉，下一輪失憶、重新讀同樣的
+        // 大檔案、甚至改成另寫腳本重做（把原本成功的流程丟了）。桌面版（auto agent mode，一次任務常跨很多步）
+        // 額度放到900 tokens，並且明確要求保留這幾類資訊；網頁版維持300。
+        const summaryTokens = this._isAutoAgentMode() ? 900 : 300;
+        const summaryExtra = this._isAutoAgentMode()
+            ? `另外**一定要逐條保留**：(4)使用者在對話中途給的所有更正、限制與偏好（盡量保留原話，例如「不要調整壓縮」「按照範本重新建立」「每一頁都要截圖比對」）(5)已經**成功執行過的完整指令與它產出的檔案路徑、驗證結果數字**（下一輪要直接沿用或重跑，不要重新發明做法）(6)試過但失敗的做法與失敗原因（避免再試一次）(7)下一步要做的一件事。不要建議「改寫現成工具/流程」，除非對話裡已經證明現成的流程做不到。`
+            : '';
+        const summaryPrompt = `請將以下對話內容進行深度摘要與壓縮，字數限制在 ${summaryTokens} 個 Token 內。請保留：(1)使用者的原始意圖與具體需求 (2)已經呼叫過哪些工具、傳了什麼參數、取得了什麼關鍵結果（例如已經查到的股票代號、已經產生的圖表）(3)目前任務進行到哪個階段、還缺什麼才能給出最終答案。${summaryExtra}這份摘要會被當成「已完成的工作記錄」交給下一輪繼續，重點是讓下一輪不需要重新呼叫已經呼叫過的工具：\n\n${JSON.stringify(chatToCompress)}`;
 
         try {
             const controller = this._createAbortController();
@@ -27372,7 +27452,7 @@ _result
             this.archivedDisplayBlocks.push({ reason, messages: chatToCompress, silent: !archive });
 
             this.messages = [{ role: "system", content: this._getFinalSystemPrompt() }];
-            this.messages.push({ role: "system", content: `[歷史對話摘要(300 tokens 內)]: ${summaryResult}` });
+            this.messages.push({ role: "system", content: `[歷史對話摘要(${summaryTokens} tokens 內)]: ${summaryResult}` });
 
             // tw_stock_db客製: 摘要本身是旁白式描述「之前發生了什麼」，不是
             // 一個可以直接回答的問題——實測發現如果就這樣結束，緊接著的續答

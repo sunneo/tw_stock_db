@@ -138,6 +138,15 @@ categories:
         updated: 2026-09-26
         history:
           - { date: 2026-09-26, note: "新增 extract_pptx_images／compare_images／extract_video_frames，browser_screenshot 支援 region 與 interpret" }
+      - id: office-report
+        name: 辦公室報告／簡報（週報、pptx）
+        summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx 的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
+        how: { domain: office_report, tools: [pptx_inspect, office_export_slide_images, fs_grep, extract_pptx_images, compare_images] }
+        platforms: [desktop]
+        samples: ["依範本產生這週的簡報，並逐頁檢查有沒有圖片或背景掉了", "檢查這份 pptx 有沒有壞掉、為什麼檔案很難打開"]
+        updated: 2026-09-26
+        history:
+          - { date: 2026-09-26, note: "新增辦公室報告 domain（office_report）與 fs_grep／pptx_inspect／office_export_slide_images；fs_read_file 支援 start_line" }
       - id: file-access-points
         name: 授權資料夾存取（File Access Point）
         summary: 授權一個真實資料夾後，助理可以列出、讀取、搜尋、寫入修補其中的檔案。
@@ -150,12 +159,13 @@ categories:
       - id: desktop-ops
         name: 本機檔案與指令執行
         summary: 直接讀寫本機檔案、執行系統指令、開 tmux 工作階段（桌面版限定，需在設定允許）。
-        how: { domain: desktop_ops, tools: [run_command, fs_read_file, fs_write_file, fs_list_files, fs_find_file, fs_stat, fs_mkdir, fs_remove, tmux_start_session, tmux_send_keys, tmux_capture_pane, tmux_list_sessions, tmux_kill_session, batch_process_items, analyze_large_file, get_large_file_analysis_chunk] }
+        how: { domain: desktop_ops, tools: [run_command, fs_read_file, fs_write_file, fs_list_files, fs_find_file, fs_grep, fs_stat, fs_mkdir, fs_remove, tmux_start_session, tmux_send_keys, tmux_capture_pane, tmux_list_sessions, tmux_kill_session, batch_process_items, analyze_large_file, get_large_file_analysis_chunk] }
         platforms: [desktop]
         samples: ["列出這個資料夾最大的 10 個檔案", "在背景開一個 tmux 跑這個腳本"]
         updated: 2026-09-26
         history:
           - { date: 2026-09-26, note: "清冊補列16個原始碼已有的工具（fs_*/tmux_*/fap_copy_*/attachment_apply_patch等）" }
+          - { date: 2026-09-26, note: "新增辦公室報告 domain（office_report）與 fs_grep／pptx_inspect／office_export_slide_images；fs_read_file 支援 start_line" }
 
   - id: coding
     name: 程式設計與版本控制

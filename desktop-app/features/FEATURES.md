@@ -136,6 +136,17 @@
   - `把這份 pptx 每張投影片裡的圖片抽出來`
   - `比較這兩張圖有什麼不同`
 
+### 辦公室報告／簡報（週報、pptx）（`office-report`）
+
+專門處理週報、簡報、投影片、pptx／docx／xlsx 的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
+
+- 可用平台：桌面版
+- 子代理人領域：`office_report`
+- AI 工具：`pptx_inspect`、`office_export_slide_images`、`fs_grep`、`extract_pptx_images`、`compare_images`
+- 範例：
+  - `依範本產生這週的簡報，並逐頁檢查有沒有圖片或背景掉了`
+  - `檢查這份 pptx 有沒有壞掉、為什麼檔案很難打開`
+
 ### 授權資料夾存取（File Access Point）（`file-access-points`）
 
 授權一個真實資料夾後，助理可以列出、讀取、搜尋、寫入修補其中的檔案。
@@ -155,7 +166,7 @@
 
 - 可用平台：桌面版
 - 子代理人領域：`desktop_ops`
-- AI 工具：`run_command`、`fs_read_file`、`fs_write_file`、`fs_list_files`、`fs_find_file`、`fs_stat`、`fs_mkdir`、`fs_remove`、`tmux_start_session`、`tmux_send_keys`、`tmux_capture_pane`、`tmux_list_sessions`、`tmux_kill_session`、`batch_process_items`、`analyze_large_file`、`get_large_file_analysis_chunk`
+- AI 工具：`run_command`、`fs_read_file`、`fs_write_file`、`fs_list_files`、`fs_find_file`、`fs_grep`、`fs_stat`、`fs_mkdir`、`fs_remove`、`tmux_start_session`、`tmux_send_keys`、`tmux_capture_pane`、`tmux_list_sessions`、`tmux_kill_session`、`batch_process_items`、`analyze_large_file`、`get_large_file_analysis_chunk`
 - 範例：
   - `列出這個資料夾最大的 10 個檔案`
   - `在背景開一個 tmux 跑這個腳本`
