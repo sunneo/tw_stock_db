@@ -937,7 +937,7 @@ function patchCloudflareWording(root) {
   );
   fa.register_openai_tool(
     "fs_write_file",
-    "直接寫入這台電腦上任意路徑的檔案（不存在會自動建立，含父資料夾），不需要先授權/註冊資料夾。寫入前務必先跟使用者確認要寫的內容/目標路徑，不要自作主張覆蓋重要檔案。參數: {\"path\":\"/home/user/out.txt\",\"content\":\"...\"}",
+    "直接寫入這台電腦上任意路徑的檔案（不存在會自動建立，含父資料夾），不需要先授權/註冊資料夾。寫入前務必先跟使用者確認要寫的內容/目標路徑，不要自作主張覆蓋重要檔案。**目標路徑如果落在另一個應用程式自己的私有設定/資料目錄底下（例如使用者家目錄下的.claude、.config、AppData\\Roaming\\<其他app>這類路徑，尤其.claude/skills/synced、.claude/plugins/synced這種名稱帶「synced」的資料夾——那是Claude Code/Claude Desktop這個完全不同產品自己同步管理的地方，不是這個桌面版app的資料），一律先明確跟使用者確認「要不要真的寫進那個屬於別的應用程式的路徑」，不要因為某個工具（例如skill_create）一時失敗/不好用，就自己想到「不然我直接把檔案寫進那裡好了」當作workaround——那個目錄的內容可能被那個其他應用程式自己的同步機制覆蓋/清空，寫進去的東西不可靠，也不是這個app該自作主張去改動的地方（尤其那個目錄底下如果有manifest.json這類索引檔案，絕對不要自己去新增/修改它的內容去「註冊」什麼東西進另一個應用程式）。參數: {\"path\":\"/home/user/out.txt\",\"content\":\"...\"}",
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
