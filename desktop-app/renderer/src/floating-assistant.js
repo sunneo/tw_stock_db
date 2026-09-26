@@ -33019,6 +33019,7 @@ ${existingNodeSummaries}
                 mdDiv.className = 'ai-markdown-body';
                 try {
                     mdDiv.innerHTML = DOMPurify.sanitize(this._renderMarkdownWithMath(answerText));
+                    this._wireSendSampleLinks(mdDiv);
                 } catch (_) {
                     mdDiv.textContent = answerText;
                 }
@@ -33286,13 +33287,34 @@ ${existingNodeSummaries}
                     const how = f.how || {};
                     if (how.slash) lines.push(`  - 斜線指令：${[].concat(how.slash).map(s => '`' + s + '`').join('、')}`);
                     if (how.ui) lines.push(`  - 介面入口：${[].concat(how.ui).join('、')}`);
-                    for (const s of (f.samples || [])) lines.push(`  - 範例：\`${s}\``);
+                    // tw_stock_db客製: 2026-09-26使用者要求——範例後面附一個「▶ 送出」
+                    // 連結，點下去直接把範例送出對話（href用#fa-send-<編碼過的文字>，
+                    // 不會被DOMPurify擋掉；點擊處理見_wireSendSampleLinks）。
+                    for (const s of (f.samples || [])) lines.push(`  - 範例：\`${s}\` [▶ 送出](#fa-send-${encodeURIComponent(s)})`);
                 }
             }
             lines.push('');
         }
         if (!result.detail) lines.push('輸入 `/ai-features <分類id或功能id>` 可以看詳細用法跟範例，例如 `/ai-features media`。');
         return lines.join('\n');
+    }
+
+    // 把訊息裡「▶ 送出」連結（href="#fa-send-<編碼文字>"）接成點擊直接送出
+    // 對話（見_formatFeaturesMarkdown）。正在回應中時不重複送出。
+    _wireSendSampleLinks(root) {
+        root.querySelectorAll('a[href^="#fa-send-"]').forEach((a) => {
+            const text = decodeURIComponent(a.getAttribute('href').slice('#fa-send-'.length));
+            a.title = `直接送出：${text}`;
+            a.style.cssText = 'margin-left:4px; padding:1px 8px; border-radius:999px; border:1px solid #76b900; color:#76b900; font-size:12px; text-decoration:none; cursor:pointer; white-space:nowrap;';
+            a.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                const inputEl = document.getElementById('ai-input-text');
+                const bar = document.getElementById('ai-autocomplete-bar');
+                if (!inputEl) return;
+                inputEl.value = text;
+                this._submitChatInput(inputEl, bar);
+            });
+        });
     }
 
     showAiFeatures(argsText) {
