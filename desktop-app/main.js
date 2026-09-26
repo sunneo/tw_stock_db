@@ -1549,6 +1549,97 @@ ipcMain.handle("fa:update:reload", async () => {
   return { ok: true };
 });
 
+// ---------- AppImage 版本仲裁（僅Linux AppImage） ----------
+// tw_stock_db客製: 2026-09-26使用者要求——上面的Live Update只熱更新
+// renderer前端幾個檔案，不處理main.js/preload.js或整個AppImage本體的
+// 更新（見該區塊說明，範圍刻意限縮）。但AppImage這種封裝方式沒有NSIS
+// 安裝檔那種「固定安裝目錄、新版直接原地覆蓋」的機制——使用者通常是把
+// 新版.AppImage下載到任意路徑（例如~/Downloads/），舊的.AppImage檔案、
+// 桌面捷徑、檔案總管「最近使用」都還留在原地指向舊檔，沒有任何管道讓
+// 「剛好點到舊捷徑」的使用者知道電腦上其實已經有更新的版本存在。
+//
+// 這裡不是要做真正的AppImage self-update（那需要處理.AppImage本身的
+// 下載/校驗/覆寫，複雜度和風險都高很多，不在這次範圍），只做「版本
+// 仲裁」：每次以AppImage方式啟動時，在
+// ~/.local/share/floating-assistant-desktop/appimage-registry.json
+// 登記「這個路徑的AppImage、目前是哪個版本」（版本沿用上面Live Update
+// 已經在用的baseline.baseVersion，即renderer/update-manifest.json裡
+// 建置時寫入的package.json版本號，同一份資料兩邊共用，不用另外維護）；
+// 下次啟動任一份時，如果登記簿裡有另一個路徑的版本比自己新、且那個
+// 檔案確認還存在於磁碟上，就跳出一個對話框問使用者要不要改用那份啟動
+// （選「確定」會spawn那個新版AppImage、自己quit；選「取消」完全不受
+// 影響、照常用目前這份啟動，不會刪除或搬動任何檔案）。只在
+// process.env.APPIMAGE存在時介入——AppImage runtime保證會設這個環境
+// 變數指向目前執行中的.AppImage檔案真實路徑，`electron .`開發模式／
+// Windows／macOS都不會設這個變數，這整段邏輯在那些情況下自動不生效。
+//
+// 對話框刻意重用下面的showConfirmWindow()（自己刻的BrowserWindow
+// modal），不用Electron內建的`dialog.showMessageBox`——上面
+// showExecConfirmWindow那段已經記錄過使用者實測`dialog.showMessageBox`
+// 在他的機器上會整個卡住、不會真的顯示（跟`dialog.showOpenDialog`、
+// `window.prompt/confirm`同一類已知在這個環境不可靠的原生API），沒有
+// 理由假設這裡會表現不同。
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(/[.+-]/).map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(/[.+-]/).map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function checkAppImageRegistryAndMaybeRelaunch() {
+  if (process.platform !== "linux" || !process.env.APPIMAGE) return false;
+  const currentPath = process.env.APPIMAGE;
+  const baseline = await loadBaselineManifest();
+  const currentVersion = baseline.baseVersion || app.getVersion();
+  const registryFile = path.join(app.getPath("home"), ".local", "share", "floating-assistant-desktop", "appimage-registry.json");
+  const registry = await readJsonSafe(registryFile, { schema: 1, entries: {} });
+  if (!registry.entries || typeof registry.entries !== "object") registry.entries = {};
+
+  // 清掉指向已經不存在的.AppImage檔案的舊紀錄（使用者刪掉/搬移過的舊
+  // 下載），避免登記簿無限長大、也避免對著已經不在磁碟上的檔案提議切換。
+  for (const key of Object.keys(registry.entries)) {
+    const entry = registry.entries[key];
+    if (!entry || typeof entry.path !== "string" || !existsSync(entry.path)) delete registry.entries[key];
+  }
+
+  const now = new Date().toISOString();
+  const prevSelf = registry.entries[currentPath];
+  registry.entries[currentPath] = {
+    path: currentPath,
+    baseVersion: currentVersion,
+    firstSeenAt: (prevSelf && prevSelf.firstSeenAt) || now,
+    lastRunAt: now,
+  };
+
+  let newer = null;
+  for (const [key, entry] of Object.entries(registry.entries)) {
+    if (key === currentPath) continue;
+    if (compareVersions(entry.baseVersion, currentVersion) > 0 && (!newer || compareVersions(entry.baseVersion, newer.baseVersion) > 0)) {
+      newer = entry;
+    }
+  }
+
+  await writeJsonSafe(registryFile, registry);
+  if (!newer) return false;
+
+  const wantsNewer = await showConfirmWindow(
+    `偵測到另一份較新的 FloatingAssistant AppImage：\n${newer.path}\n（v${newer.baseVersion}，目前這份是 v${currentVersion}）\n\n要改用那份啟動嗎？\n選「確定」會改用那份啟動、結束目前這份；選「取消」照常使用目前這份，不會刪除或影響任何檔案。`
+  );
+  if (!wantsNewer) return false;
+
+  try {
+    spawn(newer.path, [], { detached: true, stdio: "ignore" }).unref();
+    return true;
+  } catch (err) {
+    await showAlertWindow(`啟動 ${newer.path} 失敗：${String((err && err.message) || err)}\n將繼續使用目前這份。`);
+    return false;
+  }
+}
+
 // ---------- IPC: 其他 ----------
 ipcMain.handle("fa:config:getLocalProxyPort", async () => localProxyPort);
 ipcMain.handle("fa:config:getLocalProxyBase", async () => localProxyBase);
@@ -2683,6 +2774,22 @@ app.whenReady().then(async () => {
     delete process.env.NVAPI_KEY;
     console.log("[builtin-secrets-test] result:\n" + JSON.stringify(out, null, 2));
   }
+
+  // AppImage版本仲裁（見該區塊完整說明）：CLI模式(-p)是給腳本/排程呼叫的
+  // 非互動流程，不該卡在等人手動點擊的對話框上，直接跳過——這段本來就
+  // 只對互動式GUI啟動有意義。
+  if (cliArgs.prompt == null) {
+    try {
+      const relaunchedIntoNewer = await checkAppImageRegistryAndMaybeRelaunch();
+      if (relaunchedIntoNewer) {
+        app.quit();
+        return;
+      }
+    } catch (err) {
+      console.error("[appimage-registry] 版本仲裁檢查失敗（不影響正常啟動，照常使用目前這份）：", err);
+    }
+  }
+
   try {
     // tw_stock_db客製: 2026-09-15使用者要求——改成預設交給OS隨機挑一個可用
     // port（preferredPort:0），不再固定猜47891。原本固定port+衝突時遞增最多
