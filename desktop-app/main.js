@@ -30,6 +30,7 @@ app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 const path = require("path");
 const os = require("os");
 const fs = require("fs/promises");
+const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
 const { startLocalProxy, createInProcessFetchHandler } = require("./local-proxy.js");
 
@@ -1335,6 +1336,219 @@ ipcMain.handle("fa:secrets:set", async (_evt, patch) => {
   return true;
 });
 
+// ---------- Live Update（桌面版右上角「檢查更新」，renderer前端熱更新） ----------
+// tw_stock_db客製: 2026-09-26使用者要求——右上角要有一顆desktop-only的
+// 「check update」圖示、可以「live update」。這裡刻意不是electron-updater
+// 那種下載/執行新安裝檔的完整自動更新器（README.md已經明講這個專案目前
+// 沒有code signing，貿然自動下載/執行.exe風險太高，不是這次要做的事）——
+// 範圍限定在package.json的files清單裡`renderer/**/*`（扣掉src）這幾個
+// 純前端檔案：整檔覆蓋式熱更新，套用後只是把BrowserWindow重新loadFile()
+// 指到覆蓋後的檔案，不用整個app relaunch，也完全不碰main.js/preload.js
+// 這類主行程原始碼（那些原本就已經在執行中，就算寫檔案覆蓋掉也不會生效，
+// 硬要支援熱抽換主行程程式碼風險又高、價值又低，不在這次範圍內）。
+//
+// 比對方式是使用者明確要求的「看manifest file跟自己的差異」，不是比單一
+// 版本號字串：
+//   - 本機基準manifest：renderer/update-manifest.json，build-assistant.js
+//     在每次建置時對LIVE_PATCH_ALLOWED_FILES這幾個檔案算md5、寫進去，
+//     跟floating-assistant.js/floating-assistant.min.js同一批必須commit的
+//     建置產物，不是執行期現算——「代表自己當下的特性」這句話對應的就是
+//     這份檔案。
+//   - 遠端manifest：獨立分支desktop-app-patch（raw.githubusercontent.com
+//     直接讀，跟festival-themes套版分支同一種「獨立分支＋raw讀取」慣例）
+//     根目錄的manifest.json，同樣{相對路徑:{md5,...}}格式，多帶
+//     version/notes/publishedAt——這個分支的內容由使用者自己維護、推送，
+//     app本身只讀不寫，不會、也不能自動幫使用者提交更新內容進那個分支。
+//   - diff時逐檔比對md5，只有真的不同的檔案才會被下載，不是整包重抓。
+//   - 套用結果記在userData/live-patch/state.json（同樣{相對路徑:md5}
+//     格式＋appliedVersion＋baselineVersion）。下次讀取時：
+//       1. 先比對state.baselineVersion跟目前這次安裝的基準版本是否相同——
+//          不同代表使用者中間換過安裝檔（例如重新裝了新版installer），
+//          舊的覆蓋目錄是疊在「已經不存在的舊基準」上，不能繼續沿用，
+//          視同沒套用過，下次apply()會整個重建覆蓋目錄。
+//       2. 版本相同才逐檔重新算md5，跟state.json記錄的值比對，確認覆蓋
+//          目錄沒有被外部改壞——相符才真的採用它當「目前本機manifest」。
+//
+// LIVE_PATCH_ALLOWED_FILES是唯一會被寫入/讀取的相對路徑白名單，遠端
+// manifest.json裡任何不在這個清單裡的key一律忽略——即使desktop-app-patch
+// 是使用者自己的repo分支、不是真正意義上的「不受信任來源」，這層allowlist
+// 仍然是便宜的縱深防禦，避免manifest格式手誤（例如打錯相對路徑）意外把
+// 檔案寫到預期以外的地方。
+const FA_UPDATE_BRANCH_BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/desktop-app-patch";
+const LIVE_PATCH_ALLOWED_FILES = [
+  "renderer/index.html",
+  "renderer/bootstrap.js",
+  "renderer/floating-assistant.js",
+  "renderer/floating-assistant.min.js",
+];
+// floating-assistant.js壓縮後實測約1~2MB，這裡抓寬鬆一點的上限，manifest.json
+// 本身另外用更小的上限（見fetchUpdateResource呼叫端）。
+const LIVE_PATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const LIVE_PATCH_MANIFEST_MAX_BYTES = 256 * 1024;
+const LIVE_PATCH_FETCH_TIMEOUT_MS = 15000;
+const LIVE_PATCH_DIR = () => path.join(USER_DATA_DIR(), "live-patch");
+const LIVE_PATCH_STATE_FILE = () => path.join(LIVE_PATCH_DIR(), "state.json");
+const BASELINE_MANIFEST_FILE = path.join(__dirname, "renderer", "update-manifest.json");
+
+function md5Hex(buf) {
+  return crypto.createHash("md5").update(buf).digest("hex");
+}
+async function md5OfFile(file) {
+  try { return md5Hex(await fs.readFile(file)); } catch (_) { return null; }
+}
+async function fetchUpdateResource(url, { maxBytes = LIVE_PATCH_MAX_FILE_BYTES } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LIVE_PATCH_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { signal: controller.signal, cache: "no-store" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.byteLength > maxBytes) throw new Error(`回應超過上限（${maxBytes} bytes）：${url}`);
+    return buf;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function loadBaselineManifest() {
+  const data = await readJsonSafe(BASELINE_MANIFEST_FILE, null);
+  if (data && data.files && typeof data.files === "object") return data;
+  // 找不到（例如開發模式沒跑過build:assistant）時退回全空的基準——所有
+  // 白名單檔案都會被視為「跟遠端不同」，check()仍然能正常運作，只是每次
+  // 都會回報有更新可套用。
+  return { schema: 1, baseVersion: app.getVersion(), files: {} };
+}
+// 算出「目前實際生效」的本機manifest：覆蓋目錄完整可信時採用baseline疊加
+// state.json的結果，否則單純退回baseline（詳見上方Live Update區塊說明）。
+async function computeEffectiveLocalManifest() {
+  const baseline = await loadBaselineManifest();
+  const baselineVersion = baseline.baseVersion || app.getVersion();
+  const state = await readJsonSafe(LIVE_PATCH_STATE_FILE(), null);
+  if (state && state.files && typeof state.files === "object" && state.baselineVersion === baselineVersion) {
+    let intact = true;
+    for (const relPath of Object.keys(state.files)) {
+      if (!LIVE_PATCH_ALLOWED_FILES.includes(relPath)) continue;
+      const actual = await md5OfFile(path.join(LIVE_PATCH_DIR(), relPath));
+      if (actual !== state.files[relPath]) { intact = false; break; }
+    }
+    if (intact) {
+      return {
+        version: state.appliedVersion || baselineVersion,
+        files: { ...baseline.files, ...state.files },
+        overrideActive: true,
+      };
+    }
+  }
+  return { version: baselineVersion, files: { ...baseline.files }, overrideActive: false };
+}
+// mainWindow/runCliPrompt兩個loadFile()呼叫點共用：覆蓋目錄有效才指過去，
+// 否則用打包內建的原始路徑，呼叫端不用各自重複判斷邏輯。
+async function resolveIndexHtmlPath() {
+  const local = await computeEffectiveLocalManifest();
+  if (local.overrideActive) return path.join(LIVE_PATCH_DIR(), "renderer", "index.html");
+  return path.join(__dirname, "renderer", "index.html");
+}
+
+async function fetchRemoteUpdateManifest() {
+  const buf = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/manifest.json`, { maxBytes: LIVE_PATCH_MANIFEST_MAX_BYTES });
+  const remote = JSON.parse(buf.toString("utf8"));
+  if (!remote || typeof remote.files !== "object") throw new Error("manifest.json格式不正確（缺少files欄位）");
+  return remote;
+}
+function diffChangedFiles(localManifest, remoteManifest) {
+  const changed = [];
+  for (const relPath of LIVE_PATCH_ALLOWED_FILES) {
+    const info = remoteManifest.files[relPath];
+    if (!info || typeof info.md5 !== "string") continue; // 遠端沒提供這個檔案的md5，視為這次沒有更新
+    if (localManifest.files[relPath] !== info.md5) changed.push(relPath);
+  }
+  return changed;
+}
+
+// 唯讀查詢——只抓manifest.json（小檔）比對，不下載任何實際檔案內容，
+// 所以按鈕上的「檢查更新」可以隨便按、也可以在啟動時靜默呼叫一次，
+// 不會有副作用。
+ipcMain.handle("fa:update:check", async () => {
+  try {
+    const local = await computeEffectiveLocalManifest();
+    const remote = await fetchRemoteUpdateManifest();
+    const changedFiles = diffChangedFiles(local, remote);
+    return {
+      ok: true,
+      currentVersion: local.version,
+      remoteVersion: remote.version || null,
+      notes: remote.notes || "",
+      publishedAt: remote.publishedAt || null,
+      hasUpdate: changedFiles.length > 0,
+      changedFiles,
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// 實際下載＋套用。刻意先把每個要更新的檔案都下載＋驗證md5完成，全部通過
+// 才落地寫入（見下方迴圈），避免抓到一半網路斷線、留下「部分檔案是新版、
+// 部分還是舊版」這種比原本不更新還糟的半套狀態。
+ipcMain.handle("fa:update:apply", async () => {
+  try {
+    const baseline = await loadBaselineManifest();
+    const baselineVersion = baseline.baseVersion || app.getVersion();
+    const local = await computeEffectiveLocalManifest();
+    const remote = await fetchRemoteUpdateManifest();
+    const toFetch = diffChangedFiles(local, remote);
+    if (toFetch.length === 0) return { ok: true, appliedVersion: local.version, changedFiles: [] };
+
+    const downloaded = {};
+    for (const relPath of toFetch) {
+      const buf = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/${relPath}`, { maxBytes: LIVE_PATCH_MAX_FILE_BYTES });
+      const md5 = md5Hex(buf);
+      if (md5 !== remote.files[relPath].md5) throw new Error(`${relPath} 下載內容跟manifest.json宣告的md5不符，已中止這次更新（沒有寫入任何檔案）`);
+      downloaded[relPath] = buf;
+    }
+
+    const overrideRendererDir = path.join(LIVE_PATCH_DIR(), "renderer");
+    // local.overrideActive為false代表computeEffectiveLocalManifest()判斷
+    // 覆蓋目錄「不存在／內容被改壞／建立在已經不是目前這次安裝的基準版本
+    // 之上」（見該函式的說明）——這幾種情況都不能只疊加新檔案在舊底稿上，
+    // 要整個重建；重建後local.files（＝baseline.files）就是覆蓋目錄目前
+    // 實際內容的正確寫照，下面可以直接拿來當state.json的起點。
+    if (!local.overrideActive) {
+      await fs.rm(LIVE_PATCH_DIR(), { recursive: true, force: true }).catch(() => {});
+      await fs.mkdir(LIVE_PATCH_DIR(), { recursive: true });
+      await fs.cp(path.join(__dirname, "renderer"), overrideRendererDir, { recursive: true });
+    }
+
+    for (const relPath of toFetch) {
+      const dest = path.join(LIVE_PATCH_DIR(), relPath);
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.writeFile(dest, downloaded[relPath]);
+    }
+
+    const nextStateFiles = { ...local.files };
+    for (const relPath of toFetch) nextStateFiles[relPath] = remote.files[relPath].md5;
+    await writeJsonSafe(LIVE_PATCH_STATE_FILE(), {
+      schema: 1,
+      appliedVersion: remote.version || local.version,
+      appliedAt: new Date().toISOString(),
+      baselineVersion,
+      files: nextStateFiles,
+    });
+
+    return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// apply()只負責落地檔案＋記錄狀態，不會自己導航視窗——由renderer在顯示
+// 「更新完成」訊息之後才呼叫這個handler，讓使用者看得到那句話，不會畫面
+// 一閃就被loadFile()換頁蓋掉。
+ipcMain.handle("fa:update:reload", async () => {
+  if (!mainWindow) return { ok: false, error: "主視窗不存在" };
+  await mainWindow.loadFile(await resolveIndexHtmlPath());
+  return { ok: true };
+});
+
 // ---------- IPC: 其他 ----------
 ipcMain.handle("fa:config:getLocalProxyPort", async () => localProxyPort);
 ipcMain.handle("fa:config:getLocalProxyBase", async () => localProxyBase);
@@ -1346,7 +1560,7 @@ ipcMain.handle("fa:shell:openExternal", async (_evt, url) => {
 });
 
 // ---------- 視窗建立 ----------
-function createWindow() {
+async function createWindow() {
   // tw_stock_db客製: 2026-09-15使用者要求——桌面版是單一用途的全螢幕對話
   // 視窗，不是「小工具疊在別的頁面上」的浮動widget，開啟時就該佔滿畫面。
   // 一開始用show:false+ready-to-show裡呼叫maximize()+show()，實測（真的
@@ -1414,7 +1628,7 @@ function createWindow() {
       console.log(`[renderer console] ${message} (${sourceId}:${line})`);
     });
   }
-  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.loadFile(await resolveIndexHtmlPath());
   if (process.env.FA_DEBUG_COI_TEST) {
     mainWindow.webContents.once("did-finish-load", () => {
       setTimeout(async () => {
@@ -2311,7 +2525,7 @@ async function runCliPrompt({ prompt, outputFormat }) {
   await new Promise((resolve, reject) => {
     win.webContents.once("did-finish-load", resolve);
     win.webContents.once("did-fail-load", (_e, code, desc) => reject(new Error(`renderer載入失敗: ${desc} (${code})`)));
-    win.loadFile(path.join(__dirname, "renderer", "index.html"));
+    resolveIndexHtmlPath().then((p) => win.loadFile(p));
   });
 
   // bootstrap.js的main() IIFE是async、有好幾個await（workspace init、
@@ -2535,7 +2749,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  createWindow();
+  await createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

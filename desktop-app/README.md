@@ -359,9 +359,16 @@ Electron 31（Chromium ~126）會直接`WebAssembly.compile()`失敗。這是這
   起來之後做什麼**——一旦程式開始跑，它擁有跟使用者本人一樣的系統權限，
   不受這個app的root範圍限制（這是作業系統層級的行程權限模型，這個app
   沒有、也不打算做真正的程式沙盒）。
-- 目前沒有self-update機制、沒有code signing（Windows/macOS可能會顯示
-  「未知發布者」警告）——這些留給之後真的要對外發布時再處理，這次範圍
-  只到「本機打包成可執行的單一檔案」。
+- 目前沒有electron-updater那種會下載/執行新安裝檔的self-update機制、
+  沒有code signing（Windows/macOS可能會顯示「未知發布者」警告）——安裝檔
+  本身（.exe/AppImage）仍然要使用者自己重新下載安裝，這些留給之後真的要
+  對外發布時再處理。
+  桌面版右上角「🔄 檢查更新」是獨立、範圍小很多的機制：只針對renderer
+  前端這幾個檔案（floating-assistant.js／bootstrap.js／index.html）做
+  manifest-diff（md5比對）＋整檔覆蓋式熱更新，更新來源是獨立分支
+  `desktop-app-patch`，套用後立即生效、不用重新安裝或重開整個app，完全
+  不碰main.js/preload.js等主行程原始碼——manifest格式與維護方式見
+  README.FloatingAssitant.md的「Live Update」章節。
 - `main.js`裡的本機代理埠號預設`47891`，被佔用時會自動往上找（最多試
   20個），實際埠號透過IPC回報給renderer，不需要使用者自己處理。
 - **不要對這個資料夾跑`npm audit fix --force`**——實測過會把
