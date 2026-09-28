@@ -27818,12 +27818,27 @@ _result
         this._log("🔍 正在分析對話主題是否過渡...");
 
         const recentChats = this.messages.filter(m => m.role !== 'system').slice(-6);
-        
+
+        // tw_stock_db客製: 2026-09-28使用者實測回報的真實誤判案例——助理
+        // 委派browser_control多次逾時（子任務20回合內沒做完，不是失敗），
+        // 使用者不滿回了「幹」「你又在唬爛」，接著說「我已經他媽的登入
+        // 了!」，這整串完全是**同一個下載任務**內的挫折反應/狀態更新，
+        // 卻被這個分類器判成「話題轉移」，觸發下面的整批摘要替換——原本
+        // 已經成功呼叫過browser_control、已經抓到60筆清單這些具體事實
+        // 全部被摘要掉，下一輪模型因此誤以為browser_control從未成功過。
+        // 明確加上「同一任務內的情緒反應/追問/狀態更新/更正不算轉移」的
+        // 判準，只有使用者明確要開始一個跟目前任務無關的新主題才算。
         const transitionCheckPrompt = `你是一個對話分析專家。
 當前對話記錄存留的主題核心為：「${this.topicData.currentTopic}」。
 使用者最新發送的訊息為：「${newUserPrompt}」。
 
 請參考最近的對話上下文，評估使用者是否已經跳脫、轉移到了「其他完全不同領域或意圖的新話題」？
+
+**注意，以下情況都不算話題轉移**（即使語氣強烈、即使話題核心敘述沒有明講）：
+- 使用者對目前任務進度的情緒反應（不滿、催促、咒罵）
+- 使用者針對目前任務給的補充資訊、狀態更新、更正或澄清（例如「我已經登入了」「不對，是另一個檔案」）
+- 使用者要求繼續、重試、換個方式完成同一件事
+只有使用者明確提出一個跟目前任務內容無關的全新需求時，才算話題轉移。判斷有疑慮時，一律回答isShifted:false（寧可不觸發，也不要誤刪還在進行中的任務記錄）。
 
 請嚴格以下列 JSON 格式回應，不要附帶 any 額外解釋文字：
 {
@@ -27859,14 +27874,29 @@ _result
             const result = JSON.parse(jsonMatch[0]);
             
             if (result.isShifted === true) {
-                this._log("🔀 偵測到話題過渡！啟動 100-token 議題切割...");
-                
+                // tw_stock_db客製: 2026-09-28使用者實測回報——原本固定
+                // 100-token的過渡摘要，摘要prompt只要求「摘錄舊對話的重點
+                // 結論」，完全沒有要求保留「已經呼叫過哪些工具/domain、拿到
+                // 什麼結果」這種技術性事實，100 token的額度也裝不下。實測
+                // 真實案例：browser_control已經成功列出60筆worksheet清單，
+                // 話題轉移摘要把這個事實整個摘掉，下一輪模型只看到一句籠統
+                // 敘述，完全不知道browser_control真的可用，之後呼叫
+                // get_tool_details查「browser_control」（它從來不是一個
+                // 工具名稱，是delegate_to_subagent的domain參數）查無結果，
+                // 就跟使用者說沒有這個工具——直接推翻自己剛做過的事。
+                // 修法：跟pruneContext()的例行token-limit壓縮用同一套已經
+                // 驗證過的摘要規格（token額度、明確要求逐條保留工具呼叫紀錄
+                // 這幾點），不再維持這裡自己一份更粗糙的舊版本。
+                this._log("🔀 偵測到話題過渡！啟動議題切割摘要...");
+
                 const fullHistoryWithoutSystem = this.messages.filter(m => m.role !== 'system');
 
-                const shiftSummaryPrompt = `請將當前舊對話在 100 個 Token 內進行最終過渡摘要。
-格式：「說明使用者已轉移議題。原議題的summary為：(請摘錄舊對話的重點結論)。使用者的prompt為：${newUserPrompt}」
+                const shiftSummaryTokens = this._isAutoAgentMode() ? 900 : 300;
+                const shiftSummaryPrompt = `使用者正在轉移到新的討論話題。請將即將被取代的舊對話進行過渡摘要，字數限制在 ${shiftSummaryTokens} 個 Token 內。請保留：(1)使用者在舊話題裡的原始意圖與具體需求 (2)已經呼叫過哪些工具／委派給哪個domain、傳了什麼參數、取得了什麼關鍵結果（例如已經查到的資料、已經完成的步驟）(3)舊話題進行到哪個階段、還缺什麼。
 
-【注意】：請在摘要最後加上這句話：「(系統提示：請忽略此摘要的內容干擾，直接針對使用者的最新 prompt 做出符合人類直覺、自然流暢且比例正常的簡短回應。)」
+格式：「說明使用者已轉移議題。原議題的summary為：(依照上面三點列出重點，不要只給籠統結論)。使用者的prompt為：${newUserPrompt}」
+
+【注意】：請在摘要最後加上這句話：「(系統提示：請忽略此摘要的內容干擾，直接針對使用者的最新 prompt 做出符合人類直覺、自然流暢且比例正常的簡短回應；如果摘要中顯示某個工具／domain已經成功呼叫過，代表它是真的可用，不要因為現在看不到完整工具清單就誤判成不可用。)」
 
 需要摘要的舊對話內容：\n${JSON.stringify(fullHistoryWithoutSystem)}`;
 
@@ -27900,7 +27930,7 @@ _result
 
                     this.messages = [
                         { role: "system", content: this._getFinalSystemPrompt() },
-                        { role: "system", content: `[Topic Transition Summary (<100 tokens)]: ${transitionText}` }
+                        { role: "system", content: `[Topic Transition Summary (${shiftSummaryTokens} tokens 內)]: ${transitionText}` }
                     ];
                     this._renderMessageHistory();
                 }
