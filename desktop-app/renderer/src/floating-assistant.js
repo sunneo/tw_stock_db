@@ -19489,11 +19489,82 @@ ${sourceTool.handlerScript}
             return { type: 'SimpleCommand', assignments, argvWords, srcText };
         };
 
+        // tw_stock_db客製: 2026-09-28使用者實測回報——`function dosleep { ... }`
+        // 這種函式定義完全沒被這個parser認得，落到parseSimpleCommand()：
+        // `{`本身在_terminalLexShell()裡不是分隔符（跟`(`/`)`不同，沒有
+        // 專屬token type），只要前後有空白就會被當成獨立的'word' token
+        // （值剛好是"{"）——parseSimpleCommand()的argv掃描迴圈只認
+        // `peek().t === 'word'`，會把`function`、函式名稱都吃進argvWords，
+        // 直到遇到這個"{" word token才停下來（因為它後面實際上沒有再檢查
+        // 「這個word是不是單獨的大括號」，但問題出在**停下來之後，"{"
+        // 這個word token完全沒被消耗**，變成下一個statement的開頭）——
+        // 於是整個函式定義被腰斬成好幾個各自不完整、彼此無關的top-level
+        // 「statement」（`function dosleep`、`sleep ${SLEEP_DURATION}`、
+        // 孤立的`}`...），函式本體的敘述句全部被誤判成緊接在函式定義後面
+        // 的一般頂層指令、立刻執行（不是等函式真正被呼叫時才執行），孤立
+        // 的`}`本身還會被busybox當成「不存在的指令」報錯——使用者原始回報
+        // 的`sh: line 0: syntax error: unexpected "}"`／`dosleep: not
+        // found`等一整串錯誤，根因都在這裡。
+        //
+        // 修法：在還沒落到parseSimpleCommand()之前，先偵測bash風格
+        // `function`NAME`{`...`}`跟POSIX風格`NAME()`{`...`}`兩種函式定義
+        // 語法，用token流裡"{"/"}"這兩個word token（`${...}`參數展開因為
+        // 整段會被_terminalLexShell()當成同一個word token、不會被拆成
+        // 獨立的"{"/"}"，可以放心只靠「word值剛好等於"{"或"}""」判斷巢狀
+        // 深度）找出真正對應的收尾大括號，把整個函式定義（含大括號本身）
+        // 當一個新的FunctionDef節點交給_terminalExecShellNode（見該方法
+        // 新增的'FunctionDef' case）——執行時除了照常送進wasi-sh定義一次
+        // （維持跟其他statement同樣的行為），還會把函式原始碼記進
+        // session.userFunctionDefs，讓_terminalRunWasmLine（見該方法的
+        // 新增邏輯）之後每一次呼叫都自動把所有已知函式定義補在最前面——
+        // 這是必要的，因為for/while迴圈本體是由這個parser自己原生執行、
+        // 每次迭代呼叫wasi-sh都是全新、無狀態的WASM instance（跟cwd的處理
+        // 方式同一個道理，見`cd`前綴那行），函式一旦定義過就要在「之後任何
+        // 一次」呼叫裡都能被呼叫到，不能只靠定義當下那一次wasi-sh呼叫。
+        const parseFunctionDef = () => {
+            const startPos = pos;
+            let name = null;
+            if (peekWord() === 'function') {
+                pos++;
+                const nameTok = peek();
+                if (!nameTok || nameTok.t !== 'word' || nameTok.v === '{' || nameTok.v === '}') { pos = startPos; return null; }
+                name = nameTok.v;
+                pos++;
+                if (peek() && peek().t === '(') {
+                    pos++;
+                    if (!(peek() && peek().t === ')')) { pos = startPos; return null; }
+                    pos++;
+                }
+            } else {
+                const nameTok = peek();
+                if (!nameTok || nameTok.t !== 'word' || nameTok.v === '{' || nameTok.v === '}') return null;
+                if (!(tokens[pos + 1] && tokens[pos + 1].t === '(' && tokens[pos + 2] && tokens[pos + 2].t === ')')) return null;
+                name = nameTok.v;
+                pos += 3;
+            }
+            while (peek() && peek().t === '\n') pos++;
+            if (!(peek() && peek().t === 'word' && peek().v === '{')) { pos = startPos; return null; }
+            pos++; // 消耗開頭的'{'
+            let depth = 1, j = pos;
+            while (j < tokens.length && tokens[j].t !== 'eof') {
+                if (tokens[j].t === 'word' && tokens[j].v === '{') depth++;
+                else if (tokens[j].t === 'word' && tokens[j].v === '}') { depth--; if (depth === 0) break; }
+                j++;
+            }
+            if (j >= tokens.length || tokens[j].t === 'eof') { pos = startPos; return null; }
+            const srcStart = tokens[startPos].pos;
+            const srcEnd = tokens[j].end;
+            pos = j + 1; // 消耗收尾的'}'
+            return { type: 'FunctionDef', name, srcText: src.slice(srcStart, srcEnd).trim() };
+        };
+
         const parseCompoundOrSimple = () => {
             const w = peekWord();
             if (w === 'for') return parseFor();
             if (w === 'while' || w === 'until') return parseWhile(w === 'until');
             if (w === 'if') return parseIf();
+            const funcDef = parseFunctionDef();
+            if (funcDef) return funcDef;
             if (peek() && peek().t === '(') {
                 const openIdx = pos;
                 let depth = 0, j = pos;
@@ -19837,6 +19908,20 @@ ${sourceTool.handlerScript}
                 if (!node.srcText) return { exitCode: 0, stdout: '', stderr: '' };
                 const prefix = this._terminalBuildEnvPrefix(env);
                 const r = await this._terminalRunWasmLine(session, prefix + node.srcText, { streamToWidget: opts.streamToWidget, stdin: this._terminalConsumeStdinOpt(opts) });
+                return r.ok ? { exitCode: r.exit_code, stdout: r.stdout, stderr: r.stderr } : { exitCode: 1, stdout: '', stderr: String(r.error || '') };
+            }
+            case 'FunctionDef': {
+                // tw_stock_db客製: 見上面parseFunctionDef()的完整說明——記進
+                // session.userFunctionDefs讓_terminalRunWasmLine之後每一次
+                // 呼叫都自動帶上這個定義（因為for/while本體每次迭代都是全新
+                // 的WASM instance，函式定義不會自己跨呼叫存活）。這裡另外照常
+                // 執行一次（定義動作本身沒有副作用，只是為了跟其他statement
+                // 一致、也方便同一次呼叫裡緊接著的程式碼能立刻用到）。
+                if (!session.userFunctionDefs) session.userFunctionDefs = new Map();
+                if (node.name) session.userFunctionDefs.set(node.name, node.srcText);
+                if (!node.srcText) return { exitCode: 0, stdout: '', stderr: '' };
+                const prefix = this._terminalBuildEnvPrefix(env);
+                const r = await this._terminalRunWasmLine(session, prefix + node.srcText, { streamToWidget: opts.streamToWidget });
                 return r.ok ? { exitCode: r.exit_code, stdout: r.stdout, stderr: r.stderr } : { exitCode: 1, stdout: '', stderr: String(r.error || '') };
             }
             default:
@@ -20785,7 +20870,16 @@ ${sourceTool.handlerScript}
         try { await this._hydrateReferencedFapMounts(session, fsStore, line); } catch (err) {
             return { ok: false, error: `FAP掛載讀取失敗：${String(err.message || err)}` };
         }
-        const script = this._terminalRewriteBuiltinPaths(`cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
+        // tw_stock_db客製: 2026-09-28——見parseFunctionDef()/'FunctionDef'
+        // case的完整說明：每次wasi-sh呼叫都是全新、無狀態的WASM instance，
+        // 使用者定義過的shell函式不會自己跨呼叫存活，所以跟cwd用同一招——
+        // 每次呼叫前都自動把目前已知的所有函式定義重新補在最前面，確保
+        // for/while本體（由這個parser自己原生逐次呼叫wasi-sh執行）裡呼叫
+        // 到的函式，不管是不是跟函式定義本身同一次呼叫，都真的找得到。
+        const funcDefsPrefix = session.userFunctionDefs && session.userFunctionDefs.size
+            ? `${Array.from(session.userFunctionDefs.values()).join('\n')}\n`
+            : '';
+        const script = this._terminalRewriteBuiltinPaths(`${funcDefsPrefix}cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
         let builtins;
         try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
             return { ok: false, error: `指令需要的執行環境載入失敗：${String(err.message || err)}` };
