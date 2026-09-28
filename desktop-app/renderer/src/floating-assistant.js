@@ -1396,7 +1396,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -3074,6 +3074,15 @@ const FA_ASSET_URLS = {
     // pdf.js官方測試用PDF能正確逐頁擷取文字）。
     pdfJs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
     pdfJsWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+    // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs（把多份已上傳的PDF
+    // 合併成一份）。pdf.js（上面pdfJs）只能「讀」，沒有寫入/組裝PDF的能力，
+    // 這裡另外vendor pdf-lib——純JS、可以直接載入既有PDF、逐頁複製
+    // （copyPages）到一份新文件再save()，複製的是原始頁面物件（含字型/
+    // 圖片/向量內容），不是重新渲染，不會有轉檔失真的問題。UMD
+    // global-attaching build（window.PDFLib），跟jszip/js-yaml同一種
+    // _faLoadScriptOnce載入方式，不需要另外處理worker（純同步JS運算，沒有
+    // pdf.js那種一定要Worker執行的限制）。版本鎖定1.17.1（目前最新穩定版）。
+    pdfLib: 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js',
     // tw_stock_db客製: 2026-09-16使用者要求——內建bash/python執行環境，讓AI
     // 能真的產生程式並執行（bash script／python script），不是只能描述
     // 「這段程式應該做什麼」。主要給純網頁版用（見bash_execute/python_execute
@@ -8292,6 +8301,24 @@ ${fnData.code}
                 slides: { type: 'string', description: '（選填）投影片範圍，例如"3"或"2-5"，預設全部' },
                 max_images: { type: 'integer', description: '（選填）最多抽幾張，預設30，最高80' },
             }, additionalProperties: false }
+        );
+        // tw_stock_db客製: 2026-09-28使用者要求——「上傳PDF附件，合併成一個PDF」。
+        registerOptional('merge_pdfs',
+            '把多份已上傳的PDF依指定順序合併成一份新的PDF（直接複製原始頁面物件，不是重新渲染，合併後文字仍可選取/搜尋、畫質不會劣化）。回傳{ok, pdf_file_id, filename, sizeBytes, pageCount, fileCount, files:[{filename,pages}]}，成功時會自動產生下載附件。⚠️只能合併沒有密碼保護的PDF；遇到有密碼保護（真的加密）的檔案會直接回報是哪一份，不會嘗試強行合併產生看似成功、實際內容是空白/亂碼的檔案——收到這種錯誤時如實轉告使用者需要先自行移除密碼保護。參數: {"files":["PDF的file_id或檔名", ...]（至少2個，依這個順序合併）}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : [];
+                if (fileArgs.length < 2) return JSON.stringify({ ok: false, error: '至少需要2個PDF的file_id/檔名才能合併（files參數目前少於2個）' });
+                try {
+                    const result = await this._mergePdfFiles(fileArgs, (m) => this._log('📄 ' + m));
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已合併 ${r.fileCount} 份PDF（共${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                files: { type: 'array', items: { type: 'string' }, description: '要依序合併的PDF file_id或檔名陣列，至少2個' },
+            }, required: ['files'], additionalProperties: false }
         );
         registerOptional('compare_images',
             '把2~6張圖片「一起」交給支援讀圖(vision)的model比較（相同點/差異、哪一張符合某個描述、哪一張對應哪一張），比分別呼叫interpret_image再自己對照準確。圖片來源：file_id（📎附件、extract_pptx_images/extract_video_frames/browser_screenshot產生的圖片）或http(s)圖片網址，混用也可以。典型用途：拿投影片裡抽出的圖，跟影片幾個時間點的畫面比對，找出投影片圖片出現在影片的哪個時間，再用extract_clip_range剪那一段。參數: {"images":["file_id或網址",...],"question":"（選填）想比較什麼，例如\"圖1（投影片）跟哪一張影格畫面最像？\""}',
@@ -18167,6 +18194,86 @@ ${sourceTool.handlerScript}
                 throw new Error('PDF 解析所需的外部程式庫載入失敗（可能是網路問題）：' + e.message);
             });
         return this._pdfJsLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-28——merge_pdfs用的pdf-lib載入（見FA_ASSET_URLS.pdfLib
+    // 的說明）。純UMD global-attaching build，不需要像pdf.js那樣另外處理Worker。
+    _ensurePdfLibLoaded() {
+        if (typeof PDFLib !== 'undefined') return Promise.resolve();
+        if (this._pdfLibLoadPromise) return this._pdfLibLoadPromise;
+        this._pdfLibLoadPromise = _faLoadScriptOnce(FA_ASSET_URLS.pdfLib).catch(e => {
+            this._pdfLibLoadPromise = null;
+            throw new Error('PDF合併所需的外部程式庫載入失敗（可能是網路問題）：' + e.message);
+        });
+        return this._pdfLibLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——把多份已上傳的PDF依指定順序
+    // 合併成一份，跟_concatAudioFiles（合併音檔）同一種「解析每個file_id→
+    // 逐一處理→輸出一個新檔案存回fileCache」模式。用pdf-lib的copyPages
+    // 直接複製原始頁面物件（含字型/圖片/向量內容），不是重新渲染成圖片再
+    // 拼頁，所以合併後每一頁的文字仍可選取/搜尋、畫質不會劣化。
+    // 已知限制：pdf-lib沒有解密能力，遇到有密碼保護（真的加密，不是單純
+    // 唯讀限制）的PDF，PDFDocument.load()會丟EncryptedPDFError，這裡直接
+    // 如實回報是哪一份檔案有密碼保護，不嘗試用ignoreEncryption蒙混過去
+    // （那樣複製出來的頁面內容流其實還是加密的，會產生看似成功、實際頁面
+    // 是空白或亂碼的合併結果，比明確報錯更糟）。
+    async _mergePdfFiles(fileArgs, onProgress) {
+        const records = [];
+        for (const arg of fileArgs) {
+            const record = await this._resolveUploadedFileRecord(arg);
+            if (!record) return { ok: false, error: `找不到符合「${arg}」的已上傳檔案` };
+            if (this._detectFileFormat(record.filename) !== 'pdf') return { ok: false, error: `「${record.filename}」不是PDF檔案，merge_pdfs只能合併PDF` };
+            records.push(record);
+        }
+        if (onProgress) onProgress('載入PDF合併程式庫…');
+        try { await this._ensurePdfLibLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        let merged;
+        try {
+            merged = await PDFLib.PDFDocument.create();
+        } catch (err) {
+            return { ok: false, error: '建立合併後的PDF文件失敗：' + String(err.message || err) };
+        }
+        const perFile = [];
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (onProgress) onProgress(`合併第 ${i + 1}/${records.length} 份：${record.filename}…`);
+            let src;
+            try {
+                const bytes = await record.blob.arrayBuffer();
+                src = await PDFLib.PDFDocument.load(bytes);
+            } catch (err) {
+                const isEncrypted = err && (err.name === 'EncryptedPDFError' || /encrypt/i.test(String(err.message || '')));
+                return { ok: false, error: isEncrypted
+                    ? `「${record.filename}」是有密碼保護的PDF，merge_pdfs不支援解密，請先手動移除密碼保護再上傳`
+                    : `「${record.filename}」不是有效的PDF或已損毀：${String(err.message || err)}` };
+            }
+            let copiedPages;
+            try {
+                copiedPages = await merged.copyPages(src, src.getPageIndices());
+            } catch (err) {
+                return { ok: false, error: `複製「${record.filename}」的頁面失敗：${String(err.message || err)}` };
+            }
+            copiedPages.forEach((p) => merged.addPage(p));
+            perFile.push({ filename: record.filename, pages: copiedPages.length });
+        }
+        if (onProgress) onProgress('產生合併結果…');
+        let mergedBytes;
+        try {
+            mergedBytes = await merged.save();
+        } catch (err) {
+            return { ok: false, error: '輸出合併後的PDF失敗：' + String(err.message || err) };
+        }
+        const blob = new Blob([mergedBytes], { type: 'application/pdf' });
+        const name = `合併PDF_${Date.now()}.pdf`;
+        let pdfFileId;
+        try {
+            pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded');
+        } catch (err) {
+            return { ok: false, error: '儲存合併結果失敗：' + String(err.message || err) };
+        }
+        const pageCount = perFile.reduce((sum, f) => sum + f.pages, 0);
+        return { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, pageCount, fileCount: records.length, files: perFile };
     }
 
     // tw_stock_db客製: 2026-09-24使用者要求——解析/檢視有密碼保護的PDF。

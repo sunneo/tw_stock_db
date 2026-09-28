@@ -1639,6 +1639,7 @@ function patchCloudflareWording(root) {
    b) 有PowerPoint時，用office_export_slide_images把輸出檔逐頁轉圖，再用compare_images把「輸出的某一頁」跟「來源/範本的對應頁」放在一起比（背景圖、版面、圖片還在嗎）。至少比對封面、分節頁、每位成員的第一頁。
    c) 發現問題就回頭修流程再重跑，不要把有問題的檔案當成果交出去。
 6. 需要瀏覽器截圖（例如專案管理系統、儀表板、內部網站的頁面）這類要操作Chrome的部分，你沒有瀏覽器工具——在回報裡明確寫出「這一步需要委派瀏覽器控制領域」，不要自己假裝完成或跳過不講。
+7. **合併多份PDF成一份，用merge_pdfs（不要自己寫python腳本或透過run_command呼叫外部工具做這件事）**：使用者上傳PDF附件（不是這台電腦真實磁碟上的檔案）＋要求「合併成一個PDF」時，直接用list_uploaded_files確認每份附件的file_id，再呼叫merge_pdfs({"files":[...]})，依使用者指定的順序（沒指定就照上傳先後）合併，成功會自動產生下載附件。merge_pdfs不支援有密碼保護的PDF，遇到這種錯誤如實轉告使用者需要先自行移除密碼保護，不要自己想辦法繞過。
 
 **固定流程**
 步驟1 摸清楚環境：用fs_list_files看工作資料夾、範本、來源資料夾（例如各人提供內容的來源資料夾）、現成腳本；看README/config範例決定怎麼跑。一次列出來，不要一個檔案一個檔案問。
@@ -1648,11 +1649,12 @@ function patchCloudflareWording(root) {
 步驟5 回報：一段精簡文字——產出檔路徑、驗證結果的具體數字（頁數/檔案大小/圖片數/斷掉的關聯數）、哪些步驟沒做到以及原因。不要貼整份檔案內容或程式碼。`;
   fa.register_domain("office_report", {
     enabled: true,
-    label: "辦公室報告／簡報／投影片（週報、pptx・docx・xlsx、套用範本、複製投影片、驗證輸出，桌面版限定）",
+    label: "辦公室報告／簡報／投影片／PDF（週報、pptx・docx・xlsx、套用範本、複製投影片、合併PDF附件、驗證輸出，桌面版限定）",
     toolNames: [
       "fs_read_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_grep", "fs_write_file", "fs_mkdir",
       "run_command", "pptx_inspect", "office_export_slide_images",
       "extract_pptx_images", "compare_images", "interpret_image", "list_uploaded_files", "parse_uploaded_file",
+      "merge_pdfs",
     ],
     systemPrompt: officePrompt,
   });
