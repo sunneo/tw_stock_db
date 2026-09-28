@@ -5860,6 +5860,13 @@ class FloatingAssistant {
             // 斜線指令選單（見_wireSlashCommandMenu），手機版也要有同樣的
             // 好處——這裡給使用者一個開關可以關掉（例如覺得干擾），預設開啟。
             slashCommandMenuEnabled: true,
+            // tw_stock_db客製: 2026-09-28使用者要求——拖曳檔案到畫面上要能
+            // 直接變成附件（見_wireDragDropAttachment），第一次拖曳會先跳
+            // 一個確認對話框（避免不小心把檔案拖進來誤觸附件），對話框裡有
+            // 「之後都不再詢問」勾選框、預設勾選——使用者要求這個開關也要能
+            // 直接在LLM基礎設定裡開關（不是只能透過對話框勾選），兩處共用
+            // 同一個設定值。
+            dragDropAttachSkipConfirm: true,
             // tw_stock_db客製: 使用者要求「中間tool call tracing跟thinking都要
             // 可以用齒輪開關決定是否顯示，預設改成隱藏，使用者只應該在乎最終
             // 結果」——這個開關預設false（隱藏），跟slashCommandMenuEnabled
@@ -7040,6 +7047,7 @@ class FloatingAssistant {
             batchRequestsPerMinute: Number.isFinite(batchRequestsPerMinuteNum) && batchRequestsPerMinuteNum > 0 ? Math.round(batchRequestsPerMinuteNum) : 0,
             fileCacheLimitMB: Number.isFinite(fileCacheLimitMBNum) && fileCacheLimitMBNum > 0 ? Math.round(fileCacheLimitMBNum) : 256,
             slashCommandMenuEnabled: raw.slashCommandMenuEnabled !== false,
+            dragDropAttachSkipConfirm: raw.dragDropAttachSkipConfirm !== false,
             showInternalTrace: raw.showInternalTrace === true,
             // tw_stock_db客製: 0是刻意保留給「不限制」用的合法值，不能套用
             // 「> 0才採用，否則退回預設」這個跟其他數字設定一樣的判斷式
@@ -17610,6 +17618,8 @@ ${sourceTool.handlerScript}
         if (hermesChk) hermesChk.checked = localStorage.getItem(this.HERMES_AUTO_EVOLVE_KEY) === 'true';
         const slashMenuChk = document.getElementById('ai-slash-menu-chk');
         if (slashMenuChk) slashMenuChk.checked = this.advancedSettings.slashCommandMenuEnabled !== false;
+        const dragDropSkipConfirmChk = document.getElementById('ai-dragdrop-skip-confirm-chk');
+        if (dragDropSkipConfirmChk) dragDropSkipConfirmChk.checked = this.advancedSettings.dragDropAttachSkipConfirm !== false;
         const festivalChk = document.getElementById('ai-festival-chk');
         if (festivalChk) festivalChk.checked = this.advancedSettings.festivalThemeEnabled !== false;
         this._updateFestivalStatusText();
@@ -29158,6 +29168,24 @@ ${existingNodeSummaries}
     // 單純的轉圈動畫，讀取過程中可以按×取消（清掉還沒寫入的部分，不留
     // 殘留）；已經寫入完成的附件按×則是單純移除（含刪除FileCache裡的
     // 實體記錄，不是只從畫面清單移除、留下孤兒記錄）。
+    // tw_stock_db客製: 2026-09-28從attachInput的change handler抽出——
+    // 拖曳檔案進來（見_wireDragDropAttachment）要走一模一樣的「寫進
+    // fileCache＋加進_pendingAttachments＋更新chip列」流程，不要維護
+    // 兩份重複邏輯。
+    _ingestFilesAsAttachments(files) {
+        for (const file of files) {
+            const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+            const entry = { id, filename: file.name, sizeBytes: file.size, status: 'uploading', progress: 0, cancelled: false };
+            entry.promise = this._readFileWithProgress(file, entry).catch((err) => {
+                if (entry.cancelled) return; // 使用者主動取消，不算失敗，不用額外記log
+                this._log(`⚠️ 附件「${file.name}」存檔失敗：${err.message || err}`);
+                this._pendingAttachments = this._pendingAttachments.filter(a => a !== entry);
+                this._renderPendingAttachments();
+            });
+            this._pendingAttachments.push(entry);
+        }
+        this._renderPendingAttachments();
+    }
     _wireAttachmentUpload() {
         const attachBtn = document.getElementById('ai-attach-btn');
         const attachInput = document.getElementById('ai-attach-input');
@@ -29166,18 +29194,7 @@ ${existingNodeSummaries}
         attachInput.addEventListener('change', () => {
             const files = Array.from(attachInput.files || []);
             attachInput.value = '';
-            for (const file of files) {
-                const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
-                const entry = { id, filename: file.name, sizeBytes: file.size, status: 'uploading', progress: 0, cancelled: false };
-                entry.promise = this._readFileWithProgress(file, entry).catch((err) => {
-                    if (entry.cancelled) return; // 使用者主動取消，不算失敗，不用額外記log
-                    this._log(`⚠️ 附件「${file.name}」存檔失敗：${err.message || err}`);
-                    this._pendingAttachments = this._pendingAttachments.filter(a => a !== entry);
-                    this._renderPendingAttachments();
-                });
-                this._pendingAttachments.push(entry);
-            }
-            this._renderPendingAttachments();
+            this._ingestFilesAsAttachments(files);
         });
         const pendingRow = document.getElementById('ai-pending-attachments');
         if (pendingRow) {
@@ -29195,6 +29212,118 @@ ${existingNodeSummaries}
                     await this.fileCache.delete(id).catch(() => {});
                 }
             });
+        }
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——拖曳檔案到畫面上要能直接
+    // 變成附件（跟按📎選檔案走同一條_ingestFilesAsAttachments路徑），
+    // 拖到/run-terminal終端機視窗裡則是另一種行為（複製進該終端機的沙盒
+    // 檔案系統，見_copyDroppedFilesIntoTerminal，不經過這裡的確認流程——
+    // 使用者原話「如果drag的對象是terminal，變成copy in」，這是明確、
+    // 目標唯一的動作，不像「拖進聊天室」那樣需要先確認才知道使用者是不是
+    // 真的要送出一個新附件）。一般附件在真的寫入fileCache之前先跳一個
+    // 輕量確認對話框（避免不小心把檔案拖進視窗就默默建立附件），對話框
+    // 裡有「之後都不再詢問」勾選框、預設勾選；這個開關也可以直接在LLM
+    // 基礎設定裡開關（this.advancedSettings.dragDropAttachSkipConfirm），
+    // 兩處共用同一個設定值，彼此同步。
+    _wireDragDropAttachment() {
+        let dragDepth = 0;
+        document.addEventListener('dragover', (e) => {
+            if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+            e.preventDefault();
+        });
+        document.addEventListener('dragenter', (e) => {
+            if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+            dragDepth++;
+        });
+        document.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); });
+        document.addEventListener('drop', async (e) => {
+            if (!e.dataTransfer) return;
+            const files = Array.from(e.dataTransfer.files || []);
+            if (!files.length) return;
+            e.preventDefault();
+            dragDepth = 0;
+
+            const termEmbed = e.target && e.target.closest && e.target.closest('.ai-terminal-embed');
+            const session = termEmbed && termEmbed._terminalSession;
+            if (session) { await this._copyDroppedFilesIntoTerminal(session, files); return; }
+
+            if (this.advancedSettings.dragDropAttachSkipConfirm === false) {
+                const ok = await this._confirmDragDropAttachment(files.map(f => f.name));
+                if (!ok) return;
+            }
+            this._ingestFilesAsAttachments(files);
+        });
+    }
+
+    // 輕量Modal——跟_showFapPermissionDialog同一種寫法，多一個「之後都不再
+    // 詢問」勾選框（預設勾選）。勾選並確定＝把advancedSettings.dragDrop
+    // AttachSkipConfirm設回true並持久化，下次拖曳直接跳過這個對話框
+    // （跟LLM基礎設定裡那個checkbox是同一個值，兩邊會同步顯示）。
+    _confirmDragDropAttachment(fileNames) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2147483647; display:flex; align-items:center; justify-content:center;';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#fff; color:#222; border-radius:10px; padding:18px 20px; width:min(380px,90vw); box-shadow:0 10px 34px rgba(0,0,0,0.3); font-size:13px; font-family:inherit;';
+            const listHtml = fileNames.slice(0, 8).map(n => `<li>${this._escapeHtml(n)}</li>`).join('') + (fileNames.length > 8 ? `<li>…共 ${fileNames.length} 個檔案</li>` : '');
+            box.innerHTML = `
+                <div style="font-weight:bold; font-size:14px; margin-bottom:10px;">📎 加為附件？</div>
+                <div style="margin-bottom:10px; line-height:1.5;">要把拖進來的檔案加為這個對話的附件嗎？</div>
+                <ul style="margin:0 0 14px; padding-left:18px; max-height:140px; overflow:auto;">${listHtml}</ul>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:16px;">
+                    <input type="checkbox" id="fa-dragdrop-noask" checked style="cursor:pointer;">
+                    <label for="fa-dragdrop-noask" style="margin:0; cursor:pointer;">之後都不再詢問</label>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button type="button" id="fa-dragdrop-cancel" style="padding:6px 14px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer; font-size:13px;">取消</button>
+                    <button type="button" id="fa-dragdrop-ok" style="padding:6px 14px; border-radius:6px; border:none; background:#3182ce; color:#fff; cursor:pointer; font-size:13px;">加為附件</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            let settled = false;
+            const cleanup = () => overlay.remove();
+            const finish = (accepted) => {
+                if (settled) return;
+                settled = true;
+                if (accepted && box.querySelector('#fa-dragdrop-noask').checked) {
+                    this.advancedSettings.dragDropAttachSkipConfirm = true;
+                    this._saveAdvancedSettings();
+                    const chk = document.getElementById('ai-dragdrop-skip-confirm-chk');
+                    if (chk) chk.checked = true;
+                }
+                cleanup();
+                resolve(accepted);
+            };
+            box.querySelector('#fa-dragdrop-cancel').addEventListener('click', () => finish(false));
+            box.querySelector('#fa-dragdrop-ok').addEventListener('click', () => finish(true));
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false); });
+        });
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——拖到/run-terminal終端機視窗
+    // 裡的檔案直接複製進該終端機的沙盒檔案系統（跟terminal_cp_to工具同一
+    // 條寫入路徑：_ensureBashWasmLoaded/_ensureTerminalFsStore/
+    // _writeBytesToTerminalFs），落在該終端機目前的cwd底下、用原始檔名。
+    // 不經過附件確認流程——這是明確、目標唯一的動作（拖到哪個終端機視窗
+    // 就進那個終端機），不是「可能誤觸」的情境。
+    async _copyDroppedFilesIntoTerminal(session, files) {
+        let runtime;
+        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+            session.term.write(`\r\n\x1b[31m拖放複製失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            return;
+        }
+        const fsStore = await this._ensureTerminalFsStore(session, runtime);
+        for (const file of files) {
+            try {
+                const buf = await file.arrayBuffer();
+                const abs = this._terminalResolvePath(session.cwd, file.name);
+                this._writeBytesToTerminalFs(fsStore, abs, new Uint8Array(buf));
+                session.term.write(`\r\n\x1b[90m[已從拖放複製] ${abs}（${buf.byteLength} bytes）\x1b[0m\r\n`);
+            } catch (err) {
+                session.term.write(`\r\n\x1b[31m拖放複製「${file.name}」失敗：${String(err.message || err)}\x1b[0m\r\n`);
+            }
         }
     }
 
@@ -32921,6 +33050,11 @@ ${existingNodeSummaries}
                                         <input type="checkbox" id="ai-slash-menu-chk" ${this.advancedSettings.slashCommandMenuEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-slash-menu-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">輸入框打「/」時顯示可用指令選單</label>
                                     </div>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-dragdrop-skip-confirm-chk" ${this.advancedSettings.dragDropAttachSkipConfirm !== false ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-dragdrop-skip-confirm-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">拖曳檔案到畫面上直接加為附件，不再詢問確認</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">關掉的話，拖曳檔案時會先跳出確認對話框（對話框裡也可以勾選「之後都不再詢問」，效果等同這裡）。拖到 /run-terminal 終端機視窗裡一律直接複製進沙盒檔案系統，不受這個開關影響。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-festival-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用台灣節慶套版（春節、元宵、端午、中秋、國慶、聖誕…依台灣行事曆自動換裝，連假期間都算同一個節慶）</label>
@@ -35298,6 +35432,13 @@ ${existingNodeSummaries}
                 this._saveAdvancedSettings();
             });
         }
+        const dragDropSkipConfirmChkBx = document.getElementById('ai-dragdrop-skip-confirm-chk');
+        if (dragDropSkipConfirmChkBx) {
+            dragDropSkipConfirmChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.dragDropAttachSkipConfirm = e.target.checked;
+                this._saveAdvancedSettings();
+            });
+        }
         const showTraceChkBx = document.getElementById('ai-show-trace-chk');
         if (showTraceChkBx) {
             showTraceChkBx.addEventListener('change', (e) => {
@@ -36508,6 +36649,7 @@ ${existingNodeSummaries}
 
         this._wireVoiceInputButton(inputText);
         this._wireAttachmentUpload();
+        this._wireDragDropAttachment();
         this._wireSlashCommandMenu(inputText, slashMenu, suggestBar);
 
         // tw_stock_db客製: 手機上沒有實體上/下鍵，原本的ArrowUp/ArrowDown
