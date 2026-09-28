@@ -5146,6 +5146,36 @@ class FloatingAssistant {
             '建立配音小幫手互動widget，針對影片的某個時間段（或整支字幕，留空時間段）逐句錄音/上傳音檔配音。時間格式可以是秒數或"分:秒"，例如 /media-dub-video 1:20-1:45',
             (argsText) => this._handleMediaDubVideoCommand(argsText)
         );
+        // tw_stock_db客製: 2026-09-28使用者要求——concat_audio工具也要有
+        // /media-開頭的slash指令直接觸發，跟其餘/media-*同一種「本地端
+        // 直接呼叫底層方法」模式，不經過LLM決策要不要呼叫這個工具（但仍會
+        // 呼叫_concatAudioFiles本身，純瀏覽器端解碼/合併/編碼，不涉及AI）。
+        this.register_slash_command(
+            '/media-concat-audio', '<音檔1的id或檔名> <音檔2的id或檔名> [...]',
+            '把多個已上傳的音檔依指定順序串接合併成一個MP3（瀏覽器端解碼/合併/編碼，不上傳）。至少2個，用空格分隔，依這個順序串接，例如 /media-concat-audio file_1 file_2',
+            (argsText) => this._handleMediaConcatAudioCommand(argsText)
+        );
+        // tw_stock_db客製: 2026-09-28使用者要求——compare_images也要有
+        // /media-開頭的slash指令。⚠️跟其餘/media-*指令不同：這個指令背後
+        // 一定會呼叫一次vision model（_interpretImageWithVisionModel），
+        // 不是純本地運算，會花費使用者設定的AI模型額度/token——只是跳過
+        // 「AI要不要決定呼叫這個工具」這一層決策，不是完全不經過AI。
+        // 圖片來源用逗號分隔（第一個以空白分隔的token），後面剩下的文字
+        // 整段當作question，跟既有指令「逗號分隔多值」的慣例一致（見
+        // dependencies/preConditions的split(',')寫法）。
+        this.register_slash_command(
+            '/media-compare-images', '<圖片1,圖片2,...> [想比較什麼…]',
+            '把2~6張圖片一起交給支援讀圖(vision)的model比較（會實際呼叫一次AI，不是純本地運算）。圖片來源可以是file_id或http(s)網址，用逗號分隔、不要有空格；後面接著的文字整段當作想問的問題，留空就做一般的相同點/差異比較。例如 /media-compare-images file_1,file_2 哪一張比較新',
+            (argsText) => this._handleMediaCompareImagesCommand(argsText)
+        );
+        // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
+        // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
+        // 分類前綴慣例），純本地端呼叫_mergePdfFiles，不經過LLM、不花token。
+        this.register_slash_command(
+            '/office-pdf-merge', '<PDF1的id或檔名> <PDF2的id或檔名> [...]',
+            '把多份已上傳的PDF依指定順序合併成一份新PDF（直接複製原始頁面，不重新渲染，文字仍可選取/搜尋）。至少2個，用空格分隔，依這個順序合併，例如 /office-pdf-merge file_1 file_2。不支援有密碼保護的PDF。',
+            (argsText) => this._handleOfficePdfMergeCommand(argsText)
+        );
         // tw_stock_db客製: 2026-09-15使用者要求——File Access Point（Advance
         // Settings「檔案存取管理」分頁授權的真實磁碟資料夾）本地直接執行的
         // 瀏覽/讀取/搜尋指令，不經過LLM。ref格式一律是「fap:<名稱或id>
@@ -29816,6 +29846,93 @@ ${existingNodeSummaries}
             result = { ok: false, error: String(err && err.message || err) };
         }
         if (!result.ok) { this._log(`⚠️ /media-dub-video：${result.error}`); }
+    }
+
+    // /media-concat-audio <音檔1> <音檔2> [...]——跟concat_audio工具共用
+    // _concatAudioFiles，純本地解碼/合併/編碼，不經過AI。
+    async _handleMediaConcatAudioCommand(argsText) {
+        const fileArgs = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        if (fileArgs.length < 2) {
+            this._log('⚠️ /media-concat-audio：至少需要2個音檔的file_id或檔名，依序合併（例如 /media-concat-audio file_1 file_2）');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `🔗 合併音檔：${fileArgs.join(' ')}` });
+        const prog = this._createProgressWidget('合併音檔');
+        let result;
+        try {
+            result = await this._concatAudioFiles(fileArgs, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：合併 ${result.fileCount} 個音檔，${result.durationSeconds}s`);
+        if (result.audio_file_id) {
+            await this._deliverExistingCacheFile(result.audio_file_id, `📎 已合併 ${result.fileCount} 個音檔：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+        }
+    }
+
+    // /media-compare-images <圖1,圖2,...> [問題…]——跟compare_images工具
+    // 共用_interpretImageWithVisionModel。⚠️這個指令會實際呼叫一次vision
+    // model，不是純本地運算，只是跳過「AI要不要呼叫這個工具」的決策層。
+    async _handleMediaCompareImagesCommand(argsText) {
+        const text = String(argsText || '').trim();
+        if (!text) {
+            this._log('⚠️ /media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔，不要空格），例如 /media-compare-images file_1,file_2 有什麼不同');
+            return;
+        }
+        const firstSpace = text.indexOf(' ');
+        const imagesPart = firstSpace === -1 ? text : text.slice(0, firstSpace);
+        const question = firstSpace === -1 ? '' : text.slice(firstSpace + 1).trim();
+        const items = imagesPart.split(',').map((s) => s.trim()).filter(Boolean);
+        if (items.length < 2) { this._log('⚠️ /media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔）'); return; }
+        if (items.length > 6) { this._log('⚠️ /media-compare-images：最多6張，太多張請分批比較'); return; }
+        this.messages.push({ role: 'user', content: `🖼️ 比較圖片：${items.join('、')}${question ? '（' + question + '）' : ''}` });
+        const prog = this._createProgressWidget('比較圖片');
+        prog.update({ status: '讀取圖片中…' });
+        let result;
+        try {
+            const dataUrls = [], labels = [];
+            for (const it of items) {
+                const isUrl = /^(https?:\/\/|data:image\/)/i.test(it);
+                const r = await this._resolveImageInputForInterpretation(isUrl ? { imageUrl: it } : { fileId: it });
+                dataUrls.push(r.dataUrl);
+                labels.push(r.label && r.label.length > 60 ? r.label.slice(0, 57) + '…' : r.label);
+            }
+            prog.update({ status: '請AI比較中…' });
+            const vres = await this._interpretImageWithVisionModel(dataUrls, question || undefined, labels);
+            result = { ok: true, labels, model_used: vres.modelUsed, comparison: vres.description };
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`已用${result.model_used ? '「' + result.model_used + '」' : ''}比較完成`);
+        const imgList = result.labels.map((label, i) => `圖${i + 1}：${label}`).join('\n');
+        this._pushAssistantMessage(`**圖片比較**\n\n${imgList}\n\n${result.comparison}`, null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    // /office-pdf-merge <PDF1> <PDF2> [...]——跟merge_pdfs工具共用
+    // _mergePdfFiles，純本地pdf-lib複製頁面，不經過AI。
+    async _handleOfficePdfMergeCommand(argsText) {
+        const fileArgs = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        if (fileArgs.length < 2) {
+            this._log('⚠️ /office-pdf-merge：至少需要2個PDF的file_id或檔名，依序合併（例如 /office-pdf-merge file_1 file_2）');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `📄 合併PDF：${fileArgs.join(' ')}` });
+        const prog = this._createProgressWidget('合併PDF');
+        let result;
+        try {
+            result = await this._mergePdfFiles(fileArgs, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：合併 ${result.fileCount} 份PDF，共 ${result.pageCount} 頁`);
+        if (result.pdf_file_id) {
+            await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已合併 ${result.fileCount} 份PDF（共${result.pageCount}頁）：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+        }
     }
 
     // ============================================================
