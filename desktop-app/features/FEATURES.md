@@ -131,21 +131,25 @@
 把 pptx 投影片裡嵌入的圖片抽出來，或把多張圖片（含影片截幀、瀏覽器截圖）一起交給讀圖模型比較。
 
 - 可用平台：網頁版、桌面版
+- 斜線指令：`/media-compare-images`
 - AI 工具：`extract_pptx_images`、`compare_images`
 - 範例：
   - `把這份 pptx 每張投影片裡的圖片抽出來`
   - `比較這兩張圖有什麼不同`
+  - `/media-compare-images file_1,file_2 哪一張比較新`
 
 ### 合併PDF附件（`merge-pdfs`）
 
 把多份已上傳的PDF依指定順序合併成一份新的PDF；直接複製原始頁面（不重新渲染），合併後文字仍可選取/搜尋、畫質不劣化。不支援有密碼保護的PDF。
 
 - 可用平台：網頁版、桌面版
+- 斜線指令：`/office-pdf-merge`
 - 子代理人領域：`file_analysis`
 - AI 工具：`merge_pdfs`
 - 範例：
   - `把這三份上傳的PDF合併成一個`
   - `幫我把這幾份報告PDF照順序併成一份`
+  - `/office-pdf-merge file_1 file_2`
 
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
@@ -371,16 +375,17 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 範例：
   - `/media-to-animation 0:00-0:03 fps=5 loop`
 
-### 文字轉語音（`tts`）
+### 文字轉語音／合併音檔（`tts`）
 
-英文用本地 Kokoro，中文粵語日文韓文用可選的 API 轉接；可列出全部語音代號。
+英文用本地 Kokoro，中文粵語日文韓文用可選的 API 轉接；可列出全部語音代號；也能把多個音檔依序合併成一個。
 
 - 可用平台：網頁版、桌面版
-- 斜線指令：`/media-text-to-speech`、`/media-list-voices`
+- 斜線指令：`/media-text-to-speech`、`/media-list-voices`、`/media-concat-audio`
 - AI 工具：`text_to_speech`、`concat_audio`
 - 範例：
   - `/media-text-to-speech 歡迎使用 AI 助理`
   - `/media-list-voices`
+  - `/media-concat-audio file_1 file_2`
 
 ### 配音小幫手（`dubbing`）
 

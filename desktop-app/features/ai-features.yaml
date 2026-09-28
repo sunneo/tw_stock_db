@@ -132,21 +132,23 @@ categories:
       - id: image-compare
         name: 圖片比較與投影片抽圖
         summary: 把 pptx 投影片裡嵌入的圖片抽出來，或把多張圖片（含影片截幀、瀏覽器截圖）一起交給讀圖模型比較。
-        how: { tools: [extract_pptx_images, compare_images] }
+        how: { slash: ["/media-compare-images"], tools: [extract_pptx_images, compare_images] }
         platforms: [web, desktop]
-        samples: ["把這份 pptx 每張投影片裡的圖片抽出來", "比較這兩張圖有什麼不同"]
-        updated: 2026-09-26
+        samples: ["把這份 pptx 每張投影片裡的圖片抽出來", "比較這兩張圖有什麼不同", "/media-compare-images file_1,file_2 哪一張比較新"]
+        updated: 2026-09-28
         history:
           - { date: 2026-09-26, note: "新增 extract_pptx_images／compare_images／extract_video_frames，browser_screenshot 支援 region 與 interpret" }
+          - { date: 2026-09-28, note: "新增 /media-compare-images slash 指令（會實際呼叫一次vision model，不是純本地運算）" }
       - id: merge-pdfs
         name: 合併PDF附件
         summary: 把多份已上傳的PDF依指定順序合併成一份新的PDF；直接複製原始頁面（不重新渲染），合併後文字仍可選取/搜尋、畫質不劣化。不支援有密碼保護的PDF。
-        how: { domain: file_analysis, tools: [merge_pdfs] }
+        how: { slash: ["/office-pdf-merge"], domain: file_analysis, tools: [merge_pdfs] }
         platforms: [web, desktop]
-        samples: ["把這三份上傳的PDF合併成一個", "幫我把這幾份報告PDF照順序併成一份"]
+        samples: ["把這三份上傳的PDF合併成一個", "幫我把這幾份報告PDF照順序併成一份", "/office-pdf-merge file_1 file_2"]
         updated: 2026-09-28
         history:
           - { date: 2026-09-28, note: "新增merge_pdfs工具，同時掛進file_analysis與office_report兩個domain" }
+          - { date: 2026-09-28, note: "新增 /office-pdf-merge slash 指令" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
@@ -315,12 +317,14 @@ categories:
         samples: ["/media-to-animation 0:00-0:03 fps=5 loop"]
         updated: 2026-09-26
       - id: tts
-        name: 文字轉語音
-        summary: 英文用本地 Kokoro，中文粵語日文韓文用可選的 API 轉接；可列出全部語音代號。
-        how: { slash: ["/media-text-to-speech", "/media-list-voices"], tools: [text_to_speech, concat_audio] }
+        name: 文字轉語音／合併音檔
+        summary: 英文用本地 Kokoro，中文粵語日文韓文用可選的 API 轉接；可列出全部語音代號；也能把多個音檔依序合併成一個。
+        how: { slash: ["/media-text-to-speech", "/media-list-voices", "/media-concat-audio"], tools: [text_to_speech, concat_audio] }
         platforms: [web, desktop]
-        samples: ["/media-text-to-speech 歡迎使用 AI 助理", "/media-list-voices"]
-        updated: 2026-09-26
+        samples: ["/media-text-to-speech 歡迎使用 AI 助理", "/media-list-voices", "/media-concat-audio file_1 file_2"]
+        updated: 2026-09-28
+        history:
+          - { date: 2026-09-28, note: "新增 /media-concat-audio slash 指令" }
       - id: dubbing
         name: 配音小幫手
         summary: 針對影片某個時間段逐句錄音或上傳音檔配音，再合成新影片。
