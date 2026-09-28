@@ -5151,8 +5151,8 @@ class FloatingAssistant {
         // 直接呼叫底層方法」模式，不經過LLM決策要不要呼叫這個工具（但仍會
         // 呼叫_concatAudioFiles本身，純瀏覽器端解碼/合併/編碼，不涉及AI）。
         this.register_slash_command(
-            '/media-concat-audio', '<音檔1的id或檔名> <音檔2的id或檔名> [...]',
-            '把多個已上傳的音檔依指定順序串接合併成一個MP3（瀏覽器端解碼/合併/編碼，不上傳）。至少2個，用空格分隔，依這個順序串接，例如 /media-concat-audio file_1 file_2',
+            '/media-concat-audio', '[<音檔1的id或檔名> <音檔2的id或檔名> [...]]',
+            '把多個音檔依順序串接合併成一個MP3（瀏覽器端解碼/合併/編碼，不上傳）。**留空參數直接送出＝合併「這次一起附加上傳的全部音檔」**（依附加順序），這是最常見的用法：先打 /media-concat-audio，再用附加按鈕選多個音檔上傳後送出即可；也可以明確指定 /media-concat-audio file_1 file_2（至少2個，用空格分隔，依這個順序串接）。',
             (argsText) => this._handleMediaConcatAudioCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-28使用者要求——compare_images也要有
@@ -5172,8 +5172,8 @@ class FloatingAssistant {
         // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
         // 分類前綴慣例），純本地端呼叫_mergePdfFiles，不經過LLM、不花token。
         this.register_slash_command(
-            '/office-pdf-merge', '<PDF1的id或檔名> <PDF2的id或檔名> [...]',
-            '把多份已上傳的PDF依指定順序合併成一份新PDF（直接複製原始頁面，不重新渲染，文字仍可選取/搜尋）。至少2個，用空格分隔，依這個順序合併，例如 /office-pdf-merge file_1 file_2。不支援有密碼保護的PDF。',
+            '/office-pdf-merge', '[<PDF1的id或檔名> <PDF2的id或檔名> [...]]',
+            '把多份PDF依順序合併成一份新PDF（直接複製原始頁面，不重新渲染，文字仍可選取/搜尋）。**留空參數直接送出＝合併「這次一起附加上傳的全部PDF」**（依附加順序），這是最常見的用法：先打 /office-pdf-merge，再用附加按鈕選多個PDF上傳後送出即可；也可以明確指定 /office-pdf-merge file_1 file_2（至少2個，用空格分隔，依這個順序合併）。不支援有密碼保護的PDF。',
             (argsText) => this._handleOfficePdfMergeCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-15使用者要求——File Access Point（Advance
@@ -29848,12 +29848,38 @@ ${existingNodeSummaries}
         if (!result.ok) { this._log(`⚠️ /media-dub-video：${result.error}`); }
     }
 
-    // /media-concat-audio <音檔1> <音檔2> [...]——跟concat_audio工具共用
-    // _concatAudioFiles，純本地解碼/合併/編碼，不經過AI。
+    // tw_stock_db客製: 2026-09-28使用者實測回報——他的實際用法是先打
+    // 「/office-pdf-merge」，指令本身不帶任何參數，接著才用附加按鈕上傳
+    // 6個PDF再送出，預期直接合併「這次夾帶的全部附件」，不是要先手動查
+    // 每個檔案的file_id再一個一個打進指令。原本只在text完全空白時退回
+    // 「最近一個pending附件」（單檔邏輯，見_resolveUploadedFileRecord），
+    // 沒有「多檔、依附加順序全部一起用」的版本——這裡補上：沒有明講任何
+    // file_id/檔名時，改用目前輸入框旁「已完成上傳」的pending附件裡，副檔名
+    // 符合指定分類的全部項目（依附加順序），成功後照既有consumePendingAttachment
+    // 慣例一併從pending清單移除，避免同一批附件被其他指令誤用。
+    _pickPendingAttachmentsByClass(mediaClass) {
+        return (this._pendingAttachments || [])
+            .filter((a) => a.status === 'done' && _faClassifyMediaFile(a.filename) === mediaClass);
+    }
+    _consumePendingAttachments(ids) {
+        const idSet = new Set(ids);
+        this._pendingAttachments = (this._pendingAttachments || []).filter((a) => !idSet.has(a.id));
+        this._renderPendingAttachments();
+    }
+
+    // /media-concat-audio [<音檔1> <音檔2> [...]]——跟concat_audio工具共用
+    // _concatAudioFiles，純本地解碼/合併/編碼，不經過AI。不給參數時改用
+    // 目前附加的全部音檔pending附件（依附加順序）。
     async _handleMediaConcatAudioCommand(argsText) {
-        const fileArgs = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const text = String(argsText || '').trim();
+        let fileArgs = text ? text.split(/\s+/).filter(Boolean) : [];
+        let consumedIds = null;
+        if (!text) {
+            const pending = this._pickPendingAttachmentsByClass('audio');
+            if (pending.length >= 2) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
+        }
         if (fileArgs.length < 2) {
-            this._log('⚠️ /media-concat-audio：至少需要2個音檔的file_id或檔名，依序合併（例如 /media-concat-audio file_1 file_2）');
+            this._log('⚠️ /media-concat-audio：至少需要2個音檔——先附加多個音檔後直接打 /media-concat-audio（不用打id），或明確指定 /media-concat-audio file_1 file_2');
             return;
         }
         this.messages.push({ role: 'user', content: `🔗 合併音檔：${fileArgs.join(' ')}` });
@@ -29866,6 +29892,7 @@ ${existingNodeSummaries}
         }
         if (!result.ok) { prog.fail(result.error); return; }
         prog.finish(`完成：合併 ${result.fileCount} 個音檔，${result.durationSeconds}s`);
+        if (consumedIds) this._consumePendingAttachments(consumedIds);
         if (result.audio_file_id) {
             await this._deliverExistingCacheFile(result.audio_file_id, `📎 已合併 ${result.fileCount} 個音檔：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
         }
@@ -29912,12 +29939,21 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
     }
 
-    // /office-pdf-merge <PDF1> <PDF2> [...]——跟merge_pdfs工具共用
-    // _mergePdfFiles，純本地pdf-lib複製頁面，不經過AI。
+    // /office-pdf-merge [<PDF1> <PDF2> [...]]——跟merge_pdfs工具共用
+    // _mergePdfFiles，純本地pdf-lib複製頁面，不經過AI。不給參數時改用
+    // 目前附加的全部PDF pending附件（依附加順序）——使用者實際用法是先打
+    // /office-pdf-merge、再用附加按鈕上傳PDF，見_pickPendingAttachmentsByClass
+    // 的說明。
     async _handleOfficePdfMergeCommand(argsText) {
-        const fileArgs = String(argsText || '').trim().split(/\s+/).filter(Boolean);
+        const text = String(argsText || '').trim();
+        let fileArgs = text ? text.split(/\s+/).filter(Boolean) : [];
+        let consumedIds = null;
+        if (!text) {
+            const pending = this._pickPendingAttachmentsByClass('pdf');
+            if (pending.length >= 2) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
+        }
         if (fileArgs.length < 2) {
-            this._log('⚠️ /office-pdf-merge：至少需要2個PDF的file_id或檔名，依序合併（例如 /office-pdf-merge file_1 file_2）');
+            this._log('⚠️ /office-pdf-merge：至少需要2個PDF——先附加多個PDF後直接打 /office-pdf-merge（不用打id），或明確指定 /office-pdf-merge file_1 file_2');
             return;
         }
         this.messages.push({ role: 'user', content: `📄 合併PDF：${fileArgs.join(' ')}` });
@@ -29930,6 +29966,7 @@ ${existingNodeSummaries}
         }
         if (!result.ok) { prog.fail(result.error); return; }
         prog.finish(`完成：合併 ${result.fileCount} 份PDF，共 ${result.pageCount} 頁`);
+        if (consumedIds) this._consumePendingAttachments(consumedIds);
         if (result.pdf_file_id) {
             await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已合併 ${result.fileCount} 份PDF（共${result.pageCount}頁）：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
         }

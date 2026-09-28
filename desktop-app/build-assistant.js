@@ -109,13 +109,29 @@ async function main() {
 // floating-assistant.min.js是上面剛寫入的壓縮輸出（跟main.js「Live
 // Update」比對用的內容完全一致）；bootstrap.js／index.html這支腳本完全
 // 不會去改，直接讀目前commit在renderer/底下的原始內容算md5即可。
+//
+// tw_stock_db客製: 2026-09-28實測發現的真實bug——這個repo設定
+// core.autocrlf=true，Windows工作目錄上的index.html／bootstrap.js（手動
+// 編輯過，含CRLF換行）跟git實際commit進物件庫的內容（git的clean filter
+// 會轉成LF）是兩份不同的bytes；發佈live update patch時，patch分支的
+// manifest.json／實際檔案都是照著「git commit進去的LF版本」（raw.
+// githubusercontent.com serve的也是這份），但這裡原本直接
+// fs.readFileSync()讀Windows工作目錄上的CRLF版本算md5，兩者對不上——
+// 使用者端下載patch時，main.js比對下載內容的md5發現跟manifest.json宣告
+// 的不一致，直接中止更新（完整性防護正常運作，但這裡的md5從一開始就
+// 算錯了）。修法：算md5前先把CRLF正規化成LF（跟git的text正規化行為一致），
+// floating-assistant.js／.min.js是這支腳本自己剛用LF寫出來的，正規化是
+// no-op，不影響既有行為。
+function _normalizeLineEndingsForHash(buf) {
+  return Buffer.from(buf.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+}
 function writeUpdateManifest() {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   const fileContents = {
-    "renderer/index.html": fs.readFileSync(INDEX_HTML_PATH),
-    "renderer/bootstrap.js": fs.readFileSync(BOOTSTRAP_PATH),
-    "renderer/floating-assistant.js": fs.readFileSync(OUT_PATH),
-    "renderer/floating-assistant.min.js": fs.readFileSync(MIN_PATH),
+    "renderer/index.html": _normalizeLineEndingsForHash(fs.readFileSync(INDEX_HTML_PATH)),
+    "renderer/bootstrap.js": _normalizeLineEndingsForHash(fs.readFileSync(BOOTSTRAP_PATH)),
+    "renderer/floating-assistant.js": _normalizeLineEndingsForHash(fs.readFileSync(OUT_PATH)),
+    "renderer/floating-assistant.min.js": _normalizeLineEndingsForHash(fs.readFileSync(MIN_PATH)),
   };
   // files是純{相對路徑: md5 hex}的扁平字串map——刻意跟main.js
   // state.json的files欄位同一種形狀（不是{md5,...}物件），因為
