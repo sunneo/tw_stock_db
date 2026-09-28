@@ -4867,7 +4867,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
 const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set([
-    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make',
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -19787,6 +19787,29 @@ ${sourceTool.handlerScript}
         for (const a of node.assignments) env[a.name] = this._terminalExpandWord(a.valueWordSrc, env).text;
         if (!node.argvWords.length) return { exitCode: 0, stdout: '', stderr: '' };
         const rawCmdName = node.argvWords[0];
+        // tw_stock_db客製: 2026-09-28使用者實測回報——test.sh結尾的`time
+        // main`過去只有互動輸入路徑（_runTerminalCommand的cmdName==='time'
+        // 判斷）有攔截，新的AST執行器（script檔案/貼上多行文字都會走這裡）
+        // 完全沒有對應處理，`time main`被原封不動當成SimpleCommand送進
+        // wasi-sh，這個wasi-sh的busybox build本身沒有`time`這個reserved
+        // word/applet（fork-free ash patch的關係，`time`量測子行程需要真的
+        // fork），直接得到`time: not found`。修法：跟互動輸入路徑同一個
+        // 精神，把`time`後面剩下的部分（可能是函式呼叫、也可能是完整的
+        // 複合指令，不是單純的argv）重新遞迴丟回_terminalRunShellText真正
+        // 執行、量測前後時間差，輸出真實time指令慣用的real/user/sys格式
+        // （user/sys在這個沙盒沒有真正的核心態量測能力，固定印0，跟互動
+        // 輸入路徑既有的time實作一致，不是這裡新發明的簡化）。
+        if (rawCmdName === 'time' && node.argvWords.length > 1) {
+            const restText = String(node.srcText || '').replace(/^\s*time\b\s*/, '');
+            const startedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+            const r = await this._terminalRunShellText(session, restText, { streamToWidget: opts.streamToWidget, stdin: this._terminalConsumeStdinOpt(opts) });
+            const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
+            const totalSeconds = elapsedMs / 1000;
+            const mins = Math.floor(totalSeconds / 60);
+            const secs = (totalSeconds - mins * 60).toFixed(3);
+            const timing = `\nreal\t${mins}m${secs}s\nuser\t0m0.000s\nsys\t0m0.000s\n`;
+            return { exitCode: r.exit_code, stdout: (r.stdout || '') + timing, stderr: r.stderr || '' };
+        }
         if (this._terminalIsVirtualCommandWord(rawCmdName)) {
             const expandedArgv = node.argvWords.map((w) => this._terminalExpandWord(w, env).text);
             const cmdName = expandedArgv[0];
@@ -19932,9 +19955,30 @@ ${sourceTool.handlerScript}
     // ---- 統一入口：parse成AST後執行，取代直接把整段文字丟給wasi-sh。
     // parser本身丟例外時（不應該發生，但求穩）整段退回舊行為。----
     async _terminalRunShellText(session, text, opts = {}) {
+        // tw_stock_db客製: 2026-09-28使用者實測回報（Windows上傳的test.sh，
+        // 檔案本身是CRLF換行）——parseFunctionDef()抓srcText用的是
+        // `src.slice(srcStart, srcEnd)`對原始文字的直接substring，_terminal
+        // LexShell()的word掃描迴圈只在**我們自己的token**層面把`\r`當空白
+        // 跳過，不代表被原封不動保留在srcText裡的`\r`字元也會消失——結果
+        // `}`後面黏著沒被消耗掉的`\r`（原始位元組是`}\r\n`）被當成單一
+        // funcDefsPrefix字串整段送進wasi-sh的**真正busybox ash**執行時，
+        // ash自己的parser不把孤立的`\r`當空白（跟我們的_terminalLexShell
+        // 不一樣），於是`}\r`黏成一個它看不懂的token，永遠找不到函式本體
+        // 真正的收尾大括號——不只這次執行本身壞掉（`sh: line 0: syntax
+        // error: unexpected word`），這段壞掉的原始文字還被記進
+        // session.userFunctionDefs、之後每一次_terminalRunWasmLine呼叫都會
+        // 重新prepend一次，導致**同一個session之後任何指令（包括單純的
+        // `ls`）都被這段殘留的CRLF函式定義拖累、一路壞到底**（使用者實測
+        // 截圖：`./test.sh`出錯後，接著單獨下的`ls`也出現一模一樣的
+        // syntax error）。修法：在parse/執行最前面就把CRLF／孤立CR正規化
+        // 成LF（`\r\n`→`\n`、殘留的單獨`\r`→`\n`），確保_terminalParse
+        // ShellSource()切出來的srcText、以及最終送進wasi-sh的整段script，
+        // 從頭到尾都不含`\r`——不只是我們自己的tokenizer要處理對，wasi-sh
+        // 內部真正的busybox ash parser也要看到乾淨的LF。
+        const normalizedText = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         let ast;
-        try { ast = this._terminalParseShellSource(text); }
-        catch (_) { return this._terminalRunWasmLine(session, text, opts); }
+        try { ast = this._terminalParseShellSource(normalizedText); }
+        catch (_) { return this._terminalRunWasmLine(session, normalizedText, opts); }
         const r = await this._terminalExecShellNode(session, ast, {}, opts);
         return { ok: true, exit_code: r.exitCode, stdout: r.stdout, stderr: r.stderr };
     }
