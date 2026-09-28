@@ -4867,7 +4867,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
 const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set([
-    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time',
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -19783,8 +19783,46 @@ ${sourceTool.handlerScript}
     _terminalIsVirtualCommandWord(rawWord) {
         return TERMINAL_VIRTUAL_SCRIPT_COMMANDS.has(rawWord);
     }
+    // tw_stock_db客製: 2026-09-28使用者要求——SECONDS/EPOCHSECONDS/
+    // EPOCHREALTIME/RANDOM這幾個bash常見內建特殊變數。busybox ash本身
+    // 不是bash，沒有這幾個的動態語意（實測驗證過：`SECONDS=0`後`echo
+    // $SECONDS`永遠印出使用者自己賦值過的字面值，不會像真bash那樣隨著
+    // 經過的時間自動遞增）。跟session.userFunctionDefs/userExportedEnv
+    // 同一招：這幾個值由我們JS層每次呼叫前重新即時計算、當成純變數賦值
+    // 補在funcDefsPrefix/envDefsPrefix前面（見_terminalRunWasmLine），
+    // 讓頂層script能看到接近真bash的行為。**已知限制**：使用者自訂函式
+    // 的本體本身是不透明文字、整段交給真正的busybox ash一次執行（我們的
+    // parser不會遞迴解析函式本體內部的敘述句），所以函式本體「內部」對
+    // SECONDS的賦值/讀取，仍然只有ash自己的一般變數語意（不會動態遞增），
+    // 這裡只能確保**頂層script**（parser真的有拆解、逐一送進wasm的那些
+    // statement）看到正確的即時值。RANDOM每次wasm呼叫只計算一次新值
+    // （不是每次「引用」都重新算——這個沙盒的粒度就是一次wasm呼叫，
+    // 沒辦法攔截到「同一次呼叫裡引用第二次」這麼細），同一次呼叫內多次
+    // 引用$RANDOM會拿到同一個值，跟真bash「每次引用都重新隨機」不同，
+    // 但已經比完全沒有這個變數好。
+    _terminalComputeBashSpecialVars(session) {
+        if (session.secondsAnchorAt == null) { session.secondsAnchorAt = Date.now(); session.secondsAnchorValue = 0; }
+        const elapsedSeconds = Math.floor((Date.now() - session.secondsAnchorAt) / 1000);
+        const nowMs = Date.now();
+        return {
+            SECONDS: String(session.secondsAnchorValue + elapsedSeconds),
+            EPOCHSECONDS: String(Math.floor(nowMs / 1000)),
+            EPOCHREALTIME: (nowMs / 1000).toFixed(6),
+            RANDOM: String(Math.floor(Math.random() * 32768)),
+        };
+    }
+    // 賦值攔截共用：SECONDS要重設session層的錨點（之後每次呼叫前重新
+    // 計算的基準），其餘一般變數照舊只更新JS層的env。
+    _terminalApplyShellAssignment(session, env, name, value) {
+        env[name] = value;
+        if (name === 'SECONDS') {
+            const n = Number(value);
+            session.secondsAnchorValue = Number.isFinite(n) ? n : 0;
+            session.secondsAnchorAt = Date.now();
+        }
+    }
     async _terminalExecSimpleCommand(session, node, env, opts) {
-        for (const a of node.assignments) env[a.name] = this._terminalExpandWord(a.valueWordSrc, env).text;
+        for (const a of node.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
         if (!node.argvWords.length) return { exitCode: 0, stdout: '', stderr: '' };
         const rawCmdName = node.argvWords[0];
         // tw_stock_db客製: 2026-09-28使用者實測回報——test.sh結尾的`time
@@ -19809,6 +19847,36 @@ ${sourceTool.handlerScript}
             const secs = (totalSeconds - mins * 60).toFixed(3);
             const timing = `\nreal\t${mins}m${secs}s\nuser\t0m0.000s\nsys\t0m0.000s\n`;
             return { exitCode: r.exit_code, stdout: (r.stdout || '') + timing, stderr: r.stderr || '' };
+        }
+        // tw_stock_db客製: 2026-09-28使用者實測回報——export過的變數在函式
+        // 裡讀不到（sleep收到空字串，變成「usage: sleep ...」）。根因跟
+        // session.userFunctionDefs同一類：每次wasi-sh呼叫都是全新、無狀態
+        // 的WASM instance，`export SLEEP_DURATION=1`過去是普通SimpleCommand
+        // 被Sequence層的batch邏輯送進某一次獨立的wasm呼叫，那次呼叫結束
+        // 變數就消失了——`time main`底下遞迴呼叫的_terminalRunShellText
+        // (session,"main",...)是**另一個全新的頂層呼叫**（重新建立一個空
+        // 的env、也是全新的wasm instance），完全看不到之前那次呼叫設過的
+        // SLEEP_DURATION。修法：跟userFunctionDefs同一招——把export過的
+        // 變數記進session.userExportedEnv（Map），_terminalRunWasmLine
+        // 每次呼叫前都自動把目前已知的所有export變數重新補在最前面（見該
+        // 方法新增的envDefsPrefix，跟funcDefsPrefix同一個位置），確保不管
+        // 是哪一次獨立的wasm呼叫都能看到這個變數。純JS層攔截、不送進wasm
+        // （跟cd/bare assignment同一種處理方式——送不送進wasm當下都只在
+        // 那次呼叫內有效，真正需要的是靠session.userExportedEnv補在之後
+        // 每一次呼叫最前面）。
+        if (rawCmdName === 'export') {
+            for (const w of node.argvWords.slice(1)) {
+                const expanded = this._terminalExpandWord(w, env).text;
+                const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(expanded);
+                if (!session.userExportedEnv) session.userExportedEnv = new Map();
+                if (m) {
+                    env[m[1]] = m[2];
+                    session.userExportedEnv.set(m[1], m[2]);
+                } else if (env[expanded] != null) {
+                    session.userExportedEnv.set(expanded, env[expanded]);
+                }
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
         }
         if (this._terminalIsVirtualCommandWord(rawCmdName)) {
             const expandedArgv = node.argvWords.map((w) => this._terminalExpandWord(w, env).text);
@@ -19867,7 +19935,7 @@ ${sourceTool.handlerScript}
                 for (const part of node.parts) {
                     if (session.ended) break;
                     if (part.type === 'SimpleCommand' && !part.argvWords.length && part.assignments.length) {
-                        for (const a of part.assignments) env[a.name] = this._terminalExpandWord(a.valueWordSrc, env).text;
+                        for (const a of part.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
                         continue;
                     }
                     if (part.type === 'SimpleCommand' && part.argvWords.length && !this._terminalIsVirtualCommandWord(part.argvWords[0]) && !part.assignments.length) {
@@ -20923,7 +20991,21 @@ ${sourceTool.handlerScript}
         const funcDefsPrefix = session.userFunctionDefs && session.userFunctionDefs.size
             ? `${Array.from(session.userFunctionDefs.values()).join('\n')}\n`
             : '';
-        const script = this._terminalRewriteBuiltinPaths(`${funcDefsPrefix}cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
+        // tw_stock_db客製: 2026-09-28——見_terminalExecSimpleCommand的
+        // export分支說明：跟funcDefsPrefix同一個理由、同一招，export過的
+        // 變數也要在每次wasm呼叫前重新補在最前面，不然函式被獨立呼叫時
+        // （例如`time main`遞迴呼叫進來的那次）完全看不到更早一次呼叫裡
+        // export過的變數。
+        const envDefsPrefix = session.userExportedEnv && session.userExportedEnv.size
+            ? Array.from(session.userExportedEnv.entries()).map(([k, v]) => `export ${k}=${this._shQuote(v)}`).join('\n') + '\n'
+            : '';
+        // tw_stock_db客製: 2026-09-28——見_terminalComputeBashSpecialVars的
+        // 完整說明：SECONDS/EPOCHSECONDS/EPOCHREALTIME/RANDOM這幾個bash
+        // 內建特殊變數，跟funcDefsPrefix/envDefsPrefix同一個位置、同一招，
+        // 每次呼叫前都重新即時計算一次補在最前面。
+        const specialVars = this._terminalComputeBashSpecialVars(session);
+        const specialVarsPrefix = Object.entries(specialVars).map(([k, v]) => `${k}=${this._shQuote(v)}`).join('\n') + '\n';
+        const script = this._terminalRewriteBuiltinPaths(`${specialVarsPrefix}${envDefsPrefix}${funcDefsPrefix}cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
         let builtins;
         try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
             return { ok: false, error: `指令需要的執行環境載入失敗：${String(err.message || err)}` };
