@@ -1,17 +1,17 @@
 {
   "schema": 1,
   "baseVersion": "0.1.0",
-  "generatedAt": "2026-09-28T08:53:37.719Z",
+  "generatedAt": "2026-09-28T09:02:20.463Z",
   "files": {
-    "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
-    "renderer/bootstrap.js": "6f5982ee5a837c2f456f303d797df6ec",
-    "renderer/floating-assistant.js": "d7fc600f881aa72ae6ffb399ddafbf70",
-    "renderer/floating-assistant.min.js": "d7fc600f881aa72ae6ffb399ddafbf70"
+    "renderer/index.html": "339cd88582fab0b1c7ffb5f55c842504",
+    "renderer/bootstrap.js": "c765a9d814c39c51b11594657dac48d7",
+    "renderer/floating-assistant.js": "2a76c1294b233148bd0f35c881b3fdcc",
+    "renderer/floating-assistant.min.js": "2a76c1294b233148bd0f35c881b3fdcc"
   },
   "sizes": {
-    "renderer/index.html": 5741,
-    "renderer/bootstrap.js": 142564,
-    "renderer/floating-assistant.js": 1140760,
-    "renderer/floating-assistant.min.js": 1140760
+    "renderer/index.html": 5821,
+    "renderer/bootstrap.js": 145090,
+    "renderer/floating-assistant.js": 1145018,
+    "renderer/floating-assistant.min.js": 1145018
   }
 }

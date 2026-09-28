@@ -136,16 +136,28 @@
   - `把這份 pptx 每張投影片裡的圖片抽出來`
   - `比較這兩張圖有什麼不同`
 
+### 合併PDF附件（`merge-pdfs`）
+
+把多份已上傳的PDF依指定順序合併成一份新的PDF；直接複製原始頁面（不重新渲染），合併後文字仍可選取/搜尋、畫質不劣化。不支援有密碼保護的PDF。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`file_analysis`
+- AI 工具：`merge_pdfs`
+- 範例：
+  - `把這三份上傳的PDF合併成一個`
+  - `幫我把這幾份報告PDF照順序併成一份`
+
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
-專門處理週報、簡報、投影片、pptx／docx／xlsx 的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
+專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
 
 - 可用平台：桌面版
 - 子代理人領域：`office_report`
-- AI 工具：`pptx_inspect`、`office_export_slide_images`、`fs_grep`、`extract_pptx_images`、`compare_images`
+- AI 工具：`pptx_inspect`、`office_export_slide_images`、`fs_grep`、`extract_pptx_images`、`compare_images`、`merge_pdfs`
 - 範例：
   - `依範本產生這週的簡報，並逐頁檢查有沒有圖片或背景掉了`
   - `檢查這份 pptx 有沒有壞掉、為什麼檔案很難打開`
+  - `把這幾份上傳的PDF合併成一份`
 
 ### 授權資料夾存取（File Access Point）（`file-access-points`）
 
