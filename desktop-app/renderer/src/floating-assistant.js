@@ -1396,7 +1396,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -5176,6 +5176,28 @@ class FloatingAssistant {
             '把多份PDF依順序合併成一份新PDF（直接複製原始頁面，不重新渲染，文字仍可選取/搜尋）。**留空參數直接送出＝合併「這次一起附加上傳的全部PDF」**（依附加順序），這是最常見的用法：先打 /office-pdf-merge，再用附加按鈕選多個PDF上傳後送出即可；也可以明確指定 /office-pdf-merge file_1 file_2（至少2個，用空格分隔，依這個順序合併）。不支援有密碼保護的PDF。',
             (argsText) => this._handleOfficePdfMergeCommand(argsText)
         );
+        // tw_stock_db客製: 2026-09-28使用者要求——remove/extract-page/
+        // extract-image三個PDF頁面操作的slash指令，跟/office-pdf-merge同一種
+        // 純本地端呼叫（不經過LLM、不花token）。用哪一份PDF固定用「留空＝
+        // 最近上傳/附加的檔案」這個既有慣例（見_resolveUploadedFileRecord
+        // 空字串時的行為），指令本身只需要打頁碼範圍這一個參數，跟使用者
+        // 原話「/office-pdf-remove-page <range expr>」的用法一致——先附加
+        // 一份PDF，再打指令+頁碼範圍即可，不用另外打檔名/id。
+        this.register_slash_command(
+            '/office-pdf-remove-page', '<頁碼範圍>',
+            '移除PDF指定頁面，產生一份新PDF（直接複製剩餘頁面，不重新渲染，文字仍可選取/搜尋）。用哪份PDF：留空＝最近附加/上傳的PDF。頁碼範圍語法比照印表機：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼自動忽略、結尾多餘逗號沒關係，例如 /office-pdf-remove-page 1-5,6。不支援有密碼保護的PDF；移除後若會變成0頁會直接報錯。',
+            (argsText) => this._handleOfficePdfRemovePageCommand(argsText)
+        );
+        this.register_slash_command(
+            '/office-pdf-extract-page', '<頁碼範圍>',
+            '把PDF指定頁面取出、變成一份新PDF（直接複製頁面，不重新渲染，文字仍可選取/搜尋，輸出固定依頁碼排序）。用哪份PDF：留空＝最近附加/上傳的PDF。頁碼範圍語法比照印表機：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼自動忽略、結尾多餘逗號沒關係，例如 /office-pdf-extract-page 1-5,6。不支援有密碼保護的PDF。',
+            (argsText) => this._handleOfficePdfExtractPageCommand(argsText)
+        );
+        this.register_slash_command(
+            '/office-pdf-extract-image', '<頁碼範圍>',
+            '把PDF指定頁面整頁渲染成PNG圖片（該頁畫面截圖，不是抽取頁面內嵌的圖片物件）。用哪份PDF：留空＝最近附加/上傳的PDF。頁碼範圍語法比照印表機：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼自動忽略、結尾多餘逗號沒關係，例如 /office-pdf-extract-image 1-5,6。只指定1頁時直接產生一張PNG；指定多頁時自動打包成zip（每張檔名pdf_image_{頁碼}.png）。支援有密碼保護的PDF（會跳密碼輸入框）。',
+            (argsText) => this._handleOfficePdfExtractImageCommand(argsText)
+        );
         // tw_stock_db客製: 2026-09-15使用者要求——File Access Point（Advance
         // Settings「檔案存取管理」分頁授權的真實磁碟資料夾）本地直接執行的
         // 瀏覽/讀取/搜尋指令，不經過LLM。ref格式一律是「fap:<名稱或id>
@@ -8357,6 +8379,77 @@ ${fnData.code}
             { type: 'object', properties: {
                 files: { type: 'array', items: { type: 'string' }, description: '要依序合併的PDF file_id或檔名陣列，至少2個' },
             }, required: ['files'], additionalProperties: false }
+        );
+        // tw_stock_db客製: 2026-09-28使用者要求——remove/extract-page/
+        // extract-image三個PDF頁面操作，跟merge_pdfs同一套pdf-lib/pdf.js
+        // 基礎、同一種「解析file_id→處理→存回fileCache→自動交付下載」模式。
+        // pages參數統一用_parsePageRangeExpr的頁碼範圍語法（見該方法說明），
+        // 三個工具的description都各自重述一次語法範例，不假設模型會自己
+        // 記得「範圍語法在別的工具說過」。
+        registerOptional('remove_pdf_pages',
+            '移除PDF指定頁面，回傳移除後的新PDF（複製剩餘頁面的原始物件，不重新渲染，文字仍可選取/搜尋）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"或"6,2,2,1-3,"都合法。回傳{ok, pdf_file_id, filename, sizeBytes, originalPageCount, removedPages, remainingPageCount}，成功時會自動產生下載附件。⚠️不支援有密碼保護的PDF；移除後如果會變成0頁會直接報錯，不會產生空白PDF。參數: {"file":"PDF的file_id或檔名","pages":"要移除的頁碼範圍，例如\\"1-5,6\\""}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const pages = String(parsed.pages || '').trim();
+                if (!fileArg) return JSON.stringify({ ok: false, error: '缺少file參數（PDF的file_id或檔名）' });
+                if (!pages) return JSON.stringify({ ok: false, error: '缺少pages參數（要移除的頁碼範圍，例如"1-5,6"）' });
+                try {
+                    const result = await this._removePdfPages(fileArg, pages, (m) => this._log('📄 ' + m));
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已移除${r.removedPages.length}頁（剩${r.remainingPageCount}頁）：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: 'PDF的file_id或檔名' },
+                pages: { type: 'string', description: '要移除的頁碼範圍，例如"1-5,6"' },
+            }, required: ['file', 'pages'], additionalProperties: false }
+        );
+        registerOptional('extract_pdf_pages',
+            '把PDF指定頁面取出、變成一份新的PDF（複製原始頁面物件，不重新渲染，文字仍可選取/搜尋，輸出固定依頁碼由小到大排序，跟輸入範圍的先後順序無關）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"或"6,2,2,1-3,"都合法。回傳{ok, pdf_file_id, filename, sizeBytes, originalPageCount, extractedPages}，成功時會自動產生下載附件。⚠️不支援有密碼保護的PDF。參數: {"file":"PDF的file_id或檔名","pages":"要取出的頁碼範圍，例如\\"1-5,6\\""}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const pages = String(parsed.pages || '').trim();
+                if (!fileArg) return JSON.stringify({ ok: false, error: '缺少file參數（PDF的file_id或檔名）' });
+                if (!pages) return JSON.stringify({ ok: false, error: '缺少pages參數（要取出的頁碼範圍，例如"1-5,6"）' });
+                try {
+                    const result = await this._extractPdfPages(fileArg, pages, (m) => this._log('📄 ' + m));
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已取出${r.extractedPages.length}頁：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: 'PDF的file_id或檔名' },
+                pages: { type: 'string', description: '要取出的頁碼範圍，例如"1-5,6"' },
+            }, required: ['file', 'pages'], additionalProperties: false }
+        );
+        registerOptional('extract_pdf_images',
+            '把PDF指定頁面整頁渲染成PNG圖片（是「該頁畫面長什麼樣子」的截圖，不是抽取頁面內容流裡個別的內嵌圖片物件——即使該頁是純文字/向量圖形也能正常輸出一張圖）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"。只指定1頁時直接回傳一張PNG；指定多頁時自動打包成一份zip（裡面每張圖檔名是pdf_image_{頁碼}.png），成功時會自動產生下載附件。回傳單頁時{ok, image_file_id, filename, sizeBytes, page, originalPageCount}；多頁時{ok, zip_file_id, filename, sizeBytes, originalPageCount, pages:[{page,filename,sizeBytes}]}。支援有密碼保護的PDF（會跳密碼輸入框）。參數: {"file":"PDF的file_id或檔名","pages":"要輸出成圖片的頁碼範圍，例如\\"1-5,6\\"","scale":"（選填）渲染解析度倍率，預設2，最高6，數字越大圖越清楚但檔案也越大"}',
+            async (rawArgs) => {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const fileArg = String(parsed.file || parsed.file_id || '').trim();
+                const pages = String(parsed.pages || '').trim();
+                if (!fileArg) return JSON.stringify({ ok: false, error: '缺少file參數（PDF的file_id或檔名）' });
+                if (!pages) return JSON.stringify({ ok: false, error: '缺少pages參數（要輸出成圖片的頁碼範圍，例如"1-5,6"）' });
+                try {
+                    const result = await this._extractPdfPageImages(fileArg, pages, { scale: parsed.scale }, (m) => this._log('🖼️ ' + m));
+                    if (result.ok && result.image_file_id) {
+                        await this._deliverToolResultFile(result, 'image_file_id', (r) => `📎 已輸出第${r.page}頁：${r.filename}（${(r.sizeBytes / 1024).toFixed(0)}KB）`);
+                    } else if (result.ok && result.zip_file_id) {
+                        await this._deliverToolResultFile(result, 'zip_file_id', (r) => `📎 已輸出${r.pages.length}張圖片並打包：${r.filename}（${(r.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+                    }
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                file: { type: 'string', description: 'PDF的file_id或檔名' },
+                pages: { type: 'string', description: '要輸出成圖片的頁碼範圍，例如"1-5,6"' },
+                scale: { type: 'number', description: '（選填）渲染解析度倍率，預設2，最高6' },
+            }, required: ['file', 'pages'], additionalProperties: false }
         );
         registerOptional('compare_images',
             '把2~6張圖片「一起」交給支援讀圖(vision)的model比較（相同點/差異、哪一張符合某個描述、哪一張對應哪一張），比分別呼叫interpret_image再自己對照準確。圖片來源：file_id（📎附件、extract_pptx_images/extract_video_frames/browser_screenshot產生的圖片）或http(s)圖片網址，混用也可以。典型用途：拿投影片裡抽出的圖，跟影片幾個時間點的畫面比對，找出投影片圖片出現在影片的哪個時間，再用extract_clip_range剪那一段。參數: {"images":["file_id或網址",...],"question":"（選填）想比較什麼，例如\"圖1（投影片）跟哪一張影格畫面最像？\""}',
@@ -13549,7 +13642,7 @@ ${fnData.code}
         // 出「看到不熟悉的特定名詞/流程、通用知識答不出來時優先試著委派」
         // 這個判斷原則（不列出實際skill名稱，維持既有的分層揭露/root
         // system prompt精簡原則）。
-        const base = '把不屬於你自己直接負責範圍的任務委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。適用範圍包含（但不限於）：檔案解讀（含使用者自己上傳的檔案，**也包含使用者已經在「檔案存取管理」授權過的電腦上真實磁碟資料夾**——即使使用者這樣描述任務：直接講一個電腦上的完整路徑、或只講一個資料夾別名，都可能對應到一個已授權的資料夾，**一律先委派查詢，不要用「我沒有檔案系統存取權限」這種通用常識直接回絕使用者**，畢竟你不知道使用者是否已經授權）、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋、**使用者自己匯入/建立的技能包(Skill Bundle)或自訂工具**等。**這個工具也是使用者自訂技能唯一的觸發入口**——如果使用者提到一個你不熟悉的特定名詞、流程、代號、或指名要用「XX方法/XX skill」，很可能對應到使用者自己設定好的技能包，先試著委派（domain留空讓系統自動判斷）比直接用通用知識回答或說「我不知道」更正確；只有明確判斷任務單純、跟任何專業領域/自訂技能都無關時才略過委派。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。';
+        const base = '把不屬於你自己直接負責範圍的任務委派給合適的專家子agent處理，子agent只能使用該任務相關的專屬工具、用專屬system prompt獨立跑完整個對話後只回傳最終結論（過程不會顯示在主對話）。適用範圍包含（但不限於）：檔案解讀（含使用者自己上傳的檔案，**也包含使用者已經在「檔案存取管理」授權過的電腦上真實磁碟資料夾**——即使使用者這樣描述任務：直接講一個電腦上的完整路徑、或只講一個資料夾別名，都可能對應到一個已授權的資料夾，**一律先委派查詢，不要用「我沒有檔案系統存取權限」這種通用常識直接回絕使用者**，畢竟你不知道使用者是否已經授權）、3D場景設計、通用繪圖、互動元件生成、2D動畫、RAG知識庫查詢/維護、AI自製函式管理、網路搜尋、**使用者自己匯入/建立的技能包(Skill Bundle)或自訂工具**等。**這個工具也是使用者自訂技能唯一的觸發入口**——如果使用者提到一個你不熟悉的特定名詞、流程、代號、或指名要用「XX方法/XX skill」，很可能對應到使用者自己設定好的技能包，先試著委派（domain留空讓系統自動判斷）比直接用通用知識回答或說「我不知道」更正確；只有明確判斷任務單純、跟任何專業領域/自訂技能都無關時才略過委派。**如果使用者一句話裡包含好幾件不同性質的事**（例如同時要查資料庫又要畫圖），把整段需求原封不動寫進同一次task描述裡呼叫這個工具「一次」就好，不要為了每件事各自拆成好幾次呼叫。**反過來，如果同一個領域本身工具很多、任務又需要依序走過好幾個明顯不同的階段**（例如「先從PDF裡挑出某些頁面存成新檔、再把那些頁面轉成圖片、最後把圖片整理成報告」這種一個領域內部就有好幾道獨立工序的任務），不要硬塞成一次委派（子agent的工具清單/對話會因此過度膨脹、更容易失焦或漏步驟）：改成對**同一個domain依序呼叫好幾次**這個工具，每次task描述開頭都加上`[分階段 N/M]`標記（N是這是第幾步、M是總共幾步，例如`[分階段 1/3]`），並且**在每個階段的task文字裡親自摘要前面階段已經完成/產出了什麼**（子agent之間沒有共用記憶，前一階段的結論、檔案id等一定要由你自己複述進下一階段的task），等前一次委派真的回傳結果後才送出下一階段的委派（依序、不是同時送出）。這樣分階段委派出去的子agent會被告知「這是pipeline的一步、不用申請額外工具」，不會誤以為自己被漏分配工具而卡住。';
         if (this.multiSubAgentMode === 'full') {
             // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析的
             // domain，使用者還沒建立任何Skill時要從這份清單隱藏（否則會列出一個
@@ -18314,6 +18407,187 @@ ${sourceTool.handlerScript}
         }
         const pageCount = perFile.reduce((sum, f) => sum + f.pages, 0);
         return { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, pageCount, fileCount: records.length, files: perFile };
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——remove_pdf_pages/extract_pdf_pages/
+    // extract_pdf_images共用的頁碼範圍語法，仿照一般印表機的頁碼範圍輸入
+    // 慣例：逗號分隔多個片段，每個片段是單一頁碼或"start-end"區間，**不管
+    // 先後順序**（"6,1-5"跟"1-5,6"視為同一組）、**自動忽略重複頁碼**、
+    // **容許結尾多餘的逗號**（"1-5,6,"、"1,,2"這種連續/結尾逗號的空片段
+    // 直接跳過，不當成錯誤）、也容許區間頭尾寫反（"5-1"當"1-5"處理）。回傳
+    // 由小到大排序、去重後的頁碼陣列（1起算），超出這份PDF實際頁數範圍時
+    // 直接報錯並列出哪些頁碼不合法（比靜默忽略掉使用者可能沒注意到的錯誤
+    // 更安全——remove/extract都是會產生新檔案的操作，默默漏掉/多算頁碼
+    // 比明確報錯更麻煩）。
+    _parsePageRangeExpr(expr, totalPages) {
+        const raw = String(expr || '').trim();
+        if (!raw) throw new Error('缺少頁碼範圍（例如"1-5,6"）');
+        const segments = raw.split(',').map((s) => s.trim()).filter(Boolean);
+        if (!segments.length) throw new Error(`頁碼範圍格式錯誤："${raw}"（範例："1-5,6"）`);
+        const pages = new Set();
+        for (const seg of segments) {
+            const m = /^(\d+)(?:-(\d+))?$/.exec(seg);
+            if (!m) throw new Error(`頁碼範圍格式錯誤："${seg}"（範例："1-5,6"）`);
+            const a = parseInt(m[1], 10);
+            const b = m[2] != null ? parseInt(m[2], 10) : a;
+            const lo = Math.min(a, b), hi = Math.max(a, b);
+            for (let p = lo; p <= hi; p++) pages.add(p);
+        }
+        const sorted = Array.from(pages).sort((x, y) => x - y);
+        const invalid = sorted.filter((p) => p < 1 || p > totalPages);
+        if (invalid.length) throw new Error(`頁碼超出範圍（這份PDF共${totalPages}頁）：${invalid.join(', ')}`);
+        return sorted;
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——移除PDF指定頁面，跟
+    // _mergePdfFiles同一套pdf-lib copyPages模式（複製要保留的頁面物件，
+    // 不重新渲染，文字仍可選取/搜尋），只是這裡複製的是「要保留」的頁面
+    // （全部頁碼扣掉要移除的頁碼），不是全部頁面。
+    async _removePdfPages(fileArg, pagesExpr, onProgress) {
+        const record = await this._resolveUploadedFileRecord(fileArg);
+        if (!record) return { ok: false, error: `找不到符合「${fileArg}」的已上傳檔案` };
+        if (this._detectFileFormat(record.filename) !== 'pdf') return { ok: false, error: `「${record.filename}」不是PDF檔案` };
+        if (onProgress) onProgress('載入PDF程式庫…');
+        try { await this._ensurePdfLibLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        let src;
+        try {
+            const bytes = await record.blob.arrayBuffer();
+            src = await PDFLib.PDFDocument.load(bytes);
+        } catch (err) {
+            const isEncrypted = err && (err.name === 'EncryptedPDFError' || /encrypt/i.test(String(err.message || '')));
+            return { ok: false, error: isEncrypted
+                ? `「${record.filename}」是有密碼保護的PDF，不支援解密，請先手動移除密碼保護再上傳`
+                : `「${record.filename}」不是有效的PDF或已損毀：${String(err.message || err)}` };
+        }
+        const totalPages = src.getPageCount();
+        let removePages;
+        try { removePages = this._parsePageRangeExpr(pagesExpr, totalPages); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const removeSet = new Set(removePages);
+        const keepIndices = [];
+        for (let i = 0; i < totalPages; i++) if (!removeSet.has(i + 1)) keepIndices.push(i);
+        if (!keepIndices.length) return { ok: false, error: `移除頁面${pagesExpr}後這份PDF會變成0頁，拒絕產生空白PDF——請確認頁碼範圍` };
+        if (onProgress) onProgress(`複製剩餘 ${keepIndices.length}/${totalPages} 頁…`);
+        let out;
+        try {
+            out = await PDFLib.PDFDocument.create();
+            const copied = await out.copyPages(src, keepIndices);
+            copied.forEach((p) => out.addPage(p));
+        } catch (err) {
+            return { ok: false, error: '複製頁面失敗：' + String(err.message || err) };
+        }
+        let outBytes;
+        try { outBytes = await out.save(); } catch (err) { return { ok: false, error: '輸出PDF失敗：' + String(err.message || err) }; }
+        const blob = new Blob([outBytes], { type: 'application/pdf' });
+        const name = record.filename.replace(/\.pdf$/i, '') + `_移除頁面_${Date.now()}.pdf`;
+        let pdfFileId;
+        try { pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded'); }
+        catch (err) { return { ok: false, error: '儲存結果失敗：' + String(err.message || err) }; }
+        return { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, originalPageCount: totalPages, removedPages: removePages, remainingPageCount: keepIndices.length };
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——把PDF指定頁面取出、變成一份
+    // 新的PDF（跟_removePdfPages互補：這裡複製的是「要保留」的頁面本身，
+    // 依頁碼由小到大排序輸出，不依使用者輸入範圍時的先後順序——range本身
+    // 就允許"不論順序"，輸出固定用頁碼順序比較符合直覺、也比較好核對）。
+    async _extractPdfPages(fileArg, pagesExpr, onProgress) {
+        const record = await this._resolveUploadedFileRecord(fileArg);
+        if (!record) return { ok: false, error: `找不到符合「${fileArg}」的已上傳檔案` };
+        if (this._detectFileFormat(record.filename) !== 'pdf') return { ok: false, error: `「${record.filename}」不是PDF檔案` };
+        if (onProgress) onProgress('載入PDF程式庫…');
+        try { await this._ensurePdfLibLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        let src;
+        try {
+            const bytes = await record.blob.arrayBuffer();
+            src = await PDFLib.PDFDocument.load(bytes);
+        } catch (err) {
+            const isEncrypted = err && (err.name === 'EncryptedPDFError' || /encrypt/i.test(String(err.message || '')));
+            return { ok: false, error: isEncrypted
+                ? `「${record.filename}」是有密碼保護的PDF，不支援解密，請先手動移除密碼保護再上傳`
+                : `「${record.filename}」不是有效的PDF或已損毀：${String(err.message || err)}` };
+        }
+        const totalPages = src.getPageCount();
+        let extractPages;
+        try { extractPages = this._parsePageRangeExpr(pagesExpr, totalPages); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        if (onProgress) onProgress(`複製 ${extractPages.length} 頁…`);
+        let out;
+        try {
+            out = await PDFLib.PDFDocument.create();
+            const copied = await out.copyPages(src, extractPages.map((p) => p - 1));
+            copied.forEach((p) => out.addPage(p));
+        } catch (err) {
+            return { ok: false, error: '複製頁面失敗：' + String(err.message || err) };
+        }
+        let outBytes;
+        try { outBytes = await out.save(); } catch (err) { return { ok: false, error: '輸出PDF失敗：' + String(err.message || err) }; }
+        const blob = new Blob([outBytes], { type: 'application/pdf' });
+        const name = record.filename.replace(/\.pdf$/i, '') + `_取出頁面_${Date.now()}.pdf`;
+        let pdfFileId;
+        try { pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded'); }
+        catch (err) { return { ok: false, error: '儲存結果失敗：' + String(err.message || err) }; }
+        return { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, originalPageCount: totalPages, extractedPages: extractPages };
+    }
+
+    // tw_stock_db客製: 2026-09-28使用者要求——把PDF指定頁面渲染成PNG圖片
+    // （不是抽取內嵌在頁面內容流裡的原始圖片物件——那樣一頁可能對應0~N張
+    // 內嵌圖，跟使用者指定「pdf_image_{page}.png」這種一頁固定一張檔名的
+    // 慣例對不起來；改成每頁整頁渲染成一張圖，語意明確、對任何PDF都適用，
+    // 即使該頁其實是純文字/向量圖形也能正常輸出）。用既有_loadPdfDocument
+    // （pdf.js，支援密碼保護PDF的輸入對話框，跟parse_uploaded_file/PDF
+    // viewer共用同一套密碼流程）+ canvas渲染。單頁只回傳一張PNG；多頁
+    // 打包成一份zip（既有JSZip vendored library，見_ensureJSZipLoaded），
+    // 不逐張各自產生下載卡片洗版對話。
+    async _extractPdfPageImages(fileArg, pagesExpr, opts, onProgress) {
+        const record = await this._resolveUploadedFileRecord(fileArg);
+        if (!record) return { ok: false, error: `找不到符合「${fileArg}」的已上傳檔案` };
+        if (this._detectFileFormat(record.filename) !== 'pdf') return { ok: false, error: `「${record.filename}」不是PDF檔案` };
+        if (onProgress) onProgress('載入PDF程式庫…');
+        let doc;
+        try { doc = await this._loadPdfDocument(record.blob, { filename: record.filename }); }
+        catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const totalPages = doc.numPages;
+        let pages;
+        try { pages = this._parsePageRangeExpr(pagesExpr, totalPages); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const scale = Number.isFinite(Number(opts && opts.scale)) && Number(opts.scale) > 0 ? Math.min(6, Number(opts.scale)) : 2;
+        const rendered = [];
+        for (let i = 0; i < pages.length; i++) {
+            const pageNum = pages[i];
+            if (onProgress) onProgress(`渲染第 ${i + 1}/${pages.length} 頁（page ${pageNum}）…`);
+            let page, viewport, canvas, ctx;
+            try {
+                page = await doc.getPage(pageNum);
+                viewport = page.getViewport({ scale });
+                canvas = document.createElement('canvas');
+                canvas.width = Math.ceil(viewport.width);
+                canvas.height = Math.ceil(viewport.height);
+                ctx = canvas.getContext('2d');
+                await page.render({ canvasContext: ctx, viewport }).promise;
+            } catch (err) {
+                return { ok: false, error: `渲染第${pageNum}頁失敗：${String(err.message || err)}` };
+            }
+            const pngBlob = await new Promise((resolve, reject) => {
+                canvas.toBlob((b) => b ? resolve(b) : reject(new Error('canvas.toBlob回傳空值')), 'image/png');
+            }).catch((err) => { throw new Error(`第${pageNum}頁轉成PNG失敗：${String(err.message || err)}`); });
+            rendered.push({ page: pageNum, blob: pngBlob, filename: `pdf_image_${pageNum}.png` });
+        }
+        if (rendered.length === 1) {
+            const only = rendered[0];
+            let fileId;
+            try { fileId = await this.fileCache.put(only.filename, 'image/png', only.blob, 'uploaded'); }
+            catch (err) { return { ok: false, error: '儲存圖片失敗：' + String(err.message || err) }; }
+            return { ok: true, image_file_id: fileId, filename: only.filename, sizeBytes: only.blob.size, page: only.page, originalPageCount: totalPages };
+        }
+        if (onProgress) onProgress(`打包 ${rendered.length} 張圖片成zip…`);
+        try { await this._ensureJSZipLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const zip = new JSZip();
+        for (const r of rendered) zip.file(r.filename, r.blob);
+        let zipBlob;
+        try { zipBlob = await zip.generateAsync({ type: 'blob' }); }
+        catch (err) { return { ok: false, error: 'zip打包失敗：' + String(err.message || err) }; }
+        const zipName = record.filename.replace(/\.pdf$/i, '') + `_圖片_${Date.now()}.zip`;
+        let zipFileId;
+        try { zipFileId = await this.fileCache.put(zipName, 'application/zip', zipBlob, 'uploaded'); }
+        catch (err) { return { ok: false, error: '儲存zip失敗：' + String(err.message || err) }; }
+        return { ok: true, zip_file_id: zipFileId, filename: zipName, sizeBytes: zipBlob.size, originalPageCount: totalPages, pages: rendered.map((r) => ({ page: r.page, filename: r.filename, sizeBytes: r.blob.size })) };
     }
 
     // tw_stock_db客製: 2026-09-24使用者要求——解析/檢視有密碼保護的PDF。
@@ -30101,6 +30375,96 @@ ${existingNodeSummaries}
         }
     }
 
+    // tw_stock_db客製: 2026-09-28使用者要求——/office-pdf-remove-page/
+    // /office-pdf-extract-page/office-pdf-extract-image三個指令共用的
+    // 「決定要動哪一份PDF」邏輯：優先用剛剛附加的pending PDF（有的話，
+    // 成功後consume掉，跟merge的慣例一致），沒有pending附件時留空字串，
+    // 交給_resolveUploadedFileRecord自己退回「最近上傳的檔案」。
+    _resolvePdfArgForSlashCommand() {
+        const pending = this._pickPendingAttachmentsByClass('pdf');
+        if (pending.length) {
+            const last = pending[pending.length - 1];
+            return { fileArg: last.id, consumeId: last.id };
+        }
+        return { fileArg: '', consumeId: null };
+    }
+
+    // /office-pdf-remove-page <頁碼範圍>——純本地呼叫_removePdfPages，不經過AI。
+    async _handleOfficePdfRemovePageCommand(argsText) {
+        const pages = String(argsText || '').trim();
+        if (!pages) {
+            this._log('⚠️ /office-pdf-remove-page：缺少頁碼範圍，例如 /office-pdf-remove-page 1-5,6');
+            return;
+        }
+        const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
+        this.messages.push({ role: 'user', content: `📄 移除PDF頁面：${pages}` });
+        const prog = this._createProgressWidget('移除PDF頁面');
+        let result;
+        try {
+            result = await this._removePdfPages(fileArg, pages, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：移除${result.removedPages.length}頁，剩${result.remainingPageCount}頁`);
+        if (consumeId) this._consumePendingAttachments([consumeId]);
+        if (result.pdf_file_id) {
+            await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已移除${result.removedPages.length}頁（剩${result.remainingPageCount}頁）：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+        }
+    }
+
+    // /office-pdf-extract-page <頁碼範圍>——純本地呼叫_extractPdfPages，不經過AI。
+    async _handleOfficePdfExtractPageCommand(argsText) {
+        const pages = String(argsText || '').trim();
+        if (!pages) {
+            this._log('⚠️ /office-pdf-extract-page：缺少頁碼範圍，例如 /office-pdf-extract-page 1-5,6');
+            return;
+        }
+        const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
+        this.messages.push({ role: 'user', content: `📄 取出PDF頁面：${pages}` });
+        const prog = this._createProgressWidget('取出PDF頁面');
+        let result;
+        try {
+            result = await this._extractPdfPages(fileArg, pages, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        prog.finish(`完成：取出${result.extractedPages.length}頁`);
+        if (consumeId) this._consumePendingAttachments([consumeId]);
+        if (result.pdf_file_id) {
+            await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已取出${result.extractedPages.length}頁：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+        }
+    }
+
+    // /office-pdf-extract-image <頁碼範圍>——純本地呼叫_extractPdfPageImages，
+    // 不經過AI。單頁直接交付PNG，多頁交付zip（跟工具版本同一個回傳形狀）。
+    async _handleOfficePdfExtractImageCommand(argsText) {
+        const pages = String(argsText || '').trim();
+        if (!pages) {
+            this._log('⚠️ /office-pdf-extract-image：缺少頁碼範圍，例如 /office-pdf-extract-image 1-5,6');
+            return;
+        }
+        const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
+        this.messages.push({ role: 'user', content: `🖼️ 輸出PDF頁面圖片：${pages}` });
+        const prog = this._createProgressWidget('輸出PDF頁面圖片');
+        let result;
+        try {
+            result = await this._extractPdfPageImages(fileArg, pages, {}, (m) => prog.update({ status: m }));
+        } catch (err) {
+            result = { ok: false, error: String(err && err.message || err) };
+        }
+        if (!result.ok) { prog.fail(result.error); return; }
+        if (consumeId) this._consumePendingAttachments([consumeId]);
+        if (result.image_file_id) {
+            prog.finish(`完成：輸出第${result.page}頁`);
+            await this._deliverExistingCacheFile(result.image_file_id, `📎 已輸出第${result.page}頁：${result.filename}（${(result.sizeBytes / 1024).toFixed(0)}KB）`);
+        } else if (result.zip_file_id) {
+            prog.finish(`完成：輸出${result.pages.length}張圖片並打包`);
+            await this._deliverExistingCacheFile(result.zip_file_id, `📎 已輸出${result.pages.length}張圖片並打包：${result.filename}（${(result.sizeBytes / 1024 / 1024).toFixed(1)}MB）`);
+        }
+    }
+
     // ============================================================
     // tw_stock_db客製: /benchmark-model 指令——見使用者要求記錄的評估準則
     // （簡易回應速度／單一工具呼叫／完整多步驟請求跑2次，各自評分、算
@@ -32394,7 +32758,16 @@ ${existingNodeSummaries}
             for (const n of BROWSER_CONTROL_TOOL_NAMES) if (!allowedToolNames.includes(n)) allowedToolNames.push(n);
             browserControlInjected = true;
         }
-        const canRequestMore = Array.isArray(allowedToolNames);
+        // tw_stock_db客製: 2026-09-28使用者要求——見下面systemPrompt組裝處
+        // pipelineStepMatch的完整說明：分階段pipeline裡的某一步，不應該有
+        // 「申請追加工具」這個逃生門（那些工具本來就刻意留給後面的sibling
+        // 階段，不是這個階段的異常狀況）。這裡不只是用文字提示「不要用」，
+        // 直接讓canRequestMore為false——resolveTool()完全不會認得
+        // request_additional_tools這個名稱、native模式下body.tools的schema
+        // 也不會列出它（見下面nativeExtraEntries），從根本上讓這個工具在
+        // 這種情境下不存在，比單純提示更可靠。
+        const pipelineStepPrefixMatch = /^\s*\[分階段\s*(\d+)\s*\/\s*(\d+)\s*\]/.exec(userPrompt);
+        const canRequestMore = Array.isArray(allowedToolNames) && !pipelineStepPrefixMatch;
         // tw_stock_db客製: 2026-09-15使用者實測回報——即使把某個model row的
         // 「批次每分鐘請求數上限」設定成40，實際還是撞到429。追查後發現：
         // runBatchSubAgents原本只在「每個item開始跑之前」呼叫一次
@@ -32478,7 +32851,24 @@ ${existingNodeSummaries}
         // 完全沒有管道讓子agent知道這個工具存在，這裡額外補一句提示，兩種
         // 模式都受益（native模式多一句提醒也無妨）。
         if (browserControlInjected) systemPrompt += BROWSER_CONTROL_HINT;
-        if (canRequestMore) {
+        // tw_stock_db客製: 2026-09-28使用者要求——當一個domain的工具數量太多、
+        // 一次全部開給同一個子agent會讓它的工具清單/context過度膨脹時，最外層
+        // orchestrator（根模型）應該改成把任務拆成好幾個階段、依序呼叫好幾次
+        // delegate_to_subagent（同一個domain，任務描述各自只涵蓋一個階段），
+        // 而不是硬塞成一次超大的委派——見_buildDelegateToSubagentDescription()
+        // 裡教根模型怎麼標記這種「分階段」任務（task文字開頭用`[分階段 N/M]`
+        // 標記）。這裡偵測這個標記：偵測到的話，這個子agent就是pipeline裡的
+        // 其中一棒，**不應該**呼叫request_additional_tools去申請這個階段本來
+        // 就沒有分配到的工具（那些工具屬於「後面的sibling階段」負責，不是這個
+        // 階段沒拿到工具的異常情況）——完全比照request_additional_tools本身
+        // 「原地申請、不用結束對話」的精神給出對稱、明確的指示，不是含糊地說
+        // 「不要」，讓它清楚知道正確反應是完成這個階段範圍內能做的部分、清楚
+        // 交代做到哪裡/產出了什麼（給下一階段接手用），不是卡住不動或勉強硬做
+        // 超出範圍的事。
+        if (pipelineStepPrefixMatch) {
+            const [, stepNum, totalSteps] = pipelineStepPrefixMatch;
+            systemPrompt += `\n\n這個任務是一個分階段pipeline的第${stepNum}/${totalSteps}步——你只拿得到這個階段需要的工具，這是刻意設計（避免一次開放整個領域的全部工具讓單一子agent的工具清單過度膨脹），不是遺漏。**不要呼叫${REQUEST_MORE_TOOLS_NAME}申請這個階段本來就沒有分配到的工具**（後面還有其他sibling階段會被依序委派、各自拿到各自那個階段需要的工具，會接手處理）。你的正確任務範圍：只完成「這個階段」用現有工具做得到的部分，然後在最終回答裡清楚交代（1）這個階段實際完成了什麼、產出了什麼（檔案id/資料/結論等）（2）如果這個階段沒辦法完全做完，明確講清楚卡在哪裡、缺什麼，讓委派下一階段的人知道要接續處理什麼，不要自己嘗試繞過工具限制硬做，也不要因為看起來做不完就直接放棄回一句「做不到」。`;
+        } else if (canRequestMore) {
             systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。`;
         }
         let messages = [
