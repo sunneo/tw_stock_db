@@ -23306,7 +23306,11 @@ class _FaYtDlpLogger:
         _fa_debug_lines.append('ERROR: ' + str(msg))
 ydl_opts = {
     'quiet': True, 'no_warnings': True, 'skip_download': True,
-    'format': 'best[ext=mp4]/best',
+    # 2026-09-30：不再要求progressive mp4（visionos等client根本不提供，會直接
+    # 「Requested format is not available」）。優先選單一http檔案的影音合一格式，
+    # 沒有就選http的最佳影片(<=1080p)＋最佳音訊分開下載（沒有ffmpeg合併，兩個檔
+    # 都交付）。[protocol^=http]排除HLS(m3u8)——那是播放清單，不是媒體檔。
+    'format': 'b[protocol^=http][vcodec!=none][acodec!=none]/bv*[protocol^=http][height<=1080]+ba[protocol^=http]',
     'js_runtimes': {'deno': {}},
     'extractor_args': ${extractorArgsPy},
     'verbose': True,
@@ -23316,14 +23320,18 @@ _result = None
 try:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info('https://www.youtube.com/watch?v=${videoId}', download=False)
-        fmt_url = info.get('url')
-        if not fmt_url and info.get('formats'):
-            fmt_url = info['formats'][-1].get('url')
+        reqs = info.get('requested_formats')
+        if reqs:
+            parts = [{
+                'url': f.get('url'), 'ext': f.get('ext') or 'bin',
+                'kind': 'video' if (f.get('vcodec') or 'none') != 'none' else 'audio',
+            } for f in reqs]
+        else:
+            parts = [{'url': info.get('url'), 'ext': info.get('ext') or 'mp4', 'kind': 'video+audio'}]
         _result = _fa_json4.dumps({
             'ok': True,
             'title': info.get('title'),
-            'ext': info.get('ext') or 'mp4',
-            'url': fmt_url,
+            'parts': parts,
             'debug_log': _fa_debug_lines[-60:],
         })
 except Exception as e:
@@ -23364,14 +23372,17 @@ _result
             }
             throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}${debugTail}`);
         }
-        if (!info.url) throw new Error('yt-dlp沒有解析出可下載的媒體網址（可能沒有progressive格式可用）');
-        const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });
-        if (!resp.ok) throw new Error(`下載媒體檔案失敗：HTTP ${resp.status}`);
-        const buf = await resp.arrayBuffer();
+        const parts = (info.parts || []).filter((p) => p && p.url);
+        if (!parts.length) throw new Error('yt-dlp沒有解析出可下載的媒體網址（沒有任何http格式可用）');
+        const files = [];
+        for (const p of parts) {
+            const { resp } = await this._terminalHttpFetch('GET', p.url, { timeoutMs: 300000 });
+            if (!resp.ok) throw new Error(`下載媒體檔案失敗（${p.kind}）：HTTP ${resp.status}`);
+            files.push({ kind: p.kind, ext: p.ext, bytes: new Uint8Array(await resp.arrayBuffer()) });
+        }
         return {
             title: info.title || videoId,
-            ext: info.ext || 'mp4',
-            bytes: new Uint8Array(buf),
+            files,
             debugLog: verbose && Array.isArray(info.debug_log) ? info.debug_log : null,
         };
     }
@@ -23394,11 +23405,21 @@ _result
             const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
             progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
             try {
-                const { title, ext, bytes, debugLog } = await this._youtubeDownloadOne(id, verbose);
+                const { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose);
                 const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
-                const blob = new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'application/octet-stream' });
-                const delivered = await this.generateAndDeliverFile(blob, `${safeTitle}.${ext}`, blob.type);
-                downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id, debug_log: debugLog });
+                const names = [];
+                let totalBytes = 0;
+                let lastId = null;
+                for (const f of files) {
+                    const filename = files.length > 1 ? `${safeTitle}.${f.kind}.${f.ext}` : `${safeTitle}.${f.ext}`;
+                    const mime = f.ext === 'mp4' ? 'video/mp4' : f.ext === 'webm' ? (f.kind === 'audio' ? 'audio/webm' : 'video/webm') : f.ext === 'm4a' ? 'audio/mp4' : 'application/octet-stream';
+                    const delivered = await this.generateAndDeliverFile(new Blob([f.bytes], { type: mime }), filename, mime);
+                    names.push(filename);
+                    totalBytes += f.bytes.length;
+                    lastId = delivered && delivered.id;
+                }
+                const splitNote = files.length > 1 ? '（影片與音訊是分開的兩個檔案，尚未合併）' : '';
+                downloaded.push({ video_id: id, title, filename: names.join('、') + splitNote, size_bytes: totalBytes, file_id: lastId, debug_log: debugLog });
             } catch (err) {
                 failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
             }
