@@ -334,7 +334,7 @@ categories:
         updated: 2026-09-26
       - id: youtube-download
         name: 下載 YouTube 影片
-        summary: 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：YouTube 目前對多數影片會要求 PO Token（另一套反機器人驗證，這個 app 還沒實作），很多影片會下載失敗、只剩縮圖格式可用。
+        summary: 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。
         how: { slash: ["/media-youtube-download"], tools: [youtube_download] }
         platforms: [web, desktop]
         samples: ["幫我下載這支 YouTube 影片並轉成逐字稿", "/media-youtube-download https://www.youtube.com/watch?v=xxxxxxxxxxx"]
@@ -342,6 +342,7 @@ categories:
         history:
           - { date: 2026-09-29, note: "第一次端對端驗證成功：修好micropip CDN路徑/ssl套件/yt-dlp載入順序/subprocess橋接等從沒真的跑通過的bug，新增JS簽章解密橋接（meriyah/astring+yt-dlp官方core.js，真實瀏覽器驗證），新增/media-youtube-download slash指令。發現PO Token是下一個未解決的關卡。" }
           - { date: 2026-09-29, note: "使用者要求「讓我可以直接try」：API金鑰/頻道ID改成選填，沒設定時跳過範圍驗證直接放行下載，不再是硬性擋下。" }
+          - { date: 2026-09-29, note: "新增PO Token/BotGuard橋接（port自bgutil-ytdlp-pot-provider參考實作的協議，純瀏覽器fetch()完成，不需要Node服務）。實測拿到的是Google的降級版fallback token、不是完整信任的token，仍然下載不到真實格式；用真實登入的Chrome重測結果一樣，排除是自動化偵測問題。使用者決定先停在這個進度，之後如果YouTube/社群工具有新進展再回來接。" }
 
   - id: web
     name: 網路與瀏覽器

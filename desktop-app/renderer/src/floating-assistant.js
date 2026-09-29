@@ -1616,7 +1616,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
             '- extract_video_frames：擷取影片指定時間點的畫面存成圖片（file_id），搭配interpret_image看內容、compare_images跟其他圖片（例如投影片裡抽出來的圖）比對，就能靠畫面內容找出該剪哪一段時間，再用extract_clip_range剪出來。先粗取樣（例如每30秒一張）比對，再對候選附近加密縮小範圍。\n' +
             '- convert_video_to_animation：把整支影片或其中一段時間範圍逐格轉成這個app的2D動畫YAML格式（不是你自己設計動畫，是真實影片畫面內嵌成JPEG逐格播放），每個影格都是內嵌base64圖片，間隔太密/範圍太長檔案會暴增，需要提醒使用者控制範圍。\n' +
-            '- youtube_download：下載YouTube影片（瀏覽器端Pyodide跑真正的yt-dlp）。有在Advance Settings設定YouTube Data API金鑰跟使用者自己的頻道ID時，**只允許(a)使用者自己頻道的影片，或(b)授權欄位是Creative Commons的影片**，其餘一律跳過並說明原因；**沒設定的話會直接跳過範圍驗證、放行下載**（使用者明確要求要能直接測試，不設金鑰不算錯誤），回傳結果裡verification_skipped為true時要在回覆裡明講這次沒有做範圍驗證。⚠️**已知限制，如實告知使用者，不要重試或假裝能繞過**：這個功能有JS簽章解密橋接，但YouTube目前對多數影片還會額外要求PO Token（另一套獨立的反機器人驗證，這個app還沒有實作），實際測試時很多影片仍然會回報「只剩storyboard縮圖格式，沒有真實音視訊格式」——收到這個錯誤時直接照實轉告使用者這是目前的技術限制，不是設定錯誤，不要嘗試用其他工具（code_execution等）繞過或假裝下載成功。\n' +
+            '- youtube_download：下載YouTube影片（瀏覽器端Pyodide跑真正的yt-dlp）。有在Advance Settings設定YouTube Data API金鑰跟使用者自己的頻道ID時，**只允許(a)使用者自己頻道的影片，或(b)授權欄位是Creative Commons的影片**，其餘一律跳過並說明原因；**沒設定的話會直接跳過範圍驗證、放行下載**（使用者明確要求要能直接測試，不設金鑰不算錯誤），回傳結果裡verification_skipped為true時要在回覆裡明講這次沒有做範圍驗證。⚠️**已知限制，如實告知使用者，不要重試或假裝能繞過**：這個功能有JS簽章解密橋接，也有PO Token/BotGuard橋接（會自動嘗試產生），但目前Google只給這個app信任度較低的「降級版」token，不是完整信任的token，所以實際測試時多數影片仍然會回報「只剩storyboard縮圖格式，沒有真實音視訊格式」——已經排除是瀏覽器環境被偵測為自動化的可能性（用真實登入的Chrome測過結果一樣），根因還在查、屬於持續在打的BotGuard逆向工程游擊戰。收到這個錯誤時直接照實轉告使用者這是目前的技術限制，不是設定錯誤，不要嘗試用其他工具（code_execution等）繞過或假裝下載成功。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
     // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
@@ -23072,6 +23072,108 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
         return results;
     }
 
+    // tw_stock_db客製: 2026-09-29——PO Token/BotGuard橋接。完整讀過
+    // bgutil-ytdlp-pot-provider（真正在被廣泛使用、有效的參考實作）的
+    // session_manager.ts原始碼，把同一套流程port到純瀏覽器端fetch()——
+    // 不需要它用的Node/JSDOM/axios，我們本來就是真的瀏覽器，bgutils-js
+    // 這個函式庫本身就有isBrowser()偵測、設計上就支援瀏覽器環境直接跑：
+    // 1. 抓YouTube首頁HTML，解析出裡面嵌的ytcfg.set({...})（給EVENT_ID用）
+    //    跟window.ytAtN({...})（BotGuard挑戰資料）——這是參考實作2026-08
+    //    因應YouTube反爬蟲加強後改用的新路徑；解析不到時退回POST
+    //    /youtubei/v1/att/get這個舊版端點當備援。
+    // 2. 用bgutils-js的BotGuardClient載入Google給的解謎直譯器JS、執行
+    //    snapshot()拿到botguardResponse。
+    // 3. 拿REQUEST_KEY（YouTube用了很多年的公開固定值，不是機密，寫在
+    //    yt-dlp社群的參考實作原始碼裡）+botguardResponse去換integrity
+    //    token。
+    // 4. 用WebPoMinter把integrity token「鑄造」成真正的PO Token，content
+    //    binding用影片ID（每支影片各自產生，符合yt-dlp wiki建議的做法——
+    //    「手動填一個固定token」已經被棄用，因為YouTube現在把PO Token
+    //    跟影片ID綁在一起）。
+    // ⚠️這整個流程是對Google私有、非公開文件化API的逆向工程結果（bgutils-js
+    // 作者自己在README明講：不是繞過BotGuard，只是重現YouTube網頁版本來
+    // 就會做的流程），YouTube隨時可能改版讓這裡失效，屬於持續要維護的
+    // 已知風險，不是一次做完就一勞永逸。
+    async _ensureBgUtilsLoaded() {
+        if (this._bgUtilsLibs) return this._bgUtilsLibs;
+        if (this._bgUtilsLoadPromise) return this._bgUtilsLoadPromise;
+        this._bgUtilsLoadPromise = (async () => {
+            const [botguardMod, webpoMod, utilsMod] = await Promise.all([
+                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/bgutils-js@4.0.3/dist/exports/botguard.js/+esm')),
+                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/bgutils-js@4.0.3/dist/exports/webpo.js/+esm')),
+                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/bgutils-js@4.0.3/dist/exports/utils.js/+esm')),
+            ]);
+            this._bgUtilsLibs = { BotGuardClient: botguardMod.BotGuardClient, WebPoMinter: webpoMod.WebPoMinter, utils: utilsMod };
+            return this._bgUtilsLibs;
+        })().catch(e => { this._bgUtilsLoadPromise = null; throw e; });
+        return this._bgUtilsLoadPromise;
+    }
+
+    async _youtubeGeneratePoToken(videoId) {
+        const { BotGuardClient, WebPoMinter, utils } = await this._ensureBgUtilsLoaded();
+        const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
+
+        const { resp: homeResp } = await this._terminalHttpFetch('GET', 'https://www.youtube.com', {
+            headers: { accept: '*/*', 'accept-language': 'en-US,en;q=0.7' },
+            timeoutMs: 20000,
+        });
+        if (!homeResp.ok) throw new Error(`抓YouTube首頁失敗：HTTP ${homeResp.status}`);
+        const homeHtml = await homeResp.text();
+
+        let challenge = null;
+        const ytcfgMatch = homeHtml.match(/ytcfg\.set\(({.+?})\);/s);
+        if (ytcfgMatch) {
+            try { window.yt = { config_: JSON.parse(ytcfgMatch[1]) }; } catch (_) { /* EVENT_ID缺失時BotGuard仍可能可以跑，不當成致命錯誤 */ }
+        }
+        const attMatch = homeHtml.match(/window\.ytAtN\(\s*({[\s\S]*?})\s*\)/);
+        if (attMatch) {
+            try {
+                const attData = utils.parseLooseJSON(attMatch[1]);
+                const bgChallenge = attData && attData.R && attData.R.bgChallenge;
+                if (bgChallenge && bgChallenge.program && bgChallenge.interpreterUrl) challenge = bgChallenge;
+            } catch (_) { /* 解析失敗，下面會退回舊版端點 */ }
+        }
+
+        if (!challenge) {
+            const { resp: attResp } = await this._terminalHttpFetch('POST', 'https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false', {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    context: { client: { clientName: 'WEB', clientVersion: '2.20260817.01.00' } },
+                    engagementType: 'ENGAGEMENT_TYPE_UNBOUND',
+                }),
+                timeoutMs: 20000,
+            });
+            if (!attResp.ok) throw new Error(`取得BotGuard挑戰失敗（首頁解析與/att/get備援皆失敗）：HTTP ${attResp.status}`);
+            const attestation = await attResp.json();
+            challenge = attestation && attestation.bgChallenge;
+            if (!challenge) throw new Error('取得BotGuard挑戰失敗：/att/get回應裡沒有bgChallenge（YouTube可能又改版了）');
+        }
+
+        const interpreterUrl = challenge.interpreterUrl.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
+        const { resp: jsResp } = await this._terminalHttpFetch('GET', `https:${interpreterUrl}`, { timeoutMs: 20000 });
+        if (!jsResp.ok) throw new Error(`載入BotGuard解謎直譯器失敗：HTTP ${jsResp.status}`);
+        const interpreterJs = await jsResp.text();
+        new Function(interpreterJs)();
+
+        const bgClient = await BotGuardClient.create({ program: challenge.program, globalName: challenge.globalName, globalObject: globalThis });
+        const webPoSignalOutput = [];
+        const botguardResponse = await bgClient.snapshot({ webPoSignalOutput });
+
+        const { resp: itResp } = await this._terminalHttpFetch('POST', 'https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT', {
+            headers: utils.getHeaders(),
+            body: JSON.stringify([REQUEST_KEY, botguardResponse]),
+            timeoutMs: 20000,
+        });
+        if (!itResp.ok) throw new Error(`換取integrity token失敗：HTTP ${itResp.status}`);
+        const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = await itResp.json();
+        if (!integrityToken) throw new Error('integrity token是空的（BotGuard attestation可能被拒絕）');
+
+        const minter = await WebPoMinter.create({ integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken }, webPoSignalOutput);
+        const poToken = await minter.mintAsWebsafeString(videoId);
+        if (!poToken) throw new Error('鑄造PO Token失敗（結果是空的）');
+        return poToken;
+    }
+
     // tw_stock_db客製: 2026-09-25——實際下載一支已通過驗證的影片。**只抓
     // progressive格式**（單一檔案已經muxed好audio+video，格式選擇字串
     // 'best[ext=mp4]/best'會優先選這種）——這個沙盒沒有ffmpeg，沒辦法mux
@@ -23093,12 +23195,23 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
     // 知道這是目前技術上還沒解決的已知落差，不是設定錯誤或程式bug。
     async _youtubeDownloadOne(videoId) {
         const instance = await this._ensureYtDlpLoaded();
+        let poToken = null;
+        let poTokenError = null;
+        try {
+            poToken = await this._youtubeGeneratePoToken(videoId);
+        } catch (err) {
+            poTokenError = String(err && err.message || err);
+        }
+        const extractorArgsPy = poToken
+            ? `{'youtube': {'po_token': ['web.gvs+${poToken}', 'web.player+${poToken}']}}`
+            : `{}`;
         const script = `
 import yt_dlp, json as _fa_json4, traceback
 ydl_opts = {
     'quiet': True, 'no_warnings': True, 'skip_download': True,
     'format': 'best[ext=mp4]/best',
     'js_runtimes': {'deno': {}},
+    'extractor_args': ${extractorArgsPy},
 }
 _result = None
 try:
@@ -23139,10 +23252,13 @@ _result
         }
         const info = JSON.parse(infoJson);
         if (!info.ok) {
+            const poTokenNote = poToken
+                ? '（已嘗試產生PO Token，但Google目前只給這個app一個信任度較低的「降級版」token（websafeFallbackToken），不是完整信任的integrityToken，所以還是拿不到真實格式——已排除是瀏覽器環境被偵測為自動化的問題（用真實登入的Chrome測過結果一樣），根因還在查，屬於持續在打的BotGuard逆向工程游擊戰，不是設定錯誤）'
+                : `（PO Token產生失敗：${poTokenError || '未知原因'}）`;
             if (info.only_storyboards) {
-                throw new Error('這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式。這個app目前已經有JS簽章解密橋接，但YouTube近期對多數影片還會額外要求「PO Token」（另一套獨立的反機器人驗證機制，目前這個app還沒有實作），這是已知的技術限制，不是設定錯誤。');
+                throw new Error(`這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式${poTokenNote}`);
             }
-            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}`);
+            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}`);
         }
         if (!info.url) throw new Error('yt-dlp沒有解析出可下載的媒體網址（可能沒有progressive格式可用）');
         const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });

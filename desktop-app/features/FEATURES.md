@@ -400,7 +400,7 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 
 ### 下載 YouTube 影片（`youtube-download`）
 
-下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：YouTube 目前對多數影片會要求 PO Token（另一套反機器人驗證，這個 app 還沒實作），很多影片會下載失敗、只剩縮圖格式可用。
+下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。
 
 - 可用平台：網頁版、桌面版
 - 斜線指令：`/media-youtube-download`
