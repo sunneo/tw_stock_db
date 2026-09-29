@@ -22645,7 +22645,36 @@ ${sourceTool.handlerScript}
     // 走擴充功能時_extensionHttpFetch每抓完一段就回報；走proxy/fetch時用串流讀取，
     // 邊讀邊回報。總大小優先用呼叫端給的totalHint（YouTube媒體網址的clen參數），
     // 其次才用Content-Length（Cloudflare Worker的/proxy/會把它刪掉，所以不一定有）。
-    async _downloadBinaryWithProgress(url, { timeoutMs, onProgress, totalHint } = {}) {
+    async _downloadBinaryWithProgress(url, { timeoutMs, onProgress, totalHint, _noChunk } = {}) {
+        // tw_stock_db客製: 2026-09-30實測（Claude in Chrome在使用者真實瀏覽器）——經Cloudflare
+        // Worker單一連線整檔下載googlevideo只有約60KB/s（YouTube對不分段的整檔請求限速，
+        // yt-dlp自己就是用http_chunk_size=10MB、網址加range=起-迄參數分段抓來避開）。
+        // 走proxy時比照辦理；走擴充功能時_extensionHttpFetch自己已經用Range標頭分段，不重複。
+        let host = '';
+        try { host = new URL(url).hostname; } catch (_) { /* 不合法網址交給下面的fetch報錯 */ }
+        const CHUNK = 10 * 1024 * 1024;
+        if (!_noChunk && totalHint > CHUNK && /(^|\.)googlevideo\.com$/i.test(host)
+            && !(this.advancedSettings.youtubeExtensionFetch !== false && !this._isLocalAssetProxy() && await this._extensionFetchAvailable())) {
+            const parts = [];
+            let got = 0, lastResp = null;
+            for (let start = 0; start < totalHint; start += CHUNK) {
+                const end = Math.min(start + CHUNK, totalHint) - 1;
+                const u = new URL(url);
+                u.searchParams.set('range', `${start}-${end}`);
+                const r = await this._downloadBinaryWithProgress(u.href, {
+                    timeoutMs, totalHint: 0, _noChunk: true,
+                    onProgress: onProgress ? (recv) => onProgress(got + recv, totalHint) : undefined,
+                });
+                lastResp = r.resp;
+                if (!r.resp.ok || !r.bytes) return { resp: r.resp, bytes: null };
+                parts.push(r.bytes);
+                got += r.bytes.length;
+                if (!r.bytes.length) break;
+            }
+            const bytes = new Uint8Array(got);
+            let off = 0; for (const p of parts) { bytes.set(p, off); off += p.length; }
+            return { resp: lastResp, bytes };
+        }
         const wrapped = onProgress ? (recv, tot) => onProgress(recv, tot || totalHint || null) : undefined;
         const { resp } = await this._terminalHttpFetch('GET', url, { timeoutMs, onProgress: wrapped });
         if (!resp.ok) return { resp, bytes: null };
