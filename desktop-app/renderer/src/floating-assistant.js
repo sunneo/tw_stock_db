@@ -1616,7 +1616,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
             '- extract_video_frames：擷取影片指定時間點的畫面存成圖片（file_id），搭配interpret_image看內容、compare_images跟其他圖片（例如投影片裡抽出來的圖）比對，就能靠畫面內容找出該剪哪一段時間，再用extract_clip_range剪出來。先粗取樣（例如每30秒一張）比對，再對候選附近加密縮小範圍。\n' +
             '- convert_video_to_animation：把整支影片或其中一段時間範圍逐格轉成這個app的2D動畫YAML格式（不是你自己設計動畫，是真實影片畫面內嵌成JPEG逐格播放），每個影格都是內嵌base64圖片，間隔太密/範圍太長檔案會暴增，需要提醒使用者控制範圍。\n' +
-            '- youtube_download：下載YouTube影片（瀏覽器端Pyodide跑真正的yt-dlp）。**只允許(a)使用者自己頻道的影片，或(b)授權欄位是Creative Commons的影片**，其餘一律跳過並說明原因；需要先在Advance Settings設定YouTube Data API金鑰跟使用者自己的頻道ID，沒設定會直接回報要先去設定。⚠️**已知限制，如實告知使用者，不要重試或假裝能繞過**：這個功能有JS簽章解密橋接，但YouTube目前對多數影片還會額外要求PO Token（另一套獨立的反機器人驗證，這個app還沒有實作），實際測試時很多影片仍然會回報「只剩storyboard縮圖格式，沒有真實音視訊格式」——收到這個錯誤時直接照實轉告使用者這是目前的技術限制，不是設定錯誤，不要嘗試用其他工具（code_execution等）繞過或假裝下載成功。\n' +
+            '- youtube_download：下載YouTube影片（瀏覽器端Pyodide跑真正的yt-dlp）。有在Advance Settings設定YouTube Data API金鑰跟使用者自己的頻道ID時，**只允許(a)使用者自己頻道的影片，或(b)授權欄位是Creative Commons的影片**，其餘一律跳過並說明原因；**沒設定的話會直接跳過範圍驗證、放行下載**（使用者明確要求要能直接測試，不設金鑰不算錯誤），回傳結果裡verification_skipped為true時要在回覆裡明講這次沒有做範圍驗證。⚠️**已知限制，如實告知使用者，不要重試或假裝能繞過**：這個功能有JS簽章解密橋接，但YouTube目前對多數影片還會額外要求PO Token（另一套獨立的反機器人驗證，這個app還沒有實作），實際測試時很多影片仍然會回報「只剩storyboard縮圖格式，沒有真實音視訊格式」——收到這個錯誤時直接照實轉告使用者這是目前的技術限制，不是設定錯誤，不要嘗試用其他工具（code_execution等）繞過或假裝下載成功。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
     // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
@@ -5294,7 +5294,7 @@ class FloatingAssistant {
         // PO Token這個已知限制造成的失敗），不用透過AI轉述。
         this.register_slash_command(
             '/media-youtube-download', '<YouTube連結或一段含連結的文字>',
-            '下載YouTube影片（瀏覽器端跑真正的yt-dlp）。**只允許(a)你自己頻道的影片，或(b)Creative Commons授權的影片**，其餘會跳過並說明原因；需要先在Advance Settings設定YouTube Data API金鑰與你的頻道ID。⚠️已知限制：YouTube目前對多數影片會要求PO Token（這個app還沒實作的另一套反機器人驗證），很多影片會下載失敗、只剩storyboard縮圖格式可用，這是目前技術上的落差，不是操作錯誤。',
+            '下載YouTube影片（瀏覽器端跑真正的yt-dlp）。留空未設定Advance Settings的YouTube Data API金鑰/頻道ID時，直接跳過範圍驗證下載；有設定的話才會**只允許(a)你自己頻道的影片，或(b)Creative Commons授權的影片**，其餘會跳過並說明原因。⚠️已知限制：YouTube目前對多數影片會要求PO Token（這個app還沒實作的另一套反機器人驗證），很多影片會下載失敗、只剩storyboard縮圖格式可用，這是目前技術上的落差，不是操作錯誤。',
             (argsText) => this._handleMediaYoutubeDownloadCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
@@ -9028,7 +9028,7 @@ ${fnData.code}
         // 手動改寫成JS），只能抓到progressive格式（沒有ffmpeg沒辦法mux
         // DASH高畫質音視訊分離串流，這是明確的品質上限）。
         registerOptional('youtube_download',
-            '從一段文字裡解析出YouTube連結（或直接給連結陣列），驗證每個影片是否符合下載範圍後下載：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因（不支援下載任意版權影片）。需要先在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）——沒設定會直接回報要先去設定。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。⚠️**已知限制**：YouTube目前對多數影片會要求PO Token（獨立於JS簽章解密之外的另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、回報只剩storyboard縮圖格式——收到這個錯誤要如實轉告使用者，不要重試或嘗試繞過。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
+            '從一段文字裡解析出YouTube連結（或直接給連結陣列）下載。有在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）時，會先驗證每個影片是否符合下載範圍：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因。**沒設定這兩個欄位時會跳過驗證、直接放行下載**（不算錯誤，回傳的verification_skipped會是true，要在回覆裡提醒使用者這次沒有做範圍限制）。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。⚠️**已知限制**：YouTube目前對多數影片會要求PO Token（獨立於JS簽章解密之外的另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、回報只剩storyboard縮圖格式——收到這個錯誤要如實轉告使用者，不要重試或嘗試繞過。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -23019,14 +23019,23 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
     // 其餘一律跳過並說明原因，不做無限制下載。用YouTube Data API v3的
     // videos.list（part=snippet,status）一次查最多50個ID，同時拿到
     // channelId（跟使用者設定的youtubeChannelId比對）跟license（比對是否
-    // 為'creativeCommon'）。**兩個advancedSettings欄位都是必填**——沒設定
-    // 就直接報錯，不做「沒有金鑰時的降級驗證」（故意不留一條容易被繞過的
-    // 驗證路徑）。
+    // 為'creativeCommon'）。
+    // tw_stock_db客製: 2026-09-29使用者明確要求改成可跳過——原本沒設定
+    // API金鑰/頻道ID會直接報錯擋下，使用者實測時這道牆讓他連「下載機制
+    // 本身能不能動」都沒辦法先試，明確要求「讓我可以直接try」。改成：
+    // 沒設定金鑰時**跳過驗證、直接放行下載**（不是報錯），但在回傳結果
+    // 附上verification_skipped旗標，呼叫端據此在回覆裡明講「這次沒有驗證
+    // 下載範圍」，不要讓使用者誤以為驗證有生效。設定了金鑰+頻道ID時，
+    // 驗證邏輯完全不變（一樣只允許本人頻道或CC授權）。
     async _youtubeCheckLicenseAndOwnership(videoIds) {
         const apiKey = String(this.advancedSettings.youtubeDataApiKey || '').trim();
         const myChannelId = String(this.advancedSettings.youtubeChannelId || '').trim();
         if (!apiKey || !myChannelId) {
-            throw new Error('請先在Advance Settings設定「YouTube Data API金鑰」與「我的YouTube頻道ID」，這個工具才能驗證下載範圍（只允許本人頻道或Creative Commons授權的影片）。');
+            const results = {};
+            for (const id of videoIds) {
+                results[id] = { ok: true, title: null, channelId: null, license: null, reason: '未設定YouTube Data API金鑰/頻道ID，已跳過下載範圍驗證', verification_skipped: true };
+            }
+            return results;
         }
         const results = {};
         for (let i = 0; i < videoIds.length; i += 50) {
@@ -23170,7 +23179,10 @@ _result
             }
         }
         progress.finish(`完成：成功${downloaded.length}支、跳過${skipped.length}支、失敗${failed.length}支`);
-        return { ok: true, downloaded, skipped, failed, note: '只能下載progressive格式（沒有ffmpeg，沒辦法合併DASH分離的高畫質音視訊串流）；YouTube目前對多數影片會要求PO Token，這個app還沒實作，很多影片可能會出現在failed清單裡。' };
+        const verificationSkipped = videoIds.some((id) => checks[id] && checks[id].verification_skipped);
+        const note = '只能下載progressive格式（沒有ffmpeg，沒辦法合併DASH分離的高畫質音視訊串流）；YouTube目前對多數影片會要求PO Token，這個app還沒實作，很多影片可能會出現在failed清單裡。'
+            + (verificationSkipped ? '⚠️沒有設定YouTube Data API金鑰/頻道ID，這次沒有驗證下載範圍（沒有限制只能下載本人頻道或CC授權影片）。' : '');
+        return { ok: true, downloaded, skipped, failed, verification_skipped: verificationSkipped, note };
     }
 
     // ==== MP-METHODS-BEGIN ====
@@ -30618,6 +30630,7 @@ ${existingNodeSummaries}
             return;
         }
         const lines = [];
+        if (result.verification_skipped) lines.push('⚠️ 沒有設定YouTube Data API金鑰/頻道ID，這次**沒有驗證下載範圍**（沒有限制只能下載本人頻道或CC授權影片）。');
         if (result.downloaded.length) lines.push('**已下載：**\n' + result.downloaded.map((d) => `- ${d.title || d.video_id}（${d.filename}）`).join('\n'));
         if (result.skipped.length) lines.push('**跳過（不符合下載範圍）：**\n' + result.skipped.map((s) => `- ${s.title || s.video_id}：${s.reason}`).join('\n'));
         if (result.failed.length) lines.push('**失敗：**\n' + result.failed.map((f) => `- ${f.title || f.video_id}：${f.error}`).join('\n'));
@@ -33969,7 +33982,7 @@ ${existingNodeSummaries}
                                     <div class="ai-advanced-tools-header" style="margin-top:16px;">
                                         <div class="ai-advanced-label" style="margin:0;">YouTube下載（youtube_download工具）</div>
                                     </div>
-                                    <p class="ai-advanced-hint">AI可以用<code>youtube_download</code>解析貼上的文字裡的YouTube連結並下載——**只允許下載你自己頻道的影片，或YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並說明原因，不支援下載任意版權影片。這兩個欄位都要填才能用：金鑰請到<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>免費申請YouTube Data API v3金鑰；頻道ID是你自己YouTube頻道的ID（在YouTube工作室的「設定→頻道→進階設定」可以查到，用來比對影片上傳者是不是你本人）。</p>
+                                    <p class="ai-advanced-hint">AI可以用<code>youtube_download</code>（或直接打<code>/media-youtube-download</code>）解析貼上的文字裡的YouTube連結並下載。**這兩個欄位是選填**——留空可以直接下載任何影片；填了才會啟用範圍限制：**只允許下載你自己頻道的影片，或YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並說明原因。金鑰請到<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>免費申請YouTube Data API v3金鑰；頻道ID是你自己YouTube頻道的ID（在YouTube工作室的「設定→頻道→進階設定」可以查到，用來比對影片上傳者是不是你本人）。⚠️已知限制：YouTube目前對多數影片會要求PO Token（另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、只剩縮圖格式可用。</p>
                                     <label class="ai-advanced-label" for="ai-youtube-api-key">YouTube Data API金鑰</label>
                                     <input type="password" id="ai-youtube-api-key" class="ai-advanced-input" placeholder="AIza...">
                                     <label class="ai-advanced-label" for="ai-youtube-channel-id">我的YouTube頻道ID</label>
