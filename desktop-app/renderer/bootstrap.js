@@ -496,7 +496,7 @@ function patchCloudflareWording(root) {
       <div style="overflow-y:auto; flex:1 1 auto; min-height:0;">
         <p style="color:#93a4b7; margin:0 0 10px 0; line-height:1.5;">目前版本：${escapeHtml(info.currentVersion || "?")} → 新版本：${escapeHtml(info.remoteVersion || "?")}</p>
         ${notesHtml}
-        <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">會更新 ${info.changedFiles.length} 個前端檔案（${escapeHtml(info.changedFiles.join("、"))}），套用後立即生效，不用重新安裝或重開整個應用程式。</p>
+        <p style="color:#93a4b7; margin:0 0 14px 0; line-height:1.5;">會更新 ${info.changedFiles.length} 個檔案（${escapeHtml(info.changedFiles.join("、"))}），${info.changedFiles.some((f) => !f.startsWith("renderer/")) ? "其中包含主行程模組，套用後需要重新啟動應用程式才會生效。" : "套用後立即生效，不用重新安裝或重開整個應用程式。"}</p>
       </div>
       <div id="update-dlg-error" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:6px; flex:0 0 auto;"></div>
       <div style="display:flex; justify-content:flex-end; gap:8px; flex:0 0 auto;">
@@ -522,12 +522,17 @@ function patchCloudflareWording(root) {
         if (!result || !result.ok) throw new Error((result && result.error) || "更新失敗");
         pendingUpdateInfo = null;
         if (updateDot) updateDot.style.display = "none";
-        applyBtn.textContent = "✅ 已完成，重新載入中…";
         setUpdateBtnLabel("✅ 已更新", { disabled: true });
-        setTimeout(async () => {
-          close();
-          await window.desktopAPI.update.reload();
-        }, 800);
+        if (result.requiresRestart && window.desktopAPI.update.relaunch) {
+          applyBtn.textContent = "✅ 已完成，重新啟動中…";
+          setTimeout(async () => { await window.desktopAPI.update.relaunch(); }, 800);
+        } else {
+          applyBtn.textContent = "✅ 已完成，重新載入中…";
+          setTimeout(async () => {
+            close();
+            await window.desktopAPI.update.reload();
+          }, 800);
+        }
       } catch (err) {
         errEl.textContent = String((err && err.message) || err);
         applyBtn.disabled = false;

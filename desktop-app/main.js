@@ -32,6 +32,77 @@ const os = require("os");
 const fs = require("fs/promises");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
+
+// tw_stock_db客製: 2026-09-30使用者要求——live update patch不該有「更新不到」
+// 的檔案（原本白名單只有renderer前端四個檔案，主行程require()進來的模組
+// 例如local-proxy.js的修正必須重新安裝installer才會生效）。這裡把白名單
+// 擴大到主行程啟動時require()的模組，並在require()它們**之前**先掛上
+// 一個Module載入攔截：userData/live-patch/裡有通過完整性驗證的覆蓋版本
+// 就優先載入覆蓋版本，否則照舊載入安裝包內建的。因為模組是啟動時載入、
+// 已經在記憶體執行的程式碼無法熱抽換，這類檔案的更新要等**下次啟動**才
+// 生效（renderer前端仍是套用後立即生效）。main.js/preload.js本身是這套
+// 機制的入口，不在白名單內，還是只能靠重新安裝更新。
+//
+// 攔截點是Module._extensions[".js"]：filename維持原本的安裝路徑，只把
+// 「編譯用的原始碼」換成覆蓋版本——所以模組裡的相對require()（例如
+// local-proxy.js的require("./browser-search.js")）、node_modules解析、
+// __dirname都跟原本完全一樣，而且被require進來的其他白名單模組也會各自
+// 套用自己的覆蓋版本，不需要覆蓋目錄自己補齊整個依賴樹。
+//
+// 安全性：跟renderer覆蓋同一套完整性檢查（state.json記錄的md5＋建立在
+// 同一個基準版本之上），另外再多兩道防護避免「patch把app改到打不開」：
+// (1)套用前先做語法檢查（見fa:update:apply），(2)載入時萬一覆蓋版本丟例外，
+// 退回安裝包內建版本；環境變數FA_DISABLE_MAIN_OVERLAY=1可以整個停用覆蓋。
+// ⚠️信任模型：這代表desktop-app-patch分支的內容會在主行程（完整Node權限）
+// 裡執行，等同信任那個repo分支不被竄改，使用者已明確接受這個取捨。
+const LIVE_PATCH_MAIN_FILES = [
+  "local-proxy.js",
+  "browser-search.js",
+  "edge-tts.js",
+  "cli-format.js",
+  "coding-workspace.js",
+  "browser-control-server.js",
+];
+const mainOverlaySources = (() => {
+  const overlays = new Map();
+  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return overlays;
+  try {
+    const fsSync = require("fs");
+    const livePatchDir = path.join(app.getPath("userData"), "live-patch");
+    const state = JSON.parse(fsSync.readFileSync(path.join(livePatchDir, "state.json"), "utf8"));
+    const baseline = JSON.parse(fsSync.readFileSync(path.join(__dirname, "renderer", "update-manifest.json"), "utf8"));
+    const baselineVersion = baseline.baseVersion || app.getVersion();
+    if (!state || state.baselineVersion !== baselineVersion || !state.files) return overlays;
+    for (const relPath of LIVE_PATCH_MAIN_FILES) {
+      const expected = state.files[relPath];
+      // 沒有紀錄、或紀錄的md5跟安裝包內建版本一樣＝從沒被覆蓋過，不用處理
+      if (!expected || expected === (baseline.files || {})[relPath]) continue;
+      let buf;
+      try { buf = fsSync.readFileSync(path.join(livePatchDir, relPath)); } catch (_) { continue; }
+      if (crypto.createHash("md5").update(buf).digest("hex") !== expected) continue;
+      overlays.set(path.join(__dirname, relPath), buf.toString("utf8"));
+    }
+  } catch (_) { /* 沒有覆蓋目錄／state.json壞掉——一律當作沒有覆蓋，用內建版本 */ }
+  return overlays;
+})();
+if (mainOverlaySources.size > 0) {
+  const Module = require("module");
+  const originalJsLoader = Module._extensions[".js"];
+  Module._extensions[".js"] = function (mod, filename) {
+    const overlaySource = mainOverlaySources.get(filename);
+    if (overlaySource != null) {
+      try {
+        return mod._compile(overlaySource, filename);
+      } catch (err) {
+        console.error(`[live-patch] 覆蓋版本 ${path.basename(filename)} 載入失敗，退回安裝包內建版本：`, err);
+        mod.exports = {};
+      }
+    }
+    return originalJsLoader(mod, filename);
+  };
+  console.log(`[live-patch] 主行程模組使用覆蓋版本：${[...mainOverlaySources.keys()].map((f) => path.basename(f)).join("、")}`);
+}
+
 const { startLocalProxy, createInProcessFetchHandler } = require("./local-proxy.js");
 
 // 2026-09-21：本機proxy的兩種傳輸模式，由建置腳本（build.ps1/build.sh的-ProxyMode / PROXY_MODE）寫進
@@ -1380,6 +1451,7 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/bootstrap.js",
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
+  ...LIVE_PATCH_MAIN_FILES,
 ];
 // floating-assistant.js壓縮後實測約1~2MB，這裡抓寬鬆一點的上限，manifest.json
 // 本身另外用更小的上限（見fetchUpdateResource呼叫端）。
@@ -1472,6 +1544,8 @@ async function computeEffectiveLocalManifest() {
     for (const relPath of Object.keys(state.files)) {
       if (!LIVE_PATCH_ALLOWED_FILES.includes(relPath)) continue;
       const actual = await md5OfFile(path.join(LIVE_PATCH_DIR(), relPath));
+      // 主行程模組沒被patch過時覆蓋目錄本來就沒有這個檔案（state記的是內建md5），不算壞掉
+      if (actual === null && baseline.files[relPath] === state.files[relPath]) continue;
       if (actual !== state.files[relPath]) { intact = false; break; }
     }
     if (intact) {
@@ -1547,6 +1621,11 @@ ipcMain.handle("fa:update:apply", async () => {
       const buf = await fetchUpdateResource(`${FA_UPDATE_BRANCH_BASE}/${relPath}`, { maxBytes: LIVE_PATCH_MAX_FILE_BYTES });
       const md5 = md5Hex(buf);
       if (md5 !== remote.files[relPath].md5) throw new Error(`${relPath} 下載內容跟manifest.json宣告的md5不符，已中止這次更新（沒有寫入任何檔案）`);
+      // 主行程模組：套用前先確認語法正確，避免一個壞掉的patch讓app下次啟動載入失敗
+      if (LIVE_PATCH_MAIN_FILES.includes(relPath)) {
+        try { new (require("vm").Script)(require("module").wrap(buf.toString("utf8")), { filename: relPath }); }
+        catch (err) { throw new Error(`${relPath} 語法檢查失敗，已中止這次更新（沒有寫入任何檔案）：${String((err && err.message) || err)}`); }
+      }
       downloaded[relPath] = buf;
     }
 
@@ -1578,7 +1657,9 @@ ipcMain.handle("fa:update:apply", async () => {
       files: nextStateFiles,
     });
 
-    return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch };
+    // 主行程模組是啟動時載入的，這次更新要重新啟動應用程式才會生效
+    const requiresRestart = toFetch.some((f) => LIVE_PATCH_MAIN_FILES.includes(f));
+    return { ok: true, appliedVersion: remote.version || local.version, changedFiles: toFetch, requiresRestart };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -1587,6 +1668,12 @@ ipcMain.handle("fa:update:apply", async () => {
 // apply()只負責落地檔案＋記錄狀態，不會自己導航視窗——由renderer在顯示
 // 「更新完成」訊息之後才呼叫這個handler，讓使用者看得到那句話，不會畫面
 // 一閃就被loadFile()換頁蓋掉。
+ipcMain.handle("fa:update:relaunch", async () => {
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
+
 ipcMain.handle("fa:update:reload", async () => {
   if (!mainWindow) return { ok: false, error: "主視窗不存在" };
   await mainWindow.loadFile(await resolveIndexHtmlPath());

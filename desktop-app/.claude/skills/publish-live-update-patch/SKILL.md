@@ -53,6 +53,8 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
    cp desktop-app/renderer/bootstrap.js "$PATCH_DIR/renderer/"
    cp desktop-app/renderer/floating-assistant.js "$PATCH_DIR/renderer/"
    cp desktop-app/renderer/floating-assistant.min.js "$PATCH_DIR/renderer/"
+   # 主行程模組放在patch分支根目錄（路徑跟manifest的key一致）
+   for f in local-proxy.js browser-search.js edge-tts.js cli-format.js coding-workspace.js browser-control-server.js; do cp "desktop-app/$f" "$PATCH_DIR/"; done
 
    # 2) manifest.json：files是{相對路徑: {md5}}物件（注意跟本機update-manifest.json
    #    的{相對路徑: "md5字串"}純字串格式不一樣！remote這邊每個值是物件、local那邊是

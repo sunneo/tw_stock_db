@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     check: () => ipcRenderer.invoke("fa:update:check"),
     apply: () => ipcRenderer.invoke("fa:update:apply"),
     reload: () => ipcRenderer.invoke("fa:update:reload"),
+    relaunch: () => ipcRenderer.invoke("fa:update:relaunch"),
   },
   // tw_stock_db客製: 2026-09-16使用者要求桌面版「在不同資料夾執行」時
   // 各自獨立的對話+設定——見main.js fa:workspace:*系列handler的說明。
