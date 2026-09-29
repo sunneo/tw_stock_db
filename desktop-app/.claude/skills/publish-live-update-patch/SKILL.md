@@ -9,14 +9,16 @@ description: 修改desktop-app的renderer前端檔案（floating-assistant.js／
 
 ## 什麼會被熱更新、什麼不會
 
-只有這四個檔案（`main.js`裡`LIVE_PATCH_ALLOWED_FILES`、`build-assistant.js`裡同名常數，**兩處要保持同步**）：
+白名單（`main.js`裡`LIVE_PATCH_ALLOWED_FILES`＋`LIVE_PATCH_MAIN_FILES`、`build-assistant.js`裡同名常數，**兩處要保持同步**）分兩類。**renderer前端（套用後立即生效）：**
 
 - `renderer/index.html`
 - `renderer/bootstrap.js`
 - `renderer/floating-assistant.js`
 - `renderer/floating-assistant.min.js`
 
-`main.js`／`preload.js`／`package.json`這類主行程原始碼或安裝檔本身**不會**被這個機制更新（主行程程式早就載進記憶體在跑，寫檔案覆蓋也不會生效）。改到這些檔案時，desktop-app-patch分支照樣要重發（讓有安裝AppImage版本仲裁機制的使用者知道有更新可切換），但不要期待它們會被live-update熱套用——這種改動只能靠使用者重新安裝新的installer。
+**主行程模組（2026-09-30起，套用後要重新啟動app才生效，更新對話框會自動改成「重新啟動」）：** `local-proxy.js`、`browser-search.js`、`edge-tts.js`、`cli-format.js`、`coding-workspace.js`、`browser-control-server.js`（路徑相對於`desktop-app/`，patch分支裡放在根目錄，不在`renderer/`底下）。啟動時`main.js`最前面會先掛Module載入攔截，有通過md5驗證的覆蓋版本就用它（語法壞掉或載入丟例外退回內建版；`FA_DISABLE_MAIN_OVERLAY=1`可整個停用）。
+
+**不能**被patch更新的只剩`main.js`／`preload.js`／`package.json`這類機制入口本身，改到它們只能靠使用者重新安裝新的installer——而且這個攔截機制本身要先有一次installer更新才會存在，舊版安裝的使用者第一次仍需重新安裝。
 
 ## 標準流程
 
