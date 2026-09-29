@@ -143,10 +143,12 @@ try {
 
 // ---- 載入 floating-assistant.js（raw.githubusercontent.com 回傳 text/plain +
 // nosniff，不能直接 <script src>；fetch 文字→Blob→blob URL，主頁同一招）----
-// ⚠️ ?v= 版本號必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
+// ⚠️ 2026-09-30起改用「完整commit SHA釘住」的網址（內容不可變，不會被GitHub raw CDN的分支快取拖累——
+// 原本的分支網址+?v=實測擋不住CDN快取，使用者會載到舊版）。發版時把下面URL裡的SHA換成desktop-app分支最新commit的
+// 完整40字元SHA，且必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
 function loadAssistantScript() {
-  return fetch(RAW + '/desktop-app/desktop-app/renderer/floating-assistant.js?v=5c12dfcd')
+  return fetch(RAW + '/5c12dfcd9acf3593e9e497bf130011cfd6d8a7a9/desktop-app/renderer/floating-assistant.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
