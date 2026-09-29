@@ -14814,7 +14814,7 @@ ${fnData.code}
             update: (patch = {}) => {
                 if (patch.pct != null) state.pct = Math.round(Math.max(0, Math.min(100, patch.pct)));
                 if (patch.status != null) state.status = String(patch.status);
-                rerender(false);
+                rerender(!!patch.force);
             },
             finish: (finalStatus) => {
                 state.done = true;
@@ -22614,6 +22614,20 @@ ${sourceTool.handlerScript}
         return { resp, elapsedMs: performance.now() - t0 };
     }
 
+    // tw_stock_db客製: 2026-09-30使用者回報進度畫面停在第一階段、「已 0s」完全不動——
+    // 後面的階段（BotGuard VM、yt-dlp在主執行緒解析大型網頁、JS簽章解密）是同步的
+    // 重CPU工作，會讓整個頁面無法重繪也無法執行計時器。在進入每個階段前主動讓出一次
+    // 給瀏覽器畫面，確保「現在要開始做什麼」在卡住之前就已經顯示出來。rAF在背景分頁會被
+    // 暫停，所以用100ms逾時保底，不會永遠等不到。
+    _yieldToPaint() {
+        return new Promise((resolve) => {
+            const t = setTimeout(resolve, 100);
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => setTimeout(() => { clearTimeout(t); resolve(); }, 0));
+            }
+        });
+    }
+
     _fmtBytes(n) {
         if (n == null || !Number.isFinite(n)) return '?';
         if (n < 1024) return `${n} B`;
@@ -23453,11 +23467,11 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
     // 的百分比配置），text是給使用者看的當下狀態文字。
     async _youtubeDownloadOne(videoId, verbose, report) {
         const rep = typeof report === 'function' ? report : () => {};
-        rep(0.01, '載入yt-dlp執行環境中（第一次使用需要下載Python環境與套件，可能要1～2分鐘，之後會快很多）…');
+        await rep(0.01, '載入yt-dlp執行環境中（第一次使用需要下載Python環境與套件，可能要1～2分鐘，之後會快很多）…', true);
         const instance = await this._ensureYtDlpLoaded();
         let poToken = null;
         let poTokenError = null;
-        rep(0.08, '產生PO Token中…');
+        await rep(0.08, '產生PO Token中…（頁面可能會短暫沒有反應）', true);
         try {
             poToken = await this._youtubeGeneratePoToken(videoId);
         } catch (err) {
@@ -23526,7 +23540,7 @@ except Exception as e:
 _result
 `;
         let infoJson;
-        rep(0.15, 'yt-dlp解析影片資訊中（會依序向YouTube請求網頁與player資料，通常要10～30秒）…');
+        await rep(0.15, 'yt-dlp解析影片資訊中（會向YouTube請求網頁與player資料並解密簽章，過程中頁面可能會短暫沒有反應）…', true);
         try {
             infoJson = await instance.runPythonAsync(script);
         } catch (err) {
@@ -23668,7 +23682,13 @@ _result
             progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
             // 這支影片在整體進度條裡佔的區間：[pct, pct+span]，內部進度frac(0~1)映射進去
             const span = 85 / Math.max(1, allowed.length);
-            const rep = (frac, text) => progress.update({ pct: pct + span * Math.min(1, Math.max(0, frac)), status: `(${i + 1}/${allowed.length}) ${checks[id].title || id}｜${text}` });
+            const videoT0 = Date.now();
+            // stage=true：階段切換（不是位元組進度），立即重繪並讓出一次畫面，同時把耗時印到console，
+            // 之後如果又覺得「卡很久」，看console就知道時間花在哪個階段。
+            const rep = (frac, text, stage) => {
+                progress.update({ pct: pct + span * Math.min(1, Math.max(0, frac)), status: `(${i + 1}/${allowed.length}) ${checks[id].title || id}｜${text}`, force: !!stage });
+                if (stage) { console.log(`[youtube ${((Date.now() - videoT0) / 1000).toFixed(1)}s] ${text}`); return this._yieldToPaint(); }
+            };
             try {
                 let { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose, rep);
                 const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
@@ -23676,7 +23696,7 @@ _result
                 const vPart = files.length === 2 ? files.find((f) => f.kind === 'video') : null;
                 const aPart = files.length === 2 ? files.find((f) => f.kind === 'audio') : null;
                 if (vPart && aPart) {
-                    rep(0.86, '合併影像與聲音中…');
+                    await rep(0.86, '合併影像與聲音中…', true);
                     try {
                         const merged = await this._remuxVideoAudio(vPart.bytes, aPart.bytes, (f, text) => rep(0.86 + 0.14 * f, text));
                         files = [{ kind: 'video+audio', ext: merged.ext, bytes: merged.bytes }];
