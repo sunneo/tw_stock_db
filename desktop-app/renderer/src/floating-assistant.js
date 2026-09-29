@@ -22501,9 +22501,113 @@ ${sourceTool.handlerScript}
     // 會原樣回傳網址（直接fetch()），大部分外部網站沒有permissive CORS
     // header會直接失敗，這裡失敗訊息主動提示去哪裡設定代理，不要讓使用者
     // 自己猜為什麼curl一個外部網址會失敗。
+    // tw_stock_db客製: 2026-09-30使用者要求——網頁版經Cloudflare Worker出去的請求，YouTube看到的是
+    // 資料中心IP，會要求登入（桌面版走本機proxy用家用IP就正常）。使用者接受「用瀏覽器擴充功能發
+    // 請求」：擴充功能有<all_urls>主機權限（不受CORS限制），請求從使用者真實網路出去。範圍刻意
+    // 只限YouTube相關網域；本機proxy（桌面版）本來就是家用IP，不需要繞擴充功能；擴充功能沒裝/
+    // 沒允許這個網站/版本太舊時自動退回原本的proxy路徑（行為跟以前一樣）。
+    _isYouTubeFetchHost(hostname) {
+        return /(^|\.)youtube\.com$|(^|\.)googlevideo\.com$|(^|\.)googleapis\.com$|^youtu\.be$|(^|\.)ytimg\.com$/i.test(hostname);
+    }
+    _isLocalAssetProxy() {
+        const p = this._resolveAssetProxyUrl();
+        return /^(https?:\/\/(127\.0\.0\.1|localhost|\[::1\])|fa-local:)/i.test(p);
+    }
+    async _extensionFetchAvailable() {
+        const now = Date.now();
+        if (this._extFetchAvail && now - this._extFetchAvail.at < 60000) return this._extFetchAvail.ok;
+        let ok = false;
+        try {
+            const r = await this._bcCall('ping', {}, 3000);
+            const v = String((r && r.version) || '0').split('.').map((n) => parseInt(n, 10) || 0);
+            ok = !!(r && r.ok && r.allowed !== false && (v[0] > 1 || (v[0] === 1 && v[1] >= 1)));
+        } catch (_) { ok = false; }
+        this._extFetchAvail = { at: now, ok };
+        return ok;
+    }
+    async _extensionHttpFetch(method, urlStr, { headers, body, timeoutMs } = {}) {
+        const t0 = performance.now();
+        const toB64 = (bytes) => {
+            let s = '';
+            for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            return btoa(s);
+        };
+        const fromB64 = (b64) => {
+            const s = atob(b64);
+            const out = new Uint8Array(s.length);
+            for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+            return out;
+        };
+        let bodyBytes = null;
+        if (typeof body === 'string') bodyBytes = new TextEncoder().encode(body);
+        else if (body instanceof Uint8Array) bodyBytes = body;
+        else if (body instanceof ArrayBuffer) bodyBytes = new Uint8Array(body);
+        const callOnce = async (extraHeaders) => {
+            const r = await this._bcCall('http_fetch', {
+                url: urlStr, method, headers: Object.assign({}, headers || {}, extraHeaders || {}),
+                bodyBase64: bodyBytes ? toB64(bodyBytes) : undefined,
+                timeoutMs: timeoutMs || 60000,
+            }, (timeoutMs || 60000) + 5000);
+            if (!r || !r.ok) {
+                const err = new Error(`擴充功能發送請求失敗：${(r && (r.error || r.note)) || '沒有回應'}`);
+                err.code = 'EXT_UNAVAILABLE';
+                throw err;
+            }
+            return r;
+        };
+        const host = new URL(urlStr).hostname;
+        let status, statusText, respUrl, respHeaders, bytes;
+        const wantsChunks = method === 'GET' && /(^|\.)googlevideo\.com$/i.test(host)
+            && !Object.keys(headers || {}).some((k) => k.toLowerCase() === 'range');
+        if (wantsChunks) {
+            // googlevideo媒體檔很大（可能上百MB），單次base64訊息塞不下，也容易被限速；
+            // 比照yt-dlp自己對YouTube的做法，用Range分段抓再串起來。
+            const CHUNK = 6 * 1024 * 1024;
+            const parts = [];
+            let start = 0, total = null;
+            for (;;) {
+                const r = await callOnce({ Range: `bytes=${start}-${start + CHUNK - 1}` });
+                status = r.status; statusText = r.statusText; respUrl = r.url; respHeaders = r.headers;
+                const chunk = fromB64(r.bodyBase64 || '');
+                if (r.status !== 206) { parts.length = 0; parts.push(chunk); total = chunk.length; break; }
+                parts.push(chunk);
+                const m = /\/(\d+)$/.exec((r.headers && r.headers['content-range']) || '');
+                total = m ? parseInt(m[1], 10) : null;
+                start += chunk.length;
+                if (!chunk.length || (total != null && start >= total)) break;
+            }
+            let len = 0; for (const p of parts) len += p.length;
+            bytes = new Uint8Array(len);
+            let off = 0; for (const p of parts) { bytes.set(p, off); off += p.length; }
+            if (status === 206) status = 200;
+            respHeaders = Object.assign({}, respHeaders);
+            delete respHeaders['content-range'];
+        } else {
+            const r = await callOnce();
+            status = r.status; statusText = r.statusText; respUrl = r.url; respHeaders = r.headers;
+            bytes = fromB64(r.bodyBase64 || '');
+        }
+        const noBody = status === 204 || status === 205 || status === 304 || method === 'HEAD';
+        const resp = new Response(noBody ? null : bytes, { status, statusText: statusText || '', headers: respHeaders });
+        Object.defineProperty(resp, 'url', { value: respUrl || urlStr });
+        return { resp, elapsedMs: performance.now() - t0 };
+    }
+
     async _terminalHttpFetch(method, urlStr, { headers, body, timeoutMs } = {}) {
         let target;
         try { target = new URL(urlStr); } catch (_) { throw new Error(`不合法的網址：${urlStr}`); }
+        if (this.advancedSettings.youtubeExtensionFetch !== false
+            && this._isYouTubeFetchHost(target.hostname)
+            && !this._isLocalAssetProxy()
+            && await this._extensionFetchAvailable()) {
+            try {
+                return await this._extensionHttpFetch(method, target.href, { headers, body, timeoutMs });
+            } catch (err) {
+                if (!(err && err.code === 'EXT_UNAVAILABLE')) throw err;
+                this._extFetchAvail = { at: Date.now(), ok: false };
+                console.warn('[http] 擴充功能請求失敗，改走proxy：', err.message);
+            }
+        }
         const proxied = this._viaAssetProxy(target.href);
         const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         const timer = (controller && timeoutMs) ? setTimeout(() => controller.abort(), timeoutMs) : null;
