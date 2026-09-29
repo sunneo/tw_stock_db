@@ -14788,16 +14788,31 @@ ${fnData.code}
         this.messages.push(msg);
         this._renderMessageHistory();
         let lastRender = 0;
+        let trailingTimer = null;
+        let heartbeat = null;
+        const stopTimers = () => {
+            if (trailingTimer) { clearTimeout(trailingTimer); trailingTimer = null; }
+            if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+        };
         const rerender = (force) => {
             const now = Date.now();
-            if (!force && now - lastRender < 250) return;
+            if (!force && now - lastRender < 250) {
+                // tw_stock_db客製: 2026-09-30使用者回報進度「卡住」——節流窗口內的更新
+                // 原本直接丟掉、沒有補最後一次重繪，畫面會停在較舊的狀態文字直到
+                // 下一次update。改成節流窗口結束後補畫一次最新狀態（trailing render）。
+                if (!trailingTimer) trailingTimer = setTimeout(() => { trailingTimer = null; rerender(true); }, 250 - (now - lastRender));
+                return;
+            }
             lastRender = now;
             this._renderMessageHistory();
         };
+        // 每秒重繪一次讓「已用時間」持續跳動（長時間處理即使沒有新進度也看得出還活著），
+        // 完成/失敗/移除時停止；30分鐘保險上限避免handler忘了finish造成計時器外洩。
+        heartbeat = setInterval(() => { if (state.done || Date.now() - state.startedAt > 30 * 60 * 1000) stopTimers(); else rerender(true); }, 1000);
         return {
             msg,
             update: (patch = {}) => {
-                if (patch.pct != null) state.pct = Math.max(0, Math.min(100, patch.pct));
+                if (patch.pct != null) state.pct = Math.round(Math.max(0, Math.min(100, patch.pct)));
                 if (patch.status != null) state.status = String(patch.status);
                 rerender(false);
             },
@@ -14805,14 +14820,17 @@ ${fnData.code}
                 state.done = true;
                 if (state.pct != null) state.pct = 100;
                 if (finalStatus != null) state.status = String(finalStatus);
+                stopTimers();
                 rerender(true);
             },
             fail: (errMsg) => {
                 state.done = true;
                 state.error = String(errMsg || '失敗');
+                stopTimers();
                 rerender(true);
             },
             remove: () => {
+                stopTimers();
                 this.messages = this.messages.filter(m => m !== msg);
                 this._renderMessageHistory();
             },
@@ -22525,7 +22543,7 @@ ${sourceTool.handlerScript}
         this._extFetchAvail = { at: now, ok };
         return ok;
     }
-    async _extensionHttpFetch(method, urlStr, { headers, body, timeoutMs } = {}) {
+    async _extensionHttpFetch(method, urlStr, { headers, body, timeoutMs, onProgress } = {}) {
         const t0 = performance.now();
         const toB64 = (bytes) => {
             let s = '';
@@ -22574,6 +22592,7 @@ ${sourceTool.handlerScript}
                 const m = /\/(\d+)$/.exec((r.headers && r.headers['content-range']) || '');
                 total = m ? parseInt(m[1], 10) : null;
                 start += chunk.length;
+                if (onProgress) onProgress(start, total);
                 if (!chunk.length || (total != null && start >= total)) break;
             }
             let len = 0; for (const p of parts) len += p.length;
@@ -22590,10 +22609,54 @@ ${sourceTool.handlerScript}
         const noBody = status === 204 || status === 205 || status === 304 || method === 'HEAD';
         const resp = new Response(noBody ? null : bytes, { status, statusText: statusText || '', headers: respHeaders });
         Object.defineProperty(resp, 'url', { value: respUrl || urlStr });
+        // 已在_extensionHttpFetch裡分段回報過進度，_downloadBinaryWithProgress不用再串流讀一次
+        Object.defineProperty(resp, '_faStreamed', { value: true });
         return { resp, elapsedMs: performance.now() - t0 };
     }
 
-    async _terminalHttpFetch(method, urlStr, { headers, body, timeoutMs } = {}) {
+    _fmtBytes(n) {
+        if (n == null || !Number.isFinite(n)) return '?';
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+        return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    }
+    _fmtDuration(sec) {
+        if (sec == null || !Number.isFinite(sec) || sec < 0) return '計算中';
+        sec = Math.round(sec);
+        if (sec < 60) return `${sec} 秒`;
+        return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+    }
+
+    // tw_stock_db客製: 2026-09-30使用者要求下載要有進度回報（抓了多少KB／共多少KB）。
+    // 走擴充功能時_extensionHttpFetch每抓完一段就回報；走proxy/fetch時用串流讀取，
+    // 邊讀邊回報。總大小優先用呼叫端給的totalHint（YouTube媒體網址的clen參數），
+    // 其次才用Content-Length（Cloudflare Worker的/proxy/會把它刪掉，所以不一定有）。
+    async _downloadBinaryWithProgress(url, { timeoutMs, onProgress, totalHint } = {}) {
+        const wrapped = onProgress ? (recv, tot) => onProgress(recv, tot || totalHint || null) : undefined;
+        const { resp } = await this._terminalHttpFetch('GET', url, { timeoutMs, onProgress: wrapped });
+        if (!resp.ok) return { resp, bytes: null };
+        const total = totalHint || parseInt(resp.headers.get('content-length') || '0', 10) || null;
+        if (resp._faStreamed || !resp.body || !resp.body.getReader) {
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            if (onProgress) onProgress(bytes.length, bytes.length);
+            return { resp, bytes };
+        }
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            if (onProgress) onProgress(received, total);
+        }
+        const bytes = new Uint8Array(received);
+        let off = 0; for (const c of chunks) { bytes.set(c, off); off += c.length; }
+        return { resp, bytes };
+    }
+
+    async _terminalHttpFetch(method, urlStr, { headers, body, timeoutMs, onProgress } = {}) {
         let target;
         try { target = new URL(urlStr); } catch (_) { throw new Error(`不合法的網址：${urlStr}`); }
         if (this.advancedSettings.youtubeExtensionFetch !== false
@@ -22601,7 +22664,7 @@ ${sourceTool.handlerScript}
             && !this._isLocalAssetProxy()
             && await this._extensionFetchAvailable()) {
             try {
-                return await this._extensionHttpFetch(method, target.href, { headers, body, timeoutMs });
+                return await this._extensionHttpFetch(method, target.href, { headers, body, timeoutMs, onProgress });
             } catch (err) {
                 if (!(err && err.code === 'EXT_UNAVAILABLE')) throw err;
                 this._extFetchAvail = { at: Date.now(), ok: false };
@@ -23386,10 +23449,15 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
     // 可用的真實音視訊格式（只剩storyboard縮圖）。這裡偵測到這種情況時
     // 明確回報「可能是PO Token限制」，不是含糊的「沒有可用格式」，讓使用者
     // 知道這是目前技術上還沒解決的已知落差，不是設定錯誤或程式bug。
-    async _youtubeDownloadOne(videoId, verbose) {
+    // report(frac, text)：frac是這支影片內的整體進度0~1（下載佔大部分，見_youtubeDownloadBatch
+    // 的百分比配置），text是給使用者看的當下狀態文字。
+    async _youtubeDownloadOne(videoId, verbose, report) {
+        const rep = typeof report === 'function' ? report : () => {};
+        rep(0.01, '載入yt-dlp執行環境中（第一次使用需要下載Python環境與套件，可能要1～2分鐘，之後會快很多）…');
         const instance = await this._ensureYtDlpLoaded();
         let poToken = null;
         let poTokenError = null;
+        rep(0.08, '產生PO Token中…');
         try {
             poToken = await this._youtubeGeneratePoToken(videoId);
         } catch (err) {
@@ -23458,6 +23526,7 @@ except Exception as e:
 _result
 `;
         let infoJson;
+        rep(0.15, 'yt-dlp解析影片資訊中（會依序向YouTube請求網頁與player資料，通常要10～30秒）…');
         try {
             infoJson = await instance.runPythonAsync(script);
         } catch (err) {
@@ -23479,10 +23548,35 @@ _result
         const parts = (info.parts || []).filter((p) => p && p.url);
         if (!parts.length) throw new Error('yt-dlp沒有解析出可下載的媒體網址（沒有任何http格式可用）');
         const files = [];
-        for (const p of parts) {
-            const { resp } = await this._terminalHttpFetch('GET', p.url, { timeoutMs: 300000 });
+        // 總大小：YouTube媒體網址帶clen參數（內容長度），用它算整體百分比；沒有就只顯示已下載量
+        const sizes = parts.map((p) => { try { return parseInt(new URL(p.url).searchParams.get('clen') || '0', 10) || 0; } catch (_) { return 0; } });
+        const grandTotal = sizes.every((s) => s > 0) ? sizes.reduce((a, b) => a + b, 0) : 0;
+        const kindLabel = { video: '影片', audio: '音訊', 'video+audio': '影音' };
+        const dlStart = Date.now();
+        let doneBytes = 0;
+        for (let i = 0; i < parts.length; i++) {
+            const p = parts[i];
+            const { resp, bytes } = await this._downloadBinaryWithProgress(p.url, {
+                timeoutMs: 300000,
+                totalHint: sizes[i] || 0,
+                onProgress: (recv, tot) => {
+                    const all = doneBytes + recv;
+                    const elapsed = Math.max(0.5, (Date.now() - dlStart) / 1000);
+                    const speed = all / elapsed;
+                    const partTotal = tot || sizes[i] || 0;
+                    const remaining = grandTotal ? Math.max(0, grandTotal - all) : null;
+                    const eta = remaining != null && speed > 0 ? remaining / speed : null;
+                    const frac = grandTotal ? all / grandTotal : 0;
+                    rep(0.2 + 0.65 * Math.min(1, frac),
+                        `下載${kindLabel[p.kind] || ''}（第${i + 1}/${parts.length}個檔）：${this._fmtBytes(recv)} / ${partTotal ? this._fmtBytes(partTotal) : '?'}`
+                        + (grandTotal ? `（整體 ${Math.round(frac * 100)}%）` : '')
+                        + `　${this._fmtBytes(Math.round(speed))}/秒`
+                        + (eta != null ? `　剩約 ${this._fmtDuration(eta)}` : ''));
+                },
+            });
             if (!resp.ok) throw new Error(`下載媒體檔案失敗（${p.kind}）：HTTP ${resp.status}`);
-            files.push({ kind: p.kind, ext: p.ext, bytes: new Uint8Array(await resp.arrayBuffer()) });
+            doneBytes += bytes.length;
+            files.push({ kind: p.kind, ext: p.ext, bytes });
         }
         return {
             title: info.title || videoId,
@@ -23496,7 +23590,7 @@ _result
     // （stream copy，不重新編碼，很快、不損畫質），已在Node用真實vp9+opus/
     // avc+aac/vp9+aac三種組合實測，輸出用ffprobe確認同時有影像與音訊兩軌、
     // 時長正確、可完整解碼。容器格式依編碼相容性自動選：WebM→MP4→MKV。
-    async _remuxVideoAudio(videoBytes, audioBytes) {
+    async _remuxVideoAudio(videoBytes, audioBytes, onProgress) {
         const MB = await this._ensureMediabunnyLoaded();
         const inV = new MB.Input({ source: new MB.BufferSource(videoBytes), formats: MB.ALL_FORMATS });
         const inA = new MB.Input({ source: new MB.BufferSource(audioBytes), formats: MB.ALL_FORMATS });
@@ -23521,16 +23615,36 @@ _result
         output.addVideoTrack(vSrc);
         output.addAudioTrack(aSrc);
         await output.start();
-        const copyPackets = async (track, src) => {
+        // 進度：各軌用「封包時間戳／軌道總長」估算，兩軌平均；預估剩餘時間由已花時間外推
+        let vDur = 0, aDur = 0;
+        try { vDur = await vt.computeDuration(); aDur = await at.computeDuration(); } catch (_) { /* 拿不到總長就只顯示處理中 */ }
+        const frac = { v: 0, a: 0 };
+        const t0 = Date.now();
+        let lastReport = 0;
+        const report = (force) => {
+            if (!onProgress) return;
+            const now = Date.now();
+            if (!force && now - lastReport < 200) return;
+            lastReport = now;
+            const f = Math.min(1, (frac.v + frac.a) / 2);
+            const elapsed = (now - t0) / 1000;
+            const eta = f > 0.02 ? elapsed * (1 - f) / f : null;
+            onProgress(f, `合併影像與聲音（不重新編碼）：${Math.round(f * 100)}%　已花 ${this._fmtDuration(elapsed)}　預計還要約 ${this._fmtDuration(eta)}`);
+        };
+        const copyPackets = async (track, src, key, dur) => {
             const cfg = await track.getDecoderConfig();
             let first = true;
             for await (const packet of new MB.EncodedPacketSink(track).packets()) {
                 await src.add(packet, first ? { decoderConfig: cfg } : undefined);
                 first = false;
+                if (dur > 0) { frac[key] = Math.min(1, packet.timestamp / dur); report(false); }
             }
+            frac[key] = 1;
             src.close();
         };
-        await Promise.all([copyPackets(vt, vSrc), copyPackets(at, aSrc)]);
+        report(true);
+        await Promise.all([copyPackets(vt, vSrc, 'v', vDur), copyPackets(at, aSrc, 'a', aDur)]);
+        report(true);
         await output.finalize();
         return { ext: picked.ext, bytes: new Uint8Array(output.target.buffer) };
     }
@@ -23552,16 +23666,19 @@ _result
             const id = allowed[i];
             const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
             progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
+            // 這支影片在整體進度條裡佔的區間：[pct, pct+span]，內部進度frac(0~1)映射進去
+            const span = 85 / Math.max(1, allowed.length);
+            const rep = (frac, text) => progress.update({ pct: pct + span * Math.min(1, Math.max(0, frac)), status: `(${i + 1}/${allowed.length}) ${checks[id].title || id}｜${text}` });
             try {
-                let { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose);
+                let { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose, rep);
                 const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
                 let mergeNote = '';
                 const vPart = files.length === 2 ? files.find((f) => f.kind === 'video') : null;
                 const aPart = files.length === 2 ? files.find((f) => f.kind === 'audio') : null;
                 if (vPart && aPart) {
-                    progress.update({ status: `合併影像與聲音中：${checks[id].title || id}` });
+                    rep(0.86, '合併影像與聲音中…');
                     try {
-                        const merged = await this._remuxVideoAudio(vPart.bytes, aPart.bytes);
+                        const merged = await this._remuxVideoAudio(vPart.bytes, aPart.bytes, (f, text) => rep(0.86 + 0.14 * f, text));
                         files = [{ kind: 'video+audio', ext: merged.ext, bytes: merged.bytes }];
                     } catch (mergeErr) {
                         mergeNote = `（合併失敗，改為分開交付：${String(mergeErr && mergeErr.message || mergeErr)}）`;
