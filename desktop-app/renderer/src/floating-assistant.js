@@ -5295,7 +5295,17 @@ class FloatingAssistant {
         this.register_slash_command(
             '/media-youtube-download', '<YouTube連結或一段含連結的文字>',
             '下載YouTube影片（瀏覽器端跑真正的yt-dlp）。留空未設定Advance Settings的YouTube Data API金鑰/頻道ID時，直接跳過範圍驗證下載；有設定的話才會**只允許(a)你自己頻道的影片，或(b)Creative Commons授權的影片**，其餘會跳過並說明原因。⚠️已知限制：YouTube目前對多數影片會要求PO Token（這個app還沒實作的另一套反機器人驗證），很多影片會下載失敗、只剩storyboard縮圖格式可用，這是目前技術上的落差，不是操作錯誤。',
-            (argsText) => this._handleMediaYoutubeDownloadCommand(argsText)
+            (argsText) => this._handleMediaYoutubeDownloadCommand(argsText, false)
+        );
+        // tw_stock_db客製: 2026-09-30使用者要求——除了一般版之外，另外要有
+        // 一個verbose版本，不用另外設定/切換什麼就能直接看到yt-dlp實際嘗試
+        // 了哪些player client、各自失敗原因（跟command line的-v輸出同一份
+        // 資訊，見_youtubeDownloadOne裡的_FaYtDlpLogger）。跟一般版共用同一個
+        // handler，只差一個verbose旗標——不想長出兩份幾乎一樣的邏輯。
+        this.register_slash_command(
+            '/media-youtube-download-verbose', '<YouTube連結或一段含連結的文字>',
+            '跟/media-youtube-download完全一樣，差別是不管成功或失敗都會附上yt-dlp的verbose除錯輸出（實際嘗試了哪個player client、各自的錯誤訊息），跟command line `yt-dlp -v`的輸出對得上，用於診斷「為什麼這支影片下載失敗/成功」。',
+            (argsText) => this._handleMediaYoutubeDownloadCommand(argsText, true)
         );
         // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
         // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
@@ -14709,6 +14719,37 @@ ${fnData.code}
         return msg;
     }
 
+    // tw_stock_db客製: 2026-09-30使用者實測發現——好幾個/media-*、/office-*
+    // 斜線指令的失敗路徑（參數驗證沒過只call _log()、或跑到一半prog.fail()
+    // 後直接return）從來沒有真的進到對話歷史：_log()只是改`#ai-status-log`
+    // 這個單行DOM文字（見_log定義），完全不碰this.messages，重新整理就
+    // 消失；prog.fail()只更新progress widget自己的暫存UI狀態（_progressWidget
+    // 本身就設計成非可枚舉、reload後會變空——見_createProgressWidget的
+    // 說明），也沒有另外_persistChatHistory()。結果是使用者打的指令、跟
+    // 失敗原因，兩者都不會真的留在歷史裡——跟本檔案其他地方（例如
+    // _deliverExistingCacheFile、11380一帶的File Access Point指令）「成功
+    // /失敗都push一則assistant訊息+persist+render」的既有慣例不一致。這裡
+    // 補兩個共用helper，讓每個斜線指令的失敗路徑都能比照辦理，不用在7個
+    // handler裡各自重複同一組4行修正（也比較不會漏掉第8個以後新增的指令）。
+
+    // 參數驗證沒通過時用：把使用者實際打的指令原文＋警告文字都存進歷史。
+    _failSlashCommandValidation(rawCommandText, warnText) {
+        this.messages.push({ role: 'user', content: rawCommandText });
+        this._pushAssistantMessage(`⚠️ ${warnText}`, null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    // 已經push過使用者指令訊息、progress widget也建立好，但實際執行失敗時用：
+    // progress widget的❌只是暫時視覺效果，這裡另外補一則會被persist的錯誤
+    // 訊息，確保重新整理頁面後失敗原因還在。
+    _failSlashCommandRuntime(prog, errText) {
+        prog.fail(errText);
+        this._pushAssistantMessage(`⚠️ ${errText}`, null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
     // tw_stock_db客製: 2026-09-11使用者要求——長時間的slash-command處理
     // （語音轉文字/擷取聲音/燒字幕）要在對話裡放一個「會更新的widget」顯示
     // 進度，而不是狂洗_log訊息。做法：推一則帶`_progressWidget`非可枚舉
@@ -23193,7 +23234,7 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
     // 可用的真實音視訊格式（只剩storyboard縮圖）。這裡偵測到這種情況時
     // 明確回報「可能是PO Token限制」，不是含糊的「沒有可用格式」，讓使用者
     // 知道這是目前技術上還沒解決的已知落差，不是設定錯誤或程式bug。
-    async _youtubeDownloadOne(videoId) {
+    async _youtubeDownloadOne(videoId, verbose) {
         const instance = await this._ensureYtDlpLoaded();
         let poToken = null;
         let poTokenError = null;
@@ -23267,7 +23308,7 @@ _result
             const poTokenNote = poToken
                 ? '（已嘗試產生PO Token，但Google目前只給這個app一個信任度較低的「降級版」token（websafeFallbackToken），不是完整信任的integrityToken，所以還是拿不到真實格式——已排除是瀏覽器環境被偵測為自動化的問題（用真實登入的Chrome測過結果一樣），根因還在查，屬於持續在打的BotGuard逆向工程游擊戰，不是設定錯誤）'
                 : `（PO Token產生失敗：${poTokenError || '未知原因'}）`;
-            const debugTail = Array.isArray(info.debug_log) && info.debug_log.length
+            const debugTail = verbose && Array.isArray(info.debug_log) && info.debug_log.length
                 ? `\n\n--- yt-dlp verbose輸出（最後${info.debug_log.length}行，跟command line的-v輸出同一份資訊）---\n${info.debug_log.join('\n')}`
                 : '';
             if (info.only_storyboards) {
@@ -23279,7 +23320,12 @@ _result
         const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });
         if (!resp.ok) throw new Error(`下載媒體檔案失敗：HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
-        return { title: info.title || videoId, ext: info.ext || 'mp4', bytes: new Uint8Array(buf) };
+        return {
+            title: info.title || videoId,
+            ext: info.ext || 'mp4',
+            bytes: new Uint8Array(buf),
+            debugLog: verbose && Array.isArray(info.debug_log) ? info.debug_log : null,
+        };
     }
 
     // tw_stock_db客製: 2026-09-29——把youtube_download工具跟/media-youtube-download
@@ -23287,7 +23333,7 @@ _result
     // 維護一份一樣的邏輯（slash指令是使用者實測回報「沒有地方可以自己驗證」
     // 之後新增的，直接重用工具已經寫好、驗證過的流程）。progress是呼叫端
     // 建立好的_createProgressWidget() handle，這裡只負責update/finish/fail。
-    async _youtubeDownloadBatch(videoIds, progress) {
+    async _youtubeDownloadBatch(videoIds, progress, verbose) {
         progress.update({ pct: 5, status: `解析到${videoIds.length}支影片，驗證下載範圍中...` });
         const checks = await this._youtubeCheckLicenseAndOwnership(videoIds);
         const allowed = videoIds.filter((id) => checks[id] && checks[id].ok);
@@ -23300,11 +23346,11 @@ _result
             const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
             progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
             try {
-                const { title, ext, bytes } = await this._youtubeDownloadOne(id);
+                const { title, ext, bytes, debugLog } = await this._youtubeDownloadOne(id, verbose);
                 const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
                 const blob = new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'application/octet-stream' });
                 const delivered = await this.generateAndDeliverFile(blob, `${safeTitle}.${ext}`, blob.type);
-                downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id });
+                downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id, debug_log: debugLog });
             } catch (err) {
                 failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
             }
@@ -30681,7 +30727,7 @@ ${existingNodeSummaries}
             if (pending.length >= 2) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
         }
         if (fileArgs.length < 2) {
-            this._log('⚠️ /media-concat-audio：至少需要2個音檔——先附加多個音檔後直接打 /media-concat-audio（不用打id），或明確指定 /media-concat-audio file_1 file_2');
+            this._failSlashCommandValidation(`/media-concat-audio ${text}`.trim(), '/media-concat-audio：至少需要2個音檔——先附加多個音檔後直接打 /media-concat-audio（不用打id），或明確指定 /media-concat-audio file_1 file_2');
             return;
         }
         this.messages.push({ role: 'user', content: `🔗 合併音檔：${fileArgs.join(' ')}` });
@@ -30692,7 +30738,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         prog.finish(`完成：合併 ${result.fileCount} 個音檔，${result.durationSeconds}s`);
         if (consumedIds) this._consumePendingAttachments(consumedIds);
         if (result.audio_file_id) {
@@ -30706,15 +30752,15 @@ ${existingNodeSummaries}
     async _handleMediaCompareImagesCommand(argsText) {
         const text = String(argsText || '').trim();
         if (!text) {
-            this._log('⚠️ /media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔，不要空格），例如 /media-compare-images file_1,file_2 有什麼不同');
+            this._failSlashCommandValidation('/media-compare-images', '/media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔，不要空格），例如 /media-compare-images file_1,file_2 有什麼不同');
             return;
         }
         const firstSpace = text.indexOf(' ');
         const imagesPart = firstSpace === -1 ? text : text.slice(0, firstSpace);
         const question = firstSpace === -1 ? '' : text.slice(firstSpace + 1).trim();
         const items = imagesPart.split(',').map((s) => s.trim()).filter(Boolean);
-        if (items.length < 2) { this._log('⚠️ /media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔）'); return; }
-        if (items.length > 6) { this._log('⚠️ /media-compare-images：最多6張，太多張請分批比較'); return; }
+        if (items.length < 2) { this._failSlashCommandValidation(`/media-compare-images ${text}`, '/media-compare-images：至少要給2張圖片（file_id或網址，用逗號分隔）'); return; }
+        if (items.length > 6) { this._failSlashCommandValidation(`/media-compare-images ${text}`, '/media-compare-images：最多6張，太多張請分批比較'); return; }
         this.messages.push({ role: 'user', content: `🖼️ 比較圖片：${items.join('、')}${question ? '（' + question + '）' : ''}` });
         const prog = this._createProgressWidget('比較圖片');
         prog.update({ status: '讀取圖片中…' });
@@ -30733,7 +30779,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         prog.finish(`已用${result.model_used ? '「' + result.model_used + '」' : ''}比較完成`);
         const imgList = result.labels.map((label, i) => `圖${i + 1}：${label}`).join('\n');
         this._pushAssistantMessage(`**圖片比較**\n\n${imgList}\n\n${result.comparison}`, null);
@@ -30743,26 +30789,35 @@ ${existingNodeSummaries}
 
     // /media-youtube-download <連結或含連結的文字>——跟youtube_download工具
     // 共用_youtubeDownloadBatch，讓使用者自己也能直接測試（不用透過AI轉述），
-    // 見該方法上方的說明。
-    async _handleMediaYoutubeDownloadCommand(argsText) {
+    // 見該方法上方的說明。verbose為true時（/media-youtube-download-verbose，
+    // 見register_slash_command那段說明）不管成功或失敗都附上yt-dlp的verbose
+    // 除錯輸出，一般版維持精簡摘要。
+    async _handleMediaYoutubeDownloadCommand(argsText, verbose) {
         const text = String(argsText || '').trim();
         const videoIds = this._youtubeExtractVideoIds(text);
+        const cmdName = verbose ? '/media-youtube-download-verbose' : '/media-youtube-download';
         if (!videoIds.length) {
-            this._log('⚠️ /media-youtube-download：沒有從輸入裡解析出任何YouTube連結（支援youtube.com/watch?v=、youtu.be/、/embed/、/shorts/這幾種格式），例如 /media-youtube-download https://www.youtube.com/watch?v=xxxxxxxxxxx');
+            this._failSlashCommandValidation(`${cmdName} ${text}`.trim(), `${cmdName}：沒有從輸入裡解析出任何YouTube連結（支援youtube.com/watch?v=、youtu.be/、/embed/、/shorts/這幾種格式），例如 ${cmdName} https://www.youtube.com/watch?v=xxxxxxxxxxx`);
             return;
         }
         this.messages.push({ role: 'user', content: `📺 YouTube下載：${videoIds.join(', ')}` });
         const prog = this._createProgressWidget('YouTube 下載');
         let result;
         try {
-            result = await this._youtubeDownloadBatch(videoIds, prog);
+            result = await this._youtubeDownloadBatch(videoIds, prog, verbose);
         } catch (err) {
-            prog.fail(String(err && err.message || err));
+            this._failSlashCommandRuntime(prog, String(err && err.message || err));
             return;
         }
         const lines = [];
         if (result.verification_skipped) lines.push('⚠️ 沒有設定YouTube Data API金鑰/頻道ID，這次**沒有驗證下載範圍**（沒有限制只能下載本人頻道或CC授權影片）。');
-        if (result.downloaded.length) lines.push('**已下載：**\n' + result.downloaded.map((d) => `- ${d.title || d.video_id}（${d.filename}）`).join('\n'));
+        if (result.downloaded.length) lines.push('**已下載：**\n' + result.downloaded.map((d) => {
+            const base = `- ${d.title || d.video_id}（${d.filename}）`;
+            const dbg = verbose && Array.isArray(d.debug_log) && d.debug_log.length
+                ? `\n  <details><summary>yt-dlp verbose輸出（${d.debug_log.length}行）</summary>\n\n  \`\`\`\n${d.debug_log.join('\n')}\n  \`\`\`\n  </details>`
+                : '';
+            return base + dbg;
+        }).join('\n'));
         if (result.skipped.length) lines.push('**跳過（不符合下載範圍）：**\n' + result.skipped.map((s) => `- ${s.title || s.video_id}：${s.reason}`).join('\n'));
         if (result.failed.length) lines.push('**失敗：**\n' + result.failed.map((f) => `- ${f.title || f.video_id}：${f.error}`).join('\n'));
         this._pushAssistantMessage(lines.join('\n\n') || '沒有任何結果。', null);
@@ -30784,7 +30839,7 @@ ${existingNodeSummaries}
             if (pending.length >= 2) { fileArgs = pending.map((a) => a.id); consumedIds = fileArgs; }
         }
         if (fileArgs.length < 2) {
-            this._log('⚠️ /office-pdf-merge：至少需要2個PDF——先附加多個PDF後直接打 /office-pdf-merge（不用打id），或明確指定 /office-pdf-merge file_1 file_2');
+            this._failSlashCommandValidation(`/office-pdf-merge ${text}`.trim(), '/office-pdf-merge：至少需要2個PDF——先附加多個PDF後直接打 /office-pdf-merge（不用打id），或明確指定 /office-pdf-merge file_1 file_2');
             return;
         }
         this.messages.push({ role: 'user', content: `📄 合併PDF：${fileArgs.join(' ')}` });
@@ -30795,7 +30850,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         prog.finish(`完成：合併 ${result.fileCount} 份PDF，共 ${result.pageCount} 頁`);
         if (consumedIds) this._consumePendingAttachments(consumedIds);
         if (result.pdf_file_id) {
@@ -30821,7 +30876,7 @@ ${existingNodeSummaries}
     async _handleOfficePdfRemovePageCommand(argsText) {
         const pages = String(argsText || '').trim();
         if (!pages) {
-            this._log('⚠️ /office-pdf-remove-page：缺少頁碼範圍，例如 /office-pdf-remove-page 1-5,6');
+            this._failSlashCommandValidation('/office-pdf-remove-page', '/office-pdf-remove-page：缺少頁碼範圍，例如 /office-pdf-remove-page 1-5,6');
             return;
         }
         const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
@@ -30833,7 +30888,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         prog.finish(`完成：移除${result.removedPages.length}頁，剩${result.remainingPageCount}頁`);
         if (consumeId) this._consumePendingAttachments([consumeId]);
         if (result.pdf_file_id) {
@@ -30845,7 +30900,7 @@ ${existingNodeSummaries}
     async _handleOfficePdfExtractPageCommand(argsText) {
         const pages = String(argsText || '').trim();
         if (!pages) {
-            this._log('⚠️ /office-pdf-extract-page：缺少頁碼範圍，例如 /office-pdf-extract-page 1-5,6');
+            this._failSlashCommandValidation('/office-pdf-extract-page', '/office-pdf-extract-page：缺少頁碼範圍，例如 /office-pdf-extract-page 1-5,6');
             return;
         }
         const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
@@ -30857,7 +30912,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         prog.finish(`完成：取出${result.extractedPages.length}頁`);
         if (consumeId) this._consumePendingAttachments([consumeId]);
         if (result.pdf_file_id) {
@@ -30870,7 +30925,7 @@ ${existingNodeSummaries}
     async _handleOfficePdfExtractImageCommand(argsText) {
         const pages = String(argsText || '').trim();
         if (!pages) {
-            this._log('⚠️ /office-pdf-extract-image：缺少頁碼範圍，例如 /office-pdf-extract-image 1-5,6');
+            this._failSlashCommandValidation('/office-pdf-extract-image', '/office-pdf-extract-image：缺少頁碼範圍，例如 /office-pdf-extract-image 1-5,6');
             return;
         }
         const { fileArg, consumeId } = this._resolvePdfArgForSlashCommand();
@@ -30882,7 +30937,7 @@ ${existingNodeSummaries}
         } catch (err) {
             result = { ok: false, error: String(err && err.message || err) };
         }
-        if (!result.ok) { prog.fail(result.error); return; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
         if (consumeId) this._consumePendingAttachments([consumeId]);
         if (result.image_file_id) {
             prog.finish(`完成：輸出第${result.page}頁`);
