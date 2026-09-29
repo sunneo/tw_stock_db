@@ -2952,10 +2952,27 @@ def _fa_run_with_jsc(argv, *args, input=None, **kwargs):
         out = _FA_JSC_VERSION_OUTPUT
         return subprocess.CompletedProcess(argv_list, 0, out if text_mode else out.encode(), '' if text_mode else b'')
     stdin_text = input.decode('utf-8') if isinstance(input, bytes) else input
-    if not stdin_text:
-        return subprocess.CompletedProcess(argv_list, 1, '', 'jsc bridge：deno被呼叫時沒有收到任何stdin內容')
+    request_json = None
+    if stdin_text:
+        try:
+            request_json = _fa_extract_jsc_request(stdin_text)
+        except Exception:
+            request_json = None
+    if request_json is None:
+        # 2026-09-30實測發現的真實bug：yt-dlp-ejs在真正丟jsc(...)請求之前，
+        # 會先用「空stdin」呼叫一次deno（debug log裡的[jsc:deno] Checking
+        # if npm packages are cached）當作這個runtime能不能用的健檢探測，
+        # 不是要真的解謎。原本這裡把「沒有stdin」當成錯誤直接回傳exit 1，
+        # 導致yt-dlp-ejs誤判deno整個不可用（Remote components...were
+        # skipped→簽章/n參數解密整個放棄→退回storyboard-only）。我們的
+        # 方案本來就完全繞過npm/deno真正的套件機制（改用meriyah/astring+
+        # yt-dlp自己vendor的core.js），不需要真的跑這段探測腳本，這裡統一
+        # 對「不是真正jsc(...)請求」的呼叫（不管是空stdin還是解不出請求的
+        # 探測腳本）回報「這個runtime沒問題」(exit 0)，讓它繼續往下走到
+        # 真正帶jsc(...)請求的那次呼叫。
+        empty = '' if text_mode else b''
+        return subprocess.CompletedProcess(argv_list, 0, empty, empty)
     try:
-        request_json = _fa_extract_jsc_request(stdin_text)
         result_json = asyncio.run(_fa_yt_jsc_bridge.solve(request_json))
     except Exception as e:
         return subprocess.CompletedProcess(argv_list, 1, '', f'jsc bridge執行失敗：{e!r}')
