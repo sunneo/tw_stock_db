@@ -2914,6 +2914,207 @@ def _fa_prefer_ytfetch(handler, request):
     return 1000
 `;
 
+// ============================================================
+// tw_stock_db客製: 2026-09-30——yt-dlp「跟版契約」：釘版本＋契約自檢。
+// 完整說明（耦合點清單、升版流程）見 desktop-app/DESIGN.youtube-download.md。
+// 這個常數是「我們跟上游yt-dlp耦合的細節」的單一真相來源：安裝的版本、JS簽章
+// 橋接載入的meriyah/astring版本、我們指定的format選擇器、從deno stdin取出解謎請求
+// 的正規表示式——橋接程式碼與契約自檢（PYODIDE_YTDLP_CONTRACT_SRC）都讀這裡，
+// 不會兩邊各寫一份而悄悄不一致。**升級yt-dlp時只改這裡＋跑/media-youtube-selfcheck**，
+// 自檢會指出哪條管線要跟著改寫。
+// ⚠️jscStdinRegex：上游_construct_stdin的結尾是「console.log(JSON.stringify(jsc({...})));」，
+// 請求JSON之後有**三個**右括號（jsc、stringify、log各一個）。之前這裡只寫兩個，
+// 正規表示式從來沒有真的比對成功過，是契約自檢D4項目抓出來的。
+const FA_YTDLP_CONTRACT = {
+    version: '2026.8.19',
+    meriyah: '6.1.4',
+    astring: '1.9.0',
+    formatSelector: 'b[protocol^=http][vcodec!=none][acodec!=none]/bv*[protocol^=http][height<=1080]+ba[protocol^=http]',
+    jscStdinRegex: String.raw`jsc\((\{.*\})\)\)\);?\s*$`,
+};
+
+// 契約自檢本體（在Pyodide裡執行，用yt-dlp自己的公開/半公開API逐條檢查耦合點，
+// 不需要網路）。回傳[{pipeline,id,ok,detail}]。本機CPython也能跑（bridges=False
+// 會跳過需要我們橋接的項目），升版前可以先在本機對新版wheel預跑。
+const PYODIDE_YTDLP_CONTRACT_SRC = String.raw`
+import re, json, os
+
+def fa_contract_check(expected, bridges):
+    """回傳 [{pipeline, id, ok, detail}]。bridges=True代表在Pyodide裡（我們的HTTP橋接/subprocess墊片已安裝），
+    False（本機CPython測試）時跳過需要橋接的項目。"""
+    out = []
+
+    def rec(pipeline, cid, ok, detail=''):
+        out.append({'pipeline': pipeline, 'id': cid, 'ok': bool(ok), 'detail': str(detail)})
+
+    def guard(pipeline, cid, fn):
+        try:
+            r = fn()
+            if isinstance(r, tuple):
+                rec(pipeline, cid, r[0], r[1])
+            else:
+                rec(pipeline, cid, bool(r))
+        except Exception as e:
+            rec(pipeline, cid, False, f'{type(e).__name__}: {e}')
+
+    import yt_dlp
+    from yt_dlp import YoutubeDL
+
+    def norm(v):
+        # 2026.08.19 與 2026.8.19 視為同一版；開發版尾巴的 .dev0 不影響比對
+        return '.'.join(str(int(p)) if p.isdigit() else p for p in str(v).split('.') if not p.startswith('dev'))
+
+    guard('版本', 'A1 已安裝版本等於釘住的版本', lambda: (norm(yt_dlp.version.__version__) == norm(expected['version']),
+          f"實際 {yt_dlp.version.__version__}，釘住 {expected['version']}"))
+
+    # ---- B. HTTP橋接（公開擴充API）----
+    def b1():
+        from yt_dlp.networking.common import RequestHandler, Response, register_rh, register_preference, Features
+        return True
+    guard('HTTP橋接', 'B1 networking公開API存在', b1)
+    if bridges:
+        def b2():
+            names = [h.RH_NAME for h in YoutubeDL({'quiet': True})._request_director.handlers.values()]
+            return ('fafetch' in names, f'handlers={names}')
+        guard('HTTP橋接', 'B2 fafetch已註冊進request director', b2)
+
+    # ---- C. subprocess墊片 ----
+    def c1():
+        from yt_dlp.utils import Popen
+        miss = [m for m in ('communicate_or_kill', 'run', '__enter__', '__exit__', 'kill') if not hasattr(Popen, m)]
+        return (not miss, f'缺少 {miss}' if miss else '')
+    guard('subprocess墊片', 'C1 utils.Popen介面', c1)
+    if bridges:
+        def c2():
+            from yt_dlp.utils._jsruntime import DenoJsRuntime
+            info = DenoJsRuntime()._info()
+            return (bool(info and info.supported), f'info={info}')
+        guard('subprocess墊片', 'C2 yt-dlp的deno偵測（走我們墊片）', c2)
+
+    # ---- D. JS簽章橋接 ----
+    from yt_dlp.extractor.youtube.jsc._builtin import vendor
+
+    def d1():
+        core = vendor.load_script('yt.solver.core.js')
+        lib = vendor.load_script('yt.solver.deno.lib.js')
+        return (bool(core) and bool(lib), f'vendor.VERSION={vendor.VERSION}')
+    guard('JS簽章橋接', 'D1 vendor腳本可讀取', d1)
+    guard('JS簽章橋接', 'D2 core腳本以「var jsc =」開頭',
+          lambda: re.search(r'\bvar jsc\s*=', vendor.load_script('yt.solver.core.js')[:2000]) is not None)
+
+    def d3():
+        lib = vendor.load_script('yt.solver.deno.lib.js')
+        m = re.search(r'npm:meriyah@([\d.]+)', lib)
+        a = re.search(r'npm:astring@([\d.]+)', lib)
+        got = (m and m.group(1), a and a.group(1))
+        return (got == (expected['meriyah'], expected['astring']),
+                f"上游要求 meriyah={got[0]} astring={got[1]}；我們載入 meriyah={expected['meriyah']} astring={expected['astring']}")
+    guard('JS簽章橋接', 'D3 meriyah/astring版本與我們載入的一致', d3)
+
+    def d4():
+        from yt_dlp.extractor.youtube.jsc._builtin.deno import DenoJCP
+
+        class S:  # 假instance，只提供_construct_stdin用到的兩個屬性
+            class _lib_script:
+                code = 'LIB;'
+
+            class _core_script:
+                code = 'CORE;'
+        stdin = DenoJCP._construct_stdin(S, 'PLAYERSRC', False, [])
+        m = re.search(expected['stdin_regex'], stdin, re.S)
+        if not m:
+            return (False, '我們的正規表示式抓不到jsc(...)請求；stdin結尾=' + repr(stdin[-120:]))
+        data = json.loads(m.group(1))
+        return (data.get('type') == 'player' and data.get('player') == 'PLAYERSRC', f'抓到keys={sorted(data)}')
+    guard('JS簽章橋接', 'D4 stdin範本可被我們的正規表示式解析', d4)
+
+    def d5():
+        from yt_dlp.extractor.youtube.jsc._builtin.deno import DenoJCP
+        opts = DenoJCP._DENO_BASE_OPTIONS
+        return ('--cached-only' not in opts and hasattr(DenoJCP, '_npm_packages_cached'), f'base_options={opts}')
+    guard('JS簽章橋接', 'D5 deno provider的npm快取探測仍存在（我們的墊片要對它回exit 0）', d5)
+
+    def d6():
+        from yt_dlp.utils._jsruntime import DenoJsRuntime
+        return (DenoJsRuntime.MIN_SUPPORTED_VERSION <= (2, 3, 0),
+                f'MIN_SUPPORTED_VERSION={DenoJsRuntime.MIN_SUPPORTED_VERSION}，我們回報deno 2.3.0')
+    guard('JS簽章橋接', 'D6 最低deno版本不高於我們宣稱的2.3.0', d6)
+
+    def d7():
+        from yt_dlp.extractor.youtube.jsc._builtin import ejs
+        return hasattr(ejs.EJSBaseJCP, '_construct_stdin') and hasattr(ejs.EJSBaseJCP, '_run_js_runtime')
+    guard('JS簽章橋接', 'D7 EJSBaseJCP._construct_stdin/_run_js_runtime存在', d7)
+
+    def d8():
+        return (YoutubeDL({'quiet': True, 'js_runtimes': {'deno': {}}})._js_runtimes is not None, '')
+    guard('JS簽章橋接', 'D8 params[js_runtimes]設定被接受', d8)
+
+    # ---- E. 格式選擇與結果解析 ----
+    def fmt(fid, proto, v, a, h=None, ext='webm'):
+        return {'format_id': fid, 'protocol': proto, 'vcodec': v, 'acodec': a, 'height': h, 'ext': ext,
+                'url': 'http://x/' + fid, 'tbr': 100, 'quality': 1}
+
+    def run_sel(formats):
+        sel = YoutubeDL({'quiet': True}).build_format_selector(expected['format'])
+        return list(sel({'formats': formats, 'incomplete_formats': False, 'has_merged_format': False}))
+
+    def e1():
+        r = run_sel([fmt('hls', 'm3u8_native', 'avc1', 'mp4a', 720, 'mp4'), fmt('v', 'https', 'vp9', 'none', 1080),
+                     fmt('a', 'https', 'none', 'opus')])
+        rf = r[0].get('requested_formats') if r else None
+        ids = [x['format_id'] for x in rf] if rf else None
+        return (ids == ['v', 'a'], f'選到 {ids}（應為分開的http影片+音訊，且不可選HLS）')
+    guard('格式/結果解析', 'E1 無muxed時選http影片+音訊，排除HLS', e1)
+
+    def e2():
+        r = run_sel([fmt('v', 'https', 'vp9', 'none', 1080), fmt('a', 'https', 'none', 'opus'),
+                     fmt('m', 'https', 'avc1', 'mp4a', 360, 'mp4')])
+        return (bool(r) and r[0].get('format_id') == 'm' and not r[0].get('requested_formats'),
+                f"選到 {r[0].get('format_id') if r else None}")
+    guard('格式/結果解析', 'E2 有muxed https單檔時優先選它', e2)
+
+    def e3():
+        r = run_sel([fmt('v', 'https', 'vp9', 'none', 1080), fmt('a', 'https', 'none', 'opus')])
+        rf = r[0]['requested_formats']
+        return (all(x.get('url') and x.get('ext') and 'vcodec' in x for x in rf), 'requested_formats需含url/ext/vcodec')
+    guard('格式/結果解析', 'E3 requested_formats欄位（url/ext/vcodec）', e3)
+
+    # ---- F. extractor-args鍵名 ----
+    def f1():
+        d = os.path.join(os.path.dirname(yt_dlp.__file__), 'extractor', 'youtube')
+        txt = ''
+        for root, _, files in os.walk(d):
+            for fn in files:
+                if fn.endswith('.py'):
+                    try:
+                        txt += open(os.path.join(root, fn), encoding='utf8').read()
+                    except Exception:
+                        pass
+        miss = [k for k in ('player_client', 'po_token') if k not in txt]
+        return (not miss, f'找不到鍵名 {miss}' if miss else '')
+    guard('extractor-args', 'F1 player_client / po_token鍵名仍存在', f1)
+
+    # ---- G. logger介面 ----
+    def g1():
+        lines = []
+
+        class L:
+            def debug(self, m):
+                lines.append(m)
+
+            def warning(self, m):
+                lines.append(m)
+
+            def error(self, m):
+                lines.append(m)
+        y = YoutubeDL({'logger': L(), 'verbose': True, 'quiet': True})
+        y.write_debug('契約自檢')
+        return (any('契約自檢' in x for x in lines), f'收到{len(lines)}行')
+    guard('logger', 'G1 自訂logger收得到verbose輸出', g1)
+    return out
+
+`;
+
 // tw_stock_db客製: 2026-09-29——攔截yt-dlp-ejs對外部JS runtime（deno/node/
 // bun/quickjs）的subprocess呼叫，改導向_ytDlpJscBridge（見該方法的完整
 // 說明）。**只冒充'deno'這一種**（EJS四個provider裡優先權最高的一個，
@@ -2941,7 +3142,7 @@ def _fa_extract_jsc_request(stdin_text):
     # _construct_stdin()固定用這個格式收尾：console.log(JSON.stringify(jsc(<請求JSON>)));
     # 我們不執行前面那段lib/core script文字本身（改用_ytDlpJscBridge自己
     # 更可靠的meriyah/astring/core.js來源），只需要regex取出最後這個JSON。
-    m = re.search(r'jsc\\((\\{.*\\})\\)\\);\\s*$', stdin_text, re.S)
+    m = re.search(r'${FA_YTDLP_CONTRACT.jscStdinRegex}', stdin_text, re.S)
     if not m:
         raise ValueError('無法從stdin解析出jsc()呼叫的請求JSON——EJS腳本樣板可能已經改版')
     return m.group(1)
@@ -5329,6 +5530,13 @@ class FloatingAssistant {
             '/media-youtube-download-verbose', '<YouTube連結或一段含連結的文字>',
             '跟/media-youtube-download完全一樣，差別是不管成功或失敗都會附上yt-dlp的verbose除錯輸出（實際嘗試了哪個player client、各自的錯誤訊息），跟command line `yt-dlp -v`的輸出對得上，用於診斷「為什麼這支影片下載失敗/成功」。',
             (argsText) => this._handleMediaYoutubeDownloadCommand(argsText, true)
+        );
+        // tw_stock_db客製: 2026-09-30——yt-dlp跟版契約自檢（釘版本＋逐條檢查我們跟上游的耦合點，
+        // 升版時用它找出哪條管線要改寫，見DESIGN.youtube-download.md）。純本地，不打YouTube。
+        this.register_slash_command(
+            '/media-youtube-selfcheck', '[<yt-dlp版本>|reset]',
+            '檢查下載功能跟yt-dlp上游的耦合點（HTTP橋接／subprocess墊片／JS簽章橋接／格式選擇／extractor-args／logger）是否都還成立，指出升版後哪條管線要改寫。不給參數＝直接自檢；給版本號（例如 2026.9.1）＝設定「試用新版本」，重新整理後再自檢一次確認；reset＝清除試用設定、回到釘住的版本。',
+            (argsText) => this._handleMediaYoutubeSelfcheckCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
         // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
@@ -23195,8 +23403,8 @@ ${sourceTool.handlerScript}
         if (this._ytDlpJscLibsLoadPromise) return this._ytDlpJscLibsLoadPromise;
         this._ytDlpJscLibsLoadPromise = (async () => {
             const [meriyahMod, astringMod] = await Promise.all([
-                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/meriyah@6.1.4/+esm')),
-                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/astring@1.9.0/+esm')),
+                import(/* webpackIgnore: true */ this._viaAssetProxy(`https://cdn.jsdelivr.net/npm/meriyah@${FA_YTDLP_CONTRACT.meriyah}/+esm`)),
+                import(/* webpackIgnore: true */ this._viaAssetProxy(`https://cdn.jsdelivr.net/npm/astring@${FA_YTDLP_CONTRACT.astring}/+esm`)),
             ]);
             this._ytDlpJscLibs = { meriyah: meriyahMod, astring: astringMod };
             return this._ytDlpJscLibs;
@@ -23270,7 +23478,7 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
             }
             try {
                 const micropip = instance.pyimport('micropip');
-                await micropip.install('yt-dlp');
+                await micropip.install(`yt-dlp==${this._ytDlpVersion()}`);
                 await instance.runPythonAsync('import yt_dlp');
             } catch (err) {
                 throw new Error(`yt-dlp安裝/載入失敗：${String(err.message || err)}`);
@@ -23288,9 +23496,107 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
                 throw new Error(`JS簽章解密橋接註冊失敗：${String(err.message || err)}`);
             }
             this._ytDlpReady = true;
+            // 載入完成後在背景跑一次契約自檢（結果存this._ytContract，失敗印console.warn；不阻塞下載）
+            setTimeout(() => { this._ytDlpContractCheck().catch((e) => console.warn('[yt-dlp契約自檢] 執行失敗：', e)); }, 0);
             return instance;
         })().catch(e => { this._ytDlpLoadPromise = null; this._ytDlpReady = false; throw e; });
         return this._ytDlpLoadPromise;
+    }
+
+    // tw_stock_db客製: 2026-09-30——yt-dlp釘版本＋契約自檢（見FA_YTDLP_CONTRACT的說明與
+    // DESIGN.youtube-download.md）。預設用釘住的版本；要試新版本時在localStorage設
+    // fa_ytdlp_version_override（/media-youtube-selfcheck <版本>會幫忙設定），重新整理後生效。
+    _ytDlpVersion() {
+        let o = '';
+        try { o = String(localStorage.getItem('fa_ytdlp_version_override') || '').trim(); } catch (_) { /* 沒有localStorage就用釘住版本 */ }
+        return /^[0-9][0-9A-Za-z.+-]*$/.test(o) ? o : FA_YTDLP_CONTRACT.version;
+    }
+
+    async _ytDlpContractCheck() {
+        const instance = await this._ensureYtDlpLoaded();
+        instance.runPython(PYODIDE_YTDLP_CONTRACT_SRC);
+        const fn = instance.globals.get('fa_contract_check');
+        const expected = instance.toPy({
+            version: FA_YTDLP_CONTRACT.version, meriyah: FA_YTDLP_CONTRACT.meriyah, astring: FA_YTDLP_CONTRACT.astring,
+            format: FA_YTDLP_CONTRACT.formatSelector, stdin_regex: FA_YTDLP_CONTRACT.jscStdinRegex,
+        });
+        let results;
+        try {
+            const pyRes = fn(expected, true);
+            results = pyRes.toJs({ dict_converter: Object.fromEntries });
+            pyRes.destroy();
+        } finally { expected.destroy(); fn.destroy(); }
+        // JS端項目：core腳本＋meriyah/astring在瀏覽器裡能載入並實際執行（最小請求會丟出
+        // 「unexpected structure」這種受控錯誤＝已經跑到解析階段；ReferenceError/TypeError才是載入壞了）
+        try {
+            await this._ensureYtDlpJscLibsLoaded();
+            const jsc = this._buildYtDlpJscFn(instance);
+            let ok = true, detail = '回傳了結果';
+            try { jsc({ type: 'player', player: 'var a=1;', requests: [], output_preprocessed: true }); } catch (e) {
+                ok = !(e instanceof ReferenceError || e instanceof TypeError);
+                detail = `最小請求丟出「${String((e && e.message) || e).slice(0, 80)}」（受控錯誤＝core與meriyah/astring已載入並跑到解析階段）`;
+            }
+            results.push({ pipeline: 'JS簽章橋接', id: 'D9 core腳本＋meriyah/astring在瀏覽器可載入執行', ok, detail });
+        } catch (e) {
+            results.push({ pipeline: 'JS簽章橋接', id: 'D9 core腳本＋meriyah/astring在瀏覽器可載入執行', ok: false, detail: String((e && e.message) || e) });
+        }
+        const failed = results.filter((r) => !r.ok);
+        this._ytContract = { at: Date.now(), version: this._ytDlpVersion(), pinned: FA_YTDLP_CONTRACT.version, results, failed };
+        if (failed.length) console.warn(`[yt-dlp契約自檢] ${failed.length}/${results.length}項失敗：`, failed);
+        else console.log(`[yt-dlp契約自檢] ${results.length}項全數通過（yt-dlp ${this._ytDlpVersion()}）`);
+        return this._ytContract;
+    }
+
+    _ytContractHint() {
+        const c = this._ytContract;
+        if (!c || !c.failed.length) return '';
+        return `\n（上游契約自檢有${c.failed.length}項失敗：${c.failed.map((f) => f.id.split(' ')[0]).join('、')}——執行 /media-youtube-selfcheck 看是哪條管線要改寫）`;
+    }
+
+    async _handleMediaYoutubeSelfcheckCommand(argsText) {
+        const arg = String(argsText || '').trim();
+        if (arg) {
+            let msg;
+            if (arg.toLowerCase() === 'reset') {
+                try { localStorage.removeItem('fa_ytdlp_version_override'); } catch (_) { /* 忽略 */ }
+                msg = `已清除試用版本設定，之後回到釘住的版本 ${FA_YTDLP_CONTRACT.version}。請重新整理頁面後生效。`;
+            } else if (!/^[0-9][0-9A-Za-z.+-]*$/.test(arg)) {
+                this._failSlashCommandValidation(`/media-youtube-selfcheck ${arg}`, '/media-youtube-selfcheck：版本格式不合法，例如 /media-youtube-selfcheck 2026.9.1，或用 reset 清除試用設定');
+                return;
+            } else {
+                try { localStorage.setItem('fa_ytdlp_version_override', arg); } catch (_) { /* 忽略 */ }
+                msg = `已設定試用 yt-dlp ${arg}（釘住的版本是 ${FA_YTDLP_CONTRACT.version}）。**請重新整理頁面**，之後再執行 /media-youtube-selfcheck 看契約自檢結果；確認每條管線都沒問題後，再把 desktop-app/renderer/src/floating-assistant.js 的 FA_YTDLP_CONTRACT.version 改成新版本並更新DESIGN.youtube-download.md。`;
+            }
+            this.messages.push({ role: 'user', content: `/media-youtube-selfcheck ${arg}` });
+            this._pushAssistantMessage(msg, null);
+            this._persistChatHistory();
+            this._renderMessageHistory();
+            return;
+        }
+        this.messages.push({ role: 'user', content: '🔎 yt-dlp跟版契約自檢' });
+        const prog = this._createProgressWidget('yt-dlp跟版契約自檢');
+        let c;
+        try {
+            prog.update({ pct: 10, status: '載入yt-dlp執行環境中（第一次需要下載Python環境與套件，可能要1～2分鐘）…', force: true });
+            c = await this._ytDlpContractCheck();
+        } catch (err) {
+            this._failSlashCommandRuntime(prog, String((err && err.message) || err));
+            return;
+        }
+        prog.finish(c.failed.length ? `${c.failed.length}項失敗` : '全數通過');
+        const groups = new Map();
+        for (const r of c.results) { if (!groups.has(r.pipeline)) groups.set(r.pipeline, []); groups.get(r.pipeline).push(r); }
+        const lines = [`**yt-dlp 跟版契約自檢**：實際使用 \`${c.version}\`，釘住版本 \`${c.pinned}\`${c.version !== c.pinned ? '（⚠️目前是試用版本）' : ''}——${c.results.length - c.failed.length}/${c.results.length} 項通過\n`];
+        for (const [pipeline, items] of groups) {
+            const bad = items.filter((x) => !x.ok).length;
+            lines.push(`**${bad ? '❌' : '✅'} ${pipeline}**`);
+            for (const it of items) lines.push(`- ${it.ok ? '✅' : '❌'} ${it.id}${!it.ok && it.detail ? `：${it.detail}` : ''}`);
+            lines.push('');
+        }
+        if (c.failed.length) lines.push('❌ 的項目對應的管線就是升版後需要改寫的地方，對照表見 DESIGN.youtube-download.md 的「耦合點與改寫指引」。');
+        this._pushAssistantMessage(lines.join('\n'), null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
     }
 
     // tw_stock_db客製: 2026-09-25——從貼上的文字裡抓YouTube連結（
@@ -23525,7 +23831,7 @@ ydl_opts = {
     # 「Requested format is not available」）。優先選單一http檔案的影音合一格式，
     # 沒有就選http的最佳影片(<=1080p)＋最佳音訊分開下載（沒有ffmpeg合併，兩個檔
     # 都交付）。[protocol^=http]排除HLS(m3u8)——那是播放清單，不是媒體檔。
-    'format': 'b[protocol^=http][vcodec!=none][acodec!=none]/bv*[protocol^=http][height<=1080]+ba[protocol^=http]',
+    'format': '${FA_YTDLP_CONTRACT.formatSelector}',
     'js_runtimes': {'deno': {}},
     'extractor_args': ${extractorArgsPy},
     'verbose': True,
@@ -23584,9 +23890,9 @@ _result
                 ? `\n\n--- yt-dlp verbose輸出（最後${info.debug_log.length}行，跟command line的-v輸出同一份資訊）---\n${info.debug_log.join('\n')}`
                 : '';
             if (info.only_storyboards) {
-                throw new Error(`這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式${poTokenNote}${debugTail}`);
+                throw new Error(`這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式${poTokenNote}${this._ytContractHint()}${debugTail}`);
             }
-            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}${debugTail}`);
+            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}${this._ytContractHint()}${debugTail}`);
         }
         const parts = (info.parts || []).filter((p) => p && p.url);
         if (!parts.length) throw new Error('yt-dlp沒有解析出可下載的媒體網址（沒有任何http格式可用）');
