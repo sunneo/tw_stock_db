@@ -1605,7 +1605,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files', 'youtube_download'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
@@ -1616,6 +1616,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
             '- extract_video_frames：擷取影片指定時間點的畫面存成圖片（file_id），搭配interpret_image看內容、compare_images跟其他圖片（例如投影片裡抽出來的圖）比對，就能靠畫面內容找出該剪哪一段時間，再用extract_clip_range剪出來。先粗取樣（例如每30秒一張）比對，再對候選附近加密縮小範圍。\n' +
             '- convert_video_to_animation：把整支影片或其中一段時間範圍逐格轉成這個app的2D動畫YAML格式（不是你自己設計動畫，是真實影片畫面內嵌成JPEG逐格播放），每個影格都是內嵌base64圖片，間隔太密/範圍太長檔案會暴增，需要提醒使用者控制範圍。\n' +
+            '- youtube_download：下載YouTube影片（瀏覽器端Pyodide跑真正的yt-dlp）。**只允許(a)使用者自己頻道的影片，或(b)授權欄位是Creative Commons的影片**，其餘一律跳過並說明原因；需要先在Advance Settings設定YouTube Data API金鑰跟使用者自己的頻道ID，沒設定會直接回報要先去設定。⚠️**已知限制，如實告知使用者，不要重試或假裝能繞過**：這個功能有JS簽章解密橋接，但YouTube目前對多數影片還會額外要求PO Token（另一套獨立的反機器人驗證，這個app還沒有實作），實際測試時很多影片仍然會回報「只剩storyboard縮圖格式，沒有真實音視訊格式」——收到這個錯誤時直接照實轉告使用者這是目前的技術限制，不是設定錯誤，不要嘗試用其他工具（code_execution等）繞過或假裝下載成功。\n' +
             '需要指定檔案時可以用file_id或檔名，或留空用最近上傳的。⚠️transcribe_media第一次執行會下載Whisper模型（約77MB）、text_to_speech第一次執行會下載Kokoro模型（約90MB），之後瀏覽器都會快取；transcribe_media/burn_subtitles/compose_video/text_to_speech都可能要跑一段時間（會逐步回報進度），呼叫後要等真正的結果，不要在拿到結果前就說「已經好了」。逐字稿很長且使用者要的是摘要時，回傳結果裡的transcript_file_id可以再委派給檔案解讀領域用summarize_large_text處理，不要自己把超長逐字稿整段貼回去。使用者要「幫影片配音／錄自己的聲音」時，那是另一個領域（video_editing），委派過去，不要自己在這裡兜。',
     },
     // tw_stock_db客製: 2026-09-12使用者要求——「配音」獨立成一個影片編修
@@ -2810,14 +2811,34 @@ def _fa_run(argv, *args, input=None, capture_output=True, text=True, check=False
 subprocess.run = _fa_run
 
 class _FaPopen:
+    # tw_stock_db客製: 2026-09-29實測發現——標準subprocess用法常常是
+    # 「建構時stdin=subprocess.PIPE（只是個sentinel常數，不是真資料），
+    # 真正要送進去的內容留到之後呼叫.communicate(input=真資料)才給」
+    # （yt-dlp自己的Popen.run()就是這樣寫的）。原本這裡在__init__當下就
+    # 急著跑完整個指令，等於永遠只送出sentinel常數本身，收不到真正該給的
+    # stdin內容。改成延後到communicate()/wait()第一次被呼叫時才真的執行，
+    # 屆時才拿得到communicate(input=...)給的真正資料。
     def __init__(self, argv, *a, stdin=None, **kw):
-        self._r = _fa_run(argv, input=stdin, **kw)
+        self._argv = argv
+        self._kw = kw
+        self._initial_stdin = stdin if (stdin is not subprocess.PIPE and stdin is not None) else None
+        self._r = None
+        self.returncode = None
+        self.stdout = None
+        self.stderr = None
+    def _fa_ensure_run(self, input=None):
+        if self._r is not None:
+            return
+        use_input = input if input is not None else self._initial_stdin
+        self._r = _fa_run(self._argv, input=use_input, **self._kw)
         self.returncode = self._r.returncode
         self.stdout = self._r.stdout
         self.stderr = self._r.stderr
     def communicate(self, input=None, timeout=None):
+        self._fa_ensure_run(input)
         return (self.stdout, self.stderr)
     def wait(self, timeout=None):
+        self._fa_ensure_run()
         return self.returncode
     def poll(self):
         return self.returncode
@@ -2885,6 +2906,63 @@ class FaYtFetchRH(RequestHandler):
 @register_preference(FaYtFetchRH)
 def _fa_prefer_ytfetch(handler, request):
     return 1000
+`;
+
+// tw_stock_db客製: 2026-09-29——攔截yt-dlp-ejs對外部JS runtime（deno/node/
+// bun/quickjs）的subprocess呼叫，改導向_ytDlpJscBridge（見該方法的完整
+// 說明）。**只冒充'deno'這一種**（EJS四個provider裡優先權最高的一個，
+// preference=1000，其餘node=900/quickjs=850/bun=800），原因：(1)
+// DenoJCP/BunJCP的_iter_script_sources各自有自己專屬的BUILTIN lib script
+// 來源（yt.solver.deno.lib.js／yt.solver.bun.lib.js），NodeJCP／
+// QuickJSJCP完全沒有覆寫這個方法，預設4種來源（PYPACKAGE/CACHE/BUILTIN/
+// WEB）在沒有額外安裝yt-dlp-ejs這個PyPI套件、也沒有開`--remote-components
+// ejs:github`的情況下，連lib script都找不到、根本進不了_run_js_runtime這
+// 一步——已實測確認只有deno/bun這兩個provider在預設情況下真的可用，選
+// deno是因為它優先權更高，選中了其他provider就不會再被嘗試。(2)
+// `--version`探測只需要回報一個看起來合理的版本字串，內容本身不重要，
+// 只要能通過DenoJsRuntime._info()的`^deno (\\S+)`正規表示式、且版本號
+// 高於MIN_SUPPORTED_VERSION (2,3,0)即可。
+// 這段程式碼**必須在yt-dlp已經import完成之後**才能執行（要monkeypatch
+// 全域的_fa_run／subprocess.Popen，這兩個名字在PYODIDE_SUBPROCESS_SHIM_SRC
+// 階段就已經定義好，這裡只是疊加一層攔截，不影響其餘既有指令的行為）。
+const PYODIDE_YTDLP_JSC_BRIDGE_SRC = `
+import subprocess, asyncio, re
+import _fa_yt_jsc_bridge
+
+_FA_JSC_VERSION_OUTPUT = 'deno 2.3.0 (release, x86_64-unknown-linux-gnu)\\nv8 12.4.254.20\\ntypescript 5.6.2\\n'
+
+def _fa_extract_jsc_request(stdin_text):
+    # _construct_stdin()固定用這個格式收尾：console.log(JSON.stringify(jsc(<請求JSON>)));
+    # 我們不執行前面那段lib/core script文字本身（改用_ytDlpJscBridge自己
+    # 更可靠的meriyah/astring/core.js來源），只需要regex取出最後這個JSON。
+    m = re.search(r'jsc\\((\\{.*\\})\\)\\);\\s*$', stdin_text, re.S)
+    if not m:
+        raise ValueError('無法從stdin解析出jsc()呼叫的請求JSON——EJS腳本樣板可能已經改版')
+    return m.group(1)
+
+_fa_run_pre_jsc = _fa_run
+
+def _fa_run_with_jsc(argv, *args, input=None, **kwargs):
+    argv_list = argv.split() if isinstance(argv, str) else list(argv)
+    argv0_base = (argv_list[0] if argv_list else '').rsplit('/', 1)[-1]
+    if argv0_base != 'deno':
+        return _fa_run_pre_jsc(argv, *args, input=input, **kwargs)
+    text_mode = kwargs.get('text', True)
+    if '--version' in argv_list:
+        out = _FA_JSC_VERSION_OUTPUT
+        return subprocess.CompletedProcess(argv_list, 0, out if text_mode else out.encode(), '' if text_mode else b'')
+    stdin_text = input.decode('utf-8') if isinstance(input, bytes) else input
+    if not stdin_text:
+        return subprocess.CompletedProcess(argv_list, 1, '', 'jsc bridge：deno被呼叫時沒有收到任何stdin內容')
+    try:
+        request_json = _fa_extract_jsc_request(stdin_text)
+        result_json = asyncio.run(_fa_yt_jsc_bridge.solve(request_json))
+    except Exception as e:
+        return subprocess.CompletedProcess(argv_list, 1, '', f'jsc bridge執行失敗：{e!r}')
+    return subprocess.CompletedProcess(argv_list, 0, result_json if text_mode else result_json.encode(), '' if text_mode else b'')
+
+_fa_run = _fa_run_with_jsc
+subprocess.run = _fa_run_with_jsc
 `;
 
 // tw_stock_db客製: 建立「使用者從未設定過model rows」時的預設清單——直接把
@@ -5207,6 +5285,17 @@ class FloatingAssistant {
             '/media-compare-images', '<圖片1,圖片2,...> [想比較什麼…]',
             '把2~6張圖片一起交給支援讀圖(vision)的model比較（會實際呼叫一次AI，不是純本地運算）。圖片來源可以是file_id或http(s)網址，用逗號分隔、不要有空格；後面接著的文字整段當作想問的問題，留空就做一般的相同點/差異比較。例如 /media-compare-images file_1,file_2 哪一張比較新',
             (argsText) => this._handleMediaCompareImagesCommand(argsText)
+        );
+        // tw_stock_db客製: 2026-09-29使用者要求——「我也要有slash command來
+        // 讓我驗證」：youtube_download原本只有AI工具能呼叫，使用者自己完全
+        // 沒有管道能測試/觀察實際結果（只能看AI轉述）。跟/media-transcribe
+        // 同一種「本地直接呼叫底層流程，不經過AI決策」模式，讓使用者可以
+        // 直接貼YouTube連結測試，親眼看到真正的下載結果或錯誤訊息（包含
+        // PO Token這個已知限制造成的失敗），不用透過AI轉述。
+        this.register_slash_command(
+            '/media-youtube-download', '<YouTube連結或一段含連結的文字>',
+            '下載YouTube影片（瀏覽器端跑真正的yt-dlp）。**只允許(a)你自己頻道的影片，或(b)Creative Commons授權的影片**，其餘會跳過並說明原因；需要先在Advance Settings設定YouTube Data API金鑰與你的頻道ID。⚠️已知限制：YouTube目前對多數影片會要求PO Token（這個app還沒實作的另一套反機器人驗證），很多影片會下載失敗、只剩storyboard縮圖格式可用，這是目前技術上的落差，不是操作錯誤。',
+            (argsText) => this._handleMediaYoutubeDownloadCommand(argsText)
         );
         // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
         // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
@@ -8939,7 +9028,7 @@ ${fnData.code}
         // 手動改寫成JS），只能抓到progressive格式（沒有ffmpeg沒辦法mux
         // DASH高畫質音視訊分離串流，這是明確的品質上限）。
         registerOptional('youtube_download',
-            '從一段文字裡解析出YouTube連結（或直接給連結陣列），驗證每個影片是否符合下載範圍後下載：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因（不支援下載任意版權影片）。需要先在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）——沒設定會直接回報要先去設定。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
+            '從一段文字裡解析出YouTube連結（或直接給連結陣列），驗證每個影片是否符合下載範圍後下載：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因（不支援下載任意版權影片）。需要先在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）——沒設定會直接回報要先去設定。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。⚠️**已知限制**：YouTube目前對多數影片會要求PO Token（獨立於JS簽章解密之外的另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、回報只剩storyboard縮圖格式——收到這個錯誤要如實轉告使用者，不要重試或嘗試繞過。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
             async (rawArgs) => {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -8949,35 +9038,8 @@ ${fnData.code}
                 if (!videoIds.length) return JSON.stringify({ ok: false, error: '沒有從text/urls裡解析出任何YouTube連結（支援youtube.com/watch?v=、youtu.be/、/embed/、/shorts/這幾種格式）' });
                 const progress = this._createProgressWidget('YouTube 下載');
                 try {
-                    progress.update({ pct: 5, status: `解析到${videoIds.length}支影片，驗證下載範圍中...` });
-                    let checks;
-                    try {
-                        checks = await this._youtubeCheckLicenseAndOwnership(videoIds);
-                    } catch (err) {
-                        progress.fail(String(err.message || err));
-                        return JSON.stringify({ ok: false, error: String(err.message || err) });
-                    }
-                    const allowed = videoIds.filter((id) => checks[id] && checks[id].ok);
-                    const skipped = videoIds.filter((id) => !checks[id] || !checks[id].ok)
-                        .map((id) => ({ video_id: id, reason: (checks[id] && checks[id].reason) || '未知原因', title: checks[id] && checks[id].title }));
-                    const downloaded = [];
-                    const failed = [];
-                    for (let i = 0; i < allowed.length; i++) {
-                        const id = allowed[i];
-                        const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
-                        progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
-                        try {
-                            const { title, ext, bytes } = await this._youtubeDownloadOne(id);
-                            const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
-                            const blob = new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'application/octet-stream' });
-                            const delivered = await this.generateAndDeliverFile(blob, `${safeTitle}.${ext}`, blob.type);
-                            downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id });
-                        } catch (err) {
-                            failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
-                        }
-                    }
-                    progress.finish(`完成：成功${downloaded.length}支、跳過${skipped.length}支、失敗${failed.length}支`);
-                    return JSON.stringify({ ok: true, downloaded, skipped, failed, note: '只能下載progressive格式（沒有ffmpeg，沒辦法合併DASH分離的高畫質音視訊串流）。' });
+                    const result = await this._youtubeDownloadBatch(videoIds, progress);
+                    return JSON.stringify(result);
                 } catch (err) {
                     progress.fail(String(err.message || err));
                     return JSON.stringify({ ok: false, error: String(err.message || err) });
@@ -22810,6 +22872,75 @@ ${sourceTool.handlerScript}
         return this._ytDlpHttpBridgeObj;
     }
 
+    // tw_stock_db客製: 2026-09-29——YouTube的JS簽章/n參數解密橋接（yt-dlp
+    // 官方稱為「EJS」）。已讀過yt-dlp-ejs的deno.py/node.py/bun.py/quickjs.py
+    // 完整原始碼：四種runtime provider的協議完全一樣——把「lib script（提供
+    // meriyah語法解析器/astring程式碼產生器）+ core script（真正的解謎邏輯，
+    // 一個接受(meriyah, astring)兩個參數的IIFE，跑完賦值成全域變數`jsc`）+
+    // 呼叫`console.log(JSON.stringify(jsc(請求JSON)))`」這一整段JS原始碼
+    // 餵給runtime執行、讀stdout當JSON結果。**這裡不去模擬deno/node的
+    // subprocess+npm套件解析行為（deno的lib script用`npm:`這種deno專屬
+    // 的module specifier，瀏覽器原生import()解析不了）**，改成直接自己
+    // 掌控meriyah/astring的來源（改用瀏覽器能直接解析的jsDelivr ESM CDN
+    // 網址）跟core script的內容（直接從Pyodide虛擬檔案系統裡yt-dlp自己
+    // vendor的那份.js檔讀出來，跟真正執行的內容保證一致，不是另外抓一份
+    // 可能對不上版本的原始碼）——攔截點在Python那層（見_ensureYtDlpLoaded
+    // 裡的PYODIDE_YTDLP_JSC_BRIDGE_SRC monkeypatch），只從yt-dlp準備好的
+    // 完整stdin文字裡regex取出最後`jsc(<請求JSON>)`這段參數，其餘lib/core
+    // script文字本身不採用（我們自己有更可靠的來源），避免依賴deno/bun
+    // 專屬的npm import語法能不能被瀏覽器接受。
+    // meriyah@6.1.4／astring@1.9.0版本號跟yt.solver.deno.lib.js裡寫的完全
+    // 一致（已讀取該檔案原始內容確認），不是憑印象猜的版本。
+    async _ensureYtDlpJscLibsLoaded() {
+        if (this._ytDlpJscLibs) return this._ytDlpJscLibs;
+        if (this._ytDlpJscLibsLoadPromise) return this._ytDlpJscLibsLoadPromise;
+        this._ytDlpJscLibsLoadPromise = (async () => {
+            const [meriyahMod, astringMod] = await Promise.all([
+                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/meriyah@6.1.4/+esm')),
+                import(/* webpackIgnore: true */ this._viaAssetProxy('https://cdn.jsdelivr.net/npm/astring@1.9.0/+esm')),
+            ]);
+            this._ytDlpJscLibs = { meriyah: meriyahMod, astring: astringMod };
+            return this._ytDlpJscLibs;
+        })().catch(e => { this._ytDlpJscLibsLoadPromise = null; throw e; });
+        return this._ytDlpJscLibsLoadPromise;
+    }
+
+    // 從yt-dlp自己vendor的yt.solver.core.js（在Pyodide虛擬檔案系統裡）組出
+    // 可呼叫的jsc函式，只組一次、之後重複使用（一個Pyodide instance的生命
+    // 週期內，這份腳本內容不會變）。用`new Function('meriyah','astring', 腳本
+    // +'\\nreturn jsc;')`執行——這個腳本本身是`var jsc = (function(meriyah,
+    // astring){...})(meriyah, astring);`這種一般敘述句（不是ES module，沒有
+    // import/export語法問題），跟Function建構式的參數名稱剛好同名，IIFE內部
+    // 對meriyah/astring的參照會正確對應到Function自己的參數，不需要污染
+    // globalThis。
+    _buildYtDlpJscFn(instance) {
+        if (this._ytDlpJscFn) return this._ytDlpJscFn;
+        const corePath = instance.runPython(`
+import yt_dlp.extractor.youtube.jsc._builtin.vendor as _fa_vendor_mod
+import os as _fa_os
+_fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.js')
+`);
+        const coreJsText = instance.FS.readFile(corePath, { encoding: 'utf8' });
+        const libs = this._ytDlpJscLibs;
+        const fn = new Function('meriyah', 'astring', coreJsText + '\nreturn jsc;');
+        this._ytDlpJscFn = fn(libs.meriyah, libs.astring);
+        return this._ytDlpJscFn;
+    }
+
+    _ytDlpJscBridge() {
+        if (this._ytDlpJscBridgeObj) return this._ytDlpJscBridgeObj;
+        this._ytDlpJscBridgeObj = {
+            solve: async (dataJson) => {
+                await this._ensureYtDlpJscLibsLoaded();
+                const jsc = this._buildYtDlpJscFn(this._pyodideInstance);
+                const data = JSON.parse(dataJson);
+                const result = jsc(data);
+                return JSON.stringify(result);
+            },
+        };
+        return this._ytDlpJscBridgeObj;
+    }
+
     // tw_stock_db客製: 2026-09-25——yt-dlp的lazy-load（跟python/jq/m4等指令
     // 同一種「只在真的用到才載入」原則，使用者明確要求「僅在用到相對需要的
     // 功能再接」）。**只在_pyodideInstance已經存在的情況下額外掛yt-dlp**
@@ -22850,6 +22981,12 @@ ${sourceTool.handlerScript}
                 await instance.runPythonAsync(PYODIDE_YTDLP_BRIDGE_SRC);
             } catch (err) {
                 throw new Error(`YouTube網路橋接註冊失敗：${String(err.message || err)}`);
+            }
+            instance.registerJsModule('_fa_yt_jsc_bridge', this._ytDlpJscBridge());
+            try {
+                await instance.runPythonAsync(PYODIDE_YTDLP_JSC_BRIDGE_SRC);
+            } catch (err) {
+                throw new Error(`JS簽章解密橋接註冊失敗：${String(err.message || err)}`);
             }
             this._ytDlpReady = true;
             return instance;
@@ -22931,24 +23068,57 @@ ${sourceTool.handlerScript}
     // 'best[ext=mp4]/best'會優先選這種）——這個沙盒沒有ffmpeg，沒辦法mux
     // DASH分離的高畫質音視訊串流，這是明確的品質上限，不是bug（等
     // ffmpeg.wasm接上後可以放寬）。
+    // tw_stock_db客製: 2026-09-29——'js_runtimes': {'deno': {}}是必填，
+    // 不給的話yt-dlp根本不會嘗試偵測/使用任何JS runtime（見
+    // YoutubeDL._js_runtimes這個cached_property，完全只讀這個設定值，不會
+    // 自動探測），我們自己冒充的deno橋接也就永遠不會被呼叫到。
+    // **已知限制（2026-09-29實測發現，如實記錄）**：JS簽章/n參數解密只是
+    // 第一道關卡，YouTube目前對多數client還會另外要求PO Token（Proof-of-
+    // Origin，來源驗證權杖，用來確認請求來自真正的瀏覽器/已知用戶端，
+    // 是2024-2025新增、獨立於簽章解密之外的另一套反機器人機制）。這個app
+    // 目前**沒有**PO Token供應者（業界標準做法是另外跑一個執行Google
+    // BotGuard挑戰的Node.js服務，跟這裡做的JS簽章橋接是完全不同的兩套
+    // 系統），所以即使簽章解密橋接運作正常，多數影片仍然可能完全沒有
+    // 可用的真實音視訊格式（只剩storyboard縮圖）。這裡偵測到這種情況時
+    // 明確回報「可能是PO Token限制」，不是含糊的「沒有可用格式」，讓使用者
+    // 知道這是目前技術上還沒解決的已知落差，不是設定錯誤或程式bug。
     async _youtubeDownloadOne(videoId) {
         const instance = await this._ensureYtDlpLoaded();
         const script = `
-import yt_dlp, json as _fa_json4
+import yt_dlp, json as _fa_json4, traceback
 ydl_opts = {
     'quiet': True, 'no_warnings': True, 'skip_download': True,
     'format': 'best[ext=mp4]/best',
+    'js_runtimes': {'deno': {}},
 }
 _result = None
-with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-    info = ydl.extract_info('https://www.youtube.com/watch?v=${videoId}', download=False)
-    fmt_url = info.get('url')
-    if not fmt_url and info.get('formats'):
-        fmt_url = info['formats'][-1].get('url')
+try:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info('https://www.youtube.com/watch?v=${videoId}', download=False)
+        fmt_url = info.get('url')
+        if not fmt_url and info.get('formats'):
+            fmt_url = info['formats'][-1].get('url')
+        _result = _fa_json4.dumps({
+            'ok': True,
+            'title': info.get('title'),
+            'ext': info.get('ext') or 'mp4',
+            'url': fmt_url,
+        })
+except Exception as e:
+    # 沒有拿到任何real格式時，用「原始的、未經格式過濾的資訊」判斷是不是
+    # 卡在PO Token這關（只剩下storyboard縮圖格式）
+    only_storyboards = False
+    try:
+        ie = ydl.get_info_extractor('Youtube') if 'ydl' in dir() else None
+        raw = ie.extract('https://www.youtube.com/watch?v=${videoId}') if ie else None
+        fmts = (raw or {}).get('formats') or []
+        only_storyboards = bool(fmts) and all(f.get('protocol') == 'mhtml' for f in fmts)
+    except Exception:
+        pass
     _result = _fa_json4.dumps({
-        'title': info.get('title'),
-        'ext': info.get('ext') or 'mp4',
-        'url': fmt_url,
+        'ok': False,
+        'only_storyboards': only_storyboards,
+        'error': str(e),
     })
 _result
 `;
@@ -22959,11 +23129,48 @@ _result
             throw new Error(`yt-dlp解析影片資訊失敗：${String(err.message || err)}`);
         }
         const info = JSON.parse(infoJson);
+        if (!info.ok) {
+            if (info.only_storyboards) {
+                throw new Error('這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式。這個app目前已經有JS簽章解密橋接，但YouTube近期對多數影片還會額外要求「PO Token」（另一套獨立的反機器人驗證機制，目前這個app還沒有實作），這是已知的技術限制，不是設定錯誤。');
+            }
+            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}`);
+        }
         if (!info.url) throw new Error('yt-dlp沒有解析出可下載的媒體網址（可能沒有progressive格式可用）');
         const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });
         if (!resp.ok) throw new Error(`下載媒體檔案失敗：HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
         return { title: info.title || videoId, ext: info.ext || 'mp4', bytes: new Uint8Array(buf) };
+    }
+
+    // tw_stock_db客製: 2026-09-29——把youtube_download工具跟/media-youtube-download
+    // slash指令共用的「驗證範圍→逐一下載→交付檔案」流程抽出來，避免兩處各自
+    // 維護一份一樣的邏輯（slash指令是使用者實測回報「沒有地方可以自己驗證」
+    // 之後新增的，直接重用工具已經寫好、驗證過的流程）。progress是呼叫端
+    // 建立好的_createProgressWidget() handle，這裡只負責update/finish/fail。
+    async _youtubeDownloadBatch(videoIds, progress) {
+        progress.update({ pct: 5, status: `解析到${videoIds.length}支影片，驗證下載範圍中...` });
+        const checks = await this._youtubeCheckLicenseAndOwnership(videoIds);
+        const allowed = videoIds.filter((id) => checks[id] && checks[id].ok);
+        const skipped = videoIds.filter((id) => !checks[id] || !checks[id].ok)
+            .map((id) => ({ video_id: id, reason: (checks[id] && checks[id].reason) || '未知原因', title: checks[id] && checks[id].title }));
+        const downloaded = [];
+        const failed = [];
+        for (let i = 0; i < allowed.length; i++) {
+            const id = allowed[i];
+            const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
+            progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
+            try {
+                const { title, ext, bytes } = await this._youtubeDownloadOne(id);
+                const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+                const blob = new Blob([bytes], { type: ext === 'mp4' ? 'video/mp4' : 'application/octet-stream' });
+                const delivered = await this.generateAndDeliverFile(blob, `${safeTitle}.${ext}`, blob.type);
+                downloaded.push({ video_id: id, title, filename: `${safeTitle}.${ext}`, size_bytes: bytes.length, file_id: delivered && delivered.id });
+            } catch (err) {
+                failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
+            }
+        }
+        progress.finish(`完成：成功${downloaded.length}支、跳過${skipped.length}支、失敗${failed.length}支`);
+        return { ok: true, downloaded, skipped, failed, note: '只能下載progressive格式（沒有ffmpeg，沒辦法合併DASH分離的高畫質音視訊串流）；YouTube目前對多數影片會要求PO Token，這個app還沒實作，很多影片可能會出現在failed清單裡。' };
     }
 
     // ==== MP-METHODS-BEGIN ====
@@ -30387,6 +30594,34 @@ ${existingNodeSummaries}
         prog.finish(`已用${result.model_used ? '「' + result.model_used + '」' : ''}比較完成`);
         const imgList = result.labels.map((label, i) => `圖${i + 1}：${label}`).join('\n');
         this._pushAssistantMessage(`**圖片比較**\n\n${imgList}\n\n${result.comparison}`, null);
+        this._persistChatHistory();
+        this._renderMessageHistory();
+    }
+
+    // /media-youtube-download <連結或含連結的文字>——跟youtube_download工具
+    // 共用_youtubeDownloadBatch，讓使用者自己也能直接測試（不用透過AI轉述），
+    // 見該方法上方的說明。
+    async _handleMediaYoutubeDownloadCommand(argsText) {
+        const text = String(argsText || '').trim();
+        const videoIds = this._youtubeExtractVideoIds(text);
+        if (!videoIds.length) {
+            this._log('⚠️ /media-youtube-download：沒有從輸入裡解析出任何YouTube連結（支援youtube.com/watch?v=、youtu.be/、/embed/、/shorts/這幾種格式），例如 /media-youtube-download https://www.youtube.com/watch?v=xxxxxxxxxxx');
+            return;
+        }
+        this.messages.push({ role: 'user', content: `📺 YouTube下載：${videoIds.join(', ')}` });
+        const prog = this._createProgressWidget('YouTube 下載');
+        let result;
+        try {
+            result = await this._youtubeDownloadBatch(videoIds, prog);
+        } catch (err) {
+            prog.fail(String(err && err.message || err));
+            return;
+        }
+        const lines = [];
+        if (result.downloaded.length) lines.push('**已下載：**\n' + result.downloaded.map((d) => `- ${d.title || d.video_id}（${d.filename}）`).join('\n'));
+        if (result.skipped.length) lines.push('**跳過（不符合下載範圍）：**\n' + result.skipped.map((s) => `- ${s.title || s.video_id}：${s.reason}`).join('\n'));
+        if (result.failed.length) lines.push('**失敗：**\n' + result.failed.map((f) => `- ${f.title || f.video_id}：${f.error}`).join('\n'));
+        this._pushAssistantMessage(lines.join('\n\n') || '沒有任何結果。', null);
         this._persistChatHistory();
         this._renderMessageHistory();
     }
