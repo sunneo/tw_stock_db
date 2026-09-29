@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -197,9 +197,51 @@ async function createAiTab(url, active) {
   return { tab, groupId };
 }
 
+// tw_stock_db客製: 2026-09-30——http_fetch：讓 app 用「使用者自己瀏覽器的網路」發 HTTP 請求。
+// 背景：YouTube 對 Cloudflare 這類資料中心 IP 會要求登入，經 Worker 轉送的請求出口 IP 就是資料中心；
+// 擴充功能有 <all_urls> 主機權限（不受 CORS 限制），請求從使用者真實網路出去。
+// 安全邊界（比 <all_urls> 窄很多）：只放行 https 的 YouTube 相關網域、只允許 GET/POST/HEAD、
+// 不帶 cookie（credentials: omit），網頁版仍受既有「允許的網站」清單限制。
+const HTTP_FETCH_HOSTS = [/(^|\.)youtube\.com$/, /(^|\.)googlevideo\.com$/, /(^|\.)googleapis\.com$/, /^youtu\.be$/, /(^|\.)ytimg\.com$/];
+const HTTP_FETCH_DROP_HEADERS = /^(host|origin|referer|cookie|accept-encoding|content-length|connection|sec-.*|proxy-.*)$/i;
+function bytesToB64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64ToBytes(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 const commands = {
   async ping() {
-    return { version: VERSION, browser: navigator.userAgent };
+    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch"] };
+  },
+
+  async http_fetch(a) {
+    let u;
+    try { u = new URL(String(a.url || "")); } catch (_) { throw new Error("不合法的網址"); }
+    if (u.protocol !== "https:" || !HTTP_FETCH_HOSTS.some((re) => re.test(u.hostname))) throw new Error("http_fetch 只允許 https 的 YouTube 相關網域：" + u.hostname);
+    const method = String(a.method || "GET").toUpperCase();
+    if (!["GET", "POST", "HEAD"].includes(method)) throw new Error("http_fetch 只支援 GET/POST/HEAD");
+    const headers = {};
+    for (const [k, v] of Object.entries(a.headers && typeof a.headers === "object" ? a.headers : {})) {
+      if (!HTTP_FETCH_DROP_HEADERS.test(k)) headers[k] = String(v);
+    }
+    const init = { method, headers, credentials: "omit", redirect: "follow" };
+    if (a.bodyBase64 && method === "POST") init.body = b64ToBytes(String(a.bodyBase64));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.min(Math.max(Number(a.timeoutMs) || 30000, 1000), 100000));
+    try {
+      const resp = await fetch(u.href, Object.assign(init, { signal: ctrl.signal }));
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      const outHeaders = {};
+      resp.headers.forEach((v, k) => { outHeaders[k] = v; });
+      return { status: resp.status, statusText: resp.statusText, url: resp.url, headers: outHeaders, bodyBase64: bytesToB64(buf) };
+    } finally { clearTimeout(timer); }
   },
 
   async tab_group_create(a) {
