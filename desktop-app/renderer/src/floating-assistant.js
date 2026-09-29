@@ -22924,6 +22924,22 @@ ${sourceTool.handlerScript}
                 const buf = new Uint8Array(await resp.arrayBuffer());
                 const respHeaders = {};
                 resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+                // tw_stock_db客製: 2026-09-30使用者實測回報「Incomplete data
+                // received」重試——yt-dlp自己的完整性檢查（很可能是JSON parse
+                // 失敗，見下方說明）認定回應被截斷，懷疑是我們的proxy/fetch
+                // 鏈路在較大的JSON回應上漏收位元組。**不能靠比對Content-Length
+                // 判斷**：Cloudflare Worker的/proxy/路由會主動刪掉這個回應
+                // header（避免Workers對gzip/br回應自動解壓縮後，殘留的舊
+                // Content-Length誤導下游——見worker.js handleAssetProxy的
+                // 說明），所以這裡永遠收不到這個header可以比對。改成直接印出
+                // 實際收到的bytes數＋結尾200字元（如果是被砍斷的JSON，結尾
+                // 不會是合法的收尾字元如}/]，一眼就看得出來），下次重現
+                // 「Incomplete data received」時查console就有確切證據，不用
+                // 再猜。
+                if (buf.length > 0 && (respHeaders['content-type'] || '').includes('json')) {
+                    const tail = new TextDecoder().decode(buf.slice(Math.max(0, buf.length - 200)));
+                    console.log(`[yt-dlp http bridge] 收到${buf.length}bytes，結尾200字元＝${JSON.stringify(tail)}，url=${url}`);
+                }
                 return { status: resp.status, url: resp.url, headersJson: JSON.stringify(respHeaders), body: buf };
             },
         };
