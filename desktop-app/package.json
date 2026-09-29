@@ -1,6 +1,6 @@
 {
   "name": "floating-assistant-desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "floating-assistant.js 的Electron單機封裝——檔案存取直接授權（不用瀏覽器每次重新授權）、可執行本機程式的subagent、內建本地proxy取代Cloudflare Worker",
   "main": "main.js",
