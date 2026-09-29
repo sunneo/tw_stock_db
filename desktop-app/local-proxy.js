@@ -146,10 +146,28 @@ function handleProxyRequest(req, res, targetUrlRaw, overrideHeaders) {
   }
   const client = targetUrl.protocol === "http:" ? http : https;
 
+  // tw_stock_db客製: 2026-09-29實測發現的真實bug——這裡原本會把client端
+  // 送來的user-agent／全部sec-*（Sec-Fetch-*/Sec-CH-UA-*這類Fetch
+  // Metadata/Client Hints）headers直接丟掉，不轉發、也不用任何值補上。
+  // 這些header瀏覽器端的fetch()呼叫是自動附加的（頁面JS不能手動設定
+  // User-Agent，這是瀏覽器保留欄位），代表renderer端本來就是「真實瀏覽器
+  // 發出的、帶有真實瀏覽器特徵」的請求，但轉發到真正的上游時卻被拔光，
+  // 變成上游收到的請求完全沒有User-Agent、也沒有任何Sec-*標頭——用curl
+  // 直接驗證過（httpbin.org/headers回顯）：明明client端送了user-agent／
+  // sec-ch-ua／sec-fetch-mode，上游收到的request裡這幾個key完全消失，
+  // 連Node預設值都沒有（Node的http.request()沒設就是完全不送）。這是
+  // 任何自動化偵測系統最容易辨識的「這不是真瀏覽器」訊號之一——YouTube的
+  // BotGuard/PO Token驗證卡住拿不到完整信任的token，追查到最後就是這個
+  // 通用proxy轉發層造成的，不是BotGuard協議本身有什麼我們沒實作到的
+  // 必要條件。這裡直接停止丟棄這兩類header、原樣轉發，讓上游看到的請求
+  // 忠實反映真正發起請求的瀏覽器（而不是被砍成一個看起來像裸script的
+  // 請求）——這個修正是通用性的，不只是為了YouTube，任何走這條/proxy/
+  // 路徑的功能（browser_search／git操作／資源備援下載等）都會受益，
+  // 沒有任何已知情境會因為「header變得更完整、更像真實瀏覽器」而變差。
   const outHeaders = {};
   for (const [key, value] of Object.entries(req.headers)) {
     const lower = key.toLowerCase();
-    if (HOP_BY_HOP_REQUEST_HEADERS.has(lower) || lower.startsWith("sec-") || lower === "user-agent") continue;
+    if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
     outHeaders[key] = value;
   }
   outHeaders.host = targetUrl.host;
