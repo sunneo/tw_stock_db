@@ -136,59 +136,6 @@ async function ensureForeground(tabId) {
   return tab;
 }
 
-// tw_stock_db客製: 2026-09-28使用者要求——批次走訪多個頁面、逐一點「免費下載」把檔案抓下來
-// （例如worksheet網站的PDF圖集），原本完全沒有下載追蹤能力：AI點了下載按鈕之後，不知道
-// 有沒有真的觸發下載、存到哪裡、檔名是什麼，沒辦法確認成功或接著搬動/改名檔案。這裡用
-// chrome.downloads的onCreated/onChanged維護一份最近下載的記錄（記憶體內，service worker
-// 重啟就清空，不需要持久化），click/wait_download指令用「呼叫當下的時間戳記」當分界線，
-// 只等「這次操作之後才新建立」的下載項目，避免撈到使用者自己之前下載的舊檔案。
-const recentDownloads = [];
-function pushOrUpdateDownload(patch) {
-  let d = recentDownloads.find((x) => x.id === patch.id);
-  if (!d) {
-    d = { id: patch.id, startTime: Date.now(), state: "in_progress" };
-    recentDownloads.unshift(d);
-    if (recentDownloads.length > 40) recentDownloads.pop();
-  }
-  for (const k of ["url", "filename", "state", "mime", "fileSize", "error", "exists"]) {
-    if (patch[k] !== undefined) d[k] = patch[k];
-  }
-}
-if (chrome.downloads) {
-  chrome.downloads.onCreated.addListener((item) => pushOrUpdateDownload(item));
-  chrome.downloads.onChanged.addListener((delta) => {
-    const patch = { id: delta.id };
-    for (const k of ["filename", "state", "mime", "fileSize", "error", "exists"]) {
-      if (delta[k]) patch[k] = delta[k].current;
-    }
-    pushOrUpdateDownload(patch);
-  });
-}
-function downloadInfo(d) {
-  return { id: d.id, path: d.filename || null, url: d.url || null, mime: d.mime || null, size_bytes: d.fileSize != null ? d.fileSize : null };
-}
-// since：只認「startTime >= since」的下載項目為「這次操作觸發的」；用「呼叫時的Date.now()」
-// 當since、不是「點擊後才記」，避免下載快到在我們開始等待之前就已經進了onCreated的race condition。
-async function waitForNewDownload(timeoutMs, since) {
-  const budget = Math.max(1000, Math.min(180000, Number(timeoutMs) || 20000));
-  const end = Date.now() + budget;
-  for (;;) {
-    const cand = recentDownloads.find((d) => d.startTime >= since);
-    if (cand) {
-      if (cand.state === "complete") return downloadInfo(cand);
-      if (cand.state === "interrupted") throw new Error("下載被中斷/失敗：" + (cand.error || "未知原因") + (cand.filename ? "（" + cand.filename + "）" : ""));
-    }
-    if (Date.now() >= end) {
-      throw new Error(
-        cand
-          ? "下載還沒完成就逾時了（目前狀態：" + cand.state + "，可能是大檔案或網路慢，可以再呼叫一次wait_download繼續等）"
-          : "等不到新的下載開始——可能是：(1)這個網站彈出了「另存新檔」對話框卡住（擴充功能無法操作系統原生對話框，需要使用者手動到Chrome設定關閉「下載前詢問每個檔案的儲存位置」）(2)剛才點的元素其實不是觸發下載的按鈕 (3)網站改成在新分頁開啟PDF而不是下載，改用browser_navigate或browser_list_tabs確認"
-      );
-    }
-    await sleep(300);
-  }
-}
-
 async function waitLoad(tabId, timeoutMs) {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
@@ -250,9 +197,51 @@ async function createAiTab(url, active) {
   return { tab, groupId };
 }
 
+// tw_stock_db客製: 2026-09-30——http_fetch：讓 app 用「使用者自己瀏覽器的網路」發 HTTP 請求。
+// 背景：YouTube 對 Cloudflare 這類資料中心 IP 會要求登入，經 Worker 轉送的請求出口 IP 就是資料中心；
+// 擴充功能有 <all_urls> 主機權限（不受 CORS 限制），請求從使用者真實網路出去。
+// 安全邊界（比 <all_urls> 窄很多）：只放行 https 的 YouTube 相關網域、只允許 GET/POST/HEAD、
+// 不帶 cookie（credentials: omit），網頁版仍受既有「允許的網站」清單限制。
+const HTTP_FETCH_HOSTS = [/(^|\.)youtube\.com$/, /(^|\.)googlevideo\.com$/, /(^|\.)googleapis\.com$/, /^youtu\.be$/, /(^|\.)ytimg\.com$/];
+const HTTP_FETCH_DROP_HEADERS = /^(host|origin|referer|cookie|accept-encoding|content-length|connection|sec-.*|proxy-.*)$/i;
+function bytesToB64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64ToBytes(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 const commands = {
   async ping() {
-    return { version: VERSION, browser: navigator.userAgent };
+    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch"] };
+  },
+
+  async http_fetch(a) {
+    let u;
+    try { u = new URL(String(a.url || "")); } catch (_) { throw new Error("不合法的網址"); }
+    if (u.protocol !== "https:" || !HTTP_FETCH_HOSTS.some((re) => re.test(u.hostname))) throw new Error("http_fetch 只允許 https 的 YouTube 相關網域：" + u.hostname);
+    const method = String(a.method || "GET").toUpperCase();
+    if (!["GET", "POST", "HEAD"].includes(method)) throw new Error("http_fetch 只支援 GET/POST/HEAD");
+    const headers = {};
+    for (const [k, v] of Object.entries(a.headers && typeof a.headers === "object" ? a.headers : {})) {
+      if (!HTTP_FETCH_DROP_HEADERS.test(k)) headers[k] = String(v);
+    }
+    const init = { method, headers, credentials: "omit", redirect: "follow" };
+    if (a.bodyBase64 && method === "POST") init.body = b64ToBytes(String(a.bodyBase64));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.min(Math.max(Number(a.timeoutMs) || 30000, 1000), 100000));
+    try {
+      const resp = await fetch(u.href, Object.assign(init, { signal: ctrl.signal }));
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      const outHeaders = {};
+      resp.headers.forEach((v, k) => { outHeaders[k] = v; });
+      return { status: resp.status, statusText: resp.statusText, url: resp.url, headers: outHeaders, bodyBase64: bytesToB64(buf) };
+    } finally { clearTimeout(timer); }
   },
 
   async tab_group_create(a) {
@@ -361,19 +350,6 @@ const commands = {
     const vp = m.cssVisualViewport || m.visualViewport;
     const params = { format: "jpeg", quality: Math.min(95, Math.max(30, Number(a.quality) || 70)) };
     let width, height;
-    // 2026-09-26：region={x,y,width,height}只截指定範圍（非full_page時座標是可視區像素、
-    // 左上角0,0，跟browser_mouse/browser_get_elements同一套；full_page時是整頁座標），
-    // scale(1~3)放大。回傳region_applied讓呼叫端確認這個版本真的支援。
-    const rg = a.region && typeof a.region === "object" ? a.region : null;
-    if (rg && Number(rg.width) > 0 && Number(rg.height) > 0) {
-      const scale = Math.min(3, Math.max(1, Number(a.scale) || 1));
-      const rx = Math.max(0, Number(rg.x) || 0), ry = Math.max(0, Number(rg.y) || 0);
-      const rw = Math.round(Number(rg.width)), rh = Math.min(Math.round(Number(rg.height)), 8000);
-      if (a.full_page) params.captureBeyondViewport = true;
-      params.clip = { x: a.full_page ? rx : vp.pageX + rx, y: a.full_page ? ry : vp.pageY + ry, width: rw, height: rh, scale };
-      const shot = await send(tabId, "Page.captureScreenshot", params);
-      return { data_url: "data:image/jpeg;base64," + shot.data, width: Math.round(rw * scale), height: Math.round(rh * scale), region_applied: { x: rx, y: ry, width: rw, height: rh, scale }, url: tab.url || "", title: tab.title || "", note: "這是指定範圍的截圖（已套用scale），圖內座標=(該點-region左上角)*scale，跟原分頁座標不同，點擊請用原分頁座標" };
-    }
     if (a.full_page) {
       const cs = m.cssContentSize || m.contentSize;
       width = Math.round(cs.width);
@@ -432,76 +408,6 @@ const commands = {
     }
     await sleep(150);
     return { ok: true, action, x, y };
-  },
-
-  // tw_stock_db客製: 2026-09-28——選擇器/文字點擊，不用每次先screenshot+get_elements算座標。
-  // 對「同一種頁面模板、跑很多個網址」這種批次任務（例如逐一走訪很多個worksheet頁面各點一次
-  // 下載）特別重要：同一個CSS selector在每個頁面都找得到對應元素，比每次重新截圖辨識座標
-  // 快很多也穩很多。selector找不到/被selector排除掉不可見的元素時，回傳「找到幾個」讓AI
-  // 判斷是selector寫錯還是頁面結構不同。點擊本身仍然透過CDP合成滑鼠事件（跟mouse()共用
-  // 邏輯），是瀏覽器認證的「真實使用者手勢」，會觸發下載/彈窗等需要user gesture的行為。
-  async click(a, ctx) {
-    const { tabId } = await needTab(a, ctx);
-    await ensureForeground(tabId);
-    const selector = a.selector ? String(a.selector) : null;
-    const text = a.text != null && a.text !== "" ? String(a.text) : null;
-    const index = Number.isInteger(Number(a.index)) && Number(a.index) >= 0 ? Number(a.index) : 0;
-    if (!selector && !text) throw new Error("selector與text至少要給一個");
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [selector, text, index],
-      func: (selector, text, index) => {
-        const CLICKABLE = 'a,button,label,input[type=submit],input[type=button],input[type=checkbox],input[type=radio],[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],summary,[onclick],[contenteditable=""],[contenteditable=true]';
-        let list = selector ? Array.from(document.querySelectorAll(selector)) : Array.from(document.querySelectorAll(CLICKABLE));
-        const totalBySelector = list.length;
-        if (text) {
-          const needle = text.toLowerCase();
-          list = list.filter((el) => {
-            const label = (el.innerText || el.value || el.getAttribute("aria-label") || el.title || "").toLowerCase();
-            return label.includes(needle);
-          });
-        }
-        const visible = list.filter((el) => {
-          const rect = el.getBoundingClientRect();
-          const st = getComputedStyle(el);
-          return rect.width > 0 && rect.height > 0 && st.visibility !== "hidden" && st.display !== "none" && Number(st.opacity) !== 0;
-        });
-        const el = visible[index];
-        if (!el) {
-          return { error: "找不到符合的元素（selector=" + (selector || "(無)") + " text=" + (text || "(無)") + " index=" + index + "）：selector先比對到" + totalBySelector + "個，text篩選後" + list.length + "個，其中可見的有" + visible.length + "個", matched_by_selector: totalBySelector, matched_after_text_filter: list.length, visible_count: visible.length };
-        }
-        el.scrollIntoView({ block: "center", inline: "center" });
-        const rect = el.getBoundingClientRect();
-        return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), tag: el.tagName.toLowerCase(), matched_text: (el.innerText || el.value || "").trim().slice(0, 120), visible_count: visible.length };
-      },
-    });
-    const res = r && r.result;
-    if (!res) throw new Error("無法在此頁面尋找元素（可能是受保護頁面）");
-    if (res.error) throw new Error(res.error);
-    await sleep(150); // scrollIntoView後讓版面穩定，避免座標算完、畫面又reflow導致點歪
-    await dbg(tabId);
-    const sinceTs = Date.now(); // 一定要在真正點擊「之前」記下，避免下載在我們開始等待前就已完成的race condition
-    const ev = (type, extra) => send(tabId, "Input.dispatchMouseEvent", Object.assign({ type, x: res.x, y: res.y, button: "left", modifiers: 0 }, extra));
-    await ev("mouseMoved", { button: "none" });
-    await ev("mousePressed", { clickCount: 1 });
-    await ev("mouseReleased", { clickCount: 1 });
-    await sleep(150);
-    const out = { ok: true, x: res.x, y: res.y, tag: res.tag, clicked_text: res.matched_text, visible_count: res.visible_count };
-    if (a.wait_download) out.download = await waitForNewDownload(a.download_timeout_ms, sinceTs);
-    return out;
-  },
-
-  // 獨立的下載等待（例如下載是click之外的動作觸發的：例如按了Enter、或頁面延遲幾秒後自動觸發）。
-  // since_ms選填：預設用「這次呼叫當下」當分界線，只等這之後才新建立的下載。
-  async wait_download(a) {
-    const since = Number.isFinite(Number(a.since_ms)) ? Number(a.since_ms) : Date.now();
-    return waitForNewDownload(a.timeout_ms, since);
-  },
-
-  // 除錯用：列出目前記得的最近下載（service worker重啟就會清空，不是長期歷史）。
-  async list_downloads(a) {
-    const n = Math.max(1, Math.min(40, Number(a.max) || 10));
-    return { downloads: recentDownloads.slice(0, n).map((d) => Object.assign(downloadInfo(d), { state: d.state, started_ms_ago: Date.now() - d.startTime })) };
   },
 
   async type_text(a, ctx) {
