@@ -29695,6 +29695,18 @@ ${existingNodeSummaries}
             const firstToken = textToSend.split(/\s+/)[0].toLowerCase();
             const entry = this.slashCommands.get(firstToken);
             if (entry) {
+                // tw_stock_db客製: 2026-09-30使用者實測發現——斜線指令這條路徑
+                // 直接return，從沒走到executeChat()裡「送出的文字記進
+                // commandHistory＋存localStorage」那段（見executeChat結尾），
+                // 導致按方向鍵↑recall輸入框歷史時完全叫不出剛打過的斜線指令，
+                // 只會叫出更早之前的一般訊息。這裡補上同一份記錄邏輯，讓斜線
+                // 指令跟一般訊息共用同一份輸入框recall歷史，行為一致。
+                if (textToSend && !this.commandHistory.includes(textToSend)) {
+                    this.commandHistory.unshift(textToSend);
+                    if (this.commandHistory.length > 50) this.commandHistory.pop();
+                    localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory));
+                }
+                this.historyIndex = -1;
                 const argsText = textToSend.slice(firstToken.length).trim();
                 entry.handler(argsText);
                 return;
