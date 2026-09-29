@@ -23387,6 +23387,50 @@ _result
         };
     }
 
+    // tw_stock_db客製: 2026-09-30——把分開下載的影片檔與音訊檔合併成單一檔案
+    // （YouTube的DASH格式影音是分開的）。用Mediabunny直接複製已編碼的封包
+    // （stream copy，不重新編碼，很快、不損畫質），已在Node用真實vp9+opus/
+    // avc+aac/vp9+aac三種組合實測，輸出用ffprobe確認同時有影像與音訊兩軌、
+    // 時長正確、可完整解碼。容器格式依編碼相容性自動選：WebM→MP4→MKV。
+    async _remuxVideoAudio(videoBytes, audioBytes) {
+        const MB = await this._ensureMediabunnyLoaded();
+        const inV = new MB.Input({ source: new MB.BufferSource(videoBytes), formats: MB.ALL_FORMATS });
+        const inA = new MB.Input({ source: new MB.BufferSource(audioBytes), formats: MB.ALL_FORMATS });
+        const vt = await inV.getPrimaryVideoTrack();
+        const at = await inA.getPrimaryAudioTrack();
+        if (!vt) throw new Error('影片檔裡找不到影像軌');
+        if (!at) throw new Error('音訊檔裡找不到音訊軌');
+        const candidates = [
+            { ext: 'webm', make: () => new MB.WebMOutputFormat() },
+            { ext: 'mp4', make: () => new MB.Mp4OutputFormat({ fastStart: 'in-memory' }) },
+            { ext: 'mkv', make: () => new MB.MkvOutputFormat() },
+        ];
+        let picked = null;
+        for (const c of candidates) {
+            const f = c.make();
+            if (f.getSupportedVideoCodecs().includes(vt.codec) && f.getSupportedAudioCodecs().includes(at.codec)) { picked = { ext: c.ext, format: f }; break; }
+        }
+        if (!picked) throw new Error(`沒有容器格式同時支援影像編碼「${vt.codec}」與音訊編碼「${at.codec}」`);
+        const output = new MB.Output({ format: picked.format, target: new MB.BufferTarget() });
+        const vSrc = new MB.EncodedVideoPacketSource(vt.codec);
+        const aSrc = new MB.EncodedAudioPacketSource(at.codec);
+        output.addVideoTrack(vSrc);
+        output.addAudioTrack(aSrc);
+        await output.start();
+        const copyPackets = async (track, src) => {
+            const cfg = await track.getDecoderConfig();
+            let first = true;
+            for await (const packet of new MB.EncodedPacketSink(track).packets()) {
+                await src.add(packet, first ? { decoderConfig: cfg } : undefined);
+                first = false;
+            }
+            src.close();
+        };
+        await Promise.all([copyPackets(vt, vSrc), copyPackets(at, aSrc)]);
+        await output.finalize();
+        return { ext: picked.ext, bytes: new Uint8Array(output.target.buffer) };
+    }
+
     // tw_stock_db客製: 2026-09-29——把youtube_download工具跟/media-youtube-download
     // slash指令共用的「驗證範圍→逐一下載→交付檔案」流程抽出來，避免兩處各自
     // 維護一份一樣的邏輯（slash指令是使用者實測回報「沒有地方可以自己驗證」
@@ -23405,8 +23449,20 @@ _result
             const pct = 10 + Math.round((i / Math.max(1, allowed.length)) * 85);
             progress.update({ pct, status: `下載中 (${i + 1}/${allowed.length})：${checks[id].title || id}` });
             try {
-                const { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose);
+                let { title, files, debugLog } = await this._youtubeDownloadOne(id, verbose);
                 const safeTitle = String(title || id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+                let mergeNote = '';
+                const vPart = files.length === 2 ? files.find((f) => f.kind === 'video') : null;
+                const aPart = files.length === 2 ? files.find((f) => f.kind === 'audio') : null;
+                if (vPart && aPart) {
+                    progress.update({ status: `合併影像與聲音中：${checks[id].title || id}` });
+                    try {
+                        const merged = await this._remuxVideoAudio(vPart.bytes, aPart.bytes);
+                        files = [{ kind: 'video+audio', ext: merged.ext, bytes: merged.bytes }];
+                    } catch (mergeErr) {
+                        mergeNote = `（合併失敗，改為分開交付：${String(mergeErr && mergeErr.message || mergeErr)}）`;
+                    }
+                }
                 const names = [];
                 let totalBytes = 0;
                 let lastId = null;
@@ -23418,7 +23474,7 @@ _result
                     totalBytes += f.bytes.length;
                     lastId = delivered && delivered.id;
                 }
-                const splitNote = files.length > 1 ? '（影片與音訊是分開的兩個檔案，尚未合併）' : '';
+                const splitNote = files.length > 1 ? (mergeNote || '（影片與音訊是分開的兩個檔案，尚未合併）') : '';
                 downloaded.push({ video_id: id, title, filename: names.join('、') + splitNote, size_bytes: totalBytes, file_id: lastId, debug_log: debugLog });
             } catch (err) {
                 failed.push({ video_id: id, title: checks[id].title, error: String(err.message || err) });
