@@ -54,6 +54,13 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/bootstrap.js",
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
+  // 主行程啟動時require()的模組（跟main.js的LIVE_PATCH_MAIN_FILES必須同步）
+  "local-proxy.js",
+  "browser-search.js",
+  "edge-tts.js",
+  "cli-format.js",
+  "coding-workspace.js",
+  "browser-control-server.js",
 ];
 
 async function main() {
@@ -133,6 +140,9 @@ function writeUpdateManifest() {
     "renderer/floating-assistant.js": _normalizeLineEndingsForHash(fs.readFileSync(OUT_PATH)),
     "renderer/floating-assistant.min.js": _normalizeLineEndingsForHash(fs.readFileSync(MIN_PATH)),
   };
+  for (const relPath of LIVE_PATCH_ALLOWED_FILES) {
+    if (!fileContents[relPath]) fileContents[relPath] = _normalizeLineEndingsForHash(fs.readFileSync(path.join(__dirname, relPath)));
+  }
   // files是純{相對路徑: md5 hex}的扁平字串map——刻意跟main.js
   // state.json的files欄位同一種形狀（不是{md5,...}物件），因為
   // computeEffectiveLocalManifest()會直接把這份baseline.files跟
