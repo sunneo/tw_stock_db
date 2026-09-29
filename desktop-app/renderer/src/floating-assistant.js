@@ -22653,7 +22653,7 @@ ${sourceTool.handlerScript}
         let host = '';
         try { host = new URL(url).hostname; } catch (_) { /* 不合法網址交給下面的fetch報錯 */ }
         const CHUNK = 10 * 1024 * 1024;
-        if (!_noChunk && totalHint > CHUNK && /(^|\.)googlevideo\.com$/i.test(host)
+        if (!_noChunk && totalHint > 0 && /(^|\.)googlevideo\.com$/i.test(host)
             && !(this.advancedSettings.youtubeExtensionFetch !== false && !this._isLocalAssetProxy() && await this._extensionFetchAvailable())) {
             const parts = [];
             let got = 0, lastResp = null;

@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "0.3.1",
-  "generatedAt": "2026-09-29T19:51:55.582Z",
+  "generatedAt": "2026-09-29T19:55:28.767Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "29c3d028c70fec191acfd06b49332511",
-    "renderer/floating-assistant.js": "ed551cc344f374b1d39240b993c81fbd",
-    "renderer/floating-assistant.min.js": "ed551cc344f374b1d39240b993c81fbd",
+    "renderer/floating-assistant.js": "23cf8e1ddcf97be3071f9ab4b3428bed",
+    "renderer/floating-assistant.min.js": "23cf8e1ddcf97be3071f9ab4b3428bed",
     "local-proxy.js": "2a6fe083e05b0b8900cb31049fb1b02b",
     "browser-search.js": "8e9ac296eee4fa8f61b2168a631dc75a",
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
