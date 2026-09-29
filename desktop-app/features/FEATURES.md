@@ -400,12 +400,14 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 
 ### 下載 YouTube 影片（`youtube-download`）
 
-下載 YouTube 影片供後續轉逐字稿、剪輯（桌面版透過本地代理）。
+下載你自己頻道或 Creative Commons 授權的 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接）。已知限制：YouTube 目前對多數影片會要求 PO Token（另一套反機器人驗證，這個 app 還沒實作），很多影片會下載失敗、只剩縮圖格式可用。
 
-- 可用平台：桌面版
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/media-youtube-download`
 - AI 工具：`youtube_download`
 - 範例：
   - `幫我下載這支 YouTube 影片並轉成逐字稿`
+  - `/media-youtube-download https://www.youtube.com/watch?v=xxxxxxxxxxx`
 
 ## 網路與瀏覽器
 
