@@ -2873,6 +2873,7 @@ subprocess.Popen = _FaPopen
 // validate()階段的extension檢查是在preference排序**之後**的獨立關卡）。
 const PYODIDE_YTDLP_BRIDGE_SRC = `
 import io, json as _fa_json3, asyncio
+from pyodide.ffi import to_js as _fa_to_js
 from yt_dlp.networking.common import RequestHandler, Response, register_rh, register_preference, Features
 import _fa_yt_http_bridge
 
@@ -2894,7 +2895,12 @@ class FaYtFetchRH(RequestHandler):
         data = request.data
         if data is not None and not isinstance(data, (bytes, bytearray)):
             data = data.read() if hasattr(data, 'read') else b''.join(data)
-        r = asyncio.run(_fa_yt_http_bridge.request(request.url, request.method, _fa_json3.dumps(headers), data))
+        # 2026-09-30揪出的真bug：Python bytes直接丟進JS函式不會自動變成
+        # Uint8Array，Pyodide會包成PyProxy，JS端fetch()拿它當body時被轉成
+        # 字串"b'{...}'"（Python repr），YouTube回400「Invalid JSON payload
+        # received」——所有POST的body都是壞的。必須明確to_js轉成Uint8Array。
+        data_js = _fa_to_js(bytes(data)) if data is not None else None
+        r = asyncio.run(_fa_yt_http_bridge.request(request.url, request.method, _fa_json3.dumps(headers), data_js))
         body_bytes = bytes(r.body.to_py()) if hasattr(r.body, 'to_py') else bytes(r.body)
         return Response(
             fp=io.BytesIO(body_bytes),
@@ -22916,9 +22922,18 @@ ${sourceTool.handlerScript}
                 let headers = {};
                 try { headers = JSON.parse(headersJson || '{}'); } catch (_) {}
                 delete headers['Accept-Encoding']; delete headers['accept-encoding'];
+                // 防呆：萬一呼叫端漏了to_js，PyProxy會被fetch()轉成"b'...'"
+                // 字串而不是真正的位元組（見PYODIDE_YTDLP_BRIDGE_SRC的說明），
+                // 這裡再擋一層，確保送出去的一定是Uint8Array。
+                let body = bodyBytes;
+                if (body && typeof body.toJs === 'function') {
+                    const converted = body.toJs();
+                    if (typeof body.destroy === 'function') body.destroy();
+                    body = converted;
+                }
                 const { resp } = await this._terminalHttpFetch(method, url, {
                     headers,
-                    body: bodyBytes && bodyBytes.length ? bodyBytes : undefined,
+                    body: body && body.length ? body : undefined,
                     timeoutMs: 60000,
                 });
                 const buf = new Uint8Array(await resp.arrayBuffer());
