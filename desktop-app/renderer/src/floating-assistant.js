@@ -2777,17 +2777,34 @@ def _fa_run(argv, *args, input=None, capture_output=True, text=True, check=False
     stdin_bytes = None
     if input is not None:
         stdin_bytes = input.encode() if isinstance(input, str) else input
-    if argv0 in ('python', 'python3'):
-        with open(argv[1]) as f:
-            script_text = f.read()
-        r = asyncio.run(_fa_shell_bridge.runPython(script_text, stdin_bytes))
-    else:
-        r = asyncio.run(_fa_shell_bridge.runShell(_fa_json.dumps(argv), stdin_bytes))
-    stdout = r.stdout if text else (r.stdout.encode() if r.stdout is not None else None)
-    stderr = r.stderr if text else (r.stderr.encode() if r.stderr is not None else None)
-    proc = subprocess.CompletedProcess(argv, r.returncode, stdout, stderr)
-    if check and r.returncode != 0:
-        raise subprocess.CalledProcessError(r.returncode, argv, stdout, stderr)
+    try:
+        if argv0 in ('python', 'python3'):
+            with open(argv[1]) as f:
+                script_text = f.read()
+            r = asyncio.run(_fa_shell_bridge.runPython(script_text, stdin_bytes))
+        else:
+            r = asyncio.run(_fa_shell_bridge.runShell(_fa_json.dumps(argv), stdin_bytes))
+        out_text, err_text, ret = r.stdout, r.stderr, r.returncode
+    except Exception as e:
+        # tw_stock_db客製: 2026-09-29實測發現——巢狀呼叫（python腳本本身是被
+        # 另一層subprocess/runPythonAsync呼叫進來的，例如yt-dlp的
+        # Popen.run(['deno','--version'])這種在extract_info內部呼叫）遇到
+        # 真的不存在的指令時，這裡原本會讓_fa_shell_bridge.runShell()的
+        # 例外（實測是Pyodide JSPI巢狀呼叫底層丟出的RangeError: Invalid
+        # typed array length: -1，不是我們自己的bug，是wasi-sh引擎在這種
+        # 巢狀狀態下的已知限制）整個往外傳，導致呼叫端（例如yt-dlp探測
+        # ffmpeg/deno等外部執行檔存不存在時）從「乾淨回報command not
+        # found」變成整個crash掉。標準subprocess在指令不存在時應該是乾淨
+        # 的FileNotFoundError／非0 exit code，不該讓底層WASM細節外洩——
+        # 這裡統一轉成returncode 127（shell慣例的「command not found」）＋
+        # 錯誤訊息放進stderr，讓呼叫端（不管是使用者腳本還是像yt-dlp這種
+        # 外部套件）可以照標準流程判斷「這個指令不存在」，不會整個中斷。
+        out_text, err_text, ret = '', f'{argv0}: command not found ({e})', 127
+    stdout = out_text if text else (out_text.encode() if out_text is not None else None)
+    stderr = err_text if text else (err_text.encode() if err_text is not None else None)
+    proc = subprocess.CompletedProcess(argv, ret, stdout, stderr)
+    if check and ret != 0:
+        raise subprocess.CalledProcessError(ret, argv, stdout, stderr)
     return proc
 
 subprocess.run = _fa_run
@@ -2798,12 +2815,20 @@ class _FaPopen:
         self.returncode = self._r.returncode
         self.stdout = self._r.stdout
         self.stderr = self._r.stderr
-    def communicate(self, input=None):
+    def communicate(self, input=None, timeout=None):
         return (self.stdout, self.stderr)
     def wait(self, timeout=None):
         return self.returncode
     def poll(self):
         return self.returncode
+    def kill(self, timeout=None):
+        pass  # 已經是同步執行完成的結果，沒有真正在跑的process可以殺
+    def terminate(self):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
 subprocess.Popen = _FaPopen
 `;
@@ -3147,7 +3172,22 @@ const FA_ASSET_URLS = {
     // 限制下的已知取捨，不是沒注意到）。只vendor核心執行環境~13MB：直譯器+
     // stdlib，不含numpy/pandas這類額外套件——那些照Pyodide官方設計走
     // micropip/loadPackage按需從官方CDN抓，不在這裡vendor整個套件生態。
-    pyodideJsBase: 'https://cdn.jsdelivr.net/npm/pyodide@314.0.7/',
+    // tw_stock_db客製: 2026-09-29實測發現的真實bug——`cdn.jsdelivr.net/npm/
+    // pyodide@<版本>/`這個npm鏡射路徑不含完整的wheel集合（例如micropip
+    // 自己的wheel檔`micropip-0.11.1-py3-none-any.whl`在這個路徑回傳404，
+    // 直接curl驗證過，不是這個app的proxy或CORS問題），導致任何
+    // `loadPackage(['micropip'])`或後續`micropip.install(...)`都會靜默
+    // 失敗（loadPackage不會拋錯，但instance.loadedPackages事後查詢是空
+    // 的，import micropip會得到「included in the Pyodide distribution但
+    // 沒有真的安裝」）。改用Pyodide官方發佈的「full」發行版路徑（
+    // `cdn.jsdelivr.net/pyodide/v<版本>/full/`，注意路徑結構不一樣，不是
+    // npm鏡射），已實測驗證：(1) 這個路徑下的pyodide-lock.json內容跟npm
+    // 鏡射的完全一致（純粹是檔案集合比較齊全，manifest沒有分岔）(2)
+    // micropip的wheel在這個路徑回傳200 (3) 實際跑過micropip.install
+    // (成功)。任何用到micropip/loadPackage按需安裝套件的功能（yt-dlp、
+    // 未來其他透過pip裝的套件）都依賴這裡是完整的wheel來源，不能只指到
+    // npm鏡射。
+    pyodideJsBase: 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/',
     pyodideBackupBase: 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@pyodide-backup/pyodide-core/',
     // tw_stock_db客製: 2026-09-16使用者要求——bash_execute的shell要能直接
     // 認得python/jq/xq/column/split這幾個指令（見SANDBOX_COMMAND_REGISTRY）。
@@ -22775,25 +22815,28 @@ ${sourceTool.handlerScript}
     // 功能再接」）。**只在_pyodideInstance已經存在的情況下額外掛yt-dlp**
     // （呼叫_ensurePyodideLoaded()確保基礎環境先就緒），跟_mpInstallShim
     // 同一種「先存區域變數、全部步驟成功才設定完成旗標」的保守寫法，避免
-    // 半成功狀態被誤判成已就緒。`ssl`是Pyodide unvendor掉的stdlib套件，
-    // 要跟`micropip`一起明確`loadPackage`；yt-dlp本身透過micropip從PyPI
-    // 安裝（這個app第一次安裝任意PyPI套件，已實測確認yt-dlp沒有硬性C
-    // extension依賴、可以在Pyodide裡正常import）。
+    // 半成功狀態被誤判成已就緒。
+    // tw_stock_db客製: 2026-09-29實測發現並修正兩個從沒真的跑通過的bug
+    // （之前這整條路徑從來沒有實際驗證成功過一次，見DESIGN文件的Phase1
+    // 驗證記錄）：(1) 這裡原本還會`loadPackage(['ssl', ...])`，但目前pin
+    // 的pyodide@314.0.7版本已經把ssl內建進core，不再是獨立的unvendor
+    // package，`loadPackage(['ssl'])`會直接丟「No known package with
+    // name 'ssl'」——這裡移除，只留真的需要額外載入的micropip。(2) 原本
+    // 順序是「先runPythonAsync(PYODIDE_YTDLP_BRIDGE_SRC)註冊HTTP橋接、
+    // 再micropip.install('yt-dlp')」，但PYODIDE_YTDLP_BRIDGE_SRC本身第一
+    // 行就是`from yt_dlp.networking.common import ...`——yt-dlp都還沒裝，
+    // 當然import不到，每次都會在這一步直接失敗。改成先裝好yt-dlp、
+    // import成功之後，才註冊HTTP橋接（此時yt_dlp.networking.common已經
+    // 存在，可以正常import/register_rh）。
     async _ensureYtDlpLoaded() {
         if (this._ytDlpReady) return this._pyodideInstance;
         if (this._ytDlpLoadPromise) return this._ytDlpLoadPromise;
         this._ytDlpLoadPromise = (async () => {
             const instance = await this._ensurePyodideLoaded();
             try {
-                await instance.loadPackage(['ssl', 'micropip']);
+                await instance.loadPackage(['micropip']);
             } catch (err) {
-                throw new Error(`Python基礎套件（ssl/micropip）載入失敗：${String(err.message || err)}`);
-            }
-            instance.registerJsModule('_fa_yt_http_bridge', this._ytDlpHttpBridge());
-            try {
-                await instance.runPythonAsync(PYODIDE_YTDLP_BRIDGE_SRC);
-            } catch (err) {
-                throw new Error(`YouTube網路橋接註冊失敗：${String(err.message || err)}`);
+                throw new Error(`Python基礎套件（micropip）載入失敗：${String(err.message || err)}`);
             }
             try {
                 const micropip = instance.pyimport('micropip');
@@ -22801,6 +22844,12 @@ ${sourceTool.handlerScript}
                 await instance.runPythonAsync('import yt_dlp');
             } catch (err) {
                 throw new Error(`yt-dlp安裝/載入失敗：${String(err.message || err)}`);
+            }
+            instance.registerJsModule('_fa_yt_http_bridge', this._ytDlpHttpBridge());
+            try {
+                await instance.runPythonAsync(PYODIDE_YTDLP_BRIDGE_SRC);
+            } catch (err) {
+                throw new Error(`YouTube網路橋接註冊失敗：${String(err.message || err)}`);
             }
             this._ytDlpReady = true;
             return instance;
