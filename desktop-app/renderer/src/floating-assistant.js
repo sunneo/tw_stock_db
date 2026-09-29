@@ -23207,11 +23207,21 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
             : `{}`;
         const script = `
 import yt_dlp, json as _fa_json4, traceback
+_fa_debug_lines = []
+class _FaYtDlpLogger:
+    def debug(self, msg):
+        _fa_debug_lines.append(str(msg))
+    def warning(self, msg):
+        _fa_debug_lines.append('WARNING: ' + str(msg))
+    def error(self, msg):
+        _fa_debug_lines.append('ERROR: ' + str(msg))
 ydl_opts = {
     'quiet': True, 'no_warnings': True, 'skip_download': True,
     'format': 'best[ext=mp4]/best',
     'js_runtimes': {'deno': {}},
     'extractor_args': ${extractorArgsPy},
+    'verbose': True,
+    'logger': _FaYtDlpLogger(),
 }
 _result = None
 try:
@@ -23225,6 +23235,7 @@ try:
             'title': info.get('title'),
             'ext': info.get('ext') or 'mp4',
             'url': fmt_url,
+            'debug_log': _fa_debug_lines[-60:],
         })
 except Exception as e:
     # 沒有拿到任何real格式時，用「原始的、未經格式過濾的資訊」判斷是不是
@@ -23241,6 +23252,7 @@ except Exception as e:
         'ok': False,
         'only_storyboards': only_storyboards,
         'error': str(e),
+        'debug_log': _fa_debug_lines[-60:],
     })
 _result
 `;
@@ -23255,10 +23267,13 @@ _result
             const poTokenNote = poToken
                 ? '（已嘗試產生PO Token，但Google目前只給這個app一個信任度較低的「降級版」token（websafeFallbackToken），不是完整信任的integrityToken，所以還是拿不到真實格式——已排除是瀏覽器環境被偵測為自動化的問題（用真實登入的Chrome測過結果一樣），根因還在查，屬於持續在打的BotGuard逆向工程游擊戰，不是設定錯誤）'
                 : `（PO Token產生失敗：${poTokenError || '未知原因'}）`;
+            const debugTail = Array.isArray(info.debug_log) && info.debug_log.length
+                ? `\n\n--- yt-dlp verbose輸出（最後${info.debug_log.length}行，跟command line的-v輸出同一份資訊）---\n${info.debug_log.join('\n')}`
+                : '';
             if (info.only_storyboards) {
-                throw new Error(`這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式${poTokenNote}`);
+                throw new Error(`這支影片目前無法下載——YouTube只回傳了縮圖用的storyboard格式，沒有任何真實的音視訊格式${poTokenNote}${debugTail}`);
             }
-            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}`);
+            throw new Error(`yt-dlp解析影片資訊失敗：${info.error}${poTokenNote}${debugTail}`);
         }
         if (!info.url) throw new Error('yt-dlp沒有解析出可下載的媒體網址（可能沒有progressive格式可用）');
         const { resp } = await this._terminalHttpFetch('GET', info.url, { timeoutMs: 180000 });
