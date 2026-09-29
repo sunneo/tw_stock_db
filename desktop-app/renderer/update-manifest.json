@@ -1,17 +1,17 @@
 {
   "schema": 1,
   "baseVersion": "0.2.0",
-  "generatedAt": "2026-09-28T16:48:52.646Z",
+  "generatedAt": "2026-09-29T14:01:29.183Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "d9e46e038a19e46b4fe5dc425dd1e72c",
-    "renderer/floating-assistant.js": "7200155af8546ad896c43eba23eaf23c",
-    "renderer/floating-assistant.min.js": "7200155af8546ad896c43eba23eaf23c"
+    "renderer/floating-assistant.js": "c2d8d79b8d61ee5cab46930a0684fb22",
+    "renderer/floating-assistant.min.js": "c2d8d79b8d61ee5cab46930a0684fb22"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 143204,
-    "renderer/floating-assistant.js": 1174489,
-    "renderer/floating-assistant.min.js": 1174489
+    "renderer/floating-assistant.js": 1176162,
+    "renderer/floating-assistant.min.js": 1176162
   }
 }
