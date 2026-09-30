@@ -16608,7 +16608,8 @@ ${sourceTool.handlerScript}
             el.appendChild(t); el.appendChild(time);
             return el;
         };
-        const byTime = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+        // 使用者要求清單順序不要再變：依「建立時間」排（新對話在最上面），不會因為點擊、傳訊息、AI回覆而跳動。
+        const byTime = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
         for (const g of idx.groups) {
             const members = idx.chats.filter((c) => c.groupId === g.id).sort(byTime);
             const head = document.createElement('div');
