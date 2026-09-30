@@ -6161,7 +6161,12 @@ class FloatingAssistant {
     // _buildNativeToolsSchema()優先使用它；沒有提供時維持原本的opaque
     // schema（向下相容，不影響只用3個參數呼叫的既有builtin工具）。
     register_openai_tool(name, description, callback, parametersSchema) {
-        this.tools[name] = { description, callback, parametersSchema };
+        // 背景對話：AI執行迴圈用.call(對話代理, args)呼叫工具，工具內的this就是那個對話（見_chatRunner）；
+        // 其他呼叫方式（host頁面直接tools[x].callback(...)）沒有對話代理，退回實例本身＝目前顯示的對話。
+        // host自己註冊的箭頭函式callback不受影響（箭頭函式本來就忽略this）。
+        const inst = this;
+        const wrapped = typeof callback === 'function' ? function (...cbArgs) { return callback.apply(this instanceof FloatingAssistant ? this : inst, cbArgs); } : callback;
+        this.tools[name] = { description, callback: wrapped, parametersSchema };
         this._log("工具已註冊: " + name);
         this._refreshSystemPromptMessage();
         return this;
@@ -6909,7 +6914,7 @@ class FloatingAssistant {
                 // 呼叫即可，沒有「打錯ID」的風險。
                 this.register_openai_tool(toolName,
                     `讀取技能包「${bundle.name}」附帶的參考資料/腳本檔案的完整內容（這些檔案的內容不在你的system prompt裡，需要時才呼叫這個工具讀取，不要假裝已經知道內容）。可用路徑：${bundle.files.map(f => f.path).join('、')}。大檔案會自動分段，回應的chunk.hasMore/chunk.nextOffset會告訴你有沒有更多、下一段從哪裡開始。參數: {"path":"references/xxx.md","offset":0}`,
-                    async (rawArgs) => {
+                    async function (rawArgs) {
                         let parsed = {};
                         try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                         const path = String(parsed.path || '').trim();
@@ -7737,7 +7742,7 @@ ${fnData.code}
         };
         registerOptional('list_ai_functions',
             '列舉所有AI自製函式，返回函式名稱和描述的清單。',
-            async () => {
+            async function () {
                 const fns = this.advancedSettings.aiCustomFunctions || {};
                 const list = Object.entries(fns).map(([n, fn]) => ({ name: n, description: fn.description || '' }));
                 if (!list.length) return '目前沒有AI自製函式。';
@@ -7746,7 +7751,7 @@ ${fnData.code}
         );
         registerOptional('call_ai_function',
             '呼叫指定名稱的AI自製函式。參數: {"name":"函式名稱","args":{任意參數}}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fnName = String(parsed.name || '');
@@ -7762,7 +7767,7 @@ ${fnData.code}
         );
         registerOptional('add_ai_function',
             '新增或更新AI自製函式。注意：設計此自製功能之 JavaScript 函式體時，腳本結尾必須有一行主動調用執行並回傳（例如，若定義了 async function main(args)，最後一行必須寫 "return await main(args);"），否則自製功能僅會被宣告定義而不會實際執行。參數: {"name":"函式名稱","description":"描述","code":"JavaScript函式體"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fnName = String(parsed.name || '').trim();
@@ -7781,7 +7786,7 @@ ${fnData.code}
         );
         registerOptional('delete_ai_function',
             '刪除指定名稱的AI自製函式。參數: {"name":"函式名稱"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fnName = String(parsed.name || '').trim();
@@ -7801,7 +7806,7 @@ ${fnData.code}
         // ============================================================
         registerOptional('rag_store_graph_node',
             '將高價值 Routine 技能或偏好儲存到記憶圖譜中。參數: {"id":"節點名稱(如 skill_debounce)","content":"核心內容","dependencies":["依賴的前置節點ID清單"],"preConditions":["滿足此條件才調用此節點的描述"],"tags":"標籤(可填 skill, user_preference, document_section)"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const content = String(parsed.content || '').trim();
@@ -7823,7 +7828,7 @@ ${fnData.code}
 
         registerOptional('rag_query_graph',
             '從知識圖譜中進行語意查詢，會自動提取符合條件與所有前置依賴鏈(DAG Traversal)的有序列表。參數: {"query":"查詢語意","top_k":3}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const queryText = String(parsed.query || '').trim();
@@ -7872,7 +7877,7 @@ ${fnData.code}
         // 給file_id、由這個工具自己去讀完整內容。
         registerOptional('rag_chunk_document',
             '【長文組織器】將超大文章、程式專案或長文件，在背景進行章節拆解，為每個章節提煉精準摘要，並自動設定 dependencies 與 preconditions。不論文件多長都會完整處理（內部自動分段、不會截斷丟棄），文件已經在persistentStorage時（使用者上傳的檔案、或AI用fetch_web_page/summarize_large_text看過的file_id）建議直接傳file_id，不用自己先讀出全文再貼進documentText。參數: {"documentText":"文章內文（跟file_id擇一）","file_id":"（跟documentText擇一）persistentStorage裡的檔案id","entry_path":"（選填，file_id指向壓縮檔時用）","title":"文章大標題","tags":"自訂標籤(選填)"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const title = String(parsed.title || '長文件分析').trim();
@@ -7917,7 +7922,7 @@ ${fnData.code}
 
         registerOptional('rag_delete',
             '從RAG記憶庫刪除指定id的記錄。參數: {"id":記錄id}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const id = parsed.id;
@@ -7951,7 +7956,7 @@ ${fnData.code}
         // 這個工具（結構化schema裡本來就看得到完整參數）。
         this.register_openai_tool('get_tool_details',
             '查詢一個或多個工具的完整說明（用途、每個參數的確切名稱與格式）——只能查詢「目前真的出現在你自己的工具清單裡」的名稱，上面清單裡的項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前先用這個查出完整參數規格，不要自己憑印象/猜測參數名稱或格式。**不要用這個工具去猜測/尋找沒有出現在你工具清單裡的名稱**——你需要的能力如果根本沒出現在清單裡，代表它是委派給專家子agent處理的範圍，應該直接呼叫delegate_to_subagent描述你要做的事，不是想辦法用這個工具找出隱藏的工具名稱（那樣只會浪費好幾輪都查無結果）。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const names = Array.isArray(parsed.names) ? parsed.names
@@ -7973,7 +7978,7 @@ ${fnData.code}
         // domain）的唯一工具：查功能清冊。清冊內容見FA_AI_FEATURES_CATALOG。
         registerOptional('list_ai_features',
             '查詢這個助理的功能清冊（分類、功能名稱、說明、怎麼用、範例、目前平台能不能用）。不帶參數＝列出全部分類與功能的精簡清單；帶category或id＝該分類／該功能的完整用法與範例；帶query＝用關鍵字搜尋。參數: {"category":"media"} 或 {"id":"media-transcribe"} 或 {"query":"字幕"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const result = this._queryFeatures(parsed);
@@ -8026,7 +8031,7 @@ ${fnData.code}
         // 在該方法的base字串裡加上使用者自訂技能包/工具的提示，不是這裡。
         this.register_openai_tool('delegate_to_subagent',
             this._buildDelegateToSubagentDescription(),
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const task = String(parsed.task || '').trim();
@@ -8057,7 +8062,7 @@ ${fnData.code}
         // 一眼就能分辨。
         registerOptional('list_file_access_points',
             '列出使用者目前已授權給AI讀寫的File Access Point（真實磁碟資料夾，不是persistentStorage）清單，含每個的授權狀態、別名(label)、以及使用者自己選填的real_path_hint（這個資料夾在使用者電腦上的完整真實路徑，使用者跟AI描述任務時可能會直接講這個完整路徑而不是別名，一定要拿這份清單的real_path_hint去比對，不要只比對label）。無參數。要操作其中的檔案，用回傳的id或label組成`fap:<名稱或id>[/<路徑>]`格式的ref，交給fap_list_files/fap_read_file/fap_write_file/fap_find_file使用。',
-            async () => {
+            async function () {
                 try {
                     const points = await this._listAllFapAccessPoints();
                     return JSON.stringify({ ok: true, access_points: points });
@@ -8070,7 +8075,7 @@ ${fnData.code}
 
         registerOptional('fap_list_files',
             '列出一個File Access Point（真實磁碟資料夾）底下某個路徑的檔案/子資料夾清單。ref格式：`fap:<名稱或id>[/<子路徑>]`（子路徑留空＝列根目錄）。不確定有哪些File Access Point可用時，先呼叫list_file_access_points查詢。參數: {"ref":"fap:我的筆記/2026"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8086,7 +8091,7 @@ ${fnData.code}
 
         registerOptional('fap_read_file',
             '讀取一個File Access Point（真實磁碟資料夾）裡某個純文字檔案的內容（原始碼/筆記/設定檔/markdown等；圖片/影片/office文件/壓縮檔這類二進位格式不支援，會回報明確錯誤，請改用📎上傳附件+parse_uploaded_file）。超過8000字元會截斷（回傳裡truncated:true時代表被截斷）。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt"}**分頁讀取**：回傳has_more:true表示還沒讀完，用offset（字元）或start_line（行號）搭配max_chars/max_lines繼續讀到完整份；要精準編修程式碼、字幕這類內容時一定要把整份讀完，不可以用摘要代替。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8108,7 +8113,7 @@ ${fnData.code}
 
         registerOptional('fap_apply_patch',
             '用unified diff（跟git diff同格式）修改File Access Point裡既有檔案的**某幾行**，不用整份覆寫——精準編修（程式碼、字幕、設定檔）的唯一正確方式，比fap_write_file安全：內容對不上時整份patch都不會套用（all-or-nothing）、套用後逐檔讀回比對、原內容自動備份。流程：(1)用fap_read_file分頁（offset/start_line）把要改的區段完整讀出來 (2)照讀到的內容手寫diff：`--- a/路徑`、`+++ b/路徑`、`@@ -起始行,行數 +起始行,行數 @@`，每個hunk前後至少3行context，context行與被刪除行必須逐字複製原檔內容（含縮排/標點），fap_read_file的行號只是輔助、不可寫進diff；新增檔案用`--- /dev/null` (3)呼叫本工具（可先check_only:true乾跑） (4)成功後用fap_read_file(start_line=回傳的first_changed_line附近)讀回修改處確認結構正確。失敗（ok:false）時照stderr重新讀檔、重寫patch，不要改用整份覆寫。ref是patch路徑的根資料夾：fap:<名稱或id>[/<子資料夾>]，patch裡的路徑相對於它。參數: {"ref":"fap:我的專案","patch":"--- a/src/a.js\\n+++ b/src/a.js\\n@@ -3,3 +3,3 @@\\n ...","check_only":false}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8132,7 +8137,7 @@ ${fnData.code}
 
         registerOptional('attachment_apply_patch',
             '用unified diff（跟git diff同格式）修改使用者📎上傳的**純文字附件**（程式碼、字幕srt、設定檔、markdown…）的某幾行，不用整份重寫——精準編修附件的方式：內容對不上時整份patch都不套用（all-or-nothing）並回傳實際內容供重寫，套用後讀回比對。成功後修改後的內容存成新的附件（檔名加「.已修改」，原附件不動；in_place:true才覆寫原附件）並直接在對話顯示下載卡片，你只需要用一兩句話說明改了什麼。流程：(1)用parse_uploaded_file分頁（offset/start_line）把要改的區段完整讀出來（精準編修不可用summarize代替） (2)照讀到的內容手寫diff：`--- a/檔名`、`+++ b/檔名`、`@@ -起始行,行數 +起始行,行數 @@`，每個hunk前後至少3行context，context行與被刪除行必須逐字複製原檔內容 (3)呼叫本工具（可先check_only:true乾跑） (4)用回傳的first_changed_line讀回確認。二進位附件（xlsx/docx/圖片…）不能用patch，改用bash_execute/python_execute的attachment_files。參數: {"file_id":"附件id","patch":"--- a/Goofy.srt\\n+++ b/Goofy.srt\\n@@ -1,4 +1,4 @@\\n ...","check_only":false,"in_place":false}（多個附件用file_ids陣列，patch裡每個檔案各一段）',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 if (!String(parsed.patch || '').trim()) return JSON.stringify({ ok: false, error: '缺少patch內容' });
@@ -8155,7 +8160,7 @@ ${fnData.code}
 
         registerOptional('fap_write_file',
             '把文字內容寫入一個File Access Point（真實磁碟資料夾）裡的某個檔案——檔案不存在會自動建立（含中途缺的子資料夾），存在則整份覆蓋（不是附加）。這是真正的磁碟寫入，使用前務必跟使用者確認要寫的內容跟目標路徑。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的筆記/2026/todo.txt", "content":"...")}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8182,7 +8187,7 @@ ${fnData.code}
         // _fapCopyToStorage的說明。
         registerOptional('fap_copy_from_storage',
             '把一個已存在persistentStorage（FileCache）的檔案複製或移動到File Access Point（真實磁碟資料夾）——這是唯一能把任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等，fap_write_file只支援純文字）搬進File Access Point的方式，直接在瀏覽器內部做檔案複製，二進位內容不會經過你（不用也不能把檔案內容塞進參數）。file_id可以是使用者📎上傳的檔案、或AI自己用text_to_speech/concat_audio/export_document等工具產生的檔案（用list_uploaded_files查詢，或直接用工具回傳的file_id/audio_file_id等）。ref可以是完整目標檔案路徑（可以順便改名），也可以只給資料夾（以"/"結尾或留空代表根目錄）讓它自動沿用來源檔名。move=true時複製成功後會把persistentStorage裡的原始檔案一併刪除（真正的「移動」）。參數: {"file_id":"...", "ref":"fap:我的音檔/2026/output.mp3", "move": false}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -8204,7 +8209,7 @@ ${fnData.code}
 
         registerOptional('fap_copy_to_storage',
             '把File Access Point（真實磁碟資料夾）裡的一個檔案（不限格式，包含fap_read_file讀不了的二進位格式，例如圖片/音檔/影片/Office文件）複製一份進persistentStorage（FileCache）——複製完成後就能用list_uploaded_files/parse_uploaded_file/transcribe_media/extract_audio等既有工具鏈處理，這是跟fap_copy_from_storage相反的方向。ref格式：`fap:<名稱或id>/<檔案路徑>`。參數: {"ref":"fap:我的音檔/input.mp3"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8220,7 +8225,7 @@ ${fnData.code}
 
         registerOptional('fap_download_url',
             '直接從一個網址下載內容、寫進File Access Point（真實磁碟資料夾），不用先繞道persistentStorage。任何格式都適用（純Blob層級寫入）。⚠️受目標網站CORS政策限制——只有目標網站有開放跨網域存取的資源才抓得到（大多數直接檔案下載連結/CDN/raw.githubusercontent.com可以，一般網頁/需要登入的資源不一定），失敗時會回報明確的CORS/HTTP錯誤。ref可以是完整目標檔案路徑，也可以只給資料夾（"/"結尾或留空）讓它自動沿用網址最後一段當檔名。參數: {"url":"https://...", "ref":"fap:我的下載/檔名.ext"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const url = String(parsed.url || '').trim();
@@ -8241,7 +8246,7 @@ ${fnData.code}
 
         registerOptional('fap_find_file',
             '在一個File Access Point（真實磁碟資料夾）底下遞迴搜尋檔名包含指定關鍵字的檔案/資料夾（不分大小寫、子字串比對）。有安全上限（最多掃5000個項目/找200筆結果/往下8層），超過會截斷並標記truncated:true。ref格式：`fap:<名稱或id>[/<起始路徑>]`（起始路徑留空＝從根目錄開始搜尋）。參數: {"ref":"fap:我的筆記", "query":"todo"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8266,7 +8271,7 @@ ${fnData.code}
         // GitHub token，commit/push都支援。
         registerOptional('git_clone',
             '把一個git repo（公開或私有皆可）clone到一個File Access Point資料夾。私有repo需要使用者已在Advance Settings「檔案存取管理」填入有讀取權限的GitHub Personal Access Token，否則會clone失敗。目標資料夾建議是空的（clone到已有內容的資料夾可能失敗或造成衝突）。參數: {"ref":"fap:我的專案", "url":"https://github.com/owner/repo.git", "branch":"main", "depth":1}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8287,7 +8292,7 @@ ${fnData.code}
 
         registerOptional('git_pull',
             '對一個已經是git repo的File Access Point資料夾執行git pull（抓取並合併遠端最新變更）。私有repo需要已填入GitHub token。參數: {"ref":"fap:我的專案", "branch":"main"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8306,7 +8311,7 @@ ${fnData.code}
 
         registerOptional('git_status',
             '查詢一個File Access Point資料夾（git repo）目前有哪些檔案變更（新增/修改/刪除，分staged/未staged）。參數: {"ref":"fap:我的專案"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8322,7 +8327,7 @@ ${fnData.code}
 
         registerOptional('git_log',
             '查詢一個File Access Point資料夾（git repo）最近的commit歷史。參數: {"ref":"fap:我的專案", "depth":10}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8341,7 +8346,7 @@ ${fnData.code}
 
         registerOptional('git_commit',
             '把一個File Access Point資料夾（git repo）目前所有變更（新增/修改/刪除）加入staging並commit。需要使用者已在Advance Settings填入git作者名稱/信箱，否則會失敗。不會自動push，要推上遠端請接著呼叫git_push。參數: {"ref":"fap:我的專案", "message":"更新XXX"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8361,7 +8366,7 @@ ${fnData.code}
         // ==== CODING-TOOLS-BEGIN ====
         // tw_stock_db客製: 2026-09-20 coding domain網頁版工具（TODO.md Phase 4）。桌面版
         // 由bootstrap.js用同名工具（真的git）覆蓋apply_git_patch/git_inspect/coding_task_state。
-        const codingCap = (r) => {
+        const codingCap = function (r) {
             const max = this._getAdaptiveContentBudgetChars(0.15, 8000);
             const out = { ...r };
             for (const k of ['stdout', 'stderr', 'content']) {
@@ -8369,23 +8374,23 @@ ${fnData.code}
             }
             return out;
         };
-        const codingRoot = async (parsed) => {
+        const codingRoot = async function (parsed) {
             const ref = this._codingRefFromArgs(parsed);
             if (!ref) throw new Error('缺少cwd_abs（目標專案資料夾的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]）');
             return { ref, io: await this._codingFapIo(ref) };
         };
         const codingRootSchema = { type: 'string', description: '目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]' };
-        const codingWrap = (fn) => async (rawArgs) => {
+        const codingWrap = (fn) => async function (rawArgs) {
             let parsed = {};
             try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-            try { return JSON.stringify(codingCap(await fn(parsed))); }
+            try { return JSON.stringify(codingCap.call(this, await fn.call(this, parsed))); }
             catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
         };
 
         registerOptional('coding_read_file',
             '讀取專案裡一個純文字/原始碼檔案的**完整**內容（不像fap_read_file固定截斷在8000字元），每行前面附行號方便計算patch的hunk位置。大檔案自動分段，has_more/next_start_line告訴你下一段從哪開始。參數: {"cwd_abs":"fap:我的專案","path":"src/calc.js","start_line":1,"line_numbers":true}',
-            codingWrap(async (parsed) => {
-                const { io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { io } = await codingRoot.call(this, parsed);
                 if (!parsed.path) return { ok: false, error: '缺少path（相對於專案資料夾的檔案路徑）' };
                 return this._codingReadFile(io, String(parsed.path), { startLine: parsed.start_line, lineNumbers: parsed.line_numbers !== false });
             }),
@@ -8394,8 +8399,8 @@ ${fnData.code}
 
         registerOptional('apply_git_patch',
             '把一份unified diff（git diff格式）套用到專案——**修改程式碼的唯一入口**。會先完整檢查（乾跑）：任何一個hunk對不上，整份patch都不會套用、檔案完全不動，並把錯誤原因（含檔案目前的實際內容）放在stderr，請讀stderr、用coding_read_file重讀最新內容後重寫patch。格式：`--- a/路徑`／`+++ b/路徑`、`@@ -起始行,行數 +起始行,行數 @@`、每個hunk前後至少3行未變更context（以一個空白開頭，逐字複製原檔）、刪除行`-`開頭、新增行`+`開頭；新增檔案用`--- /dev/null`、刪除檔案用`+++ /dev/null`。會拒絕把檔案清空成0 bytes的patch。參數: {"cwd_abs":"fap:我的專案","patch":"--- a/src/x.js\\n+++ b/src/x.js\\n@@ -1,3 +1,3 @@\\n ...","check_only":false}',
-            codingWrap(async (parsed) => {
-                const { io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { io } = await codingRoot.call(this, parsed);
                 if (!parsed.patch) return { ok: false, error: '缺少patch內容' };
                 return this._codingApplyPatch(io, String(parsed.patch), { checkOnly: !!parsed.check_only, strip: parsed.strip == null ? 1 : parsed.strip });
             }),
@@ -8404,8 +8409,8 @@ ${fnData.code}
 
         registerOptional('git_inspect',
             '查看專案git狀態或還原檔案。mode: status（未commit的變更/是不是git repo）、diff（未commit的實際變更，可用path限定單一檔案）、log（最近commit）、restore（把path還原到最後一次commit；沒有git或檔案不在commit裡時改用apply_git_patch套用前的自動備份）、init（初始化git repo，**要先問過使用者**）。參數: {"cwd_abs":"fap:我的專案","mode":"diff","path":"src/x.js"}',
-            codingWrap(async (parsed) => {
-                const { ref, io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { ref, io } = await codingRoot.call(this, parsed);
                 return this._codingGitInspect(io, ref, { mode: parsed.mode || 'status', path: parsed.path, maxCommits: parsed.max_commits });
             }),
             { type: 'object', properties: { cwd_abs: codingRootSchema, mode: { type: 'string', enum: ['status', 'diff', 'log', 'restore', 'init'] }, path: { type: 'string' }, max_commits: { type: 'number' } }, required: ['cwd_abs'], additionalProperties: false }
@@ -8413,8 +8418,8 @@ ${fnData.code}
 
         registerOptional('coding_task_state',
             '管理程式設計任務的持久化狀態（TODO清單／目前階段／設計索引），存在專案資料夾的.floating-assistant/coding-task-state.json、DESIGN-INDEX.md、tests/。**處理coding任務前第一件事永遠是action:get讀取真實狀態，不要假設記得之前做到哪。** action：get；init（title,requirements,design=照Plan Template寫的設計文字,todos=[{text,files_hint}]）；add_todo（text,position=now|next|end，使用者中途插隊要求用now）；update_todo（id,status=pending|in_progress|blocked,notes）；complete_todo（id,design_summary,source_locations[],entry_points[]，標記完成並自動append DESIGN-INDEX.md）；record_test_result（todo_id,command,stdout,stderr,passed）；set_phase（phase=requirements_analysis|design|planning|executing|blocked|done）。參數: {"cwd_abs":"fap:我的專案","action":"get"}',
-            codingWrap(async (parsed) => {
-                const { ref, io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { ref, io } = await codingRoot.call(this, parsed);
                 return this._codingStateRun(ref, parsed, io);
             }),
             { type: 'object', properties: { cwd_abs: codingRootSchema, action: { type: 'string', enum: ['get', 'init', 'add_todo', 'update_todo', 'complete_todo', 'record_test_result', 'set_phase'] } }, required: ['cwd_abs', 'action'], additionalProperties: true }
@@ -8422,8 +8427,8 @@ ${fnData.code}
 
         registerOptional('coding_run_tests',
             '在瀏覽器內的bash/python沙盒執行測試：把專案的文字檔（排除.git/node_modules等，單檔≤300KB、總量≤4MB）複製進沙盒/work後，執行你給的bash腳本（工作目錄已在/work）。支援python/python3（直接執行測試腳本檔，`python -m ...`不支援）、jq、grep/sed/awk等。**沒有node、沒有網路**——JS/TS專案的測試在這裡跑不了，要誠實告知使用者。沙盒內的修改不會寫回專案。參數: {"cwd_abs":"fap:我的專案","script":"python test_calc.py"}',
-            codingWrap(async (parsed) => {
-                const { io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { io } = await codingRoot.call(this, parsed);
                 const script = String(parsed.script || '').trim();
                 if (!script) return { ok: false, error: '缺少script（要在沙盒/work執行的bash腳本，例如 python test_calc.py）' };
                 const r = await this._codingRunInSandbox(io, script);
@@ -8434,8 +8439,8 @@ ${fnData.code}
 
         registerOptional('coding_run_check',
             '對指定檔案做語法檢查（不執行程式）：.py（Python ast）、.js/.mjs/.cjs（acorn）、.json、.sh（sh -n）。其他副檔名會回報「不支援檢查」。參數: {"cwd_abs":"fap:我的專案","paths":["src/calc.py","config.json"]}',
-            codingWrap(async (parsed) => {
-                const { io } = await codingRoot(parsed);
+            codingWrap(async function (parsed) {
+                const { io } = await codingRoot.call(this, parsed);
                 const paths = Array.isArray(parsed.paths) ? parsed.paths.map(String) : (parsed.path ? [String(parsed.path)] : []);
                 if (!paths.length) return { ok: false, error: '缺少paths（要檢查的檔案路徑陣列）' };
                 return this._codingSyntaxCheck(io, paths);
@@ -8444,7 +8449,7 @@ ${fnData.code}
         );
         registerOptional('coding_workspace',
             '程式設計任務的暫存工作區（網頁版）。action: open（source=使用者專案資料夾的File Access Point參照 fap:名稱/子路徑，可選subpath只複製子資料夾；把專案複製一份到瀏覽器內部儲存OPFS並git init，回傳workspace_path=fap:ws-...與要告訴使用者的tell_user；已存在就接續）、status（cwd_abs=workspace_path，列出還沒轉移的新增/修改/刪除）、deploy（cwd_abs=workspace_path；dry_run:true只預覽；轉移回使用者資料夾，逐檔備份、寫入、讀回比對；使用者原檔在這段期間被改過會列為conflicts不覆蓋，force:true才強制）、discard（cwd_abs=workspace_path，刪除暫存區）。',
-            codingWrap(async (parsed) => {
+            codingWrap(async function (parsed) {
                 const ws = String(parsed.cwd_abs || parsed.workspace_path || '').trim();
                 if (parsed.action === 'open') return this._codingWsOpen({ source: parsed.source || parsed.source_path, subpath: parsed.subpath });
                 if (parsed.action === 'status') return this._codingWsStatus(ws);
@@ -8464,15 +8469,15 @@ ${fnData.code}
 
         // ==== SKILLS-BC-TOOLS-BEGIN ====
         // tw_stock_db客製: 2026-09-20 `skills` domain工具（產生Claude格式skill）。
-        const skillWrap = (fn) => async (rawArgs) => {
+        const skillWrap = (fn) => async function (rawArgs) {
             let parsed = {};
             try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-            try { return JSON.stringify(await fn(parsed)); }
+            try { return JSON.stringify(await fn.call(this, parsed)); }
             catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
         };
         registerOptional('skill_create',
             '建立（或用overwrite:true更新）一個Claude格式的skill：SKILL.md（自動組出name/description frontmatter）＋選填的scripts/references/assets檔案。建立後立刻出現在Advance Settings的Skill分頁、可當domain使用。dry_run:true只驗證並回傳產生的SKILL.md不儲存。download:true會下載.skill壓縮檔（可放進Claude的skills資料夾）；save_to填File Access Point資料夾（fap:名稱/子路徑）會把整個skill資料夾寫進去。**files參數是合併、不是整包覆蓋**：overwrite:true更新既有skill時，這次files裡提到的路徑會被這次的新內容取代，先前已經存過、這次沒提到的路徑會維持原樣不會被清掉——依賴檔案很多、內容加起來很長時，直接分成好幾次呼叫、每次只帶幾個檔案即可，不用、也不要為了「一次到位」把所有檔案硬塞進同一次呼叫（單次呼叫的參數太長時，容易讓子任務生不出完整的工具呼叫而卡住重試）。參數: {"name":"pdf-form-filler","description":"做什麼＋什麼時候該用","body":"SKILL.md的Markdown內容(不含frontmatter)","files":[{"path":"references/api.md","content":"..."},{"path":"scripts/fill.py","content":"..."}],"overwrite":false,"dry_run":false,"download":false,"save_to":"fap:我的技能"}',
-            skillWrap((p) => this._skillCreate(p)),
+            skillWrap(function (p) { return this._skillCreate(p); }),
             { type: 'object', properties: {
                 name: { type: 'string', description: '小寫英文/數字/連字號，最長64字元，不可含anthropic/claude' },
                 description: { type: 'string', description: '最長1024字元：這個skill做什麼、什麼情境/關鍵字該觸發它（第三人稱）' },
@@ -8484,18 +8489,18 @@ ${fnData.code}
         );
         registerOptional('skill_list',
             '列出目前app內所有skill（名稱、description、附帶檔案清單、是否啟用）。',
-            skillWrap(async () => ({ ok: true, skills: this._skillList() })),
+            skillWrap(async function () { return { ok: true, skills: this._skillList() }; }),
             { type: 'object', properties: {}, additionalProperties: false }
         );
         registerOptional('skill_read',
             '讀取一個既有skill的SKILL.md與檔案清單；帶path則讀取該skill內某個附帶檔案的內容。修改既有skill前一定要先讀取，不要憑記憶重寫。參數: {"name":"skill名稱","path":"references/api.md"}',
-            skillWrap((p) => this._skillRead(p.name, p.path)),
+            skillWrap(function (p) { return this._skillRead(p.name, p.path); }),
             { type: 'object', properties: { name: { type: 'string' }, path: { type: 'string' } }, required: ['name'], additionalProperties: false }
         );
 
         // tw_stock_db客製: 2026-09-20 `browser_control` domain工具（Chrome擴充功能）。
         const bcTool = (name, cmd, desc, props, required, timeoutMs) => registerOptional(name, desc,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(this._bcShapeResult(cmd, await this._bcCall(cmd, parsed, timeoutMs || 30000))); }
@@ -8527,7 +8532,7 @@ ${fnData.code}
         // 沒有的話在meta.warning講清楚，不要讓AI以為截到的是指定範圍。
         registerOptional('browser_screenshot',
             '對分頁截圖（畫面會顯示給使用者）。預設你只拿到尺寸與標題、看不到像素；**要讓自己看到截圖內容，帶interpret:true（可加question指定想看什麼）**，會用支援讀圖的model看這張圖並把描述放在回傳的description。region:{x,y,width,height}只截指定範圍（座標是分頁可視區像素、左上角0,0，跟browser_get_elements的座標同一套；full_page:true時改用整頁座標），scale(1~3)可放大小範圍讓文字更清楚。save:true把截圖存成圖片檔案（回傳file_id，之後可用compare_images跟其他圖片比對）。full_page:true截整頁（最高8000px）。要看頁面文字內容仍優先用browser_get_page_structure / browser_get_page_text。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -8600,7 +8605,7 @@ ${fnData.code}
         // 該張圖片就只留description_error，不影響其他圖片/整體結果。
         registerOptional('browser_get_page_structure',
             '以結構化方式讀取分頁內容（讀網頁的首選）：回傳標題階層(headings)、Markdown格式的正文(markdown，含標題/清單/表格/連結)、表格資料(tables，含欄位名稱與列)、連結清單(links)、圖片清單(images，含src/alt)、表單欄位(forms)。自動避開導覽列/頁尾等雜訊。**分頁讀取**：markdown欄位回傳has_more:true代表還沒讀完，用offset（或start_line）繼續讀，長文章要分頁讀完整份。**圖文穿插**：interpret_images:true時，會對前幾張圖片（interpret_images_count，預設5、最多10）自動呼叫vision model，把解讀結果填進images[].description（沒有配置支援讀圖的model、或該張圖片解讀失敗會是images[].description_error，不影響其他張）；這會增加額外的網路請求/延遲，圖片不是頁面重點時不要開。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 let result;
@@ -8647,7 +8652,7 @@ ${fnData.code}
 
         registerOptional('git_push',
             '把一個File Access Point資料夾（git repo）本機已經commit的內容推上遠端(origin)。一定需要使用者已填入有寫入權限的GitHub Personal Access Token（不論公開或私有repo，push都需要驗證身分），沒有的話會直接回報錯誤而不是嘗試匿名push。參數: {"ref":"fap:我的專案", "branch":"main"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ref = String(parsed.ref || '').trim();
@@ -8666,7 +8671,7 @@ ${fnData.code}
 
         registerOptional('list_uploaded_files',
             '列出使用者透過📎附件按鈕上傳、目前還在快取中的檔案清單（不含AI自己產生的匯出檔）。無參數。',
-            async () => {
+            async function () {
                 try {
                     const all = await this.fileCache.getAll();
                     const uploaded = all.filter(r => r.kind === 'uploaded')
@@ -8681,7 +8686,7 @@ ${fnData.code}
 
         registerOptional('parse_uploaded_file',
             '解析一個已上傳檔案的內容，依副檔名自動判斷格式（csv/xlsx/js/json/txt/markdown/yaml/docx/pptx/pdf/toon/cfg/inf/ini/log/zip/tar/tgz都支援）。壓縮檔（zip/tar/tgz）預設只回傳內含項目清單，要看特定項目的實際內容再帶entry_path指定。pdf會逐頁擷取文字內容接成fullText（只回傳前12000字元，超長文件需要完整全文請改用summarize_large_text）；純掃描/圖片PDF沒有文字層，擷取不到內容屬於正常情況（不支援OCR），回應裡的note欄位會說明。**PDF文字跟圖片是分開解析的**：預設只解析文字（速度快），如果PDF裡有圖表/圖片需要理解內容，帶interpret_images:true重新呼叫——有圖片的頁面會被整頁截圖（不是逐一還原內嵌圖片，比較可靠），截圖先以「[圖片區塊：第N頁截圖｜file_id=...]」佔位標籤插入該頁文字，interpret_images:true時才會真的呼叫vision model描述內容並附加在佔位標籤後面（interpret_images_count控制最多對幾頁截圖做vision描述，避免每頁都跑vision太慢，預設3）；回應的pageImages欄位列出每張截圖的file_id/是否已描述，之後也可以直接拿file_id呼叫interpret_image單獨補問。**有密碼保護的PDF**：呼叫這個工具時如果偵測到需要密碼，會在畫面上自動跳出密碼輸入框讓使用者當場輸入（跟File Access Point權限不足時的行為一致），這次工具呼叫會停在那裡等使用者輸入完成，不需要事先知道密碼或另外處理，使用者輸入錯誤會再跳一次、取消輸入則工具回報明確錯誤。參數: {"file_id":"...", "entry_path":"（選填，僅壓縮檔用）"}**分頁讀取**：純文字、壓縮檔項目、PDF文字如果回傳has_more:true，用offset/start_line/max_chars/max_lines繼續讀到完整份；精準編修（程式碼、字幕）不要用summarize_large_text，要分頁把整份讀完。要「改」附件內容請用bash_execute/python_execute的attachment_files參數。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -8716,7 +8721,7 @@ ${fnData.code}
         // 遇到二進位都是同樣的引導）一致，不另外開一條路。
         registerOptional('interpret_image',
             '請AI實際「看」一張圖片並用文字描述/回答關於這張圖片的問題（附件圖片、File Access Point裡的圖片、或圖片URL都支援）。內部會自動從目前設定的LLM Models清單挑一個支援讀圖(vision)的model來解讀，呼叫端不用（也不需要）自己判斷哪個model支援讀圖。三種輸入來源三選一：file_id（📎附件或AI產生的圖片，用list_uploaded_files查）、fap_ref搭配需要先呼叫fap_copy_to_storage複製成file_id（File Access Point本身不支援直接讀二進位圖片內容）、image_url（http(s)網址或data:image/...開頭的data URL，遠端URL可能受目標網站CORS限制而失敗）。question選填，不給的話預設請model詳細描述圖片內容（含圖片裡的文字）；想確認特定細節時直接問具體問題（例如「這張圖表股價的最高點在哪一天」「這是什麼型態的K線圖」）比只說「描述這張圖」更準確。參數: {"file_id":"..."} 或 {"image_url":"https://..."}，可加 {"question":"..."}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -8749,7 +8754,7 @@ ${fnData.code}
         // ============================================================
         registerOptional('extract_pptx_images',
             '把已上傳的pptx投影片裡「嵌入的圖片」逐張抽出來，存成圖片檔案（回傳每張的slide投影片編號、順序、file_id），之後可以用interpret_image/compare_images讀圖或比較。**只抽得出嵌入的圖片（png/jpg/gif/webp/svg），抽不出「整張投影片的渲染畫面」**（文字/圖形/表格不會變成圖片）；emf/wmf/tif等瀏覽器不支援的格式會列在skipped。參數: {"file":"pptx的file_id或檔名，留空用最近上傳的","slides":"（選填）投影片範圍例如\"2-5\"或\"3\"，預設全部","max_images":"（選填）最多抽幾張，預設30，最高80"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -8768,7 +8773,7 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-28使用者要求——「上傳PDF附件，合併成一個PDF」。
         registerOptional('merge_pdfs',
             '把多份已上傳的PDF依指定順序合併成一份新的PDF（直接複製原始頁面物件，不是重新渲染，合併後文字仍可選取/搜尋、畫質不會劣化）。回傳{ok, pdf_file_id, filename, sizeBytes, pageCount, fileCount, files:[{filename,pages}]}，成功時會自動產生下載附件。⚠️只能合併沒有密碼保護的PDF；遇到有密碼保護（真的加密）的檔案會直接回報是哪一份，不會嘗試強行合併產生看似成功、實際內容是空白/亂碼的檔案——收到這種錯誤時如實轉告使用者需要先自行移除密碼保護。參數: {"files":["PDF的file_id或檔名", ...]（至少2個，依這個順序合併）}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : [];
@@ -8791,7 +8796,7 @@ ${fnData.code}
         // 記得「範圍語法在別的工具說過」。
         registerOptional('remove_pdf_pages',
             '移除PDF指定頁面，回傳移除後的新PDF（複製剩餘頁面的原始物件，不重新渲染，文字仍可選取/搜尋）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"或"6,2,2,1-3,"都合法。回傳{ok, pdf_file_id, filename, sizeBytes, originalPageCount, removedPages, remainingPageCount}，成功時會自動產生下載附件。⚠️不支援有密碼保護的PDF；移除後如果會變成0頁會直接報錯，不會產生空白PDF。參數: {"file":"PDF的file_id或檔名","pages":"要移除的頁碼範圍，例如\\"1-5,6\\""}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -8811,7 +8816,7 @@ ${fnData.code}
         );
         registerOptional('extract_pdf_pages',
             '把PDF指定頁面取出、變成一份新的PDF（複製原始頁面物件，不重新渲染，文字仍可選取/搜尋，輸出固定依頁碼由小到大排序，跟輸入範圍的先後順序無關）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"或"6,2,2,1-3,"都合法。回傳{ok, pdf_file_id, filename, sizeBytes, originalPageCount, extractedPages}，成功時會自動產生下載附件。⚠️不支援有密碼保護的PDF。參數: {"file":"PDF的file_id或檔名","pages":"要取出的頁碼範圍，例如\\"1-5,6\\""}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -8831,7 +8836,7 @@ ${fnData.code}
         );
         registerOptional('extract_pdf_images',
             '把PDF指定頁面整頁渲染成PNG圖片（是「該頁畫面長什麼樣子」的截圖，不是抽取頁面內容流裡個別的內嵌圖片物件——即使該頁是純文字/向量圖形也能正常輸出一張圖）。pages用頁碼範圍語法：逗號分隔、可以用"start-end"區間、順序不重要、重複頁碼會自動忽略、結尾多餘逗號沒關係，例如"1-5,6"。只指定1頁時直接回傳一張PNG；指定多頁時自動打包成一份zip（裡面每張圖檔名是pdf_image_{頁碼}.png），成功時會自動產生下載附件。回傳單頁時{ok, image_file_id, filename, sizeBytes, page, originalPageCount}；多頁時{ok, zip_file_id, filename, sizeBytes, originalPageCount, pages:[{page,filename,sizeBytes}]}。支援有密碼保護的PDF（會跳密碼輸入框）。參數: {"file":"PDF的file_id或檔名","pages":"要輸出成圖片的頁碼範圍，例如\\"1-5,6\\"","scale":"（選填）渲染解析度倍率，預設2，最高6，數字越大圖越清楚但檔案也越大"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -8856,7 +8861,7 @@ ${fnData.code}
         );
         registerOptional('compare_images',
             '把2~6張圖片「一起」交給支援讀圖(vision)的model比較（相同點/差異、哪一張符合某個描述、哪一張對應哪一張），比分別呼叫interpret_image再自己對照準確。圖片來源：file_id（📎附件、extract_pptx_images/extract_video_frames/browser_screenshot產生的圖片）或http(s)圖片網址，混用也可以。典型用途：拿投影片裡抽出的圖，跟影片幾個時間點的畫面比對，找出投影片圖片出現在影片的哪個時間，再用extract_clip_range剪那一段。參數: {"images":["file_id或網址",...],"question":"（選填）想比較什麼，例如\"圖1（投影片）跟哪一張影格畫面最像？\""}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const items = Array.isArray(parsed.images) ? parsed.images.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -8883,7 +8888,7 @@ ${fnData.code}
         );
         registerOptional('extract_video_frames',
             '擷取已上傳影片在「指定時間點」的畫面，每個時間點存成一張JPEG圖片（回傳每張的時間與file_id），之後可以用interpret_image看內容、或用compare_images跟其他圖片（例如投影片裡的圖）比對，找出內容對應的時間範圍。用關鍵影格查詢，長影片取幾個點也很快。參數: {"video":"影片file_id或檔名，留空用最近上傳的","times":[10,"1:20",95.5],"max_width":"（選填）輸出寬度px，預設640，範圍160~1280","quality":"（選填）JPEG品質0.3~0.95，預設0.8"}。times最多24個；不確定內容在哪時，先每隔一段時間（例如每30秒）取樣，比對後再對候選附近加密取樣縮小範圍。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
@@ -8922,7 +8927,7 @@ ${fnData.code}
         // 不需要另外發明一套平行的「網頁內容」儲存機制。
         registerOptional('fetch_web_page',
             '抓取一個網頁的完整內容，轉成方便閱讀的Markdown文字後存進persistentStorage（跟使用者上傳檔案一樣會出現在list_uploaded_files清單裡）。browser_search只回傳標題+極短摘要，想深入了解某篇特定文章/頁面的完整內容時用這個工具抓下來，再視需要用parse_uploaded_file看細節、或內容很長時用summarize_large_text分段摘要。需要目前環境已經提供CORS代理能力才能運作，若回傳「找不到可用的CORS代理」錯誤，如實告知使用者這個限制，不要假裝抓取成功。只支援伺服器端直接回傳HTML的網頁，抓不到內容通常代表目標網頁完全靠JS動態渲染（例如SPA），這種情況也如實告知使用者，不要編造內容。參數: {"url":"https://..."}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const url = String(parsed.url || '').trim();
@@ -8978,7 +8983,7 @@ ${fnData.code}
         // 內容怎麼摘要」的邏輯。
         registerOptional('summarize_large_text',
             '把一個已存進persistentStorage的大型文字內容（使用者上傳的檔案，或AI自己透過fetch_web_page等工具抓回來存進去的網頁內容——這類內容一樣會出現在list_uploaded_files清單裡）分段摘要——不論原始內容多長，都會自動切成多個區塊各自摘要、再彙整成一份涵蓋全文重點的最終摘要，不像parse_uploaded_file遇到超長純文字內容時會直接截斷丟棄後面的部分。壓縮檔（zip/tar/tgz）必須指定entry_path指定要摘要哪個內部檔案，不能對整個壓縮檔本身摘要；xlsx/docx/pptx這類二進位格式請改用parse_uploaded_file取得結構化內容。pdf視為長文字文件支援：會逐頁擷取文字、完整涵蓋全文不截斷（比parse_uploaded_file固定只看前12000字元更適合長文件），純掃描/圖片PDF因為沒有文字層（不支援OCR）擷取不到內容。內容越長，處理時間越久（每個區塊都是一次LLM往返），不是瞬間完成。參數: {"file_id":"...", "entry_path":"（選填，壓縮檔用）", "focus":"（選填）你想特別關注的重點方向，會用來引導每個區塊的摘要方向"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -9051,7 +9056,7 @@ ${fnData.code}
         // web/desktop都可用），其餘當成絕對路徑走fs_read_file（只有提供
         // 這個工具的環境才有），只有兩種格式對應的機制都用不上時才真的丟
         // 錯誤，且錯誤訊息會建議改用另一種格式，不是單純說「不支援」。
-        const resolveRealInputFiles = async (raw) => {
+        const resolveRealInputFiles = async function (raw) {
             if (raw == null) return {};
             if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('real_input_files必須是「相對路徑」→「這台電腦上的真實絕對路徑，或"fap:<名稱或id>[/<路徑>]"參照」的物件');
             const entries = Object.entries(raw);
@@ -9074,7 +9079,7 @@ ${fnData.code}
                 if (!fsReadTool) {
                     throw new Error(`「${ref}」看起來是一個真實磁碟絕對路徑，但目前環境沒有可以直接讀取任意路徑的工具。如果這個檔案在使用者已經授權的File Access Point底下，改用"fap:<名稱或id>[/<路徑>]"格式重試；否則請改用input_files直接附上檔案內容。`);
                 }
-                const resultJson = await fsReadTool.callback(JSON.stringify({ path: ref }));
+                const resultJson = await fsReadTool.callback.call(this, JSON.stringify({ path: ref }));
                 const result = JSON.parse(resultJson);
                 if (!result.ok) throw new Error(`讀取真實檔案「${ref}」失敗：${result.error}`);
                 if (result.likely_binary) throw new Error(`「${ref}」偵測為二進位內容，real_input_files目前只支援純文字檔案`);
@@ -9086,7 +9091,7 @@ ${fnData.code}
         // {"工作目錄相對檔名":"附件file_id或檔名"}（也可以給file_id陣列，檔名沿用附件原名），
         // 這裡在JS層直接從persistentStorage(FileCache)取出原始bytes（二進位檔也行）寫進/work，
         // 不經過LLM的tool-calling協定。產出的檔案預設存回persistentStorage並直接顯示下載卡片。
-        const resolveAttachmentFiles = async (raw) => {
+        const resolveAttachmentFiles = async function (raw) {
             if (raw == null) return {};
             let pairs;
             if (Array.isArray(raw)) pairs = raw.map((ref) => [null, ref]);
@@ -9106,14 +9111,14 @@ ${fnData.code}
             }
             return out;
         };
-        const executionInputHashes = (files) => {
+        const executionInputHashes = function (files) {
             const h = {};
             for (const [k, v] of Object.entries(files)) h[k.replace(/^\/+/, '')] = this._fnv1a(typeof v === 'string' ? new TextEncoder().encode(v) : v);
             return h;
         };
         // 輸出=/work底下「新增或內容有變」的檔案；原封不動的輸入檔（尤其是附件）不算產出，不重複存、不出卡片。
-        const filterChangedOutputs = (files, inputHashes) => files.filter((f) => inputHashes[f.relPath] !== this._fnv1a(f.bytes));
-        const deliverOutputCards = async (persisted) => {
+        const filterChangedOutputs = function (files, inputHashes) { return files.filter((f) => inputHashes[f.relPath] !== this._fnv1a(f.bytes)); };
+        const deliverOutputCards = async function (persisted) {
             let delivered = 0;
             if (persisted && persisted.destination === 'persistent_storage') {
                 for (const f of persisted.files.slice(0, 5)) {
@@ -9137,7 +9142,7 @@ ${fnData.code}
 
         registerOptional('bash_execute',
             '在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線|/重導向>/>>/&&/||都支援）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（需要外部資料請先用browser_search/fetch_web_page等工具取得，不要在腳本裡wget/curl）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。**這個shell額外認得幾個按需下載的指令**（第一次用到才會下載對應的執行環境，不會拖慢沒用到這些指令的呼叫）：`python`/`python3`（Pyodide，可以直接寫`python script.py | jq .`這類管線；這個路徑跑的python**不支援top-level await、也不支援subprocess**（呼叫subprocess.run會直接失敗），需要這兩個能力請改用python_execute工具，那邊的python完整支援subprocess.run(["python3","x.py"])／subprocess.run(["sh","-c","..."])回頭呼叫shell/其他python腳本）、`jq`（真正的jq，支援`-r`/`-c`/`-s`旗標）、`xq`（XML轉JSON再套用jq filter）、`column -t`/`split -l N`（busybox這個build沒有內建這兩個，補了同步JS版本）。⚠️**`time`關鍵字不支援**（shell語法層特殊處理，這個沙盒的host builtin機制補不了），需要量測耗時請改用python的`time.perf_counter()`或自己在腳本裡記錄。腳本的工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案（含輸入檔案原本的內容跟腳本新增/修改的）都會依output_ref規則處理（見output_ref參數說明）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"echo hello; ls /work", "input_files":{"data.txt":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/build"}**編修使用者的📎附件**：用attachment_files參數（{"工作目錄相對檔名":"附件file_id或檔名"}，二進位檔也行，file_id用list_uploaded_files查）把附件放進工作目錄，腳本讀取、修改後寫回同名檔案（或寫成新檔案）即可；執行完畢後，「新增或內容有變」的檔案會存回persistentStorage並直接在對話裡顯示下載卡片給使用者（原封不動的輸入檔不會重複產出），你只需要用一兩句話說明改了什麼、不要把整份檔案內容貼回對話。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const script = this._terminalRewriteBuiltinPaths(String(parsed.script || ''));
@@ -9145,10 +9150,10 @@ ${fnData.code}
                 let inputFiles;
                 try {
                     inputFiles = parseExecutionInputFiles(parsed.input_files);
-                    Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
-                    Object.assign(inputFiles, await resolveAttachmentFiles(parsed.attachment_files));
+                    Object.assign(inputFiles, await resolveRealInputFiles.call(this, parsed.real_input_files));
+                    Object.assign(inputFiles, await resolveAttachmentFiles.call(this, parsed.attachment_files));
                 } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
-                const inputHashes = executionInputHashes(inputFiles);
+                const inputHashes = executionInputHashes.call(this, inputFiles);
                 let runtime;
                 try { runtime = await this._ensureBashWasmLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 const seedFiles = {};
@@ -9206,14 +9211,14 @@ ${fnData.code}
                 } finally {
                     fsStack.pop();
                 }
-                const outputFiles = filterChangedOutputs(this._walkMemoryFsDir(store, '/work'), inputHashes);
+                const outputFiles = filterChangedOutputs.call(this, this._walkMemoryFsDir(store, '/work'), inputHashes);
                 let persisted;
                 try {
                     persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                 } catch (err) {
                     return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode });
                 }
-                const deliveredCards = await deliverOutputCards(persisted);
+                const deliveredCards = await deliverOutputCards.call(this, persisted);
                 return JSON.stringify({
                     ok: true, stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode,
                     output_destination: persisted.destination, output_files: persisted.files, download_cards_shown: deliveredCards,
@@ -9229,7 +9234,7 @@ ${fnData.code}
         // 靠python自己print再從某個地方讀回來。
         registerOptional('python_execute',
             '在瀏覽器沙盒內執行一段Python腳本（Pyodide=CPython編譯成wasm，標準函式庫齊全；額外套件可以在腳本開頭用`import micropip; await micropip.install("套件名")`安裝純Python套件，或直接import常見科學計算套件如numpy/pandas讓Pyodide自動載入，第一次載入某個套件會花一點時間）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦真正的檔案系統，也沒有對外網路連線能力（micropip.install只能裝Pyodide自己索引到的套件，不是任意網路存取）；但輸入/輸出兩端（見input_files/real_input_files/output_ref參數）如果目前環境已經提供對應能力，可以直接對接真實磁碟路徑。工作目錄是/work，input_files/real_input_files會先寫進這裡，執行後/work底下所有檔案都會依output_ref規則處理（見output_ref參數說明）。腳本頂層程式碼可以直接寫（不需要包在函式或用exec），支援top-level await。**`import subprocess`後`subprocess.run(["python3","other.py"])`／`subprocess.run(["sh","-c","..."])`真的能動**（回頭呼叫另一支python腳本或busybox shell指令，看得到同一份/work內容；子腳本有獨立的變數空間，不會跟呼叫端互相污染；`Popen`只支援`communicate()`/`wait()`這種等到完成才回傳的簡化語意，沒有真正的背景行程控制）。**任務裡如果提到一個真實檔案（絕對路徑如"/home/user/xxx.py"，或使用者提過的File Access Point裡的檔案），尤其使用者說「我改過了」這種暗示要讀取最新內容的情境，用real_input_files直接把它讀進來，不要因為「我沒辦法存取你的檔案系統」就放棄或叫使用者貼上程式碼——兩種參照格式各自需要對應的能力，只有兩者都用不上時才會得到明確錯誤，如實告知使用者即可**。⚠️沒有逾時中斷機制，避免寫真正的無窮迴圈。參數: {"script":"print(\'hello\')\\nwith open(\'/work/out.txt\',\'w\') as f: f.write(\'done\')", "input_files":{"data.csv":"..."}, "real_input_files":{"compute_pi.py":"/home/user/AI-Workspace/compute_pi.py"}, "output_ref":"fap:我的專案/results"}**平行運算**：multiprocessing（Pool.map/starmap/apply_async/imap_unordered、Process、Queue）與concurrent.futures.ProcessPoolExecutor可以用——底層是瀏覽器Web Worker（每個worker一份獨立Pyodide，不共用記憶體，所以Value/Array/Manager/Pipe不能用，改用Pool回傳值或Queue彙整結果）；規則跟真實multiprocessing一樣：進入點要放在`if __name__ == \'__main__\':`底下，交給worker的函式必須是模組最上層定義的具名函式（lambda/巢狀函式無法pickle）。shell裡的`python`指令無法等待worker，會自動改成單執行緒依序執行（結果相同、沒有加速）。**編修使用者的📎附件**：用attachment_files參數（{"工作目錄相對檔名":"附件file_id或檔名"}，二進位檔也行，file_id用list_uploaded_files查）把附件放進工作目錄，腳本讀取、修改後寫回同名檔案（或寫成新檔案）即可；執行完畢後，「新增或內容有變」的檔案會存回persistentStorage並直接在對話裡顯示下載卡片給使用者（原封不動的輸入檔不會重複產出），你只需要用一兩句話說明改了什麼、不要把整份檔案內容貼回對話。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const script = String(parsed.script || '');
@@ -9237,10 +9242,10 @@ ${fnData.code}
                 let inputFiles;
                 try {
                     inputFiles = parseExecutionInputFiles(parsed.input_files);
-                    Object.assign(inputFiles, await resolveRealInputFiles(parsed.real_input_files));
-                    Object.assign(inputFiles, await resolveAttachmentFiles(parsed.attachment_files));
+                    Object.assign(inputFiles, await resolveRealInputFiles.call(this, parsed.real_input_files));
+                    Object.assign(inputFiles, await resolveAttachmentFiles.call(this, parsed.attachment_files));
                 } catch (err) { return JSON.stringify({ ok: false, error: err.message }); }
-                const inputHashes = executionInputHashes(inputFiles);
+                const inputHashes = executionInputHashes.call(this, inputFiles);
                 let pyodide;
                 try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
                 try {
@@ -9258,14 +9263,14 @@ ${fnData.code}
                     // 正確巢狀運作的必要條件，python_execute本身的既有行為
                     // （不隔離globals、支援top-level await）完全不變。
                     const { stdout, stderr, returncode: exitCode } = await this._runPyodideScriptAsync(pyodide, script, null);
-                    const outputFiles = filterChangedOutputs(this._walkPyodideFsDir(pyodide, '/work'), inputHashes);
+                    const outputFiles = filterChangedOutputs.call(this, this._walkPyodideFsDir(pyodide, '/work'), inputHashes);
                     let persisted;
                     try {
                         persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                     } catch (err) {
                         return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout, stderr, exit_code: exitCode });
                     }
-                    const deliveredCards = await deliverOutputCards(persisted);
+                    const deliveredCards = await deliverOutputCards.call(this, persisted);
                     return JSON.stringify({
                         ok: true, stdout, stderr, exit_code: exitCode,
                         output_destination: persisted.destination, output_files: persisted.files, download_cards_shown: deliveredCards,
@@ -9303,7 +9308,7 @@ ${fnData.code}
         // DASH高畫質音視訊分離串流，這是明確的品質上限）。
         registerOptional('youtube_download',
             '從一段文字裡解析出YouTube連結（或直接給連結陣列）下載。有在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）時，會先驗證每個影片是否符合下載範圍：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因。**沒設定這兩個欄位時會跳過驗證、直接放行下載**（不算錯誤，回傳的verification_skipped會是true，要在回覆裡提醒使用者這次沒有做範圍限制）。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。⚠️**已知限制**：YouTube目前對多數影片會要求PO Token（獨立於JS簽章解密之外的另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、回報只剩storyboard縮圖格式——收到這個錯誤要如實轉告使用者，不要重試或嘗試繞過。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fromText = this._youtubeExtractVideoIds(parsed.text);
@@ -9332,7 +9337,7 @@ ${fnData.code}
         // 有獨立的清單，呼應使用者可能本來就會依專案分資料夾整理的習慣）。
         registerOptional('register_saved_script',
             '把一段已經測試過、值得未來重複使用的bash/python腳本存起來，連同描述性metadata登記進一份可查詢的清單。**評估到使用者的需求需要背景執行、要跑大量運算/公式、或看起來未來還會被問到類似問題時，應該主動用這個工具把腳本存下來，不要每次都重新寫一遍**。存進persistentStorage時有100MB的LRU額度（滿了自動清掉最久沒被list_saved_scripts/get_saved_script存取的舊腳本，不用手動管理）；存進File Access Point（使用者指定/共用的真實磁碟資料夾）沒有這個上限，交給使用者自己的磁碟空間管理。這個工具只負責存腳本本體+metadata，不會執行它——存之前應該已經用bash_execute/python_execute測過確認可以正確執行。參數: {"name":"唯一識別名稱","description":"這個腳本做什麼、什麼情境該重用它（愈具體愈好，之後靠這段文字判斷要不要重用）","language":"python或bash","code":"完整腳本內容","entry_file":"（選填）檔名，預設依language自動產生<name>.py或.sh","args_hint":"（選填）怎麼呼叫/帶什麼參數的簡短提示","tags":["（選填）分類標籤"],"output_ref":"（選填）留空=persistentStorage，或fap:<名稱或id>/<資料夾路徑>"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const name = String(parsed.name || '').trim();
@@ -9381,7 +9386,7 @@ ${fnData.code}
         );
         registerOptional('list_saved_scripts',
             '列出已經用register_saved_script存過的可重用bash/python腳本（只回傳metadata，不含完整程式碼——需要實際內容時再用get_saved_script查單一筆）。**評估到使用者需求可能之前已經處理過類似情境時，先呼叫這個查一下，不要每次都重新寫腳本**。參數: {"output_ref":"（選填）留空=查persistentStorage，或fap:<名稱或id>/<資料夾路徑>"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -9399,7 +9404,7 @@ ${fnData.code}
         );
         registerOptional('get_saved_script',
             '取回一個用register_saved_script存過的腳本完整內容（先用list_saved_scripts確認有哪些名稱可用）。參數: {"name":"腳本名稱","output_ref":"（選填）留空=persistentStorage，或fap:<名稱或id>/<資料夾路徑>，要跟當初register_saved_script用的output_ref一致"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const name = String(parsed.name || '').trim();
@@ -9434,7 +9439,7 @@ ${fnData.code}
         // 保持精簡」的明確要求。
         registerOptional('render_3d_scene',
             '用一段YAML描述渲染一個可用滑鼠拖曳/縮放互動的3D場景給使用者看（純宣告式格式，不能寫真正的JS程式碼）。頂層欄位只有這幾個合法：title/background/camera/lights/nodes/defs/particle_presets——不要自己發明其他頂層欄位（例如lines/markers這類），未知頂層欄位會直接回報錯誤；想加更多物體/軌跡線，一律加進nodes陣列，不要另外開新的頂層陣列。基本欄位：{title:"這個場景的簡短標題（選填，會顯示在畫面下方，建議一定要填，讓使用者一眼看出這是什麼）", camera:{position:[x,y,z],look_at:[x,y,z],fov:50}, lights:[{type:"directional"|"ambient"|"point",position:[x,y,z],intensity:1,color:"#fff"}], nodes:[{id:"這個節點的名字（選填字串，給animation_parent引用用，例如\"earth\"）", mesh:"box"|"sphere"|"cylinder"|"cone"|"plane"|"torus"|"polygon"|"particles"|"line", position:[x,y,z], rotation:[x,y,z]（弧度）, size:[w,h,d]（box用）或[寬,長]（plane用，只有2個維度，不要照box習慣多寫第三個「厚度」數字進去——plane是平面沒有厚度，寫3個元素時第2個會被忽略、只有第1、3個當寬/長，容易誤解成整片被壓扁成一條細線）, radius, height（cylinder/cone/sphere/torus用）, material:{color,metalness,roughness,emissive,emissive_intensity,opacity,side:"front"（預設）|"back"|"double"}, animation:"spin"|"bounce"|"orbit", animation_speed, animation_radius, animation_center:[x,y,z]（orbit預設繞[0,y,0]轉，y是這個節點自己的初始高度）, animation_parent:"另一個節點的id"（orbit專用，選填，見下方說明）}]}。plane預設面朝相機（垂直），沒指定rotation時想當地板/海面/天空這種大範圍水平面用，要自己設rotation:[-1.5708,0,0]；沒有stairs/chair這類複雜mesh，用原語組合。**階層式軌道（衛星繞母星，例如月亮繞地球、地球繞太陽）**：animation:"orbit"預設繞著固定世界座標（animation_center，預設原點）轉，這樣沒辦法表達「月亮繞著會動的地球轉」；要畫這種階層軌道，先給母星節點一個id（例如地球設id:"earth"），衛星節點animation:"orbit"再加上animation_parent:"earth"（衛星的animation_radius/animation_speed就是牠自己繞著地球轉的半徑/速度，不要沿用地球繞太陽的半徑），這樣衛星的軌道中心每一幀都會自動跟著母星目前的位置走，母星自己也可以同時animation_parent指向再上一層的母星（例如地球又繞太陽），可以疊多層；純向下相容，不寫animation_parent時行為完全不變。畫對應的軌道環（mesh:"line"）時，圓心/半徑要對齊真正在動的軌道（例如月亮軌道環的center要放地球目前的初始位置，不是原點）。mesh:"line"是專門畫軌跡線/軌道環用的（例如行星公轉軌道、資料連線）：{mesh:"line", points:[[x,y,z],...]（至少2點的折線）, closed:true（選填，把points首尾相連成封閉環）, material:{color}}，或更簡便的圓形軌道寫法{mesh:"line", shape:"circle", center:[x,y,z]（預設[0,0,0]）, radius, plane:"xz"（預設，跟animation:"orbit"的繞行平面一致）|"xy"|"yz", segments（預設64）, material:{color}}——想畫「某個天體繞著另一個天體轉」的軌道時，圓形軌道環的center/radius/plane要跟該天體的animation_center/animation_radius互相對應，才會看起來繞著同一條軌道走。polygon（例如手刻多面體）沒辦法保證每個面winding方向一致，這個渲染器已經把polygon一律當雙面處理，不會因為winding反過來就有一面消失，不用特別擔心這件事、不用刻意去對齊winding方向。想用一顆大球體/大盒子當「天空」把相機包在裡面（相機位置在這個mesh內部）時，一定要設material.side:"back"（或"double"），不然預設只畫外側面、從裡面看會整個看不見；地面類場景（沙灘/草地/水面等）如果要分區塊呈現不同材質，記得讓不同區塊的plane節點座標範圍不要完全重疊，兩片一樣大小疊在同一個位置只會看到蓋在上面那片、底下那片完全被遮住看不見。呼叫前若不確定texture/particles/polygon/defs這幾個進階主題的格式，先呼叫get_3d_scene_topic查，不要用猜的。修改既有場景之前，一律先呼叫get_3d_scene_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫（容易跟實際渲染出來的內容有落差）。未知的mesh類型/頂層欄位都會直接回報錯誤。畫面上會有📤按鈕讓使用者自己把這個場景匯出成PPTX/PDF/STL/OBJ/3MF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"場景YAML描述"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const yamlText = String(parsed.yaml || '').trim();
@@ -9453,7 +9458,7 @@ ${fnData.code}
 
         registerOptional('get_3d_scene_topic',
             '查詢render_3d_scene進階主題的完整說明（texture貼圖/particles粒子/polygon自訂形狀/defs可重用群組），這些細節不包含在render_3d_scene自己的說明裡，用之前先查這個，不要用猜的。參數: {"topic":"texture|particles|polygon|defs"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const topic = String(parsed.topic || '').trim();
@@ -9466,7 +9471,7 @@ ${fnData.code}
 
         registerOptional('get_3d_scene_yaml',
             '取得目前對話中最近一次成功渲染的3D場景YAML原始內容——要修改既有場景之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
-            async () => {
+            async function () {
                 if (!this._latestScene3DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何3D場景' });
                 return JSON.stringify({ ok: true, yaml: this._latestScene3DYaml });
             },
@@ -9482,7 +9487,7 @@ ${fnData.code}
         // 會直接報錯而不是硬做有損簡化。
         registerOptional('import_3d_model_attachment',
             '把使用者上傳的STL/OBJ/3MF/FBX這幾種3D模型檔案轉成場景YAML並直接顯示給使用者看（用list_uploaded_files取得file_id）。只還原幾何形狀+單一材質顏色，不含原始貼圖/多重材質/骨架動畫；模型三角形數量超過使用者設定的上限（Advanced Settings的maxImportedMeshTriangles，預設100000，0代表不限制）會被拒絕，若被拒絕請提醒使用者換更精簡的模型，或在Advanced Settings調高/解除上限。參數: {"file_id":"..."}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -9517,7 +9522,7 @@ ${fnData.code}
         // 適合這種開放式繪圖需求）。
         registerOptional('render_drawing',
             '畫一張通用向量圖給使用者看（流程圖、示意圖、圖表、插畫等），直接輸出完整的SVG原始碼——這不是股票K線圖表工具（那是這個網頁應用自己的功能，不透過這裡）。輸出的SVG會先經過消毒過濾掉任何可執行的script/事件屬性才顯示，所以安全無虞，但也代表SVG裡不能靠內嵌JS做互動效果，只能用純圖形元素表達。參數: {"svg":"完整的<svg .../>...</svg>原始碼"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const svgText = String(parsed.svg || '').trim();
@@ -9548,7 +9553,7 @@ ${fnData.code}
         // 滾輪縮放的互動檢視器（不是死的靜態圖），見那個函式的說明。
         registerOptional('render_uml_diagram',
             '用Mermaid語法畫一張UML/流程圖/序列圖/類別圖/狀態圖/甘特圖/心智圖等結構化圖表給使用者看，會在對話裡顯示成可以拖曳平移、滾輪縮放的互動檢視器（不是死的靜態圖），使用者可以另外匯出成SVG/PNG。Mermaid語法範例：flowchart TD\\n  A[開始]-->B{判斷}\\n  B--是-->C[結束]。語法錯誤時會直接回傳mermaid的錯誤訊息，請看著錯誤修正語法後重新呼叫。參數: {"mermaid":"完整的mermaid語法文字"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const mermaidSrc = String(parsed.mermaid || '').trim();
@@ -9586,7 +9591,7 @@ ${fnData.code}
         // 場景簡單很多，不需要另外拆get_xxx_topic）。
         registerOptional('render_interactive_viewer',
             '用一段YAML描述渲染一個多頁互動表單/精靈/教學畫面給使用者看（純宣告式，不能寫真正的JS）。格式：{state_namespace:"必填，這個viewer狀態要存在persistentStorage的哪個位置", pages:[{id:"page1", title:"標題", components:[{type:"text", content:"說明文字"}, {type:"input", state_key:"變數名", label:"標籤", input_type:"text|number|select|checkbox|textarea", options:[...]（select用）, default:預設值, visible_if:"安全表達式（選填，可讀其他input的state_key當變數）", enabled_if:"安全表達式（選填）"}, {type:"button", label:"下一步", action:"next_page|prev_page|goto_page:目標page_id|save_state|close", enabled_if:"..."}, {type:"subagent_panel", domain:"領域代號", prompt_placeholder:"..."}]}]}。visible_if/enabled_if是有限安全表達式（算術/比較/布林+讀其他欄位的值），不是真正的JS，不能呼叫函式（除了白名單數學函式）也不能存取DOM。save_state按鈕會把使用者目前填的所有input值存進persistentStorage；之後可以用get_viewer_state(state_namespace)查詢使用者實際填了什麼。參數: {"yaml":"viewer YAML描述"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const yamlText = String(parsed.yaml || '').trim();
@@ -9605,7 +9610,7 @@ ${fnData.code}
 
         registerOptional('get_interactive_viewer_yaml',
             '取得目前對話中最近一次成功渲染的互動viewer YAML原始內容——要修改既有viewer之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
-            async () => {
+            async function () {
                 if (!this._latestViewerYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何互動viewer' });
                 return JSON.stringify({ ok: true, yaml: this._latestViewerYaml });
             },
@@ -9614,7 +9619,7 @@ ${fnData.code}
 
         registerOptional('get_viewer_state',
             '查詢某個互動viewer目前persistentStorage裡存的狀態（使用者按過save_state之後實際填了什麼）。參數: {"state_namespace":"viewer YAML裡的state_namespace"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ns = String(parsed.state_namespace || '').trim();
@@ -9627,7 +9632,7 @@ ${fnData.code}
 
         registerOptional('set_viewer_state',
             '直接修改某個互動viewer在persistentStorage裡的狀態（例如AI想預先幫使用者填一些預設值）。這會整包覆蓋該namespace目前的狀態，不是欄位級合併。參數: {"state_namespace":"...", "state":{...任意物件...}}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const ns = String(parsed.state_namespace || '').trim();
@@ -9645,7 +9650,7 @@ ${fnData.code}
         // 邏輯，差別只在這個是AI自己判斷該不該叫用，不用使用者手動下指令。
         registerOptional('import_interactive_viewer_attachment',
             '把使用者上傳的「可互動文件」封裝檔（用互動表單卡片上的📦匯出按鈕產生的.viewerdoc.yaml）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。如果封裝內有包含填寫狀態，會覆蓋回persistentStorage對應的state_namespace；沒有包含狀態則只匯入模板、不動使用者本機已有的填寫進度。參數: {"file_id":"..."}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -9666,7 +9671,7 @@ ${fnData.code}
         // 修改前先查真實內容」設計精神。
         registerOptional('render_2d_animation',
             '用一段YAML描述渲染一個2D向量圖形動畫給使用者看（純宣告式格式，不能寫真正的JS程式碼；用Canvas2D畫圓/矩形/多邊形/折線/文字，不是3D）。頂層欄位：{title:"標題（選填）", width:480, height:320（皆選填，預設480x312）, background:"#ffffff", duration:4（動畫一輪的秒數，會loop重播）, shapes:[{id:"這個shape的名字（選填，給animation.parent引用）", type:"circle"|"rect"|"polygon"|"line"|"text"|"image", position:[x,y]（畫布座標，原點左上角，y向下）, rotation:0（度）, scale:1, opacity:1, fill:"#ff0000", stroke:"#000000", stroke_width:0, radius（circle用）, width,height（rect用、image用，image是唯一必填width/height的類型）, points:[[x,y],...]（polygon至少3點/line至少2點，座標相對於shape自己的position）, closed:true（line專用，選填，首尾相連）, content:"文字內容"（text用）, font_size:16（text用）, src:"http(s)網址或data:開頭的base64圖片"（image類型必填：整張圖依width/height拉伸畫出來）, fill_image:"http(s)網址或data:開頭的base64圖片"（circle/rect/polygon選填：改用這張圖貼滿該shape的外形取代純色fill，圖片以shape的bounding box拉伸、裁切到形狀輪廓內，不是精確的UV映射，多邊形也一樣用bounding box近似）, animation:{type:"move"|"rotate"|"scale"|"fade"|"orbit"|"keyframes", ...}}]}。這個架構沒有伺服器端附件系統，src/fill_image一律用http(s)網址或直接把圖片內容轉成data:開頭的base64字串內嵌在YAML裡，圖片還沒載入完成或載入失敗時會優雅退回灰色佔位方塊/純色，不會讓整個動畫壞掉。animation依type各自的參數：move用from:[x,y]/to:[x,y]/duration/loop:true|"pingpong"；rotate用speed（度/秒，持續轉）；scale用min/max/speed（來回縮放）；fade用from/to/duration/loop（透明度變化）；orbit用center:[x,y]或parent:"另一個shape的id"（衛星繞著該shape轉，母shape自己也可以再animation.parent繞第三個shape，可以疊多層，跟3D場景的animation_parent同一個設計）+radius+speed（弧度/秒）；keyframes用keyframes:[{t:秒數,position,rotation,scale,opacity},...]（依時間線性內插，最泛用但要自己列出每個時間點）。未知的頂層欄位/shape類型/animation類型都會直接回報錯誤。修改既有動畫之前，一律先呼叫get_2d_animation_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫。畫面上會有📤按鈕讓使用者自己把這個動畫匯出成PPTX/PDF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"2D動畫YAML描述"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const yamlText = String(parsed.yaml || '').trim();
@@ -9685,7 +9690,7 @@ ${fnData.code}
 
         registerOptional('get_2d_animation_yaml',
             '取得目前對話中最近一次成功渲染的2D動畫YAML原始內容——要修改既有動畫之前，一律先呼叫這個工具取得目前真正的內容，不要憑記憶重新編寫。無參數。',
-            async () => {
+            async function () {
                 if (!this._latestAnim2DYaml) return JSON.stringify({ ok: false, error: '目前對話還沒有渲染過任何2D動畫' });
                 return JSON.stringify({ ok: true, yaml: this._latestAnim2DYaml });
             },
@@ -9694,7 +9699,7 @@ ${fnData.code}
 
         registerOptional('import_2d_animation_attachment',
             '把使用者上傳的2D動畫YAML檔案（用動畫卡片上的📥下載按鈕產生的.2danim.yaml，或使用者自己手寫的同格式YAML）匯入並直接顯示給使用者看（用list_uploaded_files取得file_id）。參數: {"file_id":"..."}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileId = String(parsed.file_id || '').trim();
@@ -9717,7 +9722,7 @@ ${fnData.code}
         // 工具一樣的薄callback模式。
         registerOptional('browser_search',
             `向外部網站搜尋資料（技術文件/開源專案/問答討論串/一般網頁），來源代號：${BROWSER_SEARCH_SOURCES.join('/')}。google實際上是透過DuckDuckGo代打（Google對自動化請求的回應格式不穩定，不是真的呼叫Google）；sourceforge/codeproject/deepwiki是用site:限定範圍的網頁搜尋代打（這三個網站自己的搜尋功能無法從伺服器端穩定存取），只有wiki/stackoverflow/github三個是呼叫各自的官方搜尋API。結果只有標題+連結+摘要，不是完整網頁內容，需要更多細節時把最相關的連結告訴使用者、不要自己編造網頁沒提到的細節。查詢結果會快取1天，同樣的查詢短時間內重複呼叫不會產生新的網路請求。這個工具需要host頁面已經設定好Cloudflare Worker端點才能使用，若回傳"尚未設定"錯誤，請直接把這個限制告訴使用者，不要嘗試用其他工具繞過。參數: {"query":"搜尋關鍵字","sources":["wiki","github",...]}（sources選填，留空＝查詢全部${BROWSER_SEARCH_SOURCES.length}個來源）`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const query = String(parsed.query || '').trim();
@@ -9743,7 +9748,7 @@ ${fnData.code}
         // （約77MB，之後瀏覽器Cache API快取），且轉錄本身依長度可能跑數分鐘。
         registerOptional('transcribe_media',
             `把一個已上傳的影片(mp4等)或音檔(mp3/wav/m4a等)轉成逐字稿，用瀏覽器端的Whisper模型（中英雙語）在本機執行、不會把音訊上傳到任何伺服器。回傳 {ok, language, durationSeconds, text（全文）, segments:[{start,end,text}]（帶時間軸的分段）, transcript_file_id（把逐字稿另存成persistentStorage的.srt字幕檔，可以直接當burn_subtitles的字幕來源，或交給summarize_large_text做摘要）}。⚠️第一次執行會下載約77MB的模型（之後瀏覽器會快取不重抓）；轉錄時間依影片長度而定，長影片可能要跑好幾分鐘（每 30 秒一段、會逐段回報進度），呼叫後一定要等真正的回傳結果，不要在拿到結果前就說已經轉好。⚠️需要較新的 Chrome/Edge/Safari（含手機版；Firefox 目前不支援）；手機或沒有 GPU 的機器會慢很多、長影片可能因記憶體不足失敗。參數: {"file":"file_id或檔名（也可以留空＝用最近上傳的影片/音檔）", "language":"（選填）不填＝中文（zh），確定整支是英文才傳 en。不做語言自動偵測。中文內容裡夾雜英文會照原樣保留、算正常"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -9770,7 +9775,7 @@ ${fnData.code}
         // WAV檔（見_extractAudio）。
         registerOptional('extract_audio',
             `把一個已上傳的影片（或任何有音軌的媒體檔）的聲音抽出來，存成一個獨立的WAV音檔到persistentStorage，回傳 {ok, audio_file_id, filename, durationSeconds, sampleRate, channels, sizeBytes}。純瀏覽器端解碼、不上傳。WAV是無損格式、檔案會比原本的壓縮音訊大。參數: {"file":"file_id或檔名（留空＝用最近上傳的影片/音檔）"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
@@ -9793,7 +9798,7 @@ ${fnData.code}
         // （硬字幕，不是可關的軟字幕），輸出新的MP4（見_burnSubtitles）。
         registerOptional('burn_subtitles',
             `把字幕燒進影片，輸出一個新的MP4（字幕變成畫面的一部分，不是可關的軟字幕）。純瀏覽器端處理（WebCodecs硬體解碼＋Mediabunny，整條pipeline在worker裡跑），音軌原封不動保留。字幕來源：subtitle給一個字幕檔的file_id/檔名（.srt，或transcribe_media產生的那種）；留空＝自動先跑transcribe_media轉逐字稿再燒。回傳 {ok, video_file_id, filename, frames, sizeBytes}。⚠️需要有 WebCodecs 的瀏覽器（較新的 Chrome/Edge/Safari，含手機版；Firefox 目前不支援）；處理時間約1~2倍影片長度（手機更慢），長影片可能好幾分鐘、也可能因記憶體不足失敗，呼叫後一定要等真正的結果。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "subtitle":"（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿", "language":"（選填，只在自動轉逐字稿時用）不填＝中文（zh），確定是英文才傳 en"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
@@ -9824,7 +9829,7 @@ ${fnData.code}
         // tw_stock_db客製: 2026-09-22使用者要求新增的4個影音工具，時間參數
         // 統一支援兩種寫法：range（"開始-結束"字串，例如"1:20-1:45"）或
         // start_seconds/end_seconds（數字，也接受"1:20"這種字串）。
-        const resolveMediaRangeArgs = (parsed) => {
+        const resolveMediaRangeArgs = function (parsed) {
             if (parsed.range) {
                 const r = this._parseDubRangeToken(String(parsed.range).trim());
                 if (r) return r;
@@ -9837,13 +9842,13 @@ ${fnData.code}
 
         registerOptional('extract_clip_range',
             `擷取影片指定時間範圍的畫面+聲音，輸出一段新的MP4到persistentStorage（瀏覽器端Mediabunny裁切，盡量走快速stream copy不重新編碼，不上傳）。回傳 {ok, video_file_id, filename, startSeconds, endSeconds, sizeBytes}。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"開始-結束，例如1:20-1:45（跟start_seconds/end_seconds擇一）", "start_seconds":數字或"分:秒"字串, "end_seconds":數字或"分:秒"字串}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(videoArg);
                 if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
-                const range = resolveMediaRangeArgs(parsed);
+                const range = resolveMediaRangeArgs.call(this, parsed);
                 if (!range) return JSON.stringify({ ok: false, error: '缺少或無法解析時間範圍（給range="開始-結束"，或start_seconds/end_seconds）' });
                 try {
                     const result = await this._extractClipRange(record, range.start, range.end);
@@ -9863,13 +9868,13 @@ ${fnData.code}
 
         registerOptional('extract_clip_range_audio',
             `只擷取影片/音檔指定時間範圍的聲音（不含畫面），輸出一個獨立音檔到persistentStorage（瀏覽器端Web Audio API解碼+切割，不上傳；預設MP3省空間）。回傳 {ok, audio_file_id, filename, startSeconds, endSeconds, durationSeconds, sizeBytes}。參數: {"file":"file_id或檔名（留空＝最近上傳的）", "range":"開始-結束，例如1:20-1:45（跟start_seconds/end_seconds擇一）", "start_seconds":數字或"分:秒"字串, "end_seconds":數字或"分:秒"字串}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArg = String(parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(fileArg);
                 if (!record) return JSON.stringify({ ok: false, error: fileArg ? `找不到符合「${fileArg}」的已上傳檔案` : '沒有可用的影片/音檔' });
-                const range = resolveMediaRangeArgs(parsed);
+                const range = resolveMediaRangeArgs.call(this, parsed);
                 if (!range) return JSON.stringify({ ok: false, error: '缺少或無法解析時間範圍（給range="開始-結束"，或start_seconds/end_seconds）' });
                 try {
                     const result = await this._extractAudioClipRange(record, range.start, range.end);
@@ -9889,13 +9894,13 @@ ${fnData.code}
 
         registerOptional('convert_to_animated_gif',
             `把影片（或其中一段時間範圍）轉成動態GIF存進persistentStorage（瀏覽器端逐幀量化編碼，不上傳）。回傳 {ok, gif_file_id, filename, frames, width, height, fps, sizeBytes}。GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px（避免產生出幾十MB的GIF）；需要更清楚時可以調高max_width，但檔案會變大很多。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，例如1:20-1:45，留空＝整支影片", "fps":（選填，預設10，最高30）, "max_width":（選填，預設480，最高960）}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(videoArg);
                 if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
-                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs(parsed) : null;
+                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs.call(this, parsed) : null;
                 try {
                     const result = await this._convertVideoToAnimatedGif(record, {
                         start: range ? range.start : undefined, end: range ? range.end : undefined,
@@ -9920,13 +9925,13 @@ ${fnData.code}
 
         registerOptional('convert_video_to_animation',
             `把影片（或其中一段時間範圍）轉成這個app的2D動畫YAML格式（不是渲染你自己設計的動畫，是把真實影片逐格轉成YAML描述的flipbook動畫：每個影格擷取成JPEG圖片內嵌成data URL）。預設（opacity_transition:false）用單一shape+硬切換src，任何時刻只有一張圖、沒有opacity動畫；opacity_transition:true則改用舊版做法（多個shape疊在一起靠opacity的keyframes交叉淡化切換，柔和過渡風格）。存進persistentStorage並回傳 {ok, animation_file_id, filename, frames, fps, durationSeconds}。⚠️每個影格都是內嵌base64圖片，取樣率太高/範圍太長YAML檔案會暴增，fps/frame_interval可以自己在「流暢度」跟「檔案大小」之間取捨，frames數量有上限（超過會自動停在上限）。輸出的YAML可以直接用get_2d_animation_yaml風格的工具或/import-2d-animation-attachment匯入播放，也可以再手動編修。參數: {"video":"file_id或檔名（留空＝最近上傳的）", "range":"（選填）開始-結束，留空＝整支影片", "fps":（選填，每秒幾格，預設5，跟frame_interval擇一）, "frame_interval":（選填，秒，跟fps擇一）, "max_frames":（選填，預設60，最高200）, "max_width":（選填，輸出寬度px，預設320）, "quality":（選填，JPEG品質0.3~0.95，預設0.75）, "loop":（選填布林，是否循環播放）, "opacity_transition":（選填布林，true＝用舊版opacity交叉淡化，預設false＝硬切換無opacity動畫）}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || parsed.file_id || '').trim();
                 const record = await this._resolveUploadedFileRecord(videoArg);
                 if (!record) return JSON.stringify({ ok: false, error: videoArg ? `找不到符合「${videoArg}」的影片` : '沒有可用的影片' });
-                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs(parsed) : null;
+                const range = parsed.range || parsed.start_seconds != null || parsed.start != null ? resolveMediaRangeArgs.call(this, parsed) : null;
                 try {
                     const result = await this._convertVideoToFlipbookAnimation(record, {
                         start: range ? range.start : undefined, end: range ? range.end : undefined,
@@ -9969,7 +9974,7 @@ ${fnData.code}
         // ============================================================
         registerOptional('terminal_create',
             '建立一個新的WASM沙盒終端機（busybox ash，跟/run-terminal同一種，會直接顯示在對話裡讓使用者也看得到），回傳{ok, id, name}供之後terminal_run/terminal_get_text/terminal_cp_*等工具指定使用。可以順便給一個初始指令直接執行。參數: {"name":"（選填）自訂名稱，不給會自動編號term-N", "initial_command":"（選填）建立後立刻執行的指令"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try {
@@ -9987,7 +9992,7 @@ ${fnData.code}
 
         registerOptional('terminal_list',
             '列出目前對話裡所有active的終端機（id/name/目前工作目錄等）。terminal關閉的判斷方式是DOM是否還掛著（使用者手動關閉、或對話紀錄被壓縮清除都會讓它從清單消失，不需要額外的關閉動作）。',
-            async () => {
+            async function () {
                 const sessions = this._getMountedTerminalSessions();
                 return JSON.stringify({ ok: true, terminals: sessions.map((s) => ({ id: s.id, name: s.name, cwd: s.cwd, has_focus: !!s.hasFocus, last_active_at: s.lastActiveAt })) });
             },
@@ -9996,7 +10001,7 @@ ${fnData.code}
 
         registerOptional('terminal_run',
             `在指定的終端機裡執行一行bash指令（跟你自己在畫面上打字是同一個沙盒busybox ash環境、同一個目前工作目錄），等執行完畢才回傳，拿到{ok, exit_code, stdout, stderr}——這是這個沙盒目前唯一「能拿到結構化執行結果」的方式（直接在終端機打字只會印到畫面上，看不到exit code）。同一輪畫面上使用者也看得到指令即時輸出，不會偷偷跑。output_file/stderr_file選填：把這次輸出額外寫進沙盒檔案系統的指定路徑（JS層直接寫入accumulate好的內容，不是靠shell的>重導向，所以不會影響你同時拿到的stdout/stderr）。⚠️每次呼叫是全新的wasm執行，沒有真正的長時間背景程序概念，不要拿來跑需要人機互動/常駐監聽的指令。除了busybox指令，也支援sleep（秒數，可加s/m/h單位）、curl/wget（-o/-O可指定沙盒內輸出檔案，網路請求走既有的proxy機制，跨網域常需要Advance Settings先設定assetBackupProxyUrl）、httping（-c指定次數）、m4（GNU m4的簡化子集，define/ifelse/ifdef/include等）、make（讀取cwd底下的Makefile，簡化子集不支援條件式/include/函式呼叫）——這幾個都不是真的busybox applet，是JS層攔截實作的，不能跟其他指令用管線接（例如'curl url | jq'不會生效），用各自的輸出檔案旗標取代重導向。**切換工作目錄要單獨一次呼叫只下'cd <path>'（整行只有cd，不要跟其他指令用&&接在一起），下一個指令再另外呼叫一次**——這個沙盒沒有真正的shell parser，'cd x && y'這種複合指令裡的cd不會被偵測到、不會持續影響之後的cwd（單獨的cd指令才會被正確辨識並記住）。參數: {"id_or_name":"terminal_list查到的id或name","command":"要執行的bash指令","output_file":"（選填）把stdout寫進這個沙盒內的路徑","stderr_file":"（選填）把stderr寫進這個沙盒內的路徑"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
@@ -10019,7 +10024,7 @@ ${fnData.code}
 
         registerOptional('terminal_get_text',
             '取得指定終端機目前畫面上顯示的文字內容（最近約500行scrollback），用來確認畫面實際長什麼樣子（例如互動式程式的輸出、或使用者自己手動打的指令跟結果）。',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
@@ -10037,7 +10042,7 @@ ${fnData.code}
 
         registerOptional('terminal_cp_to',
             '把一個檔案複製進指定終端機的沙盒檔案系統（絕對路徑或資料夾，是資料夾的話沿用來源檔名）。來源(src)三選一：fap:<名稱或id>/<路徑>（File Access Point）、附件的file_id或檔名（list_uploaded_files查詢）、或（僅桌面版）真實磁碟的絕對路徑。參數: {"id_or_name":"目標terminal", "src":"來源", "dst_path":"沙盒內的絕對路徑或資料夾"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
@@ -10067,7 +10072,7 @@ ${fnData.code}
 
         registerOptional('terminal_cp_from',
             '從指定終端機的沙盒檔案系統取出一個檔案。dst留空＝存成附件並直接在對話顯示下載卡片給使用者；dst也可以指定fap:<名稱或id>/<路徑或資料夾>（存進File Access Point）或（僅桌面版）真實磁碟的絕對路徑/資料夾。參數: {"id_or_name":"來源terminal", "src_path":"沙盒內的絕對路徑", "dst":"（選填）目的地"}',
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const { session, error } = this._resolveTerminalSession(parsed.id_or_name);
@@ -10100,7 +10105,7 @@ ${fnData.code}
         // 字幕）+ extract_audio（拿音軌）就是完整的「影片→動畫版」流程。
         registerOptional('compose_video',
             `把一段2D動畫（render_2d_animation格式的YAML）或3D場景（render_3d_scene格式）＋一個音軌＋（選填）對齊時間軸的字幕，合成成一支有聲音的MP4。典型用途：把一支影片的旁白轉成逐字稿後、你自己設計一個把內容視覺化的動畫，再配上原本的聲音跟字幕，產生「動畫版影片」。純瀏覽器端（WebCodecs＋Mediabunny）。回傳 {ok, video_file_id, filename, sizeBytes, durationSeconds, hasAudio, hasCaptions}。⚠️輸出影片長度＝音軌長度；動畫請在YAML的width/height設成適合影片的尺寸（例如1280x720），動畫內容用keyframes依時間軸鋪陳（duration設成跟音軌一樣長，不要loop）。參數: {"animation_2d":"（跟animation_3d擇一）2D動畫YAML", "animation_3d":"（跟animation_2d擇一）3D場景YAML", "audio":"音軌檔的file_id或檔名（通常是extract_audio產生的）", "captions":"（選填）字幕檔的file_id/檔名，或直接給[{start,end,text}]陣列"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const yaml2d = String(parsed.animation_2d || '').trim();
@@ -10142,7 +10147,7 @@ ${fnData.code}
         // 語言。
         registerOptional('text_to_speech',
             `把一段文字念成語音，存成MP3。英文走Kokoro TTS（純瀏覽器端、不上傳文字）；中文（或粵語/日文/韓文等）走一個可選的API轉接（需要使用者已在設定啟用「中文語音API」，會把文字送到使用者設定的Worker端點）。voice留空時會依文字內容自動判斷語言選engine；如果偵測到中文但API還沒啟用，會回傳明確錯誤說明怎麼啟用，不要自己重試或用英文語音硬念中文字。⚠️text必須是純文字，不支援SSML/XML標記（沒有<speak>、<phoneme alphabet="ipa" ph="...">這類語法）——這個引擎不會解析標記，只會把標記本身逐字唸出來（例如包一段<speak>會被唸成"speak version equals..."這種完全不是你要的內容），偵測到類似標記會直接回傳錯誤拒絕合成。需要控制特定發音（例如象聲詞、非標準拼法）時，改用同音近似的一般英文拼寫方式直接寫進text（例如要「嗯」的鼻音，可以嘗試"Hmm"或"Mmm"這類英文擬聲拼法），不要嘗試用IPA/SSML語法控制。speed（選填，0.5~2.0，預設依使用者設定，通常是1.0）控制語速倍數，1.5＝快50%、0.8＝慢20%，本地Kokoro跟API都支援。回傳 {ok, audio_file_id, filename, durationSeconds, voice, sizeBytes}。本地英文語音（共${TTS_VOICES.length}個，例如 af_heart 女聲／am_michael 男聲／bf_emma 英式女聲）第一次用會下載約90MB模型；API中文語音（例如 zh-TW-HsiaoChenNeural 曉臻／zh-CN-XiaoxiaoNeural 晓晓，完整清單用 /media-list-voices 查）不用下載、但每次都要打API、需要已啟用。長文字會自動分段合成再接起來，可能要一點時間，呼叫後要等真正的結果。參數: {"text":"要念的純文字（不可含XML/SSML標記）", "voice":"（選填）語音代號", "speed":"（選填）語速倍數，0.5~2.0"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const text = String(parsed.text || '').trim();
@@ -10172,7 +10177,7 @@ ${fnData.code}
         // 分開好幾次text_to_speech的輸出）依指定順序串接成一個MP3。
         registerOptional('concat_audio',
             `把多個已上傳的音檔依指定順序串接合併成一個檔案，輸出MP3。純瀏覽器端解碼/合併/編碼，不上傳。適合把好幾段分開產生的語音（例如分批text_to_speech的輸出）接成一整段。回傳 {ok, audio_file_id, filename, durationSeconds, sizeBytes, fileCount}。參數: {"files":["file_id或檔名", ...]（至少2個，依這個順序串接）}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : [];
@@ -10196,7 +10201,7 @@ ${fnData.code}
         // 上一頁下一頁），使用者接下來自己在widget裡操作，不需要AI再介入。
         registerOptional('start_dubbing_session',
             `建立一個「配音小幫手」互動widget，讓使用者針對一支影片的某幾個時間段錄音配音（例如把原本的對話換成使用者自己的聲音）。兩種用法：(1) 給ranges——使用者自己指定要配音的時間段（例如「幫我把1:20到1:45這段配音」），不需要字幕、也不會轉整支逐字稿，速度快很多；(2) 不給ranges——用整支影片的逐句字幕（提供subtitle參數，或留空自動先跑一次語音轉逐字稿），每句一頁。widget每頁都顯示：那個時間段當下的關鍵影格截圖、文字說明、錄音/上傳音檔/重新錄音/試聽按鈕、上一頁/下一頁；使用者可以隨時在widget裡按「輸出目前成果」匯出一支合成好的MP4看效果（沒配音的段落維持原音），或按「結束配音」收工——這些操作使用者自己在widget裡完成，呼叫完這個工具、widget建立成功後，你不用再問使用者要不要繼續、也不用再描述接下來的步驟，直接告知widget已經準備好即可。回傳 {ok, pages}。⚠️沒給ranges時，句數多的話擷取關鍵影格需要處理時間，請求後要等一下。參數: {"video":"影片的file_id或檔名（留空＝最近上傳的）", "ranges":"（選填）[{start:秒數或\\"M:SS\\",end:選填,text:選填的文字說明}]，給了就忽略subtitle", "subtitle":"（選填，沒給ranges時才有作用）字幕檔的file_id或檔名；留空＝自動先轉逐字稿"}`,
-            async (rawArgs) => {
+            async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 const videoArg = String(parsed.video || parsed.file || '').trim();
@@ -16235,19 +16240,27 @@ ${sourceTool.handlerScript}
     _writeChatBlob(jsonText) {
         if (!this._chatListEnabled) { localStorage.setItem(this.CHAT_HISTORY_KEY, jsonText); return; }
         if (!this._chatListReady || !this._chatIndex) return;
-        this._chatPending = { id: this._chatIndex.currentId, text: jsonText };
-        this._touchCurrentChatMeta();
+        // 存的是「執行這段程式碼的那個對話」（背景對話＝它自己，不是使用者現在看的那個）；已被刪掉的對話不再寫檔。
+        const id = this._ctx.id;
+        if (!this._chatEntry(id)) return;
+        if (this._ctx !== this._activeCtx) this._chatMarkUnread(this._ctx); // 背景對話有新內容
+        if (!this._chatPendingMap) this._chatPendingMap = new Map();
+        this._chatPendingMap.set(id, jsonText);
+        this._touchChatMeta(this._ctx);
         clearTimeout(this._chatWriteTimer);
         this._chatWriteTimer = setTimeout(() => { this._flushChatWrite(); }, 350);
     }
 
     async _flushChatWrite() {
         clearTimeout(this._chatWriteTimer);
-        const pending = this._chatPending;
-        this._chatPending = null;
-        if (!pending) return;
+        const pending = this._chatPendingMap;
+        if (!pending || !pending.size) return;
+        this._chatPendingMap = new Map();
         try {
-            await this._chatBackend().write(pending.id, pending.text);
+            for (const [id, text] of pending) {
+                if (!this._chatEntry(id)) continue; // 寫檔前被刪掉了
+                await this._chatBackend().write(id, text);
+            }
             await this._saveChatIndex();
         } catch (err) {
             console.warn('對話存檔失敗:', err);
@@ -16255,12 +16268,12 @@ ${sourceTool.handlerScript}
         }
     }
 
-    _touchCurrentChatMeta() {
-        const entry = this._chatEntry(this._chatIndex.currentId);
+    _touchChatMeta(ctx) {
+        const entry = this._chatEntry(ctx.id);
         if (!entry) return;
         entry.updatedAt = Date.now();
         if (!entry.title || entry.title === '新對話') {
-            const firstUser = this.messages.find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
+            const firstUser = ctx.messages.find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
             if (firstUser) {
                 const t = firstUser.content.replace(/\s+/g, ' ').trim().slice(0, 28);
                 if (t) { entry.title = t; this._renderChatList(); return; }
@@ -16302,6 +16315,10 @@ ${sourceTool.handlerScript}
         if (!idx.chats.length) idx.chats.push({ id: this._chatNewId('c'), title: '新對話', groupId: null, createdAt: Date.now(), updatedAt: Date.now() });
         if (!idx.chats.some((c) => c.id === idx.currentId)) idx.currentId = idx.chats[0].id;
         this._chatIndex = idx;
+        // 建構子建立的暫時ctx（id='__pending__'）正式變成「目前對話」的ctx
+        this._chatCtxs.delete(this._activeCtx.id);
+        this._activeCtx.id = idx.currentId;
+        this._chatCtxs.set(idx.currentId, this._activeCtx);
         let raw = null;
         try { raw = await be.read(idx.currentId); } catch (err) { console.warn('對話讀取失敗:', err); }
         this._applyChatBlob(raw);
@@ -16334,31 +16351,63 @@ ${sourceTool.handlerScript}
         if (changed) { this._renderChatList(); this._saveChatIndex(); }
     }
 
-    _chatBusy() {
-        if (this.isResponding) {
-            this._log && this._log('⏳ AI 回應中，請先按 Stop 或等它完成，再切換／新增／刪除對話。');
-            return true;
+    // 取得（必要時建立並從存檔載入）某個對話的ctx。已經在記憶體裡的（正在跑或背景有新內容的）直接沿用，
+    // 內容才會跟它自己的AI執行迴圈手上的是同一份。
+    async _chatCtxLoad(id) {
+        let ctx = this._chatCtxs.get(id);
+        if (ctx) return ctx;
+        let raw = null;
+        try { raw = await this._chatBackend().read(id); } catch (err) { console.warn('對話讀取失敗:', err); }
+        ctx = this._chatCtxs.get(id); // 讀檔期間別人可能已經建好了
+        if (ctx) return ctx;
+        ctx = this._chatCtxNew(id);
+        const prev = this._activeCtx;
+        this._activeCtx = ctx; // 載入函式寫的是「目前對話」，暫時借用
+        try { this._applyChatBlob(raw); } finally { this._activeCtx = prev; }
+        this._chatCtxs.set(id, ctx);
+        return ctx;
+    }
+
+    // 沒在跑、沒有未讀、沒有等使用者的背景ctx，記憶體裡不必留（內容已存檔，要看的時候再讀）。
+    _chatCtxPrune() {
+        for (const [id, c] of this._chatCtxs) {
+            if (c === this._activeCtx) continue;
+            if (c.isResponding || c.unread || c.waitingForUser) continue;
+            this._chatCtxs.delete(id);
         }
-        return false;
+    }
+
+    // 把畫面切成某個對話：清單標記、訊息、串流中的氣泡、回應指示器、停止鈕一次到位。
+    _chatActivate(ctx) {
+        this._activeCtx = ctx;
+        this._chatIndex.currentId = ctx.id;
+        ctx.unread = false;
+        this._chatCtxPrune();
+        this._renderChatList();
+        if (!ctx.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); }
+        // AI還在這個對話裡跑：把它脫離畫面的串流氣泡接回來，使用者就能接著看到它中間做的事情
+        const body = document.getElementById('ai-chat-body');
+        if (body && ctx.isResponding && ctx.streamDiv && !ctx.streamDiv.isConnected) body.appendChild(ctx.streamDiv);
+        this._scrollChatToBottom();
+        if (ctx.isResponding) this._updateElapsedIndicator(); else this._renderResponseIndicator('');
+        this._syncStopButton();
+        const waiters = ctx.visibleWaiters.splice(0);
+        waiters.forEach((fn) => { try { fn(); } catch (err) { console.warn('切回對話後續動作失敗:', err); } });
     }
 
     async _chatSwitch(id) {
-        if (!this._chatListReady || id === this._chatIndex.currentId || this._chatBusy() || this._chatSwitching) return;
+        if (!this._chatListReady || id === this._chatIndex.currentId || this._chatSwitching) return;
         this._chatSwitching = true;
         try {
             await this._flushChatWrite();
-            let raw = null;
-            try { raw = await this._chatBackend().read(id); } catch (err) { console.warn('對話讀取失敗:', err); }
-            this._chatIndex.currentId = id;
-            this._applyChatBlob(raw);
-            this._renderChatList();
-            if (!this.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); this._scrollChatToBottom(); }
+            const ctx = await this._chatCtxLoad(id);
+            this._chatActivate(ctx);
             await this._saveChatIndex();
         } finally { this._chatSwitching = false; }
     }
 
     async _chatNew(groupId = null) {
-        if (!this._chatListReady || this._chatBusy() || this._chatSwitching) return;
+        if (!this._chatListReady || this._chatSwitching) return;
         const cur = this._chatEntry(this._chatIndex.currentId);
         // tw_stock_db客製: 2026-09-30使用者回報——只有斜線指令（/ai-features、/suggest等，沒有AI參與、
         // 甚至沒有user訊息）的對話沒辦法開新對話：原本只看有沒有role==='user'的訊息，這種對話被誤判成
@@ -16376,13 +16425,12 @@ ${sourceTool.handlerScript}
             const id = this._chatNewId('c');
             const now = Date.now();
             this._chatIndex.chats.push({ id, title: '新對話', groupId, createdAt: now, updatedAt: now });
-            this._chatIndex.currentId = id;
             const g = groupId && this._chatIndex.groups.find((x) => x.id === groupId);
             if (g) g.collapsed = false;
-            this._applyChatBlob(null);
-            this._renderChatList();
-            this.insertSuggestionChipsMessage();
-            if (!this.messages.length) this._renderMessageHistory();
+            const ctx = this._chatCtxNew(id);
+            this._chatCtxs.set(id, ctx);
+            this._chatActivate(ctx);
+            if (!ctx.messages.length) this._renderMessageHistory();
             await this._saveChatIndex();
             const input = document.getElementById('ai-input-text'); if (input) input.focus();
         } finally { this._chatSwitching = false; }
@@ -16390,26 +16438,32 @@ ${sourceTool.handlerScript}
 
     async _chatDelete(id) {
         const entry = this._chatEntry(id);
-        if (!entry || this._chatBusy() || this._chatSwitching) return;
-        if (!confirm(`刪除對話「${entry.title}」？這個動作無法復原。`)) return;
+        if (!entry || this._chatSwitching) return;
+        const running = this._chatCtxs.get(id);
+        const runningNote = running && running.isResponding ? '\nAI 還在這個對話裡執行，會一併停止。' : '';
+        if (!confirm(`刪除對話「${entry.title}」？這個動作無法復原。${runningNote}`)) return;
         const wasCurrent = id === this._chatIndex.currentId;
+        // 背景的AI要先停下來，不然它會繼續對一個已經刪掉的對話工作
+        if (running && running.isResponding) {
+            running.stopRequested = true;
+            try { if (running.currentAbortController) running.currentAbortController.abort(); } catch (_) { /* 已經結束 */ }
+        }
         this._chatIndex.chats = this._chatIndex.chats.filter((c) => c.id !== id);
+        if (this._chatPendingMap) this._chatPendingMap.delete(id);
+        if (running && running !== this._activeCtx) this._chatCtxs.delete(id);
         try { await this._chatBackend().del(id); } catch (err) { console.warn('對話檔案刪除失敗:', err); }
         if (wasCurrent) {
-            this._chatPending = null; clearTimeout(this._chatWriteTimer);
+            this._chatCtxs.delete(id);
             const next = this._chatIndex.chats.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
             if (next) {
-                this._chatIndex.currentId = next.id;
-                let raw = null;
-                try { raw = await this._chatBackend().read(next.id); } catch (_) { raw = null; }
-                this._applyChatBlob(raw);
-                if (!this.messages.length) this.insertSuggestionChipsMessage(); else { this._renderMessageHistory(); this._scrollChatToBottom(); }
+                const ctx = await this._chatCtxLoad(next.id);
+                this._chatActivate(ctx);
             } else {
                 const nid = this._chatNewId('c'); const now = Date.now();
                 this._chatIndex.chats.push({ id: nid, title: '新對話', groupId: null, createdAt: now, updatedAt: now });
-                this._chatIndex.currentId = nid;
-                this._applyChatBlob(null);
-                this.insertSuggestionChipsMessage();
+                const ctx = this._chatCtxNew(nid);
+                this._chatCtxs.set(nid, ctx);
+                this._chatActivate(ctx);
             }
         }
         this._renderChatList();
@@ -16508,7 +16562,8 @@ ${sourceTool.handlerScript}
         const idx = this._chatIndex;
         if (!list || !idx) return;
         if (this._chatRenaming) return; // 正在重新命名：不能動這個清單的DOM
-        const sig = JSON.stringify([idx.currentId, idx.groups.map((g) => [g.id, g.name, !!g.collapsed]), idx.chats.map((c) => [c.id, c.title, c.groupId || '', this._chatTimeText(c.updatedAt)])]);
+        const st = (id) => { const x = this._chatCtxs.get(id); return x ? (x.isResponding ? 'r' : '') + (x.unread ? 'u' : '') + (x.waitingForUser ? 'w' : '') : ''; };
+        const sig = JSON.stringify([idx.currentId, idx.groups.map((g) => [g.id, g.name, !!g.collapsed]), idx.chats.map((c) => [c.id, c.title, c.groupId || '', this._chatTimeText(c.updatedAt), st(c.id)])]);
         if (sig === this._chatListSig && list.firstChild) return; // 沒有實質變化（AI每一步存檔都會呼叫這裡）
         this._chatListSig = sig;
         list.textContent = '';
@@ -16516,8 +16571,18 @@ ${sourceTool.handlerScript}
             const el = document.createElement('div');
             el.className = `cl-item${c.id === idx.currentId ? ' active' : ''}${nested ? ' nested' : ''}`;
             el.dataset.chatId = c.id; el.draggable = true;
+            const cx = this._chatCtxs.get(c.id);
+            // 狀態標記放在標題「前面」：⏳＝AI還在跑、❓＝AI在等你確認、藍點＝背景有你還沒看的新內容
+            if (cx && (cx.isResponding || cx.waitingForUser)) {
+                const b = document.createElement('span'); b.className = 'cl-state';
+                b.textContent = cx.waitingForUser ? '❓' : '⏳';
+                b.title = cx.waitingForUser ? 'AI 在等你確認（切過去就會看到）' : 'AI 還在執行中';
+                el.appendChild(b);
+            }
+            if (cx && cx.unread) el.classList.add('unread');
             const t = document.createElement('span'); t.className = 'cl-title'; t.textContent = c.title || '新對話'; t.title = c.title || '';
             const time = document.createElement('span'); time.className = 'cl-time'; time.textContent = this._chatTimeText(c.updatedAt);
+            if (cx && cx.unread) { const d = document.createElement('span'); d.className = 'cl-unread'; d.title = '有新內容'; el.appendChild(d); }
             el.appendChild(t); el.appendChild(time);
             return el;
         };
@@ -16752,6 +16817,11 @@ ${sourceTool.handlerScript}
                 #ai-chatlist .cl-item.active { background: var(--cl-active); }
                 #ai-chatlist .cl-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 #ai-chatlist .cl-time { font-size: 10px; color: var(--cl-muted); flex: 0 0 auto; }
+                #ai-chatlist .cl-state { flex: 0 0 auto; font-size: 12px; line-height: 1; }
+                #ai-chatlist .cl-unread { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--cl-accent, #3b82f6); }
+                #ai-chatlist .cl-item.unread .cl-title { font-weight: bold; }
+                #ai-chatlist .cl-item { justify-content: flex-start; }
+                #ai-chatlist .cl-item .cl-time { margin-left: auto; }
                 #ai-chatlist .cl-rename { flex: 1; min-width: 0; width: 100%; box-sizing: border-box; padding: 3px 6px; border: 1px solid var(--cl-accent); border-radius: 4px; background: var(--cl-bg); color: var(--cl-text); font-size: 13px; }
                 #ai-cl-menu { position: fixed; z-index: 2147483000; min-width: 190px; background: var(--cl-bg); color: var(--cl-text); border: 1px solid var(--cl-border); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-size: 13px; }
                 #ai-cl-menu .mi { padding: 6px 10px; cursor: pointer; border-radius: 5px; white-space: nowrap; }
@@ -25391,7 +25461,7 @@ _result
             const results = [];
             for (const f of files) {
                 const targetAbsPath = baseAbs + '/' + f.relPath;
-                const resultJson = await fsWriteTool.callback(JSON.stringify({ path: targetAbsPath, content: this._bytesToBase64(f.bytes), encoding: 'base64' }));
+                const resultJson = await fsWriteTool.callback.call(this, JSON.stringify({ path: targetAbsPath, content: this._bytesToBase64(f.bytes), encoding: 'base64' }));
                 const result = JSON.parse(resultJson);
                 if (!result.ok) throw new Error(`寫入 ${targetAbsPath} 失敗：${result.error}`);
                 results.push({ path: targetAbsPath, sizeBytes: f.bytes.length });
@@ -30606,7 +30676,8 @@ ${existingNodeSummaries}
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }
-        this.executeChat(textToSend);
+        // 從這一刻起，這次AI執行的所有狀態都落在「送出時的這個對話」上；使用者中途切到別的對話，它照樣在原本的對話裡繼續做事。
+        this._chatRunner(this._ctx).executeChat(textToSend);
     }
 
     // ============================================================
@@ -32026,7 +32097,7 @@ ${existingNodeSummaries}
                         try {
                             const toolDef = this._getToolDefinition(fnName);
                             if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
-                            const result = await Promise.resolve(toolDef.callback(rawArgs));
+                            const result = await Promise.resolve(toolDef.callback.call(this, rawArgs));
                             messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
                         } catch (err) {
                             messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ ok: false, error: String(err.message || err) }) });
@@ -32074,7 +32145,7 @@ ${existingNodeSummaries}
                         if (task.fnName === 'export_document' && parsedArgs && typeof parsedArgs === 'object') {
                             exportedYaml += (parsedArgs.content_yaml || '') + '\n\n';
                         }
-                        const result = await Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs)));
+                        const result = await Promise.resolve(toolDef.callback.call(this, JSON.stringify(parsedArgs)));
                         messages.push(this._buildToolResultMessage(task.fnName, result));
                     } catch (err) {
                         messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
@@ -33022,7 +33093,7 @@ ${existingNodeSummaries}
 
                         this._log(`執行工具: ${task.fnName}`);
                         const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
-                        const result = await this._callToolGuarded(this._toolCallLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDefinition.callback(JSON.stringify(parsedArgs))));
+                        const result = await this._callToolGuarded(this._toolCallLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDefinition.callback.call(this, JSON.stringify(parsedArgs))));
                         this._noteWriteEvidence(this._writeEvidence, task.fnName, result);
 
                         this._pushToolResultMessage(task.fnName, result);
@@ -33368,7 +33439,7 @@ ${existingNodeSummaries}
                     const toolDefinition = this._getToolDefinition(fnName);
                     if (!toolDefinition) throw new Error(`找不到工具: ${fnName}`);
                     this._log(`執行工具（原生）: ${fnName}`);
-                    const result = await this._callToolGuarded(this._toolCallLog, fnName, rawArgs, () => Promise.resolve(toolDefinition.callback(rawArgs)));
+                    const result = await this._callToolGuarded(this._toolCallLog, fnName, rawArgs, () => Promise.resolve(toolDefinition.callback.call(this, rawArgs)));
                     this._noteWriteEvidence(this._writeEvidence, fnName, result);
                     this._pushToolResultMessage(fnName, result, { tool_call_id: tc.id });
                 } catch (err) {
@@ -34483,7 +34554,7 @@ ${existingNodeSummaries}
                     try {
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
-                        const result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback(rawArgs)));
+                        const result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback.call(this, rawArgs)));
                         this._noteWriteEvidence(writeEvidence, fnName, result);
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
@@ -34577,7 +34648,7 @@ ${existingNodeSummaries}
                     const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
-                    const result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback(JSON.stringify(parsedArgs))));
+                    const result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback.call(this, JSON.stringify(parsedArgs))));
                     this._noteWriteEvidence(writeEvidence, task.fnName, result);
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;
