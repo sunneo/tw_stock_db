@@ -15151,7 +15151,11 @@ ${fnData.code}
     }
 
     _requestUserFormNow(options = {}) {
-        return new Promise((resolve) => {
+        return new Promise((resolve) => this._showUserForm(options, resolve));
+    }
+
+    _showUserForm(options, resolve) {
+        {
             const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null } = options;
             const chatBody = document.getElementById('ai-chat-body');
             if (!chatBody) { resolve({ confirmed: true }); return; } // 理論上不該發生(呼叫這個方法時對話視窗一定已經開著)，保守起見不卡住整個工具呼叫流程
@@ -15189,7 +15193,9 @@ ${fnData.code}
             chatBody.scrollTo({ top: chatBody.scrollHeight, behavior: 'smooth' });
 
             const container = document.getElementById(formId);
-            const finish = (result) => { container.remove(); resolve(result); };
+            const formCtx = this._ctx;
+            formCtx.pendingForm = { options, resolve, container };
+            const finish = (result) => { container.remove(); if (formCtx.pendingForm && formCtx.pendingForm.container === container) formCtx.pendingForm = null; resolve(result); };
 
             if (Array.isArray(choices) && choices.length) {
                 container.querySelectorAll('[data-choice-idx]').forEach(btn => {
@@ -15206,7 +15212,7 @@ ${fnData.code}
                 container.querySelector('[data-action="confirm-yes"]').addEventListener('click', () => finish({ confirmed: true }));
                 container.querySelector('[data-action="confirm-no"]').addEventListener('click', () => finish({ confirmed: false }));
             }
-        });
+        }
     }
 
     // tw_stock_db客製: 把「工具執行結果」組成訊息物件的邏輯，跟「push進
@@ -16271,7 +16277,14 @@ ${sourceTool.handlerScript}
     _touchChatMeta(ctx) {
         const entry = this._chatEntry(ctx.id);
         if (!entry) return;
-        entry.updatedAt = Date.now();
+        // 使用者反映：點一下對話清單就會改變順序。切換對話會重畫並存檔，但內容沒變就不該更新「最後更新時間」
+        // （清單是依它排序）。只有訊息數或最後一則訊息長度真的變了才更新；第一次記錄基準值時不算變動。
+        const last = ctx.messages[ctx.messages.length - 1];
+        const sig = ctx.messages.length + ':' + (last && typeof last.content === 'string' ? last.content.length : 0);
+        if (ctx._touchSig !== sig) {
+            if (ctx._touchSig !== undefined) entry.updatedAt = Date.now();
+            ctx._touchSig = sig;
+        }
         if (!entry.title || entry.title === '新對話') {
             const firstUser = ctx.messages.find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
             if (firstUser) {
@@ -16372,13 +16385,21 @@ ${sourceTool.handlerScript}
     _chatCtxPrune() {
         for (const [id, c] of this._chatCtxs) {
             if (c === this._activeCtx) continue;
-            if (c.isResponding || c.unread || c.waitingForUser) continue;
+            if (c.isResponding || c.unread || c.waitingForUser || c.visibleWaiters.length || c.pendingForm) continue;
             this._chatCtxs.delete(id);
         }
     }
 
     // 把畫面切成某個對話：清單標記、訊息、串流中的氣泡、回應指示器、停止鈕一次到位。
     _chatActivate(ctx) {
+        const prev = this._activeCtx;
+        if (prev && prev !== ctx && prev.pendingForm) {
+            const pf = prev.pendingForm;
+            try { pf.container.remove(); } catch (_) { /* 已經不在畫面上 */ }
+            prev.pendingForm = null;
+            prev.waitingForUser = true;
+            prev.visibleWaiters.push(() => { prev.waitingForUser = false; this._showUserForm(pf.options, pf.resolve); });
+        }
         this._activeCtx = ctx;
         this._chatIndex.currentId = ctx.id;
         ctx.unread = false;
@@ -16393,6 +16414,7 @@ ${sourceTool.handlerScript}
         this._syncStopButton();
         const waiters = ctx.visibleWaiters.splice(0);
         waiters.forEach((fn) => { try { fn(); } catch (err) { console.warn('切回對話後續動作失敗:', err); } });
+        if (waiters.length) this._renderChatList();
     }
 
     async _chatSwitch(id) {
