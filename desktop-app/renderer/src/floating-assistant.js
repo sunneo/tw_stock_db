@@ -2248,7 +2248,7 @@ const TWODANIM_SHAPE_TYPES = new Set(['circle', 'rect', 'polygon', 'line', 'text
 // 本身（不是position/rotation/scale/opacity），每個時間點直接切換成
 // 對應的圖片，不做任何插值/淡化，見_build2DAnimatorForShape的實作。
 const TWODANIM_ANIMATION_TYPES = new Set(['move', 'rotate', 'scale', 'fade', 'orbit', 'keyframes', 'frames']);
-const TWODANIM_KNOWN_TOP_LEVEL_KEYS = new Set(['title', 'width', 'height', 'background', 'duration', 'shapes']);
+const TWODANIM_KNOWN_TOP_LEVEL_KEYS = new Set(['kind', 'title', 'width', 'height', 'background', 'duration', 'camera', 'shapes']);
 
 // tw_stock_db客製: 2026-09-05使用者實測回報——STL/OBJ/3MF/FBX從上傳到轉成
 // 場景YAML這段UI會卡住一陣子，3D場景真正畫出來之後反而很順。根因是
@@ -9755,7 +9755,7 @@ ${fnData.code}
         // render_3d_scene/render_interactive_viewer同一套「主功能工具精簡、
         // 修改前先查真實內容」設計精神。
         registerOptional('render_2d_animation',
-            '用一段YAML描述渲染一個2D向量圖形動畫給使用者看（純宣告式格式，不能寫真正的JS程式碼；用Canvas2D畫圓/矩形/多邊形/折線/文字，不是3D）。頂層欄位：{title:"標題（選填）", width:480, height:320（皆選填，預設480x312）, background:"#ffffff", duration:4（動畫一輪的秒數，會loop重播）, shapes:[{id:"這個shape的名字（選填，給animation.parent引用）", type:"circle"|"rect"|"polygon"|"line"|"text"|"image", position:[x,y]（畫布座標，原點左上角，y向下）, rotation:0（度）, scale:1, opacity:1, fill:"#ff0000", stroke:"#000000", stroke_width:0, radius（circle用）, width,height（rect用、image用，image是唯一必填width/height的類型）, points:[[x,y],...]（polygon至少3點/line至少2點，座標相對於shape自己的position）, closed:true（line專用，選填，首尾相連）, content:"文字內容"（text用）, font_size:16（text用）, src:"http(s)網址或data:開頭的base64圖片"（image類型必填：整張圖依width/height拉伸畫出來）, fill_image:"http(s)網址或data:開頭的base64圖片"（circle/rect/polygon選填：改用這張圖貼滿該shape的外形取代純色fill，圖片以shape的bounding box拉伸、裁切到形狀輪廓內，不是精確的UV映射，多邊形也一樣用bounding box近似）, animation:{type:"move"|"rotate"|"scale"|"fade"|"orbit"|"keyframes", ...}}]}。這個架構沒有伺服器端附件系統，src/fill_image一律用http(s)網址或直接把圖片內容轉成data:開頭的base64字串內嵌在YAML裡，圖片還沒載入完成或載入失敗時會優雅退回灰色佔位方塊/純色，不會讓整個動畫壞掉。animation依type各自的參數：move用from:[x,y]/to:[x,y]/duration/loop:true|"pingpong"；rotate用speed（度/秒，持續轉）；scale用min/max/speed（來回縮放）；fade用from/to/duration/loop（透明度變化）；orbit用center:[x,y]或parent:"另一個shape的id"（衛星繞著該shape轉，母shape自己也可以再animation.parent繞第三個shape，可以疊多層，跟3D場景的animation_parent同一個設計）+radius+speed（弧度/秒）；keyframes用keyframes:[{t:秒數,position,rotation,scale,opacity},...]（依時間線性內插，最泛用但要自己列出每個時間點）。未知的頂層欄位/shape類型/animation類型都會直接回報錯誤。修改既有動畫之前，一律先呼叫get_2d_animation_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫。畫面上會有📤按鈕讓使用者自己把這個動畫匯出成PPTX/PDF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"2D動畫YAML描述"}',
+            '用一段YAML描述渲染一個2D向量圖形動畫給使用者看（純宣告式格式，不能寫真正的JS程式碼；用Canvas2D畫圓/矩形/多邊形/折線/文字，不是3D）。頂層欄位：{title:"標題（選填）", width:480, height:320（皆選填，預設480x312）, background:"#ffffff", duration:4（動畫一輪的秒數，會loop重播）, shapes:[{id:"這個shape的名字（選填，給animation.parent引用）", type:"circle"|"rect"|"polygon"|"line"|"text"|"image", position:[x,y]（畫布座標，原點左上角，y向下）, rotation:0（度）, scale:1, opacity:1, fill:"#ff0000", stroke:"#000000", stroke_width:0, radius（circle用）, width,height（rect用、image用，image是唯一必填width/height的類型）, points:[[x,y],...]（polygon至少3點/line至少2點，座標相對於shape自己的position）, closed:true（line專用，選填，首尾相連）, content:"文字內容"（text用）, font_size:16（text用）, src:"http(s)網址或data:開頭的base64圖片"（image類型必填：整張圖依width/height拉伸畫出來）, fill_image:"http(s)網址或data:開頭的base64圖片"（circle/rect/polygon選填：改用這張圖貼滿該shape的外形取代純色fill，圖片以shape的bounding box拉伸、裁切到形狀輪廓內，不是精確的UV映射，多邊形也一樣用bounding box近似）, animation:{type:"move"|"rotate"|"scale"|"fade"|"orbit"|"keyframes", ...}}]}。這個架構沒有伺服器端附件系統，src/fill_image一律用http(s)網址或直接把圖片內容轉成data:開頭的base64字串內嵌在YAML裡，圖片還沒載入完成或載入失敗時會優雅退回灰色佔位方塊/純色，不會讓整個動畫壞掉。animation依type各自的參數：move用from:[x,y]/to:[x,y]/duration/loop:true|"pingpong"；rotate用speed（度/秒，持續轉）；scale用min/max/speed（來回縮放）；fade用from/to/duration/loop（透明度變化）；orbit用center:[x,y]或parent:"另一個shape的id"（衛星繞著該shape轉，母shape自己也可以再animation.parent繞第三個shape，可以疊多層，跟3D場景的animation_parent同一個設計）+radius+speed（弧度/秒）；keyframes用keyframes:[{t:秒數,curve:"ease-out",position:[x,y]或cx/cy（只動一軸也行）,rotation,scale,opacity,radius,width,height,fill（顏色會漸變）},...]（每個屬性各自一條時間軸，keyframe裡寫了哪些屬性就動哪些，不用每個都列；每一段的緩動寫在該段起點keyframe的curve：linear/ease-in/ease-out/ease-in-out/ease/bounce/step/cubic-bezier(a,b,c,d)，預設linear。**位置：circle/rect/text/image以position:[x,y]或cx/cy（x/y）指定「中心點」，沒寫的那一軸預設在畫布中心，不會掉到左上角；polygon/line的points是相對於position。fill也可以是漸層：{type:"radialGradient",cx:0.35,cy:0.35,r:0.8,stops:[{offset:0,color:"#00ffff"},{offset:1,color:"#0044aa"}]}（座標是shape外框的比例；linearGradient用x1,y1,x2,y2或angle度數）**）。視角（選填）：頂層camera:{zoom:1, center:[x,y], focus:"shape的id（視角跟著它動）", keyframes:[{t,zoom,center或focus,curve}]}，可以讓動畫自己推進特寫/拉遠；使用者在畫面上也可以自己滾輪縮放、拖曳平移、雙擊圖形聚焦。未知的頂層欄位/shape類型/animation類型都會直接回報錯誤。修改既有動畫之前，一律先呼叫get_2d_animation_yaml拿到目前真正的內容再改，不要憑對話記憶重新編寫。畫面上會有📤按鈕讓使用者自己把這個動畫匯出成PPTX/PDF/MP4影片（H.264），不需要另外用其他工具產生匯出檔。參數: {"yaml":"2D動畫YAML描述"}',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -26906,6 +26906,10 @@ _result
             if (typeof s.src !== 'string' || !s.src) return `${where} 的image類型缺少src（http(s)網址或data:開頭的base64圖片）`;
             if (!Number.isFinite(s.width) || !Number.isFinite(s.height)) return `${where} 的image類型缺少width/height`;
         }
+        if (s.fill && typeof s.fill === 'object') {
+            const okGrad = (s.fill.type === 'linearGradient' || s.fill.type === 'radialGradient') && Array.isArray(s.fill.stops) && s.fill.stops.length >= 2 && s.fill.stops.every((st) => st && typeof st.color === 'string');
+            if (!okGrad) return `${where} 的fill如果是物件，必須是漸層：{type:"linearGradient"|"radialGradient", stops:[{offset:0..1, color:"#rrggbb"},...至少2個]}`;
+        } else if (s.fill != null && typeof s.fill !== 'string') return `${where} 的fill必須是顏色字串或漸層物件`;
         if (s.fill_image && typeof s.fill_image !== 'string') return `${where} 的fill_image必須是字串（http(s)網址或data:開頭的base64圖片）`;
         if (s.animation && typeof s.animation === 'object' && s.animation.type && !TWODANIM_ANIMATION_TYPES.has(s.animation.type)) {
             return `${where} 的animation.type未知: "${s.animation.type}"（合法值：${[...TWODANIM_ANIMATION_TYPES].join('/')}）`;
@@ -26967,10 +26971,25 @@ _result
     // 靜態）+ 依animation.parent建立階層動畫，跟3D場景_build3DSceneGraph
     // 同一個兩階段做法：先把全部shape的state建好＋建立id查找表，animator
     // 才會查得到parent（可能宣告順序在後面）。
-    _build2DShapeGraph(shapeDefs) {
+    // 2026-09-30使用者回報「彈跳的球沒有顯示、只出現影子」：那份YAML的球沒有position，只在keyframes裡寫
+    // cy（沒有cx），fill是radialGradient物件——position沒寫就落在左上角(0,0)、fill不是字串。修法：
+    // (1)位置可以用position:[x,y]，也可以用cx/cy（或x/y）分開寫，沒寫的那一軸（circle/rect/text/image
+    // 這種以「中心點」定位的shape）預設在畫布中心，不再掉到左上角；(2)fill可以是漸層物件；
+    // (3)keyframes可以直接動cx/cy/x/y/radius/width/height/fill…（見_build2DAnimatorForShape）。
+    // opts.width/height：畫布尺寸（算預設中心用）。回傳多帶byId（id→state），camera的focus要用。
+    _build2DShapeGraph(shapeDefs, opts) {
+        const cw = opts && Number.isFinite(opts.width) ? opts.width : 480;
+        const ch = opts && Number.isFinite(opts.height) ? opts.height : 312;
         const statesById = {};
         const list = [];
+        const firstFinite = (...vals) => { for (const v of vals) if (Number.isFinite(v)) return v; return null; };
         for (const def of shapeDefs) {
+            const centered = def.type !== 'polygon' && def.type !== 'line';
+            const hasPos = Array.isArray(def.position);
+            let px = hasPos ? def.position[0] : firstFinite(def.cx, def.x);
+            let py = hasPos ? def.position[1] : firstFinite(def.cy, def.y);
+            if (!Number.isFinite(px)) px = centered && !hasPos ? cw / 2 : 0;
+            if (!Number.isFinite(py)) py = centered && !hasPos ? ch / 2 : 0;
             const state = {
                 type: def.type,
                 radius: def.radius,
@@ -26985,12 +27004,13 @@ _result
                 strokeWidth: Number.isFinite(def.stroke_width) ? def.stroke_width : 0,
                 src: def.src || null,
                 fillImage: def.fill_image || null,
-                position: Array.isArray(def.position) ? def.position.slice(0, 2) : [0, 0],
+                position: [px, py],
                 rotation: Number.isFinite(def.rotation) ? def.rotation : 0,
                 scale: Number.isFinite(def.scale) ? def.scale : 1,
                 opacity: Number.isFinite(def.opacity) ? def.opacity : 1,
+                id: (typeof def.id === 'string' && def.id) ? def.id : null,
             };
-            if (typeof def.id === 'string' && def.id) statesById[def.id] = state;
+            if (state.id) statesById[state.id] = state;
             list.push({ def, state });
         }
         const animators = [];
@@ -26999,7 +27019,62 @@ _result
             const fn = this._build2DAnimatorForShape(state, def.animation, statesById);
             if (fn) animators.push(fn);
         }
-        return { shapes: list.map((l) => l.state), animators };
+        return { shapes: list.map((l) => l.state), animators, byId: statesById };
+    }
+
+    // ---- 緩動曲線：keyframes每一段的curve（寫在該段「起點」的keyframe上，也可以寫在animation層當預設）----
+    // linear／ease-in／ease-out／ease-in-out（二次）、ease（CSS的ease）、*-cubic（三次）、step（到終點才跳）、
+    // bounce（落地反彈）、cubic-bezier(x1,y1,x2,y2)。不認得的名稱當linear。
+    _ease2D(name, x) {
+        x = Math.max(0, Math.min(1, x));
+        const n = String(name || 'linear').trim().toLowerCase();
+        switch (n) {
+            case 'linear': return x;
+            case 'ease-in': case 'ease-in-quad': return x * x;
+            case 'ease-out': case 'ease-out-quad': return 1 - (1 - x) * (1 - x);
+            case 'ease-in-out': case 'ease-in-out-quad': return x < 0.5 ? 2 * x * x : 1 - 2 * (1 - x) * (1 - x);
+            case 'ease-in-cubic': return x * x * x;
+            case 'ease-out-cubic': return 1 - Math.pow(1 - x, 3);
+            case 'ease-in-out-cubic': return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+            case 'step': case 'hold': return x < 1 ? 0 : 1;
+            case 'ease': return this._cubicBezier2D(0.25, 0.1, 0.25, 1, x);
+            case 'bounce': case 'bounce-out': {
+                const n1 = 7.5625, d1 = 2.75;
+                if (x < 1 / d1) return n1 * x * x;
+                if (x < 2 / d1) { x -= 1.5 / d1; return n1 * x * x + 0.75; }
+                if (x < 2.5 / d1) { x -= 2.25 / d1; return n1 * x * x + 0.9375; }
+                x -= 2.625 / d1; return n1 * x * x + 0.984375;
+            }
+            default: {
+                const m = /^cubic-bezier\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)$/.exec(n);
+                if (m) return this._cubicBezier2D(+m[1], +m[2], +m[3], +m[4], x);
+                return x;
+            }
+        }
+    }
+    _cubicBezier2D(x1, y1, x2, y2, x) {
+        const bez = (a, b, t) => 3 * a * (1 - t) * (1 - t) * t + 3 * b * (1 - t) * t * t + t * t * t;
+        let lo = 0, hi = 1, t = x;
+        for (let i = 0; i < 24; i++) { t = (lo + hi) / 2; const bx = bez(x1, x2, t); if (bx < x) lo = t; else hi = t; }
+        return bez(y1, y2, t);
+    }
+
+    // 顏色內插（'#rgb'/'#rrggbb'/'rgb(r,g,b)'）；解析不了的顏色就在一半處直接切換
+    _parseColor2D(c) {
+        const s = String(c || '').trim();
+        let m = /^#([0-9a-f]{3})$/i.exec(s);
+        if (m) return m[1].split('').map((h) => parseInt(h + h, 16));
+        m = /^#([0-9a-f]{6})$/i.exec(s);
+        if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+        m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+        if (m) return [+m[1], +m[2], +m[3]];
+        return null;
+    }
+    _lerpColor2D(a, b, f) {
+        const ca = this._parseColor2D(a), cb = this._parseColor2D(b);
+        if (!ca || !cb) return f < 0.5 ? a : b;
+        const c = ca.map((v, i) => Math.round(v + (cb[i] - v) * f));
+        return `rgb(${c[0]},${c[1]},${c[2]})`;
     }
 
     // tw_stock_db客製: animation.parent（跟3D場景的animation_parent同一個
@@ -27058,22 +27133,49 @@ _result
             };
         }
         if (type === 'keyframes') {
-            const kfs = Array.isArray(anim.keyframes) ? anim.keyframes.slice().sort((a, b) => a.t - b.t) : [];
+            const kfs = Array.isArray(anim.keyframes) ? anim.keyframes.filter((k) => k && Number.isFinite(k.t)).sort((a, b) => a.t - b.t) : [];
             if (kfs.length < 2) return null;
             const totalDur = kfs[kfs.length - 1].t;
             const loop = anim.loop !== false;
+            // 2026-09-30：改成「每個屬性各自一條時間軸」——keyframe裡有寫哪個屬性就參與哪個，不用每個keyframe都列全部；
+            // 可以動的屬性：position:[x,y]／cx／cy／x／y、rotation、scale、opacity、radius、width、height、
+            // font_size、stroke_width，以及顏色fill／stroke（RGB內插）。每一段的緩動用該段起點keyframe的curve
+            // （或easing），沒寫就用animation層的curve，再沒有就是linear（見_ease2D）。
+            const NUM_PROPS = { rotation: 'rotation', scale: 'scale', opacity: 'opacity', radius: 'radius', width: 'width', height: 'height', font_size: 'fontSize', fontSize: 'fontSize', stroke_width: 'strokeWidth', strokeWidth: 'strokeWidth' };
+            const tracks = {}; // prop → [{t,v,curve}]
+            const push = (prop, kf, v, kind) => {
+                if (kind === 'num' ? !Number.isFinite(v) : typeof v !== 'string') return;
+                (tracks[prop] = tracks[prop] || []).push({ t: kf.t, v, curve: kf.curve || kf.easing || anim.curve || anim.easing || 'linear', kind });
+            };
+            for (const kf of kfs) {
+                if (Array.isArray(kf.position)) { push('px', kf, kf.position[0], 'num'); push('py', kf, kf.position[1], 'num'); }
+                push('px', kf, Number.isFinite(kf.cx) ? kf.cx : kf.x, 'num');
+                push('py', kf, Number.isFinite(kf.cy) ? kf.cy : kf.y, 'num');
+                for (const [k, prop] of Object.entries(NUM_PROPS)) if (k in kf) push(prop, kf, kf[k], 'num');
+                if (typeof kf.fill === 'string') push('fill', kf, kf.fill, 'color');
+                if (typeof kf.stroke === 'string') push('stroke', kf, kf.stroke, 'color');
+            }
+            const props = Object.keys(tracks);
+            if (!props.length) return null;
             return (t) => {
-                const localT = loop ? (t % totalDur) : Math.min(t, totalDur);
-                let i = 0;
-                while (i < kfs.length - 1 && kfs[i + 1].t < localT) i++;
-                const a = kfs[i], b = kfs[Math.min(i + 1, kfs.length - 1)];
-                const span = (b.t - a.t) || 1;
-                const frac = Math.max(0, Math.min(1, (localT - a.t) / span));
-                const lerp = (x, y) => x + (y - x) * frac;
-                if (Array.isArray(a.position) && Array.isArray(b.position)) state.position = [lerp(a.position[0], b.position[0]), lerp(a.position[1], b.position[1])];
-                if (Number.isFinite(a.rotation) && Number.isFinite(b.rotation)) state.rotation = lerp(a.rotation, b.rotation);
-                if (Number.isFinite(a.scale) && Number.isFinite(b.scale)) state.scale = lerp(a.scale, b.scale);
-                if (Number.isFinite(a.opacity) && Number.isFinite(b.opacity)) state.opacity = lerp(a.opacity, b.opacity);
+                const localT = loop && totalDur > 0 ? (t % totalDur) : Math.min(t, totalDur);
+                const vals = {};
+                for (const prop of props) {
+                    const tr = tracks[prop];
+                    let v;
+                    if (localT <= tr[0].t) v = tr[0].v;
+                    else if (localT >= tr[tr.length - 1].t) v = tr[tr.length - 1].v;
+                    else {
+                        let i = 0;
+                        while (i < tr.length - 2 && tr[i + 1].t <= localT) i++;
+                        const a = tr[i], b = tr[i + 1];
+                        const frac = this._ease2D(a.curve, (localT - a.t) / ((b.t - a.t) || 1));
+                        v = a.kind === 'color' ? this._lerpColor2D(a.v, b.v, frac) : a.v + (b.v - a.v) * frac;
+                    }
+                    vals[prop] = v;
+                }
+                if ('px' in vals || 'py' in vals) state.position = [('px' in vals) ? vals.px : state.position[0], ('py' in vals) ? vals.py : state.position[1]];
+                for (const prop of props) if (prop !== 'px' && prop !== 'py') state[prop] = vals[prop];
             };
         }
         // tw_stock_db客製: 2026-09-22使用者明確要求——影片轉逐格動畫不要用
@@ -27154,7 +27256,7 @@ _result
         ctx.rotate((shape.rotation || 0) * Math.PI / 180);
         const scale = Number.isFinite(shape.scale) ? shape.scale : 1;
         ctx.scale(scale, scale);
-        ctx.fillStyle = shape.fill || '#333333';
+        ctx.fillStyle = this._make2DFillStyle(ctx, shape);
         if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.lineWidth = shape.strokeWidth; }
         const fillImg = shape.fillImage && images ? images[shape.fillImage] : null;
         switch (shape.type) {
@@ -27207,8 +27309,8 @@ _result
                 ctx.beginPath();
                 (shape.points || []).forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
                 if (shape.closed) ctx.closePath();
-                if (shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke || shape.fill || '#333333'; ctx.lineWidth = shape.strokeWidth; ctx.stroke(); }
-                else { ctx.strokeStyle = shape.fill || '#333333'; ctx.lineWidth = 1; ctx.stroke(); }
+                if (shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke || this._color2DOf(shape.fill); ctx.lineWidth = shape.strokeWidth; ctx.stroke(); }
+                else { ctx.strokeStyle = this._color2DOf(shape.fill); ctx.lineWidth = 1; ctx.stroke(); }
                 break;
             case 'text':
                 ctx.font = `${shape.fontSize}px sans-serif`;
@@ -27232,10 +27334,155 @@ _result
         ctx.restore();
     }
 
+    // ---- 漸層填色：fill可以是 {type:"linearGradient"|"radialGradient", stops:[{offset,color},...], ...} ----
+    // 座標一律用「該shape外框（bounding box）的比例」：radialGradient的cx/cy（亮點中心，預設0.5/0.5）、
+    // r（半徑，佔外框較長邊的比例，預設0.5）、fx/fy（焦點，選填）、r0（內圈半徑，預設0）；
+    // linearGradient用x1,y1→x2,y2（預設0,0→1,0＝由左到右），或angle（度，0＝左到右、90＝上到下）。
+    _shape2DLocalBounds(shape) {
+        if (shape.type === 'circle') { const r = shape.radius || 10; return { minX: -r, minY: -r, w: r * 2, h: r * 2 }; }
+        if (shape.type === 'rect' || shape.type === 'image') return { minX: -shape.width / 2, minY: -shape.height / 2, w: shape.width, h: shape.height };
+        if (shape.type === 'polygon' || shape.type === 'line') {
+            const pts = shape.points || [];
+            if (!pts.length) return null;
+            const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+            const minX = Math.min(...xs), minY = Math.min(...ys);
+            return { minX, minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+        }
+        return null;
+    }
+    _color2DOf(fill, fallback) {
+        if (typeof fill === 'string') return fill;
+        if (fill && Array.isArray(fill.stops) && fill.stops[0] && fill.stops[0].color) return fill.stops[0].color;
+        return fallback || '#333333';
+    }
+    _make2DFillStyle(ctx, shape) {
+        const f = shape.fill;
+        if (!f) return '#333333';
+        if (typeof f === 'string') return f;
+        if (typeof f !== 'object' || !Array.isArray(f.stops) || !f.stops.length) return '#333333';
+        const bb = this._shape2DLocalBounds(shape);
+        if (!bb || !(bb.w > 0 || bb.h > 0)) return this._color2DOf(f);
+        const num = (v, d) => (Number.isFinite(v) ? v : d);
+        let g;
+        try {
+            if (f.type === 'radialGradient') {
+                const D = Math.max(bb.w, bb.h) || 1;
+                const cx = bb.minX + num(f.cx, 0.5) * bb.w, cy = bb.minY + num(f.cy, 0.5) * bb.h;
+                const fx = Number.isFinite(f.fx) ? bb.minX + f.fx * bb.w : cx;
+                const fy = Number.isFinite(f.fy) ? bb.minY + f.fy * bb.h : cy;
+                g = ctx.createRadialGradient(fx, fy, Math.max(0, num(f.r0, 0)) * D, cx, cy, Math.max(0.0001, num(f.r, 0.5)) * D);
+            } else {
+                let x1, y1, x2, y2;
+                if (Number.isFinite(f.angle)) {
+                    const rad = f.angle * Math.PI / 180, dx = Math.cos(rad), dy = Math.sin(rad);
+                    const len = Math.abs(bb.w * dx) + Math.abs(bb.h * dy);
+                    const mx = bb.minX + bb.w / 2, my = bb.minY + bb.h / 2;
+                    x1 = mx - dx * len / 2; y1 = my - dy * len / 2; x2 = mx + dx * len / 2; y2 = my + dy * len / 2;
+                } else {
+                    x1 = bb.minX + num(f.x1, 0) * bb.w; y1 = bb.minY + num(f.y1, 0) * bb.h;
+                    x2 = bb.minX + num(f.x2, 1) * bb.w; y2 = bb.minY + num(f.y2, 0) * bb.h;
+                }
+                g = ctx.createLinearGradient(x1, y1, x2, y2);
+            }
+            f.stops.forEach((st, i) => {
+                const off = Number.isFinite(st.offset) ? Math.max(0, Math.min(1, st.offset)) : (f.stops.length > 1 ? i / (f.stops.length - 1) : 0);
+                try { g.addColorStop(off, st.color || '#000000'); } catch (_) { /* 不合法的顏色字串就略過這個色標 */ }
+            });
+            return g;
+        } catch (_) { return this._color2DOf(f); }
+    }
+
+    // ---- 視角（camera）：頂層camera欄位 ----
+    // camera:{zoom:1, center:[x,y], focus:"shape的id", keyframes:[{t,zoom,center|focus,curve}]}
+    // zoom是放大倍率（1＝看整個畫布），center是「畫面正中央對準的世界座標」（預設畫布中心），focus是讓視角中心
+    // 一直跟著某個shape（它動視角就跟著動）。有keyframes就依時間在各個視角之間內插（每段的緩動用起點的curve），
+    // 讓動畫可以自己「推進特寫→拉遠」。回傳(t)=>{zoom,cx,cy}；沒有camera回傳null（＝固定看整個畫布）。
+    // 一定要在這一幀的animators跑完之後才呼叫，focus才拿得到shape當下的位置。
+    _build2DCamera(cam, byId, width, height) {
+        if (!cam || typeof cam !== 'object') return null;
+        const base = { zoom: Number.isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 1, center: Array.isArray(cam.center) ? cam.center : null, focus: cam.focus };
+        const pointOf = (spec, fallback) => {
+            const f = spec && spec.focus && byId ? byId[spec.focus] : null;
+            if (f) return [f.position[0], f.position[1]];
+            if (spec && Array.isArray(spec.center) && Number.isFinite(spec.center[0]) && Number.isFinite(spec.center[1])) return spec.center;
+            return fallback;
+        };
+        const basePoint = () => pointOf(base, [width / 2, height / 2]);
+        const kfs = Array.isArray(cam.keyframes) ? cam.keyframes.filter((k) => k && Number.isFinite(k.t)).sort((a, b) => a.t - b.t) : [];
+        if (!kfs.length) return () => { const p = basePoint(); return { zoom: base.zoom, cx: p[0], cy: p[1] }; };
+        const totalDur = kfs[kfs.length - 1].t;
+        const loop = cam.loop !== false;
+        const resolve = (k) => { const p = pointOf(k, basePoint()); return { zoom: Number.isFinite(k.zoom) && k.zoom > 0 ? k.zoom : base.zoom, cx: p[0], cy: p[1], curve: k.curve || k.easing || cam.curve || cam.easing || 'ease-in-out' }; };
+        return (t) => {
+            const lt = loop && totalDur > 0 ? (t % totalDur) : Math.min(t, totalDur);
+            if (lt <= kfs[0].t) { const r = resolve(kfs[0]); return { zoom: r.zoom, cx: r.cx, cy: r.cy }; }
+            if (lt >= totalDur) { const r = resolve(kfs[kfs.length - 1]); return { zoom: r.zoom, cx: r.cx, cy: r.cy }; }
+            let i = 0;
+            while (i < kfs.length - 2 && kfs[i + 1].t <= lt) i++;
+            const a = resolve(kfs[i]), b = resolve(kfs[i + 1]);
+            const f = this._ease2D(a.curve, (lt - kfs[i].t) / ((kfs[i + 1].t - kfs[i].t) || 1));
+            // 縮放用對數內插：2倍→4倍的推進看起來才是等速
+            return { zoom: Math.exp(Math.log(a.zoom) + (Math.log(b.zoom) - Math.log(a.zoom)) * f), cx: a.cx + (b.cx - a.cx) * f, cy: a.cy + (b.cy - a.cy) * f };
+        };
+    }
+
+    // 畫一整個畫面：背景鋪滿整個畫布（不受視角影響），shape依視角（縮放＋平移）畫。
+    // view：{zoom, cx, cy, panX, panY}——世界座標(cx,cy)對準畫面中央，再加上使用者拖曳的平移(panX,panY，畫布像素)。
+    _draw2DScene(ctx, width, height, background, shapes, images, view, pxRatio) {
+        ctx.save();
+        const pr = pxRatio > 0 ? pxRatio : 1;
+        ctx.setTransform(pr, 0, 0, pr, 0, 0); // 畫布實際像素比邏輯尺寸多時（高解析度），座標仍用邏輯尺寸
+        ctx.fillStyle = background || '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.beginPath(); ctx.rect(0, 0, width, height); ctx.clip();
+        const z = view && view.zoom > 0 ? view.zoom : 1;
+        const cx = view && Number.isFinite(view.cx) ? view.cx : width / 2;
+        const cy = view && Number.isFinite(view.cy) ? view.cy : height / 2;
+        ctx.translate(width / 2 + ((view && view.panX) || 0) - cx * z, height / 2 + ((view && view.panY) || 0) - cy * z);
+        ctx.scale(z, z);
+        for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) { /* 單一shape畫失敗不影響其餘shape */ } }
+        ctx.restore();
+    }
+
+    // 世界座標(wx,wy)有沒有點到這個shape（雙擊聚焦用）。把點換算到shape自己的座標系（反向套用位置/旋轉/縮放）再依類型判斷。
+    _hit2DShape(shape, wx, wy) {
+        const s = Number.isFinite(shape.scale) && shape.scale !== 0 ? shape.scale : 1;
+        const rad = -(shape.rotation || 0) * Math.PI / 180;
+        const dx = wx - shape.position[0], dy = wy - shape.position[1];
+        const lx = (dx * Math.cos(rad) - dy * Math.sin(rad)) / s;
+        const ly = (dx * Math.sin(rad) + dy * Math.cos(rad)) / s;
+        switch (shape.type) {
+            case 'circle': return lx * lx + ly * ly <= Math.pow(shape.radius || 10, 2);
+            case 'rect': case 'image': return Math.abs(lx) <= shape.width / 2 && Math.abs(ly) <= shape.height / 2;
+            case 'text': { const w = (shape.content || '').length * shape.fontSize * 0.6; return Math.abs(lx) <= w / 2 && Math.abs(ly) <= shape.fontSize / 2; }
+            case 'polygon': {
+                const pts = shape.points || []; let inside = false;
+                for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+                    if (((yi > ly) !== (yj > ly)) && (lx < (xj - xi) * (ly - yi) / ((yj - yi) || 1e-9) + xi)) inside = !inside;
+                }
+                return inside;
+            }
+            default: return false; // line：太細，不參與點選
+        }
+    }
+    // shape在世界座標裡大約多大（聚焦時決定放大多少倍）
+    _size2DOf(shape) {
+        const s = Math.abs(shape.scale || 1);
+        const bb = this._shape2DLocalBounds(shape);
+        if (bb) return Math.max(bb.w, bb.h) * s;
+        if (shape.type === 'text') return Math.max((shape.content || '').length * shape.fontSize * 0.6, shape.fontSize) * s;
+        return 40 * s;
+    }
+
     // 掛載一段2D動畫YAML到container底下：跟_mount3DScene同一種「lenient
     // 驗證+建構時try/catch」雙重防線，bypass有問題的shape繼續播放其餘部分，
     // 回傳的handle帶warnings（給卡片的「⚠️ N」按鈕用）跟snapshotDataUri
     // （給PPTX/PDF快照用）。
+    // 2026-09-30使用者要求：2D動畫要能放大縮小、平移、聚焦——(1)畫面上可以滾輪縮放（以游標為中心）、拖曳平移、
+    // 兩指捏合縮放；(2)雙擊某個shape＝聚焦它（視角跟著它動並放大），雙擊空白處＝回到全景；(3)右上角的
+    // ＋／－／⟲按鈕與「聚焦」下拉選單；(4)YAML頂層的camera欄位讓動畫自己推進特寫（見_build2DCamera）。
+    // 使用者自己的縮放/平移是疊在camera之上的；匯出MP4/快照只看YAML的camera，不含使用者當下的操作。
     async _mount2DAnimation(container, yamlText) {
         await this._ensureJsYamlLoaded();
         const validation = this._validate2DAnimationYaml(yamlText, { lenient: true });
@@ -27246,20 +27493,33 @@ _result
         const animDef = validation.anim;
         const width = Number.isFinite(animDef.width) ? animDef.width : 480;
         const height = Number.isFinite(animDef.height) ? animDef.height : Math.round(width * 0.65);
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative; width:100%; line-height:0;';
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
-        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; background:#fff;';
-        container.appendChild(canvas);
+        canvas.style.cssText = 'width:100%; height:auto; display:block; border-radius:8px; background:#fff; touch-action:none; cursor:grab;';
+        wrap.appendChild(canvas);
+        container.appendChild(wrap);
         const ctx = canvas.getContext('2d');
+        // 畫布實際像素 ＝ 顯示大小 × 螢幕像素比（最多4倍）：向量圖形縮放時永遠用足夠的像素重畫，不會因為放大而模糊
+        let pxRatio = 1;
+        const applyResolution = () => {
+            const cssW = canvas.clientWidth || width;
+            const target = Math.max(1, Math.min(4, Math.round((cssW * (window.devicePixelRatio || 1) / width) * 4) / 4));
+            if (target !== pxRatio) { pxRatio = target; canvas.width = Math.round(width * pxRatio); canvas.height = Math.round(height * pxRatio); }
+        };
+        applyResolution();
 
         const warnings = (validation.warnings || []).slice();
-        let shapes = [], animators = [];
+        let shapes = [], animators = [], byId = {};
         try {
-            const built = this._build2DShapeGraph(validation.shapes);
-            shapes = built.shapes; animators = built.animators;
+            const built = this._build2DShapeGraph(validation.shapes, { width, height });
+            shapes = built.shapes; animators = built.animators; byId = built.byId;
         } catch (err) {
             warnings.push(`建構shapes失敗：${err.message || err}`);
         }
+        let cameraFn = null;
+        try { cameraFn = this._build2DCamera(animDef.camera, byId, width, height); } catch (err) { warnings.push(`camera設定無效，改看整個畫布：${err.message || err}`); }
         // tw_stock_db客製: 2026-09-06——貼圖/照片支援，在真的開始render loop
         // 之前先把所有用到的圖片非同步載入完成，避免前幾幀因為圖片還沒到位
         // 而畫成灰色佔位方塊（見_preload2DShapeImages/_draw2DShape的說明）。
@@ -27271,18 +27531,132 @@ _result
         const duration = Number.isFinite(animDef.duration) && animDef.duration > 0 ? animDef.duration : 4;
         let frameIndex = 0;
         let stopped = false;
-        const drawFrame = (t) => {
+        // 使用者的視角操作（疊在camera之上）
+        const user = { zoom: 1, panX: 0, panY: 0, focus: null };
+        let lastCam = { zoom: 1, cx: width / 2, cy: height / 2 }; // 最近一幀的camera（YAML的視角）
+        const currentView = () => ({
+            zoom: lastCam.zoom * user.zoom,
+            cx: user.focus ? user.focus.position[0] : lastCam.cx,
+            cy: user.focus ? user.focus.position[1] : lastCam.cy,
+            panX: user.panX, panY: user.panY,
+        });
+        const computeView = (t, withUser) => {
+            const cam = cameraFn ? cameraFn(t) : { zoom: 1, cx: width / 2, cy: height / 2 };
+            if (!withUser) return { zoom: cam.zoom, cx: cam.cx, cy: cam.cy, panX: 0, panY: 0 };
+            lastCam = cam;
+            return currentView();
+        };
+        const drawFrame = (t, withUser) => {
             for (const fn of animators) { try { fn(t, 1 / 60); } catch (_) { /* 單一animator失敗不影響其餘shape */ } }
-            ctx.save();
-            ctx.fillStyle = animDef.background || '#ffffff';
-            ctx.fillRect(0, 0, width, height);
-            for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) { /* 單一shape畫失敗不影響其餘shape */ } }
-            ctx.restore();
+            const view = computeView(t, withUser);
+            this._draw2DScene(ctx, width, height, animDef.background, shapes, images, view, pxRatio);
         };
         const renderOnce = () => {
-            drawFrame((frameIndex / 60) % duration);
+            drawFrame((frameIndex / 60) % duration, true);
             frameIndex++;
         };
+
+        // ---- 視角操作UI ----
+        const bar = document.createElement('div');
+        bar.style.cssText = 'position:absolute; top:6px; right:6px; display:flex; gap:4px; align-items:center; line-height:1; font-size:12px; user-select:none;';
+        const mkBtn = (label, title) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = label; b.title = title;
+            b.style.cssText = 'min-width:26px; height:26px; padding:0 6px; border:1px solid rgba(0,0,0,.25); border-radius:6px; background:rgba(255,255,255,.85); color:#222; cursor:pointer; font-size:14px;';
+            return b;
+        };
+        const zoomLabel = document.createElement('span');
+        zoomLabel.style.cssText = 'padding:0 6px; height:26px; line-height:26px; border-radius:6px; background:rgba(255,255,255,.85); color:#222; font-size:11px; min-width:38px; text-align:center;';
+        const focusSel = document.createElement('select');
+        focusSel.title = '聚焦：視角跟著選到的圖形，並放大';
+        focusSel.style.cssText = 'height:26px; max-width:120px; border:1px solid rgba(0,0,0,.25); border-radius:6px; background:rgba(255,255,255,.85); color:#222; font-size:12px;';
+        const optAll = document.createElement('option'); optAll.value = ''; optAll.textContent = '🎯 全景'; focusSel.appendChild(optAll);
+        shapes.forEach((sh, i) => {
+            const o = document.createElement('option'); o.value = String(i);
+            o.textContent = `${sh.id || sh.type + '#' + (i + 1)}`;
+            focusSel.appendChild(o);
+        });
+        const zoomIn = mkBtn('＋', '放大'), zoomOut = mkBtn('－', '縮小'), reset = mkBtn('⟲', '回到全景（重設縮放與平移）');
+        bar.append(focusSel, zoomOut, zoomLabel, zoomIn, reset);
+        wrap.appendChild(bar);
+        const refreshUi = () => {
+            const total = currentView().zoom;
+            zoomLabel.textContent = `${Math.round(total * 100)}%`;
+            const idx = user.focus ? shapes.indexOf(user.focus) : -1;
+            focusSel.value = idx >= 0 ? String(idx) : '';
+        };
+        const clampZoom = (z) => Math.max(0.2, Math.min(40, z));
+        const toCanvas = (ev) => {
+            const r = canvas.getBoundingClientRect();
+            return { x: (ev.clientX - r.left) * width / (r.width || width), y: (ev.clientY - r.top) * height / (r.height || height) };
+        };
+        // 以畫布上的點(mx,my)為中心縮放：縮放前後這一點對到的世界座標不變
+        const zoomAt = (mx, my, factor) => {
+            const before = currentView();
+            const newUser = clampZoom(user.zoom * factor);
+            const f = newUser / user.zoom;
+            const wx = (mx - width / 2 - user.panX) / before.zoom + before.cx;
+            const wy = (my - height / 2 - user.panY) / before.zoom + before.cy;
+            user.zoom = newUser;
+            const z2 = before.zoom * f;
+            user.panX = mx - width / 2 - (wx - before.cx) * z2;
+            user.panY = my - height / 2 - (wy - before.cy) * z2;
+            refreshUi();
+        };
+        const focusOn = (shape) => {
+            user.focus = shape || null; user.panX = 0; user.panY = 0;
+            if (shape) {
+                const size = this._size2DOf(shape);
+                user.zoom = clampZoom(Math.max(1, Math.min(8, (Math.min(width, height) * 0.5) / Math.max(size, 20) / (lastCam.zoom || 1))));
+            } else user.zoom = 1;
+            refreshUi();
+        };
+        const resetView = () => { user.focus = null; user.zoom = 1; user.panX = 0; user.panY = 0; refreshUi(); };
+        zoomIn.addEventListener('click', () => zoomAt(width / 2, height / 2, 1.25));
+        zoomOut.addEventListener('click', () => zoomAt(width / 2, height / 2, 0.8));
+        reset.addEventListener('click', resetView);
+        focusSel.addEventListener('change', () => { const v = focusSel.value; if (v === '') resetView(); else focusOn(shapes[Number(v)]); });
+        canvas.addEventListener('wheel', (ev) => {
+            ev.preventDefault();
+            const p = toCanvas(ev);
+            zoomAt(p.x, p.y, ev.deltaY < 0 ? 1.15 : 1 / 1.15);
+        }, { passive: false });
+        // 拖曳平移（滑鼠/觸控）＋兩指捏合縮放
+        const pointers = new Map();
+        let pinchDist = 0;
+        canvas.addEventListener('pointerdown', (ev) => {
+            try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+            pointers.set(ev.pointerId, toCanvas(ev));
+            canvas.style.cursor = 'grabbing';
+            if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinchDist = Math.hypot(a.x - b.x, a.y - b.y); }
+        });
+        canvas.addEventListener('pointermove', (ev) => {
+            if (!pointers.has(ev.pointerId)) return;
+            const prev = pointers.get(ev.pointerId), cur = toCanvas(ev);
+            pointers.set(ev.pointerId, cur);
+            if (pointers.size === 1) {
+                if (!user.focus) { user.panX += cur.x - prev.x; user.panY += cur.y - prev.y; }
+                else { user.panX += cur.x - prev.x; user.panY += cur.y - prev.y; } // 聚焦中也允許微調偏移
+            } else if (pointers.size === 2) {
+                const [a, b] = [...pointers.values()];
+                const d = Math.hypot(a.x - b.x, a.y - b.y);
+                if (pinchDist > 0 && d > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinchDist);
+                pinchDist = d;
+            }
+        });
+        const endPointer = (ev) => { pointers.delete(ev.pointerId); pinchDist = 0; if (!pointers.size) canvas.style.cursor = 'grab'; };
+        canvas.addEventListener('pointerup', endPointer);
+        canvas.addEventListener('pointercancel', endPointer);
+        canvas.addEventListener('dblclick', (ev) => {
+            const p = toCanvas(ev);
+            const v = currentView();
+            const wx = (p.x - width / 2 - v.panX) / v.zoom + v.cx;
+            const wy = (p.y - height / 2 - v.panY) / v.zoom + v.cy;
+            let hit = null;
+            for (let i = shapes.length - 1; i >= 0; i--) { if (this._hit2DShape(shapes[i], wx, wy)) { hit = shapes[i]; break; } }
+            if (hit && hit !== user.focus) focusOn(hit); else resetView();
+        });
+
         // tw_stock_db客製: 2026-09-22使用者回報CPU消耗——原本這個rAF迴圈
         // 不管canvas有沒有捲出可視範圍外都會一直畫下去，對話串一長、疊了
         // 好幾張動畫卡片就會持續佔用CPU（瀏覽器分頁被切到背景時rAF天生會
@@ -27296,7 +27670,9 @@ _result
         const loop = () => {
             rafId = null;
             if (stopped) return;
+            if (frameIndex % 30 === 0) applyResolution();
             renderOnce();
+            if (frameIndex % 6 === 0) refreshUi();
             if (visible) rafId = requestAnimationFrame(loop);
         };
         let observer = null;
@@ -27307,19 +27683,25 @@ _result
             }, { threshold: 0 });
             observer.observe(canvas);
         }
+        if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => { applyResolution(); }).observe(canvas);
         loop(); // 第一幀同步畫出來（跟原本行為一致，不用等下一個animation frame）
+        refreshUi();
 
         return {
             canvas, warnings,
             title: (typeof animDef.title === 'string' && animDef.title.trim()) ? animDef.title.trim() : null,
             stop: () => { stopped = true; if (rafId != null) cancelAnimationFrame(rafId); if (observer) observer.disconnect(); },
+            // 給測試/外部呼叫：程式化地縮放、聚焦、重設（跟畫面上的按鈕同一組行為）
+            view: { zoomAt, focusOn: (idOrIndex) => focusOn(typeof idOrIndex === 'number' ? shapes[idOrIndex] : shapes.find((s) => s.id === idOrIndex)), reset: resetView, get state() { return { zoom: currentView().zoom, userZoom: user.zoom, panX: user.panX, panY: user.panY, focus: user.focus ? (user.focus.id || user.focus.type) : null }; } },
             // 匯出前快轉到動畫中段（duration的一半），比起永遠抓第0幀的初始
             // 姿態更能代表「動畫進行中」的畫面，跟3D場景snapshotDataUri的
             // 「快轉90幀」是同一個目的、不同的實作方式（2D動畫本身有明確的
-            // duration週期，直接用一半週期比較準）。
+            // duration週期，直接用一半週期比較準）。快照只看YAML的camera，不含使用者操作。
             snapshotDataUri: () => {
-                drawFrame(duration / 2);
-                return canvas.toDataURL('image/png');
+                drawFrame(duration / 2, false);
+                const url = canvas.toDataURL('image/png');
+                drawFrame((frameIndex / 60) % duration, true); // 還原成使用者目前看的畫面
+                return url;
             },
         };
     }
@@ -27349,7 +27731,9 @@ _result
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext('2d');
-        const { shapes, animators } = this._build2DShapeGraph(validation.shapes);
+        const { shapes, animators, byId } = this._build2DShapeGraph(validation.shapes, { width, height });
+        let exportCamera = null;
+        try { exportCamera = this._build2DCamera(animDef.camera, byId, width, height); } catch (_) {}
         // tw_stock_db客製: 2026-09-06——匯出MP4前也要先把貼圖載入完成，不然
         // 匯出的影片前幾幀（甚至全部幀，如果圖片載入比編碼還慢）會是灰色
         // 佔位方塊，見_mount2DAnimation同一段的說明。
@@ -27363,11 +27747,8 @@ _result
         return this._encodeCanvasFramesToMp4(canvas, totalFrames, fps, (i) => {
             const t = (i / fps) * speed;
             for (const fn of animators) { try { fn(t, (1 / fps) * speed); } catch (_) {} }
-            ctx.save();
-            ctx.fillStyle = animDef.background || '#ffffff';
-            ctx.fillRect(0, 0, width, height);
-            for (const shape of shapes) { try { this._draw2DShape(ctx, shape, images); } catch (_) {} }
-            ctx.restore();
+            const cam = exportCamera ? exportCamera(t) : null;
+            this._draw2DScene(ctx, width, height, animDef.background, shapes, images, cam ? { zoom: cam.zoom, cx: cam.cx, cy: cam.cy } : null, 1);
         }, onProgress, { audioBuffer: opts.audioBuffer, captionSegments: opts.captionSegments, captionStyle: opts.captionStyle });
     }
 
@@ -30581,7 +30962,7 @@ ${existingNodeSummaries}
     // handle——SVG是靜態內容，事件監聽器綁完就結束，跟_displayDrawingSvg
     // 目前的處理複雜度相近，只是多了pan/zoom互動層；匯出/檢視原始碼按鈕
     // 直接對msg._displayMermaidSvg操作，不需要透過這個函式的回傳值。
-    _mountMermaidViewer(container, svgText) {
+    _mountMermaidViewer(container, svgText, viewerOpts) {
         const viewport = document.createElement('div');
         viewport.tabIndex = 0;
         viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:2px solid rgba(0,0,0,0.1); cursor:grab; outline:none; transition:border-color 0.15s;';
@@ -30617,6 +30998,8 @@ ${existingNodeSummaries}
         }
 
         let x = 20, y = 20, scale = 1;
+        let userTouched = false;
+        const clampScale = (v) => Math.max(0.05, Math.min(vectorBase ? 40 : 5, v));
         // tw_stock_db客製: 2026-09-22使用者要求——只有「focused」（點過這個
         // 圖表）才讓滾輪控制縮放，避免使用者在對話串裡滾動、滑鼠剛好經過
         // 圖表但還沒點進去，滾輪就被吃掉變成縮放而不是頁面捲動。focused
@@ -30691,6 +31074,7 @@ ${existingNodeSummaries}
         let dragging = false, dragStartX = 0, dragStartY = 0, originX = 0, originY = 0;
         viewport.addEventListener('mousedown', (e) => {
             setFocused(true);
+            userTouched = true;
             dragging = true; dragStartX = e.clientX; dragStartY = e.clientY; originX = x; originY = y;
             viewport.style.cursor = 'grabbing';
         });
@@ -30706,7 +31090,8 @@ ${existingNodeSummaries}
             if (!focused) return; // 沒點過這個圖表，讓滾輪事件正常冒泡去捲動對話
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
-            scale = Math.max(0.2, Math.min(5, scale * factor));
+            userTouched = true;
+            scale = clampScale(scale * factor);
             applyTransform();
         }, { passive: false });
 
@@ -30719,12 +31104,28 @@ ${existingNodeSummaries}
             b.addEventListener('click', (e) => { e.stopPropagation(); setFocused(true); onClick(); });
             return b;
         };
-        controls.appendChild(mkBtn('🔍+', '放大', () => { scale = Math.min(5, scale * 1.2); applyTransform(); }));
-        controls.appendChild(mkBtn('🔍-', '縮小', () => { scale = Math.max(0.2, scale / 1.2); applyTransform(); }));
-        controls.appendChild(mkBtn('⟲', '重設視角', () => { x = 20; y = 20; scale = 1; applyTransform(); }));
+        controls.appendChild(mkBtn('🔍+', '放大', () => { userTouched = true; scale = clampScale(scale * 1.2); applyTransform(); }));
+        controls.appendChild(mkBtn('🔍-', '縮小', () => { userTouched = true; scale = clampScale(scale / 1.2); applyTransform(); }));
+        controls.appendChild(mkBtn('⟲', '適合視窗', () => { userTouched = false; if (!fitView()) { x = 20; y = 20; scale = 1; applyTransform(); } }));
         viewport.appendChild(controls);
 
         container.appendChild(viewport);
+        // 初始與「重設」＝適合視窗（整張圖看得到）；使用者操作過就不再自動調整。向量縮放範圍很大（SVG每個倍率都清晰）。
+        const fitView = () => {
+            const vw = viewport.clientWidth;
+            if (!vectorBase || !vw) return false;
+            let vh = viewport.clientHeight;
+            const f = Math.max(0.05, Math.min(1, (vw - 40) / vectorBase.w, (vh - 40) / vectorBase.h));
+            if (viewerOpts && viewerOpts.autoHeight) { vh = Math.min(420, Math.max(160, Math.round(vectorBase.h * f) + 40)); viewport.style.height = vh + 'px'; }
+            scale = f;
+            x = Math.max(20, (vw - vectorBase.w * f) / 2);
+            y = Math.max(20, (vh - vectorBase.h * f) / 2);
+            applyTransform();
+            return true;
+        };
+        let fitTries = 0;
+        const tryFit = () => { if (userTouched || fitView() || ++fitTries > 40) return; requestAnimationFrame(tryFit); };
+        requestAnimationFrame(tryFit);
     }
 
     // tw_stock_db客製: 2026-09-22使用者要求——對話裡任何來源的圖片（AI回覆
@@ -30734,32 +31135,128 @@ ${existingNodeSummaries}
     // class="ai-img-thumb"+data-full-src，不用每個掛載點各自重複寫一份
     // 彈窗邏輯。點背景/按✕/按Esc都可以關閉；再點一次圖片本身在「縮小置中」
     // 跟「原始尺寸（可捲動）」間切換，方便看清楚細節。
+    // 2026-09-30使用者要求「所有的viewer（2D動畫、svg、diagram、mermaid、圖片）都要可以放大不模糊」：
+    // 這個放大檢視現在支援連續縮放與平移——滾輪（以游標為中心）、拖曳、兩指捏合、＋/－/適合/1:1按鈕、
+    // 鍵盤 + - 0。**縮放＝改變<img>本身的顯示尺寸（width/height），不用CSS transform scale**：transform會把
+    // 已經光柵化的那層點陣拉大，向量SVG也跟著糊；改變layout尺寸則瀏覽器會用新尺寸重新光柵化SVG，
+    // 每個倍率都清晰（點陣圖本來就沒有更多細節，只能平滑放大）。點一下圖片（沒拖動）在「適合畫面」與
+    // 「原始尺寸（SVG是2.5倍）」間切換，點背景/按✕/按Esc關閉。
     _openImageLightbox(src, altText) {
         if (!src) return;
+        const isSvg = /^data:image\/svg\+xml/i.test(src) || /\.svg([?#]|$)/i.test(src);
         const overlay = document.createElement('div');
-        overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,0.82); display:flex; align-items:center; justify-content:center; cursor:zoom-out; overflow:auto; padding:24px; box-sizing:border-box;';
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,0.82); overflow:hidden; touch-action:none; user-select:none;';
         const img = document.createElement('img');
         img.src = src;
         img.alt = altText || '';
-        let natural = false;
-        const applyImgStyle = () => {
-            img.style.cssText = natural
-                ? 'max-width:none; max-height:none; border-radius:4px; box-shadow:0 4px 24px rgba(0,0,0,0.5); cursor:zoom-out;'
-                : 'max-width:90vw; max-height:90vh; object-fit:contain; border-radius:4px; box-shadow:0 4px 24px rgba(0,0,0,0.5); cursor:zoom-in; margin:auto;';
+        img.draggable = false;
+        img.style.cssText = 'position:absolute; left:0; top:0; max-width:none; max-height:none; border-radius:4px; box-shadow:0 4px 24px rgba(0,0,0,0.5); cursor:grab; visibility:hidden;';
+        let base = { w: 0, h: 0 }, scale = 1, x = 0, y = 0;
+        const MIN = 0.1, MAX = 60;
+        const clamp = (v) => Math.max(MIN, Math.min(MAX, v));
+        const label = document.createElement('span');
+        label.style.cssText = 'min-width:52px; text-align:center; color:#fff; font-size:13px;';
+        const apply = () => {
+            img.style.width = `${base.w * scale}px`;
+            img.style.height = `${base.h * scale}px`;
+            img.style.left = `${x}px`;
+            img.style.top = `${y}px`;
+            const pct = isSvg || !img.naturalWidth ? scale * 100 : (base.w * scale / img.naturalWidth) * 100;
+            label.textContent = `${Math.round(pct)}%`;
         };
-        applyImgStyle();
-        img.addEventListener('click', (e) => { e.stopPropagation(); natural = !natural; applyImgStyle(); });
+        const fit = () => {
+            let nw = img.naturalWidth, nh = img.naturalHeight;
+            if (!nw || !nh) { nw = 4; nh = 3; }
+            const vw = window.innerWidth, vh = window.innerHeight;
+            const f = Math.min((vw * 0.9) / nw, (vh * 0.9) / nh, isSvg ? Infinity : 1); // 點陣圖不放大超過原始尺寸；SVG是向量，可以放大到填滿
+            base = { w: nw * f, h: nh * f };
+            scale = 1; x = (vw - base.w) / 2; y = (vh - base.h) / 2;
+            apply();
+            img.style.visibility = 'visible';
+        };
+        const zoomAt = (px, py, factor) => {
+            const s2 = clamp(scale * factor);
+            const k = s2 / scale;
+            x = px - (px - x) * k; y = py - (py - y) * k;
+            scale = s2; apply();
+        };
+        const naturalScale = () => (isSvg || !img.naturalWidth ? 2.5 : Math.max(MIN, img.naturalWidth / (base.w || 1)));
+        img.addEventListener('load', fit);
+        if (img.complete && img.naturalWidth) setTimeout(fit, 0);
+        else setTimeout(() => { if (img.style.visibility === 'hidden') fit(); }, 1500); // 沒有intrinsic尺寸的SVG（onload有時給0）也要顯示出來
+
+        const bar = document.createElement('div');
+        bar.style.cssText = 'position:fixed; left:50%; bottom:18px; transform:translateX(-50%); display:flex; gap:6px; align-items:center; padding:6px 10px; border-radius:999px; background:rgba(0,0,0,0.6); z-index:2;';
+        const mkBtn = (text, title, fn) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = text; b.title = title;
+            b.style.cssText = 'border:none; background:rgba(255,255,255,0.18); color:#fff; min-width:32px; height:30px; border-radius:15px; cursor:pointer; font-size:14px; padding:0 10px;';
+            b.addEventListener('pointerdown', (e) => e.stopPropagation());
+            b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+            return b;
+        };
+        const centerZoom = (f) => zoomAt(window.innerWidth / 2, window.innerHeight / 2, f);
+        bar.append(mkBtn('－', '縮小 (-)', () => centerZoom(1 / 1.25)), label, mkBtn('＋', '放大 (+)', () => centerZoom(1.25)), mkBtn('適合', '適合畫面 (0)', fit), mkBtn('1:1', isSvg ? '放大到2.5倍' : '原始尺寸', () => { const s2 = clamp(naturalScale()); const k = s2 / scale; const cx = window.innerWidth / 2, cy = window.innerHeight / 2; x = cx - (cx - x) * k; y = cy - (cy - y) * k; scale = s2; apply(); }));
+
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button'; closeBtn.textContent = '✕'; closeBtn.title = '關閉';
-        closeBtn.style.cssText = 'position:fixed; right:18px; top:14px; z-index:1; border:none; background:rgba(255,255,255,0.15); color:#fff; width:36px; height:36px; border-radius:50%; font-size:18px; cursor:pointer;';
-        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        closeBtn.style.cssText = 'position:fixed; right:18px; top:14px; z-index:2; border:none; background:rgba(255,255,255,0.15); color:#fff; width:36px; height:36px; border-radius:18px; cursor:pointer; font-size:18px;';
+        const onKey = (e) => {
+            if (e.key === 'Escape') close();
+            else if (e.key === '+' || e.key === '=') centerZoom(1.25);
+            else if (e.key === '-' || e.key === '_') centerZoom(1 / 1.25);
+            else if (e.key === '0') fit();
+        };
+        const onResize = () => { if (scale === 1) fit(); };
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); };
         closeBtn.addEventListener('click', close);
-        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
         document.addEventListener('keydown', onKey);
+        window.addEventListener('resize', onResize);
+
+        overlay.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15); }, { passive: false });
+        // 拖曳平移／兩指捏合；沒有拖動的點擊：點圖片＝切換適合/放大，點背景＝關閉
+        const pointers = new Map();
+        let moved = 0, pinch = 0;
+        overlay.addEventListener('pointerdown', (e) => {
+            try { overlay.setPointerCapture(e.pointerId); } catch (_) {}
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 1) moved = 0;
+            if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); }
+            img.style.cursor = 'grabbing';
+        });
+        overlay.addEventListener('pointermove', (e) => {
+            const p = pointers.get(e.pointerId);
+            if (!p) return;
+            const dx = e.clientX - p.x, dy = e.clientY - p.y;
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            moved += Math.abs(dx) + Math.abs(dy);
+            if (pointers.size === 1) { x += dx; y += dy; apply(); }
+            else if (pointers.size === 2) {
+                const [a, b] = [...pointers.values()];
+                const d = Math.hypot(a.x - b.x, a.y - b.y);
+                if (pinch > 0 && d > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinch);
+                pinch = d;
+            }
+        });
+        const endPtr = (e) => {
+            const wasSingle = pointers.size === 1;
+            pointers.delete(e.pointerId); pinch = 0;
+            img.style.cursor = 'grab';
+            if (wasSingle && moved < 6 && e.type === 'pointerup') {
+                if (e.target === img) {
+                    if (scale === 1) { const s2 = clamp(naturalScale()); const k = s2 / scale; x = e.clientX - (e.clientX - x) * k; y = e.clientY - (e.clientY - y) * k; scale = s2; apply(); }
+                    else fit();
+                } else if (e.target === overlay) close();
+            }
+        };
+        overlay.addEventListener('pointerup', endPtr);
+        overlay.addEventListener('pointercancel', endPtr);
         overlay.appendChild(img);
+        overlay.appendChild(bar);
         overlay.appendChild(closeBtn);
         document.body.appendChild(overlay);
+        overlay._faLightbox = { get scale() { return scale; }, get size() { return { w: base.w * scale, h: base.h * scale }; }, zoomAt, fit };
     }
 
     // 一次性掛在#ai-chat-body上的delegated click listener——不管訊息history
@@ -37301,10 +37798,13 @@ ${existingNodeSummaries}
                 }
                 const drawWrap = document.createElement('div');
                 drawWrap.style.cssText = 'margin-bottom: 12px; max-width: 95%;';
-                drawWrap.innerHTML = `
-                    <div style="font-size: 12px; font-weight: bold; color: #dd6b20; margin-bottom: 4px;">🎨 繪圖</div>
-                    <div style="max-width:100%; overflow:auto; background:#fff; border-radius:6px; border:1px solid rgba(0,0,0,0.1); padding:8px;">${msg._displayDrawingSvg}</div>
-                `;
+                // 2026-09-30使用者要求所有viewer都能放大不模糊：改用跟UML/流程圖同一個向量viewer（滾輪縮放、拖曳平移、
+                // 縮放＝改變SVG尺寸而不是拉大點陣，每個倍率都清晰），小圖自動縮短高度。
+                const drawLabel = document.createElement('div');
+                drawLabel.style.cssText = 'font-size: 12px; font-weight: bold; color: #dd6b20; margin-bottom: 4px;';
+                drawLabel.textContent = '🎨 繪圖（可拖曳平移、滾輪縮放）';
+                drawWrap.appendChild(drawLabel);
+                this._mountMermaidViewer(drawWrap, msg._displayDrawingSvg, { autoHeight: true });
                 const drawFooter = document.createElement('div');
                 drawFooter.style.cssText = 'display:flex; justify-content:flex-end; gap:4px; margin-top:4px;';
                 drawWrap.appendChild(drawFooter);
