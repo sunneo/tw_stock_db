@@ -16220,6 +16220,21 @@ ${sourceTool.handlerScript}
         if (body) body.scrollTop = body.scrollHeight;
     }
 
+    // 斜線指令（沒有AI參與）也算「這個對話用過了」：記進索引的touched旗標（讓「新對話」不會把它誤判成空對話），
+    // 標題還是預設的「新對話」時改用這個指令當標題，清單裡才分得出是哪個對話。
+    _chatMarkTouched(commandText) {
+        if (!this._chatListEnabled || !this._chatIndex) return;
+        const entry = this._chatEntry(this._chatIndex.currentId);
+        if (!entry) return;
+        let changed = false;
+        if (!entry.touched) { entry.touched = true; changed = true; }
+        if (!entry.title || entry.title === '新對話') {
+            const t = String(commandText || '').replace(/\s+/g, ' ').trim().slice(0, 28);
+            if (t) { entry.title = t; changed = true; }
+        }
+        if (changed) { this._renderChatList(); this._saveChatIndex(); }
+    }
+
     _chatBusy() {
         if (this.isResponding) {
             this._log && this._log('⏳ AI 回應中，請先按 Stop 或等它完成，再切換／新增／刪除對話。');
@@ -16246,8 +16261,12 @@ ${sourceTool.handlerScript}
     async _chatNew(groupId = null) {
         if (!this._chatListReady || this._chatBusy() || this._chatSwitching) return;
         const cur = this._chatEntry(this._chatIndex.currentId);
-        const hasUser = this.messages.some((m) => m.role === 'user');
-        if (cur && !hasUser) { // 目前這個就是空的新對話，不要再堆一個空的
+        // tw_stock_db客製: 2026-09-30使用者回報——只有斜線指令（/ai-features、/suggest等，沒有AI參與、
+        // 甚至沒有user訊息）的對話沒辦法開新對話：原本只看有沒有role==='user'的訊息，這種對話被誤判成
+        // 「還是空的新對話」而靜默不動。改成：目前這個對話「用過斜線指令」（entry.touched，存在索引裡，
+        // 重新整理後仍在），或有任何user訊息、或有system/建議chips以外的訊息，就不算空。
+        const hasContent = this.messages.some((m) => m.role !== 'system' && !m._suggestionChips);
+        if (cur && !cur.touched && !hasContent) { // 目前這個就是空的新對話，不要再堆一個空的
             if (groupId && cur.groupId !== groupId) { cur.groupId = groupId; this._renderChatList(); await this._saveChatIndex(); }
             const input = document.getElementById('ai-input-text'); if (input) input.focus();
             return;
@@ -30440,6 +30459,7 @@ ${existingNodeSummaries}
                 // 導致按方向鍵↑recall輸入框歷史時完全叫不出剛打過的斜線指令，
                 // 只會叫出更早之前的一般訊息。這裡補上同一份記錄邏輯，讓斜線
                 // 指令跟一般訊息共用同一份輸入框recall歷史，行為一致。
+                this._chatMarkTouched(textToSend);
                 if (textToSend && !this.commandHistory.includes(textToSend)) {
                     this.commandHistory.unshift(textToSend);
                     if (this.commandHistory.length > 50) this.commandHistory.pop();
