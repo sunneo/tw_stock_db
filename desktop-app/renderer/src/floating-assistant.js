@@ -35453,6 +35453,10 @@ ${existingNodeSummaries}
             // tw_stock_db客製: 階段4——通用繪圖SVG同一套作法（見
             // _buildToolResultMessage的_displayDrawingSvg說明）。
             const drawingMap = {};
+            // tw_stock_db客製: 2026-09-30使用者回報「UML/流程圖viewer重新整理後消失」——
+            // _displayMermaidSvg（render_uml_diagram的結果）跟_displayDrawingSvg同一套非可枚舉
+            // 屬性，但存檔/還原原本漏了它，重新整理後只剩AI的文字。同一套作法補上。
+            const mermaidMap = {};
             // tw_stock_db客製: 階段5——互動viewer YAML同一套作法（見
             // _buildToolResultMessage的_displayViewerYaml說明）。
             const viewerMap = {};
@@ -35493,6 +35497,7 @@ ${existingNodeSummaries}
                 if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
                 if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
                 if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
+                if (m._displayMermaidSvg) mermaidMap[i] = m._displayMermaidSvg;
                 if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
                 if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
@@ -35507,6 +35512,7 @@ ${existingNodeSummaries}
                     if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
                     if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
                     if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
+                    if (m._displayMermaidSvg) mermaidMap[`${bi}:${mi}`] = m._displayMermaidSvg;
                     if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                     if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
@@ -35523,6 +35529,7 @@ ${existingNodeSummaries}
                 chipsMap,
                 scene3DMap,
                 drawingMap,
+                mermaidMap,
                 viewerMap,
                 anim2dMap,
                 dubbingMap,
@@ -35594,6 +35601,12 @@ ${existingNodeSummaries}
                 Object.entries(data.drawingMap).forEach(([key, svgText]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayDrawingSvg', { value: svgText, enumerable: false, configurable: true });
+                });
+            }
+            if (data.mermaidMap) {
+                Object.entries(data.mermaidMap).forEach(([key, svgText]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayMermaidSvg', { value: svgText, enumerable: false, configurable: true });
                 });
             }
             if (data.viewerMap) {
