@@ -5235,6 +5235,27 @@ const TERMINAL_THEME_PRESETS = {
 // ============================================================
 // FloatingAssistant — 萬能網頁懸浮 AI 助手主體
 // ============================================================
+// ============================================================
+// tw_stock_db客製: 2026-09-30使用者要求——AI執行中可以切換對話，原本對話裡的AI繼續做事（背景執行）。
+// 做法：這些「一次AI執行會讀寫的狀態」不再直接存在實例上，而是每個對話各有一份（ctx，見_chatCtxNew）。
+// 實例上同名的屬性是存取器，永遠指向「目前顯示的對話」的那份；AI執行迴圈則透過_chatRunner(ctx)
+// 拿到的代理物件執行（executeChat由代理呼叫，迴圈裡的this就是代理），代理讀寫這些鍵時一律落在
+// 那個對話自己的ctx，不管使用者現在切到哪個對話——所以切走之後訊息、工具結果、串流都還是進原本的對話。
+// 其他（快取、函式庫載入狀態、設定…）不在這份清單，仍然是全域共用，代理直接寫回實例。
+// ⚠️這份清單是靜態分析「executeChat可到達的所有方法」寫入了哪些this.*欄位得出的；新增會在一次
+// AI執行中被寫入、且該屬於單一對話的狀態時，記得加進來，否則背景對話會互相污染。
+// ============================================================
+const FA_CHAT_CTX_KEYS = new Set([
+    'messages', 'archivedDisplayBlocks', 'topicData',
+    'isResponding', 'stopRequested', 'currentAbortController',
+    'responseStartedAt', 'responseElapsedMs', 'responseIndicatorTimer', 'responseIndicatorLabel',
+    '_toolCallLog', '_writeEvidence', '_fakeWriteGuard', '_intentGuard', '_forceNoTools',
+    '_autoFallbackActive', '_autoFallbackGroups', '_autoFallbackGroupIndex', '_autoFallbackGroupAttempts',
+    '_turnPruneCount', '_currentTurnUserText',
+    '_latestScene3DYaml', '_latestViewerYaml', '_latestAnim2DYaml',
+    '_steeringLog',
+]);
+
 class FloatingAssistant {
     // tw_stock_db客製: 2026-08-28使用者要求——讓host頁面能在`new FloatingAssistant()`
     // 之前，把PPT/PDF/markdown渲染用到的外部函式庫網址（pptxgenjs/pdfmake/
@@ -5255,6 +5276,18 @@ class FloatingAssistant {
         // tw_stock_db客製: 2026-09-26——host用options.chatList:true開啟左邊對話清單（桌面版、aiweb；台股頁不開），
         // 見_buildChatListUI。要在最前面決定，因為後面的載入/初始化流程都看這個旗標。
         this._chatListEnabled = !!(options && options.chatList);
+        // 每個對話各自一份的執行狀態（見FA_CHAT_CTX_KEYS的說明）。存取器必須在建構子其餘部分
+        // 開始寫this.messages/this.isResponding…之前建立，之後這些賦值就會落進目前對話的ctx。
+        this._chatCtxs = new Map();
+        this._activeCtx = this._chatCtxNew('__pending__');
+        this._chatCtxs.set(this._activeCtx.id, this._activeCtx);
+        for (const key of FA_CHAT_CTX_KEYS) {
+            Object.defineProperty(this, key, {
+                get: () => this._activeCtx[key],
+                set: (v) => { this._activeCtx[key] = v; },
+                configurable: true, enumerable: true,
+            });
+        }
         // --- 核心方法強制綁定實例 (防禦 Context 遺失 Bug) ---
         this.toggleWindow = this.toggleWindow.bind(this);
         this._log = this._log.bind(this);
@@ -15098,6 +15131,21 @@ ${fnData.code}
     // 就沒辦法真正恢復（相當於那次工具呼叫直接視為使用者沒有回應），比起
     // 硬做一套可持久化的表單狀態機，這裡選擇不過度工程化。
     requestUserForm(options = {}) {
+        // 背景對話（使用者已切走）的AI想確認事情：表單是畫在目前對話的畫面上的，不能憑空蓋在別的對話上，
+        // 也不能自動當成使用者同意。標成「等你確認」，等使用者切回這個對話再顯示表單。
+        if (!this._chatIsVisible()) {
+            const ctx = this._ctx;
+            ctx.waitingForUser = true;
+            this._renderChatList();
+            this._chatMarkUnread(ctx);
+            return new Promise((resolve) => {
+                ctx.visibleWaiters.push(() => { ctx.waitingForUser = false; this._renderChatList(); resolve(this._requestUserFormNow(options)); });
+            });
+        }
+        return this._requestUserFormNow(options);
+    }
+
+    _requestUserFormNow(options = {}) {
         return new Promise((resolve) => {
             const { title = '🧭 AI 想確認一下', description = '', choices = null, fields = null } = options;
             const chatBody = document.getElementById('ai-chat-body');
@@ -16125,6 +16173,57 @@ ${sourceTool.handlerScript}
     }
 
     _chatNewId(prefix) { return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`; }
+
+    // ---- 每個對話各自一份的執行狀態（背景執行，見FA_CHAT_CTX_KEYS）----
+    _chatCtxNew(id) {
+        return {
+            id, runner: null,
+            unread: false,          // 這個對話在背景有新內容、使用者還沒看
+            waitingForUser: false,  // 背景的AI在等使用者確認（requestUserForm）
+            streamDiv: null,        // 串流中的AI回覆氣泡（背景時是脫離畫面的節點，切回來時接回去）
+            visibleWaiters: [],     // 等這個對話被切回前景才能繼續的動作
+            messages: [], archivedDisplayBlocks: [], topicData: { currentTopic: '無（新對話開始）' },
+            isResponding: false, stopRequested: false, currentAbortController: null,
+            responseStartedAt: 0, responseElapsedMs: 0, responseIndicatorTimer: null, responseIndicatorLabel: '',
+            _autoFallbackActive: false,
+        };
+    }
+
+    // 實例本身永遠代表「目前顯示的對話」；代理物件（見_chatRunner）覆寫成它自己那個對話的ctx。
+    get _ctx() { return this._activeCtx; }
+
+    // 這段程式碼現在是不是在「使用者正在看的那個對話」裡執行（AI執行迴圈是背景時＝false，不能碰畫面）。
+    _chatIsVisible() { return this._ctx === this._activeCtx; }
+
+    // 回傳執行AI用的代理物件：this上的一次執行狀態讀寫全部導向ctx，其餘照舊落在實例上。
+    // 注意：建構子把executeChat/_log/pruneContext…用bind綁死在實例上（own property），代理必須改回
+    // 原型上的版本，否則它們會用實例（＝目前顯示的對話）而不是這個對話的ctx。
+    _chatRunner(ctx) {
+        if (ctx.runner) return ctx.runner;
+        const proto = FloatingAssistant.prototype;
+        ctx.runner = new Proxy(this, {
+            get(target, prop, receiver) {
+                if (prop === '_ctx') return ctx;
+                if (typeof prop === 'string' && FA_CHAT_CTX_KEYS.has(prop)) return ctx[prop];
+                const v = Reflect.get(target, prop, receiver);
+                if (typeof v === 'function' && typeof prop === 'string' && v.name && v.name.startsWith('bound ') && typeof proto[prop] === 'function') return proto[prop];
+                return v;
+            },
+            set(target, prop, value) {
+                if (typeof prop === 'string' && FA_CHAT_CTX_KEYS.has(prop)) { ctx[prop] = value; return true; }
+                target[prop] = value;
+                return true;
+            },
+        });
+        return ctx.runner;
+    }
+
+    // 背景對話有新內容：清單上打未讀標記（目前顯示的對話不用）。
+    _chatMarkUnread(ctx) {
+        if (!ctx || ctx === this._activeCtx) return;
+        if (!ctx.unread) { ctx.unread = true; }
+        this._renderChatList();
+    }
 
     _saveChatIndex() {
         if (!this._chatIndex) return Promise.resolve();
@@ -28992,12 +29091,14 @@ _result
     }
 
     _renderResponseIndicator(text) {
+        if (!this._chatIsVisible()) return; // 背景對話：畫面屬於目前顯示的對話
         const indicator = document.getElementById('ai-response-indicator');
         if (!indicator) return;
         indicator.textContent = text;
     }
 
     _syncStopButton() {
+        if (!this._chatIsVisible()) return;
         const stopBtn = document.getElementById('ai-stop-response-btn');
         if (!stopBtn) return;
         stopBtn.disabled = !this.isResponding;
@@ -29006,6 +29107,7 @@ _result
     }
 
     _updateElapsedIndicator() {
+        if (!this._chatIsVisible()) return;
         const elapsed = this.responseStartedAt
             ? Date.now() - this.responseStartedAt
             : this.responseElapsedMs;
@@ -29041,8 +29143,9 @@ _result
     }
 
     _setRespondingState(isResponding, extraMessage = '', finalState = 'completed') {
+        const visibleNow = this._chatIsVisible();
         this.isResponding = isResponding;
-        const indicator = document.getElementById('ai-response-indicator');
+        const indicator = visibleNow ? document.getElementById('ai-response-indicator') : null;
         if (isResponding) {
             if (!this.responseStartedAt) this.responseStartedAt = Date.now();
             this.responseIndicatorLabel = extraMessage || '⏳ AI 回應中';
@@ -29069,6 +29172,9 @@ _result
             indicator.style.opacity = isResponding ? '1' : '0.7';
         }
         this._syncStopButton();
+        // 對話清單：AI還在跑的對話前面顯示沙漏；背景對話跑完＝有未讀更新
+        this._renderChatList();
+        if (!isResponding && !visibleNow) this._chatMarkUnread(this._ctx);
     }
 
     // tw_stock_db客製: 2026-09-26使用者要求「desktop必須always auto agent mode」
@@ -32476,9 +32582,16 @@ ${existingNodeSummaries}
         // tw_stock_db客製: 只有使用者原本就在（接近）畫面底部時，才在新增
         // 這則streamDiv後自動捲到底——如果使用者正往上拉看歷史訊息，不該
         // 因為AI開始回覆就被強制拉回底部。見_isNearBottom()的說明。
-        const wasNearBottomBeforeStream = this._isNearBottom(chatBody);
-        chatBody.appendChild(streamDiv);
-        if (wasNearBottomBeforeStream) chatBody.scrollTop = chatBody.scrollHeight;
+        // 背景對話（使用者已切到別的對話）：氣泡不掛進畫面（畫面屬於目前顯示的對話），只記在ctx上，
+        // 使用者切回來時_chatActivate會把它接回畫面，串流內容一直都在更新這個節點。
+        const ctxForStream = this._ctx;
+        ctxForStream.streamDiv = streamDiv;
+        const dropStream = () => { streamDiv.remove(); if (ctxForStream.streamDiv === streamDiv) ctxForStream.streamDiv = null; };
+        if (this._chatIsVisible()) {
+            const wasNearBottomBeforeStream = this._isNearBottom(chatBody);
+            chatBody.appendChild(streamDiv);
+            if (wasNearBottomBeforeStream) chatBody.scrollTop = chatBody.scrollHeight;
+        }
 
         const streamStopBtn = streamDiv.querySelector('.ai-inline-stop-btn');
         if (streamStopBtn) streamStopBtn.onclick = () => this._requestStopResponse();
@@ -32557,7 +32670,7 @@ ${existingNodeSummaries}
                     const nextFallback = this._nextAutoFallbackModel(response.status, apiModel);
                     if (nextFallback) {
                         this._log(`⚠️ 模型 ${apiModel} 目前無法使用(HTTP ${response.status})，自動改用下一個候選模型：${nextFallback.apiModel}`);
-                        streamDiv.remove();
+                        dropStream();
                         this._updateHeaderModelName(nextFallback.apiModel, true);
                         return await this._loopFetch(nextFallback.apiKey, nextFallback.apiUrl, nextFallback.apiModel, retryAttempt,
                             { temperature: nextFallback.temperature, samplingOverrides: nextFallback.samplingOverrides, maxOutputTokens: nextFallback.maxOutputTokens });
@@ -32571,15 +32684,15 @@ ${existingNodeSummaries}
                     // 對同一個key只會生效一次，不會無窮遞迴。
                     const rejectedParam = this._detectRejectedSamplingParam(errText);
                     if (rejectedParam && this._disableRejectedSamplingParam(rejectedParam, errText)) {
-                        streamDiv.remove();
+                        dropStream();
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
                     if (this._isStopParamRejected(errText) && this._disableStopParam(errText)) {
-                        streamDiv.remove();
+                        dropStream();
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
                     if (response.status === 400 || response.status === 413) {
-                        streamDiv.remove();
+                        dropStream();
                         // tw_stock_db客製: 原本這裡遞迴時永遠寫死傳1，等於這條路徑
                         // 沒有重試上限——如果壓縮沒有真正解決400/413的成因（例如
                         // 單一則過大的tool結果，不是對話輪數太多），就會「壓縮→
@@ -32659,7 +32772,7 @@ ${existingNodeSummaries}
                                 // 繼續自動捲動。
                                 const wasNearBottomChunk = this._isNearBottom(chatBody);
                                 textSpan.innerText = fullContent || (reasoningContent ? '🧠 思考中…' : '');
-                                if (wasNearBottomChunk) chatBody.scrollTop = chatBody.scrollHeight;
+                                if (wasNearBottomChunk && this._chatIsVisible() && streamDiv.isConnected) chatBody.scrollTop = chatBody.scrollHeight;
                             } catch (_) {}
                         }
                     }
@@ -32762,7 +32875,7 @@ ${existingNodeSummaries}
                     if (requestSizeChars >= threshold) {
                         this._turnPruneCount++;
                         this._log(`⚠️ 這一輪送出的對話內容過大（約${requestSizeChars}字元，門檻${Math.round(threshold)}字元），疑似是導致模型只輸出思考過程、沒有給出答案的原因，自動壓縮對話內容後重試（第${this._turnPruneCount}/${this.maxPruneRetriesPerTurn}次）…`);
-                        streamDiv.remove();
+                        dropStream();
                         await this.pruneContext('Reasoning Dead-End (Oversized Context)');
                         return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt, genOverrides);
                     }
@@ -32795,7 +32908,7 @@ ${existingNodeSummaries}
             // 不該丟棄重來。
             if (!repetitionCut && lastRoundWasReasoningDeadEnd && retryAttempt <= FULL_TURN_DEADEND_RETRY_LIMIT) {
                 this._log(`⚠️ 這一輪反覆重試仍然沒有取得真正答案，自動當作全新嘗試重新送出這一輪對話（第${retryAttempt}次全新嘗試）…`);
-                streamDiv.remove();
+                dropStream();
                 return await this._loopFetch(apiKey, apiUrl, apiModel, retryAttempt + 1, genOverrides);
             }
 
@@ -32982,7 +33095,7 @@ ${existingNodeSummaries}
             return fullContent;
 
         } catch (err) {
-            streamDiv.remove();
+            dropStream();
             if (err.name === 'AbortError' || this.stopRequested) return "";
             // tw_stock_db客製: 2026-09-15使用者實測回報——這裡是fetch()本身
             // 丟例外的路徑（不是端點回了空內容，是連請求都沒能正常完成，
@@ -35357,6 +35470,7 @@ ${existingNodeSummaries}
     }
 
     _log(msg) {
+        if (!this._chatIsVisible()) return; // 背景對話的狀態訊息不要蓋掉目前對話的狀態列
         const el = document.getElementById('ai-status-log');
         if (el) el.innerText = msg;
     }
@@ -35693,6 +35807,8 @@ ${existingNodeSummaries}
     }
 
     _renderMessageHistory() {
+        // 背景對話（AI在別的對話還在跑、使用者已經切走）：不能清空／重畫畫面，只把它自己的內容存檔、打未讀標記。
+        if (!this._chatIsVisible()) { this._persistChatHistory(); this._chatMarkUnread(this._ctx); return; }
         const chatBody = document.getElementById('ai-chat-body');
         // tw_stock_db客製: 2026-09-16使用者實測回報——啟動時崩潰
         // 「Cannot read properties of null (reading 'scrollTop')」。追查
