@@ -144,7 +144,6 @@ function handleProxyRequest(req, res, targetUrlRaw, overrideHeaders) {
     res.end(JSON.stringify({ error: "invalid target url: " + String(err.message || err) }));
     return;
   }
-  const client = targetUrl.protocol === "http:" ? http : https;
 
   // tw_stock_db客製: 2026-09-29實測發現的真實bug——這裡原本會把client端
   // 送來的user-agent／全部sec-*（Sec-Fetch-*/Sec-CH-UA-*這類Fetch
@@ -164,49 +163,101 @@ function handleProxyRequest(req, res, targetUrlRaw, overrideHeaders) {
   // 請求）——這個修正是通用性的，不只是為了YouTube，任何走這條/proxy/
   // 路徑的功能（browser_search／git操作／資源備援下載等）都會受益，
   // 沒有任何已知情境會因為「header變得更完整、更像真實瀏覽器」而變差。
+  // 2026-09-30跟標準curl/wget對齊：呼叫端可以用x-fa-*請求標頭控制這一次轉發（這些標頭不會送給上游）——
+  //   x-fa-follow: "1"＝由這裡跟隨轉址（curl -L／wget預設）；"0"＝不跟隨，把3xx原樣回傳（curl沒加-L）。
+  //                瀏覽器的fetch遇到帶Location的3xx會自己跟隨，所以「不跟隨」時把Location改名成x-fa-location，
+  //                狀態碼保持3xx，呼叫端就能讀到真正的狀態碼跟轉址目標。沒有這個標頭＝維持原本行為（原樣轉發）。
+  //   x-fa-insecure: "1"＝不驗證上游TLS憑證（curl -k／wget --no-check-certificate）。
+  //   x-fa-timeout: 毫秒，整個請求的逾時（curl -m）；逾時回504並帶x-fa-error: timeout。
+  //   x-fa-referer / x-fa-cookie：瀏覽器fetch不准自訂Referer、Cookie，改由這兩個標頭帶，這裡還原成真正的標頭。
+  // 錯誤時回應帶x-fa-error（timeout/tls/connect），呼叫端據此對應curl的離開碼（28/35/7）。
+  const faFollow = req.headers["x-fa-follow"];
+  const faInsecure = req.headers["x-fa-insecure"] === "1";
+  const faTimeoutMs = parseInt(req.headers["x-fa-timeout"] || "0", 10) || 0;
   const outHeaders = {};
   for (const [key, value] of Object.entries(req.headers)) {
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
+    if (lower.startsWith("x-fa-")) continue;
     outHeaders[key] = value;
   }
+  if (req.headers["x-fa-referer"]) outHeaders.referer = req.headers["x-fa-referer"];
+  if (req.headers["x-fa-cookie"]) outHeaders.cookie = req.headers["x-fa-cookie"];
+  if (req.headers["x-fa-user-agent"]) outHeaders["user-agent"] = req.headers["x-fa-user-agent"];
   outHeaders.host = targetUrl.host;
   // /nvidia、/openrouter用這個蓋掉client端送來的Authorization（renderer端
   // floating-assistant.js的apiKey欄位填什麼都無所謂，真正的金鑰只在這裡
   // 才會被加上去）。
   if (overrideHeaders) Object.assign(outHeaders, overrideHeaders);
 
-  const upstreamReq = client.request(
-    {
-      protocol: targetUrl.protocol,
-      hostname: targetUrl.hostname,
-      port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
-      path: targetUrl.pathname + targetUrl.search,
-      method: req.method,
-      headers: outHeaders,
-    },
-    (upstreamRes) => {
-      // 已經在請求端拿掉accept-encoding、請上游不要壓縮，這裡body是原始
-      // bytes、headers原樣轉發即可，不用再處理content-encoding/
-      // content-length（兩者本來就跟這份未壓縮的body一致）。
-      const respHeaders = { ...upstreamRes.headers };
-      setCorsHeaders(res, req);
-      res.writeHead(upstreamRes.statusCode || 502, respHeaders);
-      upstreamRes.pipe(res);
-    }
-  );
-  upstreamReq.on("error", (err) => {
-    if (!res.headersSent) {
-      setCorsHeaders(res, req);
-      res.writeHead(502, { "Content-Type": "application/json" });
-    }
-    res.end(JSON.stringify({ error: String(err.message || err) }));
-  });
+  const hasBody = req.method !== "GET" && req.method !== "HEAD";
+  const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    req.pipe(upstreamReq);
+  const sendError = (err, kind) => {
+    if (res.headersSent) { res.end(); return; }
+    setCorsHeaders(res, req);
+    const isTimeout = kind === "timeout" || (err && (err.code === "ETIMEDOUT" || err.code === "ESOCKETTIMEDOUT"));
+    const isTls = err && /certificate|SSL|TLS|self.signed|CERT_/i.test(String((err.code || "") + " " + (err.message || "")));
+    res.writeHead(isTimeout ? 504 : 502, { "Content-Type": "application/json", "x-fa-error": isTimeout ? "timeout" : (isTls ? "tls" : "connect") });
+    res.end(JSON.stringify({ error: String((err && err.message) || err) }));
+  };
+
+  // 發一次上游請求；followMode==="1"時遇到3xx由這裡再發下一跳（最多10跳）。
+  const send = (url, method, headers, bodyBuf, hops) => {
+    const upstreamReq = (url.protocol === "http:" ? http : https).request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (url.protocol === "http:" ? 80 : 443),
+        path: url.pathname + url.search,
+        method,
+        headers,
+        rejectUnauthorized: !faInsecure,
+      },
+      (upstreamRes) => {
+        const status = upstreamRes.statusCode || 502;
+        const location = upstreamRes.headers.location;
+        if (faFollow === "1" && REDIRECT_CODES.has(status) && location && hops < 10) {
+          upstreamRes.resume();
+          let next;
+          try { next = new URL(location, url); } catch (_) { next = null; }
+          if (next) {
+            const h = { ...headers, host: next.host };
+            let m = method, b = bodyBuf;
+            // 301/302/303：改成GET並丟掉請求本體（跟curl/瀏覽器一樣，HEAD維持HEAD）；307/308原樣保留
+            if (status === 303 || ((status === 301 || status === 302) && method === "POST")) { m = method === "HEAD" ? "HEAD" : "GET"; b = null; delete h["content-length"]; delete h["content-type"]; }
+            if (next.host !== url.host) { delete h.authorization; delete h.cookie; } // 換網域不外洩認證資訊
+            send(next, m, h, b, hops + 1);
+            return;
+          }
+        }
+        // 原本的行為：headers原樣轉發（已請上游不要壓縮，content-encoding/content-length跟body本來就一致）
+        const respHeaders = { ...upstreamRes.headers };
+        if (faFollow === "0" && REDIRECT_CODES.has(status) && respHeaders.location) {
+          respHeaders["x-fa-location"] = respHeaders.location;
+          delete respHeaders.location;
+        }
+        if (faFollow === "1") respHeaders["x-fa-final-url"] = url.href;
+        setCorsHeaders(res, req);
+        res.writeHead(status, respHeaders);
+        upstreamRes.pipe(res);
+      }
+    );
+    if (faTimeoutMs > 0) upstreamReq.setTimeout(faTimeoutMs, () => upstreamReq.destroy(Object.assign(new Error("Operation timed out after " + faTimeoutMs + " milliseconds"), { code: "ETIMEDOUT" })));
+    upstreamReq.on("error", (err) => sendError(err));
+    if (bodyBuf) upstreamReq.end(bodyBuf);
+    else if (hasBody && hops === 0 && !bodyBuf && faFollow !== "1") req.pipe(upstreamReq);
+    else upstreamReq.end();
+  };
+
+  if (faFollow === "1" && hasBody) {
+    // 要跟隨轉址時，307/308可能需要重送本體，所以先把整個本體收進記憶體
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => send(targetUrl, req.method, outHeaders, Buffer.concat(chunks), 0));
+    req.on("error", (err) => sendError(err));
   } else {
-    upstreamReq.end();
+    send(targetUrl, req.method, outHeaders, null, 0);
   }
 }
 
