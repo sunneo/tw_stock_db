@@ -19883,7 +19883,19 @@ ${sourceTool.handlerScript}
             const cs = getComputedStyle(container);
             const innerH = container.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
             const rows = Math.max(2, Math.floor(innerH / cellH));
-            if (rows !== term.rows) term.resize(term.cols, rows);
+            // 2026-09-30使用者回報：文字區域的寬度蓋住了捲軸，點不到終端機的捲軸。欄數固定（預設80）時，
+            // 容器比 80欄×字寬 窄，畫面就會超出容器、壓在右邊的捲軸上。欄數也依容器寬度扣掉捲軸寬度推算
+            // （使用者在設定指定欄數時，取指定值與能容納的較小者）。
+            let cols = term.cols;
+            const viewportEl = container.querySelector('.xterm-viewport');
+            if (screenEl.offsetWidth && term.cols) {
+                const cellW = screenEl.offsetWidth / term.cols;
+                const scrollbarW = Math.max(viewportEl ? viewportEl.offsetWidth - viewportEl.clientWidth : 0, 12);
+                const innerW = container.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - scrollbarW;
+                const fitCols = Math.max(20, Math.floor(innerW / cellW));
+                cols = termSettings.cols > 0 ? Math.min(termSettings.cols, fitCols) : fitCols;
+            }
+            if (rows !== term.rows || cols !== term.cols) term.resize(cols, rows);
         };
         requestAnimationFrame(fitTermRows);
         if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => fitTermRows()).observe(container);
@@ -19961,7 +19973,9 @@ ${sourceTool.handlerScript}
         session.term.write(initialCommand + '\r\n');
         if (initialCommand.trim()) session.history.push(initialCommand);
         session.historyIndex = session.history.length;
-        await this._runTerminalCommand(session, initialCommand);
+        const initScan = this._terminalScanInput(initialCommand);
+        if (initScan.incomplete) await this._runTerminalCommand(session, initialCommand);
+        else await this._terminalRunUnits(session, initScan.units);
         if (!session.activeProgram) this._writeTerminalPrompt(session);
         await this._persistTerminalSnapshot(session);
     }
@@ -19969,6 +19983,7 @@ ${sourceTool.handlerScript}
     // 純粹回傳prompt的文字本身（不含前導\r\n），跟_redrawTerminalLine()
     // 共用——兩處都要組出一模一樣的prompt文字，寫兩份容易漏改。
     _terminalPromptText(session) {
+        if (session.pending != null) return '\x1b[90m> \x1b[0m'; // 語法還沒結束（引號/續行/heredoc/if…fi…）：跟一般shell一樣顯示PS2
         return `\x1b[32m${session.cwd}\x1b[0m $ `;
     }
 
@@ -20059,14 +20074,34 @@ ${sourceTool.handlerScript}
         // 指令執行中（例如第一次cd進大的/mnt資料夾要讀很久）忽略鍵盤輸入，避免第二個指令跟第一個交錯執行
         if (session.busy && data !== '\x03') return;
         if (session.cursorPos == null) session.cursorPos = session.line.length;
+        // 貼上多行文字：xterm一次送來一整段（換行是\r）。拆成「文字」跟「Enter」逐一處理，效果等同使用者一行一行打，
+        // 這樣引號沒結束、heredoc之類的續行判斷才會照常運作（不然整段換行字元被塞進同一行，指令被切壞）。
+        if (data.length > 1 && data.charCodeAt(0) !== 27 && /[\r\n]/.test(data)) {
+            const parts = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            for (let k = 0; k < parts.length; k++) {
+                if (parts[k]) await this._handleTerminalInput(session, parts[k]);
+                if (k < parts.length - 1) await this._handleTerminalInput(session, '\r');
+            }
+            return;
+        }
         if (data === '\r') {
             session.term.write('\r\n');
             const line = session.line;
             session.line = ''; session.cursorPos = 0;
-            if (line.trim()) session.history.push(line);
+            // 跟一般shell一樣：把目前這一行接在還沒結束的上一段後面，判斷語法是否完整；
+            // 還沒結束（引號/反斜線續行/heredoc/if…fi/管線運算子在行尾…）就顯示「> 」繼續等下一行，不執行。
+            const combined = session.pending != null ? session.pending + '\n' + line : line;
+            const scan = this._terminalScanInput(combined);
+            if (scan.incomplete) {
+                session.pending = combined;
+                session.term.write(this._terminalPromptText(session));
+                return;
+            }
+            session.pending = null;
+            if (combined.trim() && !combined.includes('\n')) session.history.push(combined);
             session.historyIndex = session.history.length;
             session.busy = true;
-            try { await this._runTerminalCommand(session, line); }
+            try { await this._terminalRunUnits(session, scan.units); }
             catch (err) { session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m
 
 `); }
@@ -20092,7 +20127,7 @@ ${sourceTool.handlerScript}
         }
         if (data === '\x03') { // Ctrl+C
             session.term.write('^C');
-            session.line = ''; session.cursorPos = 0;
+            session.line = ''; session.cursorPos = 0; session.pending = null;
             this._writeTerminalPrompt(session);
             return;
         }
@@ -20138,6 +20173,150 @@ ${sourceTool.handlerScript}
         session.line = session.line.slice(0, session.cursorPos) + data + session.line.slice(session.cursorPos);
         session.cursorPos += data.length;
         this._redrawTerminalLine(session);
+    }
+
+    // 掃描終端機輸入文字，回答兩件事：(1)語法完整了嗎（引號、反斜線續行、heredoc本體、括號/大括號、
+    // if/for/while/until/case…fi/done/esac、行尾的| && ||都算沒結束）(2)完整的話，依「頂層換行」
+    // 拆成一個個要執行的指令（每個指令可能自己含換行，例如引號裡的換行、for迴圈整段、heredoc連本體）。
+    // 不是完整的shell parser，是給互動輸入判斷「要不要繼續等下一行」用的，寧可保守：合法語法一定判成完整，
+    // 語法真的有錯的輸入交給後面的shell報錯。
+    _terminalScanInput(text) {
+        const s = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+        const n = s.length;
+        const units = [];
+        const OPEN = new Set(['if', 'while', 'until', 'for', 'case']);
+        const CLOSE = new Set(['fi', 'done', 'esac']);
+        const KEEP_CMD_POS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time']);
+        let unitStart = 0, unitHeredoc = false;
+        let inS = false, inD = false, inBt = false;
+        let paren = 0, brace = 0, ctrl = 0;
+        let cmdStart = true, word = '', wordCmd = true, lastOp = false;
+        let pendingHere = [];
+        const flushWord = () => {
+            if (!word) return;
+            if (wordCmd && OPEN.has(word)) ctrl++;
+            else if (wordCmd && CLOSE.has(word)) ctrl = Math.max(0, ctrl - 1);
+            else if (wordCmd && word === '{') brace++;
+            else if (wordCmd && word === '}') brace = Math.max(0, brace - 1);
+            cmdStart = wordCmd && KEEP_CMD_POS.has(word);
+            word = '';
+            lastOp = false;
+        };
+        const addUnit = (end) => {
+            const t = s.slice(unitStart, end);
+            if (t.trim()) units.push({ text: t, heredoc: unitHeredoc });
+            unitHeredoc = false;
+        };
+        let i = 0;
+        while (i < n) {
+            const c = s[i];
+            if (inS) { if (c === "'") inS = false; word += c; i++; continue; }
+            if (inD) {
+                if (c === '\\' && i + 1 < n) { word += c + s[i + 1]; i += 2; continue; }
+                if (c === '"') inD = false;
+                word += c; i++; continue;
+            }
+            if (inBt) { if (c === '`') inBt = false; word += c; i++; continue; }
+            if (c === '\\') {
+                if (i + 1 >= n) return { incomplete: true, units }; // 行尾的反斜線：下一行接續
+                if (s[i + 1] === '\n') { i += 2; continue; }
+                if (!word) wordCmd = cmdStart;
+                word += c + s[i + 1]; i += 2; continue;
+            }
+            if (c === "'" || c === '"' || c === '`') {
+                if (!word) wordCmd = cmdStart;
+                if (c === "'") inS = true; else if (c === '"') inD = true; else inBt = true;
+                word += c; i++; continue;
+            }
+            if (c === '#' && !word) { while (i < n && s[i] !== '\n') i++; continue; }
+            if (c === '$' && s[i + 1] === '{') {
+                const end = s.indexOf('}', i + 2);
+                if (end === -1) return { incomplete: true, units };
+                if (!word) wordCmd = cmdStart;
+                word += s.slice(i, end + 1); i = end + 1; continue;
+            }
+            if (c === '\n') {
+                flushWord();
+                if (pendingHere.length) {
+                    let pos = i + 1;
+                    for (const h of pendingHere) {
+                        let found = false;
+                        while (pos < n) {
+                            const e = s.indexOf('\n', pos);
+                            const lineEnd = e === -1 ? n : e;
+                            let ln = s.slice(pos, lineEnd);
+                            if (h.strip) ln = ln.replace(/^\t+/, '');
+                            pos = e === -1 ? n : e + 1;
+                            if (ln === h.word) { found = true; break; }
+                            if (e === -1) break;
+                        }
+                        if (!found) return { incomplete: true, units };
+                    }
+                    pendingHere = [];
+                    if (paren === 0 && brace === 0 && ctrl === 0 && !lastOp) { addUnit(pos > 0 && s[pos - 1] === '\n' ? pos - 1 : pos); unitStart = pos; }
+                    i = pos; cmdStart = true; continue;
+                }
+                if (paren === 0 && brace === 0 && ctrl === 0 && !lastOp) { addUnit(i); unitStart = i + 1; }
+                cmdStart = true; i++; continue;
+            }
+            if (c === ' ' || c === '\t') { flushWord(); i++; continue; }
+            if (c === ';') { flushWord(); cmdStart = true; lastOp = false; i++; continue; }
+            if (c === '&') {
+                flushWord();
+                if (s[i + 1] === '&') { lastOp = true; cmdStart = true; i += 2; continue; }
+                lastOp = false; cmdStart = true; i++; continue;
+            }
+            if (c === '|') {
+                flushWord();
+                lastOp = true; cmdStart = true;
+                i += s[i + 1] === '|' ? 2 : 1; continue;
+            }
+            if (c === '(') { flushWord(); paren++; cmdStart = true; lastOp = false; i++; continue; }
+            if (c === ')') { flushWord(); paren = Math.max(0, paren - 1); cmdStart = true; lastOp = false; i++; continue; }
+            if (c === '<' && s[i + 1] === '<' && s[i + 2] === '<') { flushWord(); i += 3; continue; } // <<< here-string，不是heredoc
+            if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<' && paren === 0) {
+                let j = i + 2;
+                let strip = false;
+                if (s[j] === '-') { strip = true; j++; }
+                while (s[j] === ' ' || s[j] === '\t') j++;
+                let delim = '';
+                if (s[j] === "'" || s[j] === '"') {
+                    const q = s[j]; j++;
+                    while (j < n && s[j] !== q) delim += s[j++];
+                    if (j < n) j++;
+                } else {
+                    while (j < n && !/[\s;&|()<>]/.test(s[j])) { if (s[j] === '\\') { j++; continue; } delim += s[j++]; }
+                }
+                if (delim) {
+                    flushWord();
+                    pendingHere.push({ word: delim, strip });
+                    unitHeredoc = true;
+                    i = j; continue;
+                }
+            }
+            if (!word) wordCmd = cmdStart;
+            word += c; i++;
+        }
+        if (inS || inD || inBt) return { incomplete: true, units };
+        flushWord();
+        if (pendingHere.length) return { incomplete: true, units };
+        if (paren > 0 || brace > 0 || ctrl > 0 || lastOp) return { incomplete: true, units };
+        addUnit(n);
+        return { incomplete: false, units };
+    }
+
+    // 依序執行掃描出來的指令。含heredoc的指令整段（連本體）原封不動交給busybox ash：我們自己的shell
+    // parser不認得heredoc，拆開會把本體當成一行行指令；其餘走原本的指令路徑（cd/sleep/python…的JS層攔截照舊）。
+    async _terminalRunUnits(session, units) {
+        for (const u of units) {
+            if (session.ended) return;
+            if (u.heredoc) {
+                const r = await this._terminalRunWasmLine(session, u.text);
+                if (r && r.ok === false) session.term.write(`\x1b[31m${String(r.error || '執行失敗')}\x1b[0m\r\n`);
+            } else {
+                await this._runTerminalCommand(session, u.text);
+            }
+        }
     }
 
     _setTerminalLine(session, newLine) {
@@ -24627,14 +24806,37 @@ _result
     // 的/work整包同步進pyodide.FS、執行後反向整包同步回ctx.fs」，兩邊API
     // 都是同步呼叫，橋接本身不需要await。
     _runPythonBuiltin(ctx, pyodide) {
-        const scriptPath = ctx.argv[1];
+        // 2026-09-30使用者回報：`python -c '程式碼'`被當成檔名（「python: -c: No such file or directory」）。
+        // 支援常用的命令列寫法：-c 程式碼、-（從stdin讀程式碼）、-V/--version，以及不影響結果的旗標（-u -B -O -q -E -s -S）。
+        const enc = new TextEncoder();
+        let cliArgs = ctx.argv.slice(1);
+        let inlineCode = null;
+        while (cliArgs.length && cliArgs[0].startsWith('-') && cliArgs[0] !== '-') {
+            const a = cliArgs[0];
+            if (a === '-c') {
+                if (cliArgs.length < 2) { ctx.stderr(enc.encode('Argument expected for the -c option\n')); return 2; }
+                inlineCode = String(cliArgs[1]);
+                cliArgs = ['-c', ...cliArgs.slice(2)];
+                break;
+            }
+            if (a === '-V' || a === '--version') { ctx.stdout(enc.encode('Python 3 (Pyodide)\n')); return 0; }
+            if (/^-[uBOqEsS]+$/.test(a)) { cliArgs = cliArgs.slice(1); continue; }
+            ctx.stderr(enc.encode(`${ctx.argv[0]}: 不支援的選項 ${a}（支援：-c 程式碼、- 從stdin讀、-V）\n`)); return 2;
+        }
+        let stdinScript = null;
+        if (inlineCode === null && cliArgs[0] === '-') {
+            stdinScript = new TextDecoder('utf-8').decode(ctx.stdin() || new Uint8Array());
+        }
+        const scriptPath = cliArgs[0];
         if (!scriptPath) { ctx.stderr(new TextEncoder().encode(`${ctx.argv[0]}: missing script path\n`)); return 2; }
         // tw_stock_db客製: 2026-09-20（coding domain測試用）——相對路徑要能解析：
         // 實測shell的cwd未必是/work（`python hello.py`原本直接失敗），依序試
         // 原樣、cwd相對、/work相對三種，第一個讀得到的為準。
         let scriptText;
         let scriptAbs = scriptPath;
-        {
+        if (inlineCode !== null) { scriptText = inlineCode; scriptAbs = '/work/-c'; }
+        else if (stdinScript !== null) { scriptText = stdinScript; scriptAbs = '/work/-'; }
+        else {
             const candidates = scriptPath.startsWith('/') ? [scriptPath] : [scriptPath, `${String(ctx.cwd || '/work').replace(/\/$/, '')}/${scriptPath}`, `/work/${scriptPath}`];
             let lastErr = null;
             for (const cand of candidates) {
@@ -24664,7 +24866,7 @@ _result
             if (dir && dir !== '/work') pyodide.FS.mkdirTree(dir);
             pyodide.FS.writeFile(abs, f.bytes);
         }
-        const stdinBytes = ctx.stdin() || null;
+        const stdinBytes = stdinScript !== null ? null : (ctx.stdin() || null);
         // tw_stock_db客製: 2026-09-20——讓腳本行為像真的`python script.py`：cwd設成
         // /work、腳本所在目錄放進sys.path（測試腳本`from calc import add`才找得到
         // 同專案的模組）、設定__file__；並清掉上一次執行從/work載入的模組快取，否則
@@ -24673,7 +24875,7 @@ _result
         const relInWork = scriptAbs.startsWith('/work/') ? scriptAbs : '/work/' + scriptPath.replace(/^\.\//, '');
         try {
             pyodide.globals.set('__fa_script_abs', relInWork);
-            pyodide.globals.set('__fa_argv_json', JSON.stringify([scriptPath, ...ctx.argv.slice(2).map(String)]));
+            pyodide.globals.set('__fa_argv_json', JSON.stringify([scriptPath, ...cliArgs.slice(1).map(String)]));
             pyodide.runPython(FA_PY_RUN_PRELUDE);
         } catch (_) {}
         const { stdout, stderr, returncode } = this._runPyodideScriptSync(pyodide, scriptText, stdinBytes && stdinBytes.length ? stdinBytes : null);
