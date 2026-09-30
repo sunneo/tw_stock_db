@@ -27616,7 +27616,25 @@ _result
         zoomOut.addEventListener('click', () => zoomAt(width / 2, height / 2, 0.8));
         reset.addEventListener('click', resetView);
         focusSel.addEventListener('change', () => { const v = focusSel.value; if (v === '') resetView(); else focusOn(shapes[Number(v)]); });
+        // 2026-09-30使用者回報：滾輪經過動畫就被吃掉、沒辦法捲動對話。跟UML/流程圖viewer同一個規則——
+        // 只有「聚焦」（點過這個動畫）才讓滾輪縮放；沒聚焦時滾輪照常捲動對話。點動畫以外的地方或按Esc就取消聚焦。
+        let wheelFocused = false;
+        const hint = document.createElement('div');
+        hint.textContent = '點一下即可用滾輪縮放、拖曳平移、雙擊聚焦';
+        hint.style.cssText = 'position:absolute; left:8px; top:8px; z-index:2; font-size:11px; line-height:1.4; padding:2px 8px; border-radius:999px; background:rgba(0,0,0,0.55); color:#fff; pointer-events:none; transition:opacity .2s;';
+        wrap.appendChild(hint);
+        const setWheelFocus = (v) => {
+            wheelFocused = v;
+            canvas.style.outline = v ? '2px solid #3b82f6' : 'none';
+            canvas.style.outlineOffset = '-2px';
+            hint.style.opacity = v ? '0' : '1';
+        };
+        const onDocPointerDown = (e) => { if (wheelFocused && !wrap.contains(e.target)) setWheelFocus(false); };
+        const onDocKey = (e) => { if (wheelFocused && e.key === 'Escape') setWheelFocus(false); };
+        document.addEventListener('pointerdown', onDocPointerDown, true);
+        document.addEventListener('keydown', onDocKey);
         canvas.addEventListener('wheel', (ev) => {
+            if (!wheelFocused) return; // 沒點過這個動畫：讓滾輪事件正常冒泡去捲動對話
             ev.preventDefault();
             const p = toCanvas(ev);
             zoomAt(p.x, p.y, ev.deltaY < 0 ? 1.15 : 1 / 1.15);
@@ -27625,6 +27643,7 @@ _result
         const pointers = new Map();
         let pinchDist = 0;
         canvas.addEventListener('pointerdown', (ev) => {
+            setWheelFocus(true);
             try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
             pointers.set(ev.pointerId, toCanvas(ev));
             canvas.style.cursor = 'grabbing';
@@ -27690,7 +27709,7 @@ _result
         return {
             canvas, warnings,
             title: (typeof animDef.title === 'string' && animDef.title.trim()) ? animDef.title.trim() : null,
-            stop: () => { stopped = true; if (rafId != null) cancelAnimationFrame(rafId); if (observer) observer.disconnect(); },
+            stop: () => { stopped = true; if (rafId != null) cancelAnimationFrame(rafId); if (observer) observer.disconnect(); document.removeEventListener('pointerdown', onDocPointerDown, true); document.removeEventListener('keydown', onDocKey); },
             // 給測試/外部呼叫：程式化地縮放、聚焦、重設（跟畫面上的按鈕同一組行為）
             view: { zoomAt, focusOn: (idOrIndex) => focusOn(typeof idOrIndex === 'number' ? shapes[idOrIndex] : shapes.find((s) => s.id === idOrIndex)), reset: resetView, get state() { return { zoom: currentView().zoom, userZoom: user.zoom, panX: user.panX, panY: user.panY, focus: user.focus ? (user.focus.id || user.focus.type) : null }; } },
             // 匯出前快轉到動畫中段（duration的一半），比起永遠抓第0幀的初始
@@ -29101,6 +29120,24 @@ _result
             controls.target.set(lookAt[0], lookAt[1], lookAt[2]);
             controls.update();
         } catch (_) { controls = null; }
+        // 2026-09-30使用者要求：所有viewer「只有聚焦（點過）才吃滾輪」，不然滑鼠經過場景時滾輪被吃掉、對話捲不動。
+        // OrbitControls在enableZoom為false時不處理滾輪（也不preventDefault），事件會正常冒泡去捲動對話；
+        // 拖曳旋轉/平移不受影響。點場景＝聚焦（開啟滾輪縮放、外框變藍），點場景以外或按Esc＝取消聚焦。
+        let zoomFocused3d = false;
+        const setZoomFocus3d = (v) => {
+            zoomFocused3d = v;
+            if (controls) controls.enableZoom = v;
+            canvas.style.outline = v ? '2px solid #3b82f6' : 'none';
+            canvas.style.outlineOffset = '-2px';
+        };
+        setZoomFocus3d(false);
+        canvas.title = '點一下即可用滾輪縮放、拖曳旋轉';
+        const onCanvasDown3d = () => setZoomFocus3d(true);
+        const onDocDown3d = (e) => { if (zoomFocused3d && e.target !== canvas) setZoomFocus3d(false); };
+        const onDocKey3d = (e) => { if (zoomFocused3d && e.key === 'Escape') setZoomFocus3d(false); };
+        canvas.addEventListener('pointerdown', onCanvasDown3d);
+        document.addEventListener('pointerdown', onDocDown3d, true);
+        document.addEventListener('keydown', onDocKey3d);
 
         let frameIndex = 0;
         let stopped = false;
@@ -29126,7 +29163,7 @@ _result
             // warning清單，給呼叫端（_renderSingleMessage的3D場景卡片）顯示
             // 一個「⚠️ N」錯誤紀錄按鈕用，點開才看得到細節，不干擾正常播放。
             warnings,
-            stop: () => { stopped = true; if (controls) controls.dispose(); },
+            stop: () => { stopped = true; if (controls) controls.dispose(); canvas.removeEventListener('pointerdown', onCanvasDown3d); document.removeEventListener('pointerdown', onDocDown3d, true); document.removeEventListener('keydown', onDocKey3d); },
             // tw_stock_db客製: 2026-09-05使用者要求——右下角要有「重設視角」
             // 按鈕，把camera位置/朝向、OrbitControls的target都還原成場景YAML
             // 一開始定義的camera.position/look_at，不是重新掛載整個場景（那樣
