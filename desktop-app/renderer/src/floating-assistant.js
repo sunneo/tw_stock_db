@@ -29663,9 +29663,35 @@ ${existingNodeSummaries}
         viewport.tabIndex = 0;
         viewport.style.cssText = 'position:relative; height:420px; overflow:hidden; background:#f7f7f7; border-radius:6px; border:2px solid rgba(0,0,0,0.1); cursor:grab; outline:none; transition:border-color 0.15s;';
         const inner = document.createElement('div');
-        inner.style.cssText = 'position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform;';
+        // tw_stock_db客製: 2026-09-30使用者回報「image viewer即使是svg，放大也會糊掉」。
+        // 原因：原本用`will-change:transform`＋CSS `scale()`放大——瀏覽器會把這層固定在
+        // 「初始倍率」光柵化，之後的放大只是把那張點陣圖拉大，向量SVG也跟著糊。改成
+        // 「縮放＝改變SVG本身的寬高」（viewBox讓內容跟著向量重繪，每個倍率都是清晰的），
+        // 平移仍用translate（只移動、不改變光柵倍率，不會糊）。沒有viewBox也沒有可用
+        // 寬高的SVG才退回transform scale（且不再用will-change，讓瀏覽器在縮放後重新光柵化）。
+        inner.style.cssText = 'position:absolute; left:0; top:0; transform-origin:0 0;';
         inner.innerHTML = svgText;
         viewport.appendChild(inner);
+        const svgEl = inner.querySelector('svg');
+        let vectorBase = null;
+        if (svgEl) {
+            let bw = 0, bh = 0;
+            const vb = (svgEl.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+            if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) { bw = vb[2]; bh = vb[3]; }
+            else {
+                const aw = svgEl.getAttribute('width') || '', ah = svgEl.getAttribute('height') || '';
+                if (aw && ah && !/%$/.test(aw) && !/%$/.test(ah)) {
+                    bw = parseFloat(aw); bh = parseFloat(ah);
+                    if (bw > 0 && bh > 0) svgEl.setAttribute('viewBox', `0 0 ${bw} ${bh}`);
+                }
+            }
+            // mermaid輸出的style="max-width: 850px"是它算好的自然寬度，倍率1時尊重它
+            const maxW = parseFloat(String(svgEl.style.maxWidth || '').replace('px', ''));
+            if (bw > 0 && bh > 0) {
+                if (maxW > 0 && maxW < bw) { bh = bh * maxW / bw; bw = maxW; }
+                vectorBase = { w: bw, h: bh };
+            }
+        }
 
         let x = 20, y = 20, scale = 1;
         // tw_stock_db客製: 2026-09-22使用者要求——只有「focused」（點過這個
@@ -29685,9 +29711,8 @@ ${existingNodeSummaries}
 
         // 內容原始尺寸（transform不影響layout，offsetWidth/Height量到的一律
         // 是scale=1時的真實尺寸），用來算scrollbar的thumb大小/位置。
-        const contentW = inner.offsetWidth || 1;
-        const contentH = inner.offsetHeight || 1;
-
+        // （向量縮放模式下改看vectorBase：SVG本身的尺寸會隨倍率改變。這裡在畫面元素還沒
+        // 掛進頁面前就會執行，退回模式的offsetWidth量到0，所以改成用到時才量，見updateScrollbars。）
         const hTrack = document.createElement('div');
         hTrack.style.cssText = 'position:absolute; left:2px; right:12px; bottom:3px; height:6px; border-radius:3px; background:rgba(0,0,0,0.08); z-index:1; pointer-events:none;';
         const hThumb = document.createElement('div');
@@ -29703,6 +29728,8 @@ ${existingNodeSummaries}
 
         const updateScrollbars = () => {
             const vw = viewport.clientWidth, vh = viewport.clientHeight;
+            const contentW = vectorBase ? vectorBase.w : (inner.offsetWidth || 1);
+            const contentH = vectorBase ? vectorBase.h : (inner.offsetHeight || 1);
             const totalW = contentW * scale, totalH = contentH * scale;
             const showH = totalW > vw + 1, showV = totalH > vh + 1;
             hTrack.style.display = showH ? 'block' : 'none';
@@ -29724,7 +29751,18 @@ ${existingNodeSummaries}
                 vThumb.style.top = top + 'px';
             }
         };
-        const applyTransform = () => { inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; updateScrollbars(); };
+        const applyTransform = () => {
+            if (vectorBase) {
+                svgEl.style.maxWidth = 'none';
+                svgEl.style.display = 'block';
+                svgEl.style.width = `${vectorBase.w * scale}px`;
+                svgEl.style.height = `${vectorBase.h * scale}px`;
+                inner.style.transform = `translate(${x}px, ${y}px)`;
+            } else {
+                inner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+            }
+            updateScrollbars();
+        };
         applyTransform();
 
         let dragging = false, dragStartX = 0, dragStartY = 0, originX = 0, originY = 0;
