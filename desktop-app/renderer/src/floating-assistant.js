@@ -2854,6 +2854,88 @@ class _FaPopen:
 subprocess.Popen = _FaPopen
 `;
 
+// 2026-09-30使用者回報：沙盒python用urllib連https會失敗（「unknown url type: https」——沒有可用的ssl；
+// 有ssl殘殼時則是「TLS not supported in this environment」，http也是「Remote end closed connection」）。
+// Pyodide沒有真正的socket/TLS，所以把urllib.request的底層「實際送出請求」那一步（AbstractHTTPHandler.do_open，
+// HTTPHandler/HTTPSHandler共用）換成走JS的fetch橋接（跟終端機curl/wget、yt-dlp同一條路：桌面版經本機proxy、
+// 網頁版經assetBackupProxyUrl的proxy，所以CORS/TLS都由proxy端處理）。urlopen()、Request、build_opener、
+// 自訂header、POST資料、HTTPError（狀態碼>=400照標準丟例外，可以read()到回應本文）都維持標準行為；
+// 轉址由fetch自動跟隨（geturl()回傳最後的網址）；ssl._create_unverified_context()等context參數接受但忽略
+// （憑證驗證由proxy端負責）；timeout統一由橋接的逾時控制。requests套件不在這次範圍。
+const PYODIDE_URLLIB_SHIM_SRC = String.raw`
+import urllib.request as _ur, urllib.error as _ue, http.client as _hc
+import io as _io, json as _fa_json4, asyncio as _fa_asyncio4, email.message as _em
+from pyodide.ffi import to_js as _fa_to_js4
+import _fa_http_bridge
+
+class _FaHTTPResponse(_io.BytesIO):
+    def __init__(self, body, status, reason, headers, url):
+        super().__init__(body)
+        self.status = self.code = status
+        self.reason = self.msg = reason
+        self.url = url
+        m = _em.Message()
+        for k, v in headers.items():
+            m[k] = v
+        self.headers = m
+        self.version = 11
+    def info(self):
+        return self.headers
+    def geturl(self):
+        return self.url
+    def getcode(self):
+        return self.status
+    def getheader(self, name, default=None):
+        return self.headers.get(name, default)
+    def getheaders(self):
+        return list(self.headers.items())
+
+_FA_HTTP_REASONS = {200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Request Timeout',
+    429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout'}
+
+def _fa_do_open(self, http_class, req, **http_conn_args):
+    url = req.full_url
+    headers = {}
+    for k, v in req.header_items():
+        lk = k.lower()
+        if lk in ('host', 'content-length', 'connection', 'accept-encoding'):
+            continue
+        headers[k] = v
+    data = req.data
+    if data is not None and not isinstance(data, (bytes, bytearray)):
+        data = data.read() if hasattr(data, 'read') else bytes(data)
+    data_js = _fa_to_js4(bytes(data)) if data else None
+    try:
+        if _fa_http_bridge.isSync():
+            r = _fa_http_bridge.requestSync(url, req.get_method(), _fa_json4.dumps(headers), data_js)
+        else:
+            r = _fa_asyncio4.run(_fa_http_bridge.request(url, req.get_method(), _fa_json4.dumps(headers), data_js))
+    except Exception as e:
+        raise _ue.URLError(str(e))
+    body = bytes(r.body.to_py()) if hasattr(r.body, 'to_py') else bytes(r.body)
+    status = int(r.status)
+    return _FaHTTPResponse(body, status, _FA_HTTP_REASONS.get(status, ''), _fa_json4.loads(r.headersJson), r.url)
+
+_ur.AbstractHTTPHandler.do_open = _fa_do_open
+
+# ssl不可用時（import ssl失敗）標準庫不會裝HTTPSHandler，開https網址會得到「unknown url type: https」。
+# 這裡補一個一定存在的HTTPSHandler（實際送出仍走上面的橋接），並讓預設opener認得它。
+if not hasattr(_hc, 'HTTPSConnection'):
+    class _FaHTTPSConnection(_hc.HTTPConnection):
+        default_port = 443
+    _hc.HTTPSConnection = _FaHTTPSConnection
+if not hasattr(_ur, 'HTTPSHandler'):
+    class _FaHTTPSHandler(_ur.AbstractHTTPHandler):
+        def __init__(self, debuglevel=None, context=None, check_hostname=None):
+            super().__init__(debuglevel if debuglevel is not None else 0)
+        def https_open(self, req):
+            return self.do_open(None, req)
+        https_request = _ur.AbstractHTTPHandler.do_request_
+    _ur.HTTPSHandler = _FaHTTPSHandler
+_ur._opener = None
+`;
+
 // tw_stock_db客製: 2026-09-25使用者要求——在Pyodide裡跑真正的上游yt-dlp
 // （不是每次YouTube更新就手動改寫成JS，那是無底洞的維護負擔；yt-dlp本身
 // 沒有硬性依賴，靠這裡的橋接+定期micropip重裝就能跟上YouTube的變化）。
@@ -23342,7 +23424,7 @@ ${sourceTool.handlerScript}
     // terminal_run最上層直接打`curl -o`/`wget -O`（走pre-interception的
     // _terminalHttpFetch，正確拿到ArrayBuffer），這裡在_runCurlBuiltin/
     // _runWgetBuiltin的訊息裡會明講這個限制，不假裝二進位下載也支援。
-    _terminalHttpFetchSync(method, urlStr, { headers, body } = {}) {
+    _terminalHttpFetchSync(method, urlStr, { headers, body, binary } = {}) {
         let target;
         try { target = new URL(urlStr); } catch (_) { throw new Error(`不合法的網址：${urlStr}`); }
         const proxied = this._viaAssetProxy(target.href);
@@ -23353,6 +23435,7 @@ ${sourceTool.handlerScript}
             : '（提示：跨網域請求常被瀏覽器CORS擋下，可在Advance Settings填assetBackupProxyUrl讓請求改走本機proxy/Cloudflare Worker繞過）';
         try {
             xhr.open(method, proxied, false);
+            if (binary) xhr.overrideMimeType('text/plain; charset=x-user-defined'); // 同步XHR不能設arraybuffer，用這招才能拿到原始位元組
             if (headers) {
                 for (const k of Object.keys(headers)) {
                     try { xhr.setRequestHeader(k, headers[k]); } catch (_) { /* 部分header瀏覽器不給自訂（如Host），忽略 */ }
@@ -23709,6 +23792,8 @@ ${sourceTool.handlerScript}
                 runPython: (scriptText, stdinBytes) => this._pyodideBridgeRunPython(scriptText, stdinBytes),
             });
             instance.runPython(PYODIDE_SUBPROCESS_SHIM_SRC);
+            instance.registerJsModule('_fa_http_bridge', this._ytDlpHttpBridge());
+            try { instance.runPython(PYODIDE_URLLIB_SHIM_SRC); } catch (err) { console.warn('urllib橋接安裝失敗（python的urllib連網不可用）:', err); }
             this._pyodideIndexURL = indexURL;
             instance.registerJsModule('_fa_mp', this._mpBridge());
             this._mpInstallShim(instance);
@@ -23765,6 +23850,27 @@ ${sourceTool.handlerScript}
                 }
                 return { status: resp.status, url: resp.url, headersJson: JSON.stringify(respHeaders), body: buf };
             },
+            // 同步版本（給終端機裡的python用：那條路徑是pyodide.runPython同步執行，沒有JSPI可以await，
+            // 見_runPyodideScriptSync）。用同步XHR，位元組用x-user-defined搬運；跟async版本回傳同樣的形狀。
+            requestSync: (url, method, headersJson, bodyBytes) => {
+                let headers = {};
+                try { headers = JSON.parse(headersJson || '{}'); } catch (_) {}
+                delete headers['Accept-Encoding']; delete headers['accept-encoding'];
+                let body = bodyBytes;
+                if (body && typeof body.toJs === 'function') { const c = body.toJs(); if (typeof body.destroy === 'function') body.destroy(); body = c; }
+                const { xhr } = this._terminalHttpFetchSync(method, url, { headers, body: body && body.length ? body : undefined, binary: true });
+                const text = xhr.responseText || '';
+                const buf = new Uint8Array(text.length);
+                for (let i = 0; i < text.length; i++) buf[i] = text.charCodeAt(i) & 0xff;
+                const respHeaders = {};
+                String(xhr.getAllResponseHeaders() || '').split(/\r?\n/).forEach((line) => {
+                    const idx = line.indexOf(':');
+                    if (idx > 0) { const k = line.slice(0, idx).trim().toLowerCase(); respHeaders[k] = respHeaders[k] ? respHeaders[k] + ', ' + line.slice(idx + 1).trim() : line.slice(idx + 1).trim(); }
+                });
+                return { status: xhr.status, url, headersJson: JSON.stringify(respHeaders), body: buf };
+            },
+            // 目前是不是在「同步執行的python」裡（_runPyodideScriptSync）：是的話不能用asyncio.run橋接async函式。
+            isSync: () => (this._pySyncDepth || 0) > 0,
         };
         return this._ytDlpHttpBridgeObj;
     }
@@ -24700,12 +24806,14 @@ _result
         let stdinSent = !stdinBytes;
         this._pyodideStdinStack.push(() => { if (stdinSent) return null; stdinSent = true; return stdinBytes; });
         let returncode = 0;
+        this._pySyncDepth = (this._pySyncDepth || 0) + 1;
         try {
             pyodide.runPython(scriptText);
         } catch (err) {
             stderrChunks.push(String(err && err.message || err));
             returncode = 1;
         } finally {
+            this._pySyncDepth--;
             this._pyodideStdoutStack.pop();
             this._pyodideStderrStack.pop();
             this._pyodideStdinStack.pop();
