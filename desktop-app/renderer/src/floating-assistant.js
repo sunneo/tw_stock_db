@@ -37299,7 +37299,10 @@ ${existingNodeSummaries}
     // 助理能做什麼。
     _getSuggestionChips() {
         const host = typeof this.options.chipsProvider === 'function' ? (this.options.chipsProvider() || []) : [];
-        return host.concat(this._buildFeatureChips(host.length === 0));
+        // 2026-09-30使用者回報：網頁版跟桌面版的/suggest長得很不一樣（桌面版有host自己的建議，只多一顆「AI功能總覽」；
+        // 網頁版沒有host建議，列出全部分類）。桌面版統一成「host建議在前＋全部分類」，options.suggestAllCategories=true開啟；
+        // 台股頁等其他host沒設就維持原本只多一顆，不搶版面。
+        return host.concat(this._buildFeatureChips(host.length === 0 || this.options.suggestAllCategories === true));
     }
 
     _buildFeatureChips(includeCategories) {
