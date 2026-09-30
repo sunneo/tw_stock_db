@@ -345,6 +345,7 @@ function patchCloudflareWording(root) {
     buttonStyle: "display:none;",
     windowStyle: "position:static; width:100%; height:100%; max-height:none; box-shadow:none; z-index:1;",
     chipsProvider: buildDesktopSuggestionChips,
+    suggestAllCategories: true, // 桌面版/suggest：桌面專屬建議之後接跟網頁版一樣的完整功能分類
     // 2026-09-26使用者要求：桌面版（跟aiweb）左邊有可收合、可分群組的對話清單；台股頁不開。
     chatList: true,
   });
