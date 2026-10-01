@@ -4430,8 +4430,11 @@ async function _faMarkdownToPdfBlob(markdownText, heading, visualSnapshots) {
 // 不要讓共用引擎自己猜host是誰」原則——這裡引擎完全不檢查
 // window.desktopAPI之類的全域變數，純粹由host自己決定要不要打開。
 const ADVANCED_SETTINGS_GROUPS = {
-    ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'file-access', 'subagent', 'domains', 'limits'], visible: true },
-    multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice'], visible: true },
+    ai: { label: 'AI', cats: ['llm-basic', 'llm-sampling', 'llm-debug', 'functions', 'skills', 'rag', 'subagent', 'domains', 'limits'], visible: true },
+    // 2026-09-30使用者要求：FileAccess是一個獨立分類，Git在它底下有獨立一頁（原本這兩個加YouTube全擠在同一頁）。
+    fileaccess: { label: '檔案存取', cats: ['file-access', 'git'], visible: true },
+    // YouTube下載設定在「多媒體」底下有自己的一頁。
+    multimedia: { label: '多媒體', cats: ['input', 'multimedia', 'voice', 'youtube'], visible: true },
     // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——獨立
     // 成一個群組（不塞進AI群組底下），因為/run-terminal是桌面/網頁共用的
     // 一個功能本身，不是「AI相關」的子設定，跟multimedia群組同一種「功能
@@ -18338,7 +18341,7 @@ ${sourceTool.handlerScript}
         return {
             'llm-basic': 'LLM 基礎設定', 'llm-sampling': 'LLM Model 管理', 'llm-debug': 'LLM Debug',
             'input': '輸入', 'functions': '自訂函式', 'skills': 'Skill', 'rag': 'RAG 知識庫',
-            'file-access': '檔案存取管理', 'subagent': '子Agent', 'multimedia': '多媒體',
+            'file-access': '檔案存取管理', 'git': 'Git 版本控制', 'youtube': 'YouTube 下載', 'subagent': '子Agent', 'multimedia': '多媒體',
             'voice': '語音設定', 'limits': '效能與限制', 'terminal': 'xterm 終端機', 'domains': 'Domain 管理', 'browser-control': 'Chrome 瀏覽器控制',
             // tw_stock_db客製: 2026-09-18——host透過registerAdvancedSettingsTab()
             // 額外註冊的cat標籤（見該方法說明），跟內建cat共用同一份查詢
@@ -36531,7 +36534,11 @@ ${existingNodeSummaries}
                                     </div>
                                     <p class="ai-advanced-hint">把電腦上一個真實資料夾的讀寫權限授權給AI（File System Access API）。AI可以用<code>list_file_access_points</code>/<code>fap_list_files</code>/<code>fap_read_file</code>/<code>fap_write_file</code>/<code>fap_find_file</code>這幾個工具操作純文字內容，你自己也可以用 <code>/fap-list</code> <code>/fap-read</code> <code>/fap-find</code> 斜線指令直接瀏覽——這是跟AI產生/你透過📎上傳的檔案（persistentStorage）完全獨立的另一套系統，兩邊不會混在一起、也不會互相看到彼此。**任何格式的二進位檔案**（MP3/MP4/xlsx/pdf/pptx/圖片等）可以用<code>fap_copy_from_storage</code>／<code>fap_copy_to_storage</code>在兩套系統之間搬動（複製或移動），或用<code>fap_download_url</code>直接把一個網址的內容下載進來（受目標網站CORS限制，不是每個網址都抓得到）。授權會存在瀏覽器本機、盡量記住，但瀏覽器可能因為太久沒用而要求重新授權——不用特地跑來這裡點，AI下次要用到時會直接在畫面上跳一個小視窗讓你當場點擊同意；這裡的「重新授權」按鈕留著給你想主動先授權好、不想等AI用到時才處理的情況。⚠️目前只有 Chrome/Edge 支援這個功能；寫入是真正的磁碟寫入，請只授權你信任AI去動的資料夾。</p>
                                     <div id="ai-fap-list" class="ai-tool-list"></div>
-                                    <div class="ai-advanced-tools-header" style="margin-top:16px;">
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="git">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
                                         <div class="ai-advanced-label" style="margin:0;">git版本控制（clone / pull / commit / push）</div>
                                     </div>
                                     <p class="ai-advanced-hint">AI可以用<code>git_clone</code>/<code>git_pull</code>/<code>git_status</code>/<code>git_log</code>/<code>git_commit</code>/<code>git_push</code>對上面已授權的File Access Point資料夾做git操作（純瀏覽器JS實作，不需要安裝git）。因為瀏覽器直接對GitHub發請求會被CORS擋下，一定要透過一個部署了<code>/git-proxy</code>路由的Cloudflare Worker中繼——留空會沿用你AI端點目前的網址，如果那個端點背後沒有部署這條路由，git操作會連線失敗。公開repo唯讀clone/pull不需要token；私有repo、以及任何repo的push，都需要下面填入你自己的GitHub Personal Access Token（只存在你自己瀏覽器本機，不會被上傳）。</p>
@@ -36543,7 +36550,11 @@ ${existingNodeSummaries}
                                     <input type="text" id="ai-git-author-name" class="ai-advanced-input" placeholder="例如：sunneo">
                                     <label class="ai-advanced-label" for="ai-git-author-email">commit作者信箱</label>
                                     <input type="text" id="ai-git-author-email" class="ai-advanced-input" placeholder="例如：you@example.com">
-                                    <div class="ai-advanced-tools-header" style="margin-top:16px;">
+                                </div>
+                            </div>
+                            <div class="ai-advanced-pane hidden" data-pane="youtube">
+                                <div class="ai-advanced-stack">
+                                    <div class="ai-advanced-tools-header">
                                         <div class="ai-advanced-label" style="margin:0;">YouTube下載（youtube_download工具）</div>
                                     </div>
                                     <p class="ai-advanced-hint">AI可以用<code>youtube_download</code>（或直接打<code>/media-youtube-download</code>）解析貼上的文字裡的YouTube連結並下載。**這兩個欄位是選填**——留空可以直接下載任何影片；填了才會啟用範圍限制：**只允許下載你自己頻道的影片，或YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並說明原因。金鑰請到<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>免費申請YouTube Data API v3金鑰；頻道ID是你自己YouTube頻道的ID（在YouTube工作室的「設定→頻道→進階設定」可以查到，用來比對影片上傳者是不是你本人）。⚠️已知限制：YouTube目前對多數影片會要求PO Token（另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、只剩縮圖格式可用。</p>
