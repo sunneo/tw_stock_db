@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,9 +34,31 @@ async function unmarkTab(tabId) {
   const m = await getManaged();
   if (m.tabs.delete(tabId)) await saveManaged(m);
 }
+// 2026-09-30（跟Redmine那邊對齊）：分頁不管是被AI關、自動清理、還是使用者自己關掉，都從追蹤名單移除；
+// 群組裡最後一個分頁關掉後（Chrome會自動移除空群組），也把我們記錄的群組資料清掉。
+async function getKeep() { const s = await chrome.storage.session.get({ keepTabs: [] }); return new Set(s.keepTabs); }
+async function markKeep(tabId) {
+  const k = await getKeep();
+  if (!k.has(tabId)) { k.add(tabId); await chrome.storage.session.set({ keepTabs: [...k] }); }
+}
+async function unmarkKeep(tabId) {
+  const k = await getKeep();
+  if (k.delete(tabId)) await chrome.storage.session.set({ keepTabs: [...k] });
+}
+async function pruneGroups() {
+  const m = await getManaged();
+  let changed = false;
+  for (const gid of Object.keys(m.groups)) {
+    let n = 0;
+    try { n = (await chrome.tabs.query({ groupId: Number(gid) })).length; } catch (_) { n = 0; }
+    if (n === 0) { delete m.groups[gid]; changed = true; }
+  }
+  if (changed) await saveManaged(m);
+}
 chrome.tabs.onRemoved.addListener((tabId) => {
-  unmarkTab(tabId);
+  unmarkTab(tabId).then(() => unmarkKeep(tabId)).then(() => pruneGroups()).catch(() => {});
   attached.delete(tabId);
+  focusEmulated.delete(tabId);
 });
 chrome.tabs.onCreated.addListener(async (tab) => {
   if (tab.openerTabId != null) {
@@ -69,7 +91,8 @@ async function needTab(a, ctx) {
 
 // ---------- debugger（滑鼠/鍵盤/截圖用真實輸入事件） ----------
 const attached = new Set();
-chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) attached.delete(src.tabId); });
+const focusEmulated = new Set();
+chrome.debugger.onDetach.addListener((src) => { if (src.tabId != null) { attached.delete(src.tabId); focusEmulated.delete(src.tabId); } });
 async function dbg(tabId) {
   if (attached.has(tabId)) return;
   try { await chrome.debugger.attach({ tabId }, "1.3"); }
@@ -126,14 +149,17 @@ function pageText(text, o = {}) {
 // tw_stock_db客製: 2026-09-22——移植到Redmine時實測發現背景分頁（active:false）幾乎每次都收不到
 // 合成滑鼠/鍵盤事件（screenshot/scroll等唯讀操作則不受影響，維持背景可用），所以真的要打字/點擊/
 // 按鍵前一律先把分頁切到前景，等一小段時間讓頁面真正拿到焦點再送CDP指令。
-async function ensureForeground(tabId) {
-  const tab = await chrome.tabs.get(tabId);
-  if (!tab.active) {
-    await chrome.tabs.update(tabId, { active: true });
-    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (_) { /* 視窗可能已關閉或無法取得焦點，不阻擋後續操作 */ }
-    await sleep(200);
+// 2026-09-30（跟Redmine那邊對齊）：使用者要求不要自動切到助理開的分頁——會干擾使用者正在做的事。
+// 背景分頁收不到合成的滑鼠/鍵盤事件的問題，改用 Emulation.setFocusEmulationEnabled 解決：
+// 讓頁面「以為」自己有焦點，實際上分頁仍留在背景、使用者的畫面不動。
+// 只有 tab_activate（browser_activate_tab）才會真的把分頁切到前景。
+async function keepPageFocused(tabId) {
+  await dbg(tabId);
+  if (!focusEmulated.has(tabId)) {
+    await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+    focusEmulated.add(tabId);
   }
-  return tab;
+  return chrome.tabs.get(tabId);
 }
 
 async function waitLoad(tabId, timeoutMs) {
@@ -188,11 +214,14 @@ async function placeInAiGroup(tabIds, windowId) {
   await saveManaged(m);
   return groupId;
 }
-async function createAiTab(url, active) {
+// keepOpen：回合結束時不要自動關閉（AI要讓使用者看的頁面）。用 active 開的分頁也一律保留——
+// 使用者既然被切到那個分頁，就不該在他還在看的時候被關掉。
+async function createAiTab(url, active, keepOpen) {
   const existing = await findAiGroup();
   const windowId = existing ? existing.windowId : await targetWindowId();
   const tab = await chrome.tabs.create({ url: normUrl(url), active: !!active, windowId });
   await markTab(tab.id);
+  if (active || keepOpen) await markKeep(tab.id);
   const groupId = await placeInAiGroup([tab.id], windowId);
   return { tab, groupId };
 }
@@ -218,7 +247,7 @@ function b64ToBytes(b64) {
 
 const commands = {
   async ping() {
-    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch"] };
+    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch", "turn_end", "focus_emulation"] };
   },
 
   async http_fetch(a) {
@@ -249,7 +278,7 @@ const commands = {
     const tabIds = [];
     let groupId = null;
     for (let i = 0; i < Math.min(urls.length, 20); i++) {
-      const r = await createAiTab(urls[i], i === 0 && !!a.active);
+      const r = await createAiTab(urls[i], i === 0 && !!a.active, !!a.keep_open);
       tabIds.push(r.tab.id);
       groupId = r.groupId;
     }
@@ -259,16 +288,17 @@ const commands = {
   },
 
   async tab_create(a) {
-    const { tab, groupId } = await createAiTab(a.url, a.active);
+    const { tab, groupId } = await createAiTab(a.url, a.active, !!a.keep_open);
     if (a.wait !== false) await waitLoad(tab.id, 15000);
     return Object.assign(tabInfo(await chrome.tabs.get(tab.id)), { group_id: groupId, group_title: AI_GROUP_TITLE });
   },
 
   async tab_list() {
     const m = await getManaged();
+    const keep = await getKeep();
     const out = [];
     for (const id of [...m.tabs]) {
-      try { out.push(tabInfo(await chrome.tabs.get(id))); } catch (_) { m.tabs.delete(id); }
+      try { out.push(Object.assign(tabInfo(await chrome.tabs.get(id)), { keep_open: keep.has(id) })); } catch (_) { m.tabs.delete(id); }
     }
     await saveManaged(m);
     const groups = [];
@@ -284,6 +314,7 @@ const commands = {
       if (m.groups[String(a.group_id)] == null) throw new Error("不是助理建立的分頁群組");
       const tabs = await chrome.tabs.query({ groupId: Number(a.group_id) });
       await chrome.tabs.remove(tabs.map((t) => t.id).filter((id) => m.tabs.has(id)));
+      await pruneGroups();
       return { closed: tabs.length };
     }
     const tabId = Number(a.tab_id);
@@ -291,7 +322,24 @@ const commands = {
     if (!Number.isInteger(tabId) || !m.tabs.has(tabId)) return { closed: 0, note: "這個分頁已經不存在或不是助理開的，不需要關閉" };
     try { await chrome.tabs.remove(tabId); } catch (_) {}
     await unmarkTab(tabId);
+    await unmarkKeep(tabId);
+    await pruneGroups();
     return { closed: 1 };
+  },
+
+  // 2026-09-30：助理回合結束時呼叫。關閉這一輪助理開的分頁（沒被標記keep_open、也沒被activate過的），
+  // 並清掉空群組的紀錄。找不到要關的分頁也不算錯（可能AI已經自己關了）。
+  async turn_end() {
+    const m = await getManaged();
+    const keep = await getKeep();
+    let closed = 0;
+    for (const id of [...m.tabs]) {
+      if (keep.has(id)) continue;
+      try { await chrome.tabs.remove(id); closed++; } catch (_) {}
+      await unmarkTab(id);
+    }
+    await pruneGroups();
+    return { closed, kept: [...m.tabs].filter((id) => keep.has(id)).length };
   },
 
   async tab_navigate(a, ctx) {
@@ -308,6 +356,7 @@ const commands = {
     const { tabId, tab } = await needTab(a, ctx);
     await chrome.tabs.update(tabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
+    await markKeep(tabId); // 使用者被切到這個分頁了，回合結束時不能關掉
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
@@ -340,12 +389,7 @@ const commands = {
 
   async screenshot(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    const tab = await chrome.tabs.get(tabId);
-    if (!tab.active) {
-      await chrome.tabs.update(tabId, { active: true });
-      await sleep(250);
-    }
-    await dbg(tabId);
+    const tab = await keepPageFocused(tabId); // 不切到前景（見keepPageFocused）
     const m = await send(tabId, "Page.getLayoutMetrics");
     const vp = m.cssVisualViewport || m.visualViewport;
     const params = { format: "jpeg", quality: Math.min(95, Math.max(30, Number(a.quality) || 70)) };
@@ -367,8 +411,7 @@ const commands = {
 
   async mouse(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    await ensureForeground(tabId);
-    await dbg(tabId);
+    await keepPageFocused(tabId);
     const action = String(a.action || "click");
     const x = Number(a.x), y = Number(a.y);
     if (!isFinite(x) || !isFinite(y)) throw new Error("x、y 必須是數字（分頁可視區內的像素座標）");
@@ -412,8 +455,7 @@ const commands = {
 
   async type_text(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    await ensureForeground(tabId);
-    await dbg(tabId);
+    await keepPageFocused(tabId);
     const text = String(a.text == null ? "" : a.text);
     if (a.selector) {
       const [r] = await chrome.scripting.executeScript({
@@ -433,8 +475,7 @@ const commands = {
 
   async press_key(a, ctx) {
     const { tabId } = await needTab(a, ctx);
-    await ensureForeground(tabId);
-    await dbg(tabId);
+    await keepPageFocused(tabId);
     const key = String(a.key || "");
     if (!key) throw new Error("缺少 key（例如 Enter、Tab、Escape、ArrowDown、a）");
     await pressKey(tabId, key, Array.isArray(a.modifiers) ? a.modifiers : []);
