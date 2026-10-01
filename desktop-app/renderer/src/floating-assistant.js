@@ -19906,6 +19906,76 @@ ${sourceTool.handlerScript}
         return TERMINAL_THEME_PRESETS[themeKey] || TERMINAL_THEME_PRESETS['black-white'];
     }
 
+    // 2026-09-30使用者要求：Configure裡xterm終端機的設定要能「一次套用到全部」，或在終端機右鍵選單有「套用主題」。
+    // 設定本來只在「開新終端機」時讀一次；這裡把目前設定（佈景主題、字體、字體大小、可回捲行數、欄數）
+    // 直接套到已經開著的終端機（xterm的term.options可以即時改），並重新依容器大小量一次欄列。
+    _applyTerminalAppearance(session) {
+        if (!session || !session.term) return false;
+        const ts = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
+        try {
+            const t = session.term;
+            t.options.theme = this._getTerminalXtermTheme();
+            t.options.fontFamily = ts.fontFamily || 'monospace, monospace';
+            t.options.fontSize = ts.fontSize || 13;
+            t.options.scrollback = ts.scrollback != null ? ts.scrollback : 1000;
+        } catch (_) { return false; }
+        if (typeof session.refit === 'function') setTimeout(() => { try { session.refit(); } catch (_) {} }, 50);
+        return true;
+    }
+    _applyTerminalAppearanceToAll() {
+        const sessions = this._getMountedTerminalSessions();
+        let n = 0;
+        for (const s of sessions) if (this._applyTerminalAppearance(s)) n++;
+        return n;
+    }
+
+    // 終端機右鍵選單（取代瀏覽器預設選單）：套用外觀、複製、貼上、清除畫面、視窗化。
+    _showTerminalContextMenu(session, wrap, x, y) {
+        this._closeTerminalContextMenu();
+        const p = this._getThemePalette();
+        const menu = document.createElement('div');
+        menu.id = 'ai-term-ctx-menu';
+        menu.style.cssText = `position:fixed; z-index:2147483600; min-width:210px; padding:4px; border-radius:8px; font-size:13px; background:${p.windowBg}; color:${p.headerText}; border:1px solid ${p.windowBorder}; box-shadow:0 8px 24px rgba(0,0,0,.4);`;
+        const sel = (() => { try { return session.term.getSelection(); } catch (_) { return ''; } })();
+        const win = wrap && wrap._termWin;
+        const items = [
+            { label: '🎨 套用主題與字型設定（這個終端機）', run: () => { this._applyTerminalAppearance(session); this._log('🎨 已套用Configure的終端機外觀設定'); } },
+            { label: '🎨 套用到全部終端機', run: () => { const n = this._applyTerminalAppearanceToAll(); this._log(`🎨 已把終端機外觀設定套用到 ${n} 個終端機`); } },
+            { sep: true },
+            { label: '📋 複製選取的文字', disabled: !sel, run: () => { try { navigator.clipboard.writeText(sel); } catch (_) {} } },
+            { label: '📥 貼上', run: async () => { try { const t = await navigator.clipboard.readText(); if (t) await this._handleTerminalInput(session, t); } catch (err) { this._log('⚠️ 無法讀取剪貼簿：' + String((err && err.message) || err)); } } },
+            { label: '🧹 清除畫面', run: () => { try { session.term.clear(); } catch (_) {} } },
+        ];
+        if (win) { items.push({ sep: true }); items.push({ label: win.windowed ? '⬇ 放回對話' : '🗗 視窗化', run: () => (win.windowed ? win.dock() : win.undock()) }); }
+        for (const it of items) {
+            if (it.sep) { const d = document.createElement('div'); d.style.cssText = 'height:1px; margin:4px 2px; background:rgba(127,127,127,.35);'; menu.appendChild(d); continue; }
+            const row = document.createElement('div');
+            row.textContent = it.label;
+            row.style.cssText = `padding:6px 10px; border-radius:5px; cursor:${it.disabled ? 'default' : 'pointer'}; white-space:nowrap; opacity:${it.disabled ? 0.4 : 1};`;
+            if (!it.disabled) {
+                row.addEventListener('mouseenter', () => { row.style.background = 'rgba(127,127,127,.25)'; });
+                row.addEventListener('mouseleave', () => { row.style.background = ''; });
+                row.addEventListener('click', (e) => { e.stopPropagation(); this._closeTerminalContextMenu(); it.run(); });
+            }
+            menu.appendChild(row);
+        }
+        document.body.appendChild(menu);
+        const w = menu.offsetWidth, h = menu.offsetHeight;
+        menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+        menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+        const off = (e) => { if (!menu.contains(e.target)) this._closeTerminalContextMenu(); };
+        const esc = (e) => { if (e.key === 'Escape') this._closeTerminalContextMenu(); };
+        document.addEventListener('pointerdown', off, true);
+        document.addEventListener('keydown', esc, true);
+        window.addEventListener('blur', () => this._closeTerminalContextMenu(), { once: true });
+        this._termCtxMenuCleanup = () => { document.removeEventListener('pointerdown', off, true); document.removeEventListener('keydown', esc, true); };
+    }
+    _closeTerminalContextMenu() {
+        if (this._termCtxMenuCleanup) { this._termCtxMenuCleanup(); this._termCtxMenuCleanup = null; }
+        const m = document.getElementById('ai-term-ctx-menu');
+        if (m) m.remove();
+    }
+
     // tw_stock_db客製: 2026-09-18使用者要求——「一個對話中的terminal要有
     // 資源管理」「避免產生無數多的terminal shell loop吃光畫面的資源」。
     // 直接查DOM（`.ai-terminal-embed`元素本身就存著`._terminalSession`，
@@ -20022,6 +20092,12 @@ ${sourceTool.handlerScript}
             msg: msg || null,
         };
         container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
+        session.refit = fitTermRows; // 套用字體大小/設定後重新量欄列用（見_applyTerminalAppearance）
+        container.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            if (session.activeProgram) return; // vim/less等全螢幕程式接管時不攔截
+            this._showTerminalContextMenu(session, container.parentElement, ev.clientX, ev.clientY);
+        });
 
         // tw_stock_db客製: xterm.js的Terminal本身沒有公開onFocus/onBlur
         // event（不像onData），改監聽term.textarea（xterm.js內部用來接收
@@ -36754,7 +36830,7 @@ ${existingNodeSummaries}
                             <div class="ai-advanced-pane hidden" data-pane="terminal">
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">/run-terminal 外觀</label>
-                                    <p class="ai-advanced-hint">下面的設定套用在下一次開啟/run-terminal終端機時（已經開啟的既有終端機不會即時變更外觀，避免正在互動時畫面突然重排）。</p>
+                                    <p class="ai-advanced-hint">下面的設定預設只套用在「下一次開啟」的/run-terminal終端機（避免正在互動時畫面突然重排）。要讓已經開著的終端機也套用，按下面的「套用到全部已開啟的終端機」，或在任一個終端機上按右鍵→「套用主題與字型設定」。</p>
                                     <label class="ai-advanced-label" for="ai-terminal-font-family" style="font-weight:normal;">字體</label>
                                     <input type="text" id="ai-terminal-font-family" class="ai-advanced-input" placeholder="monospace, monospace">
                                     <label class="ai-advanced-label" for="ai-terminal-font-size" style="font-weight:normal; margin-top:8px;">字體大小 (px)</label>
@@ -36776,6 +36852,10 @@ ${existingNodeSummaries}
                                         <option value="black-white">黑底白字</option>
                                         <option value="white-black">白底黑字</option>
                                     </select>
+                                    <div style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+                                        <button type="button" id="ai-terminal-apply-all-btn" class="ai-advanced-btn primary">🎨 套用到全部已開啟的終端機</button>
+                                        <span id="ai-terminal-apply-all-status" class="ai-advanced-hint" style="margin:0;"></span>
+                                    </div>
                                 </div>
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label">終端機資源管理</label>
@@ -39337,6 +39417,14 @@ ${existingNodeSummaries}
         const terminalThemeSelect = document.getElementById('ai-terminal-theme');
         if (terminalThemeSelect) {
             terminalThemeSelect.addEventListener('change', () => updateTerminalSetting({ theme: terminalThemeSelect.value }));
+        }
+        const terminalApplyAllBtn = document.getElementById('ai-terminal-apply-all-btn');
+        if (terminalApplyAllBtn) {
+            terminalApplyAllBtn.addEventListener('click', () => {
+                const n = this._applyTerminalAppearanceToAll();
+                const st = document.getElementById('ai-terminal-apply-all-status');
+                if (st) st.textContent = n ? `已套用到 ${n} 個終端機` : '目前沒有開著的終端機';
+            });
         }
         const terminalResourcePolicySelect = document.getElementById('ai-terminal-resource-policy');
         if (terminalResourcePolicySelect) {
