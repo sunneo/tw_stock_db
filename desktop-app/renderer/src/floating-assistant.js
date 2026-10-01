@@ -17100,6 +17100,9 @@ ${sourceTool.handlerScript}
         document.querySelectorAll('.ai-terminal-embed').forEach((el) => {
             el.style.borderColor = palette.windowBorder;
         });
+        document.querySelectorAll('.ai-terminal-windowed').forEach((el) => {
+            el.style.background = palette.windowBg; el.style.color = palette.headerText; el.style.borderColor = palette.windowBorder;
+        });
     }
 
     _ensureAdvancedStyles() {
@@ -22468,6 +22471,158 @@ ${sourceTool.handlerScript}
     // 刪除——遞迴複製/刪除資料夾的邊界案例（FAP的removeEntry({recursive})
     // 、沙盒fsStore有沒有rmdirSync、真實磁碟的巢狀覆蓋問題）超出這次需求
     // 範圍，資料夾在這個dialog裡只能點進去瀏覽，不能勾選。
+    // 2026-09-30使用者要求：終端機卡片右上角要有一個「視窗化」按鈕，視窗化之後可以全螢幕。
+    // 視窗化＝把整張終端機卡片（含xterm與session，狀態完全保留）搬到document.body，變成position:fixed的
+    // 浮動視窗：標題列可拖曳、右下角可調整大小（xterm會依容器大小自動重排欄列，見_mountTerminalWidget的
+    // fitTermRows）、「⛶ 全螢幕」鋪滿整個畫面（盡量用瀏覽器的Fullscreen API，不行就用視窗填滿）、
+    // 「⬇ 放回對話」搬回原本的位置。視窗化期間，對話裡原位置留一張小卡片（可以按鈕放回），
+    // 對話重繪（_renderSingleMessage走_liveWidgetCache的路徑）也會認得這個狀態，不會把終端機又拉回對話。
+    _setupTerminalWindowing(wrap, termEl) {
+        const slot = wrap.querySelector('.ai-terminal-win-slot');
+        const header = wrap.firstElementChild;
+        if (!slot || !header) return;
+        const origWrapCss = wrap.style.cssText;
+        const origEmbedCss = termEl.style.cssText;
+        const mk = (label, title) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = label; b.title = title;
+            b.style.cssText = 'border:none; background:rgba(127,127,127,0.25); color:inherit; cursor:pointer; font-size:12px; padding:3px 9px; border-radius:6px; white-space:nowrap;';
+            b.addEventListener('pointerdown', (e) => e.stopPropagation());
+            return b;
+        };
+        const winBtn = mk('🗗 視窗化', '彈出成浮動視窗（可拖曳、調整大小、全螢幕）');
+        const fsBtn = mk('⛶ 全螢幕', '全螢幕（再按一次或按Esc還原）');
+        fsBtn.style.display = 'none';
+        slot.append(fsBtn, winBtn);
+
+        const st = { windowed: false, full: false, rect: null, handle: null };
+        wrap._termWin = st;
+        const focusTerm = () => { const s = termEl._terminalSession; if (s && s.term) setTimeout(() => { try { s.term.focus(); } catch (_) {} }, 60); };
+        const applyRect = () => {
+            const r = st.rect;
+            wrap.style.left = `${r.x}px`; wrap.style.top = `${r.y}px`; wrap.style.width = `${r.w}px`; wrap.style.height = `${r.h}px`;
+        };
+        const clampRect = () => {
+            const r = st.rect, vw = window.innerWidth, vh = window.innerHeight;
+            r.w = Math.max(360, Math.min(r.w, vw)); r.h = Math.max(200, Math.min(r.h, vh));
+            r.x = Math.max(-r.w + 120, Math.min(r.x, vw - 120)); r.y = Math.max(0, Math.min(r.y, vh - 40)); // 標題列永遠留在畫面內，才拉得回來
+        };
+        const windowStyle = () => {
+            const p = this._getThemePalette();
+            wrap.className = (wrap.className + ' ai-terminal-windowed').trim();
+            wrap.style.cssText = `position:fixed; margin:0; max-width:none; z-index:${++window._faTermZ}; display:flex; flex-direction:column; box-sizing:border-box; padding:8px 10px 10px; background:${p.windowBg}; color:${p.headerText}; border:1px solid ${p.windowBorder}; border-radius:10px; box-shadow:0 12px 40px rgba(0,0,0,0.5);`;
+            termEl.style.cssText = `${origEmbedCss}; flex:1; height:auto; min-height:80px;`;
+            header.style.cursor = 'move'; header.style.userSelect = 'none';
+            applyRect();
+        };
+        const makePlaceholder = () => {
+            const ph = document.createElement('div');
+            ph.className = 'ai-terminal-placeholder';
+            ph.style.cssText = 'margin-bottom:12px; max-width:95%; padding:8px 12px; border:1px dashed rgba(127,127,127,0.6); border-radius:8px; font-size:12px; display:flex; align-items:center; gap:10px;';
+            const label = document.createElement('span'); label.textContent = '🖥️ 終端機已彈出成視窗';
+            const back = mk('⬇ 放回對話', '把終端機放回這裡'); back.addEventListener('click', () => dock());
+            const raise = mk('顯示視窗', '把視窗拉到最上層'); raise.addEventListener('click', () => { wrap.style.zIndex = ++window._faTermZ; focusTerm(); });
+            ph.append(label, raise, back);
+            wrap._termPlaceholder = ph;
+            return ph;
+        };
+        st.makePlaceholder = makePlaceholder;
+
+        const exitFull = () => {
+            if (!st.full) return;
+            st.full = false;
+            if (document.fullscreenElement === wrap) { try { document.exitFullscreen(); } catch (_) {} }
+            wrap.style.borderRadius = '10px';
+            applyRect();
+            fsBtn.textContent = '⛶ 全螢幕';
+            if (st.handle) st.handle.style.display = 'block';
+            focusTerm();
+        };
+        const enterFull = () => {
+            if (!st.windowed || st.full) return;
+            st.full = true; st._apiFullSeen = false;
+            wrap.style.left = '0px'; wrap.style.top = '0px'; wrap.style.width = '100vw'; wrap.style.height = '100vh'; wrap.style.borderRadius = '0';
+            fsBtn.textContent = '🗗 還原視窗';
+            if (st.handle) st.handle.style.display = 'none';
+            try { const p = wrap.requestFullscreen && wrap.requestFullscreen(); if (p && p.catch) p.catch(() => {}); } catch (_) { /* 不支援Fullscreen API就維持視窗填滿 */ }
+            focusTerm();
+        };
+        const toggleFull = () => (st.full ? exitFull() : enterFull());
+        // 使用者在API全螢幕裡按Esc：瀏覽器自己退出全螢幕，這裡跟著把視窗還原
+        document.addEventListener('fullscreenchange', () => {
+            if (document.fullscreenElement === wrap) { st._apiFullSeen = true; return; }
+            if (st.full && st._apiFullSeen) exitFull();
+            st._apiFullSeen = false;
+        });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && st.full && !document.fullscreenElement) exitFull(); });
+
+        const undock = () => {
+            if (st.windowed) return;
+            const ph = makePlaceholder();
+            if (wrap.parentNode) wrap.parentNode.insertBefore(ph, wrap);
+            const vw = window.innerWidth, vh = window.innerHeight;
+            const w = Math.min(900, vw - 40), h = Math.min(560, vh - 60);
+            st.rect = { x: Math.max(10, Math.round((vw - w) / 2)), y: Math.max(10, Math.round((vh - h) / 2)), w, h };
+            window._faTermZ = window._faTermZ || 2147482000;
+            st.windowed = true;
+            document.body.appendChild(wrap);
+            windowStyle();
+            // 右下角縮放把手
+            const handle = document.createElement('div');
+            handle.title = '拖曳調整大小';
+            handle.style.cssText = 'position:absolute; right:2px; bottom:2px; width:18px; height:18px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, rgba(127,127,127,0.7) 50%, rgba(127,127,127,0.7) 58%, transparent 58%, transparent 72%, rgba(127,127,127,0.7) 72%, rgba(127,127,127,0.7) 80%, transparent 80%); z-index:2;';
+            wrap.appendChild(handle);
+            st.handle = handle;
+            handle.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+                const sx = e.clientX, sy = e.clientY, sw = st.rect.w, sh = st.rect.h;
+                const move = (ev) => { st.rect.w = sw + ev.clientX - sx; st.rect.h = sh + ev.clientY - sy; clampRect(); applyRect(); };
+                const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up); };
+                handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+            });
+            winBtn.textContent = '⬇ 放回對話'; winBtn.title = '放回對話裡原本的位置';
+            fsBtn.style.display = '';
+            focusTerm();
+        };
+        const dock = () => {
+            if (!st.windowed) return;
+            exitFull();
+            st.windowed = false;
+            if (st.handle) { st.handle.remove(); st.handle = null; }
+            wrap.className = wrap.className.replace(/\bai-terminal-windowed\b/, '').trim();
+            wrap.style.cssText = origWrapCss;
+            termEl.style.cssText = origEmbedCss;
+            header.style.cursor = ''; header.style.userSelect = '';
+            const ph = wrap._termPlaceholder;
+            if (ph && ph.isConnected) ph.replaceWith(wrap);
+            else { const body = document.getElementById('ai-chat-body'); if (body) body.appendChild(wrap); }
+            wrap._termPlaceholder = null;
+            winBtn.textContent = '🗗 視窗化'; winBtn.title = '彈出成浮動視窗（可拖曳、調整大小、全螢幕）';
+            fsBtn.style.display = 'none';
+            // 重新量一次欄列（容器大小變了）
+            window.dispatchEvent(new Event('resize'));
+            focusTerm();
+        };
+        winBtn.addEventListener('click', () => (st.windowed ? dock() : undock()));
+        fsBtn.addEventListener('click', toggleFull);
+
+        // 標題列拖曳移動（視窗化時）；雙擊標題列＝全螢幕/還原
+        header.addEventListener('pointerdown', (e) => {
+            if (!st.windowed || st.full || e.button !== 0) return;
+            wrap.style.zIndex = ++window._faTermZ;
+            const sx = e.clientX, sy = e.clientY, ox = st.rect.x, oy = st.rect.y;
+            try { header.setPointerCapture(e.pointerId); } catch (_) {}
+            const move = (ev) => { st.rect.x = ox + ev.clientX - sx; st.rect.y = oy + ev.clientY - sy; clampRect(); applyRect(); };
+            const up = () => { header.removeEventListener('pointermove', move); header.removeEventListener('pointerup', up); header.removeEventListener('pointercancel', up); };
+            header.addEventListener('pointermove', move); header.addEventListener('pointerup', up); header.addEventListener('pointercancel', up);
+        });
+        header.addEventListener('dblclick', (e) => { if (st.windowed && !(e.target.closest && e.target.closest('button'))) toggleFull(); });
+        wrap.addEventListener('pointerdown', () => { if (st.windowed) wrap.style.zIndex = ++window._faTermZ; }, true);
+        window.addEventListener('resize', () => { if (st.windowed && !st.full) { clampRect(); applyRect(); } });
+        st.undock = undock; st.dock = dock; st.toggleFull = toggleFull;
+    }
+
     _appendTerminalTransferButton(container, getSessionFn) {
         if (!container) return;
         const btn = document.createElement('button');
@@ -37429,6 +37584,7 @@ ${existingNodeSummaries}
         if (msg._displayTerminal) {
             if (this._liveWidgetCache.has(msg)) {
                 const cachedWrap = this._liveWidgetCache.get(msg);
+                if (cachedWrap._termWin && cachedWrap._termWin.windowed) { container.appendChild(cachedWrap._termWin.makePlaceholder()); return; }
                 container.appendChild(cachedWrap);
                 const cachedEmbed = cachedWrap.querySelector('.ai-terminal-embed');
                 if (cachedEmbed) cachedEmbed.style.borderColor = palette.windowBorder;
@@ -37446,6 +37602,7 @@ ${existingNodeSummaries}
                     <div style="display:flex; align-items:center; gap:4px;">
                         <div class="ai-terminal-transfer-slot"></div>
                         <div class="ai-terminal-export-slot"></div>
+                        <div class="ai-terminal-win-slot" style="display:flex; gap:4px;"></div>
                     </div>
                 </div>
                 <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:480px; border:1px solid ${palette.windowBorder};"></div>
@@ -37474,6 +37631,7 @@ ${existingNodeSummaries}
             // 可能還沒建立好session，點擊當下才讀terminalEmbedEl._terminalSession
             // 一定已經掛載完成。
             this._appendTerminalTransferButton(wrap.querySelector('.ai-terminal-transfer-slot'), () => terminalEmbedEl._terminalSession);
+            this._setupTerminalWindowing(wrap, terminalEmbedEl);
             this._mountTerminalWidget(terminalEmbedEl, msg._displayTerminal.initialCommand, msg);
             return;
         }
