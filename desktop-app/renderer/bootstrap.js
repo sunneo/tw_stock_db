@@ -1477,7 +1477,7 @@ function patchCloudflareWording(root) {
       "fs_read_file", "fs_list_files", "fs_find_file", "fs_grep", "fs_stat",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "run_command", "browser_search", "fetch_web_page",
-      "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
+      "repo_map", "repo_wiki", "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
     ],
     systemPrompt: fa._buildCodingSystemPrompt(Object.assign({}, codingEnv, { publishMode: fa.advancedSettings.codingPublishMode === "auto" ? "auto" : "ask" })),
   });
@@ -1698,7 +1698,7 @@ function patchCloudflareWording(root) {
     "tmux_start_session", "tmux_send_keys", "tmux_capture_pane", "tmux_list_sessions", "tmux_kill_session",
     "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
     "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
-    "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
+    "repo_map", "repo_wiki", "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
   // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——

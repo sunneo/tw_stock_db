@@ -956,6 +956,8 @@ function _faBuildCodingSystemPrompt(env = {}) {
 
 **步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；前端加後端一起測用sandbox_mock（頁面照常寫fetch/WebSocket，沙盒接到持久儲存的模擬伺服器，頁面不用為了測試改、之後可export成Node/Cloudflare部署檔）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
 
+**步驟0：先追出專案結構（有專案／repository時）**：用repo_map——使用者只給模糊名稱（例如「登入那段」「那個設定檔」）、你不知道原始碼在哪時，直接repo_map({"action":"find","root":"專案參照","query":"關鍵字"})，它會自動分階段建立地圖並找出候選；找到後用explore沿依賴逐步往外看（它引用誰、定義了什麼），不要整個專案逐檔讀。**讀檔案回報「找不到檔案」或路徑不存在，就是專案結構改變了：用repo_map resolve從最近還存在的那一層重新追，不要猜路徑。**想要整份專案的索引與查詢頁面，用repo_wiki generate（需要整份索引時repo_map build_index會先問使用者）。
+
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
 ## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
 ## 需求分析（使用者實際要什麼、有沒有隱含限制）
@@ -1451,7 +1453,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -1491,7 +1493,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     research: {
         enabled: true,
         label: '研究／程式碼與檔案分析（唯讀，不修改/不執行）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'repo_map', 'repo_wiki', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
         systemPrompt: '你是一個專門做「研究/分析」的子任務助理——讀懂一批檔案（原始碼、文件、設定檔）並產出理解/報告，刻意不給任何寫入/執行類工具（不能寫入File Access Point、不能執行程式）。**收到任務的第一件事：判斷使用者真正想要的是「修改/實作」還是「分析/理解」**。如果任務明顯是要新增功能、修bug、改程式碼、寫新檔案，那不是這個domain該做的事——直接在回應裡明確指出「這個任務需要實際修改/執行，不是單純分析」，讓委派端知道應該改委派給有寫入能力的domain（File Access Point用file_access_points，桌面版真實磁碟用desktop_ops），不要自己勉強上，也不要因為手上沒有寫入工具就直接放棄不回答。如果任務是要看懂/摘要/抓出設計脈絡/找出可能的問題點，才是這個domain的範圍：先用list_file_access_points/fap_list_files摸清楚有哪些檔案跟目錄結構，再用fap_read_file/fap_find_file實際讀取內容——大檔案改用summarize_large_text，不要自己手動分段閱讀；使用者上傳的檔案用list_uploaded_files/parse_uploaded_file。花時間多讀、多思考再給出有條理的分析結論，不要只憑檔名/目錄結構猜測內容、也不要看了一兩個檔案就倉促下結論。',
     },
     drawing: {
@@ -1677,7 +1679,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // ============================================================
 const FA_PROG_COMMON_TOOLS = [
     'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app',
-    'list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
+    'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
     'git_inspect', 'git_commit', 'coding_run_check', 'coding_run_tests',
     'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'browser_search', 'fetch_web_page',
 ];
@@ -1857,6 +1859,359 @@ const FA_SANDBOX_BOOTSTRAP_JS = [
     'try{parent.postMessage({__fa_ready:1},"*");}catch(e){}',
     '})();',
 ].join('\n');
+
+
+// 2026-10-02：專案結構追蹤（repo_map）與專案索引百科（repo_wiki）的純函式部分（不碰檔案系統，方便單獨測試）。
+// 資料流：目錄清單→（分階段）讀檔案→抽出 import／符號定義→解析成「檔案→檔案」依賴邊。
+const FA_REPOMAP_IGNORE_DIRS = new Set(['.git', '.hg', '.svn', 'node_modules', '.floating-assistant', '__pycache__', '.venv', 'venv', 'env', 'dist', 'build', 'out', '.idea', '.vscode', 'target', '.next', '.nuxt', '.cache', 'coverage', '.gradle', 'Pods', 'obj', '.tox', '.mypy_cache', '.pytest_cache', 'vendor', 'bower_components', '.terraform', 'site-packages']);
+const FA_REPOMAP_LANG = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'js', ts: 'ts', tsx: 'ts', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'kt', kts: 'kt', c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', cs: 'cs', rb: 'rb', php: 'php', sh: 'sh', bash: 'sh', swift: 'swift', dart: 'dart', lua: 'lua' };
+const FA_REPOMAP_MANIFESTS = ['package.json', 'pyproject.toml', 'setup.py', 'setup.cfg', 'requirements.txt', 'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'CMakeLists.txt', 'Makefile', 'composer.json', 'Gemfile', 'README.md', 'README.rst', 'README'];
+const FA_REPOMAP_ENTRY_NAMES = /^(main|index|app|server|cli|__main__|manage|program|startup|bootstrap|run|start)\.[a-z]+$/i;
+
+function _faRepoExt(p) { const m = /\.([A-Za-z0-9]+)$/.exec(String(p || '')); return m ? m[1].toLowerCase() : ''; }
+function _faRepoLang(p) { return FA_REPOMAP_LANG[_faRepoExt(p)] || ''; }
+function _faRepoDirname(p) { const i = String(p).lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i); }
+function _faRepoBasename(p) { const i = String(p).lastIndexOf('/'); return i < 0 ? p : p.slice(i + 1); }
+function _faRepoJoin(dir, rel) {
+    const parts = (dir ? dir.split('/') : []).concat(String(rel).split('/'));
+    const out = [];
+    for (const seg of parts) {
+        if (!seg || seg === '.') continue;
+        if (seg === '..') { if (!out.length) return null; out.pop(); } else out.push(seg);
+    }
+    return out.join('/');
+}
+function _faRepoHash(text) { let h = 5381; for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + ':' + text.length; }
+function _faRepoTokens(s) {
+    return Array.from(new Set(String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((t) => t.length >= 2)));
+}
+
+// 從一個檔案的文字抽出 import／符號定義／開頭說明
+function _faRepoExtract(path, text) {
+    const lang = _faRepoLang(path);
+    const lines = String(text || '').split(/\r?\n/);
+    const imports = [];
+    const symbols = [];
+    const seenImp = new Set();
+    const addImp = (spec, kind) => { spec = String(spec || '').trim(); if (!spec || seenImp.has(spec)) return; seenImp.add(spec); imports.push({ spec, kind: kind || 'pkg' }); };
+    const addSym = (n, k, l) => { if (n && symbols.length < 400) symbols.push({ n, k, l, sig: lines[l - 1].trim().slice(0, 140) }); };
+    const reserved = /^(if|for|while|switch|catch|function|return|else|do|try|with|await|new|typeof|delete|void|throw|constructor)$/;
+    const src = String(text || '');
+    if (lang === 'js' || lang === 'ts') {
+        let m;
+        const re1 = /\b(?:import|export)\s+(?:type\s+)?(?:[^'";()]*?\sfrom\s+)?['"]([^'"\n]+)['"]/g;
+        while ((m = re1.exec(src))) addImp(m[1], /^[./]/.test(m[1]) ? 'rel' : (/^[@~]\//.test(m[1]) ? 'alias' : 'pkg'));
+        const re2 = /\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g;
+        while ((m = re2.exec(src))) addImp(m[1], /^[./]/.test(m[1]) ? 'rel' : 'pkg');
+        const re3 = /\bimport\(\s*['"]([^'"\n]+)['"]\s*\)/g;
+        while ((m = re3.exec(src))) addImp(m[1], /^[./]/.test(m[1]) ? 'rel' : 'pkg');
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(ln))) addSym(q[1], 'function', i + 1);
+            else if ((q = /^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/.exec(ln))) addSym(q[1], 'class', i + 1);
+            else if ((q = /^\s*(?:export\s+)?(?:declare\s+)?(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(ln))) addSym(q[1], 'type', i + 1);
+            else if ((q = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.exec(ln))) addSym(q[1], 'function', i + 1);
+            else if ((q = /^\s*(?:export\s+)?const\s+([A-Z][A-Z0-9_]{2,})\s*=/.exec(ln))) addSym(q[1], 'const', i + 1);
+            else if ((q = /^\s{2,}(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[\w<>\[\]|., ]+)?\s*\{\s*$/.exec(ln)) && !reserved.test(q[1])) addSym(q[1], 'method', i + 1);
+        });
+    } else if (lang === 'py') {
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^\s*from\s+(\.*[\w.]*)\s+import\s/.exec(ln))) addImp(q[1], /^\./.test(q[1]) ? 'rel' : 'mod');
+            else if ((q = /^\s*import\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)\s*$/.exec(ln))) q[1].split(',').forEach((x) => addImp(x.trim().split(/\s+as\s+/)[0], 'mod'));
+            if ((q = /^(\s*)(?:async\s+)?def\s+(\w+)/.exec(ln))) addSym(q[2], q[1].length ? 'method' : 'function', i + 1);
+            else if ((q = /^\s*class\s+(\w+)/.exec(ln))) addSym(q[1], 'class', i + 1);
+        });
+    } else if (lang === 'go') {
+        let m;
+        const blk = /\bimport\s*\(([\s\S]*?)\)/g;
+        while ((m = blk.exec(src))) m[1].split('\n').forEach((l) => { const q = /"([^"]+)"/.exec(l); if (q) addImp(q[1], 'pkg'); });
+        const one = /^\s*import\s+(?:\w+\s+)?"([^"]+)"/gm;
+        while ((m = one.exec(src))) addImp(m[1], 'pkg');
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^func\s+(?:\([^)]*\)\s*)?(\w+)/.exec(ln))) addSym(q[1], /^func\s+\(/.test(ln) ? 'method' : 'function', i + 1);
+            else if ((q = /^type\s+(\w+)\s+(struct|interface)/.exec(ln))) addSym(q[1], q[2], i + 1);
+        });
+    } else if (lang === 'rs') {
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/.exec(ln))) { addImp('mod:' + q[1], 'rel'); addSym(q[1], 'module', i + 1); }
+            else if ((q = /^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+((?:crate|self|super)(?:::\w+)+)/.exec(ln))) addImp(q[1], 'rel');
+            else if ((q = /^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(\w+)/.exec(ln))) addImp(q[1], 'pkg');
+            if ((q = /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)/.exec(ln))) addSym(q[1], 'function', i + 1);
+            else if ((q = /^\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait|type)\s+(\w+)/.exec(ln))) addSym(q[2], q[1], i + 1);
+        });
+    } else if (lang === 'java' || lang === 'kt' || lang === 'cs' || lang === 'swift' || lang === 'dart') {
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^\s*import\s+(?:static\s+)?([\w.]+)\s*;?\s*$/.exec(ln))) addImp(q[1], 'mod');
+            else if ((q = /^\s*using\s+([\w.]+)\s*;/.exec(ln))) addImp(q[1], 'mod');
+            else if (lang === 'dart' && (q = /^\s*import\s+'([^']+)'/.exec(ln))) addImp(q[1], /^package:|^dart:/.test(q[1]) ? 'pkg' : 'rel');
+            if ((q = /\b(class|interface|enum|record|object|struct|protocol|trait)\s+(\w+)/.exec(ln)) && !/^\s*(\/\/|\*|#)/.test(ln)) addSym(q[2], q[1], i + 1);
+            else if (lang === 'kt' && (q = /\bfun\s+(?:<[^>]+>\s*)?(?:[\w.]+\.)?(\w+)/.exec(ln))) addSym(q[1], 'function', i + 1);
+            else if (lang === 'swift' && (q = /\bfunc\s+(\w+)/.exec(ln))) addSym(q[1], 'function', i + 1);
+            else if (lang === 'java' && (q = /^\s*(?:(?:public|private|protected|static|final|abstract|synchronized)\s+)+[\w<>\[\], ?]+\s+(\w+)\s*\([^;]*\)\s*(?:throws [\w, .]+)?\{?\s*$/.exec(ln)) && !reserved.test(q[1])) addSym(q[1], 'method', i + 1);
+        });
+    } else if (lang === 'c' || lang === 'cpp') {
+        lines.forEach((ln, i) => {
+            let q;
+            if ((q = /^\s*#\s*include\s+"([^"]+)"/.exec(ln))) addImp(q[1], 'rel');
+            else if ((q = /^\s*#\s*include\s+<([^>]+)>/.exec(ln))) addImp(q[1], 'pkg');
+            else if ((q = /^\s*(?:typedef\s+)?(struct|class|enum|union)\s+(\w+)/.exec(ln))) addSym(q[2], q[1], i + 1);
+            else if ((q = /^(?:static\s+|inline\s+|extern\s+|virtual\s+)*[A-Za-z_][\w:<>*&\s]*?[\s*&]+(\w+)\s*\([^;{]*\)\s*(?:const\s*)?(?:\{|$)/.exec(ln)) && !reserved.test(q[1]) && !/^\s/.test(ln)) addSym(q[1], 'function', i + 1);
+            else if ((q = /^\s*#\s*define\s+(\w+)/.exec(ln))) addSym(q[1], 'macro', i + 1);
+        });
+    } else if (lang === 'rb' || lang === 'php' || lang === 'sh' || lang === 'lua') {
+        lines.forEach((ln, i) => {
+            let q;
+            if (lang === 'rb') {
+                if ((q = /^\s*require_relative\s+['"]([^'"]+)['"]/.exec(ln))) addImp(q[1], 'rel');
+                else if ((q = /^\s*require\s+['"]([^'"]+)['"]/.exec(ln))) addImp(q[1], 'pkg');
+                if ((q = /^\s*def\s+(?:self\.)?(\w+[?!]?)/.exec(ln))) addSym(q[1], 'function', i + 1);
+                else if ((q = /^\s*(class|module)\s+([\w:]+)/.exec(ln))) addSym(q[2], q[1], i + 1);
+            } else if (lang === 'php') {
+                if ((q = /^\s*(?:require|include)(?:_once)?\s*\(?\s*['"]([^'"]+)['"]/.exec(ln))) addImp(q[1], /^[./]/.test(q[1]) ? 'rel' : 'pkg');
+                if ((q = /\bfunction\s+(\w+)/.exec(ln))) addSym(q[1], 'function', i + 1);
+                else if ((q = /^\s*(?:abstract\s+|final\s+)?(class|interface|trait)\s+(\w+)/.exec(ln))) addSym(q[2], q[1], i + 1);
+            } else if (lang === 'sh') {
+                if ((q = /^\s*(?:source|\.)\s+(\S+)/.exec(ln))) addImp(q[1].replace(/^["']|["']$/g, ''), 'rel');
+                if ((q = /^\s*(?:function\s+)?(\w+)\s*\(\)\s*\{?/.exec(ln))) addSym(q[1], 'function', i + 1);
+            } else if (lang === 'lua') {
+                if ((q = /\brequire\s*\(?\s*['"]([^'"]+)['"]/.exec(ln))) addImp(q[1], 'mod');
+                if ((q = /^\s*(?:local\s+)?function\s+([\w.:]+)/.exec(ln))) addSym(q[1], 'function', i + 1);
+            }
+        });
+    }
+    let doc = '';
+    const hashLang = lang === 'py' || lang === 'sh' || lang === 'rb' || lang === 'php';
+    const cmtRe = hashLang ? /^(?:#+|"""|''')\s*(.*)$/ : (lang === 'lua' ? /^--+\s*(.*)$/ : /^(?:\/\/+|\*+|\/\*+)\s*(.*)$/);
+    for (let i = 0; i < Math.min(lines.length, 40); i++) {
+        const t = lines[i].trim();
+        if (!t || /^#!/.test(t) || /^(['"]use strict['"];?|\/\*+|\*\/)$/.test(t)) continue;
+        const c = cmtRe.exec(t);
+        if (c && c[1] && !/^(eslint|tslint|-\*-|noqa|pylint|@ts-|copyright|license)/i.test(c[1])) { doc += (doc ? ' ' : '') + c[1].replace(/\*\/\s*$/, '').replace(/("""|''')\s*$/, '').trim(); if (doc.length > 160) break; } else if (doc) break; else if (!c) break;
+    }
+    return { lang, imports, symbols, doc: doc.slice(0, 200), lines: lines.length };
+}
+
+// 依語言產生「這個import可能指到哪些檔案/資料夾」的候選路徑（由呼叫端用目錄清單確認是否存在）
+function _faRepoResolveCandidates(fromPath, imp, lang) {
+    const dir = _faRepoDirname(fromPath);
+    const spec = imp.spec;
+    const out = [];
+    const push = (p) => { if (p && out.indexOf(p) < 0) out.push(p); };
+    if (lang === 'js' || lang === 'ts') {
+        let bases = [];
+        if (/^[./]/.test(spec)) bases = [_faRepoJoin(dir, spec)];
+        else if (/^[@~]\//.test(spec)) { const rest = spec.slice(2); bases = [_faRepoJoin('src', rest), _faRepoJoin('', rest), _faRepoJoin('app', rest)]; }
+        for (const b of bases) {
+            if (!b) continue;
+            push(b);
+            if (/\.(js|jsx|mjs|cjs)$/.test(b)) { push(b.replace(/\.(js|jsx|mjs|cjs)$/, '.ts')); push(b.replace(/\.(js|jsx|mjs|cjs)$/, '.tsx')); }
+            else if (!/\.(ts|tsx|json|css|scss|svg|png|html)$/.test(b)) for (const e of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.d.ts']) push(b + e);
+            for (const e of ['.ts', '.tsx', '.js', '.jsx', '.mjs']) push(b + '/index' + e);
+        }
+    } else if (lang === 'py') {
+        if (/^\./.test(spec)) {
+            const dots = /^\.+/.exec(spec)[0].length;
+            let base = dir;
+            for (let i = 1; i < dots; i++) base = _faRepoDirname(base);
+            const rest = spec.slice(dots).replace(/\./g, '/');
+            const b = rest ? _faRepoJoin(base, rest) : base;
+            push(b + '.py'); push(b ? b + '/__init__.py' : '__init__.py');
+        } else {
+            const rest = spec.replace(/\./g, '/');
+            for (const root of ['', 'src', dir]) {
+                const b = _faRepoJoin(root, rest);
+                if (b) { push(b + '.py'); push(b + '/__init__.py'); }
+            }
+        }
+    } else if (lang === 'c' || lang === 'cpp') {
+        for (const root of [dir, '', 'include', 'src']) { const b = _faRepoJoin(root, spec); if (b) push(b); }
+    } else if (lang === 'rs') {
+        if (/^mod:/.test(spec)) { const n = spec.slice(4); push(_faRepoJoin(dir, n + '.rs')); push(_faRepoJoin(dir, n + '/mod.rs')); const base = _faRepoBasename(fromPath); if (base !== 'mod.rs' && base !== 'main.rs' && base !== 'lib.rs') push(_faRepoJoin(dir, base.replace(/\.rs$/, '') + '/' + n + '.rs')); }
+        else {
+            const segs = spec.split('::').slice(1);
+            const rootDir = (spec.startsWith('crate') ? (fromPath.indexOf('src/') >= 0 ? fromPath.slice(0, fromPath.indexOf('src/') + 3) : 'src') : (spec.startsWith('super') ? _faRepoDirname(dir) : dir));
+            for (let n = segs.length; n >= 1; n--) { const b = _faRepoJoin(rootDir, segs.slice(0, n).join('/')); if (b) { push(b + '.rs'); push(b + '/mod.rs'); } }
+        }
+    } else if (lang === 'java' || lang === 'kt' || lang === 'cs') {
+        const rest = spec.replace(/\./g, '/');
+        const ext = lang === 'java' ? '.java' : (lang === 'kt' ? '.kt' : '.cs');
+        for (const root of ['', 'src', 'src/main/java', 'src/main/kotlin', 'app/src/main/java', 'app/src/main/kotlin']) { const b = _faRepoJoin(root, rest); if (b) push(b + ext); }
+    } else if (lang === 'go') {
+        const segs = spec.split('/');
+        for (let n = Math.min(3, segs.length); n >= 1; n--) { const b = segs.slice(-n).join('/'); push(b); push('internal/' + b); push('pkg/' + b); }
+    } else if (lang === 'rb' || lang === 'sh' || lang === 'php' || lang === 'dart') {
+        if (imp.kind === 'rel' || /^[./]/.test(spec)) { const b = _faRepoJoin(dir, spec); if (b) { push(b); push(b + '.' + _faRepoExt(fromPath)); if (lang === 'dart') push(b); } }
+    }
+    return out;
+}
+
+// 解析 package.json／pyproject.toml／go.mod／Cargo.toml 等，抽出專案名稱、依賴、腳本
+function _faRepoParseManifest(name, text) {
+    const t = String(text || '');
+    const out = { file: name };
+    try {
+        if (name === 'package.json') {
+            const j = JSON.parse(t);
+            out.name = j.name; out.version = j.version; out.main = j.main || j.module; out.bin = typeof j.bin === 'string' ? j.bin : (j.bin ? Object.values(j.bin).join(', ') : undefined);
+            out.scripts = Object.keys(j.scripts || {}).slice(0, 15);
+            out.deps = Object.keys(Object.assign({}, j.dependencies, j.devDependencies)).slice(0, 60);
+            out.workspaces = Array.isArray(j.workspaces) ? j.workspaces : (j.workspaces && j.workspaces.packages) || undefined;
+        } else if (name === 'composer.json') {
+            const j = JSON.parse(t); out.name = j.name; out.deps = Object.keys(j.require || {}).slice(0, 40);
+        } else if (name === 'pyproject.toml') {
+            const n = /^\s*name\s*=\s*["']([^"']+)["']/m.exec(t); if (n) out.name = n[1];
+            const d = /dependencies\s*=\s*\[([\s\S]*?)\]/.exec(t); if (d) out.deps = (d[1].match(/["']([A-Za-z0-9_.\-]+)/g) || []).map((x) => x.slice(1)).slice(0, 40);
+            const sc = /\[project\.scripts\]([\s\S]*?)(?:\n\[|$)/.exec(t); if (sc) out.scripts = (sc[1].match(/^\s*([\w\-]+)\s*=/gm) || []).map((x) => x.replace(/[\s=]/g, ''));
+        } else if (name === 'setup.py' || name === 'setup.cfg') {
+            const n = /name\s*=\s*["']?([\w.\-]+)/.exec(t); if (n) out.name = n[1];
+        } else if (name === 'requirements.txt') {
+            out.deps = t.split(/\r?\n/).map((l) => l.trim().split(/[<>=!~\[; ]/)[0]).filter((l) => l && !l.startsWith('#') && !l.startsWith('-')).slice(0, 60);
+        } else if (name === 'go.mod') {
+            const m = /^module\s+(\S+)/m.exec(t); if (m) out.name = m[1];
+            out.deps = (t.match(/^\s+([\w.\-\/]+)\s+v[\w.\-+]+/gm) || []).map((x) => x.trim().split(/\s+/)[0]).slice(0, 40);
+        } else if (name === 'Cargo.toml') {
+            const n = /^\s*name\s*=\s*["']([^"']+)["']/m.exec(t); if (n) out.name = n[1];
+            const d = /\[dependencies\]([\s\S]*?)(?:\n\[|$)/.exec(t); if (d) out.deps = (d[1].match(/^\s*([\w\-]+)\s*=/gm) || []).map((x) => x.replace(/[\s=]/g, '')).slice(0, 40);
+        } else if (name === 'pom.xml') {
+            const n = /<artifactId>([^<]+)<\/artifactId>/.exec(t); if (n) out.name = n[1];
+            out.deps = (t.match(/<artifactId>[^<]+<\/artifactId>/g) || []).map((x) => x.replace(/<\/?artifactId>/g, '')).slice(1, 40);
+        } else if (/^build\.gradle/.test(name)) {
+            out.deps = (t.match(/(?:implementation|api|compile)\s*\(?\s*['"]([^'"]+)['"]/g) || []).map((x) => /['"]([^'"]+)/.exec(x)[1]).slice(0, 40);
+        } else if (name === 'CMakeLists.txt') {
+            const n = /project\s*\(\s*(\w+)/i.exec(t); if (n) out.name = n[1];
+        } else if (name === 'Makefile') {
+            out.scripts = (t.match(/^([A-Za-z][\w\-]*)\s*:(?!=)/gm) || []).map((x) => x.replace(':', '')).slice(0, 15);
+        } else if (/^README/i.test(name)) {
+            out.summary = t.replace(/^#+\s*/gm, '').split(/\r?\n/).filter((l) => l.trim()).slice(0, 3).join(' ').slice(0, 240);
+        }
+    } catch (e) { out.parse_error = String(e.message || e).slice(0, 80); }
+    return out;
+}
+
+// repo_wiki產生的單檔查詢頁面（資料內嵌，不需要網路）。__DATA__會被換成索引JSON。
+const FA_REPOWIKI_HTML = `<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>專案百科</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;display:flex;height:100vh}
+#side{width:340px;max-width:42vw;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf)}
+#q{margin:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}
+#tabs{display:flex;gap:4px;padding:0 10px 8px}#tabs button{flex:1;padding:5px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}
+#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}
+#list{flex:1;overflow:auto;padding:0 6px 12px}
+#list a,#list summary{display:block;padding:3px 8px;border-radius:5px;color:var(--fg);text-decoration:none;cursor:pointer;word-break:break-all}
+#list a:hover,#list summary:hover{background:var(--bd)}#list .k{color:var(--mut);font-size:12px;margin-left:6px}
+#list details>div{margin-left:12px}
+#main{flex:1;overflow:auto;padding:18px 26px 60px}
+h1{font-size:20px;margin:0 0 6px;word-break:break-all}h2{font-size:15px;margin:20px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}
+.mut{color:var(--mut)}code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:4px 0}
+a.l{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top}
+.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}
+.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}
+@media (max-width:720px){body{flex-direction:column}#side{width:100%;max-width:none;height:46vh}}
+</style></head><body>
+<div id="side"><input id="q" placeholder="搜尋檔案、函式、類別、名詞…" autofocus>
+<div id="tabs"><button data-t="tree" class="on">結構</button><button data-t="syms">定義</button><button data-t="terms">名詞</button></div>
+<div id="list"></div></div>
+<div id="main"></div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function(){
+var D=JSON.parse(document.getElementById('data').textContent);
+var $=function(s){return document.querySelector(s)};
+var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+var fileMap={};D.files.forEach(function(f){fileMap[f.path]=f});
+var dirMap={};D.dirs.forEach(function(d){dirMap[d.path]=d});
+var syms=[];D.files.forEach(function(f){f.symbols.forEach(function(s){syms.push({n:s.n,k:s.k,l:s.l,sig:s.sig,f:f.path})})});
+syms.sort(function(a,b){return a.n.localeCompare(b.n)});
+var tab='tree';
+function link(path,label){return '<a class="l" data-go="file:'+esc(path)+'">'+esc(label||path)+'</a>'}
+function symLink(n){return '<a class="l" data-go="sym:'+esc(n)+'">'+esc(n)+'</a>'}
+function treeHtml(dir,depth){
+  var d=dirMap[dir];if(!d)return '';var h='';
+  d.dirs.forEach(function(n){var p=dir?dir+'/'+n:n;h+='<details'+(depth<1?' open':'')+'><summary>'+esc(n)+'/'+(dirMap[p]?'':'<span class="k">未展開</span>')+'</summary><div>'+treeHtml(p,depth+1)+'</div></details>'});
+  d.files.forEach(function(n){var p=dir?dir+'/'+n:n;var f=fileMap[p];h+='<a data-go="file:'+esc(p)+'">'+esc(n)+(f?'<span class="k">'+f.symbols.length+'</span>':'')+'</a>'});
+  return h;
+}
+function renderList(){
+  var q=$('#q').value.trim().toLowerCase(),h='';
+  if(q){
+    var hits=[];
+    D.files.forEach(function(f){var s=0;if(f.path.toLowerCase().indexOf(q)>=0)s+=f.path.toLowerCase().split('/').pop().indexOf(q)>=0?6:3;if(f.doc&&f.doc.toLowerCase().indexOf(q)>=0)s+=2;if(s)hits.push({s:s,h:'<a data-go="file:'+esc(f.path)+'">'+esc(f.path)+'<span class="k">檔案</span></a>'})});
+    syms.forEach(function(s){var nl=s.n.toLowerCase();var sc=nl===q?9:(nl.indexOf(q)>=0?5:0);if(sc)hits.push({s:sc,h:'<a data-go="sym:'+esc(s.n)+'">'+esc(s.n)+'<span class="k">'+esc(s.k)+' · '+esc(s.f)+':'+s.l+'</span></a>'})});
+    Object.keys(D.glossary||{}).forEach(function(t){if(t.toLowerCase().indexOf(q)>=0||String(D.glossary[t].definition).toLowerCase().indexOf(q)>=0)hits.push({s:7,h:'<a data-go="term:'+esc(t)+'">'+esc(t)+'<span class="k">名詞</span></a>'})});
+    hits.sort(function(a,b){return b.s-a.s});
+    h=hits.slice(0,80).map(function(x){return x.h}).join('')||'<div class="mut" style="padding:8px">沒有符合的結果</div>';
+  }else if(tab==='tree')h=treeHtml('',0);
+  else if(tab==='syms')h=syms.slice(0,600).map(function(s){return '<a data-go="sym:'+esc(s.n)+'">'+esc(s.n)+'<span class="k">'+esc(s.k)+'</span></a>'}).join('');
+  else h=Object.keys(D.glossary||{}).sort().map(function(t){return '<a data-go="term:'+esc(t)+'">'+esc(t)+'</a>'}).join('')||'<div class="mut" style="padding:8px">還沒有名詞定義（請AI用 repo_wiki add_term 補充）</div>';
+  $('#list').innerHTML=h;
+}
+function pageHome(){
+  var st=D.stats||{},h='<h1>專案百科</h1><div class="mut">'+esc(D.root)+'　·　產生於 '+esc(new Date(D.generated_at).toLocaleString())+'</div>';
+  if(!D.complete)h+='<div class="note">這份索引只涵蓋已分析的 '+D.files.length+' 個原始碼檔（還有部分資料夾／檔案沒展開）。完整索引請讓AI執行 repo_map build_index。</div>';
+  h+='<h2>概況</h2><p>'+D.files.length+' 個已分析檔案、'+syms.length+' 個定義、'+(st.dependency_edges||0)+' 條內部依賴；語言：'+esc(Object.keys(st.languages||{}).map(function(k){return k+' '+st.languages[k]}).join('、'))+'</p>';
+  var ms=Object.keys(D.manifests||{});
+  if(ms.length){h+='<h2>專案設定檔</h2><table>';ms.forEach(function(p){var m=D.manifests[p];h+='<tr><td><code>'+esc(p)+'</code></td><td>'+esc(m.name||'')+(m.main?' <span class="tag">main: '+esc(m.main)+'</span>':'')+(m.summary?'<div class="mut">'+esc(m.summary)+'</div>':'')+(m.scripts&&m.scripts.length?'<div class="mut">scripts: '+esc(m.scripts.join('、'))+'</div>':'')+'</td></tr>'});h+='</table>'}
+  var hubs=D.files.slice().sort(function(a,b){return b.imported_by.length-a.imported_by.length}).slice(0,10).filter(function(f){return f.imported_by.length});
+  if(hubs.length){h+='<h2>最多檔案依賴的核心檔案</h2><table>';hubs.forEach(function(f){h+='<tr><td>'+link(f.path)+'</td><td>被 '+f.imported_by.length+' 個檔案引用</td><td class="mut">'+esc(f.doc||'')+'</td></tr>'});h+='</table>'}
+  $('#main').innerHTML=h;
+}
+function pageFile(p){
+  var f=fileMap[p],d=dirMap[p];
+  if(f){
+    var h='<h1>'+esc(p)+'</h1><div><span class="tag">'+esc(f.lang)+'</span><span class="tag">'+f.lines+' 行</span></div>';
+    if(f.doc)h+='<p>'+esc(f.doc)+'</p>';
+    if(D.notes&&D.notes[p])h+='<div class="note">'+esc(D.notes[p])+'</div>';
+    h+='<h2>定義（'+f.symbols.length+'）</h2>';
+    if(f.symbols.length){h+='<table>';f.symbols.forEach(function(s){h+='<tr><td>'+symLink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td><code>'+esc(s.sig)+'</code></td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
+    var inn=f.imports.filter(function(e){return e.to}),ext=f.imports.filter(function(e){return !e.to&&e.kind==='pkg'}),un=f.imports.filter(function(e){return e.kind==='unresolved'});
+    h+='<h2>依賴（引用了誰）</h2>'+(inn.length?inn.map(function(e){return '<div>'+link(e.to)+' <span class="mut">'+esc(e.spec)+'</span></div>'}).join(''):'<div class="mut">（沒有內部依賴）</div>');
+    if(ext.length)h+='<div class="mut" style="margin-top:6px">外部套件：'+ext.map(function(e){return esc(e.spec)}).join('、')+'</div>';
+    if(un.length)h+='<div class="note">找不到對應檔案的引用：'+un.map(function(e){return esc(e.spec)}).join('、')+'（可能是結構改變，請AI用 repo_map resolve／refresh）</div>';
+    h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.length?f.imported_by.map(function(x){return '<div>'+link(x)+'</div>'}).join(''):'<div class="mut">（沒有已分析的檔案引用它）</div>');
+    $('#main').innerHTML=h;return;
+  }
+  if(d||p===''){
+    var h2='<h1>'+esc(p||'（專案根目錄）')+'/</h1>';
+    if(D.notes&&D.notes[p])h2+='<div class="note">'+esc(D.notes[p])+'</div>';
+    h2+='<h2>子資料夾</h2>'+(d.dirs.map(function(n){var q=p?p+'/'+n:n;return '<div>'+link(q,n+'/')+(dirMap[q]?'':' <span class="mut">（未展開）</span>')+'</div>'}).join('')||'<div class="mut">（無）</div>');
+    h2+='<h2>檔案</h2>'+(d.files.map(function(n){var q=p?p+'/'+n:n;var ff=fileMap[q];return '<div>'+(ff?link(q,n)+' <span class="mut">'+esc(ff.doc||'')+'</span>':esc(n))+'</div>'}).join('')||'<div class="mut">（無）</div>');
+    $('#main').innerHTML=h2;return;
+  }
+  $('#main').innerHTML='<h1>'+esc(p)+'</h1><div class="note">地圖裡沒有這個路徑（可能還沒展開或結構改變了）。</div>';
+}
+function pageSym(n){
+  var defs=syms.filter(function(s){return s.n===n});if(!defs.length)defs=syms.filter(function(s){return s.n.toLowerCase()===n.toLowerCase()});
+  var h='<h1>'+esc(n)+'</h1>';
+  if(D.glossary&&D.glossary[n])h+='<div class="note">'+esc(D.glossary[n].definition)+'</div>';
+  if(!defs.length){h+='<div class="mut">找不到這個名稱的定義。</div>';$('#main').innerHTML=h;return}
+  h+='<h2>定義（'+defs.length+'處）</h2>';
+  defs.forEach(function(s){var f=fileMap[s.f];h+='<div style="margin-bottom:12px"><span class="tag">'+esc(s.k)+'</span>'+link(s.f)+' 第 '+s.l+' 行<pre>'+esc(s.sig)+'</pre>'+(f&&f.imported_by.length?'<div class="mut">所在檔案被這些檔案引用：'+f.imported_by.slice(0,12).map(function(x){return link(x)}).join('、')+'</div>':'')+'</div>'});
+  $('#main').innerHTML=h;
+}
+function pageTerm(t){
+  var g=(D.glossary||{})[t];if(!g){$('#main').innerHTML='<h1>'+esc(t)+'</h1><div class="mut">沒有這個名詞。</div>';return}
+  $('#main').innerHTML='<h1>'+esc(t)+'</h1><p>'+esc(g.definition)+'</p>'+((g.refs||[]).length?'<h2>相關位置</h2>'+g.refs.map(function(r){return '<div>'+link(r)+'</div>'}).join(''):'');
+}
+function go(h){
+  location.hash=h;var i=h.indexOf(':'),k=h.slice(0,i),v=h.slice(i+1);
+  if(k==='file')pageFile(v);else if(k==='sym')pageSym(v);else if(k==='term')pageTerm(v);else pageHome();
+}
+document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
+$('#q').addEventListener('input',renderList);
+document.querySelectorAll('#tabs button').forEach(function(b){b.addEventListener('click',function(){tab=b.getAttribute('data-t');document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#q').value='';renderList()})});
+renderList();
+var h0=decodeURIComponent((location.hash||'').slice(1));if(h0&&h0.indexOf(':')>0)go(h0);else pageHome();
+})();
+</script></body></html>`;
 
 // 2026-10-02：沙盒「模擬後端」（sandbox_mock）——被測試的頁面照常寫 fetch('/api/todos')、new WebSocket(...)，
 // 沙盒只在「測試時」把這兩個API接到一個Web Worker裡的伺服器程式，資料存在持久儲存（IndexedDB）。
@@ -6621,6 +6976,9 @@ class FloatingAssistant {
         // 2026-10-02：程式設計領域的狀態機任務（playbook_state）與沙盒Worker的持久檔案系統（sandbox_worker的fs），各自獨立的小型快取
         this.playbookCache = new FileCache('FloatingAssistantPlaybooks_' + ragDbSuffix, 32 * 1024 * 1024);
         this.sandboxFsCache = new FileCache('FloatingAssistantSandboxFs_' + ragDbSuffix, 64 * 1024 * 1024);
+        // 2026-10-02：專案結構地圖（repo_map）與專案百科（repo_wiki），存在persistentStorage（IndexedDB）
+        this.repoMapCache = new FileCache('FloatingAssistantRepoMap_' + ragDbSuffix, 48 * 1024 * 1024);
+        this.repoWikiCache = new FileCache('FloatingAssistantRepoWiki_' + ragDbSuffix, 48 * 1024 * 1024);
         this.programmingPlaybooks = Object.assign({}, FA_PROGRAMMING_PLAYBOOKS);
         this._programmingBaseTools = {};
         // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
@@ -9308,6 +9666,44 @@ ${fnData.code}
                 return JSON.stringify(await this._programmingDomainsRun(parsed));
             },
             { type: 'object', properties: { action: { type: 'string', enum: ['list', 'describe', 'request_tools', 'replace_tool', 'reset'] }, domain: { type: 'string' }, tools: { type: 'array', items: { type: 'string' } }, add: { type: 'array', items: { type: 'string' } }, remove: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } }, required: ['action'], additionalProperties: false }
+        );
+
+        registerOptional('repo_map',
+            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾的File Access Point參照（fap:名稱[/子路徑]）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／build_index（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後分批做）／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                return JSON.stringify(await this._repoMapRun(parsed));
+            },
+            { type: 'object', properties: {
+                action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'build_index', 'annotate', 'reset'] },
+                root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]' },
+                query: { type: 'string', description: 'find：檔名、功能或專案名稱的關鍵字（模糊也可以）' },
+                from: { type: 'string', description: 'explore：要探索的檔案或資料夾（相對於root）' },
+                path: { type: 'string', description: 'resolve／refresh／tree／annotate：路徑（相對於root）' },
+                depth: { type: 'number', description: 'explore（1-4）／tree（1-6）的深度' },
+                direction: { type: 'string', enum: ['imports', 'importers', 'both'] },
+                focus: { type: 'string', description: 'build：只展開／分析這個子資料夾' },
+                deep: { type: 'boolean', description: 'refresh：連檔案內容有沒有變都檢查' },
+                force: { type: 'boolean', description: 'explore：已分析過也重新讀' },
+                note: { type: 'string', description: 'annotate：你對這個檔案／資料夾的理解（一兩句）' },
+            }, required: ['action', 'root'], additionalProperties: false }
+        );
+
+        registerOptional('repo_wiki',
+            '專案索引百科（類似DeepWiki）：把repo_map追出來的結構整理成可查詢的資料庫，存進persistentStorage（IndexedDB），並產生「查詢頁面」與「定義頁面」（單一HTML檔，搜尋檔案／函式／類別／名詞，點進去看定義位置、依賴、被誰引用）。動作：generate（產生並存起來，預設會在畫面開啟頁面並提供可下載檔案；write_to_repo:true會問使用者要不要把結果寫進專案的.floating-assistant/wiki/）／query（q=關鍵字）／define（symbol=函式或類別名稱，回傳定義位置與程式碼片段）／page（path=檔案或資料夾的百科頁）／add_term（term＋definition：幫專案裡的重要名詞寫定義，之後出現在百科的「名詞」頁）／status。需要先有repo_map的地圖，而且涵蓋的範圍就是已經分析過的檔案（要完整請先repo_map build_index，會問使用者）。範例：repo_wiki({"action":"generate","root":"fap:我的專案"})、repo_wiki({"action":"define","root":"fap:我的專案","symbol":"parseConfig"})。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._repoWikiRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: {
+                action: { type: 'string', enum: ['generate', 'query', 'define', 'page', 'add_term', 'status'] },
+                root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]' },
+                q: { type: 'string' }, symbol: { type: 'string' }, path: { type: 'string' },
+                term: { type: 'string' }, definition: { type: 'string' }, refs: { type: 'array', items: { type: 'string' } },
+                write_to_repo: { type: 'boolean' }, show: { type: 'boolean', description: 'generate：是否在畫面開啟頁面（預設true）' }, deliver: { type: 'boolean', description: 'generate：是否提供可下載的HTML檔（預設true）' }, snippet: { type: 'boolean' },
+            }, required: ['action', 'root'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -12965,7 +13361,7 @@ ${fnData.code}
         };
         const notFound = (e) => e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError');
         return {
-            kind: 'fap', label: rec.label, dirHandle,
+            kind: 'fap', ref, label: rec.label, dirHandle,
             async readText(rel) {
                 try { const { d, name } = await walk(rel, false); return await (await (await d.getFileHandle(name)).getFile()).text(); }
                 catch (e) { if (notFound(e)) return null; throw e; }
@@ -12982,6 +13378,14 @@ ${fnData.code}
                     for (const p of self._splitFapPath(relDir)) d = await d.getDirectoryHandle(p);
                     const out = []; for await (const [n] of d.entries()) out.push(n); return out;
                 } catch (e) { if (notFound(e)) return []; throw e; }
+            },
+            // 列出一個資料夾的項目與類型；資料夾不存在回傳null（repo_map用來偵測「路徑不存在＝結構改變」）
+            async listEntries(relDir) {
+                try {
+                    let d = dirHandle;
+                    for (const p of self._splitFapPath(relDir)) d = await d.getDirectoryHandle(p);
+                    const out = []; for await (const [n, h] of d.entries()) out.push({ name: n, kind: h.kind }); return out;
+                } catch (e) { if (notFound(e)) return null; throw e; }
             },
             describe(rel) { return `fap:${rec.label}/${rel}`; },
         };
@@ -13679,6 +14083,688 @@ ${fnData.code}
             console_logs: logs.slice(-60), result: outcome.result, responses: outcome.responses || [],
             fs_files: (await this._sandboxFsOp('fs.list', [''])).slice(0, 50),
         };
+    }
+
+    // ===== 專案結構追蹤（repo_map）=====
+    // 目標：有專案/repository時，先「追出結構」；而且是分階段（incremental）建立——不必一次讀完整個專案。
+    //   outline（頂層兩層＋專案設定檔）→ dirs（逐批展開資料夾）→ deps（逐批讀檔案，抽出定義與依賴）→ index（整份，要先問使用者）。
+    // 路徑不存在＝結構改變：從「最近還存在的那一層」重新列出、比對差異，只重追有改變的地方（不是整份重建）。
+    // 使用者只給很模糊的名稱、地圖又還沒建立時：find會自動先建最小的outline，再逐批展開找到原始碼，之後用explore沿依賴逐步探索。
+    _repoMapEmpty(root) {
+        return { v: 1, root, created: Date.now(), updated: Date.now(), dirs: {}, files: {}, manifests: {}, notes: {}, glossary: {}, changes: [], stage: 'none', index_approved: false, index_built: false };
+    }
+    async _repoMapLoad(key) {
+        try { const rec = await this.repoMapCache.get('map:' + key); return rec ? JSON.parse(await rec.blob.text()) : null; } catch (_) { return null; }
+    }
+    async _repoMapSave(map) {
+        map.updated = Date.now();
+        await this.repoMapCache.put('map.json', 'application/json', new Blob([JSON.stringify(map)], { type: 'application/json' }), 'repo_map', 'map:' + map.root);
+    }
+    _repoMapKey(root) { return String(root || '').trim().replace(/\/+$/, ''); }
+    async _repoMapIo(root) {
+        if (typeof this.repoMapIoFactory === 'function') return await this.repoMapIoFactory(root);
+        const io = await this._codingFapIo(root);
+        if (typeof io.listEntries !== 'function') throw new Error('這個檔案介面不支援列目錄');
+        return io;
+    }
+    _repoMapLog(map, kind, path, detail) { map.changes.push({ at: Date.now(), kind, path, detail: detail || '' }); if (map.changes.length > 60) map.changes.shift(); }
+    _repoMapJoinPath(dir, name) { return dir ? dir + '/' + name : name; }
+
+    // 列出一個資料夾並更新地圖。回傳 {exists, added, removed, changed}。資料夾消失時，連同底下的記錄一起丟掉，並讓「依賴它的檔案」標記為需要重看。
+    async _repoMapListDir(io, map, path, ctx) {
+        const cache = ctx && ctx.cache;
+        let entries = cache && cache.has(path) ? cache.get(path) : await io.listEntries(path);
+        if (cache) cache.set(path, entries);
+        const prev = map.dirs[path];
+        if (entries === null) {
+            if (prev) { this._repoMapDropSubtree(map, path); this._repoMapLog(map, 'dir_removed', path); }
+            return { exists: false, added: [], removed: prev ? prev.entries.map((e) => e.n) : [], changed: !!prev };
+        }
+        const kept = entries.filter((e) => !(e.kind === 'directory' && FA_REPOMAP_IGNORE_DIRS.has(e.name)) && e.name !== '.DS_Store');
+        const MAX = 400;
+        const list = kept.slice(0, MAX).map((e) => ({ n: e.name, t: e.kind === 'directory' ? 'd' : 'f' }));
+        const curNames = new Map(list.map((e) => [e.n, e.t]));
+        const prevNames = prev ? new Map(prev.entries.map((e) => [e.n, e.t])) : new Map();
+        const added = list.filter((e) => prevNames.get(e.n) !== e.t).map((e) => e.n);
+        const removed = prev ? prev.entries.filter((e) => curNames.get(e.n) !== e.t).map((e) => e.n) : [];
+        map.dirs[path] = { entries: list, more: Math.max(0, kept.length - MAX), listed_at: Date.now() };
+        if (prev) {
+            for (const r of prev.entries) {
+                if (curNames.get(r.n) === r.t) continue;
+                const child = this._repoMapJoinPath(path, r.n);
+                if (r.t === 'd') { this._repoMapDropSubtree(map, child); this._repoMapLog(map, 'dir_removed', child); }
+                else { this._repoMapDropFile(map, child); this._repoMapLog(map, 'file_removed', child); }
+            }
+            for (const a of added) this._repoMapLog(map, curNames.get(a) === 'd' ? 'dir_added' : 'file_added', this._repoMapJoinPath(path, a));
+        }
+        return { exists: true, added, removed, changed: !!prev && (added.length > 0 || removed.length > 0) };
+    }
+    _repoMapMarkBroken(map, test) {
+        for (const f of Object.values(map.files)) {
+            let hit = false;
+            for (const e of f.imports || []) if (e.to && test(e.to)) { e.broken = e.to; e.to = null; e.kind = 'unresolved'; hit = true; }
+            if (hit) f.stale = true;
+        }
+    }
+    _repoMapDropSubtree(map, path) {
+        const pre = path + '/';
+        for (const p of Object.keys(map.dirs)) if (p === path || p.startsWith(pre)) delete map.dirs[p];
+        for (const p of Object.keys(map.files)) if (p.startsWith(pre)) delete map.files[p];
+        this._repoMapMarkBroken(map, (to) => to === path || to.startsWith(pre));
+    }
+    _repoMapDropFile(map, path) { delete map.files[path]; this._repoMapMarkBroken(map, (to) => to === path); }
+    _repoMapUnlisted(map, focus) {
+        const out = [];
+        const pre = focus ? focus + '/' : '';
+        for (const [p, d] of Object.entries(map.dirs)) {
+            for (const e of d.entries) {
+                if (e.t !== 'd') continue;
+                const c = this._repoMapJoinPath(p, e.n);
+                if (map.dirs[c]) continue;
+                if (focus && c !== focus && !c.startsWith(pre)) continue;
+                out.push(c);
+            }
+        }
+        return out.sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b));
+    }
+    _repoMapFrontierFiles(map, focus) {
+        const out = [];
+        const pre = focus ? focus + '/' : '';
+        for (const [p, d] of Object.entries(map.dirs)) {
+            for (const e of d.entries) {
+                if (e.t !== 'f') continue;
+                const c = this._repoMapJoinPath(p, e.n);
+                if (!_faRepoLang(c)) continue;
+                if (focus && !c.startsWith(pre)) continue;
+                const f = map.files[c];
+                if (!f || f.stale) out.push(c);
+            }
+        }
+        const rank = (p) => (FA_REPOMAP_ENTRY_NAMES.test(_faRepoBasename(p)) ? 0 : 1) * 100 + p.split('/').length;
+        return out.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    }
+    // 用目錄清單確認一個路徑是檔案/資料夾/不存在（沿途的資料夾順便記進地圖）
+    async _repoMapStat(io, map, path, ctx) {
+        if (!path) return 'dir';
+        const parent = _faRepoDirname(path), name = _faRepoBasename(path);
+        if (!map.dirs[parent]) { const r = await this._repoMapListDir(io, map, parent, ctx); if (!r.exists) return null; }
+        const hit = map.dirs[parent] && map.dirs[parent].entries.find((e) => e.n === name);
+        return hit ? (hit.t === 'd' ? 'dir' : 'file') : null;
+    }
+
+    async _repoMapOutline(io, map, ctx) {
+        const root = await this._repoMapListDir(io, map, '', ctx);
+        if (!root.exists) throw new Error('專案根目錄不存在或讀不到：' + map.root);
+        const top = map.dirs[''].entries.filter((e) => e.t === 'd').slice(0, 40);
+        for (const d of top) await this._repoMapListDir(io, map, d.n, ctx);
+        for (const dp of [''].concat(top.map((d) => d.n))) {
+            for (const e of (map.dirs[dp] ? map.dirs[dp].entries : [])) {
+                if (e.t !== 'f') continue;
+                if (!(FA_REPOMAP_MANIFESTS.includes(e.n) || /\.(csproj|sln)$/.test(e.n))) continue;
+                const p = this._repoMapJoinPath(dp, e.n);
+                if (map.manifests[p]) continue;
+                const text = await io.readText(p);
+                if (text !== null) map.manifests[p] = _faRepoParseManifest(e.n, text.slice(0, 60000));
+            }
+        }
+        if (map.stage === 'none') map.stage = 'outline';
+    }
+
+    // 路徑不存在＝結構改變：從最近還存在的那一層重新列出，找出差異與可能的新位置
+    async _repoMapHandleMiss(io, map, path, ctx) {
+        ctx = ctx || { cache: null };
+        const parts = String(path || '').split('/').filter(Boolean);
+        const diffs = [];
+        let missingAt = '';
+        let missingName = parts[0] || '';
+        let exists = false;
+        let relisted = 0;
+        for (let i = 0; i <= parts.length - 1; i++) {
+            const dir = parts.slice(0, i).join('/');
+            const r = await this._repoMapListDir(io, map, dir, { cache: null });
+            relisted++;
+            if (!r.exists) { missingAt = _faRepoDirname(dir); missingName = _faRepoBasename(dir); break; }
+            if (r.changed) diffs.push({ dir: dir || '（專案根目錄）', added: r.added.slice(0, 15), removed: r.removed.slice(0, 15) });
+            const hit = map.dirs[dir].entries.find((e) => e.n === parts[i]);
+            if (!hit) { missingAt = dir; missingName = parts[i]; break; }
+            if (i === parts.length - 1) { exists = true; break; }
+            if (hit.t === 'f') { missingAt = dir; missingName = parts[i] + '（是檔案，不是資料夾）'; break; }
+        }
+        if (exists) return { exists: true, note: '路徑其實存在（地圖已更新）。', diffs, relisted };
+        const base = _faRepoBasename(path);
+        const baseLow = base.toLowerCase();
+        const cands = [];
+        const addCand = (p, why) => { if (p !== path && !cands.some((c) => c.path === p) && cands.length < 10) cands.push({ path: p, why }); };
+        const lev = (a, b) => { const m = a.length, n = b.length; if (Math.abs(m - n) > 3) return 9; const d = Array.from({ length: m + 1 }, (_, i) => [i]); for (let j = 1; j <= n; j++) d[0][j] = j; for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[m][n]; };
+        // 1) 同一層名稱很像（大小寫、拼字、副檔名）
+        const siblings = map.dirs[missingAt] ? map.dirs[missingAt].entries : [];
+        for (const e of siblings) {
+            const nl = e.n.toLowerCase();
+            const stem = (x) => x.replace(/\.[A-Za-z0-9]+$/, '');
+            if (nl === String(missingName).toLowerCase() || stem(nl) === stem(String(missingName).toLowerCase()) || lev(nl, String(missingName).toLowerCase()) <= 2) addCand(this._repoMapJoinPath(missingAt, e.n), '同一層、名稱相近');
+        }
+        // 2) 地圖裡已知的、同檔名的路徑（搬家）
+        const knownSame = (p) => _faRepoBasename(p).toLowerCase() === baseLow;
+        for (const [dp, d] of Object.entries(map.dirs)) for (const e of d.entries) { const full = this._repoMapJoinPath(dp, e.n); if (knownSame(full) && map.dirs[dp]) addCand(full, '地圖裡有同名的' + (e.t === 'd' ? '資料夾' : '檔案')); }
+        // 3) 沒找到：從「有改變的地方」往下追（新增的資料夾、尚未展開的資料夾，分批找同名）
+        let scanned = 0;
+        const firstChanged = diffs.map((d) => d.dir === '（專案根目錄）' ? '' : d.dir);
+        if (!cands.length) {
+            const focusList = firstChanged.concat(missingAt ? [missingAt] : []);
+            const pending = [];
+            for (const f of focusList) pending.push(...this._repoMapUnlisted(map, f || undefined));
+            const rest = this._repoMapUnlisted(map);
+            const queue = Array.from(new Set(pending.concat(rest))).slice(0, 40);
+            for (const d of queue) {
+                if (cands.length >= 3) break;
+                const r = await this._repoMapListDir(io, map, d, { cache: null });
+                scanned++;
+                if (r.exists) for (const e of map.dirs[d].entries) if (e.n.toLowerCase() === baseLow) addCand(this._repoMapJoinPath(d, e.n), '掃描新資料夾時找到同名項目');
+            }
+        }
+        this._repoMapLog(map, 'path_missing', path, '最近存在的一層：' + (missingAt || '（根目錄）'));
+        return { exists: false, missing_at: missingAt || '（專案根目錄）', missing_name: missingName, diffs, relisted, rescanned_new_dirs: scanned, candidates: cands };
+    }
+
+    async _repoMapAnalyzeFile(io, map, path, ctx) {
+        let text = await io.readText(path);
+        if (text === null) { const miss = await this._repoMapHandleMiss(io, map, path, ctx); delete map.files[path]; return { ok: false, missing: true, miss }; }
+        if (text.length > 400000) text = text.slice(0, 400000);
+        const ex = _faRepoExtract(path, text);
+        const edges = [];
+        for (const imp of ex.imports.slice(0, 150)) {
+            let to = null, kind = imp.kind;
+            const tryResolve = imp.kind !== 'pkg' || ex.lang === 'go';
+            if (tryResolve) {
+                const cands = _faRepoResolveCandidates(path, imp, ex.lang);
+                const attempt = async () => { for (const c of cands) { const st = await this._repoMapStat(io, map, c, ctx); if (st) { to = c; kind = st === 'dir' ? 'dir' : 'rel'; return true; } } return false; };
+                let found = await attempt();
+                // 相對路徑找不到＝結構可能改變了：把「應該在的那一層」重新列出一次再試
+                if (!found && (imp.kind === 'rel' || imp.kind === 'alias') && cands.length && ctx && ctx.relisted) {
+                    const where = _faRepoDirname(cands[0]);
+                    if (!ctx.relisted.has(where)) {
+                        ctx.relisted.add(where);
+                        let probe = where;
+                        while (true) { const r = await this._repoMapListDir(io, map, probe, { cache: null }); if (r.exists || !probe) break; probe = _faRepoDirname(probe); }
+                        found = await attempt();
+                    }
+                }
+                if (!found) kind = (imp.kind === 'rel' || imp.kind === 'alias') ? 'unresolved' : 'pkg';
+            }
+            edges.push({ spec: imp.spec, kind, to });
+        }
+        map.files[path] = { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: ex.symbols.slice(0, 300), analyzed_at: Date.now() };
+        return { ok: true };
+    }
+
+    _repoMapStats(map) {
+        let dirsListed = 0, unlisted = 0, srcKnown = 0, filesKnown = 0;
+        const langs = {};
+        for (const [p, d] of Object.entries(map.dirs)) {
+            dirsListed++;
+            for (const e of d.entries) {
+                if (e.t === 'd') { if (!map.dirs[this._repoMapJoinPath(p, e.n)]) unlisted++; } else {
+                    filesKnown++;
+                    const l = _faRepoLang(e.n);
+                    if (l) { srcKnown++; langs[l] = (langs[l] || 0) + 1; }
+                }
+            }
+        }
+        const analyzed = Object.keys(map.files).length;
+        let stale = 0, unresolved = 0, edges = 0, symbols = 0;
+        for (const f of Object.values(map.files)) { if (f.stale) stale++; symbols += (f.symbols || []).length; for (const e of f.imports || []) { if (e.to) edges++; if (e.kind === 'unresolved') unresolved++; } }
+        return { dirs_listed: dirsListed, dirs_unlisted: unlisted, files_known: filesKnown, source_files_known: srcKnown, source_files_analyzed: analyzed, stale_files: stale, dependency_edges: edges, unresolved_imports: unresolved, symbols, languages: langs };
+    }
+
+    _repoMapStatus(map) {
+        const st = this._repoMapStats(map);
+        const entries = [];
+        for (const [p, m] of Object.entries(map.manifests)) entries.push({ file: p, name: m.name, main: m.main, scripts: m.scripts, deps: (m.deps || []).slice(0, 12), summary: m.summary });
+        const frontier = this._repoMapFrontierFiles(map).length;
+        let next;
+        if (map.stage === 'none') next = '還沒有地圖：先 repo_map({"action":"build","root":"..."}) 建立最小的outline（頂層兩層＋專案設定檔）。使用者只給模糊名稱時直接 repo_map({"action":"find","query":"..."}) 就會自動先建。';
+        else if (st.dirs_unlisted || frontier) next = `地圖還沒完整：還有${st.dirs_unlisted}個資料夾沒展開、${frontier}個原始碼檔沒分析。要找東西用find，要看某個檔案的依賴用explore；想一次建完整索引用build_index（會先問使用者）。`;
+        else next = '地圖已完整（所有資料夾已展開、所有原始碼檔已分析）。路徑不存在時用resolve，懷疑專案有變動時用refresh。';
+        return { ok: true, root: map.root, stage: map.stage, stats: st, index_built: !!map.index_built, index_approved: !!map.index_approved, projects: entries.slice(0, 10), recent_changes: map.changes.slice(-8).map((c) => `${c.kind}：${c.path}${c.detail ? '（' + c.detail + '）' : ''}`), next_action: next };
+    }
+
+    async _repoMapBuildStep(io, map, opts) {
+        const ctx = { cache: null, relisted: new Set() };
+        const focus = opts && opts.focus ? String(opts.focus).replace(/^\/+|\/+$/g, '') : '';
+        const did = {};
+        if (map.stage === 'none') { await this._repoMapOutline(io, map, ctx); did.phase = 'outline'; did.note = '已建立最小地圖：頂層兩層資料夾＋專案設定檔。'; }
+        else {
+            const un = this._repoMapUnlisted(map, focus);
+            if (un.length) {
+                const batch = un.slice(0, 25);
+                for (const d of batch) await this._repoMapListDir(io, map, d, ctx);
+                map.stage = 'dirs';
+                did.phase = 'dirs'; did.expanded = batch; did.note = `展開了${batch.length}個資料夾。`;
+            } else {
+                const ff = this._repoMapFrontierFiles(map, focus);
+                if (!ff.length) { map.stage = focus ? map.stage : 'deps'; did.phase = 'complete'; did.note = focus ? '這個範圍內已經沒有要展開或分析的東西了。' : '已完成：所有資料夾都展開了，所有原始碼檔都分析過了。'; }
+                else {
+                    const batch = ff.slice(0, 30);
+                    let missing = 0;
+                    for (const p of batch) { const a = await this._repoMapAnalyzeFile(io, map, p, ctx); if (a.missing) missing++; }
+                    map.stage = 'deps';
+                    did.phase = 'deps'; did.analyzed = batch.length - missing; did.missing = missing || undefined; did.note = `分析了${batch.length - missing}個原始碼檔（抽出定義與依賴）。`;
+                }
+            }
+        }
+        return did;
+    }
+
+    _repoMapScore(map, query) {
+        const qLow = String(query || '').toLowerCase().trim();
+        const qTok = _faRepoTokens(query);
+        const res = new Map();
+        const bump = (path, type, pts, why) => { if (pts <= 0) return; const r = res.get(path) || { path, type, score: 0, why: [] }; r.score += pts; if (r.why.length < 4 && !r.why.includes(why)) r.why.push(why); res.set(path, r); };
+        const nameScore = (p, type) => {
+            const base = _faRepoBasename(p).toLowerCase().replace(/\.[a-z0-9]+$/, '');
+            const baseTok = _faRepoTokens(_faRepoBasename(p).replace(/\.[A-Za-z0-9]+$/, ''));
+            if (base === qLow) bump(p, type, 10, '名稱完全相符');
+            else if (qLow && base.includes(qLow)) bump(p, type, 6, '名稱包含關鍵字');
+            const ov = qTok.filter((t) => baseTok.includes(t) || base.includes(t)).length;
+            if (ov) bump(p, type, ov * 3, `名稱含${ov}個關鍵詞`);
+            else if (qLow && p.toLowerCase().includes(qLow)) bump(p, type, 3, '路徑包含關鍵字');
+        };
+        for (const [dp, d] of Object.entries(map.dirs)) {
+            if (dp) nameScore(dp, 'dir');
+            for (const e of d.entries) if (e.t === 'f' && (_faRepoLang(e.n) || FA_REPOMAP_MANIFESTS.includes(e.n))) nameScore(this._repoMapJoinPath(dp, e.n), 'file');
+        }
+        for (const [p, f] of Object.entries(map.files)) {
+            let best = 0, bestSym = null;
+            for (const s of f.symbols || []) {
+                const sl = s.n.toLowerCase();
+                const pts = sl === qLow ? 8 : (qLow && sl.includes(qLow) ? 4 : (qTok.length && qTok.every((t) => sl.includes(t)) ? 4 : 0));
+                if (pts > best) { best = pts; bestSym = s; }
+            }
+            if (bestSym) bump(p, 'file', best, `定義了 ${bestSym.k} ${bestSym.n}（第${bestSym.l}行）`);
+            if (f.doc) { const dl = f.doc.toLowerCase(); const ov = qTok.filter((t) => dl.includes(t)).length; if (ov) bump(p, 'file', Math.min(4, ov * 2), '檔案開頭說明相關'); }
+        }
+        for (const [mp, m] of Object.entries(map.manifests)) {
+            const proj = _faRepoDirname(mp);
+            const nm = String(m.name || '').toLowerCase();
+            if (nm && (nm === qLow || (qLow && nm.includes(qLow)) || qTok.some((t) => nm.includes(t)))) bump(proj || '(根目錄)', 'project', 7, `專案設定檔（${_faRepoBasename(mp)}）名稱是「${m.name}」`);
+            if (m.summary) { const sl = m.summary.toLowerCase(); const ov = qTok.filter((t) => sl.includes(t)).length; if (ov) bump(proj || '(根目錄)', 'project', ov * 2, 'README摘要相關'); }
+        }
+        return Array.from(res.values()).sort((a, b) => b.score - a.score);
+    }
+
+    async _repoMapFind(io, map, query, opts) {
+        const ctx = { cache: null, relisted: new Set() };
+        const steps = [];
+        if (map.stage === 'none') { await this._repoMapOutline(io, map, ctx); steps.push('先建立最小地圖（outline）'); }
+        let results = this._repoMapScore(map, query);
+        const strong = () => results.filter((r) => r.score >= 6).length;
+        let rounds = 0;
+        const qTok = _faRepoTokens(query);
+        while (strong() < 3 && rounds < 3) {
+            let un = this._repoMapUnlisted(map);
+            if (!un.length) break;
+            // 名稱跟關鍵字有關的資料夾先展開
+            un = un.sort((a, b) => { const sa = qTok.some((t) => a.toLowerCase().includes(t)) ? 0 : 1; const sb = qTok.some((t) => b.toLowerCase().includes(t)) ? 0 : 1; return sa - sb; });
+            const batch = un.slice(0, 30);
+            for (const d of batch) await this._repoMapListDir(io, map, d, ctx);
+            map.stage = map.stage === 'outline' ? 'dirs' : map.stage;
+            rounds++;
+            steps.push(`第${rounds}輪：展開了${batch.length}個資料夾繼續找`);
+            results = this._repoMapScore(map, query);
+        }
+        // 名稱找不到（例如用功能描述找）：分批讀原始碼檔（入口檔、淺層優先），用定義名稱與檔案開頭說明再找
+        let frounds = 0;
+        while (strong() < 1 && frounds < 2) {
+            const ff = this._repoMapFrontierFiles(map).slice(0, 25);
+            if (!ff.length) break;
+            for (const p of ff) await this._repoMapAnalyzeFile(io, map, p, ctx);
+            frounds++;
+            steps.push(`第${frounds}輪：讀了${ff.length}個原始碼檔（定義與依賴）再找`);
+            results = this._repoMapScore(map, query);
+        }
+        // 前幾名是檔案但還沒分析：讀進來，讓符號與依賴出現，再重新排名
+        const toRead = results.filter((r) => r.type === 'file' && _faRepoLang(r.path) && !map.files[r.path]).slice(0, 4);
+        for (const r of toRead) await this._repoMapAnalyzeFile(io, map, r.path, ctx);
+        if (toRead.length) { steps.push(`讀了${toRead.length}個最可能的檔案（抽出定義與依賴）`); results = this._repoMapScore(map, query); }
+        return { results: results.slice(0, 12), steps, rounds };
+    }
+
+    async _repoMapExplore(io, map, from, opts) {
+        const ctx = { cache: null, relisted: new Set() };
+        const depth = Math.max(1, Math.min(4, Math.floor(Number(opts.depth) || 1)));
+        const direction = ['imports', 'importers', 'both'].includes(opts.direction) ? opts.direction : 'imports';
+        const nodes = [];
+        const visited = new Set();
+        const queue = [[from, 0]];
+        while (queue.length && visited.size < 30) {
+            const [p, d] = queue.shift();
+            if (visited.has(p)) continue;
+            visited.add(p);
+            const st = await this._repoMapStat(io, map, p, ctx);
+            if (st === 'dir') {
+                if (!map.dirs[p]) await this._repoMapListDir(io, map, p, ctx);
+                nodes.push({ path: p, type: 'dir', entries: (map.dirs[p] ? map.dirs[p].entries : []).slice(0, 30).map((e) => e.n + (e.t === 'd' ? '/' : '')) });
+                continue;
+            }
+            if (!st) { const miss = await this._repoMapHandleMiss(io, map, p, ctx); nodes.push({ path: p, missing: true, miss }); continue; }
+            let f = map.files[p];
+            if (!f || f.stale || opts.force) { const a = await this._repoMapAnalyzeFile(io, map, p, ctx); f = map.files[p]; if (!f) { nodes.push({ path: p, error: a.missing ? '檔案不見了（結構改變）' : '讀不到', miss: a.miss }); continue; } }
+            nodes.push({
+                path: p, depth: d, lang: f.lang, lines: f.lines, doc: f.doc || undefined,
+                symbols: f.symbols.slice(0, 15).map((s) => `${s.k} ${s.n}@${s.l}`), symbols_total: f.symbols.length,
+                imports: f.imports.filter((e) => e.to).map((e) => e.to),
+                external: f.imports.filter((e) => !e.to && e.kind === 'pkg').map((e) => e.spec).slice(0, 12),
+                unresolved: f.imports.filter((e) => e.kind === 'unresolved').map((e) => e.spec),
+            });
+            if (d < depth && direction !== 'importers') for (const e of f.imports) if (e.to && e.kind === 'rel') queue.push([e.to, d + 1]);
+        }
+        let importedBy;
+        if (direction !== 'imports') {
+            importedBy = Object.entries(map.files).filter(([fp, f]) => fp !== from && (f.imports || []).some((e) => e.to === from)).map(([fp]) => fp).slice(0, 30);
+        }
+        return { nodes, imported_by: importedBy, truncated: queue.length > 0 };
+    }
+
+    async _repoMapRefresh(io, map, path, opts) {
+        const start = path ? String(path).replace(/^\/+|\/+$/g, '') : '';
+        const dirs = Object.keys(map.dirs).filter((p) => start === '' || p === start || p.startsWith(start + '/')).sort((a, b) => a.split('/').length - b.split('/').length);
+        if (!dirs.includes(start)) dirs.unshift(start);
+        const changed = [];
+        let relisted = 0;
+        for (const d of dirs.slice(0, 150)) {
+            if (d !== start && !map.dirs[d]) continue;
+            const r = await this._repoMapListDir(io, map, d, { cache: null });
+            relisted++;
+            if (r.changed || !r.exists) changed.push({ dir: d || '（專案根目錄）', exists: r.exists, added: r.added.slice(0, 12), removed: r.removed.slice(0, 12) });
+        }
+        let contentChanged = [];
+        if (opts && opts.deep) {
+            const pre = start ? start + '/' : '';
+            const files = Object.keys(map.files).filter((p) => !start || p === start || p.startsWith(pre)).slice(0, 80);
+            for (const p of files) {
+                const t = await io.readText(p);
+                if (t === null) continue;
+                const f = map.files[p];
+                if (f && f.hash !== _faRepoHash(t.length > 400000 ? t.slice(0, 400000) : t)) { f.stale = true; contentChanged.push(p); }
+            }
+        }
+        this._repoMapLog(map, 'refresh', start || '（全部）', `重新列出${relisted}個資料夾，${changed.length}個有變動`);
+        return { relisted, changed, content_changed: contentChanged, truncated: dirs.length > 150 };
+    }
+
+    _repoMapTree(map, path, depth, maxLines) {
+        const lines = [];
+        const walk = (dir, indent, d) => {
+            const rec = map.dirs[dir];
+            if (!rec) return;
+            for (const e of rec.entries) {
+                if (lines.length >= maxLines) return;
+                const full = this._repoMapJoinPath(dir, e.n);
+                if (e.t === 'd') {
+                    const listed = !!map.dirs[full];
+                    lines.push(`${indent}${e.n}/${listed ? '' : '  …（還沒展開）'}`);
+                    if (listed && d < depth) walk(full, indent + '  ', d + 1);
+                } else {
+                    const f = map.files[full];
+                    lines.push(`${indent}${e.n}${f ? `  [${(f.symbols || []).length}個定義、${(f.imports || []).filter((x) => x.to).length}個內部依賴]` : ''}`);
+                }
+            }
+            if (rec.more) lines.push(`${indent}…（還有${rec.more}個項目沒列出）`);
+        };
+        walk(path || '', '', 1);
+        if (lines.length >= maxLines) lines.push('…（已截斷，縮小path或降低depth）');
+        return lines.join('\n');
+    }
+
+    async _repoMapBuildIndex(io, map) {
+        if (!map.index_approved) {
+            const st = this._repoMapStats(map);
+            const ans = await this.requestUserForm({
+                title: '🗂️ 要為整個專案建立完整索引嗎？',
+                description: `專案：${map.root}\n目前已知：${st.dirs_listed}個資料夾已展開、${st.dirs_unlisted}個還沒展開；原始碼檔${st.source_files_known}個，已分析${st.source_files_analyzed}個。\n\n完整索引會把所有原始碼檔都讀過一遍（上限3000個檔，每檔最多400KB），記錄函式／類別的定義位置與檔案之間的依賴，資料只存在瀏覽器儲存（IndexedDB），不會改動你的專案。大型專案會分批進行（每批約25秒）。\n\n不建完整索引也可以：我只會在需要時，分階段追蹤相關的檔案。`,
+                choices: ['整份建立', '只建需要的部分'],
+            });
+            if (!ans || !ans.confirmed || ans.answer !== '整份建立') return { ok: true, declined: true, note: '使用者選擇不建立完整索引。之後用find／explore分階段追蹤需要的部分即可，不要再問一次。' };
+            map.index_approved = true;
+            await this._repoMapSave(map);
+        }
+        const ctx = { cache: null, relisted: new Set() };
+        const t0 = Date.now();
+        let listed = 0, analyzed = 0;
+        if (map.stage === 'none') await this._repoMapOutline(io, map, ctx);
+        while (Date.now() - t0 < 25000) {
+            const un = this._repoMapUnlisted(map);
+            if (un.length) { for (const d of un.slice(0, 10)) { await this._repoMapListDir(io, map, d, ctx); listed++; } continue; }
+            const ff = this._repoMapFrontierFiles(map);
+            if (!ff.length || Object.keys(map.files).length >= 3000) break;
+            for (const p of ff.slice(0, 10)) { await this._repoMapAnalyzeFile(io, map, p, ctx); analyzed++; }
+        }
+        const remainingDirs = this._repoMapUnlisted(map).length;
+        const remainingFiles = this._repoMapFrontierFiles(map).length;
+        const capped = Object.keys(map.files).length >= 3000;
+        const done = (remainingDirs === 0 && remainingFiles === 0) || capped;
+        map.index_built = done;
+        map.stage = done ? 'index' : (remainingDirs ? 'dirs' : 'deps');
+        return { ok: true, done, capped: capped || undefined, this_batch: { dirs_listed: listed, files_analyzed: analyzed, seconds: Math.round((Date.now() - t0) / 1000) }, remaining: { dirs: remainingDirs, files: remainingFiles }, next_action: done ? '完整索引完成。可以用 repo_wiki({"action":"generate","root":...}) 產生專案百科（查詢頁、定義頁），或用find／explore查詢。' : '還沒完成：再呼叫一次 repo_map({"action":"build_index","root":...}) 繼續下一批（使用者已同意，不用再問）。' };
+    }
+
+    // 路徑不存在的小提示（coding_read_file等找不到檔案時順手呼叫）：有地圖才會追
+    async _repoMapOnMiss(io, path) {
+        if (!io || !io.ref) return null;
+        const key = this._repoMapKey(io.ref);
+        const map = await this._repoMapLoad(key);
+        if (!map) return { note: '這個專案還沒有結構地圖。找不到檔案時可以用 repo_map({"action":"find","root":"' + key + '","query":"檔名或功能關鍵字"}) 搜尋，會自動分階段建立。' };
+        const miss = await this._repoMapHandleMiss(io, map, String(path || ''), { cache: null });
+        await this._repoMapSave(map);
+        return Object.assign({ note: '路徑不存在，已當成「結構改變」，從最近還存在的那一層重新追蹤。' }, miss);
+    }
+
+    async _repoMapRun(parsed) {
+        const action = String(parsed.action || 'status');
+        const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
+        if (!root) return { ok: false, error: '缺少root（專案資料夾的File Access Point參照，格式 fap:<名稱或id>[/<子路徑>]；用list_file_access_points查有哪些）' };
+        const key = this._repoMapKey(root);
+        if (!this._repoMapLocks) this._repoMapLocks = new Map();
+        const prev = this._repoMapLocks.get(key) || Promise.resolve();
+        const run = prev.then(() => this._repoMapAction(action, key, parsed)).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+        this._repoMapLocks.set(key, run.catch(() => {}));
+        return await run;
+    }
+
+    async _repoMapAction(action, key, parsed) {
+        if (action === 'reset') { await this.repoMapCache.delete('map:' + key); return { ok: true, note: '已清除這個專案的結構地圖（專案檔案沒有動）。' }; }
+        const io = await this._repoMapIo(key);
+        let map = await this._repoMapLoad(key);
+        const created = !map;
+        if (!map) map = this._repoMapEmpty(key);
+        if (action === 'status') { if (created) return { ok: true, root: key, stage: 'none', next_action: this._repoMapStatus(map).next_action }; return this._repoMapStatus(map); }
+        let out;
+        if (action === 'build') {
+            const did = await this._repoMapBuildStep(io, map, { focus: parsed.focus || parsed.path });
+            out = Object.assign({ ok: true }, did, this._repoMapStatus(map));
+            out.next_action = (did.phase === 'complete' ? '' : '還沒完整，可以再呼叫一次build繼續下一批；') + out.next_action;
+        } else if (action === 'find') {
+            const q = String(parsed.query || '').trim();
+            if (!q) return { ok: false, error: '缺少query（檔名、功能或專案名稱的關鍵字，模糊也可以）' };
+            const r = await this._repoMapFind(io, map, q, {});
+            const top = r.results.find((x) => x.type === 'file') || r.results[0];
+            out = { ok: true, query: q, steps: r.steps, results: r.results, stats: this._repoMapStats(map), next_action: r.results.length ? `最可能的是 ${top.path}。用 repo_map({"action":"explore","root":"${key}","from":"${top.path}","depth":2}) 沿它的依賴往外看，確認是不是你要的原始碼；不是的話換個關鍵字再find，或問使用者更多線索。` : '找不到。把關鍵字換成別的說法（英文／中文／縮寫），或問使用者專案裡大概有哪些資料夾；也可以 repo_map({"action":"build"}) 再展開幾批資料夾後重找。' };
+        } else if (action === 'explore') {
+            const from = String(parsed.from || parsed.path || '').replace(/^\/+/, '');
+            if (!from) return { ok: false, error: '缺少from（要探索的檔案或資料夾路徑，相對於root）。不知道從哪開始就先用find。' };
+            if (map.stage === 'none') await this._repoMapOutline(io, map, { cache: null });
+            const r = await this._repoMapExplore(io, map, from, parsed);
+            out = Object.assign({ ok: true, from }, r, { next_action: r.nodes.some((n) => n.missing) ? '有路徑不存在：照 miss.candidates 找新位置（地圖已從有改變的地方重追）。' : '想看更深一層就把depth加1，或把from換成imports裡你有興趣的檔案；要看誰用到它用direction:"importers"（只涵蓋已分析的檔案，要完整請build_index）。' });
+        } else if (action === 'resolve') {
+            const p = String(parsed.path || '').replace(/^\/+/, '');
+            if (!p) return { ok: false, error: '缺少path（找不到的那個路徑）' };
+            if (map.stage === 'none') await this._repoMapOutline(io, map, { cache: null });
+            const r = await this._repoMapHandleMiss(io, map, p, { cache: null });
+            out = Object.assign({ ok: true, path: p }, r, { next_action: r.exists ? '路徑存在，可以直接讀。' : (r.candidates && r.candidates.length ? `可能是搬家或改名，候選：${r.candidates.map((c) => c.path).join('、')}。確認後用新路徑，不要猜。` : '附近找不到。把diffs（有改變的地方）告訴使用者，或用find換關鍵字搜尋。') });
+        } else if (action === 'refresh') {
+            if (map.stage === 'none') return { ok: false, error: '還沒有地圖可以更新，先build或find。' };
+            const r = await this._repoMapRefresh(io, map, parsed.path, { deep: !!parsed.deep });
+            out = Object.assign({ ok: true }, r, { next_action: r.changed.length || r.content_changed.length ? '有變動的地方已經標記，之後explore／build會只重看那些地方。' : '沒有發現變動。' });
+        } else if (action === 'tree') {
+            if (map.stage === 'none') await this._repoMapOutline(io, map, { cache: null });
+            out = { ok: true, path: parsed.path || '', tree: this._repoMapTree(map, String(parsed.path || '').replace(/^\/+|\/+$/g, ''), Math.max(1, Math.min(6, Number(parsed.depth) || 3)), 150), note: '「還沒展開」的資料夾用build或find逐步展開，不要整份讀。' };
+        } else if (action === 'build_index') {
+            out = await this._repoMapBuildIndex(io, map);
+        } else if (action === 'annotate') {
+            const p = String(parsed.path || '').trim();
+            if (!p || !parsed.note) return { ok: false, error: 'annotate需要path與note（你對這個檔案/資料夾的理解，一兩句話）' };
+            map.notes[p] = String(parsed.note).slice(0, 400);
+            out = { ok: true, path: p, note: '已記下，之後repo_wiki會顯示在這個檔案的頁面。' };
+        } else return { ok: false, error: 'action必須是status／build／find／explore／resolve／refresh／tree／build_index／annotate／reset' };
+        await this._repoMapSave(map);
+        return out;
+    }
+
+    // ===== 專案索引百科（repo_wiki，類似DeepWiki）=====
+    // 由repo_map的地圖產生：檔案頁（定義、依賴、被誰引用）、資料夾頁、名詞定義頁、單檔查詢頁面（wiki.html）。
+    // 存放：persistentStorage（IndexedDB）一定會存；寫進專案資料夾（FAP的 .floating-assistant/wiki/）要使用者同意。
+    _repoWikiBuildIndex(map) {
+        const files = Object.entries(map.files).map(([p, f]) => ({
+            path: p, lang: f.lang, lines: f.lines, doc: f.doc || '',
+            symbols: (f.symbols || []).map((s) => ({ n: s.n, k: s.k, l: s.l, sig: s.sig })),
+            imports: (f.imports || []).map((e) => ({ spec: e.spec, to: e.to || null, kind: e.kind })),
+        }));
+        const by = {};
+        for (const f of files) for (const e of f.imports) if (e.to) (by[e.to] = by[e.to] || []).push(f.path);
+        files.forEach((f) => { f.imported_by = (by[f.path] || []).slice(0, 80); });
+        const dirs = Object.entries(map.dirs).map(([p, d]) => ({ path: p, dirs: d.entries.filter((e) => e.t === 'd').map((e) => e.n), files: d.entries.filter((e) => e.t === 'f').map((e) => e.n), more: d.more || 0 }));
+        return { v: 1, root: map.root, generated_at: Date.now(), complete: !!map.index_built, stats: this._repoMapStats(map), manifests: map.manifests, notes: map.notes, glossary: map.glossary, dirs, files };
+    }
+    _repoWikiMarkdown(idx) {
+        const out = [`# 專案百科：${idx.root}`, '', `產生時間：${new Date(idx.generated_at).toLocaleString()}　已分析${idx.files.length}個檔案　${idx.complete ? '（完整索引）' : '（部分索引：只涵蓋已分析的檔案）'}`, ''];
+        for (const [p, m] of Object.entries(idx.manifests || {})) out.push(`- 專案設定檔 \`${p}\`：${m.name || ''}${m.main ? '，main=' + m.main : ''}${m.summary ? '。' + m.summary : ''}`);
+        out.push('');
+        for (const f of idx.files.slice(0, 600)) {
+            out.push(`## ${f.path}`, `${f.lang}，${f.lines}行${f.doc ? '。' + f.doc : ''}`);
+            if (idx.notes && idx.notes[f.path]) out.push(`> ${idx.notes[f.path]}`);
+            if (f.symbols.length) out.push('', '定義：' + f.symbols.slice(0, 40).map((s) => `${s.k} \`${s.n}\`(L${s.l})`).join('、'));
+            const inn = f.imports.filter((e) => e.to).map((e) => e.to);
+            if (inn.length) out.push('依賴：' + inn.join('、'));
+            if (f.imported_by.length) out.push('被引用：' + f.imported_by.slice(0, 15).join('、'));
+            out.push('');
+        }
+        const g = Object.entries(idx.glossary || {});
+        if (g.length) { out.push('## 名詞定義', ''); g.forEach(([t, v]) => out.push(`- **${t}**：${v.definition}${(v.refs || []).length ? '（' + v.refs.join('、') + '）' : ''}`)); }
+        return out.join('\n');
+    }
+    _repoWikiHtml(idx) {
+        const json = JSON.stringify(idx).replace(/</g, '\\u003c').split(String.fromCharCode(0x2028)).join('\\u2028').split(String.fromCharCode(0x2029)).join('\\u2029');
+        return FA_REPOWIKI_HTML.replace('__DATA__', () => json);
+    }
+    async _repoWikiStore(key, idx) {
+        const put = (name, mime, text) => this.repoWikiCache.put(name, mime, new Blob([text], { type: mime }), 'repo_wiki', 'wiki:' + key + '/' + name);
+        const html = this._repoWikiHtml(idx);
+        const md = this._repoWikiMarkdown(idx);
+        await put('index.json', 'application/json', JSON.stringify(idx));
+        await put('wiki.html', 'text/html', html);
+        await put('wiki.md', 'text/markdown', md);
+        return { html, md };
+    }
+    async _repoWikiLoadIndex(key) {
+        try { const rec = await this.repoWikiCache.get('wiki:' + key + '/index.json'); return rec ? JSON.parse(await rec.blob.text()) : null; } catch (_) { return null; }
+    }
+    _repoWikiSearch(idx, q) {
+        const ql = String(q || '').toLowerCase().trim();
+        const tok = _faRepoTokens(q);
+        const out = [];
+        for (const f of idx.files) {
+            let s = 0; const why = [];
+            const base = _faRepoBasename(f.path).toLowerCase();
+            if (ql && base.includes(ql)) { s += 6; why.push('檔名相符'); } else if (ql && f.path.toLowerCase().includes(ql)) { s += 3; why.push('路徑相符'); }
+            if (f.doc && tok.some((t) => f.doc.toLowerCase().includes(t))) { s += 2; why.push('檔案說明相關'); }
+            const sy = f.symbols.find((x) => x.n.toLowerCase() === ql) || f.symbols.find((x) => ql && x.n.toLowerCase().includes(ql));
+            if (sy) { s += sy.n.toLowerCase() === ql ? 9 : 5; why.push(`定義 ${sy.k} ${sy.n}（第${sy.l}行）`); }
+            if (s) out.push({ path: f.path, type: 'file', score: s, why });
+        }
+        for (const [t, v] of Object.entries(idx.glossary || {})) if (t.toLowerCase().includes(ql) || String(v.definition).toLowerCase().includes(ql)) out.push({ path: t, type: 'term', score: 7, why: [v.definition.slice(0, 80)] });
+        return out.sort((a, b) => b.score - a.score).slice(0, 20);
+    }
+    async _repoWikiRun(parsed) {
+        const action = String(parsed.action || 'generate');
+        const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
+        if (!root) return { ok: false, error: '缺少root（專案資料夾的File Access Point參照）' };
+        const key = this._repoMapKey(root);
+        if (action === 'add_term') {
+            const term = String(parsed.term || '').trim(), def = String(parsed.definition || '').trim();
+            if (!term || !def) return { ok: false, error: 'add_term需要term與definition' };
+            const map = await this._repoMapLoad(key);
+            if (!map) return { ok: false, error: '還沒有地圖，先 repo_map build 或 find' };
+            map.glossary[term] = { definition: def.slice(0, 600), refs: Array.isArray(parsed.refs) ? parsed.refs.map(String).slice(0, 10) : [] };
+            await this._repoMapSave(map);
+            return { ok: true, term, note: '已記下。下次 repo_wiki generate 會出現在「名詞」頁。' };
+        }
+        let idx = await this._repoWikiLoadIndex(key);
+        if (action === 'generate' || !idx) {
+            const map = await this._repoMapLoad(key);
+            if (!map || map.stage === 'none') return { ok: false, error: '還沒有專案地圖。先用 repo_map({"action":"build","root":"' + key + '"}) 建立，或 find 搜尋（會自動分階段建立）。' };
+            if (!Object.keys(map.files).length) return { ok: false, error: '地圖裡還沒有分析過的原始碼檔。先用 repo_map explore／build 分析一些檔案，或 build_index 整份建立（會先問使用者）。' };
+            idx = this._repoWikiBuildIndex(map);
+            const stored = await this._repoWikiStore(key, idx);
+            if (action === 'generate') {
+                const out = { ok: true, stored_in: 'persistentStorage（IndexedDB）', files: ['index.json', 'wiki.html', 'wiki.md'], stats: { files: idx.files.length, symbols: idx.files.reduce((n, f) => n + f.symbols.length, 0), glossary_terms: Object.keys(idx.glossary || {}).length }, complete: idx.complete };
+                if (!idx.complete) out.warning = '這是部分索引：只涵蓋已分析的' + idx.files.length + '個檔案。要完整百科先 repo_map build_index（會問使用者）。';
+                if (parsed.write_to_repo) {
+                    const ans = await this.requestUserForm({ title: '📝 要把專案百科寫進專案資料夾嗎？', description: `會在 ${key} 底下建立（或覆蓋）：\n.floating-assistant/wiki/index.json\n.floating-assistant/wiki/wiki.html\n.floating-assistant/wiki/wiki.md\n不會動到其他檔案。`, choices: ['寫入', '不要'] });
+                    if (ans && ans.confirmed && ans.answer === '寫入') {
+                        try {
+                            const io = await this._repoMapIo(key);
+                            await io.writeText('.floating-assistant/wiki/index.json', JSON.stringify(idx));
+                            await io.writeText('.floating-assistant/wiki/wiki.html', stored.html);
+                            await io.writeText('.floating-assistant/wiki/wiki.md', stored.md);
+                            out.written_to_repo = ['.floating-assistant/wiki/index.json', '.floating-assistant/wiki/wiki.html', '.floating-assistant/wiki/wiki.md'];
+                        } catch (e) { out.write_error = String((e && e.message) || e); }
+                    } else out.written_to_repo = false;
+                }
+                if (parsed.show !== false) {
+                    try {
+                        const doc = this._sandboxBuildDoc({ html: stored.html, backend: 'iframe' });
+                        const frame = await this._sandboxOpenIframe(doc, { width: 960, height: 620 }, null);
+                        out.shown = frame && frame.ok ? '已在畫面左下角開啟「專案百科」查詢頁面（可搜尋檔案、函式、名詞）' : '開啟頁面失敗（可改下載）';
+                    } catch (e) { out.shown = '開啟頁面失敗：' + String((e && e.message) || e); }
+                }
+                if (parsed.deliver !== false) {
+                    try { await this.generateAndDeliverFile(new Blob([stored.html], { type: 'text/html' }), 'project-wiki.html', 'text/html'); out.delivered = 'project-wiki.html（可下載的單一檔案，離線可開）'; } catch (e) { out.deliver_error = String((e && e.message) || e); }
+                }
+                out.next_action = '用 repo_wiki({"action":"query","root":"' + key + '","q":"關鍵字"}) 查詢、define 看定義、page 看單頁；用 add_term 幫專案裡的重要名詞寫定義。';
+                return out;
+            }
+        }
+        if (action === 'query') {
+            const q = String(parsed.q || parsed.query || '').trim();
+            if (!q) return { ok: false, error: '缺少q（查詢關鍵字）' };
+            return { ok: true, q, results: this._repoWikiSearch(idx, q), complete: idx.complete };
+        }
+        if (action === 'define') {
+            const sym = String(parsed.symbol || parsed.q || '').trim();
+            if (!sym) return { ok: false, error: '缺少symbol（函式／類別／變數名稱）' };
+            const defs = [];
+            for (const f of idx.files) for (const s of f.symbols) if (s.n === sym || s.n.toLowerCase() === sym.toLowerCase()) defs.push({ file: f.path, line: s.l, kind: s.k, signature: s.sig, used_by_files: f.imported_by.slice(0, 10) });
+            let snippet;
+            if (defs.length && parsed.snippet !== false) {
+                try {
+                    const io = await this._repoMapIo(key);
+                    const text = await io.readText(defs[0].file);
+                    if (text !== null) { const lines = text.split(/\r?\n/); const a = Math.max(0, defs[0].line - 2); snippet = lines.slice(a, a + 14).map((l, i) => `${String(a + i + 1).padStart(5)}| ${l}`).join('\n'); }
+                    else snippet = '（檔案已經不存在：結構可能改變了，用 repo_map resolve 追蹤）';
+                } catch (_) {}
+            }
+            return { ok: true, symbol: sym, definitions: defs.slice(0, 12), snippet, glossary: (idx.glossary || {})[sym] || undefined, note: defs.length ? undefined : '索引裡沒有這個名稱（索引可能還沒涵蓋它所在的檔案，用 repo_map find 查）' };
+        }
+        if (action === 'page') {
+            const p = String(parsed.path || '').replace(/^\/+/, '');
+            const f = idx.files.find((x) => x.path === p);
+            if (f) return { ok: true, type: 'file', path: p, lang: f.lang, lines: f.lines, doc: f.doc, note: idx.notes && idx.notes[p], symbols: f.symbols.slice(0, 80), imports: f.imports.filter((e) => e.to).map((e) => e.to), external: f.imports.filter((e) => !e.to && e.kind === 'pkg').map((e) => e.spec).slice(0, 20), unresolved: f.imports.filter((e) => e.kind === 'unresolved').map((e) => e.spec), imported_by: f.imported_by };
+            const d = idx.dirs.find((x) => x.path === p);
+            if (d) return { ok: true, type: 'dir', path: p, dirs: d.dirs, files: d.files.slice(0, 80), note: idx.notes && idx.notes[p] };
+            return { ok: false, error: '索引裡沒有這個路徑（可能還沒展開或結構改變，用 repo_map resolve／refresh）' };
+        }
+        if (action === 'status') return { ok: true, generated_at: idx.generated_at, complete: idx.complete, files: idx.files.length, glossary_terms: Object.keys(idx.glossary || {}).length };
+        return { ok: false, error: 'action必須是generate／query／define／page／add_term／status' };
     }
 
     // ===== 沙盒模擬後端（sandbox_mock）=====
@@ -14462,7 +15548,11 @@ ${fnData.code}
     // ---- coding_read_file（完整文字＋行號，不像fap_read_file固定截斷在8000字元）----
     async _codingReadFile(io, path, { startLine = 1, lineNumbers = true } = {}) {
         const text = await io.readText(path);
-        if (text === null) return { ok: false, error: `找不到檔案：${path}` };
+        if (text === null) {
+            let hint = null;
+            try { hint = await this._repoMapOnMiss(io, path); } catch (_) {}
+            return Object.assign({ ok: false, error: `找不到檔案：${path}` }, hint ? { repo_map: hint } : {});
+        }
         if (FAP_BINARY_EXT_PATTERN.test(path)) return { ok: false, error: `「${path}」看起來是二進位檔案，不能當程式碼讀取` };
         const { lines } = _faCodingSplitLines(text);
         const budget = this._getAdaptiveContentBudgetChars(0.1, 6000);
