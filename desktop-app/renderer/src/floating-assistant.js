@@ -1453,7 +1453,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -1493,7 +1493,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     research: {
         enabled: true,
         label: '研究／程式碼與檔案分析（唯讀，不修改/不執行）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'repo_map', 'repo_wiki', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_wiki', 'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text'],
         systemPrompt: '你是一個專門做「研究/分析」的子任務助理——讀懂一批檔案（原始碼、文件、設定檔）並產出理解/報告，刻意不給任何寫入/執行類工具（不能寫入File Access Point、不能執行程式）。**收到任務的第一件事：判斷使用者真正想要的是「修改/實作」還是「分析/理解」**。如果任務明顯是要新增功能、修bug、改程式碼、寫新檔案，那不是這個domain該做的事——直接在回應裡明確指出「這個任務需要實際修改/執行，不是單純分析」，讓委派端知道應該改委派給有寫入能力的domain（File Access Point用file_access_points，桌面版真實磁碟用desktop_ops），不要自己勉強上，也不要因為手上沒有寫入工具就直接放棄不回答。如果任務是要看懂/摘要/抓出設計脈絡/找出可能的問題點，才是這個domain的範圍：先用list_file_access_points/fap_list_files摸清楚有哪些檔案跟目錄結構，再用fap_read_file/fap_find_file實際讀取內容——大檔案改用summarize_large_text，不要自己手動分段閱讀；使用者上傳的檔案用list_uploaded_files/parse_uploaded_file。花時間多讀、多思考再給出有條理的分析結論，不要只憑檔名/目錄結構猜測內容、也不要看了一兩個檔案就倉促下結論。',
     },
     drawing: {
@@ -1679,7 +1679,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // ============================================================
 const FA_PROG_COMMON_TOOLS = [
     'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'language_explore',
-    'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
+    'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
     'git_inspect', 'git_commit', 'coding_run_check', 'coding_run_tests',
     'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'browser_search', 'fetch_web_page',
 ];
@@ -2950,6 +2950,255 @@ function _faRerank(query, items, opts) {
 }
 
 // ============================================================
+// 2026-10-02：程式碼問答引擎（doxygen＋語意檢索）。輸入是repo_map的結構資料（檔案、定義、依賴、呼叫），輸出是
+// 「定義在哪／做什麼用／誰在用／跟誰相關」的回答。全部是純函式、不引用外面的變數（只用上面的語意函式），所以會用toString()
+// 塞進產生出來的HTML，離線在瀏覽器裡跑同樣的問答。
+//   資料格式 db：{files:[[路徑,語言,行數,說明]], syms:[[名稱,種類,檔案序號,行,說明,簽名]], imps:[[檔案序號,被引用的檔案序號]], uses:[[檔案序號,定義序號]]}
+//   檢索：倒排索引（詞→定義／檔案）先召回，再用向量餘弦＋BM25＋TextRank重排（跟離線訓練器同一套），不需要任何模型或網路。
+// ============================================================
+const FA_CODE_VERB_ZH = { get: '取得', set: '設定', init: '初始化', initialize: '初始化', read: '讀取', write: '寫入', parse: '解析', create: '建立', new: '建立', delete: '刪除', remove: '移除', free: '釋放', destroy: '銷毀', add: '新增', find: '尋找', search: '搜尋', lookup: '查找', check: '檢查', is: '判斷是否', has: '判斷是否有', update: '更新', handle: '處理', load: '載入', save: '儲存', store: '儲存', send: '傳送', recv: '接收', receive: '接收', open: '開啟', close: '關閉', start: '開始', stop: '停止', run: '執行', exec: '執行', build: '建構', make: '製作', convert: '轉換', to: '轉換成', print: '輸出', log: '記錄', dump: '傾印', test: '測試', register: '註冊', unregister: '取消註冊', callback: '回呼', cb: '回呼', on: '事件處理', validate: '驗證', verify: '驗證', encode: '編碼', decode: '解碼', compute: '計算', calc: '計算', copy: '複製', clear: '清除', reset: '重設', enable: '啟用', disable: '停用', wait: '等待', poll: '輪詢', notify: '通知', render: '繪製', draw: '繪製', list: '列舉', enumerate: '列舉', fetch: '擷取', request: '請求', response: '回應', config: '設定', setup: '設定' };
+function _faCodeSplitName(n) { return String(n == null ? '' : n).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:]+/g, ' ').toLowerCase().trim(); }
+function _faCodeBase(p) { const i = String(p).lastIndexOf('/'); return i < 0 ? String(p) : String(p).slice(i + 1); }
+// 建立查詢用的索引（倒排索引分批建，ix.ti記錄進度；_faCodeIndexTokens(ix, 毫秒預算)回傳true表示建完）
+function _faCodeIndexNew(db) {
+    db.files = db.files || []; db.syms = db.syms || []; db.imps = db.imps || []; db.uses = db.uses || [];
+    const ix = { db, nameMap: {}, post: {}, fpost: {}, impOut: db.files.map(() => []), impIn: db.files.map(() => []), usedBy: {}, fileUses: db.files.map(() => []), fileSyms: db.files.map(() => []), ti: 0, tf: 0, done: false };
+    db.syms.forEach((s, i) => { const k = String(s[0]).toLowerCase(); (ix.nameMap[k] = ix.nameMap[k] || []).push(i); if (ix.fileSyms[s[2]]) ix.fileSyms[s[2]].push(i); });
+    db.imps.forEach((e) => { if (ix.impOut[e[0]] && ix.impIn[e[1]]) { ix.impOut[e[0]].push(e[1]); ix.impIn[e[1]].push(e[0]); } });
+    db.uses.forEach((e) => { if (ix.fileUses[e[0]]) ix.fileUses[e[0]].push(e[1]); (ix.usedBy[e[1]] = ix.usedBy[e[1]] || []).push(e[0]); });
+    return ix;
+}
+function _faCodeIndexTokens(ix, budgetMs) {
+    const db = ix.db, t0 = Date.now();
+    const add = (map, id, text) => { const seen = {}; const toks = _faSemTokens(text); for (let k = 0; k < toks.length; k++) { const t = toks[k]; if (seen[t]) continue; seen[t] = 1; (map[t] = map[t] || []).push(id); } };
+    while (ix.ti < db.syms.length) {
+        const s = db.syms[ix.ti];
+        add(ix.post, ix.ti, s[0] + ' ' + (s[4] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]));
+        ix.ti++;
+        if ((ix.ti & 255) === 0 && Date.now() - t0 > budgetMs) return false;
+    }
+    while (ix.tf < db.files.length) {
+        const f = db.files[ix.tf];
+        const names = ix.fileSyms[ix.tf].slice(0, 25).map((i) => db.syms[i][0]).join(' ');
+        add(ix.fpost, ix.tf, f[0] + ' ' + (f[3] || '') + ' ' + names);
+        ix.tf++;
+        if ((ix.tf & 255) === 0 && Date.now() - t0 > budgetMs) return false;
+    }
+    ix.done = true;
+    return true;
+}
+function _faCodeIndex(db) { const ix = _faCodeIndexNew(db); _faCodeIndexTokens(ix, 1e9); return ix; }
+// 語意檢索：倒排索引召回候選（定義、檔案）→ 向量餘弦＋BM25＋TextRank重排
+function _faCodeSearch(ix, query, opts) {
+    opts = opts || {};
+    const db = ix.db;
+    const qt = Array.from(new Set(_faSemTokens(query)));
+    const w = (t) => (t.indexOf('c:') === 0 ? 0.3 : (t.indexOf('k:') === 0 ? 0.8 : 1));
+    const score = (post, N) => {
+        const sc = {};
+        for (const t of qt) {
+            const list = post[t];
+            if (!list || list.length > Math.max(50, N * 0.25)) continue;
+            const idf = Math.log(1 + N / (list.length + 1)) * w(t);
+            for (let i = 0; i < list.length; i++) sc[list[i]] = (sc[list[i]] || 0) + idf;
+        }
+        return Object.keys(sc).map((k) => ({ id: Number(k), raw: sc[k] })).sort((a, b) => b.raw - a.raw).slice(0, 40);
+    };
+    const qv = _faSemEmbed(query);
+    const out = [];
+    const symText = (s) => _faCodeSplitName(s[0]) + ' ' + (s[4] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]);
+    const fileText = (f, i) => f[0] + ' ' + (f[3] || '') + ' ' + ix.fileSyms[i].slice(0, 12).map((k) => db.syms[k][0]).join(' ');
+    const mk = (type, cands, textOf) => {
+        const items = cands.map((c) => { const t = textOf(c.id); const cos = Math.max(0, _faSemCos(qv, _faSemEmbed(t))); return { type, id: c.id, text: t, raw: c.raw, base: Math.min(1, 0.6 * cos * 1.6 + 0.4 * (c.raw / (c.raw + 4))) }; });
+        return items.length ? _faRerank(query, items, { wBase: 0.6, wBm: 0.3, wPr: 0.1, diversity: 0.02, topN: opts.n || 8 }) : [];
+    };
+    if (opts.kind !== 'file') mk('symbol', score(ix.post, db.syms.length || 1), (i) => symText(db.syms[i])).forEach((r) => out.push(r));
+    if (opts.kind !== 'symbol') mk('file', score(ix.fpost, db.files.length || 1), (i) => fileText(db.files[i], i)).forEach((r) => out.push(r));
+    out.sort((a, b) => b.score - a.score);
+    return out.slice(0, opts.n || 8);
+}
+function _faCodeNameGuess(name) {
+    const words = _faCodeSplitName(name).split(/\s+/).filter(Boolean);
+    if (!words.length) return '';
+    const v = FA_CODE_VERB_ZH[words[0]];
+    return v ? `名稱拆開是「${words.join(' ')}」，看起來是在${v}${words.length > 1 ? '「' + words.slice(1).join(' ') + '」' : ''}（依名稱推測，程式碼沒有註解）` : `名稱拆開是「${words.join(' ')}」（程式碼沒有註解，無法確定用途）`;
+}
+// 回答問題。回傳 {intent, answer(含markdown), hits, targets, evidence}
+function _faCodeAsk(ix, question, opts) {
+    opts = opts || {};
+    const db = ix.db;
+    const q = String(question || '').trim();
+    const F = (i) => db.files[i] || ['?', '', 0, ''];
+    const S = (i) => db.syms[i];
+    const loc = (i) => { const s = S(i); return F(s[2])[0] + ':' + s[3]; };
+    const symLine = (i) => { const s = S(i); return '- `' + s[0] + '`（' + s[1] + '）— `' + loc(i) + '`' + (s[4] ? '：' + s[4] : '') + (s[5] ? '\n  `' + s[5] + '`' : ''); };
+    // 目標：問題裡出現的識別字（對得到定義的）與路徑（對得到檔案的）
+    const targets = { symbols: [], files: [] };
+    const idRe = /[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*/g;
+    const seen = {};
+    let m;
+    const STOPID = { the: 1, is: 1, in: 1, of: 1, what: 1, where: 1, who: 1, how: 1, does: 1, and: 1, for: 1, used: 1, defined: 1, calls: 1, uses: 1, file: 1, function: 1, class: 1, related: 1, to: 1, by: 1, it: 1, this: 1, that: 1, are: 1, with: 1, from: 1, all: 1, any: 1 };
+    while ((m = idRe.exec(q))) {
+        const tok = m[0];
+        const parts = tok.split(/::|\.|->/);
+        const keys = [tok.toLowerCase()].concat(parts.length > 1 ? [parts[parts.length - 1].toLowerCase(), parts[0].toLowerCase()] : []);
+        for (const k of keys) {
+            if (seen[k] || STOPID[k] || k.length < 2) continue;
+            const defs = ix.nameMap[k];
+            if (defs && defs.length && defs.length <= 40) { seen[k] = 1; targets.symbols.push({ name: k, ids: defs.slice(0, 12), exact: db.syms[defs[0]][0] === tok || db.syms[defs[0]][0] === parts[parts.length - 1] }); break; }
+        }
+    }
+    targets.symbols.sort((a, b) => (b.exact ? 1 : 0) - (a.exact ? 1 : 0) || a.ids.length - b.ids.length);
+    const idTokens = (q.match(idRe) || []).filter((x) => x.length >= 4 && /[_A-Z0-9]|[a-z][A-Z]/.test(x.slice(1)) && !STOPID[x.toLowerCase()]);
+    targets.symbols = targets.symbols.slice(0, 3);
+    const pathRe = /[\w.+\-@\/]+\.[A-Za-z0-9]{1,6}\b|[\w.+\-@]+(?:\/[\w.+\-@]+)+\/?/g;
+    const pseen = {};
+    while ((m = pathRe.exec(q))) {
+        const tok = m[0].toLowerCase().replace(/\/+$/, '');
+        if (tok.length < 3 || pseen[tok]) continue;
+        pseen[tok] = 1;
+        const hit = [];
+        for (let i = 0; i < db.files.length && hit.length < 6; i++) { const p = db.files[i][0].toLowerCase(); if (p === tok || p.endsWith('/' + tok) || (tok.indexOf('/') < 0 && _faCodeBase(p) === tok)) hit.push(i); }
+        if (hit.length) targets.files.push({ name: tok, ids: hit });
+    }
+    // 識別字也可能是「檔名（不含副檔名）」，例如 generate_daily_report、fetch_market_index
+    const stemSeen = {};
+    for (const tok of idTokens) {
+        const k = tok.toLowerCase();
+        if (stemSeen[k] || seen[k] || targets.symbols.some((x) => x.name === k)) continue;
+        stemSeen[k] = 1;
+        const hit = [];
+        for (let i = 0; i < db.files.length && hit.length < 6; i++) { const b = _faCodeBase(db.files[i][0]).toLowerCase(); if (b.replace(/\.[^.]+$/, '') === k) hit.push(i); }
+        if (hit.length) targets.files.push({ name: k, ids: hit });
+    }
+    const unknown = idTokens.filter((x) => { const k = x.toLowerCase(); return !ix.nameMap[k] && !targets.files.some((t) => t.name === k); });
+    // 意圖
+    const who = /誰(?:在)?(?:用|使用|呼叫|引用|依賴|include|import)|被(?:誰|哪些|哪裡).{0,6}(?:用|使用|呼叫|引用|依賴)|哪些.{0,6}(?:用到|使用|呼叫|引用|依賴)|用到|(?:\bcallers?\b|used by|who (?:calls|uses|imports)|references? to|usages?\b|called by)/i.test(q);
+    const where = /在哪|哪裡|哪個檔|位置|宣告|定義在|\bwhere\b|\bdefined\b|definition of|declared/i.test(q);
+    const related = /相關|關聯|關係|\brelated\b|relation/i.test(q);
+    const deps = /依賴|相依|引用了|\bimports?\b|\bincludes?\b|\brequires?\b|depends?/i.test(q);
+    const purpose = /做什麼|功能|用途|作用|目的|是什麼|說明|解釋|怎麼用|\bpurpose\b|what (?:does|is)|\bdoes\b|explain|describe|how does|overview|summary/i.test(q);
+    let intent = who ? 'who' : (where ? 'where' : (related ? 'related' : (deps && targets.files.length ? 'deps' : (purpose ? 'purpose' : ((targets.symbols.length || targets.files.length) ? 'about' : 'search')))));
+    const L = [];
+    const hits = [];
+    const evidence = [];
+    const addEv = (i) => { const s = S(i); evidence.push({ path: F(s[2])[0], line: s[3] }); };
+    const users = (sid) => { const direct = (ix.usedBy[sid] || []); const viaImport = (ix.impIn[S(sid)[2]] || []); const all = Array.from(new Set(direct.concat(viaImport))); all.sort((a, b) => (ix.impIn[b] || []).length - (ix.impIn[a] || []).length); return { direct, viaImport, all }; };
+    const fileCard = (fi) => {
+        const f = F(fi);
+        const c = ['**`' + f[0] + '`**（' + f[1] + '，' + f[2] + '行）' + (f[3] ? '：' + f[3] : '')];
+        const syms = ix.fileSyms[fi] || [];
+        if (syms.length) c.push('定義了 ' + syms.length + ' 個：' + syms.slice(0, 12).map((k) => '`' + S(k)[0] + '`').join('、') + (syms.length > 12 ? '…' : ''));
+        const out = ix.impOut[fi] || [], inn = ix.impIn[fi] || [];
+        const callers = {};
+        (ix.fileSyms[fi] || []).forEach((k) => (ix.usedBy[k] || []).forEach((f2) => { if (f2 !== fi) callers[f2] = 1; }));
+        const cl = Object.keys(callers);
+        if (cl.length) c.push('有 ' + cl.length + ' 個檔案呼叫了它裡面定義的名稱：' + cl.slice(0, 6).map((k) => '`' + F(Number(k))[0] + '`').join('、') + (cl.length > 6 ? '…' : ''));
+        c.push('引用了 ' + out.length + ' 個檔案' + (out.length ? '：' + out.slice(0, 8).map((k) => '`' + F(k)[0] + '`').join('、') + (out.length > 8 ? '…' : '') : '') + '；被 ' + inn.length + ' 個檔案引用' + (inn.length ? '：' + inn.slice(0, 8).map((k) => '`' + F(k)[0] + '`').join('、') + (inn.length > 8 ? '…' : '') : ''));
+        return c.join('\n');
+    };
+    if (intent === 'search' || (!targets.symbols.length && !targets.files.length)) {
+        const r = _faCodeSearch(ix, q, { n: opts.n || 8 });
+        if (unknown.length) L.push('（索引裡沒有名為 ' + unknown.slice(0, 3).map((x) => '`' + x + '`').join('、') + ' 的定義或檔案——可能還沒分析到，或不是在原始碼裡定義的；改用語意搜尋找相近的：）', '');
+        if (!r.length) { L.push('找不到相關的定義或檔案。換個說法試試（函式名稱、檔名或功能描述，中英文都可以）。'); }
+        else {
+            L.push('最相關的結果：', '');
+            r.forEach((x) => {
+                if (x.type === 'symbol') { L.push(symLine(x.id)); hits.push({ type: 'symbol', id: x.id, score: x.score }); addEv(x.id); }
+                else { L.push('- 檔案 `' + F(x.id)[0] + '`' + (F(x.id)[3] ? '：' + F(x.id)[3] : '')); hits.push({ type: 'file', id: x.id, score: x.score }); }
+            });
+            const top = r[0];
+            if (top && top.type === 'symbol') L.push('', '最可能的是 `' + S(top.id)[0] + '`（`' + loc(top.id) + '`）。想知道細節可以問「' + S(top.id)[0] + ' 是做什麼的」或「誰用到 ' + S(top.id)[0] + '」。');
+        }
+        return { intent: 'search', answer: L.join('\n'), hits, targets, evidence };
+    }
+    const T = targets.symbols;
+    if (intent === 'where') {
+        if (T.length) T.forEach((t) => { L.push('**`' + S(t.ids[0])[0] + '`** 的定義位置：', ''); t.ids.forEach((i) => { L.push(symLine(i)); hits.push({ type: 'symbol', id: i }); addEv(i); }); L.push(''); });
+        else targets.files.forEach((t) => t.ids.forEach((i) => { L.push(fileCard(i)); hits.push({ type: 'file', id: i }); }));
+    } else if (intent === 'who') {
+        if (!T.length) { targets.files.forEach((t) => t.ids.forEach((i) => { const inn = ix.impIn[i] || []; const viaUse = {}; (ix.fileSyms[i] || []).forEach((k) => (ix.usedBy[k] || []).forEach((f2) => { if (f2 !== i && inn.indexOf(f2) < 0) viaUse[f2] = (viaUse[f2] || 0) + 1; })); const vu = Object.keys(viaUse).sort((a, b) => viaUse[b] - viaUse[a]); L.push('`' + F(i)[0] + '` 被 ' + inn.length + ' 個檔案引用（import／include）：', ...(inn.length ? inn.slice(0, 25).map((k) => '- `' + F(k)[0] + '`') : ['（沒有）'])); if (vu.length) L.push('', '另外有 ' + vu.length + ' 個檔案呼叫了它裡面定義的名稱：', ...vu.slice(0, 20).map((k) => '- `' + F(Number(k))[0] + '`（用到 ' + viaUse[k] + ' 個）')); L.push(''); hits.push({ type: 'file', id: i }); })); }
+        T.forEach((t) => {
+            const def = t.ids[0];
+            L.push('**`' + S(def)[0] + '`**（定義在 `' + loc(def) + '`）' + (t.ids.length > 1 ? '，另有 ' + (t.ids.length - 1) + ' 個同名定義' : ''), '');
+            const u = users(def);
+            if (u.direct.length) L.push('程式碼裡有出現呼叫／使用它的檔案（' + u.direct.length + '個）：', ...u.direct.slice(0, 20).map((k) => '- `' + F(k)[0] + '`'));
+            else L.push('（沒有記錄到直接呼叫它的檔案' + (db.uses && db.uses.length ? '' : '：這份索引沒有呼叫關係資料，需要重新建立索引才會有') + '）');
+            const vi = u.viaImport.filter((k) => u.direct.indexOf(k) < 0);
+            if (vi.length) L.push('', '引用了定義它的檔案（`' + F(S(def)[2])[0] + '`）的其他檔案（' + vi.length + '個，可能用到）：', ...vi.slice(0, 15).map((k) => '- `' + F(k)[0] + '`'));
+            hits.push({ type: 'symbol', id: def }); addEv(def);
+            L.push('');
+        });
+    } else if (intent === 'deps') {
+        targets.files.forEach((t) => t.ids.forEach((i) => { L.push(fileCard(i), ''); hits.push({ type: 'file', id: i }); }));
+    } else if (intent === 'related') {
+        T.forEach((t) => {
+            const def = t.ids[0], s = S(def), fi = s[2];
+            L.push('**`' + s[0] + '`**（`' + loc(def) + '`）相關的東西：', '');
+            const same = (ix.fileSyms[fi] || []).filter((k) => k !== def).slice(0, 12);
+            if (same.length) L.push('- 同一個檔案裡的其他定義：' + same.map((k) => '`' + S(k)[0] + '`').join('、'));
+            const u = users(def);
+            if (u.direct.length) L.push('- 使用它的檔案：' + u.direct.slice(0, 8).map((k) => '`' + F(k)[0] + '`').join('、'));
+            const out = (ix.impOut[fi] || []).slice(0, 8);
+            if (out.length) L.push('- 它所在的檔案引用了：' + out.map((k) => '`' + F(k)[0] + '`').join('、'));
+            const uses = (ix.fileUses[fi] || []).slice(0, 10).map((k) => S(k)[0]);
+            if (uses.length) L.push('- 它所在的檔案呼叫了：' + Array.from(new Set(uses)).map((n) => '`' + n + '`').join('、'));
+            const sim = _faCodeSearch(ix, s[0] + ' ' + (s[4] || ''), { kind: 'symbol', n: 6 }).filter((x) => x.id !== def).slice(0, 5);
+            if (sim.length) L.push('- 名稱或說明相近的定義：' + sim.map((x) => '`' + S(x.id)[0] + '`（`' + loc(x.id) + '`）').join('、'));
+            hits.push({ type: 'symbol', id: def }); addEv(def);
+            L.push('');
+        });
+        targets.files.forEach((t) => t.ids.forEach((i) => { L.push(fileCard(i), ''); hits.push({ type: 'file', id: i }); }));
+    } else { // purpose／about
+        T.forEach((t) => {
+            t.ids.slice(0, 4).forEach((def, n) => {
+                const s = S(def), fi = s[2];
+                L.push('**`' + s[0] + '`**（' + s[1] + '）定義在 `' + loc(def) + '`' + (n === 0 && t.ids.length > 1 ? '（共 ' + t.ids.length + ' 個同名定義，下面列出前幾個）' : ''));
+                L.push(s[4] ? '說明：' + s[4] : '說明：' + _faCodeNameGuess(s[0]));
+                if (s[5]) L.push('簽名：`' + s[5] + '`');
+                if (F(fi)[3]) L.push('所在檔案的說明：' + F(fi)[3]);
+                const same = (ix.fileSyms[fi] || []).filter((k) => k !== def).slice(0, 8);
+                if (same.length) L.push('同檔案的其他定義：' + same.map((k) => '`' + S(k)[0] + '`').join('、'));
+                const u = users(def);
+                if (u.direct.length) L.push('被這些檔案用到（' + u.direct.length + '個）：' + u.direct.slice(0, 6).map((k) => '`' + F(k)[0] + '`').join('、') + (u.direct.length > 6 ? '…' : ''));
+                L.push('');
+                hits.push({ type: 'symbol', id: def }); addEv(def);
+            });
+        });
+        targets.files.forEach((t) => t.ids.slice(0, 3).forEach((i) => { L.push(fileCard(i), ''); hits.push({ type: 'file', id: i }); }));
+    }
+    return { intent, answer: L.join('\n').trim(), hits, targets, evidence };
+}
+// repo_map的地圖 → 問答用的db（陣列格式，精簡）。maxSyms：每個檔案最多留幾個定義（匯出大型專案時用）
+function _faCodeFromMap(map, opts) {
+    opts = opts || {};
+    const paths = Object.keys(map.files).sort();
+    const fid = {};
+    paths.forEach((p, i) => { fid[p] = i; });
+    const files = [], syms = [], imps = [], uses = [];
+    const seenImp = {};
+    let truncated = 0;
+    paths.forEach((p, i) => {
+        const f = map.files[p];
+        files.push([p, f.lang || '', f.lines || 0, f.doc || '']);
+        let list = f.symbols || [];
+        if (opts.maxSyms && list.length > opts.maxSyms) { truncated += list.length - opts.maxSyms; list = list.slice(0, opts.maxSyms); }
+        list.forEach((x) => { syms.push([x.n, x.k, i, x.l, x.d || '', x.sig || '']); });
+        (f.imports || []).forEach((e) => { if (e.to && fid[e.to] != null) { const key = i + '>' + fid[e.to]; if (!seenImp[key]) { seenImp[key] = 1; imps.push([i, fid[e.to]]); } } });
+    });
+    const byName = {};
+    syms.forEach((x, k) => { (byName[x[0]] = byName[x[0]] || []).push(k); });
+    paths.forEach((p, i) => {
+        (map.files[p].uses || []).forEach((n) => {
+            const defs = byName[n];
+            if (!defs || defs.length > 8) return;
+            defs.forEach((k) => { if (syms[k][2] !== i) uses.push([i, k]); });
+        });
+    });
+    return { v: 1, root: map.root, generated: Date.now(), complete: !!map.index_built, files, syms, imps, uses, truncated_syms: truncated };
+}
+
+// ============================================================
 // Offline Trainer（離線訓練器）。設計來源：使用者的 DomainResolver（YAML規則＋chromadb語意＋TextRank），改成助理內建、純JavaScript：
 //   文字 → 擷取槽位（網址、路徑、引號內容…）→ 規則比對（regex／關鍵字）＋語意檢索（特徵雜湊＋概念詞典）→ 文字重排（BM25＋TextRank＋MMR）
 //   → 決定要呼叫哪個工具與參數 → 執行 → 用TextRank把結果濃縮成回答。完全不需要LLM。
@@ -3142,14 +3391,57 @@ function _faRepoTokens(s) {
 }
 
 // 從一個檔案的文字抽出 import／符號定義／開頭說明
-function _faRepoExtract(path, text) {
+// 呼叫關係（uses）要略過的名稱：語言關鍵字、標準函式庫與非常通用的名稱
+const FA_CODE_STOP = new Set('if else for while switch case return sizeof typeof catch function def class void int char long short float double unsigned signed static const struct enum union typedef defined elif with await async yield lambda assert printf fprintf sprintf snprintf vsnprintf vfprintf puts putchar scanf sscanf fscanf malloc calloc realloc free memcpy memset memmove memcmp strlen strcmp strncmp strcpy strncpy strcat strchr strrchr strstr strtol strtoul atoi atol exit abort fopen fclose fread fwrite fgets fputs fflush perror errno console log warn error info require import then resolve reject Promise Boolean Number String Object Array Symbol Date Math JSON Error Map Set parseInt parseFloat setTimeout setInterval clearTimeout clearInterval isNaN print len range str int float list dict set tuple isinstance issubclass super open format append extend join split strip replace lower upper sorted reversed enumerate zip any all min max sum abs round type getattr setattr hasattr self cls main'.split(' '));
+function _faRepoExtract(path, text, opts) {
     const lang = _faRepoLang(path);
+    const tier = (opts && opts.tier) || 0; // 0完整、1精簡（>5000個原始碼檔）、2最精簡（>25000個）：限制每檔定義數、簽名長度、呼叫名稱數，控制索引大小
+    const maxSyms = tier >= 2 ? 80 : (tier === 1 ? 150 : 400);
+    const sigMax = tier >= 2 ? 0 : (tier === 1 ? 90 : 140);
     const lines = String(text || '').split(/\r?\n/);
     const imports = [];
     const symbols = [];
     const seenImp = new Set();
     const addImp = (spec, kind) => { spec = String(spec || '').trim(); if (!spec || seenImp.has(spec)) return; seenImp.add(spec); imports.push({ spec, kind: kind || 'pkg' }); };
-    const addSym = (n, k, l) => { if (n && symbols.length < 400) symbols.push({ n, k, l, sig: lines[l - 1].trim().slice(0, 140) }); };
+    // 定義上面緊接著的註解（doxygen／JSDoc／#註解／Python docstring）的第一句，當成「這個函式做什麼」
+    const docAbove = (l) => {
+        if (lang === 'py') {
+            const mm = /^[ru]?("""|''')\s*(.*?)\s*(?:\1)?$/.exec((lines[l] || '').trim());
+            if (mm && mm[2]) return mm[2].slice(0, 120);
+        }
+        const buf = [];
+        let i = l - 2;
+        if (i >= 0 && /^\*\/\s*$/.test(lines[i].trim())) i--;
+        for (let n = 0; i >= 0 && n < 8; i--, n++) {
+            const t = lines[i].trim();
+            let c;
+            if ((c = /^\/\*+!?\s*(.*?)\s*(?:\*\/)?$/.exec(t))) { if (c[1]) buf.unshift(c[1]); break; }
+            if ((c = /^(?:\/\/+[\/!]?|\*+(?!\/)|#+(?!\s*(?:include|define|if|ifdef|ifndef|endif|else|elif|pragma|undef)\b)(?!!)|--+)\s?(.*)$/.exec(t))) { buf.unshift(c[1].replace(/\*\/\s*$/, '')); continue; }
+            break;
+        }
+        if (!buf.length) return '';
+        const body = buf.filter((x) => !/^[@\\](?:param|return|returns|retval|note|see|since|author|date|file|throws|tparam)\b/i.test(x));
+        const br = body.findIndex((x) => /^[@\\]brief\b/i.test(x));
+        let out = br >= 0 ? body[br].replace(/^[@\\]brief\s*/i, '') : (body.find((x) => x && !/^[-=*_#\s]+$/.test(x)) || '');
+        out = out.replace(/^[@\\]\w+\s*/, '').trim();
+        return out.length > 2 ? out.slice(0, 120) : '';
+    };
+    const addSym = (n, k, l) => { if (n && symbols.length < maxSyms) { const o = { n, k, l }; if (sigMax) o.sig = lines[l - 1].trim().slice(0, sigMax); const d = docAbove(l); if (d) o.d = d; symbols.push(o); } };
+    // 這個檔案呼叫了哪些名稱（識別字後面接括號）：之後跟全專案的定義對起來，就知道「誰用到這個函式」
+    const getUses = () => {
+        if (lang === 'bb') return [];
+        const cap = tier >= 2 ? 12 : (tier === 1 ? 30 : 60);
+        const own = {};
+        symbols.forEach((x) => { own[x.n] = 1; });
+        const cnt = {};
+        let um, guard = 0;
+        const reC = /\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(/g;
+        while ((um = reC.exec(String(text || ''))) && guard++ < 30000) { const w = um[1]; if (FA_CODE_STOP.has(w) || own[w]) continue; cnt[w] = (cnt[w] || 0) + 1; }
+        const reN = /\bnew\s+([A-Z][A-Za-z0-9_]{2,})/g;
+        guard = 0;
+        while ((um = reN.exec(String(text || ''))) && guard++ < 5000) { const w = um[1]; if (!own[w]) cnt[w] = (cnt[w] || 0) + 1; }
+        return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]).slice(0, cap);
+    };
     const reserved = /^(if|for|while|switch|catch|function|return|else|do|try|with|await|new|typeof|delete|void|throw|constructor)$/;
     const src = String(text || '');
     if (lang === 'js' || lang === 'ts') {
@@ -3227,7 +3519,7 @@ function _faRepoExtract(path, text) {
             else if ((q = /^\s*(SRC_URI|DEPENDS|RDEPENDS:\S+|PACKAGECONFIG|SYSTEMD_SERVICE:\S+|EXTRA_OEMESON)\s*(?:\+|:append|:prepend|\?)?=/.exec(ln))) addSym(q[1], 'var', i + 1);
         });
         const sm = /^\s*(?:SUMMARY|DESCRIPTION)\s*=\s*"([^"]*)"/m.exec(src);
-        if (sm) return { lang, imports, symbols, doc: sm[1].slice(0, 200), lines: lines.length };
+        if (sm) return { lang, imports, symbols, doc: sm[1].slice(0, 200), lines: lines.length, uses: [] };
     } else if (lang === 'rb' || lang === 'php' || lang === 'sh' || lang === 'lua') {
         lines.forEach((ln, i) => {
             let q;
@@ -3250,15 +3542,16 @@ function _faRepoExtract(path, text) {
         });
     }
     let doc = '';
+    if (lang === 'py') { const dm = /^(?:\s*(?:#[^\n]*)?\n)*\s*[ru]?("""|''')([\s\S]*?)\1/.exec(src.slice(0, 3000)); if (dm) { const first = dm[2].split(/\n/).map((x) => x.trim()).filter((x) => x && !/^[-=*_#\s]+$/.test(x)).slice(0, 2).join(' '); if (first) return { lang, imports, symbols, doc: first.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses() }; } }
     const hashLang = lang === 'py' || lang === 'sh' || lang === 'rb' || lang === 'php';
     const cmtRe = hashLang ? /^(?:#+|"""|''')\s*(.*)$/ : (lang === 'lua' ? /^--+\s*(.*)$/ : /^(?:\/\/+|\*+|\/\*+)\s*(.*)$/);
     for (let i = 0; i < Math.min(lines.length, 40); i++) {
         const t = lines[i].trim();
         if (!t || /^#!/.test(t) || /^(['"]use strict['"];?|\/\*+|\*\/)$/.test(t)) continue;
         const c = cmtRe.exec(t);
-        if (c && c[1] && !/^(eslint|tslint|-\*-|noqa|pylint|@ts-|copyright|license)/i.test(c[1])) { doc += (doc ? ' ' : '') + c[1].replace(/\*\/\s*$/, '').replace(/("""|''')\s*$/, '').trim(); if (doc.length > 160) break; } else if (doc) break; else if (!c) break;
+        if (c && c[1] && !/^(eslint|tslint|-\*-|noqa|pylint|@ts-|copyright|license)/i.test(c[1])) { doc += (doc ? ' ' : '') + c[1].replace(/^[@\\]brief\s*/i, '').replace(/\*\/\s*$/, '').replace(/("""|''')\s*$/, '').trim(); if (doc.length > 160) break; } else if (doc) break; else if (!c) break;
     }
-    return { lang, imports, symbols, doc: doc.slice(0, 200), lines: lines.length };
+    return { lang, imports, symbols, doc: doc.slice(0, tier >= 2 ? 80 : 200), lines: lines.length, uses: getUses() };
 }
 
 // 依語言產生「這個import可能指到哪些檔案/資料夾」的候選路徑（由呼叫端用目錄清單確認是否存在）
@@ -3288,7 +3581,9 @@ function _faRepoResolveCandidates(fromPath, imp, lang) {
             push(b + '.py'); push(b ? b + '/__init__.py' : '__init__.py');
         } else {
             const rest = spec.replace(/\./g, '/');
-            for (const root of ['', 'src', dir]) {
+            const roots = ['', 'src']; // 同一層、以及往上每一層（腳本常用 from config import x，config在專案根）
+            for (let d = dir, n = 0; d && n < 8; d = _faRepoDirname(d), n++) roots.push(d);
+            for (const root of roots) {
                 const b = _faRepoJoin(root, rest);
                 if (b) { push(b + '.py'); push(b + '/__init__.py'); }
             }
@@ -3359,6 +3654,11 @@ function _faRepoParseManifest(name, text) {
     } catch (e) { out.parse_error = String(e.message || e).slice(0, 80); }
     return out;
 }
+
+/* CODEUI-BEGIN */
+const FA_CODEUI_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>__TITLE__</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader h1{font-size:16px;margin:0;word-break:break-all}header .st{color:var(--mut);font-size:12px}\nnav{display:flex;gap:4px;margin-left:auto}nav button{padding:5px 12px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;font-size:13px}\nnav button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#load{padding:30px;text-align:center;color:var(--mut)}#bar{height:6px;background:var(--bd);border-radius:3px;margin:10px auto;max-width:420px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac)}\n#app{flex:1;display:flex;min-height:0}\n.pane{display:none;flex:1;min-height:0}.pane.on{display:flex}\n.side{width:330px;max-width:42vw;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n.side input,.side select{margin:8px 10px 0;padding:7px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}\n.list{flex:1;overflow:auto;padding:8px 6px 14px}\n.list a,.list summary{display:block;padding:3px 8px;border-radius:5px;color:var(--fg);text-decoration:none;cursor:pointer;word-break:break-all}\n.list a:hover,.list summary:hover{background:var(--bd)}.list .k{color:var(--mut);font-size:12px;margin-left:6px}.list details>div{margin-left:12px}\n.main{flex:1;overflow:auto;padding:16px 26px 70px;min-width:0}\nh1.t{font-size:20px;margin:0 0 8px;word-break:break-all}h1,h2,h3{line-height:1.3}h2{font-size:16px;margin:20px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}h3{font-size:14px;margin:14px 0 4px}\n.mut{color:var(--mut)}code,pre,textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}\n:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}\na.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}\ntable{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf);position:sticky;top:0}\n.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}\n.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er);white-space:pre-wrap}\n.md ul,.md ol{padding-left:22px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}\nsvg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px;margin:6px 0}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}\n.ask{display:flex;gap:8px}.ask input{flex:1;padding:9px 11px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}\nbutton.b{padding:7px 14px;border:1px solid var(--ac);background:var(--ac);color:#fff;border-radius:6px;cursor:pointer}button.b.s{background:var(--bg);color:var(--ac)}\n.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 9px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px;color:var(--mut)}.chips span:hover{border-color:var(--ac);color:var(--ac)}\n.qa{border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:12px 0}.qa .q{font-weight:600;margin-bottom:4px}\ntextarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}\n.res{overflow:auto;max-height:60vh;border:1px solid var(--bd);border-radius:6px;margin-top:8px}\n@media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}\n</style></head><body>\n<header><h1 id=\"ttl\"></h1><span class=\"st\" id=\"stat\"></span><nav id=\"nav\"></nav></header>\n<div id=\"load\"><div id=\"lmsg\">載入中…</div><div id=\"bar\"><i id=\"barfill\"></i></div></div>\n<div id=\"app\" style=\"display:none\">\n<section class=\"pane\" id=\"p-wiki\"><div class=\"side\"><input id=\"wq\" placeholder=\"搜尋頁面…\"><div class=\"list\" id=\"wl\"></div></div><div class=\"main\" id=\"wm\"></div></section>\n<section class=\"pane\" id=\"p-files\"><div class=\"side\"><input id=\"fq\" placeholder=\"搜尋檔案路徑…\"><div class=\"list\" id=\"fl\"></div></div><div class=\"main\" id=\"fm\"></div></section>\n<section class=\"pane\" id=\"p-syms\"><div class=\"side\"><input id=\"sq\" placeholder=\"搜尋函式／類別名稱或說明…\"><select id=\"sk\"><option value=\"\">所有種類</option></select><div class=\"list\" id=\"sl\"></div></div><div class=\"main\" id=\"sm\"></div></section>\n<section class=\"pane\" id=\"p-ask\"><div class=\"main\" id=\"am\" style=\"max-width:980px\">\n<h1 class=\"t\">問答（離線，不需要網路或AI）</h1>\n<div class=\"mut\">像 doxygen＋語意搜尋：依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>\n<div class=\"ask\" style=\"margin-top:10px\"><input id=\"aq\" placeholder=\"例如：parse_config 是做什麼的？／main 在哪裡定義？／誰用到 Logger？／登入流程相關的檔案\" autofocus><button class=\"b\" id=\"ago\">問</button></div>\n<div class=\"chips\" id=\"achips\"></div><div id=\"aout\"></div></div></section>\n<section class=\"pane\" id=\"p-sql\"><div class=\"main\" id=\"qm\" style=\"max-width:1100px\">\n<h1 class=\"t\">SQL 查詢（內嵌 SQLite）</h1>\n<div class=\"mut\">資料表：files、symbols、imports（src→dst，檔案之間的引用）、uses（file_id 呼叫了 symbol_id）、pages、glossary、meta；檢視：v_symbols、v_imports、v_uses。id 是序號（從0開始）。Ctrl+Enter 執行。</div>\n<div style=\"margin:8px 0\"><select id=\"qex\"></select></div>\n<textarea id=\"qsql\" spellcheck=\"false\"></textarea>\n<div style=\"margin:8px 0;display:flex;gap:8px;align-items:center\"><button class=\"b\" id=\"qrun\">執行</button><button class=\"b s\" id=\"qcsv\">下載CSV</button><span class=\"mut\" id=\"qinfo\"></span></div>\n<div class=\"res\" id=\"qres\"></div>\n<details style=\"margin-top:12px\"><summary class=\"mut\">資料表結構</summary><pre id=\"qschema\"></pre></details></div></section>\n</div>\n<script id=\"cfg\" type=\"application/json\">__CFG__</script>\n<script id=\"payload\" type=\"application/json\">__PAYLOAD__</script>\n<script>\n__RUNTIME__\n</script>\n<script>\n(function(){\nvar CFG=JSON.parse(document.getElementById('cfg').textContent);\nvar DB=null,IX=null,SQLDB=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[];\nfunction $(s){return document.querySelector(s)}\nfunction esc(s){return String(s==null?'':s).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}\nfunction b64u8(b){var bin=atob(b),n=bin.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u}\nasync function gunzip(u8,gz){if(!gz)return u8;var r=new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip')));return new Uint8Array(await r.arrayBuffer())}\nfunction setLoad(msg,pct){$('#lmsg').textContent=msg;if(pct!=null)$('#barfill').style.width=Math.round(pct)+'%'}\nfunction tick(){return new Promise(function(r){setTimeout(r,0)})}\nfunction loadScript(text){return new Promise(function(res,rej){var u=URL.createObjectURL(new Blob([text],{type:'application/javascript'}));var s=document.createElement('script');s.src=u;s.onload=function(){URL.revokeObjectURL(u);res()};s.onerror=function(){rej(new Error('載入SQLite引擎失敗'))};document.head.appendChild(s)})}\nfunction rows(sql){var r=SQLDB.exec(sql);return r.length?r[0].values:[]}\nfunction F(i){return DB.files[i]||['?','',0,'']}\nfunction S(i){return DB.syms[i]}\nfunction link(path,label){return '<a class=\"l\" data-go=\"file:'+esc(path)+'\">'+esc(label||path)+'</a>'}\nfunction slink(name){return '<a class=\"l\" data-go=\"sym:'+esc(name)+'\">'+esc(name)+'</a>'}\n/* ---- 迷你Markdown ---- */\nfunction inline(t){\n  t=esc(t);\n  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\\d+(-\\d+)?$/,'');return fileMap[p]!=null?'<a class=\"l\" data-go=\"file:'+esc(p)+'\"><code>'+c+'</code></a>':(IX&&IX.nameMap[c.toLowerCase()]?'<a class=\"l\" data-go=\"sym:'+esc(c)+'\"><code>'+c+'</code></a>':'<code>'+c+'</code>')});\n  t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<b>$1</b>').replace(/\\[([^\\]]+)\\]\\(page:([^)]+)\\)/g,'<a class=\"l\" data-go=\"page:$2\">$1</a>').replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  return t;\n}\nfunction mdToHtml(md){\n  var lines=String(md||'').split('\\n'),h='',i=0;\n  while(i<lines.length){\n    var l=lines[i];\n    if(/^```/.test(l)){var lang=l.replace(/^```/,'').trim();var buf=[];i++;while(i<lines.length&&!/^```/.test(lines[i])){buf.push(lines[i]);i++}i++;\n      if(lang==='mermaid'){var sv=mermaidLite(buf.join('\\n'));h+=sv||'<pre>'+esc(buf.join('\\n'))+'</pre>'}else h+='<pre>'+esc(buf.join('\\n'))+'</pre>';continue}\n    var m;\n    if((m=/^(#{1,4})\\s+(.*)$/.exec(l))){var n=m[1].length;h+='<h'+n+'>'+inline(m[2])+'</h'+n+'>';i++;continue}\n    if(/^\\|.*\\|\\s*$/.test(l)&&i+1<lines.length&&/^\\|[\\s:|-]+\\|\\s*$/.test(lines[i+1])){var hd=l.split('|').slice(1,-1);i+=2;var rows=[];while(i<lines.length&&/^\\|.*\\|\\s*$/.test(lines[i])){rows.push(lines[i].split('|').slice(1,-1));i++}\n      h+='<table><tr>'+hd.map(function(c){return '<th>'+inline(c.trim())+'</th>'}).join('')+'</tr>'+rows.map(function(r){return '<tr>'+r.map(function(c){return '<td>'+inline(c.trim())+'</td>'}).join('')+'</tr>'}).join('')+'</table>';continue}\n    if(/^\\s*[-*]\\s+/.test(l)){var it=[];while(i<lines.length&&/^\\s*[-*]\\s+/.test(lines[i])){it.push('<li>'+inline(lines[i].replace(/^\\s*[-*]\\s+/,''))+'</li>');i++}h+='<ul>'+it.join('')+'</ul>';continue}\n    if(/^\\s*\\d+\\.\\s+/.test(l)){var it2=[];while(i<lines.length&&/^\\s*\\d+\\.\\s+/.test(lines[i])){it2.push('<li>'+inline(lines[i].replace(/^\\s*\\d+\\.\\s+/,''))+'</li>');i++}h+='<ol>'+it2.join('')+'</ol>';continue}\n    if(/^>\\s?/.test(l)){var q=[];while(i<lines.length&&/^>\\s?/.test(lines[i])){q.push(lines[i].replace(/^>\\s?/,''));i++}h+='<blockquote>'+inline(q.join(' '))+'</blockquote>';continue}\n    if(!l.trim()){i++;continue}\n    var p=[l];i++;while(i<lines.length&&lines[i].trim()&&!/^(#{1,4}\\s|```|\\s*[-*]\\s|\\s*\\d+\\.\\s|>|\\|)/.test(lines[i])){p.push(lines[i]);i++}\n    h+='<p>'+inline(p.join(' '))+'</p>';\n  }\n  return h;\n}\n/* ---- 迷你流程圖（只支援 graph LR/TD 的節點與箭頭）---- */\nfunction mermaidLite(src){\n  var ls=src.split('\\n').map(function(x){return x.trim()}).filter(Boolean);\n  if(!ls.length||!/^(graph|flowchart)\\s+(LR|RL|TD|TB|BT)/i.test(ls[0]))return '';\n  var dir=/LR|RL/i.test(ls[0])?'LR':'TD';var nodes={},order=[],edges=[];\n  function nd(tok){var m=/^([A-Za-z0-9_\\-.]+)\\s*(?:\\[\\[?\"?([^\\]\"]*)\"?\\]?\\]|\\(\\(?\"?([^)\"]*)\"?\\)?\\)|\\{\"?([^}\"]*)\"?\\})?$/.exec(tok.trim());if(!m)return null;var id=m[1];var label=m[2]||m[3]||m[4];if(!nodes[id]){nodes[id]={id:id,label:label||id};order.push(id)}else if(label)nodes[id].label=label;return id}\n  for(var k=1;k<ls.length;k++){var ln=ls[k];if(/^(subgraph|end|classDef|class|style|linkStyle|%%)/.test(ln))continue;\n    var parts=ln.split(/\\s*(?:-->|---|-\\.->|==>)\\s*(?:\\|([^|]*)\\|\\s*)?/);\n    var ids=[];for(var j=0;j<parts.length;j+=2){var id=nd(parts[j]||'');if(!id)return '';ids.push({id:id,lab:parts[j+1]||''})}\n    for(var e=0;e+1<ids.length;e++)edges.push({a:ids[e].id,b:ids[e+1].id,lab:ids[e+1].lab||''});}\n  if(!order.length||order.length>60)return '';\n  var rank={};order.forEach(function(id){rank[id]=0});\n  for(var it=0;it<order.length;it++){var ch=false;edges.forEach(function(e){if(e.a!==e.b&&rank[e.b]<rank[e.a]+1&&rank[e.a]+1<order.length){rank[e.b]=rank[e.a]+1;ch=true}});if(!ch)break}\n  var cols={};order.forEach(function(id){(cols[rank[id]]=cols[rank[id]]||[]).push(id)});\n  var W=170,H=44,GX=60,GY=22,pos={},maxc=0,maxr=0;\n  Object.keys(cols).forEach(function(r){cols[r].forEach(function(id,idx){pos[id]=dir==='LR'?{x:r*(W+GX)+10,y:idx*(H+GY)+10}:{x:idx*(W+GX)+10,y:r*(H+GY+20)+10};maxc=Math.max(maxc,pos[id].x+W+10);maxr=Math.max(maxr,pos[id].y+H+10)})});\n  var s='<svg class=\"dg\" viewBox=\"0 0 '+maxc+' '+maxr+'\" width=\"'+Math.min(maxc,900)+'\"><defs><marker id=\"ar\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" style=\"fill:var(--mut);stroke:none\"/></marker></defs>';\n  edges.forEach(function(e){var a=pos[e.a],b=pos[e.b];if(!a||!b)return;var x1=dir==='LR'?a.x+W:a.x+W/2,y1=dir==='LR'?a.y+H/2:a.y+H,x2=dir==='LR'?b.x:b.x+W/2,y2=dir==='LR'?b.y+H/2:b.y;var mx=(x1+x2)/2,my=(y1+y2)/2;\n    s+='<path d=\"M'+x1+','+y1+' C'+(dir==='LR'?mx:x1)+','+(dir==='LR'?y1:my)+' '+(dir==='LR'?mx:x2)+','+(dir==='LR'?y2:my)+' '+x2+','+y2+'\" marker-end=\"url(#ar)\"/>';if(e.lab)s+='<text x=\"'+mx+'\" y=\"'+(my-3)+'\" text-anchor=\"middle\">'+esc(e.lab)+'</text>'});\n  order.forEach(function(id){var p=pos[id],lb=nodes[id].label;if(lb.length>24)lb=lb.slice(0,23)+'…';s+='<rect x=\"'+p.x+'\" y=\"'+p.y+'\" width=\"'+W+'\" height=\"'+H+'\" rx=\"6\"/><text x=\"'+(p.x+W/2)+'\" y=\"'+(p.y+H/2+4)+'\" text-anchor=\"middle\">'+esc(lb)+'</text>'});\n  return s+'</svg>';\n}\n\nasync function boot(){\n  $('#ttl').textContent=CFG.title;\n  var P=JSON.parse(document.getElementById('payload').textContent);\n  if(CFG.mode==='sqlite'){\n    setLoad('解壓縮 SQLite 引擎…',3);\n    var js=new TextDecoder().decode(await gunzip(b64u8(P.js),CFG.sql.gz.js));\n    var wasm=await gunzip(b64u8(P.wasm),CFG.sql.gz.wasm);\n    await loadScript(js);\n    setLoad('載入資料庫…',10);\n    var dbBytes=await gunzip(b64u8(P.db),CFG.sql.gz.db);\n    var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});\n    SQLDB=new SQL.Database(dbBytes);\n    setLoad('讀取資料表…',18);await tick();\n    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};\n    PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});\n    rows('SELECT term,definition FROM glossary').forEach(function(r){GLOSS[r[0]]={definition:r[1]}});\n  }else{\n    setLoad('解壓縮資料…',5);\n    var j=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(P.data),CFG.dataGz)));\n    DB=j;PAGES=j.pages||[];GLOSS=j.glossary||{};\n  }\n  DB.files.forEach(function(f,i){fileMap[f[0]]=i});\n  setLoad('建立檢索索引…',22);await tick();\n  IX=_faCodeIndexNew(DB);\n  var total=(DB.syms.length+DB.files.length)||1;\n  while(!_faCodeIndexTokens(IX,120)){setLoad('建立檢索索引… '+Math.round((IX.ti+IX.tf)/total*100)+'%',22+78*(IX.ti+IX.tf)/total);await tick()}\n  $('#load').style.display='none';$('#app').style.display='flex';\n  $('#stat').textContent=CFG.stats.files+' 個檔案 · '+CFG.stats.symbols+' 個定義 · '+CFG.stats.imports+' 條引用 · '+CFG.stats.uses+' 條呼叫'+(CFG.complete?'':' · （部分索引）')+' · 產生於 '+new Date(CFG.generated).toLocaleString();\n  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答']];if(SQLDB)tabs.push(['sql','SQL']);\n  $('#nav').innerHTML=tabs.map(function(t){return '<button data-t=\"'+t[0]+'\">'+t[1]+'</button>'}).join('');\n  $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};\n  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();\n  show(PAGES.length?'wiki':'ask');\n}\nfunction show(t){document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});if(t==='ask')$('#aq').focus()}\nfunction go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);\n  if(k==='file'){show('files');showFile(v)}else if(k==='sym'){show('syms');showSym(v)}else if(k==='page'){show('wiki');showPage(v)}}\ndocument.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go)}});\n/* ---- 百科 ---- */\nfunction initWiki(){\n  function render(){var q=$('#wq').value.trim().toLowerCase();var h='';\n    PAGES.forEach(function(p){if(q&&p.title.toLowerCase().indexOf(q)<0&&String(p.md).toLowerCase().indexOf(q)<0)return;h+='<a data-go=\"page:'+esc(p.id)+'\">'+esc(p.title)+(p.auto?'<span class=\"k\">草稿</span>':'')+'</a>'});\n    var gl=Object.keys(GLOSS);if(gl.length&&!q)h+='<div class=\"mut\" style=\"padding:8px 8px 2px\">名詞</div>'+gl.sort().map(function(t){return '<a data-go=\"term:'+esc(t)+'\">'+esc(t)+'</a>'}).join('');\n    $('#wl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的頁面</div>'}\n  $('#wq').oninput=render;render();\n  if(PAGES.length)showPage(PAGES[0].id);else{var h2='<h1 class=\"t\">專案概況</h1><div class=\"mut\">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}\n}\nfunction showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p){$('#wm').innerHTML='<div class=\"note\">沒有這個頁面</div>';return}\n  $('#wm').innerHTML='<div class=\"md\">'+(p.auto?'<div class=\"note\">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(p.md)+'</div>';$('#wm').scrollTop=0}\n/* ---- 檔案 ---- */\nfunction initFiles(){\n  var tree={};DB.files.forEach(function(f,i){var segs=f[0].split('/'),n=tree;for(var k=0;k<segs.length-1;k++){n=(n.d=n.d||{})[segs[k]]=(n.d&&n.d[segs[k]])||{}}(n.f=n.f||[]).push(i)});\n  function node(n,depth){var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/</summary><div>'+node(n.d[k],depth+1)+'</div></details>'});\n    (n.f||[]).slice(0,300).forEach(function(i){h+='<a data-go=\"file:'+esc(F(i)[0])+'\">'+esc(F(i)[0].split('/').pop())+'<span class=\"k\">'+(IX.fileSyms[i]||[]).length+'</span></a>'});return h}\n  var lazy=null;\n  function render(){var q=$('#fq').value.trim().toLowerCase();\n    if(!q){if(!lazy)lazy=node(tree,0);$('#fl').innerHTML=lazy;return}\n    var h='',c=0;for(var i=0;i<DB.files.length&&c<200;i++){if(DB.files[i][0].toLowerCase().indexOf(q)>=0){c++;h+='<a data-go=\"file:'+esc(DB.files[i][0])+'\">'+esc(DB.files[i][0])+'</a>'}}\n    $('#fl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的檔案</div>'}\n  $('#fq').oninput=render;render();\n  $('#fm').innerHTML='<h1 class=\"t\">檔案</h1><div class=\"mut\">左邊選一個檔案，看它定義了什麼、引用了誰、被誰引用。</div>';\n}\nfunction showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class=\"note\">索引裡沒有這個檔案</div>';return}\n  var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];\n  var h='<h1 class=\"t\">'+esc(path)+'</h1><div><span class=\"tag\">'+esc(f[1])+'</span><span class=\"tag\">'+f[2]+' 行</span></div>';\n  if(f[3])h+='<p>'+esc(f[3])+'</p>';\n  h+='<h2>定義（'+syms.length+'）</h2>';\n  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class=\"tag\">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class=\"mut\">（沒有抽到定義）</div>';\n  h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有內部引用）</div>');\n  h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有已分析的檔案引用它）</div>');\n  if(uses.length){var seen={};h+='<h2>呼叫了別處的定義（'+uses.length+'）</h2>'+uses.slice(0,200).filter(function(k){return !seen[k]&&(seen[k]=1)}).map(function(k){var s=S(k);return '<div>'+slink(s[0])+' <span class=\"mut\">'+esc(F(s[2])[0])+':'+s[3]+'</span></div>'}).join('')}\n  $('#fm').innerHTML=h;$('#fm').scrollTop=0}\n/* ---- 符號 ---- */\nfunction initSyms(){\n  var kinds={};DB.syms.forEach(function(s){kinds[s[1]]=(kinds[s[1]]||0)+1});\n  $('#sk').innerHTML='<option value=\"\">所有種類</option>'+Object.keys(kinds).sort(function(a,b){return kinds[b]-kinds[a]}).map(function(k){return '<option value=\"'+esc(k)+'\">'+esc(k)+'（'+kinds[k]+'）</option>'}).join('');\n  var order=null;\n  function render(){var q=$('#sq').value.trim().toLowerCase(),kd=$('#sk').value,h='',c=0;\n    if(!order){order=DB.syms.map(function(s,i){return i}).sort(function(a,b){return String(DB.syms[a][0]).toLowerCase()<String(DB.syms[b][0]).toLowerCase()?-1:1})}\n    for(var n=0;n<order.length&&c<300;n++){var s=DB.syms[order[n]];if(kd&&s[1]!==kd)continue;if(q&&String(s[0]).toLowerCase().indexOf(q)<0&&String(s[4]).toLowerCase().indexOf(q)<0)continue;c++;h+='<a data-go=\"sym:'+esc(s[0])+'\">'+esc(s[0])+'<span class=\"k\">'+esc(s[1])+' · '+esc(F(s[2])[0].split('/').pop())+'</span></a>'}\n    $('#sl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的結果</div>'+(c>=300?'':'')}\n  $('#sq').oninput=render;$('#sk').onchange=render;render();\n  $('#sm').innerHTML='<h1 class=\"t\">符號</h1><div class=\"mut\">函式、類別、結構、巨集…（最多列300筆，用上面的搜尋縮小範圍）。</div>';\n}\nfunction showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];\n  if(!ids.length){$('#sm').innerHTML='<div class=\"note\">索引裡沒有「'+esc(name)+'」</div>';return}\n  var h='<h1 class=\"t\">'+esc(S(ids[0])[0])+'</h1><div class=\"mut\">'+ids.length+' 個定義</div>';\n  ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];\n    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';\n    h+=s[4]?'<p>'+esc(s[4])+'</p>':'<p class=\"mut\">'+esc(_faCodeNameGuess(s[0]))+'</p>';\n    if(s[5])h+='<pre>'+esc(s[5])+'</pre>';\n    var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var inn=IX.impIn[fi]||[];if(inn.length)h+='<div class=\"mut\" style=\"margin-top:4px\">定義它的檔案被 '+inn.length+' 個檔案引用：'+inn.slice(0,12).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var same=(IX.fileSyms[fi]||[]).filter(function(x){return x!==k}).slice(0,15);if(same.length)h+='<div style=\"margin-top:4px\"><b>同檔案的其他定義：</b> '+same.map(function(x){return slink(S(x)[0])}).join('、')+'</div>'});\n  $('#sm').innerHTML=h;$('#sm').scrollTop=0}\n/* ---- 問答 ---- */\nfunction initAsk(){\n  var ex=['這個專案是做什麼的','哪些檔案被最多檔案引用','處理設定檔的函式在哪','錯誤處理相關的程式'];\n  var big=DB.syms.length?DB.syms[0][0]:'main';\n  ex=[big+' 是做什麼的','where is '+big+' defined','誰用到 '+big,big+' 相關的東西'].concat(ex.slice(2));\n  $('#achips').innerHTML=ex.map(function(x){return '<span>'+esc(x)+'</span>'}).join('');\n  $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};\n  $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};\n}\nfunction ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r=_faCodeAsk(IX,q);\n  var ms=Math.round(performance.now()-t0);\n  var h='<div class=\"qa\"><div class=\"q\">'+esc(q)+'</div><div class=\"md\">'+mdToHtml(r.answer)+'</div><div class=\"mut\" style=\"margin-top:6px\">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div></div>';\n  $('#aout').insertAdjacentHTML('afterbegin',h);$('#aq').select()}\n/* ---- SQL ---- */\nvar EXAMPLES=[\n['被最多檔案引用的檔案（Top 30）',\"SELECT path, imported_by_n AS 被引用數, imports_n AS 引用數 FROM files ORDER BY imported_by_n DESC LIMIT 30\"],\n['某檔案引用了誰／被誰引用（改 LIKE 裡的檔名）',\"SELECT 'imports' AS 方向, dst_path AS 檔案 FROM v_imports WHERE src_path LIKE '__FILE__'\\nUNION ALL\\nSELECT 'imported_by', src_path FROM v_imports WHERE dst_path LIKE '__FILE__'\"],\n['某檔案的所有間接依賴（遞迴）',\"WITH RECURSIVE dep(id, depth) AS (\\n  SELECT id, 0 FROM (SELECT id FROM files WHERE path LIKE '__FILE__' ORDER BY id LIMIT 1)\\n  UNION\\n  SELECT i.dst, dep.depth + 1 FROM imports i JOIN dep ON i.src = dep.id WHERE dep.depth < 6\\n)\\nSELECT f.path, MIN(dep.depth) AS 距離 FROM dep JOIN files f ON f.id = dep.id GROUP BY f.path ORDER BY 距離, f.path\"],\n['最常被呼叫的函式（依呼叫它的檔案數）',\"SELECT symbol AS 名稱, defined_in AS 定義在, COUNT(DISTINCT caller_file) AS 呼叫的檔案數 FROM v_uses GROUP BY symbol, defined_in ORDER BY 呼叫的檔案數 DESC LIMIT 30\"],\n['某個符號的所有使用者（改名稱）',\"SELECT DISTINCT caller_file AS 使用的檔案, defined_in AS 定義在 FROM v_uses WHERE symbol = '__SYM__'\"],\n['同名定義（可能衝突或多型）',\"SELECT name, COUNT(*) AS 個數, group_concat(path, '  |  ') AS 位置 FROM v_symbols GROUP BY name HAVING COUNT(*) > 1 ORDER BY 個數 DESC LIMIT 50\"],\n['定義最多的檔案',\"SELECT f.path, COUNT(*) AS 定義數 FROM symbols s JOIN files f ON f.id = s.file_id GROUP BY f.id ORDER BY 定義數 DESC LIMIT 30\"],\n['孤立檔案（沒人引用、也沒引用別人）',\"SELECT path, lines FROM files WHERE imports_n = 0 AND imported_by_n = 0 ORDER BY lines DESC LIMIT 100\"],\n['說明（註解）裡有某個關鍵字的定義',\"SELECT name, kind, path, line, doc FROM v_symbols WHERE doc LIKE '%config%' ORDER BY name LIMIT 50\"],\n['各目錄的檔案數與行數',\"SELECT dir AS 目錄, COUNT(*) AS 檔案數, SUM(lines) AS 總行數 FROM files GROUP BY dir ORDER BY 總行數 DESC LIMIT 40\"],\n['各語言統計',\"SELECT lang AS 語言, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC\"]\n];\nfunction initSql(){\n  var hot='%',sym='main';\n  try{var a=SQLDB.exec('SELECT name FROM files ORDER BY imports_n+imported_by_n DESC LIMIT 1');if(a.length)hot='%'+a[0].values[0][0]+'%';var b=SQLDB.exec('SELECT symbol FROM v_uses GROUP BY symbol ORDER BY COUNT(*) DESC LIMIT 1');if(b.length)sym=b[0].values[0][0]}catch(e){}\n  EXAMPLES.forEach(function(x){x[1]=x[1].split('__FILE__').join(hot).split('__SYM__').join(sym)});\n  $('#qex').innerHTML='<option value=\"\">範例查詢…</option>'+EXAMPLES.map(function(x,i){return '<option value=\"'+i+'\">'+esc(x[0])+'</option>'}).join('');\n  $('#qex').onchange=function(){if(this.value!=='')$('#qsql').value=EXAMPLES[this.value][1]};\n  $('#qsql').value=EXAMPLES[0][1];\n  $('#qrun').onclick=runSql;$('#qsql').onkeydown=function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runSql()}};\n  $('#qcsv').onclick=function(){if(!LASTCOLS.length)return;var csv=[LASTCOLS].concat(LASTROWS).map(function(r){return r.map(function(c){c=c==null?'':String(c);return /[\",\\n]/.test(c)?'\"'+c.replace(/\"/g,'\"\"')+'\"':c}).join(',')}).join('\\n');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='query.csv';a.click()};\n  try{var sc=SQLDB.exec(\"SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type DESC,name\");$('#qschema').textContent=sc.length?sc[0].values.map(function(r){return r[1]+';'}).join('\\n\\n'):''}catch(e){}\n}\nfunction runSql(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performance.now();\n  try{var res=SQLDB.exec(sql);var ms=Math.round(performance.now()-t0);\n    if(!res.length){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"mut\">執行完成，沒有回傳資料列。</div>';$('#qinfo').textContent=ms+' ms';LASTCOLS=[];LASTROWS=[];return}\n    var r=res[res.length-1];LASTCOLS=r.columns;LASTROWS=r.values;var max=500;\n    var h='<table><tr>'+r.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+r.values.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var col=r.columns[ci];var lk=(/path|file|defined_in|檔案|定義在|src_path|dst_path|caller/i.test(col)&&fileMap[t]!=null)?link(t):esc(t);return '<td>'+lk+'</td>'}).join('')+'</tr>'}).join('')+'</table>';\n    $('#qres').innerHTML=h;$('#qinfo').textContent=r.values.length+' 列'+(r.values.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}\n  catch(e){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"err\">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}\nboot().catch(function(e){$('#lmsg').innerHTML='<span class=\"err\">載入失敗：'+esc(e&&e.message||e)+'</span>'});\n})();\n</script>\n</body></html>\n";
+/* CODEUI-END */
+function _faU8ToB64(u8) { let out = ''; for (let i = 0; i < u8.length; i += 0x8000) out += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(out); }
 
 // repo_wiki產生的單檔查詢頁面（資料內嵌，不需要網路）。__DATA__會被換成索引JSON。
 const FA_REPOWIKI_HTML = `<!doctype html>
@@ -9260,6 +9560,8 @@ class FloatingAssistant {
             offlineLearn: true, // 線上AI成功的做法自動學進離線訓練器
             offlineAutoFallback: true, // AI完全沒辦法回應時，退回離線訓練器
             offlineThreshold: 0.45,
+            repoIndexMaxFiles: 50000, // 專案索引：最多分析幾個原始碼檔
+            repoIndexMaxMb: 100, // 專案索引：索引大小上限（MB）
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -10414,6 +10716,8 @@ class FloatingAssistant {
             offlineMode: raw.offlineMode === true,
             offlineLearn: raw.offlineLearn !== false,
             offlineAutoFallback: raw.offlineAutoFallback !== false,
+            repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 100 && n <= 2000000 ? n : 50000; })(),
+            repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 5 && n <= 2000 ? n : 100; })(),
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
             customLanguages: (() => {
                 const out = {};
@@ -11363,14 +11667,15 @@ ${fnData.code}
         );
 
         registerOptional('repo_map',
-            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾：網頁版用已授權資料夾的參照（fap:名稱[/子路徑]），桌面版也可以直接給絕對路徑（例如 C:/專案 或 /home/me/專案）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／build_index（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後分批做）／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。**大型專案（例如已經build過的OpenBMC／Yocto樹）**：建置輸出、下載快取、Yocto暫存會自動略過（status的skipped會列出），只展開真正的原始碼；find會優先往名稱相關的方向找；清單類結果太長時會分頁（has_more／next_offset，下一次帶offset接著取），不要重複呼叫同一個沒有offset的請求。真的要看被略過的路徑：build帶include。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
+            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾：網頁版用已授權資料夾的參照（fap:名稱[/子路徑]），桌面版也可以直接給絕對路徑（例如 C:/專案 或 /home/me/專案）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／index_start（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後在**背景**慢慢做，進度顯示在對話裡，可接續；參數max_files、max_mb（索引大小上限；沒給就用「設定 → AI → 專案索引」裡的值，預設50000個檔／100MB）、reanalyze:true（舊地圖補上註解與呼叫關係）、exports:["sqlite_html","qa_html"]完成後自動匯出）／index_status（看背景索引進度，不要一直輪詢）／index_stop／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。**大型專案（例如已經build過的OpenBMC／Yocto樹）**：建置輸出、下載快取、Yocto暫存會自動略過（status的skipped會列出），只展開真正的原始碼；find會優先往名稱相關的方向找；清單類結果太長時會分頁（has_more／next_offset，下一次帶offset接著取），不要重複呼叫同一個沒有offset的請求。真的要看被略過的路徑：build帶include。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 return JSON.stringify(await this._repoMapRun(parsed));
             },
             { type: 'object', properties: {
-                action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'build_index', 'annotate', 'reset'] },
+                action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'index_start', 'index_status', 'index_stop', 'build_index', 'annotate', 'reset'] },
+                max_files: { type: 'number', description: 'index_start：最多分析幾個原始碼檔（預設50000）' }, max_mb: { type: 'number', description: 'index_start：索引大小上限（MB，預設100）' }, reanalyze: { type: 'boolean', description: 'index_start：舊版地圖的檔案重新分析（補上註解與呼叫關係）' }, exports: { type: 'array', items: { type: 'string', enum: ['sqlite_html', 'qa_html'] }, description: 'index_start：完成後自動匯出' },
                 root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
                 query: { type: 'string', description: 'find：檔名、功能或專案名稱的關鍵字（模糊也可以）' },
                 from: { type: 'string', description: 'explore：要探索的檔案或資料夾（相對於root）' },
@@ -11387,15 +11692,30 @@ ${fnData.code}
             }, required: ['action', 'root'], additionalProperties: false }
         );
 
+        registerOptional('repo_ask',
+            '程式碼問答（類似doxygen＋語意搜尋）：問專案裡「某個函式／類別做什麼用」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。需要先有repo_map索引（repo_map index_start，會問使用者並在背景建立；索引不完整時回答會註明）。question用自然語言，函式或檔案名稱照原樣寫，中英文都可以。回傳依索引整理的事實answer（定義位置、註解、簽名、呼叫它的檔案、依賴）與程式碼片段snippets——**用這些回答，說明用途要以snippets的程式碼為準，不要編造**。action:search只回相近的定義／檔案清單；action:stats看索引規模。範例：repo_ask({"root":"fap:我的專案","question":"parse_config 是做什麼的"})、repo_ask({"root":"C:/src/openbmc","question":"誰用到 sdbusplus::bus"})。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._repoAskRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: {
+                root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
+                question: { type: 'string', description: '要問的問題（自然語言）' },
+                action: { type: 'string', enum: ['ask', 'search', 'stats'] },
+                n: { type: 'number', description: '最多回幾筆（預設8）' }, kind: { type: 'string', enum: ['symbol', 'file'], description: 'search：只找定義或只找檔案' }, snippets: { type: 'boolean', description: '是否附程式碼片段（預設true）' },
+            }, required: ['root'], additionalProperties: false }
+        );
+
         registerOptional('repo_wiki',
-            '專案索引百科（類似DeepWiki）：把repo_map追出來的結構整理成**有內容的百科**，存進persistentStorage（IndexedDB），並產生單檔的查詢頁面（頁面／結構／定義／名詞，可搜尋；有依賴圖）。**不要自己用一份markdown把檔案清單抄一遍**（專案大時清單會被系統截斷，內容也會很空）——照下面的分階段流程：①plan（依地圖算出模組與頁面清單：概覽、架構、各模組、建置…）②每一頁 evidence（只給這一頁需要的事實與程式碼片段，附寫法規定與依結構自動產生的草稿）→ 你寫成有說明文字的markdown → write_page（會驗證：標題、字數、引用的檔案必須真的存在、不能編造、不能留佔位字，不合格會告訴你怎麼改）③finalize（組成HTML與markdown，沒寫的頁面用自動草稿補上；預設在畫面開啟並提供下載；write_to_repo:true會問使用者要不要寫進專案的.floating-assistant/wiki/）。頁面多時，每一頁委派給「頁面撰寫」子任務（delegate_to_subagent domain:wiki_writer）避免上下文爆掉。其他動作：generate（plan＋用草稿finalize，快速看結果）／pages（頁面清單與進度）／query（q=關鍵字）／define（symbol=函式或類別，回傳定義位置與程式碼片段）／page（path=檔案或資料夾；或page_id=百科頁面）／add_term（term＋definition）／status。需要先有repo_map的地圖，涵蓋範圍就是已分析過的檔案（要完整先repo_map build_index，會問使用者）。範例：repo_wiki({"action":"plan","root":"fap:我的專案"})、repo_wiki({"action":"evidence","root":"fap:我的專案","page_id":"overview"})。',
+            '專案索引百科（類似DeepWiki）：把repo_map追出來的結構整理成**有內容的百科**，存進persistentStorage（IndexedDB），並產生單檔的查詢頁面（頁面／結構／定義／名詞，可搜尋；有依賴圖）。**不要自己用一份markdown把檔案清單抄一遍**（專案大時清單會被系統截斷，內容也會很空）——照下面的分階段流程：①plan（依地圖算出模組與頁面清單：概覽、架構、各模組、建置…）②每一頁 evidence（只給這一頁需要的事實與程式碼片段，附寫法規定與依結構自動產生的草稿）→ 你寫成有說明文字的markdown → write_page（會驗證：標題、字數、引用的檔案必須真的存在、不能編造、不能留佔位字，不合格會告訴你怎麼改）③finalize（組成HTML與markdown，沒寫的頁面用自動草稿補上；預設在畫面開啟並提供下載；write_to_repo:true會問使用者要不要寫進專案的.floating-assistant/wiki/）。頁面多時，每一頁委派給「頁面撰寫」子任務（delegate_to_subagent domain:wiki_writer）避免上下文爆掉。**export（需要先有repo_map索引）：產生可離線開啟的單檔HTML——format:"sqlite_html"內嵌SQLite，可以看百科畫面、瀏覽檔案與符號、問答、直接下SQL查檔案關聯；format:"qa_html"是純HTML／JavaScript的問答頁**。其他動作：generate（plan＋用草稿finalize，快速看結果）／pages（頁面清單與進度）／query（q=關鍵字）／define（symbol=函式或類別，回傳定義位置與程式碼片段）／page（path=檔案或資料夾；或page_id=百科頁面）／add_term（term＋definition）／status。需要先有repo_map的地圖，涵蓋範圍就是已分析過的檔案（要完整先repo_map build_index，會問使用者）。範例：repo_wiki({"action":"plan","root":"fap:我的專案"})、repo_wiki({"action":"evidence","root":"fap:我的專案","page_id":"overview"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._repoWikiRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: {
-                action: { type: 'string', enum: ['plan', 'evidence', 'write_page', 'finalize', 'generate', 'pages', 'query', 'define', 'page', 'add_term', 'status'] },
+                action: { type: 'string', enum: ['plan', 'evidence', 'write_page', 'finalize', 'generate', 'pages', 'query', 'define', 'page', 'add_term', 'status', 'export'] }, format: { type: 'string', enum: ['sqlite_html', 'qa_html', 'both'], description: 'export：sqlite_html＝內嵌SQLite的單檔HTML（百科、檔案關聯、問答、可下SQL）；qa_html＝純JS問答頁（較小，不含SQLite）；both＝兩種' },
                 page_id: { type: 'string', description: 'evidence／write_page／page：百科頁面id（用plan或pages查，例如overview、architecture、mod:xxx）' }, markdown: { type: 'string', description: 'write_page：整頁markdown' }, max_modules: { type: 'number', description: 'plan：最多幾個模組頁面（預設20）' }, rebuild: { type: 'boolean', description: 'plan：重新計算頁面清單（已寫好的頁面保留）' }, offset: { type: 'number' },
                 root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]' },
                 q: { type: 'string' }, symbol: { type: 'string' }, path: { type: 'string' },
@@ -16711,6 +17031,68 @@ ${fnData.code}
     }
 
     // ===== Offline Trainer 管理介面（Configure → AI → 離線訓練器；跟RAG知識庫放在一起管理）=====
+    // ===== 設定 → AI → 專案索引：上限、已建立索引的專案、開始／停止／匯出 =====
+    _riRegisterPane() {
+        if (this._riPaneRegistered) return;
+        const root = document.createElement('div');
+        root.id = 'ai-ri-pane';
+        root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._riPaneRoot = root;
+        this._riPaneRegistered = true;
+        this.registerAdvancedSettingsTab('ai', 'project-index', '專案索引（程式碼問答）', root);
+        const refresh = () => this._riRenderPane();
+        root.addEventListener('change', (ev) => {
+            const t = ev.target;
+            if (t.dataset.riSet) { const k = t.dataset.riSet; const n = Math.floor(Number(t.value)); if (k === 'repoIndexMaxFiles' && n >= 100) this.advancedSettings.repoIndexMaxFiles = n; else if (k === 'repoIndexMaxMb' && n >= 5) this.advancedSettings.repoIndexMaxMb = n; this._saveAdvancedSettings(); t.value = this.advancedSettings[k]; }
+        });
+        root.addEventListener('click', async (ev) => {
+            const b = ev.target.closest('button[data-ri]');
+            if (!b) return;
+            const act = b.dataset.ri, rootKey = b.dataset.root || '';
+            const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
+            try {
+                if (act === 'start') { const r = await this._repoIndexStart(rootKey, {}); if (r.declined) say('已取消。'); }
+                else if (act === 'add') { const inp = root.querySelector('#ai-ri-new'); const p = this._repoMapKey(inp ? inp.value : ''); if (!p) return; const r = await this._repoIndexStart(p, {}); if (r.declined) say('已取消。'); }
+                else if (act === 'stop') this._repoIndexStop(rootKey);
+                else if (act === 'sqlite' || act === 'qa') { b.disabled = true; b.textContent = '產生中…'; try { await this._codeExport(rootKey, act === 'sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); } catch (e) { say('⚠️ 匯出失敗：' + String((e && e.message) || e)); } }
+                else if (act === 'reset') { if (!window.confirm('清除這個專案的索引與地圖？（專案檔案不會動）')) return; await this._repoMapRun({ action: 'reset', root: rootKey }); }
+            } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
+            refresh();
+        });
+        const side = document.getElementById('ai-advanced-sidebar');
+        if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'project-index') { this._riRenderPane(); if (!this._riTimer) this._riTimer = setInterval(() => { if (root.isConnected && root.offsetParent) this._riRenderPane(); else { clearInterval(this._riTimer); this._riTimer = null; } }, 3000); } });
+    }
+    async _riRenderPane() {
+        const root = this._riPaneRoot;
+        if (!root) return;
+        const S = this.advancedSettings;
+        const inp = 'padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc; font-size:12px;';
+        const btn = 'padding:3px 9px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const keep = root.querySelector('#ai-ri-new') ? root.querySelector('#ai-ri-new').value : '';
+        const projects = [];
+        try { for (const r of await this.repoMapCache.getAll()) if (r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0) projects.push({ root: String(r.id).slice(4), size: r.sizeBytes || (r.blob && r.blob.size) || 0 }); } catch (_) {}
+        const rows = [];
+        for (const p of projects) {
+            const job = this._repoJobs && this._repoJobs.get(p.root);
+            const running = job && (job.state === 'running' || job.state === 'stopping');
+            let info = '';
+            if (running) info = '⏳ ' + esc(this._repoJobText(job)).replace(/\n/g, '<br>');
+            else {
+                const m = await this._repoMapLoad(p.root);
+                if (m) { const st = this._repoMapStats(m); info = `已分析 ${st.source_files_analyzed}／${st.source_files_known} 個原始碼檔、${st.symbols} 個定義、${st.dependency_edges} 條依賴　${m.index_built ? '✅ 索引完成' : '（部分）'}　地圖 ${Math.round(p.size / 104857.6) / 10} MB`; }
+            }
+            rows.push(`<div style="border:1px solid #334155; border-radius:8px; padding:8px 10px; margin:8px 0;"><div style="font-weight:600; word-break:break-all;">${esc(p.root)}</div><div style="color:#94a3b8; margin:3px 0 6px;">${info}</div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">${running ? `<button style="${btn}" data-ri="stop" data-root="${esc(p.root)}">停止</button>` : `<button style="${btn}" data-ri="start" data-root="${esc(p.root)}">開始／接續索引</button>`}
+                <button style="${btn}" data-ri="sqlite" data-root="${esc(p.root)}">匯出 SQLite HTML</button><button style="${btn}" data-ri="qa" data-root="${esc(p.root)}">匯出問答 HTML</button><button style="${btn}" data-ri="reset" data-root="${esc(p.root)}">清除</button></div></div>`);
+        }
+        root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">為專案建立完整索引（定義、註解、依賴、呼叫關係），之後可以用 <code>repo_ask</code> 問「某函式做什麼／在哪定義／誰用到它」，或匯出成單檔 HTML（內嵌 SQLite 可下 SQL，或純 JS 問答）。索引在背景漸進建立，可停止、可接續；進度也顯示在對話裡。</div>
+            <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）">檔案數上限 <input type="number" min="100" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
+                <label title="索引（地圖）資料的大小上限，超過就停下來">索引大小上限（MB） <input type="number" min="5" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
+            <div style="display:flex; gap:6px; margin-bottom:6px;"><input id="ai-ri-new" placeholder="專案資料夾：桌面版的絕對路徑，或 fap:名稱" value="${esc(keep)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
+            ${rows.join('') || '<div style="color:#94a3b8;">還沒有建立過索引的專案。</div>'}`;
+    }
     _otRegisterPane() {
         if (this._otPaneRegistered) return;
         const root = document.createElement('div');
@@ -16892,6 +17274,336 @@ ${fnData.code}
         };
     }
 
+    // ===== 程式碼問答：背景漸進建索引（可停止、可續跑）、問答（repo_ask）、匯出（SQLite／純JS的HTML） =====
+    // 資料來源是repo_map的地圖；索引工作在背景一小段一小段跑（每段約0.7秒，之間讓出執行權），不會卡住對話，進度顯示在進度卡片。
+    // 中途停掉或關閉程式，已分析的部分都存著，再次index_start會從沒做完的地方接續。
+    _repoMapExclusive(key, fn) {
+        if (!this._repoMapLocks) this._repoMapLocks = new Map();
+        const prev = this._repoMapLocks.get(key) || Promise.resolve();
+        const run = prev.then(fn);
+        this._repoMapLocks.set(key, run.catch(() => {}));
+        return run;
+    }
+    _repoMapTier(map) {
+        let n = 0;
+        for (const d of Object.values(map.dirs)) { for (const e of d.entries) if (e.t === 'f' && _faRepoLang(e.n)) n++; n += d.more || 0; }
+        return n >= 25000 ? 2 : (n >= 5000 ? 1 : 0);
+    }
+    _repoJobFmtTime(sec) { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; return (h ? h + ':' : '') + String(m).padStart(h ? 2 : 1, '0') + ':' + String(s).padStart(2, '0'); }
+    _repoJobStatusObj(job) {
+        const el = (Date.now() - job.startedAt) / 1000;
+        const o = { state: job.state, phase: job.phase, percent: Math.round(job.pct || 0), dirs_listed: job.dirs, dirs_waiting: job.queueDirs, files_analyzed: job.analyzed, files_remaining: job.filesTotal ? Math.max(0, job.filesTotal - job.analyzed - job.missing) : undefined, files_missing: job.missing || undefined, elapsed: this._repoJobFmtTime(el), index_mb: Math.round(job.bytes / 1048576 * 10) / 10, current: job.current || undefined };
+        if (job.phase === 'files' && job.analyzed > 20 && job.filesTotal) { const rate = job.analyzed / Math.max(1, (Date.now() - job.filesStartedAt) / 1000); o.eta = this._repoJobFmtTime((job.filesTotal - job.analyzed - job.missing) / Math.max(rate, 0.01)); }
+        if (job.capped) o.capped = job.capped;
+        if (job.error) o.error = job.error;
+        if (job.exports && job.exports.length) o.exports = job.exports;
+        if (job.summary) o.summary = job.summary;
+        return o;
+    }
+    _repoJobText(job) {
+        const s = this._repoJobStatusObj(job);
+        const ph = { prepare: '準備', dirs: '階段1/3 展開資料夾', files: '階段2/3 分析原始碼', store: '階段3/3 建立問答索引', export: '產生匯出檔', done: '完成' }[job.phase] || job.phase;
+        let t = `${ph}`;
+        if (job.phase === 'dirs') t += `：已展開${s.dirs_listed}個、等待${s.dirs_waiting}個`;
+        else if (job.phase === 'files') t += `：${s.files_analyzed}/${job.filesTotal || '?'}個檔案${s.files_missing ? '（' + s.files_missing + '個不見了）' : ''}`;
+        t += ` · 已用 ${s.elapsed}`;
+        if (s.eta) t += ` · 預估剩 ${s.eta}`;
+        if (job.phase === 'files' || job.phase === 'dirs') t += ` · 索引約${s.index_mb}MB`;
+        if (job.current && (job.phase === 'dirs' || job.phase === 'files')) t += `\n目前：${String(job.current).slice(-70)}`;
+        if (job.state === 'stopping') t += '（正在停止…）';
+        return t;
+    }
+    _repoIndexStatus(key) {
+        const job = this._repoJobs && this._repoJobs.get(key);
+        if (!job) return { ok: true, running: false, note: '目前沒有背景索引工作。用 repo_map({"action":"index_start","root":"' + key + '"}) 開始（已分析的部分會接續，不會重做）。' };
+        return Object.assign({ ok: true, running: job.state === 'running' || job.state === 'stopping' }, this._repoJobStatusObj(job), { note: job.state === 'running' ? '索引在背景進行中，進度顯示在對話裡的進度卡片。不需要一直呼叫index_status；可以先回答使用者別的事，或告訴使用者「慢慢建，完成會通知」。' : undefined });
+    }
+    _repoIndexStop(key) {
+        const job = this._repoJobs && this._repoJobs.get(key);
+        if (!job || (job.state !== 'running')) return { ok: true, running: false, note: '沒有在跑的索引工作。' };
+        job.stop = true; job.state = 'stopping';
+        return { ok: true, note: '已要求停止；已分析的部分會存起來，之後再 index_start 會接續。' };
+    }
+    async _repoIndexStart(key, parsed) {
+        if (!this._repoJobs) this._repoJobs = new Map();
+        if (!this._repoJobMaps) this._repoJobMaps = new Map();
+        const cur = this._repoJobs.get(key);
+        if (cur && (cur.state === 'running' || cur.state === 'stopping')) return Object.assign({ ok: true, already_running: true }, this._repoJobStatusObj(cur));
+        const known = await this._repoMapLoad(key);
+        if (!(known && known.index_approved)) {
+            const st = known ? this._repoMapStats(known) : null;
+            const ans = await this.requestUserForm({
+                title: '🗂️ 要為整個專案建立完整索引嗎？',
+                description: `專案：${key}\n${st ? `目前已知：${st.dirs_listed}個資料夾已展開、${st.dirs_unlisted}個還沒展開；原始碼檔${st.source_files_known}個，已分析${st.source_files_analyzed}個。\n` : ''}\n會在背景慢慢做（可以繼續聊天，進度顯示在對話裡，也可以隨時停止）：①展開所有資料夾 ②讀過所有原始碼檔，記下函式／類別的定義位置、註解、檔案之間的依賴與呼叫關係 ③建立問答索引，之後可以問「這個函式做什麼」「在哪定義」「誰用到它」，也能匯出成單檔HTML（內嵌SQLite可下SQL、純JS問答）。\n資料只存在瀏覽器儲存（IndexedDB），不會改動你的專案。大型專案（例如已build的OpenBMC）可能要很久，建置輸出會自動略過。\n\n不建完整索引也可以：只在需要時分階段追蹤相關檔案。`,
+                choices: ['整份建立', '只建需要的部分'],
+            });
+            if (!ans || !ans.confirmed || ans.answer !== '整份建立') return { ok: true, declined: true, note: '使用者選擇不建立完整索引。之後用find／explore分階段追蹤需要的部分即可，不要再問一次。' };
+        }
+        const map = await this._repoMapExclusive(key, async () => {
+            const m = (await this._repoMapLoad(key)) || this._repoMapEmpty(key);
+            m.index_approved = true;
+            this._repoJobMaps.set(key, m);
+            return m;
+        });
+        const exp = [].concat(parsed.exports || parsed.export || []).map(String).filter((x) => /^(sqlite_html|qa_html)$/.test(x));
+        const job = { key, state: 'running', phase: 'prepare', pct: 0, startedAt: Date.now(), filesStartedAt: Date.now(), stop: false, dirs: 0, queueDirs: 0, analyzed: 0, missing: 0, filesTotal: 0, bytes: 0, current: '', map, opts: { maxFiles: Math.max(100, Math.floor(Number(parsed.max_files) || this.advancedSettings.repoIndexMaxFiles || 50000)), maxMb: Math.max(5, Math.floor(Number(parsed.max_mb) || this.advancedSettings.repoIndexMaxMb || 100)), exports: exp, reanalyze: !!parsed.reanalyze } };
+        this._repoJobs.set(key, job);
+        job.promise = this._repoIndexRun(job).catch((e) => { job.state = 'error'; job.error = String((e && e.message) || e); });
+        return Object.assign({ ok: true, started: true, note: '已在背景開始建立索引。慢沒關係：進度顯示在對話裡的進度卡片，完成後會提示；也可以用 index_status 看進度、index_stop 停止。這段時間可以繼續做別的事。' }, this._repoJobStatusObj(job));
+    }
+    async _repoIndexRun(job) {
+        const key = job.key, o = job.opts, map = job.map;
+        const yieldUi = () => new Promise((r) => setTimeout(r, 0));
+        const prog = this._createProgressWidget('專案索引：' + (key.split('/').filter(Boolean).pop() || key));
+        job.prog = prog;
+        let lastSave = Date.now();
+        const tick = (force) => { prog.update({ pct: job.pct, status: this._repoJobText(job), force }); };
+        const save = (force) => (force || Date.now() - lastSave > 30000) ? this._repoMapExclusive(key, async () => { await this._repoMapSave(map); lastSave = Date.now(); }) : null;
+        try {
+            const io = await this._repoMapIo(key);
+            const ctx = { cache: null, relisted: new Set() };
+            const slice = (fn) => this._repoMapExclusive(key, fn);
+            if (o.reanalyze) map.reanalyze = true;
+            if (Object.keys(map.files).length) job.bytes = JSON.stringify(map.files).length;
+            for (let round = 0; round < 4 && !job.stop; round++) {
+                // ---- 階段1：展開所有資料夾（淺層優先，建置輸出自動略過）----
+                job.phase = 'dirs';
+                if (map.stage === 'none') await slice(() => this._repoMapOutline(io, map, ctx));
+                const q = this._repoMapUnlisted(map);
+                let qi = 0;
+                while (qi < q.length && !job.stop) {
+                    await slice(async () => {
+                        const t0 = Date.now();
+                        while (qi < q.length && Date.now() - t0 < 700 && !job.stop) {
+                            const d = q[qi++];
+                            job.current = d;
+                            await this._repoMapListDir(io, map, d, ctx);
+                            job.dirs++;
+                            const rec = map.dirs[d];
+                            if (rec) for (const e of rec.entries) if (e.t === 'd') { const c = this._repoMapJoinPath(d, e.n); if (!map.dirs[c]) q.push(c); }
+                        }
+                    });
+                    job.queueDirs = q.length - qi;
+                    job.pct = 30 * job.dirs / Math.max(1, job.dirs + job.queueDirs);
+                    tick(); await save(); await yieldUi();
+                }
+                if (job.stop) break;
+                // ---- 階段2：分析所有原始碼檔（抽出定義、註解、依賴、呼叫關係）----
+                map.tier = this._repoMapTier(map);
+                job.phase = 'files';
+                const ff = this._repoMapFrontierFiles(map);
+                const already = Object.keys(map.files).length;
+                job.filesTotal = job.analyzed + job.missing + ff.length;
+                job.filesStartedAt = job.filesStartedAt || Date.now();
+                let fi = 0;
+                while (fi < ff.length && !job.stop) {
+                    if (already + job.analyzed >= o.maxFiles) { job.capped = 'files'; break; }
+                    if (job.bytes / 1048576 >= o.maxMb) { job.capped = 'size'; break; }
+                    await slice(async () => {
+                        const t0 = Date.now();
+                        while (fi < ff.length && Date.now() - t0 < 700 && !job.stop) {
+                            const p = ff[fi++];
+                            job.current = p;
+                            let a;
+                            try { a = await this._repoMapAnalyzeFile(io, map, p, ctx); } catch (e) { job.missing++; continue; }
+                            if (a.missing) job.missing++;
+                            else { job.analyzed++; const rec = map.files[p]; if (rec) job.bytes += JSON.stringify(rec).length; }
+                        }
+                    });
+                    job.pct = 30 + 62 * (job.analyzed + job.missing) / Math.max(1, job.filesTotal);
+                    tick(); await save(); await yieldUi();
+                }
+                if (job.stop || job.capped) break;
+                // 分析檔案時順手展開了新資料夾、或有新檔案：再跑一輪，直到沒有東西為止
+                if (!this._repoMapUnlisted(map).length && !this._repoMapFrontierFiles(map).length) break;
+            }
+            // ---- 階段3：存地圖、建問答索引 ----
+            job.phase = 'store'; job.pct = 93; job.current = ''; tick(true);
+            const remDirs = this._repoMapUnlisted(map).length, remFiles = this._repoMapFrontierFiles(map).length;
+            map.index_built = (remDirs === 0 && remFiles === 0) || !!job.capped;
+            map.stage = 'index';
+            if (!remFiles) map.reanalyze = false;
+            await save(true);
+            const store = await this._codeStoreBuild(key, map, (p) => { job.pct = 93 + 6 * p; tick(); });
+            job.summary = { files: store.db.files.length, symbols: store.db.syms.length, dependency_edges: store.db.imps.length, call_edges: store.db.uses.length, remaining_dirs: remDirs, remaining_files: remFiles };
+            for (const fmt of o.exports || []) {
+                if (job.stop) break;
+                job.phase = 'export'; tick(true);
+                try { const r = await this._codeExport(key, fmt, { deliver: true }); (job.exports = job.exports || []).push(r.filename || fmt); } catch (e) { (job.exports = job.exports || []).push(fmt + ' 失敗：' + String((e && e.message) || e)); }
+            }
+            job.phase = 'done'; if (!job.stop) job.pct = 100;
+            job.state = job.stop ? 'stopped' : 'done';
+            const sm = job.summary;
+            prog.finish(job.stop
+                ? `已停止（已分析${job.analyzed}個檔案，進度已存起來，再執行 index_start 會接續）`
+                : `完成：${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係 · 用時 ${this._repoJobFmtTime((Date.now() - job.startedAt) / 1000)}${job.capped ? '（已達上限：' + (job.capped === 'size' ? '索引大小' : '檔案數') + '）' : ''}${remFiles ? '，還有' + remFiles + '個沒分析' : ''}`);
+            this._pushAssistantMessage(`🗂️ 專案索引${job.stop ? '已停止' : '完成'}：${key}\n${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係。${job.capped ? '\n（已達' + (job.capped === 'size' ? '索引大小' : '檔案數') + '上限，沒分析完的可以到「設定 → AI → 專案索引」調高上限，再按「開始／接續索引」。）' : ''}\n現在可以問程式碼問題（repo_ask：「某函式做什麼／在哪定義／誰用到它」），或匯出：repo_wiki({"action":"export","format":"sqlite_html"}) 產生內嵌SQLite的單檔HTML，format:"qa_html" 產生純JS問答頁。`, null);
+            this._persistChatHistory(); this._renderMessageHistory();
+        } catch (e) {
+            job.state = 'error'; job.error = String((e && e.message) || e);
+            try { await save(true); } catch (_) {}
+            prog.fail('索引中斷：' + job.error + '（已分析的部分有存，可再 index_start 接續）');
+        } finally {
+            if (this._repoJobMaps) this._repoJobMaps.delete(key);
+        }
+    }
+
+    // ---- 問答索引（資料庫＋倒排索引），記憶體快取，也存一份在persistentStorage ----
+    async _codeStoreBuild(key, map, onProgress) {
+        const db = _faCodeFromMap(map);
+        const ix = _faCodeIndexNew(db);
+        const total = db.syms.length + db.files.length || 1;
+        while (!_faCodeIndexTokens(ix, 300)) { if (onProgress) onProgress((ix.ti + ix.tf) / total); await new Promise((r) => setTimeout(r, 0)); }
+        if (!this._codeStores) this._codeStores = new Map();
+        const st = { db, ix, fileCount: Object.keys(map.files).length, at: Date.now() };
+        this._codeStores.set(key, st);
+        try { await this.repoWikiCache.put('code.json', 'application/json', new Blob([JSON.stringify(db)], { type: 'application/json' }), 'repo_wiki', 'code:' + key); } catch (_) {}
+        return st;
+    }
+    async _codeStoreGet(key) {
+        if (!this._codeStores) this._codeStores = new Map();
+        const map = await this._repoMapLoad(key);
+        const n = map ? Object.keys(map.files).length : -1;
+        const mem = this._codeStores.get(key);
+        if (mem && (n < 0 || mem.fileCount === n)) return mem;
+        if (map && n > 0) return await this._codeStoreBuild(key, map);
+        try { const rec = await this.repoWikiCache.get('code:' + key + '/code.json'); if (!rec) { const r2 = await this.repoWikiCache.get('code:' + key); if (r2) { const db = JSON.parse(await r2.blob.text()); const ix = _faCodeIndex(db); const st = { db, ix, fileCount: db.files.length, at: Date.now() }; this._codeStores.set(key, st); return st; } } } catch (_) {}
+        return null;
+    }
+    async _repoAskRun(parsed) {
+        const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
+        if (!root) return { ok: false, error: '缺少root（專案資料夾：fap:名稱，或桌面版的絕對路徑）' };
+        const key = this._repoMapKey(root);
+        const action = String(parsed.action || 'ask');
+        const st = await this._codeStoreGet(key);
+        if (!st || !st.db.files.length) return { ok: false, error: '這個專案還沒有可以問的索引。先 repo_map({"action":"index_start","root":"' + key + '"}) 在背景建立（會先問使用者）；只想快速問一個範圍，先用 repo_map find／explore 分析幾個檔案再問。' };
+        const job = this._repoJobs && this._repoJobs.get(key);
+        const partial = !(await this._repoMapLoad(key) || {}).index_built;
+        const stats = { files: st.db.files.length, symbols: st.db.syms.length, dependency_edges: st.db.imps.length, call_edges: st.db.uses.length, complete: !partial };
+        if (action === 'stats') return { ok: true, stats, index_job: job ? this._repoJobStatusObj(job) : undefined };
+        const q = String(parsed.question || parsed.query || parsed.q || '').trim();
+        if (!q) return { ok: false, error: '缺少question（例如「foo_bar 是做什麼的」「parse_config 在哪裡定義」「誰用到 Logger」「登入流程相關的檔案」）' };
+        const r = action === 'search' ? { intent: 'search', hits: _faCodeSearch(st.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)), kind: parsed.kind }).map((x) => ({ type: x.type, id: x.id, score: x.score })), targets: {}, evidence: [], answer: '' } : _faCodeAsk(st.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)) });
+        if (action === 'search') r.answer = r.hits.map((h) => h.type === 'symbol' ? `- ${st.db.syms[h.id][0]}（${st.db.syms[h.id][1]}）${st.db.files[st.db.syms[h.id][2]][0]}:${st.db.syms[h.id][3]}` : `- 檔案 ${st.db.files[h.id][0]}`).join('\n');
+        const out = { ok: true, intent: r.intent, answer: r.answer, stats };
+        if (partial) out.warning = '索引還不完整（只涵蓋已分析的' + stats.files + '個檔案）' + (job && job.state === 'running' ? '，背景索引還在進行，稍後再問會更完整。' : '。要完整先 repo_map index_start。');
+        if (!stats.call_edges) out.note = '這份索引沒有「誰呼叫誰」的資料（舊版地圖）：repo_map index_start 帶 reanalyze:true 重新分析即可補上。';
+        if (parsed.snippets !== false && r.evidence.length) {
+            try {
+                const io = await this._repoMapIo(key);
+                const seen = new Set(); out.snippets = [];
+                for (const ev of r.evidence) {
+                    const k = ev.path + ':' + ev.line; if (seen.has(k) || out.snippets.length >= 3) continue; seen.add(k);
+                    const t = await io.readText(ev.path);
+                    if (t) { const lines = t.split(/\r?\n/); const a = Math.max(0, ev.line - 3), b = Math.min(lines.length, ev.line + 9); out.snippets.push({ path: ev.path, from_line: a + 1, text: lines.slice(a, b).join('\n').slice(0, 900) }); }
+                }
+            } catch (_) {}
+        }
+        out.next_action = '用上面的answer（依索引的事實整理的）與snippets回答使用者；說明用途時要以snippets的程式碼為準，不要編造索引裡沒有的內容。想看完整檔案用 coding_read_file。';
+        return out;
+    }
+
+    // ---- 匯出：SQLite（內嵌在HTML裡，可下SQL）與純JS的問答頁 ----
+    async _sqlJsAssets() {
+        if (this._sqlAssets) return this._sqlAssets;
+        const base = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/vendor-assets/vendor/sql.js/';
+        let js = null, wasm = null;
+        try { const a = await this.repoWikiCache.get('asset:sql-wasm.js'), b = await this.repoWikiCache.get('asset:sql-wasm.wasm'); if (a && b) { js = await a.blob.text(); wasm = new Uint8Array(await b.blob.arrayBuffer()); } } catch (_) {}
+        if (!js || !wasm) {
+            const [rj, rw] = await Promise.all([fetch(base + 'sql-wasm.js'), fetch(base + 'sql-wasm.wasm')]);
+            if (!rj.ok || !rw.ok) throw new Error('下載sql.js失敗（HTTP ' + rj.status + '／' + rw.status + '）。需要網路一次，之後會存起來離線可用。');
+            js = await rj.text(); wasm = new Uint8Array(await rw.arrayBuffer());
+            try { await this.repoWikiCache.put('sql-wasm.js', 'application/javascript', new Blob([js]), 'repo_wiki', 'asset:sql-wasm.js'); await this.repoWikiCache.put('sql-wasm.wasm', 'application/wasm', new Blob([wasm]), 'repo_wiki', 'asset:sql-wasm.wasm'); } catch (_) {}
+        }
+        this._sqlAssets = { js, wasm };
+        return this._sqlAssets;
+    }
+    async _sqlJsInit() {
+        const a = await this._sqlJsAssets();
+        if (typeof window.initSqlJs !== 'function') {
+            await new Promise((resolve, reject) => {
+                const url = URL.createObjectURL(new Blob([a.js], { type: 'application/javascript' }));
+                const s = document.createElement('script');
+                s.src = url; s.onload = () => { URL.revokeObjectURL(url); resolve(); }; s.onerror = () => { URL.revokeObjectURL(url); reject(new Error('sql.js 執行失敗')); };
+                document.head.appendChild(s);
+            });
+        }
+        return await window.initSqlJs({ wasmBinary: a.wasm.buffer.slice(a.wasm.byteOffset, a.wasm.byteOffset + a.wasm.byteLength) });
+    }
+    async _codeBuildSqlite(db, extra) {
+        extra = extra || {};
+        const SQL = await this._sqlJsInit();
+        const sdb = new SQL.Database();
+        sdb.run(`CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, dir TEXT, name TEXT, lang TEXT, lines INTEGER, doc TEXT, imports_n INTEGER, imported_by_n INTEGER);
+CREATE TABLE symbols(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, file_id INTEGER, line INTEGER, doc TEXT, sig TEXT);
+CREATE TABLE imports(src INTEGER, dst INTEGER);
+CREATE TABLE uses(file_id INTEGER, symbol_id INTEGER);
+CREATE TABLE pages(id TEXT PRIMARY KEY, title TEXT, kind TEXT, auto INTEGER, md TEXT);
+CREATE TABLE glossary(term TEXT PRIMARY KEY, definition TEXT);`);
+        const ins = (sql, rows) => { const st = sdb.prepare(sql); sdb.run('BEGIN'); for (const r of rows) st.run(r); sdb.run('COMMIT'); st.free(); };
+        const outN = db.files.map(() => 0), inN = db.files.map(() => 0);
+        db.imps.forEach((e) => { outN[e[0]]++; inN[e[1]]++; });
+        ins('INSERT INTO files VALUES (?,?,?,?,?,?,?,?,?)', db.files.map((f, i) => { const p = f[0], k = p.lastIndexOf('/'); return [i, p, k < 0 ? '' : p.slice(0, k), k < 0 ? p : p.slice(k + 1), f[1], f[2], f[3], outN[i], inN[i]]; }));
+        ins('INSERT INTO symbols VALUES (?,?,?,?,?,?,?)', db.syms.map((s, i) => [i, s[0], s[1], s[2], s[3], s[4], s[5]]));
+        ins('INSERT INTO imports VALUES (?,?)', db.imps);
+        ins('INSERT INTO uses VALUES (?,?)', db.uses);
+        ins('INSERT INTO pages VALUES (?,?,?,?,?)', (extra.pages || []).map((p) => [p.id, p.title, p.kind || '', p.auto ? 1 : 0, p.md]));
+        ins('INSERT INTO glossary VALUES (?,?)', Object.entries(extra.glossary || {}).map(([t, v]) => [t, v.definition]));
+        ins('INSERT INTO meta VALUES (?,?)', [['root', db.root || ''], ['generated', new Date(db.generated || Date.now()).toISOString()], ['complete', db.complete ? '1' : '0'], ['truncated_symbols', String(db.truncated_syms || 0)], ['note', '由 Floating AI Assistant 的 repo_map 索引產生。id＝檔案／定義的序號（從0開始）。']]);
+        sdb.run(`CREATE INDEX idx_sym_name ON symbols(name); CREATE INDEX idx_sym_file ON symbols(file_id); CREATE INDEX idx_imp_src ON imports(src); CREATE INDEX idx_imp_dst ON imports(dst); CREATE INDEX idx_use_file ON uses(file_id); CREATE INDEX idx_use_sym ON uses(symbol_id); CREATE INDEX idx_files_path ON files(path);
+CREATE VIEW v_symbols AS SELECT s.id, s.name, s.kind, f.path, s.line, s.doc, s.sig FROM symbols s JOIN files f ON f.id = s.file_id;
+CREATE VIEW v_imports AS SELECT a.path AS src_path, b.path AS dst_path FROM imports i JOIN files a ON a.id = i.src JOIN files b ON b.id = i.dst;
+CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS defined_in, s.line AS defined_line FROM uses u JOIN files f ON f.id = u.file_id JOIN symbols s ON s.id = u.symbol_id JOIN files d ON d.id = s.file_id;`);
+        const bytes = sdb.export();
+        sdb.close();
+        return bytes;
+    }
+    async _gzB64(u8) {
+        let out = u8, gz = false;
+        try { if (typeof CompressionStream !== 'undefined') { out = new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()); gz = true; } } catch (_) { out = u8; gz = false; }
+        return { b64: _faU8ToB64(out), gz };
+    }
+    _codeRuntimeSource() {
+        const fns = [_faSemBuildLex, _faSemTokens, _faSemEmbed, _faSemCos, _faSemSentences, _faPagerank, _faRankBlocks, _faBm25, _faRerank, _faCodeSplitName, _faCodeBase, _faCodeIndexNew, _faCodeIndexTokens, _faCodeIndex, _faCodeSearch, _faCodeNameGuess, _faCodeAsk];
+        return ('const FA_SEM_GROUPS=' + JSON.stringify(FA_SEM_GROUPS) + ';\nconst FA_CODE_VERB_ZH=' + JSON.stringify(FA_CODE_VERB_ZH) + ';\n' + fns.map((f) => f.toString()).join('\n') + '\nconst FA_SEM_LEX=_faSemBuildLex(FA_SEM_GROUPS);').replace(/<\/script/gi, '<\\/script');
+    }
+    async _codeExportCollect(key, map) {
+        let pages = [];
+        try { let plan = await this._wikiLoadPlan(key); if (!plan) plan = this._wikiPlanCreate(map, {}); const ctx = await this._wikiGetCtx(map, plan); pages = await this._wikiPagesWithContent(key, map, plan, ctx); } catch (_) { pages = []; }
+        return { pages, glossary: map.glossary || {} };
+    }
+    async _codeExport(key, format, opts) {
+        opts = opts || {};
+        const st = await this._codeStoreGet(key);
+        const map = await this._repoMapLoad(key);
+        if (!st || !map) throw new Error('還沒有索引可以匯出：先 repo_map index_start');
+        const extra = await this._codeExportCollect(key, map);
+        const title = '專案百科：' + (key.split('/').filter(Boolean).pop() || key);
+        let payload, filename, mode;
+        if (format === 'sqlite_html') {
+            const bytes = await this._codeBuildSqlite(st.db, extra);
+            const a = await this._sqlJsAssets();
+            const [d, j, w] = await Promise.all([this._gzB64(bytes), this._gzB64(new TextEncoder().encode(a.js)), this._gzB64(a.wasm)]);
+            payload = { sql: { db: d, js: j, wasm: w }, size: bytes.length };
+            filename = 'project-wiki-sqlite.html'; mode = 'sqlite';
+        } else {
+            const slim = Object.assign({}, st.db, { pages: extra.pages.map((p) => ({ id: p.id, title: p.title, kind: p.kind, auto: !!p.auto, md: p.md })), glossary: extra.glossary });
+            const d = await this._gzB64(new TextEncoder().encode(JSON.stringify(slim)));
+            payload = { data: d, size: JSON.stringify(slim).length };
+            filename = 'project-qa.html'; mode = 'qa';
+        }
+        const cfg = { mode, title, root: key, generated: Date.now(), stats: { files: st.db.files.length, symbols: st.db.syms.length, imports: st.db.imps.length, uses: st.db.uses.length }, complete: !!map.index_built, sql: payload.sql ? { gz: { db: payload.sql.db.gz, js: payload.sql.js.gz, wasm: payload.sql.wasm.gz } } : null, dataGz: payload.data ? payload.data.gz : false };
+        const html = FA_CODEUI_HTML
+            .replace('__TITLE__', () => title.replace(/[<>&]/g, ''))
+            .replace('__CFG__', () => JSON.stringify(cfg).replace(/</g, '\\u003c'))
+            .replace('__RUNTIME__', () => this._codeRuntimeSource())
+            .replace('__PAYLOAD__', () => JSON.stringify(payload.sql ? { db: payload.sql.db.b64, js: payload.sql.js.b64, wasm: payload.sql.wasm.b64 } : { data: payload.data.b64 }));
+        const blob = new Blob([html], { type: 'text/html' });
+        if (opts.deliver !== false) await this.generateAndDeliverFile(blob, filename, 'text/html');
+        return { ok: true, filename, mode, bytes: blob.size, html_chars: html.length, blob, stats: cfg.stats };
+    }
+
     // ===== 專案結構追蹤（repo_map）=====
     // 目標：有專案/repository時，先「追出結構」；而且是分階段（incremental）建立——不必一次讀完整個專案。
     //   outline（頂層兩層＋專案設定檔）→ dirs（逐批展開資料夾）→ deps（逐批讀檔案，抽出定義與依賴）→ index（整份，要先問使用者）。
@@ -16901,6 +17613,8 @@ ${fnData.code}
         return { v: 1, root, created: Date.now(), updated: Date.now(), dirs: {}, files: {}, manifests: {}, notes: {}, glossary: {}, changes: [], stage: 'none', index_approved: false, index_built: false };
     }
     async _repoMapLoad(key) {
+        const live = this._repoJobMaps && this._repoJobMaps.get(key);
+        if (live) return live;
         try { const rec = await this.repoMapCache.get('map:' + key); return rec ? JSON.parse(await rec.blob.text()) : null; } catch (_) { return null; }
     }
     async _repoMapSave(map) {
@@ -17044,7 +17758,7 @@ ${fnData.code}
                 if (!_faRepoLang(c)) continue;
                 if (focus && !c.startsWith(pre)) continue;
                 const f = map.files[c];
-                if (!f || f.stale) out.push(c);
+                if (!f || f.stale || (map.reanalyze && f.sv !== 2)) out.push(c);
             }
         }
         const rank = (p) => (FA_REPOMAP_ENTRY_NAMES.test(_faRepoBasename(p)) ? 0 : (_faRepoLang(p) === 'bb' ? 300 : 100) + p.split('/').length * 2); // 原始碼優先於BitBake配方
@@ -17137,9 +17851,10 @@ ${fnData.code}
         let text = await io.readText(path);
         if (text === null) { const miss = await this._repoMapHandleMiss(io, map, path, ctx); delete map.files[path]; return { ok: false, missing: true, miss }; }
         if (text.length > 400000) text = text.slice(0, 400000);
-        const ex = _faRepoExtract(path, text);
+        const tier = map.tier || 0;
+        const ex = _faRepoExtract(path, text, { tier });
         const edges = [];
-        for (const imp of ex.imports.slice(0, 150)) {
+        for (const imp of ex.imports.slice(0, tier >= 1 ? 80 : 150)) {
             let to = null, kind = imp.kind;
             const tryResolve = imp.kind !== 'pkg' || ex.lang === 'go';
             if (tryResolve) {
@@ -17158,9 +17873,9 @@ ${fnData.code}
                 }
                 if (!found) kind = (imp.kind === 'rel' || imp.kind === 'alias') ? 'unresolved' : 'pkg';
             }
-            edges.push({ spec: imp.spec, kind, to });
+            edges.push(tier >= 2 && to ? { kind, to } : { spec: imp.spec, kind, to });
         }
-        map.files[path] = { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: ex.symbols.slice(0, 300), analyzed_at: Date.now() };
+        map.files[path] = { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: ex.symbols.slice(0, 400), uses: ex.uses, sv: 2 };
         return { ok: true };
     }
 
@@ -17197,12 +17912,14 @@ ${fnData.code}
         }
         let next;
         if (map.stage === 'none') next = '還沒有地圖：先 repo_map({"action":"build","root":"..."}) 建立最小的outline（頂層兩層＋專案設定檔）。使用者只給模糊名稱時直接 repo_map({"action":"find","query":"..."}) 就會自動先建。';
-        else if (map.index_built && frontier) next = `完整索引已完成（單次上限3000個原始碼檔，還有${frontier}個沒分析）。要補特定範圍用 repo_map build 帶 focus（子資料夾），或 explore／find 針對性分析。`;
-        else if (st.dirs_unlisted || frontier) next = `地圖還沒完整：還有${st.dirs_unlisted}個資料夾沒展開、${frontier}個原始碼檔沒分析。要找東西用find（會優先往名稱相關的方向找），要看某個檔案的依賴用explore；想一次建完整索引用build_index（會先問使用者）。`;
+        else if (map.index_built && frontier) next = `完整索引已完成（已達檔案數／索引大小上限，還有${frontier}個沒分析）。要接續：repo_map index_start 帶更大的 max_files／max_mb；或用 build 帶 focus（子資料夾）、explore／find 針對性分析。`;
+        else if (st.dirs_unlisted || frontier) next = `地圖還沒完整：還有${st.dirs_unlisted}個資料夾沒展開、${frontier}個原始碼檔沒分析。要找東西用find（會優先往名稱相關的方向找），要看某個檔案的依賴用explore；想建完整索引用index_start（會先問使用者，之後在背景慢慢做，有進度）。`;
         else next = '地圖已完整（所有資料夾已展開、所有原始碼檔已分析）。路徑不存在時用resolve，懷疑專案有變動時用refresh。';
         const out = { ok: true, root: map.root, stage: map.stage, stats: st, index_built: !!map.index_built, index_approved: !!map.index_approved, projects: entries.slice(0, 10), recent_changes: map.changes.slice(-8).map((c) => `${c.kind}：${c.path}${c.detail ? '（' + c.detail + '）' : ''}`), next_action: next };
         if (skippedTotal) out.skipped = { total: skippedTotal, examples: skipped, how_to_include: '被略過的是建置輸出／下載快取／Yocto暫存，通常不是原始碼。真的需要某一段時：repo_map({"action":"build","root":"...","include":"相對路徑"})' };
         if ((map.include || []).length) out.include = map.include;
+        const job = this._repoJobs && this._repoJobs.get(map.root);
+        if (job) out.index_job = this._repoJobStatusObj(job);
         return out;
     }
 
@@ -17510,11 +18227,13 @@ ${fnData.code}
         const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
         if (!root) return { ok: false, error: '缺少root（專案資料夾的File Access Point參照，格式 fap:<名稱或id>[/<子路徑>]；用list_file_access_points查有哪些）' };
         const key = this._repoMapKey(root);
-        if (!this._repoMapLocks) this._repoMapLocks = new Map();
-        const prev = this._repoMapLocks.get(key) || Promise.resolve();
-        const run = prev.then(() => this._repoMapAction(action, key, parsed)).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
-        this._repoMapLocks.set(key, run.catch(() => {}));
-        return await run;
+        try {
+            if (action === 'index_start' || action === 'build_index') return await this._repoIndexStart(key, parsed);
+            if (action === 'index_status') return this._repoIndexStatus(key);
+            if (action === 'index_stop') return this._repoIndexStop(key);
+            if (action === 'reset') { this._repoIndexStop(key); if (this._codeStores) this._codeStores.delete(key); try { await this.repoWikiCache.delete('code:' + key); } catch (_) {} }
+        } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+        return await this._repoMapExclusive(key, () => this._repoMapAction(action, key, parsed)).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
     }
 
     async _repoMapAction(action, key, parsed) {
@@ -18015,6 +18734,12 @@ ${fnData.code}
         if (!root) return { ok: false, error: '缺少root（專案資料夾的File Access Point參照）' };
         const key = this._repoMapKey(root);
         if (['plan', 'pages', 'evidence', 'write_page', 'finalize', 'generate'].indexOf(action) >= 0) { const v2 = await this._wikiRun(parsed); if (v2) return v2; }
+        if (action === 'export') {
+            const fmts = parsed.format === 'both' ? ['sqlite_html', 'qa_html'] : [parsed.format === 'qa_html' ? 'qa_html' : 'sqlite_html'];
+            const outs = [];
+            for (const f of fmts) { try { const r = await this._codeExport(key, f, { deliver: parsed.deliver !== false }); outs.push({ format: f, filename: r.filename, size_mb: Math.round(r.bytes / 1048576 * 10) / 10, stats: r.stats }); } catch (e) { outs.push({ format: f, error: String((e && e.message) || e) }); } }
+            return { ok: outs.some((x) => !x.error), exported: outs, next_action: '檔案已提供下載。sqlite_html第一次需要網路下載sql.js（之後存在瀏覽器，離線可用）。告訴使用者：用瀏覽器開啟HTML，上方分頁有百科／檔案／符號／問答／SQL。' };
+        }
         if (action === 'add_term') {
             const term = String(parsed.term || '').trim(), def = String(parsed.definition || '').trim();
             if (!term || !def) return { ok: false, error: 'add_term需要term與definition' };
@@ -45332,6 +46057,7 @@ ${existingNodeSummaries}
         }
         const win = document.getElementById('ai-floating-window');
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
+        try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');

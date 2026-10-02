@@ -82,6 +82,13 @@ categories:
         updated: 2026-09-26
         history:
           - { date: 2026-09-26, note: "新增台灣節慶套版：三區（上／中／下）、越接近節日越豐富、混合風、可在 LLM 基礎設定開關" }
+      - id: offline-trainer
+        name: 離線訓練器（AI 失效時的備援）
+        summary: 不經過 AI 也能做事：純文字→槽位擷取（網址、路徑、引號）→規則與語意比對（字串雜湊向量＋中英文概念詞典）→文字重排（BM25＋TextRank＋MMR）→決定要呼叫的工具與參數（含「開分頁→讀文字→關分頁」這類多步驟做法）→執行並整理結果。畫面右上角的開關可以切成純離線；所有 AI model 都失敗時會自動退回離線（可關）。線上 AI 成功的做法、RAG 與對話紀錄會自動學進去；在「設定 → AI → 離線訓練器」可以管理領域、規則、範例句、同義詞，並用乾跑確認它會怎麼判斷（不會真的執行）。有副作用的工具執行前一定先問使用者。
+        how: { slash: ["/offline", "/offline-dry"], tools: [offline_trainer], ui: ["畫面右上角的線上／離線開關", "設定 → AI → 離線訓練器"] }
+        platforms: [web, desktop]
+        samples: ["/offline on", "/offline-dry 用瀏覽器控制開啟 https://example.com 並說明內容", "把這個問答教給離線訓練器"]
+        updated: 2026-10-02
 
   - id: knowledge
     name: 知識與自製函式
@@ -234,17 +241,24 @@ categories:
         updated: 2026-10-02
       - id: repo-map
         name: 專案結構追蹤（分階段）
-        summary: 有專案／repository 時先追出結構（網頁版用已授權資料夾，桌面版可直接給絕對路徑）：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（build_index）會先問使用者。
-        how: { domain: coding, tools: [repo_map] }
+        summary: 有專案／repository 時先追出結構（網頁版用已授權資料夾，桌面版可直接給絕對路徑）：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（index_start）會先問使用者，之後在背景漸進建立（進度卡片、可停止、可接續、大型專案如已 build 的 OpenBMC 也行，大小與檔案數有上限可調），並記下每個定義上面的註解與檔案之間的呼叫關係。
+        how: { domain: coding, tools: [repo_map, repo_ask] }
         platforms: [web, desktop]
         samples: ["幫我找一下專案裡處理登入的原始碼，再看它依賴哪些檔案", "這個檔案路徑找不到了，專案是不是改過結構？", "先看一下這個 repo 的整體結構"]
         updated: 2026-10-02
       - id: repo-wiki
         name: 專案索引百科（類似 DeepWiki）
-        summary: 類似 DeepWiki 的專案百科，分階段產生（避免大專案的檔案清單被截斷、也避免只得到一份空泛的 markdown）：plan 算出模組與頁面清單 → 每頁 evidence（預算內的事實與程式碼片段＋寫法規定）→ AI 寫成有說明的頁面並 write_page（驗證標題、字數、引用的檔案必須存在）→ finalize 組成單檔的查詢頁面（頁面、依賴圖、結構、定義、名詞）；沒寫的頁面用結構草稿補上；頁面多時委派 wiki_writer 子任務。存進 persistentStorage（IndexedDB），可選擇寫進專案資料夾。
+        summary: 類似 DeepWiki 的專案百科，分階段產生（避免大專案的檔案清單被截斷、也避免只得到一份空泛的 markdown）：plan 算出模組與頁面清單 → 每頁 evidence（預算內的事實與程式碼片段＋寫法規定）→ AI 寫成有說明的頁面並 write_page（驗證標題、字數、引用的檔案必須存在）→ finalize 組成單檔的查詢頁面（頁面、依賴圖、結構、定義、名詞）；沒寫的頁面用結構草稿補上；頁面多時委派 wiki_writer 子任務。存進 persistentStorage（IndexedDB），可選擇寫進專案資料夾。export 可產生單檔 HTML：內嵌 SQLite（看百科畫面、瀏覽檔案與符號、離線問答、直接下 SQL 查檔案關聯與呼叫關係）或純 HTML／JavaScript 的問答頁。
         how: { domain: [coding, wiki_writer], tools: [repo_wiki, repo_map] }
         platforms: [web, desktop]
         samples: ["幫這個專案產生可以搜尋的百科頁面", "查一下 parseConfig 這個函式定義在哪、誰在用", "幫專案裡的重要名詞寫定義，放進百科"]
+        updated: 2026-10-02
+      - id: repo-ask
+        name: 程式碼問答（類似 doxygen＋語意搜尋）
+        summary: 問專案裡「某個函式做什麼」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。依 repo_map 的索引（定義、註解、簽名、依賴、呼叫關係）回答，用字串雜湊向量＋BM25＋TextRank 重排，不需要模型；回傳事實與程式碼片段讓 AI 整理成回答。同一個問答引擎也會內嵌進匯出的 HTML，離線在瀏覽器裡問。
+        how: { domain: coding, tools: [repo_ask, repo_wiki] }
+        platforms: [web, desktop]
+        samples: ["parse_config 這個函式是做什麼的？", "誰用到 Logger 這個類別？", "處理登入的程式碼在哪些檔案？", "把這個專案匯出成可以離線查詢、能下 SQL 的 HTML"]
         updated: 2026-10-02
       - id: git-operations
         name: git 操作

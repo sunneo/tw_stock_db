@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149}}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}
+header h1{font-size:16px;margin:0;word-break:break-all}header .st{color:var(--mut);font-size:12px}
+nav{display:flex;gap:4px;margin-left:auto}nav button{padding:5px 12px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;font-size:13px}
+nav button.on{border-color:var(--ac);color:var(--ac);font-weight:600}
+#load{padding:30px;text-align:center;color:var(--mut)}#bar{height:6px;background:var(--bd);border-radius:3px;margin:10px auto;max-width:420px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac)}
+#app{flex:1;display:flex;min-height:0}
+.pane{display:none;flex:1;min-height:0}.pane.on{display:flex}
+.side{width:330px;max-width:42vw;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}
+.side input,.side select{margin:8px 10px 0;padding:7px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}
+.list{flex:1;overflow:auto;padding:8px 6px 14px}
+.list a,.list summary{display:block;padding:3px 8px;border-radius:5px;color:var(--fg);text-decoration:none;cursor:pointer;word-break:break-all}
+.list a:hover,.list summary:hover{background:var(--bd)}.list .k{color:var(--mut);font-size:12px;margin-left:6px}.list details>div{margin-left:12px}
+.main{flex:1;overflow:auto;padding:16px 26px 70px;min-width:0}
+h1.t{font-size:20px;margin:0 0 8px;word-break:break-all}h1,h2,h3{line-height:1.3}h2{font-size:16px;margin:20px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}h3{font-size:14px;margin:14px 0 4px}
+.mut{color:var(--mut)}code,pre,textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}
+:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
+a.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf);position:sticky;top:0}
+.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}
+.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er);white-space:pre-wrap}
+.md ul,.md ol{padding-left:22px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}
+svg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px;margin:6px 0}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}
+.ask{display:flex;gap:8px}.ask input{flex:1;padding:9px 11px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}
+button.b{padding:7px 14px;border:1px solid var(--ac);background:var(--ac);color:#fff;border-radius:6px;cursor:pointer}button.b.s{background:var(--bg);color:var(--ac)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 9px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px;color:var(--mut)}.chips span:hover{border-color:var(--ac);color:var(--ac)}
+.qa{border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:12px 0}.qa .q{font-weight:600;margin-bottom:4px}
+textarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}
+.res{overflow:auto;max-height:60vh;border:1px solid var(--bd);border-radius:6px;margin-top:8px}
+@media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}
+</style></head><body>
+<header><h1 id="ttl"></h1><span class="st" id="stat"></span><nav id="nav"></nav></header>
+<div id="load"><div id="lmsg">載入中…</div><div id="bar"><i id="barfill"></i></div></div>
+<div id="app" style="display:none">
+<section class="pane" id="p-wiki"><div class="side"><input id="wq" placeholder="搜尋頁面…"><div class="list" id="wl"></div></div><div class="main" id="wm"></div></section>
+<section class="pane" id="p-files"><div class="side"><input id="fq" placeholder="搜尋檔案路徑…"><div class="list" id="fl"></div></div><div class="main" id="fm"></div></section>
+<section class="pane" id="p-syms"><div class="side"><input id="sq" placeholder="搜尋函式／類別名稱或說明…"><select id="sk"><option value="">所有種類</option></select><div class="list" id="sl"></div></div><div class="main" id="sm"></div></section>
+<section class="pane" id="p-ask"><div class="main" id="am" style="max-width:980px">
+<h1 class="t">問答（離線，不需要網路或AI）</h1>
+<div class="mut">像 doxygen＋語意搜尋：依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>
+<div class="ask" style="margin-top:10px"><input id="aq" placeholder="例如：parse_config 是做什麼的？／main 在哪裡定義？／誰用到 Logger？／登入流程相關的檔案" autofocus><button class="b" id="ago">問</button></div>
+<div class="chips" id="achips"></div><div id="aout"></div></div></section>
+<section class="pane" id="p-sql"><div class="main" id="qm" style="max-width:1100px">
+<h1 class="t">SQL 查詢（內嵌 SQLite）</h1>
+<div class="mut">資料表：files、symbols、imports（src→dst，檔案之間的引用）、uses（file_id 呼叫了 symbol_id）、pages、glossary、meta；檢視：v_symbols、v_imports、v_uses。id 是序號（從0開始）。Ctrl+Enter 執行。</div>
+<div style="margin:8px 0"><select id="qex"></select></div>
+<textarea id="qsql" spellcheck="false"></textarea>
+<div style="margin:8px 0;display:flex;gap:8px;align-items:center"><button class="b" id="qrun">執行</button><button class="b s" id="qcsv">下載CSV</button><span class="mut" id="qinfo"></span></div>
+<div class="res" id="qres"></div>
+<details style="margin-top:12px"><summary class="mut">資料表結構</summary><pre id="qschema"></pre></details></div></section>
+</div>
+<script id="cfg" type="application/json">__CFG__</script>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+__RUNTIME__
+</script>
+<script>
+(function(){
+var CFG=JSON.parse(document.getElementById('cfg').textContent);
+var DB=null,IX=null,SQLDB=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[];
+function $(s){return document.querySelector(s)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function b64u8(b){var bin=atob(b),n=bin.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u}
+async function gunzip(u8,gz){if(!gz)return u8;var r=new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip')));return new Uint8Array(await r.arrayBuffer())}
+function setLoad(msg,pct){$('#lmsg').textContent=msg;if(pct!=null)$('#barfill').style.width=Math.round(pct)+'%'}
+function tick(){return new Promise(function(r){setTimeout(r,0)})}
+function loadScript(text){return new Promise(function(res,rej){var u=URL.createObjectURL(new Blob([text],{type:'application/javascript'}));var s=document.createElement('script');s.src=u;s.onload=function(){URL.revokeObjectURL(u);res()};s.onerror=function(){rej(new Error('載入SQLite引擎失敗'))};document.head.appendChild(s)})}
+function rows(sql){var r=SQLDB.exec(sql);return r.length?r[0].values:[]}
+function F(i){return DB.files[i]||['?','',0,'']}
+function S(i){return DB.syms[i]}
+function link(path,label){return '<a class="l" data-go="file:'+esc(path)+'">'+esc(label||path)+'</a>'}
+function slink(name){return '<a class="l" data-go="sym:'+esc(name)+'">'+esc(name)+'</a>'}
+/* ---- 迷你Markdown ---- */
+function inline(t){
+  t=esc(t);
+  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\d+(-\d+)?$/,'');return fileMap[p]!=null?'<a class="l" data-go="file:'+esc(p)+'"><code>'+c+'</code></a>':(IX&&IX.nameMap[c.toLowerCase()]?'<a class="l" data-go="sym:'+esc(c)+'"><code>'+c+'</code></a>':'<code>'+c+'</code>')});
+  t=t.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\(page:([^)]+)\)/g,'<a class="l" data-go="page:$2">$1</a>').replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return t;
+}
+function mdToHtml(md){
+  var lines=String(md||'').split('\n'),h='',i=0;
+  while(i<lines.length){
+    var l=lines[i];
+    if(/^```/.test(l)){var lang=l.replace(/^```/,'').trim();var buf=[];i++;while(i<lines.length&&!/^```/.test(lines[i])){buf.push(lines[i]);i++}i++;
+      if(lang==='mermaid'){var sv=mermaidLite(buf.join('\n'));h+=sv||'<pre>'+esc(buf.join('\n'))+'</pre>'}else h+='<pre>'+esc(buf.join('\n'))+'</pre>';continue}
+    var m;
+    if((m=/^(#{1,4})\s+(.*)$/.exec(l))){var n=m[1].length;h+='<h'+n+'>'+inline(m[2])+'</h'+n+'>';i++;continue}
+    if(/^\|.*\|\s*$/.test(l)&&i+1<lines.length&&/^\|[\s:|-]+\|\s*$/.test(lines[i+1])){var hd=l.split('|').slice(1,-1);i+=2;var rows=[];while(i<lines.length&&/^\|.*\|\s*$/.test(lines[i])){rows.push(lines[i].split('|').slice(1,-1));i++}
+      h+='<table><tr>'+hd.map(function(c){return '<th>'+inline(c.trim())+'</th>'}).join('')+'</tr>'+rows.map(function(r){return '<tr>'+r.map(function(c){return '<td>'+inline(c.trim())+'</td>'}).join('')+'</tr>'}).join('')+'</table>';continue}
+    if(/^\s*[-*]\s+/.test(l)){var it=[];while(i<lines.length&&/^\s*[-*]\s+/.test(lines[i])){it.push('<li>'+inline(lines[i].replace(/^\s*[-*]\s+/,''))+'</li>');i++}h+='<ul>'+it.join('')+'</ul>';continue}
+    if(/^\s*\d+\.\s+/.test(l)){var it2=[];while(i<lines.length&&/^\s*\d+\.\s+/.test(lines[i])){it2.push('<li>'+inline(lines[i].replace(/^\s*\d+\.\s+/,''))+'</li>');i++}h+='<ol>'+it2.join('')+'</ol>';continue}
+    if(/^>\s?/.test(l)){var q=[];while(i<lines.length&&/^>\s?/.test(lines[i])){q.push(lines[i].replace(/^>\s?/,''));i++}h+='<blockquote>'+inline(q.join(' '))+'</blockquote>';continue}
+    if(!l.trim()){i++;continue}
+    var p=[l];i++;while(i<lines.length&&lines[i].trim()&&!/^(#{1,4}\s|```|\s*[-*]\s|\s*\d+\.\s|>|\|)/.test(lines[i])){p.push(lines[i]);i++}
+    h+='<p>'+inline(p.join(' '))+'</p>';
+  }
+  return h;
+}
+/* ---- 迷你流程圖（只支援 graph LR/TD 的節點與箭頭）---- */
+function mermaidLite(src){
+  var ls=src.split('\n').map(function(x){return x.trim()}).filter(Boolean);
+  if(!ls.length||!/^(graph|flowchart)\s+(LR|RL|TD|TB|BT)/i.test(ls[0]))return '';
+  var dir=/LR|RL/i.test(ls[0])?'LR':'TD';var nodes={},order=[],edges=[];
+  function nd(tok){var m=/^([A-Za-z0-9_\-.]+)\s*(?:\[\[?"?([^\]"]*)"?\]?\]|\(\(?"?([^)"]*)"?\)?\)|\{"?([^}"]*)"?\})?$/.exec(tok.trim());if(!m)return null;var id=m[1];var label=m[2]||m[3]||m[4];if(!nodes[id]){nodes[id]={id:id,label:label||id};order.push(id)}else if(label)nodes[id].label=label;return id}
+  for(var k=1;k<ls.length;k++){var ln=ls[k];if(/^(subgraph|end|classDef|class|style|linkStyle|%%)/.test(ln))continue;
+    var parts=ln.split(/\s*(?:-->|---|-\.->|==>)\s*(?:\|([^|]*)\|\s*)?/);
+    var ids=[];for(var j=0;j<parts.length;j+=2){var id=nd(parts[j]||'');if(!id)return '';ids.push({id:id,lab:parts[j+1]||''})}
+    for(var e=0;e+1<ids.length;e++)edges.push({a:ids[e].id,b:ids[e+1].id,lab:ids[e+1].lab||''});}
+  if(!order.length||order.length>60)return '';
+  var rank={};order.forEach(function(id){rank[id]=0});
+  for(var it=0;it<order.length;it++){var ch=false;edges.forEach(function(e){if(e.a!==e.b&&rank[e.b]<rank[e.a]+1&&rank[e.a]+1<order.length){rank[e.b]=rank[e.a]+1;ch=true}});if(!ch)break}
+  var cols={};order.forEach(function(id){(cols[rank[id]]=cols[rank[id]]||[]).push(id)});
+  var W=170,H=44,GX=60,GY=22,pos={},maxc=0,maxr=0;
+  Object.keys(cols).forEach(function(r){cols[r].forEach(function(id,idx){pos[id]=dir==='LR'?{x:r*(W+GX)+10,y:idx*(H+GY)+10}:{x:idx*(W+GX)+10,y:r*(H+GY+20)+10};maxc=Math.max(maxc,pos[id].x+W+10);maxr=Math.max(maxr,pos[id].y+H+10)})});
+  var s='<svg class="dg" viewBox="0 0 '+maxc+' '+maxr+'" width="'+Math.min(maxc,900)+'"><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--mut);stroke:none"/></marker></defs>';
+  edges.forEach(function(e){var a=pos[e.a],b=pos[e.b];if(!a||!b)return;var x1=dir==='LR'?a.x+W:a.x+W/2,y1=dir==='LR'?a.y+H/2:a.y+H,x2=dir==='LR'?b.x:b.x+W/2,y2=dir==='LR'?b.y+H/2:b.y;var mx=(x1+x2)/2,my=(y1+y2)/2;
+    s+='<path d="M'+x1+','+y1+' C'+(dir==='LR'?mx:x1)+','+(dir==='LR'?y1:my)+' '+(dir==='LR'?mx:x2)+','+(dir==='LR'?y2:my)+' '+x2+','+y2+'" marker-end="url(#ar)"/>';if(e.lab)s+='<text x="'+mx+'" y="'+(my-3)+'" text-anchor="middle">'+esc(e.lab)+'</text>'});
+  order.forEach(function(id){var p=pos[id],lb=nodes[id].label;if(lb.length>24)lb=lb.slice(0,23)+'…';s+='<rect x="'+p.x+'" y="'+p.y+'" width="'+W+'" height="'+H+'" rx="6"/><text x="'+(p.x+W/2)+'" y="'+(p.y+H/2+4)+'" text-anchor="middle">'+esc(lb)+'</text>'});
+  return s+'</svg>';
+}
+
+async function boot(){
+  $('#ttl').textContent=CFG.title;
+  var P=JSON.parse(document.getElementById('payload').textContent);
+  if(CFG.mode==='sqlite'){
+    setLoad('解壓縮 SQLite 引擎…',3);
+    var js=new TextDecoder().decode(await gunzip(b64u8(P.js),CFG.sql.gz.js));
+    var wasm=await gunzip(b64u8(P.wasm),CFG.sql.gz.wasm);
+    await loadScript(js);
+    setLoad('載入資料庫…',10);
+    var dbBytes=await gunzip(b64u8(P.db),CFG.sql.gz.db);
+    var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});
+    SQLDB=new SQL.Database(dbBytes);
+    setLoad('讀取資料表…',18);await tick();
+    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};
+    PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});
+    rows('SELECT term,definition FROM glossary').forEach(function(r){GLOSS[r[0]]={definition:r[1]}});
+  }else{
+    setLoad('解壓縮資料…',5);
+    var j=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(P.data),CFG.dataGz)));
+    DB=j;PAGES=j.pages||[];GLOSS=j.glossary||{};
+  }
+  DB.files.forEach(function(f,i){fileMap[f[0]]=i});
+  setLoad('建立檢索索引…',22);await tick();
+  IX=_faCodeIndexNew(DB);
+  var total=(DB.syms.length+DB.files.length)||1;
+  while(!_faCodeIndexTokens(IX,120)){setLoad('建立檢索索引… '+Math.round((IX.ti+IX.tf)/total*100)+'%',22+78*(IX.ti+IX.tf)/total);await tick()}
+  $('#load').style.display='none';$('#app').style.display='flex';
+  $('#stat').textContent=CFG.stats.files+' 個檔案 · '+CFG.stats.symbols+' 個定義 · '+CFG.stats.imports+' 條引用 · '+CFG.stats.uses+' 條呼叫'+(CFG.complete?'':' · （部分索引）')+' · 產生於 '+new Date(CFG.generated).toLocaleString();
+  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答']];if(SQLDB)tabs.push(['sql','SQL']);
+  $('#nav').innerHTML=tabs.map(function(t){return '<button data-t="'+t[0]+'">'+t[1]+'</button>'}).join('');
+  $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};
+  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();
+  show(PAGES.length?'wiki':'ask');
+}
+function show(t){document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});if(t==='ask')$('#aq').focus()}
+function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);
+  if(k==='file'){show('files');showFile(v)}else if(k==='sym'){show('syms');showSym(v)}else if(k==='page'){show('wiki');showPage(v)}}
+document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go)}});
+/* ---- 百科 ---- */
+function initWiki(){
+  function render(){var q=$('#wq').value.trim().toLowerCase();var h='';
+    PAGES.forEach(function(p){if(q&&p.title.toLowerCase().indexOf(q)<0&&String(p.md).toLowerCase().indexOf(q)<0)return;h+='<a data-go="page:'+esc(p.id)+'">'+esc(p.title)+(p.auto?'<span class="k">草稿</span>':'')+'</a>'});
+    var gl=Object.keys(GLOSS);if(gl.length&&!q)h+='<div class="mut" style="padding:8px 8px 2px">名詞</div>'+gl.sort().map(function(t){return '<a data-go="term:'+esc(t)+'">'+esc(t)+'</a>'}).join('');
+    $('#wl').innerHTML=h||'<div class="mut" style="padding:8px">沒有符合的頁面</div>'}
+  $('#wq').oninput=render;render();
+  if(PAGES.length)showPage(PAGES[0].id);else{var h2='<h1 class="t">專案概況</h1><div class="mut">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}
+}
+function showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p){$('#wm').innerHTML='<div class="note">沒有這個頁面</div>';return}
+  $('#wm').innerHTML='<div class="md">'+(p.auto?'<div class="note">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(p.md)+'</div>';$('#wm').scrollTop=0}
+/* ---- 檔案 ---- */
+function initFiles(){
+  var tree={};DB.files.forEach(function(f,i){var segs=f[0].split('/'),n=tree;for(var k=0;k<segs.length-1;k++){n=(n.d=n.d||{})[segs[k]]=(n.d&&n.d[segs[k]])||{}}(n.f=n.f||[]).push(i)});
+  function node(n,depth){var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/</summary><div>'+node(n.d[k],depth+1)+'</div></details>'});
+    (n.f||[]).slice(0,300).forEach(function(i){h+='<a data-go="file:'+esc(F(i)[0])+'">'+esc(F(i)[0].split('/').pop())+'<span class="k">'+(IX.fileSyms[i]||[]).length+'</span></a>'});return h}
+  var lazy=null;
+  function render(){var q=$('#fq').value.trim().toLowerCase();
+    if(!q){if(!lazy)lazy=node(tree,0);$('#fl').innerHTML=lazy;return}
+    var h='',c=0;for(var i=0;i<DB.files.length&&c<200;i++){if(DB.files[i][0].toLowerCase().indexOf(q)>=0){c++;h+='<a data-go="file:'+esc(DB.files[i][0])+'">'+esc(DB.files[i][0])+'</a>'}}
+    $('#fl').innerHTML=h||'<div class="mut" style="padding:8px">沒有符合的檔案</div>'}
+  $('#fq').oninput=render;render();
+  $('#fm').innerHTML='<h1 class="t">檔案</h1><div class="mut">左邊選一個檔案，看它定義了什麼、引用了誰、被誰引用。</div>';
+}
+function showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class="note">索引裡沒有這個檔案</div>';return}
+  var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];
+  var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f[1])+'</span><span class="tag">'+f[2]+' 行</span></div>';
+  if(f[3])h+='<p>'+esc(f[3])+'</p>';
+  h+='<h2>定義（'+syms.length+'）</h2>';
+  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class="tag">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
+  h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class="mut">（沒有內部引用）</div>');
+  h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class="mut">（沒有已分析的檔案引用它）</div>');
+  if(uses.length){var seen={};h+='<h2>呼叫了別處的定義（'+uses.length+'）</h2>'+uses.slice(0,200).filter(function(k){return !seen[k]&&(seen[k]=1)}).map(function(k){var s=S(k);return '<div>'+slink(s[0])+' <span class="mut">'+esc(F(s[2])[0])+':'+s[3]+'</span></div>'}).join('')}
+  $('#fm').innerHTML=h;$('#fm').scrollTop=0}
+/* ---- 符號 ---- */
+function initSyms(){
+  var kinds={};DB.syms.forEach(function(s){kinds[s[1]]=(kinds[s[1]]||0)+1});
+  $('#sk').innerHTML='<option value="">所有種類</option>'+Object.keys(kinds).sort(function(a,b){return kinds[b]-kinds[a]}).map(function(k){return '<option value="'+esc(k)+'">'+esc(k)+'（'+kinds[k]+'）</option>'}).join('');
+  var order=null;
+  function render(){var q=$('#sq').value.trim().toLowerCase(),kd=$('#sk').value,h='',c=0;
+    if(!order){order=DB.syms.map(function(s,i){return i}).sort(function(a,b){return String(DB.syms[a][0]).toLowerCase()<String(DB.syms[b][0]).toLowerCase()?-1:1})}
+    for(var n=0;n<order.length&&c<300;n++){var s=DB.syms[order[n]];if(kd&&s[1]!==kd)continue;if(q&&String(s[0]).toLowerCase().indexOf(q)<0&&String(s[4]).toLowerCase().indexOf(q)<0)continue;c++;h+='<a data-go="sym:'+esc(s[0])+'">'+esc(s[0])+'<span class="k">'+esc(s[1])+' · '+esc(F(s[2])[0].split('/').pop())+'</span></a>'}
+    $('#sl').innerHTML=h||'<div class="mut" style="padding:8px">沒有符合的結果</div>'+(c>=300?'':'')}
+  $('#sq').oninput=render;$('#sk').onchange=render;render();
+  $('#sm').innerHTML='<h1 class="t">符號</h1><div class="mut">函式、類別、結構、巨集…（最多列300筆，用上面的搜尋縮小範圍）。</div>';
+}
+function showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];
+  if(!ids.length){$('#sm').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  var h='<h1 class="t">'+esc(S(ids[0])[0])+'</h1><div class="mut">'+ids.length+' 個定義</div>';
+  ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];
+    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';
+    h+=s[4]?'<p>'+esc(s[4])+'</p>':'<p class="mut">'+esc(_faCodeNameGuess(s[0]))+'</p>';
+    if(s[5])h+='<pre>'+esc(s[5])+'</pre>';
+    var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';
+    var inn=IX.impIn[fi]||[];if(inn.length)h+='<div class="mut" style="margin-top:4px">定義它的檔案被 '+inn.length+' 個檔案引用：'+inn.slice(0,12).map(function(u){return link(F(u)[0])}).join('、')+'</div>';
+    var same=(IX.fileSyms[fi]||[]).filter(function(x){return x!==k}).slice(0,15);if(same.length)h+='<div style="margin-top:4px"><b>同檔案的其他定義：</b> '+same.map(function(x){return slink(S(x)[0])}).join('、')+'</div>'});
+  $('#sm').innerHTML=h;$('#sm').scrollTop=0}
+/* ---- 問答 ---- */
+function initAsk(){
+  var ex=['這個專案是做什麼的','哪些檔案被最多檔案引用','處理設定檔的函式在哪','錯誤處理相關的程式'];
+  var big=DB.syms.length?DB.syms[0][0]:'main';
+  ex=[big+' 是做什麼的','where is '+big+' defined','誰用到 '+big,big+' 相關的東西'].concat(ex.slice(2));
+  $('#achips').innerHTML=ex.map(function(x){return '<span>'+esc(x)+'</span>'}).join('');
+  $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};
+  $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};
+}
+function ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r=_faCodeAsk(IX,q);
+  var ms=Math.round(performance.now()-t0);
+  var h='<div class="qa"><div class="q">'+esc(q)+'</div><div class="md">'+mdToHtml(r.answer)+'</div><div class="mut" style="margin-top:6px">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div></div>';
+  $('#aout').insertAdjacentHTML('afterbegin',h);$('#aq').select()}
+/* ---- SQL ---- */
+var EXAMPLES=[
+['被最多檔案引用的檔案（Top 30）',"SELECT path, imported_by_n AS 被引用數, imports_n AS 引用數 FROM files ORDER BY imported_by_n DESC LIMIT 30"],
+['某檔案引用了誰／被誰引用（改 LIKE 裡的檔名）',"SELECT 'imports' AS 方向, dst_path AS 檔案 FROM v_imports WHERE src_path LIKE '__FILE__'\nUNION ALL\nSELECT 'imported_by', src_path FROM v_imports WHERE dst_path LIKE '__FILE__'"],
+['某檔案的所有間接依賴（遞迴）',"WITH RECURSIVE dep(id, depth) AS (\n  SELECT id, 0 FROM (SELECT id FROM files WHERE path LIKE '__FILE__' ORDER BY id LIMIT 1)\n  UNION\n  SELECT i.dst, dep.depth + 1 FROM imports i JOIN dep ON i.src = dep.id WHERE dep.depth < 6\n)\nSELECT f.path, MIN(dep.depth) AS 距離 FROM dep JOIN files f ON f.id = dep.id GROUP BY f.path ORDER BY 距離, f.path"],
+['最常被呼叫的函式（依呼叫它的檔案數）',"SELECT symbol AS 名稱, defined_in AS 定義在, COUNT(DISTINCT caller_file) AS 呼叫的檔案數 FROM v_uses GROUP BY symbol, defined_in ORDER BY 呼叫的檔案數 DESC LIMIT 30"],
+['某個符號的所有使用者（改名稱）',"SELECT DISTINCT caller_file AS 使用的檔案, defined_in AS 定義在 FROM v_uses WHERE symbol = '__SYM__'"],
+['同名定義（可能衝突或多型）',"SELECT name, COUNT(*) AS 個數, group_concat(path, '  |  ') AS 位置 FROM v_symbols GROUP BY name HAVING COUNT(*) > 1 ORDER BY 個數 DESC LIMIT 50"],
+['定義最多的檔案',"SELECT f.path, COUNT(*) AS 定義數 FROM symbols s JOIN files f ON f.id = s.file_id GROUP BY f.id ORDER BY 定義數 DESC LIMIT 30"],
+['孤立檔案（沒人引用、也沒引用別人）',"SELECT path, lines FROM files WHERE imports_n = 0 AND imported_by_n = 0 ORDER BY lines DESC LIMIT 100"],
+['說明（註解）裡有某個關鍵字的定義',"SELECT name, kind, path, line, doc FROM v_symbols WHERE doc LIKE '%config%' ORDER BY name LIMIT 50"],
+['各目錄的檔案數與行數',"SELECT dir AS 目錄, COUNT(*) AS 檔案數, SUM(lines) AS 總行數 FROM files GROUP BY dir ORDER BY 總行數 DESC LIMIT 40"],
+['各語言統計',"SELECT lang AS 語言, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC"]
+];
+function initSql(){
+  var hot='%',sym='main';
+  try{var a=SQLDB.exec('SELECT name FROM files ORDER BY imports_n+imported_by_n DESC LIMIT 1');if(a.length)hot='%'+a[0].values[0][0]+'%';var b=SQLDB.exec('SELECT symbol FROM v_uses GROUP BY symbol ORDER BY COUNT(*) DESC LIMIT 1');if(b.length)sym=b[0].values[0][0]}catch(e){}
+  EXAMPLES.forEach(function(x){x[1]=x[1].split('__FILE__').join(hot).split('__SYM__').join(sym)});
+  $('#qex').innerHTML='<option value="">範例查詢…</option>'+EXAMPLES.map(function(x,i){return '<option value="'+i+'">'+esc(x[0])+'</option>'}).join('');
+  $('#qex').onchange=function(){if(this.value!=='')$('#qsql').value=EXAMPLES[this.value][1]};
+  $('#qsql').value=EXAMPLES[0][1];
+  $('#qrun').onclick=runSql;$('#qsql').onkeydown=function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runSql()}};
+  $('#qcsv').onclick=function(){if(!LASTCOLS.length)return;var csv=[LASTCOLS].concat(LASTROWS).map(function(r){return r.map(function(c){c=c==null?'':String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c}).join(',')}).join('\n');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='query.csv';a.click()};
+  try{var sc=SQLDB.exec("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type DESC,name");$('#qschema').textContent=sc.length?sc[0].values.map(function(r){return r[1]+';'}).join('\n\n'):''}catch(e){}
+}
+function runSql(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performance.now();
+  try{var res=SQLDB.exec(sql);var ms=Math.round(performance.now()-t0);
+    if(!res.length){$('#qres').innerHTML='<div style="padding:10px" class="mut">執行完成，沒有回傳資料列。</div>';$('#qinfo').textContent=ms+' ms';LASTCOLS=[];LASTROWS=[];return}
+    var r=res[res.length-1];LASTCOLS=r.columns;LASTROWS=r.values;var max=500;
+    var h='<table><tr>'+r.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+r.values.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var col=r.columns[ci];var lk=(/path|file|defined_in|檔案|定義在|src_path|dst_path|caller/i.test(col)&&fileMap[t]!=null)?link(t):esc(t);return '<td>'+lk+'</td>'}).join('')+'</tr>'}).join('')+'</table>';
+    $('#qres').innerHTML=h;$('#qinfo').textContent=r.values.length+' 列'+(r.values.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}
+  catch(e){$('#qres').innerHTML='<div style="padding:10px" class="err">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}
+boot().catch(function(e){$('#lmsg').innerHTML='<span class="err">載入失敗：'+esc(e&&e.message||e)+'</span>'});
+})();
+</script>
+</body></html>
