@@ -1862,7 +1862,7 @@ async function createWindow() {
     });
   }
   // 2026-10-03：對話裡的http(s)連結不要在app裡開（會多一個空殼視窗，或整個視窗跳去那個網站）——一律交給系統瀏覽器。本機（localhost）與非http(s)（blob:、about:）照舊。
-  const isExternalWeb = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && !/^(localhost|127.0.0.1|[::1])$/.test(x.hostname); } catch (_) { return false; } };
+  const isExternalWeb = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(x.hostname); } catch (_) { return false; } };
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (isExternalWeb(url)) { shell.openExternal(url).catch(() => {}); return { action: "deny" }; } return { action: "allow" }; });
   mainWindow.webContents.on("will-navigate", (evt, url) => { if (isExternalWeb(url)) { evt.preventDefault(); shell.openExternal(url).catch(() => {}); } });
   mainWindow.loadFile(await resolveIndexHtmlPath());
