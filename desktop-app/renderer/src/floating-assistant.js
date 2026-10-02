@@ -10493,6 +10493,19 @@ class FloatingAssistant {
         setTimeout(() => URL.revokeObjectURL(url), 10000);
         return { fileName: a.download, folderName: pkg.name };
     }
+    // 把一張圖（data URL）裁成region={x,y,width,height}（像素，左上角0,0）。srcWidth＝這張圖對應的畫面寬度（沒給就用圖片實際寬度），圖片比例不同時等比換算
+    async _cropDataUrl(dataUrl, region, srcWidth) {
+        const img = await new Promise((resolve, reject) => { const im = new Image(); im.onload = () => resolve(im); im.onerror = () => reject(new Error('圖片載入失敗')); im.src = dataUrl; });
+        const k = srcWidth && Number(srcWidth) > 0 ? img.naturalWidth / Number(srcWidth) : 1;
+        let x = Math.max(0, Math.round(region.x * k)), y = Math.max(0, Math.round(region.y * k));
+        let w = Math.round(region.width * k), h = Math.round(region.height * k);
+        w = Math.min(w, img.naturalWidth - x); h = Math.min(h, img.naturalHeight - y);
+        if (!(w > 0 && h > 0)) throw new Error('範圍超出畫面（圖片只有 ' + img.naturalWidth + '×' + img.naturalHeight + '）');
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, x, y, w, h, 0, 0, w, h);
+        return { dataUrl: cv.toDataURL('image/jpeg', 0.92), x: Math.round(x / k), y: Math.round(y / k), width: Math.round(w / k), height: Math.round(h / k) };
+    }
     _bcShapeResult(cmd, r) {
         if (!r || typeof r !== 'object') return { ok: false, error: '沒有回應' };
         if (!r.ok) {
@@ -11980,7 +11993,16 @@ ${fnData.code}
                     const result = this._bcShapeResult('screenshot', await this._bcCall('screenshot', callArgs, 45000));
                     if (!result || result.type !== 'image') return JSON.stringify(result);
                     if (region && !(result.meta && result.meta.region_applied)) {
-                        result.meta.warning = '擴充功能版本太舊，不支援region：這張是整個畫面/整頁而不是指定範圍。請告訴使用者重新載入最新版擴充功能（web/browser-control-extension）。';
+                        // 擴充功能這一版沒有區域截圖：用整張圖在本機精準裁切（座標是畫面左上角0,0的像素，跟擴充功能回傳的width／height同一套）
+                        try {
+                            const cropped = await this._cropDataUrl(result.dataUrl, region, result.meta && result.meta.width);
+                            result.dataUrl = cropped.dataUrl;
+                            result.meta.region_applied = { x: cropped.x, y: cropped.y, width: cropped.width, height: cropped.height, by: 'local' };
+                            result.meta.width = cropped.width; result.meta.height = cropped.height;
+                            result.meta.note = '擴充功能沒有區域截圖功能，已在本機從整張截圖裁出指定範圍（x=' + cropped.x + ',y=' + cropped.y + ',' + cropped.width + '×' + cropped.height + '）。';
+                        } catch (cropErr) {
+                            result.meta.warning = '要求的範圍沒有裁成功（' + String((cropErr && cropErr.message) || cropErr) + '），這張是整個畫面／整頁。';
+                        }
                     }
                     if (parsed.save || parsed.interpret) {
                         const blob = await (await fetch(result.dataUrl)).blob();
@@ -16601,8 +16623,9 @@ ${fnData.code}
         return [{ tool: 'browser_list_tabs', args: {} }, { tool: 'browser_screenshot', args: Object.assign({ tab_id: '{step1.tab_id}' }, a) }];
     }
     _otShowImage(j) {
-        const m = this._pushAssistantMessage('📸 截圖' + (j.meta && (j.meta.title || j.meta.url) ? '：' + String(j.meta.title || j.meta.url).slice(0, 80) : ''), null);
+        const m = { role: 'tool', content: '[離線模式截圖' + (j.meta && (j.meta.title || j.meta.url) ? '：' + String(j.meta.title || j.meta.url).slice(0, 80) : '') + '，圖片已直接顯示給使用者]', tool_call_id: 'offline_shot_' + Date.now().toString(36) };
         try { Object.defineProperty(m, '_displayDataUrl', { value: j.dataUrl, enumerable: false, configurable: true }); } catch (_) {}
+        this.messages.push(m);
         this._persistChatHistory(); this._renderMessageHistory();
     }
     _otPickTool(p, text) {
@@ -16799,7 +16822,7 @@ ${fnData.code}
                 results.push({ tool: st.tool, raw, json, ok });
                 if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
             }
-            const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
+            const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.region_applied ? '，範圍 ' + m.region_applied.width + '×' + m.region_applied.height + '（x=' + m.region_applied.x + ',y=' + m.region_applied.y + (m.region_applied.by === 'local' ? '，本機裁切' : '') + '）' : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
             const body = [shotText].concat(results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
             return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
