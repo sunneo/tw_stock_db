@@ -9258,6 +9258,7 @@ class FloatingAssistant {
             customLanguages: {},
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
             offlineLearn: true, // 線上AI成功的做法自動學進離線訓練器
+            offlineAutoFallback: true, // AI完全沒辦法回應時，退回離線訓練器
             offlineThreshold: 0.45,
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
@@ -10412,6 +10413,7 @@ class FloatingAssistant {
             })(),
             offlineMode: raw.offlineMode === true,
             offlineLearn: raw.offlineLearn !== false,
+            offlineAutoFallback: raw.offlineAutoFallback !== false,
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
             customLanguages: (() => {
                 const out = {};
@@ -16443,17 +16445,29 @@ ${fnData.code}
     }
 
     // ---- 離線模式的對話：不經過LLM ----
-    async _offlineRespond(userText) {
+    // 這一輪（從第idx則訊息之後）AI有沒有成功回應：沒有任何助理回覆、或最後一則是錯誤訊息＝失敗，回傳失敗說明；成功回傳空字串
+    _turnFailureText(idx) {
+        const tail = this.messages.slice(idx + 1);
+        const lastA = [...tail].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
+        if (!lastA) return '（沒有任何回應）';
+        return /^\s*(⚠️|❌|🚫)/.test(lastA.content) ? lastA.content.replace(/\s+/g, ' ').slice(0, 200) : '';
+    }
+
+    async _offlineRespond(userText, opts) {
+        opts = opts || {};
         const text = String(userText || '').trim();
         if (!text) return;
-        this._chatMarkTouched && this._chatMarkTouched(text);
-        this.messages.push({ role: 'user', content: text });
-        this._renderMessageHistory();
+        if (!opts.skipUser) {
+            this._chatMarkTouched && this._chatMarkTouched(text);
+            this.messages.push({ role: 'user', content: text });
+            this._renderMessageHistory();
+        }
         let plan;
         try { plan = await this._otPlan(text); } catch (e) { this._pushAssistantMessage('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return; }
         const d = plan.decision;
         const c = d.chosen;
-        const head = `🔌 離線模式（Offline Trainer，不經過AI）`;
+        const errLines = opts.errors && opts.errors.length ? '\n' + opts.errors.map((e) => `- ${e.model}：${e.err}`).join('\n') : '';
+        const head = opts.fallback ? `🔌 所有AI model（共${opts.errors ? opts.errors.length : '?'}個）都沒辦法回應，改用離線訓練器（不經過AI）${errLines}` : `🔌 離線模式（Offline Trainer，不經過AI）`;
         const why = c ? `比對：「${c.domain} / ${c.pattern}」信心 ${c.score}（${c.via || '規則'}${c.explain ? `；字面${c.explain.bm25}、重排${c.explain.textrank}` : ''}）` : '';
         if (d.status === 'planned' || d.status === 'cache') {
             const act = c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
@@ -16535,7 +16549,7 @@ ${fnData.code}
         }
         // 問答記憶：沒有工具、純粹是知識問答的一輪，也存起來（離線時可以直接回答）
         const ans = String(answer || '').trim();
-        if (ans.length >= 20 && ans.length <= 4000 && !/^(⚠️|\[系統提示\])/.test(ans)) {
+        if (ans.length >= 20 && ans.length <= 4000 && !/^\s*(⚠️|❌|🚫|🔌|\[系統提示\])/.test(ans)) {
             const id = 'qa_' + _faRepoHash(text.toLowerCase());
             await this._otVecUpsert('ot_qa', [{ id, doc: text, meta: { answer: ans.slice(0, 3000), source: 'chat', at: Date.now() } }]);
             learned++;
@@ -16668,6 +16682,7 @@ ${fnData.code}
         h += `<div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
             <label><input type="checkbox" data-ot-set="offlineMode" ${S.offlineMode ? 'checked' : ''}> 離線模式（不經過AI）</label>
             <label><input type="checkbox" data-ot-set="offlineLearn" ${S.offlineLearn ? 'checked' : ''}> 線上AI成功時自動學習</label>
+            <label title="所有model都失敗時，自動改用離線訓練器回答"><input type="checkbox" data-ot-set="offlineAutoFallback" ${S.offlineAutoFallback !== false ? 'checked' : ''}> AI失效時自動退回離線</label>
             <label>信心門檻 <input type="range" min="0.2" max="0.8" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b></label>
         </div>`;
         h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　問答記憶 <b>${stats.qa}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
@@ -40528,9 +40543,34 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
 
         let aiFullResponseContent = "";
+        const __otUserIdx = this.messages.length - 1;
 
         try {
             aiFullResponseContent = await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+            // 第一個model失敗時，把清單裡「還沒試過」的model row逐一試完；全部都沒辦法回應，才會（在finally裡）退回離線訓練器
+            if (!this.stopRequested && this.advancedSettings.offlineAutoFallback !== false) {
+                const firstErr = this._turnFailureText(__otUserIdx);
+                if (firstErr) {
+                    const rows = this._getModelRows();
+                    const errs = [{ model: apiModel, err: firstErr }];
+                    const tried = new Set([rowCfg.rowIndex]);
+                    for (let i = 0; i < rows.length && !this.stopRequested; i++) {
+                        if (tried.has(i)) continue;
+                        tried.add(i);
+                        if (!this._turnFailureText(__otUserIdx)) break;
+                        const cfg = Object.assign({ rowIndex: i }, this._resolveModelRowConfig(rows[i]));
+                        // 拿掉前一個model留下的錯誤訊息（診斷內容已經記在errs，最後一起交代）
+                        while (this.messages.length > __otUserIdx + 1 && this._turnFailureText(__otUserIdx)) this.messages.pop();
+                        this._log(`⚠️ 模型 ${errs[errs.length - 1].model} 沒辦法回應，改試下一個模型：${cfg.apiModel}`);
+                        this._updateHeaderModelName(cfg.apiModel, true);
+                        this._renderMessageHistory();
+                        aiFullResponseContent = await this._loopFetch(cfg.apiKey, cfg.apiUrl, cfg.apiModel, 1, { temperature: cfg.temperature, samplingOverrides: cfg.samplingOverrides, maxOutputTokens: cfg.maxOutputTokens });
+                        const e2 = this._turnFailureText(__otUserIdx);
+                        if (e2) errs.push({ model: cfg.apiModel, err: e2 });
+                    }
+                    this._otAllModelsFailed = !this.stopRequested && !!this._turnFailureText(__otUserIdx) ? errs : null;
+                }
+            }
         } finally {
             this._setRespondingState(false, '', this.stopRequested ? 'stopped' : 'completed');
             // 2026-09-30（跟Redmine那邊對齊）：AI開的分頁在回合結束時自動關閉，最後一個分頁關掉時空的分頁群組也跟著清掉。
@@ -40542,6 +40582,13 @@ ${existingNodeSummaries}
             
             if (aiFullResponseContent && !this.stopRequested) {
                 this._hermesReflectAndEvolve(userText, aiFullResponseContent);
+            }
+            // AI完全沒辦法回應（所有model都失敗）：退回離線訓練器（純文字→語意分析→工具呼叫→文字重排），至少還有事可以做
+            // 必須「所有」model都試過、都沒辦法回應才會切（只有一個model失敗不算）
+            const allFailed = this._otAllModelsFailed;
+            this._otAllModelsFailed = null;
+            if (allFailed && !this.stopRequested && this.advancedSettings.offlineAutoFallback !== false && !(this._otCalls || []).length) {
+                try { await this._offlineRespond(userText, { skipUser: true, fallback: true, errors: allFailed }); } catch (_) {}
             }
         }
     }
@@ -45206,6 +45253,8 @@ ${existingNodeSummaries}
         const calls = (this._otCalls || []).slice();
         const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
         if (!userText || !lastAsst) return;
+        const ui = this.messages.map((m) => m.role === 'user' && m.content === userText).lastIndexOf(true);
+        if (ui < 0 || this.messages.indexOf(lastAsst) < ui) return; // 這則回覆不是針對這句話的
         this._otLearnFromTurn(userText, calls, lastAsst.content).catch((e) => console.warn('離線訓練器學習失敗', e));
     }
 
