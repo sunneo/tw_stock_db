@@ -956,7 +956,7 @@ function _faBuildCodingSystemPrompt(env = {}) {
 
 **步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；前端加後端一起測用sandbox_mock（頁面照常寫fetch/WebSocket，沙盒接到持久儲存的模擬伺服器，頁面不用為了測試改、之後可export成Node/Cloudflare部署檔）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
 
-**步驟0：先追出專案結構（有專案／repository時）**：用repo_map——使用者只給模糊名稱（例如「登入那段」「那個設定檔」）、你不知道原始碼在哪時，直接repo_map({"action":"find","root":"專案參照","query":"關鍵字"})，它會自動分階段建立地圖並找出候選；找到後用explore沿依賴逐步往外看（它引用誰、定義了什麼），不要整個專案逐檔讀。**讀檔案回報「找不到檔案」或路徑不存在，就是專案結構改變了：用repo_map resolve從最近還存在的那一層重新追，不要猜路徑。**想要整份專案的索引與查詢頁面，用repo_wiki generate（需要整份索引時repo_map build_index會先問使用者）。
+**步驟0：先追出專案結構（有專案／repository時）**：用repo_map——使用者只給模糊名稱（例如「登入那段」「那個設定檔」）、你不知道原始碼在哪時，直接repo_map({"action":"find","root":"專案參照","query":"關鍵字"})，它會自動分階段建立地圖並找出候選；找到後用explore沿依賴逐步往外看（它引用誰、定義了什麼），不要整個專案逐檔讀。**讀檔案回報「找不到檔案」或路徑不存在，就是專案結構改變了：用repo_map resolve從最近還存在的那一層重新追，不要猜路徑。**遇到不認識的程式語言或框架：用language_explore({\"action\":\"start\",\"language\":\"名稱\"})（先查內建知識，沒有才上網探索並詢問使用者要不要保存）；Rust、UEFI、OpenBMC的語法與知識用programming_knowledge查。想要整份專案的索引與查詢頁面，用repo_wiki generate（需要整份索引時repo_map build_index會先問使用者）。
 
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
 ## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
@@ -1678,7 +1678,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // programming_domains工具（見_programmingDomainsRun），都不用改引擎。
 // ============================================================
 const FA_PROG_COMMON_TOOLS = [
-    'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app',
+    'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'language_explore',
     'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_wiki', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
     'git_inspect', 'git_commit', 'coding_run_check', 'coding_run_tests',
     'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'browser_search', 'fetch_web_page',
@@ -1740,13 +1740,46 @@ const FA_PROGRAMMING_PLAYBOOKS = {
         extraTools: ['python_execute', 'bash_execute'],
     },
     prog_bmc: {
-        label: 'BMC／OpenBMC 程式設計（Redfish／IPMI／D-Bus、phosphor 元件、感測器、韌體更新）',
-        focus: '先盤點平台介面（IPMI、Redfish、D-Bus、I2C感測器、GPIO、KVM）與OpenBMC元件（phosphor-*、entity-manager設定、systemd服務）；對外介面（Redfish/IPMI）要先寫契約再寫實作；用「mock Redfish服務」驗證回應格式與錯誤處理；韌體更新與帳號/TLS屬於安全重點。',
+        label: 'BMC／OpenBMC 韌體程式設計（分層：kernel／HAL／感測器與Entity Manager／D-Bus與IPMI／Redfish／SNMP／Web；C／C++／Rust／Java／yaml／Vue）',
+        focus: '先決定改動在哪一層（evaluate要交layer）：底層Linux kernel（device tree、驅動）→HAL（hwmon sysfs、i2c-dev、libgpiod）→middleware（感測器dbus-sensors／phosphor-hwmon、Entity Manager JSON、D-Bus介面YAML、ipmid）→上層（IPMI、Redfish的bmcweb、SNMP、webui-vue）；跨層資料一律走D-Bus，改介面YAML要列出所有消費者；對外介面（Redfish／IPMI）先寫契約再寫實作，用mock Redfish服務驗證回應格式與錯誤處理；yaml／JSON設定先在沙盒做語法與欄位檢查；不確定的元件、語法或名詞，用programming_knowledge查卡片（openbmc、rust），不要憑印象寫；用Rust或不熟的語言時先查know_rust，沒有的語言用language_explore；韌體更新與帳號／TLS屬於安全重點。',
         verification: 'needs_toolchain',
-        designHeadings: ['平台與介面盤點（IPMI／Redfish／D-Bus／I2C 感測器／GPIO／KVM）', '服務與元件設計（phosphor-* 元件、systemd 服務、entity-manager 實體設定）', 'Redfish／IPMI 介面契約與錯誤處理', '安全（帳號、TLS、權限、韌體簽章與更新）', '模擬與測試（mock Redfish 服務、QEMU）', '實機驗證清單（沙盒無法驗證的項目）'],
-        experiments: ['sandbox_worker：寫mock Redfish服務（/redfish/v1、Systems、Chassis、Managers），handler依請求回JSON，用requests參數驗證資源結構、@odata欄位、錯誤回應', 'python_execute：解析/組裝IPMI raw封包、感測器換算公式的單元測試'],
-        limits: '沙盒沒有Yocto/BitBake、QEMU、D-Bus、真正的BMC硬體或網路埠；只能驗證純邏輯與介面格式。整包韌體建置、D-Bus服務互動、感測器實機讀值、更新流程都必須列進unverified。',
-        extraTools: ['python_execute', 'bash_execute', 'render_uml_diagram'],
+        layers: [
+            { key: 'kernel', label: '底層：Linux kernel／device tree／驅動／u-boot（C、dts）', hint: 'dts節點、compatible、位址與中斷、Kconfig；HAL會看到的sysfs路徑', checks: ['列出dts節點與compatible', '對應驅動與Kconfig', '使用者空間看到的路徑（hwmon／i2c-dev／gpiochip）', '實機驗證：dmesg探測結果'] },
+            { key: 'hal', label: 'HAL：裝置存取（hwmon sysfs、i2c-dev、libgpiod、PECI；C／C++／Rust）', hint: '硬體路徑、單位換算、讀取週期、失敗與逾時處理', checks: ['硬體路徑與單位換算', '讀取週期與阻塞行為', '裝置不存在或讀取失敗時的處理', '上報成哪個D-Bus介面'] },
+            { key: 'mw_sensor', label: 'middleware：感測器與Entity Manager（dbus-sensors／phosphor-hwmon／JSON設定；C++、JSON）', hint: 'Entity Manager的Probe與Exposes、感測器D-Bus物件與閾值', checks: ['Entity Manager JSON：Probe條件與每個Exposes的Type', '感測器D-Bus路徑、單位、閾值', '消費它的守護程式與上層呈現', '沙盒可做：JSON語法與欄位檢查'] },
+            { key: 'mw_dbus_ipmi', label: 'middleware：D-Bus介面與ipmid（介面YAML、sdbusplus、host-ipmid provider；C++、yaml）', hint: '介面YAML、物件路徑、ObjectMapper、IPMI provider註冊', checks: ['完整interface.yaml（屬性型別、預設、唯讀、錯誤）', '實作與呼叫它的服務', '相容性（改介面的影響範圍）', 'IPMI provider：netfn／cmd／權限'] },
+            { key: 'up_ipmi', label: '上層：IPMI對外（KCS／SSIF／IPMB／lanplus、OEM命令）', hint: '命令位元組表、完成碼、權限', checks: ['請求與回應的位元組表', '完成碼與錯誤情況', '權限等級', '對應D-Bus呼叫', 'ipmitool測試指令'] },
+            { key: 'up_redfish', label: '上層：Redfish（bmcweb；C++）', hint: 'URI、HTTP方法、@odata欄位、資料來源、權限、錯誤', checks: ['URI與HTTP方法', '必要的@odata.id／@odata.type／Id／Name', '資料來源（哪個D-Bus路徑）', '權限與標準錯誤訊息', 'curl驗證範例與sandbox_mock的mock實作'] },
+            { key: 'up_snmp', label: '上層：SNMP（phosphor-snmp、trap、MIB）', hint: 'OID／MIB、trap變數、版本與安全設定', checks: ['OID與MIB', '觸發事件與節流', 'v2c／v3與帳號', '測試：snmptrapd／snmpwalk'] },
+            { key: 'up_web', label: '上層：Web UI（webui-vue；Vue／JavaScript）', hint: '頁面、路由、store、Redfish資源、多語言字串', checks: ['頁面草圖與路由', '需要的Redfish資源與欄位', '載入／錯誤／權限不足狀態', 'locale字串清單', '沙盒可做：sandbox_html＋sandbox_mock驗證前端互動'] },
+            { key: 'build', label: '建置：Yocto／meta層／配方／映像與韌體更新（bitbake、meson、cargo）', hint: '配方、systemd服務、PACKAGECONFIG、交叉編譯', checks: ['.bb／.bbappend與SRC_URI／SRCREV', 'meson.build或Cargo.toml', 'systemd service與相依順序', '加進哪個machine的image', '交叉編譯target（Rust／C++）'] },
+        ],
+        knowledge: ['openbmc', 'rust'],
+        designHeadings: ['層級定位與跨層影響（本次改動在哪一層、上下層介面與相容性）', '平台與介面盤點（IPMI／Redfish／D-Bus／I2C 感測器／GPIO／KVM）', '元件與設定設計（phosphor-*／dbus-sensors／Entity Manager JSON／介面YAML／systemd服務／Yocto配方）', '對外介面契約與錯誤處理（Redfish URI與@odata欄位／IPMI位元組表／D-Bus介面／SNMP OID）', '語言與建置（C／C++／Rust／Java／Vue／yaml 各自的建置、交叉編譯與相依）', '安全（帳號、TLS、權限、韌體簽章與更新）', '模擬與測試（mock Redfish 服務、設定檔語法檢查、QEMU）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['sandbox_mock：用router寫mock Redfish服務（/redfish/v1、Systems、Chassis、Managers、Sensors），再用requests驗證資源結構、@odata欄位、錯誤回應；前端（webui-vue風格）頁面用sandbox_html({mock})連它', 'python_execute：micropip.install("pyyaml")檢查interface／sensor／led／pid設定yaml的語法與必要欄位；JSON設定用JSON.parse檢查', 'python_execute：解析／組裝IPMI raw封包、感測器換算公式（hwmon毫度C→度C、閾值判斷）的單元測試', 'programming_knowledge：查openbmc卡片（layers／entity_manager／dbus／redfish…）確認元件與介面做法'],
+        limits: '沙盒沒有Yocto／BitBake、交叉編譯器、rustc／cargo、QEMU、D-Bus、真正的BMC硬體或網路埠；只能驗證純邏輯、設定檔語法與介面格式（含mock Redfish服務、前端互動）。整包韌體建置、kernel驅動探測、D-Bus服務互動、感測器實機讀值、更新流程都必須列進unverified。',
+        extraTools: ['python_execute', 'bash_execute', 'render_uml_diagram', 'programming_knowledge'],
+    },
+    prog_bios: {
+        label: 'BIOS／UEFI／EDK II（Tianocore）韌體程式設計（SEC／PEI／DXE／BDS／TSL／RT／AL；INF／DEC／DSC／FDF／UNI／VFR／VFCF；HII）',
+        focus: '先決定改動在哪個階段或哪一類檔案（evaluate要交layer：sec／pei／dxe／bds／tsl／rt／al，或建置中繼資料meta、Setup畫面hii）；PEI沒有Boot Services，只能用PPI與PeiServices，DXE才有gBS／gRT；PEI到DXE傳資料用GUID HOB，執行期設定用UEFI Variable或PCD；新模組要同時決定INF／DEC／DSC／FDF各改什麼與Depex；INF／DEC／DSC／FDF／UNI／VFR／VFCF寫完先用uefi_parse檢查結構與一致性；不確定的規格、名詞、API，用programming_knowledge查uefi卡片（phases／protocol／hob／services／variable／driver_model／lib_pcd／build…），不要憑印象寫；SMM、安全開機、韌體更新一律標示為需要實機與安全審查。',
+        verification: 'needs_toolchain',
+        layers: [
+            { key: 'sec', label: 'SEC：重置向量、暫時記憶體（CAR）、交棒給PEI Core（組語／C）', hint: '最早期，沒有記憶體與服務', checks: ['進入方式與堆疊／CAR配置', '傳給PEI Core的資訊', '安全與信任根（量測起點）', '只能在實機／模擬器驗證'] },
+            { key: 'pei', label: 'PEI：記憶體初始化、PEIM、PPI、HOB（只有PeiServices）', hint: '用PPI溝通、建立HOB交給DXE', checks: ['PEIM的MODULE_TYPE與Depex（PPI）', '產生／消耗哪些PPI', '建立哪些HOB（GUID與結構）', '記憶體尚未可用前的限制（暫時RAM大小）', '用PeiServicesLib而不是gBS'] },
+            { key: 'dxe', label: 'DXE：DXE驅動、Protocol、Boot／Runtime Services、Variable', hint: '最主要的開發階段', checks: ['MODULE_TYPE（DXE_DRIVER／DXE_RUNTIME_DRIVER／UEFI_DRIVER）', '產生／消耗哪些Protocol與Depex', '讀取哪些HOB', 'Variable／PCD的使用', '錯誤路徑與資源回收（EFI_STATUS）', '放進哪個FV（FDF）'] },
+            { key: 'bds', label: 'BDS：開機選項、主控台、Setup、裝置連接', hint: 'Boot####／BootOrder、ConnectController、Setup入口', checks: ['開機選項與BootOrder變數處理', '要連接哪些裝置', 'Setup進入條件與熱鍵', '事件群組（READY_TO_BOOT）時機'] },
+            { key: 'tsl', label: 'TSL：OS loader／UEFI應用程式（仍在Boot Services時期）', hint: 'UEFI_APPLICATION、ExitBootServices前後差異', checks: ['UEFI_APPLICATION進入點與參數', '使用的protocol（檔案系統、GOP、Shell）', 'ExitBootServices之後不可再用的服務'] },
+            { key: 'rt', label: 'RT：Runtime Services與虛擬位址轉換', hint: 'DXE_RUNTIME_DRIVER、SetVirtualAddressMap', checks: ['Runtime driver的限制（不可呼叫gBS）', 'VIRTUAL_ADDRESS_CHANGE事件與指標轉換（ConvertPointer）', 'Runtime記憶體類型與對齊'] },
+            { key: 'al', label: 'AL：關機／重置／錯誤與復原（含capsule與更新）', hint: 'ResetSystem、Capsule、Recovery', checks: ['重置類型與流程', 'Capsule更新與簽章驗證', '失敗時的復原路徑'] },
+            { key: 'meta', label: '建置中繼資料：INF／DEC／DSC／FDF 與建置系統', hint: '模組怎麼被建置與放進映像', checks: ['INF：Defines／Sources／Packages／LibraryClasses／Protocols／Depex', 'DEC：GUID／Protocol／PPI／PCD宣告', 'DSC：LibraryClasses對應與Components', 'FDF：放進哪個FV、Rule、區域', '用uefi_parse檢查全部檔案'] },
+            { key: 'hii', label: 'HII：Setup畫面（VFR／UNI／Config Access／VFCF）', hint: '題目、變數、字串與預設值', checks: ['VFR：formset／form／題目／varstore結構', 'UNI：所有語言的字串', 'Config Access Protocol（ExtractConfig／RouteConfig／Callback）', '預設值與重開機生效', 'uefi_parse交叉比對vfr與uni'] },
+        ],
+        knowledge: ['uefi'],
+        designHeadings: ['階段與層級定位（這段程式在SEC／PEI／DXE／BDS／TSL／RT／AL哪一階段、有哪些服務可用）', '模組與中繼資料（INF／DEC／DSC／FDF 各改什麼、Library Class、PCD、Depex、放進哪個FV）', '介面設計（Protocol／PPI／HOB／Variable／GUID 的產生與使用關係）', '資料與設定（UEFI Variable、PCD、Setup選項與VFR／UNI／VFCF）', '錯誤處理與資源回收（EFI_STATUS 路徑、ASSERT、記憶體釋放）', '安全與相容性（SMM／輸入驗證、安全開機、資料結構版本相容）', '建置與測試計畫（build指令、OVMF／QEMU、主機端單元測試）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['uefi_parse：把設計中的INF／DEC／DSC／FDF草稿貼進去，檢查必要欄位、GUID／Token重複、!if配對、FD區域重疊與FV參照', 'uefi_parse：把UNI與VFR一起檢查（vfr放text、uni放uni_text），確認STRING_TOKEN都有字串、formid不重複、oneof有DEFAULT', 'programming_knowledge：查uefi卡片確認階段可用的服務、protocol／HOB／variable的用法與函式庫', 'python_execute：用Python模擬depex派遣順序、HOB資料結構打包、GUID轉換的邏輯（uefi_parse的guid動作可轉GUID格式）'],
+        limits: '沙盒沒有EDK II BaseTools、編譯器、QEMU／OVMF或真實硬體：只能驗證檔案格式與一致性（uefi_parse）與純邏輯。編譯、連結、開機、Protocol／PPI實際互動、效能與時序、SMM與安全開機的行為都必須列進unverified。',
+        extraTools: ['programming_knowledge', 'uefi_parse', 'python_execute', 'bash_execute', 'render_uml_diagram'],
     },
     prog_android: {
         label: 'Android 程式設計（Kotlin／Java、Jetpack Compose、Activity 生命週期、Gradle、權限）',
@@ -1813,6 +1846,8 @@ ${heads}
 7. **驗證**：交出commands（跑了什麼）、result（結果）、passed（true/false），以及unverified（沒辦法驗證的項目清單${spec.verification === 'sandbox' ? '，沒有就給空陣列' : '，這個領域一定要列'}）。
 8. **交付**：交出summary（做了什麼）與limitations（限制與使用者還要自己做的事）。
 
+${spec.layers && spec.layers.length ? `**層級（先決定改哪一層）**：這個領域的評估一定要交layer（可多個）：${spec.layers.map((l) => l.key + '＝' + l.label).join('；')}。選好後，playbook_state每次回傳的layers會附上該層的檢查清單；設計文件要寫跨層影響。\n\n` : ''}${spec.knowledge && spec.knowledge.length ? `**領域知識（舊模型不一定認識）**：不確定的名詞、規格、語法、函式庫，先用programming_knowledge查（先domains看有哪些，再lookup；每次只取最相關1～2張卡，不要全部讀）：${spec.knowledge.join('、')}。需要計畫範本與各階段要交的欄位：programming_knowledge({"action":"plan_template","playbook":"${key}"})。若你能委派，也可以請知識助理（${spec.knowledge.map((k) => 'know_' + k).join('、')}）回答，答案會很短，不會塞爆上下文。\n\n` : ''}**遇到不認識的程式語言或框架**：不要憑印象寫。用language_explore({"action":"start","language":"名稱"})：它會先檢查內建與已保存的知識，沒有才引導你上網查（browser_search、fetch_web_page）、整理成入門摘要，然後自動詢問使用者要成為新領域、只記到RAG，或不要。
+
 **環境標示（每一步都要知道自己在哪）**：playbook_state每次回傳的environment_now告訴你現在這一步在哪種環境，sandbox_*工具的結果有environment:"sandbox"。沙盒＝隔離的瀏覽器環境，不會動到使用者的真實專案或系統；真實專案＝實作階段用patch修改使用者檔案。報告與驗證時一律標明結果來自哪一種：在沙盒觀察到的，不能寫成「已在實際環境驗證」。純網頁版（沒有桌面功能）更要注意：你能操作的只有沙盒和使用者授權的資料夾，不要宣稱執行過真實的系統指令或真實部署。
 
 **領域重點**：${spec.focus}
@@ -1829,9 +1864,825 @@ for (const [pkey, pspec] of Object.entries(FA_PROGRAMMING_PLAYBOOKS)) {
         systemPrompt: _faBuildProgrammingPrompt(pkey, pspec),
     };
 }
+
+// ============================================================
+// 2026-10-02：UEFI／EDK II 內建檔案解析（uefi_parse工具用）：inf、dec、dsc、fdf、uni、vfr、vfcf。
+// 都是純函式（不碰檔案系統），輸入文字、輸出結構化資料＋issues（severity: error／warn／info）。
+// 解析規則依EDK II公開的檔案格式規格整理；各專案的BaseTools版本、自訂擴充可能不同，issues是「提醒」不是編譯器的最終判斷。
+// ============================================================
+const FA_UEFI_ARCHS = ['IA32', 'X64', 'ARM', 'AARCH64', 'RISCV64', 'LOONGARCH64', 'EBC', 'COMMON'];
+const FA_UEFI_MODULE_TYPES = ['BASE', 'SEC', 'PEI_CORE', 'PEIM', 'DXE_CORE', 'DXE_DRIVER', 'DXE_RUNTIME_DRIVER', 'DXE_SMM_DRIVER', 'DXE_SAL_DRIVER', 'SMM_CORE', 'UEFI_DRIVER', 'UEFI_APPLICATION', 'USER_DEFINED', 'HOST_APPLICATION', 'MM_STANDALONE', 'MM_CORE_STANDALONE', 'COMBINED_SMM_DXE'];
+const FA_UEFI_ENTRY_MODULES = ['PEIM', 'DXE_DRIVER', 'DXE_RUNTIME_DRIVER', 'DXE_SMM_DRIVER', 'UEFI_DRIVER', 'UEFI_APPLICATION', 'MM_STANDALONE', 'DXE_SAL_DRIVER'];
+const FA_UEFI_PCD_TYPES = ['UINT8', 'UINT16', 'UINT32', 'UINT64', 'BOOLEAN', 'VOID*'];
+const FA_UEFI_GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function _faUefiSplitComment(line) {
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+        const c = line.charAt(i);
+        if (c === '"') inQ = !inQ;
+        else if (c === '#' && !inQ) return [line.slice(0, i), line.slice(i + 1)];
+    }
+    return [line, ''];
+}
+// 把 {0x1,0x2,0x3,{0x4,...}} 轉成標準GUID字串；格式不對回傳null
+function _faUefiGuidFromStruct(text) {
+    const nums = String(text).match(/0[xX][0-9a-fA-F]+/g);
+    if (!nums || nums.length !== 11) return null;
+    const v = nums.map((n) => parseInt(n, 16));
+    const hex = (x, w) => { let s = x.toString(16).toUpperCase(); while (s.length < w) s = '0' + s; return s.length > w ? null : s; };
+    const parts = [hex(v[0], 8), hex(v[1], 4), hex(v[2], 4), hex(v[3], 2), hex(v[4], 2), hex(v[5], 2), hex(v[6], 2), hex(v[7], 2), hex(v[8], 2), hex(v[9], 2), hex(v[10], 2)];
+    if (parts.some((p) => p === null)) return null;
+    return parts[0] + '-' + parts[1] + '-' + parts[2] + '-' + parts[3] + parts[4] + '-' + parts.slice(5).join('');
+}
+function _faUefiGuidToStruct(guid) {
+    const g = String(guid).trim();
+    if (!FA_UEFI_GUID_RE.test(g)) return null;
+    const h = g.replace(/-/g, '');
+    const b = (i) => '0x' + h.slice(i, i + 2).toUpperCase();
+    return '{ 0x' + h.slice(0, 8).toUpperCase() + ', 0x' + h.slice(8, 12).toUpperCase() + ', 0x' + h.slice(12, 16).toUpperCase() + ', { ' + [16, 18, 20, 22, 24, 26, 28, 30].map(b).join(', ') + ' }}';
+}
+
+// 通用的「章節」切分：[Name.Qualifier1.Qualifier2, Other.X] 後面接條目；條目保留行號與行尾註解
+function _faUefiSections(text) {
+    const sections = [];
+    const orphans = [];
+    let cur = null;
+    String(text || '').replace(/^﻿/, '').split(/\r?\n/).forEach((raw, idx) => {
+        const n = idx + 1;
+        const sc = _faUefiSplitComment(raw);
+        const code = sc[0].trim();
+        const cmt = sc[1].trim();
+        if (!code) return;
+        const m = /^\[(.*)\]$/.exec(code);
+        if (m) {
+            const heads = m[1].split(',').map((x) => x.trim()).filter(Boolean).map((h) => {
+                const segs = h.split('.');
+                return { name: segs[0], qualifiers: segs.slice(1), raw: h };
+            });
+            cur = { heads, name: heads[0] ? heads[0].name : '', line: n, entries: [] };
+            sections.push(cur);
+            return;
+        }
+        if (!cur) { orphans.push({ line: n, text: code }); return; }
+        cur.entries.push({ line: n, text: code, comment: cmt });
+    });
+    return { sections, orphans };
+}
+function _faUefiKV(entries) {
+    const out = {};
+    entries.forEach((e) => { const m = /^(?:DEFINE\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*)$/.exec(e.text); if (m) out[m[1]] = m[2].trim(); });
+    return out;
+}
+function _faUefiArchOf(head) { return head.qualifiers.filter((q) => FA_UEFI_ARCHS.indexOf(q.toUpperCase()) >= 0).map((q) => q.toUpperCase()); }
+function _faUefiIssue(list, severity, line, msg) { list.push({ severity, line: line || 0, message: msg }); }
+
+function _faUefiParseInf(text) {
+    const { sections, orphans } = _faUefiSections(text);
+    const issues = [];
+    orphans.forEach((o) => _faUefiIssue(issues, 'error', o.line, '章節標頭 [..] 之前不能有內容：' + o.text.slice(0, 40)));
+    const out = { format: 'inf', defines: {}, sources: [], packages: [], library_classes: [], protocols: [], ppis: [], guids: [], pcds: [], depex: [], build_options: [], binaries: [], sections: sections.map((s) => s.heads.map((h) => h.raw).join(', ')) };
+    const usage = (c) => { const m = /^#*\s*(CONSUMES|PRODUCES|SOMETIMES_CONSUMES|SOMETIMES_PRODUCES|TO_START|BY_START|NOTIFY|UNDEFINED)\b/.exec(c); return m ? m[1] : ''; };
+    const pcdNames = { pcd: 'Pcd', fixedpcd: 'FixedPcd', featurepcd: 'FeaturePcd', patchpcd: 'PatchPcd', pcdex: 'PcdEx' };
+    for (const s of sections) {
+        const nm = s.name.toLowerCase();
+        const archs = s.heads.map((h) => _faUefiArchOf(h)).reduce((a, b) => a.concat(b), []);
+        for (const e of s.entries) {
+            if (nm === 'defines') { const m = /^([A-Za-z_][\w.]*)\s*=\s*(.*)$/.exec(e.text); if (m) out.defines[m[1]] = m[2].trim(); else _faUefiIssue(issues, 'warn', e.line, '[Defines] 的條目應該是 KEY = VALUE：' + e.text.slice(0, 40)); }
+            else if (nm === 'sources') out.sources.push({ file: e.text.split('|')[0].trim(), options: e.text.indexOf('|') >= 0 ? e.text.split('|').slice(1).join('|').trim() : '', arch: archs, line: e.line });
+            else if (nm === 'packages') { out.packages.push(e.text); if (!/\.dec$/i.test(e.text)) _faUefiIssue(issues, 'warn', e.line, '[Packages] 應該是 .dec 檔：' + e.text); }
+            else if (nm === 'libraryclasses') out.library_classes.push({ name: e.text.split('|')[0].trim(), flag: e.text.split('|')[1] ? e.text.split('|')[1].trim() : '', arch: archs, line: e.line });
+            else if (nm === 'protocols') { const name = e.text.split('|')[0].trim(); out.protocols.push({ name, usage: usage(e.comment), line: e.line }); if (!/Guid$/.test(name)) _faUefiIssue(issues, 'info', e.line, 'Protocol 的 GUID 名稱慣例是 gXxxProtocolGuid：' + name); }
+            else if (nm === 'ppis') { const name = e.text.split('|')[0].trim(); out.ppis.push({ name, usage: usage(e.comment), line: e.line }); if (!/Guid$/.test(name)) _faUefiIssue(issues, 'info', e.line, 'PPI 的 GUID 名稱慣例是 gXxxPpiGuid：' + name); }
+            else if (nm === 'guids') out.guids.push({ name: e.text.split('|')[0].trim(), usage: usage(e.comment), line: e.line });
+            else if (pcdNames[nm]) { const name = e.text.split('|')[0].trim(); out.pcds.push({ kind: pcdNames[nm], name, line: e.line }); if (!/^\w+\.\w+$/.test(name)) _faUefiIssue(issues, 'warn', e.line, 'PCD 要寫成 TokenSpaceGuid.PcdName：' + name); }
+            else if (nm === 'depex') out.depex.push(e.text);
+            else if (nm === 'buildoptions') out.build_options.push(e.text);
+            else if (nm === 'binaries') out.binaries.push(e.text);
+        }
+    }
+    const d = out.defines;
+    ['INF_VERSION', 'BASE_NAME', 'FILE_GUID', 'MODULE_TYPE'].forEach((k) => { if (!d[k]) _faUefiIssue(issues, 'error', 0, '[Defines] 缺少必要欄位 ' + k); });
+    if (d.FILE_GUID && !FA_UEFI_GUID_RE.test(d.FILE_GUID)) _faUefiIssue(issues, 'error', 0, 'FILE_GUID 格式必須是 8-4-4-4-12 的十六進位：' + d.FILE_GUID);
+    if (d.MODULE_TYPE && FA_UEFI_MODULE_TYPES.indexOf(d.MODULE_TYPE) < 0) _faUefiIssue(issues, 'error', 0, 'MODULE_TYPE 不認得：' + d.MODULE_TYPE + '（可用：' + FA_UEFI_MODULE_TYPES.join('、') + '）');
+    if (d.MODULE_TYPE && FA_UEFI_ENTRY_MODULES.indexOf(d.MODULE_TYPE) >= 0 && !d.LIBRARY_CLASS && !d.ENTRY_POINT) _faUefiIssue(issues, 'warn', 0, d.MODULE_TYPE + ' 通常需要 ENTRY_POINT（進入點函式名稱），除非它是函式庫（有 LIBRARY_CLASS）');
+    if (!d.VERSION_STRING && !d.INF_VERSION) _faUefiIssue(issues, 'info', 0, '建議填 VERSION_STRING');
+    if (!out.sources.length && d.MODULE_TYPE !== 'USER_DEFINED') _faUefiIssue(issues, 'warn', 0, '沒有 [Sources]：模組沒有任何原始碼檔');
+    if (!out.packages.length) _faUefiIssue(issues, 'warn', 0, '沒有 [Packages]：至少要有 MdePkg/MdePkg.dec 才能用標準型別與函式庫類別');
+    const seen = {};
+    out.library_classes.forEach((l) => { if (seen[l.name]) _faUefiIssue(issues, 'warn', l.line, 'LibraryClasses 重複：' + l.name); seen[l.name] = 1; });
+    const usesBs = out.sources.length && /\bgBS\b/.test('');
+    if (!out.library_classes.some((l) => /UefiDriverEntryPoint|UefiApplicationEntryPoint|PeimEntryPoint|DxeCoreEntryPoint|PeiCoreEntryPoint|StandaloneMmDriverEntryPoint|SmmDriverEntryPoint/.test(l.name)) && FA_UEFI_ENTRY_MODULES.indexOf(d.MODULE_TYPE) >= 0 && !d.LIBRARY_CLASS) _faUefiIssue(issues, 'info', 0, '看不到進入點函式庫（例如 UefiDriverEntryPoint／UefiApplicationEntryPoint／PeimEntryPoint），ENTRY_POINT 要靠它才會被呼叫');
+    void usesBs;
+    out.summary = { module: d.BASE_NAME, type: d.MODULE_TYPE, entry_point: d.ENTRY_POINT, library_class: d.LIBRARY_CLASS, sources: out.sources.length, library_classes: out.library_classes.length, protocols: out.protocols.length, ppis: out.ppis.length, guids: out.guids.length, pcds: out.pcds.length };
+    return { out, issues };
+}
+
+function _faUefiParseDec(text) {
+    const { sections, orphans } = _faUefiSections(text);
+    const issues = [];
+    orphans.forEach((o) => _faUefiIssue(issues, 'error', o.line, '章節標頭 [..] 之前不能有內容：' + o.text.slice(0, 40)));
+    const out = { format: 'dec', defines: {}, includes: [], library_classes: [], guids: [], protocols: [], ppis: [], pcds: [], sections: sections.map((s) => s.heads.map((h) => h.raw).join(', ')) };
+    const guidSeen = {};
+    const nameSeen = {};
+    const tokenSeen = {};
+    for (const s of sections) {
+        const nm = s.name.toLowerCase();
+        const full = s.heads.map((h) => h.raw).join(',');
+        for (const e of s.entries) {
+            if (nm === 'defines') { const m = /^([A-Za-z_][\w.]*)\s*=\s*(.*)$/.exec(e.text); if (m) out.defines[m[1]] = m[2].trim(); }
+            else if (nm === 'includes') out.includes.push(e.text);
+            else if (nm === 'libraryclasses') { const p = e.text.split('|'); out.library_classes.push({ name: p[0].trim(), header: (p[1] || '').trim(), line: e.line }); if (!p[1]) _faUefiIssue(issues, 'warn', e.line, 'LibraryClasses 應該是 名稱|標頭檔路徑：' + e.text); }
+            else if (nm === 'guids' || nm === 'protocols' || nm === 'ppis') {
+                const m = /^(\w+)\s*=\s*(\{[\s\S]*\})\s*$/.exec(e.text);
+                if (!m) { _faUefiIssue(issues, 'error', e.line, nm + ' 條目格式應該是 gName = { 0x.., 0x.., 0x.., { 0x.., ... } }：' + e.text.slice(0, 50)); continue; }
+                const g = _faUefiGuidFromStruct(m[2]);
+                if (!g) { _faUefiIssue(issues, 'error', e.line, 'GUID 結構必須剛好 11 個十六進位數（Data1、Data2、Data3、Data4[8]），且各欄位不能超出寬度：' + m[1]); continue; }
+                const rec = { name: m[1], guid: g, line: e.line };
+                out[nm].push(rec);
+                if (guidSeen[g]) _faUefiIssue(issues, 'warn', e.line, '同一個 GUID 被重複定義：' + g + '（' + guidSeen[g] + ' 與 ' + m[1] + '）'); else guidSeen[g] = m[1];
+                const key = nm + ':' + m[1];
+                if (nameSeen[key]) _faUefiIssue(issues, 'error', e.line, '名稱重複定義：' + m[1]); nameSeen[key] = 1;
+                if (nm === 'protocols' && !/Protocol/.test(m[1])) _faUefiIssue(issues, 'info', e.line, 'Protocol GUID 名稱慣例含 Protocol：' + m[1]);
+                if (nm === 'ppis' && !/Ppi/.test(m[1])) _faUefiIssue(issues, 'info', e.line, 'PPI GUID 名稱慣例含 Ppi：' + m[1]);
+            } else if (/^pcds/.test(nm)) {
+                const p = e.text.split('|').map((x) => x.trim());
+                const rec = { section: full, name: p[0], default: p[1], type: p[2], token: p[3], line: e.line };
+                out.pcds.push(rec);
+                if (p.length < 4) { _faUefiIssue(issues, 'error', e.line, 'PCD 條目應該是 Name|預設值|資料型別|Token：' + e.text.slice(0, 60)); continue; }
+                if (!/^\w+\.\w+$/.test(p[0]) && !/^\w+$/.test(p[0])) _faUefiIssue(issues, 'warn', e.line, 'PCD 名稱格式怪怪的：' + p[0]);
+                if (!/^Pcd/.test(p[0].split('.').pop())) _faUefiIssue(issues, 'info', e.line, 'PCD 名稱慣例以 Pcd 開頭：' + p[0]);
+                if (FA_UEFI_PCD_TYPES.indexOf(p[2]) < 0) _faUefiIssue(issues, 'error', e.line, 'PCD 資料型別必須是 ' + FA_UEFI_PCD_TYPES.join('／') + '：' + p[2]);
+                if (!/^0[xX][0-9a-fA-F]{1,8}$/.test(p[3])) _faUefiIssue(issues, 'error', e.line, 'PCD Token 必須是 0x 開頭、最多 8 位十六進位：' + p[3]);
+                else { const tk = (s.heads[0].qualifiers.join('.') || '') + ':' + parseInt(p[3], 16); if (tokenSeen[tk]) _faUefiIssue(issues, 'error', e.line, 'PCD Token 重複（同一個 TokenSpace 內必須唯一）：' + p[3] + '（' + tokenSeen[tk] + ' 與 ' + p[0] + '）'); else tokenSeen[tk] = p[0]; }
+                if (p[2] === 'BOOLEAN' && !/^(TRUE|FALSE|0|1|0x0|0x1)$/i.test(p[1])) _faUefiIssue(issues, 'warn', e.line, 'BOOLEAN 預設值應該是 TRUE／FALSE：' + p[1]);
+            }
+        }
+    }
+    ['DEC_SPECIFICATION', 'PACKAGE_NAME', 'PACKAGE_GUID', 'PACKAGE_VERSION'].forEach((k) => { if (!out.defines[k]) _faUefiIssue(issues, 'error', 0, '[Defines] 缺少必要欄位 ' + k); });
+    if (out.defines.PACKAGE_GUID && !FA_UEFI_GUID_RE.test(out.defines.PACKAGE_GUID)) _faUefiIssue(issues, 'error', 0, 'PACKAGE_GUID 格式不對：' + out.defines.PACKAGE_GUID);
+    out.summary = { package: out.defines.PACKAGE_NAME, includes: out.includes.length, library_classes: out.library_classes.length, guids: out.guids.length, protocols: out.protocols.length, ppis: out.ppis.length, pcds: out.pcds.length };
+    return { out, issues };
+}
+
+function _faUefiParseDsc(text) {
+    const issues = [];
+    const lines = String(text || '').replace(/^﻿/, '').split(/\r?\n/);
+    // 先處理條件指令（!if／!ifdef／!ifndef／!elseif／!else／!endif／!include／!error），再把其餘行交給章節切分
+    const directives = [];
+    const stack = [];
+    const kept = [];
+    lines.forEach((raw, idx) => {
+        const n = idx + 1;
+        const code = _faUefiSplitComment(raw)[0].trim();
+        const m = /^!(\w+)\s*(.*)$/.exec(code);
+        if (!m) { kept.push(raw); return; }
+        const kw = m[1].toLowerCase();
+        directives.push({ line: n, directive: kw, arg: m[2].trim() });
+        if (kw === 'if' || kw === 'ifdef' || kw === 'ifndef') stack.push({ line: n, kw, seenElse: false });
+        else if (kw === 'elseif') { if (!stack.length) _faUefiIssue(issues, 'error', n, '!elseif 前面沒有對應的 !if'); else if (stack[stack.length - 1].seenElse) _faUefiIssue(issues, 'error', n, '!elseif 不能出現在 !else 之後'); }
+        else if (kw === 'else') { if (!stack.length) _faUefiIssue(issues, 'error', n, '!else 前面沒有對應的 !if'); else if (stack[stack.length - 1].seenElse) _faUefiIssue(issues, 'error', n, '同一個 !if 有兩個 !else'); else stack[stack.length - 1].seenElse = true; }
+        else if (kw === 'endif') { if (!stack.length) _faUefiIssue(issues, 'error', n, '!endif 前面沒有對應的 !if'); else stack.pop(); }
+        else if (kw === 'include') { /* 記錄即可 */ }
+        else if (kw === 'error') { /* 條件滿足時會讓建置失敗，保留 */ }
+        else _faUefiIssue(issues, 'warn', n, '不認得的指令 !' + kw);
+        kept.push(''); // 保持行號
+    });
+    stack.forEach((s) => _faUefiIssue(issues, 'error', s.line, '!' + s.kw + ' 沒有對應的 !endif'));
+    const { sections, orphans } = _faUefiSections(kept.join('\n'));
+    orphans.forEach((o) => _faUefiIssue(issues, 'error', o.line, '章節標頭 [..] 之前不能有內容：' + o.text.slice(0, 40)));
+    const out = { format: 'dsc', defines: {}, sku_ids: [], library_classes: [], components: [], pcds: [], build_options: [], directives, sections: sections.map((s) => s.heads.map((h) => h.raw).join(', ')) };
+    const defined = {};
+    const used = {};
+    const useScan = (t, line) => { (String(t).match(/\$\(([A-Za-z_][\w]*)\)/g) || []).forEach((x) => { const k = x.slice(2, -1); (used[k] = used[k] || []).push(line); }); };
+    lines.forEach((raw, idx) => { const m = /^\s*DEFINE\s+([A-Za-z_]\w*)\s*=/.exec(_faUefiSplitComment(raw)[0]); if (m) defined[m[1]] = 1; });
+    const libSeen = {};
+    for (const s of sections) {
+        const nm = s.name.toLowerCase();
+        const key = s.heads.map((h) => h.raw).join(',');
+        let comp = null, sub = null;
+        for (const e of s.entries) {
+            useScan(e.text, e.line);
+            if (nm === 'defines') { const m = /^(?:DEFINE\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(e.text); if (m) { out.defines[m[1]] = m[2].trim(); defined[m[1]] = 1; } continue; }
+            if (nm === 'skuids') { out.sku_ids.push(e.text); continue; }
+            if (nm === 'libraryclasses') {
+                const p = e.text.split('|').map((x) => x.trim());
+                const dm = /^DEFINE\s+(\w+)\s*=/.exec(e.text);
+                if (dm) { defined[dm[1]] = 1; continue; }
+                out.library_classes.push({ name: p[0], inf: p[1] || '', section: key, line: e.line });
+                if (!p[1]) _faUefiIssue(issues, 'warn', e.line, 'LibraryClasses 應該是 類別名稱|實作.inf：' + e.text.slice(0, 50));
+                else if (!/\.inf$/i.test(p[1].replace(/\$\(.*?\)/g, 'x')) && p[0] !== 'NULL') _faUefiIssue(issues, 'warn', e.line, 'LibraryClasses 的實作應該是 .inf：' + p[1]);
+                const k = key + '|' + p[0] + '|' + (p[0] === 'NULL' ? p[1] : '');
+                if (libSeen[k] && p[0] !== 'NULL') _faUefiIssue(issues, 'warn', e.line, '同一個章節重複指定函式庫類別：' + p[0]);
+                libSeen[k] = 1;
+                continue;
+            }
+            if (nm === 'components') {
+                if (comp) { // 在 { } 區塊裡面
+                    if (e.text === '}') { comp = null; sub = null; continue; }
+                    const sm = /^<(\w+)>$/.exec(e.text);
+                    if (sm) { sub = sm[1]; continue; }
+                    (comp.overrides[sub || '_'] = comp.overrides[sub || '_'] || []).push(e.text);
+                    continue;
+                }
+                if (/\{\s*$/.test(e.text)) { comp = { inf: e.text.replace(/\{\s*$/, '').trim(), line: e.line, section: key, overrides: {} }; out.components.push(comp); sub = null; }
+                else out.components.push({ inf: e.text, line: e.line, section: key, overrides: {} });
+                const infPath = (comp ? comp.inf : e.text).replace(/\$\(.*?\)/g, 'x');
+                if (!/\.inf$/i.test(infPath)) _faUefiIssue(issues, 'warn', e.line, '[Components] 條目應該是 .inf 檔：' + e.text.slice(0, 60));
+                continue;
+            }
+            if (/^pcds/.test(nm)) {
+                const p = e.text.split('|');
+                out.pcds.push({ section: key, name: p[0].trim(), value: (p[1] || '').trim(), line: e.line });
+                if (!/^\w+\.\w+/.test(p[0].trim())) _faUefiIssue(issues, 'warn', e.line, 'PCD 要寫成 TokenSpaceGuid.PcdName|值：' + e.text.slice(0, 50));
+                if (p.length < 2) _faUefiIssue(issues, 'warn', e.line, 'PCD 條目沒有值：' + e.text.slice(0, 50));
+                continue;
+            }
+            if (nm === 'buildoptions') { out.build_options.push({ section: key, text: e.text, line: e.line }); continue; }
+        }
+        if (comp) _faUefiIssue(issues, 'error', s.entries.length ? s.entries[s.entries.length - 1].line : s.line, '[Components] 裡的 { 區塊沒有結尾的 }：' + comp.inf);
+    }
+    ['PLATFORM_NAME', 'PLATFORM_GUID', 'PLATFORM_VERSION', 'DSC_SPECIFICATION', 'OUTPUT_DIRECTORY', 'SUPPORTED_ARCHITECTURES', 'BUILD_TARGETS', 'SKUID_IDENTIFIER'].forEach((k) => { if (!out.defines[k]) _faUefiIssue(issues, k === 'SKUID_IDENTIFIER' ? 'warn' : 'error', 0, '[Defines] 缺少 ' + k); });
+    if (out.defines.PLATFORM_GUID && !FA_UEFI_GUID_RE.test(out.defines.PLATFORM_GUID)) _faUefiIssue(issues, 'error', 0, 'PLATFORM_GUID 格式不對：' + out.defines.PLATFORM_GUID);
+    const builtin = ['WORKSPACE', 'PLATFORM_NAME', 'ARCH', 'TARGET', 'TOOL_CHAIN_TAG', 'EDK_TOOLS_PATH', 'PACKAGES_PATH', 'FAMILY', 'TOOLCHAIN', 'BUILD_DIR', 'PLATFORM_DIR', 'MODULE_NAME', 'INF_OUTPUT', 'OUTPUT_DIR', 'DEBUG_DIR', 'BUILD_NUMBER', 'INF_VERSION', 'NAMED_GUID', 'FFS_OUTPUT_DIR', 'MODULE_NAME_GUID', 'EDK_SOURCE', 'EFI_SOURCE', 'TARGET_ARCH', 'PCD_NAME'];
+    Object.keys(used).forEach((k) => { if (!defined[k] && builtin.indexOf(k) < 0) _faUefiIssue(issues, 'info', used[k][0], '巨集 $(' + k + ') 沒有在這個檔案 DEFINE（可能來自 -D 命令列、!include 的檔案或 target.txt）'); });
+    out.summary = { platform: out.defines.PLATFORM_NAME, architectures: out.defines.SUPPORTED_ARCHITECTURES, build_targets: out.defines.BUILD_TARGETS, library_classes: out.library_classes.length, components: out.components.length, pcd_settings: out.pcds.length, conditionals: directives.filter((d) => /^if/.test(d.directive)).length, includes: directives.filter((d) => d.directive === 'include').length };
+    return { out, issues };
+}
+
+function _faUefiNum(s) {
+    const t = String(s || '').trim();
+    if (/^0[xX][0-9a-fA-F]+$/.test(t)) return parseInt(t, 16);
+    if (/^\d+$/.test(t)) return parseInt(t, 10);
+    return null;
+}
+function _faUefiParseFdf(text) {
+    const issues = [];
+    const lines = String(text || '').replace(/^﻿/, '').split(/\r?\n/);
+    const out = { format: 'fdf', defines: {}, fds: [], fvs: [], rules: [], other_sections: [] };
+    let cur = null;
+    let depth = 0;
+    let region = null;
+    let item = null; // 正在收集的 { 區塊 }
+    let fv = null;
+    lines.forEach((raw, idx) => {
+        const n = idx + 1;
+        const code = _faUefiSplitComment(raw)[0].trim();
+        if (!code) return;
+        if (/^!(if|ifdef|ifndef|else|elseif|endif|include|error)\b/i.test(code)) return;
+        const hm = /^\[(.*)\]$/.exec(code);
+        if (hm) {
+            if (depth !== 0) _faUefiIssue(issues, 'error', n, '上一個章節還有沒關閉的 { 區塊（缺少 }）');
+            depth = 0; region = null; item = null; fv = null;
+            const segs = hm[1].trim().split('.');
+            const kind = segs[0].toUpperCase();
+            if (kind === 'FD') { cur = { kind: 'FD', name: segs[1] || '', line: n, attrs: {}, regions: [] }; out.fds.push(cur); }
+            else if (kind === 'FV') { cur = { kind: 'FV', name: segs[1] || '', line: n, attrs: {}, items: [], apriori: [] }; out.fvs.push(cur); fv = cur; }
+            else if (kind === 'RULE') { cur = { kind: 'RULE', name: segs.slice(1).join('.'), line: n, lines: [] }; out.rules.push(cur); }
+            else if (kind === 'DEFINES') cur = { kind: 'DEFINES' };
+            else { cur = { kind: kind, name: hm[1], line: n }; out.other_sections.push(hm[1]); }
+            return;
+        }
+        if (!cur) { _faUefiIssue(issues, 'error', n, '章節標頭 [..] 之前不能有內容：' + code.slice(0, 40)); return; }
+        const opens = (code.match(/\{/g) || []).length;
+        const closes = (code.match(/\}/g) || []).length;
+        if (cur.kind === 'DEFINES') { const m = /^(?:DEFINE\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(code); if (m) out.defines[m[1]] = m[2].trim(); return; }
+        if (cur.kind === 'RULE') { cur.lines.push(code); depth += opens - closes; return; }
+        if (cur.kind === 'FD') {
+            if (depth > 0) { depth += opens - closes; if (region) region.data = (region.data || '') + ' ' + code; return; }
+            const rm = /^([^\s=|]+)\s*\|\s*([^\s=]+)\s*$/.exec(code);
+            if (rm) { region = { offset: rm[1], size: rm[2], line: n, items: [] }; cur.regions.push(region); return; }
+            const am = /^(?:DEFINE\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(code);
+            if (am && !region) { cur.attrs[am[1]] = am[2].trim(); return; }
+            if (region) { region.items.push(code); depth += opens - closes; return; }
+            if (am) { cur.attrs[am[1]] = am[2].trim(); return; }
+            _faUefiIssue(issues, 'warn', n, '[FD] 裡看不懂的行：' + code.slice(0, 50));
+            return;
+        }
+        if (cur.kind === 'FV') {
+            if (depth > 0) { depth += opens - closes; if (item) item.body.push(code); if (depth === 0) item = null; return; }
+            let m;
+            if ((m = /^INF\s+(?:(.+?)\s+)?(\S+\.inf)\s*$/i.exec(code))) { cur.items.push({ kind: 'INF', path: m[2], options: m[1] || '', line: n }); return; }
+            if ((m = /^FILE\s+(\w+)\s*=\s*(\S+)/i.exec(code))) { item = { kind: 'FILE', type: m[1].toUpperCase(), guid: m[2], line: n, body: [] }; cur.items.push(item); depth += opens - closes; if (depth === 0) item = null; return; }
+            if ((m = /^APRIORI\s+(\w+)/i.exec(code))) { item = { kind: 'APRIORI', phase: m[1].toUpperCase(), line: n, body: [] }; cur.apriori.push(item); depth += opens - closes; if (depth === 0) item = null; return; }
+            if ((m = /^(?:DEFINE\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(code))) { cur.attrs[m[1]] = m[2].trim(); return; }
+            _faUefiIssue(issues, 'warn', n, '[FV] 裡看不懂的行：' + code.slice(0, 50));
+        }
+    });
+    if (depth !== 0) _faUefiIssue(issues, 'error', lines.length, '檔案結束時還有沒關閉的 { 區塊（缺少 }）');
+    // 檢查
+    const fvNames = {};
+    out.fvs.forEach((f) => { if (fvNames[f.name]) _faUefiIssue(issues, 'error', f.line, '[FV.' + f.name + '] 重複定義'); fvNames[f.name] = 1; });
+    const infSeen = {};
+    out.fvs.forEach((f) => f.items.forEach((it) => { if (it.kind === 'INF') { if (infSeen[it.path]) _faUefiIssue(issues, 'warn', it.line, 'INF 被放進多個位置：' + it.path + '（第' + infSeen[it.path] + '行已經有）'); else infSeen[it.path] = it.line; } }));
+    out.fds.forEach((fd) => {
+        const size = _faUefiNum(fd.attrs.Size);
+        if (fd.attrs.Size !== undefined && size === null && !/\$\(|Pcd/.test(fd.attrs.Size)) _faUefiIssue(issues, 'warn', fd.line, '[FD.' + fd.name + '] Size 不是數字：' + fd.attrs.Size);
+        ['BaseAddress', 'Size', 'ErasePolarity', 'BlockSize', 'NumBlocks'].forEach((k) => { if (fd.attrs[k] === undefined) _faUefiIssue(issues, 'warn', fd.line, '[FD.' + fd.name + '] 沒有 ' + k + '（通常都要寫，否則用預設值或建置失敗）'); });
+        let prevEnd = 0;
+        fd.regions.forEach((r) => {
+            const off = _faUefiNum(r.offset), sz = _faUefiNum(r.size);
+            if (off === null || sz === null) return; // 用巨集／PCD就不檢查
+            if (off < prevEnd) _faUefiIssue(issues, 'error', r.line, '區域 ' + r.offset + '|' + r.size + ' 跟前一個區域重疊或順序不對（前一個到 0x' + prevEnd.toString(16) + '）');
+            if (size !== null && off + sz > size) _faUefiIssue(issues, 'error', r.line, '區域 ' + r.offset + '|' + r.size + ' 超出 FD 大小 0x' + size.toString(16));
+            prevEnd = Math.max(prevEnd, off + sz);
+            r.items.forEach((t) => { const m = /^FV\s*=\s*(\w+)/i.exec(t); if (m && !fvNames[m[1]]) _faUefiIssue(issues, 'error', r.line, '區域指到 FV = ' + m[1] + '，但沒有 [FV.' + m[1] + '] 章節'); });
+        });
+    });
+    out.summary = { fds: out.fds.map((f) => ({ name: f.name, regions: f.regions.length, size: f.attrs.Size })), fvs: out.fvs.map((f) => ({ name: f.name, inf: f.items.filter((i) => i.kind === 'INF').length, files: f.items.filter((i) => i.kind === 'FILE').length, apriori: f.apriori.map((a) => a.phase) })), rules: out.rules.map((r) => r.name) };
+    return { out, issues };
+}
+
+function _faUefiParseUni(text) {
+    const issues = [];
+    const src = String(text || '').replace(/^﻿/, '');
+    const out = { format: 'uni', languages: {}, strings: {}, includes: [] };
+    const re = /\/\/[^\n]*|#(langdef|string|language|include|secondary)\b|"((?:[^"\\]|\\.)*)"|([A-Za-z0-9_\-]+)/g;
+    let m, mode = '', curName = '', curLang = '';
+    let expectLangName = false, line = 1, lastIdx = 0;
+    const lineAt = (i) => { let c = 1; for (let k = lastIdx; k < i; k++) if (src.charCodeAt(k) === 10) c++; line += c - 1; lastIdx = i; return line; };
+    let pendingLangdef = '';
+    while ((m = re.exec(src))) {
+        const ln = lineAt(m.index);
+        if (m[0].slice(0, 2) === '//') continue;
+        if (m[1]) { mode = m[1]; if (mode === 'string') { curName = ''; curLang = ''; } if (mode === 'langdef') pendingLangdef = ''; continue; }
+        if (m[2] !== undefined) {
+            const val = m[2].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            if (mode === 'langdef' && pendingLangdef) { out.languages[pendingLangdef] = val; pendingLangdef = ''; mode = ''; }
+            else if (mode === 'include') { out.includes.push(val); mode = ''; }
+            else if (curName && curLang) { const rec = out.strings[curName]; rec[curLang] = (rec[curLang] || '') + val; }
+            else _faUefiIssue(issues, 'warn', ln, '字串內容前面沒有 #string 名稱與 #language：' + val.slice(0, 30));
+            continue;
+        }
+        if (m[3]) {
+            if (mode === 'langdef' && !pendingLangdef) { pendingLangdef = m[3]; if (out.languages[m[3]] !== undefined) _faUefiIssue(issues, 'error', ln, '#langdef 重複：' + m[3]); out.languages[m[3]] = out.languages[m[3]] || ''; continue; }
+            if (mode === 'string' && !curName) { curName = m[3]; if (out.strings[curName]) _faUefiIssue(issues, 'error', ln, '字串名稱重複：' + curName); out.strings[curName] = out.strings[curName] || { _line: ln }; continue; }
+            if (mode === 'language') { curLang = m[3]; if (out.languages[curLang] === undefined) _faUefiIssue(issues, 'error', ln, '使用了沒有 #langdef 的語言：' + curLang); mode = 'string'; continue; }
+        }
+    }
+    const langs = Object.keys(out.languages);
+    if (!langs.length) _faUefiIssue(issues, 'error', 0, '沒有任何 #langdef（至少要定義一個語言，例如 #langdef en-US "English"）');
+    Object.keys(out.strings).forEach((name) => {
+        const rec = out.strings[name];
+        if (!/^STR_[A-Z0-9_]+$/.test(name)) _faUefiIssue(issues, 'info', rec._line, '字串名稱慣例是 STR_ 開頭的大寫底線：' + name);
+        const have = Object.keys(rec).filter((k) => k !== '_line');
+        if (!have.length) _faUefiIssue(issues, 'error', rec._line, '字串 ' + name + ' 沒有任何語言的內容');
+        langs.forEach((l) => { if (have.length && !rec[l] && rec[l] !== '') _faUefiIssue(issues, 'warn', rec._line, '字串 ' + name + ' 缺少語言 ' + l + ' 的翻譯'); });
+        have.forEach((l) => { if (rec[l] === '') _faUefiIssue(issues, 'warn', rec._line, '字串 ' + name + ' 的 ' + l + ' 內容是空的'); });
+    });
+    const names = Object.keys(out.strings);
+    out.summary = { languages: langs, string_count: names.length, includes: out.includes };
+    out.strings = Object.fromEntries(names.slice(0, 300).map((k) => { const v = Object.assign({}, out.strings[k]); delete v._line; return [k, v]; }));
+    return { out, issues };
+}
+
+function _faUefiStripCComments(text) {
+    return String(text || '').replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/\/\/[^\n]*/g, '');
+}
+function _faUefiSplitTop(s, ch) {
+    const out = [];
+    let depth = 0, inQ = false, cur = '';
+    for (let i = 0; i < s.length; i++) {
+        const c = s.charAt(i);
+        if (c === '"') inQ = !inQ;
+        if (!inQ) { if (c === '(' || c === '{' || c === '[') depth++; else if (c === ')' || c === '}' || c === ']') depth--; }
+        if (c === ch && depth === 0 && !inQ) { out.push(cur); cur = ''; } else cur += c;
+    }
+    out.push(cur);
+    return out;
+}
+const FA_VFR_OPENERS = { formset: 'endformset', form: 'endform', formmap: 'endformmap', checkbox: 'endcheckbox', numeric: 'endnumeric', oneof: 'endoneof', orderedlist: 'endlist', string: 'endstring', password: 'endpassword', date: 'enddate', time: 'endtime', resetbutton: 'endresetbutton', action: 'endaction', guidop: 'endguidop', suppressif: 'endif', grayoutif: 'endif', disableif: 'endif', inconsistentif: 'endif', nosubmitif: 'endif', warningif: 'endif' };
+function _faUefiParseVfr(text, uniText) {
+    const issues = [];
+    let src = _faUefiStripCComments(text);
+    const out = { format: 'vfr', structs: {}, varstores: {}, formsets: [], defines: [], includes: [], string_tokens: [] };
+    // typedef struct {...} NAME;
+    src = src.replace(/typedef\s+struct\s*\{([\s\S]*?)\}\s*(\w+)\s*;/g, (all, body, name) => {
+        out.structs[name] = body.split(';').map((f) => f.trim()).filter(Boolean).map((f) => { const m = /^(?:.*?\s)?(\w+)\s*(\[[^\]]*\])?\s*$/.exec(f); return m ? m[1] : f; });
+        return '';
+    });
+    src = src.replace(/^\s*#\s*(include|define|pragma|if|ifdef|ifndef|else|endif|undef)\b(.*)$/gm, (all, kw, rest) => { if (kw === 'include') out.includes.push(rest.trim().replace(/^["<]|[">]$/g, '')); else if (kw === 'define') out.defines.push(rest.trim().slice(0, 60)); return ''; });
+    (src.match(/STRING_TOKEN\s*\(\s*(\w+)\s*\)/g) || []).forEach((t) => out.string_tokens.push(/\(\s*(\w+)/.exec(t)[1]));
+    const stack = [];
+    let formset = null;
+    const stmts = _faUefiSplitTop(src, ';').map((s) => s.trim()).filter(Boolean);
+    // formset 的標頭後面沒有分號：它一路接著 varstore／form 等內容到第一個 ; 才結束，這裡把標頭切出來
+    for (let q = 0; q < stmts.length; q++) {
+        if (/^formset\b/i.test(stmts[q])) {
+            const cut = /,\s*(varstore|efivarstore|namevaluevarstore|defaultstore|form|formmap)\b/i.exec(stmts[q]);
+            if (cut) { const rest = stmts[q].slice(cut.index + 1).trim(); stmts[q] = stmts[q].slice(0, cut.index).trim(); stmts.splice(q + 1, 0, rest); }
+        }
+    }
+    const lineOf = (stmt) => { const i = String(text).indexOf(stmt.slice(0, 20)); return i < 0 ? 0 : String(text).slice(0, i).split('\n').length; };
+    for (const st of stmts) {
+        const km = /^([A-Za-z_]\w*)\b([\s\S]*)$/.exec(st);
+        if (!km) continue;
+        const kw = km[1].toLowerCase();
+        const rest = km[2].trim();
+        const args = _faUefiSplitTop(rest, ',').map((a) => a.trim()).filter(Boolean);
+        const props = {};
+        const flagsOnly = [];
+        args.forEach((a) => { const pm = /^(\w+)\s*=\s*([\s\S]*)$/.exec(a); if (pm) props[pm[1].toLowerCase()] = pm[2].trim(); else flagsOnly.push(a); });
+        const ln = lineOf(st);
+        if (kw === 'varstore' || kw === 'efivarstore' || kw === 'namevaluevarstore') {
+            const first = /^(\w+)/.exec(rest);
+            const rec = { kind: kw, type: first ? first[1] : '', varid: props.varid, name: props.name, guid: props.guid, line: ln };
+            const vname = props.name || (first ? first[1] : '');
+            out.varstores[vname] = rec;
+            if (kw === 'varstore' && first && !out.structs[first[1]]) _faUefiIssue(issues, 'warn', ln, 'varstore 的結構型別 ' + first[1] + ' 沒有在這個檔案用 typedef struct 定義（可能在 #include 的標頭檔裡）');
+            continue;
+        }
+        if (/^end/.test(kw) && kw !== 'endif' ? true : kw === 'endif') {
+            const top = stack[stack.length - 1];
+            if (!top) { _faUefiIssue(issues, 'error', ln, kw + ' 沒有對應的開頭'); continue; }
+            if (FA_VFR_OPENERS[top.type] !== kw) { _faUefiIssue(issues, 'error', ln, '區塊不匹配：' + top.type + '（第' + top.line + '行）後面應該是 ' + FA_VFR_OPENERS[top.type] + '，卻看到 ' + kw); }
+            stack.pop();
+            continue;
+        }
+        const el = { type: kw, props, flags: flagsOnly, line: ln, children: [] };
+        if (kw === 'formset') { formset = { line: ln, guid: props.guid, title: props.title, forms: [], elements: 0 }; out.formsets.push(formset); }
+        if (FA_VFR_OPENERS[kw]) {
+            // 結尾關鍵字寫在同一個陳述式最後（checkbox ... , endcheckbox;）→ 立刻關閉
+            const last = args.length ? args[args.length - 1].toLowerCase() : '';
+            const closedInline = last === FA_VFR_OPENERS[kw];
+            if (stack.length) stack[stack.length - 1].children.push(el);
+            if (!closedInline) stack.push(el);
+        } else if (stack.length) stack[stack.length - 1].children.push(el);
+        if (kw === 'form' && formset) formset.forms.push(el);
+        if (formset) formset.elements++;
+    }
+    stack.forEach((s) => _faUefiIssue(issues, 'error', s.line, s.type + ' 沒有結尾的 ' + FA_VFR_OPENERS[s.type]));
+    // 語意檢查
+    const walk = (nodes, fn) => nodes.forEach((n) => { fn(n); walk(n.children, fn); });
+    out.formsets.forEach((fs0) => {
+        if (!fs0.guid) _faUefiIssue(issues, 'error', fs0.line, 'formset 缺少 guid');
+        if (!fs0.title) _faUefiIssue(issues, 'warn', fs0.line, 'formset 缺少 title');
+        const ids = {};
+        fs0.forms.forEach((f) => { const id = f.props.formid; if (!id) _faUefiIssue(issues, 'error', f.line, 'form 缺少 formid'); else if (ids[id]) _faUefiIssue(issues, 'error', f.line, 'formid 重複：' + id); ids[id] = 1; });
+        const qids = {};
+        fs0.forms.forEach((f) => walk(f.children, (n) => {
+            const q = n.props.questionid;
+            if (q) { if (qids[q]) _faUefiIssue(issues, 'error', n.line, 'questionid 重複：' + q); qids[q] = 1; }
+            if (n.type === 'oneof' || n.type === 'orderedlist') {
+                const opts = n.children.filter((c) => c.type === 'option');
+                if (!opts.length) _faUefiIssue(issues, 'error', n.line, n.type + ' 沒有任何 option');
+                if (n.type === 'oneof') {
+                    const defs = opts.filter((o) => /DEFAULT/.test(o.flags.concat(Object.values(o.props)).join(' ')));
+                    if (opts.length && !defs.length) _faUefiIssue(issues, 'warn', n.line, 'oneof 沒有任何 option 標記 DEFAULT（使用者第一次進入會是未定義的預設值）');
+                    if (defs.length > 1) _faUefiIssue(issues, 'error', n.line, 'oneof 有多個 DEFAULT option');
+                }
+            }
+            if (n.type === 'numeric') {
+                const mn = _faUefiNum(n.props.minimum), mx = _faUefiNum(n.props.maximum);
+                if (mn === null || mx === null) _faUefiIssue(issues, 'warn', n.line, 'numeric 缺少 minimum／maximum 或不是數字');
+                else if (mn > mx) _faUefiIssue(issues, 'error', n.line, 'numeric 的 minimum 大於 maximum：' + n.props.minimum + ' > ' + n.props.maximum);
+                const df = _faUefiNum(n.props.default);
+                if (mn !== null && mx !== null && df !== null && (df < mn || df > mx)) _faUefiIssue(issues, 'error', n.line, 'numeric 的 default（' + n.props.default + '）超出範圍');
+            }
+            const v = n.props.varid;
+            if (v && /^\w+\.\w+/.test(v)) {
+                const vs = v.split('.')[0];
+                const field = v.split('.')[1].replace(/\[.*\]/, '');
+                const rec = out.varstores[vs];
+                if (!rec) _faUefiIssue(issues, 'warn', n.line, 'varid ' + v + ' 指到的 varstore「' + vs + '」沒有宣告（要用 varstore 結構型別, varid=..., name=' + vs + ', guid=...;）');
+                else if (rec.type && out.structs[rec.type] && out.structs[rec.type].indexOf(field) < 0) _faUefiIssue(issues, 'error', n.line, 'varid ' + v + '：結構 ' + rec.type + ' 沒有欄位 ' + field);
+            }
+            if (['checkbox', 'numeric', 'oneof', 'string', 'text', 'goto', 'date', 'time', 'orderedlist'].indexOf(n.type) >= 0 && !n.props.prompt && n.type !== 'goto' && n.type !== 'text') _faUefiIssue(issues, 'warn', n.line, n.type + ' 缺少 prompt');
+        }));
+        if (!fs0.forms.length) _faUefiIssue(issues, 'warn', fs0.line, 'formset 裡沒有任何 form');
+    });
+    if (!out.formsets.length) _faUefiIssue(issues, 'warn', 0, '沒有找到 formset');
+    // 跟 UNI 交叉比對
+    if (uniText) {
+        const u = _faUefiParseUni(uniText);
+        const have = u.out.strings;
+        const missing = Array.from(new Set(out.string_tokens)).filter((t) => !Object.prototype.hasOwnProperty.call(have, t));
+        out.string_tokens_missing_in_uni = missing.slice(0, 40);
+        missing.slice(0, 40).forEach((t) => _faUefiIssue(issues, 'error', 0, 'STRING_TOKEN(' + t + ') 在 .uni 裡沒有定義'));
+    }
+    out.string_tokens = Array.from(new Set(out.string_tokens)).slice(0, 80);
+    const count = (type) => { let c = 0; out.formsets.forEach((f) => f.forms.forEach((fm) => walk(fm.children, (n) => { if (n.type === type) c++; }))); return c; };
+    out.summary = { formsets: out.formsets.length, forms: out.formsets.reduce((a, f) => a + f.forms.length, 0), varstores: Object.keys(out.varstores), questions: { checkbox: count('checkbox'), numeric: count('numeric'), oneof: count('oneof'), string: count('string') }, string_tokens: out.string_tokens.length };
+    const slim = (n, d) => ({ type: n.type, line: n.line, id: n.props.formid || n.props.questionid || undefined, title: n.props.title || n.props.prompt || n.props.text || undefined, varid: n.props.varid, children: d < 3 ? n.children.slice(0, 60).map((c) => slim(c, d + 1)) : undefined });
+    out.formsets = out.formsets.map((f) => ({ line: f.line, guid: f.guid, title: f.title, forms: f.forms.slice(0, 40).map((fm) => slim(fm, 0)) }));
+    return { out, issues };
+}
+
+// VFCF：依使用者描述是「類CSS」的設定檔（選擇器＋{ 屬性: 值; }）。這裡只做通用的語法解析與基本檢查，不認得特定欄位。
+function _faUefiParseVfcf(text) {
+    const issues = [];
+    const src = _faUefiStripCComments(String(text || '').replace(/^﻿/, '')).replace(/^\s*#.*$/gm, '');
+    const out = { format: 'vfcf', rules: [] };
+    let i = 0;
+    const lineAt = (idx) => src.slice(0, idx).split('\n').length;
+    const parseBlock = (selector, startIdx) => {
+        const rule = { selector: selector.trim(), declarations: {}, children: [], line: lineAt(startIdx) };
+        let buf = '';
+        while (i < src.length) {
+            const c = src.charAt(i);
+            if (c === '}') { i++; flush(); return rule; }
+            if (c === '{') {
+                i++;
+                const child = parseBlock(buf, i);
+                buf = '';
+                rule.children.push(child);
+                continue;
+            }
+            if (c === ';') { i++; flush(); continue; }
+            buf += c; i++;
+        }
+        _faUefiIssue(issues, 'error', rule.line, '區塊 { 沒有結尾的 }：' + rule.selector.slice(0, 30));
+        flush();
+        return rule;
+        function flush() {
+            const t = buf.trim();
+            buf = '';
+            if (!t) return;
+            const m = /^([\w\-.]+)\s*[:=]\s*([\s\S]+)$/.exec(t);
+            if (!m) { _faUefiIssue(issues, 'warn', lineAt(i), '看不懂的宣告（應該是 屬性: 值;）：' + t.slice(0, 40)); return; }
+            if (Object.prototype.hasOwnProperty.call(rule.declarations, m[1])) _faUefiIssue(issues, 'warn', lineAt(i), '同一個規則裡屬性重複：' + m[1]);
+            rule.declarations[m[1]] = m[2].trim();
+        }
+    };
+    let top = '';
+    while (i < src.length) {
+        const c = src.charAt(i);
+        if (c === '{') { i++; const r = parseBlock(top, i); if (!r.selector) _faUefiIssue(issues, 'warn', r.line, '規則沒有選擇器'); out.rules.push(r); top = ''; continue; }
+        if (c === '}') { _faUefiIssue(issues, 'error', lineAt(i), '多出來的 }'); i++; continue; }
+        top += c; i++;
+    }
+    if (top.trim()) _faUefiIssue(issues, 'warn', lineAt(i), '檔案結尾有沒有被 { } 包住的內容：' + top.trim().slice(0, 40));
+    if (!out.rules.length) _faUefiIssue(issues, 'warn', 0, '沒有任何規則（選擇器 { 屬性: 值; }）');
+    const count = (rs) => rs.reduce((a, r) => a + 1 + count(r.children), 0);
+    out.summary = { rules: count(out.rules), top_level: out.rules.map((r) => r.selector).slice(0, 20) };
+    return { out, issues };
+}
+
+function _faUefiDetectFormat(text, filename) {
+    const ext = _faRepoExt(filename || '');
+    if (['inf', 'dec', 'dsc', 'fdf', 'uni', 'vfr', 'vfcf'].indexOf(ext) >= 0) return ext;
+    if (ext === 'hfr') return 'vfr';
+    const t = String(text || '');
+    if (/^\s*#langdef\b/m.test(t)) return 'uni';
+    if (/\bformset\b/.test(t) && /\bendformset\b/.test(t)) return 'vfr';
+    if (/^\s*\[FD\./mi.test(t) || /^\s*\[FV\./mi.test(t)) return 'fdf';
+    if (/DEC_SPECIFICATION/.test(t)) return 'dec';
+    if (/INF_VERSION/.test(t)) return 'inf';
+    if (/DSC_SPECIFICATION|PLATFORM_GUID/.test(t)) return 'dsc';
+    if (/\{[^{}]*:[^{}]*;[^{}]*\}/.test(t)) return 'vfcf';
+    return '';
+}
+function _faUefiParse(format, text, opts) {
+    const f = format === 'auto' || !format ? _faUefiDetectFormat(text, opts && opts.filename) : String(format).toLowerCase();
+    let r;
+    if (f === 'inf') r = _faUefiParseInf(text);
+    else if (f === 'dec') r = _faUefiParseDec(text);
+    else if (f === 'dsc') r = _faUefiParseDsc(text);
+    else if (f === 'fdf') r = _faUefiParseFdf(text);
+    else if (f === 'uni') r = _faUefiParseUni(text);
+    else if (f === 'vfr' || f === 'hfr') r = _faUefiParseVfr(text, opts && opts.uni_text);
+    else if (f === 'vfcf') r = _faUefiParseVfcf(text);
+    else return { ok: false, error: '不認得的格式「' + (format || '') + '」（可用：inf、dec、dsc、fdf、uni、vfr、vfcf、auto）' };
+    const order = { error: 0, warn: 1, info: 2 };
+    r.issues.sort((a, b) => order[a.severity] - order[b.severity] || a.line - b.line);
+    const counts = { error: 0, warn: 0, info: 0 };
+    r.issues.forEach((x) => { counts[x.severity]++; });
+    return { ok: true, format: f, summary: r.out.summary, issue_counts: counts, issues: r.issues.slice(0, 60), issues_truncated: r.issues.length > 60 || undefined, data: r.out };
+}
+
+// ============================================================
+// 2026-10-02：程式設計「知識」資料（programming_knowledge工具用）。
+// 為什麼獨立成知識助理：弱模型的上下文很小，把UEFI／OpenBMC／Rust的大量背景知識塞進開發用的領域會炸掉上下文。
+// 所以知識放在這裡，開發領域只在需要時委派給 know_xxx 助理，由它用 programming_knowledge 查「卡片」、濃縮成簡短答案再回來。
+// 卡片是依公開文件整理的摘要（寫在這裡是給不認識新語言／新規格的舊模型用的）；細節以規格、專案原始碼與官方文件為準。
+// ============================================================
+const FA_PROG_KNOWLEDGE = {
+    uefi: {
+        label: 'UEFI／EDK II／Tianocore（BIOS韌體）',
+        playbook: 'prog_bios',
+        cards: [
+            { id: 'phases', title: '開機階段：SEC／PEI／DXE／BDS／TSL／RT／AL', keywords: 'sec pei dxe bds tsl rt al 階段 phase pi 開機 流程 boot',
+                text: 'PI規格把開機分成：SEC（Security，重置向量、暫時記憶體CAR、找到並交棒給PEI Core）→ PEI（Pre-EFI Initialization，PEI Foundation與PEIM，初始化記憶體與基本晶片組，建立HOB，用PPI互相溝通）→ DXE（Driver Execution Environment，DXE Core與派遣器依depex載入DXE driver，安裝protocol，提供Boot Services／Runtime Services）→ BDS（Boot Device Selection，連接裝置、讀Boot####與BootOrder變數、顯示Setup、選開機裝置）→ TSL（Transient System Load，OS loader或UEFI應用程式執行中，仍在Boot Services時期，呼叫ExitBootServices結束）→ RT（Run Time，作業系統執行，只剩Runtime Services例如GetVariable／SetVirtualAddressMap／ResetSystem）→ AL（After Life，關機、重置、錯誤復原）。要判斷程式碼屬於哪一階段：看INF的MODULE_TYPE（SEC／PEI_CORE／PEIM／DXE_CORE／DXE_DRIVER／DXE_RUNTIME_DRIVER／UEFI_APPLICATION）。',
+                plan_hint: '設計時先寫「這段程式跑在哪個階段、那個階段有哪些服務可用」：PEI沒有Boot Services、只有PeiServices；DXE才有gBS／gRT。' },
+            { id: 'protocol', title: 'Interface／Protocol／PPI', keywords: 'protocol ppi interface 介面 handle locateprotocol installprotocolinterface openprotocol guid',
+                text: 'Protocol＝用GUID識別的介面（一個結構，裡面是函式指標與資料），安裝在某個handle上。DXE：gBS->InstallProtocolInterface／InstallMultipleProtocolInterfaces安裝；gBS->LocateProtocol(&gXxxProtocolGuid, NULL, &Interface)找全域唯一的實例；gBS->HandleProtocol／OpenProtocol在特定handle上取（OpenProtocol有屬性：BY_HANDLE_PROTOCOL、GET_PROTOCOL、TEST_PROTOCOL、BY_DRIVER、EXCLUSIVE…，驅動模型用BY_DRIVER）；gBS->LocateHandleBuffer列舉所有有這個protocol的handle；RegisterProtocolNotify等protocol出現時通知。PEI裡對應的是PPI：(*PeiServices)->InstallPpi／LocatePpi／NotifyPpi。GUID在DEC的[Protocols]／[Ppis]宣告，模組在INF的[Protocols]／[Ppis]引用（註解用 ## CONSUMES 或 ## PRODUCES 標示用途），C程式用gXxxProtocolGuid變數。',
+                plan_hint: '設計要列出：這個模組PRODUCES哪些protocol／PPI、CONSUMES哪些；依賴要寫進[Depex]，否則載入順序會錯。' },
+            { id: 'hob', title: 'HOB（Hand-Off Block）', keywords: 'hob handoff getfirstguidhob buildguiddatahob resource descriptor 交棒',
+                text: 'HOB是PEI階段建立、交給DXE的資料串列（PEI記憶體裡的鏈結串列，以END_OF_HOB_LIST結尾）。類型：PHIT（Handoff Info Table）、Resource Descriptor（記憶體／MMIO資源）、Memory Allocation、FV、CPU、GUID Extension（自訂資料，用GUID識別）。PEI端：BuildGuidDataHob(&gMyHobGuid, &Data, sizeof Data)、BuildResourceDescriptorHob；DXE端：GetHobList()取串列、GetFirstGuidHob(&gMyHobGuid)找自訂HOB、GET_GUID_HOB_DATA取資料。要用HobLib（INF的[LibraryClasses]加HobLib，DSC有對應實作）。典型用途：PEI偵測平台資訊（記憶體大小、啟動模式、SMBIOS資料）→ 包成GUID HOB → DXE讀取。HOB是單向交棒，DXE不能回頭改PEI的資料。',
+                plan_hint: '需要PEI→DXE傳資料時用GUID HOB：先定義HOB的結構與GUID（放DEC），PEI建立、DXE讀取，兩邊INF都要加HobLib與該GUID。' },
+            { id: 'services', title: '服務表：gST／gBS／gRT／gDS／PeiServices', keywords: 'gbs grt gst gds boottable services 服務 systemtable bootservices runtimeservices',
+                text: 'gST＝EFI_SYSTEM_TABLE（含ConIn／ConOut、BootServices、RuntimeServices、設定表ConfigurationTable）；gBS＝EFI_BOOT_SERVICES（AllocatePool／FreePool／AllocatePages、CreateEvent／SignalEvent／SetTimer、LocateProtocol／InstallProtocolInterface、Stall、ExitBootServices…），只在ExitBootServices之前有效；gRT＝EFI_RUNTIME_SERVICES（GetVariable／SetVariable、GetTime／SetTime、ResetSystem、SetVirtualAddressMap），OS執行期仍可用；gDS＝DXE Services（AddMemorySpace、Dispatch、Schedule…）；PEI沒有gBS，用PeiServices指標（EFI_PEI_SERVICES**）。在EDK II用函式庫取得這些全域變數：gBS來自UefiBootServicesTableLib、gRT來自UefiRuntimeServicesTableLib、gST來自UefiBootServicesTableLib、gDS來自DxeServicesTableLib；INF要列在[LibraryClasses]。PEI用PeiServicesLib（PeiServicesLocatePpi等）。',
+                plan_hint: '寫程式前確認階段：PEI用PeiServicesLib，DXE用gBS／gRT；在Runtime driver裡不能在ExitBootServices之後呼叫gBS。' },
+            { id: 'variable', title: 'UEFI Variable', keywords: 'variable getvariable setvariable nvram attribute bootorder setup 變數 secureboot',
+                text: 'gRT->GetVariable(L"Name", &VendorGuid, &Attributes, &DataSize, Data)：先傳DataSize=0得到EFI_BUFFER_TOO_SMALL與實際大小再配置buffer（兩次呼叫模式）。SetVariable(Name, Guid, Attributes, Size, Data)，Size=0且存在即刪除。屬性：NON_VOLATILE（NV，存快閃）、BOOTSERVICE_ACCESS（BS）、RUNTIME_ACCESS（RT，必須同時有BS）、HARDWARE_ERROR_RECORD、AUTHENTICATED_WRITE_ACCESS、TIME_BASED_AUTHENTICATED_WRITE_ACCESS、APPEND_WRITE。列舉用GetNextVariableName。常見變數：BootOrder／Boot####／Driver####、SecureBoot／SetupMode／PK／KEK／db／dbx（安全開機金鑰）、平台自訂的Setup變數（用自己的VendorGuid）。DXE的Variable driver管理NV儲存（常搭配FTW fault tolerant write與spare區，FDF要保留NvStorage區）。注意：RT階段的SetVariable可能慢且受空間限制；不要在中斷或高TPL呼叫；變數名稱是CHAR16（L"..."）。',
+                plan_hint: '設計變數時列出：名稱、VendorGuid、屬性組合、大小上限、誰讀誰寫、預設值與版本相容（結構改變怎麼升級）。' },
+            { id: 'driver_model', title: 'UEFI驅動模型與事件', keywords: 'driver binding supported start stop event tpl createevent 驅動 entrypoint unload devicepath',
+                text: '進入點：EFI_STATUS EFIAPI UefiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)（INF的ENTRY_POINT指定，需UefiDriverEntryPoint或UefiApplicationEntryPoint函式庫）。裝置驅動用Driver Binding Protocol：Supported()判斷能不能管這個controller（不改任何狀態）、Start()開始管理並安裝子protocol、Stop()停止；搭配Component Name與Device Path。事件：CreateEvent／CreateEventEx（事件群組如EFI_EVENT_GROUP_READY_TO_BOOT、EXIT_BOOT_SERVICES、VIRTUAL_ADDRESS_CHANGE）、SignalEvent、CloseEvent；TPL（Task Priority Level）TPL_APPLICATION／TPL_CALLBACK／TPL_NOTIFY／TPL_HIGH_LEVEL，用RaiseTPL／RestoreTPL保護臨界區。慣例：函式回傳EFI_STATUS，用EFI_ERROR(Status)判斷，ASSERT_EFI_ERROR；參數標記IN／OUT／OPTIONAL；字串字面值L"..."是CHAR16。',
+                plan_hint: '裝置驅動：先畫Supported／Start／Stop各自做什麼，並列出Start失敗時怎麼回收資源。' },
+            { id: 'lib_pcd', title: 'Library Class、NULL函式庫與PCD', keywords: 'library libraryclass null pcd fixedatbuild dynamic patchable featureflag 函式庫 constructor',
+                text: 'Library Class：DEC的[LibraryClasses]宣告「類別名＋標頭檔」，DSC的[LibraryClasses]把類別對應到實作INF（可依架構與模組類型分段，例如[LibraryClasses.common.PEIM]），模組INF的[LibraryClasses]列出要用的類別。NULL函式庫（DSC寫 NULL|path.inf，常在[Components]的模組區塊 <LibraryClasses> 裡）沒有對外函式，只是被連結進模組以執行它的constructor。constructor／destructor由INF的CONSTRUCTOR／DESTRUCTOR指定。PCD（Platform Configuration Database）：在DEC宣告（Name|預設值|型別|Token），在INF的[Pcd]／[FixedPcd]／[FeaturePcd]／[PatchPcd]／[PcdEx]使用，在DSC設定值。類型：FixedAtBuild（編譯期常數）、PatchableInModule（可在映像檔中修補）、FeatureFlag（布林開關）、Dynamic／DynamicEx（執行期可改，經PCD資料庫）。存取：PcdGet32(PcdXxx)／PcdGetBool／PcdGetPtr／FixedPcdGet32／PcdSet32S（回傳狀態的安全版本）。',
+                plan_hint: '新增設定值先決定PCD型別（要不要執行期改）；新增共用功能先決定做成Library Class還是protocol。' },
+            { id: 'build', title: '建置系統（BaseTools／build指令）', keywords: 'build edksetup basetools target tools_def autogen genfds workspace packages_path ovmf qemu 建置 編譯 toolchain gcc5 vs2019',
+                text: '流程：source edksetup.sh（Windows用edksetup.bat）設定WORKSPACE與PACKAGES_PATH → build -p Pkg/Platform.dsc -a X64 -t GCC5（或VS2019、CLANGDWARF）-b DEBUG（或RELEASE／NOOPT）[-m 單一模組.inf]。Conf/target.txt設預設值，Conf/tools_def.txt定義工具鏈，Conf/build_rule.txt定義副檔名的建置規則。步驟：解析DSC／DEC／INF／FDF → AutoGen（產生AutoGen.c／AutoGen.h，含PCD與GUID）→ make → GenFds（依FDF組出FV與FD）。輸出在Build/<平台>/<TARGET>_<工具鏈>/（FV、X64/模組輸出）。測試：OvmfPkg＋QEMU（qemu-system-x86_64 -bios OVMF.fd 或 -drive if=pflash）、EmulatorPkg（主機模擬）、主機端單元測試（UnitTestFrameworkPkg＋HostBasedUnitTest，用 -b NOOPT 與主機編譯器）。常見錯誤：找不到函式庫實作（DSC缺對應的LibraryClasses）、undefined reference（INF沒列函式庫）、GUID重複、Depex寫錯導致driver沒被載入。',
+                plan_hint: '驗證層級誠實標示：沙盒沒有BaseTools與QEMU，只能驗證INF／DEC／DSC／FDF／UNI／VFR的語法與一致性（用uefi_parse），編譯與開機測試要列進unverified。' },
+            { id: 'fv_fd', title: 'FD／FV／FFS與Depex', keywords: 'fd fv ffs depex apriori flash region nvstorage fdf 派遣 firmware volume',
+                text: 'FD（Flash Device）是整個快閃映像，切成區域（Region，offset|size）：放FV、NV變數區（NvStorage含Variable、FTW working、FTW spare）、微碼、FMP資料等。FV（Firmware Volume）是檔案系統，裡面是FFS檔案：類型PEI_CORE／PEIM／DXE_CORE／DRIVER／APPLICATION／FREEFORM／RAW；檔案由區段（Section）組成：PE32、PEI_DEPEX／DXE_DEPEX、UI、VERSION、RAW、GUIDED（壓縮如LZMA）。Depex（相依表示式）決定派遣順序：用protocol／PPI的GUID與AND／OR／NOT／TRUE／FALSE／END組合；INF的[Depex]寫（例如 gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid），沒寫等於沒有相依（可能太早被載入）。APRIORI清單可強制某些模組最先派遣。FDF的[Rule.]定義某類模組怎麼組成FFS檔案。',
+                plan_hint: '新增模組要同時決定：放進哪個FV（FDF的INF行）、Depex寫什麼、是否需要放進APRIORI。' },
+            { id: 'hii', title: 'HII：VFR／UNI／Setup選單', keywords: 'hii vfr uni ifr setup formset form string_token configaccess hiiaddpackages 選單 formbrowser',
+                text: 'Setup畫面由三塊構成：VFR（Visual Forms Representation，描述formset／form與checkbox／numeric／oneof等題目，編譯成IFR opcode）、UNI（多語言字串，STRING_TOKEN(STR_X)引用）、程式碼（HII Config Access Protocol：ExtractConfig、RouteConfig、Callback）。驅動啟動時用HiiAddPackages把VFR／UNI打包註冊到HII資料庫；Form Browser在BDS顯示。VFR的varstore宣告資料結構與變數（buffer varstore對應UEFI變數）：typedef struct { UINT8 Foo; } MY_CONFIG; varstore MY_CONFIG, varid = 1, name = MyVar, guid = MY_GUID; 題目用 varid = MyVar.Foo。INF的[Sources]要列出.vfr與.uni，並在[Guids]宣告用到的GUID。常見錯誤：STRING_TOKEN沒有對應的UNI字串、formid或questionid重複、oneof沒有DEFAULT選項、varstore結構欄位名對不上。',
+                plan_hint: 'Setup選項設計要列：題目、型別、範圍、預設值、存在哪個變數、改了要不要重開機生效；並用uefi_parse檢查vfr與uni一致。' },
+            { id: 'smm', title: 'SMM／MM（系統管理模式）', keywords: 'smm mm smram smi smst communicate standalone 安全 韌體更新',
+                text: 'SMM是特權執行環境（SMRAM隔離，只能透過SMI進入）：DXE_SMM_DRIVER或MM_STANDALONE模組在SMM裡註冊handler（gSmst->SmiHandlerRegister或MmiHandlerRegister），OS／DXE端用MM Communication（EFI_MM_COMMUNICATION_PROTOCOL，通訊buffer）呼叫。重點：SMM內不能呼叫gBS／gRT，只能用SMM服務表；buffer要檢查指標是否落在SMRAM之外（防止呼叫者騙SMM讀寫SMRAM）；變數寫入、韌體更新、特權操作常放SMM。',
+                plan_hint: 'SMM功能一律要寫安全設計：輸入驗證、通訊buffer檢查、不信任呼叫端指標，並列入需要實機與安全審查的unverified。' },
+            { id: 'secure_boot', title: '安全開機與量測', keywords: 'secure boot pk kek db dbx tpm pcr measured shim 簽章 驗證',
+                text: '安全開機：平台金鑰PK→金鑰交換金鑰KEK→簽章資料庫db（允許）／dbx（撤銷）。載入映像時用db驗證Authenticode簽章，dbx優先。SetupMode（尚未有PK）與UserMode。量測開機：TPM2把各階段映像與設定量測進PCR（Tcg2Protocol，事件記錄到事件日誌）。這些變數是TIME_BASED_AUTHENTICATED_WRITE_ACCESS，更新要有簽章的payload。開發時常在測試用OVMF關閉或使用測試金鑰。',
+                plan_hint: '涉及驗證／金鑰的設計一律標示為需要實機與安全審查。' },
+            { id: 'debug', title: '除錯與常用EFI Shell指令', keywords: 'debug debuglib assert serial shell dh drivers devtree memmap dmpstore 除錯 日誌',
+                text: 'DebugLib：DEBUG ((DEBUG_INFO, "訊息 %a %r\\n", Str, Status))（%r印EFI_STATUS）、ASSERT、ASSERT_EFI_ERROR、DEBUG_CODE；輸出等級由PcdDebugPrintErrorLevel控制，輸出到序列埠（SerialPortLib）或QEMU的isa-debugcon。EFI Shell：dh -b（列handle與protocol）、drivers／devices／devtree（驅動與裝置樹）、memmap（記憶體地圖）、dmpstore（列變數）、setvar、pci、mm（讀寫記憶體／IO）、smbiosview、map／ls（檔案系統）。DXE階段可用gBS->GetMemoryMap檢查記憶體；用 -b DEBUG 建置才有DEBUG訊息。',
+                plan_hint: '實機驗證清單裡要有：要看哪些DEBUG輸出、用哪些shell指令確認protocol／變數已安裝。' },
+            { id: 'coding_style', title: 'EDK II程式碼慣例', keywords: 'style 慣例 coding standard efiapi uintn allocatezeropool freepool 型別 字串',
+                text: '型別用UINT8／UINT16／UINT32／UINT64／UINTN／INTN／BOOLEAN／CHAR8／CHAR16／VOID（不用int／long的寬度假設）；字串：CHAR16用StrLen／StrCpyS／UnicodeSPrint，CHAR8用AsciiStrLen／AsciiSPrint；記憶體：AllocatePool／AllocateZeroPool／FreePool（MemoryAllocationLib）、CopyMem／ZeroMem／SetMem（BaseMemoryLib）；回傳EFI_SUCCESS／EFI_NOT_FOUND／EFI_INVALID_PARAMETER／EFI_OUT_OF_RESOURCES／EFI_UNSUPPORTED／EFI_BUFFER_TOO_SMALL；用EFIAPI標示公開函式的呼叫慣例；ALIGN／BASE_4KB等巨集；GUID用 STATIC EFI_GUID gMyGuid = { ... }; 或DEC宣告後用gMyGuid。每個.c檔頭有檔案說明註解，函式有Doxygen風格註解（@param、@retval）。禁止C標準函式庫的malloc／printf（用EDK II函式庫）。',
+                plan_hint: '實作階段的todo要寫：每個函式的錯誤路徑如何回收資源與回傳哪個EFI_STATUS。' },
+            { id: 'fmt_inf', title: '檔案格式：INF（模組描述）', keywords: 'inf module 模組 defines sources packages libraryclasses depex file_guid module_type entry_point',
+                text: 'INF描述一個模組。章節：[Defines]（INF_VERSION、BASE_NAME、FILE_GUID、MODULE_TYPE、VERSION_STRING、ENTRY_POINT；函式庫另有LIBRARY_CLASS = 類別名|適用模組類型）、[Sources]（原始碼，可加.arch限定）、[Packages]（引用的.dec，至少MdePkg/MdePkg.dec）、[LibraryClasses]、[Protocols]／[Ppis]／[Guids]（行尾註解 ## CONSUMES／PRODUCES 標示用途）、[Pcd]等、[Depex]、[BuildOptions]、[Binaries]。章節標頭可帶限定詞：[Sources.X64]、[LibraryClasses.common.PEIM]、[Depex.common.DXE_DRIVER]。FILE_GUID要唯一（uuidgen產生）。用 uefi_parse({format:"inf",...}) 可解析並檢查必要欄位與命名慣例。',
+                plan_hint: '' },
+            { id: 'fmt_dec', title: '檔案格式：DEC（套件宣告）', keywords: 'dec package 套件 guid protocol ppi pcd includes declaration token',
+                text: 'DEC宣告一個套件對外提供的東西：[Defines]（DEC_SPECIFICATION、PACKAGE_NAME、PACKAGE_GUID、PACKAGE_VERSION）、[Includes]（公開標頭資料夾）、[LibraryClasses]（類別名|標頭）、[Guids]／[Protocols]／[Ppis]（gName = { 0x8位, 0x4位, 0x4位, { 8個位元組 } }，必須剛好11個十六進位數）、[PcdsFixedAtBuild]／[PcdsPatchableInModule]／[PcdsFeatureFlag]／[PcdsDynamic]／[PcdsDynamicEx]（TokenSpaceGuid.PcdName|預設值|型別|0xToken，型別限UINT8／UINT16／UINT32／UINT64／BOOLEAN／VOID*，同一個TokenSpace的Token不可重複）。uefi_parse可把GUID結構轉成標準字串並找出重複。',
+                plan_hint: '' },
+            { id: 'fmt_dsc', title: '檔案格式：DSC（平台描述）', keywords: 'dsc platform 平台 components skuids buildoptions include define 條件 !if',
+                text: 'DSC描述一個平台怎麼建置：[Defines]（PLATFORM_NAME、PLATFORM_GUID、PLATFORM_VERSION、DSC_SPECIFICATION、OUTPUT_DIRECTORY、SUPPORTED_ARCHITECTURES、BUILD_TARGETS、SKUID_IDENTIFIER、FLASH_DEFINITION）、[SkuIds]、[LibraryClasses]（類別|實作.inf，可依架構／模組類型分段）、[PcdsFixedAtBuild]等（TokenSpaceGuid.PcdName|值）、[Components]（要編的INF，可加 { <LibraryClasses> ... <PcdsFixedAtBuild> ... <BuildOptions> } 區塊覆寫只對這個模組有效）、[BuildOptions]。指令：DEFINE 巨集、!include、!if／!ifdef／!ifndef／!elseif／!else／!endif、!error。巨集用 $(NAME)。uefi_parse會檢查!if／!endif是否成對、{ }是否結尾、必要欄位。',
+                plan_hint: '' },
+            { id: 'fmt_fdf', title: '檔案格式：FDF（快閃映像描述）', keywords: 'fdf flash fd fv rule region 映像 layout apriori genfds',
+                text: 'FDF描述怎麼把模組組成快閃映像：[Defines]、[FD.名稱]（BaseAddress、Size、ErasePolarity、BlockSize、NumBlocks，之後是區域行 Offset|Size，下面接 PCD名稱 或 FV = 名稱 或 DATA = { ... }）、[FV.名稱]（屬性如BlockSize、FvAlignment、ERASE_POLARITY；INF 路徑／ INF RuleOverride=XXX 路徑；FILE FREEFORM = GUID { SECTION RAW = 檔案 }；APRIORI PEI／DXE { INF ... }）、[Rule.Common.PEIM] 等（FILE PEIM = $(NAMED_GUID) { PEI_DEPEX Optional ... PE32 PE32 ... UI STRING="..." }）。uefi_parse會檢查區域是否重疊或超出FD大小、FV參照是否存在、INF是否重複放入。',
+                plan_hint: '' },
+            { id: 'fmt_uni', title: '檔案格式：UNI（多語言字串）', keywords: 'uni string langdef language unicode 字串 翻譯 多語言 str_',
+                text: 'UNI放Setup與訊息用的多語言字串：#langdef en-US "English" 定義語言；#string STR_NAME #language en-US "文字" （下一行可接 #language zh-Hans "文字"）。字串名稱慣例STR_大寫底線；每個字串要有所有已定義語言的版本；長字串可用多段相鄰的 "..." 串接；跳脫用 \\n、\\"。傳統上UNI檔是UTF-16LE（含BOM），新版BaseTools也接受UTF-8，依專案BaseTools版本。程式與VFR用STRING_TOKEN(STR_NAME)引用。uefi_parse會找出缺翻譯、重複名稱、沒定義的語言。',
+                plan_hint: '' },
+            { id: 'fmt_vfr', title: '檔案格式：VFR（Setup表單）', keywords: 'vfr formset form checkbox numeric oneof varstore endform 表單 setup question',
+                text: 'VFR結構：#include 標頭、typedef struct {...} 設定結構、formset guid = ..., title = STRING_TOKEN(...), help = ..., classguid = ..., varstore 結構, varid = ..., name = ..., guid = ...; form formid = 1, title = STRING_TOKEN(...); 題目...; endform; endformset;。題目：checkbox varid = Var.Field, prompt = ..., help = ..., flags = ..., default = ..., endcheckbox; numeric（minimum、maximum、step、default）endnumeric; oneof（option text = ..., value = N, flags = DEFAULT;）endoneof; string／text／subtitle／goto；條件：suppressif／grayoutif／disableif ... endif;。每個題目有prompt、help（STRING_TOKEN）。uefi_parse會檢查區塊是否成對、formid重複、numeric範圍、oneof的DEFAULT、varid欄位是否在結構裡，並可傳uni_text交叉比對STRING_TOKEN。',
+                plan_hint: '' },
+            { id: 'fmt_vfcf', title: '檔案格式：VFCF（類CSS的表單設定）', keywords: 'vfcf css 設定 選擇器 selector 外觀',
+                text: 'VFCF是類CSS語法的設定檔：選擇器 { 屬性: 值; } 的規則，可有巢狀區塊與註解。因為各專案用到的欄位不同，uefi_parse只做通用的語法解析（規則樹、重複屬性、括號是否成對），不判斷屬性名稱的對錯；實際欄位含意要看該專案的文件或處理它的工具。',
+                plan_hint: '' },
+        ],
+    },
+    openbmc: {
+        label: 'OpenBMC／BMC韌體',
+        playbook: 'prog_bmc',
+        cards: [
+            { id: 'layers', title: '分層總覽：kernel／HAL／middleware／上層', keywords: 'layer 分層 架構 overview kernel hal middleware 總覽 openbmc',
+                text: '由下而上：①底層 Linux kernel（device tree、驅動：i2c／pwm-tacho／hwmon／gpio／adc／LPC-KCS／SSIF／eSPI／PECI／SPI；u-boot；Yocto建置）②HAL／裝置存取（sysfs hwmon、/dev/i2c-N、libgpiod、phosphor-hwmon、dbus-sensors讀硬體）③middleware：感測器（dbus-sensors／phosphor-hwmon）、Entity Manager（用JSON設定描述硬體並依探測條件建立實體）、D-Bus（sdbusplus、phosphor-dbus-interfaces、ObjectMapper）、ipmid（phosphor-host-ipmid）④上層對外介面：IPMI（KCS／IPMB／SSIF／網路lanplus）、Redfish（bmcweb）、SNMP（phosphor-snmp）、Web UI（webui-vue）。語言：C／C++（多數phosphor服務、bmcweb）、yaml（interface／設定）、JSON（Entity Manager、PID）、Vue／JavaScript（webui-vue）、Python／Bash（腳本、測試）、Java（部分廠商KVM／虛擬媒體客戶端）、Rust（部分服務與新元件，見rust卡）。改動前先決定「改哪一層」，再看上下層介面是否受影響。',
+                plan_hint: '評估階段要交layer欄位（kernel／hal／mw_sensor／mw_dbus_ipmi／up_ipmi／up_redfish／up_snmp／up_web／build），設計階段要寫跨層影響。' },
+            { id: 'kernel', title: '底層：Linux kernel與device tree', keywords: 'kernel linux dts device tree driver aspeed ast2500 ast2600 hwmon i2c pwm gpio kcs 驅動 u-boot',
+                text: 'BMC SoC多為ASPEED AST2400／2500／2600（ARM）。kernel原始碼用OpenBMC維護的linux分支。板級描述在device tree：arch/arm/boot/dts/aspeed/aspeed-bmc-<廠商>-<板名>.dts，引用aspeed-g5／g6 dtsi，用節點啟用裝置（例如 &i2c3 { status = "okay"; ... }，在匯流排下掛裝置節點與compatible字串、reg位址）。常用驅動：aspeed i2c、pwm-tacho（風扇）、hwmon驅動（lm75、tmp421、pmbus類電源、adm1275…）、gpio-aspeed、ADC、KCS／BT／SSIF（IPMI主機介面）、eSPI、PECI、SPI-NOR（韌體快閃，MTD分割）。除錯：dmesg、/sys/class/hwmon、i2cdetect／i2cget／i2cdump -y、devmem。kernel改動要列的驗證：設定檔建置、dtc編譯、實機開機與驅動探測。',
+                plan_hint: 'kernel層改動：列出dts節點、compatible、位址與中斷、對應驅動的Kconfig，並說明HAL層會看到的sysfs路徑。' },
+            { id: 'yocto', title: 'Yocto建置與meta層', keywords: 'yocto bitbake recipe bb bbappend meta layer machine devtool image 建置 配方 packageconfig',
+                text: 'OpenBMC用Yocto／BitBake建置：bitbake obmc-phosphor-image。層：meta-phosphor、meta-aspeed、meta-openembedded，廠商層meta-<廠商>/meta-<機型>（含conf/machine、recipes-*）。配方.bb描述一個元件（SRC_URI、SRCREV、inherit meson或cmake或cargo、DEPENDS、PACKAGECONFIG、EXTRA_OEMESON、SYSTEMD_SERVICE）；.bbappend在廠商層修改既有配方。多數phosphor C++元件用meson＋ninja建置，相依sdbusplus、phosphor-dbus-interfaces、phosphor-logging、boost、nlohmann-json。開發捷徑：devtool modify <配方> 取原始碼、在SDK或devtool環境交叉編譯。設定檔來源：machine的conf（例如 obmc-phosphor-... 的 VIRTUAL-RUNTIME provider選擇）。',
+                plan_hint: '需要新元件：要寫配方（.bb）、systemd service、meson.build，並說明加進哪個machine的image。' },
+            { id: 'hal', title: 'HAL：從驅動到使用者空間', keywords: 'hal sysfs hwmon libgpiod gpio i2c-dev phosphor-hwmon device access 硬體存取 gpiochip',
+                text: '使用者空間讀硬體的主要路徑：①hwmon sysfs（/sys/class/hwmon/hwmonN/temp1_input、fan1_input、in1_input、pwm1，單位通常是毫度C／毫伏等，需換算）②/dev/i2c-N（i2c-dev，用ioctl或smbus函式庫，或工具i2cget）③GPIO用libgpiod（/dev/gpiochipN，gpioget／gpioset／gpiomon；舊的sysfs gpio已不建議）④PECI、ADC、SPI等各自介面。phosphor-hwmon依設定檔（.conf，LABEL_、MINVALUE_／MAXVALUE_、WARNLO／CRITHI等）把hwmon屬性轉成D-Bus感測器；dbus-sensors的各守護程式（hwmontempsensor、fansensor、adcsensor、psusensor、nvmesensor、mcutempsensor、ipmbsensor…）則依Entity Manager的設定探測硬體。寫自己的HAL時：用非阻塞或獨立執行緒讀取，處理裝置暫時不存在與讀取失敗，不要讓一顆壞感測器卡死整個服務。',
+                plan_hint: 'HAL層設計要寫：硬體路徑、單位換算、讀取週期、失敗與逾時處理、上報成D-Bus哪個介面。' },
+            { id: 'sensor', title: 'Middleware：感測器（dbus-sensors／phosphor-hwmon）', keywords: 'sensor 感測器 dbus-sensors threshold xyz.openbmc_project.sensor.value hwmon 臨界 閾值 fan psu',
+                text: '感測器在D-Bus上發布成物件：/xyz/openbmc_project/sensors/<類型>/<名稱>（類型如temperature、fan_tach、voltage、current、power），實作介面 xyz.openbmc_project.Sensor.Value（屬性Value、Unit、MaxValue、MinValue）、xyz.openbmc_project.Sensor.Threshold.Warning／Critical（WarningHigh／WarningLow／CriticalHigh／CriticalLow與Alarm屬性）、xyz.openbmc_project.State.Decorator.Availability／OperationalStatus、Association（連到chassis或inventory）。dbus-sensors從Entity Manager的設定取得每顆感測器的Name、Bus、Address、Thresholds，並定期更新Value；NaN代表讀不到。上層（Redfish Sensors／Thermal、IPMI SDR）都是讀這些D-Bus物件。測試用：busctl tree xyz.openbmc_project.HwmonTempSensor、busctl introspect、busctl get-property。',
+                plan_hint: '新增感測器要寫：D-Bus物件路徑與型別、單位與換算、閾值、Entity Manager設定、對應的Redfish／IPMI呈現。' },
+            { id: 'entity_manager', title: 'Middleware：Entity Manager', keywords: 'entity-manager entity manager fru fruDevice probe exposes json configuration 設定 實體 association',
+                text: 'Entity Manager依JSON設定描述「這塊板子有哪些硬體」。檔案（configurations/*.json）主要欄位：Name、Type（例如Board、Chassis）、Probe（探測條件，例如 xyz.openbmc_project.FruDevice({"PRODUCT_PRODUCT_NAME": "某板"}) 或 TRUE 或以AND／OR組合）、Exposes（陣列，每個元素是一個要建立的設定：Type如TMP75、PSUSensor、AspeedFan、Name、Bus、Address、Thresholds、Presence…）、Parent_Chassis。支援模板變數：$bus、$address、$index（依探測結果展開）。流程：FruDevice掃描I2C EEPROM（FRU資料）→ Entity Manager比對Probe → 在D-Bus建立 xyz.openbmc_project.Configuration.<Type> 物件 → dbus-sensors等守護程式據此建立感測器。設定的JSON有schema檢查（schemas/）。常見錯誤：Probe字串引號跳脫錯、Type名稱拼錯（對應的守護程式不認識）、Bus用編號與實際不符。',
+                plan_hint: '寫Entity Manager設定：列出Probe條件、每個Exposes的Type與必填欄位，並說明哪個守護程式會消費它。' },
+            { id: 'dbus', title: 'Middleware：D-Bus、sdbusplus與介面YAML', keywords: 'dbus sdbusplus interface yaml phosphor-dbus-interfaces objectmapper busctl sdbus++ property method signal',
+                text: 'OpenBMC用D-Bus當內部匯流排。介面定義放phosphor-dbus-interfaces的YAML：yaml/xyz/openbmc_project/<區域>/<名稱>.interface.yaml，內容有 description、properties（name、type、default、flags: [readonly]、description）、methods（name、parameters、returns、errors）、signals、enumerations、errors。sdbus++工具把YAML產生C++伺服器／客戶端綁定；C++用sdbusplus（sdbusplus::bus、sdbusplus::asio::object_server 註冊物件與屬性、async_method_call 非同步呼叫）。ObjectMapper（xyz.openbmc_project.ObjectMapper）提供GetSubTree／GetObject／GetAssociatedSubTree，上層用它找「哪個服務擁有這個路徑」。除錯：busctl list／tree／introspect／call／get-property／monitor。注意：D-Bus屬性型別要精確（y u i x t d s o a{..} v），改介面YAML是跨元件的相容性變更。',
+                plan_hint: '設計新D-Bus介面：寫完整YAML（屬性、型別、預設、唯讀、錯誤），列出會呼叫它與實作它的服務。' },
+            { id: 'ipmi', title: 'IPMI：host-ipmid與傳輸層', keywords: 'ipmi ipmid host-ipmid netfn cmd oem kcs ssif ipmb net-ipmid lanplus sdr sel fru ipmitool',
+                text: 'phosphor-host-ipmid（ipmid）載入provider函式庫（.so），provider用 ipmi::registerHandler(優先序, netfn, cmd, 權限, 處理函式) 註冊命令，處理函式用強型別參數與回傳（ipmi::RspType<...>），失敗回傳ipmi::response(ipmi::ccXxx)。OEM命令用OEM網路功能群組（依IPMI規格的OEM／Group範圍與廠商分配為準）。設定yaml：感測器對應（sensor.yaml、inventory-sensors.yaml）、FRU對應、entity對應等，由腳本產生程式碼。傳輸層：KCS／BT（phosphor-ipmi-kcs，與主機BIOS溝通）、SSIF、IPMB（phosphor-ipmi-ipmb）、網路RMCP+（phosphor-net-ipmid，netipmid@<網卡>服務）。測試：ipmitool -I lanplus -H <ip> -U <user> -P <pw> mc info／sdr list／sel list／fru print／raw 0x06 0x01。IPMI較舊且安全性弱，新功能優先走Redfish，IPMI只維持相容。',
+                plan_hint: 'IPMI命令設計：netfn／cmd／請求位元組表／回應位元組表／完成碼，並列出對應的D-Bus呼叫。' },
+            { id: 'redfish', title: '上層：Redfish與bmcweb', keywords: 'redfish bmcweb odata schema account session eventservice updateservice crow beast route privileges',
+                text: 'bmcweb是OpenBMC的Web伺服器（C++，Boost.Beast／Asio），提供Redfish、Web UI靜態檔、WebSocket（console、KVM、虛擬媒體）。Redfish資源實作在redfish-core/lib/*.hpp，路由用 BMCWEB_ROUTE(app, "/redfish/v1/Chassis/<str>/").privileges(redfish::privileges::getChassis).methods(boost::beast::http::verb::get)(處理函式)；處理函式非同步呼叫D-Bus（sdbusplus::asio::getProperty 或 crow::connections::systemBus->async_method_call），把結果寫進 asyncResp->res.jsonValue[...]，錯誤用 messages::resourceNotFound／internalError／propertyValueNotInList 等標準訊息。要符合DMTF的Redfish schema：@odata.id、@odata.type、Id、Name、Members@odata.count；Schema檢查工具Redfish-Service-Validator。認證：Session（X-Auth-Token）、Basic、mTLS，並有XSRF保護。常見服務：Systems／Chassis／Managers／AccountService／SessionService／UpdateService／EventService／TelemetryService／LogServices。測試：curl -k -u user:pw https://<ip>/redfish/v1/…，以及openbmc-test-automation（Robot Framework）。',
+                plan_hint: 'Redfish新資源設計：URI、HTTP方法、必要的@odata欄位、資料來源（哪個D-Bus路徑）、權限、錯誤回應，並寫驗證用的curl範例。' },
+            { id: 'snmp', title: '上層：SNMP', keywords: 'snmp trap net-snmp mib phosphor-snmp notification 通知 管理',
+                text: 'OpenBMC的SNMP主要是「通知」：phosphor-snmp提供設定管理（D-Bus介面 xyz.openbmc_project.Network.SNMP 設定trap接收端位址與埠），事件發生時（例如phosphor-logging的錯誤記錄）送出SNMP trap／inform；也可整合net-snmp的snmpd提供查詢（Agent）。Redfish端可用EventDestination設定SNMP類型的訂閱。設計時要定義：OID／MIB、trap變數綁定、版本（v2c／v3，v3要處理帳號與加密）、觸發事件與節流。測試用snmptrapd接收、snmpwalk查詢。',
+                plan_hint: 'SNMP設計：寫OID與MIB、觸發事件對應、版本與安全設定。' },
+            { id: 'webui', title: '上層：Web UI（webui-vue）', keywords: 'webui vue vuex bootstrap-vue i18n frontend 前端 網頁 介面 axios jest cypress',
+                text: 'webui-vue是OpenBMC的前端單頁應用（歷史上為Vue 2＋Vuex＋Vue Router＋Bootstrap-Vue，實際版本以專案package.json為準），透過Redfish API取資料。結構：src/views（頁面）、src/components、src/store/modules（Vuex狀態與API呼叫）、src/api.js（axios封裝）、src/locales/*.json（vue-i18n多語言）、src/env（廠商品牌與設定，env.config.js）、src/router。開發：npm install、npm run serve（可用mock或連到真實BMC，用VUE_APP_ENV_NAME選環境）、npm run lint、單元測試jest、端對端cypress。新增頁面＝加view＋路由＋store module＋locale字串＋（需要時）導覽選單項目。前端一律把使用者輸入送到Redfish，不要自己拼D-Bus。',
+                plan_hint: 'Web UI設計：頁面草圖、需要的Redfish資源與欄位、載入／錯誤／權限不足狀態、多語言字串清單。' },
+            { id: 'rust', title: 'BMC裡的Rust', keywords: 'rust cargo zbus tokio crate yocto cargo-bitbake no_std 交叉編譯 cross compile arm',
+                text: 'BMC上的Rust多用於新的使用者空間服務與工具。Yocto：配方 inherit cargo，相依crate可用 cargo-bitbake 產生 crate:// 的SRC_URI（或離線vendor）；目標架構依SoC：AST2600是ARM Cortex-A7（armv7，常用 armv7-unknown-linux-gnueabihf），AST2400／2500是ARM926（armv5，需確認target與浮點設定）。D-Bus用zbus（純Rust、可搭async）；非同步用tokio；序列化用serde／serde_json；日誌用tracing或log；硬體存取用gpiocdev、i2cdev等crate。資源限制：快閃與RAM小，release設定常用 opt-level="z"、lto=true、panic="abort"、strip=true。與C++元件互通走D-Bus（跨語言最穩），不要輕易走FFI。語法與函式庫細節請委派 know_rust 查詢。驗證：沙盒沒有rustc／cargo，編譯與測試要在使用者機器或CI。',
+                plan_hint: '用Rust寫BMC服務：列crate與版本、async模型、D-Bus介面（對應YAML）、錯誤處理策略、交叉編譯target與Yocto配方。' },
+            { id: 'java_vendor', title: '廠商BMC的Java與其他語言', keywords: 'java jviewer kvm applet vendor ami megarac 虛擬媒體 jar',
+                text: 'OpenBMC本身以C++、yaml、JSON、Vue為主；Java多出現在廠商BMC堆疊或周邊：KVM／虛擬媒體的用戶端（例如JViewer類程式，以jar／Java Web Start方式提供）、管理端工具。注意：新版瀏覽器已不支援Applet，現代做法是HTML5 KVM（OpenBMC的bmcweb透過 /kvm/0 WebSocket提供，並有obmc-ikvm服務）。維護Java用戶端時重點：JDK版本與簽章、與BMC的認證與TLS、跨平台執行。遇到專有堆疊要先確認是否有公開文件，不要憑印象猜API。',
+                plan_hint: '' },
+            { id: 'yaml_config', title: 'BMC裡的yaml與設定檔', keywords: 'yaml config sensor.yaml led pid errors metadata 設定 檔案 json schema',
+                text: 'yaml／JSON出現在：phosphor-dbus-interfaces介面定義（*.interface.yaml、*.errors.yaml）、phosphor-logging錯誤與metadata定義、host-ipmid的sensor／inventory／FRU對應yaml、phosphor-led-manager（led.yaml，定義LED群組與動作）、phosphor-pid-control（風扇PID設定JSON，zones／fans／sensors／pids）、Entity Manager（JSON）、phosphor-power、廠商自訂設定。驗證方法：先用解析器確認語法（沙盒可用Python的PyYAML：micropip.install("pyyaml")；JSON可直接parse），再依對應專案的schema或產生腳本檢查欄位。yaml縮排用空白、不要用tab。',
+                plan_hint: '改yaml／JSON設定：列出受影響的產生腳本與消費它的服務，並在沙盒先做語法與欄位檢查。' },
+            { id: 'debug', title: 'BMC除錯工具箱', keywords: 'debug journalctl systemctl busctl obmcutil qemu ast2600-evb romulus 除錯 日誌 測試 openbmc-test-automation',
+                text: 'systemctl status／restart <服務>、journalctl -u <服務> -f（看日誌）、busctl（D-Bus）、obmcutil state／poweron（BMC與主機狀態）、ipmitool、curl＋Redfish、i2cdetect／i2cget／i2cdump -y <bus> <addr>、gpioinfo／gpioget、devmem、dmesg。模擬：QEMU有ASPEED機型（例如 ast2600-evb、ast2500-evb、romulus-bmc）可用 qemu-system-arm -M <機型> -nographic -drive file=<image>,format=raw,if=mtd 啟動映像做粗略驗證（沒有真實I2C感測器）。自動化測試：openbmc-test-automation（Robot Framework）。沙盒無法執行這些：要列進實機驗證清單。',
+                plan_hint: '實機驗證清單要有：要跑的指令、預期輸出、失敗時看哪個服務日誌。' },
+        ],
+    },
+    rust: {
+        label: 'Rust 語法與函式庫',
+        playbook: '',
+        cards: [
+            { id: 'overview', title: 'Rust概覽與工具', keywords: 'rust overview cargo rustup hello 入門 概覽 安裝 edition',
+                text: 'Rust是編譯型、無垃圾回收、以「所有權」在編譯期保證記憶體安全的系統語言。工具：rustup（安裝與切換工具鏈）、rustc（編譯器）、cargo（建置與套件管理）。常用指令：cargo new 專案名（--lib 建函式庫）、cargo build（--release 最佳化）、cargo run、cargo check（只檢查不產生執行檔，最快）、cargo test、cargo fmt（格式化）、cargo clippy（lint）、cargo doc --open、cargo add 套件（加相依）。副檔名.rs；進入點 fn main()；專案設定在 Cargo.toml（[package]、[dependencies]、[features]、[profile.release]）；edition目前常用2021（新專案可能是2024，以cargo new產生的為準）。Hello World：fn main() { println!("Hello, {}!", "world"); }',
+                plan_hint: '' },
+            { id: 'syntax', title: '基本語法', keywords: 'syntax let mut fn match if loop for while vec string 語法 變數 函式 型別 expression',
+                text: '變數預設不可變：let x = 5; 要改用 let mut x = 5;。型別：整數 i8／i16／i32／i64／u8／u32／u64／usize、浮點 f32／f64、bool、char、字串 &str（借用的字串切片）與 String（擁有的字串）、tuple (i32, f64)、陣列 [i32; 3]、動態陣列 Vec<i32>。函式：fn add(a: i32, b: i32) -> i32 { a + b }，最後一個運算式「不加分號」就是回傳值（加分號會變成回傳()）。控制流：if 條件 { } else { }（if是運算式，可 let x = if c { 1 } else { 2 };）、loop { break; }、while 條件 { }、for i in 0..n { }（0..n不含n，0..=n含n）、for x in &vec { }、match 值 { 模式 => 運算式, _ => 預設 }（必須窮盡所有可能）。巨集有驚嘆號：println!、format!、vec![1,2,3]、assert_eq!、panic!。註解 // 與 /* */，文件註解 ///。型別轉換用 as（數值）或 .into()／.try_into()／parse::<i32>()。',
+                plan_hint: '' },
+            { id: 'ownership', title: '所有權、借用與生命週期', keywords: 'ownership borrow lifetime move clone copy reference 所有權 借用 生命週期 e0382 e0499 e0502 e0106',
+                text: '每個值只有一個擁有者；賦值或傳參數預設「移動」（move），原變數就不能再用（錯誤E0382 use of moved value）。想保留原值：傳參考 &x（不可變借用，可同時有很多個）或 &mut x（可變借用，同一時間只能有一個，且不能與不可變借用並存，錯誤E0499／E0502）；或 .clone() 複製一份；實作了Copy的簡單型別（整數、bool、char…）賦值時是複製。參考不能比被參考的值活得久：函式回傳參考或結構裡放參考時要標生命週期 fn longest<\'a>(a: &\'a str, b: &\'a str) -> &\'a str；結構 struct Foo<\'a> { s: &\'a str }；\'static 表示整個程式期間都有效（字串字面值是\'static）。省略規則：只有一個輸入參考時，回傳的參考自動沿用它。解法速查：想改傳進來的資料→用 &mut；想存起來→拿所有權（String而非&str）或 clone；多處共享擁有→Rc<T>（單執行緒）、Arc<T>（多執行緒）；共享且要改→Rc<RefCell<T>>、Arc<Mutex<T>>。',
+                plan_hint: '' },
+            { id: 'types_traits', title: 'struct／enum／trait／泛型', keywords: 'struct enum trait impl generic option result derive dyn match 泛型 特徵 型別',
+                text: 'struct Point { x: i32, y: i32 }，方法寫在 impl Point { fn new(x: i32, y: i32) -> Self { Point { x, y } } fn len(&self) -> f64 {..} }（&self不可變借用、&mut self可變、self取走）。enum可帶資料：enum Shape { Circle(f64), Rect { w: f64, h: f64 }, Unit }，用match拆開；標準的 Option<T>（Some(v)／None，取代null）與 Result<T, E>（Ok(v)／Err(e)）。if let Some(v) = opt { } 與 while let。trait＝介面：trait Speak { fn speak(&self) -> String; } impl Speak for Dog { .. }；泛型 fn show<T: Display + Clone>(x: T)，複雜條件用 where；回傳實作某trait的型別 -> impl Trait，動態分派 Box<dyn Trait>／&dyn Trait。#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)] 自動實作常用trait；格式化輸出實作 Display；型別轉換實作 From<T>（自動得到Into）。',
+                plan_hint: '' },
+            { id: 'errors', title: '錯誤處理', keywords: 'error result question mark anyhow thiserror unwrap expect panic box dyn error 錯誤 處理',
+                text: '可恢復錯誤用Result：fn read() -> Result<String, std::io::Error> { let s = std::fs::read_to_string("a.txt")?; Ok(s) }，?運算子遇到Err就提早回傳（錯誤型別需能轉換：實作From或用Box<dyn Error>）。main可回傳Result：fn main() -> Result<(), Box<dyn std::error::Error>>。避免在服務程式裡用 unwrap()／expect()（遇錯會panic整個程式）；用 match、if let、unwrap_or、unwrap_or_else、ok_or、map_err 處理。函式庫常用：thiserror（#[derive(thiserror::Error)] 定義自己的錯誤列舉，適合函式庫）、anyhow（anyhow::Result 與 .context("..")，適合應用程式）。陣列越界、除以零、整數溢位（debug模式）會panic，要自己檢查或用 checked_add／get(i)。',
+                plan_hint: '' },
+            { id: 'collections', title: '集合、迭代器與閉包', keywords: 'vec hashmap iterator closure map filter collect fold 集合 迭代器 閉包 entry',
+                text: 'Vec<T>（push、pop、len、iter、sort、retain）、HashMap<K,V>（insert、get(&k)回傳Option、entry(k).or_insert(0)、contains_key）、HashSet、BTreeMap（有序）、VecDeque、String（push_str、chars()、len()是位元組數）。迭代器是惰性的：v.iter().filter(|x| **x > 1).map(|x| x * 2).collect::<Vec<_>>()，常用 enumerate、zip、take、skip、sum、min／max、any／all、fold、flat_map、rev；iter() 借用元素、into_iter() 取走、iter_mut() 可改。閉包 |參數| 運算式，可捕捉外部變數；要搬進執行緒用 move || {...}。排序 v.sort_by(|a, b| a.cmp(b))、sort_by_key。字串切片用 &s[0..3]（要在字元邊界，中文每字3位元組，用 chars() 較安全）。',
+                plan_hint: '' },
+            { id: 'modules_cargo', title: '模組、crate與Cargo.toml', keywords: 'mod use pub crate cargo toml workspace feature dependency lib main 模組 套件 相依',
+                text: '一個crate是編譯單位：src/main.rs（可執行檔）或src/lib.rs（函式庫）。模組：mod utils;（對應 utils.rs 或 utils/mod.rs）、pub 對外公開、use crate::utils::helper; 引入。Cargo.toml：[package] name／version／edition；[dependencies] serde = { version = "1", features = ["derive"] } 或 tokio = { version = "1", features = ["full"] }；[dev-dependencies] 測試用；[features] 條件編譯（#[cfg(feature = "x")]）；[workspace] members = ["a", "b"] 多crate專案；[profile.release] opt-level／lto／codegen-units／panic = "abort"／strip = true（縮小體積，嵌入式常用）。Cargo.lock鎖定版本（應用程式要提交）。cargo tree看相依樹。編譯錯誤「unresolved import／can\'t find crate」多半是Cargo.toml沒加相依或沒寫 use。',
+                plan_hint: '' },
+            { id: 'concurrency', title: '執行緒與同步', keywords: 'thread spawn mutex arc mpsc channel send sync atomic rayon 執行緒 並行 同步',
+                text: 'std::thread::spawn(move || {...}) 建立執行緒，返回JoinHandle（.join()等待）。跨執行緒共享：Arc<Mutex<T>>（let c = Arc::clone(&a); *c.lock().unwrap() += 1;）、讀多寫少用RwLock；訊息傳遞用 std::sync::mpsc::channel()（tx.send(v)、rx.recv()）；計數器用 std::sync::atomic（AtomicUsize、fetch_add）。編譯器靠Send／Sync標記保證執行緒安全（Rc不是Send，要用Arc）。資料平行用rayon（v.par_iter().map(..).sum()）。避免死鎖：固定加鎖順序、鎖的持有時間短、不要持鎖時呼叫未知回呼。',
+                plan_hint: '' },
+            { id: 'async_tokio', title: 'async／await與tokio', keywords: 'async await tokio future spawn select runtime 非同步 reqwest axum',
+                text: 'async fn 回傳Future，要用 .await 才會執行，且需要執行時期（runtime）：最常用tokio。#[tokio::main] async fn main() { ... }；tokio::spawn(async move {...}) 建立並行任務；tokio::time::sleep(Duration::from_secs(1)).await；tokio::select! { v = a => ..., _ = b => ... } 等多個事件；非同步通道 tokio::sync::mpsc、oneshot、broadcast，非同步鎖 tokio::sync::Mutex。重點：不要在async裡做阻塞呼叫（std::thread::sleep、大量CPU運算、同步檔案IO）會卡住runtime，要用 tokio::task::spawn_blocking；async函式裡持有 std Mutex 跨 .await 常造成編譯錯誤或死鎖。HTTP：reqwest（客戶端）、axum／actix-web（伺服器）。',
+                plan_hint: '' },
+            { id: 'libs_common', title: '常用函式庫（crate）', keywords: 'serde serde_json clap tokio reqwest axum tracing regex chrono rand uuid itertools once_cell 函式庫 crate 套件 json cli log',
+                text: 'serde／serde_json：#[derive(Serialize, Deserialize)] struct X {..}；serde_json::from_str::<X>(s)?、serde_json::to_string(&x)?；clap（#[derive(Parser)] 解析命令列）；tokio（非同步runtime）；reqwest（HTTP客戶端）；axum／actix-web（Web伺服器）；tracing＋tracing-subscriber（結構化日誌）或 log＋env_logger；anyhow／thiserror（錯誤）；regex；chrono 或 time（時間）；rand；uuid；bytes；itertools；rayon（資料平行）；once_cell／std::sync::OnceLock（延遲初始化的全域）；nom（解析器）；criterion（效能測試）；proptest（性質測試）。選套件原則：看 crates.io 的下載量與維護狀態，並在 Cargo.toml 鎖定主版本。',
+                plan_hint: '' },
+            { id: 'libs_system', title: '系統／嵌入式／D-Bus相關crate', keywords: 'zbus dbus gpiocdev i2cdev serialport libc nix embedded-hal no_std heapless embassy rtic probe-rs uefi 嵌入式 硬體 系統',
+                text: 'Linux系統：libc、nix（系統呼叫的安全封裝）、gpiocdev（GPIO字元裝置）、i2cdev／i2c-linux、serialport、memmap2。D-Bus：zbus（純Rust，async，#[proxy] 定義客戶端、#[interface] 定義服務端）、dbus（libdbus綁定）。嵌入式（no_std，無作業系統）：embedded-hal（硬體抽象trait）、heapless（無堆積的容器）、cortex-m／cortex-m-rt、rtic、embassy（async嵌入式框架）、probe-rs（燒錄與除錯）；程式要 #![no_std] #![no_main]，並自己定義panic處理。UEFI：uefi crate（rust-osdev），目標 x86_64-unknown-uefi，#![no_std] #![no_main] 與 #[entry]。這些crate版本變動快，使用前用browser_search或fetch_web_page確認目前版本與API。',
+                plan_hint: '' },
+            { id: 'unsafe_ffi', title: 'unsafe與C互通（FFI）', keywords: 'unsafe ffi extern repr c bindgen cbindgen raw pointer no_mangle 互通 指標',
+                text: 'unsafe區塊才能做：解參考原始指標（*const T／*mut T）、呼叫unsafe函式、存取可變靜態變數、實作unsafe trait。C互通：extern "C" { fn strlen(s: *const c_char) -> usize; } 呼叫C；匯出給C：#[no_mangle] pub extern "C" fn foo(x: i32) -> i32；結構要 #[repr(C)] 才有C的記憶體排列；字串用 std::ffi::{CStr, CString}（CString::new("..")?.as_ptr()）；bindgen自動由C標頭產生Rust綁定，cbindgen由Rust產生C標頭，cc crate在build.rs編譯C程式碼。原則：unsafe範圍越小越好，外面包一層安全的API並寫清楚前提條件；跨語言邊界不要丟panic（用catch_unwind或回傳錯誤碼）。',
+                plan_hint: '' },
+            { id: 'testing', title: '測試與品質工具', keywords: 'test cfg(test) assert cargo test clippy fmt doc test integration 測試 品質',
+                text: '單元測試放在同檔案：#[cfg(test)] mod tests { use super::*; #[test] fn adds() { assert_eq!(add(1, 2), 3); } }；預期panic用 #[should_panic]；整合測試放 tests/*.rs（只能用公開API）；文件測試是 /// 註解裡的程式碼區塊。指令：cargo test（--  --nocapture 顯示println）、cargo test 名稱過濾、cargo clippy -- -D warnings（lint當錯誤）、cargo fmt --check（格式檢查）、cargo doc。CI常見組合：fmt --check → clippy → test → build --release。非同步測試用 #[tokio::test]。',
+                plan_hint: '' },
+            { id: 'common_errors', title: '常見編譯錯誤速查', keywords: 'error e0382 e0499 e0502 e0308 e0277 e0425 e0433 e0599 e0106 編譯錯誤 compile 錯誤碼',
+                text: 'E0382 use of moved value→值已被移動：改傳參考、clone、或調整順序。E0499／E0502 借用衝突→縮短借用範圍、先複製出需要的值再改、拆成多步。E0308 mismatched types→型別不符：&str與String（用 .to_string()／.as_str()／&s）、整數寬度（用 as 或 try_into）、回傳最後多了分號。E0277 trait bound not satisfied→缺少實作：加 derive 或 impl，或在泛型加約束。E0425／E0433 找不到名稱／路徑→少寫 use 或Cargo.toml沒加相依或拼字。E0599 no method named→該型別沒有這個方法：檢查型別、是否要先 use 某個trait、Option／Result要先拆開。E0106 missing lifetime specifier→要標生命週期或改用擁有的型別。E0596 cannot borrow as mutable→變數沒宣告 mut。看錯誤訊息的 help: 提示通常就是解法；用 rustc --explain E0382 看說明。',
+                plan_hint: '' },
+        ],
+    },
+};
+
+// 讓弱模型有固定流程可以走的「不認識的語言」探索範本（language_explore工具用）
+const FA_LANG_PRIMER_REQUIRED = {
+    overview: '一段話介紹這個語言是什麼、用在哪、編譯／直譯、有沒有垃圾回收（至少30字）',
+    file_extensions: ['.ext'],
+    how_to_run: '安裝、建立專案、建置、執行、測試的實際指令（至少20字）',
+    syntax: { variables: '變數與型別怎麼宣告', functions: '函式怎麼定義與回傳', control_flow: 'if／迴圈／模式比對怎麼寫', types: '常用的資料型別與集合', modules: '模組、匯入、套件怎麼組織', errors: '錯誤處理的慣用方式' },
+    libraries: [{ name: '套件名', purpose: '用途', example: '一行引入或使用範例' }],
+    idioms: ['這個語言慣用的寫法（至少2條）'],
+    pitfalls: ['新手常踩的坑（至少2條）'],
+    hello_world: '可以執行的最小範例程式碼',
+    testing: '單元測試怎麼寫、怎麼跑',
+};
+
+// 知識助理的系統提示：只查卡片、濃縮回答、附上開發入口（計畫範本與狀態機）
+function _faBuildKnowledgePrompt(key, label, playbook) {
+    const entry = playbook
+        ? `要開始開發：playbook_state({"action":"start","domain":"${playbook}","title":"簡短標題","goal":"要達成的結果"})；計畫範本與各階段要交的欄位：programming_knowledge({"action":"plan_template","playbook":"${playbook}"})（可再加"layer"取得某一層的檢查清單）。`
+        : '這個領域沒有專用的開發領域：要寫程式用coding領域（它有固定流程與計畫範本）；要拿計畫範本用programming_knowledge({"action":"plan_template","playbook":"coding"})。';
+    return `你是FloatingAssistant「${label}」的知識助理：只回答問題與引導，不修改任何專案檔案。
+**因為使用你的模型可能比較舊、不認識新的規格或新的語言，所有答案都必須來自programming_knowledge查到的知識卡片，不要憑記憶補細節或編造函式名稱。**
+**流程**：
+1. programming_knowledge({"action":"lookup","domain":"${key}","query":"問題裡的關鍵字"})。第一次不知道有哪些主題，先programming_knowledge({"action":"domains"})看主題清單；查不準就換關鍵字，或用"topic":"卡片id"指定。每次只取最相關的1～2張卡，不要把所有卡片都讀一遍（會塞爆上下文）。
+2. 用自己的話把答案濃縮成300字以內：保留關鍵名詞、函式／指令／檔案格式的範例；不要貼整張卡片原文。
+3. 知識庫查不到的，明講「知識庫沒有這部分」，並建議用browser_search／fetch_web_page查官方文件；查到的重點可以請上層用language_explore或RAG記錄下來。
+4. 回答最後固定附一行開發入口：${entry}
+5. 問題其實是要寫程式或改專案時，不要自己動手，回報「這是開發任務」並給出上面的開發入口。`;
+}
+function _faBuildLangExplorerPrompt() {
+    return `你是FloatingAssistant的「不認識的語言／框架探索」助理。目標：當任務用到你（或使用者）不熟的程式語言、框架或規格時，先把它學起來，再問使用者要怎麼保存。
+**因為模型可能比較舊，不要憑記憶描述新語言。必須照language_explore這個狀態機一步一步做：**
+1. language_explore({"action":"start","language":"語言名稱"})：它會先檢查內建知識（例如Rust、UEFI、OpenBMC）、使用者之前保存的、RAG知識庫裡有沒有；已經有的就直接用programming_knowledge查，不要重學。
+2. 沒有才探索：照它回傳的next_action，用browser_search找入門教學、標準函式庫與常用套件、安裝與建置方式；再用fetch_web_page讀至少2個可信來源（官方文件優先）；每讀完一個就language_explore({"action":"note","exploration_id":"...","url":"...","summary":"重點（至少40字）"})記下來。
+3. 湊滿來源後，用language_explore({"action":"submit_primer","exploration_id":"...","primer":{...}})交出「入門摘要」：overview、file_extensions、how_to_run、syntax（variables／functions／control_flow／types／modules／errors）、libraries（至少3個，各有name／purpose／example）、idioms（至少2條）、pitfalls（至少2條）、hello_world、testing。缺欄位或太空泛會被退回，照訊息補，不要原封不動重送。
+4. 交出後系統會**自動詢問使用者**要「成為新的領域（含知識工具）」、「只記錄到知識庫（RAG）」還是「先不要」。你不用也不可以自己決定；照結果回報即可。
+**誠實規則**：摘要裡每一條都要有來源；查不到的就寫「待確認」，不要編造函式庫名稱或語法；沙盒通常沒有該語言的編譯器，不能宣稱已執行驗證。`;
+}
+for (const [kkey, kd] of Object.entries(FA_PROG_KNOWLEDGE)) {
+    SUBAGENT_DOMAIN_REGISTRY['know_' + kkey] = {
+        enabled: true,
+        label: kd.label + '知識助理（問答與引導，不改專案；查知識卡片，回答簡短）',
+        category: 'programming',
+        toolNames: ['programming_knowledge'].concat(kkey === 'uefi' ? ['uefi_parse'] : []).concat(['browser_search', 'fetch_web_page']),
+        systemPrompt: _faBuildKnowledgePrompt(kkey, kd.label, kd.playbook),
+    };
+}
+SUBAGENT_DOMAIN_REGISTRY.lang_explorer = {
+    enabled: true,
+    label: '不認識的程式語言／框架探索（上網查資料→入門摘要→詢問使用者要成為新領域或記到RAG）',
+    category: 'programming',
+    toolNames: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page', 'rag_query_graph'],
+    systemPrompt: _faBuildLangExplorerPrompt(),
+};
+
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
 SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
-SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'playbook_state', 'programming_domains'])));
+SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'playbook_state', 'programming_domains', 'programming_knowledge', 'language_explore'])));
 
 // 沙盒頁面用的偵測程式：注入到iframe／彈出視窗／瀏覽器分頁裡的文件，收集console與錯誤，並讓外部用postMessage（或
 // 分頁的eval）下指令：report／query／click／type／eval／wait。純ES5、不含</script>。
@@ -7400,7 +8251,7 @@ class FloatingAssistant {
         // 產生對應的skill_<id>domain，並把custom_skills domain收斂成只涵蓋
         // 未分類工具（見那個方法本身的說明）。
         this.register_domain_category('user_skills', { label: '使用者自訂技能(Skill)' });
-        this.register_domain_category('programming', { label: '程式設計', description: '依領域分支的程式設計：通用coding、平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式/Raspberry Pi、BMC/OpenBMC、Android、Windows、iOS（每個領域都有計畫範本與狀態機，先在沙盒實驗再設計實作）' });
+        this.register_domain_category('programming', { label: '程式設計', description: '依領域分支的程式設計：通用coding、平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式/Raspberry Pi、BMC/OpenBMC（分層）、BIOS/UEFI/EDK II、Android、Windows、iOS（每個領域都有計畫範本與狀態機，先在沙盒實驗再設計實作），另有知識助理（know_uefi／know_openbmc／know_rust，只回答問題以免塞爆上下文）與不認識的語言探索（lang_explorer）' });
         this._ensureBuiltinSkillBundles();
         this._syncSkillBundleDomains();
         // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
@@ -7409,6 +8260,7 @@ class FloatingAssistant {
         // 的說明。
         this._syncCustomDomains();
         this._applyProgrammingToolOverrides(); // 使用者核准過的「申請/替換工具」
+        this._restoreCustomLanguages(); // 使用者核准保存的「新增語言」（知識助理＋開發領域）
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -7897,6 +8749,7 @@ class FloatingAssistant {
             youtubeDataApiKey: '',
             youtubeChannelId: '',
             programmingToolOverrides: {},
+            customLanguages: {},
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -9048,6 +9901,15 @@ class FloatingAssistant {
                 }
                 return out;
             })(),
+            customLanguages: (() => {
+                const out = {};
+                const src = raw.customLanguages && typeof raw.customLanguages === 'object' ? raw.customLanguages : {};
+                for (const [k, v] of Object.entries(src)) {
+                    if (!/^[a-z][a-z0-9_]{1,30}$/.test(k) || !v || typeof v !== 'object' || !v.primer || typeof v.primer !== 'object') continue;
+                    out[k] = { language: String(v.language || k).slice(0, 60), primer: v.primer, sources: Array.isArray(v.sources) ? v.sources.map(String).slice(0, 10) : [], created: Number(v.created) || Date.now() };
+                }
+                return out;
+            })(),
             codingDomainEnabled: raw.codingDomainEnabled !== false,
             codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
             festivalThemeEnabled: raw.festivalThemeEnabled !== false,
@@ -10022,6 +10884,43 @@ ${fnData.code}
                 term: { type: 'string' }, definition: { type: 'string' }, refs: { type: 'array', items: { type: 'string' } },
                 write_to_repo: { type: 'boolean' }, show: { type: 'boolean', description: 'generate：是否在畫面開啟頁面（預設true）' }, deliver: { type: 'boolean', description: 'generate：是否提供可下載的HTML檔（預設true）' }, snippet: { type: 'boolean' },
             }, required: ['action', 'root'], additionalProperties: false }
+        );
+
+        registerOptional('programming_knowledge',
+            '程式設計知識卡片庫（給舊模型、不認識新規格或新語言時用；內建：uefi＝UEFI／EDK II／BIOS、openbmc＝OpenBMC／BMC分層、rust＝Rust語法與函式庫，另有使用者透過language_explore新增的語言）。每次只回最相關的1～2張卡片，不會塞爆上下文。動作：domains（列出有哪些知識與主題）／lookup（domain＋query關鍵字，或topic指定卡片id）／plan_template（playbook＝開發領域例如prog_bios、prog_bmc，回傳計畫範本標題、狀態機各階段要交的欄位、各層檢查清單；可加layer只取某一層）。範例：programming_knowledge({"action":"lookup","domain":"uefi","query":"HOB"})、programming_knowledge({"action":"lookup","domain":"rust","query":"借用 所有權"})、programming_knowledge({"action":"plan_template","playbook":"prog_bmc","layer":"up_redfish"})。查不到的語言會提示用language_explore。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._knowledgeRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['domains', 'lookup', 'plan_template'] }, domain: { type: 'string', description: 'lookup：uefi／openbmc／rust／使用者新增的語言' }, query: { type: 'string', description: 'lookup：關鍵字' }, topic: { type: 'string', description: 'lookup：卡片id（用domains查）' }, playbook: { type: 'string', description: 'plan_template：開發領域，例如prog_bios、prog_bmc' }, layer: { type: 'string', description: 'plan_template：只取某一層（bios：sec／pei／dxe／bds／tsl／rt／al／meta／hii；bmc：kernel／hal／mw_sensor／mw_dbus_ipmi／up_ipmi／up_redfish／up_snmp／up_web／build）' } }, required: ['action'], additionalProperties: false }
+        );
+
+        registerOptional('uefi_parse',
+            'UEFI／EDK II內建檔案解析與檢查：inf、dec、dsc、fdf、uni、vfr、vfcf（類CSS）。給text（檔案內容）或root＋path（專案資料夾與檔案路徑），format填副檔名或auto自動判斷。回傳結構化摘要（summary）、問題清單（issues：error會讓建置失敗、warn建議處理、info是慣例提醒；含行號）與解析後的資料（data）。檢查項目例：INF必要欄位與MODULE_TYPE、DEC的GUID結構與PCD Token重複、DSC的!if／!endif配對與{ }區塊結尾、FDF區域重疊或超出FD大小與FV參照、UNI缺翻譯與重複名稱、VFR區塊成對／formid重複／numeric範圍／oneof的DEFAULT／varid欄位是否在結構裡（可加uni_text交叉比對STRING_TOKEN）。action:"guid"可在 {0x…} 結構與標準GUID字串之間轉換。範例：uefi_parse({"format":"inf","text":"[Defines]\\n  INF_VERSION = 0x00010005\\n..."})、uefi_parse({"root":"fap:我的韌體","path":"MyPkg/MyPkg.dsc"})。VFCF只做通用語法解析（不判斷欄位名稱）。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try {
+                    const r = await this._uefiParseRun(parsed);
+                    if (parsed.task_id && r.ok && r.format) {
+                        const lg = await this._playbookLogExperiment(parsed.task_id, { backend: 'uefi_parse', title: String(parsed.title || 'uefi_parse檢查' + r.format), expected: String(parsed.expected || ''), observed: `${r.format}：error ${r.issue_counts.error}、warn ${r.issue_counts.warn}、info ${r.issue_counts.info}${r.issues[0] ? '；第一個問題：' + r.issues[0].message.slice(0, 80) : ''}`, ok: r.issue_counts.error === 0 });
+                        r.logged_to_task = lg.ok ? { task_id: parsed.task_id, experiment_id: lg.experiment_id, total_experiments: lg.total } : { error: lg.error };
+                    }
+                    return JSON.stringify(r);
+                } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['parse', 'guid'] }, format: { type: 'string', enum: ['auto', 'inf', 'dec', 'dsc', 'fdf', 'uni', 'vfr', 'vfcf'] }, text: { type: 'string', description: '檔案內容' }, uni_text: { type: 'string', description: 'vfr：對應的.uni內容，用來檢查STRING_TOKEN' }, root: { type: 'string', description: '專案資料夾（fap:名稱；桌面版可用絕對路徑）' }, path: { type: 'string', description: '檔案路徑（相對於root）' }, uni_path: { type: 'string', description: 'vfr：對應的.uni路徑（相對於root）' }, value: { type: 'string', description: 'guid：要轉換的GUID' }, task_id: { type: 'string', description: '帶playbook任務id會自動記成一次實驗' }, title: { type: 'string' }, expected: { type: 'string' } }, additionalProperties: false }
+        );
+
+        registerOptional('language_explore',
+            '遇到不認識的程式語言／框架（舊模型沒學過的新語言）時的探索流程（狀態機）：start（先檢查內建知識、使用者保存過的、RAG裡有沒有；都沒有才建立探索，回傳要用browser_search查什麼、fetch_web_page讀什麼）→ note（每讀完一個來源記一筆，至少2個不同網址）→ submit_primer（交出入門摘要：overview、file_extensions、how_to_run、syntax六項、libraries至少3個、idioms、pitfalls、hello_world、testing；缺欄位會被退回）→ **系統會自動詢問使用者**：成為新的領域（新增「語言知識助理」與「語言程式設計」開發領域，重新開機後仍在）、只記錄到知識庫（RAG）、或先不要。其他動作：status／list／remove。你不能替使用者決定要不要保存。範例：language_explore({"action":"start","language":"Zig"})。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._langExploreRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['start', 'note', 'submit_primer', 'status', 'list', 'remove'] }, language: { type: 'string' }, exploration_id: { type: 'string' }, url: { type: 'string', description: 'note：來源網址' }, summary: { type: 'string', description: 'note：這個來源的重點（至少40字）' }, primer: { type: 'object', description: 'submit_primer：入門摘要，欄位見start回傳的primer_template' } }, required: ['action'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -13753,8 +14652,8 @@ ${fnData.code}
         switch (st.phase) {
             case 'evaluate':
                 return {
-                    submit_fields: { goal: '要達成什麼（一句話）', risks: ['可能出錯/不確定的地方'], environment: '目前環境（web或desktop）與可用的沙盒', backend: 'iframe|tab|popup|worker|python|terminal 其中之一', experiment_plan: '打算做什麼實驗、要驗證什麼假設', verification_level: 'sandbox|simulated|needs_toolchain|needs_hardware' },
-                    next_action: `1) 呼叫sandbox_capabilities({})看哪些沙盒可用；2) 評估後呼叫 ${sub({ goal: '...', risks: ['...'], environment: 'web，可用iframe/worker', backend: 'iframe', experiment_plan: '...', verification_level: spec.verification || 'sandbox' })}`,
+                    submit_fields: { goal: '要達成什麼（一句話）', risks: ['可能出錯/不確定的地方'], environment: '目前環境（web或desktop）與可用的沙盒', backend: 'iframe|tab|popup|worker|python|terminal 其中之一', experiment_plan: '打算做什麼實驗、要驗證什麼假設', verification_level: 'sandbox|simulated|needs_toolchain|needs_hardware', ...(Array.isArray(spec.layers) && spec.layers.length ? { layer: spec.layers.map((l) => l.key).join('|') + '（可多個，用陣列）' } : {}) },
+                    next_action: `1) 呼叫sandbox_capabilities({})看哪些沙盒可用；${Array.isArray(spec.layers) && spec.layers.length ? '2) 這個領域要先決定改動在哪一層（layer）：' + spec.layers.map((l) => l.key + '＝' + l.label).join('；') + '。需要某層的檢查清單：programming_knowledge({"action":"plan_template","playbook":"' + st.domain + '","layer":"層名"})；' : ''}${(spec.knowledge || []).length ? '不確定的名詞、規格或語法先查知識：' + (spec.knowledge || []).map((k) => 'programming_knowledge({"action":"lookup","domain":"' + k + '","query":"關鍵字"})').join('、') + '（不要憑印象）；' : ''}評估後呼叫 ${sub({ goal: '...', risks: ['...'], environment: 'web，可用iframe/worker', backend: 'iframe', experiment_plan: '...', verification_level: spec.verification || 'sandbox', ...(Array.isArray(spec.layers) && spec.layers.length ? { layer: [spec.layers[0].key] } : {}) })}`,
                 };
             case 'experiment':
                 return {
@@ -13798,6 +14697,7 @@ ${fnData.code}
             ok: true, task_id: st.task_id, domain: st.domain, title: st.title, goal: st.goal,
             phase: st.phase, phase_title: FA_PLAYBOOK_PHASE_TITLES[st.phase] || st.phase,
             environment_now: FA_PLAYBOOK_PHASE_ENV[st.phase] || '',
+            layers: Array.isArray(spec.layers) && spec.layers.length ? (st.layers && st.layers.length ? spec.layers.filter((l) => st.layers.indexOf(l.key) >= 0).map((l) => ({ key: l.key, label: l.label, checks: l.checks })) : spec.layers.map((l) => l.key)) : undefined,
             phases: FA_PLAYBOOK_PHASE_ORDER.slice(0, -1).map((p) => `${p === st.phase ? '▶ ' : ''}${FA_PLAYBOOK_PHASE_TITLES[p]}`),
             verification_level: st.verification_level || spec.verification || 'sandbox',
             experiments_logged: (st.experiments || []).length,
@@ -13923,10 +14823,18 @@ ${fnData.code}
         const missing = (keys) => keys.filter((k) => { const v = a[k]; return Array.isArray(v) ? !v.length : !nonEmpty(typeof v === 'string' ? v : (v == null ? '' : String(v)), 2); });
         const reject = (msg) => ({ ...this._playbookView(st), ok: false, error: msg });
 
+        const spec0 = (this.programmingPlaybooks || {})[st.domain] || {};
         if (st.phase === 'evaluate') {
             const miss = missing(['goal', 'risks', 'environment', 'backend', 'experiment_plan', 'verification_level']);
             if (miss.length) return reject(`評估缺少欄位：${miss.join('、')}。每個欄位都要有實際內容。`);
             if (!lvl.includes(String(a.verification_level))) return reject(`verification_level必須是${lvl.join('／')}其中之一（${lvl.map((k) => `${k}＝${FA_VERIFICATION_LEVELS[k]}`).join('；')}）`);
+            if (Array.isArray(spec0.layers) && spec0.layers.length) {
+                const want = (Array.isArray(a.layer) ? a.layer : String(a.layer || '').split(/[,，、\s]+/)).map((x) => String(x).trim()).filter(Boolean);
+                const valid = spec0.layers.map((l) => l.key);
+                const bad = want.filter((x) => valid.indexOf(x) < 0);
+                if (!want.length || bad.length) return reject(`評估要交layer（這次改動屬於哪一層，可多個）：${valid.join('／')}。${bad.length ? '不認得：' + bad.join('、') + '。' : ''}各層說明：${spec0.layers.map((l) => l.key + '＝' + l.label).join('；')}`);
+                st.layers = want;
+            }
             st.artifacts.evaluate = a; st.verification_level = String(a.verification_level); st.phase = 'experiment';
             await this._playbookSave(st);
             return this._playbookView(st, { note: '評估完成，進入實驗階段（先在沙盒確認行為，再設計）。' });
@@ -14420,6 +15328,279 @@ ${fnData.code}
             console_logs: logs.slice(-60), result: outcome.result, responses: outcome.responses || [],
             fs_files: (await this._sandboxFsOp('fs.list', [''])).slice(0, 50),
         };
+    }
+
+    // ===== 程式設計知識助理：programming_knowledge／uefi_parse／language_explore =====
+    _knowledgeAll() {
+        return Object.assign({}, FA_PROG_KNOWLEDGE, this.customKnowledge || {});
+    }
+    _knowledgeScore(card, query) {
+        const q = String(query || '').toLowerCase().trim();
+        const tok = _faRepoTokens(query);
+        if (!q) return 0;
+        const kw = String(card.keywords || '').toLowerCase();
+        const title = String(card.title || '').toLowerCase();
+        let s = 0;
+        if (card.id === q) s += 20;
+        if (title.includes(q)) s += 10;
+        for (const t of tok) {
+            if (card.id === t) s += 8;
+            if (kw.split(/\s+/).indexOf(t) >= 0) s += 5; else if (kw.includes(t)) s += 3;
+            if (title.includes(t)) s += 4;
+            if (String(card.text).toLowerCase().includes(t)) s += 1;
+        }
+        return s;
+    }
+    _knowledgePlaybookOf(spec, key) {
+        const pb = (this.programmingPlaybooks || {})[key];
+        return pb || null;
+    }
+    async _knowledgeRun(parsed) {
+        const action = String(parsed.action || 'domains');
+        const all = this._knowledgeAll();
+        if (action === 'domains') {
+            return { ok: true, domains: Object.entries(all).map(([k, d]) => ({ domain: k, label: d.label, develop_with: d.playbook || 'coding', topics: d.cards.map((c) => `${c.id}：${c.title}`) })), usage: '用 programming_knowledge({"action":"lookup","domain":"uefi|openbmc|rust|…","query":"關鍵字"}) 查卡片；每次只取最相關的1～2張。沒有你要的語言：用 language_explore 探索並詢問使用者要不要保存。' };
+        }
+        if (action === 'lookup') {
+            const dom = String(parsed.domain || '').trim().toLowerCase();
+            const q = String(parsed.query || parsed.topic || '').trim();
+            if (!dom) return { ok: false, error: '缺少domain（可用：' + Object.keys(all).join('、') + '）' };
+            const kd = all[dom];
+            if (!kd) {
+                // 內建與使用者保存的知識都沒有：看RAG（language_explore選「只記錄到RAG」存的）
+                let rag = [];
+                if (this.advancedSettings.ragEnabled && this.ragSystem) {
+                    try { rag = (await this.ragSystem.query(dom + ' ' + q, 3)).filter((r) => String(r.content || '').toLowerCase().includes(dom)).map((r) => ({ id: r.id, content: String(r.content).slice(0, 1500) })); } catch (_) {}
+                }
+                if (rag.length) return { ok: true, domain: dom, source: 'rag', results: rag };
+                return { ok: false, error: `知識庫沒有「${dom}」。已有的：${Object.keys(all).join('、')}。這是不認識的語言／領域：用 language_explore({"action":"start","language":"${dom}"}) 上網探索，完成後系統會詢問使用者要成為新領域或記到RAG。` };
+            }
+            const byId = parsed.topic ? kd.cards.find((c) => c.id === String(parsed.topic)) : null;
+            let picks;
+            if (byId) picks = [byId];
+            else {
+                const scored = kd.cards.map((c) => ({ c, s: this._knowledgeScore(c, q) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+                picks = scored.slice(0, 2).map((x) => x.c);
+            }
+            if (!picks.length) return { ok: true, domain: dom, results: [], note: '沒有符合的卡片，換個關鍵字，或看下面的主題清單。', topics: kd.cards.map((c) => `${c.id}：${c.title}`) };
+            const pbKey = kd.playbook || '';
+            return {
+                ok: true, domain: dom, label: kd.label,
+                results: picks.map((c) => ({ id: c.id, title: c.title, text: String(c.text).slice(0, 2200), plan_hint: c.plan_hint || undefined })),
+                other_topics: kd.cards.filter((c) => picks.indexOf(c) < 0).slice(0, 8).map((c) => `${c.id}：${c.title}`),
+                develop_with: pbKey ? { playbook: pbKey, start: `playbook_state({"action":"start","domain":"${pbKey}","title":"…","goal":"…"})`, plan_template: `programming_knowledge({"action":"plan_template","playbook":"${pbKey}"})` } : { playbook: 'coding', note: '這個領域沒有專用開發領域，寫程式用coding領域' },
+                note: '回答時用自己的話濃縮，不要貼整張卡片。',
+            };
+        }
+        if (action === 'plan_template') {
+            const pbKey = String(parsed.playbook || parsed.domain || '').trim();
+            const spec = (this.programmingPlaybooks || {})[pbKey];
+            if (!spec) return { ok: false, error: `沒有「${pbKey}」這個開發領域的計畫範本。可用：${Object.keys(this.programmingPlaybooks || {}).join('、')}（用programming_domains list看說明）` };
+            const layerKey = String(parsed.layer || '').trim();
+            const layers = Array.isArray(spec.layers) ? spec.layers : null;
+            const layerInfo = layers && layerKey ? layers.find((l) => l.key === layerKey) : null;
+            if (layers && layerKey && !layerInfo) return { ok: false, error: `layer「${layerKey}」不存在。可用：${layers.map((l) => l.key).join('、')}` };
+            return {
+                ok: true, playbook: pbKey, label: spec.label, verification_level: spec.verification, verification_meaning: FA_VERIFICATION_LEVELS[spec.verification],
+                state_machine: FA_PLAYBOOK_PHASE_ORDER.slice(0, -1).map((p) => `${FA_PLAYBOOK_PHASE_TITLES[p]}（${FA_PLAYBOOK_PHASE_ENV[p]}）`),
+                how_to_start: `playbook_state({"action":"start","domain":"${pbKey}","title":"簡短標題","goal":"要達成的結果"})，之後每一步照它回傳的next_action做，用submit交出該階段成果；缺欄位會被退回。`,
+                submit_fields: {
+                    evaluate: ['goal', 'risks', 'environment', 'backend', 'experiment_plan', 'verification_level'].concat(layers ? ['layer（' + layers.map((l) => l.key).join('／') + '，可多個）'] : []),
+                    experiment: ['verdict（confirmed／refuted／inconclusive）', 'conclusion', 'learned（至少先用sandbox_*或uefi_parse做一次實驗並記錄）'],
+                    design: ['doc（必須包含下面每個「## 標題」，各至少15字）', 'todos（每項要有text與test）'],
+                    implement: ['每個todo用 todo 動作標示 in_progress／done，done要附evidence（至少10字）'],
+                    verify: ['commands', 'result', 'passed', 'unverified（非sandbox等級一定要列出沙盒驗證不了的項目）'],
+                    deliver: ['summary', 'limitations'],
+                },
+                design_headings: spec.designHeadings.map((h) => '## ' + h),
+                layers: layerInfo ? [layerInfo] : (layers || undefined),
+                layer_checklist: layerInfo ? layerInfo.checks : undefined,
+                experiment_suggestions: spec.experiments,
+                limits: spec.limits,
+                knowledge_agents: (spec.knowledge || []).map((k) => ({ domain: 'know_' + k, ask: `委派給 know_${k} 或呼叫 programming_knowledge({"action":"lookup","domain":"${k}","query":"…"})` })),
+            };
+        }
+        return { ok: false, error: 'action必須是domains／lookup／plan_template' };
+    }
+
+    async _uefiParseRun(parsed) {
+        const action = String(parsed.action || 'parse');
+        if (action === 'guid') {
+            const v = String(parsed.value || '').trim();
+            if (!v) return { ok: false, error: '缺少value（{0x…} 結構或 8-4-4-4-12 的GUID字串）' };
+            if (FA_UEFI_GUID_RE.test(v)) return { ok: true, guid: v.toUpperCase(), struct: _faUefiGuidToStruct(v) };
+            const g = _faUefiGuidFromStruct(v);
+            if (!g) return { ok: false, error: '不是合法的GUID：結構必須剛好11個十六進位數（Data1、Data2、Data3、Data4[8]）' };
+            return { ok: true, guid: g, struct: _faUefiGuidToStruct(g) };
+        }
+        let text = parsed.text != null ? String(parsed.text) : null;
+        let uni = parsed.uni_text != null ? String(parsed.uni_text) : null;
+        const root = this._codingRefFromArgs(parsed) || String(parsed.root || '').trim();
+        if (text === null) {
+            if (!root || !parsed.path) return { ok: false, error: '要給 text（檔案內容），或 root＋path（專案資料夾與檔案路徑）' };
+            const io = await this._repoMapIo(this._repoMapKey(root));
+            text = await io.readText(String(parsed.path).replace(/^\/+/, ''));
+            if (text === null) { let hint = null; try { hint = await this._repoMapOnMiss(io, String(parsed.path)); } catch (_) {} return Object.assign({ ok: false, error: '找不到檔案：' + parsed.path }, hint ? { repo_map: hint } : {}); }
+        }
+        if (uni === null && root && parsed.uni_path) { try { const io = await this._repoMapIo(this._repoMapKey(root)); uni = await io.readText(String(parsed.uni_path).replace(/^\/+/, '')); } catch (_) {} }
+        const res = _faUefiParse(String(parsed.format || 'auto'), text, { filename: parsed.path, uni_text: uni });
+        if (res.ok && JSON.stringify(res).length > 14000) { res.data = '（結構資料太長已省略，請看summary與issues；要看某一段請縮小檔案範圍再解析）'; res.data_omitted = true; }
+        if (res.ok) res.note = '這是依EDK II公開格式規格做的檢查：error通常會讓建置失敗，warn建議處理，info是慣例提醒；各專案的BaseTools版本可能略有差異。';
+        return res;
+    }
+
+    // ---------- 不認識的語言：探索→入門摘要→詢問使用者（成為新領域／記到RAG／不要） ----------
+    _langKey(language) {
+        let k = String(language || '').trim().toLowerCase().replace(/\+/g, 'p').replace(/#/g, 'sharp').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!/^[a-z]/.test(k)) k = 'lang_' + k;
+        return k.slice(0, 30);
+    }
+    async _langLoad(id) { try { const r = await this.playbookCache.get(id); return r ? JSON.parse(await r.blob.text()) : null; } catch (_) { return null; } }
+    async _langSave(rec) { rec.updated = Date.now(); await this.playbookCache.put(rec.id + '.json', 'application/json', new Blob([JSON.stringify(rec)], { type: 'application/json' }), 'lang_explore', rec.id); }
+    _langPrimerCards(language, primer) {
+        const syn = primer.syntax || {};
+        const names = { variables: '變數與型別', functions: '函式', control_flow: '控制流程', types: '資料型別與集合', modules: '模組與套件', errors: '錯誤處理' };
+        const cards = [];
+        cards.push({ id: 'overview', title: language + ' 概覽', keywords: (language + ' overview 概覽 入門 介紹 ' + (primer.file_extensions || []).join(' ')).toLowerCase(), text: primer.overview + (primer.file_extensions && primer.file_extensions.length ? '\n副檔名：' + primer.file_extensions.join('、') : ''), plan_hint: '' });
+        cards.push({ id: 'how_to_run', title: '安裝、建置、執行、測試', keywords: 'run build install 安裝 建置 執行 測試 test 指令 command', text: primer.how_to_run + '\n測試：' + primer.testing, plan_hint: '' });
+        Object.keys(names).forEach((k) => { if (syn[k]) cards.push({ id: 'syntax_' + k, title: '語法：' + names[k], keywords: ('syntax 語法 ' + k + ' ' + names[k]).toLowerCase(), text: String(syn[k]), plan_hint: '' }); });
+        cards.push({ id: 'libraries', title: '常用函式庫', keywords: 'library libraries package 套件 函式庫 module crate', text: (primer.libraries || []).map((l) => `${l.name}：${l.purpose}（${l.example}）`).join('\n'), plan_hint: '' });
+        cards.push({ id: 'idioms', title: '慣用寫法', keywords: 'idiom style 慣用 風格', text: (primer.idioms || []).join('\n'), plan_hint: '' });
+        cards.push({ id: 'pitfalls', title: '常見的坑', keywords: 'pitfall error 坑 錯誤 注意', text: (primer.pitfalls || []).join('\n'), plan_hint: '' });
+        cards.push({ id: 'hello_world', title: '最小範例', keywords: 'hello world example 範例 sample', text: primer.hello_world, plan_hint: '' });
+        return cards;
+    }
+    // 把使用者核准的語言註冊成「知識助理＋開發領域」（開機時也會從設定還原）
+    _registerCustomLanguage(key) {
+        const rec = (this.advancedSettings.customLanguages || {})[key];
+        if (!rec) return false;
+        if (!this.customKnowledge) this.customKnowledge = {};
+        const language = rec.language;
+        this.customKnowledge[key] = { label: language + '（使用者新增的語言）', playbook: 'prog_' + key, cards: this._langPrimerCards(language, rec.primer) };
+        this.register_domain('know_' + key, {
+            label: language + '知識助理（使用者新增；問答與引導，不改專案）', category: 'programming', enabled: true,
+            toolNames: ['programming_knowledge', 'browser_search', 'fetch_web_page'],
+            systemPrompt: _faBuildKnowledgePrompt(key, language, 'prog_' + key),
+        });
+        const p = rec.primer;
+        this.register_programming_domain('prog_' + key, {
+            label: language + ' 程式設計（使用者新增的語言，依探索到的入門摘要）',
+            focus: `先用programming_knowledge查${language}的語法與慣用寫法再動手，不憑印象寫；建置與執行方式：${String(p.how_to_run).slice(0, 200)}；慣用寫法：${(p.idioms || []).slice(0, 2).join('；').slice(0, 200)}；常見的坑：${(p.pitfalls || []).slice(0, 2).join('；').slice(0, 200)}。`,
+            verification: 'needs_toolchain',
+            designHeadings: ['需求與語言／函式庫選型（為什麼用' + language + '、用哪些套件與版本）', '結構與模組設計（檔案、模組、公開介面）', '錯誤處理與邊界情況', '建置與執行方式（指令、相依、目標環境）', '測試計畫（怎麼寫、怎麼跑、預期結果）', '實機驗證清單（沙盒沒有' + language + '工具鏈時無法驗證的項目）'],
+            experiments: ['programming_knowledge：查' + language + '的語法與常用函式庫卡片，確認寫法', 'python_execute／sandbox_worker：把核心演算法先用熟悉的語言驗證邏輯，再翻成' + language],
+            limits: '沙盒（瀏覽器）通常沒有' + language + '的編譯器或直譯器，語法與編譯結果不能宣稱已驗證；請使用者在本機或CI執行建置與測試。',
+            extraTools: ['programming_knowledge'],
+            knowledge: [key],
+        });
+        return true;
+    }
+    _restoreCustomLanguages() {
+        const cl = (this.advancedSettings && this.advancedSettings.customLanguages) || {};
+        for (const key of Object.keys(cl)) { try { this._registerCustomLanguage(key); } catch (e) { console.warn('還原自訂語言失敗：' + key, e); } }
+    }
+    _langValidatePrimer(p) {
+        const miss = [];
+        const s = (v, n) => typeof v === 'string' && v.trim().length >= n;
+        if (!p || typeof p !== 'object') return ['primer必須是物件'];
+        if (!s(p.overview, 30)) miss.push('overview（至少30字：這個語言是什麼、用在哪、編譯或直譯）');
+        if (!Array.isArray(p.file_extensions) || !p.file_extensions.length) miss.push('file_extensions（例如[".rs"]）');
+        if (!s(p.how_to_run, 20)) miss.push('how_to_run（安裝／建置／執行／測試的實際指令，至少20字）');
+        const syn = p.syntax || {};
+        ['variables', 'functions', 'control_flow', 'types', 'modules', 'errors'].forEach((k) => { if (!s(syn[k], 10)) miss.push('syntax.' + k + '（至少10字，含一小段範例）'); });
+        const libs = Array.isArray(p.libraries) ? p.libraries.filter((l) => l && s(l.name, 1) && s(l.purpose, 4) && s(l.example, 3)) : [];
+        if (libs.length < 3) miss.push('libraries（至少3個，每個要有name／purpose／example；目前合格' + libs.length + '個）');
+        if (!Array.isArray(p.idioms) || p.idioms.filter((x) => s(x, 8)).length < 2) miss.push('idioms（至少2條，每條至少8字）');
+        if (!Array.isArray(p.pitfalls) || p.pitfalls.filter((x) => s(x, 8)).length < 2) miss.push('pitfalls（至少2條，每條至少8字）');
+        if (!s(p.hello_world, 10)) miss.push('hello_world（可以執行的最小範例程式碼）');
+        if (!s(p.testing, 10)) miss.push('testing（單元測試怎麼寫、怎麼跑）');
+        return miss;
+    }
+    async _langExploreRun(a) {
+        const action = String(a.action || 'start');
+        const cl = () => { if (!this.advancedSettings.customLanguages) this.advancedSettings.customLanguages = {}; return this.advancedSettings.customLanguages; };
+        if (action === 'list') {
+            return { ok: true, built_in: Object.keys(FA_PROG_KNOWLEDGE), user_added: Object.entries(cl()).map(([k, v]) => ({ key: k, language: v.language, created: v.created, domains: ['know_' + k, 'prog_' + k] })) };
+        }
+        if (action === 'remove') {
+            const key = this._langKey(a.language);
+            if (!cl()[key]) return { ok: false, error: '沒有使用者新增的語言「' + a.language + '」（內建的不能移除）' };
+            delete cl()[key];
+            if (this.customKnowledge) delete this.customKnowledge[key];
+            ['know_' + key, 'prog_' + key].forEach((d) => { delete this.domains[d]; if (this.programmingPlaybooks) delete this.programmingPlaybooks[d]; });
+            this._saveAdvancedSettings();
+            return { ok: true, note: '已移除這個語言的知識助理與開發領域。RAG裡記錄的節點要用rag_delete另外刪。' };
+        }
+        if (action === 'start') {
+            const language = String(a.language || '').trim();
+            if (!language) return { ok: false, error: '缺少language（語言或框架名稱）' };
+            const key = this._langKey(language);
+            const all = this._knowledgeAll();
+            const aliasKey = { 'c++': 'cpp', 'c#': 'csharp' }[language.toLowerCase()] || key;
+            if (FA_PROG_KNOWLEDGE[aliasKey] || FA_PROG_KNOWLEDGE[key]) { const k = FA_PROG_KNOWLEDGE[aliasKey] ? aliasKey : key; return { ok: true, known: 'built_in', domain: k, next_action: `內建知識庫已經有「${language}」，不用探索。用 programming_knowledge({"action":"lookup","domain":"${k}","query":"關鍵字"}) 查，或委派 know_${k}。` }; }
+            if (cl()[key] || all[key]) return { ok: true, known: 'user_added', domain: key, next_action: `使用者之前已經保存過「${language}」。用 programming_knowledge({"action":"lookup","domain":"${key}","query":"關鍵字"}) 查，開發用 prog_${key} 領域。` };
+            if (this.advancedSettings.ragEnabled && this.ragSystem) {
+                try { const r = (await this.ragSystem.query(language + ' language primer', 3)).filter((x) => String(x.content || '').toLowerCase().includes(language.toLowerCase())); if (r.length) return { ok: true, known: 'rag', results: r.map((x) => ({ id: x.id, content: String(x.content).slice(0, 800) })), next_action: 'RAG知識庫裡已經有相關記錄（上面），先用它；不夠再探索。' }; } catch (_) {}
+            }
+            const id = 'lang:' + key;
+            const rec = { id, key, language, created: Date.now(), sources: [], status: 'exploring' };
+            await this._langSave(rec);
+            const q = (t) => `browser_search({"query":"${t}"})`;
+            return {
+                ok: true, known: false, exploration_id: id, language, status: 'exploring',
+                next_action: `${language}不在知識庫裡，開始探索（照順序做）：1) ${q(language + ' programming language tutorial syntax')}；2) ${q(language + ' standard library overview popular libraries packages')}；3) ${q(language + ' install build run test hello world')}；4) 挑至少2個可信來源（官方文件優先）用fetch_web_page讀；每讀完一個就 language_explore({"action":"note","exploration_id":"${id}","url":"網址","summary":"重點（至少40字）"})；5) 湊滿2個來源後 language_explore({"action":"submit_primer","exploration_id":"${id}","primer":{...}})（欄位見 primer_template）。`,
+                primer_template: FA_LANG_PRIMER_REQUIRED,
+            };
+        }
+        const id = String(a.exploration_id || (a.language ? 'lang:' + this._langKey(a.language) : '')).trim();
+        const rec = id ? await this._langLoad(id) : null;
+        if (!rec) return { ok: false, error: '找不到探索記錄。先 language_explore({"action":"start","language":"…"})。' };
+        if (action === 'status') return { ok: true, exploration_id: rec.id, language: rec.language, status: rec.status, sources: rec.sources.length, next_action: rec.sources.length < 2 ? '還需要至少' + (2 - rec.sources.length) + '個來源（browser_search→fetch_web_page→note）。' : '可以 submit_primer 了。' };
+        if (action === 'note') {
+            const url = String(a.url || '').trim(), summary = String(a.summary || '').trim();
+            if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'url必須是http(s)網址' };
+            if (summary.length < 40) return { ok: false, error: 'summary太短（至少40字：這個來源講了什麼重點）' };
+            if (rec.sources.some((s) => s.url === url)) return { ok: false, error: '這個網址已經記過了，換一個不同的來源。' };
+            rec.sources.push({ url, summary: summary.slice(0, 1200) });
+            await this._langSave(rec);
+            return { ok: true, sources: rec.sources.length, next_action: rec.sources.length < 2 ? '再讀至少' + (2 - rec.sources.length) + '個不同的來源。' : '來源夠了。整理成入門摘要：language_explore({"action":"submit_primer","exploration_id":"' + rec.id + '","primer":{...}})（欄位見 start 回傳的 primer_template）。' };
+        }
+        if (action === 'submit_primer') {
+            if (rec.sources.length < 2) return { ok: false, error: '至少要記錄2個來源（note）才能交入門摘要，目前' + rec.sources.length + '個。' };
+            const miss = this._langValidatePrimer(a.primer);
+            if (miss.length) return { ok: false, error: '入門摘要缺少或太空泛：' + miss.join('；') + '。請照訊息補，不要原封不動重送。', primer_template: FA_LANG_PRIMER_REQUIRED };
+            const p = a.primer;
+            rec.primer = p; rec.status = 'primer_ready';
+            await this._langSave(rec);
+            const language = rec.language;
+            const ans = await this.requestUserForm({
+                title: `📚 要怎麼保存「${language}」的知識？`,
+                description: `我剛才上網查了${rec.sources.length}個來源，整理出「${language}」的入門摘要：\n${String(p.overview).slice(0, 160)}\n常用函式庫：${p.libraries.slice(0, 5).map((l) => l.name).join('、')}\n\n・成為新的領域：新增「${language}知識助理」與「${language}程式設計」開發領域（有計畫範本與狀態機），之後遇到${language}就能直接用。\n・只記錄到知識庫（RAG）：把摘要存進RAG，需要時查詢，不新增領域。\n・先不要：這次用完就丟掉。\n\n來源：\n${rec.sources.map((s) => '- ' + s.url).join('\n')}`,
+                choices: ['成為新的領域（含知識工具）', '只記錄到知識庫（RAG）', '先不要'],
+            });
+            const choice = ans && ans.confirmed ? ans.answer : '先不要';
+            const key = rec.key;
+            if (choice === '成為新的領域（含知識工具）') {
+                cl()[key] = { language, primer: p, sources: rec.sources.map((s) => s.url), created: Date.now() };
+                this._registerCustomLanguage(key);
+                this._saveAdvancedSettings();
+                rec.status = 'saved_as_domain'; await this._langSave(rec);
+                return { ok: true, saved: 'domain', domains: ['know_' + key, 'prog_' + key], note: `已新增「${language}」知識助理（know_${key}）與開發領域（prog_${key}），重新開機後仍在。之後問語法／函式庫用 programming_knowledge({"action":"lookup","domain":"${key}","query":"…"})，開發用 playbook_state({"action":"start","domain":"prog_${key}",...})。要移除用 language_explore({"action":"remove","language":"${language}"})。` };
+            }
+            if (choice === '只記錄到知識庫（RAG）') {
+                if (!(this.advancedSettings.ragEnabled && this.ragSystem)) return { ok: false, saved: false, error: 'RAG知識庫目前未啟用，請使用者到Advance Settings的「RAG知識庫」分頁開啟後再說一次要記錄；摘要還在這次探索裡，不用重查。' };
+                const cards = this._langPrimerCards(language, p);
+                let n = 0;
+                for (const c of cards) {
+                    try { await this.ragSystem.add(`[lang:${key}] ${language}｜${c.title}\n${c.text}`, { id: `lang_${key}_${c.id}`, dependencies: c.id === 'overview' ? [] : [`lang_${key}_overview`], preConditions: [], source: 'language_explore', tags: `lang:${key} language_primer` }); n++; } catch (_) {}
+                }
+                rec.status = 'saved_to_rag'; await this._langSave(rec);
+                return { ok: true, saved: 'rag', nodes: n, note: `已把「${language}」的入門摘要拆成${n}個節點記進RAG知識庫（標籤 lang:${key}）。之後用 rag_query_graph({"query":"${language} 語法"}) 或 programming_knowledge({"action":"lookup","domain":"${key}","query":"…"}) 查。` };
+            }
+            rec.status = 'declined'; await this._langSave(rec);
+            return { ok: true, saved: false, note: '使用者選擇不保存。這次對話裡可以直接用剛整理的摘要，但不會留下來。' };
+        }
+        return { ok: false, error: 'action必須是start／note／submit_primer／status／list／remove' };
     }
 
     // ===== 專案結構追蹤（repo_map）=====

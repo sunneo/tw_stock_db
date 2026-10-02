@@ -193,9 +193,30 @@ categories:
       - id: programming-domains
         name: 程式設計領域分支（各有計畫範本與狀態機）
         summary: 依領域分支的程式設計：平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式／Raspberry Pi、BMC／OpenBMC、Android、Windows、iOS。每個領域都有固定的計畫範本與狀態機（評估→實驗→設計→實作→驗證→交付，缺欄位會被退回、每一步都告訴你下一步做什麼），專為較弱的模型設計；驗證不了的部分（硬體、工具鏈）一定要誠實列出。可以申請或替換各領域的工具。
-        how: { domain: [prog_parallel, prog_hpc, prog_webservice, prog_ecosystem, prog_graphics, prog_embedded, prog_bmc, prog_android, prog_windows, prog_ios], tools: [playbook_state, programming_domains] }
+        how: { domain: [prog_parallel, prog_hpc, prog_webservice, prog_ecosystem, prog_graphics, prog_embedded, prog_bmc, prog_bios, prog_android, prog_windows, prog_ios], tools: [playbook_state, programming_domains] }
         platforms: [web, desktop]
         samples: ["我要用 Cloudflare Worker 做一個待辦清單 REST API（程式設計：web service 領域）", "幫我設計 Raspberry Pi 讀溫度感測器、超過門檻就亮燈的程式", "我想做一個 OpenBMC 的 Redfish 感測器服務，先用 mock 驗證介面", "列出程式設計有哪些領域，並把 render_3d_scene 申請給繪圖工具領域"]
+        updated: 2026-10-02
+      - id: bios-uefi
+        name: BIOS／UEFI／EDK II（Tianocore）開發領域
+        summary: BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS／TSL／RT／AL）或哪一類檔案（建置中繼資料、HII 設定畫面），有計畫範本與狀態機。內建 INF、DEC、DSC、FDF、UNI、VFR、VFCF 檔案解析與一致性檢查（uefi_parse），GUID 結構與字串互轉。
+        how: { domain: [prog_bios, know_uefi], tools: [uefi_parse, programming_knowledge, playbook_state] }
+        platforms: [web, desktop]
+        samples: ["幫我在 PEI 建立一個平台資訊 HOB 給 DXE 讀取（BIOS／UEFI 領域）", "幫我檢查這份 INF／DEC／DSC 有沒有錯", "這個 VFR 和 UNI 的字串對得起來嗎？"]
+        updated: 2026-10-02
+      - id: programming-knowledge
+        name: 程式設計知識助理（Rust／UEFI／OpenBMC）
+        summary: 把背景知識放在獨立的知識助理與卡片庫，避免塞爆開發領域的上下文：Rust 語法與函式庫、UEFI／EDK II（階段、Protocol、HOB、服務、變數、建置、檔案格式）、OpenBMC 分層（kernel、HAL、感測器與 Entity Manager、D-Bus 與 IPMI、Redfish、SNMP、Web）。每次只回最相關的一兩張卡，並能引導取出各開發領域的計畫範本與狀態機。
+        how: { domain: [know_uefi, know_openbmc, know_rust], tools: [programming_knowledge] }
+        platforms: [web, desktop]
+        samples: ["Rust 的借用和生命週期是什麼意思？", "UEFI 的 gBS 和 gRT 差在哪裡？", "OpenBMC 的 Entity Manager 設定檔怎麼寫？", "給我 BMC Redfish 開發的計畫範本"]
+        updated: 2026-10-02
+      - id: language-explore
+        name: 不認識的程式語言探索
+        summary: 遇到舊模型不認識的新語言或框架：先查內建與已保存的知識，沒有才上網探索（至少兩個來源）、整理成入門摘要，再詢問使用者要成為新的領域（含知識助理與開發領域）、只記到 RAG，或先不要。
+        how: { domain: lang_explorer, tools: [language_explore] }
+        platforms: [web, desktop]
+        samples: ["我要用 Zig 寫個小工具，但你好像不熟 Zig", "這個專案用了一個你沒看過的語言，先學起來"]
         updated: 2026-10-02
       - id: sandbox-lab
         name: 沙盒實驗（先實驗再設計）
