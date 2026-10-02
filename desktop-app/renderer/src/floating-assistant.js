@@ -954,7 +954,7 @@ function _faBuildCodingSystemPrompt(env = {}) {
 
 **步驟1-A：評估（背景調查，視需要才做）**：先靠已知線索判斷——讀懂使用者的任務描述、相關既有原始碼、（有的話）coding_task_state裡的舊紀錄，通常這樣就足夠規劃設計，不用額外查資料。**只有當任務涉及不熟悉的函式庫/框架版本差異、少見的錯誤訊息、業界最佳實踐比較、或使用者明確要求調查/研究時**，才呼叫browser_search主動搜尋背景知識（sources建議包含github、codeproject、wiki、deepwiki、stackoverflow這幾個技術類來源），找到有用的候選連結後用fetch_web_page讀完整內容，不要只憑search回傳的短摘要就下結論。**這兩個工具如果回報網路搜尋功能未設定/未啟用，直接跳過這一步、改用你已知的知識繼續評估即可，不要因此卡住整個任務**。調查到的重點整理成2-5條精簡摘要，供下面設計計畫的「背景調查」小節使用；沒有做調查就不用寫這小節，不要硬湊內容。
 
-**步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
+**步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；前端加後端一起測用sandbox_mock（頁面照常寫fetch/WebSocket，沙盒接到持久儲存的模擬伺服器，頁面不用為了測試改、之後可export成Node/Cloudflare部署檔）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
 
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
 ## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
@@ -1676,7 +1676,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
 // programming_domains工具（見_programmingDomainsRun），都不用改引擎。
 // ============================================================
 const FA_PROG_COMMON_TOOLS = [
-    'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_py_app',
+    'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app',
     'list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
     'git_inspect', 'git_commit', 'coding_run_check', 'coding_run_tests',
     'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'browser_search', 'fetch_web_page',
@@ -1706,7 +1706,7 @@ const FA_PROGRAMMING_PLAYBOOKS = {
         focus: '先寫API契約（路由、請求、回應、錯誤碼），再寫實作；每個端點都要有「請求→預期回應」的測試表；驗證/授權/CORS/輸入驗證是設計的一部分，不是事後補。沒有真的網路埠可以開，所以用「把request直接丟給handler」的方式測試。',
         verification: 'sandbox',
         designHeadings: ['API契約（路由／請求／回應／錯誤碼）', '資料模型與儲存', '驗證與安全（認證、輸入驗證、CORS、速率限制）', '部署目標（Cloudflare Worker／Node／Python WSGI·ASGI）', '測試計畫（請求→預期回應對照表）'],
-        experiments: ['sandbox_worker：寫async function handler(request){return new Response(...)}，用requests參數送出測試請求，檢查status/headers/body（Cloudflare Worker風格，檔案可存進沙盒的持久檔案系統fs）', 'sandbox_py_app：Flask/Bottle（WSGI）或Starlette/FastAPI（ASGI）用micropip安裝後，直接以測試請求呼叫app', 'sandbox_html：寫一個呼叫該API的前端頁面（fetch指向同頁的模擬handler）驗證前後端合約'],
+        experiments: ['sandbox_worker：寫async function handler(request){return new Response(...)}，用requests參數送出測試請求，檢查status/headers/body（Cloudflare Worker風格，檔案可存進沙盒的持久檔案系統fs）', 'sandbox_py_app：Flask/Bottle（WSGI）或Starlette/FastAPI（ASGI）用micropip安裝後，直接以測試請求呼叫app', 'sandbox_mock：deploy伺服器程式（router／crud／ws，資料存持久儲存），再用sandbox_html({mock:"名稱"})讓前端頁面照常寫fetch／WebSocket去打它，驗證前後端合約（頁面不用為了測試改）；沒問題後用sandbox_mock({action:"export",target:"node"})產生部署檔'],
         limits: '沙盒沒有可連線的埠、沒有真正的資料庫與Service Worker（Service Worker需要同源的script檔案，網頁版無法用blob/暫存內容註冊）。邏輯、路由、序列化、驗證可以驗證；真實網路、資料庫、TLS、部署只能產出設定，必須列進unverified。',
         extraTools: ['python_execute', 'render_uml_diagram'],
     },
@@ -1777,6 +1777,15 @@ const FA_PROGRAMMING_PLAYBOOKS = {
 
 const FA_PLAYBOOK_PHASE_ORDER = ['evaluate', 'experiment', 'design', 'implement', 'verify', 'deliver', 'done'];
 const FA_PLAYBOOK_PHASE_TITLES = { evaluate: '評估', experiment: '實驗（先在沙盒確認行為）', design: '設計', implement: '實作', verify: '驗證', deliver: '交付', done: '完成' };
+const FA_PLAYBOOK_PHASE_ENV = {
+    evaluate: '調查：唯讀，不改任何檔案',
+    experiment: '沙盒：隔離環境，不會動到使用者的真實專案或系統',
+    design: '紙上設計：還沒動任何東西',
+    implement: '真實專案：用patch修改使用者的專案檔案',
+    verify: '驗證：等級是sandbox就是沙盒結果，其他等級只能模擬，沒驗證的要列進unverified',
+    deliver: '交付：整理說明，不再執行',
+    done: '已完成',
+};
 const FA_VERIFICATION_LEVELS = {
     sandbox: '可以在沙盒（瀏覽器/Worker/Pyodide）真的執行驗證',
     simulated: '只能用模擬/mock/縮小規模驗證邏輯，真實環境的行為要使用者實測',
@@ -1802,6 +1811,8 @@ ${heads}
 7. **驗證**：交出commands（跑了什麼）、result（結果）、passed（true/false），以及unverified（沒辦法驗證的項目清單${spec.verification === 'sandbox' ? '，沒有就給空陣列' : '，這個領域一定要列'}）。
 8. **交付**：交出summary（做了什麼）與limitations（限制與使用者還要自己做的事）。
 
+**環境標示（每一步都要知道自己在哪）**：playbook_state每次回傳的environment_now告訴你現在這一步在哪種環境，sandbox_*工具的結果有environment:"sandbox"。沙盒＝隔離的瀏覽器環境，不會動到使用者的真實專案或系統；真實專案＝實作階段用patch修改使用者檔案。報告與驗證時一律標明結果來自哪一種：在沙盒觀察到的，不能寫成「已在實際環境驗證」。純網頁版（沒有桌面功能）更要注意：你能操作的只有沙盒和使用者授權的資料夾，不要宣稱執行過真實的系統指令或真實部署。
+
 **領域重點**：${spec.focus}
 **誠實規則**：${spec.limits} 沒有真的執行過的事，不要寫成「已驗證／已測試」；工具回傳ok:false就照實回報，不要編造成功。需要別的領域的工具時，用programming_domains({"action":"request_tools",...})申請，或request_additional_tools。回覆使用者時簡短說明：做了什麼、哪些驗證過、哪些沒驗證。`;
 }
@@ -1818,7 +1829,7 @@ for (const [pkey, pspec] of Object.entries(FA_PROGRAMMING_PLAYBOOKS)) {
 }
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
 SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
-SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_py_app', 'playbook_state', 'programming_domains'])));
+SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'playbook_state', 'programming_domains'])));
 
 // 沙盒頁面用的偵測程式：注入到iframe／彈出視窗／瀏覽器分頁裡的文件，收集console與錯誤，並讓外部用postMessage（或
 // 分頁的eval）下指令：report／query／click／type／eval／wait。純ES5、不含</script>。
@@ -1846,6 +1857,561 @@ const FA_SANDBOX_BOOTSTRAP_JS = [
     'try{parent.postMessage({__fa_ready:1},"*");}catch(e){}',
     '})();',
 ].join('\n');
+
+// 2026-10-02：沙盒「模擬後端」（sandbox_mock）——被測試的頁面照常寫 fetch('/api/todos')、new WebSocket(...)，
+// 沙盒只在「測試時」把這兩個API接到一個Web Worker裡的伺服器程式，資料存在持久儲存（IndexedDB）。
+// 設計重點是「測試時能跑、實際部署也能跑」：
+//  1) 頁面程式碼不需要為了測試改任何東西——攔截層只存在於沙盒（注入的shim），不會寫進使用者的檔案。
+//  2) 伺服器程式用標準的Request/Response（Cloudflare Workers／Node 18+同一套），env.db／env.fs／ws的介面在
+//     沙盒、Node、Cloudflare三邊是同一組，export動作會產生對應的部署檔（資料換成資料夾JSON檔或KV）。
+// 下面三個函式都必須「自給自足」（不能引用外面的變數），因為會用toString()塞進Worker／iframe／匯出檔。
+function __faMockPrelude() {
+    const json = (data, status, headers) => new Response(JSON.stringify(data === undefined ? null : data), { status: status || 200, headers: Object.assign({ 'content-type': 'application/json; charset=utf-8' }, headers || {}) });
+    const text = (s, status, headers) => new Response(String(s), { status: status || 200, headers: Object.assign({ 'content-type': 'text/plain; charset=utf-8' }, headers || {}) });
+    const fail = (status, message) => json({ error: message }, status);
+    const coerce = (out) => {
+        if (out instanceof Response) return out;
+        if (out === undefined || out === null) return new Response(null, { status: 204 });
+        if (typeof out === 'string') return text(out);
+        return json(out);
+    };
+    const compile = (pattern) => {
+        const keys = [];
+        const src = String(pattern).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/:(\w+)|\*/g, (m, k) => { if (k) { keys.push(k); return '([^/]+)'; } keys.push('*'); return '(.*)'; });
+        return { re: new RegExp('^' + src + '/?$'), keys };
+    };
+    const router = () => {
+        const routes = [];
+        const wsRoutes = [];
+        const app = {
+            routes, wsRoutes,
+            add(method, pattern, fn) { const c = compile(pattern); routes.push({ method, pattern, re: c.re, keys: c.keys, fn }); return app; },
+            ws(pattern, fn) { const c = compile(pattern); wsRoutes.push({ pattern, re: c.re, keys: c.keys, fn }); return app; },
+            matchWs(pathname) {
+                for (const r of wsRoutes) {
+                    const m = r.re.exec(pathname);
+                    if (!m) continue;
+                    const params = {};
+                    r.keys.forEach((k, i) => { params[k] = m[i + 1]; });
+                    return { fn: r.fn, params };
+                }
+                return null;
+            },
+            async handle(request, env, ctx) {
+                const url = new URL(request.url);
+                const method = request.method.toUpperCase();
+                let pathHit = false;
+                for (const r of routes) {
+                    const m = r.re.exec(url.pathname);
+                    if (!m) continue;
+                    pathHit = true;
+                    if (r.method !== 'ALL' && r.method !== method && !(method === 'HEAD' && r.method === 'GET')) continue;
+                    const params = {};
+                    r.keys.forEach((k, i) => { try { params[k] = decodeURIComponent(m[i + 1]); } catch (e) { params[k] = m[i + 1]; } });
+                    try { return coerce(await r.fn(request, env, params, url, ctx)); }
+                    catch (e) { console.error('[route error] ' + r.method + ' ' + r.pattern + ' ' + String((e && e.stack) || e)); return json({ error: String((e && e.message) || e) }, 500); }
+                }
+                if (method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'access-control-allow-headers': '*' } });
+                return json({ error: pathHit ? 'Method Not Allowed' : 'Not Found', method, path: url.pathname }, pathHit ? 405 : 404);
+            },
+            crud(path, collection) {
+                const key = (id) => collection + '/' + id;
+                const readBody = async (req) => { try { return await req.json(); } catch (e) { return null; } };
+                const idOf = (s) => (/^\d+$/.test(s) ? Number(s) : s);
+                const isObj = (b) => b && typeof b === 'object' && !Array.isArray(b);
+                app.get(path, async (req, env) => (await env.db.list(collection + '/')).map((e) => e.value).sort((a, b) => ((a.id > b.id) - (a.id < b.id))));
+                app.post(path, async (req, env) => {
+                    const b = await readBody(req);
+                    if (!isObj(b)) return fail(400, '需要JSON物件');
+                    const id = await env.db.nextId(collection);
+                    const item = Object.assign({}, b, { id });
+                    await env.db.set(key(id), item);
+                    return json(item, 201);
+                });
+                app.get(path + '/:id', async (req, env, p) => { const it = await env.db.get(key(p.id)); return it === null ? fail(404, 'Not Found') : json(it); });
+                app.put(path + '/:id', async (req, env, p) => {
+                    if ((await env.db.get(key(p.id))) === null) return fail(404, 'Not Found');
+                    const b = await readBody(req);
+                    if (!isObj(b)) return fail(400, '需要JSON物件');
+                    const item = Object.assign({}, b, { id: idOf(p.id) });
+                    await env.db.set(key(p.id), item);
+                    return json(item);
+                });
+                app.patch(path + '/:id', async (req, env, p) => {
+                    const old = await env.db.get(key(p.id));
+                    if (old === null) return fail(404, 'Not Found');
+                    const b = await readBody(req);
+                    if (!isObj(b)) return fail(400, '需要JSON物件');
+                    const item = Object.assign({}, old, b, { id: old.id });
+                    await env.db.set(key(p.id), item);
+                    return json(item);
+                });
+                app.delete(path + '/:id', async (req, env, p) => {
+                    if ((await env.db.get(key(p.id))) === null) return fail(404, 'Not Found');
+                    await env.db.delete(key(p.id));
+                    return new Response(null, { status: 204 });
+                });
+                return app;
+            },
+        };
+        ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'all'].forEach((m) => { app[m] = (p, fn) => app.add(m.toUpperCase(), p, fn); });
+        app.fetch = (request, env, ctx) => app.handle(request, env, ctx);
+        return app;
+    };
+    // WebSocket連線管理：transport = {send(conn,data), close(conn,code,reason), opened(conn), log(level,msg)}
+    // 伺服器程式拿到的ws物件：ws.send(資料)／ws.close(code,reason)／ws.on("message",fn(資料))／ws.on("close",fn(code,reason))／ws.broadcast(資料)／ws.path／ws.query
+    const wsHub = (transport) => {
+        const conns = new Map();
+        const toWire = (d) => ((typeof d === 'string' || d instanceof ArrayBuffer || ArrayBuffer.isView(d)) ? d : JSON.stringify(d));
+        const hub = {
+            conns,
+            count(path) { let n = 0; conns.forEach((c) => { if (c.path === path && c.started && !c.ws.closed) n++; }); return n; },
+            broadcast(path, data) { conns.forEach((c) => { if (c.path === path && c.started && !c.ws.closed) c.ws.send(data); }); },
+            async open(conn, urlStr, handlerFn) {
+                const u = new URL(urlStr);
+                const c = { path: u.pathname, started: false, buf: [], ws: null, listeners: { message: [], close: [] } };
+                c.opened = new Promise((r) => { c.resolveOpen = r; });
+                const ws = {
+                    id: conn, path: u.pathname, url: urlStr, query: Object.fromEntries(u.searchParams), closed: false,
+                    send(data) { if (ws.closed) return; const d = toWire(data); if (c.started) transport.send(conn, d); else c.buf.push(() => transport.send(conn, d)); },
+                    close(code, reason) {
+                        if (ws.closed) return;
+                        ws.closed = true;
+                        const f = () => { transport.close(conn, code || 1000, reason || ''); c.listeners.close.forEach((fn) => { try { fn(code || 1000, reason || ''); } catch (e) {} }); conns.delete(conn); };
+                        if (c.started) f(); else c.buf.push(f);
+                    },
+                    on(ev, fn) { (c.listeners[ev] = c.listeners[ev] || []).push(fn); return ws; },
+                    broadcast(data, opts) { conns.forEach((o) => { if (o.path === c.path && o.started && !o.ws.closed && (o.ws !== ws || (opts && opts.includeSelf))) o.ws.send(data); }); },
+                };
+                c.ws = ws;
+                conns.set(conn, c);
+                try { await handlerFn(ws); } catch (e) { transport.log('error', '[ws handler error] ' + String((e && e.stack) || e)); ws.close(1011, 'server error'); }
+                c.started = true;
+                transport.opened(conn);
+                c.buf.splice(0).forEach((f) => f());
+                c.resolveOpen();
+            },
+            message(conn, data) {
+                const c = conns.get(conn);
+                if (!c) return;
+                c.opened.then(() => {
+                    c.listeners.message.forEach((fn) => { Promise.resolve().then(() => fn(data)).catch((e) => transport.log('error', '[ws message error] ' + String((e && e.stack) || e))); });
+                });
+            },
+            closed(conn, code, reason) {
+                const c = conns.get(conn);
+                if (!c) return;
+                c.ws.closed = true;
+                conns.delete(conn);
+                c.listeners.close.forEach((fn) => { try { fn(code, reason); } catch (e) {} });
+            },
+        };
+        return hub;
+    };
+    // 使用者程式載入後的統一入口：handler(request,env,ctx)與wsFor(pathname)
+    const resolve = (mod) => {
+        const def = mod.__default;
+        const app = mod.app && typeof mod.app.handle === 'function' ? mod.app : (def && typeof def.handle === 'function' ? def : null);
+        const handler = typeof mod.handler === 'function' ? mod.handler : (app ? app.handle : (def && typeof def.fetch === 'function' ? def.fetch.bind(def) : null));
+        const wsFor = (pathname) => {
+            if (app) { const m = app.matchWs(pathname); if (m) return (ws, req, env) => m.fn(ws, req, env, m.params); }
+            if (typeof mod.onWebSocket === 'function') return mod.onWebSocket;
+            return null;
+        };
+        return { handler, wsFor, app, init: typeof mod.init === 'function' ? mod.init : null };
+    };
+    return { json, text, fail, coerce, router, wsHub, resolve };
+}
+
+// Worker端：載入伺服器程式、處理http／WebSocket訊息，資料讀寫透過rpc交給主頁面（沙盒是IndexedDB）
+function __faMockWorkerMain(P) {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    let rpcId = 0;
+    const pending = new Map();
+    const rpc = (op, args) => new Promise((res, rej) => { const id = ++rpcId; pending.set(id, { res, rej }); postMessage({ __rpc: id, op, args }); });
+    const fmt = (x) => { try { return typeof x === 'string' ? x : (x instanceof Error ? (x.stack || String(x)) : JSON.stringify(x)); } catch (e) { return String(x); } };
+    const mkLog = (l) => (...a) => { postMessage({ __log: { l, m: a.map(fmt).join(' ').slice(0, 1000) } }); };
+    console.log = mkLog('log'); console.info = mkLog('info'); console.warn = mkLog('warn'); console.error = mkLog('error'); console.debug = mkLog('debug');
+    const db = {
+        get: (k) => rpc('db.get', [k]), set: (k, v) => rpc('db.set', [k, v]), delete: (k) => rpc('db.delete', [k]),
+        list: (p) => rpc('db.list', [p || '']), clear: (p) => rpc('db.clear', [p || '']), nextId: (c) => rpc('db.nextId', [c]),
+    };
+    const files = { read: (p) => rpc('file.read', [p]), write: (p, c) => rpc('file.write', [p, String(c)]), list: (p) => rpc('file.list', [p || '']), remove: (p) => rpc('file.remove', [p]) };
+    const hub = P.wsHub({
+        send: (c, d) => postMessage({ __ws: 'send', conn: c, data: d }),
+        close: (c, code, reason) => postMessage({ __ws: 'close', conn: c, code, reason }),
+        opened: (c) => postMessage({ __ws: 'opened', conn: c }),
+        log: (l, m) => console[l](m),
+    });
+    const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, now: () => Date.now() };
+    const ctx = { waitUntil: (p) => { Promise.resolve(p).catch((e) => console.error(String(e))); } };
+    // 讓使用者程式直接用 db／fs／env／router／json／text／fail（用全域，所以使用者自己宣告同名變數也不會衝突）
+    self.env = env; self.db = db; self.fs = files; self.router = P.router; self.json = P.json; self.text = P.text; self.fail = P.fail;
+    let mod = null;
+    self.onmessage = async (ev) => {
+        const d = ev.data || {};
+        if (d.__rpc_res) {
+            const p = pending.get(d.__rpc_res);
+            if (p) { pending.delete(d.__rpc_res); if (d.error) p.rej(new Error(d.error)); else p.res(d.result); }
+            return;
+        }
+        if (d.__cmd === 'init') {
+            try {
+                const code = String(d.code || '').replace(/^\s*export\s+default\s+/m, 'const __default = ');
+                const fn = new AsyncFunction(code + '\n;return { handler: (typeof handler !== "undefined" ? handler : undefined), onWebSocket: (typeof onWebSocket !== "undefined" ? onWebSocket : undefined), app: (typeof app !== "undefined" ? app : undefined), init: (typeof init !== "undefined" ? init : undefined), __default: (typeof __default !== "undefined" ? __default : undefined) };');
+                const m = await fn();
+                mod = P.resolve(m);
+                if (!mod.handler) throw new Error('程式裡找不到伺服器入口：請定義 async function handler(request, env){...}，或 const app = router(); ...，或 export default { fetch(request, env){...} }');
+                if (mod.init) await mod.init(env);
+                postMessage({ __init: true, ok: true, routes: mod.app ? mod.app.routes.map((r) => r.method + ' ' + r.pattern) : [], ws_routes: mod.app ? mod.app.wsRoutes.map((r) => r.pattern) : [], has_on_websocket: typeof m.onWebSocket === 'function' });
+            } catch (e) { postMessage({ __init: true, ok: false, error: String((e && e.stack) || e).slice(0, 1500) }); }
+            return;
+        }
+        if (d.__cmd === 'http') {
+            let headers = [['content-type', 'application/json']];
+            try {
+                if (!mod) throw new Error('伺服器尚未載入');
+                const noBody = d.method === 'GET' || d.method === 'HEAD';
+                const req = new Request(d.url, { method: d.method, headers: d.headers || [], body: (noBody || !d.body || !d.body.byteLength) ? undefined : d.body });
+                const resp = P.coerce(await mod.handler(req, env, ctx));
+                headers = Array.from(resp.headers.entries());
+                const buf = await resp.arrayBuffer();
+                postMessage({ __http: d.id, status: resp.status, statusText: resp.statusText, headers, body: buf }, [buf]);
+            } catch (e) {
+                console.error('[handler error] ' + String((e && e.stack) || e));
+                const buf = new TextEncoder().encode(JSON.stringify({ error: String((e && e.message) || e) })).buffer;
+                postMessage({ __http: d.id, status: 500, statusText: 'Internal Server Error', headers, body: buf }, [buf]);
+            }
+            return;
+        }
+        if (d.__cmd === 'ws_open') {
+            const path = new URL(d.url).pathname;
+            const fn = mod && mod.wsFor(path);
+            if (!fn) { postMessage({ __ws: 'rejected', conn: d.conn, reason: '沒有符合 ' + path + ' 的WebSocket路由（用 app.ws("/路徑", (ws, req, env) => {...}) 或定義 function onWebSocket(ws, req, env)）' }); return; }
+            const req = new Request(d.url, { headers: d.headers || [] });
+            hub.open(d.conn, d.url, (ws) => fn(ws, req, env));
+            return;
+        }
+        if (d.__cmd === 'ws_msg') { hub.message(d.conn, d.data); return; }
+        if (d.__cmd === 'ws_close') { hub.closed(d.conn, d.code, d.reason); return; }
+    };
+}
+
+// 頁面端的攔截層（只存在於沙盒，不會寫進使用者的檔案）：window.fetch與window.WebSocket改接到主頁面的mock伺服器
+function __faMockShim(cfg) {
+    if (window.__fa_mock) return;
+    const realFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+    const RealWS = window.WebSocket;
+    const baseHref = /^https?:/i.test(document.baseURI || '') ? document.baseURI : 'http://mock.local/';
+    let baseHost = 'mock.local';
+    try { baseHost = new URL(baseHref).hostname; } catch (e) {}
+    const hosts = ['mock.local', baseHost].concat((cfg.hosts || []).map((h) => String(h).toLowerCase()));
+    let seq = 0;
+    const waits = new Map();
+    const sockets = new Map();
+    const send = (m, transfer) => {
+        const msg = Object.assign({ __fa_mock: 1 }, m);
+        try { parent.postMessage(msg, '*', transfer || []); } catch (e) { try { parent.postMessage(msg, '*'); } catch (e2) {} }
+    };
+    const isMock = (u) => {
+        if (hosts.indexOf(u.hostname.toLowerCase()) < 0 && hosts.indexOf('*') < 0) return false;
+        if (!cfg.prefixes) return true;
+        return cfg.prefixes.some((p) => u.pathname.indexOf(p) === 0);
+    };
+    window.fetch = function (input, init) {
+        const raw = typeof input === 'string' ? input : (input && typeof input.url === 'string' ? input.url : String(input));
+        let u = null;
+        try { u = new URL(raw, baseHref); } catch (e) { u = null; }
+        if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:') || !isMock(u)) {
+            if (cfg.block) return Promise.reject(new TypeError('Failed to fetch（沙盒設定了block_external，不是mock範圍的網址不放行）：' + raw));
+            return realFetch ? realFetch(input, init) : Promise.reject(new TypeError('Failed to fetch'));
+        }
+        return (async () => {
+            const req = (typeof Request !== 'undefined' && input instanceof Request) ? new Request(input, init) : new Request(u.href, init);
+            if (req.signal && req.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+            const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+            const buf = hasBody ? await req.arrayBuffer() : null;
+            const id = ++seq;
+            const d = await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => { waits.delete(id); reject(new TypeError('Failed to fetch（mock伺服器20秒沒有回應）')); }, 20000);
+                waits.set(id, (r) => { clearTimeout(timer); resolve(r); });
+                if (req.signal) req.signal.addEventListener('abort', () => { if (waits.delete(id)) { clearTimeout(timer); reject(new DOMException('The operation was aborted.', 'AbortError')); } });
+                send({ t: 'http', id, method: req.method, url: u.href, headers: Array.from(req.headers.entries()), body: buf && buf.byteLength ? buf : null }, buf && buf.byteLength ? [buf] : []);
+            });
+            if (d.error) throw new TypeError('Failed to fetch（' + d.error + '）');
+            const nullBody = [101, 204, 205, 304].indexOf(d.status) >= 0;
+            const resp = new Response(nullBody ? null : d.body, { status: d.status, statusText: d.statusText || '', headers: d.headers || [] });
+            try { Object.defineProperty(resp, 'url', { value: u.href }); } catch (e) {}
+            return resp;
+        })();
+    };
+    const resolveWs = (raw) => {
+        const s = String(raw);
+        let u;
+        const m = /^wss?:\/\/(\/.*)?$/i.exec(s); // location.host是空的時候組出來的 ws:///chat
+        if (m) u = new URL('http://mock.local' + (m[1] || '/'));
+        else {
+            try { u = new URL(s, baseHref); } catch (e) { return null; }
+            if (/^wss?:$/i.test(u.protocol)) u = new URL(u.href.replace(/^ws/i, 'http'));
+            else if (!/^https?:$/i.test(u.protocol)) return null;
+        }
+        return isMock(u) ? u.href : null;
+    };
+    class MockWS extends EventTarget {
+        constructor(url, wireUrl, protocols) {
+            super();
+            this.url = url; this.readyState = 0; this.binaryType = 'blob'; this.protocol = ''; this.extensions = ''; this.bufferedAmount = 0;
+            this.onopen = null; this.onmessage = null; this.onclose = null; this.onerror = null;
+            this._id = ++seq;
+            sockets.set(this._id, this);
+            send({ t: 'ws_open', id: this._id, url: wireUrl, protocols: protocols });
+        }
+        _emit(ev) {
+            try { this.dispatchEvent(ev); } catch (e) {}
+            const h = this['on' + ev.type];
+            if (typeof h === 'function') { try { h.call(this, ev); } catch (e) { console.error(e); } }
+        }
+        _opened() { if (this.readyState !== 0) return; this.readyState = 1; this._emit(new Event('open')); }
+        _message(data) {
+            if (this.readyState !== 1) return;
+            let v = data;
+            if (typeof data !== 'string') v = this.binaryType === 'arraybuffer' ? data : new Blob([data]);
+            this._emit(new MessageEvent('message', { data: v }));
+        }
+        _closed(code, reason, clean) {
+            if (this.readyState === 3) return;
+            this.readyState = 3;
+            sockets.delete(this._id);
+            if (!clean) this._emit(new Event('error'));
+            this._emit(new CloseEvent('close', { code: code || 1005, reason: reason || '', wasClean: !!clean }));
+        }
+        send(data) {
+            if (this.readyState === 0) throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
+            if (this.readyState !== 1) return;
+            const id = this._id;
+            if (typeof data === 'string') send({ t: 'ws_send', id, data });
+            else if (typeof Blob !== 'undefined' && data instanceof Blob) data.arrayBuffer().then((b) => send({ t: 'ws_send', id, data: b }, [b]));
+            else if (ArrayBuffer.isView(data)) { const b = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength); send({ t: 'ws_send', id, data: b }, [b]); }
+            else if (data instanceof ArrayBuffer) { const b = data.slice(0); send({ t: 'ws_send', id, data: b }, [b]); }
+            else send({ t: 'ws_send', id, data: String(data) });
+        }
+        close(code, reason) {
+            if (this.readyState >= 2) return;
+            this.readyState = 2;
+            send({ t: 'ws_close', id: this._id, code: code, reason: reason });
+            setTimeout(() => this._closed(code || 1005, reason || '', true), 0);
+        }
+    }
+    const WSWrapper = function WebSocket(url, protocols) {
+        const wire = resolveWs(url);
+        if (!wire) {
+            if (cfg.block) throw new DOMException('沙盒設定了block_external，不是mock範圍的WebSocket不放行：' + url, 'SecurityError');
+            return new RealWS(url, protocols);
+        }
+        return new MockWS(String(url), wire, protocols);
+    };
+    WSWrapper.prototype = MockWS.prototype;
+    ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach((k, i) => { WSWrapper[k] = i; MockWS.prototype[k] = i; });
+    window.WebSocket = WSWrapper;
+    window.addEventListener('message', (ev) => {
+        const d = ev.data;
+        if (!d || d.__fa_mock_r !== 1 || ev.source !== parent) return;
+        if (d.t === 'http_res') { const w = waits.get(d.id); if (w) { waits.delete(d.id); w(d); } return; }
+        const s = sockets.get(d.id);
+        if (!s) return;
+        if (d.t === 'ws_opened') s._opened();
+        else if (d.t === 'ws_msg') s._message(d.data);
+        else if (d.t === 'ws_close') s._closed(d.code, d.reason, true);
+        else if (d.t === 'ws_rejected') { console.warn('[mock] WebSocket連線被拒絕：' + d.reason); s._closed(1006, '', false); }
+    });
+    window.__fa_mock = { hosts, prefixes: cfg.prefixes || null, base: baseHref };
+}
+
+// 匯出部署檔：同一份伺服器程式，換掉env.db／env.fs的實作就能在Node或Cloudflare Workers跑
+function __faMockBuildExport(target, userCode, name) {
+    const prelude = '(' + __faMockPrelude.toString() + ')()';
+    const code = String(userCode || '').replace(/^\s*export\s+default\s+/m, 'const __default = ');
+    const userBlock = [
+        'const __loadUser = async () => {',
+        code,
+        ';return { handler: (typeof handler !== "undefined" ? handler : undefined), onWebSocket: (typeof onWebSocket !== "undefined" ? onWebSocket : undefined), app: (typeof app !== "undefined" ? app : undefined), init: (typeof init !== "undefined" ? init : undefined), __default: (typeof __default !== "undefined" ? __default : undefined) };',
+        '};',
+    ].join('\n');
+    const files = {};
+    if (target === 'node') {
+        const head = String.raw`// 由「沙盒模擬後端」匯出（${'__NAME__'}）——跟在沙盒測試的是同一份伺服器程式，只有儲存換成資料夾裡的JSON檔。
+// 執行：npm install && npm start   （PORT、DATA_DIR、PUBLIC_DIR可用環境變數調整）
+// 靜態頁面：把頁面存成 public/index.html，會一起被服務（頁面程式碼不用改，fetch('/api/...')直接打到這個伺服器）。
+import http from 'node:http';
+import nodeFs from 'node:fs';
+import nodePath from 'node:path';
+import { WebSocketServer } from 'ws';
+
+const PORT = Number(process.env.PORT || 8787);
+const DATA_DIR = process.env.DATA_DIR || './data';
+const PUBLIC_DIR = process.env.PUBLIC_DIR || './public';
+
+const __P = __PRELUDE__;
+const { router, json, text, fail, coerce, wsHub, resolve } = __P;
+
+const safe = (k) => { const s = String(k).replace(/\\/g, '/').replace(/^\/+/, ''); if (!s || s.split('/').includes('..')) throw new Error('路徑不合法：' + k); return s; };
+const walk = (dir) => {
+    const out = [];
+    if (!nodeFs.existsSync(dir)) return out;
+    for (const e of nodeFs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) out.push(...walk(nodePath.join(dir, e.name)).map((x) => e.name + '/' + x));
+        else out.push(e.name);
+    }
+    return out;
+};
+const dbFile = (k) => nodePath.join(DATA_DIR, 'db', safe(k) + '.json');
+const db = {
+    async get(k) { try { return JSON.parse(nodeFs.readFileSync(dbFile(k), 'utf8')); } catch (e) { return null; } },
+    async set(k, v) { const p = dbFile(k); nodeFs.mkdirSync(nodePath.dirname(p), { recursive: true }); nodeFs.writeFileSync(p, JSON.stringify(v === undefined ? null : v)); return true; },
+    async delete(k) { try { nodeFs.unlinkSync(dbFile(k)); } catch (e) {} return true; },
+    async list(prefix) {
+        const keys = walk(nodePath.join(DATA_DIR, 'db')).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5)).filter((k) => k.startsWith(prefix || '') && !k.startsWith('_seq/')).sort();
+        return keys.map((k) => ({ key: k, value: JSON.parse(nodeFs.readFileSync(dbFile(k), 'utf8')) }));
+    },
+    async clear(prefix) { const items = await db.list(prefix); for (const it of items) await db.delete(it.key); return items.length; },
+    async nextId(c) { const k = '_seq/' + c; const n = ((await db.get(k)) || 0) + 1; await db.set(k, n); return n; },
+};
+const fileOf = (p) => nodePath.join(DATA_DIR, 'fs', safe(p));
+const files = {
+    async read(p) { try { return nodeFs.readFileSync(fileOf(p), 'utf8'); } catch (e) { throw new Error('檔案不存在：' + p); } },
+    async write(p, c) { const f = fileOf(p); nodeFs.mkdirSync(nodePath.dirname(f), { recursive: true }); nodeFs.writeFileSync(f, String(c)); return { ok: true }; },
+    async list(prefix) { return walk(nodePath.join(DATA_DIR, 'fs')).filter((f) => f.startsWith(prefix || '')).sort(); },
+    async remove(p) { try { nodeFs.unlinkSync(fileOf(p)); } catch (e) {} return { ok: true }; },
+};
+
+const sockets = new Map();
+const hub = wsHub({
+    send: (c, d) => { const s = sockets.get(c); if (s) s.send(d, { binary: typeof d !== 'string' }); },
+    close: (c, code, reason) => { const s = sockets.get(c); if (s) { sockets.delete(c); try { s.close(code, reason); } catch (e) { s.terminate(); } } },
+    opened: () => {},
+    log: (l, m) => console[l](m),
+});
+const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, now: () => Date.now() };
+const ctx = { waitUntil: (p) => { Promise.resolve(p).catch((e) => console.error(String(e))); } };
+globalThis.env = env; globalThis.db = db; globalThis.fs = files;
+globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail;
+
+__USER__
+
+const mod = resolve(await __loadUser());
+if (!mod.handler) throw new Error('找不到伺服器入口（handler／app／export default）');
+if (mod.init) await mod.init(env);
+
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
+const staticFile = (pathname) => {
+    let rel = decodeURIComponent(pathname);
+    if (rel.endsWith('/')) rel += 'index.html';
+    const f = nodePath.join(PUBLIC_DIR, nodePath.normalize(rel).replace(/^([/\\])+/, ''));
+    if (!f.startsWith(nodePath.resolve(PUBLIC_DIR)) && !nodePath.resolve(f).startsWith(nodePath.resolve(PUBLIC_DIR))) return null;
+    try { return nodeFs.statSync(f).isFile() ? f : null; } catch (e) { return null; }
+};
+
+const server = http.createServer(async (req, res) => {
+    try {
+        const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
+        if (req.method === 'GET' || req.method === 'HEAD') {
+            const f = staticFile(url.pathname);
+            if (f) { res.writeHead(200, { 'content-type': MIME[nodePath.extname(f).toLowerCase()] || 'application/octet-stream' }); res.end(req.method === 'HEAD' ? undefined : nodeFs.readFileSync(f)); return; }
+        }
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const body = Buffer.concat(chunks);
+        const request = new Request(url.href, { method: req.method, headers: req.headers, body: (req.method === 'GET' || req.method === 'HEAD' || !body.length) ? undefined : body });
+        const resp = coerce(await mod.handler(request, env, ctx));
+        res.writeHead(resp.status, Object.fromEntries(resp.headers));
+        res.end(Buffer.from(await resp.arrayBuffer()));
+    } catch (e) {
+        console.error(e);
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: String((e && e.message) || e) }));
+    }
+});
+const wss = new WebSocketServer({ noServer: true });
+let connSeq = 0;
+server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
+    const fn = mod.wsFor(url.pathname);
+    if (!fn) { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (s) => {
+        const conn = ++connSeq;
+        sockets.set(conn, s);
+        const request = new Request(url.href, { headers: req.headers });
+        s.on('message', (data, isBinary) => hub.message(conn, isBinary ? data : data.toString()));
+        s.on('close', (code, reason) => { sockets.delete(conn); hub.closed(conn, code, String(reason || '')); });
+        hub.open(conn, url.href, (ws) => fn(ws, request, env));
+    });
+});
+server.listen(PORT, () => console.log('listening on http://localhost:' + PORT));
+`;
+        files['server.mjs'] = head.replace('__NAME__', () => name).replace('__PRELUDE__', () => prelude).replace('__USER__', () => userBlock);
+        files['package.json'] = JSON.stringify({ name: 'mock-' + name, private: true, type: 'module', scripts: { start: 'node server.mjs' }, dependencies: { ws: '^8.18.0' }, engines: { node: '>=18' } }, null, 2) + '\n';
+        files['README.md'] = ['# ' + name + '（Node部署）', '', '```', 'npm install', 'npm start        # http://localhost:8787', '```', '', '- 資料放在 ./data（db/*.json、fs/*）。沙盒裡的資料是IndexedDB，兩邊介面一樣（env.db.get/set/delete/list/clear/nextId、env.fs.read/write/list/remove）。',
+            '- 前端頁面放 ./public/index.html，頁面裡照常寫 fetch("/api/...")、new WebSocket(...)，不用改任何程式。', '- WebSocket用 ws 套件；伺服器程式的 ws.send／ws.on("message")／ws.broadcast 行為跟沙盒相同。', '- 沙盒的 nextId 是序列化的；這裡用檔案計數器，單一行程沒問題，多行程部署請換成資料庫的自動遞增。', ''].join('\n');
+    } else if (target === 'cloudflare') {
+        const head = String.raw`// 由「沙盒模擬後端」匯出（${'__NAME__'}）——跟在沙盒測試的是同一份伺服器程式，只有儲存換成Workers KV。
+// 部署：npx wrangler kv namespace create DATA  → 把id填進wrangler.toml → npx wrangler deploy
+// 限制：WebSocket在Workers需要Durable Objects，這份匯出檔只處理HTTP（WebSocket請求會回501）。
+const __P = __PRELUDE__;
+const { router, json, text, fail, coerce, resolve } = __P;
+
+const kvDb = (kv) => ({
+    async get(k) { const v = await kv.get('db:' + k); return v === null ? null : JSON.parse(v); },
+    async set(k, v) { await kv.put('db:' + k, JSON.stringify(v === undefined ? null : v)); return true; },
+    async delete(k) { await kv.delete('db:' + k); return true; },
+    async list(prefix) {
+        const out = [];
+        let cursor;
+        do {
+            const r = await kv.list({ prefix: 'db:' + (prefix || ''), cursor });
+            for (const k of r.keys) { const key = k.name.slice(3); if (key.startsWith('_seq/')) continue; const v = await kv.get(k.name); if (v !== null) out.push({ key, value: JSON.parse(v) }); }
+            cursor = r.list_complete ? undefined : r.cursor;
+        } while (cursor);
+        return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    },
+    async clear(prefix) { const items = await this.list(prefix); for (const it of items) await kv.delete('db:' + it.key); return items.length; },
+    async nextId(c) { const k = 'db:_seq/' + c; const n = Number((await kv.get(k)) || 0) + 1; await kv.put(k, String(n)); return n; }, // KV不是原子操作：高併發請改用Durable Objects或D1的自動遞增
+});
+const kvFs = (kv) => ({
+    async read(p) { const v = await kv.get('fs:' + p); if (v === null) throw new Error('檔案不存在：' + p); return v; },
+    async write(p, c) { await kv.put('fs:' + p, String(c)); return { ok: true }; },
+    async list(prefix) { const r = await kv.list({ prefix: 'fs:' + (prefix || '') }); return r.keys.map((k) => k.name.slice(3)).sort(); },
+    async remove(p) { await kv.delete('fs:' + p); return { ok: true }; },
+});
+
+__USER__
+
+let loaded = null;
+const load = async (env) => {
+    if (loaded) return loaded;
+    globalThis.env = env; globalThis.db = env.db; globalThis.fs = env.fs;
+    globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail;
+    const mod = resolve(await __loadUser());
+    if (!mod.handler) throw new Error('找不到伺服器入口（handler／app／export default）');
+    if (mod.init) await mod.init(env);
+    loaded = mod;
+    return mod;
+};
+
+export default {
+    async fetch(request, rawEnv, ctx) {
+        if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') return json({ error: 'WebSocket在Cloudflare Workers需要Durable Objects，這份匯出檔沒有包含' }, 501);
+        const env = Object.assign({}, rawEnv, { db: kvDb(rawEnv.DATA), fs: kvFs(rawEnv.DATA), ws: { broadcast() {}, count() { return 0; } }, now: () => Date.now() });
+        const mod = await load(env);
+        return coerce(await mod.handler(request, env, ctx));
+    },
+};
+`;
+        files['worker.js'] = head.replace('__NAME__', () => name).replace('__PRELUDE__', () => prelude).replace('__USER__', () => userBlock);
+        files['wrangler.toml'] = ['name = "mock-' + name + '"', 'main = "worker.js"', 'compatibility_date = "2024-09-01"', '', '[[kv_namespaces]]', 'binding = "DATA"', 'id = "把 wrangler kv namespace create 印出來的id貼在這裡"', ''].join('\n');
+        files['README.md'] = ['# ' + name + '（Cloudflare Workers部署）', '', '1. npx wrangler kv namespace create DATA，把id貼進wrangler.toml', '2. npx wrangler deploy', '', '- 儲存：env.db／env.fs 換成 Workers KV（單一key最大25MB；KV是最終一致，不是即時一致）。', '- 前端頁面可放在 Workers Assets 或 Pages，頁面程式碼不用改。', '- WebSocket需要Durable Objects，這份匯出檔沒有包含（收到upgrade請求會回501）。', '- nextId在KV不是原子操作：高併發請改用D1或Durable Objects。', ''].join('\n');
+    } else throw new Error('target必須是node或cloudflare');
+    return files;
+}
 
 // tw_stock_db客製: 2026-09-24使用者要求——「把create skill（像Claude自己的
 // skill-creator）作為內建skill，屬於skill customize的domain；Configure的UI
@@ -8753,11 +9319,11 @@ ${fnData.code}
         );
 
         registerOptional('sandbox_html',
-            '在隔離的沙盒裡跑一段HTML/CSS/JS並回報結果（console輸出、錯誤、頁面文字、互動步驟是否成功）——**實驗用，確認行為後才設計/實作**。backend：auto（有瀏覽器控制權限→全新about:blank分頁；沒有→iframe）／iframe（隔離iframe，沒給html時複製「目前畫面」快照來實驗CSS/DOM修改）／tab／popup（彈出視窗，畫面上會出現按鈕要使用者按一下）。可以用steps自動操作並檢查：[{"action":"click","selector":"#btn"},{"action":"type","selector":"#name","text":"abc"},{"action":"drag","selector":"#box","dx":50,"dy":0},{"action":"wait","ms":300},{"action":"eval","js":"document.title"},{"action":"query","selector":".item"},{"action":"expect_text","selector":"#out","contains":"完成"},{"action":"expect_visible","selector":"#dialog"}]。手機畫面實驗：width:360,height:800。帶task_id會自動記錄成這個任務的一次實驗。範例：sandbox_html({"html":"<button id=b>0</button>","js":"b.onclick=()=>b.textContent=+b.textContent+1","steps":[{"action":"click","selector":"#b"},{"action":"expect_text","selector":"#b","contains":"1"}],"task_id":"pb_..."})',
+            '在隔離的沙盒裡跑一段HTML/CSS/JS並回報結果（console輸出、錯誤、頁面文字、互動步驟是否成功）——**實驗用，確認行為後才設計/實作**。前端要連後端時帶mock參數（mock:"名稱"，名稱是sandbox_mock存好的模擬伺服器；也可以給{name,code}一次定義）：頁面照常寫fetch("/api/...")、new WebSocket(...)，沙盒把它們接到持久儲存的模擬伺服器，頁面程式碼不用為了測試改（部署時直接打真伺服器）；結果多一個mock欄位（每個請求的狀態碼、404、5xx、WebSocket事件）。WebSocket網址請用 (location.protocol==="https:"?"wss://":"ws://")+location.host+"/路徑" 或相對路徑，不要用location.origin拼。backend：auto（有瀏覽器控制權限→全新about:blank分頁；沒有→iframe）／iframe（隔離iframe，沒給html時複製「目前畫面」快照來實驗CSS/DOM修改）／tab／popup（彈出視窗，畫面上會出現按鈕要使用者按一下）。可以用steps自動操作並檢查：[{"action":"click","selector":"#btn"},{"action":"type","selector":"#name","text":"abc"},{"action":"drag","selector":"#box","dx":50,"dy":0},{"action":"wait","ms":300},{"action":"eval","js":"document.title"},{"action":"query","selector":".item"},{"action":"expect_text","selector":"#out","contains":"完成"},{"action":"expect_visible","selector":"#dialog"}]。手機畫面實驗：width:360,height:800。帶task_id會自動記錄成這個任務的一次實驗。範例：sandbox_html({"html":"<button id=b>0</button>","js":"b.onclick=()=>b.textContent=+b.textContent+1","steps":[{"action":"click","selector":"#b"},{"action":"expect_text","selector":"#b","contains":"1"}],"task_id":"pb_..."})',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const r = await this._sandboxHtmlRun(parsed);
+                const r = this._sandboxTag(await this._sandboxHtmlRun(parsed), 'html');
                 if (parsed.task_id) {
                     const summary = r.ok ? `頁面${r.page_ok ? '正常' : '有問題'}；錯誤${(r.errors || []).length}個；steps ${(r.step_results || []).filter((s) => s.ok).length}/${(r.step_results || []).length}成功；文字：${String(r.text || '').replace(/\s+/g, ' ').slice(0, 100)}` : `失敗：${r.error}`;
                     const lg = await this._playbookLogExperiment(parsed.task_id, { backend: r.backend || 'sandbox_html', title: String(parsed.title || 'sandbox_html實驗'), expected: String(parsed.expected || ''), observed: summary, ok: !!r.ok && r.page_ok !== false });
@@ -8765,7 +9331,7 @@ ${fnData.code}
                 }
                 return JSON.stringify(r);
             },
-            { type: 'object', properties: { html: { type: 'string', description: 'HTML（片段或完整文件）。不給＝複製目前畫面' }, css: { type: 'string' }, js: { type: 'string' }, base: { type: 'string', enum: ['blank', 'current_page'] }, backend: { type: 'string', enum: ['auto', 'iframe', 'tab', 'popup'] }, steps: { type: 'array', items: { type: 'object' } }, width: { type: 'number' }, height: { type: 'number' }, wait_ms: { type: 'number' }, keep_open: { type: 'boolean', description: '做完不要關掉（要讓使用者看時才用）' }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, additionalProperties: false }
+            { type: 'object', properties: { html: { type: 'string', description: 'HTML（片段或完整文件）。不給＝複製目前畫面' }, css: { type: 'string' }, js: { type: 'string' }, base: { type: 'string', enum: ['blank', 'current_page'] }, backend: { type: 'string', enum: ['auto', 'iframe', 'tab', 'popup'] }, steps: { type: 'array', items: { type: 'object' } }, mock: { description: 'mock伺服器名稱（字串），或{name,code,hosts,prefixes,block_external,reset}', anyOf: [{ type: 'string' }, { type: 'object' }] }, width: { type: 'number' }, height: { type: 'number' }, wait_ms: { type: 'number' }, keep_open: { type: 'boolean', description: '做完不要關掉（要讓使用者看時才用）' }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, additionalProperties: false }
         );
 
         registerOptional('sandbox_worker',
@@ -8773,7 +9339,7 @@ ${fnData.code}
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const r = await this._sandboxWorkerRun(parsed);
+                const r = this._sandboxTag(await this._sandboxWorkerRun(parsed), 'worker');
                 r.backend = 'worker';
                 if (parsed.task_id) {
                     const summary = r.ok ? `Worker執行成功${(r.responses || []).length ? '；回應：' + r.responses.map((x) => `${x.request}→${x.status || x.error}`).join('、') : ''}${r.result !== undefined ? '；result=' + JSON.stringify(r.result).slice(0, 100) : ''}` : `失敗：${String(r.error).slice(0, 150)}`;
@@ -8785,12 +9351,39 @@ ${fnData.code}
             { type: 'object', properties: { code: { type: 'string' }, requests: { type: 'array', items: { type: 'object' } }, files: { type: 'object', description: '{"路徑":"內容"}，執行前寫進持久檔案系統' }, timeout_ms: { type: 'number' }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, required: ['code'], additionalProperties: false }
         );
 
+        registerOptional('sandbox_mock',
+            '沙盒「模擬後端」：讓被測試的頁面照常寫 fetch("/api/...")、new WebSocket(...)，沙盒只在測試時把它們接到一個Web Worker裡的伺服器程式，資料存在持久儲存（IndexedDB，重新整理後還在）。**目的是「測試時能跑、實際部署也能跑」**：頁面程式碼完全不用為了測試改（攔截層只存在沙盒），伺服器程式用標準Request/Response，export之後換掉儲存就能在Node或Cloudflare Workers跑。伺服器程式三種寫法擇一：（1）最簡單：const app = router(); app.crud("/api/todos","todos"); app.get("/api/ping",()=>({ok:true})); app.post("/api/x", async (req, env)=>{ const b = await req.json(); return json({got:b},201); }); app.ws("/chat",(ws,req,env)=>{ ws.on("message",(m)=>ws.broadcast(m,{includeSelf:true})); });（2）async function handler(request, env){ ...; return json({...}); } 搭配 function onWebSocket(ws, req, env){...}；（3）export default { fetch(request, env){...} }。可用：env.db.get/set/delete/list(前綴)/clear/nextId(集合名)（JSON值，持久）、env.fs.read/write/list/remove（文字檔，持久）、json(資料,狀態碼)、text()、fail(狀態碼,訊息)、env.ws.broadcast(路徑,資料)、async function init(env){...}（載入時跑一次，可放種子資料）。ws物件：ws.send／ws.close／ws.on("message"|"close")／ws.broadcast／ws.path／ws.query。動作：deploy（存伺服器程式並檢查，回傳路由）／call（送測試請求requests＋WebSocket多人情境ws）／db（檢視或修改持久資料）／list／reset／export（target:"node"或"cloudflare"，產生部署檔）。頁面端整合用sandbox_html({mock:"名稱",...})。範例：sandbox_mock({"action":"deploy","name":"todo","code":"const app = router(); app.crud(\"/api/todos\",\"todos\");"}) 然後 sandbox_mock({"action":"call","name":"todo","requests":[{"method":"POST","path":"/api/todos","json":{"title":"買菜"},"expect_status":201},{"method":"GET","path":"/api/todos"}]})。已知限制：不支援XMLHttpRequest／EventSource；沙盒測得到的是伺服器「邏輯」，真實的併發、延遲、TLS、資料庫行為要列進unverified。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const r = this._sandboxTag(await this._mockToolRun(parsed), 'mock');
+                if (parsed.task_id && (parsed.action === 'call' || parsed.action === 'deploy')) {
+                    const summary = r.ok ? `mock伺服器「${parsed.name}」${parsed.action}成功；${(r.responses || []).length}個請求${(r.responses || []).filter((x) => x.pass === false).length ? '，有' + (r.responses || []).filter((x) => x.pass === false).length + '個不符預期' : ''}${r.mock && r.mock.server_errors.length ? '；5xx：' + r.mock.server_errors.join('、') : ''}` : `失敗：${r.error}`;
+                    const lg = await this._playbookLogExperiment(parsed.task_id, { backend: 'mock', title: String(parsed.title || 'sandbox_mock實驗'), expected: String(parsed.expected || ''), observed: summary, ok: !!r.ok && !r.failed_expectations && !(r.mock && r.mock.server_errors.length) });
+                    r.logged_to_task = lg.ok ? { task_id: parsed.task_id, experiment_id: lg.experiment_id, total_experiments: lg.total } : { error: lg.error };
+                }
+                return JSON.stringify(r);
+            },
+            { type: 'object', properties: {
+                action: { type: 'string', enum: ['deploy', 'call', 'db', 'list', 'reset', 'export'] },
+                name: { type: 'string', description: 'mock伺服器名稱（英數字、底線、連字號），資料與程式都存在這個名稱底下' },
+                code: { type: 'string', description: 'deploy／call：伺服器程式。call不給code就用上次deploy存的' },
+                requests: { type: 'array', items: { type: 'object' }, description: 'call：[{"method":"POST","path":"/api/todos","json":{...},"headers":{...},"expect_status":201}]' },
+                ws: { type: 'object', description: 'call：WebSocket多人情境 {"clients":{"alice":"/chat","bob":"/chat"},"script":[{"client":"alice","send":"hi"},{"wait_ms":100},{"client":"bob","close":true}],"wait_ms":200}' },
+                reset: { type: 'boolean', description: 'deploy／call：先清掉這個伺服器的持久資料' },
+                op: { type: 'string', enum: ['list', 'get', 'set', 'delete', 'clear'], description: 'db：操作' }, key: { type: 'string' }, value: {}, prefix: { type: 'string' },
+                what: { type: 'string', enum: ['data', 'all'], description: 'reset：data只清資料；all連伺服器程式一起刪' },
+                target: { type: 'string', enum: ['node', 'cloudflare'], description: 'export：部署目標' },
+                task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' },
+            }, required: ['action'], additionalProperties: false }
+        );
+
         registerOptional('sandbox_py_app',
             '在Python沙盒（Pyodide）跑一個Python web app並用測試請求呼叫它——適合實驗Flask/Bottle（WSGI）或Starlette/FastAPI（ASGI）這類server程式（沙盒不能開埠，所以直接把請求丟給app）。程式裡定義一個叫app的物件；packages填要用micropip安裝的純Python套件（例如["flask"]、["fastapi"]，第一次下載比較慢）；requests同sandbox_worker格式。kind預設auto（自動判斷WSGI/ASGI）。回傳每個請求的status/headers/body。帶task_id會自動記錄成實驗。範例：sandbox_py_app({"packages":["flask"],"code":"from flask import Flask\\napp=Flask(__name__)\\n@app.get("/hi")\\ndef hi(): return {"ok":True}","requests":[{"method":"GET","path":"/hi"}],"task_id":"pb_..."})',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const r = await this._sandboxPyAppRun(parsed);
+                const r = this._sandboxTag(await this._sandboxPyAppRun(parsed), 'python');
                 r.backend = 'python';
                 if (parsed.task_id) {
                     const summary = r.ok ? `Python app（${r.kind}）回應：${(r.responses || []).map((x) => `${x.request}→${x.status || x.error}`).join('、')}` : `失敗：${String(r.error).slice(0, 150)}`;
@@ -12482,6 +13075,7 @@ ${fnData.code}
         return Object.assign({
             ok: true, task_id: st.task_id, domain: st.domain, title: st.title, goal: st.goal,
             phase: st.phase, phase_title: FA_PLAYBOOK_PHASE_TITLES[st.phase] || st.phase,
+            environment_now: FA_PLAYBOOK_PHASE_ENV[st.phase] || '',
             phases: FA_PLAYBOOK_PHASE_ORDER.slice(0, -1).map((p) => `${p === st.phase ? '▶ ' : ''}${FA_PLAYBOOK_PHASE_TITLES[p]}`),
             verification_level: st.verification_level || spec.verification || 'sandbox',
             experiments_logged: (st.experiments || []).length,
@@ -12489,7 +13083,7 @@ ${fnData.code}
             todo_counts: counts,
             submit_fields: guide.submit_fields,
             required_headings: guide.required_headings,
-            next_action: guide.next_action,
+            next_action: '【現在：' + ((FA_PLAYBOOK_PHASE_ENV[st.phase] || '').split('：')[0]) + '】' + guide.next_action,
         }, extra || {});
     }
 
@@ -12780,6 +13374,7 @@ ${fnData.code}
         out.backends.browser_tab = tab;
         out.backends.popup = { available: typeof window !== 'undefined' && typeof window.open === 'function', isolation: '彈出視窗裡再放一層sandbox iframe（AI寫的程式仍然隔離）', needs_user_action: true, how: 'sandbox_html({"backend":"popup",...})：畫面右下角會出現「開啟測試視窗」按鈕，使用者按下才能彈出（瀏覽器規定彈出視窗一定要使用者操作，這就是pending action）' };
         out.backends.worker = { available: typeof Worker !== 'undefined', persistent_fs: true, how: 'sandbox_worker({"code":"...","requests":[...]})：Web Worker，沒有DOM；有fs.read/write/list/remove存到持久檔案系統；可以寫handler(request)當成Service Worker／Cloudflare Worker測試' };
+        out.backends.mock_server = { available: typeof Worker !== 'undefined', persistent: true, how: 'sandbox_mock（先deploy伺服器程式）＋sandbox_html({mock:"名稱"})：頁面照常寫fetch／WebSocket，沙盒接到持久儲存的模擬伺服器；頁面程式不用改，伺服器程式可export成Node／Cloudflare部署檔。限制：瀏覽器分頁後端不支援（會用iframe）、沒有XMLHttpRequest／EventSource' };
         out.backends.python = { available: true, micropip: true, how: 'python_execute（純腳本）或sandbox_py_app（Flask/FastAPI等web app，用micropip安裝純Python套件後直接以測試請求呼叫app）' };
         out.backends.terminal = { available: true, how: 'run-terminal（busybox ash＋python -c）：適合檔案與指令流程；注意終端機裡的python是同步執行，不能await micropip.install，要裝套件請用python_execute或sandbox_py_app' };
         out.backends.service_worker = { available: false, reason: 'Service Worker必須由「同源的script檔案網址」註冊，瀏覽器不接受blob或data網址，所以網頁版沒辦法把AI剛寫的程式註冊成Service Worker；桌面版也一樣，除非另外在本機proxy提供固定路徑（目前沒有）。替代做法：sandbox_worker用handler(request)模擬Service Worker／Cloudflare Worker的fetch處理，行為（路由、Request/Response、快取邏輯）可以完整驗證。' };
@@ -12807,6 +13402,8 @@ ${fnData.code}
         const css = String(a.css || '');
         const js = String(a.js || '').replace(/<\/script/gi, '<\\/script');
         const boot = `<script>${FA_SANDBOX_BOOTSTRAP_JS.replace(/<\/script/gi, '<\\/script')}</script>`;
+        const flag = `<script>window.__FA_SANDBOX=${JSON.stringify({ sandbox: true, backend: (a.__mockCfg && a.__mockCfg.backend) || a.backend || 'iframe', mock: !!a.__mockCfg, note: '這是FloatingAssistant的沙盒實驗環境，不是正式部署；頁面程式碼請不要依賴這個旗標做行為分支' }).replace(/</g, '\\u003c')}</script>`;
+        const mockScript = a.__mockCfg ? `<script>(${__faMockShim.toString()})(${JSON.stringify(a.__mockCfg).replace(/</g, '\\u003c')})</script>` : '';
         let doc;
         if (a.base === 'current_page' || (!html && a.base !== 'blank')) {
             doc = this._sandboxCurrentPageDoc();
@@ -12818,7 +13415,7 @@ ${fnData.code}
         }
         if (css) doc = /<\/head>/i.test(doc) ? doc.replace(/<\/head>/i, () => `<style>${css}</style></head>`) : `<style>${css}</style>` + doc;
         if (js) doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, () => `<script>${js}</script></body>`) : doc + `<script>${js}</script>`;
-        doc = /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (m) => m + boot) : boot + doc;
+        doc = /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (m) => m + boot + flag + mockScript) : boot + flag + mockScript + doc;
         return doc;
     }
 
@@ -12844,6 +13441,7 @@ ${fnData.code}
         iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
         iframe.style.cssText = hostWin ? 'width:100vw; height:100vh; border:0; background:#fff;' : `width:${width}px; height:${height}px; border:0; background:#fff; display:block;`;
         panel.appendChild(iframe);
+        if (a.__mockHub) a.__mockHub.attach(hostWin || window, () => iframe.contentWindow);
         let nextId = 0;
         const ready = new Promise((resolve) => {
             const onMsg = (ev) => { if (ev.source === iframe.contentWindow && ev.data && ev.data.__fa_ready) { window.removeEventListener('message', onMsg); resolve(true); } };
@@ -12918,15 +13516,30 @@ ${fnData.code}
         if (want === 'auto') { kind = caps.backends.browser_tab.available ? 'tab' : 'iframe'; notes.push(kind === 'tab' ? '有瀏覽器控制權限：用全新的about:blank分頁。' : '沒有瀏覽器控制權限：用隔離的iframe（沒給html時複製目前畫面）。'); }
         if (kind === 'tab' && !caps.backends.browser_tab.available) { notes.push(`瀏覽器分頁不可用（${caps.backends.browser_tab.reason}），改用iframe。`); kind = 'iframe'; }
         if (!['iframe', 'tab', 'popup'].includes(kind)) return { ok: false, error: 'backend必須是auto／iframe／tab／popup' };
+        let hub = null;
+        let mockSummary = null;
+        if (a.mock) {
+            const mspec = typeof a.mock === 'string' ? { name: a.mock } : (a.mock && typeof a.mock === 'object' ? a.mock : null);
+            if (!mspec) return { ok: false, error: 'mock必須是mock伺服器名稱，或 {name, code, hosts, prefixes, block_external, reset} 物件' };
+            if (kind === 'tab') { notes.push('mock需要主頁面當中繼，瀏覽器分頁後端目前不支援mock，改用iframe。'); kind = 'iframe'; }
+            const o = await this._mockOpen(mspec);
+            if (!o.ok) return o;
+            hub = o.hub;
+            const usesCurrent = a.base === 'current_page' || (!a.html && a.base !== 'blank');
+            a.__mockHub = hub;
+            a.__mockCfg = { hosts: Array.isArray(mspec.hosts) ? mspec.hosts.map(String) : [], prefixes: Array.isArray(mspec.prefixes) ? mspec.prefixes.map(String) : (usesCurrent ? ['/api/'] : null), block: mspec.block_external === true, backend: kind };
+            notes.push('mock伺服器「' + hub.name + '」已接上：頁面的fetch／WebSocket（' + (a.__mockCfg.prefixes ? '路徑開頭是' + a.__mockCfg.prefixes.join('、') : '所有相對路徑與mock.local') + '）由它回應，資料存在持久儲存。頁面程式碼不用為了測試改動，部署時直接打真正的伺服器。');
+        }
         const doc = this._sandboxBuildDoc(a);
         let frame = null;
         if (kind === 'tab') frame = await this._sandboxOpenTab(doc, a);
         else if (kind === 'popup') {
             const w = await this._sandboxPopupViaGesture();
+            if (!w && hub) hub.close();
             if (!w) return { ok: false, backend: 'popup', error: '沒有開成測試視窗（使用者沒有按按鈕，或瀏覽器擋掉彈出視窗）。可以改用backend:"iframe"。' };
             frame = await this._sandboxOpenIframe(doc, a, w);
         } else frame = await this._sandboxOpenIframe(doc, a, null);
-        if (!frame || frame.ok === false) { if (frame && frame.close) await frame.close(); return { ok: false, backend: kind, error: (frame && frame.error) || '沙盒頁面沒有在8秒內載入完成（可能是程式一載入就卡住或語法錯誤，看errors）' }; }
+        if (!frame || frame.ok === false) { if (hub) hub.close(); if (frame && frame.close) await frame.close(); return { ok: false, backend: kind, error: (frame && frame.error) || '沙盒頁面沒有在8秒內載入完成（可能是程式一載入就卡住或語法錯誤，看errors）' }; }
         const stepResults = [];
         let report = null;
         try {
@@ -12957,13 +13570,18 @@ ${fnData.code}
             const rep = await frame.call('report', []);
             report = rep.ok ? rep.value : { error: rep.error };
         } finally {
+            if (hub) {
+                mockSummary = hub.summary();
+                if (a.keep_open) { if (!this._mockLive) this._mockLive = new Map(); this._mockLive.set(hub.name, hub); } else hub.close();
+            }
             if (!a.keep_open) await frame.close();
         }
         const errors = (report && report.errors) || [];
         const stepsOk = stepResults.every((s) => s.ok);
         return {
             ok: true, backend: frame.kind, notes, duration_ms: Date.now() - t0,
-            page_ok: errors.length === 0 && stepsOk, step_results: stepResults,
+            page_ok: errors.length === 0 && stepsOk && !(mockSummary && mockSummary.server_errors.length), step_results: stepResults,
+            mock: mockSummary || undefined,
             errors, console_logs: ((report && report.logs) || []).slice(-40),
             title: report && report.title, viewport: report && report.viewport,
             text: report && report.text, html_excerpt: report && report.html ? String(report.html).slice(0, 3500) : undefined,
@@ -13061,6 +13679,349 @@ ${fnData.code}
             console_logs: logs.slice(-60), result: outcome.result, responses: outcome.responses || [],
             fs_files: (await this._sandboxFsOp('fs.list', [''])).slice(0, 50),
         };
+    }
+
+    // ===== 沙盒模擬後端（sandbox_mock）=====
+    _mockNameOk(n) {
+        const s = String(n == null || n === '' ? 'default' : n);
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(s)) throw new Error('name只能用英數字、底線、連字號（最長40字）');
+        return s;
+    }
+
+    // mock伺服器的持久儲存：全部放在sandboxFsCache（IndexedDB）的 mock/<name>/ 底下：server.js、db/<key>、fs/<path>
+    async _mockStoreOp(name, op, args) {
+        const base = `mock/${name}/`;
+        const dbPath = (k) => { const s = String(k == null ? '' : k); if (!s) throw new Error('key不能是空的'); return base + 'db/' + s; };
+        const filePath = (p) => base + 'fs/' + String(p == null ? '' : p);
+        const readJson = async (p) => { try { return JSON.parse(await this._sandboxFsOp('fs.read', [p])); } catch (_) { return null; } };
+        switch (op) {
+            case 'db.get': return await readJson(dbPath(args[0]));
+            case 'db.set': await this._sandboxFsOp('fs.write', [dbPath(args[0]), JSON.stringify(args[1] === undefined ? null : args[1])]); return true;
+            case 'db.delete': await this._sandboxFsOp('fs.remove', [dbPath(args[0])]); return true;
+            case 'db.list': {
+                const pfx = base + 'db/';
+                const names = await this._sandboxFsOp('fs.list', [pfx + String(args[0] || '')]);
+                const out = [];
+                for (const n of names) {
+                    const key = n.slice(pfx.length);
+                    if (key.startsWith('_seq/')) continue;
+                    const v = await readJson(n);
+                    out.push({ key, value: v });
+                }
+                return out;
+            }
+            case 'db.clear': {
+                const pfx = base + 'db/';
+                const names = (await this._sandboxFsOp('fs.list', [pfx + String(args[0] || '')])).filter((n) => !n.slice(pfx.length).startsWith('_seq/'));
+                for (const n of names) await this._sandboxFsOp('fs.remove', [n]);
+                return names.length;
+            }
+            case 'db.nextId': {
+                const k = dbPath('_seq/' + String(args[0] || 'default'));
+                const n = (Number(await readJson(k)) || 0) + 1;
+                await this._sandboxFsOp('fs.write', [k, String(n)]);
+                return n;
+            }
+            case 'file.read': return await this._sandboxFsOp('fs.read', [filePath(args[0])]);
+            case 'file.write': return await this._sandboxFsOp('fs.write', [filePath(args[0]), String(args[1] == null ? '' : args[1])]);
+            case 'file.list': { const pfx = base + 'fs/'; return (await this._sandboxFsOp('fs.list', [pfx + String(args[0] || '')])).map((n) => n.slice(pfx.length)); }
+            case 'file.remove': return await this._sandboxFsOp('fs.remove', [filePath(args[0])]);
+            case 'reset': {
+                const what = args[0] === 'all' ? '' : null;
+                const names = await this._sandboxFsOp('fs.list', [base]);
+                let n = 0;
+                for (const f of names) {
+                    if (what === null && !(f.startsWith(base + 'db/') || f.startsWith(base + 'fs/'))) continue;
+                    await this._sandboxFsOp('fs.remove', [f]); n++;
+                }
+                return n;
+            }
+            default: throw new Error('不認得的儲存操作：' + op);
+        }
+    }
+
+    _mockWorkerSource() {
+        return `const __faPrelude = (${__faMockPrelude.toString()})();\n(${__faMockWorkerMain.toString()})(__faPrelude);`;
+    }
+
+    // 開一個mock伺服器（Web Worker＋持久儲存）。回傳 {ok, hub}；hub.http()／hub.wsOpen()／hub.attach()／hub.summary()／hub.close()
+    async _mockOpen(spec) {
+        if (typeof Worker === 'undefined') return { ok: false, error: '這個環境不支援Web Worker' };
+        let name;
+        try { name = this._mockNameOk(spec && spec.name); } catch (e) { return { ok: false, error: e.message }; }
+        if (!this._mockLive) this._mockLive = new Map();
+        const prev = this._mockLive.get(name);
+        if (prev) { try { prev.close(); } catch (_) {} this._mockLive.delete(name); }
+        if (spec.reset) await this._mockStoreOp(name, 'reset', ['data']);
+        let code = spec.code ? String(spec.code) : null;
+        if (code) await this._sandboxFsOp('fs.write', [`mock/${name}/server.js`, code]);
+        else { try { code = await this._sandboxFsOp('fs.read', [`mock/${name}/server.js`]); } catch (_) { code = null; } }
+        if (!code) return { ok: false, error: `沒有叫「${name}」的mock伺服器。第一次要帶code（定義 handler、或 const app = router(); ...、或 export default { fetch }）。` };
+        const me = this;
+        const hub = { name, code, worker: null, workerUrl: null, calls: [], consoleLogs: [], inflight: new Map(), sinks: new Map(), chain: Promise.resolve(), nextHttp: 0, nextConn: 0, closed: false, routes: [], wsRoutes: [], restarts: 0, httpTimeoutMs: 8000, listeners: [] };
+        const rec = (e) => { e.t = Date.now(); hub.calls.push(e); if (hub.calls.length > 300) hub.calls.shift(); };
+        const enc = (o) => new TextEncoder().encode(JSON.stringify(o)).buffer;
+        hub.store = (op, args) => { const p = hub.chain.then(() => me._mockStoreOp(name, op, args)); hub.chain = p.catch(() => {}); return p; };
+        hub.start = () => new Promise((resolve) => {
+            const url = URL.createObjectURL(new Blob([me._mockWorkerSource()], { type: 'text/javascript' }));
+            const w = new Worker(url);
+            hub.worker = w; hub.workerUrl = url;
+            let settled = false;
+            const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ ok: false, error: 'mock伺服器初始化逾時（5秒）：程式載入時卡住了？' }); } }, 5000);
+            w.onmessage = async (ev) => {
+                const d = ev.data || {};
+                if (d.__init) { if (!settled) { settled = true; clearTimeout(timer); if (d.ok) { hub.routes = d.routes || []; hub.wsRoutes = d.ws_routes || []; hub.hasOnWebSocket = !!d.has_on_websocket; } resolve(d); } }
+                else if (d.__log) { if (hub.consoleLogs.length < 300) hub.consoleLogs.push(d.__log); }
+                else if (d.__rpc) {
+                    try { w.postMessage({ __rpc_res: d.__rpc, result: await hub.store(d.op, d.args) }); }
+                    catch (e) { try { w.postMessage({ __rpc_res: d.__rpc, error: String((e && e.message) || e) }); } catch (_) {} }
+                } else if (d.__http) { const f = hub.inflight.get(d.__http); if (f) { hub.inflight.delete(d.__http); f(d); } }
+                else if (d.__ws) {
+                    const sink = hub.sinks.get(d.conn);
+                    if (!sink) return;
+                    if (d.__ws === 'opened') sink.onOpen();
+                    else if (d.__ws === 'send') { rec({ kind: 'ws', ev: 'server→client', path: sink.path, data: typeof d.data === 'string' ? d.data.slice(0, 120) : `[binary ${d.data && d.data.byteLength}B]` }); sink.onMessage(d.data); }
+                    else if (d.__ws === 'close') { hub.sinks.delete(d.conn); rec({ kind: 'ws', ev: 'close(server)', path: sink.path, code: d.code }); sink.onClose(d.code, d.reason); }
+                    else if (d.__ws === 'rejected') { hub.sinks.delete(d.conn); rec({ kind: 'ws', ev: 'rejected', path: sink.path, error: d.reason }); sink.onReject(d.reason); }
+                }
+            };
+            w.onerror = (e) => {
+                if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false, error: String((e && e.message) || 'Worker發生錯誤') }); }
+                else hub.consoleLogs.push({ l: 'error', m: 'Worker錯誤：' + String((e && e.message) || e) });
+            };
+            w.postMessage({ __cmd: 'init', code: hub.code });
+        });
+        hub.stop = () => { try { if (hub.worker) hub.worker.terminate(); } catch (_) {} try { if (hub.workerUrl) URL.revokeObjectURL(hub.workerUrl); } catch (_) {} hub.worker = null; hub.workerUrl = null; };
+        hub.restart = async () => {
+            hub.restarts++;
+            hub.stop();
+            for (const [, f] of hub.inflight) f({ status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: 'mock伺服器重啟中' }) });
+            hub.inflight.clear();
+            const sinks = Array.from(hub.sinks.values());
+            hub.sinks.clear();
+            sinks.forEach((s) => { try { s.onClose(1012, 'server restarted'); } catch (_) {} });
+            return await hub.start();
+        };
+        // req: {method, url, headers:[[k,v]], body:ArrayBuffer|null}
+        hub.http = (req) => new Promise((resolve) => {
+            if (hub.closed || !hub.worker) { resolve({ status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: 'mock伺服器已關閉' }) }); return; }
+            const id = ++hub.nextHttp;
+            const t0 = performance.now();
+            let u = null; try { u = new URL(req.url); } catch (_) {}
+            const label = { kind: 'http', method: req.method, path: u ? u.pathname + u.search : req.url };
+            const timer = setTimeout(async () => {
+                hub.inflight.delete(id);
+                rec(Object.assign(label, { status: 504, ms: Math.round(performance.now() - t0), error: 'handler超過' + hub.httpTimeoutMs + '毫秒沒回應，伺服器已重啟（記憶體內的狀態會消失，持久儲存的資料不受影響）' }));
+                await hub.restart();
+                resolve({ status: 504, statusText: 'Gateway Timeout', headers: [['content-type', 'application/json']], body: enc({ error: 'mock伺服器handler逾時（可能是無窮迴圈或沒有結束的await），已重啟' }) });
+            }, hub.httpTimeoutMs);
+            hub.inflight.set(id, (d) => {
+                clearTimeout(timer);
+                rec(Object.assign(label, { status: d.status, ms: Math.round(performance.now() - t0) }));
+                resolve({ status: d.status, statusText: d.statusText, headers: d.headers, body: d.body });
+            });
+            try { hub.worker.postMessage({ __cmd: 'http', id, method: req.method, url: req.url, headers: req.headers || [], body: req.body || null }, req.body ? [req.body] : []); }
+            catch (e) { clearTimeout(timer); hub.inflight.delete(id); resolve({ status: 502, statusText: 'Bad Gateway', headers: [['content-type', 'application/json']], body: enc({ error: String((e && e.message) || e) }) }); }
+        });
+        // sink: {onOpen, onMessage(data), onClose(code,reason), onReject(reason)}
+        hub.wsOpen = (sink, urlStr) => {
+            const conn = ++hub.nextConn;
+            let path = '/'; try { path = new URL(urlStr).pathname; } catch (_) {}
+            sink.path = path;
+            hub.sinks.set(conn, sink);
+            rec({ kind: 'ws', ev: 'open', path });
+            if (!hub.worker) { hub.sinks.delete(conn); setTimeout(() => sink.onReject('mock伺服器已關閉'), 0); return conn; }
+            hub.worker.postMessage({ __cmd: 'ws_open', conn, url: urlStr, headers: [] });
+            return conn;
+        };
+        hub.wsSend = (conn, data) => {
+            const sink = hub.sinks.get(conn);
+            if (!sink || !hub.worker) return;
+            rec({ kind: 'ws', ev: 'client→server', path: sink.path, data: typeof data === 'string' ? data.slice(0, 120) : `[binary ${data && data.byteLength}B]` });
+            hub.worker.postMessage({ __cmd: 'ws_msg', conn, data });
+        };
+        hub.wsClose = (conn, code, reason) => {
+            const sink = hub.sinks.get(conn);
+            if (!sink) return;
+            hub.sinks.delete(conn);
+            rec({ kind: 'ws', ev: 'close(client)', path: sink.path, code: code || 1005 });
+            if (hub.worker) hub.worker.postMessage({ __cmd: 'ws_close', conn, code: code || 1005, reason: reason || '' });
+        };
+        // 把頁面（iframe）送來的 fetch／WebSocket 訊息接到這個hub
+        hub.attach = (listenWin, getFrameWin) => {
+            const conns = new Map(); // 頁面的socket id → hub的conn
+            const onMsg = (ev) => {
+                const d = ev.data;
+                if (!d || d.__fa_mock !== 1 || ev.source !== getFrameWin()) return;
+                const src = ev.source;
+                const reply = (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} };
+                if (d.t === 'http') {
+                    hub.http({ method: d.method, url: d.url, headers: d.headers, body: d.body }).then((r) => reply({ t: 'http_res', id: d.id, status: r.status, statusText: r.statusText, headers: r.headers, body: r.body }, [r.body])).catch((e) => reply({ t: 'http_res', id: d.id, error: String((e && e.message) || e) }));
+                } else if (d.t === 'ws_open') {
+                    const conn = hub.wsOpen({
+                        onOpen: () => reply({ t: 'ws_opened', id: d.id }),
+                        onMessage: (data) => reply({ t: 'ws_msg', id: d.id, data }),
+                        onClose: (code, reason) => { conns.delete(d.id); reply({ t: 'ws_close', id: d.id, code, reason }); },
+                        onReject: (reason) => { conns.delete(d.id); reply({ t: 'ws_rejected', id: d.id, reason }); },
+                    }, d.url);
+                    conns.set(d.id, conn);
+                } else if (d.t === 'ws_send') { const c = conns.get(d.id); if (c) hub.wsSend(c, d.data); }
+                else if (d.t === 'ws_close') { const c = conns.get(d.id); if (c) { conns.delete(d.id); hub.wsClose(c, d.code, d.reason); } }
+            };
+            listenWin.addEventListener('message', onMsg);
+            hub.listeners.push(() => { try { listenWin.removeEventListener('message', onMsg); } catch (_) {} });
+        };
+        hub.summary = () => {
+            const http = hub.calls.filter((c) => c.kind === 'http');
+            return {
+                server: name, routes: hub.routes, ws_routes: hub.wsRoutes,
+                http_calls: http.length, calls: hub.calls.slice(-60).map((c) => { const o = Object.assign({}, c); delete o.t; return o; }),
+                not_found: http.filter((c) => c.status === 404).map((c) => c.method + ' ' + c.path),
+                server_errors: http.filter((c) => c.status >= 500).map((c) => c.method + ' ' + c.path + ' → ' + c.status + (c.error ? '（' + c.error + '）' : '')),
+                restarts: hub.restarts, server_console: hub.consoleLogs.slice(-30),
+            };
+        };
+        hub.close = () => {
+            if (hub.closed) return;
+            hub.closed = true;
+            hub.listeners.forEach((f) => f());
+            hub.sinks.forEach((s) => { try { s.onClose(1001, 'going away'); } catch (_) {} });
+            hub.sinks.clear();
+            hub.stop();
+            if (me._mockLive && me._mockLive.get(name) === hub) me._mockLive.delete(name);
+        };
+        const init = await hub.start();
+        if (!init || init.ok === false) { hub.stop(); return { ok: false, error: '伺服器程式載入失敗：' + ((init && init.error) || '未知錯誤') }; }
+        return { ok: true, hub };
+    }
+
+    // sandbox_mock工具的動作分派
+    async _mockToolRun(a) {
+        const action = String(a.action || '');
+        const textOf = (buf) => { try { return new TextDecoder().decode(buf); } catch (_) { return ''; } };
+        if (action === 'list') {
+            const all = await this.sandboxFsCache.getAll();
+            const names = Array.from(new Set(all.filter((r) => r.kind === 'sandbox_fs' && /^mock\/[^/]+\/server\.js$/.test(r.filename)).map((r) => r.filename.split('/')[1]))).sort();
+            const servers = [];
+            for (const n of names) {
+                const keys = all.filter((r) => r.kind === 'sandbox_fs' && r.filename.startsWith(`mock/${n}/db/`) && !r.filename.startsWith(`mock/${n}/db/_seq/`)).length;
+                servers.push({ name: n, db_keys: keys, files: all.filter((r) => r.kind === 'sandbox_fs' && r.filename.startsWith(`mock/${n}/fs/`)).length });
+            }
+            return { ok: true, servers };
+        }
+        let name;
+        try { name = this._mockNameOk(a.name); } catch (e) { return { ok: false, error: e.message }; }
+        if (action === 'db') {
+            const op = String(a.op || 'list');
+            if (op === 'list') return { ok: true, entries: (await this._mockStoreOp(name, 'db.list', [a.prefix || ''])).slice(0, 200) };
+            if (op === 'get') return { ok: true, value: await this._mockStoreOp(name, 'db.get', [a.key]) };
+            if (op === 'set') { await this._mockStoreOp(name, 'db.set', [a.key, a.value]); return { ok: true }; }
+            if (op === 'delete') { await this._mockStoreOp(name, 'db.delete', [a.key]); return { ok: true }; }
+            if (op === 'clear') return { ok: true, removed: await this._mockStoreOp(name, 'db.clear', [a.prefix || '']) };
+            return { ok: false, error: 'op必須是list／get／set／delete／clear' };
+        }
+        if (action === 'reset') {
+            const removed = await this._mockStoreOp(name, 'reset', [a.what === 'all' ? 'all' : 'data']);
+            return { ok: true, removed, note: a.what === 'all' ? '連伺服器程式一起刪除了' : '只清掉資料（db與fs），伺服器程式還在' };
+        }
+        if (action === 'export') {
+            let code;
+            try { code = await this._sandboxFsOp('fs.read', [`mock/${name}/server.js`]); } catch (_) { return { ok: false, error: `沒有叫「${name}」的mock伺服器` }; }
+            const target = String(a.target || 'node');
+            let files;
+            try { files = __faMockBuildExport(target, code, name); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+            for (const [p, c] of Object.entries(files)) await this._sandboxFsOp('fs.write', [`mock/${name}/export/${target}/${p}`, c]);
+            return {
+                ok: true, target, files,
+                saved_in_sandbox_fs: Object.keys(files).map((p) => `mock/${name}/export/${target}/${p}`),
+                parity: '前端頁面不用改（攔截層只在沙盒）；伺服器程式是同一份；env.db／env.fs／ws的介面三邊相同，差別只在儲存：沙盒=IndexedDB、Node=資料夾JSON、Cloudflare=KV。',
+                unverified: ['匯出的檔案沒有在真實的Node／Cloudflare環境執行過（沙盒裡只能驗證伺服器邏輯）', target === 'cloudflare' ? 'WebSocket在Cloudflare要用Durable Objects，匯出檔不含' : 'Node版需要 npm install（ws套件）'],
+            };
+        }
+        if (action === 'deploy' || action === 'call') {
+            if (action === 'deploy' && !a.code) return { ok: false, error: 'deploy需要code' };
+            const o = await this._mockOpen({ name, code: a.code, reset: a.reset });
+            if (!o.ok) return o;
+            const hub = o.hub;
+            const t0 = Date.now();
+            try {
+                if (action === 'deploy') return { ok: true, name, saved: true, routes: hub.routes, ws_routes: hub.wsRoutes, has_on_websocket: !!hub.hasOnWebSocket, server_console: hub.consoleLogs.slice(-20), next: '用 sandbox_mock({action:"call",name,requests:[...]}) 送測試請求，或 sandbox_html({mock:name,...}) 讓頁面的fetch／WebSocket接到它' };
+                const responses = [];
+                for (const r of (Array.isArray(a.requests) ? a.requests.slice(0, 60) : [])) {
+                    const method = String(r.method || 'GET').toUpperCase();
+                    let u;
+                    try { u = new URL(r.url || ('http://mock.local' + (r.path || '/'))); } catch (e) { responses.push({ request: method + ' ' + (r.path || r.url), error: '網址不合法' }); continue; }
+                    const headers = Object.entries(r.headers || {}).map(([k, v]) => [k, String(v)]);
+                    let body = null;
+                    if (r.json !== undefined) { body = new TextEncoder().encode(JSON.stringify(r.json)).buffer; if (!headers.some(([k]) => k.toLowerCase() === 'content-type')) headers.push(['content-type', 'application/json']); }
+                    else if (r.body !== undefined && method !== 'GET' && method !== 'HEAD') body = new TextEncoder().encode(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)).buffer;
+                    const t1 = performance.now();
+                    const resp = await hub.http({ method, url: u.href, headers, body });
+                    const bodyText = textOf(resp.body);
+                    const hdr = {}; (resp.headers || []).forEach(([k, v]) => { hdr[k] = v; });
+                    const item = { request: `${method} ${u.pathname}${u.search}`, status: resp.status, headers: hdr, body: bodyText.slice(0, 3000), ms: Math.round(performance.now() - t1) };
+                    if (/json/i.test(hdr['content-type'] || '')) { try { item.json = JSON.parse(bodyText); } catch (_) {} }
+                    if (r.expect_status !== undefined) { item.expect_status = r.expect_status; item.pass = resp.status === Number(r.expect_status); }
+                    responses.push(item);
+                }
+                const out = { ok: true, name, duration_ms: 0, responses };
+                if (a.ws && typeof a.ws === 'object') out.ws = await this._mockWsScenario(hub, a.ws);
+                const failed = responses.filter((r) => r.pass === false).length;
+                if (failed) out.failed_expectations = failed;
+                out.mock = hub.summary();
+                out.db_keys = (await this._mockStoreOp(name, 'db.list', [''])).map((e) => e.key).slice(0, 50);
+                out.duration_ms = Date.now() - t0;
+                return out;
+            } finally { hub.close(); }
+        }
+        return { ok: false, error: 'action必須是deploy／call／db／list／reset／export' };
+    }
+
+    // WebSocket多人情境：clients={"alice":"/chat","bob":"/chat"}，script依序執行
+    async _mockWsScenario(hub, spec) {
+        const clients = spec.clients && typeof spec.clients === 'object' ? spec.clients : {};
+        const names = Object.keys(clients).slice(0, 8);
+        const t0 = Date.now();
+        const state = {};
+        const opened = [];
+        for (const n of names) {
+            const st = { opened: false, rejected: null, closed: null, received: [], conn: 0 };
+            state[n] = st;
+            let u = clients[n];
+            const wire = /^https?:/i.test(u) ? u : (/^wss?:/i.test(u) ? u.replace(/^ws/i, 'http') : 'http://mock.local' + (String(u).startsWith('/') ? '' : '/') + u);
+            opened.push(new Promise((resolve) => {
+                st.conn = hub.wsOpen({
+                    onOpen: () => { st.opened = true; resolve(); },
+                    onMessage: (data) => { st.received.push({ at_ms: Date.now() - t0, data: typeof data === 'string' ? data : `[binary ${data && data.byteLength}B]` }); },
+                    onClose: (code, reason) => { st.closed = { code, reason }; resolve(); },
+                    onReject: (why) => { st.rejected = why; resolve(); },
+                }, wire);
+                setTimeout(resolve, 3000);
+            }));
+        }
+        await Promise.all(opened);
+        for (const s of (Array.isArray(spec.script) ? spec.script.slice(0, 80) : [])) {
+            if (s.wait_ms) { await new Promise((r) => setTimeout(r, Math.min(3000, Number(s.wait_ms) || 0))); continue; }
+            const st = state[s.client];
+            if (!st) continue;
+            if (s.close) { hub.wsClose(st.conn, s.code, s.reason); st.closed = st.closed || { code: s.code || 1005, reason: s.reason || '', by: 'client' }; }
+            else if (s.send !== undefined) hub.wsSend(st.conn, typeof s.send === 'string' ? s.send : JSON.stringify(s.send));
+            await new Promise((r) => setTimeout(r, 40));
+        }
+        await new Promise((r) => setTimeout(r, Math.min(3000, Number(spec.wait_ms) || 150)));
+        names.forEach((n) => { if (!state[n].closed && state[n].opened) hub.wsClose(state[n].conn, 1000, 'scenario end'); });
+        const out = {};
+        names.forEach((n) => { const s = state[n]; out[n] = { opened: s.opened, rejected: s.rejected || undefined, closed: s.closed || undefined, received: s.received.slice(0, 60) }; });
+        return { clients: out };
+    }
+
+    // 2026-10-02：每個沙盒工具的結果都明確標示「這是沙盒」，讓模型（尤其是純網頁版）知道自己現在在哪個環境
+    _sandboxTag(r, kind) {
+        if (r && typeof r === 'object') {
+            r.environment = 'sandbox';
+            r.sandbox_notice = `這是沙盒（${kind}）的實驗結果，不是真實部署環境：真實的網路、資料庫、硬體、瀏覽器差異、效能都還沒驗證。報告時要說「在沙盒觀察到」，不要說「已在實際環境驗證」。`;
+        }
+        return r;
     }
 
     async _sandboxPyAppRun(a) {
