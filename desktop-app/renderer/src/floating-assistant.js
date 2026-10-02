@@ -16550,8 +16550,9 @@ ${fnData.code}
                 { id: 'url_only', type: 'regex', expr: '^\\s*(https?://(?!(?:www\\.)?(?:youtube\\.com|youtu\\.be)/)\\S+)\\s*$', intent: '貼上單一網址 → 讀取網頁', tool: 'fetch_web_page', args: { url: '{1}' }, confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'youtube_url', type: 'regex', expr: '(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be)/\\S+)', intent: '貼上YouTube網址 → 下載', tool: 'youtube_download', args: { text: '{1}' }, confidence: 0.9, risk: 'confirm', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
-                { id: 'browser_open_read', type: 'regex', expr: '(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.98, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
-                { id: 'browser_control_status', type: 'regex', expr: '瀏覽器控制|控制瀏覽器|browser[ _]?control', intent: '瀏覽器控制：檢查擴充功能是否連線（要開網址請連同網址一起說）', tool: 'browser_status', args: {}, confidence: 0.8, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_open_read', type: 'regex', expr: '^(?![^]*(?:截取|截圖|截個圖|截一張|screenshot))[^]*?(?:(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control)))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.98, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_screenshot', type: 'regex', expr: '^(?![^]*(?:影片|音訊|音檔|mp4|mp3|video|audio|pdf|投影片|pptx))[^]*(?:截取|截圖|截個圖|截一張|螢幕截圖|screenshot|截下)', intent: '截圖（有網址就先開分頁；可指定範圍如 800x400、整頁）', shot: true, confidence: 0.97, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_control_status', type: 'regex', expr: '瀏覽器控制|控制瀏覽器|browser[ _]?control', intent: '瀏覽器控制：檢查擴充功能是否連線（要開網址請連同網址一起說）', tool: 'browser_status', args: {}, confidence: 0.9, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'search_words', type: 'regex', expr: '^(?:請|幫我|幫忙)?(?:上網|網路上)?(?:搜尋|搜索|查詢|查一下|查)\\s*[:：]?\\s*(.{2,})$', intent: '搜尋 xxx', tool: 'browser_search', args: { query: '{1}' }, confidence: 0.72, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
             ],
         };
@@ -16589,7 +16590,21 @@ ${fnData.code}
         }
         return made;
     }
-    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v7:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v10:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    // 截圖的步驟：有網址 → 開分頁→截圖→關分頁；沒有網址 → 用AI已經開著的分頁。800x400之類的尺寸＝只截上方左上角那個範圍，「整頁」＝整頁
+    _otShotSteps(slots, norm) {
+        const m = /(\d{2,5})\s*[x×*＊]\s*(\d{2,5})/i.exec(norm);
+        const a = {};
+        if (/整頁|整個頁面|全頁|full[ _-]?page/i.test(norm)) a.full_page = true;
+        else if (m) a.region = { x: 0, y: 0, width: Number(m[1]), height: Number(m[2]) };
+        if (slots.url) return [{ tool: 'browser_create_tab', args: { url: slots.url } }, { tool: 'browser_screenshot', args: Object.assign({ tab_id: '{step1.tab_id}' }, a) }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }];
+        return [{ tool: 'browser_list_tabs', args: {} }, { tool: 'browser_screenshot', args: Object.assign({ tab_id: '{step1.tab_id}' }, a) }];
+    }
+    _otShowImage(j) {
+        const m = this._pushAssistantMessage('📸 截圖' + (j.meta && (j.meta.title || j.meta.url) ? '：' + String(j.meta.title || j.meta.url).slice(0, 80) : ''), null);
+        try { Object.defineProperty(m, '_displayDataUrl', { value: j.dataUrl, enumerable: false, configurable: true }); } catch (_) {}
+        this._persistChatHistory(); this._renderMessageHistory();
+    }
     _otPickTool(p, text) {
         if (!p.tools || p.tools.length < 2) return p.tool;
         const low = String(text).toLowerCase();
@@ -16675,7 +16690,8 @@ ${fnData.code}
             const tplArgs = pickedTool && pickedTool !== p.tool ? this._otGuessArgs(pickedTool) : (p.args || {});
             let filled = pickedTool ? _faOtFill(tplArgs, slots, groups) : { args: {}, missing: [] };
             let stepList = null;
-            if (Array.isArray(p.steps) && p.steps.length) {
+            if (p.shot) { stepList = this._otShotSteps(slots, norm); filled = { args: {}, missing: [] }; }
+            else if (Array.isArray(p.steps) && p.steps.length) {
                 const miss = [];
                 stepList = p.steps.map((st) => { const f = _faOtFill(st.args || {}, slots, groups); f.missing.forEach((m) => { if (miss.indexOf(m) < 0 && !/^step\d/.test(m)) miss.push(m); }); return { tool: st.tool, args: f.args, cleanup: !!st.cleanup }; });
                 filled = { args: {}, missing: miss };
@@ -16769,19 +16785,22 @@ ${fnData.code}
                 return v;
             };
             let failed = null;
+            const shots = [];
             for (const st of c.steps || []) {
                 if (failed && !st.cleanup) { results.push({ tool: st.tool, skipped: true }); continue; }
                 const t = this.tools[st.tool];
                 if (!t) { if (!st.cleanup) failed = failed || `工具「${st.tool}」不存在（可能是這個版本沒有，或網頁版不支援）`; results.push({ tool: st.tool, error: '工具不存在' }); continue; }
                 const args = subst(st.args || {});
-                if (Object.values(args).some((x) => x === '')) { failed = failed || `${st.tool}缺少前一步的結果（例如分頁id），前面的步驟可能沒成功`; results.push({ tool: st.tool, skipped: true }); continue; }
+                if (Object.values(args).some((x) => x === '')) { failed = failed || (st.tool === 'browser_screenshot' && (c.steps[0] || {}).tool === 'browser_list_tabs' ? '目前沒有AI開啟的分頁可以截圖。請在指令裡附上網址，例如：截圖 https://example.com 上方 800x400' : `${st.tool}缺少前一步的結果（例如分頁id），前面的步驟可能沒成功`); results.push({ tool: st.tool, skipped: true }); continue; }
                 let raw, json = null, ok = true;
                 try { raw = await t.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ error: String((e && e.message) || e) }); }
                 try { json = JSON.parse(raw); if (json && (json.ok === false || json.error)) ok = false; } catch (_) {}
+                if (json && json.type === 'image' && json.dataUrl) { this._otShowImage(json); shots.push(json.meta || {}); results.push({ tool: st.tool, ok: true, shown: true }); continue; }
                 results.push({ tool: st.tool, raw, json, ok });
                 if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
             }
-            const body = results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text)).join('\n\n');
+            const shotText = shots.map((m) => '📸 已截圖' + (m.width ? '（' + m.width + '×' + m.height + '）' : '') + (m.title ? '：' + m.title : '') + (m.url ? ' ' + m.url : '') + (m.warning ? '\n⚠️ ' + m.warning : '')).join('\n');
+            const body = [shotText].concat(results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close|list_tabs)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text))).filter(Boolean).join('\n\n') + (shots.length ? '\n\n（離線模式不看圖片內容，只負責截圖；要說明畫面內容請切回線上模式。）' : '');
             if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
             return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
         }
