@@ -16381,6 +16381,28 @@ ${fnData.code}
     }
 
     // ---- 執行與回答 ----
+    // 網頁文字（browser_get_page_text）的整理：去掉時間戳、導覽列、捲動位置等雜訊；列表型頁面（新聞首頁）依頁面順序列出標題
+    _otPageDigest(o, query) {
+        const raw = String(o.text);
+        const noise = [/^\S{0,16}[•·]\s*\d+\s*(?:秒|分鐘|分|小時|天|週|周|月)前$/, /^[\d\s:：\-\/.,]+$/, /^(?:登入|註冊|首頁|更多|搜尋|選單|廣告|分享|訂閱|回到頂端|關於|隱私|服務條款|Yahoo|新聞熱搜)/, /^\d+\s*(?:秒|分鐘|小時|天)前(?:更新)?$/];
+        const lines = raw.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+        const good = lines.filter((l) => l.length >= 8 && l.length <= 140 && !noise.some((re) => re.test(l)));
+        const head = [];
+        if (o.title) head.push('**' + o.title + '**' + (o.url ? '（' + o.url + '）' : '')); else if (o.url) head.push(String(o.url));
+        const avg = good.reduce((a, l) => a + l.length, 0) / (good.length || 1);
+        let body;
+        if (good.length >= 10 && avg < 45) {
+            const seen = new Set(); const pick = [];
+            for (const l of good) { if (seen.has(l)) continue; seen.add(l); pick.push(l); if (pick.length >= 15) break; }
+            body = '這是列表型頁面（約' + good.length + '行有內容的文字），依頁面順序列出前' + pick.length + '則：\n' + pick.map((l) => '- ' + l).join('\n');
+        } else {
+            const sents = _faSemSentences(good.join('\n'));
+            body = sents.length >= 6 ? _faSummarize(sents, 6, 0.4, query).join('\n') + '\n…（原文' + raw.length + '字，以上是依TextRank挑出的重點句）' : (good.join('\n').slice(0, 1800) || '（頁面沒有可顯示的文字）');
+        }
+        if (o.has_more) body += '\n\n（頁面後面還有內容沒讀完；要看更多請用 browser_get_page_text 帶 offset 繼續讀。）';
+        body += '\n\n（離線模式只能列出頁面上的文字，無法像AI一樣歸納說明；要完整說明請切回線上模式。）';
+        return head.concat([body]).join('\n\n');
+    }
     _otPretty(raw, query, budget) {
         budget = budget || 1800;
         let obj = raw;
@@ -16392,6 +16414,7 @@ ${fnData.code}
             if (sents.length >= 6) return _faSummarize(sents, 6, 0.4, query).join('\n') + `\n…（原文${s.length}字，以上是依TextRank挑出的重點句）`;
             return s.slice(0, budget) + '…';
         };
+        if (obj && typeof obj === 'object' && typeof obj.text === 'string' && obj.text.length > 200 && (obj.url || obj.title || obj.total_chars != null)) return this._otPageDigest(obj, query);
         if (obj == null || typeof obj !== 'object') return asText(raw);
         if (obj.error) return '⚠️ 工具回報：' + String(obj.error).slice(0, 400);
         const lines = [];
@@ -45295,6 +45318,18 @@ ${existingNodeSummaries}
     }
 
     _initEventListeners() {
+        if (!this._extLinkHooked) {
+            this._extLinkHooked = true;
+            document.addEventListener('click', (e) => {
+                const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+                if (!a || !a.closest('#ai-floating-window')) return;
+                const href = a.getAttribute('href') || '';
+                if (!/^https?:\/\//i.test(href)) return;
+                e.preventDefault();
+                if (window.desktopAPI && window.desktopAPI.openExternal) window.desktopAPI.openExternal(href).catch(() => {});
+                else window.open(href, '_blank', 'noopener');
+            }, true);
+        }
         const win = document.getElementById('ai-floating-window');
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         const inputText = document.getElementById('ai-input-text');
