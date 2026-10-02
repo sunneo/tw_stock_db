@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AIDoc</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff}}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.55 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}
+header b{font-size:14px;word-break:break-all}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.ai{color:var(--ai);border-color:var(--ai)}
+header .sp{flex:1}
+button{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.p{background:var(--ac);border-color:var(--ac);color:#fff}button.ai{border-color:var(--ai);color:var(--ai)}button:disabled{opacity:.5;cursor:default}
+#app{flex:1;display:flex;min-height:0}
+#nav{width:270px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}
+#tabs{display:flex;gap:3px;padding:6px}#tabs button{flex:1;padding:3px 0}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}
+#sq{margin:0 6px 6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+#list{flex:1;overflow:auto;padding:0 4px 10px}#list a,#list summary{display:block;padding:2px 6px;border-radius:5px;color:var(--fg);cursor:pointer;word-break:break-all}#list a:hover,#list summary:hover{background:var(--bd)}#list .k{color:var(--mut);font-size:11px;margin-left:6px}#list details>div{margin-left:10px}
+#main{flex:1;overflow:auto;padding:14px 20px 60px;min-width:0}
+#chat{width:360px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0;background:var(--bg)}
+#msgs{flex:1;overflow:auto;padding:8px}
+.msg{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);word-break:break-word}.msg.u{background:var(--sf);margin-left:24px}.msg.a{margin-right:8px}.msg.ai{border-color:var(--ai)}
+.msg .h{font-size:11px;color:var(--mut);margin-bottom:3px}.msg .acts{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+#qbar{display:flex;gap:6px;padding:8px;border-top:1px solid var(--bd)}#q{flex:1;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+details#net{border-top:1px solid var(--bd);padding:4px 8px;font-size:11px;color:var(--mut)}#netlog{max-height:90px;overflow:auto;font-family:ui-monospace,Consolas,monospace}
+h1.t{font-size:19px;margin:0 0 6px;word-break:break-all}h2{font-size:15px;margin:18px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:3px}h3{font-size:14px;margin:12px 0 4px}
+.mut{color:var(--mut)}code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
+a.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:3px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf)}
+.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:11px;color:var(--mut);margin-right:4px}
+.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 10px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px}.chips span:hover{border-color:var(--ac);color:var(--ac)}.chips span.ai{border-color:var(--ai);color:var(--ai)}
+.md ul,.md ol{padding-left:20px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}
+svg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}
+@media (max-width:900px){#chat{width:300px}#nav{width:200px}}
+@media (max-width:640px){#app{flex-direction:column}#nav,#chat{width:100%;max-height:34vh;border:0;border-bottom:1px solid var(--bd)}}
+</style></head><body>
+<header><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
+<div id="app">
+<aside id="nav"><div id="tabs"><button data-t="pages" class="on">頁面</button><button data-t="tree">檔案</button><button data-t="syms">定義</button><button data-t="notes">說明</button></div><input id="sq" placeholder="搜尋…（語意搜尋）"><div id="list"></div></aside>
+<main id="main"><div class="mut">載入中…</div></main>
+<section id="chat"><div id="msgs"></div><div id="qbar"><input id="q" placeholder="問這個專案：某函式做什麼／在哪定義／誰用到…" autofocus><button id="ask" class="p" title="離線問答（立刻回答）">問</button><button id="askai" class="ai" title="請 AI 讀程式碼後回答（依序處理，AI 在背景參與）">問 AI</button></div>
+<details id="net"><summary>通訊紀錄（fetch／WebSocket）</summary><div id="netlog"></div></details></section>
+</div>
+<script id="cfg" type="application/json">__CFG__</script>
+__SHIM__
+<script>
+(function(){
+var CFG=JSON.parse(document.getElementById('cfg').textContent);
+function $(s){return document.querySelector(s)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var PATHRE=/^[\w.+\-@\/]+\.[A-Za-z0-9]{1,6}(:\d+(-\d+)?)?$/,SYMRE=/^[A-Za-z_][\w:.]{2,}$/;
+var BASE='http://mock.local';
+var NET=[];
+function netlog(t){NET.push(new Date().toLocaleTimeString()+'  '+t);if(NET.length>60)NET.shift();var el=$('#netlog');if(el){el.textContent=NET.join('\n');el.scrollTop=1e9}}
+async function api(method,path,body){
+  var t0=performance.now();
+  var r=await fetch(BASE+path,{method:method,headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  var j=null;try{j=await r.json()}catch(e){j={error:'回應不是JSON'}}
+  netlog(method+' '+path.slice(0,70)+' → '+r.status+'  '+Math.round(performance.now()-t0)+'ms');
+  if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));
+  return j;
+}
+function mdToHtml(src){
+  var s=String(src==null?'':src).replace(/\r/g,'');
+  var blocks=[];
+  s=s.replace(/```[^\n]*\n([\s\S]*?)```/g,function(_,c){blocks.push('<pre>'+esc(c.replace(/\n$/,''))+'</pre>');return '\u0000'+(blocks.length-1)+'\u0000'});
+  var lines=s.split('\n'),out=[],list=null;
+  function inl(t){
+    t=esc(t);
+    t=t.replace(/`([^`]+)`/g,function(_,c){
+      var raw=c.replace(/&amp;/g,'&');
+      if(PATHRE.test(raw))return '<a class="l" data-go="file:'+esc(raw.replace(/:\d+(-\d+)?$/,''))+'"><code>'+c+'</code></a>';
+      if(SYMRE.test(raw)&&!/^\d/.test(raw))return '<a class="l" data-go="sym:'+esc(raw)+'"><code>'+c+'</code></a>';
+      return '<code>'+c+'</code>'});
+    t=t.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+    return t;
+  }
+  function close(){if(list){out.push('</'+list+'>');list=null}}
+  lines.forEach(function(l){
+    var m;
+    if(/^\u0000\d+\u0000$/.test(l.trim())){close();out.push(blocks[+l.trim().replace(/\u0000/g,'')]);return}
+    if((m=/^(#{1,4})\s+(.*)$/.exec(l))){close();var n=Math.min(3,m[1].length+1);out.push('<h'+n+'>'+inl(m[2])+'</h'+n+'>');return}
+    if((m=/^\s*[-*]\s+(.*)$/.exec(l))){if(list!=='ul'){close();out.push('<ul>');list='ul'}out.push('<li>'+inl(m[1])+'</li>');return}
+    if((m=/^\s*\d+[.)]\s+(.*)$/.exec(l))){if(list!=='ol'){close();out.push('<ol>');list='ol'}out.push('<li>'+inl(m[1])+'</li>');return}
+    if((m=/^>\s?(.*)$/.exec(l))){close();out.push('<blockquote>'+inl(m[1])+'</blockquote>');return}
+    if(/^\|.*\|\s*$/.test(l)){close();if(/^\|[\s:|-]+\|$/.test(l))return;var cells=l.trim().slice(1,-1).split('|');out.push('<table><tr>'+cells.map(function(c){return '<td>'+inl(c.trim())+'</td>'}).join('')+'</tr></table>');return}
+    close();
+    if(!l.trim())return;
+    out.push('<p>'+inl(l)+'</p>');
+  });
+  close();
+  return out.join('\n').replace(/<\/table>\n<table>/g,'');
+}
+
+var ws=null,wsTry=0;
+function connect(){
+  try{ws=new WebSocket('ws://mock.local/ws')}catch(e){netlog('WebSocket 建立失敗：'+e.message);return}
+  ws.onopen=function(){wsTry=0;$('#wsdot').style.color='var(--ok)';netlog('WS open /ws');ws.send(JSON.stringify({type:'hello'}))};
+  ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data)}catch(e){return}netlog('WS ← '+m.type);onEvent(m)};
+  ws.onclose=function(){$('#wsdot').style.color='var(--er)';netlog('WS close');if(wsTry++<5)setTimeout(connect,1000*wsTry)};
+}
+var cur={kind:'',key:''};
+var AIB={}; // 問題id→AI訊息節點
+function addMsg(cls,head,html,acts){
+  var d=document.createElement('div');d.className='msg '+cls;
+  d.innerHTML='<div class="h">'+esc(head)+'</div><div class="b md">'+html+'</div>';
+  if(acts&&acts.length){var a=document.createElement('div');a.className='acts';acts.forEach(function(x){var b=document.createElement('button');b.textContent=x[0];if(x[2])b.className=x[2];b.onclick=function(){x[1](b)};a.appendChild(b)});d.appendChild(a)}
+  $('#msgs').appendChild(d);$('#msgs').scrollTop=1e9;return d;
+}
+async function ask(q,ctx,ai){
+  q=String(q||'').trim();if(!q)return;
+  addMsg('u',ai?'你（請 AI 回答）':'你',esc(q));
+  try{
+    var r=await api('POST','/api/ask',{q:q,ctx:ctx||cur,ai:!!ai});
+    var acts=[];
+    if(!ai)acts.push(['請 AI 深入回答',function(b){b.disabled=true;ask(q,ctx,true)},'ai']);
+    addMsg('a','離線問答（'+esc(r.quick.intent)+'）',mdToHtml(r.quick.answer||'（沒有結果）'),acts);
+    if(r.ai_id){var n=addMsg('a ai','AI（'+(r.queue_pos>1?'排隊中，前面還有 '+(r.queue_pos-1)+' 個':'準備中')+'）','<span class="mut">⏳ 等待…</span>');AIB[r.ai_id]={node:n,q:q,ctx:ctx||cur}}
+  }catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}
+}
+function chips(list){return '<div class="chips">'+list.map(function(c,i){return '<span data-ci="'+i+'" class="'+(c[2]||'')+'">'+esc(c[0])+'</span>'}).join('')+'</div>'}
+function wireChips(root,list){root.querySelectorAll('.chips span').forEach(function(sp){sp.onclick=function(){var c=list[+sp.dataset.ci];ask(c[1],cur,c[2]==='ai')}})}
+function onEvent(m){
+  if(m.type==='info'){setInfo(m.info)}
+  else if(m.type==='jobs'){setJobs(m.jobs)}
+  else if(m.type==='ai_queue'){var q=$('#aiq');q.style.display=m.n?'':'none';q.textContent='🤖 AI 佇列 '+m.n}
+  else if(m.type==='ai_start'){var b=AIB[m.id];if(b)b.node.querySelector('.h').textContent='AI（讀程式碼中…）'}
+  else if(m.type==='ai_progress'){var b2=AIB[m.id];if(b2)b2.node.querySelector('.b').innerHTML='<span class="mut">⏳ '+esc(m.text)+'</span>'}
+  else if(m.type==='ai_answer'){var b3=AIB[m.id];if(b3){b3.node.querySelector('.h').textContent='AI 回答';b3.node.querySelector('.b').innerHTML=mdToHtml(m.text||'（沒有回答）');if(m.notes_changed){var a=document.createElement('div');a.className='mut';a.textContent='✅ AI 已把確認過的說明補進資料庫';b3.node.appendChild(a)}else if(cur.kind==='file'||cur.kind==='symbol'){var ac=document.createElement('div');ac.className='acts';var bt=document.createElement('button');bt.textContent='把這段存成說明';bt.onclick=function(){saveNote(b3.ctx||cur,m.text,bt)};ac.appendChild(bt);b3.node.appendChild(ac)}}}
+  else if(m.type==='notes_changed'){refreshCur()}
+}
+async function saveNote(ctx,text,btn){try{await api('POST','/api/note',{path:ctx.path,symbol:ctx.kind==='symbol'?ctx.name:undefined,note:String(text).replace(/\s+/g,' ').slice(0,480)});if(btn){btn.textContent='✅ 已存入';btn.disabled=true}}catch(e){alert('存入失敗：'+e.message)}}
+function setInfo(i){CFG.info=i;$('#ttl').textContent=i.title||CFG.title;$('#stat').textContent=i.files+' 個檔案 · '+i.symbols+' 個定義 · 說明 '+(i.notes_files+i.notes_symbols)+(i.complete?'':' · 部分索引');$('#stat').className='badge'+(i.complete?' ok':'')}
+function setJobs(j){var el=$('#jobs');var t=[];if(j.index&&j.index.running)t.push('索引 '+j.index.percent+'%');if(j.dive&&j.dive.running)t.push('深入探討 '+j.dive.done+'/'+j.dive.total);el.style.display=t.length?'':'none';el.textContent='⏳ '+t.join('・')}
+/* ---- 導覽 ---- */
+var tab='pages';
+async function renderList(){
+  var q=$('#sq').value.trim(),h='';
+  try{
+    if(q.length>=2){var r=await api('GET','/api/search?q='+encodeURIComponent(q));h=r.hits.map(function(x){return x.type==='symbol'?'<a data-go="sym:'+esc(x.name)+'">'+esc(x.name)+'<span class="k">'+esc(x.kind)+' · '+esc(x.path)+':'+x.line+'</span></a>':'<a data-go="file:'+esc(x.path)+'">'+esc(x.path)+'<span class="k">檔案</span></a>'}).join('')||'<div class="mut" style="padding:6px">沒有結果</div>'}
+    else if(tab==='pages'){var p=await api('GET','/api/pages');h=p.pages.map(function(x){return '<a data-go="page:'+esc(x.id)+'">'+esc(x.title)+(x.auto?'<span class="k">草稿</span>':'')+'</a>'}).join('')||'<div class="mut" style="padding:6px">還沒有百科頁面（/deepwiki wiki 產生）</div>'}
+    else if(tab==='tree'){h='<div id="tr"></div>';$('#list').innerHTML=h;await loadTree('',$('#tr'));return}
+    else if(tab==='syms'){var s=await api('GET','/api/symbols');h=s.symbols.map(function(x){return '<a data-go="sym:'+esc(x.name)+'">'+esc(x.name)+'<span class="k">'+esc(x.kind)+'</span></a>'}).join('')}
+    else{var n=await api('GET','/api/notes');h=n.notes.map(function(x){return '<a data-go="'+(x.symbol?'sym:'+esc(x.symbol):'file:'+esc(x.path))+'">'+esc(x.symbol||x.path)+'<span class="k">'+esc(x.by||'')+(x.stale?' · 可能過期':'')+'</span></a>'}).join('')||'<div class="mut" style="padding:6px">還沒有說明。AI 深入探討或你自己補的說明會出現在這裡。</div>'}
+  }catch(e){h='<div class="err" style="padding:6px">'+esc(e.message)+'</div>'}
+  $('#list').innerHTML=h;
+}
+async function loadTree(path,host){
+  var r=await api('GET','/api/tree?path='+encodeURIComponent(path));
+  var h='';r.dirs.forEach(function(d){var p=path?path+'/'+d:d;h+='<details data-p="'+esc(p)+'"><summary>'+esc(d)+'/</summary><div></div></details>'});
+  r.files.forEach(function(f){var p=path?path+'/'+f.name:f.name;h+='<a data-go="file:'+esc(p)+'">'+esc(f.name)+(f.note?'<span class="k">✎</span>':'')+'</a>'});
+  if(r.more)h+='<div class="mut" style="padding:2px 6px">…另有 '+r.more+' 項</div>';
+  host.innerHTML=h;
+  host.querySelectorAll('details').forEach(function(dt){dt.addEventListener('toggle',function(){if(dt.open&&!dt.dataset.loaded){dt.dataset.loaded=1;loadTree(dt.dataset.p,dt.querySelector('div'))}})});
+}
+function link(path,label){return '<a class="l" data-go="file:'+esc(path)+'">'+esc(label||path)+'</a>'}
+function slink(n){return '<a class="l" data-go="sym:'+esc(n)+'">'+esc(n)+'</a>'}
+async function showPage(id){cur={kind:'page',key:id,path:'',name:id};var r=await api('GET','/api/page?id='+encodeURIComponent(id));var cs=[['這個專案整體怎麼分層？','這個專案整體怎麼分層、主要模組有哪些'],['請 AI 用白話說明這一頁','請用白話說明這一頁（'+r.title+'）的重點，並指出最值得先看的檔案','ai']];$('#main').innerHTML='<div class="md">'+(r.auto?'<div class="note">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(r.md)+'</div>'+chips(cs);wireChips($('#main'),cs);$('#main').scrollTop=0}
+async function showFile(path){
+  cur={kind:'file',key:path,path:path,name:path};
+  var f=await api('GET','/api/file?path='+encodeURIComponent(path));
+  var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f.lang)+'</span><span class="tag">'+f.lines+' 行</span>'+(f.note_stale?'<span class="tag" style="color:var(--er)">說明可能過期</span>':'')+'</div>';
+  h+=f.note?'<div class="note"><b>說明</b>（'+esc(f.note_by||'AI')+'）：'+esc(f.note)+' <a class="l" id="editnote">編輯</a></div>':'<div class="mut">還沒有說明。<a class="l" id="editnote">自己補一段</a>，或請 AI 讀過後補。</div>';
+  if(f.doc)h+='<p>'+esc(f.doc)+'</p>';
+  var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];
+  h+=chips(cs)+'<div><button id="src">看程式碼</button></div><div id="srcbox"></div>';
+  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+esc(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
+  h+='<h2>引用了誰（'+f.imports.length+'）</h2>'+(f.imports.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
+  h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
+  $('#main').innerHTML=h;$('#main').scrollTop=0;
+  $('#main').querySelectorAll('.chips span').forEach(function(sp){sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
+  $('#editnote').onclick=function(){var t=prompt('這個檔案的說明（一兩句：做什麼、為什麼存在、要注意什麼）：',f.note||'');if(t&&t.trim().length>=6)saveNote(cur,t)};
+  $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class="mut">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+}
+async function showSym(name){
+  cur={kind:'symbol',key:name,path:'',name:name};
+  var r=await api('GET','/api/symbol?name='+encodeURIComponent(name));
+  if(!r.defs.length){$('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  cur.path=r.defs[0].path;
+  var h='<h1 class="t">'+esc(name)+'</h1><div class="mut">'+r.defs.length+' 個定義</div>';
+  var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];
+  r.defs.slice(0,10).forEach(function(d){
+    h+='<h2>'+esc(d.kind)+'　'+link(d.path,d.path+':'+d.line)+'</h2>';
+    h+=d.note?'<div class="note"><b>說明</b>（'+esc(d.note_by||'AI')+(d.stale?'，可能過期':'')+'）：'+esc(d.note)+'</div>':(d.doc?'':'<div class="mut">還沒有說明。</div>');
+    if(d.doc)h+='<p>'+esc(d.doc)+'</p>';
+    if(d.sig)h+='<pre>'+esc(d.sig)+'</pre>';
+    if(d.users&&d.users.length)h+='<div><b>被這些檔案使用（'+d.users.length+'）：</b> '+d.users.slice(0,20).map(function(p){return link(p)}).join('、')+'</div>';
+    if(d.same&&d.same.length)h+='<div style="margin-top:4px"><b>同檔案的其他定義：</b> '+d.same.map(slink).join('、')+'</div>';
+  });
+  h+=chips(cs);$('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;
+}
+function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>'})}
+function refreshCur(){if(cur.kind==='file')showFile(cur.key);else if(cur.kind==='symbol')showSym(cur.key);else if(cur.kind==='page')showPage(cur.key);if(tab==='notes')renderList()}
+document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
+document.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#sq').value='';renderList()}});
+var sqT=null;$('#sq').oninput=function(){clearTimeout(sqT);sqT=setTimeout(renderList,250)};
+$('#ask').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,false)};
+$('#askai').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,true)};
+$('#q').onkeydown=function(e){if(e.key==='Enter'){var v=$('#q').value;$('#q').value='';ask(v,cur,e.shiftKey)}};
+$('#btnNet').onclick=function(){var d=$('#net');d.open=!d.open};
+(async function(){
+  try{setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length)showPage(p.pages[0].id);else $('#main').innerHTML='<h1 class="t">'+esc(CFG.title)+'</h1><div class="mut">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}
+  catch(e){$('#main').innerHTML='<div class="note err">載入失敗：'+esc(e.message)+'</div>'}
+  connect();
+})();
+})();
+</script>
+</body></html>

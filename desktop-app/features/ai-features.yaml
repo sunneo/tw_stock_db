@@ -253,6 +253,13 @@ categories:
         platforms: [web, desktop]
         samples: ["幫這個專案產生可以搜尋的百科頁面", "查一下 parseConfig 這個函式定義在哪、誰在用", "幫專案裡的重要名詞寫定義，放進百科"]
         updated: 2026-10-02
+      - id: aidoc
+        name: AIDoc 專案文件（/aidoc、/ai-repo-doc）
+        summary: 專案索引的整套操作：/aidoc index 選資料夾建立索引（桌面版直接用路徑，網頁版選完自動授權成 fap）、/aidoc dive 讓 AI 逐檔讀程式碼把確認過的說明補進資料庫、/aidoc view 開互動檢視器（可視窗化／最大化，左邊瀏覽、右邊對話查資料，點進檔案或函式可請 AI 排隊回答，過程用假的 fetch／WebSocket 與主程式溝通）、/aidoc save／load／bundle／import 讓不同人拿同一份專案繼續延伸索引與說明。AI 的程式設計相關領域可用 repo_map／repo_ask 快速取得整體結構，深入後用 annotate 補說明。舊名 /deepwiki 仍可用。
+        how: { domain: coding, tools: [repo_map, repo_ask] }
+        platforms: [web, desktop]
+        samples: ["/aidoc view", "幫這個專案建立索引並讓 AI 補上每個檔案的說明", "把專案的索引存進專案資料夾，同事拿到可以接著補"]
+        updated: 2026-10-03
       - id: repo-ask
         name: 程式碼問答（類似 doxygen＋語意搜尋）
         summary: 問專案裡「某個函式做什麼」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。依 repo_map 的索引（定義、註解、簽名、依賴、呼叫關係）回答，用字串雜湊向量＋BM25＋TextRank 重排，不需要模型；回傳事實與程式碼片段讓 AI 整理成回答。同一個問答引擎也會內嵌進匯出的 HTML，離線在瀏覽器裡問。
