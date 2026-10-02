@@ -16230,7 +16230,7 @@ ${fnData.code}
                 { id: 'url_only', type: 'regex', expr: '^\\s*(https?://(?!(?:www\\.)?(?:youtube\\.com|youtu\\.be)/)\\S+)\\s*$', intent: '貼上單一網址 → 讀取網頁', tool: 'fetch_web_page', args: { url: '{1}' }, confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'youtube_url', type: 'regex', expr: '(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be)/\\S+)', intent: '貼上YouTube網址 → 下載', tool: 'youtube_download', args: { text: '{1}' }, confidence: 0.9, risk: 'confirm', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
-                { id: 'browser_open_read', type: 'regex', expr: '(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_open_read', type: 'regex', expr: '(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.98, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'browser_control_status', type: 'regex', expr: '瀏覽器控制|控制瀏覽器|browser[ _]?control', intent: '瀏覽器控制：檢查擴充功能是否連線（要開網址請連同網址一起說）', tool: 'browser_status', args: {}, confidence: 0.8, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'search_words', type: 'regex', expr: '^(?:請|幫我|幫忙)?(?:上網|網路上)?(?:搜尋|搜索|查詢|查一下|查)\\s*[:：]?\\s*(.{2,})$', intent: '搜尋 xxx', tool: 'browser_search', args: { query: '{1}' }, confidence: 0.72, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
             ],
@@ -16269,7 +16269,7 @@ ${fnData.code}
         }
         return made;
     }
-    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v6:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v7:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
     _otPickTool(p, text) {
         if (!p.tools || p.tools.length < 2) return p.tool;
         const low = String(text).toLowerCase();
@@ -16365,6 +16365,8 @@ ${fnData.code}
             return { kind: stepList ? 'steps' : (p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer'))), steps: stepList || undefined, domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: stepList ? (p.risk || 'safe') : ((pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe')), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
         });
         res.sort((a, b) => b.score - a.score);
+        // 能實際執行的做法（規則／工具／多步驟）優先於「只有說明文字」的內建功能卡片：分數接近（差0.1內）時選能動手的
+        if (res[0] && res[0].kind === 'answer' && res[0].source === 'builtin') { const act = res.find((x) => (x.kind === 'steps' || x.kind === 'tool' || x.kind === 'slash') && x.score >= res[0].score - 0.1); if (act) { res.splice(res.indexOf(act), 1); res.unshift(act); } }
         const best = res[0];
         out.alternatives = res.slice(1, 5).map((x) => ({ domain: x.domain, pattern: x.pattern, intent: x.intent, tool: x.tool, score: x.score }));
         if (best && best.score >= threshold && (best.via !== '語意' || (best.example && best.sim_raw >= 0.28))) {
