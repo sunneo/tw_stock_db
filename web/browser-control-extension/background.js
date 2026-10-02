@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -423,19 +423,34 @@ const commands = {
     const vp = m.cssVisualViewport || m.visualViewport;
     const params = { format: "jpeg", quality: Math.min(95, Math.max(30, Number(a.quality) || 70)) };
     let width, height;
+    // region={x,y,width,height}：只截指定範圍（像素；一般模式是畫面可視區左上角0,0，full_page時是整頁座標）；scale(1~3)放大
+    const rg = a.region && typeof a.region === "object" ? { x: Number(a.region.x), y: Number(a.region.y), width: Number(a.region.width), height: Number(a.region.height) } : null;
+    if (rg && !(Number.isFinite(rg.x) && Number.isFinite(rg.y) && rg.width > 0 && rg.height > 0)) throw new Error("region需要{x,y,width,height}四個數字，width/height要大於0");
+    const scale = Math.min(3, Math.max(1, Number(a.scale) || 1));
+    let regionApplied;
     if (a.full_page) {
       const cs = m.cssContentSize || m.contentSize;
-      width = Math.round(cs.width);
-      height = Math.min(Math.round(cs.height), 8000);
+      const fullW = Math.round(cs.width), fullH = Math.min(Math.round(cs.height), 8000);
       params.captureBeyondViewport = true;
-      params.clip = { x: 0, y: 0, width, height, scale: 1 };
+      if (rg) {
+        const x = Math.max(0, Math.round(rg.x)), y = Math.max(0, Math.round(rg.y));
+        width = Math.min(Math.round(rg.width), fullW - x); height = Math.min(Math.round(rg.height), fullH - y);
+        if (!(width > 0 && height > 0)) throw new Error("region超出整頁範圍（頁面 " + fullW + "×" + fullH + "）");
+        params.clip = { x, y, width, height, scale };
+        regionApplied = { x, y, width, height };
+      } else { width = fullW; height = fullH; params.clip = { x: 0, y: 0, width, height, scale: 1 }; }
     } else {
-      width = Math.round(vp.clientWidth);
-      height = Math.round(vp.clientHeight);
-      params.clip = { x: vp.pageX, y: vp.pageY, width, height, scale: 1 };
+      const vw = Math.round(vp.clientWidth), vh = Math.round(vp.clientHeight);
+      if (rg) {
+        const x = Math.max(0, Math.round(rg.x)), y = Math.max(0, Math.round(rg.y));
+        width = Math.min(Math.round(rg.width), vw - x); height = Math.min(Math.round(rg.height), vh - y);
+        if (!(width > 0 && height > 0)) throw new Error("region超出畫面範圍（可視區 " + vw + "×" + vh + "）");
+        params.clip = { x: vp.pageX + x, y: vp.pageY + y, width, height, scale };
+        regionApplied = { x, y, width, height };
+      } else { width = vw; height = vh; params.clip = { x: vp.pageX, y: vp.pageY, width, height, scale: 1 }; }
     }
     const shot = await send(tabId, "Page.captureScreenshot", params);
-    return { data_url: "data:image/jpeg;base64," + shot.data, width, height, url: tab.url || "", title: tab.title || "", note: "座標以這張圖的像素為準（左上角=0,0），可直接給 browser_mouse 的 x/y" };
+    return { data_url: "data:image/jpeg;base64," + shot.data, width, height, region_applied: regionApplied, url: tab.url || "", title: tab.title || "", note: "座標以這張圖的像素為準（左上角=0,0），可直接給 browser_mouse 的 x/y" };
   },
 
   async mouse(a, ctx) {
