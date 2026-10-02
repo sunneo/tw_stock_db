@@ -2692,6 +2692,365 @@ SUBAGENT_DOMAIN_REGISTRY.wiki_writer = {
 **誠實規則**：沒有出現在證據裡的檔案、函式、行為一律不寫；寧可寫「待確認」。`,
 };
 
+
+// 中英對照的「概念詞典」：把意思相近的詞（含中英文）歸到同一個概念，嵌入時多加一個概念特徵，這樣「幫我查新聞」與
+// "search the web for news" 在離線時也算相近（純雜湊嵌入只看字面，跨語言完全不相似）。使用者之後可在Offline Trainer裡補充同義詞。
+const FA_SEM_GROUPS = {
+    search: '搜尋 搜索 查詢 查找 查 找 尋找 檢索 search find lookup query google bing',
+    web: '網路 網頁 網站 網址 上網 瀏覽器 網際網路 web website webpage browser internet online url http',
+    news: '新聞 消息 報導 頭條 news headline article',
+    stock: '股票 股價 台股 個股 大盤 加權指數 漲跌 技術分析 型態 stock price market taiex tsmc 台積電',
+    file: '檔案 文件 檔 file document',
+    folder: '資料夾 目錄 文件夾 路徑 folder directory dir path',
+    read: '讀取 讀 打開 開啟 開 讀檔 查看 看 瀏覽 檢視 read open view show display cat',
+    write: '寫入 寫 存檔 儲存 另存 建立檔案 新增檔案 輸出 write save create output',
+    delete: '刪除 移除 清除 刪 delete remove erase clear',
+    edit: '修改 編輯 更改 改 更新 取代 edit modify change update replace patch',
+    download: '下載 抓取 擷取 取得 download fetch get scrape crawl',
+    upload: '上傳 傳送 傳 upload send transfer',
+    video: '影片 視頻 影音 錄影 video movie clip mp4 youtube',
+    audio: '音訊 音檔 聲音 錄音 音樂 audio sound music mp3 wav',
+    image: '圖片 圖像 照片 影像 相片 圖 image picture photo png jpg jpeg',
+    pdf: 'pdf 文件檔',
+    office: 'word excel powerpoint ppt pptx docx xlsx 簡報 投影片 試算表 文書 office slide slides deck spreadsheet',
+    convert: '轉換 轉成 轉檔 轉 換成 變成 convert transform export encode decode',
+    summarize: '摘要 總結 重點 概述 彙整 整理 summarize summary digest tldr overview',
+    translate: '翻譯 譯成 譯 translate translation',
+    explain: '解釋 說明 介紹 講解 什麼是 為什麼 原理 explain describe introduce why what meaning',
+    code: '程式 程式碼 寫程式 開發 編程 實作 原始碼 code program programming develop implement source script',
+    debug: '除錯 偵錯 修bug 錯誤 異常 當機 bug debug error exception crash fix troubleshoot traceback',
+    test: '測試 單元測試 驗證 檢查 test unittest verify check validate lint',
+    build: '建置 編譯 打包 構建 build compile package bundle make cmake',
+    deploy: '部署 發佈 上線 發布 deploy release publish ship',
+    git: 'git 版本控制 版控 commit push pull branch merge clone checkout diff 提交 推送 拉取 分支 合併',
+    terminal: '終端機 命令列 指令 命令 終端 shell terminal command cli bash powershell cmd console',
+    python: 'python py pip pyodide 腳本',
+    javascript: 'javascript js node npm typescript ts',
+    run: '執行 運行 跑 啟動 run execute launch start invoke',
+    click: '點擊 按 點 按鈕 click press button tap',
+    screenshot: '截圖 螢幕擷取 擷取畫面 screenshot capture screen',
+    form: '表單 填寫 輸入 填入 form fill input type',
+    chart: '圖表 走勢圖 K線 折線圖 長條圖 統計圖 chart plot graph candlestick',
+    diagram: '流程圖 架構圖 時序圖 類別圖 示意圖 diagram flowchart uml mermaid sequence',
+    svg: 'svg 向量圖 繪圖 畫圖 繪製 draw drawing vector',
+    animation: '動畫 動態 animation animate motion keyframe',
+    scene3d: '3d 三維 立體 場景 模型 three scene 3D場景 render 渲染',
+    database: '資料庫 資料表 sql sqlite database table query',
+    rag: '知識庫 記憶 筆記 記住 記錄 圖譜 rag memory knowledge note remember',
+    schedule: '排程 提醒 定時 時間 日期 現在幾點 schedule reminder cron time date clock now today',
+    settings: '設定 配置 選項 偏好 設定檔 settings config configuration preference option',
+    model: '模型 llm 語言模型 model gpt claude gemini ollama',
+    transcribe: '逐字稿 語音辨識 聽寫 辨識語音 transcribe whisper speech recognition subtitle 字幕',
+    tts: '朗讀 語音合成 念出來 發音 tts speak voice readaloud',
+    ocr: '文字辨識 圖片轉文字 ocr 辨識文字',
+    email: '電子郵件 郵件 信件 寄信 email mail gmail',
+    calendar: '行事曆 日曆 會議 活動 calendar meeting event',
+    math: '計算 算 數學 加減乘除 公式 calculate math compute formula sum average',
+    list: '列出 清單 列表 有哪些 顯示全部 list ls enumerate all',
+    compare: '比較 差異 對照 差別 diff compare difference versus',
+    analyze: '分析 診斷 評估 研究 analyze analysis diagnose evaluate investigate',
+    generate: '產生 生成 製作 做一個 建立 創作 generate create make produce build-me',
+    help: '幫助 說明書 怎麼用 用法 教學 指南 help usage guide tutorial how-to 使用方式 功能 features',
+    security: '安全 漏洞 弱點 加密 權限 密碼 security vulnerability cve exploit encrypt permission password',
+    network: '網路 連線 封包 代理 proxy network packet socket http https dns',
+    bmc: 'bmc openbmc redfish ipmi 韌體 firmware',
+    uefi: 'uefi bios edk tianocore 開機 韌體',
+    docker: 'docker 容器 container kubernetes k8s 映像',
+    mobile: 'android ios 手機 行動 app 應用程式',
+    game: '遊戲 game unity unreal',
+    hardware: '硬體 感測器 傳輸 raspberry gpio i2c spi 樹莓派 嵌入式 embedded sensor',
+    parallel: '平行 並行 多執行緒 多核 parallel concurrent thread gpu hpc mpi openmp cuda',
+    project: '專案 repo repository 倉庫 結構 架構 專案結構 codebase wiki 百科',
+    symbol: '函式 函數 類別 符號 定義 function class symbol method definition 變數 variable',
+    dependency: '依賴 相依 引用 呼叫 關聯 import include require dependency call reference related',
+};
+function _faSemBuildLex(groups, extra) {
+    const lex = { word: {}, cjk: [] };
+    const all = Object.assign({}, groups || {});
+    for (const k in (extra || {})) all[k] = (all[k] ? all[k] + ' ' : '') + extra[k];
+    for (const id in all) {
+        String(all[id]).toLowerCase().split(/\s+/).filter(Boolean).forEach((t) => {
+            if (/^[a-z0-9\-_.#+]+$/.test(t)) { (lex.word[t] = lex.word[t] || []).push(id); }
+            else lex.cjk.push([t, id]);
+        });
+    }
+    return lex;
+}
+const FA_SEM_LEX = _faSemBuildLex(FA_SEM_GROUPS);
+
+// ============================================================
+// 2026-10-02：離線語意核心（Offline Trainer與專案問答共用）。構想來自使用者的 DomainResolver（pattern_rules + chromadb
+// + TextRank），這裡全部用純JavaScript重寫、不需要任何模型或網路：
+//   語意＝特徵雜湊嵌入（英文詞＋CJK單字與雙字組，確定性，同樣文字永遠同樣向量）＋餘弦相似度
+//   文字重排＝BM25（字面）＋TextRank（候選之間的中心性，PageRank）＋MMR（多樣性）
+// 下面這幾個函式刻意「自給自足」（不引用外面的變數），因為會用toString()塞進產生出來的HTML，在純HTML／JS裡離線問答。
+// ============================================================
+function _faSemTokens(text, lex) {
+    lex = lex || (typeof FA_SEM_LEX !== 'undefined' ? FA_SEM_LEX : null);
+    const STOP_EN = { the: 1, a: 1, an: 1, and: 1, or: 1, but: 1, if: 1, of: 1, to: 1, in: 1, on: 1, for: 1, with: 1, as: 1, by: 1, at: 1, from: 1, is: 1, are: 1, was: 1, were: 1, be: 1, this: 1, that: 1, it: 1, its: 1, not: 1, no: 1, so: 1, than: 1, which: 1, who: 1, what: 1, when: 1, where: 1, how: 1, can: 1, will: 1, do: 1, does: 1, did: 1, has: 1, have: 1, had: 1, i: 1, you: 1, he: 1, she: 1, we: 1, they: 1, there: 1, here: 1 };
+    const STOP_ZH = '的了是在有和與及或也都就把被讓給對於請幫我你他她它們這那一個嗎呢吧啊哦喔呀嘛什麼怎麼如何可以能不要會想要把將';
+    const s = String(text == null ? '' : text).replace(/https?:\/\/\S+/gi, ' http ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.\-\/\\]+/g, ' ').toLowerCase();
+    const out = [];
+    const re = /[a-z0-9]+|[\u3400-\u9fff\uf900-\ufaff]+/g;
+    let m;
+    while ((m = re.exec(s))) {
+        const w = m[0];
+        if (/^[a-z0-9]+$/.test(w)) { if (w.length >= 2 && !STOP_EN[w]) out.push(w); else if (/^\d+$/.test(w)) out.push(w); continue; }
+        const chars = Array.from(w);
+        for (let i = 0; i < chars.length; i++) {
+            if (STOP_ZH.indexOf(chars[i]) < 0) out.push('c:' + chars[i]);
+            if (i + 1 < chars.length && !(STOP_ZH.indexOf(chars[i]) >= 0 && STOP_ZH.indexOf(chars[i + 1]) >= 0)) out.push('b:' + chars[i] + chars[i + 1]);
+        }
+    }
+    // 概念特徵：同義詞（含中英文）共用一個 k:概念id，讓離線時也能跨語言、跨說法對上
+    if (lex) {
+        const seen = {};
+        const ascii = s.match(/[a-z0-9-_.#+]+/g) || [];
+        ascii.forEach((w) => { (lex.word[w] || []).forEach((id) => { if (!seen[id]) { seen[id] = 1; out.push('k:' + id); } }); });
+        for (let i = 0; i < lex.cjk.length; i++) { const e = lex.cjk[i]; if (s.indexOf(e[0]) >= 0 && !seen[e[1]]) { seen[e[1]] = 1; out.push('k:' + e[1]); } }
+    }
+    return out;
+}
+function _faSemEmbed(text, dim, lex) {
+    dim = dim || 256;
+    const v = new Float32Array(dim);
+    const toks = _faSemTokens(text, lex);
+    const tf = {};
+    for (const t of toks) tf[t] = (tf[t] || 0) + 1;
+    for (const t in tf) {
+        let h = 2166136261;
+        for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+        const w = (1 + Math.log(tf[t])) * (t.indexOf('c:') === 0 ? 0.5 : (t.indexOf('k:') === 0 ? ({ code: 1, run: 1, generate: 1, file: 1, project: 1, help: 1, analyze: 1, read: 1, list: 1, test: 1, web: 1, explain: 1, settings: 1, python: 1, javascript: 1 }[t.slice(2)] ? 0.7 : 1.4) : 1));
+        v[h % dim] += ((h >>> 16) & 1) ? -w : w;
+    }
+    let n = 0;
+    for (let i = 0; i < dim; i++) n += v[i] * v[i];
+    n = Math.sqrt(n) || 1;
+    for (let i = 0; i < dim; i++) v[i] /= n;
+    return v;
+}
+function _faSemCos(a, b) { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) s += a[i] * b[i]; return s; }
+// 句子切分（中英文標點與換行）
+function _faSemSentences(text) {
+    return String(text || '').replace(/\r/g, '').split(/(?<=[。！？!?；;])\s*|\n+|(?<=[.])\s+(?=[A-Z])/).map((x) => x.trim()).filter((x) => x.length > 1);
+}
+function _faPagerank(adj, damping, iters) {
+    const n = adj.length;
+    if (!n) return [];
+    if (n === 1) return [1];
+    damping = damping || 0.85; iters = iters || 60;
+    const rowSum = adj.map((r) => r.reduce((a, b) => a + b, 0));
+    let sc = new Array(n).fill(1 / n);
+    for (let it = 0; it < iters; it++) {
+        const ns = new Array(n);
+        let diff = 0;
+        for (let i = 0; i < n; i++) {
+            let inc = 0;
+            for (let j = 0; j < n; j++) if (i !== j && rowSum[j] > 0) inc += (adj[j][i] / rowSum[j]) * sc[j];
+            ns[i] = (1 - damping) / n + damping * inc;
+            diff += Math.abs(ns[i] - sc[i]);
+        }
+        sc = ns;
+        if (diff < 1e-4) break;
+    }
+    const tot = sc.reduce((a, b) => a + b, 0) || 1;
+    return sc.map((x) => x / tot);
+}
+// 區塊（句子、函式說明、候選答案…）的TextRank中心性：每個區塊是節點，邊權重是向量相似度，PageRank算「誰最能代表整體」
+function _faRankBlocks(blocks, minSim) {
+    minSim = minSim == null ? 0.05 : minSim;
+    const vecs = blocks.map((b) => _faSemEmbed(b));
+    const n = blocks.length;
+    const adj = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const s = _faSemCos(vecs[i], vecs[j]); if (s >= minSim) { adj[i][j] = s; adj[j][i] = s; } }
+    const pr = _faPagerank(adj);
+    return blocks.map((b, i) => ({ index: i, text: b, score: pr[i], vec: vecs[i] }));
+}
+// 抽取式摘要（MMR：兼顧中心性與多樣性），原句照抄、不改寫、不編造
+function _faSummarize(blocks, topN, diversity, query) {
+    topN = topN || 5; diversity = diversity == null ? 0.4 : diversity;
+    if (!blocks.length) return [];
+    if (blocks.length <= topN) return blocks.slice();
+    const ranked = _faRankBlocks(blocks);
+    const qv = query ? _faSemEmbed(query) : null;
+    const cent = ranked.map((r) => r.score);
+    const mx = Math.max.apply(null, cent) || 1;
+    const rel = ranked.map((r, i) => (cent[i] / mx) * (qv ? 0.5 : 1) + (qv ? Math.max(0, _faSemCos(r.vec, qv)) * 0.5 : 0));
+    const order = ranked.map((r, i) => i).sort((a, b) => rel[b] - rel[a]);
+    const pool = order.slice(0, Math.max(topN * 3, topN));
+    const picked = [];
+    while (pool.length && picked.length < topN) {
+        let best = -1, bv = -1e9;
+        for (const i of pool) {
+            const red = picked.length ? Math.max.apply(null, picked.map((p) => _faSemCos(ranked[i].vec, ranked[p].vec))) : 0;
+            const v = (1 - diversity) * rel[i] - diversity * red;
+            if (v > bv) { bv = v; best = i; }
+        }
+        picked.push(best);
+        pool.splice(pool.indexOf(best), 1);
+    }
+    return picked.sort((a, b) => a - b).map((i) => blocks[i]);
+}
+function _faKeywords(text, topN) {
+    const words = _faSemTokens(text).filter((t) => t.indexOf('c:') !== 0 && t.indexOf('k:') !== 0).map((t) => t.replace(/^b:/, ''));
+    const vocab = Array.from(new Set(words));
+    if (!vocab.length) return [];
+    const idx = {};
+    vocab.forEach((w, i) => { idx[w] = i; });
+    const n = vocab.length;
+    const adj = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < words.length; i++) for (let j = i + 1; j < Math.min(i + 4, words.length); j++) { const a = idx[words[i]], b = idx[words[j]]; if (a !== b) { adj[a][b] += 1; adj[b][a] += 1; } }
+    const pr = _faPagerank(adj);
+    return vocab.map((w, i) => ({ word: w, score: pr[i] })).sort((a, b) => b.score - a.score).slice(0, topN || 8);
+}
+// BM25：query對一批文件的字面相關度（0~1，除以最大值）
+function _faBm25(query, docs) {
+    const q = Array.from(new Set(_faSemTokens(query)));
+    const tk = docs.map((d) => _faSemTokens(d));
+    const N = docs.length || 1;
+    const avg = tk.reduce((a, t) => a + t.length, 0) / N || 1;
+    const df = {};
+    tk.forEach((t) => Array.from(new Set(t)).forEach((w) => { df[w] = (df[w] || 0) + 1; }));
+    const k1 = 1.5, b = 0.75;
+    const scores = tk.map((t) => {
+        const tf = {};
+        t.forEach((w) => { tf[w] = (tf[w] || 0) + 1; });
+        let s = 0;
+        for (const w of q) {
+            if (!tf[w]) continue;
+            const idf = Math.log(1 + (N - (df[w] || 0) + 0.5) / ((df[w] || 0) + 0.5));
+            s += idf * (tf[w] * (k1 + 1)) / (tf[w] + k1 * (1 - b + b * t.length / avg));
+        }
+        return s;
+    });
+    return scores.map((s) => s / (s + 3)); // 飽和：沒有任何字面重疊＝0，重疊越多越接近1（絕對值，不是相對最大值）
+}
+// 文字重排：向量檢索回來的候選，用「字面BM25＋候選之間的TextRank中心性＋MMR多樣性」重新排序
+// items: [{text, base}]，base是第一階段（向量／規則）分數(0~1)。回傳同樣的物件加上 score 與 explain。
+function _faRerank(query, items, opts) {
+    opts = opts || {};
+    if (!items.length) return [];
+    const texts = items.map((x) => x.text);
+    const bm = _faBm25(query, texts);
+    const pr = _faRankBlocks(texts);
+    const prMax = Math.max(1 / (2 * items.length), 1e-9); // TextRank分數以「平均值的2倍」為滿分（不是相對最大值）
+    const wBase = opts.wBase == null ? 0.55 : opts.wBase, wBm = opts.wBm == null ? 0.3 : opts.wBm, wPr = opts.wPr == null ? 0.15 : opts.wPr;
+    const scored = items.map((it, i) => ({ item: it, bm25: bm[i], rank: Math.min(1, pr[i].score / prMax), vec: pr[i].vec, score: wBase * (it.base || 0) + wBm * bm[i] + wPr * Math.min(1, pr[i].score / prMax) }));
+    scored.sort((a, b) => b.score - a.score);
+    const div = opts.diversity == null ? 0.15 : opts.diversity;
+    const out = [];
+    const rest = scored.slice();
+    while (rest.length && out.length < (opts.topN || items.length)) {
+        let best = 0, bv = -1e9;
+        rest.forEach((c, i) => { const red = out.length ? Math.max.apply(null, out.map((o) => _faSemCos(c.vec, o.vec))) : 0; const v = c.score - div * red; if (v > bv) { bv = v; best = i; } });
+        const c = rest.splice(best, 1)[0];
+        out.push(c);
+    }
+    return out.map((c) => Object.assign({}, c.item, { score: Math.round(c.score * 1000) / 1000, explain: { base: Math.round((c.item.base || 0) * 1000) / 1000, bm25: Math.round(c.bm25 * 1000) / 1000, textrank: Math.round(c.rank * 1000) / 1000 } }));
+}
+
+// ============================================================
+// Offline Trainer（離線訓練器）。設計來源：使用者的 DomainResolver（YAML規則＋chromadb語意＋TextRank），改成助理內建、純JavaScript：
+//   文字 → 擷取槽位（網址、路徑、引號內容…）→ 規則比對（regex／關鍵字）＋語意檢索（特徵雜湊＋概念詞典）→ 文字重排（BM25＋TextRank＋MMR）
+//   → 決定要呼叫哪個工具與參數 → 執行 → 用TextRank把結果濃縮成回答。完全不需要LLM。
+// 知識沉澱在「領域」裡（每個領域有多條 pattern：規則、範例句、要呼叫的工具與參數樣板），可以由使用者手動編輯，
+// 也可以從線上AI問答、RAG知識庫、功能清冊自動訓練。資料存在瀏覽器的IndexedDB。
+// ============================================================
+const FA_SEM_VER = 4; // 嵌入演算法版本：改了斷詞／權重／概念詞典，已存的向量要重算
+// 工具名稱裡的「動詞」對應到中英文說法：同一個功能有多個工具時，用它挑最貼近這句話的那個
+const FA_OT_VERBS = { commit: '提交 commit', push: '推送 push', pull: '拉取 pull', clone: '克隆 複製專案 clone', status: '狀態 status', log: '紀錄 歷史 log', read: '讀取 讀 看 讀檔 read cat open', write: '寫入 寫 存 儲存 write save', list: '列出 清單 list ls', find: '搜尋 找 尋找 find search', delete: '刪除 移除 delete remove', apply: '套用 修改 apply patch', copy: '複製 copy', download: '下載 download', render: '繪製 畫 render draw', import: '匯入 import', export: '匯出 export', merge: '合併 merge', transcribe: '逐字稿 辨識 transcribe', summarize: '摘要 summarize', parse: '解析 parse', extract: '擷取 抽取 extract', convert: '轉換 轉 convert', search: '搜尋 查 search', fetch: '讀取網頁 抓取 fetch', create: '建立 新增 create', run: '執行 run execute', start: '開始 啟動 start', stop: '停止 stop' };
+const FA_OT_RISKY_TOOL = /(write|delete|remove|commit|push|apply|patch|exec|execute|run_command|terminal_run|tmux|send|post|upload|copy|move|install|deploy|kill|reset|clear|drop)/i;
+const FA_OT_META_TOOLS = new Set(['delegate_to_subagent', 'request_additional_tools', 'get_tool_details', 'list_ai_features', 'rag_store_graph_node', 'rag_query_graph', 'rag_delete', 'rag_chunk_document', 'offline_trainer', 'skill_list', 'skill_read', 'skill_create']);
+
+class FaOtDb {
+    constructor(name) { this.name = name; this._p = null; }
+    _open() {
+        if (this._p) return this._p;
+        this._p = new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.name, 1);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains('domains')) db.createObjectStore('domains', { keyPath: 'name' });
+                if (!db.objectStoreNames.contains('solutions')) db.createObjectStore('solutions', { keyPath: 'fp' });
+                if (!db.objectStoreNames.contains('vec')) { const s = db.createObjectStore('vec', { keyPath: 'key' }); s.createIndex('col', 'col', { unique: false }); }
+                if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'k' });
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        return this._p;
+    }
+    async _tx(store, mode, fn) {
+        const db = await this._open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(store, mode);
+            let out;
+            try { out = fn(tx.objectStore(store)); } catch (e) { reject(e); return; }
+            tx.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    }
+    getAll(store) { return this._tx(store, 'readonly', (s) => s.getAll()); }
+    get(store, key) { return this._tx(store, 'readonly', (s) => s.get(key)); }
+    put(store, rec) { return this._tx(store, 'readwrite', (s) => s.put(rec)); }
+    async putMany(store, recs) { const db = await this._open(); return new Promise((resolve, reject) => { const tx = db.transaction(store, 'readwrite'); const s = tx.objectStore(store); recs.forEach((r) => s.put(r)); tx.oncomplete = () => resolve(recs.length); tx.onerror = () => reject(tx.error); }); }
+    delete(store, key) { return this._tx(store, 'readwrite', (s) => s.delete(key)); }
+    clear(store) { return this._tx(store, 'readwrite', (s) => s.clear()); }
+    getByCol(col) { return this._tx('vec', 'readonly', (s) => s.index('col').getAll(col)); }
+    async deleteMany(store, keys) { const db = await this._open(); return new Promise((resolve, reject) => { const tx = db.transaction(store, 'readwrite'); const s = tx.objectStore(store); keys.forEach((k) => s.delete(k)); tx.oncomplete = () => resolve(keys.length); tx.onerror = () => reject(tx.error); }); }
+}
+
+// 槽位擷取：從使用者文字裡抓網址、路徑、引號內容、數字、程式碼區塊…，讓pattern的參數樣板可以用 {url} {path} {quoted} {number} 等
+function _faOtSlots(text) {
+    const t = String(text || '');
+    const urls = t.match(/https?:\/\/[^\s)）」』"'<>]+/g) || [];
+    const paths = (t.match(/(?:[A-Za-z]:[\\/][^\s"'<>|?*]+|fap:[^\s"'<>]+|(?:\.{0,2}\/)?(?:[\w.\-]+\/)+[\w.\-]+\.[A-Za-z0-9]{1,6}|\/(?:[\w.\-]+\/)*[\w.\-]+)/g) || []).filter((p) => urls.every((u) => u.indexOf(p) < 0));
+    const quoted = [];
+    t.replace(/[「『“"']([^「」『』“”"']{1,200})[」』”"']/g, (m, c) => { quoted.push(c); return m; });
+    const numbers = t.match(/-?\d+(?:\.\d+)?/g) || [];
+    const code = [];
+    t.replace(/```[a-z]*\n?([\s\S]*?)```/gi, (m, c) => { code.push(c.trim()); return m; });
+    const colon = /[:：]\s*([\s\S]+)$/.exec(t);
+    const stock = (t.match(/\b\d{4}\b/g) || []).find(() => true);
+    return { problem_text: t.trim(), url: urls[0] || '', urls, path: paths[0] || '', paths, quoted: quoted[0] || '', quotedAll: quoted, number: numbers[0] || '', numbers, code: code[0] || '', after_colon: colon ? colon[1].trim() : '', stock_id: stock || '' };
+}
+// 把參數樣板（{problem_text}、{url}、{1}、{名稱}）填成實際參數；找不到的槽位列在 missing（需要追問使用者）
+function _faOtFill(template, slots, groups) {
+    const missing = [];
+    const sub = (s) => {
+        if (typeof s !== 'string') return s;
+        const exact = /^\{(\w+)\}$/.exec(s);
+        const get = (k) => {
+            if (groups && Object.prototype.hasOwnProperty.call(groups, k)) return groups[k];
+            if (/^\d+$/.test(k) && groups && groups._idx) return groups._idx[Number(k) - 1];
+            return slots[k];
+        };
+        if (exact) { const v = get(exact[1]); if (v === undefined || v === '') { missing.push(exact[1]); return ''; } return v; }
+        return s.replace(/\{(\w+)\}/g, (m, k) => { const v = get(k); if (v === undefined || v === '') { missing.push(k); return ''; } return String(v); });
+    };
+    const walk = (v) => Array.isArray(v) ? v.map(walk) : (v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : sub(v));
+    return { args: walk(template || {}), missing: Array.from(new Set(missing)) };
+}
+// 單一pattern的規則比對（regex／keyword_any／keyword_all）；語意比對在外面用向量做
+function _faOtMatchRule(p, text) {
+    const t = String(text || '');
+    try {
+        if (p.type === 'regex') {
+            const m = new RegExp(p.expr, (p.flags || ['i']).join('').replace(/IGNORECASE/gi, 'i').replace(/MULTILINE/gi, 'm').replace(/DOTALL/gi, 's')).exec(t);
+            if (!m) return null;
+            const groups = Object.assign({}, m.groups || {});
+            groups._idx = m.slice(1);
+            return { score: p.confidence == null ? 0.8 : p.confidence, detail: m[0].slice(0, 80), groups };
+        }
+        const kws = (Array.isArray(p.expr) ? p.expr : String(p.expr || '').split(/[,，\n]/)).map((x) => String(x).trim()).filter(Boolean);
+        const low = t.toLowerCase();
+        if (p.type === 'keyword_any') { const hit = kws.find((k) => low.indexOf(k.toLowerCase()) >= 0); if (!hit) return null; return { score: p.confidence == null ? 0.6 : p.confidence, detail: hit, groups: {} }; }
+        if (p.type === 'keyword_all') { if (!kws.length || !kws.every((k) => low.indexOf(k.toLowerCase()) >= 0)) return null; return { score: Math.min(0.98, (p.confidence == null ? 0.65 : p.confidence) + 0.03 * Math.min(3, kws.length)), detail: kws.join('＋'), groups: {} }; }
+    } catch (e) { return null; }
+    return null;
+}
+
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
 SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
 SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'playbook_state', 'programming_domains', 'programming_knowledge', 'language_explore'])));
@@ -7910,6 +8269,36 @@ class FloatingAssistant {
             '重新顯示建議操作（例如換了股票之後想看新的建議）',
             () => this.insertSuggestionChipsMessage()
         );
+        // 離線訓練器（Offline Trainer）：切換離線模式、乾跑一句話看它會怎麼判斷
+        this.register_slash_command(
+            '/offline', '[on|off|status]',
+            '切換線上／離線模式（離線＝不經過AI，用離線訓練器處理對話）；不帶參數顯示狀態',
+            async (argsText) => {
+                const a = String(argsText || '').trim().toLowerCase();
+                if (a === 'on' || a === 'off') { this.advancedSettings.offlineMode = a === 'on'; this._saveAdvancedSettings(); this._applyOfflineModeUI(); }
+                const st = await this._otRun({ action: 'status' });
+                this._pushAssistantMessage(`🔌 離線模式：${this.advancedSettings.offlineMode ? '開' : '關'}　自動學習：${this.advancedSettings.offlineLearn ? '開' : '關'}　門檻 ${this.advancedSettings.offlineThreshold}\n領域 ${st.domains}、規則 ${st.patterns}、範例句 ${st.examples}、問答記憶 ${st.qa}、已學會的解法 ${st.solutions}`, null);
+                this._persistChatHistory(); this._renderMessageHistory();
+            }
+        );
+        this.register_slash_command(
+            '/offline-dry', '<一句話>',
+            '乾跑：顯示離線訓練器會怎麼判斷這句話（規則、語意、重排、要呼叫的工具與參數），不執行',
+            async (argsText) => {
+                const t = String(argsText || '').trim();
+                if (!t) { this._pushAssistantMessage('用法：/offline-dry <一句話>', null); this._renderMessageHistory(); return; }
+                this.messages.push({ role: 'user', content: '/offline-dry ' + t });
+                const r = await this._otDryRun(t, {});
+                const d = r.decision;
+                const lines = [`🔬 乾跑：「${r.text}」`, `狀態：**${d.status}**　${d.reason}`];
+                if (d.chosen) lines.push(`選中：${d.chosen.domain} / ${d.chosen.pattern}（${d.chosen.via}，分數 ${d.chosen.score}）→ ${d.chosen.tool ? '工具 ' + d.chosen.tool + ' ' + JSON.stringify(d.chosen.args) : (d.chosen.slash ? '指令 ' + d.chosen.slash : '回答')}`);
+                if (r.stages.semantic && r.stages.semantic.length) lines.push('語意相近：' + r.stages.semantic.slice(0, 4).map((x) => `${x.pattern}(${x.sim})`).join('、'));
+                if (r.stages.rules && r.stages.rules.length) lines.push('規則命中：' + r.stages.rules.map((x) => `${x.pattern}(${x.detail})`).join('、'));
+                if (r.alternatives.length) lines.push('其他候選：' + r.alternatives.map((x) => `${x.intent || x.pattern}(${x.score})`).join('、'));
+                this._pushAssistantMessage(lines.join('\n'), null);
+                this._persistChatHistory(); this._renderMessageHistory();
+            }
+        );
         // tw_stock_db客製: 2026-09-26使用者要求——直接列出功能清冊（不經過
         // LLM，立即顯示，也不花token）。內容來自功能清冊（見
         // FA_AI_FEATURES_CATALOG），要問「怎麼做才好」這類需要判斷的問題
@@ -8264,6 +8653,7 @@ class FloatingAssistant {
         // 2026-10-02：專案結構地圖（repo_map）與專案百科（repo_wiki），存在persistentStorage（IndexedDB）
         this.repoMapCache = new FileCache('FloatingAssistantRepoMap_' + ragDbSuffix, 48 * 1024 * 1024);
         this.repoWikiCache = new FileCache('FloatingAssistantRepoWiki_' + ragDbSuffix, 48 * 1024 * 1024);
+        this._otDbName = 'FloatingAssistantOfflineTrainer_' + ragDbSuffix; // 離線訓練器（Offline Trainer）的IndexedDB
         this.programmingPlaybooks = Object.assign({}, FA_PROGRAMMING_PLAYBOOKS);
         this._programmingBaseTools = {};
         // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
@@ -8866,6 +9256,9 @@ class FloatingAssistant {
             youtubeChannelId: '',
             programmingToolOverrides: {},
             customLanguages: {},
+            offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
+            offlineLearn: true, // 線上AI成功的做法自動學進離線訓練器
+            offlineThreshold: 0.45,
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -10017,6 +10410,9 @@ class FloatingAssistant {
                 }
                 return out;
             })(),
+            offlineMode: raw.offlineMode === true,
+            offlineLearn: raw.offlineLearn !== false,
+            offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
             customLanguages: (() => {
                 const out = {};
                 const src = raw.customLanguages && typeof raw.customLanguages === 'object' ? raw.customLanguages : {};
@@ -11041,6 +11437,16 @@ ${fnData.code}
                 try { return JSON.stringify(await this._langExploreRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { action: { type: 'string', enum: ['start', 'note', 'submit_primer', 'status', 'list', 'remove'] }, language: { type: 'string' }, exploration_id: { type: 'string' }, url: { type: 'string', description: 'note：來源網址' }, summary: { type: 'string', description: 'note：這個來源的重點（至少40字）' }, primer: { type: 'object', description: 'submit_primer：入門摘要，欄位見start回傳的primer_template' } }, required: ['action'], additionalProperties: false }
+        );
+
+        registerOptional('offline_trainer',
+            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._otRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned'] }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -15721,6 +16127,695 @@ ${fnData.code}
             return { ok: true, saved: false, note: '使用者選擇不保存。這次對話裡可以直接用剛整理的摘要，但不會留下來。' };
         }
         return { ok: false, error: 'action必須是start／note／submit_primer／status／list／remove' };
+    }
+
+    // ===== Offline Trainer（離線訓練器）：引擎 =====
+    _otDb() { if (!this._otdb) this._otdb = new FaOtDb(this._otDbName || 'FloatingAssistantOfflineTrainer'); return this._otdb; }
+    async _otLoad() {
+        if (this._ot && this._ot.loaded) return this._ot;
+        if (this._otLoading) return this._otLoading;
+        this._otLoading = (async () => {
+            const db = this._otDb();
+            const [domains, sols, vecs, syn] = await Promise.all([db.getAll('domains'), db.getAll('solutions'), db.getAll('vec'), db.get('meta', 'synonyms')]);
+            const cols = {};
+            for (const r of vecs) { const c = cols[r.col] = cols[r.col] || { ids: [], docs: [], metas: [], vecs: [], idx: new Map() }; c.idx.set(r.id, c.ids.length); c.ids.push(r.id); c.docs.push(r.doc); c.metas.push(r.meta); c.vecs.push(new Float32Array(r.vec)); }
+            this._ot = { loaded: true, domains: new Map(domains.map((d) => [d.name, d])), solutions: new Map(sols.map((x) => [x.fp, x])), cols, synonyms: (syn && syn.v) || {} };
+            this._otApplyLex();
+            const ev = await db.get('meta', 'emb_ver');
+            if (!ev || ev.v !== FA_SEM_VER) { await this._otReindex(); await db.put('meta', { k: 'emb_ver', v: FA_SEM_VER }); }
+            await this._otSeedBuiltin(false); // 沒有領域，或功能清冊／工具數量變了就重新播種（使用者編輯過的不會被覆蓋）
+            return this._ot;
+        })();
+        try { return await this._otLoading; } finally { this._otLoading = null; }
+    }
+    _otApplyLex() {
+        const nl = _faSemBuildLex(FA_SEM_GROUPS, (this._ot && this._ot.synonyms) || {});
+        FA_SEM_LEX.word = nl.word; FA_SEM_LEX.cjk = nl.cjk;
+    }
+    _otEmbed(text) { return _faSemEmbed(text, 256, FA_SEM_LEX); }
+    _otCol(col) { const st = this._ot; return st.cols[col] || (st.cols[col] = { ids: [], docs: [], metas: [], vecs: [], idx: new Map() }); }
+    async _otVecUpsert(col, items) {
+        const c = this._otCol(col);
+        const recs = [];
+        for (const it of items) {
+            const vec = this._otEmbed(it.doc);
+            const i = c.idx.get(it.id);
+            if (i !== undefined) { c.docs[i] = it.doc; c.metas[i] = it.meta; c.vecs[i] = vec; }
+            else { c.idx.set(it.id, c.ids.length); c.ids.push(it.id); c.docs.push(it.doc); c.metas.push(it.meta); c.vecs.push(vec); }
+            recs.push({ key: col + '\u0000' + it.id, col, id: it.id, doc: it.doc, meta: it.meta, vec: vec.buffer.slice(0) });
+        }
+        if (recs.length) await this._otDb().putMany('vec', recs);
+    }
+    async _otVecDelete(col, pred) {
+        const c = this._otCol(col);
+        const keep = { ids: [], docs: [], metas: [], vecs: [] };
+        const del = [];
+        c.ids.forEach((id, i) => { if (pred(id, c.metas[i])) del.push(col + '\u0000' + id); else { keep.ids.push(id); keep.docs.push(c.docs[i]); keep.metas.push(c.metas[i]); keep.vecs.push(c.vecs[i]); } });
+        c.ids = keep.ids; c.docs = keep.docs; c.metas = keep.metas; c.vecs = keep.vecs;
+        c.idx = new Map(c.ids.map((id, i) => [id, i]));
+        if (del.length) await this._otDb().deleteMany('vec', del);
+        return del.length;
+    }
+    _otVecQuery(col, text, n, filter) {
+        const c = this._ot.cols[col];
+        if (!c || !c.ids.length) return [];
+        const q = this._otEmbed(text);
+        const out = [];
+        for (let i = 0; i < c.ids.length; i++) { if (filter && !filter(c.metas[i])) continue; out.push({ id: c.ids[i], doc: c.docs[i], meta: c.metas[i], sim: _faSemCos(q, c.vecs[i]) }); }
+        out.sort((a, b) => b.sim - a.sim);
+        return out.slice(0, n || 10);
+    }
+    async _otReindex() {
+        const st = await this._otLoad();
+        for (const col of Object.keys(st.cols)) {
+            const c = st.cols[col];
+            if (col.indexOf('code:') === 0) continue;
+            await this._otVecUpsert(col, c.ids.map((id, i) => ({ id, doc: c.docs[i], meta: c.metas[i] })));
+        }
+    }
+    async _otSaveDomain(d) { d.updated = Date.now(); this._ot.domains.set(d.name, d); await this._otDb().put('domains', d); }
+    async _otSyncPatternExamples(d, p) {
+        const prefix = d.name + '/' + p.id + '#';
+        await this._otVecDelete('ot_examples', (id) => id.indexOf(prefix) === 0);
+        if (p.enabled === false || d.enabled === false) return;
+        const ex = [].concat(p.examples || []).concat(p.type === 'semantic' && p.intent ? [p.intent] : []);
+        await this._otVecUpsert('ot_examples', ex.filter(Boolean).map((e, i) => ({ id: prefix + i, doc: String(e), meta: { domain: d.name, pattern: p.id } })));
+    }
+    // 依工具的參數結構猜一份參數樣板：第一個必填（或常見名稱）字串參數填 {problem_text}
+    _otGuessArgs(toolName) {
+        const FIXED = { list_file_access_points: {}, browser_search: { query: '{problem_text}' }, fetch_web_page: { url: '{url}' }, fap_read_file: { ref: '{path}' }, fap_list_files: { ref: '{path}' }, fs_read_file: { path: '{path}' }, fs_list_files: { path: '{path}' }, rag_query_graph: { query: '{problem_text}' }, repo_map: { action: 'find', query: '{problem_text}' }, programming_knowledge: { action: 'lookup', query: '{problem_text}' } };
+        if (FIXED[toolName]) return Object.assign({}, FIXED[toolName]);
+        const t = this.tools[toolName];
+        const sc = t && t.parametersSchema;
+        const prio = ['query', 'q', 'text', 'task', 'prompt', 'message', 'url', 'path', 'ref', 'input', 'content', 'question', 'keyword'];
+        if (sc && sc.properties) {
+            const props = Object.keys(sc.properties);
+            const pick = prio.find((k) => props.indexOf(k) >= 0 && (sc.properties[k].type === 'string' || !sc.properties[k].type)) || (sc.required || []).find((k) => (sc.properties[k] || {}).type === 'string');
+            if (pick) return { [pick]: pick === 'url' ? '{url}' : (pick === 'path' || pick === 'ref' ? '{path}' : '{problem_text}') };
+        }
+        const m = t && /參數\s*[:：]\s*\{\s*"(\w+)"/.exec(String(t.description || ''));
+        if (m) return { [m[1]]: m[1] === 'url' ? '{url}' : (m[1] === 'path' || m[1] === 'ref' ? '{path}' : '{problem_text}') };
+        return { query: '{problem_text}' };
+    }
+    // 由功能清冊建立內建領域（每個分類一個領域、每個功能一條語意pattern）。使用者編輯過／學到的不會被覆蓋。
+    async _otSeedBuiltin(force) {
+        const st = this._ot || await this._otLoad();
+        const catalog = this.getFeaturesCatalog();
+        const made = { domains: 0, patterns: 0 };
+        const core = {
+            name: 'core_rules', description: '通用規則：網址、/指令提示等（regex／關鍵字）', enabled: true, source: 'builtin', references: [], created: Date.now(), updated: Date.now(),
+            patterns: [
+                { id: 'url_only', type: 'regex', expr: '^\\s*(https?://(?!(?:www\\.)?(?:youtube\\.com|youtu\\.be)/)\\S+)\\s*$', intent: '貼上單一網址 → 讀取網頁', tool: 'fetch_web_page', args: { url: '{1}' }, confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'youtube_url', type: 'regex', expr: '(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be)/\\S+)', intent: '貼上YouTube網址 → 下載', tool: 'youtube_download', args: { text: '{1}' }, confidence: 0.9, risk: 'confirm', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
+                { id: 'search_words', type: 'regex', expr: '^(?:請|幫我|幫忙)?(?:上網|網路上)?(?:搜尋|搜索|查詢|查一下|查)\\s*[:：]?\\s*(.{2,})$', intent: '搜尋 xxx', tool: 'browser_search', args: { query: '{1}' }, confidence: 0.72, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+            ],
+        };
+        const doms = { core_rules: core };
+        if (catalog) for (const c of catalog.categories) {
+            const d = { name: 'cat_' + c.id, description: c.name + '：' + (c.summary || ''), enabled: true, source: 'builtin', patterns: [], references: [], created: Date.now(), updated: Date.now() };
+            for (const f of c.features) {
+                if (!f.available) continue;
+                const tools = [].concat((f.how || {}).tools || []).filter((t) => this.tools[t] && !FA_OT_META_TOOLS.has(t));
+                const slashes = [].concat((f.how || {}).slash || []);
+                const toolWords = tools.length ? [tools.map((t) => t.replace(/_/g, ' ')).join(' ')] : [];
+                const examples = Array.from(new Set([f.name].concat(f.samples || []).concat([String(f.summary || '').slice(0, 90)]).concat(toolWords))).filter(Boolean);
+                const BROAD = { 'ai-features': 0.5, 'subagent-delegation': 0.5, 'skill-creator': 0.55, 'benchmark-model': 0.55, 'language-explore': 0.5, 'programming-domains': 0.55, 'programming-knowledge': 0.6, 'sandbox-lab': 0.6, 'sandbox-mock': 0.6, 'saved-scripts': 0.6, 'repo-wiki': 0.65 };
+                const p = { id: 'feat_' + f.id, type: 'semantic', examples, intent: f.name, description: f.summary, confidence: BROAD[f.id] || 0.7, source: 'builtin', enabled: true, hits: 0 };
+                if (tools.length) { p.tool = tools[0]; p.args = this._otGuessArgs(tools[0]); p.risk = FA_OT_RISKY_TOOL.test(tools[0]) ? 'confirm' : 'safe'; p.tools = tools.slice(0, 8); }
+                else if (slashes.length) p.slash = slashes[0];
+                else p.answer = `${f.name}：${f.summary}\n\n用法範例：\n- ${(f.samples || []).join('\n- ')}\n\n（這個功能需要AI協助才能真的做，離線模式只能說明用法。）`;
+                d.patterns.push(p);
+            }
+            if (d.patterns.length) doms[d.name] = d;
+        }
+        for (const nd of Object.values(doms)) {
+            const old = st.domains.get(nd.name);
+            if (old && !force && old.seeded_ver === this._otSeedVer()) continue;
+            const merged = old ? Object.assign({}, old) : nd;
+            if (old) {
+                const keep = old.patterns.filter((p) => p.source !== 'builtin' || p.edited);
+                const keepIds = new Set(keep.map((p) => p.id));
+                merged.patterns = keep.concat(nd.patterns.filter((p) => !keepIds.has(p.id)));
+            }
+            merged.seeded_ver = this._otSeedVer();
+            await this._otSaveDomain(merged);
+            for (const p of merged.patterns) await this._otSyncPatternExamples(merged, p);
+            made.domains++; made.patterns += merged.patterns.length;
+        }
+        return made;
+    }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v4:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otPickTool(p, text) {
+        if (!p.tools || p.tools.length < 2) return p.tool;
+        const low = String(text).toLowerCase();
+        let best = p.tool, bs = 0;
+        for (const t of p.tools) {
+            let sc = 0;
+            for (const w of t.toLowerCase().split('_')) {
+                const syn = FA_OT_VERBS[w];
+                if (syn && syn.split(' ').some((x) => x && low.indexOf(x) >= 0)) sc += 2;
+                else if (w.length > 3 && low.indexOf(w) >= 0) sc += 1;
+            }
+            if (sc > bs) { bs = sc; best = t; }
+        }
+        return best;
+    }
+
+    // ---- 規劃：文字 → 候選（規則＋語意）→ 重排 → 決策 ----
+    async _otPlan(text, opts) {
+        opts = opts || {};
+        const st = await this._otLoad();
+        const norm = String(text || '').replace(/\s+/g, ' ').trim();
+        const slots = _faOtSlots(norm);
+        const fp = _faRepoHash(norm.toLowerCase());
+        const threshold = Number(opts.threshold != null ? opts.threshold : (this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45));
+        const out = { text: norm, fingerprint: fp, slots: Object.fromEntries(Object.entries(slots).filter(([k, v]) => k !== 'problem_text' && v && (!Array.isArray(v) || v.length)).map(([k, v]) => [k, Array.isArray(v) ? v.slice(0, 3) : String(v).slice(0, 120)])), threshold, stages: {} };
+        // 1) 決定性快取：完全一樣的問題，直接重放之前驗證過的工具呼叫
+        const sol = opts.noCache ? null : st.solutions.get(fp);
+        out.stages.cache = { hit: !!sol };
+        if (sol) { out.decision = { status: 'cache', chosen: { kind: 'cache', domain: '(已學會的解法)', pattern: sol.fp, calls: sol.calls, summary: sol.summary, score: 1 }, alternatives: [], reason: '完全一樣的問題之前成功過，重放當時的工具呼叫。' }; return out; }
+        // 2) 規則（regex／關鍵字）
+        const cands = new Map();
+        const ruleHits = [];
+        for (const d of st.domains.values()) {
+            if (d.enabled === false) continue;
+            for (const p of d.patterns) {
+                if (p.enabled === false) continue;
+                const key = d.name + '/' + p.id;
+                if (p.type !== 'semantic') {
+                    const r = _faOtMatchRule(p, norm);
+                    if (r) { cands.set(key, { key, domain: d.name, p, rule: r, sim: 0 }); ruleHits.push({ domain: d.name, pattern: p.id, type: p.type, detail: r.detail, score: r.score }); }
+                } else cands.set(key, { key, domain: d.name, p, rule: null, sim: 0, _sem: true });
+            }
+        }
+        out.stages.rules = ruleHits.slice(0, 10);
+        // 3) 語意（向量）：範例句的相似度，每個pattern取最相似的一句
+        const hits = this._otVecQuery('ot_examples', norm, 40);
+        const sem = [];
+        for (const h of hits) {
+            const key = h.meta.domain + '/' + h.meta.pattern;
+            let c = cands.get(key);
+            if (!c) { const d = st.domains.get(h.meta.domain); const p = d && d.patterns.find((x) => x.id === h.meta.pattern); if (!p) continue; c = { key, domain: d.name, p, rule: null, sim: 0 }; cands.set(key, c); }
+            if (h.sim > c.sim) { c.sim = h.sim; c.example = h.doc; }
+            sem.push({ domain: h.meta.domain, pattern: h.meta.pattern, example: h.doc, sim: Math.round(h.sim * 1000) / 1000 });
+        }
+        out.stages.semantic = sem.slice(0, 8);
+        // 3b) 問答記憶（從線上AI問答／RAG學來的）：當成「回答」候選
+        for (const h of this._otVecQuery('ot_qa', norm, 6)) {
+            if (h.sim < 0.15) continue;
+            const key = 'qa/' + h.id;
+            cands.set(key, { key, domain: '(問答記憶)', p: { id: h.id, type: 'semantic', intent: h.doc.slice(0, 40), answer: h.meta.answer, qa: true, confidence: 0.6, enabled: true, source: h.meta.source || 'qa' }, rule: null, sim: h.sim * 0.9, example: h.doc });
+        }
+        // 4) 第一階段分數
+        const list = [];
+        for (const c of cands.values()) {
+            const prior = (c.p.confidence != null ? c.p.confidence : 0.7) / 0.7;
+            const semScore = c.sim > 0 ? Math.min(0.95, c.sim * 1.4 * Math.min(1.2, prior)) : 0;
+            const ruleScore = c.rule ? c.rule.score : 0;
+            const base = Math.min(0.99, Math.max(ruleScore, semScore) + (ruleScore && semScore > 0.2 ? 0.08 : 0));
+            c.ruleFloor = ruleScore * 0.95; // 規則是使用者明確寫的意圖，不被字面／重排的權重稀釋
+            if (base <= 0.05) continue;
+            const ptxt = [c.example || '', (c.p.examples || []).slice(0, 3).join(' '), c.p.intent || '', c.p.description || '', c.p.tool || '', c.p.slash || ''].join(' ');
+            list.push({ cand: c, base, text: ptxt });
+        }
+        list.sort((a, b) => b.base - a.base);
+        const top = list.slice(0, 16);
+        // 5) 文字重排：BM25（字面）＋TextRank（候選之間的中心性）＋MMR
+        const reranked = top.length ? _faRerank(norm, top.map((x) => ({ text: x.text, base: x.base, cand: x.cand })), { topN: 8, wBase: 0.7, wBm: 0.25, wPr: 0.05, diversity: 0.05 }) : [];
+        out.stages.rerank = reranked.slice(0, 6).map((r) => ({ domain: r.cand.domain, pattern: r.cand.p.id, score: r.score, explain: r.explain }));
+        const res = reranked.map((r) => {
+            const p = r.cand.p;
+            const groups = r.cand.rule ? r.cand.rule.groups : {};
+            const pickedTool = p.tool ? this._otPickTool(p, norm) : null;
+            const tplArgs = pickedTool && pickedTool !== p.tool ? this._otGuessArgs(pickedTool) : (p.args || {});
+            const filled = pickedTool ? _faOtFill(tplArgs, slots, groups) : { args: {}, missing: [] };
+            const finalScore = Math.max(r.score, r.cand.ruleFloor || 0);
+            const simRaw = r.cand.sim || 0;
+            return { kind: p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer')), domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: (pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe'), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
+        });
+        res.sort((a, b) => b.score - a.score);
+        const best = res[0];
+        out.alternatives = res.slice(1, 5).map((x) => ({ domain: x.domain, pattern: x.pattern, intent: x.intent, tool: x.tool, score: x.score }));
+        if (best && best.score >= threshold && (best.via !== '語意' || (best.example && best.sim_raw >= 0.28))) {
+            if (best.missing && best.missing.length) out.decision = { status: 'needs_input', chosen: best, reason: '找到對應的動作，但缺少參數：' + best.missing.join('、') + '（文字裡找不到，請補上，例如網址或檔案路徑）。' };
+            else out.decision = { status: 'planned', chosen: best, reason: `最高分「${best.domain} / ${best.pattern}」${best.score}（門檻${threshold}），${best.via}。` };
+        } else {
+            out.decision = { status: 'unresolved', chosen: best || null, reason: best ? `最高分只有 ${best.score}，低於門檻 ${threshold}，不敢亂猜。` : '沒有任何規則或範例跟這段文字相近。' };
+            // RAG知識庫退路
+            if (this.advancedSettings.ragEnabled && this.ragSystem) { try { const r = await this.ragSystem.query(norm, 3); if (r && r.length) out.rag = r.map((x) => ({ id: x.id, content: String(x.content).slice(0, 400), score: x.score })); } catch (_) {} }
+        }
+        return out;
+    }
+
+    // ---- 執行與回答 ----
+    _otPretty(raw, query, budget) {
+        budget = budget || 1800;
+        let obj = raw;
+        if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch (_) { obj = null; } }
+        const asText = (s) => {
+            s = String(s);
+            if (s.length <= budget) return s;
+            const sents = _faSemSentences(s);
+            if (sents.length >= 6) return _faSummarize(sents, 6, 0.4, query).join('\n') + `\n…（原文${s.length}字，以上是依TextRank挑出的重點句）`;
+            return s.slice(0, budget) + '…';
+        };
+        if (obj == null || typeof obj !== 'object') return asText(raw);
+        if (obj.error) return '⚠️ 工具回報：' + String(obj.error).slice(0, 400);
+        const lines = [];
+        const bigKeys = ['text', 'content', 'result', 'summary', 'markdown', 'answer', 'body', 'output', 'stdout'];
+        const bk = bigKeys.find((k) => typeof obj[k] === 'string' && obj[k].length > 0);
+        if (bk) lines.push(asText(obj[bk]));
+        for (const [k, v] of Object.entries(obj)) {
+            if (k === bk || k === 'ok') continue;
+            if (Array.isArray(v) && v.length) lines.push(`**${k}**（${v.length}）\n` + v.slice(0, 8).map((x) => '- ' + (typeof x === 'object' ? Object.entries(x).filter(([, y]) => y != null && typeof y !== 'object').slice(0, 4).map(([a, b]) => a + '：' + String(b).slice(0, 80)).join('；') : String(x).slice(0, 120))).join('\n'));
+            else if (typeof v === 'string' && v) lines.push(`**${k}**：${v.slice(0, 200)}`);
+            else if (typeof v === 'number' || typeof v === 'boolean') lines.push(`**${k}**：${v}`);
+        }
+        return lines.join('\n\n').slice(0, budget * 2) || '（工具沒有回傳可顯示的內容）';
+    }
+    async _otExecute(plan, opts) {
+        opts = opts || {};
+        const c = plan.decision && plan.decision.chosen;
+        if (!c) return { ok: false, error: '沒有可以執行的動作' };
+        if (c.kind === 'answer' || c.kind === 'qa') return { ok: true, kind: c.kind, text: c.answer || '' };
+        if (c.kind === 'cache') {
+            const outs = [];
+            for (const call of c.calls || []) { const t = this.tools[call.tool]; if (!t) { outs.push({ tool: call.tool, error: '工具已不存在' }); continue; } outs.push({ tool: call.tool, raw: await t.callback.call(this, JSON.stringify(call.args || {})) }); }
+            return { ok: true, kind: 'cache', results: outs, text: outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
+        }
+        if (c.kind === 'slash') {
+            const first = String(c.slash).trim().split(/\s+/)[0];
+            const e = this.slashCommands.get(first);
+            if (!e) return { ok: false, error: '找不到指令 ' + first };
+            e.handler(plan.slots.after_colon || '');
+            return { ok: true, kind: 'slash', text: `已執行 ${first}（結果顯示在對話裡）。`, silent: true };
+        }
+        if (c.kind === 'tool') {
+            const t = this.tools[c.tool];
+            if (!t) return { ok: false, error: `工具「${c.tool}」不存在（可能是這個版本沒有，或網頁版不支援）` };
+            if (c.risk === 'confirm' && !opts.assumeYes) {
+                const ans = await this.requestUserForm({ title: '🔌 離線訓練器要執行有副作用的工具', description: `工具：${c.tool}\n參數：${JSON.stringify(c.args).slice(0, 400)}\n依據：${c.domain} / ${c.pattern}（信心${c.score}）\n\n這是離線規則比對出來的，不是AI判斷的。要執行嗎？`, choices: ['執行', '取消'] });
+                if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, error: '使用者取消', cancelled: true };
+            }
+            let raw;
+            try { raw = await t.callback.call(this, JSON.stringify(c.args)); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+            let ok = true;
+            try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
+            return { ok, kind: 'tool', raw, text: this._otPretty(raw, plan.text) };
+        }
+        return { ok: false, error: '不認得的動作類型' };
+    }
+    async _otBumpHit(plan) {
+        const c = plan.decision && plan.decision.chosen;
+        if (!c || !c.domain) return;
+        const d = this._ot.domains.get(c.domain);
+        const p = d && d.patterns.find((x) => x.id === c.pattern);
+        if (p) { p.hits = (p.hits || 0) + 1; p.last_hit = Date.now(); await this._otSaveDomain(d); }
+    }
+    // 乾跑：只回報「會怎麼判斷、會做什麼」，不執行（execute:true 才真的執行）
+    async _otDryRun(text, opts) {
+        const plan = await this._otPlan(text, opts);
+        const d = plan.decision;
+        const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
+        if (opts && opts.execute && (d.status === 'planned' || d.status === 'cache')) { const r = await this._otExecute(plan, opts); out.executed = { ok: r.ok, error: r.error, preview: String(r.text || '').slice(0, 1500) }; if (r.ok) await this._otBumpHit(plan); }
+        return out;
+    }
+
+    // ---- 離線模式的對話：不經過LLM ----
+    async _offlineRespond(userText) {
+        const text = String(userText || '').trim();
+        if (!text) return;
+        this._chatMarkTouched && this._chatMarkTouched(text);
+        this.messages.push({ role: 'user', content: text });
+        this._renderMessageHistory();
+        let plan;
+        try { plan = await this._otPlan(text); } catch (e) { this._pushAssistantMessage('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        const d = plan.decision;
+        const c = d.chosen;
+        const head = `🔌 離線模式（Offline Trainer，不經過AI）`;
+        const why = c ? `比對：「${c.domain} / ${c.pattern}」信心 ${c.score}（${c.via || '規則'}${c.explain ? `；字面${c.explain.bm25}、重排${c.explain.textrank}` : ''}）` : '';
+        if (d.status === 'planned' || d.status === 'cache') {
+            const act = c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
+            this._pushAssistantMessage(`${head}\n${why}\n動作：${act}`, null);
+            this._persistChatHistory(); this._renderMessageHistory();
+            const r = await this._otExecute(plan);
+            await this._otBumpHit(plan);
+            if (!r.silent) this._pushAssistantMessage(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`), null);
+        } else if (d.status === 'needs_input') {
+            this._pushAssistantMessage(`${head}\n${why}\n${d.reason}`, null);
+        } else {
+            const alts = [c].concat(plan.alternatives.map((a) => ({ domain: a.domain, pattern: a.pattern, intent: a.intent, score: a.score }))).filter(Boolean).slice(0, 4);
+            let msg = `${head}\n${d.reason}\n\n可能相關：\n` + (alts.length ? alts.map((a) => `- ${a.intent || a.pattern}（${a.domain}，${a.score}）`).join('\n') : '（沒有）');
+            if (plan.rag && plan.rag.length) msg += '\n\n知識庫(RAG)裡有相近的內容：\n' + plan.rag.map((r) => `- ${String(r.content).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
+            msg += '\n\n要讓它學會這句話：到「Configure → AI → 離線訓練器」用乾跑確認並加入範例，或切回線上模式讓AI回答（線上的成功做法會自動學起來）。';
+            this._pushAssistantMessage(msg, null);
+        }
+        this._persistChatHistory(); this._renderMessageHistory();
+    }
+
+    // ---- 學習：從線上AI的一輪對話、RAG、對話紀錄訓練 ----
+    _otTemplateize(args, slots) {
+        const walk = (v) => {
+            if (typeof v === 'string') {
+                if (v.trim() === slots.problem_text) return '{problem_text}';
+                if (slots.url && v === slots.url) return '{url}';
+                if (slots.path && v === slots.path) return '{path}';
+                if (slots.quoted && v === slots.quoted) return '{quoted}';
+                if (slots.after_colon && v === slots.after_colon) return '{after_colon}';
+                return v;
+            }
+            if (Array.isArray(v)) return v.map(walk);
+            if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+            return v;
+        };
+        return walk(args);
+    }
+    async _otAddExample(domainName, patternId, text) {
+        const st = await this._otLoad();
+        const d = st.domains.get(domainName);
+        const p = d && d.patterns.find((x) => x.id === patternId);
+        if (!p) return false;
+        p.examples = p.examples || [];
+        const v = this._otEmbed(text);
+        const near = this._otVecQuery('ot_examples', text, 3, (m) => m.domain === d.name && m.pattern === p.id).some((h) => h.sim >= 0.92);
+        if (near || p.examples.indexOf(text) >= 0) return false;
+        p.examples.push(text);
+        if (p.examples.length > 40) p.examples.shift();
+        if (p.source === 'builtin') p.edited = true;
+        await this._otSaveDomain(d);
+        await this._otVecUpsert('ot_examples', [{ id: d.name + '/' + p.id + '#' + Date.now().toString(36), doc: text, meta: { domain: d.name, pattern: p.id } }]);
+        return true;
+    }
+    async _otLearnFromTurn(userText, calls, answer) {
+        if (!this.advancedSettings.offlineLearn) return { learned: 0 };
+        const text = String(userText || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length < 2 || text.charAt(0) === '/') return { learned: 0 };
+        const good = (calls || []).filter((c) => c.ok && !FA_OT_META_TOOLS.has(c.name) && this.tools[c.name]);
+        const st = await this._otLoad();
+        const slots = _faOtSlots(text);
+        let learned = 0;
+        if (good.length && good.length <= 3) {
+            const first = good[0];
+            let args = {};
+            try { args = JSON.parse(first.rawArgs || '{}'); } catch (_) {}
+            const tpl = this._otTemplateize(args, slots);
+            const dom = st.domains.get('learned') || { name: 'learned', description: '從線上AI問答自動學到的做法（使用者與AI互動時累積）', enabled: true, source: 'learned', patterns: [], references: [], created: Date.now() };
+            const pid = 'learned_' + first.name;
+            let p = dom.patterns.find((x) => x.id === pid);
+            if (!p) { p = { id: pid, type: 'semantic', examples: [], intent: '（學到）' + first.name, description: '', tool: first.name, args: tpl, risk: FA_OT_RISKY_TOOL.test(first.name) ? 'confirm' : 'safe', confidence: 0.6, source: 'learned', enabled: true, hits: 0 }; dom.patterns.push(p); }
+            const hadVec = (p.examples || []).length;
+            await this._otSaveDomain(dom);
+            if (await this._otAddExample('learned', pid, text)) learned++;
+            if (!hadVec) await this._otSyncPatternExamples(dom, p);
+            // 決定性快取：完全一樣的句子 → 重放這一輪成功的工具呼叫
+            const fp = _faRepoHash(text.toLowerCase());
+            await this._otDb().put('solutions', { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: String(answer || '').slice(0, 300), created: Date.now(), hits: 0 });
+            st.solutions.set(fp, { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: String(answer || '').slice(0, 300) });
+        }
+        // 問答記憶：沒有工具、純粹是知識問答的一輪，也存起來（離線時可以直接回答）
+        const ans = String(answer || '').trim();
+        if (ans.length >= 20 && ans.length <= 4000 && !/^(⚠️|\[系統提示\])/.test(ans)) {
+            const id = 'qa_' + _faRepoHash(text.toLowerCase());
+            await this._otVecUpsert('ot_qa', [{ id, doc: text, meta: { answer: ans.slice(0, 3000), source: 'chat', at: Date.now() } }]);
+            learned++;
+        }
+        return { learned };
+    }
+    async _otTrainFromRag() {
+        const st = await this._otLoad();
+        if (!this.ragSystem) return { ok: false, error: '沒有RAG系統' };
+        const all = await this.ragSystem.getAll();
+        const items = all.filter((r) => r && r.content).map((r) => {
+            const content = String(r.content);
+            const first = content.split(/\n/)[0].slice(0, 80);
+            return { id: 'rag_' + r.id, doc: (String(r.id).replace(/[_\-]/g, ' ') + ' ' + first).trim(), meta: { answer: content.slice(0, 3000), source: 'rag', rag_id: r.id, tags: r.tags || '' } };
+        });
+        if (items.length) await this._otVecUpsert('ot_qa', items);
+        return { ok: true, added: items.length };
+    }
+    async _otTrainFromChats() {
+        await this._otLoad();
+        let n = 0;
+        const msgs = this.messages || [];
+        for (let i = 0; i < msgs.length - 1; i++) {
+            const m = msgs[i], a = msgs[i + 1];
+            if (m.role === 'user' && a.role === 'assistant' && typeof m.content === 'string' && typeof a.content === 'string' && m.content.length > 2 && a.content.length >= 20 && !a._suggestionChips && m.content.charAt(0) !== '/') {
+                const t = m.content.replace(/\s+/g, ' ').trim();
+                await this._otVecUpsert('ot_qa', [{ id: 'qa_' + _faRepoHash(t.toLowerCase()), doc: t, meta: { answer: a.content.slice(0, 3000), source: 'chat', at: Date.now() } }]);
+                n++;
+            }
+        }
+        return { ok: true, added: n };
+    }
+    _otStats() {
+        const st = this._ot;
+        if (!st) return { loaded: false };
+        let patterns = 0, examples = 0;
+        st.domains.forEach((d) => { patterns += d.patterns.length; });
+        return { loaded: true, domains: st.domains.size, patterns, examples: (st.cols.ot_examples || { ids: [] }).ids.length, qa: (st.cols.ot_qa || { ids: [] }).ids.length, solutions: st.solutions.size, collections: Object.keys(st.cols) };
+    }
+    async _otRun(a) {
+        const action = String(a.action || 'status');
+        const st = await this._otLoad();
+        if (action === 'status') return Object.assign({ ok: true, offline_mode: !!this.advancedSettings.offlineMode, learn: !!this.advancedSettings.offlineLearn, threshold: this.advancedSettings.offlineThreshold }, this._otStats());
+        if (action === 'dry_run' || action === 'resolve') { if (!a.text) return { ok: false, error: '缺少text' }; return await this._otDryRun(a.text, { execute: action === 'resolve' || !!a.execute, assumeYes: !!a.assume_yes, noCache: !!a.no_cache, threshold: a.threshold }); }
+        if (action === 'list') return { ok: true, domains: Array.from(st.domains.values()).map((d) => ({ name: d.name, enabled: d.enabled !== false, source: d.source, patterns: d.patterns.length, description: String(d.description || '').slice(0, 80) })) };
+        if (action === 'show') { const d = st.domains.get(String(a.domain || '')); return d ? { ok: true, domain: d } : { ok: false, error: '沒有這個領域' }; }
+        if (action === 'add_pattern') {
+            const name = String(a.domain || 'user');
+            const d = st.domains.get(name) || { name, description: '使用者自訂', enabled: true, source: 'user', patterns: [], references: [], created: Date.now() };
+            const p = Object.assign({ id: 'p_' + Date.now().toString(36), type: 'semantic', examples: [], confidence: 0.7, enabled: true, source: 'user', hits: 0, risk: 'safe' }, a.pattern || {});
+            if (!p.tool && !p.slash && !p.answer) return { ok: false, error: 'pattern要有 tool（工具＋args）、slash 或 answer 其中之一' };
+            if (p.tool && !this.tools[p.tool]) return { ok: false, error: `工具「${p.tool}」不存在` };
+            if (p.tool && !p.risk) p.risk = FA_OT_RISKY_TOOL.test(p.tool) ? 'confirm' : 'safe';
+            d.patterns = d.patterns.filter((x) => x.id !== p.id).concat([p]);
+            await this._otSaveDomain(d);
+            await this._otSyncPatternExamples(d, p);
+            return { ok: true, domain: name, pattern: p.id };
+        }
+        if (action === 'remove_pattern') {
+            const d = st.domains.get(String(a.domain || ''));
+            if (!d) return { ok: false, error: '沒有這個領域' };
+            const before = d.patterns.length;
+            d.patterns = d.patterns.filter((x) => x.id !== a.pattern);
+            await this._otSaveDomain(d);
+            await this._otVecDelete('ot_examples', (id) => id.indexOf(d.name + '/' + a.pattern + '#') === 0);
+            return { ok: true, removed: before - d.patterns.length };
+        }
+        if (action === 'add_example') { const ok = await this._otAddExample(String(a.domain || ''), String(a.pattern || ''), String(a.text || '')); return { ok, note: ok ? '已加入範例' : '範例已存在或找不到pattern' }; }
+        if (action === 'train_rag') return await this._otTrainFromRag();
+        if (action === 'train_chat') return await this._otTrainFromChats();
+        if (action === 'reseed') { const r = await this._otSeedBuiltin(true); return { ok: true, reseeded: r }; }
+        if (action === 'set_synonyms') {
+            if (!a.group || !a.terms) return { ok: false, error: '需要 group（概念名）與 terms（以空白分隔的同義詞，可中英文混合）' };
+            st.synonyms[String(a.group)] = String(a.terms);
+            await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms });
+            this._otApplyLex();
+            await this._otReindex();
+            return { ok: true, groups: Object.keys(st.synonyms).length };
+        }
+        if (action === 'export') {
+            return { ok: true, data: { version: 1, domains: Array.from(st.domains.values()).filter((d) => d.source !== 'builtin' || d.patterns.some((p) => p.edited)), solutions: Array.from(st.solutions.values()), qa: (st.cols.ot_qa ? st.cols.ot_qa.ids.map((id, i) => ({ id, doc: st.cols.ot_qa.docs[i], meta: st.cols.ot_qa.metas[i] })) : []), synonyms: st.synonyms } };
+        }
+        if (action === 'import') {
+            const data = a.data || {};
+            let n = 0;
+            for (const d of data.domains || []) { await this._otSaveDomain(d); for (const p of d.patterns || []) await this._otSyncPatternExamples(d, p); n++; }
+            for (const s of data.solutions || []) { await this._otDb().put('solutions', s); st.solutions.set(s.fp, s); }
+            if ((data.qa || []).length) await this._otVecUpsert('ot_qa', data.qa);
+            if (data.synonyms) { Object.assign(st.synonyms, data.synonyms); await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms }); this._otApplyLex(); await this._otReindex(); }
+            return { ok: true, domains: n };
+        }
+        if (action === 'forget_learned') {
+            st.domains.delete('learned'); await this._otDb().delete('domains', 'learned');
+            await this._otVecDelete('ot_examples', (id, m) => m && m.domain === 'learned');
+            await this._otVecDelete('ot_qa', () => true);
+            st.solutions.clear(); await this._otDb().clear('solutions');
+            return { ok: true };
+        }
+        return { ok: false, error: 'action必須是status／dry_run／resolve／list／show／add_pattern／remove_pattern／add_example／train_rag／train_chat／reseed／set_synonyms／export／import／forget_learned' };
+    }
+
+    // ===== Offline Trainer 管理介面（Configure → AI → 離線訓練器；跟RAG知識庫放在一起管理）=====
+    _otRegisterPane() {
+        if (this._otPaneRegistered) return;
+        const root = document.createElement('div');
+        root.id = 'ai-ot-pane';
+        root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._otPaneRoot = root;
+        this._otPaneRegistered = true;
+        this.registerAdvancedSettingsTab('ai', 'offline-trainer', '離線訓練器（Offline Trainer）', root);
+        this._otWirePane(root);
+        // 切到這一頁時重新整理
+        const side = document.getElementById('ai-advanced-sidebar');
+        if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'offline-trainer') this._otRenderPane(); });
+    }
+    _otPaneInput(extra) { return `padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc; font-size:12px; ${extra || ''}`; }
+    async _otRenderPane() {
+        const root = this._otPaneRoot;
+        if (!root) return;
+        const st = await this._otLoad();
+        const es = (x) => this._escapeHtml(String(x == null ? '' : x));
+        const stats = this._otStats();
+        const S = this.advancedSettings;
+        const btn = (act, label, extra) => `<button class="ai-advanced-btn" data-ot="${act}" ${extra || ''} style="padding:5px 10px; font-size:12px;">${label}</button>`;
+        const inp = this._otPaneInput();
+        const rag = this.ragSystem ? await this.ragSystem.getAll().catch(() => []) : [];
+        const qaCol = st.cols.ot_qa || { ids: [], docs: [], metas: [] };
+        let h = '';
+        h += `<div style="margin-bottom:10px; opacity:.85;">不需要AI也能「文字→語意分析→選工具→呼叫→文字重排後回答」。構想來自 DomainResolver（pattern_rules＋語意＋TextRank），這裡是助理內建、純離線的版本。畫面右上角的「線上／離線」開關切到離線，整個對話就改走這裡；線上AI成功的做法、RAG、對話紀錄都能訓練它。</div>`;
+        h += `<div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+            <label><input type="checkbox" data-ot-set="offlineMode" ${S.offlineMode ? 'checked' : ''}> 離線模式（不經過AI）</label>
+            <label><input type="checkbox" data-ot-set="offlineLearn" ${S.offlineLearn ? 'checked' : ''}> 線上AI成功時自動學習</label>
+            <label>信心門檻 <input type="range" min="0.2" max="0.8" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b></label>
+        </div>`;
+        h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　問答記憶 <b>${stats.qa}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
+        h += `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">${btn('train-rag', '📚 從RAG訓練')}${btn('train-chat', '💬 從目前對話訓練')}${btn('reseed', '🔄 重新載入內建（功能清冊）')}${btn('export', '⬇️ 匯出')}${btn('import', '⬆️ 匯入')}${btn('forget', '🗑️ 清除學到的')}<input type="file" id="ai-ot-import-file" accept="application/json" style="display:none;"></div>`;
+        // 乾跑
+        h += `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin-bottom:14px;"><b>🔬 乾跑（Dry run）</b>
+            <div style="display:flex; gap:6px; margin:6px 0;"><input id="ai-ot-dry-text" placeholder="輸入一句話，看離線訓練器會怎麼判斷…" style="flex:1; ${inp}"><button class="ai-advanced-btn primary" data-ot="dry" style="padding:5px 10px; font-size:12px;">乾跑</button><button class="ai-advanced-btn" data-ot="dry-exec" style="padding:5px 10px; font-size:12px;" title="真的執行選中的工具（有副作用的會先問）">乾跑並執行</button></div>
+            <pre id="ai-ot-dry-out" style="max-height:340px; overflow:auto; margin:0; padding:8px; background:#0b1220; border-radius:6px; font-size:12px; white-space:pre-wrap;"></pre></div>`;
+        // 領域與規則
+        h += `<div style="margin-bottom:6px;"><b>領域與規則</b> <span style="opacity:.7;">（內建＝由功能清冊產生；學到＝線上AI成功的做法；使用者＝你自己加的）</span></div>`;
+        const doms = Array.from(st.domains.values()).sort((a, b) => (a.source === 'builtin') - (b.source === 'builtin') || a.name.localeCompare(b.name));
+        for (const d of doms) {
+            h += `<details style="border:1px solid #334155; border-radius:8px; margin-bottom:6px; padding:6px 8px;"><summary style="cursor:pointer;"><b>${es(d.name)}</b> <span style="opacity:.7;">${es(d.source)}・${d.patterns.length}條</span> <label style="margin-left:8px;" onclick="event.stopPropagation()"><input type="checkbox" data-ot-dom="${es(d.name)}" ${d.enabled !== false ? 'checked' : ''}> 啟用</label>${d.source !== 'builtin' ? ` <button class="ai-advanced-btn" data-ot="del-domain" data-d="${es(d.name)}" style="padding:2px 8px; font-size:11px;" onclick="event.stopPropagation()">刪除領域</button>` : ''}</summary>
+                <div style="opacity:.75; margin:4px 0;">${es(d.description || '')}</div>
+                <table style="width:100%; border-collapse:collapse; font-size:12px;"><tr style="opacity:.7;"><th align="left">規則</th><th align="left">類型</th><th align="left">範例／表達式</th><th align="left">動作</th><th>信心</th><th>命中</th><th>啟用</th><th></th></tr>`;
+            for (const p of d.patterns.slice(0, 80)) {
+                const ex = p.type === 'semantic' ? (p.examples || []).slice(0, 2).join(' ｜ ') : (Array.isArray(p.expr) ? p.expr.join('、') : p.expr);
+                const act = p.tool ? `🔧 ${p.tool} ${JSON.stringify(p.args || {})}` : (p.slash ? `⌨️ ${p.slash}` : '💬 回答');
+                h += `<tr style="border-top:1px solid #1e293b;"><td>${es(p.id)}</td><td>${es(p.type)}</td><td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${es(ex)}">${es(ex)}</td><td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${es(act)}">${es(act)}</td><td align="center">${p.confidence == null ? '' : p.confidence}</td><td align="center">${p.hits || 0}</td><td align="center"><input type="checkbox" data-ot-pat="${es(d.name)}|${es(p.id)}" ${p.enabled !== false ? 'checked' : ''}></td><td align="right"><button class="ai-advanced-btn" data-ot="edit-pat" data-d="${es(d.name)}" data-p="${es(p.id)}" style="padding:1px 6px; font-size:11px;">編輯</button> <button class="ai-advanced-btn" data-ot="del-pat" data-d="${es(d.name)}" data-p="${es(p.id)}" style="padding:1px 6px; font-size:11px;">刪</button></td></tr>`;
+            }
+            if (d.patterns.length > 80) h += `<tr><td colspan="8" style="opacity:.7;">…另有 ${d.patterns.length - 80} 條（用匯出檢視）</td></tr>`;
+            h += `</table><div style="margin-top:6px;"><button class="ai-advanced-btn" data-ot="add-pat" data-d="${es(d.name)}" style="padding:3px 8px; font-size:12px;">＋新增規則</button></div></details>`;
+        }
+        h += `<div style="margin:6px 0 14px;"><button class="ai-advanced-btn" data-ot="add-domain" style="padding:4px 10px; font-size:12px;">＋新增領域</button></div>`;
+        // 同義詞
+        h += `<div style="margin-bottom:6px;"><b>同義詞（概念詞典）</b> <span style="opacity:.7;">中英文混合、空白分隔。同一組的詞在語意比對時視為同一個意思。</span></div><div style="margin-bottom:6px;">`;
+        for (const [g, t] of Object.entries(st.synonyms)) h += `<div style="display:flex; gap:6px; margin-bottom:3px;"><code style="min-width:90px;">${es(g)}</code><span style="flex:1;">${es(t)}</span><button class="ai-advanced-btn" data-ot="del-syn" data-g="${es(g)}" style="padding:1px 6px; font-size:11px;">刪</button></div>`;
+        h += `</div><div style="display:flex; gap:6px; margin-bottom:14px;"><input id="ai-ot-syn-g" placeholder="概念名（例如 push）" style="width:140px; ${inp}"><input id="ai-ot-syn-t" placeholder="推送 上傳到遠端 push publish" style="flex:1; ${inp}"><button class="ai-advanced-btn" data-ot="add-syn" style="padding:5px 10px; font-size:12px;">加入</button></div>`;
+        // 問答記憶 + RAG（一起管理）
+        h += `<div style="margin-bottom:6px;"><b>問答記憶 ＋ RAG 知識庫</b> <span style="opacity:.7;">離線時可以直接用它們回答；RAG節點可以一鍵變成問答記憶</span></div>
+            <input id="ai-ot-mem-filter" placeholder="篩選…" style="width:100%; margin-bottom:6px; ${inp}">
+            <div style="display:flex; gap:10px; flex-wrap:wrap;"><div style="flex:1; min-width:300px;"><div style="opacity:.8; margin-bottom:3px;">🧠 問答記憶（${qaCol.ids.length}）</div><div id="ai-ot-qa-list" style="max-height:260px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:4px;">`;
+        qaCol.ids.slice(0, 200).forEach((id, i) => { const m = qaCol.metas[i] || {}; h += `<div class="ai-ot-mem" data-t="${es((qaCol.docs[i] + ' ' + (m.answer || '')).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(qaCol.docs[i]).slice(0, 70))}</b> <span style="opacity:.6;">[${es(m.source || '')}]</span> <button class="ai-advanced-btn" data-ot="del-qa" data-id="${es(id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(m.answer || '').replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
+        h += `</div></div><div style="flex:1; min-width:300px;"><div style="opacity:.8; margin-bottom:3px;">📚 RAG節點（${rag.length}${S.ragEnabled ? '' : '，RAG目前未啟用'}）</div><div id="ai-ot-rag-list" style="max-height:260px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:4px;">`;
+        rag.slice(0, 200).forEach((r) => { h += `<div class="ai-ot-mem" data-t="${es((r.id + ' ' + r.content).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(r.id).slice(0, 60))}</b> <button class="ai-advanced-btn" data-ot="rag-train" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">訓練</button> <button class="ai-advanced-btn" data-ot="rag-del" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(r.content).replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
+        h += `</div></div></div>`;
+        root.innerHTML = h;
+        // 還原乾跑輸入
+        if (this._otLastDry) { const i = root.querySelector('#ai-ot-dry-text'); if (i) i.value = this._otLastDry.text || ''; const o = root.querySelector('#ai-ot-dry-out'); if (o) o.textContent = this._otLastDry.out || ''; }
+    }
+    _otDryText(r) {
+        const d = r.decision;
+        const L = [`文字：${r.text}`, `指紋：${r.fingerprint}　門檻：${r.threshold}`, `槽位：${JSON.stringify(r.slots)}`, ''];
+        L.push(`① 快取：${r.stages.cache && r.stages.cache.hit ? '命中（重放已學會的解法）' : '沒有'}`);
+        L.push('② 規則（regex／關鍵字）：' + ((r.stages.rules || []).length ? '\n' + r.stages.rules.map((x) => `   ✔ ${x.domain}/${x.pattern}（${x.type}）命中「${x.detail}」信心${x.score}`).join('\n') : '沒有命中'));
+        L.push('③ 語意（範例句相似度，特徵雜湊＋概念詞典）：' + ((r.stages.semantic || []).length ? '\n' + r.stages.semantic.slice(0, 6).map((x) => `   ${x.sim}  ${x.domain}/${x.pattern}  ←「${String(x.example).slice(0, 40)}」`).join('\n') : '沒有'));
+        L.push('④ 文字重排（BM25字面＋TextRank中心性＋MMR）：' + ((r.stages.rerank || []).length ? '\n' + r.stages.rerank.map((x) => `   ${x.score}  ${x.domain}/${x.pattern}  （第一階段${x.explain.base}、字面${x.explain.bm25}、中心性${x.explain.textrank}）`).join('\n') : '沒有'));
+        L.push('', `⑤ 決策：${d.status}　${d.reason}`);
+        if (d.chosen) L.push(`   選中：${d.chosen.domain}/${d.chosen.pattern}（${d.chosen.via}，${d.chosen.score}）→ ${d.chosen.tool ? '工具 ' + d.chosen.tool + ' ' + JSON.stringify(d.chosen.args) : (d.chosen.slash ? '指令 ' + d.chosen.slash : '回答')}　風險：${d.chosen.risk || 'safe'}${d.chosen.missing && d.chosen.missing.length ? '　缺：' + d.chosen.missing.join('、') : ''}`);
+        if (r.alternatives && r.alternatives.length) L.push('   其他候選：' + r.alternatives.map((x) => `${x.intent || x.pattern}(${x.score})`).join('、'));
+        if (r.rag && r.rag.length) L.push('   RAG相近內容：' + r.rag.map((x) => String(x.content).replace(/\s+/g, ' ').slice(0, 60)).join(' ｜ '));
+        if (r.executed) L.push('', `⑥ 執行：${r.executed.ok ? '成功' : '失敗 ' + (r.executed.error || '')}\n${r.executed.preview}`);
+        return L.join('\n');
+    }
+    _otWirePane(root) {
+        const refresh = () => this._otRenderPane();
+        root.addEventListener('change', async (ev) => {
+            const t = ev.target;
+            if (t.dataset.otSet) {
+                const k = t.dataset.otSet;
+                if (k === 'offlineThreshold') { this.advancedSettings.offlineThreshold = Number(t.value); const b = root.querySelector('#ai-ot-thr'); if (b) b.textContent = t.value; }
+                else { this.advancedSettings[k] = t.checked; if (k === 'offlineMode') this._applyOfflineModeUI(); }
+                this._saveAdvancedSettings();
+            } else if (t.dataset.otDom !== undefined) { const st = await this._otLoad(); const d = st.domains.get(t.dataset.otDom); if (d) { d.enabled = t.checked; await this._otSaveDomain(d); for (const p of d.patterns) await this._otSyncPatternExamples(d, p); } }
+            else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
+            else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const r = await this._otRun({ action: 'import', data: data.data || data }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } refresh(); }
+        });
+        root.addEventListener('input', (ev) => { if (ev.target.id === 'ai-ot-mem-filter') { const q = ev.target.value.toLowerCase(); root.querySelectorAll('.ai-ot-mem').forEach((el) => { el.style.display = !q || el.dataset.t.indexOf(q) >= 0 ? '' : 'none'; }); } });
+        root.addEventListener('keydown', (ev) => { if (ev.target.id === 'ai-ot-dry-text' && ev.key === 'Enter') { ev.preventDefault(); root.querySelector('[data-ot="dry"]').click(); } });
+        root.addEventListener('click', async (ev) => {
+            const b = ev.target.closest('[data-ot]');
+            if (!b) return;
+            const act = b.dataset.ot;
+            const st = await this._otLoad();
+            try {
+                if (act === 'dry' || act === 'dry-exec') {
+                    const text = root.querySelector('#ai-ot-dry-text').value;
+                    const out = root.querySelector('#ai-ot-dry-out');
+                    out.textContent = '分析中…';
+                    const r = await this._otDryRun(text, { execute: act === 'dry-exec' });
+                    const txt = this._otDryText(r);
+                    this._otLastDry = { text, out: txt };
+                    out.textContent = txt;
+                } else if (act === 'train-rag') { const r = await this._otTrainFromRag(); alert('已把RAG節點加入問答記憶：' + (r.added || 0) + ' 筆'); refresh(); }
+                else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話加入問答記憶：' + (r.added || 0) + ' 組'); refresh(); }
+                else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
+                else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
+                else if (act === 'export') { const r = await this._otRun({ action: 'export' }); const blob = new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+                else if (act === 'import') root.querySelector('#ai-ot-import-file').click();
+                else if (act === 'del-domain') { const n = b.dataset.d; if (confirm('刪除領域 ' + n + '？')) { st.domains.delete(n); await this._otDb().delete('domains', n); await this._otVecDelete('ot_examples', (id, m) => m && m.domain === n); refresh(); } }
+                else if (act === 'del-pat') { await this._otRun({ action: 'remove_pattern', domain: b.dataset.d, pattern: b.dataset.p }); refresh(); }
+                else if (act === 'edit-pat') { const d = st.domains.get(b.dataset.d); this._otPatternEditor(b.dataset.d, d && d.patterns.find((x) => x.id === b.dataset.p)); }
+                else if (act === 'add-pat') this._otPatternEditor(b.dataset.d, null);
+                else if (act === 'add-domain') { const n = (prompt('新領域名稱（英文／數字／底線）') || '').trim(); if (/^[A-Za-z0-9_\-]{2,40}$/.test(n)) { await this._otSaveDomain({ name: n, description: '使用者自訂', enabled: true, source: 'user', patterns: [], references: [], created: Date.now() }); refresh(); } else if (n) alert('名稱格式不合'); }
+                else if (act === 'add-syn') { const g = root.querySelector('#ai-ot-syn-g').value.trim(), t = root.querySelector('#ai-ot-syn-t').value.trim(); if (g && t) { await this._otRun({ action: 'set_synonyms', group: g, terms: t }); refresh(); } }
+                else if (act === 'del-syn') { delete st.synonyms[b.dataset.g]; await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms }); this._otApplyLex(); await this._otReindex(); refresh(); }
+                else if (act === 'del-qa') { await this._otVecDelete('ot_qa', (id) => id === b.dataset.id); refresh(); }
+                else if (act === 'rag-train') { const rec = await this.ragSystem.get(b.dataset.id); if (rec) { await this._otVecUpsert('ot_qa', [{ id: 'rag_' + rec.id, doc: String(rec.id).replace(/[_\-]/g, ' ') + ' ' + String(rec.content).split(/\n/)[0].slice(0, 80), meta: { answer: String(rec.content).slice(0, 3000), source: 'rag', rag_id: rec.id } }]); } refresh(); }
+                else if (act === 'rag-del') { if (confirm('刪除這個RAG節點？')) { await this.ragSystem.delete(b.dataset.id); refresh(); } }
+            } catch (e) { alert('操作失敗：' + ((e && e.message) || e)); }
+        });
+    }
+    // 規則編輯器：新增或修改一條pattern
+    _otPatternEditor(domainName, p) {
+        const old = document.getElementById('ai-ot-editor'); if (old) old.remove();
+        const es = (x) => this._escapeHtml(String(x == null ? '' : x));
+        const ov = document.createElement('div');
+        ov.id = 'ai-ot-editor';
+        ov.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:2147483000; display:flex; align-items:center; justify-content:center;';
+        const kind = p ? (p.tool ? 'tool' : (p.slash ? 'slash' : 'answer')) : 'tool';
+        const inp = this._otPaneInput('width:100%;');
+        ov.innerHTML = `<div style="background:#111827; color:#f8fafc; border:1px solid #475569; border-radius:10px; padding:14px; width:min(640px,94vw); max-height:90vh; overflow:auto; font-size:13px;">
+            <b>${p ? '編輯' : '新增'}規則　<span style="opacity:.7;">領域：${es(domainName)}</span></b>
+            <div style="display:grid; grid-template-columns:90px 1fr; gap:6px; margin-top:8px; align-items:center;">
+                <label>id</label><input id="otp-id" value="${es(p ? p.id : 'p_' + Date.now().toString(36))}" style="${inp}" ${p ? 'readonly' : ''}>
+                <label>類型</label><select id="otp-type" style="${inp}"><option value="semantic">semantic（範例句語意）</option><option value="regex">regex</option><option value="keyword_any">keyword_any（任一關鍵字）</option><option value="keyword_all">keyword_all（全部關鍵字）</option></select>
+                <label>範例／表達式</label><textarea id="otp-expr" rows="4" placeholder="semantic：一行一個範例句；regex：正規表示式；keyword：以逗號或換行分隔" style="${inp}"></textarea>
+                <label>動作</label><select id="otp-kind" style="${inp}"><option value="tool">呼叫工具</option><option value="slash">執行 / 指令</option><option value="answer">直接回答</option></select>
+                <label id="otp-l1">工具</label><input id="otp-tool" list="otp-tools" value="${es(p ? (p.tool || p.slash || '') : '')}" style="${inp}"><datalist id="otp-tools">${Object.keys(this.tools || {}).sort().map((n) => `<option value="${es(n)}">`).join('')}</datalist>
+                <label id="otp-l2">參數(JSON)</label><textarea id="otp-args" rows="3" placeholder='{"query":"{problem_text}"}　可用 {problem_text} {url} {path} {quoted} {number} {after_colon} {1}' style="${inp}">${es(p && p.args ? JSON.stringify(p.args) : '')}</textarea>
+                <label>回答文字</label><textarea id="otp-answer" rows="3" style="${inp}">${es(p ? p.answer || '' : '')}</textarea>
+                <label>信心</label><input id="otp-conf" type="number" step="0.05" min="0.1" max="0.99" value="${p && p.confidence != null ? p.confidence : 0.7}" style="${inp}">
+            </div>
+            <div style="margin-top:10px; display:flex; gap:8px; justify-content:flex-end;"><button class="ai-advanced-btn" id="otp-cancel">取消</button><button class="ai-advanced-btn primary" id="otp-save">儲存</button></div></div>`;
+        document.body.appendChild(ov);
+        const $ = (id) => ov.querySelector('#' + id);
+        $('otp-type').value = p ? p.type : 'semantic';
+        $('otp-kind').value = kind;
+        $('otp-expr').value = p ? (p.type === 'semantic' ? (p.examples || []).join('\n') : (Array.isArray(p.expr) ? p.expr.join('\n') : (p.expr || ''))) : '';
+        $('otp-cancel').onclick = () => ov.remove();
+        $('otp-save').onclick = async () => {
+            try {
+                const type = $('otp-type').value, k = $('otp-kind').value, expr = $('otp-expr').value.trim();
+                const pat = { id: $('otp-id').value.trim(), type, confidence: Number($('otp-conf').value) || 0.7, enabled: true, source: p ? p.source : 'user', hits: p ? p.hits || 0 : 0, edited: p && p.source === 'builtin' ? true : undefined };
+                if (!pat.id) throw new Error('id不能空白');
+                if (type === 'semantic') pat.examples = expr.split(/\n/).map((x) => x.trim()).filter(Boolean); else pat.expr = type === 'regex' ? expr : expr.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean);
+                if (type !== 'semantic' && !pat.expr.length) throw new Error('要填表達式／關鍵字');
+                if (type === 'semantic' && !pat.examples.length) throw new Error('至少一個範例句');
+                if (type === 'regex') new RegExp(expr);
+                if (k === 'tool') { pat.tool = $('otp-tool').value.trim(); const a = $('otp-args').value.trim(); pat.args = a ? JSON.parse(a) : this._otGuessArgs(pat.tool); }
+                else if (k === 'slash') pat.slash = $('otp-tool').value.trim();
+                else pat.answer = $('otp-answer').value;
+                const r = await this._otRun({ action: 'add_pattern', domain: domainName, pattern: pat });
+                if (!r.ok) throw new Error(r.error);
+                ov.remove();
+                this._otRenderPane();
+            } catch (e) { alert('無法儲存：' + ((e && e.message) || e)); }
+        };
     }
 
     // ===== 專案結構追蹤（repo_map）=====
@@ -35940,6 +37035,7 @@ _result
             this.responseIndicatorLabel = '';
             this.currentAbortController = null;
             this.stopRequested = false;
+            if (finalState !== 'stopped') { try { this._otOnTurnDone(); } catch (_) {} }
         }
         if (indicator) {
             indicator.style.opacity = isResponding ? '1' : '0.7';
@@ -36020,6 +37116,7 @@ _result
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
+        if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
@@ -37495,6 +38592,8 @@ ${existingNodeSummaries}
         if (this.isResponding) {
             this._setRespondingState(true, '⏳ AI 回應中（Steering 已加入）');
         }
+        // 離線模式：完全不經過LLM，用離線訓練器（規則＋語意＋文字重排）決定要做什麼
+        if (this.advancedSettings.offlineMode) { await this._offlineRespond(textToSend); return; }
         // 從這一刻起，這次AI執行的所有狀態都落在「送出時的這個對話」上；使用者中途切到別的對話，它照樣在原本的對話裡繼續做事。
         this._chatRunner(this._ctx).executeChat(textToSend);
     }
@@ -39270,6 +40369,7 @@ ${existingNodeSummaries}
         this._fakeWriteGuard = { count: 0 };
         this._intentGuard = { count: 0 };
         this._toolCallLog = { calls: [], blocked: 0 };
+        this._otCalls = [];
         this._forceNoTools = false;
         const rowCfg = this._getInitialFallbackConfig();
         const { apiKey, apiUrl, apiModel } = rowCfg;
@@ -41657,7 +42757,7 @@ ${existingNodeSummaries}
             <div id="ai-window-header" style="background: ${palette.headerBg}; color: ${palette.headerText}; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-weight: bold; color: #76b900;">AI Assistant <span style="font-size:10px; background:#8b5cf6; color:#fff; padding:1px 5px; border-radius:999px; font-weight:normal; margin-left:4px;">Graph RAG</span><span id="ai-header-model-name" style="font-size:10px; font-weight:normal; color:${palette.detailText}; margin-left:6px;"></span></span>
                 <div>
-                    <span id="ai-btn-clear-chat" title="清除對話" style="cursor:pointer; margin-right: 10px;">🗑️</span>
+                    <label id="ai-offline-switch" title="線上：問AI。離線：不經過AI，用離線訓練器（規則＋語意＋文字重排）決定要做什麼，可以用來驗證它學會了什麼" style="display:inline-flex; align-items:center; gap:4px; margin-right:12px; cursor:pointer; font-size:11px; font-weight:normal; vertical-align:middle;"><input type="checkbox" id="ai-offline-chk" style="display:none;"><span id="ai-offline-track" style="position:relative; width:28px; height:15px; border-radius:999px; background:#4b5563; display:inline-block; transition:background .15s;"><span id="ai-offline-knob" style="position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:#fff; transition:left .15s;"></span></span><span id="ai-offline-label">線上</span></label><span id="ai-btn-clear-chat" title="清除對話" style="cursor:pointer; margin-right: 10px;">🗑️</span>
                     <span id="ai-btn-config" style="cursor:pointer; margin-right: 10px;">⚙️</span>
                     <span id="ai-btn-close" style="cursor:pointer;">❌</span>
                 </div>
@@ -42971,6 +44071,16 @@ ${existingNodeSummaries}
                     if (inputEl) { inputEl.value = c.text; inputEl.focus(); }
                 });
                 chipRow.appendChild(btn);
+                const run = document.createElement('button');
+                run.type = 'button';
+                run.title = '直接執行這個建議（離線模式下走離線訓練器，不經過AI）';
+                run.textContent = '▶';
+                run.style.cssText = `padding:4px 8px; margin-left:-4px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:#76b900; font-size:11px; cursor:pointer;`;
+                run.addEventListener('click', () => {
+                    const inputEl = document.getElementById('ai-input-text');
+                    if (inputEl) { inputEl.value = c.text; this._submitChatInput(inputEl, null); }
+                });
+                chipRow.appendChild(run);
             });
             wrap.appendChild(chipRow);
             container.appendChild(wrap);
@@ -44081,8 +45191,27 @@ ${existingNodeSummaries}
         this._renderMessageHistory();
     }
 
+    _applyOfflineModeUI() {
+        const on = !!this.advancedSettings.offlineMode;
+        const track = document.getElementById('ai-offline-track'), knob = document.getElementById('ai-offline-knob'), label = document.getElementById('ai-offline-label'), chk = document.getElementById('ai-offline-chk');
+        if (chk) chk.checked = on;
+        if (track) track.style.background = on ? '#f59e0b' : '#4b5563';
+        if (knob) knob.style.left = on ? '15px' : '2px';
+        if (label) { label.textContent = on ? '離線' : '線上'; label.style.color = on ? '#f59e0b' : ''; }
+    }
+    // 一輪線上AI對話結束：把成功的工具呼叫與問答學進離線訓練器（可在設定關掉）
+    _otOnTurnDone() {
+        if (this.advancedSettings.offlineMode || !this.advancedSettings.offlineLearn) return;
+        const userText = this._currentTurnUserText;
+        const calls = (this._otCalls || []).slice();
+        const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
+        if (!userText || !lastAsst) return;
+        this._otLearnFromTurn(userText, calls, lastAsst.content).catch((e) => console.warn('離線訓練器學習失敗', e));
+    }
+
     _initEventListeners() {
         const win = document.getElementById('ai-floating-window');
+        try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');
@@ -44150,6 +45279,18 @@ ${existingNodeSummaries}
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
         document.getElementById('ai-btn-close').onclick = () => this.toggleWindow();
+        const offChk = document.getElementById('ai-offline-chk');
+        if (offChk) {
+            offChk.checked = !!this.advancedSettings.offlineMode;
+            this._applyOfflineModeUI();
+            offChk.addEventListener('change', () => {
+                this.advancedSettings.offlineMode = offChk.checked;
+                this._saveAdvancedSettings();
+                this._applyOfflineModeUI();
+                this._pushAssistantMessage(offChk.checked ? '🔌 已切到離線模式：之後的訊息不經過AI，由離線訓練器（規則＋語意＋文字重排）決定要做什麼。可以用來驗證它學會了什麼；到「Configure → AI → 離線訓練器」可以管理與乾跑。' : '🌐 已切回線上模式。', null);
+                this._persistChatHistory(); this._renderMessageHistory();
+            });
+        }
         document.getElementById('ai-btn-clear-chat').onclick = () => {
             if (!this.messages.length && !(this.archivedDisplayBlocks || []).length) return;
             if (confirm('確定要清除目前的對話紀錄嗎？這個動作無法復原。')) this._clearChatHistory();
