@@ -16743,6 +16743,14 @@ ${fnData.code}
 
     // ===== Offline Trainer（離線訓練器）：引擎 =====
     _otDb() { if (!this._otdb) this._otdb = new FaOtDb(this._otDbName || 'FloatingAssistantOfflineTrainer'); return this._otdb; }
+    async _otPurgeStaleQa() {
+        try {
+            const rec = await this._otDb().get('meta', 'qa_purged_v1');
+            if (rec && rec.v) return; // 注意：FaOtDb.get 找不到時回傳IDBRequest物件，要看 .v
+            await this._otVecDelete('ot_qa', (id) => true);
+            await this._otDb().put('meta', { k: 'qa_purged_v1', v: Date.now() });
+        } catch (_) {}
+    }
     async _otLoad() {
         if (this._ot && this._ot.loaded) return this._ot;
         if (this._otLoading) return this._otLoading;
@@ -16756,6 +16764,7 @@ ${fnData.code}
             const ev = await db.get('meta', 'emb_ver');
             if (!ev || ev.v !== FA_SEM_VER) { await this._otReindex(); await db.put('meta', { k: 'emb_ver', v: FA_SEM_VER }); }
             await this._otSeedBuiltin(false); // 沒有領域，或功能清冊／工具數量變了就重新播種（使用者編輯過的不會被覆蓋）
+            await this._otPurgeStaleQa(); // 一次性：清掉舊版存的「問答記憶」（舊回答／舊查詢結果會過期）
             return this._ot;
         })();
         try { return await this._otLoading; } finally { this._otLoading = null; }
@@ -16953,7 +16962,7 @@ ${fnData.code}
         out.stages.semantic = sem.slice(0, 8);
         // 3b) 問答記憶（從線上AI問答／RAG學來的）：當成「回答」候選
         for (const h of this._otVecQuery('ot_qa', norm, 6)) {
-            if (h.sim < 0.15) continue;
+            if (h.sim < 0.15 || (h.meta || {}).source !== 'user') continue; // 對話／RAG來源的舊回答不拿來答（結果會過期）；離線訓練只學「怎麼呼叫工具」
             const key = 'qa/' + h.id;
             cands.set(key, { key, domain: '(問答記憶)', p: { id: h.id, type: 'semantic', intent: h.doc.slice(0, 40), answer: h.meta.answer, qa: true, confidence: 0.6, enabled: true, source: h.meta.source || 'qa' }, rule: null, sim: h.sim * 0.9, example: h.doc });
         }
@@ -17220,8 +17229,8 @@ ${fnData.code}
         await this._otVecUpsert('ot_examples', [{ id: d.name + '/' + p.id + '#' + Date.now().toString(36), doc: text, meta: { domain: d.name, pattern: p.id } }]);
         return true;
     }
-    async _otLearnFromTurn(userText, calls, answer) {
-        if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { learned: 0 };
+    async _otLearnFromTurn(userText, calls, answer, force) {
+        if (!force && (this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { learned: 0 };
         const text = String(userText || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length < 2 || text.charAt(0) === '/') return { learned: 0 };
         const good = (calls || []).filter((c) => c.ok && !FA_OT_META_TOOLS.has(c.name) && this.tools[c.name]);
@@ -17243,43 +17252,71 @@ ${fnData.code}
             if (!hadVec) await this._otSyncPatternExamples(dom, p);
             // 決定性快取：完全一樣的句子 → 重放這一輪成功的工具呼叫
             const fp = _faRepoHash(text.toLowerCase());
-            await this._otDb().put('solutions', { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: String(answer || '').slice(0, 300), created: Date.now(), hits: 0 });
-            st.solutions.set(fp, { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: String(answer || '').slice(0, 300) });
+            await this._otDb().put('solutions', { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: '', created: Date.now(), hits: 0 });
+            st.solutions.set(fp, { fp, problem: text, calls: good.map((g) => { let a = {}; try { a = JSON.parse(g.rawArgs || '{}'); } catch (_) {} return { tool: g.name, args: a }; }), summary: '' });
         }
-        // 問答記憶：沒有工具、純粹是知識問答的一輪，也存起來（離線時可以直接回答）
-        const ans = String(answer || '').trim();
-        if (ans.length >= 20 && ans.length <= 4000 && !/^\s*(⚠️|❌|🚫|🔌|\[系統提示\])/.test(ans)) {
-            const id = 'qa_' + _faRepoHash(text.toLowerCase());
-            await this._otVecUpsert('ot_qa', [{ id, doc: text, meta: { answer: ans.slice(0, 3000), source: 'chat', at: Date.now() } }]);
-            learned++;
-        }
+        // （2026-10-03）不再把「回答」存成問答記憶：查詢結果（新聞、股價…）會過期，離線時不能拿舊結果當答案。只學工具呼叫。
         return { learned };
     }
+    // 從文字裡抽出工具呼叫：[CALL: 名稱({...})] 或 名稱({...})，名稱必須是助理真的有的工具
+    _otCallsFromText(text) {
+        const out = [];
+        const re = /(?:\[CALL:\s*)?\b([a-z][a-z0-9_]{2,60})\s*\(\s*(\{[\s\S]{0,1500}?\})\s*\)/g;
+        let m;
+        while ((m = re.exec(String(text || ''))) && out.length < 8) {
+            const name = m[1];
+            if (!this.tools[name] || FA_OT_META_TOOLS.has(name)) continue;
+            try { JSON.parse(m[2]); } catch (_) { continue; }
+            out.push({ name, rawArgs: m[2], ok: true });
+        }
+        return out;
+    }
+    // 從RAG訓練：只學節點裡寫到的「工具呼叫」（做法），不把節點內容當離線回答（內容可能過期）
     async _otTrainFromRag() {
-        const st = await this._otLoad();
+        await this._otLoad();
         if (!this.ragSystem) return { ok: false, error: '沒有RAG系統' };
         const all = await this.ragSystem.getAll();
-        const items = all.filter((r) => r && r.content).map((r) => {
-            const content = String(r.content);
-            const first = content.split(/\n/)[0].slice(0, 80);
-            return { id: 'rag_' + r.id, doc: (String(r.id).replace(/[_\-]/g, ' ') + ' ' + first).trim(), meta: { answer: content.slice(0, 3000), source: 'rag', rag_id: r.id, tags: r.tags || '' } };
-        });
-        if (items.length) await this._otVecUpsert('ot_qa', items);
-        return { ok: true, added: items.length };
+        let nodes = 0, calls = 0;
+        for (const r of all) {
+            if (!r || !r.content) continue;
+            const cs = this._otCallsFromText(r.content);
+            if (!cs.length) continue;
+            const title = (String(r.id).replace(/[_\-]/g, ' ') + ' ' + String(r.content).split(/\n/)[0].slice(0, 80)).trim();
+            await this._otLearnFromTurn(title, cs, '', true);
+            await this._otRecordTurn(title, cs, '', { source: 'rag' });
+            nodes++; calls += cs.length;
+        }
+        return { ok: true, added: nodes, calls };
     }
+    // 從目前對話訓練：只學每一輪「成功的工具呼叫」（function call），不存AI的回答
     async _otTrainFromChats() {
         await this._otLoad();
-        let n = 0;
         const msgs = this.messages || [];
-        for (let i = 0; i < msgs.length - 1; i++) {
-            const m = msgs[i], a = msgs[i + 1];
-            if (m.role === 'user' && a.role === 'assistant' && typeof m.content === 'string' && typeof a.content === 'string' && m.content.length > 2 && a.content.length >= 20 && !a._suggestionChips && m.content.charAt(0) !== '/') {
-                const t = m.content.replace(/\s+/g, ' ').trim();
-                await this._otVecUpsert('ot_qa', [{ id: 'qa_' + _faRepoHash(t.toLowerCase()), doc: t, meta: { answer: a.content.slice(0, 3000), source: 'chat', at: Date.now() } }]);
-                n++;
+        let turns = 0, calls = 0;
+        const isErr = (c) => /"ok"\s*:\s*false|"error"\s*:/.test(String(c || ''));
+        for (let i = 0; i < msgs.length; i++) {
+            const u = msgs[i];
+            if (u.role !== 'user' || typeof u.content !== 'string' || u.content.length < 2 || u.content.charAt(0) === '/') continue;
+            let j = i + 1;
+            const cs = [];
+            for (; j < msgs.length && msgs[j].role !== 'user'; j++) {
+                const m = msgs[j];
+                if (m.role !== 'assistant') continue;
+                const next = msgs[j + 1] && msgs[j + 1].role === 'tool' ? msgs[j + 1] : null;
+                if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+                    m.tool_calls.forEach((tc) => { const name = tc.function && tc.function.name; if (name && this.tools[name] && !FA_OT_META_TOOLS.has(name)) { const res = msgs.slice(j + 1).find((x) => x.role === 'tool' && x.tool_call_id === tc.id); cs.push({ name, rawArgs: String(tc.function.arguments || '{}'), ok: !(res && isErr(res.content)) }); } });
+                } else if (typeof m.content === 'string' && m.content.indexOf('[CALL:') >= 0) {
+                    this._otCallsFromText(m.content).forEach((c) => cs.push(Object.assign(c, { ok: !(next && isErr(next.content)) })));
+                }
             }
+            const good = cs.filter((c) => c.ok);
+            if (!good.length) continue;
+            await this._otLearnFromTurn(u.content, good, '', true);
+            await this._otRecordTurn(u.content, good, '', { source: 'chat' });
+            turns++; calls += good.length;
+            i = j - 1;
         }
-        return { ok: true, added: n };
+        return { ok: true, added: turns, calls };
     }
     _otStats() {
         const st = this._ot;
@@ -17717,7 +17754,7 @@ ${fnData.code}
             <label title="所有model都失敗時，自動改用離線訓練器回答"><input type="checkbox" data-ot-set="offlineAutoFallback" ${S.offlineAutoFallback !== false ? 'checked' : ''}> AI失效時自動退回離線</label>
             <label>信心門檻 <input type="range" min="0.2" max="0.8" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b></label>
         </div>`;
-        h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　問答記憶 <b>${stats.qa}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
+        h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
         h += `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">${btn('train-rag', '📚 從RAG訓練')}${btn('train-chat', '💬 從目前對話訓練')}${btn('reseed', '🔄 重新載入內建（功能清冊）')}${btn('export', '⬇️ 匯出')}${btn('import', '⬆️ 匯入')}${btn('forget', '🗑️ 清除學到的')}<input type="file" id="ai-ot-import-file" accept="application/json" style="display:none;"></div>`;
         // 乾跑
         h += `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin-bottom:14px;"><b>🔬 乾跑（Dry run）</b>
@@ -17744,12 +17781,12 @@ ${fnData.code}
         for (const [g, t] of Object.entries(st.synonyms)) h += `<div style="display:flex; gap:6px; margin-bottom:3px;"><code style="min-width:90px;">${es(g)}</code><span style="flex:1;">${es(t)}</span><button class="ai-advanced-btn" data-ot="del-syn" data-g="${es(g)}" style="padding:1px 6px; font-size:11px;">刪</button></div>`;
         h += `</div><div style="display:flex; gap:6px; margin-bottom:14px;"><input id="ai-ot-syn-g" placeholder="概念名（例如 push）" style="width:140px; ${inp}"><input id="ai-ot-syn-t" placeholder="推送 上傳到遠端 push publish" style="flex:1; ${inp}"><button class="ai-advanced-btn" data-ot="add-syn" style="padding:5px 10px; font-size:12px;">加入</button></div>`;
         // 問答記憶 + RAG（一起管理）
-        h += `<div style="margin-bottom:6px;"><b>問答記憶 ＋ RAG 知識庫</b> <span style="opacity:.7;">離線時可以直接用它們回答；RAG節點可以一鍵變成問答記憶</span></div>
+        h += `<div style="margin-bottom:6px;"><b>RAG 知識庫</b> <span style="opacity:.7;">離線訓練只學「怎麼呼叫工具」（function call），不會把內容或查詢結果存起來當回答；RAG 節點裡寫到的工具呼叫可以學成規則</span></div>
             <input id="ai-ot-mem-filter" placeholder="篩選…" style="width:100%; margin-bottom:6px; ${inp}">
             <div style="display:flex; gap:10px; flex-wrap:wrap;"><div style="flex:1; min-width:300px;"><div style="opacity:.8; margin-bottom:3px;">🧠 問答記憶（${qaCol.ids.length}）</div><div id="ai-ot-qa-list" style="max-height:260px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:4px;">`;
         qaCol.ids.slice(0, 200).forEach((id, i) => { const m = qaCol.metas[i] || {}; h += `<div class="ai-ot-mem" data-t="${es((qaCol.docs[i] + ' ' + (m.answer || '')).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(qaCol.docs[i]).slice(0, 70))}</b> <span style="opacity:.6;">[${es(m.source || '')}]</span> <button class="ai-advanced-btn" data-ot="del-qa" data-id="${es(id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(m.answer || '').replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
         h += `</div></div><div style="flex:1; min-width:300px;"><div style="opacity:.8; margin-bottom:3px;">📚 RAG節點（${rag.length}${S.ragEnabled ? '' : '，RAG目前未啟用'}）</div><div id="ai-ot-rag-list" style="max-height:260px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:4px;">`;
-        rag.slice(0, 200).forEach((r) => { h += `<div class="ai-ot-mem" data-t="${es((r.id + ' ' + r.content).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(r.id).slice(0, 60))}</b> <button class="ai-advanced-btn" data-ot="rag-train" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">訓練</button> <button class="ai-advanced-btn" data-ot="rag-del" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(r.content).replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
+        rag.slice(0, 200).forEach((r) => { h += `<div class="ai-ot-mem" data-t="${es((r.id + ' ' + r.content).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(r.id).slice(0, 60))}</b> <button class="ai-advanced-btn" data-ot="rag-train" data-id="${es(r.id)}" title="只學這個節點裡寫到的工具呼叫" style="padding:0 6px; font-size:11px;">學工具呼叫</button> <button class="ai-advanced-btn" data-ot="rag-del" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(r.content).replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
         h += `</div></div></div>`;
         try { h += await this._otSkillsHtml(st); } catch (e) { h += `<div style="color:#f87171;">技能區塊載入失敗：${es(e.message)}</div>`; }
         root.innerHTML = h;
@@ -17801,12 +17838,12 @@ ${fnData.code}
                     const txt = this._otDryText(r);
                     this._otLastDry = { text, out: txt };
                     out.textContent = txt;
-                } else if (act === 'train-rag') { const r = await this._otTrainFromRag(); alert('已把RAG節點加入問答記憶：' + (r.added || 0) + ' 筆'); refresh(); }
+                } else if (act === 'train-rag') { const r = await this._otTrainFromRag(); alert('已從 ' + (r.added || 0) + ' 個RAG節點學到 ' + (r.calls || 0) + ' 個工具呼叫（只學做法，內容不會當作離線回答）'); refresh(); }
                 else if (act === 'distill-now') { b.disabled = true; b.textContent = '整理中…'; const r = await this._otTrainRun({ minCount: 3 }); if (!r.ok) alert('整理失敗：' + r.error); else alert('整理完成：看了 ' + r.turns + ' 輪對話，新增 ' + r.adopted + ' 個技能、更新 ' + r.updated + ' 個' + (r.review ? '（' + r.review + ' 個準確度不夠，先停用等你審核）' : '') + (r.rejected && r.rejected.length ? '\n\n沒整理成技能的原因（前幾項）：\n' + r.rejected.slice(0, 5).map((x) => x.sig + '：' + x.why).join('\n') : '')); refresh(); }
                 else if (act === 'skill-view') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p) this._otSkillEditor(d, p); }
                 else if (act === 'skill-del') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p && window.confirm('刪除這個技能？（觸發規則與範例句；狀態機與原始碼工具保留在領域裡）')) { d.patterns = d.patterns.filter((x) => x.id !== p.id && x.id !== p.id + '_kw'); await this._otSaveDomain(d); await this._otVecDelete('ot_examples', (id) => id.indexOf(d.name + '/' + p.id) === 0); } refresh(); }
                 else if (act === 'unresolved-clear') { await this._otDb().put('meta', { k: 'unresolved', v: [] }); refresh(); }
-                else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話加入問答記憶：' + (r.added || 0) + ' 組'); refresh(); }
+                else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話學到 ' + (r.added || 0) + ' 輪的工具呼叫（共 ' + (r.calls || 0) + ' 個；只學做法，不存AI的回答或查詢結果）'); refresh(); }
                 else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
                 else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
                 else if (act === 'export') { const r = await this._otRun({ action: 'export' }); const blob = new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
@@ -17819,7 +17856,7 @@ ${fnData.code}
                 else if (act === 'add-syn') { const g = root.querySelector('#ai-ot-syn-g').value.trim(), t = root.querySelector('#ai-ot-syn-t').value.trim(); if (g && t) { await this._otRun({ action: 'set_synonyms', group: g, terms: t }); refresh(); } }
                 else if (act === 'del-syn') { delete st.synonyms[b.dataset.g]; await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms }); this._otApplyLex(); await this._otReindex(); refresh(); }
                 else if (act === 'del-qa') { await this._otVecDelete('ot_qa', (id) => id === b.dataset.id); refresh(); }
-                else if (act === 'rag-train') { const rec = await this.ragSystem.get(b.dataset.id); if (rec) { await this._otVecUpsert('ot_qa', [{ id: 'rag_' + rec.id, doc: String(rec.id).replace(/[_\-]/g, ' ') + ' ' + String(rec.content).split(/\n/)[0].slice(0, 80), meta: { answer: String(rec.content).slice(0, 3000), source: 'rag', rag_id: rec.id } }]); } refresh(); }
+                else if (act === 'rag-train') { const rec = await this.ragSystem.get(b.dataset.id); if (rec) { const cs = this._otCallsFromText(rec.content); if (!cs.length) alert('這個節點裡沒有找到工具呼叫（[CALL: 工具({...})] 或 工具({...})），沒有東西可以學。'); else { const title = (String(rec.id).replace(/[_\-]/g, ' ') + ' ' + String(rec.content).split(/\n/)[0].slice(0, 80)).trim(); await this._otLearnFromTurn(title, cs, '', true); await this._otRecordTurn(title, cs, '', { source: 'rag' }); alert('學到 ' + cs.length + ' 個工具呼叫'); } } refresh(); }
                 else if (act === 'rag-del') { if (confirm('刪除這個RAG節點？')) { await this.ragSystem.delete(b.dataset.id); refresh(); } }
             } catch (e) { alert('操作失敗：' + ((e && e.message) || e)); }
         });
