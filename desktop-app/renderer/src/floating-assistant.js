@@ -3265,7 +3265,9 @@ function _faOtSlots(text) {
     const stock = (t.match(/\b\d{4}\b/g) || []).find(() => true);
     const identStop = { the: 1, what: 1, where: 1, which: 1, how: 1, define: 1, defined: 1, definition: 1, function: 1, class: 1, file: 1, find: 1, show: 1, with: 1, from: 1, this: 1, that: 1, please: 1, source: 1, code: 1, sdk: 1, api: 1, http: 1, https: 1, www: 1, com: 1 };
     const idents = (t.replace(/https?:\/\/\S+/g, ' ').match(/[A-Za-z_][A-Za-z0-9_]*(?:(?:::|->|\.)[A-Za-z_][A-Za-z0-9_]*)*/g) || []).filter((x) => x.length >= 3 && !identStop[x.toLowerCase()] && (/[_A-Z0-9]|[a-z][A-Z]|::|->|\./.test(x.slice(1)) || /\w+\(/.test(t)));
-    return { problem_text: t.trim(), ident: idents[0] || '', idents, url: urls[0] || '', urls, path: paths[0] || '', paths, quoted: quoted[0] || '', quotedAll: quoted, number: numbers[0] || '', numbers, code: code[0] || '', after_colon: colon ? colon[1].trim() : '', stock_id: stock || '' };
+    const cves = (t.match(/\bCVE-\d{4}-\d{4,7}\b/gi) || []).map((x) => x.toUpperCase());
+    const hashes = t.match(/\b[0-9a-f]{12,40}\b/g) || [];
+    return { problem_text: t.trim(), ident: idents[0] || '', idents, cve: cves[0] || '', cves, hash: hashes[0] || '', url: urls[0] || '', urls, path: paths[0] || '', paths, quoted: quoted[0] || '', quotedAll: quoted, number: numbers[0] || '', numbers, code: code[0] || '', after_colon: colon ? colon[1].trim() : '', stock_id: stock || '' };
 }
 // 把參數樣板（{problem_text}、{url}、{1}、{名稱}）填成實際參數；找不到的槽位列在 missing（需要追問使用者）
 function _faOtFill(template, slots, groups) {
@@ -3565,6 +3567,62 @@ class FaOtWorkerHost {
         });
     }
 }
+
+// ============================================================
+// 2026-10-03：/offline-trainer-by-ai —「AI 教離線訓練器」。
+// 使用者給一份清單（例如 cve-check 報告裡上萬條 CVE），一項一項交給 AI 去解（找 patch、merge、處理衝突、改寫 API…），
+// 而且AI每次成功後「必須」把可重複的部分寫回離線訓練器（原始碼工具＋狀態機＋觸發規則）。
+// 每一項都先讓離線訓練器自己試：解得掉就不需要AI——離線自己解決的比例，就是訓練成效。
+// ============================================================
+// 從文字（報告、清單）抽出要處理的項目。自動辨識：有 CVE-YYYY-NNNN 就以CVE為單位（並記下它所在的套件／那一行當背景），否則每行一項；也可以給regex
+function _faOtParseItems(text, opts) {
+    opts = opts || {};
+    const lines = String(text || '').split(/\r?\n/);
+    let re = null;
+    if (opts.regex) { try { re = new RegExp(opts.regex, 'g'); } catch (_) { re = null; } }
+    const cveRe = /\bCVE-\d{4}-\d{4,7}\b/gi;
+    const mode = re ? 'regex' : (/\bCVE-\d{4}-\d{4,7}\b/i.test(String(text || '')) ? 'cve' : 'line');
+    const items = [], seen = {};
+    let pkg = '', ver = '';
+    for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        let m;
+        if ((m = /^PACKAGE NAME\s*:\s*(.+)$/i.exec(t))) { pkg = m[1].trim(); continue; }
+        if ((m = /^PACKAGE VERSION\s*:\s*(.+)$/i.exec(t))) { ver = m[1].trim(); continue; }
+        if (t.length > 800) continue;
+        let keys;
+        if (mode === 'regex') { re.lastIndex = 0; keys = t.match(re) || []; }
+        else if (mode === 'cve') keys = (t.match(cveRe) || []).map((x) => x.toUpperCase());
+        else keys = [t];
+        for (const k of keys.slice(0, mode === 'line' ? 1 : 50)) {
+            if (seen[k]) continue;
+            seen[k] = 1;
+            const ctx = (pkg ? '套件 ' + pkg + (ver ? ' ' + ver : '') + '；' : '') + (mode === 'line' ? '' : t.slice(0, 300));
+            items.push({ key: k, context: ctx, status: 'pending', attempts: 0 });
+        }
+    }
+    return { mode, items };
+}
+// 教學用的規範：AI要照這個做，而且做完一定要把可重複的部分寫回離線訓練器
+const FA_OT_TEACHER_PROTOCOL = `你現在是「離線訓練器的老師」。使用者給了一長串同類的項目，要你一項一項處理；你的任務有兩個，缺一不可：
+(A) 把這一項真的處理好（用你有的工具：網頁／搜尋、檔案、git、終端機、程式專案索引…）。
+(B) 處理成功之後，把「可重複的做法」寫回離線訓練器，讓下一個同類項目不需要你就能做完。這是這個任務最重要的產出——如果你只解決了這一項、沒有擴充離線訓練器，就等於白做。
+
+做法（照順序）：
+1. 先 offline_trainer({"action":"dry_run","text":"<這一項的描述>"}) 看離線訓練器現在會怎麼做；已經有的技能先 show／show_tool 看過，擴充它而不是重寫（add_tool 用同名會升版並保留歷史）。
+2. 自己處理這一項。每個步驟都記得「哪些是這一項專屬的值（例如 CVE 編號、套件名、版本、commit）、哪些是固定的做法」。
+3. 成功後，把固定的做法寫成：
+   - add_tool：一段 JavaScript（在沙盒worker執行；ctx.slots／ctx.text／ctx.call(工具名,參數)→{ok,result}／ctx.last_tool_result／ctx.pretty()；最後 return {ok,text,...}）。專屬的值一律從 ctx.slots 取（例如 ctx.slots.cve、ctx.slots.ident），**不能把這一項的值寫死**。失敗要 return {ok:false,error:"原因"}，讓狀態機走 on_failure。
+   - add_state：把工具串成狀態機（call_tool＋args樣板，可用 {cve}{ident}{path}{step1.欄位}；on_success／on_failure；失敗分支寫成獨立狀態，最後 report_unresolved，這樣下次只剩那一段需要你）。
+   - add_pattern：觸發規則（pattern 加 state:入口狀態；examples 給 3 句以上不同說法）。
+   - 用 run_tool 搭配 mock_calls 測試你寫的script，再用 dry_run 確認文字能觸發它。
+   - record_case：把這次成功的工具呼叫順序記下來（累積多項之後，背景會自動整理出更多技能）。
+4. 遇到「找不到來源／衝突／API 不相容」這類難的地方，不要放棄：把你的處理方式也寫成工具（例如「用 AI 比對雙方 diff 重新套用 hunk」「把舊 API 呼叫改成新 API」），哪怕第一版只能處理一部分，也要寫下來並標明限制；下一項再擴充它。
+5. 絕對不要把密碼、金鑰、這一項的專屬資料寫進工具；有副作用的操作（寫檔、git push、終端機）照樣是離線訓練器執行前要確認的。
+6. 最後只輸出一行JSON回報（不要別的內容）：{"status":"solved|failed|partial","summary":"一句話","extended":["新增或更新的工具／狀態／規則名稱"],"limits":"這個技能還處理不了什麼"}
+
+注意：你的回合有限，不要在同一個步驟反覆重試；真的做不到就誠實回報 failed 並寫明卡在哪一步，那一步就是下次要擴充的地方。`;
 
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
 SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
@@ -8848,6 +8906,15 @@ class FloatingAssistant {
             }
         );
         this.register_slash_command(
+            '/offline-trainer-by-ai', '<目標>＋清單｜status｜stop｜resume｜report',
+            'AI 教離線訓練器：把一長串同類項目（例如 cve-check 報告裡上萬條 CVE）一項一項交給 AI 處理，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
+            async (argsText) => {
+                this.messages.push({ role: 'user', content: '/offline-trainer-by-ai ' + String(argsText || '').slice(0, 300) });
+                this._renderMessageHistory();
+                await this._otTeacherCommand(argsText);
+            }
+        );
+        this.register_slash_command(
             '/offline-dry', '<一句話>',
             '乾跑：顯示離線訓練器會怎麼判斷這句話（規則、語意、重排、要呼叫的工具與參數），不執行',
             async (argsText) => {
@@ -12043,13 +12110,13 @@ ${fnData.code}
         );
 
         registerOptional('offline_trainer',
-            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／export／import（把領域＝規則＋狀態機＋**原始碼工具**、已學會的解法、同義詞打包成一個JSON檔，import前會逐一檢查原始碼語法並請使用者確認；dry_run:true只檢查）／run_tool（試跑原始碼工具除錯，可給mock_calls）／rollback_tool／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
+            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／teach（text＝清單／報告＋goal＝目標：**AI教離線訓練器**，一項一項處理並要求每次成功後擴充離線訓練器，需要使用者先打開自動訓練）／teach_status／teach_stop／teach_resume／export／import（把領域＝規則＋狀態機＋**原始碼工具**、已學會的解法、同義詞打包成一個JSON檔，import前會逐一檢查原始碼語法並請使用者確認；dry_run:true只檢查）／run_tool（試跑原始碼工具除錯，可給mock_calls）／rollback_tool／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._otRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned', 'init_domain', 'link', 'add_tool', 'add_state', 'set_fsm', 'show_tool', 'remove_tool', 'record_case', 'distill', 'list_unresolved', 'clear_unresolved', 'run_tool', 'rollback_tool'] }, domains: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['merge', 'replace'] }, include_turns: { type: 'boolean' }, include_solutions: { type: 'boolean' }, deliver: { type: 'boolean' }, dry_run: { type: 'boolean' }, overwrite: { type: 'boolean' }, mock_calls: { type: 'object' }, slots: { type: 'object' }, last_tool_result: {}, assume_yes: { type: 'boolean' }, index: { type: 'number' }, name: { type: 'string' }, description: { type: 'string' }, source: { type: 'string', description: 'add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）' }, tests: { type: 'array', items: { type: 'object' } }, states: { type: 'object' }, initial: { type: 'string' }, to: { type: 'string' }, tool_calls: { type: 'array', items: { type: 'object' } }, answer: { type: 'string' }, min_count: { type: 'number' }, force: { type: 'boolean' }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
+            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned', 'init_domain', 'link', 'add_tool', 'add_state', 'set_fsm', 'show_tool', 'remove_tool', 'record_case', 'distill', 'list_unresolved', 'clear_unresolved', 'run_tool', 'rollback_tool', 'teach', 'teach_status', 'teach_stop', 'teach_resume', 'teach_report'] }, goal: { type: 'string' }, regex: { type: 'string' }, limit: { type: 'number' }, unattended: { type: 'boolean' }, id: { type: 'string' }, domains: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['merge', 'replace'] }, include_turns: { type: 'boolean' }, include_solutions: { type: 'boolean' }, deliver: { type: 'boolean' }, dry_run: { type: 'boolean' }, overwrite: { type: 'boolean' }, mock_calls: { type: 'object' }, slots: { type: 'object' }, last_tool_result: {}, assume_yes: { type: 'boolean' }, index: { type: 'number' }, name: { type: 'string' }, description: { type: 'string' }, source: { type: 'string', description: 'add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）' }, tests: { type: 'array', items: { type: 'object' } }, states: { type: 'object' }, initial: { type: 'string' }, to: { type: 'string' }, tool_calls: { type: 'array', items: { type: 'object' } }, answer: { type: 'string' }, min_count: { type: 'number' }, force: { type: 'boolean' }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -17495,6 +17562,14 @@ ${fnData.code}
                 <div style="margin:6px 0; display:flex; gap:6px; flex-wrap:wrap;">${btn('skill-view', '檢視／編輯狀態機與原始碼', `data-d="${es(d.name)}" data-p="${es(p.id)}"`)}${btn('skill-del', '刪除', `data-d="${es(d.name)}" data-p="${es(p.id)}"`)}</div>
                 <div style="opacity:.8;">範例：${es((p.examples || []).slice(0, 3).join('／'))}</div></details>`;
         }
+        try {
+            const ts = await this._otTeacherLatest();
+            if (ts) {
+                const live = this._otTeacherSessions().get(ts.id) || ts;
+                const running = live.state === 'running';
+                h += `<div style="margin-top:10px; padding:8px; border:1px dashed #334155; border-radius:6px;"><b>🎓 AI 教離線訓練器</b>（/offline-trainer-by-ai）<div style="white-space:pre-wrap; opacity:.85; margin:4px 0;">${es(this._otTeacherText(live))}</div>${running ? btn('teach-stop', '⏹ 停止') : btn('teach-resume', '▶ 接續')}</div>`;
+            }
+        } catch (_) {}
         const un = ((await this._otDb().get('meta', 'unresolved')) || {}).v || [];
         h += `<div style="margin-top:10px;"><b>尚未能處理的請求</b> <span style="opacity:.7;">（離線時做不到的；AI 看到會把它擴充成技能）</span> ${un.length ? btn('unresolved-clear', '清空') : ''}</div>`;
         h += un.length ? un.slice(0, 12).map((x) => `<div style="opacity:.85; padding:2px 0;">• ${es(x.text)} <span style="opacity:.6;">（${x.n || 1} 次；${es(x.reason)}）</span></div>`).join('') : '<div style="opacity:.7;">（沒有）</div>';
@@ -17645,6 +17720,196 @@ ${fnData.code}
         return { ok: r.ok, result: r.result, error: r.error, logs: r.logs, ms: Date.now() - t0, used_mocks: !!mocks };
     }
 
+    // ===== /offline-trainer-by-ai：AI教離線訓練器（長時間、無人值守、可停止／接續）=====
+    _otTeacherSessions() { return this._otTeachers || (this._otTeachers = new Map()); }
+    // 離線訓練器目前的「規模」：用來判斷AI這一項之後有沒有真的擴充它
+    async _otFingerprint() {
+        const st = await this._otLoad();
+        let tools = 0, toolBytes = 0, states = 0, patterns = 0, versions = 0;
+        for (const d of st.domains.values()) { patterns += (d.patterns || []).length; states += Object.keys((d.states && d.states.states) || {}).length; (d.tools || []).forEach((t) => { tools++; toolBytes += (t.source || '').length; versions += t.version || 1; }); }
+        const turns = (await this._otDb().getAll('turns')).length;
+        return { tools, toolBytes, states, patterns, versions, turns };
+    }
+    _otFpDiff(a, b) { return b.tools !== a.tools || b.toolBytes !== a.toolBytes || b.states !== a.states || b.patterns !== a.patterns || b.versions !== a.versions; }
+    async _otTeacherSave(s) { try { await this._otDb().put('meta', { k: 'teacher:' + s.id, v: s }); await this._otDb().put('meta', { k: 'teacher:latest', v: s.id }); } catch (_) {} }
+    async _otTeacherLoad(id) { try { const r = await this._otDb().get('meta', 'teacher:' + id); return r && r.v ? r.v : null; } catch (_) { return null; } }
+    async _otTeacherLatest() { try { const r = await this._otDb().get('meta', 'teacher:latest'); return r && r.v ? await this._otTeacherLoad(r.v) : null; } catch (_) { return null; } }
+    _otTeacherStats(s) {
+        const c = { pending: 0, done: 0, failed: 0, partial: 0 };
+        s.items.forEach((x) => { c[x.status] = (c[x.status] || 0) + 1; });
+        const finished = s.items.filter((x) => x.status !== 'pending');
+        const recent = finished.slice(-50);
+        const offline = (arr) => arr.length ? Math.round(arr.filter((x) => x.offline).length / arr.length * 100) : 0;
+        return { total: s.items.length, pending: c.pending, solved_by_offline: finished.filter((x) => x.offline).length, solved_by_ai: finished.filter((x) => !x.offline && (x.status === 'done' || x.status === 'partial')).length, failed: c.failed, offline_rate_overall: offline(finished), offline_rate_recent50: offline(recent), extended_items: finished.filter((x) => x.extended).length, state: s.state };
+    }
+    _otTeacherText(s) {
+        const k = this._otTeacherStats(s);
+        const done = k.total - k.pending;
+        let eta = '';
+        if (done > 3 && k.pending && s.started) { const per = (Date.now() - s.started - (s.pausedMs || 0)) / done; eta = ' · 預估剩 ' + this._repoJobFmtTime(per * k.pending / 1000); }
+        return `${s.goal.slice(0, 40)}\n已處理 ${done}/${k.total} · 離線自己解決 ${k.solved_by_offline}（最近50項 ${k.offline_rate_recent50}%）· AI解決 ${k.solved_by_ai} · 失敗 ${k.failed} · 擴充了技能的項目 ${k.extended_items}${eta}${s.current ? '\n目前：' + String(s.current).slice(0, 60) : ''}${s.state === 'paused' ? '\n⏸ ' + (s.pauseReason || '已暫停') : ''}`;
+    }
+    async _otTeacherStart(o) {
+        o = o || {};
+        if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { ok: false, error: '要先在「設定 → AI → 離線訓練器」把「自動訓練」選成「是，自動」或「是，手動」，才能用 /offline-trainer-by-ai。' };
+        const parsed = _faOtParseItems(o.text || '', { regex: o.regex });
+        let items = parsed.items;
+        if (!items.length) return { ok: false, error: '清單裡找不到任何項目。貼上報告／清單（每行一項；有 CVE-YYYY-NNNN 會自動抽出），或用 --regex 指定樣式。' };
+        if (o.limit) items = items.slice(0, Math.max(1, Math.floor(Number(o.limit))));
+        const goal = String(o.goal || '').trim() || (parsed.mode === 'cve' ? '處理這個 CVE：找出修補 patch（NVD、Debian security tracker、kernel.org、上游），套用／merge 進目前的專案，處理衝突與 API 不相容，並驗證' : '處理這個項目');
+        const ans = await this.requestUserForm({ title: '🎓 AI 教離線訓練器：要開始嗎？', description: `共 ${items.length} 項（${parsed.mode === 'cve' ? 'CVE' : parsed.mode === 'regex' ? '依regex' : '每行一項'}）。\n目標：${goal}\n\n每一項會先讓離線訓練器自己試；做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）。會在背景長時間進行（可以隨時 /offline-trainer-by-ai stop，之後 resume 接續），這段時間會消耗 AI 額度。\n\n注意：AI 與離線訓練器會用到有副作用的工具（寫檔、git、終端機）。${o.unattended ? '你選了無人值守：離線訓練器自己呼叫的工具不再逐次詢問。' : '離線訓練器呼叫有副作用的工具時仍會逐次詢問你。'}`, choices: ['開始', '取消'] });
+        if (!ans || !ans.confirmed || ans.answer !== '開始') return { ok: false, cancelled: true, error: '使用者取消' };
+        const s = { id: 's_' + Date.now().toString(36), goal, created: Date.now(), started: Date.now(), pausedMs: 0, state: 'running', mode: parsed.mode, items, idx: 0, opts: { unattended: !!o.unattended, maxFailures: Math.max(3, Number(o.max_failures) || 15), delayMs: Math.max(0, Number(o.delay_ms) || 1500), maxRounds: Math.max(8, Number(o.max_rounds) || 40), template: String(o.template || '') }, consecutiveFailures: 0, log: [] };
+        await this._otTeacherSave(s);
+        this._otTeacherSessions().set(s.id, s);
+        this._otTeacherLoop(s).catch((e) => { s.state = 'error'; s.pauseReason = String((e && e.message) || e); this._otTeacherSave(s); });
+        return { ok: true, id: s.id, items: items.length, mode: parsed.mode, note: '已在背景開始。進度卡片會顯示處理到哪、離線自己解決的比例；/offline-trainer-by-ai status 看詳情，stop 停止。' };
+    }
+    async _otTeacherResume(id) {
+        let s = id ? await this._otTeacherLoad(id) : await this._otTeacherLatest();
+        if (!s) return { ok: false, error: '沒有可以接續的教學任務' };
+        const live = this._otTeacherSessions().get(s.id);
+        if (live && live.state === 'running') return { ok: true, already_running: true, id: s.id };
+        if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { ok: false, error: '自動訓練是「否」，不能接續（先到設定改成「是」）' };
+        s.state = 'running'; s.pauseReason = ''; s.consecutiveFailures = 0; s.started = Date.now() - ((s.items.filter((x) => x.status !== 'pending').length) * 1000);
+        this._otTeacherSessions().set(s.id, s);
+        this._otTeacherLoop(s).catch((e) => { s.state = 'error'; s.pauseReason = String((e && e.message) || e); this._otTeacherSave(s); });
+        return { ok: true, id: s.id, pending: this._otTeacherStats(s).pending };
+    }
+    _otTeacherStop(id) {
+        const list = Array.from(this._otTeacherSessions().values()).filter((s) => (!id || s.id === id) && s.state === 'running');
+        list.forEach((s) => { s.stop = true; });
+        return { ok: true, stopping: list.map((s) => s.id), note: list.length ? '會在目前這一項處理完之後停止，進度已存，之後 resume 接續。' : '沒有在跑的教學任務。' };
+    }
+    // 離線訓練器先試這一項：解得掉（狀態機走到 report_success、工具都成功）就不需要AI
+    async _otTeacherTryOffline(text, s) {
+        let d;
+        try { d = await this._otDryRun(text, { execute: true, assumeYes: !!s.opts.unattended }); } catch (e) { return { ok: false, why: '離線訓練器出錯：' + String((e && e.message) || e) }; }
+        const dec = d.decision || {};
+        if (dec.status !== 'planned' && dec.status !== 'cache') return { ok: false, why: '離線訓練器沒有對應的做法（' + String(dec.reason || dec.status).slice(0, 120) + '）' };
+        if (!d.executed) return { ok: false, why: '離線訓練器找到做法但沒有執行' };
+        if (!d.executed.ok) return { ok: false, why: '離線訓練器執行失敗：' + String(d.executed.error || '').slice(0, 200), attempted: dec.chosen && (dec.chosen.pattern || dec.chosen.tool) };
+        return { ok: true, preview: String(d.executed.preview || '').slice(0, 300), by: dec.chosen && (dec.chosen.pattern || dec.chosen.tool) };
+    }
+    _otTeacherAllowedTools() { return Object.keys(this.tools).filter((n) => /^(offline_trainer|fetch_web_page|browser_search|http_|git_|apply_git_patch|coding_|terminal_|fs_|fap_|repo_|list_file_access|python_execute|bash_execute|programming_knowledge|summarize_large_text|list_uploaded|parse_uploaded)/.test(n)); }
+    _otTeacherVerdict(text) {
+        const t = String(text || '');
+        const ms = t.match(/\{[^{}]*"status"[^{}]*\}/g) || [];
+        for (let i = ms.length - 1; i >= 0; i--) { try { const j = JSON.parse(ms[i]); if (j && j.status) return j; } catch (_) {} }
+        return null;
+    }
+    async _otTeacherLoop(s) {
+        const prog = this._createProgressWidget('AI 教離線訓練器');
+        const tick = (force) => prog.update({ pct: s.items.length ? (s.items.filter((x) => x.status !== 'pending').length / s.items.length) * 100 : 0, status: this._otTeacherText(s), force });
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        let sinceSave = 0, lastSaved = Date.now();
+        try {
+            while (!s.stop) {
+                if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') { s.state = 'paused'; s.pauseReason = '自動訓練被關掉了'; break; }
+                const item = s.items.find((x) => x.status === 'pending');
+                if (!item) { s.state = 'done'; break; }
+                s.current = item.key;
+                const text = (s.opts.template ? s.opts.template.split('{item}').join(item.key).split('{context}').join(item.context || '') : `${s.goal}：${item.key}${item.context ? '（' + item.context + '）' : ''}`);
+                item.text = text.slice(0, 600);
+                tick();
+                const t0 = Date.now();
+                // 1) 離線訓練器先試
+                const off = await this._otTeacherTryOffline(text, s);
+                if (off.ok) {
+                    Object.assign(item, { status: 'done', offline: true, summary: off.preview, by: off.by, ms: Date.now() - t0, at: Date.now() });
+                    s.consecutiveFailures = 0;
+                } else {
+                    // 2) 交給AI（每一項是全新的子任務、乾淨的上下文），AI成功後必須擴充離線訓練器
+                    item.attempts++;
+                    const before = await this._otFingerprint();
+                    const calls = [];
+                    const mk = (extra) => `${extra || ''}項目：${item.key}\n背景：${item.context || '（無）'}\n目標：${s.goal}\n\n離線訓練器目前的情況：${off.why}\n\n處理完請照規範擴充離線訓練器，最後輸出一行JSON回報。`;
+                    let r, verdict;
+                    try {
+                        r = await this._runSubAgentTask(mk(), s.opts.maxRounds, { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls });
+                        verdict = this._otTeacherVerdict(r && r.text);
+                    } catch (e) { r = { text: '' }; verdict = { status: 'failed', summary: '子任務出錯：' + String((e && e.message) || e) }; }
+                    let after = await this._otFingerprint();
+                    let extended = this._otFpDiff(before, after);
+                    // AI解決了卻沒有擴充離線訓練器：催一次
+                    if (verdict && /solved|partial/.test(String(verdict.status)) && !extended && !s.stop) {
+                        try { const r2 = await this._runSubAgentTask(mk('你剛才處理成功了，但離線訓練器沒有任何變化（沒有新增／更新工具、狀態或規則）。現在照規範把可重複的做法寫回離線訓練器（add_tool→add_state→add_pattern，並用 run_tool／dry_run 驗證），再回報。\n\n'), Math.min(20, s.opts.maxRounds), { systemPrompt: FA_OT_TEACHER_PROTOCOL, allowedToolNames: this._otTeacherAllowedTools(), collectCalls: calls }); const v2 = this._otTeacherVerdict(r2 && r2.text); if (v2) verdict = v2; } catch (_) {}
+                        after = await this._otFingerprint(); extended = this._otFpDiff(before, after);
+                    }
+                    const okStatus = verdict && /solved/.test(String(verdict.status)) ? 'done' : (verdict && /partial/.test(String(verdict.status)) ? 'partial' : 'failed');
+                    Object.assign(item, { status: okStatus, offline: false, extended, summary: String((verdict && verdict.summary) || (r && r.text) || '').slice(0, 300), limits: verdict && verdict.limits ? String(verdict.limits).slice(0, 200) : undefined, tools_changed: verdict && Array.isArray(verdict.extended) ? verdict.extended.slice(0, 8) : undefined, ms: Date.now() - t0, at: Date.now() });
+                    // 成功的做法也記成對話紀錄：累積多項之後，背景整理（distill）還能自動長出更多技能
+                    if (okStatus !== 'failed') { try { await this._otRecordTurn(text, calls.filter((c) => c.ok), String((verdict && verdict.summary) || ''), { source: 'teacher' }); this._otTrainSchedule && this._otTrainSchedule(); } catch (_) {} }
+                    if (okStatus === 'failed') s.consecutiveFailures++; else s.consecutiveFailures = 0;
+                }
+                s.log.push({ key: item.key, status: item.status, offline: !!item.offline, at: item.at }); if (s.log.length > 200) s.log.shift();
+                if (++sinceSave >= 20 || Date.now() - lastSaved > 30000) { sinceSave = 0; lastSaved = Date.now(); await this._otTeacherSave(s); } // 上萬項時每次存整份很大，改成每20項或30秒存一次
+                tick();
+                if (s.consecutiveFailures >= s.opts.maxFailures) { s.state = 'paused'; s.pauseReason = `連續失敗 ${s.consecutiveFailures} 項，暫停等你看（/offline-trainer-by-ai report 看失敗原因，改好之後 resume）`; break; }
+                if (s.opts.delayMs) await sleep(s.opts.delayMs);
+            }
+        } finally {
+            if (s.state === 'running') s.state = s.stop ? 'stopped' : 'done';
+            s.stop = false; s.current = '';
+            await this._otTeacherSave(s);
+            const k = this._otTeacherStats(s);
+            if (s.state === 'done') prog.finish(`完成：${k.total} 項，離線自己解決 ${k.solved_by_offline}（${k.offline_rate_overall}%），AI解決 ${k.solved_by_ai}，失敗 ${k.failed}`); else if (s.state === 'paused' || s.state === 'stopped') prog.finish((s.state === 'paused' ? '已暫停：' : '已停止：') + (s.pauseReason || '進度已存，可以 resume 接續'));
+            else prog.fail(s.pauseReason || '中斷');
+            this._pushAssistantMessage(`🎓 AI 教離線訓練器${s.state === 'done' ? '完成' : s.state === 'paused' ? '暫停' : '停止'}：\n${this._otTeacherText(s)}\n\n看報告：/offline-trainer-by-ai report　接續：/offline-trainer-by-ai resume`, null);
+            this._persistChatHistory(); this._renderMessageHistory();
+        }
+    }
+    async _otTeacherReport(id) {
+        const s = id ? await this._otTeacherLoad(id) : await this._otTeacherLatest();
+        if (!s) return { ok: false, error: '沒有教學任務' };
+        const k = this._otTeacherStats(s);
+        const fails = s.items.filter((x) => x.status === 'failed').slice(-15).map((x) => ({ item: x.key, why: x.summary, limits: x.limits }));
+        const limits = {};
+        s.items.forEach((x) => { if (x.limits) limits[x.limits] = (limits[x.limits] || 0) + 1; });
+        const fp = await this._otFingerprint();
+        return { ok: true, id: s.id, goal: s.goal, stats: k, trainer: fp, top_limits: Object.entries(limits).sort((a, b) => b[1] - a[1]).slice(0, 5), recent_failures: fails, pause_reason: s.pauseReason || undefined };
+    }
+    // 以斜線指令 /offline-trainer-by-ai 的原始輸入解析：第一行（或 -- 參數）是目標與選項，其餘是清單
+    _otTeacherParseArgs(raw) {
+        let text = String(raw || '');
+        const o = { text: '' };
+        const optRe = /--(file|regex|limit|goal|template|max-failures|max-rounds|delay)\s+("([^"]*)"|'([^']*)'|\S+)/g;
+        text = text.replace(optRe, (m, k, v, d1, d2) => { o[k.replace(/-/g, '_')] = d1 != null ? d1 : (d2 != null ? d2 : v); return ''; });
+        if (/--unattended/.test(text)) { o.unattended = true; text = text.replace(/--unattended/g, ''); }
+        const lines = text.split(/\r?\n/);
+        const first = lines[0].trim();
+        if (!o.goal && first && lines.length > 1) { o.goal = first; o.text = lines.slice(1).join('\n'); } else o.text = text;
+        if (o.max_failures) o.max_failures = Number(o.max_failures); if (o.max_rounds) o.max_rounds = Number(o.max_rounds); if (o.delay) { o.delay_ms = Number(o.delay); delete o.delay; }
+        return o;
+    }
+    async _otTeacherCommand(raw) {
+        const arg = String(raw || '').trim();
+        const word = arg.split(/\s+/)[0].toLowerCase();
+        const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
+        if (!arg || word === 'help') { say('🎓 /offline-trainer-by-ai　AI 教離線訓練器（需要先把「自動訓練」打開）\n\n用法：\n/offline-trainer-by-ai <目標>（換行貼上清單／報告）\n  或  /offline-trainer-by-ai --file <路徑或已上傳的檔名> --goal "目標"\n選項：--regex <樣式> --limit <N> --unattended --max-failures <N> --max-rounds <N> --delay <ms>\n/offline-trainer-by-ai status｜stop｜resume｜report\n\n例：貼一份 cve-check 報告，目標「找 patch、merge、處理衝突」。每一項先讓離線訓練器試，做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器；離線自己解決的比例會越來越高。'); return; }
+        if (word === 'stop') { const r = this._otTeacherStop(); say('⏹ ' + r.note); return; }
+        if (word === 'resume') { const r = await this._otTeacherResume(); say(r.ok ? '▶️ 已接續（剩 ' + (r.pending != null ? r.pending : '?') + ' 項）' : '⚠️ ' + r.error); return; }
+        if (word === 'status' || word === 'report') {
+            const r = await this._otTeacherReport();
+            if (!r.ok) { say('⚠️ ' + r.error); return; }
+            say(`🎓 ${r.goal}\n狀態：${r.stats.state}　共 ${r.stats.total} 項，剩 ${r.stats.pending}\n離線自己解決 ${r.stats.solved_by_offline}（整體 ${r.stats.offline_rate_overall}%，最近50項 ${r.stats.offline_rate_recent50}%）· AI解決 ${r.stats.solved_by_ai} · 失敗 ${r.stats.failed}\n離線訓練器：工具 ${r.trainer.tools}、狀態 ${r.trainer.states}、規則 ${r.trainer.patterns}${r.top_limits.length ? '\n\n最常見的限制：\n' + r.top_limits.map((x) => `- ${x[0]}（${x[1]} 次）`).join('\n') : ''}${r.recent_failures.length ? '\n\n最近失敗：\n' + r.recent_failures.slice(0, 8).map((x) => `- ${x.item}：${String(x.why || '').slice(0, 100)}`).join('\n') : ''}${r.pause_reason ? '\n\n⏸ ' + r.pause_reason : ''}`);
+            return;
+        }
+        const o = this._otTeacherParseArgs(arg);
+        if (o.file) {
+            try {
+                let txt = null;
+                const rec = await this._resolveUploadedFileRecord(String(o.file)).catch(() => null);
+                if (rec && rec.blob) txt = await rec.blob.text();
+                if (txt == null && window.desktopAPI && window.desktopAPI.rawfs) { const r = await window.desktopAPI.rawfs.readFile(String(o.file)); txt = typeof r.text === 'string' ? r.text : null; }
+                if (txt == null) { say('⚠️ 讀不到檔案：' + o.file + '（桌面版可給絕對路徑，或先上傳檔案再給檔名）'); return; }
+                o.text = txt;
+            } catch (e) { say('⚠️ 讀取檔案失敗：' + e.message); return; }
+        }
+        const r = await this._otTeacherStart(o);
+        say(r.ok ? `🎓 已開始：${r.items} 項（${r.mode}）。${r.note}` : '⚠️ ' + (r.error || '沒有開始'));
+    }
+
     async _otRun(a) {
         const action = String(a.action || 'status');
         const st = await this._otLoad();
@@ -17675,6 +17940,10 @@ ${fnData.code}
             return { ok: true, removed: before - d.patterns.length };
         }
         if (action === 'add_example') { const ok = await this._otAddExample(String(a.domain || ''), String(a.pattern || ''), String(a.text || '')); return { ok, note: ok ? '已加入範例' : '範例已存在或找不到pattern' }; }
+        if (action === 'teach') return await this._otTeacherStart({ text: a.text, goal: a.goal, regex: a.regex, limit: a.limit, unattended: !!a.unattended });
+        if (action === 'teach_status' || action === 'teach_report') return await this._otTeacherReport(a.id);
+        if (action === 'teach_stop') return this._otTeacherStop(a.id);
+        if (action === 'teach_resume') return await this._otTeacherResume(a.id);
         if (action === 'init_domain') {
             const name = String(a.domain || '').trim();
             if (!/^[\w\u4e00-\u9fff-]{2,40}$/.test(name)) return { ok: false, error: 'domain名稱要2~40字（英數、底線、連字號、中文）' };
@@ -17956,6 +18225,8 @@ ${fnData.code}
                 else if (act === 'distill-now') { b.disabled = true; b.textContent = '整理中…'; const r = await this._otTrainRun({ minCount: 3 }); if (!r.ok) alert('整理失敗：' + r.error); else alert('整理完成：看了 ' + r.turns + ' 輪對話，新增 ' + r.adopted + ' 個技能、更新 ' + r.updated + ' 個' + (r.review ? '（' + r.review + ' 個準確度不夠，先停用等你審核）' : '') + (r.rejected && r.rejected.length ? '\n\n沒整理成技能的原因（前幾項）：\n' + r.rejected.slice(0, 5).map((x) => x.sig + '：' + x.why).join('\n') : '')); refresh(); }
                 else if (act === 'skill-view') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p) this._otSkillEditor(d, p); }
                 else if (act === 'skill-del') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p && window.confirm('刪除這個技能？（觸發規則與範例句；狀態機與原始碼工具保留在領域裡）')) { d.patterns = d.patterns.filter((x) => x.id !== p.id && x.id !== p.id + '_kw'); await this._otSaveDomain(d); await this._otVecDelete('ot_examples', (id) => id.indexOf(d.name + '/' + p.id) === 0); } refresh(); }
+                else if (act === 'teach-stop') { this._otTeacherStop(); refresh(); }
+                else if (act === 'teach-resume') { const r = await this._otTeacherResume(); if (!r.ok) alert(r.error); refresh(); }
                 else if (act === 'unresolved-clear') { await this._otDb().put('meta', { k: 'unresolved', v: [] }); refresh(); }
                 else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話學到 ' + (r.added || 0) + ' 輪的工具呼叫（共 ' + (r.calls || 0) + ' 個；只學做法，不存AI的回答或查詢結果）'); refresh(); }
                 else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
@@ -38665,6 +38936,7 @@ _result
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
+        if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
@@ -43836,7 +44108,7 @@ ${existingNodeSummaries}
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
         const intentGuard = { count: 0 };
-        const subToolLog = { calls: [], blocked: 0 };
+        const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
         // 一樣不消耗maxRounds，獨立計數。
         let malformedCallRetries = 0;
