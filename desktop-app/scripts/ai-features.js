@@ -59,7 +59,11 @@ function collectSourceNames() {
   // 程式設計領域分支（prog_*）是由 FA_PROGRAMMING_PLAYBOOKS 這份資料迴圈登記進 SUBAGENT_DOMAIN_REGISTRY 的
   const pb = src.match(/const FA_PROGRAMMING_PLAYBOOKS = \{([\s\S]*?)\n\};/);
   if (pb) for (const m of pb[1].matchAll(/^    ([a-z_0-9]+): \{/gm)) domains.add(m[1]);
-  for (const m of (src + boot).matchAll(/register_domain\(\s*['"]([a-z_0-9]+)['"]/g)) domains.add(m[1]);
+  for (const m of (src + boot).matchAll(/register_domain\(\s*['"]([a-z_0-9]+)['"](?!\s*\+)/g)) domains.add(m[1]);
+  // 知識助理（know_*）由 FA_PROG_KNOWLEDGE 的每個 key 登記；另有直接指派的 SUBAGENT_DOMAIN_REGISTRY.xxx = {…}
+  const kn = src.match(/const FA_PROG_KNOWLEDGE = \{([\s\S]*?)\n\};/);
+  if (kn) for (const m of kn[1].matchAll(/^    ([a-z_0-9]+): \{/gm)) domains.add('know_' + m[1]);
+  for (const m of src.matchAll(/SUBAGENT_DOMAIN_REGISTRY\.([a-z_0-9]+) = \{/g)) domains.add(m[1]);
   return { tools, slash, domains };
 }
 
