@@ -16205,7 +16205,7 @@ ${fnData.code}
     }
     // 依工具的參數結構猜一份參數樣板：第一個必填（或常見名稱）字串參數填 {problem_text}
     _otGuessArgs(toolName) {
-        const FIXED = { list_file_access_points: {}, browser_search: { query: '{problem_text}' }, fetch_web_page: { url: '{url}' }, fap_read_file: { ref: '{path}' }, fap_list_files: { ref: '{path}' }, fs_read_file: { path: '{path}' }, fs_list_files: { path: '{path}' }, rag_query_graph: { query: '{problem_text}' }, repo_map: { action: 'find', query: '{problem_text}' }, programming_knowledge: { action: 'lookup', query: '{problem_text}' } };
+        const FIXED = { list_file_access_points: {}, browser_status: {}, browser_list_tabs: {}, browser_search: { query: '{problem_text}' }, fetch_web_page: { url: '{url}' }, fap_read_file: { ref: '{path}' }, fap_list_files: { ref: '{path}' }, fs_read_file: { path: '{path}' }, fs_list_files: { path: '{path}' }, rag_query_graph: { query: '{problem_text}' }, repo_map: { action: 'find', query: '{problem_text}' }, programming_knowledge: { action: 'lookup', query: '{problem_text}' } };
         if (FIXED[toolName]) return Object.assign({}, FIXED[toolName]);
         const t = this.tools[toolName];
         const sc = t && t.parametersSchema;
@@ -16230,6 +16230,8 @@ ${fnData.code}
                 { id: 'url_only', type: 'regex', expr: '^\\s*(https?://(?!(?:www\\.)?(?:youtube\\.com|youtu\\.be)/)\\S+)\\s*$', intent: '貼上單一網址 → 讀取網頁', tool: 'fetch_web_page', args: { url: '{1}' }, confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'youtube_url', type: 'regex', expr: '(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be)/\\S+)', intent: '貼上YouTube網址 → 下載', tool: 'youtube_download', args: { text: '{1}' }, confidence: 0.9, risk: 'confirm', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_open_read', type: 'regex', expr: '(?:(?:瀏覽器控制|用瀏覽器|瀏覽器(?:開啟|打開|前往|看)|browser[ _]?control|用chrome|用 chrome)[^]*?https?://|https?://[^\\s]*[^]*?(?:瀏覽器控制|用瀏覽器|browser[ _]?control))', intent: '用瀏覽器控制開啟網址並讀取頁面', steps: [{ tool: 'browser_create_tab', args: { url: '{url}' } }, { tool: 'browser_get_page_text', args: { tab_id: '{step1.tab_id}' } }, { tool: 'browser_close', args: { tab_id: '{step1.tab_id}' }, cleanup: true }], confidence: 0.95, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
+                { id: 'browser_control_status', type: 'regex', expr: '瀏覽器控制|控制瀏覽器|browser[ _]?control', intent: '瀏覽器控制：檢查擴充功能是否連線（要開網址請連同網址一起說）', tool: 'browser_status', args: {}, confidence: 0.8, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'search_words', type: 'regex', expr: '^(?:請|幫我|幫忙)?(?:上網|網路上)?(?:搜尋|搜索|查詢|查一下|查)\\s*[:：]?\\s*(.{2,})$', intent: '搜尋 xxx', tool: 'browser_search', args: { query: '{1}' }, confidence: 0.72, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
             ],
         };
@@ -16238,7 +16240,7 @@ ${fnData.code}
             const d = { name: 'cat_' + c.id, description: c.name + '：' + (c.summary || ''), enabled: true, source: 'builtin', patterns: [], references: [], created: Date.now(), updated: Date.now() };
             for (const f of c.features) {
                 if (!f.available) continue;
-                const tools = [].concat((f.how || {}).tools || []).filter((t) => this.tools[t] && !FA_OT_META_TOOLS.has(t));
+                const tools = [].concat((f.how || {}).tools || []).filter((t) => this.tools[t] && !FA_OT_META_TOOLS.has(t) && !/^browser_(get_|click|mouse|type|press|scroll|screenshot|wait|close|activate|navigate|list_d)/.test(t));
                 const slashes = [].concat((f.how || {}).slash || []);
                 const toolWords = tools.length ? [tools.map((t) => t.replace(/_/g, ' ')).join(' ')] : [];
                 const examples = Array.from(new Set([f.name].concat(f.samples || []).concat([String(f.summary || '').slice(0, 90)]).concat(toolWords))).filter(Boolean);
@@ -16267,7 +16269,7 @@ ${fnData.code}
         }
         return made;
     }
-    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v4:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v6:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
     _otPickTool(p, text) {
         if (!p.tools || p.tools.length < 2) return p.tool;
         const low = String(text).toLowerCase();
@@ -16351,10 +16353,16 @@ ${fnData.code}
             const groups = r.cand.rule ? r.cand.rule.groups : {};
             const pickedTool = p.tool ? this._otPickTool(p, norm) : null;
             const tplArgs = pickedTool && pickedTool !== p.tool ? this._otGuessArgs(pickedTool) : (p.args || {});
-            const filled = pickedTool ? _faOtFill(tplArgs, slots, groups) : { args: {}, missing: [] };
+            let filled = pickedTool ? _faOtFill(tplArgs, slots, groups) : { args: {}, missing: [] };
+            let stepList = null;
+            if (Array.isArray(p.steps) && p.steps.length) {
+                const miss = [];
+                stepList = p.steps.map((st) => { const f = _faOtFill(st.args || {}, slots, groups); f.missing.forEach((m) => { if (miss.indexOf(m) < 0 && !/^step\d/.test(m)) miss.push(m); }); return { tool: st.tool, args: f.args, cleanup: !!st.cleanup }; });
+                filled = { args: {}, missing: miss };
+            }
             const finalScore = Math.max(r.score, r.cand.ruleFloor || 0);
             const simRaw = r.cand.sim || 0;
-            return { kind: p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer')), domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: (pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe'), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
+            return { kind: stepList ? 'steps' : (p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer'))), steps: stepList || undefined, domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: stepList ? (p.risk || 'safe') : ((pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe')), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
         });
         res.sort((a, b) => b.score - a.score);
         const best = res[0];
@@ -16389,7 +16397,7 @@ ${fnData.code}
         const bk = bigKeys.find((k) => typeof obj[k] === 'string' && obj[k].length > 0);
         if (bk) lines.push(asText(obj[bk]));
         for (const [k, v] of Object.entries(obj)) {
-            if (k === bk || k === 'ok') continue;
+            if (k === bk || k === 'ok' || k === 'tab_id') continue;
             if (Array.isArray(v) && v.length) lines.push(`**${k}**（${v.length}）\n` + v.slice(0, 8).map((x) => '- ' + (typeof x === 'object' ? Object.entries(x).filter(([, y]) => y != null && typeof y !== 'object').slice(0, 4).map(([a, b]) => a + '：' + String(b).slice(0, 80)).join('；') : String(x).slice(0, 120))).join('\n'));
             else if (typeof v === 'string' && v) lines.push(`**${k}**：${v.slice(0, 200)}`);
             else if (typeof v === 'number' || typeof v === 'boolean') lines.push(`**${k}**：${v}`);
@@ -16405,6 +16413,32 @@ ${fnData.code}
             const outs = [];
             for (const call of c.calls || []) { const t = this.tools[call.tool]; if (!t) { outs.push({ tool: call.tool, error: '工具已不存在' }); continue; } outs.push({ tool: call.tool, raw: await t.callback.call(this, JSON.stringify(call.args || {})) }); }
             return { ok: true, kind: 'cache', results: outs, text: outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
+        }
+        if (c.kind === 'steps') {
+            const results = [];
+            const find = (o, key) => { if (!o || typeof o !== 'object') return undefined; if (Object.prototype.hasOwnProperty.call(o, key) && o[key] != null && typeof o[key] !== 'object') return o[key]; for (const v of Object.values(o)) { const r = find(v, key); if (r !== undefined) return r; } return undefined; };
+            const subst = (v) => {
+                if (typeof v === 'string') { const ex = /^\{step(\d+)\.([\w.]+)\}$/.exec(v); if (ex) { const j = results[Number(ex[1]) - 1]; const val = j ? find(j.json, ex[2].split('.').pop()) : undefined; return val === undefined ? '' : val; } return v; }
+                if (Array.isArray(v)) return v.map(subst);
+                if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subst(x)]));
+                return v;
+            };
+            let failed = null;
+            for (const st of c.steps || []) {
+                if (failed && !st.cleanup) { results.push({ tool: st.tool, skipped: true }); continue; }
+                const t = this.tools[st.tool];
+                if (!t) { if (!st.cleanup) failed = failed || `工具「${st.tool}」不存在（可能是這個版本沒有，或網頁版不支援）`; results.push({ tool: st.tool, error: '工具不存在' }); continue; }
+                const args = subst(st.args || {});
+                if (Object.values(args).some((x) => x === '')) { failed = failed || `${st.tool}缺少前一步的結果（例如分頁id），前面的步驟可能沒成功`; results.push({ tool: st.tool, skipped: true }); continue; }
+                let raw, json = null, ok = true;
+                try { raw = await t.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ error: String((e && e.message) || e) }); }
+                try { json = JSON.parse(raw); if (json && (json.ok === false || json.error)) ok = false; } catch (_) {}
+                results.push({ tool: st.tool, raw, json, ok });
+                if (!ok && !st.cleanup) failed = failed || (json && json.error ? String(json.error).slice(0, 300) : st.tool + '失敗');
+            }
+            const body = results.filter((r) => r.raw && r.ok && !/^browser_(create_tab|close)$/.test(r.tool)).map((r) => this._otPretty(r.raw, plan.text)).join('\n\n');
+            if (failed) return { ok: false, kind: 'steps', error: failed, text: body, results };
+            return { ok: true, kind: 'steps', text: body || '（步驟都執行了，但沒有可顯示的內容）', results };
         }
         if (c.kind === 'slash') {
             const first = String(c.slash).trim().split(/\s+/)[0];
@@ -16439,7 +16473,7 @@ ${fnData.code}
     async _otDryRun(text, opts) {
         const plan = await this._otPlan(text, opts);
         const d = plan.decision;
-        const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
+        const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, steps: d.chosen.steps, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
         if (opts && opts.execute && (d.status === 'planned' || d.status === 'cache')) { const r = await this._otExecute(plan, opts); out.executed = { ok: r.ok, error: r.error, preview: String(r.text || '').slice(0, 1500) }; if (r.ok) await this._otBumpHit(plan); }
         return out;
     }
@@ -16470,7 +16504,7 @@ ${fnData.code}
         const head = opts.fallback ? `🔌 所有AI model（共${opts.errors ? opts.errors.length : '?'}個）都沒辦法回應，改用離線訓練器（不經過AI）${errLines}` : `🔌 離線模式（Offline Trainer，不經過AI）`;
         const why = c ? `比對：「${c.domain} / ${c.pattern}」信心 ${c.score}（${c.via || '規則'}${c.explain ? `；字面${c.explain.bm25}、重排${c.explain.textrank}` : ''}）` : '';
         if (d.status === 'planned' || d.status === 'cache') {
-            const act = c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
+            const act = c.kind === 'steps' ? `依序執行 ${(c.steps || []).map((x) => x.tool).join(' → ')}` : c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
             this._pushAssistantMessage(`${head}\n${why}\n動作：${act}`, null);
             this._persistChatHistory(); this._renderMessageHistory();
             const r = await this._otExecute(plan);
