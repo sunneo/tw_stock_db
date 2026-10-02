@@ -8843,7 +8843,7 @@ class FloatingAssistant {
                 const a = String(argsText || '').trim().toLowerCase();
                 if (a === 'on' || a === 'off') { this.advancedSettings.offlineMode = a === 'on'; this._saveAdvancedSettings(); this._applyOfflineModeUI(); }
                 const st = await this._otRun({ action: 'status' });
-                this._pushAssistantMessage(`🔌 離線模式：${this.advancedSettings.offlineMode ? '開' : '關'}　自動訓練：${this.advancedSettings.offlineAutoTrain ? '開' : '關'}　門檻 ${this.advancedSettings.offlineThreshold}\n領域 ${st.domains}、規則 ${st.patterns}、範例句 ${st.examples}、問答記憶 ${st.qa}、已學會的解法 ${st.solutions}`, null);
+                this._pushAssistantMessage(`🔌 離線模式：${this.advancedSettings.offlineMode ? '開' : '關'}　自動訓練：${{ auto: '自動', manual: '手動（按按鈕）', off: '關' }[this.advancedSettings.offlineAutoTrain || 'off']}　門檻 ${this.advancedSettings.offlineThreshold}\n領域 ${st.domains}、規則 ${st.patterns}、範例句 ${st.examples}、問答記憶 ${st.qa}、已學會的解法 ${st.solutions}`, null);
                 this._persistChatHistory(); this._renderMessageHistory();
             }
         );
@@ -9824,7 +9824,7 @@ class FloatingAssistant {
             customLanguages: {},
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
             offlineLearn: true, // （舊）線上AI成功的做法自動學進離線訓練器；現在改由offlineAutoTrain控制
-            offlineAutoTrain: false, // 自動訓練：線上AI成功的對話才會被記錄，並在背景worker整理成技能（規則＋狀態機＋原始碼）；預設關閉
+            offlineAutoTrain: 'off', // 自動訓練：'auto'＝線上AI成功的對話自動記錄並在背景worker整理成技能（規則＋狀態機＋原始碼）；'manual'＝每輪結束後出現「讓離線訓練器學會」按鈕，按了才加入離線訓練；'off'＝不做（預設）
             offlineAutoFallback: true, // AI完全沒辦法回應時，退回離線訓練器
             offlineThreshold: 0.45,
             repoIndexMaxFiles: 50000, // 專案索引：最多分析幾個原始碼檔
@@ -10996,7 +10996,7 @@ class FloatingAssistant {
             offlineMode: raw.offlineMode === true,
             offlineLearn: raw.offlineLearn !== false,
             offlineAutoFallback: raw.offlineAutoFallback !== false,
-            offlineAutoTrain: raw.offlineAutoTrain === true,
+            offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 100 && n <= 2000000 ? n : 50000; })(),
             repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 5 && n <= 2000 ? n : 100; })(),
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
@@ -17221,7 +17221,7 @@ ${fnData.code}
         return true;
     }
     async _otLearnFromTurn(userText, calls, answer) {
-        if (!this.advancedSettings.offlineAutoTrain) return { learned: 0 };
+        if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { learned: 0 };
         const text = String(userText || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length < 2 || text.charAt(0) === '/') return { learned: 0 };
         const good = (calls || []).filter((c) => c.ok && !FA_OT_META_TOOLS.has(c.name) && this.tools[c.name]);
@@ -17379,7 +17379,7 @@ ${fnData.code}
         opts = opts || {};
         const ti = this._otTrainInfo();
         if (ti.running) return { ok: true, skipped: '已經在整理中' };
-        if (opts.auto && !this.advancedSettings.offlineAutoTrain) return { ok: true, skipped: '沒有勾選自動訓練' };
+        if (opts.auto && this.advancedSettings.offlineAutoTrain !== 'auto') return { ok: true, skipped: '自動訓練不是「自動」模式' };
         ti.running = true; ti.error = '';
         try {
             const turns = (await this._otDb().getAll('turns')).sort((a, b) => a.at - b.at).slice(-600);
@@ -17444,7 +17444,7 @@ ${fnData.code}
         let h = `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin:14px 0;"><b>🧠 技能（規則＋狀態機＋原始碼工具）</b>
             <div style="opacity:.75; margin:4px 0 8px;">長期對話的成功做法（例如一直在查 SDK 某個符號的定義）會被整理成：觸發規則、狀態機、一小段會把結果整理成回答的原始碼。整理在背景 worker 裡做，不會卡畫面。AI 也可以用 offline_trainer 的 add_tool／add_state 直接寫入。</div>
             <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
-                <label title="打勾後，線上AI成功的對話才會被記錄並在背景整理成技能；沒打勾就不會做任何背景訓練"><input type="checkbox" data-ot-set="offlineAutoTrain" ${S.offlineAutoTrain ? 'checked' : ''}> 自動訓練（背景）</label>
+                <label title="自動：線上AI成功的對話自動記錄，並在背景worker整理成技能。手動：每輪結束出現「動作完成了（加入離線訓練）」按鈕，按了才加入離線訓練。否（預設）：什麼都不做。">自動訓練 <select data-ot-sel="offlineAutoTrain" style="${this._otPaneInput()}"><option value="auto" ${S.offlineAutoTrain === 'auto' ? 'selected' : ''}>是，自動（背景）</option><option value="manual" ${S.offlineAutoTrain === 'manual' ? 'selected' : ''}>是，手動（每輪出現按鈕）</option><option value="off" ${(S.offlineAutoTrain || 'off') === 'off' ? 'selected' : ''}>否</option></select></label>
                 ${btn('distill-now', '⚙️ 立即整理一次')}
                 <span style="opacity:.8;">${ti.running ? '⏳ 整理中…' : (ti.lastRun ? '上次整理：' + new Date(ti.lastRun).toLocaleString() + (ti.lastResult ? `（${ti.lastResult.turns}輪對話 → 新增${ti.lastResult.adopted}、更新${ti.lastResult.updated}${ti.lastResult.review ? '、待審核' + ti.lastResult.review : ''}）` : '') : '還沒整理過')}${ti.error ? ' <span style="color:#f87171;">⚠️ ' + es(ti.error) + '</span>' : ''}</span></div>`;
         const turns = (await this._otDb().getAll('turns')).length;
@@ -17501,7 +17501,7 @@ ${fnData.code}
     async _otRun(a) {
         const action = String(a.action || 'status');
         const st = await this._otLoad();
-        if (action === 'status') return Object.assign({ ok: true, offline_mode: !!this.advancedSettings.offlineMode, auto_train: !!this.advancedSettings.offlineAutoTrain, train: (() => { const t = this._otTrainInfo(); return { running: t.running, pending: t.pending, last_run: t.lastRun || null, last_result: t.lastResult, error: t.error || undefined }; })(), threshold: this.advancedSettings.offlineThreshold }, this._otStats());
+        if (action === 'status') return Object.assign({ ok: true, offline_mode: !!this.advancedSettings.offlineMode, auto_train: this.advancedSettings.offlineAutoTrain || 'off', train: (() => { const t = this._otTrainInfo(); return { running: t.running, pending: t.pending, last_run: t.lastRun || null, last_result: t.lastResult, error: t.error || undefined }; })(), threshold: this.advancedSettings.offlineThreshold }, this._otStats());
         if (action === 'dry_run' || action === 'resolve') { if (!a.text) return { ok: false, error: '缺少text' }; return await this._otDryRun(a.text, { execute: action === 'resolve' || !!a.execute, assumeYes: !!a.assume_yes, noCache: !!a.no_cache, threshold: a.threshold }); }
         if (action === 'list') return { ok: true, domains: Array.from(st.domains.values()).map((d) => ({ name: d.name, enabled: d.enabled !== false, source: d.source, patterns: d.patterns.length, description: String(d.description || '').slice(0, 80) })) };
         if (action === 'show') { const d = st.domains.get(String(a.domain || '')); return d ? { ok: true, domain: d } : { ok: false, error: '沒有這個領域' }; }
@@ -17780,6 +17780,7 @@ ${fnData.code}
                 else { this.advancedSettings[k] = t.checked; if (k === 'offlineMode') this._applyOfflineModeUI(); }
                 this._saveAdvancedSettings();
             } else if (t.dataset.otDom !== undefined) { const st = await this._otLoad(); const d = st.domains.get(t.dataset.otDom); if (d) { d.enabled = t.checked; await this._otSaveDomain(d); for (const p of d.patterns) await this._otSyncPatternExamples(d, p); } }
+            else if (t.dataset.otSel !== undefined) { this.advancedSettings[t.dataset.otSel] = t.value; this._saveAdvancedSettings(); refresh(); }
             else if (t.dataset.otSkillEn !== undefined) { const [dn, pid] = t.dataset.otSkillEn.split('|'); const st2 = await this._otLoad(); const d = st2.domains.get(dn); if (d) { for (const p of d.patterns) if (p.id === pid || p.id === pid + '_kw') { p.enabled = t.checked; if (t.checked && p.stats) p.stats.needs_review = false; await this._otSyncPatternExamples(d, p); } await this._otSaveDomain(d); } }
             else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
             else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const r = await this._otRun({ action: 'import', data: data.data || data }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } refresh(); }
@@ -38512,7 +38513,7 @@ _result
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
-        if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this.advancedSettings.offlineAutoTrain ? this._otScalarFields(result) : undefined });
+        if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
@@ -45732,6 +45733,22 @@ ${existingNodeSummaries}
         // 的JSON（例如get_chart_snapshot截圖），直接渲染成<img>，不要
         // 走下面情況二那種「摺疊起來的純文字」渲染——data URL通常是幾十
         // KB的base64字串，塞進純文字區塊只會很長一串看不出是圖片。
+        if (msg._actionChips && msg._actionChips.length) {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'margin-bottom: 12px; display:flex; flex-wrap:wrap; gap:6px;';
+            msg._actionChips.forEach((c) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'ai-suggestion-chip';
+                btn.disabled = c.state === 'busy' || c.state === 'done';
+                btn.style.cssText = `padding:4px 12px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${c.state === 'done' ? '#76b900' : palette.detailText}; font-size:12px; cursor:${btn.disabled ? 'default' : 'pointer'};`;
+                btn.textContent = c.label;
+                btn.addEventListener('click', () => { try { c.action(); } catch (_) {} });
+                wrap.appendChild(btn);
+            });
+            container.appendChild(wrap);
+            return;
+        }
         if (msg.role === 'tool') {
             let imagePayload = null;
             // tw_stock_db客製: 優先看不可枚舉的_displayDataUrl（見
@@ -46629,15 +46646,47 @@ ${existingNodeSummaries}
     }
     // 一輪線上AI對話結束：把成功的工具呼叫與問答學進離線訓練器（可在設定關掉）
     _otOnTurnDone() {
-        if (this.advancedSettings.offlineMode || !this.advancedSettings.offlineAutoTrain) return;
+        const mode = this.advancedSettings.offlineAutoTrain || 'off';
+        if (this.advancedSettings.offlineMode || mode === 'off') return;
         const userText = this._currentTurnUserText;
         const calls = (this._otCalls || []).slice();
         const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
         if (!userText || !lastAsst) return;
         const ui = this.messages.map((m) => m.role === 'user' && m.content === userText).lastIndexOf(true);
         if (ui < 0 || this.messages.indexOf(lastAsst) < ui) return; // 這則回覆不是針對這句話的
-        this._otLearnFromTurn(userText, calls, lastAsst.content).catch((e) => console.warn('離線訓練器學習失敗', e));
-        this._otRecordTurn(userText, calls, lastAsst.content).then((rec) => { if (rec) this._otTrainSchedule(); }).catch(() => {});
+        const payload = { userText, calls, answer: lastAsst.content };
+        if (mode === 'auto') { this._otTrainTurn(payload, false); return; }
+        // manual：這一輪有成功的工具呼叫（值得學）才出現按鈕
+        if (!calls.some((c) => c.ok && !FA_OT_META_TOOLS.has(c.name))) return;
+        this._otPushTrainChip(payload);
+    }
+    // 把這一輪的做法教給離線訓練器：記成對話紀錄＋(即時)簡單規則；auto＝排程背景整理，manual＝立刻在背景worker整理一次
+    async _otTrainTurn(payload, immediate) {
+        try {
+            await this._otLearnFromTurn(payload.userText, payload.calls, payload.answer);
+            const rec = await this._otRecordTurn(payload.userText, payload.calls, payload.answer);
+            if (!immediate) { if (rec) this._otTrainSchedule(); return { recorded: !!rec }; }
+            const r = rec ? await this._otTrainRun({ minCount: 3 }) : { ok: true, adopted: 0, updated: 0, turns: 0 };
+            return Object.assign({ recorded: !!rec }, r);
+        } catch (e) { console.warn('離線訓練器學習失敗', e); return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    // 手動訓練：在這一輪的結尾附一顆按鈕（跟建議操作的chip同一種樣式）
+    _otPushTrainChip(payload) {
+        const msg = { role: 'tool', content: '', tool_call_id: 'ot_chip_' + Date.now().toString(36) };
+        const chip = { label: '✅ 動作完成了（加入離線訓練）', state: 'idle' };
+        chip.action = async () => {
+            if (chip.state !== 'idle') return;
+            chip.state = 'busy'; chip.label = '⏳ 加入離線訓練中（背景worker）…'; this._renderMessageHistory();
+            const r = await this._otTrainTurn(payload, true);
+            chip.state = 'done';
+            if (r && r.ok === false) chip.label = '⚠️ 加入離線訓練失敗：' + String(r.error || '').slice(0, 80);
+            else if (r && (r.adopted || r.updated)) chip.label = `✅ 已加入離線訓練：新增 ${r.adopted} 個技能、更新 ${r.updated} 個（設定 → AI → 離線訓練器 可以檢視）`;
+            else chip.label = '✅ 已加入離線訓練（同一類做法累積 3 次以上，才會整理成可重複使用的技能）';
+            this._renderMessageHistory();
+        };
+        Object.defineProperty(msg, '_actionChips', { value: [chip], enumerable: false, configurable: true });
+        this.messages.push(msg);
+        this._renderMessageHistory();
     }
 
     _initEventListeners() {
