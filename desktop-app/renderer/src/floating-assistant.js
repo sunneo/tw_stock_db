@@ -3570,55 +3570,44 @@ class FaOtWorkerHost {
 
 // ============================================================
 // 2026-10-03：/offline-trainer-by-ai —「AI 教離線訓練器」。
-// 使用者給一份清單（例如 cve-check 報告裡上萬條 CVE），一項一項交給 AI 去解（找 patch、merge、處理衝突、改寫 API…），
+// 使用者給一個任務或一份清單（任何同類的一長串項目），一項一項交給 AI 去解，
 // 而且AI每次成功後「必須」把可重複的部分寫回離線訓練器（原始碼工具＋狀態機＋觸發規則）。
 // 每一項都先讓離線訓練器自己試：解得掉就不需要AI——離線自己解決的比例，就是訓練成效。
 // ============================================================
-// 從文字（報告、清單）抽出要處理的項目。自動辨識：有 CVE-YYYY-NNNN 就以CVE為單位（並記下它所在的套件／那一行當背景），否則每行一項；也可以給regex
+// 從文字（清單、報告）抽出要處理的項目：預設每行一項；給 regex 就用 regex 抽（每個符合的片段一項，所在那一行當背景）；整段是 JSON 陣列就每個元素一項。
 function _faOtParseItems(text, opts) {
     opts = opts || {};
-    const lines = String(text || '').split(/\r?\n/);
+    const raw = String(text || '');
+    const items = [], seen = {};
+    const push = (key, ctx) => { key = String(key).trim(); if (!key || key.length > 800 || seen[key]) return; seen[key] = 1; items.push({ key, context: String(ctx || '').slice(0, 300), status: 'pending', attempts: 0 }); };
     let re = null;
     if (opts.regex) { try { re = new RegExp(opts.regex, 'g'); } catch (_) { re = null; } }
-    const cveRe = /\bCVE-\d{4}-\d{4,7}\b/gi;
-    const mode = re ? 'regex' : (/\bCVE-\d{4}-\d{4,7}\b/i.test(String(text || '')) ? 'cve' : 'line');
-    const items = [], seen = {};
-    let pkg = '', ver = '';
-    for (const line of lines) {
-        const t = line.trim();
-        if (!t) continue;
-        let m;
-        if ((m = /^PACKAGE NAME\s*:\s*(.+)$/i.exec(t))) { pkg = m[1].trim(); continue; }
-        if ((m = /^PACKAGE VERSION\s*:\s*(.+)$/i.exec(t))) { ver = m[1].trim(); continue; }
-        if (t.length > 800) continue;
-        let keys;
-        if (mode === 'regex') { re.lastIndex = 0; keys = t.match(re) || []; }
-        else if (mode === 'cve') keys = (t.match(cveRe) || []).map((x) => x.toUpperCase());
-        else keys = [t];
-        for (const k of keys.slice(0, mode === 'line' ? 1 : 50)) {
-            if (seen[k]) continue;
-            seen[k] = 1;
-            const ctx = (pkg ? '套件 ' + pkg + (ver ? ' ' + ver : '') + '；' : '') + (mode === 'line' ? '' : t.slice(0, 300));
-            items.push({ key: k, context: ctx, status: 'pending', attempts: 0 });
-        }
+    if (!re && /^\s*\[/.test(raw)) {
+        try { const arr = JSON.parse(raw); if (Array.isArray(arr)) { arr.forEach((x) => push(typeof x === 'string' ? x : JSON.stringify(x), '')); return { mode: 'json', items }; } } catch (_) { /* 不是JSON就當一般文字 */ }
     }
-    return { mode, items };
+    for (const line of raw.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.length > 2000) continue;
+        if (re) { re.lastIndex = 0; (t.match(re) || []).slice(0, 50).forEach((k) => push(k, t === k ? '' : t)); }
+        else push(t, '');
+    }
+    return { mode: re ? 'regex' : 'line', items };
 }
 // 教學用的規範：AI要照這個做，而且做完一定要把可重複的部分寫回離線訓練器
-const FA_OT_TEACHER_PROTOCOL = `你現在是「離線訓練器的老師」。使用者給了一長串同類的項目，要你一項一項處理；你的任務有兩個，缺一不可：
+const FA_OT_TEACHER_PROTOCOL = `你現在是「離線訓練器的老師」。使用者給了一個任務（或一長串同類的項目），要你處理；你的任務有兩個，缺一不可：
 (A) 把這一項真的處理好（用你有的工具：網頁／搜尋、檔案、git、終端機、程式專案索引…）。
 (B) 處理成功之後，把「可重複的做法」寫回離線訓練器，讓下一個同類項目不需要你就能做完。這是這個任務最重要的產出——如果你只解決了這一項、沒有擴充離線訓練器，就等於白做。
 
 做法（照順序）：
 1. 先 offline_trainer({"action":"dry_run","text":"<這一項的描述>"}) 看離線訓練器現在會怎麼做；已經有的技能先 show／show_tool 看過，擴充它而不是重寫（add_tool 用同名會升版並保留歷史）。
-2. 自己處理這一項。每個步驟都記得「哪些是這一項專屬的值（例如 CVE 編號、套件名、版本、commit）、哪些是固定的做法」。
+2. 自己處理這一項。每個步驟都記得「哪些是這一項專屬的值（例如項目的編號、名稱、路徑、網址、版本）、哪些是固定的做法」。
 3. 成功後，把固定的做法寫成：
-   - add_tool：一段 JavaScript（在沙盒worker執行；ctx.slots／ctx.text／ctx.call(工具名,參數)→{ok,result}／ctx.last_tool_result／ctx.pretty()；最後 return {ok,text,...}）。專屬的值一律從 ctx.slots 取（例如 ctx.slots.cve、ctx.slots.ident），**不能把這一項的值寫死**。失敗要 return {ok:false,error:"原因"}，讓狀態機走 on_failure。
-   - add_state：把工具串成狀態機（call_tool＋args樣板，可用 {cve}{ident}{path}{step1.欄位}；on_success／on_failure；失敗分支寫成獨立狀態，最後 report_unresolved，這樣下次只剩那一段需要你）。
+   - add_tool：一段 JavaScript（在沙盒worker執行；ctx.slots／ctx.text／ctx.call(工具名,參數)→{ok,result}／ctx.last_tool_result／ctx.pretty()；最後 return {ok,text,...}）。專屬的值一律從 ctx.slots 取（常用槽位：ident 程式識別字、url、path、quoted 引號內容、number、problem_text＝整句話），**不能把這一項的值寫死**。失敗要 return {ok:false,error:"原因"}，讓狀態機走 on_failure。
+   - add_state：把工具串成狀態機（call_tool＋args樣板，可用 {ident}{url}{path}{step1.欄位}{step1.line-2} 這類佔位符；on_success／on_failure；失敗分支寫成獨立狀態，最後 report_unresolved，這樣下次只剩那一段需要你）。
    - add_pattern：觸發規則（pattern 加 state:入口狀態；examples 給 3 句以上不同說法）。
    - 用 run_tool 搭配 mock_calls 測試你寫的script，再用 dry_run 確認文字能觸發它。
    - record_case：把這次成功的工具呼叫順序記下來（累積多項之後，背景會自動整理出更多技能）。
-4. 遇到「找不到來源／衝突／API 不相容」這類難的地方，不要放棄：把你的處理方式也寫成工具（例如「用 AI 比對雙方 diff 重新套用 hunk」「把舊 API 呼叫改成新 API」），哪怕第一版只能處理一部分，也要寫下來並標明限制；下一項再擴充它。
+4. 遇到比較難的地方（找不到來源、結果不一致、環境不同…），不要放棄：把你的處理方式也寫成工具，哪怕第一版只能處理一部分，也要寫下來並標明限制；下一項再擴充它。
 5. 絕對不要把密碼、金鑰、這一項的專屬資料寫進工具；有副作用的操作（寫檔、git push、終端機）照樣是離線訓練器執行前要確認的。
 6. 最後只輸出一行JSON回報（不要別的內容）：{"status":"solved|failed|partial","summary":"一句話","extended":["新增或更新的工具／狀態／規則名稱"],"limits":"這個技能還處理不了什麼"}
 
@@ -8907,7 +8896,7 @@ class FloatingAssistant {
         );
         this.register_slash_command(
             '/offline-trainer-by-ai', '<目標>＋清單｜status｜stop｜resume｜report',
-            'AI 教離線訓練器：把一長串同類項目（例如 cve-check 報告裡上萬條 CVE）一項一項交給 AI 處理，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
+            'AI 教離線訓練器（通用）：讓 AI 處理一個任務或一長串同類項目，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
             async (argsText) => {
                 this.messages.push({ role: 'user', content: '/offline-trainer-by-ai ' + String(argsText || '').slice(0, 300) });
                 this._renderMessageHistory();
@@ -12110,7 +12099,7 @@ ${fnData.code}
         );
 
         registerOptional('offline_trainer',
-            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／teach（text＝清單／報告＋goal＝目標：**AI教離線訓練器**，一項一項處理並要求每次成功後擴充離線訓練器，需要使用者先打開自動訓練）／teach_status／teach_stop／teach_resume／export／import（把領域＝規則＋狀態機＋**原始碼工具**、已學會的解法、同義詞打包成一個JSON檔，import前會逐一檢查原始碼語法並請使用者確認；dry_run:true只檢查）／run_tool（試跑原始碼工具除錯，可給mock_calls）／rollback_tool／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
+            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／teach（goal＝目標或任務；text＝清單，可省略＝單一任務：**AI教離線訓練器**，通用——處理任務並要求每次成功後把做法擴充進離線訓練器，需要使用者先打開自動訓練）／teach_status／teach_stop／teach_resume／export／import（把領域＝規則＋狀態機＋**原始碼工具**、已學會的解法、同義詞打包成一個JSON檔，import前會逐一檢查原始碼語法並請使用者確認；dry_run:true只檢查）／run_tool（試跑原始碼工具除錯，可給mock_calls）／rollback_tool／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -17754,10 +17743,12 @@ ${fnData.code}
         if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off') return { ok: false, error: '要先在「設定 → AI → 離線訓練器」把「自動訓練」選成「是，自動」或「是，手動」，才能用 /offline-trainer-by-ai。' };
         const parsed = _faOtParseItems(o.text || '', { regex: o.regex });
         let items = parsed.items;
-        if (!items.length) return { ok: false, error: '清單裡找不到任何項目。貼上報告／清單（每行一項；有 CVE-YYYY-NNNN 會自動抽出），或用 --regex 指定樣式。' };
+        // 沒給清單、只有目標：當成只有一項的任務（AI解決它並把做法寫回離線訓練器）
+        if (!items.length && String(o.goal || '').trim()) { items = [{ key: String(o.goal).trim().slice(0, 300), context: '', status: 'pending', attempts: 0 }]; parsed.mode = 'single'; }
+        if (!items.length) return { ok: false, error: '沒有任務。給一個目標（例如 /offline-trainer-by-ai 查某個SDK符號的定義並寫成技能），或貼上一份清單（每行一項；也可以用 --regex 從報告裡抽出項目）。' };
         if (o.limit) items = items.slice(0, Math.max(1, Math.floor(Number(o.limit))));
-        const goal = String(o.goal || '').trim() || (parsed.mode === 'cve' ? '處理這個 CVE：找出修補 patch（NVD、Debian security tracker、kernel.org、上游），套用／merge 進目前的專案，處理衝突與 API 不相容，並驗證' : '處理這個項目');
-        const ans = await this.requestUserForm({ title: '🎓 AI 教離線訓練器：要開始嗎？', description: `共 ${items.length} 項（${parsed.mode === 'cve' ? 'CVE' : parsed.mode === 'regex' ? '依regex' : '每行一項'}）。\n目標：${goal}\n\n每一項會先讓離線訓練器自己試；做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）。會在背景長時間進行（可以隨時 /offline-trainer-by-ai stop，之後 resume 接續），這段時間會消耗 AI 額度。\n\n注意：AI 與離線訓練器會用到有副作用的工具（寫檔、git、終端機）。${o.unattended ? '你選了無人值守：離線訓練器自己呼叫的工具不再逐次詢問。' : '離線訓練器呼叫有副作用的工具時仍會逐次詢問你。'}`, choices: ['開始', '取消'] });
+        const goal = String(o.goal || '').trim() || '處理這個項目';
+        const ans = await this.requestUserForm({ title: '🎓 AI 教離線訓練器：要開始嗎？', description: `共 ${items.length} 項（${{ regex: '依regex抽出', json: 'JSON陣列', single: '單一任務', line: '每行一項' }[parsed.mode] || parsed.mode}）。\n目標：${goal}\n\n每一項會先讓離線訓練器自己試；做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）。會在背景長時間進行（可以隨時 /offline-trainer-by-ai stop，之後 resume 接續），這段時間會消耗 AI 額度。\n\n注意：AI 與離線訓練器會用到有副作用的工具（寫檔、git、終端機）。${o.unattended ? '你選了無人值守：離線訓練器自己呼叫的工具不再逐次詢問。' : '離線訓練器呼叫有副作用的工具時仍會逐次詢問你。'}`, choices: ['開始', '取消'] });
         if (!ans || !ans.confirmed || ans.answer !== '開始') return { ok: false, cancelled: true, error: '使用者取消' };
         const s = { id: 's_' + Date.now().toString(36), goal, created: Date.now(), started: Date.now(), pausedMs: 0, state: 'running', mode: parsed.mode, items, idx: 0, opts: { unattended: !!o.unattended, maxFailures: Math.max(3, Number(o.max_failures) || 15), delayMs: Math.max(0, Number(o.delay_ms) || 1500), maxRounds: Math.max(8, Number(o.max_rounds) || 40), template: String(o.template || '') }, consecutiveFailures: 0, log: [] };
         await this._otTeacherSave(s);
@@ -17886,8 +17877,8 @@ ${fnData.code}
         const arg = String(raw || '').trim();
         const word = arg.split(/\s+/)[0].toLowerCase();
         const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
-        if (!arg || word === 'help') { say('🎓 /offline-trainer-by-ai　AI 教離線訓練器（需要先把「自動訓練」打開）\n\n用法：\n/offline-trainer-by-ai <目標>（換行貼上清單／報告）\n  或  /offline-trainer-by-ai --file <路徑或已上傳的檔名> --goal "目標"\n選項：--regex <樣式> --limit <N> --unattended --max-failures <N> --max-rounds <N> --delay <ms>\n/offline-trainer-by-ai status｜stop｜resume｜report\n\n例：貼一份 cve-check 報告，目標「找 patch、merge、處理衝突」。每一項先讓離線訓練器試，做不到才交給 AI，AI 成功後必須把做法寫回離線訓練器；離線自己解決的比例會越來越高。'); return; }
-        if (word === 'stop') { const r = this._otTeacherStop(); say('⏹ ' + r.note); return; }
+        if (!arg || word === 'help') { say('🎓 /offline-trainer-by-ai　AI 教離線訓練器（通用工具；需要先把「自動訓練」打開）\n\n做什麼：讓 AI 處理一個任務（或一長串同類項目），並要求 AI 每次成功後，把可重複的做法寫回離線訓練器（原始碼工具＋狀態機＋觸發規則）。每一項先讓離線訓練器自己試，做不到才交給 AI；離線自己解決的比例會越來越高。\n\n用法：\n/offline-trainer-by-ai <目標或任務>　　　（單一任務）\n/offline-trainer-by-ai <目標>\n<第1項>\n<第2項>…　　　（換行貼上清單，每行一項）\n/offline-trainer-by-ai --file <路徑或已上傳的檔名> --goal "目標"\n選項：--regex <樣式>（從報告裡抽出項目）--limit <N> --unattended --max-failures <N> --max-rounds <N> --delay <ms> --template "處理 {item}（{context}）"\n/offline-trainer-by-ai status｜stop｜resume｜report\n\n例：目標「把這個SDK的函式定義查詢做成技能」，後面貼一批要查的符號；或目標「整理周報」單獨一個任務。'); return; }
+                if (word === 'stop') { const r = this._otTeacherStop(); say('⏹ ' + r.note); return; }
         if (word === 'resume') { const r = await this._otTeacherResume(); say(r.ok ? '▶️ 已接續（剩 ' + (r.pending != null ? r.pending : '?') + ' 項）' : '⚠️ ' + r.error); return; }
         if (word === 'status' || word === 'report') {
             const r = await this._otTeacherReport();
