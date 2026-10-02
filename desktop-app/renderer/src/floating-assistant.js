@@ -3216,9 +3216,10 @@ class FaOtDb {
     _open() {
         if (this._p) return this._p;
         this._p = new Promise((resolve, reject) => {
-            const req = indexedDB.open(this.name, 1);
+            const req = indexedDB.open(this.name, 2);
             req.onupgradeneeded = () => {
                 const db = req.result;
+                if (!db.objectStoreNames.contains('turns')) db.createObjectStore('turns', { keyPath: 'id' });
                 if (!db.objectStoreNames.contains('domains')) db.createObjectStore('domains', { keyPath: 'name' });
                 if (!db.objectStoreNames.contains('solutions')) db.createObjectStore('solutions', { keyPath: 'fp' });
                 if (!db.objectStoreNames.contains('vec')) { const s = db.createObjectStore('vec', { keyPath: 'key' }); s.createIndex('col', 'col', { unique: false }); }
@@ -3262,7 +3263,9 @@ function _faOtSlots(text) {
     t.replace(/```[a-z]*\n?([\s\S]*?)```/gi, (m, c) => { code.push(c.trim()); return m; });
     const colon = /[:：]\s*([\s\S]+)$/.exec(t);
     const stock = (t.match(/\b\d{4}\b/g) || []).find(() => true);
-    return { problem_text: t.trim(), url: urls[0] || '', urls, path: paths[0] || '', paths, quoted: quoted[0] || '', quotedAll: quoted, number: numbers[0] || '', numbers, code: code[0] || '', after_colon: colon ? colon[1].trim() : '', stock_id: stock || '' };
+    const identStop = { the: 1, what: 1, where: 1, which: 1, how: 1, define: 1, defined: 1, definition: 1, function: 1, class: 1, file: 1, find: 1, show: 1, with: 1, from: 1, this: 1, that: 1, please: 1, source: 1, code: 1, sdk: 1, api: 1, http: 1, https: 1, www: 1, com: 1 };
+    const idents = (t.replace(/https?:\/\/\S+/g, ' ').match(/[A-Za-z_][A-Za-z0-9_]*(?:(?:::|->|\.)[A-Za-z_][A-Za-z0-9_]*)*/g) || []).filter((x) => x.length >= 3 && !identStop[x.toLowerCase()] && (/[_A-Z0-9]|[a-z][A-Z]|::|->|\./.test(x.slice(1)) || /\w+\(/.test(t)));
+    return { problem_text: t.trim(), ident: idents[0] || '', idents, url: urls[0] || '', urls, path: paths[0] || '', paths, quoted: quoted[0] || '', quotedAll: quoted, number: numbers[0] || '', numbers, code: code[0] || '', after_colon: colon ? colon[1].trim() : '', stock_id: stock || '' };
 }
 // 把參數樣板（{problem_text}、{url}、{1}、{名稱}）填成實際參數；找不到的槽位列在 missing（需要追問使用者）
 function _faOtFill(template, slots, groups) {
@@ -3298,6 +3301,269 @@ function _faOtMatchRule(p, text) {
         if (p.type === 'keyword_all') { if (!kws.length || !kws.every((k) => low.indexOf(k.toLowerCase()) >= 0)) return null; return { score: Math.min(0.98, (p.confidence == null ? 0.65 : p.confidence) + 0.03 * Math.min(3, kws.length)), detail: kws.join('＋'), groups: {} }; }
     } catch (e) { return null; }
     return null;
+}
+
+// ============================================================
+// 2026-10-03：離線訓練器的「狀態機（FSM）＋工具＋對話整理（distill）」純函式。設計照 DomainResolver：
+//   AI 發現離線訓練器不會的事 → 用 offline_trainer 的 add_tool／add_state／add_pattern 把解法寫回去（規則＋狀態機＋原始碼工具）；
+//   長期對話的成功做法，由背景 worker 自動整理成同樣的東西（只有使用者勾了「自動訓練」才會做）。
+// 下面這些函式刻意自給自足（只用上面的語意函式與 _faOtSlots），因為會用 toString() 塞進 worker 裡執行。
+// ============================================================
+const FA_OT_TERMINAL = { report_success: 'solved', report_unresolved: 'unresolved', split_and_escalate: 'split_requested' };
+// 範本代換：{url}、{slots.url}、{step1.tab_id}、{context.x.y}。整個字串剛好就是一個佔位符時，保留原本的型別（數字、陣列、物件）。
+function _faOtTpl(value, scope, missing) {
+    const get = (path) => {
+        const parts = String(path).split('.');
+        let cur = scope;
+        if (!(parts[0] in scope) && scope.slots && parts[0] in scope.slots) cur = scope.slots;
+        for (const p of parts) { if (cur == null || typeof cur !== 'object' || !(p in cur)) return undefined; cur = cur[p]; }
+        return cur;
+    };
+    const val = (k, off) => { let v = get(k); if (v === undefined || v === '') return undefined; if (off) { const n = Number(v); if (!Number.isFinite(n)) return undefined; v = n + Number(off); } return v; };
+    const sub = (s) => {
+        const ex = /^\{([A-Za-z_][\w.]*?)([+-]\d+)?\}$/.exec(s);
+        if (ex) { const v = val(ex[1], ex[2]); if (v === undefined) { if (missing) missing.push(ex[1]); return ''; } return v; }
+        return s.replace(/\{([A-Za-z_][\w.]*?)([+-]\d+)?\}/g, (m, k, off) => { const v = val(k, off); if (v === undefined) { if (missing) missing.push(k); return ''; } return typeof v === 'object' ? JSON.stringify(v) : String(v); });
+    };
+    const walk = (v) => (typeof v === 'string' ? sub(v) : (Array.isArray(v) ? v.map(walk) : (v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v)));
+    return walk(value);
+}
+// 狀態機：states = {initial, states:{名稱:{call_tool, args, on_success, on_failure, action}}}。
+// io.callTool(名稱, 參數, 狀態名) → Promise<{ok, result}>；每個狀態只能是 call_tool、單純的 action（檢查點）、或三個保留字之一。
+// 有循環偵測（同一狀態最多進入5次）與總步數上限（100）。結果寫進 context：stepN、result__<tool>、last_tool_result。
+async function _faOtFsmRun(fsm, entry, scope, io) {
+    const states = (fsm && fsm.states) || {};
+    let cur = entry || (fsm && fsm.initial);
+    const trace = [], visits = {};
+    const ctx = scope;
+    ctx.context = ctx.context || {};
+    let steps = 0, nCall = 0;
+    while (cur) {
+        if (FA_OT_TERMINAL[cur]) return { status: FA_OT_TERMINAL[cur], trace, final_state: cur, context: ctx };
+        const st = states[cur];
+        if (!st) return { status: 'error', error: '找不到狀態「' + cur + '」', trace, final_state: cur, context: ctx };
+        visits[cur] = (visits[cur] || 0) + 1;
+        if (visits[cur] > 5) return { status: 'error', error: '狀態「' + cur + '」重複進入太多次（可能是循環）', trace, final_state: cur, context: ctx };
+        if (++steps > 100) return { status: 'error', error: '步數超過上限（100）', trace, final_state: cur, context: ctx };
+        if (st.call_tool) {
+            const miss = [];
+            const args = _faOtTpl(st.args || {}, ctx, miss);
+            if (miss.length && !st.optional_args) {
+                trace.push({ state: cur, tool: st.call_tool, args, ok: false, error: '缺少參數：' + miss.join('、') });
+                return { status: 'needs_input', missing: miss, trace, final_state: cur, context: ctx };
+            }
+            let r;
+            try { r = await io.callTool(st.call_tool, args, cur); } catch (e) { r = { ok: false, result: { error: String((e && e.message) || e) } }; }
+            nCall++;
+            ctx['step' + nCall] = r.result; ctx['result__' + st.call_tool] = r.result; ctx.last_tool_result = r.result; ctx.last_ok = !!r.ok;
+            const next = r.ok ? (st.on_success || 'report_success') : (st.on_failure || 'report_unresolved');
+            trace.push({ state: cur, tool: st.call_tool, args, ok: !!r.ok, next_state: next });
+            if (r.stop) return { status: r.stop, trace, final_state: cur, context: ctx };
+            cur = next;
+        } else {
+            trace.push({ state: cur, action: st.action || '', next_state: st.on_success || null });
+            if (!st.on_success) return { status: 'unresolved', trace, final_state: cur, context: ctx };
+            cur = st.on_success;
+        }
+    }
+    return { status: 'unresolved', trace, final_state: cur, context: ctx };
+}
+
+// 對話整理（distill）：turns＝[{id,text,calls:[{name,args(物件),ok,res:{欄位:純量}}],answer}]。
+// 把「工具呼叫順序相同、做法一致」的多輪成功對話整理成：觸發規則（關鍵字＋範例句）＋狀態機（含參數樣板：哪個參數來自文字的哪個槽位、或前一步的哪個結果）
+// ＋一段會把結果整理成回答的原始碼（formatter）。每個提案都會拿原始對話重放驗證（觸發＋參數是否一致），accuracy不夠的標成需要人看。
+function _faOtDistill(turns, opts) {
+    opts = opts || {};
+    const minCount = opts.minCount || 3;
+    const META = {};
+    (opts.metaTools || []).forEach((n) => { META[n] = 1; });
+    const slotsOf = (t) => (t._slots = t._slots || _faOtSlots(t.text));
+    const SLOT_ORDER = ['ident', 'url', 'path', 'quoted', 'after_colon', 'stock_id', 'number', 'problem_text'];
+    const groups = {};
+    for (const t of turns) {
+        const calls = (t.calls || []).filter((c) => c.ok && !META[c.name]);
+        if (!calls.length || calls.length > 8) continue;
+        const seq = [];
+        calls.forEach((c) => { if (!seq.length || seq[seq.length - 1].name !== c.name) seq.push(c); });
+        const sig = seq.map((c) => c.name).join('>');
+        (groups[sig] = groups[sig] || []).push({ turn: t, seq });
+    }
+    // 全部對話的詞頻（算關鍵字的IDF）
+    const df = {}, N = turns.length || 1;
+    turns.forEach((t) => { const seen = {}; _faSemTokens(t.text).forEach((w) => { if (!seen[w]) { seen[w] = 1; df[w] = (df[w] || 0) + 1; } }); });
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    // 這個變動的值（每一輪都不一樣）是從哪來的？回傳樣板（字串或物件），找不到回傳undefined
+    const explain = (vals, g, stepIdx) => {
+        if (vals.every((v) => v && typeof v === 'object' && !Array.isArray(v))) {
+            const keys = Array.from(new Set([].concat(...vals.map((v) => Object.keys(v)))));
+            const out = {};
+            for (const k of keys) {
+                const col = vals.map((v) => v[k]);
+                if (col.every((x) => same(x, col[0]))) { out[k] = col[0]; continue; }
+                const e = explain(col, g, stepIdx);
+                if (e === undefined) return undefined;
+                out[k] = e;
+            }
+            return out;
+        }
+        if (vals.some((v) => v === undefined || v === null)) return undefined;
+        const strs = vals.map((v) => String(v));
+        if (vals.every((v) => typeof v === 'number')) {
+            const off = (src) => { const d = vals.map((v, i) => { const n = Number(src(i)); return Number.isFinite(n) ? v - n : NaN; }); return d.every((x) => Number.isFinite(x) && x === d[0]) ? d[0] : null; };
+            const fmtOff = (d) => (d === 0 ? '' : (d > 0 ? '+' + d : String(d)));
+            for (const s of ['number']) { const d = off((i) => slotsOf(g[i].turn)[s]); if (d !== null) return '{' + s + fmtOff(d) + '}'; }
+            for (let j = 0; j < stepIdx; j++) { const first = g[0].seq[j].res || {}; for (const key of Object.keys(first)) { const d = off((i) => (g[i].seq[j].res || {})[key]); if (d !== null) return '{step' + (j + 1) + '.' + key + fmtOff(d) + '}'; } }
+        }
+        const cands = [];
+        SLOT_ORDER.forEach((s) => cands.push({ name: s, get: (x) => { const v = slotsOf(x.turn)[s]; return v == null ? '' : String(v); } }));
+        for (let j = 0; j < stepIdx; j++) cands.push({ name: 'step' + (j + 1) + '.', dyn: true, j });
+        for (const c of cands) {
+            if (c.dyn) {
+                // 前一步的結果欄位：每一輪都找得到同一個欄位名，且值等於這個參數
+                const first = g[0].seq[c.j].res || {};
+                for (const key of Object.keys(first)) {
+                    if (g.every((x, i) => { const r = x.seq[c.j].res || {}; return r[key] != null && String(r[key]) === strs[i]; })) return typeof vals[0] === 'number' ? '{step' + (c.j + 1) + '.' + key + '}' : '{step' + (c.j + 1) + '.' + key + '}';
+                }
+                continue;
+            }
+            const sv = g.map((x) => c.get(x));
+            if (sv.every((v, i) => v !== '' && v === strs[i])) return '{' + c.name + '}';
+            // 值裡面「包含」槽位的值（例如搜尋樣式 foo\s*\( ）：把槽位換成佔位符後，每一輪的樣板要一樣
+            if (sv.every((v, i) => v.length >= 3 && strs[i].indexOf(v) >= 0)) {
+                const tpl = strs.map((s, i) => s.split(sv[i]).join('{' + c.name + '}'));
+                if (tpl.every((x) => x === tpl[0])) return tpl[0];
+            }
+        }
+        return undefined;
+    };
+    const proposals = [], rejected = [];
+    for (const sig of Object.keys(groups)) {
+        const g = groups[sig];
+        if (g.length < minCount) { rejected.push({ sig, count: g.length, why: '次數不足（' + g.length + '／' + minCount + '）' }); continue; }
+        const steps = [];
+        let bad = '';
+        for (let i = 0; i < g[0].seq.length && !bad; i++) {
+            const name = g[0].seq[i].name;
+            const keys = Array.from(new Set([].concat(...g.map((x) => Object.keys(x.seq[i].args || {})))));
+            const args = {};
+            for (const k of keys) {
+                const vals = g.map((x) => (x.seq[i].args || {})[k]);
+                if (vals.every((v) => same(v, vals[0]))) { if (vals[0] !== undefined) args[k] = vals[0]; continue; }
+                const e = explain(vals, g, i);
+                if (e === undefined) { bad = name + '.' + k + ' 每次都不一樣，但找不到它是從文字的哪裡、或前一步的哪個結果來的'; break; }
+                args[k] = e;
+            }
+            steps.push({ tool: name, args });
+        }
+        if (bad) { rejected.push({ sig, count: g.length, why: bad }); continue; }
+        // 觸發：群裡幾乎每句都有、而且在全部對話裡比較少見的詞
+        const texts = g.map((x) => x.turn.text);
+        const slotVals = {};
+        g.forEach((x) => { const sl = slotsOf(x.turn); SLOT_ORDER.forEach((s) => { if (sl[s] && s !== 'problem_text') slotVals[String(sl[s]).toLowerCase()] = 1; }); });
+        const tokCount = {};
+        texts.forEach((t) => { const seen = {}; _faSemTokens(t).forEach((w) => { if (w.indexOf('c:') === 0 || w.indexOf('k:') === 0 || seen[w]) return; seen[w] = 1; tokCount[w] = (tokCount[w] || 0) + 1; }); });
+        const kws = Object.keys(tokCount).filter((w) => tokCount[w] >= Math.ceil(texts.length * 0.8) && !slotVals[w.replace(/^b:/, '')] && !/^\d+$/.test(w))
+            .map((w) => ({ w: w.replace(/^b:/, ''), s: Math.log(1 + N / (df[w] || 1)) })).sort((a, b) => b.s - a.s).slice(0, 4).map((x) => x.w);
+        // formatter：最後一步的結果裡，哪些欄位的值有出現在AI的最後回答裡
+        const lastIdx = g[0].seq.length - 1;
+        const fieldHit = {};
+        g.forEach((x) => { const r = x.seq[lastIdx].res || {}; const ans = String(x.turn.answer || ''); Object.keys(r).forEach((k) => { const v = String(r[k]); if (v.length >= 4 && ans.indexOf(v.slice(0, 40)) >= 0) fieldHit[k] = (fieldHit[k] || 0) + 1; }); });
+        let fmtKeys = Object.keys(fieldHit).filter((k) => fieldHit[k] >= Math.ceil(g.length * 0.6)).sort((a, b) => fieldHit[b] - fieldHit[a]).slice(0, 6);
+        if (!fmtKeys.length) fmtKeys = ['answer', 'text', 'summary', 'content'].filter((k) => g.some((x) => (x.seq[lastIdx].res || {})[k] != null)).slice(0, 2);
+        // 重放驗證：觸發要對得上、重新代換出來的參數要跟當時AI用的一樣
+        let okN = 0;
+        const render = (x) => steps.map((st, i) => { const scope = Object.assign({ slots: slotsOf(x.turn) }, slotsOf(x.turn)); for (let j = 0; j < i; j++) scope['step' + (j + 1)] = x.seq[j].res || {}; return _faOtTpl(st.args, scope); });
+        g.forEach((x) => { const out = render(x); if (steps.every((st, i) => same(out[i], x.seq[i].args || {}) || same(JSON.parse(JSON.stringify(out[i])), JSON.parse(JSON.stringify(x.seq[i].args || {}))))) okN++; });
+        const accuracy = Math.round(okN / g.length * 100) / 100;
+        const coherence = (() => { const vs = texts.slice(0, 12).map((t) => _faSemEmbed(t)); let s = 0, n = 0; for (let a = 0; a < vs.length; a++) for (let b = a + 1; b < vs.length; b++) { s += _faSemCos(vs[a], vs[b]); n++; } return n ? s / n : 1; })();
+        const confidence = Math.round(Math.min(0.92, (0.62 + 0.05 * Math.min(g.length, 6)) * (0.6 + 0.4 * accuracy) * (0.85 + 0.3 * Math.min(1, coherence * 2))) * 100) / 100;
+        proposals.push({ sig, count: g.length, accuracy, coherence: Math.round(coherence * 100) / 100, confidence, steps, keywords: kws, examples: Array.from(new Set(texts)).slice(0, 8), fmt_keys: fmtKeys, turn_ids: g.map((x) => x.turn.id).slice(0, 50), needs_review: accuracy < 0.9 || !kws.length });
+    }
+    proposals.sort((a, b) => b.count * b.accuracy - a.count * a.accuracy);
+    return { proposals, rejected };
+}
+// 把整理出來的提案寫成「原始碼工具」：最後一步之後，把結果整理成使用者看得懂的回答（會在沙盒worker裡執行，ctx.last_tool_result＝最後一個工具的結果）
+function _faOtGenFormatter(p, when) {
+    const L = ['// 離線訓練器自動產生（' + when + '）：從 ' + p.count + ' 次成功的對話整理出來，可以直接修改。', '// 工具順序：' + p.sig.split('>').join(' → '), 'const r = ctx.last_tool_result || {};', 'const parts = [];'];
+    const keys = p.fmt_keys || [];
+    keys.forEach((k) => {
+        L.push('if (r[' + JSON.stringify(k) + '] != null) {');
+        L.push('    const v = r[' + JSON.stringify(k) + '];');
+        L.push('    parts.push(' + (keys.length > 1 ? JSON.stringify('**' + k + '**：') + ' + ' : '') + '(typeof v === "string" ? v : JSON.stringify(v, null, 2)));');
+        L.push('}');
+    });
+    L.push('return { ok: true, text: parts.join("\\n\\n") || ctx.pretty(r) };');
+    return L.join('\n');
+}
+
+// ---- worker：背景整理（distill）與「原始碼工具」的沙盒執行 ----
+// 整理在 worker 裡做，不卡畫面；原始碼工具每次執行都開一個全新的 worker（沒有 DOM、拿掉網路相關 API，只能透過 ctx.call 呼叫助理的工具，工具照樣要過風險確認），逾時就直接終止。
+function _faOtWorkerSource() {
+    const fns = [_faSemBuildLex, _faSemTokens, _faSemEmbed, _faSemCos, _faSemSentences, _faPagerank, _faRankBlocks, _faSummarize, _faKeywords, _faOtSlots, _faOtTpl, _faOtDistill, _faOtGenFormatter];
+    const head = 'const FA_SEM_GROUPS=' + JSON.stringify(FA_SEM_GROUPS) + ';\nconst FA_OT_TERMINAL=' + JSON.stringify(FA_OT_TERMINAL) + ';\n' + fns.map((f) => f.toString()).join('\n') + '\nconst FA_SEM_LEX=_faSemBuildLex(FA_SEM_GROUPS);\n';
+    const body = [
+        'const pending = new Map(); let nextCid = 0;',
+        'function pretty(x){ if (x == null) return ""; if (typeof x === "string") return x; if (typeof x !== "object") return String(x); return Object.keys(x).filter(function(k){ return x[k] != null && typeof x[k] !== "object"; }).map(function(k){ return k + "：" + String(x[k]).slice(0, 400); }).join("\\n"); }',
+        'self.onmessage = async function(e) {',
+        '  const m = e.data;',
+        '  if (m.type === "result") { const p = pending.get(m.cid); if (p) { pending.delete(m.cid); p.res(m.result); } return; }',
+        '  if (m.type === "distill") {',
+        '    try { self.postMessage({ type: "done", id: m.id, ok: true, result: _faOtDistill(m.turns, m.opts) }); } catch (err) { self.postMessage({ type: "done", id: m.id, ok: false, error: String(err && err.message || err) }); }',
+        '    return;',
+        '  }',
+        '  if (m.type === "run") {',
+        '    try { self.fetch = undefined; self.XMLHttpRequest = undefined; self.WebSocket = undefined; self.EventSource = undefined; self.importScripts = undefined; self.indexedDB = undefined; } catch (_) {}',
+        '    const d = m.data || {};',
+        '    const ctx = { slots: d.slots || {}, text: d.text || "", context: d.context || {}, last_tool_result: d.last_tool_result,',
+        '      call: function(name, args){ return new Promise(function(res){ const cid = ++nextCid; pending.set(cid, { res: res }); self.postMessage({ type: "call", cid: cid, name: name, args: args || {} }); }); },',
+        '      pretty: pretty, summarize: function(t, n){ return _faSummarize(_faSemSentences(String(t)), n || 5, 0.4, d.text); }, keywords: function(t, n){ return _faKeywords(String(t), n || 8); },',
+        '      log: function(){ self.postMessage({ type: "log", text: Array.prototype.join.call(arguments, " ") }); } };',
+        '    try {',
+        '      const AF = Object.getPrototypeOf(async function(){}).constructor;',
+        '      const fn = new AF("ctx", m.source);',
+        '      const out = await fn(ctx);',
+        '      self.postMessage({ type: "done", id: m.id, ok: true, result: JSON.parse(JSON.stringify(out === undefined ? null : out)) });',
+        '    } catch (err) { self.postMessage({ type: "done", id: m.id, ok: false, error: String(err && err.message || err) }); }',
+        '  }',
+        '};',
+    ].join('\n');
+    return head + body;
+}
+class FaOtWorkerHost {
+    constructor() { this._url = null; }
+    _workerUrl() { if (!this._url) this._url = URL.createObjectURL(new Blob([_faOtWorkerSource()], { type: 'application/javascript' })); return this._url; }
+    available() { return typeof Worker !== 'undefined' && typeof URL !== 'undefined' && typeof Blob !== 'undefined'; }
+    // 背景整理：把對話紀錄交給worker，回傳 {proposals, rejected}。沒有Worker時退回在主執行緒做（分段不卡太久，資料量小）
+    distill(turns, opts) {
+        if (!this.available()) return Promise.resolve().then(() => _faOtDistill(turns, opts));
+        return new Promise((resolve, reject) => {
+            let w;
+            try { w = new Worker(this._workerUrl()); } catch (e) { resolve(_faOtDistill(turns, opts)); return; }
+            const timer = setTimeout(() => { try { w.terminate(); } catch (_) {} reject(new Error('整理逾時（120秒）')); }, 120000);
+            w.onmessage = (ev) => { const m = ev.data; if (m.type !== 'done') return; clearTimeout(timer); try { w.terminate(); } catch (_) {} if (m.ok) resolve(m.result); else reject(new Error(m.error)); };
+            w.onerror = (ev) => { clearTimeout(timer); try { w.terminate(); } catch (_) {} reject(new Error(ev.message || 'worker錯誤')); };
+            w.postMessage({ type: 'distill', id: 1, turns, opts });
+        });
+    }
+    // 執行一個原始碼工具。onCall(name,args) → Promise<任意結果>，由主執行緒代為呼叫助理的工具。回傳 {ok, result|error, logs}
+    run(source, data, onCall, timeoutMs) {
+        if (!this.available()) return Promise.resolve({ ok: false, error: '這個環境沒有Worker，無法執行原始碼工具' });
+        return new Promise((resolve) => {
+            let w;
+            const logs = [];
+            try { w = new Worker(this._workerUrl()); } catch (e) { resolve({ ok: false, error: '建立worker失敗：' + String((e && e.message) || e) }); return; }
+            const finish = (r) => { clearTimeout(timer); try { w.terminate(); } catch (_) {} resolve(Object.assign(r, { logs })); };
+            const timer = setTimeout(() => finish({ ok: false, error: '原始碼工具執行逾時（' + Math.round((timeoutMs || 60000) / 1000) + '秒），已終止' }), timeoutMs || 60000);
+            w.onmessage = async (ev) => {
+                const m = ev.data;
+                if (m.type === 'log') logs.push(String(m.text).slice(0, 300));
+                else if (m.type === 'call') { let result; try { result = await onCall(m.name, m.args); } catch (e) { result = { ok: false, result: { error: String((e && e.message) || e) } }; } try { w.postMessage({ type: 'result', cid: m.cid, result }); } catch (_) {} }
+                else if (m.type === 'done') { if (m.ok) finish({ ok: true, result: m.result }); else finish({ ok: false, error: m.error }); }
+            };
+            w.onerror = (ev) => finish({ ok: false, error: ev.message || 'worker錯誤' });
+            w.postMessage({ type: 'run', id: 1, source, data });
+        });
+    }
 }
 
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
@@ -8577,7 +8843,7 @@ class FloatingAssistant {
                 const a = String(argsText || '').trim().toLowerCase();
                 if (a === 'on' || a === 'off') { this.advancedSettings.offlineMode = a === 'on'; this._saveAdvancedSettings(); this._applyOfflineModeUI(); }
                 const st = await this._otRun({ action: 'status' });
-                this._pushAssistantMessage(`🔌 離線模式：${this.advancedSettings.offlineMode ? '開' : '關'}　自動學習：${this.advancedSettings.offlineLearn ? '開' : '關'}　門檻 ${this.advancedSettings.offlineThreshold}\n領域 ${st.domains}、規則 ${st.patterns}、範例句 ${st.examples}、問答記憶 ${st.qa}、已學會的解法 ${st.solutions}`, null);
+                this._pushAssistantMessage(`🔌 離線模式：${this.advancedSettings.offlineMode ? '開' : '關'}　自動訓練：${this.advancedSettings.offlineAutoTrain ? '開' : '關'}　門檻 ${this.advancedSettings.offlineThreshold}\n領域 ${st.domains}、規則 ${st.patterns}、範例句 ${st.examples}、問答記憶 ${st.qa}、已學會的解法 ${st.solutions}`, null);
                 this._persistChatHistory(); this._renderMessageHistory();
             }
         );
@@ -9557,7 +9823,8 @@ class FloatingAssistant {
             programmingToolOverrides: {},
             customLanguages: {},
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
-            offlineLearn: true, // 線上AI成功的做法自動學進離線訓練器
+            offlineLearn: true, // （舊）線上AI成功的做法自動學進離線訓練器；現在改由offlineAutoTrain控制
+            offlineAutoTrain: false, // 自動訓練：線上AI成功的對話才會被記錄，並在背景worker整理成技能（規則＋狀態機＋原始碼）；預設關閉
             offlineAutoFallback: true, // AI完全沒辦法回應時，退回離線訓練器
             offlineThreshold: 0.45,
             repoIndexMaxFiles: 50000, // 專案索引：最多分析幾個原始碼檔
@@ -10729,6 +10996,7 @@ class FloatingAssistant {
             offlineMode: raw.offlineMode === true,
             offlineLearn: raw.offlineLearn !== false,
             offlineAutoFallback: raw.offlineAutoFallback !== false,
+            offlineAutoTrain: raw.offlineAutoTrain === true,
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 100 && n <= 2000000 ? n : 50000; })(),
             repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 5 && n <= 2000 ? n : 100; })(),
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
@@ -11775,13 +12043,13 @@ ${fnData.code}
         );
 
         registerOptional('offline_trainer',
-            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
+            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._otRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned'] }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
+            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned', 'init_domain', 'link', 'add_tool', 'add_state', 'set_fsm', 'show_tool', 'remove_tool', 'record_case', 'distill', 'list_unresolved', 'clear_unresolved'] }, name: { type: 'string' }, description: { type: 'string' }, source: { type: 'string', description: 'add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）' }, tests: { type: 'array', items: { type: 'object' } }, states: { type: 'object' }, initial: { type: 'string' }, to: { type: 'string' }, tool_calls: { type: 'array', items: { type: 'object' } }, answer: { type: 'string' }, min_count: { type: 'number' }, force: { type: 'boolean' }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -16714,14 +16982,20 @@ ${fnData.code}
             let filled = pickedTool ? _faOtFill(tplArgs, slots, groups) : { args: {}, missing: [] };
             let stepList = null;
             if (p.shot) { stepList = this._otShotSteps(slots, norm); filled = { args: {}, missing: [] }; }
-            else if (Array.isArray(p.steps) && p.steps.length) {
+            else if (p.state) {
+                const dm = st.domains.get(r.cand.domain);
+                const s0 = dm && dm.states && dm.states.states && dm.states.states[p.state];
+                const miss = [];
+                if (s0 && s0.call_tool) _faOtTpl(s0.args || {}, Object.assign({ slots }, slots), miss);
+                filled = { args: {}, missing: miss.filter((m) => !/^step\d/.test(m)) };
+            } else if (Array.isArray(p.steps) && p.steps.length) {
                 const miss = [];
                 stepList = p.steps.map((st) => { const f = _faOtFill(st.args || {}, slots, groups); f.missing.forEach((m) => { if (miss.indexOf(m) < 0 && !/^step\d/.test(m)) miss.push(m); }); return { tool: st.tool, args: f.args, cleanup: !!st.cleanup }; });
                 filled = { args: {}, missing: miss };
             }
             const finalScore = Math.max(r.score, r.cand.ruleFloor || 0);
             const simRaw = r.cand.sim || 0;
-            return { kind: stepList ? 'steps' : (p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer'))), steps: stepList || undefined, domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: stepList ? (p.risk || 'safe') : ((pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe')), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
+            return { kind: stepList ? 'steps' : (p.state ? 'fsm' : (p.tool ? 'tool' : (p.slash ? 'slash' : (p.qa ? 'qa' : 'answer')))), state: p.state, steps: stepList || undefined, domain: r.cand.domain, pattern: p.id, intent: p.intent || '', tool: pickedTool || p.tool, args: filled.args, missing: filled.missing, slash: p.slash, answer: p.answer, risk: stepList ? (p.risk || 'safe') : ((pickedTool && FA_OT_RISKY_TOOL.test(pickedTool)) ? 'confirm' : (p.risk || 'safe')), score: Math.round(finalScore * 1000) / 1000, explain: r.explain, via: r.cand.rule ? (r.cand.sim > 0 ? '規則＋語意' : '規則') : '語意', example: r.cand.example, sim_raw: Math.round(simRaw * 1000) / 1000, source: p.source };
         });
         res.sort((a, b) => b.score - a.score);
         // 能實際執行的做法（規則／工具／多步驟）優先於「只有說明文字」的內建功能卡片：分數接近（差0.1內）時選能動手的
@@ -16798,6 +17072,7 @@ ${fnData.code}
             for (const call of c.calls || []) { const t = this.tools[call.tool]; if (!t) { outs.push({ tool: call.tool, error: '工具已不存在' }); continue; } outs.push({ tool: call.tool, raw: await t.callback.call(this, JSON.stringify(call.args || {})) }); }
             return { ok: true, kind: 'cache', results: outs, text: outs.map((o) => (o.error ? `⚠️ ${o.tool}：${o.error}` : this._otPretty(o.raw, plan.text))).join('\n\n') };
         }
+        if (c.kind === 'fsm') return await this._otExecFsm(plan, c, opts);
         if (c.kind === 'steps') {
             const results = [];
             const find = (o, key) => { if (!o || typeof o !== 'object') return undefined; if (Object.prototype.hasOwnProperty.call(o, key) && o[key] != null && typeof o[key] !== 'object') return o[key]; for (const v of Object.values(o)) { const r = find(v, key); if (r !== undefined) return r; } return undefined; };
@@ -16860,7 +17135,7 @@ ${fnData.code}
     async _otDryRun(text, opts) {
         const plan = await this._otPlan(text, opts);
         const d = plan.decision;
-        const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, steps: d.chosen.steps, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
+        const out = { ok: true, text: plan.text, fingerprint: plan.fingerprint, slots: plan.slots, threshold: plan.threshold, stages: plan.stages, decision: { status: d.status, reason: d.reason, chosen: d.chosen ? { kind: d.chosen.kind, state: d.chosen.state, steps: d.chosen.steps, domain: d.chosen.domain, pattern: d.chosen.pattern, tool: d.chosen.tool, slash: d.chosen.slash, args: d.chosen.args, risk: d.chosen.risk, score: d.chosen.score, via: d.chosen.via, explain: d.chosen.explain, missing: d.chosen.missing } : null }, alternatives: plan.alternatives, rag: plan.rag };
         if (opts && opts.execute && (d.status === 'planned' || d.status === 'cache')) { const r = await this._otExecute(plan, opts); out.executed = { ok: r.ok, error: r.error, preview: String(r.text || '').slice(0, 1500) }; if (r.ok) await this._otBumpHit(plan); }
         return out;
     }
@@ -16891,15 +17166,18 @@ ${fnData.code}
         const head = opts.fallback ? `🔌 所有AI model（共${opts.errors ? opts.errors.length : '?'}個）都沒辦法回應，改用離線訓練器（不經過AI）${errLines}` : `🔌 離線模式（Offline Trainer，不經過AI）`;
         const why = c ? `比對：「${c.domain} / ${c.pattern}」信心 ${c.score}（${c.via || '規則'}${c.explain ? `；字面${c.explain.bm25}、重排${c.explain.textrank}` : ''}）` : '';
         if (d.status === 'planned' || d.status === 'cache') {
-            const act = c.kind === 'steps' ? `依序執行 ${(c.steps || []).map((x) => x.tool).join(' → ')}` : c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
+            const act = c.kind === 'fsm' ? `執行狀態機 ${c.state}（技能：${c.intent || c.pattern}）` : c.kind === 'steps' ? `依序執行 ${(c.steps || []).map((x) => x.tool).join(' → ')}` : c.kind === 'tool' ? `呼叫工具 \`${c.tool}\`，參數 ${JSON.stringify(c.args).slice(0, 200)}` : (c.kind === 'slash' ? `執行指令 ${c.slash}` : (c.kind === 'cache' ? `重放 ${(c.calls || []).length} 個已驗證的工具呼叫` : '回答（來自已學到的內容）'));
             this._pushAssistantMessage(`${head}\n${why}\n動作：${act}`, null);
             this._persistChatHistory(); this._renderMessageHistory();
             const r = await this._otExecute(plan);
             await this._otBumpHit(plan);
+            if (!r.ok && !r.cancelled) this._otNoteUnresolved(text, '執行失敗：' + String(r.error || '').slice(0, 120));
             if (!r.silent) this._pushAssistantMessage(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`), null);
         } else if (d.status === 'needs_input') {
+            this._otNoteUnresolved(text, d.reason || '缺少參數');
             this._pushAssistantMessage(`${head}\n${why}\n${d.reason}`, null);
         } else {
+            this._otNoteUnresolved(text, d.reason || '沒有對應的規則');
             const alts = [c].concat(plan.alternatives.map((a) => ({ domain: a.domain, pattern: a.pattern, intent: a.intent, score: a.score }))).filter(Boolean).slice(0, 4);
             let msg = `${head}\n${d.reason}\n\n可能相關：\n` + (alts.length ? alts.map((a) => `- ${a.intent || a.pattern}（${a.domain}，${a.score}）`).join('\n') : '（沒有）');
             if (plan.rag && plan.rag.length) msg += '\n\n知識庫(RAG)裡有相近的內容：\n' + plan.rag.map((r) => `- ${String(r.content).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
@@ -16943,7 +17221,7 @@ ${fnData.code}
         return true;
     }
     async _otLearnFromTurn(userText, calls, answer) {
-        if (!this.advancedSettings.offlineLearn) return { learned: 0 };
+        if (!this.advancedSettings.offlineAutoTrain) return { learned: 0 };
         const text = String(userText || '').replace(/\s+/g, ' ').trim();
         if (!text || text.length < 2 || text.charAt(0) === '/') return { learned: 0 };
         const good = (calls || []).filter((c) => c.ok && !FA_OT_META_TOOLS.has(c.name) && this.tools[c.name]);
@@ -17010,10 +17288,220 @@ ${fnData.code}
         st.domains.forEach((d) => { patterns += d.patterns.length; });
         return { loaded: true, domains: st.domains.size, patterns, examples: (st.cols.ot_examples || { ids: [] }).ids.length, qa: (st.cols.ot_qa || { ids: [] }).ids.length, solutions: st.solutions.size, collections: Object.keys(st.cols) };
     }
+    // ===== 離線訓練器：狀態機（FSM）、原始碼工具、AI擴充、背景訓練（worker） =====
+    // 構想照 DomainResolver：AI 用 offline_trainer 的 add_tool／add_state／add_pattern 把「自己想出來的做法」寫回離線訓練器，
+    // 之後同類問題不需要AI就能得到一樣的結果；長期對話的成功做法也會由背景worker自動整理成同樣的東西（只有勾了「自動訓練」才會做）。
+    _otWorkers() { return this._otWk || (this._otWk = new FaOtWorkerHost()); }
+    async _otCallAssistantTool(name, args, opts) {
+        const t = this.tools[name];
+        if (!t) return { ok: false, result: { error: '工具「' + name + '」不存在（可能是這個版本沒有，或網頁版不支援）' } };
+        if (FA_OT_RISKY_TOOL.test(name) && !(opts && opts.assumeYes)) {
+            const ans = await this.requestUserForm({ title: '🔌 離線訓練器要執行有副作用的工具', description: `工具：${name}\n參數：${JSON.stringify(args || {}).slice(0, 400)}\n\n這是離線訓練器依規則／狀態機決定的，不是AI判斷的。要執行嗎？`, choices: ['執行', '取消'] });
+            if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, result: { error: '使用者取消' }, stop: 'cancelled' };
+        }
+        let raw;
+        try { raw = await t.callback.call(this, JSON.stringify(args || {})); } catch (e) { return { ok: false, result: { error: String((e && e.message) || e) } }; }
+        let j = null;
+        try { j = JSON.parse(raw); } catch (_) {}
+        if (j && j.type === 'image' && j.dataUrl) { this._otShowImage(j); j = { ok: true, shown_image: true, title: j.meta && j.meta.title, url: j.meta && j.meta.url, width: j.meta && j.meta.width, height: j.meta && j.meta.height }; }
+        const ok = !(j && typeof j === 'object' && (j.ok === false || j.error));
+        return { ok, result: j !== null && typeof j === 'object' ? j : { text: String(raw) } };
+    }
+    _otFindJsTool(domain, name) {
+        const mine = (domain.tools || []).find((t) => t.name === name && t.kind === 'js' && t.enabled !== false);
+        if (mine) return mine;
+        for (const d of this._ot.domains.values()) { const t = (d.tools || []).find((x) => x.name === name && x.kind === 'js' && x.enabled !== false); if (t) return t; }
+        return null;
+    }
+    async _otRunJsTool(tool, scope, opts) {
+        const data = { slots: scope.slots, text: scope.text, context: scope.context, last_tool_result: scope.last_tool_result };
+        const r = await this._otWorkers().run(tool.source, data, (n, a) => this._otCallAssistantTool(n, a, opts), 60000);
+        if (!r.ok) return { ok: false, result: { error: r.error, logs: r.logs } };
+        const out = r.result;
+        return { ok: !(out && typeof out === 'object' && out.ok === false), result: out && typeof out === 'object' ? out : { text: String(out) } };
+    }
+    async _otExecFsm(plan, c, opts) {
+        const st = await this._otLoad();
+        const d = st.domains.get(c.domain);
+        if (!d || !d.states || !d.states.states) return { ok: false, error: '這個領域沒有狀態機' };
+        const slots = _faOtSlots(plan.text);
+        const scope = Object.assign({ slots, text: plan.text, context: {} }, slots);
+        const io = { callTool: async (name, args) => { const jt = this._otFindJsTool(d, name); return jt ? await this._otRunJsTool(jt, scope, opts) : await this._otCallAssistantTool(name, args, opts); } };
+        const r = await _faOtFsmRun(d.states, c.state, scope, io);
+        const trace = r.trace.map((x) => `${x.state}${x.tool ? ' → ' + x.tool : ''}${x.ok === false ? ' ✗' : ''}`).join('，');
+        if (r.status === 'cancelled') return { ok: false, cancelled: true, error: '使用者取消' };
+        if (r.status === 'needs_input') return { ok: false, error: '缺少參數：' + (r.missing || []).join('、') + '（文字裡找不到，請補上，例如函式名稱、網址或檔案路徑）', trace };
+        const last = scope.last_tool_result;
+        const text = last ? this._otPretty(typeof last === 'string' ? last : JSON.stringify(last), plan.text) : '';
+        if (r.status === 'solved') return { ok: true, kind: 'fsm', text, trace, results: r.context };
+        const lastErr = last && typeof last === 'object' && last.error ? String(last.error).slice(0, 300) : '';
+        return { ok: false, kind: 'fsm', error: (r.status === 'error' ? r.error : '狀態機沒有解決（走到 ' + (r.final_state || '?') + '）') + (lastErr ? '：' + lastErr : ''), text, trace };
+    }
+    // 離線時「做不到」的請求記下來：這是給AI的待辦——AI下次看到就該把它做成規則／狀態機／工具（offline_trainer list_unresolved）
+    async _otNoteUnresolved(text, reason) {
+        try {
+            const rec = await this._otDb().get('meta', 'unresolved');
+            const list = (rec && rec.v) || [];
+            const hit = list.find((x) => x.text === text);
+            if (hit) { hit.n = (hit.n || 1) + 1; hit.at = Date.now(); hit.reason = reason; } else list.unshift({ text: String(text).slice(0, 300), reason: String(reason).slice(0, 200), at: Date.now(), n: 1 });
+            await this._otDb().put('meta', { k: 'unresolved', v: list.slice(0, 100) });
+        } catch (_) {}
+    }
+    _otScalarFields(result) {
+        let j = result;
+        if (typeof result === 'string') { try { j = JSON.parse(result); } catch (_) { return { text: String(result).slice(0, 200) }; } }
+        const out = {};
+        if (j && typeof j === 'object' && !Array.isArray(j)) for (const k of Object.keys(j).slice(0, 40)) { const v = j[k]; if (typeof v === 'string') out[k] = v.slice(0, 200); else if (typeof v === 'number' || typeof v === 'boolean') out[k] = v; }
+        return out;
+    }
+    // ---- 對話紀錄（給背景整理用）----
+    async _otRecordTurn(userText, calls, answer, extra) {
+        const text = String(userText || '').replace(/\s+/g, ' ').trim();
+        if (text.length < 2 || text.charAt(0) === '/') return false;
+        const good = (calls || []).filter((c) => c.ok && !FA_OT_META_TOOLS.has(c.name));
+        if (!good.length) return false;
+        const turn = { id: 't_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, at: Date.now(), answer: String(answer || '').slice(0, 1500), source: (extra && extra.source) || 'online', calls: good.slice(0, 10).map((c) => { let args = {}; try { args = JSON.parse(c.rawArgs || '{}'); } catch (_) {} return { name: c.name, args, ok: true, res: c.res || {} }; }) };
+        const db = this._otDb();
+        await db.put('turns', turn);
+        const all = await db.getAll('turns');
+        if (all.length > 800) { all.sort((a, b) => a.at - b.at); await db.deleteMany('turns', all.slice(0, all.length - 600).map((x) => x.id)); }
+        return true;
+    }
+    _otTrainInfo() { return this._otTrain || (this._otTrain = { running: false, pending: 0, lastRun: 0, lastResult: null, error: '' }); }
+    // 只有勾了「自動訓練」才會呼叫：累積幾輪、或閒置一段時間後，在背景worker裡整理
+    _otTrainSchedule() {
+        const ti = this._otTrainInfo();
+        ti.pending++;
+        if (this._otTrainTimer) clearTimeout(this._otTrainTimer);
+        this._otTrainTimer = setTimeout(() => { this._otTrainTimer = null; this._otTrainRun({ auto: true }).catch(() => {}); }, ti.pending >= 5 ? 3000 : 45000);
+    }
+    async _otTrainRun(opts) {
+        opts = opts || {};
+        const ti = this._otTrainInfo();
+        if (ti.running) return { ok: true, skipped: '已經在整理中' };
+        if (opts.auto && !this.advancedSettings.offlineAutoTrain) return { ok: true, skipped: '沒有勾選自動訓練' };
+        ti.running = true; ti.error = '';
+        try {
+            const turns = (await this._otDb().getAll('turns')).sort((a, b) => a.at - b.at).slice(-600);
+            const res = await this._otWorkers().distill(turns, { minCount: Math.max(2, Number(opts.minCount) || 3), metaTools: Array.from(FA_OT_META_TOOLS) });
+            const adopted = await this._otAdopt(res);
+            ti.lastRun = Date.now(); ti.pending = 0;
+            ti.lastResult = { turns: turns.length, proposals: res.proposals.length, adopted: adopted.added, updated: adopted.updated, review: adopted.review, rejected: res.rejected.slice(0, 20) };
+            if (adopted.added || adopted.updated) { try { this._log(`🔌 離線訓練器在背景整理出 ${adopted.added} 個新技能、更新 ${adopted.updated} 個`); } catch (_) {} }
+            return Object.assign({ ok: true }, ti.lastResult);
+        } catch (e) { ti.error = String((e && e.message) || e); return { ok: false, error: ti.error }; }
+        finally { ti.running = false; if (this._otPaneRoot && this._otPaneRoot.isConnected) this._otRenderPane().catch(() => {}); }
+    }
+    // 把整理結果寫成領域裡的 pattern＋狀態機＋原始碼工具。使用者改過的、已經學得更多的不覆蓋；準確度不夠的先停用，等人看過
+    async _otAdopt(res) {
+        const st = await this._otLoad();
+        const dom = st.domains.get('learned_skills') || { name: 'learned_skills', description: '離線訓練器從長期對話整理出來的技能（觸發規則＋狀態機＋原始碼工具）', enabled: true, source: 'distilled', patterns: [], references: [], created: Date.now() };
+        dom.tools = dom.tools || [];
+        dom.states = dom.states || { initial: null, states: {} };
+        const when = new Date().toISOString().slice(0, 10);
+        let added = 0, updated = 0, review = 0;
+        for (const p of res.proposals || []) {
+            const id = 'sk_' + _faRepoHash(p.sig + JSON.stringify(p.steps)).split(':')[0];
+            const prev = dom.patterns.find((x) => x.id === id);
+            if (prev && (prev.edited || (prev.stats && prev.stats.turns >= p.count))) continue;
+            const names = p.steps.map((s, i) => id + ':' + (i + 1));
+            const fmtName = id + ':fmt';
+            p.steps.forEach((s, i) => { dom.states.states[names[i]] = { call_tool: s.tool, args: s.args, on_success: i + 1 < p.steps.length ? names[i + 1] : fmtName, on_failure: 'report_unresolved' }; });
+            dom.states.states[fmtName] = { call_tool: 'fmt_' + id, on_success: 'report_success', on_failure: 'report_unresolved' };
+            dom.tools = dom.tools.filter((t) => t.name !== 'fmt_' + id).concat([{ name: 'fmt_' + id, kind: 'js', description: '整理 ' + p.sig + ' 的結果成回答', source: _faOtGenFormatter(p, when), generated: true, enabled: true, created: Date.now() }]);
+            const intent = '學到：' + p.sig.split('>').join('→') + (p.keywords.length ? '（' + p.keywords.join('、') + '）' : '');
+            const stats = { turns: p.count, accuracy: p.accuracy, learned_at: Date.now(), keywords: p.keywords, sig: p.sig, needs_review: !!p.needs_review };
+            const base = { type: 'semantic', intent, state: names[0], confidence: p.confidence, source: 'distilled', generated: true, enabled: !p.needs_review, risk: 'safe', hits: prev ? prev.hits || 0 : 0, stats };
+            dom.patterns = dom.patterns.filter((x) => x.id !== id && x.id !== id + '_kw').concat([Object.assign({ id, examples: p.examples }, base)]);
+            if (p.keywords.length >= 2) dom.patterns.push(Object.assign({}, base, { id: id + '_kw', type: 'keyword_all', expr: p.keywords.slice(0, 2), confidence: Math.min(0.9, p.confidence) }));
+            if (prev) updated++; else added++;
+            if (p.needs_review) review++;
+        }
+        if (added || updated) {
+            await this._otSaveDomain(dom);
+            for (const p of dom.patterns) if (p.source === 'distilled') await this._otSyncPatternExamples(dom, p);
+        }
+        return { added, updated, review };
+    }
+    // AI寫入的狀態機要先驗證：每個狀態是call_tool或action、呼叫的工具存在、轉移的目標存在
+    _otValidateStates(dom, states) {
+        const errs = [];
+        const all = Object.assign({}, (dom.states && dom.states.states) || {}, states);
+        const names = Object.keys(all);
+        for (const [name, s] of Object.entries(states)) {
+            if (!s || typeof s !== 'object') { errs.push(`狀態「${name}」必須是物件`); continue; }
+            if (!s.call_tool && !s.action) errs.push(`狀態「${name}」要有 call_tool（要呼叫的工具）或 action（檢查點／report_success／report_unresolved）`);
+            if (s.call_tool && !this._otFindJsTool(dom, s.call_tool) && !this.tools[s.call_tool]) errs.push(`狀態「${name}」呼叫的工具「${s.call_tool}」不存在（先 add_tool，或用助理已有的工具名稱）`);
+            for (const k of ['on_success', 'on_failure']) if (s[k] && !FA_OT_TERMINAL[s[k]] && names.indexOf(s[k]) < 0) errs.push(`狀態「${name}」的 ${k} 指到不存在的狀態「${s[k]}」`);
+            if (s.action && FA_OT_TERMINAL[s.action]) { /* 終止 */ }
+        }
+        return errs;
+    }
+    async _otSkillsHtml(st) {
+        const es = (x) => this._escapeHtml(String(x == null ? '' : x));
+        const S = this.advancedSettings, ti = this._otTrainInfo();
+        const btn = (act, label, extra) => `<button class="ai-advanced-btn" data-ot="${act}" ${extra || ''} style="padding:4px 9px; font-size:12px;">${label}</button>`;
+        let h = `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin:14px 0;"><b>🧠 技能（規則＋狀態機＋原始碼工具）</b>
+            <div style="opacity:.75; margin:4px 0 8px;">長期對話的成功做法（例如一直在查 SDK 某個符號的定義）會被整理成：觸發規則、狀態機、一小段會把結果整理成回答的原始碼。整理在背景 worker 裡做，不會卡畫面。AI 也可以用 offline_trainer 的 add_tool／add_state 直接寫入。</div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
+                <label title="打勾後，線上AI成功的對話才會被記錄並在背景整理成技能；沒打勾就不會做任何背景訓練"><input type="checkbox" data-ot-set="offlineAutoTrain" ${S.offlineAutoTrain ? 'checked' : ''}> 自動訓練（背景）</label>
+                ${btn('distill-now', '⚙️ 立即整理一次')}
+                <span style="opacity:.8;">${ti.running ? '⏳ 整理中…' : (ti.lastRun ? '上次整理：' + new Date(ti.lastRun).toLocaleString() + (ti.lastResult ? `（${ti.lastResult.turns}輪對話 → 新增${ti.lastResult.adopted}、更新${ti.lastResult.updated}${ti.lastResult.review ? '、待審核' + ti.lastResult.review : ''}）` : '') : '還沒整理過')}${ti.error ? ' <span style="color:#f87171;">⚠️ ' + es(ti.error) + '</span>' : ''}</span></div>`;
+        const turns = (await this._otDb().getAll('turns')).length;
+        h += `<div style="opacity:.75; margin-bottom:6px;">已記錄的成功對話：<b>${turns}</b> 輪${ti.pending ? '（有 ' + ti.pending + ' 輪等待整理）' : ''}</div>`;
+        const skills = [];
+        for (const d of st.domains.values()) for (const p of d.patterns) if (p.state && !/_kw$/.test(p.id)) skills.push({ d, p });
+        if (!skills.length) h += '<div style="opacity:.7;">還沒有技能。累積同一類做法成功 3 次以上，或請 AI 用 add_state／add_tool 寫入，就會出現在這裡。</div>';
+        for (const { d, p } of skills) {
+            const sx = p.stats || {};
+            h += `<details style="border:1px solid #334155; border-radius:6px; margin:4px 0; padding:4px 8px;"><summary style="cursor:pointer;"><label style="margin-right:6px;"><input type="checkbox" data-ot-skill-en="${es(d.name)}|${es(p.id)}" ${p.enabled !== false ? 'checked' : ''}></label><b>${es(p.intent || p.id)}</b> <span style="opacity:.7;">${es(d.name)}${sx.turns ? '　學自 ' + sx.turns + ' 輪、重放準確度 ' + Math.round((sx.accuracy || 0) * 100) + '%' : ''}　命中 ${p.hits || 0} 次${sx.needs_review ? '　⚠️ 待審核（已停用）' : ''}</span></summary>
+                <div style="margin:6px 0; display:flex; gap:6px; flex-wrap:wrap;">${btn('skill-view', '檢視／編輯狀態機與原始碼', `data-d="${es(d.name)}" data-p="${es(p.id)}"`)}${btn('skill-del', '刪除', `data-d="${es(d.name)}" data-p="${es(p.id)}"`)}</div>
+                <div style="opacity:.8;">範例：${es((p.examples || []).slice(0, 3).join('／'))}</div></details>`;
+        }
+        const un = ((await this._otDb().get('meta', 'unresolved')) || {}).v || [];
+        h += `<div style="margin-top:10px;"><b>尚未能處理的請求</b> <span style="opacity:.7;">（離線時做不到的；AI 看到會把它擴充成技能）</span> ${un.length ? btn('unresolved-clear', '清空') : ''}</div>`;
+        h += un.length ? un.slice(0, 12).map((x) => `<div style="opacity:.85; padding:2px 0;">• ${es(x.text)} <span style="opacity:.6;">（${x.n || 1} 次；${es(x.reason)}）</span></div>`).join('') : '<div style="opacity:.7;">（沒有）</div>';
+        return h + '</div>';
+    }
+    _otSkillEditor(d, p) {
+        const states = {};
+        const walk = (name) => { const s = d.states && d.states.states[name]; if (!s || states[name]) return; states[name] = s; [s.on_success, s.on_failure].forEach((n) => { if (n && !FA_OT_TERMINAL[n]) walk(n); }); };
+        walk(p.state);
+        const tools = {};
+        Object.values(states).forEach((s) => { const t = (d.tools || []).find((x) => x.name === s.call_tool); if (t) tools[t.name] = t; });
+        const ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:2147483000; display:flex; align-items:center; justify-content:center;';
+        const ta = 'width:100%; min-height:150px; font-family:monospace; font-size:12px; padding:6px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc;';
+        ov.innerHTML = `<div style="background:#1e293b; color:#e2e8f0; border-radius:10px; padding:16px; width:min(860px,94vw); max-height:90vh; overflow:auto;">
+            <div style="font-weight:700; margin-bottom:8px;">${this._escapeHtml(p.intent || p.id)}</div>
+            <div style="opacity:.8; margin:4px 0;">狀態機（JSON）：每個狀態 call_tool＋args（{ident}、{step1.path}、{step1.line-2} 這類佔位符）＋on_success／on_failure</div>
+            <textarea id="ot-sk-fsm" style="${ta}">${this._escapeHtml(JSON.stringify(states, null, 2))}</textarea>
+            ${Object.values(tools).map((t) => `<div style="opacity:.8; margin:8px 0 4px;">原始碼工具 <b>${this._escapeHtml(t.name)}</b>（在沙盒 worker 裡執行；ctx.call(工具, 參數) 呼叫助理的工具）</div><textarea data-tool="${this._escapeHtml(t.name)}" style="${ta}">${this._escapeHtml(t.source)}</textarea>`).join('')}
+            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px;"><button id="ot-sk-cancel" class="ai-advanced-btn">取消</button><button id="ot-sk-save" class="ai-advanced-btn">儲存</button></div></div>`;
+        document.body.appendChild(ov);
+        ov.querySelector('#ot-sk-cancel').onclick = () => ov.remove();
+        ov.querySelector('#ot-sk-save').onclick = async () => {
+            try {
+                const newStates = JSON.parse(ov.querySelector('#ot-sk-fsm').value);
+                const errs = this._otValidateStates(d, newStates);
+                const AF = Object.getPrototypeOf(async function () {}).constructor;
+                const newTools = {};
+                ov.querySelectorAll('textarea[data-tool]').forEach((el) => { try { new AF('ctx', el.value); } catch (e) { errs.push('原始碼工具「' + el.dataset.tool + '」語法錯誤：' + e.message); } newTools[el.dataset.tool] = el.value; });
+                if (errs.length) { alert('不能儲存：\n- ' + errs.join('\n- ')); return; }
+                Object.assign(d.states.states, newStates);
+                (d.tools || []).forEach((t) => { if (newTools[t.name] != null && newTools[t.name] !== t.source) { t.source = newTools[t.name]; t.edited = true; } });
+                p.edited = true;
+                await this._otSaveDomain(d);
+                ov.remove();
+                this._otRenderPane();
+            } catch (e) { alert('儲存失敗：' + e.message); }
+        };
+    }
+
     async _otRun(a) {
         const action = String(a.action || 'status');
         const st = await this._otLoad();
-        if (action === 'status') return Object.assign({ ok: true, offline_mode: !!this.advancedSettings.offlineMode, learn: !!this.advancedSettings.offlineLearn, threshold: this.advancedSettings.offlineThreshold }, this._otStats());
+        if (action === 'status') return Object.assign({ ok: true, offline_mode: !!this.advancedSettings.offlineMode, auto_train: !!this.advancedSettings.offlineAutoTrain, train: (() => { const t = this._otTrainInfo(); return { running: t.running, pending: t.pending, last_run: t.lastRun || null, last_result: t.lastResult, error: t.error || undefined }; })(), threshold: this.advancedSettings.offlineThreshold }, this._otStats());
         if (action === 'dry_run' || action === 'resolve') { if (!a.text) return { ok: false, error: '缺少text' }; return await this._otDryRun(a.text, { execute: action === 'resolve' || !!a.execute, assumeYes: !!a.assume_yes, noCache: !!a.no_cache, threshold: a.threshold }); }
         if (action === 'list') return { ok: true, domains: Array.from(st.domains.values()).map((d) => ({ name: d.name, enabled: d.enabled !== false, source: d.source, patterns: d.patterns.length, description: String(d.description || '').slice(0, 80) })) };
         if (action === 'show') { const d = st.domains.get(String(a.domain || '')); return d ? { ok: true, domain: d } : { ok: false, error: '沒有這個領域' }; }
@@ -17021,7 +17509,8 @@ ${fnData.code}
             const name = String(a.domain || 'user');
             const d = st.domains.get(name) || { name, description: '使用者自訂', enabled: true, source: 'user', patterns: [], references: [], created: Date.now() };
             const p = Object.assign({ id: 'p_' + Date.now().toString(36), type: 'semantic', examples: [], confidence: 0.7, enabled: true, source: 'user', hits: 0, risk: 'safe' }, a.pattern || {});
-            if (!p.tool && !p.slash && !p.answer) return { ok: false, error: 'pattern要有 tool（工具＋args）、slash 或 answer 其中之一' };
+            if (!p.tool && !p.slash && !p.answer && !p.state && !p.steps) return { ok: false, error: 'pattern要有 tool（工具＋args）、state（狀態機的入口狀態）、steps、slash 或 answer 其中之一' };
+            if (p.state && !(d.states && d.states.states && d.states.states[p.state])) return { ok: false, error: `狀態機裡沒有入口狀態「${p.state}」（先用 add_state 寫入）` };
             if (p.tool && !this.tools[p.tool]) return { ok: false, error: `工具「${p.tool}」不存在` };
             if (p.tool && !p.risk) p.risk = FA_OT_RISKY_TOOL.test(p.tool) ? 'confirm' : 'safe';
             d.patterns = d.patterns.filter((x) => x.id !== p.id).concat([p]);
@@ -17039,6 +17528,67 @@ ${fnData.code}
             return { ok: true, removed: before - d.patterns.length };
         }
         if (action === 'add_example') { const ok = await this._otAddExample(String(a.domain || ''), String(a.pattern || ''), String(a.text || '')); return { ok, note: ok ? '已加入範例' : '範例已存在或找不到pattern' }; }
+        if (action === 'init_domain') {
+            const name = String(a.domain || '').trim();
+            if (!/^[\w\u4e00-\u9fff-]{2,40}$/.test(name)) return { ok: false, error: 'domain名稱要2~40字（英數、底線、連字號、中文）' };
+            if (st.domains.get(name)) return { ok: true, existed: true, domain: name };
+            await this._otSaveDomain({ name, description: String(a.description || '').slice(0, 300), enabled: true, source: 'ai', patterns: [], references: [], tools: [], states: { initial: null, states: {} }, created: Date.now() });
+            return { ok: true, domain: name, note: '已建立領域。接著 add_tool／add_state／add_pattern 把解法寫進去。' };
+        }
+        if (action === 'link') {
+            const from = st.domains.get(String(a.domain || '')), to = String(a.to || '');
+            if (!from || !st.domains.get(to)) return { ok: false, error: 'domain 與 to 都要是已存在的領域' };
+            from.references = Array.from(new Set((from.references || []).concat([to])));
+            await this._otSaveDomain(from);
+            return { ok: true, references: from.references };
+        }
+        if (action === 'add_tool') {
+            const name = String(a.name || '').trim(), source = String(a.source || '');
+            if (!/^[A-Za-z_][\w]{1,60}$/.test(name)) return { ok: false, error: 'name要是英文識別字（例如 find_sdk_definition）' };
+            if (!source.trim()) return { ok: false, error: '缺少 source：一段 JavaScript（函式本體，可以用 await；變數 ctx：ctx.slots、ctx.text、ctx.call(工具名,參數)→{ok,result}、ctx.last_tool_result、ctx.pretty()、ctx.summarize()；最後 return {ok,text}）' };
+            const dname = String(a.domain || 'ai_tools');
+            const d = st.domains.get(dname) || { name: dname, description: 'AI寫入的技能', enabled: true, source: 'ai', patterns: [], references: [], tools: [], states: { initial: null, states: {} }, created: Date.now() };
+            const AF = Object.getPrototypeOf(async function () {}).constructor;
+            try { new AF('ctx', source); } catch (e) { return { ok: false, error: '原始碼語法錯誤：' + e.message }; }
+            // 驗證：給了tests就用假的工具結果在沙盒worker裡跑一遍，沒過不寫入（除非force）
+            const results = [];
+            for (const t of Array.isArray(a.tests) ? a.tests.slice(0, 8) : []) {
+                const mocks = t.mock_calls || {};
+                const slots = Object.assign({}, _faOtSlots(String(t.text || '')), t.slots || {});
+                const r = await this._otWorkers().run(source, { slots, text: String(t.text || ''), context: {}, last_tool_result: t.last_tool_result }, async (n) => ({ ok: true, result: mocks[n] !== undefined ? mocks[n] : { error: '測試沒有提供 ' + n + ' 的假結果' } }), 15000);
+                const txt = r.ok ? JSON.stringify(r.result) : r.error;
+                const pass = r.ok && (t.expect_contains == null || txt.indexOf(String(t.expect_contains)) >= 0);
+                results.push({ pass, text: t.text, got: String(txt).slice(0, 200) });
+            }
+            if (results.some((x) => !x.pass) && !a.force) return { ok: false, error: '測試沒過，沒有寫入：照 tests_result 修正原始碼再送（不要原封不動重送）', tests_result: results };
+            d.tools = (d.tools || []).filter((x) => x.name !== name).concat([{ name, kind: 'js', description: String(a.description || '').slice(0, 300), source, enabled: true, created: Date.now(), author: 'ai', tests: Array.isArray(a.tests) ? a.tests.slice(0, 8) : [] }]);
+            await this._otSaveDomain(d);
+            return { ok: true, domain: dname, tool: name, tests_result: results.length ? results : undefined, next: '接著 add_state 把它放進狀態機（call_tool:"' + name + '"），再 add_pattern（state:入口狀態）讓文字能觸發。' };
+        }
+        if (action === 'add_state' || action === 'set_fsm') {
+            const d = st.domains.get(String(a.domain || ''));
+            if (!d) return { ok: false, error: '沒有這個領域（先 init_domain）' };
+            const states = a.states && typeof a.states === 'object' ? a.states : null;
+            if (!states || !Object.keys(states).length) return { ok: false, error: 'states要是物件：{狀態名:{call_tool:"工具",args:{參數樣板，可用{ident}、{url}、{step1.欄位}、{step1.line-2}},on_success:"下一個狀態或report_success",on_failure:"report_unresolved"}}' };
+            const errs = this._otValidateStates(d, states);
+            if (errs.length) return { ok: false, error: '狀態機不合格，沒有寫入：\n- ' + errs.join('\n- ') };
+            d.states = d.states || { initial: null, states: {} };
+            if (action === 'set_fsm') d.states.states = {};
+            Object.assign(d.states.states, states);
+            if (a.initial) d.states.initial = String(a.initial);
+            await this._otSaveDomain(d);
+            return { ok: true, domain: d.name, states: Object.keys(d.states.states), next: '用 add_pattern（pattern:{type:"semantic",examples:[…],state:"入口狀態"}）讓文字觸發它，再 dry_run 驗證。' };
+        }
+        if (action === 'show_tool') { for (const d of st.domains.values()) { const t = (d.tools || []).find((x) => x.name === a.name); if (t) return { ok: true, domain: d.name, tool: t }; } return { ok: false, error: '沒有這個工具' }; }
+        if (action === 'remove_tool') { const d = st.domains.get(String(a.domain || '')); if (!d) return { ok: false, error: '沒有這個領域' }; const n = (d.tools || []).length; d.tools = (d.tools || []).filter((x) => x.name !== a.name); await this._otSaveDomain(d); return { ok: true, removed: n - d.tools.length }; }
+        if (action === 'record_case') {
+            const calls = (Array.isArray(a.tool_calls) ? a.tool_calls : []).map((c) => ({ name: String(c.tool || c.name || ''), rawArgs: JSON.stringify(c.args || {}), ok: c.ok !== false, res: this._otScalarFields(c.result || {}) })).filter((c) => c.name);
+            const ok = await this._otRecordTurn(String(a.text || ''), calls, String(a.answer || ''), { source: 'ai' });
+            return { ok, note: ok ? '已記成一筆成功的做法。同一類做法累積3次以上，distill 會自動整理成技能。' : '沒有記錄（text太短，或沒有成功的工具呼叫）' };
+        }
+        if (action === 'distill' || action === 'train_now') return await this._otTrainRun({ minCount: a.min_count });
+        if (action === 'list_unresolved') return { ok: true, unresolved: (((await this._otDb().get('meta', 'unresolved')) || {}).v || []).slice(0, 30), note: '這些是離線時做不到的請求。照 DomainResolver 的原則：你（AI）能解決的，就把解法寫成技能（add_tool／add_state／add_pattern），下次不需要你也能做到。' };
+        if (action === 'clear_unresolved') { await this._otDb().put('meta', { k: 'unresolved', v: [] }); return { ok: true }; }
         if (action === 'train_rag') return await this._otTrainFromRag();
         if (action === 'train_chat') return await this._otTrainFromChats();
         if (action === 'reseed') { const r = await this._otSeedBuiltin(true); return { ok: true, reseeded: r }; }
@@ -17164,7 +17714,6 @@ ${fnData.code}
         h += `<div style="margin-bottom:10px; opacity:.85;">不需要AI也能「文字→語意分析→選工具→呼叫→文字重排後回答」。構想來自 DomainResolver（pattern_rules＋語意＋TextRank），這裡是助理內建、純離線的版本。畫面右上角的「線上／離線」開關切到離線，整個對話就改走這裡；線上AI成功的做法、RAG、對話紀錄都能訓練它。</div>`;
         h += `<div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
             <label><input type="checkbox" data-ot-set="offlineMode" ${S.offlineMode ? 'checked' : ''}> 離線模式（不經過AI）</label>
-            <label><input type="checkbox" data-ot-set="offlineLearn" ${S.offlineLearn ? 'checked' : ''}> 線上AI成功時自動學習</label>
             <label title="所有model都失敗時，自動改用離線訓練器回答"><input type="checkbox" data-ot-set="offlineAutoFallback" ${S.offlineAutoFallback !== false ? 'checked' : ''}> AI失效時自動退回離線</label>
             <label>信心門檻 <input type="range" min="0.2" max="0.8" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b></label>
         </div>`;
@@ -17202,6 +17751,7 @@ ${fnData.code}
         h += `</div></div><div style="flex:1; min-width:300px;"><div style="opacity:.8; margin-bottom:3px;">📚 RAG節點（${rag.length}${S.ragEnabled ? '' : '，RAG目前未啟用'}）</div><div id="ai-ot-rag-list" style="max-height:260px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:4px;">`;
         rag.slice(0, 200).forEach((r) => { h += `<div class="ai-ot-mem" data-t="${es((r.id + ' ' + r.content).toLowerCase())}" style="border-bottom:1px solid #1e293b; padding:3px 0;"><b>${es(String(r.id).slice(0, 60))}</b> <button class="ai-advanced-btn" data-ot="rag-train" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">訓練</button> <button class="ai-advanced-btn" data-ot="rag-del" data-id="${es(r.id)}" style="padding:0 6px; font-size:11px;">刪</button><div style="opacity:.75;">${es(String(r.content).replace(/\s+/g, ' ').slice(0, 120))}</div></div>`; });
         h += `</div></div></div>`;
+        try { h += await this._otSkillsHtml(st); } catch (e) { h += `<div style="color:#f87171;">技能區塊載入失敗：${es(e.message)}</div>`; }
         root.innerHTML = h;
         // 還原乾跑輸入
         if (this._otLastDry) { const i = root.querySelector('#ai-ot-dry-text'); if (i) i.value = this._otLastDry.text || ''; const o = root.querySelector('#ai-ot-dry-out'); if (o) o.textContent = this._otLastDry.out || ''; }
@@ -17230,6 +17780,7 @@ ${fnData.code}
                 else { this.advancedSettings[k] = t.checked; if (k === 'offlineMode') this._applyOfflineModeUI(); }
                 this._saveAdvancedSettings();
             } else if (t.dataset.otDom !== undefined) { const st = await this._otLoad(); const d = st.domains.get(t.dataset.otDom); if (d) { d.enabled = t.checked; await this._otSaveDomain(d); for (const p of d.patterns) await this._otSyncPatternExamples(d, p); } }
+            else if (t.dataset.otSkillEn !== undefined) { const [dn, pid] = t.dataset.otSkillEn.split('|'); const st2 = await this._otLoad(); const d = st2.domains.get(dn); if (d) { for (const p of d.patterns) if (p.id === pid || p.id === pid + '_kw') { p.enabled = t.checked; if (t.checked && p.stats) p.stats.needs_review = false; await this._otSyncPatternExamples(d, p); } await this._otSaveDomain(d); } }
             else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
             else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const r = await this._otRun({ action: 'import', data: data.data || data }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } refresh(); }
         });
@@ -17250,6 +17801,10 @@ ${fnData.code}
                     this._otLastDry = { text, out: txt };
                     out.textContent = txt;
                 } else if (act === 'train-rag') { const r = await this._otTrainFromRag(); alert('已把RAG節點加入問答記憶：' + (r.added || 0) + ' 筆'); refresh(); }
+                else if (act === 'distill-now') { b.disabled = true; b.textContent = '整理中…'; const r = await this._otTrainRun({ minCount: 3 }); if (!r.ok) alert('整理失敗：' + r.error); else alert('整理完成：看了 ' + r.turns + ' 輪對話，新增 ' + r.adopted + ' 個技能、更新 ' + r.updated + ' 個' + (r.review ? '（' + r.review + ' 個準確度不夠，先停用等你審核）' : '') + (r.rejected && r.rejected.length ? '\n\n沒整理成技能的原因（前幾項）：\n' + r.rejected.slice(0, 5).map((x) => x.sig + '：' + x.why).join('\n') : '')); refresh(); }
+                else if (act === 'skill-view') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p) this._otSkillEditor(d, p); }
+                else if (act === 'skill-del') { const d = st.domains.get(b.dataset.d); const p = d && d.patterns.find((x) => x.id === b.dataset.p); if (d && p && window.confirm('刪除這個技能？（觸發規則與範例句；狀態機與原始碼工具保留在領域裡）')) { d.patterns = d.patterns.filter((x) => x.id !== p.id && x.id !== p.id + '_kw'); await this._otSaveDomain(d); await this._otVecDelete('ot_examples', (id) => id.indexOf(d.name + '/' + p.id) === 0); } refresh(); }
+                else if (act === 'unresolved-clear') { await this._otDb().put('meta', { k: 'unresolved', v: [] }); refresh(); }
                 else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話加入問答記憶：' + (r.added || 0) + ' 組'); refresh(); }
                 else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
                 else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
@@ -37957,7 +38512,7 @@ _result
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
-        if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok });
+        if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this.advancedSettings.offlineAutoTrain ? this._otScalarFields(result) : undefined });
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
@@ -46074,7 +46629,7 @@ ${existingNodeSummaries}
     }
     // 一輪線上AI對話結束：把成功的工具呼叫與問答學進離線訓練器（可在設定關掉）
     _otOnTurnDone() {
-        if (this.advancedSettings.offlineMode || !this.advancedSettings.offlineLearn) return;
+        if (this.advancedSettings.offlineMode || !this.advancedSettings.offlineAutoTrain) return;
         const userText = this._currentTurnUserText;
         const calls = (this._otCalls || []).slice();
         const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
@@ -46082,6 +46637,7 @@ ${existingNodeSummaries}
         const ui = this.messages.map((m) => m.role === 'user' && m.content === userText).lastIndexOf(true);
         if (ui < 0 || this.messages.indexOf(lastAsst) < ui) return; // 這則回覆不是針對這句話的
         this._otLearnFromTurn(userText, calls, lastAsst.content).catch((e) => console.warn('離線訓練器學習失敗', e));
+        this._otRecordTurn(userText, calls, lastAsst.content).then((rec) => { if (rec) this._otTrainSchedule(); }).catch(() => {});
     }
 
     _initEventListeners() {
