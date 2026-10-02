@@ -2230,6 +2230,44 @@ function __faMockPrelude() {
         if (typeof out === 'string') return text(out);
         return json(out);
     };
+    // Server-Sent Events：return sse((stream) => { stream.send("hello"); const t = setInterval(() => stream.send({n:1}, {event:"tick"}), 1000); stream.onClose(() => clearInterval(t)); });
+    const sse = (setup, init) => {
+        const enc = new TextEncoder();
+        let ctrl = null;
+        let closed = false;
+        const closers = [];
+        const runClosers = () => { closers.splice(0).forEach((f) => { try { f(); } catch (e) {} }); };
+        const stream = new ReadableStream({ start(c) { ctrl = c; }, cancel() { closed = true; runClosers(); } });
+        const api = {
+            send(data, opts) {
+                if (closed) return;
+                opts = opts || {};
+                let s = '';
+                if (opts.event) s += 'event: ' + opts.event + '\n';
+                if (opts.id != null) s += 'id: ' + opts.id + '\n';
+                if (opts.retry != null) s += 'retry: ' + opts.retry + '\n';
+                String(typeof data === 'string' ? data : JSON.stringify(data)).split('\n').forEach((l) => { s += 'data: ' + l + '\n'; });
+                try { ctrl.enqueue(enc.encode(s + '\n')); } catch (e) { closed = true; runClosers(); }
+            },
+            comment(t) { if (!closed) { try { ctrl.enqueue(enc.encode(': ' + String(t) + '\n\n')); } catch (e) {} } },
+            close() { if (closed) return; closed = true; try { ctrl.close(); } catch (e) {} runClosers(); },
+            onClose(fn) { closers.push(fn); },
+            get closed() { return closed; },
+        };
+        Promise.resolve().then(() => setup(api)).catch((e) => { console.error('[sse error] ' + String((e && e.stack) || e)); api.close(); });
+        return new Response(stream, Object.assign({ status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' } }, init || {}));
+    };
+    // 同一個伺服器行程內的簡單發布／訂閱（例如POST新增資料後，通知所有SSE／WebSocket連線）：const ch = env.channel("todos"); ch.subscribe(fn)；ch.publish(資料)
+    const channels = new Map();
+    const channel = (name) => {
+        let c = channels.get(name);
+        if (!c) {
+            const subs = new Set();
+            c = { publish(data) { subs.forEach((fn) => { try { fn(data); } catch (e) {} }); }, subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }, count() { return subs.size; } };
+            channels.set(name, c);
+        }
+        return c;
+    };
     const compile = (pattern) => {
         const keys = [];
         const src = String(pattern).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/:(\w+)|\*/g, (m, k) => { if (k) { keys.push(k); return '([^/]+)'; } keys.push('*'); return '(.*)'; });
@@ -2375,7 +2413,7 @@ function __faMockPrelude() {
         };
         return { handler, wsFor, app, init: typeof mod.init === 'function' ? mod.init : null };
     };
-    return { json, text, fail, coerce, router, wsHub, resolve };
+    return { json, text, fail, coerce, router, wsHub, resolve, sse, channel };
 }
 
 // Worker端：載入伺服器程式、處理http／WebSocket訊息，資料讀寫透過rpc交給主頁面（沙盒是IndexedDB）
@@ -2398,10 +2436,21 @@ function __faMockWorkerMain(P) {
         opened: (c) => postMessage({ __ws: 'opened', conn: c }),
         log: (l, m) => console[l](m),
     });
-    const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, now: () => Date.now() };
+    const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, channel: P.channel, now: () => Date.now() };
     const ctx = { waitUntil: (p) => { Promise.resolve(p).catch((e) => console.error(String(e))); } };
-    // 讓使用者程式直接用 db／fs／env／router／json／text／fail（用全域，所以使用者自己宣告同名變數也不會衝突）
-    self.env = env; self.db = db; self.fs = files; self.router = P.router; self.json = P.json; self.text = P.text; self.fail = P.fail;
+    // 讓使用者程式直接用 db／fs／env／router／json／text／fail／sse（用全域，所以使用者自己宣告同名變數也不會衝突）
+    self.env = env; self.db = db; self.fs = files; self.router = P.router; self.json = P.json; self.text = P.text; self.fail = P.fail; self.sse = P.sse;
+    // 沙盒不使用Cloudflare Worker的流量：伺服器程式裡的fetch也不能打*.workers.dev／*.pages.dev／使用者設定的proxy
+    let deny = [];
+    const realFetch = typeof self.fetch === 'function' ? self.fetch.bind(self) : null;
+    self.fetch = (input, init) => {
+        let u = null;
+        try { u = new URL(typeof input === 'string' ? input : input.url, 'http://x'); } catch (e) {}
+        const h = u ? u.hostname.toLowerCase() : '';
+        if (h && deny.some((x) => (x.charAt(0) === '.' ? h.slice(-x.length) === x : h === x))) return Promise.reject(new TypeError('沙盒不使用Cloudflare Worker的流量，已擋下：' + h));
+        return realFetch ? realFetch(input, init) : Promise.reject(new TypeError('fetch不可用'));
+    };
+    const streams = new Map();
     let mod = null;
     self.onmessage = async (ev) => {
         const d = ev.data || {};
@@ -2410,7 +2459,9 @@ function __faMockWorkerMain(P) {
             if (p) { pending.delete(d.__rpc_res); if (d.error) p.rej(new Error(d.error)); else p.res(d.result); }
             return;
         }
+        if (d.__cmd === 'http_cancel') { const r = streams.get(d.id); if (r) { streams.delete(d.id); try { r.cancel(); } catch (e) {} } return; }
         if (d.__cmd === 'init') {
+            deny = (d.deny || []).map((x) => String(x).toLowerCase());
             try {
                 const code = String(d.code || '').replace(/^\s*export\s+default\s+/m, 'const __default = ');
                 const fn = new AsyncFunction(code + '\n;return { handler: (typeof handler !== "undefined" ? handler : undefined), onWebSocket: (typeof onWebSocket !== "undefined" ? onWebSocket : undefined), app: (typeof app !== "undefined" ? app : undefined), init: (typeof init !== "undefined" ? init : undefined), __default: (typeof __default !== "undefined" ? __default : undefined) };');
@@ -2430,6 +2481,25 @@ function __faMockWorkerMain(P) {
                 const req = new Request(d.url, { method: d.method, headers: d.headers || [], body: (noBody || !d.body || !d.body.byteLength) ? undefined : d.body });
                 const resp = P.coerce(await mod.handler(req, env, ctx));
                 headers = Array.from(resp.headers.entries());
+                if (/text\/event-stream/i.test(resp.headers.get('content-type') || '') && resp.body) {
+                    // 串流回應（Server-Sent Events）：先送狀態與標頭，資料塊之後一塊一塊送
+                    const reader = resp.body.getReader();
+                    streams.set(d.id, reader);
+                    postMessage({ __http: d.id, stream: true, status: resp.status, statusText: resp.statusText, headers });
+                    (async () => {
+                        try {
+                            for (;;) {
+                                const r = await reader.read();
+                                if (r.done) break;
+                                const b = r.value.buffer.slice(r.value.byteOffset, r.value.byteOffset + r.value.byteLength);
+                                postMessage({ __chunk: d.id, data: b }, [b]);
+                            }
+                        } catch (e) {}
+                        streams.delete(d.id);
+                        postMessage({ __end: d.id });
+                    })();
+                    return;
+                }
                 const buf = await resp.arrayBuffer();
                 postMessage({ __http: d.id, status: resp.status, statusText: resp.statusText, headers, body: buf }, [buf]);
             } catch (e) {
@@ -2452,20 +2522,33 @@ function __faMockWorkerMain(P) {
     };
 }
 
-// 頁面端的攔截層（只存在於沙盒，不會寫進使用者的檔案）：window.fetch與window.WebSocket改接到主頁面的mock伺服器
+// 頁面端的攔截層（只存在於沙盒，不會寫進使用者的檔案）：fetch／XMLHttpRequest／EventSource／WebSocket改接到主頁面的mock伺服器。
+// 傳輸：iframe用postMessage（cfg.transport未設定）；瀏覽器分頁沒有父頁面，改用佇列＋主頁面輪詢（cfg.transport==="poll"）。
+// 網路規則：mock範圍外的網址預設直接走瀏覽器網路；但「*.workers.dev／*.pages.dev／使用者設定的proxy網址」一律擋下——沙盒不使用Cloudflare Worker的流量。
 function __faMockShim(cfg) {
     if (window.__fa_mock) return;
     const realFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
     const RealWS = window.WebSocket;
+    const RealXHR = window.XMLHttpRequest;
+    const RealES = window.EventSource;
     const baseHref = /^https?:/i.test(document.baseURI || '') ? document.baseURI : 'http://mock.local/';
     let baseHost = 'mock.local';
     try { baseHost = new URL(baseHref).hostname; } catch (e) {}
     const hosts = ['mock.local', baseHost].concat((cfg.hosts || []).map((h) => String(h).toLowerCase()));
+    const deny = (cfg.deny || []).map((h) => String(h).toLowerCase());
+    const allow = (cfg.allow_hosts || []).map((h) => String(h).toLowerCase());
     let seq = 0;
     const waits = new Map();
+    const streams = new Map();
     const sockets = new Map();
+    const b64enc = (buf) => { const u8 = new Uint8Array(buf); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+    const b64dec = (str) => { const s = atob(str); const u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i); return u8.buffer; };
+    const encMsg = (m) => { const o = {}; for (const k in m) { const v = m[k]; o[k] = (v instanceof ArrayBuffer) ? { __b64: b64enc(v) } : v; } return o; };
+    const decMsg = (m) => { const o = {}; for (const k in m) { const v = m[k]; o[k] = (v && typeof v === 'object' && typeof v.__b64 === 'string') ? b64dec(v.__b64) : v; } return o; };
+    const outQ = [];
     const send = (m, transfer) => {
         const msg = Object.assign({ __fa_mock: 1 }, m);
+        if (cfg.transport === 'poll') { outQ.push(encMsg(msg)); return; }
         try { parent.postMessage(msg, '*', transfer || []); } catch (e) { try { parent.postMessage(msg, '*'); } catch (e2) {} }
     };
     const isMock = (u) => {
@@ -2473,44 +2556,262 @@ function __faMockShim(cfg) {
         if (!cfg.prefixes) return true;
         return cfg.prefixes.some((p) => u.pathname.indexOf(p) === 0);
     };
+    const hostDenied = (u) => { const h = u.hostname.toLowerCase(); return deny.some((d) => (d.charAt(0) === '.' ? h.slice(-d.length) === d : h === d)); };
+    // 'mock'＝交給mock伺服器；'deny'＝Cloudflare等一律擋；'block'＝block_external擋下；'real'＝直接走瀏覽器網路
+    const classify = (u) => {
+        if (!u || !/^(https?|wss?):$/.test(u.protocol)) return 'real';
+        if (hostDenied(u)) return 'deny';
+        if (isMock(u)) return 'mock';
+        if (allow.indexOf(u.hostname.toLowerCase()) >= 0 || allow.indexOf('*') >= 0) return 'real';
+        return cfg.block ? 'block' : 'real';
+    };
+    const whyBlocked = (cls, u, raw) => (cls === 'deny' ? '沙盒不使用Cloudflare Worker的流量，已擋下：' + (u ? u.hostname : raw) : '沙盒設定了block_external，不是mock範圍的網址不放行：' + raw);
+    const parseUrl = (raw) => { try { return new URL(raw, baseHref); } catch (e) { return null; } };
+
+    // 對mock伺服器發一個http請求。回應若是串流（text/event-stream），r.bodyStream是ReadableStream，之後的資料塊由http_chunk／http_end送進來。
+    const mockRequest = (u, method, headers, buf, signal) => new Promise((resolve, reject) => {
+        const id = ++seq;
+        const timer = setTimeout(() => { waits.delete(id); reject(new TypeError('Failed to fetch（mock伺服器20秒沒有回應）')); }, 20000);
+        waits.set(id, (r) => {
+            clearTimeout(timer);
+            if (r.stream) r.bodyStream = new ReadableStream({ start(c) { streams.set(id, c); }, cancel() { if (streams.delete(id)) send({ t: 'http_cancel', id }); } });
+            r.id = id;
+            resolve(r);
+        });
+        if (signal) {
+            const onAbort = () => {
+                if (waits.delete(id)) { clearTimeout(timer); reject(new DOMException('The operation was aborted.', 'AbortError')); }
+                else if (streams.has(id)) { const c = streams.get(id); streams.delete(id); send({ t: 'http_cancel', id }); try { c.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (e) {} }
+            };
+            if (signal.aborted) { onAbort(); return; }
+            signal.addEventListener('abort', onAbort);
+        }
+        send({ t: 'http', id, method, url: u.href, headers, body: buf && buf.byteLength ? buf : null }, buf && buf.byteLength ? [buf] : []);
+    });
+
+    // ---- fetch ----
     window.fetch = function (input, init) {
         const raw = typeof input === 'string' ? input : (input && typeof input.url === 'string' ? input.url : String(input));
-        let u = null;
-        try { u = new URL(raw, baseHref); } catch (e) { u = null; }
-        if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:') || !isMock(u)) {
-            if (cfg.block) return Promise.reject(new TypeError('Failed to fetch（沙盒設定了block_external，不是mock範圍的網址不放行）：' + raw));
-            return realFetch ? realFetch(input, init) : Promise.reject(new TypeError('Failed to fetch'));
-        }
+        const u = parseUrl(raw);
+        const cls = classify(u);
+        if (cls === 'deny' || cls === 'block') return Promise.reject(new TypeError('Failed to fetch（' + whyBlocked(cls, u, raw) + '）'));
+        if (cls === 'real') return realFetch ? realFetch(input, init) : Promise.reject(new TypeError('Failed to fetch'));
         return (async () => {
             const req = (typeof Request !== 'undefined' && input instanceof Request) ? new Request(input, init) : new Request(u.href, init);
             if (req.signal && req.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
             const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
             const buf = hasBody ? await req.arrayBuffer() : null;
-            const id = ++seq;
-            const d = await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => { waits.delete(id); reject(new TypeError('Failed to fetch（mock伺服器20秒沒有回應）')); }, 20000);
-                waits.set(id, (r) => { clearTimeout(timer); resolve(r); });
-                if (req.signal) req.signal.addEventListener('abort', () => { if (waits.delete(id)) { clearTimeout(timer); reject(new DOMException('The operation was aborted.', 'AbortError')); } });
-                send({ t: 'http', id, method: req.method, url: u.href, headers: Array.from(req.headers.entries()), body: buf && buf.byteLength ? buf : null }, buf && buf.byteLength ? [buf] : []);
-            });
+            const d = await mockRequest(u, req.method, Array.from(req.headers.entries()), buf, req.signal);
             if (d.error) throw new TypeError('Failed to fetch（' + d.error + '）');
             const nullBody = [101, 204, 205, 304].indexOf(d.status) >= 0;
-            const resp = new Response(nullBody ? null : d.body, { status: d.status, statusText: d.statusText || '', headers: d.headers || [] });
+            const resp = new Response(d.bodyStream ? d.bodyStream : (nullBody ? null : d.body), { status: d.status, statusText: d.statusText || '', headers: d.headers || [] });
             try { Object.defineProperty(resp, 'url', { value: u.href }); } catch (e) {}
             return resp;
         })();
     };
+
+    // ---- XMLHttpRequest ----
+    const XHR_EVENTS = ['readystatechange', 'loadstart', 'progress', 'load', 'error', 'abort', 'timeout', 'loadend'];
+    class FaXHR extends EventTarget {
+        constructor() {
+            super();
+            this._real = null; this._m = null; this._up = null;
+            this._cfg = { timeout: 0, withCredentials: false, responseType: '' };
+            XHR_EVENTS.forEach((t) => { this['on' + t] = null; });
+        }
+        get timeout() { return this._cfg.timeout; }
+        set timeout(v) { this._cfg.timeout = Number(v) || 0; if (this._real) this._real.timeout = this._cfg.timeout; }
+        get withCredentials() { return this._cfg.withCredentials; }
+        set withCredentials(v) { this._cfg.withCredentials = !!v; if (this._real) this._real.withCredentials = !!v; }
+        get responseType() { return this._cfg.responseType; }
+        set responseType(v) { this._cfg.responseType = String(v); if (this._real) this._real.responseType = String(v); }
+        get upload() { return this._real ? this._real.upload : (this._up = this._up || new EventTarget()); }
+        get readyState() { return this._m ? this._m.rs : (this._real ? this._real.readyState : 0); }
+        get status() { return this._m ? this._m.status : (this._real ? this._real.status : 0); }
+        get statusText() { return this._m ? this._m.statusText : (this._real ? this._real.statusText : ''); }
+        get responseURL() { return this._m ? (this._m.rs >= 2 ? this._m.url.href : '') : (this._real ? this._real.responseURL : ''); }
+        get responseText() { return this._m ? this._m.text : (this._real ? this._real.responseText : ''); }
+        get response() { return this._m ? this._m.resp : (this._real ? this._real.response : null); }
+        get responseXML() { return this._real ? this._real.responseXML : null; }
+        _fire(type) {
+            const ev = /^(loadstart|progress|load|loadend|error|abort|timeout)$/.test(type) ? new ProgressEvent(type) : new Event(type);
+            try { this.dispatchEvent(ev); } catch (e) {}
+            const h = this['on' + type];
+            if (typeof h === 'function') { try { h.call(this, ev); } catch (e) { console.error(e); } }
+        }
+        open(method, url, async, user, pass) {
+            const raw = String(url);
+            const u = parseUrl(raw);
+            const cls = classify(u);
+            if (cls === 'mock' || cls === 'deny' || cls === 'block') {
+                if (async === false) throw new DOMException('沙盒mock不支援同步的XMLHttpRequest，請改用非同步', 'InvalidAccessError');
+                this._real = null;
+                this._m = { rs: 1, status: 0, statusText: '', method: String(method).toUpperCase(), url: u || new URL('http://mock.local/'), headers: [], respHeaders: [], text: '', resp: '', sent: false, aborted: false, id: 0, denied: (cls === 'deny' || cls === 'block') ? whyBlocked(cls, u, raw) : '' };
+                this._fire('readystatechange');
+                return;
+            }
+            this._m = null;
+            this._real = new RealXHR();
+            XHR_EVENTS.forEach((t) => this._real.addEventListener(t, () => this._fire(t)));
+            this._real.timeout = this._cfg.timeout; this._real.withCredentials = this._cfg.withCredentials; this._real.responseType = this._cfg.responseType;
+            this._real.open.apply(this._real, arguments);
+        }
+        setRequestHeader(k, v) {
+            if (this._m) { if (this._m.rs !== 1 || this._m.sent) throw new DOMException('InvalidStateError', 'InvalidStateError'); this._m.headers.push([String(k), String(v)]); }
+            else if (this._real) this._real.setRequestHeader(k, v);
+            else throw new DOMException('InvalidStateError', 'InvalidStateError');
+        }
+        overrideMimeType(t) { if (this._real) this._real.overrideMimeType(t); }
+        getResponseHeader(n) {
+            if (this._real) return this._real.getResponseHeader(n);
+            if (!this._m || this._m.rs < 2) return null;
+            const hit = this._m.respHeaders.filter((h) => h[0].toLowerCase() === String(n).toLowerCase()).map((h) => h[1]);
+            return hit.length ? hit.join(', ') : null;
+        }
+        getAllResponseHeaders() {
+            if (this._real) return this._real.getAllResponseHeaders();
+            if (!this._m || this._m.rs < 2) return '';
+            return this._m.respHeaders.map((h) => h[0] + ': ' + h[1] + '\r\n').join('');
+        }
+        abort() {
+            if (this._real) { this._real.abort(); return; }
+            const m = this._m;
+            if (!m || !m.sent || m.rs === 4) return;
+            m.aborted = true; m.status = 0;
+            if (m.id && streams.has(m.id)) { streams.delete(m.id); send({ t: 'http_cancel', id: m.id }); }
+            if (m.finish) m.finish('abort');
+        }
+        send(body) {
+            if (this._real) { this._real.send(body); return; }
+            const m = this._m;
+            if (!m || m.rs !== 1 || m.sent) throw new DOMException('InvalidStateError', 'InvalidStateError');
+            m.sent = true;
+            this._mockSend(body);
+        }
+        async _mockSend(body) {
+            const m = this._m;
+            let finished = false;
+            const finish = (type) => { if (finished) return; finished = true; clearTimeout(m.timer); m.rs = 4; this._fire('readystatechange'); this._fire(type); this._fire('loadend'); };
+            m.finish = finish;
+            this._fire('loadstart');
+            if (this._cfg.timeout > 0) m.timer = setTimeout(() => { m.status = 0; finish('timeout'); }, this._cfg.timeout);
+            try {
+                if (m.denied) throw new Error(m.denied);
+                const noBody = m.method === 'GET' || m.method === 'HEAD';
+                const req = new Request(m.url.href, { method: m.method, body: noBody ? undefined : body, headers: m.headers });
+                const buf = noBody ? null : await req.arrayBuffer();
+                if (finished) return;
+                const d = await mockRequest(m.url, m.method, Array.from(req.headers.entries()), buf, null);
+                if (finished) { if (d.stream) send({ t: 'http_cancel', id: d.id }); return; }
+                if (d.error) throw new Error(d.error);
+                m.id = d.id; m.status = d.status; m.statusText = d.statusText || ''; m.respHeaders = d.headers || [];
+                m.rs = 2; this._fire('readystatechange');
+                const ct = (m.respHeaders.filter((h) => h[0].toLowerCase() === 'content-type')[0] || ['', ''])[1];
+                if (d.bodyStream) {
+                    const reader = d.bodyStream.getReader(); const dec = new TextDecoder();
+                    for (;;) { const r = await reader.read(); if (finished) return; if (r.done) break; m.text += dec.decode(r.value, { stream: true }); m.resp = m.text; m.rs = 3; this._fire('readystatechange'); this._fire('progress'); }
+                    finish('load');
+                    return;
+                }
+                const text = new TextDecoder().decode(d.body || new ArrayBuffer(0));
+                m.text = text;
+                const rt = this._cfg.responseType;
+                if (rt === 'json') { try { m.resp = JSON.parse(text); } catch (e) { m.resp = null; } }
+                else if (rt === 'arraybuffer') m.resp = d.body || new ArrayBuffer(0);
+                else if (rt === 'blob') m.resp = new Blob([d.body || new ArrayBuffer(0)], { type: ct });
+                else m.resp = text;
+                m.rs = 3; this._fire('readystatechange'); this._fire('progress');
+                finish('load');
+            } catch (e) { if (!finished) { m.status = 0; if (m.denied) console.warn('[mock] ' + m.denied); finish('error'); } }
+        }
+    }
+    ['UNSENT', 'OPENED', 'HEADERS_RECEIVED', 'LOADING', 'DONE'].forEach((k, i) => { FaXHR[k] = i; FaXHR.prototype[k] = i; });
+    window.XMLHttpRequest = FaXHR;
+
+    // ---- EventSource（Server-Sent Events）----
+    class FaES extends EventTarget {
+        constructor(url, init) {
+            super();
+            const raw = String(url);
+            const u = parseUrl(raw);
+            const cls = classify(u);
+            if (cls === 'real' && RealES) return new RealES(url, init);
+            this.url = u ? u.href : raw; this.withCredentials = !!(init && init.withCredentials); this.readyState = 0;
+            this.onopen = null; this.onmessage = null; this.onerror = null;
+            this._u = u; this._cls = cls; this._last = ''; this._retry = 3000; this._closed = false; this._abort = null;
+            setTimeout(() => this._connect(), 0);
+        }
+        close() { this._closed = true; this.readyState = 2; if (this._abort) this._abort(); }
+        _emit(ev) {
+            try { this.dispatchEvent(ev); } catch (e) {}
+            const h = this['on' + ev.type];
+            if (typeof h === 'function') { try { h.call(this, ev); } catch (e) { console.error(e); } }
+        }
+        _fail() { if (this._closed) return; this.readyState = 0; this._emit(new Event('error')); setTimeout(() => this._connect(), this._retry); }
+        async _connect() {
+            if (this._closed) return;
+            if (this._cls === 'deny' || this._cls === 'block' || !this._u) { console.warn('[mock] EventSource：' + whyBlocked(this._cls, this._u, this.url)); this.readyState = 2; this._emit(new Event('error')); return; }
+            const headers = [['accept', 'text/event-stream'], ['cache-control', 'no-cache']];
+            if (this._last) headers.push(['last-event-id', this._last]);
+            let d;
+            try { d = await mockRequest(this._u, 'GET', headers, null, null); } catch (e) { this._fail(); return; }
+            if (this._closed) { if (d && d.stream) send({ t: 'http_cancel', id: d.id }); return; }
+            if (d.error || d.status !== 200 || !d.bodyStream) { this.readyState = 2; this._emit(new Event('error')); return; }
+            this._abort = () => { if (streams.delete(d.id)) send({ t: 'http_cancel', id: d.id }); };
+            this.readyState = 1;
+            this._emit(new Event('open'));
+            const reader = d.bodyStream.getReader();
+            const dec = new TextDecoder();
+            let buf = '';
+            let ev = { data: [], type: '', id: null };
+            const dispatch = () => {
+                if (ev.data.length) {
+                    if (ev.id !== null) this._last = ev.id;
+                    this._emit(new MessageEvent(ev.type || 'message', { data: ev.data.join('\n'), lastEventId: this._last, origin: this._u.origin }));
+                }
+                ev = { data: [], type: '', id: null };
+            };
+            try {
+                for (;;) {
+                    const r = await reader.read();
+                    if (r.done) break;
+                    buf += dec.decode(r.value, { stream: true });
+                    let m;
+                    while ((m = /\r\n|\n|\r/.exec(buf))) {
+                        const line = buf.slice(0, m.index);
+                        buf = buf.slice(m.index + m[0].length);
+                        if (line === '') dispatch();
+                        else if (line.charAt(0) !== ':') {
+                            const c = line.indexOf(':');
+                            const f = c < 0 ? line : line.slice(0, c);
+                            let v = c < 0 ? '' : line.slice(c + 1);
+                            if (v.charAt(0) === ' ') v = v.slice(1);
+                            if (f === 'data') ev.data.push(v); else if (f === 'event') ev.type = v; else if (f === 'id') ev.id = v; else if (f === 'retry' && /^\d+$/.test(v)) this._retry = Number(v);
+                        }
+                    }
+                }
+            } catch (e) {}
+            this._abort = null;
+            this._fail();
+        }
+    }
+    ['CONNECTING', 'OPEN', 'CLOSED'].forEach((k, i) => { FaES[k] = i; FaES.prototype[k] = i; });
+    window.EventSource = FaES;
+
+    // ---- WebSocket ----
     const resolveWs = (raw) => {
         const s = String(raw);
         let u;
         const m = /^wss?:\/\/(\/.*)?$/i.exec(s); // location.host是空的時候組出來的 ws:///chat
         if (m) u = new URL('http://mock.local' + (m[1] || '/'));
         else {
-            try { u = new URL(s, baseHref); } catch (e) { return null; }
+            u = parseUrl(s);
+            if (!u) return { cls: 'real' };
             if (/^wss?:$/i.test(u.protocol)) u = new URL(u.href.replace(/^ws/i, 'http'));
-            else if (!/^https?:$/i.test(u.protocol)) return null;
+            else if (!/^https?:$/i.test(u.protocol)) return { cls: 'real' };
         }
-        return isMock(u) ? u.href : null;
+        const cls = classify(u);
+        return { cls, wire: cls === 'mock' ? u.href : null, u };
     };
     class MockWS extends EventTarget {
         constructor(url, wireUrl, protocols) {
@@ -2558,28 +2859,38 @@ function __faMockShim(cfg) {
         }
     }
     const WSWrapper = function WebSocket(url, protocols) {
-        const wire = resolveWs(url);
-        if (!wire) {
-            if (cfg.block) throw new DOMException('沙盒設定了block_external，不是mock範圍的WebSocket不放行：' + url, 'SecurityError');
-            return new RealWS(url, protocols);
-        }
-        return new MockWS(String(url), wire, protocols);
+        const r = resolveWs(url);
+        if (r.cls === 'deny' || r.cls === 'block') throw new DOMException(whyBlocked(r.cls, r.u, String(url)), 'SecurityError');
+        if (r.cls === 'real') return new RealWS(url, protocols);
+        return new MockWS(String(url), r.wire, protocols);
     };
     WSWrapper.prototype = MockWS.prototype;
     ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach((k, i) => { WSWrapper[k] = i; MockWS.prototype[k] = i; });
     window.WebSocket = WSWrapper;
-    window.addEventListener('message', (ev) => {
-        const d = ev.data;
-        if (!d || d.__fa_mock_r !== 1 || ev.source !== parent) return;
+
+    // ---- 接收主頁面的回覆 ----
+    const onReply = (d) => {
         if (d.t === 'http_res') { const w = waits.get(d.id); if (w) { waits.delete(d.id); w(d); } return; }
+        if (d.t === 'http_chunk') { const c = streams.get(d.id); if (c) { try { c.enqueue(new Uint8Array(d.data)); } catch (e) {} } return; }
+        if (d.t === 'http_end') { const c = streams.get(d.id); if (c) { streams.delete(d.id); try { c.close(); } catch (e) {} } return; }
         const s = sockets.get(d.id);
         if (!s) return;
         if (d.t === 'ws_opened') s._opened();
         else if (d.t === 'ws_msg') s._message(d.data);
         else if (d.t === 'ws_close') s._closed(d.code, d.reason, true);
         else if (d.t === 'ws_rejected') { console.warn('[mock] WebSocket連線被拒絕：' + d.reason); s._closed(1006, '', false); }
-    });
-    window.__fa_mock = { hosts, prefixes: cfg.prefixes || null, base: baseHref };
+    };
+    if (cfg.transport === 'poll') {
+        window.__fa_mock_drain = () => JSON.stringify(outQ.splice(0));
+        window.__fa_mock_deliver = (json) => { JSON.parse(json).forEach((m) => onReply(decMsg(m))); return true; };
+    } else {
+        window.addEventListener('message', (ev) => {
+            const d = ev.data;
+            if (!d || d.__fa_mock_r !== 1 || ev.source !== parent) return;
+            onReply(d);
+        });
+    }
+    window.__fa_mock = { hosts, prefixes: cfg.prefixes || null, base: baseHref, transport: cfg.transport || 'postMessage' };
 }
 
 // 匯出部署檔：同一份伺服器程式，換掉env.db／env.fs的實作就能在Node或Cloudflare Workers跑
@@ -2607,7 +2918,7 @@ const DATA_DIR = process.env.DATA_DIR || './data';
 const PUBLIC_DIR = process.env.PUBLIC_DIR || './public';
 
 const __P = __PRELUDE__;
-const { router, json, text, fail, coerce, wsHub, resolve } = __P;
+const { router, json, text, fail, coerce, wsHub, resolve, sse, channel } = __P;
 
 const safe = (k) => { const s = String(k).replace(/\\/g, '/').replace(/^\/+/, ''); if (!s || s.split('/').includes('..')) throw new Error('路徑不合法：' + k); return s; };
 const walk = (dir) => {
@@ -2646,10 +2957,10 @@ const hub = wsHub({
     opened: () => {},
     log: (l, m) => console[l](m),
 });
-const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, now: () => Date.now() };
+const env = { db, fs: files, ws: { broadcast: (p, d) => hub.broadcast(p, d), count: (p) => hub.count(p) }, channel, now: () => Date.now() };
 const ctx = { waitUntil: (p) => { Promise.resolve(p).catch((e) => console.error(String(e))); } };
 globalThis.env = env; globalThis.db = db; globalThis.fs = files;
-globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail;
+globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail; globalThis.sse = sse;
 
 __USER__
 
@@ -2679,6 +2990,13 @@ const server = http.createServer(async (req, res) => {
         const request = new Request(url.href, { method: req.method, headers: req.headers, body: (req.method === 'GET' || req.method === 'HEAD' || !body.length) ? undefined : body });
         const resp = coerce(await mod.handler(request, env, ctx));
         res.writeHead(resp.status, Object.fromEntries(resp.headers));
+        if (/text\/event-stream/i.test(resp.headers.get('content-type') || '') && resp.body) {
+            const reader = resp.body.getReader();
+            req.on('close', () => { try { reader.cancel(); } catch (e) {} });
+            for (;;) { const r = await reader.read(); if (r.done) break; res.write(Buffer.from(r.value)); }
+            res.end();
+            return;
+        }
         res.end(Buffer.from(await resp.arrayBuffer()));
     } catch (e) {
         console.error(e);
@@ -2712,7 +3030,7 @@ server.listen(PORT, () => console.log('listening on http://localhost:' + PORT));
 // 部署：npx wrangler kv namespace create DATA  → 把id填進wrangler.toml → npx wrangler deploy
 // 限制：WebSocket在Workers需要Durable Objects，這份匯出檔只處理HTTP（WebSocket請求會回501）。
 const __P = __PRELUDE__;
-const { router, json, text, fail, coerce, resolve } = __P;
+const { router, json, text, fail, coerce, resolve, sse, channel } = __P;
 
 const kvDb = (kv) => ({
     async get(k) { const v = await kv.get('db:' + k); return v === null ? null : JSON.parse(v); },
@@ -2744,7 +3062,7 @@ let loaded = null;
 const load = async (env) => {
     if (loaded) return loaded;
     globalThis.env = env; globalThis.db = env.db; globalThis.fs = env.fs;
-    globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail;
+    globalThis.router = router; globalThis.json = json; globalThis.text = text; globalThis.fail = fail; globalThis.sse = sse;
     const mod = resolve(await __loadUser());
     if (!mod.handler) throw new Error('找不到伺服器入口（handler／app／export default）');
     if (mod.init) await mod.init(env);
@@ -2755,7 +3073,7 @@ const load = async (env) => {
 export default {
     async fetch(request, rawEnv, ctx) {
         if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') return json({ error: 'WebSocket在Cloudflare Workers需要Durable Objects，這份匯出檔沒有包含' }, 501);
-        const env = Object.assign({}, rawEnv, { db: kvDb(rawEnv.DATA), fs: kvFs(rawEnv.DATA), ws: { broadcast() {}, count() { return 0; } }, now: () => Date.now() });
+        const env = Object.assign({}, rawEnv, { db: kvDb(rawEnv.DATA), fs: kvFs(rawEnv.DATA), ws: { broadcast() {}, count() { return 0; } }, channel, now: () => Date.now() });
         const mod = await load(env);
         return coerce(await mod.handler(request, env, ctx));
     },
@@ -9669,7 +9987,7 @@ ${fnData.code}
         );
 
         registerOptional('repo_map',
-            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾的File Access Point參照（fap:名稱[/子路徑]）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／build_index（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後分批做）／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
+            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾：網頁版用已授權資料夾的參照（fap:名稱[/子路徑]），桌面版也可以直接給絕對路徑（例如 C:/專案 或 /home/me/專案）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／build_index（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後分批做）／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -9677,7 +9995,7 @@ ${fnData.code}
             },
             { type: 'object', properties: {
                 action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'build_index', 'annotate', 'reset'] },
-                root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]' },
+                root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
                 query: { type: 'string', description: 'find：檔名、功能或專案名稱的關鍵字（模糊也可以）' },
                 from: { type: 'string', description: 'explore：要探索的檔案或資料夾（相對於root）' },
                 path: { type: 'string', description: 'resolve／refresh／tree／annotate：路徑（相對於root）' },
@@ -9748,7 +10066,7 @@ ${fnData.code}
         );
 
         registerOptional('sandbox_mock',
-            '沙盒「模擬後端」：讓被測試的頁面照常寫 fetch("/api/...")、new WebSocket(...)，沙盒只在測試時把它們接到一個Web Worker裡的伺服器程式，資料存在持久儲存（IndexedDB，重新整理後還在）。**目的是「測試時能跑、實際部署也能跑」**：頁面程式碼完全不用為了測試改（攔截層只存在沙盒），伺服器程式用標準Request/Response，export之後換掉儲存就能在Node或Cloudflare Workers跑。伺服器程式三種寫法擇一：（1）最簡單：const app = router(); app.crud("/api/todos","todos"); app.get("/api/ping",()=>({ok:true})); app.post("/api/x", async (req, env)=>{ const b = await req.json(); return json({got:b},201); }); app.ws("/chat",(ws,req,env)=>{ ws.on("message",(m)=>ws.broadcast(m,{includeSelf:true})); });（2）async function handler(request, env){ ...; return json({...}); } 搭配 function onWebSocket(ws, req, env){...}；（3）export default { fetch(request, env){...} }。可用：env.db.get/set/delete/list(前綴)/clear/nextId(集合名)（JSON值，持久）、env.fs.read/write/list/remove（文字檔，持久）、json(資料,狀態碼)、text()、fail(狀態碼,訊息)、env.ws.broadcast(路徑,資料)、async function init(env){...}（載入時跑一次，可放種子資料）。ws物件：ws.send／ws.close／ws.on("message"|"close")／ws.broadcast／ws.path／ws.query。動作：deploy（存伺服器程式並檢查，回傳路由）／call（送測試請求requests＋WebSocket多人情境ws）／db（檢視或修改持久資料）／list／reset／export（target:"node"或"cloudflare"，產生部署檔）。頁面端整合用sandbox_html({mock:"名稱",...})。範例：sandbox_mock({"action":"deploy","name":"todo","code":"const app = router(); app.crud(\"/api/todos\",\"todos\");"}) 然後 sandbox_mock({"action":"call","name":"todo","requests":[{"method":"POST","path":"/api/todos","json":{"title":"買菜"},"expect_status":201},{"method":"GET","path":"/api/todos"}]})。已知限制：不支援XMLHttpRequest／EventSource；沙盒測得到的是伺服器「邏輯」，真實的併發、延遲、TLS、資料庫行為要列進unverified。',
+            '沙盒「模擬後端」：讓被測試的頁面照常寫 fetch("/api/...")、new WebSocket(...)，沙盒只在測試時把它們接到一個Web Worker裡的伺服器程式，資料存在持久儲存（IndexedDB，重新整理後還在）。**目的是「測試時能跑、實際部署也能跑」**：頁面程式碼完全不用為了測試改（攔截層只存在沙盒），伺服器程式用標準Request/Response，export之後換掉儲存就能在Node或Cloudflare Workers跑。伺服器程式三種寫法擇一：（1）最簡單：const app = router(); app.crud("/api/todos","todos"); app.get("/api/ping",()=>({ok:true})); app.post("/api/x", async (req, env)=>{ const b = await req.json(); return json({got:b},201); }); app.ws("/chat",(ws,req,env)=>{ ws.on("message",(m)=>ws.broadcast(m,{includeSelf:true})); });（2）async function handler(request, env){ ...; return json({...}); } 搭配 function onWebSocket(ws, req, env){...}；（3）export default { fetch(request, env){...} }。可用：env.db.get/set/delete/list(前綴)/clear/nextId(集合名)（JSON值，持久）、env.fs.read/write/list/remove（文字檔，持久）、json(資料,狀態碼)、text()、fail(狀態碼,訊息)、env.ws.broadcast(路徑,資料)、async function init(env){...}（載入時跑一次，可放種子資料）。ws物件：ws.send／ws.close／ws.on("message"|"close")／ws.broadcast／ws.path／ws.query。動作：deploy（存伺服器程式並檢查，回傳路由）／call（送測試請求requests＋WebSocket多人情境ws）／db（檢視或修改持久資料）／list／reset／export（target:"node"或"cloudflare"，產生部署檔）。頁面端整合用sandbox_html({mock:"名稱",...})。範例：sandbox_mock({"action":"deploy","name":"todo","code":"const app = router(); app.crud(\"/api/todos\",\"todos\");"}) 然後 sandbox_mock({"action":"call","name":"todo","requests":[{"method":"POST","path":"/api/todos","json":{"title":"買菜"},"expect_status":201},{"method":"GET","path":"/api/todos"}]})。支援的頁面API：fetch、XMLHttpRequest（非同步）、EventSource、WebSocket。伺服器串流（Server-Sent Events）：return sse((stream)=>{ stream.send("hi"); stream.send({n:1},{event:"tick"}); stream.onClose(()=>{...}); })；env.channel(名稱).publish／subscribe可在請求之間廣播。**沙盒不使用Cloudflare Worker的流量**：全部在瀏覽器裡跑，頁面或伺服器程式要連*.workers.dev、*.pages.dev或你設定的proxy網址會被擋下。已知限制：沙盒測得到的是伺服器「邏輯」，真實的併發、延遲、TLS、資料庫行為要列進unverified。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -13778,7 +14096,7 @@ ${fnData.code}
         out.backends.browser_tab = tab;
         out.backends.popup = { available: typeof window !== 'undefined' && typeof window.open === 'function', isolation: '彈出視窗裡再放一層sandbox iframe（AI寫的程式仍然隔離）', needs_user_action: true, how: 'sandbox_html({"backend":"popup",...})：畫面右下角會出現「開啟測試視窗」按鈕，使用者按下才能彈出（瀏覽器規定彈出視窗一定要使用者操作，這就是pending action）' };
         out.backends.worker = { available: typeof Worker !== 'undefined', persistent_fs: true, how: 'sandbox_worker({"code":"...","requests":[...]})：Web Worker，沒有DOM；有fs.read/write/list/remove存到持久檔案系統；可以寫handler(request)當成Service Worker／Cloudflare Worker測試' };
-        out.backends.mock_server = { available: typeof Worker !== 'undefined', persistent: true, how: 'sandbox_mock（先deploy伺服器程式）＋sandbox_html({mock:"名稱"})：頁面照常寫fetch／WebSocket，沙盒接到持久儲存的模擬伺服器；頁面程式不用改，伺服器程式可export成Node／Cloudflare部署檔。限制：瀏覽器分頁後端不支援（會用iframe）、沒有XMLHttpRequest／EventSource' };
+        out.backends.mock_server = { available: typeof Worker !== 'undefined', persistent: true, how: 'sandbox_mock（先deploy伺服器程式）＋sandbox_html({mock:"名稱"})：頁面照常寫fetch／WebSocket，沙盒接到持久儲存的模擬伺服器；頁面程式不用改，伺服器程式可export成Node／Cloudflare部署檔。支援fetch、XMLHttpRequest、EventSource（Server-Sent Events）、WebSocket；iframe與瀏覽器分頁後端都支援（分頁靠主頁面輪詢，每個請求多約0.1～0.3秒）。沙盒不使用Cloudflare Worker的流量：*.workers.dev、*.pages.dev與你設定的proxy網址一律擋下' };
         out.backends.python = { available: true, micropip: true, how: 'python_execute（純腳本）或sandbox_py_app（Flask/FastAPI等web app，用micropip安裝純Python套件後直接以測試請求呼叫app）' };
         out.backends.terminal = { available: true, how: 'run-terminal（busybox ash＋python -c）：適合檔案與指令流程；注意終端機裡的python是同步執行，不能await micropip.install，要裝套件請用python_execute或sandbox_py_app' };
         out.backends.service_worker = { available: false, reason: 'Service Worker必須由「同源的script檔案網址」註冊，瀏覽器不接受blob或data網址，所以網頁版沒辦法把AI剛寫的程式註冊成Service Worker；桌面版也一樣，除非另外在本機proxy提供固定路徑（目前沒有）。替代做法：sandbox_worker用handler(request)模擬Service Worker／Cloudflare Worker的fetch處理，行為（路由、Request/Response、快取邏輯）可以完整驗證。' };
@@ -13908,7 +14226,11 @@ ${fnData.code}
             if (!r || !r.ok) return { ok: false, error: (r && r.error) || `${cmd}失敗` };
             try { return { ok: true, value: JSON.parse(r.value) }; } catch (_) { return { ok: true, value: r.value }; }
         };
-        return { ok: true, kind: 'tab', tabId, call, close: async () => { try { await this._bcCall('tab_close', { tab_id: tabId }); } catch (_) {} } };
+        const evalRaw = async (expr, timeoutMs = 6000) => {
+            const r = await this._bcCall('tab_eval', { tab_id: tabId, js: '(async()=>{return ' + expr + '})()', timeout_ms: timeoutMs }, timeoutMs + 3000);
+            return r && r.ok ? r.value : null;
+        };
+        return { ok: true, kind: 'tab', tabId, call, evalRaw, close: async () => { try { await this._bcCall('tab_close', { tab_id: tabId }); } catch (_) {} } };
     }
 
     async _sandboxHtmlRun(a) {
@@ -13925,18 +14247,17 @@ ${fnData.code}
         if (a.mock) {
             const mspec = typeof a.mock === 'string' ? { name: a.mock } : (a.mock && typeof a.mock === 'object' ? a.mock : null);
             if (!mspec) return { ok: false, error: 'mock必須是mock伺服器名稱，或 {name, code, hosts, prefixes, block_external, reset} 物件' };
-            if (kind === 'tab') { notes.push('mock需要主頁面當中繼，瀏覽器分頁後端目前不支援mock，改用iframe。'); kind = 'iframe'; }
             const o = await this._mockOpen(mspec);
             if (!o.ok) return o;
             hub = o.hub;
             const usesCurrent = a.base === 'current_page' || (!a.html && a.base !== 'blank');
             a.__mockHub = hub;
-            a.__mockCfg = { hosts: Array.isArray(mspec.hosts) ? mspec.hosts.map(String) : [], prefixes: Array.isArray(mspec.prefixes) ? mspec.prefixes.map(String) : (usesCurrent ? ['/api/'] : null), block: mspec.block_external === true, backend: kind };
+            a.__mockCfg = { hosts: Array.isArray(mspec.hosts) ? mspec.hosts.map(String) : [], prefixes: Array.isArray(mspec.prefixes) ? mspec.prefixes.map(String) : (usesCurrent ? ['/api/'] : null), block: mspec.block_external === true, allow_hosts: Array.isArray(mspec.allow_hosts) ? mspec.allow_hosts.map(String) : [], deny: this._sandboxDenyHosts(), transport: kind === 'tab' ? 'poll' : undefined, backend: kind };
             notes.push('mock伺服器「' + hub.name + '」已接上：頁面的fetch／WebSocket（' + (a.__mockCfg.prefixes ? '路徑開頭是' + a.__mockCfg.prefixes.join('、') : '所有相對路徑與mock.local') + '）由它回應，資料存在持久儲存。頁面程式碼不用為了測試改動，部署時直接打真正的伺服器。');
         }
         const doc = this._sandboxBuildDoc(a);
         let frame = null;
-        if (kind === 'tab') frame = await this._sandboxOpenTab(doc, a);
+        if (kind === 'tab') { frame = await this._sandboxOpenTab(doc, a); if (hub && frame && frame.ok !== false) hub.attachPoll(frame); }
         else if (kind === 'popup') {
             const w = await this._sandboxPopupViaGesture();
             if (!w && hub) hub.close();
@@ -14014,9 +14335,24 @@ ${fnData.code}
         throw new Error('不認得的fs操作：' + op);
     }
 
+    // 沙盒不使用Cloudflare Worker的流量：這些主機一律擋下（*.workers.dev、*.pages.dev，以及使用者在設定裡填的proxy網址的主機；本機網址不擋）
+    _sandboxDenyHosts() {
+        const out = ['.workers.dev', '.pages.dev'];
+        const st = this.advancedSettings || {};
+        for (const k of Object.keys(st)) {
+            if (!/proxy.*url$/i.test(k)) continue;
+            const v = String(st[k] || '').trim();
+            if (!/^https?:\/\//i.test(v)) continue;
+            try { const h = new URL(v).hostname.toLowerCase(); if (h && h !== 'localhost' && h !== '127.0.0.1' && h !== '[::1]') out.push(h); } catch (_) {}
+        }
+        return Array.from(new Set(out));
+    }
+
     _sandboxWorkerSource() {
         return [
             'const __AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;',
+            'let __deny = []; const __realFetch = typeof self.fetch === "function" ? self.fetch.bind(self) : null;',
+            'self.fetch = (input, init) => { let u = null; try { u = new URL(typeof input === "string" ? input : input.url, "http://x"); } catch (e) {} const h = u ? u.hostname.toLowerCase() : ""; if (h && __deny.some((x) => (x.charAt(0) === "." ? h.slice(-x.length) === x : h === x))) return Promise.reject(new TypeError("沙盒不使用Cloudflare Worker的流量，已擋下：" + h)); return __realFetch ? __realFetch(input, init) : Promise.reject(new TypeError("fetch不可用")); };',
             'let __rpcId = 0; const __pending = new Map();',
             'function __rpc(op, args){ return new Promise((res, rej) => { const id = ++__rpcId; __pending.set(id, {res, rej}); postMessage({__rpc: id, op: op, args: args}); }); }',
             'self.fs = { read: (p) => __rpc("fs.read",[p]), write: (p,c) => __rpc("fs.write",[p,String(c)]), list: (p) => __rpc("fs.list",[p||""]), remove: (p) => __rpc("fs.remove",[p]) };',
@@ -14027,6 +14363,7 @@ ${fnData.code}
             '  const d = ev.data || {};',
             '  if (d.__rpc_res) { const p = __pending.get(d.__rpc_res); if (p) { __pending.delete(d.__rpc_res); if (d.error) p.rej(new Error(d.error)); else p.res(d.result); } return; }',
             '  if (!d.__run) return;',
+            '  __deny = (d.deny || []).map((x) => String(x).toLowerCase());',
             '  try {',
             '    const fn = new __AsyncFunction("fs", d.code + "\\n;return {handler: (typeof handler!==\\"undefined\\" ? handler : undefined), result: (typeof result!==\\"undefined\\" ? result : undefined)};");',
             '    const out = await fn(self.fs);',
@@ -14074,7 +14411,7 @@ ${fnData.code}
             };
             worker.onerror = (e) => resolve({ __done: true, error: String(e.message || 'Worker發生錯誤') });
         });
-        worker.postMessage({ __run: true, code, requests: Array.isArray(a.requests) ? a.requests.slice(0, 50) : [] });
+        worker.postMessage({ __run: true, code, deny: this._sandboxDenyHosts(), requests: Array.isArray(a.requests) ? a.requests.slice(0, 50) : [] });
         const outcome = await Promise.race([done, new Promise((r) => setTimeout(() => r({ __timeout: true }), timeoutMs))]);
         worker.terminate(); URL.revokeObjectURL(url);
         if (outcome.__timeout) return { ok: false, error: `執行超過${timeoutMs}毫秒被中止（可能是無窮迴圈或沒有結束的await）`, console_logs: logs.slice(-40), duration_ms: Date.now() - t0 };
@@ -14100,9 +14437,45 @@ ${fnData.code}
         map.updated = Date.now();
         await this.repoMapCache.put('map.json', 'application/json', new Blob([JSON.stringify(map)], { type: 'application/json' }), 'repo_map', 'map:' + map.root);
     }
-    _repoMapKey(root) { return String(root || '').trim().replace(/\/+$/, ''); }
+    _repoMapKey(root) { return String(root || '').trim().replace(/\\/g, '/').replace(/\/+$/, ''); }
+    // 桌面版可以直接給任意資料夾的絕對路徑（C:/專案、/home/me/專案）；網頁版只能用已授權的File Access Point（fap:名稱）
+    _repoMapIsAbsPath(root) { return !/^fap:/i.test(root) && /^([A-Za-z]:\/|\/|\/\/)/.test(String(root).replace(/\\/g, '/')); }
+    _repoMapRawIo(root) {
+        const raw = window.desktopAPI.rawfs;
+        const base = this._repoMapKey(root);
+        const abs = (rel) => (rel ? base + '/' + rel : base);
+        const missing = (e) => /ENOENT|ENOTDIR|no such file|not a directory/i.test(String((e && e.message) || e));
+        return {
+            kind: 'raw', ref: base, label: base,
+            async readText(rel) { try { const r = await raw.readFile(abs(rel)); return typeof r.text === 'string' ? r.text : ''; } catch (e) { if (missing(e)) return null; throw e; } },
+            async writeText(rel, text) { await raw.writeFile(abs(rel), { text: String(text) }); },
+            async remove(rel) { await raw.remove(abs(rel), false); },
+            async listNames(relDir) { try { return (await raw.readdir(abs(relDir))).map((e) => e.name); } catch (e) { if (missing(e)) return []; throw e; } },
+            async listEntries(relDir) { try { return (await raw.readdir(abs(relDir))).map((e) => ({ name: e.name, kind: e.isDirectory ? 'directory' : 'file' })); } catch (e) { if (missing(e)) return null; throw e; } },
+            describe(rel) { return abs(rel); },
+        };
+    }
+    // 桌面版fs_read_file等找不到路徑時呼叫：如果這個路徑在某個已建立地圖的專案底下，就當成結構改變、從最近還存在的那一層重追
+    async _repoMapOnAbsMiss(absPath) {
+        if (!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs)) return null;
+        const p = String(absPath || '').replace(/\\/g, '/');
+        const lp = p.toLowerCase();
+        let best = null;
+        for (const r of await this.repoMapCache.getAll()) {
+            if (r.kind !== 'repo_map' || !String(r.id).startsWith('map:')) continue;
+            const root = String(r.id).slice(4);
+            if (/^fap:/i.test(root)) continue;
+            const lr = root.toLowerCase();
+            if ((lp === lr || lp.startsWith(lr + '/')) && (!best || root.length > best.length)) best = root;
+        }
+        if (!best) return null;
+        return await this._repoMapOnMiss(await this._repoMapIo(best), p.slice(best.length + 1));
+    }
     async _repoMapIo(root) {
-        if (typeof this.repoMapIoFactory === 'function') return await this.repoMapIoFactory(root);
+        if (this._repoMapIsAbsPath(root)) {
+            if (!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs)) throw new Error('絕對路徑只有桌面版能用；網頁版請用已授權的資料夾參照 fap:<名稱>（用list_file_access_points查有哪些）');
+            return this._repoMapRawIo(root);
+        }
         const io = await this._codingFapIo(root);
         if (typeof io.listEntries !== 'function') throw new Error('這個檔案介面不支援列目錄');
         return io;
@@ -14844,7 +15217,7 @@ ${fnData.code}
         else { try { code = await this._sandboxFsOp('fs.read', [`mock/${name}/server.js`]); } catch (_) { code = null; } }
         if (!code) return { ok: false, error: `沒有叫「${name}」的mock伺服器。第一次要帶code（定義 handler、或 const app = router(); ...、或 export default { fetch }）。` };
         const me = this;
-        const hub = { name, code, worker: null, workerUrl: null, calls: [], consoleLogs: [], inflight: new Map(), sinks: new Map(), chain: Promise.resolve(), nextHttp: 0, nextConn: 0, closed: false, routes: [], wsRoutes: [], restarts: 0, httpTimeoutMs: 8000, listeners: [] };
+        const hub = { name, code, worker: null, workerUrl: null, calls: [], consoleLogs: [], inflight: new Map(), sinks: new Map(), chain: Promise.resolve(), nextHttp: 0, nextConn: 0, closed: false, routes: [], wsRoutes: [], restarts: 0, httpTimeoutMs: 8000, listeners: [], streams: new Map() };
         const rec = (e) => { e.t = Date.now(); hub.calls.push(e); if (hub.calls.length > 300) hub.calls.shift(); };
         const enc = (o) => new TextEncoder().encode(JSON.stringify(o)).buffer;
         hub.store = (op, args) => { const p = hub.chain.then(() => me._mockStoreOp(name, op, args)); hub.chain = p.catch(() => {}); return p; };
@@ -14862,6 +15235,8 @@ ${fnData.code}
                     try { w.postMessage({ __rpc_res: d.__rpc, result: await hub.store(d.op, d.args) }); }
                     catch (e) { try { w.postMessage({ __rpc_res: d.__rpc, error: String((e && e.message) || e) }); } catch (_) {} }
                 } else if (d.__http) { const f = hub.inflight.get(d.__http); if (f) { hub.inflight.delete(d.__http); f(d); } }
+                else if (d.__chunk) { const st = hub.streams.get(d.__chunk); if (st) st.onChunk(d.data); }
+                else if (d.__end) { const st = hub.streams.get(d.__end); if (st) { hub.streams.delete(d.__end); st.onEnd(); } }
                 else if (d.__ws) {
                     const sink = hub.sinks.get(d.conn);
                     if (!sink) return;
@@ -14875,7 +15250,7 @@ ${fnData.code}
                 if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false, error: String((e && e.message) || 'Worker發生錯誤') }); }
                 else hub.consoleLogs.push({ l: 'error', m: 'Worker錯誤：' + String((e && e.message) || e) });
             };
-            w.postMessage({ __cmd: 'init', code: hub.code });
+            w.postMessage({ __cmd: 'init', code: hub.code, deny: me._sandboxDenyHosts() });
         });
         hub.stop = () => { try { if (hub.worker) hub.worker.terminate(); } catch (_) {} try { if (hub.workerUrl) URL.revokeObjectURL(hub.workerUrl); } catch (_) {} hub.worker = null; hub.workerUrl = null; };
         hub.restart = async () => {
@@ -14883,13 +15258,15 @@ ${fnData.code}
             hub.stop();
             for (const [, f] of hub.inflight) f({ status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: 'mock伺服器重啟中' }) });
             hub.inflight.clear();
+            hub.streams.forEach((st) => { try { st.onEnd(); } catch (_) {} });
+            hub.streams.clear();
             const sinks = Array.from(hub.sinks.values());
             hub.sinks.clear();
             sinks.forEach((s) => { try { s.onClose(1012, 'server restarted'); } catch (_) {} });
             return await hub.start();
         };
         // req: {method, url, headers:[[k,v]], body:ArrayBuffer|null}
-        hub.http = (req) => new Promise((resolve) => {
+        hub.http = (req, streamSink) => new Promise((resolve) => {
             if (hub.closed || !hub.worker) { resolve({ status: 503, statusText: 'Service Unavailable', headers: [['content-type', 'application/json']], body: enc({ error: 'mock伺服器已關閉' }) }); return; }
             const id = ++hub.nextHttp;
             const t0 = performance.now();
@@ -14903,8 +15280,9 @@ ${fnData.code}
             }, hub.httpTimeoutMs);
             hub.inflight.set(id, (d) => {
                 clearTimeout(timer);
-                rec(Object.assign(label, { status: d.status, ms: Math.round(performance.now() - t0) }));
-                resolve({ status: d.status, statusText: d.statusText, headers: d.headers, body: d.body });
+                rec(Object.assign(label, { status: d.status, ms: Math.round(performance.now() - t0), stream: d.stream || undefined }));
+                if (d.stream) hub.streams.set(id, streamSink || { onChunk() {}, onEnd() {} });
+                resolve({ status: d.status, statusText: d.statusText, headers: d.headers, body: d.body, stream: !!d.stream, id });
             });
             try { hub.worker.postMessage({ __cmd: 'http', id, method: req.method, url: req.url, headers: req.headers || [], body: req.body || null }, req.body ? [req.body] : []); }
             catch (e) { clearTimeout(timer); hub.inflight.delete(id); resolve({ status: 502, statusText: 'Bad Gateway', headers: [['content-type', 'application/json']], body: enc({ error: String((e && e.message) || e) }) }); }
@@ -14933,20 +15311,27 @@ ${fnData.code}
             rec({ kind: 'ws', ev: 'close(client)', path: sink.path, code: code || 1005 });
             if (hub.worker) hub.worker.postMessage({ __cmd: 'ws_close', conn, code: code || 1005, reason: reason || '' });
         };
-        // 把頁面（iframe）送來的 fetch／WebSocket 訊息接到這個hub
-        hub.attach = (listenWin, getFrameWin) => {
+        hub.cancelStream = (id) => { if (hub.streams.delete(id) && hub.worker) { try { hub.worker.postMessage({ __cmd: 'http_cancel', id }); } catch (_) {} } };
+        // 頁面送來的訊息處理（iframe與分頁輪詢共用）：reply(訊息, 可轉移物件)把回覆送回頁面
+        hub.makePageHandler = () => {
             const conns = new Map(); // 頁面的socket id → hub的conn
-            const onMsg = (ev) => {
-                const d = ev.data;
-                if (!d || d.__fa_mock !== 1 || ev.source !== getFrameWin()) return;
-                const src = ev.source;
-                const reply = (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} };
+            const streamIds = new Map(); // 頁面的http id → hub的串流id
+            return (d, reply) => {
                 if (d.t === 'http') {
-                    hub.http({ method: d.method, url: d.url, headers: d.headers, body: d.body }).then((r) => reply({ t: 'http_res', id: d.id, status: r.status, statusText: r.statusText, headers: r.headers, body: r.body }, [r.body])).catch((e) => reply({ t: 'http_res', id: d.id, error: String((e && e.message) || e) }));
+                    hub.http({ method: d.method, url: d.url, headers: d.headers, body: d.body }, {
+                        onChunk: (buf) => reply({ t: 'http_chunk', id: d.id, data: buf }, [buf]),
+                        onEnd: () => { streamIds.delete(d.id); reply({ t: 'http_end', id: d.id }); },
+                    }).then((r) => {
+                        if (r.stream) streamIds.set(d.id, r.id);
+                        reply({ t: 'http_res', id: d.id, status: r.status, statusText: r.statusText, headers: r.headers, body: r.body || null, stream: r.stream || undefined }, r.body ? [r.body] : []);
+                    }).catch((e) => reply({ t: 'http_res', id: d.id, error: String((e && e.message) || e) }));
+                } else if (d.t === 'http_cancel') {
+                    const hid = streamIds.get(d.id);
+                    if (hid) { streamIds.delete(d.id); hub.cancelStream(hid); }
                 } else if (d.t === 'ws_open') {
                     const conn = hub.wsOpen({
                         onOpen: () => reply({ t: 'ws_opened', id: d.id }),
-                        onMessage: (data) => reply({ t: 'ws_msg', id: d.id, data }),
+                        onMessage: (data) => reply({ t: 'ws_msg', id: d.id, data }, data instanceof ArrayBuffer ? [data] : []),
                         onClose: (code, reason) => { conns.delete(d.id); reply({ t: 'ws_close', id: d.id, code, reason }); },
                         onReject: (reason) => { conns.delete(d.id); reply({ t: 'ws_rejected', id: d.id, reason }); },
                     }, d.url);
@@ -14954,8 +15339,40 @@ ${fnData.code}
                 } else if (d.t === 'ws_send') { const c = conns.get(d.id); if (c) hub.wsSend(c, d.data); }
                 else if (d.t === 'ws_close') { const c = conns.get(d.id); if (c) { conns.delete(d.id); hub.wsClose(c, d.code, d.reason); } }
             };
+        };
+        // iframe／彈出視窗：用postMessage
+        hub.attach = (listenWin, getFrameWin) => {
+            const handle = hub.makePageHandler();
+            const onMsg = (ev) => {
+                const d = ev.data;
+                if (!d || d.__fa_mock !== 1 || ev.source !== getFrameWin()) return;
+                const src = ev.source;
+                handle(d, (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} });
+            };
             listenWin.addEventListener('message', onMsg);
             hub.listeners.push(() => { try { listenWin.removeEventListener('message', onMsg); } catch (_) {} });
+        };
+        // 瀏覽器分頁：分頁沒有父頁面，改成主頁面定時用tab_eval取出頁面佇列裡的請求、再把回覆送進去
+        hub.attachPoll = (frame) => {
+            const handle = hub.makePageHandler();
+            const b64enc = (buf) => { const u8 = new Uint8Array(buf); let st = ''; for (let i = 0; i < u8.length; i += 0x8000) st += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(st); };
+            const b64dec = (str) => { const st = atob(str); const u8 = new Uint8Array(st.length); for (let i = 0; i < st.length; i++) u8[i] = st.charCodeAt(i); return u8.buffer; };
+            const encMsg = (m) => { const o = {}; for (const k of Object.keys(m)) o[k] = (m[k] instanceof ArrayBuffer) ? { __b64: b64enc(m[k]) } : m[k]; return o; };
+            const decMsg = (m) => { const o = {}; for (const k of Object.keys(m)) { const v = m[k]; o[k] = (v && typeof v === 'object' && typeof v.__b64 === 'string') ? b64dec(v.__b64) : v; } return o; };
+            const outBatch = [];
+            let stopped = false;
+            const reply = (m) => { outBatch.push(encMsg(Object.assign({ __fa_mock_r: 1 }, m))); };
+            (async () => {
+                while (!stopped && !hub.closed) {
+                    try {
+                        if (outBatch.length) await frame.evalRaw('window.__fa_mock_deliver(' + JSON.stringify(JSON.stringify(outBatch.splice(0))) + ')', 6000);
+                        const out = await frame.evalRaw('window.__fa_mock_drain ? window.__fa_mock_drain() : "[]"', 6000);
+                        if (out) for (const m of JSON.parse(out)) handle(decMsg(m), reply);
+                    } catch (_) {}
+                    await new Promise((r) => setTimeout(r, outBatch.length ? 10 : 100));
+                }
+            })();
+            hub.listeners.push(() => { stopped = true; });
         };
         hub.summary = () => {
             const http = hub.calls.filter((c) => c.kind === 'http');
@@ -15042,11 +15459,19 @@ ${fnData.code}
                     if (r.json !== undefined) { body = new TextEncoder().encode(JSON.stringify(r.json)).buffer; if (!headers.some(([k]) => k.toLowerCase() === 'content-type')) headers.push(['content-type', 'application/json']); }
                     else if (r.body !== undefined && method !== 'GET' && method !== 'HEAD') body = new TextEncoder().encode(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)).buffer;
                     const t1 = performance.now();
-                    const resp = await hub.http({ method, url: u.href, headers, body });
+                    const chunks = [];
+                    let ended = false;
+                    const resp = await hub.http({ method, url: u.href, headers, body }, { onChunk: (b) => chunks.push(textOf(b)), onEnd: () => { ended = true; } });
+                    if (resp.stream) {
+                        await new Promise((res) => setTimeout(res, Math.min(3000, Number(r.collect_ms) || 300)));
+                        if (!ended) hub.cancelStream(resp.id);
+                        resp.body = new TextEncoder().encode(chunks.join('')).buffer;
+                    }
                     const bodyText = textOf(resp.body);
                     const hdr = {}; (resp.headers || []).forEach(([k, v]) => { hdr[k] = v; });
                     const item = { request: `${method} ${u.pathname}${u.search}`, status: resp.status, headers: hdr, body: bodyText.slice(0, 3000), ms: Math.round(performance.now() - t1) };
                     if (/json/i.test(hdr['content-type'] || '')) { try { item.json = JSON.parse(bodyText); } catch (_) {} }
+                    if (resp.stream) { item.stream = true; item.server_closed_stream = ended; item.events = bodyText.split(/\n\n+/).filter(Boolean).slice(0, 40).map((blk) => { const ev = {}; blk.split('\n').forEach((ln) => { const c = ln.indexOf(':'); if (c > 0) { const k = ln.slice(0, c); const v = ln.slice(c + 1).replace(/^ /, ''); ev[k] = ev[k] ? ev[k] + '\n' + v : v; } }); return ev; }); }
                     if (r.expect_status !== undefined) { item.expect_status = r.expect_status; item.pass = resp.status === Number(r.expect_status); }
                     responses.push(item);
                 }
@@ -15110,7 +15535,13 @@ ${fnData.code}
         return r;
     }
 
+    // 沙盒執行期間（載入Pyodide、micropip安裝、程式裡的網路請求）一律直連，不經過proxy／Cloudflare Worker
     async _sandboxPyAppRun(a) {
+        this._sandboxDirectOnly = (this._sandboxDirectOnly || 0) + 1;
+        try { return await this._sandboxPyAppRunInner(a); } finally { this._sandboxDirectOnly--; }
+    }
+
+    async _sandboxPyAppRunInner(a) {
         const code = String(a.code || '');
         if (!code.trim()) return { ok: false, error: '缺少code（要定義一個叫app的物件）' };
         const packages = Array.isArray(a.packages) ? a.packages.map(String).filter((p) => /^[A-Za-z0-9_.\-\[\]=<>!~, ]+$/.test(p)).slice(0, 12) : [];
@@ -22631,6 +23062,7 @@ ${sourceTool.handlerScript}
     }
 
     _viaAssetProxy(url) {
+        if (this._sandboxDirectOnly > 0) return url; // 沙盒執行期間不經過proxy（Cloudflare Worker）
         const proxyBase = this._resolveAssetProxyUrl();
         return proxyBase ? proxyBase + url : url;
     }

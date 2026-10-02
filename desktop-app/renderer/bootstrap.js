@@ -931,7 +931,12 @@ function patchCloudflareWording(root) {
           }
         }
         return JSON.stringify({ ok: true, ...r });
-      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+      } catch (err) {
+        const out = { ok: false, error: String(err.message || err) };
+        // 路徑不存在＝專案結構可能改變了：如果這個路徑在已建立地圖的專案底下，從最近還存在的那一層重追（見repo_map）
+        if (/ENOENT|no such file/i.test(out.error) && typeof fa._repoMapOnAbsMiss === "function") { try { const h = await fa._repoMapOnAbsMiss(parsed.path); if (h) out.repo_map = h; } catch (_) {} }
+        return JSON.stringify(out);
+      }
     },
     fsToolSchema({
       encoding: { type: "string", enum: ["auto", "base64"], description: "選填，'base64'強制以base64回傳（例如已知是圖片/二進位檔）；預設auto自動偵測" },
@@ -967,7 +972,11 @@ function patchCloudflareWording(root) {
       try {
         const entries = await window.desktopAPI.rawfs.readdir(parsed.path);
         return JSON.stringify({ ok: true, path: parsed.path, entries });
-      } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+      } catch (err) {
+        const out = { ok: false, error: String(err.message || err) };
+        if (/ENOENT|no such file/i.test(out.error) && typeof fa._repoMapOnAbsMiss === "function") { try { const h = await fa._repoMapOnAbsMiss(parsed.path); if (h) out.repo_map = h; } catch (_) {} }
+        return JSON.stringify(out);
+      }
     },
     fsToolSchema()
   );

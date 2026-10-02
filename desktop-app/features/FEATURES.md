@@ -227,7 +227,7 @@
 
 ### 沙盒模擬後端（測試與部署同一份）（`sandbox-mock`）
 
-被測試的頁面照常寫 fetch／WebSocket，沙盒只在測試時把它們接到 Web Worker 裡的伺服器程式，資料存在持久儲存（IndexedDB）。伺服器程式用標準 Request／Response（router、crud、ws），可匯出成 Node 或 Cloudflare Workers 部署檔，頁面程式碼不用為了測試或部署改動。
+被測試的頁面照常寫 fetch／XMLHttpRequest／EventSource／WebSocket，沙盒只在測試時把它們接到 Web Worker 裡的伺服器程式（iframe 與瀏覽器控制的新分頁都支援），資料存在持久儲存（IndexedDB）。伺服器程式用標準 Request／Response（router、crud、ws），可匯出成 Node 或 Cloudflare Workers 部署檔，頁面程式碼不用為了測試或部署改動。全部在瀏覽器裡跑，沙盒不使用 Cloudflare Worker 的流量（*.workers.dev、*.pages.dev 與設定的 proxy 網址一律擋下）。
 
 - 可用平台：網頁版、桌面版
 - AI 工具：`sandbox_mock`、`sandbox_html`
@@ -238,7 +238,7 @@
 
 ### 專案結構追蹤（分階段）（`repo-map`）
 
-有專案／repository 時先追出結構：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（build_index）會先問使用者。
+有專案／repository 時先追出結構（網頁版用已授權資料夾，桌面版可直接給絕對路徑）：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（build_index）會先問使用者。
 
 - 可用平台：網頁版、桌面版
 - 子代理人領域：`coding`
