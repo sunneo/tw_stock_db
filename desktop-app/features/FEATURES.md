@@ -219,11 +219,46 @@
 設計前先在沙盒真的跑一次確認行為：隔離的 iframe（可複製目前畫面）、瀏覽器控制的全新 about:blank 分頁、彈出視窗（使用者按一下）、Web Worker（有持久檔案系統、可測 handler(request)）、Python web app（micropip 安裝 Flask／FastAPI 後直接以測試請求呼叫）。先用 sandbox_capabilities 評估目前能用哪些。
 
 - 可用平台：網頁版、桌面版
-- AI 工具：`sandbox_capabilities`、`sandbox_html`、`sandbox_worker`、`sandbox_py_app`
+- AI 工具：`sandbox_capabilities`、`sandbox_html`、`sandbox_worker`、`sandbox_mock`、`sandbox_py_app`
 - 範例：
   - `先用沙盒做一個點擊計數器，確認事件行為再改我的頁面`
   - `用 Worker 模擬 Cloudflare Worker 的 handler，送幾個請求看回應`
   - `用 Flask 寫個 API 在沙盒裡測 /hi 和 /sum`
+
+### 沙盒模擬後端（測試與部署同一份）（`sandbox-mock`）
+
+被測試的頁面照常寫 fetch／WebSocket，沙盒只在測試時把它們接到 Web Worker 裡的伺服器程式，資料存在持久儲存（IndexedDB）。伺服器程式用標準 Request／Response（router、crud、ws），可匯出成 Node 或 Cloudflare Workers 部署檔，頁面程式碼不用為了測試或部署改動。
+
+- 可用平台：網頁版、桌面版
+- AI 工具：`sandbox_mock`、`sandbox_html`
+- 範例：
+  - `幫我寫待辦清單的前端，並用沙盒模擬 REST API 測試新增、修改、刪除`
+  - `做一個聊天室，沙盒裡用模擬 WebSocket 測試兩個人互傳訊息`
+  - `測好之後匯出成 Node 伺服器讓我部署`
+
+### 專案結構追蹤（分階段）（`repo-map`）
+
+有專案／repository 時先追出結構：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（build_index）會先問使用者。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`coding`
+- AI 工具：`repo_map`
+- 範例：
+  - `幫我找一下專案裡處理登入的原始碼，再看它依賴哪些檔案`
+  - `這個檔案路徑找不到了，專案是不是改過結構？`
+  - `先看一下這個 repo 的整體結構`
+
+### 專案索引百科（類似 DeepWiki）（`repo-wiki`）
+
+把專案結構整理成可查詢的索引資料庫，存進 persistentStorage（IndexedDB），並產生單檔的查詢頁面與定義頁面（搜尋檔案、函式、類別、名詞；顯示定義位置、依賴、被誰引用）；可選擇寫進專案資料夾。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`coding`
+- AI 工具：`repo_wiki`、`repo_map`
+- 範例：
+  - `幫這個專案產生可以搜尋的百科頁面`
+  - `查一下 parseConfig 這個函式定義在哪、誰在用`
+  - `幫專案裡的重要名詞寫定義，放進百科`
 
 ### git 操作（`git-operations`）
 
