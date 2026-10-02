@@ -1496,6 +1496,17 @@ async function copyDirRecursive(srcDir, destDir) {
 async function md5OfFile(file) {
   try { return md5Hex(await fs.readFile(file)); } catch (_) { return null; }
 }
+// 2026-10-02：基準清單（build-assistant）的md5是「換行正規化成LF」之後算的，但Windows安裝版內建的index.html／bootstrap.js是CRLF；
+// 驗證覆蓋資料夾時只拿檔案實際內容算md5會對不上，覆蓋被判定為不完整，更新後永遠退回基準版本、一直提示有新版本。
+// 這裡同時算「原樣」與「CRLF→LF」兩種md5，符合其中一個就算對。
+async function md5OfFileEither(file) {
+  try {
+    const buf = await fs.readFile(file);
+    const raw = md5Hex(buf);
+    if (buf.indexOf(13) < 0) return [raw];
+    return [raw, md5Hex(Buffer.from(buf.toString("latin1").replace(/\r\n/g, "\n"), "latin1"))];
+  } catch (_) { return null; }
+}
 // tw_stock_db客製: 2026-09-26使用者實測回報——force push新版本到
 // desktop-app-patch分支之後，點「檢查更新」一開始還是回報「已是最新
 // 版本」，隔一段時間才終於抓到新版本。`fetch(url, {cache:"no-store"})`
@@ -1543,10 +1554,10 @@ async function computeEffectiveLocalManifest() {
     let intact = true;
     for (const relPath of Object.keys(state.files)) {
       if (!LIVE_PATCH_ALLOWED_FILES.includes(relPath)) continue;
-      const actual = await md5OfFile(path.join(LIVE_PATCH_DIR(), relPath));
+      const actual = await md5OfFileEither(path.join(LIVE_PATCH_DIR(), relPath));
       // 主行程模組沒被patch過時覆蓋目錄本來就沒有這個檔案（state記的是內建md5），不算壞掉
       if (actual === null && baseline.files[relPath] === state.files[relPath]) continue;
-      if (actual !== state.files[relPath]) { intact = false; break; }
+      if (actual === null || actual.indexOf(state.files[relPath]) < 0) { intact = false; break; }
     }
     if (intact) {
       return {
