@@ -12043,13 +12043,13 @@ ${fnData.code}
         );
 
         registerOptional('offline_trainer',
-            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
+            '離線訓練器（Offline Trainer）：不需要LLM的「文字→語意分析→決定工具與參數→呼叫工具→文字重排後回答」引擎（構想來自使用者的DomainResolver）。知識存成「領域」（規則regex／關鍵字、範例句、要呼叫的工具與參數樣板），語意用特徵雜湊嵌入＋中英文概念詞典，重排用BM25＋TextRank＋MMR；完全一樣的問題會重放之前成功的工具呼叫。可以從線上AI問答（自動）、RAG知識庫、對話紀錄、功能清冊訓練。動作：status／dry_run（text＝只回報會怎麼判斷與要做什麼，不執行）／resolve（判斷並執行；有副作用的工具會先問使用者）／list／show（domain）／add_pattern（domain＋pattern：{type:"semantic|regex|keyword_any|keyword_all",examples:[..]或expr,tool,args,answer,slash,confidence}）／remove_pattern／add_example（domain,pattern,text）／train_rag／train_chat／reseed／set_synonyms（group＋terms，中英文同義詞）／export／import／forget_learned。**擴充離線訓練器（AI 的責任）**：你解決了一件「離線訓練器自己做不到」的事之後，要把解法寫回去，讓下次不用你也能得到同樣結果——init_domain（新領域）／export／import（把領域＝規則＋狀態機＋**原始碼工具**、已學會的解法、同義詞打包成一個JSON檔，import前會逐一檢查原始碼語法並請使用者確認；dry_run:true只檢查）／run_tool（試跑原始碼工具除錯，可給mock_calls）／rollback_tool／add_tool（name＋source：一段在沙盒worker執行的JavaScript，ctx.call(工具,參數)呼叫助理的工具，return {ok,text}；可附 tests 用假結果驗證）／add_state（states：狀態機，每個狀態 call_tool＋args樣板＋on_success／on_failure，樣板可用 {ident}{url}{path}{step1.欄位}{step1.line-2}）／add_pattern（pattern 加 state:入口狀態）／link／record_case（把這次的做法記成一筆成功案例）／distill（立即整理）／list_unresolved（離線時做不到的請求清單，是你的待辦）。使用者勾了「自動訓練」時，長期對話的成功做法也會由背景worker自動整理成同樣的技能。使用者在畫面上方的「線上／離線」開關切到離線時，整個對話就改走這個引擎。範例：offline_trainer({"action":"dry_run","text":"幫我搜尋台積電新聞"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._otRun(parsed)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned', 'init_domain', 'link', 'add_tool', 'add_state', 'set_fsm', 'show_tool', 'remove_tool', 'record_case', 'distill', 'list_unresolved', 'clear_unresolved'] }, name: { type: 'string' }, description: { type: 'string' }, source: { type: 'string', description: 'add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）' }, tests: { type: 'array', items: { type: 'object' } }, states: { type: 'object' }, initial: { type: 'string' }, to: { type: 'string' }, tool_calls: { type: 'array', items: { type: 'object' } }, answer: { type: 'string' }, min_count: { type: 'number' }, force: { type: 'boolean' }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
+            { type: 'object', properties: { action: { type: 'string', enum: ['status', 'dry_run', 'resolve', 'list', 'show', 'add_pattern', 'remove_pattern', 'add_example', 'train_rag', 'train_chat', 'reseed', 'set_synonyms', 'export', 'import', 'forget_learned', 'init_domain', 'link', 'add_tool', 'add_state', 'set_fsm', 'show_tool', 'remove_tool', 'record_case', 'distill', 'list_unresolved', 'clear_unresolved', 'run_tool', 'rollback_tool'] }, domains: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['merge', 'replace'] }, include_turns: { type: 'boolean' }, include_solutions: { type: 'boolean' }, deliver: { type: 'boolean' }, dry_run: { type: 'boolean' }, overwrite: { type: 'boolean' }, mock_calls: { type: 'object' }, slots: { type: 'object' }, last_tool_result: {}, assume_yes: { type: 'boolean' }, index: { type: 'number' }, name: { type: 'string' }, description: { type: 'string' }, source: { type: 'string', description: 'add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）' }, tests: { type: 'array', items: { type: 'object' } }, states: { type: 'object' }, initial: { type: 'string' }, to: { type: 'string' }, tool_calls: { type: 'array', items: { type: 'object' } }, answer: { type: 'string' }, min_count: { type: 'number' }, force: { type: 'boolean' }, text: { type: 'string' }, domain: { type: 'string' }, pattern: {}, text_example: { type: 'string' }, group: { type: 'string' }, terms: { type: 'string' }, execute: { type: 'boolean' }, assume_yes: { type: 'boolean' }, no_cache: { type: 'boolean' }, threshold: { type: 'number' }, data: { type: 'object' } }, required: ['action'], additionalProperties: false }
         );
 
         registerOptional('sandbox_capabilities',
@@ -17535,6 +17535,116 @@ ${fnData.code}
         };
     }
 
+    // ===== 匯出／匯入（bundle）：領域（規則＋狀態機＋原始碼工具）、已學會的解法（重放用的工具呼叫）、同義詞，可選對話紀錄 =====
+    // 檔案格式 {format:'fa-offline-trainer', version:2, payload:{domains,solutions,synonyms,turns?}, checksum}；舊版（version 1）也讀得進來。
+    // 原始碼工具（domain.tools[].source）會一起打包；匯入時逐一檢查語法、大小，匯入後仍然只在沙盒worker裡執行，呼叫的工具有副作用時照樣要使用者確認。
+    async _otBundleExport(opts) {
+        opts = opts || {};
+        const st = await this._otLoad();
+        const want = Array.isArray(opts.domains) && opts.domains.length ? new Set(opts.domains.map(String)) : null;
+        const doms = [];
+        for (const d of st.domains.values()) {
+            if (want ? !want.has(d.name) : false) continue;
+            const builtin = d.source === 'builtin';
+            const patterns = (d.patterns || []).filter((p) => !builtin || p.edited || p.source !== 'builtin');
+            const hasTools = (d.tools || []).length || (d.states && d.states.states && Object.keys(d.states.states).length);
+            if (!want && builtin && !patterns.length && !hasTools) continue;
+            doms.push(JSON.parse(JSON.stringify(Object.assign({}, d, { patterns }))));
+        }
+        const payload = { domains: doms, solutions: opts.include_solutions === false ? [] : Array.from(st.solutions.values()).map((x) => ({ fp: x.fp, problem: x.problem, calls: x.calls, created: x.created })), synonyms: st.synonyms || {} };
+        if (opts.include_turns) payload.turns = (await this._otDb().getAll('turns')).sort((a, b) => a.at - b.at).slice(-600);
+        const summary = { domains: doms.length, patterns: doms.reduce((n, d) => n + d.patterns.length, 0), tools: doms.reduce((n, d) => n + (d.tools || []).length, 0), states: doms.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: payload.solutions.length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms).length };
+        return { format: 'fa-offline-trainer', version: 2, exported_at: new Date().toISOString(), summary, payload, checksum: _faRepoHash(JSON.stringify(payload)) };
+    }
+    // 檢查一份bundle（不寫入）：回傳摘要、每個原始碼工具的語法檢查、警告
+    _otBundleInspect(bundle) {
+        if (!bundle || typeof bundle !== 'object') return { ok: false, error: '不是有效的JSON物件' };
+        let payload, legacy = false;
+        if (bundle.format === 'fa-offline-trainer' && bundle.payload) {
+            payload = bundle.payload;
+            if (bundle.checksum && bundle.checksum !== _faRepoHash(JSON.stringify(payload))) return { ok: false, error: '檔案內容跟checksum對不起來（檔案被改過或毀損）。要強制匯入請帶 force:true。', checksum_mismatch: true };
+            if (Number(bundle.version) > 2) return { ok: false, error: '這份bundle的版本（' + bundle.version + '）比這個app新，請先更新app' };
+        } else if (bundle.data || bundle.domains) { payload = bundle.data || bundle; legacy = true; } else return { ok: false, error: '找不到 payload／domains：不是離線訓練器匯出的檔案' };
+        const AF = Object.getPrototypeOf(async function () {}).constructor;
+        const tools = [], warnings = [], domains = [];
+        const NAME = /^[\w\u4e00-\u9fff-]{2,40}$/;
+        for (const d of Array.isArray(payload.domains) ? payload.domains : []) {
+            if (!d || !NAME.test(String(d.name || ''))) { warnings.push('略過名稱不合法的領域：' + String(d && d.name).slice(0, 30)); continue; }
+            const cleanTools = [];
+            for (const t of Array.isArray(d.tools) ? d.tools : []) {
+                const src = String((t && t.source) || '');
+                const rec = { domain: d.name, name: String((t && t.name) || ''), bytes: src.length, ok: true };
+                if (!/^[A-Za-z_]\w{1,60}$/.test(rec.name)) { rec.ok = false; rec.error = '名稱不合法'; }
+                else if (src.length > 65536) { rec.ok = false; rec.error = '原始碼超過64KB'; }
+                else if (!src.trim()) { rec.ok = false; rec.error = '沒有原始碼'; }
+                else { try { new AF('ctx', src); } catch (e) { rec.ok = false; rec.error = '語法錯誤：' + e.message; } }
+                rec.risky_calls = Array.from(new Set((src.match(/ctx\.call\(\s*['"]([\w]+)['"]/g) || []).map((x) => /['"]([\w]+)['"]/.exec(x)[1]).filter((n) => FA_OT_RISKY_TOOL.test(n))));
+                tools.push(rec);
+                if (rec.ok) cleanTools.push(t);
+            }
+            const stateErrs = d.states && d.states.states ? this._otValidateStates(Object.assign({}, d, { tools: cleanTools }), d.states.states) : [];
+            stateErrs.slice(0, 5).forEach((e) => warnings.push(d.name + '：' + e));
+            (d.patterns || []).forEach((p) => { if (p.tool && !this.tools[p.tool]) warnings.push(`${d.name}/${p.id}：工具「${p.tool}」在這個版本／平台不存在`); });
+            domains.push(Object.assign({}, d, { tools: cleanTools }));
+        }
+        const summary = { domains: domains.length, patterns: domains.reduce((n, d) => n + (d.patterns || []).length, 0), tools: tools.filter((t) => t.ok).length, states: domains.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: (payload.solutions || []).length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms || {}).length };
+        return { ok: true, legacy, summary, tools, rejected_tools: tools.filter((t) => !t.ok), warnings, domains, payload };
+    }
+    async _otBundleImport(bundle, opts) {
+        opts = opts || {};
+        const st = await this._otLoad();
+        let ins = this._otBundleInspect(bundle);
+        if (!ins.ok && ins.checksum_mismatch && opts.force) { const b2 = Object.assign({}, bundle, { checksum: null }); ins = this._otBundleInspect(b2); }
+        if (!ins.ok) return ins;
+        const want = Array.isArray(opts.domains) && opts.domains.length ? new Set(opts.domains.map(String)) : null;
+        const doms = ins.domains.filter((d) => !want || want.has(d.name));
+        const report = { ok: true, summary: ins.summary, rejected_tools: ins.rejected_tools, warnings: ins.warnings, legacy: ins.legacy };
+        if (opts.dry_run) return Object.assign(report, { dry_run: true, tools: ins.tools.map((t) => ({ domain: t.domain, name: t.name, ok: t.ok, risky_calls: t.risky_calls })) });
+        if (!opts.confirmed) {
+            const risky = ins.tools.filter((t) => t.ok && t.risky_calls.length);
+            const ans = await this.requestUserForm({ title: '📥 要匯入離線訓練器的資料嗎？', description: `領域 ${ins.summary.domains}、規則 ${ins.summary.patterns}、狀態機 ${ins.summary.states} 個狀態、原始碼工具 ${ins.summary.tools} 個、已學會的解法 ${ins.summary.solutions}${ins.summary.turns ? '、對話紀錄 ' + ins.summary.turns + ' 輪' : ''}。\n\n原始碼工具（${ins.tools.filter((t) => t.ok).slice(0, 8).map((t) => t.name).join('、') || '無'}）只會在沙盒worker裡執行，但它們可以呼叫助理的工具${risky.length ? '，其中 ' + risky.map((t) => t.name + '→' + t.risky_calls.join('/')).join('、') + ' 會呼叫有副作用的工具（執行前仍會問你）' : ''}。${ins.rejected_tools.length ? '\n\n有 ' + ins.rejected_tools.length + ' 個工具檢查沒過，不會匯入。' : ''}\n\n只匯入你信任來源的檔案。`, choices: ['匯入', '取消'] });
+            if (!ans || !ans.confirmed || ans.answer !== '匯入') return { ok: false, cancelled: true, error: '使用者取消' };
+        }
+        const conflicts = [];
+        const rec = { domains: 0, patterns: 0, tools: 0, states: 0, solutions: 0, turns: 0 };
+        const when = Date.now();
+        for (const inc of doms) {
+            const ex = st.domains.get(inc.name);
+            const replace = opts.mode === 'replace' && ex && ex.source !== 'builtin';
+            let d;
+            if (!ex || replace) d = Object.assign({}, inc, { imported_at: when, enabled: inc.enabled !== false });
+            else {
+                d = ex;
+                for (const p of inc.patterns || []) { const old = d.patterns.find((x) => x.id === p.id); if (old && old.edited && !opts.overwrite) { conflicts.push(`${d.name}/${p.id}：你改過，保留原本的`); continue; } d.patterns = d.patterns.filter((x) => x.id !== p.id).concat([p]); }
+                d.tools = d.tools || [];
+                for (const t of inc.tools || []) { const old = d.tools.find((x) => x.name === t.name); if (old && old.edited && !opts.overwrite) { conflicts.push(`工具 ${d.name}/${t.name}：你改過，保留原本的`); continue; } if (old && old.source !== t.source) t.history = [{ source: old.source, at: when }].concat(old.history || []).slice(0, 5); d.tools = d.tools.filter((x) => x.name !== t.name).concat([t]); }
+                if (inc.states && inc.states.states) { d.states = d.states || { initial: null, states: {} }; Object.assign(d.states.states, inc.states.states); if (!d.states.initial && inc.states.initial) d.states.initial = inc.states.initial; }
+                d.references = Array.from(new Set((d.references || []).concat(inc.references || [])));
+            }
+            (d.tools || []).forEach((t) => { if (!t.imported_at && (inc.tools || []).some((x) => x.name === t.name)) { t.imported = true; t.imported_at = when; } });
+            await this._otSaveDomain(d);
+            for (const p of d.patterns || []) await this._otSyncPatternExamples(d, p);
+            rec.domains++; rec.patterns += (inc.patterns || []).length; rec.tools += (inc.tools || []).length; rec.states += Object.keys((inc.states && inc.states.states) || {}).length;
+        }
+        for (const s of ins.payload.solutions || []) { if (!s || !s.fp || !Array.isArray(s.calls)) continue; const row = { fp: s.fp, problem: String(s.problem || '').slice(0, 300), calls: s.calls.slice(0, 10), summary: '', created: s.created || when, hits: 0 }; await this._otDb().put('solutions', row); st.solutions.set(row.fp, row); rec.solutions++; }
+        for (const t of ins.payload.turns || []) { if (t && t.id && Array.isArray(t.calls)) { await this._otDb().put('turns', t); rec.turns++; } }
+        if (ins.payload.synonyms && Object.keys(ins.payload.synonyms).length) { Object.assign(st.synonyms, ins.payload.synonyms); await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms }); this._otApplyLex(); await this._otReindex(); }
+        return Object.assign(report, { imported: rec, conflicts });
+    }
+    // 在沙盒worker裡試跑一個原始碼工具（AI寫完script後用來除錯）：給mock_calls就用假結果，沒給就真的呼叫助理的工具（有副作用的會先問使用者）
+    async _otRunToolScript(a) {
+        let tool = null;
+        for (const d of this._ot.domains.values()) { const t = (d.tools || []).find((x) => x.name === a.name); if (t) { tool = t; break; } }
+        const source = a.source != null ? String(a.source) : (tool && tool.source);
+        if (!source) return { ok: false, error: '找不到工具「' + a.name + '」（或給 source 直接試跑一段）' };
+        const text = String(a.text || '');
+        const slots = Object.assign({}, _faOtSlots(text), a.slots || {});
+        const mocks = a.mock_calls && typeof a.mock_calls === 'object' ? a.mock_calls : null;
+        const t0 = Date.now();
+        const r = await this._otWorkers().run(source, { slots, text, context: {}, last_tool_result: a.last_tool_result }, mocks ? async (n) => ({ ok: true, result: mocks[n] !== undefined ? mocks[n] : { error: '沒有提供 ' + n + ' 的假結果' } }) : (n, args) => this._otCallAssistantTool(n, args, { assumeYes: !!a.assume_yes }), 60000);
+        return { ok: r.ok, result: r.result, error: r.error, logs: r.logs, ms: Date.now() - t0, used_mocks: !!mocks };
+    }
+
     async _otRun(a) {
         const action = String(a.action || 'status');
         const st = await this._otLoad();
@@ -17598,7 +17708,8 @@ ${fnData.code}
                 results.push({ pass, text: t.text, got: String(txt).slice(0, 200) });
             }
             if (results.some((x) => !x.pass) && !a.force) return { ok: false, error: '測試沒過，沒有寫入：照 tests_result 修正原始碼再送（不要原封不動重送）', tests_result: results };
-            d.tools = (d.tools || []).filter((x) => x.name !== name).concat([{ name, kind: 'js', description: String(a.description || '').slice(0, 300), source, enabled: true, created: Date.now(), author: 'ai', tests: Array.isArray(a.tests) ? a.tests.slice(0, 8) : [] }]);
+            const prevTool = (d.tools || []).find((x) => x.name === name);
+            d.tools = (d.tools || []).filter((x) => x.name !== name).concat([{ name, kind: 'js', description: String(a.description || (prevTool && prevTool.description) || '').slice(0, 300), source, enabled: true, created: (prevTool && prevTool.created) || Date.now(), updated: Date.now(), version: ((prevTool && prevTool.version) || 0) + 1, history: prevTool && prevTool.source !== source ? [{ source: prevTool.source, at: Date.now() }].concat(prevTool.history || []).slice(0, 5) : ((prevTool && prevTool.history) || []), author: 'ai', tests: Array.isArray(a.tests) ? a.tests.slice(0, 8) : [] }]);
             await this._otSaveDomain(d);
             return { ok: true, domain: dname, tool: name, tests_result: results.length ? results : undefined, next: '接著 add_state 把它放進狀態機（call_tool:"' + name + '"），再 add_pattern（state:入口狀態）讓文字能觸發。' };
         }
@@ -17638,16 +17749,19 @@ ${fnData.code}
             return { ok: true, groups: Object.keys(st.synonyms).length };
         }
         if (action === 'export') {
-            return { ok: true, data: { version: 1, domains: Array.from(st.domains.values()).filter((d) => d.source !== 'builtin' || d.patterns.some((p) => p.edited)), solutions: Array.from(st.solutions.values()), qa: (st.cols.ot_qa ? st.cols.ot_qa.ids.map((id, i) => ({ id, doc: st.cols.ot_qa.docs[i], meta: st.cols.ot_qa.metas[i] })) : []), synonyms: st.synonyms } };
+            const bundle = await this._otBundleExport({ domains: a.domains, include_turns: !!a.include_turns, include_solutions: a.include_solutions });
+            const out = { ok: true, summary: bundle.summary, data: bundle };
+            if (a.deliver) { try { await this.generateAndDeliverFile(new Blob([JSON.stringify(bundle, null, 1)], { type: 'application/json' }), 'offline-trainer-bundle.json', 'application/json'); out.delivered = 'offline-trainer-bundle.json'; delete out.data; } catch (e) { out.deliver_error = String((e && e.message) || e); } }
+            return out;
         }
         if (action === 'import') {
-            const data = a.data || {};
-            let n = 0;
-            for (const d of data.domains || []) { await this._otSaveDomain(d); for (const p of d.patterns || []) await this._otSyncPatternExamples(d, p); n++; }
-            for (const s of data.solutions || []) { await this._otDb().put('solutions', s); st.solutions.set(s.fp, s); }
-            if ((data.qa || []).length) await this._otVecUpsert('ot_qa', data.qa);
-            if (data.synonyms) { Object.assign(st.synonyms, data.synonyms); await this._otDb().put('meta', { k: 'synonyms', v: st.synonyms }); this._otApplyLex(); await this._otReindex(); }
-            return { ok: true, domains: n };
+            if (!a.data || typeof a.data !== 'object') return { ok: false, error: '缺少 data（export 匯出的bundle物件）。UI 請用設定頁的「匯入」。' };
+            return await this._otBundleImport(a.data, { mode: a.mode, domains: a.domains, dry_run: !!a.dry_run, overwrite: !!a.overwrite, force: !!a.force, confirmed: !!a.ui_confirmed });
+        }
+        if (action === 'run_tool') return await this._otRunToolScript(a);
+        if (action === 'rollback_tool') {
+            for (const d of st.domains.values()) { const t = (d.tools || []).find((x) => x.name === a.name); if (t) { const h = (t.history || [])[Number(a.index) || 0]; if (!h) return { ok: false, error: '沒有這個歷史版本（history 共 ' + (t.history || []).length + ' 筆）' }; t.history = [{ source: t.source, at: Date.now() }].concat(t.history || []).slice(0, 5); t.source = h.source; await this._otSaveDomain(d); return { ok: true, tool: t.name, restored_from: h.at }; } }
+            return { ok: false, error: '沒有這個工具' };
         }
         if (action === 'forget_learned') {
             st.domains.delete('learned'); await this._otDb().delete('domains', 'learned');
@@ -17820,7 +17934,7 @@ ${fnData.code}
             else if (t.dataset.otSel !== undefined) { this.advancedSettings[t.dataset.otSel] = t.value; this._saveAdvancedSettings(); refresh(); }
             else if (t.dataset.otSkillEn !== undefined) { const [dn, pid] = t.dataset.otSkillEn.split('|'); const st2 = await this._otLoad(); const d = st2.domains.get(dn); if (d) { for (const p of d.patterns) if (p.id === pid || p.id === pid + '_kw') { p.enabled = t.checked; if (t.checked && p.stats) p.stats.needs_review = false; await this._otSyncPatternExamples(d, p); } await this._otSaveDomain(d); } }
             else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
-            else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const r = await this._otRun({ action: 'import', data: data.data || data }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } refresh(); }
+            else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const chk = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, dry_run: true }); if (!chk.ok) { if (chk.checksum_mismatch && window.confirm(chk.error + '\n\n仍要匯入嗎？')) { chk.ok = true; chk.force = true; } else { alert('匯入失敗：' + chk.error); t.value = ''; return; } } const sm = chk.summary || {}; const msg = '要匯入嗎？\n領域 ' + sm.domains + '、規則 ' + sm.patterns + '、狀態 ' + sm.states + '、原始碼工具 ' + sm.tools + '、解法 ' + sm.solutions + (sm.turns ? '、對話紀錄 ' + sm.turns : '') + (chk.rejected_tools && chk.rejected_tools.length ? '\n\n⚠️ ' + chk.rejected_tools.length + ' 個工具檢查沒過（不會匯入）：' + chk.rejected_tools.map((x) => x.name + '（' + x.error + '）').join('、') : '') + (chk.warnings && chk.warnings.length ? '\n\n提醒：\n- ' + chk.warnings.slice(0, 6).join('\n- ') : '') + '\n\n原始碼工具只會在沙盒worker裡執行，有副作用的工具呼叫仍會先問你。只匯入你信任來源的檔案。'; if (!window.confirm(msg)) { t.value = ''; return; } const replace = window.confirm('同名領域要怎麼處理？\n確定＝覆蓋（用匯入的取代）\n取消＝合併（保留你改過的規則與工具）'); const r = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, mode: replace ? 'replace' : 'merge', ui_confirmed: true, force: !!chk.force }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r.imported || r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } t.value = ''; refresh(); }
         });
         root.addEventListener('input', (ev) => { if (ev.target.id === 'ai-ot-mem-filter') { const q = ev.target.value.toLowerCase(); root.querySelectorAll('.ai-ot-mem').forEach((el) => { el.style.display = !q || el.dataset.t.indexOf(q) >= 0 ? '' : 'none'; }); } });
         root.addEventListener('keydown', (ev) => { if (ev.target.id === 'ai-ot-dry-text' && ev.key === 'Enter') { ev.preventDefault(); root.querySelector('[data-ot="dry"]').click(); } });
@@ -17846,8 +17960,8 @@ ${fnData.code}
                 else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話學到 ' + (r.added || 0) + ' 輪的工具呼叫（共 ' + (r.calls || 0) + ' 個；只學做法，不存AI的回答或查詢結果）'); refresh(); }
                 else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
                 else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
-                else if (act === 'export') { const r = await this._otRun({ action: 'export' }); const blob = new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
-                else if (act === 'import') root.querySelector('#ai-ot-import-file').click();
+                else if (act === 'export') { const withTurns = window.confirm('匯出內容：領域（規則＋狀態機＋原始碼工具）、已學會的解法、同義詞。\n\n要連「訓練用的對話紀錄」一起匯出嗎？（確定＝一起匯出；取消＝不含）'); const r = await this._otRun({ action: 'export', include_turns: withTurns }); const blob = new Blob([JSON.stringify(r.data, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer-bundle.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); alert('已匯出：領域 ' + r.summary.domains + '、規則 ' + r.summary.patterns + '、狀態 ' + r.summary.states + '、原始碼工具 ' + r.summary.tools + '、解法 ' + r.summary.solutions); }
+                                else if (act === 'import') root.querySelector('#ai-ot-import-file').click();
                 else if (act === 'del-domain') { const n = b.dataset.d; if (confirm('刪除領域 ' + n + '？')) { st.domains.delete(n); await this._otDb().delete('domains', n); await this._otVecDelete('ot_examples', (id, m) => m && m.domain === n); refresh(); } }
                 else if (act === 'del-pat') { await this._otRun({ action: 'remove_pattern', domain: b.dataset.d, pattern: b.dataset.p }); refresh(); }
                 else if (act === 'edit-pat') { const d = st.domains.get(b.dataset.d); this._otPatternEditor(b.dataset.d, d && d.patterns.find((x) => x.id === b.dataset.p)); }
