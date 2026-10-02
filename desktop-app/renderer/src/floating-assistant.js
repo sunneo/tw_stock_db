@@ -1850,6 +1850,7 @@ ${spec.layers && spec.layers.length ? `**層級（先決定改哪一層）**：�
 
 **環境標示（每一步都要知道自己在哪）**：playbook_state每次回傳的environment_now告訴你現在這一步在哪種環境，sandbox_*工具的結果有environment:"sandbox"。沙盒＝隔離的瀏覽器環境，不會動到使用者的真實專案或系統；真實專案＝實作階段用patch修改使用者檔案。報告與驗證時一律標明結果來自哪一種：在沙盒觀察到的，不能寫成「已在實際環境驗證」。純網頁版（沒有桌面功能）更要注意：你能操作的只有沙盒和使用者授權的資料夾，不要宣稱執行過真實的系統指令或真實部署。
 
+**現有專案（先拿整體，再深入，把看到的補進資料庫）**：要改動「已經存在的專案」時，先用 repo_map({"action":"status","root":"..."}) 看有沒有索引；有就用 repo_ask 問整體定義與結構（「這個專案怎麼分層」「某函式做什麼／在哪定義／誰用到」），不要整個專案亂讀；沒有索引先用 repo_map find／explore 看相關範圍，專案大、想要完整索引就請使用者執行 /aidoc index（背景進行，有進度）。你深入讀過某個檔案或函式之後，把確認過的說明用 repo_map({"action":"annotate","root":"...","path":"檔案","note":"檔案用途","symbols":{"函式名":"做什麼"}}) 補進資料庫——之後你自己、其他人與匯出的 HTML 查詢都會用到，資料庫會越來越完整。
 **領域重點**：${spec.focus}
 **誠實規則**：${spec.limits} 沒有真的執行過的事，不要寫成「已驗證／已測試」；工具回傳ok:false就照實回報，不要編造成功。需要別的領域的工具時，用programming_domains({"action":"request_tools",...})申請，或request_additional_tools。回覆使用者時簡短說明：做了什麼、哪些驗證過、哪些沒驗證。`;
 }
@@ -2973,14 +2974,14 @@ function _faCodeIndexTokens(ix, budgetMs) {
     const add = (map, id, text) => { const seen = {}; const toks = _faSemTokens(text); for (let k = 0; k < toks.length; k++) { const t = toks[k]; if (seen[t]) continue; seen[t] = 1; (map[t] = map[t] || []).push(id); } };
     while (ix.ti < db.syms.length) {
         const s = db.syms[ix.ti];
-        add(ix.post, ix.ti, s[0] + ' ' + (s[4] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]));
+        add(ix.post, ix.ti, s[0] + ' ' + (s[4] || '') + ' ' + (s[6] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]));
         ix.ti++;
         if ((ix.ti & 255) === 0 && Date.now() - t0 > budgetMs) return false;
     }
     while (ix.tf < db.files.length) {
         const f = db.files[ix.tf];
         const names = ix.fileSyms[ix.tf].slice(0, 25).map((i) => db.syms[i][0]).join(' ');
-        add(ix.fpost, ix.tf, f[0] + ' ' + (f[3] || '') + ' ' + names);
+        add(ix.fpost, ix.tf, f[0] + ' ' + (f[3] || '') + ' ' + (f[4] || '') + ' ' + names);
         ix.tf++;
         if ((ix.tf & 255) === 0 && Date.now() - t0 > budgetMs) return false;
     }
@@ -3006,8 +3007,8 @@ function _faCodeSearch(ix, query, opts) {
     };
     const qv = _faSemEmbed(query);
     const out = [];
-    const symText = (s) => _faCodeSplitName(s[0]) + ' ' + (s[4] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]);
-    const fileText = (f, i) => f[0] + ' ' + (f[3] || '') + ' ' + ix.fileSyms[i].slice(0, 12).map((k) => db.syms[k][0]).join(' ');
+    const symText = (s) => _faCodeSplitName(s[0]) + ' ' + (s[4] || '') + ' ' + (s[6] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]);
+    const fileText = (f, i) => f[0] + ' ' + (f[3] || '') + ' ' + (f[4] || '') + ' ' + ix.fileSyms[i].slice(0, 12).map((k) => db.syms[k][0]).join(' ');
     const mk = (type, cands, textOf) => {
         const items = cands.map((c) => { const t = textOf(c.id); const cos = Math.max(0, _faSemCos(qv, _faSemEmbed(t))); return { type, id: c.id, text: t, raw: c.raw, base: Math.min(1, 0.6 * cos * 1.6 + 0.4 * (c.raw / (c.raw + 4))) }; });
         return items.length ? _faRerank(query, items, { wBase: 0.6, wBm: 0.3, wPr: 0.1, diversity: 0.02, topN: opts.n || 8 }) : [];
@@ -3031,7 +3032,7 @@ function _faCodeAsk(ix, question, opts) {
     const F = (i) => db.files[i] || ['?', '', 0, ''];
     const S = (i) => db.syms[i];
     const loc = (i) => { const s = S(i); return F(s[2])[0] + ':' + s[3]; };
-    const symLine = (i) => { const s = S(i); return '- `' + s[0] + '`（' + s[1] + '）— `' + loc(i) + '`' + (s[4] ? '：' + s[4] : '') + (s[5] ? '\n  `' + s[5] + '`' : ''); };
+    const symLine = (i) => { const s = S(i); return '- `' + s[0] + '`（' + s[1] + '）— `' + loc(i) + '`' + ((s[6] || s[4]) ? '：' + (s[6] || s[4]) : '') + (s[5] ? '\n  `' + s[5] + '`' : ''); };
     // 目標：問題裡出現的識別字（對得到定義的）與路徑（對得到檔案的）
     const targets = { symbols: [], files: [] };
     const idRe = /[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*/g;
@@ -3086,7 +3087,7 @@ function _faCodeAsk(ix, question, opts) {
     const users = (sid) => { const direct = (ix.usedBy[sid] || []); const viaImport = (ix.impIn[S(sid)[2]] || []); const all = Array.from(new Set(direct.concat(viaImport))); all.sort((a, b) => (ix.impIn[b] || []).length - (ix.impIn[a] || []).length); return { direct, viaImport, all }; };
     const fileCard = (fi) => {
         const f = F(fi);
-        const c = ['**`' + f[0] + '`**（' + f[1] + '，' + f[2] + '行）' + (f[3] ? '：' + f[3] : '')];
+        const c = ['**`' + f[0] + '`**（' + f[1] + '，' + f[2] + '行）' + ((f[4] || f[3]) ? '：' + (f[4] || f[3]) : '')];
         const syms = ix.fileSyms[fi] || [];
         if (syms.length) c.push('定義了 ' + syms.length + ' 個：' + syms.slice(0, 12).map((k) => '`' + S(k)[0] + '`').join('、') + (syms.length > 12 ? '…' : ''));
         const out = ix.impOut[fi] || [], inn = ix.impIn[fi] || [];
@@ -3105,7 +3106,7 @@ function _faCodeAsk(ix, question, opts) {
             L.push('最相關的結果：', '');
             r.forEach((x) => {
                 if (x.type === 'symbol') { L.push(symLine(x.id)); hits.push({ type: 'symbol', id: x.id, score: x.score }); addEv(x.id); }
-                else { L.push('- 檔案 `' + F(x.id)[0] + '`' + (F(x.id)[3] ? '：' + F(x.id)[3] : '')); hits.push({ type: 'file', id: x.id, score: x.score }); }
+                else { L.push('- 檔案 `' + F(x.id)[0] + '`' + ((F(x.id)[4] || F(x.id)[3]) ? '：' + (F(x.id)[4] || F(x.id)[3]) : '')); hits.push({ type: 'file', id: x.id, score: x.score }); }
             });
             const top = r[0];
             if (top && top.type === 'symbol') L.push('', '最可能的是 `' + S(top.id)[0] + '`（`' + loc(top.id) + '`）。想知道細節可以問「' + S(top.id)[0] + ' 是做什麼的」或「誰用到 ' + S(top.id)[0] + '」。');
@@ -3154,7 +3155,7 @@ function _faCodeAsk(ix, question, opts) {
             t.ids.slice(0, 4).forEach((def, n) => {
                 const s = S(def), fi = s[2];
                 L.push('**`' + s[0] + '`**（' + s[1] + '）定義在 `' + loc(def) + '`' + (n === 0 && t.ids.length > 1 ? '（共 ' + t.ids.length + ' 個同名定義，下面列出前幾個）' : ''));
-                L.push(s[4] ? '說明：' + s[4] : '說明：' + _faCodeNameGuess(s[0]));
+                L.push(s[6] ? '說明（AI 讀過程式碼後補充）：' + s[6] + (s[4] ? '；原始註解：' + s[4] : '') : (s[4] ? '說明：' + s[4] : '說明：' + _faCodeNameGuess(s[0])));
                 if (s[5]) L.push('簽名：`' + s[5] + '`');
                 if (F(fi)[3]) L.push('所在檔案的說明：' + F(fi)[3]);
                 const same = (ix.fileSyms[fi] || []).filter((k) => k !== def).slice(0, 8);
@@ -3180,10 +3181,11 @@ function _faCodeFromMap(map, opts) {
     let truncated = 0;
     paths.forEach((p, i) => {
         const f = map.files[p];
-        files.push([p, f.lang || '', f.lines || 0, f.doc || '']);
+        files.push([p, f.lang || '', f.lines || 0, f.doc || '', (map.notes && map.notes[p]) || '']);
         let list = f.symbols || [];
         if (opts.maxSyms && list.length > opts.maxSyms) { truncated += list.length - opts.maxSyms; list = list.slice(0, opts.maxSyms); }
-        list.forEach((x) => { syms.push([x.n, x.k, i, x.l, x.d || '', x.sig || '']); });
+        const sn = (map.sym_notes && map.sym_notes[p]) || {};
+        list.forEach((x) => { syms.push([x.n, x.k, i, x.l, x.d || '', x.sig || '', sn[x.n] || '']); });
         (f.imports || []).forEach((e) => { if (e.to && fid[e.to] != null) { const key = i + '>' + fid[e.to]; if (!seenImp[key]) { seenImp[key] = 1; imps.push([i, fid[e.to]]); } } });
     });
     const byName = {};
@@ -3613,6 +3615,9 @@ const FA_OT_TEACHER_PROTOCOL = `你現在是「離線訓練器的老師」。使
 
 注意：你的回合有限，不要在同一個步驟反覆重試；真的做不到就誠實回報 failed 並寫明卡在哪一步，那一步就是下次要擴充的地方。`;
 
+// 專案深入探討（/aidoc dive）給AI的規範：把「讀過程式碼確認過的說明」補進索引資料庫
+const FA_DIVE_PROTOCOL = '你現在要為一個「已經建立索引」的專案補上說明（深入探討）。索引已經有結構（定義、依賴、呼叫），缺的是「這個檔案／函式在幹嘛、為什麼存在、要注意什麼」。\n做法：\n1. 用 coding_read_file（或 fap_read_file／fs_read_file）讀指定的檔案（長檔分段讀）；需要時用 repo_ask 問「誰用到這個函式」「這個函式在哪定義」確認脈絡，不要整個專案亂讀。\n2. 只寫你「讀過程式碼、確認過」的說明；看不懂就不要寫、不要編造。說明要具體：做什麼、輸入輸出、副作用、重要限制，不要只是複述函式名稱。\n3. 用 repo_map({"action":"annotate","root":"<專案>","path":"<檔案>","note":"檔案的用途（一兩句）","symbols":{"函式名":"做什麼（一句）"}}) 寫進資料庫；至少寫檔案說明，並為最重要的 3～10 個定義寫說明。函式名必須是索引裡有的名稱（寫錯會被退回並告訴你相近的）。\n4. 最後只輸出一行JSON：{"status":"done|skipped","summary":"一句話"}';
+
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
 SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
 SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'playbook_state', 'programming_domains', 'programming_knowledge', 'language_explore'])));
@@ -3969,8 +3974,11 @@ function _faRepoParseManifest(name, text) {
 }
 
 /* CODEUI-BEGIN */
-const FA_CODEUI_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>__TITLE__</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader h1{font-size:16px;margin:0;word-break:break-all}header .st{color:var(--mut);font-size:12px}\nnav{display:flex;gap:4px;margin-left:auto}nav button{padding:5px 12px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;font-size:13px}\nnav button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#load{padding:30px;text-align:center;color:var(--mut)}#bar{height:6px;background:var(--bd);border-radius:3px;margin:10px auto;max-width:420px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac)}\n#app{flex:1;display:flex;min-height:0}\n.pane{display:none;flex:1;min-height:0}.pane.on{display:flex}\n.side{width:330px;max-width:42vw;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n.side input,.side select{margin:8px 10px 0;padding:7px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}\n.list{flex:1;overflow:auto;padding:8px 6px 14px}\n.list a,.list summary{display:block;padding:3px 8px;border-radius:5px;color:var(--fg);text-decoration:none;cursor:pointer;word-break:break-all}\n.list a:hover,.list summary:hover{background:var(--bd)}.list .k{color:var(--mut);font-size:12px;margin-left:6px}.list details>div{margin-left:12px}\n.main{flex:1;overflow:auto;padding:16px 26px 70px;min-width:0}\nh1.t{font-size:20px;margin:0 0 8px;word-break:break-all}h1,h2,h3{line-height:1.3}h2{font-size:16px;margin:20px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}h3{font-size:14px;margin:14px 0 4px}\n.mut{color:var(--mut)}code,pre,textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}\n:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}\na.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}\ntable{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf);position:sticky;top:0}\n.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}\n.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er);white-space:pre-wrap}\n.md ul,.md ol{padding-left:22px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}\nsvg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px;margin:6px 0}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}\n.ask{display:flex;gap:8px}.ask input{flex:1;padding:9px 11px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}\nbutton.b{padding:7px 14px;border:1px solid var(--ac);background:var(--ac);color:#fff;border-radius:6px;cursor:pointer}button.b.s{background:var(--bg);color:var(--ac)}\n.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 9px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px;color:var(--mut)}.chips span:hover{border-color:var(--ac);color:var(--ac)}\n.qa{border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:12px 0}.qa .q{font-weight:600;margin-bottom:4px}\ntextarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}\n.res{overflow:auto;max-height:60vh;border:1px solid var(--bd);border-radius:6px;margin-top:8px}\n@media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}\n</style></head><body>\n<header><h1 id=\"ttl\"></h1><span class=\"st\" id=\"stat\"></span><nav id=\"nav\"></nav></header>\n<div id=\"load\"><div id=\"lmsg\">載入中…</div><div id=\"bar\"><i id=\"barfill\"></i></div></div>\n<div id=\"app\" style=\"display:none\">\n<section class=\"pane\" id=\"p-wiki\"><div class=\"side\"><input id=\"wq\" placeholder=\"搜尋頁面…\"><div class=\"list\" id=\"wl\"></div></div><div class=\"main\" id=\"wm\"></div></section>\n<section class=\"pane\" id=\"p-files\"><div class=\"side\"><input id=\"fq\" placeholder=\"搜尋檔案路徑…\"><div class=\"list\" id=\"fl\"></div></div><div class=\"main\" id=\"fm\"></div></section>\n<section class=\"pane\" id=\"p-syms\"><div class=\"side\"><input id=\"sq\" placeholder=\"搜尋函式／類別名稱或說明…\"><select id=\"sk\"><option value=\"\">所有種類</option></select><div class=\"list\" id=\"sl\"></div></div><div class=\"main\" id=\"sm\"></div></section>\n<section class=\"pane\" id=\"p-ask\"><div class=\"main\" id=\"am\" style=\"max-width:980px\">\n<h1 class=\"t\">問答（離線，不需要網路或AI）</h1>\n<div class=\"mut\">像 doxygen＋語意搜尋：依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>\n<div class=\"ask\" style=\"margin-top:10px\"><input id=\"aq\" placeholder=\"例如：parse_config 是做什麼的？／main 在哪裡定義？／誰用到 Logger？／登入流程相關的檔案\" autofocus><button class=\"b\" id=\"ago\">問</button></div>\n<div class=\"chips\" id=\"achips\"></div><div id=\"aout\"></div></div></section>\n<section class=\"pane\" id=\"p-sql\"><div class=\"main\" id=\"qm\" style=\"max-width:1100px\">\n<h1 class=\"t\">SQL 查詢（內嵌 SQLite）</h1>\n<div class=\"mut\">資料表：files、symbols、imports（src→dst，檔案之間的引用）、uses（file_id 呼叫了 symbol_id）、pages、glossary、meta；檢視：v_symbols、v_imports、v_uses。id 是序號（從0開始）。Ctrl+Enter 執行。</div>\n<div style=\"margin:8px 0\"><select id=\"qex\"></select></div>\n<textarea id=\"qsql\" spellcheck=\"false\"></textarea>\n<div style=\"margin:8px 0;display:flex;gap:8px;align-items:center\"><button class=\"b\" id=\"qrun\">執行</button><button class=\"b s\" id=\"qcsv\">下載CSV</button><span class=\"mut\" id=\"qinfo\"></span></div>\n<div class=\"res\" id=\"qres\"></div>\n<details style=\"margin-top:12px\"><summary class=\"mut\">資料表結構</summary><pre id=\"qschema\"></pre></details></div></section>\n</div>\n<script id=\"cfg\" type=\"application/json\">__CFG__</script>\n<script id=\"payload\" type=\"application/json\">__PAYLOAD__</script>\n<script>\n__RUNTIME__\n</script>\n<script>\n(function(){\nvar CFG=JSON.parse(document.getElementById('cfg').textContent);\nvar DB=null,IX=null,SQLDB=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[];\nfunction $(s){return document.querySelector(s)}\nfunction esc(s){return String(s==null?'':s).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}\nfunction b64u8(b){var bin=atob(b),n=bin.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u}\nasync function gunzip(u8,gz){if(!gz)return u8;var r=new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip')));return new Uint8Array(await r.arrayBuffer())}\nfunction setLoad(msg,pct){$('#lmsg').textContent=msg;if(pct!=null)$('#barfill').style.width=Math.round(pct)+'%'}\nfunction tick(){return new Promise(function(r){setTimeout(r,0)})}\nfunction loadScript(text){return new Promise(function(res,rej){var u=URL.createObjectURL(new Blob([text],{type:'application/javascript'}));var s=document.createElement('script');s.src=u;s.onload=function(){URL.revokeObjectURL(u);res()};s.onerror=function(){rej(new Error('載入SQLite引擎失敗'))};document.head.appendChild(s)})}\nfunction rows(sql){var r=SQLDB.exec(sql);return r.length?r[0].values:[]}\nfunction F(i){return DB.files[i]||['?','',0,'']}\nfunction S(i){return DB.syms[i]}\nfunction link(path,label){return '<a class=\"l\" data-go=\"file:'+esc(path)+'\">'+esc(label||path)+'</a>'}\nfunction slink(name){return '<a class=\"l\" data-go=\"sym:'+esc(name)+'\">'+esc(name)+'</a>'}\n/* ---- 迷你Markdown ---- */\nfunction inline(t){\n  t=esc(t);\n  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\\d+(-\\d+)?$/,'');return fileMap[p]!=null?'<a class=\"l\" data-go=\"file:'+esc(p)+'\"><code>'+c+'</code></a>':(IX&&IX.nameMap[c.toLowerCase()]?'<a class=\"l\" data-go=\"sym:'+esc(c)+'\"><code>'+c+'</code></a>':'<code>'+c+'</code>')});\n  t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<b>$1</b>').replace(/\\[([^\\]]+)\\]\\(page:([^)]+)\\)/g,'<a class=\"l\" data-go=\"page:$2\">$1</a>').replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  return t;\n}\nfunction mdToHtml(md){\n  var lines=String(md||'').split('\\n'),h='',i=0;\n  while(i<lines.length){\n    var l=lines[i];\n    if(/^```/.test(l)){var lang=l.replace(/^```/,'').trim();var buf=[];i++;while(i<lines.length&&!/^```/.test(lines[i])){buf.push(lines[i]);i++}i++;\n      if(lang==='mermaid'){var sv=mermaidLite(buf.join('\\n'));h+=sv||'<pre>'+esc(buf.join('\\n'))+'</pre>'}else h+='<pre>'+esc(buf.join('\\n'))+'</pre>';continue}\n    var m;\n    if((m=/^(#{1,4})\\s+(.*)$/.exec(l))){var n=m[1].length;h+='<h'+n+'>'+inline(m[2])+'</h'+n+'>';i++;continue}\n    if(/^\\|.*\\|\\s*$/.test(l)&&i+1<lines.length&&/^\\|[\\s:|-]+\\|\\s*$/.test(lines[i+1])){var hd=l.split('|').slice(1,-1);i+=2;var rows=[];while(i<lines.length&&/^\\|.*\\|\\s*$/.test(lines[i])){rows.push(lines[i].split('|').slice(1,-1));i++}\n      h+='<table><tr>'+hd.map(function(c){return '<th>'+inline(c.trim())+'</th>'}).join('')+'</tr>'+rows.map(function(r){return '<tr>'+r.map(function(c){return '<td>'+inline(c.trim())+'</td>'}).join('')+'</tr>'}).join('')+'</table>';continue}\n    if(/^\\s*[-*]\\s+/.test(l)){var it=[];while(i<lines.length&&/^\\s*[-*]\\s+/.test(lines[i])){it.push('<li>'+inline(lines[i].replace(/^\\s*[-*]\\s+/,''))+'</li>');i++}h+='<ul>'+it.join('')+'</ul>';continue}\n    if(/^\\s*\\d+\\.\\s+/.test(l)){var it2=[];while(i<lines.length&&/^\\s*\\d+\\.\\s+/.test(lines[i])){it2.push('<li>'+inline(lines[i].replace(/^\\s*\\d+\\.\\s+/,''))+'</li>');i++}h+='<ol>'+it2.join('')+'</ol>';continue}\n    if(/^>\\s?/.test(l)){var q=[];while(i<lines.length&&/^>\\s?/.test(lines[i])){q.push(lines[i].replace(/^>\\s?/,''));i++}h+='<blockquote>'+inline(q.join(' '))+'</blockquote>';continue}\n    if(!l.trim()){i++;continue}\n    var p=[l];i++;while(i<lines.length&&lines[i].trim()&&!/^(#{1,4}\\s|```|\\s*[-*]\\s|\\s*\\d+\\.\\s|>|\\|)/.test(lines[i])){p.push(lines[i]);i++}\n    h+='<p>'+inline(p.join(' '))+'</p>';\n  }\n  return h;\n}\n/* ---- 迷你流程圖（只支援 graph LR/TD 的節點與箭頭）---- */\nfunction mermaidLite(src){\n  var ls=src.split('\\n').map(function(x){return x.trim()}).filter(Boolean);\n  if(!ls.length||!/^(graph|flowchart)\\s+(LR|RL|TD|TB|BT)/i.test(ls[0]))return '';\n  var dir=/LR|RL/i.test(ls[0])?'LR':'TD';var nodes={},order=[],edges=[];\n  function nd(tok){var m=/^([A-Za-z0-9_\\-.]+)\\s*(?:\\[\\[?\"?([^\\]\"]*)\"?\\]?\\]|\\(\\(?\"?([^)\"]*)\"?\\)?\\)|\\{\"?([^}\"]*)\"?\\})?$/.exec(tok.trim());if(!m)return null;var id=m[1];var label=m[2]||m[3]||m[4];if(!nodes[id]){nodes[id]={id:id,label:label||id};order.push(id)}else if(label)nodes[id].label=label;return id}\n  for(var k=1;k<ls.length;k++){var ln=ls[k];if(/^(subgraph|end|classDef|class|style|linkStyle|%%)/.test(ln))continue;\n    var parts=ln.split(/\\s*(?:-->|---|-\\.->|==>)\\s*(?:\\|([^|]*)\\|\\s*)?/);\n    var ids=[];for(var j=0;j<parts.length;j+=2){var id=nd(parts[j]||'');if(!id)return '';ids.push({id:id,lab:parts[j+1]||''})}\n    for(var e=0;e+1<ids.length;e++)edges.push({a:ids[e].id,b:ids[e+1].id,lab:ids[e+1].lab||''});}\n  if(!order.length||order.length>60)return '';\n  var rank={};order.forEach(function(id){rank[id]=0});\n  for(var it=0;it<order.length;it++){var ch=false;edges.forEach(function(e){if(e.a!==e.b&&rank[e.b]<rank[e.a]+1&&rank[e.a]+1<order.length){rank[e.b]=rank[e.a]+1;ch=true}});if(!ch)break}\n  var cols={};order.forEach(function(id){(cols[rank[id]]=cols[rank[id]]||[]).push(id)});\n  var W=170,H=44,GX=60,GY=22,pos={},maxc=0,maxr=0;\n  Object.keys(cols).forEach(function(r){cols[r].forEach(function(id,idx){pos[id]=dir==='LR'?{x:r*(W+GX)+10,y:idx*(H+GY)+10}:{x:idx*(W+GX)+10,y:r*(H+GY+20)+10};maxc=Math.max(maxc,pos[id].x+W+10);maxr=Math.max(maxr,pos[id].y+H+10)})});\n  var s='<svg class=\"dg\" viewBox=\"0 0 '+maxc+' '+maxr+'\" width=\"'+Math.min(maxc,900)+'\"><defs><marker id=\"ar\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" style=\"fill:var(--mut);stroke:none\"/></marker></defs>';\n  edges.forEach(function(e){var a=pos[e.a],b=pos[e.b];if(!a||!b)return;var x1=dir==='LR'?a.x+W:a.x+W/2,y1=dir==='LR'?a.y+H/2:a.y+H,x2=dir==='LR'?b.x:b.x+W/2,y2=dir==='LR'?b.y+H/2:b.y;var mx=(x1+x2)/2,my=(y1+y2)/2;\n    s+='<path d=\"M'+x1+','+y1+' C'+(dir==='LR'?mx:x1)+','+(dir==='LR'?y1:my)+' '+(dir==='LR'?mx:x2)+','+(dir==='LR'?y2:my)+' '+x2+','+y2+'\" marker-end=\"url(#ar)\"/>';if(e.lab)s+='<text x=\"'+mx+'\" y=\"'+(my-3)+'\" text-anchor=\"middle\">'+esc(e.lab)+'</text>'});\n  order.forEach(function(id){var p=pos[id],lb=nodes[id].label;if(lb.length>24)lb=lb.slice(0,23)+'…';s+='<rect x=\"'+p.x+'\" y=\"'+p.y+'\" width=\"'+W+'\" height=\"'+H+'\" rx=\"6\"/><text x=\"'+(p.x+W/2)+'\" y=\"'+(p.y+H/2+4)+'\" text-anchor=\"middle\">'+esc(lb)+'</text>'});\n  return s+'</svg>';\n}\n\nasync function boot(){\n  $('#ttl').textContent=CFG.title;\n  var P=JSON.parse(document.getElementById('payload').textContent);\n  if(CFG.mode==='sqlite'){\n    setLoad('解壓縮 SQLite 引擎…',3);\n    var js=new TextDecoder().decode(await gunzip(b64u8(P.js),CFG.sql.gz.js));\n    var wasm=await gunzip(b64u8(P.wasm),CFG.sql.gz.wasm);\n    await loadScript(js);\n    setLoad('載入資料庫…',10);\n    var dbBytes=await gunzip(b64u8(P.db),CFG.sql.gz.db);\n    var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});\n    SQLDB=new SQL.Database(dbBytes);\n    setLoad('讀取資料表…',18);await tick();\n    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};\n    PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});\n    rows('SELECT term,definition FROM glossary').forEach(function(r){GLOSS[r[0]]={definition:r[1]}});\n  }else{\n    setLoad('解壓縮資料…',5);\n    var j=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(P.data),CFG.dataGz)));\n    DB=j;PAGES=j.pages||[];GLOSS=j.glossary||{};\n  }\n  DB.files.forEach(function(f,i){fileMap[f[0]]=i});\n  setLoad('建立檢索索引…',22);await tick();\n  IX=_faCodeIndexNew(DB);\n  var total=(DB.syms.length+DB.files.length)||1;\n  while(!_faCodeIndexTokens(IX,120)){setLoad('建立檢索索引… '+Math.round((IX.ti+IX.tf)/total*100)+'%',22+78*(IX.ti+IX.tf)/total);await tick()}\n  $('#load').style.display='none';$('#app').style.display='flex';\n  $('#stat').textContent=CFG.stats.files+' 個檔案 · '+CFG.stats.symbols+' 個定義 · '+CFG.stats.imports+' 條引用 · '+CFG.stats.uses+' 條呼叫'+(CFG.complete?'':' · （部分索引）')+' · 產生於 '+new Date(CFG.generated).toLocaleString();\n  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答']];if(SQLDB)tabs.push(['sql','SQL']);\n  $('#nav').innerHTML=tabs.map(function(t){return '<button data-t=\"'+t[0]+'\">'+t[1]+'</button>'}).join('');\n  $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};\n  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();\n  show(PAGES.length?'wiki':'ask');\n}\nfunction show(t){document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});if(t==='ask')$('#aq').focus()}\nfunction go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);\n  if(k==='file'){show('files');showFile(v)}else if(k==='sym'){show('syms');showSym(v)}else if(k==='page'){show('wiki');showPage(v)}}\ndocument.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go)}});\n/* ---- 百科 ---- */\nfunction initWiki(){\n  function render(){var q=$('#wq').value.trim().toLowerCase();var h='';\n    PAGES.forEach(function(p){if(q&&p.title.toLowerCase().indexOf(q)<0&&String(p.md).toLowerCase().indexOf(q)<0)return;h+='<a data-go=\"page:'+esc(p.id)+'\">'+esc(p.title)+(p.auto?'<span class=\"k\">草稿</span>':'')+'</a>'});\n    var gl=Object.keys(GLOSS);if(gl.length&&!q)h+='<div class=\"mut\" style=\"padding:8px 8px 2px\">名詞</div>'+gl.sort().map(function(t){return '<a data-go=\"term:'+esc(t)+'\">'+esc(t)+'</a>'}).join('');\n    $('#wl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的頁面</div>'}\n  $('#wq').oninput=render;render();\n  if(PAGES.length)showPage(PAGES[0].id);else{var h2='<h1 class=\"t\">專案概況</h1><div class=\"mut\">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}\n}\nfunction showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p){$('#wm').innerHTML='<div class=\"note\">沒有這個頁面</div>';return}\n  $('#wm').innerHTML='<div class=\"md\">'+(p.auto?'<div class=\"note\">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(p.md)+'</div>';$('#wm').scrollTop=0}\n/* ---- 檔案 ---- */\nfunction initFiles(){\n  var tree={};DB.files.forEach(function(f,i){var segs=f[0].split('/'),n=tree;for(var k=0;k<segs.length-1;k++){n=(n.d=n.d||{})[segs[k]]=(n.d&&n.d[segs[k]])||{}}(n.f=n.f||[]).push(i)});\n  function node(n,depth){var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/</summary><div>'+node(n.d[k],depth+1)+'</div></details>'});\n    (n.f||[]).slice(0,300).forEach(function(i){h+='<a data-go=\"file:'+esc(F(i)[0])+'\">'+esc(F(i)[0].split('/').pop())+'<span class=\"k\">'+(IX.fileSyms[i]||[]).length+'</span></a>'});return h}\n  var lazy=null;\n  function render(){var q=$('#fq').value.trim().toLowerCase();\n    if(!q){if(!lazy)lazy=node(tree,0);$('#fl').innerHTML=lazy;return}\n    var h='',c=0;for(var i=0;i<DB.files.length&&c<200;i++){if(DB.files[i][0].toLowerCase().indexOf(q)>=0){c++;h+='<a data-go=\"file:'+esc(DB.files[i][0])+'\">'+esc(DB.files[i][0])+'</a>'}}\n    $('#fl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的檔案</div>'}\n  $('#fq').oninput=render;render();\n  $('#fm').innerHTML='<h1 class=\"t\">檔案</h1><div class=\"mut\">左邊選一個檔案，看它定義了什麼、引用了誰、被誰引用。</div>';\n}\nfunction showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class=\"note\">索引裡沒有這個檔案</div>';return}\n  var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];\n  var h='<h1 class=\"t\">'+esc(path)+'</h1><div><span class=\"tag\">'+esc(f[1])+'</span><span class=\"tag\">'+f[2]+' 行</span></div>';\n  if(f[3])h+='<p>'+esc(f[3])+'</p>';\n  h+='<h2>定義（'+syms.length+'）</h2>';\n  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class=\"tag\">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class=\"mut\">（沒有抽到定義）</div>';\n  h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有內部引用）</div>');\n  h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有已分析的檔案引用它）</div>');\n  if(uses.length){var seen={};h+='<h2>呼叫了別處的定義（'+uses.length+'）</h2>'+uses.slice(0,200).filter(function(k){return !seen[k]&&(seen[k]=1)}).map(function(k){var s=S(k);return '<div>'+slink(s[0])+' <span class=\"mut\">'+esc(F(s[2])[0])+':'+s[3]+'</span></div>'}).join('')}\n  $('#fm').innerHTML=h;$('#fm').scrollTop=0}\n/* ---- 符號 ---- */\nfunction initSyms(){\n  var kinds={};DB.syms.forEach(function(s){kinds[s[1]]=(kinds[s[1]]||0)+1});\n  $('#sk').innerHTML='<option value=\"\">所有種類</option>'+Object.keys(kinds).sort(function(a,b){return kinds[b]-kinds[a]}).map(function(k){return '<option value=\"'+esc(k)+'\">'+esc(k)+'（'+kinds[k]+'）</option>'}).join('');\n  var order=null;\n  function render(){var q=$('#sq').value.trim().toLowerCase(),kd=$('#sk').value,h='',c=0;\n    if(!order){order=DB.syms.map(function(s,i){return i}).sort(function(a,b){return String(DB.syms[a][0]).toLowerCase()<String(DB.syms[b][0]).toLowerCase()?-1:1})}\n    for(var n=0;n<order.length&&c<300;n++){var s=DB.syms[order[n]];if(kd&&s[1]!==kd)continue;if(q&&String(s[0]).toLowerCase().indexOf(q)<0&&String(s[4]).toLowerCase().indexOf(q)<0)continue;c++;h+='<a data-go=\"sym:'+esc(s[0])+'\">'+esc(s[0])+'<span class=\"k\">'+esc(s[1])+' · '+esc(F(s[2])[0].split('/').pop())+'</span></a>'}\n    $('#sl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的結果</div>'+(c>=300?'':'')}\n  $('#sq').oninput=render;$('#sk').onchange=render;render();\n  $('#sm').innerHTML='<h1 class=\"t\">符號</h1><div class=\"mut\">函式、類別、結構、巨集…（最多列300筆，用上面的搜尋縮小範圍）。</div>';\n}\nfunction showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];\n  if(!ids.length){$('#sm').innerHTML='<div class=\"note\">索引裡沒有「'+esc(name)+'」</div>';return}\n  var h='<h1 class=\"t\">'+esc(S(ids[0])[0])+'</h1><div class=\"mut\">'+ids.length+' 個定義</div>';\n  ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];\n    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';\n    h+=s[4]?'<p>'+esc(s[4])+'</p>':'<p class=\"mut\">'+esc(_faCodeNameGuess(s[0]))+'</p>';\n    if(s[5])h+='<pre>'+esc(s[5])+'</pre>';\n    var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var inn=IX.impIn[fi]||[];if(inn.length)h+='<div class=\"mut\" style=\"margin-top:4px\">定義它的檔案被 '+inn.length+' 個檔案引用：'+inn.slice(0,12).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var same=(IX.fileSyms[fi]||[]).filter(function(x){return x!==k}).slice(0,15);if(same.length)h+='<div style=\"margin-top:4px\"><b>同檔案的其他定義：</b> '+same.map(function(x){return slink(S(x)[0])}).join('、')+'</div>'});\n  $('#sm').innerHTML=h;$('#sm').scrollTop=0}\n/* ---- 問答 ---- */\nfunction initAsk(){\n  var ex=['這個專案是做什麼的','哪些檔案被最多檔案引用','處理設定檔的函式在哪','錯誤處理相關的程式'];\n  var big=DB.syms.length?DB.syms[0][0]:'main';\n  ex=[big+' 是做什麼的','where is '+big+' defined','誰用到 '+big,big+' 相關的東西'].concat(ex.slice(2));\n  $('#achips').innerHTML=ex.map(function(x){return '<span>'+esc(x)+'</span>'}).join('');\n  $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};\n  $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};\n}\nfunction ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r=_faCodeAsk(IX,q);\n  var ms=Math.round(performance.now()-t0);\n  var h='<div class=\"qa\"><div class=\"q\">'+esc(q)+'</div><div class=\"md\">'+mdToHtml(r.answer)+'</div><div class=\"mut\" style=\"margin-top:6px\">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div></div>';\n  $('#aout').insertAdjacentHTML('afterbegin',h);$('#aq').select()}\n/* ---- SQL ---- */\nvar EXAMPLES=[\n['被最多檔案引用的檔案（Top 30）',\"SELECT path, imported_by_n AS 被引用數, imports_n AS 引用數 FROM files ORDER BY imported_by_n DESC LIMIT 30\"],\n['某檔案引用了誰／被誰引用（改 LIKE 裡的檔名）',\"SELECT 'imports' AS 方向, dst_path AS 檔案 FROM v_imports WHERE src_path LIKE '__FILE__'\\nUNION ALL\\nSELECT 'imported_by', src_path FROM v_imports WHERE dst_path LIKE '__FILE__'\"],\n['某檔案的所有間接依賴（遞迴）',\"WITH RECURSIVE dep(id, depth) AS (\\n  SELECT id, 0 FROM (SELECT id FROM files WHERE path LIKE '__FILE__' ORDER BY id LIMIT 1)\\n  UNION\\n  SELECT i.dst, dep.depth + 1 FROM imports i JOIN dep ON i.src = dep.id WHERE dep.depth < 6\\n)\\nSELECT f.path, MIN(dep.depth) AS 距離 FROM dep JOIN files f ON f.id = dep.id GROUP BY f.path ORDER BY 距離, f.path\"],\n['最常被呼叫的函式（依呼叫它的檔案數）',\"SELECT symbol AS 名稱, defined_in AS 定義在, COUNT(DISTINCT caller_file) AS 呼叫的檔案數 FROM v_uses GROUP BY symbol, defined_in ORDER BY 呼叫的檔案數 DESC LIMIT 30\"],\n['某個符號的所有使用者（改名稱）',\"SELECT DISTINCT caller_file AS 使用的檔案, defined_in AS 定義在 FROM v_uses WHERE symbol = '__SYM__'\"],\n['同名定義（可能衝突或多型）',\"SELECT name, COUNT(*) AS 個數, group_concat(path, '  |  ') AS 位置 FROM v_symbols GROUP BY name HAVING COUNT(*) > 1 ORDER BY 個數 DESC LIMIT 50\"],\n['定義最多的檔案',\"SELECT f.path, COUNT(*) AS 定義數 FROM symbols s JOIN files f ON f.id = s.file_id GROUP BY f.id ORDER BY 定義數 DESC LIMIT 30\"],\n['孤立檔案（沒人引用、也沒引用別人）',\"SELECT path, lines FROM files WHERE imports_n = 0 AND imported_by_n = 0 ORDER BY lines DESC LIMIT 100\"],\n['說明（註解）裡有某個關鍵字的定義',\"SELECT name, kind, path, line, doc FROM v_symbols WHERE doc LIKE '%config%' ORDER BY name LIMIT 50\"],\n['各目錄的檔案數與行數',\"SELECT dir AS 目錄, COUNT(*) AS 檔案數, SUM(lines) AS 總行數 FROM files GROUP BY dir ORDER BY 總行數 DESC LIMIT 40\"],\n['各語言統計',\"SELECT lang AS 語言, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC\"]\n];\nfunction initSql(){\n  var hot='%',sym='main';\n  try{var a=SQLDB.exec('SELECT name FROM files ORDER BY imports_n+imported_by_n DESC LIMIT 1');if(a.length)hot='%'+a[0].values[0][0]+'%';var b=SQLDB.exec('SELECT symbol FROM v_uses GROUP BY symbol ORDER BY COUNT(*) DESC LIMIT 1');if(b.length)sym=b[0].values[0][0]}catch(e){}\n  EXAMPLES.forEach(function(x){x[1]=x[1].split('__FILE__').join(hot).split('__SYM__').join(sym)});\n  $('#qex').innerHTML='<option value=\"\">範例查詢…</option>'+EXAMPLES.map(function(x,i){return '<option value=\"'+i+'\">'+esc(x[0])+'</option>'}).join('');\n  $('#qex').onchange=function(){if(this.value!=='')$('#qsql').value=EXAMPLES[this.value][1]};\n  $('#qsql').value=EXAMPLES[0][1];\n  $('#qrun').onclick=runSql;$('#qsql').onkeydown=function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runSql()}};\n  $('#qcsv').onclick=function(){if(!LASTCOLS.length)return;var csv=[LASTCOLS].concat(LASTROWS).map(function(r){return r.map(function(c){c=c==null?'':String(c);return /[\",\\n]/.test(c)?'\"'+c.replace(/\"/g,'\"\"')+'\"':c}).join(',')}).join('\\n');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='query.csv';a.click()};\n  try{var sc=SQLDB.exec(\"SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type DESC,name\");$('#qschema').textContent=sc.length?sc[0].values.map(function(r){return r[1]+';'}).join('\\n\\n'):''}catch(e){}\n}\nfunction runSql(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performance.now();\n  try{var res=SQLDB.exec(sql);var ms=Math.round(performance.now()-t0);\n    if(!res.length){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"mut\">執行完成，沒有回傳資料列。</div>';$('#qinfo').textContent=ms+' ms';LASTCOLS=[];LASTROWS=[];return}\n    var r=res[res.length-1];LASTCOLS=r.columns;LASTROWS=r.values;var max=500;\n    var h='<table><tr>'+r.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+r.values.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var col=r.columns[ci];var lk=(/path|file|defined_in|檔案|定義在|src_path|dst_path|caller/i.test(col)&&fileMap[t]!=null)?link(t):esc(t);return '<td>'+lk+'</td>'}).join('')+'</tr>'}).join('')+'</table>';\n    $('#qres').innerHTML=h;$('#qinfo').textContent=r.values.length+' 列'+(r.values.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}\n  catch(e){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"err\">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}\nboot().catch(function(e){$('#lmsg').innerHTML='<span class=\"err\">載入失敗：'+esc(e&&e.message||e)+'</span>'});\n})();\n</script>\n</body></html>\n";
+const FA_CODEUI_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>__TITLE__</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader h1{font-size:16px;margin:0;word-break:break-all}header .st{color:var(--mut);font-size:12px}\nnav{display:flex;gap:4px;margin-left:auto}nav button{padding:5px 12px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;font-size:13px}\nnav button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#load{padding:30px;text-align:center;color:var(--mut)}#bar{height:6px;background:var(--bd);border-radius:3px;margin:10px auto;max-width:420px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac)}\n#app{flex:1;display:flex;min-height:0}\n.pane{display:none;flex:1;min-height:0}.pane.on{display:flex}\n.side{width:330px;max-width:42vw;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n.side input,.side select{margin:8px 10px 0;padding:7px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}\n.list{flex:1;overflow:auto;padding:8px 6px 14px}\n.list a,.list summary{display:block;padding:3px 8px;border-radius:5px;color:var(--fg);text-decoration:none;cursor:pointer;word-break:break-all}\n.list a:hover,.list summary:hover{background:var(--bd)}.list .k{color:var(--mut);font-size:12px;margin-left:6px}.list details>div{margin-left:12px}\n.main{flex:1;overflow:auto;padding:16px 26px 70px;min-width:0}\nh1.t{font-size:20px;margin:0 0 8px;word-break:break-all}h1,h2,h3{line-height:1.3}h2{font-size:16px;margin:20px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}h3{font-size:14px;margin:14px 0 4px}\n.mut{color:var(--mut)}code,pre,textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}\n:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}\na.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}\ntable{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf);position:sticky;top:0}\n.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}\n.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er);white-space:pre-wrap}\n.md ul,.md ol{padding-left:22px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}\nsvg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px;margin:6px 0}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}\n.ask{display:flex;gap:8px}.ask input{flex:1;padding:9px 11px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}\nbutton.b{padding:7px 14px;border:1px solid var(--ac);background:var(--ac);color:#fff;border-radius:6px;cursor:pointer}button.b.s{background:var(--bg);color:var(--ac)}\n.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 9px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px;color:var(--mut)}.chips span:hover{border-color:var(--ac);color:var(--ac)}\n.qa{border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:12px 0}.qa .q{font-weight:600;margin-bottom:4px}\ntextarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}\n.res{overflow:auto;max-height:60vh;border:1px solid var(--bd);border-radius:6px;margin-top:8px}\n@media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}\n</style></head><body>\n<header><h1 id=\"ttl\"></h1><span class=\"st\" id=\"stat\"></span><nav id=\"nav\"></nav></header>\n<div id=\"load\"><div id=\"lmsg\">載入中…</div><div id=\"bar\"><i id=\"barfill\"></i></div></div>\n<div id=\"app\" style=\"display:none\">\n<section class=\"pane\" id=\"p-wiki\"><div class=\"side\"><input id=\"wq\" placeholder=\"搜尋頁面…\"><div class=\"list\" id=\"wl\"></div></div><div class=\"main\" id=\"wm\"></div></section>\n<section class=\"pane\" id=\"p-files\"><div class=\"side\"><input id=\"fq\" placeholder=\"搜尋檔案路徑…\"><div class=\"list\" id=\"fl\"></div></div><div class=\"main\" id=\"fm\"></div></section>\n<section class=\"pane\" id=\"p-syms\"><div class=\"side\"><input id=\"sq\" placeholder=\"搜尋函式／類別名稱或說明…\"><select id=\"sk\"><option value=\"\">所有種類</option></select><div class=\"list\" id=\"sl\"></div></div><div class=\"main\" id=\"sm\"></div></section>\n<section class=\"pane\" id=\"p-ask\"><div class=\"main\" id=\"am\" style=\"max-width:980px\">\n<h1 class=\"t\">問答（離線，不需要網路或AI）</h1>\n<div class=\"mut\">像 doxygen＋語意搜尋：依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>\n<div class=\"ask\" style=\"margin-top:10px\"><input id=\"aq\" placeholder=\"例如：parse_config 是做什麼的？／main 在哪裡定義？／誰用到 Logger？／登入流程相關的檔案\" autofocus><button class=\"b\" id=\"ago\">問</button></div>\n<div class=\"chips\" id=\"achips\"></div><div id=\"aout\"></div></div></section>\n<section class=\"pane\" id=\"p-sql\"><div class=\"main\" id=\"qm\" style=\"max-width:1100px\">\n<h1 class=\"t\">SQL 查詢（內嵌 SQLite）</h1>\n<div class=\"mut\">資料表：files、symbols、imports（src→dst，檔案之間的引用）、uses（file_id 呼叫了 symbol_id）、pages、glossary、meta；檢視：v_symbols、v_imports、v_uses。id 是序號（從0開始）。Ctrl+Enter 執行。</div>\n<div style=\"margin:8px 0\"><select id=\"qex\"></select></div>\n<textarea id=\"qsql\" spellcheck=\"false\"></textarea>\n<div style=\"margin:8px 0;display:flex;gap:8px;align-items:center\"><button class=\"b\" id=\"qrun\">執行</button><button class=\"b s\" id=\"qcsv\">下載CSV</button><span class=\"mut\" id=\"qinfo\"></span></div>\n<div class=\"res\" id=\"qres\"></div>\n<details style=\"margin-top:12px\"><summary class=\"mut\">資料表結構</summary><pre id=\"qschema\"></pre></details></div></section>\n</div>\n<script id=\"cfg\" type=\"application/json\">__CFG__</script>\n<script id=\"payload\" type=\"application/json\">__PAYLOAD__</script>\n<script>\n__RUNTIME__\n</script>\n<script>\n(function(){\nvar CFG=JSON.parse(document.getElementById('cfg').textContent);\nvar DB=null,IX=null,SQLDB=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[];\nfunction $(s){return document.querySelector(s)}\nfunction esc(s){return String(s==null?'':s).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}\nfunction b64u8(b){var bin=atob(b),n=bin.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u}\nasync function gunzip(u8,gz){if(!gz)return u8;var r=new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip')));return new Uint8Array(await r.arrayBuffer())}\nfunction setLoad(msg,pct){$('#lmsg').textContent=msg;if(pct!=null)$('#barfill').style.width=Math.round(pct)+'%'}\nfunction tick(){return new Promise(function(r){setTimeout(r,0)})}\nfunction loadScript(text){return new Promise(function(res,rej){var u=URL.createObjectURL(new Blob([text],{type:'application/javascript'}));var s=document.createElement('script');s.src=u;s.onload=function(){URL.revokeObjectURL(u);res()};s.onerror=function(){rej(new Error('載入SQLite引擎失敗'))};document.head.appendChild(s)})}\nfunction rows(sql){var r=SQLDB.exec(sql);return r.length?r[0].values:[]}\nfunction F(i){return DB.files[i]||['?','',0,'']}\nfunction S(i){return DB.syms[i]}\nfunction link(path,label){return '<a class=\"l\" data-go=\"file:'+esc(path)+'\">'+esc(label||path)+'</a>'}\nfunction slink(name){return '<a class=\"l\" data-go=\"sym:'+esc(name)+'\">'+esc(name)+'</a>'}\n/* ---- 迷你Markdown ---- */\nfunction inline(t){\n  t=esc(t);\n  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\\d+(-\\d+)?$/,'');return fileMap[p]!=null?'<a class=\"l\" data-go=\"file:'+esc(p)+'\"><code>'+c+'</code></a>':(IX&&IX.nameMap[c.toLowerCase()]?'<a class=\"l\" data-go=\"sym:'+esc(c)+'\"><code>'+c+'</code></a>':'<code>'+c+'</code>')});\n  t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<b>$1</b>').replace(/\\[([^\\]]+)\\]\\(page:([^)]+)\\)/g,'<a class=\"l\" data-go=\"page:$2\">$1</a>').replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  return t;\n}\nfunction mdToHtml(md){\n  var lines=String(md||'').split('\\n'),h='',i=0;\n  while(i<lines.length){\n    var l=lines[i];\n    if(/^```/.test(l)){var lang=l.replace(/^```/,'').trim();var buf=[];i++;while(i<lines.length&&!/^```/.test(lines[i])){buf.push(lines[i]);i++}i++;\n      if(lang==='mermaid'){var sv=mermaidLite(buf.join('\\n'));h+=sv||'<pre>'+esc(buf.join('\\n'))+'</pre>'}else h+='<pre>'+esc(buf.join('\\n'))+'</pre>';continue}\n    var m;\n    if((m=/^(#{1,4})\\s+(.*)$/.exec(l))){var n=m[1].length;h+='<h'+n+'>'+inline(m[2])+'</h'+n+'>';i++;continue}\n    if(/^\\|.*\\|\\s*$/.test(l)&&i+1<lines.length&&/^\\|[\\s:|-]+\\|\\s*$/.test(lines[i+1])){var hd=l.split('|').slice(1,-1);i+=2;var rows=[];while(i<lines.length&&/^\\|.*\\|\\s*$/.test(lines[i])){rows.push(lines[i].split('|').slice(1,-1));i++}\n      h+='<table><tr>'+hd.map(function(c){return '<th>'+inline(c.trim())+'</th>'}).join('')+'</tr>'+rows.map(function(r){return '<tr>'+r.map(function(c){return '<td>'+inline(c.trim())+'</td>'}).join('')+'</tr>'}).join('')+'</table>';continue}\n    if(/^\\s*[-*]\\s+/.test(l)){var it=[];while(i<lines.length&&/^\\s*[-*]\\s+/.test(lines[i])){it.push('<li>'+inline(lines[i].replace(/^\\s*[-*]\\s+/,''))+'</li>');i++}h+='<ul>'+it.join('')+'</ul>';continue}\n    if(/^\\s*\\d+\\.\\s+/.test(l)){var it2=[];while(i<lines.length&&/^\\s*\\d+\\.\\s+/.test(lines[i])){it2.push('<li>'+inline(lines[i].replace(/^\\s*\\d+\\.\\s+/,''))+'</li>');i++}h+='<ol>'+it2.join('')+'</ol>';continue}\n    if(/^>\\s?/.test(l)){var q=[];while(i<lines.length&&/^>\\s?/.test(lines[i])){q.push(lines[i].replace(/^>\\s?/,''));i++}h+='<blockquote>'+inline(q.join(' '))+'</blockquote>';continue}\n    if(!l.trim()){i++;continue}\n    var p=[l];i++;while(i<lines.length&&lines[i].trim()&&!/^(#{1,4}\\s|```|\\s*[-*]\\s|\\s*\\d+\\.\\s|>|\\|)/.test(lines[i])){p.push(lines[i]);i++}\n    h+='<p>'+inline(p.join(' '))+'</p>';\n  }\n  return h;\n}\n/* ---- 迷你流程圖（只支援 graph LR/TD 的節點與箭頭）---- */\nfunction mermaidLite(src){\n  var ls=src.split('\\n').map(function(x){return x.trim()}).filter(Boolean);\n  if(!ls.length||!/^(graph|flowchart)\\s+(LR|RL|TD|TB|BT)/i.test(ls[0]))return '';\n  var dir=/LR|RL/i.test(ls[0])?'LR':'TD';var nodes={},order=[],edges=[];\n  function nd(tok){var m=/^([A-Za-z0-9_\\-.]+)\\s*(?:\\[\\[?\"?([^\\]\"]*)\"?\\]?\\]|\\(\\(?\"?([^)\"]*)\"?\\)?\\)|\\{\"?([^}\"]*)\"?\\})?$/.exec(tok.trim());if(!m)return null;var id=m[1];var label=m[2]||m[3]||m[4];if(!nodes[id]){nodes[id]={id:id,label:label||id};order.push(id)}else if(label)nodes[id].label=label;return id}\n  for(var k=1;k<ls.length;k++){var ln=ls[k];if(/^(subgraph|end|classDef|class|style|linkStyle|%%)/.test(ln))continue;\n    var parts=ln.split(/\\s*(?:-->|---|-\\.->|==>)\\s*(?:\\|([^|]*)\\|\\s*)?/);\n    var ids=[];for(var j=0;j<parts.length;j+=2){var id=nd(parts[j]||'');if(!id)return '';ids.push({id:id,lab:parts[j+1]||''})}\n    for(var e=0;e+1<ids.length;e++)edges.push({a:ids[e].id,b:ids[e+1].id,lab:ids[e+1].lab||''});}\n  if(!order.length||order.length>60)return '';\n  var rank={};order.forEach(function(id){rank[id]=0});\n  for(var it=0;it<order.length;it++){var ch=false;edges.forEach(function(e){if(e.a!==e.b&&rank[e.b]<rank[e.a]+1&&rank[e.a]+1<order.length){rank[e.b]=rank[e.a]+1;ch=true}});if(!ch)break}\n  var cols={};order.forEach(function(id){(cols[rank[id]]=cols[rank[id]]||[]).push(id)});\n  var W=170,H=44,GX=60,GY=22,pos={},maxc=0,maxr=0;\n  Object.keys(cols).forEach(function(r){cols[r].forEach(function(id,idx){pos[id]=dir==='LR'?{x:r*(W+GX)+10,y:idx*(H+GY)+10}:{x:idx*(W+GX)+10,y:r*(H+GY+20)+10};maxc=Math.max(maxc,pos[id].x+W+10);maxr=Math.max(maxr,pos[id].y+H+10)})});\n  var s='<svg class=\"dg\" viewBox=\"0 0 '+maxc+' '+maxr+'\" width=\"'+Math.min(maxc,900)+'\"><defs><marker id=\"ar\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" style=\"fill:var(--mut);stroke:none\"/></marker></defs>';\n  edges.forEach(function(e){var a=pos[e.a],b=pos[e.b];if(!a||!b)return;var x1=dir==='LR'?a.x+W:a.x+W/2,y1=dir==='LR'?a.y+H/2:a.y+H,x2=dir==='LR'?b.x:b.x+W/2,y2=dir==='LR'?b.y+H/2:b.y;var mx=(x1+x2)/2,my=(y1+y2)/2;\n    s+='<path d=\"M'+x1+','+y1+' C'+(dir==='LR'?mx:x1)+','+(dir==='LR'?y1:my)+' '+(dir==='LR'?mx:x2)+','+(dir==='LR'?y2:my)+' '+x2+','+y2+'\" marker-end=\"url(#ar)\"/>';if(e.lab)s+='<text x=\"'+mx+'\" y=\"'+(my-3)+'\" text-anchor=\"middle\">'+esc(e.lab)+'</text>'});\n  order.forEach(function(id){var p=pos[id],lb=nodes[id].label;if(lb.length>24)lb=lb.slice(0,23)+'…';s+='<rect x=\"'+p.x+'\" y=\"'+p.y+'\" width=\"'+W+'\" height=\"'+H+'\" rx=\"6\"/><text x=\"'+(p.x+W/2)+'\" y=\"'+(p.y+H/2+4)+'\" text-anchor=\"middle\">'+esc(lb)+'</text>'});\n  return s+'</svg>';\n}\n\nasync function boot(){\n  $('#ttl').textContent=CFG.title;\n  var P=JSON.parse(document.getElementById('payload').textContent);\n  if(CFG.mode==='sqlite'){\n    setLoad('解壓縮 SQLite 引擎…',3);\n    var js=new TextDecoder().decode(await gunzip(b64u8(P.js),CFG.sql.gz.js));\n    var wasm=await gunzip(b64u8(P.wasm),CFG.sql.gz.wasm);\n    await loadScript(js);\n    setLoad('載入資料庫…',10);\n    var dbBytes=await gunzip(b64u8(P.db),CFG.sql.gz.db);\n    var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});\n    SQLDB=new SQL.Database(dbBytes);\n    setLoad('讀取資料表…',18);await tick();\n    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc,note FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig,note FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};\n    PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});\n    rows('SELECT term,definition FROM glossary').forEach(function(r){GLOSS[r[0]]={definition:r[1]}});\n  }else{\n    setLoad('解壓縮資料…',5);\n    var j=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(P.data),CFG.dataGz)));\n    DB=j;PAGES=j.pages||[];GLOSS=j.glossary||{};\n  }\n  DB.files.forEach(function(f,i){fileMap[f[0]]=i});\n  setLoad('建立檢索索引…',22);await tick();\n  IX=_faCodeIndexNew(DB);\n  var total=(DB.syms.length+DB.files.length)||1;\n  while(!_faCodeIndexTokens(IX,120)){setLoad('建立檢索索引… '+Math.round((IX.ti+IX.tf)/total*100)+'%',22+78*(IX.ti+IX.tf)/total);await tick()}\n  $('#load').style.display='none';$('#app').style.display='flex';\n  $('#stat').textContent=CFG.stats.files+' 個檔案 · '+CFG.stats.symbols+' 個定義 · '+CFG.stats.imports+' 條引用 · '+CFG.stats.uses+' 條呼叫'+(CFG.complete?'':' · （部分索引）')+' · 產生於 '+new Date(CFG.generated).toLocaleString();\n  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答']];if(SQLDB)tabs.push(['sql','SQL']);\n  $('#nav').innerHTML=tabs.map(function(t){return '<button data-t=\"'+t[0]+'\">'+t[1]+'</button>'}).join('');\n  $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};\n  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();\n  show(PAGES.length?'wiki':'ask');\n}\nfunction show(t){document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});if(t==='ask')$('#aq').focus()}\nfunction go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);\n  if(k==='file'){show('files');showFile(v)}else if(k==='sym'){show('syms');showSym(v)}else if(k==='page'){show('wiki');showPage(v)}}\ndocument.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go)}});\n/* ---- 百科 ---- */\nfunction initWiki(){\n  function render(){var q=$('#wq').value.trim().toLowerCase();var h='';\n    PAGES.forEach(function(p){if(q&&p.title.toLowerCase().indexOf(q)<0&&String(p.md).toLowerCase().indexOf(q)<0)return;h+='<a data-go=\"page:'+esc(p.id)+'\">'+esc(p.title)+(p.auto?'<span class=\"k\">草稿</span>':'')+'</a>'});\n    var gl=Object.keys(GLOSS);if(gl.length&&!q)h+='<div class=\"mut\" style=\"padding:8px 8px 2px\">名詞</div>'+gl.sort().map(function(t){return '<a data-go=\"term:'+esc(t)+'\">'+esc(t)+'</a>'}).join('');\n    $('#wl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的頁面</div>'}\n  $('#wq').oninput=render;render();\n  if(PAGES.length)showPage(PAGES[0].id);else{var h2='<h1 class=\"t\">專案概況</h1><div class=\"mut\">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}\n}\nfunction showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p){$('#wm').innerHTML='<div class=\"note\">沒有這個頁面</div>';return}\n  $('#wm').innerHTML='<div class=\"md\">'+(p.auto?'<div class=\"note\">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(p.md)+'</div>';$('#wm').scrollTop=0}\n/* ---- 檔案 ---- */\nfunction initFiles(){\n  var tree={};DB.files.forEach(function(f,i){var segs=f[0].split('/'),n=tree;for(var k=0;k<segs.length-1;k++){n=(n.d=n.d||{})[segs[k]]=(n.d&&n.d[segs[k]])||{}}(n.f=n.f||[]).push(i)});\n  function node(n,depth){var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/</summary><div>'+node(n.d[k],depth+1)+'</div></details>'});\n    (n.f||[]).slice(0,300).forEach(function(i){h+='<a data-go=\"file:'+esc(F(i)[0])+'\">'+esc(F(i)[0].split('/').pop())+'<span class=\"k\">'+(IX.fileSyms[i]||[]).length+'</span></a>'});return h}\n  var lazy=null;\n  function render(){var q=$('#fq').value.trim().toLowerCase();\n    if(!q){if(!lazy)lazy=node(tree,0);$('#fl').innerHTML=lazy;return}\n    var h='',c=0;for(var i=0;i<DB.files.length&&c<200;i++){if(DB.files[i][0].toLowerCase().indexOf(q)>=0){c++;h+='<a data-go=\"file:'+esc(DB.files[i][0])+'\">'+esc(DB.files[i][0])+'</a>'}}\n    $('#fl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的檔案</div>'}\n  $('#fq').oninput=render;render();\n  $('#fm').innerHTML='<h1 class=\"t\">檔案</h1><div class=\"mut\">左邊選一個檔案，看它定義了什麼、引用了誰、被誰引用。</div>';\n}\nfunction showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class=\"note\">索引裡沒有這個檔案</div>';return}\n  var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];\n  var h='<h1 class=\"t\">'+esc(path)+'</h1><div><span class=\"tag\">'+esc(f[1])+'</span><span class=\"tag\">'+f[2]+' 行</span></div>';\n  if(f[4])h+='<div class=\"note\"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(f[4])+'</div>';\n  if(f[3])h+='<p>'+esc(f[3])+'</p>';\n  h+='<h2>定義（'+syms.length+'）</h2>';\n  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class=\"tag\">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class=\"mut\">（沒有抽到定義）</div>';\n  h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有內部引用）</div>');\n  h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class=\"mut\">（沒有已分析的檔案引用它）</div>');\n  if(uses.length){var seen={};h+='<h2>呼叫了別處的定義（'+uses.length+'）</h2>'+uses.slice(0,200).filter(function(k){return !seen[k]&&(seen[k]=1)}).map(function(k){var s=S(k);return '<div>'+slink(s[0])+' <span class=\"mut\">'+esc(F(s[2])[0])+':'+s[3]+'</span></div>'}).join('')}\n  $('#fm').innerHTML=h;$('#fm').scrollTop=0}\n/* ---- 符號 ---- */\nfunction initSyms(){\n  var kinds={};DB.syms.forEach(function(s){kinds[s[1]]=(kinds[s[1]]||0)+1});\n  $('#sk').innerHTML='<option value=\"\">所有種類</option>'+Object.keys(kinds).sort(function(a,b){return kinds[b]-kinds[a]}).map(function(k){return '<option value=\"'+esc(k)+'\">'+esc(k)+'（'+kinds[k]+'）</option>'}).join('');\n  var order=null;\n  function render(){var q=$('#sq').value.trim().toLowerCase(),kd=$('#sk').value,h='',c=0;\n    if(!order){order=DB.syms.map(function(s,i){return i}).sort(function(a,b){return String(DB.syms[a][0]).toLowerCase()<String(DB.syms[b][0]).toLowerCase()?-1:1})}\n    for(var n=0;n<order.length&&c<300;n++){var s=DB.syms[order[n]];if(kd&&s[1]!==kd)continue;if(q&&String(s[0]).toLowerCase().indexOf(q)<0&&String(s[4]).toLowerCase().indexOf(q)<0)continue;c++;h+='<a data-go=\"sym:'+esc(s[0])+'\">'+esc(s[0])+'<span class=\"k\">'+esc(s[1])+' · '+esc(F(s[2])[0].split('/').pop())+'</span></a>'}\n    $('#sl').innerHTML=h||'<div class=\"mut\" style=\"padding:8px\">沒有符合的結果</div>'+(c>=300?'':'')}\n  $('#sq').oninput=render;$('#sk').onchange=render;render();\n  $('#sm').innerHTML='<h1 class=\"t\">符號</h1><div class=\"mut\">函式、類別、結構、巨集…（最多列300筆，用上面的搜尋縮小範圍）。</div>';\n}\nfunction showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];\n  if(!ids.length){$('#sm').innerHTML='<div class=\"note\">索引裡沒有「'+esc(name)+'」</div>';return}\n  var h='<h1 class=\"t\">'+esc(S(ids[0])[0])+'</h1><div class=\"mut\">'+ids.length+' 個定義</div>';\n  ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];\n    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';\n    h+=s[6]?'<div class=\"note\"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(s[6])+'</div>':'';\n    h+=s[4]?'<p>'+esc(s[4])+'</p>':(s[6]?'':'<p class=\"mut\">'+esc(_faCodeNameGuess(s[0]))+'</p>');\n    if(s[5])h+='<pre>'+esc(s[5])+'</pre>';\n    var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var inn=IX.impIn[fi]||[];if(inn.length)h+='<div class=\"mut\" style=\"margin-top:4px\">定義它的檔案被 '+inn.length+' 個檔案引用：'+inn.slice(0,12).map(function(u){return link(F(u)[0])}).join('、')+'</div>';\n    var same=(IX.fileSyms[fi]||[]).filter(function(x){return x!==k}).slice(0,15);if(same.length)h+='<div style=\"margin-top:4px\"><b>同檔案的其他定義：</b> '+same.map(function(x){return slink(S(x)[0])}).join('、')+'</div>'});\n  $('#sm').innerHTML=h;$('#sm').scrollTop=0}\n/* ---- 問答 ---- */\nfunction initAsk(){\n  var ex=['這個專案是做什麼的','哪些檔案被最多檔案引用','處理設定檔的函式在哪','錯誤處理相關的程式'];\n  var big=DB.syms.length?DB.syms[0][0]:'main';\n  ex=[big+' 是做什麼的','where is '+big+' defined','誰用到 '+big,big+' 相關的東西'].concat(ex.slice(2));\n  $('#achips').innerHTML=ex.map(function(x){return '<span>'+esc(x)+'</span>'}).join('');\n  $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};\n  $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};\n}\nfunction ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r=_faCodeAsk(IX,q);\n  var ms=Math.round(performance.now()-t0);\n  var h='<div class=\"qa\"><div class=\"q\">'+esc(q)+'</div><div class=\"md\">'+mdToHtml(r.answer)+'</div><div class=\"mut\" style=\"margin-top:6px\">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div></div>';\n  $('#aout').insertAdjacentHTML('afterbegin',h);$('#aq').select()}\n/* ---- SQL ---- */\nvar EXAMPLES=[\n['被最多檔案引用的檔案（Top 30）',\"SELECT path, imported_by_n AS 被引用數, imports_n AS 引用數 FROM files ORDER BY imported_by_n DESC LIMIT 30\"],\n['某檔案引用了誰／被誰引用（改 LIKE 裡的檔名）',\"SELECT 'imports' AS 方向, dst_path AS 檔案 FROM v_imports WHERE src_path LIKE '__FILE__'\\nUNION ALL\\nSELECT 'imported_by', src_path FROM v_imports WHERE dst_path LIKE '__FILE__'\"],\n['某檔案的所有間接依賴（遞迴）',\"WITH RECURSIVE dep(id, depth) AS (\\n  SELECT id, 0 FROM (SELECT id FROM files WHERE path LIKE '__FILE__' ORDER BY id LIMIT 1)\\n  UNION\\n  SELECT i.dst, dep.depth + 1 FROM imports i JOIN dep ON i.src = dep.id WHERE dep.depth < 6\\n)\\nSELECT f.path, MIN(dep.depth) AS 距離 FROM dep JOIN files f ON f.id = dep.id GROUP BY f.path ORDER BY 距離, f.path\"],\n['最常被呼叫的函式（依呼叫它的檔案數）',\"SELECT symbol AS 名稱, defined_in AS 定義在, COUNT(DISTINCT caller_file) AS 呼叫的檔案數 FROM v_uses GROUP BY symbol, defined_in ORDER BY 呼叫的檔案數 DESC LIMIT 30\"],\n['某個符號的所有使用者（改名稱）',\"SELECT DISTINCT caller_file AS 使用的檔案, defined_in AS 定義在 FROM v_uses WHERE symbol = '__SYM__'\"],\n['同名定義（可能衝突或多型）',\"SELECT name, COUNT(*) AS 個數, group_concat(path, '  |  ') AS 位置 FROM v_symbols GROUP BY name HAVING COUNT(*) > 1 ORDER BY 個數 DESC LIMIT 50\"],\n['定義最多的檔案',\"SELECT f.path, COUNT(*) AS 定義數 FROM symbols s JOIN files f ON f.id = s.file_id GROUP BY f.id ORDER BY 定義數 DESC LIMIT 30\"],\n['孤立檔案（沒人引用、也沒引用別人）',\"SELECT path, lines FROM files WHERE imports_n = 0 AND imported_by_n = 0 ORDER BY lines DESC LIMIT 100\"],\n['說明（註解）裡有某個關鍵字的定義',\"SELECT name, kind, path, line, doc FROM v_symbols WHERE doc LIKE '%config%' ORDER BY name LIMIT 50\"],\n['AI 補過說明的定義（note 欄位）',\"SELECT name, kind, path, line, note FROM v_symbols WHERE note IS NOT NULL AND note <> '' ORDER BY path, line LIMIT 100\"],\n['各目錄的檔案數與行數',\"SELECT dir AS 目錄, COUNT(*) AS 檔案數, SUM(lines) AS 總行數 FROM files GROUP BY dir ORDER BY 總行數 DESC LIMIT 40\"],\n['各語言統計',\"SELECT lang AS 語言, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC\"]\n];\nfunction initSql(){\n  var hot='%',sym='main';\n  try{var a=SQLDB.exec('SELECT name FROM files ORDER BY imports_n+imported_by_n DESC LIMIT 1');if(a.length)hot='%'+a[0].values[0][0]+'%';var b=SQLDB.exec('SELECT symbol FROM v_uses GROUP BY symbol ORDER BY COUNT(*) DESC LIMIT 1');if(b.length)sym=b[0].values[0][0]}catch(e){}\n  EXAMPLES.forEach(function(x){x[1]=x[1].split('__FILE__').join(hot).split('__SYM__').join(sym)});\n  $('#qex').innerHTML='<option value=\"\">範例查詢…</option>'+EXAMPLES.map(function(x,i){return '<option value=\"'+i+'\">'+esc(x[0])+'</option>'}).join('');\n  $('#qex').onchange=function(){if(this.value!=='')$('#qsql').value=EXAMPLES[this.value][1]};\n  $('#qsql').value=EXAMPLES[0][1];\n  $('#qrun').onclick=runSql;$('#qsql').onkeydown=function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runSql()}};\n  $('#qcsv').onclick=function(){if(!LASTCOLS.length)return;var csv=[LASTCOLS].concat(LASTROWS).map(function(r){return r.map(function(c){c=c==null?'':String(c);return /[\",\\n]/.test(c)?'\"'+c.replace(/\"/g,'\"\"')+'\"':c}).join(',')}).join('\\n');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='query.csv';a.click()};\n  try{var sc=SQLDB.exec(\"SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type DESC,name\");$('#qschema').textContent=sc.length?sc[0].values.map(function(r){return r[1]+';'}).join('\\n\\n'):''}catch(e){}\n}\nfunction runSql(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performance.now();\n  try{var res=SQLDB.exec(sql);var ms=Math.round(performance.now()-t0);\n    if(!res.length){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"mut\">執行完成，沒有回傳資料列。</div>';$('#qinfo').textContent=ms+' ms';LASTCOLS=[];LASTROWS=[];return}\n    var r=res[res.length-1];LASTCOLS=r.columns;LASTROWS=r.values;var max=500;\n    var h='<table><tr>'+r.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+r.values.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var col=r.columns[ci];var lk=(/path|file|defined_in|檔案|定義在|src_path|dst_path|caller/i.test(col)&&fileMap[t]!=null)?link(t):esc(t);return '<td>'+lk+'</td>'}).join('')+'</tr>'}).join('')+'</table>';\n    $('#qres').innerHTML=h;$('#qinfo').textContent=r.values.length+' 列'+(r.values.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}\n  catch(e){$('#qres').innerHTML='<div style=\"padding:10px\" class=\"err\">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}\nboot().catch(function(e){$('#lmsg').innerHTML='<span class=\"err\">載入失敗：'+esc(e&&e.message||e)+'</span>'});\n})();\n</script>\n</body></html>\n";
 /* CODEUI-END */
+/* AIDOCVIEW-BEGIN */
+const FA_AIDOC_VIEWER_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>AIDoc</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.55 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px;word-break:break-all}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.ai{color:var(--ai);border-color:var(--ai)}\nheader .sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.p{background:var(--ac);border-color:var(--ac);color:#fff}button.ai{border-color:var(--ai);color:var(--ai)}button:disabled{opacity:.5;cursor:default}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:270px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#tabs{display:flex;gap:3px;padding:6px}#tabs button{flex:1;padding:3px 0}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#sq{margin:0 6px 6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#list{flex:1;overflow:auto;padding:0 4px 10px}#list a,#list summary{display:block;padding:2px 6px;border-radius:5px;color:var(--fg);cursor:pointer;word-break:break-all}#list a:hover,#list summary:hover{background:var(--bd)}#list .k{color:var(--mut);font-size:11px;margin-left:6px}#list details>div{margin-left:10px}\n#main{flex:1;overflow:auto;padding:14px 20px 60px;min-width:0}\n#chat{width:360px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n#msgs{flex:1;overflow:auto;padding:8px}\n.msg{margin:8px 0;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);word-break:break-word}.msg.u{background:var(--sf);margin-left:24px}.msg.a{margin-right:8px}.msg.ai{border-color:var(--ai)}\n.msg .h{font-size:11px;color:var(--mut);margin-bottom:3px}.msg .acts{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}\n#qbar{display:flex;gap:6px;padding:8px;border-top:1px solid var(--bd)}#q{flex:1;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\ndetails#net{border-top:1px solid var(--bd);padding:4px 8px;font-size:11px;color:var(--mut)}#netlog{max-height:90px;overflow:auto;font-family:ui-monospace,Consolas,monospace}\nh1.t{font-size:19px;margin:0 0 6px;word-break:break-all}h2{font-size:15px;margin:18px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:3px}h3{font-size:14px;margin:12px 0 4px}\n.mut{color:var(--mut)}code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12px}pre{background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;overflow:auto;margin:6px 0}:not(pre)>code{background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:0 4px}\na.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}\ntable{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:3px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf)}\n.tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:11px;color:var(--mut);margin-right:4px}\n.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er)}\n.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 10px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px}.chips span:hover{border-color:var(--ac);color:var(--ac)}.chips span.ai{border-color:var(--ai);color:var(--ai)}\n.md ul,.md ol{padding-left:20px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}\nsvg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}\n@media (max-width:900px){#chat{width:300px}#nav{width:200px}}\n@media (max-width:640px){#app{flex-direction:column}#nav,#chat{width:100%;max-height:34vh;border:0;border-bottom:1px solid var(--bd)}}\n</style></head><body>\n<header><b id=\"ttl\">AIDoc</b><span class=\"badge\" id=\"stat\">載入中…</span><span class=\"badge\" id=\"jobs\" style=\"display:none\"></span><span class=\"sp\"></span><span class=\"badge ai\" id=\"aiq\" style=\"display:none\"></span><button id=\"btnNet\" title=\"這個畫面用假的 fetch／WebSocket 跟主程式溝通\">🔌 連線 <span id=\"wsdot\">●</span></button></header>\n<div id=\"app\">\n<aside id=\"nav\"><div id=\"tabs\"><button data-t=\"pages\" class=\"on\">頁面</button><button data-t=\"tree\">檔案</button><button data-t=\"syms\">定義</button><button data-t=\"notes\">說明</button></div><input id=\"sq\" placeholder=\"搜尋…（語意搜尋）\"><div id=\"list\"></div></aside>\n<main id=\"main\"><div class=\"mut\">載入中…</div></main>\n<section id=\"chat\"><div id=\"msgs\"></div><div id=\"qbar\"><input id=\"q\" placeholder=\"問這個專案：某函式做什麼／在哪定義／誰用到…\" autofocus><button id=\"ask\" class=\"p\" title=\"離線問答（立刻回答）\">問</button><button id=\"askai\" class=\"ai\" title=\"請 AI 讀程式碼後回答（依序處理，AI 在背景參與）\">問 AI</button></div>\n<details id=\"net\"><summary>通訊紀錄（fetch／WebSocket）</summary><div id=\"netlog\"></div></details></section>\n</div>\n<script id=\"cfg\" type=\"application/json\">__CFG__</script>\n__SHIM__\n<script>\n(function(){\nvar CFG=JSON.parse(document.getElementById('cfg').textContent);\nfunction $(s){return document.querySelector(s)}\nfunction esc(s){return String(s==null?'':s).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}\nvar PATHRE=/^[\\w.+\\-@\\/]+\\.[A-Za-z0-9]{1,6}(:\\d+(-\\d+)?)?$/,SYMRE=/^[A-Za-z_][\\w:.]{2,}$/;\nvar BASE='http://mock.local';\nvar NET=[];\nfunction netlog(t){NET.push(new Date().toLocaleTimeString()+'  '+t);if(NET.length>60)NET.shift();var el=$('#netlog');if(el){el.textContent=NET.join('\\n');el.scrollTop=1e9}}\nasync function api(method,path,body){\n  var t0=performance.now();\n  var r=await fetch(BASE+path,{method:method,headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});\n  var j=null;try{j=await r.json()}catch(e){j={error:'回應不是JSON'}}\n  netlog(method+' '+path.slice(0,70)+' → '+r.status+'  '+Math.round(performance.now()-t0)+'ms');\n  if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));\n  return j;\n}\nfunction mdToHtml(src){\n  var s=String(src==null?'':src).replace(/\\r/g,'');\n  var blocks=[];\n  s=s.replace(/```[^\\n]*\\n([\\s\\S]*?)```/g,function(_,c){blocks.push('<pre>'+esc(c.replace(/\\n$/,''))+'</pre>');return '\\u0000'+(blocks.length-1)+'\\u0000'});\n  var lines=s.split('\\n'),out=[],list=null;\n  function inl(t){\n    t=esc(t);\n    t=t.replace(/`([^`]+)`/g,function(_,c){\n      var raw=c.replace(/&amp;/g,'&');\n      if(PATHRE.test(raw))return '<a class=\"l\" data-go=\"file:'+esc(raw.replace(/:\\d+(-\\d+)?$/,''))+'\"><code>'+c+'</code></a>';\n      if(SYMRE.test(raw)&&!/^\\d/.test(raw))return '<a class=\"l\" data-go=\"sym:'+esc(raw)+'\"><code>'+c+'</code></a>';\n      return '<code>'+c+'</code>'});\n    t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<b>$1</b>');\n    return t;\n  }\n  function close(){if(list){out.push('</'+list+'>');list=null}}\n  lines.forEach(function(l){\n    var m;\n    if(/^\\u0000\\d+\\u0000$/.test(l.trim())){close();out.push(blocks[+l.trim().replace(/\\u0000/g,'')]);return}\n    if((m=/^(#{1,4})\\s+(.*)$/.exec(l))){close();var n=Math.min(3,m[1].length+1);out.push('<h'+n+'>'+inl(m[2])+'</h'+n+'>');return}\n    if((m=/^\\s*[-*]\\s+(.*)$/.exec(l))){if(list!=='ul'){close();out.push('<ul>');list='ul'}out.push('<li>'+inl(m[1])+'</li>');return}\n    if((m=/^\\s*\\d+[.)]\\s+(.*)$/.exec(l))){if(list!=='ol'){close();out.push('<ol>');list='ol'}out.push('<li>'+inl(m[1])+'</li>');return}\n    if((m=/^>\\s?(.*)$/.exec(l))){close();out.push('<blockquote>'+inl(m[1])+'</blockquote>');return}\n    if(/^\\|.*\\|\\s*$/.test(l)){close();if(/^\\|[\\s:|-]+\\|$/.test(l))return;var cells=l.trim().slice(1,-1).split('|');out.push('<table><tr>'+cells.map(function(c){return '<td>'+inl(c.trim())+'</td>'}).join('')+'</tr></table>');return}\n    close();\n    if(!l.trim())return;\n    out.push('<p>'+inl(l)+'</p>');\n  });\n  close();\n  return out.join('\\n').replace(/<\\/table>\\n<table>/g,'');\n}\n\nvar ws=null,wsTry=0;\nfunction connect(){\n  try{ws=new WebSocket('ws://mock.local/ws')}catch(e){netlog('WebSocket 建立失敗：'+e.message);return}\n  ws.onopen=function(){wsTry=0;$('#wsdot').style.color='var(--ok)';netlog('WS open /ws');ws.send(JSON.stringify({type:'hello'}))};\n  ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data)}catch(e){return}netlog('WS ← '+m.type);onEvent(m)};\n  ws.onclose=function(){$('#wsdot').style.color='var(--er)';netlog('WS close');if(wsTry++<5)setTimeout(connect,1000*wsTry)};\n}\nvar cur={kind:'',key:''};\nvar AIB={}; // 問題id→AI訊息節點\nfunction addMsg(cls,head,html,acts){\n  var d=document.createElement('div');d.className='msg '+cls;\n  d.innerHTML='<div class=\"h\">'+esc(head)+'</div><div class=\"b md\">'+html+'</div>';\n  if(acts&&acts.length){var a=document.createElement('div');a.className='acts';acts.forEach(function(x){var b=document.createElement('button');b.textContent=x[0];if(x[2])b.className=x[2];b.onclick=function(){x[1](b)};a.appendChild(b)});d.appendChild(a)}\n  $('#msgs').appendChild(d);$('#msgs').scrollTop=1e9;return d;\n}\nasync function ask(q,ctx,ai){\n  q=String(q||'').trim();if(!q)return;\n  addMsg('u',ai?'你（請 AI 回答）':'你',esc(q));\n  try{\n    var r=await api('POST','/api/ask',{q:q,ctx:ctx||cur,ai:!!ai});\n    var acts=[];\n    if(!ai)acts.push(['請 AI 深入回答',function(b){b.disabled=true;ask(q,ctx,true)},'ai']);\n    addMsg('a','離線問答（'+esc(r.quick.intent)+'）',mdToHtml(r.quick.answer||'（沒有結果）'),acts);\n    if(r.ai_id){var n=addMsg('a ai','AI（'+(r.queue_pos>1?'排隊中，前面還有 '+(r.queue_pos-1)+' 個':'準備中')+'）','<span class=\"mut\">⏳ 等待…</span>');AIB[r.ai_id]={node:n,q:q,ctx:ctx||cur}}\n  }catch(e){addMsg('a','錯誤','<span class=\"err\">'+esc(e.message)+'</span>')}\n}\nfunction chips(list){return '<div class=\"chips\">'+list.map(function(c,i){return '<span data-ci=\"'+i+'\" class=\"'+(c[2]||'')+'\">'+esc(c[0])+'</span>'}).join('')+'</div>'}\nfunction wireChips(root,list){root.querySelectorAll('.chips span').forEach(function(sp){sp.onclick=function(){var c=list[+sp.dataset.ci];ask(c[1],cur,c[2]==='ai')}})}\nfunction onEvent(m){\n  if(m.type==='info'){setInfo(m.info)}\n  else if(m.type==='jobs'){setJobs(m.jobs)}\n  else if(m.type==='ai_queue'){var q=$('#aiq');q.style.display=m.n?'':'none';q.textContent='🤖 AI 佇列 '+m.n}\n  else if(m.type==='ai_start'){var b=AIB[m.id];if(b)b.node.querySelector('.h').textContent='AI（讀程式碼中…）'}\n  else if(m.type==='ai_progress'){var b2=AIB[m.id];if(b2)b2.node.querySelector('.b').innerHTML='<span class=\"mut\">⏳ '+esc(m.text)+'</span>'}\n  else if(m.type==='ai_answer'){var b3=AIB[m.id];if(b3){b3.node.querySelector('.h').textContent='AI 回答';b3.node.querySelector('.b').innerHTML=mdToHtml(m.text||'（沒有回答）');if(m.notes_changed){var a=document.createElement('div');a.className='mut';a.textContent='✅ AI 已把確認過的說明補進資料庫';b3.node.appendChild(a)}else if(cur.kind==='file'||cur.kind==='symbol'){var ac=document.createElement('div');ac.className='acts';var bt=document.createElement('button');bt.textContent='把這段存成說明';bt.onclick=function(){saveNote(b3.ctx||cur,m.text,bt)};ac.appendChild(bt);b3.node.appendChild(ac)}}}\n  else if(m.type==='notes_changed'){refreshCur()}\n}\nasync function saveNote(ctx,text,btn){try{await api('POST','/api/note',{path:ctx.path,symbol:ctx.kind==='symbol'?ctx.name:undefined,note:String(text).replace(/\\s+/g,' ').slice(0,480)});if(btn){btn.textContent='✅ 已存入';btn.disabled=true}}catch(e){alert('存入失敗：'+e.message)}}\nfunction setInfo(i){CFG.info=i;$('#ttl').textContent=i.title||CFG.title;$('#stat').textContent=i.files+' 個檔案 · '+i.symbols+' 個定義 · 說明 '+(i.notes_files+i.notes_symbols)+(i.complete?'':' · 部分索引');$('#stat').className='badge'+(i.complete?' ok':'')}\nfunction setJobs(j){var el=$('#jobs');var t=[];if(j.index&&j.index.running)t.push('索引 '+j.index.percent+'%');if(j.dive&&j.dive.running)t.push('深入探討 '+j.dive.done+'/'+j.dive.total);el.style.display=t.length?'':'none';el.textContent='⏳ '+t.join('・')}\n/* ---- 導覽 ---- */\nvar tab='pages';\nasync function renderList(){\n  var q=$('#sq').value.trim(),h='';\n  try{\n    if(q.length>=2){var r=await api('GET','/api/search?q='+encodeURIComponent(q));h=r.hits.map(function(x){return x.type==='symbol'?'<a data-go=\"sym:'+esc(x.name)+'\">'+esc(x.name)+'<span class=\"k\">'+esc(x.kind)+' · '+esc(x.path)+':'+x.line+'</span></a>':'<a data-go=\"file:'+esc(x.path)+'\">'+esc(x.path)+'<span class=\"k\">檔案</span></a>'}).join('')||'<div class=\"mut\" style=\"padding:6px\">沒有結果</div>'}\n    else if(tab==='pages'){var p=await api('GET','/api/pages');h=p.pages.map(function(x){return '<a data-go=\"page:'+esc(x.id)+'\">'+esc(x.title)+(x.auto?'<span class=\"k\">草稿</span>':'')+'</a>'}).join('')||'<div class=\"mut\" style=\"padding:6px\">還沒有百科頁面（/deepwiki wiki 產生）</div>'}\n    else if(tab==='tree'){h='<div id=\"tr\"></div>';$('#list').innerHTML=h;await loadTree('',$('#tr'));return}\n    else if(tab==='syms'){var s=await api('GET','/api/symbols');h=s.symbols.map(function(x){return '<a data-go=\"sym:'+esc(x.name)+'\">'+esc(x.name)+'<span class=\"k\">'+esc(x.kind)+'</span></a>'}).join('')}\n    else{var n=await api('GET','/api/notes');h=n.notes.map(function(x){return '<a data-go=\"'+(x.symbol?'sym:'+esc(x.symbol):'file:'+esc(x.path))+'\">'+esc(x.symbol||x.path)+'<span class=\"k\">'+esc(x.by||'')+(x.stale?' · 可能過期':'')+'</span></a>'}).join('')||'<div class=\"mut\" style=\"padding:6px\">還沒有說明。AI 深入探討或你自己補的說明會出現在這裡。</div>'}\n  }catch(e){h='<div class=\"err\" style=\"padding:6px\">'+esc(e.message)+'</div>'}\n  $('#list').innerHTML=h;\n}\nasync function loadTree(path,host){\n  var r=await api('GET','/api/tree?path='+encodeURIComponent(path));\n  var h='';r.dirs.forEach(function(d){var p=path?path+'/'+d:d;h+='<details data-p=\"'+esc(p)+'\"><summary>'+esc(d)+'/</summary><div></div></details>'});\n  r.files.forEach(function(f){var p=path?path+'/'+f.name:f.name;h+='<a data-go=\"file:'+esc(p)+'\">'+esc(f.name)+(f.note?'<span class=\"k\">✎</span>':'')+'</a>'});\n  if(r.more)h+='<div class=\"mut\" style=\"padding:2px 6px\">…另有 '+r.more+' 項</div>';\n  host.innerHTML=h;\n  host.querySelectorAll('details').forEach(function(dt){dt.addEventListener('toggle',function(){if(dt.open&&!dt.dataset.loaded){dt.dataset.loaded=1;loadTree(dt.dataset.p,dt.querySelector('div'))}})});\n}\nfunction link(path,label){return '<a class=\"l\" data-go=\"file:'+esc(path)+'\">'+esc(label||path)+'</a>'}\nfunction slink(n){return '<a class=\"l\" data-go=\"sym:'+esc(n)+'\">'+esc(n)+'</a>'}\nasync function showPage(id){cur={kind:'page',key:id,path:'',name:id};var r=await api('GET','/api/page?id='+encodeURIComponent(id));var cs=[['這個專案整體怎麼分層？','這個專案整體怎麼分層、主要模組有哪些'],['請 AI 用白話說明這一頁','請用白話說明這一頁（'+r.title+'）的重點，並指出最值得先看的檔案','ai']];$('#main').innerHTML='<div class=\"md\">'+(r.auto?'<div class=\"note\">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(r.md)+'</div>'+chips(cs);wireChips($('#main'),cs);$('#main').scrollTop=0}\nasync function showFile(path){\n  cur={kind:'file',key:path,path:path,name:path};\n  var f=await api('GET','/api/file?path='+encodeURIComponent(path));\n  var h='<h1 class=\"t\">'+esc(path)+'</h1><div><span class=\"tag\">'+esc(f.lang)+'</span><span class=\"tag\">'+f.lines+' 行</span>'+(f.note_stale?'<span class=\"tag\" style=\"color:var(--er)\">說明可能過期</span>':'')+'</div>';\n  h+=f.note?'<div class=\"note\"><b>說明</b>（'+esc(f.note_by||'AI')+'）：'+esc(f.note)+' <a class=\"l\" id=\"editnote\">編輯</a></div>':'<div class=\"mut\">還沒有說明。<a class=\"l\" id=\"editnote\">自己補一段</a>，或請 AI 讀過後補。</div>';\n  if(f.doc)h+='<p>'+esc(f.doc)+'</p>';\n  var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];\n  h+=chips(cs)+'<div><button id=\"src\">看程式碼</button></div><div id=\"srcbox\"></div>';\n  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class=\"tag\">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+esc(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class=\"mut\">（沒有抽到定義）</div>');\n  h+='<h2>引用了誰（'+f.imports.length+'）</h2>'+(f.imports.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class=\"mut\">（沒有）</div>');\n  h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class=\"mut\">（沒有）</div>');\n  $('#main').innerHTML=h;$('#main').scrollTop=0;\n  $('#main').querySelectorAll('.chips span').forEach(function(sp){sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class=\"mut\">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class=\"err\">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});\n  $('#editnote').onclick=function(){var t=prompt('這個檔案的說明（一兩句：做什麼、為什麼存在、要注意什麼）：',f.note||'');if(t&&t.trim().length>=6)saveNote(cur,t)};\n  $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class=\"mut\">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class=\"err\">'+esc(e.message)+'</span>'}};\n}\nasync function showSym(name){\n  cur={kind:'symbol',key:name,path:'',name:name};\n  var r=await api('GET','/api/symbol?name='+encodeURIComponent(name));\n  if(!r.defs.length){$('#main').innerHTML='<div class=\"note\">索引裡沒有「'+esc(name)+'」</div>';return}\n  cur.path=r.defs[0].path;\n  var h='<h1 class=\"t\">'+esc(name)+'</h1><div class=\"mut\">'+r.defs.length+' 個定義</div>';\n  var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];\n  r.defs.slice(0,10).forEach(function(d){\n    h+='<h2>'+esc(d.kind)+'　'+link(d.path,d.path+':'+d.line)+'</h2>';\n    h+=d.note?'<div class=\"note\"><b>說明</b>（'+esc(d.note_by||'AI')+(d.stale?'，可能過期':'')+'）：'+esc(d.note)+'</div>':(d.doc?'':'<div class=\"mut\">還沒有說明。</div>');\n    if(d.doc)h+='<p>'+esc(d.doc)+'</p>';\n    if(d.sig)h+='<pre>'+esc(d.sig)+'</pre>';\n    if(d.users&&d.users.length)h+='<div><b>被這些檔案使用（'+d.users.length+'）：</b> '+d.users.slice(0,20).map(function(p){return link(p)}).join('、')+'</div>';\n    if(d.same&&d.same.length)h+='<div style=\"margin-top:4px\"><b>同檔案的其他定義：</b> '+d.same.map(slink).join('、')+'</div>';\n  });\n  h+=chips(cs);$('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;\n}\nfunction go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class=\"note\">'+esc(e.message)+'</div>'})}\nfunction refreshCur(){if(cur.kind==='file')showFile(cur.key);else if(cur.kind==='symbol')showSym(cur.key);else if(cur.kind==='page')showPage(cur.key);if(tab==='notes')renderList()}\ndocument.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});\ndocument.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#sq').value='';renderList()}});\nvar sqT=null;$('#sq').oninput=function(){clearTimeout(sqT);sqT=setTimeout(renderList,250)};\n$('#ask').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,false)};\n$('#askai').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,true)};\n$('#q').onkeydown=function(e){if(e.key==='Enter'){var v=$('#q').value;$('#q').value='';ask(v,cur,e.shiftKey)}};\n$('#btnNet').onclick=function(){var d=$('#net');d.open=!d.open};\n(async function(){\n  try{setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length)showPage(p.pages[0].id);else $('#main').innerHTML='<h1 class=\"t\">'+esc(CFG.title)+'</h1><div class=\"mut\">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}\n  catch(e){$('#main').innerHTML='<div class=\"note err\">載入失敗：'+esc(e.message)+'</div>'}\n  connect();\n})();\n})();\n</script>\n</body></html>\n";
+/* AIDOCVIEW-END */
 function _faU8ToB64(u8) { let out = ''; for (let i = 0; i < u8.length; i += 0x8000) out += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(out); }
 
 // repo_wiki產生的單檔查詢頁面（資料內嵌，不需要網路）。__DATA__會被換成索引JSON。
@@ -5359,7 +5367,7 @@ const DUBBING_EXPORT_FPS = 24; // 純畫面passthrough，不需要跟來源影�
 // github三個走各自的官方JSON API（穩定、有結構化snippet）；news是Google
 // News官方RSS Feed（穩定、真正依時間排序，2026-09-09使用者實測回報google
 // 來源對「今日焦點新聞」這類查詢效果很差後新增，見_browserSearch/worker.js
-// 的說明）；google/sourceforge/codeproject/deepwiki四個沒有可靠的官方
+// 的說明）；google/sourceforge/codeproject/aidoc四個沒有可靠的官方
 // 搜尋API或CORS支援（google自己的搜尋結果頁面近年高度JS化，直接fetch
 // 拿不到可解析的連結；sourceforge/codeproject會擋掉非瀏覽器的自動化請求；
 // deepwiki是純SPA），改用DuckDuckGo的HTML介面(html.duckduckgo.com/html/)
@@ -8895,6 +8903,17 @@ class FloatingAssistant {
             }
         );
         this.register_slash_command(
+            '/aidoc', 'index [資料夾]｜status｜stop｜ask <問題>｜wiki｜export sqlite|qa｜list',
+            '專案索引（類似AIDoc＋doxygen）：建立索引（背景漸進）、問程式碼（函式做什麼／在哪定義／誰用到）、產生專案百科、匯出內嵌SQLite的單檔HTML。桌面版直接用資料夾路徑，網頁版選完資料夾自動授權成fap',
+            async (argsText) => {
+                // 選資料夾需要使用者手勢，所以這裡不能先 await 別的東西
+                await this._aidocCommand(argsText);
+            },
+            ['view', 'index', 'status', 'stop', 'ask', 'wiki', 'export sqlite', 'export qa', 'list']
+        );
+        // /aidoc 的別名（舊名 /deepwiki 繼續可用）
+        { const e = this.slashCommands.get('/aidoc'); if (e) ['/ai-repo-doc', '/deepwiki'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: al === '/deepwiki' ? '（舊名，等於 /aidoc）' + e.desc : '（等於 /aidoc）' + e.desc }))); }
+        this.register_slash_command(
             '/offline-trainer-by-ai', '<目標>＋清單｜status｜stop｜resume｜report',
             'AI 教離線訓練器（通用）：讓 AI 處理一個任務或一長串同類項目，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
             async (argsText) => {
@@ -9885,6 +9904,7 @@ class FloatingAssistant {
             offlineThreshold: 0.45,
             repoIndexMaxFiles: 50000, // 專案索引：最多分析幾個原始碼檔
             repoIndexMaxMb: 100, // 專案索引：索引大小上限（MB）
+            repoIndexAutoSave: 'off', // 專案索引：完成後自動存回專案資料夾的 .floating-assistant/index/（'notes'＝只存說明、'all'＝說明＋索引資料、'off'＝不存）
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -11054,6 +11074,7 @@ class FloatingAssistant {
             offlineAutoFallback: raw.offlineAutoFallback !== false,
             offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 100 && n <= 2000000 ? n : 50000; })(),
+            repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'off',
             repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 5 && n <= 2000 ? n : 100; })(),
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
             customLanguages: (() => {
@@ -12004,14 +12025,15 @@ ${fnData.code}
         );
 
         registerOptional('repo_map',
-            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾：網頁版用已授權資料夾的參照（fap:名稱[/子路徑]），桌面版也可以直接給絕對路徑（例如 C:/專案 或 /home/me/專案）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／index_start（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後在**背景**慢慢做，進度顯示在對話裡，可接續；參數max_files、max_mb（索引大小上限；沒給就用「設定 → AI → 專案索引」裡的值，預設50000個檔／100MB）、reanalyze:true（舊地圖補上註解與呼叫關係）、exports:["sqlite_html","qa_html"]完成後自動匯出）／index_status（看背景索引進度，不要一直輪詢）／index_stop／annotate（記下你對某檔案的理解）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。**大型專案（例如已經build過的OpenBMC／Yocto樹）**：建置輸出、下載快取、Yocto暫存會自動略過（status的skipped會列出），只展開真正的原始碼；find會優先往名稱相關的方向找；清單類結果太長時會分頁（has_more／next_offset，下一次帶offset接著取），不要重複呼叫同一個沒有offset的請求。真的要看被略過的路徑：build帶include。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
+            '專案結構追蹤：有專案／repository時，**先追出結構再動手**，而且是分階段建立（不用一次讀完）。root=專案資料夾：網頁版用已授權資料夾的參照（fap:名稱[/子路徑]），桌面版也可以直接給絕對路徑（例如 C:/專案 或 /home/me/專案）。動作：status（看地圖建到哪）／build（建一階段：第一次建最小的outline＝頂層兩層資料夾＋專案設定檔；之後每次展開一批資料夾，再每次分析一批原始碼檔）／find（query給很模糊的名稱也可以，沒有地圖會自動先建，逐批展開直到找到原始碼，回傳候選與理由）／explore（from=檔案，沿依賴往外一層層看：它引用誰、定義了什麼；direction:importers看誰用到它）／resolve（path=找不到的路徑：當成「結構改變」，只從最近還存在的那一層重新追，回傳差異與搬家後的候選）／refresh（重新列出已知資料夾找變動；deep:true連檔案內容變了也找）／tree（用地圖畫目錄樹）／index_start（整份專案建完整索引——**會先跳出詢問使用者要不要**，同意後在**背景**慢慢做，進度顯示在對話裡，可接續；參數max_files、max_mb（索引大小上限；沒給就用「設定 → AI → 專案索引」裡的值，預設50000個檔／100MB）、reanalyze:true（舊地圖補上註解與呼叫關係）、exports:["sqlite_html","qa_html"]完成後自動匯出）／index_status（看背景索引進度，不要一直輪詢）／index_stop／annotate（把你讀過程式碼後確認的說明補進資料庫：path＋note＝檔案說明，symbols:{函式名:說明}或symbol＋note＝定義的說明，items可一次多筆；之後repo_ask、repo_wiki、匯出的HTML都會用到）／dive_targets（還沒有說明、依重要程度排序的檔案清單，給你規劃深入探討）／save_index／load_index（把索引的說明＋資料存進／讀回專案資料夾的.floating-assistant/index/，不同人拿同一份專案可以接著延伸）／export_index／import_index（單一檔案的索引備份／匯入）／reset。**用法：不知道檔案在哪→find；找到後→explore；讀檔案回報「找不到檔案」→用resolve，不要猜路徑；專案有變動→refresh。** 每次回傳都有next_action照著做。**大型專案（例如已經build過的OpenBMC／Yocto樹）**：建置輸出、下載快取、Yocto暫存會自動略過（status的skipped會列出），只展開真正的原始碼；find會優先往名稱相關的方向找；清單類結果太長時會分頁（has_more／next_offset，下一次帶offset接著取），不要重複呼叫同一個沒有offset的請求。真的要看被略過的路徑：build帶include。範例：repo_map({"action":"find","root":"fap:我的專案","query":"登入"})。限制：依賴是用文字規則抽出來的（JS/TS/Python/Go/Rust/Java/Kotlin/C/C++/Ruby/PHP/Shell等），動態載入與框架魔法抓不到；檔案內容改了但名稱沒變，要refresh加deep才看得出來。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 return JSON.stringify(await this._repoMapRun(parsed));
             },
             { type: 'object', properties: {
-                action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'index_start', 'index_status', 'index_stop', 'build_index', 'annotate', 'reset'] },
+                action: { type: 'string', enum: ['status', 'build', 'find', 'explore', 'resolve', 'refresh', 'tree', 'index_start', 'index_status', 'index_stop', 'build_index', 'annotate', 'dive_targets', 'save_index', 'load_index', 'export_index', 'import_index', 'reset'] },
+                symbol: { type: 'string', description: 'annotate：定義的名稱（搭配note寫那個定義的說明）' }, symbols: { type: 'object', description: 'annotate：{定義名稱:說明}' }, items: { type: 'array', items: { type: 'object' }, description: 'annotate：一次多筆 [{path,note,symbols}]（最多40）' }, include_map: { type: 'boolean', description: 'save_index／export_index：連索引資料一起（檔案可能很大）' }, data: { type: 'object', description: 'import_index：export_index匯出的檔案內容' },
                 max_files: { type: 'number', description: 'index_start：最多分析幾個原始碼檔（預設50000）' }, max_mb: { type: 'number', description: 'index_start：索引大小上限（MB，預設100）' }, reanalyze: { type: 'boolean', description: 'index_start：舊版地圖的檔案重新分析（補上註解與呼叫關係）' }, exports: { type: 'array', items: { type: 'string', enum: ['sqlite_html', 'qa_html'] }, description: 'index_start：完成後自動匯出' },
                 root: { type: 'string', description: '專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑' },
                 query: { type: 'string', description: 'find：檔名、功能或專案名稱的關鍵字（模糊也可以）' },
@@ -12030,7 +12052,7 @@ ${fnData.code}
         );
 
         registerOptional('repo_ask',
-            '程式碼問答（類似doxygen＋語意搜尋）：問專案裡「某個函式／類別做什麼用」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。需要先有repo_map索引（repo_map index_start，會問使用者並在背景建立；索引不完整時回答會註明）。question用自然語言，函式或檔案名稱照原樣寫，中英文都可以。回傳依索引整理的事實answer（定義位置、註解、簽名、呼叫它的檔案、依賴）與程式碼片段snippets——**用這些回答，說明用途要以snippets的程式碼為準，不要編造**。action:search只回相近的定義／檔案清單；action:stats看索引規模。範例：repo_ask({"root":"fap:我的專案","question":"parse_config 是做什麼的"})、repo_ask({"root":"C:/src/openbmc","question":"誰用到 sdbusplus::bus"})。',
+            '程式碼問答（類似doxygen＋語意搜尋）：問專案裡「某個函式／類別做什麼用」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。需要先有repo_map索引（repo_map index_start，會問使用者並在背景建立；索引不完整時回答會註明）。question用自然語言，函式或檔案名稱照原樣寫，中英文都可以。回傳依索引整理的事實answer（定義位置、註解、簽名、呼叫它的檔案、依賴）與程式碼片段snippets——**用這些回答，說明用途要以snippets的程式碼為準，不要編造**。action:search只回相近的定義／檔案清單；action:stats看索引規模。**你讀過程式碼確認了某個函式／檔案在做什麼之後，用 repo_map annotate 補進資料庫**，之後問同樣的問題（你、同事、匯出的HTML）就會直接得到這份說明。範例：repo_ask({"root":"fap:我的專案","question":"parse_config 是做什麼的"})、repo_ask({"root":"C:/src/openbmc","question":"誰用到 sdbusplus::bus"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -12045,7 +12067,7 @@ ${fnData.code}
         );
 
         registerOptional('repo_wiki',
-            '專案索引百科（類似DeepWiki）：把repo_map追出來的結構整理成**有內容的百科**，存進persistentStorage（IndexedDB），並產生單檔的查詢頁面（頁面／結構／定義／名詞，可搜尋；有依賴圖）。**不要自己用一份markdown把檔案清單抄一遍**（專案大時清單會被系統截斷，內容也會很空）——照下面的分階段流程：①plan（依地圖算出模組與頁面清單：概覽、架構、各模組、建置…）②每一頁 evidence（只給這一頁需要的事實與程式碼片段，附寫法規定與依結構自動產生的草稿）→ 你寫成有說明文字的markdown → write_page（會驗證：標題、字數、引用的檔案必須真的存在、不能編造、不能留佔位字，不合格會告訴你怎麼改）③finalize（組成HTML與markdown，沒寫的頁面用自動草稿補上；預設在畫面開啟並提供下載；write_to_repo:true會問使用者要不要寫進專案的.floating-assistant/wiki/）。頁面多時，每一頁委派給「頁面撰寫」子任務（delegate_to_subagent domain:wiki_writer）避免上下文爆掉。**export（需要先有repo_map索引）：產生可離線開啟的單檔HTML——format:"sqlite_html"內嵌SQLite，可以看百科畫面、瀏覽檔案與符號、問答、直接下SQL查檔案關聯；format:"qa_html"是純HTML／JavaScript的問答頁**。其他動作：generate（plan＋用草稿finalize，快速看結果）／pages（頁面清單與進度）／query（q=關鍵字）／define（symbol=函式或類別，回傳定義位置與程式碼片段）／page（path=檔案或資料夾；或page_id=百科頁面）／add_term（term＋definition）／status。需要先有repo_map的地圖，涵蓋範圍就是已分析過的檔案（要完整先repo_map build_index，會問使用者）。範例：repo_wiki({"action":"plan","root":"fap:我的專案"})、repo_wiki({"action":"evidence","root":"fap:我的專案","page_id":"overview"})。',
+            '專案索引百科（類似AIDoc）：把repo_map追出來的結構整理成**有內容的百科**，存進persistentStorage（IndexedDB），並產生單檔的查詢頁面（頁面／結構／定義／名詞，可搜尋；有依賴圖）。**不要自己用一份markdown把檔案清單抄一遍**（專案大時清單會被系統截斷，內容也會很空）——照下面的分階段流程：①plan（依地圖算出模組與頁面清單：概覽、架構、各模組、建置…）②每一頁 evidence（只給這一頁需要的事實與程式碼片段，附寫法規定與依結構自動產生的草稿）→ 你寫成有說明文字的markdown → write_page（會驗證：標題、字數、引用的檔案必須真的存在、不能編造、不能留佔位字，不合格會告訴你怎麼改）③finalize（組成HTML與markdown，沒寫的頁面用自動草稿補上；預設在畫面開啟並提供下載；write_to_repo:true會問使用者要不要寫進專案的.floating-assistant/wiki/）。頁面多時，每一頁委派給「頁面撰寫」子任務（delegate_to_subagent domain:wiki_writer）避免上下文爆掉。**export（需要先有repo_map索引）：產生可離線開啟的單檔HTML——format:"sqlite_html"內嵌SQLite，可以看百科畫面、瀏覽檔案與符號、問答、直接下SQL查檔案關聯；format:"qa_html"是純HTML／JavaScript的問答頁**。其他動作：generate（plan＋用草稿finalize，快速看結果）／pages（頁面清單與進度）／query（q=關鍵字）／define（symbol=函式或類別，回傳定義位置與程式碼片段）／page（path=檔案或資料夾；或page_id=百科頁面）／add_term（term＋definition）／status。需要先有repo_map的地圖，涵蓋範圍就是已分析過的檔案（要完整先repo_map build_index，會問使用者）。範例：repo_wiki({"action":"plan","root":"fap:我的專案"})、repo_wiki({"action":"evidence","root":"fap:我的專案","page_id":"overview"})。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -13498,7 +13520,7 @@ ${fnData.code}
         // 參數解析/cache命中判斷/呼叫Worker/寫回cache，跟其他registerOptional
         // 工具一樣的薄callback模式。
         registerOptional('browser_search',
-            `向外部網站搜尋資料（技術文件/開源專案/問答討論串/一般網頁），來源代號：${BROWSER_SEARCH_SOURCES.join('/')}。google實際上是透過DuckDuckGo代打（Google對自動化請求的回應格式不穩定，不是真的呼叫Google）；sourceforge/codeproject/deepwiki是用site:限定範圍的網頁搜尋代打（這三個網站自己的搜尋功能無法從伺服器端穩定存取），只有wiki/stackoverflow/github三個是呼叫各自的官方搜尋API。結果只有標題+連結+摘要，不是完整網頁內容，需要更多細節時把最相關的連結告訴使用者、不要自己編造網頁沒提到的細節。查詢結果會快取1天，同樣的查詢短時間內重複呼叫不會產生新的網路請求。這個工具需要host頁面已經設定好Cloudflare Worker端點才能使用，若回傳"尚未設定"錯誤，請直接把這個限制告訴使用者，不要嘗試用其他工具繞過。參數: {"query":"搜尋關鍵字","sources":["wiki","github",...]}（sources選填，留空＝查詢全部${BROWSER_SEARCH_SOURCES.length}個來源）`,
+            `向外部網站搜尋資料（技術文件/開源專案/問答討論串/一般網頁），來源代號：${BROWSER_SEARCH_SOURCES.join('/')}。google實際上是透過DuckDuckGo代打（Google對自動化請求的回應格式不穩定，不是真的呼叫Google）；sourceforge/codeproject/aidoc是用site:限定範圍的網頁搜尋代打（這三個網站自己的搜尋功能無法從伺服器端穩定存取），只有wiki/stackoverflow/github三個是呼叫各自的官方搜尋API。結果只有標題+連結+摘要，不是完整網頁內容，需要更多細節時把最相關的連結告訴使用者、不要自己編造網頁沒提到的細節。查詢結果會快取1天，同樣的查詢短時間內重複呼叫不會產生新的網路請求。這個工具需要host頁面已經設定好Cloudflare Worker端點才能使用，若回傳"尚未設定"錯誤，請直接把這個限制告訴使用者，不要嘗試用其他工具繞過。參數: {"query":"搜尋關鍵字","sources":["wiki","github",...]}（sources選填，留空＝查詢全部${BROWSER_SEARCH_SOURCES.length}個來源）`,
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -18034,6 +18056,564 @@ ${fnData.code}
     }
 
     // ===== Offline Trainer 管理介面（Configure → AI → 離線訓練器；跟RAG知識庫放在一起管理）=====
+    // ===== 專案索引：AI 深入探討（dive）——把AI讀過程式碼後得到的說明補進資料庫 =====
+    // 索引只能抽出「結構」（定義、註解、依賴、呼叫）。真正的「這個檔案／函式在幹嘛、為什麼這樣設計」要靠AI讀過程式碼才知道；
+    // 這些說明用 repo_map annotate 寫進資料庫（file notes／symbol notes），之後 repo_ask、repo_wiki、匯出的HTML（含SQLite的note欄位）都會用到。
+    // dive 會依「重要程度」（被引用數、定義數、入口檔）排出還沒有說明的檔案，一個檔案一個全新的AI子任務，逐一補完；可停止，之後接續（沒有說明的檔案自然就是還沒做的）。
+    async _repoDiveTargets(key, limit) {
+        const st = await this._codeStoreGet(key);
+        if (!st || !st.db.files.length) return null;
+        const { db, ix } = st;
+        const ENTRY = /^(main|index|app|server|cli|__main__|manage|program|startup|bootstrap|run|start)\.[a-z]+$/i;
+        const rows = [];
+        db.files.forEach((f, i) => {
+            if (f[4] || (f[2] || 0) < 10) return; // 已經有AI的說明、或太小
+            const base = f[0].slice(f[0].lastIndexOf('/') + 1);
+            const syms = (ix.fileSyms[i] || []).length;
+            const inn = (ix.impIn[i] || []).length;
+            const used = (ix.fileSyms[i] || []).reduce((n, k) => n + (ix.usedBy[k] ? ix.usedBy[k].length : 0), 0);
+            rows.push({ path: f[0], score: inn * 3 + Math.min(used, 60) * 0.5 + syms / 2 + (ENTRY.test(base) ? 6 : 0) + (f[3] ? 0.5 : 0), lines: f[2], symbols: syms, imported_by: inn });
+        });
+        rows.sort((a, b) => b.score - a.score);
+        const annotated = db.files.filter((f) => f[4]).length;
+        return { targets: rows.slice(0, Math.max(1, Math.min(500, Number(limit) || 30))), remaining: rows.length, annotated, total: db.files.length };
+    }
+    async _aidocDive(root, o) {
+        o = o || {};
+        const key = this._repoMapKey(root);
+        const cur = this._diveJob;
+        if (cur && cur.state === 'running') return { ok: false, error: '已經有一個深入探討在進行（/aidoc stop 可以停止）' };
+        const first = await this._repoDiveTargets(key, o.limit || 100);
+        if (!first) return { ok: false, error: '這個專案還沒有索引，先 /aidoc index' };
+        if (!first.targets.length) return { ok: true, nothing: true, note: '沒有還沒補說明的檔案了（已補 ' + first.annotated + '／' + first.total + '）。' };
+        const job = { id: 'dive_' + Date.now().toString(36), root: key, state: 'running', done: 0, failed: 0, total: Math.min(first.targets.length, Math.max(1, Number(o.limit) || 100)), started: Date.now(), current: '', stop: false };
+        this._diveJob = job;
+        const prog = this._createProgressWidget('專案深入探討：' + (key.split('/').filter(Boolean).pop() || key));
+        const tick = (force) => prog.update({ pct: job.total ? (job.done + job.failed) / job.total * 100 : 0, status: '已補說明 ' + job.done + ' 個檔案、跳過 ' + job.failed + ' · 共 ' + job.total + ' 個（依重要程度）· 已用 ' + this._repoJobFmtTime((Date.now() - job.started) / 1000) + (job.current ? '\n目前：' + job.current.slice(-70) : ''), force });
+        (async () => {
+            try {
+                let targets = first.targets.slice(0, job.total);
+                for (const t of targets) {
+                    if (job.stop) break;
+                    job.current = t.path; tick();
+                    const before = ((await this._repoMapLoad(key)) || { notes: {} }).notes[t.path];
+                    const prompt = '專案：' + key + '\n要補說明的檔案：' + t.path + '（' + t.lines + ' 行、定義 ' + t.symbols + ' 個、被 ' + t.imported_by + ' 個檔案引用）\n\n照規範讀這個檔案，把你確認過的說明用 repo_map annotate 補進資料庫，最後輸出一行JSON回報。';
+                    try { await this._runSubAgentTask(prompt, 14, { systemPrompt: FA_DIVE_PROTOCOL, allowedToolNames: Object.keys(this.tools).filter((n) => /^(repo_map|repo_ask|coding_read_file|fap_read_file|fap_list_files|fap_find_file|fs_read_file|fs_list_files|list_file_access_points)$/.test(n)) }); } catch (_) {}
+                    const after = ((await this._repoMapLoad(key)) || { notes: {} }).notes[t.path];
+                    if (after && after !== before) job.done++; else job.failed++;
+                    tick();
+                    await new Promise((r) => setTimeout(r, 300));
+                }
+                job.state = job.stop ? 'stopped' : 'done';
+            } catch (e) { job.state = 'error'; job.error = String((e && e.message) || e); }
+            finally {
+                job.current = '';
+                if (job.state === 'done') prog.finish('完成：補了 ' + job.done + ' 個檔案的說明，跳過 ' + job.failed); else if (job.state === 'stopped') prog.finish('已停止：補了 ' + job.done + ' 個（之後再 /aidoc dive 會從還沒說明的檔案接續）'); else prog.fail(job.error || '中斷');
+                this._pushAssistantMessage('🔎 專案深入探討' + (job.state === 'done' ? '完成' : job.state === 'stopped' ? '已停止' : '中斷') + '：補了 ' + job.done + ' 個檔案的說明（跳過 ' + job.failed + '）。現在 /aidoc ask 與匯出的 HTML 都會用到這些說明。', null);
+                this._persistChatHistory(); this._renderMessageHistory();
+                try { await this._repoIndexAutoSave(key); } catch (_) {}
+            }
+        })();
+        return { ok: true, id: job.id, total: job.total };
+    }
+    // ===== 專案索引：AI補的說明（notes）與索引檔的匯出／匯入／存進專案資料夾 =====
+    _repoAnnotate(map, parsed) {
+        const items = Array.isArray(parsed.items) && parsed.items.length ? parsed.items.slice(0, 40) : [{ path: parsed.path, note: parsed.note, symbol: parsed.symbol, symbols: parsed.symbols }];
+        map.notes = map.notes || {}; map.notes_meta = map.notes_meta || {}; map.sym_notes = map.sym_notes || {}; map.sym_notes_meta = map.sym_notes_meta || {};
+        const clean = (t) => String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+        const saved = { files: [], symbols: 0 }, errors = [];
+        const now = Date.now(), by = parsed.by === 'user' ? 'user' : 'ai';
+        for (const it of items) {
+            const p = String((it && it.path) || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+            if (!p) { errors.push('缺少 path（相對於root的檔案或資料夾）'); continue; }
+            const f = map.files[p];
+            const h = f ? f.hash : undefined;
+            const symNotes = {};
+            if (it.symbols && typeof it.symbols === 'object') Object.assign(symNotes, it.symbols);
+            if (it.symbol && it.note) symNotes[it.symbol] = it.note;
+            else if (it.note) {
+                const n = clean(it.note);
+                if (n.length < 6) errors.push(p + '：note太短（至少6字：這個檔案做什麼、為什麼存在、要注意什麼）');
+                else { map.notes[p] = n.slice(0, 500); map.notes_meta[p] = { by, at: now, h }; saved.files.push(p); }
+            }
+            for (const [name, raw] of Object.entries(symNotes)) {
+                if (!f) { errors.push(p + '：還沒分析過這個檔案，不能補符號說明（先 repo_map explore）'); break; }
+                const n = clean(raw);
+                if (n.length < 6) { errors.push(p + '#' + name + '：說明太短（至少6字）'); continue; }
+                if (!(f.symbols || []).some((s) => s.n === name)) { const cand = (f.symbols || []).map((s) => s.n).filter((x) => x.toLowerCase().indexOf(String(name).toLowerCase()) >= 0).slice(0, 5); errors.push(p + '#' + name + '：這個檔案的索引裡沒有這個定義' + (cand.length ? '，相近：' + cand.join('、') : '')); continue; }
+                (map.sym_notes[p] = map.sym_notes[p] || {})[name] = n.slice(0, 500);
+                map.sym_notes_meta[p + '#' + name] = { by, at: now, h };
+                saved.symbols++;
+            }
+        }
+        const any = saved.files.length || saved.symbols;
+        if (any) map.notes_ver = (map.notes_ver || 0) + 1;
+        return { ok: !!any, saved, errors: errors.length ? errors : undefined, error: any ? undefined : (errors[0] || '沒有可以寫入的說明'), note: any ? '已寫進資料庫：之後 repo_ask、repo_wiki、匯出的HTML（含SQLite的note欄位）都會用到；要讓同事也看到，用 repo_map save_index 存進專案資料夾。' : undefined };
+    }
+    // 說明是在檔案內容改變「之前」寫的嗎（寫的時候記了檔案hash，現在的hash不一樣＝可能過期）
+    _repoNoteStale(map, p, name) {
+        const meta = name ? (map.sym_notes_meta || {})[p + '#' + name] : (map.notes_meta || {})[p];
+        const f = map.files && map.files[p];
+        return !!(meta && meta.h && f && f.hash && meta.h !== f.hash);
+    }
+    // 索引快照：meta（小）、notes（小、git友善：鍵排序、一項一行）、map（大，可選；可由專案重建）
+    _repoIndexSnapshot(map, includeMap) {
+        const sortObj = (o) => Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]]));
+        const notes = { format: 'fa-project-notes', version: 1, files: {}, symbols: {}, glossary: {} };
+        Object.keys(map.notes || {}).sort().forEach((p) => { notes.files[p] = Object.assign({ note: map.notes[p] }, (map.notes_meta || {})[p] || {}); });
+        Object.keys(map.sym_notes || {}).sort().forEach((p) => Object.keys(map.sym_notes[p]).sort().forEach((n) => { notes.symbols[p + '#' + n] = Object.assign({ note: map.sym_notes[p][n] }, (map.sym_notes_meta || {})[p + '#' + n] || {}); }));
+        Object.keys(map.glossary || {}).sort().forEach((t) => { notes.glossary[t] = Object.assign({}, map.glossary[t]); });
+        const st = this._repoMapStats(map);
+        const meta = { format: 'fa-project-index', version: 1, generated_at: new Date().toISOString(), root_label: String(map.root || '').split('/').filter(Boolean).pop() || '', complete: !!map.index_built, tier: map.tier || 0, files: st.source_files_analyzed, symbols: st.symbols, notes: { files: Object.keys(notes.files).length, symbols: Object.keys(notes.symbols).length, terms: Object.keys(notes.glossary).length }, has_map: !!includeMap };
+        const out = { meta, notes };
+        if (includeMap) {
+            const copy = Object.assign({}, map);
+            delete copy.changes; delete copy.index_approved; delete copy.reanalyze; delete copy.notes; delete copy.notes_meta; delete copy.sym_notes; delete copy.sym_notes_meta; delete copy.glossary; delete copy.root;
+            out.map = Object.assign({ format: 'fa-project-map', version: 1 }, copy);
+        }
+        return out;
+    }
+    // 把別人（或自己上次）存的索引合併進目前的地圖。說明：同一個鍵，時間較新的贏；地圖：只補本機沒有的檔案與資料夾（本機的比較新，不覆蓋）
+    _repoIndexMerge(map, data) {
+        const rep = { notes: { added: 0, updated: 0, kept: 0, stale: 0 }, symbols: { added: 0, updated: 0, kept: 0, stale: 0 }, glossary: { added: 0, updated: 0 }, map: { files_added: 0, dirs_added: 0, manifests_added: 0 } };
+        map.notes = map.notes || {}; map.notes_meta = map.notes_meta || {}; map.sym_notes = map.sym_notes || {}; map.sym_notes_meta = map.sym_notes_meta || {}; map.glossary = map.glossary || {};
+        const nt = data.notes || {};
+        const newer = (inc, cur) => (inc && inc.at ? inc.at : 0) > (cur && cur.at ? cur.at : 0);
+        for (const [p, v] of Object.entries(nt.files || {})) {
+            if (!v || typeof v.note !== 'string') continue;
+            const cur = map.notes[p];
+            if (cur === undefined) { map.notes[p] = v.note; map.notes_meta[p] = { by: v.by, at: v.at, h: v.h }; rep.notes.added++; }
+            else if (cur !== v.note && newer(v, map.notes_meta[p])) { map.notes[p] = v.note; map.notes_meta[p] = { by: v.by, at: v.at, h: v.h }; rep.notes.updated++; }
+            else rep.notes.kept++;
+        }
+        for (const [k, v] of Object.entries(nt.symbols || {})) {
+            if (!v || typeof v.note !== 'string') continue;
+            const i = k.indexOf('#');
+            if (i < 1) continue;
+            const p = k.slice(0, i), name = k.slice(i + 1);
+            const cur = (map.sym_notes[p] || {})[name];
+            if (cur === undefined) { (map.sym_notes[p] = map.sym_notes[p] || {})[name] = v.note; map.sym_notes_meta[k] = { by: v.by, at: v.at, h: v.h }; rep.symbols.added++; }
+            else if (cur !== v.note && newer(v, map.sym_notes_meta[k])) { map.sym_notes[p][name] = v.note; map.sym_notes_meta[k] = { by: v.by, at: v.at, h: v.h }; rep.symbols.updated++; }
+            else rep.symbols.kept++;
+        }
+        for (const [t, v] of Object.entries(nt.glossary || {})) {
+            if (!v || !v.definition) continue;
+            if (!map.glossary[t]) { map.glossary[t] = v; rep.glossary.added++; } else if (map.glossary[t].definition !== v.definition && newer(v, map.glossary[t])) { map.glossary[t] = v; rep.glossary.updated++; }
+        }
+        const im = data.map;
+        if (im && im.files) {
+            for (const [p, f] of Object.entries(im.files)) if (!map.files[p]) { map.files[p] = Object.assign({}, f, { imported: true }); rep.map.files_added++; }
+            for (const [p, d] of Object.entries(im.dirs || {})) if (!map.dirs[p]) { map.dirs[p] = d; rep.map.dirs_added++; }
+            for (const [p, m] of Object.entries(im.manifests || {})) if (!map.manifests[p]) { map.manifests[p] = m; rep.map.manifests_added++; }
+            if (im.tier != null && (map.tier || 0) < im.tier) map.tier = im.tier;
+            if (map.stage === 'none') map.stage = 'deps';
+            if (im.index_built && !map.index_built && rep.map.files_added) { map.index_built = true; map.stage = 'index'; }
+            map.imported_at = Date.now();
+        }
+        // 說明是不是在檔案改變前寫的
+        for (const p of Object.keys(map.notes)) if (this._repoNoteStale(map, p)) rep.notes.stale++;
+        for (const p of Object.keys(map.sym_notes)) for (const n of Object.keys(map.sym_notes[p])) if (this._repoNoteStale(map, p, n)) rep.symbols.stale++;
+        map.notes_ver = (map.notes_ver || 0) + 1;
+        return rep;
+    }
+    _repoIndexDir() { return '.floating-assistant/index'; }
+    // 專案資料夾裡有沒有別人存的索引（只讀很小的meta.json）
+    async _repoSharedIndexPeek(io) {
+        try { const t = await io.readText(this._repoIndexDir() + '/meta.json'); if (!t) return null; const m = JSON.parse(t); return m && m.format === 'fa-project-index' ? m : null; } catch (_) { return null; }
+    }
+    async _repoIndexSaveToProject(key, opts) {
+        opts = opts || {};
+        const io = await this._repoMapIo(key);
+        const map = await this._repoMapLoad(key);
+        if (!map) return { ok: false, error: '這個專案還沒有索引可以存' };
+        const snap = this._repoIndexSnapshot(map, !!opts.include_map);
+        const dir = this._repoIndexDir();
+        const notesText = JSON.stringify(snap.notes, null, 1) + '\n';
+        const mapText = snap.map ? JSON.stringify(snap.map) : null;
+        if (!opts.assume_yes) {
+            const ans = await this.requestUserForm({ title: '💾 要把專案索引存進專案資料夾嗎？', description: `會在 ${key} 底下建立（或覆蓋）：\n${dir}/meta.json\n${dir}/notes.json（AI與你補的說明，${snap.meta.notes.files + snap.meta.notes.symbols} 筆，適合一起 commit 讓同事共用）${mapText ? '\n' + dir + '/map.json（索引資料，約 ' + Math.round(mapText.length / 1048576 * 10) / 10 + ' MB，可以由專案重建，不建議 commit）' : ''}\n不會動到其他檔案。同事拿到同一份專案後 /aidoc load 就能接著延伸。`, choices: ['存進去', '不要'] });
+            if (!ans || !ans.confirmed || ans.answer !== '存進去') return { ok: false, cancelled: true, error: '使用者取消' };
+        }
+        await io.writeText(dir + '/meta.json', JSON.stringify(snap.meta, null, 1) + '\n');
+        await io.writeText(dir + '/notes.json', notesText);
+        if (mapText) await io.writeText(dir + '/map.json', mapText);
+        return { ok: true, saved_to: [dir + '/meta.json', dir + '/notes.json'].concat(mapText ? [dir + '/map.json'] : []), notes: snap.meta.notes, map_mb: mapText ? Math.round(mapText.length / 1048576 * 10) / 10 : undefined };
+    }
+    async _repoIndexLoadFromProject(key, opts) {
+        opts = opts || {};
+        const io = await this._repoMapIo(key);
+        const meta = await this._repoSharedIndexPeek(io);
+        if (!meta) return { ok: false, error: '專案資料夾裡沒有索引檔（' + this._repoIndexDir() + '/meta.json）。要先有人用 /aidoc save 存進來。' };
+        const dir = this._repoIndexDir();
+        let notes = null, mapData = null;
+        try { const t = await io.readText(dir + '/notes.json'); if (t) notes = JSON.parse(t); } catch (e) { return { ok: false, error: 'notes.json 讀不進來：' + String((e && e.message) || e) }; }
+        if (opts.map !== false && meta.has_map) { try { const t = await io.readText(dir + '/map.json'); if (t) mapData = JSON.parse(t); } catch (e) { /* map壞了就只載入說明 */ } }
+        return await this._repoMapExclusive(key, async () => {
+            let map = await this._repoMapLoad(key);
+            if (!map) map = this._repoMapEmpty(key);
+            const rep = this._repoIndexMerge(map, { notes, map: mapData });
+            await this._repoMapSave(map);
+            if (this._codeStores) this._codeStores.delete(key);
+            return { ok: true, from: meta.generated_at, merged: rep, hint: rep.notes.stale || rep.symbols.stale ? '有說明是在檔案改變之前寫的（可能過期），repo_ask 會標示；想確認可以 repo_map refresh deep:true' : undefined, next_action: mapData ? '索引資料已載入。專案有變動的話用 repo_map refresh deep:true 只重看有變的檔案，不用重建整份。' : '只載入了說明；索引結構用 /aidoc index 建立（說明會自動套用）。' };
+        });
+    }
+    // 單一檔案（下載／傳給別人）：bundle 包含 meta＋notes＋map
+    async _repoIndexExportBundle(key, opts) {
+        opts = opts || {};
+        const map = await this._repoMapLoad(key);
+        if (!map) return { ok: false, error: '這個專案還沒有索引' };
+        const snap = this._repoIndexSnapshot(map, opts.include_map !== false);
+        const bundle = { format: 'fa-project-index-bundle', version: 1, exported_at: new Date().toISOString(), meta: snap.meta, notes: snap.notes, map: snap.map };
+        const text = JSON.stringify(bundle);
+        const name = (snap.meta.root_label || 'project') + '-index.json';
+        if (opts.deliver !== false) await this.generateAndDeliverFile(new Blob([text], { type: 'application/json' }), name, 'application/json');
+        return { ok: true, filename: name, mb: Math.round(text.length / 1048576 * 10) / 10, notes: snap.meta.notes, files: snap.meta.files };
+    }
+    async _repoIndexImportBundle(key, data, opts) {
+        opts = opts || {};
+        if (!data || (data.format !== 'fa-project-index-bundle' && data.format !== 'fa-project-notes')) return { ok: false, error: '不是專案索引檔（format 應是 fa-project-index-bundle 或 fa-project-notes）' };
+        const payload = data.format === 'fa-project-notes' ? { notes: data } : { notes: data.notes, map: data.map };
+        const ns = Object.keys((payload.notes && payload.notes.files) || {}).length + Object.keys((payload.notes && payload.notes.symbols) || {}).length;
+        if (!opts.confirmed) {
+            const ans = await this.requestUserForm({ title: '📥 要匯入專案索引嗎？', description: `匯入到：${key}\n說明 ${ns} 筆${payload.map ? '、索引資料 ' + Object.keys(payload.map.files || {}).length + ' 個檔案' : ''}。\n同一個項目以時間較新的為準；索引資料只補本機沒有的檔案。\n只匯入你信任來源的檔案。`, choices: ['匯入', '取消'] });
+            if (!ans || !ans.confirmed || ans.answer !== '匯入') return { ok: false, cancelled: true, error: '使用者取消' };
+        }
+        return await this._repoMapExclusive(key, async () => {
+            let map = await this._repoMapLoad(key);
+            if (!map) map = this._repoMapEmpty(key);
+            const rep = this._repoIndexMerge(map, payload);
+            await this._repoMapSave(map);
+            if (this._codeStores) this._codeStores.delete(key);
+            return { ok: true, merged: rep };
+        });
+    }
+    // 設定「索引自動存回專案資料夾」：off／notes（只存說明）／all（說明＋索引資料）。使用者已經選了自動，所以不再逐次詢問
+    async _repoIndexAutoSave(key) {
+        const mode = this.advancedSettings.repoIndexAutoSave || 'off';
+        if (mode === 'off') return null;
+        try { return await this._repoIndexSaveToProject(key, { include_map: mode === 'all', assume_yes: true }); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    // ===== DeepWiki（專案索引）：選資料夾與 /aidoc 指令 =====
+    // 桌面版：直接用絕對路徑（自己刻的資料夾瀏覽視窗，dialog.showOpenDialog 在部分機器不會顯示）。
+    // 網頁版：showDirectoryPicker 選完自動授權成 File Access Point（fap:名稱），已經授權過同一個資料夾就重用，不再問名稱。
+    // 注意：showDirectoryPicker 需要使用者手勢，呼叫端要在點擊／按 Enter 之後第一時間呼叫，不要先 await 別的東西。
+    async _repoPickFolder(startPath) {
+        if (typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.roots && typeof window.desktopAPI.roots.browse === 'function') {
+            let p = null;
+            try { p = await window.desktopAPI.roots.browse(startPath || undefined); } catch (e) { return { error: '開啟資料夾瀏覽失敗：' + String((e && e.message) || e) }; }
+            return p ? { root: this._repoMapKey(p), kind: 'path' } : null;
+        }
+        if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') return { error: '這個瀏覽器不支援選資料夾（請用 Chrome／Edge），或直接輸入已授權的 fap:名稱。' };
+        let dir;
+        try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch (e) { return e && e.name === 'AbortError' ? null : { error: '選擇資料夾失敗：' + String((e && e.message) || e) }; }
+        const existing = await this.fileAccessPoints.getAll();
+        for (const r of existing) { try { if (r.handle && await r.handle.isSameEntry(dir)) return { root: 'fap:' + r.label, kind: 'fap', reused: true }; } catch (_) {} }
+        let label = dir.name || 'project';
+        if (existing.some((r) => r.label === label)) label = label + '_' + Date.now().toString(36);
+        await this.fileAccessPoints.add(label, dir, '');
+        try { await this._renderFapList(); } catch (_) {}
+        return { root: 'fap:' + label, kind: 'fap', created: true };
+    }
+    async _aidocDefaultRoot() {
+        if (this._repoLastRoot) return this._repoLastRoot;
+        try { const v = localStorage.getItem('fa_aidoc_root'); if (v) return v; } catch (_) {}
+        try { const roots = (await this.repoMapCache.getAll()).filter((r) => r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0).map((r) => String(r.id).slice(4)); if (roots.length === 1) return roots[0]; } catch (_) {}
+        return '';
+    }
+    _aidocRememberRoot(root) { this._repoLastRoot = root; try { localStorage.setItem('fa_aidoc_root', root); } catch (_) {} }
+    async _aidocCommand(raw) {
+        const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
+        const arg = String(raw || '').trim();
+        const looksRoot = (t) => /^(fap:|[A-Za-z]:[\\/]|\/|\\\\)/.test(String(t || ''));
+        const opt = (name) => { const m = new RegExp('(?:^|\\s)--' + name + '\\s+("[^"]+"|\\S+)').exec(arg); return m ? m[1].replace(/^"|"$/g, '') : null; };
+        const flag = (name) => new RegExp('(?:^|\\s)--' + name + '(?:\\s|$)').test(arg);
+        const stripOpts = (t) => String(t || '').replace(/(?:^|\s)--(?:max-files|max-mb|export|root)\s+("[^"]+"|\S+)/g, ' ').replace(/(?:^|\s)--reanalyze(?=\s|$)/g, ' ').trim();
+        const m = /^(\S+)\s*([\s\S]*)$/.exec(arg);
+        let sub = m ? m[1].toLowerCase() : '';
+        let rest = stripOpts(m ? m[2] : '');
+        if (!arg || sub === 'help') {
+            say('📚 /aidoc　專案索引（類似 DeepWiki＋doxygen）\n\n/aidoc index [資料夾]　建立索引（背景漸進，可停止／接續）。不給資料夾會開「瀏覽」：桌面版直接用路徑，網頁版選完自動授權成 fap\n  選項：--max-files <N> --max-mb <N> --reanalyze --export sqlite|qa|both\n/aidoc view　開啟互動檢視器（視窗／最大化；瀏覽、對話查資料、點進去問 AI）\n/aidoc status [資料夾]　進度與規模\n/aidoc stop　停止背景索引\n/aidoc ask <問題>　問程式碼（函式做什麼／在哪定義／誰用到／相關）；可加 --root <資料夾>\n/aidoc wiki [資料夾]　產生專案百科頁面\n/aidoc export sqlite|qa [資料夾]　匯出單檔 HTML（內嵌 SQLite 可下 SQL／純 JS 問答）\n/aidoc list　已建立索引的專案\n/aidoc dive [資料夾] [--limit N]　AI 深入探討：依重要程度逐檔讀程式碼，把確認過的說明補進資料庫（可 stop／接續）\n/aidoc save [--map]　把索引的說明（和可選的索引資料）存進專案資料夾 .floating-assistant/index/，同事拿到同一份專案後 /aidoc load 接著延伸\n/aidoc load　從專案資料夾載入別人存的索引\n/aidoc bundle　匯出成單一索引檔（下載）；/aidoc import --file <路徑或已上傳檔名>　匯入\n\n也可以直接打 /aidoc <資料夾路徑>（等於 index）或 /aidoc <問題>（等於 ask）。\n設定頁：設定 → AI → 專案索引（有「📁 瀏覽…」）。');
+            return;
+        }
+        // 第一個字不是子指令：像路徑就當 index，否則當問題
+        const SUBS = ['view', 'index', 'build', 'status', 'stop', 'ask', 'wiki', 'export', 'list', 'dive', 'save', 'load', 'bundle', 'import'];
+        if (SUBS.indexOf(sub) < 0) { if (looksRoot(m[1])) { sub = 'index'; rest = stripOpts(arg); } else { sub = 'ask'; rest = stripOpts(arg); } }
+        if (sub === 'list') {
+            const rows = (await this.repoMapCache.getAll()).filter((r) => r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0).map((r) => String(r.id).slice(4));
+            if (!rows.length) { say('📚 還沒有建立過索引的專案。/aidoc index 開始。'); return; }
+            const lines = [];
+            for (const root of rows) { const mp = await this._repoMapLoad(root); const st = mp ? this._repoMapStats(mp) : null; lines.push('- ' + root + (st ? '：' + st.source_files_analyzed + '／' + st.source_files_known + ' 個原始碼檔、' + st.symbols + ' 個定義' + (mp.index_built ? '（索引完成）' : '（部分）') : '')); }
+            say('📚 已建立索引的專案：\n' + lines.join('\n'));
+            return;
+        }
+        const firstTok = rest.split(/\s+/)[0];
+        const explicitRoot = opt('root') || (looksRoot(firstTok) ? firstTok : '');
+        if (sub === 'stop') { if (this._diveJob && this._diveJob.state === 'running') this._diveJob.stop = true; const root = explicitRoot || await this._aidocDefaultRoot(); const r = this._repoIndexStop(this._repoMapKey(root)); say('⏹ ' + (r.note || '已要求停止')); return; }
+        if (sub === 'index' || sub === 'build') {
+            let root = explicitRoot;
+            if (!root) {
+                const pick = await this._repoPickFolder();
+                if (!pick) { say('已取消。'); return; }
+                if (pick.error) { say('⚠️ ' + pick.error); return; }
+                root = pick.root;
+                if (pick.created) say('📁 已授權資料夾，之後可以用 ' + root + ' 存取。');
+            }
+            root = this._repoMapKey(root);
+            this._aidocRememberRoot(root);
+            const exp = opt('export');
+            const r = await this._repoMapRun({ action: 'index_start', root, max_files: opt('max-files') ? Number(opt('max-files')) : undefined, max_mb: opt('max-mb') ? Number(opt('max-mb')) : undefined, reanalyze: flag('reanalyze'), exports: exp ? (exp === 'both' ? ['sqlite_html', 'qa_html'] : [exp === 'qa' ? 'qa_html' : 'sqlite_html']) : undefined });
+            say(r.ok ? (r.declined ? '已取消。' : '🗂️ ' + (r.already_running ? '這個專案已經在背景建立索引了。' : '已開始在背景建立索引：' + root) + '\n進度顯示在上方進度卡片；/aidoc status 看詳情、/aidoc stop 停止。完成後可以 /aidoc ask <問題>。') : '⚠️ ' + (r.error || '失敗'));
+            return;
+        }
+        const root = explicitRoot ? this._repoMapKey(explicitRoot) : await this._aidocDefaultRoot();
+        if (!root) { say('⚠️ 不知道要用哪個專案：先 /aidoc index（會開瀏覽），或加 --root <資料夾>。'); return; }
+        if (sub === 'view') { const r = await this._aidocViewerOpen(root); say(r.ok ? (r.reused ? '📖 檢視器已經開著了。' : '📖 已開啟 AIDoc 檢視器（可拖曳、縮放、最大化）：左邊瀏覽，右邊問問題；「問 AI」會排進佇列依序回答，AI 補的說明會寫進資料庫。') : '⚠️ ' + r.error); return; }
+        if (sub === 'status') {
+            const js = this._repoIndexStatus(root);
+            const mp = await this._repoMapLoad(root);
+            const st = mp ? this._repoMapStats(mp) : null;
+            say('📚 ' + root + '\n' + (js.running ? '⏳ 索引進行中：' + js.phase + '，' + js.percent + '%，已用 ' + js.elapsed + (js.eta ? '，預估剩 ' + js.eta : '') + '\n' : '') + (st ? '已分析 ' + st.source_files_analyzed + '／' + st.source_files_known + ' 個原始碼檔、' + st.symbols + ' 個定義、' + st.dependency_edges + ' 條依賴' + (mp.index_built ? '　✅ 索引完成' : '　（部分）') : '還沒有索引。/aidoc index 開始。'));
+            return;
+        }
+        if (sub === 'ask') {
+            const q = (explicitRoot && looksRoot(firstTok) ? rest.slice(firstTok.length) : rest).trim();
+            if (!q) { say('用法：/aidoc ask <問題>'); return; }
+            this.messages.push({ role: 'user', content: '/aidoc ask ' + q }); this._renderMessageHistory();
+            const r = await this._repoAskRun({ root, question: q });
+            if (!r.ok) { say('⚠️ ' + r.error); return; }
+            const fence = String.fromCharCode(96, 96, 96);
+            say((r.warning ? '⚠️ ' + r.warning + '\n\n' : '') + r.answer + (r.snippets && r.snippets.length ? '\n\n' + r.snippets.map((x) => x.path + ':' + x.from_line + '\n' + fence + '\n' + x.text + '\n' + fence).join('\n') : ''));
+            return;
+        }
+        if (sub === 'dive') { const r = await this._aidocDive(root, { limit: opt('limit') ? Number(opt('limit')) : 100 }); say(r.ok ? (r.nothing ? '🔎 ' + r.note : '🔎 已開始深入探討：' + r.total + ' 個檔案（依重要程度），進度在上方卡片。/aidoc stop 停止；之後再 /aidoc dive 會從還沒說明的檔案接續。') : '⚠️ ' + r.error); return; }
+        if (sub === 'save') { const r = await this._repoIndexSaveToProject(root, { include_map: flag('map') }); say(r.ok ? '💾 已存進專案資料夾：\n' + r.saved_to.join('\n') + '\n說明 ' + r.notes.files + ' 個檔案、' + r.notes.symbols + ' 個定義。同事拿到同一份專案後 /aidoc load 就能接著延伸。' : (r.cancelled ? '已取消。' : '⚠️ ' + r.error)); return; }
+        if (sub === 'load') { const r = await this._repoIndexLoadFromProject(root, {}); say(r.ok ? '📥 已載入（存於 ' + r.from + '）：說明新增 ' + (r.merged.notes.added + r.merged.symbols.added) + '、更新 ' + (r.merged.notes.updated + r.merged.symbols.updated) + '、保留你較新的 ' + (r.merged.notes.kept + r.merged.symbols.kept) + (r.merged.map.files_added ? '；索引資料補了 ' + r.merged.map.files_added + ' 個檔案' : '') + (r.hint ? '\n⚠️ ' + r.hint : '') : '⚠️ ' + r.error); return; }
+        if (sub === 'bundle') { const r = await this._repoIndexExportBundle(root, { include_map: !flag('no-map') }); say(r.ok ? '📦 已匯出 ' + r.filename + '（' + r.mb + ' MB；說明 ' + (r.notes.files + r.notes.symbols) + ' 筆）' : '⚠️ ' + r.error); return; }
+        if (sub === 'import') {
+            const file = opt('file');
+            if (!file) { say('用法：/aidoc import --file <路徑或已上傳的檔名> [--root <資料夾>]（也可以在設定頁按「匯入索引檔…」）'); return; }
+            let txt = null;
+            try { const rec = await this._resolveUploadedFileRecord(String(file)).catch(() => null); if (rec && rec.blob) txt = await rec.blob.text(); if (txt == null && window.desktopAPI && window.desktopAPI.rawfs) { const rr = await window.desktopAPI.rawfs.readFile(String(file)); txt = typeof rr.text === 'string' ? rr.text : null; } } catch (e) { say('⚠️ 讀取檔案失敗：' + e.message); return; }
+            if (txt == null) { say('⚠️ 讀不到檔案：' + file); return; }
+            let data; try { data = JSON.parse(txt); } catch (e) { say('⚠️ 不是有效的JSON'); return; }
+            const r = await this._repoIndexImportBundle(root, data, {});
+            say(r.ok ? '📥 已匯入：說明新增 ' + (r.merged.notes.added + r.merged.symbols.added) + '、更新 ' + (r.merged.notes.updated + r.merged.symbols.updated) + (r.merged.map.files_added ? '；索引資料補了 ' + r.merged.map.files_added + ' 個檔案' : '') : (r.cancelled ? '已取消。' : '⚠️ ' + r.error));
+            return;
+        }
+        if (sub === 'wiki') { const r = await this._repoWikiRun({ action: 'generate', root, show: true, deliver: true }); say(r.ok ? '📚 專案百科已產生（畫面左下角開啟，也提供下載）。' + (r.warning ? '\n⚠️ ' + r.warning : '') : '⚠️ ' + (r.error || '失敗')); return; }
+        if (sub === 'export') {
+            const fmt = /^qa/.test(rest) ? 'qa_html' : 'sqlite_html';
+            try { const r = await this._codeExport(root, fmt, { deliver: true }); say('📦 已匯出 ' + r.filename + '（' + Math.round(r.bytes / 1048576 * 10) / 10 + ' MB）。'); } catch (e) { say('⚠️ 匯出失敗：' + String((e && e.message) || e)); }
+            return;
+        }
+    }
+
+    // ===== /aidoc view：互動檢視器（可視窗化／最大化的浮動視窗，裡面是 iframe；iframe 的 fetch／WebSocket 由主頁面「假伺服器」回應） =====
+    // 做法跟沙盒的 mock 相同（__faMockShim＋postMessage），但伺服器端不是 Worker，而是這裡的函式：查索引、問答、AI 佇列都在主頁面做，AI 的進度用假的 WebSocket 推進視窗。
+    _aidocServer(key) {
+        const me = this;
+        const enc = (o) => new TextEncoder().encode(JSON.stringify(o)).buffer;
+        const conns = new Map();
+        const q = { list: [], cur: null, seq: 0 };
+        const srv = { closed: false, conns };
+        srv.push = (obj) => { const s = JSON.stringify(obj); conns.forEach((reply, id) => { try { reply({ t: 'ws_msg', id, data: s }); } catch (_) {} }); };
+        const QA_PROTOCOL = '你是專案索引檢視器裡的助理，使用者在檢視器裡問這個專案的問題。\n做法：先用 repo_ask 取得索引的事實（定義在哪、誰用到、相關檔案），需要確認時用 coding_read_file 等讀程式碼，不要整個專案亂讀。\n回答用繁體中文白話，具體、有依據；引用檔案請用反引號包路徑（例如 src/a.js），定義用反引號包名稱，檢視器會把它們變成可點的連結。不要編造索引裡沒有的內容，不確定就說不確定。\n如果你讀過程式碼、確認了某個檔案或定義在做什麼，順手用 repo_map({"action":"annotate","root":"<專案>","path":"<檔案>","note":"一兩句","symbols":{"名稱":"一句"}}) 補進資料庫（只寫確認過的）。\n最後只輸出要給使用者看的回答。';
+        const TOOLS = /^(repo_map|repo_ask|coding_read_file|fap_read_file|fap_list_files|fap_find_file|fs_read_file|fs_list_files|list_file_access_points)$/;
+        const notesVer = async () => ((await me._repoMapLoad(key)) || {}).notes_ver || 0;
+        const jobsObj = () => {
+            const ij = me._repoIndexStatus(key), dj = me._diveJob && me._diveJob.root === key ? me._diveJob : null;
+            return { index: ij ? { running: !!ij.running, percent: ij.percent || 0 } : null, dive: dj ? { running: dj.state === 'running', done: dj.done + dj.failed, total: dj.total } : null };
+        };
+        const infoObj = async () => {
+            const st = await me._codeStoreGet(key); const db = st.db;
+            const mp = (await me._repoMapLoad(key)) || {};
+            return { title: key.split('/').filter(Boolean).pop() || key, root: key, files: db.files.length, symbols: db.syms.length, notes_files: db.files.filter((f) => f[4]).length, notes_symbols: db.syms.filter((s) => s[6]).length, complete: !!mp.index_built };
+        };
+        const pump = async () => {
+            if (q.cur || !q.list.length || srv.closed) return;
+            const t = q.list.shift(); q.cur = t;
+            srv.push({ type: 'ai_queue', n: q.list.length + 1 });
+            srv.push({ type: 'ai_start', id: t.id });
+            let text = '', changed = false;
+            try {
+                const before = await notesVer();
+                srv.push({ type: 'ai_progress', id: t.id, text: t.kind === 'dive' ? 'AI 讀 ' + t.path + ' 並補說明…' : 'AI 讀程式碼、整理回答…' });
+                let prompt, sys;
+                if (t.kind === 'dive') { prompt = '專案：' + key + '\n要補說明的檔案：' + t.path + '\n\n照規範讀這個檔案，把你確認過的說明用 repo_map annotate 補進資料庫，最後輸出一行JSON回報。'; sys = FA_DIVE_PROTOCOL; }
+                else { prompt = '專案：' + key + '\n使用者目前在檢視器看的是：' + (t.ctx && t.ctx.kind ? t.ctx.kind + ' ' + (t.ctx.key || '') : '（首頁）') + '\n\n使用者的問題：' + t.q; sys = QA_PROTOCOL; }
+                const r = await me._runSubAgentTask(prompt, 14, { systemPrompt: sys, allowedToolNames: Object.keys(me.tools).filter((n) => TOOLS.test(n)) });
+                text = String((r && r.text) || '');
+                if (t.kind === 'dive') { let sm = ''; try { sm = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)).summary || ''; } catch (_) {} text = '已讀過 ' + t.path + '，' + (sm || '處理完畢') + '。'; }
+                changed = (await notesVer()) !== before;
+            } catch (e) { text = '⚠️ AI 回答失敗：' + String((e && e.message) || e); }
+            srv.push({ type: 'ai_answer', id: t.id, text, notes_changed: changed });
+            if (changed) { srv.push({ type: 'notes_changed' }); try { srv.push({ type: 'info', info: await infoObj() }); } catch (_) {} }
+            q.cur = null; srv.push({ type: 'ai_queue', n: q.list.length });
+            pump();
+        };
+        const enqueue = (t) => { t.id = 'q' + (++q.seq); q.list.push(t); const pos = q.list.length + (q.cur ? 1 : 0); srv.push({ type: 'ai_queue', n: pos }); pump(); return { id: t.id, pos }; };
+        const route = async (method, u, body) => {
+            const st = await me._codeStoreGet(key);
+            if (!st) return { s: 404, j: { error: '索引不存在' } };
+            const db = st.db, ix = st.ix, P = u.pathname, Q = (k) => u.searchParams.get(k) || '';
+            const map = (await me._repoMapLoad(key)) || {};
+            const nm = map.notes_meta || {}, sm = map.sym_notes_meta || {};
+            const fileIdx = {}; db.files.forEach((f, i) => { fileIdx[f[0]] = i; });
+            const symView = (k) => { const s = db.syms[k]; return { n: s[0], k: s[1], l: s[3], d: s[4], sig: s[5], note: s[6] }; };
+            if (method === 'GET' && P === '/api/info') return { j: await infoObj() };
+            if (method === 'GET' && P === '/api/jobs') return { j: { jobs: jobsObj() } };
+            if (method === 'GET' && P === '/api/pages') {
+                const idx = await me._repoWikiLoadIndex(key);
+                return { j: { pages: [{ id: 'overview', title: '專案概觀', auto: true }].concat(((idx && idx.pages) || []).map((p, i) => ({ id: String(i), title: p.title || ('頁面 ' + (i + 1)), auto: !!p.auto }))) } };
+            }
+            if (method === 'GET' && P === '/api/page') {
+                const id = Q('id');
+                if (id === 'overview') {
+                    const dirs = {}; db.files.forEach((f) => { const d = f[0].indexOf('/') < 0 ? '(根目錄)' : f[0].slice(0, f[0].indexOf('/')); dirs[d] = (dirs[d] || 0) + 1; });
+                    const top = db.files.map((f, i) => [f[0], ix.impIn[i].length, f[4]]).sort((a, b) => b[1] - a[1]).slice(0, 12).filter((x) => x[1] > 0);
+                    const noted = db.files.filter((f) => f[4]).slice(0, 10);
+                    const BT = String.fromCharCode(96);
+                    const md = ['# ' + (key.split('/').filter(Boolean).pop() || key), '', '- 檔案 ' + db.files.length + ' 個、定義 ' + db.syms.length + ' 個、依賴 ' + db.imps.length + ' 條', '- 說明已補 ' + db.files.filter((f) => f[4]).length + ' 個檔案、' + db.syms.filter((s) => s[6]).length + ' 個定義（AI 深入探討或你自己補的）', '', '## 頂層目錄', ''].concat(Object.keys(dirs).sort((a, b) => dirs[b] - dirs[a]).slice(0, 20).map((d) => '- ' + BT + d + BT + '：' + dirs[d] + ' 個檔案'), ['', '## 最常被引用的檔案（核心）', ''], top.map((x) => '- ' + BT + x[0] + BT + '（被 ' + x[1] + ' 個檔案引用）' + (x[2] ? '：' + x[2] : '')), noted.length ? ['', '## 已有說明的檔案', ''].concat(noted.map((f) => '- ' + BT + f[0] + BT + '：' + f[4])) : []).join('\n');
+                    return { j: { id, title: '專案概觀', auto: true, md } };
+                }
+                const idx = await me._repoWikiLoadIndex(key); const p = idx && idx.pages && idx.pages[Number(id)];
+                if (!p) return { s: 404, j: { error: '沒有這一頁' } };
+                return { j: { id, title: p.title, auto: !!p.auto, md: p.md } };
+            }
+            if (method === 'GET' && P === '/api/tree') {
+                const base = Q('path').replace(/^\/+|\/+$/g, ''), pre = base ? base + '/' : '';
+                const dirs = new Set(), files = [];
+                for (let i = 0; i < db.files.length; i++) { const p = db.files[i][0]; if (pre && p.indexOf(pre) !== 0) continue; const rest = p.slice(pre.length), s = rest.indexOf('/'); if (s >= 0) dirs.add(rest.slice(0, s)); else files.push({ name: rest, note: !!db.files[i][4] }); }
+                const d = Array.from(dirs).sort(), f = files.sort((a, b) => a.name < b.name ? -1 : 1);
+                return { j: { dirs: d.slice(0, 400), files: f.slice(0, 400), more: Math.max(0, d.length - 400) + Math.max(0, f.length - 400) } };
+            }
+            if (method === 'GET' && P === '/api/symbols') {
+                const seen = new Map(); db.syms.forEach((s, k) => { const o = seen.get(s[0]); if (!o) seen.set(s[0], { name: s[0], kind: s[1], n: (ix.usedBy[k] || []).length }); else o.n += (ix.usedBy[k] || []).length; });
+                return { j: { symbols: Array.from(seen.values()).sort((a, b) => b.n - a.n).slice(0, 600) } };
+            }
+            if (method === 'GET' && P === '/api/notes') {
+                const out = [];
+                db.files.forEach((f) => { if (f[4]) out.push({ path: f[0], note: f[4], by: (nm[f[0]] || {}).by, stale: !!(nm[f[0]] || {}).stale }); });
+                db.syms.forEach((s) => { if (s[6]) out.push({ path: db.files[s[2]][0], symbol: s[0], note: s[6], by: ((sm[db.files[s[2]][0]] || {})[s[0]] || {}).by }); });
+                return { j: { notes: out.slice(0, 800) } };
+            }
+            if (method === 'GET' && P === '/api/search') {
+                const hits = _faCodeSearch(ix, Q('q'), { n: 30 }).map((h) => h.type === 'symbol' ? { type: 'symbol', name: db.syms[h.id][0], kind: db.syms[h.id][1], path: db.files[db.syms[h.id][2]][0], line: db.syms[h.id][3] } : { type: 'file', path: db.files[h.id][0] });
+                return { j: { hits } };
+            }
+            if (method === 'GET' && P === '/api/file') {
+                const path = Q('path'), i = fileIdx[path];
+                if (i == null) return { s: 404, j: { error: '索引裡沒有這個檔案：' + path } };
+                const f = db.files[i];
+                return { j: { path, lang: f[1], lines: f[2], doc: f[3], note: f[4], note_by: (nm[path] || {}).by, note_stale: !!(nm[path] || {}).stale, symbols: ix.fileSyms[i].map(symView), imports: ix.impOut[i].map((j) => db.files[j][0]), imported_by: ix.impIn[i].map((j) => db.files[j][0]).slice(0, 200) } };
+            }
+            if (method === 'GET' && P === '/api/symbol') {
+                const ks = ix.nameMap[Q('name').toLowerCase()] || [];
+                return { j: { defs: ks.slice(0, 20).map((k) => { const s = db.syms[k], p = db.files[s[2]][0]; return { kind: s[1], path: p, line: s[3], sig: s[5], doc: s[4], note: s[6], note_by: ((sm[p] || {})[s[0]] || {}).by, users: Array.from(new Set((ix.usedBy[k] || []).map((i) => db.files[i][0]))).slice(0, 60), same: ix.fileSyms[s[2]].filter((x) => x !== k).slice(0, 20).map((x) => db.syms[x][0]) }; }) } };
+            }
+            if (method === 'GET' && P === '/api/source') {
+                const path = Q('path'); if (fileIdx[path] == null) return { s: 404, j: { error: '索引裡沒有這個檔案' } };
+                const io = await me._repoMapIo(key); const t = await io.readText(path);
+                if (t == null) return { s: 404, j: { error: '讀不到檔案（專案資料夾不在了？）' } };
+                const lines = t.split(/\r?\n/), from = Math.max(1, Number(Q('from')) || 1), to = Math.min(lines.length, Number(Q('to')) || from + 199);
+                return { j: { path, from, to, total: lines.length, text: lines.slice(from - 1, to).join('\n').slice(0, 60000) } };
+            }
+            if (method === 'POST' && P === '/api/ask') {
+                const qq = String((body && body.q) || '').trim(); if (!qq) return { s: 400, j: { error: '問題是空的' } };
+                let quick = { intent: '-', answer: '' };
+                try { const r = _faCodeAsk(ix, qq, { n: 8 }); quick = { intent: r.intent, answer: r.answer }; } catch (e) { quick = { intent: '-', answer: '（離線問答失敗：' + e.message + '）' }; }
+                const out = { quick };
+                if (body && body.ai) { const e = enqueue({ kind: 'qa', q: qq, ctx: body.ctx }); out.ai_id = e.id; out.queue_pos = e.pos; }
+                return { j: out };
+            }
+            if (method === 'POST' && P === '/api/dive') {
+                const path = String((body && body.path) || ''); if (fileIdx[path] == null) return { s: 404, j: { error: '索引裡沒有這個檔案' } };
+                const e = enqueue({ kind: 'dive', path }); return { j: { ok: true, id: e.id, queue_pos: e.pos } };
+            }
+            if (method === 'POST' && P === '/api/note') {
+                const path = String((body && body.path) || ''), note = String((body && body.note) || '').trim();
+                if (fileIdx[path] == null) return { s: 404, j: { error: '索引裡沒有這個檔案' } };
+                if (note.length < 6) return { s: 400, j: { error: '說明太短（至少寫一句有內容的）' } };
+                const args = body.symbol ? { symbols: { [body.symbol]: note } } : { note };
+                const r = JSON.parse(await me.tools.repo_map.callback.call(me, JSON.stringify(Object.assign({ root: key, action: 'annotate', path, by: 'user' }, args))));
+                if (!r.ok) return { s: 400, j: { error: r.error || (r.errors && r.errors.join('；')) || '存入失敗' } };
+                srv.push({ type: 'notes_changed' }); try { srv.push({ type: 'info', info: await infoObj() }); } catch (_) {}
+                return { j: { ok: true } };
+            }
+            return { s: 404, j: { error: '沒有這個路由：' + method + ' ' + P } };
+        };
+        srv.handle = (d, reply) => {
+            if (d.t === 'http') {
+                (async () => {
+                    let r;
+                    try { const u = new URL(d.url); let body = null; if (d.body && d.body.byteLength) { try { body = JSON.parse(new TextDecoder().decode(d.body)); } catch (_) {} } r = await route(String(d.method || 'GET').toUpperCase(), u, body); }
+                    catch (e) { r = { s: 500, j: { error: String((e && e.message) || e) } }; }
+                    const buf = enc(r.j);
+                    reply({ t: 'http_res', id: d.id, status: r.s || 200, statusText: r.s && r.s >= 400 ? 'Error' : 'OK', headers: [['content-type', 'application/json']], body: buf }, [buf]);
+                })();
+            } else if (d.t === 'ws_open') {
+                conns.set(d.id, reply);
+                reply({ t: 'ws_opened', id: d.id });
+            } else if (d.t === 'ws_send') {
+                (async () => { try { srv.push({ type: 'info', info: await infoObj() }); srv.push({ type: 'jobs', jobs: jobsObj() }); } catch (_) {} })();
+            } else if (d.t === 'ws_close') conns.delete(d.id);
+        };
+        srv.timer = setInterval(() => { if (!srv.closed && conns.size) srv.push({ type: 'jobs', jobs: jobsObj() }); }, 2500);
+        srv.close = () => { srv.closed = true; clearInterval(srv.timer); conns.clear(); q.list.length = 0; };
+        return srv;
+    }
+    async _aidocViewerOpen(root) {
+        const key = this._repoMapKey(root);
+        const st = await this._codeStoreGet(key);
+        if (!st || !st.db.files.length) return { ok: false, error: '這個專案還沒有索引，先 /aidoc index' };
+        if (!this._aidocViews) this._aidocViews = new Map();
+        const prev = this._aidocViews.get(key);
+        if (prev && prev.win.isConnected) { prev.win.style.zIndex = '2147482450'; return { ok: true, reused: true }; }
+        const srv = this._aidocServer(key);
+        const title = key.split('/').filter(Boolean).pop() || key;
+        const cfg = { hosts: ['mock.local'], prefixes: null, block: true, allow_hosts: [], deny: this._sandboxDenyHosts(), backend: 'iframe' };
+        const shim = '<script>(' + __faMockShim.toString() + ')(' + JSON.stringify(cfg).replace(/</g, '\\u003c') + ')</' + 'script>';
+        const doc = FA_AIDOC_VIEWER_HTML.replace('__CFG__', () => JSON.stringify({ title }).replace(/</g, '\\u003c')).replace('__SHIM__', () => shim);
+        const win = document.createElement('div');
+        win.className = 'ai-aidoc-win';
+        win.style.cssText = 'position:fixed; left:5vw; top:5vh; width:90vw; height:86vh; min-width:420px; min-height:300px; z-index:2147482450; background:#0d1117; border:1px solid #6b7280; border-radius:8px; box-shadow:0 10px 40px rgba(0,0,0,.5); display:flex; flex-direction:column; resize:both; overflow:hidden; font:12px sans-serif; color:#e5e7eb;';
+        const bar = document.createElement('div');
+        bar.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 8px; background:#1f2937; cursor:move; user-select:none; flex:none;';
+        bar.innerHTML = '<span style="flex:1;">📚 AIDoc　' + title.replace(/[<>&]/g, '') + '</span>';
+        const mk = (txt, tip) => { const b = document.createElement('button'); b.textContent = txt; b.title = tip; b.style.cssText = 'border:none; background:none; color:#e5e7eb; cursor:pointer; font-size:14px; padding:0 6px;'; return b; };
+        const bMax = mk('🗖', '最大化／還原'), bX = mk('✕', '關閉');
+        bar.append(bMax, bX); win.appendChild(bar);
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals');
+        iframe.style.cssText = 'flex:1; width:100%; border:0; background:#fff; min-height:0;';
+        win.appendChild(iframe);
+        const onMsg = (ev) => {
+            const d = ev.data;
+            if (!d || d.__fa_mock !== 1 || ev.source !== iframe.contentWindow) return;
+            const src = ev.source;
+            srv.handle(d, (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) {} });
+        };
+        window.addEventListener('message', onMsg);
+        let maxed = false, saved = '';
+        const setMax = (on) => { maxed = on; if (on) { saved = win.style.cssText; win.style.left = '0'; win.style.top = '0'; win.style.width = '100vw'; win.style.height = '100vh'; win.style.borderRadius = '0'; win.style.resize = 'none'; } else { win.style.cssText = saved; } };
+        bMax.onclick = () => setMax(!maxed);
+        bar.ondblclick = (e) => { if (e.target === bar || e.target.tagName === 'SPAN') setMax(!maxed); };
+        const close = () => { window.removeEventListener('message', onMsg); srv.close(); try { win.remove(); } catch (_) {} this._aidocViews.delete(key); };
+        bX.onclick = close;
+        bar.addEventListener('pointerdown', (e) => {
+            if (maxed || e.target.tagName === 'BUTTON') return;
+            const r = win.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+            iframe.style.pointerEvents = 'none'; win.style.zIndex = '2147482450';
+            const mv = (ev) => { win.style.left = Math.max(0, Math.min(innerWidth - 80, ev.clientX - dx)) + 'px'; win.style.top = Math.max(0, Math.min(innerHeight - 30, ev.clientY - dy)) + 'px'; };
+            const up = () => { iframe.style.pointerEvents = ''; document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); };
+            document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+        });
+        document.body.appendChild(win);
+        iframe.srcdoc = doc;
+        this._aidocViews.set(key, { win, srv, close });
+        return { ok: true };
+    }
+
     // ===== 設定 → AI → 專案索引：上限、已建立索引的專案、開始／停止／匯出 =====
     _riRegisterPane() {
         if (this._riPaneRegistered) return;
@@ -18046,6 +18626,8 @@ ${fnData.code}
         const refresh = () => this._riRenderPane();
         root.addEventListener('change', (ev) => {
             const t = ev.target;
+            if (t.dataset.riSel) { this.advancedSettings[t.dataset.riSel] = t.value; this._saveAdvancedSettings(); return; }
+            if (t.id === 'ai-ri-import-file' && t.files && t.files[0]) { const target = this._riImportRoot; (async () => { try { const data = JSON.parse(await t.files[0].text()); const r = await this._repoIndexImportBundle(target, data, {}); this._pushAssistantMessage(r.ok ? '📥 已匯入索引：說明新增 ' + (r.merged.notes.added + r.merged.symbols.added) + '、更新 ' + (r.merged.notes.updated + r.merged.symbols.updated) + (r.merged.map.files_added ? '；索引資料補了 ' + r.merged.map.files_added + ' 個檔案' : '') : (r.cancelled ? '已取消。' : '⚠️ ' + r.error), null); this._persistChatHistory(); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } t.value = ''; refresh(); })(); return; }
             if (t.dataset.riSet) { const k = t.dataset.riSet; const n = Math.floor(Number(t.value)); if (k === 'repoIndexMaxFiles' && n >= 100) this.advancedSettings.repoIndexMaxFiles = n; else if (k === 'repoIndexMaxMb' && n >= 5) this.advancedSettings.repoIndexMaxMb = n; this._saveAdvancedSettings(); t.value = this.advancedSettings[k]; }
         });
         root.addEventListener('click', async (ev) => {
@@ -18055,9 +18637,15 @@ ${fnData.code}
             const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
             try {
                 if (act === 'start') { const r = await this._repoIndexStart(rootKey, {}); if (r.declined) say('已取消。'); }
+                else if (act === 'browse') { const inp0 = root.querySelector('#ai-ri-new'); const pick = await this._repoPickFolder(inp0 && inp0.value && inp0.value.indexOf('fap:') !== 0 ? inp0.value : undefined); if (pick && pick.error) say('⚠️ ' + pick.error); else if (pick && pick.root) { if (inp0) inp0.value = pick.root; if (pick.created) say('📁 已授權資料夾，AI 之後可以用 ' + pick.root + ' 存取。按「建立索引」開始。'); return; } else return; }
                 else if (act === 'add') { const inp = root.querySelector('#ai-ri-new'); const p = this._repoMapKey(inp ? inp.value : ''); if (!p) return; const r = await this._repoIndexStart(p, {}); if (r.declined) say('已取消。'); }
                 else if (act === 'stop') this._repoIndexStop(rootKey);
                 else if (act === 'sqlite' || act === 'qa') { b.disabled = true; b.textContent = '產生中…'; try { await this._codeExport(rootKey, act === 'sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); } catch (e) { say('⚠️ 匯出失敗：' + String((e && e.message) || e)); } }
+                else if (act === 'dive') { const r = await this._aidocDive(rootKey, { limit: 100 }); say(r.ok ? (r.nothing ? '🔎 ' + r.note : '🔎 已開始深入探討（' + r.total + ' 個檔案，進度在上方卡片）') : '⚠️ ' + r.error); }
+                else if (act === 'save-idx') { const inc = window.confirm('除了「說明」，要連「索引資料」一起存嗎？\n（確定＝連索引資料一起存，檔案可能很大；取消＝只存說明，適合一起 commit）'); const r = await this._repoIndexSaveToProject(rootKey, { include_map: inc }); say(r.ok ? '💾 已存進專案資料夾：' + r.saved_to.join('、') : (r.cancelled ? '已取消。' : '⚠️ ' + r.error)); }
+                else if (act === 'load-idx') { const r = await this._repoIndexLoadFromProject(rootKey, {}); say(r.ok ? '📥 已載入：說明新增 ' + (r.merged.notes.added + r.merged.symbols.added) + '、更新 ' + (r.merged.notes.updated + r.merged.symbols.updated) + (r.merged.map.files_added ? '；索引資料補了 ' + r.merged.map.files_added + ' 個檔案' : '') + (r.hint ? '\n⚠️ ' + r.hint : '') : '⚠️ ' + r.error); }
+                else if (act === 'bundle') { const r = await this._repoIndexExportBundle(rootKey, { include_map: true }); if (!r.ok) say('⚠️ ' + r.error); }
+                else if (act === 'import-idx') { this._riImportRoot = rootKey; const fi = root.querySelector('#ai-ri-import-file'); if (fi) fi.click(); return; }
                 else if (act === 'reset') { if (!window.confirm('清除這個專案的索引與地圖？（專案檔案不會動）')) return; await this._repoMapRun({ action: 'reset', root: rootKey }); }
             } catch (e) { say('⚠️ ' + String((e && e.message) || e)); }
             refresh();
@@ -18073,6 +18661,7 @@ ${fnData.code}
         const btn = 'padding:3px 9px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
         const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
         const keep = root.querySelector('#ai-ri-new') ? root.querySelector('#ai-ri-new').value : '';
+        const isDesk = typeof window !== 'undefined' && !!(window.desktopAPI && window.desktopAPI.roots && window.desktopAPI.roots.browse);
         const projects = [];
         try { for (const r of await this.repoMapCache.getAll()) if (r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0) projects.push({ root: String(r.id).slice(4), size: r.sizeBytes || (r.blob && r.blob.size) || 0 }); } catch (_) {}
         const rows = [];
@@ -18087,13 +18676,14 @@ ${fnData.code}
             }
             rows.push(`<div style="border:1px solid #334155; border-radius:8px; padding:8px 10px; margin:8px 0;"><div style="font-weight:600; word-break:break-all;">${esc(p.root)}</div><div style="color:#94a3b8; margin:3px 0 6px;">${info}</div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">${running ? `<button style="${btn}" data-ri="stop" data-root="${esc(p.root)}">停止</button>` : `<button style="${btn}" data-ri="start" data-root="${esc(p.root)}">開始／接續索引</button>`}
-                <button style="${btn}" data-ri="sqlite" data-root="${esc(p.root)}">匯出 SQLite HTML</button><button style="${btn}" data-ri="qa" data-root="${esc(p.root)}">匯出問答 HTML</button><button style="${btn}" data-ri="reset" data-root="${esc(p.root)}">清除</button></div></div>`);
+                <button style="${btn}" data-ri="sqlite" data-root="${esc(p.root)}">匯出 SQLite HTML</button><button style="${btn}" data-ri="qa" data-root="${esc(p.root)}">匯出問答 HTML</button><button style="${btn}" data-ri="dive" data-root="${esc(p.root)}" title="AI 依重要程度逐檔讀程式碼，把確認過的說明補進資料庫">🔎 深入探討</button><button style="${btn}" data-ri="save-idx" data-root="${esc(p.root)}" title="存進專案資料夾的 .floating-assistant/index/">💾 存進專案資料夾</button><button style="${btn}" data-ri="load-idx" data-root="${esc(p.root)}" title="載入別人存在專案資料夾裡的索引">📥 從專案資料夾載入</button><button style="${btn}" data-ri="bundle" data-root="${esc(p.root)}">⬇ 匯出索引檔</button><button style="${btn}" data-ri="import-idx" data-root="${esc(p.root)}">⬆ 匯入索引檔…</button><button style="${btn}" data-ri="reset" data-root="${esc(p.root)}">清除</button></div></div>`);
         }
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">為專案建立完整索引（定義、註解、依賴、呼叫關係），之後可以用 <code>repo_ask</code> 問「某函式做什麼／在哪定義／誰用到它」，或匯出成單檔 HTML（內嵌 SQLite 可下 SQL，或純 JS 問答）。索引在背景漸進建立，可停止、可接續；進度也顯示在對話裡。</div>
             <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
                 <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）">檔案數上限 <input type="number" min="100" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
                 <label title="索引（地圖）資料的大小上限，超過就停下來">索引大小上限（MB） <input type="number" min="5" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
-            <div style="display:flex; gap:6px; margin-bottom:6px;"><input id="ai-ri-new" placeholder="專案資料夾：桌面版的絕對路徑，或 fap:名稱" value="${esc(keep)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
+            <div style="margin-bottom:8px;"><label title="索引完成、深入探討完成後，自動把說明（和可選的索引資料）存進專案資料夾的 .floating-assistant/index/，不同人拿同一份專案可以接著延伸">索引自動存回專案資料夾 <select data-ri-sel="repoIndexAutoSave" style="${inp}"><option value="off" ${(S.repoIndexAutoSave || 'off') === 'off' ? 'selected' : ''}>否</option><option value="notes" ${S.repoIndexAutoSave === 'notes' ? 'selected' : ''}>是，只存說明</option><option value="all" ${S.repoIndexAutoSave === 'all' ? 'selected' : ''}>是，說明＋索引資料</option></select></label><input type="file" id="ai-ri-import-file" accept=".json,application/json" style="display:none;"></div>
+            <div style="display:flex; gap:6px; margin-bottom:6px;"><button style="${btn}" data-ri="browse" title="${isDesk ? '選擇專案資料夾（直接使用路徑）' : '選擇專案資料夾（選完會自動授權成 fap）'}">📁 瀏覽…</button><input id="ai-ri-new" placeholder="${isDesk ? '專案資料夾：按左邊「瀏覽」選擇，或貼上絕對路徑' : '按左邊「瀏覽」選資料夾（會自動授權成 fap），或輸入 fap:名稱'}" value="${esc(keep)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
             ${rows.join('') || '<div style="color:#94a3b8;">還沒有建立過索引的專案。</div>'}`;
     }
     _otRegisterPane() {
@@ -18340,7 +18930,16 @@ ${fnData.code}
         if (!this._repoJobMaps) this._repoJobMaps = new Map();
         const cur = this._repoJobs.get(key);
         if (cur && (cur.state === 'running' || cur.state === 'stopping')) return Object.assign({ ok: true, already_running: true }, this._repoJobStatusObj(cur));
-        const known = await this._repoMapLoad(key);
+        let known = await this._repoMapLoad(key);
+        if (!known) {
+            try {
+                const sm = await this._repoSharedIndexPeek(await this._repoMapIo(key));
+                if (sm) {
+                    const a0 = await this.requestUserForm({ title: '📥 專案資料夾裡有別人建立的索引', description: `在 ${key}/.floating-assistant/index/ 找到索引（${sm.generated_at}，${sm.files} 個檔案、${sm.symbols} 個定義；說明 ${sm.notes ? sm.notes.files + sm.notes.symbols : 0} 筆${sm.has_map ? '，含索引資料' : '，只有說明'}）。\n\n載入之後會從別人做到的地方接續（只分析還沒做的／有變動的檔案），AI 與同事補的說明也一起帶進來。`, choices: ['載入並接續', '重新建立'] });
+                    if (a0 && a0.confirmed && a0.answer === '載入並接續') { const lr = await this._repoIndexLoadFromProject(key, {}); if (lr && lr.ok) known = await this._repoMapLoad(key); }
+                }
+            } catch (_) { /* 沒有就照原本流程 */ }
+        }
         if (!(known && known.index_approved)) {
             const st = known ? this._repoMapStats(known) : null;
             const ans = await this.requestUserForm({
@@ -18450,6 +19049,7 @@ ${fnData.code}
                 : `完成：${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係 · 用時 ${this._repoJobFmtTime((Date.now() - job.startedAt) / 1000)}${job.capped ? '（已達上限：' + (job.capped === 'size' ? '索引大小' : '檔案數') + '）' : ''}${remFiles ? '，還有' + remFiles + '個沒分析' : ''}`);
             this._pushAssistantMessage(`🗂️ 專案索引${job.stop ? '已停止' : '完成'}：${key}\n${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係。${job.capped ? '\n（已達' + (job.capped === 'size' ? '索引大小' : '檔案數') + '上限，沒分析完的可以到「設定 → AI → 專案索引」調高上限，再按「開始／接續索引」。）' : ''}\n現在可以問程式碼問題（repo_ask：「某函式做什麼／在哪定義／誰用到它」），或匯出：repo_wiki({"action":"export","format":"sqlite_html"}) 產生內嵌SQLite的單檔HTML，format:"qa_html" 產生純JS問答頁。`, null);
             this._persistChatHistory(); this._renderMessageHistory();
+            try { const sv = await this._repoIndexAutoSave(key); if (sv && sv.ok) this._log('💾 索引已自動存回專案資料夾'); } catch (_) {}
         } catch (e) {
             job.state = 'error'; job.error = String((e && e.message) || e);
             try { await save(true); } catch (_) {}
@@ -18466,7 +19066,7 @@ ${fnData.code}
         const total = db.syms.length + db.files.length || 1;
         while (!_faCodeIndexTokens(ix, 300)) { if (onProgress) onProgress((ix.ti + ix.tf) / total); await new Promise((r) => setTimeout(r, 0)); }
         if (!this._codeStores) this._codeStores = new Map();
-        const st = { db, ix, fileCount: Object.keys(map.files).length, at: Date.now() };
+        const st = { db, ix, fileCount: Object.keys(map.files).length, notesVer: map.notes_ver || 0, at: Date.now() };
         this._codeStores.set(key, st);
         try { await this.repoWikiCache.put('code.json', 'application/json', new Blob([JSON.stringify(db)], { type: 'application/json' }), 'repo_wiki', 'code:' + key); } catch (_) {}
         return st;
@@ -18476,7 +19076,7 @@ ${fnData.code}
         const map = await this._repoMapLoad(key);
         const n = map ? Object.keys(map.files).length : -1;
         const mem = this._codeStores.get(key);
-        if (mem && (n < 0 || mem.fileCount === n)) return mem;
+        if (mem && (n < 0 || (mem.fileCount === n && mem.notesVer === ((map && map.notes_ver) || 0)))) return mem;
         if (map && n > 0) return await this._codeStoreBuild(key, map);
         try { const rec = await this.repoWikiCache.get('code:' + key + '/code.json'); if (!rec) { const r2 = await this.repoWikiCache.get('code:' + key); if (r2) { const db = JSON.parse(await r2.blob.text()); const ix = _faCodeIndex(db); const st = { db, ix, fileCount: db.files.length, at: Date.now() }; this._codeStores.set(key, st); return st; } } } catch (_) {}
         return null;
@@ -18546,8 +19146,8 @@ ${fnData.code}
         const SQL = await this._sqlJsInit();
         const sdb = new SQL.Database();
         sdb.run(`CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
-CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, dir TEXT, name TEXT, lang TEXT, lines INTEGER, doc TEXT, imports_n INTEGER, imported_by_n INTEGER);
-CREATE TABLE symbols(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, file_id INTEGER, line INTEGER, doc TEXT, sig TEXT);
+CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, dir TEXT, name TEXT, lang TEXT, lines INTEGER, doc TEXT, imports_n INTEGER, imported_by_n INTEGER, note TEXT);
+CREATE TABLE symbols(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, file_id INTEGER, line INTEGER, doc TEXT, sig TEXT, note TEXT);
 CREATE TABLE imports(src INTEGER, dst INTEGER);
 CREATE TABLE uses(file_id INTEGER, symbol_id INTEGER);
 CREATE TABLE pages(id TEXT PRIMARY KEY, title TEXT, kind TEXT, auto INTEGER, md TEXT);
@@ -18555,15 +19155,15 @@ CREATE TABLE glossary(term TEXT PRIMARY KEY, definition TEXT);`);
         const ins = (sql, rows) => { const st = sdb.prepare(sql); sdb.run('BEGIN'); for (const r of rows) st.run(r); sdb.run('COMMIT'); st.free(); };
         const outN = db.files.map(() => 0), inN = db.files.map(() => 0);
         db.imps.forEach((e) => { outN[e[0]]++; inN[e[1]]++; });
-        ins('INSERT INTO files VALUES (?,?,?,?,?,?,?,?,?)', db.files.map((f, i) => { const p = f[0], k = p.lastIndexOf('/'); return [i, p, k < 0 ? '' : p.slice(0, k), k < 0 ? p : p.slice(k + 1), f[1], f[2], f[3], outN[i], inN[i]]; }));
-        ins('INSERT INTO symbols VALUES (?,?,?,?,?,?,?)', db.syms.map((s, i) => [i, s[0], s[1], s[2], s[3], s[4], s[5]]));
+        ins('INSERT INTO files VALUES (?,?,?,?,?,?,?,?,?,?)', db.files.map((f, i) => { const p = f[0], k = p.lastIndexOf('/'); return [i, p, k < 0 ? '' : p.slice(0, k), k < 0 ? p : p.slice(k + 1), f[1], f[2], f[3], outN[i], inN[i], f[4] || '']; }));
+        ins('INSERT INTO symbols VALUES (?,?,?,?,?,?,?,?)', db.syms.map((s, i) => [i, s[0], s[1], s[2], s[3], s[4], s[5], s[6] || '']));
         ins('INSERT INTO imports VALUES (?,?)', db.imps);
         ins('INSERT INTO uses VALUES (?,?)', db.uses);
         ins('INSERT INTO pages VALUES (?,?,?,?,?)', (extra.pages || []).map((p) => [p.id, p.title, p.kind || '', p.auto ? 1 : 0, p.md]));
         ins('INSERT INTO glossary VALUES (?,?)', Object.entries(extra.glossary || {}).map(([t, v]) => [t, v.definition]));
         ins('INSERT INTO meta VALUES (?,?)', [['root', db.root || ''], ['generated', new Date(db.generated || Date.now()).toISOString()], ['complete', db.complete ? '1' : '0'], ['truncated_symbols', String(db.truncated_syms || 0)], ['note', '由 Floating AI Assistant 的 repo_map 索引產生。id＝檔案／定義的序號（從0開始）。']]);
         sdb.run(`CREATE INDEX idx_sym_name ON symbols(name); CREATE INDEX idx_sym_file ON symbols(file_id); CREATE INDEX idx_imp_src ON imports(src); CREATE INDEX idx_imp_dst ON imports(dst); CREATE INDEX idx_use_file ON uses(file_id); CREATE INDEX idx_use_sym ON uses(symbol_id); CREATE INDEX idx_files_path ON files(path);
-CREATE VIEW v_symbols AS SELECT s.id, s.name, s.kind, f.path, s.line, s.doc, s.sig FROM symbols s JOIN files f ON f.id = s.file_id;
+CREATE VIEW v_symbols AS SELECT s.id, s.name, s.kind, f.path, s.line, s.doc, s.note, s.sig FROM symbols s JOIN files f ON f.id = s.file_id;
 CREATE VIEW v_imports AS SELECT a.path AS src_path, b.path AS dst_path FROM imports i JOIN files a ON a.id = i.src JOIN files b ON b.id = i.dst;
 CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS defined_in, s.line AS defined_line FROM uses u JOIN files f ON f.id = u.file_id JOIN symbols s ON s.id = u.symbol_id JOIN files d ON d.id = s.file_id;`);
         const bytes = sdb.export();
@@ -19242,6 +19842,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (action === 'index_start' || action === 'build_index') return await this._repoIndexStart(key, parsed);
             if (action === 'index_status') return this._repoIndexStatus(key);
             if (action === 'index_stop') return this._repoIndexStop(key);
+            if (action === 'dive_targets') { const r = await this._repoDiveTargets(key, parsed.limit); return r ? Object.assign({ ok: true }, r, { next_action: '依重要程度排好的、還沒有說明的檔案。逐一讀過（coding_read_file）後用 repo_map annotate 補說明；要自動做完整批，請使用者用 /aidoc dive。' }) : { ok: false, error: '這個專案還沒有索引：先 repo_map index_start（或請使用者 /aidoc index）' }; }
+            if (action === 'save_index') return await this._repoIndexSaveToProject(key, { include_map: !!parsed.include_map });
+            if (action === 'load_index') return await this._repoIndexLoadFromProject(key, {});
+            if (action === 'export_index') return await this._repoIndexExportBundle(key, { include_map: parsed.include_map !== false });
+            if (action === 'import_index') return await this._repoIndexImportBundle(key, parsed.data, {});
             if (action === 'reset') { this._repoIndexStop(key); if (this._codeStores) this._codeStores.delete(key); try { await this.repoWikiCache.delete('code:' + key); } catch (_) {} }
         } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
         return await this._repoMapExclusive(key, () => this._repoMapAction(action, key, parsed)).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
@@ -19296,16 +19901,13 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         } else if (action === 'build_index') {
             out = await this._repoMapBuildIndex(io, map);
         } else if (action === 'annotate') {
-            const p = String(parsed.path || '').trim();
-            if (!p || !parsed.note) return { ok: false, error: 'annotate需要path與note（你對這個檔案/資料夾的理解，一兩句話）' };
-            map.notes[p] = String(parsed.note).slice(0, 400);
-            out = { ok: true, path: p, note: '已記下，之後repo_wiki會顯示在這個檔案的頁面。' };
-        } else return { ok: false, error: 'action必須是status／build／find／explore／resolve／refresh／tree／build_index／annotate／reset' };
+            out = this._repoAnnotate(map, parsed);
+        } else return { ok: false, error: 'action必須是status／build／find／explore／resolve／refresh／tree／index_start／index_status／index_stop／annotate／dive_targets／save_index／load_index／export_index／import_index／reset' };
         await this._repoMapSave(map);
         return this._repoApplyBudget(out, parsed);
     }
 
-    // ===== 專案百科 v2（類似DeepWiki）：分階段產生，而且是「結構事實＋AI撰寫說明」 =====
+    // ===== 專案百科 v2（類似AIDoc）：分階段產生，而且是「結構事實＋AI撰寫說明」 =====
     // 為什麼這樣做：直接叫AI「寫一份wiki」會因為檔案太多被截斷，也只會得到一份很空泛的markdown。
     // 這裡拆成：plan（依地圖算出模組與頁面清單）→ 每頁 evidence（只給這一頁需要的、在預算內的事實與程式碼片段，附寫法規定）
     // → write_page（驗證：標題、字數、引用的檔案必須真的存在、不能編造、不能留佔位字）→ finalize（組成可搜尋的HTML與markdown）。
@@ -19674,7 +20276,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return null; // 其他動作交給舊的查詢類處理
     }
 
-    // ===== 專案索引百科（repo_wiki，類似DeepWiki）=====
+    // ===== 專案索引百科（repo_wiki，類似AIDoc）=====
     // 由repo_map的地圖產生：檔案頁（定義、依賴、被誰引用）、資料夾頁、名詞定義頁、單檔查詢頁面（wiki.html）。
     // 存放：persistentStorage（IndexedDB）一定會存；寫進專案資料夾（FAP的 .floating-assistant/wiki/）要使用者同意。
     _repoWikiBuildIndex(map) {

@@ -138,7 +138,7 @@ async function boot(){
     var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});
     SQLDB=new SQL.Database(dbBytes);
     setLoad('讀取資料表…',18);await tick();
-    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};
+    DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc,note FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig,note FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};
     PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});
     rows('SELECT term,definition FROM glossary').forEach(function(r){GLOSS[r[0]]={definition:r[1]}});
   }else{
@@ -190,6 +190,7 @@ function initFiles(){
 function showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class="note">索引裡沒有這個檔案</div>';return}
   var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];
   var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f[1])+'</span><span class="tag">'+f[2]+' 行</span></div>';
+  if(f[4])h+='<div class="note"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(f[4])+'</div>';
   if(f[3])h+='<p>'+esc(f[3])+'</p>';
   h+='<h2>定義（'+syms.length+'）</h2>';
   if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class="tag">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
@@ -214,7 +215,8 @@ function showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];
   var h='<h1 class="t">'+esc(S(ids[0])[0])+'</h1><div class="mut">'+ids.length+' 個定義</div>';
   ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];
     h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';
-    h+=s[4]?'<p>'+esc(s[4])+'</p>':'<p class="mut">'+esc(_faCodeNameGuess(s[0]))+'</p>';
+    h+=s[6]?'<div class="note"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(s[6])+'</div>':'';
+    h+=s[4]?'<p>'+esc(s[4])+'</p>':(s[6]?'':'<p class="mut">'+esc(_faCodeNameGuess(s[0]))+'</p>');
     if(s[5])h+='<pre>'+esc(s[5])+'</pre>';
     var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';
     var inn=IX.impIn[fi]||[];if(inn.length)h+='<div class="mut" style="margin-top:4px">定義它的檔案被 '+inn.length+' 個檔案引用：'+inn.slice(0,12).map(function(u){return link(F(u)[0])}).join('、')+'</div>';
@@ -244,6 +246,7 @@ var EXAMPLES=[
 ['定義最多的檔案',"SELECT f.path, COUNT(*) AS 定義數 FROM symbols s JOIN files f ON f.id = s.file_id GROUP BY f.id ORDER BY 定義數 DESC LIMIT 30"],
 ['孤立檔案（沒人引用、也沒引用別人）',"SELECT path, lines FROM files WHERE imports_n = 0 AND imported_by_n = 0 ORDER BY lines DESC LIMIT 100"],
 ['說明（註解）裡有某個關鍵字的定義',"SELECT name, kind, path, line, doc FROM v_symbols WHERE doc LIKE '%config%' ORDER BY name LIMIT 50"],
+['AI 補過說明的定義（note 欄位）',"SELECT name, kind, path, line, note FROM v_symbols WHERE note IS NOT NULL AND note <> '' ORDER BY path, line LIMIT 100"],
 ['各目錄的檔案數與行數',"SELECT dir AS 目錄, COUNT(*) AS 檔案數, SUM(lines) AS 總行數 FROM files GROUP BY dir ORDER BY 總行數 DESC LIMIT 40"],
 ['各語言統計',"SELECT lang AS 語言, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC"]
 ];
