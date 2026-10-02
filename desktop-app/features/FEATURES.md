@@ -201,6 +201,30 @@
 - 範例：
   - `在目前工作目錄修一個 bug，全程用 git patch，改完跑測試`
 
+### 程式設計領域分支（各有計畫範本與狀態機）（`programming-domains`）
+
+依領域分支的程式設計：平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式／Raspberry Pi、BMC／OpenBMC、Android、Windows、iOS。每個領域都有固定的計畫範本與狀態機（評估→實驗→設計→實作→驗證→交付，缺欄位會被退回、每一步都告訴你下一步做什麼），專為較弱的模型設計；驗證不了的部分（硬體、工具鏈）一定要誠實列出。可以申請或替換各領域的工具。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`prog_parallel`、`prog_hpc`、`prog_webservice`、`prog_ecosystem`、`prog_graphics`、`prog_embedded`、`prog_bmc`、`prog_android`、`prog_windows`、`prog_ios`
+- AI 工具：`playbook_state`、`programming_domains`
+- 範例：
+  - `我要用 Cloudflare Worker 做一個待辦清單 REST API（程式設計：web service 領域）`
+  - `幫我設計 Raspberry Pi 讀溫度感測器、超過門檻就亮燈的程式`
+  - `我想做一個 OpenBMC 的 Redfish 感測器服務，先用 mock 驗證介面`
+  - `列出程式設計有哪些領域，並把 render_3d_scene 申請給繪圖工具領域`
+
+### 沙盒實驗（先實驗再設計）（`sandbox-lab`）
+
+設計前先在沙盒真的跑一次確認行為：隔離的 iframe（可複製目前畫面）、瀏覽器控制的全新 about:blank 分頁、彈出視窗（使用者按一下）、Web Worker（有持久檔案系統、可測 handler(request)）、Python web app（micropip 安裝 Flask／FastAPI 後直接以測試請求呼叫）。先用 sandbox_capabilities 評估目前能用哪些。
+
+- 可用平台：網頁版、桌面版
+- AI 工具：`sandbox_capabilities`、`sandbox_html`、`sandbox_worker`、`sandbox_py_app`
+- 範例：
+  - `先用沙盒做一個點擊計數器，確認事件行為再改我的頁面`
+  - `用 Worker 模擬 Cloudflare Worker 的 handler，送幾個請求看回應`
+  - `用 Flask 寫個 API 在沙盒裡測 /hi 和 /sum`
+
 ### git 操作（`git-operations`）
 
 clone、pull、status、log、commit、push（網頁版透過 worker 中繼）。

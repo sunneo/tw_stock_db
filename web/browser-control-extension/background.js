@@ -9,7 +9,7 @@
 // 安全邊界：除了 ping，所有指令都只作用在「助理自己建立的分頁」（managedTabs），
 // 不能讀取或操作使用者原本開著的其他分頁。
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const AI_GROUP_TITLE = "AI Controlled";
 const AI_GROUP_COLOR = "purple";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -247,7 +247,7 @@ function b64ToBytes(b64) {
 
 const commands = {
   async ping() {
-    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch", "turn_end", "focus_emulation"] };
+    return { version: VERSION, browser: navigator.userAgent, capabilities: ["http_fetch", "turn_end", "focus_emulation", "eval_js"] };
   },
 
   async http_fetch(a) {
@@ -350,6 +350,35 @@ const commands = {
     else await chrome.tabs.update(tabId, { url: normUrl(a.url) });
     if (a.wait !== false) { await sleep(200); await waitLoad(tabId, 15000); }
     return tabInfo(await chrome.tabs.get(tabId));
+  },
+
+  // 2026-10-02：給「程式設計領域」的沙盒實驗用——在助理自己開的about:blank分頁裡寫入一份完整的HTML（會執行裡面的script），
+  // 之後可以用tab_eval下指令（例如查詢DOM、點擊、回報console）。about:blank分頁沒有opener，origin是不透明的，
+  // 跟助理的網站與使用者的其他分頁完全隔離；仍然只作用在「助理自己建立的分頁」。
+  async tab_set_html(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    const html = String(a.html == null ? "" : a.html);
+    if (html.length > 1500000) throw new Error("HTML太大（上限約1.5MB）");
+    await dbg(tabId);
+    const expr = "document.open();document.write(" + JSON.stringify(html) + ");document.close();'ok'";
+    const r = await send(tabId, "Runtime.evaluate", { expression: expr, returnByValue: true });
+    if (r && r.exceptionDetails) throw new Error("寫入HTML失敗：" + String((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text || "").slice(0, 300));
+    await sleep(150);
+    return { tab_id: tabId, bytes: html.length };
+  },
+
+  // 在助理的分頁裡執行一段JavaScript並回傳結果（字串化）。只給程式設計領域沙盒用的小工具：
+  // js通常是 (async()=>{ ... return JSON.stringify(x) })() 這種形式。有逾時；只作用在助理自己的分頁。
+  async tab_eval(a, ctx) {
+    const { tabId } = await needTab(a, ctx);
+    const js = String(a.js || "");
+    if (!js) throw new Error("缺少js");
+    await dbg(tabId);
+    const timeout = Math.min(Math.max(Number(a.timeout_ms) || 8000, 500), 30000);
+    const r = await send(tabId, "Runtime.evaluate", { expression: js, awaitPromise: true, returnByValue: true, timeout });
+    if (r && r.exceptionDetails) throw new Error(String((r.exceptionDetails.exception && (r.exceptionDetails.exception.description || r.exceptionDetails.exception.value)) || r.exceptionDetails.text || "執行失敗").slice(0, 500));
+    const v = r && r.result ? r.result.value : null;
+    return { value: v === undefined ? null : v };
   },
 
   async tab_activate(a, ctx) {

@@ -56,6 +56,9 @@ function collectSourceNames() {
   // domain 名稱：SUBAGENT_DOMAIN_REGISTRY 的 key，以及桌面版 register_domain('xxx')
   const reg = src.match(/const SUBAGENT_DOMAIN_REGISTRY = \{([\s\S]*?)\n\};/);
   if (reg) for (const m of reg[1].matchAll(/^    ([a-z_0-9]+): \{/gm)) domains.add(m[1]);
+  // 程式設計領域分支（prog_*）是由 FA_PROGRAMMING_PLAYBOOKS 這份資料迴圈登記進 SUBAGENT_DOMAIN_REGISTRY 的
+  const pb = src.match(/const FA_PROGRAMMING_PLAYBOOKS = \{([\s\S]*?)\n\};/);
+  if (pb) for (const m of pb[1].matchAll(/^    ([a-z_0-9]+): \{/gm)) domains.add(m[1]);
   for (const m of (src + boot).matchAll(/register_domain\(\s*['"]([a-z_0-9]+)['"]/g)) domains.add(m[1]);
   return { tools, slash, domains };
 }

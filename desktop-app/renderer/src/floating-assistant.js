@@ -954,6 +954,8 @@ function _faBuildCodingSystemPrompt(env = {}) {
 
 **步驟1-A：評估（背景調查，視需要才做）**：先靠已知線索判斷——讀懂使用者的任務描述、相關既有原始碼、（有的話）coding_task_state裡的舊紀錄，通常這樣就足夠規劃設計，不用額外查資料。**只有當任務涉及不熟悉的函式庫/框架版本差異、少見的錯誤訊息、業界最佳實踐比較、或使用者明確要求調查/研究時**，才呼叫browser_search主動搜尋背景知識（sources建議包含github、codeproject、wiki、deepwiki、stackoverflow這幾個技術類來源），找到有用的候選連結後用fetch_web_page讀完整內容，不要只憑search回傳的短摘要就下結論。**這兩個工具如果回報網路搜尋功能未設定/未啟用，直接跳過這一步、改用你已知的知識繼續評估即可，不要因此卡住整個任務**。調查到的重點整理成2-5條精簡摘要，供下面設計計畫的「背景調查」小節使用；沒有做調查就不用寫這小節，不要硬湊內容。
 
+**步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
+
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
 ## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
 ## 需求分析（使用者實際要什麼、有沒有隱含限制）
@@ -1655,6 +1657,195 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '**腳本重用（register_saved_script/list_saved_scripts/get_saved_script）**：評估到使用者的需求需要背景執行、要跑大量運算/公式、或看起來未來還會被問到類似情境時，不要每次都重新寫一遍腳本——動手寫之前先呼叫list_saved_scripts看有沒有現成可用的（可以直接用get_saved_script取回內容、透過input_files帶進bash_execute/python_execute執行）；確認一段新腳本可以正確執行、判斷值得未來重複使用之後，呼叫register_saved_script存起來（連同一段清楚描述「做什麼、什麼情境該重用」的description，之後才找得回來）。三個工具跟bash_execute/python_execute共用同一套output_ref語意（留空=persistentStorage、fap:<名稱>[/<路徑>]=使用者指定或共用的資料夾）——存進persistentStorage的有100MB自動LRU額度，不用自己操心空間；存進File Access Point沒有這個上限。',
     },
 };
+
+// ============================================================
+// 2026-10-02使用者要求：程式設計要有「領域分支」——不同領域（平行運算、HPC、web service、生態系設計、繪圖工具、
+// 嵌入式/Raspberry Pi、BMC/OpenBMC、Android、Windows、iOS）的工具與開發流程都不同。使用者接的LLM很弱，
+// 每個領域都需要現成的「計畫範本（Plan Template）」跟「狀態機（State Machine）」，不能靠模型自己記流程。
+//
+// 做法：每個領域是一份資料（FA_PROGRAMMING_PLAYBOOKS），由同一套引擎處理——
+//   (1) 狀態機：playbook_state工具（見FloatingAssistant._playbookRun）強制階段順序
+//       評估→實驗→設計→實作→驗證→交付，每個階段交出指定欄位才能進下一階段，錯了回ok:false＋next_action
+//       （下一步該呼叫哪個工具、參數長什麼樣），弱模型照著做就不會迷路；
+//   (2) 計畫範本：design階段的設計文件必須含該領域規定的每一個「## 標題」，缺一個就退回；
+//   (3) 先實驗再設計：實驗階段要用sandbox_*工具（iframe／瀏覽器分頁／彈出視窗／Web Worker／Pyodide）
+//       真的跑過、記錄觀察到的行為，才可以進設計；
+//   (4) 誠實驗證分級：evaluate階段必須宣告verification_level（sandbox/simulated/needs_toolchain/
+//       needs_hardware），非sandbox的領域在驗證與交付階段一定要列出「沒辦法驗證的項目」，不能假裝驗證過。
+// 要新增領域：加一筆資料即可（或在執行期用register_programming_domain()）；要替換/申請某領域的工具用
+// programming_domains工具（見_programmingDomainsRun），都不用改引擎。
+// ============================================================
+const FA_PROG_COMMON_TOOLS = [
+    'playbook_state', 'programming_domains', 'sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_py_app',
+    'list_file_access_points', 'fap_list_files', 'fap_find_file', 'coding_workspace', 'coding_read_file', 'apply_git_patch',
+    'git_inspect', 'git_commit', 'coding_run_check', 'coding_run_tests',
+    'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'browser_search', 'fetch_web_page',
+];
+
+const FA_PROGRAMMING_PLAYBOOKS = {
+    prog_parallel: {
+        label: '平行程式設計（資料平行／任務平行／管線、執行緒與同步、加速比量測）',
+        focus: '先寫「序列基準版」並確認結果正確，再平行化；平行版的結果必須和序列版逐項比對一致，才可以談效能。區分資料平行（切資料）、任務平行（切工作）、管線（分階段）；找出共享狀態與同步點；用Amdahl定律估上限，用實測的加速比驗證。',
+        verification: 'sandbox',
+        designHeadings: ['平行化目標與切分方式', '共享狀態與同步', '正確性驗證（與序列版逐項比對）', '效能量測計畫（加速比、負載平衡）', '失敗模式（競爭條件、死結、負載不均）'],
+        experiments: ['sandbox_worker：同一份工作先序列跑、再切給多個Worker（程式裡可以new Worker）跑，比對結果與耗時（navigator.hardwareConcurrency可看核心數）', 'python_execute：multiprocessing/concurrent.futures（沙盒有Web Worker版shim），比對序列與平行結果'],
+        limits: '沙盒是瀏覽器：沒有真正的OpenMP/MPI/CUDA/pthread。這些只能寫出程式碼與編譯指令，不能說「已在沙盒驗證」，要放進verify階段的unverified清單。',
+        extraTools: ['python_execute', 'bash_execute'],
+    },
+    prog_hpc: {
+        label: '高效能運算HPC（效能瓶頸分析、向量化／分塊、數值精度、基準測試、叢集作業腳本）',
+        focus: '先判斷瓶頸是計算、記憶體頻寬還是I/O；選資料佈局與演算法（分塊、向量化、減少拷貝）；數值結果要有精度標準（和參考實作比對誤差）；用規模掃描（資料量逐步放大）做基準測試，記錄實測數字，不要用猜的。',
+        verification: 'simulated',
+        designHeadings: ['問題規模與瓶頸分析', '資料佈局與演算法選擇', '向量化／分塊／記憶體策略', '數值正確性與精度標準', '基準測試計畫（規模掃描）', '部署與作業腳本（Slurm／MPI／OpenMP／CUDA，哪些無法在沙盒驗證）'],
+        experiments: ['python_execute：用numpy（micropip.install）在小規模驗證數值正確性、量測不同寫法的耗時', 'sandbox_worker：TypedArray／WebAssembly風格的計算核心、規模掃描計時'],
+        limits: '沙盒沒有叢集、沒有GPU、沒有MPI/OpenMP/CUDA工具鏈，效能數字也不能代表真機。小規模的正確性與演算法對比可以驗證；真正的加速比、擴展性、作業排程腳本只能產出而不能驗證，必須列進unverified。',
+        extraTools: ['python_execute', 'bash_execute'],
+    },
+    prog_webservice: {
+        label: 'Web Service程式設計（API契約、路由、驗證與安全、Cloudflare Worker／Node／Flask／FastAPI）',
+        focus: '先寫API契約（路由、請求、回應、錯誤碼），再寫實作；每個端點都要有「請求→預期回應」的測試表；驗證/授權/CORS/輸入驗證是設計的一部分，不是事後補。沒有真的網路埠可以開，所以用「把request直接丟給handler」的方式測試。',
+        verification: 'sandbox',
+        designHeadings: ['API契約（路由／請求／回應／錯誤碼）', '資料模型與儲存', '驗證與安全（認證、輸入驗證、CORS、速率限制）', '部署目標（Cloudflare Worker／Node／Python WSGI·ASGI）', '測試計畫（請求→預期回應對照表）'],
+        experiments: ['sandbox_worker：寫async function handler(request){return new Response(...)}，用requests參數送出測試請求，檢查status/headers/body（Cloudflare Worker風格，檔案可存進沙盒的持久檔案系統fs）', 'sandbox_py_app：Flask/Bottle（WSGI）或Starlette/FastAPI（ASGI）用micropip安裝後，直接以測試請求呼叫app', 'sandbox_html：寫一個呼叫該API的前端頁面（fetch指向同頁的模擬handler）驗證前後端合約'],
+        limits: '沙盒沒有可連線的埠、沒有真正的資料庫與Service Worker（Service Worker需要同源的script檔案，網頁版無法用blob/暫存內容註冊）。邏輯、路由、序列化、驗證可以驗證；真實網路、資料庫、TLS、部署只能產出設定，必須列進unverified。',
+        extraTools: ['python_execute', 'render_uml_diagram'],
+    },
+    prog_ecosystem: {
+        label: '生態系設計程式設計（外掛架構、擴充點與介面契約、版本相容、發佈與治理）',
+        focus: '把系統分成核心、外掛、第三方、使用者幾種角色，定義穩定的擴充點與介面契約（含版本號與相容規則）；先做一個最小外掛載入器原型驗證契約，再設計；每個破壞性變更要有流程（棄用期、遷移指南）。',
+        verification: 'sandbox',
+        designHeadings: ['生態系角色與邊界（核心／外掛／第三方／使用者）', '擴充點與介面契約（版本化、相容性）', '相依與發佈策略', '治理與破壞性變更流程', '範例外掛與相容性測試'],
+        experiments: ['sandbox_worker：寫外掛載入器原型——外掛註冊、契約檢查（缺欄位/版本不符要被拒絕）、隔離錯誤（一個外掛壞了不拖垮其他）', 'render_uml_diagram：畫元件圖/時序圖，讓使用者先確認架構'],
+        limits: '真實的套件登錄庫、簽章、跨版本相依解析無法在沙盒驗證，只能驗證契約檢查與載入邏輯。',
+        extraTools: ['render_uml_diagram', 'python_execute'],
+    },
+    prog_graphics: {
+        label: '繪圖工具設計程式設計（Canvas2D／SVG／WebGL／DOM 繪圖編輯器、互動、匯出）',
+        focus: '先釐清使用者的操作流程（畫、選、移動、縮放、復原、匯出），再選渲染方式（Canvas2D／SVG／WebGL／DOM）；資料模型要和畫面分開（場景/文件/圖層）；縮放要用向量重繪，不能拉大點陣；互動用沙盒頁面真的點擊/拖曳驗證。',
+        verification: 'sandbox',
+        designHeadings: ['工具目標與使用者操作流程', '資料模型（場景／文件／圖層）', '渲染方式選擇（Canvas2D／SVG／WebGL／DOM）與效能', '互動設計（縮放／平移／選取／復原）', '匯出格式與截圖測試計畫'],
+        experiments: ['sandbox_html：寫最小可行頁面，用steps（click/type/query/expect_text）驗證互動；backend=tab時是真實瀏覽器分頁', 'render_drawing / render_2d_animation / render_3d_scene：先用內建渲染器預覽想要的視覺效果'],
+        limits: '沙盒頁面的互動是用事件模擬，不等於真人觸控/滑鼠的所有細節（例如手勢、效能手感）；匯出格式的外部相容性要列進unverified。',
+        extraTools: ['render_drawing', 'render_2d_animation', 'render_3d_scene', 'render_uml_diagram'],
+    },
+    prog_embedded: {
+        label: '嵌入式系統程式設計（Raspberry Pi／MCU／Linux 嵌入式、GPIO·I2C·SPI·UART、即時性）',
+        focus: '先列硬體介面清單（腳位、匯流排、位址、電壓、時序），再設計程式架構（主迴圈／中斷／狀態機）；把硬體存取包成「硬體抽象層」，才能在沙盒用mock/模擬器驗證邏輯；明確寫出資源限制（記憶體、CPU、延遲）與失效保護（看門狗、斷電、輸入驗證）。',
+        verification: 'needs_hardware',
+        designHeadings: ['硬體與介面清單（GPIO／I2C／SPI／UART、供電、時序）', '韌體／程式架構（主迴圈、中斷、狀態機）', '硬體抽象層與模擬策略（mock）', '資源與即時性限制（記憶體、CPU、延遲）', '安全與失效保護（看門狗、斷電、輸入驗證）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['python_execute：寫假的RPi.GPIO／smbus／serial模組（mock），在上面跑完整邏輯與狀態機測試', 'sandbox_worker：用事件序列模擬感測器輸入，驗證狀態機轉換與逾時處理'],
+        limits: '沙盒沒有GPIO、I2C、SPI、真實時序與電氣特性；只能驗證「邏輯」，不能驗證「硬體行為」。時序、去彈跳、供電、驅動、交叉編譯與燒錄都必須列進unverified，要求使用者在實機確認。',
+        extraTools: ['python_execute', 'bash_execute'],
+    },
+    prog_bmc: {
+        label: 'BMC／OpenBMC 程式設計（Redfish／IPMI／D-Bus、phosphor 元件、感測器、韌體更新）',
+        focus: '先盤點平台介面（IPMI、Redfish、D-Bus、I2C感測器、GPIO、KVM）與OpenBMC元件（phosphor-*、entity-manager設定、systemd服務）；對外介面（Redfish/IPMI）要先寫契約再寫實作；用「mock Redfish服務」驗證回應格式與錯誤處理；韌體更新與帳號/TLS屬於安全重點。',
+        verification: 'needs_toolchain',
+        designHeadings: ['平台與介面盤點（IPMI／Redfish／D-Bus／I2C 感測器／GPIO／KVM）', '服務與元件設計（phosphor-* 元件、systemd 服務、entity-manager 實體設定）', 'Redfish／IPMI 介面契約與錯誤處理', '安全（帳號、TLS、權限、韌體簽章與更新）', '模擬與測試（mock Redfish 服務、QEMU）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['sandbox_worker：寫mock Redfish服務（/redfish/v1、Systems、Chassis、Managers），handler依請求回JSON，用requests參數驗證資源結構、@odata欄位、錯誤回應', 'python_execute：解析/組裝IPMI raw封包、感測器換算公式的單元測試'],
+        limits: '沙盒沒有Yocto/BitBake、QEMU、D-Bus、真正的BMC硬體或網路埠；只能驗證純邏輯與介面格式。整包韌體建置、D-Bus服務互動、感測器實機讀值、更新流程都必須列進unverified。',
+        extraTools: ['python_execute', 'bash_execute', 'render_uml_diagram'],
+    },
+    prog_android: {
+        label: 'Android 程式設計（Kotlin／Java、Jetpack Compose、Activity 生命週期、Gradle、權限）',
+        focus: '先定畫面流程與資料流，再選架構（ViewModel／Repository／Room／網路）；生命週期、權限、背景工作要在設計裡寫清楚；把「純邏輯」寫成不依賴Android框架的模組，才能在沙盒用JS/Python移植版先驗證；UI流程可以用手機尺寸的HTML頁面做原型。',
+        verification: 'needs_toolchain',
+        designHeadings: ['應用目標與畫面流程（Activity／Fragment／Compose）', '架構與資料層（ViewModel／Repository／Room／網路）', '權限、生命週期與背景工作', '建置與相依（Gradle、minSdk／targetSdk）', '測試計畫（單元／UI／實機）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['sandbox_html：用手機尺寸（width:360, height:800）的頁面做畫面流程原型，steps驗證點擊流程', 'sandbox_worker／python_execute：把純邏輯（驗證、計算、狀態機）移植成JS/Python先測'],
+        limits: '沙盒無法編譯Kotlin/Java、無法跑Gradle與模擬器、無法測權限與生命週期。HTML原型只驗證流程與邏輯，不代表原生UI；編譯、安裝、實機行為都必須列進unverified。桌面版如果使用者裝了Android SDK，可以用run_command自行編譯，但要先確認真的存在。',
+        extraTools: ['python_execute', 'render_uml_diagram'],
+    },
+    prog_windows: {
+        label: 'Windows 程式設計（Win32／WinForms／WPF／WinUI／.NET／PowerShell／服務／安裝封裝）',
+        focus: '先選應用類型與技術（桌面UI／背景服務／命令列／PowerShell模組），再設計架構；Windows特有的坑要寫進設計：路徑與編碼、UAC/權限、登錄檔、DPI、服務生命週期、非管理員執行。純邏輯盡量獨立成可測模組，在沙盒用JS/Python移植版驗證。',
+        verification: 'needs_toolchain',
+        designHeadings: ['應用類型與技術選型（Win32／WinForms／WPF／WinUI／.NET／PowerShell／服務）', '架構與資料流', 'Windows API 與系統整合（登錄檔、服務、UAC 權限、路徑與編碼）', '打包與部署（MSIX／MSI／安裝程式、簽章）', '測試計畫與相容性（Windows 版本、DPI、非管理員）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['sandbox_worker／python_execute：把純邏輯（解析、轉換、狀態機）移植成JS/Python先測', 'sandbox_html：UI流程原型（版面與操作流程）'],
+        limits: '沙盒是busybox/瀏覽器，沒有Windows API、.NET、PowerShell、登錄檔與安裝程式；只能驗證邏輯與流程。編譯、執行、權限、打包都必須列進unverified。桌面版在Windows上可以用run_command實際執行，但要先確認工具鏈真的存在。',
+        extraTools: ['python_execute', 'bash_execute'],
+    },
+    prog_ios: {
+        label: 'iOS 程式設計（Swift／SwiftUI／UIKit、生命週期、簽章與上架）',
+        focus: '先定畫面流程與資料流，再選架構（MVVM／Core Data／網路層）；權限、背景任務、簽章與App Store審查規範是設計的一部分；純邏輯寫成不依賴UIKit的模組，用JS/Python移植版在沙盒先驗證，UI流程用手機尺寸HTML原型。',
+        verification: 'needs_toolchain',
+        designHeadings: ['應用目標與畫面流程（SwiftUI／UIKit）', '架構與資料層（MVVM／Core Data／網路）', '權限、生命週期與背景任務', '簽章、Provisioning 與 App Store 規範', '測試計畫（XCTest／UI Test／TestFlight）', '實機驗證清單（沙盒無法驗證的項目）'],
+        experiments: ['sandbox_html：手機尺寸（width:390, height:844）的畫面流程原型', 'sandbox_worker／python_execute：把純邏輯移植成JS/Python先測'],
+        limits: '沒有macOS、Xcode、模擬器與簽章環境，無法編譯Swift或執行任何iOS程式；只能驗證流程與邏輯，編譯、簽章、實機行為、審查規範符合度都必須列進unverified。',
+        extraTools: ['python_execute', 'render_uml_diagram'],
+    },
+};
+
+const FA_PLAYBOOK_PHASE_ORDER = ['evaluate', 'experiment', 'design', 'implement', 'verify', 'deliver', 'done'];
+const FA_PLAYBOOK_PHASE_TITLES = { evaluate: '評估', experiment: '實驗（先在沙盒確認行為）', design: '設計', implement: '實作', verify: '驗證', deliver: '交付', done: '完成' };
+const FA_VERIFICATION_LEVELS = {
+    sandbox: '可以在沙盒（瀏覽器/Worker/Pyodide）真的執行驗證',
+    simulated: '只能用模擬/mock/縮小規模驗證邏輯，真實環境的行為要使用者實測',
+    needs_toolchain: '需要沙盒沒有的工具鏈（編譯器、SDK、模擬器），只能驗證純邏輯與流程',
+    needs_hardware: '需要實體硬體，只能驗證邏輯與狀態機',
+};
+
+// 領域的系統提示：固定流程＋計畫範本＋領域重點，全部由資料產生，每個領域長得一樣，弱模型只要學會一套流程。
+function _faBuildProgrammingPrompt(key, spec) {
+    const heads = spec.designHeadings.map((h) => '## ' + h).join('\n');
+    const hints = (spec.experiments || []).map((h, i) => `（${i + 1}）${h}`).join('；');
+    const level = FA_VERIFICATION_LEVELS[spec.verification] || FA_VERIFICATION_LEVELS.sandbox;
+    return `你是FloatingAssistant「${spec.label}」領域的子任務助理。**因為目前接的AI模型能力有限，你必須完全照playbook_state這個狀態機一步一步做：每一步只做它回傳的next_action叫你做的事，做完才能進下一步，不能跳階段，不能憑記憶或猜測代替真的執行。**
+
+**固定流程**：
+1. **第一個動作**：先playbook_state({"action":"get"})看有沒有進行中的任務——有就接著做（steering：使用者補充的新要求用add_todo插進清單），沒有才playbook_state({"action":"start","domain":"${key}","title":"簡短標題","goal":"使用者真正要的結果"})。記下回傳的task_id，之後每次呼叫playbook_state與sandbox_*都帶上task_id。
+2. 階段依序是：評估→實驗→設計→實作→驗證→交付。每個階段結束要用playbook_state({"action":"submit","task_id":"...","artifact":{...}})交出該階段的成果；缺欄位或格式不對會回ok:false並說明缺什麼，照說明補，**不要原封不動重送**。
+3. **評估**：先呼叫sandbox_capabilities看目前能用哪些沙盒（iframe／瀏覽器分頁／彈出視窗／Web Worker／Pyodide），再交出評估：goal、risks、environment、backend、experiment_plan、verification_level。這個領域的預設驗證等級是「${spec.verification}」（${level}）。
+4. **實驗（先實驗再設計）**：照experiment_plan用sandbox_*工具做最小可行實驗，確認行為和你的假設一不一樣——**實驗要真的執行並看結果，結果寫進submit的conclusion/learned**。實驗建議：${hints}。實驗不符預期就改假設再做一次，不要硬往下。
+5. **設計**：確認行為後才寫設計。設計文件一定要有下面每一個標題（缺一個會被退回），再附todos（每項小到「一次實作＋一次驗證」，且一定要寫test：怎麼驗證這一項）：
+${heads}
+6. **實作**：每個TODO用playbook_state({"action":"todo","task_id":"...","todo_id":N,"status":"in_progress"})開始，做完用status:"done"並附evidence（實際看到的測試輸出/觀察結果，不能空）。修改使用者專案的檔案時，沿用coding domain的流程：coding_workspace(open)→apply_git_patch（只能用patch改檔）→coding_run_check／coding_run_tests。
+7. **驗證**：交出commands（跑了什麼）、result（結果）、passed（true/false），以及unverified（沒辦法驗證的項目清單${spec.verification === 'sandbox' ? '，沒有就給空陣列' : '，這個領域一定要列'}）。
+8. **交付**：交出summary（做了什麼）與limitations（限制與使用者還要自己做的事）。
+
+**領域重點**：${spec.focus}
+**誠實規則**：${spec.limits} 沒有真的執行過的事，不要寫成「已驗證／已測試」；工具回傳ok:false就照實回報，不要編造成功。需要別的領域的工具時，用programming_domains({"action":"request_tools",...})申請，或request_additional_tools。回覆使用者時簡短說明：做了什麼、哪些驗證過、哪些沒驗證。`;
+}
+
+// 由資料產生領域登記項（category=programming，路由器會先選「程式設計」類別再選細分領域）
+for (const [pkey, pspec] of Object.entries(FA_PROGRAMMING_PLAYBOOKS)) {
+    SUBAGENT_DOMAIN_REGISTRY[pkey] = {
+        enabled: true,
+        label: pspec.label,
+        category: 'programming',
+        toolNames: Array.from(new Set(FA_PROG_COMMON_TOOLS.concat(pspec.extraTools || []))),
+        systemPrompt: _faBuildProgrammingPrompt(pkey, pspec),
+    };
+}
+// 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
+SUBAGENT_DOMAIN_REGISTRY.coding.category = 'programming';
+SUBAGENT_DOMAIN_REGISTRY.coding.toolNames = Array.from(new Set(SUBAGENT_DOMAIN_REGISTRY.coding.toolNames.concat(['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_py_app', 'playbook_state', 'programming_domains'])));
+
+// 沙盒頁面用的偵測程式：注入到iframe／彈出視窗／瀏覽器分頁裡的文件，收集console與錯誤，並讓外部用postMessage（或
+// 分頁的eval）下指令：report／query／click／type／eval／wait。純ES5、不含</script>。
+const FA_SANDBOX_BOOTSTRAP_JS = [
+    '(function(){',
+    'if(window.__fa)return;',
+    'var logs=[],errors=[],MAX=300;',
+    'function fmt(a){try{if(typeof a==="string")return a;if(a instanceof Error)return a.stack||String(a);return JSON.stringify(a);}catch(e){return String(a);}}',
+    '["log","info","warn","error","debug"].forEach(function(l){var o=console[l];console[l]=function(){try{logs.push({l:l,m:Array.prototype.map.call(arguments,fmt).join(" ").slice(0,500)});if(logs.length>MAX)logs.shift();}catch(e){}return o&&o.apply(console,arguments);};});',
+    'window.addEventListener("error",function(e){errors.push({m:String(e.message||e.type).slice(0,400),src:String(e.filename||"").slice(-60),line:e.lineno||0});});',
+    'window.addEventListener("unhandledrejection",function(e){errors.push({m:"unhandledrejection: "+fmt(e.reason).slice(0,400)});});',
+    'function vis(el){var r=el.getBoundingClientRect();var s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";}',
+    'function describe(el){var r=el.getBoundingClientRect();return {tag:el.tagName.toLowerCase(),id:el.id||undefined,cls:(typeof el.className==="string"&&el.className)?el.className.slice(0,80):undefined,text:(el.innerText||el.textContent||"").trim().slice(0,160),value:(el.value!==undefined?String(el.value).slice(0,100):undefined),visible:vis(el),rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}};}',
+    'var api={',
+    ' report:function(){return {title:document.title,url:String(location.href).slice(0,100),text:(document.body?document.body.innerText:"").slice(0,5000),html:(document.documentElement?document.documentElement.outerHTML:"").slice(0,7000),viewport:{w:innerWidth,h:innerHeight},logs:logs.slice(-80),errors:errors.slice(-30)};},',
+    ' query:function(sel){var out=[];var nodes=document.querySelectorAll(sel);for(var i=0;i<nodes.length&&i<10;i++)out.push(describe(nodes[i]));return {count:nodes.length,items:out};},',
+    ' click:function(sel){var el=document.querySelector(sel);if(!el)return {ok:false,error:"找不到 "+sel};if(el.scrollIntoView)el.scrollIntoView({block:"center"});["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){try{el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}));}catch(e){}});return {ok:true};},',
+    ' type:function(sel,text){var el=document.querySelector(sel);if(!el)return {ok:false,error:"找不到 "+sel};if(el.focus)el.focus();if("value" in el){el.value=text;}else{el.textContent=text;}el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new Event("change",{bubbles:true}));return {ok:true};},',
+    ' drag:function(sel,dx,dy){var el=document.querySelector(sel);if(!el)return {ok:false,error:"找不到 "+sel};var r=el.getBoundingClientRect();var x=r.x+r.width/2,y=r.y+r.height/2;function ev(t,px,py){el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window,clientX:px,clientY:py}));}ev("mousedown",x,y);ev("mousemove",x+dx/2,y+dy/2);ev("mousemove",x+dx,y+dy);ev("mouseup",x+dx,y+dy);return {ok:true};},',
+    ' eval:function(js){var r=(0,eval)(js);return r===undefined?null:JSON.parse(JSON.stringify(r,function(k,v){return typeof v==="function"?"[function]":v;}));},',
+    ' wait:function(ms){return new Promise(function(r){setTimeout(function(){r({ok:true});},Math.min(Number(ms)||0,5000));});}',
+    '};',
+    'window.__fa=api;',
+    'window.addEventListener("message",function(ev){var d=ev.data;if(!d||d.__fa_rpc!==1)return;Promise.resolve().then(function(){return api[d.cmd].apply(null,d.args||[]);}).then(function(r){ev.source.postMessage({__fa_res:d.id,result:r===undefined?null:r},"*");},function(e){ev.source.postMessage({__fa_res:d.id,error:String(e&&e.message||e)},"*");});});',
+    'try{parent.postMessage({__fa_ready:1},"*");}catch(e){}',
+    '})();',
+].join('\n');
 
 // tw_stock_db客製: 2026-09-24使用者要求——「把create skill（像Claude自己的
 // skill-creator）作為內建skill，屬於skill customize的domain；Configure的UI
@@ -5861,6 +6052,11 @@ class FloatingAssistant {
         // persistentStorage的可重用腳本，獨立的FileCache實例（獨立LRU
         // 淘汰池，理由跟skillFileCache同一段說明）。
         this.savedScriptCache = new FileCache('FloatingAssistantSavedScripts_' + ragDbSuffix, SAVED_SCRIPT_CACHE_MAX_BYTES);
+        // 2026-10-02：程式設計領域的狀態機任務（playbook_state）與沙盒Worker的持久檔案系統（sandbox_worker的fs），各自獨立的小型快取
+        this.playbookCache = new FileCache('FloatingAssistantPlaybooks_' + ragDbSuffix, 32 * 1024 * 1024);
+        this.sandboxFsCache = new FileCache('FloatingAssistantSandboxFs_' + ragDbSuffix, 64 * 1024 * 1024);
+        this.programmingPlaybooks = Object.assign({}, FA_PROGRAMMING_PLAYBOOKS);
+        this._programmingBaseTools = {};
         // tw_stock_db客製: 2026-09-15——見FileAccessPointStore類別上方的說明，
         // 跟fileCache/searchCache一樣依mount實例分開資料庫。
         this.fileAccessPoints = new FileAccessPointStore('FloatingAssistantFAP_' + ragDbSuffix);
@@ -5962,6 +6158,7 @@ class FloatingAssistant {
         // 產生對應的skill_<id>domain，並把custom_skills domain收斂成只涵蓋
         // 未分類工具（見那個方法本身的說明）。
         this.register_domain_category('user_skills', { label: '使用者自訂技能(Skill)' });
+        this.register_domain_category('programming', { label: '程式設計', description: '依領域分支的程式設計：通用coding、平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式/Raspberry Pi、BMC/OpenBMC、Android、Windows、iOS（每個領域都有計畫範本與狀態機，先在沙盒實驗再設計實作）' });
         this._ensureBuiltinSkillBundles();
         this._syncSkillBundleDomains();
         // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第2/3項）——
@@ -5969,6 +6166,7 @@ class FloatingAssistant {
         // 把使用者自建的domain真正register_domain()進this.domains，見該方法
         // 的說明。
         this._syncCustomDomains();
+        this._applyProgrammingToolOverrides(); // 使用者核准過的「申請/替換工具」
         // tw_stock_db客製: 2026-09-09使用者要求把原本單一的
         // builtinToolExposure('root'/'domains')二選一，擴充成三種
         // multiSubAgentMode（'router'/'full'/'off'，見get multiSubAgentMode()/
@@ -6456,6 +6654,7 @@ class FloatingAssistant {
             // 驗證」，避免留一條容易被繞過的路徑。
             youtubeDataApiKey: '',
             youtubeChannelId: '',
+            programmingToolOverrides: {},
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -7598,6 +7797,15 @@ class FloatingAssistant {
             gitAuthorEmail: String(raw.gitAuthorEmail || '').trim(),
             youtubeDataApiKey: String(raw.youtubeDataApiKey || '').trim(),
             youtubeChannelId: String(raw.youtubeChannelId || '').trim(),
+            programmingToolOverrides: (() => {
+                const out = {};
+                const src = raw.programmingToolOverrides && typeof raw.programmingToolOverrides === 'object' ? raw.programmingToolOverrides : {};
+                for (const [k, v] of Object.entries(src)) {
+                    if (!v || typeof v !== 'object') continue;
+                    out[String(k)] = { add: Array.isArray(v.add) ? v.add.map(String) : [], remove: Array.isArray(v.remove) ? v.remove.map(String) : [] };
+                }
+                return out;
+            })(),
             codingDomainEnabled: raw.codingDomainEnabled !== false,
             codingPublishMode: raw.codingPublishMode === 'auto' ? 'auto' : 'ask',
             festivalThemeEnabled: raw.festivalThemeEnabled !== false,
@@ -8511,6 +8719,87 @@ ${fnData.code}
                 return this._codingStateRun(ref, parsed, io);
             }),
             { type: 'object', properties: { cwd_abs: codingRootSchema, action: { type: 'string', enum: ['get', 'init', 'add_todo', 'update_todo', 'complete_todo', 'record_test_result', 'set_phase'] } }, required: ['cwd_abs', 'action'], additionalProperties: true }
+        );
+
+        // ============================================================
+        // 2026-10-02：程式設計領域分支的工具（playbook狀態機／沙盒實驗／領域管理），見FA_PROGRAMMING_PLAYBOOKS的說明。
+        // ============================================================
+        registerOptional('playbook_state',
+            '程式設計領域的「狀態機」——弱模型靠它不迷路。階段固定：評估→實驗→設計→實作→驗證→交付，每一步回傳next_action（下一步該呼叫什麼、參數長什麼樣），照做就好；交出的成果不合格會回ok:false並說明缺什麼。動作：start（開新任務：domain,title,goal）／get（看目前階段與下一步，不帶task_id就是最近進行中的）／submit（交出目前階段的成果artifact）／todo（實作階段：todo_id,status:in_progress|done|blocked，done一定要附evidence）／add_todo（text,test,position:now|next|end，使用者中途補充新要求用）／log_experiment（手動記錄實驗）／list／abort（reason）。**每次開始先get，有進行中的任務就接著做，不要重開。** 範例：playbook_state({"action":"start","domain":"prog_webservice","title":"待辦API","goal":"做一個可以新增/查詢待辦事項的REST API"})。可用領域用programming_domains({"action":"list"})查。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                return JSON.stringify(await this._playbookRun(parsed));
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['start', 'get', 'list', 'submit', 'todo', 'add_todo', 'log_experiment', 'abort'] }, task_id: { type: 'string' }, domain: { type: 'string', description: 'start時必填：領域代號（programming_domains list查）' }, title: { type: 'string' }, goal: { type: 'string' }, artifact: { type: 'object', description: 'submit時填：目前階段要交的成果，欄位見回傳的submit_fields' }, todo_id: { type: 'number' }, status: { type: 'string', enum: ['in_progress', 'done', 'blocked'] }, evidence: { type: 'string', description: 'todo done時必填：實際看到的測試輸出/觀察結果' }, notes: { type: 'string' }, text: { type: 'string' }, test: { type: 'string' }, position: { type: 'string', enum: ['now', 'next', 'end'] }, observed: { type: 'string' }, expected: { type: 'string' }, backend: { type: 'string' }, reason: { type: 'string' }, force: { type: 'boolean' } }, required: ['action'], additionalProperties: true }
+        );
+
+        registerOptional('programming_domains',
+            '管理「程式設計」類別底下的領域（平行程式設計、HPC、web service、生態系設計、繪圖工具、嵌入式/Raspberry Pi、BMC/OpenBMC、Android、Windows、iOS…）。動作：list（有哪些領域）／describe（某領域的計畫範本標題、實驗建議、限制、目前工具）／request_tools（申請把已存在的工具加進某領域，要使用者點頭；參數domain,tools:[...],reason）／replace_tool（替換：domain,remove:[...],add:[...],reason，要使用者點頭）／reset（還原出廠工具清單）。核准過的變更會記住，下次開機也有效。範例：programming_domains({"action":"request_tools","domain":"prog_graphics","tools":["render_3d_scene"],"reason":"要預覽3D效果"})',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                return JSON.stringify(await this._programmingDomainsRun(parsed));
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['list', 'describe', 'request_tools', 'replace_tool', 'reset'] }, domain: { type: 'string' }, tools: { type: 'array', items: { type: 'string' } }, add: { type: 'array', items: { type: 'string' } }, remove: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } }, required: ['action'], additionalProperties: false }
+        );
+
+        registerOptional('sandbox_capabilities',
+            '評估目前能用哪些「沙盒」做實驗：iframe（隔離的前端頁面，可複製目前畫面）、瀏覽器分頁（有瀏覽器控制權限時，全新about:blank分頁）、彈出視窗（需要使用者按一下按鈕）、Web Worker（伺服器邏輯/平行運算，有持久檔案系統）、Python（micropip＋Pyodide）、終端機，以及Service Worker是否可行（網頁版不行，並說明替代做法）。**做任何實驗前先呼叫一次**，依回傳的recommendation選後端。不需要參數。',
+            async function () {
+                return JSON.stringify({ ok: true, ...(await this._sandboxCapabilities()) });
+            },
+            { type: 'object', properties: {}, additionalProperties: false }
+        );
+
+        registerOptional('sandbox_html',
+            '在隔離的沙盒裡跑一段HTML/CSS/JS並回報結果（console輸出、錯誤、頁面文字、互動步驟是否成功）——**實驗用，確認行為後才設計/實作**。backend：auto（有瀏覽器控制權限→全新about:blank分頁；沒有→iframe）／iframe（隔離iframe，沒給html時複製「目前畫面」快照來實驗CSS/DOM修改）／tab／popup（彈出視窗，畫面上會出現按鈕要使用者按一下）。可以用steps自動操作並檢查：[{"action":"click","selector":"#btn"},{"action":"type","selector":"#name","text":"abc"},{"action":"drag","selector":"#box","dx":50,"dy":0},{"action":"wait","ms":300},{"action":"eval","js":"document.title"},{"action":"query","selector":".item"},{"action":"expect_text","selector":"#out","contains":"完成"},{"action":"expect_visible","selector":"#dialog"}]。手機畫面實驗：width:360,height:800。帶task_id會自動記錄成這個任務的一次實驗。範例：sandbox_html({"html":"<button id=b>0</button>","js":"b.onclick=()=>b.textContent=+b.textContent+1","steps":[{"action":"click","selector":"#b"},{"action":"expect_text","selector":"#b","contains":"1"}],"task_id":"pb_..."})',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const r = await this._sandboxHtmlRun(parsed);
+                if (parsed.task_id) {
+                    const summary = r.ok ? `頁面${r.page_ok ? '正常' : '有問題'}；錯誤${(r.errors || []).length}個；steps ${(r.step_results || []).filter((s) => s.ok).length}/${(r.step_results || []).length}成功；文字：${String(r.text || '').replace(/\s+/g, ' ').slice(0, 100)}` : `失敗：${r.error}`;
+                    const lg = await this._playbookLogExperiment(parsed.task_id, { backend: r.backend || 'sandbox_html', title: String(parsed.title || 'sandbox_html實驗'), expected: String(parsed.expected || ''), observed: summary, ok: !!r.ok && r.page_ok !== false });
+                    r.logged_to_task = lg.ok ? { task_id: parsed.task_id, experiment_id: lg.experiment_id, total_experiments: lg.total } : { error: lg.error };
+                }
+                return JSON.stringify(r);
+            },
+            { type: 'object', properties: { html: { type: 'string', description: 'HTML（片段或完整文件）。不給＝複製目前畫面' }, css: { type: 'string' }, js: { type: 'string' }, base: { type: 'string', enum: ['blank', 'current_page'] }, backend: { type: 'string', enum: ['auto', 'iframe', 'tab', 'popup'] }, steps: { type: 'array', items: { type: 'object' } }, width: { type: 'number' }, height: { type: 'number' }, wait_ms: { type: 'number' }, keep_open: { type: 'boolean', description: '做完不要關掉（要讓使用者看時才用）' }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, additionalProperties: false }
+        );
+
+        registerOptional('sandbox_worker',
+            '在Web Worker沙盒跑JavaScript（沒有DOM）——適合伺服器邏輯、演算法、平行運算實驗。程式碼是async函式本體：可以用await、console.log，**fs.read(path)／fs.write(path,內容)／fs.list(prefix)／fs.remove(path)** 存取持久檔案系統（重新整理後還在）；想測試web service就定義 async function handler(request){ return new Response("ok",{status:200}); }，再用requests參數送測試請求（[{"method":"GET","path":"/todos"},{"method":"POST","path":"/todos","json":{"title":"買菜"}}]），回傳每個請求的status/headers/body；想回傳資料就設 const result = ...。平行運算實驗：程式裡可以new Worker。files參數可以預先寫入檔案。逾時預設10秒（最多60秒）。帶task_id會自動記錄成實驗。範例：sandbox_worker({"code":"async function handler(req){ const u=new URL(req.url); return new Response(JSON.stringify({path:u.pathname}),{headers:{"content-type":"application/json"}}); }","requests":[{"method":"GET","path":"/hi"}],"task_id":"pb_..."})',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const r = await this._sandboxWorkerRun(parsed);
+                r.backend = 'worker';
+                if (parsed.task_id) {
+                    const summary = r.ok ? `Worker執行成功${(r.responses || []).length ? '；回應：' + r.responses.map((x) => `${x.request}→${x.status || x.error}`).join('、') : ''}${r.result !== undefined ? '；result=' + JSON.stringify(r.result).slice(0, 100) : ''}` : `失敗：${String(r.error).slice(0, 150)}`;
+                    const lg = await this._playbookLogExperiment(parsed.task_id, { backend: 'worker', title: String(parsed.title || 'sandbox_worker實驗'), expected: String(parsed.expected || ''), observed: summary, ok: !!r.ok });
+                    r.logged_to_task = lg.ok ? { task_id: parsed.task_id, experiment_id: lg.experiment_id, total_experiments: lg.total } : { error: lg.error };
+                }
+                return JSON.stringify(r);
+            },
+            { type: 'object', properties: { code: { type: 'string' }, requests: { type: 'array', items: { type: 'object' } }, files: { type: 'object', description: '{"路徑":"內容"}，執行前寫進持久檔案系統' }, timeout_ms: { type: 'number' }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, required: ['code'], additionalProperties: false }
+        );
+
+        registerOptional('sandbox_py_app',
+            '在Python沙盒（Pyodide）跑一個Python web app並用測試請求呼叫它——適合實驗Flask/Bottle（WSGI）或Starlette/FastAPI（ASGI）這類server程式（沙盒不能開埠，所以直接把請求丟給app）。程式裡定義一個叫app的物件；packages填要用micropip安裝的純Python套件（例如["flask"]、["fastapi"]，第一次下載比較慢）；requests同sandbox_worker格式。kind預設auto（自動判斷WSGI/ASGI）。回傳每個請求的status/headers/body。帶task_id會自動記錄成實驗。範例：sandbox_py_app({"packages":["flask"],"code":"from flask import Flask\\napp=Flask(__name__)\\n@app.get("/hi")\\ndef hi(): return {"ok":True}","requests":[{"method":"GET","path":"/hi"}],"task_id":"pb_..."})',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const r = await this._sandboxPyAppRun(parsed);
+                r.backend = 'python';
+                if (parsed.task_id) {
+                    const summary = r.ok ? `Python app（${r.kind}）回應：${(r.responses || []).map((x) => `${x.request}→${x.status || x.error}`).join('、')}` : `失敗：${String(r.error).slice(0, 150)}`;
+                    const lg = await this._playbookLogExperiment(parsed.task_id, { backend: 'python', title: String(parsed.title || 'sandbox_py_app實驗'), expected: String(parsed.expected || ''), observed: summary, ok: !!r.ok });
+                    r.logged_to_task = lg.ok ? { task_id: parsed.task_id, experiment_id: lg.experiment_id, total_experiments: lg.total } : { error: lg.error };
+                }
+                return JSON.stringify(r);
+            },
+            { type: 'object', properties: { code: { type: 'string' }, packages: { type: 'array', items: { type: 'string' } }, requests: { type: 'array', items: { type: 'object' } }, kind: { type: 'string', enum: ['auto', 'wsgi', 'asgi'] }, task_id: { type: 'string' }, title: { type: 'string' }, expected: { type: 'string' } }, required: ['code'], additionalProperties: false }
         );
 
         registerOptional('coding_run_tests',
@@ -12108,6 +12397,764 @@ ${fnData.code}
     // ---- coding_task_state（狀態機，桌面/網頁共用）----
     _codingPaths() {
         return { state: '.floating-assistant/coding-task-state.json', index: 'DESIGN-INDEX.md', testsDir: 'tests' };
+    }
+
+    // ============================================================
+    // 2026-10-02：程式設計領域分支的引擎（資料見FA_PROGRAMMING_PLAYBOOKS）。
+    // 三塊：(A)playbook狀態機 (B)沙盒實驗後端 (C)領域管理（註冊/申請/替換工具）。
+    // ============================================================
+
+    // ---------- (A) Playbook狀態機 ----------
+    async _playbookLoad(id) {
+        if (!id) return null;
+        try {
+            const rec = await this.playbookCache.get(String(id));
+            if (!rec) return null;
+            return JSON.parse(await rec.blob.text());
+        } catch (_) { return null; }
+    }
+    async _playbookSave(st) {
+        st.updated_at = Date.now();
+        await this.playbookCache.put(`${st.task_id}.json`, 'application/json', new Blob([JSON.stringify(st)], { type: 'application/json' }), 'playbook', st.task_id);
+    }
+    async _playbookAll() {
+        const recs = await this.playbookCache.getAll();
+        const out = [];
+        for (const r of recs) { if (r.kind !== 'playbook') continue; const st = await this._playbookLoad(r.id); if (st) out.push(st); }
+        return out.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    }
+    async _playbookActive(domain) {
+        const all = await this._playbookAll();
+        return all.find((s) => s.phase !== 'done' && (!domain || s.domain === domain)) || null;
+    }
+
+    // 目前階段的指引：要交什麼、下一步該呼叫什麼（next_action寫成可以照抄的工具呼叫，給弱模型用）
+    _playbookGuide(st) {
+        const spec = (this.programmingPlaybooks || {})[st.domain] || {};
+        const id = st.task_id;
+        const sub = (artifact) => `playbook_state({"action":"submit","task_id":"${id}","artifact":${JSON.stringify(artifact)}})`;
+        const heads = (spec.designHeadings || []).map((h) => '## ' + h);
+        const open = (st.todos || []).find((t) => t.status === 'in_progress') || (st.todos || []).find((t) => t.status === 'pending');
+        switch (st.phase) {
+            case 'evaluate':
+                return {
+                    submit_fields: { goal: '要達成什麼（一句話）', risks: ['可能出錯/不確定的地方'], environment: '目前環境（web或desktop）與可用的沙盒', backend: 'iframe|tab|popup|worker|python|terminal 其中之一', experiment_plan: '打算做什麼實驗、要驗證什麼假設', verification_level: 'sandbox|simulated|needs_toolchain|needs_hardware' },
+                    next_action: `1) 呼叫sandbox_capabilities({})看哪些沙盒可用；2) 評估後呼叫 ${sub({ goal: '...', risks: ['...'], environment: 'web，可用iframe/worker', backend: 'iframe', experiment_plan: '...', verification_level: spec.verification || 'sandbox' })}`,
+                };
+            case 'experiment':
+                return {
+                    submit_fields: { verdict: 'confirmed|refuted|inconclusive', conclusion: '實驗觀察到什麼（至少10字）', learned: '這對設計有什麼影響（至少10字）' },
+                    next_action: `用sandbox_html／sandbox_worker／sandbox_py_app做實驗（呼叫時帶"task_id":"${id}"，結果會自動記錄；目前已記錄${(st.experiments || []).length}次）。建議：${(spec.experiments || []).join('；')}。至少做1次後呼叫 ${sub({ verdict: 'confirmed', conclusion: '...', learned: '...' })}`,
+                };
+            case 'design':
+                return {
+                    submit_fields: { design: '設計文件（Markdown，必須含下列每個標題）', todos: [{ text: '一次實作＋一次驗證能完成的小項目', test: '怎麼驗證這一項' }] },
+                    required_headings: heads,
+                    next_action: `照下面每個標題寫設計文件（缺一個會被退回），再附todos（每項都要有test）：\n${heads.join('\n')}\n然後呼叫 ${sub({ design: '## ...', todos: [{ text: '...', test: '...' }] })}`,
+                };
+            case 'implement':
+                return {
+                    submit_fields: {},
+                    next_action: open
+                        ? `目前要做的TODO #${open.id}：「${open.text}」（驗證方式：${open.test}）。${open.status === 'pending' ? `先呼叫playbook_state({"action":"todo","task_id":"${id}","todo_id":${open.id},"status":"in_progress"})。` : ''}做完並驗證後呼叫playbook_state({"action":"todo","task_id":"${id}","todo_id":${open.id},"status":"done","evidence":"實際看到的測試輸出或觀察結果"})`
+                        : '所有TODO都處理完了，會自動進入驗證階段。',
+                };
+            case 'verify':
+                return {
+                    submit_fields: { commands: ['跑了什麼指令/檢查'], result: '結果（至少6字）', passed: true, unverified: spec.verification === 'sandbox' ? ['沒辦法驗證的項目；沒有就給空陣列'] : ['沒辦法在沙盒驗證的項目（這個領域至少要列一項）'] },
+                    next_action: `重新跑一次整體驗證（${(spec.experiments || [])[0] || '照測試計畫'}），然後呼叫 ${sub({ commands: ['...'], result: '...', passed: true, unverified: spec.verification === 'sandbox' ? [] : ['...'] })}。passed填false會退回實作階段並自動新增修正項目。`,
+                };
+            case 'deliver':
+                return {
+                    submit_fields: { summary: '做了什麼（至少10字）', limitations: '限制與使用者還要自己做的事' },
+                    next_action: `呼叫 ${sub({ summary: '...', limitations: '...' })}，完成後用簡短的話向使用者回報：做了什麼、哪些驗證過、哪些沒驗證。`,
+                };
+            default:
+                return { submit_fields: {}, next_action: '任務已完成，直接向使用者簡短回報結果；要開新任務請playbook_state({"action":"start",...})。' };
+        }
+    }
+
+    _playbookView(st, extra) {
+        const spec = (this.programmingPlaybooks || {})[st.domain] || {};
+        const counts = {};
+        for (const t of st.todos || []) counts[t.status] = (counts[t.status] || 0) + 1;
+        const guide = this._playbookGuide(st);
+        return Object.assign({
+            ok: true, task_id: st.task_id, domain: st.domain, title: st.title, goal: st.goal,
+            phase: st.phase, phase_title: FA_PLAYBOOK_PHASE_TITLES[st.phase] || st.phase,
+            phases: FA_PLAYBOOK_PHASE_ORDER.slice(0, -1).map((p) => `${p === st.phase ? '▶ ' : ''}${FA_PLAYBOOK_PHASE_TITLES[p]}`),
+            verification_level: st.verification_level || spec.verification || 'sandbox',
+            experiments_logged: (st.experiments || []).length,
+            todos: (st.todos || []).map((t) => ({ id: t.id, text: t.text, test: t.test, status: t.status })),
+            todo_counts: counts,
+            submit_fields: guide.submit_fields,
+            required_headings: guide.required_headings,
+            next_action: guide.next_action,
+        }, extra || {});
+    }
+
+    async _playbookRun(parsed) {
+        if (!this._playbookLocks) this._playbookLocks = new Map();
+        const key = String(parsed.task_id || '*');
+        const prev = this._playbookLocks.get(key) || Promise.resolve();
+        const run = prev.then(() => this._playbookAction(parsed)).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+        this._playbookLocks.set(key, run.catch(() => {}));
+        return run;
+    }
+
+    // 記錄一次實驗（sandbox_*工具帶task_id時自動呼叫；也可以用playbook_state的log_experiment手動記錄）
+    async _playbookLogExperiment(taskId, rec) {
+        const st = await this._playbookLoad(taskId);
+        if (!st) return { ok: false, error: `找不到task_id=${taskId}的任務` };
+        st.experiments = st.experiments || [];
+        const exp = { id: st.experiments.length + 1, at: Date.now(), phase: st.phase, ...rec };
+        st.experiments.push(exp);
+        await this._playbookSave(st);
+        return { ok: true, experiment_id: exp.id, total: st.experiments.length };
+    }
+
+    async _playbookAction(parsed) {
+        const action = String(parsed.action || '').trim();
+        const nonEmpty = (v, min = 4) => typeof v === 'string' && v.trim().length >= min;
+        const lvl = Object.keys(FA_VERIFICATION_LEVELS);
+        const playbooks = this.programmingPlaybooks || {};
+
+        if (action === 'list') {
+            const all = await this._playbookAll();
+            return { ok: true, tasks: all.slice(0, 20).map((s) => ({ task_id: s.task_id, domain: s.domain, title: s.title, phase: s.phase, updated_at: new Date(s.updated_at).toISOString() })) };
+        }
+        if (action === 'start') {
+            const domain = String(parsed.domain || '').trim();
+            if (!playbooks[domain]) return { ok: false, error: `沒有這個領域「${domain}」。可用領域：${Object.keys(playbooks).join('、')}。要查詳細內容用programming_domains({"action":"list"})` };
+            if (!nonEmpty(parsed.title, 2)) return { ok: false, error: 'start需要title（簡短的任務標題）' };
+            if (!nonEmpty(parsed.goal, 4)) return { ok: false, error: 'start需要goal（使用者真正要的結果，至少4個字）' };
+            const active = await this._playbookActive(domain);
+            if (active && !parsed.force) {
+                return { ok: false, error: `這個領域已經有進行中的任務「${active.title}」（task_id=${active.task_id}，階段=${FA_PLAYBOOK_PHASE_TITLES[active.phase]}）。接著做它：playbook_state({"action":"get","task_id":"${active.task_id}"})；使用者明講要另開新任務才加"force":true。` };
+            }
+            const st = {
+                task_id: `pb_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+                domain, title: String(parsed.title).trim(), goal: String(parsed.goal).trim(),
+                phase: 'evaluate', verification_level: playbooks[domain].verification || 'sandbox',
+                artifacts: {}, experiments: [], todos: [], steering_log: [], created_at: Date.now(), updated_at: Date.now(),
+            };
+            await this._playbookSave(st);
+            return this._playbookView(st, { note: `已建立任務。領域重點：${playbooks[domain].focus}` });
+        }
+
+        let st = null;
+        if (parsed.task_id) {
+            st = await this._playbookLoad(parsed.task_id);
+            if (!st) return { ok: false, error: `找不到task_id=${parsed.task_id}。用playbook_state({"action":"list"})查現有任務，或重新start。` };
+        } else {
+            st = await this._playbookActive(parsed.domain ? String(parsed.domain) : null);
+        }
+        if (action === 'get') {
+            if (!st) return { ok: true, exists: false, note: '目前沒有進行中的任務。要開始：playbook_state({"action":"start","domain":"<領域代號>","title":"...","goal":"..."})', domains: Object.keys(playbooks) };
+            return this._playbookView(st);
+        }
+        if (!st) return { ok: false, error: '沒有進行中的任務，請先action:start（或帶task_id）' };
+
+        const wrongPhase = (expected) => ({ ...this._playbookView(st), ok: false, error: `現在是「${FA_PLAYBOOK_PHASE_TITLES[st.phase]}」階段，這個動作要在「${FA_PLAYBOOK_PHASE_TITLES[expected]}」階段才能做。請照next_action做。` });
+        const spec = playbooks[st.domain] || {};
+
+        if (action === 'abort') {
+            if (!nonEmpty(parsed.reason, 4)) return { ok: false, error: 'abort需要reason（為什麼要放棄這個任務）' };
+            st.phase = 'done'; st.aborted = String(parsed.reason); await this._playbookSave(st);
+            return { ok: true, note: '任務已中止並封存。', task_id: st.task_id };
+        }
+        if (action === 'log_experiment') {
+            if (st.phase !== 'experiment' && st.phase !== 'evaluate' && st.phase !== 'implement' && st.phase !== 'verify') return wrongPhase('experiment');
+            if (!nonEmpty(parsed.title) || !nonEmpty(parsed.observed)) return { ok: false, error: 'log_experiment需要title（做了什麼實驗）與observed（實際觀察到什麼）' };
+            const r = await this._playbookLogExperiment(st.task_id, { backend: String(parsed.backend || 'manual'), title: String(parsed.title), expected: String(parsed.expected || ''), observed: String(parsed.observed), ok: parsed.ok !== false, manual: true });
+            return { ...r, next_action: '至少做完1次實驗後，用submit交出verdict/conclusion/learned進入設計。' };
+        }
+        if (action === 'add_todo') {
+            if (st.phase !== 'implement' && st.phase !== 'verify' && st.phase !== 'deliver') return wrongPhase('implement');
+            if (!nonEmpty(parsed.text) || !nonEmpty(parsed.test)) return { ok: false, error: 'add_todo需要text與test（怎麼驗證）' };
+            const t = { id: Math.max(0, ...st.todos.map((x) => x.id)) + 1, text: String(parsed.text).trim(), test: String(parsed.test).trim(), status: 'pending', evidence: '' };
+            const inProg = st.todos.findIndex((x) => x.status === 'in_progress');
+            const firstOpen = st.todos.findIndex((x) => x.status !== 'done');
+            const pos = parsed.position === 'now' ? (firstOpen === -1 ? st.todos.length : firstOpen) : parsed.position === 'end' || firstOpen === -1 ? st.todos.length : (inProg !== -1 ? inProg + 1 : firstOpen + 1);
+            if (parsed.position === 'now' && inProg !== -1) st.todos[inProg].status = 'pending';
+            st.todos.splice(pos, 0, t);
+            st.steering_log.push({ at: Date.now(), text: t.text });
+            if (st.phase !== 'implement') st.phase = 'implement';
+            await this._playbookSave(st);
+            return this._playbookView(st, { added: t });
+        }
+        if (action === 'todo') {
+            if (st.phase !== 'implement') return wrongPhase('implement');
+            const t = st.todos.find((x) => x.id === Number(parsed.todo_id));
+            if (!t) return { ok: false, error: `找不到todo_id=${parsed.todo_id}，現有：${st.todos.map((x) => x.id).join(',')}` };
+            const status = String(parsed.status || '');
+            if (!['in_progress', 'done', 'blocked'].includes(status)) return { ok: false, error: 'status必須是in_progress／done／blocked' };
+            if (status === 'done' && !nonEmpty(parsed.evidence, 10)) return { ok: false, error: 'status:"done"一定要附evidence（實際看到的測試輸出或觀察結果，至少10個字）——沒有真的驗證過就不能標完成。' };
+            if (status === 'blocked' && !nonEmpty(parsed.notes, 4)) return { ok: false, error: 'status:"blocked"需要notes（卡在哪、試過什麼）' };
+            t.status = status;
+            if (parsed.evidence) t.evidence = String(parsed.evidence);
+            if (parsed.notes) t.notes = String(parsed.notes);
+            const allSettled = st.todos.every((x) => x.status === 'done' || x.status === 'blocked');
+            if (allSettled) st.phase = 'verify';
+            await this._playbookSave(st);
+            return this._playbookView(st, allSettled ? { advanced: true, note: '所有TODO都處理完了，進入驗證階段。' } : {});
+        }
+        if (action !== 'submit') return { ok: false, error: `不認得的action「${action}」。可用：start／get／list／submit／todo／add_todo／log_experiment／abort` };
+
+        // ---- submit：每個階段交出指定成果，通過才進下一階段 ----
+        const a = parsed.artifact && typeof parsed.artifact === 'object' ? parsed.artifact : null;
+        if (!a) return { ...this._playbookView(st), ok: false, error: 'submit需要artifact物件。' };
+        const missing = (keys) => keys.filter((k) => { const v = a[k]; return Array.isArray(v) ? !v.length : !nonEmpty(typeof v === 'string' ? v : (v == null ? '' : String(v)), 2); });
+        const reject = (msg) => ({ ...this._playbookView(st), ok: false, error: msg });
+
+        if (st.phase === 'evaluate') {
+            const miss = missing(['goal', 'risks', 'environment', 'backend', 'experiment_plan', 'verification_level']);
+            if (miss.length) return reject(`評估缺少欄位：${miss.join('、')}。每個欄位都要有實際內容。`);
+            if (!lvl.includes(String(a.verification_level))) return reject(`verification_level必須是${lvl.join('／')}其中之一（${lvl.map((k) => `${k}＝${FA_VERIFICATION_LEVELS[k]}`).join('；')}）`);
+            st.artifacts.evaluate = a; st.verification_level = String(a.verification_level); st.phase = 'experiment';
+            await this._playbookSave(st);
+            return this._playbookView(st, { note: '評估完成，進入實驗階段（先在沙盒確認行為，再設計）。' });
+        }
+        if (st.phase === 'experiment') {
+            if (!(st.experiments || []).length) return reject('還沒有任何實驗記錄。請先用sandbox_html／sandbox_worker／sandbox_py_app實際跑一次（帶task_id，會自動記錄），或用log_experiment手動記錄做過什麼、觀察到什麼。');
+            const verdict = String(a.verdict || '');
+            if (!['confirmed', 'refuted', 'inconclusive'].includes(verdict)) return reject('verdict必須是confirmed（行為符合假設）／refuted（不符，已理解原因）／inconclusive（還看不出來）');
+            if (!nonEmpty(a.conclusion, 10) || !nonEmpty(a.learned, 10)) return reject('conclusion（實驗觀察到什麼）與learned（對設計的影響）各至少10個字，要寫實際觀察到的內容。');
+            if (verdict === 'inconclusive' && st.experiments.length < 2) return reject('inconclusive代表還不能確認行為：請改假設或縮小問題，再做一次實驗（至少2次實驗記錄）後再交。');
+            st.artifacts.experiment = a; st.phase = 'design';
+            await this._playbookSave(st);
+            return this._playbookView(st, { note: '實驗完成，進入設計階段。' });
+        }
+        if (st.phase === 'design') {
+            const design = typeof a.design === 'string' ? a.design : '';
+            const heads = spec.designHeadings || [];
+            const baseOf = (h) => h.split(/[（(]/)[0].trim();
+            const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const absent = heads.filter((h) => !new RegExp('^#{2,3}\\s*' + esc(baseOf(h)), 'm').test(design));
+            if (absent.length) return reject(`設計文件缺少這些標題：${absent.map((h) => '## ' + h).join('；')}。每個標題都要有（可以照原樣複製標題）。`);
+            const thin = heads.filter((h) => {
+                const m = new RegExp('^#{2,3}\\s*' + esc(baseOf(h)) + '[^\\n]*\\n([\\s\\S]*?)(?=^#{2,3}\\s|$(?![\\s\\S]))', 'm').exec(design);
+                return !m || m[1].trim().length < 15;
+            });
+            if (thin.length) return reject(`這些章節內容太少（至少15個字，要寫實際設計不是空標題）：${thin.map((h) => baseOf(h)).join('、')}`);
+            const todos = Array.isArray(a.todos) ? a.todos : [];
+            if (!todos.length) return reject('設計階段要附todos（至少1項，每項要有text與test）。');
+            const badTodo = todos.findIndex((t) => !t || !nonEmpty(t.text) || !nonEmpty(t.test));
+            if (badTodo !== -1) return reject(`todos第${badTodo + 1}項缺text或test（test＝怎麼驗證這一項）。`);
+            st.artifacts.design = design;
+            st.todos = todos.map((t, i) => ({ id: i + 1, text: String(t.text).trim(), test: String(t.test).trim(), status: 'pending', evidence: '' }));
+            st.phase = 'implement';
+            await this._playbookSave(st);
+            return this._playbookView(st, { note: '設計通過，進入實作階段。一次只做一個TODO。' });
+        }
+        if (st.phase === 'verify') {
+            const cmds = Array.isArray(a.commands) ? a.commands.filter(Boolean) : (nonEmpty(a.commands) ? [a.commands] : []);
+            if (!cmds.length) return reject('verify需要commands（跑了什麼指令/檢查，陣列）。');
+            if (!nonEmpty(a.result, 6)) return reject('verify需要result（結果，至少6個字）。');
+            if (typeof a.passed !== 'boolean') return reject('verify需要passed（true或false）。');
+            if (!Array.isArray(a.unverified)) return reject('verify需要unverified（陣列：沒辦法驗證的項目；全部都驗證過就給空陣列）。');
+            if (st.verification_level !== 'sandbox' && !a.unverified.length) return reject(`這個任務的驗證等級是「${st.verification_level}」（${FA_VERIFICATION_LEVELS[st.verification_level]}），一定有沙盒驗證不了的項目（硬體、工具鏈、真實環境…），unverified不能是空的。誠實列出來，讓使用者知道還要自己確認什麼。`);
+            if (!a.passed) {
+                const fix = { id: Math.max(0, ...st.todos.map((x) => x.id)) + 1, text: `修正驗證失敗：${String(a.result).slice(0, 80)}`, test: '重新執行整體驗證並通過', status: 'pending', evidence: '' };
+                st.todos.push(fix); st.phase = 'implement';
+                await this._playbookSave(st);
+                return this._playbookView(st, { advanced: false, note: '驗證沒通過，退回實作階段，已自動新增修正項目。' });
+            }
+            st.artifacts.verify = { commands: cmds, result: String(a.result), passed: true, unverified: a.unverified.map(String) };
+            st.phase = 'deliver';
+            await this._playbookSave(st);
+            return this._playbookView(st, { note: '驗證完成，進入交付階段。' });
+        }
+        if (st.phase === 'deliver') {
+            if (!nonEmpty(a.summary, 10)) return reject('deliver需要summary（做了什麼，至少10個字）。');
+            if (!nonEmpty(a.limitations, 4)) return reject('deliver需要limitations（限制與使用者還要自己做的事）。');
+            st.artifacts.deliver = a; st.phase = 'done';
+            await this._playbookSave(st);
+            const unv = (st.artifacts.verify && st.artifacts.verify.unverified) || [];
+            return this._playbookView(st, { note: '任務完成。回覆使用者時要簡短說明：做了什麼、哪些驗證過、哪些沒驗證。', report: { summary: String(a.summary), limitations: String(a.limitations), unverified: unv, experiments: (st.experiments || []).length, todos_done: st.todos.filter((t) => t.status === 'done').length } });
+        }
+        return { ok: false, error: '任務已完成，沒有可以submit的階段。' };
+    }
+
+    // ---------- (C) 領域管理 ----------
+    // 執行期新增一個程式設計領域（host頁面或使用者的設定用）；跟內建領域走完全同一套playbook引擎。
+    register_programming_domain(key, spec) {
+        const k = String(key || '').trim();
+        if (!/^[a-z][a-z0-9_]{2,40}$/.test(k)) throw new Error('register_programming_domain: key必須是小寫英數底線（3~41字，字母開頭）');
+        if (!spec || !spec.label || !Array.isArray(spec.designHeadings) || spec.designHeadings.length < 2) throw new Error('register_programming_domain: spec需要label與designHeadings（至少2個設計文件標題）');
+        const full = Object.assign({ focus: '', verification: 'sandbox', experiments: [], limits: '沒有真的執行過的事不要寫成已驗證。', extraTools: [] }, spec);
+        if (!FA_VERIFICATION_LEVELS[full.verification]) full.verification = 'sandbox';
+        this.programmingPlaybooks[k] = full;
+        this.register_domain(k, {
+            label: full.label, category: 'programming', enabled: full.enabled !== false,
+            toolNames: Array.from(new Set(FA_PROG_COMMON_TOOLS.concat(full.extraTools || []))),
+            systemPrompt: _faBuildProgrammingPrompt(k, full),
+        });
+        this._programmingBaseTools[k] = this.domains[k].toolNames.slice();
+        this._applyProgrammingToolOverrides();
+        return this;
+    }
+
+    // 使用者核准過的「申請/替換工具」是存在advancedSettings.programmingToolOverrides的，每次開機重新套用到領域上
+    _applyProgrammingToolOverrides() {
+        const ov = (this.advancedSettings && this.advancedSettings.programmingToolOverrides) || {};
+        for (const [dom, o] of Object.entries(ov)) {
+            const d = this.domains[dom];
+            if (!d || !Array.isArray(d.toolNames)) continue;
+            const base = this._programmingBaseTools[dom] || d.toolNames.slice();
+            if (!this._programmingBaseTools[dom]) this._programmingBaseTools[dom] = base.slice();
+            const remove = new Set((o && o.remove) || []);
+            d.toolNames = Array.from(new Set(base.filter((t) => !remove.has(t)).concat((o && o.add) || [])));
+        }
+    }
+
+    async _programmingDomainsRun(parsed) {
+        const action = String(parsed.action || '').trim();
+        const playbooks = this.programmingPlaybooks || {};
+        const label = (k) => (this.domains[k] && this.domains[k].label) || k;
+        if (action === 'list') {
+            return {
+                ok: true,
+                domains: Object.entries(playbooks).map(([k, p]) => ({ domain: k, label: label(k), verification_level: p.verification, design_headings: p.designHeadings.length, tools: Array.isArray(this.domains[k] && this.domains[k].toolNames) ? this.domains[k].toolNames.length : 0, enabled: !!(this.domains[k] && this.domains[k].enabled) })),
+                note: '用playbook_state({"action":"start","domain":"<代號>",...})開始該領域的任務；delegate_to_subagent也可以直接指定domain。',
+            };
+        }
+        const dom = String(parsed.domain || '').trim();
+        if (!playbooks[dom] || !this.domains[dom]) return { ok: false, error: `沒有這個程式設計領域「${dom}」。可用：${Object.keys(playbooks).join('、')}` };
+        if (action === 'describe') {
+            const p = playbooks[dom];
+            return { ok: true, domain: dom, label: label(dom), focus: p.focus, verification_level: p.verification, verification_meaning: FA_VERIFICATION_LEVELS[p.verification], design_headings: p.designHeadings, experiment_suggestions: p.experiments, limits: p.limits, tools: this.domains[dom].toolNames, overrides: ((this.advancedSettings.programmingToolOverrides || {})[dom]) || null };
+        }
+        if (action === 'reset') {
+            if (this.advancedSettings.programmingToolOverrides) delete this.advancedSettings.programmingToolOverrides[dom];
+            if (this._programmingBaseTools[dom]) this.domains[dom].toolNames = this._programmingBaseTools[dom].slice();
+            this._saveAdvancedSettings();
+            return { ok: true, note: `已還原「${dom}」的工具清單為出廠設定。`, tools: this.domains[dom].toolNames };
+        }
+        if (action !== 'request_tools' && action !== 'replace_tool') return { ok: false, error: '不認得的action。可用：list／describe／request_tools／replace_tool／reset' };
+        const strs = (v) => (Array.isArray(v) ? v : (v ? [v] : [])).map((x) => String(x).trim()).filter(Boolean);
+        const add = strs(action === 'request_tools' ? parsed.tools : parsed.add);
+        const remove = action === 'replace_tool' ? strs(parsed.remove) : [];
+        if (!add.length && !remove.length) return { ok: false, error: action === 'request_tools' ? 'request_tools需要tools（要新增的工具名稱陣列）' : 'replace_tool需要add與/或remove' };
+        if (!String(parsed.reason || '').trim()) return { ok: false, error: '需要reason（為什麼這個領域需要這個變更，要給使用者看）' };
+        const unknown = add.filter((t) => !this.tools[t]);
+        if (unknown.length) return { ok: false, error: `這些工具不存在：${unknown.join('、')}。目前所有工具名稱可以用get_tool_details查，或看sandbox_capabilities/programming_domains的describe。` };
+        const cur = this.domains[dom].toolNames;
+        const toAdd = add.filter((t) => !cur.includes(t));
+        const toRemove = remove.filter((t) => cur.includes(t));
+        if (!toAdd.length && !toRemove.length) return { ok: true, note: '沒有需要變更的（工具已經在這個領域裡／要移除的本來就不在）。', tools: cur };
+        // 改動領域能力要使用者點頭
+        const answer = await this.requestUserForm({
+            title: '🧰 程式設計領域申請變更工具',
+            description: `領域「${label(dom)}」（${dom}）\n${toAdd.length ? '新增：' + toAdd.join('、') + '\n' : ''}${toRemove.length ? '移除：' + toRemove.join('、') + '\n' : ''}理由：${String(parsed.reason).trim()}`,
+            choices: ['同意', '拒絕'],
+        });
+        if (!answer || !answer.confirmed || answer.answer !== '同意') return { ok: false, error: '使用者拒絕了這次工具變更，維持原本的工具清單。' };
+        if (!this.advancedSettings.programmingToolOverrides) this.advancedSettings.programmingToolOverrides = {};
+        const o = this.advancedSettings.programmingToolOverrides[dom] || { add: [], remove: [] };
+        o.add = Array.from(new Set((o.add || []).concat(toAdd))).filter((t) => !toRemove.includes(t));
+        o.remove = Array.from(new Set((o.remove || []).concat(toRemove))).filter((t) => !toAdd.includes(t));
+        this.advancedSettings.programmingToolOverrides[dom] = o;
+        this._applyProgrammingToolOverrides();
+        this._saveAdvancedSettings();
+        return { ok: true, note: '已套用，之後這個領域的子任務就能用這些工具。', tools: this.domains[dom].toolNames };
+    }
+
+    // ---------- (B) 沙盒實驗後端 ----------
+    async _sandboxCapabilities() {
+        const isDesktop = typeof window !== 'undefined' && !!window.desktopAPI;
+        const out = { environment: isDesktop ? 'desktop' : 'web', backends: {}, recommendation: [], server_programs: {}, notes: [] };
+        out.backends.iframe = { available: true, isolation: 'iframe的sandbox屬性隔離（讀不到本頁資料、網路與儲存），適合跑AI寫的前端程式', needs_user_action: false, can_clone_current_page: true, how: 'sandbox_html({"backend":"iframe","html":"...","steps":[...]})；不給html時會複製「目前畫面」的快照來實驗（base:"current_page"）' };
+        let tab = { available: false, reason: '瀏覽器控制沒有啟用（Configure→瀏覽器控制）' };
+        if (this.advancedSettings.browserControlEnabled) {
+            try {
+                const p = await this._bcCall('ping', {}, 3000);
+                if (p && p.ok && p.allowed !== false) {
+                    const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
+                    tab = caps.includes('eval_js')
+                        ? { available: true, isolation: '全新的about:blank分頁（AI Controlled群組），跟本頁完全無關', needs_user_action: false, how: 'sandbox_html({"backend":"tab",...})（預設：有瀏覽器控制權限時auto就會選它）' }
+                        : { available: false, reason: `Chrome擴充功能版本太舊（${p.version || '未知'}），需要1.3.0以上才能在about:blank分頁寫入HTML；請重新下載擴充功能` };
+                } else tab = { available: false, reason: (p && (p.note || p.error)) || '擴充功能沒有回應或這個網站還沒被允許' };
+            } catch (err) { tab = { available: false, reason: String((err && err.message) || err) }; }
+        }
+        out.backends.browser_tab = tab;
+        out.backends.popup = { available: typeof window !== 'undefined' && typeof window.open === 'function', isolation: '彈出視窗裡再放一層sandbox iframe（AI寫的程式仍然隔離）', needs_user_action: true, how: 'sandbox_html({"backend":"popup",...})：畫面右下角會出現「開啟測試視窗」按鈕，使用者按下才能彈出（瀏覽器規定彈出視窗一定要使用者操作，這就是pending action）' };
+        out.backends.worker = { available: typeof Worker !== 'undefined', persistent_fs: true, how: 'sandbox_worker({"code":"...","requests":[...]})：Web Worker，沒有DOM；有fs.read/write/list/remove存到持久檔案系統；可以寫handler(request)當成Service Worker／Cloudflare Worker測試' };
+        out.backends.python = { available: true, micropip: true, how: 'python_execute（純腳本）或sandbox_py_app（Flask/FastAPI等web app，用micropip安裝純Python套件後直接以測試請求呼叫app）' };
+        out.backends.terminal = { available: true, how: 'run-terminal（busybox ash＋python -c）：適合檔案與指令流程；注意終端機裡的python是同步執行，不能await micropip.install，要裝套件請用python_execute或sandbox_py_app' };
+        out.backends.service_worker = { available: false, reason: 'Service Worker必須由「同源的script檔案網址」註冊，瀏覽器不接受blob或data網址，所以網頁版沒辦法把AI剛寫的程式註冊成Service Worker；桌面版也一樣，除非另外在本機proxy提供固定路徑（目前沒有）。替代做法：sandbox_worker用handler(request)模擬Service Worker／Cloudflare Worker的fetch處理，行為（路由、Request/Response、快取邏輯）可以完整驗證。' };
+        out.server_programs = {
+            node_or_worker_style: '用sandbox_worker：寫async function handler(request){return new Response(...)}，用requests參數送測試請求。',
+            python_wsgi_asgi: '用sandbox_py_app：packages填["flask"]或["fastapi"]等純Python套件（micropip安裝），程式裡定義app，用requests測試。',
+            real_sockets: '沙盒不能開監聽埠，也沒有真的資料庫/TLS；這些只能列進verify階段的unverified。',
+        };
+        out.recommendation = out.backends.browser_tab.available ? ['browser_tab（前端/頁面）', 'iframe', 'worker（伺服器邏輯）', 'python（Python後端）'] : ['iframe（前端/頁面，預設）', 'popup（需要使用者按一下）', 'worker（伺服器邏輯）', 'python（Python後端）'];
+        if (!out.backends.browser_tab.available) out.notes.push(`沒有瀏覽器控制權限：前端頁面實驗用iframe（可以複製目前畫面）；要更真實的獨立視窗用popup（需要使用者在畫面上按一下按鈕）。原因：${out.backends.browser_tab.reason}`);
+        return out;
+    }
+
+    _sandboxCurrentPageDoc() {
+        const clone = document.documentElement.cloneNode(true);
+        clone.querySelectorAll('script, iframe, noscript, #ai-floating-window, #ai-advanced-modal, .ai-sandbox-panel, [id^="ai-"]').forEach((n) => n.remove());
+        const head = clone.querySelector('head');
+        if (head) head.insertAdjacentHTML('afterbegin', `<base href="${String(location.href).split('#')[0].replace(/"/g, '&quot;')}">`);
+        return ('<!doctype html>' + clone.outerHTML).slice(0, 600000);
+    }
+
+    // 組出要放進沙盒的完整HTML文件：注入偵測程式（FA_SANDBOX_BOOTSTRAP_JS）＋使用者的css/js
+    _sandboxBuildDoc(a) {
+        const html = String(a.html || '');
+        const css = String(a.css || '');
+        const js = String(a.js || '').replace(/<\/script/gi, '<\\/script');
+        const boot = `<script>${FA_SANDBOX_BOOTSTRAP_JS.replace(/<\/script/gi, '<\\/script')}</script>`;
+        let doc;
+        if (a.base === 'current_page' || (!html && a.base !== 'blank')) {
+            doc = this._sandboxCurrentPageDoc();
+            if (html) doc = doc.replace(/<\/body>/i, () => html + '</body>');
+        } else if (/<html[\s>]/i.test(html)) {
+            doc = html;
+        } else {
+            doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>sandbox</title></head><body>${html}</body></html>`;
+        }
+        if (css) doc = /<\/head>/i.test(doc) ? doc.replace(/<\/head>/i, () => `<style>${css}</style></head>`) : `<style>${css}</style>` + doc;
+        if (js) doc = /<\/body>/i.test(doc) ? doc.replace(/<\/body>/i, () => `<script>${js}</script></body>`) : doc + `<script>${js}</script>`;
+        doc = /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (m) => m + boot) : boot + doc;
+        return doc;
+    }
+
+    // iframe後端：浮動小面板裡放一個sandbox iframe（不給allow-same-origin，AI寫的程式讀不到本頁任何資料）
+    async _sandboxOpenIframe(doc, a, hostWin) {
+        const width = Math.max(200, Math.min(1400, Number(a.width) || 360));
+        const height = Math.max(150, Math.min(1000, Number(a.height) || 260));
+        const hostDoc = hostWin ? hostWin.document : document;
+        const panel = hostDoc.createElement('div');
+        panel.className = 'ai-sandbox-panel';
+        if (!hostWin) {
+            panel.style.cssText = `position:fixed; left:12px; bottom:12px; z-index:2147482500; background:#fff; color:#111; border:1px solid #888; border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.35); overflow:hidden; font:12px sans-serif;`;
+            const bar = hostDoc.createElement('div');
+            bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; background:#eee;';
+            bar.innerHTML = '<span>🧪 沙盒實驗（隔離的iframe）</span>';
+            const x = hostDoc.createElement('button'); x.textContent = '✕'; x.style.cssText = 'border:none; background:none; cursor:pointer;';
+            x.addEventListener('click', () => panel.remove());
+            bar.appendChild(x); panel.appendChild(bar);
+        } else {
+            panel.style.cssText = 'position:fixed; inset:0;';
+        }
+        const iframe = hostDoc.createElement('iframe');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
+        iframe.style.cssText = hostWin ? 'width:100vw; height:100vh; border:0; background:#fff;' : `width:${width}px; height:${height}px; border:0; background:#fff; display:block;`;
+        panel.appendChild(iframe);
+        let nextId = 0;
+        const ready = new Promise((resolve) => {
+            const onMsg = (ev) => { if (ev.source === iframe.contentWindow && ev.data && ev.data.__fa_ready) { window.removeEventListener('message', onMsg); resolve(true); } };
+            window.addEventListener('message', onMsg);
+            setTimeout(() => { window.removeEventListener('message', onMsg); resolve(false); }, 8000);
+        });
+        (hostWin ? hostDoc.body : document.body).appendChild(panel);
+        iframe.srcdoc = doc;
+        const ok = await ready;
+        const call = (cmd, args, timeoutMs = 8000) => new Promise((resolve) => {
+            const id = ++nextId;
+            const timer = setTimeout(() => { window.removeEventListener('message', onMsg); resolve({ ok: false, error: `沙盒沒有回應（${cmd}逾時）` }); }, timeoutMs);
+            const onMsg = (ev) => {
+                if (ev.source !== iframe.contentWindow || !ev.data || ev.data.__fa_res !== id) return;
+                clearTimeout(timer); window.removeEventListener('message', onMsg);
+                resolve(ev.data.error ? { ok: false, error: ev.data.error } : { ok: true, value: ev.data.result });
+            };
+            window.addEventListener('message', onMsg);
+            try { iframe.contentWindow.postMessage({ __fa_rpc: 1, id, cmd, args: args || [] }, '*'); } catch (e) { clearTimeout(timer); resolve({ ok: false, error: String(e.message || e) }); }
+        });
+        return { ok, kind: hostWin ? 'popup' : 'iframe', call, close: () => { try { if (hostWin) hostWin.close(); else panel.remove(); } catch (_) {} } };
+    }
+
+    // popup後端的pending action：瀏覽器規定window.open一定要在使用者按下按鈕的當下呼叫，所以在畫面上放一顆按鈕等使用者按
+    _sandboxPopupViaGesture() {
+        return new Promise((resolve) => {
+            const card = document.createElement('div');
+            card.className = 'ai-sandbox-panel';
+            card.style.cssText = 'position:fixed; right:16px; bottom:16px; z-index:2147482600; background:#1f2937; color:#fff; padding:10px 12px; border-radius:10px; box-shadow:0 6px 24px rgba(0,0,0,.4); font:13px sans-serif; display:flex; gap:10px; align-items:center;';
+            card.innerHTML = '<span>🪟 AI想開一個測試視窗做實驗</span>';
+            const go = document.createElement('button'); go.textContent = '開啟測試視窗';
+            go.style.cssText = 'border:none; border-radius:6px; padding:5px 10px; background:#76b900; color:#000; cursor:pointer;';
+            const no = document.createElement('button'); no.textContent = '取消';
+            no.style.cssText = 'border:none; border-radius:6px; padding:5px 10px; background:#4b5563; color:#fff; cursor:pointer;';
+            let done = false;
+            const finish = (w) => { if (done) return; done = true; clearTimeout(timer); card.remove(); resolve(w); };
+            go.addEventListener('click', () => { // 這裡是使用者點擊的當下，window.open才不會被擋
+                let w = null;
+                try { w = window.open('', 'fa_sandbox_' + Date.now(), 'width=980,height=720'); } catch (_) { w = null; }
+                if (w) { w.document.open(); w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>沙盒實驗</title></head><body style="margin:0"></body></html>'); w.document.close(); }
+                finish(w);
+            });
+            no.addEventListener('click', () => finish(null));
+            card.append(go, no);
+            document.body.appendChild(card);
+            const timer = setTimeout(() => finish(null), 120000);
+        });
+    }
+
+    // 瀏覽器分頁後端：用Chrome擴充功能（1.3.0的tab_set_html／tab_eval）在全新about:blank分頁寫入HTML並下指令
+    async _sandboxOpenTab(doc, a) {
+        const created = await this._bcCall('tab_create', { url: 'about:blank', active: false, keep_open: !!a.keep_open });
+        if (!created || !created.ok) return { ok: false, error: (created && created.error) || '開about:blank分頁失敗' };
+        const tabId = created.tab_id;
+        const set = await this._bcCall('tab_set_html', { tab_id: tabId, html: doc }, 20000);
+        if (!set || !set.ok) { try { await this._bcCall('tab_close', { tab_id: tabId }); } catch (_) {} return { ok: false, error: (set && set.error) || '寫入HTML失敗（擴充功能需要1.3.0）' }; }
+        const call = async (cmd, args, timeoutMs = 8000) => {
+            const js = `(async()=>{const r=await window.__fa.${cmd}.apply(null,${JSON.stringify(args || [])});return JSON.stringify(r===undefined?null:r);})()`;
+            const r = await this._bcCall('tab_eval', { tab_id: tabId, js, timeout_ms: timeoutMs }, timeoutMs + 3000);
+            if (!r || !r.ok) return { ok: false, error: (r && r.error) || `${cmd}失敗` };
+            try { return { ok: true, value: JSON.parse(r.value) }; } catch (_) { return { ok: true, value: r.value }; }
+        };
+        return { ok: true, kind: 'tab', tabId, call, close: async () => { try { await this._bcCall('tab_close', { tab_id: tabId }); } catch (_) {} } };
+    }
+
+    async _sandboxHtmlRun(a) {
+        const t0 = Date.now();
+        const caps = await this._sandboxCapabilities();
+        const want = String(a.backend || 'auto');
+        let kind = want;
+        const notes = [];
+        if (want === 'auto') { kind = caps.backends.browser_tab.available ? 'tab' : 'iframe'; notes.push(kind === 'tab' ? '有瀏覽器控制權限：用全新的about:blank分頁。' : '沒有瀏覽器控制權限：用隔離的iframe（沒給html時複製目前畫面）。'); }
+        if (kind === 'tab' && !caps.backends.browser_tab.available) { notes.push(`瀏覽器分頁不可用（${caps.backends.browser_tab.reason}），改用iframe。`); kind = 'iframe'; }
+        if (!['iframe', 'tab', 'popup'].includes(kind)) return { ok: false, error: 'backend必須是auto／iframe／tab／popup' };
+        const doc = this._sandboxBuildDoc(a);
+        let frame = null;
+        if (kind === 'tab') frame = await this._sandboxOpenTab(doc, a);
+        else if (kind === 'popup') {
+            const w = await this._sandboxPopupViaGesture();
+            if (!w) return { ok: false, backend: 'popup', error: '沒有開成測試視窗（使用者沒有按按鈕，或瀏覽器擋掉彈出視窗）。可以改用backend:"iframe"。' };
+            frame = await this._sandboxOpenIframe(doc, a, w);
+        } else frame = await this._sandboxOpenIframe(doc, a, null);
+        if (!frame || frame.ok === false) { if (frame && frame.close) await frame.close(); return { ok: false, backend: kind, error: (frame && frame.error) || '沙盒頁面沒有在8秒內載入完成（可能是程式一載入就卡住或語法錯誤，看errors）' }; }
+        const stepResults = [];
+        let report = null;
+        try {
+            await new Promise((r) => setTimeout(r, Math.max(0, Math.min(5000, a.wait_ms != null ? Number(a.wait_ms) : 600))));
+            const steps = Array.isArray(a.steps) ? a.steps.slice(0, 40) : [];
+            for (let i = 0; i < steps.length; i++) {
+                const s = steps[i] || {};
+                const act = String(s.action || '');
+                let r;
+                if (act === 'wait') r = await frame.call('wait', [s.ms || 300]);
+                else if (act === 'click') r = await frame.call('click', [String(s.selector || '')]);
+                else if (act === 'type') r = await frame.call('type', [String(s.selector || ''), String(s.text == null ? '' : s.text)]);
+                else if (act === 'drag') r = await frame.call('drag', [String(s.selector || ''), Number(s.dx) || 0, Number(s.dy) || 0]);
+                else if (act === 'eval') r = await frame.call('eval', [String(s.js || '')]);
+                else if (act === 'query') r = await frame.call('query', [String(s.selector || '')]);
+                else if (act === 'expect_text' || act === 'expect_visible') {
+                    const q = await frame.call('query', [String(s.selector || '')]);
+                    const item = q.ok && q.value && q.value.items && q.value.items[0];
+                    let pass = !!item;
+                    if (pass && act === 'expect_text') pass = (item.text || '').includes(String(s.contains || '')) || String(item.value || '').includes(String(s.contains || ''));
+                    if (pass && act === 'expect_visible') pass = !!item.visible;
+                    r = { ok: pass, value: item || null, error: pass ? undefined : (item ? `不符：${act === 'expect_text' ? '文字沒有包含「' + s.contains + '」，實際是「' + (item.text || item.value || '') + '」' : '元素不可見'}` : `找不到 ${s.selector}`) };
+                } else r = { ok: false, error: `不認得的step action「${act}」（可用：click／type／drag／wait／eval／query／expect_text／expect_visible）` };
+                const detail = r.ok ? (r.value && r.value.ok === false ? r.value : r.value) : r.error;
+                stepResults.push({ i: i + 1, action: act, selector: s.selector, ok: !!(r.ok && !(r.value && r.value.ok === false)), detail: typeof detail === 'string' ? detail : JSON.stringify(detail).slice(0, 400) });
+                await new Promise((res) => setTimeout(res, 80));
+            }
+            const rep = await frame.call('report', []);
+            report = rep.ok ? rep.value : { error: rep.error };
+        } finally {
+            if (!a.keep_open) await frame.close();
+        }
+        const errors = (report && report.errors) || [];
+        const stepsOk = stepResults.every((s) => s.ok);
+        return {
+            ok: true, backend: frame.kind, notes, duration_ms: Date.now() - t0,
+            page_ok: errors.length === 0 && stepsOk, step_results: stepResults,
+            errors, console_logs: ((report && report.logs) || []).slice(-40),
+            title: report && report.title, viewport: report && report.viewport,
+            text: report && report.text, html_excerpt: report && report.html ? String(report.html).slice(0, 3500) : undefined,
+            kept_open: !!a.keep_open,
+        };
+    }
+
+    async _sandboxFsOp(op, args) {
+        const norm = (p) => { const s = String(p || '').replace(/\\/g, '/').replace(/^\/+/, ''); if (!s || s.split('/').includes('..')) throw new Error('路徑不合法：' + p); return s; };
+        if (op === 'fs.write') {
+            const p = norm(args[0]); const content = String(args[1] == null ? '' : args[1]);
+            if (content.length > 1024 * 1024) throw new Error('單一檔案最大1MB');
+            await this.sandboxFsCache.put(p, 'text/plain', new Blob([content], { type: 'text/plain' }), 'sandbox_fs', 'sbx:' + p);
+            return { ok: true, path: p, bytes: content.length };
+        }
+        if (op === 'fs.read') {
+            const p = norm(args[0]); const rec = await this.sandboxFsCache.get('sbx:' + p);
+            if (!rec) throw new Error('檔案不存在：' + p);
+            return await rec.blob.text();
+        }
+        if (op === 'fs.list') {
+            const prefix = String(args[0] || '').replace(/^\/+/, '');
+            return (await this.sandboxFsCache.getAll()).filter((r) => r.kind === 'sandbox_fs' && r.filename.startsWith(prefix)).map((r) => r.filename).sort();
+        }
+        if (op === 'fs.remove') { const p = norm(args[0]); await this.sandboxFsCache.delete('sbx:' + p); return { ok: true }; }
+        throw new Error('不認得的fs操作：' + op);
+    }
+
+    _sandboxWorkerSource() {
+        return [
+            'const __AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;',
+            'let __rpcId = 0; const __pending = new Map();',
+            'function __rpc(op, args){ return new Promise((res, rej) => { const id = ++__rpcId; __pending.set(id, {res, rej}); postMessage({__rpc: id, op: op, args: args}); }); }',
+            'self.fs = { read: (p) => __rpc("fs.read",[p]), write: (p,c) => __rpc("fs.write",[p,String(c)]), list: (p) => __rpc("fs.list",[p||""]), remove: (p) => __rpc("fs.remove",[p]) };',
+            'const __fmt = (x) => { try { return typeof x === "string" ? x : (x instanceof Error ? (x.stack || String(x)) : JSON.stringify(x)); } catch(e) { return String(x); } };',
+            'const __log = (l) => (...a) => { postMessage({__log: {l: l, m: a.map(__fmt).join(" ").slice(0,1000)}}); };',
+            'console.log=__log("log"); console.info=__log("info"); console.warn=__log("warn"); console.error=__log("error"); console.debug=__log("debug");',
+            'self.onmessage = async (ev) => {',
+            '  const d = ev.data || {};',
+            '  if (d.__rpc_res) { const p = __pending.get(d.__rpc_res); if (p) { __pending.delete(d.__rpc_res); if (d.error) p.rej(new Error(d.error)); else p.res(d.result); } return; }',
+            '  if (!d.__run) return;',
+            '  try {',
+            '    const fn = new __AsyncFunction("fs", d.code + "\\n;return {handler: (typeof handler!==\\"undefined\\" ? handler : undefined), result: (typeof result!==\\"undefined\\" ? result : undefined)};");',
+            '    const out = await fn(self.fs);',
+            '    const responses = [];',
+            '    if (d.requests && d.requests.length) {',
+            '      if (!out || typeof out.handler !== "function") throw new Error("有給requests，但程式裡沒有定義 handler(request) 函式（例如 async function handler(request){ return new Response(\\"ok\\"); }）");',
+            '      for (const r of d.requests) {',
+            '        const t0 = performance.now(); const label = (r.method||"GET").toUpperCase() + " " + (r.path || r.url || "/");',
+            '        try {',
+            '          const init = { method: (r.method||"GET").toUpperCase(), headers: r.headers || {} };',
+            '          if (r.json !== undefined) { init.body = JSON.stringify(r.json); init.headers = Object.assign({"content-type":"application/json"}, init.headers); }',
+            '          else if (r.body !== undefined && init.method !== "GET" && init.method !== "HEAD") init.body = typeof r.body === "string" ? r.body : JSON.stringify(r.body);',
+            '          const resp = await out.handler(new Request(r.url || ("http://sandbox.local" + (r.path || "/")), init), {fs: self.fs});',
+            '          const text = resp && typeof resp.text === "function" ? await resp.text() : String(resp);',
+            '          const hdr = {}; if (resp && resp.headers) resp.headers.forEach((v,k) => { hdr[k] = v; });',
+            '          responses.push({request: label, status: resp.status, headers: hdr, body: text.slice(0,3000), ms: Math.round(performance.now()-t0)});',
+            '        } catch (e) { responses.push({request: label, error: String(e && e.message || e)}); }',
+            '      }',
+            '    }',
+            '    let res; try { res = out && out.result !== undefined ? JSON.parse(JSON.stringify(out.result)) : undefined; } catch (e) { res = String(out.result); }',
+            '    postMessage({__done: true, result: res, responses: responses});',
+            '  } catch (e) { postMessage({__done: true, error: String(e && e.stack || e)}); }',
+            '};',
+        ].join('\n');
+    }
+
+    async _sandboxWorkerRun(a) {
+        if (typeof Worker === 'undefined') return { ok: false, error: '這個環境不支援Web Worker' };
+        const code = String(a.code || '');
+        if (!code.trim()) return { ok: false, error: '缺少code' };
+        const timeoutMs = Math.max(1000, Math.min(60000, Number(a.timeout_ms) || 10000));
+        if (a.files && typeof a.files === 'object') for (const [p, c] of Object.entries(a.files)) await this._sandboxFsOp('fs.write', [p, c]);
+        const url = URL.createObjectURL(new Blob([this._sandboxWorkerSource()], { type: 'text/javascript' }));
+        const worker = new Worker(url);
+        const logs = [];
+        const t0 = Date.now();
+        const done = new Promise((resolve) => {
+            worker.onmessage = async (ev) => {
+                const d = ev.data || {};
+                if (d.__log) { if (logs.length < 300) logs.push(d.__log); }
+                else if (d.__rpc) {
+                    try { worker.postMessage({ __rpc_res: d.__rpc, result: await this._sandboxFsOp(d.op, d.args) }); }
+                    catch (e) { worker.postMessage({ __rpc_res: d.__rpc, error: String((e && e.message) || e) }); }
+                } else if (d.__done) resolve(d);
+            };
+            worker.onerror = (e) => resolve({ __done: true, error: String(e.message || 'Worker發生錯誤') });
+        });
+        worker.postMessage({ __run: true, code, requests: Array.isArray(a.requests) ? a.requests.slice(0, 50) : [] });
+        const outcome = await Promise.race([done, new Promise((r) => setTimeout(() => r({ __timeout: true }), timeoutMs))]);
+        worker.terminate(); URL.revokeObjectURL(url);
+        if (outcome.__timeout) return { ok: false, error: `執行超過${timeoutMs}毫秒被中止（可能是無窮迴圈或沒有結束的await）`, console_logs: logs.slice(-40), duration_ms: Date.now() - t0 };
+        return {
+            ok: !outcome.error, error: outcome.error, duration_ms: Date.now() - t0,
+            console_logs: logs.slice(-60), result: outcome.result, responses: outcome.responses || [],
+            fs_files: (await this._sandboxFsOp('fs.list', [''])).slice(0, 50),
+        };
+    }
+
+    async _sandboxPyAppRun(a) {
+        const code = String(a.code || '');
+        if (!code.trim()) return { ok: false, error: '缺少code（要定義一個叫app的物件）' };
+        const packages = Array.isArray(a.packages) ? a.packages.map(String).filter((p) => /^[A-Za-z0-9_.\-\[\]=<>!~, ]+$/.test(p)).slice(0, 12) : [];
+        const requests = Array.isArray(a.requests) ? a.requests.slice(0, 50) : [];
+        const kind = ['wsgi', 'asgi', 'auto'].includes(a.kind) ? a.kind : 'auto';
+        let pyodide;
+        try { pyodide = await this._ensurePyodideLoaded(); } catch (err) { return { ok: false, error: 'Python環境載入失敗：' + String((err && err.message) || err) }; }
+        const script = [
+            'import json, sys, io, asyncio, inspect',
+            'async def _fa_main():',
+            '    pk = json.loads(__fa_packages_json)',
+            '    if pk:',
+            '        import micropip',
+            '        await micropip.install(pk)',
+            '    ns = {"__name__": "sandbox_app"}',
+            '    exec(compile(__fa_user_code, "app.py", "exec"), ns)',
+            '    app = ns.get("app") or ns.get("application")',
+            '    if app is None:',
+            '        raise RuntimeError("程式裡要定義一個叫 app 的物件（Flask/Bottle/Starlette/FastAPI 的 app，或 WSGI 的 application）")',
+            '    kind = __fa_kind',
+            '    if kind == "auto":',
+            '        call = app if (inspect.isfunction(app) or inspect.ismethod(app)) else getattr(app, "__call__", app)',
+            '        kind = "asgi" if inspect.iscoroutinefunction(call) else "wsgi"',
+            '    def prep(r):',
+            '        method = (r.get("method") or "GET").upper(); path = r.get("path") or "/"; q = ""',
+            '        if "?" in path: path, q = path.split("?", 1)',
+            '        headers = {str(k).lower(): str(v) for k, v in (r.get("headers") or {}).items()}',
+            '        body = r.get("body")',
+            '        if "json" in r: body = json.dumps(r["json"]); headers.setdefault("content-type", "application/json")',
+            '        data = body.encode() if isinstance(body, str) else (body or b"")',
+            '        return method, path, q, headers, data',
+            '    def wsgi(r):',
+            '        method, path, q, headers, data = prep(r)',
+            '        env = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": q, "SERVER_NAME": "sandbox.local", "SERVER_PORT": "80", "SERVER_PROTOCOL": "HTTP/1.1", "wsgi.version": (1, 0), "wsgi.url_scheme": "http", "wsgi.input": io.BytesIO(data), "wsgi.errors": sys.stderr, "wsgi.multithread": False, "wsgi.multiprocess": False, "wsgi.run_once": False, "CONTENT_LENGTH": str(len(data)), "CONTENT_TYPE": headers.get("content-type", "")}',
+            '        for k, v in headers.items(): env["HTTP_" + k.upper().replace("-", "_")] = v',
+            '        box = {}',
+            '        def start_response(status, rh, exc_info=None): box["status"] = status; box["headers"] = rh; return lambda s: None',
+            '        chunks = app(env, start_response)',
+            '        body = b"".join(chunks)',
+            '        if hasattr(chunks, "close"): chunks.close()',
+            '        return {"status": int(box["status"].split()[0]), "headers": dict(box["headers"]), "body": body.decode("utf-8", "replace")[:3000]}',
+            '    async def asgi(r):',
+            '        method, path, q, headers, data = prep(r)',
+            '        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method, "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": q.encode(), "headers": [(k.encode(), v.encode()) for k, v in headers.items()], "client": ("127.0.0.1", 0), "server": ("sandbox.local", 80)}',
+            '        state = {"sent": False}',
+            '        async def receive():',
+            '            if not state["sent"]:',
+            '                state["sent"] = True',
+            '                return {"type": "http.request", "body": data, "more_body": False}',
+            '            return {"type": "http.disconnect"}',
+            '        out = {"status": None, "headers": {}, "body": b""}',
+            '        async def send(m):',
+            '            if m["type"] == "http.response.start":',
+            '                out["status"] = m["status"]; out["headers"] = {k.decode(): v.decode() for k, v in m.get("headers", [])}',
+            '            elif m["type"] == "http.response.body":',
+            '                out["body"] += m.get("body", b"")',
+            '        await app(scope, receive, send)',
+            '        return {"status": out["status"], "headers": out["headers"], "body": out["body"].decode("utf-8", "replace")[:3000]}',
+            '    results = []',
+            '    for r in json.loads(__fa_requests_json):',
+            '        label = (r.get("method") or "GET").upper() + " " + (r.get("path") or "/")',
+            '        try:',
+            '            res = await asgi(r) if kind == "asgi" else wsgi(r)',
+            '            res["request"] = label',
+            '            results.append(res)',
+            '        except Exception as e:',
+            '            results.append({"request": label, "error": type(e).__name__ + ": " + str(e)})',
+            '    return {"kind": kind, "responses": results}',
+            '_fa_res = await _fa_main()',
+            'print("__FA_PYAPP__" + json.dumps(_fa_res))',
+        ].join('\n');
+        try {
+            if (packages.length) { try { await pyodide.loadPackage('micropip'); } catch (_) { /* 內建在core時不用載入 */ } }
+            pyodide.globals.set('__fa_user_code', code);
+            pyodide.globals.set('__fa_requests_json', JSON.stringify(requests));
+            pyodide.globals.set('__fa_packages_json', JSON.stringify(packages));
+            pyodide.globals.set('__fa_kind', kind);
+            const t0 = Date.now();
+            const r = await Promise.race([
+                this._runPyodideScriptAsync(pyodide, script, null),
+                new Promise((resolve) => setTimeout(() => resolve({ stdout: '', stderr: '超過120秒（套件下載或執行太久）', returncode: 124 }), 120000)),
+            ]);
+            const m = /__FA_PYAPP__(.*)/.exec(r.stdout || '');
+            if (!m) return { ok: false, error: (r.stderr || '').split('\n').filter(Boolean).slice(-6).join('\n') || '沒有取得結果', stdout: (r.stdout || '').slice(-1500), duration_ms: Date.now() - t0 };
+            const parsed = JSON.parse(m[1]);
+            return { ok: true, kind: parsed.kind, responses: parsed.responses, stdout: (r.stdout || '').replace(/__FA_PYAPP__.*/, '').trim().slice(-1500), stderr: (r.stderr || '').slice(-800), packages_installed: packages, duration_ms: Date.now() - t0 };
+        } catch (err) {
+            return { ok: false, error: String((err && err.message) || err).split('\n').slice(-6).join('\n') };
+        } finally {
+            for (const k of ['__fa_user_code', '__fa_requests_json', '__fa_packages_json', '__fa_kind']) { try { pyodide.globals.delete(k); } catch (_) {} }
+        }
     }
 
     async _codingStateRun(key, parsed, io) {
