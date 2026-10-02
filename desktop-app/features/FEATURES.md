@@ -286,10 +286,10 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
 
 ### 專案索引百科（類似 DeepWiki）（`repo-wiki`）
 
-把專案結構整理成可查詢的索引資料庫，存進 persistentStorage（IndexedDB），並產生單檔的查詢頁面與定義頁面（搜尋檔案、函式、類別、名詞；顯示定義位置、依賴、被誰引用）；可選擇寫進專案資料夾。
+類似 DeepWiki 的專案百科，分階段產生（避免大專案的檔案清單被截斷、也避免只得到一份空泛的 markdown）：plan 算出模組與頁面清單 → 每頁 evidence（預算內的事實與程式碼片段＋寫法規定）→ AI 寫成有說明的頁面並 write_page（驗證標題、字數、引用的檔案必須存在）→ finalize 組成單檔的查詢頁面（頁面、依賴圖、結構、定義、名詞）；沒寫的頁面用結構草稿補上；頁面多時委派 wiki_writer 子任務。存進 persistentStorage（IndexedDB），可選擇寫進專案資料夾。
 
 - 可用平台：網頁版、桌面版
-- 子代理人領域：`coding`
+- 子代理人領域：`coding`、`wiki_writer`
 - AI 工具：`repo_wiki`、`repo_map`
 - 範例：
   - `幫這個專案產生可以搜尋的百科頁面`
