@@ -30,5 +30,14 @@ function embedPyBridge() {
     console.log('已更新 FA_PYBRIDGE_FILES（' + Object.keys(out).join('、') + '）');
 }
 embedPyBridge();
+function embedBehavior() {
+    const dir = path.join(root, 'renderer/src/behavior');
+    const data = { patterns: JSON.parse(fs.readFileSync(path.join(dir, 'behavior_patterns.json'), 'utf8')), api: JSON.parse(fs.readFileSync(path.join(dir, 'api_semantics.json'), 'utf8')) };
+    const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 BEHAVIOR 標記');
+    src = src.slice(0, a) + '/* BEHAVIOR-BEGIN */\nconst FA_BEHAVIOR_DATA = ' + lit(data) + ';\n' + src.slice(b);
+    console.log('已更新 FA_BEHAVIOR_DATA（' + Object.keys(data.patterns.categories).length + ' 個行為分類）');
+}
+embedBehavior();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

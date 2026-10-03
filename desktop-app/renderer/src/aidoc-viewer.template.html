@@ -78,6 +78,8 @@ function mdToHtml(src){
   lines.forEach(function(l){
     var m;
     if(/^\u0000\d+\u0000$/.test(l.trim())){close();out.push(blocks[+l.trim().replace(/\u0000/g,'')]);return}
+    if((m=/^\s*<details( open)?><summary>(.*)<\/summary>\s*$/.exec(l))){close();out.push('<details'+(m[1]||'')+'><summary>'+inl(m[2].replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>'))+'</summary>');return}
+    if(/^\s*<\/details>\s*$/.test(l)){close();out.push('</details>');return}
     if((m=/^(#{1,4})\s+(.*)$/.exec(l))){close();var n=Math.min(3,m[1].length+1);out.push('<h'+n+'>'+inl(m[2])+'</h'+n+'>');return}
     if((m=/^\s*[-*]\s+(.*)$/.exec(l))){if(list!=='ul'){close();out.push('<ul>');list='ul'}out.push('<li>'+inl(m[1])+'</li>');return}
     if((m=/^\s*\d+[.)]\s+(.*)$/.exec(l))){if(list!=='ol'){close();out.push('<ol>');list='ol'}out.push('<li>'+inl(m[1])+'</li>');return}
@@ -161,13 +163,14 @@ async function showFile(path){
   var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f.lang)+'</span><span class="tag">'+f.lines+' 行</span>'+(f.note_stale?'<span class="tag" style="color:var(--er)">說明可能過期</span>':'')+'</div>';
   h+=f.note?'<div class="note"><b>說明</b>（'+esc(f.note_by||'AI')+'）：'+esc(f.note)+' <a class="l" id="editnote">編輯</a></div>':'<div class="mut">還沒有說明。<a class="l" id="editnote">自己補一段</a>，或請 AI 讀過後補。</div>';
   if(f.doc)h+='<p>'+esc(f.doc)+'</p>';
-  var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];
-  h+=chips(cs)+'<div><button id="src">看程式碼</button></div><div id="srcbox"></div>';
+  var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['__explain__','__explain__'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];
+  h+=chips(cs)+'<div><button id="src">看程式碼</button> <button id="expl">行為說明（可折疊）</button></div><div id="srcbox"></div><div id="explbox" class="md"></div>';
   h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+esc(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
   h+='<h2>引用了誰（'+f.imports.length+'）</h2>'+(f.imports.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   $('#main').innerHTML=h;$('#main').scrollTop=0;
-  $('#main').querySelectorAll('.chips span').forEach(function(sp){sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
+  $('#main').querySelectorAll('.chips span').forEach(function(sp){if(cs[+sp.dataset.ci][0]==='__explain__')sp.textContent='這個檔案在做什麼（行為說明）';sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__explain__'){document.getElementById('expl').click();return}if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
+  $('#expl').onclick=async function(){var b=$('#expl');b.disabled=true;$('#explbox').innerHTML='<span class="mut">分析中…</span>';try{var r=await api('GET','/api/explain?path='+encodeURIComponent(path));$('#explbox').innerHTML=mdToHtml(r.markdown)+(r.unclassified&&r.unclassified.length?'<div class="mut">還不認得的呼叫：'+r.unclassified.slice(0,20).map(function(u){return esc(u)}).join('、')+'（可請 AI 讀過後用 behavior_define 補定義）</div>':'')}catch(e){$('#explbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}b.disabled=false};
   $('#editnote').onclick=function(){var t=prompt('這個檔案的說明（一兩句：做什麼、為什麼存在、要注意什麼）：',f.note||'');if(t&&t.trim().length>=6)saveNote(cur,t)};
   $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class="mut">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
 }
