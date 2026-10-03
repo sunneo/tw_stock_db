@@ -92,6 +92,14 @@
         if (!idiomLines.length && !cats.length) out.push('（沒有認得的指令；可用 behavior_define 補組語定義）');
         return out.join('\n');
     }
+    function opCategories(ops, arch, tx) {
+        const lk = asmLookup(tx); const by = {};
+        for (const op of ops) for (const [a, cat, , desc] of (lk[String(op).toLowerCase()] || [])) { if (a !== arch) continue; (by[cat] = by[cat] || new Set()).add(op); }
+        return by;
+    }
+    function opCategoryLines(ops, arch, tx) {
+        const by = opCategories(ops, arch, tx); return Object.entries(by).map(([c, s]) => '- ' + ((tx.categories[c] || {}).label || c) + '：' + Array.from(s).slice(0, 14).map((x) => '`' + x + '`').join(' '));
+    }
     // ================= JVM／Python byte code 文字（bytecode_tools）：javap -c 與 dis 輸出 =================
     const JVM_OPS = { invokestatic: '呼叫靜態方法', invokevirtual: '呼叫方法', invokespecial: '呼叫建構子／父類別方法', invokeinterface: '呼叫介面方法', invokedynamic: '動態呼叫（lambda／字串串接）', new: '建立物件', getfield: '讀欄位', putfield: '寫欄位', getstatic: '讀靜態欄位', putstatic: '寫靜態欄位', athrow: '丟出例外', monitorenter: '取得鎖', monitorexit: '釋放鎖', ifeq: '等於 0 則跳', ifne: '不等於 0 則跳', if_icmpeq: '整數相等則跳', if_icmpne: '整數不等則跳', goto: '無條件跳躍', ireturn: '回傳整數', areturn: '回傳物件', return: '回傳（void）', checkcast: '型別轉換檢查', instanceof: '型別判斷' };
     function parseJavap(text) {
@@ -110,6 +118,7 @@
             const cats = new Set(); for (const c of m.calls) { const cn = (c.split('.').pop() || '').split(':')[0].replace(/"?<init>"?/, 'new'); if (lookup[cn]) cats.add(lookup[cn]); }
             if (m.calls.length) out.push('- 呼叫：' + Array.from(new Set(m.calls)).slice(0, 12).map((c) => '`' + c + '`').join('、'));
             if (cats.size) out.push('- 行為：' + Array.from(cats).map((c) => (tx.categories[c] || {}).label || c).join('、'));
+            const catLines = opCategoryLines(Array.from(new Set(m.ops.map((o) => o.op))), 'jvm', tx); if (catLines.length) { out.push('- 指令的行為分類：'); catLines.forEach((l) => out.push('  ' + l)); }
             const notable = Array.from(new Set(m.ops.map((o) => o.op))).filter((o) => JVM_OPS[o]).slice(0, 8); if (notable.length) out.push('- 指令：' + notable.map((o) => '`' + o + '`＝' + JVM_OPS[o]).join('；'));
             out.push('', '</details>', '');
         }
@@ -135,6 +144,7 @@
             out.push('## `' + f.name + '`（' + f.ops.length + ' 個指令）', '');
             if (cats.size) out.push('行為分類：' + Array.from(cats).map((c) => (tx.categories[c] || {}).label || c).join('、'), '');
             if (calls.length) out.push('<details open><summary>用到的名稱／呼叫</summary>', '', ...calls.slice(0, 30).map((c) => '- ' + c + (lookup[c] ? '：' + ((tx.categories[lookup[c]] || {}).label || lookup[c]) : '')), '', '</details>', '');
+            const catLines = opCategoryLines(Array.from(new Set(f.ops.map((o) => o.op))), 'pybc', tx); if (catLines.length) out.push('指令的行為分類：', '', ...catLines, '');
             const notable = Array.from(new Set(f.ops.map((o) => o.op))).filter((o) => PYDIS_OPS[o]); if (notable.length) out.push('指令：' + notable.map((o) => o + '＝' + PYDIS_OPS[o]).join('；'), '');
         }
         return out.join('\n');
