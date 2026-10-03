@@ -321,6 +321,23 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
   - `幫這個專案建立索引並讓 AI 補上每個檔案的說明`
   - `把專案的索引存進專案資料夾，同事拿到可以接著補`
 
+### 參考知識（錯誤碼、命令與手冊、pragma、HPC／CUDA／核心 API）（`reference-knowledge`）
+
+離線也能查：Linux errno／訊號／退出碼、Windows Win32／HRESULT／NTSTATUS／Winsock 錯誤碼（含 HRESULT 解碼）、gcc／g++／javac／python／gdb／node／qemu-system-arm／aarch64／x86_64 與常用 Linux 命令的選項（逐項解釋整行命令，qemu 會講整台機器怎麼組）、C 的
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/ref`
+- 子代理人領域：`offline_knowledge_expander`、`aidoc_knowledge_expander`
+- AI 工具：`lookup_error_code`、`explain_command_line`、`ref_lookup`、`ref_define`、`ref_expand`
+- 範例：
+  - `errno 13 是什麼意思`
+  - `0xC0000005 是什麼錯誤`
+  - `qemu-system-aarch64 -M virt -cpu cortex-a53 -m 1G -kernel Image -nographic 這行在做什麼`
+  - `gcc -O2 -fopenmp -march=native 各代表什麼`
+  - `#pragma omp parallel for reduction(+:sum) 怎麼解釋`
+  - `/ref expand RISC-V 向量指令`
+  - `/ref export`
+
 ### 程式行為分析（explain_code）（`behavior-analyzer`）
 
 把原始碼／組合語言解釋成由下而上、沿正向路徑、可折疊的行為說明：函式與檔案自己的註解優先，區塊註解重排後部分採用，aidoc 裡 AI 或使用者補的說明更優先；沒有註解就用呼叫事實（引數與回傳值語意、47 個行為分類、組合語言 idiom）。不認得的呼叫列成候選，可用 behavior_define 補定義（持久保存、可匯出匯入，也能直接匯入 Domain Resolver 的 yml 定義）。支援 C／Java／JavaScript／Python／Shell／PowerShell／Batch／GLSL／x86 與 ARM 組合語言／LLVM IR／PTX／WASM。aidoc 用 /aidoc explain <檔案> [函式]，檢視器檔案頁有「行為說明」。

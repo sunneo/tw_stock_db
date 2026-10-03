@@ -164,6 +164,26 @@
         }
         return out;
     }
+    // ================= 參考知識的標註（FaRef）：錯誤碼常數、exit code、命令列字串、#pragma =================
+    // 離線訓練器的參考知識（錯誤碼、命令、pragma，使用者與 AI 補的也算）直接用在行為說明上：同一份資料，兩邊共用。
+    function pragmaNodes(root, src) { const arr = []; collectTypes(root, S(['preproc_call']), arr); return arr.map((n) => ({ line: row(n) + 1, text: T(n, src).trim() })).filter((p) => /^#\s*pragma\b/.test(p.text)); }
+    function annotateTrace(lines, ref, language, pragmas) {
+        const used = new Set();
+        for (const entry of lines) {
+            const isCtl = CONTROL_KINDS.has(entry.kind);
+            const notes = ref.annotateText(isCtl ? String(entry.text || '').split('{')[0] : (entry.text || ''), language);
+            for (const p of pragmas || []) if (!used.has(p) && entry.line > p.line && p.expl) { used.add(p); notes.push('上一行 ' + p.text.replace(/^#\s*pragma\s+/, '#pragma ') + '：' + p.expl.desc + (p.expl.clauses.length ? '（' + p.expl.clauses.map((c) => c.clause).join('、') + '）' : '')); }
+            if (!notes.length) continue;
+            let base = entry.explanation; if (!base) base = isCtl ? '`' + conditionPhrase(entry) + '`' : fallbackLeafPhrase(entry);
+            entry.explanation = base ? base + '\nNotes:\n' + notes.map((n) => '- ' + n).join('\n') : 'Notes: ' + notes.join('；');
+        }
+    }
+    function pragmaMarkdown(list) {
+        if (!list.length) return '';
+        const out = ['<details open><summary>編譯指示（#pragma，' + list.length + '）</summary>', ''];
+        for (const p of list) { out.push('- 第 ' + p.line + ' 行 `' + p.text + '`：' + (p.expl ? p.expl.desc : '（沒有收錄這個 pragma；可請 AI 查文件後用 ref_define 補）')); if (p.expl) for (const c of p.expl.clauses) out.push('  - `' + c.clause + '`：' + c.desc); }
+        out.push('', '</details>', ''); return out.join('\n');
+    }
     // ================= 總協調：把一份原始碼解釋成可折疊的 markdown =================
     const EXT_LANG = { c: 'c', h: 'c', cc: 'c', cpp: 'c', cxx: 'c', hpp: 'c', cu: 'c', cuh: 'c', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell' };
     function languageOfPath(path) { const m = /\.([A-Za-z0-9]+)$/.exec(path || ''); return m ? (EXT_LANG[m[1].toLowerCase()] || null) : null; }
@@ -199,6 +219,7 @@
         const root = await deps.parse(language, src); if (!root) throw new Error('語法樹剖析失敗：' + language);
         const profile = PROFILES[language]; const scan = scanTree(root, src, profile, tx, { path, wholeFile: !!opts.wholeFile });
         let fns = scan.functions.filter((f) => !(/^<anonymous/.test(f.name) && scan.functions.some((o) => o !== f && o.line <= f.line && o.end_line >= f.end_line && !/^<anonymous/.test(o.name)))); meta.unclassified = scan.unclassified.slice(0, 40).map((u) => u.name); meta.functions = fns.length;
+        const ref = opts.ref || null; const allPragmas = ref && (language === 'c') ? pragmaNodes(root, src).map((p) => Object.assign(p, { expl: ref.explainPragma(p.text) })) : [];
         const jp = language === 'java' ? detectJavaDesignPatterns(root, src) : []; const fileObj = { path, language, functions: fns, root, _src: src };
         const cg = buildCallGraph([fileObj]);
         const resolveCache = {};
@@ -212,7 +233,7 @@
         if (cg.indirect.length && !target) { out.push('<details><summary>間接呼叫（函式指標／回呼／vtable，' + cg.indirect.length + '）</summary>', ''); for (const i of cg.indirect.slice(0, 30)) out.push('- 第 ' + i.line + ' 行：`' + i.target + '` 以' + ({ callback: '回呼', 'function-pointer': '函式指標', 'vtable-field': 'vtable 欄位' }[i.via]) + '被綁定' + (i.field ? '到 `' + i.field + '`' : '') + (i.from !== '(file scope)' ? '（在 `' + i.from + '`）' : '')); out.push('', '</details>', ''); }
         if (!target && fns.length > 1) { const sums = fns.map((f) => (notes[path + '::' + f.name] || f.leading_comment_text || '')).filter(Boolean); if (sums.length > 3) { const s = summarizeBlocks(sums, 3); out.push('**檔案重點**：' + s.summary.map((x) => rerank(x, [], 1)).join(' ／ '), ''); } }
         for (const f of fns) {
-            cur = f; const note = notes[path + '::' + f.name] || notes[f.name]; const trace = traceFunction(f._node, src, profile, tx, f.name, path);
+            cur = f; const note = notes[path + '::' + f.name] || notes[f.name]; const trace = traceFunction(f._node, src, profile, tx, f.name, path); const fnPragmas = allPragmas.filter((p) => p.line >= f.line && p.line <= f.end_line); if (ref) annotateTrace(trace.lines, ref, language, fnPragmas);
             out.push('## `' + f.name + '`（第 ' + f.line + '–' + f.end_line + ' 行，複雜度 ' + f.complexity + '）', '');
             if (note) { out.push('**' + NOTE_LABEL.user + '**：' + note, ''); meta.sources[f.name] = 'user'; }
             else if (f.leading_comment_text) { out.push('**' + NOTE_LABEL.comment + '**：' + rerank(f.leading_comment_text, f.all_calls.concat(Object.keys(f.behaviors)), 2), ''); meta.sources[f.name] = 'comment'; }
@@ -221,6 +242,7 @@
             if (f.preprocessor_guards.length) out.push('編譯條件：' + f.preprocessor_guards.map((g) => '`' + g + '`').join('、'), '');
             const bodyMd = renderFunctionNarrativeMarkdown(trace, resolveCallee, { useComments: true });
             out.push('<details open><summary>由下而上的行為敘事（正向路徑為主，防呆分支已折疊）</summary>', '', bodyMd, '', '</details>', '');
+            if (fnPragmas.length) out.push(pragmaMarkdown(fnPragmas));
             for (const a of f.inline_asm) if (a.idioms && a.idioms.length) { out.push('<details><summary>內嵌組合語言（第 ' + a.line + ' 行）</summary>', ''); for (const id of a.idioms) out.push('- `' + id.name + '`：' + (id.template || id.description || '')); out.push('', '</details>', ''); }
             const flows = dataFlowOfTrace(trace, language); if (flows.length) { out.push('<details><summary>資料流警示（' + flows.length + '）</summary>', ''); for (const x of flows) out.push('- 第 ' + x.origin_line + ' 行 `' + x.origin + '` 的資料，經 `' + x.variables.join('、') + '`，到第 ' + x.line + ' 行 `' + x.sink + '()`：' + x.meaning); out.push('', '</details>', ''); f.dataflow = flows; }
             const callers = (cg.callers[f.name] || []); if (callers.length) out.push('被呼叫：' + callers.map((c) => '`' + c + '`').join('、'), '');

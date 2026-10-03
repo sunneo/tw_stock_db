@@ -32,6 +32,7 @@
                 for (const [l, names] of Object.entries(c.languages || {})) t.languages[l] = uniq((t.languages[l] || []).concat(names));
             }
             for (const [l, fns] of Object.entries(user.api || {})) api[l] = Object.assign(api[l] || {}, fns);
+            for (const [arch, cats] of Object.entries(user.mnemonics || {})) { tx.assembly_instruction_sets = tx.assembly_instruction_sets || {}; const set = tx.assembly_instruction_sets[arch] = tx.assembly_instruction_sets[arch] || {}; for (const [cat, rows] of Object.entries(cats || {})) set[cat] = (set[cat] || []).concat(rows); }
             tx.assembly_idioms = tx.assembly_idioms || {};
             for (const [a, list] of Object.entries(user.idioms || {})) tx.assembly_idioms[a] = (list || []).concat(tx.assembly_idioms[a] || []);
         }
