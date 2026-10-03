@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "version": "57",
+  "publishedAt": "2026-10-03T16:03:28.161Z",
+  "notes": "AIDoc：檢視器版面可拖曳調整、左右可隱藏、右邊可停靠右／左／下、偏好記憶與還原版面；/aidoc 自動完成與設定頁、索引完成卡片都有開啟檢視器；專案索引支援 pdf／xlsx／docx／pptx／csv／壓縮檔並可深入探討（repo_read_doc）",
+  "files": {
+    "renderer/index.html": {
+      "md5": "339cd88582fab0b1c7ffb5f55c842504"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "599332598cc7c1c233bde0eaa18939ba"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "14d90de618a95b6237850c9918bab889"
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "14d90de618a95b6237850c9918bab889"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "browser-control-server.js": {
+      "md5": "96bf1133f3eedacd1f0e770c038bb4bd"
+    }
+  }
+}
