@@ -25,6 +25,7 @@
 ## 轉接的 API
 
 - `playwright.sync_api`：`sync_playwright()`、`chromium/firefox/webkit.connect_over_cdp()/launch()`、browser／context／page／locator 的常用子集（goto、inner_text、locator.first/count/screenshot、evaluate、wait_for_*、close…），每個動作對應到瀏覽器控制的 `tab_create／tab_navigate／get_page_text／tab_eval／screenshot／tab_close`。使用者的登入狀態就是他自己 Chrome 的狀態。
+- `openai`：`OpenAI(...).chat.completions.create(...)`（非串流）轉接到助理目前選用的模型（腳本自己的 base_url／金鑰／model 都忽略），回傳可用 `resp.choices[0].message.content` 讀取；串流、embeddings 等丟出 NotImplementedError。
 - 沒支援的功能丟出說明清楚的 `NotImplementedError`，指向 `fa_bridge.tool(...)`／`fa_bridge.domain(...)`。
 - 通用通道：`fa_bridge.tool("browser_…", …)`（僅開放瀏覽器控制工具）、`fa_bridge.domain("browser_control", "任務")`（委派給任何已啟用的領域）。
 
