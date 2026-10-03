@@ -45081,7 +45081,8 @@ ${existingNodeSummaries}
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
         const claimPathGuard = { count: 0 };
-        let autoExecDescribed = 0;
+        let autoExecDescribed = 0, describedRepeats = 0;
+        const describedSeen = new Map();
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
@@ -45363,7 +45364,7 @@ ${existingNodeSummaries}
                 const dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
                 if (dc) {
                     autoExecDescribed++;
-                    toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args) });
+                    toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args), described: true });
                     if (onTrace) onTrace('🔁 模型把工具呼叫寫成文字JSON，已當成真的呼叫執行：' + dc.name);
                 }
             }
@@ -45423,6 +45424,16 @@ ${existingNodeSummaries}
             messages.push({ role: 'assistant', content: this._stripInlineBase64(truncated) });
 
             for (const task of toolTasks) {
+                if (task.described) {
+                    const dk = task.fnName + '|' + task.fnArgsRaw;
+                    const prev = describedSeen.get(dk);
+                    if (prev !== undefined) {
+                        describedRepeats++;
+                        if (onTrace) onTrace('⛔ 同樣的呼叫已經執行過（第' + (describedRepeats + 1) + '次重複），不再執行，提醒模型用上一次的結果往下做：' + task.fnName);
+                        messages.push({ role: 'user', content: '[系統提示] 你剛才又送出一模一樣的 ' + task.fnName + ' 呼叫。這個呼叫已經執行過了，真實結果如下，請直接根據它進行任務的下一步（例如讀檔、執行腳本、寫檔），不要再重複同樣的呼叫：\n' + prev });
+                        continue;
+                    }
+                }
                 if (onProgress) onProgress(`⚙️ 呼叫工具：${task.fnName}`);
                 if (onTrace) onTrace('⚙️ ' + task.fnName + '(' + traceSnip(task.fnArgsRaw, 400) + ')');
                 try {
@@ -45433,7 +45444,12 @@ ${existingNodeSummaries}
                     this._noteWriteEvidence(writeEvidence, task.fnName, result);
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;
-                    messages.push(this._buildToolResultMessage(task.fnName, result));
+                    if (task.described) {
+                        const rm = this._buildToolResultMessage(task.fnName, result);
+                        const rtext = '[TOOL RESULT: ' + task.fnName + ']\n' + String(typeof rm.content === 'string' ? rm.content : JSON.stringify(rm.content || ''));
+                        describedSeen.set(task.fnName + '|' + task.fnArgsRaw, rtext);
+                        messages.push({ role: 'user', content: rtext + '\n\n（以上是工具的真實執行結果。請根據它繼續完成任務的下一步。）' });
+                    } else messages.push(this._buildToolResultMessage(task.fnName, result));
                     if (onTrace) onTrace('   ↩ ' + traceSnip(result, 500));
                 } catch (err) {
                     if (onTrace) onTrace('   ↩ ❌ ' + String((err && err.message) || err));
