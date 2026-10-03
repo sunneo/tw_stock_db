@@ -321,6 +321,19 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
   - `幫這個專案建立索引並讓 AI 補上每個檔案的說明`
   - `把專案的索引存進專案資料夾，同事拿到可以接著補`
 
+### 程式行為分析（explain_code）（`behavior-analyzer`）
+
+把原始碼／組合語言解釋成由下而上、沿正向路徑、可折疊的行為說明：函式與檔案自己的註解優先，區塊註解重排後部分採用，aidoc 裡 AI 或使用者補的說明更優先；沒有註解就用呼叫事實（引數與回傳值語意、47 個行為分類、組合語言 idiom）。不認得的呼叫列成候選，可用 behavior_define 補定義（持久保存、可匯出匯入，也能直接匯入 Domain Resolver 的 yml 定義）。支援 C／Java／JavaScript／Python／Shell／PowerShell／Batch／GLSL／x86 與 ARM 組合語言／LLVM IR／PTX／WASM。aidoc 用 /aidoc explain <檔案> [函式]，檢視器檔案頁有「行為說明」。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/aidoc`
+- 子代理人領域：`coding`
+- AI 工具：`explain_code`、`behavior_define`
+- 範例：
+  - `解釋這個函式在做什麼`
+  - `/aidoc explain src/net.c recv_all`
+  - `這段組合語言在做什麼`
+
 ### 程式碼問答（類似 doxygen＋語意搜尋）（`repo-ask`）
 
 問專案裡「某個函式做什麼」「在哪裡定義」「誰用到它」「跟什麼相關」「某功能的程式在哪」。依 repo_map 的索引（定義、註解、簽名、依賴、呼叫關係）回答，用字串雜湊向量＋BM25＋TextRank 重排，不需要模型；回傳事實與程式碼片段讓 AI 整理成回答。同一個問答引擎也會內嵌進匯出的 HTML，離線在瀏覽器裡問。
