@@ -8923,26 +8923,27 @@ class FloatingAssistant {
         this.register_slash_command(
             '/aidoc', 'index [資料夾]｜status｜stop｜ask <問題>｜wiki｜export sqlite|qa｜list',
             '專案索引（類似AIDoc＋doxygen）：建立索引（背景漸進）、問程式碼（函式做什麼／在哪定義／誰用到）、產生專案百科、匯出內嵌SQLite的單檔HTML。桌面版直接用資料夾路徑，網頁版選完資料夾自動授權成fap',
-            async (argsText) => {
+            async (argsText, run) => {
                 // 選資料夾需要使用者手勢，所以這裡不能先 await 別的東西
-                await this._aidocCommand(argsText);
+                await (run || this)._aidocCommand(argsText);
             },
             ['view', 'index', 'status', 'stop', 'ask', 'wiki', 'export sqlite', 'export qa', 'list']
         );
         this.register_slash_command(
             '/skill-import', '<.skill 檔案路徑> [--name 名稱] [--keep]',
             '純指令匯入 .skill 技能包，不跳對話框：來源可以是桌面版絕對路徑、fap:<名稱>/<路徑>、已上傳的檔名；同名預設直接取代（--keep 另外新增）',
-            async (argsText) => { await this._skillImportCommand(argsText); }
+            async (argsText, run) => { await (run || this)._skillImportCommand(argsText); }
         );
         // /aidoc 的別名（舊名 /deepwiki 繼續可用）
         { const e = this.slashCommands.get('/aidoc'); if (e) ['/ai-repo-doc', '/deepwiki'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: al === '/deepwiki' ? '（舊名，等於 /aidoc）' + e.desc : '（等於 /aidoc）' + e.desc }))); }
         this.register_slash_command(
             '/offline-trainer-by-ai', '<目標>＋清單｜status｜stop｜resume｜report',
             'AI 教離線訓練器（通用）：讓 AI 處理一個任務或一長串同類項目，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
-            async (argsText) => {
-                this.messages.push({ role: 'user', content: '/offline-trainer-by-ai ' + String(argsText || '').slice(0, 300) });
-                this._renderMessageHistory();
-                await this._otTeacherCommand(argsText);
+            async (argsText, run) => {
+                run = run || this;
+                run.messages.push({ role: 'user', content: '/offline-trainer-by-ai ' + String(argsText || '').slice(0, 300) });
+                run._renderMessageHistory();
+                await run._otTeacherCommand(argsText);
             }
         );
         this.register_slash_command(
@@ -10598,7 +10599,7 @@ class FloatingAssistant {
                 key,
                 '（技能包，選填補充內容）',
                 `技能包「${bundle.name}」——依知識/人設扮演回答`,
-                (argsText) => this._runSkillBundleAsSlashCommand(bundle, argsText)
+                (argsText, run) => (run || this)._runSkillBundleAsSlashCommand(bundle, argsText)
             );
             const entry = this.slashCommands.get(key);
             if (entry) entry._autoFromSkillBundle = true;
@@ -41326,7 +41327,16 @@ ${existingNodeSummaries}
                 }
                 this.historyIndex = -1;
                 const argsText = textToSend.slice(firstToken.length).trim();
-                entry.handler(argsText);
+                // 2026-10-03使用者回報：斜線指令（例如 /sp1-weekly-report-v2）執行到一半切去別的對話，再切回來就看不到執行中，
+                // 對話清單也沒有沙漏。原因：斜線指令沒有走一般 AI 執行的「對話狀態」（isResponding）。這裡把它綁在送出指令的對話上：
+                // 執行期間標成執行中（沙漏、停止鈕、計時），第二個參數把「綁定這個對話的代理物件」交給 handler，handler 用它呼叫內部方法，
+                // 訊息／進度卡片就會落在原本的對話，不會因為使用者切走而跑到別的對話裡。
+                const ctx = this._activeCtx;
+                const run = this._chatRunner(ctx);
+                try { run._setRespondingState(true, '⏳ 指令執行中：' + firstToken); } catch (_) {}
+                Promise.resolve().then(() => entry.handler(argsText, run))
+                    .catch((e) => { console.error('斜線指令失敗', firstToken, e); try { run._pushAssistantMessage('⚠️ 指令執行失敗：' + String((e && e.message) || e), null); } catch (_) {} })
+                    .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) {} });
                 return;
             }
         }
