@@ -5972,8 +5972,11 @@ const SCENE3D_TOPIC_DOCS = {
 // 使用者的預設值只會讓每個全新安裝都內建3筆一定會失敗的row。移除這三個，
 // 保留使用者實測過仍然有效的其餘項目；openrouter/free維持在清單最後
 // 當保底（不依賴NVIDIA NIM本身的可用性）。
+// 2026-10-03：nvidia/nemotron-3-super-120b-a12b 被 NVIDIA 下架（end of life，HTTP 410 Gone），預設改成
+// nvidia/nemotron-3-ultra-550b-a55b（2026-06 發布，實測回應約1秒）排第一，nvidia/nemotron-3.5-lightning-30b-a3b 排第二。
+// 使用者設定裡還留著舊名稱的 row 會在載入時自動換成新名稱（見 FA_MODEL_RENAMES）。
 const PRESET_MODEL_OPTIONS = [
-    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/nemotron-3-ultra-550b-a55b',
     'nvidia/nemotron-3.5-lightning-30b-a3b',
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
     'nvidia/nemotron-3-nano-30b-a3b',
@@ -6668,6 +6671,7 @@ subprocess.run = _fa_run_with_jsc
 // _resolveModelRowConfig）。刻意寫成module-level純函式（不是instance
 // method）：_createDefaultAdvancedSettings()呼叫這個的時機，instance可能
 // 還沒完全初始化完成，純函式沒有this綁定疑慮。
+const FA_MODEL_RENAMES = { 'nvidia/nemotron-3-super-120b-a12b': 'nvidia/nemotron-3-ultra-550b-a55b' };
 function _buildDefaultModelRows() {
     return PRESET_MODEL_OPTIONS.map(name => ({
         id: (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
@@ -6708,6 +6712,7 @@ function _buildDefaultModelRows() {
 // 還在PRESET_MODEL_OPTIONS清單裡的項目，避免留著兩筆永遠不會再被查詢到
 // 的孤兒紀錄。
 const PRESET_MODEL_TOOLCALL_SUPPORT = {
+    'nvidia/nemotron-3-ultra-550b-a55b': true, // 2026-10-03 實測：帶 tools 參數會回標準的 tool_calls
     'nvidia/nemotron-3.5-lightning-30b-a3b': true,
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': true,
     'nvidia/nemotron-3-nano-30b-a3b': false,
@@ -8924,6 +8929,11 @@ class FloatingAssistant {
             },
             ['view', 'index', 'status', 'stop', 'ask', 'wiki', 'export sqlite', 'export qa', 'list']
         );
+        this.register_slash_command(
+            '/skill-import', '<.skill 檔案路徑> [--name 名稱] [--keep]',
+            '純指令匯入 .skill 技能包，不跳對話框：來源可以是桌面版絕對路徑、fap:<名稱>/<路徑>、已上傳的檔名；同名預設直接取代（--keep 另外新增）',
+            async (argsText) => { await this._skillImportCommand(argsText); }
+        );
         // /aidoc 的別名（舊名 /deepwiki 繼續可用）
         { const e = this.slashCommands.get('/aidoc'); if (e) ['/ai-repo-doc', '/deepwiki'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: al === '/deepwiki' ? '（舊名，等於 /aidoc）' + e.desc : '（等於 /aidoc）' + e.desc }))); }
         this.register_slash_command(
@@ -10505,7 +10515,8 @@ class FloatingAssistant {
                         names.push(toolName);
                         // 有腳本的技能包：子任務也要拿得到這個AI自己的工具（瀏覽器、檔案／指令、程式執行），才能照FA_SKILL_RUN_PROTOCOL優先用自己的工具做，而不是只能照腳本的做法硬跑
                         if (bundle.files.some((f) => /\.(py|js|ts|sh|ps1|bat|cmd|rb|pl)$/i.test(String(f.path || '')) || /^scripts\//i.test(String(f.path || '')))) {
-                            for (const dk of ['browser_control', 'desktop_ops', 'code_execution']) {
+                            const isDesktop = !!(window.desktopAPI && window.desktopAPI.rawfs);
+                            for (const dk of (isDesktop ? ['browser_control', 'desktop_ops'] : ['browser_control', 'desktop_ops', 'code_execution'])) {
                                 const d = this.domains[dk];
                                 if (d && d.enabled !== false) { try { for (const n of this._resolveDomainToolNames(d)) if (names.indexOf(n) < 0) names.push(n); } catch (_) {} }
                             }
@@ -10897,7 +10908,8 @@ class FloatingAssistant {
     // 空字串/非數字）一律正規化成null（=不覆寫）。
     _normalizeModelRow(row) {
         if (!row || typeof row !== 'object') return null;
-        const modelName = String(row.modelName || '').trim();
+        let modelName = String(row.modelName || '').trim();
+        if (FA_MODEL_RENAMES[modelName]) modelName = FA_MODEL_RENAMES[modelName];
         if (!modelName) return null;
         const normalized = {
             id: String(row.id || '').trim() || (crypto.randomUUID ? crypto.randomUUID() : `row_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`),
@@ -12969,7 +12981,7 @@ ${fnData.code}
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const script = this._terminalRewriteBuiltinPaths(String(parsed.script || ''));
+                const script = this._terminalRewriteBuiltinPaths(String(parsed.script || parsed.code || parsed.source || parsed.python || parsed.bash || ''));
                 if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
                 let inputFiles;
                 try {
@@ -18644,13 +18656,23 @@ ${fnData.code}
     // 所以多加一層穩定的保險：腳本照原樣執行，但 import playwright 拿到的是轉接版，每個動作實際呼叫助理的瀏覽器控制工具。
     // 通訊用「檔案信箱」（.floating-assistant/pybridge/rpc/<runId>/req-*.json → res-*.json），不開網路埠、不需要改主程式。
     // 範圍：只在「執行技能包」期間（_pyBridgeDepth > 0）、而且設定 pythonApiBridge 不是 off 時，才改寫 run_command 裡的 python 腳本啟動指令。
+    async _faUserDataDir() {
+        if (this._faUserDataDirCache) return this._faUserDataDirCache;
+        const api = window.desktopAPI;
+        if (!api || !api.chats || !api.chats.dir) return null;
+        const d = String(await api.chats.dir() || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const base = d.replace(/\/[^/]+$/, '');
+        this._faUserDataDirCache = base || null;
+        return this._faUserDataDirCache;
+    }
     async _pyBridgeBase() {
         const rawfs = window.desktopAPI && window.desktopAPI.rawfs;
         if (!rawfs) return null;
         if (this._pyBridgeDir) return this._pyBridgeDir;
-        await rawfs.mkdir('.floating-assistant/pybridge');
-        const st = await rawfs.stat('.floating-assistant/pybridge');
-        this._pyBridgeDir = String(st.path).replace(/\\/g, '/');
+        const ud = await this._faUserDataDir();
+        if (!ud) return null;
+        await rawfs.mkdir(ud + '/pybridge');
+        this._pyBridgeDir = ud + '/pybridge';
         return this._pyBridgeDir;
     }
     async _pyBridgeInstall() {
@@ -23635,7 +23657,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 成員數時繼續在同一組裡round-robin換下一把key；已經到了才真的換下
     // 一組、attempts歸零重新數。
     _nextAutoFallbackModel(status, currentModel) {
-        if (status !== 404 || !this._autoFallbackActive) return null;
+        // 410 Gone（模型已下架／end of life，例如 nvidia/nemotron-3-super-120b-a12b 在 2026-10-03 被 NVIDIA 停用）跟 404 一樣代表這個模型在這個端點上已經不存在，換下一筆候選
+        if ((status !== 404 && status !== 410) || !this._autoFallbackActive) return null;
         const groups = this._autoFallbackGroups || (this._autoFallbackGroups = this._computeModelRowGroups());
         let group = groups[this._autoFallbackGroupIndex];
         if (this._autoFallbackGroupAttempts >= group.rows.length) {
@@ -39422,8 +39445,21 @@ _result
         return (ext && map[ext[1]]) || '';
     }
 
-    async _applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel }) {
-        const bundleName = (prompt('幫這個匯入的Skill技能包取一個名稱：', sourceLabel) || sourceLabel || '匯入的Skill').trim() || (sourceLabel || '匯入的Skill');
+    async _applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel, silent = false, name = '', replace = false }) {
+        const bundleName = silent
+            ? (String(name || sourceLabel || '匯入的Skill').trim() || '匯入的Skill')
+            : (prompt('幫這個匯入的Skill技能包取一個名稱：', sourceLabel) || sourceLabel || '匯入的Skill').trim() || (sourceLabel || '匯入的Skill');
+        let replacedOld = 0;
+        if (silent && replace) {
+            // 同名技能包整包換掉（連同它掛的工具）：指令匯入不問使用者，直接覆蓋
+            const old = (this.advancedSettings.skillBundles || []).filter((b) => b.name === bundleName);
+            if (old.length) {
+                const ids = new Set(old.map((b) => b.id));
+                this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter((b) => !ids.has(b.id));
+                this.advancedSettings.customTools = (this.advancedSettings.customTools || []).filter((t) => !ids.has(t.skillBundleId));
+                replacedOld = old.length;
+            }
+        }
         const trimmedSkillMd = String(skillMdText || '').trim();
         const bundleId = this._createSkillBundle(bundleName, trimmedSkillMd);
 
@@ -39451,7 +39487,7 @@ _result
             normalized.skillBundleId = bundleId;
             const existingIndex = this.advancedSettings.customTools.findIndex(t => t.name === normalized.name);
             if (existingIndex > -1) {
-                if (!confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
+                if (!silent && !confirm(`Skill「${normalized.name}」已存在，是否覆蓋？`)) continue;
                 this.advancedSettings.customTools.splice(existingIndex, 1, normalized);
             } else {
                 this.advancedSettings.customTools.push(normalized);
@@ -39488,6 +39524,8 @@ _result
         if (skippedBuiltinCount) parts.push(`略過 ${skippedBuiltinCount} 個與內建工具同名的項目`);
         if (files.length) parts.push(`附帶 ${files.length} 個參考資料/腳本檔案`);
         if (skippedOversizeCount) parts.push(`略過 ${skippedOversizeCount} 個超過大小上限的檔案`);
+        if (replacedOld) parts.push('已取代同名的舊技能包');
+        if (silent) return { ok: true, name: bundleName, bundleId, summary: parts.join('，') };
         alert('Skill 匯入完成：' + parts.join('，'));
     }
 
@@ -39538,11 +39576,13 @@ _result
         return toHex(a0) + toHex(b0) + toHex(c0) + toHex(d0);
     }
 
-    async _importSkillZip(file) {
-        if (!file) return;
+    async _importSkillZip(file, opts = {}) {
+        const silent = !!(opts && opts.silent);
+        if (!file) return silent ? { ok: false, error: '沒有檔案' } : undefined;
         try {
             await this._ensureJSZipLoaded();
         } catch (err) {
+            if (silent) return { ok: false, error: '.skill 匯入功能需要 JSZip 函式庫：' + (err.message || err) };
             alert('.skill 匯入功能需要 JSZip 函式庫：' + (err.message || err));
             return;
         }
@@ -39570,10 +39610,27 @@ _result
             // 名稱，確保還是有一個穩定、不會跟其他匯入撞名的預設值。
             const strippedName = String(file.name || '').replace(/\.(skill|zip)$/i, '').trim();
             const sourceLabel = strippedName || `SKILL-${this._md5Hex(await file.arrayBuffer())}`;
-            await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel });
+            return await this._applyImportedSkillBundle({ skillMdText, toolFileEntries, extraFileEntries, sourceLabel, silent, name: opts && opts.name, replace: !!(opts && opts.replace) });
         } catch (err) {
+            if (silent) return { ok: false, error: '.skill 匯入失敗: ' + (err.message || err) };
             alert('.skill 匯入失敗: ' + (err.message || err));
         }
+    }
+    // /skill-import：純指令匯入 .skill（不跳任何對話框）。來源可以是桌面版的絕對路徑、fap:<名稱>/<路徑>、或已上傳的檔名／file_id。
+    async _skillImportCommand(raw) {
+        const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
+        let arg = String(raw || '').trim();
+        const nameM = /(?:^|\s)--name\s+("[^"]+"|\S+)/.exec(arg);
+        const name = nameM ? nameM[1].replace(/^"|"$/g, '') : '';
+        if (nameM) arg = arg.replace(nameM[0], ' ').trim();
+        const keep = /(?:^|\s)--keep(?=\s|$)/.test(arg);
+        arg = arg.replace(/(?:^|\s)--keep(?=\s|$)/g, ' ').trim().replace(/^"(.*)"$/, '$1');
+        if (!arg) { say('用法：/skill-import <.skill 檔案路徑> [--name 技能包名稱] [--keep]\n來源可以是桌面版的絕對路徑、fap:<名稱>/<路徑>，或已上傳的檔名。預設遇到同名技能包會直接取代；加 --keep 則另外新增一個。不會跳出任何對話框。'); return; }
+        let src;
+        try { src = await this._resolveTerminalCopySource(arg); } catch (e) { say('⚠️ 讀不到來源：' + String((e && e.message) || e)); return; }
+        const file = new File([src.bytes], src.filename || 'skill.skill', { type: 'application/zip' });
+        const r = await this._importSkillZip(file, { silent: true, name, replace: !keep });
+        say(r && r.ok ? '✅ 已匯入技能包「' + r.name + '」：' + r.summary + '。現在可以用 /' + r.name + ' 執行。' : '⚠️ ' + ((r && r.error) || '匯入失敗'));
     }
 
     // tw_stock_db客製: 2026-09-13使用者要求——「系統上可以用專屬資料夾避免被
@@ -44215,6 +44272,28 @@ ${existingNodeSummaries}
         return this._createProgressWidget(title);
     }
 
+    // 2026-10-03真實環境測試（nemotron）：技能包的腳本只存在助理的儲存空間裡，磁碟上沒有 scripts 資料夾，
+    // AI 只能一直找不到、或把腳本內容讀出來再貼著重寫。桌面版在委派給有腳本的技能包之前，先把整包檔案解開到
+    // 助理的資料資料夾（userData）底下的 skills/<名稱>/（每次都用最新內容覆寫），並把路徑告訴子 AI，腳本就能用 run_command 直接執行。
+    async _skillMaterialize(bundle) {
+        const rawfs = window.desktopAPI && window.desktopAPI.rawfs;
+        if (!rawfs || !bundle || !bundle.files || !bundle.files.length || bundle.filesLost) return null;
+        const safe = String(bundle.name || bundle.id).replace(/[^A-Za-z0-9._-]+/g, '_');
+        const ud = await this._faUserDataDir();
+        if (!ud) return null;
+        const dir = ud + '/skills/' + safe;
+        await rawfs.mkdir(dir);
+        let n = 0;
+        for (const f of bundle.files) {
+            try {
+                const rec = await this.skillFileCache.get(bundle.id + '::' + f.path);
+                if (!rec) continue;
+                await rawfs.writeFile(dir + '/' + f.path, { text: await rec.blob.text() });
+                n++;
+            } catch (_) {}
+        }
+        return n ? { dir, files: n } : null;
+    }
     async _delegateToSubagentDomain(domainKey, task) {
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
@@ -44228,9 +44307,17 @@ ${existingNodeSummaries}
         const isSkillDomain = String(domainKey).indexOf('skill_') === 0;
         if (isSkillDomain) this._pyBridgeDepth = (this._pyBridgeDepth || 0) + 1;
         try {
+            let skillDirNote = '';
+            if (isSkillDomain) {
+                try {
+                    const bundle = (this.advancedSettings.skillBundles || []).find((b) => 'skill_' + b.id === domainKey);
+                    const mat = bundle ? await this._skillMaterialize(bundle) : null;
+                    if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時直接用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py" 參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
+                } catch (_) {}
+            }
             const subResult = await this._runSubAgentTask(task, isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: this._resolveDomainToolNames(domain),
-                systemPrompt: this._resolveDomainSystemPrompt(domain),
+                systemPrompt: this._resolveDomainSystemPrompt(domain) + skillDirNote,
                 onProgress: progress ? (status) => progress.update({ status }) : null,
                 onTrace: progress ? (line) => progress.log(line) : null,
             });
@@ -44866,6 +44953,23 @@ ${existingNodeSummaries}
     // 回傳 {name, args}（name 已解析成實際存在的工具名稱），認不出來回傳 null。呼叫端直接把它當成真的呼叫執行。
     _parseDescribedToolCall(text, availableToolNames) {
         let t = String(text || '').trim();
+        {
+            const names0 = Array.isArray(availableToolNames) ? availableToolNames : [];
+            const resolveName = (n) => { n = String(n || '').trim(); if (names0.indexOf(n) >= 0) return n; const c = names0.filter((x) => x.indexOf(n + '__') === 0); return c.length === 1 ? c[0] : null; };
+            const braceJson = (str, from) => { const i = str.indexOf('{', from); if (i < 0) return null; let d = 0, q = false, esc = false; for (let k = i; k < str.length; k++) { const ch = str[k]; if (q) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') q = false; continue; } if (ch === '"') q = true; else if (ch === '{') d++; else if (ch === '}') { d--; if (d === 0) { const raw = str.slice(i, k + 1); try { return JSON.parse(raw); } catch (_) { try { return JSON.parse(raw.replace(/\\(?![\\"\/bfnrtu])/g, '\\\\')); } catch (_2) { return null; } } } } } return null; };
+            // 標籤寫法：<tool_call> 功能: 工具名稱 參數: {…}（也認 name／tool／function／arguments／args／parameters 這些英文標籤）
+            const lab = /(?:<tool_call>\s*)?(?:功能|工具|name|tool|function)\s*[:：=]\s*["']?([A-Za-z0-9_\-]+)["']?\s*[\r\n,;]*\s*(?:參數|arguments|args|parameters|input)\s*[:：=]\s*/i.exec(t);
+            if (lab && /<tool_call>|功能|參數/.test(t)) {
+                const nm = resolveName(lab[1]); const a = nm ? braceJson(t, lab.index + lab[0].length - 1) : null;
+                if (nm && a) return { name: nm, args: a };
+            }
+            // XML 寫法：<function=名稱><parameter=鍵>值</parameter>…</function>（或 <function name="名稱">）
+            const fx = /<function(?:=|\s+name\s*=\s*)["']?([A-Za-z0-9_\-]+)["']?\s*>([\s\S]*?)(?:<\/function>|$)/i.exec(t);
+            if (fx) {
+                const nm = resolveName(fx[1]);
+                if (nm) { const a = {}; const pr = /<parameter(?:=|\s+name\s*=\s*)["']?([A-Za-z0-9_\-]+)["']?\s*>([\s\S]*?)<\/parameter>/gi; let m2; while ((m2 = pr.exec(fx[2]))) { const v = m2[2].trim(); let pv = v; try { pv = JSON.parse(v); } catch (_) {} a[m2[1]] = pv; } return { name: nm, args: a }; }
+            }
+        }
         const fence = t.match(/^```(?:json|tool_call)?\s*([\s\S]*?)\s*```$/i);
         if (fence) t = fence[1].trim();
         if (!t.startsWith('{') || !t.endsWith('}')) return null;
@@ -44881,7 +44985,12 @@ ${existingNodeSummaries}
         const raw = o.name || o.tool || o.tool_name || o.function || o.action;
         if (typeof raw !== 'string' || !raw.trim()) return null;
         let args = o.arguments !== undefined ? o.arguments : (o.args !== undefined ? o.args : (o.parameters !== undefined ? o.parameters : o.input));
-        if (args === undefined) return null;
+        let flat = false;
+        if (args === undefined) {
+            // 平鋪寫法：{"tool":"read_skill_file","skill_id":"…","offset":0}——參數直接跟工具名稱放在同一層（nemotron 實測）
+            const rest = Object.assign({}, o); delete rest.name; delete rest.tool; delete rest.tool_name; delete rest.function; delete rest.action; delete rest.type;
+            args = rest; flat = true;
+        }
         if (typeof args === 'string') { try { args = JSON.parse(args); } catch (_) { return null; } }
         if (!args || typeof args !== 'object') args = {};
         const names = Array.isArray(availableToolNames) ? availableToolNames : [];
@@ -45081,7 +45190,7 @@ ${existingNodeSummaries}
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
         const claimPathGuard = { count: 0 };
-        let autoExecDescribed = 0, describedRepeats = 0;
+        let autoExecDescribed = 0, describedRepeats = 0, junkTagRetries = 0;
         const describedSeen = new Map();
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
@@ -45166,7 +45275,7 @@ ${existingNodeSummaries}
             // 參數/取樣參數自我修復路徑同一個「基礎設施問題不算一輪對話」原則。
             const isRateLimited = !!(response && response.status === 429);
             const isServerTransient = !!networkError || (response && response.status >= 500);
-            const isModelUnavailable = response && response.status === 404;
+            const isModelUnavailable = response && (response.status === 404 || response.status === 410);
             // tw_stock_db客製: 2026-09-15使用者明確要求——「429應該要等、
             // retry，而且在處理parallel subagent應該要考慮到設定值」「這種
             // give up並不是無法連線，不是頻率問題，不接受換model的作法」。
@@ -45360,7 +45469,7 @@ ${existingNodeSummaries}
                 }
             }
 
-            if (!toolTasks.length && autoExecDescribed < 8) {
+            if (!toolTasks.length && autoExecDescribed < 80) {
                 const dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
                 if (dc) {
                     autoExecDescribed++;
@@ -45384,6 +45493,15 @@ ${existingNodeSummaries}
                         role: 'user',
                         content: `[系統提示] 你剛才用一段JSON文字描述要呼叫工具「${describedTool}」，但這不是系統真正認得的呼叫語法，這個工具並沒有被執行，你也還沒有拿到任何真實結果。請改用正確語法重新呼叫：[CALL: ${describedTool}(這裡放JSON格式的參數物件)]，例如[CALL: ${describedTool}({"path":"..."})]。不要再用純文字描述你打算做什麼。`,
                     });
+                    round--;
+                    continue;
+                }
+                if (/<\/?(?:tool_call|function|parameter|tool_response)\b[^>]*>/i.test(finalText) && junkTagRetries < 3) {
+                    junkTagRetries++;
+                    if (onProgress) onProgress('↻ 回覆裡混進了不屬於系統格式的標籤（tool_call／function／parameter），請AI重來（第' + junkTagRetries + '次）…');
+                    if (onTrace) onTrace('↻ 最終回覆含有奇怪的標籤，不當成答案，退回重來：' + traceSnip(finalText, 160));
+                    messages.push({ role: 'assistant', content: finalText });
+                    messages.push({ role: 'user', content: '[系統提示] 你的回覆裡出現了 </tool_call>、</function>、<parameter> 這類標籤，那不是系統認得的格式，所以什麼都沒有被執行，這也不是可以交給使用者的答案。要呼叫工具請用系統提供的工具呼叫方式（原生 function call，或 [CALL: 工具名稱({"參數":"值"})]）；如果任務已經做完，請直接用幾句白話說明結果，不要帶任何標籤。' });
                     round--;
                     continue;
                 }
