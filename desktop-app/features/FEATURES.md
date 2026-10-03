@@ -351,6 +351,23 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
   - `tar -xzvf a.tar.gz -C /tmp`
   - `javac -d out -cp lib/* Main.java`
 
+### 日誌診斷（建置錯誤、gdb、核心日誌、kernel panic、journal）（`ref-log-diagnose`）
+
+離線讀懂日誌並說明發生什麼事：建置失敗（make、CMake、BitBake／Yocto、ninja、Meson、autotools、Kbuild、gcc／g++／clang 編譯錯誤、ld 連結錯誤、Maven、Gradle、npm、Cargo、pip、Go）、gdb 訊息（Program received signal、Cannot access memory、遠端除錯架構不符…）、Linux 核心日誌（dmesg、Oops、soft lockup、OOM、驅動 probe 失敗、韌體缺失、模組載入）、kernel panic（找不到根檔案系統、init 死掉）、systemd／journal（服務啟動失敗、status=203/EXEC、start-limit-hit、sshd 登入失敗、SELinux／AppArmor 拒絕）。找出根本原因、連帶結果與傳遞路徑（編譯器錯誤→make→BitBake 任務失敗），並說明常見原因與處理。沒有規則的錯誤行進「待學習清單」，AI 之後補規則（每條要附真實範例驗證與來源），越用越完整。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/ref`
+- AI 工具：`diagnose_log`、`explain_build_error`
+- 範例：
+  - `make: *** [Makefile:45: foo.o] Error 1 這是什麼意思`
+  - `ERROR: Nothing PROVIDES 'libfoo'`
+  - `undefined reference to sqrt 怎麼解`
+  - `Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)`
+  - `myapp.service: Main process exited, code=exited, status=203/EXEC`
+  - `Program received signal SIGSEGV 然後 Cannot access memory at address 0x0`
+  - `/ref diag <貼上整段日誌>`
+  - `/ref queue`
+
 ### 查 pragma、選項與參考知識（`ref-lookup`）
 
 離線查 C 的
