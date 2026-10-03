@@ -47072,7 +47072,12 @@ ${existingNodeSummaries}
             wrap.appendChild(intro);
             const chipRow = document.createElement('div');
             chipRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px;';
-            msg._suggestionChips.forEach((c) => {
+            // 2026-10-03使用者偏好：建議操作只列到「AI功能總覽」，後面的分類收進「更多…」，點開用對話框全部顯示
+            const allChips = msg._suggestionChips;
+            const cut = allChips.findIndex((c) => c && c.text === '/ai-features');
+            const shownChips = cut >= 0 ? allChips.slice(0, cut + 1) : allChips;
+            const moreChips = cut >= 0 ? allChips.slice(cut + 1) : [];
+            const addChip = (row, c, afterUse) => {
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'ai-suggestion-chip';
@@ -47081,8 +47086,9 @@ ${existingNodeSummaries}
                 btn.addEventListener('click', () => {
                     const inputEl = document.getElementById('ai-input-text');
                     if (inputEl) { inputEl.value = c.text; inputEl.focus(); }
+                    if (afterUse) afterUse();
                 });
-                chipRow.appendChild(btn);
+                row.appendChild(btn);
                 const run = document.createElement('button');
                 run.type = 'button';
                 run.title = '直接執行這個建議（離線模式下走離線訓練器，不經過AI）';
@@ -47091,9 +47097,42 @@ ${existingNodeSummaries}
                 run.addEventListener('click', () => {
                     const inputEl = document.getElementById('ai-input-text');
                     if (inputEl) { inputEl.value = c.text; this._submitChatInput(inputEl, null); }
+                    if (afterUse) afterUse();
                 });
-                chipRow.appendChild(run);
-            });
+                row.appendChild(run);
+            };
+            shownChips.forEach((c) => addChip(chipRow, c, null));
+            if (moreChips.length) {
+                const more = document.createElement('button');
+                more.type = 'button';
+                more.className = 'ai-suggestion-chip';
+                more.style.cssText = `padding:4px 10px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:12px; cursor:pointer;`;
+                more.textContent = '更多…';
+                more.title = '顯示全部建議操作';
+                more.addEventListener('click', () => {
+                    const ov = document.createElement('div');
+                    ov.style.cssText = 'position:fixed; inset:0; z-index:2147483000; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center;';
+                    const dlg = document.createElement('div');
+                    dlg.style.cssText = `width:min(720px,92vw); max-height:80vh; overflow:auto; padding:16px 18px; border-radius:10px; background:${palette.assistantBg}; color:${palette.assistantText}; border:1px solid ${palette.windowBorder}; box-shadow:0 10px 40px rgba(0,0,0,.5);`;
+                    const head = document.createElement('div');
+                    head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:14px; font-weight:600;';
+                    head.textContent = '💡 全部建議操作（點擊填入輸入框，▶ 直接執行）';
+                    const x = document.createElement('button');
+                    x.type = 'button'; x.textContent = '✕'; x.title = '關閉';
+                    x.style.cssText = 'border:none; background:none; color:inherit; font-size:16px; cursor:pointer;';
+                    head.appendChild(x);
+                    const body = document.createElement('div');
+                    body.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px;';
+                    const close = () => { try { ov.remove(); } catch (_) {} document.removeEventListener('keydown', onKey, true); };
+                    const onKey = (e) => { if (e.key === 'Escape') close(); };
+                    allChips.forEach((c) => addChip(body, c, close));
+                    x.addEventListener('click', close);
+                    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+                    document.addEventListener('keydown', onKey, true);
+                    dlg.append(head, body); ov.appendChild(dlg); document.body.appendChild(ov);
+                });
+                chipRow.appendChild(more);
+            }
             wrap.appendChild(chipRow);
             container.appendChild(wrap);
             return;
