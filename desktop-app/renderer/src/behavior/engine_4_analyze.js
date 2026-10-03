@@ -115,6 +115,30 @@
         }
         return out.join('\n');
     }
+    // ================= Python byte code（dis 輸出）=================
+    const PYDIS_OPS = { RAISE_VARARGS: '丟出例外', RETURN_VALUE: '回傳', RETURN_CONST: '回傳常數', POP_JUMP_IF_FALSE: '條件為假則跳', POP_JUMP_IF_TRUE: '條件為真則跳', FOR_ITER: '迴圈下一個元素', SETUP_WITH: '進入 with', BEFORE_WITH: '進入 with', IMPORT_NAME: '匯入模組', STORE_ATTR: '寫屬性', DELETE_NAME: '刪除變數', YIELD_VALUE: '產出（generator）', SETUP_FINALLY: '進入 try', JUMP_BACKWARD: '往回跳（迴圈）' };
+    function parsePyDis(text) {
+        const fns = []; let cur = null;
+        for (const ln of text.split('\n')) {
+            const h = /^Disassembly of <code object (\S+) at/.exec(ln); if (h) { cur = { name: h[1], ops: [], calls: [] }; fns.push(cur); continue; }
+            const m = /^\s*(?:\d+\s+)?(?:>>\s+)?(\d+)\s+([A-Z_]+)\s*(\d*)\s*(?:\((.*)\))?\s*$/.exec(ln); if (!m) continue;
+            if (!cur) { cur = { name: '<module>', ops: [], calls: [] }; fns.push(cur); }
+            cur.ops.push({ offset: +m[1], op: m[2], arg: m[4] || '' });
+            if (/^(LOAD_GLOBAL|LOAD_NAME|LOAD_ATTR|LOAD_METHOD)$/.test(m[2]) && m[4]) cur.calls.push(m[4].replace(/^NULL \+ /, ''));
+        }
+        return fns;
+    }
+    function pyDisMarkdown(fns, tx) {
+        const lookup = lookupFor(tx, 'python'); const out = [];
+        for (const f of fns) {
+            const calls = Array.from(new Set(f.calls)); const cats = new Set(calls.filter((c) => lookup[c]).map((c) => lookup[c]));
+            out.push('## `' + f.name + '`（' + f.ops.length + ' 個指令）', '');
+            if (cats.size) out.push('行為分類：' + Array.from(cats).map((c) => (tx.categories[c] || {}).label || c).join('、'), '');
+            if (calls.length) out.push('<details open><summary>用到的名稱／呼叫</summary>', '', ...calls.slice(0, 30).map((c) => '- ' + c + (lookup[c] ? '：' + ((tx.categories[lookup[c]] || {}).label || lookup[c]) : '')), '', '</details>', '');
+            const notable = Array.from(new Set(f.ops.map((o) => o.op))).filter((o) => PYDIS_OPS[o]); if (notable.length) out.push('指令：' + notable.map((o) => o + '＝' + PYDIS_OPS[o]).join('；'), '');
+        }
+        return out.join('\n');
+    }
     // ================= Java 設計模式（designpattern_tools）：以語法樹的類別結構判斷 =================
     function detectJavaDesignPatterns(root, src) {
         const out = []; const classes = []; collectTypes(root, S(['class_declaration', 'interface_declaration']), classes);
@@ -158,6 +182,7 @@
         if (/\.(javap|jvm)$/i.test(path) || /^Compiled from "|^\s*(public|private|protected)?\s*(static\s+)?class\s+[\w.]+\s*\{[\s\S]*\n\s+Code:/m.test(src)) {
             const methods = parseJavap(src); meta.language = 'jvm-bytecode'; meta.functions = methods.length; out.push(bytecodeMarkdown(methods, tx)); return { markdown: out.join('\n'), meta, functions: methods };
         }
+        if (/\.dis$/i.test(path) || (!language && /^Disassembly of <code object|^\s*\d+\s+\d+\s+(?:RESUME|LOAD_CONST|LOAD_GLOBAL|LOAD_NAME)\b/m.test(src))) { const pf = parsePyDis(src); meta.language = 'python-bytecode'; meta.functions = pf.length; out.push(pyDisMarkdown(pf, tx)); return { markdown: out.join('\n'), meta, functions: pf }; }
         if (!language) return { markdown: out.join('\n') + '\n（不認得的檔案類型，無法分析）', meta, functions: [] };
         meta.language = language;
         if (!deps.parse) throw new Error('沒有可用的語法樹剖析器（deps.parse）');

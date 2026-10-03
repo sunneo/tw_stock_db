@@ -64,6 +64,6 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 
 - 巨集展開、C++ 模板、跨檔呼叫圖（目前一次分析一個檔案）沒有。
 - 資料流是單一函式內的污染追蹤，不跨函式。
-- Python byte code（dis 輸出）、`cluster_functions_by_behavior`、`teach_function_role` 還沒移植；JVM 位元組碼只讀 javap -c 的輸出。
+- `cluster_functions_by_behavior`、`teach_function_role` 還沒移植；JVM 位元組碼只讀 javap -c 的輸出、Python 位元組碼只讀 dis 輸出（以名稱與指令歸類，不重建流程）。
 - 敘事句型是 api_semantics 的英文原文加中文連接詞，沒有全面中文化。
 - 組合語言語意只靠 pattern 表；使用者自己的大量定義用 `behavior_define import` 匯入。
