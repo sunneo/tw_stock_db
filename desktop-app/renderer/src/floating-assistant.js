@@ -12410,9 +12410,9 @@ class FloatingAssistant {
             offlineAutoFallback: raw.offlineAutoFallback !== false,
             pythonApiBridge: raw.pythonApiBridge === 'off' ? 'off' : 'skill',
             offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
-            repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 100 && n <= 2000000 ? n : 50000; })(),
+            repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 ? n : 50000; })(),
             repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'off',
-            repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 5 && n <= 2000 ? n : 100; })(),
+            repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 1 ? n : 100; })(),
             offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
             customLanguages: (() => {
                 const out = {};
@@ -20389,7 +20389,7 @@ ${fnData.code}
             const t = ev.target;
             if (t.dataset.riSel) { this.advancedSettings[t.dataset.riSel] = t.value; this._saveAdvancedSettings(); return; }
             if (t.id === 'ai-ri-import-file' && t.files && t.files[0]) { const target = this._riImportRoot; (async () => { try { const data = JSON.parse(await t.files[0].text()); const r = await this._repoIndexImportBundle(target, data, {}); this._pushAssistantMessage(r.ok ? '📥 已匯入索引：說明新增 ' + (r.merged.notes.added + r.merged.symbols.added) + '、更新 ' + (r.merged.notes.updated + r.merged.symbols.updated) + (r.merged.map.files_added ? '；索引資料補了 ' + r.merged.map.files_added + ' 個檔案' : '') : (r.cancelled ? '已取消。' : '⚠️ ' + r.error), null); this._persistChatHistory(); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } t.value = ''; refresh(); })(); return; }
-            if (t.dataset.riSet) { const k = t.dataset.riSet; const n = Math.floor(Number(t.value)); if (k === 'repoIndexMaxFiles' && n >= 100) this.advancedSettings.repoIndexMaxFiles = n; else if (k === 'repoIndexMaxMb' && n >= 5) this.advancedSettings.repoIndexMaxMb = n; this._saveAdvancedSettings(); t.value = this.advancedSettings[k]; }
+            if (t.dataset.riSet) { const k = t.dataset.riSet; const n = Math.floor(Number(t.value)); if (k === 'repoIndexMaxFiles' && n >= 1) this.advancedSettings.repoIndexMaxFiles = n; else if (k === 'repoIndexMaxMb' && n >= 1) this.advancedSettings.repoIndexMaxMb = n; this._saveAdvancedSettings(); t.value = this.advancedSettings[k]; }
         });
         root.addEventListener('click', async (ev) => {
             const b = ev.target.closest('button[data-ri]');
@@ -20441,8 +20441,8 @@ ${fnData.code}
         }
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">為專案建立完整索引（定義、註解、依賴、呼叫關係），之後可以用 <code>repo_ask</code> 問「某函式做什麼／在哪定義／誰用到它」，或匯出成單檔 HTML（內嵌 SQLite 可下 SQL，或純 JS 問答）。索引在背景漸進建立，可停止、可接續；進度也顯示在對話裡。</div>
             <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-                <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）">檔案數上限 <input type="number" min="100" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
-                <label title="索引（地圖）資料的大小上限，超過就停下來">索引大小上限（MB） <input type="number" min="5" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
+                <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）">檔案數上限 <input type="number" min="1" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
+                <label title="索引（地圖）資料的大小上限，超過就停下來">索引大小上限（MB） <input type="number" min="1" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
             <div style="margin-bottom:8px;"><label title="索引完成、深入探討完成後，自動把說明（和可選的索引資料）存進專案資料夾的 .floating-assistant/index/，不同人拿同一份專案可以接著延伸">索引自動存回專案資料夾 <select data-ri-sel="repoIndexAutoSave" style="${inp}"><option value="off" ${(S.repoIndexAutoSave || 'off') === 'off' ? 'selected' : ''}>否</option><option value="notes" ${S.repoIndexAutoSave === 'notes' ? 'selected' : ''}>是，只存說明</option><option value="all" ${S.repoIndexAutoSave === 'all' ? 'selected' : ''}>是，說明＋索引資料</option></select></label><input type="file" id="ai-ri-import-file" accept=".json,application/json" style="display:none;"></div>
             <div style="display:flex; gap:6px; margin-bottom:6px;"><button style="${btn}" data-ri="browse" title="${isDesk ? '選擇專案資料夾（直接使用路徑）' : '選擇專案資料夾（選完會自動授權成 fap）'}">📁 瀏覽…</button><input id="ai-ri-new" placeholder="${isDesk ? '專案資料夾：按左邊「瀏覽」選擇，或貼上絕對路徑' : '按左邊「瀏覽」選資料夾（會自動授權成 fap），或輸入 fap:名稱'}" value="${esc(keep)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
             ${rows.join('') || '<div style="color:#94a3b8;">還沒有建立過索引的專案。</div>'}`;
@@ -20717,7 +20717,7 @@ ${fnData.code}
             return m;
         });
         const exp = [].concat(parsed.exports || parsed.export || []).map(String).filter((x) => /^(sqlite_html|qa_html)$/.test(x));
-        const job = { key, state: 'running', phase: 'prepare', pct: 0, startedAt: Date.now(), filesStartedAt: Date.now(), stop: false, dirs: 0, queueDirs: 0, analyzed: 0, missing: 0, filesTotal: 0, bytes: 0, current: '', map, opts: { maxFiles: Math.max(100, Math.floor(Number(parsed.max_files) || this.advancedSettings.repoIndexMaxFiles || 50000)), maxMb: Math.max(5, Math.floor(Number(parsed.max_mb) || this.advancedSettings.repoIndexMaxMb || 100)), exports: exp, reanalyze: !!parsed.reanalyze } };
+        const job = { key, state: 'running', phase: 'prepare', pct: 0, startedAt: Date.now(), filesStartedAt: Date.now(), stop: false, dirs: 0, queueDirs: 0, analyzed: 0, missing: 0, filesTotal: 0, bytes: 0, current: '', map, opts: { maxFiles: Math.max(1, Math.floor(Number(parsed.max_files) || this.advancedSettings.repoIndexMaxFiles || 50000)), maxMb: Math.max(1, Math.floor(Number(parsed.max_mb) || this.advancedSettings.repoIndexMaxMb || 100)), exports: exp, reanalyze: !!parsed.reanalyze } };
         this._repoJobs.set(key, job);
         job.promise = this._repoIndexRun(job).catch((e) => { job.state = 'error'; job.error = String((e && e.message) || e); });
         return Object.assign({ ok: true, started: true, note: '已在背景開始建立索引。慢沒關係：進度顯示在對話裡的進度卡片，完成後會提示；也可以用 index_status 看進度、index_stop 停止。這段時間可以繼續做別的事。' }, this._repoJobStatusObj(job));
