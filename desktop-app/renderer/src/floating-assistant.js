@@ -24167,7 +24167,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // _progressWidget是非可枚舉的，JSON.stringify不會序列化它，重新整理
     // 頁面後這則訊息會變成空的tool訊息（等於消失），符合「純過渡UI」語意。
     _createProgressWidget(title) {
-        const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now() };
+        const state = { title: String(title || '處理中'), pct: null, status: '準備中…', done: false, error: null, startedAt: Date.now(), trace: [], traceOpen: true };
         const msg = { role: 'tool', content: '' };
         Object.defineProperty(msg, '_progressWidget', { value: state, enumerable: false, configurable: true });
         this.messages.push(msg);
@@ -24200,6 +24200,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (patch.pct != null) state.pct = Math.round(Math.max(0, Math.min(100, patch.pct)));
                 if (patch.status != null) state.status = String(patch.status);
                 rerender(!!patch.force);
+            },
+            // 逐步紀錄（子agent的思考、工具呼叫與結果）：顯示在卡片下方的可摺疊區塊，結束後仍保留
+            log: (line) => {
+                state.trace.push({ t: Date.now(), line: String(line == null ? '' : line) });
+                if (state.trace.length > 400) state.trace.splice(0, state.trace.length - 400);
+                rerender(false);
             },
             finish: (finalStatus) => {
                 state.done = true;
@@ -44189,6 +44195,7 @@ ${existingNodeSummaries}
                 allowedToolNames: this._resolveDomainToolNames(domain),
                 systemPrompt: this._resolveDomainSystemPrompt(domain),
                 onProgress: progress ? (status) => progress.update({ status }) : null,
+                onTrace: progress ? (line) => progress.log(line) : null,
             });
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
@@ -44743,6 +44750,7 @@ ${existingNodeSummaries}
                 allowedToolNames: routed.toolNames,
                 systemPrompt: routed.systemPrompt,
                 onProgress: progress ? (status) => progress.update({ status }) : null,
+                onTrace: progress ? (line) => progress.log(line) : null,
             });
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domains: routed.domains }, subResult);
@@ -44889,6 +44897,8 @@ ${existingNodeSummaries}
         // 只在showInternalTrace開啟時才建立）——這裡只負責在關鍵時機點
         // （每輪開始/呼叫了哪個工具/申請追加工具）呼叫一下，不管有沒有人在聽。
         const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+        const onTrace = typeof options.onTrace === 'function' ? options.onTrace : null;
+        const traceSnip = (v, n) => { let t = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch (_) { return String(v); } })(); t = String(t == null ? '' : t).replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]{40,}/gi, '[base64省略]').replace(/\s+/g, ' '); return t.length > n ? t.slice(0, n) + '…（共' + t.length + '字）' : t; };
         // tw_stock_db客製: resolveTool取代原本兩處直接呼叫
         // this._getToolDefinition(fnName, allowedToolNames)的地方——
         // request_additional_tools只在這次_runSubAgentTask執行內有效，故意
@@ -45180,6 +45190,7 @@ ${existingNodeSummaries}
             // 沒有真的產出答案」，直接請它照AI_REASONING_DEADEND_PROMPT的指示
             // 重講一次，不消耗maxRounds（round--），有自己獨立的重試上限。
             const reasoningContent = message.reasoning_content || '';
+            if (onTrace && reasoningContent) onTrace('💭 思考：' + traceSnip(reasoningContent, 600));
             // tw_stock_db客製: 見_loopFetch/_loopFetchNative裡isCompletelyEmpty
             // 的詳細說明——這裡原本只認reasoningContent.trim().length>20，
             // 完全沒有任何輸出（連思考過程都沒有）的情況會直接漏接、落到下面
@@ -45204,11 +45215,13 @@ ${existingNodeSummaries}
             }
 
             if (useNative && toolCalls.length) {
+                if (onTrace && String(rawContent).trim()) onTrace('💬 ' + traceSnip(rawContent, 400));
                 messages.push(Object.assign({ role: 'assistant', content: this._stripInlineBase64(rawContent) }, { tool_calls: toolCalls }));
                 for (const tc of toolCalls) {
                     const fnName = tc.function && tc.function.name;
                     const rawArgs = (tc.function && tc.function.arguments) || '{}';
                     if (onProgress) onProgress(`⚙️ 呼叫工具：${fnName}`);
+                    if (onTrace) onTrace('⚙️ ' + fnName + '(' + traceSnip(rawArgs, 400) + ')');
                     try {
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
@@ -45217,7 +45230,9 @@ ${existingNodeSummaries}
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
                         messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
+                        if (onTrace) onTrace('   ↩ ' + traceSnip(result, 500));
                     } catch (err) {
+                        if (onTrace) onTrace('   ↩ ❌ ' + String((err && err.message) || err));
                         messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ ok: false, error: String(err.message || err) }) });
                     }
                 }
@@ -45309,6 +45324,7 @@ ${existingNodeSummaries}
                         return { text: this._claimPathWarning(pc) + (finalText || ''), visual: capturedVisual };
                     }
                 }
+                if (onTrace) onTrace('✅ 最終回覆：' + traceSnip(finalText || '（無回應）', 600));
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
 
@@ -45316,6 +45332,7 @@ ${existingNodeSummaries}
 
             for (const task of toolTasks) {
                 if (onProgress) onProgress(`⚙️ 呼叫工具：${task.fnName}`);
+                if (onTrace) onTrace('⚙️ ' + task.fnName + '(' + traceSnip(task.fnArgsRaw, 400) + ')');
                 try {
                     const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
@@ -45325,7 +45342,9 @@ ${existingNodeSummaries}
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;
                     messages.push(this._buildToolResultMessage(task.fnName, result));
+                    if (onTrace) onTrace('   ↩ ' + traceSnip(result, 500));
                 } catch (err) {
+                    if (onTrace) onTrace('   ↩ ❌ ' + String((err && err.message) || err));
                     messages.push({ role: 'user', content: `[系統提示] 工具 "${task.fnName}" 執行失敗: ${err.message}。` });
                 }
             }
@@ -47135,6 +47154,22 @@ ${existingNodeSummaries}
                 }
                 w.innerHTML = `<div style="font-weight:bold;">${icon} ${this._escapeHtml(st.title)}${st.pct != null && !st.error ? `　${st.pct}%` : ''}</div>
                     <div style="margin-top:4px; opacity:0.85;">${this._escapeHtml(st.error || st.status)}${!st.done ? `　（已 ${elapsed}s）` : ''}</div>${bar}`;
+                if (st.trace && st.trace.length) {
+                    const det = document.createElement('details');
+                    det.open = st.traceOpen !== false;
+                    det.style.cssText = 'margin-top:8px;';
+                    det.addEventListener('toggle', () => { st.traceOpen = det.open; });
+                    const sum = document.createElement('summary');
+                    sum.style.cssText = 'cursor:pointer; opacity:0.85;';
+                    sum.textContent = '執行紀錄（' + st.trace.length + ' 筆：思考、工具呼叫與結果）';
+                    const box = document.createElement('div');
+                    box.style.cssText = 'margin-top:6px; max-height:320px; overflow:auto; font:11px/1.5 ui-monospace,Consolas,monospace; color:#475569; white-space:pre-wrap; word-break:break-word;';
+                    const t0 = st.startedAt;
+                    box.textContent = st.trace.slice(-120).map((e) => '+' + Math.round((e.t - t0) / 1000) + 's ' + e.line).join('\n');
+                    det.append(sum, box);
+                    w.appendChild(det);
+                    if (!st.done) setTimeout(() => { try { box.scrollTop = box.scrollHeight; } catch (_) {} }, 0);
+                }
                 container.appendChild(w);
                 return;
             }
