@@ -3616,6 +3616,13 @@ const FA_OT_TEACHER_PROTOCOL = `你現在是「離線訓練器的老師」。使
 注意：你的回合有限，不要在同一個步驟反覆重試；真的做不到就誠實回報 failed 並寫明卡在哪一步，那一步就是下次要擴充的地方。`;
 
 // 專案深入探討（/aidoc dive）給AI的規範：把「讀過程式碼確認過的說明」補進索引資料庫
+const FA_SKILL_RUN_PROTOCOL = '【執行這個技能包的規範——先讀懂行為，再優先用你自己的工具做】\n'
+  + '這個技能包附帶了腳本（scripts/…）。它原本是為別的環境（例如 Claude）寫的，腳本裡的做法（自己啟動 Chrome、接 CDP 遠端除錯埠、用 Playwright／Selenium、要使用者先手動開瀏覽器…）不等於你該照做的方式。\n'
+  + '1. 先讀：動手前用 read_skill_file 把 SKILL.md 提到的腳本讀過（長檔用 offset 分段讀），弄清楚每支腳本「做什麼事、輸入輸出是什麼、依賴什麼環境」。沒讀過就不要宣稱知道它怎麼運作，更不要直接叫使用者去裝環境或開 Chrome。\n'
+  + '2. 分類：把腳本的行為拆成兩類——(A) 你自己已經有工具可以做到的（開網頁／分頁／截圖／讀頁面文字／點擊 → browser_* 工具；讀寫檔案、列資料夾、執行指令 → fs_* 與 run_command；跑 Python／bash → python_execute／bash_execute）；(B) 腳本真正獨特的邏輯（資料整理公式、投影片組版、解析規則、固定格式輸出…）。\n'
+  + '3. 優先用自己的工具：(A) 類一律用你自己的工具完成，不要照腳本去連 CDP／開 Chromium；(B) 類才保留腳本的邏輯——可以直接執行腳本（把你用工具取得的資料以檔案或參數交給它，例如截圖存檔、數字寫進設定檔，再用腳本提供的略過選項跳過它自己抓資料的那一段），或依腳本的邏輯用自己的方式重做。腳本需要改才能配合時，改一份副本，不要動原檔，除非使用者要求。\n'
+  + '4. 不要編造：每一步都要有實際工具呼叫的結果當依據。回報「已完成」前，用 fs_list_files 或 fs_read_file 確認產出的檔案真的存在；沒做到的部分直接說沒做到與原因，不要說成完成。\n'
+  + '5. 回報時用幾句話說明：哪些步驟用了你自己的工具、哪些執行了腳本、哪些沒做到。';
 const FA_DIVE_PROTOCOL = '你現在要為一個「已經建立索引」的專案補上說明（深入探討）。索引已經有結構（定義、依賴、呼叫），缺的是「這個檔案／函式在幹嘛、為什麼存在、要注意什麼」。\n做法：\n1. 用 coding_read_file（或 fap_read_file／fs_read_file）讀指定的檔案（長檔分段讀）；需要時用 repo_ask 問「誰用到這個函式」「這個函式在哪定義」確認脈絡，不要整個專案亂讀。\n2. 只寫你「讀過程式碼、確認過」的說明；看不懂就不要寫、不要編造。說明要具體：做什麼、輸入輸出、副作用、重要限制，不要只是複述函式名稱。\n3. 用 repo_map({"action":"annotate","root":"<專案>","path":"<檔案>","note":"檔案的用途（一兩句）","symbols":{"函式名":"做什麼（一句）"}}) 寫進資料庫；至少寫檔案說明，並為最重要的 3～10 個定義寫說明。函式名必須是索引裡有的名稱（寫錯會被退回並告訴你相近的）。\n4. 最後只輸出一行JSON：{"status":"done|skipped","summary":"一句話"}';
 
 // 通用的coding domain也歸入同一個類別，並加上「先實驗」的沙盒工具與狀態機工具
@@ -5093,6 +5100,7 @@ description: 協助使用者建立、修改、匯出「Claude格式的Skill」�
 
 **流程**：
 1. **如果任務是「把一個外部程式/腳本的行為轉成skill」（例如「讀這支XX.py，把它的功能變成我們的skill」），第一步不是照抄那支腳本的實作方式，是先盤點「這個AI自己內建的sub-agent領域(domain)裡，有沒有已經提供對等能力的」**：這裡講的domain**不是**SKILL.md/skill_create/skill_list那種「外部技能包」（不要用skill_list、fap_*、或任何檔案系統/搜尋工具去「找」一個叫browser_control或desktop_ops的skill包或SKILL.md檔案，那樣一定找不到——它們根本不是檔案，也不需要安裝），而是**這個AI本身寫死內建、可以直接用delegate_to_subagent（參數{"task":"...","domain":"領域代號"}）委派過去、或所屬工具已經在你目前工具集裡可以直接呼叫的能力**。舉例：控制瀏覽器已經有browser_control這個內建domain＋Chrome擴充功能（工具有browser_status/browser_navigate/browser_get_page_structure/browser_screenshot/browser_get_elements等，直接呼叫delegate_to_subagent、domain參數填browser_control即可委派過去，或這些browser_*工具本來就在你手上時直接呼叫，完全不用去哪裡找、也不用先確認它「存不存在」——它跟你現在能呼叫skill_create一樣，是這個AI原生就有的能力），不需要外部腳本自己spawn一個Chrome、接CDP、或另外用Playwright/Selenium開一個瀏覽器；桌面版執行系統指令/讀寫真實檔案已有desktop_ops domain（run_command／fs_*）；跑bash/python已有code_execution domain（bash_execute/python_execute）。原始腳本的「做法」（它怎麼啟動Chrome、怎麼接CDP、怎麼用Playwright）只是參考「它想達成的效果」，不是SKILL.md該照搬的實作——新skill的scripts/裡不要重新實作一套跟既有domain重複的能力，SKILL.md本體應該直接說明「委派給browser_control domain，依序呼叫browser_status→browser_navigate→browser_get_page_structure/browser_screenshot」這樣的正確流程；只有「既有domain真的做不到的部分」（例如腳本裡真正獨特的商業邏輯、頁面解析規則、特定CSS選擇器、資料整理公式）才需要留在SKILL.md或scripts/裡當作補充知識，不要把整支原始腳本原封不動塞進scripts/當成「skill的做法」。**這條原則不只適用瀏覽器控制，任何要轉成skill的外部腳本都一樣：先問「這件事這個AI自己有沒有現成的內建domain/工具可以做到」，找不到對應能力才需要另外寫scripts/腳本；不確定目前有哪些內建domain時，直接看delegate_to_subagent工具說明裡列出的領域目錄，不要用檔案搜尋工具去找。**
+1-b. **匯入或改寫一個既有的skill（例如使用者從Claude匯入的skill，要求「改成我們自己的AI能用」）時，一定要先讀懂原始碼，再改寫**：(a) 用skill_list找到它，用skill_read／read_skill_file把SKILL.md與每一支scripts／references讀過（長檔分段讀），不要只看SKILL.md的描述就動手；(b) 逐支腳本整理出「它實際做了什麼」：輸入、輸出、依賴的環境（是否自己開Chrome／接CDP遠端除錯埠、Playwright、外部程式、網路帳號）、可以略過的選項；注意原本在Claude環境裡，Claude是讀過腳本後用自己的瀏覽器工具或外掛完成，不是真的照腳本去接CDP——腳本的做法只是在說明「想達成什麼效果」；(c) 把每個行為分成「這個AI自己的工具就做得到」（browser_*、fs_*、run_command、python_execute／bash_execute等）與「腳本真正獨特的邏輯」兩類；(d) 改寫SKILL.md的步驟：前一類寫成明確的「用哪個工具、依什麼順序」，不要再叫人啟動Chrome或接CDP；後一類保留腳本，並寫清楚怎麼把自己用工具取得的資料交給它（檔案或參數、略過選項）；腳本本身需要配合時改成新的版本（用skill_create overwrite更新，並用files帶上新腳本），不要只改文字說明卻沒有真的改腳本；(e) 完成後用skill_read核對，並如實回報哪些步驟改成用自己的工具、哪些保留腳本、哪些還沒改。
 2. 跟使用者釐清這個skill要解決什麼、什麼情境該被觸發、需要哪些固定腳本/參考資料，資訊不足就簡短追問，不要瞎猜。
 3. 修改既有skill時先skill_list/skill_read讀取現況，不要憑記憶重寫。
 4. 用skill_create（先dry_run:true檢查也可以）建立，成功後告訴使用者skill名稱與檔案清單，需要的話download:true下載.skill或save_to寫進資料夾。
@@ -10371,6 +10379,7 @@ class FloatingAssistant {
         // (progressive disclosure)：這裡只條列檔案「有什麼」，不把內容塞進
         // system prompt本身（那樣會讓persona prompt暴增），需要細節時才呼叫
         // read_skill_file__<id>（見_syncSkillBundleDomains）主動讀取全文。
+        if (bundle.files && bundle.files.length && !bundle.filesLost && bundle.files.some((f) => /\.(py|js|ts|sh|ps1|bat|cmd|rb|pl)$/i.test(String(f.path || '')) || /^scripts\//i.test(String(f.path || '')))) systemPrompt += '\n\n' + FA_SKILL_RUN_PROTOCOL;
         if (bundle.files && bundle.files.length && !bundle.filesLost) {
             systemPrompt += `\n\n這個技能包還附帶以下參考資料/腳本檔案（內容不在這段文字裡，需要時才呼叫read_skill_file__${bundle.id}讀取，不要假裝已經知道內容）：\n`
                 + bundle.files.map(f => `- ${f.path}`).join('\n');
@@ -10486,7 +10495,16 @@ class FloatingAssistant {
                 category: 'user_skills',
                 toolNames: () => {
                     const names = this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).map(t => t.name);
-                    if (bundle.files && bundle.files.length) names.push(toolName);
+                    if (bundle.files && bundle.files.length) {
+                        names.push(toolName);
+                        // 有腳本的技能包：子任務也要拿得到這個AI自己的工具（瀏覽器、檔案／指令、程式執行），才能照FA_SKILL_RUN_PROTOCOL優先用自己的工具做，而不是只能照腳本的做法硬跑
+                        if (bundle.files.some((f) => /\.(py|js|ts|sh|ps1|bat|cmd|rb|pl)$/i.test(String(f.path || '')) || /^scripts\//i.test(String(f.path || '')))) {
+                            for (const dk of ['browser_control', 'desktop_ops', 'code_execution']) {
+                                const d = this.domains[dk];
+                                if (d && d.enabled !== false) { try { for (const n of this._resolveDomainToolNames(d)) if (names.indexOf(n) < 0) names.push(n); } catch (_) {} }
+                            }
+                        }
+                    }
                     // tw_stock_db客製: 2026-09-24——內建skill（BUILTIN_SKILLS）沒有
                     // 使用者掛的customTools可以繼承，要靠自己專屬的builtinToolNames
                     // 才有實際能力（例如skill-creator要能真的呼叫skill_create）。
