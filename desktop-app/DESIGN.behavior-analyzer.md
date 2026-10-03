@@ -53,10 +53,17 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 
 `explain_code`、`behavior_define` 進入功能清冊（`features/ai-features.yaml`），離線訓練器依清冊自動長出對應的語意 pattern：離線也能解釋原始碼；AI 補的定義同樣會被分析引擎用到。
 
-## 8. 誠實的限制
+## 8. 引擎版本（v2：語法樹）
 
-- 沒有用 tree-sitter：用輕量掃描器（去除字串與註解、括號配對、縮排）。巨集展開、模板、複雜 lambda、跨檔呼叫圖、資料流追蹤、callback／vtable 間接呼叫目前**沒有**；Domain Resolver 的 `callgraph`／`dataflow`／`linetrace`／`summarize` 那幾層是後續移植的目標。
-- 文字重排是關鍵字加句子相似度的輕量版，不是完整 TextRank。
-- 敘事目前是中文句型加內建 API 的英文說明（api_semantics 原文），沒有全面中文化。
-- JVM／Python byte code 掃描、`cluster_functions_by_behavior`、`teach_function_role` 還沒移植。
-- 組合語言只在 x86 idiom 表上辨識；其他架構需要用 `add_idiom` 或匯入定義補上。
+- v2 是 Domain Resolver 的完整移植（，嵌入成 ）：用 web-tree-sitter 0.20.8 的真正語法樹（C／C++、Java、Python、JavaScript／TypeScript、Shell）。第一次從 CDN 下載剖析器與語言 wasm，存進本機快取，之後離線可用。
+- 包含：行為分類掃描（47 類）、api_semantics 引數／回傳值語意、逐行追蹤→複合區塊樹→由下而上的 positive-path 敘事（guard 折疊、無限迴圈＝持續行為）、區塊註解重排後掛在區塊標題、呼叫圖（含函式指標、回呼、vtable 欄位綁定）、資料流（來源→匯點的污染追蹤）、Java 設計模式、javap 位元組碼、組語／LLVM IR／PTX／WASM 文字的函式與基本區塊切分＋idiom、文字重排與摘要（相似度圖＋PageRank）。
+- 剖析器載入失敗（離線第一次、CDN 擋住）時自動退回 v1 輕量掃描器，回傳裡  標明用了哪一個、 說明原因； 可用  強制舊引擎。
+- 驗證：用 Domain Resolver 範例（rdma_sim、task_queue、asm_idioms）在真實 Electron 跑過，三份都由 v2 完成。
+
+## 9. 誠實的限制
+
+- 巨集展開、C++ 模板、跨檔呼叫圖（目前一次分析一個檔案）沒有。
+- 資料流是單一函式內的污染追蹤，不跨函式。
+- Python byte code（dis 輸出）、、 還沒移植；JVM 位元組碼只讀 javap -c 的輸出。
+- 敘事句型是 api_semantics 的英文原文加中文連接詞，沒有全面中文化。
+- 組合語言語意只靠 pattern 表；使用者自己的大量定義用  匯入。
