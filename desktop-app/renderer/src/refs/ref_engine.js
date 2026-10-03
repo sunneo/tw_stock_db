@@ -96,7 +96,7 @@
             const numToks = q.match(/-?0x[0-9a-fA-F]+|(?<![A-Za-z_])-?\d{1,10}(?![A-Za-z_])/g) || [];
             for (const t of numToks) { const n = parseNumber(t); if (n == null) continue; for (const m of describeNum(n, hint)) if (!only || only.indexOf(m.system) >= 0) push(m); }
             // 名稱查不到、也沒有數字：用關鍵字找訊息
-            if (!matches.length && q.length >= 3 && !numToks.length) {
+            if (!matches.length && q.length >= 3 && !numToks.length && !o.noKeyword) {
                 const words = low.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 3); const scored = [];
                 for (const [s, mp] of Object.entries(idx.bySys)) for (const e of mp.values()) { const hay = ((e.name || '') + ' ' + (e.msg || '') + ' ' + (e.note || '')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; if (sc) scored.push([sc, e]); }
                 scored.sort((a, b) => b[0] - a[0]); scored.slice(0, 6).forEach(([, e]) => describeEntry(e).forEach(push));
@@ -240,9 +240,10 @@
             if (/^#?\s*pragma\b/i.test(q) || /^omp\s/.test(q)) { const p = explainPragma(q); if (p) out.results.push({ kind: 'pragma', pragma: p }); }
             const first = tokenizeShell(q.replace(/^\$\s*/, '').replace(/^sudo\s+/, ''))[0];
             if (first && cmdOf(first) && /(\s-|--|^\S+$)/.test(q)) { const r = /\s/.test(q) ? explainCommandLine(q) : lookupCommand(first); if (r.ok) out.results.push({ kind: /\s/.test(q) ? 'command_line' : 'command', command: r }); }
-            const er = lookupError(q); if (er.ok && !(out.results.length && /\s-/.test(q))) out.results.push({ kind: 'error', matches: er.matches });
+            const er = lookupError(q, { noKeyword: true }); if (er.ok && !(out.results.length && /\s-/.test(q))) out.results.push({ kind: 'error', matches: er.matches });
             const low = q.toLowerCase(); const words = low.split(/[^a-z0-9_+.\-一-鿿]+/).filter((w) => w.length >= 2);
             for (const g of allGeneric()) { const hay = ((g.key || '') + ' ' + (g.text || '') + ' ' + (g.tags || []).join(' ')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; if (sc && sc >= Math.min(2, words.length)) out.results.push({ kind: g.kind, key: g.key, text: g.text, source: g.src || undefined, _s: sc }); }
+            if (!out.results.length) { const ek = lookupError(q); if (ek.ok) out.results.push({ kind: 'error', matches: ek.matches }); }
             if (!out.results.length) { // 關鍵字搜尋命令選項
                 const hits = []; const all = Object.assign({}, data.commands || {}, U.commands);
                 for (const c of Object.values(all)) for (const o of c.options || []) { const hay = (o.flag + ' ' + o.desc).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; if (sc) hits.push([sc, c.name, o]); }
