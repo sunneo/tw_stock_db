@@ -832,13 +832,25 @@ function patchCloudflareWording(root) {
         }
       }
       try {
-        const result = await window.desktopAPI.exec.run({
-          rootId,
-          command,
-          args: Array.isArray(parsed.args) ? parsed.args.map(String) : [],
-          cwdRel: parsed.cwd || ".",
-          cwdAbs: parsed.cwd_abs || null,
-        });
+        // 執行技能包的 Python 腳本時，把腳本啟動指令改寫成經過轉接層（playwright 等公開 API 實際接到助理自己的工具），見 floating-assistant.js 的 _pyBridgeWrap
+        let wrapped = null, stopBridge = null;
+        try { wrapped = fa._pyBridgeWrap ? await fa._pyBridgeWrap(command, Array.isArray(parsed.args) ? parsed.args.map(String) : []) : null; } catch (_) { wrapped = null; }
+        if (wrapped) stopBridge = fa._pyBridgeServe(wrapped.rpc);
+        let result;
+        try {
+          result = await window.desktopAPI.exec.run({
+            rootId,
+            command: wrapped ? wrapped.command : command,
+            args: wrapped ? wrapped.args : (Array.isArray(parsed.args) ? parsed.args.map(String) : []),
+            cwdRel: parsed.cwd || ".",
+            cwdAbs: parsed.cwd_abs || null,
+          });
+        } finally {
+          if (stopBridge) {
+            const info = await stopBridge();
+            if (result && typeof result === "object") result.python_api_bridge = { used: true, calls: info.calls, ops: info.ops, note: "這支 Python 腳本是經過 API 轉接層執行的：腳本裡的 playwright 等呼叫實際上由助理的瀏覽器控制工具完成（沒有連 Chrome 遠端除錯埠）。" };
+          }
+        }
         return JSON.stringify(result);
       } catch (err) {
         return JSON.stringify({ ok: false, error: String(err.message || err) });
