@@ -39,5 +39,14 @@ function embedBehavior() {
     console.log('已更新 FA_BEHAVIOR_DATA（' + Object.keys(data.patterns.categories).length + ' 個行為分類）');
 }
 embedBehavior();
+function embedBeh2() {
+    const dir = path.join(root, 'renderer/src/behavior');
+    const parts = ['engine_1_core.js', 'engine_2_scan.js', 'engine_3_narrative.js', 'engine_4_analyze.js', 'engine_5_api.js'].map((f) => fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n')).join('\n');
+    const a = src.indexOf('/* BEH2-BEGIN */'), b = src.indexOf('/* BEH2-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 BEH2 標記');
+    src = src.slice(0, a) + '/* BEH2-BEGIN */\nconst FaBeh2 = (function () {\n\'use strict\';\n' + parts + '\n})();\n' + src.slice(b);
+    console.log('已更新 FaBeh2（' + parts.length + ' 字元）');
+}
+embedBeh2();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
