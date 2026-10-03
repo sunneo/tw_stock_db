@@ -44750,7 +44750,21 @@ ${existingNodeSummaries}
     // 改走_routeTaskHierarchical（類別→細分domain兩層路由），其餘模式維持
     // 扁平_routeTaskToDomains；兩者回傳同一個形狀，下面的合併/執行邏輯不用
     // 區分呼叫端。
+    // 任務文字裡提到已啟用技能包的名稱（或使用者打 /技能名）時，回傳該技能包的領域代號
+    _findSkillDomainForTask(task) {
+        const norm = (x) => String(x || '').toLowerCase().replace(/[\u2010-\u2015\u2212_\s]+/g, '-');
+        const t = norm(task);
+        let best = null;
+        for (const b of (this.advancedSettings.skillBundles || [])) {
+            if (!b || b.enabled === false || !b.name) continue;
+            const n = norm(b.name);
+            if (n.length >= 4 && t.indexOf(n) >= 0 && this.domains['skill_' + b.id] && this.domains['skill_' + b.id].enabled !== false) { if (!best || n.length > best.n) best = { key: 'skill_' + b.id, n: n.length }; }
+        }
+        return best ? best.key : null;
+    }
     async _delegateToSubagentAuto(task) {
+        const skillKey = this._findSkillDomainForTask(task);
+        if (skillKey) return await this._delegateToSubagentDomain(skillKey, task);
         const progress = this._createSubagentProgressWidget('🤖 自動判斷該委派給哪個領域…');
         const routed = this.multiSubAgentMode === 'hierarchical'
             ? await this._routeTaskHierarchical(task)
