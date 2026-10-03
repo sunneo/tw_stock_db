@@ -30,13 +30,22 @@ table{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px s
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.chips span{padding:2px 10px;border:1px solid var(--bd);border-radius:12px;cursor:pointer;font-size:12px}.chips span:hover{border-color:var(--ac);color:var(--ac)}.chips span.ai{border-color:var(--ai);color:var(--ai)}
 .md ul,.md ol{padding-left:20px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}
 svg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}
-@media (max-width:900px){#chat{width:300px}#nav{width:200px}}
-@media (max-width:640px){#app{flex-direction:column}#nav,#chat{width:100%;max-height:34vh;border:0;border-bottom:1px solid var(--bd)}}
+#top{flex:1;display:flex;min-width:0;min-height:0}
+#nav{width:var(--navw,270px);flex:none}#chat{width:var(--chatw,360px);flex:none}
+.sp{flex:none;background:var(--bd);opacity:.45;z-index:2;touch-action:none}.sp:hover,.sp.drag{background:var(--ac);opacity:1}
+#spL{width:5px;cursor:col-resize}#spR{width:5px;cursor:col-resize}
+#app.dock-left{flex-direction:row-reverse}#app.dock-left #chat{border-left:0;border-right:1px solid var(--bd)}
+#app.dock-bottom{flex-direction:column}#app.dock-bottom #spR{width:auto;height:5px;cursor:row-resize}#app.dock-bottom #chat{width:auto;height:var(--chath,38%);border-left:0;border-top:1px solid var(--bd)}
+body.hide-nav #nav,body.hide-nav #spL,body.hide-chat #chat,body.hide-chat #spR{display:none}
+#btnNav.off,#btnChat.off{opacity:.5}
+@media (max-width:900px){#chat{width:var(--chatw,300px)}#nav{width:var(--navw,200px)}}
+@media (max-width:640px){#top{flex-direction:column}#nav{width:100%;max-height:34vh;border:0;border-bottom:1px solid var(--bd)}#app.dock-right,#app.dock-left{flex-direction:column}#app.dock-right #chat,#app.dock-left #chat{width:100%;max-height:40vh}#spL,#spR{display:none}}
 </style></head><body>
-<header><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
-<div id="app">
-<aside id="nav"><div id="tabs"><button data-t="pages" class="on">頁面</button><button data-t="tree">檔案</button><button data-t="syms">定義</button><button data-t="notes">說明</button></div><input id="sq" placeholder="搜尋…（語意搜尋）"><div id="list"></div></aside>
-<main id="main"><div class="mut">載入中…</div></main>
+<header><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNav" title="顯示／隱藏左邊（瀏覽）">◧</button><button id="btnChat" title="顯示／隱藏右邊（問答）">◨</button><select id="dockSel" title="右邊問答區停靠的位置"><option value="right">右邊在右</option><option value="left">右邊改到左</option><option value="bottom">右邊改到下</option></select><button id="btnReset" title="把版面（寬度、停靠位置、顯示隱藏）和視窗位置大小都還原成預設">還原版面</button><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
+<div id="app" class="dock-right"><div id="top">
+<aside id="nav"><div id="tabs"><button data-t="pages" class="on">頁面</button><button data-t="tree">檔案</button><button data-t="syms">定義</button><button data-t="notes">說明</button></div><input id="sq" placeholder="搜尋…（語意搜尋）"><div id="list"></div></aside><div class="sp" id="spL" title="拖曳調整左邊寬度（雙擊還原）"></div>
+<main id="main"><div class="mut">載入中…</div></main></div>
+<div class="sp" id="spR" title="拖曳調整右邊（雙擊還原）"></div>
 <section id="chat"><div id="msgs"></div><div id="qbar"><input id="q" placeholder="問這個專案：某函式做什麼／在哪定義／誰用到…" autofocus><button id="ask" class="p" title="離線問答（立刻回答）">問</button><button id="askai" class="ai" title="請 AI 讀程式碼後回答（依序處理，AI 在背景參與）">問 AI</button></div>
 <details id="net"><summary>通訊紀錄（fetch／WebSocket）</summary><div id="netlog"></div></details></section>
 </div>
@@ -200,8 +209,36 @@ $('#ask').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,fals
 $('#askai').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,true)};
 $('#q').onkeydown=function(e){if(e.key==='Enter'){var v=$('#q').value;$('#q').value='';ask(v,cur,e.shiftKey)}};
 $('#btnNet').onclick=function(){var d=$('#net');d.open=!d.open};
+// ---- 版面：左／中／右可拖曳調整、左右可隱藏、右邊可停靠右／左／下；偏好由主程式保存（iframe 沒有自己的儲存空間） ----
+var DEF={dock:'right',navW:270,chatW:360,chatH:0,navHidden:false,chatHidden:false},PREF=Object.assign({},DEF),prefT=null;
+function applyPref(){
+  var app=$('#app'),root=document.documentElement.style;app.className='dock-'+PREF.dock;
+  document.body.classList.toggle('hide-nav',!!PREF.navHidden);document.body.classList.toggle('hide-chat',!!PREF.chatHidden);
+  root.setProperty('--navw',PREF.navW+'px');root.setProperty('--chatw',PREF.chatW+'px');if(PREF.chatH>0)root.setProperty('--chath',PREF.chatH+'px');else root.removeProperty('--chath');
+  $('#dockSel').value=PREF.dock;$('#btnNav').classList.toggle('off',!!PREF.navHidden);$('#btnChat').classList.toggle('off',!!PREF.chatHidden);
+}
+function savePref(){clearTimeout(prefT);prefT=setTimeout(function(){api('POST','/api/prefs',{layout:PREF}).catch(function(){})},300)}
+function setPref(k,v){PREF[k]=v;applyPref();savePref()}
+async function loadPrefs(){try{var r=await api('GET','/api/prefs');if(r&&r.layout)Object.assign(PREF,r.layout)}catch(e){}applyPref()}
+function clampN(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
+function dragSplit(sp,onMove,onDbl){
+  sp.addEventListener('pointerdown',function(e){e.preventDefault();var sx=e.clientX,sy=e.clientY,nav=$('#nav').offsetWidth,chat=$('#chat').offsetWidth,chh=$('#chat').offsetHeight;sp.classList.add('drag');try{sp.setPointerCapture(e.pointerId)}catch(_){}
+    var mv=function(ev){onMove(ev.clientX-sx,ev.clientY-sy,{nav:nav,chat:chat,chh:chh})};
+    var up=function(){sp.classList.remove('drag');sp.removeEventListener('pointermove',mv);sp.removeEventListener('pointerup',up);savePref()};
+    sp.addEventListener('pointermove',mv);sp.addEventListener('pointerup',up)});
+  sp.addEventListener('dblclick',onDbl);
+}
+dragSplit($('#spL'),function(dx,dy,s){PREF.navW=clampN(s.nav+dx,120,Math.max(160,innerWidth-260));applyPref()},function(){setPref('navW',DEF.navW)});
+dragSplit($('#spR'),function(dx,dy,s){
+  if(PREF.dock==='bottom')PREF.chatH=clampN(s.chh-dy,80,Math.max(120,innerHeight-160));
+  else PREF.chatW=clampN(s.chat+(PREF.dock==='left'?dx:-dx),200,Math.max(240,innerWidth-260));
+  applyPref()},function(){PREF.chatW=DEF.chatW;PREF.chatH=0;applyPref();savePref()});
+$('#btnNav').onclick=function(){setPref('navHidden',!PREF.navHidden)};
+$('#btnChat').onclick=function(){setPref('chatHidden',!PREF.chatHidden)};
+$('#dockSel').onchange=function(){PREF.dock=$('#dockSel').value;applyPref();savePref()};
+$('#btnReset').onclick=async function(){try{var r=await api('POST','/api/prefs',{reset:true});PREF=Object.assign({},DEF,r&&r.layout||{})}catch(e){PREF=Object.assign({},DEF)}applyPref()};
 (async function(){
-  try{setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length)showPage(p.pages[0].id);else $('#main').innerHTML='<h1 class="t">'+esc(CFG.title)+'</h1><div class="mut">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}
+  try{await loadPrefs();setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length)showPage(p.pages[0].id);else $('#main').innerHTML='<h1 class="t">'+esc(CFG.title)+'</h1><div class="mut">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}
   catch(e){$('#main').innerHTML='<div class="note err">載入失敗：'+esc(e.message)+'</div>'}
   connect();
 })();

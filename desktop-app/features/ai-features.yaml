@@ -242,7 +242,7 @@ categories:
       - id: repo-map
         name: 專案結構追蹤（分階段）
         summary: 有專案／repository 時先追出結構（網頁版用已授權資料夾，桌面版可直接給絕對路徑）：最小地圖→逐批展開資料夾→逐批分析檔案的定義與依賴。只給模糊名稱也能 find 出原始碼，再沿依賴 explore；路徑不存在就當結構改變，只從最近還存在的那一層重追；整份索引（index_start）會先問使用者，之後在背景漸進建立（進度卡片、可停止、可接續、大型專案如已 build 的 OpenBMC 也行，大小與檔案數有上限可調），並記下每個定義上面的註解與檔案之間的呼叫關係。
-        how: { domain: coding, tools: [repo_map, repo_ask] }
+        how: { domain: coding, tools: [repo_map, repo_ask, repo_read_doc] }
         platforms: [web, desktop]
         samples: ["幫我找一下專案裡處理登入的原始碼，再看它依賴哪些檔案", "這個檔案路徑找不到了，專案是不是改過結構？", "先看一下這個 repo 的整體結構"]
         updated: 2026-10-02
@@ -256,7 +256,7 @@ categories:
       - id: aidoc
         name: AIDoc 專案文件（/aidoc、/ai-repo-doc）
         summary: 專案索引的整套操作：/aidoc index 選資料夾建立索引（桌面版直接用路徑，網頁版選完自動授權成 fap）、/aidoc dive 讓 AI 逐檔讀程式碼把確認過的說明補進資料庫、/aidoc view 開互動檢視器（可視窗化／最大化，左邊瀏覽、右邊對話查資料，點進檔案或函式可請 AI 排隊回答，過程用假的 fetch／WebSocket 與主程式溝通）、/aidoc save／load／bundle／import 讓不同人拿同一份專案繼續延伸索引與說明。AI 的程式設計相關領域可用 repo_map／repo_ask 快速取得整體結構，深入後用 annotate 補說明。舊名 /deepwiki 仍可用。
-        how: { domain: coding, tools: [repo_map, repo_ask] }
+        how: { domain: coding, tools: [repo_map, repo_ask, repo_read_doc] }
         platforms: [web, desktop]
         samples: ["/aidoc view", "幫這個專案建立索引並讓 AI 補上每個檔案的說明", "把專案的索引存進專案資料夾，同事拿到可以接著補"]
         updated: 2026-10-03
