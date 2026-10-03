@@ -44185,7 +44185,7 @@ ${existingNodeSummaries}
         const isSkillDomain = String(domainKey).indexOf('skill_') === 0;
         if (isSkillDomain) this._pyBridgeDepth = (this._pyBridgeDepth || 0) + 1;
         try {
-            const subResult = await this._runSubAgentTask(task, SUBAGENT_DELEGATE_MAX_ROUNDS, {
+            const subResult = await this._runSubAgentTask(task, isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS, {
                 allowedToolNames: this._resolveDomainToolNames(domain),
                 systemPrompt: this._resolveDomainSystemPrompt(domain),
                 onProgress: progress ? (status) => progress.update({ status }) : null,
@@ -45331,7 +45331,17 @@ ${existingNodeSummaries}
             }
             // 迴圈繼續下一輪，讓模型看到工具結果後給出最終結論
         }
-        return { text: `[子任務用完了${maxRounds}個回合仍未給出最終結論（不是失敗，是還沒做完）。請不要再委派一模一樣的任務：把還沒做完的部分拆成更小的子任務再委派，或由你自己直接用工具完成。]`, visual: capturedVisual };
+        // 2026-10-03使用者回報：技能包子任務用完回合只回一句罐頭訊息，使用者完全看不到做到哪、卡在哪。這裡最後做一次不帶工具的整理，回傳進度回報。
+        let progressReport = '';
+        try {
+            const digest = messages.slice(-24).map((m) => {
+                let c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+                if (m.tool_calls && m.tool_calls.length) c += ' [呼叫工具：' + m.tool_calls.map((t) => (t.function && t.function.name) + '(' + String((t.function && t.function.arguments) || '').slice(0, 120) + ')').join('；') + ']';
+                return '[' + m.role + '] ' + String(c).slice(0, 380);
+            }).join('\n');
+            progressReport = await this._callSimpleCompletion('下面是一個子任務最近的執行過程（已用完回合、還沒做完）。請用繁體中文整理一份簡短的進度回報，只根據過程裡真的出現的工具結果，不要編造：1) 已經確實完成的步驟（有工具結果佐證）；2) 目前卡在哪、為什麼；3) 建議的下一步（可以拆成哪幾個小任務）。\n\n任務：' + String(userPrompt).slice(0, 600) + '\n\n過程：\n' + digest, { maxTokens: 700, temperature: 0.1 });
+        } catch (_) { progressReport = ''; }
+        return { text: (progressReport ? '【進度回報（子任務用完回合，還沒做完）】\n' + String(progressReport).trim() + '\n\n' : '') + `[子任務用完了${maxRounds}個回合仍未給出最終結論（不是失敗，是還沒做完）。請不要再委派一模一樣的任務：把還沒做完的部分拆成更小的子任務再委派，或由你自己直接用工具完成。]`, visual: capturedVisual };
     }
 
     // tw_stock_db客製: batch_analyze_stocks工具的實作入口（見web/index.html
