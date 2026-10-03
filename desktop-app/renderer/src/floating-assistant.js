@@ -5532,7 +5532,7 @@ const FaRef = (function () {
             const nameToks = q.match(/[-]?[A-Za-z_][A-Za-z0-9_]{1,}/g) || [];
             for (let t of nameToks) { t = t.replace(/^-/, ''); const es = idx.byName.get(t.toLowerCase()); if (es) for (const e of es) describeEntry(e).forEach(push); }
             // 數字
-            const numToks = q.match(/-?0x[0-9a-fA-F]+|(?<![A-Za-z_])-?\d{1,10}(?![A-Za-z_])/g) || [];
+            const numToks = q.match(/-?0x[0-9a-fA-F]+|(?<![A-Za-z_0-9])-?\d{1,10}(?![A-Za-z_0-9])/g) || [];
             for (const t of numToks) { const n = parseNumber(t); if (n == null) continue; for (const m of describeNum(n, hint)) if (!only || only.indexOf(m.system) >= 0) push(m); }
             // 名稱查不到、也沒有數字：用關鍵字找訊息
             if (!matches.length && q.length >= 3 && !numToks.length && !o.noKeyword) {
@@ -5681,7 +5681,7 @@ const FaRef = (function () {
             if (first && cmdOf(first) && /(\s-|--|^\S+$)/.test(q)) { const r = /\s/.test(q) ? explainCommandLine(q) : lookupCommand(first); if (r.ok) out.results.push({ kind: /\s/.test(q) ? 'command_line' : 'command', command: r }); }
             const er = lookupError(q, { noKeyword: true }); if (er.ok && !(out.results.length && /\s-/.test(q))) out.results.push({ kind: 'error', matches: er.matches });
             const low = q.toLowerCase(); const words = low.split(/[^a-z0-9_+.\-一-鿿]+/).filter((w) => w.length >= 2);
-            for (const g of allGeneric()) { const hay = ((g.key || '') + ' ' + (g.text || '') + ' ' + (g.tags || []).join(' ')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; if (sc && sc >= Math.min(2, words.length)) out.results.push({ kind: g.kind, key: g.key, text: g.text, source: g.src || undefined, _s: sc }); }
+            for (const g of allGeneric()) { const hay = ((g.key || '') + ' ' + (g.text || '') + ' ' + (g.tags || []).join(' ')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; const strong = words.some((w) => w.length >= 3 && ((g.key || '').toLowerCase().indexOf(w) >= 0 || (g.tags || []).some((tg) => String(tg).toLowerCase() === w))); if (sc && (sc >= Math.min(2, words.length) || strong)) out.results.push({ kind: g.kind, key: g.key, text: g.text, source: g.src || undefined, _s: sc }); }
             if (!out.results.length) { const ek = lookupError(q); if (ek.ok) out.results.push({ kind: 'error', matches: ek.matches }); }
             if (!out.results.length) { // 關鍵字搜尋命令選項
                 const hits = []; const all = Object.assign({}, data.commands || {}, U.commands);
