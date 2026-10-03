@@ -830,6 +830,18 @@ function patchCloudflareWording(root) {
         parsed.command = [parsed.command].concat(parsed.args).join(" ");
         parsed.args = [];
       }
+      // 2026-10-03 真實環境測試（nemotron）：Git Bash 會把 `cmd /c copy …` 的 /c 當成路徑轉成 C:\\，cmd 變成互動模式，等 120 秒逾時才中止。
+      // 偵測到目前的 shell 是 bash 時，把 cmd 的 /c、/k 改成 //c、//k（bash 會原樣傳成 /c）。其他 shell（PowerShell／cmd）不改。
+      if (typeof parsed.command === "string" && /\bcmd(?:\.exe)?\s+(?:\/[dDsSqQ]\s+)*\/[cCkK]\b/.test(parsed.command) && window.desktopAPI.platform.isWindows) {
+        if (fa._execShellIsBash === undefined) {
+          try { const pr = await window.desktopAPI.exec.run({ rootId: null, command: 'echo "$BASH_VERSION"', args: [], cwdRel: ".", cwdAbs: null }); fa._execShellIsBash = !!(pr && pr.ok && String(pr.stdout || "").trim()); } catch (_) { fa._execShellIsBash = false; }
+        }
+        if (fa._execShellIsBash) parsed.command = parsed.command.replace(/(\bcmd(?:\.exe)?\s+(?:\/[dDsSqQ]\s+)*)\/([cCkK])\b/g, (m, pre, k) => pre.replace(/\/([dDsSqQ])/g, '//$1') + '//' + k);
+      }
+      if (/^cmd(?:\.exe)?$/i.test(String(parsed.command || '')) && Array.isArray(parsed.args) && /^\/[cCkK]$/.test(String(parsed.args[0] || '')) && window.desktopAPI.platform.isWindows) {
+        if (fa._execShellIsBash === undefined) { try { const pr = await window.desktopAPI.exec.run({ rootId: null, command: 'echo "$BASH_VERSION"', args: [], cwdRel: '.', cwdAbs: null }); fa._execShellIsBash = !!(pr && pr.ok && String(pr.stdout || '').trim()); } catch (_) { fa._execShellIsBash = false; } }
+        if (fa._execShellIsBash) parsed.args = ['/' + parsed.args[0]].concat(parsed.args.slice(1).map(String));
+      }
       const command = String(parsed.command || "").trim();
       if (!command) return JSON.stringify({ ok: false, error: "缺少command參數（要執行的指令；參數名稱是 command，可另給 args 陣列）" });
       let rootId = null;
