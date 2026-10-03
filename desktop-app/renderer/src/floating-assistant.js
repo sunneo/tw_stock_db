@@ -44859,6 +44859,34 @@ ${existingNodeSummaries}
         if (!hasArgLikeField) return null;
         return toolName;
     }
+    // 2026-10-03使用者回報（nemotron-3-super-120b-a12b）：模型把工具呼叫寫成純文字JSON，例如
+    // {"invocation":{"name":"read_skill_file","arguments":{...}}}，結果被當成最終答案回傳，什麼都沒執行。
+    // 這裡把常見的各種寫法（invocation／tool_call／function_call／tool_calls[0]、name／tool／function）認出來，
+    // 而且名稱只寫了前半（技能包的讀檔工具實際叫 read_skill_file__<id>）時，用唯一符合的工具補全。
+    // 回傳 {name, args}（name 已解析成實際存在的工具名稱），認不出來回傳 null。呼叫端直接把它當成真的呼叫執行。
+    _parseDescribedToolCall(text, availableToolNames) {
+        let t = String(text || '').trim();
+        const fence = t.match(/^```(?:json|tool_call)?\s*([\s\S]*?)\s*```$/i);
+        if (fence) t = fence[1].trim();
+        if (!t.startsWith('{') || !t.endsWith('}')) return null;
+        let p; try { p = JSON.parse(t); } catch (_) { return null; }
+        if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+        let o = p.invocation || p.tool_call || p.function_call || (Array.isArray(p.tool_calls) && p.tool_calls[0]) || p;
+        if (o && o.function && typeof o.function === 'object') o = o.function;
+        if (!o || typeof o !== 'object') return null;
+        const raw = o.name || o.tool || o.tool_name || o.function || o.action;
+        if (typeof raw !== 'string' || !raw.trim()) return null;
+        let args = o.arguments !== undefined ? o.arguments : (o.args !== undefined ? o.args : (o.parameters !== undefined ? o.parameters : o.input));
+        if (args === undefined) return null;
+        if (typeof args === 'string') { try { args = JSON.parse(args); } catch (_) { return null; } }
+        if (!args || typeof args !== 'object') args = {};
+        const names = Array.isArray(availableToolNames) ? availableToolNames : [];
+        const n = raw.trim();
+        let name = names.indexOf(n) >= 0 ? n : null;
+        if (!name) { const c = names.filter((x) => x.indexOf(n + '__') === 0); if (c.length === 1) name = c[0]; }
+        if (!name) return null;
+        return { name, args };
+    }
     async _runSubAgentTask(userPrompt, maxRounds = 6, options = {}) {
         // tw_stock_db客製: 2026-09-07使用者要求子任務支援retry+model
         // fallback——apiModel/apiUrl/apiKey/useNative改成let，允許中途換成
@@ -45049,6 +45077,7 @@ ${existingNodeSummaries}
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
         const claimPathGuard = { count: 0 };
+        let autoExecDescribed = 0;
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
@@ -45326,6 +45355,14 @@ ${existingNodeSummaries}
                 }
             }
 
+            if (!toolTasks.length && autoExecDescribed < 8) {
+                const dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
+                if (dc) {
+                    autoExecDescribed++;
+                    toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args) });
+                    if (onTrace) onTrace('🔁 模型把工具呼叫寫成文字JSON，已當成真的呼叫執行：' + dc.name);
+                }
+            }
             if (!toolTasks.length) {
                 const finalText = this._stripInlineBase64(rawContent).trim();
                 // tw_stock_db客製: 見_looksLikeDescribedToolCallJson/
