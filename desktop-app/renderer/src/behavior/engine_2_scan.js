@@ -100,7 +100,8 @@
     // ================= API 語意（apisemantics_tools）=================
     const OPS = { '<': (v, n) => v < n, '<=': (v, n) => v <= n, '>': (v, n) => v > n, '>=': (v, n) => v >= n, '==': (v, n) => v === n, '!=': (v, n) => v !== n };
     const PROBE = { '<': [-1, -100], '<=': [0, -1], '>': [1, 100], '>=': [0, 1], '==': [0], '!=': [-1, 1] };
-    function parseIntLit(s) { if (/^-?0[xX][0-9a-fA-F]+$/.test(s)) return parseInt(s, 16); if (/^-?\d+$/.test(s)) return parseInt(s, 10); if (/^-?0[0-7]+$/.test(s)) return parseInt(s, 8); return null; }
+    const CONST_INT = { MPI_SUCCESS: 0, cudaSuccess: 0, CUDA_SUCCESS: 0, CUBLAS_STATUS_SUCCESS: 0, CUDNN_STATUS_SUCCESS: 0, CUSPARSE_STATUS_SUCCESS: 0, CUSOLVER_STATUS_SUCCESS: 0, ERROR_SUCCESS: 0, S_OK: 0, STATUS_SUCCESS: 0, NO_ERROR: 0, EXIT_SUCCESS: 0, EXIT_FAILURE: 1, SOCKET_ERROR: -1, EOF: -1, FALSE: 0, TRUE: 1, NULL: 0, false: 0, true: 1, nullptr: 0, WAIT_OBJECT_0: 0, WAIT_TIMEOUT: 258, WAIT_FAILED: -1 };
+    function parseIntLit(s) { if (Object.prototype.hasOwnProperty.call(CONST_INT, s)) return CONST_INT[s]; if (/^-?0[xX][0-9a-fA-F]+$/.test(s)) return parseInt(s, 16); if (/^-?\d+$/.test(s)) return parseInt(s, 10); if (/^-?0[0-7]+$/.test(s)) return parseInt(s, 8); return null; }
     function parseCondition(text) {
         text = text.trim(); if (text.startsWith('(') && text.endsWith(')')) text = text.slice(1, -1).trim();
         let m = /^!\s*([A-Za-z_]\w*)$/.exec(text); if (m) return [m[1], 'falsy', null];
@@ -111,7 +112,7 @@
     }
     function ruleMatches(condOp, condValue, when) {
         const ro = when.op, rv = when.value;
-        if (condOp === 'truthy' || condOp === 'falsy') return ro === condOp;
+        if (condOp === 'truthy' || condOp === 'falsy') { if (ro === condOp) return true; if ((ro in OPS) && typeof rv === 'number') return condOp === 'falsy' ? OPS[ro](0, rv) : [1, -1, 100].some((p) => OPS[ro](p, rv)); return false; }
         if (typeof condValue === 'string' || typeof rv === 'string') return condOp === ro && condValue === rv && condOp === '==';
         if (!(ro in OPS)) return false;
         return (PROBE[condOp] || [0]).map((o) => condValue + o).some((p) => OPS[ro](p, rv));

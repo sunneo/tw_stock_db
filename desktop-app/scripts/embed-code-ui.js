@@ -48,5 +48,15 @@ function embedBeh2() {
     console.log('已更新 FaBeh2（' + parts.length + ' 字元）');
 }
 embedBeh2();
+function embedRefs() {
+    const data = require('./refs-dsl.js').build(path.join(root, 'renderer/src/refs'));
+    const engine = fs.readFileSync(path.join(root, 'renderer/src/refs/ref_engine.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* REF-BEGIN */'), b = src.indexOf('/* REF-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 REF 標記');
+    src = src.slice(0, a) + '/* REF-BEGIN */\nconst FA_REF_DATA = ' + lit(data) + ';\nconst FaRef = (function () {\n\'use strict\';\n' + engine + '\n})();\n' + src.slice(b);
+    const st = require('./refs-dsl.js') && data;
+    console.log('已更新 FA_REF_DATA／FaRef（錯誤碼 ' + Object.values(data.errors).reduce((n, l) => n + l.length, 0) + '、命令 ' + Object.keys(data.commands).length + '、pragma ' + data.pragmas.length + '）');
+}
+embedRefs();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
