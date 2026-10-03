@@ -56,7 +56,7 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 
 ## 8. 互動檢視器 `/aidoc view`
 
-浮動視窗（可拖曳、縮放、雙擊標題列或按鈕最大化，關閉會結束背景伺服器），裡面是 sandbox iframe（`allow-scripts allow-forms allow-modals`，沒有 same-origin）。
+浮動視窗（可拖曳、縮放、雙擊標題列或按鈕最大化，關閉會結束背景伺服器；內部版面與視窗位置大小有偏好記憶，見第 11 節），裡面是 sandbox iframe（`allow-scripts allow-forms allow-modals`，沒有 same-origin）。
 
 **假伺服器**：iframe 內注入 `__faMockShim`，把 `fetch`／`WebSocket` 對 `mock.local` 的請求以 `postMessage` 送回主頁面，由 `_aidocServer(key)` 回應（設定 `block:true`，其他外部網址一律擋下，不走任何外部流量）。
 
@@ -66,13 +66,15 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 | `POST /api/ask {q,ctx,ai}` | 離線問答立刻回；`ai:true` 另排進 AI 佇列 |
 | `POST /api/dive {path}` | 排進佇列，請 AI 讀檔後補說明 |
 | `POST /api/note {path,symbol,note}` | 使用者自己補說明（`by:user`） |
+| `GET／POST /api/prefs` | 版面偏好讀寫、`{reset:true}` 還原（見第 11 節） |
+| `GET /api/explain?path=&fn=` | 行為說明（`DESIGN.behavior-analyzer.md`） |
 | `WS /ws` | 推送：`info`、`jobs`（索引／深入進度）、`ai_queue`、`ai_start`、`ai_progress`、`ai_answer`、`notes_changed` |
 
 **AI 佇列**：一次只跑一個（子任務 `_runSubAgentTask`，工具限定 repo_map／repo_ask／讀檔類），依序回答；回答帶「是否補了說明」，補了就推 `notes_changed` 讓畫面更新。畫面上每個檔案／定義都有「問 AI」「請 AI 補說明」，回答中的路徑與名稱自動變成可點連結（點進去就是下一個查詢）。
 
 ## 9. 指令一覽
 
-`/aidoc index｜status｜stop｜ask｜wiki｜export｜list｜dive｜save｜load｜bundle｜import｜view`；不是子指令時，像路徑就當 `index`，否則當 `ask`。
+`/aidoc view｜explain｜index｜status｜stop｜ask｜wiki｜export｜list｜dive｜save｜load｜bundle｜import`；不是子指令時，像路徑就當 `index`，否則當 `ask`。
 
 ## 10. 已知限制與注意
 
@@ -80,3 +82,69 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 - 檢視器的 AI 佇列在視窗關閉時清空；進行中的那一個仍會跑完。
 - 沒有「誰呼叫誰」資料的舊地圖需 `reanalyze` 重新分析。
 - 測試注意：自動化測試要先覆寫 `fa.requestUserForm`，否則建立索引的確認對話會一直等使用者。
+
+## 11. 檢視器的版面與偏好（2026-10-03）
+
+### 11.1 版面
+
+- 檢視器分三塊：左（瀏覽：頁面／檔案／定義／說明＋搜尋）、中（內容）、右（問答與 AI 佇列、通訊紀錄）。
+- **左／中／右都可以拖曳調整**：左、中之間與中、右之間各有一條分隔線（5px，滑過會變色）；拖曳時寬度有上下限（左 120 起、右 200 起，且中間至少留約 260px）；**雙擊分隔線還原該塊預設大小**。
+- **左右可隱藏**：標題列的 ◧（左）、◨（右）切換，隱藏時分隔線一併隱藏，按鈕變暗表示目前是隱藏狀態。
+- **右邊可停靠**：標題列的下拉選單「右邊在右／右邊改到左／右邊改到下」。停靠到下方時，右邊變成橫條，分隔線改成上下拖曳（高度存 `chatH`，0 表示預設 38%）。
+- 小視窗（寬度小於 640px）自動改成上下堆疊，分隔線隱藏。
+
+### 11.2 偏好與還原
+
+- 偏好存在**主程式**的 `localStorage['fa_aidoc_view_prefs_v1']`（iframe 是沒有 same-origin 的沙盒，自己沒有儲存空間），內容：
+  - `layout`：`{ dock, navW, chatW, chatH, navHidden, chatHidden }`（全域，不分專案）。
+  - `win`：視窗的 `{ left, top, width, height }`（拖曳結束與縮放後 0.4 秒存；最大化時不存，以免記住全螢幕尺寸）。
+- 路由：`GET /api/prefs` 回傳 `layout`；`POST /api/prefs {layout}` 保存（伺服器端會把每個欄位夾在合理範圍、`dock` 只接受 right／left／bottom）；`POST /api/prefs {reset:true}` 清掉 `layout` 與 `win`，並透過 `srv.hooks.resetWin` 讓視窗回到預設位置與大小（先取消最大化）。
+- 開啟檢視器時：視窗位置大小先套用（夾在目前螢幕範圍內，避免換螢幕後視窗跑到畫面外），再由檢視器載入 `layout` 後才渲染內容，避免版面閃一下。
+- **「還原版面」按鈕**（標題列）：同時還原檢視器內部版面與視窗位置大小。
+
+## 12. 入口（2026-10-03）
+
+- **斜線指令自動完成**：`/aidoc` 的提示文字與候選第一個就是 `view`，其後 `explain`、`index`、`status`、`stop`、`ask`、`wiki`、`export sqlite|qa`、`list`、`dive`、`save`、`load`、`bundle`、`import`（別名 `/deepwiki`、`/ai-repo-doc` 同步）。
+- **設定 → AI → 專案索引**：已建立完畢（`index_built`）且沒有在跑的專案，列上會出現「📖 開啟檢視器」按鈕；還在建立或只有部分索引的專案不顯示。
+- **索引完成的進度卡片**：卡片底部多一顆「📖 開啟檢視器」（進度卡片的 `finish(status, actions)` 可帶操作按鈕，完成且沒失敗才顯示）；完成訊息也會提示 `/aidoc view`。
+- 行為說明：檢視器檔案頁的「行為說明（可折疊）」與 `/aidoc explain`，見 `DESIGN.behavior-analyzer.md`。
+
+## 13. 設定的上限（2026-10-03）
+
+「檔案數上限」「索引大小上限（MB）」輸入多少就保存多少：只要是 1 以上的整數都接受；不是數字或小於 1 才還原預設。（先前超過 2,000,000 檔或 2,000 MB 會被靜默改回預設，已移除。）
+
+## 14. 文件型檔案（pdf／xlsx／docx／pptx／csv／壓縮檔，2026-10-04）
+
+專案裡的文件也進索引、也能深入探討。
+
+### 14.1 哪些檔案算
+`_faRepoDocKind(path)`：`pdf`、`xlsx`、`docx`、`pptx`、`csv`（含 `tsv`）、`zip`、`tar`、`tgz`（含 `.tar.gz`）。這些檔案的 `lang` 記成 `doc:<種類>`（例如 `doc:pdf`），所以原本依 `lang` 判斷「要不要分析」的地方（待分析清單、統計、依名稱搜尋）自動包含它們；排序上文件排在原始碼之後。
+
+### 14.2 建立索引時記什麼
+`_repoMapAnalyzeDoc`：讀二進位內容（`io.readBlob`：桌面版走 `rawfs.readFile(path,'base64')`，fap 走 `getFile()`），用 `_repoDocText` 取出全文，但**地圖只存摘要與標題，不存全文**：
+
+| 種類 | `doc`（一句摘要） | `symbols`（可被搜尋的名字） |
+|---|---|---|
+| pdf／pptx | 頁數＋第一段文字 | 標題（「第一章」「1.2 …」「一、」「全大寫短標題」）；`lines` 是全文行數 |
+| docx | 第一段文字 | 標題 |
+| xlsx | 幾個工作表、各幾列 | 工作表名稱（`sheet`） |
+| csv | 列數、欄位名稱 | 欄位名稱（`column`） |
+| zip／tar／tgz | 項目數與前幾個名稱 | 項目名稱（`entry`，前 150 個） |
+
+超過 40 MB 的檔案不分析，只記「檔案太大」；讀取失敗只記原因，不中斷整個索引。pdf 若幾乎沒有文字（掃描件）會在摘要註明，**不做 OCR**。
+
+### 14.3 讀全文：`repo_read_doc`
+新工具 `repo_read_doc({root, path, entry?, offset?, max_chars?})`，分段回傳全文：pdf 每頁前有 `[第N頁]`、xlsx 每個工作表前有 `[工作表 名稱（N 列）]`、pptx 每張前有 `[投影片 N]`；壓縮檔不給 `entry` 只列項目，給 `entry` 讀裡面的文字檔。回傳含 `total_chars`、`has_more`、`next_offset`。同一份文件最近 4 份的解析結果會暫存（以專案、路徑、檔案大小為鍵），分段讀不會重複解析。xlsx 最多取前 5000 列。
+
+### 14.4 深入探討與檢視器
+- 深入探討的目標清單（`_repoDiveTargets`）把文件算進去，而且**不套用「少於 10 行就略過」**（文件的行數沒有意義）。
+- 深入探討的子任務工具白名單與提示（`FA_DIVE_PROTOCOL`）加了文件規則：改用 `repo_read_doc`；說明要寫「這份文件是什麼、主要章節／工作表／欄位、關鍵數字或結論」，pdf 要註明內容在第幾頁；掃描件只能寫「沒有文字層」，不編造。
+- 檢視器：檔案頁「看程式碼」對文件顯示全文；問答佇列的工具白名單也加了 `repo_read_doc`。
+- `repo_ask` 的離線問答會搜到文件的標題、工作表、欄位與摘要。
+
+### 14.5 限制
+- 不做 OCR（掃描 PDF 沒有文字層就讀不到）；PDF 內的圖片與圖表不解析（要看圖用 `parse_uploaded_file` 的 `interpret_images`，目前不接進索引）。
+- xlsx 不處理公式與樣式，只取儲存格的值；docx 不保留表格結構與樣式。
+- 舊版（`.doc`、`.xls`、`.ppt`、`.rar`、`.7z`）不支援。
+- 文件型檔案沒有依賴與呼叫關係，只會出現在搜尋、說明與百科。
+- 已經建立過索引的專案要「重新分析」（`reanalyze`）或在檔案變動後的接續索引時，文件才會補進來。
