@@ -55,15 +55,15 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 
 ## 8. 引擎版本（v2：語法樹）
 
-- v2 是 Domain Resolver 的完整移植（，嵌入成 ）：用 web-tree-sitter 0.20.8 的真正語法樹（C／C++、Java、Python、JavaScript／TypeScript、Shell）。第一次從 CDN 下載剖析器與語言 wasm，存進本機快取，之後離線可用。
+- v2 是 Domain Resolver 的完整移植（`renderer/src/behavior/engine_1..5_*.js`，嵌入成 `FaBeh2`）：用 web-tree-sitter 0.20.8 的真正語法樹（C／C++、Java、Python、JavaScript／TypeScript、Shell）。第一次從 CDN 下載剖析器與語言 wasm，存進本機快取，之後離線可用。
 - 包含：行為分類掃描（47 類）、api_semantics 引數／回傳值語意、逐行追蹤→複合區塊樹→由下而上的 positive-path 敘事（guard 折疊、無限迴圈＝持續行為）、區塊註解重排後掛在區塊標題、呼叫圖（含函式指標、回呼、vtable 欄位綁定）、資料流（來源→匯點的污染追蹤）、Java 設計模式、javap 位元組碼、組語／LLVM IR／PTX／WASM 文字的函式與基本區塊切分＋idiom、文字重排與摘要（相似度圖＋PageRank）。
-- 剖析器載入失敗（離線第一次、CDN 擋住）時自動退回 v1 輕量掃描器，回傳裡  標明用了哪一個、 說明原因； 可用  強制舊引擎。
+- 剖析器載入失敗（離線第一次、CDN 擋住）時自動退回 v1 輕量掃描器，回傳裡 `engine` 標明用了哪一個、`fallback_reason` 說明原因；`explain_code` 可用 `engine:"v1"` 強制舊引擎。
 - 驗證：用 Domain Resolver 範例（rdma_sim、task_queue、asm_idioms）在真實 Electron 跑過，三份都由 v2 完成。
 
 ## 9. 誠實的限制
 
 - 巨集展開、C++ 模板、跨檔呼叫圖（目前一次分析一個檔案）沒有。
 - 資料流是單一函式內的污染追蹤，不跨函式。
-- Python byte code（dis 輸出）、、 還沒移植；JVM 位元組碼只讀 javap -c 的輸出。
+- Python byte code（dis 輸出）、`cluster_functions_by_behavior`、`teach_function_role` 還沒移植；JVM 位元組碼只讀 javap -c 的輸出。
 - 敘事句型是 api_semantics 的英文原文加中文連接詞，沒有全面中文化。
-- 組合語言語意只靠 pattern 表；使用者自己的大量定義用  匯入。
+- 組合語言語意只靠 pattern 表；使用者自己的大量定義用 `behavior_define import` 匯入。
