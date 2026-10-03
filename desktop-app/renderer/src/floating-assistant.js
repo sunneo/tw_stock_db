@@ -39551,6 +39551,36 @@ _result
         } catch (_) { /* 非JSON的結果視為成功 */ }
         if (ok) store.n = (store.n || 0) + 1;
     }
+    // 2026-10-03使用者回報gpt-oss:120b很會幻覺：子任務宣稱「已建立SKILL.md」「已完成產出pptx」，實際磁碟上沒有（或建在「暫存工作區」、或檔名用了長得像連字號的特殊字元）。
+    // 「有沒有成功的寫入工具呼叫」不夠——coding_workspace、python_execute等都算證據，模型照樣可以編路徑。所以桌面版直接把宣稱裡的絕對路徑拿去stat：不存在就退回請它如實處理，
+    // 退回次數用完還是說謊，就在結果前面加上醒目的「系統驗證未通過」，讓上層AI與使用者都不會把它當成完成。
+    async _claimPathCheck(text) {
+        if (!(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs && window.desktopAPI.rawfs.stat)) return null;
+        const t = String(text || '').replace(/```[\s\S]*?```/g, ' ');
+        if (!this._detectFakeWriteClaim(t)) return null;
+        const paths = [];
+        const add = (p) => { p = p.replace(/[.,:;，。；、]+$/, ''); if (p.length > 5 && paths.indexOf(p) < 0 && paths.length < 8) paths.push(p); };
+        // 用引號／反引號包起來的路徑是完整的（可含空白）；沒包的路徑遇到空白就斷，後面還接著文字時無法確定有沒有被截斷，不檢查，避免誤判
+        let m;
+        const q = /[`"'「]([A-Za-z]:\\[^`"'」\n]+)[`"'」]/g;
+        while ((m = q.exec(t))) add(m[1]);
+        const re = /[A-Za-z]:\\[^\s`"'<>|*?，。；、）)\]]+/g;
+        while ((m = re.exec(t))) { const nx = t.slice(re.lastIndex, re.lastIndex + 2); if (/^ [\w\u4e00-\u9fff]/.test(nx) || paths.some((p) => p.indexOf(m[0]) === 0)) continue; add(m[0]); }
+        if (!paths.length) return null;
+        const missing = [], odd = [];
+        for (const p of paths) {
+            if (/[\u2010\u2011\u2012\u2212]/.test(p)) odd.push(p);
+            try { await window.desktopAPI.rawfs.stat(p); } catch (_) { missing.push(p); }
+        }
+        if (!missing.length && !odd.length) return null;
+        return { missing, odd, checked: paths.length };
+    }
+    _claimPathNudgeText(r) {
+        return '[系統驗證] 你宣稱已建立／寫入檔案，我實際去磁碟檢查：' + (r.missing.length ? '這些路徑不存在——' + r.missing.join('、') + '。' : '') + (r.odd.length ? '這些路徑含有長得像連字號的特殊字元（U+2010／2011／2012／2212），檔名很可能不是使用者要的——' + r.odd.join('、') + '，請一律用半形連字號「-」。' : '') + '請不要再宣稱完成：用 fs_write_file／fs_mkdir 真的建立（路徑要跟使用者給的完全一致），建好後用 fs_list_files 或 fs_read_file 確認存在，再回報；如果做不到，直接說做不到與原因。';
+    }
+    _claimPathWarning(r) {
+        return '⚠️【系統驗證未通過】以下的完成說法沒有被磁碟上的實際狀態支持：' + (r.missing.length ? '路徑不存在——' + r.missing.join('、') + '。' : '') + (r.odd.length ? '路徑含長得像連字號的特殊字元——' + r.odd.join('、') + '。' : '') + '請當成「還沒完成」處理，不要轉述成已完成，需要的話自己用 fs_write_file 重做並用 fs_list_files 確認。\n\n';
+    }
     _detectFakeWriteClaim(text) {
         const t = String(text || '').replace(/```[\s\S]*?```/g, ' ');
         if (!t.trim()) return false;
@@ -42780,6 +42810,7 @@ ${existingNodeSummaries}
         // 的輪值機會。
         this._writeEvidence = { n: 0 };
         this._fakeWriteGuard = { count: 0 };
+        this._claimPathGuard = { count: 0 };
         this._intentGuard = { count: 0 };
         this._toolCallLog = { calls: [], blocked: 0 };
         this._otCalls = [];
@@ -43524,6 +43555,20 @@ ${existingNodeSummaries}
                     this._renderMessageHistory();
                     return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
                 }
+                {
+                    const pc = await this._claimPathCheck(fullContent);
+                    if (pc) {
+                        const g = this._claimPathGuard || (this._claimPathGuard = { count: 0 });
+                        if (g.count < 2) {
+                            g.count++;
+                            this._log('🛡️ 宣稱建立的檔案在磁碟上不存在，已退回請AI重做。');
+                            this.messages.push({ role: 'system', content: this._claimPathNudgeText(pc) });
+                            this._renderMessageHistory();
+                            return await this._loopFetch(apiKey, apiUrl, apiModel, 1, genOverrides);
+                        }
+                        this._pushAssistantMessage(this._claimPathWarning(pc).trim(), null);
+                    }
+                }
                 const intentNudge = this._unfulfilledIntentNudge(fullContent, this._intentGuard || (this._intentGuard = { count: 0 }));
                 if (intentNudge) {
                     this._log('🛡️ 偵測到「說要做某件事卻沒有呼叫任何工具就結束」，已退回請AI真的去做。');
@@ -43789,6 +43834,20 @@ ${existingNodeSummaries}
                     this.messages.push({ role: 'system', content: nudge });
                     this._renderMessageHistory();
                     return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
+                }
+                {
+                    const pc = await this._claimPathCheck(finalContent);
+                    if (pc) {
+                        const g = this._claimPathGuard || (this._claimPathGuard = { count: 0 });
+                        if (g.count < 2) {
+                            g.count++;
+                            this._log('🛡️ 宣稱建立的檔案在磁碟上不存在，已退回請AI重做。');
+                            this.messages.push({ role: 'system', content: this._claimPathNudgeText(pc) });
+                            this._renderMessageHistory();
+                            return await this._loopFetchNative(apiKey, apiUrl, apiModel, 1, genOverrides);
+                        }
+                        this._pushAssistantMessage(this._claimPathWarning(pc).trim(), null);
+                    }
                 }
                 const intentNudge = this._unfulfilledIntentNudge(finalContent, this._intentGuard || (this._intentGuard = { count: 0 }));
                 if (intentNudge) {
@@ -44700,6 +44759,7 @@ ${existingNodeSummaries}
         let reasoningDeadendRetries = 0;
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
+        const claimPathGuard = { count: 0 };
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
@@ -45006,6 +45066,20 @@ ${existingNodeSummaries}
                     messages.push({ role: 'user', content: subIntentNudge });
                     round--;
                     continue;
+                }
+                {
+                    const pc = await this._claimPathCheck(finalText);
+                    if (pc) {
+                        if ((claimPathGuard.count || 0) < 2) {
+                            claimPathGuard.count = (claimPathGuard.count || 0) + 1;
+                            if (onProgress) onProgress('🛡️ 宣稱建立的檔案在磁碟上不存在，退回請AI重做');
+                            messages.push({ role: 'assistant', content: finalText });
+                            messages.push({ role: 'user', content: this._claimPathNudgeText(pc) });
+                            round--;
+                            continue;
+                        }
+                        return { text: this._claimPathWarning(pc) + (finalText || ''), visual: capturedVisual };
+                    }
                 }
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
             }
