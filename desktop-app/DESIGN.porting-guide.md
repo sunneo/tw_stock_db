@@ -124,3 +124,9 @@
 - AIDoc 的 AI 佇列、檢視器問答依賴 `_runSubAgentTask` 的行為細節（工具白名單、文字化工具呼叫的解析 `_parseDescribedToolCall`、重複呼叫去重），換成別的代理執行器時要確認這些行為都在。
 - 離線訓練器的 JS 工具沙盒依賴 Web Worker 與 `ctx.call` 橋接，換環境（例如 Node）要換實作。
 - 網頁版的檔案存取（fap）是 File System Access API 專屬；新專案若不是瀏覽器，只需要實作 `readText/listDir`。
+
+## 10. 參考知識模組（2026-10-04）
+
+- 檔案：`renderer/src/refs/ref_engine.js`（純函式引擎，無任何助理依賴）、`renderer/src/refs/*.dsl` 與 `generic_*.json`（資料）、`scripts/refs-dsl.js`（DSL 解析）、`scripts/promote-runtime-defs.js`（升級成內建）。**這是最容易搬的一塊**：新專案只要載入資料、建立 `FaRef.create(data, 使用者定義)`，就有錯誤碼、命令列、pragma 的查詢與解釋。
+- 主機要提供的：使用者定義的保存（本專案用 `localStorage`）、工具登記（`lookup_error_code`、`explain_command_line`、`ref_lookup`、`ref_define`、`ref_expand`）、子代理領域（`offline_knowledge_expander`、`aidoc_knowledge_expander` 的系統提示與工具清單）。
+- 與行為分析的接點：`FaBeh2.create(...).explain(path, text, {ref})`，沒有傳 `ref` 就沒有標註，其餘照常。

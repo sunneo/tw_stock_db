@@ -104,3 +104,11 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 - Java 函式只有 17 個有引數語意，其餘只有分類名稱。
 - 沒有 C++ 標準函式庫（STL）、Rust、Go 的名稱表。
 - 語意文字用英文原句（沿用 Domain Resolver 的句型），尚未中文化。
+
+## 11. 參考知識的標註與擴充定義（2026-10-04）
+
+- 行為說明現在會用**離線訓練器的參考知識**（`FaRef`，見 `DESIGN.reference-knowledge.md`）：逐行追蹤的每一行若有錯誤碼常數（`ENOMEM`、`ERROR_ACCESS_DENIED`、`STATUS_ACCESS_VIOLATION`）、`exit(139)`、`errno == EACCES`、字串裡的命令（`system("qemu-system-arm …")`），會在敘事裡多一個 `Notes:`；`#pragma`（OpenMP、OpenACC、GCC）會附在緊接的迴圈上，函式內另有可折疊的「編譯指示」區塊。AI／使用者用 `ref_define` 補的資料同樣立刻生效。
+- 函式語意擴充：OpenMP 執行期、MPI（MPICH／MVAPICH2／Open MPI）、BLAS／CBLAS／LAPACK、cuBLAS、cuDNN、CUDA 執行期與驅動 API、Linux 核心標頭函式（約 800 個，加上先前 POSIX／WinAPI，C 共約 1100 個）有摘要、引數意義、回傳值各範圍的意義。
+- 引擎調整：成功碼常數表（`MPI_SUCCESS`、`cudaSuccess`、`CUBLAS_STATUS_SUCCESS`、`NULL`、`EOF`…→ 整數）讓 `rc != MPI_SUCCESS` 能套用規則；指標條件（`!p`、`if (p)`）可以套用以 `== 0`／`!= 0` 寫的規則；C 系語言的檔頭註解不再把 `#include`／`#pragma` 當成註解。
+- 使用者補定義新增 `add_mnemonic`（`arch`、`category`、`name`、`description`）：補組合語言指令，`makeTaxonomy` 合併進指令集表。
+- AI 自主擴充領域 `aidoc_knowledge_expander`：用 `explain_code` 找出還不認得的呼叫，查官方資料，用 `behavior_define`／`ref_define` 補定義（每筆附來源），再驗證。執行期補的定義可 `/ref export` 匯出，用 `scripts/promote-runtime-defs.js` 升級成內建。

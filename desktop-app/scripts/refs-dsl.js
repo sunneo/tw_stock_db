@@ -37,6 +37,9 @@ function parseCommands(text) {
         else if (list) list.push({ name: c[0], desc: c[1] || '' });
         else cur.options.push({ flag: c[0], arg: c[1] || '', desc: c[2] || '' });
     }
+    return out;
+}
+function resolveInherit(out) {
     const done = {}; const resolve = (n) => { if (done[n]) return; done[n] = true; const c = out[n]; if (!c || !c.inherit) return; const p = out[c.inherit]; if (!p) return; resolve(c.inherit); c.options = c.options.concat(p.options.filter((o) => !c.options.some((x) => x.flag === o.flag))); for (const [k, v] of Object.entries(p.subs)) if (!c.subs[k]) c.subs[k] = v; for (const [k, v] of Object.entries(p.lists)) if (!c.lists[k]) c.lists[k] = v; };
     Object.keys(out).forEach(resolve); return out;
 }
@@ -53,8 +56,9 @@ function build(dir) {
     const rd = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : '');
     const errors = {}; for (const f of fs.readdirSync(dir).filter((x) => /^errors.*\.dsl$/.test(x))) { const e = parseErrors(rd(f)); for (const [k, v] of Object.entries(e)) errors[k] = (errors[k] || []).concat(v); }
     const commands = {}; for (const f of fs.readdirSync(dir).filter((x) => /^commands.*\.dsl$/.test(x)).sort()) { const part = parseCommands(rd(f)); for (const [n, c] of Object.entries(part)) { const o = commands[n]; if (!o) { commands[n] = c; continue; } for (const op of c.options) if (!o.options.some((x) => x.flag === op.flag)) o.options.push(op); for (const [k, v] of Object.entries(c.subs)) o.subs[k] = (o.subs[k] || []).concat(v.filter((r) => !(o.subs[k] || []).some((x) => x.key === r.key))); for (const [k, v] of Object.entries(c.lists)) o.lists[k] = (o.lists[k] || []).concat(v.filter((r) => !(o.lists[k] || []).some((x) => x.name === r.name))); for (const a of c.aliases) if (o.aliases.indexOf(a) < 0) o.aliases.push(a); if (!o.summary) o.summary = c.summary; } }
+    resolveInherit(commands);
     const pr = { pragmas: [], clauses: [] }; for (const f of fs.readdirSync(dir).filter((x) => /^pragmas.*\.dsl$/.test(x))) { const p = parsePragmas(rd(f)); pr.pragmas.push(...p.pragmas); pr.clauses.push(...p.clauses); }
     const generic = []; for (const f of fs.readdirSync(dir).filter((x) => /^generic.*\.json$/.test(x))) { try { const a = JSON.parse(rd(f)); if (Array.isArray(a)) generic.push(...a); } catch (_) {} }
     return { version: 1, errors, commands, pragmas: pr.pragmas, clauses: pr.clauses, generic };
 }
-module.exports = { build, parseErrors, parseCommands, parsePragmas };
+module.exports = { resolveInherit, build, parseErrors, parseCommands, parsePragmas };
