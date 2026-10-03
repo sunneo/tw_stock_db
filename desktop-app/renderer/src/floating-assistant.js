@@ -44869,7 +44869,11 @@ ${existingNodeSummaries}
         const fence = t.match(/^```(?:json|tool_call)?\s*([\s\S]*?)\s*```$/i);
         if (fence) t = fence[1].trim();
         if (!t.startsWith('{') || !t.endsWith('}')) return null;
-        let p; try { p = JSON.parse(t); } catch (_) { return null; }
+        let p;
+        try { p = JSON.parse(t); } catch (_) {
+            // Windows 路徑常被寫成單一反斜線，JSON 不合法：把不是跳脫字元的反斜線補成雙反斜線再試一次
+            try { p = JSON.parse(t.replace(/\\(?![\\"\/bfnrtu])/g, '\\\\')); } catch (_2) { return null; }
+        }
         if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
         let o = p.invocation || p.tool_call || p.function_call || (Array.isArray(p.tool_calls) && p.tool_calls[0]) || p;
         if (o && o.function && typeof o.function === 'object') o = o.function;
