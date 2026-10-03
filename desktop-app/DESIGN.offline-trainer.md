@@ -76,3 +76,10 @@ AI 模型全部連不上（或使用者開啟離線模式）時，助理仍能**
 - 離線訓練器不聯網補資料；需要即時資料的意圖只學「怎麼查」，查詢仍需網路。
 - 學習必須有重複證據（預設 3 次）才自動升格，避免一次性操作變成規則。
 - 測試注意：測試要停用或覆寫 `requestUserForm`；老師迴圈測試用 `unattended` 避免風險確認卡住。
+
+## 參考知識與知識擴充領域（2026-10-04）
+
+- 離線訓練器現在內建「讀懂」的能力：錯誤碼（Linux errno／訊號／退出碼、Windows Win32／HRESULT／NTSTATUS／Winsock）、命令列（gcc、g++、javac、java、python、node、gdb、qemu-system-arm／aarch64／x86_64、mpirun、nvcc 與常用 Linux 命令）、`#pragma`。資料與引擎見 `DESIGN.reference-knowledge.md`；同一份資料也用在 AIDoc 的行為說明。
+- 離線工具：`lookup_error_code`、`explain_command_line`、`ref_lookup`（都是離線純函式，不需要 AI）。路由：`core_rules` 的四條規則（`ref_error_code`、`ref_error_name`、`ref_command_line`、`ref_pragma`）加上功能清冊四項（`ref-error-codes`、`ref-command-explain`、`ref-lookup`、`ref-expand`，各有自己的範例語句）。
+- 擴充方式：`ref_define` 補定義（每筆要附來源）；AI 自主擴充有專屬領域 `offline_knowledge_expander`（工具 `ref_expand`、`/ref expand`），範圍包括錯誤碼、命令選項、API 語意、pragma、文法 pattern、語意、分詞規則、組合語言、建置系統。這符合「AI 成功後離線訓練器必須被擴充」的原則：AI 查到的知識寫回知識庫，下次離線就能直接回答。
+- 補的資料可 `/ref export` 匯出，交給開發者或 Claude 升級成內建（`scripts/promote-runtime-defs.js`）。

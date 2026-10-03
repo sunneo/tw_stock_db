@@ -321,22 +321,63 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
   - `幫這個專案建立索引並讓 AI 補上每個檔案的說明`
   - `把專案的索引存進專案資料夾，同事拿到可以接著補`
 
-### 參考知識（錯誤碼、命令與手冊、pragma、HPC／CUDA／核心 API）（`reference-knowledge`）
+### 查錯誤碼（Linux／Windows）（`ref-error-codes`）
 
-離線也能查：Linux errno／訊號／退出碼、Windows Win32／HRESULT／NTSTATUS／Winsock 錯誤碼（含 HRESULT 解碼）、gcc／g++／javac／python／gdb／node／qemu-system-arm／aarch64／x86_64 與常用 Linux 命令的選項（逐項解釋整行命令，qemu 會講整台機器怎麼組）、C 的
+離線查錯誤碼的意思：Linux errno（EACCES、13、-ENOMEM）、訊號（SIGSEGV）、shell 退出碼（139、127）、Windows Win32 錯誤（ERROR_ACCESS_DENIED、GetLastError）、HRESULT（0x80070005，含解碼）、NTSTATUS（0xC0000005，也吃帶號整數）、Winsock（10061）。這些知識同時用在程式行為說明裡（錯誤碼常數、exit code 會被標註）。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/ref`
+- AI 工具：`lookup_error_code`
+- 範例：
+  - `errno 13 是什麼意思`
+  - `0xC0000005 是什麼錯誤`
+  - `ERROR_ACCESS_DENIED 怎麼處理`
+  - `exit code 139 代表什麼`
+  - `GetLastError 126 是什麼`
+  - `WSAECONNREFUSED 10061`
+  - `0x80070005`
+
+### 逐項解釋命令列（gcc、qemu、gdb、Linux 命令）（`ref-command-explain`）
+
+離線逐項解釋整行命令：gcc／g++／javac／java／python／node／gdb／qemu-system-arm／aarch64／x86_64（含 -M 機型、-cpu、-drive／-device／-netdev 子選項、-append 核心命令列，並講整台模擬機器怎麼組）與常用 Linux 命令（grep、find、tar、curl、ssh、rsync、systemctl、git、docker、cmake、make… 內容來自 man 手冊重點）。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/ref`
+- AI 工具：`explain_command_line`
+- 範例：
+  - `qemu-system-aarch64 -M virt -cpu cortex-a53 -m 1G -kernel Image -nographic 這行在做什麼`
+  - `gcc -O2 -fopenmp -march=native main.c -o a.out 各代表什麼`
+  - `gdb --args ./a.out 怎麼用`
+  - `tar -xzvf a.tar.gz -C /tmp`
+  - `javac -d out -cp lib/* Main.java`
+
+### 查 pragma、選項與參考知識（`ref-lookup`）
+
+離線查 C 的
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/ref`
+- AI 工具：`ref_lookup`
+- 範例：
+  - `#pragma omp parallel for reduction(+:sum) 怎麼解釋`
+  - `gcc 的 -fPIC 是什麼`
+  - `omp schedule dynamic 和 static 差在哪`
+  - `gdb 的 x 命令怎麼看記憶體`
+  - `#pragma pack(push,1)`
+
+### AI 自己找資料擴充知識庫（`ref-expand`）
+
+讓 AI 上網查官方資料，補進離線訓練器與 AIDoc 行為說明的知識（錯誤碼、命令選項、API 語意、pragma，以及文法 pattern、語意、分詞規則、組合語言、建置系統）；分成「離線訓練器知識擴充」與「AIDoc 行為說明擴充」兩個領域，補的每一筆都附來源。補的內容可用 /ref export 匯出，交給開發者或 Claude 升級成內建（scripts/promote-runtime-defs.js）。內建涵蓋 OpenMP、MPI（MPICH／MVAPICH）、BLAS、cuBLAS、cuDNN、CUDA 執行期與驅動 API、Linux 核心標頭函式的引數與回傳值語意。
 
 - 可用平台：網頁版、桌面版
 - 斜線指令：`/ref`
 - 子代理人領域：`offline_knowledge_expander`、`aidoc_knowledge_expander`
-- AI 工具：`lookup_error_code`、`explain_command_line`、`ref_lookup`、`ref_define`、`ref_expand`
+- AI 工具：`ref_expand`、`ref_define`
 - 範例：
-  - `errno 13 是什麼意思`
-  - `0xC0000005 是什麼錯誤`
-  - `qemu-system-aarch64 -M virt -cpu cortex-a53 -m 1G -kernel Image -nographic 這行在做什麼`
-  - `gcc -O2 -fopenmp -march=native 各代表什麼`
-  - `#pragma omp parallel for reduction(+:sum) 怎麼解釋`
   - `/ref expand RISC-V 向量指令`
+  - `/ref expand Windows 網路相關的 HRESULT --aidoc`
   - `/ref export`
+  - `幫我查官方文件，補 Bazel 建置檔的知識`
 
 ### 程式行為分析（explain_code）（`behavior-analyzer`）
 

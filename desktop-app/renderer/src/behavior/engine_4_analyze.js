@@ -167,11 +167,12 @@
     // ================= 參考知識的標註（FaRef）：錯誤碼常數、exit code、命令列字串、#pragma =================
     // 離線訓練器的參考知識（錯誤碼、命令、pragma，使用者與 AI 補的也算）直接用在行為說明上：同一份資料，兩邊共用。
     function pragmaNodes(root, src) { const arr = []; collectTypes(root, S(['preproc_call']), arr); return arr.map((n) => ({ line: row(n) + 1, text: T(n, src).trim() })).filter((p) => /^#\s*pragma\b/.test(p.text)); }
+    function condOnly(text) { text = String(text || ''); const i = text.indexOf('('); if (i < 0) return text.split('{')[0]; let d = 0; for (let k = i; k < text.length; k++) { if (text[k] === '(') d++; else if (text[k] === ')') { d--; if (d === 0) return text.slice(0, k + 1); } } return text; }
     function annotateTrace(lines, ref, language, pragmas) {
         const used = new Set();
         for (const entry of lines) {
             const isCtl = CONTROL_KINDS.has(entry.kind);
-            const notes = ref.annotateText(isCtl ? String(entry.text || '').split('{')[0] : (entry.text || ''), language);
+            const notes = ref.annotateText(isCtl ? condOnly(entry.text) : (entry.text || ''), language);
             for (const p of pragmas || []) if (!used.has(p) && entry.line > p.line && p.expl) { used.add(p); notes.push('上一行 ' + p.text.replace(/^#\s*pragma\s+/, '#pragma ') + '：' + p.expl.desc + (p.expl.clauses.length ? '（' + p.expl.clauses.map((c) => c.clause).join('、') + '）' : '')); }
             if (!notes.length) continue;
             let base = entry.explanation; if (!base) base = isCtl ? '`' + conditionPhrase(entry) + '`' : fallbackLeafPhrase(entry);
@@ -188,14 +189,14 @@
     const EXT_LANG = { c: 'c', h: 'c', cc: 'c', cpp: 'c', cxx: 'c', hpp: 'c', cu: 'c', cuh: 'c', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell' };
     function languageOfPath(path) { const m = /\.([A-Za-z0-9]+)$/.exec(path || ''); return m ? (EXT_LANG[m[1].toLowerCase()] || null) : null; }
     const FileCommentRe = /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+|(?:#[^\n]*\n?)+)/;
-    function fileHeaderComment(src) { const m = FileCommentRe.exec(src.replace(/^#!.*\n/, '')); if (!m) return null; return m[0].split('\n').map((l) => l.replace(/^\s*(\/\*+|\*+\/|\*+|\/\/+|#+)\s?/, '').replace(/\*\/\s*$/, '').trim()).filter(Boolean).join(' ') || null; }
+    function fileHeaderComment(src, language) { const hashOk = language === 'python' || language === 'shell'; const m = (hashOk ? FileCommentRe : /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+)/).exec(src.replace(/^#!.*\n/, '')); if (!m) return null; return m[0].split('\n').map((l) => l.replace(/^\s*(\/\*+|\*+\/|\*+|\/\/+|#+)\s?/, '').replace(/\*\/\s*$/, '').trim()).filter(Boolean).join(' ') || null; }
     const NOTE_LABEL = { user: 'aidoc 補充', comment: '原始碼註解', auto: '自動分析' };
     // deps.parse(language, src) → tree.rootNode（呼叫端提供 web-tree-sitter）；deps.notes[path|path::fn] 是 aidoc 的說明
     async function explainSource(path, src, opts) {
         opts = opts || {}; const tx = opts.taxonomy; const deps = opts.deps || {}; const target = opts.fn || null; const notes = Object.assign({}, tx.__notes || {}, opts.notes || {});
         const out = []; const meta = { path, language: null, functions: 0, unclassified: [], sources: {} };
         const lowKind = detectLowLevelKind(path, src); const language = languageOfPath(path);
-        const fileNote = notes[path] || notes['file::' + path]; const header = fileHeaderComment(src);
+        const fileNote = notes[path] || notes['file::' + path]; const header = fileHeaderComment(src, language);
         out.push('# ' + path); out.push('');
         if (fileNote) { out.push('> **' + NOTE_LABEL.user + '**：' + fileNote); out.push(''); meta.sources.file = 'user'; }
         else if (header) { out.push('> **' + NOTE_LABEL.comment + '**：' + rerank(header, [], 3)); out.push(''); meta.sources.file = 'comment'; }
