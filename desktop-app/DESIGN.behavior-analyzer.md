@@ -67,3 +67,40 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 - `cluster_functions_by_behavior`、`teach_function_role` 還沒移植；JVM 位元組碼只讀 javap -c 的輸出、Python 位元組碼只讀 dis 輸出（以名稱與指令歸類，不重建流程）。
 - 敘事句型是 api_semantics 的英文原文加中文連接詞，沒有全面中文化。
 - 組合語言語意只靠 pattern 表；使用者自己的大量定義用 `behavior_define import` 匯入。
+
+## 10. 定義資料（pattern／語意表）的設計
+
+### 10.1 兩份資料、三個層次
+
+| 檔案 | 內容 | 用在哪 |
+|---|---|---|
+| `renderer/src/behavior/behavior_patterns.json` | 行為分類（47 類）× 語言的呼叫名稱表；`assembly_instruction_sets`（各指令集的助記符→分類→一句說明）；`assembly_idioms`（多指令組合）；`control_flow_nodes`、`structural_signals`、well-known 路徑／環境變數 | 掃描器歸類、組語／位元組碼／IR 文字的指令歸類、idiom 辨識 |
+| `renderer/src/behavior/api_semantics.json` | 函式 → 一句摘要、每個位置引數的真實意義、回傳值各範圍的意義 | 逐行追蹤敘事（「引數 buf=… 是接收資料的緩衝區」「n <= 0 ＝ 對方關閉連線」） |
+| 使用者／AI 補的定義（`fa_behavior_user_defs_v1`，`behavior_define`） | 同樣的結構，保存在本機 | 與內建合併，優先於內建；可匯出匯入 |
+
+三個層次的合併順序：內建 → 使用者補的（同名者蓋掉內建）。分析引擎只認合併後的結果，所以任何來源補進來的定義立刻生效。
+
+### 10.2 來源與規模（誠實記錄）
+
+- **Domain Resolver 的 `behavior_patterns.yml`／`api_semantics.yml`**：完整匯入，逐項比對過沒有遺漏（呼叫名稱 1628、助記符 x86 118／x64 105／ARM 88／AArch64 87／POWER 55／MIPS 55／RISC-V 82／PTX 24／JVM 102、idiom 12 條、API 語意 C 21 個＋JavaScript 25 個）。這份參考資料本身規模不大，**沒有** LLVM IR、WASM、Python 位元組碼，也沒有 POSIX／WinAPI 的引數語意。
+- **本專案依需求自行補寫的部分**（以使用者的需求為主，參考資料只是起點）：
+  - x86／x64：約 450／440 個助記符（含 SSE／AVX／AVX-512、BMI、AES、SHA、TSX、系統與虛擬化指令）。
+  - PTX 174、JVM 位元組碼 202（完整 opcode）、LLVM IR 116（含常用 intrinsic）、WASM 218、Python 位元組碼 139。
+  - 函式名稱：POSIX／libc、pthread、WinAPI（行程、記憶體、登錄檔、服務、Winsock、WinINet／WinHTTP、加密、COM、視窗、Native API）、OpenGL／Vulkan／WebGL／WebGPU、CUDA／OpenCL／HIP、GLSL／HLSL 內建、Java 標準函式庫、Python／Node，合計約 4200 個。
+  - API 語意：C 340 個（POSIX＋WinAPI）、JavaScript 38、Python 35、Java 17。
+- 這些是依官方文件知識整理，**沒有逐條對照官方文件**；有錯用 `behavior_define`（`add_api`／`add_note`／`remove`）修正即可，不必改程式。
+
+### 10.3 格式與擴充
+
+- 助記符表：`assembly_instruction_sets.<架構>.<分類>[] = { name, format, description }`。名稱比對不分大小寫，且會逐段退回（`ld.global.f32` → `ld.global` → `ld`），所以 PTX、WASM 這類帶點的助記符不必列出所有變體。
+- 架構鍵：`x86`、`x86_64`、`arm`、`aarch64`、`power`、`mips`、`riscv`、`ptx`、`jvm`、`llvm`、`wasm`、`pybc`（Python 位元組碼）。文字格式的組語／IR／位元組碼會拿全部架構的表比對；idiom 只在該架構有命中時才辨識。
+- API 語意：`api.<語言>.<函式名稱> = { summary, parameters:[{name, meaning}], return:{ meaning, rules:[{when:{op,value}, meaning}] } }`；`op` 可用 `< <= > >= == !=`。回傳規則會跟著「緊接在呼叫之後的條件」套用；指標回傳的 NULL 視為 `== 0`。
+- 大量匯入：`behavior_define` 的 `import` 直接吃 Domain Resolver 格式的 YAML／JSON（也吃匯出檔）。使用者自己的大量定義用這條路進來。
+- 改了內建 JSON 之後：`node scripts/embed-code-ui.js`（把資料嵌進 `FA_BEHAVIOR_DATA`）→ `node build-assistant.js`。
+
+### 10.4 已知缺口
+
+- ARM／AArch64／POWER／MIPS／RISC-V 仍只有參考資料的 55 到 88 個助記符。
+- Java 函式只有 17 個有引數語意，其餘只有分類名稱。
+- 沒有 C++ 標準函式庫（STL）、Rust、Go 的名稱表。
+- 語意文字用英文原句（沿用 Domain Resolver 的句型），尚未中文化。
