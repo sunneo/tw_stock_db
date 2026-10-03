@@ -1,7 +1,7 @@
 # 參考知識（Reference Knowledge）設計文件
 
 > 2026-10-04。原始碼：`renderer/src/refs/`（`ref_engine.js` 查詢引擎、`*.dsl` 資料來源、`generic_builtin.json`）、`scripts/refs-dsl.js`（DSL 轉資料）、`scripts/promote-runtime-defs.js`（把執行期補的定義升級成內建）；嵌入 `floating-assistant.js` 的 `FA_REF_DATA`／`FaRef`（`scripts/embed-code-ui.js` 的 `embedRefs`）。主機端 `_ref*` 方法、工具與斜線指令見第 6 節。
-> 相關：`DESIGN.offline-trainer.md`（離線路由與領域）、`DESIGN.behavior-analyzer.md`（行為說明如何使用這份知識）。
+> 相關：`DESIGN.offline-trainer.md`（離線路由與領域）、`DESIGN.behavior-analyzer.md`（行為說明如何使用這份知識）、`DESIGN.offline-trainer-roadmap.md`（隨使用成長、日誌診斷、離線文字生成與推理鏈的路線圖）。
 
 ## 1. 要解決的事
 
@@ -96,7 +96,65 @@
 - 功能清冊四項：`ref-error-codes`、`ref-command-explain`、`ref-lookup`、`ref-expand`，各有自己的範例語句，語意比對才會選對工具（早先用單一功能時，語意分數會讓所有查詢都選到第一個工具，所以拆開）。
 - 驗證（真實 Electron，`_otRun dry_run`）：「errno 13 是什麼意思」→ `lookup_error_code`；「qemu-system-aarch64 -M virt …」與「gcc -O2 -fopenmp main.c」→ `explain_command_line`；「#pragma omp parallel for」與「gcc 的 -fPIC 是什麼」→ `ref_lookup`；「ERROR_ACCESS_DENIED」→ `lookup_error_code`；「/ref expand RISC-V 向量指令」→ `ref_expand`。
 
-## 10. 已知限制
+## 11. 日誌診斷（建置錯誤、gdb、核心日誌、kernel panic、journal；2026-10-04）
+
+目標：離線訓練器看到一段失敗的輸出，能**明確說明發生了什麼事**——不只是翻譯一行錯誤，而是指出根本原因、哪些只是連帶結果、錯誤是怎麼一層層傳上來的。路線圖見 `DESIGN.offline-trainer-roadmap.md`。
+
+### 11.1 規則格式（`buildrules*.dsl`）
+
+```
+## 規則id | 系統 | 層級
+re: 逐行比對的正規表示式（不分大小寫，可用具名群組 (?<名稱>…)；同名群組可以在不同分支重複）
+what: 發生什麼事（白話；{名稱} 填入擷取到的值）
+cause: 常見原因（可重複）
+fix: 怎麼處理（可重複）
+```
+
+- 層級：`root`＝根本原因；`cascade`＝連帶結果（例如 make 的「Error 1」、ld 的「returned 1 exit status」、BitBake 的「Task failed」、CMake 的「Configuring incomplete」）；`warn`＝警告。層級後面加 `!` 表示整份日誌只報第一次（panic 結論、BitBake 任務失敗這類會重複出現的行）。比對到的行若是 `WARNING:`／`NOTE:`／`warning:` 開頭，根本原因類會自動降成警告。
+- 具名群組叫 `errno` 時，數字會自動附上 Linux 錯誤碼的意義（例如驅動訊息 `probe failed with error -517` → `EPROBE_DEFER`）。
+- 系統名只是篩選用：`any` 一律比對；`gcc`、`make`、`maven`、`cargo`… 只在偵測到該系統時比對（避免 `error: …` 這類通用字樣在別的日誌誤觸發）。
+- 規則檔：`buildrules_compile.dsl`（gcc／ld）、`buildrules_make_cmake.dsl`（make、ninja、Meson、CMake、autotools、Kbuild）、`buildrules_bitbake.dsl`（BitBake／Yocto）、`buildrules_kernel_journal.dsl`（核心日誌、panic、journal、gdb、執行期）、`buildrules_other.dsl`（Maven、Gradle、npm、Cargo、pip、Go）；`buildrules_promoted.dsl` 放升級進來的規則（同 id 取代內建）。約 200 條。
+
+### 11.2 診斷引擎（`FaRef.diagnoseLog`，`diagnoseBuild` 是別名）
+
+1. 清理（去 ANSI 色碼、BitBake 子行程輸出的「| 」前綴）並**偵測系統**（make、cmake、bitbake、ninja、meson、gcc、ld、maven、gradle、npm、cargo、python、autotools、kbuild、kernel、panic、journal、gdb、runtime、java、go）。
+2. 抽出**脈絡**：BitBake 的配方與任務與失敗日誌路徑、make 失敗的目標（檔案:行、退出碼）、ninja 的 FAILED 步驟、CMake 出錯的檔案行與指令、編譯器錯誤的檔案行欄。
+3. 逐行套用規則；相同說明不重複報。
+4. 整理輸出：`summary`（一段話）、`chain`（傳遞路徑，例如「原始錯誤（gcc）→ make 的目標 foo.o 的命令失敗，退出碼 1 → BitBake：配方 bar 的 do_compile 失敗」）、`root_causes`（附原因與處理）、`consequences`、`warnings`、`context`、`unmatched_error_lines`、`markdown`。
+5. 退出碼會被解釋：127＝找不到命令、126＝不能執行、139＝程式當掉、137＝被殺掉（常是記憶體不足）。
+6. 找不到根本原因時**明說**：「只看到連帶結果，要往上找第一個 error」，不亂猜。
+
+### 11.3 涵蓋範圍（規則）
+
+- **編譯／連結**：缺標頭、未宣告、隱式宣告（GCC 14 起變錯誤）、型別不符、重複定義、-Werror、編譯器內部錯誤與被 OOM 殺掉、不認得的選項、-march 不符、需要更新的語言標準、不完整型別、組譯錯誤；undefined reference（缺 -l、順序、C／C++ 混用）、vtable、multiple definition（-fno-common）、找不到函式庫與 crt 檔、需要 -fPIC、架構不符、DSO 缺失、記憶體區域溢位（嵌入式）、無 main、輸出檔無權限、連結器被殺掉、GLIBC 版本、LTO。
+- **make／ninja／Meson／CMake／autotools／Kbuild**：No rule to make target、missing separator、遞迴變數、命令找不到、時鐘偏差、jobserver；CMake 找不到套件／編譯器／建置程式、版本太舊（含 CMake 4 的相容性移除）、快取位置不符、目標重複或不存在、來源不存在、install 錯誤；configure 找不到編譯器或套件、autotools 工具缺失；核心 modpost 未定義符號、設定過期、缺主機開發套件。
+- **BitBake／Yocto**：Nothing PROVIDES、無法建置的相依鏈、配方被跳過、多個 provider、下載失敗與雜湊不符、git 取得失敗、補丁套用失敗、解壓失敗、do_configure／do_compile／do_install 失敗、QA 問題（installed-vs-shipped、ldflags、textrel、already-stripped、file-rdeps、dev-so、license-checksum、arch、buildpaths、useless-rpaths）、rootfs 安裝與檔案衝突、解析錯誤與變數展開、繼承 class 失敗、layer 相容性、環境檢查、磁碟空間、taskhash、Python 函式錯誤、伺服器、禁網路、記憶體不足。
+- **核心與系統**：panic（找不到根檔案系統、init 死掉並解碼 exitcode、找不到 init、沒有主控台）、Oops（空指標、paging request、BUG、WARN、ARM 內部錯誤）、KASAN、lockdep、soft lockup、hung task、RCU stall、OOM、使用者程式 segfault（解讀錯誤位元）、磁碟與檔案系統錯誤、韌體缺失、模組載入、驅動 probe 失敗（附錯誤碼意義，-517 是延後不是失敗）、裝置樹、USB、網路、SD／I2C、硬體錯誤、記憶體破壞、refcount。
+- **systemd／journal**：2xx 狀態碼（203/EXEC、217/USER、226/NAMESPACE…）、主行程退出方式、失敗結果類型、start-limit-hit、依賴失敗、單元不存在、逾時、sshd 登入失敗、SELinux avc 與 AppArmor 拒絕。
+- **gdb**：收到訊號、Cannot access memory、找不到符號、位址隨機化警告、遠端連線中斷、架構不符（'g' packet reply too long）、無法插入中斷點、缺除錯符號、ptrace 被拒、沒有執行中的程式、auto-load 被拒。
+- **執行期**：缺共享函式庫、Exec format error、Illegal instruction、位址已被使用。
+- **其他建置系統**：Maven、Gradle、npm／node-gyp、Cargo、pip、Go。
+
+### 11.4 工具與入口
+
+- 工具 `diagnose_log{log}`；`explain_build_error{log}` 是別名（專給建置輸出）；斜線指令 `/ref diag <日誌>`。
+- 離線路由：`core_rules` 的 `ref_log_diag`（日誌裡有 `make: ***`、`CMake Error`、`undefined reference to`、`Kernel panic`、`Call Trace:`、`Program received signal`、`Failed with result` 等特徵）加功能清冊 `ref-log-diagnose`。已在真實 Electron 驗證：貼上 make 錯誤行、kernel panic 行、systemd 狀態行、`Nothing PROVIDES`、`undefined reference` 都走到診斷工具。
+
+### 11.5 成長機制
+
+- **待學習清單**：每次診斷，沒有規則的錯誤行會被正規化（數字、路徑、十六進位換成佔位符）後去重、計次，存在 `localStorage['fa_ref_unmatched_v1']`（最多 200 筆，依次數排序）。查看：`/ref queue` 或 `ref_define{action:"queue"}`；清空：`queue_clear`。
+- **補規則**：`ref_define{kind:"build_error_rule", id, system, level, re, what, cause, fix, example, source}`。**必須附 `example`（一行真實日誌）**，系統用它驗證規則真的比對得到；正規表示式要能編譯；沒有 `source` 不收。通過後保存，並把清單中對應的行移除。已在真實 Electron 驗證四種情況：沒有範例被拒、範例對不上被拒、無效的正規表示式被拒、正確的規則被收下並立刻生效（補完後原本沒規則的那行就被診斷了）。
+- **AI 擴充領域**（`offline_knowledge_expander`）的提示已加「先看待學習清單」與規則的寫法與驗證要求。
+- **升級成內建**：`/ref export` 的 `references.buildrules_dsl` 就是 `buildrules*.dsl` 的格式；`scripts/promote-runtime-defs.js` 以「整條規則」為單位合併進 `buildrules_promoted.dsl`（同 id 取代、檢查正規表示式可編譯），之後人或 Claude 覆核。
+
+### 11.6 已知限制
+
+- 規則是**逐行**比對，看不懂跨多行的結構（完整的 Call Trace、Python 例外鏈、CMake 的多行區塊）；多行規則在路線圖的下一步。
+- 通用意義，不含你專案裡的特殊情況。
+- 偵測「沒有規則的錯誤行」靠關鍵字（error、failed、fatal、denied…），沒有這些字樣的異常行不會進待學習清單。
+- 規則量約 200 條，覆蓋最常見的情況，不是全部；新型態的錯誤要靠待學習清單與 AI 擴充逐步補。
+
+## 12. 已知限制
 
 - 命令選項是「重點選項」，不是 man 手冊的全文；沒收錄的選項會列在「還不認得的選項」，可請 AI 補。
 - 引擎不執行任何命令，只解釋文字；展開 shell 變數、管線、`$(…)` 不處理（只取第一個命令）。

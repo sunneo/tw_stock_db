@@ -34,7 +34,20 @@ function appendDsl(fileName, text, kind) {
     // 簡化：重複的標頭行保留（解析器對同名區段／命令會合併）
     write(p, existing.replace(/\n*$/, '\n') + lines.join('\n') + '\n');
 }
+// 診斷規則：以 ## id 為單位，同 id 就取代；檢查正規表示式能編譯（具名群組在不同分支重複時自動改名，與引擎相同）
+function appendBuildRules(text) {
+    if (!text || !text.trim()) return; const p = path.join(refDir, 'buildrules_promoted.dsl'); const existing = readOr(p, '# 由 scripts/promote-runtime-defs.js 從執行期定義升級而來（每條附來源，請覆核）\n').replace(/\r\n/g, '\n');
+    const split = (s) => { const blocks = []; let cur = null; for (const line of s.split('\n')) { if (line.startsWith('## ')) { cur = { id: line.slice(3).split(' | ')[0].trim(), lines: [line] }; blocks.push(cur); } else if (cur) cur.lines.push(line); } return blocks; };
+    const old = split(existing); const head = existing.split('\n').filter((l) => l.startsWith('#') && !l.startsWith('## ')).join('\n');
+    const dedupe = (src) => { const seen = {}; return src.replace(/\(\?<([A-Za-z_]\w*)>/g, (all, n) => { seen[n] = (seen[n] || 0) + 1; return seen[n] === 1 ? all : '(?<' + n + '__' + seen[n] + '>'; }); };
+    for (const b of split(text.replace(/\r\n/g, '\n'))) {
+        const reLine = b.lines.find((l) => l.startsWith('re: ')); try { new RegExp(dedupe((reLine || 're: ').slice(4)), 'i'); } catch (e) { console.error('略過 ' + b.id + '：正規表示式無效（' + e.message + '）'); bump(report.skipped, 'build_error_rule（正規表示式無效）'); continue; }
+        const i = old.findIndex((x) => x.id === b.id); if (i >= 0) { old[i] = b; bump(report.skipped, 'build_error_rule（同 id，已取代）'); } else { old.push(b); bump(report.added, 'build_error_rule'); }
+    }
+    write(p, head + '\n\n' + old.map((b) => b.lines.join('\n').replace(/\n+$/, '')).join('\n\n') + '\n');
+}
 const refs = bundle.references || {};
+appendBuildRules(refs.buildrules_dsl);
 appendDsl('errors_promoted.dsl', refs.errors_dsl, 'error_code');
 appendDsl('commands_promoted.dsl', refs.commands_dsl, 'command_option');
 appendDsl('pragmas_promoted.dsl', refs.pragmas_dsl, 'pragma');

@@ -52,13 +52,27 @@ function parsePragmas(text) {
     }
     return out;
 }
+// 建置錯誤規則：## id | 系統 | 層級（root 根本原因／cascade 連帶結果／warn 警告）
+//   re: 正規表示式（逐行比對，不分大小寫，可用具名群組 (?<名稱>…)）
+//   what: 發生什麼事（白話，可用 {名稱} 或 {1}）；cause: 常見原因（可重複）；fix: 怎麼處理（可重複）；see: 相關說明（選填）
+function parseBuildRules(text) {
+    const out = []; let cur = null;
+    for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+        const line = raw.replace(/\s+$/, ''); if (!line.trim() || (line.trim()[0] === '#' && !line.startsWith('## '))) continue;
+        if (line.startsWith('## ')) { const [id, system, level] = cols(line.slice(3)); cur = { id, system: system || 'any', level: String(level || 'root').replace(/!$/, ''), once: /!$/.test(level || ''), re: '', what: '', causes: [], fixes: [], see: '' }; out.push(cur); continue; }
+        if (!cur) continue; const m = /^(re|what|cause|fix|see):\s?(.*)$/.exec(line.trim()); if (!m) continue;
+        if (m[1] === 're') cur.re = m[2]; else if (m[1] === 'what') cur.what = m[2]; else if (m[1] === 'cause') cur.causes.push(m[2]); else if (m[1] === 'fix') cur.fixes.push(m[2]); else cur.see = m[2];
+    }
+    return out;
+}
 function build(dir) {
     const rd = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : '');
     const errors = {}; for (const f of fs.readdirSync(dir).filter((x) => /^errors.*\.dsl$/.test(x))) { const e = parseErrors(rd(f)); for (const [k, v] of Object.entries(e)) errors[k] = (errors[k] || []).concat(v); }
     const commands = {}; for (const f of fs.readdirSync(dir).filter((x) => /^commands.*\.dsl$/.test(x)).sort()) { const part = parseCommands(rd(f)); for (const [n, c] of Object.entries(part)) { const o = commands[n]; if (!o) { commands[n] = c; continue; } for (const op of c.options) if (!o.options.some((x) => x.flag === op.flag)) o.options.push(op); for (const [k, v] of Object.entries(c.subs)) o.subs[k] = (o.subs[k] || []).concat(v.filter((r) => !(o.subs[k] || []).some((x) => x.key === r.key))); for (const [k, v] of Object.entries(c.lists)) o.lists[k] = (o.lists[k] || []).concat(v.filter((r) => !(o.lists[k] || []).some((x) => x.name === r.name))); for (const a of c.aliases) if (o.aliases.indexOf(a) < 0) o.aliases.push(a); if (!o.summary) o.summary = c.summary; } }
     resolveInherit(commands);
+    const buildRules = []; for (const f of fs.readdirSync(dir).filter((x) => /^buildrules.*\.dsl$/.test(x)).sort()) for (const r of parseBuildRules(rd(f))) { const i = buildRules.findIndex((x) => x.id === r.id); if (i >= 0) buildRules[i] = r; else buildRules.push(r); }
     const pr = { pragmas: [], clauses: [] }; for (const f of fs.readdirSync(dir).filter((x) => /^pragmas.*\.dsl$/.test(x))) { const p = parsePragmas(rd(f)); pr.pragmas.push(...p.pragmas); pr.clauses.push(...p.clauses); }
     const generic = []; for (const f of fs.readdirSync(dir).filter((x) => /^generic.*\.json$/.test(x))) { try { const a = JSON.parse(rd(f)); if (Array.isArray(a)) generic.push(...a); } catch (_) {} }
-    return { version: 1, errors, commands, pragmas: pr.pragmas, clauses: pr.clauses, generic };
+    return { version: 1, errors, commands, pragmas: pr.pragmas, clauses: pr.clauses, generic, buildRules };
 }
-module.exports = { resolveInherit, build, parseErrors, parseCommands, parsePragmas };
+module.exports = { parseBuildRules, resolveInherit, build, parseErrors, parseCommands, parsePragmas };

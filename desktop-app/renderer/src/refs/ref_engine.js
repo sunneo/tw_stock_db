@@ -12,16 +12,87 @@
     const NT_SEV = ['成功（Success）', '資訊（Informational）', '警告（Warning）', '錯誤（Error）'];
     function create(data, user) {
         data = data || { errors: {}, commands: {}, pragmas: [], clauses: [] };
-        const U = { errors: {}, commands: {}, options: {}, pragmas: [], clauses: [], generic: [] };
+        const U = { errors: {}, commands: {}, options: {}, pragmas: [], clauses: [], generic: [], buildRules: [] };
         const idx = { built: false, byName: new Map(), bySys: {}, cmdAlias: new Map(), errNameRe: null };
         function mergeUser(u) {
             U.errors = {}; U.commands = {}; U.options = {}; U.pragmas = []; U.clauses = []; U.generic = [];
             if (!u) return;
             for (const [s, l] of Object.entries(u.errors || {})) U.errors[s] = l.slice();
             Object.assign(U.commands, u.commands || {}); Object.assign(U.options, u.options || {});
-            U.pragmas = (u.pragmas || []).slice(); U.clauses = (u.clauses || []).slice(); U.generic = (u.generic || []).slice();
+            U.pragmas = (u.pragmas || []).slice(); U.clauses = (u.clauses || []).slice(); U.generic = (u.generic || []).slice(); U.buildRules = (u.buildRules || []).slice(); bRules = null;
         }
         const allGeneric = () => (data.generic || []).concat(U.generic);
+        // ---------------- 建置錯誤診斷（make／CMake／BitBake／gcc／ld／ninja／meson／maven／gradle／npm／cargo／pip…）----------------
+        let bRules = null;
+        const dedupeGroups = (src) => { const seen = {}; return String(src).replace(/\(\?<([A-Za-z_]\w*)>/g, (all, n) => { seen[n] = (seen[n] || 0) + 1; return seen[n] === 1 ? all : '(?<' + n + '__' + seen[n] + '>'; }); };
+        const grp = (m, k) => { const g = m.groups || {}; if (g[k] !== undefined) return g[k]; for (let i = 2; i < 8; i++) if (g[k + '__' + i] !== undefined) return g[k + '__' + i]; return undefined; };
+        const buildRules = () => {
+            if (bRules) return bRules; const merged = []; const all = (data.buildRules || []).concat(U.buildRules || []);
+            for (const r of all) { const i = merged.findIndex((x) => x.id === r.id); if (i >= 0) merged[i] = r; else merged.push(r); }
+            bRules = merged.map((r) => { let re = null; try { re = new RegExp(dedupeGroups(r.re), 'i'); } catch (_) {} return Object.assign({}, r, { _re: re }); }).filter((r) => r._re); return bRules;
+        };
+        const SIGNS = [
+            ['bitbake', /(?:^|\s)(?:ERROR|NOTE|WARNING):\s.*\bdo_[a-z_]+\b|bitbake|NOTE: Executing|Nothing PROVIDES|BitBake Fetcher/i], ['cmake', /CMake (?:Error|Warning)|-- Configuring (?:incomplete|done)|CMakeLists\.txt|CMakeCache/i],
+            ['make', /\bmake(?:\[\d+\])?: \*\*\*|\bmake(?:\[\d+\])?: (?:Entering|Leaving) directory|\*\*\* missing separator|No rule to make target/i], ['ninja', /^FAILED: |ninja: (?:error|build stopped)/im],
+            ['meson', /meson\.build:\d+|\bmeson\b.*ERROR|^ERROR: Dependency/im], ['gcc', /:\d+(?::\d+)?: (?:fatal )?error:|\bcc1(?:plus)?: |gcc: (?:fatal )?error|g\+\+: (?:fatal )?error|clang: error|error: unknown type name/i],
+            ['ld', /undefined reference to|cannot find -l|ld returned \d+ exit status|collect2: error|\/ld: |ld\.lld: error|multiple definition of/i], ['maven', /\[ERROR\]|BUILD FAILURE|maven-compiler-plugin|COMPILATION ERROR/], ['java', /\.java:\d+|cannot find symbol|package [\w.]+ does not exist|UnsupportedClassVersion|Unsupported class file|java\.lang\.\w+Error/], ['go', /\.go:\d+:\d+:|^go: |cannot find package/m],
+            ['kernel', /\[\s*\d+\.\d{3,6}\]|\bkernel:|Call Trace:|\bBUG:|\bOops\b|Hardware name:|RIP: 0010|pc : \S+ lr : /], ['panic', /Kernel panic - not syncing|---\[ end (?:Kernel panic|trace)|Oops: [0-9a-f]+|Unable to handle kernel|VFS: Unable to mount root/],
+            ['journal', /systemd(?:\[\d+\])?: |(?:Started|Stopped|Starting|Failed to start) [^\n]+\.|-- (?:Boot|Logs begin)|\b(?:sshd|systemd-logind|NetworkManager|dbus-daemon)\[\d+\]:|Main process exited|code=(?:exited|killed|dumped), status=/], ['gdb', /Program (?:received|terminated with) signal|\(gdb\)|Reading symbols from|GNU gdb|Cannot access memory at address|No symbol .* in current context|Remote communication error|warning: Error disabling address space/],
+            ['runtime', /error while loading shared libraries|Exec format error|Illegal instruction|Segmentation fault|Address already in use|Permission denied|cannot execute: required file not found/], ['gradle', /FAILURE: Build failed|> Task :|Execution failed for task|Could not resolve all/],
+            ['npm', /npm ERR!|gyp ERR!|node-gyp|ERESOLVE/], ['cargo', /error\[E\d{4}\]|could not compile|failed to select a version|cargo build/i], ['python', /pip(?:3)?(?: install)?|setup\.py|ModuleNotFoundError|externally-managed-environment|Failed building wheel/i], ['autotools', /configure: error|config\.status: error|checking for .*\.\.\. no/i], ['kbuild', /scripts\/Makefile|modpost|Kconfig|include\/generated\/autoconf\.h|\bKBUILD\b/i],
+        ];
+        function diagnoseBuild(log, o) {
+            o = o || {}; const raw = String(log == null ? '' : log); if (raw.trim().length < 4) return { ok: false, error: '要給 log（建置失敗時的輸出文字，整段貼上最好）' };
+            const text = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, ''); const lines = text.split('\n');
+            const clean = lines.map((l) => l.replace(/^\|\s?/, '').replace(/^\s*\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\s+/, ''));
+            const systems = SIGNS.filter(([, re]) => re.test(text)).map(([n]) => n); if (o.system && systems.indexOf(o.system) < 0) systems.push(o.system);
+            const ctx = { recipe: null, task: null, logfile: null, targets: [], locations: [], cmakeAt: [], ninja: [] };
+            for (const l of clean) {
+                let m = /(?:ERROR|NOTE|WARNING):\s+(?<recipe>[A-Za-z0-9_.+-]+?)(?:-[0-9][^\s]*)?-r\d+ do_(?<task>[a-z_]+)(?::|\s)/.exec(l); if (m && !ctx.recipe && /ERROR/.test(l)) { ctx.recipe = m.groups.recipe; ctx.task = m.groups.task; }
+                m = /Logfile of failure stored in:\s*(\S+)/i.exec(l); if (m) ctx.logfile = m[1];
+                m = /Task \((?<f>[^)]+?):do_(?<task>[a-z_]+)\) failed/.exec(l); if (m && !ctx.recipe) { ctx.recipe = m.groups.f.replace(/^.*\//, '').replace(/\.bb(append)?$/, ''); ctx.task = m.groups.task; }
+                m = /make(?:\[(?<lvl>\d+)\])?: \*\*\* \[(?:(?<f>[^:\]]+):(?<ln>\d+): )?(?<t>[^\]]+)\] Error (?<c>\d+)/.exec(l); if (m && ctx.targets.length < 6) ctx.targets.push({ target: m.groups.t, file: m.groups.f || '', line: m.groups.ln || '', code: m.groups.c, level: m.groups.lvl || '0' });
+                m = /^FAILED:\s+(\S.*)$/.exec(l); if (m && ctx.ninja.length < 4) ctx.ninja.push(m[1].trim());
+                m = /CMake Error at (?<f>[^:\s]+):(?<ln>\d+) \((?<cmd>[\w]+)\)/.exec(l); if (m && ctx.cmakeAt.length < 4) ctx.cmakeAt.push({ file: m.groups.f, line: m.groups.ln, command: m.groups.cmd });
+                m = /(?<f>[^\s:()]+\.(?:c|cc|cpp|cxx|h|hpp|S|s|cu|java|rs|go|py|ts|js)):(?<ln>\d+)(?::(?<col>\d+))?:\s*(?:fatal )?(?:error|Error)/.exec(l); if (m && ctx.locations.length < 8) ctx.locations.push({ file: m.groups.f, line: m.groups.ln, col: m.groups.col || '' });
+            }
+            const rules = buildRules(); const hits = []; const seen = new Set(); const matchedLines = new Set();
+            const fmt = (s, m) => String(s || '').replace(/\{(\w+)\}/g, (all, k) => { const v = grp(m, k); const w = v !== undefined ? v : (/^\d+$/.test(k) ? m[+k] : undefined); return w === undefined ? (/^[a-z]\w*$/.test(k) ? '' : all) : w; });
+            for (let i = 0; i < clean.length; i++) {
+                const l = clean[i]; if (!l.trim() || l.length > 2000) continue;
+                for (const r of rules) {
+                    if (r.system !== 'any' && systems.length && systems.indexOf(r.system) < 0 && !o.anySystem) continue;
+                    const m = r._re.exec(l); if (!m) continue; const whatText = fmt(r.what, m); const key = r.once ? r.id : r.id + '|' + whatText; if (seen.has(key)) { matchedLines.add(i); continue; } seen.add(key); matchedLines.add(i); const lvl = r.level === 'root' && /^\s*(?:WARNING|NOTE):|\bwarning:/i.test(l) && !/\berror\b/i.test(l) ? 'warn' : r.level;
+                    const eno = grp(m, 'errno'); let enoMeaning; if (eno !== undefined && /^-?\d+$/.test(eno)) { const dn = describeNum(Math.abs(parseInt(eno, 10)), 'linux').filter((x) => x.system === 'linux_errno')[0]; if (dn) enoMeaning = dn.name + '（' + dn.code + '）＝' + (dn.note || dn.message); }
+                    hits.push({ id: r.id, system: r.system, level: lvl, line: i + 1, text: l.trim().slice(0, 240), what: whatText, causes: r.causes.map((c) => fmt(c, m)), fixes: r.fixes.map((c) => fmt(c, m)), errno: enoMeaning, see: r.see || undefined });
+                }
+            }
+            const roots = hits.filter((h) => h.level === 'root'), casc = hits.filter((h) => h.level === 'cascade'), warns = hits.filter((h) => h.level === 'warn');
+            const unmatched = []; const ERRLINE = /(?:^|\s)(?:fatal )?error\b|\bERROR\b|\*\*\*|FAILED|Error \d+|cannot|undefined|not found|No such file|failed|\bfatal\b|exception|\bpanic\b|abort|\bdied\b|crash|exploded|denied|refused|time(?:d )?out|invalid|unable|unexpected|\bBUG\b|\bOops\b|traceback/i;
+            for (let i = 0; i < clean.length && unmatched.length < 8; i++) { const l = clean[i].trim(); if (l && !matchedLines.has(i) && ERRLINE.test(l) && l.length < 400 && !/^(?:make|ninja)\b.*(?:Entering|Leaving)/.test(l)) unmatched.push({ line: i + 1, text: l.slice(0, 240) }); }
+            // 傳遞鏈：由內到外
+            const chain = [];
+            if (roots.length) chain.push('原始錯誤（' + (roots[0].system) + '）：' + roots[0].what.split('。')[0]);
+            for (const g of ctx.targets.slice(0, 3)) chain.push('make 的目標 ' + g.target + (g.file ? '（' + g.file + ':' + g.line + '）' : '') + ' 的命令失敗，退出碼 ' + g.code + (g.code === '127' ? '（找不到命令）' : g.code === '126' ? '（不能執行）' : g.code === '139' ? '（程式當掉 SIGSEGV）' : g.code === '137' ? '（被殺掉，常是記憶體不足）' : '') + '，make 往上一層回報 Error');
+            for (const f of ctx.ninja.slice(0, 2)) chain.push('ninja 的步驟失敗：' + f);
+            if (ctx.recipe) chain.push('BitBake：配方 ' + ctx.recipe + ' 的 do_' + ctx.task + ' 失敗' + (ctx.logfile ? '，詳細日誌 ' + ctx.logfile : '（詳細日誌在 tmp/work/…/temp/log.do_' + ctx.task + '）'));
+            const parts = []; const LOGKIND = { kernel: '核心日誌', panic: '核心 panic', journal: 'systemd／journal 日誌', gdb: 'gdb 輸出', runtime: '執行期錯誤' }; if (systems.length) parts.push('看起來是 ' + systems.map((s) => LOGKIND[s] || s).join('、') + (systems.some((s) => LOGKIND[s]) && !systems.some((s) => !LOGKIND[s]) ? '' : ' 的輸出')); else parts.push('不確定是哪個系統的輸出');
+            if (roots.length) parts.push('根本原因：' + roots.slice(0, 3).map((h) => '第 ' + h.line + ' 行「' + h.what.split('。')[0] + '」').join('；')); else if (casc.length) parts.push('只看到連帶結果（' + casc[0].what.split('。')[0] + '），找不到根本原因，要往上找第一個 error');
+            if (chain.length > 1) parts.push('傳遞路徑：' + chain.join(' → '));
+            const summary = parts.join('。') + '。';
+            const res = { ok: roots.length + casc.length + warns.length > 0, systems, context: { recipe: ctx.recipe || undefined, task: ctx.task || undefined, logfile: ctx.logfile || undefined, failed_targets: ctx.targets.length ? ctx.targets : undefined, failed_ninja: ctx.ninja.length ? ctx.ninja : undefined, cmake_at: ctx.cmakeAt.length ? ctx.cmakeAt : undefined, locations: ctx.locations.length ? ctx.locations : undefined }, summary, chain, root_causes: roots.slice(0, 8), consequences: casc.slice(0, 6), warnings: warns.slice(0, 5), unmatched_error_lines: unmatched };
+            if (!res.ok) res.hint = '沒有比對到收錄的規則。可以請 AI 看完整日誌找原因，並用 ref_define（kind:"build_error_rule"）補一條規則，下次離線也能直接說明。';
+            else if (unmatched.length) res.hint = '另外有 ' + unmatched.length + ' 行錯誤沒有對應規則（unmatched_error_lines），可請 AI 查資料後用 ref_define 補規則。';
+            res.markdown = buildMarkdown(res); return res;
+        }
+        function buildMarkdown(r) {
+            const L = ['**' + r.summary + '**']; const one = (h) => { L.push('', '- 第 ' + h.line + ' 行：`' + h.text + '`', '  - 發生什麼事：' + h.what); if (h.errno) L.push('  - 錯誤碼：' + h.errno); if (h.causes.length) L.push('  - 常見原因：' + h.causes.join('；')); if (h.fixes.length) L.push('  - 怎麼處理：' + h.fixes.join('；')); };
+            if (r.root_causes.length) { L.push('', '### 根本原因'); r.root_causes.forEach(one); }
+            if (r.consequences.length) { L.push('', '### 連帶結果（不是原因，是上面錯誤造成的）'); r.consequences.slice(0, 4).forEach((h) => L.push('- 第 ' + h.line + ' 行：' + h.what)); }
+            if (r.warnings.length) { L.push('', '### 警告'); r.warnings.forEach(one); }
+            if (r.unmatched_error_lines.length) { L.push('', '### 還沒有規則的錯誤行'); r.unmatched_error_lines.forEach((u) => L.push('- 第 ' + u.line + ' 行：`' + u.text + '`')); }
+            return L.join('\n');
+        }
         function build() {
             idx.byName = new Map(); idx.bySys = {};
             const sys = Object.keys(data.errors || {}).concat(Object.keys(U.errors).filter((k) => !(data.errors || {})[k]));
@@ -261,17 +332,18 @@
         // ---------------- 執行期補的定義 → 內建來源檔的格式（之後交給 Claude 或其他 AI 協助併進內建）----------------
         const clean = (s) => String(s == null ? '' : s).replace(/\s*\|\s*/g, '／').replace(/\n+/g, ' ').trim();
         function exportBuiltin(u) {
-            u = u || U; const out = { errors_dsl: '', commands_dsl: '', pragmas_dsl: '', generic: [] };
+            u = u || U; const out = { buildrules_dsl: '', errors_dsl: '', commands_dsl: '', pragmas_dsl: '', generic: [] };
             const el = []; for (const [s, rows] of Object.entries(u.errors || {})) { if (!rows.length) continue; el.push('@' + s); for (const r of rows) el.push([r.code, clean(r.name), clean(r.msg), clean((r.note || '') + (r.src ? '（來源：' + r.src + '）' : ''))].join(' | ')); } out.errors_dsl = el.join('\n') + (el.length ? '\n' : '');
             const cl = []; const names = new Set(Object.keys(u.commands || {}).concat(Object.keys(u.options || {})));
             for (const n of names) { const c = (u.commands || {})[n] || {}; cl.push('## ' + [clean(n), (c.aliases || []).map(clean).join(','), clean(c.summary || ''), clean(c.synopsis || '')].join(' | ')); for (const o of (c.options || []).concat((u.options || {})[n] || [])) cl.push([clean(o.flag), clean(o.arg || ''), clean(o.desc || '') + (o.src ? '（來源：' + clean(o.src) + '）' : '')].join(' | ')); } out.commands_dsl = cl.join('\n') + (cl.length ? '\n' : '');
             const pl = []; if ((u.pragmas || []).length) { pl.push('@pragma'); for (const p of u.pragmas) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } if ((u.clauses || []).length) { pl.push('@clause'); for (const p of u.clauses) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } out.pragmas_dsl = pl.join('\n') + (pl.length ? '\n' : '');
+            const bl = []; for (const r of (u.buildRules || [])) { bl.push('## ' + [clean(r.id), clean(r.system || 'any'), clean(r.level || 'root')].join(' | ')); bl.push('re: ' + String(r.re).replace(/\n/g, ' ')); bl.push('what: ' + clean(r.what) + (r.src ? '（來源：' + clean(r.src) + '）' : '')); (r.causes || []).forEach((c) => bl.push('cause: ' + clean(c))); (r.fixes || []).forEach((c) => bl.push('fix: ' + clean(c))); bl.push(''); } out.buildrules_dsl = bl.join('\n');
             out.generic = (u.generic || []).map((g) => ({ kind: g.kind, key: g.key, text: g.text, tags: g.tags || [], rules: g.rules || undefined, src: g.src || '' }));
             return out;
         }
         return {
-            exportBuiltin, setUser(u) { mergeUser(u); idx.built = false; }, lookup, lookupError, lookupCommand, explainCommandLine, explainPragma, annotateText, tokenize, hresultDecode, ntDecode, errorLine, tokenizeShell,
-            stats() { ensure(); const e = {}; for (const [k, m] of Object.entries(idx.bySys)) e[k] = m.size; const c = Object.keys(data.commands || {}).length + Object.keys(U.commands).length; let o = 0; for (const x of Object.values(data.commands || {})) o += (x.options || []).length; return { errors: e, commands: c, options: o, pragmas: (data.pragmas || []).length + U.pragmas.length, clauses: (data.clauses || []).length + U.clauses.length, generic: allGeneric().length }; },
+            diagnoseBuild, diagnoseLog: diagnoseBuild, validateBuildRules() { const all = (data.buildRules || []).concat(U.buildRules || []); const bad = []; for (const r of all) { try { new RegExp(dedupeGroups(r.re), 'i'); } catch (e) { bad.push({ id: r.id, error: String(e.message).slice(0, 100) }); } } return { total: all.length, invalid: bad }; }, exportBuiltin, setUser(u) { mergeUser(u); idx.built = false; }, lookup, lookupError, lookupCommand, explainCommandLine, explainPragma, annotateText, tokenize, hresultDecode, ntDecode, errorLine, tokenizeShell,
+            stats() { ensure(); const e = {}; for (const [k, m] of Object.entries(idx.bySys)) e[k] = m.size; const c = Object.keys(data.commands || {}).length + Object.keys(U.commands).length; let o = 0; for (const x of Object.values(data.commands || {})) o += (x.options || []).length; return { errors: e, commands: c, options: o, pragmas: (data.pragmas || []).length + U.pragmas.length, clauses: (data.clauses || []).length + U.clauses.length, generic: allGeneric().length, build_rules: buildRules().length }; },
         };
     }
     return { create };
