@@ -47077,12 +47077,13 @@ ${existingNodeSummaries}
             const cut = allChips.findIndex((c) => c && c.text === '/ai-features');
             const shownChips = cut >= 0 ? allChips.slice(0, cut + 1) : allChips;
             const moreChips = cut >= 0 ? allChips.slice(cut + 1) : [];
-            const addChip = (row, c, afterUse) => {
+            const addChip = (row, c, afterUse, asRow) => {
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'ai-suggestion-chip';
                 btn.style.cssText = `padding:4px 10px; border-radius:999px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:12px; cursor:pointer;`;
                 btn.textContent = c.label || c.text;
+                if (asRow) { btn.style.flex = '1'; btn.style.textAlign = 'left'; btn.style.borderRadius = '8px'; btn.style.whiteSpace = 'normal'; }
                 btn.addEventListener('click', () => {
                     const inputEl = document.getElementById('ai-input-text');
                     if (inputEl) { inputEl.value = c.text; inputEl.focus(); }
@@ -47115,17 +47116,53 @@ ${existingNodeSummaries}
                     const dlg = document.createElement('div');
                     dlg.style.cssText = `width:min(720px,92vw); max-height:80vh; overflow:auto; padding:16px 18px; border-radius:10px; background:${palette.assistantBg}; color:${palette.assistantText}; border:1px solid ${palette.windowBorder}; box-shadow:0 10px 40px rgba(0,0,0,.5);`;
                     const head = document.createElement('div');
-                    head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:14px; font-weight:600;';
+                    head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:14px; font-weight:600; position:sticky; top:-16px; padding:6px 0; z-index:1; background:' + palette.assistantBg + ';';
                     head.textContent = '💡 全部建議操作（點擊填入輸入框，▶ 直接執行）';
                     const x = document.createElement('button');
                     x.type = 'button'; x.textContent = '✕'; x.title = '關閉';
                     x.style.cssText = 'border:none; background:none; color:inherit; font-size:16px; cursor:pointer;';
                     head.appendChild(x);
                     const body = document.createElement('div');
-                    body.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px;';
+                    body.style.cssText = 'display:flex; flex-direction:column; gap:6px;';
                     const close = () => { try { ov.remove(); } catch (_) {} document.removeEventListener('keydown', onKey, true); };
                     const onKey = (e) => { if (e.key === 'Escape') close(); };
-                    allChips.forEach((c) => addChip(body, c, close));
+                    const catalog = this.getFeaturesCatalog();
+                    const rowBox = (parent) => { const r = document.createElement('div'); r.style.cssText = 'display:flex; align-items:center; gap:4px;'; parent.appendChild(r); return r; };
+                    const sectionTitle = (text) => { const t = document.createElement('div'); t.style.cssText = 'margin:8px 0 2px; font-size:12px; opacity:.7;'; t.textContent = text; body.appendChild(t); };
+                    // 第一層：快速開始（host 的建議＋AI功能總覽）
+                    sectionTitle('快速開始');
+                    shownChips.forEach((c) => addChip(rowBox(body), c, close, true));
+                    // 第一層：各功能分類，可展開；展開後是第二層（該分類裡的每個功能，點一下填入範例）
+                    if (moreChips.length) sectionTitle('依分類瀏覽（點三角形展開）');
+                    moreChips.forEach((c) => {
+                        const m = /^\/ai-features\s+(\S+)/.exec(String(c.text || ''));
+                        const cat = m && catalog ? catalog.categories.find((x) => x.id === m[1]) : null;
+                        const det = document.createElement('details');
+                        det.style.cssText = 'border:1px solid ' + palette.inputBorder + '; border-radius:8px; padding:4px 8px;';
+                        const sum = document.createElement('summary');
+                        sum.style.cssText = 'cursor:pointer; display:flex; align-items:center; gap:6px; list-style-position:outside;';
+                        const head = document.createElement('span');
+                        head.style.cssText = 'flex:1; font-size:12px; font-weight:600;';
+                        head.textContent = cat ? cat.name + (cat.summary ? '　' + cat.summary : '') : (c.label || c.text);
+                        sum.appendChild(head);
+                        const go = document.createElement('button');
+                        go.type = 'button'; go.textContent = '▶'; go.title = '顯示這個分類的說明';
+                        go.style.cssText = 'padding:2px 8px; border-radius:999px; border:1px solid ' + palette.inputBorder + '; background:' + palette.detailBg + '; color:#76b900; font-size:11px; cursor:pointer;';
+                        go.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const inputEl = document.getElementById('ai-input-text'); if (inputEl) { inputEl.value = c.text; this._submitChatInput(inputEl, null); } close(); });
+                        sum.appendChild(go);
+                        det.appendChild(sum);
+                        const inner = document.createElement('div');
+                        inner.style.cssText = 'display:flex; flex-direction:column; gap:5px; margin:8px 0 4px 14px;';
+                        const feats = cat ? cat.features.filter((f) => f.available) : [];
+                        if (feats.length) feats.forEach((f) => {
+                            const text = (f.samples && f.samples[0]) ? f.samples[0] : '/ai-features ' + f.id;
+                            addChip(rowBox(inner), { label: f.name + (f.summary ? '：' + String(f.summary).slice(0, 60) : ''), text }, close, true);
+                        });
+                        else addChip(rowBox(inner), c, close, true);
+                        det.appendChild(inner);
+                        body.appendChild(det);
+                    });
+                    if (!moreChips.length) allChips.filter((c) => shownChips.indexOf(c) < 0).forEach((c) => addChip(rowBox(body), c, close, true));
                     x.addEventListener('click', close);
                     ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
                     document.addEventListener('keydown', onKey, true);
