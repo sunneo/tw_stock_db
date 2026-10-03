@@ -819,8 +819,19 @@ function patchCloudflareWording(root) {
     async (rawArgs) => {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
+      // 2026-10-03：模型常把參數寫成 cmd（字串或陣列），原本一律回「缺少command參數」讓它反覆試錯；這裡認得 cmd／executable／program 別名
+      if (!parsed.command) {
+        const alt = parsed.cmd ?? parsed.executable ?? parsed.program;
+        if (Array.isArray(alt) && alt.length) { parsed.command = String(alt[0]); if (!Array.isArray(parsed.args) || !parsed.args.length) parsed.args = alt.slice(1).map(String); }
+        else if (typeof alt === "string" && alt.trim()) parsed.command = alt;
+      }
+      // python - <<'PY' ... 這類 heredoc 被拆成 args 會被加引號而壞掉：偵測到就把整段當成一行指令交給 shell
+      if (Array.isArray(parsed.args) && parsed.args.length && typeof parsed.args[0] === "string" && /^-\s*<<-?\s*['"]?\w+/.test(parsed.args[0])) {
+        parsed.command = [parsed.command].concat(parsed.args).join(" ");
+        parsed.args = [];
+      }
       const command = String(parsed.command || "").trim();
-      if (!command) return JSON.stringify({ ok: false, error: "缺少command參數" });
+      if (!command) return JSON.stringify({ ok: false, error: "缺少command參數（要執行的指令；參數名稱是 command，可另給 args 陣列）" });
       let rootId = null;
       if (parsed.root_ref) {
         try {
@@ -965,9 +976,16 @@ function patchCloudflareWording(root) {
       let parsed = {};
       try { parsed = await fa.repairJsonPayload(String(rawArgs || "{}")); } catch (_) {}
       try {
-        const payload = parsed.encoding === "base64" ? { base64: String(parsed.content ?? "") } : { text: String(parsed.content ?? "") };
+        // 2026-10-03：模型把參數名稱寫成 contents／text／data 時，原本會靜默寫出 0 bytes 的空檔卻回報成功（週報 config 因此是空的、AI 重複寫了三次都沒發現）。
+        // 現在認得常見的別名；完全沒給內容就直接報錯，不寫檔。
+        const body = ["content", "contents", "text", "data", "body"].map((k) => parsed[k]).find((v) => v !== undefined && v !== null);
+        if (body === undefined) return JSON.stringify({ ok: false, error: "缺少content參數（要寫入的內容）。參數名稱是 content，不是 contents／text。沒有寫入任何東西。" });
+        const payload = parsed.encoding === "base64" ? { base64: String(body) } : { text: typeof body === "string" ? body : JSON.stringify(body, null, 2) };
         const r = await window.desktopAPI.rawfs.writeFile(parsed.path, payload);
-        return JSON.stringify({ ok: true, ...r });
+        const out = { ok: true, ...r };
+        if (r && r.sizeBytes === 0 && String(body).length > 0) { out.ok = false; out.error = "寫入後檔案是 0 bytes，但你要寫的內容不是空的，寫入失敗。"; }
+        else if (r && r.sizeBytes === 0) out.note = "你寫入的內容是空字串，檔案現在是空的（0 bytes）。";
+        return JSON.stringify(out);
       } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
     },
     fsToolSchema({
