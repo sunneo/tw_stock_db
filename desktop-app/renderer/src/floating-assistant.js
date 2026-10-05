@@ -21104,6 +21104,7 @@ ${fnData.code}
         this._riPaneRegistered = true;
         this.registerAdvancedSettingsTab('ai', 'project-index', '專案索引（程式碼問答）', root);
         const refresh = () => this._riRenderPane();
+        root.addEventListener('input', (ev) => { if (ev.target && ev.target.id === 'ai-ri-new') this._riNewValue = ev.target.value; });
         root.addEventListener('change', (ev) => {
             const t = ev.target;
             if (t.dataset.riSel) { this.advancedSettings[t.dataset.riSel] = t.value; this._saveAdvancedSettings(); return; }
@@ -21117,7 +21118,7 @@ ${fnData.code}
             const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
             try {
                 if (act === 'start') { const r = await this._repoIndexStart(rootKey, {}); if (r.declined) say('已取消。'); }
-                else if (act === 'browse') { const inp0 = root.querySelector('#ai-ri-new'); const pick = await this._repoPickFolder(inp0 && inp0.value && inp0.value.indexOf('fap:') !== 0 ? inp0.value : undefined); if (pick && pick.error) say('⚠️ ' + pick.error); else if (pick && pick.root) { if (inp0) inp0.value = pick.root; if (pick.created) say('📁 已授權資料夾，AI 之後可以用 ' + pick.root + ' 存取。按「建立索引」開始。'); return; } else return; }
+                else if (act === 'browse') { const inp0 = root.querySelector('#ai-ri-new'); const pick = await this._repoPickFolder(inp0 && inp0.value && inp0.value.indexOf('fap:') !== 0 ? inp0.value : undefined); if (pick && pick.error) say('⚠️ ' + pick.error); else if (pick && pick.root) { this._riNewValue = pick.root; const inpNow = root.querySelector('#ai-ri-new') || inp0; if (inpNow) inpNow.value = pick.root; if (pick.created) say('📁 已授權資料夾，AI 之後可以用 ' + pick.root + ' 存取。按「建立索引」開始。'); return; } else return; }
                 else if (act === 'add') { const inp = root.querySelector('#ai-ri-new'); const p = this._repoMapKey(inp ? inp.value : ''); if (!p) return; const r = await this._repoIndexStart(p, {}); if (r.declined) say('已取消。'); }
                 else if (act === 'stop') this._repoIndexStop(rootKey);
                 else if (act === 'view') { const r = await this._aidocViewerOpen(rootKey); if (!r.ok) say('⚠️ ' + r.error); }
@@ -21141,7 +21142,7 @@ ${fnData.code}
         const inp = 'padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc; font-size:12px;';
         const btn = 'padding:3px 9px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
         const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-        const keep = root.querySelector('#ai-ri-new') ? root.querySelector('#ai-ri-new').value : '';
+        const keepEl = root.querySelector('#ai-ri-new'); const keep0 = keepEl ? keepEl.value : '';
         const isDesk = typeof window !== 'undefined' && !!(window.desktopAPI && window.desktopAPI.roots && window.desktopAPI.roots.browse);
         const projects = [];
         try { for (const r of await this.repoMapCache.getAll()) if (r.kind === 'repo_map' && String(r.id).indexOf('map:') === 0) projects.push({ root: String(r.id).slice(4), size: r.sizeBytes || (r.blob && r.blob.size) || 0 }); } catch (_) {}
@@ -21164,7 +21165,7 @@ ${fnData.code}
                 <label title="最多分析幾個原始碼檔，超過就停下來（可以調高後接續）">檔案數上限 <input type="number" min="1" step="1000" value="${S.repoIndexMaxFiles}" data-ri-set="repoIndexMaxFiles" style="${inp} width:110px;"></label>
                 <label title="索引（地圖）資料的大小上限，超過就停下來">索引大小上限（MB） <input type="number" min="1" step="10" value="${S.repoIndexMaxMb}" data-ri-set="repoIndexMaxMb" style="${inp} width:90px;"></label></div>
             <div style="margin-bottom:8px;"><label title="索引完成、深入探討完成後，自動把說明（和可選的索引資料）存進專案資料夾的 .floating-assistant/index/，不同人拿同一份專案可以接著延伸">索引自動存回專案資料夾 <select data-ri-sel="repoIndexAutoSave" style="${inp}"><option value="off" ${(S.repoIndexAutoSave || 'off') === 'off' ? 'selected' : ''}>否</option><option value="notes" ${S.repoIndexAutoSave === 'notes' ? 'selected' : ''}>是，只存說明</option><option value="all" ${S.repoIndexAutoSave === 'all' ? 'selected' : ''}>是，說明＋索引資料</option></select></label><input type="file" id="ai-ri-import-file" accept=".json,application/json" style="display:none;"></div>
-            <div style="display:flex; gap:6px; margin-bottom:6px;"><button style="${btn}" data-ri="browse" title="${isDesk ? '選擇專案資料夾（直接使用路徑）' : '選擇專案資料夾（選完會自動授權成 fap）'}">📁 瀏覽…</button><input id="ai-ri-new" placeholder="${isDesk ? '專案資料夾：按左邊「瀏覽」選擇，或貼上絕對路徑' : '按左邊「瀏覽」選資料夾（會自動授權成 fap），或輸入 fap:名稱'}" value="${esc(keep)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
+            <div style="display:flex; gap:6px; margin-bottom:6px;"><button style="${btn}" data-ri="browse" title="${isDesk ? '選擇專案資料夾（直接使用路徑）' : '選擇專案資料夾（選完會自動授權成 fap）'}">📁 瀏覽…</button><input id="ai-ri-new" placeholder="${isDesk ? '專案資料夾：按左邊「瀏覽」選擇，或貼上絕對路徑' : '按左邊「瀏覽」選資料夾（會自動授權成 fap），或輸入 fap:名稱'}" value="${esc(this._riNewValue != null ? this._riNewValue : keep0)}" style="${inp} flex:1;"><button style="${btn}" data-ri="add">建立索引</button></div>
             ${rows.join('') || '<div style="color:#94a3b8;">還沒有建立過索引的專案。</div>'}`;
     }
     _otRegisterPane() {
