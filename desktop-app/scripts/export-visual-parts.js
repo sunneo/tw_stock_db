@@ -13,7 +13,8 @@ for (const e of eng.listTyped('visual_part')) {
     const raw = e.customize || {};
     // 容器＝自己有 parts（或繼承來的有 parts）且是 face／animal 群組的條目
     const r = eng.resolve('visual_part', e.key);
-    if (r.ok && r.value && Array.isArray(r.value.parts) && r.value.parts.length && /^(face|animal)$/.test(r.value.group || '')) containers.push({ key: e.key, text: e.text, value: r.value });
+    const top = !!(r.ok && r.value && r.value.detect && r.value.detect.top_level);
+    if (r.ok && r.value && ((Array.isArray(r.value.parts) && r.value.parts.length && /^(face|animal)$/.test(r.value.group || '')) || top)) containers.push({ key: e.key, text: e.text, value: r.value });
 }
 const out = { format: 'fa-visual-parts', version: 1, generatedAt: new Date().toISOString(), containers };
 const dest = process.argv[2] || path.join(root, 'skills/image-decompose-redraw/data/parts_builtin.json');

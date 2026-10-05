@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""部位偵測與局部深度（純幾何、不需要 AI）：依知識庫裡展開好的 visual_part 定義，找出臉（容器）與五官、頭髮、耳朵等部位，
+"""部位偵測與局部深度（純幾何、不需要 AI）：依知識庫裡展開好的 visual_part 定義，找出容器（臉、動物臉，或使用者標註的任何物件）與它的部位（五官、頭髮、耳朵、車輪…），
 把「臉是圓頂、鼻子突起、眼窩凹陷、頭髮有體積」這類語意加到 2.5D 模型的深度上。
 
 知識從哪來：`parts.json`（由助理的知識庫 `ref_resolve` 展開，或 `scripts/export-visual-parts.js` 匯出）。這個模組只實作「基本動作」——
@@ -313,16 +313,16 @@ def _run_container(lab, cont, comp, score):
             n = max(1, int(p.get("count") or 1))
             ev_den += w
             ev_num += w * sum(fp["confidence"] for fp in found_parts if fp["source"] == "detected") / n
-    return result, (ev_num / ev_den if ev_den else 0.0)
+    return result, (ev_num / ev_den if ev_den else 0.5)  # 沒有子部位可驗證（頂層物件）：證據中性 0.5，信心只靠顏色、大小、形狀
 
 
 def detect_parts(lab, parts_data):
     """回傳 {container: {...} 或 None, parts: [...], reason}。每個 part：{id, group, bbox, confidence, source, depth, mask?}。
     容器候選（顏色、大小、形狀）每一個都實際比對一次部位，用「找到的五官證據」加權後才選：
     只靠形狀與顏色，棕色頭髮會被當成臉，裡面有沒有眼睛嘴巴才是區分的關鍵。最後的信心 ＝ 形狀分數 ×（0.4 + 0.6 × 五官證據）。"""
-    containers = [c for c in (parts_data or {}).get("containers", []) if c.get("value", {}).get("parts")]
+    containers = [c for c in (parts_data or {}).get("containers", []) if c.get("value", {}).get("parts") or (c.get("value", {}).get("detect") or {}).get("top_level")]
     if not containers:
-        return {"container": None, "parts": [], "reason": "知識庫裡沒有可用的容器定義（visual_part 的 parts）"}
+        return {"container": None, "parts": [], "reason": "知識庫裡沒有可用的容器或頂層物件定義（visual_part 的 parts，或 detect.top_level）"}
     cands = container_candidates(lab, containers)
     if not cands:
         return {"container": None, "parts": [], "reason": "沒有偵測到符合的容器（臉或動物臉）：顏色、大小或形狀都對不上；這張圖可能沒有臉，或臉的顏色不在已登記的顏色族群裡（可以用 ref_define 補顏色族群與容器）"}
