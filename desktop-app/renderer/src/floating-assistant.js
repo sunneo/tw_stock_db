@@ -6859,7 +6859,7 @@ const BUILTIN_SKILLS = [
 
 ## 在助理裡怎麼用（重要）
 
-- 直接呼叫工具 image_decompose_redraw，不要自己去讀 scripts 或重寫程式。參數：image（使用者用📎上傳的圖片的 file_id 或檔名；先用 list_uploaded_files 查）、vision（off／auto／on，預設 off）、preview（true 會多產生正面與左右各轉 15° 的預覽圖）、max_side、max_leaves、welded，以及 output_ref（留空＝存進 persistentStorage 並出現下載卡片；fap:<名稱>[/<子路徑>]＝存進使用者授權的資料夾）。
+- 直接呼叫工具 image_decompose_redraw，不要自己去讀 scripts 或重寫程式。參數：image（選填；省略時工具會自己去拿這個對話最新的圖片附件，使用者貼上或上傳的圖片送出後訊息裡的 file_id 就是它，不用你抄 id；附了好幾張或找不到時工具會自己跳對話框讓使用者選，你不用先問；指定別張圖才給 file_id 或檔名）、vision（off／auto／on，預設 off）、preview（true 會多產生正面與左右各轉 15° 的預覽圖）、max_side、max_leaves、welded，以及 output_ref（留空＝存進 persistentStorage 並出現下載卡片；fap:<名稱>[/<子路徑>]＝存進使用者授權的資料夾）。
 - 使用者要「更準的前後順序」或圖裡有複雜重疊時用 vision:"auto"：會用助理已設定、支援讀圖的 Model 看圖決定每個區域的名稱與景深；沒有支援讀圖的 Model 時自動退回純幾何，結果的 stats.depth_source 會寫 geometry 或 vision，照實轉告使用者。
 - 圖片不是上傳的附件（例如在使用者授權的資料夾裡）時，先請使用者用📎上傳，或用把資料夾檔案複製到 persistentStorage 的工具取得 file_id，再呼叫。
 - 回報結果時照實說：景深是猜測、邊界精度約等於最小格子大小、轉動視角時被擋住的地方是空洞（不會編造內容）。stdout 的 JSON 摘要有區域數、三角形數、耗時。
@@ -14994,12 +14994,31 @@ ${fnData.code}
         // 內建技能 image-decompose-redraw 的執行入口：把嵌入的腳本（FA_IDR_SKILL_FILES）寫進 python_execute 的工作目錄，用附件（二進位也可以）當輸入跑 run_geometric.py。
         // 純幾何軌道不呼叫模型；vision 為 auto／on 時，腳本裡的 anthropic／openai 呼叫由 Python API 轉接層（只在執行技能包期間啟用）轉給助理已設定、支援讀圖的 Model。
         registerOptional('image_decompose_redraw',
-            '把一張圖片分解並向量重繪：四叉樹三角網格 → 區域聚類與景深猜測 → 距離變換充氣成 2.5D 幾何體 → 原圖顏色重新取樣貼回。輸出 SVG（依景深由遠到近）、網格 JSON（頂點 xyz、UV、頂點顏色、區域與景深）、OBJ＋貼圖，preview:true 另有正面與左右轉 15° 的預覽圖。參數: {"image":"📎上傳的圖片的file_id或檔名","vision":"off|auto|on（預設off；auto＝有支援讀圖的Model就用它決定前後順序，否則退回純幾何）","preview":false,"max_side":384,"max_leaves":3000,"welded":false,"output_ref":"留空=存進persistentStorage並出現下載卡片；fap:<名稱>[/<子路徑>]=存進使用者授權的資料夾"}',
+            '把一張圖片分解並向量重繪：四叉樹三角網格 → 區域聚類與景深猜測 → 距離變換充氣成 2.5D 幾何體 → 原圖顏色重新取樣貼回。輸出 SVG（依景深由遠到近）、網格 JSON（頂點 xyz、UV、頂點顏色、區域與景深）、OBJ＋貼圖，preview:true 另有正面與左右轉 15° 的預覽圖。參數: {"image":"（選填）📎上傳的圖片的file_id或檔名；省略＝自動用這個對話最新的圖片附件，拿不準時會跳對話框讓使用者選","vision":"off|auto|on（預設off；auto＝有支援讀圖的Model就用它決定前後順序，否則退回純幾何）","preview":false,"max_side":384,"max_leaves":3000,"welded":false,"output_ref":"留空=存進persistentStorage並出現下載卡片；fap:<名稱>[/<子路徑>]=存進使用者授權的資料夾"}',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const image = String(parsed.image || '').trim();
-                if (!image) return JSON.stringify({ ok: false, error: '缺少 image 參數：請給使用者📎上傳的圖片的 file_id 或檔名（list_uploaded_files 可以查）' });
+                let image = String(parsed.image || '').trim();
+                // 沒給 image：自己去拿這個對話最新的圖片附件（送出時訊息裡帶的 file_id），不用 AI 抄 id；拿不準就跳對話框讓使用者選
+                if (!image) {
+                    const cands = await this._attachmentCandidates('image');
+                    if (cands.length === 1) image = cands[0].id;
+                    else if (cands.length > 1) {
+                        const pick = await this._pickAttachmentInteractive(cands, '要處理哪一張圖片？', '這一則訊息附了好幾張圖片，請選一張（要處理其他張再送一次）。');
+                        if (!pick) return JSON.stringify({ ok: false, cancelled: true, error: '使用者取消了選擇，沒有處理任何圖片' });
+                        image = pick.id;
+                    } else {
+                        let recent = [];
+                        try {
+                            recent = (await this.fileCache.getAll()).filter((r) => r.kind === 'uploaded' && r.blob && (/^image\//i.test(r.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(r.filename || '')))
+                                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8).map((r) => ({ id: r.id, filename: r.filename, size: r.blob.size }));
+                        } catch (_) {}
+                        if (!recent.length) return JSON.stringify({ ok: false, error: '這個對話裡沒有圖片附件，也沒有先前上傳的圖片：請使用者貼上圖片（Ctrl+V）或用📎上傳後送出，再呼叫一次' });
+                        const pick = await this._pickAttachmentInteractive(recent, '要處理哪一張圖片？', '這個對話最近的訊息沒有圖片附件。要用先前上傳過的圖片嗎？（也可以取消，貼上新圖片再送出）');
+                        if (!pick) return JSON.stringify({ ok: false, cancelled: true, error: '使用者取消了選擇，沒有處理任何圖片；請使用者貼上或上傳圖片後再呼叫' });
+                        image = pick.id;
+                    }
+                }
                 if (typeof FA_IDR_SKILL_FILES === 'undefined' || !FA_IDR_SKILL_FILES['scripts/run_geometric.py']) return JSON.stringify({ ok: false, error: '這個版本沒有內嵌 image-decompose-redraw 的腳本' });
                 const vision = ['off', 'auto', 'on'].indexOf(String(parsed.vision || 'off')) >= 0 ? String(parsed.vision || 'off') : 'off';
                 const num = (v, lo, hi) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : null; };
@@ -15024,7 +15043,7 @@ ${fnData.code}
             {
                 type: 'object',
                 properties: {
-                    image: { type: 'string', description: '📎上傳的圖片的 file_id 或檔名' },
+                    image: { type: 'string', description: '選填：📎上傳的圖片的 file_id 或檔名；省略時自動用這個對話最新的圖片附件（附了好幾張或找不到時會跳對話框讓使用者選）' },
                     vision: { type: 'string', enum: ['off', 'auto', 'on'], description: '預設 off（純幾何）；auto：有支援讀圖的 Model 就用它決定前後順序，否則退回純幾何；on：一定要用，失敗就報錯' },
                     preview: { type: 'boolean', description: '是否產生正面與左右各轉 15° 的預覽圖' },
                     max_side: { type: 'number', description: '工作解析度（長邊像素，預設 384）' },
@@ -15032,7 +15051,6 @@ ${fnData.code}
                     welded: { type: 'boolean', description: 'true＝單片連續網格（2D↔3D 完全一對一，但沒有區域之間的景深落差）' },
                     output_ref: { type: 'string', description: '輸出位置：留空＝persistentStorage（下載卡片）；fap:<名稱>[/<子路徑>]＝使用者授權的資料夾' },
                 },
-                required: ['image'],
                 additionalProperties: false,
             }
         );
@@ -43827,6 +43845,40 @@ ${existingNodeSummaries}
         this._pendingAttachments = [];
         this._renderPendingAttachments();
         return note;
+    }
+
+    // 附件送出後訊息裡會帶「[附件：檔名（file_id=…）、…]」。技能或工具要用附件時自己來拿，不必由 AI 把 id 抄過來：
+    // 依對話由新到舊找，回傳「最近一則有附件的使用者訊息」裡符合 kind（'image'＝圖片、不給＝任何）的全部 [{id, filename, type, size}]（舊→新）。
+    async _attachmentCandidates(kind) {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            const m = this.messages[i];
+            if (!m || m.role !== 'user' || typeof m.content !== 'string') continue;
+            const mark = /\[附件：([^\]]*)\]/.exec(m.content);
+            if (!mark) continue;
+            const out = [];
+            const re = /([^、（]+?)（file_id=([\w-]+)）/g;
+            let x;
+            while ((x = re.exec(mark[1]))) {
+                let rec = null;
+                try { rec = await this.fileCache.get(x[2]); } catch (_) {}
+                if (!rec || !rec.blob) continue;
+                const type = rec.blob.type || '';
+                if (kind === 'image' && !/^image\//i.test(type) && !/\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1])) continue;
+                out.push({ id: x[2], filename: x[1].trim(), type, size: rec.blob.size });
+            }
+            if (out.length) return out;
+        }
+        return [];
+    }
+
+    // 拿不準要用哪個附件時，跳對話框讓使用者選（互動式補齊），不要猜。回傳選到的 {id, filename}，使用者取消回 null。
+    async _pickAttachmentInteractive(candidates, title, description) {
+        const label = (c) => `${c.filename}（${Math.max(1, Math.round((c.size || 0) / 1024))}KB）`;
+        const labels = candidates.map(label);
+        const ans = await this.requestUserForm({ title, description, choices: labels.concat(['取消']) });
+        if (!ans || !ans.confirmed || ans.answer === '取消') return null;
+        const k = labels.indexOf(ans.answer);
+        return k >= 0 ? candidates[k] : null;
     }
 
     async _submitChatInput(inputText, suggestBar) {
