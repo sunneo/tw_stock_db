@@ -75,10 +75,20 @@ function mdToHtml(src){
   var blocks=[];
   s=s.replace(/```[^\n]*\n([\s\S]*?)```/g,function(_,c){blocks.push('<pre>'+esc(c.replace(/\n$/,''))+'</pre>');return '\u0000'+(blocks.length-1)+'\u0000'});
   var lines=s.split('\n'),out=[],list=null;
+  (function(){ /* 表格：下一行是 |---|---| 分隔線就當表格；補齊左右的 |，表頭做成 th */
+    var SEP=/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+    for(var i=0;i<lines.length-1;i++){
+      if(lines[i].indexOf('|')<0||lines[i+1].indexOf('|')<0||!SEP.test(lines[i+1])||/^\u0000/.test(lines[i].trim()))continue;
+      var j=i;
+      while(j<lines.length&&lines[j].trim()&&lines[j].indexOf('|')>=0){var x=lines[j].trim();if(x.charAt(0)!=='|')x='|'+x;if(x.charAt(x.length-1)!=='|'||/\\\|$/.test(x))x+='|';lines[j]=(j===i?'\u0002':'')+x;j++}
+      i=j-1;
+    }
+  })();
   function inl(t){
     t=esc(t);
     t=t.replace(/`([^`]+)`/g,function(_,c){
       var raw=c.replace(/&amp;/g,'&');
+      if(/^[\w.+\-@\/]+\/$/.test(raw))return '<a class="l" data-go="dir:'+esc(raw.replace(/\/+$/,''))+'"><code>'+c+'</code></a>';
       var lm=/^(.+?):(\d+)(?:-(\d+))?$/.exec(raw);
       if(PATHRE.test(raw)&&lm)return locLink(lm[1],lm[2],lm[3],'<code>'+c+'</code>');
       if(PATHRE.test(raw))return '<a class="l" data-go="file:'+esc(raw)+'"><code>'+c+'</code></a>';
@@ -100,7 +110,7 @@ function mdToHtml(src){
     if((m=/^\s*[-*]\s+(.*)$/.exec(l))){if(list!=='ul'){close();out.push('<ul>');list='ul'}out.push('<li>'+inl(m[1])+'</li>');return}
     if((m=/^\s*\d+[.)]\s+(.*)$/.exec(l))){if(list!=='ol'){close();out.push('<ol>');list='ol'}out.push('<li>'+inl(m[1])+'</li>');return}
     if((m=/^>\s?(.*)$/.exec(l))){close();out.push('<blockquote>'+inl(m[1])+'</blockquote>');return}
-    if(/^\|.*\|\s*$/.test(l)){close();if(/^\|[\s:|-]+\|$/.test(l))return;var cells=l.trim().slice(1,-1).split('|');out.push('<table><tr>'+cells.map(function(c){return '<td>'+inl(c.trim())+'</td>'}).join('')+'</tr></table>');return}
+    if(/^\u0002?\|.*\|\s*$/.test(l)){close();var hd=l.charAt(0)==='\u0002';if(hd)l=l.slice(1);if(/^\|[\s:|-]+\|$/.test(l.trim())&&/-/.test(l))return;var cells=l.trim().slice(1,-1).split(/(?<!\\)\|/);var tg=hd?'th':'td';out.push('<table><tr>'+cells.map(function(c){return '<'+tg+'>'+inl(c.trim().replace(/\\\|/g,'|'))+'</'+tg+'>'}).join('')+'</tr></table>');return}
     close();
     if(!l.trim())return;
     out.push('<p>'+inl(l)+'</p>');
@@ -146,7 +156,7 @@ function onEvent(m){
   else if(m.type==='ai_answer'){var b3=AIB[m.id];if(b3){b3.node.querySelector('.h').textContent='AI 回答';b3.node.querySelector('.b').innerHTML=mdToHtml(m.text||'（沒有回答）');if(m.notes_changed){var a=document.createElement('div');a.className='mut';a.textContent='✅ AI 已把確認過的說明補進資料庫';b3.node.appendChild(a)}else if(cur.kind==='file'||cur.kind==='symbol'){var ac=document.createElement('div');ac.className='acts';var bt=document.createElement('button');bt.textContent='把這段存成說明';bt.onclick=function(){saveNote(b3.ctx||cur,m.text,bt)};ac.appendChild(bt);b3.node.appendChild(ac)}}}
   else if(m.type==='notes_changed'){refreshCur()}
 }
-async function saveNote(ctx,text,btn){try{await api('POST','/api/note',{path:ctx.path,symbol:ctx.kind==='symbol'?ctx.name:undefined,note:String(text).replace(/\s+/g,' ').slice(0,480)});if(btn){btn.textContent='✅ 已存入';btn.disabled=true}}catch(e){alert('存入失敗：'+e.message)}}
+async function saveNote(ctx,text,btn){try{await api('POST','/api/note',{path:ctx.path,symbol:ctx.kind==='symbol'?ctx.name:undefined,note:String(text).replace(/\r/g,'').split('\n').map(function(l){return l.replace(/[ \t]+/g,' ').trimEnd()}).join('\n').replace(/\n{3,}/g,'\n\n').trim().slice(0,2000)});if(btn){btn.textContent='✅ 已存入';btn.disabled=true}}catch(e){alert('存入失敗：'+e.message)}}
 function setInfo(i){CFG.info=i;$('#ttl').textContent=i.title||CFG.title;$('#stat').textContent=i.files+' 個檔案 · '+i.symbols+' 個定義 · 說明 '+(i.notes_files+i.notes_symbols)+(i.complete?'':' · 部分索引');$('#stat').className='badge'+(i.complete?' ok':'')}
 function setJobs(j){var el=$('#jobs');var t=[];if(j.index&&j.index.running)t.push('索引 '+j.index.percent+'%');if(j.dive&&j.dive.running)t.push('深入探討 '+j.dive.done+'/'+j.dive.total);el.style.display=t.length?'':'none';el.textContent='⏳ '+t.join('・')}
 /* ---- 導覽 ---- */
@@ -170,6 +180,7 @@ async function loadTree(path,host){
   host.innerHTML=h;
   host.querySelectorAll('details').forEach(function(dt){dt.addEventListener('toggle',function(){if(dt.open&&!dt.dataset.loaded){dt.dataset.loaded=1;loadTree(dt.dataset.p,dt.querySelector('div'))}})});
 }
+function noteHtml(x){x=String(x==null?'':x);return /\n|\|.*\|/.test(x)?'<div class="md">'+mdToHtml(x)+'</div>':esc(x)}
 function locLink(path,line,to,inner){return '<a class="l loc" data-loc="'+esc(path)+'|'+esc(line)+'|'+esc(to||'')+'" title="點一下在這裡展開該區塊的說明與程式碼">'+inner+'</a>'}
 function initViewport(host,r){
   /* 像 diff：只顯示指定的行範圍，捲到該處；上下各有「展開更多」，按下去再讀 20 行（連續按、或展開到頭尾） */
@@ -220,7 +231,7 @@ async function toggleLoc(a){
     if(r.def)tags+=' <span class="tag">在 '+esc(r.def.kind)+' '+esc(r.def.name)+'（第 '+r.def.line+(r.def.end?'–'+r.def.end:'')+' 行起）</span>';
     h+='<div>'+tags+'</div>';
     if(r.def){
-      h+=r.def.note?'<div class="note"><b>說明</b>：'+esc(r.def.note)+(r.def.stale?'（可能過期）':'')+'</div>':(r.def.doc?'<div class="note"><b>註解</b>：'+esc(r.def.doc)+'</div>':'<div class="mut">這個定義還沒有說明。</div>');
+      h+=r.def.note?'<div class="note"><b>說明</b>：'+noteHtml(r.def.note)+(r.def.stale?'（可能過期）':'')+'</div>':(r.def.doc?'<div class="note"><b>註解</b>：'+esc(r.def.doc)+'</div>':'<div class="mut">這個定義還沒有說明。</div>');
       if(r.def.sig)h+='<div><code>'+esc(r.def.sig)+'</code></div>';
       if(r.users.length)h+='<div class="mut">被這些檔案使用：'+r.users.slice(0,8).map(function(p){return link(p)}).join('、')+(r.users.length>8?' …':'')+'</div>';
     }else if(r.file_note||r.file_doc){h+='<div class="note"><b>檔案說明</b>：'+esc(r.file_note||r.file_doc)+'</div>'}
@@ -242,29 +253,42 @@ async function showFile(path){
   cur={kind:'file',key:path,path:path,name:path};
   var f=await api('GET','/api/file?path='+encodeURIComponent(path));
   var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f.lang)+'</span><span class="tag">'+f.lines+' 行</span>'+(f.note_stale?'<span class="tag" style="color:var(--er)">說明可能過期</span>':'')+'</div>';
-  h+=f.note?'<div class="note"><b>說明</b>（'+esc(f.note_by||'AI')+'）：'+esc(f.note)+' <a class="l" id="editnote">編輯</a></div>':'<div class="mut">還沒有說明。<a class="l" id="editnote">自己補一段</a>，或請 AI 讀過後補。</div>';
+  h+=f.note?'<div class="note"><b>說明</b>（'+esc(f.note_by||'AI')+'）：'+noteHtml(f.note)+' <a class="l" id="editnote">編輯</a></div>':'<div class="mut">還沒有說明。<a class="l" id="editnote">自己補一段</a>，或請 AI 讀過後補。</div>';
   if(f.doc)h+='<p>'+esc(f.doc)+'</p>';
   var cs=[['這個檔案是做什麼的','這個檔案（'+path+'）是做什麼的'],['__explain__','__explain__'],['誰引用它','誰用到 '+path],['它引用了什麼','這個檔案（'+path+'）依賴哪些檔案'],['請 AI 讀過後解釋','請讀 '+path+'，解釋它的用途、主要流程與要注意的地方','ai'],['請 AI 補說明（存進資料庫）','__dive__','ai']];
   h+=chips(cs)+'<div><button id="src">看程式碼</button> <button id="expl">行為說明（可折疊）</button></div><div id="srcbox"></div><div id="explbox" class="md"></div>';
-  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+esc(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
+  h+='<h2>定義（'+f.symbols.length+'）</h2>'+(f.symbols.length?'<table>'+f.symbols.map(function(s){return '<tr><td>'+slink(s.n)+'</td><td><span class="tag">'+esc(s.k)+'</span></td><td>第 '+s.l+' 行</td><td>'+(s.note?'<b>'+noteHtml(s.note)+'</b><br>':'')+(s.d?esc(s.d)+'<br>':'')+(s.sig?'<code>'+esc(s.sig)+'</code>':'')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有抽到定義）</div>');
   h+='<h2>引用了誰（'+f.imports.length+'）</h2>'+(f.imports.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   $('#main').innerHTML=h;$('#main').scrollTop=0;
   $('#main').querySelectorAll('.chips span').forEach(function(sp){if(cs[+sp.dataset.ci][0]==='__explain__')sp.textContent='這個檔案在做什麼（行為說明）';sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__explain__'){document.getElementById('expl').click();return}if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
   $('#expl').onclick=async function(){var b=$('#expl');b.disabled=true;$('#explbox').innerHTML='<span class="mut">分析中…</span>';try{var r=await api('GET','/api/explain?path='+encodeURIComponent(path));$('#explbox').innerHTML=mdToHtml(r.markdown)+(r.unclassified&&r.unclassified.length?'<div class="mut">還不認得的呼叫：'+r.unclassified.slice(0,20).map(function(u){return esc(u)}).join('、')+'（可請 AI 讀過後用 behavior_define 補定義）</div>':'')}catch(e){$('#explbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}b.disabled=false};
-  $('#editnote').onclick=function(){var t=prompt('這個檔案的說明（一兩句：做什麼、為什麼存在、要注意什麼）：',f.note||'');if(t&&t.trim().length>=6)saveNote(cur,t)};
+  $('#editnote').onclick=function(){var nb=$('#main').querySelector('.note')||$('#editnote').parentNode;if($('#noteedit'))return;var box=document.createElement('div');box.id='noteedit';box.innerHTML='<textarea style="width:100%;min-height:120px;font:inherit;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)"></textarea><div class="acts"><button class="p" id="nsave">存起來</button><button id="ncancel">取消</button><span class="mut">可以寫多行、表格、清單（Markdown）</span></div>';box.querySelector('textarea').value=f.note||'';nb.parentNode.insertBefore(box,nb.nextSibling);box.querySelector('#ncancel').onclick=function(){box.remove()};box.querySelector('#nsave').onclick=function(){var v=box.querySelector('textarea').value;if(v.trim().length<6){alert('說明太短（至少寫一句有內容的）');return}saveNote(cur,v)}};
   $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class="mut">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+}
+async function showDir(path,tr){
+  cur={kind:'dir',key:path,path:path,name:path};
+  var h='<h1 class="t">'+esc(path)+'/</h1><div><span class="tag">資料夾</span><span class="tag">'+tr.dirs.length+' 個子資料夾</span><span class="tag">'+tr.files.length+' 個檔案'+(tr.more?'（另有 '+tr.more+' 項沒列出）':'')+'</span></div>';
+  h+=tr.note?'<div class="note"><b>說明</b>：'+noteHtml(tr.note)+'</div>':'<div class="mut">這個資料夾還沒有說明。</div>';
+  var cs=[['這個資料夾是做什麼的','這個資料夾（'+path+'）是做什麼的'],['請 AI 讀過後解釋','請看 '+path+' 底下的檔案，用白話說明這個資料夾的用途、主要檔案與它們的關係','ai']];
+  h+=chips(cs);
+  if(tr.dirs.length)h+='<h2>子資料夾</h2>'+tr.dirs.map(function(d){return '<div><a class="l" data-go="dir:'+esc(path+'/'+d)+'">'+esc(d)+'/</a></div>'}).join('');
+  if(tr.files.length)h+='<h2>檔案</h2>'+tr.files.map(function(f){return '<div>'+link(path+'/'+f.name)+(f.note?' <span class="k">✎</span>':'')+'</div>'}).join('');
+  $('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;
 }
 async function showSym(name){
   cur={kind:'symbol',key:name,path:'',name:name};
   var r=await api('GET','/api/symbol?name='+encodeURIComponent(name));
-  if(!r.defs.length){$('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  if(!r.defs.length){
+    var tr=null;try{tr=await api('GET','/api/tree?path='+encodeURIComponent(name))}catch(e){}
+    if(tr&&tr.exists){showDir(name.replace(/\/+$/,''),tr);return}
+$('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
   cur.path=r.defs[0].path;
   var h='<h1 class="t">'+esc(name)+'</h1><div class="mut">'+r.defs.length+' 個定義</div>';
   var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];
   r.defs.slice(0,10).forEach(function(d){
     h+='<h2>'+esc(d.kind)+'　'+locLink(d.path,d.line,'',esc(d.path+':'+d.line))+'</h2>';
-    h+=d.note?'<div class="note"><b>說明</b>（'+esc(d.note_by||'AI')+(d.stale?'，可能過期':'')+'）：'+esc(d.note)+'</div>':(d.doc?'':'<div class="mut">還沒有說明。</div>');
+    h+=d.note?'<div class="note"><b>說明</b>（'+esc(d.note_by||'AI')+(d.stale?'，可能過期':'')+'）：'+noteHtml(d.note)+'</div>':(d.doc?'':'<div class="mut">還沒有說明。</div>');
     if(d.doc)h+='<p>'+esc(d.doc)+'</p>';
     if(d.sig)h+='<pre>'+esc(d.sig)+'</pre>';
     if(d.users&&d.users.length)h+='<div><b>被這些檔案使用（'+d.users.length+'）：</b> '+d.users.slice(0,20).map(function(p){return link(p)}).join('、')+'</div>';
@@ -272,7 +296,7 @@ async function showSym(name){
   });
   h+=chips(cs);$('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;
 }
-function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>'})}
+function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>'})}
 function refreshCur(){if(cur.kind==='file')showFile(cur.key);else if(cur.kind==='symbol')showSym(cur.key);else if(cur.kind==='page')showPage(cur.key);if(tab==='notes')renderList()}
 document.addEventListener('click',function(e){var lc=e.target.closest('[data-loc]');if(lc){e.preventDefault();toggleLoc(lc);return}var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
 document.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#sq').value='';renderList()}});
