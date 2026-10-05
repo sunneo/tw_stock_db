@@ -122,24 +122,28 @@
         function resolve(kind, key, opts) {
             opts = opts || {}; const maxDepth = Number.isInteger(opts.depth) ? opts.depth : 8; const errors = [];
             const memo = new Map();
-            const go = (k, key2, depth, stack, path) => {
+            // 繼承在「原始條目」層級合併（父條目的 ref 還是字串），之後再一次展開——不能先展開父條目再合併，否則 ref 欄位已經變成物件，第二次展開會失效
+            const rawOf = (k, key2, depth, stack, path) => {
                 const id = k + ':' + key2;
                 if (stack.indexOf(id) >= 0) { errors.push({ path, msg: '循環引用：' + stack.concat(id).join(' → ') }); return undefined; }
                 if (depth > maxDepth) { errors.push({ path, msg: '展開太深（超過 ' + maxDepth + ' 層）：' + id }); return undefined; }
                 const e = findTyped(k, key2); if (!e) { errors.push({ path, msg: '引用的條目不存在：' + id }); return undefined; }
-                if (memo.has(id)) return clone(memo.get(id));
-                const ty = getType(k); const st = stack.concat(id);
-                let c = clone(e.customize) || {};
-                const schema = ty ? ty.schema : {};
-                for (const [f, sp0] of Object.entries(schema)) {
+                const ty = getType(k); const st = stack.concat(id); let c = clone(e.customize) || {};
+                for (const [f, sp0] of Object.entries(ty ? ty.schema : {})) {
                     const sp = specOf(sp0);
                     if (sp.type === 'ref' && sp.extends && c[f] !== undefined) {
-                        const parents = Array.isArray(c[f]) ? c[f] : [c[f]];
-                        let base = {};
-                        for (const pk of parents) { const pv = go(sp.kind || k, typeof pk === 'string' ? pk : pk.ref, depth + 1, st, path + '/extends:' + pk); if (pv) base = deepMerge(base, pv); }
+                        const parents = Array.isArray(c[f]) ? c[f] : [c[f]]; let base = {};
+                        for (const pk of parents) { const pv = rawOf(sp.kind || k, typeof pk === 'string' ? pk : pk.ref, depth + 1, st, path + '/extends:' + pk); if (pv) base = deepMerge(base, pv); }
                         const own = clone(c); delete own[f]; c = deepMerge(base, own); c._extends = parents.slice();
                     }
                 }
+                return c;
+            };
+            const go = (k, key2, depth, stack, path) => {
+                const id = k + ':' + key2;
+                if (memo.has(id)) return clone(memo.get(id));
+                const c = rawOf(k, key2, depth, stack, path); if (c === undefined) return undefined;
+                const ty = getType(k); const st = stack.concat(id); const schema = ty ? ty.schema : {};
                 const walk = (spIn, v, p) => {
                     const sp = specOf(spIn);
                     if (v === undefined || v === null) return v;
