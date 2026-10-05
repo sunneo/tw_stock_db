@@ -1,0 +1,1697 @@
+[
+ {
+  "kind": "color_family",
+  "key": "skin-pale",
+  "text": "很淺的膚色（Lab：L 78~96、a 2~14、b 4~20）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    78,
+    96
+   ],
+   "a": [
+    2,
+    14
+   ],
+   "b": [
+    4,
+    20
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-light",
+  "text": "淺膚色（Lab：L 66~88、a 4~20、b 8~28）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    66,
+    88
+   ],
+   "a": [
+    4,
+    20
+   ],
+   "b": [
+    8,
+    28
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-medium",
+  "text": "中等膚色（Lab：L 52~72、a 7~22、b 14~34）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    52,
+    72
+   ],
+   "a": [
+    7,
+    22
+   ],
+   "b": [
+    14,
+    34
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-tan",
+  "text": "偏深的膚色（曬過、橄欖、棕褐）（Lab：L 42~62、a 9~24、b 16~38）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    42,
+    62
+   ],
+   "a": [
+    9,
+    24
+   ],
+   "b": [
+    16,
+    38
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-brown",
+  "text": "棕色膚色（Lab：L 30~50、a 7~22、b 10~32）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    30,
+    50
+   ],
+   "a": [
+    7,
+    22
+   ],
+   "b": [
+    10,
+    32
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-deep",
+  "text": "很深的膚色（Lab：L 16~36、a 3~18、b 3~22）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    16,
+    36
+   ],
+   "a": [
+    3,
+    18
+   ],
+   "b": [
+    3,
+    22
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "skin-anime",
+  "text": "動畫／插畫常見的淡膚色（Lab：L 76~97、a 0~14、b 3~22）",
+  "tags": [
+   "skin",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "skin",
+   "L": [
+    76,
+    97
+   ],
+   "a": [
+    0,
+    14
+   ],
+   "b": [
+    3,
+    22
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-black",
+  "text": "黑色頭髮（Lab：L 0~26、a -6~10、b -10~12）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    0,
+    26
+   ],
+   "a": [
+    -6,
+    10
+   ],
+   "b": [
+    -10,
+    12
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-brown",
+  "text": "棕色頭髮（Lab：L 14~48、a 2~24、b 4~34）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    14,
+    48
+   ],
+   "a": [
+    2,
+    24
+   ],
+   "b": [
+    4,
+    34
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-blond",
+  "text": "金色／淺黃色頭髮（Lab：L 52~92、a -6~16、b 18~60）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    52,
+    92
+   ],
+   "a": [
+    -6,
+    16
+   ],
+   "b": [
+    18,
+    60
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-red",
+  "text": "紅色／橘紅色頭髮（Lab：L 26~64、a 16~50、b 12~52）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    26,
+    64
+   ],
+   "a": [
+    16,
+    50
+   ],
+   "b": [
+    12,
+    52
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-gray",
+  "text": "灰色／白色頭髮（Lab：L 48~98、a -6~6、b -8~10）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    48,
+    98
+   ],
+   "a": [
+    -6,
+    6
+   ],
+   "b": [
+    -8,
+    10
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "hair-any",
+  "text": "不限顏色（染髮、動畫的鮮豔髮色；只靠位置與形狀判斷）（Lab：L 0~100、a -128~127、b -128~127）",
+  "tags": [
+   "hair",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "L": [
+    0,
+    100
+   ],
+   "a": [
+    -128,
+    127
+   ],
+   "b": [
+    -128,
+    127
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "feature-dark",
+  "text": "五官的深色部分（瞳孔、眼睛輪廓、鼻孔、嘴縫）（Lab：L 0~38、a -12~24、b -20~26）",
+  "tags": [
+   "feature",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "feature",
+   "L": [
+    0,
+    38
+   ],
+   "a": [
+    -12,
+    24
+   ],
+   "b": [
+    -20,
+    26
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "lip-red",
+  "text": "嘴唇的紅色（Lab：L 28~66、a 14~60、b 0~36）",
+  "tags": [
+   "feature",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "feature",
+   "L": [
+    28,
+    66
+   ],
+   "a": [
+    14,
+    60
+   ],
+   "b": [
+    0,
+    36
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "fur-light",
+  "text": "淺色毛（白、米、奶油）（Lab：L 62~96、a -4~14、b -2~30）",
+  "tags": [
+   "fur",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "fur",
+   "L": [
+    62,
+    96
+   ],
+   "a": [
+    -4,
+    14
+   ],
+   "b": [
+    -2,
+    30
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "fur-brown",
+  "text": "棕色毛（Lab：L 22~58、a 3~24、b 8~42）",
+  "tags": [
+   "fur",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "fur",
+   "L": [
+    22,
+    58
+   ],
+   "a": [
+    3,
+    24
+   ],
+   "b": [
+    8,
+    42
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "fur-dark",
+  "text": "深色毛（黑、深灰）（Lab：L 0~34、a -8~16、b -10~22）",
+  "tags": [
+   "fur",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "fur",
+   "L": [
+    0,
+    34
+   ],
+   "a": [
+    -8,
+    16
+   ],
+   "b": [
+    -10,
+    22
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "fur-orange",
+  "text": "橘色毛（Lab：L 48~78、a 12~40、b 28~66）",
+  "tags": [
+   "fur",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "fur",
+   "L": [
+    48,
+    78
+   ],
+   "a": [
+    12,
+    40
+   ],
+   "b": [
+    28,
+    66
+   ]
+  }
+ },
+ {
+  "kind": "color_family",
+  "key": "fur-gray",
+  "text": "灰色毛（Lab：L 30~80、a -6~6、b -8~10）",
+  "tags": [
+   "fur",
+   "color"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "fur",
+   "L": [
+    30,
+    80
+   ],
+   "a": [
+    -6,
+    6
+   ],
+   "b": [
+    -8,
+    10
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "neck",
+  "text": "脖子：頭部骨架的根，可以前後（x）、左右轉（y）、側傾（z）一點點。",
+  "tags": [
+   "head-rig"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.4,
+    -0.8,
+    -0.35
+   ],
+   "rot_max": [
+    0.5,
+    0.8,
+    0.35
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "head",
+  "text": "頭：接在脖子上，點頭（x）、轉頭（y）、歪頭（z）。",
+  "tags": [
+   "head-rig"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "parent": "neck",
+   "offset": [
+    0,
+    -0.3,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.5,
+    -1.0,
+    -0.5
+   ],
+   "rot_max": [
+    0.6,
+    1.0,
+    0.5
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "jaw",
+  "text": "下巴：接在頭上，張嘴（x）。",
+  "tags": [
+   "head-rig",
+   "mouth"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "parent": "head",
+   "offset": [
+    0,
+    0.35,
+    0.05
+   ],
+   "axes": [
+    "x"
+   ],
+   "rot_min": [
+    0,
+    0,
+    0
+   ],
+   "rot_max": [
+    0.45,
+    0,
+    0
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "eyelid-l",
+  "text": "左眼皮：眨眼（x）。",
+  "tags": [
+   "head-rig",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "parent": "head",
+   "offset": [
+    -0.18,
+    -0.05,
+    0.1
+   ],
+   "axes": [
+    "x"
+   ],
+   "rot_min": [
+    0,
+    0,
+    0
+   ],
+   "rot_max": [
+    0.9,
+    0,
+    0
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "eyelid-r",
+  "text": "右眼皮：眨眼（x）。",
+  "tags": [
+   "head-rig",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "parent": "head",
+   "offset": [
+    0.18,
+    -0.05,
+    0.1
+   ],
+   "axes": [
+    "x"
+   ],
+   "rot_min": [
+    0,
+    0,
+    0
+   ],
+   "rot_max": [
+    0.9,
+    0,
+    0
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "skeleton",
+  "key": "head-rig",
+  "text": "頭部骨架：脖子、頭、下巴、兩個眼皮。用來做點頭、轉頭、張嘴、眨眼。",
+  "tags": [
+   "head-rig"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "root": "neck",
+   "joints": [
+    "neck",
+    "head",
+    "jaw",
+    "eyelid-l",
+    "eyelid-r"
+   ],
+   "unit": "relative"
+  }
+ },
+ {
+  "kind": "machine",
+  "key": "blink-cycle",
+  "text": "眨眼的階段：睜開 → 閉上 → 睜開。事件 blink 觸發。",
+  "tags": [
+   "head-rig",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "start": "open",
+   "end": [
+    "open"
+   ],
+   "states": {
+    "open": {
+     "on": {
+      "blink": {
+       "to": "closed",
+       "do": [
+        "joint:eyelid-l:rot_x=0.9",
+        "joint:eyelid-r:rot_x=0.9"
+       ]
+      }
+     }
+    },
+    "closed": {
+     "on": {
+      "release": {
+       "to": "open",
+       "do": [
+        "joint:eyelid-l:rot_x=0",
+        "joint:eyelid-r:rot_x=0"
+       ]
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "blink",
+  "text": "眨眼：兩個眼皮 0.15 秒內閉上再睜開。",
+  "tags": [
+   "head-rig",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "head-rig",
+   "duration": 0.3,
+   "loop": false,
+   "ease": "ease_in_out",
+   "machine": "blink-cycle",
+   "tracks": [
+    {
+     "joint": "eyelid-l",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.15,
+       "rot": [
+        0.9,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.3,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "eyelid-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.15,
+       "rot": [
+        0.9,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.3,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "machine",
+  "key": "nod-cycle",
+  "text": "點頭的階段：正視 → 低頭 → 抬頭 → 正視。事件 nod 開始。",
+  "tags": [
+   "head-rig",
+   "gesture"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "start": "rest",
+   "end": [
+    "rest"
+   ],
+   "states": {
+    "rest": {
+     "on": {
+      "nod": {
+       "to": "down"
+      }
+     }
+    },
+    "down": {
+     "on": {
+      "tick": {
+       "to": "up"
+      }
+     }
+    },
+    "up": {
+     "on": {
+      "tick": {
+       "to": "rest"
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "nod",
+  "text": "點頭：頭向前低 0.35 弧度再回正，0.8 秒。",
+  "tags": [
+   "head-rig",
+   "gesture"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "head-rig",
+   "duration": 0.8,
+   "loop": false,
+   "ease": "ease_in_out",
+   "machine": "nod-cycle",
+   "tracks": [
+    {
+     "joint": "head",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.35,
+       "rot": [
+        0.35,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.8,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "gesture",
+  "key": "nodding",
+  "text": "點頭：表示同意、了解。由 nod-cycle 描述階段，用 nod 運動播放。",
+  "tags": [
+   "gesture"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "machine": "nod-cycle",
+   "joints": [
+    "head",
+    "neck"
+   ],
+   "motion": "nod",
+   "meaning": "同意、了解、肯定"
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-eye",
+  "text": "人的眼睛：在臉的上半部（約 28%~50% 高度），左右對稱的兩個小橢圓，深色（瞳孔與眼睛輪廓），眼窩略往內凹。",
+  "tags": [
+   "face",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "眼睛",
+    "eye",
+    "eyes"
+   ],
+   "box": [
+    0.08,
+    0.28,
+    0.92,
+    0.5
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.004,
+    0.05
+   ],
+   "shape": "ellipse",
+   "colors": [
+    "feature-dark"
+   ],
+   "depth": {
+    "kind": "sunken",
+    "amp": 0.25
+   },
+   "attach": [
+    "eyelid-l",
+    "eyelid-r"
+   ],
+   "priority": 20
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-eyebrow",
+  "text": "人的眉毛：在眼睛上方（約 20%~36% 高度），左右對稱的兩條細長橫條，髮色，略微突起。",
+  "tags": [
+   "face",
+   "eyebrow"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "眉毛",
+    "eyebrow"
+   ],
+   "box": [
+    0.08,
+    0.2,
+    0.92,
+    0.36
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.003,
+    0.04
+   ],
+   "shape": "bar",
+   "colors": [
+    "hair-black",
+    "hair-brown",
+    "hair-blond",
+    "hair-red",
+    "hair-gray",
+    "hair-any"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.08
+   },
+   "priority": 15
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-nose",
+  "text": "人的鼻子：臉的正中央（水平 35%~65%、垂直 40%~74%），顏色跟臉差不多，沒有明顯的色塊，所以主要靠位置判斷；立體上是臉最突出的地方。",
+  "tags": [
+   "face",
+   "nose"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "鼻子",
+    "nose"
+   ],
+   "box": [
+    0.35,
+    0.4,
+    0.65,
+    0.74
+   ],
+   "count": 1,
+   "size": [
+    0.01,
+    0.1
+   ],
+   "shape": "blob",
+   "colors": [
+    "skin-pale",
+    "skin-light",
+    "skin-medium",
+    "skin-tan",
+    "skin-brown",
+    "skin-deep",
+    "skin-anime"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.7
+   },
+   "priority": 10,
+   "detect": {
+    "prior_only": true,
+    "min_confidence": 0.2
+   }
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-mouth",
+  "text": "人的嘴：在臉的下方（水平 25%~75%、垂直 66%~90%），一條橫向的紅色或深色細條，略微凹陷。",
+  "tags": [
+   "face",
+   "mouth"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "嘴",
+    "嘴巴",
+    "mouth"
+   ],
+   "box": [
+    0.25,
+    0.66,
+    0.75,
+    0.9
+   ],
+   "count": 1,
+   "size": [
+    0.004,
+    0.06
+   ],
+   "shape": "bar",
+   "colors": [
+    "lip-red",
+    "feature-dark"
+   ],
+   "depth": {
+    "kind": "sunken",
+    "amp": 0.15
+   },
+   "attach": [
+    "jaw"
+   ],
+   "priority": 18
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-ear",
+  "text": "人的耳朵：臉的左右兩側（超出臉的邊界一點），對稱的兩個小橢圓，膚色，略微突起。常被頭髮遮住，所以信心較低。",
+  "tags": [
+   "face",
+   "ear"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "耳朵",
+    "ear"
+   ],
+   "box": [
+    -0.18,
+    0.28,
+    1.18,
+    0.7
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.005,
+    0.06
+   ],
+   "shape": "ellipse",
+   "colors": [
+    "skin-pale",
+    "skin-light",
+    "skin-medium",
+    "skin-tan",
+    "skin-brown",
+    "skin-deep",
+    "skin-anime"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.25
+   },
+   "priority": 8,
+   "detect": {
+    "min_confidence": 0.2
+   }
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-hair",
+  "text": "人的頭髮：在臉的上方並包住臉的兩側（超出臉的範圍），一大塊髮色的區域，有體積（比臉高）。髮色可以是任何顏色（含染髮、動畫鮮豔髮色）。",
+  "tags": [
+   "hair"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "hair",
+   "aliases": [
+    "頭髮",
+    "髮",
+    "hair"
+   ],
+   "box": [
+    -0.25,
+    -0.55,
+    1.25,
+    0.45
+   ],
+   "count": 1,
+   "size": [
+    0.05,
+    1.5
+   ],
+   "shape": "blob",
+   "colors": [
+    "hair-black",
+    "hair-brown",
+    "hair-blond",
+    "hair-red",
+    "hair-gray",
+    "hair-any"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.45
+   },
+   "attach": [
+    "head"
+   ],
+   "priority": 5
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-neck",
+  "text": "人的脖子：在臉的正下方，比臉窄（水平 20%~80%），膚色，位置比臉後面（凹）。",
+  "tags": [
+   "body",
+   "neck"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "body",
+   "aliases": [
+    "脖子",
+    "neck"
+   ],
+   "box": [
+    0.2,
+    0.92,
+    0.8,
+    1.5
+   ],
+   "count": 1,
+   "size": [
+    0.03,
+    0.3
+   ],
+   "shape": "rect",
+   "colors": [
+    "skin-pale",
+    "skin-light",
+    "skin-medium",
+    "skin-tan",
+    "skin-brown",
+    "skin-deep",
+    "skin-anime"
+   ],
+   "depth": {
+    "kind": "sunken",
+    "amp": 0.3
+   },
+   "attach": [
+    "neck"
+   ],
+   "priority": 6
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "human-face",
+  "text": "人的臉：畫面裡一大塊膚色的橢圓（寬高比約 0.7~1.1），內部上半部有兩隻眼睛、中間鼻子、下方嘴巴，上方與兩側是頭髮。立體上整張臉是一個圓頂（中間高、邊緣低）。膚色涵蓋各種膚色（見 color_family 的 skin-*）。",
+  "tags": [
+   "face",
+   "human"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "face",
+   "aliases": [
+    "臉",
+    "人臉",
+    "face"
+   ],
+   "box": [
+    0,
+    0,
+    1,
+    1
+   ],
+   "count": 1,
+   "size": [
+    0.02,
+    0.7
+   ],
+   "shape": "ellipse",
+   "colors": [
+    "skin-pale",
+    "skin-light",
+    "skin-medium",
+    "skin-tan",
+    "skin-brown",
+    "skin-deep",
+    "skin-anime"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.55
+   },
+   "attach": [
+    "head"
+   ],
+   "priority": 30,
+   "parts": [
+    "human-hair",
+    "human-eyebrow",
+    "human-eye",
+    "human-nose",
+    "human-mouth",
+    "human-ear"
+   ]
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "anime-eye",
+  "text": "動畫風格的眼睛：比真人的大（臉的 1%~12%）、多為大塊的深色或有色的圓形／橢圓。",
+  "tags": [
+   "face",
+   "eye",
+   "anime"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "base": "human-eye",
+   "size": [
+    0.01,
+    0.12
+   ],
+   "shape": "blob",
+   "depth": {
+    "kind": "sunken",
+    "amp": 0.18
+   }
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "anime-face",
+  "text": "動畫風格的臉：淡膚色、較平，立體感比真人小；眼睛大、鼻子與嘴小。",
+  "tags": [
+   "face",
+   "anime"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "base": "human-face",
+   "colors": [
+    "skin-anime",
+    "skin-pale",
+    "skin-light"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.4
+   },
+   "parts": [
+    "human-hair",
+    "human-eyebrow",
+    "anime-eye",
+    "human-nose",
+    "human-mouth",
+    "human-ear"
+   ]
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-eye",
+  "text": "動物的眼睛：臉的上半部、左右對稱的兩個深色橢圓，比例通常比人大，略凹。",
+  "tags": [
+   "animal",
+   "eye"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "動物眼睛"
+   ],
+   "box": [
+    0.1,
+    0.25,
+    0.9,
+    0.5
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.005,
+    0.08
+   ],
+   "shape": "ellipse",
+   "colors": [
+    "feature-dark"
+   ],
+   "depth": {
+    "kind": "sunken",
+    "amp": 0.2
+   },
+   "priority": 20
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-nose",
+  "text": "動物的鼻子：口鼻部前端的一小塊深色，略突起。",
+  "tags": [
+   "animal",
+   "nose"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "動物鼻子",
+    "鼻頭"
+   ],
+   "box": [
+    0.4,
+    0.55,
+    0.6,
+    0.72
+   ],
+   "count": 1,
+   "size": [
+    0.003,
+    0.03
+   ],
+   "shape": "blob",
+   "colors": [
+    "feature-dark"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.3
+   },
+   "priority": 16
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-muzzle",
+  "text": "動物的口鼻部：臉的下半部中央突出的一塊（常比臉其他地方的毛色淺），是動物臉最突出的地方。",
+  "tags": [
+   "animal",
+   "muzzle"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "口鼻部",
+    "吻部",
+    "muzzle",
+    "snout"
+   ],
+   "box": [
+    0.25,
+    0.5,
+    0.75,
+    0.95
+   ],
+   "count": 1,
+   "size": [
+    0.03,
+    0.3
+   ],
+   "shape": "blob",
+   "colors": [
+    "fur-light",
+    "fur-light",
+    "fur-brown",
+    "fur-dark",
+    "fur-orange",
+    "fur-gray"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.8
+   },
+   "priority": 12
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-ear-pointed",
+  "text": "尖耳朵（貓、狐狸、狼）：頭頂左右對稱的兩個三角形，突出在頭的上緣之外。",
+  "tags": [
+   "animal",
+   "ear"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "尖耳朵",
+    "貓耳"
+   ],
+   "box": [
+    -0.1,
+    -0.45,
+    1.1,
+    0.2
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.01,
+    0.15
+   ],
+   "shape": "triangle",
+   "colors": [
+    "fur-light",
+    "fur-brown",
+    "fur-dark",
+    "fur-orange",
+    "fur-gray"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.3
+   },
+   "priority": 9
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-ear-floppy",
+  "text": "垂耳朵（部分狗、兔子）：頭的兩側垂下的橢圓，比頭窄長。",
+  "tags": [
+   "animal",
+   "ear"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "垂耳"
+   ],
+   "box": [
+    -0.3,
+    -0.1,
+    1.3,
+    0.7
+   ],
+   "count": 2,
+   "symmetric": true,
+   "size": [
+    0.01,
+    0.2
+   ],
+   "shape": "ellipse",
+   "colors": [
+    "fur-light",
+    "fur-brown",
+    "fur-dark",
+    "fur-orange",
+    "fur-gray"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.2
+   },
+   "priority": 9
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "animal-face",
+  "text": "動物的臉（通用）：一大塊毛色的圓形／橢圓，臉的上半部兩隻眼睛、下半部中央口鼻部突出、頭頂或兩側有耳朵。毛色見 color_family 的 fur-*。",
+  "tags": [
+   "animal",
+   "face"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "group": "animal",
+   "aliases": [
+    "動物臉",
+    "animal face"
+   ],
+   "box": [
+    0,
+    0,
+    1,
+    1
+   ],
+   "count": 1,
+   "size": [
+    0.02,
+    0.7
+   ],
+   "shape": "blob",
+   "colors": [
+    "fur-light",
+    "fur-brown",
+    "fur-dark",
+    "fur-orange",
+    "fur-gray"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.5
+   },
+   "priority": 30,
+   "parts": [
+    "animal-eye",
+    "animal-nose",
+    "animal-muzzle",
+    "animal-ear-pointed"
+   ]
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "cat-face",
+  "text": "貓的臉：動物臉，尖耳朵、口鼻部小而圓。",
+  "tags": [
+   "animal",
+   "cat"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "base": "animal-face",
+   "aliases": [
+    "貓",
+    "cat"
+   ],
+   "parts": [
+    "animal-eye",
+    "animal-nose",
+    "animal-muzzle",
+    "animal-ear-pointed"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.45
+   }
+  }
+ },
+ {
+  "kind": "visual_part",
+  "key": "dog-face",
+  "text": "狗的臉：動物臉，常是垂耳朵、口鼻部比貓長而突出。",
+  "tags": [
+   "animal",
+   "dog"
+  ],
+  "src": "內建種子（經驗值，待以真實圖片校正；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "base": "animal-face",
+   "aliases": [
+    "狗",
+    "dog"
+   ],
+   "parts": [
+    "animal-eye",
+    "animal-nose",
+    "animal-muzzle",
+    "animal-ear-floppy"
+   ],
+   "depth": {
+    "kind": "bump",
+    "amp": 0.55
+   }
+  }
+ }
+]
