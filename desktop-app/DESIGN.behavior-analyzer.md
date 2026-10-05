@@ -34,7 +34,7 @@ positive path：主線只敘述正常流程；guard、例外處理、`else` 的�
 
 ## 4. 支援的語言
 
-C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScript／TypeScript、Python（縮排）、Shell、PowerShell、Batch、GLSL／HLSL、x86／ARM 組合語言、LLVM IR、PTX、WASM 文字格式（後四種目前只有「函式切分＋呼叫＋idiom」，語意表跟 C 共用）。
+C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom；C++ 用 C++ 的語法樹與標準函式庫 STL 名稱表）、**Rust**、**Go**、Java、JavaScript／TypeScript、Python（縮排）、Shell、PowerShell、Batch、GLSL／HLSL、x86／ARM 組合語言、LLVM IR、PTX、WASM 文字格式（後四種目前只有「函式切分＋呼叫＋idiom」，語意表跟 C 共用）。
 
 ## 5. 學習與擴充（讓它越來越完整）
 
@@ -55,7 +55,7 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 
 ## 8. 引擎版本（v2：語法樹）
 
-- v2 是 Domain Resolver 的完整移植（`renderer/src/behavior/engine_1..5_*.js`，嵌入成 `FaBeh2`）：用 web-tree-sitter 0.20.8 的真正語法樹（C／C++、Java、Python、JavaScript／TypeScript、Shell）。第一次從 CDN 下載剖析器與語言 wasm，存進本機快取，之後離線可用。
+- v2 是 Domain Resolver 的完整移植（`renderer/src/behavior/engine_1..5_*.js`，嵌入成 `FaBeh2`）：用 web-tree-sitter 0.20.8 的真正語法樹（C、C++、Rust、Go、Java、Python、JavaScript／TypeScript、Shell）。第一次從 CDN 下載剖析器與語言 wasm，存進本機快取，之後離線可用。
 - 包含：行為分類掃描（47 類）、api_semantics 引數／回傳值語意、逐行追蹤→複合區塊樹→由下而上的 positive-path 敘事（guard 折疊、無限迴圈＝持續行為）、區塊註解重排後掛在區塊標題、呼叫圖（含函式指標、回呼、vtable 欄位綁定）、資料流（來源→匯點的污染追蹤）、Java 設計模式、javap 位元組碼、組語／LLVM IR／PTX／WASM 文字的函式與基本區塊切分＋idiom、文字重排與摘要（相似度圖＋PageRank）。
 - 剖析器載入失敗（離線第一次、CDN 擋住）時自動退回 v1 輕量掃描器，回傳裡 `engine` 標明用了哪一個、`fallback_reason` 說明原因；`explain_code` 可用 `engine:"v1"` 強制舊引擎。
 - 驗證：用 Domain Resolver 範例（rdma_sim、task_queue、asm_idioms）在真實 Electron 跑過，三份都由 v2 完成。
@@ -102,7 +102,7 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 
 - ARM／AArch64／POWER／MIPS／RISC-V 仍只有參考資料的 55 到 88 個助記符。
 - Java 函式只有 17 個有引數語意，其餘只有分類名稱。
-- 沒有 C++ 標準函式庫（STL）、Rust、Go 的名稱表。
+- C++ 標準函式庫（STL）、Rust、Go 的名稱表已補（見 §12），但只有約 2,700 個名稱與 112 個 API 語意，覆蓋度遠低於 C。
 - 語意文字用英文原句（沿用 Domain Resolver 的句型），尚未中文化。
 
 ## 11. 參考知識的標註與擴充定義（2026-10-04）
@@ -112,3 +112,22 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom）、Java、JavaScr
 - 引擎調整：成功碼常數表（`MPI_SUCCESS`、`cudaSuccess`、`CUBLAS_STATUS_SUCCESS`、`NULL`、`EOF`…→ 整數）讓 `rc != MPI_SUCCESS` 能套用規則；指標條件（`!p`、`if (p)`）可以套用以 `== 0`／`!= 0` 寫的規則；C 系語言的檔頭註解不再把 `#include`／`#pragma` 當成註解。
 - 使用者補定義新增 `add_mnemonic`（`arch`、`category`、`name`、`description`）：補組合語言指令，`makeTaxonomy` 合併進指令集表。
 - AI 自主擴充領域 `aidoc_knowledge_expander`：用 `explain_code` 找出還不認得的呼叫，查官方資料，用 `behavior_define`／`ref_define` 補定義（每筆附來源），再驗證。執行期補的定義可 `/ref export` 匯出，用 `scripts/promote-runtime-defs.js` 升級成內建。
+
+## 12. C++ 標準函式庫（STL）、Rust、Go 的名稱表與語言支援（2026-10-06）
+
+### 12.1 做了什麼
+- **名稱表**（`renderer/src/behavior/names_cpp_rust_go.json`，由 `scripts/gen-name-tables.py` 產生，改腳本不要改 JSON）：C++ 441、Rust 827、Go 1,409 個名稱，分到既有的行為分類（檔案 I/O、網路、行程、記憶體、並行、時間、結構化資料、資料庫、壓縮…），另外新增一個分類 `data_structures_algorithms`（Collections／algorithms：容器操作與演算法）；API 語意 C++ 34、Rust 33、Go 45 個（引數與回傳值的意義，例如 `os.Open` 回傳 `(*File, error)`、`.lock()` 在 poisoned 時是 Err、`async` 的 future 解構時會阻塞）。嵌入時（`scripts/embed-code-ui.js`）疊在 Domain Resolver 的原檔之上，原檔不動。
+- **引擎支援**：C++ 改用 C++ 的語法樹（以前 `.cpp` 用 C 的 grammar 剖析，class、template、`::` 都會是錯誤節點；現在 range-for、`condition_clause`、try／catch 都處理），名稱表是 C 加上 `cpp`（STL）；新增 Rust 與 Go 的語言設定檔（函式、呼叫、控制結構、條件、if 分支、參數、noreturn），從 CDN 載入 `tree-sitter-rust.wasm`、`tree-sitter-go.wasm`（跟其他語言同一套快取）。
+- **名稱的寫法**（要跟引擎的呼叫名稱候選一致）：C++＝呼叫名稱最後一段（`std::sort` → `sort`、`v.push_back()` → `push_back`）；Rust＝路徑 `fs::read_to_string`（完整路徑 `std::fs::read_to_string` 也會比對到最後兩段）、方法 `.lock`、巨集 `println!`；Go＝`os.Open`（套件函式）、方法 `.Lock`（任何接收者；找不到 `mu.Lock` 時退回 `.Lock`）、內建 `make`／`append`。
+- **查表規則**：同一語言的名稱只能在一個類別（引擎查表是後蓋前，生成腳本會自動處理重複：含糊的方法名全部移除、完整名稱保留第一個類別）；太泛用的方法名（`.Close`、`.Get`、`.join`、`.map`…）一律不分類（寧可留在未分類，也不要把 `f.Close()` 說成壓縮、把 `path.join()` 說成執行緒）。語言裡到處都是的小呼叫（Rust 的 `Ok`／`Some`／`.clone`…）不列進「未分類」。
+
+### 12.2 驗證
+- 純函式層：`node renderer/src/behavior/tests/names_tables.test.js`（59 項：數量、類別存在、名稱不重複、形狀、泛用方法名不被分類、代表性名稱在對的類別、API 語意格式）；已併進 `node scripts/run-core-tests.js`。
+- 真實環境（打包版 Electron）：C++、Rust、Go 範例各一份，`explain_code` 路徑完成、行為分類與 API 語意都出現在敘事裡；原有的 C／JavaScript 範例（rdma_sim、task_queue、asm_idioms）結果不變。
+
+### 12.3 限制（老實說）
+- **C++**：`std::thread t(f);`、`std::ifstream in(path);` 這種「宣告時初始化」不是呼叫節點，抓不到（只有 `.join()`、`getline()` 這些後續呼叫抓得到）；模板、巨集展開、跨檔仍然沒有；STL 的名稱只比最後一段，所以跟自己定義的同名函式會混。
+- **Rust**：巨集只認 `macro_invocation` 的名稱，不展開；trait 方法（`.read_to_string()`）只靠方法名，沒有型別資訊，所以像 `.lock()` 可能是 `Mutex` 也可能是別的型別；`async`／`.await` 只當一般運算式；`match` 的每個分支有走訪，但沒有分支條件的語意說明。
+- **Go**：套件函式靠呼叫端的前綴（`os.Open`），如果 import 別名（`import o "os"`）就認不得；方法只靠方法名；`go`／`defer` 語句整句當成一行（裡面的呼叫有算）；`select` 與 `switch` 的 case 有走訪，沒有 case 條件的說明。
+- 回傳值規則（例如「`n <= 0` ＝ 關閉連線」）只對 C 啟用；Rust 的 `Result`、Go 的 `(value, err)` 沒有追蹤，API 語意只提供摘要與引數說明。
+- 名稱是依官方文件知識整理，**沒有逐條對照官方文件**；有錯用 `behavior_define`（`add_api`／`remove`）修正。

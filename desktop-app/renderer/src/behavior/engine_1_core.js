@@ -40,13 +40,21 @@
         tx.__lookupCache = {};
         return tx;
     }
+    // 語言鍵：'cpp' ＝ C 的表再疊上 C++ 標準函式庫（cpp）的表；'go' 的 pkg.Func 找不到時退回 .Func（任何接收者的方法）
+    function withMethodFallback(m) {
+        return new Proxy(m, { get(tg, k) { if (typeof k !== 'string' || k in tg) return tg[k]; const i = k.lastIndexOf('.'); if (i > 0) { const b = '.' + k.slice(i + 1); if (b in tg) return tg[b]; } return undefined; } });
+    }
     function lookupFor(tx, language) {
         if (tx.__lookupCache[language]) return tx.__lookupCache[language];
         const m = {};
-        for (const [cid, cat] of Object.entries(tx.categories || {})) for (const name of ((cat.languages || {})[language] || [])) m[name] = cid;
-        tx.__lookupCache[language] = m; return m;
+        for (const lg of (language === 'cpp' ? ['c', 'cpp'] : [language])) for (const [cid, cat] of Object.entries(tx.categories || {})) for (const name of ((cat.languages || {})[lg] || [])) m[name] = cid;
+        tx.__lookupCache[language] = language === 'go' ? withMethodFallback(m) : m; return tx.__lookupCache[language];
     }
-    function apiFor(tx, language) { return (tx.__api && tx.__api[language]) || {}; }
+    function apiFor(tx, language) {
+        const a = tx.__api || {};
+        if (language === 'cpp') return Object.assign({}, a.c || {}, a.cpp || {});
+        const m = a[language] || {}; return language === 'go' ? withMethodFallback(Object.assign({}, m)) : m;
+    }
     function asmLookup(tx) {
         if (tx.__asm) return tx.__asm;
         const lk = {};
@@ -156,6 +164,57 @@
     function shellFunctionName(fnNode, src) { for (const c of kids(fnNode)) if (c.type === 'word') return T(c, src); return null; }
     function shellCallCandidates(callNode, src) { for (const c of kids(callNode)) if (c.type === 'command_name') return [T(c, src)]; return null; }
 
+    // ---------- Rust／Go（2026-10-06）：呼叫名稱候選要跟 names_cpp_rust_go.json 的鍵寫法一致 ----------
+    // Rust：路徑呼叫 a::b::c → [完整路徑, 最後兩段 b::c, 最後一段 c]；方法呼叫 x.foo() → ['.foo']；巨集 println! → ['println!']
+    const rustPathText = (n, src) => T(n, src).replace(/\s+/g, '').replace(/::<[^<>]*>/g, '').replace(/<[^<>]*>/g, '');
+    function rustFuncCandidates(func, src) {
+        if (func.type === 'identifier') return [T(func, src)];
+        if (func.type === 'generic_function') { const f = func.childForFieldName('function'); return f ? rustFuncCandidates(f, src) : null; }
+        if (func.type === 'scoped_identifier') { const full = rustPathText(func, src), segs = full.split('::'); const out = [full]; if (segs.length > 2) out.push(segs.slice(-2).join('::')); out.push(segs[segs.length - 1]); return uniq(out); }
+        if (func.type === 'field_expression') { const f = func.childForFieldName('field'); return f ? ['.' + T(f, src)] : null; }
+        return null;
+    }
+    function rustCallCandidates(callNode, src) {
+        if (callNode.type === 'macro_invocation') {
+            const m = callNode.childForFieldName('macro'); if (!m) return null; const t0 = rustPathText(m, src), segs = t0.split('::'); const out = [t0 + '!'];
+            if (segs.length > 2) out.push(segs.slice(-2).join('::') + '!'); if (segs.length > 1) out.push(segs[segs.length - 1] + '!'); return uniq(out);
+        }
+        const func = callNode.childForFieldName('function') || kids(callNode)[0]; return func ? rustFuncCandidates(func, src) : null;
+    }
+    // Go：套件函式 os.Open → ['os.Open', '.Open']；其他接收者的方法 mu.Lock → ['mu.Lock', '.Lock']；內建 make → ['make']
+    function goCallCandidates(callNode, src) {
+        const func = callNode.childForFieldName('function') || kids(callNode)[0]; if (!func) return null;
+        if (func.type === 'identifier') return [T(func, src)];
+        if (func.type === 'selector_expression') {
+            const f = func.childForFieldName('field'), op = func.childForFieldName('operand'); if (!f) return null; const name = T(f, src);
+            if (op && (op.type === 'identifier' || op.type === 'selector_expression')) return [T(op, src) + '.' + name, '.' + name]; return ['.' + name];
+        }
+        return null;
+    }
+    const fieldText = (n, f, src) => { const c = n.childForFieldName(f); return c ? T(c, src) : null; };
+    const rustFunctionName = (fn, src) => fieldText(fn, 'name', src);
+    const goFunctionName = (fn, src) => fieldText(fn, 'name', src);
+    function rustParamNames(fn, src) { const ps = fn.childForFieldName('parameters'); if (!ps) return []; const out = []; for (const p of kids(ps)) if (p.type === 'parameter') { const pat = p.childForFieldName('pattern'); if (pat) out.push(T(pat, src)); } return out; }
+    function goParamNames(fn, src) { const ps = fn.childForFieldName('parameters'); if (!ps) return []; const out = []; for (const p of kids(ps)) if (p.type === 'parameter_declaration' || p.type === 'variadic_parameter_declaration') for (const c of kids(p)) if (c.type === 'identifier') out.push(T(c, src)); return out; }
+    const rustCondition = (node) => node.childForFieldName('condition') || node.childForFieldName('value') || null;
+    function goCondition(node) {
+        if (node.type === 'for_statement') { const fc = firstKid(node, 'for_clause'); if (fc) return fc.childForFieldName('condition') || null; if (firstKid(node, 'range_clause')) return null; return kids(node).find((c) => c.type !== 'for' && c.type !== 'block' && c.childCount > 0) || null; }
+        return node.childForFieldName('condition') || node.childForFieldName('value') || null;
+    }
+    const fieldIfBranches = (ifNode) => [ifNode.childForFieldName('consequence') || null, ifNode.childForFieldName('alternative') || null];
+    // Go 的 for 有三種寫法（for_clause 像 C、range_clause 走訪、只有條件／什麼都沒有）；switch 的 case 直接是子節點
+    function goControlExplain(node, src, nk) {
+        if (nk !== 'for_statement') return null;
+        const rc = firstKid(node, 'range_clause');
+        if (rc) { const l = rc.childForFieldName('left'), r = rc.childForFieldName('right'); return 'For each ' + (l ? '`' + T(l, src) + '` in ' : 'element in ') + '`' + (r ? T(r, src) : 'the collection') + '`:'; }
+        const fc = firstKid(node, 'for_clause');
+        if (fc) { const i = fc.childForFieldName('initializer'), c = fc.childForFieldName('condition'), u = fc.childForFieldName('update'); const parts = []; if (i) parts.push('starts with `' + T(i, src) + '`'); if (c) parts.push('continues while `' + T(c, src) + '` holds'); else parts.push('has no exit condition of its own (relies on an explicit break/return)'); if (u) parts.push('runs `' + T(u, src) + '` after each iteration'); return 'Loop that ' + parts.join(', ') + '.'; }
+        const cond = goCondition(node); return cond ? 'Loops while `' + T(cond, src) + '` holds.' : 'Infinite loop (no condition of its own) - runs until an explicit break/return inside it.';
+    }
+    const goIsInfinite = (node) => node.type === 'for_statement' && !firstKid(node, 'for_clause') && !firstKid(node, 'range_clause') && !goCondition(node);
+    function rustControlExplain(node, src, nk) { if (node.type === 'loop_expression') return 'Infinite loop (no condition of its own) - runs until an explicit break/return inside it.'; return null; }
+    const rustIsInfinite = (node, src, p) => node.type === 'loop_expression';
+
     // ---------- 語言設定檔（LanguageProfile）：每個欄位都是真正的 grammar 節點名稱 ----------
     const ARG_PUNCT = S(['(', ')', ',', '[', ']']);
     const bracketedArgs = (node, type) => { const al = firstKid(node, type); return al ? kids(al).filter((a) => !ARG_PUNCT.has(a.type)) : []; };
@@ -171,6 +230,7 @@
         if (fnNode.type !== 'arrow_function') { const id = firstKidOf(fnNode, ['identifier', 'property_identifier']); if (id) { const name = T(id, src); if (name === 'constructor' && fnNode.type === 'method_definition') { const cn = jsEnclosingClassName(fnNode, src); if (cn) return cn; } return name; } }
         const p = fnNode.parent; if (p && p.type === 'variable_declarator') { const pid = firstKid(p, 'identifier'); if (pid) return T(pid, src); } return null;
     }
+    const cppCondition = (node) => { const cc = firstKid(node, 'condition_clause'); if (cc) return cc.childForFieldName('value') || kids(cc).find((c) => c.type !== '(' && c.type !== ')' && c.type !== 'init_statement') || null; return parenCondition(node); };
     const parenCondition = (node) => { const p = firstKid(node, 'parenthesized_expression'); if (!p) return null; return kids(p).find((c) => c.type !== '(' && c.type !== ')') || null; };
     function pythonCondition(node, src, p) { for (const c of kids(node)) { if (['if', 'while', 'elif', ':'].indexOf(c.type) >= 0) continue; if (p.body_node_types.has(c.type) || p.else_clause_types.has(c.type)) return null; return c; } return null; }
     const bashCondition = (node) => firstKidOf(node, ['test_command', 'command', 'pipeline']);
@@ -196,4 +256,38 @@
         javascript: P({ language: 'javascript', function_node_types: S(['function_declaration', 'function_expression', 'function', 'arrow_function', 'method_definition', 'generator_function_declaration']), call_node_types: S(['call_expression', 'new_expression']), body_node_types: S(['statement_block']), control_statement_types: S(['if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_statement']), leaf_statement_types: S(['expression_statement', 'lexical_declaration', 'variable_declaration', 'return_statement', 'break_statement', 'continue_statement', 'throw_statement']), transparent_types: S(['statement_block', 'switch_body', 'switch_case', 'switch_default', 'else_clause', 'catch_clause', 'finally_clause', 'labeled_statement', 'try_statement']), identifier_types: S(['identifier', 'property_identifier']), string_literal_types: S(['string', 'template_string']), assignment_types: S(['assignment_expression', 'augmented_assignment_expression']), declaration_types: S(['lexical_declaration', 'variable_declaration']), declarator_types: S(['variable_declarator']), else_clause_types: S(['else_clause']), control_transfer_types: S(['return_statement', 'continue_statement', 'break_statement', 'throw_statement']), loop_node_types: S(['for_statement', 'for_in_statement', 'while_statement', 'do_statement']), infinite_loop_texts: S(['true', '1']), c_style_for_types: S(['for_statement']), foreach_for_types: S(['for_in_statement']), switch_like_types: S(['switch_statement']), get_call_name: _lastCand(jsCallCandidates), get_call_candidates: jsCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'arguments'), get_function_name: jsFunctionNameP, get_parameter_names: jsParamNames, get_if_branches: genericIfBranches, get_condition_node: parenCondition, callback_param_funcs: { addEventListener: [1], on: [1], once: [1], setTimeout: [0], setInterval: [0], setImmediate: [0], then: [0], catch: [0], forEach: [0], map: [0], filter: [0], nextTick: [0], subscribe: [0] }, path_arg_calls: S(['readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'open', 'openSync', 'createReadStream', 'createWriteStream']) }),
         shell: P({ language: 'shell', function_node_types: S(['function_definition']), call_node_types: S(['command']), body_node_types: S(['compound_statement', 'do_group']), control_statement_types: S(['if_statement', 'for_statement', 'c_style_for_statement', 'while_statement', 'case_statement']), leaf_statement_types: S(['command', 'variable_assignment', 'declaration_command', 'unset_command', 'pipeline', 'list', 'subshell', 'redirected_statement']), transparent_types: S(['compound_statement', 'do_group', 'else_clause', 'elif_clause', 'case_item', 'program']), identifier_types: S(['variable_name', 'word']), string_literal_types: S(['string', 'raw_string', 'word']), assignment_types: S(['variable_assignment']), declaration_types: S(['declaration_command']), declarator_types: S([]), else_clause_types: S(['else_clause', 'elif_clause']), control_transfer_types: S(['return_statement', 'continue_statement', 'break_statement']), loop_node_types: S(['for_statement', 'c_style_for_statement', 'while_statement']), infinite_loop_texts: S(['true', ':', '1']), c_style_for_types: S(['c_style_for_statement']), foreach_for_types: S(['for_statement']), switch_like_types: S(['case_statement']), get_call_name: _lastCand(shellCallCandidates), get_call_candidates: shellCallCandidates, get_call_arguments: shellCallArgs, get_function_name: shellFunctionName, get_parameter_names: noParams, get_if_branches: genericIfBranches, get_condition_node: bashCondition, noreturn_calls: S(['exit']), control_transfer_call_names: S(['return', 'break', 'continue']) }),
     };
-    PROFILES.cpp = Object.assign({}, PROFILES.c, { language: 'c' });
+    // C++：語法樹用 C++ 的 grammar（class／template／namespace／range-for／lambda）；名稱表用 C 加上 C++ 標準函式庫（table_language: 'cpp'），其餘行為判斷沿用 C 的（language: 'c'）
+    PROFILES.cpp = Object.assign({}, PROFILES.c, {
+        language: 'c', table_language: 'cpp', get_condition_node: cppCondition,
+        control_statement_types: S(['if_statement', 'for_statement', 'for_range_loop', 'while_statement', 'do_statement', 'switch_statement']), loop_node_types: S(['for_statement', 'for_range_loop', 'while_statement', 'do_statement']),
+        foreach_for_types: S(['for_range_loop']), transparent_types: S(['compound_statement', 'labeled_statement', 'case_statement', 'else_clause', 'try_statement', 'catch_clause']),
+    });
+    // Rust：以運算式為主（if／match／loop 都是 *_expression）；expression_statement 不當葉子（裡面可能是 if／for），改成往下走到真正的語句
+    PROFILES.rust = P({
+        language: 'rust', multi_key: true, function_node_types: S(['function_item']), call_node_types: S(['call_expression', 'macro_invocation']), body_node_types: S(['block', 'match_block']),
+        control_statement_types: S(['if_expression', 'for_expression', 'while_expression', 'loop_expression', 'match_expression']),
+        leaf_statement_types: S(['let_declaration', 'call_expression', 'macro_invocation', 'return_expression', 'break_expression', 'continue_expression', 'assignment_expression', 'compound_assignment_expr', 'try_expression', 'await_expression', 'const_item', 'static_item']),
+        transparent_types: S(['block', 'else_clause', 'unsafe_block', 'async_block', 'expression_statement', 'match_arm']), identifier_types: S(['identifier']), string_literal_types: S(['string_literal', 'raw_string_literal']),
+        assignment_types: S(['assignment_expression', 'compound_assignment_expr']), declaration_types: S(['let_declaration']), declarator_types: S([]), else_clause_types: S(['else_clause']),
+        control_transfer_types: S(['return_expression', 'break_expression', 'continue_expression']), loop_node_types: S(['for_expression', 'while_expression', 'loop_expression']),
+        infinite_loop_texts: S(['true']), foreach_for_types: S(['for_expression']), switch_like_types: S(['match_expression']),
+        get_call_name: (n, s) => { const c = rustCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: rustCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'arguments'),
+        get_function_name: rustFunctionName, get_parameter_names: rustParamNames, get_if_branches: fieldIfBranches, get_condition_node: rustCondition,
+        noreturn_calls: S(['panic!', 'unreachable!', 'unimplemented!', 'todo!', 'process::exit', 'std::process::exit', 'process::abort', 'std::process::abort']),
+        control_explain: rustControlExplain, is_infinite_loop: rustIsInfinite,
+        ignore_names: S(['Ok', 'Err', 'Some', 'None', '.clone', '.is_empty', '.len', '.iter', '.iter_mut', '.into_iter', '.map', '.filter', '.filter_map', '.collect', '.as_ref', '.as_mut', '.as_str', '.cloned', '.copied', '.enumerate', '.zip', '.rev', '.take', '.skip', '.join', '.is_some', '.is_none', '.is_ok', '.is_err', '.unwrap_or', '.get', '.insert', '.remove', '.contains', '.keys', '.values', '.new', 'String::new', 'Vec::new', 'drop']),
+    });
+    // Go：for 有三種寫法、switch／select 的 case 直接是子節點（get_control_body 回傳節點本身，讓走訪器逐個 case 往下）
+    PROFILES.go = P({
+        language: 'go', multi_key: true, function_node_types: S(['function_declaration', 'method_declaration']), call_node_types: S(['call_expression']), body_node_types: S(['block']),
+        control_statement_types: S(['if_statement', 'for_statement', 'expression_switch_statement', 'type_switch_statement', 'select_statement']),
+        leaf_statement_types: S(['short_var_declaration', 'assignment_statement', 'call_expression', 'return_statement', 'break_statement', 'continue_statement', 'goto_statement', 'var_declaration', 'const_declaration', 'defer_statement', 'go_statement', 'inc_statement', 'dec_statement', 'send_statement']),
+        transparent_types: S(['block', 'expression_statement', 'labeled_statement', 'expression_case', 'default_case', 'type_case', 'communication_case']), identifier_types: S(['identifier']), string_literal_types: S(['interpreted_string_literal', 'raw_string_literal']),
+        assignment_types: S(['assignment_statement', 'short_var_declaration']), declaration_types: S(['var_declaration', 'short_var_declaration']), declarator_types: S(['var_spec']), else_clause_types: S([]),
+        control_transfer_types: S(['return_statement', 'break_statement', 'continue_statement', 'goto_statement']), loop_node_types: S(['for_statement']), infinite_loop_texts: S(['true']), foreach_for_types: S([]), switch_like_types: S(['expression_switch_statement', 'type_switch_statement', 'select_statement']),
+        get_call_name: (n, s) => { const c = goCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: goCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'argument_list'),
+        get_function_name: goFunctionName, get_parameter_names: goParamNames, get_if_branches: fieldIfBranches, get_condition_node: goCondition,
+        noreturn_calls: S(['panic', 'os.Exit', 'log.Fatal', 'log.Fatalf', 'log.Fatalln', 'runtime.Goexit', 'log.Panic', 'log.Panicf', 'log.Panicln']),
+        control_explain: goControlExplain, is_infinite_loop: goIsInfinite, get_control_body: (node) => (/switch|select/.test(node.type) ? node : null),
+        ignore_names: S(['len', 'cap', 'new', 'string', 'int', 'int64', 'float64', 'byte', 'error', '.Error', '.String', '.Len', '.Close', '.Get', '.Set', '.Add', '.Do', '.Run', '.Next', '.Wait']),
+    });

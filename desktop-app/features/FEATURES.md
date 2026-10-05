@@ -420,6 +420,9 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
   - `解釋這個函式在做什麼`
   - `/aidoc explain src/net.c recv_all`
   - `這段組合語言在做什麼`
+  - `解釋這支 Rust 檔案`
+  - `這段 Go 程式在做什麼`
+  - `解釋這個 C++ 類別（用了哪些 STL）`
 
 ### 程式碼問答（類似 doxygen＋語意搜尋）（`repo-ask`）
 

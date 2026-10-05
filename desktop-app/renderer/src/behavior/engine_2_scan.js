@@ -47,7 +47,7 @@
     function detectShellCmds(fnNode, src, shellLookup) { const hits = []; for (const c of findCallsByName(fnNode, src, SHELL_STR_CALLS)) { const a = firstStringLiteralArg(c); if (!a) continue; const text = unquote(T(a, src)); const commands = tokenizeShellLine(text); const matched = {}; for (const cmd of commands) { const cat = shellLookup[cmd]; if (cat) (matched[cat] = matched[cat] || new Set()).add(cmd); } const mc = {}; for (const [k, v] of Object.entries(matched)) mc[k] = sorted(v); hits.push({ call: cCallName(c, src), line: row(c) + 1, command_line: text, commands, matched_categories: mc }); } return hits; }
     // 一個檔案裡所有函式的掃描結果。profile：PROFILES[x]；language：taxonomy 用的語言名稱
     function scanTree(root, src, profile, tx, opts) {
-        opts = opts || {}; const language = profile.language; const lookup = lookupFor(tx, language);
+        opts = opts || {}; const language = profile.language; const lookup = lookupFor(tx, profile.table_language || language);
         const cf = (tx.control_flow_nodes || {})[language] || {}; const branchTypes = S(cf.branch), loopTypes = S(cf.loop);
         const sig = tx.structural_signals || {};
         const asmTypes = S((sig.inline_assembly || {})[language]), guardTypes = S((sig.preprocessor_conditional || {})[language]);
@@ -65,7 +65,7 @@
                 const cands = profile.get_call_candidates(c, src); if (!cands || !cands.length) continue;
                 callCount++; allCalls.push(cands[0]);
                 let cat = null; for (const cd of cands) { cat = lookup[cd]; if (cat) break; }
-                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1;
+                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!(profile.ignore_names && profile.ignore_names.has(cands[0]))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
             }
             const branch = countTypes(fn, branchTypes), loop = countTypes(fn, loopTypes);
             const asmBlocks = [];
@@ -142,7 +142,7 @@
     }
 
     // ================= 逐行追蹤（linetrace_tools）=================
-    const NORMALIZE_KIND = { enhanced_for_statement: 'for_statement', for_in_statement: 'for_statement', c_style_for_statement: 'for_statement', foreach_statement: 'for_statement', switch_expression: 'switch_statement', match_statement: 'switch_statement', case_statement: 'switch_statement', elif_clause: 'if_statement', elseif_clause: 'if_statement' };
+    const NORMALIZE_KIND = { enhanced_for_statement: 'for_statement', for_in_statement: 'for_statement', c_style_for_statement: 'for_statement', foreach_statement: 'for_statement', switch_expression: 'switch_statement', match_statement: 'switch_statement', case_statement: 'switch_statement', elif_clause: 'if_statement', elseif_clause: 'if_statement', if_expression: 'if_statement', for_expression: 'for_statement', while_expression: 'while_statement', loop_expression: 'while_statement', match_expression: 'switch_statement', expression_switch_statement: 'switch_statement', type_switch_statement: 'switch_statement', select_statement: 'switch_statement', for_range_loop: 'for_statement' };
     const normKind = (t) => NORMALIZE_KIND[t] || t;
     const CONTROL_KINDS = S(['if_statement', 'for_statement', 'while_statement', 'do_statement', 'switch_statement']);
     const headerText = (n, src) => T(n, src).split('\n', 1)[0].trim();
@@ -162,12 +162,14 @@
     }
     const FOREACH_SKIP = S(['for', 'foreach', 'while', 'let', 'const', 'var', '(', ')', ':']);
     function foreachParts(node, src, p) {
+        if (node.type === 'for_range_loop') { const d = node.childForFieldName('declarator'), r = node.childForFieldName('right'); return [d ? T(d, src).trim() : null, r ? T(r, src).trim() : null]; }
         const ch = kids(node); const ii = ch.findIndex((c) => c.type === 'in' || c.type === 'of'); if (ii < 0) return [null, null];
         const before = ch.slice(0, ii).filter((c) => !FOREACH_SKIP.has(c.type)); const v = before.map((c) => T(c, src)).join(' ').trim(); const after = [];
         for (const c of ch.slice(ii + 1)) { if (p.body_node_types.has(c.type) || c.type === ')') break; if (c.type === ';' || c.type === ':') continue; after.push(c); }
         return [v || null, after.map((c) => T(c, src)).join(' ').trim() || null];
     }
     function controlExplanation(node, src, p, nk) {
+        if (p.control_explain) { const ce = p.control_explain(node, src, nk); if (ce) return ce; }
         if (nk === 'for_statement') { if (p.foreach_for_types.has(node.type)) { const [v, it] = foreachParts(node, src, p); if (it) return v ? 'For each `' + v + '` in `' + it + '`:' : 'For each element in `' + it + '`:'; return 'For each element in the collection/range:'; } return cStyleForExplanation(node, src); }
         const cond = childCond(node, src, p);
         if (nk === 'while_statement') return cond ? 'Loops while `' + cond + '` holds.' : 'Loops based on its own condition (see header text).';
@@ -180,7 +182,7 @@
     function isControlTransfer(stmt, src, p) { if (p.control_transfer_types.has(stmt.type)) return true; const calls = []; collectTypes(stmt, p.call_node_types, calls); for (const c of calls) { const n = p.get_call_name(c, src); if (p.noreturn_calls.has(n) || p.control_transfer_call_names.has(n)) return true; } return false; }
     function isGuardClause(ifNode, src, p) { const [cons, els] = p.get_if_branches(ifNode, p, src); if (els || !cons) return false; const rc = p.body_node_types.has(cons.type) ? realBodyChildren(cons, p) : [cons]; if (!rc.length) return false; return isControlTransfer(rc[rc.length - 1], src, p); }
     function isCStyleForEmpty(node) { let inside = false; for (const c of kids(node)) { if (c.type === '(') { inside = true; continue; } if (c.type === ')') break; if (inside && c.type !== ';') return false; } return true; }
-    function isInfiniteLoop(node, src, p) { if (p.foreach_for_types.has(node.type)) return false; if (p.c_style_for_types.has(node.type)) return isCStyleForEmpty(node); const c = p.get_condition_node(node, src, p); if (!c) return false; return p.infinite_loop_texts.has(T(c, src).trim()); }
+    function isInfiniteLoop(node, src, p) { if (p.is_infinite_loop) return p.is_infinite_loop(node, src, p); if (p.foreach_for_types.has(node.type)) return false; if (p.c_style_for_types.has(node.type)) return isCStyleForEmpty(node); const c = p.get_condition_node(node, src, p); if (!c) return false; return p.infinite_loop_texts.has(T(c, src).trim()); }
     // C 專用：條件裡直接比較函式回傳值、變數曾經是某個函式的回傳值
     const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=', '==': '==', '!=': '!=' };
     function literalValue(node, src) { const t = T(node, src).trim(); const v = parseIntLit(t); return v !== null ? v : t; }
@@ -215,10 +217,10 @@
             if (p.control_statement_types.has(child.type)) {
                 const nk = normKind(child.type); const calls = []; collectTypes(child, p.call_node_types, calls); const isIf = nk === 'if_statement'; let body = null, cons = null, els = null, ranges;
                 if (isIf) { [cons, els] = p.get_if_branches(child, p, src); ranges = [cons, els].filter(Boolean).map((n) => [n.startIndex, n.endIndex]); }
-                else { body = kids(child).find((c) => p.body_node_types.has(c.type)) || null; ranges = body ? [[body.startIndex, body.endIndex]] : []; }
+                else { body = (p.get_control_body && p.get_control_body(child)) || kids(child).find((c) => p.body_node_types.has(c.type)) || null; ranges = body ? [[body.startIndex, body.endIndex]] : []; }
                 const condCalls = calls.filter((c) => !ranges.some(([s, e]) => s <= c.startIndex && c.startIndex < e));
-                const condNames = condCalls.map((c) => p.get_call_name(c, src)).filter(Boolean);
-                const entry = { line: row(child) + 1, depth, kind: nk, text: headerText(child, src), calls: condNames, categories: sorted(new Set(condNames.filter((n) => lookup[n]).map((n) => lookup[n]))), explanation: null, branch: branch || null, is_guard_clause: isIf && isGuardClause(child, src, p), is_infinite_loop: (nk === 'for_statement' || nk === 'while_statement' || nk === 'do_statement') && isInfiniteLoop(child, src, p), comment: precedingCommentNote(child, src) };
+                const condNames = condCalls.map((c) => p.get_call_name(c, src)).filter(Boolean); const catOf = (c) => { if (p.multi_key) { for (const cd of (p.get_call_candidates(c, src) || [])) if (lookup[cd]) return lookup[cd]; return null; } const n = p.get_call_name(c, src); return n ? (lookup[n] || null) : null; };
+                const entry = { line: row(child) + 1, depth, kind: nk, text: headerText(child, src), calls: condNames, categories: sorted(new Set(condCalls.map(catOf).filter(Boolean))), explanation: null, branch: branch || null, is_guard_clause: isIf && isGuardClause(child, src, p), is_infinite_loop: (nk === 'for_statement' || nk === 'while_statement' || nk === 'do_statement') && isInfiniteLoop(child, src, p), comment: precedingCommentNote(child, src) };
                 const parts = [];
                 if (isC && api) {
                     const cond = parenCondition(child); const dm = extractConditionCall(cond, src);
@@ -232,9 +234,9 @@
                 return;
             }
             if (p.leaf_statement_types.has(child.type)) {
-                const calls = []; collectTypes(child, p.call_node_types, calls); const names = calls.map((c) => p.get_call_name(c, src)).filter(Boolean); const exps = [];
+                const calls = []; collectTypes(child, p.call_node_types, calls); const names = calls.map((c) => p.get_call_name(c, src)).filter(Boolean); const exps = []; const catOfLeaf = (c) => { if (p.multi_key) { for (const cd of (p.get_call_candidates(c, src) || [])) if (lookup[cd]) return lookup[cd]; return null; } const n = p.get_call_name(c, src); return n ? (lookup[n] || null) : null; };
                 if (api) for (const c of calls) { const e = explainBest(c, p.get_call_candidates(c, src) || [], src, api); if (e) exps.push(e); }
-                out.push({ line: row(child) + 1, depth, kind: child.type, text: statementText(child, src), calls: names, categories: sorted(new Set(names.filter((n) => lookup[n]).map((n) => lookup[n]))), explanation: exps.join(' ') || null, branch: branch || null, is_guard_clause: false, is_infinite_loop: false, comment: precedingCommentNote(child, src) });
+                out.push({ line: row(child) + 1, depth, kind: child.type, text: statementText(child, src), calls: names, categories: sorted(new Set(calls.map(catOfLeaf).filter(Boolean))), explanation: exps.join(' ') || null, branch: branch || null, is_guard_clause: false, is_infinite_loop: false, comment: precedingCommentNote(child, src) });
                 if (isC) recordCallResultVars(child, src, varCalls);
                 return;
             }
@@ -244,7 +246,7 @@
     }
     // 追蹤一個函式節點：回傳 {name, path, start_line, end_line, lines[]}
     function traceFunction(fnNode, src, profile, tx, name, path) {
-        const lookup = lookupFor(tx, profile.language); const api = apiFor(tx, profile.language); const lines = [];
+        const lookup = lookupFor(tx, profile.table_language || profile.language); const api = apiFor(tx, profile.table_language || profile.language); const lines = [];
         const body = kids(fnNode).find((c) => profile.body_node_types.has(c.type));
         if (body) walkStatements(body, src, lookup, profile, api, {}, 0, lines, null);
         return { name, path: path || '', start_line: row(fnNode) + 1, end_line: fnNode.endPosition.row + 1, lines };

@@ -46,6 +46,15 @@ embedIdrSkill();
 function embedBehavior() {
     const dir = path.join(root, 'renderer/src/behavior');
     const data = { patterns: JSON.parse(fs.readFileSync(path.join(dir, 'behavior_patterns.json'), 'utf8')), api: JSON.parse(fs.readFileSync(path.join(dir, 'api_semantics.json'), 'utf8')) };
+    // 另外的名稱表（C++ 標準函式庫、Rust、Go；scripts/gen-name-tables.py 產生）：疊在原本的資料上，不動 Domain Resolver 匯入的原檔
+    const extFile = path.join(dir, 'names_cpp_rust_go.json');
+    if (fs.existsSync(extFile)) {
+        const ext = JSON.parse(fs.readFileSync(extFile, 'utf8')); const P = data.patterns;
+        for (const [cid, c] of Object.entries(ext.categories || {})) { const t0 = P.categories[cid] = P.categories[cid] || { label: c.label || cid, description: c.description || '', languages: {} }; t0.languages = t0.languages || {}; for (const [l, names] of Object.entries(c.languages || {})) t0.languages[l] = Array.from(new Set((t0.languages[l] || []).concat(names))); }
+        for (const [l, fns] of Object.entries(ext.api || {})) data.api[l] = Object.assign(data.api[l] || {}, fns);
+        for (const [l, cf] of Object.entries(ext.control_flow_nodes || {})) P.control_flow_nodes[l] = cf;
+        for (const [sn, per] of Object.entries(ext.structural_signals || {})) { P.structural_signals[sn] = P.structural_signals[sn] || {}; Object.assign(P.structural_signals[sn], per); }
+    }
     const a = src.indexOf('/* BEHAVIOR-BEGIN */'), b = src.indexOf('/* BEHAVIOR-END */');
     if (a < 0 || b < 0) throw new Error('找不到 BEHAVIOR 標記');
     src = src.slice(0, a) + '/* BEHAVIOR-BEGIN */\nconst FA_BEHAVIOR_DATA = ' + lit(data) + ';\n' + src.slice(b);

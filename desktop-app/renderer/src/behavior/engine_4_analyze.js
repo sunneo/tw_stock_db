@@ -186,7 +186,7 @@
         out.push('', '</details>', ''); return out.join('\n');
     }
     // ================= 總協調：把一份原始碼解釋成可折疊的 markdown =================
-    const EXT_LANG = { c: 'c', h: 'c', cc: 'c', cpp: 'c', cxx: 'c', hpp: 'c', cu: 'c', cuh: 'c', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell' };
+    const EXT_LANG = { c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', ipp: 'cpp', cu: 'cpp', cuh: 'cpp', rs: 'rust', rust: 'rust', go: 'go', golang: 'go', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell' };
     function languageOfPath(path) { const m = /\.([A-Za-z0-9]+)$/.exec(path || ''); return m ? (EXT_LANG[m[1].toLowerCase()] || null) : null; }
     const FileCommentRe = /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+|(?:#[^\n]*\n?)+)/;
     function fileHeaderComment(src, language) { const hashOk = language === 'python' || language === 'shell'; const m = (hashOk ? FileCommentRe : /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+)/).exec(src.replace(/^#!.*\n/, '')); if (!m) return null; return m[0].split('\n').map((l) => l.replace(/^\s*(\/\*+|\*+\/|\*+|\/\/+|#+)\s?/, '').replace(/\*\/\s*$/, '').trim()).filter(Boolean).join(' ') || null; }
@@ -215,13 +215,13 @@
         }
         if (/\.dis$/i.test(path) || (!language && /^Disassembly of <code object|^\s*\d+\s+\d+\s+(?:RESUME|LOAD_CONST|LOAD_GLOBAL|LOAD_NAME)\b/m.test(src))) { const pf = parsePyDis(src); meta.language = 'python-bytecode'; meta.functions = pf.length; out.push(pyDisMarkdown(pf, tx)); return { markdown: out.join('\n'), meta, functions: pf }; }
         if (!language) return { markdown: out.join('\n') + '\n（不認得的檔案類型，無法分析）', meta, functions: [] };
-        meta.language = language;
+        meta.language = language; const fam = language === 'cpp' ? 'c' : language; // C++：行為判斷沿用 C 的，語法樹與名稱表用 C++ 的
         if (!deps.parse) throw new Error('沒有可用的語法樹剖析器（deps.parse）');
         const root = await deps.parse(language, src); if (!root) throw new Error('語法樹剖析失敗：' + language);
         const profile = PROFILES[language]; const scan = scanTree(root, src, profile, tx, { path, wholeFile: !!opts.wholeFile });
         let fns = scan.functions.filter((f) => !(/^<anonymous/.test(f.name) && scan.functions.some((o) => o !== f && o.line <= f.line && o.end_line >= f.end_line && !/^<anonymous/.test(o.name)))); meta.unclassified = scan.unclassified.slice(0, 40).map((u) => u.name); meta.functions = fns.length;
-        const ref = opts.ref || null; const allPragmas = ref && (language === 'c') ? pragmaNodes(root, src).map((p) => Object.assign(p, { expl: ref.explainPragma(p.text) })) : [];
-        const jp = language === 'java' ? detectJavaDesignPatterns(root, src) : []; const fileObj = { path, language, functions: fns, root, _src: src };
+        const ref = opts.ref || null; const allPragmas = ref && (fam === 'c') ? pragmaNodes(root, src).map((p) => Object.assign(p, { expl: ref.explainPragma(p.text) })) : [];
+        const jp = language === 'java' ? detectJavaDesignPatterns(root, src) : []; const fileObj = { path, language: fam, functions: fns, root, _src: src };
         const cg = buildCallGraph([fileObj]);
         const resolveCache = {};
         const resolveCallee = (cn) => { // 本檔內的呼叫端：取該函式自己的一句話說明（註解優先，其次行為分類）
@@ -234,7 +234,7 @@
         if (cg.indirect.length && !target) { out.push('<details><summary>間接呼叫（函式指標／回呼／vtable，' + cg.indirect.length + '）</summary>', ''); for (const i of cg.indirect.slice(0, 30)) out.push('- 第 ' + i.line + ' 行：`' + i.target + '` 以' + ({ callback: '回呼', 'function-pointer': '函式指標', 'vtable-field': 'vtable 欄位' }[i.via]) + '被綁定' + (i.field ? '到 `' + i.field + '`' : '') + (i.from !== '(file scope)' ? '（在 `' + i.from + '`）' : '')); out.push('', '</details>', ''); }
         if (!target && fns.length > 1) { const sums = fns.map((f) => (notes[path + '::' + f.name] || f.leading_comment_text || '')).filter(Boolean); if (sums.length > 3) { const s = summarizeBlocks(sums, 3); out.push('**檔案重點**：' + s.summary.map((x) => rerank(x, [], 1)).join(' ／ '), ''); } }
         for (const f of fns) {
-            cur = f; const note = notes[path + '::' + f.name] || notes[f.name]; const trace = traceFunction(f._node, src, profile, tx, f.name, path); const fnPragmas = allPragmas.filter((p) => p.line >= f.line && p.line <= f.end_line); if (ref) annotateTrace(trace.lines, ref, language, fnPragmas);
+            cur = f; const note = notes[path + '::' + f.name] || notes[f.name]; const trace = traceFunction(f._node, src, profile, tx, f.name, path); const fnPragmas = allPragmas.filter((p) => p.line >= f.line && p.line <= f.end_line); if (ref) annotateTrace(trace.lines, ref, fam, fnPragmas);
             out.push('## `' + f.name + '`（第 ' + f.line + '–' + f.end_line + ' 行，複雜度 ' + f.complexity + '）', '');
             if (note) { out.push('**' + NOTE_LABEL.user + '**：' + note, ''); meta.sources[f.name] = 'user'; }
             else if (f.leading_comment_text) { out.push('**' + NOTE_LABEL.comment + '**：' + rerank(f.leading_comment_text, f.all_calls.concat(Object.keys(f.behaviors)), 2), ''); meta.sources[f.name] = 'comment'; }
@@ -245,7 +245,7 @@
             out.push('<details open><summary>由下而上的行為敘事（正向路徑為主，防呆分支已折疊）</summary>', '', bodyMd, '', '</details>', '');
             if (fnPragmas.length) out.push(pragmaMarkdown(fnPragmas));
             for (const a of f.inline_asm) if (a.idioms && a.idioms.length) { out.push('<details><summary>內嵌組合語言（第 ' + a.line + ' 行）</summary>', ''); for (const id of a.idioms) out.push('- `' + id.name + '`：' + (id.template || id.description || '')); out.push('', '</details>', ''); }
-            const flows = dataFlowOfTrace(trace, language); if (flows.length) { out.push('<details><summary>資料流警示（' + flows.length + '）</summary>', ''); for (const x of flows) out.push('- 第 ' + x.origin_line + ' 行 `' + x.origin + '` 的資料，經 `' + x.variables.join('、') + '`，到第 ' + x.line + ' 行 `' + x.sink + '()`：' + x.meaning); out.push('', '</details>', ''); f.dataflow = flows; }
+            const flows = dataFlowOfTrace(trace, fam); if (flows.length) { out.push('<details><summary>資料流警示（' + flows.length + '）</summary>', ''); for (const x of flows) out.push('- 第 ' + x.origin_line + ' 行 `' + x.origin + '` 的資料，經 `' + x.variables.join('、') + '`，到第 ' + x.line + ' 行 `' + x.sink + '()`：' + x.meaning); out.push('', '</details>', ''); f.dataflow = flows; }
             const callers = (cg.callers[f.name] || []); if (callers.length) out.push('被呼叫：' + callers.map((c) => '`' + c + '`').join('、'), '');
         }
         for (const f of scan.functions) delete f._node; delete fileObj.root;
