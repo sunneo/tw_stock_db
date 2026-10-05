@@ -130,5 +130,10 @@ def apply_depth(res, items):
 def apply_vision_depth(res, ask=None):
     """問視覺模型並套用。ask(system, text, images_png) -> str 可以換掉（測試用）。"""
     ask = ask or _client_call
-    text = ask(SYSTEM, build_prompt(res), [_png_bytes(res.rgb), _png_bytes(label_image(res))])
-    return apply_depth(res, parse_regions_json(text))
+    images = [_png_bytes(res.rgb), _png_bytes(label_image(res))]
+    prompt = build_prompt(res)
+    try:
+        items = parse_regions_json(ask(SYSTEM, prompt, images))
+    except ValueError:  # 模型沒照格式回（常見：只講了文字）。重問一次，明確要求只輸出 JSON；第二次還是不行才放棄（auto 會退回純幾何）
+        items = parse_regions_json(ask(SYSTEM + "上一次的回應不是合法的 JSON。這次只能輸出一個 JSON 物件，開頭是 { 結尾是 }，不要有任何其他文字。", prompt, images))
+    return apply_depth(res, items)

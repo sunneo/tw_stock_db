@@ -32,7 +32,14 @@ print(res.stats)            # 區域數、三角形數、耗時…
 save_all(res, "輸出資料夾", "name")   # SVG、mesh.json、OBJ＋MTL、貼圖 PNG
 ```
 
-輸出：`.svg`（依景深由遠到近）、`.mesh.json`（頂點 xyz、UV、頂點顏色、面、區域與 z_index）、`.obj`＋`mesh.mtl`＋`.texture.png`、`.preview.png`（正面與左右各轉 15°）。
+輸出（預設）：
+- `.svg`：向量重繪，每個四叉樹格子一個 `<rect>`，依景深由遠到近分組（檔案小；助理裡下載卡片有「🔍 向量檢視」）。
+- `.glb`：**單一檔案、貼圖內嵌**的 glTF 2.0 模型（材質不受光，顏色就是原圖），Windows 3D 檢視器、Blender、three.js、線上檢視器開起來就有貼圖。
+- `.scene3d.yaml`：助理的 3D 檢視器（render_3d_scene）直接顯示的 YAML，只有一個 polygon 節點，頂點、面、UV、貼圖（JPEG data URL）都內嵌。
+- `.texture.png`、`.preview.png`（加 `--preview`：正面與左右各轉 15°）。
+- `--all-formats` 另外輸出 `.obj`＋`.mtl`（OBJ 要靠旁邊的 MTL 與 PNG 才有貼圖，分開下載會掉，所以不是預設）與 `.mesh.json`。
+
+**風格**（`--style`／`Params.style`）：`smooth`（預設）＝連續單片浮雕，對整張網格的 z 做平滑，適合照片、動畫、人物，轉動視角時臉不會被切成碎片；`layered`＝各區域分層剪紙、交界補側面牆（skirts），適合物體放在乾淨背景上的圖。
 
 ## 流程與檔案對照（數學都寫在各檔案開頭的註解）
 
@@ -45,11 +52,15 @@ save_all(res, "輸出資料夾", "name")   # SVG、mesh.json、OBJ＋MTL、貼�
 
 ## 參數（`Params`）
 
-`max_side`（工作解析度，預設 384）、`max_leaves`（格子預算，決定三角形數）、`var_thresh`（Lab 方差門檻）、`min_size`、`tau_edge`／`tau_color`（聚類門檻）、`depth_weights`（景深線索權重：enclosure、area、convexity、border、vertical）、`amplitude`、`bevel`、`depth_range`、`separate_regions`（True＝各區域有自己的 3D 頂點、真的有景深落差；False＝單片連續網格，2D↔3D 完全一對一）。
+`max_side`（工作解析度，預設 640）、`max_leaves`（格子預算，決定三角形數）、`var_thresh`（Lab 方差門檻）、`min_size`、`tau_edge`／`tau_color`（聚類門檻）、`depth_weights`（景深線索權重：enclosure、area、convexity、border、vertical）、`amplitude`、`bevel`、`depth_range`、`separate_regions`（True＝各區域有自己的 3D 頂點、真的有景深落差；False＝單片連續網格，2D↔3D 完全一對一）。
 
 ## 驗證
 
 `python tests/test_geometric.py`：距離變換對暴力解、四叉樹鋪滿、網格無裂縫、三角形面積為正、合成圖上的景深順序（窗戶在建築前、建築在天空前、球在建築前）、沒有沿輪廓的細長假區域、充氣不改 (x,y)、邊界頂點不充氣、welded 模式一對一、正面視角重畫的覆蓋率與 PSNR、轉動視角有視差並露出空洞（不編造內容）。
+
+## 3D 模型太大時：點擊才渲染（助理的通用規則）
+
+3D 模型可能有十萬以上的節點或三角形，自動渲染會讓瀏覽器變慢甚至當機。助理對**所有**走 3D 檢視器的場景與模型一律先估算大小：節點數 > 2000、三角形 > 20000 或頂點 > 30000 任何一項超過，就不自動渲染，改顯示警告卡（寫出節點、三角形、頂點數）和「▶ 點擊渲染」按鈕；超過 30 萬三角形再多問一次確認。門檻可在 advancedSettings 調整：`scene3dClickToRenderNodes`、`scene3dClickToRenderTriangles`、`scene3dClickToRenderVertices`、`scene3dConfirmTriangles`（0＝那一項不檢查）。這個技能的預設輸出（約 3 萬～5 萬三角形）有時會超過門檻，所以大圖會先顯示警告卡。
 
 ## 限制（誠實說明）
 

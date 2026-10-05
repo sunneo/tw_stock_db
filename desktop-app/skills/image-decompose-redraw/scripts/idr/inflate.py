@@ -55,7 +55,71 @@ def _bilinear(grid, x, y):
             grid[y1, x0] * (1 - fx) * fy + grid[y1, x1] * fx * fy)
 
 
-def inflate(V, T, tri_region, regions, W, H, amplitude=0.8, bevel=None, depth_range=None, separate_regions=True):
+def _smooth(zl, tri_local, d, iters):
+    """拉普拉斯平滑（內部頂點取鄰居平均，邊界頂點 d=0 固定）。四叉樹的階梯狀邊界會讓距離場帶有細碎的鋸齒，
+    直接充氣會長出一堆尖刺；平滑幾次之後表面才像一個圓滑的氣球。"""
+    if iters <= 0 or len(zl) == 0:
+        return zl
+    e = np.concatenate([tri_local[:, [0, 1]], tri_local[:, [1, 2]], tri_local[:, [2, 0]]])
+    e = np.concatenate([e, e[:, ::-1]])
+    free = d > 1e-9
+    z = zl.copy()
+    cnt = np.bincount(e[:, 0], minlength=len(z)).astype(np.float64)
+    for _ in range(iters):
+        s = np.bincount(e[:, 0], weights=z[e[:, 1]], minlength=len(z))
+        avg = s / np.maximum(cnt, 1)
+        z = np.where(free, 0.5 * z + 0.5 * avg, z)
+    return z
+
+
+def _smooth_global(z, T, iters):
+    """連續單片模式：對整張 2D 網格的 z 再做拉普拉斯平滑。各區域的景深是分段常數，區域交界會有高低落差，
+    平滑後變成連續的緩坡（淺浮雕），轉動視角時才不會把一張臉切成一片一片。"""
+    if iters <= 0:
+        return z
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    e = np.concatenate([e, e[:, ::-1]])
+    cnt = np.maximum(np.bincount(e[:, 0], minlength=len(z)), 1).astype(np.float64)
+    z = z.copy()
+    for _ in range(iters):
+        z = 0.5 * z + 0.5 * np.bincount(e[:, 0], weights=z[e[:, 1]], minlength=len(z)) / cnt
+    return z
+
+
+def _add_skirts(mesh, T, tri_region):
+    """區域交界的側面牆：不同區域的同一個 2D 頂點因為景深不同，z 不一樣，中間會露出縫隙（從側面看是黑洞）。
+    對每條「兩側屬於不同區域」的 2D 邊，補一個四邊形（兩個三角形）把兩個區域的頂點接起來。牆的 UV 沿用頂點原本的位置，
+    貼圖在牆上是把邊界像素拉伸，看起來像物體的側面。"""
+    idx = {}
+    for k, (v, r) in enumerate(zip(mesh.src_vertex.tolist(), mesh.vertex_region.tolist())):
+        idx[(v, r)] = k
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    tri = np.concatenate([np.arange(len(T))] * 3)
+    lo, hi = np.minimum(e[:, 0], e[:, 1]), np.maximum(e[:, 0], e[:, 1])
+    key = lo.astype(np.int64) * (int(T.max()) + 1) + hi
+    order = np.argsort(key, kind="stable")
+    key, lo, hi, tri = key[order], lo[order], hi[order], tri[order]
+    same = key[1:] == key[:-1]
+    a = np.where(same)[0]
+    quads = []
+    for i in a:
+        ra, rb = int(tri_region[tri[i]]), int(tri_region[tri[i + 1]])
+        if ra == rb:
+            continue
+        u, v = int(lo[i]), int(hi[i])
+        try:
+            p, q, r_, s = idx[(u, ra)], idx[(v, ra)], idx[(v, rb)], idx[(u, rb)]
+        except KeyError:
+            continue
+        quads.append((p, q, r_))
+        quads.append((p, r_, s))
+    if quads:
+        mesh.faces = np.vstack([mesh.faces, np.array(quads, dtype=mesh.faces.dtype)])
+        mesh.face_region = np.concatenate([mesh.face_region, np.full(len(quads), -1)])
+        mesh.wall_mask = np.concatenate([mesh.wall_mask, np.ones(len(quads), dtype=bool)])
+
+
+def inflate(V, T, tri_region, regions, W, H, amplitude=0.8, bevel=None, depth_range=None, separate_regions=True, smooth_iters=6, skirts=True, global_smooth_iters=24):
     """V (N,2)、T (M,3)、tri_region (M,)、regions（regions.Regions）。回傳 Mesh3D。"""
     bevel = float(bevel if bevel is not None else 0.06 * max(W, H))
     depth_range = float(depth_range if depth_range is not None else 0.2 * max(W, H))
@@ -76,6 +140,7 @@ def inflate(V, T, tri_region, regions, W, H, amplitude=0.8, bevel=None, depth_ra
         d = _bilinear(D, xy[:, 0] - x0, xy[:, 1] - y0)
         t = np.clip(d / dref, 0, 1) if dref > 1e-9 else np.zeros_like(d)
         zl = amplitude * dref * np.sqrt(1.0 - (1.0 - t) ** 2)
+        zl = _smooth(zl, inv.reshape(-1, 3), d, smooth_iters)
         z = regions.z_norm[r] * depth_range + zl
         if separate_regions:
             verts.append(np.column_stack([xy, z]))
@@ -96,6 +161,7 @@ def inflate(V, T, tri_region, regions, W, H, amplitude=0.8, bevel=None, depth_ra
         zz = np.zeros(len(V))
         for vid, zs in z_by_vid.items():
             zz[vid] = float(np.mean(zs))
+        zz = _smooth_global(zz, T, global_smooth_iters)
         out.vertices, out.src_vertex = np.column_stack([V, zz]), np.arange(len(V))
         vr = np.zeros(len(V), dtype=np.int64)
         for f, r in zip(np.vstack(faces), np.concatenate(fregion)):
@@ -103,5 +169,8 @@ def inflate(V, T, tri_region, regions, W, H, amplitude=0.8, bevel=None, depth_ra
         out.vertex_region = vr
     out.faces = np.vstack(faces)
     out.face_region = np.concatenate(fregion)
+    out.wall_mask = np.zeros(len(out.faces), dtype=bool)
+    if separate_regions and skirts:
+        _add_skirts(out, T, tri_region)
     out.size = (W, H)
     return out
