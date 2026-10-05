@@ -871,7 +871,7 @@ function patchCloudflareWording(root) {
         } finally {
           if (stopBridge) {
             const info = await stopBridge();
-            if (result && typeof result === "object") result.python_api_bridge = { used: true, calls: info.calls, ops: info.ops, note: "這支 Python 腳本是經過 API 轉接層執行的：腳本裡的 playwright 等呼叫實際上由助理的瀏覽器控制工具完成（沒有連 Chrome 遠端除錯埠）。" };
+            if (result && typeof result === "object") result.python_api_bridge = { used: true, calls: info.calls, ops: info.ops, simulated: info.simulated && info.simulated.length ? info.simulated : undefined, note: "這支 Python 腳本是經過 API 轉接層執行的：腳本裡的 playwright 等呼叫實際上由助理的瀏覽器控制工具完成（沒有連 Chrome 遠端除錯埠）；openai／anthropic 與直接送 HTTP 的 LLM 呼叫由助理已設定的 LLM Model 回答（embeddings、圖片、語音、工具呼叫會先從 Model 清單找有支援的，全部都不支援才回報不支援）；simulated 列出的是助理沒有對應能力、由模擬回應代替的呼叫。" };
           }
         }
         return JSON.stringify(result);

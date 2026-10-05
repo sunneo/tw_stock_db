@@ -23,8 +23,22 @@ RPC_DIR = os.environ.get("FA_BRIDGE_RPC", "")
 IN_BROWSER = sys.platform == "emscripten"  # 網頁版／Pyodide：直接呼叫助理頁面的 JS 模組 _fa_pybridge，不需要信箱檔案
 
 
+ACTIVE = True  # 網頁版：停用轉接（一般的 python_execute）時設成 False，攔截會全部放行
+
+
 class BridgeError(RuntimeError):
     pass
+
+
+class NotSupported(BridgeError):
+    """助理設定的所有 LLM Model 都沒有這個能力（embeddings、圖片、語音、工具呼叫…）。有任何一個 Model 支援就不會丟這個。"""
+
+
+def _fail(data, op):
+    msg = data.get("error") or "橋接呼叫失敗：" + op
+    if str(msg).startswith("NOT_SUPPORTED:"):
+        raise NotSupported(str(msg)[len("NOT_SUPPORTED:"):].strip())
+    raise BridgeError(msg)
 
 
 def available():
@@ -49,7 +63,7 @@ def call(op, args=None, timeout=240.0):
         raw = asyncio.run(_fa_pybridge.call(op, json.dumps(args or {})))
         data = json.loads(str(raw))
         if not data.get("ok", False):
-            raise BridgeError(data.get("error") or "橋接呼叫失敗：" + op)
+            _fail(data, op)
         return data.get("result")
     if not available():
         raise BridgeError("不在 AI 助理的橋接環境裡（沒有 FA_BRIDGE_RPC）。這支腳本要由助理的 run_command（桌面版）或 python_execute 執行。")
@@ -76,12 +90,41 @@ def call(op, args=None, timeout=240.0):
                 except OSError:
                     pass
             if not data.get("ok", False):
-                raise BridgeError(data.get("error") or "橋接呼叫失敗：" + op)
+                _fail(data, op)
             return data.get("result")
         if time.time() - t0 > timeout:
             raise BridgeError("橋接逾時（%d 秒沒有回應）：%s" % (int(timeout), op))
         time.sleep(delay)
         delay = min(0.2, delay * 1.5)
+
+
+async def acall(op, args=None, timeout=240.0):
+    """call 的 async 版：網頁版直接 await 助理頁面的 JS（不會卡住事件迴圈）；桌面版把檔案信箱的等待丟到執行緒，不擋住別的 async 工作。"""
+    if IN_BROWSER:
+        import _fa_pybridge
+        raw = await _fa_pybridge.call(op, json.dumps(args or {}))
+        data = json.loads(str(raw))
+        if not data.get("ok", False):
+            _fail(data, op)
+        return data.get("result")
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: call(op, args, timeout))
+
+
+def install_hooks():
+    """裝上轉接用的攔截：直接送 HTTP 的 LLM 呼叫（OpenAI 標準與 Claude 格式）轉給助理的模型；網頁版另外把檔案寫入繞進 fap。可重複呼叫。"""
+    try:
+        import fa_http
+        fa_http.install()
+    except Exception as e:  # 缺 requests／httpx 之類不是錯誤
+        sys.stderr.write("[fa-bridge] http hook: %s\n" % e)
+    if IN_BROWSER:
+        try:
+            import fa_fs
+            fa_fs.install()
+        except Exception as e:
+            sys.stderr.write("[fa-bridge] fs hook: %s\n" % e)
 
 
 def tool(name, **args):
