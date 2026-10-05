@@ -51,7 +51,7 @@ def main():
     check("edt == brute force", np.allclose(d, brute), np.abs(d - brute).max())
 
     img = synthetic()
-    p = Params(max_side=256, max_leaves=1500)
+    p = Params(max_side=256, max_leaves=1500, style="layered")
     res = decompose(img, p)
     W, H = res.size
     print("stats:", res.stats)
@@ -81,8 +81,11 @@ def main():
     corner = np.where((np.abs(m3.vertices[:, 0] - 0) < 1e-9) & (np.abs(m3.vertices[:, 1] - 0) < 1e-9))[0]
     check("image-border vertices are not inflated", bool((z_loc[corner] < 1e-6).all()))
     check("each 2D vertex used by a 3D vertex", len(np.unique(m3.src_vertex)) == len(np.unique(res.T)))
-    welded = decompose(img, Params(max_side=256, max_leaves=1500, separate_regions=False)).mesh
-    check("welded mode: one 3D vertex per 2D vertex", len(welded.vertices) == len(res.V) and bool((welded.src_vertex == np.arange(len(res.V))).all()))
+    welded = decompose(img, Params(max_side=256, max_leaves=1500, style="smooth")).mesh
+    dz = float(np.abs(welded.vertices[welded.faces[:, 0], 2] - welded.vertices[welded.faces[:, 1], 2]).max())
+    check("layered mode adds side walls between regions", int(m3.wall_mask.sum()) > 0 and not bool(welded.wall_mask.any()), int(m3.wall_mask.sum()))
+    check("smooth mode: z is continuous (no big jumps between neighbours)", dz < 0.06 * max(W, H), dz)
+    check("smooth mode: one 3D vertex per 2D vertex", len(welded.vertices) == len(res.V) and bool((welded.src_vertex == np.arange(len(res.V))).all()))
 
     # 5. 貼圖重新取樣：正對視角重畫應該回到原圖；轉動視角有視差且露出空洞
     r0 = render_view(m3, res.rgb, 0.0, 0.0)
@@ -92,6 +95,22 @@ def main():
     r1 = render_view(m3, res.rgb, 0.25, 0.0)
     check("yawed view differs (parallax)", float(np.abs(r1[..., :3] - r0[..., :3]).mean()) > 0.003)
     check("yawed view exposes holes (no invented content)", float((r1[..., 3] < 0.5).mean()) > 0.0005, float((r1[..., 3] < 0.5).mean()))
+    # 6. 輸出：GLB（貼圖內嵌、單一檔案）、3D 檢視器 YAML（單一 polygon 節點、貼圖內嵌）、SVG（葉子格子版）
+    import json, struct, tempfile
+    from idr import save_all
+    out = save_all(res, tempfile.mkdtemp(prefix="idr_test"), "t")
+    g = open(out["glb"], "rb").read()
+    magic, ver, total = struct.unpack("<III", g[:12])
+    jl, jt = struct.unpack("<II", g[12:20])
+    gl = json.loads(g[20:20 + jl])
+    check("glb header and length", magic == 0x46546C67 and ver == 2 and total == len(g))
+    check("glb embeds the texture and uses it", gl["images"][0]["mimeType"] == "image/png" and gl["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0 and gl["accessors"][1]["type"] == "VEC2")
+    check("glb counts match mesh", gl["accessors"][0]["count"] == len(res.mesh.vertices) and gl["accessors"][2]["count"] == 3 * len(res.mesh.faces))
+    y = json.loads(open(out["scene3d_yaml"], encoding="utf-8").read())
+    node = y["nodes"][0]
+    check("scene3d yaml: one polygon node with embedded texture", len(y["nodes"]) == 1 and node["mesh"] == "polygon" and node["material"]["texture"].startswith("data:image/jpeg;base64,") and len(node["uvs"]) == len(node["vertices"]))
+    svg = open(out["svg"], encoding="utf-8").read()
+    check("svg is compact (one rect per leaf)", svg.count("<rect") == len(res.leaves), svg.count("<rect"))
     print("\n%d passed, %d failed" % (len(OK), len(BAD)), BAD)
     return 1 if BAD else 0
 
