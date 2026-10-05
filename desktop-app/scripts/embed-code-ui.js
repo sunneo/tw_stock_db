@@ -80,5 +80,13 @@ function embedAnnot() {
     console.log('已更新 FaAnnot（' + core.length + ' 字元）');
 }
 embedAnnot();
+function embedSkin() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/skin/skin_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* SKIN-BEGIN */'), b = src.indexOf('/* SKIN-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 SKIN 標記');
+    src = src.slice(0, a) + '/* SKIN-BEGIN */\nconst FaSkin = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaSkin;\n})();\n' + src.slice(b);
+    console.log('已更新 FaSkin（' + core.length + ' 字元）');
+}
+embedSkin();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

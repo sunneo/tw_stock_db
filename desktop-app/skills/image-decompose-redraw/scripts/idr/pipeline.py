@@ -155,7 +155,9 @@ def save_all(result, out_dir, name="out", triangles_svg=False, all_formats=False
         w("mtl", name + ".mtl", mtl)
     if getattr(result, "parts", None) is not None:
         from . import parts as parts_mod
-        w("parts", name + ".parts.json", json.dumps(parts_mod.summarize(result.parts), ensure_ascii=False, indent=1))
+        pj = parts_mod.summarize(result.parts)
+        pj["size"] = [int(result.mesh.size[0]), int(result.mesh.size[1])]
+        w("parts", name + ".parts.json", json.dumps(pj, ensure_ascii=False, indent=1))
     files["texture"] = os.path.join(out_dir, name + ".texture.png")
     Image.fromarray((np.clip(result.rgb, 0, 1) * 255).astype(np.uint8)).save(files["texture"])
     return files

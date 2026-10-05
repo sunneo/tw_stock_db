@@ -637,11 +637,12 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 
 - 可用平台：網頁版、桌面版
 - 斜線指令：`/annotate`
-- AI 工具：`image_decompose_redraw`、`image_parts_teach`、`image_parts_annotate`
+- AI 工具：`image_decompose_redraw`、`image_parts_teach`、`image_parts_annotate`、`image_rig_animate`
 - 範例：
   - `把這張臉做成 2.5D`
   - `我要在圖上標註這個杯子，教你認得`
   - `我自己標，不要 AI 猜`
+  - `讓這個 2.5D 模型動起來（點頭、揮手）`
   - `把這張圖做成 2.5D 視差網格`
   - `幫我把這張圖向量化重繪成 SVG，並猜出前後景深`
 
