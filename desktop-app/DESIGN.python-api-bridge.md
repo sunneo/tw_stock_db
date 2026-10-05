@@ -69,7 +69,7 @@ Python 的 WebSocket 用戶端連本機網址時接到同一個 mock 伺服器�
 
 ## 網頁版檔案導向 fap（`fa_fs.py`）
 
-Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指定，一般路徑走預設 fap（設定 `pythonBridgeFap`→第一個已授權的→OPFS 工作區 `ws-<名稱>`→第一個）。讀取先抓到快取資料夾 `/fa_fap_cache`，寫入在關檔時推回。`/tmp`、`/proc`、`/dev`、`/lib`、`/usr`、`/fa_pybridge`、`/fa_fap_cache` 等系統路徑留在本地。轉接關閉時（`fa_bridge.ACTIVE = False`）全部放行。注意 Pyodide 的 `sys.prefix` 是 `/`，不能拿來當系統路徑前綴。
+Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指定，一般路徑走預設 fap（設定 `pythonBridgeFap`→第一個已授權的→OPFS 工作區 `ws-<名稱>`→第一個）。讀取先抓到快取資料夾 `/fa_fap_cache`，寫入在關檔時推回。`/tmp`、`/proc`、`/dev`、`/lib`、`/usr`、`/fa_pybridge`、`/fa_fap_cache`、`/work`（python_execute 的工作目錄，是工具自己的輸出管道）等系統路徑留在本地。轉接關閉時（`fa_bridge.ACTIVE = False`）全部放行。注意 Pyodide 的 `sys.prefix` 是 `/`，不能拿來當系統路徑前綴。
 
 ## 已知限制
 

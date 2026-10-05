@@ -619,6 +619,16 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 範例：
   - `/media-dub-video 1:20-1:45`
 
+### 圖片分解與向量重繪（2.5D）（`image-decompose-redraw`）
+
+把一張圖分解成三角網格與區域、猜前後景深、用距離變換充氣成 2.5D 幾何體、重新取樣貼回原圖顏色，輸出 SVG、網格 JSON、OBJ＋貼圖。預設純幾何（不需要視覺模型）；vision:auto 時用助理已設定、支援讀圖的 Model 決定前後順序，沒有就退回純幾何。內建技能（skill_builtin-skill-image-decompose-redraw）。
+
+- 可用平台：網頁版、桌面版
+- AI 工具：`image_decompose_redraw`
+- 範例：
+  - `把這張圖做成 2.5D 視差網格`
+  - `幫我把這張圖向量化重繪成 SVG，並猜出前後景深`
+
 ### 下載 YouTube 影片（`youtube-download`）
 
 下載 YouTube 影片（瀏覽器端跑真正的 yt-dlp，含 JS 簽章解密橋接＋PO Token/BotGuard橋接）。Advance Settings 的 YouTube Data API 金鑰／頻道 ID 是選填的範圍限制（填了才會限制只能下載本人頻道或 CC 授權影片，留空可下載任何影片）。已知限制：Google 目前只給這個app信任度較低的「降級版」PO Token，多數影片仍然會下載失敗、只剩縮圖格式可用（已排除是瀏覽器環境被偵測為自動化的問題），這塊持續是進行中的逆向工程課題。
