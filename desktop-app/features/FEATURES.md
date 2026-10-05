@@ -636,9 +636,12 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 把一張圖分解成三角網格與區域、猜前後景深、用距離變換充氣成 2.5D 幾何體、重新取樣貼回原圖顏色，輸出 SVG、網格 JSON、OBJ＋貼圖。預設純幾何（不需要視覺模型），並用知識庫的部位知識（臉、五官、頭髮、動物臉）偵測並加上凸凹深度，補知識就會認得更多（顏色族群、容器）；離線也能用；vision:auto 時用助理已設定、支援讀圖的 Model 決定前後順序，沒有就退回純幾何。內建技能（skill_builtin-skill-image-decompose-redraw）。
 
 - 可用平台：網頁版、桌面版
-- AI 工具：`image_decompose_redraw`、`image_parts_teach`
+- 斜線指令：`/annotate`
+- AI 工具：`image_decompose_redraw`、`image_parts_teach`、`image_parts_annotate`
 - 範例：
   - `把這張臉做成 2.5D`
+  - `我要在圖上標註這個杯子，教你認得`
+  - `我自己標，不要 AI 猜`
   - `把這張圖做成 2.5D 視差網格`
   - `幫我把這張圖向量化重繪成 SVG，並猜出前後景深`
 
