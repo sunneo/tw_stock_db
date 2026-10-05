@@ -44057,7 +44057,36 @@ ${existingNodeSummaries}
         }
         this._renderPendingAttachments();
     }
+    // 2026-10-05使用者要求——貼上剪貼簿的圖片（截圖、從網頁／圖片軟體複製的圖）要能直接變成附件，跟按📎選檔案、拖曳走同一條
+    // _ingestFilesAsAttachments。只有「剪貼簿裡沒有文字」才接手（Excel、網頁複製表格常常同時帶文字和一張預覽圖，那種情況
+    // 照常貼文字，不要憑空多出一張附件）。剪貼簿裡的圖片檔名通常是 image.png，改成有時間的名稱，之後用 list_uploaded_files 才分得出來。
+    // 貼上是明確的動作，不跳確認對話框。
+    _wirePasteAttachment() {
+        const inp = document.getElementById('ai-input-text');
+        if (!inp || inp._faPasteWired) return;
+        inp._faPasteWired = true;
+        inp.addEventListener('paste', (e) => {
+            const cd = e.clipboardData;
+            if (!cd) return;
+            const files = Array.from(cd.files || []);
+            if (!files.length) return;
+            if (String(cd.getData('text/plain') || '').length) return;
+            e.preventDefault();
+            const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+            const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+            const extOf = (f) => (/^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i.exec(f.type || '') || [])[1];
+            const named = files.map((f, i) => {
+                const generic = !f.name || /^image\.\w+$/i.test(f.name);
+                if (!generic) return f;
+                const ext = (extOf(f) || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+                return new File([f], `貼上的圖片-${stamp}${files.length > 1 ? '-' + (i + 1) : ''}.${ext}`, { type: f.type || 'image/png', lastModified: Date.now() });
+            });
+            this._ingestFilesAsAttachments(named);
+            this._log(`📋 已貼上 ${named.length} 個檔案：${named.map((f) => f.name).join('、')}`);
+        });
+    }
     _wireAttachmentUpload() {
+        this._wirePasteAttachment();
         const attachBtn = document.getElementById('ai-attach-btn');
         const attachInput = document.getElementById('ai-attach-input');
         if (!attachBtn || !attachInput) return;
