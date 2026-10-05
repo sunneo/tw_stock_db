@@ -2,7 +2,7 @@
     // ================= 對外介面 =================
     // 剖析器載入：web-tree-sitter 與各語言的 wasm 由宿主提供（桌面：本機快取／CDN；網頁：CDN）。
     // host = { loadTreeSitter: async () => Parser, loadLanguageWasm: async (name) => Uint8Array|url }
-    const WASM_NAME = { c: 'c', java: 'java', python: 'python', javascript: 'javascript', shell: 'bash' };
+    const WASM_NAME = { c: 'c', cpp: 'cpp', rust: 'rust', go: 'go', java: 'java', python: 'python', javascript: 'javascript', shell: 'bash' };
     function makeParser(host) {
         let ParserCls = null; const langs = {}; let parserByLang = {};
         return async function parse(language, src) {
