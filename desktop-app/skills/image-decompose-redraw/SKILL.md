@@ -10,7 +10,7 @@ description: 把一張 2D 點陣圖分解成三角網格與區域、猜出前後
 | 軌道 | 狀態 | 做法 |
 |---|---|---|
 | **Without Vision Model（純幾何 2.5D）** | ✅ 已實作（本資料夾） | 四叉樹三角網格 → 區域聚類＋圖地線索猜景深 → 距離變換充氣 → UV 重新取樣 |
-| With Vision AI | ⏳ 尚未實作 | 視覺模型辨識物件與前後關係，覆蓋純幾何猜的景深順序（介面見下） |
+| With Vision AI | ✅ 已實作（`vision.py`） | 視覺模型看原圖＋標籤圖，回傳每個區域的名稱與景深順序，覆蓋純幾何猜的結果；沒有可用的模型就退回純幾何 |
 
 只依賴 `numpy` 與 `Pillow`（網頁版 Pyodide 也有），不需要 scipy／OpenCV。
 
@@ -56,6 +56,20 @@ save_all(res, "輸出資料夾", "name")   # SVG、mesh.json、OBJ＋MTL、貼�
 - 純 Python 實作，長邊 384 的圖約 1 秒內完成；解析度或格子預算大很多時會明顯變慢。
 - 測試只用合成圖與一張介面截圖驗證，沒有在大量真實照片上評估過。
 
-## With Vision AI 軌道的接入點（規劃，未實作）
+## With Vision AI 軌道（`vision.py`）
 
-視覺模型要做的事是產生「區域 → 景深順序」，直接覆蓋 `regions.Regions.z_norm`／`z_index`，後面的充氣、UV 重新取樣、輸出完全不用改。建議的資料格式：`[{"region": id 或 bbox/點座標, "z_index": n, "label": "…"}]`；區域 id 對應 `res.regions.label` 的標籤圖，視覺模型看到的是同一張標籤圖的著色版，這樣兩條軌道共用同一組幾何。
+```python
+res = decompose("輸入圖.png", Params(), vision="auto")   # off（預設）／auto／on
+print(res.stats["depth_source"])        # "vision" 或 "geometry"；退回時 stats["vision_fallback"] 說明原因
+```
+命令列：`--vision auto`。流程：把原圖與「區域標籤圖」（每區塗平均色、畫邊界、重心標編號）兩張 PNG 加上區域表交給模型，模型回
+`{"regions":[{"id":3,"label":"天空","depth":0}]}`（depth 越小越遠）；被提到的區域覆蓋 `z_norm`／`z_index`，沒被提到的保留純幾何的結果，然後
+`pipeline.rebuild_3d` 重新充氣、取 UV 與頂點顏色（其餘步驟不用改）。`auto`：失敗就退回純幾何；`on`：失敗就報錯。
+
+**模型從哪來（API 轉接）**：腳本只用標準的 `anthropic`（優先）或 `openai`（環境變數 `IDR_VISION_CLIENT` 可指定）寫法呼叫，帶 image block／image_url。
+在 Floating AI Assistant 執行技能包時，Python API 轉接層會自動轉給助理已設定、而且支援讀圖的 LLM Model（依 Model 的 vision 能力標記挑，金鑰、
+網址、model 名稱都不用管）；全部 Model 都不支援讀圖時丟 `NotSupportedError`，`auto` 就退回純幾何。不在助理裡執行時會用真正的 SDK，需要自己的金鑰。
+**純幾何軌道完全不呼叫模型，不需要轉接。**
+
+驗證：`python tests/test_vision.py`——換掉 `ask` 的覆蓋與重建、JSON 容錯解析、經轉接層（假的主機端）的 anthropic 與 openai 兩種寫法都送出兩張 PNG、沒有讀圖模型時退回幾何、`on` 時報錯。
+限制：只用假的主機端驗證，沒有用真的視覺模型評估過它判斷景深的品質；模型只看得到最大的 60 個區域的編號，其餘區域保留純幾何的結果。

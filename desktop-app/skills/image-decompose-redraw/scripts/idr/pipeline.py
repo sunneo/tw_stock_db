@@ -50,7 +50,8 @@ def load_rgb(source, max_side):
     return np.asarray(img, dtype=np.float64) / 255.0, s
 
 
-def decompose(source, params=None):
+def decompose(source, params=None, vision="off"):
+    """vision："off"（純幾何）、"auto"（有支援讀圖的模型就用它決定前後順序，否則退回純幾何）、"on"（一定要用，失敗就報錯）。"""
     p = params or Params()
     t0 = time.time()
     rgb, scale = load_rgb(source, p.max_side)
@@ -61,17 +62,36 @@ def decompose(source, params=None):
     leaf_region, region_label = regions_mod.merge_leaves(leaves, lab, p.tau_edge, p.tau_color, p.min_region_area or None, p.var_thresh)
     reg = regions_mod.analyze_regions(region_label, lab, p.depth_weights)
     tri_region = leaf_region[tri_leaf]
-    m3 = inflate_mod.inflate(V, T, tri_region, reg, W, H, p.amplitude, p.bevel or None, p.depth_range or None, p.separate_regions)
-    uv = resample.uv_from_vertices(m3.vertices[:, :2], W, H, p.flip_v)
-    colors = resample.bake_vertex_colors(rgb, region_label, m3.vertices[:, :2], m3.vertex_region)
     leaf_rgb = np.array([rgb[lf.y0:lf.y1, lf.x0:lf.x1].reshape(-1, 3).mean(0) for lf in leaves])
     r = Result()
     r.params, r.scale, r.rgb, r.size = p, scale, rgb, (W, H)
     r.leaves, r.V, r.T, r.tri_leaf, r.tri_region = leaves, V, T, tri_leaf, tri_region
-    r.regions, r.mesh, r.uv, r.vertex_colors, r.tri_color = reg, m3, uv, colors, leaf_rgb[tri_leaf]
+    r.regions, r.tri_color = reg, leaf_rgb[tri_leaf]
+    r.depth_source = "geometry"
+    rebuild_3d(r)
     r.stats = {"size": [W, H], "scale": round(scale, 4), "leaves": len(leaves), "triangles_2d": int(len(T)), "vertices_2d": int(len(V)),
-               "regions": int(reg.R), "vertices_3d": int(len(m3.vertices)), "faces_3d": int(len(m3.faces)),
-               "seconds": round(time.time() - t0, 2)}
+               "regions": int(reg.R), "vertices_3d": int(len(r.mesh.vertices)), "faces_3d": int(len(r.mesh.faces)), "depth_source": "geometry"}
+    mode = (vision or "off")
+    if mode in ("auto", "on"):
+        from . import vision as vision_mod
+        try:
+            vision_mod.apply_vision_depth(r)
+            r.stats["depth_source"] = "vision"
+            r.stats["vision_labels"] = getattr(r.regions, "labels", {})
+        except Exception as e:  # 沒有支援讀圖的模型、模型回傳格式不對…：auto 退回純幾何，on 直接報錯
+            if mode == "on":
+                raise
+            r.stats["vision_fallback"] = "%s: %s" % (type(e).__name__, str(e)[:200])
+    r.stats["seconds"] = round(time.time() - t0, 2)
+    return r
+
+
+def rebuild_3d(r):
+    """依目前的 regions.z_norm（純幾何猜的，或 Vision 覆蓋後的）重新充氣、算 UV 與頂點顏色。"""
+    p, (W, H) = r.params, r.size
+    r.mesh = inflate_mod.inflate(r.V, r.T, r.tri_region, r.regions, W, H, p.amplitude, p.bevel or None, p.depth_range or None, p.separate_regions)
+    r.uv = resample.uv_from_vertices(r.mesh.vertices[:, :2], W, H, p.flip_v)
+    r.vertex_colors = resample.bake_vertex_colors(r.rgb, r.regions.label, r.mesh.vertices[:, :2], r.mesh.vertex_region)
     return r
 
 

@@ -35,11 +35,12 @@ def main(argv=None):
     ap.add_argument("--tau-color", type=float, default=12.0)
     ap.add_argument("--amplitude", type=float, default=0.8)
     ap.add_argument("--welded", action="store_true", help="單片連續網格（2D↔3D 完全一對一，但沒有區域之間的景深落差）")
+    ap.add_argument("--vision", choices=["off", "auto", "on"], default="off", help="auto：有支援讀圖的模型就用它決定前後順序，否則退回純幾何")
     ap.add_argument("--preview", action="store_true")
     a = ap.parse_args(argv)
     p = Params(max_side=a.max_side, max_leaves=a.max_leaves, var_thresh=a.var_thresh, min_size=a.min_size,
                tau_edge=a.tau_edge, tau_color=a.tau_color, amplitude=a.amplitude, separate_regions=not a.welded)
-    res = decompose(a.image, p)
+    res = decompose(a.image, p, vision=a.vision)
     name = os.path.splitext(os.path.basename(a.image))[0]
     files = save_all(res, a.out, name)
     if a.preview:
