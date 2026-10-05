@@ -82,7 +82,7 @@ save_all(res, "輸出資料夾", "name")   # SVG、mesh.json、OBJ＋MTL、貼�
 
 ## 骨架動畫（讓 2.5D 模型動起來）
 
-跑完圖片分解之後，用 `image_rig_animate` 讓它動：有偵測到臉就預設放頭部骨架（動作 `nod` 點頭、`head-shake` 搖頭、`blink` 眨眼、`talk` 說話）；人物圖要給 `figure_bbox`（人物範圍），會用人形骨架（動作 `wave` 揮手、`idle-breath`、`jumping-jack`、`bow`、`head-turn`）。檢視器下方有動作選單、暫停、速度、顯示骨架。骨架與動作來自知識庫（`skeleton`、`joint`、`motion`），可以用 `ref_define` 補或覆蓋。
+斜線指令 `/rig-animate [骨架] [動作…]`（先貼圖再打指令、或先打指令再貼圖送出都可以；有最近一次的 2.5D 模型就直接用），或跑完圖片分解之後用 `image_rig_animate` 讓它動：有偵測到臉就預設放頭部骨架（動作 `nod` 點頭、`head-shake` 搖頭、`blink` 眨眼、`talk` 說話）；人物圖要給 `figure_bbox`（人物範圍），會用人形骨架（動作 `wave` 揮手、`idle-breath`、`jumping-jack`、`bow`、`head-turn`）。檢視器下方有動作選單、暫停、速度、顯示骨架。骨架與動作來自知識庫（`skeleton`、`joint`、`motion`），可以用 `ref_define` 補或覆蓋。
 
 - 權重是幾何猜測（到骨頭的距離）：彎折處貼圖會被拉扯、可能有尖刺；離骨架很遠的部分（背景）保持不動。
 - 這是 2.5D 浮雕：側面看得出是一片，不是真的立體。
