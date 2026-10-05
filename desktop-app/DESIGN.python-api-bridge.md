@@ -63,6 +63,10 @@
 
 `http.client` 的 `HTTPConnection／HTTPSConnection.request()` 會先問路由；有人接手就不連線，`getresponse()` 回標準 `HTTPResponse`（HEAD 無本文）。urllib、requests（urllib3）底層都用它，所以也走同一個出口。
 
+## WebSocket（`fa_ws.py`）
+
+Python 的 WebSocket 用戶端連本機網址時接到同一個 mock 伺服器（`hub.wsOpen`）：`websocket-client`（`create_connection`、`WebSocketApp.run_forever`）與 `websockets`（`sync.client.connect`、`connect()`／`asyncio.client.connect` 的 `async with`、`await`、`async for`）。主機端 op：`ws.open／send／recv／close`；收訊息是短輪詢（每次最多等 250 毫秒），非同步程式同時收送不會互相卡住。規則與 HTTP 一樣：有 mock 伺服器就接；沒有則網頁版丟 `ConnectionRefusedError`、桌面版照原本連；外部網址網頁版丟 `ConnectionError`（沒有 WebSocket 出口）、桌面版照原本連。模組之後才被 import（例如 Pyodide 用 micropip 現裝）也會補上。
+
 ## 網頁版檔案導向 fap（`fa_fs.py`）
 
 Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指定，一般路徑走預設 fap（設定 `pythonBridgeFap`→第一個已授權的→OPFS 工作區 `ws-<名稱>`→第一個）。讀取先抓到快取資料夾 `/fa_fap_cache`，寫入在關檔時推回。`/tmp`、`/proc`、`/dev`、`/lib`、`/usr`、`/fa_pybridge`、`/fa_fap_cache` 等系統路徑留在本地。轉接關閉時（`fa_bridge.ACTIVE = False`）全部放行。注意 Pyodide 的 `sys.prefix` 是 `/`，不能拿來當系統路徑前綴。
@@ -70,16 +74,16 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 ## 已知限制
 
 - 串流是模擬的（完整回應切塊），不是邊產生邊送。
-- 不攔 `aiohttp`、自己用 `putrequest／putheader／endheaders` 逐步組請求的 http.client 程式、WebSocket 用戶端（`websockets`、`websocket-client`；mock 伺服器本身支援 WebSocket，Python 端的接法還沒做）。
+- 不攔 `aiohttp`、自己用 `putrequest／putheader／endheaders` 逐步組請求的 http.client 程式、`aiohttp` 的 WebSocket、`websocket-client` 的底層 `WebSocket` 類別（只攔 `create_connection` 與 `WebSocketApp`）。
 - Realtime API 不支援。
 - `shutil.rmtree`、`os.walk` 在 fap 路徑上支援有限。
 - 網頁版外部網址沒有 proxy 時可能被 CORS 擋下。
 
 ## 驗證
 
-- 單元測試（假的主機端）：LLM 路由 35 項、一般 HTTP 10 項。
-- 真實 Electron：桌面版真的 Python 與網頁版 Pyodide——聊天、工具、串流、embeddings、圖片（無模型時丟 NotSupported）、原始 HTTP（requests／httpx／urllib／http.client）、非同步、fap 寫檔（OPFS 工作區實際出現檔案與追加內容）、`http.client` 連 127.0.0.1 接到 mock 伺服器（GET／POST／CRUD、urllib）、外部網址經 proxy、沒有 mock 伺服器時網頁版拒絕、桌面版放行。
+- 單元測試（假的主機端）：LLM 路由 35 項、一般 HTTP 10 項、WebSocket 19 項（`websocket-client` 用最小的假模組驗證包裝邏輯，沒有用真的套件測）。
+- 真實 Electron：桌面版真的 Python 與網頁版 Pyodide——聊天、工具、串流、embeddings、圖片（無模型時丟 NotSupported）、原始 HTTP（requests／httpx／urllib／http.client）、非同步、fap 寫檔（OPFS 工作區實際出現檔案與追加內容）、`http.client` 連 127.0.0.1 接到 mock 伺服器（GET／POST／CRUD、urllib）、`websockets`（真的套件）同步與非同步連 mock 伺服器收發（桌面版真的 Python、網頁版 Pyodide 用 micropip 現裝）、外部網址經 proxy、沒有 mock 伺服器時網頁版拒絕、桌面版放行。
 
 ## 之後可擴充
 
-新增別的公開 API 的轉接（例如 `selenium`）：在 `renderer/src/pybridge/` 加一個同名套件、在 `_pyBridgeDispatch` 加對應 op 即可。Python 端的 WebSocket 用戶端可以接到 mock 伺服器的 `hub.wsOpen`。
+新增別的公開 API 的轉接（例如 `selenium`）：在 `renderer/src/pybridge/` 加一個同名套件、在 `_pyBridgeDispatch` 加對應 op 即可。

@@ -26,6 +26,7 @@ import fa_bridge
 import fa_llm
 import fa_net
 import fa_sim
+import fa_ws
 
 _INSTALLED = {"done": False, "hooked": set()}
 
@@ -298,7 +299,7 @@ def _patch_urllib():
     urllib.request.urlopen = urlopen
 
 
-_PATCHERS = {"requests": _patch_requests, "httpx": _patch_httpx}
+_PATCHERS = {"requests": _patch_requests, "httpx": _patch_httpx, "websocket": fa_ws.patch_websocket_client, "websockets": fa_ws.patch_websockets}
 
 
 class _OnImport(object):
