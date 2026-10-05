@@ -42,6 +42,7 @@ body.hide-nav #nav,body.hide-nav #spL,body.hide-chat #chat,body.hide-chat #spR{d
 @media (max-width:640px){#top{flex-direction:column}#nav{width:100%;max-height:34vh;border:0;border-bottom:1px solid var(--bd)}#app.dock-right,#app.dock-left{flex-direction:column}#app.dock-right #chat,#app.dock-left #chat{width:100%;max-height:40vh}#spL,#spR{display:none}}
 .loc{border-bottom:1px dashed var(--ac)}.loccard{margin:6px 0 10px;border:1px solid var(--ac);border-radius:8px;background:var(--sf);overflow:hidden}.loccard .lh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--bd);font-weight:600}.loccard .lh .x{margin-left:auto;cursor:pointer;color:var(--mut)}.loccard .lb{padding:6px 10px}.loccard pre{margin:6px 0;padding:0;border:none;background:none;overflow:auto;max-height:340px}.loccard .cl{display:block;white-space:pre;padding:0 8px}.loccard .cl i{display:inline-block;width:3.2em;color:var(--mut);font-style:normal;text-align:right;margin-right:8px;user-select:none}.loccard .cl.hit{background:var(--hl)}.loccard .acts{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
 .loccard .vp{margin:6px 0;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--bg)}.loccard .vp .vbar{padding:2px 8px;background:var(--sf);font-size:12px;color:var(--mut)}.loccard .vp .vbar.top{border-bottom:1px solid var(--bd)}.loccard .vp .vbar.bot{border-top:1px solid var(--bd)}.loccard .vp .more{padding:1px 8px;font-size:12px}.loccard .vp pre.vpre{margin:0;max-height:300px;border:none;border-radius:0}
+.mde{border:1px solid var(--ac);border-radius:8px;margin:8px 0;background:var(--bg);overflow:hidden}.mde .tb{display:flex;gap:4px;flex-wrap:wrap;padding:5px 8px;background:var(--sf);border-bottom:1px solid var(--bd);align-items:center}.mde .tb button{padding:1px 8px;font-size:12px}.mde .tb .sp{flex:1}.mde .pn{display:grid;grid-template-columns:1fr 1fr;min-height:200px}.mde textarea{width:100%;min-height:200px;max-height:60vh;resize:vertical;border:none;border-right:1px solid var(--bd);padding:8px;font:12.5px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);color:var(--fg);outline:none}.mde .pv{padding:6px 10px;overflow:auto;max-height:60vh}.mde .ft{display:flex;gap:8px;align-items:center;padding:6px 8px;border-top:1px solid var(--bd);background:var(--sf)}@media(max-width:760px){.mde .pn{grid-template-columns:1fr}.mde textarea{border-right:none;border-bottom:1px solid var(--bd)}}
 </style></head><body>
 <header><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNav" title="顯示／隱藏左邊（瀏覽）">◧</button><button id="btnChat" title="顯示／隱藏右邊（問答）">◨</button><select id="dockSel" title="右邊問答區停靠的位置"><option value="right">右邊在右</option><option value="left">右邊改到左</option><option value="bottom">右邊改到下</option></select><button id="btnReset" title="把版面（寬度、停靠位置、顯示隱藏）和視窗位置大小都還原成預設">還原版面</button><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
 <div id="app" class="dock-right"><div id="top">
@@ -181,6 +182,30 @@ async function loadTree(path,host){
   host.querySelectorAll('details').forEach(function(dt){dt.addEventListener('toggle',function(){if(dt.open&&!dt.dataset.loaded){dt.dataset.loaded=1;loadTree(dt.dataset.p,dt.querySelector('div'))}})});
 }
 function noteHtml(x){x=String(x==null?'':x);return /\n|\|.*\|/.test(x)?'<div class="md">'+mdToHtml(x)+'</div>':esc(x)}
+function mdEditor(opt){
+  /* Markdown 編輯器：工具列（標題、粗體、行內碼、程式碼區塊、清單、表格、引用）＋左右即時預覽；Tab 縮排、Ctrl+Enter 存檔、Esc 取消 */
+  var MAX=2000,box=document.createElement('div');box.className='mde';
+  box.innerHTML='<div class="tb"><b>'+esc(opt.title||'編輯說明')+'</b><button data-k="h">H</button><button data-k="b"><b>B</b></button><button data-k="c">`code`</button><button data-k="cb">```</button><button data-k="ul">• 清單</button><button data-k="ol">1. 清單</button><button data-k="tbl">▦ 表格</button><button data-k="q">❝ 引用</button><span class="sp"></span><span class="mut">Markdown，右邊即時預覽</span></div><div class="pn"><textarea spellcheck="false"></textarea><div class="pv md"></div></div><div class="ft"><button class="p" data-k="save">存起來</button><button data-k="cancel">取消</button><span class="mut cnt"></span></div>';
+  var ta=box.querySelector('textarea'),pv=box.querySelector('.pv'),cnt=box.querySelector('.cnt');
+  ta.value=opt.value||'';
+  var tm=null;function upd(){cnt.textContent=ta.value.length+' / '+MAX+(ta.value.length>MAX?'（超過的部分不會存）':'');cnt.style.color=ta.value.length>MAX?'var(--er)':'';clearTimeout(tm);tm=setTimeout(function(){pv.innerHTML=ta.value.trim()?mdToHtml(ta.value):'<span class="mut">（預覽）</span>'},120)}
+  function wrap(a,b,ph){var s=ta.selectionStart,e=ta.selectionEnd,v=ta.value,sel=v.slice(s,e)||ph||'';ta.value=v.slice(0,s)+a+sel+b+v.slice(e);ta.focus();ta.selectionStart=s+a.length;ta.selectionEnd=s+a.length+sel.length;upd()}
+  function lines(prefix){var s=ta.selectionStart,e=ta.selectionEnd,v=ta.value,ls=v.lastIndexOf('\n',s-1)+1,le=v.indexOf('\n',e);if(le<0)le=v.length;var blk=v.slice(ls,le).split('\n').map(function(l,i){return typeof prefix==='function'?prefix(i)+l:prefix+l}).join('\n');ta.value=v.slice(0,ls)+blk+v.slice(le);ta.focus();ta.selectionStart=ls;ta.selectionEnd=ls+blk.length;upd()}
+  function insert(txt){var s=ta.selectionStart,v=ta.value,pre=s>0&&v.charAt(s-1)!=='\n'?'\n\n':'';ta.value=v.slice(0,s)+pre+txt+v.slice(ta.selectionEnd);ta.focus();ta.selectionStart=ta.selectionEnd=s+pre.length+txt.length;upd()}
+  var acts={h:function(){lines('## ')},b:function(){wrap('**','**','重點')},c:function(){wrap('`','`','名稱')},cb:function(){wrap('\n```\n','\n```\n','程式碼')},ul:function(){lines('- ')},ol:function(){lines(function(i){return (i+1)+'. '})},q:function(){lines('> ')},
+    tbl:function(){insert('| 項目 | 說明 |\n|---|---|\n| 輸入 |  |\n| 輸出 |  |\n| 副作用／限制 |  |\n')}};
+  box.querySelectorAll('.tb button').forEach(function(b){b.onclick=function(e){e.preventDefault();acts[b.dataset.k]()}});
+  ta.oninput=upd;
+  ta.onkeydown=function(e){
+    if(e.key==='Tab'){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+'  '+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2;upd()}
+    else if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();box.querySelector('[data-k=save]').click()}
+    else if(e.key==='Escape'){e.preventDefault();box.remove()}
+  };
+  box.querySelector('[data-k=cancel]').onclick=function(){box.remove()};
+  box.querySelector('[data-k=save]').onclick=function(){var v=ta.value;if(v.trim().length<6){alert('說明太短（至少寫一句有內容的）');return}opt.onSave(v.slice(0,MAX),box)};
+  upd();setTimeout(function(){ta.focus()},0);
+  return box;
+}
 function locLink(path,line,to,inner){return '<a class="l loc" data-loc="'+esc(path)+'|'+esc(line)+'|'+esc(to||'')+'" title="點一下在這裡展開該區塊的說明與程式碼">'+inner+'</a>'}
 function initViewport(host,r){
   /* 像 diff：只顯示指定的行範圍，捲到該處；上下各有「展開更多」，按下去再讀 20 行（連續按、或展開到頭尾） */
@@ -263,7 +288,7 @@ async function showFile(path){
   $('#main').innerHTML=h;$('#main').scrollTop=0;
   $('#main').querySelectorAll('.chips span').forEach(function(sp){if(cs[+sp.dataset.ci][0]==='__explain__')sp.textContent='這個檔案在做什麼（行為說明）';sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__explain__'){document.getElementById('expl').click();return}if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
   $('#expl').onclick=async function(){var b=$('#expl');b.disabled=true;$('#explbox').innerHTML='<span class="mut">分析中…</span>';try{var r=await api('GET','/api/explain?path='+encodeURIComponent(path));$('#explbox').innerHTML=mdToHtml(r.markdown)+(r.unclassified&&r.unclassified.length?'<div class="mut">還不認得的呼叫：'+r.unclassified.slice(0,20).map(function(u){return esc(u)}).join('、')+'（可請 AI 讀過後用 behavior_define 補定義）</div>':'')}catch(e){$('#explbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}b.disabled=false};
-  $('#editnote').onclick=function(){var nb=$('#main').querySelector('.note')||$('#editnote').parentNode;if($('#noteedit'))return;var box=document.createElement('div');box.id='noteedit';box.innerHTML='<textarea style="width:100%;min-height:120px;font:inherit;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)"></textarea><div class="acts"><button class="p" id="nsave">存起來</button><button id="ncancel">取消</button><span class="mut">可以寫多行、表格、清單（Markdown）</span></div>';box.querySelector('textarea').value=f.note||'';nb.parentNode.insertBefore(box,nb.nextSibling);box.querySelector('#ncancel').onclick=function(){box.remove()};box.querySelector('#nsave').onclick=function(){var v=box.querySelector('textarea').value;if(v.trim().length<6){alert('說明太短（至少寫一句有內容的）');return}saveNote(cur,v)}};
+  $('#editnote').onclick=function(){if($('#main .mde'))return;var nb=$('#main').querySelector('.note')||$('#editnote').parentNode;var ed=mdEditor({title:'編輯檔案說明：'+path,value:f.note||'',onSave:function(v,bx){saveNote(cur,v);bx.remove()}});nb.parentNode.insertBefore(ed,nb.nextSibling)};
   $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class="mut">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
 }
 async function showDir(path,tr){
@@ -288,6 +313,7 @@ $('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>
   var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];
   r.defs.slice(0,10).forEach(function(d){
     h+='<h2>'+esc(d.kind)+'　'+locLink(d.path,d.line,'',esc(d.path+':'+d.line))+'</h2>';
+    h+='<div><a class="l" data-editsym="'+esc(d.path)+'|'+esc(name)+'">'+(d.note?'編輯':'補')+'這個定義的說明</a></div>';
     h+=d.note?'<div class="note"><b>說明</b>（'+esc(d.note_by||'AI')+(d.stale?'，可能過期':'')+'）：'+noteHtml(d.note)+'</div>':(d.doc?'':'<div class="mut">還沒有說明。</div>');
     if(d.doc)h+='<p>'+esc(d.doc)+'</p>';
     if(d.sig)h+='<pre>'+esc(d.sig)+'</pre>';
@@ -298,7 +324,7 @@ $('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>
 }
 function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>'})}
 function refreshCur(){if(cur.kind==='file')showFile(cur.key);else if(cur.kind==='symbol')showSym(cur.key);else if(cur.kind==='page')showPage(cur.key);if(tab==='notes')renderList()}
-document.addEventListener('click',function(e){var lc=e.target.closest('[data-loc]');if(lc){e.preventDefault();toggleLoc(lc);return}var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
+document.addEventListener('click',function(e){var es=e.target.closest('[data-editsym]');if(es){e.preventDefault();var pp=es.getAttribute('data-editsym').split('|');var host=es.parentNode;if(host.nextElementSibling&&host.nextElementSibling.classList.contains('mde'))return;api('GET','/api/symbol?name='+encodeURIComponent(pp[1])).then(function(r){var d=r.defs.filter(function(x){return x.path===pp[0]})[0]||{};var ed=mdEditor({title:'編輯說明：'+pp[1],value:d.note||'',onSave:function(v,bx){saveNote({path:pp[0],kind:'symbol',name:pp[1]},v);bx.remove()}});host.parentNode.insertBefore(ed,host.nextSibling)});return}var lc=e.target.closest('[data-loc]');if(lc){e.preventDefault();toggleLoc(lc);return}var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
 document.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#sq').value='';renderList()}});
 var sqT=null;$('#sq').oninput=function(){clearTimeout(sqT);sqT=setTimeout(renderList,250)};
 $('#ask').onclick=function(){var v=$('#q').value;$('#q').value='';ask(v,cur,false)};
