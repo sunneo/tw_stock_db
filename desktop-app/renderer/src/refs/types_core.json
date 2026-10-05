@@ -498,5 +498,46 @@
         "type": "string"
       }
     }
+  },
+  {
+    "kind": "text_lexicon",
+    "label": "文字詞庫",
+    "version": 1,
+    "description": "某種語言的常見字詞。圖片裡的文字被切成字元格、逐格比對字形後，用這個詞庫過濾成「像一個字」的候選（例如 hcllo → hello）。可以自己補專有名詞、產品名。",
+    "schema": {
+      "lang": {
+        "type": "string",
+        "required": true
+      },
+      "words": {
+        "type": "list",
+        "of": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "kind": "glyph_code",
+    "label": "字形碼",
+    "version": 1,
+    "description": "一個漢字的字形輸入碼：倉頡、無蝦米、四角號碼。圖片裡的字被切開、使用者（或 AI）給出部分碼之後，用它把候選字縮到幾個。表很大，通常用匯入功能（Unihan、倉頡表、無蝦米表）一次補，不用手寫。",
+    "schema": {
+      "ch": {
+        "type": "string",
+        "required": true
+      },
+      "cangjie": {
+        "type": "string"
+      },
+      "wuxiami": {
+        "type": "string"
+      },
+      "four_corner": {
+        "type": "string"
+      },
+      "strokes": {
+        "type": "number"
+      }
+    }
   }
 ]
