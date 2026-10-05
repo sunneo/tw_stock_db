@@ -197,3 +197,9 @@ FaRef.registerPrimitive('color_in', fn)   // 或 Python 端：skill 自己實作
 - 條目 key 的命名空間（全域唯一，或「類型＋key」唯一）。
 - 展開結果要不要快取到使用者儲存（大型骨架可能有幾百個關節）。
 - 基本動作的版本與相容性（消費端升級後舊知識是否還能用）。
+
+## 14. 實作紀錄
+
+- **第 1 階段（核心）完成（2026-10-05）**：引擎（`renderer/src/refs/ref_engine.js`）新增類型註冊表、schema 驗證（string／number／integer／boolean／enum／range／list／object／map／color／ref／regex／any）、遞迴展開（`extends` 繼承、`ref` 的 `as`／`set` 覆寫、深度上限、循環偵測、記憶化）、全庫驗證、檢索整合、匯出；`ref_define` 可註冊類型（`kind:"knowledge_type"`）與寫入帶 `customize` 的條目（都過版本閘門；寫入前用「加入這筆之後」的引擎驗證結構、引用存在、不造成循環）；新工具 `ref_types`、`ref_resolve`、`ref_validate`。**命名**：原設計的 `ref_expand` 與既有「讓 AI 上網擴充知識庫」的 `ref_expand` 衝突，改名為 `ref_resolve`。
+- 單元測試（37 項）與真實 Electron 驗證（v0 拒絕不動資料、同意後備份轉換、不合法類型與條目被擋、循環被擋、展開與繼承、全庫驗證、檢索、刪除）全過；既有診斷測試不退步。
+- 內建類型與種子條目放在 `renderer/src/refs/types_*.json`、`typed_*.json`（`scripts/refs-dsl.js` 會讀進 `FA_REF_DATA`）；第 2 階段開始填入。
