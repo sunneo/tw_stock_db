@@ -30,8 +30,9 @@ class Leaf(object):
         return (self.x1 - self.x0) * (self.y1 - self.y0)
 
 
-def build_quadtree(lab, var_thresh=20.0, min_size=4, max_leaves=4000, max_depth=12):
-    """lab：(H,W,3)。回傳 Leaf 清單（互不重疊、剛好鋪滿整張圖）。"""
+def build_quadtree(lab, var_thresh=20.0, min_size=4, max_leaves=4000, max_depth=12, refine=None):
+    """lab：(H,W,3)。回傳 Leaf 清單（互不重疊、剛好鋪滿整張圖）。
+    refine：[(x0,y0,x1,y1,leaf_size)]——這些範圍內不管變化大不大都切到 leaf_size 以下（給需要密集頂點的區域，例如偵測到的臉；不受 max_leaves 限制）。"""
     H, W, _ = lab.shape
     S = np.zeros((H + 1, W + 1, 3))
     S[1:, 1:] = lab.cumsum(0).cumsum(1)
@@ -50,16 +51,27 @@ def build_quadtree(lab, var_thresh=20.0, min_size=4, max_leaves=4000, max_depth=
     def can_split(x0, y0, x1, y1):
         return (x1 - x0) >= 2 * min_size or (y1 - y0) >= 2 * min_size
 
+    ref = list(refine or [])
+
+    def forced(x0, y0, x1, y1):
+        for (a, b, c, d, s) in ref:
+            if x0 < c and x1 > a and y0 < d and y1 > b and max(x1 - x0, y1 - y0) > s and can_split(x0, y0, x1, y1):
+                return True
+        return False
+
     def add(x0, y0, x1, y1, depth):
         mean, var = stats(x0, y0, x1, y1)
-        if var > var_thresh and depth < max_depth and can_split(x0, y0, x1, y1):
+        if forced(x0, y0, x1, y1):
+            counter[0] += 1
+            heapq.heappush(heap, (-1e18, counter[0], (x0, y0, x1, y1, depth)))  # 強制細分的格子優先處理，而且不受 max_leaves 限制
+        elif var > var_thresh and depth < max_depth and can_split(x0, y0, x1, y1):
             counter[0] += 1
             heapq.heappush(heap, (-var * (x1 - x0) * (y1 - y0), counter[0], (x0, y0, x1, y1, depth)))
         else:
             leaves.append(Leaf(x0, y0, x1, y1, mean, var, depth))
 
     add(0, 0, W, H, 0)
-    while heap and len(leaves) + len(heap) + 3 <= max_leaves:
+    while heap and (heap[0][0] <= -1e17 or len(leaves) + len(heap) + 3 <= max_leaves):
         _, _, (x0, y0, x1, y1, d) = heapq.heappop(heap)
         xs = [x0, (x0 + x1) // 2, x1] if (x1 - x0) >= 2 * min_size else [x0, x1]
         ys = [y0, (y0 + y1) // 2, y1] if (y1 - y0) >= 2 * min_size else [y0, y1]
