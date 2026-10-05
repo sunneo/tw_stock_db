@@ -21626,7 +21626,7 @@ ${fnData.code}
             prog.finish(job.stop
                 ? `已停止（已分析${job.analyzed}個檔案，進度已存起來，再執行 index_start 會接續）`
                 : `完成：${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係 · 用時 ${this._repoJobFmtTime((Date.now() - job.startedAt) / 1000)}${job.capped ? '（已達上限：' + (job.capped === 'size' ? '索引大小' : '檔案數') + '）' : ''}${remFiles ? '，還有' + remFiles + '個沒分析' : ''}`, job.stop ? null : [{ label: '📖 開啟檢視器', onClick: async () => { const r = await this._aidocViewerOpen(key); if (!r.ok) this._log('⚠️ ' + r.error); } }]);
-            this._pushAssistantMessage(`🗂️ 專案索引${job.stop ? '已停止' : '完成'}：${key}\n${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係。${job.capped ? '\n（已達' + (job.capped === 'size' ? '索引大小' : '檔案數') + '上限，沒分析完的可以到「設定 → AI → 專案索引」調高上限，再按「開始／接續索引」。）' : ''}\n輸入 /aidoc view 開啟互動檢視器。現在可以問程式碼問題（repo_ask：「某函式做什麼／在哪定義／誰用到它」），或匯出：repo_wiki({"action":"export","format":"sqlite_html"}) 產生內嵌SQLite的單檔HTML，format:"qa_html" 產生純JS問答頁。`, null);
+            this._pushAssistantMessage(`🗂️ 專案索引${job.stop ? '已停止' : '完成'}：${key}\n${sm.files}個檔案、${sm.symbols}個定義、${sm.dependency_edges}條依賴、${sm.call_edges}條呼叫關係。${job.capped ? '\n（已達' + (job.capped === 'size' ? '索引大小' : '檔案數') + '上限，沒分析完的可以到「設定 → AI → 專案索引」調高上限，再按「開始／接續索引」。）' : ''}\n按下面的按鈕（或輸入 /aidoc view）開啟互動檢視器。現在可以問程式碼問題（repo_ask：「某函式做什麼／在哪定義／誰用到它」），或匯出：repo_wiki({"action":"export","format":"sqlite_html"}) 產生內嵌SQLite的單檔HTML，format:"qa_html" 產生純JS問答頁。`, null, { _actions: [{ kind: 'aidoc-view', label: '📖 開啟檢視器', root: key, title: '開啟互動檢視器（瀏覽檔案、定義、依賴，右邊可以問問題）' }, { kind: 'aidoc-sqlite', label: '🗄️ 匯出 SQLite 單檔 HTML', root: key, title: '產生內嵌 SQLite 的單一 HTML 檔，可以離線用 SQL 查' }, { kind: 'aidoc-qa', label: '💬 匯出問答頁', root: key, title: '產生純 JavaScript 的問答頁（單一 HTML）' }] });
             this._persistChatHistory(); this._renderMessageHistory();
             try { const sv = await this._repoIndexAutoSave(key); if (sv && sv.ok) this._log('💾 索引已自動存回專案資料夾'); } catch (_) {}
         } catch (e) {
@@ -26575,8 +26575,18 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 被重複送進API，見_loopFetch/_loopFetchNative頂端的說明）。_loopFetch
     // 的文字式CALL路徑跟_loopFetchNative的原生路徑都改用這個，避免兩處各自
     // 維護一份同樣邏輯、容易改一邊忘了改另一邊。
+    // 訊息自帶按鈕（msg._actions）的動作分派；新增種類在這裡加一個 kind 就好
+    async _runMessageAction(a) {
+        const root = String((a && a.root) || '');
+        if (a.kind === 'aidoc-view') { const r = await this._aidocViewerOpen(root); return r; }
+        if (a.kind === 'aidoc-sqlite' || a.kind === 'aidoc-qa') { await this._codeExport(root, a.kind === 'aidoc-sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); return { ok: true }; }
+        return { ok: false, error: '不認得的動作：' + a.kind };
+    }
     _pushAssistantMessage(content, reasoning, extra) {
-        const msg = Object.assign({ role: 'assistant', content: this._stripInlineBase64(content) }, extra || {});
+        const ex = Object.assign({}, extra || {});
+        const actions = ex._actions; delete ex._actions;
+        const msg = Object.assign({ role: 'assistant', content: this._stripInlineBase64(content) }, ex);
+        if (Array.isArray(actions) && actions.length) Object.defineProperty(msg, '_actions', { value: actions, enumerable: false, configurable: true });
         if (reasoning) {
             Object.defineProperty(msg, '_reasoningDisplay', { value: this._stripInlineBase64(reasoning), enumerable: false, configurable: true });
         }
@@ -49040,6 +49050,7 @@ ${existingNodeSummaries}
             // /run-terminal剛叫出來時一樣），不是還原到重整前的操作記錄，
             // 但至少widget本身不會憑空消失。
             const terminalMap = {};
+            const actionsMap = {};
             this.messages.forEach((m, i) => {
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
@@ -49053,6 +49064,7 @@ ${existingNodeSummaries}
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
                 if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
                 if (m._displayTerminal) terminalMap[i] = m._displayTerminal;
+                if (m._actions) actionsMap[i] = m._actions;
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
@@ -49068,9 +49080,11 @@ ${existingNodeSummaries}
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                     if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
                     if (m._displayTerminal) terminalMap[`${bi}:${mi}`] = m._displayTerminal;
+                    if (m._actions) actionsMap[`${bi}:${mi}`] = m._actions;
                 });
             });
             this._writeChatBlob(JSON.stringify({
+                actionsMap,
                 messages: this.messages,
                 archivedDisplayBlocks: this.archivedDisplayBlocks,
                 imageMap,
@@ -49133,6 +49147,12 @@ ${existingNodeSummaries}
                 Object.entries(data.benchmarkReportMap).forEach(([key, report]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_benchmarkReport', { value: report, enumerable: false, configurable: true });
+                });
+            }
+            if (data.actionsMap) {
+                Object.entries(data.actionsMap).forEach(([key, acts]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_actions', { value: acts, enumerable: false, configurable: true });
                 });
             }
             if (data.chipsMap) {
@@ -50390,6 +50410,27 @@ ${existingNodeSummaries}
                     });
                 }
             }
+        }
+        if (msg.role === 'assistant' && Array.isArray(msg._actions) && msg._actions.length) {
+            // 訊息自帶的操作按鈕（資料是純文字，存進對話歷史後重新整理仍在）
+            const row = document.createElement('div');
+            row.className = 'ai-msg-actions';
+            row.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;';
+            for (const a of msg._actions) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = a.label || a.kind;
+                if (a.title) b.title = a.title;
+                b.style.cssText = `padding:4px 10px; border-radius:6px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:12px; cursor:pointer;`;
+                b.addEventListener('click', async () => {
+                    const old = b.textContent; b.disabled = true;
+                    try { const r = await this._runMessageAction(a); if (r && r.ok === false) { this._pushAssistantMessage('⚠️ ' + (r.error || '操作失敗'), null); this._persistChatHistory(); this._renderMessageHistory(); } }
+                    catch (e) { this._pushAssistantMessage('⚠️ ' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); }
+                    finally { b.disabled = false; b.textContent = old; }
+                });
+                row.appendChild(b);
+            }
+            div.appendChild(row);
         }
         container.appendChild(div);
     }
