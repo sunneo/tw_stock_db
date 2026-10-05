@@ -83,3 +83,7 @@ AI 模型全部連不上（或使用者開啟離線模式）時，助理仍能**
 - 離線工具：`lookup_error_code`、`explain_command_line`、`ref_lookup`（都是離線純函式，不需要 AI）。路由：`core_rules` 的四條規則（`ref_error_code`、`ref_error_name`、`ref_command_line`、`ref_pragma`）加上功能清冊四項（`ref-error-codes`、`ref-command-explain`、`ref-lookup`、`ref-expand`，各有自己的範例語句）。
 - 擴充方式：`ref_define` 補定義（每筆要附來源）；AI 自主擴充有專屬領域 `offline_knowledge_expander`（工具 `ref_expand`、`/ref expand`），範圍包括錯誤碼、命令選項、API 語意、pragma、文法 pattern、語意、分詞規則、組合語言、建置系統。這符合「AI 成功後離線訓練器必須被擴充」的原則：AI 查到的知識寫回知識庫，下次離線就能直接回答。
 - 補的資料可 `/ref export` 匯出，交給開發者或 Claude 升級成內建（`scripts/promote-runtime-defs.js`）。
+
+## 知識類型與資料包（2026-10-06）
+
+離線訓練器的知識除了文字，還能註冊「類型」（有結構的知識：部位、顏色族群、骨架、動作、標註範例、詞庫…），資料格式有版本號（沒有編號的一律叫 v0，舊資料照用、用到新功能才問要不要遷移），匯出的資料包（`fa-offline-trainer` v2）多一個選填的 `knowledge` 區塊（`fa-knowledge-types` v1）。設計見 `DESIGN.knowledge-types.md`，移植與一致性見 `DESIGN.knowledge-portability.md`。純邏輯在 `renderer/src/refs/ref_engine.js`（`exportPack`／`inspectPack`／`mergePack`、`formatInfo`／`migrationPlan`），資料包匯出匯入只是呼叫它們。
