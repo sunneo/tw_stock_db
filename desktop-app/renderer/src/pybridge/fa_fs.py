@@ -20,7 +20,7 @@ import sys
 import fa_bridge
 
 _ST = {"installed": False, "default": None, "cache": "/fa_fap_cache"}
-_LOCAL = ("/tmp", "/proc", "/dev", "/sys", "/lib", "/usr", "/fa_pybridge", "/fa_fap_cache", "/home/pyodide/.cache", "/etc", "/var/tmp")
+_LOCAL = ("/tmp", "/proc", "/dev", "/sys", "/lib", "/usr", "/fa_pybridge", "/fa_fap_cache", "/home/pyodide/.cache", "/etc", "/var/tmp", "/work")  # /work＝python_execute 的工作目錄（工具自己的輸出管道，不導向 fap）
 _orig = {}
 
 

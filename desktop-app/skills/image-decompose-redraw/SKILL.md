@@ -14,6 +14,10 @@ description: 把一張 2D 點陣圖分解成三角網格與區域、猜出前後
 
 只依賴 `numpy` 與 `Pillow`（網頁版 Pyodide 也有），不需要 scipy／OpenCV。
 
+## 在 Floating AI Assistant 裡
+
+已接進助理的內建技能清單（`skill_builtin-skill-image-decompose-redraw`，`BUILTIN_SKILLS`），工具是 `image_decompose_redraw`：`{image: 📎上傳的 file_id 或檔名, vision: off|auto|on, preview, max_side, max_leaves, welded, output_ref}`。腳本由 `scripts/embed-code-ui.js` 嵌進 `FA_IDR_SKILL_FILES`，每次呼叫寫進 python_execute 的 `/work/idr/`（網頁版與桌面版都用 Pyodide，自動載入 numpy 與 pillow），輸出預設存進 persistentStorage 並出現下載卡片，`output_ref:"fap:<名稱>"` 可存進授權的資料夾。改了 `skills/image-decompose-redraw/` 之後要重新 `node scripts/embed-code-ui.js` 與 `node build-assistant.js`。
+
 ## 用法
 
 ```bash
