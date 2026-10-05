@@ -6853,6 +6853,7 @@ const BUILTIN_SKILLS = [
     {
         id: 'builtin-skill-image-decompose-redraw',
         name: 'image-decompose-redraw',
+        awaitInput: { kind: 'attachment', prompt: '📥 請貼上圖片（在輸入框按 Ctrl+V）或用 📎 上傳，也可以順便補一句要求（例如「預覽」「用 vision auto 決定前後順序」）。貼好後按送出就會直接處理，不用再打一次指令（輸入框上方有圖片附件時，打這個指令就會直接處理那張圖）。' },
         builtinToolNames: ['image_decompose_redraw', 'list_uploaded_files', 'list_file_access_points', 'fap_list_files'],
         personaPrompt: (FA_IDR_SKILL_FILES['SKILL.md'] || '') + `
 
@@ -12396,6 +12397,14 @@ class FloatingAssistant {
     async _runSkillBundleAsSlashCommand(bundle, argsText) {
         this.messages.push({ role: 'user', content: `/${bundle.name}${argsText ? ' ' + argsText : ''}` });
         this._renderMessageHistory();
+        // 需要先拿到輸入（例如圖片）的技能：沒帶附件也沒給要求就先提示並「等」，使用者接著貼圖／上傳送出時自動接手（不用管順序）
+        const awaitDef = ((typeof BUILTIN_SKILLS !== 'undefined' && BUILTIN_SKILLS.find((d) => d.id === bundle.builtinId)) || {}).awaitInput;
+        if (awaitDef && !String(argsText || '').trim()) {
+            this._armedSkill = { name: String(bundle.name).trim().toLowerCase(), at: Date.now() };
+            this._pushAssistantMessage(awaitDef.prompt || '請提供要處理的內容（貼上圖片或用📎上傳）。', null);
+            this._persistChatHistory(); this._renderMessageHistory();
+            return;
+        }
         const task = argsText || `請依照你的知識/人設，簡短介紹你自己（這個角色設定的重點內容），或如果使用者接下來會提問，先準備好用這份知識/角色回答。`;
         const result = await this._delegateToSubagentDomain(`skill_${bundle.id}`, task);
         const toolMsg = this._buildToolResultMessage(bundle.name, JSON.stringify(result), {});
@@ -43807,6 +43816,19 @@ ${existingNodeSummaries}
     // executeChat/LLM——這些是本地端function call直接觸發的工具指令，
     // 不需要也不應該讓AI自己「決定」要不要執行；實際指令清單見
     // this.slashCommands（見register_slash_command()的註冊機制）。
+    // 把待送出的附件收進訊息：等還在上傳的完成，回傳「檔名（file_id=…）、…」並清空待送清單（沒有就回空字串）。
+    async _takeAttachmentNote() {
+        const stillUploading = this._pendingAttachments.filter(a => a.status === 'uploading');
+        if (stillUploading.length) {
+            this._log('⏳ 等待附件上傳完成中...');
+            await Promise.all(stillUploading.map(a => a.promise || Promise.resolve()));
+        }
+        const note = this._pendingAttachments.filter(a => a.status === 'done').map(a => `${a.filename}（file_id=${a.id}）`).join('、');
+        this._pendingAttachments = [];
+        this._renderPendingAttachments();
+        return note;
+    }
+
     async _submitChatInput(inputText, suggestBar) {
         let textToSend = inputText.value.trim();
         // tw_stock_db客製: 階段2——如果有📎附加的檔案，就算輸入框是空的也
@@ -43835,7 +43857,13 @@ ${existingNodeSummaries}
                     localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory));
                 }
                 this.historyIndex = -1;
-                const argsText = textToSend.slice(firstToken.length).trim();
+                let argsText = textToSend.slice(firstToken.length).trim();
+                // 2026-10-05：技能包指令（例如 /image-decompose-redraw）先貼圖再打指令時，待送的附件要一起帶進去，不然附件留在輸入框上方被忽略
+                if (hasAttachments && entry._autoFromSkillBundle) {
+                    const note = await this._takeAttachmentNote();
+                    if (note) argsText = (argsText ? argsText + '\n\n' : '') + '[附件：' + note + ']';
+                }
+                this._armedSkill = null; // 打了別的斜線指令就取消「等圖片」
                 // 2026-10-03使用者回報：斜線指令（例如 /sp1-weekly-report-v2）執行到一半切去別的對話，再切回來就看不到執行中，
                 // 對話清單也沒有沙漏。原因：斜線指令沒有走一般 AI 執行的「對話狀態」（isResponding）。這裡把它綁在送出指令的對話上：
                 // 執行期間標成執行中（沙漏、停止鈕、計時），第二個參數把「綁定這個對話的代理物件」交給 handler，handler 用它呼叫內部方法，
@@ -43865,6 +43893,23 @@ ${existingNodeSummaries}
                 .filter(a => a.status === 'done')
                 .map(a => `${a.filename}（file_id=${a.id}）`)
                 .join('、');
+            // 2026-10-05：先打了需要圖片的技能指令（沒帶圖片）、之後才貼圖送出——不用重打指令，這一則自動交給那個技能
+            const armed = this._armedSkill;
+            if (armed && attachmentNote && Date.now() - armed.at < 15 * 60 * 1000) {
+                const armedEntry = this.slashCommands.get('/' + armed.name);
+                if (armedEntry) {
+                    this._armedSkill = null;
+                    this._pendingAttachments = [];
+                    this._renderPendingAttachments();
+                    const argsText = (textToSend ? textToSend + '\n\n' : '') + '[附件：' + attachmentNote + ']';
+                    const run = this._chatRunner(this._activeCtx);
+                    try { run._setRespondingState(true, '⏳ 指令執行中：/' + armed.name); } catch (_) {}
+                    Promise.resolve().then(() => armedEntry.handler(argsText, run))
+                        .catch((e) => { try { run._pushAssistantMessage('⚠️ 指令執行失敗：' + String((e && e.message) || e), null); } catch (_) {} })
+                        .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) {} });
+                    return;
+                }
+            }
             const instruction = textToSend
                 ? textToSend
                 : '請視需要使用檔案解讀能力（parse_uploaded_file / delegate_to_subagent的file_analysis領域）查看下面附件的內容，再回答我。';
