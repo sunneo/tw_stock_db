@@ -71,5 +71,14 @@ function embedRefs() {
     console.log('已更新 FA_REF_DATA／FaRef（錯誤碼 ' + Object.values(data.errors).reduce((n, l) => n + l.length, 0) + '、命令 ' + Object.keys(data.commands).length + '、pragma ' + data.pragmas.length + '）');
 }
 embedRefs();
+function embedAnnot() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/annotator/annot_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* ANNOT-BEGIN */'), b = src.indexOf('/* ANNOT-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 ANNOT 標記');
+    // 核心是 UMD：包一層讓它走「掛到 self」那條路（module 設為 undefined），再把結果取出來
+    src = src.slice(0, a) + '/* ANNOT-BEGIN */\nconst FaAnnot = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaAnnot;\n})();\n' + src.slice(b);
+    console.log('已更新 FaAnnot（' + core.length + ' 字元）');
+}
+embedAnnot();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
