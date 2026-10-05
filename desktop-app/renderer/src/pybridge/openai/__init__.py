@@ -215,6 +215,12 @@ class _Raw(object):
         self.headers = {"x-fa-bridge": "1"}
         self.status_code = 200
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
     def parse(self):
         return self._obj
 

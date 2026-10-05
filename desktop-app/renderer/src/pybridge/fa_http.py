@@ -24,6 +24,7 @@ import sys
 
 import fa_bridge
 import fa_llm
+import fa_net
 import fa_sim
 
 _INSTALLED = {"done": False, "hooked": set()}
@@ -94,6 +95,12 @@ _ROUTES = [
 
 
 def route(method, url, headers=None, body=b""):
+    """先看是不是 LLM 端點（回 (status, headers, body_bytes)），再看是不是要接手的一般 HTTP（本機 mock 伺服器、網頁版的外部網址；見 fa_net）。都不是就回 None。"""
+    r = _route_llm(method, url, headers, body)
+    return r if r is not None else fa_net.route(method, url, headers, body)
+
+
+def _route_llm(method, url, headers=None, body=b""):
     """是 LLM 端點就回 (status, headers, body_bytes)，不是就回 None。"""
     if not fa_bridge.ACTIVE:
         return None
@@ -328,6 +335,10 @@ def install():
     if _INSTALLED["done"]:
         return
     _INSTALLED["done"] = True
+    try:
+        fa_net.install()
+    except Exception as e:
+        sys.stderr.write("[fa-bridge] patch http.client: %s\n" % e)
     try:
         _patch_urllib()
     except Exception as e:
