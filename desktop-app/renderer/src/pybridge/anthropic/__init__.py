@@ -353,8 +353,6 @@ def _build(A):
 
 def _legacy_prompt(prompt):
     msgs = []
-    for part in re.split(r"\n\n(Human|Assistant):", "\n\n" + str(prompt or "")):
-        pass
     parts = re.split(r"\n\n(Human|Assistant):", "\n\n" + str(prompt or ""))
     i = 1
     while i + 1 < len(parts):

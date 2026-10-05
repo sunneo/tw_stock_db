@@ -32,57 +32,6 @@ def _now():
     return int(time.time())
 
 
-def _png(w=64, h=64, rgb=(200, 200, 200)):
-    """產生純色 PNG（占位圖）。"""
-    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
-
-    def chunk(tag, data):
-        c = struct.pack(">I", len(data)) + tag + data
-        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
-
-
-def _wav(seconds=0.2, rate=16000):
-    import wave
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(b"\x00\x00" * int(seconds * rate))
-    return buf.getvalue()
-
-
-class SimBytes(object):
-    """語音／檔案內容的回應（有 .content、.read()、.iter_bytes()、.stream_to_file()）。"""
-
-    def __init__(self, data):
-        self.content = data
-
-    def read(self):
-        return self.content
-
-    def iter_bytes(self, chunk_size=1024):
-        for i in range(0, len(self.content), chunk_size):
-            yield self.content[i:i + chunk_size]
-
-    def stream_to_file(self, path):
-        with open(path, "wb") as f:
-            f.write(self.content)
-
-    write_to_file = stream_to_file
-
-    @property
-    def text(self):
-        return self.content.decode("utf-8", "replace")
-
-
-def _mark(d, api):
-    d["fa_simulated"] = True
-    fa_llm.note_simulated(api)
-    return d
-
-
 # 圖片、語音、嵌入、工具呼叫「不」在這裡模擬：它們要先從助理已設定的 LLM Model 清單裡找有這個能力的 Model（fa_llm.upstream），
 # 所有 Model 都不支援才丟 NotSupported，不會回傳假的結果。
 class SimBytes(object):
