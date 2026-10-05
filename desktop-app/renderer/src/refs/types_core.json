@@ -5,18 +5,42 @@
     "description": "純資料的狀態機：狀態、事件、轉移與動作。手勢、眨眼、說話口型、流程都可以用它描述；do 裡寫基本動作名稱（由消費端實作）或其他 machine 的 key。",
     "version": 1,
     "schema": {
-      "start": { "type": "string", "required": true },
-      "end": { "type": "list", "of": "string" },
+      "start": {
+        "type": "string",
+        "required": true
+      },
+      "end": {
+        "type": "list",
+        "of": "string"
+      },
       "states": {
         "type": "map",
         "required": true,
-        "of": { "type": "object", "fields": {
-          "on": { "type": "map", "of": { "type": "object", "fields": {
-            "to": { "type": "string", "required": true },
-            "do": { "type": "list", "of": "string" }
-          } } },
-          "do": { "type": "list", "of": "string" }
-        } }
+        "of": {
+          "type": "object",
+          "fields": {
+            "on": {
+              "type": "map",
+              "of": {
+                "type": "object",
+                "fields": {
+                  "to": {
+                    "type": "string",
+                    "required": true
+                  },
+                  "do": {
+                    "type": "list",
+                    "of": "string"
+                  }
+                }
+              }
+            },
+            "do": {
+              "type": "list",
+              "of": "string"
+            }
+          }
+        }
       }
     }
   },
@@ -26,10 +50,40 @@
     "description": "Lab 色彩空間的範圍（L 明度 0~100，a、b 約 -128~127）。用來描述膚色、毛色、髮色、五官深色等；比對的是顏色特徵，不依賴任何人種或物種標籤。",
     "version": 1,
     "schema": {
-      "L": { "type": "range", "range": [0, 100], "required": true },
-      "a": { "type": "range", "range": [-128, 127], "required": true },
-      "b": { "type": "range", "range": [-128, 127], "required": true },
-      "group": { "type": "enum", "values": ["skin", "hair", "fur", "feature", "other"] }
+      "L": {
+        "type": "range",
+        "range": [
+          0,
+          100
+        ],
+        "required": true
+      },
+      "a": {
+        "type": "range",
+        "range": [
+          -128,
+          127
+        ],
+        "required": true
+      },
+      "b": {
+        "type": "range",
+        "range": [
+          -128,
+          127
+        ],
+        "required": true
+      },
+      "group": {
+        "type": "enum",
+        "values": [
+          "skin",
+          "hair",
+          "fur",
+          "feature",
+          "other"
+        ]
+      }
     }
   },
   {
@@ -38,12 +92,41 @@
     "description": "骨架裡的一個關節：父關節、相對父關節的位置、旋轉軸與範圍（弧度）、預設姿勢。",
     "version": 1,
     "schema": {
-      "parent": { "type": "ref", "kind": "joint" },
-      "offset": { "type": "list", "of": "number", "length": 3 },
-      "axes": { "type": "list", "of": { "type": "enum", "values": ["x", "y", "z"] } },
-      "rot_min": { "type": "list", "of": "number", "length": 3 },
-      "rot_max": { "type": "list", "of": "number", "length": 3 },
-      "rest": { "type": "list", "of": "number", "length": 3 }
+      "parent": {
+        "type": "ref",
+        "kind": "joint"
+      },
+      "offset": {
+        "type": "list",
+        "of": "number",
+        "length": 3
+      },
+      "axes": {
+        "type": "list",
+        "of": {
+          "type": "enum",
+          "values": [
+            "x",
+            "y",
+            "z"
+          ]
+        }
+      },
+      "rot_min": {
+        "type": "list",
+        "of": "number",
+        "length": 3
+      },
+      "rot_max": {
+        "type": "list",
+        "of": "number",
+        "length": 3
+      },
+      "rest": {
+        "type": "list",
+        "of": "number",
+        "length": 3
+      }
     }
   },
   {
@@ -52,9 +135,27 @@
     "description": "一組關節組成的骨架，root 是根關節。",
     "version": 1,
     "schema": {
-      "root": { "type": "ref", "kind": "joint", "required": true },
-      "joints": { "type": "list", "of": { "type": "ref", "kind": "joint" }, "required": true },
-      "unit": { "type": "enum", "values": ["relative", "px", "m"] }
+      "root": {
+        "type": "ref",
+        "kind": "joint",
+        "required": true
+      },
+      "joints": {
+        "type": "list",
+        "of": {
+          "type": "ref",
+          "kind": "joint"
+        },
+        "required": true
+      },
+      "unit": {
+        "type": "enum",
+        "values": [
+          "relative",
+          "px",
+          "m"
+        ]
+      }
     }
   },
   {
@@ -63,18 +164,66 @@
     "description": "一段關節運動：每個關節的關鍵影格（時間 t 與旋轉），可循環，可附一個狀態機描述階段。",
     "version": 1,
     "schema": {
-      "skeleton": { "type": "ref", "kind": "skeleton" },
-      "duration": { "type": "number", "range": [0, 3600], "required": true },
-      "loop": { "type": "boolean" },
-      "ease": { "type": "enum", "values": ["linear", "ease_in", "ease_out", "ease_in_out"] },
-      "tracks": { "type": "list", "required": true, "of": { "type": "object", "fields": {
-        "joint": { "type": "ref", "kind": "joint", "required": true },
-        "keys": { "type": "list", "required": true, "of": { "type": "object", "fields": {
-          "t": { "type": "number", "required": true },
-          "rot": { "type": "list", "of": "number", "length": 3 }
-        } } }
-      } } },
-      "machine": { "type": "ref", "kind": "machine" }
+      "skeleton": {
+        "type": "ref",
+        "kind": "skeleton"
+      },
+      "duration": {
+        "type": "number",
+        "range": [
+          0,
+          3600
+        ],
+        "required": true
+      },
+      "loop": {
+        "type": "boolean"
+      },
+      "ease": {
+        "type": "enum",
+        "values": [
+          "linear",
+          "ease_in",
+          "ease_out",
+          "ease_in_out"
+        ]
+      },
+      "tracks": {
+        "type": "list",
+        "required": true,
+        "of": {
+          "type": "object",
+          "fields": {
+            "joint": {
+              "type": "ref",
+              "kind": "joint",
+              "required": true
+            },
+            "keys": {
+              "type": "list",
+              "required": true,
+              "of": {
+                "type": "object",
+                "fields": {
+                  "t": {
+                    "type": "number",
+                    "required": true
+                  },
+                  "rot": {
+                    "type": "list",
+                    "of": "number",
+                    "length": 3
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "machine": {
+        "type": "ref",
+        "kind": "machine"
+      }
     }
   },
   {
@@ -83,10 +232,24 @@
     "description": "一種手勢或動作：由狀態機描述階段、涉及哪些關節、可對應哪段關節運動。",
     "version": 1,
     "schema": {
-      "machine": { "type": "ref", "kind": "machine" },
-      "joints": { "type": "list", "of": { "type": "ref", "kind": "joint" } },
-      "motion": { "type": "ref", "kind": "motion" },
-      "meaning": { "type": "string" }
+      "machine": {
+        "type": "ref",
+        "kind": "machine"
+      },
+      "joints": {
+        "type": "list",
+        "of": {
+          "type": "ref",
+          "kind": "joint"
+        }
+      },
+      "motion": {
+        "type": "ref",
+        "kind": "motion"
+      },
+      "meaning": {
+        "type": "string"
+      }
     }
   },
   {
@@ -95,40 +258,245 @@
     "description": "一種聲音的特徵：頻率範圍、包絡、事件標記；可被口型等運動引用。",
     "version": 1,
     "schema": {
-      "freq_hz": { "type": "range", "range": [1, 96000] },
-      "duration_s": { "type": "range", "range": [0, 3600] },
-      "envelope": { "type": "list", "of": { "type": "object", "fields": { "t": { "type": "number" }, "level": { "type": "number", "range": [0, 1] } } } },
-      "events": { "type": "list", "of": "string" },
-      "motion": { "type": "ref", "kind": "motion" }
+      "freq_hz": {
+        "type": "range",
+        "range": [
+          1,
+          96000
+        ]
+      },
+      "duration_s": {
+        "type": "range",
+        "range": [
+          0,
+          3600
+        ]
+      },
+      "envelope": {
+        "type": "list",
+        "of": {
+          "type": "object",
+          "fields": {
+            "t": {
+              "type": "number"
+            },
+            "level": {
+              "type": "number",
+              "range": [
+                0,
+                1
+              ]
+            }
+          }
+        }
+      },
+      "events": {
+        "type": "list",
+        "of": "string"
+      },
+      "motion": {
+        "type": "ref",
+        "kind": "motion"
+      }
     }
   },
   {
     "kind": "visual_part",
     "label": "視覺部位／物件",
-    "description": "畫面上的一個部位或物件（臉、眼、鼻、頭髮、動物的耳朵…）：所在容器、容器內的典型位置與大小（size＝面積占容器面積的比例範圍，可以大於 1，例如頭髮比臉大）、形狀、顏色族群、數量與對稱、深度輪廓，以及可綁定的關節（attach：左右對稱的部位依序給 [左, 右]）。可用 base 繼承、parts 組合、in 指定容器。座標 box 是 [x0,y0,x1,y1]，相對於容器的外框，可以超出 0~1（例如頭髮在臉上方）。",
+    "description": "畫面上的一個部位或物件（臉、眼、鼻、頭髮、動物的耳朵…）：所在容器、容器內的典型位置與大小（size＝面積占容器面積的比例範圍，可以大於 1，例如頭髮比臉大）、形狀、顏色族群、數量與對稱、深度輪廓，以及可綁定的關節（attach：左右對稱的部位依序給 [左, 右]）。不限於人臉：任何物件（車、樹、杯子…）都可以註冊；沒有 parts 又標 detect.top_level 的條目是「頂層物件」，直接用顏色族群、大小、形狀在整張圖裡找。可用 base 繼承、parts 組合、in 指定容器。座標 box 是 [x0,y0,x1,y1]，相對於容器的外框，可以超出 0~1（例如頭髮在臉上方）。",
     "version": 1,
     "schema": {
-      "group": { "type": "enum", "values": ["face", "hair", "body", "animal", "object", "background"] },
-      "aliases": { "type": "list", "of": "string" },
-      "base": { "type": "ref", "kind": "visual_part", "extends": true },
-      "in": { "type": "ref", "kind": "visual_part" },
-      "parts": { "type": "list", "of": { "type": "ref", "kind": "visual_part" } },
-      "box": { "type": "list", "of": "number", "length": 4 },
-      "count": { "type": "integer", "range": [1, 16] },
-      "symmetric": { "type": "boolean" },
-      "size": { "type": "range", "range": [0, 4] },
-      "shape": { "type": "enum", "values": ["ellipse", "blob", "bar", "triangle", "ring", "rect", "any"] },
-      "colors": { "type": "list", "of": { "type": "ref", "kind": "color_family" } },
-      "depth": { "type": "object", "fields": {
-        "kind": { "type": "enum", "values": ["bump", "sunken", "flat"] },
-        "amp": { "type": "number", "range": [0, 1] }
-      } },
-      "attach": { "type": "list", "of": { "type": "ref", "kind": "joint" } },
-      "priority": { "type": "integer", "range": [0, 100] },
-      "detect": { "type": "object", "fields": {
-        "prior_only": { "type": "boolean" },
-        "min_confidence": { "type": "number", "range": [0, 1] }
-      } }
+      "group": {
+        "type": "enum",
+        "values": [
+          "face",
+          "hair",
+          "body",
+          "animal",
+          "object",
+          "background"
+        ]
+      },
+      "aliases": {
+        "type": "list",
+        "of": "string"
+      },
+      "base": {
+        "type": "ref",
+        "kind": "visual_part",
+        "extends": true
+      },
+      "in": {
+        "type": "ref",
+        "kind": "visual_part"
+      },
+      "parts": {
+        "type": "list",
+        "of": {
+          "type": "ref",
+          "kind": "visual_part"
+        }
+      },
+      "box": {
+        "type": "list",
+        "of": "number",
+        "length": 4
+      },
+      "count": {
+        "type": "integer",
+        "range": [
+          1,
+          16
+        ]
+      },
+      "symmetric": {
+        "type": "boolean"
+      },
+      "size": {
+        "type": "range",
+        "range": [
+          0,
+          4
+        ]
+      },
+      "shape": {
+        "type": "enum",
+        "values": [
+          "ellipse",
+          "blob",
+          "bar",
+          "triangle",
+          "ring",
+          "rect",
+          "any"
+        ]
+      },
+      "colors": {
+        "type": "list",
+        "of": {
+          "type": "ref",
+          "kind": "color_family"
+        }
+      },
+      "depth": {
+        "type": "object",
+        "fields": {
+          "kind": {
+            "type": "enum",
+            "values": [
+              "bump",
+              "sunken",
+              "flat"
+            ]
+          },
+          "amp": {
+            "type": "number",
+            "range": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      "attach": {
+        "type": "list",
+        "of": {
+          "type": "ref",
+          "kind": "joint"
+        }
+      },
+      "priority": {
+        "type": "integer",
+        "range": [
+          0,
+          100
+        ]
+      },
+      "detect": {
+        "type": "object",
+        "fields": {
+          "prior_only": {
+            "type": "boolean"
+          },
+          "top_level": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "type": "number",
+            "range": [
+              0,
+              1
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "kind": "visual_example",
+    "label": "標註範例",
+    "version": 1,
+    "description": "一次標註的結果：縮圖、影像尺寸、每個點（標籤、位置、範圍外框、來源 human／ai／detector、是否接受）。跟預訓練資料包（offline-trainer bundle）一起匯出匯入，可以拿來重新訓練或檢視別人標過什麼。",
+    "schema": {
+      "image": {
+        "type": "string"
+      },
+      "size": {
+        "type": "list",
+        "of": "number",
+        "length": 2,
+        "required": true
+      },
+      "points": {
+        "type": "list",
+        "required": true,
+        "of": {
+          "type": "object",
+          "fields": {
+            "label": {
+              "type": "string",
+              "required": true
+            },
+            "x": {
+              "type": "number",
+              "required": true
+            },
+            "y": {
+              "type": "number",
+              "required": true
+            },
+            "box": {
+              "type": "list",
+              "of": "number",
+              "length": 4
+            },
+            "source": {
+              "type": "enum",
+              "values": [
+                "human",
+                "ai",
+                "detector"
+              ]
+            },
+            "accepted": {
+              "type": "boolean"
+            },
+            "parent": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "learned_colors": {
+        "type": "list",
+        "of": "string"
+      },
+      "notes": {
+        "type": "string"
+      }
     }
   }
 ]
