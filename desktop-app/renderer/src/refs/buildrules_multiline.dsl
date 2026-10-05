@@ -83,10 +83,10 @@ what: 文字編碼不符（{dir}）：用 {codec} 處理不了資料。
 cause: 檔案其實不是 {codec} 編碼（常見是 Big5／CP950／UTF-16），或 Windows 預設編碼不是 UTF-8
 fix: open(…, encoding="utf-8") 明確指定；不確定時用 chardet 偵測，或 errors="replace" 先看內容
 ## java-stacktrace | java | root
-start: ^(?:Exception in thread "[^"]*" )?[\w$]+(?:\.[\w$]+)*(?:Exception|Error|Throwable)(?::|$)
-span: indent 120 or ^(?:Caused by|Suppressed):
-re: ^(?:Exception in thread "(?<thr>[^"]*)" )?(?<exc>[\w$.]+)(?:: (?<msg>[^\n]*))?(?:\n[^\n]*)*?\n\s+at (?<top>[^\n(]+)\((?<where>[^)\n]*)\)(?:[\s\S]*\nCaused by: (?<cause>[\w$.]+)(?:: (?<cmsg>[^\n]*))?)?
-what: Java 例外 {exc}：{msg}（執行緒 {thr}）。堆疊最上面（事發的地方）是 {top}（{where}）；有「Caused by」串接時，最後一個才是根本原因：{cause} {cmsg}。
+start: ^(?!.*(?:Caused by|Suppressed):)(?:.*[^\w$.])?(?:[a-z][\w$]*\.)+[\w$]*(?:Exception|Error|Throwable)\b|^[A-Z][\w$]*(?:Exception|Error|Throwable)\b
+span: indent 120 or (?:^|\s)at [\w$.<>]+\(|Caused by:|Suppressed:|\.\.\. \d+ (?:more|common frames omitted)
+re: (?:^|[^\w$.])(?:Exception in thread "(?<thr>[^"]*)" )?(?<exc>(?:(?:[a-z][\w$]*\.)+[\w$]*(?:Exception|Error|Throwable)|[A-Z][\w$]*(?:Exception|Error|Throwable)))(?:: (?<msg>[^\n]*))?(?:\n[^\n]*)*?\n[^\n]*?\bat (?<top>[\w$.<>]+)\((?<where>[^)\n]*)\)(?:[\s\S]*Caused by: (?<cause>(?:[a-z][\w$]*\.)+[\w$]*)(?:: (?<cmsg>[^\n]*))?)?
+what: Java 例外 {exc}：{msg}。堆疊最上面（事發的地方）是 {top}（{where}）；有「Caused by」串接時，最後一個才是根本原因：{cause} {cmsg}。
 cause: 堆疊由上往下是呼叫順序的反向：第一個 at 是丟出例外的地方，越下面越是呼叫它的上層
 cause: Caused by 是被包起來的原因，一路往下看到最後一個，那才是最早發生的錯
 fix: 先看例外類型與訊息；再找堆疊裡第一個屬於你自己的套件（不是 java.／javax.／框架）的 at 行，那是要改的地方
