@@ -3115,6 +3115,46 @@ function _faCodeAsk(ix, question, opts) {
         c.push('引用了 ' + out.length + ' 個檔案' + (out.length ? '：' + out.slice(0, 8).map((k) => '`' + F(k)[0] + '`').join('、') + (out.length > 8 ? '…' : '') : '') + '；被 ' + inn.length + ' 個檔案引用' + (inn.length ? '：' + inn.slice(0, 8).map((k) => '`' + F(k)[0] + '`').join('、') + (inn.length > 8 ? '…' : '') : ''));
         return c.join('\n');
     };
+    // 資料夾：問題裡的路徑（可以是相對路徑、只寫資料夾名稱）對得到索引裡的資料夾，就回資料夾的概況，不要誤判成「找不到定義」
+    {
+        if (!ix._dirIdx) { const dm = {}; db.files.forEach((f, i) => { const segs = String(f[0]).split('/'); let acc = ''; for (let k = 0; k < segs.length - 1; k++) { acc = acc ? acc + '/' + segs[k] : segs[k]; (dm[acc] = dm[acc] || []).push(i); } }); ix._dirIdx = dm; }
+        const dm = ix._dirIdx, dnames = Object.keys(dm);
+        const dirHint = /資料夾|目錄|\bfolders?\b|\bdirector(?:y|ies)\b|\bdirs?\b/i.test(q);
+        const dirT = [], dseen = {};
+        if (dnames.length && (dirHint || (!targets.symbols.length && !targets.files.length))) {
+            for (const w of (q.match(/[\w.+\-@]+(?:\/[\w.+\-@]+)*/g) || [])) {
+                const k = w.toLowerCase().replace(/^\.\/+|\/+$/g, '');
+                if (k.length < 2 || STOPID[k] || dseen[k]) continue;
+                dseen[k] = 1;
+                const found = dnames.filter((d) => { const dl = d.toLowerCase(); return dl === k || dl.endsWith('/' + k); }).sort((a, b) => a.length - b.length).slice(0, 2);
+                found.forEach((d) => { if (!dirT.some((x) => x.path === d)) dirT.push({ path: d, ids: dm[d] }); });
+            }
+        }
+        if (dirT.length) {
+            const d0 = dirT.slice(0, 2);
+            d0.forEach((d, n) => {
+                const inDir = new Set(d.ids);
+                const sub = {}; d.ids.forEach((i) => { const rest = F(i)[0].slice(d.path.length + 1), s = rest.indexOf('/'); if (s >= 0) sub[rest.slice(0, s)] = (sub[rest.slice(0, s)] || 0) + 1; });
+                const symCount = d.ids.reduce((a, i) => a + (ix.fileSyms[i] || []).length, 0);
+                if (n) L.push('');
+                L.push('**`' + d.path + '/`**（資料夾，' + d.ids.length + ' 個檔案、' + symCount + ' 個定義' + (Object.keys(sub).length ? '，子資料夾：' + Object.keys(sub).sort().slice(0, 8).map((x) => '`' + x + '/`（' + sub[x] + '）').join('、') : '') + '）', '');
+                const langs = {}; d.ids.forEach((i) => { const l = F(i)[1] || '?'; langs[l] = (langs[l] || 0) + 1; });
+                L.push('語言：' + Object.keys(langs).sort((a, b) => langs[b] - langs[a]).slice(0, 4).map((l) => l + ' ' + langs[l]).join('、'), '');
+                const ranked = d.ids.slice().sort((a, b) => (ix.impIn[b] || []).length - (ix.impIn[a] || []).length || (ix.fileSyms[b] || []).length - (ix.fileSyms[a] || []).length).slice(0, 10);
+                L.push('主要的檔案（被引用越多越前面）：');
+                ranked.forEach((i) => { L.push('- `' + F(i)[0] + '`（' + F(i)[2] + ' 行，被 ' + (ix.impIn[i] || []).length + ' 個檔案引用）' + ((F(i)[4] || F(i)[3]) ? '：' + (F(i)[4] || F(i)[3]) : '')); hits.push({ type: 'file', id: i }); });
+                const topSyms = []; d.ids.forEach((i) => (ix.fileSyms[i] || []).forEach((k) => topSyms.push(k)));
+                topSyms.sort((a, b) => (ix.usedBy[b] || []).length - (ix.usedBy[a] || []).length);
+                const shown = topSyms.slice(0, 6).filter((k) => (ix.usedBy[k] || []).length || (S(k)[6] || S(k)[4]));
+                if (shown.length) { L.push('', '常被用到的定義：'); shown.forEach((k) => { L.push(symLine(k)); addEv(k); }); }
+                const outs = new Set(), ins = new Set();
+                d.ids.forEach((i) => { (ix.impOut[i] || []).forEach((j) => { if (!inDir.has(j)) outs.add(j); }); (ix.impIn[i] || []).forEach((j) => { if (!inDir.has(j)) ins.add(j); }); });
+                L.push('', '往外引用了 ' + outs.size + ' 個資料夾外的檔案' + (outs.size ? '：' + Array.from(outs).slice(0, 6).map((j) => '`' + F(j)[0] + '`').join('、') + (outs.size > 6 ? '…' : '') : '') + '；被資料夾外 ' + ins.size + ' 個檔案引用' + (ins.size ? '：' + Array.from(ins).slice(0, 6).map((j) => '`' + F(j)[0] + '`').join('、') + (ins.size > 6 ? '…' : '') : '') + '。');
+            });
+            L.push('', '資料夾本身沒有自己的說明時，上面是依檔案的說明與程式碼結構整理的概況；想要完整解釋可以按「請 AI 讀過後解釋」。');
+            return { intent: 'folder', answer: L.join('\n'), hits, targets: { symbols: [], files: [], dirs: d0.map((d) => d.path) }, evidence };
+        }
+    }
     if (intent === 'search' || (!targets.symbols.length && !targets.files.length)) {
         const r = _faCodeSearch(ix, q, { n: opts.n || 8 });
         if (unknown.length) L.push('（索引裡沒有名為 ' + unknown.slice(0, 3).map((x) => '`' + x + '`').join('、') + ' 的定義或檔案——可能還沒分析到，或不是在原始碼裡定義的；改用語意搜尋找相近的：）', '');
