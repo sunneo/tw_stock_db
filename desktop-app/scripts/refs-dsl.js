@@ -59,9 +59,9 @@ function parseBuildRules(text) {
     const out = []; let cur = null;
     for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
         const line = raw.replace(/\s+$/, ''); if (!line.trim() || (line.trim()[0] === '#' && !line.startsWith('## '))) continue;
-        if (line.startsWith('## ')) { const [id, system, level] = cols(line.slice(3)); cur = { id, system: system || 'any', level: String(level || 'root').replace(/!$/, ''), once: /!$/.test(level || ''), re: '', what: '', causes: [], fixes: [], see: '' }; out.push(cur); continue; }
-        if (!cur) continue; const m = /^(re|what|cause|fix|see):\s?(.*)$/.exec(line.trim()); if (!m) continue;
-        if (m[1] === 're') cur.re = m[2]; else if (m[1] === 'what') cur.what = m[2]; else if (m[1] === 'cause') cur.causes.push(m[2]); else if (m[1] === 'fix') cur.fixes.push(m[2]); else cur.see = m[2];
+        if (line.startsWith('## ')) { const [id, system, level] = cols(line.slice(3)); cur = { id, system: system || 'any', level: String(level || 'root').replace(/!$/, ''), once: /!$/.test(level || ''), re: '', start: '', span: '', what: '', causes: [], fixes: [], see: '' }; out.push(cur); continue; }
+        if (!cur) continue; const m = /^(re|start|span|what|cause|fix|see):\s?(.*)$/.exec(line.trim()); if (!m) continue;
+        if (m[1] === 're') cur.re = m[2]; else if (m[1] === 'start') cur.start = m[2]; else if (m[1] === 'span') cur.span = m[2]; else if (m[1] === 'what') cur.what = m[2]; else if (m[1] === 'cause') cur.causes.push(m[2]); else if (m[1] === 'fix') cur.fixes.push(m[2]); else cur.see = m[2];
     }
     return out;
 }

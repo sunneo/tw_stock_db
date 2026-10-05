@@ -26,10 +26,21 @@
         let bRules = null;
         const dedupeGroups = (src) => { const seen = {}; return String(src).replace(/\(\?<([A-Za-z_]\w*)>/g, (all, n) => { seen[n] = (seen[n] || 0) + 1; return seen[n] === 1 ? all : '(?<' + n + '__' + seen[n] + '>'; }); };
         const grp = (m, k) => { const g = m.groups || {}; if (g[k] !== undefined) return g[k]; for (let i = 2; i < 8; i++) if (g[k + '__' + i] !== undefined) return g[k + '__' + i]; return undefined; };
+        // 多行規則的區塊範圍：indent（接著的縮排行）、indent+1（再多收一行結尾，例如 Python 的例外那行）、lines N、until 正規表示式（含該行）、blank（到空白行前）
+        const parseSpan = (s) => { s = String(s).trim(); let m = /^indent(?:\+(\d+))?(?:\s+(\d+))?$/.exec(s); if (m) return { kind: 'indent', extra: +(m[1] || 0), max: +(m[2] || 60) }; m = /^lines\s+(\d+)$/.exec(s); if (m) return { kind: 'lines', max: Math.min(+m[1], 200) }; m = /^until\s+(.+)$/.exec(s); if (m) { try { return { kind: 'until', re: new RegExp(m[1], 'i'), max: 80 }; } catch (_) { return null; } } if (/^blank$/.test(s)) return { kind: 'blank', max: 60 }; return null; };
+        const takeBlock = (clean, i, sp) => {
+            const out = [clean[i]]; let j = i + 1;
+            if (sp.kind === 'lines') { while (j < clean.length && out.length < sp.max) out.push(clean[j++]); return out; }
+            if (sp.kind === 'until') { while (j < clean.length && out.length < sp.max) { out.push(clean[j]); if (sp.re.test(clean[j])) break; j++; } return out; }
+            if (sp.kind === 'blank') { while (j < clean.length && out.length < sp.max && clean[j].trim()) out.push(clean[j++]); return out; }
+            while (j < clean.length && out.length < sp.max && /^\s+\S/.test(clean[j])) out.push(clean[j++]);
+            for (let k = 0; k < sp.extra && j < clean.length && clean[j].trim(); k++) out.push(clean[j++]);
+            return out;
+        };
         const buildRules = () => {
             if (bRules) return bRules; const merged = []; const all = (data.buildRules || []).concat(U.buildRules || []);
             for (const r of all) { const i = merged.findIndex((x) => x.id === r.id); if (i >= 0) merged[i] = r; else merged.push(r); }
-            bRules = merged.map((r) => { let re = null; try { re = new RegExp(dedupeGroups(r.re), 'i'); } catch (_) {} return Object.assign({}, r, { _re: re }); }).filter((r) => r._re); return bRules;
+            bRules = merged.map((r) => { let re = null, st = null; try { re = new RegExp(dedupeGroups(r.re), r.span ? 'ims' : 'i'); if (r.span) st = new RegExp(r.start || '^', 'i'); } catch (_) { re = null; } return Object.assign({}, r, { _re: re, _st: st, _span: r.span ? parseSpan(r.span) : null }); }).filter((r) => r._re && (!r.span || r._span)); return bRules;
         };
         const SIGNS = [
             ['bitbake', /(?:^|\s)(?:ERROR|NOTE|WARNING):\s.*\bdo_[a-z_]+\b|bitbake|NOTE: Executing|Nothing PROVIDES|BitBake Fetcher/i], ['cmake', /CMake (?:Error|Warning)|-- Configuring (?:incomplete|done)|CMakeLists\.txt|CMakeCache/i],
@@ -39,7 +50,7 @@
             ['kernel', /\[\s*\d+\.\d{3,6}\]|\bkernel:|Call Trace:|\bBUG:|\bOops\b|Hardware name:|RIP: 0010|pc : \S+ lr : /], ['panic', /Kernel panic - not syncing|---\[ end (?:Kernel panic|trace)|Oops: [0-9a-f]+|Unable to handle kernel|VFS: Unable to mount root/],
             ['journal', /systemd(?:\[\d+\])?: |(?:Started|Stopped|Starting|Failed to start) [^\n]+\.|-- (?:Boot|Logs begin)|\b(?:sshd|systemd-logind|NetworkManager|dbus-daemon)\[\d+\]:|Main process exited|code=(?:exited|killed|dumped), status=/], ['gdb', /Program (?:received|terminated with) signal|\(gdb\)|Reading symbols from|GNU gdb|Cannot access memory at address|No symbol .* in current context|Remote communication error|warning: Error disabling address space/],
             ['runtime', /error while loading shared libraries|Exec format error|Illegal instruction|Segmentation fault|Address already in use|Permission denied|cannot execute: required file not found/], ['gradle', /FAILURE: Build failed|> Task :|Execution failed for task|Could not resolve all/],
-            ['npm', /npm ERR!|gyp ERR!|node-gyp|ERESOLVE/], ['cargo', /error\[E\d{4}\]|could not compile|failed to select a version|cargo build/i], ['python', /pip(?:3)?(?: install)?|setup\.py|ModuleNotFoundError|externally-managed-environment|Failed building wheel/i], ['autotools', /configure: error|config\.status: error|checking for .*\.\.\. no/i], ['kbuild', /scripts\/Makefile|modpost|Kconfig|include\/generated\/autoconf\.h|\bKBUILD\b/i],
+            ['npm', /npm ERR!|gyp ERR!|node-gyp|ERESOLVE/], ['cargo', /error\[E\d{4}\]|could not compile|failed to select a version|cargo build/i], ['python', /Traceback \(most recent call last\)|File "[^"]+", line \d+|pip(?:3)?(?: install)?|setup\.py|ModuleNotFoundError|externally-managed-environment|Failed building wheel/i], ['autotools', /configure: error|config\.status: error|checking for .*\.\.\. no/i], ['kbuild', /scripts\/Makefile|modpost|Kconfig|include\/generated\/autoconf\.h|\bKBUILD\b/i],
         ];
         function diagnoseBuild(log, o) {
             o = o || {}; const raw = String(log == null ? '' : log); if (raw.trim().length < 4) return { ok: false, error: '要給 log（建置失敗時的輸出文字，整段貼上最好）' };
@@ -62,7 +73,7 @@
                 const l = clean[i]; if (!l.trim() || l.length > 2000) continue;
                 for (const r of rules) {
                     if (r.system !== 'any' && systems.length && systems.indexOf(r.system) < 0 && !o.anySystem) continue;
-                    const m = r._re.exec(l); if (!m) continue; const whatText = fmt(r.what, m); const key = r.once ? r.id : r.id + '|' + whatText; if (seen.has(key)) { matchedLines.add(i); continue; } seen.add(key); matchedLines.add(i); const lvl = r.level === 'root' && /^\s*(?:WARNING|NOTE):|\bwarning:/i.test(l) && !/\berror\b/i.test(l) ? 'warn' : r.level;
+                    let m, blockLen = 1; if (r._span) { if (!r._st.test(l)) continue; const blk = takeBlock(clean, i, r._span); blockLen = blk.length; m = r._re.exec(blk.join('\n')); } else m = r._re.exec(l); if (!m) continue; const whatText = fmt(r.what, m); const key = r.once ? r.id : r.id + '|' + whatText; if (seen.has(key)) { for (let b = 0; b < blockLen; b++) matchedLines.add(i + b); continue; } seen.add(key); for (let b = 0; b < blockLen; b++) matchedLines.add(i + b); const lvl = r.level === 'root' && /^\s*(?:WARNING|NOTE):|\bwarning:/i.test(l) && !/\berror\b/i.test(l) ? 'warn' : r.level;
                     const eno = grp(m, 'errno'); let enoMeaning; if (eno !== undefined && /^-?\d+$/.test(eno)) { const dn = describeNum(Math.abs(parseInt(eno, 10)), 'linux').filter((x) => x.system === 'linux_errno')[0]; if (dn) enoMeaning = dn.name + '（' + dn.code + '）＝' + (dn.note || dn.message); }
                     hits.push({ id: r.id, system: r.system, level: lvl, line: i + 1, text: l.trim().slice(0, 240), what: whatText, causes: r.causes.map((c) => fmt(c, m)), fixes: r.fixes.map((c) => fmt(c, m)), errno: enoMeaning, see: r.see || undefined });
                 }
@@ -337,12 +348,12 @@
             const cl = []; const names = new Set(Object.keys(u.commands || {}).concat(Object.keys(u.options || {})));
             for (const n of names) { const c = (u.commands || {})[n] || {}; cl.push('## ' + [clean(n), (c.aliases || []).map(clean).join(','), clean(c.summary || ''), clean(c.synopsis || '')].join(' | ')); for (const o of (c.options || []).concat((u.options || {})[n] || [])) cl.push([clean(o.flag), clean(o.arg || ''), clean(o.desc || '') + (o.src ? '（來源：' + clean(o.src) + '）' : '')].join(' | ')); } out.commands_dsl = cl.join('\n') + (cl.length ? '\n' : '');
             const pl = []; if ((u.pragmas || []).length) { pl.push('@pragma'); for (const p of u.pragmas) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } if ((u.clauses || []).length) { pl.push('@clause'); for (const p of u.clauses) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } out.pragmas_dsl = pl.join('\n') + (pl.length ? '\n' : '');
-            const bl = []; for (const r of (u.buildRules || [])) { bl.push('## ' + [clean(r.id), clean(r.system || 'any'), clean(r.level || 'root')].join(' | ')); bl.push('re: ' + String(r.re).replace(/\n/g, ' ')); bl.push('what: ' + clean(r.what) + (r.src ? '（來源：' + clean(r.src) + '）' : '')); (r.causes || []).forEach((c) => bl.push('cause: ' + clean(c))); (r.fixes || []).forEach((c) => bl.push('fix: ' + clean(c))); bl.push(''); } out.buildrules_dsl = bl.join('\n');
+            const bl = []; for (const r of (u.buildRules || [])) { bl.push('## ' + [clean(r.id), clean(r.system || 'any'), clean(r.level || 'root')].join(' | ')); if (r.span) { bl.push('start: ' + String(r.start || '^')); bl.push('span: ' + clean(r.span)); } bl.push('re: ' + String(r.re).replace(/\n/g, ' ')); bl.push('what: ' + clean(r.what) + (r.src ? '（來源：' + clean(r.src) + '）' : '')); (r.causes || []).forEach((c) => bl.push('cause: ' + clean(c))); (r.fixes || []).forEach((c) => bl.push('fix: ' + clean(c))); bl.push(''); } out.buildrules_dsl = bl.join('\n');
             out.generic = (u.generic || []).map((g) => ({ kind: g.kind, key: g.key, text: g.text, tags: g.tags || [], rules: g.rules || undefined, src: g.src || '' }));
             return out;
         }
         return {
-            diagnoseBuild, diagnoseLog: diagnoseBuild, validateBuildRules() { const all = (data.buildRules || []).concat(U.buildRules || []); const bad = []; for (const r of all) { try { new RegExp(dedupeGroups(r.re), 'i'); } catch (e) { bad.push({ id: r.id, error: String(e.message).slice(0, 100) }); } } return { total: all.length, invalid: bad }; }, exportBuiltin, setUser(u) { mergeUser(u); idx.built = false; }, lookup, lookupError, lookupCommand, explainCommandLine, explainPragma, annotateText, tokenize, hresultDecode, ntDecode, errorLine, tokenizeShell,
+            diagnoseBuild, diagnoseLog: diagnoseBuild, validateBuildRules() { const all = (data.buildRules || []).concat(U.buildRules || []); const bad = []; for (const r of all) { try { new RegExp(dedupeGroups(r.re), 'i'); if (r.span) { if (!parseSpan(r.span)) throw new Error('span 格式不對'); new RegExp(r.start || '^', 'i'); } } catch (e) { bad.push({ id: r.id, error: String(e.message).slice(0, 100) }); } } return { total: all.length, invalid: bad }; }, exportBuiltin, setUser(u) { mergeUser(u); idx.built = false; }, lookup, lookupError, lookupCommand, explainCommandLine, explainPragma, annotateText, tokenize, hresultDecode, ntDecode, errorLine, tokenizeShell,
             stats() { ensure(); const e = {}; for (const [k, m] of Object.entries(idx.bySys)) e[k] = m.size; const c = Object.keys(data.commands || {}).length + Object.keys(U.commands).length; let o = 0; for (const x of Object.values(data.commands || {})) o += (x.options || []).length; return { errors: e, commands: c, options: o, pragmas: (data.pragmas || []).length + U.pragmas.length, clauses: (data.clauses || []).length + U.clauses.length, generic: allGeneric().length, build_rules: buildRules().length }; },
         };
     }
