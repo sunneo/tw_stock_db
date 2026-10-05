@@ -1,0 +1,1468 @@
+[
+ {
+  "kind": "joint",
+  "key": "hm-hips",
+  "text": "人形：髖部（根關節）",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.6,
+    -0.8,
+    -0.5
+   ],
+   "rot_max": [
+    0.6,
+    0.8,
+    0.5
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-spine",
+  "text": "人形：脊椎下段",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    -0.12,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.5,
+    -0.6,
+    -0.4
+   ],
+   "rot_max": [
+    0.5,
+    0.6,
+    0.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-hips"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-chest",
+  "text": "人形：胸",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    -0.12,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.5,
+    -0.6,
+    -0.4
+   ],
+   "rot_max": [
+    0.5,
+    0.6,
+    0.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-spine"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-neck",
+  "text": "人形：頸",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    -0.12,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.5,
+    -0.8,
+    -0.4
+   ],
+   "rot_max": [
+    0.6,
+    0.8,
+    0.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-chest"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-head",
+  "text": "人形：頭",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    -0.06,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.6,
+    -1.0,
+    -0.5
+   ],
+   "rot_max": [
+    0.6,
+    1.0,
+    0.5
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-neck"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-shoulder-l",
+  "text": "人形：左肩（影像左右）",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    -0.1,
+    -0.04,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -1.5,
+    -1.5,
+    -3.2
+   ],
+   "rot_max": [
+    1.5,
+    1.5,
+    3.2
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-chest"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-elbow-l",
+  "text": "人形：左肘",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    -0.02,
+    0.17,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -2.4,
+    0,
+    -2.4
+   ],
+   "rot_max": [
+    0.3,
+    0,
+    2.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-shoulder-l"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-wrist-l",
+  "text": "人形：左手腕",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    -0.01,
+    0.15,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.8,
+    -0.8,
+    -0.8
+   ],
+   "rot_max": [
+    0.8,
+    0.8,
+    0.8
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-elbow-l"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-shoulder-r",
+  "text": "人形：右肩（影像左右）",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0.1,
+    -0.04,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -1.5,
+    -1.5,
+    -3.2
+   ],
+   "rot_max": [
+    1.5,
+    1.5,
+    3.2
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-chest"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-elbow-r",
+  "text": "人形：右肘",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0.02,
+    0.17,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -2.4,
+    0,
+    -2.4
+   ],
+   "rot_max": [
+    0.3,
+    0,
+    2.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-shoulder-r"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-wrist-r",
+  "text": "人形：右手腕",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0.01,
+    0.15,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.8,
+    -0.8,
+    -0.8
+   ],
+   "rot_max": [
+    0.8,
+    0.8,
+    0.8
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-elbow-r"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-hip-l",
+  "text": "人形：左髖關節",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    -0.05,
+    0.02,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -1.6,
+    -0.6,
+    -0.9
+   ],
+   "rot_max": [
+    1.2,
+    0.6,
+    0.9
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-hips"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-knee-l",
+  "text": "人形：左膝",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0.23,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.1,
+    0,
+    -0.1
+   ],
+   "rot_max": [
+    2.2,
+    0,
+    0.1
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-hip-l"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-ankle-l",
+  "text": "人形：左踝",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0.23,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.6,
+    -0.4,
+    -0.4
+   ],
+   "rot_max": [
+    0.6,
+    0.4,
+    0.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-knee-l"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-hip-r",
+  "text": "人形：右髖關節",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0.05,
+    0.02,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -1.6,
+    -0.6,
+    -0.9
+   ],
+   "rot_max": [
+    1.2,
+    0.6,
+    0.9
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-hips"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-knee-r",
+  "text": "人形：右膝",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0.23,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.1,
+    0,
+    -0.1
+   ],
+   "rot_max": [
+    2.2,
+    0,
+    0.1
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-hip-r"
+  }
+ },
+ {
+  "kind": "joint",
+  "key": "hm-ankle-r",
+  "text": "人形：右踝",
+  "tags": [
+   "humanoid",
+   "joint"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "offset": [
+    0,
+    0.23,
+    0
+   ],
+   "axes": [
+    "x",
+    "y",
+    "z"
+   ],
+   "rot_min": [
+    -0.6,
+    -0.4,
+    -0.4
+   ],
+   "rot_max": [
+    0.6,
+    0.4,
+    0.4
+   ],
+   "rest": [
+    0,
+    0,
+    0
+   ],
+   "parent": "hm-knee-r"
+  }
+ },
+ {
+  "kind": "skeleton",
+  "key": "humanoid-rig",
+  "text": "人形骨架（17 個關節：髖、脊椎、胸、頸、頭、雙臂三節、雙腿三節）。座標單位＝人物高度 1.0。",
+  "tags": [
+   "humanoid",
+   "skeleton"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "root": "hm-hips",
+   "joints": [
+    "hm-hips",
+    "hm-spine",
+    "hm-chest",
+    "hm-neck",
+    "hm-head",
+    "hm-shoulder-l",
+    "hm-elbow-l",
+    "hm-wrist-l",
+    "hm-shoulder-r",
+    "hm-elbow-r",
+    "hm-wrist-r",
+    "hm-hip-l",
+    "hm-knee-l",
+    "hm-ankle-l",
+    "hm-hip-r",
+    "hm-knee-r",
+    "hm-ankle-r"
+   ],
+   "unit": "relative"
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "wave",
+  "text": "揮手：右臂舉起，前臂左右擺動",
+  "tags": [
+   "animation"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "humanoid-rig",
+   "duration": 2.0,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "hm-shoulder-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.4,
+       "rot": [
+        0,
+        0,
+        2.3
+       ]
+      },
+      {
+       "t": 1.6,
+       "rot": [
+        0,
+        0,
+        2.3
+       ]
+      },
+      {
+       "t": 2.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-elbow-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.4,
+       "rot": [
+        0,
+        0,
+        0.2
+       ]
+      },
+      {
+       "t": 0.7,
+       "rot": [
+        0,
+        0,
+        0.9
+       ]
+      },
+      {
+       "t": 1.0,
+       "rot": [
+        0,
+        0,
+        -0.4
+       ]
+      },
+      {
+       "t": 1.3,
+       "rot": [
+        0,
+        0,
+        0.9
+       ]
+      },
+      {
+       "t": 1.6,
+       "rot": [
+        0,
+        0,
+        0.2
+       ]
+      },
+      {
+       "t": 2.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-head",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.0,
+       "rot": [
+        0,
+        0.15,
+        0
+       ]
+      },
+      {
+       "t": 2.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "idle-breath",
+  "text": "待機呼吸：胸口輕微起伏、雙肩微動",
+  "tags": [
+   "animation",
+   "idle"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "humanoid-rig",
+   "duration": 3.0,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "hm-chest",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        -0.04,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-shoulder-l",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        0,
+        0,
+        -0.05
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-shoulder-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        0,
+        0,
+        0.05
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-head",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        0.03,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "jumping-jack",
+  "text": "開合跳：手臂舉到頭上、雙腿張開（正面圖用得到的平面動作）",
+  "tags": [
+   "animation"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "humanoid-rig",
+   "duration": 1.2,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "hm-shoulder-l",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.6,
+       "rot": [
+        0,
+        0,
+        -2.6
+       ]
+      },
+      {
+       "t": 1.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-shoulder-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.6,
+       "rot": [
+        0,
+        0,
+        2.6
+       ]
+      },
+      {
+       "t": 1.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-hip-l",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.6,
+       "rot": [
+        0,
+        0,
+        -0.45
+       ]
+      },
+      {
+       "t": 1.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-hip-r",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.6,
+       "rot": [
+        0,
+        0,
+        0.45
+       ]
+      },
+      {
+       "t": 1.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-hips",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.6,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "bow",
+  "text": "鞠躬：脊椎與頸前傾再回正",
+  "tags": [
+   "animation"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "humanoid-rig",
+   "duration": 2.2,
+   "loop": false,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "hm-spine",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.9,
+       "rot": [
+        0.5,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.4,
+       "rot": [
+        0.5,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 2.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-neck",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.9,
+       "rot": [
+        0.25,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 1.4,
+       "rot": [
+        0.25,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 2.2,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "head-turn",
+  "text": "轉頭：左右轉動",
+  "tags": [
+   "animation"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "humanoid-rig",
+   "duration": 3.0,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "hm-head",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.75,
+       "rot": [
+        0,
+        0.7,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 2.25,
+       "rot": [
+        0,
+        -0.7,
+        0
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "joint": "hm-neck",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.75,
+       "rot": [
+        0,
+        0.25,
+        0
+       ]
+      },
+      {
+       "t": 1.5,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 2.25,
+       "rot": [
+        0,
+        -0.25,
+        0
+       ]
+      },
+      {
+       "t": 3.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "head-shake",
+  "text": "搖頭（不）：頭快速左右擺",
+  "tags": [
+   "animation"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "head-rig",
+   "duration": 1.0,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "head",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.25,
+       "rot": [
+        0,
+        0.6,
+        0
+       ]
+      },
+      {
+       "t": 0.5,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.75,
+       "rot": [
+        0,
+        -0.6,
+        0
+       ]
+      },
+      {
+       "t": 1.0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "kind": "motion",
+  "key": "talk",
+  "text": "說話：下巴開合",
+  "tags": [
+   "animation",
+   "face"
+  ],
+  "src": "內建種子（經驗值，座標單位＝人物高度 1.0、影像座標 y 往下；使用者與 AI 可以用同 key 覆蓋）",
+  "tv": 1,
+  "customize": {
+   "skeleton": "head-rig",
+   "duration": 0.7,
+   "loop": true,
+   "ease": "ease_in_out",
+   "tracks": [
+    {
+     "joint": "jaw",
+     "keys": [
+      {
+       "t": 0,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.17,
+       "rot": [
+        0.3,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.35,
+       "rot": [
+        0.05,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.52,
+       "rot": [
+        0.38,
+        0,
+        0
+       ]
+      },
+      {
+       "t": 0.7,
+       "rot": [
+        0,
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ }
+]

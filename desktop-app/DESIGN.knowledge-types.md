@@ -189,7 +189,7 @@ FaRef.registerPrimitive('color_in', fn)   // 或 Python 端：skill 自己實作
 2. **類型與種子**：`visual_part`、`skeleton`、`joint`、`machine` 內建類型；人臉、頭髮、五官、動物臉的種子條目。
 3. **消費端**：image-decompose-redraw 的部位偵測與局部深度（Python），工具把展開後的 `parts.json` 傳進去；離線路由。
 4. **回饋**：修正→使用者條目→重新套用；RAG 檢索。
-5. **（獨立）** 蒙皮動畫檢視器、`motion`／`gesture` 的播放。
+5. **（獨立）** 蒙皮動畫檢視器——第 6 階段完成（`gesture` 的狀態機驅動播放仍未做）。
 
 ## 13. 還沒決定的事
 
@@ -222,3 +222,12 @@ FaRef.registerPrimitive('color_in', fn)   // 或 Python 端：skill 自己實作
   - 漢字：使用者（或視覺模型）給每一格的部分碼（倉頡、無蝦米、四角號碼，可用 `?` 與 `*`），用碼表縮小候選池（上限 2500），再用字形比對排序。碼表要自己匯入（Unihan 或「字<TAB>碼」文字檔），沒有內建；沒有給碼就不猜，直接說要給碼。**沒有做**從圖形自動推碼。
 - **跟預訓練資料一起匯入匯出**：離線訓練器資料包（`fa-offline-trainer` v2）的 payload 多一個選填的 `knowledge`（`fa-knowledge-types`）：使用者註冊的類型與條目（部位、顏色族群、標註範例、詞庫…）。匯出時只在使用者資料是 v1 以上才帶；檢查時用「現有知識庫＋這份」一起驗證類型、結構、引用與循環，不合法的列警告、不匯入；匯入時走版本閘門（舊格式會先問要不要 migration），同 key 內容不同時保留使用者的（`overwrite` 才覆蓋），類型版本較新的也保留。舊版 app 讀到會直接忽略這個欄位（相容）。字形碼表不在資料包裡（太大、也是第三方資料）。
 - **已知限制**：字母黏在一起（襯線字體、字距很緊）會切錯；視覺模型猜的位置只是大概；「離線偵測猜」只有對同一張圖跑過圖片分解之後才有結果；子部位標註必須先有容器標註（沒有就略過並說明原因）；新取的物件名稱若想當子部位，要先 `ref_define` 把它掛進容器的 `parts`。
+
+- **第 6 階段（蒙皮動畫檢視器）完成（2026-10-05）**：骨架與動作知識現在真的能播放。
+  - **格式**：3D 場景 YAML 的 `polygon` 節點多一個選填的 `skin` 區塊——`skeleton.joints`（`name`、`parent`、`pos`＝靜止位置，跟 `vertices` 同一個座標空間、`limits`）、`weights`（`"auto"` 或每個頂點的 `[[關節序,權重],…]`）、`motions`（`name`、`duration`、`loop`、`ease`、`tracks:[{joint, keys:[{t, rot:[rx,ry,rz 弧度]}]}]`）、`active`（動作名稱或 `"all"` 輪播）、`speed`、`static_radius`、`power`、`update_normals`。沒有 `skin` 的節點行為完全不變。原本的 YAML 沒有骨架或蒙皮（只有整體的 spin／bounce／orbit，FBX 匯入也明說不含骨架動畫），這是新增的。
+  - **演算法**（`renderer/src/skin/skin_core.js`，嵌入成 `FaSkin`，node 單元測試 17 項）：線性混合蒙皮，v' = Σ wᵢ·Mᵢ·v，Mᵢ ＝ 目前姿勢的世界矩陣 · 靜止位置的反矩陣；關節旋轉依 `limits` 夾住；動作用關鍵幀線性內插＋緩動，`loop:false` 停在最後一幀；骨架做拓撲排序並偵測循環與不存在的父關節。**自動權重是幾何猜測**：頂點到每根骨頭（關節到子關節的線段）的距離，取反距離的 power 次方，留最近 4 個並正規化；另加一個「不動」的虛擬骨頭，離骨架超過 2.5 倍不動半徑的頂點完全不動，所以背景不會跟著彎。
+  - **檢視器**：`_build3DSkinAnimator` 每幀變形頂點（polygon 展開成逐面頂點，記下每個位置對應的原始頂點序）；`_mount3DSkinControls` 在畫面下方加控制列（動作選單、全部輪播、暫停、速度、顯示骨架）。因為走原本的 `_mount3DScene`，大模型「點擊才渲染」警告、截圖、MP4 匯出都沿用。單一節點的 `skin` 不合法只會略過動畫並記一筆警告，其餘照常顯示。
+  - **知識**：新增人形骨架 `humanoid-rig`（17 個關節）與動作 `wave`、`idle-breath`、`jumping-jack`、`bow`、`head-turn`，頭部骨架補 `head-shake`、`talk`（`typed_skeletons.json`）。座標單位＝人物高度 1.0、影像座標 y 往下（放到場景時翻轉）。
+  - **工具** `image_rig_animate`：把骨架與動作放到最近一次 `image_decompose_redraw` 的模型上，回傳會動的檢視器。有偵測到臉預設 `head-rig`（relative 1.0 ＝ 臉高，頸在下巴附近）；人形要給 `figure_bbox`（人物範圍），或用 `joint_points` 直接指定關節位置。`parts.json` 現在帶 `size`，供換算影像座標與場景座標。
+  - **限制（老實說）**：權重是猜的，彎折處貼圖會被拉扯、可能出現尖刺；單張圖是 2.5D 浮雕，轉到側面看得出是一片；人形骨架放在非人物的圖上沒有意義（我用臉的圖測試，手臂舉起會把臉的貼圖拉走）；沒有 IK、沒有混合動作、沒有 `gesture` 的狀態機驅動（`machine` 欄位目前只存不跑）。
+- **圖片分解不再卡住畫面（同日）**：主執行緒的 Pyodide 一跑就是整段同步計算，介面整個停住。`python_execute` 新增 `isolated:true`，改在獨立的 Worker 裡跑（Pyodide 與 numpy 只載一次、之後重用）；`image_decompose_redraw` 在純幾何（`vision:"off"`，預設）時自動用它。Worker 裡沒有轉接層（subprocess、連網、openai／anthropic 轉接、檔案存取點），所以 `vision:"auto"|"on"` 仍走主執行緒。實測：同一張 640×720 的臉，畫面事件迴圈最長停頓 177 毫秒（整個流程 16.7 秒，含 Worker 第一次載入 Pyodide）。
