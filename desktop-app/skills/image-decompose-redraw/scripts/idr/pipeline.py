@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """純幾何軌道（Without Vision Model）的整條流程：點陣圖 → 四叉樹三角網格 → 區域聚類＋景深猜測 → 距離變換充氣 → UV 貼圖。"""
+import json
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -26,6 +27,7 @@ class Params:
     global_smooth_iters: int = 24  # smooth 風格：整張網格的 z 平滑次數
     flip_v: bool = True          # UV 的 v 軸翻轉（OpenGL 慣例）
     smooth_iters: int = 6        # 充氣後的表面平滑次數（0＝不平滑）
+    parts_depth: float = 1.0     # 部位局部深度的強度（0＝只偵測與細分、不加深度；1＝標準）
     skirts: bool = True          # 區域交界補側面牆（separate_regions 時）
 
 
@@ -53,14 +55,22 @@ def load_rgb(source, max_side):
     return np.asarray(img, dtype=np.float64) / 255.0, s
 
 
-def decompose(source, params=None, vision="off"):
+def decompose(source, params=None, vision="off", parts=None):
     """vision："off"（純幾何）、"auto"（有支援讀圖的模型就用它決定前後順序，否則退回純幾何）、"on"（一定要用，失敗就報錯）。"""
     p = params or Params()
     t0 = time.time()
     rgb, scale = load_rgb(source, p.max_side)
     H, W, _ = rgb.shape
     lab = srgb_to_lab(rgb)
-    leaves = quadtree.build_quadtree(lab, p.var_thresh, p.min_size, p.max_leaves)
+    det = None
+    if parts:
+        from . import parts as parts_mod
+        try:
+            det = parts_mod.detect_parts(lab, parts_mod.load_parts(parts))
+        except Exception as e:  # 部位偵測是加分項：失敗不影響主流程
+            det = {"container": None, "parts": [], "reason": "%s: %s" % (type(e).__name__, str(e)[:160])}
+    refine = parts_mod.refine_boxes(det, (W, H)) if det and det.get("container") else None
+    leaves = quadtree.build_quadtree(lab, p.var_thresh, p.min_size, p.max_leaves, refine=refine)
     V, T, tri_leaf = mesh_mod.build_mesh(leaves)
     leaf_region, region_label = regions_mod.merge_leaves(leaves, lab, p.tau_edge, p.tau_color, p.min_region_area or None, p.var_thresh)
     reg = regions_mod.analyze_regions(region_label, lab, p.depth_weights)
@@ -70,6 +80,7 @@ def decompose(source, params=None, vision="off"):
     r.params, r.scale, r.rgb, r.size = p, scale, rgb, (W, H)
     r.leaves, r.V, r.T, r.tri_leaf, r.tri_region = leaves, V, T, tri_leaf, tri_region
     r.regions, r.tri_color = reg, leaf_rgb[tri_leaf]
+    r.lab = lab
     r.depth_source = "geometry"
     rebuild_3d(r)
     r.stats = {"size": [W, H], "scale": round(scale, 4), "leaves": len(leaves), "triangles_2d": int(len(T)), "vertices_2d": int(len(V)),
@@ -85,6 +96,16 @@ def decompose(source, params=None, vision="off"):
             if mode == "on":
                 raise
             r.stats["vision_fallback"] = "%s: %s" % (type(e).__name__, str(e)[:200])
+    r.parts = det
+    if det is not None:
+        from . import parts as parts_mod
+        try:
+            applied = parts_mod.apply_part_depth(r, det, p.parts_depth)
+            r.stats["parts"] = parts_mod.summarize(det)
+            r.stats["parts"]["depth_applied"] = applied
+            r.stats["leaves_refined"] = int(len(leaves))
+        except Exception as e:
+            r.stats["parts"] = {"error": "%s: %s" % (type(e).__name__, str(e)[:160])}
     r.stats["seconds"] = round(time.time() - t0, 2)
     return r
 
@@ -96,6 +117,14 @@ def rebuild_3d(r):
     r.uv = resample.uv_from_vertices(r.mesh.vertices[:, :2], W, H, p.flip_v)
     r.vertex_colors = resample.bake_vertex_colors(r.rgb, r.regions.label, r.mesh.vertices[:, :2], r.mesh.vertex_region)
     return r
+
+
+def _parts_title(result):
+    c = (getattr(result, "parts", None) or {}).get("container")
+    if not c:
+        return ""
+    det = [p for p in result.parts["parts"] if p["source"] == "detected"]
+    return "；部位：%s（信心 %.2f，偵測到 %d 個、先驗 %d 個）" % (c["id"], c["confidence"], len(det), len(result.parts["parts"]) - len(det))
 
 
 def save_all(result, out_dir, name="out", triangles_svg=False, all_formats=False):
@@ -118,12 +147,15 @@ def save_all(result, out_dir, name="out", triangles_svg=False, all_formats=False
     if triangles_svg:
         w("svg_triangles", name + ".triangles.svg", export.to_svg(result.V, result.T, result.tri_color, result.tri_region, result.regions, W, H))
     w("glb", name + ".glb", export.to_glb(result.mesh, result.rgb), binary=True)
-    w("scene3d_yaml", name + ".scene3d.yaml", export.to_scene_yaml(result.mesh, result.uv, result.rgb, title="2.5D 模型：%s（%d 個區域、%d 個三角形、景深來源：%s）" % (name, result.stats["regions"], result.stats["faces_3d"], "視覺模型" if result.stats["depth_source"] == "vision" else "純幾何猜測")))
+    w("scene3d_yaml", name + ".scene3d.yaml", export.to_scene_yaml(result.mesh, result.uv, result.rgb, title="2.5D 模型：%s（%d 個區域、%d 個三角形、景深來源：%s）" % (name, result.stats["regions"], result.stats["faces_3d"], "視覺模型" if result.stats["depth_source"] == "vision" else "純幾何猜測") + _parts_title(result)))
     if all_formats:
         w("json", name + ".mesh.json", export.to_json(result.mesh, result.uv, result.vertex_colors, result.regions, asdict(result.params), result.stats))
         obj, mtl = export.to_obj(result.mesh, result.uv, name + ".texture.png", name + ".mtl")
         w("obj", name + ".obj", obj)
         w("mtl", name + ".mtl", mtl)
+    if getattr(result, "parts", None) is not None:
+        from . import parts as parts_mod
+        w("parts", name + ".parts.json", json.dumps(parts_mod.summarize(result.parts), ensure_ascii=False, indent=1))
     files["texture"] = os.path.join(out_dir, name + ".texture.png")
     Image.fromarray((np.clip(result.rgb, 0, 1) * 255).astype(np.uint8)).save(files["texture"])
     return files
