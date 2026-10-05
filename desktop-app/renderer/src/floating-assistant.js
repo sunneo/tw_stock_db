@@ -19799,7 +19799,14 @@ ${fnData.code}
         }
         const payload = { domains: doms, solutions: opts.include_solutions === false ? [] : Array.from(st.solutions.values()).map((x) => ({ fp: x.fp, problem: x.problem, calls: x.calls, created: x.created })), synonyms: st.synonyms || {} };
         if (opts.include_turns) payload.turns = (await this._otDb().getAll('turns')).sort((a, b) => a.at - b.at).slice(-600);
-        const summary = { domains: doms.length, patterns: doms.reduce((n, d) => n + d.patterns.length, 0), tools: doms.reduce((n, d) => n + (d.tools || []).length, 0), states: doms.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: payload.solutions.length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms).length };
+        // 知識類型：使用者註冊的類型與條目（部位、顏色族群、標註範例…）跟預訓練資料一起帶走；內建的不用帶（每個版本都有）。舊格式（v0）的使用者沒有這些，不輸出。
+        if (opts.include_knowledge !== false) {
+            const ku = this._refUserDefs(); const fi = this._refFormatInfo();
+            const kt = Object.entries(ku.types || {}).map(([kind, v]) => Object.assign({ kind }, v));
+            const ke = (ku.typed || []).slice();
+            if (fi.version >= 1 && (kt.length || ke.length)) payload.knowledge = { format: 'fa-knowledge-types', version: FA_REF_FORMAT.current, types: JSON.parse(JSON.stringify(kt)), typed: JSON.parse(JSON.stringify(ke)) };
+        }
+        const summary = { knowledge_types: payload.knowledge ? payload.knowledge.types.length : 0, knowledge_entries: payload.knowledge ? payload.knowledge.typed.length : 0, domains: doms.length, patterns: doms.reduce((n, d) => n + d.patterns.length, 0), tools: doms.reduce((n, d) => n + (d.tools || []).length, 0), states: doms.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: payload.solutions.length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms).length };
         return { format: 'fa-offline-trainer', version: 2, exported_at: new Date().toISOString(), summary, payload, checksum: _faRepoHash(JSON.stringify(payload)) };
     }
     // 檢查一份bundle（不寫入）：回傳摘要、每個原始碼工具的語法檢查、警告
@@ -19833,8 +19840,41 @@ ${fnData.code}
             (d.patterns || []).forEach((p) => { if (p.tool && !this.tools[p.tool]) warnings.push(`${d.name}/${p.id}：工具「${p.tool}」在這個版本／平台不存在`); });
             domains.push(Object.assign({}, d, { tools: cleanTools }));
         }
-        const summary = { domains: domains.length, patterns: domains.reduce((n, d) => n + (d.patterns || []).length, 0), tools: tools.filter((t) => t.ok).length, states: domains.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: (payload.solutions || []).length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms || {}).length };
-        return { ok: true, legacy, summary, tools, rejected_tools: tools.filter((t) => !t.ok), warnings, domains, payload };
+        let knowledge = null;
+        if (payload.knowledge && typeof payload.knowledge === 'object') {
+            const kn = payload.knowledge; const kv = Number(kn.version) || 0;
+            if (kn.format !== 'fa-knowledge-types') warnings.push('知識區塊的 format 不認得，略過');
+            else if (kv > FA_REF_FORMAT.current) warnings.push('知識區塊是格式 v' + kv + '，比這個 app 認得的（v' + FA_REF_FORMAT.current + '）新，略過；請先更新 app');
+            else {
+                const eng = this._refEngine(); const okTypes = [], okEntries = [], bad = [];
+                const tmpUser = { types: {}, typed: [] };
+                for (const ty of Array.isArray(kn.types) ? kn.types : []) {
+                    if (!ty || !ty.kind) { bad.push('類型缺 kind'); continue; }
+                    const v = eng.validateTypeDef({ kind: ty.kind, label: ty.label, description: ty.description, version: ty.version, schema: ty.schema });
+                    if (!v.ok) { bad.push('類型 ' + ty.kind + '：' + v.errors.slice(0, 2).map((e) => e.msg).join('；')); continue; }
+                    okTypes.push(ty); tmpUser.types[ty.kind] = { label: ty.label, description: ty.description, version: ty.version, schema: ty.schema };
+                }
+                // 條目用「現有知識庫＋這份的類型與條目」一起驗證（條目可以引用同一份裡的類型、顏色族群、別的部位）
+                const ku = this._refUserDefs();
+                const incoming = (Array.isArray(kn.typed) ? kn.typed : []).filter((e) => e && e.kind && e.key);
+                const cand = Object.assign({}, ku, { types: Object.assign({}, ku.types || {}, tmpUser.types), typed: (ku.typed || []).filter((e) => !incoming.some((x) => x.kind === e.kind && x.key === e.key)).concat(incoming) });
+                let tmp = null; try { tmp = FaRef.create(FA_REF_DATA, cand); } catch (e) { bad.push('知識庫無法載入：' + e.message); }
+                if (tmp) for (const e of incoming) {
+                    if (!tmp.getType(e.kind)) { bad.push(e.kind + ':' + e.key + '：沒有這個類型'); continue; }
+                    const v = tmp.validateEntry(e, { requireSource: false });
+                    if (!v.ok) { bad.push(e.kind + ':' + e.key + '：' + v.errors.slice(0, 2).map((x) => x.msg).join('；')); continue; }
+                    const r = tmp.resolve(e.kind, e.key);
+                    if (!r.ok) { bad.push(e.kind + ':' + e.key + '：' + r.errors.slice(0, 1).map((x) => x.msg).join('；')); continue; }
+                    okEntries.push(e);
+                }
+                bad.slice(0, 8).forEach((m) => warnings.push('知識：' + m + '（不會匯入）'));
+                if (bad.length > 8) warnings.push('知識：另有 ' + (bad.length - 8) + ' 筆不合法，不會匯入');
+                const byKind = {}; okEntries.forEach((e) => { byKind[e.kind] = (byKind[e.kind] || 0) + 1; });
+                knowledge = { version: kv, types: okTypes, typed: okEntries, rejected: bad.length, by_kind: byKind };
+            }
+        }
+        const summary = { knowledge_types: knowledge ? knowledge.types.length : 0, knowledge_entries: knowledge ? knowledge.typed.length : 0, knowledge_by_kind: knowledge ? knowledge.by_kind : undefined, domains: domains.length, patterns: domains.reduce((n, d) => n + (d.patterns || []).length, 0), tools: tools.filter((t) => t.ok).length, states: domains.reduce((n, d) => n + Object.keys((d.states && d.states.states) || {}).length, 0), solutions: (payload.solutions || []).length, turns: (payload.turns || []).length, synonym_groups: Object.keys(payload.synonyms || {}).length };
+        return { ok: true, legacy, summary, tools, rejected_tools: tools.filter((t) => !t.ok), warnings, domains, knowledge, payload };
     }
     async _otBundleImport(bundle, opts) {
         opts = opts || {};
@@ -19848,7 +19888,7 @@ ${fnData.code}
         if (opts.dry_run) return Object.assign(report, { dry_run: true, tools: ins.tools.map((t) => ({ domain: t.domain, name: t.name, ok: t.ok, risky_calls: t.risky_calls })) });
         if (!opts.confirmed) {
             const risky = ins.tools.filter((t) => t.ok && t.risky_calls.length);
-            const ans = await this.requestUserForm({ title: '📥 要匯入離線訓練器的資料嗎？', description: `領域 ${ins.summary.domains}、規則 ${ins.summary.patterns}、狀態機 ${ins.summary.states} 個狀態、原始碼工具 ${ins.summary.tools} 個、已學會的解法 ${ins.summary.solutions}${ins.summary.turns ? '、對話紀錄 ' + ins.summary.turns + ' 輪' : ''}。\n\n原始碼工具（${ins.tools.filter((t) => t.ok).slice(0, 8).map((t) => t.name).join('、') || '無'}）只會在沙盒worker裡執行，但它們可以呼叫助理的工具${risky.length ? '，其中 ' + risky.map((t) => t.name + '→' + t.risky_calls.join('/')).join('、') + ' 會呼叫有副作用的工具（執行前仍會問你）' : ''}。${ins.rejected_tools.length ? '\n\n有 ' + ins.rejected_tools.length + ' 個工具檢查沒過，不會匯入。' : ''}\n\n只匯入你信任來源的檔案。`, choices: ['匯入', '取消'] });
+            const ans = await this.requestUserForm({ title: '📥 要匯入離線訓練器的資料嗎？', description: `領域 ${ins.summary.domains}、規則 ${ins.summary.patterns}、狀態機 ${ins.summary.states} 個狀態、原始碼工具 ${ins.summary.tools} 個、已學會的解法 ${ins.summary.solutions}${ins.summary.knowledge_entries || ins.summary.knowledge_types ? '、知識類型 ' + ins.summary.knowledge_types + ' 個與條目 ' + ins.summary.knowledge_entries + ' 筆（' + Object.entries(ins.summary.knowledge_by_kind || {}).map(([k, n]) => k + ' ' + n).join('、') + '）' : ''}${ins.summary.turns ? '、對話紀錄 ' + ins.summary.turns + ' 輪' : ''}。\n\n原始碼工具（${ins.tools.filter((t) => t.ok).slice(0, 8).map((t) => t.name).join('、') || '無'}）只會在沙盒worker裡執行，但它們可以呼叫助理的工具${risky.length ? '，其中 ' + risky.map((t) => t.name + '→' + t.risky_calls.join('/')).join('、') + ' 會呼叫有副作用的工具（執行前仍會問你）' : ''}。${ins.rejected_tools.length ? '\n\n有 ' + ins.rejected_tools.length + ' 個工具檢查沒過，不會匯入。' : ''}\n\n只匯入你信任來源的檔案。`, choices: ['匯入', '取消'] });
             if (!ans || !ans.confirmed || ans.answer !== '匯入') return { ok: false, cancelled: true, error: '使用者取消' };
         }
         const conflicts = [];
@@ -19871,6 +19911,31 @@ ${fnData.code}
             await this._otSaveDomain(d);
             for (const p of d.patterns || []) await this._otSyncPatternExamples(d, p);
             rec.domains++; rec.patterns += (inc.patterns || []).length; rec.tools += (inc.tools || []).length; rec.states += Object.keys((inc.states && inc.states.states) || {}).length;
+        }
+        if (ins.knowledge && (ins.knowledge.types.length || ins.knowledge.typed.length)) {
+            const gate = await this._refRequireFormat(1, '匯入知識類型與條目');
+            if (!gate.ok) { report.knowledge = { skipped: true, reason: gate.error }; conflicts.push('知識沒有匯入：' + gate.error); }
+            else {
+                const ku = this._refUserDefs(); const kr = { types: 0, entries: 0, kept_yours: 0 };
+                ku.types = ku.types || {}; ku.typed = ku.typed || [];
+                for (const ty of ins.knowledge.types) {
+                    const old = ku.types[ty.kind];
+                    if (old && Number(old.version) > Number(ty.version)) { conflicts.push(`知識類型 ${ty.kind}：你的版本（v${old.version}）比較新，保留`); kr.kept_yours++; continue; }
+                    if (old && JSON.stringify(old.schema) !== JSON.stringify(ty.schema) && !opts.overwrite && Number(old.version) === Number(ty.version)) { conflicts.push(`知識類型 ${ty.kind}：結構跟你的不同，保留你的`); kr.kept_yours++; continue; }
+                    ku.types[ty.kind] = { label: ty.label, description: ty.description, version: ty.version, schema: ty.schema, src: ty.src || 'bundle', by: ty.by || 'import', at: ty.at || when }; kr.types++;
+                }
+                for (const e of ins.knowledge.typed) {
+                    const i = ku.typed.findIndex((x) => x.kind === e.kind && x.key === e.key);
+                    if (i >= 0) {
+                        if (JSON.stringify(ku.typed[i].customize) === JSON.stringify(e.customize)) continue;
+                        if (!opts.overwrite) { conflicts.push(`知識 ${e.kind}:${e.key}：你已經有不同的版本，保留你的（要覆蓋請帶 overwrite）`); kr.kept_yours++; continue; }
+                        ku.typed.splice(i, 1);
+                    }
+                    ku.typed.push(Object.assign({}, e, { src: e.src || 'bundle', by: e.by || 'import', at: e.at || when })); kr.entries++;
+                }
+                this._refSaveUserDefs();
+                rec.knowledge = kr;
+            }
         }
         for (const s of ins.payload.solutions || []) { if (!s || !s.fp || !Array.isArray(s.calls)) continue; const row = { fp: s.fp, problem: String(s.problem || '').slice(0, 300), calls: s.calls.slice(0, 10), summary: '', created: s.created || when, hits: 0 }; await this._otDb().put('solutions', row); st.solutions.set(row.fp, row); rec.solutions++; }
         for (const t of ins.payload.turns || []) { if (t && t.id && Array.isArray(t.calls)) { await this._otDb().put('turns', t); rec.turns++; } }
@@ -21981,7 +22046,7 @@ ${fnData.code}
                 else if (act === 'train-chat') { const r = await this._otTrainFromChats(); alert('已從目前對話學到 ' + (r.added || 0) + ' 輪的工具呼叫（共 ' + (r.calls || 0) + ' 個；只學做法，不存AI的回答或查詢結果）'); refresh(); }
                 else if (act === 'reseed') { await this._otSeedBuiltin(true); refresh(); }
                 else if (act === 'forget') { if (confirm('清除所有「學到的」規則、問答記憶與已學會的解法？（內建與你自己加的規則不會動）')) { await this._otRun({ action: 'forget_learned' }); refresh(); } }
-                else if (act === 'export') { const withTurns = window.confirm('匯出內容：領域（規則＋狀態機＋原始碼工具）、已學會的解法、同義詞。\n\n要連「訓練用的對話紀錄」一起匯出嗎？（確定＝一起匯出；取消＝不含）'); const r = await this._otRun({ action: 'export', include_turns: withTurns }); const blob = new Blob([JSON.stringify(r.data, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer-bundle.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); alert('已匯出：領域 ' + r.summary.domains + '、規則 ' + r.summary.patterns + '、狀態 ' + r.summary.states + '、原始碼工具 ' + r.summary.tools + '、解法 ' + r.summary.solutions); }
+                else if (act === 'export') { const withTurns = window.confirm('匯出內容：領域（規則＋狀態機＋原始碼工具）、已學會的解法、同義詞、你的知識類型與條目（部位、顏色族群、標註範例）。\n\n要連「訓練用的對話紀錄」一起匯出嗎？（確定＝一起匯出；取消＝不含）'); const r = await this._otRun({ action: 'export', include_turns: withTurns }); const blob = new Blob([JSON.stringify(r.data, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'offline-trainer-bundle.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); alert('已匯出：領域 ' + r.summary.domains + '、規則 ' + r.summary.patterns + '、狀態 ' + r.summary.states + '、原始碼工具 ' + r.summary.tools + '、解法 ' + r.summary.solutions + '、知識類型 ' + (r.summary.knowledge_types || 0) + '、知識條目 ' + (r.summary.knowledge_entries || 0)); }
                                 else if (act === 'import') root.querySelector('#ai-ot-import-file').click();
                 else if (act === 'del-domain') { const n = b.dataset.d; if (confirm('刪除領域 ' + n + '？')) { st.domains.delete(n); await this._otDb().delete('domains', n); await this._otVecDelete('ot_examples', (id, m) => m && m.domain === n); refresh(); } }
                 else if (act === 'del-pat') { await this._otRun({ action: 'remove_pattern', domain: b.dataset.d, pattern: b.dataset.p }); refresh(); }
@@ -44429,7 +44494,8 @@ ${existingNodeSummaries}
         const eng = this._refEngine(); const containers = [];
         for (const e of eng.listTyped('visual_part')) {
             const r = eng.resolve('visual_part', e.key);
-            if (r.ok && r.value && Array.isArray(r.value.parts) && r.value.parts.length && /^(face|animal)$/.test(r.value.group || '')) containers.push({ key: e.key, text: e.text, value: r.value });
+            const top = !!(r.ok && r.value && r.value.detect && r.value.detect.top_level);
+            if (r.ok && r.value && ((Array.isArray(r.value.parts) && r.value.parts.length && /^(face|animal)$/.test(r.value.group || '')) || top)) containers.push({ key: e.key, text: e.text, value: r.value });
         }
         return { format: 'fa-visual-parts', version: 1, containers };
     }
