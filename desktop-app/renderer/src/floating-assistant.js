@@ -6849,6 +6849,15 @@ export default {
 // 不是檔案、不需要安裝、也不會出現在skill_list的結果裡。下面文字改成
 // 明講兩者的差異＋給出delegate_to_subagent的實際呼叫範例，不再只寫
 // 「domain」這個容易跟skill混淆的詞。
+// 知識資料（離線訓練器的使用者／AI 補的定義，localStorage fa_ref_user_defs_v1）的格式版本。見 DESIGN.knowledge-types.md §11。
+// v0＝沒有 _format 欄位的舊格式（一律這樣稱呼）；v1＝加上 _format 封套，並備好 types（註冊的知識類型）與 typed（帶 customize 的條目）兩個容器。
+// 遷移是宣告式的（不跑程式碼）：op 只有 default（補預設值）、rename、move、drop、stamp（寫入格式封套）。永遠只做向前遷移；要退回用備份還原。
+const FA_REF_FORMAT = { name: 'fa-ref-user-defs', current: 1 };
+const FA_REF_MIGRATIONS = [
+    { from: 0, to: 1, label: '加上格式版本號，並備好 types／typed 兩個容器（既有的錯誤碼、命令、規則、通用知識…全部原樣保留）',
+        steps: [{ op: 'default', path: 'types', value: {} }, { op: 'default', path: 'typed', value: [] }, { op: 'stamp' }] },
+];
+
 const BUILTIN_SKILLS = [
     {
         id: 'builtin-skill-image-decompose-redraw',
@@ -21092,12 +21101,145 @@ ${fnData.code}
         if (this._refUserCache) return this._refUserCache;
         let d = null; try { d = JSON.parse(localStorage.getItem('fa_ref_user_defs_v1') || 'null'); } catch (_) {}
         this._refUserCache = d && typeof d === 'object' ? d : {};
+        // 全新安裝（沒有任何舊資料）直接用最新格式；有舊資料但沒有 _format 的是 v0，保持原樣，等使用者在離線訓練器設定頁按 Migration
+        if (!(d && typeof d === 'object')) { this._refUserCache._format = { name: FA_REF_FORMAT.name, version: FA_REF_FORMAT.current, createdAt: Date.now() }; this._refUserCache.types = {}; this._refUserCache.typed = []; }
         ['errors', 'commands', 'options'].forEach((k) => { if (!this._refUserCache[k]) this._refUserCache[k] = {}; });
         ['pragmas', 'clauses', 'generic', 'buildRules'].forEach((k) => { if (!Array.isArray(this._refUserCache[k])) this._refUserCache[k] = []; });
         return this._refUserCache;
     }
     _refSaveUserDefs() { try { localStorage.setItem('fa_ref_user_defs_v1', JSON.stringify(this._refUserCache || this._refUserDefs())); } catch (_) { return false; } this._refEng = null; return true; }
     _refEngine() { if (!this._refEng) this._refEng = FaRef.create(FA_REF_DATA, this._refUserDefs()); return this._refEng; }
+
+    // ===== 知識資料的格式版本：偵測、預演、備份、遷移、還原（DESIGN.knowledge-types.md §11） =====
+    // 承諾：永遠不自動遷移；遷移前一定先備份；只做向前遷移；既有欄位原樣保留（遷移後逐欄位比對，不一致就中止，不寫入）。
+    _refRawStore() { try { const s = localStorage.getItem('fa_ref_user_defs_v1'); return s == null ? { text: null, data: null } : { text: s, data: JSON.parse(s) }; } catch (e) { return { text: null, data: null, error: String((e && e.message) || e) }; } }
+    _refCountStore(d) {
+        const c = { errors: 0, commands: 0, options: 0, pragmas: 0, clauses: 0, generic: 0, buildRules: 0, typed: 0, types: 0 };
+        if (!d || typeof d !== 'object') return c;
+        for (const l of Object.values(d.errors || {})) c.errors += Array.isArray(l) ? l.length : 0;
+        c.commands = Object.keys(d.commands || {}).length;
+        for (const l of Object.values(d.options || {})) c.options += Array.isArray(l) ? l.length : 0;
+        for (const k of ['pragmas', 'clauses', 'generic', 'buildRules', 'typed']) c[k] = Array.isArray(d[k]) ? d[k].length : 0;
+        c.types = d.types && typeof d.types === 'object' ? Object.keys(d.types).length : 0;
+        return c;
+    }
+    // 回傳 { version, current, status: 'empty'|'current'|'outdated'|'newer'|'error', counts, bytes }
+    _refFormatInfo() {
+        const raw = this._refRawStore();
+        const current = FA_REF_FORMAT.current;
+        if (raw.error) return { version: null, current, status: 'error', error: raw.error, counts: this._refCountStore(null), bytes: 0 };
+        if (!raw.data || typeof raw.data !== 'object') return { version: current, current, status: 'empty', counts: this._refCountStore(null), bytes: 0 };
+        const v = raw.data._format && Number.isFinite(Number(raw.data._format.version)) ? Number(raw.data._format.version) : 0;
+        return { version: v, current, status: v === current ? 'current' : (v < current ? 'outdated' : 'newer'), counts: this._refCountStore(raw.data), bytes: (raw.text || '').length };
+    }
+    _refApplyStep(d, s) {
+        const get = (o, p) => p.split('.').reduce((x, k) => (x == null ? undefined : x[k]), o);
+        const setp = (o, p, v) => { const ks = p.split('.'); let x = o; for (let i = 0; i < ks.length - 1; i++) { if (x[ks[i]] == null || typeof x[ks[i]] !== 'object') x[ks[i]] = {}; x = x[ks[i]]; } x[ks[ks.length - 1]] = v; };
+        const delp = (o, p) => { const ks = p.split('.'); let x = o; for (let i = 0; i < ks.length - 1; i++) { x = x && x[ks[i]]; } if (x && typeof x === 'object') delete x[ks[ks.length - 1]]; };
+        const log = [];
+        if (s.op === 'default') { if (get(d, s.path) === undefined) { setp(d, s.path, JSON.parse(JSON.stringify(s.value))); log.push('新增欄位 ' + s.path); } }
+        else if (s.op === 'rename' || s.op === 'move') { const v = get(d, s.path); if (v !== undefined) { setp(d, s.to, v); delp(d, s.path); log.push((s.op === 'rename' ? '改名 ' : '搬移 ') + s.path + ' → ' + s.to); } }
+        else if (s.op === 'drop') { if (get(d, s.path) !== undefined) { delp(d, s.path); log.push('移除 ' + s.path); } }
+        else if (s.op === 'stamp') { /* 在 _refMigrationPlan 最後依目標版本寫入 */ }
+        else throw new Error('不認得的遷移動作：' + s.op);
+        return log;
+    }
+    // 預演：不寫入任何東西。回傳 { ok, from, to, steps: [{label, log}], before, after, warnings }
+    _refMigrationPlan(target) {
+        const info = this._refFormatInfo();
+        target = Number.isFinite(Number(target)) ? Number(target) : info.current;
+        if (target > info.current) return { ok: false, error: `目標版本 v${target} 比這個程式支援的（v${info.current}）新，請更新程式` };
+        if (info.status === 'error') return { ok: false, error: '讀取知識資料失敗：' + info.error };
+        if (info.status === 'newer') return { ok: false, error: `資料格式是 v${info.version}，比這個版本認得的（v${info.current}）新，已進入唯讀，不能遷移也不會被覆寫。請更新程式。` };
+        if (info.status === 'current' || info.status === 'empty' || info.version >= target) return { ok: true, nothing: true, from: info.version, to: Math.max(info.version, target), before: info.counts, after: info.counts, steps: [], warnings: [] };
+        const raw = this._refRawStore();
+        let d = JSON.parse(JSON.stringify(raw.data));
+        const steps = []; let v = info.version; const warnings = [];
+        while (v < target) {
+            const m = FA_REF_MIGRATIONS.find((x) => x.from === v);
+            if (!m) return { ok: false, error: `沒有從 v${v} 遷移的步驟（找不到 ${v} → ${v + 1}）` };
+            const log = [];
+            for (const s of m.steps) { try { log.push(...this._refApplyStep(d, s)); } catch (e) { return { ok: false, error: `遷移 v${m.from} → v${m.to} 失敗：${String((e && e.message) || e)}` }; } }
+            d._format = { name: FA_REF_FORMAT.name, version: m.to, migratedAt: Date.now(), from: m.from };
+            log.push('寫入格式版本 v' + m.to);
+            steps.push({ from: m.from, to: m.to, label: m.label, log });
+            v = m.to;
+        }
+        // 非破壞性檢查：原本的每個欄位都要原樣還在（只允許多出新欄位）
+        const lost = Object.keys(raw.data).filter((k) => JSON.stringify(raw.data[k]) !== JSON.stringify(d[k]));
+        if (lost.length) return { ok: false, error: '遷移會改到既有欄位（' + lost.join('、') + '），為了保護你已經訓練的資料，已中止、沒有寫入任何東西。' };
+        return { ok: true, from: info.version, to: info.current, steps, before: info.counts, after: this._refCountStore(d), warnings, result: d };
+    }
+    // 備份：整份知識資料匯出成 JSON 檔（下載卡片），並在 IndexedDB 另存一份（只留最近 3 份）。回傳 { ok, filename, id }
+    async _refBackup(label) {
+        const raw = this._refRawStore();
+        const info = this._refFormatInfo();
+        const payload = { format: 'fa-ref-backup', backupVersion: 1, createdAt: Date.now(), label: label || '手動備份', storeVersion: info.version, counts: info.counts, data: raw.data };
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+        const filename = `fa-ref-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-v${info.version}.json`;
+        const id = await this.fileCache.put(filename, 'application/json', blob, 'generated');
+        try {
+            const all = (await this.fileCache.getAll()).filter((r) => /^fa-ref-backup-.*\.json$/.test(r.filename || '')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            for (const r of all.slice(3)) await this.fileCache.delete(r.id).catch(() => {});
+        } catch (_) {}
+        await this._deliverExistingCacheFile(id, `💾 知識資料備份：${filename}（${(blob.size / 1024).toFixed(1)}KB；${label || '手動備份'}）`);
+        return { ok: true, filename, id, counts: info.counts };
+    }
+    // 遷移：先備份（失敗就中止）、再寫入暫存 key、驗證、才換成正式 key。回傳 { ok, ... }
+    async _refMigrate(opts) {
+        const plan = this._refMigrationPlan(opts && opts.target);
+        if (!plan.ok || plan.nothing || !(opts && opts.apply)) return plan;
+        const bk = await this._refBackup(`遷移 v${plan.from} → v${plan.to} 前的自動備份`);
+        if (!bk.ok) return { ok: false, error: '備份失敗，已中止遷移（沒有寫入任何東西）' };
+        const tmp = 'fa_ref_user_defs_v1__migrating';
+        try {
+            const text = JSON.stringify(plan.result);
+            localStorage.setItem(tmp, text);
+            const back = JSON.parse(localStorage.getItem(tmp));
+            if (!back || !back._format || back._format.version !== plan.to) throw new Error('暫存驗證失敗');
+            localStorage.setItem('fa_ref_user_defs_v1', text);
+            localStorage.removeItem(tmp);
+        } catch (e) {
+            try { localStorage.removeItem(tmp); } catch (_) {}
+            return { ok: false, error: '寫入失敗：' + String((e && e.message) || e) + '（原資料沒有被改動；備份在 ' + bk.filename + '）' };
+        }
+        this._refUserCache = null; this._refEng = null;
+        return Object.assign({}, plan, { applied: true, backup: bk.filename, result: undefined });
+    }
+    // 版本閘門：舊版（v0）資料完全照舊運作，用不到新版的訓練功能；只有「要用到新版才有的功能」才呼叫這個——資料夠新就直接放行，
+    // 不夠新就跳對話框說明「要 migration 到 vN 才能做到」，問使用者要不要；選「先不要」就維持舊版、這個功能暫時不能用（回報給呼叫端，不會偷偷轉換）。
+    // 回傳 { ok:true } 或 { ok:false, declined?, error }。
+    async _refRequireFormat(minVersion, featureLabel) {
+        const info = this._refFormatInfo();
+        if (info.status === 'error') return { ok: false, error: '讀取知識資料失敗：' + info.error };
+        if (info.status === 'empty' || info.version >= minVersion) return { ok: true };
+        if (minVersion > info.current) return { ok: false, error: `「${featureLabel}」需要知識資料格式 v${minVersion}，比這個程式支援的（v${info.current}）新，請更新程式` };
+        const ans = await this.requestUserForm({
+            title: `「${featureLabel}」需要新版的知識資料格式`,
+            description: `你目前的知識資料是 v${info.version}（舊格式），這個功能需要 v${minVersion}。\n\n要現在 migration 到 v${minVersion} 嗎？\n• 轉換前會先自動備份成檔案，既有的定義原樣保留。\n• 選「先不要」：維持舊版，原本的功能與訓練照常使用，只有「${featureLabel}」暫時不能用。`,
+            choices: [`備份並轉換成 v${minVersion}`, '先不要，維持舊版'],
+        });
+        if (!ans || !ans.confirmed || ans.answer === '先不要，維持舊版') return { ok: false, declined: true, error: `使用者選擇維持舊版（v${info.version}），沒有轉換；「${featureLabel}」需要 v${minVersion}，暫時不能用。之後可以在「離線訓練器」設定頁按 Migration，或再次使用這個功能時會再問。` };
+        const r = await this._refMigrate({ apply: true, target: minVersion });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, migrated: true, backup: r.backup };
+    }
+
+    // 還原：從備份檔（JSON 文字）。先驗證格式，並先替「目前的資料」另備份一份再覆蓋。
+    async _refRestore(text) {
+        let p; try { p = JSON.parse(text); } catch (_) { return { ok: false, error: '不是有效的 JSON 檔' }; }
+        if (!p || p.format !== 'fa-ref-backup' || !p.data || typeof p.data !== 'object') return { ok: false, error: '這不是知識資料備份檔（format 應該是 fa-ref-backup）' };
+        const v = p.data._format && Number(p.data._format.version) ? Number(p.data._format.version) : 0;
+        if (v > FA_REF_FORMAT.current) return { ok: false, error: `備份是 v${v}，比這個版本認得的新，不能還原` };
+        return { ok: true, version: v, counts: this._refCountStore(p.data), createdAt: p.createdAt, label: p.label, apply: async () => {
+            const bk = await this._refBackup('還原前的自動備份');
+            if (!bk.ok) return { ok: false, error: '還原前備份失敗，已中止' };
+            try { localStorage.setItem('fa_ref_user_defs_v1', JSON.stringify(p.data)); } catch (e) { return { ok: false, error: '寫入失敗：' + String((e && e.message) || e) }; }
+            this._refUserCache = null; this._refEng = null;
+            return { ok: true, backup: bk.filename };
+        } };
+    }
     _refLookupError(p) { p = p || {}; const q = String(p.query != null ? p.query : (p.code != null ? p.code : '')).trim(); if (!q) return { ok: false, error: '要給 query（錯誤碼、名稱或描述，例如 "errno 13"、"0xC0000005"、"ERROR_ACCESS_DENIED"、"exit code 139"）' }; return this._refEngine().lookupError(q, { system: p.system }); }
     _refExplainCmd(p) { p = p || {}; const c = String(p.command || p.query || '').trim(); if (!c) return { ok: false, error: '要給 command（完整命令列，例如 "gcc -O2 -fopenmp main.c -o a.out"、"qemu-system-aarch64 -M virt -cpu cortex-a53 …"）' }; return this._refEngine().explainCommandLine(c); }
     _refLookupAny(p) { p = p || {}; const q = String(p.query || p.q || '').trim(); if (!q) return { ok: false, error: '要給 query（錯誤碼、命令與選項、#pragma、概念名稱…）' }; const r = this._refEngine().lookup(q); const out = Object.assign({}, r); out.results = (r.results || []).map((x) => { if (x.kind === 'command_line' && x.command) return { kind: x.kind, markdown: x.command.markdown, overview: x.command.overview }; return x; }); return out; }
@@ -21433,6 +21575,21 @@ ${fnData.code}
         </div>`;
         h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
         h += `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">${btn('train-rag', '📚 從RAG訓練')}${btn('train-chat', '💬 從目前對話訓練')}${btn('reseed', '🔄 重新載入內建（功能清冊）')}${btn('export', '⬇️ 匯出')}${btn('import', '⬆️ 匯入')}${btn('forget', '🗑️ 清除學到的')}<input type="file" id="ai-ot-import-file" accept="application/json" style="display:none;"></div>`;
+        // 知識資料格式：偵測版本，不是最新就顯示 Migration 按鈕（v0＝以前沒有版本號的格式）
+        {
+            const fi = this._refFormatInfo();
+            const cn = fi.counts;
+            const total = cn.errors + cn.commands + cn.pragmas + cn.clauses + cn.generic + cn.buildRules + cn.typed;
+            const statusHtml = fi.status === 'outdated' ? `<span style="color:#f59e0b;">⚠️ 目前是 <b>v${fi.version}</b>（沒有版本號的舊格式一律稱 v0），最新是 <b>v${fi.current}</b>，建議轉換</span>`
+                : fi.status === 'newer' ? `<span style="color:#ef4444;">⛔ 資料是 v${fi.version}，比這個版本認得的（v${fi.current}）新：唯讀，不會被覆寫，請更新程式</span>`
+                : fi.status === 'error' ? `<span style="color:#ef4444;">⛔ 讀取失敗：${es(fi.error)}</span>`
+                : fi.status === 'empty' ? `<span style="color:#22c55e;">✅ 還沒有自己補的定義（最新格式 v${fi.current}）</span>`
+                : `<span style="color:#22c55e;">✅ 已是最新格式 <b>v${fi.version}</b></span>`;
+            h += `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin-bottom:14px;"><b>📦 知識資料格式</b>　${statusHtml}
+                <div style="opacity:.8; margin:4px 0 2px; font-size:12px;">${fi.status === 'outdated' ? '維持舊格式也能正常使用與訓練；只有要用到新版才有的功能時才需要轉換（到時候也會問你）。' : ''}</div><div style="opacity:.8; margin:4px 0 6px; font-size:12px;">已訓練／補充的定義：錯誤碼 ${cn.errors}、命令 ${cn.commands}、規則 ${cn.buildRules}、通用知識 ${cn.generic}、#pragma ${cn.pragmas + cn.clauses}${cn.typed || cn.types ? `、已註冊類型 ${cn.types}、類型條目 ${cn.typed}` : ''}（共 ${total} 筆，${(fi.bytes / 1024).toFixed(1)}KB）</div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">${fi.status === 'outdated' ? btn('ref-migrate', '🔄 Migration（轉換成 v' + fi.current + '）') : ''}${btn('ref-backup', '💾 備份')}${btn('ref-restore', '♻️ 從備份還原')}<input type="file" id="ai-ot-restore-file" accept=".json,application/json" style="display:none;"></div>
+                <div id="ai-ot-ref-msg" style="margin-top:6px; font-size:12px; white-space:pre-wrap;"></div></div>`;
+        }
         // 乾跑
         h += `<div style="border:1px solid #334155; border-radius:8px; padding:10px; margin-bottom:14px;"><b>🔬 乾跑（Dry run）</b>
             <div style="display:flex; gap:6px; margin:6px 0;"><input id="ai-ot-dry-text" placeholder="輸入一句話，看離線訓練器會怎麼判斷…" style="flex:1; ${inp}"><button class="ai-advanced-btn primary" data-ot="dry" style="padding:5px 10px; font-size:12px;">乾跑</button><button class="ai-advanced-btn" data-ot="dry-exec" style="padding:5px 10px; font-size:12px;" title="真的執行選中的工具（有副作用的會先問）">乾跑並執行</button></div>
@@ -21497,6 +21654,16 @@ ${fnData.code}
             else if (t.dataset.otSel !== undefined) { this.advancedSettings[t.dataset.otSel] = t.value; this._saveAdvancedSettings(); refresh(); }
             else if (t.dataset.otSkillEn !== undefined) { const [dn, pid] = t.dataset.otSkillEn.split('|'); const st2 = await this._otLoad(); const d = st2.domains.get(dn); if (d) { for (const p of d.patterns) if (p.id === pid || p.id === pid + '_kw') { p.enabled = t.checked; if (t.checked && p.stats) p.stats.needs_review = false; await this._otSyncPatternExamples(d, p); } await this._otSaveDomain(d); } }
             else if (t.dataset.otPat !== undefined) { const [dn, pid] = t.dataset.otPat.split('|'); const st = await this._otLoad(); const d = st.domains.get(dn); const p = d && d.patterns.find((x) => x.id === pid); if (p) { p.enabled = t.checked; if (p.source === 'builtin') p.edited = true; await this._otSaveDomain(d); await this._otSyncPatternExamples(d, p); } }
+            else if (t.id === 'ai-ot-restore-file' && t.files && t.files[0]) {
+                const msg = root.querySelector('#ai-ot-ref-msg'); const file = t.files[0]; t.value = '';
+                const r = await this._refRestore(await file.text());
+                if (!r.ok) { if (msg) msg.textContent = '⚠️ ' + r.error; return; }
+                const ans = await this.requestUserForm({ title: '從備份還原知識資料？', description: `備份：v${r.version}，${r.label || ''}（${r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}）\n內容：錯誤碼 ${r.counts.errors}、命令 ${r.counts.commands}、規則 ${r.counts.buildRules}、通用知識 ${r.counts.generic}。\n會用這份備份覆蓋目前的知識資料；覆蓋前會先替目前的資料自動備份一份。`, choices: ['還原', '取消'] });
+                if (!ans || !ans.confirmed || ans.answer !== '還原') return;
+                const done = await r.apply();
+                if (msg) msg.textContent = done.ok ? '✅ 已還原。還原前的資料備份：' + done.backup : '⚠️ ' + done.error;
+                this._otRenderPane();
+            }
             else if (t.id === 'ai-ot-import-file' && t.files && t.files[0]) { try { const data = JSON.parse(await t.files[0].text()); const chk = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, dry_run: true }); if (!chk.ok) { if (chk.checksum_mismatch && window.confirm(chk.error + '\n\n仍要匯入嗎？')) { chk.ok = true; chk.force = true; } else { alert('匯入失敗：' + chk.error); t.value = ''; return; } } const sm = chk.summary || {}; const msg = '要匯入嗎？\n領域 ' + sm.domains + '、規則 ' + sm.patterns + '、狀態 ' + sm.states + '、原始碼工具 ' + sm.tools + '、解法 ' + sm.solutions + (sm.turns ? '、對話紀錄 ' + sm.turns : '') + (chk.rejected_tools && chk.rejected_tools.length ? '\n\n⚠️ ' + chk.rejected_tools.length + ' 個工具檢查沒過（不會匯入）：' + chk.rejected_tools.map((x) => x.name + '（' + x.error + '）').join('、') : '') + (chk.warnings && chk.warnings.length ? '\n\n提醒：\n- ' + chk.warnings.slice(0, 6).join('\n- ') : '') + '\n\n原始碼工具只會在沙盒worker裡執行，有副作用的工具呼叫仍會先問你。只匯入你信任來源的檔案。'; if (!window.confirm(msg)) { t.value = ''; return; } const replace = window.confirm('同名領域要怎麼處理？\n確定＝覆蓋（用匯入的取代）\n取消＝合併（保留你改過的規則與工具）'); const r = await this._otRun({ action: 'import', data: data.data && data.data.payload ? data.data : data, mode: replace ? 'replace' : 'merge', ui_confirmed: true, force: !!chk.force }); this._pushAssistantMessage('🔌 已匯入離線訓練器：' + JSON.stringify(r.imported || r), null); this._renderMessageHistory(); } catch (e) { alert('匯入失敗：' + e.message); } t.value = ''; refresh(); }
         });
         root.addEventListener('input', (ev) => { if (ev.target.id === 'ai-ot-mem-filter') { const q = ev.target.value.toLowerCase(); root.querySelectorAll('.ai-ot-mem').forEach((el) => { el.style.display = !q || el.dataset.t.indexOf(q) >= 0 ? '' : 'none'; }); } });
@@ -21507,6 +21674,25 @@ ${fnData.code}
             const act = b.dataset.ot;
             const st = await this._otLoad();
             try {
+                if (act === 'ref-backup') {
+                    const r = await this._refBackup('手動備份');
+                    const msg = root.querySelector('#ai-ot-ref-msg'); if (msg) msg.textContent = r.ok ? '✅ 已備份：' + r.filename + '（下載卡片在對話裡）' : '⚠️ ' + r.error;
+                    return;
+                }
+                if (act === 'ref-migrate') {
+                    const msg = root.querySelector('#ai-ot-ref-msg');
+                    const plan = this._refMigrationPlan();
+                    if (!plan.ok) { if (msg) msg.textContent = '⚠️ ' + plan.error; return; }
+                    const lines = plan.steps.map((s) => `v${s.from} → v${s.to}：${s.label}\n  ${s.log.join('；')}`).join('\n');
+                    const ans = await this.requestUserForm({ title: `轉換知識資料格式 v${plan.from} → v${plan.to}`, description: `${lines}\n\n既有的 ${plan.before.errors} 筆錯誤碼、${plan.before.commands} 個命令、${plan.before.buildRules} 條規則、${plan.before.generic} 筆通用知識都會原樣保留（轉換後逐欄位比對，不一致就中止、不寫入）。\n轉換前會先自動備份成檔案。`, choices: ['備份並轉換', '取消'] });
+                    if (!ans || !ans.confirmed || ans.answer !== '備份並轉換') return;
+                    if (msg) msg.textContent = '⏳ 備份並轉換中…';
+                    const r = await this._refMigrate({ apply: true });
+                    if (msg) msg.textContent = r.ok ? `✅ 已轉換成 v${r.to}。備份：${r.backup}` : '⚠️ ' + r.error;
+                    this._otRenderPane();
+                    return;
+                }
+                if (act === 'ref-restore') { const fi = root.querySelector('#ai-ot-restore-file'); if (fi) fi.click(); return; }
                 if (act === 'dry' || act === 'dry-exec') {
                     const text = root.querySelector('#ai-ot-dry-text').value;
                     const out = root.querySelector('#ai-ot-dry-out');
