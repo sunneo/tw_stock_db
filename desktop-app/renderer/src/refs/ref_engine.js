@@ -12,7 +12,7 @@
     const NT_SEV = ['成功（Success）', '資訊（Informational）', '警告（Warning）', '錯誤（Error）'];
     function create(data, user) {
         data = data || { errors: {}, commands: {}, pragmas: [], clauses: [] };
-        const U = { errors: {}, commands: {}, options: {}, pragmas: [], clauses: [], generic: [], buildRules: [] };
+        const U = { errors: {}, commands: {}, options: {}, pragmas: [], clauses: [], generic: [], buildRules: [], types: {}, typed: [] }; const ktCache = new Map();
         const idx = { built: false, byName: new Map(), bySys: {}, cmdAlias: new Map(), errNameRe: null };
         function mergeUser(u) {
             U.errors = {}; U.commands = {}; U.options = {}; U.pragmas = []; U.clauses = []; U.generic = [];
@@ -20,8 +20,161 @@
             for (const [s, l] of Object.entries(u.errors || {})) U.errors[s] = l.slice();
             Object.assign(U.commands, u.commands || {}); Object.assign(U.options, u.options || {});
             U.pragmas = (u.pragmas || []).slice(); U.clauses = (u.clauses || []).slice(); U.generic = (u.generic || []).slice(); U.buildRules = (u.buildRules || []).slice(); bRules = null;
+            U.types = u.types && typeof u.types === 'object' && !Array.isArray(u.types) ? Object.assign({}, u.types) : {}; U.typed = Array.isArray(u.typed) ? u.typed.slice() : []; ktCache.clear();
         }
         const allGeneric = () => (data.generic || []).concat(U.generic);
+        // ---------------- 可註冊的知識類型（見 DESIGN.knowledge-types.md）----------------
+        // 條目 {kind, key, text, tags, src, customize, tv}；customize 的結構由 kind 對應的「已註冊類型」的 schema 規定。
+        // 類型與條目分內建（data.types／data.typed）與使用者（U.types／U.typed），同 kind／同 key 使用者的覆蓋內建。
+        // 驗證只看結構（型別、範圍、必填、引用的條目存在），不執行任何程式碼。
+        const KT_NAME = /^[a-z][a-z0-9_]{1,40}$/;
+        const KT_TYPES = ['string', 'number', 'integer', 'boolean', 'enum', 'range', 'list', 'object', 'map', 'color', 'ref', 'regex', 'any'];
+        const specOf = (s) => (typeof s === 'string' ? { type: s } : (s && typeof s === 'object' ? s : { type: 'any' }));
+        const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+        const deepMerge = (base, over) => {
+            if (over === undefined) return clone(base); if (base === undefined) return clone(over);
+            if (base && over && typeof base === 'object' && typeof over === 'object' && !Array.isArray(base) && !Array.isArray(over)) { const o = clone(base); for (const k of Object.keys(over)) o[k] = deepMerge(base[k], over[k]); return o; }
+            return clone(over);
+        };
+        function typesAll() { const m = new Map(); for (const t of (data.types || [])) m.set(t.kind, Object.assign({ source: 'builtin' }, t)); for (const [k, t] of Object.entries(U.types || {})) m.set(k, Object.assign({}, t, { kind: k, source: 'user' })); return m; }
+        function getType(kind) { return typesAll().get(String(kind || '')) || null; }
+        function typedAll() { const m = new Map(); for (const e of (data.typed || [])) m.set(e.kind + '\u0000' + e.key, Object.assign({ source: 'builtin' }, e)); for (const e of (U.typed || [])) m.set(e.kind + '\u0000' + e.key, Object.assign({}, e, { source: 'user' })); return m; }
+        function findTyped(kind, key) { return typedAll().get(String(kind) + '\u0000' + String(key)) || null; }
+        function listTyped(kind) { return Array.from(typedAll().values()).filter((e) => !kind || e.kind === kind); }
+        // 類型定義本身的檢查（註冊時用）
+        function validateTypeDef(def) {
+            const errs = [];
+            if (!def || typeof def !== 'object') return { ok: false, errors: [{ path: '', msg: '類型定義要是物件' }] };
+            if (!KT_NAME.test(String(def.kind || ''))) errs.push({ path: 'kind', msg: 'kind 要是小寫英文開頭、只含小寫英文／數字／底線（2～41 字），例如 visual_part' });
+            if (!(Number.isInteger(def.version) && def.version >= 1)) errs.push({ path: 'version', msg: 'version 要是 1 以上的整數' });
+            if (!def.schema || typeof def.schema !== 'object' || Array.isArray(def.schema)) errs.push({ path: 'schema', msg: 'schema 要是 {欄位名: 欄位規格} 的物件' });
+            const chk = (spec, path, depth) => {
+                spec = specOf(spec);
+                if (depth > 6) { errs.push({ path, msg: 'schema 巢狀太深（最多 6 層）' }); return; }
+                if (KT_TYPES.indexOf(spec.type) < 0) { errs.push({ path, msg: '不認得的型別 ' + spec.type + '（可用：' + KT_TYPES.join('、') + '）' }); return; }
+                if (spec.type === 'enum' && !(Array.isArray(spec.values) && spec.values.length)) errs.push({ path, msg: 'enum 要給 values 清單' });
+                if (spec.type === 'ref' && !KT_NAME.test(String(spec.kind || ''))) errs.push({ path, msg: 'ref 要給 kind（被引用的類型）' });
+                if ((spec.type === 'list' || spec.type === 'map') && spec.of !== undefined) chk(spec.of, path + '.of', depth + 1);
+                if (spec.type === 'object' && spec.fields) for (const [k, s] of Object.entries(spec.fields)) chk(s, path + '.' + k, depth + 1);
+            };
+            if (def.schema && typeof def.schema === 'object') for (const [k, s] of Object.entries(def.schema)) chk(s, 'schema.' + k, 0);
+            return { ok: !errs.length, errors: errs };
+        }
+        // 值的檢查。ctx：{ refs: true（檢查引用存在）, errors, warnings }
+        function checkValue(specIn, v, path, ctx) {
+            const spec = specOf(specIn); const err = (m) => ctx.errors.push({ path, msg: m });
+            if (v === undefined || v === null) { if (spec.required) err('必填'); return; }
+            const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
+            switch (spec.type) {
+                case 'any': return;
+                case 'string': if (typeof v !== 'string') return err('要是字串'); if (spec.pattern && !new RegExp(spec.pattern).test(v)) err('格式不符 ' + spec.pattern); return;
+                case 'regex': if (typeof v !== 'string') return err('要是字串（正規表示式）'); try { new RegExp(v); } catch (e) { err('不是有效的正規表示式：' + String(e.message).slice(0, 60)); } return;
+                case 'number': case 'integer': if (!isNum(v) || (spec.type === 'integer' && !Number.isInteger(v))) return err('要是' + (spec.type === 'integer' ? '整數' : '數字')); if (Array.isArray(spec.range) && (v < spec.range[0] || v > spec.range[1])) err('超出範圍 ' + spec.range[0] + '～' + spec.range[1]); return;
+                case 'boolean': if (typeof v !== 'boolean') err('要是 true／false'); return;
+                case 'enum': if (spec.values.indexOf(v) < 0) err('要是 ' + spec.values.join('／') + ' 其中之一'); return;
+                case 'color': if (typeof v !== 'string' || !v) err('要是色彩名稱（字串）'); return;
+                case 'range': if (!(Array.isArray(v) && v.length === 2 && isNum(v[0]) && isNum(v[1]) && v[0] <= v[1])) return err('要是 [最小, 最大] 兩個數字且最小 ≤ 最大'); if (Array.isArray(spec.range) && (v[0] < spec.range[0] || v[1] > spec.range[1])) err('超出範圍 ' + spec.range[0] + '～' + spec.range[1]); return;
+                case 'list': {
+                    if (!Array.isArray(v)) return err('要是清單');
+                    if (Number.isInteger(spec.length) && v.length !== spec.length) err('長度要是 ' + spec.length);
+                    if (Number.isInteger(spec.min) && v.length < spec.min) err('至少 ' + spec.min + ' 個');
+                    if (Number.isInteger(spec.max) && v.length > spec.max) err('最多 ' + spec.max + ' 個');
+                    if (spec.of !== undefined) v.forEach((x, i) => checkValue(spec.of, x, path + '[' + i + ']', ctx)); return;
+                }
+                case 'map': if (typeof v !== 'object' || Array.isArray(v)) return err('要是物件（名稱→值）'); if (spec.of !== undefined) for (const [k, x] of Object.entries(v)) checkValue(spec.of, x, path + '.' + k, ctx); return;
+                case 'object': {
+                    if (typeof v !== 'object' || Array.isArray(v)) return err('要是物件');
+                    const fields = spec.fields || {};
+                    for (const [k, s] of Object.entries(fields)) checkValue(s, v[k], path ? path + '.' + k : k, ctx);
+                    for (const k of Object.keys(v)) if (!(k in fields) && spec.fields) ctx.warnings.push({ path: path ? path + '.' + k : k, msg: '不認得的欄位（原樣保留）' });
+                    return;
+                }
+                case 'ref': {
+                    const key = typeof v === 'string' ? v : (v && typeof v === 'object' ? v.ref : undefined);
+                    if (typeof key !== 'string' || !key) return err('引用要是條目 key（字串），或 {ref, as?, set?}');
+                    if (ctx.refs && !findTyped(spec.kind, key)) err('引用的條目不存在：' + spec.kind + ':' + key);
+                    return;
+                }
+            }
+        }
+        function validateCustomize(kind, customize, opts) {
+            const ty = getType(kind); const ctx = { refs: !(opts && opts.noRefs), errors: [], warnings: [] };
+            if (!ty) return { ok: false, errors: [{ path: '', msg: '沒有註冊過這個類型：' + kind }], warnings: [] };
+            if (customize === undefined || customize === null) return { ok: true, errors: [], warnings: [] };
+            if (typeof customize !== 'object' || Array.isArray(customize)) return { ok: false, errors: [{ path: '', msg: 'customize 要是物件' }], warnings: [] };
+            checkValue({ type: 'object', fields: ty.schema }, customize, '', ctx);
+            return { ok: !ctx.errors.length, errors: ctx.errors, warnings: ctx.warnings };
+        }
+        function validateEntry(e, opts) {
+            const errs = []; opts = opts || {};
+            if (!e || typeof e !== 'object') return { ok: false, errors: [{ path: '', msg: '條目要是物件' }], warnings: [] };
+            if (!String(e.key || '').trim()) errs.push({ path: 'key', msg: '要給 key' });
+            if (!KT_NAME.test(String(e.kind || ''))) errs.push({ path: 'kind', msg: 'kind 格式不對' });
+            if (opts.requireSource && String(e.src || '').trim().length < 3) errs.push({ path: 'src', msg: '要給來源（沒有來源的內容不收；使用者自己補的寫 user）' });
+            if (!String(e.text || '').trim() && !opts.allowNoText) errs.push({ path: 'text', msg: '要給 text（給人讀、給檢索用的說明）' });
+            const r = validateCustomize(e.kind, e.customize, opts);
+            const ty = getType(e.kind);
+            const warnings = r.warnings.slice();
+            if (ty && Number.isInteger(e.tv) && e.tv !== ty.version) warnings.push({ path: 'tv', msg: '條目是依類型 v' + e.tv + ' 寫的，目前類型是 v' + ty.version });
+            return { ok: !errs.length && r.ok, errors: errs.concat(r.errors), warnings };
+        }
+        // 遞迴展開：把 ref 換成被引用條目的 customize（帶 _ref 標記），extends 先合併父條目，ref 可帶 as／set 覆寫；深度上限與循環偵測
+        function resolve(kind, key, opts) {
+            opts = opts || {}; const maxDepth = Number.isInteger(opts.depth) ? opts.depth : 8; const errors = [];
+            const memo = new Map();
+            const go = (k, key2, depth, stack, path) => {
+                const id = k + ':' + key2;
+                if (stack.indexOf(id) >= 0) { errors.push({ path, msg: '循環引用：' + stack.concat(id).join(' → ') }); return undefined; }
+                if (depth > maxDepth) { errors.push({ path, msg: '展開太深（超過 ' + maxDepth + ' 層）：' + id }); return undefined; }
+                const e = findTyped(k, key2); if (!e) { errors.push({ path, msg: '引用的條目不存在：' + id }); return undefined; }
+                if (memo.has(id)) return clone(memo.get(id));
+                const ty = getType(k); const st = stack.concat(id);
+                let c = clone(e.customize) || {};
+                const schema = ty ? ty.schema : {};
+                for (const [f, sp0] of Object.entries(schema)) {
+                    const sp = specOf(sp0);
+                    if (sp.type === 'ref' && sp.extends && c[f] !== undefined) {
+                        const parents = Array.isArray(c[f]) ? c[f] : [c[f]];
+                        let base = {};
+                        for (const pk of parents) { const pv = go(sp.kind || k, typeof pk === 'string' ? pk : pk.ref, depth + 1, st, path + '/extends:' + pk); if (pv) base = deepMerge(base, pv); }
+                        const own = clone(c); delete own[f]; c = deepMerge(base, own); c._extends = parents.slice();
+                    }
+                }
+                const walk = (spIn, v, p) => {
+                    const sp = specOf(spIn);
+                    if (v === undefined || v === null) return v;
+                    if (sp.type === 'ref' && !sp.extends) {
+                        const rk = typeof v === 'string' ? v : v.ref; const as = typeof v === 'object' ? v.as : undefined; const set = typeof v === 'object' ? v.set : undefined;
+                        let ev = go(sp.kind, rk, depth + 1, st, p); if (ev === undefined) return { _ref: { kind: sp.kind, key: rk, as, unresolved: true } };
+                        if (set) ev = deepMerge(ev, set);
+                        ev._ref = { kind: sp.kind, key: rk, as }; return ev;
+                    }
+                    if (sp.type === 'list' && Array.isArray(v) && sp.of !== undefined) return v.map((x, i) => walk(sp.of, x, p + '[' + i + ']'));
+                    if (sp.type === 'map' && typeof v === 'object' && sp.of !== undefined) { const o = {}; for (const [kk, x] of Object.entries(v)) o[kk] = walk(sp.of, x, p + '.' + kk); return o; }
+                    if (sp.type === 'object' && typeof v === 'object' && sp.fields) { const o = Object.assign({}, v); for (const [kk, s] of Object.entries(sp.fields)) if (o[kk] !== undefined) o[kk] = walk(s, o[kk], p + '.' + kk); return o; }
+                    return v;
+                };
+                const out = {}; const fieldSpecs = schema;
+                for (const kk of Object.keys(c)) out[kk] = fieldSpecs[kk] !== undefined ? walk(fieldSpecs[kk], c[kk], path ? path + '.' + kk : kk) : c[kk];
+                memo.set(id, out);
+                return clone(out);
+            };
+            const e0 = findTyped(kind, key);
+            if (!e0) return { ok: false, errors: [{ path: '', msg: '找不到條目：' + kind + ':' + key }] };
+            const value = go(kind, key, 0, [], '');
+            return { ok: !errors.length, kind, key, text: e0.text, tags: e0.tags || [], value, errors };
+        }
+        // 全庫驗證：每個條目的結構、引用存在、有沒有循環、類型本身是否合法
+        function validateAll() {
+            const problems = []; let n = 0;
+            for (const [k, ty] of typesAll()) { const r = validateTypeDef(ty); if (!r.ok) r.errors.forEach((e) => problems.push({ where: 'type:' + k, path: e.path, msg: e.msg })); }
+            for (const e of typedAll().values()) {
+                n++; const r = validateEntry(e, { allowNoText: false });
+                r.errors.forEach((x) => problems.push({ where: e.kind + ':' + e.key, path: x.path, msg: x.msg }));
+                if (r.ok) { const rr = resolve(e.kind, e.key); rr.errors.forEach((x) => problems.push({ where: e.kind + ':' + e.key, path: x.path, msg: x.msg })); }
+            }
+            return { ok: !problems.length, types: typesAll().size, entries: n, problems: problems.slice(0, 200) };
+        }
         // ---------------- 建置錯誤診斷（make／CMake／BitBake／gcc／ld／ninja／meson／maven／gradle／npm／cargo／pip…）----------------
         let bRules = null;
         const dedupeGroups = (src) => { const seen = {}; return String(src).replace(/\(\?<([A-Za-z_]\w*)>/g, (all, n) => { seen[n] = (seen[n] || 0) + 1; return seen[n] === 1 ? all : '(?<' + n + '__' + seen[n] + '>'; }); };
@@ -325,6 +478,7 @@
             const er = lookupError(q, { noKeyword: true }); if (er.ok && !(out.results.length && /\s-/.test(q))) out.results.push({ kind: 'error', matches: er.matches });
             const low = q.toLowerCase(); const words = low.split(/[^a-z0-9_+.\-一-鿿]+/).filter((w) => w.length >= 2);
             for (const g of allGeneric()) { const hay = ((g.key || '') + ' ' + (g.text || '') + ' ' + (g.tags || []).join(' ')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; const strong = words.some((w) => w.length >= 3 && ((g.key || '').toLowerCase().indexOf(w) >= 0 || (g.tags || []).some((tg) => String(tg).toLowerCase() === w))); if (sc && (sc >= Math.min(2, words.length) || strong)) out.results.push({ kind: g.kind, key: g.key, text: g.text, source: g.src || undefined, _s: sc }); }
+            for (const e of typedAll().values()) { const c = e.customize || {}; const hay = (e.key + ' ' + (e.text || '') + ' ' + (e.tags || []).join(' ') + ' ' + [].concat(c.aliases || [], c.name || []).join(' ')).toLowerCase(); let sc = 0; for (const w of words) if (hay.indexOf(w) >= 0) sc++; if (sc && (sc >= Math.min(2, words.length) || e.key.toLowerCase() === low)) out.results.push({ kind: 'typed', typed: { kind: e.kind, key: e.key, text: e.text, tags: e.tags || [], src: e.src || '', source: e.source } }); }
             if (!out.results.length) { const ek = lookupError(q); if (ek.ok) out.results.push({ kind: 'error', matches: ek.matches }); }
             if (!out.results.length) { // 關鍵字搜尋命令選項
                 const hits = []; const all = Object.assign({}, data.commands || {}, U.commands);
@@ -349,10 +503,13 @@
             for (const n of names) { const c = (u.commands || {})[n] || {}; cl.push('## ' + [clean(n), (c.aliases || []).map(clean).join(','), clean(c.summary || ''), clean(c.synopsis || '')].join(' | ')); for (const o of (c.options || []).concat((u.options || {})[n] || [])) cl.push([clean(o.flag), clean(o.arg || ''), clean(o.desc || '') + (o.src ? '（來源：' + clean(o.src) + '）' : '')].join(' | ')); } out.commands_dsl = cl.join('\n') + (cl.length ? '\n' : '');
             const pl = []; if ((u.pragmas || []).length) { pl.push('@pragma'); for (const p of u.pragmas) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } if ((u.clauses || []).length) { pl.push('@clause'); for (const p of u.clauses) pl.push(clean(p.key) + ' | ' + clean(p.desc) + (p.src ? '（來源：' + clean(p.src) + '）' : '')); } out.pragmas_dsl = pl.join('\n') + (pl.length ? '\n' : '');
             const bl = []; for (const r of (u.buildRules || [])) { bl.push('## ' + [clean(r.id), clean(r.system || 'any'), clean(r.level || 'root')].join(' | ')); if (r.span) { bl.push('start: ' + String(r.start || '^')); bl.push('span: ' + clean(r.span)); } bl.push('re: ' + String(r.re).replace(/\n/g, ' ')); bl.push('what: ' + clean(r.what) + (r.src ? '（來源：' + clean(r.src) + '）' : '')); (r.causes || []).forEach((c) => bl.push('cause: ' + clean(c))); (r.fixes || []).forEach((c) => bl.push('fix: ' + clean(c))); bl.push(''); } out.buildrules_dsl = bl.join('\n');
+            out.types_json = JSON.stringify(Object.entries(u.types || {}).map(([k, v]) => Object.assign({ kind: k }, v)), null, 1);
+            out.typed_json = JSON.stringify((u.typed || []).map((e) => ({ kind: e.kind, key: e.key, text: e.text, tags: e.tags || [], src: e.src || '', tv: e.tv, customize: e.customize })), null, 1);
             out.generic = (u.generic || []).map((g) => ({ kind: g.kind, key: g.key, text: g.text, tags: g.tags || [], rules: g.rules || undefined, src: g.src || '' }));
             return out;
         }
         return {
+            types: () => Array.from(typesAll().values()), getType, validateTypeDef, validateCustomize, validateEntry, findTyped, listTyped, resolve, validateAll,
             diagnoseBuild, diagnoseLog: diagnoseBuild, validateBuildRules() { const all = (data.buildRules || []).concat(U.buildRules || []); const bad = []; for (const r of all) { try { new RegExp(dedupeGroups(r.re), 'i'); if (r.span) { if (!parseSpan(r.span)) throw new Error('span 格式不對'); new RegExp(r.start || '^', 'i'); } } catch (e) { bad.push({ id: r.id, error: String(e.message).slice(0, 100) }); } } return { total: all.length, invalid: bad }; }, exportBuiltin, setUser(u) { mergeUser(u); idx.built = false; }, lookup, lookupError, lookupCommand, explainCommandLine, explainPragma, annotateText, tokenize, hresultDecode, ntDecode, errorLine, tokenizeShell,
             stats() { ensure(); const e = {}; for (const [k, m] of Object.entries(idx.bySys)) e[k] = m.size; const c = Object.keys(data.commands || {}).length + Object.keys(U.commands).length; let o = 0; for (const x of Object.values(data.commands || {})) o += (x.options || []).length; return { errors: e, commands: c, options: o, pragmas: (data.pragmas || []).length + U.pragmas.length, clauses: (data.clauses || []).length + U.clauses.length, generic: allGeneric().length, build_rules: buildRules().length }; },
         };

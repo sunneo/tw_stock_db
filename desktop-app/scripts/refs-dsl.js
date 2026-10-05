@@ -73,6 +73,8 @@ function build(dir) {
     const buildRules = []; for (const f of fs.readdirSync(dir).filter((x) => /^buildrules.*\.dsl$/.test(x)).sort()) for (const r of parseBuildRules(rd(f))) { const i = buildRules.findIndex((x) => x.id === r.id); if (i >= 0) buildRules[i] = r; else buildRules.push(r); }
     const pr = { pragmas: [], clauses: [] }; for (const f of fs.readdirSync(dir).filter((x) => /^pragmas.*\.dsl$/.test(x))) { const p = parsePragmas(rd(f)); pr.pragmas.push(...p.pragmas); pr.clauses.push(...p.clauses); }
     const generic = []; for (const f of fs.readdirSync(dir).filter((x) => /^generic.*\.json$/.test(x))) { try { const a = JSON.parse(rd(f)); if (Array.isArray(a)) generic.push(...a); } catch (_) {} }
-    return { version: 1, errors, commands, pragmas: pr.pragmas, clauses: pr.clauses, generic, buildRules };
+    const types = []; for (const f of fs.readdirSync(dir).filter((x) => /^types.*\.json$/.test(x)).sort()) { try { const a = JSON.parse(rd(f)); for (const x of (Array.isArray(a) ? a : [])) { const i = types.findIndex((y) => y.kind === x.kind); if (i >= 0) types[i] = x; else types.push(x); } } catch (e) { throw new Error(f + ': ' + e.message); } }
+    const typed = []; for (const f of fs.readdirSync(dir).filter((x) => /^typed.*\.json$/.test(x)).sort()) { try { const a = JSON.parse(rd(f)); for (const x of (Array.isArray(a) ? a : [])) { const i = typed.findIndex((y) => y.kind === x.kind && y.key === x.key); if (i >= 0) typed[i] = x; else typed.push(x); } } catch (e) { throw new Error(f + ': ' + e.message); } }
+    return { version: 1, errors, commands, pragmas: pr.pragmas, clauses: pr.clauses, generic, buildRules, types, typed };
 }
 module.exports = { parseBuildRules, resolveInherit, build, parseErrors, parseCommands, parsePragmas };

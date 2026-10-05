@@ -295,6 +295,13 @@ categories:
         platforms: [web, desktop]
         samples: ["/ref expand RISC-V 向量指令", "/ref expand Windows 網路相關的 HRESULT --aidoc", "/ref export", "幫我查官方文件，補 Bazel 建置檔的知識"]
         updated: 2026-10-04
+      - id: knowledge-types
+        name: 可註冊的知識類型（有結構的知識）
+        summary: 離線訓練器的知識除了文字，還能註冊「類型」（用 schema 描述 customize 欄位：數字範圍、列舉、清單、物件、引用其他條目、繼承），之後補的條目依類型驗證，可遞迴引用、繼承、帶參數覆寫地展開，並有循環與缺漏檢查；用來描述臉的部位、骨骼、關節運動、聲音、手勢、畫面物件等有結構的知識。需要知識資料格式 v1：舊格式（v0）照常使用，用到時才會問你要不要 migration（離線訓練器設定頁也有 Migration、備份、還原按鈕）。
+        how: { tools: [ref_types, ref_resolve, ref_validate, ref_define] }
+        platforms: [web, desktop]
+        samples: ["列出已註冊的知識類型", "把 human-face 展開成完整定義", "檢查整個知識庫的引用有沒有壞掉", "註冊一個 gesture 類型"]
+        updated: 2026-10-05
       - id: behavior-analyzer
         name: 程式行為分析（explain_code）
         summary: 把原始碼／組合語言解釋成由下而上、沿正向路徑、可折疊的行為說明：函式與檔案自己的註解優先，區塊註解重排後部分採用，aidoc 裡 AI 或使用者補的說明更優先；沒有註解就用呼叫事實（引數與回傳值語意、47 個行為分類、組合語言 idiom）。不認得的呼叫列成候選，可用 behavior_define 補定義（持久保存、可匯出匯入，也能直接匯入 Domain Resolver 的 yml 定義）。支援 C／Java／JavaScript／Python／Shell／PowerShell／Batch／GLSL／x86 與 ARM 組合語言／LLVM IR／PTX／WASM。aidoc 用 /aidoc explain <檔案> [函式]，檢視器檔案頁有「行為說明」。
