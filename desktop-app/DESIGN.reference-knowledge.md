@@ -150,7 +150,7 @@ fix: 怎麼處理（可重複）
 
 ### 11.6 已知限制
 
-- 規則是**逐行**比對，看不懂跨多行的結構（完整的 Call Trace、Python 例外鏈、CMake 的多行區塊）；多行規則在路線圖的下一步。
+- 規則預設是**逐行**比對；跨多行的結構要用多行規則（`start:`＋`span:`，見上），目前只收 Python Traceback（含例外串接）、核心 Call Trace（只取最上面有意義的函式，不分析整串堆疊的因果）、CMake 的 `CMake Error at` 區塊、gcc 的包含鏈。其他多行格式（例如 Java 的 `Caused by:` 串、Rust 的多行錯誤、ARM32 的 Call Trace 寫法）還沒收，也還沒有在大量真實日誌上驗證過。
 - 通用意義，不含你專案裡的特殊情況。
 - 偵測「沒有規則的錯誤行」靠關鍵字（error、failed、fatal、denied…），沒有這些字樣的異常行不會進待學習清單。
 - **多行規則**（Python Traceback、核心 Call Trace、CMake 多行錯誤、gcc 的 In file included from 包含鏈；規則檔 `buildrules_multiline.dsl`）：多兩個欄位 `start:`（觸發行的正規表示式，逐行比對）與 `span:`（區塊範圍），此時 `re:` 改成對「整個區塊」比對（`.` 可跨行、`^`／`$` 指行首行尾）。`span` 寫法：`indent`（接著的縮排行）、`indent+1`（再多收一行，Python 結尾的例外那行）、`lines N`、`until 正規表示式`（含該行）、`blank`。區塊內所有行都算「已比對」，不會再出現在待學習清單。`ref_define` 的 `build_error_rule` 也可以帶 `start`、`span`，`example` 可以是多行文字。Python Traceback 取最內層的 File 與例外類型；Call Trace 略過 dump_stack 等噪音與帶 ? 的不確定項目，指出事發函式。
