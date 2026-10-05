@@ -518,4 +518,136 @@
             stats() { ensure(); const e = {}; for (const [k, m] of Object.entries(idx.bySys)) e[k] = m.size; const c = Object.keys(data.commands || {}).length + Object.keys(U.commands).length; let o = 0; for (const x of Object.values(data.commands || {})) o += (x.options || []).length; return { errors: e, commands: c, options: o, pragmas: (data.pragmas || []).length + U.pragmas.length, clauses: (data.clauses || []).length + U.clauses.length, generic: allGeneric().length, build_rules: buildRules().length }; },
         };
     }
-    return { create };
+    // ===== 知識包（knowledge pack）：離線訓練器資料包（bundle）裡的 `knowledge` 區塊 =====
+    // 純函式，不碰儲存與介面——所有用到這個引擎的專案（桌面版、網頁版、redmine 的 AI 聊天）共用同一份語意，host 只負責「讀寫使用者資料、問使用者」。
+    // 格式：{ format:'fa-knowledge-types', version, types:[{kind,label,description,version,schema}], typed:[{kind,key,text,tags,src,tv,customize}] }
+    const PACK_FORMAT = 'fa-knowledge-types';
+    // 使用者資料 → 知識包（只有使用者註冊的類型與條目；內建的每個版本都有，不帶）。沒有東西就回 null。
+    function exportPack(userDefs, version) {
+        const u = userDefs || {};
+        const types = Object.entries(u.types || {}).map(([kind, v]) => Object.assign({ kind }, JSON.parse(JSON.stringify(v))));
+        const typed = JSON.parse(JSON.stringify(u.typed || []));
+        if (!types.length && !typed.length) return null;
+        return { format: PACK_FORMAT, version, types, typed };
+    }
+    // 檢查一個知識包（不寫入）：用「現有知識庫＋這份」一起驗證類型定義、條目結構、引用是否存在、有沒有循環。
+    // data：內建資料（FA_REF_DATA）；userDefs：目前的使用者資料；maxVersion：這個程式認得的最高知識包版本。
+    // 回傳 { ok, warnings:[字串], knowledge:{version, types, typed, rejected, by_kind} | null }；不合法的類型與條目只會列警告、不收進 knowledge。
+    function inspectPack(data, userDefs, pack, maxVersion) {
+        const warnings = []; if (!pack || typeof pack !== 'object') return { ok: true, warnings, knowledge: null };
+        const kv = Number(pack.version) || 0;
+        if (pack.format !== PACK_FORMAT) { warnings.push('知識區塊的 format 不認得，略過'); return { ok: true, warnings, knowledge: null }; }
+        if (kv > maxVersion) { warnings.push('知識區塊是格式 v' + kv + '，比這個程式認得的（v' + maxVersion + '）新，略過；請先更新程式'); return { ok: true, warnings, knowledge: null }; }
+        const u = userDefs || {}; const base = create(data, u); const okTypes = [], okEntries = [], bad = []; const tmpTypes = {};
+        for (const ty of Array.isArray(pack.types) ? pack.types : []) {
+            if (!ty || !ty.kind) { bad.push('類型缺 kind'); continue; }
+            const v = base.validateTypeDef({ kind: ty.kind, label: ty.label, description: ty.description, version: ty.version, schema: ty.schema });
+            if (!v.ok) { bad.push('類型 ' + ty.kind + '：' + v.errors.slice(0, 2).map((e) => e.msg).join('；')); continue; }
+            okTypes.push(ty); tmpTypes[ty.kind] = { label: ty.label, description: ty.description, version: ty.version, schema: ty.schema };
+        }
+        const incoming = (Array.isArray(pack.typed) ? pack.typed : []).filter((e) => e && e.kind && e.key);
+        const cand = Object.assign({}, u, { types: Object.assign({}, u.types || {}, tmpTypes), typed: (u.typed || []).filter((e) => !incoming.some((x) => x.kind === e.kind && x.key === e.key)).concat(incoming) });
+        let tmp = null; try { tmp = create(data, cand); } catch (e) { bad.push('知識庫無法載入：' + e.message); }
+        if (tmp) for (const e of incoming) {
+            if (!tmp.getType(e.kind)) { bad.push(e.kind + ':' + e.key + '：沒有這個類型'); continue; }
+            const v = tmp.validateEntry(e, { requireSource: false });
+            if (!v.ok) { bad.push(e.kind + ':' + e.key + '：' + v.errors.slice(0, 2).map((x) => x.msg).join('；')); continue; }
+            const r = tmp.resolve(e.kind, e.key);
+            if (!r.ok) { bad.push(e.kind + ':' + e.key + '：' + r.errors.slice(0, 1).map((x) => x.msg).join('；')); continue; }
+            okEntries.push(e);
+        }
+        bad.slice(0, 8).forEach((m) => warnings.push('知識：' + m + '（不會匯入）'));
+        if (bad.length > 8) warnings.push('知識：另有 ' + (bad.length - 8) + ' 筆不合法，不會匯入');
+        const by_kind = {}; okEntries.forEach((e) => { by_kind[e.kind] = (by_kind[e.kind] || 0) + 1; });
+        return { ok: true, warnings, knowledge: { version: kv, types: okTypes, typed: okEntries, rejected: bad.length, by_kind } };
+    }
+    // 把檢查過的知識包併進使用者資料（就地修改 userDefs，host 之後自己存檔）。衝突一律保留使用者的，除非 opts.overwrite。
+    // 回傳 { types, entries, kept_yours, conflicts:[字串] }
+    function mergePack(userDefs, knowledge, opts) {
+        opts = opts || {}; const when = opts.when || Date.now(); const out = { types: 0, entries: 0, kept_yours: 0, conflicts: [] };
+        if (!knowledge) return out;
+        userDefs.types = userDefs.types || {}; userDefs.typed = userDefs.typed || [];
+        for (const ty of knowledge.types || []) {
+            const old = userDefs.types[ty.kind];
+            if (old && Number(old.version) === Number(ty.version) && JSON.stringify(old.schema) === JSON.stringify(ty.schema)) continue; // 一樣：不動、不算新增
+            if (old && Number(old.version) > Number(ty.version)) { out.conflicts.push('知識類型 ' + ty.kind + '：你的版本（v' + old.version + '）比較新，保留'); out.kept_yours++; continue; }
+            if (old && JSON.stringify(old.schema) !== JSON.stringify(ty.schema) && !opts.overwrite && Number(old.version) === Number(ty.version)) { out.conflicts.push('知識類型 ' + ty.kind + '：結構跟你的不同，保留你的'); out.kept_yours++; continue; }
+            userDefs.types[ty.kind] = { label: ty.label, description: ty.description, version: ty.version, schema: ty.schema, src: ty.src || 'bundle', by: ty.by || 'import', at: ty.at || when }; out.types++;
+        }
+        for (const e of knowledge.typed || []) {
+            const i = userDefs.typed.findIndex((x) => x.kind === e.kind && x.key === e.key);
+            if (i >= 0) {
+                if (JSON.stringify(userDefs.typed[i].customize) === JSON.stringify(e.customize)) continue;
+                if (!opts.overwrite) { out.conflicts.push('知識 ' + e.kind + ':' + e.key + '：你已經有不同的版本，保留你的（要覆蓋請帶 overwrite）'); out.kept_yours++; continue; }
+                userDefs.typed.splice(i, 1);
+            }
+            userDefs.typed.push(Object.assign({}, e, { src: e.src || 'bundle', by: e.by || 'import', at: e.at || when })); out.entries++;
+        }
+        return out;
+    }
+
+    // ===== 知識資料（使用者／AI 補的定義）的格式版本與遷移：純函式，host 只負責讀寫儲存、備份、問使用者 =====
+    // 見 DESIGN.knowledge-types.md §11、DESIGN.knowledge-portability.md。v0＝沒有 _format 欄位的舊格式（一律這樣稱呼）；v1＝加上 _format 封套，並備好 types 與 typed 兩個容器。
+    // 遷移是宣告式的（不跑程式碼）：op 只有 default（補預設值）、rename、move、drop、stamp（寫入格式封套）。永遠只做向前遷移；要退回用備份還原。
+    const FORMAT = { name: 'fa-ref-user-defs', current: 1 };
+    const MIGRATIONS = [
+        { from: 0, to: 1, label: '加上格式版本號，並備好 types／typed 兩個容器（既有的錯誤碼、命令、規則、通用知識…全部原樣保留）',
+            steps: [{ op: 'default', path: 'types', value: {} }, { op: 'default', path: 'typed', value: [] }, { op: 'stamp' }] },
+    ];
+    function countStore(d) {
+        const c = { errors: 0, commands: 0, options: 0, pragmas: 0, clauses: 0, generic: 0, buildRules: 0, typed: 0, types: 0 };
+        if (!d || typeof d !== 'object') return c;
+        for (const l of Object.values(d.errors || {})) c.errors += Array.isArray(l) ? l.length : 0;
+        c.commands = Object.keys(d.commands || {}).length;
+        for (const l of Object.values(d.options || {})) c.options += Array.isArray(l) ? l.length : 0;
+        for (const k of ['pragmas', 'clauses', 'generic', 'buildRules', 'typed']) c[k] = Array.isArray(d[k]) ? d[k].length : 0;
+        c.types = d.types && typeof d.types === 'object' ? Object.keys(d.types).length : 0;
+        return c;
+    }
+    // raw：host 讀出來的 { text, data, error }（text＝原始 JSON 字串，data＝解析後；沒有資料時兩者都是 null）。
+    // 回傳 { version, current, status: 'empty'|'current'|'outdated'|'newer'|'error', counts, bytes }
+    function formatInfo(raw) {
+        const current = FORMAT.current; raw = raw || {};
+        if (raw.error) return { version: null, current, status: 'error', error: raw.error, counts: countStore(null), bytes: 0 };
+        if (!raw.data || typeof raw.data !== 'object') return { version: current, current, status: 'empty', counts: countStore(null), bytes: 0 };
+        const v = raw.data._format && Number.isFinite(Number(raw.data._format.version)) ? Number(raw.data._format.version) : 0;
+        return { version: v, current, status: v === current ? 'current' : (v < current ? 'outdated' : 'newer'), counts: countStore(raw.data), bytes: (raw.text || '').length };
+    }
+    function applyStep(d, s) {
+        const get = (o, p) => p.split('.').reduce((x, k) => (x == null ? undefined : x[k]), o);
+        const setp = (o, p, v) => { const ks = p.split('.'); let x = o; for (let i = 0; i < ks.length - 1; i++) { if (x[ks[i]] == null || typeof x[ks[i]] !== 'object') x[ks[i]] = {}; x = x[ks[i]]; } x[ks[ks.length - 1]] = v; };
+        const delp = (o, p) => { const ks = p.split('.'); let x = o; for (let i = 0; i < ks.length - 1; i++) { x = x && x[ks[i]]; } if (x && typeof x === 'object') delete x[ks[ks.length - 1]]; };
+        const log = [];
+        if (s.op === 'default') { if (get(d, s.path) === undefined) { setp(d, s.path, JSON.parse(JSON.stringify(s.value))); log.push('新增欄位 ' + s.path); } }
+        else if (s.op === 'rename' || s.op === 'move') { const v = get(d, s.path); if (v !== undefined) { setp(d, s.to, v); delp(d, s.path); log.push((s.op === 'rename' ? '改名 ' : '搬移 ') + s.path + ' → ' + s.to); } }
+        else if (s.op === 'drop') { if (get(d, s.path) !== undefined) { delp(d, s.path); log.push('移除 ' + s.path); } }
+        else if (s.op === 'stamp') { /* 在 migrationPlan 每一步結束時依目標版本寫入 */ }
+        else throw new Error('不認得的遷移動作：' + s.op);
+        return log;
+    }
+    // 預演：不寫入任何東西。回傳 { ok, from, to, steps:[{from,to,label,log}], before, after, warnings, result } 或 { ok:false, error } 或 { ok:true, nothing:true }
+    function migrationPlan(raw, target) {
+        const info = formatInfo(raw);
+        target = Number.isFinite(Number(target)) ? Number(target) : info.current;
+        if (target > info.current) return { ok: false, error: `目標版本 v${target} 比這個程式支援的（v${info.current}）新，請更新程式` };
+        if (info.status === 'error') return { ok: false, error: '讀取知識資料失敗：' + info.error };
+        if (info.status === 'newer') return { ok: false, error: `資料格式是 v${info.version}，比這個版本認得的（v${info.current}）新，已進入唯讀，不能遷移也不會被覆寫。請更新程式。` };
+        if (info.status === 'current' || info.status === 'empty' || info.version >= target) return { ok: true, nothing: true, from: info.version, to: Math.max(info.version, target), before: info.counts, after: info.counts, steps: [], warnings: [] };
+        const d = JSON.parse(JSON.stringify(raw.data));
+        const steps = []; let v = info.version; const warnings = [];
+        while (v < target) {
+            const m = MIGRATIONS.find((x) => x.from === v);
+            if (!m) return { ok: false, error: `沒有從 v${v} 遷移的步驟（找不到 ${v} → ${v + 1}）` };
+            const log = [];
+            for (const s of m.steps) { try { log.push(...applyStep(d, s)); } catch (e) { return { ok: false, error: `遷移 v${m.from} → v${m.to} 失敗：${String((e && e.message) || e)}` }; } }
+            d._format = { name: FORMAT.name, version: m.to, migratedAt: Date.now(), from: m.from };
+            log.push('寫入格式版本 v' + m.to);
+            steps.push({ from: m.from, to: m.to, label: m.label, log });
+            v = m.to;
+        }
+        // 非破壞性檢查：原本的每個欄位都要原樣還在（只允許多出新欄位）
+        const lost = Object.keys(raw.data).filter((k) => JSON.stringify(raw.data[k]) !== JSON.stringify(d[k]));
+        if (lost.length) return { ok: false, error: '遷移會改到既有欄位（' + lost.join('、') + '），為了保護你已經訓練的資料，已中止、沒有寫入任何東西。' };
+        return { ok: true, from: info.version, to: info.current, steps, before: info.counts, after: countStore(d), warnings, result: d };
+    }
+    return { create, PACK_FORMAT, exportPack, inspectPack, mergePack, FORMAT, MIGRATIONS, countStore, formatInfo, applyStep, migrationPlan };

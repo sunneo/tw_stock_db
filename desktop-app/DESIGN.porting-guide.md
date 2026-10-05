@@ -130,3 +130,11 @@
 - 檔案：`renderer/src/refs/ref_engine.js`（純函式引擎，無任何助理依賴）、`renderer/src/refs/*.dsl` 與 `generic_*.json`（資料）、`scripts/refs-dsl.js`（DSL 解析）、`scripts/promote-runtime-defs.js`（升級成內建）。**這是最容易搬的一塊**：新專案只要載入資料、建立 `FaRef.create(data, 使用者定義)`，就有錯誤碼、命令列、pragma 的查詢與解釋。
 - 主機要提供的：使用者定義的保存（本專案用 `localStorage`）、工具登記（`lookup_error_code`、`explain_command_line`、`ref_lookup`、`ref_define`、`ref_expand`）、子代理領域（`offline_knowledge_expander`、`aidoc_knowledge_expander` 的系統提示與工具清單）。
 - 與行為分析的接點：`FaBeh2.create(...).explain(path, text, {ref})`，沒有傳 `ref` 就沒有標註，其餘照常。
+
+## 11. 知識類型、版本與遷移、資料包帶知識（2026-10-06）
+
+離線訓練器這一輪的格式擴充（可註冊的知識類型、資料格式版本與 Migration、資料包帶知識、標註、骨架動畫）**另外寫成一份移植文件**：`DESIGN.knowledge-portability.md`。重點：
+- 純邏輯都在共用引擎 `renderer/src/refs/ref_engine.js`（類型註冊、驗證、展開、**知識包匯出／檢查／合併**、**格式版本偵測與遷移預演**），兩個專案共用同一批檔案、釘 commit SHA，不各自維護。
+- host 只要重寫儲存層（讀寫使用者資料、備份、版本閘門、`ref_define` 的寫入流程）與工具登記，介面在該文件第 3 節。
+- 一致性靠 `node scripts/run-core-tests.js`（知識引擎 66 項、標註核心 22 項、蒙皮核心 17 項、部位偵測 41 項）；真實環境的驗證項目在該文件第 6 節。
+- 搬到 宿主專案 前要先確認的事（引擎跑在哪、使用者資料存哪、權限、同時編輯）在該文件第 7 節。
