@@ -150,7 +150,7 @@ spec = { images: [dataURL|Blob], prompt: 自然語言, runLlm: async () => 線�
 5. **誰能用、誰能下載**：離線模型每個人下載自己一份（瀏覽器快取，上百 MB 到數 GB）；管理員可以提供開關、模型白名單、預設模型。
 6. **設定與偏好的儲存**：個人層級（GPU 與核心數是每台機器不同的事）。
 7. **瀏覽器相容**：WebGPU 需要新版 Chromium 系；Firefox／Safari 沒有 WebGPU 時一律 CPU；`credentialless` 在 Safari 不支援（拿不到隔離就單執行緒）。
-8. **授權**：登記表有各模型授權欄位（Florence-2 MIT、SmolVLM Apache-2.0、PaliGemma Gemma、LLaVA-Interleave 為 Tongyi Qianwen Research——**商用前要確認**）。
+8. **授權**：登記表有各模型授權欄位（Florence-2 MIT、SmolVLM Apache-2.0、LLaVA-Interleave 為 Tongyi Qianwen Research——**商用前要確認**）。
 
 ## 10. 驗證狀態與清單（先說清楚什麼被證實過）
 
@@ -161,9 +161,9 @@ spec = { images: [dataURL|Blob], prompt: 自然語言, runLlm: async () => 線�
 - Worker 不能動態載入 `fa-local://` 的模組（已重現並修正：先直接連 CDN）；SAB 在桌面版頁面與 Worker 裡可用（共享記憶體、Atomics、WASM 執行緒指令都通過）。
 
 **還沒證實**
-- **任何一次真實推論**（圖片進、文字出）。載入成功不等於推論成功：dtype 組合在某些 GPU 上載得起來卻可能跑出亂碼（本專案的 Whisper 就遇過 WebGPU 路徑吐亂碼的先例）。第一次真實執行請用「試跑」，並且**比對 CPU 與 GPU 兩條路徑的輸出**。
+- （已證實：Florence-2、ViT-GPT2、LLaVA-Interleave、SmolVLM 都跑過真實推論，見 `DESIGN.offline-vision.md` §7。）下面這段是當初的風險說明，仍可參考：載入成功不等於推論成功：dtype 組合在某些 GPU 上載得起來卻可能跑出亂碼（本專案的 Whisper 就遇過 WebGPU 路徑吐亂碼的先例）。第一次真實執行請用「試跑」，並且**比對 CPU 與 GPU 兩條路徑的輸出**。
 - 多執行緒實際加速（只驗證了 onnxruntime 判斷多執行緒的條件，沒量過速度）。
-- PaliGemma 2（約 2.7GB）與 LLaVA-Interleave（社群轉檔；缺 `processor_config.json`，處理器與分詞器改從原版 `llava-hf` repo 載入）能不能真的跑。
+- LLaVA-Interleave 已實測可跑（CPU 約 140～150 秒、Intel GPU 約 23 秒，社群轉檔缺 `processor_config.json`，處理器與分詞器改從原版 `llava-hf` repo 載入；提示詞用手組的 Qwen 對話格式）。**PaliGemma 2 已移除**：使用者機器上載入失敗（`unaligned accesses`）。
 - 中文輸出品質（模型主要輸出英文）。
 
 **移植到 宿主專案 後要自己驗的**
@@ -189,6 +189,6 @@ spec = { images: [dataURL|Blob], prompt: 自然語言, runLlm: async () => 線�
 ## 12. 改動規則（避免兩邊分叉）
 
 1. 只在這個版本庫改 `vlm_core.js` 與 `faVlmWorkerMain`，宿主專案 引用它們（釘 commit SHA）。需要的修改回到這邊做、跑測試、再更新釘住的版本。
-2. 新增模型 ＝ 只在登記表加一筆（`id`、`repo`、`arch`、`dtype`、`bytes`、`tasks`、`verified:false` …）；新的 `arch` 才需要改 Worker。**新模型一律標 `verified:false`，真實推論驗證過才改 `true`**。
+2. 新增模型 ＝ 只在登記表加一筆（`id`、`repo`、`arch`、`dtype`、`bytes`、`tasks`、`verified:false` …）；新的 `arch` 才需要改 Worker。**新模型一律標 `verified:false`，真實推論驗證過才改 `true`（並填 `verifiedOn` 與 `measured`）**；載不起來的模型不要留在清單裡（PaliGemma 的前例）。對話式模型要用 `FaVlm.generationParams` 的重複懲罰，否則小模型會陷入重複迴圈（SmolVLM 的前例）。移植時這兩個函式與 `defaultMaxTokens` 要一起帶走。
 3. 改優先順序、任務判斷、挑模型的規則，一定同步補 `vlm_core.test.js`（它是兩邊行為一致的合約）。
 4. 登記表的大小是「依 HuggingFace 檔案清單讀來的估計」，不是量測值；模型更新檔案後要重算。
