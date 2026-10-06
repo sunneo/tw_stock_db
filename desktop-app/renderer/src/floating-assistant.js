@@ -7021,6 +7021,265 @@ const holder = {};
 return holder.FaVlm;
 })();
 /* VLM-END */
+/* RECIPE-BEGIN */
+const FaRecipe = (function () {
+const holder = {};
+(function (module, self) {
+/* 離線小模型的「食譜」（Recipe）核心：決策樹＋狀態機＋選擇題／填空題，讓 0.5～1.7B 的離線模型也能完成工具型的服務。
+ *
+ * 設計原則（跟 redmine 那邊的 recipe 一致，細節見 DESIGN.offline-recipes.md）：
+ *   - 程式能決定的就程式決定：路由（候選分數差距夠大）、欄位（網址、路徑、附件、列舉值、預設值）、驗證、版面、措辭樣板。
+ *   - 模型只做剩下的、一次一個、沒有前面步驟的記憶：「從編號選單挑一個」「填這幾個型別固定的欄位」「用一兩句話說明（之後被檢查）」。
+ *   - 每個決定都有紀錄（誰決定的、選項、被退回的原因），之後可以拿來訓練。
+ *   - 純函式（UMD），generate／execTool 都是注入的，所以能用假模型完整測試；也能原封不動搬到別的宿主（redmine）。
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaRecipe = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    // ---------- 附件與檔案種類 ----------
+    // 訊息裡的 [附件：a.png（file_id=xxx）、b.jpg（file_id=yyy）]
+    function parseAttachments(text) {
+        const out = []; const m = /\[附件：([^\]]*)\]/.exec(String(text || '')); if (!m) return out;
+        const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(m[1]))) out.push({ filename: x[1].trim(), id: x[2] });
+        return out;
+    }
+    function stripAttachments(text) { return String(text || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function kindOf(filename) {
+        const e = (/\.([a-z0-9]+)$/i.exec(String(filename || '')) || [])[1]; const x = e ? e.toLowerCase() : '';
+        if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif'].includes(x)) return 'image';
+        if (x === 'pdf') return 'pdf';
+        if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'].includes(x)) return 'video';
+        if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'opus'].includes(x)) return 'audio';
+        if (['srt', 'vtt', 'ass'].includes(x)) return 'subtitle';
+        return 'other';
+    }
+
+    // ---------- 欄位（從工具的 JSON Schema 來）----------
+    function slotsFromSchema(schema) {
+        const props = (schema && schema.properties) || {}; const req = new Set((schema && schema.required) || []); const out = [];
+        for (const name of Object.keys(props)) {
+            const p = props[name] || {};
+            out.push({ name, type: p.type || 'string', itemsType: p.items && p.items.type, enum: Array.isArray(p.enum) ? p.enum.slice() : null, required: req.has(name), description: String(p.description || '').replace(/\s+/g, ' ').slice(0, 120), default: p.default, min: p.minimum, max: p.maximum });
+        }
+        return out;
+    }
+
+    // 搜尋／查詢類欄位的內容：拿掉網址與附件標記、開頭的指令動詞（上網搜尋、幫我查…）與結尾的「是什麼」；冒號後面（不是網址裡的冒號）優先
+    function cleanQuery(text) {
+        let s = stripAttachments(text).replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
+        const colon = /[:：]\s*(.+)$/.exec(s); if (colon && colon[1].trim().length >= 2) s = colon[1].trim();
+        s = s.replace(/^(?:請|幫我|幫忙|麻煩|可以)?(?:你)?(?:幫我)?(?:上網|網路上|網上|google|谷歌)?(?:搜尋|搜索|查詢|查一下|查一查|查查|查|找一下|找)\s*/i, '').replace(/\s*(?:是什麼意思|是什麼|是啥|什麼意思|是甚麼|的資料|相關資料|的相關資料|嗎|呢)[？?。.!！]*$/, '').trim();
+        return s || stripAttachments(text);
+    }
+    // ---------- 程式填欄位 ----------
+    // ctx: { text, slots（_faOtSlots 的結果：url、path、quoted、after_colon…）, attachments:[{id,filename}] }
+    // 回傳 { values, by:{欄位:'program'|'default'}, missing:[slot def] }——只有「程式真的決定不了」的欄位才會留在 missing，交給模型。
+    function programFill(defs, ctx) {
+        const values = {}; const by = {}; const text = String((ctx && ctx.text) || ''); const low = text.toLowerCase(); const sl = (ctx && ctx.slots) || {}; const atts = (ctx && ctx.attachments) || [];
+        const clean = stripAttachments(text); const enumLow = clean.toLowerCase().replace(/https?:\/\/\S+/g, ' ');
+        const attOfKind = (kinds) => atts.filter((a) => !kinds || kinds.includes(kindOf(a.filename)));
+        const kindsFor = (name, desc) => { const s = name + ' ' + (desc || ''); return /image|img|photo|picture|png|jpg|圖片|圖像|照片|截圖/i.test(s) ? ['image'] : (/pdf/i.test(s) ? ['pdf'] : (/video|movie|clip|影片|視訊/i.test(s) ? ['video'] : (/audio|sound|voice|音檔|音訊|語音/i.test(s) ? ['audio'] : (/subtitle|srt|caption|字幕/i.test(s) ? ['subtitle'] : null)))); };
+        const numericDefs = defs.filter((d) => (d.type === 'integer' || d.type === 'number') && d.required);
+        for (const d of defs) {
+            const n = d.name; let v;
+            if (d.enum && d.enum.length) { // 列舉：文字裡剛好出現「一個」列舉值
+                const hits = d.enum.filter((e) => String(e).length >= 2 && new RegExp('(?:^|[^a-z0-9])' + String(e).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[^a-z0-9])').test(enumLow));
+                if (hits.length === 1) v = hits[0];
+            } else if (d.type === 'string' && /^(?:url|link|href|page_url|website)$/i.test(n)) v = sl.url || undefined;
+            else if (d.type === 'array' && /^(?:files?|file_ids?|images?|attachments?|pdfs?|inputs?|paths?)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a.map((x) => x.id); }
+            else if (d.type === 'string' && /^(?:file(?:_id)?|image(?:_id)?|video(?:_id)?|audio(?:_id)?|pdf(?:_id)?|attachment(?:_id)?|input(?:_file)?|source)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a[a.length - 1].id; else if (sl.path) v = sl.path; }
+            else if (d.type === 'string' && /^(?:path|filepath|file_path|dir|directory|folder)$/i.test(n)) v = sl.path || undefined;
+            else if (d.type === 'string' && /^(?:query|q|keyword|keywords|search|search_query|text|prompt|question|problem|problem_text|task|message|content|topic)$/i.test(n)) v = (sl.quoted || cleanQuery(text)) || undefined;
+            else if ((d.type === 'integer' || d.type === 'number') && numericDefs.length === 1 && d.required && Array.isArray(sl.numbers) && sl.numbers.length === 1) { const x = Number(sl.numbers[0]); if (Number.isFinite(x)) v = d.type === 'integer' ? Math.round(x) : x; }
+            if (v !== undefined && v !== '') { values[n] = v; by[n] = 'program'; continue; }
+            if (d.default !== undefined) { values[n] = d.default; by[n] = 'default'; continue; }
+        }
+        // 沒填到、但選填的欄位不用問模型（留空由工具用自己的預設）；必填的才算 missing
+        const missing = defs.filter((d) => values[d.name] === undefined && d.required);
+        return { values, by, missing };
+    }
+
+    // ---------- 模型填空：強制 JSON、驗證、退回 ----------
+    function parseJsonLoose(text) {
+        let s = String(text == null ? '' : text).replace(/<think>[\s\S]*?<\/think>/g, '').trim(); s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        try { return JSON.parse(s); } catch (_) {}
+        const i = s.indexOf('{'); if (i < 0) return null; let depth = 0, inStr = false, esc = false;
+        for (let j = i; j < s.length; j++) { const c = s[j]; if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; } if (c === '"') inStr = true; else if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) { try { return JSON.parse(s.slice(i, j + 1)); } catch (_) { return null; } } } }
+        return null;
+    }
+    // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
+    // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
+    async function jsonStep(ctx) {
+        const maxTries = ctx.maxTries || 2; const rejected = []; let last = null; let msgs = ctx.messages;
+        for (let tries = 1; tries <= maxTries; tries++) {
+            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160 }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
+            const text = String(raw == null ? '' : raw); const obj = parseJsonLoose(text);
+            const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
+            if (!errs.length) return { ok: true, value: obj, tries, rejected };
+            rejected.push({ reply: text.slice(0, 200), errors: errs });
+            if (last !== null && text.trim() === last.trim()) break;
+            last = text;
+            msgs = ctx.messages.concat([{ role: 'assistant', content: text.slice(0, 300) }, { role: 'user', content: '上一個回覆不合格：' + errs.join('；') + '。請只輸出修正後的 JSON，不要多說別的。' }]);
+        }
+        return { ok: false, tries: rejected.length, rejected, error: rejected.length ? rejected[rejected.length - 1].errors.join('；') : '沒有回覆' };
+    }
+    // 填欄位：只問「還缺的」；prompt 不放範例數字或範例值（小模型會照抄）；不知道就填 null（不要編）
+    function fillMessages(question, defs, toolName) {
+        const lines = defs.map((d) => '- ' + d.name + '（' + (d.enum ? '只能是：' + d.enum.join('、') : (d.type === 'integer' ? '整數' : d.type === 'number' ? '數字' : d.type === 'boolean' ? 'true 或 false' : d.type === 'array' ? '字串陣列' : '字串')) + '）' + (d.description ? '：' + d.description : '')).join('\n');
+        return [{ role: 'system', content: '你負責從使用者的話裡找出工具「' + toolName + '」需要的欄位。只輸出一個 JSON 物件，鍵只能是下面列出的欄位。使用者的話裡沒有提到、你不確定的欄位填 null，不要猜、不要編。' }, { role: 'user', content: '需要的欄位：\n' + lines + '\n\n使用者的話：\n' + String(question).slice(0, 1200) }];
+    }
+    // numbers：使用者的話裡出現過的數字（字串陣列）；給了就要求數字欄位的值必須是其中之一——小模型最常見的錯是編一個數字（例如把「前 5 秒」填成 fps=5 以外的隨便一個值）
+    function validateFill(defs, numbers) {
+        const by = new Map(defs.map((d) => [d.name, d])); const numSet = numbers ? new Set(numbers.map(Number)) : null;
+        return (obj) => {
+            const errs = [];
+            for (const k of Object.keys(obj)) if (!by.has(k)) errs.push('不認得的欄位「' + k + '」（只能用：' + defs.map((d) => d.name).join('、') + '）');
+            for (const d of defs) {
+                if (!(d.name in obj)) { errs.push('缺少欄位「' + d.name + '」（不知道就填 null）'); continue; }
+                const v = obj[d.name]; if (v === null) continue;
+                if (d.enum && !d.enum.map(String).includes(String(v))) errs.push('「' + d.name + '」必須是：' + d.enum.join('、') + '（你填了 ' + JSON.stringify(v) + '）');
+                else if (d.type === 'integer' && !(Number.isInteger(v))) errs.push('「' + d.name + '」必須是整數');
+                else if (d.type === 'number' && !(typeof v === 'number' && Number.isFinite(v))) errs.push('「' + d.name + '」必須是數字');
+                else if (d.type === 'boolean' && typeof v !== 'boolean') errs.push('「' + d.name + '」必須是 true 或 false');
+                else if (d.type === 'array' && !Array.isArray(v)) errs.push('「' + d.name + '」必須是陣列');
+                else if (d.type === 'string' && !d.enum && (typeof v !== 'string' || !v.trim() || v.length > 600)) errs.push('「' + d.name + '」必須是 1～600 字的字串');
+                if ((d.type === 'integer' || d.type === 'number') && typeof v === 'number' && numSet && !numSet.has(v)) errs.push('「' + d.name + '」的數字 ' + v + ' 沒有出現在使用者的話裡（只能用使用者說過的數字；沒有就填 null）');
+                if ((d.type === 'integer' || d.type === 'number') && typeof v === 'number') { if (d.min != null && v < d.min) errs.push('「' + d.name + '」不能小於 ' + d.min); if (d.max != null && v > d.max) errs.push('「' + d.name + '」不能大於 ' + d.max); }
+            }
+            return errs;
+        };
+    }
+    // 讓模型補欄位。回傳 { ok, values（只含模型填了非 null 的）, missing（模型也填不出的）, tries, rejected, error? }
+    async function modelFill(opts) {
+        const defs = opts.missing; if (!defs.length) return { ok: true, values: {}, missing: [], tries: 0, rejected: [] };
+        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2 });
+        if (!r.ok) return { ok: false, values: {}, missing: defs, tries: r.tries, rejected: r.rejected, error: r.error };
+        const values = {}; const still = [];
+        for (const d of defs) { const v = r.value[d.name]; if (v === null || v === undefined) still.push(d); else values[d.name] = d.type === 'string' && typeof v === 'string' ? v.trim() : v; }
+        return { ok: true, values, missing: still, tries: r.tries, rejected: r.rejected };
+    }
+
+    // 選填欄位要不要問模型：使用者的話裡要有跟欄位名稱（fps、width…）或描述（幀率、寬度…）有關的字，或提到了列舉值——沒有關連就不問（避免模型為了填空而編）
+    function relevantOptional(defs, question) {
+        const q = tokensOf(question); const low = String(question || '').toLowerCase();
+        return defs.filter((d) => {
+            const parts = d.name.toLowerCase().split(/[_\W]+/).filter((x) => x.length >= 2); if (parts.some((x) => low.includes(x))) return true;
+            for (const t of tokensOf(d.description)) if (!/^\d/.test(t) && q.has(t)) return true;
+            return !!(d.enum && d.enum.some((e) => String(e).length >= 2 && low.includes(String(e).toLowerCase())));
+        });
+    }
+    // ---------- 路由 ----------
+    // 先用「證據」縮小候選（程式能決定的就程式決定）：文字裡有網址 → 只留有 url 欄位的工具；有附件 → 只留「必填的檔案欄位能用這些附件填」的工具。
+    // 縮小之後只剩一個就不用問模型。defsByTool: { 工具名: [slot def] }；ctx 同 programFill
+    function narrowByEvidence(cands, defsByTool, ctx) {
+        let list = cands.slice(); const why = [];
+        const atts = (ctx && ctx.attachments) || []; const hasUrl = !!(ctx && ctx.slots && ctx.slots.url);
+        if (hasUrl) { const k = list.filter((c) => (defsByTool[c.tool] || []).some((d) => /^(?:url|link|href|page_url|website)$/i.test(d.name))); if (k.length) { list = k; why.push('文字裡有網址'); } }
+        if (atts.length) {
+            const fileSlot = (d) => /^(?:files?|file_ids?|file|image|images|video|audio|pdf|pdfs|attachment|attachments|input|source)$/i.test(d.name);
+            const k = list.filter((c) => { const need = (defsByTool[c.tool] || []).filter((d) => d.required && fileSlot(d)); return need.length && programFill(need, ctx).missing.length === 0; });
+            if (k.length) { list = k; why.push('有附件'); }
+        }
+        return { cands: list, why };
+    }
+    // ---------- 路由：候選分數差距夠大就程式決定，否則給模型一個編號選單 ----------
+    // cands: [{ tool, intent, score }]（分數由離線訓練器給）；回傳 { index, by:'program' } 或 null（要問模型）
+    function autoPick(cands, opts) {
+        opts = opts || {}; const minScore = opts.minScore != null ? opts.minScore : 0.5, margin = opts.margin != null ? opts.margin : 0.12;
+        if (!cands.length) return null; const s = cands.map((c) => Number(c.score) || 0);
+        if (cands.length === 1) return s[0] >= (opts.minSingle != null ? opts.minSingle : 0.35) ? { index: 0, by: 'program' } : null;
+        if (s[0] >= minScore && s[0] - s[1] >= margin) return { index: 0, by: 'program' };
+        return null;
+    }
+    function menuMessages(question, cands) {
+        const lines = cands.map((c, i) => (i + 1) + '. ' + String(c.intent || c.tool).replace(/\s+/g, ' ').slice(0, 60) + '（工具 ' + c.tool + '）').join('\n');
+        return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
+    }
+    async function chooseTool(opts) {
+        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
+        if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
+        return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
+    }
+
+    // ---------- 措辭：模型寫 1～2 句，之後被檢查（不過就用程式的樣板）----------
+    function tokensOf(s) { s = String(s || '').toLowerCase(); const out = new Set(); (s.match(/\d+(?:\.\d+)?/g) || []).forEach((x) => out.add(x)); (s.match(/[a-z][a-z0-9_]{2,}/g) || []).forEach((x) => out.add(x)); (s.match(/[㐀-鿿]+/g) || []).forEach((run) => { if (run.length === 1) out.add(run); for (let i = 0; i + 1 < run.length; i++) out.add(run.slice(i, i + 2)); }); return out; }
+    // extractive：只濃縮、不新增。數字與英文識別字要（幾乎）全部出現在來源裡，而且不能有來源沒有的數字（小模型最常見的錯是編一個數字）；
+    // 中文詞用較寬的門檻（cjkMin 預設 0.6）——改寫常會換動詞，但整段新內容（來源完全沒提的詞）會被擋下
+    function checkExtractive(output, sources, opts) {
+        opts = opts || {}; const min = opts.min != null ? opts.min : 0.85, cjkMin = opts.cjkMin != null ? opts.cjkMin : 0.6; const out = String(output || '').trim();
+        if (!out) return { ok: false, reason: '空白' }; if (out.length > (opts.maxChars || 400)) return { ok: false, reason: '太長' };
+        const src = tokensOf([].concat(sources).join('\n')); const toks = Array.from(tokensOf(out)); if (!toks.length) return { ok: false, reason: '沒有內容' };
+        const isCjk = (t) => /[㐀-鿿]/.test(t); const strict = toks.filter((t) => !isCjk(t)), cjk = toks.filter(isCjk);
+        const badNum = strict.filter((t) => /^\d/.test(t) && !src.has(t)); if (badNum.length) return { ok: false, reason: '出現來源沒有的數字：' + badNum.slice(0, 3).join('、') };
+        const sCover = strict.length ? strict.filter((t) => src.has(t)).length / strict.length : 1; const cCover = cjk.length ? cjk.filter((t) => src.has(t)).length / cjk.length : 1;
+        if (sCover < min) return { ok: false, reason: '有 ' + Math.round((1 - sCover) * 100) + '% 的英文／數字來源裡沒有', cover: sCover };
+        if (cCover < cjkMin) return { ok: false, reason: '有 ' + Math.round((1 - cCover) * 100) + '% 的詞來源裡沒有', cover: cCover };
+        return { ok: true, cover: Math.min(sCover, cCover) };
+    }
+    function phraseMessages(question, resultText, instruction) {
+        return [{ role: 'system', content: '你根據「工具結果」用繁體中文寫 1～2 句話回答使用者。只能使用工具結果裡有的資訊、數字與名稱，不要新增、不要猜測。' + (instruction ? instruction : '') }, { role: 'user', content: '使用者的問題：' + String(question).slice(0, 400) + '\n\n工具結果：\n' + String(resultText).slice(0, 2400) + '\n\n請用 1～2 句話回答。' }];
+    }
+
+    // ---------- 決策紀錄 ----------
+    function newTrace(question, meta) { return Object.assign({ at: Date.now(), question: String(question || '').slice(0, 300), decisions: [] }, meta || {}); }
+    function decide(trace, d) { trace.decisions.push(Object.assign({ at: Date.now() }, d)); return trace; }
+    // ring buffer：最多 max 筆、總大小最多 maxBytes（超過就丟最舊的）
+    function pushRing(list, trace, max, maxBytes) { const out = (list || []).concat([trace]); while (out.length > (max || 30)) out.shift(); while (out.length > 1 && JSON.stringify(out).length > (maxBytes || 400000)) out.shift(); return out; }
+    function tracesToLines(list) { return (list || []).map((t) => JSON.stringify(t)).join('\n'); }
+
+    // ---------- 多步驟食譜引擎（steps：tool／compute／phrase／render）----------
+    const MAX_STEPS = 12;
+    function getPath(obj, p) { let cur = obj; for (const k of String(p).split('.')) { if (cur == null) return undefined; cur = cur[k]; } return cur; }
+    function interp(v, scope) {
+        if (typeof v === 'string') { const whole = /^\{\{\s*([\w.]+)\s*\}\}$/.exec(v); if (whole) return getPath(scope, whole[1]); return v.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (m, p) => { const x = getPath(scope, p); return x == null ? '' : (typeof x === 'object' ? JSON.stringify(x) : String(x)); }); }
+        if (Array.isArray(v)) return v.map((x) => interp(x, scope));
+        if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, interp(x, scope)]));
+        return v;
+    }
+    function validateRecipe(r) {
+        const errs = []; if (!r || typeof r !== 'object') return ['食譜不是物件'];
+        if (!/^[a-z][a-z0-9_]{0,30}$/.test(r.id || '')) errs.push('id 格式不合法');
+        if (!Array.isArray(r.steps) || !r.steps.length) errs.push('沒有步驟'); else if (r.steps.length > MAX_STEPS) errs.push('步驟超過 ' + MAX_STEPS);
+        const ids = new Set();
+        for (const s of r.steps || []) { if (!['tool', 'compute', 'phrase', 'render'].includes(s.type)) errs.push('不認得的步驟類型：' + s.type); if (!/^[a-z][a-z0-9_]{0,30}$/.test(s.id || '')) errs.push('步驟 id 不合法：' + s.id); if (ids.has(s.id)) errs.push('步驟 id 重複：' + s.id); ids.add(s.id); }
+        if (r.result && !ids.has(r.result)) errs.push('result 指向不存在的步驟：' + r.result);
+        return errs;
+    }
+    // env: { tool(name,args)→{ok,text,raw}, fns:{name(args,scope)→值}, phrase({question,input,instruction,check})→string|null, trace?, question }
+    async function runRecipe(recipe, slots, env) {
+        const errs = validateRecipe(recipe); if (errs.length) return { ok: false, error: '食譜不合法：' + errs.join('；') };
+        const scope = { slots: slots || {}, vars: {} }; const trace = env.trace;
+        for (const s of recipe.steps) {
+            try {
+                if (s.type === 'tool') {
+                    const args = interp(s.args || {}, scope); const r = await env.tool(s.name, args); scope.vars[s.id] = r;
+                    if (trace) decide(trace, { stage: 'step', step: s.id, type: 'tool', tool: s.name, answer: r && r.ok ? 'ok' : 'failed', by: 'program' });
+                    if (!r || !r.ok) { if (s.optional) continue; return { ok: false, error: '步驟「' + s.id + '」（工具 ' + s.name + '）失敗：' + String((r && r.text) || '').slice(0, 200), vars: scope.vars }; }
+                } else if (s.type === 'compute') {
+                    const fn = env.fns && env.fns[s.fn]; if (!fn) return { ok: false, error: '沒有註冊的函式：' + s.fn };
+                    scope.vars[s.id] = await fn(interp(s.args || {}, scope), scope); if (trace) decide(trace, { stage: 'step', step: s.id, type: 'compute', fn: s.fn, by: 'program' });
+                } else if (s.type === 'phrase') {
+                    const input = interp(s.input, scope); const text = typeof input === 'string' ? input : (input && input.text) || JSON.stringify(input);
+                    let out = null; if (env.phrase) { try { out = await env.phrase({ question: env.question, input: text, instruction: s.instruction, check: s.check || 'extractive' }); } catch (_) { out = null; } }
+                    const fb = s.fallback != null ? interp(s.fallback, scope) : text; scope.vars[s.id] = out != null ? out : (typeof fb === 'string' ? fb : JSON.stringify(fb));
+                    if (trace) decide(trace, { stage: 'step', step: s.id, type: 'phrase', by: out != null ? 'model' : 'program', answer: out != null ? 'model' : 'fallback' });
+                } else if (s.type === 'render') { scope.vars[s.id] = interp(s.template, scope); }
+            } catch (e) { if (s.optional) continue; return { ok: false, error: '步驟「' + s.id + '」出錯：' + String((e && e.message) || e), vars: scope.vars }; }
+        }
+        const res = recipe.result ? scope.vars[recipe.result] : scope.vars[recipe.steps[recipe.steps.length - 1].id];
+        return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
+    }
+
+    return { parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaRecipe;
+})();
+/* RECIPE-END */
 // ============================================================
 // 程式行為分析（Behavior Analyzer）——由 Domain Resolver 的 behavior_analyzer 設計移植成內建基底。
 // 目標：把原始碼／組合語言解釋成「由下而上、沿著正向路徑」的行為說明，並且可折疊：
@@ -13088,6 +13347,8 @@ class FloatingAssistant {
             offlineLlmTools: true, // 離線文字模型可以呼叫工具（只有通過基準測試的模型才會被選去呼叫）
             offlineLlmMixRewrite: true, // 混用時工具模型沒用到工具，也交給「寫回答」的模型重寫
             offlineLlmMaxTokens: 512,
+            offlineRecipes: true, // 離線小模型用「食譜」做工具型的服務：程式路由／填欄位、模型只做選擇題與填空題
+            offlineRecipePhrase: true, // 資訊類工具（搜尋、查詢、讀網頁）的結果，讓模型用 1～2 句話說明（會被檢查，不過就用程式整理的結果）
             offlineTextRoles: {}, // { 模型id: { tools, answer, summarize, priority, device } }
             offlineToolBench: {}, // { 模型id: 工具呼叫基準測試結果 }
             // 看圖（vision）的後端優先順序：llm-first（線上視覺模型優先，沒有可用模型或全部失敗就退離線模型）／offline-first／llm／offline
@@ -14281,6 +14542,8 @@ class FloatingAssistant {
             offlineLlmFallback: raw.offlineLlmFallback !== false,
             offlineLlmTools: raw.offlineLlmTools !== false,
             offlineLlmMixRewrite: raw.offlineLlmMixRewrite !== false,
+            offlineRecipes: raw.offlineRecipes !== false,
+            offlineRecipePhrase: raw.offlineRecipePhrase !== false,
             offlineLlmMaxTokens: (() => { const n = Math.floor(Number(raw.offlineLlmMaxTokens)); return Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; })(),
             offlineTextRoles: (() => { const out = {}; const src = raw.offlineTextRoles && typeof raw.offlineTextRoles === 'object' ? raw.offlineTextRoles : {}; for (const m of FaVlm.textModels()) { const c = src[m.id]; if (!c || typeof c !== 'object') continue; const o = {}; for (const k of ['tools', 'answer', 'summarize']) if (typeof c[k] === 'boolean') o[k] = c[k]; if (Number.isFinite(Number(c.priority))) o.priority = Math.max(-1000, Math.min(1000, Math.round(Number(c.priority)))); if (c.device === 'gpu' || c.device === 'cpu') o.device = c.device; out[m.id] = o; } return out; })(),
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
@@ -20673,13 +20936,22 @@ ${fnData.code}
             if (!r.ok && !r.cancelled) this._otNoteUnresolved(text, '執行失敗：' + String(r.error || '').slice(0, 120));
             if (!r.silent) this._pushAssistantMessage(r.ok ? r.text : (r.cancelled ? '已取消。' : `⚠️ ${r.error || '執行失敗'}\n\n${r.text || ''}`), null);
         } else if (d.status === 'needs_input') {
+            // 食譜：離線訓練器知道要用哪個工具、只缺參數 → 先讓食譜補欄位（程式從網址／附件／引號補，補不到才讓模型填空），不要馬上問使用者
+            if (this._omSettings().recipes && c && c.tool && text.charAt(0) !== '/') {
+                const rr = await this._recipeAnswer(text, plan, { forceTool: c.tool, fallback: !!opts.fallback });
+                if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+            }
             this._otNoteUnresolved(text, d.reason || '缺少參數');
             this._pushAssistantMessage(`${head}\n${why}\n${d.reason}`, null);
         } else {
             this._otNoteUnresolved(text, d.reason || '沒有對應的規則');
             let llmNote = '';
             if (FaVlm.shouldUseOfflineLlm(d, this.advancedSettings) && text.charAt(0) !== '/') {
-                const lr = await this._offlineLlmAnswer(text, plan, { fallback: !!opts.fallback });
+                if (this._omSettings().recipes) { // 先走食譜：程式／模型一步一步挑工具、填欄位、執行；沒有合適的工具才交給文字生成
+                    const rr = await this._recipeAnswer(text, plan, { fallback: !!opts.fallback });
+                    if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+                }
+                const lr = await this._offlineLlmAnswer(text, plan, { fallback: !!opts.fallback, noTools: this._omSettings().recipes });
                 if (lr.ok) { this._pushAssistantMessage(lr.header + '\n\n' + lr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
                 llmNote = '\n\n（離線文字模型沒能回答：' + (lr.error || '失敗') + '）';
             }
@@ -46246,7 +46518,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = this.advancedSettings || {}; const m = FaVlm.byId(s.imageToTextModel);
         const tm = FaVlm.byId(s.offlineTextModel);
         return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly && m.task === 'image-to-text' ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false,
-            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
+            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, recipes: s.offlineRecipes !== false, recipePhrase: s.offlineRecipePhrase !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
     }
     _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
     // 能不能 WASM 多執行緒：跟 onnxruntime-web 自己檢查的同三件事（SharedArrayBuffer 存在、能傳給 Worker、執行緒指令可驗證）。不是非要 crossOriginIsolated：
@@ -46506,6 +46778,103 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     // ----- 設定頁：離線模型管理 -----
+    // ===== 離線小模型的食譜（recipe）：決策樹＋狀態機＋選擇題／填空題（核心在 FaRecipe，設計見 DESIGN.offline-recipes.md）=====
+    // 流程：候選工具（離線訓練器給的）→ 路由（分數差距夠大就程式決定，否則模型從編號選單挑；可以選「都不是」）→ 欄位（程式從網址／路徑／附件／引號／列舉／預設補，
+    // 補不到的才讓模型填空，模型不知道就填 null、不准編）→ 執行（有副作用的工具先問使用者）→ 措辭（資訊類結果讓模型寫 1～2 句，會被檢查，不過就用程式整理的結果）。
+    // 每個決定都記錄（誰決定的、選項、被退回的原因）。模型每一步都沒有前面步驟的記憶。
+    _recipeCandidates(plan, forceTool) {
+        const out = []; const add = (tool, intent, score) => { if (!tool || !this.tools[tool] || FA_OT_META_TOOLS.has(tool) || out.some((c) => c.tool === tool)) return; out.push({ tool, intent: intent || String(this.tools[tool].description || tool).slice(0, 40), score: Number(score) || 0 }); };
+        if (forceTool) { add(forceTool, '', 1); return out; }
+        const d = plan && plan.decision; if (d && d.chosen && d.chosen.tool) add(d.chosen.tool, d.chosen.intent, d.chosen.score);
+        for (const a of (plan && plan.alternatives) || []) add(a.tool, a.intent, a.score);
+        ['ref_lookup', 'browser_search', 'fetch_web_page'].forEach((n) => add(n, '', 0));
+        return out.slice(0, 6);
+    }
+    _recipeSaveTrace(trace) { try { const k = 'fa_recipe_traces_v1'; const cur = JSON.parse(localStorage.getItem(k) || '[]'); localStorage.setItem(k, JSON.stringify(FaRecipe.pushRing(cur, trace, 30, 400000))); } catch (_) {} }
+    _recipeTraces() { try { return JSON.parse(localStorage.getItem('fa_recipe_traces_v1') || '[]'); } catch (_) { return []; } }
+    // 回傳 { handled:false } 或 { handled:true, ok, header, text }
+    async _recipeAnswer(userText, plan, opts) {
+        opts = opts || {}; const S = this._omSettings(); if (!S.recipes) return { handled: false };
+        const question = FaRecipe.stripAttachments(userText) || String(userText); const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
+        const cands = this._recipeCandidates(plan, opts.forceTool); if (!cands.length) return { handled: false };
+        const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false });
+        const model = route.answer; let modelErr = undefined; this._omDeclined = this._omDeclined || new Set();
+        const ensureModel = async () => { // 第一次真的要用模型才檢查／下載；自動備援不偷偷下載
+            if (modelErr !== undefined) return modelErr; const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16); if (!dev.order.length) return (modelErr = dev.reason);
+            const need = FaVlm.estimateDownload(model, dev.order[0], (inst.usage.byModel[model.id] || { bytes: 0 }).bytes);
+            if (need > 20 * 1048576) { if (opts.fallback || this._omDeclined.has(model.id)) return (modelErr = '離線文字模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（食譜需要用它挑工具、填欄位）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (modelErr = '使用者取消了下載'); } }
+            return (modelErr = null);
+        };
+        const gen = async (a) => { const err = await ensureModel(); if (err) throw new Error(err); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
+        const steps = [];
+        try {
+            // 證據：附件（訊息裡的、待送的、這個對話最近一則有附件的）與離線訓練器抽出的欄位（網址、路徑、引號…）
+            const atts = FaRecipe.parseAttachments(userText); for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done')) if (!atts.some((x) => x.id === a.id)) atts.push({ id: a.id, filename: a.filename });
+            if (!atts.length) { try { const c2 = await this._attachmentCandidates(); c2.forEach((c) => atts.push({ id: c.id, filename: c.filename })); } catch (_) {} }
+            const evCtx = { text: userText, slots: (plan && plan.slots) || {}, attachments: atts };
+            // ① 路由：先用證據縮小候選（有網址／有附件），只剩一個就程式決定；否則分數差距夠大程式決定；再不行才讓模型從編號選單挑
+            let idx, by; let evidenceUsed = false;
+            if (!opts.forceTool) {
+                const defsByTool = {}; cands.forEach((c) => { defsByTool[c.tool] = FaRecipe.slotsFromSchema(this.tools[c.tool].parametersSchema || {}); });
+                const nb = FaRecipe.narrowByEvidence(cands, defsByTool, evCtx);
+                if (nb.why.length) { FaRecipe.decide(trace, { stage: 'narrow', options: cands.map((c) => c.tool), answer: nb.cands.map((c) => c.tool), by: 'program', reason: nb.why.join('、') }); cands.length = 0; nb.cands.forEach((c) => cands.push(c)); evidenceUsed = true; }
+            }
+            if (opts.forceTool) { idx = 0; by = '程式（離線訓練器已選定）'; FaRecipe.decide(trace, { stage: 'route', options: cands.map((c) => c.tool), answer: cands[0].tool, by: 'program', reason: 'trainer' }); }
+            else {
+                const ap = (evidenceUsed && cands.length === 1) ? { index: 0, by: 'program' } : FaRecipe.autoPick(cands, { minScore: 0.5, margin: 0.12 });
+                if (ap) { idx = ap.index; by = '程式'; FaRecipe.decide(trace, { stage: 'route', options: cands.map((c) => c.tool + ':' + c.score), answer: cands[idx].tool, by: 'program' }); }
+                else {
+                    const ch = await FaRecipe.chooseTool({ cands, question, generate: gen });
+                    FaRecipe.decide(trace, { stage: 'route', options: cands.map((c) => c.tool), answer: ch.ok ? (ch.none ? 'none' : cands[ch.index].tool) : null, by: 'model', tries: ch.tries, rejected: ch.rejected });
+                    if (!ch.ok || ch.none) { this._recipeSaveTrace(trace); return { handled: false }; } // 模型說都不是／選不出來 → 交給文字生成
+                    idx = ch.index; by = '模型（第 ' + (idx + 1) + ' 個）';
+                }
+            }
+            const cand = cands[idx]; const tool = this.tools[cand.tool]; steps.push('路由：' + by + ' → ' + cand.tool);
+            // ② 欄位
+            const defs = FaRecipe.slotsFromSchema(tool.parametersSchema || {});
+            const pf = FaRecipe.programFill(defs, evCtx);
+            const args = Object.assign({}, pf.values); const fieldBy = Object.keys(pf.by).map((k) => k + '（' + (pf.by[k] === 'default' ? '預設' : '程式') + '）');
+            FaRecipe.decide(trace, { stage: 'slots', tool: cand.tool, answer: Object.keys(pf.values), by: 'program', missing: pf.missing.map((d) => d.name) });
+            let remaining = pf.missing;
+            if (remaining.length) {
+                const mf = await FaRecipe.modelFill({ missing: remaining, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [] });
+                FaRecipe.decide(trace, { stage: 'slots', tool: cand.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected, error: mf.error });
+                Object.assign(args, mf.values); Object.keys(mf.values).forEach((k) => fieldBy.push(k + '（模型）')); remaining = mf.ok ? mf.missing : remaining;
+            }
+            // 選填欄位：文字裡有數字（沒被程式用掉）或有列舉／開關類的選填欄位時，才多問模型一次；模型填 null 就不填（交給工具自己的預設）
+            if (!remaining.length) {
+                const nums = ((plan && plan.slots && plan.slots.numbers) || []).length;
+                const opt = FaRecipe.relevantOptional(defs.filter((d) => !d.required && args[d.name] === undefined && (((d.type === 'integer' || d.type === 'number') && nums > 0) || (d.enum && d.enum.length) || d.type === 'boolean')), question);
+                if (opt.length) {
+                    const of = await FaRecipe.modelFill({ missing: opt, question, toolName: cand.tool, generate: gen, numbers: (plan && plan.slots && plan.slots.numbers) || [] });
+                    FaRecipe.decide(trace, { stage: 'slots_optional', tool: cand.tool, answer: Object.keys(of.values), by: 'model', tries: of.tries, rejected: of.rejected, error: of.error });
+                    if (of.ok) { Object.assign(args, of.values); Object.keys(of.values).forEach((k) => fieldBy.push(k + '（模型）')); }
+                }
+            }
+            steps.push('欄位：' + (fieldBy.join('、') || '（無）'));
+            const header0 = '🍳 離線食譜｜' + steps.join(' → ');
+            if (remaining.length) { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: header0, text: '要執行「' + cand.tool + '」，但還缺：' + remaining.map((d) => d.name + (d.description ? '（' + d.description + '）' : '')).join('、') + '。請補上（例如附上圖片／檔案、貼網址，或直接說清楚），我就能做。' }; }
+            // ③ 執行
+            if (FA_OT_RISKY_TOOL.test(cand.tool)) { const ans = await this.requestUserForm({ title: '🍳 離線食譜要執行有副作用的工具', description: '工具：' + cand.tool + '\n參數：' + JSON.stringify(args).slice(0, 400) + '\n\n這是離線小模型加規則決定的，不一定正確。要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: header0, text: '已取消。' }; } }
+            let raw, ok = true; try { raw = await tool.callback.call(this, JSON.stringify(args)); } catch (e) { raw = JSON.stringify({ ok: false, error: String((e && e.message) || e) }); ok = false; }
+            try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
+            const pretty = this._otPretty(raw, question); FaRecipe.decide(trace, { stage: 'run', tool: cand.tool, answer: ok ? 'ok' : 'failed', by: 'program' }); steps.push('執行：' + cand.tool + (ok ? '' : '（失敗）'));
+            // ④ 措辭（只對資訊類結果；通過檢查才用）
+            let text = pretty; let phraseBy = '程式';
+            if (ok && S.recipePhrase && /search|fetch|lookup|query|read|parse|get_|summar|ask|explain/.test(cand.tool) && pretty.length > 80) {
+                let ph = null; try { ph = await gen({ messages: FaRecipe.phraseMessages(question, pretty), maxTokens: 160 }); } catch (_) { ph = null; }
+                const chk = ph ? FaRecipe.checkExtractive(ph, [pretty, String(raw)]) : { ok: false, reason: '沒有輸出' };
+                FaRecipe.decide(trace, { stage: 'phrase', by: 'model', answer: chk.ok ? 'accepted' : 'rejected', reason: chk.reason });
+                if (chk.ok) { text = String(ph).trim() + '\n\n' + pretty; phraseBy = '模型（通過檢查）'; }
+            }
+            steps.push('措辭：' + phraseBy); this._recipeSaveTrace(trace);
+            return { handled: true, ok, header: '🍳 離線食譜｜' + steps.join(' → '), text: ok ? text : ('⚠️ ' + cand.tool + ' 執行失敗：\n' + pretty) };
+        } catch (e) {
+            FaRecipe.decide(trace, { stage: 'error', answer: String((e && e.message) || e).slice(0, 200), by: 'program' }); this._recipeSaveTrace(trace);
+            return { handled: false, error: String((e && e.message) || e) };
+        }
+    }
     // ===== 離線文字模型：聊天、參考 RAG、工具呼叫，可以混用多個模型、分派到 GPU 或 CPU =====
     // 推論全在 Worker 裡（GPU 與 CPU 各一個，可同時駐留）；主執行緒只做很輕的事：組訊息、批次接收串流文字（每 120 毫秒一批）、偵測垃圾輸出。
     _omDevicePrefOf(model) { const c = (this._omSettings().roles || {})[model.id]; return c && (c.device === 'gpu' || c.device === 'cpu') ? c.device : this._omSettings().device; }
@@ -46556,7 +46925,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         opts = opts || {}; const S = this._omSettings(); const t0 = Date.now();
         if (!S.llmFallback && !opts.force) return { ok: false, error: '設定裡關掉了「交給離線文字模型」' };
         const inst = await this._omInstalled(); const gpu = await this._omGpuInfo();
-        const toolList = S.llmTools ? this._offlineLlmToolList(plan) : [];
+        const toolList = (S.llmTools && !opts.noTools) ? this._offlineLlmToolList(plan) : [];
         const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: toolList.length > 0 });
         const stageModels = []; for (const s of route.stages) if (!stageModels.some((m) => m.id === s.model.id)) stageModels.push(s.model);
         // 沒下載的模型：自動備援不自己下載；使用者主動用的才問一次（拒絕過就不再問）
@@ -46683,6 +47052,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div style="font-weight:600; margin-bottom:4px;">文字生成（離線聊天）設定</div>
               <div><label><input type="checkbox" data-om-set="llmFallback" ${S.llmFallback ? 'checked' : ''}> 離線訓練器信心不足時，交給離線文字模型回答</label></div>
               <div><label><input type="checkbox" data-om-set="llmTools" ${S.llmTools ? 'checked' : ''}> 允許離線文字模型呼叫工具（沒通過基準測試、評為不可靠的模型不會被選去呼叫工具；有副作用的工具一律先問你）</label></div>
+              <div><label><input type="checkbox" data-om-set="recipes" ${S.recipes ? 'checked' : ''}> 食譜模式：離線小模型用「路由→填欄位→執行→措辭」一步一步做工具型的服務（程式能決定的就程式決定，模型只做選擇題與填空題；開著時不跑自由工具迴圈）</label></div>
+              <div><label><input type="checkbox" data-om-set="recipePhrase" ${S.recipePhrase ? 'checked' : ''}> 食譜：資訊類結果讓模型用 1～2 句話說明（會被檢查，有編造的數字就丟掉）</label>　<button style="${btn}" data-om="exporttrace">匯出決策記錄</button> <button style="${btn} color:#fca5a5;" data-om="cleartrace">清除</button> <span style="color:#94a3b8;">（最近 ${this._recipeTraces().length} 筆）</span></div>
               <div><label><input type="checkbox" data-om-set="mixRewrite" ${S.mixRewrite ? 'checked' : ''}> 混用時，工具模型沒用到工具也交給「寫回答」的模型重寫</label></div>
               <div><label>回答長度上限 <input type="number" min="64" max="2048" step="32" value="${S.llmMax}" data-om-set="llmMax" style="${inp} width:80px;"> tokens</label>　<label>離線訓練器信心門檻 <input type="range" min="0.1" max="1" step="0.01" value="${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}" data-om-set="threshold" style="vertical-align:middle;"> <b>${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}</b></label></div>
               <div style="color:#94a3b8; margin-top:4px;">信心門檻拉到 1.0＝只有「完全一樣的問題」才由離線訓練器處理，其餘幾乎都交給離線文字模型。<b>混用</b>：每個模型勾自己的角色並給優先順序——例如小模型專門呼叫工具、大模型專門寫回答；一張 GPU 放不下就把其中一個設成 CPU（GPU 與 CPU 各有自己的背景執行緒，可以同時駐留）；同一個裝置上的兩個模型則是依階段輪流載入。</div>
@@ -46715,6 +47086,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             else if (k === 'policy') { this.advancedSettings.visionBackendPolicy = FaVlm.VISION_POLICIES[e.target.value] ? e.target.value : 'llm-first'; this.advancedSettings.offlineVisionFallback = this.advancedSettings.visionBackendPolicy !== 'llm'; }
             else if (k === 'fallback') this.advancedSettings.offlineVisionFallback = !!e.target.checked;
             else if (k === 'llmFallback') this.advancedSettings.offlineLlmFallback = !!e.target.checked;
+            else if (k === 'recipes') this.advancedSettings.offlineRecipes = !!e.target.checked;
+            else if (k === 'recipePhrase') this.advancedSettings.offlineRecipePhrase = !!e.target.checked;
             else if (k === 'llmTools') this.advancedSettings.offlineLlmTools = !!e.target.checked;
             else if (k === 'mixRewrite') this.advancedSettings.offlineLlmMixRewrite = !!e.target.checked;
             else if (k === 'llmMax') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineLlmMaxTokens = Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; }
@@ -46729,6 +47102,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const stat = (sid, s) => { const el = root.querySelector(`[data-om-status="${sid}"]`); if (el) el.textContent = s || ''; };
             if (act === 'refresh') return this._omRenderPane();
             if (act === 'default') { const dm = FaVlm.byId(id); if (dm && dm.task === 'text-generation') this.advancedSettings.offlineTextModel = id; else this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
+            if (act === 'exporttrace') { const lines = FaRecipe.tracesToLines(this._recipeTraces()); const blob = new Blob([lines || ''], { type: 'application/x-ndjson' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'recipe-traces-' + Date.now() + '.jsonl'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); return; }
+            if (act === 'cleartrace') { try { localStorage.removeItem('fa_recipe_traces_v1'); } catch (_) {} return this._omRenderPane(); }
             if (act === 'toolbench') { b.disabled = true; stat(id, '等待你的確認…'); const r = await this._omToolBench(id, (s) => stat(id, s)); stat(id, r.ok ? '' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }
             if (act === 'chattest') {
                 const inp0 = root.querySelector('[data-om-set=chattext]'); const out = root.querySelector('[data-om-chatout]'); const q = inp0 && inp0.value.trim(); if (!q) { out.textContent = '先輸入一句話'; return; }

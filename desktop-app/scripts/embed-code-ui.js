@@ -105,5 +105,13 @@ function embedVlm() {
     console.log('已更新 FaVlm（' + core.length + ' 字元）');
 }
 embedVlm();
+function embedRecipe() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/recipe_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* RECIPE-BEGIN */'), b = src.indexOf('/* RECIPE-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 RECIPE 標記');
+    src = src.slice(0, a) + '/* RECIPE-BEGIN */\nconst FaRecipe = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaRecipe;\n})();\n' + src.slice(b);
+    console.log('已更新 FaRecipe（' + core.length + ' 字元）');
+}
+embedRecipe();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
