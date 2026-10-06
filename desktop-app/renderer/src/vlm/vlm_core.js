@@ -16,18 +16,15 @@
         { id: 'smolvlm-256m', gpuNeedsF16: true, label: 'SmolVLM 256M（可以問問題）', task: 'image-to-text', arch: 'vision2seq', repo: 'HuggingFaceTB/SmolVLM-256M-Instruct',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文為主', license: 'Apache-2.0',
             dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q8', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, measured: 'CPU 4 執行緒：約 45～70 秒；第一次實測輸出一直重複同一句（已加重複懲罰，待重測）', notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
+            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, measured: 'CPU 約 16～38 秒、Intel GPU 約 10 秒；已加重複懲罰，不再卡在迴圈，但細節仍會幻覺（把頭盔笑容讀成數字 3、編出不存在的文字）。只適合快速粗略描述，不要拿來讀字或數東西', notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
         { id: 'vit-gpt2', label: 'ViT-GPT2（最簡單的一句話描述）', task: 'image-to-text', arch: 'vit-gpt2', repo: 'Xenova/vit-gpt2-image-captioning',
             tasks: ['caption'], lang: '英文', license: 'Apache-2.0',
             dtype: { gpu: 'q8', cpu: 'q8' }, bytes: { gpu: 238 * MB, cpu: 238 * MB }, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：約 2 秒（首次含下載與載入約 16 秒）', notes: '只能產生一句短描述，沒有 OCR、不能問問題；最舊也最簡單，準確度最低（實測把機器人說成「時鐘上的卡通人物」）。' },
-        { id: 'paligemma2-3b-224', gpuNeedsF16: true, label: 'PaliGemma 2 3B（大，只能用 GPU）', task: 'image-to-text', arch: 'paligemma', repo: 'onnx-community/paligemma2-3b-pt-224',
-            tasks: ['caption', 'detailed', 'ocr', 'ask'], lang: '多語（提示詞英文）', license: 'Gemma',
-            dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: null },
-            bytes: { gpu: 2765 * MB, cpu: null }, gpuOnly: true, verified: false, knownIssue: '真實機器上載入失敗：「operation does not support unaligned accesses」（WebAssembly 對齊錯誤，常見於超大模型）；已改成 GPU 載入時固定單執行緒，但還沒驗證有沒有改善。約 2.7GB，很可能超過瀏覽器的記憶體限制。', notes: '約 2.7GB，要有 WebGPU 與足夠的顯示記憶體；沒有 GPU 就不能用。預訓練（pt）版本，提示詞要用 PaliGemma 的格式。' },
+        // PaliGemma 2 3B 已從清單移除（2026-10-06）：使用者機器上載入失敗「operation does not support unaligned accesses」，無法驗證。Worker／buildTask 裡的 paligemma 分支保留，之後有可行的轉檔再加回來。
         { id: 'llava-interleave-qwen-0.5b', gpuNeedsF16: true, label: 'LLaVA-Interleave Qwen 0.5B（實驗，社群轉檔）', task: 'image-to-text', arch: 'llava', repo: 'luisresende13/llava-interleave-qwen-0.5b-hf', processorRepo: 'llava-hf/llava-interleave-qwen-0.5b-hf',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文與中文', license: 'Tongyi Qianwen Research',
             dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：簡短與詳細描述各約 140～150 秒（很慢）；內容是目前實測最準的（藍白機器人、金色硬幣、圓形金邊框）', notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
+            bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: true, verifiedOn: 'cpu+gpu', measured: 'CPU 4 執行緒約 140～150 秒（很慢）；Intel GPU 約 23 秒；內容是目前實測最準的（藍白機器人、金色硬幣、圓形金邊框）', notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];

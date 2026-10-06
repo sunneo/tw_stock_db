@@ -3,16 +3,19 @@ let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };
 // 登記表
 check('default model exists and is an image model', V.byId(V.DEFAULT_MODEL) && V.byId(V.DEFAULT_MODEL).task === 'image-to-text');
-check('named models present (PaliGemma, LLaVA-Interleave-Qwen)', V.byId('paligemma2-3b-224') && V.byId('llava-interleave-qwen-0.5b'));
+check('named models present (LLaVA-Interleave-Qwen)', V.byId('llava-interleave-qwen-0.5b'));
+check('PaliGemma is removed from the list (cannot load on real machines)', !V.byId('paligemma2-3b-224'));
 check('ids unique and repos unique', new Set(V.MODELS.map((m) => m.id)).size === V.MODELS.length && new Set(V.MODELS.map((m) => m.repo.toLowerCase())).size === V.MODELS.length);
 check('every image model has dtype+bytes for cpu unless gpuOnly', V.imageModels().every((m) => m.gpuOnly ? m.dtype.cpu === null : (m.dtype.cpu && m.bytes.cpu > 0)));
 check('whisper is manage-only (not an image model)', V.byId('whisper-base').managedOnly && !V.imageModels().some((m) => m.id === 'whisper-base'));
-check('verified flags match what was actually measured (cpu path)', V.byId('florence-2-base-ft').verified && V.byId('vit-gpt2').verified && V.byId('llava-interleave-qwen-0.5b').verified && !V.byId('smolvlm-256m').verified && !V.byId('paligemma2-3b-224').verified && V.byId('llava-interleave-qwen-0.5b').experimental === true);
-check('verified models say on which device they were verified; PaliGemma carries its known issue', V.MODELS.filter((m) => m.verified && m.task === 'image-to-text').every((m) => m.verifiedOn === 'cpu') && /unaligned/.test(V.byId('paligemma2-3b-224').knownIssue));
+check('verified flags match what was actually measured (cpu path)', V.byId('florence-2-base-ft').verified && V.byId('vit-gpt2').verified && V.byId('llava-interleave-qwen-0.5b').verified && !V.byId('smolvlm-256m').verified && V.byId('llava-interleave-qwen-0.5b').experimental === true);
+check('verified models say on which device they were verified', V.MODELS.filter((m) => m.verified && m.task === 'image-to-text').every((m) => /cpu|gpu/.test(m.verifiedOn)));
 check('repetition penalty only for chat models and not for OCR', V.generationParams(V.byId('smolvlm-256m'), 'detailed').repetition_penalty > 1 && !V.generationParams(V.byId('smolvlm-256m'), 'ocr').repetition_penalty && !Object.keys(V.generationParams(V.byId('florence-2-base-ft'), 'detailed')).length);
 check('default max tokens: short for captions', V.defaultMaxTokens('caption') < V.defaultMaxTokens('detailed'));
 // 裝置：偏好 GPU 不支援就降級 CPU
-const fl = V.byId('florence-2-base-ft'), pg = V.byId('paligemma2-3b-224');
+const fl = V.byId('florence-2-base-ft');
+// 合成的「只能用 GPU」模型（PaliGemma 已從清單移除，但裝置與提示詞邏輯仍要測）
+const pg = { id: 'synthetic-gpu-only', arch: 'paligemma', label: '合成模型', gpuOnly: true, gpuNeedsF16: true, task: 'image-to-text', tasks: ['caption', 'ocr', 'ask'], dtype: { gpu: 'q4f16', cpu: null } };
 let r = V.resolveDevice(fl, 'gpu', true); check('prefer gpu + gpu available → webgpu then cpu fallback', r.order.join() === 'webgpu,wasm', r);
 r = V.resolveDevice(fl, 'gpu', false); check('prefer gpu but no webgpu → cpu', r.order.join() === 'wasm' && /降級/.test(r.reason), r);
 r = V.resolveDevice(fl, 'cpu', true); check('prefer cpu → cpu only', r.order.join() === 'wasm', r);
@@ -69,8 +72,6 @@ const none = {}, gpuOk = { available: true, f16: true }, noGpu = { available: fa
 let pk = V.pickModel('ocr', none, 'florence-2-base-ft', noGpu); check('pick: preferred model that supports the task', pk.model.id === 'florence-2-base-ft', pk);
 pk = V.pickModel('ask', { 'smolvlm-256m': 100 }, 'florence-2-base-ft', noGpu); check('pick: ask → falls to an installed chat model', pk.model.id === 'smolvlm-256m' && /已下載/.test(pk.reason), pk);
 pk = V.pickModel('ask', none, 'florence-2-base-ft', noGpu); check('pick: ask with nothing installed → preferred (task will be downgraded)', pk.model.id === 'florence-2-base-ft' && /降級/.test(pk.reason), pk);
-pk = V.pickModel('ask', { 'paligemma2-3b-224': 5 }, 'florence-2-base-ft', noGpu); check('pick: gpu-only model is ignored without gpu', pk.model.id === 'florence-2-base-ft', pk);
-pk = V.pickModel('ask', { 'paligemma2-3b-224': 5 }, 'florence-2-base-ft', gpuOk); check('pick: gpu-only model allowed with gpu+f16', pk.model.id === 'paligemma2-3b-224', pk);
 // 優先順序
 check('vision policies', V.visionOrder('llm-first').join() === 'llm,offline' && V.visionOrder('offline-first').join() === 'offline,llm' && V.visionOrder('llm').join() === 'llm' && V.visionOrder('offline').join() === 'offline' && V.visionOrder('nonsense').join() === 'llm,offline');
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
