@@ -12,22 +12,22 @@
         { id: 'florence-2-base-ft', gpuNeedsF16: true, label: 'Florence-2 base（推薦：小、快、會 OCR）', task: 'image-to-text', arch: 'florence2', repo: 'onnx-community/Florence-2-base-ft',
             tasks: ['caption', 'detailed', 'ocr', 'objects'], lang: '英文', license: 'MIT',
             dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'fp16', encoder_model: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', encoder_model: 'q4', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 344 * MB, cpu: 208 * MB }, verified: false, notes: '描述圖片（簡短／詳細）、OCR 文字辨識、物件偵測；沒有自由問答。約 0.23B 參數。' },
+            bytes: { gpu: 344 * MB, cpu: 208 * MB }, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：簡短描述約 34 秒（含下載與載入）、詳細描述約 21 秒；GPU 路徑在使用者機器上載入成功（推論未量測）', notes: '描述圖片（簡短／詳細）、OCR 文字辨識、物件偵測；沒有自由問答。約 0.23B 參數。小模型，細節會錯（實測把機器人頭上的標誌讀成 B）。' },
         { id: 'smolvlm-256m', gpuNeedsF16: true, label: 'SmolVLM 256M（可以問問題）', task: 'image-to-text', arch: 'vision2seq', repo: 'HuggingFaceTB/SmolVLM-256M-Instruct',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文為主', license: 'Apache-2.0',
             dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q8', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
+            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, measured: 'CPU 4 執行緒：約 45～70 秒；第一次實測輸出一直重複同一句（已加重複懲罰，待重測）', notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
         { id: 'vit-gpt2', label: 'ViT-GPT2（最簡單的一句話描述）', task: 'image-to-text', arch: 'vit-gpt2', repo: 'Xenova/vit-gpt2-image-captioning',
             tasks: ['caption'], lang: '英文', license: 'Apache-2.0',
-            dtype: { gpu: 'q8', cpu: 'q8' }, bytes: { gpu: 238 * MB, cpu: 238 * MB }, verified: false, notes: '只能產生一句短描述，沒有 OCR、不能問問題；最舊也最簡單。' },
+            dtype: { gpu: 'q8', cpu: 'q8' }, bytes: { gpu: 238 * MB, cpu: 238 * MB }, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：約 2 秒（首次含下載與載入約 16 秒）', notes: '只能產生一句短描述，沒有 OCR、不能問問題；最舊也最簡單，準確度最低（實測把機器人說成「時鐘上的卡通人物」）。' },
         { id: 'paligemma2-3b-224', gpuNeedsF16: true, label: 'PaliGemma 2 3B（大，只能用 GPU）', task: 'image-to-text', arch: 'paligemma', repo: 'onnx-community/paligemma2-3b-pt-224',
             tasks: ['caption', 'detailed', 'ocr', 'ask'], lang: '多語（提示詞英文）', license: 'Gemma',
             dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: null },
-            bytes: { gpu: 2765 * MB, cpu: null }, gpuOnly: true, verified: false, notes: '約 2.7GB，要有 WebGPU 與足夠的顯示記憶體；沒有 GPU 就不能用。預訓練（pt）版本，提示詞要用 PaliGemma 的格式。' },
+            bytes: { gpu: 2765 * MB, cpu: null }, gpuOnly: true, verified: false, knownIssue: '真實機器上載入失敗：「operation does not support unaligned accesses」（WebAssembly 對齊錯誤，常見於超大模型）；已改成 GPU 載入時固定單執行緒，但還沒驗證有沒有改善。約 2.7GB，很可能超過瀏覽器的記憶體限制。', notes: '約 2.7GB，要有 WebGPU 與足夠的顯示記憶體；沒有 GPU 就不能用。預訓練（pt）版本，提示詞要用 PaliGemma 的格式。' },
         { id: 'llava-interleave-qwen-0.5b', gpuNeedsF16: true, label: 'LLaVA-Interleave Qwen 0.5B（實驗，社群轉檔）', task: 'image-to-text', arch: 'llava', repo: 'luisresende13/llava-interleave-qwen-0.5b-hf', processorRepo: 'llava-hf/llava-interleave-qwen-0.5b-hf',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文與中文', license: 'Tongyi Qianwen Research',
             dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: false, notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
+            bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：簡短與詳細描述各約 140～150 秒（很慢）；內容是目前實測最準的（藍白機器人、金色硬幣、圓形金邊框）', notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -86,6 +86,13 @@
         if (task === 'ask') return { task, prompt: String(prompt || '').trim() || CHAT_PROMPT.detailed, note: note.join('；') || undefined };
         return { task, prompt: CHAT_PROMPT[task], note: note.join('；') || undefined };
     }
+    // 生成參數（傳給 generate）。實測 SmolVLM 256M 會陷入重複同一句的迴圈 → 對話式模型（vision2seq、llava）在描述類任務加重複懲罰；OCR 不加。
+    function generationParams(model, task) {
+        if ((model.arch === 'vision2seq' || model.arch === 'llava') && task !== 'ocr') return { repetition_penalty: 1.25, no_repeat_ngram_size: 6 };
+        return {};
+    }
+    // 各任務預設最多產生多少 token（描述不需要寫到上限；太長的輸出多半是在重複）
+    function defaultMaxTokens(task) { return task === 'caption' ? 96 : (task === 'ocr' ? 384 : 256); }
     // 把 Worker 回傳的原始結果整理成文字。Florence-2 的結果是 { '<TASK>': 文字 | {bboxes, labels, quad_boxes} }
     function formatResult(model, raw, task) {
         if (raw == null) return '';
@@ -152,5 +159,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

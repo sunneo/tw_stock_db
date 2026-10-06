@@ -7,7 +7,10 @@ check('named models present (PaliGemma, LLaVA-Interleave-Qwen)', V.byId('paligem
 check('ids unique and repos unique', new Set(V.MODELS.map((m) => m.id)).size === V.MODELS.length && new Set(V.MODELS.map((m) => m.repo.toLowerCase())).size === V.MODELS.length);
 check('every image model has dtype+bytes for cpu unless gpuOnly', V.imageModels().every((m) => m.gpuOnly ? m.dtype.cpu === null : (m.dtype.cpu && m.bytes.cpu > 0)));
 check('whisper is manage-only (not an image model)', V.byId('whisper-base').managedOnly && !V.imageModels().some((m) => m.id === 'whisper-base'));
-check('experimental / unverified models are flagged honestly', V.MODELS.filter((m) => m.task === 'image-to-text').every((m) => m.verified === false) && V.byId('llava-interleave-qwen-0.5b').experimental === true);
+check('verified flags match what was actually measured (cpu path)', V.byId('florence-2-base-ft').verified && V.byId('vit-gpt2').verified && V.byId('llava-interleave-qwen-0.5b').verified && !V.byId('smolvlm-256m').verified && !V.byId('paligemma2-3b-224').verified && V.byId('llava-interleave-qwen-0.5b').experimental === true);
+check('verified models say on which device they were verified; PaliGemma carries its known issue', V.MODELS.filter((m) => m.verified && m.task === 'image-to-text').every((m) => m.verifiedOn === 'cpu') && /unaligned/.test(V.byId('paligemma2-3b-224').knownIssue));
+check('repetition penalty only for chat models and not for OCR', V.generationParams(V.byId('smolvlm-256m'), 'detailed').repetition_penalty > 1 && !V.generationParams(V.byId('smolvlm-256m'), 'ocr').repetition_penalty && !Object.keys(V.generationParams(V.byId('florence-2-base-ft'), 'detailed')).length);
+check('default max tokens: short for captions', V.defaultMaxTokens('caption') < V.defaultMaxTokens('detailed'));
 // 裝置：偏好 GPU 不支援就降級 CPU
 const fl = V.byId('florence-2-base-ft'), pg = V.byId('paligemma2-3b-224');
 let r = V.resolveDevice(fl, 'gpu', true); check('prefer gpu + gpu available → webgpu then cpu fallback', r.order.join() === 'webgpu,wasm', r);
