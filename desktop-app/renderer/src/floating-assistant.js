@@ -6668,13 +6668,15 @@ const holder = {};
         if (wantGpu && !gpuAvailable) return { order: ['wasm'], reason: '偏好 GPU，但這個環境沒有偵測到 WebGPU，降級成 CPU' };
         return { order: ['wasm'], reason: '偏好 CPU' };
     }
-    // maxCores：使用者設定的 CPU 核心上限（0／空＝不限制，用偵測到的全部）；hardware：navigator.hardwareConcurrency；isolated：crossOriginIsolated。
-    // 多執行緒的 WASM 需要 SharedArrayBuffer（頁面要是 cross-origin isolated），不然 onnxruntime-web 只會用 1 個執行緒——這裡先算好、介面照實顯示。
-    function resolveThreads(maxCores, hardware, isolated) {
+    // maxCores：使用者設定的 CPU 核心上限（0／空＝不限制，用偵測到的全部）；hardware：navigator.hardwareConcurrency；
+    // canThread：這個環境能不能多執行緒——onnxruntime-web 自己檢查的三件事：SharedArrayBuffer 存在、能傳給 Worker、WebAssembly 執行緒指令可驗證通過
+    // （**不是**非要 crossOriginIsolated：Electron 桌面版開了 SharedArrayBuffer 旗標，頁面不是 cross-origin isolated 也一樣能多執行緒）；reason：不能時的原因。
+    function resolveThreads(maxCores, hardware, canThread, reason) {
+        const isolated = canThread;
         const hw = Math.max(1, Math.floor(Number(hardware) || 1));
         const want = Number(maxCores) > 0 ? Math.min(hw, Math.floor(Number(maxCores))) : hw;
         const requested = Math.max(1, want);
-        return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : '目前頁面不是 cross-origin isolated（沒有 SharedArrayBuffer），CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
+        return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : (reason || '這個環境不能多執行緒（沒有可用的 SharedArrayBuffer）') + '，CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
     }
 
     // ---------- 任務與提示詞 ----------
@@ -17246,8 +17248,8 @@ ${fnData.code}
                 // crossOriginIsolated不成立（host頁面沒加coi-serviceworker）
                 // 時onnxruntime-web會自動夾回1、不會壞，只是慢。
                 if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
-                    const isolated = (typeof crossOriginIsolated !== 'undefined') && crossOriginIsolated;
-                    env.backends.onnx.wasm.numThreads = isolated ? this._getWhisperWasmThreads() : 1;
+                    const canThread = this._omThreadSupport().ok; // 不是非要 crossOriginIsolated：能用 SharedArrayBuffer 就能多執行緒（見 _omThreadSupport）
+                    env.backends.onnx.wasm.numThreads = canThread ? this._getWhisperWasmThreads() : 1;
                 }
             } catch (_) { /* env欄位結構若隨版本變動，載入本身不該因此失敗 */ }
             return mod;
@@ -31470,9 +31472,9 @@ ${sourceTool.handlerScript}
         const codingPublishModeSelect = document.getElementById('ai-coding-publish-mode');
         if (codingPublishModeSelect) codingPublishModeSelect.value = this.advancedSettings.codingPublishMode === 'auto' ? 'auto' : 'ask';
         const whisperDeviceSelect = document.getElementById('ai-whisper-device');
-        if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto';
+        if (whisperDeviceSelect) whisperDeviceSelect.value = this.advancedSettings.offlineDevicePreference === 'cpu' ? 'cpu' : 'auto';
         const whisperThreadsInput = document.getElementById('ai-whisper-threads');
-        if (whisperThreadsInput) whisperThreadsInput.value = this._getWhisperWasmThreads();
+        if (whisperThreadsInput) whisperThreadsInput.value = this._omSettings().maxCores || this._omCores().hardware;
         const extractAudioFormatSelect = document.getElementById('ai-extract-audio-format');
         if (extractAudioFormatSelect) extractAudioFormatSelect.value = this.advancedSettings.extractAudioFormat === 'wav' ? 'wav' : 'mp3';
         const subtitleSizeInput = document.getElementById('ai-subtitle-size');
@@ -45878,7 +45880,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false };
     }
     _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
-    _omCores() { return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: typeof crossOriginIsolated !== 'undefined' && !!crossOriginIsolated }; }
+    // 能不能 WASM 多執行緒：跟 onnxruntime-web 自己檢查的同三件事（SharedArrayBuffer 存在、能傳給 Worker、執行緒指令可驗證）。不是非要 crossOriginIsolated：
+    // 桌面版開了 SharedArrayBuffer 旗標（main.js），頁面不是 cross-origin isolated 也能多執行緒（打包版實測：頁面與 Worker 裡共享記憶體、Atomics 都正常）。
+    _omThreadSupport() {
+        if (this._omThreadCache) return this._omThreadCache;
+        const r = { ok: false, coi: typeof crossOriginIsolated !== 'undefined' && !!crossOriginIsolated, reason: '' };
+        try {
+            if (typeof SharedArrayBuffer === 'undefined') r.reason = '這個環境沒有 SharedArrayBuffer（網頁版需要頁面是 cross-origin isolated；桌面版需要啟用 SharedArrayBuffer）';
+            else { new MessageChannel().port1.postMessage(new SharedArrayBuffer(1)); r.ok = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 5, 4, 1, 3, 1, 1, 10, 11, 1, 9, 0, 65, 0, 254, 16, 2, 0, 26, 11])); if (!r.ok) r.reason = 'WebAssembly 執行緒指令驗證沒通過'; }
+        } catch (e) { r.reason = 'SharedArrayBuffer 沒辦法傳給 Worker：' + String((e && e.message) || e); }
+        return (this._omThreadCache = r);
+    }
+    _omCores() { const ts = this._omThreadSupport(); return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: ts.ok, coi: ts.coi, reason: ts.reason }; }
     // WebGPU 偵測（含顯示卡名稱與 fp16 支援）；結果快取，force 重新偵測
     async _omGpuInfo(force) {
         if (this._omGpuCache && !force) return this._omGpuCache;
@@ -45927,7 +45940,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 依序嘗試裝置載入模型（GPU 失敗自動降級 CPU）。回傳 { device, tried, threads }
     async _vlmEnsureLoaded(model, order, update, log) {
         const loaded = this._vlmLoaded; if (loaded && loaded.modelId === model.id && order.includes(loaded.device) && this._vlmWk) return Object.assign({ tried: [] }, loaded);
-        const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated); const tried = [];
+        const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated, cores.reason); const tried = [];
         for (const dev of order) {
             const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];
             if (!dt) { tried.push({ device: dev, error: '這個模型沒有 ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 的設定' }); continue; }
@@ -46055,7 +46068,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _omRenderPane() {
         const root = this._omPaneRoot; if (!root) return;
-        const S = this._omSettings(); const cores = this._omCores(); const gpu = await this._omGpuInfo(); const th = FaVlm.resolveThreads(S.maxCores, cores.hardware, cores.isolated); const usage = await this._omUsage();
+        const S = this._omSettings(); const cores = this._omCores(); const gpu = await this._omGpuInfo(); const th = FaVlm.resolveThreads(S.maxCores, cores.hardware, cores.isolated, cores.reason); const usage = await this._omUsage();
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); const inp = this._otPaneInput(); const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
         const rows = FaVlm.MODELS.map((m) => {
             const u = usage.byModel[m.id] || { bytes: 0, files: 0 }; const have = u.files > 0; const gpuOnlyBad = m.gpuOnly && !gpu.available; const sizeTxt = m.bytes.cpu ? 'CPU 約 ' + FaVlm.fmtBytes(m.bytes.cpu) + (m.bytes.gpu && m.bytes.gpu !== m.bytes.cpu ? '／GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu) : '') : 'GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu);
@@ -46075,7 +46088,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <label>偏好 <select data-om-set="device" style="${inp}"><option value="gpu" ${S.device === 'gpu' ? 'selected' : ''}>GPU（不支援時自動降級成 CPU）</option><option value="cpu" ${S.device === 'cpu' ? 'selected' : ''}>CPU</option></select></label>
               <div style="color:${gpu.available ? '#34d399' : '#fbbf24'}; margin:4px 0;">${gpu.available ? '✅ 偵測到 WebGPU：' + esc(gpu.name) + (gpu.f16 ? '（支援 fp16）' : '（不支援 fp16 著色器；部分模型可能退回 CPU）') : '⚠️ 沒有 WebGPU：' + esc(gpu.reason) + '。所有模型一律用 CPU；只能用 GPU 的模型不能用。'}</div>
               <label>CPU 核心上限 <input type="number" min="0" max="${cores.hardware}" step="1" value="${S.maxCores || ''}" placeholder="不限制" data-om-set="cores" style="${inp} width:90px;"> <span style="color:#94a3b8;">（偵測到 ${cores.hardware} 個邏輯核心；留空＝不限制）</span></label>
-              <div style="color:#94a3b8; margin-top:4px;">CPU 路徑會請求 ${th.requested} 個執行緒；實際 ${th.effective} 個。${esc(th.note)}　Whisper 語音轉文字也用同一組設定。</div>
+              <div style="color:#94a3b8; margin-top:4px;">CPU 路徑會請求 ${th.requested} 個執行緒；實際 ${th.effective} 個。${cores.isolated ? '（SharedArrayBuffer 可用' + (cores.coi ? '，頁面是 cross-origin isolated' : '，頁面不是 cross-origin isolated 但仍可多執行緒') + '）' : ''}${esc(th.note)}　Whisper 語音轉文字也用同一組設定。</div>
             </div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
               <div style="font-weight:600; margin-bottom:4px;">儲存空間</div>
@@ -51037,7 +51050,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="mp3">MP3（預設，省空間，約是WAV的1/5~1/6）</option>
                                         <option value="wav">WAV（無損，檔案較大）</option>
                                     </select>
-                                    <p class="ai-advanced-hint">運算裝置（GPU／CPU）與 CPU 核心數，請到「離線模型管理」分頁設定（跟離線圖像轉文字共用）。</p>
+                                    <label class="ai-advanced-label" for="ai-whisper-device" style="font-weight:normal; margin-top:8px;">運算裝置（跟「離線模型管理」是同一個設定）</label>
+                                    <select id="ai-whisper-device" class="ai-advanced-input">
+                                        <option value="auto">偏好 GPU（有 WebGPU 先用，不支援或失敗自動降級 CPU）</option>
+                                        <option value="cpu">只用 CPU</option>
+                                    </select>
+                                    <label class="ai-advanced-label" for="ai-whisper-threads" style="font-weight:normal; margin-top:8px;">CPU 核心上限（跟「離線模型管理」是同一個設定；Whisper、離線圖像轉文字共用）</label>
+                                    <input type="number" id="ai-whisper-threads" class="ai-advanced-input" min="1" max="64" step="1">
+                                    <p class="ai-advanced-hint">CPU 路徑請求的執行緒數。要真的多執行緒，頁面必須是 cross-origin isolated（SharedArrayBuffer）；目前不是的話只會用 1 個，「離線模型管理」分頁會顯示實際值。</p>
                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
                                         <span class="ai-advanced-hint" style="margin:0;">模型快取占用：<b id="ai-whisper-cache-size">—</b></span>
                                         <button type="button" id="ai-whisper-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
@@ -54257,8 +54277,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const whisperDeviceSelect = document.getElementById('ai-whisper-device');
         if (whisperDeviceSelect) {
             whisperDeviceSelect.addEventListener('change', () => {
+                this.advancedSettings.offlineDevicePreference = whisperDeviceSelect.value === 'cpu' ? 'cpu' : 'gpu';
                 this.advancedSettings.whisperDevicePreference = whisperDeviceSelect.value === 'cpu' ? 'cpu' : 'auto';
-                this._saveAdvancedSettings();
+                this._saveAdvancedSettings(); this._vlmTerminate(); if (this._omPaneRoot) this._omRenderPane();
                 // 下次轉錄重挑device
                 this._whisperTranscriber = null;
                 this._whisperTranscriberDevice = null;
@@ -54268,9 +54289,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (whisperThreadsInput) {
             whisperThreadsInput.addEventListener('change', () => {
                 const n = Number(whisperThreadsInput.value);
-                if (Number.isFinite(n) && n >= 1) this.advancedSettings.whisperWasmThreads = Math.min(16, Math.max(1, Math.round(n)));
-                this._saveAdvancedSettings();
-                whisperThreadsInput.value = this._getWhisperWasmThreads();
+                if (Number.isFinite(n) && n >= 1) { this.advancedSettings.offlineMaxCpuCores = Math.min(256, Math.max(1, Math.round(n))); this.advancedSettings.whisperWasmThreads = Math.min(16, Math.max(1, Math.round(n))); }
+                this._saveAdvancedSettings(); this._vlmTerminate(); if (this._omPaneRoot) this._omRenderPane();
+                whisperThreadsInput.value = this._omSettings().maxCores || this._omCores().hardware;
                 // 下次轉錄重建pipeline時才會套用新的執行緒數
                 this._transformersJsModules = null;
                 this._whisperTranscriber = null;

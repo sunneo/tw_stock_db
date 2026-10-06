@@ -54,13 +54,15 @@
         if (wantGpu && !gpuAvailable) return { order: ['wasm'], reason: '偏好 GPU，但這個環境沒有偵測到 WebGPU，降級成 CPU' };
         return { order: ['wasm'], reason: '偏好 CPU' };
     }
-    // maxCores：使用者設定的 CPU 核心上限（0／空＝不限制，用偵測到的全部）；hardware：navigator.hardwareConcurrency；isolated：crossOriginIsolated。
-    // 多執行緒的 WASM 需要 SharedArrayBuffer（頁面要是 cross-origin isolated），不然 onnxruntime-web 只會用 1 個執行緒——這裡先算好、介面照實顯示。
-    function resolveThreads(maxCores, hardware, isolated) {
+    // maxCores：使用者設定的 CPU 核心上限（0／空＝不限制，用偵測到的全部）；hardware：navigator.hardwareConcurrency；
+    // canThread：這個環境能不能多執行緒——onnxruntime-web 自己檢查的三件事：SharedArrayBuffer 存在、能傳給 Worker、WebAssembly 執行緒指令可驗證通過
+    // （**不是**非要 crossOriginIsolated：Electron 桌面版開了 SharedArrayBuffer 旗標，頁面不是 cross-origin isolated 也一樣能多執行緒）；reason：不能時的原因。
+    function resolveThreads(maxCores, hardware, canThread, reason) {
+        const isolated = canThread;
         const hw = Math.max(1, Math.floor(Number(hardware) || 1));
         const want = Number(maxCores) > 0 ? Math.min(hw, Math.floor(Number(maxCores))) : hw;
         const requested = Math.max(1, want);
-        return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : '目前頁面不是 cross-origin isolated（沒有 SharedArrayBuffer），CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
+        return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : (reason || '這個環境不能多執行緒（沒有可用的 SharedArrayBuffer）') + '，CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
     }
 
     // ---------- 任務與提示詞 ----------

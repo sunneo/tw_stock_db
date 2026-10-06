@@ -23,7 +23,7 @@ r = V.resolveDevice(fl, 'gpu', true, undefined); check('unknown f16 info does no
 let th = V.resolveThreads(0, 8, true); check('no limit → all cores', th.requested === 8 && th.effective === 8, th);
 th = V.resolveThreads(4, 8, true); check('limit 4 of 8', th.requested === 4 && th.effective === 4, th);
 th = V.resolveThreads(16, 8, true); check('limit above hardware is clamped', th.requested === 8, th);
-th = V.resolveThreads(4, 8, false); check('not isolated → effective 1 with an honest note', th.requested === 4 && th.effective === 1 && /1 個執行緒/.test(th.note), th);
+th = V.resolveThreads(4, 8, false, '沒有 SharedArrayBuffer'); check('cannot thread → effective 1 with an honest note and the reason', th.requested === 4 && th.effective === 1 && /1 個執行緒/.test(th.note) && /沒有 SharedArrayBuffer/.test(th.note), th);
 th = V.resolveThreads(NaN, undefined, true); check('missing hardware info → 1', th.requested === 1 && th.effective === 1, th);
 // 任務
 let t = V.buildTask(fl, 'ocr'); check('florence ocr → <OCR>', t.prompt === '<OCR>' && t.task === 'ocr', t);
