@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 離線模型（Whisper、離線圖像轉文字）的多執行緒需要 SharedArrayBuffer：靜態網站不能設標頭，用 coi-serviceworker 取得 cross-origin isolated（?nocoi 可關閉） -->
+<script src="../coi-serviceworker.js"></script>
 <title>AI 助理</title>
 <style>
   :root {
