@@ -177,6 +177,18 @@
   - `把這幾張圖合成一份PDF`
   - `/media-image-to-pdf a4`
 
+### 情境→UML→程式碼骨架（含架構與 library 抉擇）（`uml-to-code`）
+
+把系統情境設計成 UML 再展開成程式骨架（Python／TypeScript／Java）：UML 用一行一件事的文字 DSL，程式驗證（精確到哪一行）、推薦架構與各領域 library（分層／六角／命令列…，程式依關鍵字決定，平手才問）、產生分層專案（domain／services／repositories／api／cli／測試／依賴清單／README 設計決策表與 Mermaid 圖）。離線小模型也能用：程式先讀情境（詞彙表＋動作表），讀不出才一次一個小問題地問模型，並由上而下 rework 有問題的區域。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`coding`
+- AI 工具：`uml_to_code`、`design_choices`、`uml_design`
+- 範例：
+  - `設計一個線上書店系統，從情境做 uml 再產生程式骨架`
+  - `顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍——產生 Python 專案`
+  - `這個系統該用哪些架構和 library？`
+
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。

@@ -165,6 +165,15 @@ categories:
         updated: 2026-10-06
         history:
           - { date: 2026-10-06, note: "新增 images_to_pdf 工具與 /media-image-to-pdf（先前沒有內建，AI 委派子任務燒掉 20 輪、再說沒有工具，最後自己寫 Python）；同時掛進 file_analysis 與 media_av domain，離線訓練器加規則" }
+      - id: uml-to-code
+        name: 情境→UML→程式碼骨架（含架構與 library 抉擇）
+        summary: 把系統情境設計成 UML 再展開成程式骨架（Python／TypeScript／Java）：UML 用一行一件事的文字 DSL，程式驗證（精確到哪一行）、推薦架構與各領域 library（分層／六角／命令列…，程式依關鍵字決定，平手才問）、產生分層專案（domain／services／repositories／api／cli／測試／依賴清單／README 設計決策表與 Mermaid 圖）。離線小模型也能用：程式先讀情境（詞彙表＋動作表），讀不出才一次一個小問題地問模型，並由上而下 rework 有問題的區域。
+        how: { domain: coding, tools: [uml_to_code, design_choices, uml_design] }
+        platforms: [web, desktop]
+        samples: ["設計一個線上書店系統，從情境做 uml 再產生程式骨架", "顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍——產生 Python 專案", "這個系統該用哪些架構和 library？"]
+        updated: 2026-10-07
+        history:
+          - { date: 2026-10-07, note: "新增 uml_to_code／design_choices／uml_design 與離線訓練器內建設計片段（uml_design 領域）；離線計畫新增 uml_code／uml_only 目標" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。

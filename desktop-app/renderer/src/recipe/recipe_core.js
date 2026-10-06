@@ -65,7 +65,7 @@
             else if (d.type === 'array' && /^(?:files?|file_ids?|images?|attachments?|pdfs?|inputs?|paths?)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a.map((x) => x.id); }
             else if (d.type === 'string' && /^(?:file(?:_id)?|image(?:_id)?|video(?:_id)?|audio(?:_id)?|pdf(?:_id)?|attachment(?:_id)?|input(?:_file)?|source)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a[a.length - 1].id; else if (sl.path) v = sl.path; }
             else if (d.type === 'string' && /^(?:path|filepath|file_path|dir|directory|folder)$/i.test(n)) v = sl.path || undefined;
-            else if (d.type === 'string' && /^(?:query|q|keyword|keywords|search|search_query|text|prompt|question|problem|problem_text|task|message|content|topic)$/i.test(n)) v = (sl.quoted || cleanQuery(text)) || undefined;
+            else if (d.type === 'string' && /^(?:query|q|keyword|keywords|search|search_query|text|prompt|question|problem|problem_text|task|message|content|topic|scenario|requirement|requirements|description)$/i.test(n)) v = (sl.quoted || cleanQuery(text)) || undefined;
             else if ((d.type === 'integer' || d.type === 'number') && numericDefs.length === 1 && d.required && Array.isArray(sl.numbers) && sl.numbers.length === 1) { const x = Number(sl.numbers[0]); if (Number.isFinite(x)) v = d.type === 'integer' ? Math.round(x) : x; }
             if (v !== undefined && v !== '') { values[n] = v; by[n] = 'program'; continue; }
             if (d.default !== undefined) { values[n] = d.default; by[n] = 'default'; continue; }
@@ -85,10 +85,11 @@
     }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
+    // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
     async function jsonStep(ctx) {
         const maxTries = ctx.maxTries || 2; const rejected = []; let last = null; let msgs = ctx.messages;
         for (let tries = 1; tries <= maxTries; tries++) {
-            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160 }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
+            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160, prefill: ctx.prefill }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
             const text = String(raw == null ? '' : raw); const obj = parseJsonLoose(text);
             const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
             if (!errs.length) return { ok: true, value: obj, tries, rejected };
@@ -128,7 +129,7 @@
     // 讓模型補欄位。回傳 { ok, values（只含模型填了非 null 的）, missing（模型也填不出的）, tries, rejected, error? }
     async function modelFill(opts) {
         const defs = opts.missing; if (!defs.length) return { ok: true, values: {}, missing: [], tries: 0, rejected: [] };
-        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2 });
+        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2, prefill: '{"' + defs[0].name + '":' });
         if (!r.ok) return { ok: false, values: {}, missing: defs, tries: r.tries, rejected: r.rejected, error: r.error };
         const values = {}; const still = [];
         for (const d of defs) { const v = r.value[d.name]; if (v === null || v === undefined) still.push(d); else values[d.name] = d.type === 'string' && typeof v === 'string' ? v.trim() : v; }
@@ -172,7 +173,7 @@
         return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
     }
     async function chooseTool(opts) {
-        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
+        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
         if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
     }
