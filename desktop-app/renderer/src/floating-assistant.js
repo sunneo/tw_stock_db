@@ -6638,10 +6638,10 @@ const holder = {};
             tasks: ['caption', 'detailed', 'ocr', 'ask'], lang: '多語（提示詞英文）', license: 'Gemma',
             dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: null },
             bytes: { gpu: 2765 * MB, cpu: null }, gpuOnly: true, verified: false, notes: '約 2.7GB，要有 WebGPU 與足夠的顯示記憶體；沒有 GPU 就不能用。預訓練（pt）版本，提示詞要用 PaliGemma 的格式。' },
-        { id: 'llava-interleave-qwen-0.5b', gpuNeedsF16: true, label: 'LLaVA-Interleave Qwen 0.5B（實驗，社群轉檔）', task: 'image-to-text', arch: 'llava', repo: 'luisresende13/llava-interleave-qwen-0.5b-hf',
+        { id: 'llava-interleave-qwen-0.5b', gpuNeedsF16: true, label: 'LLaVA-Interleave Qwen 0.5B（實驗，社群轉檔）', task: 'image-to-text', arch: 'llava', repo: 'luisresende13/llava-interleave-qwen-0.5b-hf', processorRepo: 'llava-hf/llava-interleave-qwen-0.5b-hf',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文與中文', license: 'Tongyi Qianwen Research',
-            dtype: { gpu: { embed_tokens: 'fp32', vision_encoder: 'fp16', decoder_model_merged: 'fp16' }, cpu: { embed_tokens: 'fp32', vision_encoder: 'int8', decoder_model_merged: 'int8' } },
-            bytes: { gpu: 2250 * MB, cpu: 1445 * MB }, experimental: true, verified: false, notes: '沒有官方的瀏覽器版（transformers.js）轉檔，這是社群轉出的 ONNX；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 1.4～2.2GB。' },
+            dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', decoder_model_merged: 'q4' } },
+            bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: false, notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
@@ -11352,7 +11352,7 @@ function faVlmWorkerMain() {
             o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await cls.from_pretrained(repo, opts);
         } else if (m.arch === 'llava') {
             const cls = L.LlavaForConditionalGeneration || L.AutoModelForImageTextToText || L.AutoModelForVision2Seq; if (!cls) throw new Error('這個版本的 transformers.js 沒有 llava 架構支援');
-            o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await cls.from_pretrained(repo, opts);
+            o.processor = await L.AutoProcessor.from_pretrained(m.processorRepo || repo); o.model = await cls.from_pretrained(repo, opts); // 社群轉檔的 repo 沒有 processor_config.json：處理器與分詞器從原版 repo 載入
         } else if (m.arch === 'vit-gpt2') {
             o.pipe = await L.pipeline('image-to-text', repo, opts);
         } else throw new Error('不認得的模型架構：' + m.arch);
@@ -45958,7 +45958,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (log) log('載入模型到 ' + (dev === 'webgpu' ? 'GPU（WebGPU）' : 'CPU（WASM，' + th.effective + ' 個執行緒）') + '…');
                 let lastLibErr = null;
                 for (const libUrl of libUrls) {
-                    try { await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, dtype: dt, device: dev, threads: th.effective }, this._vlmProgressAgg(model.label, update || (() => {}))); lastLibErr = null; break; }
+                    try { await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, processorRepo: model.processorRepo || model.repo, dtype: dt, device: dev, threads: th.effective }, this._vlmProgressAgg(model.label, update || (() => {}))); lastLibErr = null; break; }
                     catch (e2) { lastLibErr = e2; if (!/dynamically imported module|Failed to fetch|import/i.test(String((e2 && e2.message) || e2)) || libUrl === libUrls[libUrls.length - 1]) break; if (log) log('⚠️ 函式庫載入失敗，改用另一個網址重試'); this._vlmTerminate(); }
                 }
                 if (lastLibErr) throw lastLibErr;
