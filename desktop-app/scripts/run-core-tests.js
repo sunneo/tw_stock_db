@@ -16,6 +16,7 @@ const suites = [
     ['UML → 程式骨架（DSL、驗證、圖、template、情境到 UML）', 'renderer/src/uml/uml_core.test.js'],
     ['設計抉擇與 framework 目錄（推薦、片段、rework、專案展開）', 'renderer/src/uml/design_core.test.js'],
     ['膠水（接到真正的 library、經驗、登記）', 'renderer/src/uml/glue_core.test.js'],
+    ['設計檢視器資料（節點樹、UML↔原始碼對應）', 'renderer/src/uml/view_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {

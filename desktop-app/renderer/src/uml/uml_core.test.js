@@ -117,6 +117,11 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool -> Order.s
     const full = await U.scenarioToModel(scenario, { program: false, generate: async (a) => script(a.messages) }); const gen = U.genFiles(full.model, { language: 'python', package: 'shop' });
     check('end to end: scenario → UML → python skeleton with a test for each use case', gen.some((x) => x.path === 'src/shop/cart.py') && gen.some((x) => x.path === 'tests/test_checkout.py') && gen.some((x) => x.path === 'tests/test_add_book.py') && gen.every((x) => !/\{\{|\}\}/.test(x.content)), gen.map((x) => x.path));
 
+    // ---- 小模型常見的寫法：類別名稱小寫、Generic 寫成小寫 ----
+    const spec = U.stageSpec.members('x', { cls: { name: 'Cart', kind: 'class', label: '' }, classNames: ['Cart', 'Book'], usedBy: '' }); const sample = { attrs: [{ name: 'items', type: 'list<book>' }, { name: 'owner', type: 'cart' }], ops: [{ name: 'add', params: [{ name: 'b', type: 'book' }], returns: 'optional<book>' }] };
+    check('members validator: lower-case class names and generics are normalised in place, then pass', spec.validate(sample).length === 0 && sample.attrs[0].type === 'List<Book>' && sample.attrs[1].type === 'Cart' && sample.ops[0].params[0].type === 'Book' && sample.ops[0].returns === 'Optional<Book>', { errs: spec.validate(sample), sample });
+    check('members validator: a bare "list" is still rejected (no element type is guessed)', spec.validate({ attrs: [{ name: 'items', type: 'list' }], ops: [] }).some((e) => /型別/.test(e)));
+    check('members validator: a genuinely unknown type is still rejected', spec.validate({ attrs: [{ name: 'x', type: 'Unicorn' }], ops: [] }).some((e) => /Unicorn/.test(e)));
     // ---- ⓪ 程式先讀情境（詞彙表＋動作表）----
     const zh = '顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍。';
     const h = U.scenarioHints(zh);
