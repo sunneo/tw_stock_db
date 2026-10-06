@@ -1400,7 +1400,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1609,7 +1609,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files', 'youtube_download'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files', 'youtube_download', 'images_to_pdf'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
@@ -12219,6 +12219,12 @@ class FloatingAssistant {
             '檢查下載功能跟yt-dlp上游的耦合點（HTTP橋接／subprocess墊片／JS簽章橋接／格式選擇／extractor-args／logger）是否都還成立，指出升版後哪條管線要改寫。不給參數＝直接自檢；給版本號（例如 2026.9.1）＝設定「試用新版本」，重新整理後再自檢一次確認；reset＝清除試用設定、回到釘住的版本。',
             (argsText) => this._handleMediaYoutubeSelfcheckCommand(argsText)
         );
+        // 2026-10-06：/media-image-to-pdf——跟 images_to_pdf 工具共用 _imagesToPdf（純本地、不經過AI）
+        this.register_slash_command(
+            '/media-image-to-pdf', '[fit|a4|letter] [<圖1的id或檔名> <圖2> ...]',
+            '把圖片轉成PDF（每張一頁，純本地、秒完成；PNG／JPEG直接嵌入，畫質不變）。留空參數＝這次附加／貼上的全部圖片；page_size：fit＝頁面跟圖片一樣大（預設）、a4／letter＝標準紙張（圖片等比縮放置中）。',
+            (argsText) => this._handleMediaImageToPdfCommand(argsText)
+        );
         // tw_stock_db客製: 2026-09-28使用者要求——merge_pdfs的slash指令，
         // 跟辦公室報告相關的操作用/office-開頭區隔（跟/media-*/fap-*同一種
         // 分類前綴慣例），純本地端呼叫_mergePdfFiles，不經過LLM、不花token。
@@ -15849,6 +15855,30 @@ ${fnData.code}
             { type: 'object', properties: {
                 files: { type: 'array', items: { type: 'string' }, description: '要依序合併的PDF file_id或檔名陣列，至少2個' },
             }, required: ['files'], additionalProperties: false }
+        );
+        // 2026-10-06：圖片轉 PDF（使用者貼圖說「幫我轉pdf」，因為沒有內建工具，AI 先委派 file_analysis 燒掉 20 輪、再委派 media_av 回答「沒有這個工具」，最後才自己用 Python 寫）。
+        // 純本地 pdf-lib：PNG／JPEG 直接嵌入（不重新壓縮、畫質不變），其他格式（WebP／GIF／BMP／SVG…）先用 canvas 轉 PNG；多張圖＝多頁。
+        // 根層級工具（用 register_openai_tool，不是 registerOptional）：一般 AI 在 router／full 模式也直接看得到、直接呼叫，不用委派子任務——不是只有離線訓練器的規則才能觸發。
+        this.register_openai_tool('images_to_pdf',
+            '把圖片轉成PDF（每張一頁，依序）。純本地、秒完成，PNG／JPEG直接嵌入畫質不變，其他格式先轉PNG。使用者要「圖片轉PDF」「這幾張圖合成一份PDF」就直接呼叫這個工具，不要委派子任務、不要自己寫Python。files留空＝這個對話最近附加的全部圖片；page_size：fit（預設，頁面＝圖片大小）、a4、letter。成功會自動產生PDF下載附件，回傳{ok,pdf_file_id,filename,pageCount,sizeBytes}。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                let fileArgs = Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean) : (parsed.files ? [String(parsed.files)] : []);
+                if (!fileArgs.length) { const cands = await this._attachmentCandidates('image'); fileArgs = cands.map((c) => c.id); }
+                if (!fileArgs.length) { fileArgs = this._pickPendingAttachmentsByClass('image').map((a) => a.id); }
+                if (!fileArgs.length) return JSON.stringify({ ok: false, error: '沒有圖片可以轉：請把圖片貼進對話（Ctrl+V）或用📎附加後送出，或用 files 參數給 file_id／檔名' });
+                try {
+                    const result = await this._imagesToPdf(fileArgs, { pageSize: parsed.page_size, margin: parsed.margin }, (m) => this._log('🖼️→📄 ' + m));
+                    await this._deliverToolResultFile(result, 'pdf_file_id', (r) => `📎 已把 ${r.files.length} 張圖片轉成PDF（${r.pageCount}頁）：${r.filename}（${(r.sizeBytes / 1024).toFixed(0)}KB）`);
+                    return JSON.stringify(result);
+                } catch (err) { return JSON.stringify({ ok: false, error: String(err.message || err) }); }
+            },
+            { type: 'object', properties: {
+                files: { type: 'array', items: { type: 'string' }, description: '（選填）要轉的圖片 file_id或檔名，依序一張一頁；留空＝這個對話最近附加的全部圖片' },
+                page_size: { type: 'string', enum: ['fit', 'a4', 'letter'], description: '（選填）頁面大小：fit＝跟圖片一樣大（預設）；a4／letter＝標準紙張，圖片等比縮放置中' },
+                margin: { type: 'number', description: '（選填）a4／letter 的頁面邊界（pt，0～144，預設 24）；fit 固定 0' },
+            }, additionalProperties: false }
         );
         // tw_stock_db客製: 2026-09-28使用者要求——remove/extract-page/
         // extract-image三個PDF頁面操作，跟merge_pdfs同一套pdf-lib/pdf.js
@@ -20303,6 +20333,7 @@ ${fnData.code}
                 { id: 'ref_error_name', type: 'regex', expr: '^\\s*(?:-?(?:E[A-Z0-9]{3,}|ERROR_[A-Z0-9_]+|STATUS_[A-Z0-9_]+|WSAE[A-Z0-9_]+|HRESULT_[A-Z0-9_]+)|0x[0-9a-fA-F]{8})\\s*(?:是什麼|什麼意思|代表什麼|是啥|meaning|\\?|？)?\\s*$', intent: '查錯誤碼常數的意思', tool: 'lookup_error_code', args: { query: '{problem_text}' }, confidence: 0.9, risk: 'safe' },
                 { id: 'ref_command_line', type: 'regex', expr: '^\\s*(?:\\$\\s*)?(?:sudo\\s+)?(?:qemu-system-\\S+|qemu-kvm|(?:\\S+-)?(?:gcc|g\\+\\+)|cc|c\\+\\+|javac|java|python3?|node|(?:\\S+-)?gdb|make|cmake|ninja|tar|curl|wget|ssh|scp|rsync|grep|find|sed|awk|docker|git|systemctl|journalctl|strace|objdump|readelf)\\s+(?:-|--|[a-z]+\\s)\\S*', intent: '逐項解釋一行命令（gcc、qemu、gdb、Linux 命令…）', tool: 'explain_command_line', args: { command: '{problem_text}' }, confidence: 0.85, risk: 'safe' },
                 { id: 'ref_log_diag', type: 'regex', expr: '(?:make(?:\\[\\d+\\])?: \\*\\*\\*|CMake Error|undefined reference to|fatal error: [^\\n]*No such file|ERROR: [^\\n]*do_[a-z_]+|Nothing PROVIDES|collect2: error|ninja: build stopped|^FAILED: |Kernel panic|Call Trace:|BUG: |Oops|Program received signal|Failed with result|Main process exited|\\bcannot find -l|error while loading shared libraries|Segmentation fault|Out of memory: Kill)', intent: '診斷日誌／錯誤輸出：說明發生什麼事（建置失敗、gdb、核心日誌、panic、journal）', tool: 'diagnose_log', args: { log: '{problem_text}' }, confidence: 0.92, risk: 'safe' },
+                { id: 'images_to_pdf', type: 'regex', expr: '^(?=[^]*(?:轉|變|做|存|輸出|匯出|合成|合併|併|拼|merge|convert)[^\\n]{0,6}(?:成|為|to)?\\s*pdf)(?=[^]*\\[附件：[^\\]]*\\.(?:png|jpe?g|webp|gif|bmp))(?![^]*\\[附件：[^\\]]*\\.pdf)', intent: '圖片轉PDF（附件是圖片）', tool: 'images_to_pdf', args: {}, confidence: 0.99, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'image_to_text', type: 'regex', expr: '(?:(?:描述|解析|分析|辨識|辨認|說明|解釋|看看|讀)(?:一下)?(?:這張|這個|此|附件的?)?(?:圖|圖片|照片|圖像)|圖(?:片|像)?(?:轉|轉成|變成)(?:文字|描述)|(?:圖片|照片|圖像)(?:裡|中|上)?(?:有什麼|寫什麼|的文字|的內容)|image\\s*to\\s*text|\\bOCR\\b|文字辨識)', intent: '離線圖像轉文字（描述圖片或辨識圖上的文字；模型跑在這台電腦上，不需要 AI）', tool: 'image_to_text', args: { task: 'detailed' }, confidence: 0.86, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'image_decompose', type: 'regex', expr: '(?:2\.5\s*D|2\.5d|圖片分解|圖像分解|向量重繪|重繪成向量|拆(?:成)?圖層|(?:把|將)?(?:這張|這個|此)?(?:圖|圖片|照片|圖像).{0,8}(?:變成|做成|轉成|轉為).{0,6}(?:3D|立體|浮雕|視差))', intent: '把圖片分解重繪成 2.5D 模型（純幾何＋知識庫的部位知識，不需要 AI）', tool: 'image_decompose_redraw', args: {}, confidence: 0.85, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'ref_pragma', type: 'regex', expr: '#\\s*pragma\\s+\\S+', intent: '解釋 #pragma（OpenMP、GCC…）', tool: 'ref_lookup', args: { query: '{problem_text}' }, confidence: 0.9, risk: 'safe' },
@@ -20347,7 +20378,7 @@ ${fnData.code}
         }
         return made;
     }
-    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v10:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v11:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
     // 截圖的步驟：有網址 → 開分頁→截圖→關分頁；沒有網址 → 用AI已經開著的分頁。800x400之類的尺寸＝只截上方左上角那個範圍，「整頁」＝整頁
     _otShotSteps(slots, norm) {
         const m = /(\d{2,5})\s*[x×*＊]\s*(\d{2,5})/i.exec(norm);
@@ -47967,6 +47998,63 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._pushAssistantMessage(lines.join('\n\n') || '沒有任何結果。', null);
         this._persistChatHistory();
         this._renderMessageHistory();
+    }
+
+    // 圖片 → PDF（純本地 pdf-lib）。fileArgs：file_id或檔名陣列（依序一張一頁）；opts: { pageSize:'fit'|'a4'|'letter', margin（pt） }
+    async _imagesToPdf(fileArgs, opts, onProgress) {
+        opts = opts || {}; const pageSize = ['fit', 'a4', 'letter'].includes(opts.pageSize) ? opts.pageSize : 'fit';
+        const mg = Number(opts.margin); const margin = pageSize === 'fit' ? 0 : (Number.isFinite(mg) ? Math.max(0, Math.min(144, mg)) : 24);
+        const records = [];
+        for (const arg of fileArgs) {
+            const record = await this._resolveUploadedFileRecord(arg);
+            if (!record) return { ok: false, error: `找不到符合「${arg}」的已上傳檔案` };
+            if (_faClassifyMediaFile(record.filename) !== 'image' && !/^image\//i.test((record.blob && record.blob.type) || '')) return { ok: false, error: `「${record.filename}」不是圖片，images_to_pdf只能轉圖片（png／jpg／webp／gif／bmp／svg…）；PDF 合併請用 merge_pdfs` };
+            records.push(record);
+        }
+        if (onProgress) onProgress('載入PDF程式庫…');
+        try { await this._ensurePdfLibLoaded(); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        const pdf = await PDFLib.PDFDocument.create(); const info = [];
+        const toPngBytes = async (blob) => { // 非 PNG／JPEG：用 canvas 轉成 PNG
+            const bmp = await createImageBitmap(blob); const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; c.getContext('2d').drawImage(bmp, 0, 0); try { bmp.close(); } catch (_) {}
+            const out = await new Promise((res) => c.toBlob(res, 'image/png')); if (!out) throw new Error('canvas 轉 PNG 失敗'); return new Uint8Array(await out.arrayBuffer());
+        };
+        const pageBase = pageSize === 'a4' ? [595.28, 841.89] : (pageSize === 'letter' ? [612, 792] : null);
+        for (let i = 0; i < records.length; i++) {
+            const rec = records[i]; if (onProgress) onProgress(`第 ${i + 1}/${records.length} 張：${rec.filename}…`);
+            let bytes = new Uint8Array(await rec.blob.arrayBuffer()); let embedded = null;
+            const isPng = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47; const isJpg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8;
+            try { if (isPng) embedded = await pdf.embedPng(bytes); else if (isJpg) embedded = await pdf.embedJpg(bytes); } catch (_) { embedded = null; } // 少見的變體（特殊色彩模式）嵌不進去 → 走 canvas
+            if (!embedded) { try { bytes = await toPngBytes(rec.blob); embedded = await pdf.embedPng(bytes); } catch (err) { return { ok: false, error: `「${rec.filename}」轉成PDF失敗（格式不支援或檔案損毀）：${String(err.message || err)}` }; } }
+            const w = embedded.width, h = embedded.height; let pw, ph, dw, dh, dx, dy;
+            if (!pageBase) { const k = Math.min(1, 14400 / Math.max(w, h) / 0.75); pw = dw = w * 0.75 * k; ph = dh = h * 0.75 * k; dx = 0; dy = 0; } // 96dpi → pt；PDF 頁面上限約 14400pt
+            else { const land = w > h; pw = land ? pageBase[1] : pageBase[0]; ph = land ? pageBase[0] : pageBase[1]; const aw = Math.max(1, pw - 2 * margin), ah = Math.max(1, ph - 2 * margin); const s = Math.min(aw / w, ah / h); dw = w * s; dh = h * s; dx = (pw - dw) / 2; dy = (ph - dh) / 2; }
+            const page = pdf.addPage([pw, ph]); page.drawImage(embedded, { x: dx, y: dy, width: dw, height: dh });
+            info.push({ filename: rec.filename, width: w, height: h });
+        }
+        if (onProgress) onProgress('產生PDF…');
+        let out; try { out = await pdf.save(); } catch (err) { return { ok: false, error: '輸出PDF失敗：' + String(err.message || err) }; }
+        const blob = new Blob([out], { type: 'application/pdf' });
+        const name = records.length === 1 ? String(records[0].filename).replace(/\.[A-Za-z0-9]+$/, '') + '.pdf' : `圖片轉PDF_${Date.now()}.pdf`;
+        let pdfFileId; try { pdfFileId = await this.fileCache.put(name, 'application/pdf', blob, 'uploaded'); } catch (err) { return { ok: false, error: '儲存PDF失敗：' + String(err.message || err) }; }
+        return { ok: true, pdf_file_id: pdfFileId, filename: name, sizeBytes: blob.size, pageCount: info.length, files: info, page_size: pageSize };
+    }
+    // /media-image-to-pdf [fit|a4|letter] [<圖1> <圖2> ...]：不給圖＝這次附加（或貼上）的全部圖片，依序一張一頁
+    async _handleMediaImageToPdfCommand(argsText) {
+        let text = String(argsText || '').trim(); const ids = []; const m = /\[附件：([^\]]*)\]/.exec(text);
+        if (m) { const re = /file_id=([\w-]+)/g; let x; while ((x = re.exec(m[1]))) ids.push(x[1]); text = text.replace(/\[附件：[^\]]*\]/g, ' ').trim(); }
+        const tokens = text.split(/\s+/).filter(Boolean); let pageSize = 'fit';
+        if (tokens.length && ['fit', 'a4', 'letter'].includes(tokens[0].toLowerCase())) pageSize = tokens.shift().toLowerCase();
+        let fileArgs = ids.concat(tokens); let consumed = null;
+        if (!fileArgs.length) { const pending = this._pickPendingAttachmentsByClass('image'); if (pending.length) { fileArgs = pending.map((a) => a.id); consumed = fileArgs; } }
+        if (!fileArgs.length) { const cands = await this._attachmentCandidates('image'); fileArgs = cands.map((c) => c.id); }
+        if (!fileArgs.length) { this._failSlashCommandValidation(`/media-image-to-pdf ${text}`.trim(), '/media-image-to-pdf：沒有圖片——先貼上（Ctrl+V）或用📎附加圖片再打指令，或指定 /media-image-to-pdf [fit|a4|letter] file_1 file_2'); return; }
+        this.messages.push({ role: 'user', content: `🖼️→📄 圖片轉PDF（${pageSize}）：${fileArgs.length} 張` });
+        const prog = this._createProgressWidget('圖片轉PDF'); let result;
+        try { result = await this._imagesToPdf(fileArgs, { pageSize }, (s) => prog.update({ status: s })); } catch (err) { result = { ok: false, error: String((err && err.message) || err) }; }
+        if (!result.ok) { this._failSlashCommandRuntime(prog, result.error); return; }
+        prog.finish(`完成：${result.files.length} 張圖 → ${result.pageCount} 頁PDF`);
+        if (consumed) this._consumePendingAttachments(consumed);
+        await this._deliverExistingCacheFile(result.pdf_file_id, `📎 已把 ${result.files.length} 張圖片轉成PDF（${result.pageCount}頁）：${result.filename}（${(result.sizeBytes / 1024).toFixed(0)}KB）`);
     }
 
     // /office-pdf-merge [<PDF1> <PDF2> [...]]——跟merge_pdfs工具共用
