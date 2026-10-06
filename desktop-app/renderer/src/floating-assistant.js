@@ -11412,9 +11412,7 @@ function faVlmWorkerMain() {
         else if (cur.arch === 'llava') {
             // LlavaProcessor._call(images, text)：先圖片、再文字；它把文字裡的 <image> 展開成 729 個影像標記。
             // 這份社群轉檔的聊天範本沒有把 <image> 放進文字（錯誤：tokens: 0, features 729），所以直接用 llava-interleave-qwen 模型卡上的 Qwen 對話格式組提示詞。
-            const text = '<|im_start|>user <image>
-' + m.prompt + '<|im_end|><|im_start|>assistant
-';
+            const text = '<|im_start|>user <image>\n' + m.prompt + '<|im_end|><|im_start|>assistant\n';
             const inputs = await cur.processor(image, text);
             const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
             raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
