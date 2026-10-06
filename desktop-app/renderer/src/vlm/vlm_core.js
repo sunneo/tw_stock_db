@@ -39,6 +39,9 @@
         { id: 'granite-4.0-350m', label: 'Granite 4.0 350M（小型工具呼叫專長，未驗證）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/granite-4.0-350m-ONNX-web',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 4096, lang: '英文為主（多語）', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q4' }, bytes: { gpu: 336 * MB, cpu: 551 * MB }, gpuNeedsF16: true, verified: false, notes: 'IBM 的小模型，官方標榜工具呼叫與指令遵循；很小，適合當「工具階段」的模型，再交給別的模型寫回答。還沒實測。' },
+        { id: 'granite-4.0-1b', label: 'Granite 4.0 1B（工具呼叫專長，較大）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/granite-4.0-1b-ONNX-web',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '英文為主（多語）', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q4' }, bytes: { gpu: 1192 * MB, cpu: 1702 * MB }, gpuNeedsF16: true, verified: false, notes: 'IBM 的 1B 模型。redmine 那邊實測工具呼叫評分通過（本專案還沒在這邊測）；比 350M 穩，適合當工具階段模型。' },
         { id: 'qwen2.5-1.5b', label: 'Qwen2.5 1.5B（較大，建議用 GPU）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen2.5-1.5B-Instruct',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1165 * MB, cpu: 1506 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.5B 參數；答得明顯比 0.5B 好，工具呼叫也更穩；CPU 上很慢。' },
@@ -229,6 +232,8 @@
     }
     // 工具呼叫基準測試：用三個假工具與固定題目，量「選對工具＋參數對」的比例；也量輸出格式合不合（能不能被解析）。
     // 題目刻意包含：中文、英文、該用工具、不該用工具（要能克制）。每題 1 分。
+    // 工具階段的 system 提示詞：基準測試用的就是這一句——實測 0.6B 小模型被長提示詞（一堆「何時不要用工具」的叮嚀）一影響就不呼叫工具了，所以工具階段維持這句簡短的，不要加碼
+    const TOOL_STAGE_SYSTEM = '你是助理。需要時使用工具；不需要工具時直接簡短回答。';
     const BENCH_TOOLS = [
         { name: 'get_weather', description: '查詢城市目前的天氣', parameters: { type: 'object', properties: { city: { type: 'string', description: '城市名稱' } }, required: ['city'] } },
         { name: 'calculator', description: '計算數學算式並回傳結果', parameters: { type: 'object', properties: { expression: { type: 'string', description: '算式，例如 (1+2)*3' } }, required: ['expression'] } },
@@ -394,5 +399,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
