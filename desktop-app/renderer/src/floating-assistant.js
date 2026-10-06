@@ -6639,12 +6639,34 @@ const holder = {};
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文與中文', license: 'Tongyi Qianwen Research',
             dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', decoder_model_merged: 'q4' } },
             bytes: { gpu: 780 * MB, cpu: 695 * MB }, experimental: true, verified: true, verifiedOn: 'cpu+gpu', measured: 'CPU 4 執行緒約 140～150 秒（很慢）；Intel GPU 約 23 秒；內容是目前實測最準的（藍白機器人、金色硬幣、圓形金邊框）', notes: '沒有官方的瀏覽器版（transformers.js）轉檔，模型是社群轉出的 ONNX（luisresende13，該 repo 缺 processor_config.json），所以處理器與分詞器改從原版 llava-hf/llava-interleave-qwen-0.5b-hf 載入（多下載幾 MB）；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 0.7～0.8GB（q4 量化）。' },
+        // ===== 文字生成（聊天）模型：離線訓練器信心不足時接手回答；能參考 RAG 與工具呼叫（Hermes 格式 <tool_call>，Qwen 系列原生支援）=====
+        // contextTokens：這個模型每次對話實際給的上下文長度（不是模型的理論上限；瀏覽器記憶體有限，小模型給 4096）。對話歷史、RAG、工具說明的份量都依它按比例縮放（見 textBudget）。
+        { id: 'qwen3-0.6b', label: 'Qwen3 0.6B（預設：中文與工具呼叫都不錯）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen3-0.6B-ONNX',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 4096, lang: '中英文', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 543 * MB, cpu: 589 * MB }, gpuNeedsF16: true, verified: false, notes: '約 0.6B 參數，中文與英文都能聊，支援工具呼叫與參考資料；有思考模式但這裡關掉（太慢）。' },
+        { id: 'qwen2.5-0.5b', label: 'Qwen2.5 0.5B（更小更快）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 4096, lang: '中英文', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 461 * MB, cpu: 488 * MB }, gpuNeedsF16: true, verified: false, notes: '約 0.5B 參數；比 Qwen3 小一點，答得比較淺，工具呼叫比較容易出錯。' },
+        { id: 'smollm2-360m', label: 'SmolLM2 360M（最小，英文為主）', task: 'text-generation', arch: 'causal-lm', repo: 'HuggingFaceTB/SmolLM2-360M-Instruct',
+            tasks: ['chat', 'rag'], toolCalling: null, contextTokens: 2048, lang: '英文為主', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 260 * MB, cpu: 348 * MB }, gpuNeedsF16: true, verified: false, notes: '很小，能閒聊與依參考資料回答；中文弱、沒有工具呼叫格式。' },
+        { id: 'granite-4.0-350m', label: 'Granite 4.0 350M（小型工具呼叫專長，未驗證）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/granite-4.0-350m-ONNX-web',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 4096, lang: '英文為主（多語）', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q4' }, bytes: { gpu: 336 * MB, cpu: 551 * MB }, gpuNeedsF16: true, verified: false, notes: 'IBM 的小模型，官方標榜工具呼叫與指令遵循；很小，適合當「工具階段」的模型，再交給別的模型寫回答。還沒實測。' },
+        { id: 'qwen2.5-1.5b', label: 'Qwen2.5 1.5B（較大，建議用 GPU）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen2.5-1.5B-Instruct',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1165 * MB, cpu: 1506 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.5B 參數；答得明顯比 0.5B 好，工具呼叫也更穩；CPU 上很慢。' },
+        { id: 'qwen3-1.7b', label: 'Qwen3 1.7B（最大，要 GPU 才實用）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen3-1.7B-ONNX',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1360 * MB, cpu: 1662 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.7B 參數；這份清單裡品質最好，下載與記憶體需求也最大。' },
         // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
         { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
     ];
     const byId = (id) => MODELS.find((m) => m.id === id) || null;
     const imageModels = () => MODELS.filter((m) => m.task === 'image-to-text');
-    const DEFAULT_MODEL = 'florence-2-base-ft';
+    const textModels = () => MODELS.filter((m) => m.task === 'text-generation');
+    const DEFAULT_MODEL = 'florence-2-base-ft';          // 圖像（VLM）預設
+    const DEFAULT_TEXT_MODEL = 'qwen3-0.6b';             // 文字生成預設（兩種預設分開設定）
 
     // ---------- 裝置與執行緒 ----------
     // preference：'gpu'（偏好 GPU，不支援就降級 CPU）或 'cpu'；gpuAvailable：這個環境偵測到 WebGPU。
@@ -6766,11 +6788,227 @@ const holder = {};
     }
     // 某個模型在快取裡的檔案網址（刪除用）
     function urlsOfModel(entries, model) { const r = model.repo.toLowerCase(); return (entries || []).filter((e) => repoOfUrl(e.url) === r).map((e) => e.url); }
+    // ---------- 文字生成（離線聊天）：預算、組訊息、解析工具呼叫、工具呼叫基準測試 ----------
+    // 離線訓練器的信心門檻範圍：0.1～1.0（1.0＝只有「完全一樣的問題」才不進離線模型，幾乎全部交給離線模型）
+    const THRESHOLD_MIN = 0.1, THRESHOLD_MAX = 1;
+    function clampThreshold(v, dflt) { const n = Number(v); return Number.isFinite(n) && n >= THRESHOLD_MIN && n <= THRESHOLD_MAX ? n : (dflt == null ? 0.45 : dflt); }
+    // 離線訓練器沒辦法回答（decision.status === 'unresolved'）而且設定允許 → 交給離線文字模型。缺參數（needs_input）仍由訓練器自己問，因為模型也不會知道缺的網址或路徑。
+    function shouldUseOfflineLlm(decision, settings) { return !!decision && decision.status === 'unresolved' && !(settings && settings.offlineLlmFallback === false); }
+    // token 估計：中日韓字約 1 字 1 token、其他約 3.5 字元 1 token（不同分詞器有出入，這裡只用來配置預算，保守估）
+    function estimateTokens(s) { s = String(s == null ? '' : s); let cjk = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef) || (c >= 0xac00 && c <= 0xd7af)) cjk++; } return Math.ceil(cjk + (s.length - cjk) / 3.5); }
+    function trimToTokens(s, tokens) { s = String(s == null ? '' : s); if (s.length > tokens * 4 + 16) s = s.slice(0, tokens * 4 + 16); /* 每個字至少約 0.29 token：再長的一定超過，先切短，避免對很大的文字做昂貴的二分搜尋（主執行緒） */ if (estimateTokens(s) <= tokens) return s; let lo = 0, hi = s.length; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (estimateTokens(s.slice(0, mid)) <= tokens) lo = mid; else hi = mid - 1; } return s.slice(0, lo) + '…'; }
+    // 上下文預算（token）：全部依 contextTokens 按比例，不寫死——模型的上下文越大，能帶的歷史與參考資料越多
+    function textBudget(model, maxReply) {
+        const ctx = Math.max(1024, Number(model && model.contextTokens) || 4096); const reply = Math.min(Math.max(64, Number(maxReply) || 512), Math.floor(ctx / 2));
+        const prompt = ctx - reply; const f = (x) => Math.floor(prompt * x);
+        return { context: ctx, reply, prompt, system: f(0.12), tools: f(0.18), rag: f(0.25), history: f(0.35), user: f(0.10) };
+    }
+    // 組出送給模型的訊息：system（含參考資料）＋盡量多的最近對話歷史（從最新往回加，超過預算就丟掉舊的）＋這次的問題
+    // opts: { system, history:[{role,content}], rag:[string], user, budget }
+    function composeMessages(opts) {
+        const b = opts.budget; let sys = String(opts.system || '');
+        const rag = (opts.rag || []).map((r) => String(r).replace(/\s+/g, ' ').trim()).filter(Boolean); let ragUsed = 0; const ragParts = [];
+        for (const r of rag) { const left = b.rag - ragUsed; if (left < 40) break; const piece = trimToTokens(r, Math.min(left, Math.max(60, Math.floor(b.rag / Math.max(1, Math.min(rag.length, 4)))))); ragParts.push(piece); ragUsed += estimateTokens(piece); }
+        if (ragParts.length) sys += '\n\n【參考資料（可能有幫助；沒有相關就忽略，不要硬套）】\n' + ragParts.map((r, i) => (i + 1) + '. ' + r).join('\n');
+        const user = trimToTokens(opts.user, b.user + 200);
+        const hist = []; let used = 0; const src = (opts.history || []).filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim());
+        let dropped = 0;
+        for (let i = src.length - 1; i >= 0; i--) { const c = trimToTokens(src[i].content, Math.floor(b.history / 2)); const n = estimateTokens(c) + 4; if (used + n > b.history) { dropped = i + 1; break; } hist.unshift({ role: src[i].role, content: c }); used += n; }
+        return { messages: [{ role: 'system', content: sys }].concat(hist, [{ role: 'user', content: user }]), dropped, ragUsed: ragParts.length, historyTokens: used };
+    }
+    // 生成參數：小模型用低溫度（答得穩），加一點重複懲罰避免迴圈（見 SmolVLM 的教訓）
+    function textGenParams(model, opts) { opts = opts || {}; const p = { do_sample: true, temperature: opts.temperature != null ? opts.temperature : 0.4, top_p: 0.9, repetition_penalty: 1.08 }; if (opts.deterministic) { p.do_sample = false; delete p.temperature; delete p.top_p; } return p; }
+    // 工具說明縮成模型看得懂又不佔太多上下文：描述截短、參數只留名稱／型別／短描述；整體超過預算就從尾端少放幾個
+    function compactToolSpecs(tools, budgetTokens) {
+        const out = []; let used = 0;
+        for (const t of tools || []) {
+            const spec = { type: 'function', function: { name: t.name, description: String(t.description || '').replace(/\s+/g, ' ').slice(0, 140), parameters: { type: 'object', properties: {}, required: (t.parameters && t.parameters.required) || [] } } };
+            const props = (t.parameters && t.parameters.properties) || {};
+            for (const k of Object.keys(props).slice(0, 8)) spec.function.parameters.properties[k] = { type: props[k].type || 'string', description: String(props[k].description || '').replace(/\s+/g, ' ').slice(0, 60) };
+            const n = estimateTokens(JSON.stringify(spec)); if (used + n > budgetTokens) break; out.push(spec); used += n;
+        }
+        return out;
+    }
+    // 從模型輸出裡找工具呼叫。標準格式是 <tool_call>{"name":..., "arguments":{...}}</tool_call>（Qwen／Hermes）；
+    // 小模型常常漏掉結尾標籤、加 ```json 圍欄，或只吐一段 JSON——都盡量容忍。回傳 { calls:[{name,args}], text（拿掉呼叫後剩下的文字）, format:'tag'|'json'|'none' }
+    function parseToolCalls(text) {
+        const src = String(text == null ? '' : text); const calls = []; let format = 'none';
+        const norm = (o) => { if (!o || typeof o !== 'object' || typeof o.name !== 'string' || !o.name) return null; let a = o.arguments != null ? o.arguments : (o.parameters != null ? o.parameters : o.args); if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = {}; } } return { name: o.name, args: a && typeof a === 'object' ? a : {} }; };
+        const parseJson = (s) => { s = String(s).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''); try { return JSON.parse(s); } catch (_) { const i = s.indexOf('{'), j = s.lastIndexOf('}'); if (i >= 0 && j > i) { try { return JSON.parse(s.slice(i, j + 1)); } catch (_2) {} } return null; } };
+        const re = /<tool_call>\s*([\s\S]*?)\s*(?:<\/tool_call>|(?=<tool_call>)|$)/g; let m; let rest = src;
+        while ((m = re.exec(src))) { const c = norm(parseJson(m[1])); if (c) { calls.push(c); format = 'tag'; } if (m[0] === '') re.lastIndex++; }
+        if (format === 'tag') rest = src.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|(?=<tool_call>)|$)/g, '');
+        else { const trimmed = src.trim(); if (/^(?:```(?:json)?\s*)?\{[\s\S]*"name"[\s\S]*\}(?:\s*```)?$/.test(trimmed)) { const c = norm(parseJson(trimmed)); if (c) { calls.push(c); format = 'json'; rest = ''; } } }
+        return { calls, text: rest.replace(/<think>[\s\S]*?<\/think>/g, '').trim(), format };
+    }
+    // 工具呼叫基準測試：用三個假工具與固定題目，量「選對工具＋參數對」的比例；也量輸出格式合不合（能不能被解析）。
+    // 題目刻意包含：中文、英文、該用工具、不該用工具（要能克制）。每題 1 分。
+    const BENCH_TOOLS = [
+        { name: 'get_weather', description: '查詢城市目前的天氣', parameters: { type: 'object', properties: { city: { type: 'string', description: '城市名稱' } }, required: ['city'] } },
+        { name: 'calculator', description: '計算數學算式並回傳結果', parameters: { type: 'object', properties: { expression: { type: 'string', description: '算式，例如 (1+2)*3' } }, required: ['expression'] } },
+        { name: 'search_web', description: '上網搜尋資料', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字' } }, required: ['query'] } },
+    ];
+    const BENCH_CASES = [
+        { id: 'weather_zh', user: '台北現在天氣怎麼樣？', tool: 'get_weather', arg: 'city', match: /台北|taipei/i },
+        { id: 'calc_zh', user: '幫我算 (12+8)*3 等於多少', tool: 'calculator', arg: 'expression', match: /12/ },
+        { id: 'search_zh', user: '上網查一下 Rust 的 borrow checker 是什麼', tool: 'search_web', arg: 'query', match: /rust|borrow/i },
+        { id: 'weather_en', user: "What's the weather in Tokyo right now?", tool: 'get_weather', arg: 'city', match: /tokyo|東京/i },
+        { id: 'chat_none', user: '你好，謝謝你的幫忙！', tool: null },
+        { id: 'calc_en', user: 'Please compute 7 * 6 + 2 for me.', tool: 'calculator', arg: 'expression', match: /7/ },
+    ];
+    // 評一題：回傳 { ok, formatOk, reason }。formatOk＝該用工具時輸出能被解析成工具呼叫（或不該用時沒有亂用）
+    function scoreToolCase(c, outputText) {
+        const r = parseToolCalls(outputText); const first = r.calls[0];
+        if (c.tool == null) return r.calls.length === 0 ? { ok: true, formatOk: true, reason: '沒有亂用工具' } : { ok: false, formatOk: true, reason: '不該用工具卻呼叫了 ' + first.name };
+        if (!first) return { ok: false, formatOk: false, reason: '沒有輸出可解析的工具呼叫' };
+        if (first.name !== c.tool) return { ok: false, formatOk: true, reason: '選錯工具：' + first.name + '（應為 ' + c.tool + '）' };
+        const v = first.args && first.args[c.arg]; if (v == null || !c.match.test(String(v))) return { ok: false, formatOk: true, reason: '參數 ' + c.arg + ' 不對：' + JSON.stringify(v) };
+        return { ok: true, formatOk: true, reason: '正確' };
+    }
+    // 把各題結果彙總成可存放與顯示的評級
+    function summarizeToolBench(results) {
+        const total = results.length; const passed = results.filter((r) => r.ok).length; const formatOk = results.filter((r) => r.formatOk).length;
+        const ratio = total ? passed / total : 0; const rating = ratio >= 0.83 ? 'good' : (ratio >= 0.5 ? 'fair' : 'poor');
+        return { passed, total, formatOk, rating, label: { good: '可靠', fair: '普通（建議離線模型只在有參考資料時使用工具）', poor: '不可靠（建議不要讓它呼叫工具）' }[rating] };
+    }
+
+    // ---------- 離線文字模型的對話迴圈：不調用工具就是單純文字生成；有調用就多輪，但一定會收斂 ----------
+    // 要擋的三件事：
+    //   1. 無窮迴圈：輪數上限、呼叫總數上限、同一個「工具＋參數」不執行第二次、不存在的工具最多容忍兩次，之後一律強制「不給工具、直接回答」。
+    //   2. 垃圾輸出：空白、只有標點、重複同一段（小模型的典型失敗）→ 偵測到就中斷生成，用更保守的參數重試一次，還是不行就誠實回報失敗，不把垃圾丟給使用者。
+    //   3. 上下文爆掉：每一輪都重新估算；舊的工具結果換成「placeholder」（只留一小段摘要），再不夠才丟最舊的對話；工具結果太長就先摘要或截短。
+    // 這一層是純函式＋注入的 generate／execTool，所以可以用假模型完整測試。
+    function looksLikeGarbage(text) {
+        const s = String(text == null ? '' : text); let t = s.trim();
+        if (!t) return { garbage: true, reason: 'empty' };
+        if (t.length > 6000) t = t.slice(0, 3000) + '\n' + t.slice(-3000); // 很長的輸出只看頭尾（正規表示式不要在主執行緒上跑太久）
+        if (!/[A-Za-z0-9㐀-鿿぀-ヿ가-힯]/.test(t)) return { garbage: true, reason: 'no_content' };
+        let bad = 0; for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) === 0xfffd) bad++;
+        if (t.length >= 8 && bad / t.length > 0.02) return { garbage: true, reason: 'broken_chars' };
+        if (/(.{6,80}?)\1{3,}/s.test(t)) return { garbage: true, reason: 'repeat' };       // 同一段 6～80 字連續出現 4 次以上
+        const sm = /(.{1,5}?){11,}/s.exec(t); if (sm && (/[A-Za-z0-9㐀-鿿]/.test(sm[1]) || sm[0].length >= 60)) return { garbage: true, reason: 'repeat' }; // 很短的單位重複 12 次以上（「哈哈哈哈…」）；純符號（markdown 分隔線）要更長才算
+        const lines = t.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+        if (lines.length >= 6 && new Set(lines).size / lines.length < 0.4) return { garbage: true, reason: 'repeat_lines' };
+        return { garbage: false };
+    }
+    // 把舊的工具結果換成 placeholder：只留名稱與前面一小段，其他省略
+    function placeholderOf(msg, keep) { const body = String(msg.content || '').replace(/\s+/g, ' ').trim(); return { role: 'tool', name: msg.name, content: '[' + (msg.name || '工具') + ' 的結果已省略；摘要：' + body.slice(0, keep == null ? 60 : keep) + (body.length > (keep == null ? 60 : keep) ? '…' : '') + ']', _placeholder: true }; }
+    function messagesTokens(messages, tools) { let n = 0; for (const m of messages) n += estimateTokens(m.content) + 6; if (tools && tools.length) n += estimateTokens(JSON.stringify(tools)); return n; }
+    // 讓訊息放得進預算：①舊的工具結果（最新一則以外）換 placeholder ②最新的工具結果截短 ③丟最舊的對話歷史（留 system、最後的 user 與這一輪的工具往返）。回傳 { messages, changed:[…] }
+    function fitMessages(messages, tools, limit) {
+        let msgs = messages.map((m) => Object.assign({}, m)); const changed = [];
+        if (messagesTokens(msgs, tools) <= limit) return { messages: msgs, changed };
+        const toolIdx = msgs.map((m, i) => (m.role === 'tool' && !m._placeholder ? i : -1)).filter((i) => i >= 0);
+        for (const i of toolIdx.slice(0, -1)) { msgs[i] = placeholderOf(msgs[i]); changed.push('舊工具結果換成 placeholder'); if (messagesTokens(msgs, tools) <= limit) return { messages: msgs, changed }; }
+        const last = toolIdx[toolIdx.length - 1];
+        if (last != null) { const room = Math.max(80, limit - (messagesTokens(msgs, tools) - estimateTokens(msgs[last].content))); msgs[last] = Object.assign({}, msgs[last], { content: trimToTokens(msgs[last].content, Math.floor(room * 0.8)) }); changed.push('最新工具結果截短'); if (messagesTokens(msgs, tools) <= limit) return { messages: msgs, changed }; }
+        let dropped = 0; // 最舊的先丟；system（第 0 則）與標了 _keep 的（這次的問題、強制回答的提示）不丟
+        while (messagesTokens(msgs, tools) > limit - 24) { const k = msgs.findIndex((m, i) => i > 0 && !m._keep); if (k < 0) break; msgs.splice(k, 1); dropped++; }
+        if (dropped) { msgs.splice(1, 0, { role: 'system', content: '（較早的 ' + dropped + ' 則對話為了節省上下文已省略）' }); changed.push('丟掉最舊的 ' + dropped + ' 則對話'); }
+        return { messages: msgs, changed, overflow: messagesTokens(msgs, tools) > limit };
+    }
+    // opts: { messages, tools:[spec], toolNames:Set（可呼叫的工具名稱）, budget（textBudget）, generate: async({messages,tools,strict,maxTokens}) → string, execTool: async({name,args}) → {ok,text},
+    //         summarize?: async(text, maxTokens) → string, maxRounds=4, maxCalls=6, maxCallsPerRound=3, onEvent?: (e) → void }
+    // 回傳 { ok, text, reason:'answer'|'forced'|'garbage'|'empty'|'exhausted', rounds, calls:[{name,args,ok,skipped?}], notes:[…] }
+    async function runAgentLoop(opts) {
+        const b = opts.budget; const maxRounds = opts.maxRounds || 4, maxCalls = opts.maxCalls || 6, perRound = opts.maxCallsPerRound || 3;
+        const emit = (e) => { if (opts.onEvent) try { opts.onEvent(e); } catch (_) {} };
+        let messages = opts.messages.map((m) => Object.assign({}, m)); for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') { messages[i]._keep = true; break; }
+        let tools = (opts.tools || []).slice(); const names = opts.toolNames || new Set(tools.map((t) => t.function.name));
+        const calls = []; const seen = new Set(); const notes = []; let invalid = 0; const hasResults = () => calls.some((c) => c.ok && c.text); const handoff = (round) => ({ ok: true, text: '', reason: 'handoff', handoff: true, rounds: round, calls, notes }); let forceFinal = tools.length === 0; let garbageRetried = false;
+        const finishFrom = (text, reason, rounds) => ({ ok: true, text, reason, rounds, calls, notes });
+        for (let round = 1; round <= maxRounds + 1; round++) {
+            if (opts.handoff && (forceFinal || round > maxRounds) && hasResults()) return handoff(round - 1); // 要強制收尾了：有工具結果就交給寫回答的模型
+            const useTools = !forceFinal && round <= maxRounds ? tools : [];
+            const fit = fitMessages(messages, useTools, b.prompt - 16); fit.changed.forEach((c) => { if (notes.indexOf(c) < 0) notes.push(c); });
+            if (fit.overflow) { notes.push('上下文放不下'); return { ok: false, text: '', reason: 'context_full', rounds: round, calls, notes }; }
+            messages = fit.messages;
+            let text = await opts.generate({ messages, tools: useTools, strict: false, maxTokens: b.reply });
+            let g = looksLikeGarbage(text);
+            if (g.garbage) {
+                emit({ type: 'garbage', reason: g.reason, round });
+                if (!garbageRetried) { garbageRetried = true; notes.push('輸出是垃圾（' + g.reason + '），用保守參數重試'); text = await opts.generate({ messages, tools: [], strict: true, maxTokens: Math.min(b.reply, 256) }); g = looksLikeGarbage(text); forceFinal = true; }
+                if (g.garbage) { // 還是垃圾：有工具結果就老實列出，不然回報失敗
+                    const results = calls.filter((c) => c.ok && c.text); if (results.length) return { ok: true, text: '（模型沒能整理出像樣的回答，以下是工具回傳的原始結果）\n' + results.map((c) => '【' + c.name + '】' + String(c.text).slice(0, 600)).join('\n'), reason: 'garbage', rounds: round, calls, notes };
+                    return { ok: false, text: '', reason: g.reason === 'empty' ? 'empty' : 'garbage', rounds: round, calls, notes };
+                }
+            }
+            const pc = parseToolCalls(text);
+            if (opts.handoff && !pc.calls.length && hasResults()) return handoff(round);
+            if (pc.calls.length && !useTools.length) { notes.push('工具已收回，模型還在輸出工具呼叫'); break; } // 不給工具了還在呼叫＝沒有收斂，走下面的收尾
+            if (!pc.calls.length || !useTools.length) return Object.assign(finishFrom(pc.text || String(text).replace(/<\/?tool_call>/g, '').trim(), forceFinal && calls.length ? 'forced' : 'answer', round), { plain: !calls.length });
+            messages.push({ role: 'assistant', content: text });
+            let did = 0;
+            for (const c of pc.calls.slice(0, perRound)) {
+                const key = c.name + ' ' + JSON.stringify(c.args || {}); const rec = { name: c.name, args: c.args };
+                if (!names.has(c.name)) { invalid++; rec.ok = false; rec.skipped = '沒有這個工具'; calls.push(rec); messages.push({ role: 'tool', name: c.name, content: '沒有名為 ' + c.name + ' 的工具。可用工具：' + Array.from(names).join('、') + '。如果不需要工具，請直接回答。' }); emit({ type: 'invalid_tool', name: c.name }); continue; }
+                if (seen.has(key)) { rec.ok = false; rec.skipped = '重複呼叫'; calls.push(rec); messages.push({ role: 'tool', name: c.name, content: '你已經用同樣的參數呼叫過 ' + c.name + '，結果就在上面。請直接用它回答，不要再重複呼叫。' }); forceFinal = true; emit({ type: 'duplicate_call', name: c.name }); continue; }
+                if (calls.filter((x) => !x.skipped).length >= maxCalls) { rec.ok = false; rec.skipped = '呼叫次數已達上限'; calls.push(rec); forceFinal = true; continue; }
+                seen.add(key); emit({ type: 'tool_start', name: c.name, args: c.args });
+                let r; try { r = await opts.execTool({ name: c.name, args: c.args || {} }); } catch (e) { r = { ok: false, text: String((e && e.message) || e) }; }
+                let body = String((r && r.text) == null ? '' : r.text); const limit = Math.max(120, Math.floor(b.rag * 0.8));
+                if (estimateTokens(body) > limit) { let s = null; if (opts.summarize) { try { s = await opts.summarize(body, Math.floor(limit / 2)); } catch (_) { s = null; } } body = s && !looksLikeGarbage(s).garbage ? '（內容太長，摘要如下）' + trimToTokens(s, limit) : trimToTokens(body, limit); notes.push('工具 ' + c.name + ' 的結果太長，已' + (s ? '摘要' : '截短')); }
+                rec.ok = !!(r && r.ok); rec.text = body; calls.push(rec); did++;
+                messages.push({ role: 'tool', name: c.name, content: (r && r.ok ? '' : '（執行失敗）') + body });
+                emit({ type: 'tool_done', name: c.name, ok: rec.ok });
+            }
+            if (invalid >= 2) forceFinal = true;
+            if (!did && !forceFinal) forceFinal = true; // 這一輪沒有任何有效呼叫：不要再給機會
+            if (forceFinal) messages.push({ role: 'user', content: '請根據上面的資訊直接回答我的問題，不要再呼叫工具。', _keep: true });
+        }
+        if (opts.handoff && hasResults()) return handoff(maxRounds);
+        // 輪數用完還沒收斂：有工具結果就列出，不然回報
+        const results = calls.filter((c) => c.ok && c.text);
+        if (results.length) return { ok: true, text: '（沒能整理出完整回答，以下是工具的結果）\n' + results.map((c) => '【' + c.name + '】' + String(c.text).slice(0, 600)).join('\n'), reason: 'exhausted', rounds: maxRounds, calls, notes };
+        return { ok: false, text: '', reason: 'exhausted', rounds: maxRounds, calls, notes };
+    }
+
+    // ---------- 混用多個模型（模仿 MoE 的「分工」）：工具呼叫由一個模型處理，處理完交給專門寫文字的模型 ----------
+    // 一張 GPU 放不下全部模型，所以不是同時載入，而是「依階段輪流載入」：階段一（工具）→ 卸載 → 階段二（寫回答）。換模型的代價是重新載入（檔案已在快取，約數秒）。
+    // 每個模型有自己的「角色標記」與「優先順序」：tools（呼叫工具）、answer（寫最後的回答）、summarize（摘要過長的內容）；同一個角色有多個候選時，優先順序大的先用。
+    // 工具角色另外看基準測試：測過、評為「可靠／普通」的才信任；沒測過的只在沒有已測過的候選時才用；評為「不可靠」或根本沒有工具呼叫格式的不會被選去呼叫工具。
+    function roleConfig(model, cfg, defaultId) {
+        const c = (cfg && cfg[model.id]) || {};
+        const canTools = !!model.toolCalling;
+        return { tools: c.tools != null ? !!c.tools && canTools : canTools, answer: c.answer != null ? !!c.answer : true, summarize: c.summarize != null ? !!c.summarize : true, priority: Number.isFinite(Number(c.priority)) ? Number(c.priority) : (model.id === defaultId ? 50 : 10) };
+    }
+    // 工具信任度：'trusted'（基準測試可靠／普通）、'untested'（有格式但沒測過）、'no'（沒有格式，或測出不可靠）
+    function toolsTrust(model, bench) {
+        if (!model || !model.toolCalling) return 'no';
+        const b = bench && bench[model.id]; if (!b) return 'untested';
+        return b.rating === 'poor' ? 'no' : 'trusted';
+    }
+    // opts: { config（每個模型的角色標記與優先順序）, bench（基準測試結果）, installed:Set（已下載的模型 id）, requireInstalled（沒下載的不選，除非全都沒下載）, defaultId, hasTools }
+    // 回傳 { tools, answer, summarize, mixed, stages:[{role, model}], reasons:[…] }
+    function routeStages(opts) {
+        const models = textModels(); const defaultId = opts.defaultId || DEFAULT_TEXT_MODEL; const inst = opts.installed || new Set(); const reasons = [];
+        const rc = (m) => roleConfig(m, opts.config, defaultId);
+        const pick = (role) => {
+            let c = models.filter((m) => rc(m)[role]);
+            if (role === 'tools') c = c.filter((m) => toolsTrust(m, opts.bench) !== 'no');
+            if (opts.requireInstalled && c.some((m) => inst.has(m.id))) c = c.filter((m) => inst.has(m.id));
+            const tier = (m) => (role === 'tools' ? (toolsTrust(m, opts.bench) === 'trusted' ? 0 : 1) : 0);
+            c.sort((a, b) => tier(a) - tier(b) || rc(b).priority - rc(a).priority || (b.id === defaultId) - (a.id === defaultId) || ((a.bytes && a.bytes.gpu) || 0) - ((b.bytes && b.bytes.gpu) || 0));
+            return c[0] || null;
+        };
+        let tools = opts.hasTools ? pick('tools') : null; let answer = pick('answer') || (tools || null); const summarize = pick('summarize') || answer;
+        if (opts.hasTools && !tools) reasons.push('沒有可以呼叫工具的離線模型（沒勾角色、格式不支援，或基準測試評為不可靠），這次不給工具，單純文字生成');
+        if (!answer) answer = byId(defaultId);
+        if (tools && toolsTrust(tools, opts.bench) === 'untested') reasons.push('工具模型「' + tools.id + '」還沒做過基準測試，工具呼叫能不能用未知（建議到離線模型管理按「測試工具呼叫」）');
+        const mixed = !!(tools && answer && tools.id !== answer.id);
+        const stages = []; if (tools) stages.push({ role: 'tools', model: tools }); if (!tools || mixed) stages.push({ role: 'answer', model: answer }); else stages[0].role = 'tools+answer';
+        return { tools, answer, summarize, mixed, stages, reasons };
+    }
+    // 把工具結果整理成給「寫回答的模型」看的參考資料（它自己不呼叫工具，只看結果）
+    function toolResultsAsReferences(calls) {
+        return (calls || []).filter((c) => c.ok && c.text).map((c) => '工具 ' + c.name + (c.args && Object.keys(c.args).length ? '（' + JSON.stringify(c.args).slice(0, 120) + '）' : '') + ' 的結果：' + String(c.text));
+    }
+
     function fmtBytes(n) { n = Number(n) || 0; if (n >= 1024 * MB) return (n / (1024 * MB)).toFixed(2) + ' GB'; if (n >= MB) return (n / MB).toFixed(1) + ' MB'; if (n >= 1024) return (n / 1024).toFixed(0) + ' KB'; return n + ' B'; }
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -11389,6 +11627,8 @@ function faVlmWorkerMain() {
         } else if (m.arch === 'llava') {
             const cls = L.LlavaForConditionalGeneration || L.AutoModelForImageTextToText || L.AutoModelForVision2Seq; if (!cls) throw new Error('這個版本的 transformers.js 沒有 llava 架構支援');
             o.processor = await L.AutoProcessor.from_pretrained(m.processorRepo || repo); o.model = await cls.from_pretrained(repo, opts); // 社群轉檔的 repo 沒有 processor_config.json：處理器與分詞器從原版 repo 載入
+        } else if (m.arch === 'causal-lm') {
+            o.tokenizer = await L.AutoTokenizer.from_pretrained(repo); o.model = await L.AutoModelForCausalLM.from_pretrained(repo, opts);
         } else if (m.arch === 'vit-gpt2') {
             o.pipe = await L.pipeline('image-to-text', repo, opts);
         } else throw new Error('不認得的模型架構：' + m.arch);
@@ -11403,6 +11643,20 @@ function faVlmWorkerMain() {
         const ids = await cur.model.generate({ ...inputs, ...(m.gen || {}), max_new_tokens: m.maxTokens || 256 });
         const trimmed = ids.slice(null, [inputs.input_ids.dims.at(-1), null]);
         return cur.processor.batch_decode(trimmed, { skip_special_tokens: true })[0];
+    }
+    // 文字生成：訊息（含工具說明）→ 套聊天範本 → 生成。串流的文字每 120 毫秒批次送一次（不要一個 token 一則訊息淹掉主執行緒）；可以被 interrupt 中斷
+    async function chat(m) {
+        if (!cur || cur.arch !== 'causal-lm') throw new Error('文字模型還沒載入');
+        const L = lib; const t0 = Date.now();
+        const inputs = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, return_dict: true, enable_thinking: false });
+        const stopper = L.InterruptableStoppingCriteria ? new L.InterruptableStoppingCriteria() : null; cur.stopper = stopper;
+        let buf = '', last = Date.now();
+        const flush = () => { if (buf) { post({ type: 'stream', tid: m.tid, t: buf }); buf = ''; } last = Date.now(); };
+        const streamer = L.TextStreamer ? new L.TextStreamer(cur.tokenizer, { skip_prompt: true, skip_special_tokens: true, callback_function: (x) => { buf += x; if (Date.now() - last > 120) flush(); } }) : undefined;
+        const args = { ...inputs, ...(m.gen || {}), max_new_tokens: m.maxTokens || 512 }; if (streamer) args.streamer = streamer; if (stopper) args.stopping_criteria = stopper;
+        const out = await cur.model.generate(args); flush(); cur.stopper = null;
+        const plen = inputs.input_ids.dims.at(-1); const seq = out.slice(null, [plen, null]);
+        return { raw: cur.tokenizer.batch_decode(seq, { skip_special_tokens: true })[0], ms: Date.now() - t0, info: { promptTokens: plen, newTokens: seq.dims.at(-1), interrupted: !!(stopper && stopper.interrupted) } };
     }
     async function run(m) {
         if (!cur) throw new Error('模型還沒載入');
@@ -11429,7 +11683,9 @@ function faVlmWorkerMain() {
     }
     self.onmessage = async (ev) => {
         const m = ev.data || {};
+        if (m.type === 'interrupt') { try { if (cur && cur.stopper) cur.stopper.interrupt(); } catch (_) {} return; }
         try {
+            if (m.type === 'chat') { const r = await chat(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms, info: r.info }); return; }
             if (m.type === 'load') { await load(m); post({ type: 'loaded', tid: m.tid, device: m.device, modelId: m.modelId }); }
             else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms }); }
             else if (m.type === 'dispose') { await disposeCur(); post({ type: 'disposed', tid: m.tid }); }
@@ -12815,6 +13071,13 @@ class FloatingAssistant {
             offlineMaxCpuCores: 0,
             imageToTextModel: 'florence-2-base-ft',
             offlineVisionFallback: true,
+            offlineTextModel: 'qwen3-0.6b', // 文字生成預設（跟圖像 VLM 預設分開）
+            offlineLlmFallback: true, // 離線訓練器信心不足時交給離線文字模型
+            offlineLlmTools: true, // 離線文字模型可以呼叫工具（只有通過基準測試的模型才會被選去呼叫）
+            offlineLlmMixRewrite: true, // 混用時工具模型沒用到工具，也交給「寫回答」的模型重寫
+            offlineLlmMaxTokens: 512,
+            offlineTextRoles: {}, // { 模型id: { tools, answer, summarize, priority, device } }
+            offlineToolBench: {}, // { 模型id: 工具呼叫基準測試結果 }
             // 看圖（vision）的後端優先順序：llm-first（線上視覺模型優先，沒有可用模型或全部失敗就退離線模型）／offline-first／llm／offline
             visionBackendPolicy: 'llm-first',
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
@@ -13979,7 +14242,7 @@ class FloatingAssistant {
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 ? n : 50000; })(),
             repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'off',
             repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 1 ? n : 100; })(),
-            offlineThreshold: (() => { const n = Number(raw.offlineThreshold); return Number.isFinite(n) && n >= 0.1 && n <= 0.95 ? n : 0.45; })(),
+            offlineThreshold: FaVlm.clampThreshold(raw.offlineThreshold, 0.45), // 0.1～1.0；1.0＝幾乎全部交給離線文字模型
             customLanguages: (() => {
                 const out = {};
                 const src = raw.customLanguages && typeof raw.customLanguages === 'object' ? raw.customLanguages : {};
@@ -14002,6 +14265,13 @@ class FloatingAssistant {
             offlineMaxCpuCores: (() => { const n = Math.floor(Number(raw.offlineMaxCpuCores)); return Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; })(),
             imageToTextModel: typeof raw.imageToTextModel === 'string' && raw.imageToTextModel ? raw.imageToTextModel : 'florence-2-base-ft',
             offlineVisionFallback: raw.offlineVisionFallback !== false,
+            offlineTextModel: (() => { const m = typeof raw.offlineTextModel === 'string' ? FaVlm.byId(raw.offlineTextModel) : null; return m && m.task === 'text-generation' ? m.id : FaVlm.DEFAULT_TEXT_MODEL; })(),
+            offlineLlmFallback: raw.offlineLlmFallback !== false,
+            offlineLlmTools: raw.offlineLlmTools !== false,
+            offlineLlmMixRewrite: raw.offlineLlmMixRewrite !== false,
+            offlineLlmMaxTokens: (() => { const n = Math.floor(Number(raw.offlineLlmMaxTokens)); return Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; })(),
+            offlineTextRoles: (() => { const out = {}; const src = raw.offlineTextRoles && typeof raw.offlineTextRoles === 'object' ? raw.offlineTextRoles : {}; for (const m of FaVlm.textModels()) { const c = src[m.id]; if (!c || typeof c !== 'object') continue; const o = {}; for (const k of ['tools', 'answer', 'summarize']) if (typeof c[k] === 'boolean') o[k] = c[k]; if (Number.isFinite(Number(c.priority))) o.priority = Math.max(-1000, Math.min(1000, Math.round(Number(c.priority)))); if (c.device === 'gpu' || c.device === 'cpu') o.device = c.device; out[m.id] = o; } return out; })(),
+            offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
             visionBackendPolicy: ['llm-first', 'offline-first', 'llm', 'offline'].includes(raw.visionBackendPolicy) ? raw.visionBackendPolicy : (raw.offlineVisionFallback === false ? 'llm' : 'llm-first'),
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
@@ -20370,9 +20640,16 @@ ${fnData.code}
             this._pushAssistantMessage(`${head}\n${why}\n${d.reason}`, null);
         } else {
             this._otNoteUnresolved(text, d.reason || '沒有對應的規則');
+            let llmNote = '';
+            if (FaVlm.shouldUseOfflineLlm(d, this.advancedSettings) && text.charAt(0) !== '/') {
+                const lr = await this._offlineLlmAnswer(text, plan, { fallback: !!opts.fallback });
+                if (lr.ok) { this._pushAssistantMessage(lr.header + '\n\n' + lr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+                llmNote = '\n\n（離線文字模型沒能回答：' + (lr.error || '失敗') + '）';
+            }
             const alts = [c].concat(plan.alternatives.map((a) => ({ domain: a.domain, pattern: a.pattern, intent: a.intent, score: a.score }))).filter(Boolean).slice(0, 4);
             let msg = `${head}\n${d.reason}\n\n可能相關：\n` + (alts.length ? alts.map((a) => `- ${a.intent || a.pattern}（${a.domain}，${a.score}）`).join('\n') : '（沒有）');
             if (plan.rag && plan.rag.length) msg += '\n\n知識庫(RAG)裡有相近的內容：\n' + plan.rag.map((r) => `- ${String(r.content).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
+            msg += llmNote;
             msg += '\n\n要讓它學會這句話：到「Configure → AI → 離線訓練器」用乾跑確認並加入範例，或切回線上模式讓AI回答（線上的成功做法會自動學起來）。';
             this._pushAssistantMessage(msg, null);
         }
@@ -22744,7 +23021,7 @@ ${fnData.code}
         h += `<div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
             <label><input type="checkbox" data-ot-set="offlineMode" ${S.offlineMode ? 'checked' : ''}> 離線模式（不經過AI）</label>
             <label title="所有model都失敗時，自動改用離線訓練器回答"><input type="checkbox" data-ot-set="offlineAutoFallback" ${S.offlineAutoFallback !== false ? 'checked' : ''}> AI失效時自動退回離線</label>
-            <label>信心門檻 <input type="range" min="0.2" max="0.8" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b></label>
+            <label>信心門檻 <input type="range" min="0.2" max="1" step="0.01" value="${S.offlineThreshold}" data-ot-set="offlineThreshold" style="vertical-align:middle;"> <b id="ai-ot-thr">${S.offlineThreshold}</b><span style="opacity:.7; font-size:12px;">（1.0＝幾乎全部交給離線文字模型）</span></label>
         </div>`;
         h += `<div style="margin-bottom:10px;">領域 <b>${stats.domains}</b>　規則 <b>${stats.patterns}</b>　範例句 <b>${stats.examples}</b>　已學會的解法 <b>${stats.solutions}</b>　RAG節點 <b>${rag.length}</b></div>`;
         h += `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">${btn('train-rag', '📚 從RAG訓練')}${btn('train-chat', '💬 從目前對話訓練')}${btn('reseed', '🔄 重新載入內建（功能清冊）')}${btn('export', '⬇️ 匯出')}${btn('import', '⬆️ 匯入')}${btn('forget', '🗑️ 清除學到的')}<input type="file" id="ai-ot-import-file" accept="application/json" style="display:none;"></div>`;
@@ -45930,7 +46207,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 裝置偏好、CPU 核心上限是全域設定（advancedSettings.offlineDevicePreference／offlineMaxCpuCores），Whisper 也共用。純邏輯在 FaVlm（renderer/src/vlm/vlm_core.js）。
     _omSettings() {
         const s = this.advancedSettings || {}; const m = FaVlm.byId(s.imageToTextModel);
-        return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false };
+        const tm = FaVlm.byId(s.offlineTextModel);
+        return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly && m.task === 'image-to-text' ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false,
+            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
     }
     _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
     // 能不能 WASM 多執行緒：跟 onnxruntime-web 自己檢查的同三件事（SharedArrayBuffer 存在、能傳給 Worker、執行緒指令可驗證）。不是非要 crossOriginIsolated：
@@ -45967,25 +46246,34 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return (this._omGpuCache = info);
     }
     // ----- Worker 與 RPC -----
-    _vlmWorkerGet() {
-        if (this._vlmWk) return this._vlmWk;
+    // 兩個獨立的 Worker 槽：'gpu'（WebGPU）與 'cpu'（WASM）。不同模型可以分派到不同的裝置，兩邊同時駐留、各自在自己的執行緒裡算，不互相擠掉，也不佔主執行緒。
+    _vlmSlotOf(dev) { return dev === 'webgpu' ? 'gpu' : 'cpu'; }
+    _vlmWorkerGet(slot) {
+        slot = slot === 'gpu' ? 'gpu' : 'cpu'; this._vlmWks = this._vlmWks || {}; this._vlmLoadedBy = this._vlmLoadedBy || {};
+        if (this._vlmWks[slot]) return this._vlmWks[slot];
         const blobUrl = URL.createObjectURL(new Blob(['(' + faVlmWorkerMain.toString() + ')()'], { type: 'text/javascript' }));
-        const worker = new Worker(blobUrl, { type: 'module' }); const rec = { worker, pending: new Map(), tid: 0 };
-        const die = (msg) => { for (const p of rec.pending.values()) p.reject(new Error(msg)); rec.pending.clear(); try { worker.terminate(); } catch (_) {} if (this._vlmWk === rec) { this._vlmWk = null; this._vlmLoaded = null; } };
+        const worker = new Worker(blobUrl, { type: 'module' }); const rec = { worker, pending: new Map(), tid: 0, slot };
+        const die = (msg) => { for (const p of rec.pending.values()) p.reject(new Error(msg)); rec.pending.clear(); try { worker.terminate(); } catch (_) {} if (this._vlmWks[slot] === rec) { this._vlmWks[slot] = null; this._vlmLoadedBy[slot] = null; } };
         worker.onmessage = (ev) => {
             const m = ev.data || {}; const p = rec.pending.get(m.tid); if (!p) return;
             if (m.type === 'progress') { if (p.onProgress) try { p.onProgress(m.p); } catch (_) {} return; }
+            if (m.type === 'stream') { if (p.onStream) try { p.onStream(m.t); } catch (_) {} return; }
             rec.pending.delete(m.tid); if (m.type === 'error') p.reject(new Error(m.error || 'worker error')); else p.resolve(m);
         };
         worker.onerror = (e) => die(String((e && e.message) || 'worker 發生錯誤'));
-        rec.die = die; return (this._vlmWk = rec);
+        rec.die = die; return (this._vlmWks[slot] = rec);
     }
-    _vlmRpc(type, payload, onProgress) {
-        const rec = this._vlmWorkerGet(); const tid = ++rec.tid;
-        return new Promise((resolve, reject) => { rec.pending.set(tid, { resolve, reject, onProgress }); try { rec.worker.postMessage(Object.assign({ type, tid }, payload || {})); } catch (e) { rec.pending.delete(tid); reject(e); } });
+    _vlmRpc(type, payload, onProgress, onStream, slot) {
+        const rec = this._vlmWorkerGet(slot); const tid = ++rec.tid;
+        return new Promise((resolve, reject) => { rec.pending.set(tid, { resolve, reject, onProgress, onStream }); try { rec.worker.postMessage(Object.assign({ type, tid }, payload || {})); } catch (e) { rec.pending.delete(tid); reject(e); } });
     }
-    _vlmTerminate() { if (this._vlmWk) { try { this._vlmWk.die('已卸載'); } catch (_) {} } this._vlmLoaded = null; if (this._vlmIdleTimer) { clearTimeout(this._vlmIdleTimer); this._vlmIdleTimer = null; } }
-    _vlmScheduleIdle() { if (this._vlmIdleTimer) clearTimeout(this._vlmIdleTimer); this._vlmIdleTimer = setTimeout(() => { this._vlmTerminate(); }, 5 * 60 * 1000); } // 閒置 5 分鐘就卸載（釋放記憶體與顯示記憶體）
+    // 卸載：不給 slot ＝兩個都卸載
+    _vlmTerminate(slot) {
+        const slots = slot ? [slot] : ['gpu', 'cpu']; this._vlmIdleTimers = this._vlmIdleTimers || {};
+        for (const s of slots) { const rec = this._vlmWks && this._vlmWks[s]; if (rec) { try { rec.die('已卸載'); } catch (_) {} } if (this._vlmLoadedBy) this._vlmLoadedBy[s] = null; if (this._vlmIdleTimers[s]) { clearTimeout(this._vlmIdleTimers[s]); this._vlmIdleTimers[s] = null; } }
+    }
+    _vlmTerminateModel(id) { for (const s of ['gpu', 'cpu']) { const l = this._vlmLoadedBy && this._vlmLoadedBy[s]; if (l && l.modelId === id) this._vlmTerminate(s); } }
+    _vlmScheduleIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) clearTimeout(this._vlmIdleTimers[s]); this._vlmIdleTimers[s] = setTimeout(() => { this._vlmTerminate(s); }, 5 * 60 * 1000); } } // 閒置 5 分鐘就卸載（釋放記憶體與顯示記憶體）
     _vlmProgressAgg(label, update) {
         const files = new Map(); let last = 0;
         return (p) => {
@@ -45999,7 +46287,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // 依序嘗試裝置載入模型（GPU 失敗自動降級 CPU）。回傳 { device, tried, threads }
     async _vlmEnsureLoaded(model, order, update, log) {
-        const loaded = this._vlmLoaded; if (loaded && loaded.modelId === model.id && order.includes(loaded.device) && this._vlmWk) return Object.assign({ tried: [] }, loaded);
+        this._vlmLoadedBy = this._vlmLoadedBy || {}; this._vlmWks = this._vlmWks || {};
+        for (const d0 of order) { const s0 = this._vlmSlotOf(d0); const loaded = this._vlmLoadedBy[s0]; if (loaded && loaded.modelId === model.id && loaded.device === d0 && this._vlmWks[s0]) return Object.assign({ tried: [] }, loaded); }
         const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated, cores.reason); const tried = [];
         for (const dev of order) {
             const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];
@@ -46011,12 +46300,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (log) log('載入模型到 ' + (dev === 'webgpu' ? 'GPU（WebGPU）' : 'CPU（WASM，' + th.effective + ' 個執行緒）') + '…');
                 let lastLibErr = null;
                 for (const libUrl of libUrls) {
-                    try { await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, processorRepo: model.processorRepo || model.repo, dtype: dt, device: dev, threads: dev === 'webgpu' ? 1 : th.effective }, this._vlmProgressAgg(model.label, update || (() => {}))); lastLibErr = null; break; }
-                    catch (e2) { lastLibErr = e2; if (!/dynamically imported module|Failed to fetch|import/i.test(String((e2 && e2.message) || e2)) || libUrl === libUrls[libUrls.length - 1]) break; if (log) log('⚠️ 函式庫載入失敗，改用另一個網址重試'); this._vlmTerminate(); }
+                    try { await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, processorRepo: model.processorRepo || model.repo, dtype: dt, device: dev, threads: dev === 'webgpu' ? 1 : th.effective }, this._vlmProgressAgg(model.label, update || (() => {})), null, this._vlmSlotOf(dev)); lastLibErr = null; break; }
+                    catch (e2) { lastLibErr = e2; if (!/dynamically imported module|Failed to fetch|import/i.test(String((e2 && e2.message) || e2)) || libUrl === libUrls[libUrls.length - 1]) break; if (log) log('⚠️ 函式庫載入失敗，改用另一個網址重試'); this._vlmTerminate(this._vlmSlotOf(dev)); }
                 }
                 if (lastLibErr) throw lastLibErr;
-                this._vlmLoaded = { modelId: model.id, device: dev, threads: th }; return { device: dev, tried, threads: th };
-            } catch (e) { tried.push({ device: dev, error: String((e && e.message) || e) }); if (log) log('⚠️ ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 載入失敗：' + tried[tried.length - 1].error + (order.indexOf(dev) < order.length - 1 ? '；降級成 CPU 重試' : '')); this._vlmTerminate(); }
+                this._vlmLoadedBy[this._vlmSlotOf(dev)] = { modelId: model.id, device: dev, threads: th }; return { device: dev, tried, threads: th };
+            } catch (e) { tried.push({ device: dev, error: String((e && e.message) || e) }); if (log) log('⚠️ ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 載入失敗：' + tried[tried.length - 1].error + (order.indexOf(dev) < order.length - 1 ? '；降級成 CPU 重試' : '')); this._vlmTerminate(this._vlmSlotOf(dev)); }
         }
         const err = new Error('模型載入失敗：' + tried.map((x) => x.device + '：' + x.error).join('；')); err.tried = tried; throw err;
     }
@@ -46120,12 +46409,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
                 const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
                 update({ pct: 99, status: '辨識中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
-                try { res = await this._vlmRpc('run', { image: img.blob, prompt: tb.prompt, gen: FaVlm.generationParams(model, tb.task), maxTokens: Math.max(16, Math.min(1024, Math.floor(Number(p.max_tokens) || FaVlm.defaultMaxTokens(tb.task)))) }); }
-                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(); if (ld.device === 'webgpu' && !model.gpuOnly) { order = ['wasm']; downgraded = true; log('降級成 CPU 重試'); } else break; }
+                try { res = await this._vlmRpc('run', { image: img.blob, prompt: tb.prompt, gen: FaVlm.generationParams(model, tb.task), maxTokens: Math.max(16, Math.min(1024, Math.floor(Number(p.max_tokens) || FaVlm.defaultMaxTokens(tb.task)))) }, null, null, this._vlmSlotOf(ld.device)); }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu' && !model.gpuOnly) { order = ['wasm']; downgraded = true; log('降級成 CPU 重試'); } else break; }
             }
             if (!res) throw lastErr || new Error('推論失敗');
             const text = FaVlm.formatResult(model, res.raw, tb.task);
-            this._vlmScheduleIdle();
+            this._vlmScheduleIdle(this._vlmSlotOf(used.device));
             if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒');
             if (!text) return { ok: false, error: '模型沒有產生任何文字（圖片太小或沒有可辨識的內容？）', model: model.id, device: used.device };
             return { ok: true, text, model: model.id, repo: model.repo, device: used.device === 'webgpu' ? 'gpu' : 'cpu', threads: used.device === 'webgpu' ? undefined : used.threads.effective, task: tb.task, note: tb.note, language: model.lang, ms: Date.now() - t0, fell_back_from_gpu: downgraded || (used.tried && used.tried.some((x) => x.device === 'webgpu')) ? true : undefined };
@@ -46158,7 +46447,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _omDeleteModel(id) {
         const m = FaVlm.byId(id); if (!m) return { ok: false, error: '不認得的模型' };
         const entries = await this._omCacheEntries(); const n = await this._omDeleteUrls(FaVlm.urlsOfModel(entries, m));
-        if (this._vlmLoaded && this._vlmLoaded.modelId === id) this._vlmTerminate();
+        this._vlmTerminateModel(id);
         if (id === 'whisper-base') { this._whisperTranscriber = null; this._whisperTranscriberDevice = null; this._whisperRepoFallbackTried = false; }
         return { ok: true, deleted_files: n };
     }
@@ -46180,6 +46469,128 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     // ----- 設定頁：離線模型管理 -----
+    // ===== 離線文字模型：聊天、參考 RAG、工具呼叫，可以混用多個模型、分派到 GPU 或 CPU =====
+    // 推論全在 Worker 裡（GPU 與 CPU 各一個，可同時駐留）；主執行緒只做很輕的事：組訊息、批次接收串流文字（每 120 毫秒一批）、偵測垃圾輸出。
+    _omDevicePrefOf(model) { const c = (this._omSettings().roles || {})[model.id]; return c && (c.device === 'gpu' || c.device === 'cpu') ? c.device : this._omSettings().device; }
+    async _omInstalled() { const usage = await this._omUsage(); return { usage, set: new Set(FaVlm.MODELS.filter((m) => ((usage.byModel[m.id] || {}).files || 0) > 0).map((m) => m.id)) }; }
+    // 一次生成：載入（必要時）→ 在對應裝置的 Worker 生成 → 串流中偵測垃圾／逾時就中斷。cb: { update, log, onToken }
+    async _llmGenerate(model, a, cb) {
+        cb = cb || {}; const gpu = await this._omGpuInfo();
+        const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16);
+        if (!dev.order.length) throw new Error(dev.reason);
+        const ld = await this._vlmEnsureLoaded(model, dev.order, cb.update || (() => {}), cb.log);
+        const slot = this._vlmSlotOf(ld.device); this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = ld.device;
+        const msgs = a.messages.map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
+        const gen = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
+        let acc = '', since = 0, stopped = null; const rec = this._vlmWorkerGet(slot);
+        const stop = (why) => { if (stopped) return; stopped = why; try { rec.worker.postMessage({ type: 'interrupt' }); } catch (_) {} };
+        const limitMs = (ld.device === 'webgpu' ? 90 : 300) * 1000; const timer = setTimeout(() => stop('逾時'), limitMs);
+        try {
+            const res = await this._vlmRpc('chat', { messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen }, null, (chunk) => {
+                acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc);
+                if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') stop('垃圾輸出：' + g.reason); }
+            }, slot);
+            this._vlmScheduleIdle(slot);
+            return res.raw;
+        } finally { clearTimeout(timer); }
+    }
+    // 離線文字模型可以呼叫的工具：離線訓練器找到的相近做法裡的工具＋幾個唯讀的常用工具；有副作用的工具在執行前一定會問使用者
+    _offlineLlmToolList(plan) {
+        const names = []; const add = (n) => { if (n && this.tools[n] && !FA_OT_META_TOOLS.has(n) && names.indexOf(n) < 0) names.push(n); };
+        const d = plan && plan.decision; if (d && d.chosen) add(d.chosen.tool); for (const a of (plan && plan.alternatives) || []) add(a.tool);
+        ['ref_lookup', 'fetch_web_page', 'browser_search'].forEach(add);
+        return names.slice(0, 6).map((n) => { const t = this.tools[n]; const s = t.parametersSchema || {}; return { name: n, description: t.description || n, parameters: { type: 'object', properties: s.properties || {}, required: s.required || [] } }; });
+    }
+    async _offlineLlmExecTool(c, userText) {
+        const t = this.tools[c.name]; if (!t) return { ok: false, text: '沒有這個工具' };
+        if (FA_OT_RISKY_TOOL.test(c.name)) {
+            const ans = await this.requestUserForm({ title: '🔌 離線文字模型要執行有副作用的工具', description: '工具：' + c.name + '\n參數：' + JSON.stringify(c.args).slice(0, 400) + '\n\n這是小型離線模型自己決定的，不一定正確。要執行嗎？', choices: ['執行', '取消'] });
+            if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, text: '使用者取消了這個工具呼叫' };
+        }
+        let raw; try { raw = await t.callback.call(this, JSON.stringify(c.args || {})); } catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
+        let ok = true; try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
+        return { ok, text: this._otPretty(raw, userText) };
+    }
+    // 離線文字模型回答。回傳 { ok, text, header, route, calls, notes, ms } 或 { ok:false, error, cancelled? }
+    // opts: { fallback（自動備援：不問使用者、不偷偷下載）, ui:false（不要進度卡片）, history }
+    async _offlineLlmAnswer(userText, plan, opts) {
+        opts = opts || {}; const S = this._omSettings(); const t0 = Date.now();
+        if (!S.llmFallback && !opts.force) return { ok: false, error: '設定裡關掉了「交給離線文字模型」' };
+        const inst = await this._omInstalled(); const gpu = await this._omGpuInfo();
+        const toolList = S.llmTools ? this._offlineLlmToolList(plan) : [];
+        const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: toolList.length > 0 });
+        const stageModels = []; for (const s of route.stages) if (!stageModels.some((m) => m.id === s.model.id)) stageModels.push(s.model);
+        // 沒下載的模型：自動備援不自己下載；使用者主動用的才問一次（拒絕過就不再問）
+        this._omDeclined = this._omDeclined || new Set();
+        for (const m of stageModels) {
+            const dev = FaVlm.resolveDevice(m, this._omDevicePrefOf(m), gpu.available, gpu.f16); if (!dev.order.length) return { ok: false, error: dev.reason };
+            const need = FaVlm.estimateDownload(m, dev.order[0], (inst.usage.byModel[m.id] || { bytes: 0 }).bytes);
+            if (need > 20 * 1048576) {
+                if (opts.fallback || this._omDeclined.has(m.id)) return { ok: false, error: '離線文字模型「' + m.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；到 Configure →「離線模型管理」下載後就會自動使用' };
+                const okDl = await this._omAskDownload('要下載離線文字模型嗎？', '「' + m.label + '」\n來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載一次，存在瀏覽器快取，可在「離線模型管理」清除）。\n在你的電腦上執行，對話內容不會上傳；推論在背景執行緒，不會卡住畫面。', '下載並使用');
+                if (!okDl) { this._omDeclined.add(m.id); return { ok: false, cancelled: true, error: '使用者取消了下載' }; }
+            }
+        }
+        const prog = opts.ui === false ? null : this._createProgressWidget('離線文字模型（' + stageModels.map((m) => m.id).join(' → ') + '）');
+        const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
+        route.reasons.forEach(log);
+        try {
+            const system = '你是在使用者電腦上離線執行的小型助理。預設用繁體中文簡潔回答（使用者用別種語言就用那種語言）。不確定就直說不確定，不要編造事實、網址、數字；有參考資料就優先根據它，沒有相關就憑常識回答並說明可能不準。只有真的需要即時資訊或操作時才使用工具。';
+            let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
+            let rag = (plan && plan.rag || []).map((r) => r.content);
+            if (!rag.length && this.advancedSettings.ragEnabled && this.ragSystem) { try { const r = await this.ragSystem.query(userText, 3); rag = (r || []).map((x) => String(x.content)); } catch (_) {} }
+            const cbs = { update, log, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
+            const gen = (model) => (a) => this._llmGenerate(model, a, cbs);
+            const summarizerFor = (model, b) => (route.summarize && route.summarize.id === model.id) ? async (body, maxTok) => this._llmGenerate(model, { messages: [{ role: 'system', content: '你是摘要工具。用繁體中文摘要，保留數字、名稱與結論，不要加入原文沒有的資訊。' }, { role: 'user', content: FaVlm.trimToTokens(body, Math.max(200, b.prompt - 300)) }], tools: [], deterministic: true, maxTokens: maxTok }, cbs) : null;
+            const onEvent = (e) => { if (e.type === 'tool_start') log('呼叫工具：' + e.name + ' ' + JSON.stringify(e.args).slice(0, 120)); else if (e.type === 'garbage') log('⚠️ 輸出是垃圾（' + e.reason + '），重試'); else if (e.type === 'duplicate_call') log('⚠️ 重複的工具呼叫，已略過'); };
+            let result = null; const used = []; const notes = []; let calls = [];
+            if (route.tools) {
+                const bA = FaVlm.textBudget(route.tools, S.llmMax); const specs = FaVlm.compactToolSpecs(toolList, bA.tools); const names = new Set(specs.map((s) => s.function.name));
+                const cm = FaVlm.composeMessages({ system, history, rag, user: userText, budget: bA });
+                log('階段一（' + (route.mixed ? '工具' : '工具＋回答') + '）：' + route.tools.id);
+                result = await FaVlm.runAgentLoop({ messages: cm.messages, tools: specs, toolNames: names, budget: bA, generate: gen(route.tools), execTool: (c) => this._offlineLlmExecTool(c, userText), summarize: summarizerFor(route.tools, bA), handoff: route.mixed, onEvent });
+                used.push({ role: route.mixed ? 'tools' : 'tools+answer', model: route.tools }); calls = result.calls; notes.push(...result.notes);
+                const needWriter = route.mixed && (result.handoff || (result.plain && S.mixRewrite) || !result.ok);
+                if (needWriter) {
+                    const bB = FaVlm.textBudget(route.answer, S.llmMax); const refs = FaVlm.toolResultsAsReferences(calls).concat(rag);
+                    const cmB = FaVlm.composeMessages({ system, history, rag: refs, user: userText, budget: bB });
+                    log('階段二（寫回答）：' + route.answer.id);
+                    result = await FaVlm.runAgentLoop({ messages: cmB.messages, tools: [], budget: bB, generate: gen(route.answer), execTool: async () => ({ ok: false, text: '' }), onEvent });
+                    used.push({ role: 'answer', model: route.answer }); notes.push(...result.notes);
+                }
+            } else {
+                const bB = FaVlm.textBudget(route.answer, S.llmMax); const cmB = FaVlm.composeMessages({ system, history, rag, user: userText, budget: bB });
+                log('單純文字生成：' + route.answer.id);
+                result = await FaVlm.runAgentLoop({ messages: cmB.messages, tools: [], budget: bB, generate: gen(route.answer), execTool: async () => ({ ok: false, text: '' }), onEvent });
+                used.push({ role: 'answer', model: route.answer }); notes.push(...result.notes);
+            }
+            if (!result || !result.ok || !String(result.text || '').trim()) { const why = { empty: '模型沒有產生任何文字', garbage: '模型只產生了垃圾輸出（重複或亂碼）', context_full: '上下文放不下', exhausted: '多輪之後仍沒有收斂' }[result && result.reason] || '失敗'; if (prog) prog.fail(why); return { ok: false, error: why, route }; }
+            const devOf = (m) => ((this._omLastDevice || {})[m.id] === 'webgpu' ? 'GPU' : 'CPU');
+            const ms = Date.now() - t0; if (prog) prog.finish('完成：' + (ms / 1000).toFixed(1) + ' 秒');
+            const header = '🔌 離線文字模型｜' + used.map((u) => ({ tools: '工具', 'tools+answer': '工具＋回答', answer: '回答' }[u.role]) + '：' + u.model.id + '（' + devOf(u.model) + '）').join(' → ') + (calls.filter((c) => !c.skipped).length ? '｜呼叫了 ' + calls.filter((c) => !c.skipped).map((c) => c.name).join('、') : '') + '｜' + (ms / 1000).toFixed(1) + ' 秒' + (notes.length ? '\n（' + Array.from(new Set(notes)).join('；') + '）' : '');
+            return { ok: true, text: String(result.text).trim(), header, route, calls, notes, ms };
+        } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), route }; }
+    }
+    // 工具呼叫基準測試：固定題目、假工具、確定性生成；結果存起來，決定這個模型能不能被選去呼叫工具
+    async _omToolBench(id, setStatus) {
+        const m = FaVlm.byId(id); if (!m || m.task !== 'text-generation') return { ok: false, error: '不是文字生成模型' };
+        if (!m.toolCalling) return { ok: false, error: '這個模型沒有工具呼叫格式，不能測' };
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(m, this._omDevicePrefOf(m), gpu.available, gpu.f16); if (!dev.order.length) return { ok: false, error: dev.reason };
+        const inst = await this._omInstalled(); const need = FaVlm.estimateDownload(m, dev.order[0], (inst.usage.byModel[m.id] || { bytes: 0 }).bytes);
+        if (need > 20 * 1048576) { const okDl = await this._omAskDownload('要下載「' + m.label + '」來做基準測試嗎？', '來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '。', '下載並測試'); if (!okDl) return { ok: false, cancelled: true, error: '已取消' }; }
+        const prog = this._createProgressWidget('工具呼叫基準測試（' + m.label + '）'); const update = (x) => { prog.update(x); if (setStatus) setStatus((x.pct != null ? Math.round(x.pct) + '% ' : '') + (x.status || '')); };
+        const t0 = Date.now(); const results = []; const specs = FaVlm.compactToolSpecs(FaVlm.BENCH_TOOLS, 100000);
+        try {
+            for (let i = 0; i < FaVlm.BENCH_CASES.length; i++) {
+                const c = FaVlm.BENCH_CASES[i]; if (setStatus) setStatus('第 ' + (i + 1) + '／' + FaVlm.BENCH_CASES.length + ' 題…'); prog.log('題目 ' + (i + 1) + '：' + c.user);
+                const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: '你是助理。需要時使用工具；不需要工具時直接簡短回答。' }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
+                const r = FaVlm.scoreToolCase(c, raw); results.push(Object.assign({ id: c.id }, r)); prog.log((r.ok ? '✅ ' : '❌ ') + r.reason + '　輸出：' + String(raw).replace(/\s+/g, ' ').slice(0, 100));
+            }
+            const sum = FaVlm.summarizeToolBench(results); const rec = Object.assign({}, sum, { at: Date.now(), device: (this._omLastDevice || {})[m.id] === 'webgpu' ? 'gpu' : 'cpu', ms: Date.now() - t0, details: results.map((r) => ({ id: r.id, ok: r.ok, reason: r.reason })) });
+            this.advancedSettings.offlineToolBench = Object.assign({}, this.advancedSettings.offlineToolBench, { [m.id]: rec }); this._saveAdvancedSettings();
+            prog.finish('完成：' + sum.passed + '／' + sum.total + '（' + sum.label + '）'); return { ok: true, result: rec };
+        } catch (e) { prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e) }; }
+    }
     _omRegisterPane() {
         if (this._omPaneRegistered) return;
         const root = document.createElement('div'); root.id = 'ai-om-pane'; root.style.cssText = 'font-size:13px; line-height:1.5;';
@@ -46191,19 +46602,28 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _omRenderPane() {
         const root = this._omPaneRoot; if (!root) return;
+        const keepOut = root.querySelector('[data-om-out]') ? root.querySelector('[data-om-out]').textContent : ''; const keepChat = root.querySelector('[data-om-chatout]') ? root.querySelector('[data-om-chatout]').textContent : '';
         const S = this._omSettings(); const cores = this._omCores(); const gpu = await this._omGpuInfo(); const th = FaVlm.resolveThreads(S.maxCores, cores.hardware, cores.isolated, cores.reason); const usage = await this._omUsage();
         const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); const inp = this._otPaneInput(); const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
-        const rows = FaVlm.MODELS.map((m) => {
+        const cardOf = (m) => {
             const u = usage.byModel[m.id] || { bytes: 0, files: 0 }; const have = u.files > 0; const gpuOnlyBad = m.gpuOnly && !gpu.available; const sizeTxt = m.bytes.cpu ? 'CPU 約 ' + FaVlm.fmtBytes(m.bytes.cpu) + (m.bytes.gpu && m.bytes.gpu !== m.bytes.cpu ? '／GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu) : '') : 'GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu);
-            const badges = [m.managedOnly ? '' : (m.id === S.model ? '<b style="color:#34d399">★ 預設</b>' : ''), m.experimental ? '<span style="color:#fbbf24">實驗</span>' : '', (!m.verified && !m.managedOnly) ? '<span style="color:#f59e0b" title="照官方範例寫的，還沒有在真實環境驗證">未驗證</span>' : (m.verified && !m.managedOnly ? '<span style="color:#34d399" title="' + esc(m.measured || '') + '">已驗證（' + (m.verifiedOn === 'cpu' ? 'CPU' : '') + '）</span>' : ''), m.gpuOnly ? '<span style="color:#f87171">只能用 GPU' + (gpuOnlyBad ? '（這台沒有 WebGPU，不能用）' : '') + '</span>' : ''].filter(Boolean).join('　');
+            const badges = [m.managedOnly ? '' : (m.id === (m.task === 'text-generation' ? S.textModel : S.model) ? '<b style="color:#34d399">★ 預設</b>' : ''), m.experimental ? '<span style="color:#fbbf24">實驗</span>' : '', (!m.verified && !m.managedOnly) ? '<span style="color:#f59e0b" title="照官方範例寫的，還沒有在真實環境驗證">未驗證</span>' : (m.verified && !m.managedOnly ? '<span style="color:#34d399" title="' + esc(m.measured || '') + '">已驗證（' + (m.verifiedOn === 'cpu' ? 'CPU' : '') + '）</span>' : ''), m.gpuOnly ? '<span style="color:#f87171">只能用 GPU' + (gpuOnlyBad ? '（這台沒有 WebGPU，不能用）' : '') + '</span>' : ''].filter(Boolean).join('　');
             return `<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;">
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><b>${esc(m.label)}</b>${badges ? '　' + badges : ''}</div>
                 <div style="color:#94a3b8; font-size:12px;">${esc(m.repo)}　${esc(sizeTxt)}　${esc(m.lang || '')}${m.license ? '　授權 ' + esc(m.license) : ''}</div>
                 <div style="color:#94a3b8; font-size:12px;">${esc(m.notes || '')}</div>${m.measured ? `<div style="color:#7dd3fc; font-size:12px;">實測（${esc(m.verifiedOn === 'cpu' ? 'CPU 路徑已驗證' : '尚未完整驗證')}）：${esc(m.measured)}</div>` : ''}${m.knownIssue ? `<div style="color:#f87171; font-size:12px;">已知問題：${esc(m.knownIssue)}</div>` : ''}
                 <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>${have ? '✅ 已下載 ' + FaVlm.fmtBytes(u.bytes) + '（' + u.files + ' 個檔案）' : '⬜ 未下載'}</span>
-                    ${m.managedOnly ? '' : `<button style="${btn}" data-om="preload" data-id="${esc(m.id)}" ${gpuOnlyBad ? 'disabled' : ''}>下載</button><button style="${btn}" data-om="default" data-id="${esc(m.id)}" ${m.id === S.model ? 'disabled' : ''}>設為預設</button>`}
-                    ${have ? `<button style="${btn} color:#fca5a5;" data-om="delete" data-id="${esc(m.id)}">刪除</button>` : ''}<span data-om-status="${esc(m.id)}" style="color:#7dd3fc;"></span></div></div>`;
-        }).join('');
+                    ${m.managedOnly ? '' : `<button style="${btn}" data-om="preload" data-id="${esc(m.id)}" ${gpuOnlyBad ? 'disabled' : ''}>下載</button><button style="${btn}" data-om="default" data-id="${esc(m.id)}" ${m.id === (m.task === 'text-generation' ? S.textModel : S.model) ? 'disabled' : ''}>設為預設</button>`}
+                    ${have ? `<button style="${btn} color:#fca5a5;" data-om="delete" data-id="${esc(m.id)}">刪除</button>` : ''}<span data-om-status="${esc(m.id)}" style="color:#7dd3fc;"></span></div>${extra(m)}</div>`;
+        };
+        const extra = (m) => {
+            if (m.task !== 'text-generation') return '';
+            const rc = FaVlm.roleConfig(m, S.roles, S.textModel); const bn = S.bench[m.id]; const dsel = (S.roles[m.id] && S.roles[m.id].device) || 'auto'; const chk = (role, label, dis) => `<label style="margin-right:8px;"><input type="checkbox" data-om-role="${role}" data-id="${esc(m.id)}" ${rc[role] ? 'checked' : ''} ${dis ? 'disabled' : ''}> ${label}</label>`;
+            const badge = bn ? `<b style="color:${bn.rating === 'good' ? '#34d399' : bn.rating === 'fair' ? '#fbbf24' : '#f87171'}">工具呼叫 ${bn.passed}/${bn.total}（${esc(bn.label)}）</b>` : (m.toolCalling ? '<span style="color:#94a3b8">工具呼叫：還沒測試</span>' : '<span style="color:#94a3b8">這個模型沒有工具呼叫格式，只能聊天</span>');
+            return `<div style="margin-top:4px; font-size:12px;">角色：${chk('tools', '呼叫工具', !m.toolCalling)}${chk('answer', '寫回答')}${chk('summarize', '摘要')}　優先順序 <input type="number" data-om-prio data-id="${esc(m.id)}" value="${rc.priority}" style="${inp} width:64px;">　運算 <select data-om-dev data-id="${esc(m.id)}" style="${inp}"><option value="auto" ${dsel === 'auto' ? 'selected' : ''}>跟全域設定</option><option value="gpu" ${dsel === 'gpu' ? 'selected' : ''}>GPU</option><option value="cpu" ${dsel === 'cpu' ? 'selected' : ''}>CPU</option></select></div>
+                <div style="margin-top:4px; font-size:12px;">${badge}　${m.toolCalling ? `<button style="${btn}" data-om="toolbench" data-id="${esc(m.id)}">測試工具呼叫</button>` : ''}${bn ? `<span style="color:#64748b;"> ${bn.details.filter((d) => !d.ok).map((d) => esc(d.id + '：' + d.reason)).join('；')}</span>` : ''}</div>`;
+        };
+        const textRows = FaVlm.textModels().map(cardOf).join(''); const imgRows = FaVlm.imageModels().map(cardOf).join(''); const otherRows = FaVlm.MODELS.filter((m) => m.managedOnly).map(cardOf).join('');
         const other = usage.other.files ? `<div style="margin-top:4px;">其他快取：${usage.other.files} 個檔案、${FaVlm.fmtBytes(usage.other.bytes)}${usage.other.repos.length ? '（' + usage.other.repos.map(esc).join('、') + '）' : ''} ${usage.other.repos.map((r) => `<button style="${btn} color:#fca5a5;" data-om="delrepo" data-repo="${esc(r)}">刪除 ${esc(r)}</button>`).join(' ')}</div>` : '';
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">離線模型在你的電腦上執行（瀏覽器內的 WebAssembly／WebGPU），圖片不會上傳；推論在背景執行緒，不會卡住畫面。模型第一次使用時才下載，存在瀏覽器快取。</div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
@@ -46218,20 +46638,47 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div>模型快取共 <b>${FaVlm.fmtBytes(usage.total.bytes)}</b>（${usage.total.files} 個檔案）　<button style="${btn}" data-om="refresh">重新整理</button> <button style="${btn} color:#fca5a5;" data-om="clearall">全部清除</button></div>${other}
               <div style="margin-top:6px;">看圖（vision）的優先順序：<select data-om-set="policy" style="${inp}">${Object.entries(FaVlm.VISION_POLICIES).map(([k, v]) => `<option value="${k}" ${this._visionPolicy() === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select><div style="color:#94a3b8;">Python 腳本的圖片訊息、interpret_image、離線路由都依這個順序；沒有可用的線上視覺模型或全部失敗時，離線模型已下載才會當備援（不會偷偷下載）。提示詞格式（OCR／描述／問答、各模型自己的格式）由這一層處理。</div></div>
             </div>
-            <div style="font-weight:600; margin-bottom:4px;">模型</div>${rows}
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">文字生成（離線聊天）設定</div>
+              <div><label><input type="checkbox" data-om-set="llmFallback" ${S.llmFallback ? 'checked' : ''}> 離線訓練器信心不足時，交給離線文字模型回答</label></div>
+              <div><label><input type="checkbox" data-om-set="llmTools" ${S.llmTools ? 'checked' : ''}> 允許離線文字模型呼叫工具（沒通過基準測試、評為不可靠的模型不會被選去呼叫工具；有副作用的工具一律先問你）</label></div>
+              <div><label><input type="checkbox" data-om-set="mixRewrite" ${S.mixRewrite ? 'checked' : ''}> 混用時，工具模型沒用到工具也交給「寫回答」的模型重寫</label></div>
+              <div><label>回答長度上限 <input type="number" min="64" max="2048" step="32" value="${S.llmMax}" data-om-set="llmMax" style="${inp} width:80px;"> tokens</label>　<label>離線訓練器信心門檻 <input type="range" min="0.1" max="1" step="0.01" value="${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}" data-om-set="threshold" style="vertical-align:middle;"> <b>${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}</b></label></div>
+              <div style="color:#94a3b8; margin-top:4px;">信心門檻拉到 1.0＝只有「完全一樣的問題」才由離線訓練器處理，其餘幾乎都交給離線文字模型。<b>混用</b>：每個模型勾自己的角色並給優先順序——例如小模型專門呼叫工具、大模型專門寫回答；一張 GPU 放不下就把其中一個設成 CPU（GPU 與 CPU 各有自己的背景執行緒，可以同時駐留）；同一個裝置上的兩個模型則是依階段輪流載入。</div>
+              <div style="margin-top:6px;"><input type="text" placeholder="試聊一句（會走上面的路由：工具模型→寫回答模型）" data-om-set="chattext" style="${inp} width:320px;"> <button style="${btn}" data-om="chattest">送出</button>
+              <pre data-om-chatout style="white-space:pre-wrap; background:#0f172a; border-radius:6px; padding:6px; margin:6px 0 0; min-height:20px;">${esc(keepChat)}</pre></div>
+            </div>
+            <div style="font-weight:600; margin-bottom:4px;">文字生成（聊天）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.textModel)}</span></div>${textRows}
+            <div style="font-weight:600; margin:10px 0 4px;">圖像（VLM）模型　<span style="font-weight:400; color:#94a3b8;">預設：${esc(S.model)}</span></div>${imgRows}
+            <div style="font-weight:600; margin:10px 0 4px;">其他（只管理快取）</div>${otherRows}
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-top:10px;">
               <div style="font-weight:600; margin-bottom:4px;">試跑（用預設模型）</div>
               <input type="file" accept="image/*" data-om="testfile" style="${inp}"> <select data-om-set="testtask" style="${inp}">${Object.entries(FaVlm.TASKS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select> <input type="text" placeholder="提示詞（選填，問問題用）" data-om-set="testprompt" style="${inp} width:220px;"> <button style="${btn}" data-om="test">執行</button>
-              <pre data-om-out style="white-space:pre-wrap; background:#0f172a; border-radius:6px; padding:6px; margin:6px 0 0; min-height:20px;"></pre>
+              <pre data-om-out style="white-space:pre-wrap; background:#0f172a; border-radius:6px; padding:6px; margin:6px 0 0; min-height:20px;">${esc(keepOut)}</pre>
             </div>`;
     }
     _omWirePane(root) {
+        root.addEventListener('change', (e) => {
+            const el = e.target; if (!el || !el.getAttribute) return; const id = el.getAttribute('data-id'); const m = id && FaVlm.byId(id); if (!m || m.task !== 'text-generation') return;
+            const roles = Object.assign({}, this.advancedSettings.offlineTextRoles); const c = Object.assign({}, roles[id] || {}); let hit = true;
+            if (el.hasAttribute('data-om-role')) c[el.getAttribute('data-om-role')] = !!el.checked;
+            else if (el.hasAttribute('data-om-prio')) { const n = Math.round(Number(el.value)); if (Number.isFinite(n)) c.priority = Math.max(-1000, Math.min(1000, n)); }
+            else if (el.hasAttribute('data-om-dev')) { if (el.value === 'gpu' || el.value === 'cpu') c.device = el.value; else delete c.device; }
+            else hit = false;
+            if (!hit) return; roles[id] = c; this.advancedSettings.offlineTextRoles = roles; this._saveAdvancedSettings(); this._omRenderPane();
+        });
         root.addEventListener('change', (e) => {
             const k = e.target.getAttribute && e.target.getAttribute('data-om-set'); if (!k) return;
             if (k === 'device') this.advancedSettings.offlineDevicePreference = e.target.value === 'cpu' ? 'cpu' : 'gpu';
             else if (k === 'cores') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineMaxCpuCores = Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; }
             else if (k === 'policy') { this.advancedSettings.visionBackendPolicy = FaVlm.VISION_POLICIES[e.target.value] ? e.target.value : 'llm-first'; this.advancedSettings.offlineVisionFallback = this.advancedSettings.visionBackendPolicy !== 'llm'; }
             else if (k === 'fallback') this.advancedSettings.offlineVisionFallback = !!e.target.checked;
+            else if (k === 'llmFallback') this.advancedSettings.offlineLlmFallback = !!e.target.checked;
+            else if (k === 'llmTools') this.advancedSettings.offlineLlmTools = !!e.target.checked;
+            else if (k === 'mixRewrite') this.advancedSettings.offlineLlmMixRewrite = !!e.target.checked;
+            else if (k === 'llmMax') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineLlmMaxTokens = Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; }
+            else if (k === 'threshold') this.advancedSettings.offlineThreshold = FaVlm.clampThreshold(e.target.value, 0.45);
+            else if (k === 'chattext') return;
             else return;
             this._saveAdvancedSettings(); this._vlmTerminate(); this._transformersJsModules = null; this._whisperTranscriber = null; this._whisperTranscriberDevice = null; // 下次用的時候才套用新的裝置與核心數
             this._omRenderPane();
@@ -46240,7 +46687,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const b = e.target.closest && e.target.closest('[data-om]'); if (!b) return; const act = b.getAttribute('data-om'); const id = b.getAttribute('data-id');
             const stat = (sid, s) => { const el = root.querySelector(`[data-om-status="${sid}"]`); if (el) el.textContent = s || ''; };
             if (act === 'refresh') return this._omRenderPane();
-            if (act === 'default') { this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
+            if (act === 'default') { const dm = FaVlm.byId(id); if (dm && dm.task === 'text-generation') this.advancedSettings.offlineTextModel = id; else this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
+            if (act === 'toolbench') { b.disabled = true; stat(id, '等待你的確認…'); const r = await this._omToolBench(id, (s) => stat(id, s)); stat(id, r.ok ? '' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }
+            if (act === 'chattest') {
+                const inp0 = root.querySelector('[data-om-set=chattext]'); const out = root.querySelector('[data-om-chatout]'); const q = inp0 && inp0.value.trim(); if (!q) { out.textContent = '先輸入一句話'; return; }
+                b.disabled = true; out.textContent = '處理中…（第一次會載入模型）'; const r = await this._offlineLlmAnswer(q, { decision: { status: 'unresolved' }, alternatives: [] }, { force: true, ui: false, history: [] });
+                out.textContent = r.ok ? r.header + '\n\n' + r.text : '失敗：' + r.error; b.disabled = false; return;
+            }
             if (act === 'delete') { const m = FaVlm.byId(id); if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次使用會重新下載。')) return; await this._omDeleteModel(id); return this._omRenderPane(); }
             if (act === 'delrepo') { const repo = b.getAttribute('data-repo'); if (!confirm('刪除 ' + repo + ' 的快取檔案？')) return; await this._omDeleteRepo(repo); return this._omRenderPane(); }
             if (act === 'clearall') { if (!confirm('清除全部離線模型快取（含 Whisper）？下次使用會重新下載。')) return; await this._omClearAll(); return this._omRenderPane(); }
