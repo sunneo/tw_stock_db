@@ -52,5 +52,23 @@ check('urlsOfModel finds exactly that model', V.urlsOfModel(E, fl).length === 2 
 check('repoOfUrl is case-insensitive and rejects non-HF', V.repoOfUrl('https://huggingface.co/Foo/Bar/resolve/main/a') === 'foo/bar' && V.repoOfUrl('https://x.com/a/b/resolve/c') === null);
 check('fmtBytes', V.fmtBytes(1536 * 1024) === '1.5 MB' && V.fmtBytes(3 * 1024 * 1048576) === '3.00 GB');
 check('estimateDownload subtracts what is cached', V.estimateDownload(fl, 'wasm', 100 * 1048576) === fl.bytes.cpu - 100 * 1048576 && V.estimateDownload(fl, 'webgpu', 1e12) === 0);
+// ---- 抽象層：自然語言 → 任務 → 模型 ----
+const IT = (s) => V.inferTask(s);
+check('infer: OCR (en/zh)', IT('Please read all the text in this image').task === 'ocr' && IT('辨識圖片裡的文字').task === 'ocr' && IT('OCR this').task === 'ocr' && IT('這張圖寫了什麼').task === 'ocr');
+check('infer: describe (en/zh)', IT('Describe this image in detail').task === 'detailed' && IT('請描述這張圖').task === 'detailed' && IT("What's in this picture?").task === 'detailed');
+check('infer: caption', IT('Give a short caption').task === 'caption' && IT('用一句話描述').task === 'caption');
+check('infer: objects', IT('List the objects in the image').task === 'objects' && IT('列出圖片裡的物件').task === 'objects');
+check('infer: question keeps the question text', (() => { const r = IT('How many cats are there?'); return r.task === 'ask' && r.question === 'How many cats are there?'; })() && IT('圖裡有幾隻貓？').task === 'ask');
+check('infer: empty → detailed; long unmatched text is treated as a question', IT('').task === 'detailed' && IT('the invoice total in the top right corner please').task === 'ask');
+// 提示詞格式由抽象層解決：同一個「OCR」意圖，不同模型拿到各自的格式
+check('same OCR intent → each model gets its own prompt format', V.buildTask(fl, 'ocr').prompt === '<OCR>' && V.buildTask(V.byId('smolvlm-256m'), 'ocr').prompt.startsWith('Transcribe') && V.buildTask(pg, 'ocr').prompt === 'ocr');
+const none = {}, gpuOk = { available: true, f16: true }, noGpu = { available: false };
+let pk = V.pickModel('ocr', none, 'florence-2-base-ft', noGpu); check('pick: preferred model that supports the task', pk.model.id === 'florence-2-base-ft', pk);
+pk = V.pickModel('ask', { 'smolvlm-256m': 100 }, 'florence-2-base-ft', noGpu); check('pick: ask → falls to an installed chat model', pk.model.id === 'smolvlm-256m' && /已下載/.test(pk.reason), pk);
+pk = V.pickModel('ask', none, 'florence-2-base-ft', noGpu); check('pick: ask with nothing installed → preferred (task will be downgraded)', pk.model.id === 'florence-2-base-ft' && /降級/.test(pk.reason), pk);
+pk = V.pickModel('ask', { 'paligemma2-3b-224': 5 }, 'florence-2-base-ft', noGpu); check('pick: gpu-only model is ignored without gpu', pk.model.id === 'florence-2-base-ft', pk);
+pk = V.pickModel('ask', { 'paligemma2-3b-224': 5 }, 'florence-2-base-ft', gpuOk); check('pick: gpu-only model allowed with gpu+f16', pk.model.id === 'paligemma2-3b-224', pk);
+// 優先順序
+check('vision policies', V.visionOrder('llm-first').join() === 'llm,offline' && V.visionOrder('offline-first').join() === 'offline,llm' && V.visionOrder('llm').join() === 'llm' && V.visionOrder('offline').join() === 'offline' && V.visionOrder('nonsense').join() === 'llm,offline');
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
