@@ -99,6 +99,38 @@
         return JSON.stringify(v);
     }
 
+
+    // ---------- 抽象層：自然語言提示詞 → 任務 → 各模型自己的提示詞格式 ----------
+    // 呼叫端（Python 腳本、interpret_image、任何工具）只給一般的自然語言提示詞（中文或英文都行）；
+    // 「這是 OCR、描述還是問問題」與「Florence-2 要 <OCR>、PaliGemma 要 ocr、對話式模型要完整句子」都在這一層解決，呼叫端不用管模型的格式。
+    function inferTask(text) {
+        const s = String(text == null ? '' : text).trim(); if (!s) return { task: 'detailed' };
+        if (/\b(ocr|transcrib\w*|extract(?:ed)?\s+(?:the\s+)?text|read\s+(?:out\s+)?(?:all\s+)?(?:the\s+)?text|what\s+(?:does|do)\s+(?:it|this|the\s+text)\s+say|text\s+(?:in|on|from)\s+(?:the\s+|this\s+)?(?:image|picture|photo|screenshot))\b|辨識.{0,4}文字|圖.{0,3}(?:裡|中|上)?的?文字|文字(?:辨識|內容|轉錄|擷取)|讀出|轉錄|擷取文字|寫了什麼|寫什麼/i.test(s)) return { task: 'ocr' };
+        if (/\b(?:list|detect|identify|enumerate)\b.{0,24}\b(?:objects?|items?|things)\b|bounding\s*box|\bwhat\s+objects\b|物件偵測|偵測物件|列出.{0,6}(?:物件|東西|物品)|有哪些(?:東西|物件|物品)/i.test(s)) return { task: 'objects' };
+        if (/\b(?:brief(?:ly)?|short(?:ly)?|one[\s-]sentence|in\s+a\s+sentence|caption)\b|簡短|一句話|簡單(?:描述|說明)|標題/i.test(s)) return { task: 'caption' };
+        if (/\b(?:describe|description|explain\s+(?:this|the)\s+(?:image|picture|photo)|what(?:'s|\s+is)\s+in|tell\s+me\s+about|analy[sz]e)\b|描述|說明這|解釋這|解析|分析|看看|有什麼|是什麼/i.test(s)) return { task: 'detailed' };
+        if (/[?？]\s*$/.test(s) || /^(?:what|who|where|when|why|how|which|is|are|was|were|does|do|did|can|could|count|how\s+many)\b/i.test(s) || /(?:幾|多少|是不是|是否|有沒有|為什麼|誰|哪|嗎|呢)/.test(s)) return { task: 'ask', question: s };
+        return s.length > 12 ? { task: 'ask', question: s } : { task: 'detailed' };
+    }
+    // 挑模型：偏好的（設定裡的預設）能做這個任務就用它；不能時，改用「已經下載」而且能做的；都沒有就用偏好的並降級任務（buildTask 會說明）。
+    // installed：{模型id: 已下載位元組}；gpu：{available, f16}（只能用 GPU 的模型在沒有 GPU 時不考慮）。回傳 { model, reason }
+    function pickModel(task, installed, preferredId, gpu) {
+        installed = installed || {}; const ok = (m) => !m.managedOnly && m.tasks.includes(task) && !(m.gpuOnly && !(gpu && gpu.available && gpu.f16 !== false));
+        const pref = byId(preferredId) && !byId(preferredId).managedOnly ? byId(preferredId) : byId(DEFAULT_MODEL);
+        if (ok(pref)) return { model: pref, reason: '預設模型支援這個任務' };
+        const have = imageModels().filter((m) => ok(m) && (installed[m.id] || 0) > 0);
+        if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
+        return { model: pref, reason: '沒有已下載的模型支援「' + (TASKS[task] || task) + '」，用預設模型並降級任務' };
+    }
+    // 圖片理解的後端優先順序（設定 visionBackendPolicy）
+    const VISION_POLICIES = {
+        'llm-first': { label: '線上視覺模型優先，失敗退離線模型', order: ['llm', 'offline'] },
+        'offline-first': { label: '離線模型優先，失敗退線上視覺模型', order: ['offline', 'llm'] },
+        'llm': { label: '只用線上視覺模型', order: ['llm'] },
+        'offline': { label: '只用離線模型', order: ['offline'] },
+    };
+    const visionOrder = (policy) => (VISION_POLICIES[policy] || VISION_POLICIES['llm-first']).order.slice();
+
     // ---------- 模型快取用量（Cache API 裡的檔案）----------
     // entries：[{url, size}]（transformers.js 把下載的檔案以 URL 為鍵存在 Cache API；URL 形如 https://huggingface.co/<owner>/<name>/resolve/<rev>/<path>）
     function repoOfUrl(url) { const m = /^https?:\/\/[^/]*huggingface\.co\/([^/]+\/[^/]+)\/resolve\//i.exec(String(url || '')); return m ? m[1].toLowerCase() : null; }
@@ -120,5 +152,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

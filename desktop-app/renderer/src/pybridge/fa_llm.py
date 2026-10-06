@@ -66,6 +66,49 @@ async def acomplete(req, timeout=600.0):
     return await fa_bridge.acall("llm.complete", req, timeout=timeout)
 
 
+def vision_describe(image, prompt="", policy=None, max_tokens=None, timeout=900.0):
+    """看圖：交給助理外層「抽象的 vision API」，由助理依設定決定用線上視覺模型還是離線模型（優先順序與備援都在外層處理）。
+    image：bytes、檔案路徑（例如 /work/in/a.png）、data URL 或 http(s) 網址；prompt：一般的自然語言（中文英文都行，要描述、辨識文字或問問題）——
+    各模型自己的提示詞格式由外層處理，這裡不用管。policy（選填）：llm-first／offline-first／llm／offline，不給就用助理的設定。
+    回傳 dict：text、backend（"llm"或"offline"）、model、attempts（每個後端試了什麼、為什麼失敗）。"""
+    import base64
+    if isinstance(image, (bytes, bytearray)):
+        img = "data:image/png;base64," + base64.b64encode(bytes(image)).decode("ascii")
+    elif isinstance(image, str) and (image.startswith("data:") or image.startswith("http://") or image.startswith("https://")):
+        img = image
+    else:
+        with open(image, "rb") as f:
+            raw = f.read()
+        ext = str(image).lower().rsplit(".", 1)[-1]
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}.get(ext, "image/png")
+        img = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+    req = {"image": img, "prompt": prompt or ""}
+    if policy:
+        req["policy"] = policy
+    if max_tokens:
+        req["max_tokens"] = int(max_tokens)
+    return fa_bridge.call("vision.describe", req, timeout=timeout)
+
+
+async def avision_describe(image, prompt="", policy=None, max_tokens=None, timeout=900.0):
+    """vision_describe 的 async 版本。"""
+    import base64
+    if isinstance(image, (bytes, bytearray)):
+        img = "data:image/png;base64," + base64.b64encode(bytes(image)).decode("ascii")
+    elif isinstance(image, str) and (image.startswith("data:") or image.startswith("http://") or image.startswith("https://")):
+        img = image
+    else:
+        with open(image, "rb") as f:
+            raw = f.read()
+        img = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+    req = {"image": img, "prompt": prompt or ""}
+    if policy:
+        req["policy"] = policy
+    if max_tokens:
+        req["max_tokens"] = int(max_tokens)
+    return await fa_bridge.acall("vision.describe", req, timeout=timeout)
+
+
 def upstream(cap, path, json_body=None, form=None, want="json", method="POST", timeout=600.0):
     """把一個 OpenAI 標準的 HTTP 呼叫轉給助理「已設定的 LLM Model 清單」裡有這個能力的那一個（依序試，第一個成功的就用）。
     cap：embeddings、images、audio_transcribe、audio_speech、chat、tools、vision。

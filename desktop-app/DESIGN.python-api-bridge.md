@@ -87,3 +87,7 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 ## 之後可擴充
 
 新增別的公開 API 的轉接（例如 `selenium`）：在 `renderer/src/pybridge/` 加一個同名套件、在 `_pyBridgeDispatch` 加對應 op 即可。
+
+## 圖片訊息的轉接（2026-10-06）
+
+腳本用 openai／anthropic 送**圖片訊息**時，host 不再直接打線上 LLM，改走外層抽象的 vision API（`_visionDescribe`）：依設定 `visionBackendPolicy` 決定線上視覺模型或離線模型的優先順序與備援（沒有可用的視覺模型或全部失敗 → 離線模型，已下載才會用）。回傳維持 OpenAI 形狀，走離線時 `model` 是 `offline:<模型>` 並多一個 `x_vision` 診斷欄位。另提供直接呼叫：op `vision.describe`／Python `fa_llm.vision_describe(image, prompt)`（`image` 可以是 bytes、檔案路徑、data URL、網址）。提示詞格式（OCR／描述／問答、各模型自己的格式）由抽象層處理。詳見 `DESIGN.offline-vision.md` §8。

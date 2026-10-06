@@ -78,3 +78,11 @@
 3. 多核心 CPU 見第 3 節（環境條件）。
 4. 大模型（PaliGemma 約 2.7GB）一次載入可能超過瀏覽器 WebAssembly／GPU 的記憶體上限；只標了「需要足夠顯示記憶體」，沒有量測。
 5. 中文：這些模型輸出英文；LLaVA-Interleave（Qwen 基底）理論上能處理中文提示，但沒有驗證。
+
+## 8. 抽象的 vision API 與看圖的優先順序（2026-10-06）
+
+所有「看圖」都走同一層 `_visionDescribe`：Python 腳本的 openai／anthropic 圖片訊息、`fa_llm.vision_describe`、`interpret_image` 工具、離線路由。後端優先順序由設定 `visionBackendPolicy` 決定：`llm-first`（預設，線上視覺模型優先；**沒有可用的模型或全部失敗就退離線模型**）、`offline-first`、`llm`、`offline`。離線當備援時只用**已經下載**的模型，不會偷偷下載；離線排第一才會問使用者要不要下載。失敗訊息帶 `attempts`（每個後端試了什麼、為什麼失敗）。
+
+**提示詞格式在這一層解決**：呼叫端只給自然語言（中英文都行）；`FaVlm.inferTask` 判斷是 OCR、描述、列物件、簡短描述還是問問題，`FaVlm.pickModel` 挑模型（預設模型不能問問題就改用已下載的對話式模型），`FaVlm.buildTask` 轉成各模型自己的格式（Florence-2 的 `<OCR>`、PaliGemma 的 `ocr`、對話式模型的完整句子）。
+
+驗證（打包版 Electron，用假的線上與離線後端）：四種優先順序與備援各種組合、`interpret_image` 在沒有可用視覺模型時改用離線、**真的用 Pyodide 跑 Python 腳本**——`fa_llm.vision_describe` 與 OpenAI 圖片訊息在沒有線上視覺模型時都走到離線（回傳 `model:"offline:florence-2-base-ft"`、`x_vision` 診斷欄位）。純函式：`vlm_core.test.js` 49 項。移植到 宿主專案 見 `DESIGN.offline-vision-portability.md`。
