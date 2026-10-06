@@ -35,6 +35,7 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     // ---- 查詢字串清理 ----
     check('cleanQuery: strips command verbs and trailing question words', R.cleanQuery('上網搜尋 rust borrow checker 是什麼') === 'rust borrow checker' && R.cleanQuery('幫我查一下 errno 2 是什麼意思') === 'errno 2' && R.cleanQuery('請幫我搜尋：gdb 斷點') === 'gdb 斷點', [R.cleanQuery('上網搜尋 rust borrow checker 是什麼'), R.cleanQuery('幫我查一下 errno 2 是什麼意思'), R.cleanQuery('請幫我搜尋：gdb 斷點')]);
     check('cleanQuery: a colon inside a URL is not a split point', R.cleanQuery('看一下 https://example.com/a 在講什麼') === '看一下 在講什麼', R.cleanQuery('看一下 https://example.com/a 在講什麼'));
+    check('cleanQuery: a trailing "and summarise it" is not part of the search words', R.cleanQuery('上網查 rust borrow checker 並整理重點') === 'rust borrow checker' && R.cleanQuery('搜尋 gdb 斷點，然後幫我整理成報告') === 'gdb 斷點', [R.cleanQuery('上網查 rust borrow checker 並整理重點'), R.cleanQuery('搜尋 gdb 斷點，然後幫我整理成報告')]);
     check('cleanQuery: keeps plain text when nothing to strip', R.cleanQuery('rust 借用規則') === 'rust 借用規則');
     // ---- 用證據縮小候選 ----
     const sch = { fetch_web_page: R.slotsFromSchema({ type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }), browser_search: R.slotsFromSchema({ type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }), images_to_pdf: R.slotsFromSchema({ type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: '圖片' } }, required: ['files'] }), merge_pdfs: R.slotsFromSchema({ type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'PDF檔' } }, required: ['files'] }) };
@@ -133,6 +134,26 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     check('runRecipe: unknown compute function reported', !rr.ok && /nope/.test(rr.error), rr);
     check('interp keeps object values when the whole string is a ref', JSON.stringify(R.interp({ a: '{{slots.o}}' }, { slots: { o: { k: 1 } } })) === '{"a":{"k":1}}');
 
+    // ---- 參考資料包（線上養出來的訓練器與 RAG → 離線模型的參考）----
+    const now = Date.UTC(2026, 9, 7);
+    const items = [{ kind: 'rag', title: 'notes.md', text: 'RAG 內容 '.repeat(60), score: 0.9 }, { kind: 'qa', title: '', text: '問：errno 2？答：ENOENT 檔案不存在', ts: now - 3 * 86400000, score: 0.5 }, { kind: 'steps', title: '圖片轉PDF', text: '先 images_to_pdf，再 merge_pdfs', score: 0.7 }, { kind: 'example', title: '', text: '把圖片轉成 pdf', score: 0.4 }, { kind: 'rule', title: 'core_rules/ref', text: 'errno → ref_lookup', score: 0.8 }, { kind: 'rag', text: '', score: 1 }];
+    const pack = R.buildReferencePack(items, 400, { now });
+    check('pack: ordered steps > rules > examples > qa > rag, empty items dropped', pack.lines.length === 5 && /^【離線訓練器學到的做法/.test(pack.lines[0]) && /^【離線訓練器的規則/.test(pack.lines[1]) && /^【類似的問法/.test(pack.lines[2]) && /^【過去的問答/.test(pack.lines[3]) && /^【RAG 知識庫/.test(pack.lines[4]), pack.lines.map((l) => l.slice(0, 14)));
+    check('pack: past Q&A carries its age and a staleness warning', /3 天前，可能已過期/.test(pack.lines[3]), pack.lines[3]);
+    check('pack: fits the budget (self-adaptive, no fixed size) and long items are clipped', pack.used <= 400 && /…$/.test(pack.lines[4]), { used: pack.used, last: pack.lines[4].slice(-8) });
+    const small = R.buildReferencePack(items, 80, { now }); const big = R.buildReferencePack(items, 800, { now });
+    check('pack: a bigger budget keeps more text', big.used > small.used && small.used <= 80 + 40, { s: small.used, b: big.used });
+    check('pack: numbered text for the prompt', /^1\. 【/.test(pack.text) && pack.text.split('\n').length === pack.lines.length);
+    check('pack: nothing in → empty pack', R.buildReferencePack([], 100).lines.length === 0 && R.buildReferencePack([{ kind: 'rag', text: '  ' }], 100).lines.length === 0);
+    // ---- 離線摘要與切段 ----
+    const doc = '台北今天下雨，氣溫 20 度。會議在下午三點開始，主題是專案進度。' + '這是一段不太重要的閒聊內容，沒有什麼資訊。'.repeat(8) + '結論：專案預計 10 月底上線，需要補三位測試人員。最後請大家提出意見。';
+    const ex = R.extractiveSummary(doc, 3);
+    check('extractive summary: at most N sentences, original order, only sentences from the source', ex.split('\n').length <= 3 && ex.split('\n').every((s) => doc.includes(s.replace(/…$/, ''))), ex);
+    check('extractive summary: short text is returned whole', R.extractiveSummary('只有一句話。', 5) === '只有一句話。');
+    const long2 = Array.from({ length: 40 }, (_, i) => '第' + i + '段內容，說明了一些事情。').join('');
+    const chunks = R.chunkText(long2, 120);
+    check('chunkText: every chunk is within the token budget and nothing is lost', chunks.length > 2 && chunks.every((c) => R.tokensOf(c).size > 0) && chunks.join('').replace(/\n/g, '').length >= long2.length - 40, { n: chunks.length });
+    check('chunkText: smaller budget → more chunks (scales with the model context)', R.chunkText(long2, 60).length > R.chunkText(long2, 240).length);
     console.log(ok + ' passed, ' + bad.length + ' failed', bad);
     process.exit(bad.length ? 1 : 0);
 })();

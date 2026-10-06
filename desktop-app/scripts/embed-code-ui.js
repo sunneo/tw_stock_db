@@ -113,5 +113,13 @@ function embedRecipe() {
     console.log('已更新 FaRecipe（' + core.length + ' 字元）');
 }
 embedRecipe();
+function embedPlan() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/plan_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* PLAN-BEGIN */'), b = src.indexOf('/* PLAN-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 PLAN 標記');
+    src = src.slice(0, a) + '/* PLAN-BEGIN */\nconst FaPlan = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaPlan;\n})();\n' + src.slice(b);
+    console.log('已更新 FaPlan（' + core.length + ' 字元）');
+}
+embedPlan();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
