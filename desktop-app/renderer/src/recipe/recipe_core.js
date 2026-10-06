@@ -44,7 +44,7 @@
     function cleanQuery(text) {
         let s = stripAttachments(text).replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
         const colon = /[:：]\s*(.+)$/.exec(s); if (colon && colon[1].trim().length >= 2) s = colon[1].trim();
-        s = s.replace(/^(?:請|幫我|幫忙|麻煩|可以)?(?:你)?(?:幫我)?(?:上網|網路上|網上|google|谷歌)?(?:搜尋|搜索|查詢|查一下|查一查|查查|查|找一下|找)\s*/i, '').replace(/\s*(?:是什麼意思|是什麼|是啥|什麼意思|是甚麼|的資料|相關資料|的相關資料|嗎|呢)[？?。.!！]*$/, '').trim();
+        s = s.replace(/^(?:請|幫我|幫忙|麻煩|可以)?(?:你)?(?:幫我)?(?:上網|網路上|網上|google|谷歌)?(?:搜尋|搜索|查詢|查一下|查一查|查查|查|找一下|找)\s*/i, '').replace(/\s*(?:是什麼意思|是什麼|是啥|什麼意思|是甚麼|的資料|相關資料|的相關資料|嗎|呢)[？?。.!！]*$/, '').replace(/[，,、\s]*(?:並|然後|再|且|還有)?(?:幫我|請)?(?:整理|摘要|總結|彙整|分析)(?:一下)?(?:成?(?:重點|報告|列表|表格|條列))?[。.!！]*$/, '').trim();
         return s || stripAttachments(text);
     }
     // ---------- 程式填欄位 ----------
@@ -196,6 +196,42 @@
         return [{ role: 'system', content: '你根據「工具結果」用繁體中文寫 1～2 句話回答使用者。只能使用工具結果裡有的資訊、數字與名稱，不要新增、不要猜測。' + (instruction ? instruction : '') }, { role: 'user', content: '使用者的問題：' + String(question).slice(0, 400) + '\n\n工具結果：\n' + String(resultText).slice(0, 2400) + '\n\n請用 1～2 句話回答。' }];
     }
 
+    // ---------- 參考資料包：把「線上 AI 養出來的」離線訓練器與 RAG，整理成離線模型能參考的樣子 ----------
+    // items: [{ kind:'rule'|'steps'|'example'|'qa'|'rag', title, text, ts?, score? }]。依種類排優先（規則／做法 > 相似範例 > 過去問答 > RAG），
+    // 每筆標明出處與年齡（過去問答可能過期，要讓模型知道），整體不超過 budgetTokens（呼叫端依模型上下文按比例給，不寫死）。
+    const REF_LABEL = { rule: '離線訓練器的規則', steps: '離線訓練器學到的做法', example: '類似的問法', qa: '過去的問答', rag: 'RAG 知識庫' };
+    const REF_ORDER = ['steps', 'rule', 'example', 'qa', 'rag'];
+    function ageText(ts, now) { if (!ts) return ''; const d = Math.max(0, Math.floor(((now || Date.now()) - ts) / 86400000)); return d === 0 ? '今天' : d + ' 天前'; }
+    function estTok(s) { s = String(s || ''); let cjk = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 0x3000 && c <= 0x9fff) cjk++; } return Math.ceil(cjk + (s.length - cjk) / 3.5); }
+    function clip(s, tokens) { s = String(s || '').replace(/\s+/g, ' ').trim(); if (estTok(s) <= tokens) return s; let lo = 0, hi = Math.min(s.length, tokens * 4 + 8); while (lo < hi) { const m = (lo + hi + 1) >> 1; if (estTok(s.slice(0, m)) <= tokens) lo = m; else hi = m - 1; } return s.slice(0, lo) + '…'; }
+    function buildReferencePack(items, budgetTokens, opts) {
+        opts = opts || {}; const now = opts.now || Date.now(); const maxItems = opts.maxItems || 8;
+        const sorted = (items || []).filter((x) => x && String(x.text || '').trim()).slice().sort((a, b) => REF_ORDER.indexOf(a.kind) - REF_ORDER.indexOf(b.kind) || (Number(b.score) || 0) - (Number(a.score) || 0));
+        const picked = sorted.slice(0, maxItems); const per = Math.max(40, Math.floor(budgetTokens / Math.max(1, picked.length)));
+        const lines = []; let used = 0; let dropped = sorted.length - picked.length;
+        for (const it of picked) {
+            const head = '【' + (REF_LABEL[it.kind] || it.kind) + (it.title ? '：' + String(it.title).slice(0, 40) : '') + (it.kind === 'qa' && it.ts ? '，' + ageText(it.ts, now) + '，可能已過期' : '') + '】';
+            const line = head + clip(it.text, Math.max(20, per - estTok(head))); const n = estTok(line);
+            if (used + n > budgetTokens) { dropped++; continue; } lines.push(line); used += n;
+        }
+        return { lines, text: lines.map((l, i) => (i + 1) + '. ' + l).join('\n'), used, dropped };
+    }
+    // ---------- 離線摘要：沒有模型（或模型失敗）時的程式摘要＋長文切段 ----------
+    function splitSentences(text) { return String(text || '').replace(/\r/g, '').split(/(?<=[。！？!?；;])\s*|\n+|(?<=[a-z0-9])\.\s+(?=[A-Z])/).map((s) => s.trim()).filter((s) => s.length >= 4); }
+    function extractiveSummary(text, maxSentences) {
+        const sents = splitSentences(text); if (sents.length <= (maxSentences || 5)) return sents.join('\n');
+        const freq = new Map(); const toks = sents.map((s) => Array.from(tokensOf(s))); toks.forEach((ts) => ts.forEach((t) => freq.set(t, (freq.get(t) || 0) + 1)));
+        const score = sents.map((s, i) => { const ts = toks[i]; if (!ts.length) return 0; let sc = 0; for (const t of ts) { const f = freq.get(t); if (f > 1) sc += Math.log(1 + f); } return sc / Math.sqrt(ts.length) + (i < 2 ? 0.8 : 0) + (s.length > 220 ? -0.5 : 0); });
+        const top = score.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, maxSentences || 5).map((x) => x[1]).sort((a, b) => a - b);
+        return top.map((i) => sents[i].slice(0, 200)).join('\n');
+    }
+    // 依 token 預算把長文切成幾段（盡量在句子邊界切）；maxTokens 由呼叫端依模型上下文給
+    function chunkText(text, maxTokens) {
+        const sents = splitSentences(text); const chunks = []; let cur = []; let n = 0;
+        for (const s of sents) { const t = estTok(s); if (cur.length && n + t > maxTokens) { chunks.push(cur.join('\n')); cur = []; n = 0; } cur.push(s.length > maxTokens * 3 ? s.slice(0, maxTokens * 3) : s); n += t; }
+        if (cur.length) chunks.push(cur.join('\n')); return chunks;
+    }
+
     // ---------- 決策紀錄 ----------
     function newTrace(question, meta) { return Object.assign({ at: Date.now(), question: String(question || '').slice(0, 300), decisions: [] }, meta || {}); }
     function decide(trace, d) { trace.decisions.push(Object.assign({ at: Date.now() }, d)); return trace; }
@@ -246,5 +282,5 @@
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });

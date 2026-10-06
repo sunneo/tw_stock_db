@@ -7071,7 +7071,7 @@ const holder = {};
     function cleanQuery(text) {
         let s = stripAttachments(text).replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
         const colon = /[:：]\s*(.+)$/.exec(s); if (colon && colon[1].trim().length >= 2) s = colon[1].trim();
-        s = s.replace(/^(?:請|幫我|幫忙|麻煩|可以)?(?:你)?(?:幫我)?(?:上網|網路上|網上|google|谷歌)?(?:搜尋|搜索|查詢|查一下|查一查|查查|查|找一下|找)\s*/i, '').replace(/\s*(?:是什麼意思|是什麼|是啥|什麼意思|是甚麼|的資料|相關資料|的相關資料|嗎|呢)[？?。.!！]*$/, '').trim();
+        s = s.replace(/^(?:請|幫我|幫忙|麻煩|可以)?(?:你)?(?:幫我)?(?:上網|網路上|網上|google|谷歌)?(?:搜尋|搜索|查詢|查一下|查一查|查查|查|找一下|找)\s*/i, '').replace(/\s*(?:是什麼意思|是什麼|是啥|什麼意思|是甚麼|的資料|相關資料|的相關資料|嗎|呢)[？?。.!！]*$/, '').replace(/[，,、\s]*(?:並|然後|再|且|還有)?(?:幫我|請)?(?:整理|摘要|總結|彙整|分析)(?:一下)?(?:成?(?:重點|報告|列表|表格|條列))?[。.!！]*$/, '').trim();
         return s || stripAttachments(text);
     }
     // ---------- 程式填欄位 ----------
@@ -7223,6 +7223,42 @@ const holder = {};
         return [{ role: 'system', content: '你根據「工具結果」用繁體中文寫 1～2 句話回答使用者。只能使用工具結果裡有的資訊、數字與名稱，不要新增、不要猜測。' + (instruction ? instruction : '') }, { role: 'user', content: '使用者的問題：' + String(question).slice(0, 400) + '\n\n工具結果：\n' + String(resultText).slice(0, 2400) + '\n\n請用 1～2 句話回答。' }];
     }
 
+    // ---------- 參考資料包：把「線上 AI 養出來的」離線訓練器與 RAG，整理成離線模型能參考的樣子 ----------
+    // items: [{ kind:'rule'|'steps'|'example'|'qa'|'rag', title, text, ts?, score? }]。依種類排優先（規則／做法 > 相似範例 > 過去問答 > RAG），
+    // 每筆標明出處與年齡（過去問答可能過期，要讓模型知道），整體不超過 budgetTokens（呼叫端依模型上下文按比例給，不寫死）。
+    const REF_LABEL = { rule: '離線訓練器的規則', steps: '離線訓練器學到的做法', example: '類似的問法', qa: '過去的問答', rag: 'RAG 知識庫' };
+    const REF_ORDER = ['steps', 'rule', 'example', 'qa', 'rag'];
+    function ageText(ts, now) { if (!ts) return ''; const d = Math.max(0, Math.floor(((now || Date.now()) - ts) / 86400000)); return d === 0 ? '今天' : d + ' 天前'; }
+    function estTok(s) { s = String(s || ''); let cjk = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 0x3000 && c <= 0x9fff) cjk++; } return Math.ceil(cjk + (s.length - cjk) / 3.5); }
+    function clip(s, tokens) { s = String(s || '').replace(/\s+/g, ' ').trim(); if (estTok(s) <= tokens) return s; let lo = 0, hi = Math.min(s.length, tokens * 4 + 8); while (lo < hi) { const m = (lo + hi + 1) >> 1; if (estTok(s.slice(0, m)) <= tokens) lo = m; else hi = m - 1; } return s.slice(0, lo) + '…'; }
+    function buildReferencePack(items, budgetTokens, opts) {
+        opts = opts || {}; const now = opts.now || Date.now(); const maxItems = opts.maxItems || 8;
+        const sorted = (items || []).filter((x) => x && String(x.text || '').trim()).slice().sort((a, b) => REF_ORDER.indexOf(a.kind) - REF_ORDER.indexOf(b.kind) || (Number(b.score) || 0) - (Number(a.score) || 0));
+        const picked = sorted.slice(0, maxItems); const per = Math.max(40, Math.floor(budgetTokens / Math.max(1, picked.length)));
+        const lines = []; let used = 0; let dropped = sorted.length - picked.length;
+        for (const it of picked) {
+            const head = '【' + (REF_LABEL[it.kind] || it.kind) + (it.title ? '：' + String(it.title).slice(0, 40) : '') + (it.kind === 'qa' && it.ts ? '，' + ageText(it.ts, now) + '，可能已過期' : '') + '】';
+            const line = head + clip(it.text, Math.max(20, per - estTok(head))); const n = estTok(line);
+            if (used + n > budgetTokens) { dropped++; continue; } lines.push(line); used += n;
+        }
+        return { lines, text: lines.map((l, i) => (i + 1) + '. ' + l).join('\n'), used, dropped };
+    }
+    // ---------- 離線摘要：沒有模型（或模型失敗）時的程式摘要＋長文切段 ----------
+    function splitSentences(text) { return String(text || '').replace(/\r/g, '').split(/(?<=[。！？!?；;])\s*|\n+|(?<=[a-z0-9])\.\s+(?=[A-Z])/).map((s) => s.trim()).filter((s) => s.length >= 4); }
+    function extractiveSummary(text, maxSentences) {
+        const sents = splitSentences(text); if (sents.length <= (maxSentences || 5)) return sents.join('\n');
+        const freq = new Map(); const toks = sents.map((s) => Array.from(tokensOf(s))); toks.forEach((ts) => ts.forEach((t) => freq.set(t, (freq.get(t) || 0) + 1)));
+        const score = sents.map((s, i) => { const ts = toks[i]; if (!ts.length) return 0; let sc = 0; for (const t of ts) { const f = freq.get(t); if (f > 1) sc += Math.log(1 + f); } return sc / Math.sqrt(ts.length) + (i < 2 ? 0.8 : 0) + (s.length > 220 ? -0.5 : 0); });
+        const top = score.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, maxSentences || 5).map((x) => x[1]).sort((a, b) => a - b);
+        return top.map((i) => sents[i].slice(0, 200)).join('\n');
+    }
+    // 依 token 預算把長文切成幾段（盡量在句子邊界切）；maxTokens 由呼叫端依模型上下文給
+    function chunkText(text, maxTokens) {
+        const sents = splitSentences(text); const chunks = []; let cur = []; let n = 0;
+        for (const s of sents) { const t = estTok(s); if (cur.length && n + t > maxTokens) { chunks.push(cur.join('\n')); cur = []; n = 0; } cur.push(s.length > maxTokens * 3 ? s.slice(0, maxTokens * 3) : s); n += t; }
+        if (cur.length) chunks.push(cur.join('\n')); return chunks;
+    }
+
     // ---------- 決策紀錄 ----------
     function newTrace(question, meta) { return Object.assign({ at: Date.now(), question: String(question || '').slice(0, 300), decisions: [] }, meta || {}); }
     function decide(trace, d) { trace.decisions.push(Object.assign({ at: Date.now() }, d)); return trace; }
@@ -7273,13 +7309,318 @@ const holder = {};
         return { ok: true, text: typeof res === 'string' ? res : JSON.stringify(res), vars: scope.vars };
     }
 
-    return { parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
+    return { buildReferencePack, extractiveSummary, chunkText, splitSentences, parseAttachments, stripAttachments, kindOf, cleanQuery, narrowByEvidence, relevantOptional, slotsFromSchema, programFill, parseJsonLoose, jsonStep, fillMessages, validateFill, modelFill, autoPick, menuMessages, chooseTool, tokensOf, checkExtractive, phraseMessages, newTrace, decide, pushRing, tracesToLines, validateRecipe, runRecipe, interp, MAX_STEPS };
 });
 
 }).call(null, undefined, holder);
 return holder.FaRecipe;
 })();
 /* RECIPE-END */
+/* PLAN-BEGIN */
+const FaPlan = (function () {
+const holder = {};
+(function (module, self) {
+/* 多步驟食譜（計畫）核心：目標 → 計畫（phase → step → substep）→ 狀態機＋決策樹維護執行。
+ *
+ * 給 0.5～1.7B 的離線小模型用，所以「規劃」不是叫模型自由寫計畫，而是：
+ *   ① 目標分類：程式用觸發字＋手上有的東西（附件種類、網址、文字）決定；多個都合理才讓模型從編號選單挑一個。
+ *   ② 規劃：程式對「有型別的工具能力表（CAPS：每個工具吃什麼種類、產出什麼種類）」做倒推——目標要什麼種類的成品，缺什麼就找能產出它的工具，
+ *      遞迴到手上已有的東西為止，取成本最低的一條路。資料怎麼接（上一步的成品餵給下一步哪個欄位）由種類決定，不問模型。
+ *   ③ 展開：路徑依階段分成 phase（取得 → 準備 → 分析 → 產出），每個 step 再拆成 substep（綁定輸入 → 確認 → 呼叫 → 驗證成品 → 登記）。
+ *   ④ 維護：每個 step 有狀態（pending／running／done／failed／skipped），整個計畫有狀態（ready／running／waiting／done／failed）。
+ *      失敗時走一棵「資料化的決策樹」（FAILURE_RULES）：重試／改走別條路（重新規劃、排除壞掉的工具）／略過選填步驟／問使用者／中止並交出已完成的部分。
+ *      有輪數、呼叫數、重新規劃次數的上限，不會無窮迴圈。
+ *   模型只做兩件事：目標有歧義時挑一個、程式填不出的欄位補空（沿用 FaRecipe.modelFill，數字必須是使用者說過的、不知道填 null）。
+ * 純函式（UMD）；工具呼叫、模型、使用者詢問、儲存都是注入的（env），所以能用假環境完整測試，也能搬到別的宿主。
+ */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('./recipe_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R);
+    else root.FaPlan = factory(R);
+})(typeof self !== 'undefined' ? self : this, function (R) {
+    'use strict';
+
+    // ---------- 檔案種類 ----------
+    function kindOfFile(filename) {
+        const e = (/\.([a-z0-9]+)$/i.exec(String(filename || '')) || [])[1]; const x = e ? e.toLowerCase() : '';
+        if (['txt', 'md', 'markdown', 'csv', 'json', 'yaml', 'yml', 'log', 'srt', 'vtt', 'html', 'htm', 'xml'].includes(x)) return x === 'srt' || x === 'vtt' ? 'subtitle' : 'text';
+        if (['docx', 'doc', 'pptx', 'xlsx', 'odt'].includes(x)) return 'doc';
+        const k = R.kindOf(filename); return k === 'other' ? 'file' : k;
+    }
+    // 輸入欄位可以接受哪些種類（'doc'、'pdf' 也能當文字來源：要先經過解析）
+    // ---------- 工具能力表（有型別的接口）----------
+    // in：每個輸入欄位 { slot, kinds（任一種類就行）, many, min, optional }；out：產出 { kind, keys（回傳 JSON 裡放 file_id 的鍵）, inline（成品直接在回傳文字裡）}
+    // stage：acquire 取得／prepare 準備／analyze 分析／produce 產出；cost：越小越優先；online：需要線上 AI 模型（離線時成本加重、失敗時改走別條路）
+    // local：不是 AI 工具表裡的工具，由宿主的程式（env.fns）執行
+    const CAPS = [
+        { tool: 'fetch_web_page', stage: 'acquire', cost: 1, in: [{ slot: 'url', kinds: ['url'] }], out: [{ kind: 'text', keys: ['file_id'] }], label: '抓網頁內容' },
+        { tool: 'browser_search', stage: 'acquire', cost: 1, in: [{ slot: 'query', kinds: ['query'] }], out: [{ kind: 'urls', inline: true }], label: '上網搜尋' },
+        { tool: 'pick_urls', local: true, stage: 'acquire', cost: 1, in: [{ slot: 'results', kinds: ['urls'] }], out: [{ kind: 'url', inline: true, many: true }], label: '從搜尋結果挑前幾個網址', repeatOut: true },
+        { tool: 'parse_uploaded_file', stage: 'prepare', cost: 2, in: [{ slot: 'file_id', kinds: ['doc', 'pdf', 'file'] }], out: [{ kind: 'text', inline: true }], label: '讀出檔案文字' },
+        { tool: 'extract_audio', stage: 'prepare', cost: 3, in: [{ slot: 'file', kinds: ['video'] }], out: [{ kind: 'audio', keys: ['audio_file_id'] }], label: '抽出影片聲音' },
+        { tool: 'transcribe_media', stage: 'analyze', cost: 3, slow: true, in: [{ slot: 'file', kinds: ['video', 'audio'] }], out: [{ kind: 'transcript', inline: true, keys: ['transcript_file_id'] }, { kind: 'text', inline: true }], label: '語音轉逐字稿' },
+        { tool: 'summarize_large_text', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['text', 'transcript'] }], out: [{ kind: 'summary', inline: true }], label: '摘要（線上模型）' },
+        { tool: 'local_summarize', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['text', 'transcript'], many: true }], out: [{ kind: 'summary', inline: true }], label: '摘要（離線：分段摘要＋檢查）' },
+        { tool: 'interpret_image', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['image'] }], out: [{ kind: 'description', inline: true }], label: '看圖說明' },
+        { tool: 'burn_subtitles', stage: 'produce', cost: 4, slow: true, in: [{ slot: 'video', kinds: ['video'] }, { slot: 'subtitle', kinds: ['subtitle'], optional: true }], out: [{ kind: 'subvideo', keys: ['video_file_id', 'file_id'] }], label: '把字幕燒進影片' },
+        { tool: 'convert_to_animated_gif', stage: 'produce', cost: 2, in: [{ slot: 'video', kinds: ['video'] }], out: [{ kind: 'gif', keys: ['gif_file_id'] }], label: '影片轉 GIF' },
+        { tool: 'images_to_pdf', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['image'], many: true, min: 1 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '圖片轉 PDF' },
+        { tool: 'merge_pdfs', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['pdf'], many: true, min: 2 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '合併 PDF' },
+        { tool: 'extract_pdf_pages', stage: 'produce', cost: 1, in: [{ slot: 'file', kinds: ['pdf'] }], extra: ['pages'], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '取出 PDF 頁面' },
+        { tool: 'text_to_speech', stage: 'produce', cost: 2, in: [{ slot: 'text', kinds: ['summary', 'usertext', 'text'] }], out: [{ kind: 'audio', keys: ['audio_file_id', 'file_id'] }], label: '文字轉語音' },
+    ];
+    const STAGES = [['acquire', '取得資料'], ['prepare', '準備素材'], ['analyze', '分析處理'], ['produce', '產出成品']];
+    const capOf = (tool, caps) => (caps || CAPS).find((c) => c.tool === tool);
+
+    // ---------- 目標（決策樹的第一層：使用者要什麼成品）----------
+    // target：成品的種類；needs：手上要有的東西（任一種類）；triggers：字面觸發（全部要符合其中一組）
+    const GOALS = [
+        { id: 'video_summary', label: '影片／音檔做摘要', target: 'summary', needs: ['video', 'audio'], triggers: [/(影片|視訊|錄影|錄音|音檔|video|audio|mp4)[^]*(摘要|重點|總結|整理|summar)|(摘要|重點|總結|整理|summar)[^]*(影片|視訊|錄影|錄音|音檔|video|audio|mp4)/i] },
+        { id: 'media_transcript', label: '影音轉逐字稿', target: 'transcript', needs: ['video', 'audio'], triggers: [/逐字稿|轉錄|transcri|轉成?文字|語音轉文字/i] },
+        { id: 'video_subtitled', label: '字幕燒進影片', target: 'subvideo', needs: ['video'], triggers: [/(燒|內嵌|嵌入|加上?)[^]{0,6}字幕|burn[^]{0,8}sub|字幕[^]{0,6}(燒|內嵌|嵌入)/i] },
+        { id: 'video_gif', label: '影片轉 GIF', target: 'gif', needs: ['video'], triggers: [/\bgif\b|動圖|動態圖/i] },
+        { id: 'web_summary', label: '網頁做摘要', target: 'summary', needs: ['url'], triggers: [/(摘要|重點|總結|整理|在講什麼|在說什麼|內容|summar)/i] },
+        { id: 'web_research', label: '上網查資料並整理', target: 'summary', needs: ['query'], triggers: [/(上網|搜尋|查)[^]{0,40}(整理|摘要|重點|總結|研究|彙整)|(整理|摘要|研究|彙整)[^]{0,40}(上網|搜尋|網路上)|research/i] },
+        { id: 'doc_summary', label: '文件做摘要', target: 'summary', needs: ['doc', 'pdf', 'text', 'file'], triggers: [/(摘要|重點|總結|整理|summar)/i] },
+        { id: 'images_pdf', label: '圖片轉 PDF', target: 'pdf', needs: ['image'], triggers: [/pdf/i] },
+        { id: 'pdf_merge', label: '合併 PDF', target: 'pdf', needs: ['pdf'], minCount: 2, triggers: [/合併|併成|合成|merge/i] },
+        { id: 'pdf_pages', label: '取出 PDF 頁面', target: 'pdf', needs: ['pdf'], triggers: [/(取出|抽出|擷取|extract)[^]{0,8}頁|第\s*\d+\s*(?:到|-|~)?\s*\d*\s*頁/i], extra: { tool: 'extract_pdf_pages' } },
+        { id: 'speak_summary', label: '讀出來／轉語音', target: 'audio', needs: ['doc', 'pdf', 'text', 'file', 'usertext'], triggers: [/念出來|唸出來|朗讀|轉語音|唸給我|念給我|text.?to.?speech|tts/i] },
+    ];
+
+    // ---------- 手上有的東西（facts）----------
+    // input: { attachments:[{id,filename}], url, text（使用者的話，已去掉附件標記）, query, online }
+    function factsFrom(input) {
+        const items = []; const kinds = {};
+        const add = (kind, item) => { items.push(Object.assign({ kind }, item)); kinds[kind] = (kinds[kind] || 0) + 1; };
+        for (const a of input.attachments || []) add(kindOfFile(a.filename), { id: a.id, filename: a.filename, from: 'attachment' });
+        if (input.url) add('url', { value: input.url, from: 'text' });
+        if (input.query) add('query', { value: input.query, from: 'text' });
+        if (input.text) add('usertext', { value: input.text, from: 'text' });
+        return { items, kinds, online: input.online === true, text: input.text || '' };
+    }
+    const has = (facts, kinds, min) => kinds.some((k) => (facts.kinds[k] || 0) >= (min || 1));
+
+    // 目標分類：程式用觸發字＋手上有的東西。回傳符合的目標（依特定程度排序）；呼叫端決定要不要問模型
+    function matchGoals(text, facts) {
+        const s = String(text || ''); const out = [];
+        for (const g of GOALS) {
+            if (!g.triggers.some((re) => re.test(s))) continue;
+            if (!has(facts, g.needs, g.minCount)) continue;
+            out.push(g);
+        }
+        // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, doc_summary: 5 }[g.id] ?? 4);
+        out.sort((a, b) => rank(a) - rank(b));
+        // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
+        const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
+        return specific.length ? specific : out;
+    }
+    function goalMenu(goals) { return goals.map((g) => ({ tool: g.id, intent: g.label, score: 0 })); }
+
+    // ---------- 規劃：對有型別的能力表做倒推 ----------
+    // 回傳 { ok:true, steps:[{id,tool,label,stage,cost,bind:{slot:{kind,from:'fact'|'step',ref}},extra,out}], cost } 或 { ok:false, missing:[kind], reason }
+    function buildPlan(goal, facts, opts) {
+        opts = opts || {};
+        // 規劃只從這個目標「要的輸入」出發（goal.needs＋使用者的話）：使用者說的是網址，就不能因為對話裡剛好有別的文字檔就跳過抓網頁
+        if (goal && Array.isArray(goal.needs) && goal.needs.length) { const keep = new Set(goal.needs.concat(['usertext'])); const kinds = {}; for (const k of Object.keys(facts.kinds)) if (keep.has(k)) kinds[k] = facts.kinds[k]; facts = Object.assign({}, facts, { kinds }); }
+        const caps = opts.caps || CAPS; const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
+        const capCost = (c) => c.cost + (c.online && !online ? 50 : 0) + (c.slow ? 0.5 : 0);
+        let counter = 0; const memo = new Map();
+        // 需要一個種類 kind（many 則需要 min 個）：回傳 { steps, cost, from }
+        function need(kind, depth, stack, minCount) {
+            const key = kind + '|' + (minCount || 1) + '|' + depth; if (depth > 5) return null;
+            if ((facts.kinds[kind] || 0) >= (minCount || 1)) return { steps: [], cost: 0, from: { type: 'fact', kind } };
+            if (stack.includes(kind)) return null;
+            let best = null;
+            for (const c of caps) {
+                if (excluded.has(c.tool)) continue; const o = c.out.find((x) => x.kind === kind); if (!o) continue;
+                const steps = []; let cost = capCost(c); let ok = true; const bind = {};
+                for (const inp of c.in) {
+                    let got = null;
+                    for (const k of kindsFor(c, inp)) { const sub = need(k, depth + 1, stack.concat(kind), inp.many ? (inp.min || 1) : 1); if (sub && (!got || sub.cost < got.cost)) got = Object.assign({ kind: k }, sub); }
+                    if (!got) { if (inp.optional) continue; ok = false; break; }
+                    cost += got.cost; got.steps.forEach((st) => { if (!steps.some((x) => x._sig === st._sig)) steps.push(st); }); bind[inp.slot] = { kind: got.kind, from: got.from, many: !!inp.many };
+                }
+                if (!ok) continue;
+                const sig = c.tool + JSON.stringify(Object.fromEntries(Object.entries(bind).map(([k, v]) => [k, v.from && v.from.type === 'step' ? v.from.sig : v.kind])));
+                const step = { _sig: sig, tool: c.tool, label: c.label, stage: c.stage, cost: c.cost, local: !!c.local, slow: !!c.slow, bind, extra: c.extra || [], out: c.out, repeatOut: !!c.repeatOut };
+                const total = { steps: steps.concat([step]), cost, from: { type: 'step', sig, kind } };
+                if (!best || total.cost < best.cost) best = total;
+            }
+            return best;
+        }
+        const target = opts.target || goal.target;
+        const r = need(target, 0, [], 1);
+        if (!r) return { ok: false, missing: [target], reason: '手上的東西做不出「' + target + '」：能力表裡沒有一條從現有種類（' + Object.keys(facts.kinds).join('、') + '）到它的路' };
+        if (!r.steps.length) return { ok: false, missing: [], reason: '已經有「' + target + '」，不需要計畫' };
+        // 重新編號、把 from.sig 換成 step id；goal.extra 可以指定最後一步用特定工具（例如取出頁面）
+        const idOf = new Map(); const steps = r.steps.map((s, i) => { const id = 's' + (i + 1); idOf.set(s._sig, id); return Object.assign({}, s, { id }); });
+        for (const s of steps) { for (const b of Object.values(s.bind)) if (b.from && b.from.type === 'step') b.from = { type: 'step', ref: idOf.get(b.from.sig), kind: b.kind }; delete s._sig; s.state = 'pending'; s.attempts = 0; }
+        return { ok: true, steps, cost: r.cost, target };
+    }
+    // 展開成 phase → step → substep
+    function expand(steps) {
+        const phases = [];
+        for (const [sid, name] of STAGES) {
+            const ss = steps.filter((s) => s.stage === sid); if (!ss.length) continue;
+            phases.push({ id: 'p_' + sid, stage: sid, name, state: 'pending', steps: ss.map((s) => s.id) });
+        }
+        for (const s of steps) s.sub = [{ id: s.id + '.bind', name: '綁定輸入', state: 'pending' }, { id: s.id + '.call', name: '呼叫 ' + s.tool, state: 'pending' }, { id: s.id + '.verify', name: '驗證成品（' + s.out.map((o) => o.kind).join('／') + '）', state: 'pending' }, { id: s.id + '.record', name: '登記成品', state: 'pending' }];
+        return phases;
+    }
+
+    // ---------- 執行狀態 ----------
+    function createRun(goal, facts, planRes, userText) {
+        const steps = JSON.parse(JSON.stringify(planRes.steps)); const phases = expand(steps); // 深拷貝：同一份計畫可以被多次執行，狀態不會互相污染
+        return { id: 'run_' + Date.now().toString(36), goal: { id: goal.id, label: goal.label, target: planRes.target }, userText: String(userText || '').slice(0, 400), state: 'ready', phases, steps, facts, artifacts: [], excluded: [], replans: 0, calls: 0, events: [], created: Date.now() };
+    }
+    function stepOf(run, id) { return run.steps.find((s) => s.id === id); }
+    function log(run, e) { run.events.push(Object.assign({ at: Date.now() }, e)); if (run.events.length > 200) run.events.shift(); }
+    const MARK = { pending: '☐', ready: '☐', running: '▶', done: '✅', failed: '❌', skipped: '⏭️', waiting: '⏸️', replaced: '🔁' };
+    function renderPlan(run) {
+        const lines = ['🗺️ 計畫：' + run.goal.label + '（目標成品：' + run.goal.target + '）　狀態：' + ({ ready: '準備好了', running: '執行中', waiting: '等你補資料', done: '完成', failed: '失敗（已交出完成的部分）' }[run.state] || run.state)];
+        for (const p of run.phases) { lines.push('Phase ' + (run.phases.indexOf(p) + 1) + '：' + p.name); for (const id of p.steps) { const s = stepOf(run, id); lines.push('  ' + MARK[s.state] + ' ' + s.id + ' ' + s.label + '（' + s.tool + '）' + (s.state === 'failed' && s.error ? ' — ' + String(s.error).slice(0, 80) : '') + (s.attempts > 1 ? '　重試 ' + (s.attempts - 1) + ' 次' : '')); } }
+        return lines.join('\n');
+    }
+
+    // ---------- 失敗時的決策樹（資料化，可檢視、可記錄）----------
+    // 依序檢查，第一個符合的規則決定動作：retry／replan（排除這個工具、重新規劃）／skip／ask／abort
+    const FAILURE_RULES = [
+        { id: 'optional', test: (err, step) => !!step.optional, action: 'skip', why: '選填步驟，略過' },
+        { id: 'transient', test: (err, step) => /timeout|timed out|network|fetch failed|failed to fetch|econn|429|503|502|逾時|連線|暫時/i.test(err) && step.attempts < 2, action: 'retry', why: '暫時性錯誤，重試一次' },
+        { id: 'needs_user', test: (err) => /密碼|password|encrypted|沒有.*(附件|檔案)|找不到.*(檔案|file)|缺少|請提供|沒有.*可以|not found|missing/i.test(err), action: 'ask', why: '缺東西，需要使用者補' },
+        { id: 'tool_cannot', test: (err) => /unsupported|unrecognizable|不支援|無法讀取|無法解碼|格式|沒有.*模型|model|api key|未設定|offline|離線|沒有可用/i.test(err), action: 'replan', why: '這個工具做不了這個輸入，改走別條路' },
+        { id: 'any_other', test: () => true, action: 'replan', why: '失敗，嘗試別條路' },
+    ];
+    function decideFailure(run, step, err) {
+        const msg = String(err || '');
+        for (const r of FAILURE_RULES) if (r.test(msg, step, run)) return { action: r.action, rule: r.id, why: r.why };
+        return { action: 'abort', rule: 'none', why: '沒有規則' };
+    }
+
+    // ---------- 成品登記 ----------
+    // 從工具回傳的 JSON 找成品：宣告的 keys（file_id 類）、任何 *_file_id 鍵、inline 文字
+    function collectArtifacts(step, resultJson, resultText, env) {
+        const out = []; const j = resultJson && typeof resultJson === 'object' ? resultJson : null;
+        for (const o of step.out) {
+            if (o.keys && j) for (const k of o.keys) { const v = j[k]; if (typeof v === 'string' && v) { out.push({ kind: o.kind, id: v, filename: j.filename || j.name || '', from: step.id }); break; } }
+            if (o.inline && !out.some((a) => a.kind === o.kind)) {
+                const txt = j ? (typeof j.text === 'string' ? j.text : (typeof j.summary === 'string' ? j.summary : (typeof j.content === 'string' ? j.content : (typeof j.description === 'string' ? j.description : null)))) : null;
+                if (o.kind === 'urls' && j) { const urls = (JSON.stringify(j).match(/https?:\/\/[^\s"'\\<>)）]+/g) || []); out.push({ kind: 'urls', value: Array.from(new Set(urls)), from: step.id }); }
+                else if (o.kind === 'url' && j && Array.isArray(j.urls)) j.urls.forEach((u) => out.push({ kind: 'url', value: u, from: step.id }));
+                else if (txt || resultText) out.push({ kind: o.kind, value: String(txt != null ? txt : resultText), from: step.id });
+            }
+        }
+        // 沒宣告的 file_id 也登記（用檔名判斷種類）
+        if (j) for (const k of Object.keys(j)) if (/file_id$/.test(k) && typeof j[k] === 'string' && !out.some((a) => a.id === j[k])) { const kind = /audio/.test(k) ? 'audio' : (/pdf/.test(k) ? 'pdf' : (/video/.test(k) ? 'video' : (/gif/.test(k) ? 'gif' : (/image|png|jpg/.test(k) ? 'image' : kindOfFile(j.filename))))); out.push({ kind, id: j[k], filename: j.filename || '', from: step.id }); }
+        return out;
+    }
+    // 步驟的輸入綁定：依種類從「手上有的」與「前面步驟的成品」找；回傳 { args, missing:[slot], used:[...] }
+    function bindInputs(run, step, cap) {
+        const args = {}; const missing = []; const pool = run.facts.items.concat(run.artifacts);
+        for (const inp of cap.in) {
+            const b = step.bind[inp.slot]; if (!b && inp.optional) continue;
+            // 優先用綁定指到的那一步的成品，其次同種類最新的
+            let cands = [];
+            if (b && b.from && b.from.type === 'step') cands = run.artifacts.filter((a) => a.from === b.from.ref && (a.kind === b.kind || inp.kinds.includes(a.kind)));
+            if (!cands.length) cands = pool.filter((a) => (b ? [b.kind] : inp.kinds).includes(a.kind));
+            if (!cands.length) cands = pool.filter((a) => inp.kinds.includes(a.kind));
+            if (!cands.length) { if (inp.optional) continue; missing.push(inp.slot); continue; }
+            const pick = (a) => (a.id != null ? a.id : a.value);
+            if (inp.many) { const list = cands.filter((a) => a.kind === (b ? b.kind : cands[0].kind)).map(pick); if (list.length < (inp.min || 1)) { missing.push(inp.slot); continue; } args[inp.slot] = list; }
+            else args[inp.slot] = pick(cands[cands.length - 1]);
+        }
+        return { args, missing };
+    }
+
+    // ---------- 驅動：一直做到完成／等使用者／失敗 ----------
+    // env: { tool(name,args)→{ok,text,json}, fns:{name(inputs,run)→{ok,text,json}}, defsOf(tool)→[slot def]（工具自己的欄位定義，用來補 extra 欄位）,
+    //        fill(step, missingDefs)→{values,missing}（模型補空）, save(run), onEvent(e), limits:{maxSteps,maxReplans} }
+    async function advance(run, env) {
+        const lim = Object.assign({ maxCalls: 16, maxReplans: 2 }, env.limits || {}); const emit = (e) => { log(run, e); if (env.onEvent) try { env.onEvent(e); } catch (_) {} };
+        run.state = 'running'; if (env.save) env.save(run);
+        let guard = 0;
+        while (guard++ < 60) {
+            const step = run.steps.find((s) => s.state === 'pending' || s.state === 'waiting'); if (!step) { run.state = 'done'; break; }
+            if (run.calls >= lim.maxCalls) { run.state = 'failed'; run.error = '呼叫次數已達上限（' + lim.maxCalls + '）'; emit({ type: 'limit', what: 'calls' }); break; }
+            const cap = capOf(step.tool); step.state = 'running'; step.attempts++; emit({ type: 'step_start', step: step.id, tool: step.tool });
+            const bound = bindInputs(run, step, cap);
+            let args = bound.args;
+            // extra 欄位（例如 pages）與工具自己的必填欄位：程式先填、模型補、還缺就問使用者
+            let missingDefs = [];
+            if (env.defsOf && !cap.local) {
+                const defs = env.defsOf(step.tool) || []; const rest = defs.filter((d) => args[d.name] === undefined && (d.required || (cap.extra || []).includes(d.name)));
+                const pf = R.programFill(rest, { text: run.facts.text, slots: run.slots || {}, attachments: [] }); Object.assign(args, pf.values); missingDefs = pf.missing;
+                if (missingDefs.length && env.fill) { const f = await env.fill(step, missingDefs); Object.assign(args, f.values || {}); missingDefs = f.missing || []; emit({ type: 'fill', step: step.id, filled: Object.keys((f && f.values) || {}), missing: missingDefs.map((d) => d.name) }); }
+            }
+            if (bound.missing.length || missingDefs.length) {
+                const names = bound.missing.concat(missingDefs.map((d) => d.name));
+                const d = { action: 'ask', rule: 'missing_input', why: '缺：' + names.join('、') };
+                // 缺的是前面步驟該產出的成品 → 不是問使用者，是計畫有問題 → 重新規劃
+                const fromStep = bound.missing.length && bound.missing.every((slot) => step.bind[slot] && step.bind[slot].from && step.bind[slot].from.type === 'step');
+                if (!fromStep) { step.state = 'waiting'; run.state = 'waiting'; run.waiting = { step: step.id, missing: names, defs: missingDefs }; emit({ type: 'ask', step: step.id, missing: names }); if (env.save) env.save(run); return run; }
+                step.error = '前一步沒有產出需要的成品（' + bound.missing.join('、') + '）'; const rr = await onFailure(run, step, step.error, env, lim, emit); if (rr === 'stop') break; continue;
+            }
+            // 執行
+            let res; run.calls++;
+            try { res = cap.local ? await (env.fns && env.fns[step.tool] ? env.fns[step.tool](args, run) : { ok: false, text: '沒有註冊的本機函式：' + step.tool }) : await env.tool(step.tool, args); }
+            catch (e) { res = { ok: false, text: String((e && e.message) || e) }; }
+            if (!res || !res.ok) { step.error = String((res && res.text) || '失敗'); emit({ type: 'step_failed', step: step.id, error: step.error.slice(0, 160) }); const rr = await onFailure(run, step, step.error, env, lim, emit); if (rr === 'stop') break; continue; }
+            // 驗證成品：宣告的種類至少要有一個
+            const arts = collectArtifacts(step, res.json, res.text, env);
+            if (!arts.length && !step.out.every((o) => o.optionalOut)) { step.error = '呼叫成功但沒有找到預期的成品（' + step.out.map((o) => o.kind).join('／') + '）'; emit({ type: 'verify_failed', step: step.id }); const rr = await onFailure(run, step, step.error, env, lim, emit); if (rr === 'stop') break; continue; }
+            run.artifacts.push(...arts); step.state = 'done'; step.result = String(res.text || '').slice(0, 300); step.sub.forEach((x) => { x.state = 'done'; }); emit({ type: 'step_done', step: step.id, artifacts: arts.map((a) => a.kind) });
+            for (const p of run.phases) p.state = p.steps.every((id) => ['done', 'skipped', 'replaced'].includes(stepOf(run, id).state)) ? 'done' : 'pending';
+            if (env.save) env.save(run);
+        }
+        if (run.state === 'running') run.state = run.steps.every((s) => ['done', 'skipped', 'replaced'].includes(s.state)) ? 'done' : 'failed';
+        if (env.save) env.save(run); return run;
+    }
+    async function onFailure(run, step, err, env, lim, emit) {
+        const d = decideFailure(run, step, err); emit({ type: 'decision', step: step.id, rule: d.rule, action: d.action, why: d.why });
+        if (d.action === 'retry') { step.state = 'pending'; return 'go'; }
+        if (d.action === 'skip') { step.state = 'skipped'; return 'go'; }
+        if (d.action === 'ask') { step.state = 'waiting'; run.state = 'waiting'; run.waiting = { step: step.id, missing: [], reason: err }; return 'stop'; }
+        if (d.action === 'replan' && run.replans < lim.maxReplans) {
+            const bad = step.tool; run.excluded.push(bad); run.replans++;
+            const done = run.steps.filter((s) => s.state === 'done'); const facts2 = run.facts;
+            // 已經產出的成品當作新的 facts 進計畫（不重做）
+            const kinds = Object.assign({}, facts2.kinds); for (const a of run.artifacts) kinds[a.kind] = (kinds[a.kind] || 0) + 1;
+            const pr = buildPlan({ target: run.goal.target }, Object.assign({}, facts2, { kinds }), { excluded: run.excluded });
+            if (pr.ok) {
+                const keepDone = done.map((s) => s); const base = keepDone.length; const idMap = {};
+                const newSteps = pr.steps.map((s, i) => { const nid = 'r' + run.replans + '_' + (i + 1); idMap[s.id] = nid; return Object.assign({}, s, { id: nid }); });
+                for (const s of newSteps) for (const b of Object.values(s.bind)) if (b.from && b.from.type === 'step') b.from = Object.assign({}, b.from, { ref: idMap[b.from.ref] });
+                step.state = 'replaced'; const rest = run.steps.filter((s) => s.state === 'done' || s.state === 'replaced');
+                run.steps = rest.concat(newSteps); run.phases = expand(run.steps);
+                emit({ type: 'replan', excluded: run.excluded.slice(), steps: newSteps.map((s) => s.tool) }); return 'go';
+            }
+            emit({ type: 'replan_failed', reason: pr.reason }); step.state = 'failed'; run.state = 'failed'; run.error = '失敗且沒有別條路：' + err; return 'stop';
+        }
+        step.state = 'failed'; run.state = 'failed'; run.error = err; emit({ type: 'abort', step: step.id }); return 'stop';
+    }
+    // 使用者補了資料之後接著做：values = { 欄位: 值 }（或附件）；把等待中的步驟重新排進去
+    function provide(run, input) {
+        if (input && input.attachments) { for (const a of input.attachments) { const kind = kindOfFile(a.filename); if (!run.facts.items.some((x) => x.id === a.id)) { run.facts.items.push({ kind, id: a.id, filename: a.filename, from: 'attachment' }); run.facts.kinds[kind] = (run.facts.kinds[kind] || 0) + 1; } } }
+        if (input && input.text) { run.facts.text = (run.facts.text + ' ' + input.text).trim(); }
+        if (input && input.url) { run.facts.items.push({ kind: 'url', value: input.url, from: 'text' }); run.facts.kinds.url = (run.facts.kinds.url || 0) + 1; }
+        for (const s of run.steps) if (s.state === 'waiting') s.state = 'pending';
+        run.waiting = null; run.state = 'ready'; return run;
+    }
+    // 計畫做完（或停下）之後給使用者看的成果：成品清單＋最後的文字結果
+    function summarizeRun(run) {
+        const finals = run.artifacts.filter((a) => a.kind === run.goal.target); const last = finals[finals.length - 1];
+        return { target: run.goal.target, final: last || null, doneSteps: run.steps.filter((s) => s.state === 'done').map((s) => s.tool), failedSteps: run.steps.filter((s) => s.state === 'failed').map((s) => ({ tool: s.tool, error: s.error })), artifacts: run.artifacts.map((a) => ({ kind: a.kind, id: a.id, filename: a.filename, value: a.value != null ? String(a.value).slice(0, 200) : undefined })) };
+    }
+
+    return { CAPS, GOALS, STAGES, FAILURE_RULES, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPlan;
+})();
+/* PLAN-END */
 // ============================================================
 // 程式行為分析（Behavior Analyzer）——由 Domain Resolver 的 behavior_analyzer 設計移植成內建基底。
 // 目標：把原始碼／組合語言解釋成「由下而上、沿著正向路徑」的行為說明，並且可折疊：
@@ -13348,6 +13689,7 @@ class FloatingAssistant {
             offlineLlmMixRewrite: true, // 混用時工具模型沒用到工具，也交給「寫回答」的模型重寫
             offlineLlmMaxTokens: 512,
             offlineRecipes: true, // 離線小模型用「食譜」做工具型的服務：程式路由／填欄位、模型只做選擇題與填空題
+            offlineRecipePlans: true, // 多步驟計畫：目標→phase→step→substep，狀態機＋決策樹維護
             offlineRecipePhrase: true, // 資訊類工具（搜尋、查詢、讀網頁）的結果，讓模型用 1～2 句話說明（會被檢查，不過就用程式整理的結果）
             offlineTextRoles: {}, // { 模型id: { tools, answer, summarize, priority, device } }
             offlineToolBench: {}, // { 模型id: 工具呼叫基準測試結果 }
@@ -14544,6 +14886,7 @@ class FloatingAssistant {
             offlineLlmMixRewrite: raw.offlineLlmMixRewrite !== false,
             offlineRecipes: raw.offlineRecipes !== false,
             offlineRecipePhrase: raw.offlineRecipePhrase !== false,
+            offlineRecipePlans: raw.offlineRecipePlans !== false,
             offlineLlmMaxTokens: (() => { const n = Math.floor(Number(raw.offlineLlmMaxTokens)); return Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; })(),
             offlineTextRoles: (() => { const out = {}; const src = raw.offlineTextRoles && typeof raw.offlineTextRoles === 'object' ? raw.offlineTextRoles : {}; for (const m of FaVlm.textModels()) { const c = src[m.id]; if (!c || typeof c !== 'object') continue; const o = {}; for (const k of ['tools', 'answer', 'summarize']) if (typeof c[k] === 'boolean') o[k] = c[k]; if (Number.isFinite(Number(c.priority))) o.priority = Math.max(-1000, Math.min(1000, Math.round(Number(c.priority)))); if (c.device === 'gpu' || c.device === 'cpu') o.device = c.device; out[m.id] = o; } return out; })(),
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
@@ -20920,6 +21263,10 @@ ${fnData.code}
             this.messages.push({ role: 'user', content: text });
             this._renderMessageHistory();
         }
+        if (this._activePlanRun && this._activePlanRun.run && this._activePlanRun.run.state === 'waiting' && text.charAt(0) !== '/' && this._omSettings().plans) {
+            const rr = await this._planResume(text, { fallback: !!opts.fallback });
+            if (rr && rr.handled) { this._pushAssistantMessage(rr.header + '\n\n' + rr.text, null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        }
         let plan;
         try { plan = await this._otPlan(text); } catch (e) { this._pushAssistantMessage('⚠️ 離線訓練器出錯：' + String((e && e.message) || e), null); this._persistChatHistory(); this._renderMessageHistory(); return; }
         const d = plan.decision;
@@ -20982,6 +21329,13 @@ ${fnData.code}
         };
         return walk(args);
     }
+    // 拿掉樣板裡的檔案 id（uuid）：值是 uuid、或整個陣列／物件都是 uuid 的欄位整個移除，之後由食譜從那一次的附件補
+    _otStripFileIds(args) {
+        const isId = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+        const onlyIds = (v) => isId(v) || (Array.isArray(v) && v.length > 0 && v.every(onlyIds)) || (v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).length > 0 && Object.values(v).every(onlyIds));
+        const walk = (v) => { if (Array.isArray(v)) return v.map(walk); if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([, x]) => !onlyIds(x)).map(([k, x]) => [k, walk(x)])); return v; };
+        return walk(args);
+    }
     async _otAddExample(domainName, patternId, text) {
         const st = await this._otLoad();
         const d = st.domains.get(domainName);
@@ -21010,7 +21364,7 @@ ${fnData.code}
             const first = good[0];
             let args = {};
             try { args = JSON.parse(first.rawArgs || '{}'); } catch (_) {}
-            const tpl = this._otTemplateize(args, slots);
+            const tpl = this._otStripFileIds(this._otTemplateize(args, slots)); // 檔案 id 是這一次的附件，不能寫進以後每次都會用的樣板（不然下次會去轉上一次的圖）
             const dom = st.domains.get('learned') || { name: 'learned', description: '從線上AI問答自動學到的做法（使用者與AI互動時累積）', enabled: true, source: 'learned', patterns: [], references: [], created: Date.now() };
             const pid = 'learned_' + first.name;
             let p = dom.patterns.find((x) => x.id === pid);
@@ -46518,7 +46872,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = this.advancedSettings || {}; const m = FaVlm.byId(s.imageToTextModel);
         const tm = FaVlm.byId(s.offlineTextModel);
         return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly && m.task === 'image-to-text' ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false,
-            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, recipes: s.offlineRecipes !== false, recipePhrase: s.offlineRecipePhrase !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
+            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, recipes: s.offlineRecipes !== false, plans: s.offlineRecipePlans !== false, recipePhrase: s.offlineRecipePhrase !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
     }
     _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
     // 能不能 WASM 多執行緒：跟 onnxruntime-web 自己檢查的同三件事（SharedArrayBuffer 存在、能傳給 Worker、執行緒指令可驗證）。不是非要 crossOriginIsolated：
@@ -46778,6 +47132,120 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     // ----- 設定頁：離線模型管理 -----
+    // ===== 線上 AI 養大離線 AI：離線訓練器（規則、學到的做法、相似問法、過去問答）與 RAG 都整理成離線模型能參考的樣子 =====
+    async _offlineReferences(question, plan) {
+        const items = []; const q = String(question || '');
+        try {
+            const st = this._ot || await this._otLoad();
+            const findP = (domain, id) => { const d = st.domains.get(domain); return d && d.patterns.find((x) => x.id === id); };
+            for (const h of ((plan && plan.stages && plan.stages.semantic) || []).slice(0, 4)) { const p = findP(h.domain, h.pattern); if (!p || h.sim < 0.2) continue; const steps = Array.isArray(p.steps) && p.steps.length ? p.steps.map((x) => x.tool).join(' → ') : ''; items.push({ kind: steps ? 'steps' : 'example', title: p.intent || h.pattern, text: '「' + String(h.example || '').slice(0, 80) + '」→ ' + (p.intent || '') + (p.tool ? '（工具 ' + p.tool + '）' : '') + (steps ? '（步驟：' + steps + '）' : '') + (p.answer ? ' 說明：' + String(p.answer).slice(0, 200) : ''), score: h.sim }); }
+            for (const r of ((plan && plan.stages && plan.stages.rules) || []).slice(0, 3)) { const p = findP(r.domain, r.pattern); if (p) items.push({ kind: 'rule', title: r.domain + '/' + r.pattern, text: (p.intent || r.pattern) + (p.tool ? '（工具 ' + p.tool + '）' : '') + (p.answer ? '：' + String(p.answer).slice(0, 200) : ''), score: r.score }); }
+            for (const h of this._otVecQuery('ot_qa', q, 4)) { if (h.sim < 0.2 || !h.meta || !h.meta.answer) continue; items.push({ kind: 'qa', title: h.meta.source === 'user' ? '你教的' : '從線上對話學到的', text: '問：' + String(h.doc).slice(0, 120) + ' 答：' + String(h.meta.answer).slice(0, 300), ts: h.meta.ts || h.meta.at || h.meta.time || 0, score: h.sim }); }
+        } catch (_) {}
+        let rag = (plan && plan.rag) ? plan.rag.map((r) => ({ id: r.id, content: r.content, score: r.score })) : [];
+        if (!rag.length && this.advancedSettings.ragEnabled && this.ragSystem) { try { rag = ((await this.ragSystem.query(q, 3)) || []).map((x) => ({ id: x.id, content: String(x.content), score: x.score })); } catch (_) {} }
+        for (const r of rag) items.push({ kind: 'rag', title: String(r.id || '').slice(0, 30), text: String(r.content), score: r.score });
+        return items;
+    }
+    // 離線做成功的（食譜／計畫），也養回離線訓練器：下次同樣的話訓練器就能直接處理。照設定「自動訓練」（off 不學）
+    async _recipeLearnBack(userText, calls, trace) {
+        try {
+            const r = await this._otLearnFromTurn(userText, calls.map((c) => ({ ok: true, name: c.name, rawArgs: JSON.stringify(c.args || {}) })), '', false);
+            if (r && r.learned && trace) { FaRecipe.decide(trace, { stage: 'learn_back', answer: r.learned, by: 'program' }); this._recipeSaveTrace(trace); }
+        } catch (_) {}
+    }
+    async _recipeAttachments(userText) {
+        const atts = FaRecipe.parseAttachments(userText); for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done')) if (!atts.some((x) => x.id === a.id)) atts.push({ id: a.id, filename: a.filename });
+        if (!atts.length) { try { (await this._attachmentCandidates()).forEach((c) => atts.push({ id: c.id, filename: c.filename })); } catch (_) {} }
+        return atts;
+    }
+    // ===== 多步驟食譜（計畫）：目標→phase→step→substep，程式規劃、狀態機＋決策樹維護；模型只在目標有歧義時挑一個、補程式填不出的欄位 =====
+    // 規劃與狀態機的核心在 FaPlan（plan_core.js）；這裡只接工具、模型、使用者詢問、儲存。設計見 DESIGN.offline-plans.md
+    async _planModel(opts) {
+        const S = this._omSettings(); const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false }); const model = route.answer; let err; this._omDeclined = this._omDeclined || new Set();
+        const ensure = async () => { if (err !== undefined) return err; const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16); if (!dev.order.length) return (err = dev.reason); const need = FaVlm.estimateDownload(model, dev.order[0], (inst.usage.byModel[model.id] || { bytes: 0 }).bytes); if (need > 20 * 1048576) { if (opts.fallback || this._omDeclined.has(model.id)) return (err = '離線文字模型「' + model.label + '」還沒下載'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」約 ' + FaVlm.fmtBytes(need) + '（計畫需要用它挑目標、填欄位、做摘要）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (err = '使用者取消了下載'); } } return (err = null); };
+        const gen = async (a) => { const e = await ensure(); if (e) throw new Error(e); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
+        return { model, ensure, gen };
+    }
+    // 離線摘要（pseudo 工具 local_summarize）：依模型上下文切段（自適應）→ 每段讓模型摘要並檢查（有編造就換程式摘要）→ 合併；沒有模型就全部用程式摘要
+    async _planLocalSummarize(inputs, question, M) {
+        const list = [].concat(inputs || []); let full = '';
+        for (const it of list) { const s = String(it == null ? '' : it); if (/^[\w-]{8,}$/.test(s)) { try { const rec = await this.fileCache.get(s); if (rec && rec.blob) { full += '\n' + await rec.blob.text(); continue; } } catch (_) {} } full += '\n' + s; }
+        full = full.trim(); if (!full) return { ok: false, text: '沒有可以摘要的文字' };
+        const chunkTok = Math.max(300, Math.floor(FaVlm.textBudget(M.model, 220).prompt * 0.55)); let chunks = FaRecipe.chunkText(full, chunkTok);
+        if (chunks.length > 4) chunks = FaRecipe.chunkText(FaRecipe.extractiveSummary(full, 40), chunkTok); // 太長：先用程式挑重點句，再讓模型摘要（離線 CPU 上每段要幾十秒）
+        const parts = []; let usedModel = 0, usedProgram = 0; const noModel = await M.ensure();
+        for (const c of chunks) {
+            let out = null;
+            if (!noModel) { try { const g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', c, '請用繁體中文列出 2～4 個重點。'), maxTokens: 200 }); const chk = FaRecipe.checkExtractive(g, [c], { cjkMin: 0.5, maxChars: 600 }); if (chk.ok) out = String(g).trim(); } catch (_) {} }
+            if (out) { parts.push(out); usedModel++; } else { parts.push(FaRecipe.extractiveSummary(c, 3)); usedProgram++; }
+        }
+        const summary = parts.filter(Boolean).join('\n'); return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length } };
+    }
+    _planEnv(run, userText, ctx) {
+        const M = ctx.M; const question = ctx.question; const calls = ctx.calls; const trace = ctx.trace; const prog = ctx.prog;
+        return {
+            calls: [], limits: { maxCalls: 14, maxReplans: 2 },
+            tool: async (name, args) => {
+                const tool = this.tools[name]; if (!tool) return { ok: false, text: '沒有這個工具：' + name };
+                if (FA_OT_RISKY_TOOL.test(name)) { const ans = await this.requestUserForm({ title: '🗺️ 離線計畫要執行有副作用的工具', description: '工具：' + name + '\n參數：' + JSON.stringify(args).slice(0, 400) + '\n\n要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, text: '使用者取消了這個步驟' }; }
+                let raw; try { raw = await tool.callback.call(this, JSON.stringify(args)); } catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
+                let j = null; try { j = JSON.parse(raw); } catch (_) {} const ok = !(j && (j.ok === false || j.error));
+                if (ok) calls.push({ name, args }); return { ok, text: ok ? (typeof raw === 'string' ? raw : JSON.stringify(raw)) : String((j && (j.error || j.message)) || raw).slice(0, 300), json: j };
+            },
+            fns: {
+                local_summarize: async (args) => this._planLocalSummarize(args.text, question, M),
+                pick_urls: async (args) => { const urls = [].concat(args.results || []).filter((u) => /^https?:\/\//.test(u) && !/(?:google|bing|duckduckgo|baidu)\.[a-z.]+\/(?:search|url|\?)/i.test(u)); const first = urls[0]; return first ? { ok: true, text: first, json: { urls: [first] } } : { ok: false, text: '搜尋結果裡沒有可以抓的網址' }; },
+            },
+            defsOf: (name) => FaRecipe.slotsFromSchema((this.tools[name] && this.tools[name].parametersSchema) || {}),
+            fill: async (step, missing) => { const mf = await FaRecipe.modelFill({ missing, question, toolName: step.tool, generate: M.gen, numbers: (run.slots && run.slots.numbers) || [] }); FaRecipe.decide(trace, { stage: 'plan_fill', step: step.id, tool: step.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected }); return { values: mf.values, missing: mf.missing }; },
+            onEvent: (e) => { if (e.type === 'decision' || e.type === 'replan' || e.type === 'ask') FaRecipe.decide(trace, Object.assign({ stage: 'plan_' + e.type, by: 'program' }, e)); if (prog) { if (e.type === 'step_start') prog.log('▶ ' + e.step + ' ' + e.tool); else if (e.type === 'step_done') prog.log('✅ ' + e.step); else if (e.type === 'step_failed') prog.log('❌ ' + e.step + '：' + e.error); else if (e.type === 'decision') prog.log('決策：' + e.rule + ' → ' + e.action + '（' + e.why + '）'); else if (e.type === 'replan') prog.log('🔁 重新規劃（排除 ' + e.excluded.join('、') + '）：' + e.steps.join(' → ')); } },
+            save: (r) => { this._activePlanRun = r.state === 'waiting' ? { run: r, userText } : null; },
+        };
+    }
+    async _planFinish(run, userText, trace, calls, prog) {
+        const sm = FaPlan.summarizeRun(run); const planText = FaPlan.renderPlan(run); let body = '';
+        if (run.state === 'waiting') { const w = run.waiting || {}; body = '⏸️ 計畫停在 ' + w.step + '：' + ((w.missing && w.missing.length) ? '缺 ' + w.missing.join('、') : (w.reason || '需要你補資料')) + '。請補上（附檔、貼網址，或直接說清楚），我會從這一步接著做，已完成的不會重做。'; }
+        else if (run.state === 'done') { const f = sm.final; body = f ? (f.value != null ? String(f.value) : '成品：' + (f.filename || f.id) + '（已產生下載附件）') : '完成。'; }
+        else body = '⚠️ 計畫沒有完成：' + (run.error || '失敗') + (sm.doneSteps.length ? '\n已完成的步驟：' + sm.doneSteps.join('、') + '（它們的成品還在）' : '');
+        if (prog) { if (run.state === 'done') prog.finish('完成'); else if (run.state === 'waiting') prog.finish('等你補資料'); else prog.fail(run.error || '失敗'); }
+        FaRecipe.decide(trace, { stage: 'plan_end', answer: run.state, by: 'program', steps: run.steps.map((s) => s.tool + ':' + s.state) }); this._recipeSaveTrace(trace);
+        if (run.state === 'done' && calls.length) await this._recipeLearnBack(userText, calls.slice(0, 3), trace);
+        return { handled: true, ok: run.state === 'done', header: '🍳 離線計畫｜' + run.goal.label + '（' + run.steps.filter((s) => s.state !== 'replaced').length + ' 步）', text: planText + '\n\n' + body };
+    }
+    async _planAnswer(userText, plan, opts) {
+        opts = opts || {}; const S = this._omSettings(); if (!S.plans) return { handled: false };
+        const question = FaRecipe.stripAttachments(userText) || String(userText); const slots = (plan && plan.slots) || {};
+        const hereAtts = FaRecipe.parseAttachments(userText); for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done')) if (!hereAtts.some((x) => x.id === a.id)) hereAtts.push({ id: a.id, filename: a.filename });
+        // 這一句話明確給的（附件、待送的附件、網址）優先；都沒有才退到對話裡最近一次附的檔案
+        const planAtts = (hereAtts.length || slots.url || !/這(?:份|個|張|支|些|幾|篇)|上面|剛剛|剛才|那(?:份|個|張|支)|前面/.test(question)) ? hereAtts : await this._recipeAttachments(userText); // 對話裡更早附的檔案，只有使用者用「這份／上面那個／剛剛」指它時才算
+        const facts = FaPlan.factsFrom({ attachments: planAtts, url: slots.url, query: FaRecipe.cleanQuery(userText), text: question, online: false });
+        const goals = FaPlan.matchGoals(question, facts); if (!goals.length) return { handled: false };
+        const trace = FaRecipe.newTrace(userText, { recipe: 'plan' }); const M = await this._planModel(opts); let goal = goals[0]; let by = '程式';
+        try {
+            if (goals.length > 1) { const ch = await FaRecipe.chooseTool({ cands: FaPlan.goalMenu(goals), question, generate: M.gen }); FaRecipe.decide(trace, { stage: 'plan_goal', options: goals.map((g) => g.id), answer: ch.ok && !ch.none ? goals[ch.index].id : null, by: 'model', tries: ch.tries, rejected: ch.rejected }); if (!ch.ok || ch.none) { this._recipeSaveTrace(trace); return { handled: false }; } goal = goals[ch.index]; by = '模型'; }
+            else FaRecipe.decide(trace, { stage: 'plan_goal', options: [goal.id], answer: goal.id, by: 'program' });
+            const pr = FaPlan.buildPlan(goal, facts, { inputKinds: goal.id === 'speak_summary' && /摘要|重點|總結/.test(question) ? { 'text_to_speech.text': ['summary'] } : undefined });
+            if (!pr.ok || (pr.steps.length < 2 && !pr.steps[0].local)) { FaRecipe.decide(trace, { stage: 'plan_build', answer: pr.ok ? 'single_step' : pr.reason, by: 'program' }); this._recipeSaveTrace(trace); return { handled: false }; } // 單步驟交給單一工具食譜
+            const run = FaPlan.createRun(goal, facts, pr, userText); run.slots = slots; FaRecipe.decide(trace, { stage: 'plan_build', answer: pr.steps.map((s) => s.tool), by: 'program', cost: pr.cost });
+            const slow = run.steps.filter((s) => s.slow);
+            if (slow.length) { const ans = await this.requestUserForm({ title: '🗺️ 離線計畫（目標：' + goal.label + '，由' + by + '決定）', description: FaPlan.renderPlan(run) + '\n\n' + slow.map((s) => s.tool).join('、') + ' 比較慢（第一次會下載模型、在這台電腦上算）。要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') { this._recipeSaveTrace(trace); return { handled: true, ok: false, header: '🍳 離線計畫', text: '已取消。' }; } }
+            return await this._planRun(run, userText, { question, M, trace });
+        } catch (e) { FaRecipe.decide(trace, { stage: 'error', answer: String((e && e.message) || e).slice(0, 200), by: 'program' }); this._recipeSaveTrace(trace); return { handled: false, error: String((e && e.message) || e) }; }
+    }
+    async _planRun(run, userText, ctx) {
+        const calls = []; const prog = this._createProgressWidget('離線計畫：' + run.goal.label); prog.log(FaPlan.renderPlan(run));
+        const env = this._planEnv(run, userText, Object.assign({}, ctx, { calls, prog })); await FaPlan.advance(run, env);
+        return this._planFinish(run, userText, ctx.trace, calls, prog);
+    }
+    // 計畫停在「等使用者補資料」時，下一句話就是答案：補進去、從停下的那一步接著做
+    async _planResume(text, opts) {
+        const a = this._activePlanRun; if (!a || !a.run || a.run.state !== 'waiting') return null;
+        const run = a.run; const question = FaRecipe.stripAttachments(text) || String(text); const atts = await this._recipeAttachments(text); const slots = _faOtSlots(question);
+        FaPlan.provide(run, { attachments: atts.filter((x) => !run.facts.items.some((f) => f.id === x.id)), text: question, url: slots.url || '' }); run.slots = Object.assign({}, run.slots, slots);
+        const trace = FaRecipe.newTrace(text, { recipe: 'plan_resume' }); const M = await this._planModel(opts || {});
+        return this._planRun(run, a.userText, { question: run.facts.text || question, M, trace });
+    }
     // ===== 離線小模型的食譜（recipe）：決策樹＋狀態機＋選擇題／填空題（核心在 FaRecipe，設計見 DESIGN.offline-recipes.md）=====
     // 流程：候選工具（離線訓練器給的）→ 路由（分數差距夠大就程式決定，否則模型從編號選單挑；可以選「都不是」）→ 欄位（程式從網址／路徑／附件／引號／列舉／預設補，
     // 補不到的才讓模型填空，模型不知道就填 null、不准編）→ 執行（有副作用的工具先問使用者）→ 措辭（資訊類結果讓模型寫 1～2 句，會被檢查，不過就用程式整理的結果）。
@@ -46785,7 +47253,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     _recipeCandidates(plan, forceTool) {
         const out = []; const add = (tool, intent, score) => { if (!tool || !this.tools[tool] || FA_OT_META_TOOLS.has(tool) || out.some((c) => c.tool === tool)) return; out.push({ tool, intent: intent || String(this.tools[tool].description || tool).slice(0, 40), score: Number(score) || 0 }); };
         if (forceTool) { add(forceTool, '', 1); return out; }
-        const d = plan && plan.decision; if (d && d.chosen && d.chosen.tool) add(d.chosen.tool, d.chosen.intent, d.chosen.score);
+        const d = plan && plan.decision; if (d && d.chosen && d.chosen.tool) { add(d.chosen.tool, d.chosen.intent, d.chosen.score); if (out[0] && out[0].tool === d.chosen.tool && d.chosen.args && typeof d.chosen.args === 'object') out[0].trainerArgs = d.chosen.args; }
         for (const a of (plan && plan.alternatives) || []) add(a.tool, a.intent, a.score);
         ['ref_lookup', 'browser_search', 'fetch_web_page'].forEach((n) => add(n, '', 0));
         return out.slice(0, 6);
@@ -46795,7 +47263,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 回傳 { handled:false } 或 { handled:true, ok, header, text }
     async _recipeAnswer(userText, plan, opts) {
         opts = opts || {}; const S = this._omSettings(); if (!S.recipes) return { handled: false };
-        const question = FaRecipe.stripAttachments(userText) || String(userText); const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
+        const question = FaRecipe.stripAttachments(userText) || String(userText);
+        if (S.plans && !opts.forceTool) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
+        const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' });
         const cands = this._recipeCandidates(plan, opts.forceTool); if (!cands.length) return { handled: false };
         const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false });
         const model = route.answer; let modelErr = undefined; this._omDeclined = this._omDeclined || new Set();
@@ -46834,7 +47304,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // ② 欄位
             const defs = FaRecipe.slotsFromSchema(tool.parametersSchema || {});
             const pf = FaRecipe.programFill(defs, evCtx);
-            const args = Object.assign({}, pf.values); const fieldBy = Object.keys(pf.by).map((k) => k + '（' + (pf.by[k] === 'default' ? '預設' : '程式') + '）');
+            // 離線訓練器已經替這個工具填好的欄位（它的樣板＋抽出的網址／路徑／引號）優先用——訓練器養得越好，模型要補的越少
+            const trainerVals = {}; if (cand.trainerArgs) for (const [k, v] of Object.entries(cand.trainerArgs)) if (defs.some((d) => d.name === k) && v !== '' && v != null && !(Array.isArray(v) && !v.length) && !(typeof v === 'string' && /^\{[^}]*\}$/.test(v))) trainerVals[k] = v;
+            Object.assign(pf.values, trainerVals); Object.keys(trainerVals).forEach((k) => { pf.by[k] = 'trainer'; }); pf.missing = pf.missing.filter((d) => pf.values[d.name] === undefined);
+            const args = Object.assign({}, pf.values); const fieldBy = Object.keys(pf.by).map((k) => k + '（' + ({ default: '預設', trainer: '訓練器' }[pf.by[k]] || '程式') + '）');
             FaRecipe.decide(trace, { stage: 'slots', tool: cand.tool, answer: Object.keys(pf.values), by: 'program', missing: pf.missing.map((d) => d.name) });
             let remaining = pf.missing;
             if (remaining.length) {
@@ -46869,6 +47342,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (chk.ok) { text = String(ph).trim() + '\n\n' + pretty; phraseBy = '模型（通過檢查）'; }
             }
             steps.push('措辭：' + phraseBy); this._recipeSaveTrace(trace);
+            if (ok) await this._recipeLearnBack(userText, [{ name: cand.tool, args }], trace); // 離線做成功的，也養回離線訓練器（照「自動訓練」設定）
             return { handled: true, ok, header: '🍳 離線食譜｜' + steps.join(' → '), text: ok ? text : ('⚠️ ' + cand.tool + ' 執行失敗：\n' + pretty) };
         } catch (e) {
             FaRecipe.decide(trace, { stage: 'error', answer: String((e && e.message) || e).slice(0, 200), by: 'program' }); this._recipeSaveTrace(trace);
@@ -46945,8 +47419,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try {
             const system = '你是一個友善、簡潔的助理，在使用者的電腦上離線執行。請用繁體中文回答（使用者用別種語言就用那種語言）。直接回答問題；問候與閒聊就自然地回應。如果有【參考資料】，優先根據它回答。一律使用繁體中文，不要用簡體字。你知道的就直接說；只有遇到你真的不知道的具體細節（人名、數字、網址）時，才說明你不確定，並提供你知道的相關內容。';
             let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
-            let rag = (plan && plan.rag || []).map((r) => r.content);
-            if (!rag.length && this.advancedSettings.ragEnabled && this.ragSystem) { try { const r = await this.ragSystem.query(userText, 3); rag = (r || []).map((x) => String(x.content)); } catch (_) {} }
+            // 參考資料＝離線訓練器（線上 AI 養出來的規則、學到的做法、相似問法、過去問答）＋RAG，整理成帶出處與年齡的清單，份量依模型上下文按比例給
+            const refPack = FaRecipe.buildReferencePack(await this._offlineReferences(userText, plan), FaVlm.textBudget(route.answer, S.llmMax).rag);
+            let rag = refPack.lines; if (refPack.lines.length) log('參考資料 ' + refPack.lines.length + ' 筆（訓練器／RAG）');
             const cbs = { update, log, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
             const gen = (model) => (a) => this._llmGenerate(model, (a.tools && a.tools.length) ? Object.assign({}, a, { deterministic: true }) : a, cbs); // 選工具用確定性生成（貪婪）：選工具與填參數要穩，不要隨機
             const summarizerFor = (model, b) => (route.summarize && route.summarize.id === model.id) ? async (body, maxTok) => this._llmGenerate(model, { messages: [{ role: 'system', content: '你是摘要工具。用繁體中文摘要，保留數字、名稱與結論，不要加入原文沒有的資訊。' }, { role: 'user', content: FaVlm.trimToTokens(body, Math.max(200, b.prompt - 300)) }], tools: [], deterministic: true, maxTokens: maxTok }, cbs) : null;
@@ -47053,6 +47528,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div><label><input type="checkbox" data-om-set="llmFallback" ${S.llmFallback ? 'checked' : ''}> 離線訓練器信心不足時，交給離線文字模型回答</label></div>
               <div><label><input type="checkbox" data-om-set="llmTools" ${S.llmTools ? 'checked' : ''}> 允許離線文字模型呼叫工具（沒通過基準測試、評為不可靠的模型不會被選去呼叫工具；有副作用的工具一律先問你）</label></div>
               <div><label><input type="checkbox" data-om-set="recipes" ${S.recipes ? 'checked' : ''}> 食譜模式：離線小模型用「路由→填欄位→執行→措辭」一步一步做工具型的服務（程式能決定的就程式決定，模型只做選擇題與填空題；開著時不跑自由工具迴圈）</label></div>
+              <div><label><input type="checkbox" data-om-set="plans" ${S.plans ? 'checked' : ''}> 多步驟計畫：有明確目標（影片做摘要、網頁摘要、上網查資料並整理、文件念出來…）時，程式把目標展開成 phase → step → substep 的計畫，用狀態機＋決策樹執行與維護（失敗會重試、換路、問你，不會無窮迴圈）</label></div>
+              <div style="border:1px solid #334155; border-radius:6px; padding:6px; margin:6px 0;"><b>線上 AI 養大離線 AI</b>　<span style="color:#94a3b8;">離線訓練器（${(() => { const s = this._otStats(); return s.loaded ? s.patterns + ' 條規則、' + s.examples + ' 句範例、' + s.solutions + ' 個學會的解法、' + s.qa + ' 筆問答記憶' : '尚未載入'; })()}）與 RAG 都會成為離線模型的參考（帶出處與年齡）；離線做成功的也會養回訓練器（依「自動訓練」設定：目前 ${esc(this.advancedSettings.offlineAutoTrain || 'off')}）。</span><br>
+                <button style="${btn}" data-om="train-chat">用目前對話訓練</button> <button style="${btn}" data-om="train-rag">用 RAG 訓練</button> <button style="${btn}" data-om="train-distill">整理成技能</button> <span data-om-status="train" style="color:#7dd3fc;"></span></div>
               <div><label><input type="checkbox" data-om-set="recipePhrase" ${S.recipePhrase ? 'checked' : ''}> 食譜：資訊類結果讓模型用 1～2 句話說明（會被檢查，有編造的數字就丟掉）</label>　<button style="${btn}" data-om="exporttrace">匯出決策記錄</button> <button style="${btn} color:#fca5a5;" data-om="cleartrace">清除</button> <span style="color:#94a3b8;">（最近 ${this._recipeTraces().length} 筆）</span></div>
               <div><label><input type="checkbox" data-om-set="mixRewrite" ${S.mixRewrite ? 'checked' : ''}> 混用時，工具模型沒用到工具也交給「寫回答」的模型重寫</label></div>
               <div><label>回答長度上限 <input type="number" min="64" max="2048" step="32" value="${S.llmMax}" data-om-set="llmMax" style="${inp} width:80px;"> tokens</label>　<label>離線訓練器信心門檻 <input type="range" min="0.1" max="1" step="0.01" value="${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}" data-om-set="threshold" style="vertical-align:middle;"> <b>${this.advancedSettings.offlineThreshold != null ? this.advancedSettings.offlineThreshold : 0.45}</b></label></div>
@@ -47088,6 +47566,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             else if (k === 'llmFallback') this.advancedSettings.offlineLlmFallback = !!e.target.checked;
             else if (k === 'recipes') this.advancedSettings.offlineRecipes = !!e.target.checked;
             else if (k === 'recipePhrase') this.advancedSettings.offlineRecipePhrase = !!e.target.checked;
+            else if (k === 'plans') this.advancedSettings.offlineRecipePlans = !!e.target.checked;
             else if (k === 'llmTools') this.advancedSettings.offlineLlmTools = !!e.target.checked;
             else if (k === 'mixRewrite') this.advancedSettings.offlineLlmMixRewrite = !!e.target.checked;
             else if (k === 'llmMax') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineLlmMaxTokens = Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; }
@@ -47102,6 +47581,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const stat = (sid, s) => { const el = root.querySelector(`[data-om-status="${sid}"]`); if (el) el.textContent = s || ''; };
             if (act === 'refresh') return this._omRenderPane();
             if (act === 'default') { const dm = FaVlm.byId(id); if (dm && dm.task === 'text-generation') this.advancedSettings.offlineTextModel = id; else this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
+            if (act === 'train-chat' || act === 'train-rag' || act === 'train-distill') { b.disabled = true; stat('train', '處理中…'); try { const r = act === 'train-chat' ? await this._otTrainFromChats() : (act === 'train-rag' ? await this._otTrainFromRag() : await this._otTrainRun({ minCount: 3 })); stat('train', act === 'train-distill' ? (r && r.ok ? '看了 ' + r.turns + ' 輪，新增 ' + r.adopted + ' 個技能' : '失敗：' + ((r && r.error) || '')) : '學到 ' + ((r && r.added) || 0) + ' 筆（' + ((r && r.calls) || 0) + ' 個工具呼叫）'); } catch (e) { stat('train', '失敗：' + String((e && e.message) || e)); } b.disabled = false; setTimeout(() => this._omRenderPane(), 1500); return; }
             if (act === 'exporttrace') { const lines = FaRecipe.tracesToLines(this._recipeTraces()); const blob = new Blob([lines || ''], { type: 'application/x-ndjson' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'recipe-traces-' + Date.now() + '.jsonl'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); return; }
             if (act === 'cleartrace') { try { localStorage.removeItem('fa_recipe_traces_v1'); } catch (_) {} return this._omRenderPane(); }
             if (act === 'toolbench') { b.disabled = true; stat(id, '等待你的確認…'); const r = await this._omToolBench(id, (s) => stat(id, s)); stat(id, r.ok ? '' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }

@@ -53,6 +53,8 @@
 ### ⑤ 決策記錄
 `{stage, tool/options, answer, by:'program'|'model', tries, rejected[]}`，存 localStorage（最後 30 筆、400KB 上限，`pushRing`），設定頁「匯出決策記錄」輸出 JSON lines、「清除」刪掉。範例：`narrow:program:fetch_web_page → route:program:fetch_web_page → slots:program:url → run:program:ok → phrase:model:rejected`。
 
+> **多步驟計畫（目標 → phase → step → substep，狀態機＋決策樹）已實作，見 `DESIGN.offline-plans.md`**；線上 AI 養大離線 AI、離線模型最大化使用離線訓練器也寫在那份。
+
 ## 3. 多步驟食譜引擎（`runRecipe`）
 redmine 那種「宣告式步驟」的引擎也移植了：`steps` 有 `tool`／`compute`／`phrase`／`render`，`{{slots.x}}`、`{{vars.<步驟>.欄位}}` 內插，整串剛好是一個參照就保留原值；`optional` 步驟失敗只是略過；`compute` 只能呼叫註冊的具名函式（**不從食譜檔帶程式碼**）；`MAX_STEPS = 12`；`validateRecipe` 檢查 id、重複、未知類型、`result` 指向。**目前還沒有登記任何內建的多步驟食譜**——現有服務靠「每個工具自動成為單步食譜」；要做「轉逐字稿→摘要」這類流程，照這份格式加宣告即可（測試過引擎本身）。
 
