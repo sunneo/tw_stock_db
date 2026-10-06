@@ -45891,6 +45891,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (e) { r.reason = 'SharedArrayBuffer 沒辦法傳給 Worker：' + String((e && e.message) || e); }
         return (this._omThreadCache = r);
     }
+    // 詢問使用者要不要下載：Configure 視窗開著時，聊天裡的 requestUserForm 對話框會被視窗擋住（使用者看不到、流程卡在「準備中」），所以這時改用原生確認框
+    async _omAskDownload(title, description, yesLabel) {
+        const modal = document.getElementById('ai-advanced-modal');
+        if (modal && this._isModalOpen(modal)) return window.confirm(title + '\n\n' + description);
+        const ans = await this.requestUserForm({ title, description, choices: [yesLabel, '取消'] });
+        return !!(ans && ans.confirmed && ans.answer === yesLabel);
+    }
     _omCores() { const ts = this._omThreadSupport(); return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: ts.ok, coi: ts.coi, reason: ts.reason }; }
     // WebGPU 偵測（含顯示卡名稱與 fp16 支援）；結果快取，force 重新偵測
     async _omGpuInfo(force) {
@@ -45945,9 +45952,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];
             if (!dt) { tried.push({ device: dev, error: '這個模型沒有 ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 的設定' }); continue; }
             try {
-                const libUrl = new URL(this._viaAssetProxy(dev === 'webgpu' ? FA_ASSET_URLS.transformersJsWebGpu : FA_ASSET_URLS.transformersJs), location.href).href;
+                const baseUrl = dev === 'webgpu' ? FA_ASSET_URLS.transformersJsWebGpu : FA_ASSET_URLS.transformersJs;
+                // 先直接連 CDN（跟 Whisper 一樣）。Worker 沒辦法動態載入 fa-local://（桌面版的 proxy 協定），所以經過 proxy 的網址只當第二選擇
+                const libUrls = [baseUrl]; try { const px = new URL(this._viaAssetProxy(baseUrl), location.href).href; if (px !== baseUrl) libUrls.push(px); } catch (_) {}
                 if (log) log('載入模型到 ' + (dev === 'webgpu' ? 'GPU（WebGPU）' : 'CPU（WASM，' + th.effective + ' 個執行緒）') + '…');
-                await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, dtype: dt, device: dev, threads: th.effective }, this._vlmProgressAgg(model.label, update || (() => {})));
+                let lastLibErr = null;
+                for (const libUrl of libUrls) {
+                    try { await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, dtype: dt, device: dev, threads: th.effective }, this._vlmProgressAgg(model.label, update || (() => {}))); lastLibErr = null; break; }
+                    catch (e2) { lastLibErr = e2; if (!/dynamically imported module|Failed to fetch|import/i.test(String((e2 && e2.message) || e2)) || libUrl === libUrls[libUrls.length - 1]) break; if (log) log('⚠️ 函式庫載入失敗，改用另一個網址重試'); this._vlmTerminate(); }
+                }
+                if (lastLibErr) throw lastLibErr;
                 this._vlmLoaded = { modelId: model.id, device: dev, threads: th }; return { device: dev, tried, threads: th };
             } catch (e) { tried.push({ device: dev, error: String((e && e.message) || e) }); if (log) log('⚠️ ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 載入失敗：' + tried[tried.length - 1].error + (order.indexOf(dev) < order.length - 1 ? '；降級成 CPU 重試' : '')); this._vlmTerminate(); }
         }
@@ -45979,8 +45993,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const usage = await this._omUsage(); const cached = (usage.byModel[model.id] || { bytes: 0 }).bytes; const need = FaVlm.estimateDownload(model, dev.order[0], cached);
         if (need > 20 * 1048576 && !p.confirmed) {
             if (p.fallback) return { ok: false, error: '離線圖像轉文字的模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；自動備援不會自己下載。要用請直接呼叫 image_to_text，或到 Configure →「離線模型」下載。' };
-            const ans = await this.requestUserForm({ title: '要下載離線圖像模型嗎？', description: '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型」清除）。\n推論在背景執行緒，不會卡住畫面；執行在你的電腦上，圖片不會上傳。\n' + (model.experimental ? '\n⚠️ 這是實驗性的社群轉檔，不保證能跑。' : '') , choices: ['下載並執行', '取消'] });
-            if (!ans || !ans.confirmed || ans.answer !== '下載並執行') return { ok: false, cancelled: true, error: '使用者取消了下載' };
+            const okDl = await this._omAskDownload('要下載離線圖像模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型管理」清除）。\n推論在背景執行緒，不會卡住畫面；執行在你的電腦上，圖片不會上傳。' + (model.experimental ? '\n\n⚠️ 這是實驗性的社群轉檔，不保證能跑。' : ''), '下載並執行');
+            if (!okDl) return { ok: false, cancelled: true, error: '使用者取消了下載' };
         }
         const tb = FaVlm.buildTask(model, p.task, p.prompt);
         const prog = p.silent ? null : this._createProgressWidget('離線圖像轉文字（' + model.label + '）');
@@ -46051,9 +46065,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const m = FaVlm.byId(id); if (!m || m.managedOnly) return { ok: false, error: '這個模型不能預先下載' };
         const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(m, this._omSettings().device, gpu.available, gpu.f16); if (!dev.order.length) return { ok: false, error: dev.reason };
         const usage = await this._omUsage(); const need = FaVlm.estimateDownload(m, dev.order[0], (usage.byModel[m.id] || { bytes: 0 }).bytes);
-        if (need > 20 * 1048576) { const ans = await this.requestUserForm({ title: '要下載「' + m.label + '」嗎？', description: '來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（存在瀏覽器快取，可在這個分頁清除）。', choices: ['下載', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '下載') return { ok: false, cancelled: true, error: '已取消' }; }
-        try { const ld = await this._vlmEnsureLoaded(m, dev.order, (x) => { if (setStatus) setStatus(x.status || ''); }, (s) => { if (setStatus) setStatus(s); }); this._vlmTerminate(); return { ok: true, device: ld.device }; }
-        catch (e) { this._vlmTerminate(); return { ok: false, error: String((e && e.message) || e) }; }
+        if (need > 20 * 1048576) { const okDl = await this._omAskDownload('要下載「' + m.label + '」嗎？', '來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（存在瀏覽器快取，可在這個分頁清除）。', '下載'); if (!okDl) return { ok: false, cancelled: true, error: '已取消' }; }
+        // 下載進度卡片（聊天裡）＋設定頁那一列的即時狀態：Configure 視窗關掉後，卡片還在對話裡可以看
+        const prog = this._createProgressWidget('下載離線模型（' + m.label + '，約 ' + FaVlm.fmtBytes(need) + '）');
+        try {
+            prog.log('來源：huggingface.co/' + m.repo + '；裝置：' + dev.reason);
+            const ld = await this._vlmEnsureLoaded(m, dev.order, (x) => { prog.update(x); if (setStatus) setStatus((x.pct != null ? Math.round(x.pct) + '% ' : '') + (x.status || '')); }, (s) => { prog.log(s); if (setStatus) setStatus(s); });
+            this._vlmTerminate(); prog.finish('完成：已下載並確認可以載入（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）；用量在 Configure →「離線模型管理」'); return { ok: true, device: ld.device };
+        } catch (e) { this._vlmTerminate(); prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e) }; }
     }
 
     // ----- 設定頁：離線模型管理 -----
@@ -46120,7 +46139,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (act === 'delete') { const m = FaVlm.byId(id); if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次使用會重新下載。')) return; await this._omDeleteModel(id); return this._omRenderPane(); }
             if (act === 'delrepo') { const repo = b.getAttribute('data-repo'); if (!confirm('刪除 ' + repo + ' 的快取檔案？')) return; await this._omDeleteRepo(repo); return this._omRenderPane(); }
             if (act === 'clearall') { if (!confirm('清除全部離線模型快取（含 Whisper）？下次使用會重新下載。')) return; await this._omClearAll(); return this._omRenderPane(); }
-            if (act === 'preload') { b.disabled = true; stat(id, '準備中…'); const r = await this._omPreload(id, (s) => stat(id, s)); stat(id, r.ok ? '✅ 完成（' + (r.device === 'webgpu' ? 'GPU' : 'CPU') + '）' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }
+            if (act === 'preload') { b.disabled = true; stat(id, '等待你的確認…'); const r = await this._omPreload(id, (s) => stat(id, s)); stat(id, r.ok ? '✅ 完成（' + (r.device === 'webgpu' ? 'GPU' : 'CPU') + '）' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }
             if (act === 'test') {
                 const f = root.querySelector('[data-om=testfile]').files[0]; const out = root.querySelector('[data-om-out]'); if (!f) { out.textContent = '先選一張圖片'; return; }
                 out.textContent = '處理中…（第一次會下載模型）'; const r = await this._imageToText({ blob: f, filename: f.name, task: root.querySelector('[data-om-set=testtask]').value, prompt: root.querySelector('[data-om-set=testprompt]').value, silent: false });
