@@ -142,7 +142,7 @@ rt = V.routeStages({ hasTools: true, bench: { 'qwen3-0.6b': benchGood }, config:
 check('route: mix — small model calls tools, big model writes the answer (priority + role tags)', rt.tools.id === 'qwen3-0.6b' && rt.answer.id === 'qwen3-1.7b' && rt.mixed && rt.stages.map((s) => s.role).join() === 'tools,answer', rt);
 rt = V.routeStages({ hasTools: true, bench: { 'qwen3-0.6b': benchPoor }, installed: new Set() });
 check('route: a model the benchmark rated poor is never used for tools', !rt.tools || rt.tools.id !== 'qwen3-0.6b', rt.tools);
-rt = V.routeStages({ hasTools: true, bench: { 'qwen3-0.6b': benchPoor, 'qwen2.5-0.5b': benchPoor, 'qwen2.5-1.5b': benchPoor, 'qwen3-1.7b': benchPoor, 'granite-4.0-350m': benchPoor }, installed: new Set() });
+rt = V.routeStages({ hasTools: true, bench: Object.fromEntries(V.textModels().map((m) => [m.id, benchPoor])), installed: new Set() });
 check('route: no usable tool model → no tools, plain generation, says why', rt.tools === null && !rt.mixed && rt.answer && rt.reasons.some((x) => /不給工具/.test(x)), rt);
 rt = V.routeStages({ hasTools: false, installed: new Set() });
 check('route: no tools wanted → only the answer stage', rt.tools === null && rt.stages.length === 1 && rt.stages[0].role === 'answer', rt);
@@ -154,7 +154,7 @@ rt = V.routeStages({ hasTools: true, bench: { 'qwen3-0.6b': benchGood, 'qwen2.5-
 check('route: priority decides among equally trusted models', rt.tools.id === 'qwen2.5-0.5b', rt.tools);
 rt = V.routeStages({ hasTools: true, bench: { 'qwen3-0.6b': benchGood, 'qwen2.5-0.5b': benchGood }, config: { 'qwen2.5-0.5b': { priority: 99 } }, installed: new Set(['qwen3-0.6b']), requireInstalled: true });
 check('route: fallback mode prefers models that are already downloaded (never silent download)', rt.tools.id === 'qwen3-0.6b', rt.tools);
-rt = V.routeStages({ hasTools: false, config: { 'smollm2-360m': { priority: 99 }, 'qwen3-0.6b': { answer: false }, 'qwen2.5-0.5b': { answer: false }, 'qwen2.5-1.5b': { answer: false }, 'qwen3-1.7b': { answer: false }, 'granite-4.0-350m': { answer: false } }, installed: new Set() });
+rt = V.routeStages({ hasTools: false, config: Object.assign({ 'smollm2-360m': { priority: 99 } }, Object.fromEntries(V.textModels().filter((m) => m.id !== 'smollm2-360m').map((m) => [m.id, { answer: false }]))), installed: new Set() });
 check('route: answer role can be given to a model that cannot call tools', rt.answer.id === 'smollm2-360m', rt.answer);
 check('toolsTrust values', V.toolsTrust(V.byId('smollm2-360m'), {}) === 'no' && V.toolsTrust(V.byId('qwen3-0.6b'), {}) === 'untested' && V.toolsTrust(V.byId('qwen3-0.6b'), { 'qwen3-0.6b': benchGood }) === 'trusted' && V.toolsTrust(V.byId('qwen3-0.6b'), { 'qwen3-0.6b': benchPoor }) === 'no');
 check('role config: tools flag cannot be forced on a model without a tool format', V.roleConfig(V.byId('smollm2-360m'), { 'smollm2-360m': { tools: true } }, 'x').tools === false);

@@ -6653,6 +6653,9 @@ const holder = {};
         { id: 'granite-4.0-350m', label: 'Granite 4.0 350M（小型工具呼叫專長，未驗證）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/granite-4.0-350m-ONNX-web',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 4096, lang: '英文為主（多語）', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q4' }, bytes: { gpu: 336 * MB, cpu: 551 * MB }, gpuNeedsF16: true, verified: false, notes: 'IBM 的小模型，官方標榜工具呼叫與指令遵循；很小，適合當「工具階段」的模型，再交給別的模型寫回答。還沒實測。' },
+        { id: 'granite-4.0-1b', label: 'Granite 4.0 1B（工具呼叫專長，較大）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/granite-4.0-1b-ONNX-web',
+            tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '英文為主（多語）', license: 'Apache-2.0',
+            dtype: { gpu: 'q4f16', cpu: 'q4' }, bytes: { gpu: 1192 * MB, cpu: 1702 * MB }, gpuNeedsF16: true, verified: false, notes: 'IBM 的 1B 模型。redmine 那邊實測工具呼叫評分通過（本專案還沒在這邊測）；比 350M 穩，適合當工具階段模型。' },
         { id: 'qwen2.5-1.5b', label: 'Qwen2.5 1.5B（較大，建議用 GPU）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen2.5-1.5B-Instruct',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1165 * MB, cpu: 1506 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.5B 參數；答得明顯比 0.5B 好，工具呼叫也更穩；CPU 上很慢。' },
@@ -6843,6 +6846,8 @@ const holder = {};
     }
     // 工具呼叫基準測試：用三個假工具與固定題目，量「選對工具＋參數對」的比例；也量輸出格式合不合（能不能被解析）。
     // 題目刻意包含：中文、英文、該用工具、不該用工具（要能克制）。每題 1 分。
+    // 工具階段的 system 提示詞：基準測試用的就是這一句——實測 0.6B 小模型被長提示詞（一堆「何時不要用工具」的叮嚀）一影響就不呼叫工具了，所以工具階段維持這句簡短的，不要加碼
+    const TOOL_STAGE_SYSTEM = '你是助理。需要時使用工具；不需要工具時直接簡短回答。';
     const BENCH_TOOLS = [
         { name: 'get_weather', description: '查詢城市目前的天氣', parameters: { type: 'object', properties: { city: { type: 'string', description: '城市名稱' } }, required: ['city'] } },
         { name: 'calculator', description: '計算數學算式並回傳結果', parameters: { type: 'object', properties: { expression: { type: 'string', description: '算式，例如 (1+2)*3' } }, required: ['expression'] } },
@@ -7008,7 +7013,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -46509,7 +46514,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         let raw; try { raw = await t.callback.call(this, JSON.stringify(c.args || {})); } catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
         let ok = true; try { const j = JSON.parse(raw); if (j && (j.ok === false || j.error)) ok = false; } catch (_) {}
-        return { ok, text: this._otPretty(raw, userText) };
+        // 給模型看的是精簡的原始 JSON（不用 _otPretty：它為了給人看會把巢狀欄位壓平，例如 ref_lookup 的 matches 會整個消失，模型就拿不到答案）
+        let text; try { text = JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw); } catch (_) { text = String(raw); }
+        return { ok, text };
     }
     // 離線文字模型回答。回傳 { ok, text, header, route, calls, notes, ms } 或 { ok:false, error, cancelled? }
     // opts: { fallback（自動備援：不問使用者、不偷偷下載）, ui:false（不要進度卡片）, history }
@@ -46535,25 +46542,27 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
         route.reasons.forEach(log);
         try {
-            const system = '你是在使用者電腦上離線執行的小型助理。預設用繁體中文簡潔回答（使用者用別種語言就用那種語言）。不確定就直說不確定，不要編造事實、網址、數字；有參考資料就優先根據它，沒有相關就憑常識回答並說明可能不準。只有真的需要即時資訊或操作時才使用工具。';
+            const system = '你是一個友善、簡潔的助理，在使用者的電腦上離線執行。請用繁體中文回答（使用者用別種語言就用那種語言）。直接回答問題；問候與閒聊就自然地回應。如果有【參考資料】，優先根據它回答。一律使用繁體中文，不要用簡體字。你知道的就直接說；只有遇到你真的不知道的具體細節（人名、數字、網址）時，才說明你不確定，並提供你知道的相關內容。';
             let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
             let rag = (plan && plan.rag || []).map((r) => r.content);
             if (!rag.length && this.advancedSettings.ragEnabled && this.ragSystem) { try { const r = await this.ragSystem.query(userText, 3); rag = (r || []).map((x) => String(x.content)); } catch (_) {} }
             const cbs = { update, log, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
-            const gen = (model) => (a) => this._llmGenerate(model, a, cbs);
+            const gen = (model) => (a) => this._llmGenerate(model, (a.tools && a.tools.length) ? Object.assign({}, a, { deterministic: true }) : a, cbs); // 選工具用確定性生成（貪婪）：選工具與填參數要穩，不要隨機
             const summarizerFor = (model, b) => (route.summarize && route.summarize.id === model.id) ? async (body, maxTok) => this._llmGenerate(model, { messages: [{ role: 'system', content: '你是摘要工具。用繁體中文摘要，保留數字、名稱與結論，不要加入原文沒有的資訊。' }, { role: 'user', content: FaVlm.trimToTokens(body, Math.max(200, b.prompt - 300)) }], tools: [], deterministic: true, maxTokens: maxTok }, cbs) : null;
             const onEvent = (e) => { if (e.type === 'tool_start') log('呼叫工具：' + e.name + ' ' + JSON.stringify(e.args).slice(0, 120)); else if (e.type === 'garbage') log('⚠️ 輸出是垃圾（' + e.reason + '），重試'); else if (e.type === 'duplicate_call') log('⚠️ 重複的工具呼叫，已略過'); };
             let result = null; const used = []; const notes = []; let calls = [];
             if (route.tools) {
                 const bA = FaVlm.textBudget(route.tools, S.llmMax); const specs = FaVlm.compactToolSpecs(toolList, bA.tools); const names = new Set(specs.map((s) => s.function.name));
-                const cm = FaVlm.composeMessages({ system, history, rag, user: userText, budget: bA });
+                const cm = FaVlm.composeMessages({ system: FaVlm.TOOL_STAGE_SYSTEM, history, rag, user: userText, budget: bA }); // 工具階段用基準測試驗證過的簡短提示詞；混用時回答交給階段二（有完整的 system 提示詞）
                 log('階段一（' + (route.mixed ? '工具' : '工具＋回答') + '）：' + route.tools.id);
                 result = await FaVlm.runAgentLoop({ messages: cm.messages, tools: specs, toolNames: names, budget: bA, generate: gen(route.tools), execTool: (c) => this._offlineLlmExecTool(c, userText), summarize: summarizerFor(route.tools, bA), handoff: route.mixed, onEvent });
                 used.push({ role: route.mixed ? 'tools' : 'tools+answer', model: route.tools }); calls = result.calls; notes.push(...result.notes);
                 const needWriter = route.mixed && (result.handoff || (result.plain && S.mixRewrite) || !result.ok);
                 if (needWriter) {
-                    const bB = FaVlm.textBudget(route.answer, S.llmMax); const refs = FaVlm.toolResultsAsReferences(calls).concat(rag);
-                    const cmB = FaVlm.composeMessages({ system, history, rag: refs, user: userText, budget: bB });
+                    const bB = FaVlm.textBudget(route.answer, S.llmMax); const toolRefs = FaVlm.toolResultsAsReferences(calls).map((r, _i, arr) => FaVlm.trimToTokens(r, Math.floor(bB.rag / Math.max(1, arr.length))));
+                    // 工具結果放進「使用者這一輪」而不是 system：實測 0.5B 的寫回答模型會忽略 system 裡的參考資料，但會照使用者這一輪的內容回答
+                    const userB = toolRefs.length ? userText + '\n\n【工具結果】\n' + toolRefs.join('\n') + '\n\n請只根據上面的工具結果回答（繁體中文）；結果裡沒有的就說沒有，不要編造。' : userText;
+                    const cmB = FaVlm.composeMessages({ system, history, rag, user: userB, budget: Object.assign({}, bB, { user: bB.user + bB.rag }) });
                     log('階段二（寫回答）：' + route.answer.id);
                     result = await FaVlm.runAgentLoop({ messages: cmB.messages, tools: [], budget: bB, generate: gen(route.answer), execTool: async () => ({ ok: false, text: '' }), onEvent });
                     used.push({ role: 'answer', model: route.answer }); notes.push(...result.notes);
@@ -46583,7 +46592,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try {
             for (let i = 0; i < FaVlm.BENCH_CASES.length; i++) {
                 const c = FaVlm.BENCH_CASES[i]; if (setStatus) setStatus('第 ' + (i + 1) + '／' + FaVlm.BENCH_CASES.length + ' 題…'); prog.log('題目 ' + (i + 1) + '：' + c.user);
-                const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: '你是助理。需要時使用工具；不需要工具時直接簡短回答。' }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
+                const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: FaVlm.TOOL_STAGE_SYSTEM }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
                 const r = FaVlm.scoreToolCase(c, raw); results.push(Object.assign({ id: c.id }, r)); prog.log((r.ok ? '✅ ' : '❌ ') + r.reason + '　輸出：' + String(raw).replace(/\s+/g, ' ').slice(0, 100));
             }
             const sum = FaVlm.summarizeToolBench(results); const rec = Object.assign({}, sum, { at: Date.now(), device: (this._omLastDevice || {})[m.id] === 'webgpu' ? 'gpu' : 'cpu', ms: Date.now() - t0, details: results.map((r) => ({ id: r.id, ok: r.ok, reason: r.reason })) });
