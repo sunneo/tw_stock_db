@@ -65,6 +65,13 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     r = await R.jsonStep({ generate: async () => { throw new Error('boom'); }, messages: [], validate: () => [] });
     check('jsonStep: generator error is reported, not thrown', !r.ok && /boom/.test(r.error), r);
 
+    // ---- prefill：替模型寫好回覆開頭 ----
+    let seenPrefill = []; await R.jsonStep({ generate: async (a) => { seenPrefill.push(a.prefill); return '{"x":1}'; }, messages: [], validate: () => [], prefill: '{"x":' });
+    check('jsonStep: passes the prefill to the generator', seenPrefill[0] === '{"x":', seenPrefill);
+    seenPrefill = []; await R.chooseTool({ cands: [{ tool: 'a', intent: 'A', score: 0 }], question: 'q', generate: async (a) => { seenPrefill.push(a.prefill); return '{"choice": 1}'; } });
+    check('chooseTool: prefills {"choice":', seenPrefill[0] === '{"choice":', seenPrefill);
+    seenPrefill = []; await R.modelFill({ missing: R.slotsFromSchema({ type: 'object', properties: { q: { type: 'string' } }, required: ['q'] }), question: 'x', toolName: 't', generate: async (a) => { seenPrefill.push(a.prefill); return '{"q": "x"}'; } });
+    check('modelFill: prefills the first missing field', seenPrefill[0] === '{"q":', seenPrefill);
     // ---- 模型填空 ----
     const miss = R.slotsFromSchema({ type: 'object', properties: { count: { type: 'integer', minimum: 1, maximum: 10 }, mode: { type: 'string', enum: ['x', 'y'] }, name: { type: 'string' } }, required: ['count', 'mode', 'name'] });
     let mf = await R.modelFill({ missing: miss, question: '給我 3 個 x', toolName: 't', generate: gen(['{"count": 3, "mode": "x", "name": null}']) });

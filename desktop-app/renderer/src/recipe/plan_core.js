@@ -45,6 +45,8 @@
         { tool: 'images_to_pdf', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['image'], many: true, min: 1 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '圖片轉 PDF' },
         { tool: 'merge_pdfs', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['pdf'], many: true, min: 2 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '合併 PDF' },
         { tool: 'extract_pdf_pages', stage: 'produce', cost: 1, in: [{ slot: 'file', kinds: ['pdf'] }], extra: ['pages'], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '取出 PDF 頁面' },
+        { tool: 'local_uml_design', local: true, stage: 'analyze', cost: 3, slow: true, in: [{ slot: 'scenario', kinds: ['usertext', 'text'] }], out: [{ kind: 'uml', inline: true }], label: '情境→UML（離線模型一次一個小問題地設計）' },
+        { tool: 'uml_to_code', stage: 'produce', cost: 1, in: [{ slot: 'uml', kinds: ['uml'] }], extra: ['scenario', 'language'], out: [{ kind: 'code', keys: ['zip_file_id'] }], label: 'UML→程式碼骨架（template）' },
         { tool: 'text_to_speech', stage: 'produce', cost: 2, in: [{ slot: 'text', kinds: ['summary', 'usertext', 'text'] }], out: [{ kind: 'audio', keys: ['audio_file_id', 'file_id'] }], label: '文字轉語音' },
     ];
     const STAGES = [['acquire', '取得資料'], ['prepare', '準備素材'], ['analyze', '分析處理'], ['produce', '產出成品']];
@@ -63,6 +65,8 @@
         { id: 'images_pdf', label: '圖片轉 PDF', target: 'pdf', needs: ['image'], triggers: [/pdf/i] },
         { id: 'pdf_merge', label: '合併 PDF', target: 'pdf', needs: ['pdf'], minCount: 2, triggers: [/合併|併成|合成|merge/i] },
         { id: 'pdf_pages', label: '取出 PDF 頁面', target: 'pdf', needs: ['pdf'], triggers: [/(取出|抽出|擷取|extract)[^]{0,8}頁|第\s*\d+\s*(?:到|-|~)?\s*\d*\s*頁/i], extra: { tool: 'extract_pdf_pages' } },
+        { id: 'uml_code', label: '設計情境→UML→程式碼骨架', target: 'code', needs: ['usertext'], triggers: [/(uml|類別圖|循序圖|使用案例|user\s*story|情境|需求)[^]*(程式|code|骨架|framework|scaffold|架構)|(設計|產生|生成|建立|做)[^]{0,16}(系統|程式|應用|app)[^]{0,16}(骨架|framework|架構|uml|scaffold)|骨架|scaffold/i] },
+        { id: 'uml_only', label: '情境→UML', target: 'uml', needs: ['usertext'], triggers: [/(類別圖|循序圖|使用案例圖|uml)/i] },
         { id: 'speak_summary', label: '讀出來／轉語音', target: 'audio', needs: ['doc', 'pdf', 'text', 'file', 'usertext'], triggers: [/念出來|唸出來|朗讀|轉語音|唸給我|念給我|text.?to.?speech|tts/i] },
     ];
 
@@ -88,7 +92,7 @@
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));

@@ -13,6 +13,9 @@ const tools = (plan) => plan.steps.map((s) => s.tool).join('>');
     const f1 = F({ attachments: [att('a.mp4'), att('b.pdf'), att('c.pdf')], url: 'https://x.io', text: '幫我整理' });
     check('facts: counts by kind', f1.kinds.video === 1 && f1.kinds.pdf === 2 && f1.kinds.url === 1 && f1.kinds.usertext === 1 && f1.items.length === 5, f1.kinds);
 
+    // ---- UML 目標 ----
+    check('uml: the scenario → code goal is picked by wording and plans design > scaffold (2 steps, uml flows by kind)', (() => { const f = F({ text: '設計一個線上書店系統，從情境做 uml 再產生程式骨架' }); const gs = P.matchGoals(f.text, f); const pl = P.buildPlan(gs[0], f); return gs[0].id === 'uml_code' && tools(pl) === 'local_uml_design>uml_to_code' && pl.steps[1].bind.uml.from.ref === 's1'; })());
+    check('uml: only-diagram wording stops at the UML (single local step)', (() => { const f = F({ text: '幫我畫這個情境的類別圖' }); const gs = P.matchGoals(f.text, f); const pl = P.buildPlan(gs[0], f); return gs[0].id === 'uml_only' && tools(pl) === 'local_uml_design'; })());
     // ---- 目標分類（程式）----
     const g = (text, facts) => P.matchGoals(text, facts).map((x) => x.id).join();
     check('goal: video + summary words → video_summary only (not doc_summary)', g('幫我把這支影片整理成摘要', F({ attachments: [att('a.mp4')] })) === 'video_summary', g('幫我把這支影片整理成摘要', F({ attachments: [att('a.mp4')] })));

@@ -992,7 +992,9 @@ ${step4}
 
 **輸出穩定性提醒**：patch一定要完整輸出、以換行結尾；輸出被截斷或內容明顯不完整時，不要送出，重新產生。任何檔案如果被弄壞/變空，立刻git_inspect restore該檔案。
 
-**另一種驗證環境（選用）**：如果需要一個使用者也看得到、可以持續互動觀察的環境（不只是單次批次執行）：terminal_create建立一個WASM沙盒終端機（會直接顯示在對話裡）、terminal_cp_to把workspace_path底下要驗證的檔案複製進去、terminal_run執行指令拿到exit_code/stdout/stderr、需要時terminal_cp_from把產出的檔案取出來。這是${runTests}/${checkCmd}之外的另一個選擇，適合「使用者想親眼看過程」或需要逐步下多個指令觀察中間結果的情境；純粹要跑一次測試拿結果，步驟5的既有流程已經夠用，不用每個TODO項目都特地開一個終端機。`;
+**另一種驗證環境（選用）**：如果需要一個使用者也看得到、可以持續互動觀察的環境（不只是單次批次執行）：terminal_create建立一個WASM沙盒終端機（會直接顯示在對話裡）、terminal_cp_to把workspace_path底下要驗證的檔案複製進去、terminal_run執行指令拿到exit_code/stdout/stderr、需要時terminal_cp_from把產出的檔案取出來。這是${runTests}/${checkCmd}之外的另一個選擇，適合「使用者想親眼看過程」或需要逐步下多個指令觀察中間結果的情境；純粹要跑一次測試拿結果，步驟5的既有流程已經夠用，不用每個TODO項目都特地開一個終端機。
+
+**從情境到程式骨架（UML）**：使用者給的是系統情境／需求、要設計或要專案骨架時：先用design_choices看有哪些架構與library的選擇與推薦（程式依關鍵字決定，平手才需要你選），再自己用「一行一件事」的UML文字（格式見uml_to_code的說明）寫出類別、關係與使用案例的呼叫順序，呼叫uml_to_code一次產生分層的專案骨架（含依賴清單、測試骨架、README的設計決策表與Mermaid圖）。UML有錯會回報哪一行、為什麼，改好再呼叫。不要自己手寫整個專案的樣板檔案；uml_design是給離線小模型用的（一步一步設計），你不需要它。`;
 }
 // ==== CODING-HELPERS-END ====
 
@@ -1453,7 +1455,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -1499,7 +1501,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     drawing: {
         enabled: true,
         label: '通用繪圖',
-        toolNames: ['render_drawing', 'render_uml_diagram'],
+        toolNames: ['render_drawing', 'render_uml_diagram', 'uml_to_code', 'design_choices'],
         systemPrompt: '你是一個專門畫向量圖（流程圖、示意圖、圖表、插畫等）的子任務助理。純手繪/插畫類用render_drawing直接輸出SVG原始碼；**UML圖、流程圖、序列圖、類別圖、狀態圖、甘特圖、心智圖這類有固定圖形語彙的結構化圖表，優先用render_uml_diagram（Mermaid語法）**，不要自己手刻SVG座標去畫方框箭頭，Mermaid語法簡潔、AI寫起來更準確、渲染出來的圖也會自動排版。這不是股票K線圖表工具。SVG都會被自動消毒過濾掉script/事件屬性，所以只能用純圖形元素表達，不能靠內嵌JS互動。畫完後只需要一兩句話簡短說明，不用重複整份SVG/Mermaid原始碼。',
     },
     scene_3d: {
@@ -7092,7 +7094,7 @@ const holder = {};
             else if (d.type === 'array' && /^(?:files?|file_ids?|images?|attachments?|pdfs?|inputs?|paths?)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a.map((x) => x.id); }
             else if (d.type === 'string' && /^(?:file(?:_id)?|image(?:_id)?|video(?:_id)?|audio(?:_id)?|pdf(?:_id)?|attachment(?:_id)?|input(?:_file)?|source)$/i.test(n)) { const a = attOfKind(kindsFor(n, d.description)); if (a.length) v = a[a.length - 1].id; else if (sl.path) v = sl.path; }
             else if (d.type === 'string' && /^(?:path|filepath|file_path|dir|directory|folder)$/i.test(n)) v = sl.path || undefined;
-            else if (d.type === 'string' && /^(?:query|q|keyword|keywords|search|search_query|text|prompt|question|problem|problem_text|task|message|content|topic)$/i.test(n)) v = (sl.quoted || cleanQuery(text)) || undefined;
+            else if (d.type === 'string' && /^(?:query|q|keyword|keywords|search|search_query|text|prompt|question|problem|problem_text|task|message|content|topic|scenario|requirement|requirements|description)$/i.test(n)) v = (sl.quoted || cleanQuery(text)) || undefined;
             else if ((d.type === 'integer' || d.type === 'number') && numericDefs.length === 1 && d.required && Array.isArray(sl.numbers) && sl.numbers.length === 1) { const x = Number(sl.numbers[0]); if (Number.isFinite(x)) v = d.type === 'integer' ? Math.round(x) : x; }
             if (v !== undefined && v !== '') { values[n] = v; by[n] = 'program'; continue; }
             if (d.default !== undefined) { values[n] = d.default; by[n] = 'default'; continue; }
@@ -7112,10 +7114,11 @@ const holder = {};
     }
     // 一個小而有型別的決策：ctx = { generate({messages,maxTokens})→string, messages, validate(obj)→[錯誤], maxTries=2, maxTokens=160 }
     // 回覆不合格 → 退回：模型只看到「它自己最後一次的回覆＋精確的錯誤」（不累積歷史）；連續兩次回覆完全相同就提前停止（小模型會原樣複誦錯誤答案）。
+    // prefill：先替模型寫好回覆的開頭（例如 {"choice":），小模型就不會改用散文回答；generate 回傳的文字要包含這個開頭
     async function jsonStep(ctx) {
         const maxTries = ctx.maxTries || 2; const rejected = []; let last = null; let msgs = ctx.messages;
         for (let tries = 1; tries <= maxTries; tries++) {
-            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160 }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
+            let raw; try { raw = await ctx.generate({ messages: msgs, maxTokens: ctx.maxTokens || 160, prefill: ctx.prefill }); } catch (e) { return { ok: false, tries, rejected, error: String((e && e.message) || e) }; }
             const text = String(raw == null ? '' : raw); const obj = parseJsonLoose(text);
             const errs = obj && typeof obj === 'object' && !Array.isArray(obj) ? (ctx.validate ? ctx.validate(obj) : []) : ['不是合法的 JSON 物件'];
             if (!errs.length) return { ok: true, value: obj, tries, rejected };
@@ -7155,7 +7158,7 @@ const holder = {};
     // 讓模型補欄位。回傳 { ok, values（只含模型填了非 null 的）, missing（模型也填不出的）, tries, rejected, error? }
     async function modelFill(opts) {
         const defs = opts.missing; if (!defs.length) return { ok: true, values: {}, missing: [], tries: 0, rejected: [] };
-        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2 });
+        const r = await jsonStep({ generate: opts.generate, messages: fillMessages(opts.question, defs, opts.toolName), validate: validateFill(defs, opts.numbers), maxTries: opts.maxTries || 2, prefill: '{"' + defs[0].name + '":' });
         if (!r.ok) return { ok: false, values: {}, missing: defs, tries: r.tries, rejected: r.rejected, error: r.error };
         const values = {}; const still = [];
         for (const d of defs) { const v = r.value[d.name]; if (v === null || v === undefined) still.push(d); else values[d.name] = d.type === 'string' && typeof v === 'string' ? v.trim() : v; }
@@ -7199,7 +7202,7 @@ const holder = {};
         return [{ role: 'system', content: '你負責替使用者的話挑一個合適的工具。只輸出一個 JSON 物件，格式：{"choice": 編號}。編號只能是選單裡有的數字；0 代表「這些都不合適，只是一般聊天或問答」。' }, { role: 'user', content: '選單：\n' + lines + '\n0. 都不是（一般聊天或問答）\n\n使用者的話：\n' + String(question).slice(0, 800) }];
     }
     async function chooseTool(opts) {
-        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
+        const n = opts.cands.length; const r = await jsonStep({ generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
         if (!r.ok) return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error };
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };
     }
@@ -7367,6 +7370,8 @@ const holder = {};
         { tool: 'images_to_pdf', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['image'], many: true, min: 1 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '圖片轉 PDF' },
         { tool: 'merge_pdfs', stage: 'produce', cost: 1, in: [{ slot: 'files', kinds: ['pdf'], many: true, min: 2 }], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '合併 PDF' },
         { tool: 'extract_pdf_pages', stage: 'produce', cost: 1, in: [{ slot: 'file', kinds: ['pdf'] }], extra: ['pages'], out: [{ kind: 'pdf', keys: ['pdf_file_id'] }], label: '取出 PDF 頁面' },
+        { tool: 'local_uml_design', local: true, stage: 'analyze', cost: 3, slow: true, in: [{ slot: 'scenario', kinds: ['usertext', 'text'] }], out: [{ kind: 'uml', inline: true }], label: '情境→UML（離線模型一次一個小問題地設計）' },
+        { tool: 'uml_to_code', stage: 'produce', cost: 1, in: [{ slot: 'uml', kinds: ['uml'] }], extra: ['scenario', 'language'], out: [{ kind: 'code', keys: ['zip_file_id'] }], label: 'UML→程式碼骨架（template）' },
         { tool: 'text_to_speech', stage: 'produce', cost: 2, in: [{ slot: 'text', kinds: ['summary', 'usertext', 'text'] }], out: [{ kind: 'audio', keys: ['audio_file_id', 'file_id'] }], label: '文字轉語音' },
     ];
     const STAGES = [['acquire', '取得資料'], ['prepare', '準備素材'], ['analyze', '分析處理'], ['produce', '產出成品']];
@@ -7385,6 +7390,8 @@ const holder = {};
         { id: 'images_pdf', label: '圖片轉 PDF', target: 'pdf', needs: ['image'], triggers: [/pdf/i] },
         { id: 'pdf_merge', label: '合併 PDF', target: 'pdf', needs: ['pdf'], minCount: 2, triggers: [/合併|併成|合成|merge/i] },
         { id: 'pdf_pages', label: '取出 PDF 頁面', target: 'pdf', needs: ['pdf'], triggers: [/(取出|抽出|擷取|extract)[^]{0,8}頁|第\s*\d+\s*(?:到|-|~)?\s*\d*\s*頁/i], extra: { tool: 'extract_pdf_pages' } },
+        { id: 'uml_code', label: '設計情境→UML→程式碼骨架', target: 'code', needs: ['usertext'], triggers: [/(uml|類別圖|循序圖|使用案例|user\s*story|情境|需求)[^]*(程式|code|骨架|framework|scaffold|架構)|(設計|產生|生成|建立|做)[^]{0,16}(系統|程式|應用|app)[^]{0,16}(骨架|framework|架構|uml|scaffold)|骨架|scaffold/i] },
+        { id: 'uml_only', label: '情境→UML', target: 'uml', needs: ['usertext'], triggers: [/(類別圖|循序圖|使用案例圖|uml)/i] },
         { id: 'speak_summary', label: '讀出來／轉語音', target: 'audio', needs: ['doc', 'pdf', 'text', 'file', 'usertext'], triggers: [/念出來|唸出來|朗讀|轉語音|唸給我|念給我|text.?to.?speech|tts/i] },
     ];
 
@@ -7410,7 +7417,7 @@ const holder = {};
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
@@ -7621,6 +7628,1606 @@ const holder = {};
 return holder.FaPlan;
 })();
 /* PLAN-END */
+/* UML-BEGIN */
+const FaUml = (function () {
+const holder = {};
+(function (module, self) {
+/* UML → 程式碼骨架（FaUml）：設計語意 → UML → framework。top-down，每一區都是一個 template，讓弱的小模型也能從設計一路走到程式骨架。
+ *
+ * 管線（每一段都有型別、都被驗證；程式能決定的就程式決定，模型只做封閉的小決策）：
+ *   ① 情境（文字）  →  ② UML 模型（JSON／一行一件事的文字 DSL）  →  ③ 圖（Mermaid／PlantUML，程式產生）  →  ④ 程式碼骨架（template 展開）
+ *   ①→②：模型一次只回答一個封閉的小問題（參與者與使用案例、有哪些類別、某個類別的屬性與操作、某個類別跟誰有什麼關係、某個使用案例的呼叫順序），
+ *         每個回覆都被驗證（識別字格式、型別必須是基本型別或已知類別、關係種類與方向、呼叫的操作必須存在），不合格就退回、模型沒有前面步驟的記憶。
+ *   ②→④：完全是程式——template 依區域由上而下展開：專案 → 類別檔 → 成員 → 測試；方法本體是有文件與「依使用案例會呼叫誰」註解的 stub。
+ * 純函式（UMD）；模型（generate）是注入的，所以能用假模型完整測試，也能搬到別的宿主。語言可擴充：加一組 LANGS 條目（型別對照＋template）。
+ */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('../recipe/recipe_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R);
+    else root.FaUml = factory(R);
+})(typeof self !== 'undefined' ? self : this, function (R) {
+    'use strict';
+
+    // ---------- 型別 ----------
+    const PRIMS = ['int', 'float', 'str', 'bool', 'date', 'datetime', 'bytes', 'any', 'void', 'decimal'];
+    const GENERICS = { List: 1, Set: 1, Map: 2, Optional: 1 };
+    const SYN = { string: 'str', text: 'str', integer: 'int', long: 'int', number: 'float', double: 'float', boolean: 'bool', object: 'any', dict: 'Map', list: 'List', array: 'List', set: 'Set', map: 'Map', optional: 'Optional', datetime: 'datetime', date: 'date', time: 'datetime', money: 'decimal', float: 'float', int: 'int', str: 'str', bool: 'bool', void: 'void', bytes: 'bytes', any: 'any', decimal: 'decimal' };
+    const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    const CLASS_NAME = /^[A-Z][A-Za-z0-9]{0,40}$/;
+    const MEMBER_NAME = /^[a-z_][A-Za-z0-9_]{0,40}$/;
+    // 型別運算式：Name、List<T>、Map<K,V>、Optional<T>、T[]、T?；回傳 { base, args:[...] } 或 null
+    function parseType(s) {
+        s = String(s == null ? '' : s).trim(); if (!s) return null;
+        if (/\?$/.test(s)) { const inner = parseType(s.slice(0, -1)); return inner && { base: 'Optional', args: [inner] }; }
+        if (/\[\]$/.test(s)) { const inner = parseType(s.slice(0, -2)); return inner && { base: 'List', args: [inner] }; }
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:<(.*)>)?$/.exec(s); if (!m) return null;
+        const raw = m[1]; const low = raw.toLowerCase(); const base = SYN[low] && !/^[A-Z]/.test(raw) ? SYN[low] : (SYN[low] && GENERICS[SYN[low]] ? SYN[low] : raw);
+        if (m[2] == null) return GENERICS[base] ? null : { base, args: [] };
+        if (!GENERICS[base]) return null;
+        const parts = []; let depth = 0, cur = ''; for (const c of m[2]) { if (c === '<') depth++; if (c === '>') depth--; if (c === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += c; } parts.push(cur);
+        if (parts.length !== GENERICS[base]) return null; const args = parts.map(parseType); if (args.some((a) => !a)) return null; return { base, args };
+    }
+    function typeToString(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(typeToString).join(', ') + '>' : t.base); }
+    function typeRefs(t, out) { out = out || []; if (!t) return out; if (!PRIMS.includes(t.base) && !GENERICS[t.base]) out.push(t.base); (t.args || []).forEach((a) => typeRefs(a, out)); return out; }
+
+    // ---------- 文字 DSL（一行一件事，弱模型友善）----------
+    //   model: 名稱 / actor: A, B
+    //   class Name [extends Base] [implements I1, I2] { +id:int; items:List<Item>; +total():float; add(item:Item):void }   （也可以多行）
+    //   interface Name { pay(amount:float):bool }　　enum Name { NEW, PAID }　　abstract class Name {...}
+    //   A *-- B（A 由 B 組成）　A o-- B（聚合）　A --> B : 標籤（關聯）　A ..> B（依賴）　Child --|> Parent（繼承）　Class ..|> Iface（實作）
+    //   usecase 名稱: Actor -> Cls.op(args):ret -> Cls2.op2()　（鏈：每一步由上一個參與者呼叫）
+    const REL_OPS = [['--|>', 'inherit'], ['..|>', 'implement'], ['*--', 'compose'], ['o--', 'aggregate'], ['-->', 'assoc'], ['..>', 'depend']];
+    function parseParams(s) { const out = []; for (const p of String(s || '').split(',').map((x) => x.trim()).filter(Boolean)) { const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*(.+))?$/.exec(p); if (!m) return null; const t = m[2] ? parseType(m[2]) : { base: 'any', args: [] }; if (!t) return null; out.push({ name: m[1], type: t }); } return out; }
+    function parseMember(raw) {
+        let s = raw.trim(); if (!s) return null; let vis = '+'; if (/^[+\-#~]/.test(s)) { vis = s[0] === '~' ? '+' : s[0]; s = s.slice(1).trim(); } let isStatic = false; if (/^static\s+/.test(s)) { isStatic = true; s = s.replace(/^static\s+/, ''); }
+        const op = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*(?::\s*(.+))?$/.exec(s);
+        if (op) { const params = parseParams(op[2]); if (!params) return { error: '參數格式不對：' + raw }; const ret = op[3] ? parseType(op[3]) : { base: 'void', args: [] }; if (!ret) return { error: '回傳型別不對：' + raw }; return { kind: 'op', op: { name: op[1], params, returns: ret, visibility: vis, static: isStatic } }; }
+        const at = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*([^=]+?))?\s*(?:=\s*(.+))?$/.exec(s); if (!at) return { error: '看不懂這個成員：' + raw };
+        const t = at[2] ? parseType(at[2]) : { base: 'any', args: [] }; if (!t) return { error: '屬性型別不對：' + raw };
+        return { kind: 'attr', attr: { name: at[1], type: t, visibility: vis, static: isStatic, default: at[3] ? at[3].trim() : undefined } };
+    }
+    function emptyModel() { return { name: 'Model', actors: [], classes: [], relations: [], usecases: [] }; }
+    // 回傳 { model, errors:[{line,msg}] }
+    function parseDsl(text) {
+        const model = emptyModel(); const errors = []; const err = (line, msg) => errors.push({ line, msg });
+        // 把大括號區塊（可能跨行）合併成一行
+        const lines = []; const src = String(text || '').replace(/\r/g, '').split('\n'); let buf = null, startNo = 0;
+        for (let i = 0; i < src.length; i++) {
+            let l = src[i].replace(/(^|\s)(#|\/\/).*$/, '').trim(); if (!l && buf == null) continue;
+            if (buf != null) { if (/^(abstract\s+class|class|interface|enum|usecase|actors?|model|title)\b/i.test(l) && !buf.includes('}')) { err(startNo, '大括號沒有結尾 }：' + buf.slice(0, 40)); buf = null; } else { buf += ' ; ' + l; if (l.includes('}')) { lines.push([startNo, buf]); buf = null; } continue; } }
+            if (l.includes('{') && !l.includes('}')) { buf = l; startNo = i + 1; continue; }
+            lines.push([i + 1, l]);
+        }
+        if (buf != null) err(startNo, '大括號沒有結尾 }');
+        for (const [no, l0] of lines) {
+            const l = l0.trim(); if (!l) continue; let m;
+            if ((m = /^(?:model|title)\s*[:：]\s*(.+)$/i.exec(l))) { model.name = m[1].trim(); continue; }
+            if ((m = /^actors?\s*[:：]?\s*(.+)$/i.exec(l))) { for (const a of m[1].split(/[,，、]/).map((x) => x.trim()).filter(Boolean)) { if (!IDENT.test(a)) err(no, '參與者名稱不是合法識別字：' + a); else if (!model.actors.includes(a)) model.actors.push(a); } continue; }
+            if ((m = /^usecase\s+([^:：]+?)\s*[:：]\s*(.+)$/i.exec(l))) {
+                const parts = m[2].split('->').map((x) => x.trim()).filter(Boolean); if (parts.length < 2) { err(no, '使用案例至少要有「參與者 -> 類別.操作」'); continue; }
+                const actor = parts[0]; if (!IDENT.test(actor)) { err(no, '使用案例的第一個要是參與者／類別名稱：' + actor); continue; }
+                const steps = []; let prev = actor, bad = false;
+                for (const p of parts.slice(1)) { const sm = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*(?::\s*(.+))?$/.exec(p); if (!sm) { err(no, '呼叫格式要是 類別.操作(參數)：' + p); bad = true; break; } steps.push({ from: prev, to: sm[1], msg: sm[2], args: sm[3] ? sm[3].split(',').map((x) => x.trim()).filter(Boolean) : [], returns: sm[4] ? sm[4].trim() : '' }); prev = sm[1]; }
+                if (!bad) model.usecases.push({ name: m[1].trim(), actor, steps }); continue;
+            }
+            if ((m = /^(abstract\s+class|class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:(?:extends|:)\s*([A-Za-z_][A-Za-z0-9_]*))?\s*(?:implements\s+([A-Za-z0-9_,\s]+?))?\s*(?:\{(.*)\})?\s*$/.exec(l))) {
+                const kind = m[1].replace(/\s+/g, ' '); const cls = { name: m[2], kind: kind === 'abstract class' ? 'abstract' : kind, attrs: [], ops: [], values: [] };
+                if (!CLASS_NAME.test(cls.name)) err(no, '類別名稱要是英文 PascalCase：' + cls.name);
+                if (model.classes.some((c) => c.name === cls.name)) { err(no, '類別重複定義：' + cls.name); continue; }
+                if (m[3]) model.relations.push({ from: cls.name, to: m[3], kind: 'inherit' });
+                if (m[4]) for (const i of m[4].split(',').map((x) => x.trim()).filter(Boolean)) model.relations.push({ from: cls.name, to: i, kind: 'implement' });
+                const body = (m[5] || '').trim();
+                if (body) { const items = body.split(/[;\n]/).map((x) => x.trim()).filter(Boolean); if (cls.kind === 'enum') cls.values = body.split(/[,;]/).map((x) => x.trim()).filter(Boolean); else for (const it of items) { const pm = parseMember(it); if (!pm) continue; if (pm.error) { err(no, pm.error); continue; } if (pm.kind === 'op') cls.ops.push(pm.op); else cls.attrs.push(pm.attr); } }
+                model.classes.push(cls); continue;
+            }
+            let rel = null; for (const [op, kind] of REL_OPS) { const idx = l.indexOf(op); if (idx > 0) { rel = { op, kind, idx }; break; } }
+            if (rel) {
+                const left = l.slice(0, rel.idx).trim(); const rest = l.slice(rel.idx + rel.op.length).trim(); const rm = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:[:：]\s*(.*))?$/.exec(rest); if (!rm || !IDENT.test(left)) { err(no, '關係格式要是 A ' + rel.op + ' B [: 標籤]：' + l); continue; }
+                const label = (rm[2] || '').trim(); const r = { from: left, to: rm[1], kind: rel.kind }; if (label) { const mm = /(\d+|\*)(?:\.\.(\d+|\*))?\s*$/.exec(label); if (mm && /^(\d+|\*)/.test(label.slice(label.length - mm[0].length))) { r.mult = mm[0].trim(); const lb = label.slice(0, label.length - mm[0].length).trim(); if (lb) r.label = lb; } else r.label = label; } model.relations.push(r); continue;
+            }
+            err(no, '看不懂這一行：' + l.slice(0, 60));
+        }
+        return { model, errors };
+    }
+    function memberToDsl(c, a) { return a; }
+    function opToDsl(o) { return (o.visibility === '+' ? '+' : o.visibility || '') + (o.static ? 'static ' : '') + o.name + '(' + o.params.map((p) => p.name + ':' + typeToString(p.type)).join(', ') + '):' + typeToString(o.returns); }
+    function attrToDsl(a) { return (a.visibility === '+' ? '+' : a.visibility || '') + (a.static ? 'static ' : '') + a.name + ':' + typeToString(a.type) + (a.default ? ' = ' + a.default : ''); }
+    function toDsl(model) {
+        const out = []; out.push('model: ' + model.name); if (model.actors.length) out.push('actor: ' + model.actors.join(', '));
+        for (const c of model.classes) {
+            const bases = model.relations.filter((r) => r.from === c.name && r.kind === 'inherit').map((r) => r.to); const impls = model.relations.filter((r) => r.from === c.name && r.kind === 'implement').map((r) => r.to);
+            const kind = c.kind === 'abstract' ? 'abstract class' : c.kind; const head = kind + ' ' + c.name + (bases.length ? ' extends ' + bases[0] : '') + (impls.length ? ' implements ' + impls.join(', ') : '');
+            const body = c.kind === 'enum' ? (c.values || []).join(', ') : c.attrs.map(attrToDsl).concat(c.ops.map(opToDsl)).join('; ');
+            out.push(head + (body ? ' { ' + body + ' }' : ''));
+        }
+        const ro = Object.fromEntries(REL_OPS.map(([op, k]) => [k, op]));
+        for (const r of model.relations) { if (r.kind === 'inherit' || r.kind === 'implement') continue; out.push(r.from + ' ' + ro[r.kind] + ' ' + r.to + (r.label || r.mult ? ' : ' + [r.label, r.mult].filter(Boolean).join(' ') : '')); }
+        for (const u of model.usecases) out.push('usecase ' + u.name + ': ' + u.actor + ' -> ' + u.steps.map((s) => s.to + '.' + s.msg + '(' + (s.args || []).join(', ') + ')' + (s.returns ? ':' + s.returns : '')).join(' -> '));
+        return out.join('\n');
+    }
+
+    // ---------- 驗證 ----------
+    function validateModel(model) {
+        const errs = []; const names = new Set(model.classes.map((c) => c.name)); const actors = new Set(model.actors);
+        for (const c of model.classes) {
+            if (!CLASS_NAME.test(c.name)) errs.push('類別名稱要是英文 PascalCase：' + c.name);
+            const seen = new Set(); for (const a of c.attrs) { if (seen.has(a.name)) errs.push(c.name + ' 的屬性重複：' + a.name); seen.add(a.name); for (const ref of typeRefs(a.type)) if (!names.has(ref)) errs.push(c.name + '.' + a.name + ' 的型別「' + ref + '」不是基本型別也不是已知類別'); }
+            const seenOps = new Set(); for (const o of c.ops) { if (seenOps.has(o.name)) errs.push(c.name + ' 的操作重複：' + o.name); seenOps.add(o.name); for (const t of [o.returns].concat(o.params.map((p) => p.type))) for (const ref of typeRefs(t)) if (!names.has(ref)) errs.push(c.name + '.' + o.name + ' 用到未知型別「' + ref + '」'); }
+            if (c.kind === 'interface' && c.attrs.length) errs.push('interface ' + c.name + ' 不應該有屬性');
+        }
+        const kindOf = Object.fromEntries(model.classes.map((c) => [c.name, c.kind]));
+        for (const r of model.relations) {
+            if (!names.has(r.from)) errs.push('關係的起點不是已知類別：' + r.from); if (!names.has(r.to)) errs.push('關係的終點不是已知類別：' + r.to);
+            if (r.from === r.to && r.kind !== 'assoc') errs.push(r.from + ' 不能對自己 ' + r.kind);
+            if (r.kind === 'implement' && kindOf[r.to] && kindOf[r.to] !== 'interface') errs.push(r.from + ' 實作的 ' + r.to + ' 必須是 interface');
+            if (r.kind === 'inherit' && kindOf[r.to] === 'interface') errs.push(r.from + ' 繼承的 ' + r.to + ' 是 interface，要用 implements');
+        }
+        // 繼承不能有環
+        const parent = {}; model.relations.filter((r) => r.kind === 'inherit').forEach((r) => { parent[r.from] = r.to; }); for (const c of Object.keys(parent)) { let x = c, n = 0; while (parent[x] && n++ < 50) x = parent[x]; if (n >= 50) { errs.push('繼承有環：' + c); break; } }
+        for (const u of model.usecases) {
+            if (!actors.has(u.actor) && !names.has(u.actor)) errs.push('使用案例「' + u.name + '」的參與者 ' + u.actor + ' 沒有宣告（actor: 或類別）');
+            for (const s of u.steps) { if (!names.has(s.to)) errs.push('使用案例「' + u.name + '」呼叫未知類別 ' + s.to); else { const c = model.classes.find((x) => x.name === s.to); if (c.kind !== 'enum' && !c.ops.some((o) => o.name === s.msg)) errs.push('使用案例「' + u.name + '」呼叫 ' + s.to + '.' + s.msg + '，但這個類別沒有這個操作'); } }
+        }
+        return errs;
+    }
+    // 讓模型的「新操作」自動補進類別（使用案例呼叫了還不存在的操作時）
+    function ensureOps(model) { const added = []; for (const u of model.usecases) for (const s of u.steps) { const c = model.classes.find((x) => x.name === s.to); if (c && c.kind !== 'enum' && !c.ops.some((o) => o.name === s.msg)) { c.ops.push({ name: s.msg, params: (s.args || []).map((a, i) => ({ name: /^[A-Za-z_]\w*$/.test(a) ? a : 'arg' + (i + 1), type: { base: 'any', args: [] } })), returns: { base: 'void', args: [] }, visibility: '+', static: false }); added.push(s.to + '.' + s.msg); } } return added; }
+
+    // ---------- 圖（程式產生）----------
+    const MM_REL = { inherit: '--|>', implement: '..|>', compose: '*--', aggregate: 'o--', assoc: '-->', depend: '..>' };
+    function mmType(t) { return typeToString(t).replace(/</g, '~').replace(/>/g, '~').replace(/, /g, ','); }
+    function toMermaidClass(model) {
+        const L = ['classDiagram'];
+        for (const c of model.classes) {
+            L.push('    class ' + c.name + ' {'); if (c.kind === 'interface') L.push('        <<interface>>'); else if (c.kind === 'enum') L.push('        <<enumeration>>'); else if (c.kind === 'abstract') L.push('        <<abstract>>');
+            if (c.kind === 'enum') (c.values || []).forEach((v) => L.push('        ' + v)); else { c.attrs.forEach((a) => L.push('        ' + (a.visibility || '+') + mmType(a.type) + ' ' + a.name)); c.ops.forEach((o) => L.push('        ' + (o.visibility || '+') + o.name + '(' + o.params.map((p) => mmType(p.type) + ' ' + p.name).join(', ') + ') ' + mmType(o.returns))); }
+            L.push('    }');
+        }
+        for (const r of model.relations) { const lab = [r.label, r.mult].filter(Boolean).join(' '); L.push('    ' + (r.kind === 'inherit' || r.kind === 'implement' ? r.to + ' ' + (r.kind === 'inherit' ? '<|--' : '<|..') + ' ' + r.from : r.from + ' ' + MM_REL[r.kind] + ' ' + r.to) + (lab ? ' : ' + lab : '')); }
+        return L.join('\n');
+    }
+    function toMermaidSequence(model, uc) {
+        const L = ['sequenceDiagram']; const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i);
+        for (const p of parts) L.push('    ' + (model.actors.includes(p) ? 'actor ' : 'participant ') + p);
+        for (const s of uc.steps) { L.push('    ' + s.from + '->>' + s.to + ': ' + s.msg + '(' + (s.args || []).join(', ') + ')'); if (s.returns) L.push('    ' + s.to + '-->>' + s.from + ': ' + s.returns); }
+        return L.join('\n');
+    }
+    function toMermaidUseCase(model) { const L = ['flowchart LR']; for (const a of model.actors) L.push('    ' + a + '([' + a + '])'); model.usecases.forEach((u, i) => { L.push('    uc' + i + '(("' + u.name + '"))'); L.push('    ' + u.actor + ' --> uc' + i); }); return L.join('\n'); }
+    function toPlantUml(model) {
+        const L = ['@startuml']; for (const c of model.classes) { L.push((c.kind === 'abstract' ? 'abstract class' : c.kind) + ' ' + c.name + ' {'); if (c.kind === 'enum') (c.values || []).forEach((v) => L.push('  ' + v)); else { c.attrs.forEach((a) => L.push('  ' + (a.visibility || '+') + a.name + ' : ' + typeToString(a.type))); c.ops.forEach((o) => L.push('  ' + (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name + ' : ' + typeToString(p.type)).join(', ') + ') : ' + typeToString(o.returns))); } L.push('}'); }
+        const pr = { inherit: '--|>', implement: '..|>', compose: '*--', aggregate: 'o--', assoc: '-->', depend: '..>' }; for (const r of model.relations) L.push(r.from + ' ' + pr[r.kind] + ' ' + r.to + (r.label ? ' : ' + r.label : ''));
+        L.push('@enduml'); return L.join('\n');
+    }
+
+    // ---------- Template 引擎（極小：{{x}}、{{x|filter}}、{{#each}}、{{#if}}…{{else}}…{{/if}}）----------
+    const FILTERS = {
+        pascal: (s) => String(s).replace(/(^|[_\s-]+)([A-Za-z0-9])/g, (m, a, b) => b.toUpperCase()), camel: (s) => { const p = String(s).replace(/(^|[_\s-]+)([A-Za-z0-9])/g, (m, a, b) => b.toUpperCase()); return p.charAt(0).toLowerCase() + p.slice(1); },
+        snake: (s) => String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[\s-]+/g, '_').toLowerCase(), upper: (s) => String(s).toUpperCase(), lower: (s) => String(s).toLowerCase(), indent: (s) => String(s).split('\n').map((l) => (l ? '    ' + l : l)).join('\n'),
+    };
+    function lookup(stack, path) {
+        const parts = path.split('.'); const first = parts[0]; let v;
+        if (first === 'this') { const sc = stack[stack.length - 1]; v = sc && typeof sc === 'object' && 'this' in sc ? sc.this : sc; }
+        else { for (let i = stack.length - 1; i >= 0; i--) { const sc = stack[i]; if (sc && typeof sc === 'object' && first in sc) { v = sc[first]; break; } } }
+        for (const p of parts.slice(1)) v = v == null ? undefined : v[p];
+        return v;
+    }
+    function renderTpl(tpl, ctx) {
+        const toks = []; const re = /\{\{\s*([#/]?)\s*([^}]*?)\s*\}\}/g; let last = 0, m;
+        while ((m = re.exec(tpl))) { if (m.index > last) toks.push({ t: 'text', v: tpl.slice(last, m.index) }); const body = m[2]; if (m[1] === '#') { const sp = body.split(/\s+/); toks.push({ t: 'open', kind: sp[0], arg: sp.slice(1).join(' ') }); } else if (m[1] === '/') toks.push({ t: 'close', kind: body }); else if (body === 'else') toks.push({ t: 'else' }); else toks.push({ t: 'var', v: body }); last = re.lastIndex; }
+        if (last < tpl.length) toks.push({ t: 'text', v: tpl.slice(last) });
+        function build(i, stopKinds) { const nodes = []; let elseNodes = null; let cur = nodes; while (i < toks.length) { const k = toks[i]; if (k.t === 'close') return { nodes, elseNodes, i: i + 1 }; if (k.t === 'else') { elseNodes = []; cur = elseNodes; i++; continue; } if (k.t === 'open') { const inner = build(i + 1); cur.push({ t: 'block', kind: k.kind, arg: k.arg, nodes: inner.nodes, elseNodes: inner.elseNodes }); i = inner.i; continue; } cur.push(k); i++; } return { nodes, elseNodes, i }; }
+        const tree = build(0).nodes;
+        function ev(nodes, stack) {
+            let out = '';
+            for (const n of nodes) {
+                if (n.t === 'text') out += n.v;
+                else if (n.t === 'var') { const [path, ...fl] = n.v.split('|').map((x) => x.trim()); let v = lookup(stack, path); if (v == null) v = ''; for (const f of fl) if (FILTERS[f]) v = FILTERS[f](v); out += String(v); }
+                else if (n.t === 'block') {
+                    const val = lookup(stack, n.arg);
+                    if (n.kind === 'each') { const arr = Array.isArray(val) ? val : []; if (!arr.length && n.elseNodes) out += ev(n.elseNodes, stack); arr.forEach((it, idx) => { out += ev(n.nodes, stack.concat([typeof it === 'object' && it ? Object.assign({ '@index': idx, '@first': idx === 0, '@last': idx === arr.length - 1 }, it) : { this: it, '@index': idx }])); }); }
+                    else if (n.kind === 'if') { const ok = Array.isArray(val) ? val.length > 0 : !!val; out += ok ? ev(n.nodes, stack) : (n.elseNodes ? ev(n.elseNodes, stack) : ''); }
+                }
+            }
+            return out;
+        }
+        return ev(tree, [ctx]).replace(/\n{3,}/g, '\n\n');
+    }
+
+    // ---------- 語言：型別對照＋template（每個區域一個 template）----------
+    const T = (lang, base) => ({ python: { int: 'int', float: 'float', str: 'str', bool: 'bool', date: 'date', datetime: 'datetime', bytes: 'bytes', any: 'Any', void: 'None', decimal: 'Decimal' }, typescript: { int: 'number', float: 'number', str: 'string', bool: 'boolean', date: 'Date', datetime: 'Date', bytes: 'Uint8Array', any: 'unknown', void: 'void', decimal: 'number' }, java: { int: 'int', float: 'double', str: 'String', bool: 'boolean', date: 'LocalDate', datetime: 'LocalDateTime', bytes: 'byte[]', any: 'Object', void: 'void', decimal: 'BigDecimal' } }[lang][base]);
+    const BOXED = { int: 'Integer', double: 'Double', boolean: 'Boolean' };
+    function langType(t, lang, ctxBoxed) {
+        if (!t) return lang === 'python' ? 'Any' : (lang === 'java' ? 'Object' : 'unknown'); const b = t.base; const a = (t.args || []).map((x) => langType(x, lang, true));
+        if (b === 'List') return lang === 'python' ? 'List[' + a[0] + ']' : (lang === 'typescript' ? a[0] + '[]' : 'List<' + a[0] + '>');
+        if (b === 'Set') return lang === 'python' ? 'Set[' + a[0] + ']' : (lang === 'typescript' ? 'Set<' + a[0] + '>' : 'Set<' + a[0] + '>');
+        if (b === 'Map') return lang === 'python' ? 'Dict[' + a[0] + ', ' + a[1] + ']' : (lang === 'typescript' ? 'Map<' + a[0] + ', ' + a[1] + '>' : 'Map<' + a[0] + ', ' + a[1] + '>');
+        if (b === 'Optional') return lang === 'python' ? 'Optional[' + a[0] + ']' : (lang === 'typescript' ? a[0] + ' | undefined' : a[0]);
+        const mapped = T(lang, b); if (mapped) return lang === 'java' && ctxBoxed && BOXED[mapped] ? BOXED[mapped] : mapped; return b;
+    }
+    const LANGS = {
+        python: {
+            ext: '.py', testDir: 'tests', srcDir: 'src', fileName: (c) => FILTERS.snake(c.name),
+            tpl: {
+                class: `{{#each imports}}{{this}}
+{{/each}}
+
+{{#if isEnum}}class {{name}}(Enum):
+{{#each values}}    {{name}} = "{{name}}"
+{{/each}}{{else}}{{#if isInterface}}class {{name}}(ABC):{{else}}{{#if isAbstract}}@dataclass
+class {{name}}{{bases}}(ABC):{{else}}@dataclass
+class {{name}}{{bases}}:{{/if}}{{/if}}
+    """{{doc}}"""
+{{#each attrs}}    {{name}}: {{type}}{{#if default}} = {{default}}{{/if}}
+{{/each}}{{#each ops}}
+{{#if static}}    @staticmethod
+{{/if}}{{#if abstract}}    @abstractmethod
+{{/if}}    def {{name}}({{#if static}}{{else}}self{{#if params}}, {{/if}}{{/if}}{{params}}) -> {{returns}}:
+        """{{doc}}"""
+{{#each steps}}        # {{this}}
+{{/each}}        raise NotImplementedError
+{{/each}}{{/if}}`,
+                test: `import pytest
+{{#each imports}}{{this}}
+{{/each}}
+
+def test_{{snake}}():
+    """使用案例：{{name}}（參與者：{{actor}}）"""
+{{#each steps}}    # {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}    pytest.skip("TODO: 實作這個使用案例的測試")
+`,
+            },
+        },
+        typescript: {
+            ext: '.ts', testDir: 'tests', srcDir: 'src', fileName: (c) => c.name,
+            tpl: {
+                class: `{{#each imports}}{{this}}
+{{/each}}
+
+{{#if isEnum}}export enum {{name}} {
+{{#each values}}    {{name}} = "{{name}}",
+{{/each}}}{{else}}{{#if isInterface}}export interface {{name}}{{bases}} {
+{{#each ops}}    {{name}}({{params}}): {{returns}};
+{{/each}}}{{else}}/** {{doc}} */
+export {{#if isAbstract}}abstract {{/if}}class {{name}}{{bases}} {
+{{#each attrs}}    {{visibility}}{{#if static}}static {{/if}}{{name}}: {{type}}{{#if default}} = {{default}}{{/if}};
+{{/each}}{{#each ops}}
+    /** {{doc}} */
+{{#each steps}}    // {{this}}
+{{/each}}    {{visibility}}{{#if static}}static {{/if}}{{name}}({{params}}): {{returns}} {
+        throw new Error("not implemented");
+    }
+{{/each}}}{{/if}}{{/if}}
+`,
+                test: `{{#each imports}}{{this}}
+{{/each}}
+describe("{{name}}", () => {
+    it("{{actor}}：{{name}}", () => {
+{{#each steps}}        // {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}        throw new Error("TODO: 實作這個使用案例的測試");
+    });
+});
+`,
+            },
+        },
+        java: {
+            ext: '.java', testDir: 'src/test/java', srcDir: 'src/main/java', fileName: (c) => c.name, packageDirs: true,
+            tpl: {
+                class: `package {{package}};
+
+{{#each imports}}{{this}}
+{{/each}}
+
+{{#if isEnum}}public enum {{name}} { {{valuesLine}} }{{else}}{{#if isInterface}}public interface {{name}}{{bases}} {
+{{#each ops}}    {{returns}} {{name}}({{params}});
+{{/each}}}{{else}}/** {{doc}} */
+public {{#if isAbstract}}abstract {{/if}}class {{name}}{{bases}} {
+{{#each attrs}}    {{visibility}}{{#if static}}static {{/if}}{{type}} {{name}}{{#if default}} = {{default}}{{/if}};
+{{/each}}{{#each ops}}
+    /** {{doc}} */
+{{#each steps}}    // {{this}}
+{{/each}}    {{visibility}}{{#if static}}static {{/if}}{{returns}} {{name}}({{params}}) {
+        throw new UnsupportedOperationException("not implemented");
+    }
+{{/each}}}{{/if}}{{/if}}
+`,
+                test: `package {{package}};
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Disabled;
+
+class {{className}}Test {
+    @Test
+    @Disabled("TODO: 實作這個使用案例的測試")
+    void {{camel}}() {
+{{#each steps}}        // {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}    }
+}
+`,
+            },
+        },
+    };
+
+    // ---------- 由 UML 展開成檔案（由上而下：專案 → 類別檔 → 成員 → 測試）----------
+    // 從關係推出隱含的欄位：compose／aggregate／assoc 的終點變成起點類別的欄位（多重性帶 * 或 n..* 就是 List）
+    function derivedAttrs(model, c) {
+        const out = []; for (const r of model.relations) { if (r.from !== c.name || !['compose', 'aggregate', 'assoc'].includes(r.kind)) continue; const many = r.mult && /\*|\.\.(\d+)/.test(r.mult) && !/^1$/.test(r.mult); const name = FILTERS.camel(r.to) + (many ? 's' : ''); if (c.attrs.some((a) => a.name === name || (typeRefs(a.type).includes(r.to)))) continue; out.push({ name, type: many ? { base: 'List', args: [{ base: r.to, args: [] }] } : { base: r.to, args: [] }, visibility: '-', derived: true }); }
+        return out;
+    }
+    function stepsFor(model, cls, op) { // 這個操作在哪些使用案例裡被呼叫、它之後會呼叫誰
+        const notes = []; for (const u of model.usecases) { u.steps.forEach((s, i) => { if (s.to === cls.name && s.msg === op.name) { const next = u.steps[i + 1]; notes.push('使用案例「' + u.name + '」：' + s.from + ' 呼叫此操作' + (next && next.from === cls.name ? '，接著呼叫 ' + next.to + '.' + next.msg + '()' : '')); } }); }
+        return notes;
+    }
+    function genFiles(model, opts) {
+        opts = opts || {}; const lang = LANGS[opts.language] ? opts.language : 'python'; const L = LANGS[lang]; const pkg0 = (opts.package || 'app').toLowerCase().replace(/[^a-z0-9_.]/g, ''); const sub = opts.subdir ? String(opts.subdir).replace(/[^a-z0-9_]/gi, '') : ''; const pkg = lang === 'java' && sub ? pkg0 + '.' + sub : pkg0; const files = []; const byName = Object.fromEntries(model.classes.map((c) => [c.name, c]));
+        const importOf = (names, fromCls) => { const out = []; for (const n of Array.from(new Set(names)).sort()) { if (n === fromCls || !byName[n]) continue; out.push(lang === 'python' ? 'from .' + L.fileName(byName[n]) + ' import ' + n : (lang === 'typescript' ? 'import { ' + n + ' } from "./' + n + '";' : '')); } return out.filter(Boolean); };
+        for (const c of model.classes) {
+            const isIface = c.kind === 'interface', isEnum = c.kind === 'enum', isAbs = c.kind === 'abstract';
+            const bases = model.relations.filter((r) => r.from === c.name && (r.kind === 'inherit' || r.kind === 'implement')); const baseNames = bases.map((r) => r.to);
+            const attrs = (c.attrs.concat(derivedAttrs(model, c))).map((a) => ({ name: a.name, type: langType(a.type, lang), visibility: lang === 'python' ? '' : (a.visibility === '-' ? 'private ' : (a.visibility === '#' ? 'protected ' : (lang === 'java' ? 'public ' : ''))), static: !!a.static, default: a.default }));
+            const ops = c.ops.map((o) => ({ name: lang === 'java' || lang === 'typescript' ? o.name : FILTERS.snake(o.name), params: o.params.map((p) => (lang === 'python' ? p.name + ': ' + langType(p.type, lang) : (lang === 'java' ? langType(p.type, lang) + ' ' + p.name : p.name + ': ' + langType(p.type, lang)))).join(', '), returns: langType(o.returns, lang), visibility: lang === 'python' ? '' : (o.visibility === '-' ? 'private ' : (o.visibility === '#' ? 'protected ' : (lang === 'java' && !isIface ? 'public ' : ''))), static: !!o.static, abstract: isAbs && false, doc: (c.doc ? '' : '') + o.name, steps: stepsFor(model, c, o) }));
+            const refs = [].concat(...c.attrs.map((a) => typeRefs(a.type)), ...c.ops.map((o) => [].concat(typeRefs(o.returns), ...o.params.map((p) => typeRefs(p.type)))), baseNames, ...attrs.map((a) => []));
+            for (const r of model.relations) if (r.from === c.name && ['compose', 'aggregate', 'assoc', 'depend'].includes(r.kind)) refs.push(r.to);
+            const imports = lang === 'python' ? ['from __future__ import annotations', 'from dataclasses import dataclass', 'from abc import ABC, abstractmethod', 'from decimal import Decimal', 'from enum import Enum', 'from datetime import date, datetime', 'from typing import Any, Dict, List, Optional, Set'].concat(importOf(refs, c.name)) : (lang === 'typescript' ? importOf(refs, c.name) : ['import java.math.BigDecimal;', 'import java.time.*;', 'import java.util.*;']);
+            const basesStr = lang === 'python' ? (baseNames.length ? '(' + baseNames.join(', ') + ')' : '') : (lang === 'typescript' ? (bases.length ? (isIface ? ' extends ' + baseNames.join(', ') : ' ' + [bases.filter((r) => r.kind === 'inherit').length ? 'extends ' + bases.filter((r) => r.kind === 'inherit').map((r) => r.to).join('') : '', bases.filter((r) => r.kind === 'implement').length ? 'implements ' + bases.filter((r) => r.kind === 'implement').map((r) => r.to).join(', ') : ''].filter(Boolean).join(' ')) : '') : (bases.length ? ' ' + [bases.filter((r) => r.kind === 'inherit').length ? 'extends ' + bases.filter((r) => r.kind === 'inherit').map((r) => r.to).join('') : '', bases.filter((r) => r.kind === 'implement').length ? (isIface ? 'extends ' : 'implements ') + bases.filter((r) => r.kind === 'implement').map((r) => r.to).join(', ') : ''].filter(Boolean).join(' ') : ''));
+            const pyBases = lang === 'python' && isIface ? '' : basesStr;
+            const ctx = { name: c.name, doc: c.label || c.name, isEnum, isInterface: isIface, isAbstract: isAbs, bases: lang === 'python' ? pyBases : basesStr, attrs, ops, imports, values: (c.values || []).map((v) => ({ name: v })), valuesLine: (c.values || []).join(', '), package: pkg };
+            let content = renderTpl(L.tpl.class, ctx).replace(/^\s+\n/, '').replace(/[ \t]+$/gm, ''); if (!content.endsWith('\n')) content += '\n';
+            const dir = lang === 'java' ? L.srcDir + '/' + pkg.replace(/\./g, '/') : L.srcDir + (lang === 'python' ? '/' + pkg0 + (sub ? '/' + sub : '') : (sub ? '/' + sub : ''));
+            files.push({ path: dir + '/' + L.fileName(c) + L.ext, content, region: 'class:' + c.name });
+        }
+        if (lang === 'python') { files.push({ path: L.srcDir + '/' + pkg0 + '/__init__.py', content: '', region: 'package' }); if (sub) files.push({ path: L.srcDir + '/' + pkg0 + '/' + sub + '/__init__.py', content: '', region: 'package' }); }
+        for (const u of model.usecases) {
+            const names = Array.from(new Set(u.steps.map((s) => s.to).concat(byName[u.actor] ? [u.actor] : []))); const cname = FILTERS.pascal(u.name.replace(/[^A-Za-z0-9_ ]/g, ' ').trim() || 'UseCase');
+            const imports = lang === 'python' ? names.filter((n) => byName[n]).map((n) => 'from ' + pkg0 + (sub ? '.' + sub : '') + '.' + L.fileName(byName[n]) + ' import ' + n) : (lang === 'typescript' ? names.filter((n) => byName[n]).map((n) => 'import { ' + n + ' } from "../src' + (sub ? '/' + sub : '') + '/' + n + '";') : []);
+            const ctx = { name: u.name, actor: u.actor, snake: FILTERS.snake(cname) || 'use_case', camel: FILTERS.camel(cname) || 'useCase', className: cname, package: pkg, imports, steps: u.steps.map((s) => ({ from: s.from, to: s.to, msg: s.msg, args: (s.args || []).join(', ') })) };
+            const fname = lang === 'python' ? 'test_' + (FILTERS.snake(cname) || 'use_case') : (lang === 'typescript' ? cname + '.test' : cname + 'Test'); const dir = lang === 'java' ? L.testDir + '/' + pkg.replace(/\./g, '/') : L.testDir;
+            files.push({ path: dir + '/' + fname + L.ext, content: renderTpl(L.tpl.test, ctx).replace(/[ \t]+$/gm, ''), region: 'test:' + u.name });
+        }
+        files.unshift({ path: 'README.md', region: 'project', content: genReadme(model, lang, opts) }); files.push({ path: 'docs/model.uml.txt', content: toDsl(model) + '\n', region: 'project' });
+        return files;
+    }
+    function genReadme(model, lang, opts) {
+        const L = ['# ' + model.name, '', '由 UML 產生的 ' + lang + ' 程式骨架（方法本體是 stub，依使用案例的呼叫順序寫了註解）。', '', '## 類別圖', '', '```mermaid', toMermaidClass(model), '```', ''];
+        if (model.usecases.length) { L.push('## 使用案例', '', '```mermaid', toMermaidUseCase(model), '```', ''); for (const u of model.usecases) { L.push('### ' + u.name, '', '```mermaid', toMermaidSequence(model, u), '```', ''); } }
+        if (opts && opts.scenario) L.push('## 原始情境', '', String(opts.scenario).slice(0, 2000), '');
+        return L.join('\n');
+    }
+
+    // ---------- 領域詞彙與動作（程式先讀情境，模型只處理程式不認得的）----------
+    // 實測：0.6B 對「從中文情境直接寫出 JSON 設計」會改用散文回答、或把系統提示詞當成參與者。所以「讀情境」交給程式：
+    //   詞彙表（中文詞 → 英文類別名稱、種類、常見屬性）＋動作表（中文動詞 → 動作名稱、會呼叫哪些類別的哪些操作），
+    //   程式從「誰可以做什麼」的句型抽出參與者與使用案例，再依動作表展開呼叫順序。模型只負責「程式不認得的詞」的翻譯與屬性。
+    // 詞彙表是資料，可以由使用者／離線訓練器擴充（opts.glossary：{ 中文詞: { en, kind, attrs } }）；模型翻譯出來而且通過驗證的詞，也能養回去。
+    const ACTORS = { 顧客: 'Customer', 客戶: 'Customer', 使用者: 'User', 用戶: 'User', 會員: 'Member', 管理員: 'Admin', 店員: 'Clerk', 老闆: 'Owner', 老師: 'Teacher', 學生: 'Student', 醫生: 'Doctor', 醫師: 'Doctor', 病人: 'Patient', 患者: 'Patient', 讀者: 'Reader', 員工: 'Employee', 主管: 'Manager', 訪客: 'Visitor', 房客: 'Guest', 司機: 'Driver', 乘客: 'Passenger', 買家: 'Buyer', 賣家: 'Seller', 管理者: 'Admin', 系統: 'System' };
+    const NOUNS = {
+        書籍: ['Book', { title: 'str', author: 'str', price: 'decimal' }], 圖書: ['Book', { title: 'str', author: 'str', price: 'decimal' }], 書: ['Book', { title: 'str', author: 'str', price: 'decimal' }],
+        商品: ['Product', { name: 'str', price: 'decimal', stock: 'int' }], 產品: ['Product', { name: 'str', price: 'decimal', stock: 'int' }], 購物車: ['Cart', {}], 訂單: ['Order', { status: 'str', total: 'decimal' }], 發票: ['Invoice', { number: 'str', amount: 'decimal' }], 庫存: ['Inventory', { quantity: 'int' }], 優惠券: ['Coupon', { code: 'str', discount: 'decimal' }],
+        評論: ['Review', { rating: 'int', content: 'str' }], 評價: ['Review', { rating: 'int', content: 'str' }], 帳號: ['Account', { email: 'str', passwordHash: 'str' }], 帳戶: ['Account', { email: 'str', balance: 'decimal' }], 文章: ['Article', { title: 'str', content: 'str' }], 留言: ['Comment', { content: 'str' }],
+        課程: ['Course', { title: 'str', credits: 'int' }], 成績: ['Grade', { score: 'float' }], 預約: ['Reservation', { time: 'datetime' }], 房間: ['Room', { number: 'str', price: 'decimal' }], 病歷: ['MedicalRecord', { diagnosis: 'str' }], 掛號: ['Appointment', { time: 'datetime' }],
+        任務: ['Task', { title: 'str', done: 'bool' }], 待辦: ['Task', { title: 'str', done: 'bool' }], 專案: ['Project', { name: 'str' }], 檔案: ['File', { name: 'str', size: 'int' }], 通知: ['Notification', { message: 'str' }], 訊息: ['Message', { content: 'str' }], 地址: ['Address', { street: 'str', city: 'str' }], 報表: ['Report', { title: 'str' }], 會議: ['Meeting', { topic: 'str', time: 'datetime' }], 班表: ['Schedule', { date: 'date' }], 借閱: ['Loan', { dueDate: 'date' }],
+    };
+    // 動作：en＝使用案例名稱的動詞部分；steps＝依序呼叫「類別.操作」，'$obj' 是這個動作句子裡出現的名詞所對應的類別（沒有就跳過）；fixed＝固定涉及的輔助類別
+    const VERBS = {
+        瀏覽: { en: 'Browse', steps: [['$obj', 'list']] }, 查看: { en: 'View', steps: [['$obj', 'get']] }, 搜尋: { en: 'Search', steps: [['$obj', 'search']] }, 查詢: { en: 'Search', steps: [['$obj', 'search']] },
+        加入: { en: 'AddTo', steps: [['$obj', 'add']] }, 移除: { en: 'Remove', steps: [['$obj', 'remove']] }, 刪除: { en: 'Delete', steps: [['$obj', 'delete']] }, 新增: { en: 'Create', steps: [['$obj', 'create']] }, 建立: { en: 'Create', steps: [['$obj', 'create']] },
+        修改: { en: 'Update', steps: [['$obj', 'update']] }, 編輯: { en: 'Edit', steps: [['$obj', 'update']] }, 更新: { en: 'Update', steps: [['$obj', 'update']] }, 上架: { en: 'Publish', steps: [['$obj', 'publish']] }, 下架: { en: 'Unpublish', steps: [['$obj', 'unpublish']] },
+        結帳: { en: 'Checkout', steps: [['Cart', 'checkout'], ['Order', 'create']] }, 下單: { en: 'PlaceOrder', steps: [['Order', 'create']] }, 付款: { en: 'Pay', steps: [['Payment', 'pay']] }, 支付: { en: 'Pay', steps: [['Payment', 'pay']] },
+        取消: { en: 'Cancel', steps: [['$obj', 'cancel']] }, 登入: { en: 'Login', steps: [['AuthService', 'login']] }, 註冊: { en: 'Register', steps: [['AuthService', 'register']] }, 預約: { en: 'Reserve', steps: [['Reservation', 'create']] }, 借閱: { en: 'Borrow', steps: [['Loan', 'create']] }, 歸還: { en: 'Return', steps: [['Loan', 'close']] },
+        審核: { en: 'Approve', steps: [['$obj', 'approve']] }, 核准: { en: 'Approve', steps: [['$obj', 'approve']] }, 通知: { en: 'Notify', steps: [['Notification', 'send']] }, 評論: { en: 'Review', steps: [['Review', 'create']] }, 管理: { en: 'Manage', steps: [['$obj', 'manage']] }, 統計: { en: 'Report', steps: [['Report', 'generate']] },
+    };
+    // 輔助類別（動作表會用到、情境沒提到名詞時自動補）：名稱 → [種類, 屬性]
+    const AUX = { Payment: ['class', { amount: 'decimal', paid: 'bool' }], AuthService: ['class', {}], Order: ['class', { status: 'str', total: 'decimal' }], Cart: ['class', {}], Reservation: ['class', { time: 'datetime' }], Loan: ['class', { dueDate: 'date' }], Notification: ['class', { message: 'str' }], Report: ['class', { title: 'str' }], User: ['class', { email: 'str' }] };
+    // 關係表：兩個類別都出現時加上
+    const RELS = [['Cart', 'Book', 'aggregate'], ['Cart', 'Product', 'aggregate'], ['Order', 'Book', 'assoc'], ['Order', 'Product', 'assoc'], ['Order', 'Payment', 'assoc'], ['Order', 'Cart', 'assoc'], ['Review', 'Book', 'assoc'], ['Review', 'Product', 'assoc'], ['Loan', 'Book', 'assoc'], ['Reservation', 'Room', 'assoc'], ['Comment', 'Article', 'assoc'], ['Grade', 'Course', 'assoc'], ['Appointment', 'MedicalRecord', 'assoc'], ['Invoice', 'Order', 'assoc'], ['Inventory', 'Product', 'assoc'], ['Coupon', 'Order', 'assoc']];
+    function longestKey(obj, text, from) { let best = null; for (const k of Object.keys(obj)) { const i = text.indexOf(k, from || 0); if (i >= 0 && (!best || i < best.i || (i === best.i && k.length > best.k.length))) best = { k, i }; } return best; }
+    // 從情境抽出：參與者、使用案例（含呼叫順序）、類別（含常見屬性與由動作推出的操作）、關係；unknown＝程式不認得的詞（交給模型翻譯）
+    function scenarioHints(scenario, glossary) {
+        const gl = glossary || {}; const actors = Object.assign({}, ACTORS); const nouns = Object.assign({}, NOUNS);
+        for (const [zh, v] of Object.entries(gl)) { if (!v || !v.en) continue; if (v.kind === 'actor') actors[zh] = v.en; else nouns[zh] = [v.en, v.attrs || {}]; }
+        const text = String(scenario || ''); const clauses = text.split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean); const out = { actors: [], usecases: [], classes: [], relations: [], unknown: [] }; const classMap = new Map();
+        const addClass = (name, attrs, kind) => { let c = classMap.get(name); if (!c) { c = { name, kind: kind || 'class', label: '', attrs: [], ops: [] }; classMap.set(name, c); if (!kind || kind === 'class') c.attrs.push({ name: 'id', type: 'int' }); } for (const [k, t] of Object.entries(attrs || {})) if (!c.attrs.some((a) => a.name === k)) c.attrs.push({ name: k, type: t }); return c; };
+        const addOp = (cls, op, withArg) => { const c = classMap.get(cls); if (c && !c.ops.some((o) => o.name === op)) c.ops.push({ name: op, params: withArg ? [{ name: 'item', type: 'any' }] : [], returns: 'void' }); };
+        let lastActor = null; const actorRe = new RegExp('(' + Object.keys(actors).sort((a, b) => b.length - a.length).join('|') + ')(?:都)?(?:可以|能夠|能|可|會|要|需要|負責|想要|想)');
+        for (const clause of clauses) {
+            // 一個句子可能有多個「X 可以 ...」：用逗號切段，段落沒有新的參與者就沿用上一個
+            const segs = clause.split(/[，,]/).map((s) => s.trim()).filter(Boolean); let any = false;
+            for (const seg of segs) {
+                const am = actorRe.exec(seg); let predicate = seg;
+                if (am) { lastActor = actors[am[1]]; if (!out.actors.includes(lastActor)) out.actors.push(lastActor); predicate = seg.slice(am.index + am[0].length); }
+                else { const um = /^([一-鿿]{2,4})(?:可以|能夠|能|可|會|需要|想要)/.exec(seg); if (um && !nouns[um[1]] && !VERBS[um[1]]) { out.unknown.push(um[1]); continue; } }
+                if (!lastActor) continue;
+                for (const action of predicate.split(/[、和及並且並以及然後再還有或]/).map((s) => s.trim()).filter(Boolean)) {
+                    const vs = Object.keys(VERBS).filter((v) => action.includes(v)); if (!vs.length) continue; any = true;
+                    // 動作句裡的名詞：全部都加成類別；主要受詞＝第一個動詞「之後」最近的名詞（「加入購物車」→ 購物車），沒有就用句子裡第一個
+                    const found = []; for (const k of Object.keys(nouns)) { const i = action.indexOf(k); if (i >= 0 && !found.some((f) => f.cls === nouns[k][0])) found.push({ k, i, cls: nouns[k][0] }); } found.sort((a, b) => a.i - b.i); found.forEach((f) => addClass(f.cls, nouns[f.k][1]));
+                    const v0 = action.indexOf(vs.slice().sort((a, b) => action.indexOf(a) - action.indexOf(b))[0]); const after = found.find((f) => f.i >= v0); const nm = after || found[0] || null; const objCls = nm ? nm.cls : null;
+                    // 動作句裡可能有兩個動詞（「結帳付款」）：依出現順序合成一個使用案例
+                    vs.sort((a, b) => action.indexOf(a) - action.indexOf(b)); const vsFiltered = vs.filter((v, i) => !vs.some((o, j) => j !== i && o.length > v.length && o.includes(v)));
+                    const steps = []; for (const v of vsFiltered) for (const [cls0, op] of VERBS[v].steps) { const cls = cls0 === '$obj' ? objCls : cls0; if (!cls) continue; if (!classMap.has(cls)) addClass(cls, (AUX[cls] || [])[1] || {}, (AUX[cls] || [])[0]); addOp(cls, op, op === 'add' || op === 'create' || op === 'remove'); if (!steps.some((s) => s.to === cls && s.op === op)) steps.push({ to: cls, op }); }
+                    if (!steps.length) continue;
+                    const name = vsFiltered.map((v) => VERBS[v].en).join('') + (vsFiltered.length === 1 && objCls && !/To$/.test(VERBS[vsFiltered[0]].en) ? objCls : (/To$/.test(VERBS[vsFiltered[0]].en) && objCls ? objCls : ''));
+                    const uc = { name: name || 'UseCase', actor: lastActor, summary: action.slice(0, 30), steps }; if (!out.usecases.some((u) => u.name === uc.name && u.actor === uc.actor)) out.usecases.push(uc);
+                }
+            }
+        }
+        // 使用案例名稱重複時加上編號
+        const seen = {}; for (const u of out.usecases) { seen[u.name] = (seen[u.name] || 0) + 1; if (seen[u.name] > 1) u.name += seen[u.name]; }
+        out.classes = Array.from(classMap.values()); const names = new Set(out.classes.map((c) => c.name));
+        for (const [a, b, k] of RELS) if (names.has(a) && names.has(b)) out.relations.push({ from: a, to: b, kind: k });
+        // 不認得的名詞：情境裡「X」前後帶「的」「一個」的候選很難抓準，這裡只回報參與者／動作層級的未知詞
+        out.unknown = Array.from(new Set(out.unknown)); return out;
+    }
+
+    // ---------- 情境 → UML（給弱模型：一次一個封閉的小問題，每個回覆都驗證）----------
+    const KINDS = ['assoc', 'compose', 'aggregate', 'inherit', 'implement', 'depend'];
+    const KIND_HELP = { assoc: '使用／關聯', compose: '組成（整體擁有部分，部分不能獨立存在）', aggregate: '聚合（整體包含部分，部分可獨立存在）', inherit: '繼承（是一種）', implement: '實作介面', depend: '暫時依賴' };
+    function sysMsg(task, rules) { return { role: 'system', content: '你是 UML 設計助手。' + task + '只輸出一個 JSON 物件，不要多說別的。' + (rules ? rules : '') + '識別字一律用英文（類別 PascalCase、屬性與操作 camelCase），中文只放在 label／summary。不確定的欄位寧可省略，不要編造情境裡沒有的東西。' }; }
+    function userMsg(scenario, extra) { return { role: 'user', content: '情境：\n' + String(scenario).slice(0, 1500) + (extra ? '\n\n' + extra : '') }; }
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    // 每個階段回覆的開頭（先替模型寫好，它只需要接著把 JSON 寫完；小模型被要求「只輸出 JSON」時常常改用散文回答）
+    const PREFILL = { actors: '{"actors":["', classes: '{"classes":[{"name":"', members: '{"attrs":[', relations: '{"relations":[', sequence: '{"steps":[{"to":"' };
+    const stageSpec = {
+        actors: (scenario) => ({ messages: [sysMsg('從情境找出參與者（人或外部系統）與使用案例（參與者想完成的一件事）。', '格式：{"actors":[參與者英文名稱…],"usecases":[{"name":使用案例英文名稱,"actor":參與者名稱,"summary":一句中文}…]}。參與者 1～4 個、使用案例 1～6 個。'), userMsg(scenario)], validate: (o) => { const e = []; const acts = arr(o.actors); if (!acts.length || acts.length > 4) e.push('actors 要有 1～4 個'); for (const a of acts) if (typeof a !== 'string' || !CLASS_NAME.test(a)) e.push('參與者「' + a + '」要是英文 PascalCase'); const ucs = arr(o.usecases); if (!ucs.length || ucs.length > 6) e.push('usecases 要有 1～6 個'); for (const u of ucs) { if (!u || typeof u.name !== 'string' || !CLASS_NAME.test(u.name)) e.push('使用案例名稱「' + (u && u.name) + '」要是英文 PascalCase'); else if (!acts.includes(u.actor)) e.push('使用案例 ' + u.name + ' 的 actor「' + u.actor + '」不在 actors 裡'); } return e; } }),
+        classes: (scenario, ctx) => ({ messages: [sysMsg('找出系統需要的類別（領域物件、服務、介面、列舉）。', '格式：{"classes":[{"name":類別英文名稱,"kind":"class" 或 "interface" 或 "enum","label":中文名稱}…]}。類別 2～10 個；參與者可以是類別（例如使用者）也可以不是；不要重複，不要把使用案例當成類別。'), userMsg(scenario, '參與者：' + ctx.actors.join('、') + '\n使用案例：' + ctx.usecases.map((u) => u.name + '（' + (u.summary || '') + '）').join('；'))], validate: (o) => { const e = []; const cs = arr(o.classes); if (cs.length < 2 || cs.length > 10) e.push('classes 要有 2～10 個'); const seen = new Set(); for (const c of cs) { if (!c || typeof c.name !== 'string' || !CLASS_NAME.test(c.name)) e.push('類別名稱「' + (c && c.name) + '」要是英文 PascalCase'); else if (seen.has(c.name)) e.push('類別重複：' + c.name); else seen.add(c.name); if (c && !['class', 'interface', 'enum'].includes(c.kind)) e.push('類別 ' + (c && c.name) + ' 的 kind 只能是 class／interface／enum'); } return e; } }),
+        members: (scenario, ctx) => ({ messages: [sysMsg('替類別「' + ctx.cls.name + '」（' + (ctx.cls.label || '') + '）列出屬性與操作。', '格式：{"attrs":[{"name":屬性名稱,"type":型別}…],"ops":[{"name":操作名稱,"params":[{"name":參數名稱,"type":型別}…],"returns":回傳型別}…]}。屬性最多 6 個、操作最多 6 個。型別只能用：' + PRIMS.filter((p) => p !== 'void').join('、') + '、List<型別>、Optional<型別>、或這些已知類別：' + ctx.classNames.join('、') + '。沒有回傳值的操作 returns 填 void。' + (ctx.cls.kind === 'enum' ? '這是列舉：只要 {"values":[值…]}（大寫英文 2～8 個）。' : '') + (ctx.cls.kind === 'interface' ? '這是介面：只要 ops，不要 attrs。' : '')), userMsg(scenario, '這個類別會被使用案例用到：' + (ctx.usedBy || '（未知）'))], validate: (o) => { const e = []; if (ctx.cls.kind === 'enum') { const v = arr(o.values); if (v.length < 2 || v.length > 8 || v.some((x) => typeof x !== 'string' || !/^[A-Z][A-Z0-9_]*$/.test(x))) e.push('values 要有 2～8 個大寫英文值'); return e; } const known = new Set(ctx.classNames); const chkType = (t, where) => { const pt = parseType(t); if (!pt) return where + ' 的型別「' + t + '」格式不對'; for (const ref of typeRefs(pt)) if (!known.has(ref)) return where + ' 的型別「' + ref + '」不是基本型別也不是已知類別'; return null; }; const as = arr(o.attrs); if (as.length > 6) e.push('attrs 最多 6 個'); const seen = new Set(); for (const a of as) { if (!a || typeof a.name !== 'string' || !MEMBER_NAME.test(a.name)) { e.push('屬性名稱「' + (a && a.name) + '」要是英文 camelCase'); continue; } if (seen.has(a.name)) e.push('屬性重複：' + a.name); seen.add(a.name); const te = chkType(a.type, '屬性 ' + a.name); if (te) e.push(te); } const os = arr(o.ops); if (os.length > 6) e.push('ops 最多 6 個'); const so = new Set(); for (const p of os) { if (!p || typeof p.name !== 'string' || !MEMBER_NAME.test(p.name)) { e.push('操作名稱「' + (p && p.name) + '」要是英文 camelCase'); continue; } if (so.has(p.name)) e.push('操作重複：' + p.name); so.add(p.name); for (const pr of arr(p.params)) { if (!pr || !MEMBER_NAME.test(String(pr.name))) e.push('操作 ' + p.name + ' 的參數名稱不合法'); else { const te = chkType(pr.type, '操作 ' + p.name + ' 的參數 ' + pr.name); if (te) e.push(te); } } if (p.returns != null && p.returns !== 'void') { const te = chkType(p.returns, '操作 ' + p.name + ' 的回傳'); if (te) e.push(te); } } return e; } }),
+        relations: (scenario, ctx) => ({ messages: [sysMsg('列出類別「' + ctx.cls.name + '」跟其他類別的關係。', '格式：{"relations":[{"to":對方類別名稱,"kind":關係種類}…]}。關係種類只能是：' + KINDS.map((k) => k + '（' + KIND_HELP[k] + '）').join('；') + '。對方只能是：' + ctx.others.join('、') + '。沒有關係就回 {"relations":[]}。最多 4 個。'), userMsg(scenario)], validate: (o) => { const e = []; const rs = arr(o.relations); if (rs.length > 4) e.push('relations 最多 4 個'); for (const r of rs) { if (!r || !ctx.others.includes(r.to)) e.push('關係的對方「' + (r && r.to) + '」只能是：' + ctx.others.join('、')); else if (!KINDS.includes(r.kind)) e.push('關係種類「' + r.kind + '」只能是：' + KINDS.join('、')); else if (r.kind === 'implement' && ctx.kinds[r.to] !== 'interface') e.push(r.to + ' 不是 interface，不能 implement'); else if (r.kind === 'inherit' && ctx.kinds[r.to] === 'interface') e.push(r.to + ' 是 interface，要用 implement'); } return e; } }),
+        sequence: (scenario, ctx) => ({ messages: [sysMsg('列出使用案例「' + ctx.uc.name + '」（參與者 ' + ctx.uc.actor + '：' + (ctx.uc.summary || '') + '）的呼叫順序：從參與者開始，依序呼叫哪些類別的哪個操作。', '格式：{"steps":[{"to":類別名稱,"op":操作名稱}…]}，2～8 步。類別與可用的操作：' + ctx.menu + '。只能用這些操作；如果真的需要一個沒列出的操作，op 填一個英文 camelCase 新名稱。'), userMsg(scenario)], validate: (o) => { const e = []; const ss = arr(o.steps); if (ss.length < 1 || ss.length > 8) e.push('steps 要有 1～8 步'); for (const s of ss) { if (!s || !ctx.ops[s.to]) e.push('呼叫的類別「' + (s && s.to) + '」只能是：' + Object.keys(ctx.ops).join('、')); else if (typeof s.op !== 'string' || !MEMBER_NAME.test(s.op)) e.push('操作名稱「' + (s && s.op) + '」要是英文 camelCase'); } return e; } }),
+    };
+    // 整條管線。opts: { generate({messages,maxTokens})→string, onStage(e), maxTries }
+    // 回傳 { ok, model, dsl, decisions:[{stage,by,tries,rejected}], warnings:[…] }；任何一個階段模型連續失敗，該階段退回「程式的保守預設」並記在 warnings，不會整條掛掉
+    async function scenarioToModel(scenario, opts) {
+        const decisions = []; const warnings = []; const model = emptyModel(); const emit = (e) => { if (opts.onStage) try { opts.onStage(e); } catch (_) {} };
+        // ⓪ 程式先讀情境（詞彙表＋動作表）：讀得出參與者、使用案例、至少一個類別，整份設計就由程式決定（模型 0 次呼叫）；讀不出才走下面一次一個小問題的模型階段
+        if (opts.program !== false) { const h = scenarioHints(scenario, opts.glossary); if (h.actors.length && h.usecases.length && h.classes.length >= 1) {
+            model.name = String(scenario || '').split(/[：:。\n]/)[0].replace(/^(?:請|幫我)?(?:設計|做|建立|產生)(?:一個|一套)?/, '').trim().slice(0, 24) || model.name; model.actors = h.actors.slice(); model.usecases = h.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.summary, steps: [] })); model.classes = h.classes.map((c) => ({ name: c.name, kind: c.kind, label: c.label, attrs: c.attrs.map((a) => ({ name: a.name, type: parseType(a.type), visibility: '+' })), ops: c.ops.map((o) => ({ name: o.name, params: o.params.map((p) => ({ name: p.name, type: parseType(p.type) })), returns: parseType(o.returns), visibility: '+', static: false })), values: [] })); model.relations = h.relations.slice();
+            h.usecases.forEach((u, i) => { let prev = u.actor; for (const s of u.steps) { model.usecases[i].steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } });
+            decisions.push({ stage: 'hints', by: 'program', ok: true, actors: h.actors.length, usecases: h.usecases.length, classes: h.classes.length }); emit({ type: 'stage', stage: 'hints', ok: true });
+            if (h.unknown.length) warnings.push('情境裡有程式不認得的參與者：' + h.unknown.join('、') + '（可以用詞彙表補上）');
+            ensureOps(model); let errs0 = validateModel(model); if (errs0.length) warnings.push('驗證有 ' + errs0.length + ' 個問題：' + errs0.slice(0, 3).join('；'));
+            return { ok: true, model, dsl: toDsl(model), decisions, warnings, errors: errs0, fromHints: true }; } }
+        const ask = async (stage, spec, label) => { const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: opts.maxTries || 2, maxTokens: 400, prefill: PREFILL[stage] }); decisions.push({ stage, label, by: 'model', tries: r.tries, rejected: r.rejected, ok: r.ok }); emit({ type: 'stage', stage, label, ok: r.ok }); if (!r.ok) warnings.push(stage + (label ? '（' + label + '）' : '') + ' 模型沒給出合格的回覆：' + (r.error || '')); return r.ok ? r.value : null; };
+        // ① 參與者與使用案例
+        const a1 = await ask('actors', stageSpec.actors(scenario)); if (!a1) return { ok: false, model, dsl: '', decisions, warnings, error: '找不到參與者與使用案例' };
+        model.actors = a1.actors.slice(); model.usecases = a1.usecases.map((u) => ({ name: u.name, actor: u.actor, summary: u.summary || '', steps: [] }));
+        // ② 類別
+        const a2 = await ask('classes', stageSpec.classes(scenario, { actors: model.actors, usecases: model.usecases })); if (!a2) return { ok: false, model, dsl: '', decisions, warnings, error: '找不到類別' };
+        model.classes = a2.classes.map((c) => ({ name: c.name, kind: c.kind, label: c.label || '', attrs: [], ops: [], values: [] }));
+        const names = model.classes.map((c) => c.name); const kinds = Object.fromEntries(model.classes.map((c) => [c.name, c.kind]));
+        // ③ 每個類別的成員（一次一個類別，沒有前面類別的記憶，只給已知類別名稱）
+        for (const c of model.classes) {
+            const used = model.usecases.map((u) => u.name).join('、'); const r = await ask('members', stageSpec.members(scenario, { cls: c, classNames: names, usedBy: used }), c.name);
+            if (!r) continue; if (c.kind === 'enum') { c.values = r.values.slice(); continue; }
+            for (const a of arr(r.attrs)) c.attrs.push({ name: a.name, type: parseType(a.type), visibility: '+' });
+            for (const o of arr(r.ops)) c.ops.push({ name: o.name, params: arr(o.params).map((p) => ({ name: p.name, type: parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false });
+            if (c.kind === 'interface') c.attrs = [];
+        }
+        // ④ 每個類別的關係
+        for (const c of model.classes) {
+            const others = names.filter((n) => n !== c.name); if (!others.length) continue; const r = await ask('relations', stageSpec.relations(scenario, { cls: c, others, kinds }), c.name); if (!r) continue;
+            for (const x of arr(r.relations)) if (!model.relations.some((y) => y.from === c.name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: c.name, to: x.to, kind: x.kind });
+        }
+        // ⑤ 每個使用案例的呼叫順序（選單：類別與它真的有的操作）
+        const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；');
+        for (const u of model.usecases) {
+            const r = await ask('sequence', stageSpec.sequence(scenario, { uc: u, ops, menu }), u.name); if (!r) continue; let prev = u.actor;
+            for (const s of arr(r.steps)) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; }
+        }
+        const added = ensureOps(model); if (added.length) warnings.push('使用案例呼叫了還沒有的操作，已自動補進類別：' + added.join('、'));
+        // 整體驗證；把不合法的關係／步驟拿掉（不要讓一個壞回覆毀掉整份模型）
+        let errs = validateModel(model); if (errs.length) { const names2 = new Set(names); model.relations = model.relations.filter((r) => names2.has(r.from) && names2.has(r.to) && !(r.kind === 'implement' && kinds[r.to] !== 'interface')); errs = validateModel(model); if (errs.length) warnings.push('驗證仍有 ' + errs.length + ' 個問題：' + errs.slice(0, 3).join('；')); }
+        const dsl = toDsl(model); decisions.push({ stage: 'assemble', by: 'program', ok: true }); emit({ type: 'done' });
+        return { ok: true, model, dsl, decisions, warnings, errors: errs };
+    }
+
+    return { ACTORS, NOUNS, VERBS, scenarioHints, PREFILL, CLASS_NAME, MEMBER_NAME, PRIMS, KINDS, LANGS, parseType, typeToString, typeRefs, parseDsl, toDsl, validateModel, ensureOps, toMermaidClass, toMermaidSequence, toMermaidUseCase, toPlantUml, renderTpl, FILTERS, langType, genFiles, genReadme, scenarioToModel, stageSpec, emptyModel };
+});
+
+}).call(null, undefined, holder);
+return holder.FaUml;
+})();
+/* UML-END */
+/* GLUE-BEGIN */
+const FaGlue = (function () {
+const holder = {};
+(function (module, self) {
+/* 膠水（FaGlue）：骨架之後的下一步——把設計（UML 的類別、使用案例）接到「真正的 library」，變成可以跑的系統。
+ *
+ * 骨架只有結構（stub）；真實系統還需要一堆「膠水」：domain 類別 ↔ ORM 資料列、domain ↔ API schema、repository 的資料庫實作、依賴注入、路由、進入點、
+ * 設定、記錄、認證、排程、外部 HTTP 客戶端……這些寫法對每個 library 組合都是固定的、而且是「經驗」——某個組合怎麼接才會動，是試出來（跑過測試）才知道的。
+ * 所以膠水是**資料**，不是程式邏輯：
+ *   - 每一塊膠水：適用條件（語言、對外介面、儲存、library）、要展開的檔案（template，欄位來自 UML）、驗證過的版本、經驗統計（成功／失敗、最近一次、環境）、來源（內建／線上 AI／使用者）。
+ *   - **經驗會累積**：用膠水產生的系統跑過、測試過，結果回報（glue_report）；同一個位置有多塊膠水時，依「驗證過的版本＋成功率」挑。
+ *   - **AI 可以貢獻膠水**：線上 AI 手動把某個組合接通（測試通過）之後，把那些檔案整理成 template 登記（glue_define）；之後離線小模型和其他 AI 直接重用，不用重新摸索。
+ *   - 實作用到的 library API 都寫死在 template 裡（fastapi 0.110、pydantic 2、sqlalchemy 2.0…），驗證過的版本標在資料上。
+ * 純函式（UMD）；模型不參與（膠水展開是 template）。
+ */
+(function (root, factory) {
+    const U = (typeof FaUml !== 'undefined' && FaUml) || (root && root.FaUml) || (typeof require === 'function' ? require('./uml_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(U);
+    else root.FaGlue = factory(U);
+})(typeof self !== 'undefined' ? self : this, function (U) {
+    'use strict';
+    const snake = (s) => U.FILTERS.snake(s), camel = (s) => U.FILTERS.camel(s), pascal = (s) => U.FILTERS.pascal(s);
+    const plural = (n) => { const s = snake(n); return /y$/.test(s) && !/[aeiou]y$/.test(s) ? s.slice(0, -1) + 'ies' : (/(s|x|ch|sh)$/.test(s) ? s + 'es' : s + 's'); };
+
+    // ---------- 從 UML 取出膠水需要的資料 ----------
+    function baseOf(model, c) { const r = model.relations.find((x) => x.from === c.name && x.kind === 'inherit'); return r ? model.classes.find((x) => x.name === r.to) : null; }
+    function allAttrs(model, c, seen) { seen = seen || new Set(); if (seen.has(c.name)) return []; seen.add(c.name); const b = baseOf(model, c); return (b ? allAttrs(model, b, seen) : []).concat(c.attrs); }
+    // 純量欄位：基本型別、Optional<基本型別>、列舉；其他（List、Map、類別參照）不持久化（以空值還原）
+    function scalarOf(model, t) {
+        if (!t) return null; let optional = false; let x = t; if (x.base === 'Optional' && x.args && x.args[0]) { optional = true; x = x.args[0]; }
+        if (U.PRIMS.includes(x.base) && x.base !== 'void' && x.base !== 'any') return { base: x.base, optional };
+        const en = model.classes.find((c) => c.name === x.base && c.kind === 'enum'); if (en) return { base: 'enum', enumName: en.name, enumFile: snake(en.name), optional, values: en.values || [] };
+        return null;
+    }
+    const PY = { int: 'int', float: 'float', str: 'str', bool: 'bool', date: 'date', datetime: 'datetime', bytes: 'bytes', decimal: 'Decimal' };
+    const SA = { int: 'Integer', float: 'Float', str: 'String(255)', bool: 'Boolean', date: 'Date', datetime: 'DateTime', bytes: 'LargeBinary', decimal: 'Numeric(18, 2)', enum: 'String(64)' };
+    const SAMPLE = { int: '1', float: '1.5', str: '"x"', bool: 'True', date: '"2024-01-01"', datetime: '"2024-01-01T00:00:00"', decimal: '"1.50"', bytes: '"eA=="' };
+    function fieldCtx(model, a) {
+        const sc = scalarOf(model, a.type); if (!sc) return null; const isId = a.name === 'id'; const py = sc.base === 'enum' ? sc.enumName : PY[sc.base];
+        return { name: a.name, base: sc.base, optional: sc.optional, enumName: sc.enumName, enumFile: sc.enumFile, py: sc.optional ? 'Optional[' + py + ']' : py, pyd: sc.optional ? 'Optional[' + py + '] = None' : py, mapped: sc.optional ? 'Optional[' + py + ']' : py, col: SA[sc.base] + (isId ? ', primary_key=True, autoincrement=True' : (sc.optional ? ', nullable=True' : '')), sample: sc.base === 'enum' ? '"' + (sc.values[0] || '') + '"' : SAMPLE[sc.base], isId, domainValue: sc.base === 'enum' ? '{x}' : '{x}' };
+    }
+    // 實體：一般類別（非抽象）而且有 id 欄位；回傳膠水 template 要的完整 context
+    function entitiesOf(model) {
+        const out = [];
+        for (const c of model.classes) {
+            if (c.kind !== 'class') continue; const attrs = allAttrs(model, c); if (!attrs.some((a) => a.name === 'id')) continue;
+            const fields = attrs.map((a) => fieldCtx(model, a)).filter(Boolean); if (!fields.some((f) => f.isId)) continue;
+            // 還原 domain 物件時，非純量欄位（含關係推出的欄位）用空值
+            const derived = model.relations.filter((r) => r.from === c.name && ['compose', 'aggregate', 'assoc'].includes(r.kind)).map((r) => ({ name: camel(r.to) + (r.mult && /\*|\.\.\d/.test(r.mult) && !/^1$/.test(r.mult) ? 's' : ''), many: !!(r.mult && /\*|\.\.\d/.test(r.mult) && !/^1$/.test(r.mult)) }));
+            const nonScalar = attrs.filter((a) => !scalarOf(model, a.type) && !fields.some((f) => f.name === a.name)).map((a) => ({ name: a.name, empty: a.type && a.type.base === 'List' ? '[]' : (a.type && a.type.base === 'Map' ? '{}' : 'None') })).concat(derived.filter((d) => !attrs.some((a) => a.name === d.name)).map((d) => ({ name: d.name, empty: d.many ? '[]' : 'None' })));
+            const enums = Array.from(new Map(fields.filter((f) => f.enumName).map((f) => [f.enumName, { name: f.enumName, file: f.enumFile }])).values());
+            const baseFields = fields.filter((f) => !f.isId);
+            const defaults = ['"id": 0'].concat(nonScalar.map((n) => '"' + n.name + '": ' + n.empty)).join(', ');
+            out.push({ name: c.name, snake: snake(c.name), plural: plural(c.name), table: plural(c.name), fields, baseFields, noBase: baseFields.length === 0, enums, nonScalar, defaults, sample: baseFields.map((f) => '"' + f.name + '": ' + f.sample).join(', '), sampleBody: '{' + baseFields.map((f) => '"' + f.name + '": ' + f.sample).join(', ') + '}', domainArgs: fields.map((f) => ({ name: f.name, expr: 'row.' + f.name + (f.base === 'enum' ? (f.optional ? ' and ' + f.enumName + '(row.' + f.name + ')' : '') : '') })).map((a, i) => (fields[i].base === 'enum' && !fields[i].optional ? { name: a.name, expr: fields[i].enumName + '(row.' + a.name + ')' } : a)).concat(nonScalar.map((n) => ({ name: n.name, expr: n.empty })).slice(0, 50)), saveData: fields.map((f) => ({ name: f.name, expr: 'item.' + f.name + (f.base === 'enum' ? (f.optional ? '.value if item.' + f.name + ' is not None else None' : '.value') : '') })) });
+        }
+        return out;
+    }
+    // 使用案例：只有「單一步驟、對實體做 list／get／create／update／delete」的才能直接實作；其他維持 stub（但依賴都接好）
+    const CRUD = { list: 'get', get: 'get', create: 'post', update: 'post', delete: 'delete' };
+    function usecasesOf(model, entities) {
+        const byName = Object.fromEntries(entities.map((e) => [e.name, e]));
+        return model.usecases.map((u) => {
+            const cn = pascal(String(u.name).replace(/[^A-Za-z0-9_ ]/g, ' ').trim() || 'UseCase'); const touched = Array.from(new Set(u.steps.map((s) => s.to))).filter((n) => byName[n]).map((n) => byName[n]);
+            const one = u.steps.length === 1 && byName[u.steps[0].to] && CRUD[u.steps[0].msg] ? { entity: byName[u.steps[0].to], op: u.steps[0].msg } : null;
+            return { name: u.name, actor: u.actor, className: cn, snake: snake(cn) || 'use_case', path: (snake(cn) || 'use_case').replace(/_/g, '-'), repos: touched, crud: one, steps: u.steps.map((s, i) => ({ i, from: s.from, to: s.to, msg: s.msg, args: (s.args || []).join(', ') })), method: one ? CRUD[one.op] : 'post' };
+        });
+    }
+
+    // ---------- 膠水（template）----------
+    // 每塊膠水：id、slot（同一個位置只留一塊）、語言、適用條件 requires、files:[{path, tpl, per:'project'|'entity'|'usecase', when}]、templates:{name: 字串}、verified、source
+    const T = {};
+    T.db = `import os
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///{{pkg}}.db")
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def init_db() -> None:
+    from . import orm  # noqa: F401  註冊所有資料表
+    Base.metadata.create_all(engine)
+`;
+    T.orm = `from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, Numeric, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .db import Base
+{{#each entities}}
+
+
+class {{name}}Row(Base):
+    __tablename__ = "{{table}}"
+{{#each fields}}    {{name}}: Mapped[{{mapped}}] = mapped_column({{col}})
+{{/each}}{{/each}}
+`;
+    T.sqlRepo = `from __future__ import annotations
+
+from typing import List, Optional
+
+from sqlalchemy.orm import Session
+
+from ..domain.{{snake}} import {{name}}
+{{#each enums}}from ..domain.{{file}} import {{name}}
+{{/each}}from ..orm import {{name}}Row
+from .{{snake}}_repository import {{name}}Repository
+
+
+def _to_domain(row: {{name}}Row) -> {{name}}:
+    return {{name}}(
+{{#each domainArgs}}        {{name}}={{expr}},
+{{/each}}    )
+
+
+class Sql{{name}}Repository({{name}}Repository):
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get(self, id: int) -> Optional[{{name}}]:
+        row = self.session.get({{name}}Row, id)
+        return _to_domain(row) if row is not None else None
+
+    def list(self) -> List[{{name}}]:
+        return [_to_domain(r) for r in self.session.query({{name}}Row).all()]
+
+    def save(self, item: {{name}}) -> {{name}}:
+        data = {
+{{#each saveData}}            "{{name}}": {{expr}},
+{{/each}}        }
+        row = self.session.get({{name}}Row, data["id"]) if data.get("id") else None
+        if row is None:
+            data.pop("id", None)
+            row = {{name}}Row(**data)
+            self.session.add(row)
+        else:
+            for key, value in data.items():
+                setattr(row, key, value)
+        self.session.commit()
+        return _to_domain(row)
+
+    def delete(self, id: int) -> None:
+        row = self.session.get({{name}}Row, id)
+        if row is not None:
+            self.session.delete(row)
+            self.session.commit()
+`;
+    T.schemas = `from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
+{{#each allEnums}}
+from .domain.{{file}} import {{name}}
+{{/each}}
+{{#each entities}}
+
+class {{name}}Base(BaseModel):
+{{#each baseFields}}    {{name}}: {{pyd}}
+{{/each}}{{#if noBase}}    pass
+{{/if}}
+
+class {{name}}Create({{name}}Base):
+    pass
+
+
+class {{name}}Read({{name}}Base):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+{{/each}}
+`;
+    T.factories = `"""依 UML 產生的 domain 物件工廠：補上 id 與關係欄位的空值。"""
+from __future__ import annotations
+
+from typing import Any
+{{#each entities}}
+from .domain.{{snake}} import {{name}}
+{{/each}}
+{{#each entities}}
+
+def new_{{snake}}(data: dict[str, Any]) -> {{name}}:
+    return {{name}}(**{**{ {{defaults}} }, **data})
+{{/each}}
+`;
+    T.depsSql = `from __future__ import annotations
+
+from typing import Iterator
+
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
+from ..db import SessionLocal
+{{#each entities}}
+from ..repositories.{{snake}}_sql_repository import Sql{{name}}Repository
+{{/each}}{{#each usecases}}
+from ..services.{{snake}}_service import {{className}}Service
+{{/each}}
+
+def get_session() -> Iterator[Session]:
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+{{#each entities}}
+
+def get_{{snake}}_repo(session: Session = Depends(get_session)) -> Sql{{name}}Repository:
+    return Sql{{name}}Repository(session)
+{{/each}}{{#each usecases}}
+
+def get_{{snake}}_service({{#each repos}}{{snake}}_repo: Sql{{name}}Repository = Depends(get_{{snake}}_repo){{#if @last}}{{else}}, {{/if}}{{/each}}) -> {{className}}Service:
+    return {{className}}Service({{#each repos}}{{snake}}_repo{{#if @last}}{{else}}, {{/if}}{{/each}})
+{{/each}}
+`;
+    T.depsMem = `from __future__ import annotations
+
+{{#each entities}}
+from ..repositories.{{snake}}_repository import {{name}}Repository, InMemory{{name}}Repository
+{{/each}}{{#each usecases}}
+from ..services.{{snake}}_service import {{className}}Service
+{{/each}}
+{{#each entities}}
+_{{snake}}_repo = InMemory{{name}}Repository()
+{{/each}}
+{{#each entities}}
+
+def get_{{snake}}_repo() -> {{name}}Repository:
+    return _{{snake}}_repo
+{{/each}}{{#each usecases}}
+
+def get_{{snake}}_service() -> {{className}}Service:
+    return {{className}}Service({{#each repos}}_{{snake}}_repo{{#if @last}}{{else}}, {{/if}}{{/each}})
+{{/each}}
+`;
+    T.routes = `from __future__ import annotations
+
+from typing import Any, List
+
+from fastapi import APIRouter, Depends, HTTPException
+{{#each entities}}
+from ..domain.{{snake}} import {{name}}
+{{/each}}
+from ..factories import {{#each entities}}new_{{snake}}{{#if @last}}{{else}}, {{/if}}{{/each}}
+from ..schemas import {{#each entities}}{{name}}Create, {{name}}Read{{#if @last}}{{else}}, {{/if}}{{/each}}
+from .deps import {{#each entities}}get_{{snake}}_repo{{#if @last}}{{else}}, {{/if}}{{/each}}{{#each usecases}}, get_{{snake}}_service{{/each}}
+
+routers: List[APIRouter] = []
+{{#each entities}}
+
+{{snake}}_router = APIRouter(prefix="/{{plural}}", tags=["{{name}}"])
+
+
+@{{snake}}_router.get("", response_model=List[{{name}}Read])
+def list_{{plural}}(repo=Depends(get_{{snake}}_repo)):
+    return [{{name}}Read.model_validate(i) for i in repo.list()]
+
+
+@{{snake}}_router.get("/{item_id}", response_model={{name}}Read)
+def get_{{snake}}(item_id: int, repo=Depends(get_{{snake}}_repo)):
+    item = repo.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="{{name}} not found")
+    return {{name}}Read.model_validate(item)
+
+
+@{{snake}}_router.post("", response_model={{name}}Read, status_code=201)
+def create_{{snake}}(payload: {{name}}Create, repo=Depends(get_{{snake}}_repo)):
+    return {{name}}Read.model_validate(repo.save(new_{{snake}}(payload.model_dump())))
+
+
+@{{snake}}_router.delete("/{item_id}", status_code=204)
+def delete_{{snake}}(item_id: int, repo=Depends(get_{{snake}}_repo)):
+    repo.delete(item_id)
+
+
+routers.append({{snake}}_router)
+{{/each}}
+
+usecase_router = APIRouter(prefix="/usecases", tags=["use cases"])
+{{#each usecases}}
+
+@usecase_router.{{method}}("/{{path}}")
+def {{snake}}({{#if hasPayload}}payload: dict[str, Any] | None = None, {{/if}}service=Depends(get_{{snake}}_service)):
+    """{{name}}（參與者：{{actor}}）"""
+    try:
+        result = service.execute({{#if hasPayload}}payload{{/if}})
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="use case not implemented yet")
+    return {"result": jsonable(result)}
+{{/each}}
+
+routers.append(usecase_router)
+
+
+def jsonable(value: Any) -> Any:
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(value)
+`;
+    T.main = `from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+{{#if sql}}
+from .db import init_db
+{{/if}}from .api.routes import routers
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+{{#if sql}}    init_db()
+{{/if}}    yield
+
+
+app = FastAPI(title="{{title}}", lifespan=lifespan)
+for router in routers:
+    app.include_router(router)
+`;
+    T.service = `"""使用案例：{{name}}（參與者：{{actor}}）"""
+from __future__ import annotations
+
+from typing import Any
+{{#each repos}}
+from ..factories import new_{{snake}}
+from ..repositories.{{snake}}_repository import {{name}}Repository
+{{/each}}
+
+class {{className}}Service:
+    def __init__(self{{#each repos}}, {{snake}}_repo: {{name}}Repository{{/each}}) -> None:
+{{#each repos}}        self.{{snake}}_repo = {{snake}}_repo
+{{/each}}        pass
+
+    def execute(self, payload: dict[str, Any] | None = None) -> Any:
+{{#if crud}}{{crudBody}}{{else}}{{#each steps}}        # {{i}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}        raise NotImplementedError
+{{/if}}`;
+    T.smokeTest = `"""API 冒煙測試：每個實體 建立 → 列出 → 取得 → 刪除。"""
+import os
+import tempfile
+
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "test.db")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from {{pkg}}.main import app  # noqa: E402
+{{#each entities}}
+
+def test_{{snake}}_crud():
+    with TestClient(app) as client:
+        created = client.post("/{{plural}}", json={{sampleBody}})
+        assert created.status_code == 201, created.text
+        item_id = created.json()["id"]
+        assert any(i["id"] == item_id for i in client.get("/{{plural}}").json())
+        assert client.get(f"/{{plural}}/{item_id}").status_code == 200
+        assert client.delete(f"/{{plural}}/{item_id}").status_code == 204
+        assert client.get(f"/{{plural}}/{item_id}").status_code == 404
+{{/each}}
+`;
+    T.cli = `from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+
+import typer
+{{#each allEnums}}
+from .domain.{{file}} import {{name}}
+{{/each}}
+
+from .db import SessionLocal, init_db
+{{#each entities}}
+from .repositories.{{snake}}_sql_repository import Sql{{name}}Repository
+{{/each}}{{#each usecases}}
+from .services.{{snake}}_service import {{className}}Service
+{{/each}}
+app = typer.Typer(help="{{title}}")
+
+
+def _encode(value):
+    import dataclasses
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return str(value)
+{{#each usecases}}
+
+@app.command("{{path}}")
+def {{snake}}({{cliSig}}) -> None:
+    """{{name}}（參與者：{{actor}}）"""
+    init_db()
+{{#if cliPayload}}    payload = {{cliPayload}}
+{{/if}}    with SessionLocal() as session:
+        service = {{className}}Service({{#each repos}}Sql{{name}}Repository(session){{#if @last}}{{else}}, {{/if}}{{/each}})
+        try:
+            result = service.execute({{#if cliPayload}}payload{{/if}})
+        except NotImplementedError:
+            typer.echo("use case not implemented yet", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(json.dumps(result, default=_encode, ensure_ascii=False))
+{{/each}}
+
+if __name__ == "__main__":
+    app()
+`;
+    T.auth = `"""密碼雜湊與 JWT（PyJWT）。祕密從環境變數 AUTH_SECRET 讀，沒有就用開發用的預設值（正式環境一定要設）。"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+import time
+from typing import Any, Optional
+
+import jwt
+
+SECRET = os.environ.get("AUTH_SECRET", "dev-only-secret-change-me-in-production-0123")
+ALGORITHM = "HS256"
+
+
+def hash_password(password: str, salt: Optional[bytes] = None) -> str:
+    salt = salt or os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
+    return salt.hex() + "$" + digest.hex()
+
+
+def verify_password(password: str, stored: str) -> bool:
+    salt_hex, digest_hex = stored.split("$", 1)
+    candidate = hash_password(password, bytes.fromhex(salt_hex)).split("$", 1)[1]
+    return hmac.compare_digest(candidate, digest_hex)
+
+
+def create_token(subject: str, ttl_seconds: int = 3600, **claims: Any) -> str:
+    now = int(time.time())
+    return jwt.encode({"sub": subject, "iat": now, "exp": now + ttl_seconds, **claims}, SECRET, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict[str, Any]:
+    return jwt.decode(token, SECRET, algorithms=[ALGORITHM])
+`;
+    T.httpClient = `"""呼叫外部服務的 HTTP 客戶端（httpx）：逾時、重試、錯誤轉成例外。"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+import httpx
+
+
+class ExternalServiceError(RuntimeError):
+    pass
+
+
+class HttpClient:
+    def __init__(self, base_url: str = "", timeout: float = 10.0, retries: int = 2) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.retries = retries
+
+    def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        last: Optional[Exception] = None
+        for _ in range(self.retries + 1):
+            try:
+                with httpx.Client(base_url=self.base_url, timeout=self.timeout) as client:
+                    response = client.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                last = exc
+        raise ExternalServiceError(str(last))
+
+    def get_json(self, url: str, **kwargs: Any) -> Any:
+        return self.request("GET", url, **kwargs).json()
+
+    def post_json(self, url: str, payload: Any, **kwargs: Any) -> Any:
+        return self.request("POST", url, json=payload, **kwargs).json()
+`;
+    T.jobs = `"""定時工作（APScheduler）。register_jobs() 在應用程式啟動時呼叫。"""
+from __future__ import annotations
+
+from typing import Callable
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
+scheduler = BackgroundScheduler()
+
+
+def register_job(func: Callable[[], None], cron: str) -> None:
+    """cron：五欄位 cron 運算式，例如 "0 9 * * *"（每天九點）。"""
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.add_job(func, CronTrigger.from_crontab(cron))
+
+
+def start() -> None:
+    if not scheduler.running:
+        scheduler.start()
+
+
+def stop() -> None:
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+`;
+    T.logging = `"""記錄設定（標準 logging）：LOG_LEVEL 環境變數控制。"""
+import logging
+import os
+
+
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+`;
+    T.config = `"""設定：全部從環境變數讀，集中在這裡。"""
+import os
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///{{pkg}}.db")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+`;
+    T.conftest = `import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+`;
+
+    const GLUE = [
+        { id: 'py-sqlalchemy-persistence', lang: 'python', slot: 'persistence', label: 'SQLAlchemy 2.0 資料存取（ORM 模型、repository 實作、session）', requires: { persistence: ['orm', 'sqlite'], libs: ['sqlalchemy'] }, verified: { python: '3.10', sqlalchemy: '2.0.x' }, source: 'builtin', needs: ['entities'],
+            files: [{ path: '{{src}}/db.py', tpl: 'db', per: 'project' }, { path: '{{src}}/orm.py', tpl: 'orm', per: 'project' }, { path: '{{src}}/repositories/{{snake}}_sql_repository.py', tpl: 'sqlRepo', per: 'entity' }] },
+        { id: 'py-fastapi-wiring', lang: 'python', slot: 'api', label: 'FastAPI＋Pydantic v2：schema、依賴注入、CRUD 路由、使用案例路由、啟動、冒煙測試', requires: { interface: ['rest'], libs: ['fastapi'] }, verified: { python: '3.10', fastapi: '0.110.x', pydantic: '2.x' }, source: 'builtin', needs: ['entities'],
+            files: [{ path: '{{src}}/schemas.py', tpl: 'schemas', per: 'project' }, { path: '{{src}}/api/deps.py', tpl: 'deps', per: 'project' }, { path: '{{src}}/api/routes.py', tpl: 'routes', per: 'project' }, { path: '{{src}}/main.py', tpl: 'main', per: 'project' }, { path: 'tests/test_api_smoke.py', tpl: 'smokeTest', per: 'project' }, { path: 'tests/conftest.py', tpl: 'conftest', per: 'project' }] },
+        { id: 'py-services-crud', lang: 'python', slot: 'services', label: '使用案例 service：依賴注入 repository；單一步驟的 CRUD 使用案例直接實作', requires: { libs: [] }, verified: { python: '3.10' }, source: 'builtin', needs: ['entities'], files: [{ path: '{{src}}/factories.py', tpl: 'factories', per: 'project' }, { path: '{{src}}/services/{{snake}}_service.py', tpl: 'service', per: 'usecase' }] },
+        { id: 'py-typer-wiring', lang: 'python', slot: 'cli', label: 'Typer 命令列：每個使用案例一個指令，接 SQLAlchemy repository', requires: { interface: ['cli'], persistence: ['orm', 'sqlite'], libs: ['typer', 'sqlalchemy'] }, verified: { python: '3.10', typer: '0.12.x' }, source: 'builtin', needs: ['entities'], files: [{ path: '{{src}}/cli.py', tpl: 'cli', per: 'project' }] },
+        { id: 'py-pyjwt-auth', lang: 'python', slot: 'auth', label: '密碼雜湊（PBKDF2）＋JWT（PyJWT）', requires: { auth: ['token'], libs: ['pyjwt'] }, verified: { python: '3.10', pyjwt: '2.x' }, source: 'builtin', files: [{ path: '{{src}}/auth.py', tpl: 'auth', per: 'project' }] },
+        { id: 'py-httpx-client', lang: 'python', slot: 'http_client', label: 'HTTP 客戶端（httpx）：逾時、重試、錯誤轉例外', requires: { http_client: ['client'], libs: ['httpx'] }, verified: { python: '3.10', httpx: '0.27.x' }, source: 'builtin', files: [{ path: '{{src}}/clients/http_client.py', tpl: 'httpClient', per: 'project' }, { path: '{{src}}/clients/__init__.py', tpl: '', per: 'project' }] },
+        { id: 'py-apscheduler-jobs', lang: 'python', slot: 'scheduler', label: '定時工作（APScheduler）', requires: { scheduler: ['cron'], libs: ['apscheduler'] }, verified: { python: '3.10', apscheduler: '3.10.x' }, source: 'builtin', files: [{ path: '{{src}}/jobs.py', tpl: 'jobs', per: 'project' }] },
+        { id: 'py-logging-config', lang: 'python', slot: 'logging', label: '記錄設定（標準 logging）', requires: {}, verified: { python: '3.10' }, source: 'builtin', files: [{ path: '{{src}}/logging_config.py', tpl: 'logging', per: 'project' }] },
+        { id: 'py-env-config', lang: 'python', slot: 'config', label: '環境變數設定', requires: {}, verified: { python: '3.10' }, source: 'builtin', files: [{ path: '{{src}}/config.py', tpl: 'config', per: 'project' }] },
+    ];
+
+    // ---------- 經驗 ----------
+    // experience：{ glueId: { ok, fail, last, env:{…}, notes:[…] } }；分數＝驗證過的版本加分＋成功率（平滑），同一個位置有多塊膠水時依分數挑
+    function score(g, exp) { const e = (exp && exp[g.id]) || { ok: 0, fail: 0 }; const n = e.ok + e.fail; const rate = (e.ok + 1) / (n + 2); return (g.verified && Object.keys(g.verified).length ? 2 : 0) + rate * 3 + Math.min(e.ok, 10) * 0.1 - (g.source === 'user' || g.source === 'ai' ? 0.5 : 0); }
+    function report(exp, id, ok, env, note) { const out = Object.assign({}, exp); const e = Object.assign({ ok: 0, fail: 0, notes: [] }, out[id]); if (ok) e.ok++; else e.fail++; e.last = Date.now(); if (env && typeof env === 'object') e.env = Object.assign({}, e.env, env); if (note) e.notes = (e.notes || []).concat([String(note).slice(0, 200)]).slice(-5); out[id] = e; return out; }
+    // 使用者／AI 登記的膠水：檢查格式（template 能解析、路徑安全、欄位名稱合法），回傳 { ok, errors, glue }
+    function validateGlue(def) {
+        const errs = []; if (!def || typeof def !== 'object') return { ok: false, errors: ['不是物件'] };
+        if (!/^[a-z][a-z0-9-]{2,60}$/.test(def.id || '')) errs.push('id 要是小寫英數與連字號（3～60 字）');
+        if (!['python', 'typescript', 'java'].includes(def.lang)) errs.push('lang 只能是 python／typescript／java');
+        if (!/^[a-z_]{2,30}$/.test(def.slot || '')) errs.push('slot 要是小寫英文（它決定這塊膠水取代哪個位置，例如 api、persistence、auth）');
+        if (!Array.isArray(def.files) || !def.files.length || def.files.length > 30) errs.push('files 要有 1～30 個');
+        for (const f of def.files || []) {
+            if (!f || typeof f.path !== 'string' || /(^|\/)\.\.(\/|$)|^\//.test(f.path.replace(/\{\{[^}]*\}\}/g, 'x')) || f.path.length > 200) errs.push('檔案路徑不安全或太長：' + (f && f.path)); if (!f || typeof f.template !== 'string' || f.template.length > 60000) errs.push('template 要是字串（≤60000 字）：' + (f && f.path));
+            else { try { U.renderTpl(f.template, { pkg: 'x', title: 'x', entities: [], usecases: [] }); } catch (e) { errs.push('template 無法解析：' + f.path + '：' + e.message); } }
+        }
+        if (def.requires && typeof def.requires !== 'object') errs.push('requires 要是物件');
+        if (errs.length) return { ok: false, errors: errs };
+        const glue = { id: def.id, lang: def.lang, slot: def.slot, label: String(def.label || def.id).slice(0, 120), requires: def.requires || {}, verified: {}, source: def.source === 'ai' ? 'ai' : 'user', needs: def.needs || [], notes: String(def.notes || '').slice(0, 500), files: def.files.map((f) => ({ path: f.path, tpl: '@inline', per: f.per === 'entity' || f.per === 'usecase' ? f.per : 'project', template: f.template })) };
+        return { ok: true, errors: [], glue };
+    }
+
+    // ---------- 選膠水與展開 ----------
+    function matches(g, lang, design) {
+        if (g.lang !== lang) return false; const choose = (c) => ((design.choices || []).find((x) => x.concern === c) || {}); const r = g.requires || {};
+        for (const k of ['interface', 'persistence', 'auth', 'http_client', 'scheduler', 'validation', 'logging']) if (r[k] && !r[k].includes(choose(k).option)) return false;
+        if (r.libs && r.libs.length) { const have = new Set((design.choices || []).map((c) => c.lib)); if (!r.libs.every((l) => have.has(l))) return false; }
+        if (design.architecture && design.architecture.id === 'library') return false; return true;
+    }
+    // 同一個 slot 只留分數最高的一塊（包含使用者／AI 登記的）
+    function select(lang, design, opts) {
+        opts = opts || {}; const cands = GLUE.concat(opts.userGlue || []).filter((g) => matches(g, lang, design)); const bySlot = new Map();
+        for (const g of cands) { const cur = bySlot.get(g.slot); if (!cur || score(g, opts.experience) > score(cur, opts.experience)) bySlot.set(g.slot, g); }
+        return Array.from(bySlot.values());
+    }
+    function fillPath(p, ctx) { return U.renderTpl(p, ctx); }
+    // files：buildProject 已產生的檔案（會被同路徑的膠水檔案取代）；回傳 { files, applied:[{id, source, verified}], skipped:[] }
+    function apply(model, design, files, opts) {
+        opts = opts || {}; const lang = opts.language || 'python'; if (lang !== 'python') return { files, applied: [], skipped: [{ reason: lang + ' 還沒有內建膠水（只有骨架）；可以用 glue_define 登記' }] };
+        const pkg = (opts.package || 'app').toLowerCase().replace(/[^a-z0-9_.]/g, ''); const entities = entitiesOf(model); const usecases = usecasesOf(model, entities); const sql = ['orm', 'sqlite'].includes((design.choices.find((c) => c.concern === 'persistence') || {}).option);
+        const allEnums = Array.from(new Map([].concat(...entities.map((e) => e.enums)).map((e) => [e.name, e])).values());
+        const CLI_T = { int: 'int', float: 'float', str: 'str', bool: 'bool', decimal: 'float', date: 'str', datetime: 'str', bytes: 'str', enum: 'str' };
+        const conv = (f, v) => (f.base === 'decimal' ? 'Decimal(str(' + v + '))' : (f.base === 'date' ? 'date.fromisoformat(' + v + ')' : (f.base === 'datetime' ? 'datetime.fromisoformat(' + v + ')' : (f.base === 'enum' ? f.enumName + '(' + v + ')' : v))));
+        for (const u of usecases) {
+            u.cliSig = ''; u.cliPayload = '';
+            if (u.crud) { const e = u.crud.entity; const op = u.crud.op; const idP = 'item_id: int = typer.Option(..., "--id", help="編號")'; const fp = (req) => e.baseFields.map((f) => f.name + ': ' + (req ? CLI_T[f.base] : 'Optional[' + CLI_T[f.base] + ']') + ' = typer.Option(' + (req && !f.optional ? '...' : 'None') + ', "--' + snake(f.name).replace(/_/g, '-') + '", help="' + f.name + '")');
+                if (op === 'create') { u.cliSig = fp(true).join(', '); u.cliPayload = '{' + e.baseFields.map((f) => '"' + f.name + '": ' + (f.optional ? f.name + ' if ' + f.name + ' is None else ' + conv(f, f.name) : conv(f, f.name))).join(', ') + '}'; }
+                else if (op === 'update') { u.cliSig = [idP].concat(fp(false)).join(', '); u.cliPayload = '{k: v for k, v in {"id": item_id, ' + e.baseFields.map((f) => '"' + f.name + '": ' + f.name + ' if ' + f.name + ' is None else ' + conv(f, f.name)).join(', ') + '}.items() if v is not None}'; }
+                else if (op === 'get' || op === 'delete') { u.cliSig = idP; u.cliPayload = '{"id": item_id}'; } } }
+        for (const u of usecases) { u.hasPayload = !!(u.crud && ['create', 'update', 'delete', 'get'].includes(u.crud.op)); u.crudBody = u.crud ? crudBody(u) : ''; u.crud = u.crud ? { op: u.crud.op, entity: u.crud.entity.name } : null; }
+        const base = { pkg, src: 'src/' + pkg, title: model.name, entities, usecases, allEnums, sql, memory: !sql };
+        const chosen = select(lang, design, opts); const out = files.slice(); const applied = []; const put = (path, content, region) => { const i = out.findIndex((f) => f.path === path); const f = { path, content, region: region || 'glue' }; if (i >= 0) out[i] = f; else out.push(f); };
+        for (const g of chosen) {
+            if ((g.needs || []).includes('entities') && !entities.length) continue;
+            for (const f of g.files) {
+                const tpl = f.tpl === '@inline' ? f.template : (f.tpl === 'deps' ? (sql ? T.depsSql : T.depsMem) : (f.tpl === 'sqlRepo' ? T.sqlRepo : (f.tpl === 'service' ? T.service : (f.tpl ? T[f.tpl] : ''))));
+                if (f.tpl && f.tpl !== '@inline' && tpl === undefined) continue;
+                if (f.per === 'entity') for (const e of entities) put(fillPath(f.path, Object.assign({}, base, e)), U.renderTpl(tpl, Object.assign({}, base, e)), 'glue:' + g.id + ':' + e.name);
+                else if (f.per === 'usecase') for (const u of usecases) put(fillPath(f.path, Object.assign({}, base, u)), U.renderTpl(tpl, Object.assign({}, base, u)), 'glue:' + g.id + ':' + u.name);
+                else put(fillPath(f.path, base), U.renderTpl(tpl, base), 'glue:' + g.id);
+            }
+            applied.push({ id: g.id, slot: g.slot, source: g.source, verified: g.verified, label: g.label });
+        }
+        return { files: out.map((f) => Object.assign({}, f, { content: f.content.replace(/[ \t]+$/gm, '').replace(/\n{4,}/g, '\n\n\n') })), applied, skipped: [] };
+    }
+    function crudBody(u) {
+        const e = u.crud.entity; const r = e.snake + '_repo'; const op = u.crud.op;
+        if (op === 'list') return '        return self.' + r + '.list()\n';
+        if (op === 'get') return '        return self.' + r + '.get(int((payload or {})["id"]))\n';
+        if (op === 'create') return '        return self.' + r + '.save(new_' + e.snake + '(dict(payload or {})))\n';
+        if (op === 'update') return '        data = dict(payload or {})\n        current = self.' + r + '.get(int(data.pop("id")))\n        if current is None:\n            raise KeyError("not found")\n        for key, value in data.items():\n            setattr(current, key, value)\n        return self.' + r + '.save(current)\n';
+        return '        self.' + r + '.delete(int((payload or {})["id"]))\n        return None\n';
+    }
+    return { GLUE, TEMPLATES: T, entitiesOf, usecasesOf, allAttrs, scalarOf, score, report, validateGlue, matches, select, apply, plural };
+});
+
+}).call(null, undefined, holder);
+return holder.FaGlue;
+})();
+/* GLUE-END */
+/* DESIGN-BEGIN */
+const FaDesign = (function () {
+const holder = {};
+(function (module, self) {
+/* 設計抉擇與 framework 目錄（FaDesign）：UML 確定之後，就是「選架構、選各領域的 library」——把它變成選擇題與填空題。
+ *
+ *   ① 預先建立好的常見 framework 與抉擇（資料表）：架構風格、各個關注點（對外介面、持久化、驗證、測試、記錄、設定、HTTP 客戶端、認證、訊息、排程）的選項，
+ *      每個選項有適用條件、各語言對應的 library、取捨說明。
+ *   ② 推薦（程式）：從情境的關鍵字推出「需要哪些關注點」，每個關注點算出各選項的分數，贏的就程式決定；平手才變成選擇題給模型；使用者／訓練器記得的偏好優先。
+ *   ③ 套用（程式，template）：依選擇調整專案配置（分層、service／repository／api／cli 檔案）、依賴清單、進入點；每個決定寫進 README 的「設計決策」表。
+ *   ④ 常見設計片段（FRAGMENTS：CRUD 實體、Repository、Service 層、Observer、Strategy、Factory、狀態機、購物車、登入…）：預先建好的 UML 片段，
+ *      情境符合就當種子（模型只需要確認與補充）；也是離線訓練器的內建知識（見 DESIGN.uml-framework.md）。
+ *   ⑤ top-down 遞迴 rework：由上而下（系統 → 套件 → 類別 → 成員 → 呼叫順序）找出問題、只重做有問題的那一區，上層改了下層再驗證；每個 rework 都是離線訓練器可以學的樣式。
+ * 純函式（UMD）；模型（generate）是注入的。
+ */
+(function (root, factory) {
+    const R = (typeof FaRecipe !== 'undefined' && FaRecipe) || (root && root.FaRecipe) || (typeof require === 'function' ? require('../recipe/recipe_core.js') : null);
+    const U = (typeof FaUml !== 'undefined' && FaUml) || (root && root.FaUml) || (typeof require === 'function' ? require('./uml_core.js') : null);
+    const G = (typeof FaGlue !== 'undefined' && FaGlue) || (root && root.FaGlue) || (typeof require === 'function' ? require('./glue_core.js') : null);
+    if (typeof module === 'object' && module.exports) module.exports = factory(R, U, G);
+    else root.FaDesign = factory(R, U, G);
+})(typeof self !== 'undefined' ? self : this, function (R, U, G) {
+    'use strict';
+
+    // ---------- ① 目錄 ----------
+    // 架構風格：適用條件（tags）、說明、取捨
+    const ARCH = [
+        { id: 'layered', label: '分層架構（api → service → repository → domain）', tags: ['web', 'api', 'db', 'crud'], default: true, notes: '最常見、最好懂；每個使用案例一個 service，資料存取包在 repository。小到中型系統的預設選擇。', tradeoff: '業務邏輯多時 service 會變肥。' },
+        { id: 'hexagonal', label: '六角架構（核心領域 + ports/adapters）', tags: ['integration', 'testable', 'multi_io'], notes: '核心不依賴框架，I/O 都透過 port 介面接 adapter；要接多種輸入輸出或要很好測試時選它。', tradeoff: '檔案與間接層較多。' },
+        { id: 'cli_script', label: '命令列工具（commands → services → domain）', tags: ['cli'], notes: '每個使用案例一個指令，沒有伺服器。', tradeoff: '不適合長時間運行的服務。' },
+        { id: 'library', label: '函式庫（只有 domain，沒有進入點）', tags: ['library', 'sdk'], notes: '只輸出類別與介面，給別的程式引用。', tradeoff: '沒有可以直接執行的東西。' },
+        { id: 'event_driven', label: '事件驅動（handlers 訂閱事件）', tags: ['message', 'realtime', 'async'], notes: '用事件解耦；適合通知、工作流程、即時更新。', tradeoff: '除錯與順序較難追。' },
+    ];
+    // 關注點與選項。libs：各語言對應的 library（pkg＝依賴名稱）；kw：情境裡出現就加分的關鍵字；default：沒有線索時的預設（每個語言）
+    const L = (python, typescript, java) => ({ python, typescript, java });
+    const CONCERNS = {
+        interface: { label: '對外介面', question: '系統怎麼對外提供功能？', options: [
+            { id: 'rest', label: 'REST API', kw: ['api', 'rest', 'web', '網站', '網頁', '後端', '伺服器', '服務', 'http', 'endpoint', '前端', '行動'], libs: L('fastapi', 'express', 'spring-boot-web'), tradeoff: '通用，工具多；不適合需要雙向即時的情境。' },
+            { id: 'cli', label: '命令列', kw: ['cli', '命令列', '指令', '終端', 'terminal', '批次', 'script', '腳本'], libs: L('typer', 'commander', 'picocli'), tradeoff: '最簡單；沒有圖形介面。' },
+            { id: 'library', label: '只當函式庫', kw: ['函式庫', 'library', 'sdk', '套件', '模組'], libs: L('none', 'none', 'none'), tradeoff: '沒有進入點。' },
+        ], default: L('rest', 'rest', 'rest') },
+        persistence: { label: '資料儲存', question: '資料存在哪裡？', options: [
+            { id: 'memory', label: '記憶體（先不持久化）', kw: ['暫存', '記憶體', '原型', 'prototype', 'demo'], libs: L('none', 'none', 'none'), tradeoff: '重啟就消失；最適合先把流程跑通。' },
+            { id: 'sqlite', label: 'SQLite（單檔資料庫）', kw: ['sqlite', '本機', '單機', '輕量', '檔案資料庫'], libs: L('sqlalchemy', 'better-sqlite3', 'sqlite-jdbc'), tradeoff: '零設定；併發寫入有限。' },
+            { id: 'orm', label: '關聯式資料庫＋ORM', kw: ['資料庫', 'database', 'db', 'sql', '訂單', '會員', '庫存', '交易', 'postgres', 'mysql', '儲存', '持久', '紀錄', '查詢'], libs: L('sqlalchemy', 'prisma', 'spring-data-jpa'), tradeoff: '成熟、可擴充；要管 schema 與遷移。' },
+            { id: 'document', label: '文件型資料庫', kw: ['mongodb', '文件', 'json', '彈性結構', 'nosql'], libs: L('pymongo', 'mongodb', 'spring-data-mongodb'), tradeoff: '結構彈性；跨文件交易較弱。' },
+        ], default: L('memory', 'memory', 'memory') },
+        validation: { label: '資料驗證', question: '輸入資料怎麼驗證？', options: [
+            { id: 'schema', label: '型別化 schema 驗證', kw: ['驗證', 'validate', '輸入', '表單', 'api', 'web'], libs: L('pydantic', 'zod', 'jakarta-validation'), tradeoff: '錯誤訊息清楚；多一層宣告。' },
+            { id: 'manual', label: '自己在 service 裡檢查', kw: [], libs: L('none', 'none', 'none'), tradeoff: '沒有依賴；容易漏。' },
+        ], default: L('schema', 'schema', 'schema') },
+        testing: { label: '測試', question: '用什麼測試框架？', options: [
+            { id: 'standard', label: '主流測試框架', kw: [], libs: L('pytest', 'vitest', 'junit-jupiter'), tradeoff: '' },
+        ], default: L('standard', 'standard', 'standard') },
+        logging: { label: '記錄', question: '怎麼記錄？', options: [
+            { id: 'stdlib', label: '標準／主流記錄函式庫', kw: [], libs: L('none', 'pino', 'slf4j'), tradeoff: '' },
+            { id: 'structured', label: '結構化記錄', kw: ['稽核', 'audit', '追蹤', 'trace', '監控', 'observability'], libs: L('structlog', 'pino', 'logback'), tradeoff: '利於查詢；設定較多。' },
+        ], default: L('stdlib', 'stdlib', 'stdlib') },
+        http_client: { label: '呼叫外部服務', question: '要不要呼叫外部 HTTP 服務？', options: [
+            { id: 'none', label: '不需要', kw: [], libs: L('none', 'none', 'none'), tradeoff: '' },
+            { id: 'client', label: 'HTTP 客戶端', kw: ['第三方', '外部', '串接', '金流', '付款', '物流', '簡訊', 'email', '郵件', 'webhook', '通知'], libs: L('httpx', 'axios', 'java-net-http'), tradeoff: '' },
+        ], default: L('none', 'none', 'none') },
+        auth: { label: '認證授權', question: '要不要登入與權限？', options: [
+            { id: 'none', label: '不需要', kw: [], libs: L('none', 'none', 'none'), tradeoff: '' },
+            { id: 'token', label: '登入＋Token', kw: ['登入', '會員', '帳號', '權限', '管理員', '密碼', 'login', 'auth', '角色'], libs: L('pyjwt', 'jsonwebtoken', 'spring-security'), tradeoff: '要處理密碼雜湊與 token 過期。' },
+        ], default: L('none', 'none', 'none') },
+        scheduler: { label: '排程', question: '有沒有定時工作？', options: [
+            { id: 'none', label: '沒有', kw: [], libs: L('none', 'none', 'none'), tradeoff: '' },
+            { id: 'cron', label: '定時排程', kw: ['每天', '每週', '定時', '排程', '週期', 'cron', '提醒', '到期'], libs: L('apscheduler', 'node-cron', 'spring-scheduling'), tradeoff: '' },
+        ], default: L('none', 'none', 'none') },
+        messaging: { label: '訊息／事件', question: '要不要訊息佇列或事件？', options: [
+            { id: 'none', label: '不需要', kw: [], libs: L('none', 'none', 'none'), tradeoff: '' },
+            { id: 'queue', label: '訊息佇列', kw: ['佇列', 'queue', '非同步', '事件', '訊息', '即時', '廣播', 'kafka', 'rabbitmq', 'redis'], libs: L('celery', 'bullmq', 'spring-amqp'), tradeoff: '多一個要維運的元件。' },
+        ], default: L('none', 'none', 'none') },
+    };
+    // 依賴清單：library 名稱 → 各語言的實際套件與版本
+    const PKG = {
+        python: { fastapi: ['fastapi>=0.110', 'uvicorn>=0.29'], typer: ['typer>=0.12'], sqlalchemy: ['sqlalchemy>=2.0'], pydantic: ['pydantic>=2.6'], pytest: ['pytest>=8.0'], structlog: ['structlog>=24.1'], httpx: ['httpx>=0.27'], pyjwt: ['pyjwt>=2.8'], apscheduler: ['apscheduler>=3.10'], celery: ['celery>=5.3'], pymongo: ['pymongo>=4.6'] },
+        typescript: { express: ['express@^4.19'], commander: ['commander@^12'], prisma: ['@prisma/client@^5', 'prisma@^5'], zod: ['zod@^3.23'], vitest: ['vitest@^1.6'], pino: ['pino@^9'], axios: ['axios@^1.7'], jsonwebtoken: ['jsonwebtoken@^9'], 'node-cron': ['node-cron@^3'], bullmq: ['bullmq@^5'], mongodb: ['mongodb@^6'], 'better-sqlite3': ['better-sqlite3@^11'] },
+        java: { 'spring-boot-web': ['org.springframework.boot:spring-boot-starter-web'], picocli: ['info.picocli:picocli'], 'spring-data-jpa': ['org.springframework.boot:spring-boot-starter-data-jpa'], 'jakarta-validation': ['org.springframework.boot:spring-boot-starter-validation'], 'junit-jupiter': ['org.junit.jupiter:junit-jupiter'], slf4j: ['org.slf4j:slf4j-api'], logback: ['ch.qos.logback:logback-classic'], 'spring-security': ['org.springframework.boot:spring-boot-starter-security'], 'spring-scheduling': [], 'spring-amqp': ['org.springframework.boot:spring-boot-starter-amqp'], 'sqlite-jdbc': ['org.xerial:sqlite-jdbc'], 'spring-data-mongodb': ['org.springframework.boot:spring-boot-starter-data-mongodb'] },
+    };
+
+    // ---------- ② 推薦（程式）----------
+    const TAG_KW = { web: ['網站', '網頁', 'web', 'api', 'rest', '後端', '前端', '伺服器', 'http'], cli: ['命令列', 'cli', '指令', '終端', 'terminal'], db: ['資料庫', 'database', 'sql', '儲存', '訂單', '會員', '庫存', '紀錄', '查詢'], crud: ['新增', '修改', '刪除', '查詢', '管理', '上架', '編輯'], message: ['佇列', '事件', '訊息', '通知', '即時', '廣播'], realtime: ['即時', '推播', 'websocket'], async: ['非同步', '背景'], library: ['函式庫', 'library', 'sdk'], integration: ['串接', '第三方', '外部'], testable: ['可測試', '解耦'], multi_io: ['多種輸入', '多個來源'] };
+    function detectTags(scenario) { const s = String(scenario || '').toLowerCase(); const tags = new Set(); for (const [tag, kws] of Object.entries(TAG_KW)) if (kws.some((k) => s.includes(k.toLowerCase()))) tags.add(tag); return Array.from(tags); }
+    // 每個關注點：各選項分數（關鍵字命中數）；回傳 { choices:[{concern,option,by,reason,score,alternatives}], ambiguous:[{concern,options}] }
+    // prefs：使用者／離線訓練器記得的偏好 { concern: optionId }；constraints：呼叫者明確指定的 { concern: optionId }（最優先）
+    function recommend(scenario, language, opts) {
+        opts = opts || {}; const lang = ['python', 'typescript', 'java'].includes(language) ? language : 'python'; const s = String(scenario || '').toLowerCase(); const prefs = opts.prefs || {}, cons = opts.constraints || {}; const choices = []; const ambiguous = [];
+        for (const [cid, c] of Object.entries(CONCERNS)) {
+            const scored = c.options.map((o) => ({ o, score: o.kw.filter((k) => s.includes(k.toLowerCase())).length })).sort((a, b) => b.score - a.score);
+            let pick, by, reason;
+            if (cons[cid] && c.options.some((o) => o.id === cons[cid])) { pick = cons[cid]; by = 'constraint'; reason = '呼叫者指定'; }
+            else if (prefs[cid] && c.options.some((o) => o.id === prefs[cid])) { pick = prefs[cid]; by = 'preference'; reason = '你／離線訓練器記得的偏好'; }
+            else if (scored[0].score > 0 && (scored.length === 1 || scored[0].score > scored[1].score)) { pick = scored[0].o.id; by = 'program'; reason = '情境提到：' + scored[0].o.kw.filter((k) => s.includes(k.toLowerCase())).slice(0, 3).join('、'); }
+            else if (scored[0].score > 0 && scored[1] && scored[0].score === scored[1].score) { ambiguous.push({ concern: cid, question: c.question, options: scored.filter((x) => x.score === scored[0].score).map((x) => ({ id: x.o.id, label: x.o.label, tradeoff: x.o.tradeoff })) }); pick = c.default[lang]; by = 'default'; reason = '平手，先用預設（會問選擇題）'; }
+            else { pick = c.default[lang]; by = 'default'; reason = '情境沒有線索，用預設'; }
+            const opt = c.options.find((o) => o.id === pick); choices.push({ concern: cid, label: c.label, option: pick, optionLabel: opt.label, lib: opt.libs[lang], by, reason });
+        }
+        // 架構風格
+        const tags = detectTags(scenario); let arch = ARCH.find((a) => a.default); let archBy = 'default', archReason = '沒有特殊線索，用預設';
+        const iface = (choices.find((c) => c.concern === 'interface') || {}).option;
+        if (cons.architecture && ARCH.some((a) => a.id === cons.architecture)) { arch = ARCH.find((a) => a.id === cons.architecture); archBy = 'constraint'; archReason = '呼叫者指定'; }
+        else if (prefs.architecture && ARCH.some((a) => a.id === prefs.architecture)) { arch = ARCH.find((a) => a.id === prefs.architecture); archBy = 'preference'; archReason = '你／離線訓練器記得的偏好'; }
+        else if (iface === 'cli') { arch = ARCH.find((a) => a.id === 'cli_script'); archBy = 'program'; archReason = '對外介面是命令列'; }
+        else if (iface === 'library') { arch = ARCH.find((a) => a.id === 'library'); archBy = 'program'; archReason = '只當函式庫'; }
+        else { const sc = ARCH.map((a) => ({ a, n: a.tags.filter((t) => tags.includes(t)).length })).sort((x, y) => y.n - x.n); if (sc[0].n > 0 && sc[0].n > (sc[1] ? sc[1].n : 0) && !sc[0].a.default) { arch = sc[0].a; archBy = 'program'; archReason = '情境的線索：' + sc[0].a.tags.filter((t) => tags.includes(t)).join('、'); } }
+        return { language: lang, tags, architecture: { id: arch.id, label: arch.label, by: archBy, reason: archReason, notes: arch.notes, tradeoff: arch.tradeoff }, choices, ambiguous };
+    }
+    // 平手的關注點變成選擇題：{"choice": 編號}（沿用食譜的 chooseTool 格式：cands = [{tool: id, intent: label}]）
+    async function resolveAmbiguous(rec, scenario, generate) {
+        const decisions = [];
+        for (const amb of rec.ambiguous) {
+            const cands = amb.options.map((o) => ({ tool: o.id, intent: o.label + (o.tradeoff ? '（' + o.tradeoff + '）' : ''), score: 0 }));
+            const ch = await R.chooseTool({ cands, question: amb.question + '\n' + scenario, generate }); decisions.push({ concern: amb.concern, answer: ch.ok && !ch.none ? cands[ch.index].tool : null, by: 'model', tries: ch.tries, rejected: ch.rejected });
+            if (ch.ok && !ch.none) { const c = rec.choices.find((x) => x.concern === amb.concern); const o = CONCERNS[amb.concern].options.find((x) => x.id === cands[ch.index].tool); c.option = o.id; c.optionLabel = o.label; c.lib = o.libs[rec.language]; c.by = 'model'; c.reason = '平手，模型從選單挑'; }
+        }
+        rec.ambiguous = []; return decisions;
+    }
+    const pickOf = (design, concern) => ((design.choices || []).find((c) => c.concern === concern) || {}).option;
+
+    // ---------- ③ 套用：依選擇展開專案配置 ----------
+    function manifestFor(design, lang) {
+        const libs = Array.from(new Set((design.choices || []).map((c) => c.lib).filter((x) => x && x !== 'none'))); if (design.architecture && design.architecture.id === 'library') libs.length = 0;
+        const deps = []; for (const l of libs) for (const d of (PKG[lang] && PKG[lang][l]) || []) if (!deps.includes(d)) deps.push(d);
+        return { libs, deps };
+    }
+    const snake = (s) => U.FILTERS.snake(s), camel = (s) => U.FILTERS.camel(s), pascal = (s) => U.FILTERS.pascal(s);
+    function ucName(u) { return pascal(String(u.name).replace(/[^A-Za-z0-9_ ]/g, ' ').trim() || 'UseCase'); }
+    function entities(model) { return model.classes.filter((c) => c.kind === 'class' && c.attrs.length && !model.usecases.some((u) => u.actor === c.name && false)); }
+    const PY = {
+        service: `"""使用案例：{{name}}（參與者：{{actor}}）"""
+from __future__ import annotations
+{{#each imports}}{{this}}
+{{/each}}
+
+class {{className}}Service:
+    def __init__(self{{#if deps}}, {{deps}}{{/if}}) -> None:
+{{#each depAssign}}        self.{{name}} = {{name}}
+{{/each}}        pass
+
+    def execute(self) -> None:
+{{#each steps}}        # {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}        raise NotImplementedError
+`,
+        repoIface: `from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import List, Optional
+from ..domain.{{file}} import {{name}}
+
+
+class {{name}}Repository(ABC):
+    @abstractmethod
+    def get(self, id: int) -> Optional[{{name}}]: ...
+
+    @abstractmethod
+    def list(self) -> List[{{name}}]: ...
+
+    @abstractmethod
+    def save(self, item: {{name}}) -> {{name}}: ...
+
+    @abstractmethod
+    def delete(self, id: int) -> None: ...
+
+
+class InMemory{{name}}Repository({{name}}Repository):
+    def __init__(self) -> None:
+        self._items: dict[int, {{name}}] = {}
+
+    def get(self, id: int) -> Optional[{{name}}]:
+        return self._items.get(id)
+
+    def list(self) -> List[{{name}}]:
+        return list(self._items.values())
+
+    def save(self, item: {{name}}) -> {{name}}:
+        self._items[getattr(item, "id", len(self._items) + 1)] = item
+        return item
+
+    def delete(self, id: int) -> None:
+        self._items.pop(id, None)
+`,
+        rest: `from fastapi import APIRouter
+
+router = APIRouter()
+{{#each ucs}}
+
+@router.post("/{{path}}")
+def {{snake}}() -> dict:
+    """{{name}}（參與者：{{actor}}）——呼叫 {{className}}Service"""
+    raise NotImplementedError
+{{/each}}
+`,
+        main: `from fastapi import FastAPI
+from .api.routes import router
+
+app = FastAPI(title="{{title}}")
+app.include_router(router)
+`,
+        cli: `import typer
+
+app = typer.Typer(help="{{title}}")
+{{#each ucs}}
+
+@app.command("{{path}}")
+def {{snake}}() -> None:
+    """{{name}}（參與者：{{actor}}）——呼叫 {{className}}Service"""
+    raise NotImplementedError
+{{/each}}
+
+if __name__ == "__main__":
+    app()
+`,
+    };
+    const TS = {
+        service: `{{#each imports}}{{this}}
+{{/each}}
+/** 使用案例：{{name}}（參與者：{{actor}}） */
+export class {{className}}Service {
+    execute(): void {
+{{#each steps}}        // {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}        throw new Error("not implemented");
+    }
+}
+`,
+        repoIface: `import { {{name}} } from "../domain/{{name}}";
+
+export interface {{name}}Repository {
+    get(id: number): {{name}} | undefined;
+    list(): {{name}}[];
+    save(item: {{name}}): {{name}};
+    delete(id: number): void;
+}
+
+export class InMemory{{name}}Repository implements {{name}}Repository {
+    private items = new Map<number, {{name}}>();
+    get(id: number): {{name}} | undefined { return this.items.get(id); }
+    list(): {{name}}[] { return Array.from(this.items.values()); }
+    save(item: {{name}}): {{name}} { this.items.set((item as any).id ?? this.items.size + 1, item); return item; }
+    delete(id: number): void { this.items.delete(id); }
+}
+`,
+        rest: `import express from "express";
+
+export const router = express.Router();
+{{#each ucs}}
+
+/** {{name}}（參與者：{{actor}}）——呼叫 {{className}}Service */
+router.post("/{{path}}", (_req, res) => {
+    res.status(501).json({ error: "not implemented" });
+});
+{{/each}}
+`,
+        main: `import express from "express";
+import { router } from "./api/routes";
+
+const app = express();
+app.use(express.json());
+app.use(router);
+app.listen(3000, () => console.log("{{title}} listening on :3000"));
+`,
+        cli: `import { Command } from "commander";
+
+const program = new Command().description("{{title}}");
+{{#each ucs}}
+program.command("{{path}}").description("{{name}}（參與者：{{actor}}）").action(() => {
+    throw new Error("not implemented");
+});
+{{/each}}
+program.parse();
+`,
+    };
+    const JV = {
+        controller: `package {{package}}.api;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ApiController {
+{{#each ucs}}
+    /** {{name}}（參與者：{{actor}}） */
+    @PostMapping("/{{path}}")
+    public String {{camel}}() {
+        throw new UnsupportedOperationException("not implemented");
+    }
+{{/each}}
+}
+`,
+        service: `package {{package}}.services;
+
+/** 使用案例：{{name}}（參與者：{{actor}}） */
+public class {{className}}Service {
+    public void execute() {
+{{#each steps}}        // {{@index}}. {{from}} -> {{to}}.{{msg}}({{args}})
+{{/each}}        throw new UnsupportedOperationException("not implemented");
+    }
+}
+`,
+        repoIface: `package {{package}}.repositories;
+
+import java.util.List;
+import java.util.Optional;
+import {{package}}.domain.{{name}};
+
+public interface {{name}}Repository {
+    Optional<{{name}}> get(long id);
+    List<{{name}}> list();
+    {{name}} save({{name}} item);
+    void delete(long id);
+}
+`,
+        app: `package {{package}};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+`,
+    };
+    function buildProject(model, opts) {
+        opts = opts || {}; const lang = ['python', 'typescript', 'java'].includes(opts.language) ? opts.language : 'python'; const pkg = (opts.package || 'app').toLowerCase().replace(/[^a-z0-9_.]/g, '');
+        const design = opts.design || recommend(opts.scenario || '', lang, {}); const arch = (design.architecture && design.architecture.id) || 'layered'; const layered = arch !== 'library';
+        const files = U.genFiles(model, { language: lang, package: pkg, scenario: opts.scenario, subdir: layered ? 'domain' : '' });
+        const iface = pickOf(design, 'interface'); const persist = pickOf(design, 'persistence'); const ents = entities(model).filter((c) => !model.relations.some((r) => r.to === c.name && r.kind === 'compose' && false));
+        const srcDir = lang === 'java' ? 'src/main/java/' + pkg.replace(/\./g, '/') : 'src' + (lang === 'python' ? '/' + pkg : '');
+        const ucs = model.usecases.map((u) => ({ name: u.name, actor: u.actor, className: ucName(u), snake: snake(ucName(u)) || 'use_case', camel: camel(ucName(u)) || 'useCase', path: snake(ucName(u)).replace(/_/g, '-') || 'use-case', steps: u.steps.map((s) => ({ from: s.from, to: s.to, msg: s.msg, args: (s.args || []).join(', ') })) }));
+        const fileOf = (n) => (lang === 'python' ? snake(n) : n);
+        if (layered && arch !== 'library') {
+            for (const u of ucs) {
+                const imps = lang === 'python' ? Array.from(new Set(u.steps.map((s) => s.to))).filter((n) => model.classes.some((c) => c.name === n)).map((n) => 'from ..domain.' + snake(n) + ' import ' + n) : (lang === 'typescript' ? Array.from(new Set(u.steps.map((s) => s.to))).filter((n) => model.classes.some((c) => c.name === n)).map((n) => 'import { ' + n + ' } from "../domain/' + n + '";') : []);
+                const ctx = Object.assign({}, u, { package: pkg, imports: imps, deps: '', depAssign: [] });
+                if (lang === 'python') files.push({ path: srcDir + '/services/' + u.snake + '_service.py', content: U.renderTpl(PY.service, ctx), region: 'service:' + u.name });
+                else if (lang === 'typescript') files.push({ path: 'src/services/' + u.className + 'Service.ts', content: U.renderTpl(TS.service, ctx), region: 'service:' + u.name });
+                else files.push({ path: srcDir + '/services/' + u.className + 'Service.java', content: U.renderTpl(JV.service, ctx), region: 'service:' + u.name });
+            }
+            if (persist && persist !== 'none') for (const c of ents) { const ctx = { name: c.name, file: snake(c.name), package: pkg }; if (lang === 'python') files.push({ path: srcDir + '/repositories/' + snake(c.name) + '_repository.py', content: U.renderTpl(PY.repoIface, ctx), region: 'repository:' + c.name }); else if (lang === 'typescript') files.push({ path: 'src/repositories/' + c.name + 'Repository.ts', content: U.renderTpl(TS.repoIface, ctx), region: 'repository:' + c.name }); else files.push({ path: srcDir + '/repositories/' + c.name + 'Repository.java', content: U.renderTpl(JV.repoIface, ctx), region: 'repository:' + c.name }); }
+            if (lang === 'python') { files.push({ path: srcDir + '/services/__init__.py', content: '', region: 'package' }); if (persist && persist !== 'none') files.push({ path: srcDir + '/repositories/__init__.py', content: '', region: 'package' }); }
+            const ctx = { ucs, title: model.name, package: pkg };
+            if (iface === 'rest') {
+                if (lang === 'python') { files.push({ path: srcDir + '/api/routes.py', content: U.renderTpl(PY.rest, ctx), region: 'api' }, { path: srcDir + '/api/__init__.py', content: '', region: 'package' }, { path: srcDir + '/main.py', content: U.renderTpl(PY.main, ctx), region: 'entry' }); }
+                else if (lang === 'typescript') files.push({ path: 'src/api/routes.ts', content: U.renderTpl(TS.rest, ctx), region: 'api' }, { path: 'src/main.ts', content: U.renderTpl(TS.main, ctx), region: 'entry' });
+                else files.push({ path: srcDir + '/api/ApiController.java', content: U.renderTpl(JV.controller, ctx), region: 'api' }, { path: srcDir + '/Application.java', content: U.renderTpl(JV.app, ctx), region: 'entry' });
+            } else if (iface === 'cli') {
+                if (lang === 'python') files.push({ path: srcDir + '/cli.py', content: U.renderTpl(PY.cli, ctx), region: 'entry' }); else if (lang === 'typescript') files.push({ path: 'src/cli.ts', content: U.renderTpl(TS.cli, ctx), region: 'entry' });
+            }
+        }
+        // 依賴清單
+        const mf = manifestFor(design, lang);
+        if (lang === 'python') files.push({ path: 'requirements.txt', content: mf.deps.join('\n') + (mf.deps.length ? '\n' : ''), region: 'manifest' });
+        else if (lang === 'typescript') { const run = mf.deps.filter((d) => !/^(vitest|prisma|@types)/.test(d)), dev = mf.deps.filter((d) => /^(vitest|prisma|@types)/.test(d)); const toObj = (a) => Object.fromEntries(a.map((d) => { const i = d.lastIndexOf('@'); return i > 0 ? [d.slice(0, i), d.slice(i + 1)] : [d, '*']; })); files.push({ path: 'package.json', content: JSON.stringify({ name: pkg.replace(/\./g, '-'), version: '0.1.0', private: true, scripts: { test: 'vitest run' }, dependencies: toObj(run), devDependencies: Object.assign({ typescript: '^5.4' }, toObj(dev)) }, null, 2) + '\n', region: 'manifest' }); }
+        else files.push({ path: 'pom-dependencies.xml.txt', content: mf.deps.map((d) => { const [g, a] = d.split(':'); return '<dependency><groupId>' + g + '</groupId><artifactId>' + a + '</artifactId></dependency>'; }).join('\n') + '\n', region: 'manifest' });
+        // README：設計決策表（ADR）
+        const readme = files.find((f) => f.path === 'README.md');
+        if (readme) readme.content += '\n## 設計決策\n\n| 決策 | 選擇 | 由誰決定 | 原因 |\n|---|---|---|---|\n| 架構 | ' + design.architecture.label + ' | ' + design.architecture.by + ' | ' + design.architecture.reason + ' |\n' + design.choices.filter((c) => c.option !== 'none' || c.by !== 'default').map((c) => '| ' + c.label + ' | ' + c.optionLabel + (c.lib && c.lib !== 'none' ? '（' + c.lib + '）' : '') + ' | ' + c.by + ' | ' + c.reason + ' |').join('\n') + '\n';
+        // 膠水（FaGlue）：把設計接到真正的 library（ORM 模型、repository 實作、schema、依賴注入、路由、啟動、測試…）；同一個位置有多塊時依驗證與經驗挑
+        let glue = { files, applied: [], skipped: [] }; if (G && opts.glue !== false) glue = G.apply(model, design, files, { language: lang, package: pkg, userGlue: opts.userGlue, experience: opts.experience });
+        return { files: glue.files, design, libs: mf.libs, glue: glue.applied, glueSkipped: glue.skipped };
+    }
+
+    // ---------- ④ 常見設計片段（預先建好的 UML＋抉擇）----------
+    // triggers：情境裡出現就算符合；dsl：UML 片段（類別名稱用常見英文）；choices：這類系統常見的抉擇（給推薦當先驗）；note：何時用
+    const FRAGMENTS = [
+        { id: 'crud_entity', label: 'CRUD 實體管理', triggers: ['新增', '修改', '刪除', '查詢', '管理', '上架', '編輯', '維護'], note: '一個實體＋Repository＋Service 的最小骨架。', dsl: 'class Item { +id:int; +name:str; +createdAt:datetime }\ninterface ItemRepository { get(id:int):Optional<Item>; list():List<Item>; save(item:Item):Item; delete(id:int):void }\nclass ItemService { +create(name:str):Item; +rename(id:int, name:str):Item; +remove(id:int):void }\nItemService --> ItemRepository', choices: { architecture: 'layered', persistence: 'orm' } },
+        { id: 'shopping_cart', label: '購物車與訂單', triggers: ['購物車', '結帳', '下單', '訂單', '付款', '商品'], note: '商品、購物車、訂單、付款的常見切法。', dsl: 'enum OrderStatus { NEW, PAID, SHIPPED, CANCELLED }\nclass Product { +id:int; +name:str; +price:decimal }\nclass CartItem { product:Product; quantity:int }\nclass Cart { items:List<CartItem>; +add(product:Product, quantity:int):void; +remove(product:Product):void; +total():decimal }\nclass Order { +id:int; status:OrderStatus; lines:List<CartItem>; +pay():bool; +cancel():void }\ninterface PaymentGateway { charge(amount:decimal):bool }\nCart o-- CartItem\nOrder *-- CartItem\nOrder --> PaymentGateway', choices: { interface: 'rest', persistence: 'orm', http_client: 'client' } },
+        { id: 'auth_login', label: '登入與權限', triggers: ['登入', '帳號', '密碼', '權限', '角色', '管理員', '會員', 'login'], note: '使用者、角色、登入服務。', dsl: 'enum Role { USER, ADMIN }\nclass User { +id:int; +email:str; role:Role; passwordHash:str }\nclass AuthService { +login(email:str, password:str):Optional<str>; +verify(token:str):Optional<User> }\nAuthService --> User', choices: { auth: 'token', validation: 'schema' } },
+        { id: 'observer', label: 'Observer（通知／訂閱）', triggers: ['通知', '訂閱', '事件', '推播', '提醒', '監聽'], note: '主題變化時通知所有訂閱者。', dsl: 'interface Observer { update(event:str):void }\nclass Subject { observers:List<Observer>; +attach(o:Observer):void; +detach(o:Observer):void; +notifyAll(event:str):void }\nSubject o-- Observer', choices: { messaging: 'queue' } },
+        { id: 'strategy', label: 'Strategy（可替換的演算法）', triggers: ['策略', '計算方式', '折扣', '演算法', '可替換', '多種方式'], note: '同一件事有多種做法，執行時選一個。', dsl: 'interface Strategy { apply(value:decimal):decimal }\nclass Context { strategy:Strategy; +execute(value:decimal):decimal }\nContext --> Strategy', choices: {} },
+        { id: 'factory', label: 'Factory（依條件建立物件）', triggers: ['建立不同', '依類型建立', '工廠', '多種類型'], note: '依參數決定建立哪一種物件。', dsl: 'interface Product { describe():str }\nclass Factory { +create(kind:str):Product }\nFactory ..> Product', choices: {} },
+        { id: 'state_machine', label: '狀態機（流程狀態）', triggers: ['狀態', '流程', '審核', '核准', '待處理', '進行中', '完成'], note: '實體有生命週期，轉換要驗證。', dsl: 'enum State { PENDING, APPROVED, REJECTED, DONE }\nclass Workflow { +id:int; state:State; +approve():void; +reject():void; +complete():void }\nWorkflow --> State', choices: {} },
+        { id: 'inventory', label: '庫存管理', triggers: ['庫存', '進貨', '出貨', '盤點', '倉庫'], note: '庫存量與異動紀錄。', dsl: 'class StockItem { +sku:str; quantity:int; +adjust(delta:int):void }\nclass StockMovement { +id:int; sku:str; delta:int; at:datetime }\nclass InventoryService { +receive(sku:str, qty:int):void; +ship(sku:str, qty:int):bool }\nInventoryService --> StockItem\nInventoryService --> StockMovement', choices: { persistence: 'orm' } },
+        { id: 'scheduler_job', label: '定時工作', triggers: ['每天', '每週', '定時', '排程', '提醒', '週期'], note: '排程觸發工作。', dsl: 'interface Job { run():void }\nclass JobScheduler { jobs:List<Job>; +register(job:Job, cron:str):void; +start():void }\nJobScheduler o-- Job', choices: { scheduler: 'cron' } },
+    ];
+    function matchFragments(scenario, min) {
+        const s = String(scenario || '').toLowerCase(); const out = [];
+        for (const f of FRAGMENTS) { const hits = f.triggers.filter((t) => s.includes(t.toLowerCase())); if (hits.length >= (min || 1)) out.push({ fragment: f, hits, score: hits.length }); }
+        return out.sort((a, b) => b.score - a.score);
+    }
+    // 把符合的片段合併成種子模型（類別名稱衝突就跳過後來的）；回傳 { model, used:[id], skipped:[…] }
+    function seedModel(scenario, opts) {
+        opts = opts || {}; const matches = matchFragments(scenario, opts.minHits || 1).slice(0, opts.maxFragments || 3); const model = U.emptyModel(); const used = [], skipped = [];
+        for (const m of matches) {
+            const part = U.parseDsl(m.fragment.dsl); if (part.errors.length) { skipped.push(m.fragment.id + '：片段本身有錯'); continue; }
+            const clash = part.model.classes.filter((c) => model.classes.some((x) => x.name === c.name)).map((c) => c.name); if (clash.length) { skipped.push(m.fragment.id + '：類別名稱重複 ' + clash.join('、')); continue; }
+            model.classes.push(...part.model.classes); model.relations.push(...part.model.relations); used.push(m.fragment.id);
+        }
+        return { model, used, skipped };
+    }
+    // 片段 → 離線訓練器的內建知識（宿主註冊成 domain 'uml_design'）：語意範例（觸發詞組）、說明、UML 片段
+    function trainerPatterns() { return FRAGMENTS.map((f) => ({ id: 'uml_' + f.id, type: 'semantic', examples: [f.label].concat(f.triggers.map((t) => '設計一個有「' + t + '」的系統')), intent: 'UML 設計片段：' + f.label, description: f.note, uml: f.dsl, choices: f.choices, answer: f.label + '：' + f.note + '\n\n' + f.dsl, confidence: 0.6, source: 'builtin', enabled: true, hits: 0, risk: 'safe' })); }
+
+    // ---------- ⑤ top-down 遞迴 rework ----------
+    // 找出問題（由上而下排序：model → class → relation → usecase）。每個問題指出「哪一區」與「為什麼」，只有那一區會被重做。
+    function findIssues(model) {
+        const issues = []; const used = new Set(); for (const u of model.usecases) { used.add(u.actor); u.steps.forEach((s) => used.add(s.to)); } const related = new Set(); for (const r of model.relations) { related.add(r.from); related.add(r.to); }
+        for (const e of U.validateModel(model)) { const m = /^([A-Z][A-Za-z0-9]*)[.\s]/.exec(e); issues.push({ level: 'class', region: m ? 'class:' + m[1] : 'model', kind: 'invalid', msg: e }); }
+        if (!model.usecases.length) issues.push({ level: 'model', region: 'model', kind: 'no_usecase', msg: '沒有任何使用案例' });
+        if (model.classes.length > 10) issues.push({ level: 'model', region: 'model', kind: 'too_many_classes', msg: '類別超過 10 個，需要合併或分成套件' });
+        for (const c of model.classes) {
+            if (c.kind === 'class' && !c.attrs.length && !c.ops.length) issues.push({ level: 'class', region: 'class:' + c.name, kind: 'empty', msg: c.name + ' 沒有任何屬性或操作' });
+            if (c.ops.length > 8) issues.push({ level: 'class', region: 'class:' + c.name, kind: 'god_class', msg: c.name + ' 操作超過 8 個，責任太多' });
+            if (!used.has(c.name) && !related.has(c.name) && c.kind !== 'enum') issues.push({ level: 'class', region: 'class:' + c.name, kind: 'orphan', msg: c.name + ' 沒有任何關係也沒有被任何使用案例用到' });
+        }
+        for (const u of model.usecases) if (u.steps.length < 2) issues.push({ level: 'usecase', region: 'usecase:' + u.name, kind: 'short_sequence', msg: '使用案例「' + u.name + '」呼叫順序少於 2 步' });
+        const order = { model: 0, class: 1, relation: 2, usecase: 3 }; return issues.sort((a, b) => order[a.level] - order[b.level]);
+    }
+    // 上層改了，下層要跟著收拾：拿掉指向不存在類別的關係與呼叫步驟、補不存在的操作（程式，不問模型）
+    function normalize(model) {
+        const names = new Set(model.classes.map((c) => c.name)); const log = [];
+        const nr = model.relations.length; model.relations = model.relations.filter((r) => names.has(r.from) && names.has(r.to) && r.from !== r.to || (r.kind === 'assoc' && names.has(r.from) && names.has(r.to))); if (model.relations.length !== nr) log.push('移除 ' + (nr - model.relations.length) + ' 個指向不存在類別的關係');
+        for (const u of model.usecases) { const before = u.steps.length; u.steps = u.steps.filter((s) => names.has(s.to)); let prev = u.actor; for (const s of u.steps) { s.from = prev; prev = s.to; } if (u.steps.length !== before) log.push('使用案例 ' + u.name + ' 拿掉 ' + (before - u.steps.length) + ' 個無效呼叫'); }
+        const added = U.ensureOps(model); if (added.length) log.push('補上操作：' + added.join('、')); return log;
+    }
+    function dslOfClass(model, name) { const c = model.classes.find((x) => x.name === name); if (!c) return ''; const one = U.emptyModel(); one.classes = [c]; return U.toDsl(one).split('\n').filter((l) => !/^model:/.test(l)).join('\n'); }
+    // 只重做有問題的那一區（沿用 uml_core 的封閉小問題，並附上目前的內容與要修的問題）。回傳 { model, rounds:[…], remaining }
+    async function reworkModel(model, scenario, opts) {
+        opts = opts || {}; const maxRounds = opts.maxRounds || 2; const rounds = []; const names = () => model.classes.map((c) => c.name);
+        const withIssue = (spec, current, issue) => { const m = spec.messages.slice(); const last = m[m.length - 1]; m[m.length - 1] = Object.assign({}, last, { content: last.content + '\n\n目前這一區的內容：\n' + current + '\n要修正的問題：' + issue.msg + '\n請只輸出修正後的 JSON。' }); return Object.assign({}, spec, { messages: m }); };
+        for (let round = 1; round <= maxRounds; round++) {
+            const issues = findIssues(model); if (!issues.length) break; const log = [];
+            for (const iss of issues.slice(0, opts.maxIssues || 6)) {
+                const [kind, name] = iss.region.split(':'); let did = false;
+                if (kind === 'class' && model.classes.some((c) => c.name === name)) {
+                    const c = model.classes.find((x) => x.name === name);
+                    if (iss.kind === 'orphan' || iss.kind === 'invalid' && /關係/.test(iss.msg)) { const others = names().filter((n) => n !== name); if (others.length) { const spec = withIssue(U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }), dslOfClass(model, name), iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { for (const x of r.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); did = true; } } }
+                    else if (iss.kind === 'empty' || iss.kind === 'god_class' || iss.kind === 'invalid') { const spec = withIssue(U.stageSpec.members(scenario, { cls: c, classNames: names(), usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, name), iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok && c.kind !== 'enum') { c.attrs = (r.value.attrs || []).map((a) => ({ name: a.name, type: U.parseType(a.type), visibility: '+' })); c.ops = (r.value.ops || []).map((o) => ({ name: o.name, params: (o.params || []).map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? U.parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false })); did = true; } }
+                } else if (kind === 'usecase') {
+                    const u = model.usecases.find((x) => x.name === name); if (u) { const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；'); const spec = withIssue(U.stageSpec.sequence(scenario, { uc: u, ops, menu }), u.steps.map((s) => s.to + '.' + s.msg).join(' -> ') || '（空）', iss); const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region: iss.region, issue: iss.kind, by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) { u.steps = []; let prev = u.actor; for (const s of r.value.steps || []) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } did = true; } }
+                } else if (iss.kind === 'too_many_classes') { log.push({ region: 'model', issue: iss.kind, by: 'program', ok: true, note: '分成套件（packagesOf）' }); }
+                if (did) { const nl = normalize(model); if (nl.length) log.push({ region: 'model', issue: 'normalize', by: 'program', ok: true, note: nl.join('；') }); }
+            }
+            rounds.push({ round, issues: issues.map((i) => i.region + ':' + i.kind), log });
+        }
+        const remaining = findIssues(model); return { model, rounds, remaining };
+    }
+    // 套件分組（程式）：用關係與使用案例把類別分群（連通分量），每群用最多關係的類別命名
+    function packagesOf(model) {
+        const parent = {}; const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x]))); for (const c of model.classes) parent[c.name] = c.name; const uni = (a, b) => { if (parent[a] && parent[b]) parent[find(a)] = find(b); };
+        for (const r of model.relations) if (r.kind !== 'depend') uni(r.from, r.to); for (const u of model.usecases) { let prev = null; for (const s of u.steps) { if (prev) uni(prev, s.to); prev = s.to; } }
+        const groups = {}; for (const c of model.classes) (groups[find(c.name)] = groups[find(c.name)] || []).push(c.name);
+        const deg = {}; for (const r of model.relations) { deg[r.from] = (deg[r.from] || 0) + 1; deg[r.to] = (deg[r.to] || 0) + 1; }
+        return Object.values(groups).map((cs) => { const head = cs.slice().sort((a, b) => (deg[b] || 0) - (deg[a] || 0))[0]; return { name: head.replace(/(Service|Repository|Controller)$/, '').toLowerCase() || head.toLowerCase(), classes: cs }; });
+    }
+    // 整條：種子（片段）→ 情境到 UML → rework → 推薦與抉擇 → 專案；模型只做封閉的小決策
+    async function designProject(scenario, opts) {
+        opts = opts || {}; const lang = opts.language || 'python'; const trail = [];
+        const seed = opts.seed === false ? { model: U.emptyModel(), used: [], skipped: [] } : seedModel(scenario, opts); trail.push({ stage: 'seed', by: 'program', used: seed.used });
+        let res;
+        if (opts.model) res = { ok: true, model: opts.model, decisions: [], warnings: [] };
+        else { res = await U.scenarioToModel(scenario, { generate: opts.generate, onStage: opts.onStage, maxTries: opts.maxTries, program: opts.program, glossary: opts.glossary }); if (!res.ok) return { ok: false, error: res.error, trail, decisions: res.decisions, warnings: res.warnings }; }
+        const model = res.model; // 種子片段的類別補進來（名稱不衝突的）
+        for (const c of seed.model.classes) if (!model.classes.some((x) => x.name === c.name) && model.classes.length < 10) model.classes.push(c); for (const r of seed.model.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
+        normalize(model); let rw = { rounds: [], remaining: findIssues(model) }; if (opts.generate && opts.rework !== false) rw = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); trail.push({ stage: 'rework', rounds: rw.rounds.length, remaining: rw.remaining.length });
+        const frag = seed.used.map((id) => FRAGMENTS.find((f) => f.id === id)).filter(Boolean); const fragChoices = Object.assign({}, ...frag.map((f) => f.choices || {}));
+        const rec = recommend(scenario, lang, { prefs: Object.assign({}, fragChoices, opts.prefs || {}), constraints: opts.constraints || {} });
+        const dec = opts.generate ? await resolveAmbiguous(rec, scenario, opts.generate) : []; trail.push({ stage: 'design', by: 'program', ambiguous: dec.length });
+        const proj = buildProject(model, { language: lang, package: opts.package, scenario, design: rec, userGlue: opts.userGlue, experience: opts.experience, glue: opts.glue });
+        return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used };
+    }
+
+    return { ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDesign;
+})();
+/* DESIGN-END */
 // ============================================================
 // 程式行為分析（Behavior Analyzer）——由 Domain Resolver 的 behavior_analyzer 設計移植成內建基底。
 // 目標：把原始碼／組合語言解釋成「由下而上、沿著正向路徑」的行為說明，並且可折疊：
@@ -12254,7 +13861,11 @@ function faVlmWorkerMain() {
     async function chat(m) {
         if (!cur || cur.arch !== 'causal-lm') throw new Error('文字模型還沒載入');
         const L = lib; const t0 = Date.now();
-        const inputs = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, return_dict: true, enable_thinking: false });
+        let inputs;
+        if (m.prefill) { // prefill：把回覆的開頭先寫進提示詞（模型從那裡接著寫），回傳的文字包含這個開頭
+            const text = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, tokenize: false, enable_thinking: false }) + m.prefill;
+            inputs = await cur.tokenizer(text, { add_special_tokens: false, return_tensor: true });
+        } else inputs = cur.tokenizer.apply_chat_template(m.messages, { tools: m.tools && m.tools.length ? m.tools : undefined, add_generation_prompt: true, return_dict: true, enable_thinking: false });
         const stopper = L.InterruptableStoppingCriteria ? new L.InterruptableStoppingCriteria() : null; cur.stopper = stopper;
         let buf = '', last = Date.now();
         const flush = () => { if (buf) { post({ type: 'stream', tid: m.tid, t: buf }); buf = ''; } last = Date.now(); };
@@ -12262,7 +13873,7 @@ function faVlmWorkerMain() {
         const args = { ...inputs, ...(m.gen || {}), max_new_tokens: m.maxTokens || 512 }; if (streamer) args.streamer = streamer; if (stopper) args.stopping_criteria = stopper;
         const out = await cur.model.generate(args); flush(); cur.stopper = null;
         const plen = inputs.input_ids.dims.at(-1); const seq = out.slice(null, [plen, null]);
-        return { raw: cur.tokenizer.batch_decode(seq, { skip_special_tokens: true })[0], ms: Date.now() - t0, info: { promptTokens: plen, newTokens: seq.dims.at(-1), interrupted: !!(stopper && stopper.interrupted) } };
+        return { raw: (m.prefill || '') + cur.tokenizer.batch_decode(seq, { skip_special_tokens: true })[0], ms: Date.now() - t0, info: { promptTokens: plen, newTokens: seq.dims.at(-1), interrupted: !!(stopper && stopper.interrupted) } };
     }
     async function run(m) {
         if (!cur) throw new Error('模型還沒載入');
@@ -13689,6 +15300,10 @@ class FloatingAssistant {
             offlineLlmMixRewrite: true, // 混用時工具模型沒用到工具，也交給「寫回答」的模型重寫
             offlineLlmMaxTokens: 512,
             offlineRecipes: true, // 離線小模型用「食譜」做工具型的服務：程式路由／填欄位、模型只做選擇題與填空題
+            userGlue: [], // AI／使用者登記的膠水（glue_define）；跟內建膠水依經驗競爭同一個位置
+            glueExperience: {}, // 膠水的經驗統計 { glueId: { ok, fail, last, env, notes } }（glue_report）
+            umlGlossary: {}, // 使用者補充的領域詞彙：{ 中文詞: { en, kind:'actor'|'entity', attrs:{名稱:型別} } }；程式讀情境時優先用（FaUml.scenarioHints）
+            designPrefs: {}, // 使用者做過的設計抉擇（{關注點: 選項}）：推薦時優先採用，離線訓練器也會用
             offlineRecipePlans: true, // 多步驟計畫：目標→phase→step→substep，狀態機＋決策樹維護
             offlineRecipePhrase: true, // 資訊類工具（搜尋、查詢、讀網頁）的結果，讓模型用 1～2 句話說明（會被檢查，不過就用程式整理的結果）
             offlineTextRoles: {}, // { 模型id: { tools, answer, summarize, priority, device } }
@@ -14887,6 +16502,10 @@ class FloatingAssistant {
             offlineRecipes: raw.offlineRecipes !== false,
             offlineRecipePhrase: raw.offlineRecipePhrase !== false,
             offlineRecipePlans: raw.offlineRecipePlans !== false,
+            userGlue: (() => { const out = []; for (const g of (Array.isArray(raw.userGlue) ? raw.userGlue : []).slice(0, 60)) { const v = FaGlue.validateGlue(Object.assign({}, g, { files: (g && g.files || []).map((f) => ({ path: f.path, template: f.template, per: f.per })) })); if (v.ok) out.push(Object.assign(v.glue, { source: g.source === 'ai' ? 'ai' : 'user' })); } return out; })(),
+            glueExperience: (() => { const out = {}; const src = raw.glueExperience && typeof raw.glueExperience === 'object' ? raw.glueExperience : {}; for (const [id, e] of Object.entries(src).slice(0, 200)) { if (!/^[a-z][a-z0-9-]{2,60}$/.test(id) || !e || typeof e !== 'object') continue; out[id] = { ok: Math.max(0, Math.floor(Number(e.ok) || 0)), fail: Math.max(0, Math.floor(Number(e.fail) || 0)), last: Number(e.last) || 0, env: e.env && typeof e.env === 'object' ? Object.fromEntries(Object.entries(e.env).slice(0, 12).map(([k, v]) => [String(k).slice(0, 30), String(v).slice(0, 40)])) : {}, notes: Array.isArray(e.notes) ? e.notes.slice(-5).map((n) => String(n).slice(0, 200)) : [] }; } return out; })(),
+            umlGlossary: (() => { const out = {}; const src = raw.umlGlossary && typeof raw.umlGlossary === 'object' ? raw.umlGlossary : {}; for (const [zh, v] of Object.entries(src).slice(0, 300)) { if (!/^[\u3400-\u9fff]{1,8}$/.test(zh) || !v || !/^[A-Z][A-Za-z0-9]{0,30}$/.test(String(v.en))) continue; const e = { en: String(v.en), kind: v.kind === 'actor' ? 'actor' : 'entity' }; if (v.attrs && typeof v.attrs === 'object') { e.attrs = {}; for (const [k, ty] of Object.entries(v.attrs).slice(0, 12)) if (/^[a-z][A-Za-z0-9]{0,30}$/.test(k) && typeof ty === 'string') e.attrs[k] = ty.slice(0, 40); } out[zh] = e; } return out; })(),
+            designPrefs: (() => { const out = {}; const src = raw.designPrefs && typeof raw.designPrefs === 'object' ? raw.designPrefs : {}; for (const k of Object.keys(FaDesign.CONCERNS).concat(['architecture'])) { const v = src[k]; if (typeof v === 'string' && /^[a-z_]{2,20}$/.test(v)) out[k] = v; } return out; })(),
             offlineLlmMaxTokens: (() => { const n = Math.floor(Number(raw.offlineLlmMaxTokens)); return Number.isFinite(n) ? Math.max(64, Math.min(2048, n)) : 512; })(),
             offlineTextRoles: (() => { const out = {}; const src = raw.offlineTextRoles && typeof raw.offlineTextRoles === 'object' ? raw.offlineTextRoles : {}; for (const m of FaVlm.textModels()) { const c = src[m.id]; if (!c || typeof c !== 'object') continue; const o = {}; for (const k of ['tools', 'answer', 'summarize']) if (typeof c[k] === 'boolean') o[k] = c[k]; if (Number.isFinite(Number(c.priority))) o.priority = Math.max(-1000, Math.min(1000, Math.round(Number(c.priority)))); if (c.device === 'gpu' || c.device === 'cpu') o.device = c.device; out[m.id] = o; } return out; })(),
             offlineToolBench: (() => { const out = {}; const src = raw.offlineToolBench && typeof raw.offlineToolBench === 'object' ? raw.offlineToolBench : {}; for (const m of FaVlm.textModels()) { const b = src[m.id]; if (!b || typeof b !== 'object' || !['good', 'fair', 'poor'].includes(b.rating)) continue; out[m.id] = { passed: Math.max(0, Math.floor(Number(b.passed) || 0)), total: Math.max(0, Math.floor(Number(b.total) || 0)), formatOk: Math.max(0, Math.floor(Number(b.formatOk) || 0)), rating: b.rating, label: String(b.label || '').slice(0, 80), at: Number(b.at) || 0, device: b.device === 'gpu' ? 'gpu' : 'cpu', ms: Math.max(0, Math.floor(Number(b.ms) || 0)), details: Array.isArray(b.details) ? b.details.slice(0, 12).map((d) => ({ id: String(d && d.id || '').slice(0, 24), ok: !!(d && d.ok), reason: String(d && d.reason || '').slice(0, 120) })) : [] }; } return out; })(),
@@ -16465,6 +18084,69 @@ ${fnData.code}
         );
         // 2026-10-06：圖片轉 PDF（使用者貼圖說「幫我轉pdf」，因為沒有內建工具，AI 先委派 file_analysis 燒掉 20 輪、再委派 media_av 回答「沒有這個工具」，最後才自己用 Python 寫）。
         // 純本地 pdf-lib：PNG／JPEG 直接嵌入（不重新壓縮、畫質不變），其他格式（WebP／GIF／BMP／SVG…）先用 canvas 轉 PNG；多張圖＝多頁。
+        // ===== UML → 程式碼骨架（FaUml／FaDesign，設計見 DESIGN.uml-framework.md）：給離線訓練器與線上 AI（強弱都行）共用的工具 =====
+        // 純程式、不經過 AI：UML（一行一件事的文字 DSL）→ 驗證（精確到哪一行）→ 依選擇的架構與 library 展開成專案（分層、service、repository、api／cli、依賴清單、測試骨架、README 與設計決策表）。
+        registerOptional('uml_to_code',
+            '把 UML 轉成程式碼骨架（Python／TypeScript／Java），純程式、秒完成、不經過 AI。你（或離線小模型）只要寫「一行一件事」的 UML 文字，格式：model: 名稱／actor: A, B／class Name extends Base implements I { +id:int; items:List<Item>; +total():decimal; add(item:Item):void }／interface Name { op(x:int):bool }／enum Name { A, B }／Order *-- Item（組成）Cart o-- Item（聚合）A --> B : 標籤 1..*（關聯）A ..> B（依賴）／usecase 名稱: Actor -> Cls.op(args):ret -> Cls2.op2()（呼叫順序）。型別：int float str bool date datetime decimal any、List<T> Map<K,V> Optional<T> 或已定義的類別。類別名稱英文 PascalCase，屬性與操作 camelCase。格式或內容有錯會精確回報哪一行、為什麼，改好再呼叫一次。架構與 library 由程式依 scenario 的關鍵字推薦（也可用 constraints 指定，例如 {"persistence":"sqlite"}）；要先看有哪些選項與推薦用 design_choices。產生 zip（下載附件）並回傳檔案清單、設計決策、Mermaid 類別圖。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._umlToCode(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: {
+                uml: { type: 'string', description: 'UML 文字（格式見工具說明）' },
+                language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python', description: '目標語言' },
+                package: { type: 'string', description: '（選填）套件／專案名稱，小寫英文' },
+                scenario: { type: 'string', description: '（選填）原始情境文字；用來推薦架構與 library（網站、命令列、資料庫、登入、排程…）' },
+                constraints: { type: 'object', description: '（選填）指定抉擇，例如 {"architecture":"layered","interface":"rest","persistence":"sqlite"}；選項見 design_choices' },
+                remember: { type: 'boolean', description: '（選填）true＝把 constraints 記成使用者偏好，以後推薦優先採用' },
+            }, required: ['uml'], additionalProperties: false }
+        );
+        registerOptional('glue_list',
+            '列出「膠水」——骨架之後把設計接到真正 library 的寫法（ORM 模型、repository 實作、Pydantic schema、依賴注入、FastAPI 路由與啟動、Typer 指令、JWT、HTTP 客戶端、排程、記錄、設定、冒煙測試…）：每一塊的適用條件、占的位置（slot）、驗證過的版本、經驗（成功／失敗、最近環境）、來源（內建／AI 登記／使用者）。uml_to_code 會依設計自動挑選並套用；你可以用 glue_define 登記自己接通的寫法，用 glue_report 回報某塊膠水在你的環境跑測試的結果。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const exp = this.advancedSettings.glueExperience || {}; const all = FaGlue.GLUE.concat(this.advancedSettings.userGlue || []).filter((g) => !a.lang || g.lang === a.lang);
+                return JSON.stringify({ ok: true, glue: all.map((g) => ({ id: g.id, lang: g.lang, slot: g.slot, label: g.label, source: g.source, requires: g.requires, verified: g.verified, experience: exp[g.id] || { ok: 0, fail: 0 }, score: Math.round(FaGlue.score(g, exp) * 100) / 100, files: g.files.map((f) => f.path) })) });
+            },
+            { type: 'object', properties: { lang: { type: 'string', enum: ['python', 'typescript', 'java'], description: '（選填）只列這個語言' } }, additionalProperties: false }
+        );
+        registerOptional('glue_define',
+            '登記一塊「膠水」：你（AI）把某個 library 組合手動接通、測試通過之後，把那些檔案整理成 template 登記起來，之後離線小模型與其他 AI 產生專案時直接重用，不用重新摸索。template 用 {{名稱}} 取代會變的部分，可用的變數：pkg（套件名）、src（原始碼目錄）、title（系統名稱）；每個實體／使用案例一個檔案時 per 填 entity 或 usecase，變數是 name、snake、plural、table、fields（每個有 name、py、mapped、col）／className、path、steps；迴圈 {{#each entities}}…{{/each}}、條件 {{#if x}}…{{else}}…{{/if}}、過濾 |snake |camel |pascal |upper。登記後標為「未驗證」，要累積 glue_report 的成功經驗才會贏過內建且已驗證的膠水（同一個 slot 只留分數最高的一塊）。路徑必須是專案內的相對路徑。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const v = FaGlue.validateGlue(Object.assign({}, a, { source: 'ai' })); if (!v.ok) return JSON.stringify({ ok: false, error: '膠水格式不合格', errors: v.errors });
+                const list = (this.advancedSettings.userGlue || []).filter((g) => g.id !== v.glue.id).concat([v.glue]).slice(-60); this.advancedSettings.userGlue = list; this._saveAdvancedSettings();
+                return JSON.stringify({ ok: true, id: v.glue.id, slot: v.glue.slot, note: '已登記為未驗證；用它產生專案、測試通過後請呼叫 glue_report 回報' });
+            },
+            { type: 'object', properties: { id: { type: 'string', description: '小寫英數與連字號，例如 py-fastapi-jwt-auth' }, lang: { type: 'string', enum: ['python', 'typescript', 'java'] }, slot: { type: 'string', description: '占的位置，例如 api、persistence、auth、cli、services；同一個位置只留分數最高的一塊' }, label: { type: 'string' }, requires: { type: 'object', description: '（選填）適用條件，例如 {"interface":["rest"],"persistence":["orm"],"libs":["fastapi"]}' }, files: { type: 'array', items: { type: 'object' }, description: '[{path, template, per:"project"|"entity"|"usecase"}]' }, notes: { type: 'string' } }, required: ['id', 'lang', 'slot', 'files'], additionalProperties: false }
+        );
+        registerOptional('glue_report',
+            '回報一塊膠水在真實環境的結果：用 uml_to_code／uml_design 產生的專案，裝好依賴、跑過測試之後，成功或失敗都回報（ok、環境版本、備註）。經驗會累積，決定同一個位置有多塊膠水時挑哪一塊，也讓使用者知道哪些組合真的驗證過。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const id = String(a.glue_id || ''); if (!FaGlue.GLUE.concat(this.advancedSettings.userGlue || []).some((g) => g.id === id)) return JSON.stringify({ ok: false, error: '沒有這塊膠水：' + id + '（用 glue_list 看有哪些）' });
+                this.advancedSettings.glueExperience = FaGlue.report(this.advancedSettings.glueExperience || {}, id, a.ok === true, a.env, a.note); this._saveAdvancedSettings();
+                return JSON.stringify({ ok: true, glue_id: id, experience: this.advancedSettings.glueExperience[id] });
+            },
+            { type: 'object', properties: { glue_id: { type: 'string' }, ok: { type: 'boolean', description: '測試是否通過' }, env: { type: 'object', description: '（選填）環境，例如 {"python":"3.11","fastapi":"0.110.0"}' }, note: { type: 'string', description: '（選填）備註，失敗時寫原因' } }, required: ['glue_id', 'ok'], additionalProperties: false }
+        );
+        registerOptional('design_choices',
+            '列出「UML 確定之後」的設計抉擇：架構風格（分層、六角、命令列、函式庫、事件驅動）與各關注點（對外介面、資料儲存、驗證、測試、記錄、呼叫外部服務、認證、排程、訊息）的選項、各語言對應的 library 與取捨；依 scenario 推薦（程式依關鍵字決定，平手才列成選擇題），並列出符合的常見設計片段（購物車、登入、Repository、Observer、Strategy、狀態機、庫存、排程…）。純查表，不經過 AI。選好後把選擇放進 uml_to_code 的 constraints。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python'; const rec = FaDesign.recommend(String(a.scenario || ''), lang, { prefs: this.advancedSettings.designPrefs || {}, constraints: a.constraints || {} });
+                return JSON.stringify({ ok: true, language: lang, tags: rec.tags, architecture: rec.architecture, architectures: FaDesign.ARCH.map((x) => ({ id: x.id, label: x.label, notes: x.notes, tradeoff: x.tradeoff })), choices: rec.choices.map((c) => ({ concern: c.concern, label: c.label, chosen: c.option, lib: c.lib, by: c.by, reason: c.reason, options: FaDesign.CONCERNS[c.concern].options.map((o) => ({ id: o.id, label: o.label, lib: o.libs[lang], tradeoff: o.tradeoff })) })), ambiguous: rec.ambiguous, fragments: FaDesign.matchFragments(String(a.scenario || '')).slice(0, 4).map((m) => ({ id: m.fragment.id, label: m.fragment.label, hits: m.hits, uml: m.fragment.dsl })) });
+            },
+            { type: 'object', properties: { scenario: { type: 'string', description: '（選填）情境文字，用來推薦' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, constraints: { type: 'object', description: '（選填）已經指定的抉擇' } }, additionalProperties: false }
+        );
+        registerOptional('uml_design',
+            '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。需要先下載離線文字模型（第一次會問）。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._umlDesign(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）指定抉擇' } }, required: ['scenario'], additionalProperties: false }
+        );
         // domain-gated 工具（registerOptional）：不出現在根層級的工具清單（不佔每一輪的 context），一般 AI 要用時透過 delegate_to_subagent 進 file_analysis／media_av domain 才看得到；離線訓練器規則與 /media-image-to-pdf 則直接呼叫。
         registerOptional('images_to_pdf',
             '把一張或多張圖片轉成一份PDF（每張圖一頁，依序）。純本地、不經過AI、秒完成：PNG／JPEG直接嵌入（畫質不變），其他格式先轉PNG。使用者要「圖片轉PDF」「這幾張圖合成一份PDF」就直接用這個工具，不要自己寫Python。files留空＝這個對話最近附加的全部圖片；page_size：fit（預設，頁面＝圖片大小）、a4、letter。成功會自動產生PDF下載附件，回傳{ok,pdf_file_id,filename,pageCount,sizeBytes,files}。',
@@ -20952,6 +22634,7 @@ ${fnData.code}
             ],
         };
         const doms = { core_rules: core };
+        doms.uml_design = { name: 'uml_design', description: '常見設計片段與抉擇（購物車、登入、Repository、Observer、Strategy…；UML＋架構／library 選擇）', enabled: true, source: 'builtin', patterns: FaDesign.trainerPatterns(), references: [], created: Date.now(), updated: Date.now() };
         if (catalog) for (const c of catalog.categories) {
             const d = { name: 'cat_' + c.id, description: c.name + '：' + (c.summary || ''), enabled: true, source: 'builtin', patterns: [], references: [], created: Date.now(), updated: Date.now() };
             for (const f of c.features) {
@@ -20985,7 +22668,7 @@ ${fnData.code}
         }
         return made;
     }
-    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v11:' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
+    _otSeedVer() { const c = this.getFeaturesCatalog(); return 'v12:' + FaDesign.FRAGMENTS.length + ':' + (c ? c.categories.reduce((n, x) => n + x.features.length, 0) : 0) + ':' + Object.keys(this.tools || {}).length; }
     // 截圖的步驟：有網址 → 開分頁→截圖→關分頁；沒有網址 → 用AI已經開著的分頁。800x400之類的尺寸＝只截上方左上角那個範圍，「整頁」＝整頁
     _otShotSteps(slots, norm) {
         const m = /(\d{2,5})\s*[x×*＊]\s*(\d{2,5})/i.exec(norm);
@@ -47133,6 +48816,46 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     // ----- 設定頁：離線模型管理 -----
+    // ===== UML → 程式碼骨架 =====
+    async _umlZip(files, name, lang) {
+        await this._ensureJSZipLoaded(); const zip = new JSZip(); for (const f of files) zip.file(f.path, f.content);
+        const blob = await zip.generateAsync({ type: 'blob' }); const filename = String(name || 'project').replace(/[^\w一-鿿-]+/g, '_') + '-' + lang + '.zip';
+        const id = await this.fileCache.put(filename, 'application/zip', blob, 'uploaded'); return { id, filename, size: blob.size };
+    }
+    _umlResult(model, lang, proj, z, extra) {
+        return Object.assign({ ok: true, zip_file_id: z.id, filename: z.filename, language: lang, fileCount: proj.files.length, files: proj.files.map((f) => f.path).slice(0, 60), design: { architecture: proj.design.architecture.label, choices: proj.design.choices.filter((c) => c.option !== 'none').map((c) => c.label + '：' + c.optionLabel + (c.lib && c.lib !== 'none' ? '（' + c.lib + '）' : '') + ' [' + c.by + ']') }, mermaid: { classDiagram: FaUml.toMermaidClass(model) } }, extra || {});
+    }
+    async _umlToCode(a) {
+        const text = String(a.uml || ''); if (!text.trim()) return { ok: false, error: '缺少 uml 參數（文字 DSL，格式見工具說明）' };
+        const p = FaUml.parseDsl(text); if (p.errors.length) return { ok: false, error: 'UML 有 ' + p.errors.length + ' 行看不懂', errors: p.errors.slice(0, 10), hint: '一行一件事：class Name { attr:type; op(arg:type):ret }、A *-- B、usecase 名稱: Actor -> Cls.op() -> Cls2.op()；修好這些行再呼叫一次' };
+        const model = p.model; const added = FaUml.ensureOps(model); const errs = FaUml.validateModel(model); if (errs.length) return { ok: false, error: 'UML 有 ' + errs.length + ' 個設計問題', errors: errs.slice(0, 10) };
+        const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python'; const cons = a.constraints && typeof a.constraints === 'object' ? a.constraints : {};
+        if (a.remember === true && Object.keys(cons).length) { this.advancedSettings.designPrefs = Object.assign({}, this.advancedSettings.designPrefs, cons); this._saveAdvancedSettings(); }
+        const rec = FaDesign.recommend(String(a.scenario || ''), lang, { prefs: this.advancedSettings.designPrefs || {}, constraints: cons });
+        const proj = FaDesign.buildProject(model, { language: lang, package: a.package, scenario: a.scenario, design: rec, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {} }); const z = await this._umlZip(proj.files, model.name, lang);
+        const res = this._umlResult(model, lang, proj, z, { warnings: added.length ? ['使用案例呼叫了還沒有的操作，已補進類別：' + added.join('、')] : [], glue: proj.glue.map((g) => g.id + (g.verified && Object.keys(g.verified).length ? '（驗證過：' + Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、') + '）' : '（未驗證）')), glueSkipped: proj.glueSkipped });
+        await this._deliverToolResultFile(res, 'zip_file_id', (r) => '📎 已產生 ' + lang + ' 程式骨架（' + r.fileCount + ' 個檔案）：' + r.filename); return res;
+    }
+    async _umlDesign(a) {
+        const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
+        const M = await this._planModel({}); const err = await M.ensure(); if (err) return { ok: false, error: '離線文字模型不能用：' + err };
+        const prog = this._createProgressWidget('情境→UML→程式骨架（離線模型）'); const r = await FaDesign.designProject(scenario, { generate: M.gen, language: lang, package: a.package, constraints: a.constraints, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {}, onStage: (e) => { if (e.type === 'stage') prog.log('✔ ' + e.stage + (e.label ? '：' + e.label : '') + (e.ok ? '' : '（模型沒給出合格回覆，用保守預設）')); } });
+        if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
+        const z = await this._umlZip(r.files, r.model.name || 'design', lang); prog.finish('完成：' + r.files.length + ' 個檔案');
+        const res = this._umlResult(r.model, lang, { files: r.files, design: r.design }, z, { uml: r.dsl, seededFrom: r.seedUsed, rework: r.rework.rounds.map((x) => x.issues.length + ' 個問題'), warnings: r.warnings.slice(0, 8) });
+        await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 已產生 ' + lang + ' 程式骨架（' + x.fileCount + ' 個檔案）：' + x.filename);
+        await this._umlLearnBack(scenario, r.dsl, r.design, r.warnings); return res;
+    }
+    // 設計做完且沒有警告，也養回離線訓練器：同樣的情境下次可以直接當參考／種子（照「自動訓練」設定）
+    async _umlLearnBack(scenario, dsl, design, warnings) {
+        try {
+            if ((this.advancedSettings.offlineAutoTrain || 'off') === 'off' || (warnings && warnings.length)) return;
+            const st = this._ot || await this._otLoad(); const name = 'learned_designs'; const dom = st.domains.get(name) || { name, description: '離線設計過、沒有警告的 UML 與抉擇（設計種子）', enabled: true, source: 'learned', patterns: [], references: [], created: Date.now() };
+            const id = 'uml_learned_' + _faRepoHash(scenario.toLowerCase()).slice(0, 8); if (dom.patterns.some((p) => p.id === id)) return;
+            dom.patterns.push({ id, type: 'semantic', examples: [scenario.slice(0, 200)], intent: 'UML 設計：' + scenario.slice(0, 30), description: '', uml: dsl, answer: '之前設計過的類似情境：\n\n' + dsl + '\n\n架構：' + design.architecture.label, confidence: 0.55, source: 'learned', enabled: true, hits: 0, risk: 'safe' });
+            await this._otSaveDomain(dom); await this._otSyncPatternExamples(dom, dom.patterns[dom.patterns.length - 1]);
+        } catch (_) {}
+    }
     // ===== 線上 AI 養大離線 AI：離線訓練器（規則、學到的做法、相似問法、過去問答）與 RAG 都整理成離線模型能參考的樣子 =====
     async _offlineReferences(question, plan) {
         const items = []; const q = String(question || '');
@@ -47196,6 +48919,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             },
             fns: {
                 local_summarize: async (args) => this._planLocalSummarize(args.text, question, M),
+                local_uml_design: async (args) => { const sc = [].concat(args.scenario || question).join('\n'); const lang = /typescript|\bts\b/i.test(sc) ? 'typescript' : (/java(?!script)/i.test(sc) ? 'java' : 'python'); const r = await FaDesign.designProject(sc, { generate: M.gen, language: lang, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true }); if (!r.ok) return { ok: false, text: r.error || '設計失敗' }; this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: sc }; return { ok: true, text: r.dsl, json: { text: r.dsl, warnings: r.warnings } }; },
                 pick_urls: async (args) => { const urls = [].concat(args.results || []).filter((u) => /^https?:\/\//.test(u) && !/(?:google|bing|duckduckgo|baidu)\.[a-z.]+\/(?:search|url|\?)/i.test(u)); const first = urls[0]; return first ? { ok: true, text: first, json: { urls: [first] } } : { ok: false, text: '搜尋結果裡沒有可以抓的網址' }; },
             },
             defsOf: (name) => FaRecipe.slotsFromSchema((this.tools[name] && this.tools[name].parametersSchema) || {}),
@@ -47367,7 +49091,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const stop = (why) => { if (stopped) return; stopped = why; try { rec.worker.postMessage({ type: 'interrupt' }); } catch (_) {} };
         const limitMs = (ld.device === 'webgpu' ? 90 : 300) * 1000; const timer = setTimeout(() => stop('逾時'), limitMs);
         try {
-            const res = await this._vlmRpc('chat', { messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen }, null, (chunk) => {
+            const res = await this._vlmRpc('chat', { messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen, prefill: a.prefill || undefined }, null, (chunk) => {
                 acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc);
                 if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') stop('垃圾輸出：' + g.reason); }
             }, slot);

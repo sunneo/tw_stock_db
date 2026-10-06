@@ -121,5 +121,15 @@ function embedPlan() {
     console.log('已更新 FaPlan（' + core.length + ' 字元）');
 }
 embedPlan();
+function embedUml() {
+    for (const [file, begin, end, name] of [['renderer/src/uml/uml_core.js', 'UML-BEGIN', 'UML-END', 'FaUml'], ['renderer/src/uml/glue_core.js', 'GLUE-BEGIN', 'GLUE-END', 'FaGlue'], ['renderer/src/uml/design_core.js', 'DESIGN-BEGIN', 'DESIGN-END', 'FaDesign']]) {
+        const core = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
+        const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
+        if (a < 0 || b < 0) throw new Error('找不到 ' + begin + ' 標記');
+        src = src.slice(0, a) + '/* ' + begin + ' */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+        console.log('已更新 ' + name + '（' + core.length + ' 字元）');
+    }
+}
+embedUml();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
