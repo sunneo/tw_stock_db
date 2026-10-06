@@ -29370,7 +29370,7 @@ ${sourceTool.handlerScript}
         this._saveChatIndex();
     }
 
-    async _chatExportById(id, fmt) {
+    async _chatExportById(id, fmt, opts) {
         const entry = this._chatEntry(id);
         if (!entry) return;
         await this._flushChatWrite();
@@ -29381,8 +29381,11 @@ ${sourceTool.handlerScript}
             try { const raw = await this._chatBackend().read(id); data = raw ? JSON.parse(raw) : {}; } catch (_) { data = {}; }
             const blocks = Array.isArray(data.archivedDisplayBlocks) ? data.archivedDisplayBlocks : [];
             messages = blocks.flatMap((b) => (Array.isArray(b.messages) ? b.messages : [])).concat(Array.isArray(data.messages) ? data.messages : []);
+            // 不是目前這個對話：進度卡片的紀錄在存檔的 progressMap 裡，依 key（純數字＝messages 的索引、bi:mi＝封存區塊）接回去
+            const pm = data.progressMap || {}; const bySlot = (key) => { if (String(key).includes(':')) { const [bi, mi] = String(key).split(':').map(Number); return blocks[bi] && blocks[bi].messages && blocks[bi].messages[mi]; } return (data.messages || [])[Number(key)]; };
+            Object.entries(pm).forEach(([k, st]) => { const m = bySlot(k); if (m && st) Object.defineProperty(m, '_transcript', { value: Object.assign({ trace: [] }, st), enumerable: false, configurable: true }); });
         }
-        if (fmt === 'md') this._exportConversationAsMarkdown(messages, entry.title); else this._exportConversationAsJson(messages, entry.title);
+        if (fmt === 'md') this._exportConversationAsMarkdown(messages, entry.title, opts); else this._exportConversationAsJson(messages, entry.title, opts);
     }
 
     _chatInlineRename(selector, current, onCommit) {
@@ -29557,6 +29560,8 @@ ${sourceTool.handlerScript}
                 { label: '重新命名', run: () => this._chatInlineRename(`[data-chat-id="${id}"] .cl-title`, entry ? entry.title : '', (v) => this._chatRename(id, v)) },
                 { label: '匯出為 Markdown', run: () => this._chatExportById(id, 'md') },
                 { label: '匯出為 JSON', run: () => this._chatExportById(id, 'json') },
+                { label: '匯出為 Markdown（含 transcript）', run: () => this._chatExportById(id, 'md', { transcript: true }) },
+                { label: '匯出為 JSON（含 transcript）', run: () => this._chatExportById(id, 'json', { transcript: true }) },
                 { sep: true },
                 { label: '移到群組：', run: () => {} },
                 ...groupItems,
@@ -29696,7 +29701,7 @@ ${sourceTool.handlerScript}
         }
         this._wireChatListEvents(side);
         this._wireChatListResizer(resizer, side, win);
-        ['ai-conversation-export-json-btn', 'ai-conversation-export-md-btn'].forEach((id) => { const b = document.getElementById(id); if (b) b.style.display = 'none'; });
+        ['ai-conversation-export-json-btn', 'ai-conversation-export-md-btn', 'ai-conversation-export-json-tr-btn', 'ai-conversation-export-md-tr-btn'].forEach((id) => { const b = document.getElementById(id); if (b) b.style.display = 'none'; });
         if (win.clientWidth && win.clientWidth < 640) side.classList.add('collapsed');
         this._syncChatListColors();
     }
@@ -31631,13 +31636,16 @@ ${sourceTool.handlerScript}
     }
 
     // messagesOverride/titlePart：對話清單右鍵匯出用（匯出指定的那個對話，檔名帶標題）；不帶＝匯出目前對話。
-    _exportConversationAsJson(messagesOverride, titlePart) {
+    _exportConversationAsJson(messagesOverride, titlePart, opts) {
+        // 進度卡片的 content 是空的、紀錄在非可枚舉的屬性裡：JSON 匯出時另外放進 transcript 欄位（含紀錄）或 progress 欄位（只有標題與狀態）
+        const msgs = (messagesOverride || this._collectFullConversationForExport()).map((m) => { const tr = this._transcriptOf(m); if (!tr) return m; const c = Object.assign({}, m); if (opts && opts.transcript) c.transcript = tr; else { c.progress = { title: tr.title, status: tr.status, error: tr.error, entries: tr.trace.length }; } return c; });
         const payload = {
             exportedAt: new Date().toISOString(),
             ...(titlePart ? { title: titlePart } : {}),
-            messages: messagesOverride || this._collectFullConversationForExport(),
+            ...(opts && opts.transcript ? { includesTranscript: true } : {}),
+            messages: msgs,
         };
-        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${opts && opts.transcript ? 'transcript-' : ''}${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json');
     }
 
     _exportFileTitle(title) {
@@ -31648,8 +31656,22 @@ ${sourceTool.handlerScript}
     // tw_stock_db客製: role→標題/圖示對照，跟既有訊息渲染（_renderSingleMessage）
     // 大致對齊但不追求逐一還原畫面上的摺疊/視覺元件呈現——Markdown匯出的
     // 目的是給人閱讀/存檔的純文字紀錄，不是重現互動UI。
-    _formatMessageForMarkdownExport(msg) {
+    // 進度卡片（長時間工具、子代理的執行紀錄）的純資料版本：給匯出用。紀錄是 {t, line}，t 是時間戳。
+    _transcriptOf(msg) {
+        const st = msg && (msg._progressWidget || msg._transcript); if (!st) return null;
+        return { title: st.title || '', status: st.status || '', error: st.error || null, done: !!st.done, startedAt: st.startedAt || null, pct: st.pct == null ? null : st.pct, trace: (st.trace || []).map((x) => ({ t: x.t, line: x.line })) };
+    }
+    _formatMessageForMarkdownExport(msg, opts) {
         if (!msg || typeof msg !== 'object') return '';
+        const tr = this._transcriptOf(msg);
+        if (tr) {
+            const out = ['### 🔧 進度／執行紀錄：' + (tr.title || '（無標題）'), '狀態：' + (tr.error ? '❌ ' + tr.error : tr.status || '（無）') + (tr.startedAt && tr.trace.length ? '；紀錄 ' + tr.trace.length + ' 筆' : '')];
+            if (opts && opts.transcript && tr.trace.length) {
+                const t0 = tr.startedAt || tr.trace[0].t;
+                out.push('<details><summary>執行紀錄（' + tr.trace.length + ' 筆：思考、工具呼叫與結果）</summary>', '', '```text', ...tr.trace.map((x) => '[+' + (((x.t - t0) / 1000) || 0).toFixed(1) + 's] ' + String(x.line).replace(/```/g, "'''")), '```', '', '</details>');
+            } else if (tr.trace.length) out.push('（這次匯出沒有包含執行紀錄；要偵錯請用「匯出對話（含 transcript）」）');
+            return out.join('\n\n');
+        }
         const role = msg.role;
         if (role === 'system') return ''; // 系統prompt/歷史摘要不是「對話」本身，匯出時略過
         const roleLabel = role === 'user' ? '### 👤 使用者'
@@ -31672,11 +31694,11 @@ ${sourceTool.handlerScript}
         return lines.join('\n\n');
     }
 
-    _exportConversationAsMarkdown(messagesOverride, titlePart) {
+    _exportConversationAsMarkdown(messagesOverride, titlePart, opts) {
         const all = messagesOverride || this._collectFullConversationForExport();
-        const header = `# ${titlePart ? `對話：${titlePart}` : '對話紀錄匯出'}\n\n匯出時間：${new Date().toLocaleString('zh-TW')}\n`;
-        const body = all.map(m => this._formatMessageForMarkdownExport(m)).filter(Boolean).join('\n\n---\n\n');
-        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${Date.now()}.md`, `${header}\n${body}\n`, 'text/markdown');
+        const header = `# ${titlePart ? `對話：${titlePart}` : '對話紀錄匯出'}${opts && opts.transcript ? '（含 transcript）' : ''}\n\n匯出時間：${new Date().toLocaleString('zh-TW')}\n`;
+        const body = all.map(m => this._formatMessageForMarkdownExport(m, opts)).filter(Boolean).join('\n\n---\n\n');
+        this._downloadTextFile(`ai-conversation-${this._exportFileTitle(titlePart)}${opts && opts.transcript ? 'transcript-' : ''}${Date.now()}.md`, `${header}\n${body}\n`, 'text/markdown');
     }
 
     _importSettings(file) {
@@ -49506,7 +49528,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // （每輪開始/呼叫了哪個工具/申請追加工具）呼叫一下，不管有沒有人在聽。
         const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
         const onTrace = typeof options.onTrace === 'function' ? options.onTrace : null;
-        const traceSnip = (v, n) => { let t = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch (_) { return String(v); } })(); t = String(t == null ? '' : t).replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]{40,}/gi, '[base64省略]').replace(/\s+/g, ' '); return t.length > n ? t.slice(0, n) + '…（共' + t.length + '字）' : t; };
+        const traceScale = 5; // 匯出對話含 transcript 時要能看到完整一點的內容（偵錯用）；每行最多放大 5 倍，仍會截斷並標明總字數
+        const traceSnip = (v, n0) => { const n = n0 * traceScale; let t = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch (_) { return String(v); } })(); t = String(t == null ? '' : t).replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]{40,}/gi, '[base64省略]').replace(/\s+/g, ' '); return t.length > n ? t.slice(0, n) + '…（共' + t.length + '字）' : t; };
         // tw_stock_db客製: resolveTool取代原本兩處直接呼叫
         // this._getToolDefinition(fnName, allowedToolNames)的地方——
         // request_additional_tools只在這次_runSubAgentTask執行內有效，故意
@@ -50722,6 +50745,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入設定<input type="file" id="ai-settings-import-input" accept=".json" style="display:none;"></label>
                             <button type="button" id="ai-conversation-export-json-btn" class="ai-advanced-btn">匯出對話(JSON)</button>
                             <button type="button" id="ai-conversation-export-md-btn" class="ai-advanced-btn">匯出對話(Markdown)</button>
+                            <button type="button" id="ai-conversation-export-json-tr-btn" class="ai-advanced-btn" title="含子代理的思考、工具呼叫與結果（偵錯用）">匯出對話含 transcript(JSON)</button>
+                            <button type="button" id="ai-conversation-export-md-tr-btn" class="ai-advanced-btn" title="含子代理的思考、工具呼叫與結果（偵錯用）">匯出對話含 transcript(Markdown)</button>
                         </div>
                         <button type="button" id="ai-advanced-done" class="ai-advanced-btn primary">完成</button>
                     </div>
@@ -51050,7 +51075,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // 但至少widget本身不會憑空消失。
             const terminalMap = {};
             const actionsMap = {};
+            // 進度卡片的狀態與子代理紀錄（_progressWidget 是非可枚舉的，JSON.stringify 不會存它）：另外存一份，重新整理後還在、匯出對話含 transcript 才有東西。
+            // 每行最多 3000 字、整份對話的紀錄合計最多約 1.5MB（超過就丟掉最舊的幾行），避免撐爆儲存空間。
+            const progressMap = {}; let progressBudget = 1500000;
+            const packProgress = (m) => {
+                const st = m && m._progressWidget; if (!st) return null;
+                const tr = []; for (let k = st.trace.length - 1; k >= 0 && progressBudget > 0; k--) { const line = String(st.trace[k].line || '').slice(0, 3000); progressBudget -= line.length + 16; tr.unshift({ t: st.trace[k].t, line }); }
+                return { title: st.title, status: st.status, pct: st.pct, error: st.error, startedAt: st.startedAt, done: true, actions: undefined, trace: tr };
+            };
             this.messages.forEach((m, i) => {
+                const pg = packProgress(m); if (pg) progressMap[i] = pg;
                 if (m._displayDataUrl) imageMap[i] = m._displayDataUrl;
                 if (m._reasoningDisplay) reasoningMap[i] = m._reasoningDisplay;
                 if (m._downloadFile) fileMap[i] = m._downloadFile;
@@ -51067,6 +51101,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             });
             (this.archivedDisplayBlocks || []).forEach((block, bi) => {
                 (block.messages || []).forEach((m, mi) => {
+                    const pg = packProgress(m); if (pg) progressMap[`${bi}:${mi}`] = pg;
                     if (m._displayDataUrl) imageMap[`${bi}:${mi}`] = m._displayDataUrl;
                     if (m._reasoningDisplay) reasoningMap[`${bi}:${mi}`] = m._reasoningDisplay;
                     if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
@@ -51098,6 +51133,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 anim2dMap,
                 dubbingMap,
                 terminalMap,
+                progressMap,
             }));
         } catch (err) {
             console.warn('對話紀錄存檔失敗（可能超過localStorage容量）:', err);
@@ -51128,6 +51164,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 Object.entries(data.imageMap).forEach(([key, dataUrl]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayDataUrl', { value: dataUrl, enumerable: false, configurable: true });
+                });
+            }
+            if (data.progressMap) {
+                Object.entries(data.progressMap).forEach(([key, st]) => {
+                    const msg = resolveMsg(key);
+                    if (msg && st && Array.isArray(st.trace)) Object.defineProperty(msg, '_progressWidget', { value: Object.assign({ pct: null, error: null, trace: [], traceOpen: false }, st, { done: true }), enumerable: false, configurable: true });
                 });
             }
             if (data.reasoningMap) {
@@ -53238,6 +53280,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         document.getElementById('ai-settings-export-btn').onclick = () => this._exportSettings();
         document.getElementById('ai-conversation-export-json-btn').onclick = () => this._exportConversationAsJson();
         document.getElementById('ai-conversation-export-md-btn').onclick = () => this._exportConversationAsMarkdown();
+        document.getElementById('ai-conversation-export-json-tr-btn').onclick = () => this._exportConversationAsJson(undefined, undefined, { transcript: true });
+        document.getElementById('ai-conversation-export-md-tr-btn').onclick = () => this._exportConversationAsMarkdown(undefined, undefined, { transcript: true });
         document.getElementById('ai-settings-import-input').addEventListener('change', (e) => {
             const file = e.target.files && e.target.files[0];
             if (file) this._importSettings(file);
