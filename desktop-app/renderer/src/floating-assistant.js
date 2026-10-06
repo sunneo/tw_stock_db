@@ -11409,7 +11409,16 @@ function faVlmWorkerMain() {
             const generated = cur.tokenizer.batch_decode(ids, { skip_special_tokens: false })[0];
             raw = cur.processor.post_process_generation(generated, m.prompt, image.size);
         } else if (cur.arch === 'vision2seq') raw = await chatGenerate(m, image, true);
-        else if (cur.arch === 'llava') { try { raw = await chatGenerate(m, image, false); } catch (e1) { try { raw = await chatGenerate(m, image, true); } catch (e2) { throw e1; } } }
+        else if (cur.arch === 'llava') {
+            // LlavaProcessor._call(images, text)：先圖片、再文字；它把文字裡的 <image> 展開成 729 個影像標記。
+            // 這份社群轉檔的聊天範本沒有把 <image> 放進文字（錯誤：tokens: 0, features 729），所以直接用 llava-interleave-qwen 模型卡上的 Qwen 對話格式組提示詞。
+            const text = '<|im_start|>user <image>
+' + m.prompt + '<|im_end|><|im_start|>assistant
+';
+            const inputs = await cur.processor(image, text);
+            const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
+            raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
+        }
         else if (cur.arch === 'paligemma') {
             const inputs = await cur.processor(image, m.prompt); const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
             raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
