@@ -164,6 +164,19 @@
   - `幫我把這幾份報告PDF照順序併成一份`
   - `/office-pdf-merge file_1 file_2`
 
+### 圖片轉PDF（`images-to-pdf`）
+
+把一張或多張圖片轉成一份PDF（每張一頁）。純本地、不經過AI、秒完成；PNG／JPEG直接嵌入（畫質不變），WebP／GIF／BMP／SVG先轉PNG。頁面大小可選 fit（跟圖片一樣大）、a4、letter。離線訓練器遇到「把這張圖轉PDF」＋圖片附件會直接執行。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/media-image-to-pdf`
+- 子代理人領域：`file_analysis`
+- AI 工具：`images_to_pdf`
+- 範例：
+  - `幫我轉pdf（附一張圖）`
+  - `把這幾張圖合成一份PDF`
+  - `/media-image-to-pdf a4`
+
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。

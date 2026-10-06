@@ -156,6 +156,15 @@ categories:
         history:
           - { date: 2026-09-28, note: "新增merge_pdfs工具，同時掛進file_analysis與office_report兩個domain" }
           - { date: 2026-09-28, note: "新增 /office-pdf-merge slash 指令" }
+      - id: images-to-pdf
+        name: 圖片轉PDF
+        summary: 把一張或多張圖片轉成一份PDF（每張一頁）。純本地、不經過AI、秒完成；PNG／JPEG直接嵌入（畫質不變），WebP／GIF／BMP／SVG先轉PNG。頁面大小可選 fit（跟圖片一樣大）、a4、letter。離線訓練器遇到「把這張圖轉PDF」＋圖片附件會直接執行。
+        how: { slash: ["/media-image-to-pdf"], domain: file_analysis, tools: [images_to_pdf] }
+        platforms: [web, desktop]
+        samples: ["幫我轉pdf（附一張圖）", "把這幾張圖合成一份PDF", "/media-image-to-pdf a4"]
+        updated: 2026-10-06
+        history:
+          - { date: 2026-10-06, note: "新增 images_to_pdf 工具與 /media-image-to-pdf（先前沒有內建，AI 委派子任務燒掉 20 輪、再說沒有工具，最後自己寫 Python）；同時掛進 file_analysis 與 media_av domain，離線訓練器加規則" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
