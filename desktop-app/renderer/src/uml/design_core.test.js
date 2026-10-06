@@ -83,6 +83,18 @@ function check(name, cond, info) { if (cond) ok++; else { bad.push(name); consol
     const stubborn = U.parseDsl('actor: U\nclass A { }\nusecase T: U -> A.f()').model; const rw2 = await D.reworkModel(stubborn, 's', { generate: async () => 'garbage', maxRounds: 2 });
     check('rework: a model that never answers properly leaves the issues reported, no crash, bounded rounds', rw2.rounds.length <= 2 && rw2.remaining.length >= 1);
 
+    // ---- 檢視器的動作（只重做／補充這一區）----
+    const rm = U.parseDsl('actor: U\nclass Cart { +f():void }\nclass Book { +id:int }\nusecase T: U -> Cart.f()').model; const rcalls = [];
+    const rgen = async (a) => { const sys = a.messages[0].content; rcalls.push(sys.slice(0, 24) + '|' + a.messages[a.messages.length - 1].content); if (/列出屬性與操作/.test(sys)) return '{"attrs":[{"name":"items","type":"List<Book>"}],"ops":[{"name":"add","params":[{"name":"book","type":"Book"}],"returns":"void"},{"name":"total","params":[],"returns":"decimal"}]}'; if (/跟其他類別的關係/.test(sys)) return '{"relations":[{"to":"Book","kind":"aggregate"}]}'; if (/呼叫順序/.test(sys)) return '{"steps":[{"to":"Cart","op":"add"},{"to":"Cart","op":"total"}]}'; return '{}'; };
+    const am = await D.addMembers(rm, '購物', 'Cart', { generate: rgen });
+    check('addMembers: asks only for NEW members, merges without duplicates, keeps what was there', am.ok && am.added === 3 && rm.classes[0].ops.map((o) => o.name).join() === 'f,add,total' && rm.classes[0].attrs.some((a) => a.name === 'items') && /目前這個類別已有/.test(rcalls[0]) && /不要重複/.test(rcalls[0]), { am, calls: rcalls });
+    const rr = await D.reworkRegion(rm, '購物', 'class:Cart', { generate: rgen, reason: '太少' });
+    check('reworkRegion(class): redoes members then relations for that class, and the problem text is in the question', rr.ok && rr.log[0].stage === 'members' && rr.log[1].stage === 'relations' && rcalls.some((c) => /要修正的問題：太少/.test(c)), { log: rr.log, calls: rcalls.length });
+    check('reworkRegion(class): the other class is untouched', rm.classes[1].name === 'Book' && rm.classes[1].attrs.length === 1 && !rcalls.some((c) => /「Book」/.test(c)));
+    const ru = await D.reworkRegion(rm, '購物', 'usecase:T', { generate: rgen }); check('reworkRegion(usecase): replaces the call sequence with a valid one', ru.ok && rm.usecases[0].steps.map((s) => s.to + '.' + s.msg).join() === 'Cart.add,Cart.total', rm.usecases[0].steps);
+    check('reworkRegion: unknown regions and classes are reported', !(await D.reworkRegion(rm, 's', 'class:Ghost', { generate: rgen })).ok && !(await D.reworkRegion(rm, 's', 'nonsense', { generate: rgen })).ok);
+    const au = D.addUsecaseFromText(rm, '顧客可以取消訂單'); check('addUsecaseFromText: the program reads a sentence into a use case, classes and relations (no model)', au.ok && rm.usecases.some((u) => u.name === 'CancelOrder' && u.actor === 'Customer') && rm.classes.some((c) => c.name === 'Order') && U.validateModel(rm).length === 0, { au, errs: U.validateModel(rm) });
+    const nUc = rm.usecases.length; check('addUsecaseFromText: a sentence the program cannot read is reported, nothing invented', !D.addUsecaseFromText(rm, '今天天氣很好').ok && rm.usecases.length === nUc);
     // ---- 套件 ----
     const pk = D.packagesOf(U.parseDsl('class OrderService\nclass Order\nclass Payment\nclass UserService\nclass User\nOrderService --> Order\nOrder *-- Payment\nUserService --> User').model);
     check('packagesOf: classes are grouped by their relations and named after the best connected class', pk.length === 2 && pk.some((p) => p.classes.includes('Order') && p.classes.includes('Payment')) && pk.some((p) => p.classes.includes('User')), pk);

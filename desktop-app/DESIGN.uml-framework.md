@@ -81,6 +81,36 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 - **實測（編譯／型別檢查）**：產生的 Python 全部 `compileall` 通過且 domain 模組可以 import；Java 的 domain／services／repositories 用 `javac` 編譯通過；TypeScript 用 `deno check` 型別檢查通過（domain／services／repositories）。
 - **語言可擴充**：新增語言＝加一組 `LANGS` 條目（型別對照＋class／test template）與 `PKG` 依賴對照，管線其他部分不用改。
 
+## 7.5 膠水：骨架之後接到「真正的 library」（`glue_core.js`，24 項測試）
+骨架只有結構（stub）；真實系統還需要一堆**膠水**：domain 類別 ↔ ORM 資料列、domain ↔ API schema、repository 的資料庫實作、依賴注入、路由、啟動、設定、記錄、認證、排程、HTTP 客戶端。這些寫法對每個 library 組合都是固定的、而且是**經驗**——某個組合怎麼接才會動，是試出來才知道的。所以膠水是**資料**（template），不是程式邏輯：
+
+| 膠水（slot） | 內容（exact library API） |
+|---|---|
+| `py-sqlalchemy-persistence`（persistence） | SQLAlchemy 2.0：`DeclarativeBase`、`Mapped`/`mapped_column`、engine 與 session、每個實體的 ORM 資料列、repository 的 SQL 實作（row ↔ domain 轉換） |
+| `py-fastapi-wiring`（api） | FastAPI＋Pydantic v2：每個實體的 `Create`/`Read` schema（`ConfigDict(from_attributes=True)`）、依賴注入（`Depends`）、每個實體的 CRUD 路由、每個使用案例的路由、`lifespan` 啟動、**冒煙測試**（每個實體 建立→列出→取得→刪除） |
+| `py-services-crud`（services） | 每個使用案例一個 service，注入 repository；**單一步驟的 CRUD 使用案例直接實作**（list/get/create/update/delete），多步驟的維持誠實的 stub（回 501） |
+| `py-typer-wiring`（cli） | Typer：每個使用案例一個指令，選項依實體欄位產生（型別轉換：decimal／date／enum），接 SQLAlchemy repository |
+| `py-pyjwt-auth`、`py-httpx-client`、`py-apscheduler-jobs`、`py-logging-config`、`py-env-config` | PBKDF2 密碼雜湊＋JWT；httpx 客戶端（逾時／重試）；APScheduler；logging；環境變數設定 |
+
+- **真實 library 驗證**：在乾淨的 venv 裝 `requirements.txt`（fastapi 0.142、pydantic 2.13、SQLAlchemy 2.0.54、pytest 9、httpx、PyJWT、APScheduler…——不是釘舊版）→ 產生的專案**自己的 pytest 全過**（5 個實體的 CRUD 對真的 FastAPI＋SQLAlchemy＋SQLite 跑）；記憶體儲存的變體也全過；命令列變體實際跑 `create-book --title … --price 9.9` 再 `browse-book`，資料真的存進資料庫；JWT 簽發／驗證、密碼雜湊、`/usecases/browse-book` 回傳真實資料、多步驟使用案例回 501。這個 E2E 可以用 `GLUE_E2E_DIR` 在 `glue_core.test.js` 重跑。
+- 抓到的真實 bug（只有真的跑才看得到）：`factories.py` 只在 FastAPI 膠水裡，命令列變體的 service 找不到它；CLI 的 `create` 指令沒有欄位選項；JWT 預設密鑰太短被 PyJWT 警告。
+- **經驗會累積**：每塊膠水有適用條件、占的位置（slot，同一位置只留分數最高的）、驗證過的版本、來源（內建／AI／使用者）與經驗統計（成功／失敗、最近環境、備註）。`glue_report` 回報跑測試的結果；分數＝驗證過的版本加分＋平滑成功率，未驗證的使用者／AI 膠水一開始贏不了已驗證的內建膠水，累積足夠成功經驗（或內建的連續失敗）才會取代。
+- **AI 可以貢獻膠水**：線上 AI 手動把某個組合接通、測試通過之後，用 `glue_define` 把檔案整理成 template 登記（路徑必須是專案內相對路徑、template 要能解析、至多 30 個檔案），之後離線小模型與其他 AI 產生專案時直接重用——「提供各種膠水來接合出真實系統」是 AI 可以靠經驗累積的。`glue_list` 列出全部與經驗。
+- 目前只有 **Python** 有內建膠水；TypeScript／Java 只有骨架（明說：`glueSkipped`），可以靠 `glue_define` 補。
+
+## 7.6 設計檢視器（UML 子圖 ↔ 原始碼，逐層深入）
+產生專案時 zip 裡多一個 **`viewer.html`**（單檔、不需要網路），App 裡也會自動開一個浮動視窗（設定 `umlViewerAutoOpen`），跟 `/aidoc view` 同一種做法：
+
+- **節點樹**（`view_core.js`，21 項測試）：**系統 → 套件 → 類別／使用案例 → 操作**。每個節點有自己的：**圖**（UML 子圖：系統＝使用案例圖＋全部類別；類別＝它與鄰居的類別圖；使用案例＝循序圖；操作＝標出該操作的類別框）、**設計說明**（程式從模型推出：它出現在哪些使用案例、跟誰什麼關係、屬性與操作、為什麼有 Repository 與 ORM 模型）、**設計決策**（誰決定、為什麼，例如架構與每個 library 的選擇）、**參考**（對應的原始碼檔案與行號、用到的 library 文件連結、相關節點）、**動作**。
+- **UML ↔ 原始碼互相對應**：`symbolIndex` 掃產生的原始碼找出定義（類別、方法、service、路由、指令、測試）與行號，對回 UML 元素——點類別框看它的領域類別、ORM 資料列、API schema、Repository 介面與 SQL 實作、工廠；點操作跳到方法那一行；點使用案例看 service、路由、測試。**反過來**點原始碼裡標記的行，跳回對應的 UML 節點。Python／TypeScript／Java 都有。
+- **逐層深入、每層都有 reference 與 design**：點圖上的類別框／操作／使用案例的橢圓，或樹上的節點，就往下一層；麵包屑可以回上層；一個 UML 子圖（例如某個類別與它的鄰居）就是一個節點，有自己的設計說明、決策與參考檔案。
+- **動作（切細）**——每一個都是封閉的小操作，**弱的 AI、離線訓練器或使用者本人都做得到**：
+  - 新增使用案例：用一句話（「顧客可以取消訂單」），**程式**依詞彙表與動作表展開（0 次模型呼叫）。
+  - 補充屬性與操作／重新設計這個類別或使用案例（含關係與呼叫順序）／重新檢查整個設計：沿用同一套封閉小問題（`reworkRegion`、`addMembers`），模型一次只回答一個、被驗證、被退回時附精確原因；只動這一區，改完 `normalize`、重新產生專案與檢視器、記一筆決策記錄。
+  - 單獨開啟 `viewer.html`（沒有 App）時，需要模型的動作會產生一段「可以貼給任何 AI 的指令」（含目前的 UML 文字）。
+- **對應到離線訓練器**：設計完成且沒有警告時，每個類別與使用案例的節點（設計說明＋對應檔案）存進訓練器（領域 `learned_designs`），之後問「Cart 是做什麼的」可以直接答；節點的設計說明也是離線模型的參考資料。最終「設計與實作都有了」的系統，使用者（或弱 AI／訓練器）可以像 aidoc 那樣逐層深入檢視。
+- 實測：`uml_to_code` → 29 個檔案的專案 zip＋自動開啟檢視器；iframe 內節點樹、圖與原始碼面板正常，沒有 console 錯誤；點使用案例顯示循序圖並在測試檔標出行；「新增使用案例」動作把 `CancelOrder` 與 `Order` 加進設計並即時更新檢視器；「補充成員」在 0.6B 上被驗證器擋下（它寫出 `list` 這種沒有元素型別的型別），報出精確原因、沒有改動——這是設計中的安全閥。
+
 ## 8. 實測（打包版 Electron、CPU 4 執行緒、Qwen3 0.6B）
 - `uml_to_code`：給 DSL＋scenario → 16 個檔案的 Python 專案 zip（分層、FastAPI、sqlalchemy、pydantic、pyjwt，README 設計決策表正確標出「情境提到：資料庫、會員」）；壞的 DSL 精確回報「第 2 行：大括號沒有結尾」；使用案例呼叫不存在的操作自動補上並警告。
 - `design_choices`：推薦與選項、符合的片段（auth_login、shopping_cart）。
@@ -95,6 +125,8 @@ usecase Checkout: Customer -> Cart.add(book) -> Order.pay(total):bool
 - 方法本體是 stub；沒有狀態圖／活動圖，循序圖只有單向呼叫鏈（沒有分支與迴圈）。
 - 目前三種語言（Python／TypeScript／Java）；TypeScript 的 service／repository 沒有依賴注入；Java 只有 controller、service、repository 介面、application 類別（沒有 JPA entity 註解）。
 - 偏好（`designPrefs`）與詞彙表（`umlGlossary`）目前只能由設定／工具參數寫入，還沒有圖形介面。
+- 膠水只有 Python；沒有自動在 App 裡裝依賴並跑測試（驗證由人或 AI 執行後用 `glue_report` 回報）。
+- 檢視器的「補充成員／重新設計」需要離線文字模型，0.6B 常被驗證器擋下；程式能做的（新增使用案例、導覽、對應）不受影響。圖的版面是簡單的分層配置，類別很多時需要縮放。
 - GPU 路徑沒在這台機器實測。
 
 ## 10. 移植到 宿主專案

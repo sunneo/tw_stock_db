@@ -433,6 +433,53 @@ public class Application {
         }
         const remaining = findIssues(model); return { model, rounds, remaining };
     }
+    // ---------- 檢視器的動作：只重做／補充「這一區」（封閉的小問題，弱的 AI 或離線訓練器也能逐步進行）----------
+    const memberMsg = (spec, current, extra) => { const m = spec.messages.slice(); const last = m[m.length - 1]; m[m.length - 1] = Object.assign({}, last, { content: last.content + '\n\n目前這個類別已有：\n' + current + '\n' + extra + '\n請只輸出 JSON。' }); return Object.assign({}, spec, { messages: m }); };
+    function applyMembers(c, value, onlyNew) {
+        let added = 0; if (c.kind === 'enum') { const have = new Set(c.values || []); for (const v of value.values || []) if (!have.has(v)) { c.values.push(v); added++; } return added; }
+        const names = new Set(c.attrs.map((a) => a.name).concat(c.ops.map((o) => o.name)));
+        if (!onlyNew) { c.attrs = []; c.ops = []; names.clear(); }
+        for (const a of value.attrs || []) if (!names.has(a.name)) { c.attrs.push({ name: a.name, type: U.parseType(a.type), visibility: '+' }); names.add(a.name); added++; }
+        for (const o of value.ops || []) if (!names.has(o.name)) { c.ops.push({ name: o.name, params: (o.params || []).map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: o.returns && o.returns !== 'void' ? U.parseType(o.returns) : { base: 'void', args: [] }, visibility: '+', static: false }); names.add(o.name); added++; }
+        return added;
+    }
+    // 補充：針對一個類別再列「新增」的屬性與操作（不重複）；回傳 { ok, added, rejected }
+    async function addMembers(model, scenario, className, opts) {
+        const c = model.classes.find((x) => x.name === className); if (!c) return { ok: false, error: '沒有這個類別：' + className };
+        const names = model.classes.map((x) => x.name); const spec = memberMsg(U.stageSpec.members(scenario, { cls: c, classNames: names, usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, className), '請列出還缺的「新增」成員（屬性最多 3 個、操作最多 3 個），不要重複已有的。');
+        const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); if (!r.ok) return { ok: false, error: r.error, rejected: r.rejected };
+        const added = applyMembers(c, r.value, true); const nl = normalize(model); return { ok: true, added, rejected: r.rejected, normalized: nl };
+    }
+    // 重做一個區域：'class:X'（成員與關係）、'usecase:U'（呼叫順序）、'package:p'（套件內每個有問題的類別）、'system'（整份由上而下檢查）；reason 會附在問題裡
+    async function reworkRegion(model, scenario, region, opts) {
+        opts = opts || {}; const [kind, name] = String(region).split(':'); const log = [];
+        if (region === 'system') { const r = await reworkModel(model, scenario, { generate: opts.generate, maxRounds: opts.maxRounds || 2 }); return { ok: true, log: r.rounds, remaining: r.remaining.length }; }
+        if (kind === 'package') { const pk = packagesOf(model).find((p) => p.name === name); if (!pk) return { ok: false, error: '沒有這個套件：' + name }; for (const cn of pk.classes) { const r = await reworkRegion(model, scenario, 'class:' + cn, opts); log.push({ region: 'class:' + cn, ok: r.ok }); } return { ok: true, log }; }
+        if (kind === 'class') {
+            const c = model.classes.find((x) => x.name === name); if (!c) return { ok: false, error: '沒有這個類別：' + name }; const iss = { msg: opts.reason || '使用者要求重新設計這個類別', kind: 'user' };
+            const spec = memberMsg(U.stageSpec.members(scenario, { cls: c, classNames: model.classes.map((x) => x.name), usedBy: model.usecases.map((u) => u.name).join('、') }), dslOfClass(model, name), '要修正的問題：' + iss.msg);
+            const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 400, prefill: U.PREFILL.members }); log.push({ region, stage: 'members', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected }); if (r.ok) applyMembers(c, r.value, false);
+            const others = model.classes.map((x) => x.name).filter((n) => n !== name); if (others.length) { const rs = U.stageSpec.relations(scenario, { cls: c, others, kinds: Object.fromEntries(model.classes.map((x) => [x.name, x.kind])) }); const r2 = await R.jsonStep({ generate: opts.generate, messages: rs.messages, validate: rs.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.relations }); log.push({ region, stage: 'relations', by: 'model', ok: r2.ok, tries: r2.tries, rejected: r2.rejected }); if (r2.ok) { model.relations = model.relations.filter((x) => x.from !== name || ['inherit', 'implement'].includes(x.kind) && false); for (const x of r2.value.relations || []) if (!model.relations.some((y) => y.from === name && y.to === x.to && y.kind === x.kind)) model.relations.push({ from: name, to: x.to, kind: x.kind }); } }
+            const nl = normalize(model); if (nl.length) log.push({ region: 'model', stage: 'normalize', by: 'program', note: nl.join('；') }); return { ok: true, log };
+        }
+        if (kind === 'usecase') {
+            const u = model.usecases.find((x) => x.name === name); if (!u) return { ok: false, error: '沒有這個使用案例：' + name }; const ops = Object.fromEntries(model.classes.filter((c) => c.kind !== 'enum').map((c) => [c.name, c.ops.map((o) => o.name)])); const menu = Object.entries(ops).map(([k, v]) => k + '（' + (v.length ? v.join('、') : '還沒有操作') + '）').join('；');
+            const spec = memberMsg(U.stageSpec.sequence(scenario, { uc: u, ops, menu }), u.steps.map((s) => s.to + '.' + s.msg).join(' -> ') || '（空）', '要修正的問題：' + (opts.reason || '使用者要求重新設計這個呼叫順序'));
+            const r = await R.jsonStep({ generate: opts.generate, messages: spec.messages, validate: spec.validate, maxTries: 2, maxTokens: 300, prefill: U.PREFILL.sequence }); log.push({ region, stage: 'sequence', by: 'model', ok: r.ok, tries: r.tries, rejected: r.rejected });
+            if (r.ok) { u.steps = []; let prev = u.actor; for (const s of r.value.steps || []) { u.steps.push({ from: prev, to: s.to, msg: s.op, args: [], returns: '' }); prev = s.to; } } const nl = normalize(model); if (nl.length) log.push({ region: 'model', stage: 'normalize', by: 'program', note: nl.join('；') }); return { ok: true, log };
+        }
+        return { ok: false, error: '不認得的區域：' + region };
+    }
+    // 新增使用案例：程式依詞彙表與動作表讀一句話（「顧客可以取消訂單」）；讀不出就回報，不編造
+    function addUsecaseFromText(model, text, glossary) {
+        const h = U.scenarioHints(text, glossary); if (!h.usecases.length) return { ok: false, error: '程式讀不出這句話（試試「<參與者>可以<動作><名詞>」，例如「顧客可以取消訂單」；不認得的詞可以補進詞彙表）' };
+        let added = 0; for (const a of h.actors) if (!model.actors.includes(a)) model.actors.push(a);
+        for (const c of h.classes) { const ex = model.classes.find((x) => x.name === c.name); if (!ex) { model.classes.push({ name: c.name, kind: c.kind, label: '', attrs: c.attrs.map((a) => ({ name: a.name, type: U.parseType(a.type), visibility: '+' })), ops: c.ops.map((o) => ({ name: o.name, params: o.params.map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: U.parseType(o.returns), visibility: '+', static: false })), values: [] }); } else for (const o of c.ops) if (!ex.ops.some((x) => x.name === o.name)) ex.ops.push({ name: o.name, params: o.params.map((p) => ({ name: p.name, type: U.parseType(p.type) })), returns: U.parseType(o.returns), visibility: '+', static: false }); }
+        for (const r of h.relations) if (!model.relations.some((x) => x.from === r.from && x.to === r.to && x.kind === r.kind)) model.relations.push(r);
+        for (const u of h.usecases) { if (model.usecases.some((x) => x.name === u.name)) continue; let prev = u.actor; model.usecases.push({ name: u.name, actor: u.actor, summary: u.summary, steps: u.steps.map((s) => { const st = { from: prev, to: s.to, msg: s.op, args: [], returns: '' }; prev = s.to; return st; }) }); added++; }
+        normalize(model); return { ok: true, added };
+    }
+
     // 套件分組（程式）：用關係與使用案例把類別分群（連通分量），每群用最多關係的類別命名
     function packagesOf(model) {
         const parent = {}; const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x]))); for (const c of model.classes) parent[c.name] = c.name; const uni = (a, b) => { if (parent[a] && parent[b]) parent[find(a)] = find(b); };
@@ -458,5 +505,5 @@ public class Application {
         return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used };
     }
 
-    return { ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
+    return { addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
 });

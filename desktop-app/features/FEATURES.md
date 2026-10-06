@@ -183,7 +183,7 @@
 
 - 可用平台：網頁版、桌面版
 - 子代理人領域：`coding`
-- AI 工具：`uml_to_code`、`design_choices`、`uml_design`
+- AI 工具：`uml_to_code`、`design_choices`、`uml_design`、`glue_list`、`glue_define`、`glue_report`
 - 範例：
   - `設計一個線上書店系統，從情境做 uml 再產生程式骨架`
   - `顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍——產生 Python 專案`
