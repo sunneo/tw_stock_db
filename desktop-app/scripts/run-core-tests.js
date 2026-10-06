@@ -10,6 +10,7 @@ const suites = [
     ['標註核心（魔術棒、切格、猜字）', 'renderer/src/annotator/annot_core.test.js'],
     ['蒙皮核心（骨架、權重、動作）', 'renderer/src/skin/skin_core.test.js'],
     ['名稱表（C++ STL、Rust、Go）', 'renderer/src/behavior/tests/names_tables.test.js'],
+    ['離線圖像轉文字（模型登記、裝置、快取用量）', 'renderer/src/vlm/vlm_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {

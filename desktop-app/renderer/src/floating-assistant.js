@@ -6608,6 +6608,137 @@ const holder = {};
 return holder.FaSkin;
 })();
 /* SKIN-END */
+/* VLM-BEGIN */
+const FaVlm = (function () {
+const holder = {};
+(function (module, self) {
+// 離線圖像轉文字（image to text）的純邏輯：模型登記表、裝置與執行緒決策、任務與提示詞、結果整理、模型快取用量。
+// 不碰 DOM、不碰 transformers.js（那在 Worker 裡），node 與瀏覽器都能跑；嵌入成 FaVlm（見 scripts/embed-code-ui.js）。
+// 模型的檔案大小是 2026-10-06 從 HuggingFace 的檔案清單讀來的（只讀 metadata），實際下載量以 dtype 組合為準。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaVlm = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const MB = 1024 * 1024;
+
+    // arch：決定 Worker 用哪一套載入與推論流程（見 faVlmWorkerMain）。
+    // dtype：transformers.js 的 dtype 對照（每個子模型一個）；gpu＝WebGPU 用、cpu＝WASM 用。bytes：兩種組合各自的大致下載量（加 tokenizer／config 約 3MB）。
+    // verified：這個組合有沒有在真實環境跑通過——false 代表「照官方範例寫的、還沒驗證」，介面會標示。
+    const MODELS = [
+        { id: 'florence-2-base-ft', gpuNeedsF16: true, label: 'Florence-2 base（推薦：小、快、會 OCR）', task: 'image-to-text', arch: 'florence2', repo: 'onnx-community/Florence-2-base-ft',
+            tasks: ['caption', 'detailed', 'ocr', 'objects'], lang: '英文', license: 'MIT',
+            dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'fp16', encoder_model: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q4', encoder_model: 'q4', decoder_model_merged: 'q4' } },
+            bytes: { gpu: 344 * MB, cpu: 208 * MB }, verified: false, notes: '描述圖片（簡短／詳細）、OCR 文字辨識、物件偵測；沒有自由問答。約 0.23B 參數。' },
+        { id: 'smolvlm-256m', gpuNeedsF16: true, label: 'SmolVLM 256M（可以問問題）', task: 'image-to-text', arch: 'vision2seq', repo: 'HuggingFaceTB/SmolVLM-256M-Instruct',
+            tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文為主', license: 'Apache-2.0',
+            dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q8', decoder_model_merged: 'q4' } },
+            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
+        { id: 'vit-gpt2', label: 'ViT-GPT2（最簡單的一句話描述）', task: 'image-to-text', arch: 'vit-gpt2', repo: 'Xenova/vit-gpt2-image-captioning',
+            tasks: ['caption'], lang: '英文', license: 'Apache-2.0',
+            dtype: { gpu: 'q8', cpu: 'q8' }, bytes: { gpu: 238 * MB, cpu: 238 * MB }, verified: false, notes: '只能產生一句短描述，沒有 OCR、不能問問題；最舊也最簡單。' },
+        { id: 'paligemma2-3b-224', gpuNeedsF16: true, label: 'PaliGemma 2 3B（大，只能用 GPU）', task: 'image-to-text', arch: 'paligemma', repo: 'onnx-community/paligemma2-3b-pt-224',
+            tasks: ['caption', 'detailed', 'ocr', 'ask'], lang: '多語（提示詞英文）', license: 'Gemma',
+            dtype: { gpu: { embed_tokens: 'q4f16', vision_encoder: 'q4f16', decoder_model_merged: 'q4f16' }, cpu: null },
+            bytes: { gpu: 2765 * MB, cpu: null }, gpuOnly: true, verified: false, notes: '約 2.7GB，要有 WebGPU 與足夠的顯示記憶體；沒有 GPU 就不能用。預訓練（pt）版本，提示詞要用 PaliGemma 的格式。' },
+        { id: 'llava-interleave-qwen-0.5b', gpuNeedsF16: true, label: 'LLaVA-Interleave Qwen 0.5B（實驗，社群轉檔）', task: 'image-to-text', arch: 'llava', repo: 'luisresende13/llava-interleave-qwen-0.5b-hf',
+            tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文與中文', license: 'Tongyi Qianwen Research',
+            dtype: { gpu: { embed_tokens: 'fp32', vision_encoder: 'fp16', decoder_model_merged: 'fp16' }, cpu: { embed_tokens: 'fp32', vision_encoder: 'int8', decoder_model_merged: 'int8' } },
+            bytes: { gpu: 2250 * MB, cpu: 1445 * MB }, experimental: true, verified: false, notes: '沒有官方的瀏覽器版（transformers.js）轉檔，這是社群轉出的 ONNX；能不能跑要看函式庫是否支援 llava 架構，載入失敗會直接回報。約 1.4～2.2GB。' },
+        // 管理用（不能拿來做圖像轉文字）：語音轉文字 Whisper，跟這裡共用同一個瀏覽器快取
+        { id: 'whisper-base', label: 'Whisper base（語音轉文字，transcribe_media 用）', task: 'asr', arch: 'whisper', repo: 'onnx-community/whisper-base', tasks: [], bytes: { gpu: 80 * MB, cpu: 80 * MB }, managedOnly: true, verified: true, notes: '影音轉逐字稿用，跟圖像轉文字共用快取與裝置設定。' },
+    ];
+    const byId = (id) => MODELS.find((m) => m.id === id) || null;
+    const imageModels = () => MODELS.filter((m) => m.task === 'image-to-text');
+    const DEFAULT_MODEL = 'florence-2-base-ft';
+
+    // ---------- 裝置與執行緒 ----------
+    // preference：'gpu'（偏好 GPU，不支援就降級 CPU）或 'cpu'；gpuAvailable：這個環境偵測到 WebGPU。
+    // 回傳 { order:['webgpu','wasm'] | ['wasm'] | [], reason, error? }：order 是「依序嘗試」的裝置；任何一個失敗都會往後降級，最後一個是 CPU。
+    // f16：WebGPU 介面卡是否支援 shader-f16；undefined 當成支援（沒有偵測資訊時不擋）。GPU 版本用到 fp16／q4f16 的模型（gpuNeedsF16）在不支援時不走 GPU。
+    function resolveDevice(model, preference, gpuAvailable, f16) {
+        const wantGpu = preference !== 'cpu';
+        if (gpuAvailable && f16 === false && model && model.gpuNeedsF16) {
+            if (model.gpuOnly) return { order: [], reason: '這個模型的 GPU 版本需要 fp16 著色器（shader-f16），這張顯示卡不支援，而且它不能用 CPU', error: 'gpu_required' };
+            return { order: ['wasm'], reason: '這張顯示卡不支援 fp16 著色器（shader-f16），這個模型的 GPU 版本用不了，改用 CPU' };
+        }
+        if (model && model.gpuOnly) {
+            if (!gpuAvailable) return { order: [], reason: '這個模型只能用 GPU（WebGPU），但是這個環境沒有偵測到 WebGPU', error: 'gpu_required' };
+            if (!wantGpu) return { order: ['webgpu'], reason: '你偏好 CPU，但這個模型只能用 GPU，所以仍然用 GPU' };
+            return { order: ['webgpu'], reason: '這個模型只能用 GPU' };
+        }
+        if (wantGpu && gpuAvailable) return { order: ['webgpu', 'wasm'], reason: '偏好 GPU 且偵測到 WebGPU；GPU 失敗會自動降級成 CPU' };
+        if (wantGpu && !gpuAvailable) return { order: ['wasm'], reason: '偏好 GPU，但這個環境沒有偵測到 WebGPU，降級成 CPU' };
+        return { order: ['wasm'], reason: '偏好 CPU' };
+    }
+    // maxCores：使用者設定的 CPU 核心上限（0／空＝不限制，用偵測到的全部）；hardware：navigator.hardwareConcurrency；isolated：crossOriginIsolated。
+    // 多執行緒的 WASM 需要 SharedArrayBuffer（頁面要是 cross-origin isolated），不然 onnxruntime-web 只會用 1 個執行緒——這裡先算好、介面照實顯示。
+    function resolveThreads(maxCores, hardware, isolated) {
+        const hw = Math.max(1, Math.floor(Number(hardware) || 1));
+        const want = Number(maxCores) > 0 ? Math.min(hw, Math.floor(Number(maxCores))) : hw;
+        const requested = Math.max(1, want);
+        return { requested, effective: isolated ? requested : 1, hardware: hw, isolated: !!isolated, note: isolated ? '' : '目前頁面不是 cross-origin isolated（沒有 SharedArrayBuffer），CPU 路徑實際只會用 1 個執行緒；設定的核心數在能多執行緒的環境才會生效。' };
+    }
+
+    // ---------- 任務與提示詞 ----------
+    const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
+    const FLORENCE_TOKEN = { caption: '<CAPTION>', detailed: '<MORE_DETAILED_CAPTION>', ocr: '<OCR>', objects: '<OD>' };
+    const CHAT_PROMPT = { caption: 'Describe this image briefly.', detailed: 'Describe this image in detail.', ocr: 'Transcribe all the text in this image exactly as written. If there is no text, say so.', objects: 'List the main objects in this image.' };
+    const PALI_PROMPT = { caption: 'caption en', detailed: 'describe en', ocr: 'ocr' };
+    // 回傳 { task（實際用的任務）, prompt, note? }；模型不支援的任務會退回最接近的，並在 note 說明
+    function buildTask(model, task, prompt) {
+        task = TASKS[task] ? task : 'caption'; const note = [];
+        if (model.arch === 'florence2' && task === 'ask') { task = 'detailed'; note.push('Florence-2 不能自由問答，改用「詳細描述」（問題沒有被使用）'); }
+        if (!model.tasks.includes(task)) { note.push('這個模型不支援「' + TASKS[task] + '」，改用「簡短描述」'); task = 'caption'; }
+        if (model.arch === 'florence2') {
+            return { task, prompt: FLORENCE_TOKEN[task], note: note.join('；') || undefined };
+        }
+        if (model.arch === 'paligemma') {
+            if (task === 'ask') return { task, prompt: 'answer en ' + String(prompt || 'what is in this image?').trim(), note: note.join('；') || undefined };
+            return { task, prompt: PALI_PROMPT[task] || 'caption en', note: note.join('；') || undefined };
+        }
+        if (model.arch === 'vit-gpt2') return { task: 'caption', prompt: '', note: note.join('；') || undefined };
+        if (task === 'ask') return { task, prompt: String(prompt || '').trim() || CHAT_PROMPT.detailed, note: note.join('；') || undefined };
+        return { task, prompt: CHAT_PROMPT[task], note: note.join('；') || undefined };
+    }
+    // 把 Worker 回傳的原始結果整理成文字。Florence-2 的結果是 { '<TASK>': 文字 | {bboxes, labels, quad_boxes} }
+    function formatResult(model, raw, task) {
+        if (raw == null) return '';
+        if (model.arch !== 'florence2') return String(raw).replace(/^\s+|\s+$/g, '');
+        const v = typeof raw === 'object' ? Object.values(raw)[0] : raw;
+        if (typeof v === 'string') return v.replace(/<[^>]+>/g, '').trim();
+        if (v && Array.isArray(v.labels) && (Array.isArray(v.bboxes) || Array.isArray(v.quad_boxes))) {
+            const boxes = v.bboxes || v.quad_boxes; const rows = v.labels.map((l, i) => { const b = (boxes[i] || []).map((n) => Math.round(Number(n))); return (String(l).replace(/<[^>]+>/g, '').trim() || '(未命名)') + (b.length ? ' @[' + b.join(',') + ']' : ''); });
+            return task === 'ocr' ? rows.join('\n') : rows.join('\n');
+        }
+        return JSON.stringify(v);
+    }
+
+    // ---------- 模型快取用量（Cache API 裡的檔案）----------
+    // entries：[{url, size}]（transformers.js 把下載的檔案以 URL 為鍵存在 Cache API；URL 形如 https://huggingface.co/<owner>/<name>/resolve/<rev>/<path>）
+    function repoOfUrl(url) { const m = /^https?:\/\/[^/]*huggingface\.co\/([^/]+\/[^/]+)\/resolve\//i.exec(String(url || '')); return m ? m[1].toLowerCase() : null; }
+    // 回傳 { byModel:{id:{bytes,files}}, other:{bytes,files, repos:[repo]}, total:{bytes,files} }
+    function usageByModel(entries, models) {
+        models = models || MODELS; const out = { byModel: {}, other: { bytes: 0, files: 0, repos: [] }, total: { bytes: 0, files: 0 } };
+        const repoMap = new Map(models.map((m) => [m.repo.toLowerCase(), m.id])); models.forEach((m) => { out.byModel[m.id] = { bytes: 0, files: 0 }; });
+        const others = new Set();
+        for (const e of entries || []) {
+            const size = Number(e.size) || 0; const repo = repoOfUrl(e.url); out.total.bytes += size; out.total.files++;
+            const id = repo && repoMap.get(repo);
+            if (id) { out.byModel[id].bytes += size; out.byModel[id].files++; } else { out.other.bytes += size; out.other.files++; if (repo) others.add(repo); }
+        }
+        out.other.repos = Array.from(others).sort(); return out;
+    }
+    // 某個模型在快取裡的檔案網址（刪除用）
+    function urlsOfModel(entries, model) { const r = model.repo.toLowerCase(); return (entries || []).filter((e) => repoOfUrl(e.url) === r).map((e) => e.url); }
+    function fmtBytes(n) { n = Number(n) || 0; if (n >= 1024 * MB) return (n / (1024 * MB)).toFixed(2) + ' GB'; if (n >= MB) return (n / MB).toFixed(1) + ' MB'; if (n >= 1024) return (n / 1024).toFixed(0) + ' KB'; return n + ' B'; }
+    // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
+    function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
+
+    return { MODELS, byId, imageModels, DEFAULT_MODEL, TASKS, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+});
+
+}).call(null, undefined, holder);
+return holder.FaVlm;
+})();
+/* VLM-END */
 // ============================================================
 // 程式行為分析（Behavior Analyzer）——由 Domain Resolver 的 behavior_analyzer 設計移植成內建基底。
 // 目標：把原始碼／組合語言解釋成「由下而上、沿著正向路徑」的行為說明，並且可折疊：
@@ -11188,6 +11319,78 @@ function faIdrWorkerMain() {
         } catch (e) { self.postMessage({ type: 'fatal', tid: m.tid, error: String((e && e.message) || e) }); }
     };
 }
+// 離線圖像轉文字的 Worker（2026-10-06）：transformers.js 的載入、模型下載、推論全部在這個獨立的 Worker 裡，不碰主執行緒（畫面不會卡住）。
+// 主執行緒只傳 {type:'load'|'run'|'dispose'} 與圖片 Blob，收進度與結果。裝置（webgpu／wasm）與執行緒數由主執行緒決定，失敗時由主執行緒降級重試。
+function faVlmWorkerMain() {
+    let lib = null, libUrl = null, cur = null;
+    const post = (m) => self.postMessage(m);
+    const errText = (e) => { try { if (e && e.message) return String(e.message); if (typeof e === 'number') return 'WebAssembly／WebGPU 錯誤碼 ' + e + '（通常是記憶體不足或這個裝置不支援這個模型）'; return String(e); } catch (_) { return '未知錯誤'; } };
+    async function importLib(url) { if (lib && libUrl === url) return lib; lib = await import(url); libUrl = url; return lib; }
+    async function disposeCur() {
+        if (!cur) return;
+        try { if (cur.model && cur.model.dispose) await cur.model.dispose(); } catch (_) {}
+        try { if (cur.pipe && cur.pipe.dispose) await cur.pipe.dispose(); } catch (_) {}
+        cur = null;
+    }
+    async function load(m) {
+        await disposeCur();
+        const L = await importLib(m.libUrl);
+        const env = L.env; env.allowLocalModels = false; env.useBrowserCache = true;
+        try { if (env.backends && env.backends.onnx && env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = Math.max(1, m.threads | 0); } catch (_) {}
+        const progress = (p) => post({ type: 'progress', tid: m.tid, p: { status: p && p.status, file: p && p.file, progress: p && p.progress, loaded: p && p.loaded, total: p && p.total } });
+        const opts = { dtype: m.dtype, device: m.device, progress_callback: progress };
+        const repo = m.repo; const o = { id: m.modelId, arch: m.arch, device: m.device, repo };
+        if (m.arch === 'florence2') {
+            if (!L.Florence2ForConditionalGeneration) throw new Error('這個版本的 transformers.js 沒有 Florence-2 支援');
+            o.model = await L.Florence2ForConditionalGeneration.from_pretrained(repo, opts); o.processor = await L.AutoProcessor.from_pretrained(repo); o.tokenizer = await L.AutoTokenizer.from_pretrained(repo);
+        } else if (m.arch === 'vision2seq') {
+            o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await L.AutoModelForVision2Seq.from_pretrained(repo, opts);
+        } else if (m.arch === 'paligemma') {
+            const cls = L.PaliGemmaForConditionalGeneration || L.AutoModelForVision2Seq; if (!cls) throw new Error('這個版本的 transformers.js 沒有 PaliGemma 支援');
+            o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await cls.from_pretrained(repo, opts);
+        } else if (m.arch === 'llava') {
+            const cls = L.LlavaForConditionalGeneration || L.AutoModelForImageTextToText || L.AutoModelForVision2Seq; if (!cls) throw new Error('這個版本的 transformers.js 沒有 llava 架構支援');
+            o.processor = await L.AutoProcessor.from_pretrained(repo); o.model = await cls.from_pretrained(repo, opts);
+        } else if (m.arch === 'vit-gpt2') {
+            o.pipe = await L.pipeline('image-to-text', repo, opts);
+        } else throw new Error('不認得的模型架構：' + m.arch);
+        cur = o;
+    }
+    async function chatGenerate(m, image, textFirst) {
+        const messages = [{ role: 'user', content: [{ type: 'image' }, { type: 'text', text: m.prompt }] }];
+        const text = cur.processor.apply_chat_template(messages, { add_generation_prompt: true });
+        let inputs;
+        if (textFirst) inputs = await cur.processor(text, [image], { do_image_splitting: false });
+        else inputs = await cur.processor(image, text);
+        const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
+        const trimmed = ids.slice(null, [inputs.input_ids.dims.at(-1), null]);
+        return cur.processor.batch_decode(trimmed, { skip_special_tokens: true })[0];
+    }
+    async function run(m) {
+        if (!cur) throw new Error('模型還沒載入');
+        const L = lib; const image = await L.RawImage.fromBlob(m.image); const t0 = Date.now(); let raw;
+        if (cur.arch === 'florence2') {
+            const vision = await cur.processor(image); const prompts = cur.processor.construct_prompts(m.prompt); const textInputs = cur.tokenizer(prompts);
+            const ids = await cur.model.generate({ ...textInputs, ...vision, max_new_tokens: m.maxTokens || 256 });
+            const generated = cur.tokenizer.batch_decode(ids, { skip_special_tokens: false })[0];
+            raw = cur.processor.post_process_generation(generated, m.prompt, image.size);
+        } else if (cur.arch === 'vision2seq') raw = await chatGenerate(m, image, true);
+        else if (cur.arch === 'llava') { try { raw = await chatGenerate(m, image, false); } catch (e1) { try { raw = await chatGenerate(m, image, true); } catch (e2) { throw e1; } } }
+        else if (cur.arch === 'paligemma') {
+            const inputs = await cur.processor(image, m.prompt); const ids = await cur.model.generate({ ...inputs, max_new_tokens: m.maxTokens || 256 });
+            raw = cur.processor.batch_decode(ids.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0];
+        } else if (cur.arch === 'vit-gpt2') { const out = await cur.pipe(image, { max_new_tokens: m.maxTokens || 64 }); raw = out && out[0] && out[0].generated_text; }
+        return { raw, ms: Date.now() - t0 };
+    }
+    self.onmessage = async (ev) => {
+        const m = ev.data || {};
+        try {
+            if (m.type === 'load') { await load(m); post({ type: 'loaded', tid: m.tid, device: m.device, modelId: m.modelId }); }
+            else if (m.type === 'run') { const r = await run(m); post({ type: 'result', tid: m.tid, raw: r.raw, ms: r.ms }); }
+            else if (m.type === 'dispose') { await disposeCur(); post({ type: 'disposed', tid: m.tid }); }
+        } catch (e) { post({ type: 'error', tid: m.tid, error: errText(e) }); }
+    };
+}
 // tw_stock_db客製: 2026-09-21——弱模型會「不停重複委派同一件事」（實例：燒錄字幕連續委派十幾次，每次都成功、
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
@@ -11523,7 +11726,14 @@ class FloatingAssistant {
             async (argsText, run) => { await (run || this)._rigCommand(argsText); },
             ['head-rig', 'humanoid-rig']
         );
-        { const re = this.slashCommands.get('/rig-animate'); if (re) re._autoFromSkillBundle = true; } // 待送的附件（先貼圖再打指令）會一起帶進 argsText
+        { const re = this.slashCommands.get('/rig-animate'); if (re) re._autoFromSkillBundle = true; }
+        this.register_slash_command(
+            '/image-to-text', '[描述|詳細|文字|物件|問 <問題>]',
+            '離線圖像轉文字：描述圖片、辨識圖上的文字（OCR）、列出物件或問問題。模型跑在這台電腦上（WebGPU 或多核心 CPU、背景執行緒不卡畫面），圖片不會上傳；第一次使用要下載模型（會先問）。先貼圖再打指令、或先打指令再貼圖送出都可以。模型與裝置在 Configure →「離線模型管理」。',
+            async (argsText, run) => { await (run || this)._imageToTextCommand(argsText); },
+            ['描述', '詳細', '文字', '物件', '問', 'ocr']
+        );
+        { const ie = this.slashCommands.get('/image-to-text'); if (ie) ie._autoFromSkillBundle = true; } // 待送的附件（先貼圖再打指令）會一起帶進 argsText
         this.register_slash_command(
             '/skill-import', '<.skill 檔案路徑> [--name 名稱] [--keep]',
             '純指令匯入 .skill 技能包，不跳對話框：來源可以是桌面版絕對路徑、fap:<名稱>/<路徑>、已上傳的檔名；同名預設直接取代（--keep 另外新增）',
@@ -12555,6 +12765,11 @@ class FloatingAssistant {
             // 只用CPU WASM（使用者實測某些機器/某些顯卡上WebGPU反而比CPU慢，
             // 或WebGPU那條路徑在該環境有相容性問題）。
             whisperDevicePreference: 'auto',
+            // 2026-10-06 離線模型（圖像轉文字、Whisper）共用的全域設定：偏好 GPU／CPU（GPU 不支援就降級 CPU）、CPU 核心上限（0＝不限制）、預設圖像模型、線上視覺失敗時的離線備援
+            offlineDevicePreference: 'gpu',
+            offlineMaxCpuCores: 0,
+            imageToTextModel: 'florence-2-base-ft',
+            offlineVisionFallback: true,
             // tw_stock_db客製: 2026-09-12——extract_audio輸出格式，預設mp3
             // （省persistentStorage空間，使用者要求）；改成'wav'要無損。
             extractAudioFormat: 'mp3',
@@ -13736,6 +13951,10 @@ class FloatingAssistant {
                 return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
             })(),
             whisperDevicePreference: raw.whisperDevicePreference === 'cpu' ? 'cpu' : 'auto',
+            offlineDevicePreference: raw.offlineDevicePreference === 'cpu' || (raw.offlineDevicePreference === undefined && raw.whisperDevicePreference === 'cpu') ? 'cpu' : 'gpu', // 舊設定只有 Whisper 的偏好：沿用
+            offlineMaxCpuCores: (() => { const n = Math.floor(Number(raw.offlineMaxCpuCores)); return Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; })(),
+            imageToTextModel: typeof raw.imageToTextModel === 'string' && raw.imageToTextModel ? raw.imageToTextModel : 'florence-2-base-ft',
+            offlineVisionFallback: raw.offlineVisionFallback !== false,
             extractAudioFormat: raw.extractAudioFormat === 'wav' ? 'wav' : 'mp3',
             ttsDefaultVoice: TTS_VOICES.some(v => v.id === raw.ttsDefaultVoice) ? raw.ttsDefaultVoice : TTS_DEFAULT_VOICE,
             // tw_stock_db客製: 2026-09-14——這裡改成`!== false`（不是
@@ -13786,6 +14005,7 @@ class FloatingAssistant {
 
     // tw_stock_db客製: transcribe_media的CPU WASM執行緒數存取入口，夾在1~16。
     _getWhisperWasmThreads() {
+        const g = Number(this.advancedSettings && this.advancedSettings.offlineMaxCpuCores); if (Number.isFinite(g) && g >= 1) return Math.min(16, Math.round(g)); // 全域的「CPU 核心上限」優先
         const n = Number(this.advancedSettings && this.advancedSettings.whisperWasmThreads);
         return Number.isFinite(n) && n >= 1 ? Math.min(16, Math.round(n)) : WHISPER_WASM_THREADS;
     }
@@ -15248,7 +15468,9 @@ ${fnData.code}
                     const result = await this._interpretImageWithVisionModel(dataUrl, parsed.question);
                     return JSON.stringify({ ok: true, source: label, model_used: result.modelUsed, vision_confirmed: result.visionConfirmed, description: result.description });
                 } catch (err) {
-                    return JSON.stringify({ ok: false, error: String(err.message || err) });
+                    const fb = await this._vlmFallbackForInterpret(fileId, parsed.question, err); // 線上視覺模型失敗：離線圖像模型已下載就自動備援
+                    if (fb) return JSON.stringify(fb);
+                    return JSON.stringify({ ok: false, error: String(err.message || err) + '（也可以改用 image_to_text：離線圖像轉文字，在這台電腦上執行，不需要視覺模型）' });
                 }
             },
             { type: 'object', properties: {
@@ -15922,6 +16144,11 @@ ${fnData.code}
             '讓最近一次 image_decompose_redraw 產生的 2.5D 模型動起來（蒙皮動畫）：用知識庫裡的骨架（skeleton，例如 head-rig 頭部、humanoid-rig 人形）與動作（motion，例如 nod、blink、talk、head-shake、wave、idle-breath、jumping-jack、bow、head-turn）放到模型上、自動算蒙皮權重（幾何猜測，離骨架遠的部分保持不動），結果是會動的 3D 檢視器（有動作選單、暫停、速度、顯示骨架）。有偵測到臉就預設 head-rig（骨架放在臉上），沒有就用 humanoid-rig（要給 figure_bbox 指出人物範圍，影像座標）。參數都選填: {"skeleton":"head-rig","motions":["nod","talk"],"active":"all","figure_bbox":[x0,y0,x1,y1],"joint_points":{"hm-head":[x,y]},"static_radius":數字}。權重是猜的，彎折處可能拉扯貼圖；補骨架或動作用 ref_define{kind:"joint"|"skeleton"|"motion"}。內建的骨架與動作在舊格式的知識資料上也能用。',
             skillWrap(function (p) { return this._idrRig(p); }),
             { type: 'object', properties: { skeleton: { type: 'string', description: '骨架條目 key，例如 head-rig、humanoid-rig；不給就依有沒有偵測到臉決定' }, motions: { type: 'array', items: { type: 'string' }, description: '要放進去的動作 key；不給就放這個骨架的全部動作' }, active: { type: 'string', description: '一開始播哪個動作，或 "all" 依序輪播' }, figure_bbox: { type: 'array', items: { type: 'number' }, description: '人形骨架用：人物在影像裡的範圍 [x0,y0,x1,y1]（影像座標，用 parts.json 的座標系）' }, joint_points: { type: 'object', description: '直接指定關節在影像上的位置 {關節key:[x,y]}（影像座標），覆蓋自動放置' }, static_radius: { type: 'number', description: '離骨架多遠以外保持不動（場景單位）；不給就自動' } }, additionalProperties: false }
+        );
+        registerOptional('image_to_text',
+            '離線圖像轉文字：用跑在這台電腦上的小型視覺模型（Florence-2、SmolVLM…；瀏覽器內的 WebGPU 或多核心 CPU，推論在背景執行緒，不卡畫面）描述圖片、辨識圖上的文字（OCR）、列出物件，或回答關於圖片的問題。**不需要線上視覺模型、圖片不會上傳**；第一次使用要下載模型（約 200MB～數 GB，會先問使用者）。線上視覺模型看不到圖片、失敗、或使用者要求離線處理時用這個。task：caption（簡短描述）、detailed（詳細描述）、ocr（辨識文字）、objects（列出物件）、ask（用 prompt 問問題；Florence-2 與 ViT-GPT2 不支援）。圖用最近一則附件（多張會問使用者），或給 image（file_id）。回傳的 text 主要是英文（模型限制）；需要中文再自己翻譯。模型、裝置（GPU／CPU）、CPU 核心上限在 Configure 的「離線模型管理」分頁。參數: {"task":"detailed","image":"file_id（選填）","prompt":"問題（task=ask 時）","model":"florence-2-base-ft（選填）","max_tokens":256}。',
+            skillWrap(function (p) { return this._imageToText(p); }),
+            { type: 'object', properties: { task: { type: 'string', enum: ['caption', 'detailed', 'ocr', 'objects', 'ask'] }, image: { type: 'string', description: '選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件' }, prompt: { type: 'string', description: 'task=ask 時要問的問題（英文效果最好）' }, model: { type: 'string', description: '選填：模型 id（florence-2-base-ft、smolvlm-256m、vit-gpt2、paligemma2-3b-224、llava-interleave-qwen-0.5b）；省略用預設' }, device: { type: 'string', enum: ['gpu', 'cpu'], description: '選填：這次要偏好的裝置；省略用設定' }, max_tokens: { type: 'number', description: '選填：最多產生多少 token（16～1024）' } }, additionalProperties: false }
         );
         registerOptional('youtube_download',
             '從一段文字裡解析出YouTube連結（或直接給連結陣列）下載。有在Advance Settings設定「YouTube Data API金鑰」（youtubeDataApiKey，Google Cloud Console免費申請）與「我的YouTube頻道ID」（youtubeChannelId）時，會先驗證每個影片是否符合下載範圍：**只允許(a)使用者自己頻道的影片，或(b)YouTube授權欄位標示為Creative Commons的影片**，其餘一律跳過並在結果裡說明原因。**沒設定這兩個欄位時會跳過驗證、直接放行下載**（不算錯誤，回傳的verification_skipped會是true，要在回覆裡提醒使用者這次沒有做範圍限制）。下載成功的影片會存進persistentStorage並在對話裡顯示下載卡片。**只能下載progressive格式**（畫質通常上限720p左右，視YouTube當時提供哪些格式而定，這個沙盒沒有ffmpeg沒辦法合併分離的高畫質音視訊串流）。不支援需要登入才能看的影片（會員限定、私人影片、需要cookie驗證的內容）。⚠️**已知限制**：YouTube目前對多數影片會要求PO Token（獨立於JS簽章解密之外的另一套反機器人驗證，這個app還沒實作），實測很多影片會下載失敗、回報只剩storyboard縮圖格式——收到這個錯誤要如實轉告使用者，不要重試或嘗試繞過。參數: {"text":"（跟urls至少給一個）含有YouTube連結的一段文字，會自動抓出裡面所有連結","urls":["（跟text至少給一個）直接給YouTube連結陣列"]}',
@@ -19752,6 +19979,7 @@ ${fnData.code}
                 { id: 'ref_error_name', type: 'regex', expr: '^\\s*(?:-?(?:E[A-Z0-9]{3,}|ERROR_[A-Z0-9_]+|STATUS_[A-Z0-9_]+|WSAE[A-Z0-9_]+|HRESULT_[A-Z0-9_]+)|0x[0-9a-fA-F]{8})\\s*(?:是什麼|什麼意思|代表什麼|是啥|meaning|\\?|？)?\\s*$', intent: '查錯誤碼常數的意思', tool: 'lookup_error_code', args: { query: '{problem_text}' }, confidence: 0.9, risk: 'safe' },
                 { id: 'ref_command_line', type: 'regex', expr: '^\\s*(?:\\$\\s*)?(?:sudo\\s+)?(?:qemu-system-\\S+|qemu-kvm|(?:\\S+-)?(?:gcc|g\\+\\+)|cc|c\\+\\+|javac|java|python3?|node|(?:\\S+-)?gdb|make|cmake|ninja|tar|curl|wget|ssh|scp|rsync|grep|find|sed|awk|docker|git|systemctl|journalctl|strace|objdump|readelf)\\s+(?:-|--|[a-z]+\\s)\\S*', intent: '逐項解釋一行命令（gcc、qemu、gdb、Linux 命令…）', tool: 'explain_command_line', args: { command: '{problem_text}' }, confidence: 0.85, risk: 'safe' },
                 { id: 'ref_log_diag', type: 'regex', expr: '(?:make(?:\\[\\d+\\])?: \\*\\*\\*|CMake Error|undefined reference to|fatal error: [^\\n]*No such file|ERROR: [^\\n]*do_[a-z_]+|Nothing PROVIDES|collect2: error|ninja: build stopped|^FAILED: |Kernel panic|Call Trace:|BUG: |Oops|Program received signal|Failed with result|Main process exited|\\bcannot find -l|error while loading shared libraries|Segmentation fault|Out of memory: Kill)', intent: '診斷日誌／錯誤輸出：說明發生什麼事（建置失敗、gdb、核心日誌、panic、journal）', tool: 'diagnose_log', args: { log: '{problem_text}' }, confidence: 0.92, risk: 'safe' },
+                { id: 'image_to_text', type: 'regex', expr: '(?:(?:描述|解析|分析|辨識|辨認|說明|解釋|看看|讀)(?:一下)?(?:這張|這個|此|附件的?)?(?:圖|圖片|照片|圖像)|圖(?:片|像)?(?:轉|轉成|變成)(?:文字|描述)|(?:圖片|照片|圖像)(?:裡|中|上)?(?:有什麼|寫什麼|的文字|的內容)|image\\s*to\\s*text|\\bOCR\\b|文字辨識)', intent: '離線圖像轉文字（描述圖片或辨識圖上的文字；模型跑在這台電腦上，不需要 AI）', tool: 'image_to_text', args: { task: 'detailed' }, confidence: 0.86, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'image_decompose', type: 'regex', expr: '(?:2\.5\s*D|2\.5d|圖片分解|圖像分解|向量重繪|重繪成向量|拆(?:成)?圖層|(?:把|將)?(?:這張|這個|此)?(?:圖|圖片|照片|圖像).{0,8}(?:變成|做成|轉成|轉為).{0,6}(?:3D|立體|浮雕|視差))', intent: '把圖片分解重繪成 2.5D 模型（純幾何＋知識庫的部位知識，不需要 AI）', tool: 'image_decompose_redraw', args: {}, confidence: 0.85, risk: 'safe', source: 'builtin', enabled: true, hits: 0 },
                 { id: 'ref_pragma', type: 'regex', expr: '#\\s*pragma\\s+\\S+', intent: '解釋 #pragma（OpenMP、GCC…）', tool: 'ref_lookup', args: { query: '{problem_text}' }, confidence: 0.9, risk: 'safe' },
                 { id: 'greeting', type: 'regex', expr: '^\\s*(?:你好|哈囉|嗨|hi|hello|hey|早安|午安|晚安)[!！。.\\s]*$', intent: '打招呼', answer: '你好！目前是離線模式：我不經過AI，只能依「離線訓練器」學到的規則與範例做事（搜尋、讀網頁、檔案、圖片、程式專案…）。說說你要做什麼，或打 /offline-dry <一句話> 看我會怎麼判斷。', confidence: 0.92, source: 'builtin', enabled: true, hits: 0 },
@@ -26594,7 +26822,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         // 轉錄）失敗就重置、退回CPU WASM重跑一次；CPU再失敗才真的回報。
         // 使用者在Advance Settings把whisperDevicePreference設成'cpu'時（實測
         // 某些機器WebGPU反而比CPU慢/有相容性問題），直接只走CPU WASM。
-        const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu';
+        const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu' || this.advancedSettings.offlineDevicePreference === 'cpu';
         const wantWebGpu = !cpuOnly && await this._isWebGpuAvailable();
         const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
         let lastErr = null;
@@ -45642,6 +45870,252 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     }
 
+    // ===== 離線圖像轉文字與離線模型管理（2026-10-06）=====
+    // 推論全部在獨立的 Worker 裡（faVlmWorkerMain）：transformers.js 的載入、模型下載、前處理、生成都不佔主執行緒。
+    // 裝置偏好、CPU 核心上限是全域設定（advancedSettings.offlineDevicePreference／offlineMaxCpuCores），Whisper 也共用。純邏輯在 FaVlm（renderer/src/vlm/vlm_core.js）。
+    _omSettings() {
+        const s = this.advancedSettings || {}; const m = FaVlm.byId(s.imageToTextModel);
+        return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false };
+    }
+    _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
+    _omCores() { return { hardware: Math.max(1, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1), isolated: typeof crossOriginIsolated !== 'undefined' && !!crossOriginIsolated }; }
+    // WebGPU 偵測（含顯示卡名稱與 fp16 支援）；結果快取，force 重新偵測
+    async _omGpuInfo(force) {
+        if (this._omGpuCache && !force) return this._omGpuCache;
+        let info = { available: false, name: '', f16: false, reason: '' };
+        try {
+            if (typeof navigator === 'undefined' || !navigator.gpu) info.reason = '這個環境沒有 WebGPU（navigator.gpu 不存在）';
+            else {
+                const ad = await navigator.gpu.requestAdapter();
+                if (!ad) info.reason = '找不到可用的 GPU 介面卡（驅動程式或硬體不支援 WebGPU）';
+                else { const ai = ad.info || (typeof ad.requestAdapterInfo === 'function' ? await ad.requestAdapterInfo() : {}) || {}; info = { available: true, name: [ai.vendor, ai.architecture, ai.device, ai.description].filter(Boolean).join(' ') || '（未提供名稱）', f16: !!(ad.features && ad.features.has && ad.features.has('shader-f16')), reason: '' }; }
+            }
+        } catch (e) { info.reason = 'WebGPU 偵測失敗：' + String((e && e.message) || e); }
+        return (this._omGpuCache = info);
+    }
+    // ----- Worker 與 RPC -----
+    _vlmWorkerGet() {
+        if (this._vlmWk) return this._vlmWk;
+        const blobUrl = URL.createObjectURL(new Blob(['(' + faVlmWorkerMain.toString() + ')()'], { type: 'text/javascript' }));
+        const worker = new Worker(blobUrl, { type: 'module' }); const rec = { worker, pending: new Map(), tid: 0 };
+        const die = (msg) => { for (const p of rec.pending.values()) p.reject(new Error(msg)); rec.pending.clear(); try { worker.terminate(); } catch (_) {} if (this._vlmWk === rec) { this._vlmWk = null; this._vlmLoaded = null; } };
+        worker.onmessage = (ev) => {
+            const m = ev.data || {}; const p = rec.pending.get(m.tid); if (!p) return;
+            if (m.type === 'progress') { if (p.onProgress) try { p.onProgress(m.p); } catch (_) {} return; }
+            rec.pending.delete(m.tid); if (m.type === 'error') p.reject(new Error(m.error || 'worker error')); else p.resolve(m);
+        };
+        worker.onerror = (e) => die(String((e && e.message) || 'worker 發生錯誤'));
+        rec.die = die; return (this._vlmWk = rec);
+    }
+    _vlmRpc(type, payload, onProgress) {
+        const rec = this._vlmWorkerGet(); const tid = ++rec.tid;
+        return new Promise((resolve, reject) => { rec.pending.set(tid, { resolve, reject, onProgress }); try { rec.worker.postMessage(Object.assign({ type, tid }, payload || {})); } catch (e) { rec.pending.delete(tid); reject(e); } });
+    }
+    _vlmTerminate() { if (this._vlmWk) { try { this._vlmWk.die('已卸載'); } catch (_) {} } this._vlmLoaded = null; if (this._vlmIdleTimer) { clearTimeout(this._vlmIdleTimer); this._vlmIdleTimer = null; } }
+    _vlmScheduleIdle() { if (this._vlmIdleTimer) clearTimeout(this._vlmIdleTimer); this._vlmIdleTimer = setTimeout(() => { this._vlmTerminate(); }, 5 * 60 * 1000); } // 閒置 5 分鐘就卸載（釋放記憶體與顯示記憶體）
+    _vlmProgressAgg(label, update) {
+        const files = new Map(); let last = 0;
+        return (p) => {
+            if (!p || !p.file) return;
+            if (p.status === 'progress' || p.status === 'download') files.set(p.file, { loaded: Number(p.loaded) || 0, total: Number(p.total) || 0 });
+            else if (p.status === 'done') { const f = files.get(p.file) || { loaded: 0, total: 0 }; files.set(p.file, { loaded: f.total || f.loaded, total: f.total || f.loaded }); }
+            const now = Date.now(); if (now - last < 300) return; last = now;
+            let l = 0, t = 0; for (const f of files.values()) { l += f.loaded; t += f.total; }
+            if (t > 0) update({ pct: Math.min(99, (l / t) * 100), status: '下載 ' + label + '：' + FaVlm.fmtBytes(l) + ' / ' + FaVlm.fmtBytes(t) + '（' + files.size + ' 個檔案）' });
+        };
+    }
+    // 依序嘗試裝置載入模型（GPU 失敗自動降級 CPU）。回傳 { device, tried, threads }
+    async _vlmEnsureLoaded(model, order, update, log) {
+        const loaded = this._vlmLoaded; if (loaded && loaded.modelId === model.id && order.includes(loaded.device) && this._vlmWk) return Object.assign({ tried: [] }, loaded);
+        const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated); const tried = [];
+        for (const dev of order) {
+            const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];
+            if (!dt) { tried.push({ device: dev, error: '這個模型沒有 ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 的設定' }); continue; }
+            try {
+                const libUrl = new URL(this._viaAssetProxy(dev === 'webgpu' ? FA_ASSET_URLS.transformersJsWebGpu : FA_ASSET_URLS.transformersJs), location.href).href;
+                if (log) log('載入模型到 ' + (dev === 'webgpu' ? 'GPU（WebGPU）' : 'CPU（WASM，' + th.effective + ' 個執行緒）') + '…');
+                await this._vlmRpc('load', { libUrl, modelId: model.id, arch: model.arch, repo: model.repo, dtype: dt, device: dev, threads: th.effective }, this._vlmProgressAgg(model.label, update || (() => {})));
+                this._vlmLoaded = { modelId: model.id, device: dev, threads: th }; return { device: dev, tried, threads: th };
+            } catch (e) { tried.push({ device: dev, error: String((e && e.message) || e) }); if (log) log('⚠️ ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 載入失敗：' + tried[tried.length - 1].error + (order.indexOf(dev) < order.length - 1 ? '；降級成 CPU 重試' : '')); this._vlmTerminate(); }
+        }
+        const err = new Error('模型載入失敗：' + tried.map((x) => x.device + '：' + x.error).join('；')); err.tried = tried; throw err;
+    }
+    // 取得要處理的圖片：p.blob（直接給）→ p.image（file_id 或檔名）→ 這個對話最新的圖片附件（多張就問）
+    async _vlmResolveImage(p) {
+        if (p.blob instanceof Blob) return { blob: p.blob, filename: p.filename || 'image' };
+        let id = String(p.image || p.file_id || '').trim(); let filename = '';
+        if (!id) {
+            const cands = await this._attachmentCandidates('image');
+            if (cands.length === 1) { id = cands[0].id; filename = cands[0].filename; }
+            else if (cands.length > 1) { const pick = await this._pickAttachmentInteractive(cands, '要處理哪一張圖片？', '這一則訊息附了好幾張圖片，請選一張。'); if (!pick) return { cancelled: true, error: '使用者取消了選擇' }; id = pick.id; filename = pick.filename; }
+            else return { error: '沒有圖片可以處理：請把圖片貼進對話（Ctrl+V）或用📎上傳後送出，或給 image（file_id）參數' };
+        }
+        let rec = null; try { rec = await this.fileCache.get(id); } catch (_) {}
+        if (!rec) { try { const all = await this.fileCache.getAll(); rec = all.find((r) => r.filename === id) || null; } catch (_) {} }
+        if (!rec || !rec.blob) return { error: '找不到這個圖片檔：' + id };
+        return { blob: rec.blob, filename: filename || rec.filename || id };
+    }
+    // 離線圖像轉文字。p：{image?, blob?, task:'caption'|'detailed'|'ocr'|'objects'|'ask', prompt?, model?, device?:'gpu'|'cpu', max_tokens?, confirmed?, fallback?, silent?}
+    async _imageToText(p) {
+        p = p || {}; const set = this._omSettings();
+        const model = FaVlm.byId(p.model) || FaVlm.byId(set.model);
+        if (!model || model.managedOnly) return { ok: false, error: '不是圖像轉文字的模型：' + (p.model || '') + '。可用：' + FaVlm.imageModels().map((m) => m.id).join('、') };
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
+        if (!dev.order.length) return { ok: false, error: dev.reason, hint: '到 Configure 的「離線模型」分頁選一個能用 CPU 的模型（例如 ' + FaVlm.DEFAULT_MODEL + '）' };
+        const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
+        const usage = await this._omUsage(); const cached = (usage.byModel[model.id] || { bytes: 0 }).bytes; const need = FaVlm.estimateDownload(model, dev.order[0], cached);
+        if (need > 20 * 1048576 && !p.confirmed) {
+            if (p.fallback) return { ok: false, error: '離線圖像轉文字的模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；自動備援不會自己下載。要用請直接呼叫 image_to_text，或到 Configure →「離線模型」下載。' };
+            const ans = await this.requestUserForm({ title: '要下載離線圖像模型嗎？', description: '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型」清除）。\n推論在背景執行緒，不會卡住畫面；執行在你的電腦上，圖片不會上傳。\n' + (model.experimental ? '\n⚠️ 這是實驗性的社群轉檔，不保證能跑。' : '') , choices: ['下載並執行', '取消'] });
+            if (!ans || !ans.confirmed || ans.answer !== '下載並執行') return { ok: false, cancelled: true, error: '使用者取消了下載' };
+        }
+        const tb = FaVlm.buildTask(model, p.task, p.prompt);
+        const prog = p.silent ? null : this._createProgressWidget('離線圖像轉文字（' + model.label + '）');
+        const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
+        const t0 = Date.now();
+        try {
+            log('裝置：' + dev.reason); update({ status: '準備中…' });
+            let order = dev.order.slice(); let res = null; let lastErr = null; let used = null; let downgraded = false;
+            for (let attempt = 0; attempt < 2 && !res; attempt++) {
+                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                update({ pct: 99, status: '辨識中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
+                try { res = await this._vlmRpc('run', { image: img.blob, prompt: tb.prompt, maxTokens: Math.max(16, Math.min(1024, Math.floor(Number(p.max_tokens) || (tb.task === 'ocr' || tb.task === 'detailed' ? 384 : 160)))) }); }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(); if (ld.device === 'webgpu' && !model.gpuOnly) { order = ['wasm']; downgraded = true; log('降級成 CPU 重試'); } else break; }
+            }
+            if (!res) throw lastErr || new Error('推論失敗');
+            const text = FaVlm.formatResult(model, res.raw, tb.task);
+            this._vlmScheduleIdle();
+            if (prog) prog.finish('完成：' + (used.device === 'webgpu' ? 'GPU' : 'CPU') + '，' + ((res.ms || 0) / 1000).toFixed(1) + ' 秒');
+            if (!text) return { ok: false, error: '模型沒有產生任何文字（圖片太小或沒有可辨識的內容？）', model: model.id, device: used.device };
+            return { ok: true, text, model: model.id, repo: model.repo, device: used.device === 'webgpu' ? 'gpu' : 'cpu', threads: used.device === 'webgpu' ? undefined : used.threads.effective, task: tb.task, note: tb.note, language: model.lang, ms: Date.now() - t0, fell_back_from_gpu: downgraded || (used.tried && used.tried.some((x) => x.device === 'webgpu')) ? true : undefined };
+        } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
+    }
+    // /image-to-text [描述|詳細|文字|物件|問 …]：先貼圖再打、或先打指令再貼圖送出都可以
+    async _imageToTextCommand(argsText) {
+        argsText = String(argsText || ''); const ids = []; const mark = /\[附件：([^\]]*)\]/.exec(argsText);
+        if (mark) { const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(mark[1]))) { let rec = null; try { rec = await this.fileCache.get(x[2]); } catch (_) {} if (rec && rec.blob && (/^image\//i.test(rec.blob.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(x[1]))) ids.push({ id: x[2], filename: x[1].trim(), size: rec.blob.size }); } }
+        const rest = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim() || this._itCmdArgs || ''; if (ids.length) this._itCmdArgs = '';
+        if (!ids.length) { this._armedSkill = { name: 'image-to-text', at: Date.now() }; this._itCmdArgs = argsText.replace(/\[附件：[^\]]*\]/g, ' ').trim(); this._pushAssistantMessage('🖼️ 請貼上要轉成文字的圖片（Ctrl+V）或用📎上傳，送出後我會直接處理（離線、在背景執行緒，不會卡住畫面）。', null); this._persistChatHistory(); this._renderMessageHistory(); return; }
+        let pick = ids[0]; if (ids.length > 1) { pick = await this._pickAttachmentInteractive(ids, '要處理哪一張圖？', '附了好幾張圖，請選一張。'); if (!pick) return; }
+        const m = /^(caption|detailed|ocr|objects|ask|描述|詳細|文字|ocr|物件|問)\b\s*(.*)$/is.exec(rest); const alias = { 描述: 'caption', 詳細: 'detailed', 文字: 'ocr', 物件: 'objects', 問: 'ask' };
+        const task = m ? (alias[m[1]] || m[1].toLowerCase()) : (rest ? 'ask' : 'detailed'); const prompt = m ? m[2].trim() : rest;
+        const r = await this._imageToText({ image: pick.id, task, prompt });
+        this._pushAssistantMessage(r.ok ? '🖼️ ' + r.text + '\n\n（離線模型 ' + r.model + '，' + r.device.toUpperCase() + '，' + (r.ms / 1000).toFixed(1) + ' 秒' + (r.note ? '；' + r.note : '') + '）' : '🖼️ ' + (r.cancelled ? '已取消' : '失敗：' + r.error + (r.hint ? '（' + r.hint + '）' : '')), null);
+        this._persistChatHistory(); this._renderMessageHistory();
+    }
+    // 線上視覺模型失敗時的備援：離線模型已經在快取裡才自動用（不會偷偷下載幾百 MB）
+    async _vlmFallbackForInterpret(fileId, question, cause) {
+        try {
+            if (!this._omSettings().fallback || !fileId) return null;
+            const r = await this._imageToText({ image: fileId, task: question ? 'ask' : 'detailed', prompt: question, fallback: true });
+            if (!r.ok) return null;
+            return { ok: true, source: 'offline-image-to-text', model_used: r.model, vision_confirmed: false, description: r.text, note: '線上視覺模型失敗（' + String((cause && cause.message) || cause).slice(0, 120) + '），已改用離線圖像轉文字（' + r.model + '，' + r.device + '）；內容是英文描述。' };
+        } catch (_) { return null; }
+    }
+
+    // ----- 模型快取（Cache API）-----
+    async _omCacheEntries() {
+        try {
+            if (typeof caches === 'undefined') return [];
+            const names = (await caches.keys()).filter((n) => /transformers/i.test(n)); const out = [];
+            for (const n of names) { const c = await caches.open(n); for (const rq of await c.keys()) { const r = await c.match(rq); if (!r) continue; let size = Number(r.headers.get('content-length')); if (!Number.isFinite(size) || !size) { try { size = (await r.clone().blob()).size; } catch (_) { size = 0; } } out.push({ url: rq.url, size, cache: n }); } }
+            return out;
+        } catch (_) { return []; }
+    }
+    async _omUsage() { const entries = await this._omCacheEntries(); const u = FaVlm.usageByModel(entries); u.entries = entries; return u; }
+    async _omDeleteUrls(urls) { let n = 0; try { const names = (await caches.keys()).filter((x) => /transformers/i.test(x)); for (const name of names) { const c = await caches.open(name); for (const u of urls) if (await c.delete(u)) n++; } } catch (_) {} return n; }
+    async _omDeleteModel(id) {
+        const m = FaVlm.byId(id); if (!m) return { ok: false, error: '不認得的模型' };
+        const entries = await this._omCacheEntries(); const n = await this._omDeleteUrls(FaVlm.urlsOfModel(entries, m));
+        if (this._vlmLoaded && this._vlmLoaded.modelId === id) this._vlmTerminate();
+        if (id === 'whisper-base') { this._whisperTranscriber = null; this._whisperTranscriberDevice = null; this._whisperRepoFallbackTried = false; }
+        return { ok: true, deleted_files: n };
+    }
+    async _omDeleteRepo(repo) { const entries = await this._omCacheEntries(); const urls = entries.filter((e) => FaVlm.repoOfUrl(e.url) === String(repo).toLowerCase()).map((e) => e.url); return { ok: true, deleted_files: await this._omDeleteUrls(urls) }; }
+    async _omClearAll() { this._vlmTerminate(); const ok = await this._clearWhisperCache(); return { ok }; }
+    // 預先下載（載入一次再卸載）：給設定頁的「下載」按鈕
+    async _omPreload(id, setStatus) {
+        const m = FaVlm.byId(id); if (!m || m.managedOnly) return { ok: false, error: '這個模型不能預先下載' };
+        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(m, this._omSettings().device, gpu.available, gpu.f16); if (!dev.order.length) return { ok: false, error: dev.reason };
+        const usage = await this._omUsage(); const need = FaVlm.estimateDownload(m, dev.order[0], (usage.byModel[m.id] || { bytes: 0 }).bytes);
+        if (need > 20 * 1048576) { const ans = await this.requestUserForm({ title: '要下載「' + m.label + '」嗎？', description: '來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（存在瀏覽器快取，可在這個分頁清除）。', choices: ['下載', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '下載') return { ok: false, cancelled: true, error: '已取消' }; }
+        try { const ld = await this._vlmEnsureLoaded(m, dev.order, (x) => { if (setStatus) setStatus(x.status || ''); }, (s) => { if (setStatus) setStatus(s); }); this._vlmTerminate(); return { ok: true, device: ld.device }; }
+        catch (e) { this._vlmTerminate(); return { ok: false, error: String((e && e.message) || e) }; }
+    }
+
+    // ----- 設定頁：離線模型管理 -----
+    _omRegisterPane() {
+        if (this._omPaneRegistered) return;
+        const root = document.createElement('div'); root.id = 'ai-om-pane'; root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._omPaneRoot = root; this._omPaneRegistered = true;
+        this.registerAdvancedSettingsTab('ai', 'offline-models', '離線模型管理', root);
+        this._omWirePane(root);
+        const side = document.getElementById('ai-advanced-sidebar');
+        if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'offline-models') this._omRenderPane(); });
+    }
+    async _omRenderPane() {
+        const root = this._omPaneRoot; if (!root) return;
+        const S = this._omSettings(); const cores = this._omCores(); const gpu = await this._omGpuInfo(); const th = FaVlm.resolveThreads(S.maxCores, cores.hardware, cores.isolated); const usage = await this._omUsage();
+        const esc = (s) => this._escapeHtml(String(s == null ? '' : s)); const inp = this._otPaneInput(); const btn = 'padding:3px 10px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        const rows = FaVlm.MODELS.map((m) => {
+            const u = usage.byModel[m.id] || { bytes: 0, files: 0 }; const have = u.files > 0; const gpuOnlyBad = m.gpuOnly && !gpu.available; const sizeTxt = m.bytes.cpu ? 'CPU 約 ' + FaVlm.fmtBytes(m.bytes.cpu) + (m.bytes.gpu && m.bytes.gpu !== m.bytes.cpu ? '／GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu) : '') : 'GPU 約 ' + FaVlm.fmtBytes(m.bytes.gpu);
+            const badges = [m.managedOnly ? '' : (m.id === S.model ? '<b style="color:#34d399">★ 預設</b>' : ''), m.experimental ? '<span style="color:#fbbf24">實驗</span>' : '', (!m.verified && !m.managedOnly) ? '<span style="color:#f59e0b" title="照官方範例寫的，還沒有在真實環境驗證">未驗證</span>' : '', m.gpuOnly ? '<span style="color:#f87171">只能用 GPU' + (gpuOnlyBad ? '（這台沒有 WebGPU，不能用）' : '') + '</span>' : ''].filter(Boolean).join('　');
+            return `<div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:6px;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><b>${esc(m.label)}</b>${badges ? '　' + badges : ''}</div>
+                <div style="color:#94a3b8; font-size:12px;">${esc(m.repo)}　${esc(sizeTxt)}　${esc(m.lang || '')}${m.license ? '　授權 ' + esc(m.license) : ''}</div>
+                <div style="color:#94a3b8; font-size:12px;">${esc(m.notes || '')}</div>
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;"><span>${have ? '✅ 已下載 ' + FaVlm.fmtBytes(u.bytes) + '（' + u.files + ' 個檔案）' : '⬜ 未下載'}</span>
+                    ${m.managedOnly ? '' : `<button style="${btn}" data-om="preload" data-id="${esc(m.id)}" ${gpuOnlyBad ? 'disabled' : ''}>下載</button><button style="${btn}" data-om="default" data-id="${esc(m.id)}" ${m.id === S.model ? 'disabled' : ''}>設為預設</button>`}
+                    ${have ? `<button style="${btn} color:#fca5a5;" data-om="delete" data-id="${esc(m.id)}">刪除</button>` : ''}<span data-om-status="${esc(m.id)}" style="color:#7dd3fc;"></span></div></div>`;
+        }).join('');
+        const other = usage.other.files ? `<div style="margin-top:4px;">其他快取：${usage.other.files} 個檔案、${FaVlm.fmtBytes(usage.other.bytes)}${usage.other.repos.length ? '（' + usage.other.repos.map(esc).join('、') + '）' : ''} ${usage.other.repos.map((r) => `<button style="${btn} color:#fca5a5;" data-om="delrepo" data-repo="${esc(r)}">刪除 ${esc(r)}</button>`).join(' ')}</div>` : '';
+        root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">離線模型在你的電腦上執行（瀏覽器內的 WebAssembly／WebGPU），圖片不會上傳；推論在背景執行緒，不會卡住畫面。模型第一次使用時才下載，存在瀏覽器快取。</div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">運算裝置</div>
+              <label>偏好 <select data-om-set="device" style="${inp}"><option value="gpu" ${S.device === 'gpu' ? 'selected' : ''}>GPU（不支援時自動降級成 CPU）</option><option value="cpu" ${S.device === 'cpu' ? 'selected' : ''}>CPU</option></select></label>
+              <div style="color:${gpu.available ? '#34d399' : '#fbbf24'}; margin:4px 0;">${gpu.available ? '✅ 偵測到 WebGPU：' + esc(gpu.name) + (gpu.f16 ? '（支援 fp16）' : '（不支援 fp16 著色器；部分模型可能退回 CPU）') : '⚠️ 沒有 WebGPU：' + esc(gpu.reason) + '。所有模型一律用 CPU；只能用 GPU 的模型不能用。'}</div>
+              <label>CPU 核心上限 <input type="number" min="0" max="${cores.hardware}" step="1" value="${S.maxCores || ''}" placeholder="不限制" data-om-set="cores" style="${inp} width:90px;"> <span style="color:#94a3b8;">（偵測到 ${cores.hardware} 個邏輯核心；留空＝不限制）</span></label>
+              <div style="color:#94a3b8; margin-top:4px;">CPU 路徑會請求 ${th.requested} 個執行緒；實際 ${th.effective} 個。${esc(th.note)}　Whisper 語音轉文字也用同一組設定。</div>
+            </div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">儲存空間</div>
+              <div>模型快取共 <b>${FaVlm.fmtBytes(usage.total.bytes)}</b>（${usage.total.files} 個檔案）　<button style="${btn}" data-om="refresh">重新整理</button> <button style="${btn} color:#fca5a5;" data-om="clearall">全部清除</button></div>${other}
+              <label style="display:block; margin-top:6px;"><input type="checkbox" data-om-set="fallback" ${S.fallback ? 'checked' : ''}> 線上視覺模型失敗時，若離線圖像模型已下載就自動改用（不會自己下載新模型）</label>
+            </div>
+            <div style="font-weight:600; margin-bottom:4px;">模型</div>${rows}
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-top:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">試跑（用預設模型）</div>
+              <input type="file" accept="image/*" data-om="testfile" style="${inp}"> <select data-om-set="testtask" style="${inp}">${Object.entries(FaVlm.TASKS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select> <input type="text" placeholder="提示詞（選填，問問題用）" data-om-set="testprompt" style="${inp} width:220px;"> <button style="${btn}" data-om="test">執行</button>
+              <pre data-om-out style="white-space:pre-wrap; background:#0f172a; border-radius:6px; padding:6px; margin:6px 0 0; min-height:20px;"></pre>
+            </div>`;
+    }
+    _omWirePane(root) {
+        root.addEventListener('change', (e) => {
+            const k = e.target.getAttribute && e.target.getAttribute('data-om-set'); if (!k) return;
+            if (k === 'device') this.advancedSettings.offlineDevicePreference = e.target.value === 'cpu' ? 'cpu' : 'gpu';
+            else if (k === 'cores') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineMaxCpuCores = Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; }
+            else if (k === 'fallback') this.advancedSettings.offlineVisionFallback = !!e.target.checked;
+            else return;
+            this._saveAdvancedSettings(); this._vlmTerminate(); this._transformersJsModules = null; this._whisperTranscriber = null; this._whisperTranscriberDevice = null; // 下次用的時候才套用新的裝置與核心數
+            this._omRenderPane();
+        });
+        root.addEventListener('click', async (e) => {
+            const b = e.target.closest && e.target.closest('[data-om]'); if (!b) return; const act = b.getAttribute('data-om'); const id = b.getAttribute('data-id');
+            const stat = (sid, s) => { const el = root.querySelector(`[data-om-status="${sid}"]`); if (el) el.textContent = s || ''; };
+            if (act === 'refresh') return this._omRenderPane();
+            if (act === 'default') { this.advancedSettings.imageToTextModel = id; this._saveAdvancedSettings(); return this._omRenderPane(); }
+            if (act === 'delete') { const m = FaVlm.byId(id); if (!confirm('刪除「' + (m && m.label) + '」的下載檔案？下次使用會重新下載。')) return; await this._omDeleteModel(id); return this._omRenderPane(); }
+            if (act === 'delrepo') { const repo = b.getAttribute('data-repo'); if (!confirm('刪除 ' + repo + ' 的快取檔案？')) return; await this._omDeleteRepo(repo); return this._omRenderPane(); }
+            if (act === 'clearall') { if (!confirm('清除全部離線模型快取（含 Whisper）？下次使用會重新下載。')) return; await this._omClearAll(); return this._omRenderPane(); }
+            if (act === 'preload') { b.disabled = true; stat(id, '準備中…'); const r = await this._omPreload(id, (s) => stat(id, s)); stat(id, r.ok ? '✅ 完成（' + (r.device === 'webgpu' ? 'GPU' : 'CPU') + '）' : (r.cancelled ? '' : '❌ ' + r.error)); b.disabled = false; if (r.ok) this._omRenderPane(); return; }
+            if (act === 'test') {
+                const f = root.querySelector('[data-om=testfile]').files[0]; const out = root.querySelector('[data-om-out]'); if (!f) { out.textContent = '先選一張圖片'; return; }
+                out.textContent = '處理中…（第一次會下載模型）'; const r = await this._imageToText({ blob: f, filename: f.name, task: root.querySelector('[data-om-set=testtask]').value, prompt: root.querySelector('[data-om-set=testprompt]').value, silent: false });
+                out.textContent = r.ok ? r.text + '\n\n— ' + r.model + '，' + r.device.toUpperCase() + (r.threads ? '（' + r.threads + ' 執行緒）' : '') + '，' + (r.ms / 1000).toFixed(1) + ' 秒' + (r.note ? '；' + r.note : '') + (r.fell_back_from_gpu ? '；GPU 失敗，已降級 CPU' : '') : '失敗：' + r.error; this._omRenderPane && setTimeout(() => { /* 保留結果文字，不重繪 */ }, 0); return;
+            }
+        });
+    }
+
     async _attachmentCandidates(kind) {
         for (let i = this.messages.length - 1; i >= 0; i--) {
             const m = this.messages[i];
@@ -45881,7 +46355,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         btn.title = '辨識中…';
         try {
             const audio = await this._decodeAudioForWhisper(blob);
-            const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu';
+            const cpuOnly = this.advancedSettings.whisperDevicePreference === 'cpu' || this.advancedSettings.offlineDevicePreference === 'cpu';
             const wantWebGpu = !cpuOnly && await this._isWebGpuAvailable();
             const deviceOrder = wantWebGpu ? ['webgpu', 'wasm'] : ['wasm'];
             const configuredLang = this.advancedSettings.voiceInputLanguage || 'zh';
@@ -50563,15 +51037,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <option value="mp3">MP3（預設，省空間，約是WAV的1/5~1/6）</option>
                                         <option value="wav">WAV（無損，檔案較大）</option>
                                     </select>
-                                    <label class="ai-advanced-label" for="ai-whisper-device" style="font-weight:normal; margin-top:8px;">運算裝置</label>
-                                    <select id="ai-whisper-device" class="ai-advanced-input">
-                                        <option value="auto">自動（有 WebGPU 先用 WebGPU，失敗退 CPU）</option>
-                                        <option value="cpu">只用 CPU（WebGPU 反而比較慢時選這個）</option>
-                                    </select>
-                                    <p class="ai-advanced-hint">部分機器/顯卡上 WebGPU 路徑反而比 CPU 慢、或有相容性問題，這時改成「只用 CPU」。</p>
-                                    <label class="ai-advanced-label" for="ai-whisper-threads" style="font-weight:normal; margin-top:8px;">CPU 執行緒數</label>
-                                    <input type="number" id="ai-whisper-threads" class="ai-advanced-input" min="1" max="16" step="1">
-                                    <p class="ai-advanced-hint">走 CPU 路徑時（沒有 WebGPU、或上面設成「只用 CPU」）請求的執行緒數。要真的用滿多執行緒，需要頁面是 cross-origin isolated（COOP/COEP，GitHub Pages 要靠 coi-serviceworker）；沒有的話 onnxruntime-web 會自動夾回 1 條、不會壞、只是慢。範圍 1~16，預設 4。</p>
+                                    <p class="ai-advanced-hint">運算裝置（GPU／CPU）與 CPU 核心數，請到「離線模型管理」分頁設定（跟離線圖像轉文字共用）。</p>
                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
                                         <span class="ai-advanced-hint" style="margin:0;">模型快取占用：<b id="ai-whisper-cache-size">—</b></span>
                                         <button type="button" id="ai-whisper-cache-refresh" class="ai-advanced-btn" style="padding:2px 8px;">重新整理</button>
@@ -52889,6 +53355,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         const win = document.getElementById('ai-floating-window');
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
+        try { this._omRegisterPane(); } catch (e) { console.warn('離線模型管理分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
