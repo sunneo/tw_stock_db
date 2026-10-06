@@ -97,5 +97,13 @@ function embedSkin() {
     console.log('已更新 FaSkin（' + core.length + ' 字元）');
 }
 embedSkin();
+function embedVlm() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/vlm/vlm_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* VLM-BEGIN */'), b = src.indexOf('/* VLM-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 VLM 標記');
+    src = src.slice(0, a) + '/* VLM-BEGIN */\nconst FaVlm = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaVlm;\n})();\n' + src.slice(b);
+    console.log('已更新 FaVlm（' + core.length + ' 字元）');
+}
+embedVlm();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

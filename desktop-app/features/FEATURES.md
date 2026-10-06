@@ -634,6 +634,19 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
 - 範例：
   - `/media-dub-video 1:20-1:45`
 
+### 離線圖像轉文字（Florence-2、SmolVLM、PaliGemma…）（`image-to-text`）
+
+用跑在這台電腦上的小型視覺模型（瀏覽器內的 WebGPU 或 WebAssembly CPU，推論在背景執行緒、不卡畫面）描述圖片、辨識圖上的文字（OCR）、列出物件、回答關於圖片的問題；不需要線上視覺模型，圖片不會上傳。第一次使用才下載模型（會先問大小），Configure 的「離線模型管理」可以選偏好 GPU 或 CPU（沒有 WebGPU 一律降級 CPU）、設定 CPU 核心上限、看使用空間與清除。線上視覺模型失敗時，若離線模型已下載會自動備援。輸出主要是英文。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/image-to-text`
+- AI 工具：`image_to_text`
+- 範例：
+  - `解析這張圖`
+  - `辨識這張圖片裡的文字`
+  - `/image-to-text 文字`
+  - `描述這張圖片裡有什麼`
+
 ### 圖片分解與向量重繪（2.5D）（`image-decompose-redraw`）
 
 把一張圖分解成三角網格與區域、猜前後景深、用距離變換充氣成 2.5D 幾何體、重新取樣貼回原圖顏色，輸出 SVG、網格 JSON、OBJ＋貼圖。預設純幾何（不需要視覺模型），並用知識庫的部位知識（臉、五官、頭髮、動物臉）偵測並加上凸凹深度，補知識就會認得更多（顏色族群、容器）；離線也能用；vision:auto 時用助理已設定、支援讀圖的 Model 決定前後順序，沒有就退回純幾何。內建技能（skill_builtin-skill-image-decompose-redraw）。
