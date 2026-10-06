@@ -1399,7 +1399,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     },
     file_analysis: {
         enabled: true,
-        label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾）',
+        label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾；含圖片轉PDF、合併PDF）',
         toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
@@ -1416,7 +1416,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         // 路徑/別名，不是上傳檔案），要主動呼叫request_additional_tools
         // 申請file_access_points領域的工具、原地繼續完成，不要因為
         // list_uploaded_files找不到就直接放棄或勉強瞎猜。
-        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。**使用者要求「修改/校正/編修」純文字附件（程式碼、字幕、設定檔）時**：先用parse_uploaded_file分頁（offset/start_line）把整份讀完（精準編修不可用summarize_large_text代替），再照讀到的內容手寫unified diff，用attachment_apply_patch套用（修改後的內容會自動存成新附件並顯示下載卡片），套用後用parse_uploaded_file讀回修改處確認結構正確；patch失敗就照回傳的實際內容重寫，不要改成整份重新生成。二進位附件（xlsx/docx等）改用bash_execute/python_execute的attachment_files。**圖片附件（png/jpg/gif/webp等）不要用parse_uploaded_file讀**（會直接告訴你改叫下面這個工具）：用interpret_image({"file_id":"..."})實際解讀圖片內容，內部會自動挑選支援讀圖(vision)的model，不用自己判斷哪個model支援；想確認特定細節時把question參數換成具體問題（例如「這張圖表最高點在哪一天」），比只要求「描述這張圖」更準確。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。',
+        systemPrompt: '你是一個專門解讀使用者上傳檔案（含AI自己透過fetch_web_page等工具抓回來、存進persistentStorage的網頁內容——這些也會出現在list_uploaded_files清單裡）的子任務助理。**這個domain只處理persistentStorage裡的上傳檔案（用file_id參照），不處理使用者電腦上的真實磁碟資料夾**——如果使用者提到的是一個路徑（例如"/home/user/Shared/StepAction"）或一個資料夾別名，而list_uploaded_files裡完全找不到對應的file_id，代表使用者講的其實是一個File Access Point（真實資料夾），不是這個domain的範圍，**這時候立刻呼叫request_additional_tools({"need":"存取使用者授權的真實磁碟資料夾File Access Point"})申請file_access_points領域的工具，原地繼續完成任務**，不要因為list_uploaded_files是空的就直接放棄、也不要勉強套用這裡的工具硬做。確認真的是上傳檔案（file_id存在）時：先用list_uploaded_files確認可用的file_id（如果使用者訊息裡已經明確給了file_id可以跳過這步），再用parse_uploaded_file取得內容；如果是壓縮檔（zip/tar/tgz）先看entries清單，需要看特定檔案內容時再帶entry_path重新呼叫一次。**parse_uploaded_file對純文字類內容超過8000字元的部分會直接截斷丟棄，不適合處理長文件**——如果任務是「摘要」「整理重點」這類需要看過全文才能完成的需求、且檔案看起來可能很長，改用summarize_large_text（不論原始內容多長，會自動分段摘要再彙整成一份完整涵蓋全文的最終摘要，不會漏掉被截斷的部分）。**使用者要求「修改/校正/編修」純文字附件（程式碼、字幕、設定檔）時**：先用parse_uploaded_file分頁（offset/start_line）把整份讀完（精準編修不可用summarize_large_text代替），再照讀到的內容手寫unified diff，用attachment_apply_patch套用（修改後的內容會自動存成新附件並顯示下載卡片），套用後用parse_uploaded_file讀回修改處確認結構正確；patch失敗就照回傳的實際內容重寫，不要改成整份重新生成。二進位附件（xlsx/docx等）改用bash_execute/python_execute的attachment_files。**圖片附件（png/jpg/gif/webp等）不要用parse_uploaded_file讀**（會直接告訴你改叫下面這個工具）：用interpret_image({"file_id":"..."})實際解讀圖片內容，內部會自動挑選支援讀圖(vision)的model，不用自己判斷哪個model支援；想確認特定細節時把question參數換成具體問題（例如「這張圖表最高點在哪一天」），比只要求「描述這張圖」更準確。根據使用者的實際需求（摘要/找特定資訊/檢查格式問題等）用一段精簡文字回答，不要把整份原始內容整段貼回去。**PDF相關**：使用者要把圖片（png/jpg/webp…）轉成PDF → 直接呼叫images_to_pdf（每張一頁、純本地秒完成，files留空＝這個對話最近附加的全部圖片，page_size可選fit/a4/letter），**不要自己寫Python、不要說沒有這個功能**；要把多份PDF合併成一份 → merge_pdfs；移除／抽出PDF頁面、抽出PDF裡的圖片 → remove_pdf_pages／extract_pdf_pages／extract_pdf_images。',
     },
     // tw_stock_db客製: 2026-09-15使用者要求——跟file_analysis（上面那個，
     // persistentStorage/FileCache裡的上傳檔案）是完全不同的兩套系統，
@@ -1616,6 +1616,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             '- burn_subtitles：把字幕「燒進原本的影片」輸出新MP4（字幕來源可以是字幕檔或留空自動先轉逐字稿）\n' +
             '- compose_video：把你「自己設計的一段2D/3D動畫」＋一個音軌＋對齊時間軸的字幕，合成成一支「動畫版影片」（有聲音）。要做「把影片變成動畫版」時的完整流程：先transcribe_media拿逐字稿(segments)、extract_audio拿音軌，再自己用render_2d_animation（建議，keyframes依segment時間軸鋪陳、width/height設1280x720、duration設成跟音軌一樣長不要loop）設計一個把內容視覺化的動畫，最後compose_video(animation_2d=你的YAML, audio=音軌檔, captions=剛剛的逐字稿檔或segments陣列)合成。\n' +
             '- text_to_speech：把一段文字念成語音MP3。英文用本地Kokoro TTS（純瀏覽器、不上傳）；中文/粵語/日文/韓文可選擇性走API轉接（需要使用者已在設定啟用「中文語音API」，文字會送到使用者設定的Worker端點，不是本機執行）。voice留空會依文字語言自動判斷；如果偵測到中文但API未啟用，工具會回傳明確錯誤——照實把那段錯誤訊息轉告使用者（怎麼啟用），不要自己重試或改用英文語音硬念中文（會讀出錯誤的音）。可以用speed參數調整語速。\n' +
+            '- images_to_pdf：把圖片轉成PDF（每張一頁，純本地秒完成；使用者問「圖片轉PDF」就用這個，不要說沒有這個功能、也不要自己寫Python）。\n' +
             '- concat_audio：把多個已上傳的音檔依指定順序串接成一個MP3——使用者要「把這幾段語音接起來」「合併成一個檔案」時用這個，不要說做不到，也不要自己憑空生一個沒有的工具。\n' +
             '- convert_to_animated_gif：把整支影片或其中一段時間範圍轉成動態GIF（瀏覽器端逐幀編碼，不上傳）；GIF對幀率/尺寸很敏感，預設fps=10、最大寬度480px，避免產生幾十MB的GIF。\n' +
             '- extract_video_frames：擷取影片指定時間點的畫面存成圖片（file_id），搭配interpret_image看內容、compare_images跟其他圖片（例如投影片裡抽出來的圖）比對，就能靠畫面內容找出該剪哪一段時間，再用extract_clip_range剪出來。先粗取樣（例如每30秒一張）比對，再對候選附近加密縮小範圍。\n' +
@@ -15858,9 +15859,9 @@ ${fnData.code}
         );
         // 2026-10-06：圖片轉 PDF（使用者貼圖說「幫我轉pdf」，因為沒有內建工具，AI 先委派 file_analysis 燒掉 20 輪、再委派 media_av 回答「沒有這個工具」，最後才自己用 Python 寫）。
         // 純本地 pdf-lib：PNG／JPEG 直接嵌入（不重新壓縮、畫質不變），其他格式（WebP／GIF／BMP／SVG…）先用 canvas 轉 PNG；多張圖＝多頁。
-        // 根層級工具（用 register_openai_tool，不是 registerOptional）：一般 AI 在 router／full 模式也直接看得到、直接呼叫，不用委派子任務——不是只有離線訓練器的規則才能觸發。
-        this.register_openai_tool('images_to_pdf',
-            '把圖片轉成PDF（每張一頁，依序）。純本地、秒完成，PNG／JPEG直接嵌入畫質不變，其他格式先轉PNG。使用者要「圖片轉PDF」「這幾張圖合成一份PDF」就直接呼叫這個工具，不要委派子任務、不要自己寫Python。files留空＝這個對話最近附加的全部圖片；page_size：fit（預設，頁面＝圖片大小）、a4、letter。成功會自動產生PDF下載附件，回傳{ok,pdf_file_id,filename,pageCount,sizeBytes}。',
+        // domain-gated 工具（registerOptional）：不出現在根層級的工具清單（不佔每一輪的 context），一般 AI 要用時透過 delegate_to_subagent 進 file_analysis／media_av domain 才看得到；離線訓練器規則與 /media-image-to-pdf 則直接呼叫。
+        registerOptional('images_to_pdf',
+            '把一張或多張圖片轉成一份PDF（每張圖一頁，依序）。純本地、不經過AI、秒完成：PNG／JPEG直接嵌入（畫質不變），其他格式先轉PNG。使用者要「圖片轉PDF」「這幾張圖合成一份PDF」就直接用這個工具，不要自己寫Python。files留空＝這個對話最近附加的全部圖片；page_size：fit（預設，頁面＝圖片大小）、a4、letter。成功會自動產生PDF下載附件，回傳{ok,pdf_file_id,filename,pageCount,sizeBytes,files}。',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
