@@ -156,5 +156,13 @@ function embedCfg() {
     console.log('已更新 FaCfg（' + core.length + ' 字元）');
 }
 embedCfg();
+function embedGram() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/logmine/gram_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* GRAM-BEGIN */'), b = src.indexOf('/* GRAM-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 GRAM 標記');
+    src = src.slice(0, a) + '/* GRAM-BEGIN */\nconst FaGram = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaGram;\n})();\n' + src.slice(b);
+    console.log('已更新 FaGram（' + core.length + ' 字元）');
+}
+embedGram();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
