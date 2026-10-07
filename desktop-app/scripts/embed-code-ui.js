@@ -140,5 +140,13 @@ function embedCard() {
     console.log('已更新 FaCard（' + core.length + ' 字元）');
 }
 embedCard();
+function embedLog() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/logmine/log_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* LOG-BEGIN */'), b = src.indexOf('/* LOG-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 LOG 標記');
+    src = src.slice(0, a) + '/* LOG-BEGIN */\nconst FaLog = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaLog;\n})();\n' + src.slice(b);
+    console.log('已更新 FaLog（' + core.length + ' 字元）');
+}
+embedLog();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

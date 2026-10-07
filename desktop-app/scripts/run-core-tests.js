@@ -19,6 +19,7 @@ const suites = [
     ['設計檢視器資料（節點樹、UML↔原始碼對應）', 'renderer/src/uml/view_core.test.js'],
     ['互動對話卡片（規格、驗證、wizard、還原唯讀）', 'renderer/src/card/card_core.test.js'],
     ['UML 設計引導（卡片流程、套用答案）', 'renderer/src/card/uml_guide.test.js'],
+    ['離線日誌格式學習（模板、欄位、摘要、問答、訓練器規則）', 'renderer/src/logmine/log_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {
