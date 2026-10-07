@@ -10166,6 +10166,7 @@ const holder = {};
             if (g.indentBlocks) { while (stack.length && stack[stack.length - 1].indent >= s.indent) stack.pop(); }
             let parentNode = null; if (braces.length) parentNode = braces[braces.length - 1]; else if (g.indentBlocks && stack.length) parentNode = stack[stack.length - 1].node; else if (section && node.rule !== 'section') parentNode = section;
             if (node.rule === 'section') { section = node; parentNode = null; } node.parent = parentNode ? parentNode.id : null;
+            if (node.rule === 'scalar' && !parentNode) { node.rule = 'text'; } // 單獨的詞只有在區塊裡才算清單項目的值；最上層的單詞不當成已解析（否則任何一行短句都被吃掉）
             const label = nodeLabel(node); node.path = (parentNode ? parentNode.path + (parentNode.path && label ? '.' : '') : '') + label;
             if (node.rule === 'assign' || node.rule === 'keyword' || node.rule === 'directive' || node.rule === 'item' || node.rule === 'scalar' || node.rule === 'text') { node.vtype = valueType(valueOf(node)); node.refs = refsOf(valueOf(node), g); }
             nodes.push(node);
@@ -10236,13 +10237,13 @@ const holder = {};
     const hasStructure = (g) => !!(g.ops.length || g.braceBlocks || g.section || g.listMarker || (g.sigils || []).length);
     const keywordOK = (w, n, g) => n >= 2 || /^[A-Z][A-Z0-9_]+$/.test(w) || (/^[a-z][a-z0-9_]*$/.test(w) && hasStructure(g));
     function snapshot(g, lines, opts) { const r = parse(g, lines.join('\n'), opts); const ok = new Map(); for (const n of r.nodes) if (n.rule !== 'text') ok.set(n.n, n.rule); return { r, ok }; }
-    function proposeFrom(g, un) {
+    function proposeFrom(g, un, priors) {
         const P = []; const lead = {}, words = {}, runs = {}; const total = un.length;
         for (const n of un) {
             const t = String(n.value || '').trim(); const m = /^([^\w\s"'\[\]{}()<>]{1,2})(.*)$/.exec(t); if (m) { (lead[m[1]] = lead[m[1]] || []).push(n); } const w = /^([A-Za-z_][\w-]*)(?:\s+\S.*)?$/.exec(t); if (w) words[w[1]] = (words[w[1]] || 0) + 1;
             const gx = Object.assign({}, g, { opChars: OPCH + '-*/@^%' }); const fo = findOp(t, Object.assign({}, gx, { ops: null }), null); if (fo && !g.ops.includes(fo.op)) runs[fo.op] = (runs[fo.op] || 0) + 1;
         }
-        for (const [sym, ns] of Object.entries(lead)) { if (ns.length >= 2 || total <= 4) {
+        for (const [sym, ns] of Object.entries(lead)) { if (ns.length >= 2) {
             if (!(g.comment.leaders.includes(sym))) P.push({ label: '註解記號 ' + lit(sym) + '（' + ns.length + ' 行共用）', weak: true, apply: (c) => { c.comment.leaders.push(sym); } });
             if (sym.length === 1 && !(g.sigils || []).includes(sym) && ns.every((n) => new RegExp('^\\' + sym + '[A-Za-z_]').test(String(n.value).trim()))) P.push({ label: '指令記號 ' + lit(sym), apply: (c) => { c.sigils.push(sym); } });
             if (!g.listMarker && sym.length === 1 && '*+-•'.indexOf(sym) >= 0 && ns.every((n) => new RegExp('^\\' + sym + '\\s').test(String(n.value).trim()))) P.push({ label: '清單記號 ' + lit(sym), apply: (c) => { c.listMarker = sym; } }); } }
@@ -10250,12 +10251,27 @@ const holder = {};
         if (kwc.length >= 2) P.push({ label: '行首關鍵字 ' + kwc.slice(0, 6).map(([w]) => w).join('、') + (kwc.length > 6 ? '…共 ' + kwc.length + ' 個' : ''), apply: (c) => { for (const [w, n] of kwc) { if (!c.keywords.includes(w)) c.keywords.push(w); c.keywordCounts[w] = (c.keywordCounts[w] || 0) + n; } } });
         for (const [w, n] of kwc) P.push({ label: '行首關鍵字 ' + w + '（' + n + ' 行）', apply: (c) => { c.keywords.push(w); c.keywordCounts[w] = (c.keywordCounts[w] || 0) + n; } });
         for (const [op, n] of Object.entries(runs)) if (n >= 1 && op.length <= 3) P.push({ label: '運算子 ' + lit(op) + '（' + n + ' 行）', apply: (c) => { for (const ch of op) if (c.opChars.indexOf(ch) < 0) c.opChars += ch; if (!c.ops.includes(op)) c.ops.push(op); c.opCounts[op] = (c.opCounts[op] || 0) + n; } });
+        // 沿用之前學過的規則：把已存文法裡「這份還沒有」的規則當成假設提出來；一樣要通過全文驗證（涵蓋率上升、不退步）才會被採用
+        const firstWords = new Set(un.map((n) => (/^([A-Za-z_][\w-]*)/.exec(String(n.value || '').trim()) || [])[1]).filter(Boolean));
+        for (const pr of priors || []) {
+            const pg = pr.grammar; if (!pg) continue; const tag = '「' + pr.name + '」'; const add = [];
+            for (const ld of pg.comment.leaders) if (!g.comment.leaders.includes(ld)) add.push({ k: '註解記號 ' + lit(ld), f: (c) => { c.comment.leaders.push(ld); }, weak: true });
+            for (const op of pg.ops) if (!g.ops.includes(op)) add.push({ k: '運算子 ' + lit(op), f: (c) => { for (const ch of op) if (c.opChars.indexOf(ch) < 0) c.opChars += ch; c.ops.push(op); c.opCounts[op] = c.opCounts[op] || 0; } });
+            for (const sg of pg.sigils || []) if (!g.sigils.includes(sg)) add.push({ k: '指令記號 ' + lit(sg), f: (c) => { c.sigils.push(sg); } });
+            for (const q of pg.qualifierSeps || []) if (!g.qualifierSeps.includes(q)) add.push({ k: '鍵名修飾 ' + lit(q), f: (c) => { c.qualifierSeps.push(q); } });
+            for (const w of pg.keywords || []) if (!g.keywords.includes(w) && firstWords.has(w)) add.push({ k: '關鍵字 ' + w, f: (c) => { c.keywords.push(w); } });
+            if (pg.listMarker && !g.listMarker) add.push({ k: '清單記號 ' + lit(pg.listMarker), f: (c) => { c.listMarker = pg.listMarker; } });
+            if (pg.continuation && !g.continuation) add.push({ k: '行尾續行', f: (c) => { c.continuation = true; } });
+            if (!add.length) continue;
+            P.push({ label: '沿用' + tag + '：' + add.slice(0, 5).map((x) => x.k).join('、') + (add.length > 5 ? '…共 ' + add.length + ' 項' : ''), reused: pr.name, weak: add.some((x) => x.weak), apply: (c) => { for (const x of add) x.f(c); } });
+            for (const x of add) P.push({ label: '沿用' + tag + '：' + x.k, reused: pr.name, weak: !!x.weak, apply: x.f });
+        }
         return P;
     }
     function grow(g, lines, opts) {
         const trail = []; if (!g.opChars) g.opChars = OPCH; let cur = snapshot(g, lines, opts); const maxRounds = opts.maxRounds || 6;
         for (let round = 1; round <= maxRounds && cur.r.unparsedCount; round++) {
-            const un = cur.r.nodes.filter((n) => n.rule === 'text'); const props = proposeFrom(g, un); let best = null;
+            const un = cur.r.nodes.filter((n) => n.rule === 'text'); const props = proposeFrom(g, un, opts.priors || []); let best = null;
             for (const p of props) {
                 const gc = cloneG(g); p.apply(gc); const s = snapshot(gc, lines, opts);
                 let regress = false; for (const [n, rule] of cur.ok) { const now = s.ok.get(n); if (now === undefined) { regress = true; break; } } if (regress) continue;
@@ -10264,12 +10280,16 @@ const holder = {};
                 if (!best || gain > best.gain || (gain === best.gain && !p.weak && best.p.weak)) best = { p, gc, s, gain };
             }
             if (!best) break; for (const k of Object.keys(best.gc)) g[k] = best.gc[k];
-            trail.push({ round, added: best.p.label, from: Math.round(cur.r.coverage * 1000) / 1000, to: Math.round(best.s.r.coverage * 1000) / 1000, weak: !!best.p.weak }); cur = best.s;
+            trail.push({ round, reused: best.p.reused || undefined, added: best.p.label, from: Math.round(cur.r.coverage * 1000) / 1000, to: Math.round(best.s.r.coverage * 1000) / 1000, weak: !!best.p.weak }); cur = best.s;
         }
         return trail;
     }
     function summaryStats(g, r) { const byRule = {}; for (const n of r.nodes) byRule[n.rule] = (byRule[n.rule] || 0) + 1; return { byRule }; }
     // 邊讀邊學：新的文字只補文法裡沒有的規則，再重新解析、重算涵蓋率
+    // 用一份已有的文法直接解析（不重新學）：回傳跟 induce 一樣形狀的 model；涵蓋率不夠就 ok:false
+    function apply(g, text, opts) { const r = parse(g, text, opts); const ok = r.statements >= 3 && r.coverage >= ((opts && opts.minCoverage) || 0.9); return { ok, model: Object.assign({ ok, kind: 'grammar', grammar: g }, r, summaryStats(g, r)), coverage: r.coverage, statements: r.statements }; }
+    // 一次拿所有已存的文法去解析這份文字，依涵蓋率排序（沒有學過就沒有分數；日誌與散文不會有高分）
+    function rank(priors, text, opts) { return (priors || []).map((p) => { const r = parse(p.grammar, text, opts); return { name: p.name, coverage: r.coverage, statements: r.statements, unparsed: r.unparsedCount }; }).filter((x) => x.statements >= 3).sort((a, b) => b.coverage - a.coverage || a.unparsed - b.unparsed); }
     function extend(g0, text, opts) {
         const g = JSON.parse(JSON.stringify(g0)); const before = { ops: g.ops.length, kw: g.keywords.length, q: g.qualifierSeps.length + g.underSuffixes.length, sig: g.sigils.length };
         const lines = String(text).split(/\r?\n/).slice(0, (opts && opts.maxLines) || 20000); extendGrammar(g, lines); const r = finalize(g, lines, opts || {});
@@ -10323,7 +10343,8 @@ const holder = {};
         if (g.keywords.length) L.push('行首關鍵字：' + g.keywords.slice(0, 15).map((k) => k + '×' + (g.keywordCounts[k] || 0)).join('、')); if (g.listMarker) L.push('清單記號：' + g.listMarker); if ((g.sigils || []).length) L.push('指令記號：' + g.sigils.join(' '));
         const funcs = m.nodes.filter((n) => n.rule === 'func'); if (funcs.length) L.push('函式（本體當原文）：' + funcs.slice(0, 10).map((f) => f.name).join('、') + (funcs.length > 10 ? '…共 ' + funcs.length + ' 個' : ''));
         const tops = m.nodes.filter((n) => n.rule === 'assign'); const keys = new Map(); for (const n of tops) keys.set(n.key, (keys.get(n.key) || 0) + 1); const multi = Array.from(keys.entries()).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]); if (multi.length) L.push('被多次賦值的鍵：' + multi.slice(0, 6).map(([k, c]) => k + '×' + c).join('、'));
-        const tr = g.trail || []; if (tr.length) L.push('自我修正（讀過後提出新規則，用全文重新解析驗證，涵蓋率上升且原本解得好的沒壞才採用）：' + tr.map((x) => '第 ' + x.round + ' 輪加入' + x.added + '，涵蓋率 ' + Math.round(x.from * 100) + '%→' + Math.round(x.to * 100) + '%' + (x.weak ? '（較弱的推測）' : '')).join('；'));
+        if (m.reusedFrom) L.splice(1, 0, '沿用之前學過的文法「' + m.reusedFrom + '」直接解析，涵蓋率 ' + Math.round(m.coverage * 100) + '%，沒有新增規則');
+        const tr = m.reusedFrom ? [] : (g.trail || []); if (tr.length) L.push('自我修正（讀過後提出新規則，用全文重新解析驗證，涵蓋率上升且原本解得好的沒壞才採用）：' + tr.map((x) => '第 ' + x.round + ' 輪加入' + x.added + '，涵蓋率 ' + Math.round(x.from * 100) + '%→' + Math.round(x.to * 100) + '%' + (x.weak ? '（較弱的推測）' : '')).join('；'));
         if (m.unparsed.length) L.push('吃不掉的行：' + m.unparsed.slice(0, 5).map((u) => 'L' + u.line + ' ' + u.text.slice(0, 50)).join('；')); return L;
     }
     function compactContext(m, maxChars) { const g = m.grammar; const body = flat(m).slice(0, 60).map(fmtNode).join('\n'); return (summarize(m).join('\n') + '\n\n文法：\n' + toEbnf(g) + '\n\n前 60 個陳述：\n' + body).slice(0, maxChars || 5000); }
@@ -10364,13 +10385,381 @@ const holder = {};
     }
     function fromSlim(slim) { const nodes = (slim.nodes || []).map((n) => Object.assign({}, n, { refs: [], quals: n.quals || [] })); const m = { ok: true, kind: 'grammar', grammar: slim.grammar, nodes, lines: slim.lines || 0, statements: slim.statements || nodes.length, coverage: slim.coverage || 0, unparsed: [], unparsedCount: 0, comments: slim.comments || 0, blanks: 0 }; return m; }
 
-    return { induce, extend, parse, classify, findOp, summarize, compactContext, ask, matchLine, diff, describeDiff, toEbnf, toAntlr, toTrainerPattern, fromSlim, valueType, flat, fmtNode };
+    return { logical, stripTrailingComment, insideMask, induce, extend, apply, rank, parse, classify, findOp, summarize, compactContext, ask, matchLine, diff, describeDiff, toEbnf, toAntlr, toTrainerPattern, fromSlim, valueType, flat, fmtNode };
 });
 
 }).call(null, undefined, holder);
 return holder.FaGram;
 })();
 /* GRAM-END */
+/* LR-BEGIN */
+const FaLR = (function () {
+const holder = {};
+(function (module, self) {
+/* LALR(1) 語法分析表產生器與驅動程式（FaLR）：像 bison／yacc 那樣，給一份文脈無關文法（產生式，可以遞迴），產生 LALR(1) 分析表（action／goto），
+ * 並用這張表解析 token 串。文法可以是人寫的，也可以是 FaGram 從文字自己學出來的。
+ *
+ *   grammar = { start: 'file', productions: [{ lhs: 'expr', rhs: ['expr', '+', 'term'] }, …], prec?: { '+': { level: 1, assoc: 'left' } } }
+ *   符號：出現在某個產生式左邊的是非終端符號，其他都是終端符號；空的 rhs（[]）是 ε。
+ *
+ * 建表：LR(0) 項目集 → 以「自發產生＋傳播」決定 LALR 前瞻（教科書算法）→ action／goto；衝突（shift/reduce、reduce/reduce）照 bison 的規則處理並全部記下：
+ *   shift/reduce 有優先序就依優先序，沒有就 shift；reduce/reduce 取編號小的產生式。
+ * 全部是純函式（UMD）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaLR = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const EOF = '$end', AUG = '$accept', DUMMY = '#';
+
+    function analyze(grammar) {
+        const prods = [{ lhs: AUG, rhs: [grammar.start, EOF], id: 0, aug: true }];
+        grammar.productions.forEach((p, i) => prods.push({ lhs: p.lhs, rhs: p.rhs.slice(), id: i + 1, prec: p.prec, label: p.label }));
+        const nts = new Set(prods.map((p) => p.lhs)); const terms = new Set([EOF]);
+        for (const p of prods) for (const s of p.rhs) if (!nts.has(s)) terms.add(s);
+        const byLhs = new Map(); for (const p of prods) { if (!byLhs.has(p.lhs)) byLhs.set(p.lhs, []); byLhs.get(p.lhs).push(p); }
+        // nullable、FIRST
+        const nullable = new Set(); let ch = true; while (ch) { ch = false; for (const p of prods) if (!nullable.has(p.lhs) && p.rhs.every((s) => nullable.has(s))) { nullable.add(p.lhs); ch = true; } }
+        const first = new Map(); for (const t of terms) first.set(t, new Set([t])); for (const n of nts) first.set(n, new Set());
+        ch = true; while (ch) { ch = false; for (const p of prods) { const f = first.get(p.lhs); for (const s of p.rhs) { for (const x of first.get(s) || []) if (!f.has(x)) { f.add(x); ch = true; } if (!nullable.has(s)) break; } } }
+        const firstSeq = (seq, la) => { const out = new Set(); for (const s of seq) { for (const x of first.get(s) || [s]) out.add(x); if (!nullable.has(s)) return out; } if (la !== undefined) out.add(la); return out; };
+        return { prods, nts, terms, byLhs, nullable, first, firstSeq };
+    }
+    const itemKey = (p, d) => p + '.' + d;
+
+    function build(grammar, opts) {
+        opts = opts || {}; const A = analyze(grammar); const { prods, nts, terms, byLhs, firstSeq } = A; const prec = grammar.prec || {};
+        // LR(0) 項目集
+        const closure0 = (kernel) => { const set = new Map(kernel.map((k) => [itemKey(k.p, k.d), k])); const stack = kernel.slice(); while (stack.length) { const it = stack.pop(); const rhs = prods[it.p].rhs; if (it.d < rhs.length && nts.has(rhs[it.d])) for (const q of byLhs.get(rhs[it.d])) { const k = itemKey(q.id, 0); if (!set.has(k)) { const ni = { p: q.id, d: 0 }; set.set(k, ni); stack.push(ni); } } } return Array.from(set.values()); };
+        const states = []; const index = new Map(); const sk = (kernel) => kernel.map((k) => itemKey(k.p, k.d)).sort().join('|');
+        const addState = (kernel) => { const key = sk(kernel); if (index.has(key)) return index.get(key); const id = states.length; index.set(key, id); states.push({ id, kernel: kernel.slice().sort((a, b) => a.p - b.p || a.d - b.d), trans: new Map() }); return id; };
+        addState([{ p: 0, d: 0 }]);
+        for (let i = 0; i < states.length; i++) {
+            const st = states[i]; const cl = closure0(st.kernel); const bySym = new Map();
+            for (const it of cl) { const rhs = prods[it.p].rhs; if (it.d < rhs.length) { const s = rhs[it.d]; if (!bySym.has(s)) bySym.set(s, []); bySym.get(s).push({ p: it.p, d: it.d + 1 }); } }
+            for (const [s, kernel] of bySym) st.trans.set(s, addState(kernel));
+        }
+        // LALR 前瞻：自發產生＋傳播
+        const la = states.map((st) => new Map(st.kernel.map((k) => [itemKey(k.p, k.d), new Set()]))); la[0].get(itemKey(0, 0)).add(EOF); const prop = [];
+        const closure1 = (items) => { const out = new Map(); const work = items.map((x) => ({ p: x.p, d: x.d, a: x.a })); const seen = new Set(); while (work.length) { const it = work.pop(); const k = itemKey(it.p, it.d) + '/' + it.a; if (seen.has(k)) continue; seen.add(k); out.set(k, it); const rhs = prods[it.p].rhs; if (it.d < rhs.length && nts.has(rhs[it.d])) { const f = firstSeq(rhs.slice(it.d + 1), it.a); for (const q of byLhs.get(rhs[it.d])) for (const b of f) work.push({ p: q.id, d: 0, a: b }); } } return Array.from(out.values()); };
+        for (const st of states) for (const kern of st.kernel) {
+            const cl = closure1([{ p: kern.p, d: kern.d, a: DUMMY }]);
+            for (const it of cl) { const rhs = prods[it.p].rhs; if (it.d >= rhs.length) continue; const target = st.trans.get(rhs[it.d]); const tk = itemKey(it.p, it.d + 1);
+                if (it.a === DUMMY) prop.push({ from: { s: st.id, k: itemKey(kern.p, kern.d) }, to: { s: target, k: tk } }); else la[target].get(tk).add(it.a); }
+        }
+        let changed = true; while (changed) { changed = false; for (const e of prop) { const src = la[e.from.s].get(e.from.k), dst = la[e.to.s].get(e.to.k); for (const a of src) if (!dst.has(a)) { dst.add(a); changed = true; } } }
+        // action／goto
+        const action = states.map(() => new Map()); const gotoT = states.map(() => new Map()); const conflicts = [];
+        const precOf = (p) => { if (p.prec) return prec[p.prec] || null; for (let i = p.rhs.length - 1; i >= 0; i--) if (terms.has(p.rhs[i]) && prec[p.rhs[i]]) return prec[p.rhs[i]]; return null; };
+        const setAct = (s, t, act) => {
+            const cur = action[s].get(t); if (!cur) { action[s].set(t, act); return; } if (cur.type === act.type && cur.n === act.n) return;
+            let win = cur, lose = act, how = '';
+            if ((cur.type === 'shift' && act.type === 'reduce') || (cur.type === 'reduce' && act.type === 'shift')) {
+                const sh = cur.type === 'shift' ? cur : act, rd = cur.type === 'reduce' ? cur : act; const pp = precOf(prods[rd.n]), tp = prec[t];
+                if (pp && tp) { if (pp.level > tp.level) { win = rd; lose = sh; how = '優先序：reduce'; } else if (pp.level < tp.level) { win = sh; lose = rd; how = '優先序：shift'; } else if (tp.assoc === 'left') { win = rd; lose = sh; how = '結合性：reduce'; } else if (tp.assoc === 'right') { win = sh; lose = rd; how = '結合性：shift'; } else { win = null; lose = null; how = '不可結合：錯誤'; } }
+                else { win = sh; lose = rd; how = '預設：shift'; }
+                conflicts.push({ state: s, token: t, kind: 'shift/reduce', shift: sh.n, reduce: rd.n, resolved: how, byPrec: how.indexOf('優先序') === 0 || how.indexOf('結合性') === 0 });
+                if (win === null) { action[s].set(t, { type: 'error' }); return; }
+            } else if (cur.type === 'reduce' && act.type === 'reduce') { win = cur.n < act.n ? cur : act; lose = cur.n < act.n ? act : cur; conflicts.push({ state: s, token: t, kind: 'reduce/reduce', reduce: [cur.n, act.n], resolved: '取編號小的產生式 ' + win.n }); }
+            action[s].set(t, win);
+        };
+        for (const st of states) {
+            const cl = closure1(st.kernel.map((k) => ({ p: k.p, d: k.d, a: DUMMY })).flatMap((x) => Array.from(la[st.id].get(itemKey(x.p, x.d))).map((a) => ({ p: x.p, d: x.d, a }))));
+            // 沒有前瞻的核心項目（例如沒有任何東西會用到它）也要保留：用空集合就不會產生 reduce，不影響正確性
+            for (const it of cl) { const p = prods[it.p]; if (it.d < p.rhs.length) continue; if (p.aug) continue; setAct(st.id, it.a, { type: 'reduce', n: it.p }); }
+            for (const [sym, to] of st.trans) { if (sym === EOF) { setAct(st.id, EOF, { type: 'accept' }); } else if (nts.has(sym)) gotoT[st.id].set(sym, to); else setAct(st.id, sym, { type: 'shift', n: to }); }
+        }
+        return { grammar, prods, nts, terms, states, action, goto: gotoT, conflicts, start: grammar.start, stats: { states: states.length, productions: prods.length - 1, terminals: terms.size - 1, nonterminals: nts.size - 1, conflicts: conflicts.length, unresolved: conflicts.filter((c) => !c.byPrec).length } };
+    }
+
+    // ---------- 驅動程式 ----------
+    // tokens：[{ t: 終端符號名, v: 值, n: 位置（行號）}]；回傳 { ok, tree, error:{at, token, expected[]}, steps }
+    function parse(table, tokens, opts) {
+        opts = opts || {}; const { prods, action, goto: gotoT } = table; const stack = [{ s: 0, node: null }]; let i = 0; let steps = 0; const max = opts.maxSteps || 2000000;
+        const toks = tokens.concat([{ t: EOF, v: null, n: tokens.length ? tokens[tokens.length - 1].n : 0 }]);
+        while (steps++ < max) {
+            const st = stack[stack.length - 1].s; const tk = toks[i]; const act = action[st].get(tk.t);
+            if (!act || act.type === 'error') return { ok: false, error: { at: i, token: tk.t, value: tk.v, n: tk.n, expected: Array.from(action[st].keys()).filter((k) => action[st].get(k).type !== 'error'), stack: stack.slice(1).map((x) => x.node.sym) }, steps };
+            if (act.type === 'shift') { stack.push({ s: act.n, node: { sym: tk.t, value: tk.v, n: tk.n, leaf: true, tok: tk } }); i++; }
+            else if (act.type === 'reduce') {
+                const p = prods[act.n]; const kids = []; for (let k = 0; k < p.rhs.length; k++) kids.unshift(stack.pop().node); const node = { sym: p.lhs, prod: act.n, children: kids, n: kids.length ? kids[0].n : tk.n }; const g = gotoT[stack[stack.length - 1].s].get(p.lhs); if (g === undefined) return { ok: false, error: { at: i, token: tk.t, n: tk.n, expected: [], internal: 'goto 缺少 ' + p.lhs }, steps }; stack.push({ s: g, node });
+            } else if (act.type === 'accept') return { ok: true, tree: stack[stack.length - 1].node, steps, consumed: i };
+        }
+        return { ok: false, error: { at: i, internal: '超過最大步數' }, steps };
+    }
+    // 判斷一個 token 串能不能被接受（只要結果，不建樹；給「這行已經被現有文法吃掉了嗎」用）
+    const accepts = (table, tokens) => parse(table, tokens).ok;
+
+    // ---------- 輸出 ----------
+    const symName = (s) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s) ? s : "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'");
+    function toBison(grammar, opts) {
+        opts = opts || {}; const nts = new Set(grammar.productions.map((p) => p.lhs)); const terms = []; const seen = new Set(); for (const p of grammar.productions) for (const s of p.rhs) if (!nts.has(s) && !seen.has(s)) { seen.add(s); terms.push(s); }
+        const out = []; out.push('/* ' + (opts.title || '自動學出的文法') + ' */'); const named = terms.filter((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t)); if (named.length) out.push('%token ' + named.join(' '));
+        const pr = grammar.prec || {}; const levels = {}; for (const [t, v] of Object.entries(pr)) (levels[v.level] = levels[v.level] || { assoc: v.assoc, toks: [] }).toks.push(symName(t)); for (const l of Object.keys(levels).sort((a, b) => a - b)) out.push('%' + (levels[l].assoc || 'left') + ' ' + levels[l].toks.join(' '));
+        out.push('%start ' + grammar.start, '', '%%', '');
+        const order = []; const by = new Map(); for (const p of grammar.productions) { if (!by.has(p.lhs)) { by.set(p.lhs, []); order.push(p.lhs); } by.get(p.lhs).push(p); }
+        for (const l of order) { const alts = by.get(l).map((p) => (p.rhs.length ? p.rhs.map(symName).join(' ') : '/* empty */') + (p.label ? '    /* ' + p.label + ' */' : '')); out.push(l + '\n    : ' + alts.join('\n    | ') + '\n    ;', ''); }
+        out.push('%%'); return out.join('\n');
+    }
+    function dumpTable(table, opts) {
+        opts = opts || {}; const L = []; const terms = Array.from(table.terms).sort(); const nts = Array.from(table.nts).filter((n) => n !== AUG).sort(); const maxS = opts.maxStates || 60;
+        L.push('狀態 ' + table.stats.states + '、產生式 ' + table.stats.productions + '、終端 ' + table.stats.terminals + '、非終端 ' + table.stats.nonterminals + '、衝突 ' + table.stats.conflicts + '（未用優先序解決 ' + table.stats.unresolved + '）');
+        for (const st of table.states.slice(0, maxS)) { const acts = Array.from(table.action[st.id].entries()).map(([t, a]) => symName(t) + (a.type === 'shift' ? ' s' + a.n : a.type === 'reduce' ? ' r' + a.n : a.type === 'accept' ? ' acc' : ' err')); const gts = Array.from(table.goto[st.id].entries()).map(([n, s]) => n + ' g' + s); L.push('state ' + st.id + '：' + acts.join('，') + (gts.length ? '｜' + gts.join('，') : '')); }
+        if (table.states.length > maxS) L.push('…還有 ' + (table.states.length - maxS) + ' 個狀態'); return L;
+    }
+    const describeProd = (table, n) => { const p = table.prods[n]; return p.lhs + ' → ' + (p.rhs.length ? p.rhs.map(symName).join(' ') : 'ε'); };
+    const describeConflict = (table, c) => (c.kind === 'shift/reduce' ? '狀態 ' + c.state + ' 遇到 ' + symName(c.token) + '：shift／reduce（' + describeProd(table, c.reduce) + '）→ ' + c.resolved : '狀態 ' + c.state + ' 遇到 ' + symName(c.token) + '：reduce／reduce（' + c.reduce.map((n) => describeProd(table, n)).join('；') + '）→ ' + c.resolved);
+
+    return { build, parse, accepts, toBison, dumpTable, describeProd, describeConflict, EOF };
+});
+
+}).call(null, undefined, holder);
+return holder.FaLR;
+})();
+/* LR-END */
+/* CFGL-BEGIN */
+const FaCfgLearn = (function () {
+const holder = {};
+(function (module, self) {
+/* 從文字學出「遞迴的產生式」並建 LALR(1) 分析表（FaCfgLearn）：像 bison／yacc 的文法，但是從輸入自己長出來。
+ *
+ * 流程（一行一行讀）：
+ *   ① 詞彙：沿用 FaGram 找出的詞彙層（運算子、關鍵字、引號、註解…）把每一行切成終端符號（NAME／NUM／STR／VAR 與各種字面符號）
+ *   ② 先用目前的 LALR 表解析這一行；吃得掉就不用學（這是「預測涵蓋率」：靠之前讀過的行就預測得到）
+ *   ③ 吃不掉：取出「解析不了的地方」，依序嘗試
+ *        A. 換成別的規則：把出錯位置的符號換成「這裡本來可以接受的」其他符號，整行就能解析 → 兩個符號其實是同一類，合併成一個類別（op、kw、cls_n）
+ *        B. 沿用前綴：失敗之前已經歸約好的符號（堆疊）＋ 剩下部分的一般化形狀 → 一條由既有符號組合出來的新規則
+ *        C. 當成新規則：整行的一般化形狀
+ *      每一種做完都重建分析表、重新解析驗證，通不過就退回，換下一種。
+ *   ④ 一般化形狀：括號配對 → 遞迴的群組（grp → '[' items ']'，items → list，list → list ',' elem，elem → val，val → grp…）；
+ *      運算子後面的部分 → 自由的值序列（value → value atom | atom）；重複的單元 → 左遞迴列表（rep → rep unit | unit）；清單記號 → stmt → '-' stmt（遞迴）
+ *   ⑤ 區塊：縮排（INDENT／DEDENT）與大括號（open … close）在讀完之後長成遞迴的 items，再用整份 token 串驗證
+ * 產出：文法（產生式）、LALR 分析表、衝突清單、bison 風格文字、學習曲線（預測涵蓋率、各種修補的次數）。純函式（UMD），不呼叫模型。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCfgLearn = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const LR = (typeof FaLR !== 'undefined' && FaLR) || (typeof self !== 'undefined' && self.FaLR) || (typeof require === 'function' ? require('./lr_core.js') : null);
+    const GR = (typeof FaGram !== 'undefined' && FaGram) || (typeof self !== 'undefined' && self.FaGram) || (typeof require === 'function' ? require('./gram_core.js') : null);
+    const CLASS = new Set(['STR', 'NUM', 'NAME', 'VAR', 'RAW']); const STRUCT = new Set(['NL', 'INDENT', 'DEDENT']);
+    const BR = { '(': ['paren', ')'], '[': ['brack', ']'], '{': ['brace', '}'] };
+
+    // ---------- ① 詞彙 ----------
+    function lexLine(g, text) {
+        const toks = []; const quotes = (g.quotes && g.quotes.length) ? g.quotes : ['"', "'"]; const ops = (g.ops || []).slice().sort((a, b) => b.length - a.length); const sig = (g.refSigils && g.refSigils.length) ? g.refSigils : ['$']; const n = text.length; let i = 0;
+        while (i < n) {
+            const c = text[i]; if (/\s/.test(c)) { i++; continue; }
+            if (quotes.includes(c)) { let j = i + 1; while (j < n && text[j] !== c) { if (text[j] === '\\') j++; j++; } const e = Math.min(j + 1, n); toks.push({ t: 'STR', v: text.slice(i, e) }); i = e; continue; }
+            if (sig.includes(c) && /[{(]/.test(text[i + 1] || '')) { const open = text[i + 1], close = open === '{' ? '}' : ')'; let j = i + 2, d = 1; while (j < n && d) { if (text[j] === open) d++; else if (text[j] === close) d--; j++; } toks.push({ t: 'VAR', v: text.slice(i, j) }); i = j; continue; }
+            let op = null; for (const o of ops) if (text.startsWith(o, i)) { if (o === ':' && !(i + 1 >= n || /\s/.test(text[i + 1]))) continue; op = o; break; }
+            if (op) { toks.push({ t: op, v: op }); i += op.length; continue; }
+            const m = /^[A-Za-z_\d][\w.\-@]*/.exec(text.slice(i)); if (m) { toks.push({ t: /^\d+(?:\.\d+)?$/.test(m[0]) ? 'NUM' : 'NAME', v: m[0] }); i += m[0].length; continue; }
+            toks.push({ t: c, v: c }); i++;
+        }
+        // 行首關鍵字、指令記號變成字面符號（關鍵字是從文字學出來的，不是事先列好）
+        let k = 0; if (toks[0] && g.listMarker && toks[0].t === g.listMarker) k = 1; const w = toks[k];
+        if (w && (g.sigils || []).includes(w.t) && toks[k + 1] && toks[k + 1].t === 'NAME') { toks.splice(k, 2, { t: w.t + toks[k + 1].v, v: w.t + toks[k + 1].v }); }
+        else if (w && w.t === 'NAME' && (g.keywords || []).includes(w.v)) w.t = w.v;
+        return toks;
+    }
+    // 整份文字 → 陳述串（行號、縮排、token）；函式本體的行是 RAW；註解與空白行略過
+    function streamOf(g, text, maxLines) {
+        const raw = String(text).split(/\r?\n/).slice(0, maxLines || 20000); const stmts = []; let opaque = false; const leaders = (g.comment && g.comment.leaders) || [];
+        for (const s of GR.logical(raw, g)) {
+            if (!s.text) continue; if (leaders.some((ld) => s.text.startsWith(ld) && !(ld === '--' && !/^--\s/.test(s.text)))) continue;
+            const code = GR.stripTrailingComment(s.text, g).code; if (!code) continue;
+            if (opaque) { if (/^\}\s*$/.test(code)) { opaque = false; stmts.push({ n: s.n, indent: s.indent, toks: [{ t: '}', v: '}' }], code }); } else stmts.push({ n: s.n, indent: s.indent, toks: [{ t: 'RAW', v: s.raw.trim() }], code, raw: true }); continue; }
+            if (g.funcBodies && /^(?:(?:\w[\w-]*)\s+)?[A-Za-z_][\w:.${}-]*\s*\(\s*\)\s*\{\s*$/.test(code)) opaque = true;
+            stmts.push({ n: s.n, indent: s.indent, toks: lexLine(g, code), code });
+        }
+        return stmts;
+    }
+
+    // ---------- 文法狀態 ----------
+    function newState(g, seed) { const S = { g, prods: [], keys: new Set(), table: null, dirty: true, nCls: 0, trace: [] }; for (const p of seed || []) addProd(S, p.lhs, p.rhs, p.label); return S; }
+    const pkey = (lhs, rhs) => lhs + '→' + rhs.join('\u0001');
+    function addProd(S, lhs, rhs, label) { const k = pkey(lhs, rhs); if (S.keys.has(k)) return false; S.keys.add(k); S.prods.push({ lhs, rhs: rhs.slice(), label }); S.dirty = true; return true; }
+    function removeProdAt(S, i) { const p = S.prods[i]; S.keys.delete(pkey(p.lhs, p.rhs)); S.prods.splice(i, 1); S.dirty = true; }
+    function ensureTable(S) {
+        if (!S.dirty && S.table !== undefined) return S.table; S.dirty = false; if (!S.prods.some((p) => p.lhs === 'stmt')) { S.table = null; return null; }
+        try { S.table = LR.build({ start: 'stmt', productions: S.prods }); } catch (e) { S.table = null; } return S.table;
+    }
+    function parseToks(S, toks) { const t = ensureTable(S); if (!t) return { ok: false, error: { at: 0, token: toks[0] ? toks[0].t : '$end', expected: [], stack: [] } }; return LR.parse(t, toks.map((x, i) => ({ t: x.t, v: x.v, n: x.n, i, sub: x.sub, orig: x.orig }))); }
+
+    // ---------- ④ 一般化形狀 ----------
+    const isAtom = (s) => CLASS.has(s) || /^grp_/.test(s);
+    function ensureVal(S) { for (const a of ['STR', 'NUM', 'NAME', 'VAR']) addProd(S, 'val', [a]); }
+    function makeGroup(S, open, innerToks) {
+        const [kind] = BR[open]; const close = BR[open][1]; const name = 'grp_' + kind; ensureVal(S);
+        const inner = groupify(S, innerToks); // 內層先處理（遞迴）
+        addProd(S, name, [open, 'items_' + kind, close]); addProd(S, 'val', [name]); addProd(S, 'items_' + kind, []); addProd(S, 'items_' + kind, ['list_' + kind]);
+        const sep = inner.some((x) => x.t === ',') ? ',' : (inner.some((x) => x.t === ';') ? ';' : null);
+        const elems = []; let cur = []; for (const x of inner) { if (sep && x.t === sep) { elems.push(cur); cur = []; } else cur.push(x); } if (cur.length) elems.push(cur);
+        if (elems.length) { addProd(S, 'list_' + kind, ['elem_' + kind]); addProd(S, 'list_' + kind, sep ? ['list_' + kind, sep, 'elem_' + kind] : ['list_' + kind, 'elem_' + kind]); }
+        else { const k = pkey('items_' + kind, ['list_' + kind]); const ix = S.prods.findIndex((q) => pkey(q.lhs, q.rhs) === k); if (ix >= 0 && !S.prods.some((q) => q.lhs === 'list_' + kind)) removeProdAt(S, ix); }
+        for (const el of elems) {
+            const syms = el.map((x) => x.t);
+            if (syms.length === 1 && (CLASS.has(syms[0]) || /^grp_/.test(syms[0]))) addProd(S, 'elem_' + kind, ['val']);
+            else if (syms.length >= 3 && (S.g.ops || []).includes(syms[1])) addProd(S, 'elem_' + kind, [syms[0], syms[1], 'val']);
+            else if (syms.length && syms.every((s) => isAtom(s) || /^[^\w\s]$/.test(s))) { valueNT(S, syms); addProd(S, 'elem_' + kind, ['value']); }
+            else if (syms.length) addProd(S, 'elem_' + kind, compress(S, syms));
+        }
+        return { t: name, v: '', group: true };
+    }
+    // 把一行 token 中配對的括號收成群組符號（群組的內容語言另外長成遞迴的產生式）；沒配對的括號（例如行尾的 {）留著
+    function groupify(S, toks) {
+        const out = []; for (let i = 0; i < toks.length; i++) {
+            const t = toks[i]; if (BR[t.t]) { let d = 0, j = i; for (; j < toks.length; j++) { if (toks[j].t === t.t) d++; else if (toks[j].t === BR[t.t][1]) { d--; if (d === 0) break; } } if (j < toks.length && d === 0) { out.push(makeGroup(S, t.t, toks.slice(i + 1, j))); i = j; continue; } }
+            out.push(t);
+        }
+        return out;
+    }
+    function valueNT(S, atoms) { ensureVal(S); addProd(S, 'value', ['value', 'vatom']); addProd(S, 'value', ['vatom']); for (const a of atoms) { const s = typeof a === 'string' ? a : a.t; addProd(S, 'vatom', [s]); } return 'value'; }
+    // 重複的單元（週期 1～3，連續 ≥2 次）→ 左遞迴列表 rep_k → rep_k unit | unit
+    function compress(S, seq) {
+        let out = seq.slice(); for (let period = 3; period >= 1; period--) { for (let i = 0; i + 2 * period <= out.length; i++) { let reps = 1; while (i + (reps + 1) * period <= out.length && out.slice(i, i + period).every((s, k) => s === out[i + reps * period + k])) reps++; if (reps >= 2) { const unit = out.slice(i, i + period); const name = 'rep_' + unit.map((u) => u.replace(/[^A-Za-z0-9]/g, (c) => 'x' + c.charCodeAt(0).toString(16))).join('_'); addProd(S, name, [name].concat(unit)); addProd(S, name, unit); out.splice(i, reps * period, name); } } }
+        return out;
+    }
+    // 鍵名的一般化：NAME（':' NAME）* 再加零到多個群組（旗標 [x]、函式括號 ()）→ lhs（遞迴：lhs → lhs ':' NAME）
+    function lhsGeneralize(S, part) {
+        if (!part.length || part[0] !== 'NAME') return null; let i = 1; while (i + 1 < part.length + 0 && part[i] === ':' && part[i + 1] === 'NAME') i += 2; while (i < part.length && /^grp_/.test(part[i])) i++; if (i !== part.length) return null;
+        addProd(S, 'lhs', ['NAME']); let j = 1; while (j + 1 < part.length && part[j] === ':' && part[j + 1] === 'NAME') { addProd(S, 'lhs', ['lhs', ':', 'NAME']); j += 2; } for (; j < part.length; j++) addProd(S, 'lhs', ['lhs', part[j]]); return ['lhs'];
+    }
+    function shapeOf(S, toks) {
+        const g = S.g; const g2 = groupify(S, toks); const syms = g2.map((x) => x.t); if (!syms.length) return { rhs: [], after: [] };
+        const after = [];
+        if (g.listMarker && syms[0] === g.listMarker && syms.length > 1) { after.push(toks.slice(1)); return { rhs: [syms[0], 'stmt'], after }; } // 清單項目：stmt → '-' stmt（遞迴），內層另外學
+        const oi = syms.findIndex((s, i) => i > 0 && (g.ops || []).includes(s));
+        if (oi > 0) { const lhs = lhsGeneralize(S, syms.slice(0, oi)) || compress(S, syms.slice(0, oi)); const rest = syms.slice(oi + 1); return { rhs: lhs.concat([syms[oi]], rest.length ? [valueNT(S, rest)] : []), after }; }
+        if (syms[syms.length - 1] === '{' && syms.length > 1) { const head = syms.slice(0, -1); const lg = lhsGeneralize(S, head); if (lg) return { rhs: lg.concat(['{']), after }; if (head.every((s) => isAtom(s) || /^[^\w\s]$/.test(s))) return { rhs: [valueNT(S, head), '{'], after }; }
+        const first = syms[0]; if (!CLASS.has(first) && !/^grp_/.test(first) && syms.length > 1 && syms.slice(1).every((s) => isAtom(s) || /^[^\w\s]$/.test(s))) return { rhs: [first, valueNT(S, syms.slice(1))], after };
+        if ((g.listMarker || g.indentBlocks || g.section) && syms.every((s) => isAtom(s) || /^[^\w\s]$/.test(s)) && syms.every((s) => !(g.ops || []).includes(s))) return { rhs: [valueNT(S, syms)], after };
+        return { rhs: compress(S, syms), after };
+    }
+
+    // ---------- ③ 修補 ----------
+    function sub(S, toks) {
+        let cur = toks.map((x) => Object.assign({}, x)); for (let round = 0; round < 3; round++) {
+            const r = parseToks(S, cur); if (r.ok) return { ok: true, tree: r.tree, toks: cur }; const e = r.error; if (!e || e.at >= cur.length) return { ok: false };
+            const tk = cur[e.at]; if (CLASS.has(tk.t) || STRUCT.has(tk.t) || BR[tk.t] || /^[)\]}]$/.test(tk.t)) return { ok: false }; let found = false; const kindOf = (x) => (/^[A-Za-z_!]/.test(x) ? 'word' : 'sym');
+            for (const x of (e.expected || []).slice().sort()) { if (x === LR.EOF || CLASS.has(x) || STRUCT.has(x) || x === tk.t || BR[x] || /^[)\]}]$/.test(x) || kindOf(x) !== kindOf(tk.t)) continue; const trial = cur.slice(); trial[e.at] = Object.assign({}, tk, { t: x, orig: tk.t, sub: true }); const r2 = parseToks(S, trial); if (r2.ok || (r2.error && r2.error.at > e.at)) { cur = trial; found = true; break; } }
+            if (!found) return { ok: false };
+        }
+        return { ok: false };
+    }
+    function classOf(S, x) { const g = S.g; return (g.ops || []).includes(x) ? 'op' : ((g.keywords || []).includes(x) ? 'kw' : null); }
+    function introduceClass(S, tree) {
+        const uses = []; (function walk(n) { if (!n || n.leaf) return; n.children.forEach((c, ci) => { if (c.leaf && c.tok && c.tok.sub) uses.push({ prod: n.prod - 1, idx: ci, x: c.sym, orig: c.tok.orig }); else walk(c); }); })(tree);
+        const done = []; for (const u of uses) {
+            const p = S.prods[u.prod]; if (!p) continue; const cur = p.rhs[u.idx];
+            if (/^(?:op|kw|cls_\d+)$/.test(p.lhs) && p.rhs.length === 1) { addProd(S, p.lhs, [u.orig]); done.push(p.lhs + ' += ' + u.orig); continue; }
+            const base = classOf(S, cur) || classOf(S, u.orig); let name = base && !S.prods.some((q) => q.lhs === base && q.rhs[0] !== cur && q.rhs.length === 1 && !(S.g.ops || []).concat(S.g.keywords || []).includes(q.rhs[0])) ? base : ('cls_' + (++S.nCls));
+            if (!S.prods.some((q) => q.lhs === name)) { /* 新類別 */ } else if (S.prods.some((q) => q.lhs === name && q.rhs.length === 1 && q.rhs[0] === cur)) { /* 已經有：直接加成員 */ }
+            const keyOld = pkey(p.lhs, p.rhs); S.keys.delete(keyOld); p.rhs[u.idx] = name; S.keys.add(pkey(p.lhs, p.rhs)); addProd(S, name, [cur]); addProd(S, name, [u.orig]); S.dirty = true; done.push(name + ' ← ' + cur + ' | ' + u.orig);
+        }
+        dedupSubsumed(S); return done;
+    }
+    // 類別（op、kw、cls_n）建好之後，只差在「用字面符號還是用類別」的重複產生式拿掉（類別的產生式已經涵蓋它），避免 shift/reduce 衝突
+    function dedupSubsumed(S) {
+        const members = new Map(); for (const p of S.prods) if (/^(?:op|kw|cls_\d+)$/.test(p.lhs) && p.rhs.length === 1) { if (!members.has(p.lhs)) members.set(p.lhs, new Set()); members.get(p.lhs).add(p.rhs[0]); }
+        for (let i = S.prods.length - 1; i >= 0; i--) { const q = S.prods[i]; if (/^(?:op|kw|cls_\d+)$/.test(q.lhs)) continue; const dup = S.prods.some((p, j) => j !== i && p.lhs === q.lhs && p.rhs.length === q.rhs.length && p.rhs.some((s, k) => members.has(s) && members.get(s).has(q.rhs[k]) && p.rhs.every((s2, k2) => k2 === k || s2 === q.rhs[k2]))); if (dup) removeProdAt(S, i); }
+    }
+    // 把一個形狀（和它裡面的內層形狀，例如清單項目的內容）加進文法，不做解析檢查（檢查由呼叫端做）
+    function addShape(S, toks, label, depth) { const sh = shapeOf(S, toks); addProd(S, 'stmt', sh.rhs, label); if ((depth || 0) < 6) for (const inner of sh.after) addShape(S, inner, label, (depth || 0) + 1); return sh; }
+    function learnStmt(S, toks, stats) {
+        const r0 = parseToks(S, toks); if (r0.ok) { stats.parsed++; return { how: 'parsed' }; }
+        // A. 換成別的規則（同位置的其他符號能讓整行解析 → 同一類）
+        const snap = S.prods.map((p) => ({ lhs: p.lhs, rhs: p.rhs.slice(), label: p.label })); const restore = () => { S.prods = snap.map((p) => Object.assign({}, p, { rhs: p.rhs.slice() })); S.keys = new Set(S.prods.map((p) => pkey(p.lhs, p.rhs))); S.dirty = true; };
+        const a = sub(S, toks); if (a.ok) { const done = introduceClass(S, a.tree); if (parseToks(S, toks).ok) { stats.substituted++; S.trace.push({ how: 'substitute', detail: done.join('；') }); return { how: 'substitute', detail: done }; } restore(); }
+        // B. 沿用前綴（失敗前已歸約好的符號 ＋ 剩下部分的一般化形狀）　C. 整行當成新規則（整行的一般化形狀）
+        // 兩個都先在沙盒試，通過重新解析的才算；挑比較短的（較短＝一般化得比較好），一樣長就用沿用前綴的（重複使用已有的符號）
+        const e = r0.error; const cands = [];
+        if (e && e.stack && e.stack.length >= 1 && e.at < toks.length) { const sh = shapeOf(S, toks.slice(e.at)); cands.push({ how: 'compose', rhs: e.stack.concat(sh.rhs), after: sh.after, label: '組合：既有前綴＋新尾巴', detail: e.stack.join(' ') + ' + ' + sh.rhs.join(' ') }); }
+        { const sh = shapeOf(S, toks); if (sh.rhs.length || !toks.length) cands.push({ how: 'new', rhs: sh.rhs, after: sh.after, label: '新規則', detail: sh.rhs.join(' ') }); }
+        const valid = []; for (const c of cands) { const keep = S.prods.map((p) => ({ lhs: p.lhs, rhs: p.rhs.slice(), label: p.label })); addProd(S, 'stmt', c.rhs, c.label); for (const inner of c.after) addShape(S, inner, c.label); const okc = parseToks(S, toks).ok; S.prods = keep.map((p) => Object.assign({}, p)); S.keys = new Set(S.prods.map((p) => pkey(p.lhs, p.rhs))); S.dirty = true; if (okc) valid.push(c); }
+        if (valid.length) { valid.sort((x, y) => x.rhs.length - y.rhs.length || (x.how === 'new' ? -1 : 1)); const c = valid[0]; addProd(S, 'stmt', c.rhs, c.label); if (c.how === 'compose') shapeOf(S, toks.slice(e.at)); else shapeOf(S, toks); for (const inner of c.after) addShape(S, inner, c.label); if (parseToks(S, toks).ok) { if (c.how === 'compose') stats.composed++; else stats.newRule++; S.trace.push({ how: c.how, detail: c.detail }); return { how: c.how }; } restore(); }
+        // D. 一般化後的規則被 LALR 衝突的預設處理擋住：退回完全照字面的規則（保證吃得掉自己）
+        addProd(S, 'stmt', toks.map((x) => x.t), '字面'); stats.literal++; S.trace.push({ how: 'literal', detail: toks.map((x) => x.t).join(' ') }); return { how: 'literal' };
+    }
+
+    // 讀完之後整理：只差一個字面符號的產生式（lhs '=' value、lhs '+=' value、lhs ':=' value…）合併成類別（stmt → lhs op value，op → '=' | '+=' | …）；
+    // 用到類別的位置，其他產生式裡「左邊鄰居相同」的成員字面符號也換成類別。每一步都用全部已讀的行重新驗證，吃得掉的行變少就退回。
+    function consolidate(S, allToks) {
+        const accepted = () => { const t = ensureTable(S); return t ? allToks.filter((x) => LR.accepts(t, x)).length : 0; }; const before = accepted(); const log = [];
+        const snap = () => S.prods.map((p) => ({ lhs: p.lhs, rhs: p.rhs.slice(), label: p.label })); const put = (s) => { S.prods = s.map((p) => Object.assign({}, p, { rhs: p.rhs.slice() })); S.keys = new Set(S.prods.map((p) => pkey(p.lhs, p.rhs))); S.dirty = true; };
+        const nts = () => new Set(S.prods.map((p) => p.lhs)); const isClassName = (s) => /^(?:op|kw|cls_\d+)$/.test(s); const kindOf = (x) => (/^[A-Za-z_!]/.test(x) ? 'word' : 'sym');
+        const original = snap();
+        // 1) 合併只差一個字面符號的產生式
+        const N = nts(); const groups = new Map();
+        S.prods.forEach((p, i) => { if (p.lhs !== 'stmt' && p.lhs !== 'open') return; p.rhs.forEach((s, k) => { const lit = !N.has(s) && !CLASS.has(s) && !STRUCT.has(s) && !BR[s] && !/^[)\]}]$/.test(s); const cls = isClassName(s); if (!lit && !cls) return; const key = p.lhs + '|' + k + '|' + p.rhs.slice(0, k).concat(['*'], p.rhs.slice(k + 1)).join(''); if (!groups.has(key)) groups.set(key, []); groups.get(key).push({ i, k, s, cls }); }); });
+        const drop = new Set(); const edits = [];
+        for (const [, g] of groups) { const lits = g.filter((x) => !x.cls); const cls = g.filter((x) => x.cls); if (lits.length + cls.length < 2 || !lits.length) continue; if (new Set(lits.map((x) => kindOf(x.s))).size > 1) continue; edits.push({ g, lits, cls }); }
+        for (const e of edits) {
+            const keep = e.g[0]; const className = e.cls.length ? e.cls[0].s : ((e.lits.every((x) => (S.g.ops || []).includes(x.s)) && !S.prods.some((p) => p.lhs === 'op' && !e.lits.some((x) => x.s === p.rhs[0]))) ? 'op' : (e.lits.every((x) => (S.g.keywords || []).includes(x.s)) ? 'kw' : 'cls_' + (++S.nCls)));
+            for (const x of e.lits) addProd(S, className, [x.s]); const target = S.prods[e.cls.length ? e.cls[0].i : e.lits[0].i]; if (target) { if (!e.cls.length) target.rhs[e.lits[0].k] = className; for (const x of e.g) if (x.i !== (e.cls.length ? e.cls[0].i : e.lits[0].i)) drop.add(x.i); log.push(className + ' ← ' + e.lits.map((x) => x.s).concat(e.cls.length ? ['（既有）'] : []).join(' | ')); }
+        }
+        if (drop.size) { S.prods = S.prods.filter((p, i) => !drop.has(i)); S.keys = new Set(S.prods.map((p) => pkey(p.lhs, p.rhs))); S.dirty = true; }
+        // 2) 類別成員的字面符號，在「左邊鄰居相同」的其他產生式裡也換成類別
+        const members = new Map(); for (const p of S.prods) if (isClassName(p.lhs) && p.rhs.length === 1) { if (!members.has(p.lhs)) members.set(p.lhs, new Set()); members.get(p.lhs).add(p.rhs[0]); }
+        for (const q of S.prods) { if (isClassName(q.lhs)) continue; q.rhs.forEach((s, k) => { for (const [c, m] of members) { if (!m.has(s) || k === 0) continue; if (S.prods.some((p) => p.lhs === q.lhs && p !== q && p.rhs[k] === c && p.rhs[k - 1] === q.rhs[k - 1])) { q.rhs[k] = c; log.push(c + ' 取代 ' + s); } } }); }
+        S.keys = new Set(S.prods.map((p) => pkey(p.lhs, p.rhs))); S.dirty = true; dedupSubsumed(S);
+        if (accepted() < before) { put(original); return []; } return log;
+    }
+    // ---------- ⑤ 區塊：讀完之後長成遞迴的 items，再用整份 token 串驗證 ----------
+    function fileGrammar(S, stmts, flat) {
+        const prods = S.prods.map((p) => ({ lhs: p.lhs, rhs: p.rhs.slice(), label: p.label })); const indent = !!S.g.indentBlocks && !flat; const brace = !!S.g.braceBlocks && !flat;
+        let open = [], close = null;
+        if (brace) { for (let i = prods.length - 1; i >= 0; i--) { const p = prods[i]; if (p.lhs !== 'stmt') continue; if (p.rhs.length === 1 && p.rhs[0] === '}') { close = true; prods.splice(i, 1); } else if (p.rhs.length >= 1 && p.rhs[p.rhs.length - 1] === '{') { open.push(p); prods.splice(i, 1); } } for (const p of open) prods.push({ lhs: 'open', rhs: p.rhs.slice(), label: '區塊開頭' }); if (close) prods.push({ lhs: 'close', rhs: ['}'], label: '區塊結尾' }); }
+        prods.push({ lhs: 'file', rhs: ['items'] }, { lhs: 'items', rhs: ['items', 'item'] }, { lhs: 'items', rhs: ['item'] }, { lhs: 'item', rhs: ['NL'] }, { lhs: 'item', rhs: ['stmt', 'NL'] });
+        if (indent) prods.push({ lhs: 'item', rhs: ['stmt', 'NL', 'INDENT', 'items', 'DEDENT'] });
+        if (brace && open.length && close) prods.push({ lhs: 'item', rhs: ['open', 'NL', 'items', 'close', 'NL'] }, { lhs: 'item', rhs: ['open', 'NL', 'close', 'NL'] });
+        return { start: 'file', productions: prods, flat: !!flat, indent, brace: brace && open.length > 0 && !!close };
+    }
+    function fileTokens(S, stmts) {
+        const out = []; const stack = [0]; const useIndent = !!S.g.indentBlocks;
+        for (const s of stmts) { if (useIndent) { if (s.indent > stack[stack.length - 1]) { stack.push(s.indent); out.push({ t: 'INDENT', v: '', n: s.n }); } else while (s.indent < stack[stack.length - 1] && stack.length > 1) { stack.pop(); out.push({ t: 'DEDENT', v: '', n: s.n }); } } for (const k of s.toks) out.push({ t: k.t, v: k.v, n: s.n }); out.push({ t: 'NL', v: '', n: s.n }); }
+        while (stack.length > 1) { stack.pop(); out.push({ t: 'DEDENT', v: '', n: stmts.length ? stmts[stmts.length - 1].n : 0 }); }
+        return out;
+    }
+
+    // ---------- 對外 ----------
+    // learn(text, { g, seed, maxLines })：g＝FaGram 學出的詞彙層（沒給就先學一份）；seed＝以前學過的產生式（沿用）
+    function learn(text, opts) {
+        opts = opts || {}; let g = opts.g; if (!g) { const gi = GR.induce(text, { maxLines: opts.maxLines }); if (!gi.ok) return { ok: false, reason: gi.reason || '學不出詞彙層' }; g = gi.grammar; }
+        const stmts = streamOf(g, text, opts.maxLines); if (stmts.length < 3) return { ok: false, reason: '陳述太少' };
+        const S = newState(g, opts.seed); const stats = { parsed: 0, substituted: 0, composed: 0, newRule: 0, literal: 0 }; const curve = []; let seen = 0;
+        for (const s of stmts) { learnStmt(S, s.toks, stats); seen++; if (seen % Math.max(1, Math.ceil(stmts.length / 10)) === 0 || seen === stmts.length) curve.push({ lines: seen, predicted: Math.round(stats.parsed / seen * 1000) / 1000 }); }
+        const merged = consolidate(S, stmts.map((s) => s.toks)); if (merged.length) S.trace.push({ how: 'consolidate', detail: merged.slice(0, 6).join('；') });
+        const table = ensureTable(S); const toks = fileTokens(S, stmts);
+        let fg = fileGrammar(S, stmts, false), ft = LR.build(fg), fr = LR.parse(ft, toks);
+        if (!fr.ok && (fg.brace || fg.indent)) { const fg2 = fileGrammar(S, stmts, true), ft2 = LR.build(fg2), fr2 = LR.parse(ft2, toks); if (fr2.ok) { fg = fg2; ft = ft2; fr = fr2; } }
+        const lineOk = stmts.filter((s) => LR.accepts(table, s.toks)).length;
+        const cfg = { start: 'file', productions: fg.productions, lineProductions: S.prods, prec: undefined }; const lineGrammar = { start: 'stmt', productions: S.prods };
+        const res = { ok: lineOk / stmts.length >= 0.95 && fr.ok, cfg, lineGrammar, table: ft, lineTable: table, stats: { lines: stmts.length, predicted: stats.parsed, predictedRatio: Math.round(stats.parsed / stmts.length * 1000) / 1000, substituted: stats.substituted, composed: stats.composed, newRule: stats.newRule, literal: stats.literal, lineAccepted: lineOk, productions: fg.productions.length, states: ft.stats.states, conflicts: ft.stats.conflicts, unresolved: ft.stats.unresolved, blocks: { indent: fg.indent, brace: fg.brace, flat: fg.flat } }, file: { ok: fr.ok, error: fr.ok ? null : { line: fr.error && fr.error.n, token: fr.error && fr.error.token, expected: fr.error && (fr.error.expected || []).slice(0, 8) } }, curve, trace: S.trace.slice(0, 80), bison: LR.toBison(fg, { title: '從文字自己學出的文法' }), tableDump: LR.dumpTable(ft, { maxStates: 40 }), conflicts: ft.conflicts.slice(0, 20).map((c) => LR.describeConflict(ft, c)) };
+        return res;
+    }
+    // 拿存起來的產生式直接解析一份新文字（不學）：回傳每一行有沒有被吃掉
+    function check(prods, g, text, opts) { const S = newState(g, prods); const stmts = streamOf(g, text, opts && opts.maxLines); const t = ensureTable(S); if (!t) return { lines: stmts.length, accepted: 0, ratio: 0, failed: stmts.slice(0, 5).map((s) => s.n) }; const bad = stmts.filter((s) => !LR.accepts(t, s.toks)); return { lines: stmts.length, accepted: stmts.length - bad.length, ratio: stmts.length ? (stmts.length - bad.length) / stmts.length : 0, failed: bad.slice(0, 8).map((s) => ({ line: s.n, text: s.code.slice(0, 80) })) }; }
+    // 摘要（給人看）
+    function describe(res) {
+        const s = res.stats; const L = []; L.push('遞迴文法：' + s.productions + ' 條產生式、LALR 分析表 ' + s.states + ' 個狀態、衝突 ' + s.conflicts + '（未解決 ' + s.unresolved + '）；整份檔案' + (res.file.ok ? '用分析表解析成功' : '解析失敗（第 ' + (res.file.error && res.file.error.line) + ' 行）') + (s.blocks.indent ? '；縮排區塊遞迴' : '') + (s.blocks.brace ? '；大括號區塊遞迴' : ''));
+        L.push('學習過程（一行一行讀）：' + s.lines + ' 行中 ' + s.predicted + ' 行（' + Math.round(s.predictedRatio * 100) + '%）靠之前讀過的規則就解析得了；其餘：換成同類 ' + s.substituted + '、沿用前綴組合 ' + s.composed + '、整行新規則 ' + s.newRule + (s.literal ? '、逐字 ' + s.literal : ''));
+        const tr = res.trace.filter((x) => x.how !== 'literal').slice(0, 6); if (tr.length) L.push('修補範例：' + tr.map((x) => ({ substitute: '換成同類', compose: '組合', new: '新規則', consolidate: '讀完後整理（只差一個符號的規則合併成類別）' }[x.how] + '（' + String(x.detail).slice(0, 60) + '）')).join('；'));
+        if (res.conflicts.length) L.push('衝突（照 bison 預設處理）：' + res.conflicts.slice(0, 3).join('；')); return L;
+    }
+    function toSlim(res) { return { v: 1, start: res.cfg.start, productions: res.cfg.productions, lineProductions: res.cfg.lineProductions, stats: res.stats, curve: res.curve }; }
+    // 一行文字能不能被學到的分析表接受；不能就說卡在哪個 token、這裡本來可以接受什麼
+    function checkLine(res, g, line) { const S = newState(g, res.lineProductions || (res.cfg && res.cfg.lineProductions) || []); const toks = lexLine(g, line); const r = parseToks(S, toks); return r.ok ? { accepted: true, tokens: toks.map((x) => x.t) } : { accepted: false, tokens: toks.map((x) => x.t), error: { at: r.error.at, token: r.error.token, expected: (r.error.expected || []).slice(0, 10) } }; }
+    function fromSlim(slim) { const fg = { start: slim.start, productions: slim.productions }; const table = LR.build(fg); return { cfg: fg, lineProductions: slim.lineProductions || [], table, stats: slim.stats, bison: LR.toBison(fg, { title: '從文字自己學出的文法' }), tableDump: LR.dumpTable(table, { maxStates: 40 }), conflicts: table.conflicts.slice(0, 20).map((c) => LR.describeConflict(table, c)), curve: slim.curve || [] }; }
+    return { lexLine, streamOf, learn, check, checkLine, describe, toSlim, fromSlim, shapeOf };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCfgLearn;
+})();
+/* CFGL-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -19288,7 +19677,7 @@ ${fnData.code}
             { type: 'object', properties: { scenario: { type: 'string', description: '（選填）情境文字，用來推薦' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, constraints: { type: 'object', description: '（選填）已經指定的抉擇' } }, additionalProperties: false }
         );
         registerOptional('log_learn',
-            '讀一份沒看過格式的文字日誌（ASCII／UTF-8：應用程式日誌、syslog、nginx、key=value、JSON 每行一筆、帶堆疊的多行紀錄…），程式自己找出格式：遮蔽已知型別（時間、IP、UUID、路徑、數字、耗時）、試多種分詞、把重複的行歸成模板、變動的位置變成欄位，並統計次數、第一次／最後一次出現、欄位的值分布。學到的模板與統計存進離線訓練器（領域 log_formats，沒有存整份日誌），之後同格式的紀錄直接比對。全部是程式計算，不呼叫模型；二進位或幾乎沒有重複的內容會明說學不出來。日誌來源三選一：text（貼上的文字）、file_id（上傳的檔案）、path（桌面版，這台電腦上的檔案）。預設會在對話裡放一張卡片讓使用者確認格式與名稱、選存或不存（confirm:false 略過卡片）。學完用 log_ask 摘要與問答。**章節式設定檔也能學**（INI、TOML、EDK2 的 INF／DEC／DSC／FDF、沒有章節的 key=value 如 .env）：這類檔案程式會自動辨認，改用「章節→鍵值」的結構解析（不是模板探勘）：型別（布林、數字、十六進位、GUID、路徑、網址、版本…）、重複的鍵、空值、EDK2 的 [Sources]／PCD／LibraryClasses／!include／DEFINE；密碼、金鑰、token 與網址裡的帳密會被遮蔽，不會存進訓練器或交給模型。**其他沒見過的格式（YAML、BitBake 的 .bb／.bbappend／local.conf、nginx、Dockerfile、Makefile、自創格式…）會「從文字自己長出一份文法」**：程式讀過之後自己統計出賦值的運算子（=、:=、?=、+=、:、=>…）、鍵名的修飾（:append、_append）、行首關鍵字、清單記號、註解記號、區塊靠縮排還是大括號、函式本體；然後用這份文法解析全文驗證涵蓋率，吃不掉的行會被拿來提出新規則（新運算子、新關鍵字、新註解記號），採用前一定重新驗證（涵蓋率上升且原本解得好的不能壞），結果可以輸出成 EBNF 或 ANTLR 風格。這不是通用的文法學習，只涵蓋「行導向、有鍵值或關鍵字、用縮排或括號分區塊」這一族；吃不掉大部分行就明說學不出來。想讓已存的文法讀新樣本繼續長，帶 extend:"格式名稱"。kind 可強制指定 log、config 或 grammar。',
+            '讀一份沒看過格式的文字日誌（ASCII／UTF-8：應用程式日誌、syslog、nginx、key=value、JSON 每行一筆、帶堆疊的多行紀錄…），程式自己找出格式：遮蔽已知型別（時間、IP、UUID、路徑、數字、耗時）、試多種分詞、把重複的行歸成模板、變動的位置變成欄位，並統計次數、第一次／最後一次出現、欄位的值分布。學到的模板與統計存進離線訓練器（領域 log_formats，沒有存整份日誌），之後同格式的紀錄直接比對。全部是程式計算，不呼叫模型；二進位或幾乎沒有重複的內容會明說學不出來。日誌來源三選一：text（貼上的文字）、file_id（上傳的檔案）、path（桌面版，這台電腦上的檔案）。預設會在對話裡放一張卡片讓使用者確認格式與名稱、選存或不存（confirm:false 略過卡片）。學完用 log_ask 摘要與問答。**章節式設定檔也能學**（INI、TOML、EDK2 的 INF／DEC／DSC／FDF、沒有章節的 key=value 如 .env）：這類檔案程式會自動辨認，改用「章節→鍵值」的結構解析（不是模板探勘）：型別（布林、數字、十六進位、GUID、路徑、網址、版本…）、重複的鍵、空值、EDK2 的 [Sources]／PCD／LibraryClasses／!include／DEFINE；密碼、金鑰、token 與網址裡的帳密會被遮蔽，不會存進訓練器或交給模型。**其他沒見過的格式（YAML、BitBake 的 .bb／.bbappend／local.conf、nginx、Dockerfile、Makefile、自創格式…）會「從文字自己長出一份文法」**：程式讀過之後自己統計出賦值的運算子（=、:=、?=、+=、:、=>…）、鍵名的修飾（:append、_append）、行首關鍵字、清單記號、註解記號、區塊靠縮排還是大括號、函式本體；然後用這份文法解析全文驗證涵蓋率，吃不掉的行會被拿來提出新規則（新運算子、新關鍵字、新註解記號），採用前一定重新驗證（涵蓋率上升且原本解得好的不能壞），結果可以輸出成 EBNF 或 ANTLR 風格。同時會學出**遞迴的產生式與 LALR(1) 分析表**（像 bison／yacc）：括號群組、縮排與大括號區塊、清單、重複的單元都長成遞迴規則（value → value atom、items → items item、stmt → '-' stmt）；讀每一行時先用目前的表解析，解析不了就取出失敗的地方，依序試「換成同位置的其他符號（合併成同一類）」「沿用已歸約的前綴加新尾巴」「整行當新規則」，每種都重建分析表重新驗證才採用；以前學過的產生式會當種子沿用。這不是通用的文法學習，只涵蓋「行導向、有鍵值或關鍵字、用縮排或括號分區塊」這一族，也沒有運算子優先序的帰納；吃不掉大部分行就明說學不出來。**會自動沿用以前學過的文法**：新文字進來先拿所有已存的文法試，涵蓋夠高（≥90%）就直接沿用、不重新學（結果的 reusedFrom 會寫是哪一份）；沒有完全符合時，把已存文法的規則（運算子、註解記號、修飾、關鍵字…）當成假設提出，一樣要通過全文驗證才採用（reusedRules 列出沿用了誰）。想讓已存的文法讀新樣本繼續長，帶 extend:"格式名稱"。kind 可強制指定 log、config 或 grammar。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._logLearn(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
@@ -19296,7 +19685,7 @@ ${fnData.code}
             { type: 'object', properties: { text: { type: 'string', description: '貼上的日誌文字' }, file_id: { type: 'string', description: '上傳檔案的 file_id' }, path: { type: 'string', description: '（桌面版）日誌檔的絕對路徑' }, name: { type: 'string', description: '（選填）格式名稱，之後用它指定' }, confirm: { type: 'boolean', description: '預設 true：放卡片讓使用者確認；false 直接存' }, kind: { type: 'string', enum: ['log', 'config', 'grammar'], description: '（選填）強制當日誌、章節式設定檔或自己長文法；省略＝自動判斷' }, extend: { type: 'string', description: '（選填）已存的文法名稱：讀這份新樣本，讓那份文法繼續長' }, max_lines: { type: 'integer', description: '最多分析幾行（預設 50000）' } }, additionalProperties: false }
         );
         registerOptional('log_ask',
-            '對學過（或剛 log_learn 過）的日誌做摘要與問答，全是程式查詢：「摘要」「哪個錯誤最多」「錯誤什麼時候第一次出現」「有幾筆錯誤」「欄位 xxx 的值分布」「最忙的時段」「模板有哪些」「找 「xxx」在哪些行」。text 只給一行日誌＝問「這一行是什麼意思」（比對到哪個模板、欄位值、這種紀錄的統計）。開放式問題（原因、建議）程式不亂答，會回傳 kind:"open" 與精簡的模板統計脈絡（不是整份日誌），請你根據脈絡回答。要指定日誌：format（學過的格式名稱，省略＝最近一份）或直接帶 text／file_id／path 現學現問。找某個值需要原始行：同一個對話裡剛 log_learn 過的有，只存在訓練器裡的沒有（會明說需要檔案）。**設定檔**（INI／TOML／EDK2）的問法：「[database] 有哪些設定」「workers 設成多少」「哪些是布林／GUID／路徑」「有沒有重複的鍵」「Sources 有哪些原始檔」；text 給一行 key = value＝查這個鍵現在的值與型別；帶 other_text／other_file_id／other_path（另一份設定檔）＝比較兩份差在哪（改值、新增、移除）。機密欄位的值一律顯示為已遮蔽。**自己長出文法的格式**（YAML、BitBake、nginx…）：「SRC_URI 被怎麼設定」（列出所有操作與修飾，依順序）、「services.web.image 是什麼」（用路徑）、「services.web 有哪些設定」、「哪些用了 += 」、「有哪些 inherit」「有哪些函式」、「文法」（EBNF）、「antlr」（ANTLR 風格）。',
+            '對學過（或剛 log_learn 過）的日誌做摘要與問答，全是程式查詢：「摘要」「哪個錯誤最多」「錯誤什麼時候第一次出現」「有幾筆錯誤」「欄位 xxx 的值分布」「最忙的時段」「模板有哪些」「找 「xxx」在哪些行」。text 只給一行日誌＝問「這一行是什麼意思」（比對到哪個模板、欄位值、這種紀錄的統計）。開放式問題（原因、建議）程式不亂答，會回傳 kind:"open" 與精簡的模板統計脈絡（不是整份日誌），請你根據脈絡回答。要指定日誌：format（學過的格式名稱，省略＝最近一份）或直接帶 text／file_id／path 現學現問。找某個值需要原始行：同一個對話裡剛 log_learn 過的有，只存在訓練器裡的沒有（會明說需要檔案）。**設定檔**（INI／TOML／EDK2）的問法：「[database] 有哪些設定」「workers 設成多少」「哪些是布林／GUID／路徑」「有沒有重複的鍵」「Sources 有哪些原始檔」；text 給一行 key = value＝查這個鍵現在的值與型別；帶 other_text／other_file_id／other_path（另一份設定檔）＝比較兩份差在哪（改值、新增、移除）。機密欄位的值一律顯示為已遮蔽。**自己長出文法的格式**（YAML、BitBake、nginx…）：「SRC_URI 被怎麼設定」（列出所有操作與修飾，依順序）、「services.web.image 是什麼」（用路徑）、「services.web 有哪些設定」、「哪些用了 += 」、「有哪些 inherit」「有哪些函式」、「文法」（EBNF）、「antlr」（ANTLR 風格）、「bison」（遞迴的產生式，bison 風格）、「分析表」（LALR 狀態與 shift／reduce／goto）、「衝突」（shift/reduce、reduce/reduce）；text 給一行＝同時回答 LALR 分析表接不接受它、卡在哪個 token、這裡本來可以接受什麼。',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._logAsk(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
@@ -50179,24 +50568,39 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _logStoredModel(name) { const st = this._ot || await this._otLoad(); const dom = st.domains.get('log_formats'); if (!dom) return null; const p = dom.patterns.find((x) => x.log_model && (x.log_model.name === name || x.id === 'log_' + String(name).toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '_').slice(0, 40))); return p ? this._logFromSlim(p.log_model) : null; }
     async _logSave(model, name, source) {
         const st = this._ot || await this._otLoad(); const dn = 'log_formats'; const dom = st.domains.get(dn) || { name: dn, description: '學過的日誌格式（模板、欄位、統計；沒有存整份日誌）', enabled: true, source: 'learned', patterns: [], references: [], created: Date.now() };
-        const p = model.kind === 'grammar' ? FaGram.toTrainerPattern(model, name, { source }) : (model.kind === 'config' ? FaCfg.toTrainerPattern(model, name, { source }) : FaLog.toTrainerPattern(model, name, { source })); const i = dom.patterns.findIndex((x) => x.id === p.id); if (i >= 0) { p.hits = dom.patterns[i].hits || 0; dom.patterns[i] = p; } else dom.patterns.push(p);
+        const p0 = model.kind === 'grammar' ? FaGram.toTrainerPattern(model, name, { source }) : null; if (p0 && model.cfgRes) p0.log_model.cfg = FaCfgLearn.toSlim(model.cfgRes); const p = p0 ? p0 : (model.kind === 'config' ? FaCfg.toTrainerPattern(model, name, { source }) : FaLog.toTrainerPattern(model, name, { source })); const i = dom.patterns.findIndex((x) => x.id === p.id); if (i >= 0) { p.hits = dom.patterns[i].hits || 0; dom.patterns[i] = p; } else dom.patterns.push(p);
         await this._otSaveDomain(dom); try { await this._otSyncPatternExamples(dom, p); } catch (_) {} return p;
     }
-    _logFromSlim(slim) { return slim.kind === 'grammar' ? FaGram.fromSlim(slim) : (slim.kind === 'config' ? FaCfg.fromSlim(slim) : FaLog.fromSlim(slim)); }
+    _logFromSlim(slim) { if (slim.kind === 'grammar') { const m = FaGram.fromSlim(slim); m.cfgSlim = slim.cfg || null; m.name = slim.name; return m; } return slim.kind === 'grammar' ? FaGram.fromSlim(slim) : (slim.kind === 'config' ? FaCfg.fromSlim(slim) : FaLog.fromSlim(slim)); }
     // 怎麼分析一份沒看過的文字：章節式設定檔（INI／TOML／EDK2）→ 結構解析；其他「行導向、有鍵值或關鍵字」的格式（YAML、BitBake、nginx、Dockerfile…）→ 從文字自己長出文法並驗證；都不是 → 日誌模板探勘
-    _logAnalyze(text, a) {
+    // 已學過的文法（離線訓練器領域 log_formats 裡 kind 是 grammar 的）：拿來沿用
+    async _logStoredGrammars() { try { const st = this._ot || await this._otLoad(); const dom = st.domains.get('log_formats'); if (!dom) return []; return dom.patterns.filter((x) => x.log_model && x.log_model.kind === 'grammar' && x.log_model.grammar).map((x) => ({ name: x.log_model.name, grammar: x.log_model.grammar, cfg: x.log_model.cfg || null })); } catch (_) { return []; } }
+    // 遞迴文法與 LALR 分析表：從這份文字讀出來（FaCfgLearn）；以前學過的產生式當種子（沿用），種子能解析的行就不用重學
+    async _logAttachCfg(model, text) {
+        if (!model || model.kind !== 'grammar' || model.cfgRes) return model; try {
+            const priors = await this._logStoredGrammars(); let seed = null, from = null, best = 0.3;
+            for (const p of priors) { if (!p.cfg || !p.cfg.lineProductions) continue; const c = FaCfgLearn.check(p.cfg.lineProductions, p.grammar, text); if (c.ratio >= best) { best = c.ratio; seed = p.cfg.lineProductions; from = p.name; } }
+            const r = FaCfgLearn.learn(text, { g: model.grammar, seed: seed || undefined }); if (r.ok || r.stats) { model.cfgRes = r; model.cfgSeededFrom = from; }
+        } catch (_) { /* 遞迴文法學不起來不影響其他功能 */ } return model;
+    }
+    async _logAnalyze(text, a) {
         const kind = a.kind; const ml = Number(a.max_lines) || 0; const cd = (kind === 'log' || kind === 'grammar') ? { ok: false } : FaCfg.detect(text);
         if (kind === 'config' || (cd.ok && cd.format !== 'flat')) return FaCfg.parse(text, { maxLines: Math.min(ml || 20000, 100000) });
-        if (kind !== 'log') { const gr = FaGram.induce(text, { maxLines: Math.min(ml || 20000, 100000) }); if (gr.ok) return gr.model; if (kind === 'grammar') return { ok: false, error: gr.reason, kind: gr.kind || 'text' }; }
+        if (kind !== 'log') {
+            // ① 先拿學過的文法直接試：涵蓋夠高就沿用，不重新學　② 沒有完全符合，把學過的規則當假設，驗證通過才採用　③ 都不行才從零長
+            const priors = await this._logStoredGrammars(); const mo = { maxLines: Math.min(ml || 20000, 100000) };
+            if (priors.length) { const rk = FaGram.rank(priors, text, mo); const best = rk[0]; if (best && best.coverage >= 0.9) { const g0 = priors.find((x) => x.name === best.name).grammar; const ap = FaGram.apply(g0, text, mo); if (ap.ok) { ap.model.reusedFrom = best.name; return ap.model; } } }
+            const gr = FaGram.induce(text, Object.assign({ priors }, mo)); if (gr.ok) { const used = Array.from(new Set((gr.trail || []).map((x) => x.reused).filter(Boolean))); if (used.length) gr.model.reusedRules = used; return gr.model; } if (kind === 'grammar') return { ok: false, error: gr.reason, kind: gr.kind || 'text' };
+        }
         if (kind !== 'log' && cd.ok) return FaCfg.parse(text, { maxLines: Math.min(ml || 20000, 100000) });
         return FaLog.mine(text, { maxLines: Math.min(ml || 50000, 200000) });
     }
     async _logLearn(a) {
         const src = await this._logReadSource(a); if (!src.ok) return src;
-        let model; if (a.extend) { const base = await this._logStoredModel(String(a.extend)); if (!base || base.kind !== 'grammar') return { ok: false, error: '沒有學過叫「' + a.extend + '」的文法（extend 只能延伸之前自己長出來的文法）' }; const ex = FaGram.extend(base.grammar, src.text, { maxLines: Math.min(Number(a.max_lines) || 20000, 100000) }); model = ex.model; model.added = ex.added; a.name = a.name || String(a.extend); } else model = this._logAnalyze(src.text, a); if (!model.ok) return { ok: false, error: '學不出格式：' + model.error, kind: model.kind };
+        let model; if (a.extend) { const base = await this._logStoredModel(String(a.extend)); if (!base || base.kind !== 'grammar') return { ok: false, error: '沒有學過叫「' + a.extend + '」的文法（extend 只能延伸之前自己長出來的文法）' }; const ex = FaGram.extend(base.grammar, src.text, { maxLines: Math.min(Number(a.max_lines) || 20000, 100000) }); model = ex.model; model.added = ex.added; a.name = a.name || String(a.extend); } else model = await this._logAnalyze(src.text, a); if (model.ok && model.kind === 'grammar') await this._logAttachCfg(model, src.text); if (!model.ok) return { ok: false, error: '學不出格式：' + model.error, kind: model.kind };
         const name = String(a.name || '').trim() || (String(src.source).split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'log').slice(0, 30);
         this._logSessionsMap().set(name, { model, lines: String(src.text).split(/\r?\n/).slice(0, 200000), source: src.source });
-        const isCfg = model.kind === 'config'; const isGram = model.kind === 'grammar'; const isStruct = isCfg || isGram; const summary = isGram ? FaGram.summarize(model) : (isCfg ? FaCfg.summarize(model) : FaLog.summarize(model)); let saved = false, choice = 'save';
+        const isCfg = model.kind === 'config'; const isGram = model.kind === 'grammar'; const isStruct = isCfg || isGram; const summary = isGram ? FaGram.summarize(model).concat(model.cfgRes ? FaCfgLearn.describe(model.cfgRes) : []) : (isCfg ? FaCfg.summarize(model) : FaLog.summarize(model)); let saved = false, choice = 'save';
         if (a.confirm !== false && typeof document !== 'undefined') {
             const O = (id, label, more) => Object.assign({ id, label }, more || {});
             const r = await this.askCard({ id: 'log_learn', title: isGram ? '從文字自己長出一份文法' : (isCfg ? '讀懂一份設定檔的結構' : '學到一種日誌格式'), description: '來源：' + src.source + (model.weak ? '\n⚠ ' + model.note : ''), questions: [
@@ -50206,20 +50610,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (!r.ok || !r.confirmed || r.flat.go === 'cancel') return { ok: false, cancelled: true, message: '使用者取消了，沒有存任何東西' };
             choice = r.flat.go; if (r.flat.name && r.flat.name !== name) { const s = this._logSessionsMap().get(name); this._logSessionsMap().delete(name); this._logSessionsMap().set(r.flat.name, s); a.name = r.flat.name; }
         }
-        const finalName = String(a.name || name); if (choice === 'save') { await this._logSave(model, finalName, src.source); saved = true; }
-        if (isGram) return { ok: true, name: finalName, saved, source: src.source, kind: 'grammar', coverage: model.coverage, statements: model.statements, unparsed: model.unparsedCount, grammar: FaGram.toEbnf(model.grammar), selfCorrection: model.grammar.trail || [], summary, hint: '之後用 log_ask 問：「文法」「antlr」「SRC_URI 被怎麼設定」「services.web 有哪些設定」「哪些用了 += 」「有哪些函式」；兩份比較帶 other_text／other_file_id／other_path；讀到新的樣本想讓文法繼續長：log_learn 帶 extend:"格式名稱"' };
+        const finalName = String(a.name || name); if (a.confirm === false && model.weak) choice = 'once'; /* 沒有人確認、又是很弱的結果：不自動存 */ if (choice === 'save') { await this._logSave(model, finalName, src.source); saved = true; }
+        if (isGram) return { ok: true, name: finalName, saved, source: src.source, kind: 'grammar', coverage: model.coverage, statements: model.statements, unparsed: model.unparsedCount, grammar: FaGram.toEbnf(model.grammar), recursiveGrammar: model.cfgRes ? { productions: model.cfgRes.stats.productions, lalrStates: model.cfgRes.stats.states, conflicts: model.cfgRes.stats.conflicts, predictedRatio: model.cfgRes.stats.predictedRatio, repairs: { substituted: model.cfgRes.stats.substituted, composed: model.cfgRes.stats.composed, newRule: model.cfgRes.stats.newRule }, fileParsed: model.cfgRes.file.ok, seededFrom: model.cfgSeededFrom || null, bison: model.cfgRes.bison.slice(0, 3000) } : null, selfCorrection: model.grammar.trail || [], reusedFrom: model.reusedFrom || null, reusedRules: model.reusedRules || [], summary, hint: '之後用 log_ask 問：「文法」「antlr」「SRC_URI 被怎麼設定」「services.web 有哪些設定」「哪些用了 += 」「有哪些函式」；兩份比較帶 other_text／other_file_id／other_path；讀到新的樣本想讓文法繼續長：log_learn 帶 extend:"格式名稱"' };
         if (isCfg) return { ok: true, name: finalName, saved, source: src.source, kind: 'config', format: model.format, sections: model.sections.length, keys: model.keyed, summary, hint: '之後用 log_ask 問：「[章節] 有哪些設定」「某個鍵設成多少」「哪些是布林」「有沒有重複的鍵」；兩份比較帶 other_text／other_file_id／other_path 問「差在哪」' };
         return { ok: true, name: finalName, saved, source: src.source, format: model.format, records: model.records, templates: model.templates.length, coverage: model.coverage, weak: !!model.weak, summary, top: model.templates.slice(0, 8).map((t) => ({ id: t.id, count: t.count, level: t.level, pattern: t.pattern.slice(0, 200), fields: t.fields.map((f) => f.name + ':' + f.type) })), hint: '之後用 log_ask 問：「哪個錯誤最多」「錯誤什麼時候第一次出現」「找 「xxx」」；開放式的問題我會拿精簡的模板與統計來回答' };
     }
     async _logAsk(a) {
         const question = String(a.question || '').trim(); let model = null, lines = null, from = '';
-        if ((a.file_id || a.path || (typeof a.text === 'string' && /\n/.test(a.text.trim()))) ) { const src = await this._logReadSource(a); if (!src.ok) return src; model = this._logAnalyze(src.text, a); if (!model.ok) return { ok: false, error: '學不出格式：' + model.error }; lines = String(src.text).split(/\r?\n/); from = src.source + '（這次現學的，沒有存）'; }
+        if ((a.file_id || a.path || (typeof a.text === 'string' && /\n/.test(a.text.trim()))) ) { const src = await this._logReadSource(a); if (!src.ok) return src; model = await this._logAnalyze(src.text, a); if (model.ok && model.kind === 'grammar') await this._logAttachCfg(model, src.text); if (!model.ok) return { ok: false, error: '學不出格式：' + model.error }; lines = String(src.text).split(/\r?\n/); from = src.source + '（這次現學的，沒有存）'; }
         else { const nm = String(a.format || '').trim(); const ses = nm ? this._logSessionsMap().get(nm) : Array.from(this._logSessionsMap().values()).pop(); if (ses) { model = ses.model; lines = ses.lines; from = ses.source; } else if (nm) { model = await this._logStoredModel(nm); from = '離線訓練器裡學過的格式「' + nm + '」'; } if (!model) return { ok: false, error: nm ? '沒有學過叫「' + nm + '」的日誌格式（用 log_learn 先學）' : '還沒有可以問的日誌：先用 log_learn 讀一份，或用 text／file_id／path 帶上日誌' }; }
         // 單行：這一行是什麼
         const one = typeof a.text === 'string' && a.text.trim() && !/\n/.test(a.text.trim()) ? a.text.trim() : null;
         if (model.kind === 'grammar') {
             if (a.other_text || a.other_file_id || a.other_path) { const o = await this._logReadSource({ text: a.other_text, file_id: a.other_file_id, path: a.other_path }); if (!o.ok) return o; const og = FaGram.extend(model.grammar, o.text, { grow: true }); if (!og.ok) return { ok: false, error: '另一份讀不懂：' + (og.reason || '') }; const d = FaGram.diff(model.nodes && model.nodes.length ? model : model, og.model); return { ok: true, kind: 'diff', from, answer: FaGram.describeDiff(d).join('\n'), same: d.same, counts: { added: d.added.length, removed: d.removed.length, changed: d.changed.length } }; }
-            if (one) { const hit = FaGram.matchLine(model, one); if (!hit) return { ok: true, kind: 'unmatched', answer: '這一行用學到的文法解析不出來（格式不同，或是文法還沒學到這種寫法；可以用 log_learn 的 extend 讓文法繼續長）。', from }; return { ok: true, kind: 'line', from, answer: '規則 ' + hit.rule + (hit.key ? '，名稱 ' + hit.key : '') + (hit.op ? '，運算子 ' + hit.op : '') + (hit.known ? '\n檔案裡出現過：' + hit.where.map((w) => w.text).join('；') : '\n（檔案裡沒有這個名稱）'), key: hit.key }; }
+            const cfgObj = model.cfgRes || (model.cfgSlim ? (() => { try { return FaCfgLearn.fromSlim(model.cfgSlim); } catch (_) { return null; } })() : null);
+            if (!one && /(?:bison|yacc|lalr|分析表|語法表|產生式|衝突|遞迴|parse\s*table)/i.test(question)) { if (!cfgObj) return { ok: true, kind: 'no_cfg', from, answer: '這份格式沒有存遞迴文法（舊版學的）；重新 log_learn 一次就會建出產生式與 LALR 分析表。' }; if (/衝突|conflict/i.test(question)) return { ok: true, kind: 'conflicts', from, answer: cfgObj.conflicts.length ? cfgObj.conflicts.join('\n') : '沒有衝突。' }; if (/分析表|語法表|table|state/i.test(question) && !/bison|yacc/i.test(question)) return { ok: true, kind: 'table', from, answer: cfgObj.tableDump.join('\n') }; return { ok: true, kind: 'bison', from, answer: cfgObj.bison }; }
+            if (one) { const hit = FaGram.matchLine(model, one); const chk = cfgObj && model.grammar ? FaCfgLearn.checkLine(cfgObj, model.grammar, one) : null; if (hit && chk) hit.table = chk; if (!hit) return { ok: true, kind: 'unmatched', answer: '這一行用學到的文法解析不出來（格式不同，或是文法還沒學到這種寫法；可以用 log_learn 的 extend 讓文法繼續長）。', from }; return { ok: true, kind: 'line', from, parseTable: hit.table || null, answer: (hit.table ? 'LALR 分析表：' + (hit.table.accepted ? '接受（token：' + hit.table.tokens.join(' ') + '）' : '拒絕，卡在第 ' + hit.table.error.at + ' 個 token「' + hit.table.error.token + '」，這裡本來可以接受：' + hit.table.error.expected.join('、')) + '\n' : '') + '規則 ' + hit.rule + (hit.key ? '，名稱 ' + hit.key : '') + (hit.op ? '，運算子 ' + hit.op : '') + (hit.known ? '\n檔案裡出現過：' + hit.where.map((w) => w.text).join('；') : '\n（檔案裡沒有這個名稱）'), key: hit.key }; }
             if (!question) return { ok: true, kind: 'summary', from, answer: FaGram.summarize(model).join('\n') };
             return Object.assign({ ok: true, from }, FaGram.ask(model, question));
         }

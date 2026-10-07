@@ -113,6 +113,7 @@
             if (g.indentBlocks) { while (stack.length && stack[stack.length - 1].indent >= s.indent) stack.pop(); }
             let parentNode = null; if (braces.length) parentNode = braces[braces.length - 1]; else if (g.indentBlocks && stack.length) parentNode = stack[stack.length - 1].node; else if (section && node.rule !== 'section') parentNode = section;
             if (node.rule === 'section') { section = node; parentNode = null; } node.parent = parentNode ? parentNode.id : null;
+            if (node.rule === 'scalar' && !parentNode) { node.rule = 'text'; } // 單獨的詞只有在區塊裡才算清單項目的值；最上層的單詞不當成已解析（否則任何一行短句都被吃掉）
             const label = nodeLabel(node); node.path = (parentNode ? parentNode.path + (parentNode.path && label ? '.' : '') : '') + label;
             if (node.rule === 'assign' || node.rule === 'keyword' || node.rule === 'directive' || node.rule === 'item' || node.rule === 'scalar' || node.rule === 'text') { node.vtype = valueType(valueOf(node)); node.refs = refsOf(valueOf(node), g); }
             nodes.push(node);
@@ -183,13 +184,13 @@
     const hasStructure = (g) => !!(g.ops.length || g.braceBlocks || g.section || g.listMarker || (g.sigils || []).length);
     const keywordOK = (w, n, g) => n >= 2 || /^[A-Z][A-Z0-9_]+$/.test(w) || (/^[a-z][a-z0-9_]*$/.test(w) && hasStructure(g));
     function snapshot(g, lines, opts) { const r = parse(g, lines.join('\n'), opts); const ok = new Map(); for (const n of r.nodes) if (n.rule !== 'text') ok.set(n.n, n.rule); return { r, ok }; }
-    function proposeFrom(g, un) {
+    function proposeFrom(g, un, priors) {
         const P = []; const lead = {}, words = {}, runs = {}; const total = un.length;
         for (const n of un) {
             const t = String(n.value || '').trim(); const m = /^([^\w\s"'\[\]{}()<>]{1,2})(.*)$/.exec(t); if (m) { (lead[m[1]] = lead[m[1]] || []).push(n); } const w = /^([A-Za-z_][\w-]*)(?:\s+\S.*)?$/.exec(t); if (w) words[w[1]] = (words[w[1]] || 0) + 1;
             const gx = Object.assign({}, g, { opChars: OPCH + '-*/@^%' }); const fo = findOp(t, Object.assign({}, gx, { ops: null }), null); if (fo && !g.ops.includes(fo.op)) runs[fo.op] = (runs[fo.op] || 0) + 1;
         }
-        for (const [sym, ns] of Object.entries(lead)) { if (ns.length >= 2 || total <= 4) {
+        for (const [sym, ns] of Object.entries(lead)) { if (ns.length >= 2) {
             if (!(g.comment.leaders.includes(sym))) P.push({ label: '註解記號 ' + lit(sym) + '（' + ns.length + ' 行共用）', weak: true, apply: (c) => { c.comment.leaders.push(sym); } });
             if (sym.length === 1 && !(g.sigils || []).includes(sym) && ns.every((n) => new RegExp('^\\' + sym + '[A-Za-z_]').test(String(n.value).trim()))) P.push({ label: '指令記號 ' + lit(sym), apply: (c) => { c.sigils.push(sym); } });
             if (!g.listMarker && sym.length === 1 && '*+-•'.indexOf(sym) >= 0 && ns.every((n) => new RegExp('^\\' + sym + '\\s').test(String(n.value).trim()))) P.push({ label: '清單記號 ' + lit(sym), apply: (c) => { c.listMarker = sym; } }); } }
@@ -197,12 +198,27 @@
         if (kwc.length >= 2) P.push({ label: '行首關鍵字 ' + kwc.slice(0, 6).map(([w]) => w).join('、') + (kwc.length > 6 ? '…共 ' + kwc.length + ' 個' : ''), apply: (c) => { for (const [w, n] of kwc) { if (!c.keywords.includes(w)) c.keywords.push(w); c.keywordCounts[w] = (c.keywordCounts[w] || 0) + n; } } });
         for (const [w, n] of kwc) P.push({ label: '行首關鍵字 ' + w + '（' + n + ' 行）', apply: (c) => { c.keywords.push(w); c.keywordCounts[w] = (c.keywordCounts[w] || 0) + n; } });
         for (const [op, n] of Object.entries(runs)) if (n >= 1 && op.length <= 3) P.push({ label: '運算子 ' + lit(op) + '（' + n + ' 行）', apply: (c) => { for (const ch of op) if (c.opChars.indexOf(ch) < 0) c.opChars += ch; if (!c.ops.includes(op)) c.ops.push(op); c.opCounts[op] = (c.opCounts[op] || 0) + n; } });
+        // 沿用之前學過的規則：把已存文法裡「這份還沒有」的規則當成假設提出來；一樣要通過全文驗證（涵蓋率上升、不退步）才會被採用
+        const firstWords = new Set(un.map((n) => (/^([A-Za-z_][\w-]*)/.exec(String(n.value || '').trim()) || [])[1]).filter(Boolean));
+        for (const pr of priors || []) {
+            const pg = pr.grammar; if (!pg) continue; const tag = '「' + pr.name + '」'; const add = [];
+            for (const ld of pg.comment.leaders) if (!g.comment.leaders.includes(ld)) add.push({ k: '註解記號 ' + lit(ld), f: (c) => { c.comment.leaders.push(ld); }, weak: true });
+            for (const op of pg.ops) if (!g.ops.includes(op)) add.push({ k: '運算子 ' + lit(op), f: (c) => { for (const ch of op) if (c.opChars.indexOf(ch) < 0) c.opChars += ch; c.ops.push(op); c.opCounts[op] = c.opCounts[op] || 0; } });
+            for (const sg of pg.sigils || []) if (!g.sigils.includes(sg)) add.push({ k: '指令記號 ' + lit(sg), f: (c) => { c.sigils.push(sg); } });
+            for (const q of pg.qualifierSeps || []) if (!g.qualifierSeps.includes(q)) add.push({ k: '鍵名修飾 ' + lit(q), f: (c) => { c.qualifierSeps.push(q); } });
+            for (const w of pg.keywords || []) if (!g.keywords.includes(w) && firstWords.has(w)) add.push({ k: '關鍵字 ' + w, f: (c) => { c.keywords.push(w); } });
+            if (pg.listMarker && !g.listMarker) add.push({ k: '清單記號 ' + lit(pg.listMarker), f: (c) => { c.listMarker = pg.listMarker; } });
+            if (pg.continuation && !g.continuation) add.push({ k: '行尾續行', f: (c) => { c.continuation = true; } });
+            if (!add.length) continue;
+            P.push({ label: '沿用' + tag + '：' + add.slice(0, 5).map((x) => x.k).join('、') + (add.length > 5 ? '…共 ' + add.length + ' 項' : ''), reused: pr.name, weak: add.some((x) => x.weak), apply: (c) => { for (const x of add) x.f(c); } });
+            for (const x of add) P.push({ label: '沿用' + tag + '：' + x.k, reused: pr.name, weak: !!x.weak, apply: x.f });
+        }
         return P;
     }
     function grow(g, lines, opts) {
         const trail = []; if (!g.opChars) g.opChars = OPCH; let cur = snapshot(g, lines, opts); const maxRounds = opts.maxRounds || 6;
         for (let round = 1; round <= maxRounds && cur.r.unparsedCount; round++) {
-            const un = cur.r.nodes.filter((n) => n.rule === 'text'); const props = proposeFrom(g, un); let best = null;
+            const un = cur.r.nodes.filter((n) => n.rule === 'text'); const props = proposeFrom(g, un, opts.priors || []); let best = null;
             for (const p of props) {
                 const gc = cloneG(g); p.apply(gc); const s = snapshot(gc, lines, opts);
                 let regress = false; for (const [n, rule] of cur.ok) { const now = s.ok.get(n); if (now === undefined) { regress = true; break; } } if (regress) continue;
@@ -211,12 +227,16 @@
                 if (!best || gain > best.gain || (gain === best.gain && !p.weak && best.p.weak)) best = { p, gc, s, gain };
             }
             if (!best) break; for (const k of Object.keys(best.gc)) g[k] = best.gc[k];
-            trail.push({ round, added: best.p.label, from: Math.round(cur.r.coverage * 1000) / 1000, to: Math.round(best.s.r.coverage * 1000) / 1000, weak: !!best.p.weak }); cur = best.s;
+            trail.push({ round, reused: best.p.reused || undefined, added: best.p.label, from: Math.round(cur.r.coverage * 1000) / 1000, to: Math.round(best.s.r.coverage * 1000) / 1000, weak: !!best.p.weak }); cur = best.s;
         }
         return trail;
     }
     function summaryStats(g, r) { const byRule = {}; for (const n of r.nodes) byRule[n.rule] = (byRule[n.rule] || 0) + 1; return { byRule }; }
     // 邊讀邊學：新的文字只補文法裡沒有的規則，再重新解析、重算涵蓋率
+    // 用一份已有的文法直接解析（不重新學）：回傳跟 induce 一樣形狀的 model；涵蓋率不夠就 ok:false
+    function apply(g, text, opts) { const r = parse(g, text, opts); const ok = r.statements >= 3 && r.coverage >= ((opts && opts.minCoverage) || 0.9); return { ok, model: Object.assign({ ok, kind: 'grammar', grammar: g }, r, summaryStats(g, r)), coverage: r.coverage, statements: r.statements }; }
+    // 一次拿所有已存的文法去解析這份文字，依涵蓋率排序（沒有學過就沒有分數；日誌與散文不會有高分）
+    function rank(priors, text, opts) { return (priors || []).map((p) => { const r = parse(p.grammar, text, opts); return { name: p.name, coverage: r.coverage, statements: r.statements, unparsed: r.unparsedCount }; }).filter((x) => x.statements >= 3).sort((a, b) => b.coverage - a.coverage || a.unparsed - b.unparsed); }
     function extend(g0, text, opts) {
         const g = JSON.parse(JSON.stringify(g0)); const before = { ops: g.ops.length, kw: g.keywords.length, q: g.qualifierSeps.length + g.underSuffixes.length, sig: g.sigils.length };
         const lines = String(text).split(/\r?\n/).slice(0, (opts && opts.maxLines) || 20000); extendGrammar(g, lines); const r = finalize(g, lines, opts || {});
@@ -270,7 +290,8 @@
         if (g.keywords.length) L.push('行首關鍵字：' + g.keywords.slice(0, 15).map((k) => k + '×' + (g.keywordCounts[k] || 0)).join('、')); if (g.listMarker) L.push('清單記號：' + g.listMarker); if ((g.sigils || []).length) L.push('指令記號：' + g.sigils.join(' '));
         const funcs = m.nodes.filter((n) => n.rule === 'func'); if (funcs.length) L.push('函式（本體當原文）：' + funcs.slice(0, 10).map((f) => f.name).join('、') + (funcs.length > 10 ? '…共 ' + funcs.length + ' 個' : ''));
         const tops = m.nodes.filter((n) => n.rule === 'assign'); const keys = new Map(); for (const n of tops) keys.set(n.key, (keys.get(n.key) || 0) + 1); const multi = Array.from(keys.entries()).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]); if (multi.length) L.push('被多次賦值的鍵：' + multi.slice(0, 6).map(([k, c]) => k + '×' + c).join('、'));
-        const tr = g.trail || []; if (tr.length) L.push('自我修正（讀過後提出新規則，用全文重新解析驗證，涵蓋率上升且原本解得好的沒壞才採用）：' + tr.map((x) => '第 ' + x.round + ' 輪加入' + x.added + '，涵蓋率 ' + Math.round(x.from * 100) + '%→' + Math.round(x.to * 100) + '%' + (x.weak ? '（較弱的推測）' : '')).join('；'));
+        if (m.reusedFrom) L.splice(1, 0, '沿用之前學過的文法「' + m.reusedFrom + '」直接解析，涵蓋率 ' + Math.round(m.coverage * 100) + '%，沒有新增規則');
+        const tr = m.reusedFrom ? [] : (g.trail || []); if (tr.length) L.push('自我修正（讀過後提出新規則，用全文重新解析驗證，涵蓋率上升且原本解得好的沒壞才採用）：' + tr.map((x) => '第 ' + x.round + ' 輪加入' + x.added + '，涵蓋率 ' + Math.round(x.from * 100) + '%→' + Math.round(x.to * 100) + '%' + (x.weak ? '（較弱的推測）' : '')).join('；'));
         if (m.unparsed.length) L.push('吃不掉的行：' + m.unparsed.slice(0, 5).map((u) => 'L' + u.line + ' ' + u.text.slice(0, 50)).join('；')); return L;
     }
     function compactContext(m, maxChars) { const g = m.grammar; const body = flat(m).slice(0, 60).map(fmtNode).join('\n'); return (summarize(m).join('\n') + '\n\n文法：\n' + toEbnf(g) + '\n\n前 60 個陳述：\n' + body).slice(0, maxChars || 5000); }
@@ -311,5 +332,5 @@
     }
     function fromSlim(slim) { const nodes = (slim.nodes || []).map((n) => Object.assign({}, n, { refs: [], quals: n.quals || [] })); const m = { ok: true, kind: 'grammar', grammar: slim.grammar, nodes, lines: slim.lines || 0, statements: slim.statements || nodes.length, coverage: slim.coverage || 0, unparsed: [], unparsedCount: 0, comments: slim.comments || 0, blanks: 0 }; return m; }
 
-    return { induce, extend, parse, classify, findOp, summarize, compactContext, ask, matchLine, diff, describeDiff, toEbnf, toAntlr, toTrainerPattern, fromSlim, valueType, flat, fmtNode };
+    return { logical, stripTrailingComment, insideMask, induce, extend, apply, rank, parse, classify, findOp, summarize, compactContext, ask, matchLine, diff, describeDiff, toEbnf, toAntlr, toTrainerPattern, fromSlim, valueType, flat, fmtNode };
 });

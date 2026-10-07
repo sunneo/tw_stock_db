@@ -111,5 +111,24 @@ volumes:
     check('還原後能拿新文字繼續長（extend）', G.extend(back.grammar, 'timeout => 3\nretry => 4\nmode => x\n').grammar.ops.includes('=>'));
 })();
 
+// 沿用之前學過的規則：新文字先拿已存的文法試；沒有完全符合時，把已存的規則當成假設，驗證通過才採用
+(() => {
+    const A = G.induce('%% my format\nhost => 10.0.0.1\nport => 80\n%% another\nmode => fast\nname => demo\nretry => 3\n'); const priors = [{ name: 'mine', grammar: A.grammar }, { name: 'compose', grammar: G.induce(YML).grammar }];
+    const B = '%% other file\nuser => alice\nrole => admin\nlevel => 9\n%% end\nactive => yes\n';
+    const rk = G.rank(priors, B); check('沿用：同一種格式的新檔案，已存的文法直接吃掉（涵蓋 100%），而且排第一', rk[0].name === 'mine' && rk[0].coverage === 1, rk);
+    const ap = G.apply(A.grammar, B); check('沿用：直接用已存文法解析，沒有重新學（沒有新增規則、軌跡不增加）', ap.ok && ap.model.coverage === 1 && (ap.model.grammar.trail || []).length === A.grammar.trail.length, ap.model.grammar.trail);
+    check('沿用：不同格式的文法排在後面（涵蓋低）', rk.find((x) => x.name === 'compose').coverage < 0.9, rk);
+    check('沿用：散文沒有任何文法可以高分吃掉', G.rank(priors, '這是一段文字。\n沒有任何結構。\n只是句子而已。\n再多幾句話。').every((x) => x.coverage < 0.5));
+    // 新格式只共用一部分規則：單看這份文字，%% 只出現 1 次、吃不掉的行又多，自己長不出來；有 priors 時把「%% 是註解」當假設提出，驗證通過才採用
+    const C = '%% header\ntitle: demo\nsize: 3\n?? one\n^^ two\n@@ three\n** four\ncolor: red\n';
+    const without = G.induce(C, { minCoverage: 0.5 }), withP = G.induce(C, { priors, minCoverage: 0.5 });
+    check('沿用：帶 priors 的涵蓋率比不帶的高，而且軌跡記錄「沿用了誰的哪條規則」', withP.model.coverage > without.model.coverage && withP.trail.some((x) => x.reused === 'mine' && /註解記號 '%%'/.test(x.added)), { w: without.model.coverage, wp: withP.model.coverage, trail: withP.trail });
+    check('防作弊：只出現 1 次、各不相同的怪行不會被一行一行宣告成「註解」來衝高涵蓋率', withP.model.coverage < 1 && !withP.grammar.comment.leaders.some((l) => ['??', '^^', '@@', '**'].includes(l)) && G.induce(C).ok === false, { cov: withP.model.coverage, lead: withP.grammar.comment.leaders });
+    const rr = G.apply(A.grammar, B); check('沿用時摘要只說沿用，不重述原本那份文法學習時的軌跡', !/自我修正/.test(G.summarize(Object.assign({}, rr.model, { reusedFrom: 'mine' })).join('\n')) && /沿用之前學過的文法「mine」/.test(G.summarize(Object.assign({}, rr.model, { reusedFrom: 'mine' })).join('\n')));
+    // 沒有被驗證支持的假設不會被採用
+    const D = 'a: 1\nb: 2\nc: 3\nd: 4\n'; const rd = G.induce(D, { priors }); check('沿用：用不到的規則不會被塞進文法（=> 沒出現在 D，驗證沒有增益 → 不採用）', !rd.grammar.ops.includes('=>') && !rd.grammar.comment.leaders.includes('%%') && rd.grammar.ops.includes(':'), rd.grammar.ops);
+    check('沿用：每一輪採用的提案涵蓋率都上升', withP.trail.every((x) => x.to > x.from), withP.trail);
+})();
+
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
