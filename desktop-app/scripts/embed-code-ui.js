@@ -165,7 +165,7 @@ function embedGram() {
 }
 embedGram();
 function embedLrCfgl() {
-    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn']]) {
+    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn'], ['renderer/src/logmine/boundary_core.js', 'BOUND-BEGIN', 'BOUND-END', 'FaBound']]) {
         const core = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
         const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
         if (a < 0 || b < 0) throw new Error('找不到 ' + begin + ' 標記');

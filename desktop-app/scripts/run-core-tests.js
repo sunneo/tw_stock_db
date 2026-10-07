@@ -24,6 +24,7 @@ const suites = [
     ['文法自己發現（讀→建規則→驗證→再長；YAML、BitBake、nginx、Dockerfile、自創格式）', 'renderer/src/logmine/gram_core.test.js'],
     ['LALR(1) 表產生器與驅動程式（遞迴文法、衝突處理、優先序、bison 輸出）', 'renderer/src/logmine/lr_core.test.js'],
     ['遞迴文法與分析表的學習（讀→找解析不了的地方→換成別的規則／組合／新規則→驗證）', 'renderer/src/logmine/cfglearn_core.test.js'],
+    ['語法斷點發現（不假設一行一個陳述：找處理不了的邊界→兩兩合併→終結符號→驗證）', 'renderer/src/logmine/boundary_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {

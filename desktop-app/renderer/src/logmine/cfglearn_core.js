@@ -100,8 +100,8 @@
     }
     // 鍵名的一般化：NAME（':' NAME）* 再加零到多個群組（旗標 [x]、函式括號 ()）→ lhs（遞迴：lhs → lhs ':' NAME）
     function lhsGeneralize(S, part) {
-        if (!part.length || part[0] !== 'NAME') return null; let i = 1; while (i + 1 < part.length + 0 && part[i] === ':' && part[i + 1] === 'NAME') i += 2; while (i < part.length && /^grp_/.test(part[i])) i++; if (i !== part.length) return null;
-        addProd(S, 'lhs', ['NAME']); let j = 1; while (j + 1 < part.length && part[j] === ':' && part[j + 1] === 'NAME') { addProd(S, 'lhs', ['lhs', ':', 'NAME']); j += 2; } for (; j < part.length; j++) addProd(S, 'lhs', ['lhs', part[j]]); return ['lhs'];
+        const qual = (s) => s === 'NAME' || s === 'VAR'; if (!part.length || !qual(part[0])) return null; let i = 1; while (i + 1 < part.length && part[i] === ':' && qual(part[i + 1])) i += 2; while (i < part.length && /^grp_/.test(part[i])) i++; if (i !== part.length) return null;
+        addProd(S, 'lhs', [part[0]]); let k = 1; while (k + 1 < part.length && part[k] === ':' && qual(part[k + 1])) { addProd(S, 'lhs', ['lhs', ':', part[k + 1]]); k += 2; } for (; k < part.length; k++) addProd(S, 'lhs', ['lhs', part[k]]); return ['lhs'];
     }
     function shapeOf(S, toks) {
         const g = S.g; const g2 = groupify(S, toks); const syms = g2.map((x) => x.t); if (!syms.length) return { rhs: [], after: [] };
@@ -205,10 +205,17 @@
     function learn(text, opts) {
         opts = opts || {}; let g = opts.g; if (!g) { const gi = GR.induce(text, { maxLines: opts.maxLines }); if (!gi.ok) return { ok: false, reason: gi.reason || '學不出詞彙層' }; g = gi.grammar; }
         const stmts = streamOf(g, text, opts.maxLines); if (stmts.length < 3) return { ok: false, reason: '陳述太少' };
+        return learnStmts(g, stmts, opts);
+    }
+    // 陳述可以是任意切法（一行、多行合併後的單位…）：{ n, indent, toks }；opts.noFile＝只學陳述層（不建整份檔案的表），給邊界探索用
+    function learnStmts(g, stmts, opts) {
+        opts = opts || {};
         const S = newState(g, opts.seed); const stats = { parsed: 0, substituted: 0, composed: 0, newRule: 0, literal: 0 }; const curve = []; let seen = 0;
         for (const s of stmts) { learnStmt(S, s.toks, stats); seen++; if (seen % Math.max(1, Math.ceil(stmts.length / 10)) === 0 || seen === stmts.length) curve.push({ lines: seen, predicted: Math.round(stats.parsed / seen * 1000) / 1000 }); }
         const merged = consolidate(S, stmts.map((s) => s.toks)); if (merged.length) S.trace.push({ how: 'consolidate', detail: merged.slice(0, 6).join('；') });
-        const table = ensureTable(S); const toks = fileTokens(S, stmts);
+        const table = ensureTable(S);
+        if (opts.noFile) { const lo = table ? stmts.filter((s) => LR.accepts(table, s.toks)).length : 0; return { ok: true, lineProductions: S.prods, lineTable: table, stats: { lines: stmts.length, predicted: stats.parsed, predictedRatio: Math.round(stats.parsed / stmts.length * 1000) / 1000, lineAccepted: lo }, trace: S.trace }; }
+        const toks = fileTokens(S, stmts);
         let fg = fileGrammar(S, stmts, false), ft = LR.build(fg), fr = LR.parse(ft, toks);
         if (!fr.ok && (fg.brace || fg.indent)) { const fg2 = fileGrammar(S, stmts, true), ft2 = LR.build(fg2), fr2 = LR.parse(ft2, toks); if (fr2.ok) { fg = fg2; ft = ft2; fr = fr2; } }
         const lineOk = stmts.filter((s) => LR.accepts(table, s.toks)).length;
@@ -229,5 +236,7 @@
     // 一行文字能不能被學到的分析表接受；不能就說卡在哪個 token、這裡本來可以接受什麼
     function checkLine(res, g, line) { const S = newState(g, res.lineProductions || (res.cfg && res.cfg.lineProductions) || []); const toks = lexLine(g, line); const r = parseToks(S, toks); return r.ok ? { accepted: true, tokens: toks.map((x) => x.t) } : { accepted: false, tokens: toks.map((x) => x.t), error: { at: r.error.at, token: r.error.token, expected: (r.error.expected || []).slice(0, 10) } }; }
     function fromSlim(slim) { const fg = { start: slim.start, productions: slim.productions }; const table = LR.build(fg); return { cfg: fg, lineProductions: slim.lineProductions || [], table, stats: slim.stats, bison: LR.toBison(fg, { title: '從文字自己學出的文法' }), tableDump: LR.dumpTable(table, { maxStates: 40 }), conflicts: table.conflicts.slice(0, 20).map((c) => LR.describeConflict(table, c)), curve: slim.curve || [] }; }
-    return { lexLine, streamOf, learn, check, checkLine, describe, toSlim, fromSlim, shapeOf };
+    // 一串 token 的一般化形狀（不碰任何已存的文法）：['lhs', '+=', 'value'] 這種；給邊界探索判斷「這個形狀以前見過沒有」
+    function shapeRhs(g, toks) { const S = newState(g, []); return shapeOf(S, toks).rhs; }
+    return { lexLine, streamOf, learn, learnStmts, shapeRhs, check, checkLine, describe, toSlim, fromSlim, shapeOf };
 });
