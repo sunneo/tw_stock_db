@@ -505,5 +505,69 @@ public class Application {
         return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used };
     }
 
-    return { addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
+    // ---------- 互動引導（對話卡片）：把「設計抉擇」做成表單，使用者逐步確認；程式決定問什麼、使用者回答、程式照答案組設計 ----------
+    // 流程：第一張卡片（wizard：語言與套件 → 使用案例勾選與補充 → 架構）→ 依第一張的回應產生第二張（只有平手的關注點必選，其餘是帶建議值的下拉）→ 確認卡（產生／回去改／取消）。
+    // 這些函式只產生卡片規格與套用答案，不碰畫面；規格格式見 card_core.js。
+    const GUIDE_LANGS = [{ id: 'python', label: 'Python', color: '#3776ab' }, { id: 'typescript', label: 'TypeScript', color: '#3178c6' }, { id: 'java', label: 'Java', color: '#e76f00' }];
+    const cardOpt = (id, label, more) => Object.assign({ id, label }, more || {});
+    const libText = (o, lang) => (o.libs && o.libs[lang] && o.libs[lang] !== 'none' ? '（' + o.libs[lang] + '）' : '');
+    // 程式讀情境（詞彙表＋動作表）得到初稿模型；讀不出來就回報，由呼叫端改走一般流程
+    async function guideStart(scenario, opts) {
+        opts = opts || {}; const lang = GUIDE_LANGS.some((l) => l.id === opts.language) ? opts.language : 'python'; let model = opts.model || null;
+        if (!model) { const sm = await U.scenarioToModel(scenario, { generate: async () => '', glossary: opts.glossary, program: true, maxTries: 1 }); if (!sm.fromHints) return { ok: false, error: '程式讀不出情境裡的參與者與使用案例（試試「<參與者>可以<動作><名詞>」的句型，或補詞彙表）' }; model = sm.model; }
+        if (!model) return { ok: false, error: '沒有可以引導的模型' };
+        const rec = recommend(scenario, lang, { prefs: opts.prefs || {}, constraints: opts.constraints || {} });
+        const ucs = model.usecases.map((u, i) => ({ id: 'u' + i, name: u.name, label: u.actor + '：' + (u.summary || u.name), desc: u.steps.map((s) => s.to + '.' + s.msg).join(' → ') }));
+        const spec = { id: 'uml_guide_1', title: '設計引導：基本設定（共 3 步）', description: '程式已經讀了你的情境（' + model.actors.join('、') + '；' + model.usecases.length + ' 個使用案例）。下面是需要你確認的地方，回答之後才會產生設計。', steps: [
+            { id: 'basics', title: '① 語言與套件', questions: [
+                { id: 'lang', type: 'single', label: '用哪個程式語言？', required: true, default: lang, options: GUIDE_LANGS.map((l) => cardOpt(l.id, l.label, { color: l.color })) },
+                { id: 'pkg', type: 'text', label: '套件名稱（選填，英文小寫）', hint: '留空會用系統名稱', default: opts.package || '', pattern: '^[a-z][a-z0-9_]{0,30}$', patternHint: '要英文小寫開頭，只能用小寫、數字、底線' }] },
+            { id: 'usecases', title: '② 使用案例', questions: [
+                { id: 'ucs', type: 'multi', label: '要實作哪些使用案例？', hint: '取消勾選的使用案例不會產生，只被它們用到的類別也會一起拿掉', default: ucs.map((u) => u.id), minSelect: 1, required: true, options: ucs.map((u) => cardOpt(u.id, u.label, { desc: u.desc })) },
+                { id: 'extra', type: 'textarea', label: '還想補充的使用案例（選填，一行一句）', hint: '例如：顧客可以取消訂單', maxLength: 600 }] },
+            { id: 'arch', title: '③ 架構風格', questions: [
+                { id: 'arch', type: 'single', label: '用哪一種架構？', required: true, default: rec.architecture.id, hint: '建議理由：' + rec.architecture.reason, options: ARCH.map((a) => cardOpt(a.id, a.label + (a.id === rec.architecture.id ? '（建議）' : ''), { desc: a.tradeoff || a.notes || '' })) }] },
+        ] };
+        return { ok: true, spec, model, ucs, rec };
+    }
+    // 依第一張卡片的回應產生第二張：每個關注點一題。平手的（程式分不出來）是必選的單選；其他是帶建議值的下拉
+    function guideConcerns(scenario, r1, opts) {
+        opts = opts || {}; const f = (r1 && r1.flat) || {}; const lang = GUIDE_LANGS.some((l) => l.id === f.lang) ? f.lang : 'python';
+        const rec = recommend(scenario, lang, { prefs: opts.prefs || {}, constraints: Object.assign({}, opts.constraints || {}, f.arch ? { architecture: f.arch } : {}) }); const amb = new Set(rec.ambiguous.map((a) => a.concern));
+        const mk = (cid) => { const c = CONCERNS[cid]; const ch = rec.choices.find((x) => x.concern === cid); const isAmb = amb.has(cid);
+            return { id: cid, type: isAmb ? 'single' : 'dropdown', label: c.label + (isAmb ? '（程式分不出來，請你選）' : ''), hint: isAmb ? c.question : '建議：' + ch.optionLabel + '（' + ch.reason + '）', required: true, default: isAmb ? undefined : ch.option, options: c.options.map((o) => cardOpt(o.id, o.label + libText(o, lang) + (!isAmb && o.id === ch.option ? '（建議）' : ''), { desc: o.tradeoff || '' })) }; };
+        const ambQs = Object.keys(CONCERNS).filter((k) => amb.has(k)).map(mk); const restQs = Object.keys(CONCERNS).filter((k) => !amb.has(k)).map(mk); const steps = [];
+        if (ambQs.length) steps.push({ id: 'must', title: '必須選的抉擇（' + ambQs.length + ' 項平手）', questions: ambQs });
+        steps.push({ id: 'tune', title: '其他關注點（程式已經依情境選好，不滿意再改）', questions: restQs });
+        return { id: 'uml_guide_2', title: '設計引導：抉擇與 library', description: '語言：' + lang + '；架構：' + (ARCH.find((a) => a.id === f.arch) || { label: f.arch || '預設' }).label, steps, ctx: { lang, ambiguous: Array.from(amb) } };
+    }
+    function guideSummary(scenario, ctxs, r1, r2) {
+        const f1 = (r1 && r1.flat) || {}, f2 = (r2 && r2.flat) || {}; const lang = f1.lang || 'python'; const lines = [];
+        lines.push('語言：' + lang + (f1.pkg ? '；套件：' + f1.pkg : '')); lines.push('架構：' + (ARCH.find((a) => a.id === f1.arch) || { label: f1.arch }).label);
+        lines.push('使用案例：' + (ctxs.ucs || []).filter((u) => [].concat(f1.ucs || []).includes(u.id)).map((u) => u.name).join('、') + (f1.extra ? '；補充 ' + String(f1.extra).split(/\n/).filter((x) => x.trim()).length + ' 句' : ''));
+        for (const [cid, c] of Object.entries(CONCERNS)) { const o = c.options.find((x) => x.id === f2[cid]); if (o && o.id !== 'none') lines.push(c.label + '：' + o.label + libText(o, lang)); }
+        return { id: 'uml_guide_3', title: '設計引導：確認', steps: [{ id: 'confirm', title: '確認', questions: [
+            { id: 'summary', type: 'info', label: '你選的設計', media: { text: lines.join('\n') } },
+            { id: 'remember', type: 'multi', label: '', options: [cardOpt('yes', '記住這些選擇，之後類似情境直接當預設偏好')] },
+            { id: 'go', type: 'single', label: '接下來？', required: true, default: 'go', options: [cardOpt('go', '產生設計與專案', { color: '#76b900' }), cardOpt('back', '回去改（重新問）', { color: '#f0ad4e' }), cardOpt('cancel', '取消', { color: '#9aa0a6' })] }] }] };
+    }
+    // 把選定以外的使用案例拿掉（只被它們用到的類別、與這些類別有關的關係一起拿掉）
+    function pruneUsecases(model, keepNames) {
+        const keep = new Set(keepNames); const dropped = model.usecases.filter((u) => !keep.has(u.name)); if (!dropped.length) return model;
+        const used = (list) => { const s = new Set(); for (const u of list) for (const st of u.steps) { s.add(st.to); if (st.from && model.classes.some((c) => c.name === st.from)) s.add(st.from); } return s; };
+        model.usecases = model.usecases.filter((u) => keep.has(u.name)); const stillUsed = used(model.usecases); const onlyDropped = Array.from(used(dropped)).filter((n) => !stillUsed.has(n));
+        const related = new Set(); for (const r of model.relations) { if (stillUsed.has(r.from)) related.add(r.to); if (stillUsed.has(r.to)) related.add(r.from); }
+        const gone = new Set(onlyDropped.filter((n) => !related.has(n))); model.classes = model.classes.filter((c) => !gone.has(c.name)); model.relations = model.relations.filter((r) => !gone.has(r.from) && !gone.has(r.to));
+        const actors = new Set(model.usecases.map((u) => u.actor)); model.actors = model.actors.filter((a) => actors.has(a) || model.classes.some((c) => c.name === a)); return model;
+    }
+    // 套用答案：回傳 { model, language, package, constraints, notes, remember }
+    function guideApply(scenario, g, r1, r2, r3, opts) {
+        opts = opts || {}; const f1 = (r1 && r1.flat) || {}, f2 = (r2 && r2.flat) || {}; const model = JSON.parse(JSON.stringify(g.model)); const notes = [];
+        pruneUsecases(model, (g.ucs || []).filter((u) => [].concat(f1.ucs || []).includes(u.id)).map((u) => u.name));
+        for (const line of String(f1.extra || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)) { const r = addUsecaseFromText(model, line, opts.glossary); notes.push(r.ok ? '補充「' + line + '」→ 新增 ' + r.added + ' 個使用案例' : '補充「' + line + '」讀不出來：' + r.error); }
+        normalize(model); const constraints = { architecture: f1.arch }; for (const cid of Object.keys(CONCERNS)) if (f2[cid]) constraints[cid] = f2[cid];
+        return { model, language: f1.lang || 'python', package: f1.pkg || undefined, constraints, notes, remember: !!(r3 && r3.flat && [].concat(r3.flat.remember || []).includes('yes')) };
+    }
+
+    return { guideStart, guideConcerns, guideSummary, guideApply, pruneUsecases, GUIDE_LANGS, addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
 });

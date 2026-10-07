@@ -168,13 +168,14 @@ categories:
       - id: uml-to-code
         name: 情境→UML→程式碼骨架（含架構與 library 抉擇）
         summary: 把系統情境設計成 UML 再展開成程式骨架（Python／TypeScript／Java）：UML 用一行一件事的文字 DSL，程式驗證（精確到哪一行）、推薦架構與各領域 library（分層／六角／命令列…，程式依關鍵字決定，平手才問）、產生分層專案（domain／services／repositories／api／cli／測試／依賴清單／README 設計決策表與 Mermaid 圖）。離線小模型也能用：程式先讀情境（詞彙表＋動作表），讀不出才一次一個小問題地問模型，並由上而下 rework 有問題的區域。
-        how: { domain: coding, tools: [uml_to_code, design_choices, uml_design, glue_list, glue_define, glue_report] }
+        how: { domain: coding, tools: [uml_to_code, design_choices, uml_design, uml_guide, ask_user_card, glue_list, glue_define, glue_report] }
         platforms: [web, desktop]
-        samples: ["設計一個線上書店系統，從情境做 uml 再產生程式骨架", "顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍——產生 Python 專案", "這個系統該用哪些架構和 library？"]
+        samples: ["設計一個線上書店系統，從情境做 uml 再產生程式骨架", "顧客可以瀏覽書籍、加入購物車並結帳付款，管理員可以上架書籍——產生 Python 專案", "這個系統該用哪些架構和 library？", "用互動卡片一步一步帶我確認設計（語言、使用案例、架構）"]
         updated: 2026-10-07
         history:
           - { date: 2026-10-07, note: "新增 uml_to_code／design_choices／uml_design 與離線訓練器內建設計片段（uml_design 領域）；離線計畫新增 uml_code／uml_only 目標" }
           - { date: 2026-10-07, note: "新增膠水（接到真正的 library：FastAPI／SQLAlchemy／Pydantic／Typer／JWT…，經驗累積、AI 可登記 glue_define／glue_report）與設計檢視器（zip 內 viewer.html＋App 浮動視窗：UML 子圖↔原始碼、逐層深入、封閉的切細動作）" }
+          - { date: 2026-10-07, note: "新增互動對話卡片（表單／wizard／依回應產生下一張；單選／多選、選項後面接文字或下拉、選項前圖片或色塊、題目放文字／圖片／沙盒 web widget；送出或重新整理後唯讀並保留回應，回應不進對話歷史）與 uml_guide（用卡片引導設計 UML）、ask_user_card 工具" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
