@@ -188,6 +188,15 @@ categories:
           - { date: 2026-10-07, note: "新增章節式設定檔結構學習（INI／TOML／EDK2，機密遮蔽、比較兩份）與「從文字自己長出文法」（YAML／BitBake／nginx／Dockerfile／自創格式：讀→建規則→全文驗證→再長，可輸出 EBNF／ANTLR 風格）" }
           - { date: 2026-10-07, note: "文法沿用（新文字先拿學過的文法試，涵蓋夠高直接沿用；不夠就把舊規則當假設驗證後才採用）；新增遞迴產生式與 LALR(1) 分析表（FaLR 表產生器＋FaCfgLearn：讀每行、解析不了就取出失敗處，換成別的規則／沿用前綴組合／整行新規則，每種都重建分析表驗證）；log_ask 可問 bison、分析表、衝突" }
           - { date: 2026-10-07, note: "語法斷點發現（不假設一行一個陳述）：找出處理不了的邊界，兩兩合併（引號、括號一路串到平衡；續行符號、終結符號從資料發現），合併後用分析表驗證；斷點存起來沿用；log_ask 可問斷點" }
+      - id: mixed-content
+        name: 混合內容理解（自學習語法高亮＋英文句子與意圖）
+        summary: 一份輸入裡夾著英文敘述與 PHP、HTML、JavaScript、WebGL 著色器（GLSL）、TOML、INI、Python、CSS、JSON、YAML、shell、SQL、錯誤輸出，不用事先標記：自動切段、認出每段的語言並給信心度（明確記號最高，其餘逐行評分並用前後文平滑，不確定就說不確定）、逐詞著色，區段裡專有的識別字會學成該語言的詞。英文句子做詞類標註與片語切分，用 LALR 子句文法解析成「動作＋對象＋修飾」框架（祈使句、問句、請求、我想要…），把「this shader」「the query below」對回區段，並對上離線訓練器的意圖。高亮結果有 HTML 下載附件，卡片上有跳出的檢視器視窗。
+        how: { domain: research, tools: [mix_understand, mix_highlight] }
+        platforms: [web, desktop]
+        samples: ["幫我把這份混合文件（英文說明夾著 PHP、GLSL、TOML）做語法高亮", "這段英文夾著程式的問題，使用者到底想要什麼？", "this shader fails to compile, can you fix it?（後面附著色器）"]
+        updated: 2026-10-07
+        history:
+          - { date: 2026-10-07, note: "新增 mix_understand／mix_highlight（FaMix 切段與著色、FaNlu 英文句子框架與意圖）；HTML 附件卡片新增檢視器浮動視窗" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。

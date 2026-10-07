@@ -1529,7 +1529,7 @@ function patchCloudflareWording(root) {
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "run_command", "browser_search", "fetch_web_page",
       "repo_map", "repo_wiki", "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
-      "uml_to_code", "design_choices", "uml_design", "uml_guide", "ask_user_card", "log_learn", "log_ask", "glue_list", "glue_define", "glue_report",
+      "uml_to_code", "design_choices", "uml_design", "uml_guide", "ask_user_card", "log_learn", "log_ask", "mix_understand", "mix_highlight", "glue_list", "glue_define", "glue_report",
     ],
     systemPrompt: fa._buildCodingSystemPrompt(Object.assign({}, codingEnv, { publishMode: fa.advancedSettings.codingPublishMode === "auto" ? "auto" : "ask" })),
   });

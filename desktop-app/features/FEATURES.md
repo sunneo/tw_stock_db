@@ -202,6 +202,18 @@
   - `這份 log 哪個錯誤最多？`
   - `這一行日誌是什麼意思？`
 
+### 混合內容理解（自學習語法高亮＋英文句子與意圖）（`mixed-content`）
+
+一份輸入裡夾著英文敘述與 PHP、HTML、JavaScript、WebGL 著色器（GLSL）、TOML、INI、Python、CSS、JSON、YAML、shell、SQL、錯誤輸出，不用事先標記：自動切段、認出每段的語言並給信心度（明確記號最高，其餘逐行評分並用前後文平滑，不確定就說不確定）、逐詞著色，區段裡專有的識別字會學成該語言的詞。英文句子做詞類標註與片語切分，用 LALR 子句文法解析成「動作＋對象＋修飾」框架（祈使句、問句、請求、我想要…），把「this shader」「the query below」對回區段，並對上離線訓練器的意圖。高亮結果有 HTML 下載附件，卡片上有跳出的檢視器視窗。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`research`
+- AI 工具：`mix_understand`、`mix_highlight`
+- 範例：
+  - `幫我把這份混合文件（英文說明夾著 PHP、GLSL、TOML）做語法高亮`
+  - `這段英文夾著程式的問題，使用者到底想要什麼？`
+  - `this shader fails to compile, can you fix it?（後面附著色器）`
+
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
