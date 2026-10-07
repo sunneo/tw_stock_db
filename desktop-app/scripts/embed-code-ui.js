@@ -132,5 +132,13 @@ function embedUml() {
 }
 embedUml();
 embed('renderer/src/uml/uml-viewer.template.html', 'UMLVIEW-BEGIN', 'UMLVIEW-END', 'FA_UMLVIEW_HTML');
+function embedCard() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/card/card_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* CARD-BEGIN */'), b = src.indexOf('/* CARD-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 CARD 標記');
+    src = src.slice(0, a) + '/* CARD-BEGIN */\nconst FaCard = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaCard;\n})();\n' + src.slice(b);
+    console.log('已更新 FaCard（' + core.length + ' 字元）');
+}
+embedCard();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);

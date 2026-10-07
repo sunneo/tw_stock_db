@@ -994,7 +994,7 @@ ${step4}
 
 **另一種驗證環境（選用）**：如果需要一個使用者也看得到、可以持續互動觀察的環境（不只是單次批次執行）：terminal_create建立一個WASM沙盒終端機（會直接顯示在對話裡）、terminal_cp_to把workspace_path底下要驗證的檔案複製進去、terminal_run執行指令拿到exit_code/stdout/stderr、需要時terminal_cp_from把產出的檔案取出來。這是${runTests}/${checkCmd}之外的另一個選擇，適合「使用者想親眼看過程」或需要逐步下多個指令觀察中間結果的情境；純粹要跑一次測試拿結果，步驟5的既有流程已經夠用，不用每個TODO項目都特地開一個終端機。
 
-**從情境到程式骨架（UML）**：使用者給的是系統情境／需求、要設計或要專案骨架時：先用design_choices看有哪些架構與library的選擇與推薦（程式依關鍵字決定，平手才需要你選），再自己用「一行一件事」的UML文字（格式見uml_to_code的說明）寫出類別、關係與使用案例的呼叫順序，呼叫uml_to_code一次產生分層的專案骨架（含依賴清單、測試骨架、README的設計決策表與Mermaid圖）。UML有錯會回報哪一行、為什麼，改好再呼叫。不要自己手寫整個專案的樣板檔案；uml_design是給離線小模型用的（一步一步設計），你不需要它。`;
+**從情境到程式骨架（UML）**：使用者給的是系統情境／需求、要設計或要專案骨架時：先用design_choices看有哪些架構與library的選擇與推薦（程式依關鍵字決定，平手才需要你選），再自己用「一行一件事」的UML文字（格式見uml_to_code的說明）寫出類別、關係與使用案例的呼叫順序，呼叫uml_to_code一次產生分層的專案骨架（含依賴清單、測試骨架、README的設計決策表與Mermaid圖）。UML有錯會回報哪一行、為什麼，改好再呼叫。不要自己手寫整個專案的樣板檔案；uml_design是給離線小模型用的（一步一步設計），你不需要它。使用者想自己一步一步確認設計決策（語言、要做哪些使用案例、架構、library）時，改用uml_guide：它在對話裡放互動卡片讓使用者勾選／單選／下拉，不需要你寫UML；需要使用者在幾個選項裡決定別的事時用ask_user_card，不要用文字一題一題問。`;
 }
 // ==== CODING-HELPERS-END ====
 
@@ -1455,7 +1455,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'ask_user_card', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -9270,7 +9270,71 @@ public class Application {
         return { ok: true, model, dsl: U.toDsl(model), design: rec, files: proj.files, libs: proj.libs, glue: proj.glue, packages: packagesOf(model), rework: rw, trail, decisions: (res.decisions || []).concat(dec), warnings: (res.warnings || []).concat(rw.remaining.map((i) => '尚有問題：' + i.msg)), seedUsed: seed.used };
     }
 
-    return { addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
+    // ---------- 互動引導（對話卡片）：把「設計抉擇」做成表單，使用者逐步確認；程式決定問什麼、使用者回答、程式照答案組設計 ----------
+    // 流程：第一張卡片（wizard：語言與套件 → 使用案例勾選與補充 → 架構）→ 依第一張的回應產生第二張（只有平手的關注點必選，其餘是帶建議值的下拉）→ 確認卡（產生／回去改／取消）。
+    // 這些函式只產生卡片規格與套用答案，不碰畫面；規格格式見 card_core.js。
+    const GUIDE_LANGS = [{ id: 'python', label: 'Python', color: '#3776ab' }, { id: 'typescript', label: 'TypeScript', color: '#3178c6' }, { id: 'java', label: 'Java', color: '#e76f00' }];
+    const cardOpt = (id, label, more) => Object.assign({ id, label }, more || {});
+    const libText = (o, lang) => (o.libs && o.libs[lang] && o.libs[lang] !== 'none' ? '（' + o.libs[lang] + '）' : '');
+    // 程式讀情境（詞彙表＋動作表）得到初稿模型；讀不出來就回報，由呼叫端改走一般流程
+    async function guideStart(scenario, opts) {
+        opts = opts || {}; const lang = GUIDE_LANGS.some((l) => l.id === opts.language) ? opts.language : 'python'; let model = opts.model || null;
+        if (!model) { const sm = await U.scenarioToModel(scenario, { generate: async () => '', glossary: opts.glossary, program: true, maxTries: 1 }); if (!sm.fromHints) return { ok: false, error: '程式讀不出情境裡的參與者與使用案例（試試「<參與者>可以<動作><名詞>」的句型，或補詞彙表）' }; model = sm.model; }
+        if (!model) return { ok: false, error: '沒有可以引導的模型' };
+        const rec = recommend(scenario, lang, { prefs: opts.prefs || {}, constraints: opts.constraints || {} });
+        const ucs = model.usecases.map((u, i) => ({ id: 'u' + i, name: u.name, label: u.actor + '：' + (u.summary || u.name), desc: u.steps.map((s) => s.to + '.' + s.msg).join(' → ') }));
+        const spec = { id: 'uml_guide_1', title: '設計引導：基本設定（共 3 步）', description: '程式已經讀了你的情境（' + model.actors.join('、') + '；' + model.usecases.length + ' 個使用案例）。下面是需要你確認的地方，回答之後才會產生設計。', steps: [
+            { id: 'basics', title: '① 語言與套件', questions: [
+                { id: 'lang', type: 'single', label: '用哪個程式語言？', required: true, default: lang, options: GUIDE_LANGS.map((l) => cardOpt(l.id, l.label, { color: l.color })) },
+                { id: 'pkg', type: 'text', label: '套件名稱（選填，英文小寫）', hint: '留空會用系統名稱', default: opts.package || '', pattern: '^[a-z][a-z0-9_]{0,30}$', patternHint: '要英文小寫開頭，只能用小寫、數字、底線' }] },
+            { id: 'usecases', title: '② 使用案例', questions: [
+                { id: 'ucs', type: 'multi', label: '要實作哪些使用案例？', hint: '取消勾選的使用案例不會產生，只被它們用到的類別也會一起拿掉', default: ucs.map((u) => u.id), minSelect: 1, required: true, options: ucs.map((u) => cardOpt(u.id, u.label, { desc: u.desc })) },
+                { id: 'extra', type: 'textarea', label: '還想補充的使用案例（選填，一行一句）', hint: '例如：顧客可以取消訂單', maxLength: 600 }] },
+            { id: 'arch', title: '③ 架構風格', questions: [
+                { id: 'arch', type: 'single', label: '用哪一種架構？', required: true, default: rec.architecture.id, hint: '建議理由：' + rec.architecture.reason, options: ARCH.map((a) => cardOpt(a.id, a.label + (a.id === rec.architecture.id ? '（建議）' : ''), { desc: a.tradeoff || a.notes || '' })) }] },
+        ] };
+        return { ok: true, spec, model, ucs, rec };
+    }
+    // 依第一張卡片的回應產生第二張：每個關注點一題。平手的（程式分不出來）是必選的單選；其他是帶建議值的下拉
+    function guideConcerns(scenario, r1, opts) {
+        opts = opts || {}; const f = (r1 && r1.flat) || {}; const lang = GUIDE_LANGS.some((l) => l.id === f.lang) ? f.lang : 'python';
+        const rec = recommend(scenario, lang, { prefs: opts.prefs || {}, constraints: Object.assign({}, opts.constraints || {}, f.arch ? { architecture: f.arch } : {}) }); const amb = new Set(rec.ambiguous.map((a) => a.concern));
+        const mk = (cid) => { const c = CONCERNS[cid]; const ch = rec.choices.find((x) => x.concern === cid); const isAmb = amb.has(cid);
+            return { id: cid, type: isAmb ? 'single' : 'dropdown', label: c.label + (isAmb ? '（程式分不出來，請你選）' : ''), hint: isAmb ? c.question : '建議：' + ch.optionLabel + '（' + ch.reason + '）', required: true, default: isAmb ? undefined : ch.option, options: c.options.map((o) => cardOpt(o.id, o.label + libText(o, lang) + (!isAmb && o.id === ch.option ? '（建議）' : ''), { desc: o.tradeoff || '' })) }; };
+        const ambQs = Object.keys(CONCERNS).filter((k) => amb.has(k)).map(mk); const restQs = Object.keys(CONCERNS).filter((k) => !amb.has(k)).map(mk); const steps = [];
+        if (ambQs.length) steps.push({ id: 'must', title: '必須選的抉擇（' + ambQs.length + ' 項平手）', questions: ambQs });
+        steps.push({ id: 'tune', title: '其他關注點（程式已經依情境選好，不滿意再改）', questions: restQs });
+        return { id: 'uml_guide_2', title: '設計引導：抉擇與 library', description: '語言：' + lang + '；架構：' + (ARCH.find((a) => a.id === f.arch) || { label: f.arch || '預設' }).label, steps, ctx: { lang, ambiguous: Array.from(amb) } };
+    }
+    function guideSummary(scenario, ctxs, r1, r2) {
+        const f1 = (r1 && r1.flat) || {}, f2 = (r2 && r2.flat) || {}; const lang = f1.lang || 'python'; const lines = [];
+        lines.push('語言：' + lang + (f1.pkg ? '；套件：' + f1.pkg : '')); lines.push('架構：' + (ARCH.find((a) => a.id === f1.arch) || { label: f1.arch }).label);
+        lines.push('使用案例：' + (ctxs.ucs || []).filter((u) => [].concat(f1.ucs || []).includes(u.id)).map((u) => u.name).join('、') + (f1.extra ? '；補充 ' + String(f1.extra).split(/\n/).filter((x) => x.trim()).length + ' 句' : ''));
+        for (const [cid, c] of Object.entries(CONCERNS)) { const o = c.options.find((x) => x.id === f2[cid]); if (o && o.id !== 'none') lines.push(c.label + '：' + o.label + libText(o, lang)); }
+        return { id: 'uml_guide_3', title: '設計引導：確認', steps: [{ id: 'confirm', title: '確認', questions: [
+            { id: 'summary', type: 'info', label: '你選的設計', media: { text: lines.join('\n') } },
+            { id: 'remember', type: 'multi', label: '', options: [cardOpt('yes', '記住這些選擇，之後類似情境直接當預設偏好')] },
+            { id: 'go', type: 'single', label: '接下來？', required: true, default: 'go', options: [cardOpt('go', '產生設計與專案', { color: '#76b900' }), cardOpt('back', '回去改（重新問）', { color: '#f0ad4e' }), cardOpt('cancel', '取消', { color: '#9aa0a6' })] }] }] };
+    }
+    // 把選定以外的使用案例拿掉（只被它們用到的類別、與這些類別有關的關係一起拿掉）
+    function pruneUsecases(model, keepNames) {
+        const keep = new Set(keepNames); const dropped = model.usecases.filter((u) => !keep.has(u.name)); if (!dropped.length) return model;
+        const used = (list) => { const s = new Set(); for (const u of list) for (const st of u.steps) { s.add(st.to); if (st.from && model.classes.some((c) => c.name === st.from)) s.add(st.from); } return s; };
+        model.usecases = model.usecases.filter((u) => keep.has(u.name)); const stillUsed = used(model.usecases); const onlyDropped = Array.from(used(dropped)).filter((n) => !stillUsed.has(n));
+        const related = new Set(); for (const r of model.relations) { if (stillUsed.has(r.from)) related.add(r.to); if (stillUsed.has(r.to)) related.add(r.from); }
+        const gone = new Set(onlyDropped.filter((n) => !related.has(n))); model.classes = model.classes.filter((c) => !gone.has(c.name)); model.relations = model.relations.filter((r) => !gone.has(r.from) && !gone.has(r.to));
+        const actors = new Set(model.usecases.map((u) => u.actor)); model.actors = model.actors.filter((a) => actors.has(a) || model.classes.some((c) => c.name === a)); return model;
+    }
+    // 套用答案：回傳 { model, language, package, constraints, notes, remember }
+    function guideApply(scenario, g, r1, r2, r3, opts) {
+        opts = opts || {}; const f1 = (r1 && r1.flat) || {}, f2 = (r2 && r2.flat) || {}; const model = JSON.parse(JSON.stringify(g.model)); const notes = [];
+        pruneUsecases(model, (g.ucs || []).filter((u) => [].concat(f1.ucs || []).includes(u.id)).map((u) => u.name));
+        for (const line of String(f1.extra || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)) { const r = addUsecaseFromText(model, line, opts.glossary); notes.push(r.ok ? '補充「' + line + '」→ 新增 ' + r.added + ' 個使用案例' : '補充「' + line + '」讀不出來：' + r.error); }
+        normalize(model); const constraints = { architecture: f1.arch }; for (const cid of Object.keys(CONCERNS)) if (f2[cid]) constraints[cid] = f2[cid];
+        return { model, language: f1.lang || 'python', package: f1.pkg || undefined, constraints, notes, remember: !!(r3 && r3.flat && [].concat(r3.flat.remember || []).includes('yes')) };
+    }
+
+    return { guideStart, guideConcerns, guideSummary, guideApply, pruneUsecases, GUIDE_LANGS, addMembers, reworkRegion, addUsecaseFromText, dslOfClass, ARCH, CONCERNS, PKG, FRAGMENTS, detectTags, recommend, resolveAmbiguous, manifestFor, buildProject, matchFragments, seedModel, trainerPatterns, findIssues, normalize, reworkModel, packagesOf, designProject };
 });
 
 }).call(null, undefined, holder);
@@ -9386,6 +9450,158 @@ const holder = {};
 return holder.FaView;
 })();
 /* VIEW-END */
+/* CARD-BEGIN */
+const FaCard = (function () {
+const holder = {};
+(function (module, self) {
+/* 互動對話卡片（FaCard）：對話裡的表單，使用者可以填、送出；可以是單張表單、多步驟的 wizard，或「依使用者的回應產生下一張卡片」。
+ *
+ * 規格（spec）是純資料（JSON），畫面由宿主（DOM）渲染；這裡只管規格驗證、答案的形狀與驗證、條件顯示、步驟的分支、狀態機與可持久化的狀態。
+ * 設計原則：
+ *   - 題目可以放文字、圖片、色塊、或可以互動的 web widget（沙盒 iframe，用 postMessage 回傳答案）；
+ *   - 題型：單選、多選、文字、多行文字、數字、下拉、顏色、widget；單選／多選的選項前可以放圖片或色塊，選項後面可以接 [文字]、[下拉選單]（選到那個選項才啟用），
+ *     題目層級還可以固定附加「[文字][下拉]」（after）；
+ *   - 條件顯示（showIf）、步驟分支（next 規則）、「回應 → 下一張卡片」由呼叫端的處理函式決定；
+ *   - 狀態是可序列化的小物件：送出後、或頁面重新整理後卡片變成唯讀並保留使用者的回應；回應不會被記進送給 AI 的對話歷史（宿主負責排除）。
+ * 純函式（UMD）。
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCard = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const LIMITS = { steps: 12, questions: 24, options: 60, label: 200, text: 4000, html: 24000, answer: 6000, extras: 8 };
+    const ID = /^[A-Za-z][A-Za-z0-9_\-]{0,40}$/;
+    const TYPES = ['single', 'multi', 'text', 'textarea', 'number', 'dropdown', 'color', 'widget', 'info'];
+    const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+    const safeImage = (u) => typeof u === 'string' && u.length < 400000 && (/^https:\/\/[^\s"'<>]+$/i.test(u) || /^data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/i.test(u));
+    const str = (v, n) => String(v == null ? '' : v).slice(0, n || LIMITS.label);
+
+    // ---------- 規格 ----------
+    // 補預設值：questions 簡寫 → 一個步驟；mode；id
+    function normalizeSpec(spec) {
+        const s = Object.assign({}, spec || {}); if (!Array.isArray(s.steps) || !s.steps.length) s.steps = [{ id: 'step1', title: s.stepTitle || '', questions: Array.isArray(s.questions) ? s.questions : [] }];
+        delete s.questions; s.steps = s.steps.map((st, i) => Object.assign({ id: 'step' + (i + 1), questions: [] }, st)); s.mode = s.steps.length > 1 ? 'wizard' : 'form'; s.id = s.id || 'card'; s.submitLabel = s.submitLabel || (s.steps.length > 1 ? '下一步' : '送出');
+        return s;
+    }
+    function validateSpec(spec) {
+        const errs = []; if (!spec || typeof spec !== 'object') return ['卡片規格不是物件']; const s = normalizeSpec(spec);
+        if (s.steps.length > LIMITS.steps) errs.push('步驟最多 ' + LIMITS.steps + ' 個'); const stepIds = new Set();
+        for (const st of s.steps) {
+            if (!ID.test(st.id)) errs.push('步驟 id 不合法：' + st.id); if (stepIds.has(st.id)) errs.push('步驟 id 重複：' + st.id); stepIds.add(st.id);
+            if (!Array.isArray(st.questions) || !st.questions.length) { errs.push('步驟 ' + st.id + ' 沒有題目'); continue; } if (st.questions.length > LIMITS.questions) errs.push('步驟 ' + st.id + ' 題目超過 ' + LIMITS.questions);
+            const qids = new Set();
+            for (const q of st.questions) {
+                if (!q || !ID.test(q.id || '')) { errs.push('題目 id 不合法：' + (q && q.id)); continue; } if (qids.has(q.id)) errs.push('題目 id 重複：' + q.id); qids.add(q.id);
+                if (!TYPES.includes(q.type)) { errs.push('題目 ' + q.id + ' 的 type 不認得：' + q.type); continue; }
+                if (q.media) { if (q.media.image && !safeImage(q.media.image)) errs.push('題目 ' + q.id + ' 的圖片只能是 https 或 data:image'); if (q.media.html && String(q.media.html).length > LIMITS.html) errs.push('題目 ' + q.id + ' 的 widget 太大'); }
+                if (q.type === 'single' || q.type === 'multi' || q.type === 'dropdown') {
+                    if (!Array.isArray(q.options) || !q.options.length) errs.push('題目 ' + q.id + ' 沒有選項'); else if (q.options.length > LIMITS.options) errs.push('題目 ' + q.id + ' 選項超過 ' + LIMITS.options);
+                    const oids = new Set(); for (const o of q.options || []) {
+                        if (!o || !ID.test(o.id || '')) { errs.push('題目 ' + q.id + ' 的選項 id 不合法：' + (o && o.id)); continue; } if (oids.has(o.id)) errs.push('題目 ' + q.id + ' 的選項 id 重複：' + o.id); oids.add(o.id);
+                        if (o.image && !safeImage(o.image)) errs.push('選項 ' + o.id + ' 的圖片只能是 https 或 data:image'); if (o.color && !HEX.test(o.color)) errs.push('選項 ' + o.id + ' 的色塊要是 #rgb 或 #rrggbb');
+                        if (o.extra) { if (!['text', 'select'].includes(o.extra.kind)) errs.push('選項 ' + o.id + ' 的 extra.kind 只能是 text 或 select'); if (o.extra.kind === 'select' && !(Array.isArray(o.extra.options) && o.extra.options.length)) errs.push('選項 ' + o.id + ' 的 extra 下拉沒有選項'); }
+                    }
+                }
+                if (q.after) { if (!Array.isArray(q.after) || q.after.length > LIMITS.extras) errs.push('題目 ' + q.id + ' 的 after 最多 ' + LIMITS.extras + ' 個'); else for (const a of q.after) { if (!a || !ID.test(a.id || '') || !['text', 'select'].includes(a.kind)) errs.push('題目 ' + q.id + ' 的 after 欄位不合法'); else if (a.kind === 'select' && !(Array.isArray(a.options) && a.options.length)) errs.push('題目 ' + q.id + ' 的 after 下拉沒有選項'); } }
+                if (q.showIf && !(q.showIf.q && ('eq' in q.showIf || 'in' in q.showIf || 'nonEmpty' in q.showIf || 'has' in q.showIf))) errs.push('題目 ' + q.id + ' 的 showIf 要有 q 與 eq／in／has／nonEmpty 其中之一');
+            }
+            if (st.next) for (const r of st.next) if (!r || !r.goto) errs.push('步驟 ' + st.id + ' 的 next 規則要有 goto');
+        }
+        for (const st of s.steps) for (const r of st.next || []) if (r.goto !== 'done' && !stepIds.has(r.goto)) errs.push('步驟 ' + st.id + ' 的 next 指向不存在的步驟：' + r.goto);
+        return errs;
+    }
+
+    // ---------- 答案 ----------
+    // 一題的答案：{ v: 值（single＝選項 id；multi＝選項 id 陣列；其他＝字串／數字）, x: { 選項id: { text, select } }, a: { after 欄位 id: 值 } }
+    const blank = (q) => (q.type === 'multi' ? { v: [], x: {}, a: {} } : { v: q.type === 'number' ? '' : '', x: {}, a: {} });
+    function blankAnswers(step) { const out = {}; for (const q of step.questions) { const b = blank(q); if (q.default != null) b.v = q.type === 'multi' ? [].concat(q.default) : q.default; out[q.id] = b; } return out; }
+    function matchCond(c, answers) { if (!c) return true; const a = answers[c.q]; const v = a ? a.v : undefined; const arr = Array.isArray(v) ? v : (v == null || v === '' ? [] : [v]); if ('eq' in c) return arr.length === 1 && String(arr[0]) === String(c.eq); if ('in' in c) return arr.some((x) => c.in.map(String).includes(String(x))); if ('has' in c) return arr.map(String).includes(String(c.has)); if ('nonEmpty' in c) return c.nonEmpty ? arr.length > 0 : arr.length === 0; return true; }
+    function visibleQuestions(step, answers) { return step.questions.filter((q) => matchCond(q.showIf, answers)); }
+    function isEmpty(q, a) { if (!a) return true; if (q.type === 'multi') return !(a.v && a.v.length); return a.v === '' || a.v == null; }
+    // 驗證一個步驟：回傳 { ok, errors:{題目id: 訊息} }（只驗看得到的題目）
+    function validateAnswers(step, answers) {
+        const errors = {};
+        for (const q of visibleQuestions(step, answers)) {
+            if (q.type === 'info') continue; const a = answers[q.id] || blank(q); const label = str(q.label || q.id, 40);
+            if (q.required && isEmpty(q, a)) { errors[q.id] = '「' + label + '」必填'; continue; }
+            if (isEmpty(q, a)) continue;
+            if (q.type === 'single' || q.type === 'dropdown') { if (!(q.options || []).some((o) => o.id === a.v)) { errors[q.id] = '「' + label + '」選項不合法'; continue; } }
+            if (q.type === 'multi') { const ids = new Set((q.options || []).map((o) => o.id)); if (!(a.v || []).every((x) => ids.has(x))) { errors[q.id] = '「' + label + '」有不合法的選項'; continue; } if (q.minSelect && a.v.length < q.minSelect) { errors[q.id] = '「' + label + '」至少選 ' + q.minSelect + ' 個'; continue; } if (q.maxSelect && a.v.length > q.maxSelect) { errors[q.id] = '「' + label + '」最多選 ' + q.maxSelect + ' 個'; continue; } }
+            if (q.type === 'number') { const n = Number(a.v); if (!Number.isFinite(n)) { errors[q.id] = '「' + label + '」要是數字'; continue; } if (q.min != null && n < q.min) { errors[q.id] = '「' + label + '」不能小於 ' + q.min; continue; } if (q.max != null && n > q.max) { errors[q.id] = '「' + label + '」不能大於 ' + q.max; continue; } }
+            if ((q.type === 'text' || q.type === 'textarea') && typeof a.v === 'string') { if (q.maxLength && a.v.length > q.maxLength) { errors[q.id] = '「' + label + '」最多 ' + q.maxLength + ' 字'; continue; } if (q.pattern) { let re = null; try { re = new RegExp(q.pattern); } catch (_) {} if (re && !re.test(a.v)) { errors[q.id] = q.patternHint || '「' + label + '」格式不對'; continue; } } }
+            if (q.type === 'color' && !HEX.test(String(a.v))) { errors[q.id] = '「' + label + '」要是 #rrggbb'; continue; }
+            // 選到的選項帶的 [文字]／[下拉]
+            if (q.type === 'single' || q.type === 'multi') for (const id of [].concat(a.v)) { const o = (q.options || []).find((x) => x.id === id); if (o && o.extra && o.extra.required) { const xv = a.x && a.x[id] ? (o.extra.kind === 'text' ? a.x[id].text : a.x[id].select) : ''; if (!xv) { errors[q.id] = '「' + str(o.label || o.id, 30) + '」後面的欄位必填'; break; } } }
+            if (!errors[q.id] && q.after) for (const f of q.after) if (f.required && !(a.a && a.a[f.id])) { errors[q.id] = '「' + str(f.label || f.id, 30) + '」必填'; break; }
+        }
+        return { ok: Object.keys(errors).length === 0, errors };
+    }
+    // 把答案清成乾淨、有大小上限的形狀（宿主收到使用者輸入／還原持久化資料時用）
+    function sanitizeAnswer(q, a) {
+        const out = blank(q); if (!a || typeof a !== 'object') return out;
+        const optIds = new Set((q.options || []).map((o) => o.id));
+        if (q.type === 'multi') out.v = (Array.isArray(a.v) ? a.v : []).filter((x) => optIds.has(x)).slice(0, LIMITS.options); else if (q.type === 'single' || q.type === 'dropdown') out.v = optIds.has(a.v) ? a.v : ''; else if (q.type === 'widget') { try { const j = JSON.stringify(a.v); out.v = j && j.length <= LIMITS.answer ? a.v : ''; } catch (_) { out.v = ''; } } else if (q.type === 'number') out.v = a.v === '' || a.v == null ? '' : (Number.isFinite(Number(a.v)) ? Number(a.v) : ''); else if (q.type === 'color') out.v = HEX.test(String(a.v)) ? String(a.v) : ''; else out.v = str(a.v, LIMITS.text);
+        if (a.x && typeof a.x === 'object') for (const o of q.options || []) { const x = a.x[o.id]; if (x && typeof x === 'object' && o.extra) out.x[o.id] = { text: str(x.text, 400), select: o.extra.kind === 'select' && (o.extra.options || []).some((p) => p.id === x.select) ? x.select : '' }; }
+        if (a.a && typeof a.a === 'object') for (const f of q.after || []) { const v = a.a[f.id]; out.a[f.id] = f.kind === 'select' ? ((f.options || []).some((p) => p.id === v) ? v : '') : str(v, 400); }
+        return out;
+    }
+    // ---------- 步驟分支 ----------
+    function stepIndexById(spec, id) { return spec.steps.findIndex((s) => s.id === id); }
+    // 下一步：step.next 規則（依序，第一個符合的）→ 指到的步驟或 'done'；沒有規則就是下一個步驟（最後一個之後是 done）
+    function nextStep(spec, idx, answers) {
+        const st = spec.steps[idx]; for (const r of st.next || []) if (matchCond(r.when, answers)) return r.goto === 'done' ? 'done' : stepIndexById(spec, r.goto);
+        return idx + 1 < spec.steps.length ? idx + 1 : 'done';
+    }
+    // ---------- 狀態機（可序列化）----------
+    // status：open（可以填）／submitted（已送出，唯讀）／cancelled／expired（頁面重新整理後，流程已經不在，唯讀但保留已填的內容）
+    function createState(spec) { const s = normalizeSpec(spec); return { status: 'open', stepIndex: 0, trail: [0], answers: Object.fromEntries(s.steps.map((st) => [st.id, blankAnswers(st)])), createdAt: Date.now() }; }
+    function setAnswer(spec, state, stepId, qid, value) { if (state.status !== 'open') return false; const s = normalizeSpec(spec); const st = s.steps.find((x) => x.id === stepId); const q = st && st.questions.find((x) => x.id === qid); if (!q) return false; state.answers[stepId] = state.answers[stepId] || {}; state.answers[stepId][qid] = sanitizeAnswer(q, value); return true; }
+    // 送出目前的步驟：驗證 → 前進（回傳 { ok, done, errors, stepIndex }）
+    function submitStep(spec, state) {
+        if (state.status !== 'open') return { ok: false, errors: { _: '這張卡片已經結束' } }; const s = normalizeSpec(spec); const st = s.steps[state.stepIndex]; const v = validateAnswers(st, state.answers[st.id] || {}); if (!v.ok) return { ok: false, errors: v.errors };
+        const nx = nextStep(s, state.stepIndex, state.answers[st.id]); if (nx === 'done') { state.status = 'submitted'; state.submittedAt = Date.now(); return { ok: true, done: true, stepIndex: state.stepIndex }; }
+        state.stepIndex = nx; state.trail.push(nx); return { ok: true, done: false, stepIndex: nx };
+    }
+    function back(spec, state) { if (state.status !== 'open' || state.trail.length < 2) return false; state.trail.pop(); state.stepIndex = state.trail[state.trail.length - 1]; return true; }
+    function cancel(state) { if (state.status === 'open') state.status = 'cancelled'; return state; }
+    function expire(state) { if (state.status === 'open') state.status = 'expired'; return state; }
+    // 還原：只留規格裡存在的題目與合法的答案；還在 open 的一律變 expired（送出流程已經不在了）
+    function restoreState(spec, saved) {
+        const s = normalizeSpec(spec); const st = createState(s); if (!saved || typeof saved !== 'object') return expire(st);
+        for (const step of s.steps) for (const q of step.questions) { const a = saved.answers && saved.answers[step.id] && saved.answers[step.id][q.id]; if (a) st.answers[step.id][q.id] = sanitizeAnswer(q, a); }
+        st.status = ['submitted', 'cancelled', 'expired', 'open'].includes(saved.status) ? saved.status : 'expired'; st.stepIndex = Math.max(0, Math.min(s.steps.length - 1, Number(saved.stepIndex) || 0)); st.trail = Array.isArray(saved.trail) ? saved.trail.filter((x) => Number.isInteger(x) && x >= 0 && x < s.steps.length).slice(0, 40) : [st.stepIndex]; if (!st.trail.length) st.trail = [st.stepIndex]; st.submittedAt = saved.submittedAt; st.createdAt = saved.createdAt || st.createdAt;
+        return expire(st);
+    }
+    // ---------- 結果與摘要 ----------
+    // 一題答案的人可讀文字（唯讀視圖與工具結果共用）
+    function describeAnswer(q, a) {
+        if (!a || isEmpty(q, a)) return '（沒有填）'; const optOf = (id) => (q.options || []).find((o) => o.id === id);
+        const extraText = (o, x) => { if (!o || !o.extra || !x) return ''; if (o.extra.kind === 'text') return x.text ? '：' + x.text : ''; const so = (o.extra.options || []).find((p) => p.id === x.select); return so ? '：' + (so.label || so.id) : ''; };
+        let main;
+        if (q.type === 'single' || q.type === 'dropdown') { const o = optOf(a.v); main = (o ? (o.label || o.id) : String(a.v)) + extraText(o, a.x && a.x[a.v]); }
+        else if (q.type === 'multi') main = (a.v || []).map((id) => { const o = optOf(id); return (o ? (o.label || o.id) : id) + extraText(o, a.x && a.x[id]); }).join('、');
+        else if (q.type === 'widget') main = typeof a.v === 'string' ? a.v : JSON.stringify(a.v); else main = String(a.v);
+        const after = (q.after || []).map((f) => { const v = a.a && a.a[f.id]; if (!v) return ''; const lab = f.kind === 'select' ? ((f.options || []).find((p) => p.id === v) || {}).label || v : v; return (f.label || f.id) + '：' + lab; }).filter(Boolean);
+        return main + (after.length ? '（' + after.join('；') + '）' : '');
+    }
+    // 結果物件（給呼叫端程式用）：{ confirmed, answers:{題目id: {v,x,a}}, flat:{題目id: 簡化值}, steps:[走過的步驟 id] }
+    function result(spec, state) {
+        const s = normalizeSpec(spec); const answers = {}; const flat = {};
+        for (const si of state.trail || [state.stepIndex]) { const st = s.steps[si]; if (!st) continue; for (const q of visibleQuestions(st, state.answers[st.id] || {})) { if (q.type === 'info') continue; const a = (state.answers[st.id] || {})[q.id]; if (!a || isEmpty(q, a)) continue; answers[q.id] = a; flat[q.id] = a.v; for (const [oid, x] of Object.entries(a.x || {})) if ([].concat(a.v).includes(oid)) flat[q.id + '.' + oid] = x.text || x.select || ''; for (const [fid, v] of Object.entries(a.a || {})) if (v) flat[q.id + '.' + fid] = v; } }
+        return { confirmed: state.status === 'submitted', status: state.status, answers, flat, steps: (state.trail || []).map((i) => s.steps[i] && s.steps[i].id).filter(Boolean) };
+    }
+    function summaryLines(spec, state) { const s = normalizeSpec(spec); const out = []; for (const si of state.trail || [0]) { const st = s.steps[si]; if (!st) continue; for (const q of visibleQuestions(st, state.answers[st.id] || {})) { if (q.type === 'info') continue; out.push((q.label || q.id) + '：' + describeAnswer(q, (state.answers[st.id] || {})[q.id])); } } return out; }
+    // 簡寫工廠（程式組卡片時用）
+    const opt = (id, label, more) => Object.assign({ id, label }, more || {});
+    return { LIMITS, TYPES, safeImage, normalizeSpec, validateSpec, blankAnswers, matchCond, visibleQuestions, validateAnswers, sanitizeAnswer, nextStep, createState, setAnswer, submitStep, back, cancel, expire, restoreState, describeAnswer, result, summaryLines, opt };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCard;
+})();
+/* CARD-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -18302,6 +18518,24 @@ ${fnData.code}
             },
             { type: 'object', properties: { scenario: { type: 'string', description: '（選填）情境文字，用來推薦' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, constraints: { type: 'object', description: '（選填）已經指定的抉擇' } }, additionalProperties: false }
         );
+        registerOptional('ask_user_card',
+            '在對話裡放一張「互動卡片」讓使用者填（表單或多步驟 wizard），等使用者送出後把回應交給你。用在「需要使用者從幾個選項裡決定、或補幾個欄位」而你不該替他猜的時候，比用文字一題一題問快。使用者看到的是勾選／單選／下拉／文字框，送出後卡片變唯讀；回應只回傳給這個工具，不會變成使用者訊息。規格 spec：{title, description, questions:[…]}（單張表單）或 {title, steps:[{id,title,questions,next:[{when:{q,eq|in|has|nonEmpty},goto:步驟id|"done"}]}]}（wizard，next 沒寫就依序）。題目 {id, type, label, hint, required, default, showIf:{q,eq|in|has|nonEmpty}, media:{text,image(https或data:image),html(可互動的 widget，在沙盒 iframe，用 window.faCard.answer(值) 回傳；type 要是 widget),height}}。type：single（單選）、multi（多選，minSelect／maxSelect）、dropdown、text、textarea、number（min／max）、color、widget、info（只顯示）。single／multi 的選項 {id,label,desc,image,color(#rrggbb 色塊),extra:{kind:"text"|"select",options,required}}：extra 是選項後面的文字框或下拉（選到那個選項才能填）；題目還可以有 after:[{id,kind:"text"|"select",label,options}] 固定接在選項後面。id 一律英文字母開頭。回傳 {ok,confirmed,status,answers:{題目id:值,"題目id.選項id":後面欄位的值},summary:[…]}；confirmed=false 是使用者取消。需要依回應決定下一張卡片：用這個工具兩次，第二次的規格依第一次的回應來寫。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const spec = a.spec && typeof a.spec === 'object' ? a.spec : a; const r = await this.askCard(spec);
+                if (!r.ok) return JSON.stringify({ ok: false, error: r.error, hint: '修正規格後再呼叫一次' });
+                return JSON.stringify({ ok: true, confirmed: r.confirmed, status: r.status, answers: r.flat, summary: r.summary, steps: r.steps });
+            },
+            { type: 'object', properties: { spec: { type: 'object', description: '卡片規格：{title,description,questions} 或 {title,steps:[…]}，欄位見工具說明' } }, required: ['spec'], additionalProperties: true }
+        );
+        registerOptional('uml_guide',
+            '用互動卡片一步一步引導使用者把「情境」設計成 UML 與程式骨架：程式先讀情境（參與者、使用案例、類別），再用卡片問使用者真正需要決定的事——語言與套件、要實作哪些使用案例（可以勾掉或補一句）、架構風格，接著依這些回應產生第二張卡片（平手的設計抉擇必須使用者選，其餘有帶程式的建議值），最後確認，才依答案產生設計、專案 zip 與設計檢視器。全程不需要 AI 或模型生成 UML，弱的 AI／離線模型也能用；使用者的回應只回傳給這個工具。情境要用「<參與者>可以<動作><名詞>」的句型（例如「顧客可以加入購物車並結帳付款」）；讀不出來會回報，不會編造。',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._umlGuide(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { scenario: { type: 'string', description: '情境（使用者故事、需求文字）' }, language: { type: 'string', enum: ['python', 'typescript', 'java'], default: 'python' }, package: { type: 'string' }, constraints: { type: 'object', description: '（選填）已經決定的抉擇，卡片會用它當預設值' } }, required: ['scenario'], additionalProperties: false }
+        );
         registerOptional('uml_design',
             '用「這台電腦上的離線小模型」把情境一步一步設計成 UML 再產生程式骨架：程式把設計拆成封閉的小問題（參與者與使用案例 → 類別 → 每個類別的屬性與操作 → 關係 → 呼叫順序），模型一次只回答一個、每個回覆都被驗證，之後只重做有問題的那一區（top-down rework），再用 design_choices 的規則選架構與 library。比較強的線上 AI 不需要這個：自己寫 UML 文字直接呼叫 uml_to_code 更快更準。需要先下載離線文字模型（第一次會問）。',
             async function (rawArgs) {
@@ -23095,7 +23329,7 @@ ${fnData.code}
     // 這一輪（從第idx則訊息之後）AI有沒有成功回應：沒有任何助理回覆、或最後一則是錯誤訊息＝失敗，回傳失敗說明；成功回傳空字串
     _turnFailureText(idx) {
         const tail = this.messages.slice(idx + 1);
-        const lastA = [...tail].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
+        const lastA = [...tail].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips && !m._card);
         if (!lastA) return '（沒有任何回應）';
         return /^\s*(⚠️|❌|🚫)/.test(lastA.content) ? lastA.content.replace(/\s+/g, ' ').slice(0, 200) : '';
     }
@@ -30877,6 +31111,115 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (a.kind === 'aidoc-sqlite' || a.kind === 'aidoc-qa') { await this._codeExport(root, a.kind === 'aidoc-sqlite' ? 'sqlite_html' : 'qa_html', { deliver: true }); return { ok: true }; }
         return { ok: false, error: '不認得的動作：' + a.kind };
     }
+    // ===== 互動對話卡片（FaCard）=====
+    // 對話裡的表單／wizard／「依回應產生下一張」：規格與使用者的回應都存在訊息的非可枚舉屬性 _card（跟 _benchmarkReport 同一套作法，見 _persistChatHistory 的 cardMap）。
+    // 送出之後、或重新整理之後，卡片變成唯讀並保留使用者的回應（restoreState：還沒送出的一律變「已結束」，因為等著答案的那個流程已經不在了）。
+    // 使用者的回應不當成 user 訊息：不進 this.messages 的 user 角色、卡片訊息本身也不送給 LLM（_sanitizeToolCallPairing 跳過 _card），回應只經由 askCard 的回傳值交給呼叫它的程式或工具。
+    _cardWaitersMap() { if (!this._cardWaiters) this._cardWaiters = new WeakMap(); return this._cardWaiters; }
+    askCard(spec) {
+        const errs = FaCard.validateSpec(spec); if (errs.length) return Promise.resolve({ ok: false, confirmed: false, error: '卡片規格有問題：' + errs.slice(0, 5).join('；'), errors: errs });
+        const s = FaCard.normalizeSpec(spec); const title = String(s.title || '互動卡片').slice(0, 60);
+        const msg = { role: 'assistant', content: '（互動卡片：' + title + '）' };
+        Object.defineProperty(msg, '_card', { value: { spec: s, state: FaCard.createState(s), uid: Math.random().toString(36).slice(2, 8) }, enumerable: false, configurable: true });
+        const ctx = this._ctx; const bg = !this._chatIsVisible();
+        return new Promise((resolve) => {
+            this._cardWaitersMap().set(msg, (r) => { if (bg && ctx) { ctx.waitingForUser = false; try { this._renderChatList(); } catch (_) {} } resolve(r); });
+            this.messages.push(msg); if (bg && ctx) { ctx.waitingForUser = true; try { this._renderChatList(); } catch (_) {} }
+            this._persistChatHistory(); this._renderMessageHistory();
+        });
+    }
+    // 依回應產生下一張卡片：nextFn(上一張的結果, 到目前為止的紀錄) → 下一張的規格；回傳 null／undefined 就結束
+    async askCardFlow(first, nextFn, opts) {
+        const history = []; let spec = first; let guard = 0; const max = (opts && opts.maxCards) || 12;
+        while (spec && guard++ < max) { const r = await this.askCard(spec); history.push({ id: spec.id || 'card', result: r }); if (!r.ok || !r.confirmed) return { ok: !!r.ok, cancelled: true, history }; spec = nextFn ? await nextFn(r, history) : null; }
+        return { ok: true, cancelled: false, history, last: history.length ? history[history.length - 1].result : null };
+    }
+    _cardResult(msg) { const c = msg._card; return Object.assign({ ok: true }, FaCard.result(c.spec, c.state), { summary: FaCard.summaryLines(c.spec, c.state) }); }
+    _cardFinish(msg) { this._persistChatHistory(); const w = this._cardWaitersMap().get(msg); if (w) { this._cardWaitersMap().delete(msg); try { w(this._cardResult(msg)); } catch (_) {} } }
+    _cardPersistSoon() { clearTimeout(this._cardPersistTimer); this._cardPersistTimer = setTimeout(() => { try { this._persistChatHistory(); } catch (_) {} }, 500); }
+    // 題目裡的 web widget 在沙盒 iframe 裡（只開 allow-scripts，沒有 same-origin，碰不到助理的頁面、儲存與網路身分）；用 postMessage 回傳答案，來源必須是這個 iframe 自己的 contentWindow
+    _cardFrameRegister(frame, cb) {
+        if (!this._cardFrames) { this._cardFrames = new Set(); window.addEventListener('message', (ev) => { const d = ev.data; if (!d || d.__faCard !== 1) return; for (const f of this._cardFrames) if (f.frame.contentWindow && f.frame.contentWindow === ev.source) { f.cb(d); break; } }); }
+        if (this._cardFrames.size > 200) for (const f of Array.from(this._cardFrames)) { if (!f.frame.isConnected && this._cardFrames.size > 150) this._cardFrames.delete(f); }
+        this._cardFrames.add({ frame, cb });
+    }
+    _cardWidget(html, init, readonly, height, onMsg) {
+        const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-scripts'); f.style.cssText = 'width:100%; height:' + Math.max(60, Math.min(600, Number(height) || 160)) + 'px; border:1px solid rgba(128,128,128,.4); border-radius:6px; background:#fff; margin:4px 0;' + (readonly ? ' pointer-events:none; opacity:.85;' : '');
+        let initJson = 'null'; try { initJson = JSON.stringify(init === undefined ? null : init).replace(/</g, '\\u003c'); } catch (_) {}
+        const bridge = '<scr' + 'ipt>window.faCardInit=' + initJson + ';window.faCardReadonly=' + (readonly ? 'true' : 'false') + ';window.faCard={answer:function(v){parent.postMessage({__faCard:1,type:"answer",value:v},"*")},resize:function(h){parent.postMessage({__faCard:1,type:"resize",height:h},"*")}};</scr' + 'ipt>';
+        f.srcdoc = bridge + String(html || '').slice(0, FaCard.LIMITS.html); this._cardFrameRegister(f, (d) => { if (d.type === 'resize') f.style.height = Math.max(60, Math.min(600, Number(d.height) || 160)) + 'px'; else if (d.type === 'answer' && !readonly) onMsg(d.value); }); return f;
+    }
+    _renderCardMessage(msg, container, palette) {
+        const card = msg._card; const open = card.state.status === 'open';
+        if (open && this._liveWidgetCache.has(msg)) { container.appendChild(this._liveWidgetCache.get(msg)); return; }
+        const wrap = document.createElement('div'); wrap.className = 'ai-card';
+        wrap.style.cssText = `margin-bottom:12px; padding:12px 14px; border-radius:8px; width:min(720px, 92%); box-sizing:border-box; background:${palette.assistantBg}; color:${palette.assistantText}; border:1px solid ${palette.inputBorder};`;
+        this._cardFill(msg, wrap, palette); if (open) this._liveWidgetCache.set(msg, wrap); else this._liveWidgetCache.delete(msg); container.appendChild(wrap);
+    }
+    _cardFill(msg, wrap, palette) {
+        const card = msg._card, spec = card.spec, state = card.state; const ro = state.status !== 'open'; wrap.textContent = '';
+        const h = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
+        const head = h('div', 'display:flex; align-items:center; gap:8px; margin-bottom:6px;'); head.appendChild(h('div', 'font-weight:600; font-size:14px; flex:1;', '🧩 ' + (spec.title || '請回答')));
+        if (ro) { const b = { submitted: ['✅ 已送出（唯讀）', '#76b900'], cancelled: ['已取消（唯讀）', '#9aa0a6'], expired: ['已結束（唯讀）', '#9aa0a6'] }[state.status] || ['唯讀', '#9aa0a6']; head.appendChild(h('div', 'font-size:12px; color:' + b[1] + ';', b[0])); }
+        else if (spec.mode === 'wizard') head.appendChild(h('div', 'font-size:12px; opacity:.7;', '第 ' + state.trail.length + ' 步／共 ' + spec.steps.length + ' 步'));
+        wrap.appendChild(head); if (spec.description) wrap.appendChild(h('div', 'font-size:12px; opacity:.8; white-space:pre-wrap; margin-bottom:8px;', spec.description));
+        const rebuild = () => this._cardFill(msg, wrap, palette); const stepIdxs = ro ? (state.trail && state.trail.length ? state.trail : [state.stepIndex]) : [state.stepIndex];
+        for (const si of stepIdxs) { const step = spec.steps[si]; if (!step) continue; const box = h('div', 'margin:6px 0 4px;');
+            if (spec.mode === 'wizard' && step.title) box.appendChild(h('div', 'font-size:13px; font-weight:600; margin:8px 0 4px; opacity:.9;', step.title));
+            for (const q of FaCard.visibleQuestions(step, state.answers[step.id] || {})) box.appendChild(this._cardQuestion(msg, step, q, ro, palette, rebuild)); wrap.appendChild(box); }
+        if (ro) return;
+        const bar = h('div', 'display:flex; gap:8px; margin-top:10px; justify-content:flex-end; align-items:center;'); const btn = (text, primary) => { const b = h('button', `padding:5px 14px; border-radius:6px; border:1px solid ${palette.inputBorder}; background:${primary ? '#76b900' : palette.detailBg}; color:${primary ? '#fff' : palette.detailText}; font-size:13px; cursor:pointer;`, text); b.type = 'button'; return b; };
+        const cancelBtn = btn('取消'); cancelBtn.addEventListener('click', () => { FaCard.cancel(state); this._liveWidgetCache.delete(msg); rebuild(); this._cardFinish(msg); }); bar.appendChild(cancelBtn);
+        if (state.trail.length > 1) { const back = btn('← 上一步'); back.addEventListener('click', () => { FaCard.back(spec, state); card._errors = null; this._cardPersistSoon(); rebuild(); }); bar.appendChild(back); }
+        const isLast = (() => { const nx = FaCard.nextStep(spec, state.stepIndex, state.answers[spec.steps[state.stepIndex].id] || {}); return nx === 'done'; })();
+        const go = btn(isLast ? (spec.steps.length > 1 ? '完成' : (spec.submitLabel === '下一步' ? '送出' : spec.submitLabel)) : '下一步 →', true); go.addEventListener('click', () => { const r = FaCard.submitStep(spec, state); card._errors = r.ok ? null : r.errors; if (r.ok && r.done) { this._liveWidgetCache.delete(msg); rebuild(); this._cardFinish(msg); return; } if (r.ok) this._cardPersistSoon(); rebuild(); try { wrap.scrollIntoView({ block: 'nearest' }); } catch (_) {} }); bar.appendChild(go); wrap.appendChild(bar);
+        if (card._errors && card._errors._) wrap.appendChild(h('div', 'color:#e5534b; font-size:12px; margin-top:4px;', card._errors._));
+    }
+    _cardQuestion(msg, step, q, ro, palette, rebuildAll) {
+        const card = msg._card, spec = card.spec, st = card.state; const holder = document.createElement('div'); holder.style.cssText = 'margin:8px 0 10px;';
+        const h = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
+        const visIds = () => FaCard.visibleQuestions(step, st.answers[step.id] || {}).map((x) => x.id).join(',');
+        const get = () => st.answers[step.id][q.id];
+        const set = (mut, redraw) => { const cur = JSON.parse(JSON.stringify(get())); mut(cur); const before = visIds(); FaCard.setAnswer(spec, st, step.id, q.id, cur); this._cardPersistSoon(); if (visIds() !== before) { rebuildAll(); return; } if (redraw) build(); };
+        const field = `padding:4px 6px; border-radius:5px; border:1px solid ${palette.inputBorder}; background:${palette.detailBg}; color:${palette.detailText}; font-size:13px;`;
+        const input = (type, val, onInput, o) => { const e = document.createElement('input'); e.type = type; e.value = val == null ? '' : val; e.disabled = ro || !!(o && o.disabled); e.style.cssText = field + ((o && o.css) || ''); if (o && o.placeholder) e.placeholder = o.placeholder; e.addEventListener('input', () => onInput(e.value)); return e; };
+        const select = (opts, val, onChange, o) => { const e = document.createElement('select'); e.disabled = ro || !!(o && o.disabled); e.style.cssText = field + ((o && o.css) || ''); const p = document.createElement('option'); p.value = ''; p.textContent = '（請選擇）'; e.appendChild(p); for (const x of opts) { const op = document.createElement('option'); op.value = x.id; op.textContent = x.label || x.id; if (x.id === val) op.selected = true; e.appendChild(op); } e.addEventListener('change', () => onChange(e.value)); return e; };
+        const build = () => {
+            holder.textContent = ''; const a = get(); const err = !ro && card._errors && card._errors[q.id];
+            if (q.label) holder.appendChild(h('div', 'font-size:13px; font-weight:600;', q.label + (q.required && !ro && q.type !== 'info' ? ' *' : '')));
+            if (q.hint) holder.appendChild(h('div', 'font-size:11px; opacity:.65; margin:2px 0 4px;', q.hint));
+            const m = q.media || {}; if (m.text) holder.appendChild(h('div', 'font-size:12px; white-space:pre-wrap; margin:4px 0; padding:6px 8px; border-radius:6px; background:' + palette.detailBg + ';', m.text));
+            if (m.image && FaCard.safeImage(m.image)) { const im = document.createElement('img'); im.src = m.image; im.alt = ''; im.style.cssText = 'max-width:100%; max-height:240px; border-radius:6px; margin:4px 0; display:block;'; holder.appendChild(im); }
+            if (m.html) holder.appendChild(this._cardWidget(m.html, q.type === 'widget' ? a.v : null, ro, m.height, (v) => { if (q.type === 'widget') { set((cur) => { cur.v = v; }); mark(); } }));
+            const mark = () => { if (!holder.querySelector('.fa-card-widget-mark')) holder.appendChild(h('div', 'font-size:11px; color:#76b900; margin-top:2px;', '✔ 已記下互動結果')).className = 'fa-card-widget-mark'; };
+            if (q.type === 'widget' && ro) holder.appendChild(h('div', 'font-size:12px; opacity:.8; margin-top:2px;', '互動結果：' + FaCard.describeAnswer(q, a)));
+            if (q.type === 'widget' && !ro && a.v !== '' && a.v != null) mark();
+            if (q.type === 'single' || q.type === 'multi') {
+                const list = h('div', 'display:flex; flex-direction:column; gap:2px; margin-top:3px;'); const name = 'q' + card.uid + step.id + q.id; const sel = new Set([].concat(a.v === '' ? [] : a.v));
+                for (const o of q.options) {
+                    const on = sel.has(o.id); const row = h('label', 'display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:6px; cursor:' + (ro ? 'default' : 'pointer') + ';' + (on ? ' background:' + palette.detailBg + ';' : ''));
+                    const rb = document.createElement('input'); rb.type = q.type === 'multi' ? 'checkbox' : 'radio'; rb.name = name; rb.checked = on; rb.disabled = ro; rb.style.flex = 'none';
+                    rb.addEventListener('change', () => set((cur) => { if (q.type === 'multi') { const s2 = new Set(cur.v); if (rb.checked) s2.add(o.id); else s2.delete(o.id); cur.v = q.options.map((x) => x.id).filter((id) => s2.has(id)); } else cur.v = o.id; }, true));
+                    row.appendChild(rb);
+                    if (o.color && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(o.color)) row.appendChild(h('span', 'display:inline-block; width:18px; height:18px; border-radius:4px; flex:none; border:1px solid rgba(128,128,128,.4); background:' + o.color + ';'));
+                    if (o.image && FaCard.safeImage(o.image)) { const im = document.createElement('img'); im.src = o.image; im.alt = ''; im.style.cssText = 'width:36px; height:36px; object-fit:cover; border-radius:5px; flex:none;'; row.appendChild(im); }
+                    const txt = h('div', 'flex:1; min-width:0;'); txt.appendChild(h('div', 'font-size:13px;', o.label || o.id)); if (o.desc) txt.appendChild(h('div', 'font-size:11px; opacity:.65;', o.desc)); row.appendChild(txt);
+                    if (o.extra) { const x = (a.x && a.x[o.id]) || {}; const off = ro ? false : !on; const hold = { css: 'flex:none; max-width:45%;', disabled: off, placeholder: o.extra.placeholder || '' };
+                        if (o.extra.kind === 'text') row.appendChild(input('text', x.text || '', (v) => set((cur) => { cur.x[o.id] = Object.assign({}, cur.x[o.id], { text: v }); }), hold));
+                        else row.appendChild(select(o.extra.options, x.select || '', (v) => set((cur) => { cur.x[o.id] = Object.assign({}, cur.x[o.id], { select: v }); }), hold)); }
+                    list.appendChild(row);
+                }
+                holder.appendChild(list);
+            } else if (q.type === 'dropdown') holder.appendChild(select(q.options, a.v, (v) => set((cur) => { cur.v = v; }), { css: 'margin-top:3px;' }));
+            else if (q.type === 'text') holder.appendChild(input('text', a.v, (v) => set((cur) => { cur.v = v; }), { css: 'width:100%; box-sizing:border-box; margin-top:3px;', placeholder: q.placeholder || '' }));
+            else if (q.type === 'number') holder.appendChild(input('number', a.v, (v) => set((cur) => { cur.v = v; }), { css: 'width:140px; margin-top:3px;' }));
+            else if (q.type === 'color') holder.appendChild(input('color', /^#[0-9a-fA-F]{6}$/.test(a.v) ? a.v : '#000000', (v) => set((cur) => { cur.v = v; }), { css: 'margin-top:3px; padding:0; height:28px; width:48px;' }));
+            else if (q.type === 'textarea') { const t = document.createElement('textarea'); t.value = a.v || ''; t.rows = 3; t.disabled = ro; t.style.cssText = field + 'width:100%; box-sizing:border-box; margin-top:3px; resize:vertical;'; if (q.placeholder) t.placeholder = q.placeholder; t.addEventListener('input', () => set((cur) => { cur.v = t.value; })); holder.appendChild(t); }
+            if (q.after && q.after.length) { const row = h('div', 'display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:5px;'); for (const f of q.after) { const v = (a.a && a.a[f.id]) || ''; if (f.label) row.appendChild(h('span', 'font-size:12px; opacity:.8;', f.label)); row.appendChild(f.kind === 'text' ? input('text', v, (x) => set((cur) => { cur.a[f.id] = x; }), { css: 'flex:1; min-width:120px;', placeholder: f.placeholder || '' }) : select(f.options, v, (x) => set((cur) => { cur.a[f.id] = x; }))); } holder.appendChild(row); }
+            if (err) holder.appendChild(h('div', 'color:#e5534b; font-size:12px; margin-top:3px;', err));
+        };
+        build(); return holder;
+    }
     _pushAssistantMessage(content, reasoning, extra) {
         const ex = Object.assign({}, extra || {});
         const actions = ex._actions; delete ex._actions;
@@ -31220,6 +31563,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const cleaned = [];
         for (let i = 0; i < messages.length; i++) {
             const msg = messages[i];
+            if (msg && msg._card) continue; // 互動卡片只給人看，回應也不進對話歷史
             if (msg && msg.role === 'tool') {
                 const prev = cleaned.length ? cleaned[cleaned.length - 1] : null;
                 const prevIds = (prev && prev.role === 'assistant' && Array.isArray(prev.tool_calls))
@@ -49039,6 +49383,31 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (this.advancedSettings.umlViewerAutoOpen !== false && typeof document !== 'undefined') { try { this._umlViewerOpen(sess); res.viewer = '已開啟設計檢視器（UML 子圖與原始碼互相對應，可以逐層深入）；zip 裡的 viewer.html 也可以單獨打開'; } catch (_) {} }
         return res;
     }
+    // 互動引導（卡片）：程式讀情境 → 卡片 1（wizard）→ 依回應產生卡片 2 → 確認卡（產生／回去改／取消）→ 依答案產生設計；不呼叫任何模型
+    async _umlGuide(a) {
+        const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' };
+        const opts = { language: a.language, package: a.package, glossary: this.advancedSettings.umlGlossary || {}, prefs: this.advancedSettings.designPrefs || {}, constraints: a.constraints && typeof a.constraints === 'object' ? a.constraints : {} };
+        const g = await FaDesign.guideStart(scenario, opts); if (!g.ok) return { ok: false, error: g.error, hint: '情境用「<參與者>可以<動作><名詞>」的句型寫；或改用 uml_design（離線模型一步一步設計）、uml_to_code（自己寫 UML）' };
+        const withDefaults = (spec, flat) => { const s = JSON.parse(JSON.stringify(spec)); if (!flat) return s; for (const st of s.steps || []) for (const q of st.questions) if (flat[q.id] !== undefined && q.type !== 'info') q.default = flat[q.id]; return s; };
+        let r1 = null, r2 = null, r3 = null; const cancelled = () => ({ ok: false, cancelled: true, message: '使用者取消了設計引導，沒有產生任何東西' });
+        for (let round = 0; round < 4; round++) {
+            r1 = await this.askCard(withDefaults(g.spec, r1 && r1.flat)); if (!r1.ok || !r1.confirmed) return cancelled();
+            const c2 = FaDesign.guideConcerns(scenario, r1, opts); r2 = await this.askCard(withDefaults(c2, r2 && r2.flat)); if (!r2.ok || !r2.confirmed) return cancelled();
+            r3 = await this.askCard(FaDesign.guideSummary(scenario, { ucs: g.ucs }, r1, r2)); if (!r3.ok || !r3.confirmed || r3.flat.go === 'cancel') return cancelled();
+            if (r3.flat.go === 'go') break; r3 = null;
+        }
+        if (!r3) return { ok: false, error: '回去改太多次了，先停在這裡；想繼續請再呼叫一次' };
+        const ap = FaDesign.guideApply(scenario, g, r1, r2, r3, { glossary: opts.glossary });
+        if (ap.remember) { this.advancedSettings.designPrefs = Object.assign({}, this.advancedSettings.designPrefs, ap.constraints); this._saveAdvancedSettings(); }
+        const prog = this._createProgressWidget('依你的選擇產生設計與專案');
+        const r = await FaDesign.designProject(scenario, { model: ap.model, seed: false, language: ap.language, package: ap.package, constraints: ap.constraints, glossary: opts.glossary, userGlue: this.advancedSettings.userGlue || [], experience: this.advancedSettings.glueExperience || {} });
+        if (!r.ok) { prog.fail(r.error); return { ok: false, error: r.error, warnings: r.warnings }; }
+        const sess = await this._umlStartSession(r.model, ap.language, ap.package, scenario, r.design); const z = await this._umlZip(sess.proj.files, r.model.name || 'design', ap.language); prog.finish('完成：' + sess.proj.files.length + ' 個檔案');
+        const res = this._umlResult(r.model, ap.language, { files: sess.proj.files, design: r.design }, z, { uml: r.dsl, guided: { choices: ap.constraints, notes: ap.notes, remembered: ap.remember }, warnings: r.warnings.slice(0, 8) });
+        await this._deliverToolResultFile(res, 'zip_file_id', (x) => '📎 已依你的選擇產生 ' + ap.language + ' 程式骨架（' + x.fileCount + ' 個檔案，含 viewer.html 設計檢視器）：' + x.filename);
+        if (this.advancedSettings.umlViewerAutoOpen !== false && typeof document !== 'undefined') { try { this._umlViewerOpen(sess); res.viewer = '已開啟設計檢視器'; } catch (_) {} }
+        await this._umlLearnBack(scenario, r.dsl, r.design, r.warnings, sess.bundle); return res;
+    }
     async _umlDesign(a) {
         const scenario = String(a.scenario || '').trim(); if (!scenario) return { ok: false, error: '缺少 scenario' }; const lang = ['python', 'typescript', 'java'].includes(a.language) ? a.language : 'python';
         const M = await this._planModel({}); const err = await M.ensure(); if (err) return { ok: false, error: '離線文字模型不能用：' + err };
@@ -49349,7 +49718,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         route.reasons.forEach(log);
         try {
             const system = '你是一個友善、簡潔的助理，在使用者的電腦上離線執行。請用繁體中文回答（使用者用別種語言就用那種語言）。直接回答問題；問候與閒聊就自然地回應。如果有【參考資料】，優先根據它回答。一律使用繁體中文，不要用簡體字。你知道的就直接說；只有遇到你真的不知道的具體細節（人名、數字、網址）時，才說明你不確定，並提供你知道的相關內容。';
-            let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
+            let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips && !m._card); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
             // 參考資料＝離線訓練器（線上 AI 養出來的規則、學到的做法、相似問法、過去問答）＋RAG，整理成帶出處與年齡的清單，份量依模型上下文按比例給
             const refPack = FaRecipe.buildReferencePack(await this._offlineReferences(userText, plan), FaVlm.textBudget(route.answer, S.llmMax).rag);
             let rag = refPack.lines; if (refPack.lines.length) log('參考資料 ' + refPack.lines.length + ' 筆（訓練器／RAG）');
@@ -55002,6 +55371,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // 也是同一套「非可枚舉屬性額外存一份」作法，跟benchmarkReportMap
             // 同樣理由（chips陣列很小，沒有大檔案顧慮）。
             const chipsMap = {};
+            const cardMap = {};
             // tw_stock_db客製: 2026-09-12——配音小幫手widget狀態（頁面/關鍵
             // 影格file_id/錄音file_id）同一套「非可枚舉屬性額外存一份」作法
             // ——這個widget的互動狀態（已錄哪幾句）如果重新整理頁面就不見，
@@ -55035,6 +55405,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (m._downloadFile) fileMap[i] = m._downloadFile;
                 if (m._benchmarkReport) benchmarkReportMap[i] = m._benchmarkReport;
                 if (m._suggestionChips) chipsMap[i] = m._suggestionChips;
+                if (m._card) cardMap[i] = { spec: m._card.spec, state: m._card.state };
                 if (m._displayScene3DYaml) scene3DMap[i] = m._displayScene3DYaml;
                 if (m._displayDrawingSvg) drawingMap[i] = m._displayDrawingSvg;
                 if (m._displayMermaidSvg) mermaidMap[i] = m._displayMermaidSvg;
@@ -55052,6 +55423,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (m._downloadFile) fileMap[`${bi}:${mi}`] = m._downloadFile;
                     if (m._benchmarkReport) benchmarkReportMap[`${bi}:${mi}`] = m._benchmarkReport;
                     if (m._suggestionChips) chipsMap[`${bi}:${mi}`] = m._suggestionChips;
+                    if (m._card) cardMap[`${bi}:${mi}`] = { spec: m._card.spec, state: m._card.state };
                     if (m._displayScene3DYaml) scene3DMap[`${bi}:${mi}`] = m._displayScene3DYaml;
                     if (m._displayDrawingSvg) drawingMap[`${bi}:${mi}`] = m._displayDrawingSvg;
                     if (m._displayMermaidSvg) mermaidMap[`${bi}:${mi}`] = m._displayMermaidSvg;
@@ -55071,6 +55443,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 fileMap,
                 benchmarkReportMap,
                 chipsMap,
+                cardMap,
                 scene3DMap,
                 drawingMap,
                 mermaidMap,
@@ -55145,6 +55518,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 Object.entries(data.chipsMap).forEach(([key, chips]) => {
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_suggestionChips', { value: chips, enumerable: false, configurable: true });
+                });
+            }
+            // 互動對話卡片：規格重新驗證；還沒送出的卡片一律變「已結束」（等答案的流程已經不在），已填的內容保留、唯讀
+            if (data.cardMap) {
+                Object.entries(data.cardMap).forEach(([key, c]) => {
+                    const msg = resolveMsg(key); if (!msg || !c || !c.spec) return;
+                    try { if (FaCard.validateSpec(c.spec).length) return; const spec = FaCard.normalizeSpec(c.spec); Object.defineProperty(msg, '_card', { value: { spec, state: FaCard.restoreState(spec, c.state), uid: Math.random().toString(36).slice(2, 8) }, enumerable: false, configurable: true }); } catch (_) {}
                 });
             }
             if (data.scene3DMap) {
@@ -55577,6 +55957,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             container.appendChild(wrap);
             return;
         }
+
+        // 互動對話卡片：見askCard()的說明
+        if (msg._card) { this._renderCardMessage(msg, container, palette); return; }
 
         // tw_stock_db客製: /benchmark-model的報告卡，見_handleBenchmarkModelCommand
         // 的說明——存在this.messages裡才會跟著正常訊息陣列存活過
@@ -56780,7 +57163,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (this.advancedSettings.offlineMode || mode === 'off') return;
         const userText = this._currentTurnUserText;
         const calls = (this._otCalls || []).slice();
-        const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips);
+        const lastAsst = [...(this.messages || [])].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string' && !m._suggestionChips && !m._card);
         if (!userText || !lastAsst) return;
         const ui = this.messages.map((m) => m.role === 'user' && m.content === userText).lastIndexOf(true);
         if (ui < 0 || this.messages.indexOf(lastAsst) < ui) return; // 這則回覆不是針對這句話的
