@@ -187,6 +187,7 @@ categories:
           - { date: 2026-10-07, note: "新增 log_learn／log_ask 與離線訓練器領域 log_formats（模板探勘、欄位統計、摘要與問答、確認卡片）" }
           - { date: 2026-10-07, note: "新增章節式設定檔結構學習（INI／TOML／EDK2，機密遮蔽、比較兩份）與「從文字自己長出文法」（YAML／BitBake／nginx／Dockerfile／自創格式：讀→建規則→全文驗證→再長，可輸出 EBNF／ANTLR 風格）" }
           - { date: 2026-10-07, note: "文法沿用（新文字先拿學過的文法試，涵蓋夠高直接沿用；不夠就把舊規則當假設驗證後才採用）；新增遞迴產生式與 LALR(1) 分析表（FaLR 表產生器＋FaCfgLearn：讀每行、解析不了就取出失敗處，換成別的規則／沿用前綴組合／整行新規則，每種都重建分析表驗證）；log_ask 可問 bison、分析表、衝突" }
+          - { date: 2026-10-07, note: "語法斷點發現（不假設一行一個陳述）：找出處理不了的邊界，兩兩合併（引號、括號一路串到平衡；續行符號、終結符號從資料發現），合併後用分析表驗證；斷點存起來沿用；log_ask 可問斷點" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
