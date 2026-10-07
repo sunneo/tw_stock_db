@@ -21,6 +21,7 @@ const suites = [
     ['UML 設計引導（卡片流程、套用答案）', 'renderer/src/card/uml_guide.test.js'],
     ['離線日誌格式學習（模板、欄位、摘要、問答、訓練器規則）', 'renderer/src/logmine/log_core.test.js'],
     ['離線設定檔結構學習（INI、TOML、EDK2 INF／DEC／DSC、比較、機密遮蔽）', 'renderer/src/logmine/cfg_core.test.js'],
+    ['文法自己發現（讀→建規則→驗證→再長；YAML、BitBake、nginx、Dockerfile、自創格式）', 'renderer/src/logmine/gram_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {
