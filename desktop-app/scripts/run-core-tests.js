@@ -27,6 +27,7 @@ const suites = [
     ['語法斷點發現（不假設一行一個陳述：找處理不了的邊界→兩兩合併→終結符號→驗證）', 'renderer/src/logmine/boundary_core.test.js'],
     ['混合內容語法高亮（切段、語言識別、信心度、自學習、逐詞著色）', 'renderer/src/logmine/mix_core.test.js'],
     ['英文句子理解（詞類、片語、LALR 子句文法、框架、意圖、混合內容引用）', 'renderer/src/logmine/nlu_core.test.js'],
+    ['意圖推導（受詞／目標型別、簽名比對、離線計畫可行性）', 'renderer/src/logmine/intent_core.test.js'],
 ];
 let failed = 0;
 for (const [name, file] of suites) {
