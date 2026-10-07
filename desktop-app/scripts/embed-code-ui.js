@@ -164,5 +164,15 @@ function embedGram() {
     console.log('已更新 FaGram（' + core.length + ' 字元）');
 }
 embedGram();
+function embedLrCfgl() {
+    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn']]) {
+        const core = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
+        const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
+        if (a < 0 || b < 0) throw new Error('找不到 ' + begin + ' 標記');
+        src = src.slice(0, a) + '/* ' + begin + ' */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+        console.log('已更新 ' + name + '（' + core.length + ' 字元）');
+    }
+}
+embedLrCfgl();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
