@@ -2983,7 +2983,8 @@ function _faCodeBase(p) { const i = String(p).lastIndexOf('/'); return i < 0 ? S
 // 建立查詢用的索引（倒排索引分批建，ix.ti記錄進度；_faCodeIndexTokens(ix, 毫秒預算)回傳true表示建完）
 function _faCodeIndexNew(db) {
     db.files = db.files || []; db.syms = db.syms || []; db.imps = db.imps || []; db.uses = db.uses || [];
-    const ix = { db, nameMap: {}, post: {}, fpost: {}, impOut: db.files.map(() => []), impIn: db.files.map(() => []), usedBy: {}, fileUses: db.files.map(() => []), fileSyms: db.files.map(() => []), ti: 0, tf: 0, done: false };
+    const ix = { db, nameMap: Object.create(null), post: Object.create(null), fpost: Object.create(null), impOut: db.files.map(() => []), impIn: db.files.map(() => []), usedBy: Object.create(null), fileUses: db.files.map(() => []), fileSyms: db.files.map(() => []), ti: 0, tf: 0, done: false };
+    ix.usedBy = Object.create(null);
     db.syms.forEach((s, i) => { const k = String(s[0]).toLowerCase(); (ix.nameMap[k] = ix.nameMap[k] || []).push(i); if (ix.fileSyms[s[2]]) ix.fileSyms[s[2]].push(i); });
     db.imps.forEach((e) => { if (ix.impOut[e[0]] && ix.impIn[e[1]]) { ix.impOut[e[0]].push(e[1]); ix.impIn[e[1]].push(e[0]); } });
     db.uses.forEach((e) => { if (ix.fileUses[e[0]]) ix.fileUses[e[0]].push(e[1]); (ix.usedBy[e[1]] = ix.usedBy[e[1]] || []).push(e[0]); });
@@ -2991,7 +2992,7 @@ function _faCodeIndexNew(db) {
 }
 function _faCodeIndexTokens(ix, budgetMs) {
     const db = ix.db, t0 = Date.now();
-    const add = (map, id, text) => { const seen = {}; const toks = _faSemTokens(text); for (let k = 0; k < toks.length; k++) { const t = toks[k]; if (seen[t]) continue; seen[t] = 1; (map[t] = map[t] || []).push(id); } };
+    const add = (map, id, text) => { const seen = Object.create(null); const toks = _faSemTokens(text); for (let k = 0; k < toks.length; k++) { const t = toks[k]; if (seen[t]) continue; seen[t] = 1; (map[t] = map[t] || []).push(id); } };
     while (ix.ti < db.syms.length) {
         const s = db.syms[ix.ti];
         add(ix.post, ix.ti, s[0] + ' ' + (s[4] || '') + ' ' + (s[6] || '') + ' ' + _faCodeBase((db.files[s[2]] || [''])[0]));
@@ -3234,10 +3235,10 @@ function _faCodeAsk(ix, question, opts) {
 function _faCodeFromMap(map, opts) {
     opts = opts || {};
     const paths = Object.keys(map.files).sort();
-    const fid = {};
+    const fid = Object.create(null);
     paths.forEach((p, i) => { fid[p] = i; });
     const files = [], syms = [], imps = [], uses = [];
-    const seenImp = {};
+    const seenImp = Object.create(null);
     let truncated = 0;
     paths.forEach((p, i) => {
         const f = map.files[p];
@@ -3248,7 +3249,7 @@ function _faCodeFromMap(map, opts) {
         list.forEach((x) => { syms.push([x.n, x.k, i, x.l, x.d || '', x.sig || '', sn[x.n] || '']); });
         (f.imports || []).forEach((e) => { if (e.to && fid[e.to] != null) { const key = i + '>' + fid[e.to]; if (!seenImp[key]) { seenImp[key] = 1; imps.push([i, fid[e.to]]); } } });
     });
-    const byName = {};
+    const byName = Object.create(null);
     syms.forEach((x, k) => { (byName[x[0]] = byName[x[0]] || []).push(k); });
     paths.forEach((p, i) => {
         (map.files[p].uses || []).forEach((n) => {
@@ -3790,8 +3791,9 @@ const FA_CODE_STOP = new Set('if else for while switch case return sizeof typeof
 function _faRepoExtract(path, text, opts) {
     const lang = _faRepoLang(path);
     const tier = (opts && opts.tier) || 0; // 0完整、1精簡（>5000個原始碼檔）、2最精簡（>25000個）：限制每檔定義數、簽名長度、呼叫名稱數，控制索引大小
-    const maxSyms = tier >= 2 ? 80 : (tier === 1 ? 150 : 400);
-    const sigMax = tier >= 2 ? 0 : (tier === 1 ? 90 : 140);
+    const unlimited = !!(opts && opts.unlimited); // 寫進 SQLite 索引時：不限定義數（記憶體只跟批次有關）
+    const maxSyms = unlimited ? 1e7 : (tier >= 2 ? 80 : (tier === 1 ? 150 : 400));
+    const sigMax = unlimited ? 140 : (tier >= 2 ? 0 : (tier === 1 ? 90 : 140));
     const lines = String(text || '').split(/\r?\n/);
     const imports = [];
     const symbols = [];
@@ -3824,10 +3826,10 @@ function _faRepoExtract(path, text, opts) {
     // 這個檔案呼叫了哪些名稱（識別字後面接括號）：之後跟全專案的定義對起來，就知道「誰用到這個函式」
     const getUses = () => {
         if (lang === 'bb') return [];
-        const cap = tier >= 2 ? 12 : (tier === 1 ? 30 : 60);
-        const own = {};
+        const cap = unlimited ? 400 : (tier >= 2 ? 12 : (tier === 1 ? 30 : 60));
+        const own = Object.create(null);
         symbols.forEach((x) => { own[x.n] = 1; });
-        const cnt = {};
+        const cnt = Object.create(null);
         let um, guard = 0;
         const reC = /\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(/g;
         while ((um = reC.exec(String(text || ''))) && guard++ < 30000) { const w = um[1]; if (FA_CODE_STOP.has(w) || own[w]) continue; cnt[w] = (cnt[w] || 0) + 1; }
@@ -12304,6 +12306,148 @@ const holder = {};
 return holder.FaSqliteBrowser;
 })();
 /* SQLBU-END */
+/* SQLIX-BEGIN */
+const FaIdxSql = (function () {
+const holder = {};
+(function (module, self) {
+/* 專案索引的 SQLite 層（UMD，與環境無關）：建表、分批寫入、完成階段、讀取。
+ * 設計（見 DESIGN.project-index.md／DESIGN.sqlite-fap.md）：索引本身就是專案資料夾裡的 SQLite 檔（.floating-assistant/index/index.sqlite3），
+ * 建索引時邊讀邊寫、記憶體只跟批次大小有關；查詢時 SQLite 自己用 PRAGMA cache_size（預設 64 MB）管理分頁快取，所以專案多大都不會爆記憶體。
+ * 所有函式都吃一個 exec(sql, bind?) -> Promise<[{columns, rows, changes, error?}]>（引擎協定，列是陣列），不碰 DOM、不碰檔案。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaIdxSql = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const SCHEMA_VERSION = 1;
+    const DDL = [
+        'CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)',
+        'CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT NOT NULL, dir TEXT, name TEXT, lang TEXT, lines INTEGER, hash TEXT, doc TEXT, sv INTEGER, nsyms INTEGER DEFAULT 0, refs INTEGER DEFAULT 0, used INTEGER DEFAULT 0, note TEXT)',
+        'CREATE TABLE symbols(id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT, file_id INTEGER NOT NULL, line INTEGER, doc TEXT, sig TEXT, note TEXT, used_by INTEGER DEFAULT 0)',
+        'CREATE TABLE imports(src INTEGER NOT NULL, dst INTEGER, kind TEXT, spec TEXT)',
+        'CREATE TABLE uses_raw(file_id INTEGER NOT NULL, name TEXT NOT NULL)',
+        'CREATE TABLE uses(file_id INTEGER NOT NULL, symbol_id INTEGER NOT NULL)',
+        'CREATE TABLE sym_fts_src(id INTEGER PRIMARY KEY, toks TEXT)', 'CREATE TABLE file_fts_src(id INTEGER PRIMARY KEY, toks TEXT)',
+    ];
+    const INDEXES = [
+        'CREATE INDEX idx_files_dir ON files(dir)', 'CREATE INDEX idx_sym_name ON symbols(name COLLATE NOCASE)', 'CREATE INDEX idx_sym_file ON symbols(file_id)',
+        'CREATE INDEX idx_imp_src ON imports(src)', 'CREATE INDEX idx_imp_dst ON imports(dst)', 'CREATE INDEX idx_use_file ON uses(file_id)', 'CREATE INDEX idx_use_sym ON uses(symbol_id)', 'CREATE INDEX idx_sym_used ON symbols(used_by DESC) WHERE used_by > 0',
+    ];
+    const splitNameDefault = (n) => String(n == null ? '' : n).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:]+/g, ' ').toLowerCase().trim();
+    const baseOf = (p) => { const i = String(p).lastIndexOf('/'); return i < 0 ? String(p) : String(p).slice(i + 1); };
+    const dirOf = (p) => { const i = String(p).lastIndexOf('/'); return i < 0 ? '' : String(p).slice(0, i); };
+    const MAX_VARS = 30000;
+
+    async function run(exec, sql, bind) { const r = await exec(sql, bind); const bad = r.find((x) => x.error); if (bad) { const e = new Error(bad.error + (bad.sql ? '（' + bad.sql.slice(0, 80) + '）' : '')); throw e; } return r; }
+    async function rows(exec, sql, bind) { const r = await run(exec, sql, bind); return (r[0] && r[0].rows) || []; }
+    async function one(exec, sql, bind) { const r = await rows(exec, sql, bind); return r[0] ? r[0][0] : null; }
+    // 多列 INSERT：依變數上限切批
+    async function insertMany(exec, table, cols, data) {
+        if (!data.length) return; const per = Math.max(1, Math.floor(MAX_VARS / cols.length)); const ph = '(' + cols.map(() => '?').join(',') + ')';
+        for (let i = 0; i < data.length; i += per) { const chunk = data.slice(i, i + per); const bind = []; for (const r of chunk) for (const v of r) bind.push(v); await run(exec, 'INSERT INTO ' + table + ' (' + cols.join(',') + ') VALUES ' + chunk.map(() => ph).join(','), bind); }
+    }
+
+    // ---- 建庫 ----
+    function builder(exec, opts) {
+        opts = opts || {}; const splitName = opts.splitName || splitNameDefault; const semTokens = opts.semTokens || ((text) => splitName(text)); const batch = opts.batch || 400; const macroKinds = opts.macroKinds || ['macro'];
+        const st = { pathId: new Map(), files: [], syms: [], imps: [], uses: [], fts: [], ftsf: [], nextFile: 1, nextSym: 1, nFiles: 0, nSyms: 0, nImps: 0, nUses: 0, started: false };
+        async function init(o) {
+            o = o || {};
+            if (o.fresh !== false) { for (const t of ['sym_fts', 'file_fts', 'meta', 'files', 'symbols', 'imports', 'uses_raw', 'uses', 'sym_fts_src', 'file_fts_src']) await run(exec, 'DROP TABLE IF EXISTS ' + t); }
+            for (const d of DDL) await run(exec, d);
+            await run(exec, "INSERT INTO meta(k,v) VALUES('schema', ?), ('created', ?)", [String(SCHEMA_VERSION), new Date().toISOString()]);
+            await run(exec, 'BEGIN'); st.started = true;
+        }
+        // 一個檔案的完整記錄（舊地圖的格式）：{lang, lines, hash, doc, imports:[{spec,kind,to}], symbols:[{n,k,l,d,sig}], uses:[名稱], sv}
+        function addFile(path, rec) {
+            const id = st.nextFile++; st.pathId.set(path, id);
+            const syms = rec.symbols || []; st.files.push([id, path, dirOf(path), baseOf(path), rec.lang || '', rec.lines || 0, rec.hash || '', rec.doc || '', rec.sv || 0, syms.length]);
+            for (const s of syms) { const sid = st.nextSym++; st.syms.push([sid, s.n, s.k || '', id, s.l || 0, s.d || '', s.sig || '', '']); if (!macroKinds.includes(s.k)) st.fts.push([sid, semTokens(s.n + ' ' + (s.d || '') + ' ' + baseOf(path))]); }
+            st.ftsf.push([id, semTokens(path + ' ' + (rec.doc || '') + ' ' + syms.slice(0, 25).map((x) => x.n).join(' '))]);
+            for (const e of rec.imports || []) st.imps.push([id, e.to || null, e.kind || '', e.spec || '', e.to || null]);
+            for (const n of rec.uses || []) st.uses.push([id, n]);
+            return syms.length;
+        }
+        const pending = () => st.files.length + st.syms.length + st.imps.length + st.uses.length;
+        async function flush(force) {
+            if (!st.started) throw new Error('builder 還沒 init');
+            if (!force && st.files.length < batch && st.syms.length < batch * 20) return;
+            const f = st.files, s = st.syms, im = st.imps, u = st.uses, ft = st.fts, ff = st.ftsf; st.files = []; st.syms = []; st.imps = []; st.uses = []; st.fts = []; st.ftsf = [];
+            await insertMany(exec, 'files', ['id', 'path', 'dir', 'name', 'lang', 'lines', 'hash', 'doc', 'sv', 'nsyms'], f); await insertMany(exec, 'symbols', ['id', 'name', 'kind', 'file_id', 'line', 'doc', 'sig', 'note'], s);
+            // imports 的目標路徑要等所有檔案都有 id 才能解析：先把目標路徑暫存在 spec 之外的欄位（dst 先放 NULL，之後用 path 對應）
+            await insertMany(exec, 'imports', ['src', 'dst', 'kind', 'spec'], im.map((r) => [r[0], null, r[2], (r[4] ? '\u0001' + r[4] : r[3])]));
+            await insertMany(exec, 'uses_raw', ['file_id', 'name'], u); await insertMany(exec, 'sym_fts_src', ['id', 'toks'], ft); await insertMany(exec, 'file_fts_src', ['id', 'toks'], ff);
+            st.nFiles += f.length; st.nSyms += s.length; st.nImps += im.length; st.nUses += u.length;
+            await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
+        }
+        // 完成階段：解析匯入目標、算計數、呼叫關係、索引、全文表
+        async function finalize(o) {
+            o = o || {}; const prog = o.onProgress || (() => {}); await flush(true);
+            prog('匯入關係'); await run(exec, 'COMMIT'); await run(exec, 'CREATE INDEX idx_files_path ON files(path)'); await run(exec, 'BEGIN');
+            await run(exec, "UPDATE imports SET dst = (SELECT f.id FROM files f WHERE f.path = substr(imports.spec, 2)), spec = NULL WHERE spec LIKE char(1) || '%'");
+            await run(exec, 'DELETE FROM imports WHERE dst IS NULL');
+            await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
+            prog('索引（名稱／檔案）');
+            await run(exec, 'COMMIT'); for (const ix of INDEXES) { await run(exec, ix); } await run(exec, 'BEGIN');
+            prog('計數');
+            await run(exec, 'UPDATE files SET refs = (SELECT count(*) FROM imports i WHERE i.src = files.id AND i.dst IS NOT NULL), used = (SELECT count(*) FROM imports i WHERE i.dst = files.id)');
+            prog('呼叫關係');
+            // 與舊引擎一致：名稱的定義不超過 8 個、而且不在自己的檔案
+            await run(exec, 'CREATE TEMP TABLE defc(name TEXT PRIMARY KEY, c INTEGER) WITHOUT ROWID'); await run(exec, 'INSERT INTO defc SELECT name, count(*) FROM symbols GROUP BY name HAVING count(*) <= 8');
+            await run(exec, 'INSERT INTO uses(file_id, symbol_id) SELECT DISTINCT r.file_id, s.id FROM uses_raw r JOIN defc d ON d.name = r.name JOIN symbols s ON s.name = r.name AND s.file_id <> r.file_id');
+            await run(exec, 'DROP TABLE defc'); await run(exec, 'DROP TABLE uses_raw');
+            await run(exec, 'UPDATE symbols SET used_by = (SELECT count(*) FROM uses u WHERE u.symbol_id = symbols.id) WHERE id IN (SELECT DISTINCT symbol_id FROM uses)');
+            await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
+            prog('全文索引');
+            await run(exec, "CREATE VIRTUAL TABLE sym_fts USING fts5(toks, content='', tokenize='unicode61')");
+            await run(exec, 'INSERT INTO sym_fts(rowid, toks) SELECT id, toks FROM sym_fts_src');
+            await run(exec, 'DROP TABLE sym_fts_src');
+            await run(exec, "CREATE VIRTUAL TABLE file_fts USING fts5(toks, content='', tokenize='unicode61')");
+            await run(exec, 'INSERT INTO file_fts(rowid, toks) SELECT id, toks FROM file_fts_src');
+            await run(exec, 'DROP TABLE file_fts_src');
+            const c = { files: await one(exec, 'select count(*) from files'), symbols: await one(exec, 'select count(*) from symbols'), imports: await one(exec, 'select count(*) from imports'), uses: await one(exec, 'select count(*) from uses'), macros: await one(exec, "select count(*) from symbols where kind='macro'") };
+            await run(exec, "INSERT OR REPLACE INTO meta(k,v) VALUES ('counts', ?), ('built', ?), ('complete', ?), ('root', ?)", [JSON.stringify(c), new Date().toISOString(), o.complete === false ? '0' : '1', String(o.root || '')]);
+            await run(exec, 'COMMIT'); st.started = false;
+            try { await run(exec, 'ANALYZE'); } catch (_) { /* 不影響結果 */ }
+            return c;
+        }
+        return { init, addFile, flush, finalize, pending, st };
+    }
+
+    // ---- 讀取 ----
+    const ftsQuery = (toks) => toks.filter(Boolean).map((t) => '"' + String(t).replace(/"/g, '""') + '"').join(' OR ');
+    function reader(exec) {
+        const R = {
+            counts: async () => { const v = await one(exec, "select v from meta where k='counts'"); try { return JSON.parse(v); } catch (_) { return null; } },
+            meta: async () => Object.fromEntries(await rows(exec, 'select k, v from meta')),
+            fileId: (path) => one(exec, 'select id from files where path = ?', [path]),
+            filePaths: async (like, limit) => (await rows(exec, 'select path from files where path like ? order by path limit ?', [like, limit || 100])).map((r) => r[0]),
+            // 舊地圖格式的一筆檔案記錄（含定義、匯入、呼叫名稱）
+            fileRec: async (path) => {
+                const f = (await rows(exec, 'select id, lang, lines, hash, doc, sv from files where path = ?', [path]))[0]; if (!f) return null;
+                const symbols = (await rows(exec, 'select name, kind, line, doc, sig from symbols where file_id = ? order by id', [f[0]])).map((r) => ({ n: r[0], k: r[1], l: r[2], d: r[3], sig: r[4] }));
+                const imports = (await rows(exec, 'select f.path, i.kind from imports i join files f on f.id = i.dst where i.src = ?', [f[0]])).map((r) => ({ kind: r[1], to: r[0] }));
+                return { lang: f[1], lines: f[2], hash: f[3], doc: f[4], sv: f[5], symbols, imports, uses: [] };
+            },
+            symbolsOf: async (path) => (await rows(exec, 'select s.name, s.kind, s.line, s.doc, s.sig from symbols s join files f on f.id = s.file_id where f.path = ? order by s.id', [path])).map((r) => ({ n: r[0], k: r[1], l: r[2], d: r[3], sig: r[4] })),
+            // 名稱（不分大小寫）的定義
+            symbolsByName: async (name, limit) => (await rows(exec, 'select s.id, s.name, s.kind, f.path, s.line, s.doc, s.sig, s.used_by from symbols s join files f on f.id = s.file_id where s.name = ? collate nocase order by (s.kind=\'macro\'), s.used_by desc limit ?', [name, limit || 50])).map((r) => ({ id: r[0], name: r[1], kind: r[2], path: r[3], line: r[4], doc: r[5], sig: r[6], used_by: r[7] })),
+            macros: async (name, mode, limit) => { const like = mode === 'prefix' ? String(name) + '%' : mode === 'contains' ? '%' + name + '%' : null; const sql = like ? "select s.name, f.path, s.line, s.sig from symbols s join files f on f.id = s.file_id where s.kind='macro' and s.name like ? escape '\\' limit ?" : "select s.name, f.path, s.line, s.sig from symbols s join files f on f.id = s.file_id where s.kind='macro' and s.name = ? collate nocase limit ?"; return (await rows(exec, sql, [like ? like.replace(/[\\_]/g, '\\$&') : name, limit || 50])).map((r) => ({ name: r[0], path: r[1], line: r[2], value: r[3] })); },
+            // 全文召回：符號（不含巨集）與檔案
+            recallSymbols: async (tokens, limit) => { const q = ftsQuery(tokens); if (!q) return []; return (await rows(exec, 'select rowid from sym_fts where sym_fts match ? order by rank limit ?', [q, limit || 60])).map((r) => r[0]); },
+            recallFiles: async (tokens, limit) => { const q = ftsQuery(tokens); if (!q) return []; return (await rows(exec, 'select rowid from file_fts where file_fts match ? order by rank limit ?', [q, limit || 40])).map((r) => r[0]); },
+            tree: async (dir) => (await rows(exec, "select name, 'f', lang, lines from files where dir = ? union all select distinct substr(substr(dir, ?), 1, instr(substr(dir, ?) || '/', '/') - 1), 'd', null, null from files where dir like ? and dir <> ? order by 2 desc, 1", [dir, dir ? dir.length + 2 : 1, dir ? dir.length + 2 : 1, dir ? dir + '/%' : '%', dir])).map((r) => ({ name: r[0], type: r[1], lang: r[2], lines: r[3] })),
+            top: async (n) => (await rows(exec, 'select path, lang, lines, refs, used, nsyms from files order by used desc, nsyms desc limit ?', [n || 20])).map((r) => ({ path: r[0], lang: r[1], lines: r[2], refs: r[3], used: r[4], nsyms: r[5] })),
+        };
+        return R;
+    }
+    return { builder, reader, insertMany, run, rows, one, DDL, INDEXES, SCHEMA_VERSION, splitNameDefault, dirOf, baseOf };
+});
+
+}).call(null, undefined, holder);
+return holder.FaIdxSql;
+})();
+/* SQLIX-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -17729,7 +17873,7 @@ class FloatingAssistant {
         this.playbookCache = new FileCache('FloatingAssistantPlaybooks_' + ragDbSuffix, 32 * 1024 * 1024);
         this.sandboxFsCache = new FileCache('FloatingAssistantSandboxFs_' + ragDbSuffix, 64 * 1024 * 1024);
         // 2026-10-02：專案結構地圖（repo_map）與專案百科（repo_wiki），存在persistentStorage（IndexedDB）
-        this.repoMapCache = new FileCache('FloatingAssistantRepoMap_' + ragDbSuffix, 48 * 1024 * 1024);
+        this.repoMapCache = new FileCache('FloatingAssistantRepoMap_' + ragDbSuffix, 512 * 1024 * 1024);
         this.repoWikiCache = new FileCache('FloatingAssistantRepoWiki_' + ragDbSuffix, 48 * 1024 * 1024);
         this._otDbName = 'FloatingAssistantOfflineTrainer_' + ragDbSuffix; // 離線訓練器（Offline Trainer）的IndexedDB
         this.programmingPlaybooks = Object.assign({}, FA_PROGRAMMING_PLAYBOOKS);
@@ -26949,6 +27093,7 @@ ${fnData.code}
     // dive 會依「重要程度」（被引用數、定義數、入口檔）排出還沒有說明的檔案，一個檔案一個全新的AI子任務，逐一補完；可停止，之後接續（沒有說明的檔案自然就是還沒做的）。
     async _repoDiveTargets(key, limit) {
         const st = await this._codeStoreGet(key);
+        if (st && st.sql) return await this._idxDiveTargets(key, limit);
         if (!st || !st.db.files.length) return null;
         const { db, ix } = st;
         const ENTRY = /^(main|index|app|server|cli|__main__|manage|program|startup|bootstrap|run|start)\.[a-z]+$/i;
@@ -27128,6 +27273,7 @@ ${fnData.code}
     }
     async _repoIndexLoadFromProject(key, opts) {
         opts = opts || {};
+        if (this._idxEligible(key) && await this._idxHas(key)) { try { const m = await this._idxAttach(key); return { ok: true, from: 'SQLite 索引', sqlite: true, files: m.sql.counts.files, symbols: m.sql.counts.symbols, next_action: '已接上專案資料夾裡的 SQLite 索引（不用重建）；直接 repo_ask／/aidoc view 就能問。' }; } catch (e) { return { ok: false, error: 'SQLite 索引接不上：' + String((e && e.message) || e) }; } }
         const io = await this._repoMapIo(key);
         const meta = await this._repoSharedIndexPeek(io);
         if (!meta) return { ok: false, error: '專案資料夾裡沒有索引檔（' + this._repoIndexDir() + '/meta.json）。要先有人用 /aidoc save 存進來。' };
@@ -27321,6 +27467,7 @@ ${fnData.code}
         const infoObj = async () => {
             const st = await me._codeStoreGet(key); const db = st.db;
             const mp = (await me._repoMapLoad(key)) || {};
+            if (st.sql) { const nf = Object.values(mp.notes || {}).filter(Boolean).length; const ns = Object.values(mp.sym_notes || {}).reduce((a, o) => a + Object.keys(o || {}).length, 0); return { title: key.split('/').filter(Boolean).pop() || key, root: key, files: st.counts.files, symbols: st.counts.symbols, notes_files: nf, notes_symbols: ns, complete: !!mp.index_built, sqlite: true }; }
             return { title: key.split('/').filter(Boolean).pop() || key, root: key, files: db.files.length, symbols: db.syms.length, notes_files: db.files.filter((f) => f[4]).length, notes_symbols: db.syms.filter((s) => s[6]).length, complete: !!mp.index_built };
         };
         const pump = async () => {
@@ -27350,9 +27497,10 @@ ${fnData.code}
             const st = await me._codeStoreGet(key);
             if (!st) return { s: 404, j: { error: '索引不存在' } };
             const db = st.db, ix = st.ix, P = u.pathname, Q = (k) => u.searchParams.get(k) || '';
+            if (st.sql) { const sr = await me._aidocSqlRoute({ key, st, method, u, body, enqueue, srv, infoObj }); if (sr) return sr; }
             const map = (await me._repoMapLoad(key)) || {};
             const nm = map.notes_meta || {}, sm = map.sym_notes_meta || {};
-            const fileIdx = {}; db.files.forEach((f, i) => { fileIdx[f[0]] = i; });
+            const fileIdx = {}; if (db) db.files.forEach((f, i) => { fileIdx[f[0]] = i; }); else { const wp = Q('path') || String((body && body.path) || ''); if (wp) { try { const cc = await me._idxConn(key); if ((await cc.R.fileId(wp)) != null) fileIdx[wp] = 1; } catch (_) { /* 沒有就是 404 */ } } }
             const symView = (k) => { const s = db.syms[k]; return { n: s[0], k: s[1], l: s[3], d: s[4], sig: s[5], note: s[6] }; };
             if (method === 'GET' && P === '/api/info') return { j: await infoObj() };
             if (method === 'GET' && P === '/api/jobs') return { j: { jobs: jobsObj() } };
@@ -28782,6 +28930,9 @@ ${fnData.code}
         const cur = this._repoJobs.get(key);
         if (cur && (cur.state === 'running' || cur.state === 'stopping')) return Object.assign({ ok: true, already_running: true }, this._repoJobStatusObj(cur));
         let known = await this._repoMapLoad(key);
+        if (!known && this._idxEligible(key) && await this._idxHas(key)) {
+            try { const a1 = await this.requestUserForm({ title: '📥 專案資料夾裡已經有索引（SQLite）', description: `在 ${key}/.floating-assistant/index/ 找到索引檔。直接接上就能問，不用重新建立。`, choices: ['直接使用', '重新建立'] }); if (a1 && a1.confirmed && a1.answer === '直接使用') { known = await this._idxAttach(key); return { ok: true, attached: true, note: '已接上專案資料夾裡的 SQLite 索引（' + known.sql.counts.files + '個檔案、' + known.sql.counts.symbols + '個定義），可以直接 repo_ask。', stats: known.sql.counts }; } } catch (_) { /* 接不上就照原本流程重建 */ }
+        }
         if (!known) {
             try {
                 const sm = await this._repoSharedIndexPeek(await this._repoMapIo(key));
@@ -28808,6 +28959,7 @@ ${fnData.code}
         });
         const exp = [].concat(parsed.exports || parsed.export || []).map(String).filter((x) => /^(sqlite_html|qa_html)$/.test(x));
         const job = { key, state: 'running', phase: 'prepare', pct: 0, startedAt: Date.now(), filesStartedAt: Date.now(), stop: false, dirs: 0, queueDirs: 0, analyzed: 0, missing: 0, filesTotal: 0, bytes: 0, current: '', map, opts: { maxFiles: Math.max(1, Math.floor(Number(parsed.max_files) || this.advancedSettings.repoIndexMaxFiles || 50000)), maxMb: Math.max(1, Math.floor(Number(parsed.max_mb) || this.advancedSettings.repoIndexMaxMb || 100)), exports: exp, reanalyze: !!parsed.reanalyze } };
+        job.sql = this._idxEligible(key);
         this._repoJobs.set(key, job);
         job.promise = this._repoIndexRun(job).catch((e) => { job.state = 'error'; job.error = String((e && e.message) || e); });
         return Object.assign({ ok: true, started: true, note: '已在背景開始建立索引。慢沒關係：進度顯示在對話裡的進度卡片，完成後會提示；也可以用 index_status 看進度、index_stop 停止。這段時間可以繼續做別的事。' }, this._repoJobStatusObj(job));
@@ -28822,8 +28974,9 @@ ${fnData.code}
         const save = (force) => (force || Date.now() - lastSave > 30000) ? this._repoMapExclusive(key, async () => { await this._repoMapSave(map); lastSave = Date.now(); }) : null;
         try {
             const io = await this._repoMapIo(key);
-            const ctx = { cache: null, relisted: new Set() };
+            const ctx = { cache: null, relisted: new Set() }; job.ctx = ctx;
             const slice = (fn) => this._repoMapExclusive(key, fn);
+            if (job.sql) { job.phase = 'prepare'; tick(true); await this._idxBegin(job, map, ctx); }
             if (o.reanalyze) map.reanalyze = true;
             if (Object.keys(map.files).length) job.bytes = JSON.stringify(map.files).length;
             for (let round = 0; round < 4 && !job.stop; round++) {
@@ -28870,6 +29023,7 @@ ${fnData.code}
                             if (a.missing) job.missing++;
                             else { job.analyzed++; const rec = map.files[p]; if (rec) job.bytes += JSON.stringify(rec).length; }
                         }
+                        if (ctx.sqlB) await ctx.sqlB.flush(true);
                     });
                     job.pct = 30 + 62 * (job.analyzed + job.missing) / Math.max(1, job.filesTotal);
                     tick(); await save(); await yieldUi();
@@ -28884,9 +29038,11 @@ ${fnData.code}
             map.index_built = (remDirs === 0 && remFiles === 0) || !!job.capped;
             map.stage = 'index';
             if (!remFiles) map.reanalyze = false;
+            let sqlCounts = null;
+            if (ctx.sqlB) { job.current = '整理並建立索引…'; tick(true); sqlCounts = await this._idxEnd(job, map, ctx, { complete: map.index_built }); }
             await save(true);
-            const store = await this._codeStoreBuild(key, map, (p) => { job.pct = 93 + 6 * p; tick(); });
-            job.summary = { files: store.db.files.length, symbols: store.db.syms.length, dependency_edges: store.db.imps.length, call_edges: store.db.uses.length, remaining_dirs: remDirs, remaining_files: remFiles };
+            const store = sqlCounts ? null : await this._codeStoreBuild(key, map, (p) => { job.pct = 93 + 6 * p; tick(); });
+            job.summary = sqlCounts ? { files: sqlCounts.files, symbols: sqlCounts.symbols, dependency_edges: sqlCounts.imports, call_edges: sqlCounts.uses, remaining_dirs: remDirs, remaining_files: remFiles, sqlite: '.floating-assistant/index/index.sqlite3' } : { files: store.db.files.length, symbols: store.db.syms.length, dependency_edges: store.db.imps.length, call_edges: store.db.uses.length, remaining_dirs: remDirs, remaining_files: remFiles };
             for (const fmt of o.exports || []) {
                 if (job.stop) break;
                 job.phase = 'export'; tick(true);
@@ -28903,6 +29059,7 @@ ${fnData.code}
             try { const sv = await this._repoIndexAutoSave(key); if (sv && sv.ok) this._log('💾 索引已自動存回專案資料夾'); } catch (_) {}
         } catch (e) {
             job.state = 'error'; job.error = String((e && e.message) || e);
+            try { if (job.ctx && job.ctx.sqlB) await this._idxAbort(job, job.ctx); } catch (_) {}
             try { await save(true); } catch (_) {}
             prog.fail('索引中斷：' + job.error + '（已分析的部分有存，可再 index_start 接續）');
         } finally {
@@ -28911,6 +29068,199 @@ ${fnData.code}
     }
 
     // ---- 問答索引（資料庫＋倒排索引），記憶體快取，也存一份在persistentStorage ----
+    // ===== 專案索引的 SQLite 後端（桌面版、絕對路徑的專案）=====
+    // 索引直接寫進專案資料夾的隱藏資料夾：<專案>/.floating-assistant/index/index.sqlite3（自帶 .gitignore）。
+    // 建索引時邊讀邊寫（記憶體只跟批次大小有關）；查詢時 SQLite 用 PRAGMA cache_size（64 MB）管分頁快取，所以專案多大都不吃頁面記憶體。
+    // 記憶體裡的地圖只留「瘦身」的檔案記錄（語言、行數、雜湊、說明、匯入邊、定義個數），定義與呼叫名稱都在資料庫裡。
+    _idxEligible(key) { return this._repoMapIsAbsPath(key) && this._sqlAvailable() && (this.advancedSettings.repoIndexSql || 'auto') !== 'off' && typeof FaIdxSql !== 'undefined'; }
+    _idxDir(key) { return this._repoMapKey(key) + '/.floating-assistant/index'; }
+    _idxPath(key) { return this._idxDir(key) + '/index.sqlite3'; }
+    _idxBuildPath(key) { return this._idxDir(key) + '/index.sqlite3.building'; }
+    async _idxEnsureDir(key) {
+        const raw = window.desktopAPI.rawfs; const base = this._repoMapKey(key) + '/.floating-assistant';
+        await raw.mkdir(this._idxDir(key));
+        try { await raw.stat(base + '/.gitignore'); } catch (_) { try { await raw.writeFile(base + '/.gitignore', { text: '*\n' }); } catch (_) { /* 寫不了就算了 */ } }
+    }
+    // 唯讀連線（查詢用，快取）
+    async _idxConn(key) {
+        if (!this._idxConns) this._idxConns = new Map();
+        const cur = this._idxConns.get(key); if (cur && cur.alive) return cur;
+        const r = await this._sqlCall('open', { path: this._idxPath(key), readonly: true });
+        const c = { key, db: r.db, alive: true, size: r.size }; c.exec = async (sql, bind) => (await this._sqlCall('exec', { db: c.db, sql, bind, limit: 100000 })).results; c.R = FaIdxSql.reader(c.exec);
+        this._idxConns.set(key, c); return c;
+    }
+    async _idxCloseConn(key) { const c = this._idxConns && this._idxConns.get(key); if (c) { c.alive = false; this._idxConns.delete(key); try { await this._sqlCall('close', { db: c.db }); } catch (_) { /* 已關 */ } } }
+    async _idxHas(key) { try { const st = await this._sqlCall('stat', { path: this._idxPath(key) }); return !!st.exists; } catch (_) { return false; } }
+    // 建索引開始：寫到 .building，完成才取代舊索引（舊索引在新的完成前一直有效）
+    async _idxBegin(job, map, ctx) {
+        const key = job.key; await this._idxCloseConn(key); await this._idxEnsureDir(key);
+        try { await window.desktopAPI.rawfs.remove(this._idxBuildPath(key), false); for (const s of ['-wal', '-shm']) await window.desktopAPI.rawfs.remove(this._idxBuildPath(key) + s, false); } catch (_) { /* 沒有舊的 */ }
+        const r = await this._sqlCall('open', { path: this._idxBuildPath(key), mode: 'new' });
+        const exec = async (sql, bind) => (await this._sqlCall('exec', { db: r.db, sql, bind, limit: 100000 })).results;
+        const B = FaIdxSql.builder(exec, { splitName: _faCodeSplitName, semTokens: (text) => _faSemTokens(text).map((x) => x.replace(/[^A-Za-z0-9_\u4e00-\u9fff]/g, '_')).join(' '), batch: 300 }); await B.init();
+        ctx.sqlB = B; ctx.sqlDb = r.db; job.sqlDb = r.db; map.files = {};
+        return B;
+    }
+    async _idxEnd(job, map, ctx, o) {
+        o = o || {}; const key = job.key; const B = ctx.sqlB; if (!B) return null;
+        try {
+            const counts = await B.finalize({ root: key, complete: !!o.complete, onProgress: (p) => { job.current = p; } });
+            await this._sqlCall('close', { db: ctx.sqlDb }); ctx.sqlDb = null;
+            await this._sqlCall('move', { from: this._idxBuildPath(key), to: this._idxPath(key) });
+            map.sql = { v: 1, built: Date.now(), counts, path: '.floating-assistant/index/index.sqlite3', complete: !!o.complete };
+            return counts;
+        } catch (e) { try { if (ctx.sqlDb) await this._sqlCall('close', { db: ctx.sqlDb }); } catch (_) { /* */ } throw e; }
+        finally { ctx.sqlB = null; }
+    }
+    async _idxAbort(job, ctx) { try { if (ctx.sqlDb) await this._sqlCall('close', { db: ctx.sqlDb }); } catch (_) { /* */ } try { await window.desktopAPI.rawfs.remove(this._idxBuildPath(job.key), false); } catch (_) { /* */ } ctx.sqlB = null; }
+    // 一個檔案分析完：完整記錄進資料庫，記憶體只留瘦身版
+    _repoMapPutFile(map, ctx, path, full) {
+        if (ctx && ctx.sqlB) { const n = ctx.sqlB.addFile(path, full); map.files[path] = { lang: full.lang, lines: full.lines, hash: full.hash, doc: full.doc, imports: full.imports || [], symbols: [], uses: [], nsyms: n, sv: full.sv || 2, sql: 1 }; }
+        else map.files[path] = full;
+    }
+    // 瘦身記錄要用到定義時：從資料庫取（沒有資料庫就是原本記憶體裡的）
+    async _repoSymsOf(map, path) {
+        const rec = map && map.files && map.files[path]; if (!rec) return [];
+        if (rec.symbols && rec.symbols.length) return rec.symbols; if (!(map.sql && rec.sql && rec.nsyms)) return rec.symbols || [];
+        try { const c = await this._idxConn(map.root); return await c.R.symbolsOf(path); } catch (_) { return []; }
+    }
+    // 問題用的小型資料庫：只放這個問題要談到的定義與檔案（加上引擎要談論它們所需的一切），交給原本的問答引擎
+    async _idxMini(key, question, o) {
+        o = o || {}; const c = await this._idxConn(key); const R = c.R; const q = String(question || '');
+        const ids = new Set(); const addSyms = (rows) => rows.forEach((r) => ids.add(r.id));
+        const idents = Array.from(new Set(q.match(/[A-Za-z_][A-Za-z0-9_]{2,}(?:(?:::|\.|->)[A-Za-z_][A-Za-z0-9_]*)*/g) || [])).slice(0, 12);
+        for (const w of idents) for (const part of w.split(/::|\.|->/)) if (part.length >= 3) addSyms(await R.symbolsByName(part, 30));
+        const words = Array.from(new Set(_faSemTokens(q).map((x) => x.replace(/[^A-Za-z0-9_\u4e00-\u9fff]/g, '_')).filter((x) => x.length >= 2))).slice(0, 40);
+        const recall = await R.recallSymbols(words, 80); recall.forEach((i) => ids.add(i)); const frecall = await R.recallFiles(words, 40);
+        const pathHits = []; for (const p of (q.match(/[\w.\-/]+\.[A-Za-z0-9]{1,6}\b/g) || []).slice(0, 6)) { const hit = await R.filePaths('%' + p, 5); hit.forEach((x) => pathHits.push(x)); }
+        const fileIds = new Set(); frecall.forEach((i) => fileIds.add(i));
+        for (const p of pathHits) { const id = await R.fileId(p); if (id != null) fileIds.add(id); }
+        const inList = (s) => Array.from(s).join(',') || '0';
+        const symFiles = ids.size ? (await c.exec('select distinct file_id from symbols where id in (' + inList(ids) + ')'))[0].rows.map((r) => r[0]) : []; symFiles.forEach((i) => fileIds.add(i));
+        // 擴張：這些檔案的全部定義、匯入的雙向鄰居、呼叫者與被呼叫者
+        const F = new Set(fileIds); const S = new Set(ids);
+        const symRows = async (cond) => (await c.exec('select id, name, kind, file_id, line, doc, sig from symbols where ' + cond + ' limit 6000'))[0].rows;
+        let sr = F.size ? await symRows('file_id in (' + inList(F) + ')') : []; sr.forEach((r) => S.add(r[0]));
+        if (S.size) { const callers = (await c.exec('select distinct file_id from uses where symbol_id in (' + inList(Array.from(S).slice(0, 3000)) + ') limit 800'))[0].rows.map((r) => r[0]); callers.forEach((i) => F.add(i)); }
+        if (F.size) { const nb = (await c.exec('select src, dst from imports where src in (' + inList(F) + ') or dst in (' + inList(F) + ') limit 4000'))[0].rows; nb.forEach((r) => { F.add(r[0]); F.add(r[1]); }); }
+        const fileRows = (await c.exec('select id, path, lang, lines, doc from files where id in (' + inList(F) + ')'))[0].rows; const fidx = new Map(); const files = []; fileRows.forEach((r, i) => { fidx.set(r[0], i); files.push([r[1], r[2] || '', r[3] || 0, r[4] || '', '']); });
+        sr = (await symRows('id in (' + inList(S) + ')')).filter((r) => fidx.has(r[3])); const sidx = new Map(); const syms = []; sr.forEach((r, i) => { sidx.set(r[0], i); syms.push([r[1], r[2], fidx.get(r[3]), r[4], r[5] || '', r[6] || '', '']); });
+        const imps = (await c.exec('select src, dst from imports where src in (' + inList(F) + ') and dst in (' + inList(F) + ')'))[0].rows.filter((r) => fidx.has(r[0]) && fidx.has(r[1])).map((r) => [fidx.get(r[0]), fidx.get(r[1])]);
+        const uses = (await c.exec('select file_id, symbol_id from uses where symbol_id in (' + inList(S) + ') limit 20000'))[0].rows.filter((r) => fidx.has(r[0]) && sidx.has(r[1])).map((r) => [fidx.get(r[0]), sidx.get(r[1])]);
+        // 說明（使用者／AI 補的）在地圖裡
+        const map = o.map || (await this._repoMapLoad(key)) || {}; const notes = map.notes || {}, sn = map.sym_notes || {};
+        files.forEach((f) => { f[4] = notes[f[0]] || ''; }); syms.forEach((s) => { const p = files[s[2]][0]; s[6] = (sn[p] || {})[s[0]] || ''; });
+        const db = { v: 1, root: key, files, syms, imps, uses };
+        const ix = _faCodeIndexNew(db); _faCodeIndexTokens(ix, 1e9); return { db, ix };
+    }
+    async _repoWikiHydrate(map, top) {
+        if (!map || !map.sql) return 0; const c = await this._idxConn(map.root); const rows = (await c.exec('select id, path from files order by used desc, nsyms desc limit ?', [top || 2000]))[0].rows; if (!rows.length) return 0;
+        const byId = new Map(rows.map((r) => [r[0], r[1]])); let n = 0;
+        for (let i = 0; i < rows.length; i += 400) { const ids = rows.slice(i, i + 400).map((r) => r[0]); const sr = (await c.exec("select file_id, name, kind, line, sig from symbols where file_id in (" + ids.join(',') + ") and kind <> 'macro' order by file_id, id"))[0].rows; const per = new Map(); for (const s of sr) { const arr = per.get(s[0]) || []; if (arr.length < 60) { arr.push({ n: s[1], k: s[2], l: s[3], sig: s[4] }); per.set(s[0], arr); } } for (const [fid, arr] of per) { const rec = map.files[byId.get(fid)]; if (rec) { rec.symbols = arr; n++; } } }
+        return n;
+    }
+    // 「找」用：問題裡的詞對得到哪些定義（名稱完全相同 8 分、全文召回且名稱含關鍵字 4 分）→ 每個檔案取最高分
+    async _idxSymHits(key, query) {
+        const c = await this._idxConn(key); const R = c.R; const qLow = String(query || '').toLowerCase().trim(); const qTok = _faRepoTokens(query); const out = new Map();
+        const put = (path, pts, s) => { const cur = out.get(path); if (!cur || cur.pts < pts) out.set(path, { pts, n: s.name, k: s.kind, l: s.line }); };
+        for (const w of Array.from(new Set((String(query || '').match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || []))).slice(0, 8)) for (const s of await R.symbolsByName(w, 40)) put(s.path, s.name.toLowerCase() === qLow ? 8 : 6, s);
+        const words = Array.from(new Set(_faSemTokens(query).map((x) => x.replace(/[^A-Za-z0-9_\u4e00-\u9fff]/g, '_')).filter((x) => x.length >= 2))).slice(0, 30); const ids = await R.recallSymbols(words, 80);
+        if (ids.length) for (const r of (await c.exec('select s.name, s.kind, f.path, s.line from symbols s join files f on f.id = s.file_id where s.id in (' + ids.join(',') + ')'))[0].rows) { const sl = String(r[0]).toLowerCase(); const pts = sl === qLow ? 8 : (qLow && sl.includes(qLow) ? 4 : (qTok.length && qTok.every((x) => sl.includes(x)) ? 4 : 0)); if (pts) put(r[2], pts, { name: r[0], kind: r[1], line: r[3] }); }
+        return out;
+    }
+    async _idxAttach(key) {
+        const c = await this._idxConn(key); const R = c.R; const meta = await R.meta(); const counts = await R.counts(); if (!counts) throw new Error('專案資料夾裡的索引檔讀不出統計（可能建到一半）');
+        let map = (await this._repoMapLoad(key)) || this._repoMapEmpty(key); map.files = {}; map.dirs = {}; map.stage = 'index'; map.index_approved = true; map.index_built = meta.complete !== '0';
+        const dirs = new Map(); const addDir = (d) => { if (!dirs.has(d)) { dirs.set(d, new Map()); if (d) { const up = d.lastIndexOf('/'); const parent = up < 0 ? '' : d.slice(0, up); addDir(parent); dirs.get(parent).set(up < 0 ? d : d.slice(up + 1), 'd'); } } };
+        let last = 0;
+        for (;;) {
+            const rows = (await c.exec('select id, path, lang, lines, hash, doc, nsyms, sv, dir, name from files where id > ? order by id limit 4000', [last]))[0].rows; if (!rows.length) break; last = rows[rows.length - 1][0];
+            const byId = new Map(rows.map((r) => [r[0], r[1]])); const imps = new Map();
+            for (const r of (await c.exec('select i.src, f2.path, i.kind from imports i join files f2 on f2.id = i.dst where i.src between ? and ?', [rows[0][0], last]))[0].rows) { const a = imps.get(r[0]) || []; a.push({ kind: r[2] || 'rel', to: r[1] }); imps.set(r[0], a); }
+            for (const r of rows) { map.files[r[1]] = { lang: r[2], lines: r[3], hash: r[4], doc: r[5], imports: imps.get(r[0]) || [], symbols: [], uses: [], nsyms: r[6], sv: r[7] || 2, sql: 1 }; addDir(r[8]); dirs.get(r[8]).set(r[9], 'f'); }
+            void byId;
+        }
+        for (const [d, ents] of dirs) { const entries = Array.from(ents, ([n, tt]) => ({ n, t: tt })); map.dirs[d] = { entries, more: 0, listed_at: Date.now(), nfiles: entries.filter((e) => e.t === 'f').length, ndirs: entries.filter((e) => e.t === 'd').length }; }
+        map.sql = { v: 1, built: Date.parse(meta.built) || Date.now(), counts, path: '.floating-assistant/index/index.sqlite3', complete: meta.complete !== '0' };
+        await this._repoMapSave(map); if (this._codeStores) this._codeStores.delete(key); return map;
+    }
+    async _idxCounts(key) { try { const c = await this._idxConn(key); return await c.R.counts(); } catch (_) { return null; } }
+
+    // 檢視器的路由（SQLite 後端）：只實作要查資料庫的那幾個，其餘（jobs／pages／source／dive／note／prefs／explain）由原本的路由處理
+    async _aidocSqlRoute(cx) {
+        const { key, method, u, body } = cx; const P = u.pathname, Q = (k) => u.searchParams.get(k) || ''; const c = await this._idxConn(key); const R = c.R;
+        const map = (await this._repoMapLoad(key)) || {}; const notes = map.notes || {}, sn = map.sym_notes || {}, nm = map.notes_meta || {}, sm = map.sym_notes_meta || {};
+        const BT = String.fromCharCode(96);
+        if (method === 'GET' && P === '/api/info') return { j: await cx.infoObj() };
+        if (method === 'GET' && P === '/api/page' && Q('id') === 'overview') {
+            const cnt = (await R.counts()) || {}; const dirs = (await c.exec("select case when instr(path, '/') = 0 then '(根目錄)' else substr(path, 1, instr(path, '/') - 1) end d, count(*) n from files group by d order by n desc limit 20"))[0].rows;
+            const top = (await c.exec('select path, used from files where used > 0 order by used desc limit 12'))[0].rows;
+            const nf = Object.values(notes).filter(Boolean).length; const ns = Object.values(sn).reduce((a, o) => a + Object.keys(o || {}).length, 0);
+            const noted = Object.entries(notes).filter(([, v]) => v).slice(0, 10);
+            const md = ['# ' + (key.split('/').filter(Boolean).pop() || key), '', '- 檔案 ' + cnt.files + ' 個、定義 ' + cnt.symbols + ' 個、依賴 ' + cnt.imports + ' 條', '- 說明已補 ' + nf + ' 個檔案、' + ns + ' 個定義（AI 深入探討或你自己補的）', '', '## 頂層目錄', ''].concat(dirs.map((d) => '- ' + BT + d[0] + (String(d[0]).charAt(0) === '(' ? '' : '/') + BT + '：' + d[1] + ' 個檔案'), ['', '## 最常被引用的檔案（核心）', ''], top.map((x) => '- ' + BT + x[0] + BT + '（被 ' + x[1] + ' 個檔案引用）' + (notes[x[0]] ? '：' + notes[x[0]] : '')), noted.length ? ['', '## 已有說明的檔案', ''].concat(noted.map((f) => '- ' + BT + f[0] + BT + '：' + f[1])) : []).join('\n');
+            return { j: { id: 'overview', title: '專案概觀', auto: true, md } };
+        }
+        if (method === 'GET' && P === '/api/tree') {
+            const base = Q('path').replace(/^\/+|\/+$/g, ''); const t = await R.tree(base);
+            const d = t.filter((x) => x.type === 'd').map((x) => x.name).sort(); const f = t.filter((x) => x.type === 'f').map((x) => ({ name: x.name, note: !!notes[(base ? base + '/' : '') + x.name] })).sort((a, b) => (a.name < b.name ? -1 : 1));
+            return { j: { path: base, note: base ? notes[base] || '' : '', exists: d.length + f.length > 0, dirs: d.slice(0, 400), files: f.slice(0, 400), more: Math.max(0, d.length - 400) + Math.max(0, f.length - 400) } };
+        }
+        if (method === 'GET' && P === '/api/symbols') {
+            const rows = (await c.exec('select name, kind, used_by from symbols where used_by > 0 order by used_by desc limit 3000'))[0].rows; const seen = new Map();
+            for (const r of rows) { const o = seen.get(r[0]); if (!o) seen.set(r[0], { name: r[0], kind: r[1], n: r[2] }); else o.n += r[2]; }
+            return { j: { symbols: Array.from(seen.values()).sort((a, b) => b.n - a.n).slice(0, 600) } };
+        }
+        if (method === 'GET' && P === '/api/notes') {
+            const out = []; for (const [p, v] of Object.entries(notes)) if (v) out.push({ path: p, note: v, by: (nm[p] || {}).by, stale: !!(nm[p] || {}).stale });
+            for (const [p, o] of Object.entries(sn)) for (const [n, v] of Object.entries(o || {})) if (v) out.push({ path: p, symbol: n, note: v, by: ((sm[p] || {})[n] || {}).by });
+            return { j: { notes: out.slice(0, 800) } };
+        }
+        if (method === 'GET' && P === '/api/search') {
+            const mini = await this._idxMini(key, Q('q'), { map }); const hits = _faCodeSearch(mini.ix, Q('q'), { n: 30 }).map((h) => (h.type === 'symbol' ? { type: 'symbol', name: mini.db.syms[h.id][0], kind: mini.db.syms[h.id][1], path: mini.db.files[mini.db.syms[h.id][2]][0], line: mini.db.syms[h.id][3] } : { type: 'file', path: mini.db.files[h.id][0] }));
+            return { j: { hits } };
+        }
+        if (method === 'GET' && P === '/api/file') {
+            const path = Q('path'); const f = (await c.exec('select id, lang, lines, doc from files where path = ?', [path]))[0].rows[0]; if (!f) return { s: 404, j: { error: '索引裡沒有這個檔案：' + path } };
+            const syms = (await c.exec('select name, kind, line, doc, sig from symbols where file_id = ? order by id limit 3000', [f[0]]))[0].rows.map((r) => ({ n: r[0], k: r[1], l: r[2], d: r[3], sig: r[4], note: (sn[path] || {})[r[0]] || '' }));
+            const out = (await c.exec('select f2.path from imports i join files f2 on f2.id = i.dst where i.src = ? limit 400', [f[0]]))[0].rows.map((r) => r[0]); const inn = (await c.exec('select f2.path from imports i join files f2 on f2.id = i.src where i.dst = ? limit 200', [f[0]]))[0].rows.map((r) => r[0]);
+            return { j: { path, lang: f[1], lines: f[2], doc: f[3], note: notes[path] || '', note_by: (nm[path] || {}).by, note_stale: !!(nm[path] || {}).stale, symbols: syms, imports: out, imported_by: inn } };
+        }
+        if (method === 'GET' && P === '/api/symbol') {
+            const defs = await R.symbolsByName(Q('name'), 20); const out = [];
+            for (const d of defs) {
+                const users = (await c.exec('select distinct f.path from uses u join files f on f.id = u.file_id where u.symbol_id = ? limit 60', [d.id]))[0].rows.map((r) => r[0]);
+                const same = (await c.exec('select s2.name from symbols s2 join symbols s on s.file_id = s2.file_id where s.id = ? and s2.id <> s.id limit 20', [d.id]))[0].rows.map((r) => r[0]);
+                out.push({ kind: d.kind, path: d.path, line: d.line, sig: d.sig, doc: d.doc, note: (sn[d.path] || {})[d.name] || '', note_by: ((sm[d.path] || {})[d.name] || {}).by, users, same });
+            }
+            return { j: { defs: out } };
+        }
+        if (method === 'GET' && P === '/api/locate') {
+            let path = Q('path'); let f = (await c.exec('select id, path, lang, lines, doc from files where path = ?', [path]))[0].rows[0];
+            if (!f) { const cand = await R.filePaths('%' + path.replace(/^.*\//, ''), 10); const m = cand.filter((n) => n === path || n.endsWith('/' + path) || path.endsWith('/' + n)); if (m.length === 1) { path = m[0]; f = (await c.exec('select id, path, lang, lines, doc from files where path = ?', [path]))[0].rows[0]; } else if (m.length > 1) return { s: 404, j: { error: '「' + path + '」對到多個檔案：' + m.slice(0, 5).join('、') } }; }
+            if (!f) return { s: 404, j: { error: '索引裡沒有這個檔案：' + path } };
+            const line = Math.max(1, Math.floor(Number(Q('line')) || 1)), to = Math.max(line, Math.floor(Number(Q('to')) || line));
+            const syms = (await c.exec('select id, name, kind, line, doc, sig from symbols where file_id = ? order by line', [f[0]]))[0].rows; let enc = null; for (const s of syms) { if (s[3] <= line) enc = s; else break; } const next = enc ? syms.find((s) => s[3] > enc[3]) : null;
+            let text = null, from = Math.max(1, line - 3), toL = to + 3, total = f[3];
+            try { const io = await this._repoMapIo(key); let tx; if (_faRepoDocKind(path)) { const dr = await this._repoDocFullText(key, path); tx = dr.ok ? dr.text : null; } else tx = await io.readText(path); if (tx != null) { const ls = tx.split(/\r?\n/); total = ls.length; toL = Math.min(ls.length, to + 3, from + 79); text = ls.slice(from - 1, toL).join('\n').slice(0, 20000); } } catch (_) { /* 讀不到就只回索引資料 */ }
+            const users = enc ? (await c.exec('select distinct f.path from uses u join files f on f.id = u.file_id where u.symbol_id = ? limit 12', [enc[0]]))[0].rows.map((r) => r[0]) : [];
+            return { j: { path, lang: f[2], total, line, to, from, text, file_note: notes[path] || '', file_doc: f[4] || '', note_by: (nm[path] || {}).by, def: enc ? { name: enc[1], kind: enc[2], line: enc[3], end: next ? next[3] - 1 : null, sig: enc[5] || '', doc: enc[4] || '', note: (sn[path] || {})[enc[1]] || '', stale: !!((sm[path] || {})[enc[1]] || {}).stale } : null, users } };
+        }
+        if (method === 'POST' && P === '/api/ask') {
+            const qq = String((body && body.q) || '').trim(); if (!qq) return { s: 400, j: { error: '問題是空的' } };
+            let quick = { intent: '-', answer: '' }; try { const mini = await this._idxMini(key, qq, { map }); const r = _faCodeAsk(mini.ix, qq, { n: 8 }); quick = { intent: r.intent, answer: r.answer }; } catch (e) { quick = { intent: '-', answer: '（離線問答失敗：' + e.message + '）' }; }
+            const out = { quick }; if (body && body.ai) { const e = cx.enqueue({ kind: 'qa', q: qq, ctx: body.ctx }); out.ai_id = e.id; out.queue_pos = e.pos; } return { j: out };
+        }
+        return null;
+    }
+    // 深入探討的優先順序（SQLite 後端）：沒有說明、夠大、被引用多、定義多、入口檔名
+    async _idxDiveTargets(key, limit) {
+        const c = await this._idxConn(key); const map = (await this._repoMapLoad(key)) || {}; const notes = map.notes || {}; const ENTRY = /^(main|index|app|server|cli|__main__|manage|program|startup|bootstrap|run|start)\.[a-z]+$/i;
+        const rows = (await c.exec("select path, lang, lines, doc, nsyms, used from files where (lines >= 10 or lang like 'doc:%') order by (used * 3 + min(nsyms, 400) / 2.0) desc limit 4000"))[0].rows; const out = [];
+        for (const r of rows) { if (notes[r[0]]) continue; const base = r[0].slice(r[0].lastIndexOf('/') + 1); out.push({ path: r[0], score: r[5] * 3 + r[4] / 2 + (ENTRY.test(base) ? 6 : 0) + (r[3] ? 0.5 : 0), lines: r[2], symbols: r[4], imported_by: r[5] }); }
+        out.sort((a, b) => b.score - a.score); const cnt = (await c.R.counts()) || {};
+        return { targets: out.slice(0, Math.max(1, Math.min(500, Number(limit) || 30))), remaining: out.length, annotated: Object.values(notes).filter(Boolean).length, total: cnt.files || 0 };
+    }
+
     async _codeStoreBuild(key, map, onProgress) {
         const db = _faCodeFromMap(map);
         const ix = _faCodeIndexNew(db);
@@ -28925,6 +29275,7 @@ ${fnData.code}
     async _codeStoreGet(key) {
         if (!this._codeStores) this._codeStores = new Map();
         const map = await this._repoMapLoad(key);
+        if (map && map.sql && await this._idxHas(key)) { const counts = await this._idxCounts(key); if (counts) return { sql: true, key, counts, fileCount: counts.files, notesVer: map.notes_ver || 0, at: Date.now() }; }
         const n = map ? Object.keys(map.files).length : -1;
         const mem = this._codeStores.get(key);
         if (mem && (n < 0 || (mem.fileCount === n && mem.notesVer === ((map && map.notes_ver) || 0)))) return mem;
@@ -28938,15 +29289,16 @@ ${fnData.code}
         const key = this._repoMapKey(root);
         const action = String(parsed.action || 'ask');
         const st = await this._codeStoreGet(key);
-        if (!st || !st.db.files.length) return { ok: false, error: '這個專案還沒有可以問的索引。先 repo_map({"action":"index_start","root":"' + key + '"}) 在背景建立（會先問使用者）；只想快速問一個範圍，先用 repo_map find／explore 分析幾個檔案再問。' };
+        if (!st || (!st.sql && !st.db.files.length)) return { ok: false, error: '這個專案還沒有可以問的索引。先 repo_map({"action":"index_start","root":"' + key + '"}) 在背景建立（會先問使用者）；只想快速問一個範圍，先用 repo_map find／explore 分析幾個檔案再問。' };
         const job = this._repoJobs && this._repoJobs.get(key);
         const partial = !(await this._repoMapLoad(key) || {}).index_built;
-        const stats = { files: st.db.files.length, symbols: st.db.syms.length, dependency_edges: st.db.imps.length, call_edges: st.db.uses.length, complete: !partial };
+        const stats = st.sql ? { files: st.counts.files, symbols: st.counts.symbols, dependency_edges: st.counts.imports, call_edges: st.counts.uses, complete: !partial } : { files: st.db.files.length, symbols: st.db.syms.length, dependency_edges: st.db.imps.length, call_edges: st.db.uses.length, complete: !partial };
         if (action === 'stats') return { ok: true, stats, index_job: job ? this._repoJobStatusObj(job) : undefined };
         const q = String(parsed.question || parsed.query || parsed.q || '').trim();
         if (!q) return { ok: false, error: '缺少question（例如「foo_bar 是做什麼的」「parse_config 在哪裡定義」「誰用到 Logger」「登入流程相關的檔案」）' };
-        const r = action === 'search' ? { intent: 'search', hits: _faCodeSearch(st.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)), kind: parsed.kind }).map((x) => ({ type: x.type, id: x.id, score: x.score })), targets: {}, evidence: [], answer: '' } : _faCodeAsk(st.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)) });
-        if (action === 'search') r.answer = r.hits.map((h) => h.type === 'symbol' ? `- ${st.db.syms[h.id][0]}（${st.db.syms[h.id][1]}）${st.db.files[st.db.syms[h.id][2]][0]}:${st.db.syms[h.id][3]}` : `- 檔案 ${st.db.files[h.id][0]}`).join('\n');
+        const mst = st.sql ? await this._idxMini(key, q) : st;
+        const r = action === 'search' ? { intent: 'search', hits: _faCodeSearch(mst.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)), kind: parsed.kind }).map((x) => ({ type: x.type, id: x.id, score: x.score })), targets: {}, evidence: [], answer: '' } : _faCodeAsk(mst.ix, q, { n: Math.min(20, Math.floor(Number(parsed.n) || 8)) });
+        if (action === 'search') r.answer = r.hits.map((h) => h.type === 'symbol' ? `- ${mst.db.syms[h.id][0]}（${mst.db.syms[h.id][1]}）${mst.db.files[mst.db.syms[h.id][2]][0]}:${mst.db.syms[h.id][3]}` : `- 檔案 ${mst.db.files[h.id][0]}`).join('\n');
         const out = { ok: true, intent: r.intent, answer: r.answer, stats };
         if (partial) out.warning = '索引還不完整（只涵蓋已分析的' + stats.files + '個檔案）' + (job && job.state === 'running' ? '，背景索引還在進行，稍後再問會更完整。' : '。要完整先 repo_map index_start。');
         if (!stats.call_edges) out.note = '這份索引沒有「誰呼叫誰」的資料（舊版地圖）：repo_map index_start 帶 reanalyze:true 重新分析即可補上。';
@@ -29081,6 +29433,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     async _repoMapSave(map) {
         map.updated = Date.now();
+        if (map.sql) for (const r of Object.values(map.files)) if (r && r.sql && r.symbols && r.symbols.length) r.symbols = []; // 定義在資料庫，地圖只留瘦身記錄
         await this.repoMapCache.put('map.json', 'application/json', new Blob([JSON.stringify(map)], { type: 'application/json' }), 'repo_map', 'map:' + map.root);
     }
     _repoMapKey(root) { return String(root || '').trim().replace(/\\/g, '/').replace(/\/+$/, ''); }
@@ -29161,7 +29514,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const files = kept.filter((e) => e.kind !== 'directory');
         let generated = false;
         if (!coveredHere && files.length >= 20 && files.filter((e) => FA_REPOMAP_OBJ_EXT.test(e.name)).length / files.length >= 0.7) { generated = true; kept = []; }
-        const MAX = 400;
+        const MAX = (ctx && ctx.sqlB) ? 1e7 : 400; // 寫進資料庫時不設上限
         const list = kept.slice(0, MAX).map((e) => ({ n: e.name, t: e.kind === 'directory' ? 'd' : 'f' }));
         const curNames = new Map(list.map((e) => [e.n, e.t]));
         const prevNames = prev ? new Map(prev.entries.map((e) => [e.n, e.t])) : new Map();
@@ -29389,7 +29742,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const kind = _faRepoDocKind(path); const lang = 'doc:' + kind;
         const blob = typeof io.readBlob === 'function' ? await io.readBlob(path) : null;
         if (!blob) { const miss = await this._repoMapHandleMiss(io, map, path, ctx); delete map.files[path]; return { ok: false, missing: true, miss }; }
-        const rec = (doc, lines, syms, hash) => { map.files[path] = { lang, lines: lines || 0, hash: hash || _faRepoHash(String(blob.size)), doc: doc || '', imports: [], symbols: syms || [], uses: [], sv: 2 }; return { ok: true }; };
+        const rec = (doc, lines, syms, hash) => { this._repoMapPutFile(map, ctx, path, { lang, lines: lines || 0, hash: hash || _faRepoHash(String(blob.size)), doc: doc || '', imports: [], symbols: syms || [], uses: [], sv: 2 }); return { ok: true }; };
         if (blob.size > 40 * 1048576) return rec('（檔案太大（' + Math.round(blob.size / 1048576) + ' MB），沒有分析；要看內容用 repo_read_doc）', 0, []);
         let r; try { r = await this._repoDocText(blob, path, {}); } catch (e) { return rec('（讀取失敗：' + String((e && e.message) || e).slice(0, 80) + '）', 0, []); }
         if (!r.ok) return rec('（讀取失敗：' + String(r.error || '').slice(0, 80) + '）', 0, []);
@@ -29411,11 +29764,12 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (_faRepoDocKind(path)) return await this._repoMapAnalyzeDoc(io, map, path, ctx);
         let text = await io.readText(path);
         if (text === null) { const miss = await this._repoMapHandleMiss(io, map, path, ctx); delete map.files[path]; return { ok: false, missing: true, miss }; }
-        if (text.length > 400000) text = text.slice(0, 400000);
-        const tier = map.tier || 0;
-        const ex = _faRepoExtract(path, text, { tier });
+        const unl = !!(ctx && ctx.sqlB); // 寫進資料庫：不設上限
+        if (text.length > (unl ? 4000000 : 400000)) text = text.slice(0, unl ? 4000000 : 400000);
+        const tier = unl ? 0 : (map.tier || 0);
+        const ex = _faRepoExtract(path, text, { tier, unlimited: unl });
         const edges = [];
-        for (const imp of ex.imports.slice(0, tier >= 1 ? 80 : 150)) {
+        for (const imp of ex.imports.slice(0, unl ? 2000 : (tier >= 1 ? 80 : 150))) {
             let to = null, kind = imp.kind;
             const tryResolve = imp.kind !== 'pkg' || ex.lang === 'go';
             if (tryResolve) {
@@ -29436,7 +29790,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             }
             edges.push(tier >= 2 && to ? { kind, to } : { spec: imp.spec, kind, to });
         }
-        map.files[path] = { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: ex.symbols.slice(0, 400), uses: ex.uses, sv: 2 };
+        this._repoMapPutFile(map, ctx, path, { lang: ex.lang, lines: ex.lines, hash: _faRepoHash(text), doc: ex.doc, imports: edges, symbols: unl ? ex.symbols : ex.symbols.slice(0, 400), uses: ex.uses, sv: 2 });
         return { ok: true };
     }
 
@@ -29455,7 +29809,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         }
         const analyzed = Object.keys(map.files).length;
         let stale = 0, unresolved = 0, edges = 0, symbols = 0;
-        for (const f of Object.values(map.files)) { if (f.stale) stale++; symbols += (f.symbols || []).length; for (const e of f.imports || []) { if (e.to) edges++; if (e.kind === 'unresolved') unresolved++; } }
+        for (const f of Object.values(map.files)) { if (f.stale) stale++; symbols += (f.nsyms != null ? f.nsyms : (f.symbols || []).length); for (const e of f.imports || []) { if (e.to) edges++; if (e.kind === 'unresolved') unresolved++; } }
         return { dirs_listed: dirsListed, dirs_unlisted: unlisted, files_known: filesKnown, source_files_known: srcKnown, source_files_analyzed: analyzed, stale_files: stale, dependency_edges: edges, unresolved_imports: unresolved, symbols, languages: langs };
     }
 
@@ -29577,6 +29931,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (pts > best) { best = pts; bestSym = s; }
             }
             if (bestSym) bump(p, 'file', best, `定義了 ${bestSym.k} ${bestSym.n}（第${bestSym.l}行）`);
+            else if (map._symHits && map._symHits.has(p)) { const h = map._symHits.get(p); bump(p, 'file', h.pts, `定義了 ${h.k} ${h.n}（第${h.l}行）`); }
             if (f.doc) { const dl = f.doc.toLowerCase(); const ov = qTok.filter((t) => dl.includes(t)).length; if (ov) bump(p, 'file', Math.min(4, ov * 2), '檔案開頭說明相關'); }
         }
         for (const [mp, m] of Object.entries(map.manifests)) {
@@ -29592,6 +29947,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const ctx = { cache: null, relisted: new Set() };
         const steps = [];
         if (map.stage === 'none') { await this._repoMapOutline(io, map, ctx); steps.push('先建立最小地圖（outline）'); }
+        if (map.sql) { try { map._symHits = await this._idxSymHits(map.root, query); } catch (_) { map._symHits = null; } }
         let results = this._repoMapScore(map, query);
         const strong = () => results.filter((r) => r.score >= 6).length;
         const qTok = _faRepoTokens(query);
@@ -29638,9 +29994,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (!st) { const miss = await this._repoMapHandleMiss(io, map, p, ctx); nodes.push({ path: p, missing: true, miss }); continue; }
             let f = map.files[p];
             if (!f || f.stale || opts.force) { const a = await this._repoMapAnalyzeFile(io, map, p, ctx); f = map.files[p]; if (!f) { nodes.push({ path: p, error: a.missing ? '檔案不見了（結構改變）' : '讀不到', miss: a.miss }); continue; } }
+            const fsyms = await this._repoSymsOf(map, p);
             nodes.push({
                 path: p, depth: d, lang: f.lang, lines: f.lines, doc: f.doc || undefined,
-                symbols: f.symbols.slice(0, 15).map((s) => `${s.k} ${s.n}@${s.l}`), symbols_total: f.symbols.length,
+                symbols: fsyms.slice(0, 15).map((s) => `${s.k} ${s.n}@${s.l}`), symbols_total: f.nsyms != null ? f.nsyms : fsyms.length,
                 imports: f.imports.filter((e) => e.to).map((e) => e.to),
                 external: f.imports.filter((e) => !e.to && e.kind === 'pkg').map((e) => e.spec).slice(0, 12),
                 unresolved: f.imports.filter((e) => e.kind === 'unresolved').map((e) => e.spec),
@@ -29696,7 +30053,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (sub && d < depth) walk(full, indent + '  ', d + 1);
             }
             if (dirsE.length > 80) lines.push(`${indent}…另有${dirsE.length - 80}個子資料夾`);
-            if (filesE.length <= 20) filesE.forEach((e) => { const f = map.files[this._repoMapJoinPath(dir, e.n)]; lines.push(`${indent}${e.n}${f ? `  [${(f.symbols || []).length}個定義、${(f.imports || []).filter((x) => x.to).length}個內部依賴]` : ''}`); });
+            if (filesE.length <= 20) filesE.forEach((e) => { const f = map.files[this._repoMapJoinPath(dir, e.n)]; lines.push(`${indent}${e.n}${f ? `  [${f.nsyms != null ? f.nsyms : (f.symbols || []).length}個定義、${(f.imports || []).filter((x) => x.to).length}個內部依賴]` : ''}`); });
             else {
                 filesE.slice(0, 8).forEach((e) => lines.push(`${indent}${e.n}`));
                 const ext = {};
@@ -29851,7 +30208,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         } else if (action === 'build_index') {
             out = await this._repoMapBuildIndex(io, map);
         } else if (action === 'annotate') {
-            out = this._repoAnnotate(map, parsed);
+            const hyd = [];
+            if (map.sql) { const its = Array.isArray(parsed.items) && parsed.items.length ? parsed.items : [parsed]; for (const it of its.slice(0, 40)) { const p = String((it && it.path) || '').trim().replace(/\\/g, '/').replace(/^\/+/, ''); const rec = map.files[p]; if (rec && rec.sql && rec.nsyms && !(rec.symbols || []).length) { rec.symbols = await this._repoSymsOf(map, p); hyd.push(rec); } } }
+            try { out = this._repoAnnotate(map, parsed); } finally { for (const rec of hyd) rec.symbols = []; }
         } else return { ok: false, error: 'action必須是status／build／find／explore／resolve／refresh／tree／index_start／index_status／index_stop／annotate／dive_targets／save_index／load_index／export_index／import_index／reset' };
         await this._repoMapSave(map);
         return this._repoApplyBudget(out, parsed);
@@ -29916,10 +30275,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         for (const m of mods) {
             const langs = {};
             let symbols = 0;
-            m.files.forEach((f) => { const r = map.files[f]; langs[r.lang] = (langs[r.lang] || 0) + 1; symbols += (r.symbols || []).length; });
+            m.files.forEach((f) => { const r = map.files[f]; langs[r.lang] = (langs[r.lang] || 0) + 1; symbols += (r.nsyms != null ? r.nsyms : (r.symbols || []).length); });
             m.langs = langs; m.symbols = symbols;
             m.key_files = m.files.slice().sort((a, b) => {
-                const sc = (f) => { const r = map.files[f]; return (inCount[f] || 0) * 3 + (r.symbols || []).length / 2 + (r.doc ? 2 : 0) + (FA_REPOMAP_ENTRY_NAMES.test(_faRepoBasename(f)) ? 5 : 0); };
+                const sc = (f) => { const r = map.files[f]; return (inCount[f] || 0) * 3 + (r.nsyms != null ? r.nsyms : (r.symbols || []).length) / 2 + (r.doc ? 2 : 0) + (FA_REPOMAP_ENTRY_NAMES.test(_faRepoBasename(f)) ? 5 : 0); };
                 return sc(b) - sc(a) || a.localeCompare(b);
             });
             m.deps_out = []; m.deps_in = [];
@@ -30151,6 +30510,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (!root) return { ok: false, error: '缺少root（專案資料夾：fap:名稱，或桌面版的絕對路徑）' };
         const key = this._repoMapKey(root);
         const map = await this._repoMapLoad(key);
+        if (map && map.sql) await this._repoWikiHydrate(map);
         if (!map || map.stage === 'none' || !Object.keys(map.files).length) return { ok: false, error: '還沒有專案地圖，或地圖裡還沒有分析過的原始碼檔。先用 repo_map({"action":"find","root":"' + key + '","query":"…"}) 或 build／explore 分析一些檔案，大型專案想整份分析用 build_index（會先問使用者）。' };
         let plan = await this._wikiLoadPlan(key);
         const budget = Math.min(14000, Math.max(3500, Math.floor(this._toolResultBudgetChars() * 0.6)));
@@ -30307,6 +30667,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const term = String(parsed.term || '').trim(), def = String(parsed.definition || '').trim();
             if (!term || !def) return { ok: false, error: 'add_term需要term與definition' };
             const map = await this._repoMapLoad(key);
+            if (map && map.sql) await this._repoWikiHydrate(map);
             if (!map) return { ok: false, error: '還沒有地圖，先 repo_map build 或 find' };
             map.glossary[term] = { definition: def.slice(0, 600), refs: Array.isArray(parsed.refs) ? parsed.refs.map(String).slice(0, 10) : [] };
             await this._repoMapSave(map);
@@ -30315,6 +30676,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         let idx = await this._repoWikiLoadIndex(key);
         if (action === 'generate' || !idx) {
             const map = await this._repoMapLoad(key);
+            if (map && map.sql) await this._repoWikiHydrate(map);
             if (!map || map.stage === 'none') return { ok: false, error: '還沒有專案地圖。先用 repo_map({"action":"build","root":"' + key + '"}) 建立，或 find 搜尋（會自動分階段建立）。' };
             if (!Object.keys(map.files).length) return { ok: false, error: '地圖裡還沒有分析過的原始碼檔。先用 repo_map explore／build 分析一些檔案，或 build_index 整份建立（會先問使用者）。' };
             idx = this._repoWikiBuildIndex(map);

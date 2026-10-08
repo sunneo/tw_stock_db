@@ -1,31 +1,31 @@
 {
   "schema": 1,
   "baseVersion": "0.3.2",
-  "generatedAt": "2026-10-08T11:40:03.620Z",
+  "generatedAt": "2026-10-08T12:15:17.776Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "d5cfc03969aa2b5c211567140d774f67",
-    "renderer/floating-assistant.js": "22deaa7ee671c934599c4eb9cae2deba",
-    "renderer/floating-assistant.min.js": "22deaa7ee671c934599c4eb9cae2deba",
+    "renderer/floating-assistant.js": "44e03c6ebaba97acdc13f9e0d3246d3b",
+    "renderer/floating-assistant.min.js": "44e03c6ebaba97acdc13f9e0d3246d3b",
     "local-proxy.js": "079907734ca86f14e31fb6be41b8e2ca",
     "browser-search.js": "8e9ac296eee4fa8f61b2168a631dc75a",
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
     "cli-format.js": "d46fea05645d9de9dbd32dd04225872c",
     "coding-workspace.js": "b5d608933d2b95bd042adff14f774b53",
     "browser-control-server.js": "96bf1133f3eedacd1f0e770c038bb4bd",
-    "sqlite-engine.js": "9d2b0862be7e429b79d8a7d1a98891e3"
+    "sqlite-engine.js": "4d7263af54f89aef42803d45c19e3bf4"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 149677,
-    "renderer/floating-assistant.js": 4505974,
-    "renderer/floating-assistant.min.js": 4505974,
+    "renderer/floating-assistant.js": 4535255,
+    "renderer/floating-assistant.min.js": 4535255,
     "local-proxy.js": 26808,
     "browser-search.js": 14724,
     "edge-tts.js": 7363,
     "cli-format.js": 11684,
     "coding-workspace.js": 10729,
     "browser-control-server.js": 9379,
-    "sqlite-engine.js": 21420
+    "sqlite-engine.js": 22566
   }
 }

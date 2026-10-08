@@ -125,7 +125,7 @@ function workerMain() {
       return runOne(sql, undefined, 1000, 0, 0);
     },
     checkpoint() { try { need().exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (_) { /* 非 WAL */ } return { ok: true }; },
-    status() { const d = need(); const pc = Number(d.prepare("PRAGMA page_count").get().page_count), ps = Number(d.prepare("PRAGMA page_size").get().page_size); return { pages: pc, pageSize: ps, bytes: pc * ps, path: meta.path, readonly: meta.readonly, inTransaction: d.isTransaction === true }; },
+    status() { const d = need(); const pc = Number(d.prepare("PRAGMA page_count").get().page_count), ps = Number(d.prepare("PRAGMA page_size").get().page_size); return { pages: pc, pageSize: ps, bytes: pc * ps, path: meta.path, readonly: meta.readonly, inTransaction: d.isTransaction === true, rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed, external: process.memoryUsage().external }; },
     close() { if (db) { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (_) { /* 非 WAL */ } db.close(); db = null; } return { ok: true }; },
   };
   parentPort.on("message", ({ id, op, args }) => {
