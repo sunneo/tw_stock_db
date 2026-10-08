@@ -29371,7 +29371,7 @@ ${fnData.code}
             const slice = (fn) => this._repoMapExclusive(key, fn);
             if (job.sql) { job.phase = 'prepare'; tick(true); await this._idxBegin(job, map, ctx); }
             if (o.reanalyze) map.reanalyze = true;
-            if (Object.keys(map.files).length) job.bytes = JSON.stringify(map.files).length;
+            if (Object.keys(map.files).length) { let nb = 0; for (const rec of Object.values(map.files)) nb += JSON.stringify(rec).length; job.bytes = nb; }
             for (let round = 0; round < 4 && !job.stop; round++) {
                 // ---- 階段1：展開所有資料夾（淺層優先，建置輸出自動略過）----
                 job.phase = 'dirs';
@@ -29662,7 +29662,7 @@ ${fnData.code}
         if (!this._codeStores) this._codeStores = new Map();
         const st = { db, ix, fileCount: Object.keys(map.files).length, notesVer: map.notes_ver || 0, at: Date.now() };
         this._codeStores.set(key, st);
-        try { await this.repoWikiCache.put('code.json', 'application/json', new Blob([JSON.stringify(db)], { type: 'application/json' }), 'repo_wiki', 'code:' + key); } catch (_) {}
+        if (db.syms.length <= 300000) { try { await this.repoWikiCache.put('code.json', 'application/json', new Blob([JSON.stringify(db)], { type: 'application/json' }), 'repo_wiki', 'code:' + key); } catch (_) {} } // 太大就不存整份 JSON（單一字串會超過上限）；需要時從地圖重建
         return st;
     }
     async _codeStoreGet(key) {
@@ -29840,12 +29840,37 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     async _repoMapLoad(key) {
         const live = this._repoJobMaps && this._repoJobMaps.get(key);
         if (live) return live;
-        try { const rec = await this.repoMapCache.get('map:' + key); return rec ? JSON.parse(await rec.blob.text()) : null; } catch (_) { return null; }
+        try {
+            const rec = await this.repoMapCache.get('map:' + key); if (!rec) return null;
+            const m = JSON.parse(await rec.blob.text());
+            if (m && m.chunked) { // 分塊的地圖：files、dirs 各自分成多個小記錄（每塊約 3 MB），逐塊讀回來接上
+                m.files = m.files || {}; m.dirs = m.dirs || {};
+                for (const kind of ['files', 'dirs']) for (let i = 0; i < (m.chunked[kind] || 0); i++) { const p = await this.repoMapCache.get('map:' + key + '#' + m.chunked.gen + '#' + kind + '#' + i); if (!p) throw new Error('地圖的第 ' + i + ' 塊遺失'); Object.assign(m[kind], JSON.parse(await p.blob.text())); }
+                delete m.chunked;
+            }
+            return m;
+        } catch (_) { return null; }
+    }
+    // 存地圖。小地圖（序列化後約 6 MB 以內）維持單一記錄；大地圖把 files、dirs 切成每塊約 3 MB 的小記錄，最後才寫主記錄（中途失敗舊的仍完整），再清掉上一代的塊
+    async _repoMapPutChunked(map) {
+        const key = 'map:' + map.root; const gen = Date.now().toString(36) + Math.random().toString(36).slice(2, 5); const LIM = 3 * 1024 * 1024; const counts = { files: 0, dirs: 0 };
+        for (const kind of ['files', 'dirs']) {
+            let cur = {}, size = 0; const flush = async () => { if (!size) return; await this.repoMapCache.put(kind + '.json', 'application/json', new Blob([JSON.stringify(cur)], { type: 'application/json' }), 'repo_map_part', key + '#' + gen + '#' + kind + '#' + counts[kind]); counts[kind]++; cur = {}; size = 0; };
+            for (const [p, rec] of Object.entries(map[kind])) { const s = JSON.stringify(rec).length + p.length + 8; if (size + s > LIM && size) await flush(); cur[p] = rec; size += s; }
+            await flush();
+        }
+        let prev = null; try { const pr = await this.repoMapCache.get(key); if (pr) prev = JSON.parse(await pr.blob.text()); } catch (_) { prev = null; }
+        const main = Object.assign({}, map, { files: {}, dirs: {}, chunked: { gen, files: counts.files, dirs: counts.dirs } });
+        await this.repoMapCache.put('map.json', 'application/json', new Blob([JSON.stringify(main)], { type: 'application/json' }), 'repo_map', key);
+        if (prev && prev.chunked && prev.chunked.gen !== gen) { const ids = []; for (const kind of ['files', 'dirs']) for (let i = 0; i < (prev.chunked[kind] || 0); i++) ids.push(key + '#' + prev.chunked.gen + '#' + kind + '#' + i); try { await this.repoMapCache.deleteMany(ids); } catch (_) { /* 舊的清不掉不影響 */ } }
     }
     async _repoMapSave(map) {
         map.updated = Date.now();
         if (map.sql) for (const r of Object.values(map.files)) if (r && r.sql && r.symbols && r.symbols.length) r.symbols = []; // 定義在資料庫，地圖只留瘦身記錄
+        let est = 0; for (const rec of Object.values(map.files)) { est += 200 + ((rec && rec.symbols && rec.symbols.length) || 0) * 60 + ((rec && rec.imports && rec.imports.length) || 0) * 50; if (est > 6 * 1024 * 1024) break; }
+        if (est > 6 * 1024 * 1024 || Object.keys(map.dirs).length > 40000) return await this._repoMapPutChunked(map);
         await this.repoMapCache.put('map.json', 'application/json', new Blob([JSON.stringify(map)], { type: 'application/json' }), 'repo_map', 'map:' + map.root);
+        try { const pr = await this.repoMapCache.get('map:' + map.root); void pr; } catch (_) { /* */ }
     }
     _repoMapKey(root) { return String(root || '').trim().replace(/\\/g, '/').replace(/\/+$/, ''); }
     // 桌面版可以直接給任意資料夾的絕對路徑（C:/專案、/home/me/專案）；網頁版只能用已授權的File Access Point（fap:名稱）

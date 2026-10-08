@@ -193,3 +193,7 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 - HTML 匯出（sqlite_html／qa_html）仍吃整份記憶體資料庫，SQLite 模式暫不支援。
 - 問答的小型資料庫是近似：被引用次數用 SQL 取出的呼叫者數量算（最多取到上限），個別排序可能與整份索引略有差異。
 - `/aidoc save --map`／`load` 的 JSON 分享格式沿用；SQLite 索引本身就放在專案資料夾，不需要另外分享。
+
+### 15.5 記憶體後端（網頁版與 `repoIndexSql=off`）的修正（2026-10-08）
+
+網頁版沒有 SQLite 索引，仍用記憶體地圖，所以修掉三個一定會撞到的地方：① 名為 `constructor`／`toString` 的符號撞上 `Object.prototype`（`.push is not a function`，索引直接失敗）——以名稱為鍵的表改成沒有原型的物件；② 地圖存檔不再 `JSON.stringify` 整張地圖：序列化後約 6 MB 以上就把 `files`、`dirs` 切成每塊約 3 MB 的小記錄（`kind=repo_map_part`），最後才寫主記錄，載入時逐塊接回來（21,600 檔：73 塊，主記錄 320 位元組，載入約 8 秒）；`repoMapCache` 的配額從 48 MB 提高到 512 MB（舊配額會把超過它的地圖整筆淘汰）；③ 問答索引超過 30 萬個定義時不再整份 `JSON.stringify` 存起來（需要時從地圖重建）。**這些只是不讓它壞掉，沒有改變「整張地圖在記憶體」的事實**：21,600 檔的合成專案在記憶體後端建索引，整個應用程式的處理程序記憶體峰值約 2.3–2.9 GB（SQLite 後端是 1.7 GB 且與專案大小無關）。
