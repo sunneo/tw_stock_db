@@ -171,7 +171,7 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 ### 15.2 做法（照 DESIGN.sqlite-fap.md／project-index 的設計）
 
 - 索引就是專案資料夾裡的 SQLite 檔：`<專案>/.floating-assistant/index/index.sqlite3`，旁邊自帶 `.gitignore`（內容 `*`）。建索引時寫到 `index.sqlite3.building`，完成才取代舊檔（舊索引在新的完成前一直有效）。
-- 引擎是主程序的 `node:sqlite`（`sqlite-engine.js`，SQLite 3.53、含 FTS5），預設 `PRAGMA cache_size=-65536`（64 MB）；記憶體用量由 cache_size 決定，與資料庫大小無關。桌面版的絕對路徑專案才走這條（`_idxEligible`）；網頁版的 fap 專案維持原本的記憶體索引（需要 sqlite-wasm 與寫回式 VFS，見 DESIGN.sqlite-fap.md，尚未移植）。設定 `repoIndexSql`：`auto`（預設）／`off`。
+- 引擎是主程序的 `node:sqlite`（`sqlite-engine.js`，SQLite 3.53、含 FTS5），預設 `PRAGMA cache_size=-65536`（64 MB）；記憶體用量由 cache_size 決定，與資料庫大小無關。桌面版的絕對路徑專案、以及網頁版的 `fap:` 專案（sqlite-wasm＋OPFS）都走這條（`_idxEligible`）；網頁版建庫在 OPFS，完成後串流複製進專案資料夾，查詢用唯讀 VFS 直接讀專案資料夾裡的檔案。索引沒有檔案數量與大小的預設上限（`repoIndexMaxFiles`／`repoIndexMaxMb` 預設 0＝不限）。設定 `repoIndexSql`：`auto`（預設）／`off`。
 - 建索引（`renderer/src/sql/index_core.js` 的 `builder`）：每分析一個檔案就 `addFile`，每個時間片 `flush`（一個交易、多列 INSERT）；完成階段解析匯入目標、算計數、名稱對定義的呼叫關係（與舊引擎一致：同名定義 ≤ 8 個、不在自己的檔案）、建索引、全文表。**不設上限**：每個定義（含每個巨集）、簽名 140 字、呼叫名稱 400 個、資料夾列表不限筆數、單檔 4 MB。
 - 記憶體只留「瘦身的檔案記錄」：`{lang, lines, hash, doc, imports, nsyms, sql:1}`，定義與呼叫名稱都在資料庫。要用定義的地方（annotate 驗證名稱、explore、百科的重點檔）才從資料庫取（`_repoSymsOf`、`_repoWikiHydrate`）。
 - 資料表：`files`（含 refs／used 計數）、`symbols`（含 used_by）、`imports`（只留解析成功的邊）、`uses`、`meta`，以及 FTS5 `sym_fts`（不含巨集）與 `file_fts`；全文表放的是**舊引擎倒排索引用的同一套語意詞元**（名稱拆字、說明、中英概念詞），查詢用同一個函式處理問題。
@@ -187,7 +187,7 @@ AI 端工具：`repo_map`（結構、`annotate`、`dive_targets`、`save_index`�
 
 ### 15.4 限制
 
-- 只有桌面版的絕對路徑專案；網頁版 fap 專案仍是舊的記憶體索引。
+- 網頁版已實作（OPFS 建庫→複製進專案資料夾→唯讀 VFS 查詢），但只在 OPFS 當作 FAP 的情況下實測過（6000 檔），尚未用真實資料夾與 7 萬～50 萬檔規模實測；沒有 OPFS 的瀏覽器退回記憶體索引。
 - 建索引中途停止或失敗：SQLite 模式不接續（下次從頭分析，已分析的檔案記錄會被清掉重來）。
 - 百科（`repo_wiki`）的索引檔案清單仍整份在記憶體；SQLite 模式只幫最重要的 2000 個檔案取回定義（非巨集、每檔 60 個）。
 - HTML 匯出（sqlite_html／qa_html）仍吃整份記憶體資料庫，SQLite 模式暫不支援。

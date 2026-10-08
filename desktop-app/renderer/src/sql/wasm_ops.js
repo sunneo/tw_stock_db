@@ -114,7 +114,7 @@
             export() { const u = capi.sqlite3_js_db_export(need().pointer); return { bytes: u }; },
             close() { if (db) { try { db.close(); } catch (_) { /* 已關 */ } db = null; } return { ok: true }; },
         };
-        return { ops, runOne };
+        return { ops, runOne, adopt(d, m) { if (db && db !== d) { try { db.close(); } catch (_) { /* 已關 */ } } db = d; meta = m; }, getDb: () => db };
     }
     return { create };
 });
