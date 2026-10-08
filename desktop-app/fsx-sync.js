@@ -36,7 +36,11 @@ function create(roots) {
       if (!r.force) { if (st) { if (!r.expect || st.size !== r.expect.size || Math.floor(st.mtimeMs) !== r.expect.mtime) return { ok: false, conflict: true, ...idOf(st) }; } else if (r.expect) return { ok: false, conflict: true, size: 0, mtime: 0 }; }
       const bytes = r.bytes ? Buffer.from(r.bytes.buffer, r.bytes.byteOffset, r.bytes.byteLength) : Buffer.alloc(0);
       const tmp = p + ".fa-tmp-" + process.pid + "-" + Date.now().toString(36);
-      try { fs.writeFileSync(tmp, bytes); if (st) { try { fs.chmodSync(tmp, st.mode & 0o7777); } catch (_) { /* 權限複製不了就算了 */ } } fs.renameSync(tmp, p); } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (_) { /* */ } throw e; }
+      try { fs.writeFileSync(tmp, bytes); if (st) { try { fs.chmodSync(tmp, st.mode & 0o7777); } catch (_) { /* 權限複製不了就算了 */ } } try { fs.renameSync(tmp, p); } catch (e) {
+        // Windows：目標檔被別的行程開著（例如專案索引的 SQLite 連線）時，改名覆蓋會 EPERM／EBUSY／EACCES。改成原地覆寫（不是原子的，但內容完整寫完才算成功）
+        if (!st || !/^(EPERM|EBUSY|EACCES)$/.test(e.code)) throw e;
+        const fd = fs.openSync(p, "r+"); try { fs.ftruncateSync(fd, 0); let off = 0; while (off < bytes.length) off += fs.writeSync(fd, bytes, off, bytes.length - off, off); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.rmSync(tmp, { force: true });
+      } } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (_) { /* */ } throw e; }
       const now = fs.statSync(p); return { ok: true, ...idOf(now) };
     },
     mkdir(r) { fs.mkdirSync(target(r.rootId, r.path)); return { ok: true }; },
