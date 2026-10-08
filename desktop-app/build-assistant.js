@@ -62,6 +62,7 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "coding-workspace.js",
   "browser-control-server.js",
   "sqlite-engine.js",
+  "fsx-sync.js",
 ];
 
 async function main() {

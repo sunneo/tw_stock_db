@@ -64,6 +64,10 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   sql: {
     call: (op, args) => ipcRenderer.invoke("fa:sql:call", { op, args }),
   },
+  // 終端機 /mnt/<label> 的同步檔案後端（main.js 的 fa:fsx:sync，fsx-sync.js）：shell 的檔案系統是同步的，所以用 sendSync
+  fsx: {
+    call: (req) => ipcRenderer.sendSync("fa:fsx:sync", req),
+  },
   // 對話清單（左邊chat list）的檔案儲存，見main.js的fa:chats:*。
   chats: {
     dir: () => ipcRenderer.invoke("fa:chats:dir"),

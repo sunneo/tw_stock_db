@@ -35,6 +35,7 @@
       "cli-format.js",
       "browser-control-server.js",
       "sqlite-engine.js",
+      "fsx-sync.js",
       "coding-workspace.js",
       "build-config.json",
       "renderer/**/*",

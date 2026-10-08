@@ -197,6 +197,15 @@ categories:
         updated: 2026-10-07
         history:
           - { date: 2026-10-07, note: "新增 mix_understand／mix_highlight（FaMix 切段與著色、FaNlu 英文句子框架與意圖）；HTML 附件卡片新增檢視器浮動視窗" }
+      - id: sqlite-tools
+        name: SQLite 工具（sqlite3、sqlite、sqlitebrowser）
+        summary: 終端機的 sqlite3／sqlite 指令（輸出模式 list、csv、json、column、table、box、markdown…，點指令、-cmd、管線與重導向、互動模式）與 sqlitebrowser 浮動視窗（結構、瀏覽與欄位標頭過濾、編輯、執行 SQL、Pragmas；編輯先暫存，Write Changes 才寫入）。檔案可以是 :memory:、file:<真實路徑>、fap:<名稱>/<路徑>或終端機沙盒內的檔案。
+        how: { slash: ["/sqlite-browser"], ui: ["終端機指令 sqlite3、sqlite、sqlitebrowser"] }
+        platforms: [desktop]
+        samples: ["sqlite3 file:D:/data/app.db \".tables\"", "sqlite3 -json file:D:/data/app.db \"select * from t limit 5\"", "/sqlite-browser file:D:/data/app.db", "echo \"select count(*) from t;\" | sqlite3 file:D:/data/app.db"]
+        updated: 2026-10-08
+        history:
+          - { date: 2026-10-08, note: "新增：桌面版主程序用 node:sqlite（SQLite 3.53、含 FTS5）開真實檔案，每個連線一個子行程（取消與逾時直接砍行程）；sqlite3／sqlite 終端機指令、sqlitebrowser 視窗、/sqlite-browser" }
       - id: office-report
         name: 辦公室報告／簡報（週報、pptx）
         summary: 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。
@@ -300,7 +309,9 @@ categories:
         how: { domain: coding, tools: [repo_map, repo_ask, repo_read_doc] }
         platforms: [web, desktop]
         samples: ["/aidoc view", "幫這個專案建立索引並讓 AI 補上每個檔案的說明", "把專案的索引存進專案資料夾，同事拿到可以接著補"]
-        updated: 2026-10-03
+        updated: 2026-10-08
+        history:
+          - { date: 2026-10-08, note: "桌面版（絕對路徑的專案）改把索引直接寫進專案資料夾的隱藏資料夾 .floating-assistant/index/index.sqlite3（SQLite，PRAGMA cache_size 64 MB）：建索引邊讀邊寫、不設上限（每個定義與巨集都留），記憶體只留瘦身的檔案記錄，不再因為大專案爆記憶體；問答、檢視器、找、深入探討、百科都改從資料庫取；換電腦或瀏覽器資料被清掉時 /aidoc load 直接接上；修掉符號名稱叫 constructor 會讓索引失敗的舊 bug" }
       - id: ref-error-codes
         name: 查錯誤碼（Linux／Windows）
         summary: 離線查錯誤碼的意思：Linux errno（EACCES、13、-ENOMEM）、訊號（SIGSEGV）、shell 退出碼（139、127）、Windows Win32 錯誤（ERROR_ACCESS_DENIED、GetLastError）、HRESULT（0x80070005，含解碼）、NTSTATUS（0xC0000005，也吃帶號整數）、Winsock（10061）。這些知識同時用在程式行為說明裡（錯誤碼常數、exit code 會被標註）。
