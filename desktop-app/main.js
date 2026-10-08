@@ -63,6 +63,7 @@ const LIVE_PATCH_MAIN_FILES = [
   "coding-workspace.js",
   "browser-control-server.js",
   "sqlite-engine.js",
+  "fsx-sync.js",
 ];
 const mainOverlaySources = (() => {
   const overlays = new Map();
@@ -598,6 +599,9 @@ ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
 });
 
 // SQLite引擎（見sqlite-engine.js）：node:sqlite直接開磁碟上的真實檔案，記憶體與資料庫大小無關；路徑規則同rawfs（絕對路徑，不做root檢查）。
+// 終端機 /mnt/<label> 的同步檔案後端（fsx-sync.js）：shell 的檔案系統是同步的，桌面版直接在主行程用 fs.*Sync，渲染行程用 sendSync 呼叫
+let fsxRootsCache = { at: 0, list: [] };
+require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now() - fsxRootsCache.at > 1500) fsxRootsCache = { at: Date.now(), list: JSON.parse(require("fs").readFileSync(ROOTS_FILE(), "utf8")) }; return fsxRootsCache.list.find((r) => r.id === id) || null; } catch (_) { return null; } } });
 const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
 app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
 

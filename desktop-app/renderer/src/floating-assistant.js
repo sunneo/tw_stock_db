@@ -12448,6 +12448,310 @@ const holder = {};
 return holder.FaIdxSql;
 })();
 /* SQLIX-END */
+/* FAPFS-BEGIN */
+const FaFapFs = (function () {
+const holder = {};
+(function (module, self) {
+/* 終端機的 /mnt/<label>：即時的 FAP 檔案系統（純 JS，UMD；設計見 DESIGN.run-terminal.md §11 與 DESIGN.sqlite-fap.md §17）。
+ *
+ * 舊做法是「hydrate-and-flush」：第一次提到某個 label，就把整個真實資料夾逐檔讀進記憶體（71,752 檔、含 1.3 GB 的索引庫的專案會直接卡死），
+ * 那只是複製品。這裡改成比照 ext 檔案系統：頁面快取＋寫回。
+ *
+ *   dentry／inode 快取 → stat 與列表快取，只在「一個指令內」有效（每個指令開頭 newEpoch()）
+ *   page cache         → 檔案以 1 MB 區塊快取（LRU，最多 128 塊），鍵含 size:mtime，外部改過就重讀
+ *   writeback          → 寫入進記憶體緩衝（髒檔），每個指令結束、sync、超過 128 MB 水位時寫回
+ *   一致性             → 寫回前檢查檔案是否還是讀進來時的 size:mtime；被外部改過就不覆蓋並回報衝突（force 才覆蓋）
+ *   刪除               → 先記成墓碑，寫回時才真的刪；「刪了又建」合併成覆寫（沒有刪掉真檔後才寫的空窗）
+ *
+ * wasi-sh 的 store 契約是同步的（客體是 wasm 堆疊最底層，沒有東西可以 await），而 FAP 只有非同步 API，
+ * 所以這裡只認一個「同步後端」介面（backend）；真正的後端在 fapfs_transport.js（SharedArrayBuffer＋worker），測試用記憶體假後端。
+ *
+ * 後端介面（全部同步）：
+ *   stat(path)                      -> null | {kind:'file'|'directory', size, mtime}
+ *   list(path)                      -> null（不是資料夾）| [{name, kind}]
+ *   read(path, start, end)          -> {bytes:Uint8Array, size, mtime}   // 回傳的 size／mtime 是讀的當下檔案的身分
+ *   writeFile(path, bytes, expect, force) -> {ok:true, size, mtime} | {ok:false, conflict:true, size, mtime}   // expect＝{size,mtime}｜null（新檔）
+ *   mkdir(path)  rmdir(path)  remove(path)
+ * 路徑一律以 '/' 開頭、相對於這個掛載的根。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaFapFs = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const ERRNO = { EPERM: 1, ENOENT: 2, EIO: 5, EBADF: 9, EACCES: 13, EBUSY: 16, EEXIST: 17, EXDEV: 18, ENOTDIR: 20, EISDIR: 21, EINVAL: 22, EFBIG: 27, ENOSPC: 28, EROFS: 30, ENOSYS: 38, ENOTEMPTY: 39 };
+    function fsError(code, path, hint) { const e = new Error((path === undefined ? code : code + ': ' + path) + (hint ? '（' + hint + '）' : '')); e.code = code; e.errno = ERRNO[code]; if (path !== undefined) e.path = path; return e; }
+    const S_IFMT = 0o170000, S_IFDIR = 0o040000, S_IFREG = 0o100000;
+    const BLOCK = 1024 * 1024, MAX_BLOCKS = 128, HIGH_WATER = 128 * 1024 * 1024, MAX_WRITE_FILE = 256 * 1024 * 1024;
+    const normalize = (p) => { const st = []; for (const x of String(p).split('/')) { if (!x || x === '.') continue; if (x === '..') st.pop(); else st.push(x); } return '/' + st.join('/'); };
+    const parentOf = (p) => { const i = p.lastIndexOf('/'); return i > 0 ? p.slice(0, i) : '/'; };
+    const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
+    const idOf = (st) => st.size + ':' + st.mtime;
+
+    class FapMountFs {
+        constructor(backend, opts) {
+            opts = opts || {}; this.be = backend; this.label = opts.label || ''; this.writable = opts.writable !== false; this.now = opts.now || (() => Date.now());
+            this.statCache = new Map(); this.listCache = new Map(); this.ov = new Map(); this.blocks = new Map(); this.inos = new Map(); this.nextIno = 1000000; this.dirtyBytes = 0; this.meta = new Map(); // path -> {mode, mtimeMs, uid, gid, id}（虛擬的權限位元與時間戳）
+            this.stats = { statCalls: 0, listCalls: 0, readCalls: 0, writeCalls: 0, blockHits: 0, blockMisses: 0 };
+        }
+        // ---- 快取 ----
+        newEpoch() { this.statCache.clear(); this.listCache.clear(); }
+        dropCaches() { this.newEpoch(); this.blocks.clear(); }
+        _ino(p) { let i = this.inos.get(p); if (!i) { i = this.nextIno++; this.inos.set(p, i); } return i; }
+        _rstat(p) { // 遠端 stat（一個 epoch 內快取）；null＝不存在
+            if (this.statCache.has(p)) return this.statCache.get(p);
+            this.stats.statCalls++; const r = p === '/' ? { kind: 'directory', size: 0, mtime: 0 } : this.be.stat(p); this.statCache.set(p, r || null); return r || null;
+        }
+        _rlist(p) {
+            if (this.listCache.has(p)) return this.listCache.get(p);
+            this.stats.listCalls++; const r = this.be.list(p); this.listCache.set(p, r); return r;
+        }
+        _inode(p, kind, size, mtime) {
+            const isDir = kind === 'directory'; let m = this.meta.get(p); if (m && m.id !== (isDir ? 'd' : size + ':' + mtime) && !m.keep) { this.meta.delete(p); m = null; }
+            const mt = m && m.mtimeMs !== undefined ? m.mtimeMs : mtime;
+            return { ino: this._ino(p), nlink: isDir ? 2 : 1, size: isDir ? 0 : size, mode: (isDir ? S_IFDIR : S_IFREG) | (m && m.mode !== undefined ? m.mode & 0o7777 : (isDir ? 0o755 : 0o644)), uid: m && m.uid !== undefined ? m.uid : 0, gid: m && m.gid !== undefined ? m.gid : 0, atimeMs: m && m.atimeMs !== undefined ? m.atimeMs : mt, mtimeMs: mt, ctimeMs: m && m.ctimeMs !== undefined ? m.ctimeMs : mt, birthtimeMs: mt };
+        }
+        _need(path) { const p = normalize(path); const o = this.ov.get(p); if (o) { if (o.state === 'deleted') throw fsError('ENOENT', path); return { p, kind: 'file', size: o.data.length, mtime: o.mtime, ov: o }; } const r = this._rstat(p); if (!r) throw fsError('ENOENT', path); return { p, kind: r.kind, size: r.size, mtime: r.mtime }; }
+        _rw(path) { if (!this.writable) throw fsError('EROFS', path, '這個掛載是唯讀；用 sync ' + (this.label || '<label>') + ' --push 申請寫入權限'); }
+        // ---- 契約 ----
+        statSync(path) { const n = this._need(path); return this._inode(n.p, n.kind, n.size, n.mtime); }
+        readdirSync(path) {
+            const n = this._need(path); if (n.kind !== 'directory') throw fsError('ENOTDIR', path);
+            const names = new Set((this._rlist(n.p) || []).map((e) => e.name));
+            for (const [p, o] of this.ov) { if (parentOf(p) !== n.p) continue; if (o.state === 'deleted') names.delete(baseOf(p)); else names.add(baseOf(p)); }
+            return Array.from(names);
+        }
+        _requireParentDir(p, path) { const par = parentOf(p); const r = this.ov.has(par) ? null : this._rstat(par); if (!r || r.kind !== 'directory') throw fsError(r ? 'ENOTDIR' : 'ENOENT', path); }
+        createFileSync(path) {
+            this._rw(path); const p = normalize(path); let exists = false; try { exists = this._need(p).kind != null; } catch (_) { exists = false; } if (exists) throw fsError('EEXIST', path);
+            this._requireParentDir(p, path); const prev = this.ov.get(p); const now = this.now();
+            this.ov.set(p, { state: 'dirty', data: new Uint8Array(0), base: prev ? prev.base : null, mtime: now, created: !(prev && prev.base) }); // 刪了又建＝覆寫（沿用被刪那份的身分）
+            this.statCache.delete(p); return this._inode(p, 'file', 0, now);
+        }
+        mkdirSync(path) {
+            this._rw(path); const p = normalize(path); let exists = false; try { this._need(p); exists = true; } catch (_) { exists = false; } if (exists) throw fsError('EEXIST', path);
+            this._requireParentDir(p, path); this.be.mkdir(p); this.statCache.delete(p); this.listCache.delete(parentOf(p)); return this._inode(p, 'directory', 0, this.now());
+        }
+        rmdirSync(path) {
+            this._rw(path); const n = this._need(path); if (n.p === '/') throw fsError('EBUSY', path); if (n.kind !== 'directory') throw fsError('ENOTDIR', path);
+            if (this.readdirSync(n.p).length) throw fsError('ENOTEMPTY', path); this.be.rmdir(n.p); this.statCache.delete(n.p); this.listCache.delete(n.p); this.listCache.delete(parentOf(n.p));
+        }
+        unlinkSync(path) {
+            this._rw(path); const n = this._need(path); if (n.kind === 'directory') throw fsError('EISDIR', path);
+            const o = this.ov.get(n.p);
+            if (o && o.state === 'dirty') { this.dirtyBytes -= o.data.length; if (o.created || !o.base) this.ov.delete(n.p); else this.ov.set(n.p, { state: 'deleted', data: null, base: o.base, mtime: this.now() }); }
+            else { const r = this._rstat(n.p); this.ov.set(n.p, { state: 'deleted', data: null, base: { size: r.size, mtime: r.mtime }, mtime: this.now() }); }
+            this.statCache.delete(n.p); this.listCache.delete(parentOf(n.p));
+        }
+        renameSync(from, to) {
+            this._rw(from); const src = normalize(from), dst = normalize(to); const s = this._need(src); if (src === dst) return;
+            if (s.kind === 'directory') throw fsError('EXDEV', from, '資料夾不能在 FAP 掛載內改名；busybox 的 mv 會改成複製＋刪除'); // 與設計一致：資料夾 rename 不支援
+            let d = null; try { d = this._need(dst); } catch (_) { d = null; } if (d && d.kind === 'directory') throw fsError('EISDIR', to); this._requireParentDir(dst, to);
+            const data = this._wholeFile(src); const prev = this.ov.get(dst);
+            this.ov.set(dst, { state: 'dirty', data: data.slice(), base: prev ? prev.base : (d ? (() => { const r = this._rstat(dst); return r ? { size: r.size, mtime: r.mtime } : null; })() : null), mtime: this.now(), created: !d && !(prev && prev.base) }); this.dirtyBytes += data.length; this.statCache.delete(dst);
+            this.unlinkSync(src); this.listCache.delete(parentOf(dst)); this._checkHigh();
+        }
+        linkSync(target, link) { throw fsError('ENOSYS', link, 'FAP 掛載不支援連結'); }
+        _wholeFile(p) { // 讀整個檔案（含髒的），給 rename／寫入用
+            const o = this.ov.get(p); if (o && o.state === 'dirty') return o.data; const r = this._rstat(p); if (!r) throw fsError('ENOENT', p); if (r.size > MAX_WRITE_FILE) throw fsError('EFBIG', p, '要寫入的檔案超過 ' + Math.round(MAX_WRITE_FILE / 1048576) + ' MB');
+            if (!r.size) return new Uint8Array(0); const out = new Uint8Array(r.size); this.readSync(p, out, 0, r.size); return out;
+        }
+        readSync(path, buffer, start, end) {
+            const n = this._need(path); if (n.kind === 'directory') throw fsError('EISDIR', path);
+            const o = this.ov.get(n.p); if (o && o.state === 'dirty') { const sl = o.data.subarray(start, end); const t = Math.min(sl.length, buffer.length); buffer.set(sl.subarray(0, t), 0); if (t < buffer.length) buffer.fill(0, t); return; }
+            let st = this._rstat(n.p); if (!st) throw fsError('ENOENT', path); let want = Math.min(end, st.size); let filled = 0;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const id = idOf(st); const first = Math.floor(start / BLOCK), last = want > start ? Math.floor((want - 1) / BLOCK) : first - 1; let changed = false; filled = 0;
+                for (let b = first; b <= last; b++) {
+                    const key = n.p + '|' + id + '|' + b; let blk = this.blocks.get(key);
+                    if (blk) { this.blocks.delete(key); this.blocks.set(key, blk); this.stats.blockHits++; }
+                    else {
+                        this.stats.blockMisses++; this.stats.readCalls++; const r = this.be.read(n.p, b * BLOCK, Math.min((b + 1) * BLOCK, st.size));
+                        if (idOf(r) !== id) { st = { kind: 'file', size: r.size, mtime: r.mtime }; this.statCache.set(n.p, st); this.blocks.forEach((_, k) => { if (k.startsWith(n.p + '|')) this.blocks.delete(k); }); want = Math.min(end, st.size); changed = true; break; } // 外部改過：重讀
+                        blk = r.bytes; this.blocks.set(key, blk); if (this.blocks.size > MAX_BLOCKS) this.blocks.delete(this.blocks.keys().next().value);
+                    }
+                    const bs = b * BLOCK; const from = Math.max(start, bs), to = Math.min(want, bs + blk.length); if (to > from) { buffer.set(blk.subarray(from - bs, to - bs), from - start); filled = Math.max(filled, to - start); }
+                }
+                if (!changed) break;
+            }
+            if (filled < buffer.length) buffer.fill(0, filled);
+        }
+        _dirtyFile(p) { // 取得（必要時建立）這個檔案的髒緩衝：第一次寫入才把整個檔案讀進來
+            let o = this.ov.get(p); if (o && o.state === 'dirty') return o;
+            const r = this._rstat(p); const data = r ? this._wholeFile(p).slice() : new Uint8Array(0);
+            o = { state: 'dirty', data, base: r ? { size: r.size, mtime: r.mtime } : (o && o.base) || null, mtime: this.now(), created: !r && !(o && o.base) }; this.ov.set(p, o); this.dirtyBytes += data.length; return o;
+        }
+        writeSync(path, buffer, offset) {
+            this._rw(path); const n = this._need(path); if (n.kind === 'directory') throw fsError('EISDIR', path);
+            const end = offset + buffer.length; if (end > MAX_WRITE_FILE) throw fsError('EFBIG', path); const o = this._dirtyFile(n.p);
+            if (end > o.data.length) { const g = new Uint8Array(end); g.set(o.data, 0); this.dirtyBytes += end - o.data.length; o.data = g; } o.data.set(buffer, offset); o.mtime = this.now(); this.statCache.delete(n.p); this._checkHigh();
+        }
+        touchSync(path, md) {
+            md = md || {}; const n = this._need(path); if (md.size !== undefined && n.kind === 'file') { this._rw(path); const o = this._dirtyFile(n.p); if (md.size !== o.data.length) { const g = new Uint8Array(md.size); g.set(o.data.subarray(0, Math.min(md.size, o.data.length)), 0); this.dirtyBytes += g.length - o.data.length; o.data = g; } o.mtime = this.now(); this.statCache.delete(n.p); this._checkHigh(); }
+            // mode／uid／gid／時間戳：FAP 沒有這些概念，只記在記憶體（chmod／touch 才不會失敗，且讀回來是剛設的值）
+            if (md.mode !== undefined || md.uid !== undefined || md.gid !== undefined || md.atimeMs !== undefined || md.mtimeMs !== undefined || md.ctimeMs !== undefined) {
+                const cur = this.statSync(path); const m = this.meta.get(n.p) || { id: n.kind === 'directory' ? 'd' : cur.size + ':' + (n.ov ? n.mtime : (this._rstat(n.p) || {}).mtime) };
+                for (const k of ['mode', 'uid', 'gid', 'atimeMs', 'mtimeMs', 'ctimeMs']) if (md[k] !== undefined) m[k] = md[k];
+                if (md.mtimeMs !== undefined && n.ov) n.ov.mtime = md.mtimeMs; m.keep = !!n.ov; this.meta.set(n.p, m);
+            }
+        }
+        syncSync() { const r = this.flush(); if (r.conflicts.length) { const e = fsError('EBUSY', r.conflicts[0], '外部改過這個檔案，沒有覆蓋；sync ' + this.label + ' --force 才覆蓋'); throw e; } }
+        _checkHigh() { if (this.dirtyBytes > HIGH_WATER) this.flush(); }
+        // ---- 寫回 ----
+        dirtyCount() { return this.ov.size; }
+        flush(o) {
+            o = o || {}; const force = !!o.force; const out = { written: 0, deleted: 0, conflicts: [], errors: [] };
+            const writes = [], dels = []; for (const [p, v] of this.ov) (v.state === 'dirty' ? writes : dels).push([p, v]);
+            for (const [p, v] of writes) {
+                try { const r = this.be.writeFile(p, v.data, v.base, force); if (r.ok) { out.written++; this.dirtyBytes -= v.data.length; this.ov.delete(p); this.statCache.set(p, { kind: 'file', size: r.size, mtime: r.mtime }); this.blocks.forEach((_, k) => { if (k.startsWith(p + '|')) this.blocks.delete(k); }); this.listCache.delete(parentOf(p)); } else out.conflicts.push(p); }
+                catch (e) { out.errors.push(p + ': ' + (e && e.message || e)); }
+            }
+            for (const [p, v] of dels) {
+                try {
+                    const cur = this.be.stat(p); if (!cur) { this.ov.delete(p); continue; }
+                    if (!force && v.base && (cur.size !== v.base.size || cur.mtime !== v.base.mtime)) { out.conflicts.push(p); continue; }
+                    this.be.remove(p); out.deleted++; this.ov.delete(p); this.statCache.delete(p); this.listCache.delete(parentOf(p)); this.blocks.forEach((_, k) => { if (k.startsWith(p + '|')) this.blocks.delete(k); });
+                } catch (e) { out.errors.push(p + ': ' + (e && e.message || e)); }
+            }
+            if (this.ov.size === 0) this.dirtyBytes = 0; return out;
+        }
+        discard() { this.ov.clear(); this.dirtyBytes = 0; this.dropCaches(); }
+        pending() { return Array.from(this.ov, ([p, v]) => ({ path: p, state: v.state, bytes: v.data ? v.data.length : 0 })); }
+    }
+
+    // ---- 路由：/mnt/<label>/… 走 FAP，其餘走原本的記憶體 store ----
+    function mountRouter(base) {
+        const mounts = new Map();
+        const route = (path) => {
+            const p = normalize(path); const m = /^\/mnt\/([^/]+)(\/.*)?$/.exec(p);
+            if (m && mounts.has(m[1])) return { fs: mounts.get(m[1]), path: m[2] || '/', label: m[1] };
+            return { fs: base, path: p, label: null };
+        };
+        const router = {
+            base, mounts,
+            mount(label, fs) { mounts.set(label, fs); }, unmount(label) { mounts.delete(label); }, isMounted: (label) => mounts.has(label),
+            statSync(p) { const r = route(p); return r.fs.statSync(r.path); },
+            readdirSync(p) { const r = route(p); return r.fs.readdirSync(r.path); },
+            createFileSync(p, o) { const r = route(p); return r.fs.createFileSync(r.path, o); },
+            mkdirSync(p, o) { const r = route(p); return r.fs.mkdirSync(r.path, o); },
+            rmdirSync(p) { const r = route(p); if (r.label && r.path === '/') throw fsError('EBUSY', p); return r.fs.rmdirSync(r.path); },
+            unlinkSync(p) { const r = route(p); return r.fs.unlinkSync(r.path); },
+            renameSync(a, b) { const x = route(a), y = route(b); if (x.fs !== y.fs) throw fsError('EXDEV', a, '不同檔案系統之間不能改名；mv 會改成複製＋刪除'); return x.fs.renameSync(x.path, y.path); },
+            linkSync(t, l) { const x = route(t), y = route(l); if (x.fs !== y.fs) throw fsError('EXDEV', l); return x.fs.linkSync(x.path, y.path); },
+            readSync(p, buf, s, e) { const r = route(p); return r.fs.readSync(r.path, buf, s, e); },
+            writeSync(p, buf, off) { const r = route(p); return r.fs.writeSync(r.path, buf, off); },
+            touchSync(p, md) { const r = route(p); return r.fs.touchSync(r.path, md); },
+            syncSync() { router.flushAll(); },
+            // 指令邊界
+            newEpoch() { for (const f of mounts.values()) f.newEpoch(); },
+            flushAll(o) { const out = { written: 0, deleted: 0, conflicts: [], errors: [], byLabel: {} }; for (const [l, f] of mounts) { const r = f.flush(o); out.written += r.written; out.deleted += r.deleted; out.conflicts.push(...r.conflicts.map((c) => '/mnt/' + l + c)); out.errors.push(...r.errors.map((e) => '/mnt/' + l + e)); out.byLabel[l] = r; } return out; },
+            dirtyCount() { let n = 0; for (const f of mounts.values()) n += f.dirtyCount(); return n; },
+        };
+        // 其他沒包到的方法（例如 memoryFs 的內部欄位）直接轉給 base
+        return new Proxy(router, { get(t, k) { if (k in t) return t[k]; const v = base[k]; return typeof v === 'function' ? v.bind(base) : v; } });
+    }
+
+    // ---- 測試與參考用的記憶體假後端（同一個介面，非同步行為用 latency 模擬在外面）----
+    class MemoryBackend {
+        constructor(files) { this.files = new Map(); this.dirs = new Set(['/']); this.clock = 1000; this.log = []; for (const [p, c] of Object.entries(files || {})) this._put(normalize(p), typeof c === 'string' ? new TextEncoder().encode(c) : c); }
+        _put(p, bytes) { let d = parentOf(p); const chain = []; while (d !== '/') { chain.push(d); d = parentOf(d); } chain.forEach((x) => this.dirs.add(x)); this.files.set(p, { bytes, mtime: ++this.clock }); }
+        stat(p) { this.log.push('stat ' + p); const f = this.files.get(p); if (f) return { kind: 'file', size: f.bytes.length, mtime: f.mtime }; if (this.dirs.has(p)) return { kind: 'directory', size: 0, mtime: 1 }; return null; }
+        list(p) { this.log.push('list ' + p); if (!this.dirs.has(p)) return null; const out = []; const pre = p === '/' ? '/' : p + '/'; for (const d of this.dirs) if (d !== '/' && parentOf(d) === p) out.push({ name: baseOf(d), kind: 'directory' }); for (const k of this.files.keys()) if (parentOf(k) === p) out.push({ name: baseOf(k), kind: 'file' }); void pre; return out; }
+        read(p, start, end) { this.log.push('read ' + p + ' ' + start + '-' + end); const f = this.files.get(p); if (!f) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return { bytes: f.bytes.slice(start, end), size: f.bytes.length, mtime: f.mtime }; }
+        writeFile(p, bytes, expect, force) { this.log.push('write ' + p + ' ' + bytes.length); const f = this.files.get(p); if (!force) { if (f && (!expect || f.bytes.length !== expect.size || f.mtime !== expect.mtime)) return { ok: false, conflict: true, size: f.bytes.length, mtime: f.mtime }; if (!f && expect) return { ok: false, conflict: true, size: 0, mtime: 0 }; } this._put(p, bytes.slice()); const g = this.files.get(p); return { ok: true, size: g.bytes.length, mtime: g.mtime }; }
+        mkdir(p) { this.log.push('mkdir ' + p); this.dirs.add(p); }
+        rmdir(p) { this.log.push('rmdir ' + p); this.dirs.delete(p); }
+        remove(p) { this.log.push('remove ' + p); this.files.delete(p); }
+        external(p, text) { this._put(normalize(p), typeof text === 'string' ? new TextEncoder().encode(text) : text); } // 模擬外部程式改檔案
+    }
+    return { FapMountFs, mountRouter, MemoryBackend, fsError, ERRNO, normalize, BLOCK, MAX_BLOCKS, HIGH_WATER, MAX_WRITE_FILE };
+});
+
+}).call(null, undefined, holder);
+return holder.FaFapFs;
+})();
+/* FAPFS-END */
+/* FAPT-BEGIN */
+const FaFapFsTransport = (function () {
+const holder = {};
+(function (module, self) {
+/* FapMountFs 的同步後端（只能在瀏覽器／Electron 的頁面跑）：
+ * wasi-sh 的 store 契約是同步的，而 FAP（FileSystemDirectoryHandle）只有非同步 API，所以頁面把請求寫進 SharedArrayBuffer、
+ * 叫醒持有資料夾 handle 的 worker，頁面自旋等待回應（主執行緒不能 Atomics.wait，但可以自旋；shell 本來就是同步地佔著主執行緒）。
+ * 協定一次一個請求：控制區 Int32Array［狀態、請求 JSON 長度、請求位元組長度、回應 JSON 長度、回應位元組長度］，後面接四個資料區。
+ * 需要 SharedArrayBuffer（頁面 cross-origin isolated，或像桌面版那樣啟用了這個功能）；不行就回到舊的複製式掛載。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaFapFsTransport = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const REQ_JSON = 256 * 1024, REQ_BYTES = 4 * 1024 * 1024, RES_JSON = 4 * 1024 * 1024, RES_BYTES = 4 * 1024 * 1024, CTRL = 64;
+    const OFF_REQ_JSON = CTRL, OFF_REQ_BYTES = OFF_REQ_JSON + REQ_JSON, OFF_RES_JSON = OFF_REQ_BYTES + REQ_BYTES, OFF_RES_BYTES = OFF_RES_JSON + RES_JSON, TOTAL = OFF_RES_BYTES + RES_BYTES;
+    const LIST_PAGE = 20000;
+
+    // ---- worker 程式（以字串啟動）----
+    /* WORKER-SRC-BEGIN */
+    const WORKER_SRC = "// FAP 檔案系統的 worker（頁面端 fapfs_transport.js 把這個檔案內嵌成字串常數 WORKER_SRC 啟動；不能用 function.toString()，建置的壓縮器會改掉變數名稱）\n// 頁面在啟動前先設定 self.__FAPFS_OFF（共享記憶體各區的位移與大小）。\nlet sab = null, ctrl = null, u8 = null, root = null, writable = false; const writers = new Map();\nconst OFF = self.__FAPFS_OFF; const enc = new TextEncoder(), dec = new TextDecoder();\nconst parts = (p) => String(p).split('/').filter(Boolean);\nconst errOf = (e) => ({ code: e && e.name === 'NotFoundError' ? 'ENOENT' : e && e.name === 'TypeMismatchError' ? 'ENOTDIR' : e && e.name === 'NotAllowedError' ? 'EACCES' : e && e.name === 'InvalidModificationError' ? 'ENOTEMPTY' : e && e.name === 'QuotaExceededError' ? 'ENOSPC' : (e && e.code) || 'EIO', message: String((e && e.message) || e) });\nasync function dirOf(ps) { let h = root; for (const s of ps) h = await h.getDirectoryHandle(s); return h; }\nasync function resolve(p) {\n    const ps = parts(p); if (!ps.length) return { kind: 'directory', handle: root };\n    let parent; try { parent = await dirOf(ps.slice(0, -1)); } catch (e) { if (e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError')) return null; throw e; }\n    const name = ps[ps.length - 1];\n    try { return { kind: 'file', handle: await parent.getFileHandle(name), parent, name }; } catch (e) { if (!e || (e.name !== 'TypeMismatchError' && e.name !== 'NotFoundError')) throw e; if (e.name === 'NotFoundError') return null; }\n    try { return { kind: 'directory', handle: await parent.getDirectoryHandle(name), parent, name }; } catch (e) { if (e && e.name === 'NotFoundError') return null; throw e; }\n}\nconst reply = (state, json, bytes) => {\n    const j = enc.encode(JSON.stringify(json || {})); if (j.length > OFF.RES_JSON) { const e = enc.encode(JSON.stringify({ error: { code: 'EIO', message: '回應太大' } })); u8.set(e, OFF.OFF_RES_JSON); Atomics.store(ctrl, 3, e.length); Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 0, 3); return; }\n    u8.set(j, OFF.OFF_RES_JSON); Atomics.store(ctrl, 3, j.length); const b = bytes ? bytes.length : 0; if (b) u8.set(bytes, OFF.OFF_RES_BYTES); Atomics.store(ctrl, 4, b); Atomics.store(ctrl, 0, state);\n};\nconst ops = {\n    async stat(r) { const x = await resolve(r.path); if (!x) return { json: { st: null } }; if (x.kind === 'directory') return { json: { st: { kind: 'directory', size: 0, mtime: 0 } } }; const f = await x.handle.getFile(); return { json: { st: { kind: 'file', size: f.size, mtime: f.lastModified } } }; },\n    async list(r) { const x = await resolve(r.path); if (!x || x.kind !== 'directory') return { json: { entries: null } }; const out = []; let i = 0; for await (const [name, h] of x.handle.entries()) { if (i++ < r.offset) continue; if (out.length >= r.limit) return { json: { entries: out, more: true } }; out.push({ name, kind: h.kind }); } return { json: { entries: out, more: false } }; },\n    async read(r) { const x = await resolve(r.path); if (!x || x.kind !== 'file') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); const f = await x.handle.getFile(); const buf = new Uint8Array(await f.slice(r.start, Math.min(r.end, r.start + OFF.RES_BYTES)).arrayBuffer()); return { json: { size: f.size, mtime: f.lastModified }, bytes: buf }; },\n    async wBegin(r) {\n        if (!writable) throw Object.assign(new Error('唯讀'), { code: 'EROFS' }); const ps = parts(r.path); const x = await resolve(r.path);\n        if (x && x.kind === 'directory') throw Object.assign(new Error('EISDIR'), { code: 'EISDIR' });\n        if (!r.force) { if (x) { const f = await x.handle.getFile(); if (!r.expect || f.size !== r.expect.size || f.lastModified !== r.expect.mtime) return { json: { conflict: true, size: f.size, mtime: f.lastModified } }; } else if (r.expect) return { json: { conflict: true, size: 0, mtime: 0 } }; }\n        const parent = await dirOf(ps.slice(0, -1)); const fh = await parent.getFileHandle(ps[ps.length - 1], { create: true }); const w = await fh.createWritable({ keepExistingData: false }); writers.set(r.path, { w, fh }); return { json: { ok: true } };\n    },\n    async wChunk(r, bytes) { const o = writers.get(r.path); if (!o) throw Object.assign(new Error('沒有進行中的寫入'), { code: 'EIO' }); await o.w.write(bytes.slice()); return { json: { ok: true } }; },\n    async wEnd(r) { const o = writers.get(r.path); if (!o) throw Object.assign(new Error('沒有進行中的寫入'), { code: 'EIO' }); writers.delete(r.path); await o.w.close(); const f = await o.fh.getFile(); return { json: { ok: true, size: f.size, mtime: f.lastModified } }; },\n    async wAbort(r) { const o = writers.get(r.path); if (o) { writers.delete(r.path); try { await o.w.abort(); } catch (_) { /* 已結束 */ } } return { json: { ok: true } }; },\n    async mkdir(r) { if (!writable) throw Object.assign(new Error('唯讀'), { code: 'EROFS' }); const ps = parts(r.path); const parent = await dirOf(ps.slice(0, -1)); await parent.getDirectoryHandle(ps[ps.length - 1], { create: true }); return { json: { ok: true } }; },\n    async rmdir(r) { if (!writable) throw Object.assign(new Error('唯讀'), { code: 'EROFS' }); const ps = parts(r.path); const parent = await dirOf(ps.slice(0, -1)); await parent.removeEntry(ps[ps.length - 1], { recursive: false }); return { json: { ok: true } }; },\n    async remove(r) { if (!writable) throw Object.assign(new Error('唯讀'), { code: 'EROFS' }); const ps = parts(r.path); const parent = await dirOf(ps.slice(0, -1)); await parent.removeEntry(ps[ps.length - 1]); return { json: { ok: true } }; },\n    async setWritable(r) { writable = !!r.writable; return { json: { ok: true } }; },\n};\nconst waitChange = async (from) => { const r = Atomics.waitAsync(ctrl, 0, from); if (r.async) await r.value; };\nasync function loop() {\n    for (;;) {\n        const s = Atomics.load(ctrl, 0);\n        if (s === 0) { await waitChange(0); continue; }\n        if (s === 2 || s === 3) { await waitChange(s); continue; } // 等頁面端讀完、把狀態還原成 0\n        // s === 1：有請求\n        let req, bytes = null;\n        try {\n            req = JSON.parse(dec.decode(u8.slice(OFF.OFF_REQ_JSON, OFF.OFF_REQ_JSON + Atomics.load(ctrl, 1)))); const bl = Atomics.load(ctrl, 2); if (bl) bytes = u8.slice(OFF.OFF_REQ_BYTES, OFF.OFF_REQ_BYTES + bl);\n            if (!ops[req.op]) throw Object.assign(new Error('不認得的操作 ' + req.op), { code: 'ENOSYS' });\n            const res = await ops[req.op](req, bytes); reply(2, res.json, res.bytes);\n        } catch (e) { const er = errOf(e); const j = enc.encode(JSON.stringify({ error: er })); u8.set(j, OFF.OFF_RES_JSON); Atomics.store(ctrl, 3, j.length); Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 0, 3); }\n    }\n}\nself.onmessage = (ev) => {\n    const d = ev.data; if (d && d.type === 'init') { sab = d.sab; ctrl = new Int32Array(sab, 0, 8); u8 = new Uint8Array(sab); root = d.handle; writable = !!d.writable; self.postMessage({ ready: true }); loop(); }\n};\n";
+    /* WORKER-SRC-END */
+    function workerSource() { return 'self.__FAPFS_OFF = ' + JSON.stringify({ OFF_REQ_JSON, OFF_REQ_BYTES, OFF_RES_JSON, OFF_RES_BYTES, RES_JSON, RES_BYTES }) + ';\n' + WORKER_SRC; }
+
+    function fsError(code, msg) { const e = new Error(code + (msg ? '：' + msg : '')); e.code = code; return e; }
+    const supported = () => typeof SharedArrayBuffer !== 'undefined' && typeof Atomics !== 'undefined' && typeof Worker !== 'undefined' && typeof Atomics.waitAsync === 'function';
+
+    class WorkerBackend {
+        constructor(opts) { this.timeoutMs = (opts && opts.timeoutMs) || 120000; this.worker = null; this.sab = null; this.calls = 0; }
+        async init(dirHandle, o) {
+            o = o || {}; this.sab = new SharedArrayBuffer(TOTAL); this.ctrl = new Int32Array(this.sab, 0, 8); this.u8 = new Uint8Array(this.sab); this.enc = new TextEncoder(); this.dec = new TextDecoder();
+            const url = URL.createObjectURL(new Blob([workerSource()], { type: 'application/javascript' })); this.worker = new Worker(url); this.url = url;
+            await new Promise((resolve, reject) => { const to = setTimeout(() => reject(new Error('FAP worker 沒有回應')), 10000); this.worker.onmessage = (ev) => { if (ev.data && ev.data.ready) { clearTimeout(to); resolve(); } }; this.worker.onerror = (e) => { clearTimeout(to); reject(new Error('FAP worker 錯誤：' + (e && e.message))); }; this.worker.postMessage({ type: 'init', sab: this.sab, handle: dirHandle, writable: !!o.writable }); });
+        }
+        close() { try { if (this.worker) this.worker.terminate(); if (this.url) URL.revokeObjectURL(this.url); } catch (_) { /* 已結束 */ } this.worker = null; }
+        _call(req, bytes) {
+            if (!this.worker) throw fsError('EIO', '掛載已關閉'); this.calls++; const j = this.enc.encode(JSON.stringify(req)); if (j.length > REQ_JSON) throw fsError('ENAMETOOLONG'); if (bytes && bytes.length > REQ_BYTES) throw fsError('EINVAL', '單次寫入太大');
+            this.u8.set(j, OFF_REQ_JSON); Atomics.store(this.ctrl, 1, j.length); if (bytes && bytes.length) this.u8.set(bytes, OFF_REQ_BYTES); Atomics.store(this.ctrl, 2, bytes ? bytes.length : 0);
+            Atomics.store(this.ctrl, 0, 1); Atomics.notify(this.ctrl, 0);
+            const t0 = Date.now(); let spins = 0; while (Atomics.load(this.ctrl, 0) < 2) { if ((++spins & 0xfff) === 0 && Date.now() - t0 > this.timeoutMs) { throw fsError('EIO', '等待 FAP 逾時（' + Math.round(this.timeoutMs / 1000) + ' 秒）'); } }
+            const state = Atomics.load(this.ctrl, 0); const jl = Atomics.load(this.ctrl, 3), bl = Atomics.load(this.ctrl, 4);
+            const res = JSON.parse(this.dec.decode(this.u8.slice(OFF_RES_JSON, OFF_RES_JSON + jl))); const out = bl ? this.u8.slice(OFF_RES_BYTES, OFF_RES_BYTES + bl) : null;
+            Atomics.store(this.ctrl, 0, 0); Atomics.notify(this.ctrl, 0);
+            if (state === 3) { const e = fsError((res.error && res.error.code) || 'EIO', res.error && res.error.message); throw e; }
+            return { json: res, bytes: out };
+        }
+        stat(path) { return this._call({ op: 'stat', path }).json.st; }
+        list(path) { const all = []; let offset = 0; for (;;) { const r = this._call({ op: 'list', path, offset, limit: LIST_PAGE }).json; if (r.entries === null) return null; all.push(...r.entries); if (!r.more) return all; offset += r.entries.length; } }
+        read(path, start, end) { const parts = []; let size = 0, mtime = 0, pos = start; while (pos < end) { const r = this._call({ op: 'read', path, start: pos, end: Math.min(end, pos + RES_BYTES) }); size = r.json.size; mtime = r.json.mtime; if (!r.bytes || !r.bytes.length) break; parts.push(r.bytes); pos += r.bytes.length; if (pos >= size) break; } const total = parts.reduce((n, p) => n + p.length, 0); const bytes = new Uint8Array(total); let o = 0; for (const p of parts) { bytes.set(p, o); o += p.length; } return { bytes, size, mtime }; }
+        writeFile(path, bytes, expect, force) {
+            const b = this._call({ op: 'wBegin', path, expect, force: !!force }).json; if (b.conflict) return { ok: false, conflict: true, size: b.size, mtime: b.mtime };
+            try { for (let i = 0; i < bytes.length; i += REQ_BYTES) this._call({ op: 'wChunk', path }, bytes.subarray(i, Math.min(bytes.length, i + REQ_BYTES))); const e = this._call({ op: 'wEnd', path }).json; return { ok: true, size: e.size, mtime: e.mtime }; }
+            catch (err) { try { this._call({ op: 'wAbort', path }); } catch (_) { /* */ } throw err; }
+        }
+        mkdir(path) { this._call({ op: 'mkdir', path }); }
+        rmdir(path) { this._call({ op: 'rmdir', path }); }
+        remove(path) { this._call({ op: 'remove', path }); }
+        setWritable(w) { this._call({ op: 'setWritable', writable: !!w }); }
+    }
+    // 桌面版：授權的真實資料夾，主行程同步處理（fsx-sync.js），渲染行程用 ipcRenderer.sendSync；不需要 SharedArrayBuffer 與 worker
+    class IpcSyncBackend {
+        constructor(rootId, call) { this.rootId = rootId; this.callFn = call || ((req) => window.desktopAPI.fsx.call(req)); this.calls = 0; }
+        async init() { /* 沒有東西要初始化 */ }
+        close() { /* 沒有常駐資源 */ }
+        _c(req) { this.calls++; const r = this.callFn(Object.assign({ rootId: this.rootId }, req)); if (r && r.error) throw fsError(r.error.code || 'EIO', r.error.message); return r; }
+        stat(path) { return this._c({ op: 'stat', path }).st; }
+        list(path) { return this._c({ op: 'list', path }).entries; }
+        read(path, start, end) { const parts = []; let size = 0, mtime = 0, pos = start; while (pos < end) { const r = this._c({ op: 'read', path, start: pos, end }); size = r.size; mtime = r.mtime; const b = r.bytes; if (!b || !b.length) break; parts.push(b); pos += b.length; if (pos >= size) break; } const total = parts.reduce((n, p) => n + p.length, 0); const bytes = new Uint8Array(total); let o = 0; for (const p of parts) { bytes.set(p, o); o += p.length; } return { bytes, size, mtime }; }
+        writeFile(path, bytes, expect, force) { const r = this._c({ op: 'writeFile', path, bytes, expect, force: !!force }); return r.ok ? { ok: true, size: r.size, mtime: r.mtime } : { ok: false, conflict: true, size: r.size, mtime: r.mtime }; }
+        mkdir(path) { this._c({ op: 'mkdir', path }); }
+        rmdir(path) { this._c({ op: 'rmdir', path }); }
+        remove(path) { this._c({ op: 'remove', path }); }
+        setWritable() { /* 授權的資料夾本來就可寫 */ }
+    }
+    const ipcSupported = () => typeof window !== 'undefined' && !!(window.desktopAPI && window.desktopAPI.fsx && typeof window.desktopAPI.fsx.call === 'function');
+    return { WorkerBackend, IpcSyncBackend, workerSource, supported, ipcSupported, TOTAL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaFapFsTransport;
+})();
+/* FAPT-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -27635,7 +27939,7 @@ ${fnData.code}
     async _aidocViewerOpen(root) {
         const key = this._repoMapKey(root);
         const st = await this._codeStoreGet(key);
-        if (!st || !st.db.files.length) return { ok: false, error: '這個專案還沒有索引，先 /aidoc index' };
+        if (!st || (!st.sql && !st.db.files.length)) return { ok: false, error: '這個專案還沒有索引，先 /aidoc index' };
         if (!this._aidocViews) this._aidocViews = new Map();
         const prev = this._aidocViews.get(key);
         if (prev && prev.win.isConnected) { prev.win.style.zIndex = '2147482450'; return { ok: true, reused: true }; }
@@ -29392,6 +29696,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const st = await this._codeStoreGet(key);
         const map = await this._repoMapLoad(key);
         if (!st || !map) throw new Error('還沒有索引可以匯出：先 repo_map index_start');
+        if (st.sql) throw new Error('這個專案的索引是 SQLite 檔（專案資料夾裡的 .floating-assistant/index/index.sqlite3），HTML 匯出還不支援；要分享索引直接複製那個檔案，或用 /aidoc view 檢視。');
         const extra = await this._codeExportCollect(key, map);
         const title = '專案百科：' + (key.split('/').filter(Boolean).pop() || key);
         let payload, filename, mode;
@@ -40989,6 +41294,7 @@ ${sourceTool.handlerScript}
                 }
             } catch (_) { /* FAP store可能還沒初始化完成，維持空清單即可 */ }
             session.fsStore = runtime.memoryFs(seedFiles);
+            if (this._terminalLiveSupported()) { session.fsRouter = FaFapFs.mountRouter(session.fsStore); session.fsStore = session.fsRouter; } // /mnt/<label> 即時存取真實資料夾（不複製）
             session.fapHydrated = new Set();
         }
         return session.fsStore;
@@ -40997,6 +41303,47 @@ ${sourceTool.handlerScript}
     _shQuote(str) {
         return `'${String(str).replace(/'/g, "'\\''")}'`;
     }
+
+    // ===== 終端機 /mnt/<label>：即時的 FAP 檔案系統（renderer/src/terminal/fapfs_core.js；規格見 DESIGN.sqlite-fap.md §17）=====
+    // 以前第一次提到 label 就把整個資料夾讀進記憶體（大專案直接卡死）。現在 stat／列表只在一個指令內快取、檔案按 1 MB 區塊讀、寫入先進記憶體，
+    // 每個指令結束（以及 sync、超過水位）才寫回；寫回前檢查檔案是不是還是讀進來時的樣子，被外部改過就不覆蓋。需要 SharedArrayBuffer；不行就退回舊的複製式。
+    _terminalLiveSupported() { return typeof FaFapFs !== 'undefined' && typeof FaFapFsTransport !== 'undefined' && (FaFapFsTransport.ipcSupported() || FaFapFsTransport.supported()) && (!this.advancedSettings.terminal || this.advancedSettings.terminal.liveFap !== false); }
+    async _terminalMountLive(session, label) {
+        const router = session.fsRouter; if (router.isMounted(label)) return router.mounts.get(label);
+        const rec = await this._resolveFapAccessPoint(label); await this._checkFapPermission(rec, 'read');
+        let writable = false, be;
+        if (FaFapFsTransport.ipcSupported() && rec.handle && rec.handle.rootId) { be = new FaFapFsTransport.IpcSyncBackend(rec.handle.rootId); writable = true; } // 桌面版：授權的真實資料夾，同步 IPC
+        else { try { writable = (await rec.handle.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch (_) { writable = false; } be = new FaFapFsTransport.WorkerBackend(); await be.init(rec.handle, { writable }); }
+        const mfs = new FaFapFs.FapMountFs(be, { label, writable }); router.mount(label, mfs); (session.fapLive = session.fapLive || {})[label] = mfs; session.fapHydrated.add(label);
+        session.term.write(`\x1b[90m已掛載 /mnt/${label}（即時存取，不複製${writable ? '' : '；目前唯讀，要寫入請 sync ' + label + ' --push'}）\x1b[0m\r\n`);
+        return mfs;
+    }
+    // 指令結束：寫回，並把衝突與錯誤告訴使用者
+    _terminalFlushLive(session, o) {
+        const r = session.fsRouter; if (!r || !r.dirtyCount()) return null; const out = r.flushAll(o);
+        for (const c of out.conflicts) session.term.write(`\x1b[33m⚠ ${c}：真實檔案在讀進來之後被外部改過，沒有覆蓋（sync <label> --force 才覆蓋；你的修改還留在記憶體）\x1b[0m\r\n`);
+        for (const e of out.errors) session.term.write(`\x1b[31m✗ 寫回失敗 ${e}\x1b[0m\r\n`);
+        return out;
+    }
+    async _terminalRun(session, runtime, opts) {
+        const r = session.fsRouter; if (r) r.newEpoch();
+        try { return await runtime.run(opts); } finally { if (r) { try { this._terminalFlushLive(session); } catch (e) { session.term.write(`\x1b[31m✗ 寫回失敗：${String((e && e.message) || e)}\x1b[0m\r\n`); } } }
+    }
+    async _terminalSyncLive(session, arg, flags) {
+        const r = session.fsRouter; const labels = arg ? [arg.replace(/^\/mnt\//, '').split('/')[0]] : Array.from(r.mounts.keys());
+        if (!labels.length) { session.term.write('sync: 目前沒有掛載中的 File Access Point（用到 /mnt/<名稱> 才會掛載）\r\n'); return; }
+        for (const label of labels) {
+            try {
+                if (!(session.fapLabels || []).includes(label)) { session.term.write(`\x1b[31msync: 找不到已授權的「${label}」（到Advance Settings確認授權狀態）\x1b[0m\r\n`); continue; }
+                const mfs = await this._terminalMountLive(session, label); const parts = [];
+                if (flags.has('--push') && !mfs.writable) { const rec = await this._resolveFapAccessPoint(label); await this._checkFapPermission(rec, 'readwrite'); mfs.be.setWritable(true); mfs.writable = true; parts.push('已取得寫入權限'); }
+                if (flags.has('--pull')) { if (mfs.dirtyCount()) parts.push(`⚠ 還有 ${mfs.dirtyCount()} 個沒寫回的修改（先 sync ${label} 或 --force）`); mfs.dropCaches(); parts.push('已丟棄快取，下次讀會重新取得真實檔案'); }
+                else { const out = mfs.flush({ force: flags.has('--force') }); parts.push(`寫回真實資料夾：寫入 ${out.written} 個檔案、刪除 ${out.deleted} 個`); for (const c of out.conflicts) parts.push(`  ⚠ 衝突（外部改過，沒有覆蓋）：/mnt/${label}${c}`); for (const e of out.errors) parts.push(`  ✗ 失敗：/mnt/${label}${e}`); mfs.newEpoch(); }
+                session.term.write(`sync ${label}:\r\n  ${parts.join('\r\n  ')}\r\n`);
+            } catch (err) { session.term.write(`\x1b[31msync ${label}: ${String((err && err.message) || err)}\x1b[0m\r\n`); }
+        }
+    }
+
 
     // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁——「要不要
     // scroll to output」開關（預設開）。開啟時每次有新輸出都強制捲到最
@@ -41225,6 +41572,7 @@ ${sourceTool.handlerScript}
             const prefix = `/mnt/${label}`;
             const hit = candidates.some((c) => c === prefix || c.startsWith(prefix + '/') || c.includes(prefix));
             if (!hit) continue;
+            if (session.fsRouter) { if (!session.fsRouter.isMounted(label)) await this._terminalMountLive(session, label); continue; }
             if (!session.fapHydrated.has(label)) { await this._hydrateFapMount(session, fsStore, label); continue; }
             const cost = (session.fapPullCost && session.fapPullCost[label]) || 0;
             const minGap = Math.max(4000, cost * 10);
@@ -41268,6 +41616,7 @@ ${sourceTool.handlerScript}
         const tokens = String(argsText || '').trim().split(/\s+/).filter(Boolean);
         const flags = new Set(tokens.filter((t) => t.startsWith('--')));
         const arg = tokens.find((t) => !t.startsWith('--')) || '';
+        if (session.fsRouter) { await this._terminalSyncLive(session, arg, flags); return; }
         const doPull = !flags.has('--push');
         const doPush = !flags.has('--pull');
         let targets;
@@ -41453,7 +41802,7 @@ ${sourceTool.handlerScript}
         const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
         fsStack.push(fsStore);
         try {
-            await runtime.run({
+            await this._terminalRun(session, runtime, {
                 command: script,
                 fs: fsStore,
                 wasm: runtime.wasmBytes.slice(0),
@@ -41495,7 +41844,7 @@ ${sourceTool.handlerScript}
         const script = `cd ${this._shQuote(session.cwd)} 2>/dev/null; cd ${this._shQuote(target)} && pwd`;
         let result;
         try {
-            result = await runtime.run({ command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true });
+            result = await this._terminalRun(session, runtime, { command: script, fs: fsStore, wasm: runtime.wasmBytes.slice(0), inline: true });
         } catch (err) {
             const msg = `執行失敗：${String(err.message || err)}`;
             session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
@@ -41742,7 +42091,7 @@ ${sourceTool.handlerScript}
             // 回頭呼叫shell）。只有真的有傳opts.stdin時才加這個欄位，一般
             // 終端機呼叫（互動輸入/terminal_run）不受影響。
             if (opts.stdin) runOpts.stdin = opts.stdin;
-            result = await runtime.run(runOpts);
+            result = await this._terminalRun(session, runtime, runOpts);
         } catch (err) {
             return { ok: false, error: `執行失敗：${String(err.message || err)}` };
         } finally {

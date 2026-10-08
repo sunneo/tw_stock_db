@@ -68,7 +68,7 @@ function workerMain() {
         if (!create && !fs.existsSync(p)) throw new Error("找不到資料庫檔案：" + p);
         db = new DatabaseSync(p, { readOnly: !!readonly, open: true }); meta = { path: p, readonly: !!readonly };
       }
-      db.exec("PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;"); if (!readonly) { try { db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); } catch (_) { /* 唯讀媒體 */ } }
+      db.exec("PRAGMA foreign_keys=ON;"); // temp_store 用預設（檔案）：大庫建索引的排序會溢到暫存檔，不吃記憶體 if (!readonly) { try { db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); } catch (_) { /* 唯讀媒體 */ } }
       db.exec("PRAGMA cache_size=-65536;"); if (readonly) db.exec("PRAGMA query_only=ON;");
       const size = meta.path !== ":memory:" ? fs.statSync(p).size : 0; const ver = db.prepare("select sqlite_version() v").get().v;
       return { size, version: ver, path: meta.path, readonly: meta.readonly };
@@ -129,7 +129,7 @@ function workerMain() {
     close() { if (db) { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (_) { /* 非 WAL */ } db.close(); db = null; } return { ok: true }; },
   };
   parentPort.on("message", ({ id, op, args }) => {
-    try { if (!ops[op]) throw new Error("不認得的操作：" + op); parentPort.postMessage({ id, ok: true, result: ops[op](args || {}) }); }
+    try { if (!ops[op]) throw new Error("不認得的操作：" + op); const result = ops[op](args || {}); if (typeof global.gc === "function" && process.memoryUsage().heapUsed > 160 * 1048576) global.gc(); parentPort.postMessage({ id, ok: true, result }); }
     catch (e) { parentPort.postMessage({ id, ok: false, error: String(e && e.message || e), code: e && e.errcode }); }
   });
   parentPort.postMessage({ ready: true });
@@ -144,7 +144,7 @@ class SqliteEngine {
       const f = path.join(os.tmpdir(), "fa-sql-worker-" + crypto.createHash("md5").update(body).digest("hex").slice(0, 12) + ".js");
       if (!fs.existsSync(f)) fs.writeFileSync(f, body); SqliteEngine._script = f;
     }
-    const child = spawn(process.execPath, [SqliteEngine._script], { env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: "1" }), stdio: ["ignore", "ignore", "inherit", "ipc"], windowsHide: true });
+    const child = spawn(process.execPath, ["--max-old-space-size=512", "--expose-gc", SqliteEngine._script], { env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: "1" }), stdio: ["ignore", "ignore", "inherit", "ipc"], windowsHide: true });
     return { postMessage: (m) => { if (child.connected) child.send(m); }, on: (ev, fn) => child.on(ev === "message" ? "message" : ev, fn), terminate: () => { try { child.kill("SIGKILL"); } catch (_) { /* 已結束 */ } }, child };
   }
   _conn(db) { const c = this.conns.get(db); if (!c) throw new Error("資料庫連線不存在或已關閉：" + db); return c; }

@@ -214,6 +214,19 @@
   - `這段英文夾著程式的問題，使用者到底想要什麼？`
   - `this shader fails to compile, can you fix it?（後面附著色器）`
 
+### SQLite 工具（sqlite3、sqlite、sqlitebrowser）（`sqlite-tools`）
+
+終端機的 sqlite3／sqlite 指令（輸出模式 list、csv、json、column、table、box、markdown…，點指令、-cmd、管線與重導向、互動模式）與 sqlitebrowser 浮動視窗（結構、瀏覽與欄位標頭過濾、編輯、執行 SQL、Pragmas；編輯先暫存，Write Changes 才寫入）。檔案可以是 :memory:、file:<真實路徑>、fap:<名稱>/<路徑>或終端機沙盒內的檔案。
+
+- 可用平台：桌面版
+- 斜線指令：`/sqlite-browser`
+- 介面入口：終端機指令 sqlite3、sqlite、sqlitebrowser
+- 範例：
+  - `sqlite3 file:D:/data/app.db ".tables"`
+  - `sqlite3 -json file:D:/data/app.db "select * from t limit 5"`
+  - `/sqlite-browser file:D:/data/app.db`
+  - `echo "select count(*) from t;" | sqlite3 file:D:/data/app.db`
+
 ### 辦公室報告／簡報（週報、pptx）（`office-report`）
 
 專門處理週報、簡報、投影片、pptx／docx／xlsx、合併PDF附件的固定流程：先找現成腳本直接執行、用 python 當主軸、大檔案先 grep 定位再讀那一段；產出後一定驗證（pptx_inspect 檢查大小／頁數／master／圖片／斷掉的關聯，PowerPoint 逐頁轉圖後用 compare_images 比對）。不綁定任何特定公司系統。

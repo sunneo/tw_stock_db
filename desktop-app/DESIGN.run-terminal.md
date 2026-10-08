@@ -1583,3 +1583,36 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 原樣當成字面文字，這是實務上極少見的用法）。
 
 | `desktop-app/TODO.md` | 這個子系統各次功能加入/修正的完整歷史紀錄與驗證方式（Phase 5起陸續累加） |
+
+---
+
+## 17. `/mnt/<label>`：從「複製」改成「即時的 FAP 檔案系統」（2026-10-08）
+
+### 17.1 問題
+§11 的 hydrate-and-flush：第一次提到某個 label 就把**整個真實資料夾逐檔讀進記憶體**，`sync` 才推回去。大專案（數萬檔、含 GB 級索引庫）上 `cd /mnt/<label>` 等於把整個專案塞進頁面記憶體並卡死。那只是複製品，不是真的使用 FAP。
+
+### 17.2 設計（比照 ext 檔案系統：頁面快取＋寫回）
+實作在 `renderer/src/terminal/fapfs_core.js`（`FapMountFs`＋`mountRouter`，純 JS，符合 wasi-sh 的同步檔案系統契約，並通過它自己的官方符合性套件），傳輸在 `fapfs_transport.js`。
+
+| 概念 | ext 檔案系統 | 這裡 |
+|---|---|---|
+| 目錄項／inode 快取 | dentry／inode cache | `stat` 與列表快取，**一個指令內有效**（每個指令開頭 `newEpoch()`） |
+| 頁面快取 | page cache | 檔案以 1 MB 區塊快取（LRU，最多 128 塊），鍵含 `size:mtime`，外部改過就重讀 |
+| 寫入 | 寫進 page cache，髒頁由 writeback 寫出 | 寫入進記憶體緩衝（髒檔），**每個指令結束**、`sync`、超過 128 MB 水位時寫回 |
+| 一致性 | — | 寫回前檢查檔案是否還是讀進來時的 `size:mtime`；被外部改過就**不覆蓋**並警告（`sync <label> --force` 覆蓋） |
+| 刪除 | — | 先記成墓碑，寫回時才真的刪；「刪了又建」合併成覆寫 |
+
+- **路由**：只有 `/mnt/<已掛載 label>/…`（含 `/mnt/<label>` 本身）走 FAP；`/work`、`/bin`、沒掛載的 label 仍由原本的記憶體 store 處理。掛載時機＝第一次有指令提到該 label（沿用 `_hydrateReferencedFapMounts` 的偵測）。
+- **兩種同步傳輸**（因為 store 契約是同步的，客體是 wasm 堆疊最底層，沒有東西可以 await）：
+  - **桌面版**（授權的真實資料夾）：主行程 `fsx-sync.js` 用 `fs.*Sync` 直接處理，渲染行程用 `ipcRenderer.sendSync`（`desktopAPI.fsx.call`）。桌面版的 FAP handle 是走 IPC 的假 handle（`ElectronDirectHandle`），本來就不能丟給 worker。路徑限制在授權資料夾內；寫入＝寫暫存檔再改名（原子替換）；寫回前比對 size:mtime。
+  - **網頁版**（`FileSystemDirectoryHandle`）：`WorkerBackend`——請求寫進 SharedArrayBuffer、worker 持有 handle 做非同步 API、頁面自旋等待回應；需要 SharedArrayBuffer，不行就退回舊的複製式掛載。worker 程式放獨立檔案（`fapfs_worker.js`）、建置時內嵌成字串常數——不能用 `function.toString()`，建置的壓縮器會改掉變數名稱（實測踩到）；`TextDecoder` 不收共享記憶體的視圖，要先複製（也踩到）。
+- **語意**：`mkdir`／`rmdir` 立即生效；`rename` 只支援檔案（資料夾回 `EXDEV`，busybox 的 `mv` 會自動改成複製＋刪除；這是唯一與 wasi-sh 符合性套件不同之處，FAP 沒有原子的資料夾搬移）；連結 `ENOSYS`；`chmod`／`touch` 的權限位元與時間戳記在記憶體（FAP 沒有這些概念）；單檔寫入上限 256 MB（`EFBIG`），沒被寫的檔案任意大小都只讀用到的區塊；唯讀掛載寫入回 `EROFS` 並提示 `sync <label> --push`。
+- **`sync`**（互動輸入）：`sync [label]` 立即寫回；`--force` 覆蓋被外部改過的檔案；`--pull` 丟棄快取；`--push` 申請寫入權限（網頁版）。AI 的 `terminal_run` 沒有 `sync`，但每個指令結束都會自動寫回。
+
+### 17.3 實測（桌面版，真實資料夾經真實終端機）
+`ls`、`cat`、`find`、`grep -r`、`echo >`、`>>`、`mkdir`、`mv`、`rm`、`cp`、`sqlite3 /mnt/…` 都直接作用在磁碟上；`ls /mnt/proj`、`cat` 約 0.01–0.04 秒；60 MB 的大檔不會被讀進來（`wc -c` 只 stat）；`sync` 的衝突偵測與 `--force`、`--pull` 驗證過（指令邊界寫回遇到外部改過的檔案不覆蓋、回報路徑）。
+
+### 17.4 已知限制
+- 目錄項超過約 150 個時 `ls`／`find` 只看到前面一部分：這是 wasi-sh 0.11.0 的目錄讀取緩衝限制，純記憶體沙盒也一樣（`readdirSync` 本身是完整的），不是 FAP 掛載造成的。
+- 資料夾不能改名（見上）；`dd`、`head -c`、`od` 這類 busybox 沒編進來的指令仍然沒有。
+- 網頁版（SharedArrayBuffer worker）的傳輸用 OPFS 資料夾（真的 `FileSystemDirectoryHandle`）在 Electron 的 Chromium 裡驗證過（stat、列表、區塊讀、分塊寫入、衝突、force、唯讀、刪除；每次同步呼叫約 1–25 ms）；還沒有用一般瀏覽器經 `showDirectoryPicker` 授權的資料夾驗證，網頁版頁面不是 cross-origin isolated 時是否能用 SharedArrayBuffer 也還沒確認（桌面版有開這個功能）。
