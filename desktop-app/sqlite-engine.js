@@ -174,7 +174,7 @@ class SqliteEngine {
     if (c.worker && !c.needsReopen) return;
     c.needsReopen = false; await this._send(c, "open", { path: c.path, readonly: c.readonly, create: false, memory: c.memory });
   }
-  async call(op, args) {
+  async call(op, args, owner) {
     args = args || {};
     switch (op) {
       case "open": {
@@ -182,7 +182,7 @@ class SqliteEngine {
         if (!memory) { const exists = fs.existsSync(p); if (!exists && args.mode !== "new" && !args.create) throw new Error("找不到資料庫檔案：" + p); if (!exists) fs.mkdirSync(path.dirname(p), { recursive: true }); }
         // 同一個檔案已經開著：寫入者只能有一個
         if (!memory && !args.readonly) for (const [id, c] of this.conns) if (c.path === p && !c.readonly) throw new Error("這個檔案已經被另一個連線以可寫方式開著（" + id + "）；先關閉它，或改用唯讀開啟");
-        const db = "db" + (++this.seq); const c = { id: db, path: p, readonly: !!args.readonly, memory, worker: null, pending: new Map(), rid: 0, needsReopen: false };
+        const db = "db" + (++this.seq); const c = { id: db, owner: owner || null, path: p, readonly: !!args.readonly, memory, worker: null, pending: new Map(), rid: 0, needsReopen: false };
         this.conns.set(db, c);
         try { const r = await this._send(c, "open", { path: p, readonly: !!args.readonly, create: args.mode === "new" || !!args.create, memory }); return Object.assign({ db }, r); }
         catch (e) { this.conns.delete(db); if (c.worker) { try { c.worker.terminate(); } catch (_) { /* */ } } throw e; }
@@ -198,13 +198,18 @@ class SqliteEngine {
       }
     }
   }
+  // 渲染行程重新載入或結束時，它開的連線都要收掉（否則檔案一直被鎖著）
+  async closeOwned(owner) { for (const [id, c] of Array.from(this.conns)) if (c.owner === owner) { try { await this.call("close", { db: id }); } catch (_) { /* 盡力 */ } } }
   async closeAll() { for (const id of Array.from(this.conns.keys())) { try { await this.call("close", { db: id }); } catch (_) { /* 盡力 */ } } }
 }
 
 function register(ipcMain, opts) {
   const eng = new SqliteEngine(opts);
-  ipcMain.handle("fa:sql:call", async (_evt, { op, args } = {}) => {
-    try { return { ok: true, ...(await eng.call(op, args)) }; }
+  const hooked = new Set();
+  ipcMain.handle("fa:sql:call", async (evt, { op, args } = {}) => {
+    const sender = evt && evt.sender; const owner = sender ? sender.id : null;
+    if (sender && !hooked.has(owner)) { hooked.add(owner); const drop = () => eng.closeOwned(owner); sender.on("destroyed", () => { hooked.delete(owner); drop(); }); sender.on("did-start-navigation", (...a) => { const d = a[0]; const main = d && typeof d === "object" && "isMainFrame" in d ? d.isMainFrame && !d.isSameDocument : (a[3] === true && a[2] !== true); if (main) drop(); }); }
+    try { return { ok: true, ...(await eng.call(op, args, owner)) }; }
     catch (e) { return { ok: false, error: String((e && e.message) || e), code: e && e.code }; }
   });
   return eng;
