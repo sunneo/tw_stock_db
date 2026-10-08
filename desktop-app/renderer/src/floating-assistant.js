@@ -11983,6 +11983,327 @@ const holder = {};
 return holder.FaSqliteShell;
 })();
 /* SQLSH-END */
+/* SQLBC-BEGIN */
+const FaSqliteBrowserCore = (function () {
+const holder = {};
+(function (module, self) {
+/* sqlitebrowser 的純函式部分（UMD）：欄位標頭過濾語法、DDL 預覽、儲存格顯示與輸入、危險語句判斷、匯出。
+ * 介面（DOM）在 browser_ui.js；這裡不碰 DOM，所以可以直接測。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./sql_split.js'));
+    else root.FaSqliteBrowserCore = factory(typeof FaSqlSplit !== 'undefined' ? FaSqlSplit : root.FaSqlSplit);
+})(typeof self !== 'undefined' ? self : this, function (SPLIT) {
+    'use strict';
+    const quoteIdent = (s) => '"' + String(s).replace(/"/g, '""') + '"';
+    const isNum = (s) => /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(String(s).trim());
+    const num = (s) => (isNum(s) ? Number(s) : s);
+
+    // 欄位標頭的過濾框：abc→含有；=abc→相等；<>x；>5 >=5 <5 <=5；a..b→範圍；*.c ?x→GLOB；NULL／!NULL；/regex/→本頁過濾（JS 端）
+    function parseFilter(text) {
+        const s = String(text == null ? '' : text); const t = s.trim(); if (!t) return null;
+        if (/^null$/i.test(t)) return { op: 'null' }; if (/^!null$/i.test(t)) return { op: 'notnull' };
+        let m;
+        if ((m = /^\/(.+)\/([a-z]*)$/.exec(t))) { try { new RegExp(m[1], m[2]); return { op: 'regex', value: m[1], flags: m[2] || 'i', local: true }; } catch (_) { return { op: 'like', value: t }; } }
+        if ((m = /^(>=|<=|<>|!=|>|<|=)\s*([\s\S]*)$/.exec(t))) { const map = { '>=': 'ge', '<=': 'le', '<>': 'ne', '!=': 'ne', '>': 'gt', '<': 'lt', '=': 'eq' }; const v = m[2]; if (v === '' && m[1] === '=') return { op: 'eq', value: '' }; if (v === '') return null; return { op: map[m[1]], value: num(v) }; }
+        if ((m = /^(.+?)\.\.(.+)$/.exec(t)) && !/[*?]/.test(t)) return { op: 'between', value: num(m[1].trim()), value2: num(m[2].trim()) };
+        if (/[*?]/.test(t)) return { op: 'glob', value: t };
+        return { op: 'like', value: t };
+    }
+    // 把一組 {欄名: 輸入文字} 轉成引擎 query 用的 filters；regex 類回傳在 local 裡（只能對已載入的頁面過濾）
+    function buildFilters(map) {
+        const filters = [], local = [];
+        for (const [col, txt] of Object.entries(map || {})) { const f = parseFilter(txt); if (!f) continue; if (f.local) local.push({ col, regex: new RegExp(f.value, f.flags) }); else filters.push(Object.assign({ col }, f)); }
+        return { filters, local };
+    }
+
+    // ---- DDL 預覽（所有結構操作先顯示 SQL 再確認）----
+    const colDef = (c) => quoteIdent(c.name) + (c.type ? ' ' + c.type : '') + (c.pk ? ' PRIMARY KEY' + (c.autoinc ? ' AUTOINCREMENT' : '') : '') + (c.notnull && !c.pk ? ' NOT NULL' : '') + (c.unique && !c.pk ? ' UNIQUE' : '') + (c.dflt != null && c.dflt !== '' ? ' DEFAULT ' + c.dflt : '');
+    const ddlCreateTable = (name, cols) => 'CREATE TABLE ' + quoteIdent(name) + ' (\n  ' + cols.map(colDef).join(',\n  ') + '\n);';
+    const ddlAddColumn = (table, c) => 'ALTER TABLE ' + quoteIdent(table) + ' ADD COLUMN ' + colDef(Object.assign({}, c, { pk: false })) + ';';
+    const ddlDropColumn = (table, col) => 'ALTER TABLE ' + quoteIdent(table) + ' DROP COLUMN ' + quoteIdent(col) + ';';
+    const ddlRenameColumn = (table, from, to) => 'ALTER TABLE ' + quoteIdent(table) + ' RENAME COLUMN ' + quoteIdent(from) + ' TO ' + quoteIdent(to) + ';';
+    const ddlRenameTable = (from, to) => 'ALTER TABLE ' + quoteIdent(from) + ' RENAME TO ' + quoteIdent(to) + ';';
+    const ddlCreateIndex = (name, table, cols, unique) => 'CREATE ' + (unique ? 'UNIQUE ' : '') + 'INDEX ' + quoteIdent(name) + ' ON ' + quoteIdent(table) + ' (' + cols.map(quoteIdent).join(', ') + ');';
+    const ddlDrop = (kind, name) => 'DROP ' + String(kind).toUpperCase() + ' ' + quoteIdent(name) + ';';
+
+    // ---- 語句分類 ----
+    function stripLead(sql) { return String(sql).replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, ''); }
+    function classify(sql) {
+        const s = stripLead(sql); const w = (/^[A-Za-z]+/.exec(s) || [''])[0].toUpperCase();
+        if (/^(SELECT|WITH|VALUES|EXPLAIN)$/.test(w)) return 'read'; if (w === 'PRAGMA') return /=|\(/.test(s) ? 'write' : 'read';
+        if (/^(INSERT|UPDATE|DELETE|REPLACE)$/.test(w)) return 'write'; if (/^(CREATE|DROP|ALTER|REINDEX|VACUUM|ANALYZE)$/.test(w)) return 'ddl'; if (/^(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)$/.test(w)) return 'txn'; return 'other';
+    }
+    // 危險語句：DROP，或沒有 WHERE 的 DELETE／UPDATE
+    function isDangerous(sql) {
+        const out = []; for (const st of SPLIT.split(sql)) { const s = stripLead(st); if (/^DROP\b/i.test(s)) out.push('DROP：' + s.slice(0, 60)); else if (/^(DELETE|UPDATE)\b/i.test(s) && !/\bWHERE\b/i.test(s.replace(/'(?:[^']|'')*'/g, "''"))) out.push('沒有 WHERE 的 ' + (/^DELETE/i.test(s) ? 'DELETE' : 'UPDATE') + '：' + s.slice(0, 60)); }
+        return out;
+    }
+
+    // ---- 儲存格 ----
+    const b64len = (b) => Math.floor(String(b).length * 3 / 4) - (String(b).endsWith('==') ? 2 : String(b).endsWith('=') ? 1 : 0);
+    function cellDisplay(v, max) {
+        max = max || 200;
+        if (v === null || v === undefined) return { text: 'NULL', cls: 'null', full: null };
+        if (v && typeof v === 'object' && v.$blob !== undefined) return { text: '[BLOB ' + b64len(v.$blob) + ' 位元組]', cls: 'blob', full: v };
+        if (v && typeof v === 'object' && v.$int !== undefined) return { text: String(v.$int), cls: 'num', full: v };
+        if (v && typeof v === 'object' && v.$real !== undefined) return { text: String(v.$real), cls: 'num', full: v };
+        if (typeof v === 'number') return { text: String(v), cls: 'num', full: v };
+        const s = String(v); const one = s.replace(/\s*\n\s*/g, ' ⏎ '); return { text: one.length > max ? one.slice(0, max) + '…' : one, cls: s.length > max || /\n/.test(s) ? 'long' : 'text', full: s };
+    }
+    // 使用者輸入 → 要綁定的值。型別依欄位宣告的親和性；空字串在數值欄位視為 NULL；"NULL"（含大寫）要用「Set NULL」按鈕，避免誤把文字 NULL 當空值
+    function parseCellInput(text, declType) {
+        const s = String(text == null ? '' : text); const t = String(declType || '').toUpperCase();
+        if (/INT/.test(t)) { if (s.trim() === '') return null; if (/^-?\d+$/.test(s.trim())) { const n = Number(s.trim()); return Number.isSafeInteger(n) ? n : { $int: s.trim() }; } if (isNum(s)) return Number(s); return s; }
+        if (/REAL|FLOA|DOUB|NUM|DEC/.test(t)) { if (s.trim() === '') return null; return isNum(s) ? Number(s) : s; }
+        if (/BLOB/.test(t)) { if (/^x'([0-9a-f]{2})*'$/i.test(s.trim())) { const hex = s.trim().slice(2, -1); let bin = ''; for (let i = 0; i < hex.length; i += 2) bin += String.fromCharCode(parseInt(hex.substr(i, 2), 16)); return { $blob: typeof btoa === 'function' ? btoa(bin) : Buffer.from(bin, 'binary').toString('base64') }; } return s; }
+        return s;
+    }
+    function hexDump(b64, maxBytes) {
+        const bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary'); const n = Math.min(bin.length, maxBytes || 4096); const lines = [];
+        for (let i = 0; i < n; i += 16) { let hex = '', asc = ''; for (let j = 0; j < 16; j++) { if (i + j < n) { const c = bin.charCodeAt(i + j); hex += c.toString(16).padStart(2, '0') + ' '; asc += c >= 32 && c < 127 ? bin[i + j] : '.'; } else hex += '   '; } lines.push(i.toString(16).padStart(8, '0') + '  ' + hex + ' ' + asc); }
+        if (bin.length > n) lines.push('… 還有 ' + (bin.length - n) + ' 位元組'); return lines.join('\n');
+    }
+    function imageType(b64) { const h = String(b64).slice(0, 16); if (h.startsWith('iVBORw0KGgo')) return 'image/png'; if (h.startsWith('/9j/')) return 'image/jpeg'; if (h.startsWith('R0lGOD')) return 'image/gif'; if (h.startsWith('UklGR')) return 'image/webp'; return null; }
+
+    // ---- 匯出 ----
+    const csvEsc = (s) => (/[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
+    const plain = (v) => (v === null || v === undefined ? '' : (v && typeof v === 'object') ? (v.$blob !== undefined ? '' : String(v.$int !== undefined ? v.$int : v.$real)) : String(v));
+    const toCsv = (cols, rows) => [cols.map(csvEsc).join(',')].concat(rows.map((r) => r.map((v) => csvEsc(plain(v))).join(','))).join('\r\n') + '\r\n';
+    const toJson = (cols, rows) => JSON.stringify(rows.map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i] && typeof r[i] === 'object' && r[i].$int !== undefined ? r[i].$int : (r[i] && typeof r[i] === 'object' && r[i].$real !== undefined ? Number(r[i].$real) : r[i]) ]))), null, 2);
+    const toMarkdown = (cols, rows) => '| ' + cols.join(' | ') + ' |\n|' + cols.map(() => '---').join('|') + '|\n' + rows.map((r) => '| ' + r.map((v) => plain(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n') + '\n';
+
+    // 編輯用的 WHERE：有 rowid 用 rowid，否則用主鍵欄位；兩者都沒有就不能編輯
+    function rowKey(tableInfo, cols, row, hasRowid) {
+        if (hasRowid) { const i = cols.indexOf('__rowid__'); if (i >= 0) return { sql: 'rowid = ?', bind: [row[i]] }; }
+        const pks = (tableInfo.columns || []).filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk); if (!pks.length) return null;
+        const parts = [], bind = []; for (const p of pks) { const i = cols.indexOf(p.name); if (i < 0) return null; parts.push(quoteIdent(p.name) + ' = ?'); bind.push(row[i]); }
+        return { sql: parts.join(' AND '), bind };
+    }
+    return { quoteIdent, parseFilter, buildFilters, ddlCreateTable, ddlAddColumn, ddlDropColumn, ddlRenameColumn, ddlRenameTable, ddlCreateIndex, ddlDrop, classify, isDangerous, cellDisplay, parseCellInput, hexDump, imageType, toCsv, toJson, toMarkdown, rowKey, stripLead };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSqliteBrowserCore;
+})();
+/* SQLBC-END */
+/* SQLBU-BEGIN */
+const FaSqliteBrowser = (function () {
+const holder = {};
+(function (module, self) {
+/* sqlitebrowser 視窗（DOM）：資料庫結構／瀏覽資料／執行 SQL／Pragmas。純瀏覽器程式，不依賴宿主內部——宿主只要給 host 物件：
+ *   host.openDb(ref, {readonly}) -> Promise<{db, label, readonly, commit(), close()}>
+ *   host.call(op, args)          -> Promise<引擎結果>（exec／query／schema／pragma／status／cancel）
+ *   host.download(name, text, mime)  host.pickFile() -> Promise<{name, bytes}|null>
+ * 編輯一律先在開著的交易裡暫存（粗體標示），按 Write Changes 才 COMMIT 並寫回來源；Revert 回滾。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./browser_core.js'));
+    else root.FaSqliteBrowser = factory(typeof FaSqliteBrowserCore !== 'undefined' ? FaSqliteBrowserCore : root.FaSqliteBrowserCore);
+})(typeof self !== 'undefined' ? self : this, function (C) {
+    'use strict';
+    const SPLIT = typeof FaSqlSplit !== 'undefined' ? FaSqlSplit : (typeof require === 'function' ? require('./sql_split.js') : null);
+    const Z = 2147482550; // 高於終端機、AIDoc 檢視器等浮動視窗，低於全域對話框
+    const CSS = `.fsb{position:fixed;display:flex;flex-direction:column;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5);font:13px/1.4 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;overflow:hidden}
+.fsb *{box-sizing:border-box}.fsb button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}.fsb button:hover{background:#30363d}.fsb button:disabled{opacity:.4;cursor:default}
+.fsb button.pri{background:#238636;border-color:#2ea043}.fsb button.warn{background:#9e6a03;border-color:#bb8009}.fsb button.bad{background:#b62324;border-color:#da3633}
+.fsb input,.fsb select,.fsb textarea{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:3px 6px;font:inherit}
+.fsb .bar{display:flex;align-items:center;gap:8px;padding:5px 8px;background:#161b22;cursor:move;user-select:none;flex:none}.fsb .bar b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fsb .badge{font-size:11px;padding:1px 7px;border-radius:9px;background:#1f6feb33;color:#79c0ff}.fsb .dirty{background:#bb800933;color:#e3b341}
+.fsb .main{display:flex;flex:1;min-height:0}.fsb .tree{width:210px;overflow:auto;border-right:1px solid #30363d;padding:6px;flex:none;background:#0d1117}
+.fsb .tree div{padding:2px 6px;border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fsb .tree div:hover{background:#161b22}.fsb .tree div.on{background:#1f6feb44}.fsb .tree h4{margin:8px 0 3px;font-size:11px;color:#8b949e;text-transform:uppercase}
+.fsb .right{flex:1;display:flex;flex-direction:column;min-width:0}.fsb .tabs{display:flex;gap:2px;padding:4px 6px 0;border-bottom:1px solid #30363d;flex:none}.fsb .tabs span{padding:5px 12px;cursor:pointer;border-radius:5px 5px 0 0;color:#8b949e}.fsb .tabs span.on{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-bottom-color:#161b22;margin-bottom:-1px}
+.fsb .pane{flex:1;min-height:0;display:none;flex-direction:column;overflow:hidden}.fsb .pane.on{display:flex}.fsb .tool{display:flex;gap:6px;align-items:center;padding:6px;flex-wrap:wrap;flex:none}
+.fsb .gridw{flex:1;overflow:auto;min-height:0}.fsb table{border-collapse:collapse;font-size:12.5px}.fsb th,.fsb td{border:1px solid #30363d;padding:2px 7px;white-space:nowrap;max-width:420px;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.fsb th{background:#161b22;position:sticky;top:0;z-index:1;cursor:pointer}.fsb tr.flt th{top:25px;padding:1px}.fsb tr.flt input{width:100%;min-width:60px;border-radius:0;border:0;background:#0d1117}
+.fsb td.null{color:#6e7681;font-style:italic}.fsb td.blob{color:#d2a8ff}.fsb td.num{text-align:right;color:#79c0ff}.fsb td.long{color:#ffa657}.fsb td.chg{font-weight:700;background:#bb800926}.fsb tr.sel td{background:#1f6feb33}
+.fsb .stat{display:flex;gap:14px;padding:3px 8px;background:#161b22;border-top:1px solid #30363d;font-size:12px;color:#8b949e;flex:none}.fsb .stat span:first-child{flex:1}
+.fsb textarea.sql{width:100%;height:150px;font-family:ui-monospace,Consolas,monospace;resize:vertical;flex:none}.fsb pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,Consolas,monospace}
+.fsb .res{flex:1;overflow:auto;padding:6px;min-height:0}.fsb .err{color:#ff7b72}.fsb .ok{color:#7ee787}.fsb .mut{color:#8b949e}
+.fsb .modal{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:5}.fsb .modal>div{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;min-width:360px;max-width:80%;max-height:80%;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.fsb .rz{position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,#6e7681 50%)}`;
+    function h(tag, attrs) { const e = document.createElement(tag); if (attrs) for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v); } for (let i = 2; i < arguments.length; i++) { const c = arguments[i]; if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c))); } return e; }
+    const reg = new Map();
+    const cellStr = (v) => (v == null ? '' : (typeof v === 'object' && v.$int !== undefined ? String(v.$int) : String(v)));
+
+    function open(host, ref, opts) {
+        opts = opts || {}; const key = String(ref) + (opts.readonly ? '#ro' : ''); const prev = reg.get(key); if (prev && prev.win.isConnected) { prev.win.style.zIndex = String(Z); return prev.api; }
+        if (!document.getElementById('fsb-css')) document.head.appendChild(h('style', { id: 'fsb-css', text: CSS }));
+        const st = { handle: null, db: null, ro: !!opts.readonly, schema: null, table: null, tab: 'browse', page: 0, pageSize: 100, filters: {}, sort: [], total: null, cols: [], rows: [], hasRowid: false, inTxn: false, changes: 0, sel: new Set(), chg: new Set(), hist: [], lastRes: null };
+        const win = h('div', { class: 'fsb' }); win.style.cssText = 'left:6vw;top:5vh;width:88vw;height:84vh;min-width:520px;min-height:340px;z-index:' + Z;
+        const title = h('b', { text: '🗄 ' + ref }); const badge = h('span', { class: 'badge', text: '連線中…' }); const dirtyB = h('span', { class: 'badge dirty', text: '' }); dirtyB.style.display = 'none';
+        const bWrite = h('button', { class: 'pri', title: 'COMMIT 並寫回來源 (Ctrl+S)', text: 'Write Changes' }), bRev = h('button', { title: '回滾所有暫存變更', text: 'Revert' }), bRef = h('button', { title: '重新載入', text: '↻' }), bMax = h('button', { text: '🗖' }), bX = h('button', { text: '✕' });
+        const bar = h('div', { class: 'bar' }, title, badge, dirtyB, bWrite, bRev, bRef, bMax, bX);
+        const tree = h('div', { class: 'tree' }); const tabs = h('div', { class: 'tabs' }); const panes = {};
+        const TABS = [['struct', 'Database Structure'], ['browse', 'Browse Data'], ['sql', 'Execute SQL'], ['pragma', 'Pragmas']];
+        for (const [id, label] of TABS) { tabs.append(h('span', { 'data-t': id, text: label, onclick: () => setTab(id) })); panes[id] = h('div', { class: 'pane' }); }
+        const stat1 = h('span', { text: '' }), stat2 = h('span', { text: '' }); const stat = h('div', { class: 'stat' }, stat1, stat2);
+        const right = h('div', { class: 'right' }, tabs, panes.struct, panes.browse, panes.sql, panes.pragma);
+        win.append(bar, h('div', { class: 'main' }, tree, right), stat, h('div', { class: 'rz' }));
+        document.body.appendChild(win);
+        const say = (m, bad) => { stat1.textContent = m; stat1.style.color = bad ? '#ff7b72' : ''; };
+        const q = C.quoteIdent;
+        const call = async (op, args) => host.call(op, Object.assign({ db: st.db }, args || {}));
+        const exec = async (sql, bind, o) => { const r = await call('exec', Object.assign({ sql, bind, limit: 1000 }, o || {})); return r.results; };
+        const modal = (heading, body, buttons) => new Promise((resolve) => { const m = h('div', { class: 'modal' }); const box = h('div', null, h('b', { text: heading }), body); const row = h('div', { style: 'display:flex;gap:8px;justify-content:flex-end' }); for (const [id, label, cls] of buttons) row.append(h('button', { class: cls || '', text: label, onclick: () => { m.remove(); resolve(id); } })); box.append(row); m.append(box); win.append(m); const f = box.querySelector('input,textarea'); if (f) f.focus(); });
+        const confirmSql = async (sql, why) => { const danger = C.isDangerous(sql); const pre = h('pre', { text: sql }); const body = h('div', null, h('div', { class: 'mut', text: why || '將執行下列 SQL：' }), pre); if (danger.length) body.append(h('div', { class: 'err', text: '⚠ ' + danger.join('；') })); return (await modal('確認', body, [['no', '取消'], ['yes', '執行', danger.length ? 'bad' : 'pri']])) === 'yes'; };
+        function markDirty() { dirtyB.style.display = st.inTxn ? '' : 'none'; dirtyB.textContent = '● 有未寫回的變更' + (st.changes ? '（' + st.changes + '）' : ''); bWrite.disabled = !st.inTxn; bRev.disabled = !st.inTxn; }
+        async function ensureTxn() { if (!st.inTxn) { const r = await exec('BEGIN'); if (r[0] && r[0].error) throw new Error(r[0].error); st.inTxn = true; } }
+        async function run(sql, bind) { // 寫入類：先進交易暫存
+            await ensureTxn(); const r = await exec(sql, bind); const e = r.find((x) => x.error); if (e) throw new Error(e.error); st.changes += r.reduce((n, x) => n + (x.changes || 0), 0); markDirty(); return r;
+        }
+        async function loadSchema() { st.schema = await call('schema'); const names = st.schema.tables.map((t) => t.name); if (!st.table || !names.includes(st.table)) st.table = names[0] || null; drawTree(); }
+        function drawTree() {
+            tree.textContent = ''; const sec = (label, items, fn) => { if (!items.length) return; tree.append(h('h4', { text: label + '（' + items.length + '）' })); for (const it of items) tree.append(h('div', { class: it.name === st.table && fn ? 'on' : '', title: it.name, text: it.name + (it.rows != null ? '  ' + it.rows : ''), onclick: fn ? () => { st.table = it.name; st.page = 0; st.filters = {}; st.sort = []; st.sel.clear(); drawTree(); if (st.tab === 'struct') drawStruct(); else setTab('browse'); } : () => { setTab('struct'); } })); };
+            sec('Tables', st.schema.tables, true); sec('Views', st.schema.views.map((v) => ({ name: v.name })), true); sec('Indices', st.schema.indices); sec('Triggers', st.schema.triggers);
+        }
+        function setTab(id) { st.tab = id; for (const s of tabs.children) s.classList.toggle('on', s.dataset.t === id); for (const [k, p] of Object.entries(panes)) p.classList.toggle('on', k === id); ({ struct: drawStruct, browse: drawBrowse, sql: drawSql, pragma: drawPragma })[id](); }
+
+        // ===== 結構 =====
+        function drawStruct() {
+            const p = panes.struct; p.textContent = ''; const tools = h('div', { class: 'tool' });
+            const bNew = h('button', { text: '＋ 新增資料表', disabled: st.ro, onclick: newTable }); const bIdx = h('button', { text: '＋ 新增索引', disabled: st.ro || !st.table, onclick: newIndex }); const bAdd = h('button', { text: '＋ 加欄位', disabled: st.ro || !st.table, onclick: addColumn }); const bDrop = h('button', { class: 'bad', text: '🗑 刪除…', disabled: st.ro, onclick: dropObject });
+            tools.append(bNew, bAdd, bIdx, bDrop); const w = h('div', { class: 'res' });
+            for (const t of st.schema.tables) { w.append(h('h4', { text: t.name + (t.virtual ? '（虛擬）' : '') + (t.rows != null ? '  ' + t.rows + ' 列' : '') })); const tb = h('table'); tb.append(h('tr', null, ...['欄位', '型別', 'PK', 'NOT NULL', '預設'].map((x) => h('th', { text: x })))); for (const c of t.columns) tb.append(h('tr', null, h('td', { text: c.name }), h('td', { text: c.type }), h('td', { text: c.pk ? String(c.pk) : '' }), h('td', { text: c.notnull ? '✓' : '' }), h('td', { text: c.dflt == null ? '' : String(c.dflt) }))); w.append(tb, h('pre', { class: 'mut', text: t.sql || '' })); }
+            for (const x of [].concat(st.schema.views.map((v) => ['View', v]), st.schema.indices.map((v) => ['Index', v]), st.schema.triggers.map((v) => ['Trigger', v]))) w.append(h('h4', { text: x[0] + '：' + x[1].name }), h('pre', { class: 'mut', text: x[1].sql || '' }));
+            p.append(tools, w);
+        }
+        async function applyDdl(sql, why) { if (!(await confirmSql(sql, why))) return false; try { await run(sql); await loadSchema(); setTab(st.tab); say('已執行（暫存中，按 Write Changes 寫回）'); return true; } catch (e) { say(String(e.message || e), true); return false; } }
+        async function newTable() {
+            const name = h('input', { placeholder: '資料表名稱', style: 'width:100%' }); const cols = h('textarea', { rows: 6, style: 'width:100%;font-family:monospace', placeholder: '每行一個欄位：名稱 型別 [pk] [notnull] [unique] [default 值]\nid INTEGER pk\nname TEXT notnull' }); cols.value = 'id INTEGER pk\nname TEXT';
+            if ((await modal('新增資料表', h('div', null, name, cols), [['no', '取消'], ['ok', '預覽 SQL', 'pri']])) !== 'ok' || !name.value.trim()) return;
+            const defs = cols.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const w = l.split(/\s+/); const o = { name: w[0], type: /^(pk|notnull|unique|default)$/i.test(w[1] || '') ? '' : (w[1] || '') }; for (let i = 1; i < w.length; i++) { const f = w[i].toLowerCase(); if (f === 'pk') o.pk = true; else if (f === 'notnull') o.notnull = true; else if (f === 'unique') o.unique = true; else if (f === 'default') o.dflt = w[++i]; } return o; });
+            await applyDdl(C.ddlCreateTable(name.value.trim(), defs)); setTab('struct');
+        }
+        async function addColumn() { const n = h('input', { placeholder: '欄位名稱' }), ty = h('input', { placeholder: '型別（如 TEXT）', value: 'TEXT' }); if ((await modal('在「' + st.table + '」加欄位', h('div', null, n, ty), [['no', '取消'], ['ok', '預覽 SQL', 'pri']])) === 'ok' && n.value.trim()) await applyDdl(C.ddlAddColumn(st.table, { name: n.value.trim(), type: ty.value.trim() })); }
+        async function newIndex() { const t = st.schema.tables.find((x) => x.name === st.table); if (!t) return; const n = h('input', { placeholder: '索引名稱', value: 'idx_' + t.name + '_' }), c = h('input', { placeholder: '欄位，以逗號分隔' }), u = h('input', { type: 'checkbox' }); if ((await modal('在「' + t.name + '」建索引', h('div', null, n, c, h('label', null, u, ' UNIQUE')), [['no', '取消'], ['ok', '預覽 SQL', 'pri']])) === 'ok' && n.value.trim() && c.value.trim()) await applyDdl(C.ddlCreateIndex(n.value.trim(), t.name, c.value.split(',').map((x) => x.trim()).filter(Boolean), u.checked)); }
+        async function dropObject() { const opts = [].concat(st.schema.tables.map((t) => ['table', t.name]), st.schema.views.map((t) => ['view', t.name]), st.schema.indices.map((t) => ['index', t.name]), st.schema.triggers.map((t) => ['trigger', t.name])); const sel = h('select', null, ...opts.map((o, i) => h('option', { value: String(i), text: o[0] + ' ' + o[1] }))); if ((await modal('刪除哪一個？', sel, [['no', '取消'], ['ok', '預覽 SQL', 'bad']])) === 'ok') { const o = opts[Number(sel.value)]; if (o) await applyDdl(C.ddlDrop(o[0], o[1])); } }
+
+        // ===== 瀏覽資料 =====
+        function cell(v, editable, ri, ci) {
+            const d = C.cellDisplay(v); const td = h('td', { class: d.cls + (st.chg.has(ri + ':' + ci) ? ' chg' : ''), title: d.cls === 'long' || d.cls === 'blob' ? '雙擊檢視／編輯' : '雙擊編輯', text: d.text });
+            td.addEventListener('dblclick', () => (editable ? editCell(td, v, ri, ci) : viewCell(v))); return td;
+        }
+        async function viewCell(v) { const d = C.cellDisplay(v, 1e9); const body = h('div'); if (v && v.$blob !== undefined) { const it = C.imageType(v.$blob); if (it) body.append(h('img', { src: 'data:' + it + ';base64,' + v.$blob, style: 'max-width:520px;max-height:320px' })); body.append(h('pre', { text: C.hexDump(v.$blob, 2048) })); } else body.append(h('pre', { text: d.full == null ? 'NULL' : String(d.full) })); await modal('儲存格內容', body, [['ok', '關閉']]); }
+        function editCell(td, v, ri, ci) {
+            const col = st.cols[ci]; if (col === '__rowid__') return; const info = (st.schema.tables.find((t) => t.name === st.table) || { columns: [] }).columns.find((c) => c.name === col); const d = C.cellDisplay(v, 1e9);
+            if (v && v.$blob !== undefined) return editBlob(ri, ci);
+            const long = d.cls === 'long' || (typeof d.full === 'string' && d.full.length > 60); const inp = long ? h('textarea', { rows: 6, style: 'width:100%' }) : h('input', { style: 'width:100%' }); inp.value = d.full == null ? '' : String(d.full);
+            const setNull = h('button', { text: 'Set NULL' });
+            (async () => { const choice = await Promise.race([modal('編輯 ' + st.table + '.' + col, h('div', null, inp, h('div', { class: 'mut', text: '型別：' + ((info && info.type) || '（無）') + (info && info.notnull ? '　NOT NULL' : '') })), [['no', '取消'], ['null', 'Set NULL'], ['ok', '確定', 'pri']])]); if (choice === 'no') return; await saveCell(ri, ci, choice === 'null' ? null : C.parseCellInput(inp.value, info && info.type)); })(); void setNull;
+        }
+        async function editBlob(ri, ci) { const f = await host.pickFile(); if (!f) return; let bin = ''; for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, f.bytes.subarray(i, i + 0x8000)); await saveCell(ri, ci, { $blob: btoa(bin) }); }
+        async function saveCell(ri, ci, val) {
+            const info = st.schema.tables.find((t) => t.name === st.table); const key = C.rowKey(info || { columns: [] }, st.cols, st.rows[ri], st.hasRowid); if (!key) return say('這個表沒有 rowid 或主鍵，不能編輯', true);
+            try { await run('UPDATE ' + q(st.table) + ' SET ' + q(st.cols[ci]) + ' = ? WHERE ' + key.sql, [val].concat(key.bind)); st.chg.add(ri + ':' + ci); st.rows[ri][ci] = val; renderGrid(); } catch (e) { say(String(e.message || e), true); }
+        }
+        const gridHost = {};
+        function drawBrowse() {
+            const p = panes.browse; p.textContent = ''; if (!st.table) { p.append(h('div', { class: 'res mut', text: '（沒有資料表）' })); return; }
+            const isView = !st.schema.tables.some((t) => t.name === st.table);
+            const sel = h('select', { onchange: (e) => { st.table = e.target.value; st.page = 0; st.filters = {}; st.sort = []; st.sel.clear(); drawTree(); drawBrowse(); } }, ...st.schema.tables.concat(st.schema.views).map((t) => h('option', { value: t.name, selected: t.name === st.table ? '' : null, text: t.name })));
+            const ps = h('select', { onchange: (e) => { st.pageSize = Number(e.target.value); st.page = 0; fetchPage(); } }, ...[50, 100, 500, 1000].map((n) => h('option', { value: n, selected: n === st.pageSize ? '' : null, text: n + ' 列/頁' })));
+            const prev = h('button', { text: '◀', onclick: () => { if (st.page > 0) { st.page--; fetchPage(); } } }), next = h('button', { text: '▶', onclick: () => { st.page++; fetchPage(); } }); gridHost.pageLabel = h('span', { class: 'mut' });
+            const bNewRow = h('button', { text: '＋ 新增列', disabled: st.ro || isView, onclick: newRecord }), bDel = h('button', { class: 'bad', text: '🗑 刪除選取列', disabled: st.ro || isView, onclick: delSelected }), bExp = h('button', { text: '⬇ 匯出', onclick: exportGrid });
+            p.append(h('div', { class: 'tool' }, sel, ps, prev, gridHost.pageLabel, next, bNewRow, bDel, bExp)); gridHost.wrap = h('div', { class: 'gridw' }); p.append(gridHost.wrap); fetchPage();
+        }
+        let ftimer = null; let gen = 0;
+        async function fetchPage() {
+            const my = ++gen; if (!st.table) return; const { filters, local } = C.buildFilters(st.filters); st.local = local;
+            try {
+                const r = await call('query', { table: st.table, filters, sort: st.sort, offset: st.page * st.pageSize, limit: st.pageSize });
+                if (my !== gen) return; st.cols = r.columns; st.rows = r.rows; st.total = r.total; st.hasRowid = r.hasRowid; st.sel.clear(); renderGrid();
+            } catch (e) { say(String(e.message || e), true); }
+        }
+        function renderGrid() {
+            const w = gridHost.wrap; if (!w) return; w.textContent = ''; const info = st.schema.tables.find((t) => t.name === st.table); const editable = !st.ro && !!info && !!C.rowKey(info, st.cols.length ? st.cols : [], st.rows[0] || [], st.hasRowid) || (!st.ro && !!info && st.rows.length === 0);
+            const vis = st.cols.map((c, i) => i).filter((i) => st.cols[i] !== '__rowid__'); const tb = h('table'); const hr = h('tr'), fr = h('tr', { class: 'flt' });
+            for (const i of vis) { const c = st.cols[i]; const s = st.sort.find((x) => x.col === c); hr.append(h('th', { title: '點擊排序（再點反向、第三次取消）', text: c + (s ? (s.desc ? ' ▼' : ' ▲') : ''), onclick: () => { const cur = st.sort.find((x) => x.col === c); st.sort = !cur ? [{ col: c, desc: false }] : (!cur.desc ? [{ col: c, desc: true }] : []); st.page = 0; fetchPage(); } })); const inp = h('input', { placeholder: '過濾', value: st.filters[c] || '', title: 'abc 含有｜=abc 相等｜<>x｜>5 >=5 <5 <=5｜a..b 範圍｜*.c GLOB｜NULL／!NULL｜/regex/（只過濾本頁）', oninput: (e) => { st.filters[c] = e.target.value; clearTimeout(ftimer); ftimer = setTimeout(() => { st.page = 0; fetchPage(); }, 300); } }); fr.append(h('th', null, inp)); }
+            hr.prepend(h('th', { text: '#' })); fr.prepend(h('th')); tb.append(hr, fr);
+            st.rows.forEach((r, ri) => { if (st.local && st.local.length && !st.local.every((f) => { const i = st.cols.indexOf(f.col); return i >= 0 && f.regex.test(cellStr(r[i])); })) return; const tr = h('tr', { class: st.sel.has(ri) ? 'sel' : '' }); tr.append(h('td', { class: 'mut', text: String(st.page * st.pageSize + ri + 1), onclick: (e) => { if (e.ctrlKey || e.metaKey) { if (st.sel.has(ri)) st.sel.delete(ri); else st.sel.add(ri); } else { st.sel.clear(); st.sel.add(ri); } renderGrid(); } })); for (const i of vis) tr.append(cell(r[i], editable, ri, i)); tb.append(tr); });
+            w.append(tb); const total = st.total == null ? '?' : st.total; gridHost.pageLabel.textContent = (st.rows.length ? st.page * st.pageSize + 1 : 0) + '–' + (st.page * st.pageSize + st.rows.length) + ' / ' + total; stat2.textContent = st.table + (editable ? '' : st.ro ? '（唯讀）' : '（不可編輯：沒有 rowid 或主鍵）');
+        }
+        async function newRecord() {
+            const info = st.schema.tables.find((t) => t.name === st.table); if (!info) return; const inputs = info.columns.filter((c) => !c.hidden).map((c) => ({ c, inp: h('input', { placeholder: (c.type || '') + (c.pk ? ' PK' : '') + (c.dflt != null ? ' 預設 ' + c.dflt : ''), style: 'width:100%' }) }));
+            const grid = h('div', { style: 'display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center' }); for (const x of inputs) grid.append(h('span', { text: x.c.name }), x.inp);
+            if ((await modal('新增列到 ' + st.table, grid, [['no', '取消'], ['ok', '新增', 'pri']])) !== 'ok') return;
+            const used = inputs.filter((x) => x.inp.value !== ''); const sql = used.length ? 'INSERT INTO ' + q(st.table) + ' (' + used.map((x) => q(x.c.name)).join(', ') + ') VALUES (' + used.map(() => '?').join(', ') + ')' : 'INSERT INTO ' + q(st.table) + ' DEFAULT VALUES';
+            try { await run(sql, used.map((x) => C.parseCellInput(x.inp.value, x.c.type))); await loadSchema(); fetchPage(); } catch (e) { say(String(e.message || e), true); }
+        }
+        async function delSelected() {
+            if (!st.sel.size) return say('先點左邊的列號選取（Ctrl 點可多選）', true); const info = st.schema.tables.find((t) => t.name === st.table); const keys = [...st.sel].map((ri) => C.rowKey(info, st.cols, st.rows[ri], st.hasRowid)); if (keys.some((k) => !k)) return say('這個表沒有 rowid 或主鍵，不能刪除', true);
+            if (!(await confirmSql(keys.map((k) => 'DELETE FROM ' + q(st.table) + ' WHERE ' + k.sql + ';  -- ' + JSON.stringify(k.bind)).join('\n'), '將刪除 ' + keys.length + ' 列：'))) return;
+            try { for (const k of keys) await run('DELETE FROM ' + q(st.table) + ' WHERE ' + k.sql, k.bind); await loadSchema(); fetchPage(); } catch (e) { say(String(e.message || e), true); }
+        }
+        async function exportGrid() { const cols = st.cols.filter((c) => c !== '__rowid__'); const idx = cols.map((c) => st.cols.indexOf(c)); const rows = st.rows.map((r) => idx.map((i) => r[i])); const which = await modal('匯出目前這一頁', h('div', { class: 'mut', text: cols.length + ' 欄 × ' + rows.length + ' 列' }), [['no', '取消'], ['csv', 'CSV'], ['json', 'JSON'], ['md', 'Markdown']]); if (which === 'csv') host.download(st.table + '.csv', C.toCsv(cols, rows), 'text/csv'); else if (which === 'json') host.download(st.table + '.json', C.toJson(cols, rows), 'application/json'); else if (which === 'md') host.download(st.table + '.md', C.toMarkdown(cols, rows), 'text/markdown'); }
+
+        // ===== Execute SQL =====
+        function drawSql() {
+            const p = panes.sql; if (p.firstChild) return; const ta = h('textarea', { class: 'sql', placeholder: '輸入 SQL。Ctrl+Enter＝全部執行；選取一段只執行選取的部分。', spellcheck: 'false' }); const res = h('div', { class: 'res' });
+            const go = async (explain) => { let sql = ta.value.slice(ta.selectionStart === ta.selectionEnd ? 0 : ta.selectionStart, ta.selectionStart === ta.selectionEnd ? undefined : ta.selectionEnd); if (!sql.trim()) return; if (explain) sql = sql.split(/;\s*\n?/)[0]; if (explain) sql = 'EXPLAIN QUERY PLAN ' + sql; const dg = C.isDangerous(sql); if (dg.length && !(await confirmSql(sql, '這段 SQL 有危險語句：'))) return; await runUser(sql, res, 1000); st.hist.unshift(sql); };
+            ta.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); go(false); } });
+            const hist = h('select', { onchange: (e) => { if (e.target.value) ta.value = st.hist[Number(e.target.value) - 1]; e.target.value = ''; } }, h('option', { value: '', text: '歷史…' })); hist.addEventListener('focus', () => { hist.textContent = ''; hist.append(h('option', { value: '', text: '歷史…' })); st.hist.slice(0, 30).forEach((s, i) => hist.append(h('option', { value: String(i + 1), text: s.replace(/\s+/g, ' ').slice(0, 80) }))); });
+            const bStop = h('button', { text: '■ 取消', onclick: async () => { try { await call('cancel'); say('已取消（未提交的變更已自動回滾）', true); st.inTxn = false; st.changes = 0; markDirty(); } catch (e) { say(String(e.message || e), true); } } });
+            const bEx = h('button', { text: '⬇ 匯出結果', onclick: async () => { const r = st.lastRes; if (!r) return; const w = await modal('匯出最後一個結果', h('div'), [['no', '取消'], ['csv', 'CSV'], ['json', 'JSON'], ['md', 'Markdown']]); if (w === 'csv') host.download('result.csv', C.toCsv(r.columns, r.rows), 'text/csv'); else if (w === 'json') host.download('result.json', C.toJson(r.columns, r.rows), 'application/json'); else if (w === 'md') host.download('result.md', C.toMarkdown(r.columns, r.rows), 'text/markdown'); } });
+            p.append(h('div', { class: 'tool' }, h('button', { class: 'pri', text: '▶ 執行 (Ctrl+Enter)', onclick: () => go(false) }), h('button', { text: 'Explain', onclick: () => go(true) }), bStop, hist, bEx), h('div', { style: 'padding:0 6px;flex:none' }, ta), res);
+            panes.sql._ta = ta;
+        }
+        async function runUser(sql, res, limit) {
+            res.textContent = ''; const t0 = Date.now(); let out;
+            const kinds = SPLIT.split(sql).map((s) => C.classify(s)); const needTxn = kinds.some((k) => k === 'write' || k === 'ddl') && !st.ro && !kinds.includes('txn');
+            try { if (needTxn) await ensureTxn(); out = await exec(sql, undefined, { limit }); } catch (e) { res.append(h('div', { class: 'err', text: String(e.message || e) })); return; }
+            if (kinds.includes('txn')) { const last = SPLIT.split(sql).map((s) => /^\s*(BEGIN|COMMIT|END|ROLLBACK)/i.exec(C.stripLead(s))).filter(Boolean).pop(); if (last) st.inTxn = /^BEGIN/i.test(last[1]); if (!st.inTxn) st.changes = 0; }
+            let last = null;
+            out.forEach((r, i) => {
+                const box = h('div', { style: 'margin-bottom:12px' });
+                if (r.error) box.append(h('div', { class: 'err', text: '語句 ' + (i + 1) + ' 失敗：' + r.error }), h('pre', { class: 'mut', text: r.sql || '' }));
+                else if (r.columns && r.columns.length) { const tb = h('table'); tb.append(h('tr', null, ...r.columns.map((c) => h('th', { text: c })))); r.rows.forEach((row) => tb.append(h('tr', null, ...row.map((v) => { const d = C.cellDisplay(v); return h('td', { class: d.cls, title: d.cls === 'long' || d.cls === 'blob' ? '雙擊檢視' : '', text: d.text, ondblclick: () => viewCell(v) }); })))); box.append(h('div', { class: 'ok', text: r.rows.length + ' 列' + (r.truncated ? '（只顯示前 ' + limit + ' 列）' : '') + '　' + r.ms + ' ms' }), h('div', { style: 'overflow:auto;max-height:60vh' }, tb)); if (r.truncated) box.append(h('button', { text: 'Show 10× more', onclick: () => runUser(sql, res, Math.min(limit * 10, 1000000)) })); last = r; }
+                else { box.append(h('div', { class: 'ok', text: '語句 ' + (i + 1) + '：影響 ' + (r.changes || 0) + ' 列　' + r.ms + ' ms' })); if (r.changes) st.changes += r.changes; }
+                res.append(box);
+            });
+            if (last) st.lastRes = last; markDirty(); if (kinds.some((k) => k === 'ddl' || k === 'write')) { await loadSchema(); }
+            say('完成　' + (Date.now() - t0) + ' ms');
+        }
+
+        // ===== Pragmas =====
+        const PRAGMAS = ['foreign_keys', 'journal_mode', 'synchronous', 'cache_size', 'page_size', 'user_version', 'application_id', 'auto_vacuum', 'encoding', 'busy_timeout', 'temp_store', 'locking_mode', 'secure_delete', 'recursive_triggers'];
+        async function drawPragma() {
+            const p = panes.pragma; p.textContent = ''; const w = h('div', { class: 'res' }); const tb = h('table'); tb.append(h('tr', null, h('th', { text: 'PRAGMA' }), h('th', { text: '值' }), h('th'))); w.append(tb);
+            for (const n of PRAGMAS) { let v = ''; try { const r = await call('pragma', { name: n }); v = r.rows[0] ? String(r.rows[0][0]) : ''; } catch (_) { v = '（讀取失敗）'; } const inp = h('input', { value: v, disabled: st.ro }); tb.append(h('tr', null, h('td', { text: n }), h('td', null, inp), h('td', null, h('button', { text: '設定', disabled: st.ro, onclick: async () => { try { await call('pragma', { name: n, value: /^-?\d+$/.test(inp.value) ? Number(inp.value) : inp.value }); say('已設定 ' + n); } catch (e) { say(String(e.message || e), true); } } })))); }
+            const out = h('pre', { class: 'mut' }); const chk = h('button', { text: '整合性檢查 (integrity_check)', onclick: async () => { out.textContent = '檢查中…'; try { const r = await exec('PRAGMA integrity_check'); out.textContent = r[0].rows.map((x) => x[0]).join('\n'); } catch (e) { out.textContent = String(e.message || e); } } });
+            p.append(h('div', { class: 'tool' }, chk), w, h('div', { class: 'res' }, out));
+        }
+
+        // ===== 視窗行為 =====
+        const dispose = async () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); window.removeEventListener('beforeunload', bu); reg.delete(key); win.remove(); try { if (st.inTxn) await exec('ROLLBACK'); } catch (_) { /* 連線可能已斷 */ } try { await st.handle.close(); } catch (_) { /* 已關 */ } };
+        const bu = (e) => { if (st.inTxn) { e.preventDefault(); e.returnValue = ''; } };
+        async function commit() { if (!st.inTxn) return true; try { const r = await exec('COMMIT'); if (r[0] && r[0].error) throw new Error(r[0].error); st.inTxn = false; st.changes = 0; st.chg.clear(); await st.handle.commit(); markDirty(); say('已寫入'); return true; } catch (e) { say('寫入失敗：' + String(e.message || e), true); return false; } }
+        async function revert() { try { await exec('ROLLBACK'); } catch (_) { /* 沒有交易 */ } st.inTxn = false; st.changes = 0; st.chg.clear(); markDirty(); await loadSchema(); setTab(st.tab); say('已還原'); }
+        bWrite.onclick = commit; bRev.onclick = async () => { if (st.inTxn && (await modal('還原', h('div', { text: '放棄所有未寫回的變更？' }), [['no', '取消'], ['yes', '放棄變更', 'bad']])) !== 'yes') return; revert(); };
+        bRef.onclick = async () => { await loadSchema(); setTab(st.tab); };
+        bX.onclick = async () => { if (st.inTxn) { const c = await modal('有未寫回的變更', h('div', { text: '要寫入資料庫，還是放棄？' }), [['no', '取消'], ['drop', '放棄', 'bad'], ['yes', '寫入並關閉', 'pri']]); if (c === 'no') return; if (c === 'yes' && !(await commit())) return; } dispose(); };
+        win.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); commit(); } });
+        window.addEventListener('beforeunload', bu);
+        let maxed = false, saved = ''; bMax.onclick = () => { maxed = !maxed; if (maxed) { saved = win.style.cssText; win.style.left = '0'; win.style.top = '0'; win.style.width = '100vw'; win.style.height = '100vh'; win.style.borderRadius = '0'; } else win.style.cssText = saved; };
+        let ox = 0, oy = 0, drag = false, rz = false; bar.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON' || maxed) return; drag = true; const r = win.getBoundingClientRect(); ox = e.clientX - r.left; oy = e.clientY - r.top; win.style.zIndex = String(Z); });
+        win.querySelector('.rz').addEventListener('mousedown', (e) => { rz = true; e.preventDefault(); });
+        const mv = (e) => { if (drag) { win.style.left = Math.max(0, e.clientX - ox) + 'px'; win.style.top = Math.max(0, e.clientY - oy) + 'px'; } else if (rz) { const r = win.getBoundingClientRect(); win.style.width = Math.max(520, e.clientX - r.left) + 'px'; win.style.height = Math.max(340, e.clientY - r.top) + 'px'; } }; const up = () => { drag = false; rz = false; };
+        window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+        const api = { win, state: st, close: dispose, commit, revert, refresh: bRef.onclick, setTab, ready: null };
+        reg.set(key, { win, api });
+        api.ready = (async () => {
+            try {
+                st.handle = await host.openDb(ref, { readonly: st.ro }); st.db = st.handle.db; st.ro = st.ro || !!st.handle.readonly; title.textContent = '🗄 ' + (st.handle.label || ref); badge.textContent = st.ro ? '唯讀' : '可寫'; markDirty(); await loadSchema(); setTab(st.table ? 'browse' : 'struct'); say('已開啟');
+            } catch (e) { badge.textContent = '開啟失敗'; panes.browse.classList.add('on'); panes.browse.append(h('div', { class: 'res err', text: String((e && e.message) || e) })); }
+            return api;
+        })();
+        return api;
+    }
+    return { open, Z };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSqliteBrowser;
+})();
+/* SQLBU-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -16721,7 +17042,7 @@ const TERMINAL_BUSYBOX_APPLETS = [
 // 檔案，不是額外的一份指令白名單管制。
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
-    'ask-floating-ai-assistant', 'sync', 'sqlite3', 'sqlite',
+    'ask-floating-ai-assistant', 'sync', 'sqlite3', 'sqlite', 'sqlitebrowser',
     // tw_stock_db客製: 2026-09-25使用者要求——sleep（busybox applet清單裡沒有）、
     // curl/wget/httping（非同步網路請求，SANDBOX_COMMAND_REGISTRY那條host
     // builtin路徑要求同步callback做不到，見_runTerminalCommand裡的說明）。
@@ -16738,7 +17059,7 @@ const TERMINAL_SHELL_BUILTINS = [
 // 複合指令中間執行，語意/測試成本都高出很多）。
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
-    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite',
+    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite', 'sqlitebrowser',
     'sh', 'bash',
 ]);
 
@@ -16752,7 +17073,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
 const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set([
-    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export', 'sqlite3', 'sqlite',
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export', 'sqlite3', 'sqlite', 'sqlitebrowser',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -17281,6 +17602,11 @@ class FloatingAssistant {
             '/run-terminal-cp-to', '[name=xxx] <來源> <目的地路徑>',
             '把一個檔案複製進終端機的沙盒檔案系統。來源可以是fap:<名稱>/<路徑>、附件file_id/檔名、或（桌面版）真實絕對路徑；目的地是沙盒內的絕對路徑或資料夾。name=留空時，目前只開一個終端機才會自動選用，開多個要明講。',
             (argsText) => this._handleTerminalCpToCommand(argsText)
+        );
+        this.register_slash_command(
+            '/sqlite-browser', '[-readonly] [檔案或fap:名稱/路徑]',
+            '開啟 SQLite 檔案瀏覽器（結構、瀏覽與過濾、編輯、執行 SQL、Pragmas）。不給檔案＝記憶體資料庫；桌面版可用 file:<完整路徑>、fap:<名稱>/<路徑>。',
+            async (argsText) => { const a = this._terminalTokenizeArgs(String(argsText || '')); const ro = a.some((x) => /^--?readonly$/.test(x)); const f = a.filter((x) => !/^--?readonly$/.test(x))[0] || ':memory:'; try { const b = await this._openSqliteBrowser(f, { readonly: ro }); await b.ready; } catch (e) { this._pushAssistantMessage('❌ /sqlite-browser 失敗：' + String((e && e.message) || e), null); } }
         );
         this.register_slash_command(
             '/run-terminal-cp-from', '[name=xxx] <沙盒內路徑> [目的地]',
@@ -39897,6 +40223,7 @@ ${sourceTool.handlerScript}
                 else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
                 else if (cmdName === 'ask-floating-ai-assistant') await this._terminalAskAI(session, restArgsRaw);
                 else if (cmdName === 'sqlite3' || cmdName === 'sqlite') return await this._terminalSqlite(session, expandedArgv.slice(1), this._terminalConsumeStdinOpt(opts));
+                else if (cmdName === 'sqlitebrowser') return await this._terminalSqliteBrowser(session, expandedArgv.slice(1));
                 else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
             });
             const vExit = typeof captured.result === 'number' ? captured.result : (captured.hadError ? 1 : 0);
@@ -40219,6 +40546,7 @@ ${sourceTool.handlerScript}
         // shell的能力範圍，攔截在這裡直接處理最直接。
         if (cmdName === 'ask-floating-ai-assistant') { await this._terminalAskAI(session, restArgs); return; }
         if (cmdName === 'sqlite3' || cmdName === 'sqlite') { await this._terminalSqlite(session, this._terminalTokenizeArgs(restArgs), null); return; }
+        if (cmdName === 'sqlitebrowser') { await this._terminalSqliteBrowser(session, this._terminalTokenizeArgs(restArgs)); return; }
         // tw_stock_db客製: 2026-09-25使用者要求——sleep/curl/wget/httping。這幾個
         // JS層攔截的理由各不同：sleep純粹是JS setTimeout，busybox applet清單裡
         // 根本沒有（wasi-sh 0.11.0沒編進這個applet）；curl/wget/httping的核心
@@ -41983,6 +42311,25 @@ ${sourceTool.handlerScript}
         const s = String(src || ''); let q = null, last = -1;
         for (let i = 0; i < s.length; i++) { const c = s[i]; if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; continue; } if (c === '"' || c === "'") { q = c; continue; } if (c === '\\') { i++; continue; } if (c === '|') { if (s[i + 1] === '|') { i++; continue; } last = i; } }
         if (last < 0) return null; const tail = s.slice(last + 1).trim(); if (!/^(?:sqlite3|sqlite)(?:\s|$)/.test(tail)) return null; return { head: s.slice(0, last), tail };
+    }
+    // sqlitebrowser：浮動視窗（結構／瀏覽／SQL／Pragmas）。ref 寫法同 sqlite3；在終端機裡執行時相對路徑解析成沙盒內的檔案。
+    async _openSqliteBrowser(ref, o) {
+        o = o || {}; if (!this._sqlAvailable()) throw new Error('這個環境沒有 SQLite 引擎（桌面版才有；網頁版尚未支援）');
+        if (typeof FaSqliteBrowser === 'undefined') throw new Error('sqlitebrowser 沒有載入');
+        let session = o.session || null; if (!session) { try { const ss = this._getMountedTerminalSessions(); session = ss[ss.length - 1] || null; } catch (_) { session = null; } }
+        const host = {
+            openDb: (r, oo) => this._sqlOpen(r, Object.assign({ session, create: false }, oo)),
+            call: (op, args) => this._sqlCall(op, args),
+            download: (name, text, mime) => { const u = URL.createObjectURL(new Blob([text], { type: mime || 'text/plain' })); const a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); },
+            pickFile: () => new Promise((resolve) => { const i = document.createElement('input'); i.type = 'file'; i.onchange = async () => { const f = i.files && i.files[0]; resolve(f ? { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) } : null); }; i.click(); }),
+        };
+        return FaSqliteBrowser.open(host, ref, { readonly: !!o.readonly });
+    }
+    async _terminalSqliteBrowser(session, argv) {
+        const w = (s) => session.term.write(String(s).replace(/\r?\n/g, '\r\n'));
+        const ro = argv.includes('-readonly') || argv.includes('--readonly'); const file = argv.filter((a) => !/^--?readonly$/.test(a))[0] || ':memory:';
+        try { const b = await this._openSqliteBrowser(file, { readonly: ro, session }); await b.ready; if (b.state.db) { w('已在 sqlitebrowser 開啟：' + file + '\n'); return 0; } w('\x1b[31msqlitebrowser: 開啟失敗\x1b[0m\n'); return 1; }
+        catch (e) { w('\x1b[31msqlitebrowser: ' + String((e && e.message) || e) + '\x1b[0m\n'); return 1; }
     }
     // sqlite3／sqlite 終端機指令：argv＝已展開的參數；stdin＝管線或重導向進來的文字（沒有就 null）；回傳結束碼
     async _terminalSqlite(session, argv, stdin) {
