@@ -43171,6 +43171,7 @@ ${sourceTool.handlerScript}
         }
         // 暫存副本
         let bytes = null, name = 'db.sqlite3', writeBack = null, kind = 'staged';
+        const unchanged = (b) => { const a = bytes; if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
         if (/^fap:/i.test(ref)) {
             kind = 'fap'; name = ref.split('/').pop() || name;
             try { bytes = (await this._resolveTerminalCopySource(ref)).bytes; } catch (e) { if (!o.create) throw e; }
@@ -43186,7 +43187,7 @@ ${sourceTool.handlerScript}
             if (bytes && bytes.length > 1024 * 1024 * 1024) throw new Error('檔案太大（' + Math.round(bytes.length / 1048576) + ' MB）；網頁版的 SQLite 資料庫放在記憶體裡，上限約 1 GB，建議用桌面版開大型資料庫');
             const wr = await this._sqlCall('open', { bytes: bytes && bytes.length ? bytes : undefined, readonly: !!o.readonly, label: ref });
             const pullW = async () => (await this._sqlCall('export', { db: wr.db })).bytes;
-            return { db: wr.db, kind, label: ref, readonly: !!o.readonly, size: bytes ? bytes.length : 0, commit: async () => { if (o.readonly || !writeBack) return; await writeBack(await pullW()); }, close: async () => { try { if (!o.readonly && writeBack) await writeBack(await pullW()); } finally { await this._sqlCall('close', { db: wr.db }); } } };
+            return { db: wr.db, kind, label: ref, readonly: !!o.readonly, size: bytes ? bytes.length : 0, commit: async () => { if (o.readonly || !writeBack) return; const b = await pullW(); if (!unchanged(b)) await writeBack(b); }, close: async () => { try { if (!o.readonly && writeBack) { const b = await pullW(); if (!unchanged(b)) await writeBack(b); } } finally { await this._sqlCall('close', { db: wr.db }); } } };
         }
         if (bytes && bytes.length > 512 * 1024 * 1024) throw new Error('檔案太大（' + Math.round(bytes.length / 1048576) + ' MB），暫存副本上限 512 MB；大型資料庫請放在磁碟上用 file:<路徑> 開啟');
         const st = await this._sqlCall('stage', { name: name.replace(/[^\w.-]/g, '_') }); const sp = st.path;
@@ -43196,8 +43197,8 @@ ${sourceTool.handlerScript}
         let dirty = false;
         const handle = {
             db: r.db, kind, label: ref, readonly: !!o.readonly, size: bytes ? bytes.length : 0,
-            commit: async () => { if (o.readonly || !writeBack) return; const b = await pull(); await writeBack(b); dirty = false; },
-            close: async () => { try { if (!o.readonly && writeBack) { const b = await pull(); await writeBack(b); } } finally { try { await this._sqlCall('close', { db: r.db }); } finally { for (const sfx of ['', '-wal', '-shm', '-journal']) { try { await window.desktopAPI.rawfs.remove(sp + sfx, false); } catch (_) { /* 不存在 */ } } } } },
+            commit: async () => { if (o.readonly || !writeBack) return; const b = await pull(); if (!unchanged(b)) { await writeBack(b); bytes = b; } dirty = false; },
+            close: async () => { try { if (!o.readonly && writeBack) { const b = await pull(); if (!unchanged(b)) await writeBack(b); } } finally { try { await this._sqlCall('close', { db: r.db }); } finally { for (const sfx of ['', '-wal', '-shm', '-journal']) { try { await window.desktopAPI.rawfs.remove(sp + sfx, false); } catch (_) { /* 不存在 */ } } } } },
         };
         void dirty; return handle;
     }
