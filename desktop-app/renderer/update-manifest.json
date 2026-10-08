@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "0.3.2",
-  "generatedAt": "2026-10-08T13:35:13.499Z",
+  "generatedAt": "2026-10-08T13:53:24.959Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "d5cfc03969aa2b5c211567140d774f67",
@@ -14,7 +14,7 @@
     "coding-workspace.js": "b5d608933d2b95bd042adff14f774b53",
     "browser-control-server.js": "96bf1133f3eedacd1f0e770c038bb4bd",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
-    "fsx-sync.js": "c7f7e7cf55e3834c6c815ebf2f70036d"
+    "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82"
   },
   "sizes": {
     "renderer/index.html": 5741,
@@ -28,6 +28,6 @@
     "coding-workspace.js": 10729,
     "browser-control-server.js": 9379,
     "sqlite-engine.js": 22797,
-    "fsx-sync.js": 4857
+    "fsx-sync.js": 5425
   }
 }
