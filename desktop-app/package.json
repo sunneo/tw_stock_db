@@ -34,6 +34,7 @@
       "edge-tts.js",
       "cli-format.js",
       "browser-control-server.js",
+      "sqlite-engine.js",
       "coding-workspace.js",
       "build-config.json",
       "renderer/**/*",

@@ -62,6 +62,7 @@ const LIVE_PATCH_MAIN_FILES = [
   "cli-format.js",
   "coding-workspace.js",
   "browser-control-server.js",
+  "sqlite-engine.js",
 ];
 const mainOverlaySources = (() => {
   const overlays = new Map();
@@ -595,6 +596,10 @@ ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
   const st = await fs.stat(target);
   return { path: target, isDirectory: st.isDirectory(), isFile: st.isFile(), size: st.size, mtimeMs: st.mtimeMs };
 });
+
+// SQLite引擎（見sqlite-engine.js）：node:sqlite直接開磁碟上的真實檔案，記憶體與資料庫大小無關；路徑規則同rawfs（絕對路徑，不做root檢查）。
+const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
+app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
 
 ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
   const target = path.resolve(rawFsPath(p));

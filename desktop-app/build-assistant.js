@@ -61,6 +61,7 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "cli-format.js",
   "coding-workspace.js",
   "browser-control-server.js",
+  "sqlite-engine.js",
 ];
 
 async function main() {
