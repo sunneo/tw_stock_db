@@ -165,7 +165,7 @@ function embedGram() {
 }
 embedGram();
 function embedLrCfgl() {
-    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn'], ['renderer/src/logmine/boundary_core.js', 'BOUND-BEGIN', 'BOUND-END', 'FaBound'], ['renderer/src/logmine/mix_core.js', 'MIX-BEGIN', 'MIX-END', 'FaMix'], ['renderer/src/logmine/nlu_core.js', 'NLU-BEGIN', 'NLU-END', 'FaNlu'], ['renderer/src/logmine/intent_core.js', 'INTENT-BEGIN', 'INTENT-END', 'FaIntent'], ['renderer/src/sql/sql_split.js', 'SQLSPLIT-BEGIN', 'SQLSPLIT-END', 'FaSqlSplit'], ['renderer/src/sql/shell_core.js', 'SQLSH-BEGIN', 'SQLSH-END', 'FaSqliteShell'], ['renderer/src/sql/browser_core.js', 'SQLBC-BEGIN', 'SQLBC-END', 'FaSqliteBrowserCore'], ['renderer/src/sql/browser_ui.js', 'SQLBU-BEGIN', 'SQLBU-END', 'FaSqliteBrowser'], ['renderer/src/sql/index_core.js', 'SQLIX-BEGIN', 'SQLIX-END', 'FaIdxSql'], ['renderer/src/terminal/fapfs_core.js', 'FAPFS-BEGIN', 'FAPFS-END', 'FaFapFs'], ['renderer/src/terminal/fapfs_transport.js', 'FAPT-BEGIN', 'FAPT-END', 'FaFapFsTransport']]) {
+    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn'], ['renderer/src/logmine/boundary_core.js', 'BOUND-BEGIN', 'BOUND-END', 'FaBound'], ['renderer/src/logmine/mix_core.js', 'MIX-BEGIN', 'MIX-END', 'FaMix'], ['renderer/src/logmine/nlu_core.js', 'NLU-BEGIN', 'NLU-END', 'FaNlu'], ['renderer/src/logmine/intent_core.js', 'INTENT-BEGIN', 'INTENT-END', 'FaIntent'], ['renderer/src/sql/sql_split.js', 'SQLSPLIT-BEGIN', 'SQLSPLIT-END', 'FaSqlSplit'], ['renderer/src/sql/shell_core.js', 'SQLSH-BEGIN', 'SQLSH-END', 'FaSqliteShell'], ['renderer/src/sql/browser_core.js', 'SQLBC-BEGIN', 'SQLBC-END', 'FaSqliteBrowserCore'], ['renderer/src/sql/browser_ui.js', 'SQLBU-BEGIN', 'SQLBU-END', 'FaSqliteBrowser'], ['renderer/src/sql/index_core.js', 'SQLIX-BEGIN', 'SQLIX-END', 'FaIdxSql'], ['renderer/src/sql/wasm_engine.js', 'SQLWE-BEGIN', 'SQLWE-END', 'FaWasmEngine'], ['renderer/src/terminal/fapfs_core.js', 'FAPFS-BEGIN', 'FAPFS-END', 'FaFapFs'], ['renderer/src/terminal/fapfs_transport.js', 'FAPT-BEGIN', 'FAPT-END', 'FaFapFsTransport']]) {
         const core = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
         const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
         if (a < 0 || b < 0) throw new Error('找不到 ' + begin + ' 標記');
@@ -174,6 +174,7 @@ function embedLrCfgl() {
     }
 }
 embedFapWorker(); // 先把 worker 程式內嵌進傳輸檔，才會連同傳輸檔內嵌進 floating-assistant.js
+embedWasmWorker(); // 網頁版 SQLite 引擎的 worker 程式內嵌進 wasm_engine.js
 embedLrCfgl();
 // 主行程的 SQLite 引擎（sqlite-engine.js）要自帶 SQL 語句切分器（renderer/src 不進安裝包）
 function embedSqlSplit() {
@@ -186,6 +187,14 @@ function embedSqlSplit() {
 }
 embedSqlSplit();
 // FAP 檔案系統的 worker 程式（fapfs_worker.js）內嵌進 fapfs_transport.js 的字串常數（不能用 function.toString()：建置的壓縮器會改掉變數名稱）
+function embedWasmWorker() {
+    const tf = path.join(root, 'renderer/src/sql/wasm_engine.js'); let e = fs.readFileSync(tf, 'utf8'); const crlfE = e.includes('\r\n'); e = e.replace(/\r\n/g, '\n');
+    const rd = (n) => fs.readFileSync(path.join(root, 'renderer/src/sql/' + n), 'utf8').replace(/\r\n/g, '\n');
+    const core = rd('sql_split.js') + '\n' + rd('wasm_ops.js') + '\n' + rd('wasm_worker.js');
+    const a = e.indexOf('/* WASM-WORKER-SRC-BEGIN */'), b = e.indexOf('/* WASM-WORKER-SRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 WASM-WORKER-SRC 標記');
+    e = e.slice(0, a) + '/* WASM-WORKER-SRC-BEGIN */\n    const WORKER_SRC = ' + JSON.stringify(core) + ';\n    ' + e.slice(b);
+    fs.writeFileSync(tf, crlfE ? e.replace(/\n/g, '\r\n') : e); console.log('已更新 wasm_engine.js 的 worker 程式（' + core.length + ' 字元）');
+}
 function embedFapWorker() {
     const tf = path.join(root, 'renderer/src/terminal/fapfs_transport.js'); let e = fs.readFileSync(tf, 'utf8'); const crlfE = e.includes('\r\n'); e = e.replace(/\r\n/g, '\n');
     const core = fs.readFileSync(path.join(root, 'renderer/src/terminal/fapfs_worker.js'), 'utf8').replace(/\r\n/g, '\n');
