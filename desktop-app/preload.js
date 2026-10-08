@@ -60,6 +60,10 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
     listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
   },
+  // SQLite（main.js的fa:sql:call，sqlite-engine.js）：op＝open／exec／query／schema／pragma／status／cancel／close…，協定見該檔案。
+  sql: {
+    call: (op, args) => ipcRenderer.invoke("fa:sql:call", { op, args }),
+  },
   // 對話清單（左邊chat list）的檔案儲存，見main.js的fa:chats:*。
   chats: {
     dir: () => ipcRenderer.invoke("fa:chats:dir"),

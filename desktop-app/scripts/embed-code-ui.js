@@ -174,5 +174,15 @@ function embedLrCfgl() {
     }
 }
 embedLrCfgl();
+// 主行程的 SQLite 引擎（sqlite-engine.js）要自帶 SQL 語句切分器（renderer/src 不進安裝包）
+function embedSqlSplit() {
+    const ef = path.join(root, 'sqlite-engine.js'); if (!fs.existsSync(ef)) return;
+    let e = fs.readFileSync(ef, 'utf8'); const crlfE = e.includes('\r\n'); e = e.replace(/\r\n/g, '\n');
+    const core = fs.readFileSync(path.join(root, 'renderer/src/sql/sql_split.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = e.indexOf('/* SPLIT-SRC-BEGIN */'), b = e.indexOf('/* SPLIT-SRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 SPLIT-SRC 標記');
+    e = e.slice(0, a) + '/* SPLIT-SRC-BEGIN */\nconst SPLIT_SRC = ' + JSON.stringify(core) + ';\n' + e.slice(b);
+    fs.writeFileSync(ef, crlfE ? e.replace(/\n/g, '\r\n') : e); console.log('已更新 sqlite-engine.js 的切分器（' + core.length + ' 字元）');
+}
+embedSqlSplit();
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
