@@ -26,8 +26,11 @@ function workerMain() {
   const SPLIT = (function () { const module = { exports: {} }; (function (module, self) { eval(process.env.FA_SPLIT_SRC_PLACEHOLDER); }).call(null, module, undefined); return module.exports; })();
   let db = null, meta = null;
   const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+  let typedMode = false;
   const enc = (v) => {
     if (v === null || v === undefined) return null;
+    // 保留型別模式：讀 BigInt 模式下，整數是 BigInt、實數是 number；整數值的實數（1.0）與 inf 用 {$real} 才分得出來
+    if (typedMode && typeof v === "number") return (Number.isInteger(v) || !Number.isFinite(v)) ? { $real: Number.isFinite(v) ? v.toFixed(1) : (v > 0 ? "Inf" : "-Inf") } : v;
     if (typeof v === "bigint") return (v <= SAFE && v >= -SAFE) ? Number(v) : { $int: v.toString() };
     if (v instanceof Uint8Array) return { $blob: Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("base64") };
     return v;
@@ -70,8 +73,8 @@ function workerMain() {
       const size = meta.path !== ":memory:" ? fs.statSync(p).size : 0; const ver = db.prepare("select sqlite_version() v").get().v;
       return { size, version: ver, path: meta.path, readonly: meta.readonly };
     },
-    exec({ sql, bind, limit = 1000, offset = 0, maxCell = 0 }) {
-      const stmts = SPLIT.split(sql); const results = [];
+    exec({ sql, bind, limit = 1000, offset = 0, maxCell = 0, typed = false }) {
+      typedMode = !!typed; const stmts = SPLIT.split(sql); const results = [];
       for (let i = 0; i < stmts.length; i++) {
         try { results.push(runOne(stmts[i], i === 0 && stmts.length === 1 ? bind : (i === 0 ? bind : undefined), limit, offset, maxCell)); }
         catch (e) { results.push({ columns: [], rows: [], error: String(e && e.message || e), code: e && e.errcode, sql: stmts[i].slice(0, 200) }); break; }
@@ -79,6 +82,7 @@ function workerMain() {
       return { results };
     },
     query({ table, columns, filters, sort, offset = 0, limit = 100, count }) {
+      typedMode = false;
       const cols = columns && columns.length ? columns.map(q).join(", ") : "*"; const where = []; const bind = [];
       for (const f of filters || []) {
         const c = q(f.col);
