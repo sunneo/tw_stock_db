@@ -11652,6 +11652,337 @@ const holder = {};
 return holder.FaIntent;
 })();
 /* INTENT-END */
+/* SQLSPLIT-BEGIN */
+const FaSqlSplit = (function () {
+const holder = {};
+(function (module, self) {
+/* SQL 語句切分與完整性判斷（純函式，UMD）。
+ * sqlite3 命令列用 sqlite3_complete() 判斷一段輸入「語句結束了沒」、並把一長串 SQL 切成一句一句送進引擎；
+ * node:sqlite／sql.js 沒有這個函式，所以自己寫：分號只在「字串、引號識別字、註解、CREATE TRIGGER 的 BEGIN…END」之外才算語句結尾。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaSqlSplit = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // 掃描器：回傳 { stmts:[{sql, start, end}], rest, complete }；rest＝最後沒有以分號結尾的殘餘文字
+    function scan(text) {
+        text = String(text); const stmts = []; let start = 0, i = 0; const n = text.length;
+        let depth = 0;         // CREATE TRIGGER ... BEGIN ... END; 裡的分號不算結尾
+        let caseDepth = 0;     // CASE ... END 的 END 不是觸發器的 END
+        let inTrigger = false, seenBeginInTrigger = false, firstWord = '', secondWord = '', words = 0, lastWord = '';
+        const flush = (endIdx) => { const sql = text.slice(start, endIdx); if (sql.trim() && !/^(\s|--[^\n]*\n?|\/\*[\s\S]*?\*\/)*$/.test(sql)) stmts.push({ sql, start, end: endIdx }); start = endIdx; firstWord = secondWord = lastWord = ''; words = 0; inTrigger = false; seenBeginInTrigger = false; depth = 0; caseDepth = 0; };
+        while (i < n) {
+            const c = text[i];
+            if (c === "'" || c === '"' || c === '`') { const q = c; i++; while (i < n) { if (text[i] === q) { if (text[i + 1] === q) { i += 2; continue; } break; } i++; } if (i >= n) return { stmts, rest: text.slice(start), complete: false, open: 'quote' }; i++; lastWord = ''; continue; }
+            if (c === '[') { const j = text.indexOf(']', i + 1); if (j < 0) return { stmts, rest: text.slice(start), complete: false, open: 'bracket' }; i = j + 1; lastWord = ''; continue; }
+            if (c === '-' && text[i + 1] === '-') { const j = text.indexOf('\n', i); i = j < 0 ? n : j + 1; continue; }
+            if (c === '/' && text[i + 1] === '*') { const j = text.indexOf('*/', i + 2); if (j < 0) return { stmts, rest: text.slice(start), complete: false, open: 'comment' }; i = j + 2; continue; }
+            if (/[A-Za-z_]/.test(c)) {
+                let j = i + 1; while (j < n && /[A-Za-z0-9_$]/.test(text[j])) j++; const w = text.slice(i, j).toUpperCase(); words++;
+                if (words === 1) firstWord = w; else if (words === 2) secondWord = w;
+                // CREATE [TEMP|TEMPORARY] TRIGGER：看前三個字
+                if (words <= 3 && firstWord === 'CREATE' && (w === 'TRIGGER')) inTrigger = true;
+                if (inTrigger) { if (w === 'BEGIN') { seenBeginInTrigger = true; depth = 1; } else if (seenBeginInTrigger) { if (w === 'CASE') caseDepth++; else if (w === 'END') { if (caseDepth > 0) caseDepth--; else depth = 0; } } }
+                lastWord = w; i = j; continue;
+            }
+            if (c === ';') {
+                if (inTrigger && seenBeginInTrigger && depth > 0) { i++; continue; }
+                i++; flush(i); continue;
+            }
+            i++;
+        }
+        const rest = text.slice(start); const trimmed = rest.replace(/(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/g, '');
+        return { stmts, rest, complete: trimmed === '' && !(inTrigger && seenBeginInTrigger && depth > 0), open: inTrigger && seenBeginInTrigger && depth > 0 ? 'trigger' : null };
+    }
+    const split = (text) => { const r = scan(text); const out = r.stmts.map((s) => s.sql.trim()); if (r.rest.trim() && !/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*$/.test(r.rest)) out.push(r.rest.trim()); return out; };
+    // 沒有「還在等下文」的東西：每句都以分號收尾（空白與註解不算），而且不在字串／觸發器中間（空白或只有註解也算完整＝沒東西要送）
+    const isComplete = (text) => scan(text).complete;
+    return { scan, split, isComplete };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSqlSplit;
+})();
+/* SQLSPLIT-END */
+/* SQLSH-BEGIN */
+const FaSqliteShell = (function () {
+const holder = {};
+(function (module, self) {
+/* sqlite3 命令列的核心（純 JS，UMD）：行為對齊真的 `sqlite3`——輸出模式、點指令、選項、錯誤字樣、結束碼。
+ * 不碰任何環境：引擎（exec/open）與檔案讀寫都由呼叫端注入，所以終端機指令、sqlitebrowser 的 SQL 分頁、測試共用同一份。
+ *
+ * 值的表示（引擎協定，typed:true）：null、字串、整數＝JS number 或 {$int}、實數＝{$real:"1.0"}（整數值的實數）或非整數 number、BLOB＝{$blob:base64}。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./sql_split.js'));
+    else root.FaSqliteShell = factory(typeof FaSqlSplit !== 'undefined' ? FaSqlSplit : root.FaSqlSplit);
+})(typeof self !== 'undefined' ? self : this, function (SPLIT) {
+    'use strict';
+    const MODES = ['ascii', 'box', 'csv', 'column', 'html', 'insert', 'json', 'line', 'list', 'markdown', 'quote', 'table', 'tabs', 'tcl'];
+    const isInt = (v) => typeof v === 'number' || (v && typeof v === 'object' && v.$int !== undefined);
+    const isReal = (v) => v && typeof v === 'object' && v.$real !== undefined;
+    const isBlob = (v) => v && typeof v === 'object' && v.$blob !== undefined;
+    const b64bytes = (b) => { try { if (typeof Buffer !== 'undefined') return Buffer.from(b, 'base64'); const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; } catch (_) { return new Uint8Array(0); } };
+    const utf8 = (u) => (typeof Buffer !== 'undefined' ? Buffer.from(u).toString('utf8') : new TextDecoder().decode(u));
+    const hex = (u) => Array.from(u).map((x) => x.toString(16).padStart(2, '0').toUpperCase()).join('');
+    function realText(v) { // 對齊 sqlite 的 %!.15g（現代版：最短可往返表示，整數值帶 .0）
+        if (isReal(v)) return v.$real === 'Inf' ? 'Inf' : v.$real === '-Inf' ? '-Inf' : v.$real; if (typeof v !== 'number') return String(v);
+        let s = String(v); if (/e/.test(s)) s = s.replace(/^(-?\d+)e/, '$1.0e'); return s;
+    }
+    // 一個儲存格在「文字型」輸出（list/column/line/table/box/markdown/csv…）的樣子
+    function cellText(v, nullValue) {
+        if (v === null || v === undefined) return nullValue;
+        if (typeof v === 'string') return v; if (typeof v === 'number') return Number.isInteger(v) ? String(v) : realText(v);
+        if (isReal(v)) return realText(v); if (v && v.$int !== undefined) return String(v.$int);
+        if (isBlob(v)) return utf8(b64bytes(v.$blob)); return String(v);
+    }
+    const sqlQuote = (v) => {
+        if (v === null || v === undefined) return 'NULL'; if (typeof v === 'string') return "'" + v.replace(/'/g, "''") + "'";
+        if (typeof v === 'number') return Number.isInteger(v) ? String(v) : realText(v); if (isReal(v)) return realText(v); if (v && v.$int !== undefined) return String(v.$int);
+        if (isBlob(v)) return "X'" + hex(b64bytes(v.$blob)) + "'"; return String(v);
+    };
+    const csvCell = (v, sep, nullValue) => { if (v === null || v === undefined) return nullValue; const s = cellText(v, nullValue); return (s === '' && typeof v === 'string' ? '' : (/[\r\n"]/.test(s) || s.includes(sep) || /^\s|\s$/.test(s) && false) ? '"' + s.replace(/"/g, '""') + '"' : s); };
+    const jsonStr = (s) => '"' + s.replace(/[\\"\u0000-\u001f]/g, (c) => ({ '"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t' }[c] || '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))) + '"';
+    const jsonVal = (v) => { if (v === null || v === undefined) return 'null'; if (typeof v === 'string') return jsonStr(v); if (typeof v === 'number') return Number.isInteger(v) ? String(v) : realText(v); if (isReal(v)) return realText(v) === 'Inf' ? '9.0e+999' : realText(v) === '-Inf' ? '-9.0e+999' : realText(v); if (v && v.$int !== undefined) return String(v.$int); if (isBlob(v)) return jsonStr(utf8(b64bytes(v.$blob))); return jsonStr(String(v)); };
+    const htmlEsc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const width = (s) => { let w = 0; for (const ch of s) { const c = ch.codePointAt(0); w += (c >= 0x1100 && (c <= 0x115f || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe6f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x20000 && c <= 0x3fffd))) ? 2 : 1; } return w; };
+    const pad = (s, w, right) => { const g = Math.max(0, w - width(s)); return right ? ' '.repeat(g) + s : s + ' '.repeat(g); };
+
+    function create(host) {
+        const st = {
+            mode: 'list', headers: false, colSep: '|', rowSep: '\n', nullValue: '', widths: [], echo: false, bail: false, timer: false, changes: false, stats: false,
+            db: null, dbPath: '', readonly: false, buf: '', exitCode: 0, quit: false, out: null, onceFile: null, outputFile: null, outChunks: [], insertTable: 'table', errorCount: 0, lineNo: 0, scriptName: '', explain: 'auto', limitNote: false,
+        };
+        const w = (s) => { if (st.outputFile || st.onceFile) st.outChunks.push(s); else host.write(s); };
+        const err = (s) => host.writeErr(s);
+        const ver = () => host.version || '3.53.4';
+        async function flushOut(afterSql) { const f = st.onceFile || st.outputFile; if (f && st.outChunks.length) { const txt = st.outChunks.join(''); st.outChunks = []; await host.io.writeText(f, txt, { append: !!st.outputFile && st._outStarted }); st._outStarted = true; } if (st.onceFile && afterSql) { st.onceFile = null; st._outStarted = false; } }
+        const need = async () => { if (!st.db) { await openDb(host.defaultDb || ':memory:', { readonly: false, initial: true }); } return st.db; };
+        async function openDb(p, o) { o = o || {}; if (st.db) { try { await host.close(st.db); } catch (_) { /* 已關 */ } st.db = null; } const r = await host.open(p, { readonly: !!o.readonly, create: o.create !== false }); st.db = r.db; st.dbPath = p; st.readonly = !!o.readonly; return r; }
+
+        // ---- 輸出格式化 ----
+        function renderRows(res, tableName) {
+            const cols = res.columns, rows = res.rows; if (!cols.length) return '';
+            const nv = st.nullValue; const out = [];
+            switch (st.mode) {
+                case 'list': case 'tabs': case 'ascii': {
+                    const sep = st.mode === 'tabs' ? '\t' : st.mode === 'ascii' ? '\x1f' : st.colSep; const rs = st.mode === 'ascii' ? '\x1e' : st.rowSep;
+                    if (st.headers) out.push(cols.join(sep) + rs); for (const r of rows) out.push(r.map((v) => cellText(v, nv)).join(sep) + rs); break;
+                }
+                case 'csv': { const sep = st.colSep === '|' ? ',' : st.colSep; const rs = st.rowSep === '\n' ? '\r\n' : st.rowSep; const hs = st._csvCli ? '\n' : rs; if (st.headers) out.push(cols.map((c) => csvCell(c, sep, '')).join(sep) + hs); for (const r of rows) out.push(r.map((v) => csvCell(v, sep, nv)).join(sep) + hs); break; }
+                case 'quote': { if (st.headers) out.push(cols.map(sqlQuote).join(',') + '\n'); for (const r of rows) out.push(r.map(sqlQuote).join(',') + '\n'); break; }
+                case 'insert': { const tn = st.insertTable; const q = /^[A-Za-z_][A-Za-z0-9_]*$/.test(tn) ? tn : '"' + tn.replace(/"/g, '""') + '"'; for (const r of rows) out.push('INSERT INTO ' + q + (st.headers ? '(' + cols.map((c) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(c) ? c : '"' + c.replace(/"/g, '""') + '"').join(',') + ')' : '') + ' VALUES(' + r.map(sqlQuote).join(',') + ');\n'); break; }
+                case 'json': { out.push('['); rows.forEach((r, i) => { out.push((i ? ',\n' : '') + '{' + cols.map((c, j) => jsonStr(c) + ':' + jsonVal(r[j])).join(',') + '}'); }); out.push(']\n'); break; }
+                case 'html': { if (st.headers) out.push('<TR>' + cols.map((c) => '<TH>' + htmlEsc(c) + '</TH>').join('') + '\n</TR>\n'); for (const r of rows) out.push('<TR>' + r.map((v) => '<TD>' + htmlEsc(cellText(v, nv)) + '</TD>').join('') + '\n</TR>\n'); break; }
+                case 'tcl': { const tq = (s) => '"' + s.replace(/[\\"\n\r\t]/g, (c) => ({ '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' }[c])) + '"'; if (st.headers) out.push(cols.map(tq).join(' ') + '\n'); for (const r of rows) out.push(r.map((v) => tq(cellText(v, nv))).join(' ') + '\n'); break; }
+                case 'line': {
+                    const cw = Math.max(...cols.map((c) => width(c))); rows.forEach((r, i) => { if (i) out.push('\n'); cols.forEach((c, j) => out.push(pad(c, cw, true) + ' = ' + cellText(r[j], nv) + '\n')); }); break;
+                }
+                case 'column': case 'table': case 'box': case 'markdown': {
+                    const cells = rows.map((r) => r.map((v) => cellText(v, nv))); const ws = cols.map((c, j) => { let m = width(c); for (const r of cells) m = Math.max(m, ...r[j].split('\n').map(width)); return m; });
+                    if (st.mode === 'column' && st.widths.length) st.widths.forEach((x, j) => { if (x && j < ws.length) ws[j] = Math.abs(x); });
+                    const right = (j, i) => (st.mode === 'column' && st.widths[j] < 0) || (st.mode !== 'column' && typeof rows[i][j] !== 'string' && rows[i][j] !== null && rows[i][j] !== undefined && !isBlob(rows[i][j]));
+                    const line = (l, m, r2, h) => l + ws.map((x) => h.repeat(x + 2)).join(m) + r2 + '\n';
+                    if (st.mode === 'column') {
+                        if (st.headers) { out.push(cols.map((c, j) => pad(c, ws[j])).join('  ') + '\n'); out.push(ws.map((x) => '-'.repeat(x)).join('  ') + '\n'); }
+                        for (const r of cells) out.push(r.map((c, j) => pad(c, ws[j], st.widths[j] < 0)).join('  ') + '\n');
+                    } else if (st.mode === 'markdown') {
+                        out.push('| ' + cols.map((c, j) => pad(c, ws[j])).join(' | ') + ' |\n'); out.push('|' + ws.map((x) => '-'.repeat(x + 2)).join('|') + '|\n'); for (const r of cells) out.push('| ' + r.map((c, j) => pad(c, ws[j])).join(' | ') + ' |\n');
+                    } else {
+                        const box = st.mode === 'box'; const L = box ? ['┌', '┬', '┐', '─'] : ['+', '+', '+', '-']; const M = box ? ['├', '┼', '┤', '─'] : ['+', '+', '+', '-']; const B = box ? ['└', '┴', '┘', '─'] : ['+', '+', '+', '-']; const V = box ? '│' : '|';
+                        out.push(line(L[0], L[1], L[2], L[3])); out.push(V + cols.map((c, j) => ' ' + pad(c, ws[j]) + ' ').join(V) + V + '\n'); out.push(line(M[0], M[1], M[2], M[3]));
+                        cells.forEach((r, i) => out.push(V + r.map((c, j) => ' ' + pad(c, ws[j], right(j, i)) + ' ').join(V) + V + '\n'));
+                        out.push(line(B[0], B[1], B[2], B[3]));
+                        if (!rows.length) { out.length = 0; out.push(line(L[0], L[1], L[2], L[3])); out.push(V + cols.map((c, j) => ' ' + pad(c, ws[j]) + ' ').join(V) + V + '\n'); out.push(line(B[0], B[1], B[2], B[3])); }
+                    }
+                    break;
+                }
+                default: break;
+            }
+            return out.join('');
+        }
+        const isNumeric = (s) => /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(s);
+
+        async function runSql(sql) {
+            const db = await need(); const t0 = Date.now();
+            if (st.echo) w(sql.trim() + '\n');
+            const r = await host.exec(db, sql, { typed: true, limit: 1000000 });
+            for (const res of r.results) {
+                if (res.error) { st.exitCode = 1; st.errorCount++; err('Error: ' + res.error + (res.sql && false ? '' : '') + '\n'); if (st.bail) st.quit = true; return false; }
+                if (res.columns && res.columns.length) { if (st.mode === 'column' || st.mode === 'table' || st.mode === 'box' || st.mode === 'markdown') { if (res.rows.length || st.mode !== 'column') w(renderRows(res)); } else w(renderRows(res)); }
+                if (st.changes && !(res.columns && res.columns.length)) w('changes: ' + res.changes + '   total_changes: ' + (res.changes) + '\n');
+            }
+            if (st.timer) w('Run Time: real ' + ((Date.now() - t0) / 1000).toFixed(3) + ' user 0.000000 sys 0.000000\n');
+            return true;
+        }
+
+        // ---- 點指令 ----
+        const HELP = `.backup ?DB? FILE      Backup DB (default "main") to FILE
+.bail on|off           Stop after hitting an error.  Default OFF
+.databases             List names and files of attached databases
+.dump ?OBJECTS?        Render database content as SQL
+.echo on|off           Turn command echo on or off
+.exit ?CODE?           Exit this program with return-code CODE
+.headers on|off        Turn display of headers on or off
+.help ?-all? ?PATTERN? Show help text for PATTERN
+.import FILE TABLE     Import data from FILE into TABLE
+.indexes ?TABLE?       Show names of indexes
+.mode MODE ?OPTIONS?   Set output mode
+.nullvalue STRING      Use STRING in place of NULL values
+.once ?OPTIONS? ?FILE? Output for the next SQL command only to FILE
+.open ?OPTIONS? ?FILE? Close existing database and reopen FILE
+.output ?FILE?         Send output to FILE or stdout if FILE is omitted
+.print STRING...       Print literal STRING
+.quit                  Exit this program
+.read FILE             Read input from FILE
+.save ?OPTIONS? FILE   Write database to FILE (an alias for .backup ...)
+.schema ?PATTERN?      Show the CREATE statements matching PATTERN
+.separator COL ?ROW?   Change the column and row separators
+.show                  Show the current values for various settings
+.sync                  Write unsaved changes back to the database file
+.tables ?TABLE?        List names of tables matching LIKE pattern TABLE
+.timer on|off          Turn SQL timer on or off
+.width NUM1 NUM2 ...   Set minimum column widths for columnar output
+`;
+        const unq = (s) => { s = String(s); const m = /^(['"])([\s\S]*)\1$/.exec(s); if (!m) return s; return m[1] === "'" ? m[2] : m[2].replace(/\\(.)/g, '$1'); };
+        function words(line) { // 點指令的引數：單雙引號、反斜線跳脫
+            const out = []; let i = 0; const n = line.length;
+            while (i < n) { while (i < n && /\s/.test(line[i])) i++; if (i >= n) break; let cur = ''; const q = line[i]; if (q === "'" || q === '"') { i++; while (i < n && line[i] !== q) { if (q === '"' && line[i] === '\\' && i + 1 < n) { const nx = line[i + 1]; cur += nx === 'n' ? '\n' : nx === 't' ? '\t' : nx === 'r' ? '\r' : nx; i += 2; continue; } cur += line[i++]; } i++; } else { while (i < n && !/\s/.test(line[i])) cur += line[i++]; } out.push(cur); }
+            return out;
+        }
+        const onoff = (s) => /^(on|yes|true|1)$/i.test(s) ? true : /^(off|no|false|0)$/i.test(s) ? false : null;
+        async function listObjects(kind, pattern) {
+            const db = await need(); const like = pattern ? ' and name like ?' : ''; const r = await host.exec(db, "select name from sqlite_master where type='" + kind + "' and name not like 'sqlite_%'" + like + ' order by 1', { bind: pattern ? [pattern] : undefined, typed: true });
+            return (r.results[0].rows || []).map((x) => x[0]);
+        }
+        async function dotCommand(line) {
+            const m = /^\.(\S+)\s*([\s\S]*)$/.exec(line.trim()); if (!m) { err('Error: unknown command or invalid arguments:  "' + line.trim().slice(1) + '". Enter ".help" for help\n'); st.exitCode = 1; return; }
+            const cmd = m[1].toLowerCase(); const rest = m[2].trim(); const a = words(rest);
+            const bad = (why) => { err((why || 'Error: unknown command or invalid arguments:  "' + cmd + '". Enter ".help" for help') + '\n'); st.exitCode = 1; st.errorCount++; if (st.bail) st.quit = true; };
+            switch (cmd) {
+                case 'quit': case 'exit': st.quit = true; if (cmd === 'exit' && a[0] != null && /^-?\d+$/.test(a[0])) st.exitCode = parseInt(a[0], 10); return;
+                case 'help': w(HELP); return;
+                case 'headers': case 'header': { const v = onoff(a[0] || ''); if (v === null) return bad('Usage: .headers on|off'); st.headers = v; return; }
+                case 'echo': { const v = onoff(a[0] || ''); if (v === null) return bad('Usage: .echo on|off'); st.echo = v; return; }
+                case 'bail': { const v = onoff(a[0] || ''); if (v === null) return bad('Usage: .bail on|off'); st.bail = v; return; }
+                case 'timer': { const v = onoff(a[0] || ''); if (v === null) return bad('Usage: .timer on|off'); st.timer = v; return; }
+                case 'changes': { const v = onoff(a[0] || ''); if (v === null) return bad('Usage: .changes on|off'); st.changes = v; return; }
+                case 'nullvalue': st.nullValue = a[0] != null ? a[0] : ''; return;
+                case 'print': w(a.join(' ') + '\n'); return;
+                case 'width': st.widths = a.map((x) => parseInt(x, 10) || 0); return;
+                case 'separator': { if (!a.length) return bad('Usage: .separator COL ?ROW?'); st.colSep = a[0]; if (a[1] != null) st.rowSep = a[1]; return; }
+                case 'mode': {
+                    if (!a.length) { w('current output mode: ' + st.mode + '\n'); return; }
+                    const md = a[0].toLowerCase(); if (!MODES.includes(md)) return bad('Error: mode should be one of: ' + MODES.join(' '));
+                    st.mode = md; st._csvCli = false;
+                    if (md === 'csv') { st.colSep = ','; st.rowSep = '\r\n'; } else if (md === 'tabs') { st.colSep = '\t'; st.rowSep = '\n'; } else if (md === 'list') { st.colSep = '|'; st.rowSep = '\n'; } else if (md === 'insert') st.insertTable = a[1] || 'table'; else if (md === 'ascii') { st.colSep = '\x1f'; st.rowSep = '\x1e'; }
+                    if (md === 'table' || md === 'box' || md === 'markdown') st.headers = true; return;
+                }
+                case 'show': { w('     echo: ' + (st.echo ? 'on' : 'off') + '\n  eqp: off\n  explain: auto\n headers: ' + (st.headers ? 'on' : 'off') + '\n    mode: ' + st.mode + '\nnullvalue: "' + st.nullValue + '"\n  output: ' + (st.outputFile || 'stdout') + '\ncolseparator: "' + st.colSep.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"\nrowseparator: "' + st.rowSep.replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"\n   stats: off\n   width: ' + st.widths.join(' ') + '\n filename: ' + (st.dbPath || ':memory:') + '\n'); return; }
+                case 'open': { const f = a.filter((x) => !x.startsWith('-')).pop(); const ro = a.includes('--readonly'); try { await openDb(f || ':memory:', { readonly: ro }); } catch (e) { return bad('Error: unable to open database "' + f + '": ' + (e.message || e)); } return; }
+                case 'tables': { const names = await listObjects('table', a[0]); const views = await listObjects('view', a[0]); const all = names.concat(views).sort(); if (all.length) { const cw = Math.max(...all.map(width)) + 2; const per = Math.max(1, Math.floor(80 / cw)); const rows = Math.ceil(all.length / per); for (let r = 0; r < rows; r++) { let l = ''; for (let c = 0; c < per; c++) { const k = c * rows + r; if (k < all.length) l += pad(all[k], cw); } w(l.replace(/\s+$/, '') + '\n'); } } return; }
+                case 'indexes': case 'indices': { const db = await need(); const r = await host.exec(db, "select name from sqlite_master where type='index'" + (a[0] ? ' and tbl_name like ?' : '') + ' order by 1', { bind: a[0] ? [a[0]] : undefined, typed: true }); w((r.results[0].rows || []).map((x) => x[0]).join('\n') + (r.results[0].rows.length ? '\n' : '')); return; }
+                case 'schema': { const db = await need(); const like = a.filter((x) => !x.startsWith('-'))[0]; const r = await host.exec(db, "select sql from sqlite_master where sql not null and name not like 'sqlite_%'" + (like ? ' and (tbl_name like ?1 or name like ?1)' : '') + " order by case type when 'table' then 1 when 'index' then 2 when 'view' then 3 else 4 end, rowid", { bind: like ? [like] : undefined, typed: true }); for (const x of r.results[0].rows || []) w(x[0] + ';\n'); return; }
+                case 'databases': { const db = await need(); w('main: ' + (st.dbPath && st.dbPath !== ':memory:' ? st.dbPath : '') + ' ' + (st.readonly ? 'r/o' : 'r/w') + '\n'); return; }
+                case 'read': { if (!a[0]) return bad('Usage: .read FILE'); let txt; try { txt = await host.io.readText(a[0]); } catch (e) { return bad('Error: cannot open "' + a[0] + '"'); } await runScript(txt, a[0]); return; }
+                case 'output': case 'once': { const f = a.filter((x) => !x.startsWith('-'))[0]; if (cmd === 'output') { await flushOut(); st.outputFile = f && f !== 'stdout' ? f : null; st._outStarted = false; st.outChunks = []; } else { if (!f) return bad('Usage: .once FILE'); st.onceFile = f; st.outChunks = []; } return; }
+                case 'import': {
+                    const opts = a.filter((x) => x.startsWith('-')); const pos = a.filter((x) => !x.startsWith('-')); if (pos.length !== 2) return bad('Usage: .import ?OPTIONS? FILE TABLE'); let txt; try { txt = await host.io.readText(pos[0]); } catch (e) { return bad('Error: cannot open "' + pos[0] + '"'); }
+                    const skipI = a.indexOf('--skip'); const skip = skipI >= 0 ? parseInt(a[skipI + 1], 10) || 0 : 0; const sep = (st.mode === 'csv' || opts.includes('-csv') || opts.includes('--csv')) ? ',' : st.colSep; const rows = parseCsv(txt, sep).slice(skip);
+                    const db = await need(); const tbl = pos[1]; const q = '"' + tbl.replace(/"/g, '""') + '"'; const exists = (await host.exec(db, "select 1 from sqlite_master where type='table' and name=?", { bind: [tbl], typed: true })).results[0].rows.length > 0;
+                    let data = rows; if (!exists) { if (!rows.length) return; const head = rows[0]; data = rows.slice(1); const r = await host.exec(db, 'CREATE TABLE ' + q + '(' + head.map((h) => '"' + h.replace(/"/g, '""') + '" TEXT').join(',') + ')', {}); if (r.results[0].error) return bad('Error: ' + r.results[0].error); }
+                    const ncol = (await host.exec(db, 'PRAGMA table_info(' + q + ')', { typed: true })).results[0].rows.length; await host.exec(db, 'BEGIN', {});
+                    for (const row of data) { const vals = row.slice(0, ncol); while (vals.length < ncol) vals.push(null); const r = await host.exec(db, 'INSERT INTO ' + q + ' VALUES(' + vals.map(() => '?').join(',') + ')', { bind: vals }); if (r.results[0].error) { await host.exec(db, 'ROLLBACK', {}); return bad('Error: ' + r.results[0].error); } }
+                    await host.exec(db, 'COMMIT', {}); return;
+                }
+                case 'dump': { await dump(a); return; }
+                case 'backup': case 'save': { const f = a.filter((x) => !x.startsWith('-')).pop(); if (!f) return bad('Usage: .' + cmd + ' ?DB? FILE'); if (!host.backup) return bad('Error: .' + cmd + ' 在這個環境不支援'); try { await host.backup(await need(), f); } catch (e) { return bad('Error: ' + (e.message || e)); } return; }
+                case 'sync': { if (host.sync) await host.sync(await need()); return; }
+                case 'shell': case 'system': case 'cd': case 'load': case 'restore': return bad('Error: .' + cmd + ' 在這個環境不支援');
+                default: return bad('Error: unknown command or invalid arguments:  "' + cmd + '". Enter ".help" for help');
+            }
+        }
+        function parseCsv(text, sep) {
+            const rows = []; let row = [], cur = '', i = 0, inq = false; const n = text.length; let any = false;
+            while (i < n) { const c = text[i]; if (inq) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i += 2; continue; } inq = false; i++; continue; } cur += c; i++; continue; } if (c === '"' && cur === '') { inq = true; any = true; i++; continue; } if (text.startsWith(sep, i)) { row.push(cur); cur = ''; i += sep.length; any = true; continue; } if (c === '\r' && text[i + 1] === '\n') { i++; continue; } if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; any = false; i++; continue; } cur += c; any = true; i++; }
+            if (cur !== '' || any || row.length) { row.push(cur); rows.push(row); } return rows;
+        }
+        async function dump(args) {
+            const db = await need(); const pats = args.filter((x) => !x.startsWith('-'));
+            w('PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n');
+            const objs = (await host.exec(db, "select type,name,tbl_name,sql from sqlite_master where sql not null and name not like 'sqlite_%' order by case type when 'table' then 1 when 'index' then 2 when 'view' then 3 else 4 end, rowid", { typed: true })).results[0].rows;
+            for (const [type, name, tbl, sql] of objs) {
+                if (pats.length && !pats.some((p) => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$', 'i').test(tbl))) continue;
+                w(sql + ';\n');
+                if (type === 'table' && !/^CREATE VIRTUAL TABLE/i.test(sql)) {
+                    const q = /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : '"' + name.replace(/"/g, '""') + '"'; let off = 0;
+                    for (;;) { const r = (await host.exec(db, 'select * from "' + name.replace(/"/g, '""') + '" limit 500 offset ' + off, { typed: true, limit: 500 })).results[0]; if (!r.rows || !r.rows.length) break; for (const row of r.rows) w('INSERT INTO ' + q + ' VALUES(' + row.map(sqlQuote).join(',') + ');\n'); if (r.rows.length < 500) break; off += 500; }
+                }
+            }
+            w('COMMIT;\n');
+        }
+
+        // ---- 逐行輸入（REPL 與腳本共用）----
+        async function feedLine(line) {
+            st.lineNo++;
+            if (!st.buf.trim() && /^\s*\./.test(line)) { const isOnce = /^\s*\.once\b/i.test(line); await dotCommand(line); if (!isOnce) await flushOut(false); return; }
+            if (!st.buf.trim() && /^\s*$/.test(line)) return;
+            st.buf += (st.buf ? '\n' : '') + line;
+            if (SPLIT.isComplete(st.buf) && st.buf.trim()) { const sql = st.buf; st.buf = ''; await runSql(sql); await flushOut(true); }
+        }
+        async function runScript(text, name) {
+            const lines = String(text).split(/\r?\n/); const saveName = st.scriptName; st.scriptName = name || '';
+            for (const l of lines) { if (st.quit) break; await feedLine(l); }
+            if (st.buf.trim() && !st.quit) { const sql = st.buf; st.buf = ''; await runSql(sql); await flushOut(true); } // 最後一句沒有分號：真的 sqlite3 也會執行
+            st.scriptName = saveName;
+        }
+        return {
+            state: st, feedLine, runScript, openDb, runSql, dotCommand, flushOut,
+            prompt: () => (st.buf.trim() ? '   ...> ' : 'sqlite> '),
+            banner: () => 'SQLite version ' + ver() + '\nEnter ".help" for usage hints.\n' + (st.dbPath && st.dbPath !== ':memory:' ? '' : 'Connected to a transient in-memory database.\nUse ".open FILENAME" to reopen on a persistent database.\n'),
+            close: async () => { if (st.db) { try { await host.close(st.db); } catch (_) { /* */ } st.db = null; } },
+        };
+    }
+
+    // ---- 命令列選項（對齊 sqlite3）----
+    function parseArgs(argv) {
+        const o = { file: null, sql: [], cmds: [], init: null, mode: null, headers: null, readonly: false, bail: false, echo: false, nullvalue: null, separator: null, newline: null, batch: false, version: false, help: false, errors: [], csvCli: false };
+        const modeFlags = { '-ascii': 'ascii', '-box': 'box', '-column': 'column', '-csv': 'csv', '-html': 'html', '-json': 'json', '-line': 'line', '-list': 'list', '-markdown': 'markdown', '-quote': 'quote', '-table': 'table', '-tabs': 'tabs', '-tcl': 'tcl' };
+        for (let i = 0; i < argv.length; i++) {
+            const a = argv[i].replace(/^--/, '-');
+            if (modeFlags[a]) { o.mode = modeFlags[a]; if (a === '-csv') o.csvCli = true; }
+            else if (a === '-header' || a === '-headers') o.headers = true; else if (a === '-noheader') o.headers = false;
+            else if (a === '-readonly') o.readonly = true; else if (a === '-bail') o.bail = true; else if (a === '-echo') o.echo = true; else if (a === '-batch') o.batch = true;
+            else if (a === '-version') o.version = true; else if (a === '-help' || a === '-h') o.help = true; else if (a === '-interactive' || a === '-stats' || a === '-safe' || a === '-nofollow') { /* 不影響結果 */ }
+            else if (a === '-cmd') { o.cmds.push(argv[++i]); } else if (a === '-init') { o.init = argv[++i]; } else if (a === '-separator') { o.separator = argv[++i]; } else if (a === '-newline') { o.newline = argv[++i]; } else if (a === '-nullvalue') { o.nullvalue = argv[++i]; }
+            else if (/^-/.test(argv[i]) && argv[i] !== '-') { o.errors.push('sqlite3: Error: unknown option: ' + argv[i] + '\nUse -help for a list of options.'); }
+            else if (o.file === null) o.file = argv[i]; else o.sql.push(argv[i]);
+        }
+        return o;
+    }
+    // 一次完整的命令列呼叫：io.stdin＝管線／重導向進來的文字（沒有就 null）；io.interactive＝沒有 SQL 也沒有 stdin 時是否進 REPL
+    async function runCli(argv, host, io) {
+        io = io || {}; const o = parseArgs(argv);
+        if (o.errors.length) { host.writeErr(o.errors[0] + '\n'); return { exitCode: 1 }; }
+        if (o.version) { host.write((host.version || '3.53.4') + ' 2026-01-01 00:00:00 (64-bit)\n'); return { exitCode: 0 }; }
+        if (o.help) { host.write('Usage: sqlite3 [OPTIONS] FILENAME [SQL...]\n'); return { exitCode: 0 }; }
+        const sh = create(host); const st = sh.state;
+        if (o.mode) { await sh.dotCommand('.mode ' + o.mode); if (o.csvCli) { st._csvCli = true; st.rowSep = '\n'; } if (o.mode === 'table' || o.mode === 'box' || o.mode === 'markdown') st.headers = true; }
+        if (o.headers !== null) st.headers = o.headers; if (o.nullvalue !== null) st.nullValue = o.nullvalue; if (o.separator !== null) st.colSep = o.separator; if (o.newline !== null) st.rowSep = o.newline; st.bail = o.bail; st.echo = o.echo;
+        try { await sh.openDb(o.file || host.defaultDb || ':memory:', { readonly: o.readonly, create: !o.readonly }); } catch (e) { host.writeErr('Error: unable to open database "' + (o.file || '') + '": ' + (e && e.message || e) + '\n'); return { exitCode: 1 }; }
+        if (o.init) { try { await sh.runScript(await host.io.readText(o.init), o.init); } catch (e) { host.writeErr('Error: cannot open "' + o.init + '"\n'); return { exitCode: 1 }; } }
+        for (const c of o.cmds) { if (st.quit) break; await sh.runScript(c, '-cmd'); }
+        if (o.sql.length) { for (const s of o.sql) { if (st.quit) break; await sh.runScript(s, 'arg'); } }
+        else if (io.stdin != null) await sh.runScript(io.stdin, 'stdin');
+        else if (io.interactive && !st.quit) { host.write(sh.banner()); return { exitCode: st.exitCode, shell: sh, interactive: true }; }
+        await sh.flushOut(true); await sh.close(); return { exitCode: st.exitCode };
+    }
+    return { create, parseArgs, runCli, MODES, cellText, sqlQuote, realText, splitSql: SPLIT.split };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSqliteShell;
+})();
+/* SQLSH-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -16390,7 +16721,7 @@ const TERMINAL_BUSYBOX_APPLETS = [
 // 檔案，不是額外的一份指令白名單管制。
 const TERMINAL_SHELL_BUILTINS = [
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time', 'sh', 'bash',
-    'ask-floating-ai-assistant', 'sync',
+    'ask-floating-ai-assistant', 'sync', 'sqlite3', 'sqlite',
     // tw_stock_db客製: 2026-09-25使用者要求——sleep（busybox applet清單裡沒有）、
     // curl/wget/httping（非同步網路請求，SANDBOX_COMMAND_REGISTRY那條host
     // builtin路徑要求同步callback做不到，見_runTerminalCommand裡的說明）。
@@ -16407,7 +16738,7 @@ const TERMINAL_SHELL_BUILTINS = [
 // 複合指令中間執行，語意/測試成本都高出很多）。
 const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
     'cd', 'pwd', 'clear', 'exit', 'help', 'which', 'chmod', 'time',
-    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make',
+    'ask-floating-ai-assistant', 'sync', 'sleep', 'curl', 'wget', 'httping', 'make', 'sqlite3', 'sqlite',
     'sh', 'bash',
 ]);
 
@@ -16421,7 +16752,7 @@ const TERMINAL_COMPOUND_INTERCEPT_NAMES = new Set([
 // 的AST裡，SimpleCommand節點要不要直接async dispatch，還是要合併進wasi-sh
 // batch」，兩者語意不同）。
 const TERMINAL_VIRTUAL_SCRIPT_COMMANDS = new Set([
-    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export',
+    'sleep', 'curl', 'wget', 'httping', 'date', 'ask-floating-ai-assistant', 'make', 'time', 'export', 'sqlite3', 'sqlite',
 ]);
 
 // tw_stock_db客製: 2026-09-18使用者要求的xterm Configure分頁佈景主題
@@ -39565,6 +39896,7 @@ ${sourceTool.handlerScript}
                 else if (cmdName === 'httping') await this._terminalHttping(session, restArgsQuoted);
                 else if (cmdName === 'date') await this._terminalDateInline(session, expandedArgv.slice(1));
                 else if (cmdName === 'ask-floating-ai-assistant') await this._terminalAskAI(session, restArgsRaw);
+                else if (cmdName === 'sqlite3' || cmdName === 'sqlite') return await this._terminalSqlite(session, expandedArgv.slice(1), this._terminalConsumeStdinOpt(opts));
                 else if (cmdName === 'make') await this._terminalRunMakeViaTool(session, restArgsRaw);
             });
             const vExit = typeof captured.result === 'number' ? captured.result : (captured.hadError ? 1 : 0);
@@ -39603,6 +39935,16 @@ ${sourceTool.handlerScript}
                     if (session.ended) break;
                     if (part.type === 'SimpleCommand' && !part.argvWords.length && part.assignments.length) {
                         for (const a of part.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
+                        continue;
+                    }
+                    const sqlPipe = (part.type === 'SimpleCommand' && !part.assignments.length) ? this._terminalSplitSqlitePipe(part.srcText) : null;
+                    if (sqlPipe) {
+                        await flushBatch();
+                        const hr = await this._terminalRunWasmLine(session, this._terminalBuildEnvPrefix(env) + sqlPipe.head, { streamToWidget: false, stdin: this._terminalConsumeStdinOpt(opts) });
+                        if (!hr.ok) { exitCode = 1; stderr += String(hr.error || ''); continue; }
+                        const tailArgv = this._terminalTokenizeArgs(sqlPipe.tail).slice(1).map((w) => this._terminalExpandWord(w, env).text);
+                        const cap = await this._terminalCaptureWrites(session, async () => await this._terminalSqlite(session, tailArgv, hr.stdout));
+                        exitCode = typeof cap.result === 'number' ? cap.result : (cap.hadError ? 1 : 0); stdout += exitCode ? '' : cap.text; stderr += exitCode ? cap.text : '';
                         continue;
                     }
                     if (part.type === 'SimpleCommand' && part.argvWords.length && !this._terminalIsVirtualCommandWord(part.argvWords[0]) && !part.assignments.length) {
@@ -39876,6 +40218,7 @@ ${sourceTool.handlerScript}
         // 指令），因為這裡要做的事（打一次LLM API、等回應）完全不是busybox
         // shell的能力範圍，攔截在這裡直接處理最直接。
         if (cmdName === 'ask-floating-ai-assistant') { await this._terminalAskAI(session, restArgs); return; }
+        if (cmdName === 'sqlite3' || cmdName === 'sqlite') { await this._terminalSqlite(session, this._terminalTokenizeArgs(restArgs), null); return; }
         // tw_stock_db客製: 2026-09-25使用者要求——sleep/curl/wget/httping。這幾個
         // JS層攔截的理由各不同：sleep純粹是JS setTimeout，busybox applet清單裡
         // 根本沒有（wasi-sh 0.11.0沒編進這個applet）；curl/wget/httping的核心
@@ -40538,6 +40881,14 @@ ${sourceTool.handlerScript}
                 } catch (err) { /* 寫入失敗不影響已經拿到的stdout/stderr結果，讓呼叫端自己決定要不要重試 */ }
             }
             return { ok: true, exit_code: exitCode, stdout, stderr };
+        }
+        const sqlPipe = this._terminalSplitSqlitePipe(trimmedLine);
+        if (sqlPipe) { // 管線尾端是 sqlite3：前面的輸出當 stdin（非同步引擎，不能走 wasm 的同步 host builtin）
+            const hr = await this._terminalRunWasmLine(session, sqlPipe.head, { streamToWidget: false });
+            if (!hr.ok) return hr;
+            const cap = await this._terminalCaptureWrites(session, async () => await this._terminalSqlite(session, this._terminalTokenizeArgs(sqlPipe.tail).slice(1), hr.stdout));
+            const code = typeof cap.result === 'number' ? cap.result : (cap.hadError ? 1 : 0);
+            return { ok: true, exit_code: code, stdout: code ? '' : cap.text, stderr: (hr.stderr || '') + (code ? cap.text : '') };
         }
         const firstSp = trimmedLine.indexOf(' ');
         const cmdNameOnly = firstSp === -1 ? trimmedLine : trimmedLine.slice(0, firstSp);
@@ -41580,6 +41931,126 @@ ${sourceTool.handlerScript}
     // 等待期間的心跳訊息（灰階、模擬「思考都在stderr」的視覺效果）刻意
     // 抄main.js runCliPrompt()的CLI心跳格式（每5秒一次、同樣的文字），
     // 呼應「完全跟cli版本一致」這個明確要求。
+    // ===== SQLite（桌面版：主行程 node:sqlite 開真實檔案；網頁版目前沒有引擎）=====
+    // 引擎在 sqlite-engine.js（preload 的 desktopAPI.sql.call）；命令列核心是 FaSqliteShell（renderer/src/sql/shell_core.js）。
+    // 檔案來源（ref）解析順序：:memory: → file:／host:／磁碟機代號開頭的真實路徑（直接開）→ fap:<名稱>/路徑 → 終端機沙盒內的路徑（in-memory 優先，不會碰到別處同名的檔案）。
+    // 後兩種是「暫存副本」：位元組放到系統暫存資料夾開，唯讀就丟掉、可寫就在關閉時寫回原處（FAP 或沙盒）。
+    _sqlAvailable() { return typeof window !== 'undefined' && !!(window.desktopAPI && window.desktopAPI.sql && window.desktopAPI.rawfs); }
+    async _sqlCall(op, args) {
+        const r = await window.desktopAPI.sql.call(op, args);
+        if (!r || r.ok === false) { const e = new Error((r && r.error) || 'SQLite 引擎沒有回應'); e.code = r && r.code; throw e; }
+        return r;
+    }
+    _sqlBytesToB64(bytes) { let s = ''; const CH = 0x8000; for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH)); return btoa(s); }
+    _sqlB64ToBytes(b64) { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+    // 開一個資料庫；回傳 { db, kind, label, readonly, commit(), close() }
+    async _sqlOpen(ref, o) {
+        o = o || {}; ref = String(ref == null ? '' : ref).trim();
+        if (!this._sqlAvailable()) throw new Error('這個環境沒有 SQLite 引擎（桌面版才有；網頁版尚未支援）');
+        if (ref === '' || ref === ':memory:') { const r = await this._sqlCall('open', { memory: true }); return { db: r.db, kind: 'memory', label: ':memory:', readonly: false, commit: async () => {}, close: () => this._sqlCall('close', { db: r.db }) }; }
+        const realM = /^(?:file|host):(.+)$/i.exec(ref) || ((/^[A-Za-z]:[\\/]/.test(ref) || /^\\\\/.test(ref)) ? [null, ref] : null);
+        if (realM) {
+            const p = realM[1]; const r = await this._sqlCall('open', { path: p, readonly: !!o.readonly, mode: o.create && !o.readonly ? 'new' : undefined });
+            return { db: r.db, kind: 'file', label: r.path, readonly: !!o.readonly, size: r.size, commit: async () => { try { await this._sqlCall('checkpoint', { db: r.db }); } catch (_) { /* 唯讀或非 WAL */ } }, close: () => this._sqlCall('close', { db: r.db }) };
+        }
+        // 暫存副本
+        let bytes = null, name = 'db.sqlite3', writeBack = null, kind = 'staged';
+        if (/^fap:/i.test(ref)) {
+            kind = 'fap'; name = ref.split('/').pop() || name;
+            try { bytes = (await this._resolveTerminalCopySource(ref)).bytes; } catch (e) { if (!o.create) throw e; }
+            writeBack = (b) => this._writeTerminalCopyDestination(ref, b, name, 'application/vnd.sqlite3');
+        } else {
+            const session = o.session; if (!session) throw new Error('無法解析「' + ref + '」：不在終端機裡，請用 file:<完整路徑> 或 fap:<名稱>/<路徑>');
+            const runtime = await this._ensureBashWasmLoaded(); const fsStore = await this._ensureTerminalFsStore(session, runtime); const abs = this._terminalResolvePath(session.cwd, ref); name = abs.split('/').pop() || name; kind = 'memfs';
+            try { bytes = this._terminalSandboxFileBytes(fsStore, abs); } catch (_) { bytes = null; }
+            if (!bytes && !o.create) throw new Error('找不到檔案：' + abs);
+            writeBack = async (b) => { this._writeBytesToTerminalFs(fsStore, abs, b); };
+        }
+        if (bytes && bytes.length > 512 * 1024 * 1024) throw new Error('檔案太大（' + Math.round(bytes.length / 1048576) + ' MB），暫存副本上限 512 MB；大型資料庫請放在磁碟上用 file:<路徑> 開啟');
+        const st = await this._sqlCall('stage', { name: name.replace(/[^\w.-]/g, '_') }); const sp = st.path;
+        if (bytes && bytes.length) await window.desktopAPI.rawfs.writeFile(sp, { base64: this._sqlBytesToB64(bytes) }); else if (bytes) await window.desktopAPI.rawfs.writeFile(sp, { base64: '' });
+        const r = await this._sqlCall('open', { path: sp, readonly: !!o.readonly, mode: bytes ? undefined : 'new' });
+        const pull = async () => { await this._sqlCall('checkpoint', { db: r.db }); const x = await window.desktopAPI.rawfs.readFile(sp, 'base64'); return this._sqlB64ToBytes(x.base64 || ''); };
+        let dirty = false;
+        const handle = {
+            db: r.db, kind, label: ref, readonly: !!o.readonly, size: bytes ? bytes.length : 0,
+            commit: async () => { if (o.readonly || !writeBack) return; const b = await pull(); await writeBack(b); dirty = false; },
+            close: async () => { try { if (!o.readonly && writeBack) { const b = await pull(); await writeBack(b); } } finally { try { await this._sqlCall('close', { db: r.db }); } finally { for (const sfx of ['', '-wal', '-shm', '-journal']) { try { await window.desktopAPI.rawfs.remove(sp + sfx, false); } catch (_) { /* 不存在 */ } } } } },
+        };
+        void dirty; return handle;
+    }
+    _terminalSplitSqlitePipe(src) {
+        const s = String(src || ''); let q = null, last = -1;
+        for (let i = 0; i < s.length; i++) { const c = s[i]; if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; continue; } if (c === '"' || c === "'") { q = c; continue; } if (c === '\\') { i++; continue; } if (c === '|') { if (s[i + 1] === '|') { i++; continue; } last = i; } }
+        if (last < 0) return null; const tail = s.slice(last + 1).trim(); if (!/^(?:sqlite3|sqlite)(?:\s|$)/.test(tail)) return null; return { head: s.slice(0, last), tail };
+    }
+    // sqlite3／sqlite 終端機指令：argv＝已展開的參數；stdin＝管線或重導向進來的文字（沒有就 null）；回傳結束碼
+    async _terminalSqlite(session, argv, stdin) {
+        const w = (s) => session.term.write(String(s).replace(/\r?\n/g, '\r\n'));
+        const SH = (typeof FaSqliteShell !== 'undefined') ? FaSqliteShell : null;
+        if (!SH) { w('\x1b[31msqlite3: 命令列核心沒有載入\x1b[0m\n'); return 1; }
+        if (!this._sqlAvailable()) { w('\x1b[31msqlite3: 這個環境沒有 SQLite 引擎（桌面版才有；網頁版尚未支援）\x1b[0m\n'); return 1; }
+        // 重導向：< 檔案 當 stdin；> >> 檔案 收集輸出；2>&1 錯誤也進同一處；2>/dev/null 丟掉錯誤
+        { const kept = []; let inFile = null, outFile = null, append = false, errMode = null;
+          for (let i = 0; i < argv.length; i++) { const a = argv[i]; let m;
+            if (a === '2>&1') { errMode = 'out'; continue; }
+            if ((m = /^2>(.*)$/.exec(a))) { const f = m[1] || argv[++i]; errMode = f === '/dev/null' ? 'null' : 'out'; continue; }
+            if ((m = /^(>>|>|<)(.*)$/.exec(a))) { const f = m[2] || argv[++i]; if (m[1] === '<') inFile = f; else { outFile = f; append = m[1] === '>>'; } continue; }
+            kept.push(a); }
+          if (inFile || outFile || errMode) {
+            let text = stdin; if (inFile) { try { const runtime = await this._ensureBashWasmLoaded(); const fsStore = await this._ensureTerminalFsStore(session, runtime); const b = this._terminalSandboxFileBytes(fsStore, this._terminalResolvePath(session.cwd, inFile)); if (!b) throw new Error('x'); text = new TextDecoder().decode(b); } catch (_) { w('\x1b[31msqlite3: ' + inFile + ': No such file or directory\x1b[0m\n'); return 1; } }
+            if (!outFile && !errMode) return await this._terminalSqlite(session, kept, text);
+            const realWrite = session.term.write; const outBuf = [];
+            session.term.write = (s) => { const isErr = /^\x1b\[31m/.test(String(s)); if (isErr && errMode === 'null') return; if (outFile && (!isErr || errMode === 'out')) outBuf.push(String(s)); else realWrite.call(session.term, s); };
+            let rc; try { rc = await this._terminalSqlite(session, kept, text); } finally { session.term.write = realWrite; }
+            if (outFile) { const txt = outBuf.join('').replace(/\r\n/g, '\n').replace(/\x1b\[[0-9;]*m/g, ''); const runtime = await this._ensureBashWasmLoaded(); const fsStore = await this._ensureTerminalFsStore(session, runtime); const abs = this._terminalResolvePath(session.cwd, outFile); let prev = new Uint8Array(0); if (append) { try { prev = this._terminalSandboxFileBytes(fsStore, abs) || prev; } catch (_) { /* 新檔 */ } } const add = new TextEncoder().encode(txt); const all = new Uint8Array(prev.length + add.length); all.set(prev, 0); all.set(add, prev.length); this._writeBytesToTerminalFs(fsStore, abs, all); }
+            return rc;
+          } argv = kept; }
+        const handles = new Map();
+        const readText = async (p) => {
+            if (/^(?:file|host):|^[A-Za-z]:[\\/]|^\\\\/.test(p)) { const x = await window.desktopAPI.rawfs.readFile(p.replace(/^(?:file|host):/i, ''), 'base64'); return new TextDecoder().decode(this._sqlB64ToBytes(x.base64 || '')); }
+            const runtime = await this._ensureBashWasmLoaded(); const fsStore = await this._ensureTerminalFsStore(session, runtime); const abs = this._terminalResolvePath(session.cwd, p);
+            const b = this._terminalSandboxFileBytes(fsStore, abs); if (!b) throw new Error('cannot open ' + p); return new TextDecoder().decode(b);
+        };
+        const writeText = async (p, txt, o) => {
+            const runtime = await this._ensureBashWasmLoaded(); const fsStore = await this._ensureTerminalFsStore(session, runtime); const abs = this._terminalResolvePath(session.cwd, p);
+            let prev = new Uint8Array(0); if (o && o.append) prev = this._terminalSandboxFileBytes(fsStore, abs) || prev; const add = new TextEncoder().encode(txt); const all = new Uint8Array(prev.length + add.length); all.set(prev, 0); all.set(add, prev.length);
+            this._writeBytesToTerminalFs(fsStore, abs, all);
+        };
+        const host = {
+            version: '3.53.4', write: w, writeErr: (s) => w('\x1b[31m' + String(s).replace(/\n$/, '') + '\x1b[0m\n'),
+            open: async (p, o) => { const h = await this._sqlOpen(p, Object.assign({ session }, o)); handles.set(h.db, h); return { db: h.db }; },
+            close: async (db) => { const h = handles.get(db); if (h) { handles.delete(db); await h.close(); } },
+            exec: (db, sql, o) => this._sqlCall('exec', Object.assign({ db, sql }, o || {})),
+            sync: async (db) => { const h = handles.get(db); if (h) await h.commit(); },
+            io: { readText, writeText },
+        };
+        let r;
+        try { r = await SH.runCli(argv, host, { stdin: stdin == null ? null : String(stdin), interactive: true }); }
+        catch (e) { w('\x1b[31msqlite3: ' + String((e && e.message) || e) + '\x1b[0m\n'); for (const h of handles.values()) { try { await h.close(); } catch (_) { /* 盡力 */ } } return 1; }
+        if (!r.interactive) { for (const h of handles.values()) { try { await h.close(); } catch (_) { /* 盡力 */ } } return r.exitCode; }
+        // 互動模式：接管鍵盤，一行一行餵給核心
+        const sh = r.shell; let line = ''; const hist = []; let hi = 0; let busy = false; const queue = [];
+        const prompt = () => session.term.write('\x1b[0m' + sh.prompt());
+        await new Promise((resolve) => {
+            const finish = async () => { session.activeProgram = null; try { await sh.close(); } catch (_) { /* */ } for (const h of handles.values()) { try { await h.close(); } catch (_) { /* */ } } resolve(); };
+            const runLine = async (l) => { busy = true; try { await sh.feedLine(l); } catch (e) { w('\x1b[31mError: ' + String((e && e.message) || e) + '\x1b[0m\n'); } busy = false; if (sh.state.quit) { await finish(); return; } prompt(); if (queue.length) { const nx = queue.shift(); w(nx + '\n'); await runLine(nx); } };
+            session.activeProgram = { feed: (data) => {
+                for (const ch of (String(data).match(/\x1b\[[0-9;]*[A-Za-z~]|[\s\S]/g) || [])) {
+                    if (ch === '\x1b[A' || ch === '\x1b[B') { if (!hist.length) continue; hi = Math.max(0, Math.min(hist.length, hi + (ch === '\x1b[A' ? -1 : 1))); session.term.write('\r\x1b[2K' + sh.prompt() + (hist[hi] || '')); line = hist[hi] || ''; continue; }
+                    if (ch.length > 1) continue;
+                    if (ch === '\r' || ch === '\n') { session.term.write('\r\n'); const l = line; line = ''; if (l.trim()) { hist.push(l); hi = hist.length; } if (busy) queue.push(l); else runLine(l); }
+                    else if (ch === '\x7f' || ch === '\b') { if (line.length) { const last = [...line].pop(); line = line.slice(0, -last.length); session.term.write('\b \b'.repeat(/[ᄀ-￿]/.test(last) ? 2 : 1)); } }
+                    else if (ch === '\x03') { line = ''; sh.state.buf = ''; session.term.write('^C\r\n'); prompt(); }
+                    else if (ch === '\x04') { if (!line) { session.term.write('\r\n'); sh.state.quit = true; finish(); } }
+                    else if (ch >= ' ' && ch !== '\x1b') { line += ch; session.term.write(ch); }
+                }
+            } };
+            prompt();
+        });
+        return sh.state.exitCode;
+    }
+
     async _terminalAskAI(session, argsText) {
         let format = 'text';
         let rest = String(argsText || '');
