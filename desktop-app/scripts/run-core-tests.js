@@ -52,5 +52,9 @@ if (py.status === 0) {
     if (!ok) failed++;
     console.log((ok ? 'PASS ' : 'FAIL ') + '部位偵測（Python）：' + last);
 } else console.log('略過 部位偵測（Python）：沒有 python 或缺 numpy／pillow');
+// fa_sqlite（Python 的 sqlite3 相容介面）：用標準函式庫的 sqlite3 假冒引擎來測，有 python 才跑
+const pq = spawnSync('python', [path.join(root, 'scripts/test_fa_sqlite.py')], { encoding: 'utf8' });
+if (pq.error) console.log('略過 fa_sqlite（Python）：沒有 python');
+else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = pq.status === 0 && /0 failed/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_sqlite（Python 的 sqlite3 相容介面）：' + last); }
 console.log(failed ? '\n有 ' + failed + ' 組失敗' : '\n全部通過');
 process.exit(failed ? 1 : 0);

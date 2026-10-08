@@ -354,7 +354,7 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
 
 - 可用平台：網頁版、桌面版
 - 子代理人領域：`coding`
-- AI 工具：`repo_map`、`repo_ask`、`repo_read_doc`
+- AI 工具：`repo_map`、`repo_ask`、`repo_sql`、`repo_read_doc`
 - 範例：
   - `幫我找一下專案裡處理登入的原始碼，再看它依賴哪些檔案`
   - `這個檔案路徑找不到了，專案是不是改過結構？`
@@ -378,7 +378,7 @@ BIOS 韌體開發領域：先決定改動在哪個階段（SEC／PEI／DXE／BDS
 
 - 可用平台：網頁版、桌面版
 - 子代理人領域：`coding`
-- AI 工具：`repo_map`、`repo_ask`、`repo_read_doc`
+- AI 工具：`repo_map`、`repo_ask`、`repo_sql`、`repo_read_doc`
 - 範例：
   - `/aidoc view`
   - `幫這個專案建立索引並讓 AI 補上每個檔案的說明`
