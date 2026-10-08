@@ -189,6 +189,7 @@ class SqliteEngine {
       }
       case "close": { const c = this._conn(args.db); try { if (c.worker && !c.needsReopen) await this._send(c, "close", {}, 20000); } finally { this.conns.delete(args.db); if (c.worker) { try { c.worker.terminate(); } catch (_) { /* */ } c.worker = null; } } return { ok: true }; }
       case "cancel": { const c = this._conn(args.db); this._kill(c, new Error("已取消")); return { ok: true }; }
+      case "stage": { const dir = path.join(os.tmpdir(), "fa-sql-stage"); fs.mkdirSync(dir, { recursive: true }); return { path: path.join(dir, Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8) + "-" + String(args.name || "db.sqlite3").replace(/[^\w.-]/g, "_")) }; }
       case "list": return { dbs: Array.from(this.conns.values()).map((c) => ({ db: c.id, path: c.path, readonly: c.readonly })) };
       default: {
         const c = this._conn(args.db); await this._ensureOpen(c);

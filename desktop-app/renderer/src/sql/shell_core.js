@@ -4,7 +4,7 @@
  * 值的表示（引擎協定，typed:true）：null、字串、整數＝JS number 或 {$int}、實數＝{$real:"1.0"}（整數值的實數）或非整數 number、BLOB＝{$blob:base64}。 */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) module.exports = factory(require('./sql_split.js'));
-    else root.FaSqliteShell = factory(root.FaSqlSplit);
+    else root.FaSqliteShell = factory(typeof FaSqlSplit !== 'undefined' ? FaSqlSplit : root.FaSqlSplit);
 })(typeof self !== 'undefined' ? self : this, function (SPLIT) {
     'use strict';
     const MODES = ['ascii', 'box', 'csv', 'column', 'html', 'insert', 'json', 'line', 'list', 'markdown', 'quote', 'table', 'tabs', 'tcl'];
