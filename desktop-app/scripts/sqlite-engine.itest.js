@@ -19,6 +19,12 @@ t('建立資料庫、建表、寫入、查詢', async () => {
     assert.deepStrictEqual(r.results[2].columns, ['id', 'name', 'v', 'b']); assert.deepStrictEqual(r.results[2].rows[0], [1, 'a', 1.5, { $blob: 'AQI=' }]); assert.strictEqual(r.results[2].rows[1][2], null);
     await call('close', { db: o.db });
 });
+t('同名欄位不互相覆蓋、move 取代檔案', async () => {
+    const o = await call('open', { path: ':memory:' }); await call('exec', { db: o.db, sql: 'create table a(id,x); create table b(id,x); insert into a values(1,10); insert into b values(2,20)' });
+    const r = await call('exec', { db: o.db, sql: 'select a.id, b.id, a.x, b.x from a, b' }); assert.deepStrictEqual(r.results[0].rows[0], [1, 2, 10, 20]); await call('close', { db: o.db });
+    const p1 = path.join(tmp, 'm1.db'), p2 = path.join(tmp, 'm2.db'); let w = await call('open', { path: p1, mode: 'new' }); await call('exec', { db: w.db, sql: 'create table z(v); insert into z values(7)' }); await assert.rejects(() => call('move', { from: p1, to: p2 }), /先關閉/); await call('close', { db: w.db });
+    fs.writeFileSync(p2, 'old'); const mv = await call('move', { from: p1, to: p2 }); assert.ok(mv.size > 0); assert.strictEqual(fs.existsSync(p1), false); const w2 = await call('open', { path: p2 }); const q = await call('exec', { db: w2.db, sql: 'select v from z' }); assert.deepStrictEqual(q.results[0].rows, [[7]]); await call('close', { db: w2.db });
+});
 t('大整數不失真、BLOB 往返', async () => {
     const o = await call('open', { path: ':memory:' });
     await call('exec', { db: o.db, sql: 'create table n(x integer, y blob)' });

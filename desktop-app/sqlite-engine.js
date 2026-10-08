@@ -45,7 +45,7 @@ function workerMain() {
   const need = () => { if (!db) throw new Error("資料庫沒有開啟"); return db; };
   const readOnlyStmt = (sql) => /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*(select|with|explain|pragma\s+(?!.*=)|values)\b/i.test(sql);
   function runOne(sql, bind, limit, offset, maxCell) {
-    const t0 = Date.now(); const st = need().prepare(sql); st.setReadBigInts(true);
+    const t0 = Date.now(); const st = need().prepare(sql); st.setReadBigInts(true); if (typeof st.setReturnArrays === "function") st.setReturnArrays(true); // 陣列列：同名欄位（a.id, b.id）不會互相覆蓋
     let cols = []; try { cols = st.columns().map((c) => c.name); } catch (_) { cols = []; }
     const bd = decBind(bind); const arrBind = Array.isArray(bd) ? bd : [bd];
     if (cols.length) {
@@ -53,7 +53,7 @@ function workerMain() {
       for (const r of st.iterate(...arrBind)) {
         total++; if (skipped < offset) { skipped++; continue; }
         if (rows.length >= limit) { truncated = true; break; }
-        const arr = cols.map((c) => { const v = enc(r[c]); return (maxCell && typeof v === "string" && v.length > maxCell) ? v.slice(0, maxCell) + "…" : v; }); rows.push(arr);
+        const arr = cols.map((c, ci) => { const v = enc(Array.isArray(r) ? r[ci] : r[c]); return (maxCell && typeof v === "string" && v.length > maxCell) ? v.slice(0, maxCell) + "…" : v; }); rows.push(arr);
       }
       return { columns: cols, rows, truncated, ms: Date.now() - t0 };
     }
@@ -190,6 +190,8 @@ class SqliteEngine {
       case "close": { const c = this._conn(args.db); try { if (c.worker && !c.needsReopen) await this._send(c, "close", {}, 20000); } finally { this.conns.delete(args.db); if (c.worker) { try { c.worker.terminate(); } catch (_) { /* */ } c.worker = null; } } return { ok: true }; }
       case "cancel": { const c = this._conn(args.db); this._kill(c, new Error("已取消")); return { ok: true }; }
       case "stage": { const dir = path.join(os.tmpdir(), "fa-sql-stage"); fs.mkdirSync(dir, { recursive: true }); return { path: path.join(dir, Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8) + "-" + String(args.name || "db.sqlite3").replace(/[^\w.-]/g, "_")) }; }
+      case "move": { const from = this.resolvePath(args.from), to = this.resolvePath(args.to); for (const c of this.conns.values()) if (c.path === from || c.path === to) throw new Error("要先關閉用到這個檔案的連線"); for (const sfx of ["-wal", "-shm"]) { try { fs.rmSync(to + sfx, { force: true }); } catch (_) { /* 沒有 */ } } fs.mkdirSync(path.dirname(to), { recursive: true }); try { fs.renameSync(from, to); } catch (e) { fs.copyFileSync(from, to); fs.rmSync(from, { force: true }); } for (const sfx of ["-wal", "-shm"]) { try { fs.rmSync(from + sfx, { force: true }); } catch (_) { /* 沒有 */ } } return { path: to, size: fs.statSync(to).size }; }
+      case "stat": { const p = this.resolvePath(args.path); try { const s = fs.statSync(p); return { exists: true, size: s.size, mtimeMs: s.mtimeMs }; } catch (_) { return { exists: false }; } }
       case "list": return { dbs: Array.from(this.conns.values()).map((c) => ({ db: c.id, path: c.path, readonly: c.readonly })) };
       default: {
         const c = this._conn(args.db); await this._ensureOpen(c);
