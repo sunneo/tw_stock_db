@@ -15,11 +15,11 @@
         'CREATE TABLE imports(src INTEGER NOT NULL, dst INTEGER, kind TEXT, spec TEXT)',
         'CREATE TABLE uses_raw(file_id INTEGER NOT NULL, name TEXT NOT NULL)',
         'CREATE TABLE uses(file_id INTEGER NOT NULL, symbol_id INTEGER NOT NULL)',
-        'CREATE TABLE sym_fts_src(id INTEGER PRIMARY KEY, toks TEXT, doc TEXT, base TEXT)',
+        'CREATE TABLE sym_fts_src(id INTEGER PRIMARY KEY, toks TEXT)', 'CREATE TABLE file_fts_src(id INTEGER PRIMARY KEY, toks TEXT)',
     ];
     const INDEXES = [
         'CREATE INDEX idx_files_dir ON files(dir)', 'CREATE INDEX idx_sym_name ON symbols(name COLLATE NOCASE)', 'CREATE INDEX idx_sym_file ON symbols(file_id)',
-        'CREATE INDEX idx_imp_src ON imports(src)', 'CREATE INDEX idx_imp_dst ON imports(dst)', 'CREATE INDEX idx_use_file ON uses(file_id)', 'CREATE INDEX idx_use_sym ON uses(symbol_id)',
+        'CREATE INDEX idx_imp_src ON imports(src)', 'CREATE INDEX idx_imp_dst ON imports(dst)', 'CREATE INDEX idx_use_file ON uses(file_id)', 'CREATE INDEX idx_use_sym ON uses(symbol_id)', 'CREATE INDEX idx_sym_used ON symbols(used_by DESC) WHERE used_by > 0',
     ];
     const splitNameDefault = (n) => String(n == null ? '' : n).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:]+/g, ' ').toLowerCase().trim();
     const baseOf = (p) => { const i = String(p).lastIndexOf('/'); return i < 0 ? String(p) : String(p).slice(i + 1); };
@@ -37,11 +37,11 @@
 
     // ---- 建庫 ----
     function builder(exec, opts) {
-        opts = opts || {}; const splitName = opts.splitName || splitNameDefault; const batch = opts.batch || 400; const macroKinds = opts.macroKinds || ['macro'];
-        const st = { pathId: new Map(), files: [], syms: [], imps: [], uses: [], fts: [], nextFile: 1, nextSym: 1, nFiles: 0, nSyms: 0, nImps: 0, nUses: 0, started: false };
+        opts = opts || {}; const splitName = opts.splitName || splitNameDefault; const semTokens = opts.semTokens || ((text) => splitName(text)); const batch = opts.batch || 400; const macroKinds = opts.macroKinds || ['macro'];
+        const st = { pathId: new Map(), files: [], syms: [], imps: [], uses: [], fts: [], ftsf: [], nextFile: 1, nextSym: 1, nFiles: 0, nSyms: 0, nImps: 0, nUses: 0, started: false };
         async function init(o) {
             o = o || {};
-            if (o.fresh !== false) { for (const t of ['sym_fts', 'file_fts', 'meta', 'files', 'symbols', 'imports', 'uses_raw', 'uses', 'sym_fts_src']) await run(exec, 'DROP TABLE IF EXISTS ' + t); }
+            if (o.fresh !== false) { for (const t of ['sym_fts', 'file_fts', 'meta', 'files', 'symbols', 'imports', 'uses_raw', 'uses', 'sym_fts_src', 'file_fts_src']) await run(exec, 'DROP TABLE IF EXISTS ' + t); }
             for (const d of DDL) await run(exec, d);
             await run(exec, "INSERT INTO meta(k,v) VALUES('schema', ?), ('created', ?)", [String(SCHEMA_VERSION), new Date().toISOString()]);
             await run(exec, 'BEGIN'); st.started = true;
@@ -50,7 +50,8 @@
         function addFile(path, rec) {
             const id = st.nextFile++; st.pathId.set(path, id);
             const syms = rec.symbols || []; st.files.push([id, path, dirOf(path), baseOf(path), rec.lang || '', rec.lines || 0, rec.hash || '', rec.doc || '', rec.sv || 0, syms.length]);
-            for (const s of syms) { const sid = st.nextSym++; st.syms.push([sid, s.n, s.k || '', id, s.l || 0, s.d || '', s.sig || '', '']); if (!macroKinds.includes(s.k)) st.fts.push([sid, splitName(s.n), s.d || '', baseOf(path)]); }
+            for (const s of syms) { const sid = st.nextSym++; st.syms.push([sid, s.n, s.k || '', id, s.l || 0, s.d || '', s.sig || '', '']); if (!macroKinds.includes(s.k)) st.fts.push([sid, semTokens(s.n + ' ' + (s.d || '') + ' ' + baseOf(path))]); }
+            st.ftsf.push([id, semTokens(path + ' ' + (rec.doc || '') + ' ' + syms.slice(0, 25).map((x) => x.n).join(' '))]);
             for (const e of rec.imports || []) st.imps.push([id, e.to || null, e.kind || '', e.spec || '', e.to || null]);
             for (const n of rec.uses || []) st.uses.push([id, n]);
             return syms.length;
@@ -59,11 +60,11 @@
         async function flush(force) {
             if (!st.started) throw new Error('builder 還沒 init');
             if (!force && st.files.length < batch && st.syms.length < batch * 20) return;
-            const f = st.files, s = st.syms, im = st.imps, u = st.uses, ft = st.fts; st.files = []; st.syms = []; st.imps = []; st.uses = []; st.fts = [];
+            const f = st.files, s = st.syms, im = st.imps, u = st.uses, ft = st.fts, ff = st.ftsf; st.files = []; st.syms = []; st.imps = []; st.uses = []; st.fts = []; st.ftsf = [];
             await insertMany(exec, 'files', ['id', 'path', 'dir', 'name', 'lang', 'lines', 'hash', 'doc', 'sv', 'nsyms'], f); await insertMany(exec, 'symbols', ['id', 'name', 'kind', 'file_id', 'line', 'doc', 'sig', 'note'], s);
             // imports 的目標路徑要等所有檔案都有 id 才能解析：先把目標路徑暫存在 spec 之外的欄位（dst 先放 NULL，之後用 path 對應）
             await insertMany(exec, 'imports', ['src', 'dst', 'kind', 'spec'], im.map((r) => [r[0], null, r[2], (r[4] ? '\u0001' + r[4] : r[3])]));
-            await insertMany(exec, 'uses_raw', ['file_id', 'name'], u); await insertMany(exec, 'sym_fts_src', ['id', 'toks', 'doc', 'base'], ft);
+            await insertMany(exec, 'uses_raw', ['file_id', 'name'], u); await insertMany(exec, 'sym_fts_src', ['id', 'toks'], ft); await insertMany(exec, 'file_fts_src', ['id', 'toks'], ff);
             st.nFiles += f.length; st.nSyms += s.length; st.nImps += im.length; st.nUses += u.length;
             await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
         }
@@ -86,11 +87,12 @@
             await run(exec, 'UPDATE symbols SET used_by = (SELECT count(*) FROM uses u WHERE u.symbol_id = symbols.id) WHERE id IN (SELECT DISTINCT symbol_id FROM uses)');
             await run(exec, 'COMMIT'); await run(exec, 'BEGIN');
             prog('全文索引');
-            await run(exec, "CREATE VIRTUAL TABLE sym_fts USING fts5(toks, doc, base, content='', tokenize='unicode61')");
-            await run(exec, "INSERT INTO sym_fts(rowid, toks, doc, base) SELECT id, toks, doc, base FROM sym_fts_src");
+            await run(exec, "CREATE VIRTUAL TABLE sym_fts USING fts5(toks, content='', tokenize='unicode61')");
+            await run(exec, 'INSERT INTO sym_fts(rowid, toks) SELECT id, toks FROM sym_fts_src');
             await run(exec, 'DROP TABLE sym_fts_src');
-            await run(exec, "CREATE VIRTUAL TABLE file_fts USING fts5(path, doc, note, tokenize='unicode61')");
-            await run(exec, "INSERT INTO file_fts(rowid, path, doc, note) SELECT id, replace(replace(path, '/', ' '), '_', ' '), doc, '' FROM files");
+            await run(exec, "CREATE VIRTUAL TABLE file_fts USING fts5(toks, content='', tokenize='unicode61')");
+            await run(exec, 'INSERT INTO file_fts(rowid, toks) SELECT id, toks FROM file_fts_src');
+            await run(exec, 'DROP TABLE file_fts_src');
             const c = { files: await one(exec, 'select count(*) from files'), symbols: await one(exec, 'select count(*) from symbols'), imports: await one(exec, 'select count(*) from imports'), uses: await one(exec, 'select count(*) from uses'), macros: await one(exec, "select count(*) from symbols where kind='macro'") };
             await run(exec, "INSERT OR REPLACE INTO meta(k,v) VALUES ('counts', ?), ('built', ?), ('complete', ?), ('root', ?)", [JSON.stringify(c), new Date().toISOString(), o.complete === false ? '0' : '1', String(o.root || '')]);
             await run(exec, 'COMMIT'); st.started = false;
