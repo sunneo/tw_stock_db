@@ -190,7 +190,7 @@ embedSqlSplit();
 function embedWasmWorker() {
     const tf = path.join(root, 'renderer/src/sql/wasm_engine.js'); let e = fs.readFileSync(tf, 'utf8'); const crlfE = e.includes('\r\n'); e = e.replace(/\r\n/g, '\n');
     const rd = (n) => fs.readFileSync(path.join(root, 'renderer/src/sql/' + n), 'utf8').replace(/\r\n/g, '\n');
-    const core = rd('sql_split.js') + '\n' + rd('wasm_ops.js') + '\n' + rd('wasm_worker.js');
+    const core = rd('sql_split.js') + '\n' + rd('wasm_ops.js') + '\n' + rd('wasm_vfs.js') + '\n' + rd('wasm_worker.js');
     const a = e.indexOf('/* WASM-WORKER-SRC-BEGIN */'), b = e.indexOf('/* WASM-WORKER-SRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 WASM-WORKER-SRC 標記');
     e = e.slice(0, a) + '/* WASM-WORKER-SRC-BEGIN */\n    const WORKER_SRC = ' + JSON.stringify(core) + ';\n    ' + e.slice(b);
     fs.writeFileSync(tf, crlfE ? e.replace(/\n/g, '\r\n') : e); console.log('已更新 wasm_engine.js 的 worker 程式（' + core.length + ' 字元）');

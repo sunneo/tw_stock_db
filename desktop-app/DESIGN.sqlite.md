@@ -37,7 +37,7 @@
 
 ## 6. 和 宿主專案 那份設計不同的地方
 
-- **沒有寫回式 VFS，也沒有唯讀的 `fapfile` VFS**。桌面版直接用 `node:sqlite` 開真實檔案，用不到；網頁版是「整個資料庫在 wasm 記憶體」。這代表**網頁版的大型專案索引仍是舊的記憶體索引**（只修了 `constructor` 等符號名稱撞上 `Object.prototype`、地圖存檔分塊、不存巨大的整份 JSON）。要在網頁版也做到「索引放在專案資料夾的 SQLite 檔、查詢不吃記憶體」，需要在 sqlite-wasm 上註冊自訂 VFS（唯讀讀 FAP 檔案、建庫寫到 OPFS 再串流複製進 FAP），OPFS 的同步存取在頁面沒有 cross-origin isolation 時有限制——這一塊還沒做。
+- **三層 VFS 都做了（網頁版，`renderer/src/sql/wasm_vfs.js`）**：①唯讀 `fapfile`（File.slice＋FileReaderSync，256KB 區塊、LRU 256 塊）；②寫回式（髒頁以 4096 位元組為單位，超過 32MB 溢出到 OPFS，只在交易外的提交點／sync／關閉／髒量 >64MB／閒置 30 秒寫回，寫回前比對大小與修改時間，衝突時拒絕、`force` 才覆蓋）；③建庫用 OPFS 同步存取檔（journal OFF、sync OFF、獨佔），完成後 `copyOut` 串流複製進專案資料夾。專案索引在網頁版因此也是專案資料夾裡的 SQLite 檔（`fap:` 專案，需要 OPFS；不支援時才退回舊的記憶體索引）。實測（OPFS 當作 FAP）：6000 個檔案／78,000 個定義，建庫約 40 秒、頁面 JS 記憶體持平約 20MB，精確查詢約 10～100ms，repo_ask 約 0.3 秒。尚未用真實的 showDirectoryPicker 資料夾與 7 萬～50 萬檔的規模實測。
 - 備註（notes）沒有搬進獨立的 `notes.sqlite3`：仍在地圖裡（小），問答時合併進問題用的小型資料庫。
 - 沒有增量索引（SQLite 模式建索引中途停止或失敗，下次從頭分析）。
 - 沒有 `persistentStorage` 的 `update`／`pin`（`client-file/<id>` 當資料庫來源）。
