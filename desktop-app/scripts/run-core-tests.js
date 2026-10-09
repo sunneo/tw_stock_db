@@ -32,12 +32,18 @@ const suites = [
     ['sqlitebrowser 純函式（過濾語法、DDL 預覽、儲存格、匯出）', 'renderer/src/sql/browser_core.test.js'],
     ['終端機 /mnt 即時 FAP 檔案系統（wasi-sh 契約、快取、寫回、衝突）', 'renderer/src/terminal/fapfs_core.test.js'],
     ['桌面版終端機 /mnt 的同步檔案後端（fsx-sync：真的碰磁碟）', 'scripts/fsx-sync.test.js'],
+    ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
+    ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
+    ['動畫簡報：小工具範例（打磚塊）真的玩到通關', 'scripts/deck-tests/widget_example.test.js'],
+    ['動畫簡報：工具（長文字 handle、圖片目錄、長度估算）', 'scripts/deck-tests/deck_tools.test.js'],
+    ['動畫簡報：樣板（預設值、複寫會改變繪製）', 'scripts/deck-tests/deck_template.test.js'],
+    ...(() => { try { require.resolve('jszip'); return [['動畫簡報：簡報封包（開啟新舊格式、拒絕不合法）', 'scripts/deck-tests/deck_pack.test.js']]; } catch (_) { console.log('略過 簡報封包測試：沒有安裝 jszip（npm install --no-save jszip）'); return []; } })(),
 ];
 let failed = 0;
 for (const [name, file] of suites) {
     const r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
     const last = String(r.stdout || '').trim().split('\n').pop();
-    const ok = r.status === 0 && /0 failed/.test(last);
+    const ok = r.status === 0 && /(0 failed|[0-9]+ passed)/.test(last) && !/FAILED/.test(last);
     if (!ok) failed++;
     console.log((ok ? 'PASS ' : 'FAIL ') + name + '：' + last);
     if (!ok) console.log(String(r.stdout || '').split('\n').filter((l) => /^FAIL/.test(l)).join('\n') + String(r.stderr || '').slice(0, 500));

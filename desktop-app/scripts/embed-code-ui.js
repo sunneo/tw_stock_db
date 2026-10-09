@@ -203,5 +203,20 @@ function embedFapWorker() {
     fs.writeFileSync(tf, crlfE ? e.replace(/\n/g, '\r\n') : e); console.log('已更新 fapfs_transport.js 的 worker 程式（' + core.length + ' 字元）');
 }
 
+// /media-presentation：簡報播放器（外掛移植）與主機轉接層。播放器的各個模組以字串內嵌，第一次用到時才注入頁面
+function embedDeck() {
+    const dir = path.join(root, 'renderer/src/deck'); const map = {};
+    for (const n of ['viewer3d', 'viewer2d', 'video_export', 'deck_core', 'deck_stage3d', 'deck_code', 'deck_quiz', 'deck_widget', 'deck_player', 'deck_pack', 'deck_export']) map[n] = fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n');
+    map.css = fs.readFileSync(path.join(dir, 'deck.css'), 'utf8').replace(/\r\n/g, '\n');
+    map.topics = JSON.parse(fs.readFileSync(path.join(dir, 'deck_topics.json'), 'utf8'));
+    let a = src.indexOf('/* DECKSRC-BEGIN */'), b = src.indexOf('/* DECKSRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 DECKSRC 標記');
+    src = src.slice(0, a) + '/* DECKSRC-BEGIN */\nconst FA_DECK_SRC = ' + JSON.stringify(map) + ';\n' + src.slice(b);
+    const host = ['deck_host.js', 'deck_tools.js'].map((n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n')).join('\n');
+    a = src.indexOf('/* DECKHOST-BEGIN */'); b = src.indexOf('/* DECKHOST-END */'); if (a < 0 || b < 0) throw new Error('找不到 DECKHOST 標記');
+    src = src.slice(0, a) + '/* DECKHOST-BEGIN */\n' + host + '\n' + src.slice(b);
+    console.log('已更新簡報元件（' + Object.keys(map).length + ' 個，共 ' + Object.values(map).reduce((s, x) => s + (typeof x === 'string' ? x.length : 0), 0) + ' 字元）與轉接層');
+}
+embedDeck();
+
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
