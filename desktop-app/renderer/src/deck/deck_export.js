@@ -64,15 +64,24 @@
     };
     P.isCancelled = function () { return st.cancelled; };
     P.check = function () { if (st.cancelled) { throw new Error('已取消匯出'); } };
-    P.done = function (msg) { st.i = labels.length; st.f = 0; st.over = true; render(); overallText.textContent = '完成'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; setTimeout(function () { if (card.parentNode) { card.remove(); } }, 8000); };
-    P.fail = function (msg) { st.over = true; render(); card.classList.add('failed'); overallText.textContent = st.cancelled ? '已取消' : '失敗'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; };
+    P.done = function (msg) { if (st.over) { return; } st.i = labels.length; st.f = 0; st.over = true; render(); overallText.textContent = '完成'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; setTimeout(function () { if (card.parentNode) { card.remove(); } }, 8000); };
+    P.fail = function (msg) { if (st.over) { return; } st.over = true; render(); card.classList.add('failed'); overallText.textContent = st.cancelled ? '已取消' : '失敗'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; };
     // Cancel must not wait for a long step (preparing narration, a terminal that never answers) to finish: anything awaited through
     // P.raceCancel(promise) is abandoned the moment Cancel is pressed (the work itself goes on in the background, e.g. the preheat).
     var hooks = [];
     P.raceCancel = function (promise) {
       return Promise.race([promise, new Promise(function (_res, rej) { if (st.cancelled) { rej(new Error('已取消匯出')); } else { hooks.push(function () { rej(new Error('已取消匯出')); }); } })]);
     };
-    cancel.addEventListener('click', function () { st.cancelled = true; cancel.disabled = true; cancel.textContent = '取消中…'; hooks.splice(0).forEach(function (h) { h(); }); });
+    // Safety net: whatever step is running, 3 seconds after Cancel the card is finished as cancelled (the work stops by itself later); the
+    // card can never sit on "取消中…".
+    var forcedReject = null;
+    P.forced = new Promise(function (_res, rej) { forcedReject = rej; });
+    P.forced.catch(function () { /* handled by run() */ });
+    cancel.addEventListener('click', function () {
+      if (st.cancelled) { return; }
+      st.cancelled = true; cancel.disabled = true; cancel.textContent = '取消中…'; hooks.splice(0).forEach(function (h) { h(); });
+      setTimeout(function () { if (!st.over && forcedReject) { forcedReject(new Error('已取消匯出(背景工作還在收尾)')); } }, 3000);
+    });
     close.addEventListener('click', function () { card.remove(); });
     P.step(0);
     return P;
@@ -369,7 +378,7 @@
       case 'srt': case 'vtt': job = exportSubtitles(session, P, format); break;
       default: job = exportZip(session, P);
     }
-    return job.then(function (msg) { P.done(msg); return msg; }, function (err) { P.fail('失敗:' + (err && err.message || err)); throw err; });
+    return Promise.race([job, P.forced]).then(function (msg) { P.done(msg); return msg; }, function (err) { P.fail(P.isCancelled() ? '已取消匯出' : '失敗:' + (err && err.message || err)); throw err; });
   }
 
   window.AiChatDeckExport = { run: run, STEPS: STEPS, _internal: { safeName: safeName } };
