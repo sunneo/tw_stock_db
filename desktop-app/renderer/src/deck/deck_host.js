@@ -40,7 +40,7 @@ const FaDeckHost = (function () {
                 if (tpl) w.AiChatDeckTemplate = tpl; // 核心載入時自動套用
                 for (const name of ORDER) { if (SRC[name]) await this._deckInjectScript(SRC[name], name); }
                 if (!w.AiChatDeck || !w.AiChatDeckCore) throw new Error('簡報元件載入後找不到 AiChatDeck');
-                w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang));
+                w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang), { concurrent: true });
                 w.AiChatDeck.setGradeProvider((system, user) => this._deckGrade(system, user));
                 return true;
             })();
@@ -188,7 +188,21 @@ const FaDeckHost = (function () {
             try { const t = this.advancedSettings && this.advancedSettings.deckTemplate; return t && typeof t === 'object' ? t : null; } catch (_) { return null; }
         },
         // 旁白：文字 → mp3 的位元組（用助理既有的語音合成：英文走本機 Kokoro，中文走設定好的語音轉接）
+        // 同時做幾段旁白：語音服務的聲音（中文）可以一次做 4 段；本機模型（英文）一次一段（一次只能跑一個推論）
+        _deckTtsGate(kind) {
+            this._deckTtsQ = this._deckTtsQ || { api: { n: 0, max: 4, wait: [] }, local: { n: 0, max: 1, wait: [] } };
+            const g = this._deckTtsQ[kind];
+            return new Promise((resolve) => {
+                const go = () => { g.n++; resolve(() => { g.n--; const nx = g.wait.shift(); if (nx) nx(); }); };
+                if (g.n < g.max) go(); else g.wait.push(go);
+            });
+        },
         async _deckSynthesize(text, voice, speed, lang) {
+            const isApi = voice ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((v) => v.id === voice)) : this._looksLikeCjkText(String(text));
+            const release = await this._deckTtsGate(isApi ? 'api' : 'local');
+            try { return await this._deckSynthesizeNow(text, voice, speed, lang); } finally { release(); }
+        },
+        async _deckSynthesizeNow(text, voice, speed, lang) {
             const r = await this._synthesizeSpeech(String(text), voice || null, null, speed);
             if (!r || !r.ok) throw new Error((r && r.error) || '語音合成失敗');
             const rec = await this.fileCache.get(r.audio_file_id);

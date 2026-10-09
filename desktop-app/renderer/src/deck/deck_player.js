@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var ttsProvider = null;
+  var ttsProvider = null, ttsConcurrent = false;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -504,8 +504,10 @@
           return ttsProvider(text, voice, speed, lang).then(function (mp3) { diskPut(hash, mp3); return decodeMp3(mp3); });
         };
         // a disk hit never waits for the (one-at-a-time) synthesiser; a miss queues behind it
-        var q = audioChain.then(run, run);
-        audioChain = q.then(function () {}, function () {});
+        // a provider that schedules its own work (concurrent: voices from a service can be made several at a time; a local model one at a time)
+        // is called at once; otherwise every call waits for the one before it
+        var q;
+        if (ttsConcurrent) { q = run(); } else { q = audioChain.then(run, run); audioChain = q.then(function () {}, function () {}); }
         return q;
       });
     });
@@ -596,14 +598,22 @@
   };
 
   // Prepares slide i (visual + narration); memoised. Never rejects: a failure is recorded and the slide still plays (silent / placeholder).
+  // A step that never answers (a library that cannot be fetched, a voice service that hangs) must not hold the whole deck: after `ms` it fails
+  // like any other error, and the slide plays without it (silent / without that visual).
+  function withTimeout(p, ms, what) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error(what + ' did not answer within ' + Math.round(ms / 1000) + ' seconds')); }, ms);
+      p.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+    });
+  }
   Session.prototype.prepare = function (i) {
     var self = this, pr = this.preps[i], slide = this.deck.slides[i];
     if (pr.promise) { return pr.promise; }
     pr.state = 'loading'; this.emit('state');
     var voice = slide.voice || this.deck.deck.voice, speed = this.deck.deck.speed || 1;
     var packed = this.packAudio && this.packAudio[slide.id];
-    var audioP = slide.narration ? (packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, this.deck.deck.lang)).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
-    var visualP = prepVisual(slide).then(function (v) { pr.visual = v; self.restoreResults(i); });
+    var audioP = slide.narration ? withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, this.deck.deck.lang), 240000, 'narration').then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
+    var visualP = withTimeout(prepVisual(slide), 90000, 'visual').then(function (v) { pr.visual = v; self.restoreResults(i); }, function (e) { pr.visual = null; pr.error = pr.error || String(e && e.message || e); });
     pr.promise = Promise.all([audioP, visualP]).then(function () {
       pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
       pr.state = 'ready';
@@ -1379,7 +1389,7 @@
   window.AiChatDeck = {
     isDeckUrl: isDeckUrl, mountAll: mountAll, mount: mount,
     // fn(text, voiceId|null, speed, lang) -> Promise<ArrayBuffer (mp3)>; installed by ai_chat.js
-    setTtsProvider: function (fn) { ttsProvider = fn; },
+    setTtsProvider: function (fn, opts) { ttsProvider = fn; ttsConcurrent = !!(opts && opts.concurrent); },
     hasTts: function () { return !!ttsProvider; },
     // fn(system, user) -> Promise<{score: 0..1, feedback}>; replaces the default AI grader of answer cards
     setGradeProvider: function (fn) { gradeProvider = fn; },

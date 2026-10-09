@@ -66,15 +66,26 @@
     P.check = function () { if (st.cancelled) { throw new Error('已取消匯出'); } };
     P.done = function (msg) { st.i = labels.length; st.f = 0; st.over = true; render(); overallText.textContent = '完成'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; setTimeout(function () { if (card.parentNode) { card.remove(); } }, 8000); };
     P.fail = function (msg) { st.over = true; render(); card.classList.add('failed'); overallText.textContent = st.cancelled ? '已取消' : '失敗'; P(msg || ''); cancel.style.display = 'none'; close.style.display = ''; };
-    cancel.addEventListener('click', function () { st.cancelled = true; cancel.disabled = true; cancel.textContent = '取消中…'; });
+    // Cancel must not wait for a long step (preparing narration, a terminal that never answers) to finish: anything awaited through
+    // P.raceCancel(promise) is abandoned the moment Cancel is pressed (the work itself goes on in the background, e.g. the preheat).
+    var hooks = [];
+    P.raceCancel = function (promise) {
+      return Promise.race([promise, new Promise(function (_res, rej) { if (st.cancelled) { rej(new Error('已取消匯出')); } else { hooks.push(function () { rej(new Error('已取消匯出')); }); } })]);
+    };
+    cancel.addEventListener('click', function () { st.cancelled = true; cancel.disabled = true; cancel.textContent = '取消中…'; hooks.splice(0).forEach(function (h) { h(); }); });
     close.addEventListener('click', function () { card.remove(); });
     P.step(0);
     return P;
   }
 
   function prepareAll(session, P) {
-    P.step(0, '正在準備旁白與圖片…');
-    return session.whenAllReady(function (done, total) { P.frac(done / total, '旁白與圖片:第 ' + done + ' / ' + total + ' 頁'); }).then(function () { P.check(); return session.settleTerminals ? session.settleTerminals(function (d, t) { P.frac(d / t, '終端機:執行第 ' + d + ' / ' + t + ' 個'); }) : null; }).then(function () { P.check(); });
+    var total = session.preps.length, ready = session.preps.filter(function (_p, i) { return session.isReady(i); }).length;
+    P.step(0, '正在準備旁白與圖片…(' + ready + ' / ' + total + ' 頁已預熱，已經好的會直接略過)');
+    // pages already prepared by the player's preheat resolve at once; only the remaining ones cost time (and each is shown as it finishes)
+    return P.raceCancel(session.whenAllReady(function (done, n) { P.frac(done / n, '旁白與圖片:第 ' + done + ' / ' + n + ' 頁'); })).then(function () {
+      P.check();
+      return session.settleTerminals ? P.raceCancel(Promise.resolve(session.settleTerminals(function (d, t) { P.frac(d / t, '終端機:執行第 ' + d + ' / ' + t + ' 個'); }))) : null;
+    }).then(function () { P.check(); });
   }
 
   // ------------------------------------------------------------------ MP4
