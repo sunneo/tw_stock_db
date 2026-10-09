@@ -276,7 +276,7 @@
     if (!isObj(deck)) { err('deck', 'missing "deck" mapping (title, lang, voice, ...)'); deck = {}; }
     if (!str(deck.title).trim()) { err('deck.title', 'required'); }
     if (str(deck.title).length > LIMITS.title) { err('deck.title', 'longer than ' + LIMITS.title + ' characters'); }
-    if (deck.theme != null && deck.theme !== 'default') { err('deck.theme', 'must be "default"'); }
+    if (deck.theme != null && typeof deck.theme !== 'string') { err('deck.theme', 'must be a string'); }
     if (deck.speed != null && !(typeof deck.speed === 'number' && deck.speed >= 0.5 && deck.speed <= 2)) { err('deck.speed', 'must be a number between 0.5 and 2'); }
     if (deck.aspect != null && deck.aspect !== '16:9') { err('deck.aspect', 'only "16:9" is supported'); }
     if (deck.style != null && STYLES.indexOf(deck.style) < 0) { err('deck.style', 'must be flat or 3d'); }

@@ -26,7 +26,7 @@
   function fmt(sec) { sec = Math.max(0, Math.round(sec)); var m = Math.floor(sec / 60), s = sec % 60; return m + ':' + (s < 10 ? '0' : '') + s; }
 
   // Attachment urls are saved with the server's own configured host (e.g. https://tracker.example.com/attachments/download/12/x.jpg), which a
-  // browser reaching Redmine through a proxy (https://gateway.example.net/proxy/redmine/...) cannot resolve. Any attachment url (absolute, on any
+  // browser reaching Redmine through a proxy (https://gateway.example.net/proxy/tracker/...) cannot resolve. Any attachment url (absolute, on any
   // host, or just a "/attachments/..." path) is therefore re-addressed to the origin and the Redmine root of the PAGE the viewer is on
   // (the part of the page path before "/projects/"), so it works whichever way Redmine was reached.
   // Where this Redmine is mounted ("" when it is at the root of the site, "/proxy/redmine" behind a proxy). Several clues, because none is

@@ -2046,7 +2046,7 @@ async function createWindow() {
           await mainWindow.webContents.executeJavaScript(`
             (() => {
               const input = document.getElementById('ai-input-text');
-              input.value = ${JSON.stringify('解析一下 D:\\Downloads\\SRC\\sample-docs\\KeywordDocs\\StepAction 每個檔案內容')};
+              input.value = ${JSON.stringify('解析一下 D:\\Downloads\\SRC\\sample-docs 每個檔案內容')};
               return window.fa._submitChatInput(input, null);
             })()
           `);
@@ -2071,7 +2071,7 @@ async function createWindow() {
   }
   // 一次性除錯hook：直接呼叫新增的batch_process_items工具本身（不透過
   // 根模型自己判斷要不要用它——那是prompt引導、不是保證，這裡要驗證的是
-  // 「這個工具機制本身接線正確」），對StepAction資料夾裡的20個真實XML檔案
+  // 「這個工具機制本身接線正確」），對範例資料夾裡的真實檔案
   // 做map-reduce式平行處理，確認：(1)每個檔案真的各自獨立的子任務處理、
   // 不會共用/累積同一份對話歷史，(2)全部檔案都成功產出結果，(3)不會像
   // 循序逐一呼叫fs_read_file那樣，20個檔案就把單一子任務的maxRounds(20)
@@ -2084,9 +2084,9 @@ async function createWindow() {
           console.log("[batch-test] calling batch_process_items tool directly against the real StepAction folder (20 files)...");
           const result = await mainWindow.webContents.executeJavaScript(`
             (async () => {
-              const listRaw = await window.fa.tools['fs_list_files'].callback(JSON.stringify({ path: 'D:/Downloads/SRC/sample-docs/KeywordDocs/StepAction' }));
+              const listRaw = await window.fa.tools['fs_list_files'].callback(JSON.stringify({ path: 'D:/Downloads/SRC/sample-docs' }));
               const listed = JSON.parse(listRaw);
-              const paths = listed.entries.filter(e => e.isFile).map(e => 'D:/Downloads/SRC/sample-docs/KeywordDocs/StepAction/' + e.name);
+              const paths = listed.entries.filter(e => e.isFile).map(e => 'D:/Downloads/SRC/sample-docs/' + e.name);
               const raw = await window.fa.tools['batch_process_items'].callback(JSON.stringify({
                 items: paths,
                 instruction: '用fs_read_file讀取這個檔案的內容（純文字XML），一句話摘要這個keyword的用途。',

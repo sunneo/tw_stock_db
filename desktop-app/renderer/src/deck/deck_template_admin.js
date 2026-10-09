@@ -13,7 +13,7 @@
   var T = {
     zh: {
       loading: '載入簡報樣板中…', notConfigured: '還不能使用簡報樣板:請先到「一般」分頁指定「工作區專案」與「服務帳號」,並按下設定頁的儲存,再回到這裡。目前缺少:',
-      missing: { service_account: '服務帳號', project: '工作區專案' }, usingBuiltin: '在那之前,簡報一律使用內建的樣板(Default)。',
+      missing: { service_account: '服務帳號', project: '工作區專案' }, usingBuiltin: '在那之前,簡報一律使用內建的樣板(預設)。',
       save: '儲存目前樣板', reset: '退回預設', promote: '把目前設為新的預設', exportJson: '匯出 JSON', importJson: '匯入 JSON…',
       saved: '已儲存。新開的簡報頁面會套用。', resetDone: '已用預設資料夾覆蓋目前樣板。', promoted: '已把目前樣板複製成新的預設。',
       confirmReset: '確定要退回預設?你對「目前樣板」做的所有修改(含上傳的圖片)都會被預設資料夾的內容取代。', confirmPromote: '確定把目前樣板設為新的預設?之後「退回預設」會回到現在這個樣子,原本的預設會被覆蓋。',
@@ -30,7 +30,7 @@
     },
     en: {
       loading: 'Loading the presentation template...', notConfigured: 'The presentation template is not available yet: choose the "Workspace project" and the "Service account" in the General tab and save the settings first. Missing: ',
-      missing: { service_account: 'service account', project: 'workspace project' }, usingBuiltin: 'Until then every deck uses the built-in template (Default).',
+      missing: { service_account: 'service account', project: 'workspace project' }, usingBuiltin: 'Until then every deck uses the built-in template (default).',
       save: 'Save current template', reset: 'Reset to default', promote: 'Make current the new default', exportJson: 'Export JSON', importJson: 'Import JSON...',
       saved: 'Saved. Newly opened presentation pages use it.', resetDone: 'The current template was replaced by the default folder.', promoted: 'The current template was copied to the default folder.',
       confirmReset: 'Reset to the default? Everything you changed in the current template (pictures included) is replaced by the default folder.', confirmPromote: 'Make the current template the new default? "Reset" will then return to this look; the old default is overwritten.',
