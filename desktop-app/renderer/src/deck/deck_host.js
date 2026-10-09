@@ -71,6 +71,86 @@ const FaDeckHost = (function () {
                 },
             };
             w.AiChatMarkdown = Object.assign(w.AiChatMarkdown || {}, { pptxKit: self._deckPptxKit() });
+            w.AiChatTerminal = Object.assign(w.AiChatTerminal || {}, { mountEmbedded: (container, opts) => self._deckMountTerminal(container, opts) });
+        },
+        // 簡報裡的終端機（visual kind terminal、問答卡的實作題）：跟 /run-terminal 同一個 busybox shell（含 /mnt），掛進簡報的方框裡，
+        // 不建工具列、不存檔；可以先自動打 commands，之後使用者自己接著打。回傳外掛播放器要的 handle
+        async _deckMountTerminal(container, opts) {
+            opts = opts || {};
+            container.classList.add('ai-chat-terminal-container');
+            container.setAttribute('data-deck-embedded', '1');
+            await this._mountTerminalWidget(container, null, null);
+            const session = container._terminalSession;
+            if (!session) throw new Error('終端機沒有啟動');
+            session.name = opts.name || 'deck-terminal';
+            const Code = window.AiChatDeckCode;
+            const restore = opts.restore && Code ? opts.restore : null;
+            if (restore) await new Promise((resolve) => session.term.write('\r\n' + Code.snapshotToAnsi(restore) + '\r\n', resolve));
+            const theme = this._getTerminalXtermTheme();
+            let dirty = true, cache = null;
+            ['onWriteParsed', 'onResize', 'onScroll'].forEach((n) => { try { session.term[n](() => { dirty = true; }); } catch (_) { /* 舊版 xterm */ } });
+            const self = this;
+            const runTyped = async (line) => {
+                if (session.ended) return;
+                line = String(line);
+                session.term.write(line + '\r\n');
+                if (line.trim()) session.history.push(line);
+                session.historyIndex = session.history.length;
+                session.busy = true;
+                try {
+                    const scan = self._terminalScanInput(line);
+                    if (scan.incomplete) await self._runTerminalCommand(session, line); else await self._terminalRunUnits(session, scan.units);
+                } catch (err) { session.term.write('\x1b[31m指令執行失敗：' + String((err && err.message) || err) + '\x1b[0m\r\n'); }
+                finally { session.busy = false; }
+                if (!session.activeProgram) self._writeTerminalPrompt(session);
+            };
+            if (!restore) for (const c of (opts.commands || [])) await runTyped(c);
+            const text = (full) => { const buf = session.term.buffer.active; const lines = []; const from = full ? 0 : buf.viewportY; const to = full ? buf.length : buf.viewportY + session.term.rows; for (let i = from; i < to; i++) { const l = buf.getLine(i); if (l) lines.push(l.translateToString(true)); } while (lines.length && !lines[lines.length - 1].trim()) lines.pop(); return lines.join('\n'); };
+            return {
+                session,
+                text: () => text(false),
+                fullText: () => text(true),
+                snapshot: (force) => { if (!Code) return null; if (dirty || force || !cache) { cache = Code.snapshotTerminal(session.term, theme); dirty = false; } return cache; },
+                resize: (cols, rows) => { try { session.term.resize(cols, rows); } catch (_) { /* */ } },
+                history: () => session.history.slice(),
+                run: runTyped,
+                fit: () => { try { if (session.refit) session.refit(); } catch (_) { /* 還沒有大小 */ } },
+                setFontSize: (px) => { try { session.term.options.fontSize = px; if (session.refit) session.refit(); } catch (_) { /* */ } },
+                focus: () => { try { session.term.focus(); } catch (_) { /* */ } },
+                dispose: () => { session.ended = true; try { session.term.dispose(); } catch (_) { /* */ } },
+            };
+        },
+        // ---- 簡報封包（.deckpack／舊的 .deck.zip）：整個檔案存進檔案快取，對話訊息只記檔案編號，重新整理後還能再開 ----
+        _deckIsPackName(name) { const n = String(name || '').toLowerCase(); return /\.deckpack$/.test(n) || /\.deck\.zip$/.test(n); },
+        async _deckOpenPackFile(file) {
+            const id = await this.fileCache.put(file.name, 'application/zip', file, 'uploaded');
+            this.messages.push({ role: 'user', content: '📦 開啟簡報封包：' + file.name });
+            const msg = this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
+            Object.defineProperty(msg, '_displayDeckPackId', { value: id, enumerable: false, configurable: true });
+            this._renderMessageHistory(); this._persistChatHistory();
+            return id;
+        },
+        async _deckMountPack(container, fileId) {
+            await this._deckEnsureRuntime();
+            const rec = await this.fileCache.get(fileId);
+            if (!rec) throw new Error('找不到簡報封包檔（檔案快取被清掉了，請重新開啟封包）');
+            const box = document.createElement('div');
+            box.className = 'ai-chat-deck';
+            container.appendChild(box);
+            await window.AiChatDeck.openPack(new File([rec.blob], rec.filename || 'deck.deckpack'), box);
+            return box;
+        },
+        _deckPickPack() {
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = '.deckpack,.zip'; input.style.display = 'none';
+            input.addEventListener('change', async () => {
+                const f = input.files && input.files[0]; input.remove();
+                if (!f) return;
+                if (!this._deckIsPackName(f.name)) { this._pushAssistantMessage('⚠️ 「' + f.name + '」不是簡報封包（副檔名要是 .deckpack 或 .deck.zip）。', null); this._renderMessageHistory(); return; }
+                try { await this._deckOpenPackFile(f); } catch (e) { this._pushAssistantMessage('⚠️ 開啟簡報封包失敗：' + String((e && e.message) || e), null); this._renderMessageHistory(); }
+            });
+            document.body.appendChild(input);
+            input.click(); // 斜線指令是使用者按 Enter 送出的，這裡仍在使用者手勢內
         },
         // PPTX 版型零件（標題頁、章節頁；顏色與字型來自樣板）。沒有品牌圖片時用純色底
         _deckPptxKit() {

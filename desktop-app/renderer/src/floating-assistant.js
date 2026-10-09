@@ -13833,6 +13833,12 @@ const FA_REF_MIGRATIONS = FaRef.MIGRATIONS;
 
 const BUILTIN_SKILLS = [
     {
+        id: 'builtin-skill-media-presentation',
+        name: 'media-presentation',
+        get builtinToolNames() { return (typeof FaDeckTools !== 'undefined' ? FaDeckTools.DOMAIN_TOOLS : []).slice(); },
+        get personaPrompt() { return typeof FaDeckTools !== 'undefined' ? FaDeckTools.SYSTEM_PROMPT : ''; },
+    },
+    {
         id: 'builtin-skill-image-decompose-redraw',
         name: 'image-decompose-redraw',
         awaitInput: { kind: 'attachment', prompt: '📥 請貼上圖片（在輸入框按 Ctrl+V）或用 📎 上傳，也可以順便補一句要求（例如「預覽」「用 vision auto 決定前後順序」）。貼好後按送出就會直接處理，不用再打一次指令（輸入框上方有圖片附件時，打這個指令就會直接處理那張圖）。' },
@@ -17701,6 +17707,86 @@ const FaDeckHost = (function () {
                 },
             };
             w.AiChatMarkdown = Object.assign(w.AiChatMarkdown || {}, { pptxKit: self._deckPptxKit() });
+            w.AiChatTerminal = Object.assign(w.AiChatTerminal || {}, { mountEmbedded: (container, opts) => self._deckMountTerminal(container, opts) });
+        },
+        // 簡報裡的終端機（visual kind terminal、問答卡的實作題）：跟 /run-terminal 同一個 busybox shell（含 /mnt），掛進簡報的方框裡，
+        // 不建工具列、不存檔；可以先自動打 commands，之後使用者自己接著打。回傳外掛播放器要的 handle
+        async _deckMountTerminal(container, opts) {
+            opts = opts || {};
+            container.classList.add('ai-chat-terminal-container');
+            container.setAttribute('data-deck-embedded', '1');
+            await this._mountTerminalWidget(container, null, null);
+            const session = container._terminalSession;
+            if (!session) throw new Error('終端機沒有啟動');
+            session.name = opts.name || 'deck-terminal';
+            const Code = window.AiChatDeckCode;
+            const restore = opts.restore && Code ? opts.restore : null;
+            if (restore) await new Promise((resolve) => session.term.write('\r\n' + Code.snapshotToAnsi(restore) + '\r\n', resolve));
+            const theme = this._getTerminalXtermTheme();
+            let dirty = true, cache = null;
+            ['onWriteParsed', 'onResize', 'onScroll'].forEach((n) => { try { session.term[n](() => { dirty = true; }); } catch (_) { /* 舊版 xterm */ } });
+            const self = this;
+            const runTyped = async (line) => {
+                if (session.ended) return;
+                line = String(line);
+                session.term.write(line + '\r\n');
+                if (line.trim()) session.history.push(line);
+                session.historyIndex = session.history.length;
+                session.busy = true;
+                try {
+                    const scan = self._terminalScanInput(line);
+                    if (scan.incomplete) await self._runTerminalCommand(session, line); else await self._terminalRunUnits(session, scan.units);
+                } catch (err) { session.term.write('\x1b[31m指令執行失敗：' + String((err && err.message) || err) + '\x1b[0m\r\n'); }
+                finally { session.busy = false; }
+                if (!session.activeProgram) self._writeTerminalPrompt(session);
+            };
+            if (!restore) for (const c of (opts.commands || [])) await runTyped(c);
+            const text = (full) => { const buf = session.term.buffer.active; const lines = []; const from = full ? 0 : buf.viewportY; const to = full ? buf.length : buf.viewportY + session.term.rows; for (let i = from; i < to; i++) { const l = buf.getLine(i); if (l) lines.push(l.translateToString(true)); } while (lines.length && !lines[lines.length - 1].trim()) lines.pop(); return lines.join('\n'); };
+            return {
+                session,
+                text: () => text(false),
+                fullText: () => text(true),
+                snapshot: (force) => { if (!Code) return null; if (dirty || force || !cache) { cache = Code.snapshotTerminal(session.term, theme); dirty = false; } return cache; },
+                resize: (cols, rows) => { try { session.term.resize(cols, rows); } catch (_) { /* */ } },
+                history: () => session.history.slice(),
+                run: runTyped,
+                fit: () => { try { if (session.refit) session.refit(); } catch (_) { /* 還沒有大小 */ } },
+                setFontSize: (px) => { try { session.term.options.fontSize = px; if (session.refit) session.refit(); } catch (_) { /* */ } },
+                focus: () => { try { session.term.focus(); } catch (_) { /* */ } },
+                dispose: () => { session.ended = true; try { session.term.dispose(); } catch (_) { /* */ } },
+            };
+        },
+        // ---- 簡報封包（.deckpack／舊的 .deck.zip）：整個檔案存進檔案快取，對話訊息只記檔案編號，重新整理後還能再開 ----
+        _deckIsPackName(name) { const n = String(name || '').toLowerCase(); return /\.deckpack$/.test(n) || /\.deck\.zip$/.test(n); },
+        async _deckOpenPackFile(file) {
+            const id = await this.fileCache.put(file.name, 'application/zip', file, 'uploaded');
+            this.messages.push({ role: 'user', content: '📦 開啟簡報封包：' + file.name });
+            const msg = this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
+            Object.defineProperty(msg, '_displayDeckPackId', { value: id, enumerable: false, configurable: true });
+            this._renderMessageHistory(); this._persistChatHistory();
+            return id;
+        },
+        async _deckMountPack(container, fileId) {
+            await this._deckEnsureRuntime();
+            const rec = await this.fileCache.get(fileId);
+            if (!rec) throw new Error('找不到簡報封包檔（檔案快取被清掉了，請重新開啟封包）');
+            const box = document.createElement('div');
+            box.className = 'ai-chat-deck';
+            container.appendChild(box);
+            await window.AiChatDeck.openPack(new File([rec.blob], rec.filename || 'deck.deckpack'), box);
+            return box;
+        },
+        _deckPickPack() {
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = '.deckpack,.zip'; input.style.display = 'none';
+            input.addEventListener('change', async () => {
+                const f = input.files && input.files[0]; input.remove();
+                if (!f) return;
+                if (!this._deckIsPackName(f.name)) { this._pushAssistantMessage('⚠️ 「' + f.name + '」不是簡報封包（副檔名要是 .deckpack 或 .deck.zip）。', null); this._renderMessageHistory(); return; }
+                try { await this._deckOpenPackFile(f); } catch (e) { this._pushAssistantMessage('⚠️ 開啟簡報封包失敗：' + String((e && e.message) || e), null); this._renderMessageHistory(); }
+            });
+            document.body.appendChild(input);
+            input.click(); // 斜線指令是使用者按 Enter 送出的，這裡仍在使用者手勢內
         },
         // PPTX 版型零件（標題頁、章節頁；顏色與字型來自樣板）。沒有品牌圖片時用純色底
         _deckPptxKit() {
@@ -18050,8 +18136,9 @@ const FaDeckTools = (function () {
                     };
                     if (node.kind === 'shapes' && node.scene && typeof node.scene === 'object') check2d(node.scene, np + '.scene');
                     if (node.overlay && node.overlay.scene && typeof node.overlay.scene === 'object') check2d(node.overlay.scene, np + '.overlay.scene');
-                    if (node.kind === 'scene3d' && node.scene && typeof node.scene === 'object' && typeof this._validate3DSceneYaml === 'function') {
-                        try { const sc = Object.assign({}, node.scene); delete sc.duration; const r = this._validate3DSceneYaml(y.dump(sc)); if (r && r.ok === false) problems.push(np + '.scene: ' + r.error); } catch (e) { problems.push(np + '.scene: ' + String(e && e.message || e)); }
+                    if (node.kind === 'scene3d' && node.scene && typeof node.scene === 'object') {
+                        // 播放器用移植過來的 3D 檢視器（巢狀 animation: {type, speed} 與扁平 animation: spin 兩種寫法都認），驗證也用它自己的規則
+                        try { window.AiChat3D._internal.parseScene(JSON.stringify(node.scene)); } catch (e) { problems.push(np + '.scene: ' + String(e && e.message || e)); }
                     }
                 });
             });
@@ -18183,15 +18270,14 @@ const FaDeckTools = (function () {
                     const mime = /^image\//.test(src.mimeType) ? src.mimeType : (({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' })[String(src.filename).split('.').pop().toLowerCase()] || '');
                     return this._deckImportImageBlob(new Blob([src.bytes], { type: mime }), String(src.sourceLabel || src.filename), 'import_fap_image');
                 });
-            // 領域：主助理把簡報工作整個委派過來（子任務有自己的回合數與提示）
-            this.register_domain('media_presentation', {
-                label: '動畫簡報（章節、旁白、字幕、轉場；2D＋3D 混合、可互動；匯出 MP4／PPTX）',
-                toolNames: DOMAIN_TOOLS,
-                systemPrompt: SYSTEM_PROMPT,
-            });
+            // 領域：內建技能「media-presentation」（BUILTIN_SKILLS）會自動變成 skill_<id> 領域，主助理把簡報工作整個委派過來
+            // （子任務有自己的回合數與提示）；這裡只負責工具與 /media-presentation 指令
             this.register_slash_command('/media-presentation', '<要做的簡報：主題、來源、長度、語言…>',
                 '做一份動畫簡報（章節、旁白、字幕、轉場；2D＋3D 混合、問答卡、程式碼視窗、終端機、AI 自創小遊戲），在對話裡播放，可匯出 MP4／PPTX／簡報封包。來源可以是上傳的檔案、授權的資料夾、網站，或只給主題。',
                 (argsText, run) => (run || this)._deckSlashPresentation(argsText));
+            this.register_slash_command('/media-open-presentation', '',
+                '開啟之前匯出的簡報封包（.deckpack，或舊的 .deck.zip）：跳出選檔視窗，也可以直接把封包拖進對話或當附件選。作答紀錄與終端機畫面都會還原，不需要原本的素材來源。',
+                (argsText, run) => (run || this)._deckPickPack());
         },
         // /media-presentation：直接把整個工作交給簡報領域（跳過主助理自己判斷要不要委派）
         async _deckSlashPresentation(argsText) {
@@ -18203,13 +18289,25 @@ const FaDeckTools = (function () {
                 this._persistChatHistory(); this._renderMessageHistory();
                 return;
             }
-            const result = await this._delegateToSubagentDomain('media_presentation', text);
+            const domainKey = this._deckDomainKey();
+            if (!domainKey) {
+                this._pushAssistantMessage('⚠️ 找不到內建技能「media-presentation」（可能被停用或刪除）。到 Advance Settings 的技能分頁重新啟用它。', null);
+                this._renderMessageHistory(); this._persistChatHistory();
+                return;
+            }
+            const result = await this._delegateToSubagentDomain(domainKey, text);
             this.messages.push(this._buildToolResultMessage('media_presentation', JSON.stringify(result), {}));
             const visibleText = result.ok ? (result.result || result.note || '（簡報已產生）') : '⚠️ 委派給「動畫簡報」失敗：' + result.error;
             this._pushAssistantMessage(visibleText, null);
             this._renderMessageHistory();
             this._persistChatHistory();
         },
+        // 內建技能 media-presentation 對應的領域代號（skill_<id>）；技能被停用或刪除時是 null
+        _deckDomainKey() {
+            const b = (this.advancedSettings.skillBundles || []).find((x) => x.builtinId === 'builtin-skill-media-presentation' && x.enabled !== false);
+            return b ? 'skill_' + b.id : null;
+        },
+        _deckIsDomain(domainKey) { return !!domainKey && domainKey === this._deckDomainKey(); },
         // 這個助理自己的功能清單（讓「介紹這個 AI」的簡報有真實內容）
         _deckAiFeaturesText() {
             const lines = ['Real features of this AI assistant (shipped catalog); slash commands are typed in the chat box, /help lists them all.'];
@@ -54732,6 +54830,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // fileCache＋加進_pendingAttachments＋更新chip列」流程，不要維護
     // 兩份重複邏輯。
     _ingestFilesAsAttachments(files) {
+        const packs = Array.from(files).filter((f) => this._deckIsPackName(f.name));
+        if (packs.length) { files = Array.from(files).filter((f) => !this._deckIsPackName(f.name)); packs.forEach((f) => this._deckOpenPackFile(f).catch((e) => this._log('⚠️ 簡報封包開啟失敗：' + String((e && e.message) || e)))); }
         for (const file of files) {
             const id = (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
             const entry = { id, filename: file.name, sizeBytes: file.size, status: 'uploading', progress: 0, cancelled: false };
@@ -57608,7 +57708,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時直接用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py" 參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
                 } catch (_) {}
             }
-            const isDeck = domainKey === 'media_presentation';
+            const isDeck = this._deckIsDomain(domainKey);
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             const subResult = await this._runSubAgentTask(task, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
                 allowedToolNames: this._resolveDomainToolNames(domain),
@@ -59908,6 +60008,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // _buildToolResultMessage的_displayAnim2DYaml說明）。
             const anim2dMap = {};
             const deckMap = {};
+            const deckPackMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -59958,6 +60059,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (m._displayViewerYaml) viewerMap[i] = m._displayViewerYaml;
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
                 if (m._displayDeckUrl) deckMap[i] = m._displayDeckUrl;
+                if (m._displayDeckPackId) deckPackMap[i] = m._displayDeckPackId;
                 if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
                 if (m._displayTerminal) terminalMap[i] = m._displayTerminal;
                 if (m._actions) actionsMap[i] = m._actions;
@@ -59977,6 +60079,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (m._displayViewerYaml) viewerMap[`${bi}:${mi}`] = m._displayViewerYaml;
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                     if (m._displayDeckUrl) deckMap[`${bi}:${mi}`] = m._displayDeckUrl;
+                    if (m._displayDeckPackId) deckPackMap[`${bi}:${mi}`] = m._displayDeckPackId;
                     if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
                     if (m._displayTerminal) terminalMap[`${bi}:${mi}`] = m._displayTerminal;
                     if (m._actions) actionsMap[`${bi}:${mi}`] = m._actions;
@@ -59994,6 +60097,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 cardMap,
                 scene3DMap,
                 deckMap,
+                deckPackMap,
                 drawingMap,
                 mermaidMap,
                 viewerMap,
@@ -60107,6 +60211,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayAnim2DYaml', { value: yamlText, enumerable: false, configurable: true });
                     this._latestAnim2DYaml = yamlText;
+                });
+            }
+            if (data.deckPackMap) {
+                Object.entries(data.deckPackMap).forEach(([key, id]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayDeckPackId', { value: id, enumerable: false, configurable: true });
                 });
             }
             if (data.deckMap) {
@@ -61140,6 +61250,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // 直接比照3D場景（標題列+匯出/檢視原始碼按鈕+warnings按鈕），
             // 差別只在沒有「重設視角」按鈕（2D動畫沒有camera/OrbitControls
             // 這個概念）。
+            if (msg._displayDeckPackId) {
+                const packWrap = document.createElement('div');
+                packWrap.style.cssText = 'margin-bottom: 12px; max-width: 98%;';
+                packWrap.innerHTML = '<div style="font-size: 12px; font-weight: bold; color: #0ea5e9; margin-bottom: 4px;">📦 簡報封包</div>';
+                const packMount = document.createElement('div');
+                packWrap.appendChild(packMount);
+                container.appendChild(packWrap);
+                this._deckMountPack(packMount, msg._displayDeckPackId).catch((err) => {
+                    packMount.innerHTML = '<div style="padding:8px; color:#e53e3e; font-size:12px;">⚠️ 簡報封包開啟失敗：' + this._escapeHtml(err.message || String(err)) + '</div>';
+                });
+                return;
+            }
             if (msg._displayDeckUrl) {
                 const deckWrap = document.createElement('div');
                 deckWrap.style.cssText = 'margin-bottom: 12px; max-width: 98%;';

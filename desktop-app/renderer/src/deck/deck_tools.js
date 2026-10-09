@@ -266,8 +266,9 @@ const FaDeckTools = (function () {
                     };
                     if (node.kind === 'shapes' && node.scene && typeof node.scene === 'object') check2d(node.scene, np + '.scene');
                     if (node.overlay && node.overlay.scene && typeof node.overlay.scene === 'object') check2d(node.overlay.scene, np + '.overlay.scene');
-                    if (node.kind === 'scene3d' && node.scene && typeof node.scene === 'object' && typeof this._validate3DSceneYaml === 'function') {
-                        try { const sc = Object.assign({}, node.scene); delete sc.duration; const r = this._validate3DSceneYaml(y.dump(sc)); if (r && r.ok === false) problems.push(np + '.scene: ' + r.error); } catch (e) { problems.push(np + '.scene: ' + String(e && e.message || e)); }
+                    if (node.kind === 'scene3d' && node.scene && typeof node.scene === 'object') {
+                        // 播放器用移植過來的 3D 檢視器（巢狀 animation: {type, speed} 與扁平 animation: spin 兩種寫法都認），驗證也用它自己的規則
+                        try { window.AiChat3D._internal.parseScene(JSON.stringify(node.scene)); } catch (e) { problems.push(np + '.scene: ' + String(e && e.message || e)); }
                     }
                 });
             });
@@ -399,15 +400,14 @@ const FaDeckTools = (function () {
                     const mime = /^image\//.test(src.mimeType) ? src.mimeType : (({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' })[String(src.filename).split('.').pop().toLowerCase()] || '');
                     return this._deckImportImageBlob(new Blob([src.bytes], { type: mime }), String(src.sourceLabel || src.filename), 'import_fap_image');
                 });
-            // 領域：主助理把簡報工作整個委派過來（子任務有自己的回合數與提示）
-            this.register_domain('media_presentation', {
-                label: '動畫簡報（章節、旁白、字幕、轉場；2D＋3D 混合、可互動；匯出 MP4／PPTX）',
-                toolNames: DOMAIN_TOOLS,
-                systemPrompt: SYSTEM_PROMPT,
-            });
+            // 領域：內建技能「media-presentation」（BUILTIN_SKILLS）會自動變成 skill_<id> 領域，主助理把簡報工作整個委派過來
+            // （子任務有自己的回合數與提示）；這裡只負責工具與 /media-presentation 指令
             this.register_slash_command('/media-presentation', '<要做的簡報：主題、來源、長度、語言…>',
                 '做一份動畫簡報（章節、旁白、字幕、轉場；2D＋3D 混合、問答卡、程式碼視窗、終端機、AI 自創小遊戲），在對話裡播放，可匯出 MP4／PPTX／簡報封包。來源可以是上傳的檔案、授權的資料夾、網站，或只給主題。',
                 (argsText, run) => (run || this)._deckSlashPresentation(argsText));
+            this.register_slash_command('/media-open-presentation', '',
+                '開啟之前匯出的簡報封包（.deckpack，或舊的 .deck.zip）：跳出選檔視窗，也可以直接把封包拖進對話或當附件選。作答紀錄與終端機畫面都會還原，不需要原本的素材來源。',
+                (argsText, run) => (run || this)._deckPickPack());
         },
         // /media-presentation：直接把整個工作交給簡報領域（跳過主助理自己判斷要不要委派）
         async _deckSlashPresentation(argsText) {
@@ -419,13 +419,25 @@ const FaDeckTools = (function () {
                 this._persistChatHistory(); this._renderMessageHistory();
                 return;
             }
-            const result = await this._delegateToSubagentDomain('media_presentation', text);
+            const domainKey = this._deckDomainKey();
+            if (!domainKey) {
+                this._pushAssistantMessage('⚠️ 找不到內建技能「media-presentation」（可能被停用或刪除）。到 Advance Settings 的技能分頁重新啟用它。', null);
+                this._renderMessageHistory(); this._persistChatHistory();
+                return;
+            }
+            const result = await this._delegateToSubagentDomain(domainKey, text);
             this.messages.push(this._buildToolResultMessage('media_presentation', JSON.stringify(result), {}));
             const visibleText = result.ok ? (result.result || result.note || '（簡報已產生）') : '⚠️ 委派給「動畫簡報」失敗：' + result.error;
             this._pushAssistantMessage(visibleText, null);
             this._renderMessageHistory();
             this._persistChatHistory();
         },
+        // 內建技能 media-presentation 對應的領域代號（skill_<id>）；技能被停用或刪除時是 null
+        _deckDomainKey() {
+            const b = (this.advancedSettings.skillBundles || []).find((x) => x.builtinId === 'builtin-skill-media-presentation' && x.enabled !== false);
+            return b ? 'skill_' + b.id : null;
+        },
+        _deckIsDomain(domainKey) { return !!domainKey && domainKey === this._deckDomainKey(); },
         // 這個助理自己的功能清單（讓「介紹這個 AI」的簡報有真實內容）
         _deckAiFeaturesText() {
             const lines = ['Real features of this AI assistant (shipped catalog); slash commands are typed in the chat box, /help lists them all.'];
