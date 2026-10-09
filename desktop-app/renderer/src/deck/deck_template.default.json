@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "name": "Default",
+  "font": "\"Microsoft JhengHei\",\"Noto Sans CJK TC\",\"PingFang TC\",\"Noto Sans TC\",sans-serif",
+  "pptxFont": "Microsoft JhengHei",
+  "colors": {
+    "heading": "#0E2841",
+    "body": "#333333",
+    "accent": "#77BD1D",
+    "soft": "#E8E8E8",
+    "white": "#FFFFFF",
+    "dark": "#0E2841",
+    "stripe": "#F4F7F0",
+    "contentBg": "#FFFFFF",
+    "titleText": "#FFFFFF",
+    "subtitleBar": "rgba(14,40,65,0.82)",
+    "subtitleText": "#FFFFFF"
+  },
+  "images": { "titleBg": "file", "topicBg": "file", "contentBg": "file", "logo": "file" },
+  "logo": { "x": 131, "y": 161, "w": 841, "h": 207 },
+  "title": { "x": 157, "y": 387, "w": 1520, "h": 205, "size": 72, "minSize": 44, "subtitleSize": 34 },
+  "topic": { "x": 156, "y": 276, "w": 1398, "h": 282, "size": 76, "minSize": 44, "topBar": 12, "rule": { "x": 171, "y": 573, "w": 1387, "h": 7 } },
+  "header": { "x": 63, "y": 55, "w": 1721, "h": 114, "size": 56, "minSize": 36, "labelSize": 24, "labelY": 40 },
+  "contentBar": { "h": 11 },
+  "area": { "x": 63, "y": 195, "w": 1794, "h": 690 },
+  "split": { "bulletsW": 790, "visualX": 880, "visualW": 977 },
+  "bullets": { "size": 46, "minSize": 28, "gap": 30, "dot": 9 },
+  "subtitle": { "x": 160, "y": 905, "w": 1600, "h": 140, "size": 38, "minSize": 26, "radius": 18 }
+}
