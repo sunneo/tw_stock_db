@@ -223,7 +223,7 @@ function embedRemote() {
     const dir = path.join(root, 'renderer/src/remote'); const rd = (n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n');
     const wrap = (name, code) => 'const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + code + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n';
     const a = src.indexOf('/* REMOTE-BEGIN */'), b = src.indexOf('/* REMOTE-END */'); if (a < 0 || b < 0) throw new Error('找不到 REMOTE 標記');
-    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + rd('rg_host.js') + '\n';
+    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + rd('rg_host.js') + rd('rg_dispatch.js') + '\n';
     src = src.slice(0, a) + '/* REMOTE-BEGIN */\n' + body + src.slice(b);
     console.log('已更新遠端群組（' + body.length + ' 字元）');
 }

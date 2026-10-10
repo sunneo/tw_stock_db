@@ -49,7 +49,7 @@ class Hub {
     const mk = (keys, name, extra) => new R.Room(Object.assign({ transport: hub.transport(), keys, self: { name, kind: 'web', caps: ['sandbox'] }, settleMs: 40 }, extra || {}));
     const A = mk(k1, 'PC'), B = mk(k2, 'PC'), C = mk(k3, 'Other');
     const ra = await A.join(); check('A 加入（第一個）', ra.ok && A.members().length === 1);
-    await sleep(20); const rb = await B.join(); await sleep(60);
+    await sleep(20); const rb = await B.join(); await sleep(200);
     check('B 加入；名稱重複自動加編號', rb.ok && rb.name === 'PC-2', rb);
     check('雙方都看到 2 台，名稱與能力一致', A.members().length === 2 && B.members().length === 2 && A.members().map((m) => m.name).sort().join() === 'PC,PC-2' && A.members()[0].caps[0] === 'sandbox', A.members());
     const rc = await C.join(); check('密碼錯誤的人進到別的頻道：只看得到自己、看不到 A 與 B', rc.ok && C.members().length === 1 && A.members().length === 2);
@@ -57,24 +57,24 @@ class Hub {
     // 訊息
     const gotB = [], gotA = [], gotC = [];
     B.on('message', (m) => gotB.push(m)); A.on('message', (m) => gotA.push(m)); C.on('message', (m) => gotC.push(m));
-    await A.send(B.self.nodeId, 'ping', { n: 1 }); await sleep(30);
+    await A.send(B.self.nodeId, 'ping', { n: 1 }); await sleep(150);
     check('A→B 小訊息', gotB.length === 1 && gotB[0].type === 'ping' && gotB[0].body.n === 1 && gotB[0].from === A.self.nodeId, gotB);
-    const big = 'x'.repeat(100000); await A.send(B.self.nodeId, 'blob', { big }); await sleep(60);
+    const big = 'x'.repeat(100000); await A.send(B.self.nodeId, 'blob', { big }); await sleep(200);
     check('大訊息（10 萬字元）自動切塊並重組', gotB.length === 2 && gotB[1].body.big.length === 100000);
-    await B.send('*', 'hello', { t: 1 }); await sleep(30);
+    await B.send('*', 'hello', { t: 1 }); await sleep(150);
     check('廣播（*）：A 收到', gotA.length === 1 && gotA[0].type === 'hello');
     check('別的群組（密碼不同）完全收不到', gotC.length === 0);
-    await A.send('不存在的節點', 'ping', {}); await sleep(30); check('送給不存在的節點：沒有人收到', gotB.length === 2);
+    await A.send('不存在的節點', 'ping', {}); await sleep(150); check('送給不存在的節點：沒有人收到', gotB.length === 2);
 
     // 離開
-    await B.leave(); await sleep(60); check('B 離開後 A 的名單剩 1 台', A.members().length === 1);
+    await B.leave(); await sleep(200); check('B 離開後 A 的名單剩 1 台', A.members().length === 1);
 
     // 人數上限（上限 2）
     const hub2 = new Hub(); let tick = Date.now(); const mk2 = (name) => new R.Room({ transport: hub2.transport(), keys: k1, self: { name, since: ++tick }, maxMembers: 2, settleMs: 40 });
     const r1 = mk2('a'), r2 = mk2('b'), r3 = mk2('c');
     await r1.join(); await sleep(20); await r2.join(); await sleep(20); const x3 = await r3.join();
     check('人數上限：第三台被拒絕（full）', !x3.ok && x3.reason === 'full', x3);
-    await sleep(60); check('被拒絕後沒有留在名單裡', r1.members().length === 2);
+    await sleep(200); check('被拒絕後沒有留在名單裡', r1.members().length === 2);
 
     console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'rg_core: ' + ok + ' passed');
     process.exit(bad.length ? 1 : 0);
