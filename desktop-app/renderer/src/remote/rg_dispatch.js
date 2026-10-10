@@ -43,7 +43,8 @@ const FaRemoteDispatch = (function () {
             for (const r of all.slice(-MAX_KEEP)) {
                 const job = { taskId: r.taskId, from: r.from, fromName: r.fromName, text: r.text, events: r.events || [], done: false };
                 if (!job.events.some((e) => TERMINAL[e.kind])) { job.events.push({ seq: job.events.length + 1, kind: 'failed', error: '這台機器重新整理或重新啟動，任務中斷了（需要的話請重新送出）' }); await this._rgSaveTask(job); }
-                job.done = true; rg.exec[job.taskId] = job;
+                job.done = true; rg.exec[job.taskId] = job; rg.shared = rg.shared || {};
+                for (const ev of job.events) for (const it of (ev.refs || [])) { (rg.shared[it.id] = rg.shared[it.id] || new Set()).add(job.from); for (const a of (it.assets || [])) (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(job.from); }
             }
             try { const keep = new Set(all.slice(-MAX_KEEP).map((r) => r.taskId)); for (const r of all) if (!keep.has(r.taskId)) await tx('readwrite', (s) => s.delete(r.taskId)); } catch (_) { /* */ }
         },
@@ -72,14 +73,16 @@ const FaRemoteDispatch = (function () {
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
             await finished;
         },
-        _rgTaskEnd(task, kind, textOrError, visual) {
+        _rgTaskEnd(task, kind, textOrError, visual, refs) {
             if (task.done) return; task.done = true; clearTimeout(task.ackTimer); clearInterval(task.stopTimer);
             const run = task.run, name = task.targetName;
-            if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual }); return; }
+            if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual, refs }); return; }
             if (kind === 'done') {
                 task.prog.finish('完成（由 ' + name + ' 執行）');
-                const note = visual ? '\n\n> 📎 ' + name + ' 產生了「' + (visual.title || visual.type || '內容') + '」（' + visual.type + '）。**內容傳輸（在這裡開啟、存到這邊）下一階段開放**；目前只傳回文字結果。' : '';
+                const has = Array.isArray(refs) && refs.length;
+                const note = has ? '\n\n> 📎 ' + name + ' 產生了 ' + refs.length + ' 項內容，在下面可以直接開啟或存到這邊。' : (visual ? '\n\n> （' + name + ' 產生了「' + (visual.title || visual.type || '內容') + '」，但沒有可以傳輸的檔案。）' : '');
                 run._pushAssistantMessage('🖥️ **' + name + '** 完成：\n\n' + (textOrError || '（沒有文字結果）') + note, null);
+                if (has) run._pushDisplayToolMessage('[' + name + ' 產生了 ' + refs.length + ' 項內容：' + refs.map((x) => x.name).slice(0, 8).join('、') + '，已在對話裡顯示成可開啟的卡片]', '_displayRemoteFiles', { nodeId: task.targetId, machine: name, items: refs.map((x) => Object.assign({}, x)) });
             } else {
                 const label = { failed: '失敗', stopped: '已停止', rejected: '被拒絕' }[kind] || kind;
                 task.prog.fail(name + '：' + label + (textOrError ? '（' + textOrError + '）' : ''));
@@ -111,7 +114,7 @@ const FaRemoteDispatch = (function () {
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（15 秒）'); }, 15000);
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
             const r = await finished;
-            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', note: r.visual ? '對方產生了「' + (r.visual.title || r.visual.type) + '」（內容傳輸尚未開放）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
+            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', files: (r.refs || []).map((x) => x.name + '（' + x.kind + '，' + x.size + ' 位元組）'), note: (r.refs || []).length ? '對方產生了這些檔案；使用者可以在進度卡片所在的對話裡開啟（這個階段 AI 還不能直接讀取它們）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
         },
         _rgRegisterTools() {
             const self = this;
@@ -149,6 +152,42 @@ const FaRemoteDispatch = (function () {
             this._rgLog(who + ' 修改了這台機器的設定：' + Object.keys(clean).map((k) => label[k] + '＝' + (typeof clean[k] === 'boolean' ? (clean[k] ? '開' : '關') : clean[k])).join('、'));
             await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: true, values: this._rgRemoteValues() }).catch(() => {});
         },
+        // ---------------------------------------------------------------- 內容傳輸（提供者）
+        // 在檔案快取的 put 上加一層：任務執行期間新增的檔案都記下來（這就是這個任務「產生的內容」）
+        _rgHookFileCache() {
+            const fc = this.fileCache; if (!fc || fc.__rgHooked) return; fc.__rgHooked = true; const orig = fc.put.bind(fc); const self = this;
+            fc.put = async function (...a) { const id = await orig(...a); try { const rg = self._rg; if (rg && rg.captures) { const size = (a[2] && a[2].size) || 0; for (const cap of rg.captures) cap.push({ id, name: String(a[0] || id), mime: String(a[1] || ''), size }); } } catch (_) { /* 記錄失敗不影響存檔 */ } return id; };
+        },
+        _rgFileKind(mime, name) { const m = String(mime || '').toLowerCase(), n = String(name || '').toLowerCase(); if (/\.deck\.yaml$/.test(n)) return 'deck'; if (m.startsWith('image/')) return 'image'; if (m.startsWith('video/')) return 'video'; if (m.startsWith('audio/')) return 'audio'; if (m === 'application/pdf' || n.endsWith('.pdf')) return 'pdf'; if (m.startsWith('text/') || /(json|yaml|xml|csv|markdown)/.test(m) || /\.(txt|md|json|yaml|yml|csv|log)$/.test(n)) return 'text'; return 'file'; },
+        // cap：任務期間記下的 put；visual：_runSubAgentTask 回傳的最後一個視覺結果；to：要求者的節點代號。回傳內容清單（也把每個檔案宣告給要求者）
+        async _rgBuildRefs(cap, visual, to) {
+            const rg = this._rg; if (!rg) return []; rg.shared = rg.shared || {}; const fc = this.fileCache; const seen = new Set(); const items = [];
+            const addRec = async (c) => { if (!c || seen.has(c.id)) return null; seen.add(c.id); let rec = null; try { rec = await fc.get(c.id); } catch (_) { /* */ } if (!rec || !rec.blob || !rec.blob.size) return null; return { id: c.id, name: rec.filename || c.name, mime: rec.mimeType || c.mime || rec.blob.type || '', size: rec.blob.size, blob: rec.blob }; };
+            // 視覺結果裡直接帶資料的（圖表、3D／2D 場景、繪圖）：存成檔案一起列出
+            if (visual) {
+                try {
+                    if (visual.type === 'image' && typeof visual.dataUrl === 'string' && visual.dataUrl.startsWith('data:')) { const blob = await (await fetch(visual.dataUrl)).blob(); const id = await fc.put('圖片-' + Date.now().toString(36) + '.' + (blob.type.split('/')[1] || 'png'), blob.type, blob, 'generated'); cap.push({ id, name: '圖片', mime: blob.type, size: blob.size }); }
+                    else if (typeof visual.yaml === 'string') { const ext = visual.type === 'scene3d' ? '3dscene.yaml' : visual.type === 'anim2d' ? '2danim.yaml' : 'yaml'; const blob = new Blob([visual.yaml], { type: 'text/yaml' }); const id = await fc.put((visual.type || 'visual') + '.' + ext, 'text/yaml', blob, 'generated'); cap.push({ id, name: (visual.type || 'visual') + '.' + ext, mime: 'text/yaml', size: blob.size }); }
+                    else if (typeof visual.svg === 'string') { const blob = new Blob([visual.svg], { type: 'image/svg+xml' }); const id = await fc.put((visual.type || 'drawing') + '.svg', 'image/svg+xml', blob, 'generated'); cap.push({ id, name: (visual.type || 'drawing') + '.svg', mime: 'image/svg+xml', size: blob.size }); }
+                } catch (_) { /* 存不成就只列文字結果 */ }
+            }
+            const recs = []; for (const c of cap) { const r = await addRec(c); if (r) recs.push(r); }
+            // 簡報：把它引用的圖片等素材一起打包成一項（不再另外列出）
+            const used = new Set();
+            for (const r of recs) {
+                if (this._rgFileKind(r.mime, r.name) !== 'deck') continue;
+                let text = ''; try { text = await r.blob.text(); } catch (_) { /* */ }
+                const assets = []; for (const m of text.matchAll(/client-file\/([\w-]+)/g)) { const a = recs.find((x) => x.id === m[1]) || await addRec({ id: m[1], name: m[1] }); if (a && !used.has(a.id) && a.id !== r.id) { used.add(a.id); assets.push({ id: a.id, name: a.name, mime: a.mime, size: a.size }); } }
+                r.assets = assets;
+            }
+            for (const r of recs) {
+                if (used.has(r.id)) continue; const kind = this._rgFileKind(r.mime, r.name);
+                items.push({ id: r.id, name: r.name, mime: r.mime, size: r.size, kind, assets: r.assets });
+            }
+            const list = items.slice(0, 30);
+            for (const it of list) { (rg.shared[it.id] = rg.shared[it.id] || new Set()).add(to); for (const a of (it.assets || [])) (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(to); }
+            return list;
+        },
         // 向某台機器要東西並等回覆（rid 對應）
         _rgAsk(nodeId, type, body, replyType, ms) {
             const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
@@ -168,6 +207,57 @@ const FaRemoteDispatch = (function () {
             const words = String(pref.words || '').split(/[,，、\s]+/).map((w) => w.trim().toLowerCase()).filter(Boolean); if (pref.scope === 'all' || !words.length) return true;
             const hit = words.some((w) => String(text || '').toLowerCase().includes(w)); return pref.scope === 'only' ? hit : !hit;
         },
+        // ---------------------------------------------------------------- 內容傳輸（要求者）：從那台機器取得檔案
+        async _rgFetchRemote(nodeId, id, onProgress, cancel) {
+            const rg = this._rg; if (!rg || !rg.files) throw new Error('沒有加入群組（或對方已離線）');
+            if (!rg.room.members().some((m) => m.nodeId === nodeId)) throw new Error('對方現在不在群組裡（離線了），回來之後再試');
+            return rg.files.fetch(nodeId, id, { onProgress, cancel });
+        },
+        // 取得一項內容（優先用已存在這邊的副本）：回傳 {blob, name, mime}
+        async _rgGetItemBlob(group, item, onProgress, cancel) {
+            if (item.localId) { try { const rec = await this.fileCache.get(item.localId); if (rec && rec.blob) return { blob: rec.blob, name: item.name, mime: item.mime }; } catch (_) { /* 副本不見了就重新抓 */ } }
+            const r = await this._rgFetchRemote(group.nodeId, item.id, onProgress, cancel); return { blob: r.blob, name: r.meta.name || item.name, mime: r.meta.mime || item.mime, via: r.via };
+        },
+        async _rgSaveItem(group, item, onProgress, cancel) {
+            if (item.localId) return item.localId;
+            if (item.kind === 'deck') { const d = await this._rgSaveDeck(group, item, onProgress, cancel); item.localId = d.yamlId; item.localDeckUrl = d.url; return d.yamlId; }
+            const r = await this._rgGetItemBlob(group, item, onProgress, cancel);
+            item.localId = await this.fileCache.put(r.name || item.name, r.mime || item.mime || 'application/octet-stream', r.blob, 'uploaded'); return item.localId;
+        },
+        // 簡報：把簡報檔與它引用的素材都抓過來，換成這邊的檔案編號，存成這邊的簡報
+        async _rgSaveDeck(group, item, onProgress, cancel) {
+            const parts = [{ id: item.id, name: item.name, mime: item.mime, size: item.size }].concat(item.assets || []); const total = parts.reduce((n, p) => n + (p.size || 0), 0) || 1; let doneBytes = 0; const idMap = {}; let yamlText = '';
+            for (const p of parts) {
+                const r = await this._rgFetchRemote(group.nodeId, p.id, (d) => onProgress && onProgress(doneBytes + d, total, '直連／轉送'), cancel); doneBytes += r.blob.size;
+                if (p.id === item.id) yamlText = await r.blob.text(); else idMap[p.id] = await this.fileCache.put(r.meta.name || p.name, r.meta.mime || p.mime || 'application/octet-stream', r.blob, 'uploaded');
+            }
+            for (const [oldId, newId] of Object.entries(idMap)) yamlText = yamlText.split('client-file/' + oldId).join('client-file/' + newId);
+            const saved = await this._deckSaveYaml(yamlText, String(item.name).replace(/\.deck\.yaml$/i, '')); return { yamlId: saved.id, url: saved.url };
+        },
+        // 在畫面上看：圖片、影片、音訊、PDF、文字直接顯示；簡報存過來之後在對話裡播放；其他檔案下載
+        async _rgOpenItem(group, item, onProgress, cancel) {
+            if (item.kind === 'deck') {
+                await this._rgSaveItem(group, item, onProgress, cancel);
+                this._pushAssistantMessage('🎞️ 已從 ' + group.machine + ' 取得簡報「' + item.name + '」，下面直接播放。', null);
+                this._pushDisplayToolMessage('[已從 ' + group.machine + ' 取得簡報「' + item.name + '」，已在對話裡顯示成播放器]', '_displayDeckUrl', item.localDeckUrl); this._renderMessageHistory(); this._persistChatHistory(); return;
+            }
+            const r = await this._rgGetItemBlob(group, item, onProgress, cancel); this._rgShowBlob(r.blob, r.name, r.mime || item.mime, item.kind);
+        },
+        _rgShowBlob(blob, name, mime, kind) {
+            const url = URL.createObjectURL(blob), pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s));
+            const ov = document.createElement('div'); ov.style.cssText = 'position:fixed; inset:0; z-index:1000002; background:rgba(0,0,0,.8); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; box-sizing:border-box;';
+            const close = () => { ov.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+            let body = '';
+            if (kind === 'image') body = '<img src="' + url + '" style="max-width:96%; max-height:82vh; object-fit:contain;">';
+            else if (kind === 'video') body = '<video src="' + url + '" controls autoplay style="max-width:96%; max-height:82vh;"></video>';
+            else if (kind === 'audio') body = '<audio src="' + url + '" controls autoplay></audio>';
+            else if (kind === 'pdf') body = '<iframe src="' + url + '" style="width:min(96%,1000px); height:82vh; border:0; background:#fff;"></iframe>';
+            else if (kind === 'text' && blob.size < 2 * 1024 * 1024) { body = '<pre data-pre style="width:min(96%,1000px); max-height:82vh; overflow:auto; background:' + pal.windowBg + '; color:' + pal.chatText + '; padding:12px; border-radius:8px; white-space:pre-wrap;"></pre>'; }
+            else { const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000); return; }
+            ov.innerHTML = '<div style="color:#fff; margin-bottom:8px; font-size:13px;">' + e(name) + '　<a href="' + url + '" download="' + e(name) + '" style="color:#76b900;">下載</a>　<a data-x href="#" style="color:#f87171;">關閉</a></div>' + body;
+            document.body.appendChild(ov); ov.querySelector('[data-x]').onclick = (ev) => { ev.preventDefault(); close(); }; ov.addEventListener('click', (ev) => { if (ev.target === ov) close(); });
+            const pre = ov.querySelector('[data-pre]'); if (pre) blob.text().then((t) => { pre.textContent = t; });
+        },
         // 這台機器現在跑著的子任務清單（給在線名單的數字與「點開看」用）
         _rgAgentsList() { return Array.from(AGENTS.values()).map((a) => ({ id: a.id, label: a.label, source: a.source, kind: a.kind, task: a.task, ago: Math.round((Date.now() - a.startedAt) / 1000) })); },
         _rgOnEvent(m) {
@@ -179,7 +269,7 @@ const FaRemoteDispatch = (function () {
             task.lastSeq = b.seq || task.lastSeq;
             if (b.kind === 'progress') task.prog.update({ status: b.status || '處理中…' });
             else if (b.kind === 'trace') task.prog.log(b.status || '');
-            else if (TERMINAL[b.kind]) this._rgTaskEnd(task, b.kind, b.kind === 'done' ? b.text : (b.error || b.text), b.visual);
+            else if (TERMINAL[b.kind]) this._rgTaskEnd(task, b.kind, b.kind === 'done' ? b.text : (b.error || b.text), b.visual, b.refs);
         },
         // 成員名單變動：目標離線／回來。回來時用最後看到的序號補齊錯過的事件
         _rgOnMembersChange() {
@@ -231,12 +321,15 @@ const FaRemoteDispatch = (function () {
                 const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => prog.log(line), shouldStop: () => job.stop, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
+                this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
                 const res = await this._runSubAgentTask('這是群組裡另一台機器（' + job.fromName + '）交給你的需求，請完成它並回覆結果：\n\n' + job.text, 40, opts);
                 const text = res && res.text ? String(res.text) : '';
                 const v = res && res.visual ? { type: res.visual.type, title: res.visual.title || res.visual.name || '' } : null;
+                if (rg0 && rg0.captures) rg0.captures.delete(cap);
                 if (job.stop) { this._rgEvent(job, { kind: 'stopped', text }); prog.fail('已停止'); }
-                else { this._rgEvent(job, { kind: 'done', text, visual: v }); prog.finish('完成'); }
+                else { let refs = []; try { refs = await this._rgBuildRefs(cap, res && res.visual, job.from); } catch (e) { this._rgLog('整理產生的內容失敗：' + String((e && e.message) || e)); } this._rgEvent(job, { kind: 'done', text, visual: v, refs }); prog.finish('完成' + (refs.length ? '（產生了 ' + refs.length + ' 項內容）' : '')); }
             } catch (e) { const msg = String((e && e.message) || e); this._rgEvent(job, { kind: 'failed', error: msg }); prog.fail(msg); }
+            try { const rg1 = this._rg; if (rg1 && rg1.captures && job.cap) rg1.captures.delete(job.cap); } catch (_) { /* */ }
             job.done = true;
         },
         // 發出端斷線回來要求補齊：重播序號大於 since 的事件

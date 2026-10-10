@@ -17829,6 +17829,148 @@ const holder = {};
 }).call(null, undefined, holder);
 return holder.FaRemoteTransport;
 })();
+const FaRemoteFiles = (function () {
+const holder = {};
+(function (module, self) {
+/* 遠端群組的內容傳輸（第 3 階段）。設計見 DESIGN.remote-group.md 第 8 節。
+ * 一台機器（提供者）把自己檔案快取裡的檔案「宣告」給某個要求者之後，要求者才能拿；拿的方式：
+ *   1. 點對點直連（WebRTC 資料通道）：協商訊息（rtc_offer／rtc_answer／rtc_ice）走房間通道，檔案本體不經過 Supabase；
+ *   2. 直連失敗（逾時或連線失敗）且檔案不大時，改用房間通道切塊轉送（file_pull／file_chunk，已被房間金鑰加密）。
+ * 兩種方式都在收完後用 SHA-256 核對大小與雜湊，不符就丟掉。
+ * 這個模組只依賴 Room 的介面（send、on('message')），可以用記憶體傳輸測試轉送路徑；直連路徑在瀏覽器裡測。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaRemoteFiles = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const DC_CHUNK = 16 * 1024;            // 資料通道每塊 16KB（各瀏覽器都能互通）
+    const RELAY_CHUNK = 24 * 1024;         // 轉送每塊 24KB 原始資料（base64 後約 32KB，在即時通道的訊息上限內）
+    const RELAY_MAX = 16 * 1024 * 1024;    // 轉送備援只用在 16MB 以下的檔案
+    const P2P_TIMEOUT = 12000;
+    const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+    const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return typeof btoa === 'function' ? btoa(s) : Buffer.from(u8).toString('base64'); };
+    const unb64 = (s) => { if (typeof atob === 'function') { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; } return new Uint8Array(Buffer.from(s, 'base64')); };
+    const getCrypto = () => (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : require('crypto').webcrypto;
+    async function sha256(blob) { const buf = blob.arrayBuffer ? await blob.arrayBuffer() : blob; return hex(new Uint8Array(await getCrypto().subtle.digest('SHA-256', buf))); }
+    const rnd = () => Math.random().toString(36).slice(2, 10);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    class FileShare {
+        // opts: { room, getFile: async (id) => ({blob, name, mime}) | null, allowed: (id, fromNodeId) => boolean, rtc?: { RTCPeerConnection, iceServers }, log? }
+        constructor(opts) {
+            this.room = opts.room; this.getFile = opts.getFile; this.allowed = opts.allowed || (() => false); this.log = opts.log || (() => {});
+            this.RTC = opts.rtc === undefined ? (typeof RTCPeerConnection !== 'undefined' ? RTCPeerConnection : null) : (opts.rtc && opts.rtc.RTCPeerConnection) || null;
+            this.iceServers = (opts.rtc && opts.rtc.iceServers) || [{ urls: 'stun:stun.cloudflare.com:3478' }];
+            this.shaCache = new Map(); this.pending = new Map(); this.sessions = new Map(); this.disableP2p = false;
+            this.room.on('message', (m) => { this.handle(m).catch((e) => this.log('傳輸訊息處理失敗：' + (e && e.message || e))); });
+        }
+        // 向某台機器要東西並等回覆
+        ask(nodeId, type, body, replyType, ms) {
+            const rid = rnd() + rnd();
+            return new Promise((resolve, reject) => {
+                const t = setTimeout(() => { this.pending.delete(rid); reject(new Error('對方沒有回應')); }, ms || 8000);
+                this.pending.set(rid, { replyType, resolve: (v) => { clearTimeout(t); this.pending.delete(rid); resolve(v); }, reject: (e) => { clearTimeout(t); this.pending.delete(rid); reject(e); } });
+                this.room.send(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(t); this.pending.delete(rid); reject(e); });
+            });
+        }
+        async handle(m) {
+            const b = m.body || {};
+            // ---- 回覆（要求者這一邊）
+            if (b.rid && this.pending.has(b.rid) && this.pending.get(b.rid).replyType === m.type) { const p = this.pending.get(b.rid); if (b.error) p.reject(new Error(b.error)); else p.resolve(b); return; }
+            if (m.type === 'rtc_answer' || m.type === 'rtc_ice') { const s = this.sessions.get(b.sid); if (s && s.onSignal) await s.onSignal(m.type, b); return; }
+            // ---- 要求（提供者這一邊）
+            if (m.type === 'file_req') {
+                if (!this.allowed(b.id, m.from)) return this.room.send(m.from, 'file_meta', { rid: b.rid, error: '沒有這個檔案，或沒有宣告給你' });
+                const f = await this.getFile(b.id); if (!f) return this.room.send(m.from, 'file_meta', { rid: b.rid, error: '檔案已經不在了' });
+                if (!this.shaCache.has(b.id)) this.shaCache.set(b.id, await sha256(f.blob));
+                return this.room.send(m.from, 'file_meta', { rid: b.rid, id: b.id, name: f.name, mime: f.mime || f.blob.type || '', size: f.blob.size, sha: this.shaCache.get(b.id), p2p: !!this.RTC && !this.disableP2p });
+            }
+            if (m.type === 'file_pull') {
+                if (!this.allowed(b.id, m.from)) return this.room.send(m.from, 'file_chunk', { rid: b.rid, error: '沒有宣告給你' });
+                const f = await this.getFile(b.id); if (!f) return this.room.send(m.from, 'file_chunk', { rid: b.rid, error: '檔案已經不在了' });
+                const start = b.index * RELAY_CHUNK, part = new Uint8Array(await f.blob.slice(start, start + RELAY_CHUNK).arrayBuffer());
+                return this.room.send(m.from, 'file_chunk', { rid: b.rid, index: b.index, data: b64(part) });
+            }
+            if (m.type === 'rtc_offer') return this.serveRtc(m, b);
+        }
+        // ---- 提供者：接受直連，依要求串流檔案
+        async serveRtc(m, b) {
+            if (!this.RTC || this.disableP2p) return;
+            if (!this.allowed(b.id, m.from)) return;
+            const pc = new this.RTC({ iceServers: this.iceServers }); const sess = { pc, closed: false };
+            const close = () => { if (!sess.closed) { sess.closed = true; try { pc.close(); } catch (_) { /* */ } this.sessions.delete(b.sid); } };
+            sess.onSignal = async (type, body) => { if (type === 'rtc_ice' && body.cand) { try { await pc.addIceCandidate(body.cand); } catch (_) { /* */ } } };
+            this.sessions.set(b.sid, sess); setTimeout(close, 10 * 60 * 1000);
+            pc.onicecandidate = (e) => { if (e.candidate) this.room.send(m.from, 'rtc_ice', { sid: b.sid, cand: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }).catch(() => {}); };
+            pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') close(); };
+            pc.ondatachannel = (ev) => {
+                const dc = ev.channel; dc.binaryType = 'arraybuffer'; dc.bufferedAmountLowThreshold = 1 << 20;
+                dc.onmessage = async (me) => {
+                    let req; try { req = JSON.parse(me.data); } catch (_) { return; }
+                    if (req.t !== 'get' || !this.allowed(req.id, m.from)) { dc.send(JSON.stringify({ t: 'err', error: '沒有宣告給你' })); return; }
+                    const f = await this.getFile(req.id); if (!f) { dc.send(JSON.stringify({ t: 'err', error: '檔案已經不在了' })); return; }
+                    const size = f.blob.size; let off = Math.max(0, Number(req.offset) || 0);
+                    dc.send(JSON.stringify({ t: 'start', size, offset: off }));
+                    while (off < size && dc.readyState === 'open') {
+                        if (dc.bufferedAmount > (4 << 20)) { await new Promise((res) => { const h = () => { dc.removeEventListener('bufferedamountlow', h); res(); }; dc.addEventListener('bufferedamountlow', h); setTimeout(res, 2000); }); continue; }
+                        const part = await f.blob.slice(off, Math.min(size, off + DC_CHUNK)).arrayBuffer(); dc.send(part); off += part.byteLength;
+                    }
+                    if (dc.readyState === 'open') dc.send(JSON.stringify({ t: 'end', size }));
+                };
+            };
+            await pc.setRemoteDescription({ type: 'offer', sdp: b.sdp });
+            const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+            await this.room.send(m.from, 'rtc_answer', { sid: b.sid, sdp: ans.sdp });
+        }
+        // ---- 要求者：取得檔案（Blob）。opts: { onProgress(done,total,via), cancel: {cancelled:boolean} }
+        async fetch(nodeId, id, opts) {
+            opts = opts || {}; const cancel = opts.cancel || { cancelled: false };
+            const meta = await this.ask(nodeId, 'file_req', { id }, 'file_meta', 10000);
+            const progress = (done, via) => { if (opts.onProgress) opts.onProgress(done, meta.size, via); };
+            let blob = null, via = '', p2pErr = null;
+            if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
+            if (!blob) {
+                if (meta.size > RELAY_MAX) throw new Error('直連失敗（' + (p2pErr ? p2pErr.message : '不支援') + '），而且檔案超過 ' + (RELAY_MAX >> 20) + ' MB，轉送備援不處理這麼大的檔案');
+                blob = await this.fetchRelay(nodeId, id, meta, progress, cancel); via = '轉送';
+            }
+            if (blob.size !== meta.size) throw new Error('收到的大小不符（' + blob.size + ' ≠ ' + meta.size + '）');
+            if ((await sha256(blob)) !== meta.sha) throw new Error('內容雜湊不符：檔案在傳輸中損壞，已丟棄');
+            return { blob, meta, via };
+        }
+        async fetchRelay(nodeId, id, meta, progress, cancel) {
+            const n = Math.max(1, Math.ceil(meta.size / RELAY_CHUNK)); const parts = new Array(n); let got = 0, next = 0;
+            const worker = async () => { while (next < n) { if (cancel.cancelled) throw new Error('已取消'); const i = next++; const r = await this.ask(nodeId, 'file_pull', { id, index: i }, 'file_chunk', 15000); parts[i] = unb64(r.data); got += parts[i].length; progress(Math.min(got, meta.size), '轉送'); } };
+            await Promise.all([worker(), worker(), worker(), worker()]);
+            return new Blob(parts, { type: meta.mime || 'application/octet-stream' });
+        }
+        fetchP2p(nodeId, id, meta, progress, cancel) {
+            return new Promise((resolve, reject) => {
+                const sid = rnd() + rnd(); const pc = new this.RTC({ iceServers: this.iceServers }); const dc = pc.createDataChannel('file', { ordered: true }); dc.binaryType = 'arraybuffer';
+                const parts = []; let got = 0, started = false, done = false;
+                const finish = (err, val) => { if (done) return; done = true; clearTimeout(timer); clearInterval(poll); this.sessions.delete(sid); try { dc.close(); } catch (_) { /* */ } try { pc.close(); } catch (_) { /* */ } err ? reject(err) : resolve(val); };
+                const timer = setTimeout(() => finish(new Error(started ? '直連傳輸逾時' : '直連建立逾時（' + P2P_TIMEOUT / 1000 + ' 秒）')), P2P_TIMEOUT);
+                const bump = () => { /* 有進度就延長逾時 */ };
+                const poll = setInterval(() => { if (cancel.cancelled) finish(new Error('已取消')); }, 300);
+                this.sessions.set(sid, { onSignal: async (type, b) => { if (type === 'rtc_answer') { try { await pc.setRemoteDescription({ type: 'answer', sdp: b.sdp }); } catch (e) { finish(e); } } else if (type === 'rtc_ice' && b.cand) { try { await pc.addIceCandidate(b.cand); } catch (_) { /* */ } } } });
+                pc.onicecandidate = (e) => { if (e.candidate) this.room.send(nodeId, 'rtc_ice', { sid, cand: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }).catch(() => {}); };
+                pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') finish(new Error('直連連線失敗')); };
+                dc.onopen = () => { clearTimeout(timer); dc.send(JSON.stringify({ t: 'get', id, offset: 0 })); started = true; timer2(); };
+                let t2 = null; const timer2 = () => { clearTimeout(t2); t2 = setTimeout(() => finish(new Error('直連傳輸停住了（30 秒沒有資料）')), 30000); };
+                dc.onmessage = (me) => {
+                    if (typeof me.data === 'string') { let c; try { c = JSON.parse(me.data); } catch (_) { return; } if (c.t === 'err') finish(new Error(c.error)); else if (c.t === 'end') { clearTimeout(t2); finish(null, new Blob(parts, { type: meta.mime || 'application/octet-stream' })); } return; }
+                    parts.push(me.data); got += me.data.byteLength; progress(got, '直連'); timer2(); bump();
+                };
+                dc.onerror = () => finish(new Error('資料通道錯誤'));
+                pc.createOffer().then((o) => pc.setLocalDescription(o)).then(() => this.room.send(nodeId, 'rtc_offer', { sid, id, sdp: pc.localDescription.sdp })).catch(finish);
+            });
+        }
+    }
+    return { FileShare, sha256, DC_CHUNK, RELAY_CHUNK, RELAY_MAX };
+});
+
+}).call(null, undefined, holder);
+return holder.FaRemoteFiles;
+})();
 /* 遠端群組的主機轉接層：右上角「線上」旁的滑出面板、建立／加入／離開、機器清單、測試連線。
  * 核心見 rg_core.js，傳輸見 rg_transport_supabase.js，設計見 DESIGN.remote-group.md。
  * 目前是第 1 階段：房間、密碼、在線名單、人數上限、測試連線；派工與內容傳輸在後面的階段。
@@ -17885,6 +18027,8 @@ const FaRemoteHost = (function () {
             room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') this._rgLog('連線狀態：' + st); else if (st === 'SUBSCRIBED') this._rgLog('已連線'); });
             const r = await room.join();
             if (!r.ok) { try { await room.leave(); } catch (_) { /* */ } throw new Error(r.reason === 'full' ? '群組已滿（上限 ' + s.maxMembers + ' 台）' : '加入失敗'); }
+            rg.shared = {}; rg.captures = new Set();
+            rg.files = new FaRemoteFiles.FileShare({ room, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
             rg.timer = setInterval(() => { t.rpc('rg_touch_room', { p_code: code, p_verifier: keys.verifier }).then((ok) => { if (ok === false) this._rgLog('房間已被回收（閒置太久）'); }).catch(() => {}); }, 5 * 60 * 1000);
             this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code); this._rgView = 'joined'; this._rgRender();
@@ -17913,6 +18057,7 @@ const FaRemoteHost = (function () {
             else if (m.type === 'settings' || m.type === 'settings_ack') this._rgResolveAsk(m);
             else if (m.type === 'agents_req') { try { await rg.room.send(m.from, 'agents', { rid: m.body && m.body.rid, list: this._rgAgentsList() }); } catch (_) { /* */ } }
             else if (m.type === 'agents') { rg.agentLists = rg.agentLists || {}; rg.agentLists[m.from] = { at: Date.now(), list: (m.body && m.body.list) || [] }; this._rgRenderAgents(); }
+            else if (/^(file_|rtc_)/.test(m.type)) { /* 內容傳輸：由 FileShare 處理 */ }
             else this._rgLog('收到來自 ' + who + ' 的「' + m.type + '」（不認得的訊息）');
         },
         _rgPing(nodeId) {
@@ -18192,7 +18337,8 @@ const FaRemoteDispatch = (function () {
             for (const r of all.slice(-MAX_KEEP)) {
                 const job = { taskId: r.taskId, from: r.from, fromName: r.fromName, text: r.text, events: r.events || [], done: false };
                 if (!job.events.some((e) => TERMINAL[e.kind])) { job.events.push({ seq: job.events.length + 1, kind: 'failed', error: '這台機器重新整理或重新啟動，任務中斷了（需要的話請重新送出）' }); await this._rgSaveTask(job); }
-                job.done = true; rg.exec[job.taskId] = job;
+                job.done = true; rg.exec[job.taskId] = job; rg.shared = rg.shared || {};
+                for (const ev of job.events) for (const it of (ev.refs || [])) { (rg.shared[it.id] = rg.shared[it.id] || new Set()).add(job.from); for (const a of (it.assets || [])) (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(job.from); }
             }
             try { const keep = new Set(all.slice(-MAX_KEEP).map((r) => r.taskId)); for (const r of all) if (!keep.has(r.taskId)) await tx('readwrite', (s) => s.delete(r.taskId)); } catch (_) { /* */ }
         },
@@ -18221,14 +18367,16 @@ const FaRemoteDispatch = (function () {
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
             await finished;
         },
-        _rgTaskEnd(task, kind, textOrError, visual) {
+        _rgTaskEnd(task, kind, textOrError, visual, refs) {
             if (task.done) return; task.done = true; clearTimeout(task.ackTimer); clearInterval(task.stopTimer);
             const run = task.run, name = task.targetName;
-            if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual }); return; }
+            if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual, refs }); return; }
             if (kind === 'done') {
                 task.prog.finish('完成（由 ' + name + ' 執行）');
-                const note = visual ? '\n\n> 📎 ' + name + ' 產生了「' + (visual.title || visual.type || '內容') + '」（' + visual.type + '）。**內容傳輸（在這裡開啟、存到這邊）下一階段開放**；目前只傳回文字結果。' : '';
+                const has = Array.isArray(refs) && refs.length;
+                const note = has ? '\n\n> 📎 ' + name + ' 產生了 ' + refs.length + ' 項內容，在下面可以直接開啟或存到這邊。' : (visual ? '\n\n> （' + name + ' 產生了「' + (visual.title || visual.type || '內容') + '」，但沒有可以傳輸的檔案。）' : '');
                 run._pushAssistantMessage('🖥️ **' + name + '** 完成：\n\n' + (textOrError || '（沒有文字結果）') + note, null);
+                if (has) run._pushDisplayToolMessage('[' + name + ' 產生了 ' + refs.length + ' 項內容：' + refs.map((x) => x.name).slice(0, 8).join('、') + '，已在對話裡顯示成可開啟的卡片]', '_displayRemoteFiles', { nodeId: task.targetId, machine: name, items: refs.map((x) => Object.assign({}, x)) });
             } else {
                 const label = { failed: '失敗', stopped: '已停止', rejected: '被拒絕' }[kind] || kind;
                 task.prog.fail(name + '：' + label + (textOrError ? '（' + textOrError + '）' : ''));
@@ -18260,7 +18408,7 @@ const FaRemoteDispatch = (function () {
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（15 秒）'); }, 15000);
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
             const r = await finished;
-            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', note: r.visual ? '對方產生了「' + (r.visual.title || r.visual.type) + '」（內容傳輸尚未開放）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
+            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', files: (r.refs || []).map((x) => x.name + '（' + x.kind + '，' + x.size + ' 位元組）'), note: (r.refs || []).length ? '對方產生了這些檔案；使用者可以在進度卡片所在的對話裡開啟（這個階段 AI 還不能直接讀取它們）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
         },
         _rgRegisterTools() {
             const self = this;
@@ -18298,6 +18446,42 @@ const FaRemoteDispatch = (function () {
             this._rgLog(who + ' 修改了這台機器的設定：' + Object.keys(clean).map((k) => label[k] + '＝' + (typeof clean[k] === 'boolean' ? (clean[k] ? '開' : '關') : clean[k])).join('、'));
             await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: true, values: this._rgRemoteValues() }).catch(() => {});
         },
+        // ---------------------------------------------------------------- 內容傳輸（提供者）
+        // 在檔案快取的 put 上加一層：任務執行期間新增的檔案都記下來（這就是這個任務「產生的內容」）
+        _rgHookFileCache() {
+            const fc = this.fileCache; if (!fc || fc.__rgHooked) return; fc.__rgHooked = true; const orig = fc.put.bind(fc); const self = this;
+            fc.put = async function (...a) { const id = await orig(...a); try { const rg = self._rg; if (rg && rg.captures) { const size = (a[2] && a[2].size) || 0; for (const cap of rg.captures) cap.push({ id, name: String(a[0] || id), mime: String(a[1] || ''), size }); } } catch (_) { /* 記錄失敗不影響存檔 */ } return id; };
+        },
+        _rgFileKind(mime, name) { const m = String(mime || '').toLowerCase(), n = String(name || '').toLowerCase(); if (/\.deck\.yaml$/.test(n)) return 'deck'; if (m.startsWith('image/')) return 'image'; if (m.startsWith('video/')) return 'video'; if (m.startsWith('audio/')) return 'audio'; if (m === 'application/pdf' || n.endsWith('.pdf')) return 'pdf'; if (m.startsWith('text/') || /(json|yaml|xml|csv|markdown)/.test(m) || /\.(txt|md|json|yaml|yml|csv|log)$/.test(n)) return 'text'; return 'file'; },
+        // cap：任務期間記下的 put；visual：_runSubAgentTask 回傳的最後一個視覺結果；to：要求者的節點代號。回傳內容清單（也把每個檔案宣告給要求者）
+        async _rgBuildRefs(cap, visual, to) {
+            const rg = this._rg; if (!rg) return []; rg.shared = rg.shared || {}; const fc = this.fileCache; const seen = new Set(); const items = [];
+            const addRec = async (c) => { if (!c || seen.has(c.id)) return null; seen.add(c.id); let rec = null; try { rec = await fc.get(c.id); } catch (_) { /* */ } if (!rec || !rec.blob || !rec.blob.size) return null; return { id: c.id, name: rec.filename || c.name, mime: rec.mimeType || c.mime || rec.blob.type || '', size: rec.blob.size, blob: rec.blob }; };
+            // 視覺結果裡直接帶資料的（圖表、3D／2D 場景、繪圖）：存成檔案一起列出
+            if (visual) {
+                try {
+                    if (visual.type === 'image' && typeof visual.dataUrl === 'string' && visual.dataUrl.startsWith('data:')) { const blob = await (await fetch(visual.dataUrl)).blob(); const id = await fc.put('圖片-' + Date.now().toString(36) + '.' + (blob.type.split('/')[1] || 'png'), blob.type, blob, 'generated'); cap.push({ id, name: '圖片', mime: blob.type, size: blob.size }); }
+                    else if (typeof visual.yaml === 'string') { const ext = visual.type === 'scene3d' ? '3dscene.yaml' : visual.type === 'anim2d' ? '2danim.yaml' : 'yaml'; const blob = new Blob([visual.yaml], { type: 'text/yaml' }); const id = await fc.put((visual.type || 'visual') + '.' + ext, 'text/yaml', blob, 'generated'); cap.push({ id, name: (visual.type || 'visual') + '.' + ext, mime: 'text/yaml', size: blob.size }); }
+                    else if (typeof visual.svg === 'string') { const blob = new Blob([visual.svg], { type: 'image/svg+xml' }); const id = await fc.put((visual.type || 'drawing') + '.svg', 'image/svg+xml', blob, 'generated'); cap.push({ id, name: (visual.type || 'drawing') + '.svg', mime: 'image/svg+xml', size: blob.size }); }
+                } catch (_) { /* 存不成就只列文字結果 */ }
+            }
+            const recs = []; for (const c of cap) { const r = await addRec(c); if (r) recs.push(r); }
+            // 簡報：把它引用的圖片等素材一起打包成一項（不再另外列出）
+            const used = new Set();
+            for (const r of recs) {
+                if (this._rgFileKind(r.mime, r.name) !== 'deck') continue;
+                let text = ''; try { text = await r.blob.text(); } catch (_) { /* */ }
+                const assets = []; for (const m of text.matchAll(/client-file\/([\w-]+)/g)) { const a = recs.find((x) => x.id === m[1]) || await addRec({ id: m[1], name: m[1] }); if (a && !used.has(a.id) && a.id !== r.id) { used.add(a.id); assets.push({ id: a.id, name: a.name, mime: a.mime, size: a.size }); } }
+                r.assets = assets;
+            }
+            for (const r of recs) {
+                if (used.has(r.id)) continue; const kind = this._rgFileKind(r.mime, r.name);
+                items.push({ id: r.id, name: r.name, mime: r.mime, size: r.size, kind, assets: r.assets });
+            }
+            const list = items.slice(0, 30);
+            for (const it of list) { (rg.shared[it.id] = rg.shared[it.id] || new Set()).add(to); for (const a of (it.assets || [])) (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(to); }
+            return list;
+        },
         // 向某台機器要東西並等回覆（rid 對應）
         _rgAsk(nodeId, type, body, replyType, ms) {
             const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
@@ -18317,6 +18501,57 @@ const FaRemoteDispatch = (function () {
             const words = String(pref.words || '').split(/[,，、\s]+/).map((w) => w.trim().toLowerCase()).filter(Boolean); if (pref.scope === 'all' || !words.length) return true;
             const hit = words.some((w) => String(text || '').toLowerCase().includes(w)); return pref.scope === 'only' ? hit : !hit;
         },
+        // ---------------------------------------------------------------- 內容傳輸（要求者）：從那台機器取得檔案
+        async _rgFetchRemote(nodeId, id, onProgress, cancel) {
+            const rg = this._rg; if (!rg || !rg.files) throw new Error('沒有加入群組（或對方已離線）');
+            if (!rg.room.members().some((m) => m.nodeId === nodeId)) throw new Error('對方現在不在群組裡（離線了），回來之後再試');
+            return rg.files.fetch(nodeId, id, { onProgress, cancel });
+        },
+        // 取得一項內容（優先用已存在這邊的副本）：回傳 {blob, name, mime}
+        async _rgGetItemBlob(group, item, onProgress, cancel) {
+            if (item.localId) { try { const rec = await this.fileCache.get(item.localId); if (rec && rec.blob) return { blob: rec.blob, name: item.name, mime: item.mime }; } catch (_) { /* 副本不見了就重新抓 */ } }
+            const r = await this._rgFetchRemote(group.nodeId, item.id, onProgress, cancel); return { blob: r.blob, name: r.meta.name || item.name, mime: r.meta.mime || item.mime, via: r.via };
+        },
+        async _rgSaveItem(group, item, onProgress, cancel) {
+            if (item.localId) return item.localId;
+            if (item.kind === 'deck') { const d = await this._rgSaveDeck(group, item, onProgress, cancel); item.localId = d.yamlId; item.localDeckUrl = d.url; return d.yamlId; }
+            const r = await this._rgGetItemBlob(group, item, onProgress, cancel);
+            item.localId = await this.fileCache.put(r.name || item.name, r.mime || item.mime || 'application/octet-stream', r.blob, 'uploaded'); return item.localId;
+        },
+        // 簡報：把簡報檔與它引用的素材都抓過來，換成這邊的檔案編號，存成這邊的簡報
+        async _rgSaveDeck(group, item, onProgress, cancel) {
+            const parts = [{ id: item.id, name: item.name, mime: item.mime, size: item.size }].concat(item.assets || []); const total = parts.reduce((n, p) => n + (p.size || 0), 0) || 1; let doneBytes = 0; const idMap = {}; let yamlText = '';
+            for (const p of parts) {
+                const r = await this._rgFetchRemote(group.nodeId, p.id, (d) => onProgress && onProgress(doneBytes + d, total, '直連／轉送'), cancel); doneBytes += r.blob.size;
+                if (p.id === item.id) yamlText = await r.blob.text(); else idMap[p.id] = await this.fileCache.put(r.meta.name || p.name, r.meta.mime || p.mime || 'application/octet-stream', r.blob, 'uploaded');
+            }
+            for (const [oldId, newId] of Object.entries(idMap)) yamlText = yamlText.split('client-file/' + oldId).join('client-file/' + newId);
+            const saved = await this._deckSaveYaml(yamlText, String(item.name).replace(/\.deck\.yaml$/i, '')); return { yamlId: saved.id, url: saved.url };
+        },
+        // 在畫面上看：圖片、影片、音訊、PDF、文字直接顯示；簡報存過來之後在對話裡播放；其他檔案下載
+        async _rgOpenItem(group, item, onProgress, cancel) {
+            if (item.kind === 'deck') {
+                await this._rgSaveItem(group, item, onProgress, cancel);
+                this._pushAssistantMessage('🎞️ 已從 ' + group.machine + ' 取得簡報「' + item.name + '」，下面直接播放。', null);
+                this._pushDisplayToolMessage('[已從 ' + group.machine + ' 取得簡報「' + item.name + '」，已在對話裡顯示成播放器]', '_displayDeckUrl', item.localDeckUrl); this._renderMessageHistory(); this._persistChatHistory(); return;
+            }
+            const r = await this._rgGetItemBlob(group, item, onProgress, cancel); this._rgShowBlob(r.blob, r.name, r.mime || item.mime, item.kind);
+        },
+        _rgShowBlob(blob, name, mime, kind) {
+            const url = URL.createObjectURL(blob), pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s));
+            const ov = document.createElement('div'); ov.style.cssText = 'position:fixed; inset:0; z-index:1000002; background:rgba(0,0,0,.8); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; box-sizing:border-box;';
+            const close = () => { ov.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+            let body = '';
+            if (kind === 'image') body = '<img src="' + url + '" style="max-width:96%; max-height:82vh; object-fit:contain;">';
+            else if (kind === 'video') body = '<video src="' + url + '" controls autoplay style="max-width:96%; max-height:82vh;"></video>';
+            else if (kind === 'audio') body = '<audio src="' + url + '" controls autoplay></audio>';
+            else if (kind === 'pdf') body = '<iframe src="' + url + '" style="width:min(96%,1000px); height:82vh; border:0; background:#fff;"></iframe>';
+            else if (kind === 'text' && blob.size < 2 * 1024 * 1024) { body = '<pre data-pre style="width:min(96%,1000px); max-height:82vh; overflow:auto; background:' + pal.windowBg + '; color:' + pal.chatText + '; padding:12px; border-radius:8px; white-space:pre-wrap;"></pre>'; }
+            else { const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000); return; }
+            ov.innerHTML = '<div style="color:#fff; margin-bottom:8px; font-size:13px;">' + e(name) + '　<a href="' + url + '" download="' + e(name) + '" style="color:#76b900;">下載</a>　<a data-x href="#" style="color:#f87171;">關閉</a></div>' + body;
+            document.body.appendChild(ov); ov.querySelector('[data-x]').onclick = (ev) => { ev.preventDefault(); close(); }; ov.addEventListener('click', (ev) => { if (ev.target === ov) close(); });
+            const pre = ov.querySelector('[data-pre]'); if (pre) blob.text().then((t) => { pre.textContent = t; });
+        },
         // 這台機器現在跑著的子任務清單（給在線名單的數字與「點開看」用）
         _rgAgentsList() { return Array.from(AGENTS.values()).map((a) => ({ id: a.id, label: a.label, source: a.source, kind: a.kind, task: a.task, ago: Math.round((Date.now() - a.startedAt) / 1000) })); },
         _rgOnEvent(m) {
@@ -18328,7 +18563,7 @@ const FaRemoteDispatch = (function () {
             task.lastSeq = b.seq || task.lastSeq;
             if (b.kind === 'progress') task.prog.update({ status: b.status || '處理中…' });
             else if (b.kind === 'trace') task.prog.log(b.status || '');
-            else if (TERMINAL[b.kind]) this._rgTaskEnd(task, b.kind, b.kind === 'done' ? b.text : (b.error || b.text), b.visual);
+            else if (TERMINAL[b.kind]) this._rgTaskEnd(task, b.kind, b.kind === 'done' ? b.text : (b.error || b.text), b.visual, b.refs);
         },
         // 成員名單變動：目標離線／回來。回來時用最後看到的序號補齊錯過的事件
         _rgOnMembersChange() {
@@ -18380,12 +18615,15 @@ const FaRemoteDispatch = (function () {
                 const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => prog.log(line), shouldStop: () => job.stop, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
+                this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
                 const res = await this._runSubAgentTask('這是群組裡另一台機器（' + job.fromName + '）交給你的需求，請完成它並回覆結果：\n\n' + job.text, 40, opts);
                 const text = res && res.text ? String(res.text) : '';
                 const v = res && res.visual ? { type: res.visual.type, title: res.visual.title || res.visual.name || '' } : null;
+                if (rg0 && rg0.captures) rg0.captures.delete(cap);
                 if (job.stop) { this._rgEvent(job, { kind: 'stopped', text }); prog.fail('已停止'); }
-                else { this._rgEvent(job, { kind: 'done', text, visual: v }); prog.finish('完成'); }
+                else { let refs = []; try { refs = await this._rgBuildRefs(cap, res && res.visual, job.from); } catch (e) { this._rgLog('整理產生的內容失敗：' + String((e && e.message) || e)); } this._rgEvent(job, { kind: 'done', text, visual: v, refs }); prog.finish('完成' + (refs.length ? '（產生了 ' + refs.length + ' 項內容）' : '')); }
             } catch (e) { const msg = String((e && e.message) || e); this._rgEvent(job, { kind: 'failed', error: msg }); prog.fail(msg); }
+            try { const rg1 = this._rg; if (rg1 && rg1.captures && job.cap) rg1.captures.delete(job.cap); } catch (_) { /* */ }
             job.done = true;
         },
         // 發出端斷線回來要求補齊：重播序號大於 since 的事件
@@ -18528,13 +18766,19 @@ const FaDeckHost = (function () {
                 dispose: () => { session.ended = true; try { session.term.dispose(); } catch (_) { /* */ } },
             };
         },
+        // 內容卡片（簡報、簡報封包、遠端內容清單…）要放在 role:'tool' 的訊息上才會被畫出來；content 是給模型看的一句話
+        _pushDisplayToolMessage(note, prop, value) {
+            const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note }), {});
+            m.content = String(note); Object.defineProperty(m, prop, { value, enumerable: false, configurable: true, writable: true });
+            this.messages.push(m); return m;
+        },
         // ---- 簡報封包（.deckpack／舊的 .deck.zip）：整個檔案存進檔案快取，對話訊息只記檔案編號，重新整理後還能再開 ----
         _deckIsPackName(name) { const n = String(name || '').toLowerCase(); return /\.deckpack$/.test(n) || /\.deck\.zip$/.test(n); },
         async _deckOpenPackFile(file) {
             const id = await this.fileCache.put(file.name, 'application/zip', file, 'uploaded');
             this.messages.push({ role: 'user', content: '📦 開啟簡報封包：' + file.name });
-            const msg = this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
-            Object.defineProperty(msg, '_displayDeckPackId', { value: id, enumerable: false, configurable: true });
+            this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
+            this._pushDisplayToolMessage('[已開啟簡報封包「' + file.name + '」，已經在對話裡顯示成播放器]', '_displayDeckPackId', id);
             this._renderMessageHistory(); this._persistChatHistory();
             return id;
         },
@@ -60932,6 +61176,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const anim2dMap = {};
             const deckMap = {};
             const deckPackMap = {};
+            const remoteFilesMap = {};
             // tw_stock_db客製: /benchmark-model的報告卡也是同一套「非可枚舉
             // 屬性額外存一份」作法（見_handleBenchmarkModelCommand的說明）——
             // 報告物件本身很小（沒有圖片/檔案位元組），直接整包存進
@@ -60983,6 +61228,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (m._displayAnim2DYaml) anim2dMap[i] = m._displayAnim2DYaml;
                 if (m._displayDeckUrl) deckMap[i] = m._displayDeckUrl;
                 if (m._displayDeckPackId) deckPackMap[i] = m._displayDeckPackId;
+                if (m._displayRemoteFiles) remoteFilesMap[i] = m._displayRemoteFiles;
                 if (m._dubbingWidget) dubbingMap[i] = m._dubbingWidget;
                 if (m._displayTerminal) terminalMap[i] = m._displayTerminal;
                 if (m._actions) actionsMap[i] = m._actions;
@@ -61003,6 +61249,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (m._displayAnim2DYaml) anim2dMap[`${bi}:${mi}`] = m._displayAnim2DYaml;
                     if (m._displayDeckUrl) deckMap[`${bi}:${mi}`] = m._displayDeckUrl;
                     if (m._displayDeckPackId) deckPackMap[`${bi}:${mi}`] = m._displayDeckPackId;
+                    if (m._displayRemoteFiles) remoteFilesMap[`${bi}:${mi}`] = m._displayRemoteFiles;
                     if (m._dubbingWidget) dubbingMap[`${bi}:${mi}`] = m._dubbingWidget;
                     if (m._displayTerminal) terminalMap[`${bi}:${mi}`] = m._displayTerminal;
                     if (m._actions) actionsMap[`${bi}:${mi}`] = m._actions;
@@ -61021,6 +61268,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 scene3DMap,
                 deckMap,
                 deckPackMap,
+                remoteFilesMap,
                 drawingMap,
                 mermaidMap,
                 viewerMap,
@@ -61134,6 +61382,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const msg = resolveMsg(key);
                     if (msg) Object.defineProperty(msg, '_displayAnim2DYaml', { value: yamlText, enumerable: false, configurable: true });
                     this._latestAnim2DYaml = yamlText;
+                });
+            }
+            if (data.remoteFilesMap) {
+                Object.entries(data.remoteFilesMap).forEach(([key, grp]) => {
+                    const msg = resolveMsg(key);
+                    if (msg) Object.defineProperty(msg, '_displayRemoteFiles', { value: grp, enumerable: false, configurable: true, writable: true });
                 });
             }
             if (data.deckPackMap) {
@@ -62173,6 +62427,32 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // 直接比照3D場景（標題列+匯出/檢視原始碼按鈕+warnings按鈕），
             // 差別只在沒有「重設視角」按鈕（2D動畫沒有camera/OrbitControls
             // 這個概念）。
+            if (msg._displayRemoteFiles) {
+                const grp = msg._displayRemoteFiles, wrap = document.createElement('div');
+                wrap.style.cssText = 'margin-bottom: 12px; max-width: 95%; border: 1px solid rgba(128,128,128,.4); border-radius: 8px; padding: 8px 10px; font-size: 12px;';
+                const icon = { deck: '🎞️', image: '🖼️', video: '🎬', audio: '🎵', pdf: '📕', text: '📄', file: '📎' };
+                const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+                wrap.innerHTML = '<div style="font-weight:bold; margin-bottom:6px;">📎 ' + this._escapeHtml(grp.machine) + ' 產生的內容（' + grp.items.length + '）</div>';
+                grp.items.forEach((item) => {
+                    const row = document.createElement('div'); row.style.cssText = 'display:flex; align-items:center; gap:6px; padding:3px 0; flex-wrap:wrap;';
+                    const sizeTotal = (item.size || 0) + (item.assets || []).reduce((n, a) => n + (a.size || 0), 0);
+                    row.innerHTML = '<span>' + (icon[item.kind] || '📎') + '</span><span style="flex:1; min-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + this._escapeHtml(item.name) + '">' + this._escapeHtml(item.name) + '</span><span style="opacity:.7;">' + fmt(sizeTotal) + (item.assets && item.assets.length ? '（含 ' + item.assets.length + ' 個素材）' : '') + '</span>';
+                    const st = document.createElement('span'); st.style.cssText = 'font-size:11px; min-width:90px; opacity:.85;'; if (item.localId) st.textContent = '✅ 已存到這邊';
+                    const mkBtn = (label) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'padding:2px 8px; cursor:pointer; border:1px solid rgba(128,128,128,.5); border-radius:6px; background:transparent; color:inherit;'; return b; };
+                    const openBtn = mkBtn('開啟'), saveBtn = mkBtn('存到這邊'), stopBtn = mkBtn('取消'); stopBtn.style.display = 'none';
+                    let cancel = null;
+                    const run = async (fn) => {
+                        cancel = { cancelled: false }; openBtn.disabled = saveBtn.disabled = true; stopBtn.style.display = ''; st.style.color = ''; st.textContent = '連線中…';
+                        const prog = (d, total, via) => { st.textContent = Math.round((d / (total || 1)) * 100) + '%' + (via ? '（' + via + '）' : ''); };
+                        try { await fn(prog, cancel); st.textContent = item.localId ? '✅ 已存到這邊' : '完成'; this._persistChatHistory(); }
+                        catch (e) { st.textContent = '❌ ' + String((e && e.message) || e).slice(0, 80); st.style.color = '#f87171'; }
+                        openBtn.disabled = saveBtn.disabled = false; stopBtn.style.display = 'none'; cancel = null;
+                    };
+                    openBtn.onclick = () => run((p, c) => this._rgOpenItem(grp, item, p, c)); saveBtn.onclick = () => run(async (p, c) => { await this._rgSaveItem(grp, item, p, c); }); stopBtn.onclick = () => { if (cancel) cancel.cancelled = true; };
+                    row.append(st, openBtn, saveBtn, stopBtn); wrap.appendChild(row);
+                });
+                container.appendChild(wrap);
+            }
             if (msg._displayDeckPackId) {
                 const packWrap = document.createElement('div');
                 packWrap.style.cssText = 'margin-bottom: 12px; max-width: 98%;';

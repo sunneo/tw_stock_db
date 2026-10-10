@@ -120,13 +120,19 @@ const FaDeckHost = (function () {
                 dispose: () => { session.ended = true; try { session.term.dispose(); } catch (_) { /* */ } },
             };
         },
+        // 內容卡片（簡報、簡報封包、遠端內容清單…）要放在 role:'tool' 的訊息上才會被畫出來；content 是給模型看的一句話
+        _pushDisplayToolMessage(note, prop, value) {
+            const m = this._buildToolResultMessage('display', JSON.stringify({ ok: true, note }), {});
+            m.content = String(note); Object.defineProperty(m, prop, { value, enumerable: false, configurable: true, writable: true });
+            this.messages.push(m); return m;
+        },
         // ---- 簡報封包（.deckpack／舊的 .deck.zip）：整個檔案存進檔案快取，對話訊息只記檔案編號，重新整理後還能再開 ----
         _deckIsPackName(name) { const n = String(name || '').toLowerCase(); return /\.deckpack$/.test(n) || /\.deck\.zip$/.test(n); },
         async _deckOpenPackFile(file) {
             const id = await this.fileCache.put(file.name, 'application/zip', file, 'uploaded');
             this.messages.push({ role: 'user', content: '📦 開啟簡報封包：' + file.name });
-            const msg = this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
-            Object.defineProperty(msg, '_displayDeckPackId', { value: id, enumerable: false, configurable: true });
+            this._pushAssistantMessage('已開啟簡報封包「' + file.name + '」（作答紀錄與終端機畫面都會還原；不需要原本的檔案來源）。', null);
+            this._pushDisplayToolMessage('[已開啟簡報封包「' + file.name + '」，已經在對話裡顯示成播放器]', '_displayDeckPackId', id);
             this._renderMessageHistory(); this._persistChatHistory();
             return id;
         },
