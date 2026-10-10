@@ -18615,9 +18615,10 @@ const FaRemoteHost = (function () {
                 try {
                     if (act === 'create') { if (pw !== q('pw2').value) { say('兩次輸入的密碼不一樣。'); return; } const s = FaRemoteGroup.passwordStrength(pw); if (!s.ok) { say('密碼不合格：' + s.reasons.join('；')); return; } }
                     this._rgSaveSettings({ machineName: name });
+                    const codeText = act === 'join' ? q('code').value : ''; // 要在換成「忙碌」畫面之前讀：換畫面會把表單清掉
                     this._rgBusy(act === 'create' ? '建立群組中（推導金鑰需要幾秒）…' : '加入群組中（驗證密碼需要幾秒）…');
                     if (act === 'create') { const r = await this._rgCreate(name, pw); this._rgView = 'joined'; p.dataset.view = ''; this._rgRender(); this._rgLog('請把代號 ' + r.code + ' 與密碼告訴要加入的人'); }
-                    else { await this._rgJoin(name, q('code').value, pw); p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
+                    else { await this._rgJoin(name, codeText, pw); p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
                 } catch (e) {
                     this._rgView = 'form'; p.dataset.view = ''; this._rgBuildForm(p, this._getThemePalette());
                     const m = p.querySelector('[data-rg="msg"]'); if (m) m.textContent = String((e && e.message) || e);
