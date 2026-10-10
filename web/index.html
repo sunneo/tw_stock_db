@@ -1747,7 +1747,7 @@ select:focus { outline: 2px solid var(--acc); }
      floating-assistant.js`——已實測驗證`curl`拿掉其中一個`desktop-app`
      會是404，兩個都要保留。 -->
 <script>
-  window.__floatingAssistantJsReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/3f483843f683ccf289cc252c02444f5b6f7de8f5/desktop-app/renderer/floating-assistant.js')
+  window.__floatingAssistantJsReady = fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/344bfc07b6efbb2dfcf24baa97df2574c8b75a77/desktop-app/renderer/floating-assistant.js')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(text => new Promise((resolve, reject) => {
       const blob = new Blob([text], { type: 'application/javascript' });
@@ -8022,6 +8022,20 @@ function registerAiCapabilities(ai) {
     const toolMeta = { name: c.name, description: c.description, mutates: !!c.mutates };
     ai.register_openai_tool(c.name, c.description + paramsDesc + mutateNote, aiToolHandler(c.handler, paramKeys, toolMeta), _buildParamsJsonSchema(c.params));
   });
+  // 工具除了掛在根層級，也要照引擎的註冊設計登記成領域（category:'host_app'＝「宿主頁面自己的功能」）：
+  // 子任務／技能（簡報、使用者自己的技能…）才看得到這些工具，不會因為只掛在根層級而改用瀏覽器上網找資料。
+  // 領域底下的工具名稱直接取自AI_CAPABILITIES，之後新增工具不用再改這裡。
+  if (typeof ai.register_domain === 'function') {
+    if (typeof ai.register_domain_category === 'function') {
+      ai.register_domain_category('host_app', { label: '宿主網站／應用程式的功能', description: '這個頁面自己提供的資料、分析、圖表、介面操作等工具（由宿主頁面登記）' });
+    }
+    ai.register_domain('stock_site', {
+      label: '台股追蹤網站自己的資料與分析工具（K線與指標、持股診斷、鎖股名單、自選股、備忘錄、圖表、籌碼、匯出…）',
+      category: 'host_app',
+      toolNames: AI_CAPABILITIES.map(c => c.name),
+      systemPrompt: '你是台股追蹤網站的資料與分析助理。這個網站本機資料庫已有的東西（個股K線與技術指標、持股診斷diagnose_stock、鎖股名單、自選股、大盤與美股指數、盤後籌碼、備忘錄）一律用工具取得真實資料，不要自己開瀏覽器上網找、也不要憑印象猜數字。要圖表時用render_stock_chart（可標記支撐壓力、轉折、型態，並疊加MACD／RSI／KD等指標），它回傳的圖片可以直接放進簡報或文件。診斷結果要保留工具回傳的保留態度（型態是機械式規則比對、非人工圖形驗證）。',
+    });
+  }
 }
 
 // 把 AI_CAPABILITIES 灌進 <head> 那段 JSON-LD（給只解析結構化資料、不解析
