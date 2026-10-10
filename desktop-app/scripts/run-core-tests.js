@@ -32,6 +32,7 @@ const suites = [
     ['sqlitebrowser 純函式（過濾語法、DDL 預覽、儲存格、匯出）', 'renderer/src/sql/browser_core.test.js'],
     ['終端機 /mnt 即時 FAP 檔案系統（wasi-sh 契約、快取、寫回、衝突）', 'renderer/src/terminal/fapfs_core.test.js'],
     ['桌面版終端機 /mnt 的同步檔案後端（fsx-sync：真的碰磁碟）', 'scripts/fsx-sync.test.js'],
+    ['遠端群組：密碼規則、金鑰推導、加解密、群組（人數上限、名稱不重複、訊息切塊）', 'scripts/remote-tests/rg_core.test.js'],
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：小工具範例（打磚塊）真的玩到通關', 'scripts/deck-tests/widget_example.test.js'],

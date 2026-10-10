@@ -218,5 +218,16 @@ function embedDeck() {
 }
 embedDeck();
 
+// 遠端群組：核心（純邏輯＋加密）、傳輸層（Supabase 即時通道）、主機轉接層（右上角面板）
+function embedRemote() {
+    const dir = path.join(root, 'renderer/src/remote'); const rd = (n) => fs.readFileSync(path.join(dir, n), 'utf8').replace(/\r\n/g, '\n');
+    const wrap = (name, code) => 'const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + code + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n';
+    const a = src.indexOf('/* REMOTE-BEGIN */'), b = src.indexOf('/* REMOTE-END */'); if (a < 0 || b < 0) throw new Error('找不到 REMOTE 標記');
+    const body = wrap('FaRemoteGroup', rd('rg_core.js')) + wrap('FaRemoteTransport', rd('rg_transport_supabase.js')) + rd('rg_host.js') + '\n';
+    src = src.slice(0, a) + '/* REMOTE-BEGIN */\n' + body + src.slice(b);
+    console.log('已更新遠端群組（' + body.length + ' 字元）');
+}
+embedRemote();
+
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
