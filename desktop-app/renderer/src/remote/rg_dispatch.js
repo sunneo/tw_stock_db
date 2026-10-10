@@ -13,6 +13,18 @@ const FaRemoteDispatch = (function () {
     'use strict';
     const DB = 'FaRemote', STORE_T = 'tasks', MAX_KEEP = 20;
     const TERMINAL = { done: 1, failed: 1, stopped: 1, rejected: 1 };
+    const AGENTS = new Map(); let agentSeq = 0; let agentNotify = null;
+    // 包住 _runSubAgentTask：每次子任務開始／結束都登記，並通知在線名單更新數量
+    function installTracking(cls) {
+        const proto = cls.prototype, orig = proto._runSubAgentTask; if (!orig || orig.__rgTracked) return;
+        const wrapped = async function (userPrompt, maxRounds, options) {
+            const id = 'a' + (++agentSeq), meta = (options && options.meta) || {};
+            AGENTS.set(id, { id, label: meta.label || meta.domain || '子任務', source: meta.source || '本機', kind: meta.kind || 'local', task: String(userPrompt || '').replace(/\s+/g, ' ').slice(0, 80), startedAt: Date.now() });
+            if (agentNotify) agentNotify();
+            try { return await orig.apply(this, arguments); } finally { AGENTS.delete(id); if (agentNotify) agentNotify(); }
+        };
+        wrapped.__rgTracked = true; proto._runSubAgentTask = wrapped;
+    }
     const idb = () => new Promise((resolve, reject) => {
         if (typeof indexedDB === 'undefined') { reject(new Error('沒有 IndexedDB')); return; }
         const r = indexedDB.open(DB, 1);
@@ -63,6 +75,7 @@ const FaRemoteDispatch = (function () {
         _rgTaskEnd(task, kind, textOrError, visual) {
             if (task.done) return; task.done = true; clearTimeout(task.ackTimer); clearInterval(task.stopTimer);
             const run = task.run, name = task.targetName;
+            if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual }); return; }
             if (kind === 'done') {
                 task.prog.finish('完成（由 ' + name + ' 執行）');
                 const note = visual ? '\n\n> 📎 ' + name + ' 產生了「' + (visual.title || visual.type || '內容') + '」（' + visual.type + '）。**內容傳輸（在這裡開啟、存到這邊）下一階段開放**；目前只傳回文字結果。' : '';
@@ -75,6 +88,38 @@ const FaRemoteDispatch = (function () {
             try { run._renderMessageHistory(); run._persistChatHistory(); run._setRespondingState(false, '', kind === 'done' ? 'completed' : 'stopped'); } catch (_) { /* */ }
             task.resolve && task.resolve();
         },
+        // AI 的工具：把一個子任務分給群組裡「接受子任務分工」的機器，等它做完回傳結果。machine 可以是名稱，或 'auto'（挑最空閒的）
+        async _rgDelegate(text, machine) {
+            const rg = this._rg; if (!rg) return { ok: false, error: '還沒加入遠端群組（在右上角「🌐 遠端」建立或加入）' };
+            const cands = this._rgTargets().filter((x) => x.sub === true);
+            if (!cands.length) return { ok: false, error: '群組裡沒有任何機器勾選「接受子任務分工」（要在那台機器自己的面板勾選）' };
+            let target = null; const want = String(machine || 'auto').trim();
+            if (want && want !== 'auto') { target = cands.find((x) => x.name === want); if (!target) return { ok: false, error: '找不到可分工的機器「' + want + '」。可用：' + cands.map((x) => x.name).join('、') }; }
+            else target = cands.slice().sort((a, b) => (a.agents || 0) - (b.agents || 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0))[0];
+            const taskId = rg.room.self.nodeId.slice(0, 6) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+            const prog = this._createProgressWidget('🧩 子任務分給 ' + target.name); prog.update({ status: '送出中…' });
+            const task = { taskId, targetId: target.nodeId, targetName: target.name, prog, lastSeq: 0, done: false, text, run: this, ack: false, stopSent: false, absent: false, quiet: true };
+            rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task;
+            const finished = new Promise((resolve) => { task.resolve = resolve; });
+            try { await rg.room.send(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }); } catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
+            task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（15 秒）'); }, 15000);
+            task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
+            const r = await finished;
+            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', note: r.visual ? '對方產生了「' + (r.visual.title || r.visual.type) + '」（內容傳輸尚未開放）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
+        },
+        _rgRegisterTools() {
+            const self = this;
+            this.register_openai_tool('list_remote_machines',
+                '列出已加入的遠端群組裡的其他機器：名稱、桌面或網頁、是否忙碌、正在跑幾個子任務、是否接受整個需求、是否接受子任務分工。沒有加入群組時回傳空清單。',
+                async function () { const rg = this._rg; if (!rg) return JSON.stringify({ ok: true, joined: false, machines: [], note: '還沒加入遠端群組' }); return JSON.stringify({ ok: true, joined: true, group: rg.code, machines: this._rgTargets().map((m) => ({ name: m.name, kind: m.kind, busy: !!m.busy, running_subagents: m.agents || 0, accepts_requests: m.allow !== false, accepts_subtasks: m.sub === true })) }); },
+                { type: 'object', properties: {}, additionalProperties: false });
+            this.register_openai_tool('delegate_to_machine',
+                '把一個可以獨立完成的子任務分給遠端群組裡「接受子任務分工」的機器，等它做完回傳文字結果（那台機器用自己的模型與工具）。task：完整的任務描述（對方看不到這邊的對話，要寫清楚）；machine：機器名稱，或 "auto"（挑最空閒的）。可以同時對不同機器多次呼叫來平行分工。先用 list_remote_machines 看有哪些機器可用。',
+                async function (raw) { let a = {}; try { a = await this.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } const text = String(a.task || '').trim(); if (!text) return JSON.stringify({ ok: false, error: '缺少 task' }); return JSON.stringify(await this._rgDelegate(text, a.machine)); },
+                { type: 'object', properties: { task: { type: 'string', description: '完整的任務描述' }, machine: { type: 'string', description: '機器名稱，或 auto' } }, required: ['task'], additionalProperties: false });
+        },
+        // 這台機器現在跑著的子任務清單（給在線名單的數字與「點開看」用）
+        _rgAgentsList() { return Array.from(AGENTS.values()).map((a) => ({ id: a.id, label: a.label, source: a.source, kind: a.kind, task: a.task, ago: Math.round((Date.now() - a.startedAt) / 1000) })); },
         _rgOnEvent(m) {
             const rg = this._rg, b = m.body || {}, task = rg && rg.tasks && rg.tasks[b.taskId]; if (!task || task.done) return;
             if (m.type === 'task_ack') { task.ack = true; clearTimeout(task.ackTimer); task.prog.update({ status: b.queued > 0 ? '對方正在忙，已排隊（前面還有 ' + b.queued + ' 個）' : task.targetName + ' 開始處理…' }); return; }
@@ -107,22 +152,33 @@ const FaRemoteDispatch = (function () {
         async _rgOnTask(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.text !== 'string') return;
             rg.exec = rg.exec || {}; if (rg.exec[b.taskId]) return; // 重複送來的同一個任務
-            const s = this._rgSettings(), fromName = b.fromName || this._rgTargetName(m.from) || m.from;
-            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false };
+            const s = this._rgSettings(), fromName = b.fromName || this._rgTargetName(m.from) || m.from, sub = !!b.sub;
+            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false, sub };
             rg.exec[b.taskId] = job;
-            if (!s.allowDispatch) { this._rgEvent(job, { kind: 'rejected', error: '這台機器目前不接受遠端需求' }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的需求（設定不允許）'); return; }
-            const queued = rg.running || 0; rg.running = queued + 1; rg.room.self.busy = true; try { await rg.room.publishSelf(); } catch (_) { /* */ }
+            // 整個需求要「允許派工」；AI 拆出來的子任務要另外勾「接受子任務分工」（預設關）
+            if (sub ? !s.acceptSubtasks : !s.allowDispatch) { this._rgEvent(job, { kind: 'rejected', error: sub ? '這台機器沒有勾選「接受子任務分工」' : '這台機器目前不接受遠端需求' }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '（設定不允許）'); return; }
+            const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
+            const queued = rg.running >= max ? rg.waiting.length + 1 : 0;
             await rg.room.send(m.from, 'task_ack', { taskId: b.taskId, queued }).catch(() => {});
-            this._rgLog('收到 ' + fromName + ' 的需求：' + b.text.slice(0, 30));
-            rg.queue = (rg.queue || Promise.resolve()).then(() => this._rgRunTask(job)).catch(() => {}).then(async () => { rg.running = Math.max(0, (rg.running || 1) - 1); if (!rg.running) { rg.room.self.busy = false; try { await rg.room.publishSelf(); } catch (_) { /* */ } } });
+            this._rgLog('收到 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + b.text.slice(0, 30) + (queued ? '（排隊中）' : ''));
+            const start = async () => {
+                rg.running++; this._rgSetBusy();
+                try { await this._rgRunTask(job); } catch (_) { /* 已在內部回報 */ }
+                rg.running = Math.max(0, rg.running - 1); this._rgSetBusy();
+                const next = rg.waiting.shift(); if (next) next();
+            };
+            if (rg.running < max) start(); else rg.waiting.push(start);
         },
+        _rgSetBusy() { const rg = this._rg; if (!rg) return; rg.room.self.busy = (rg.running || 0) > 0; this._rgPublishSoon(); },
+        // 狀態（忙碌、子任務數、設定）變動：稍微合併後更新在線名單
+        _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
         async _rgRunTask(job) {
-            const s = this._rgSettings(); const prog = this._createProgressWidget('🛰️ 遠端需求（來自 ' + job.fromName + '）：' + job.text.slice(0, 24));
+            const s = this._rgSettings(); const prog = this._createProgressWidget((job.sub ? '🧩 子任務（來自 ' : '🛰️ 遠端需求（來自 ') + job.fromName + '）：' + job.text.slice(0, 24));
             let lastSent = 0;
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
             try {
-                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => prog.log(line), shouldStop: () => job.stop };
+                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => prog.log(line), shouldStop: () => job.stop, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
                 const res = await this._runSubAgentTask('這是群組裡另一台機器（' + job.fromName + '）交給你的需求，請完成它並回覆結果：\n\n' + job.text, 40, opts);
@@ -141,6 +197,7 @@ const FaRemoteDispatch = (function () {
         },
         _rgOnStop(m) { const rg = this._rg, b = m.body || {}, job = rg && rg.exec && rg.exec[b.taskId]; if (job && !job.done && job.from === m.from) { job.stop = true; this._rgLog(job.fromName + ' 要求停止任務'); } },
     };
-    return { methods, TERMINAL };
+    installTracking.setNotify = (fn) => { agentNotify = fn; };
+    return { methods, TERMINAL, installTracking, AGENTS };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaRemoteDispatch;
