@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "version": "101",
+  "publishedAt": "2026-10-10T17:36:40.402Z",
+  "notes": "遠端群組：右鍵選單與左邊清單點選不再讓面板縮回、重新整理與重開後自動回到群組、左邊清單列出遠端機器、遠端需求在目標機器記成帶來源記錄的新對話、分享對話（看對方分享的對話並接著對話）、群組動態（誰在忙、過程可展開、結果人人可見）、四個 Supabase 專案加 Cloudflare KV 五層後備、加入群組不再擠動標題列。舊版（沒有身分金鑰）的機器送來的派工會被拒絕，請所有機器一起更新",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "d5cfc03969aa2b5c211567140d774f67"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "e86a3c5b33404fd7c78f770e4572f8bf"
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "e86a3c5b33404fd7c78f770e4572f8bf"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "browser-control-server.js": {
+      "md5": "96bf1133f3eedacd1f0e770c038bb4bd"
+    },
+    "sqlite-engine.js": {
+      "md5": "ff9d39366459c465271e617b00abb76e"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    }
+  }
+}

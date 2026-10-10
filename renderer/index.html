@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FloatingAssistant</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: calc(100% - 10px); background: #0d1117; font-family: -apple-system, "Segoe UI", sans-serif; overflow: hidden;}
+  #topbar {
+    display: flex; align-items: center; gap: 14px; padding: 6px 12px;
+    background: #161b22; border-bottom: 1px solid #30363d; color: #cbd5e1; font-size: 12px;
+  }
+  #topbar label { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+  #topbar .sep { flex: 1; }
+  #topbar .badge { padding: 2px 8px; border-radius: 10px; background: #1f2937; color: #93a4b7; }
+  #topbar button { background: #21262d; color: #cbd5e1; border: 1px solid #30363d; border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+  #topbar button:hover { background: #30363d; }
+</style>
+</head>
+<body>
+  <!--
+    tw_stock_db客製: 2026-09-15使用者要求——上方列原本擠了「🔑設定API金鑰」
+    「📁直接輸入路徑新增資料夾」兩個按鈕＋「允許AI執行程式」「每次執行前跳
+    確認框」兩個checkbox共四個控制項，太雜；只留「📁直接輸入路徑新增
+    資料夾」在最外層（這是最常按到、需要快速觸及的），其餘三個搬進Advance
+    設定（⚙️）新增的「桌面版設定」分頁——實際的DOM節點搬移（含id/事件
+    監聽器，兩者完全不變）由bootstrap.js的main()在topbar既有wiring跑完後
+    執行，這裡只是先把它們從topbar的HTML拿掉，元素本身仍然定義在topbar
+    （bootstrap.js抓到後才會appendChild搬走），不是刪除。
+  -->
+  <div id="topbar">
+    <span class="badge" style="display:none; visibility: hidden;">🖥️ 桌面版（直接存取，不透過雲端）</span>
+    <button type="button" id="topbar-add-folder-btn" title="直接輸入資料夾路徑授權（跳過原生資料夾選擇對話框，適合原生對話框沒反應/開到看不到的地方時使用）" style="display:none; visibility: hidden;">📁 直接輸入路徑新增資料夾</button>
+    <!--
+      tw_stock_db客製: 2026-09-15使用者要求——主題切換要放在主畫面（不是
+      藏進Advance設定裡才找得到），而且要真的cover到Configure(Advance設定)
+      畫面本身（見floating-assistant.js新增的html[data-theme="light"]
+      .ai-advanced-*系列override，本來Advance設定整個對話框是寫死深色、
+      完全不受<html data-theme>影響）。這顆按鈕本身只負責切換<html
+      data-theme>屬性+存localStorage，實際換色邏輯：聊天面板走
+      floating-assistant.js既有的_getThemePalette()/MutationObserver機制，
+      Advance設定走上面新增的CSS override，topbar自己的深色外觀維持不變
+      （topbar是應用程式chrome本身，不是floating-assistant.js管的內容，
+      這裡刻意不跟著換，避免看起來像切一半）。
+    -->
+    <button type="button" id="topbar-theme-toggle" title="切換淺色／深色主題">🌙 深色</button>
+    <span class="sep"></span>
+    <!--
+      tw_stock_db客製: 2026-09-26使用者要求——右上角要有一顆desktop-only
+      的「check update」圖示，可以live update。這顆按鈕本身就是desktop-
+      only（topbar整個是index.html的app chrome、只有Electron載入，
+      floating-assistant.js核心完全不知道它存在，跟web版天生隔離，不用
+      額外包window.desktopAPI判斷）。實際的check()/apply()/reload()
+      IPC呼叫＋modal互動邏輯在bootstrap.js，見那邊「Live Update」區塊。
+      徽章（小紅點）預設隱藏，bootstrap.js偵測到有更新時才顯示。
+    -->
+    <button type="button" id="topbar-update-btn" title="檢查桌面版更新（僅前端渲染檔案的熱更新，不影響安裝檔本身）" style="position:relative;"><span id="topbar-update-label">🔁 檢查更新</span><span id="topbar-update-dot" style="display:none; position:absolute; top:2px; right:2px; width:7px; height:7px; border-radius:50%; background:#f87171;"></span></button>
+    <span id="topbar-proxy-status" class="badge">本地proxy：啟動中…</span>
+  </div>
+  <div id="topbar-relocated-controls" style="display:none;">
+    <button type="button" id="topbar-secrets-btn" title="設定NVIDIA/OpenRouter API金鑰（存在本機secrets.json，不會出現在畫面上）">🔑 設定API金鑰</button>
+    <label><input type="checkbox" id="topbar-exec-enabled"> 允許AI執行程式</label>
+    <label><input type="checkbox" id="topbar-exec-confirm" checked> 每次執行前跳確認框</label>
+  </div>
+  <!--
+    floating-assistant.js的mount()邏輯（`mount.style.display = mount.style.display
+    || 'inline-flex';`）只在mount元素完全沒有inline style.display時才會套用它
+    自己預設的'inline-flex'（這是給「小工具疊在網頁上」的預設情境設計的，
+    inline-flex會shrink-to-fit內容寬度，不會撐滿容器）。這裡故意先給一個
+    真正的inline style="display:block"屬性（不是外部<style>規則——外部
+    stylesheet不會反映在JS讀到的`element.style.display`上，一定要是inline
+    屬性才擋得住），讓上面那行的`||`短路、不會被蓋掉，桌面版視窗才能真正
+    撐滿寬度，不是只有高度。這個bug害面板只剩~475px寬、右邊一大片空白，
+    实測（真的跑起來截圖+查computed style）才抓到的，不是憑空猜的。
+  -->
+  <div id="app" style="display:block; width:100%; height:calc(100% - 33px);"></div>
+
+  <script src="floating-assistant.js"></script>
+  <script src="bootstrap.js"></script>
+</body>
+</html>
