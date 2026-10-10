@@ -18232,7 +18232,7 @@ const FaRemoteHost = (function () {
             const R = FaRemoteGroup, s = this._rgSettings(); await this._rgLoadIdentity();
             const room = new R.Room({ transport: t, keys, self: this._rgSelfInfo(name), maxMembers: s.maxMembers });
             const rg = { home: idx || 0, idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
-            room.on('members', () => { this._rgRefreshFps(); this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
+            room.on('members', () => { this._rgRefreshFps(); this._rgRefreshRemoteChats(); this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
             room.on('message', (m) => this._rgOnMessage(m));
             room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') { this._rgLog('連線狀態：' + st); this._rgScheduleReconnect(rg); } else if (st === 'SUBSCRIBED') { rg.retry = 0; this._rgLog('已連線'); } });
             const r = await room.join();
@@ -18250,7 +18250,7 @@ const FaRemoteHost = (function () {
         },
         async _rgLeave() {
             const rg = this._rg; if (!rg) return;
-            this._rgClearSession(); clearInterval(rg.timer); clearInterval(rg.agentTimer); FaRemoteDispatch.installTracking.setNotify(null);
+            this._rgClearSession(); this._rgCloseRemoteView(); clearInterval(rg.chatsTimer); clearInterval(rg.timer); clearInterval(rg.agentTimer); FaRemoteDispatch.installTracking.setNotify(null);
             const alone = rg.room.members().filter((m) => m.nodeId !== rg.room.self.nodeId).length === 0;
             clearInterval(rg.failbackTimer);
             if (alone) { for (let i = 0; i < BACKENDS.length; i++) { try { await (i === rg.idx ? rg.t : this._rgTransport(i)).rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等自動回收 */ } } }
@@ -18264,6 +18264,13 @@ const FaRemoteHost = (function () {
             if (m.type === 'ping') { let sig = ''; try { const nonce = m.body && m.body.nonce; if (nonce && this._rgIdent) sig = await this._rgIdent.sign(FaRemoteGroup.canon({ pong: nonce, from: rg.room.self.nodeId, to: m.from })); } catch (_) { /* */ } try { await rg.room.send(m.from, 'pong', { t: m.body && m.body.t, sig }); } catch (_) { /* */ } this._rgLog('收到 ' + who + ' 的連線測試'); }
             else if (m.type === 'pong') { const p = rg.pings[m.from]; if (p && p.t === (m.body && m.body.t)) { const mem = rg.room.members().find((x) => x.nodeId === m.from), sg = m.body && m.body.sig; if (mem && mem.pk && sg && await FaRemoteGroup.verifySig(mem.pk, FaRemoteGroup.canon({ pong: p.nonce, from: m.from, to: rg.room.self.nodeId }), sg)) { rg.proven = rg.proven || {}; rg.proven[m.from] = (rg.fps || {})[m.from]; } p.resolve(Date.now() - p.t); delete rg.pings[m.from]; } }
             else if (m.type === 'rebuild') this._rgOnRebuild(m);
+            else if (m.type === 'act') this._rgOnAct(m);
+            else if (m.type === 'chats') { this._rgOnChats(m); this._rgResolveAsk(m); }
+            else if (m.type === 'chats_req') this._rgOnChatsReq(m);
+            else if (m.type === 'chat_get') this._rgOnChatGet(m);
+            else if (m.type === 'chat_say') this._rgOnChatSay(m);
+            else if (m.type === 'chat_stop') this._rgOnChatStop(m);
+            else if (m.type === 'chat_msgs' || m.type === 'chat_ack') this._rgResolveAsk(m);
             else if (m.type === 'task') this._rgOnTask(m);
             else if (m.type === 'task_ack' || m.type === 'task_ev') this._rgOnEvent(m);
             else if (m.type === 'task_stop') this._rgOnStop(m);
@@ -18302,7 +18309,7 @@ const FaRemoteHost = (function () {
             panel.addEventListener('input', (e) => this._rgOnInput(e));
             panel.addEventListener('contextmenu', (e) => { const n = e.target.closest('[data-rg-name]'); if (!n || !this._rg) return; e.preventDefault(); this._rgOpenMenu(e.clientX, e.clientY, n.dataset.id); });
             // 點在面板外面才收起。注意：點按鈕後面板內容可能立刻被換掉（原本被點的元素已不在畫面上），所以用事件發生當下的路徑判斷，不用 contains
-            document.addEventListener('click', (e) => { const path = e.composedPath ? e.composedPath() : []; if (this._rgOpen && !path.includes(panel) && !path.includes(btn) && !path.some((el) => el && el.id === 'ai-rg-menu')) this._rgToggle(false); });
+            document.addEventListener('click', (e) => { const path = e.composedPath ? e.composedPath() : []; if (this._rgOpen && Date.now() - (this._rgOpenedAt || 0) > 300 && !path.includes(panel) && !path.includes(btn) && !path.some((el) => el && el.id === 'ai-rg-menu')) this._rgToggle(false); });
             this._rgRender(); this._rgKeepAlive(); this._rgAutoRejoin();
         },
         // 「交給」選單：已加入群組才出現；選項是其他在線機器
@@ -18499,19 +18506,19 @@ const FaRemoteHost = (function () {
         },
         _rgToggle(open) {
             const p = document.getElementById('ai-rg-panel'); if (!p) return;
-            this._rgOpen = open == null ? !this._rgOpen : !!open; p.style.transform = this._rgOpen ? 'translateX(0)' : 'translateX(105%)';
+            this._rgOpen = open == null ? !this._rgOpen : !!open; if (this._rgOpen) this._rgOpenedAt = Date.now(); /* 從面板外面的點擊（例如左邊清單）打開時，同一次點擊不能馬上又把它關掉 */ p.style.transform = this._rgOpen ? 'translateX(0)' : 'translateX(105%)';
             if (this._rgOpen) this._rgRender();
         },
         _rgBtnLabel() {
             const rg = this._rg; if (!rg) return '🌐 遠端';
-            const n = rg.room.members().length; return '🌐 ' + rg.code + ' · ' + n + '台';
+            const n = rg.room.members().length; return '🌐 ' + n + '台'; // 保持跟「🌐 遠端」差不多寬：加入群組時標題列不會被擠動（代號放在滑鼠提示與面板裡）
         },
         _rgRender() {
             const btn = document.getElementById('ai-rg-btn'), p = document.getElementById('ai-rg-panel'); if (!btn || !p) return;
-            btn.textContent = this._rgBtnLabel(); btn.style.background = this._rg ? 'rgba(118,185,0,.25)' : 'transparent';
+            btn.textContent = this._rgBtnLabel(); btn.title = this._rg ? '遠端群組 ' + this._rg.code + '（' + this._rg.room.members().length + ' 台在線）：點開看機器、動態與設定' : '遠端群組：加入或建立群組，把工作交給群組裡的其他電腦'; btn.style.background = this._rg ? 'rgba(118,185,0,.25)' : 'transparent';
             const pal = this._getThemePalette(); p.style.background = pal.windowBg; p.style.color = pal.chatText; p.style.borderLeft = '1px solid ' + pal.windowBorder;
             if (!this._rgOpen && p.dataset.built) { /* 面板收著時只更新按鈕 */ return; }
-            if (this._rgView === 'joined' && this._rg) { if (p.dataset.view !== 'joined') this._rgBuildJoined(p, pal); else { this._rgRenderMembers(); this._rgRenderLog(); } }
+            if (this._rgView === 'joined' && this._rg) { if (p.dataset.view !== 'joined') this._rgBuildJoined(p, pal); else { this._rgRenderMembers(); this._rgRenderLog(); this._rgRenderActs(); } }
             else if (this._rgView === 'busy') { /* 忙碌畫面由 _rgBusy 設定 */ }
             else if (p.dataset.view !== 'form') this._rgBuildForm(p, pal);
             p.dataset.built = '1';
@@ -18544,6 +18551,7 @@ const FaRemoteHost = (function () {
                 + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:11px; opacity:.8;">房間代號</span><b style="font-size:18px; letter-spacing:1px;">' + e(rg.code) + '</b>' + (rg.idx ? '<span style="font-size:10px; color:#e2a03f;">（' + e(rg.backend) + '）</span>' : '') + '<button type="button" data-rg-act="copy" style="' + btn + '">複製</button></div>'
                 + '<div style="font-size:11px; opacity:.85; margin-bottom:8px;">這台：<b>' + e(rg.room.self.name) + '</b>（' + (rg.room.self.kind === 'desktop' ? '桌面' : '網頁') + '）　指紋 <span data-rg="fp">…</span></div>'
                 + '<div style="font-weight:bold; margin:8px 0 4px;">機器清單</div><div data-rg="members"></div><div data-rg="agentbox"></div>'
+                + '<div style="font-weight:bold; margin:12px 0 4px;">👥 群組動態</div><div data-rg="acts"></div>'
                 + '<div style="font-weight:bold; margin:12px 0 4px;">設定</div>'
                 + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;"><input type="checkbox" data-rg="allow" ' + (st.allowDispatch ? 'checked' : '') + '> 允許其他機器派工給我</label>'
                 + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;"><input type="checkbox" data-rg="sub" ' + (st.acceptSubtasks ? 'checked' : '') + '> 接受子任務分工（別人的 AI 可以把子任務分給這台）</label>'
@@ -18557,7 +18565,7 @@ const FaRemoteHost = (function () {
                 + '<button type="button" data-rg-act="leave" style="width:100%; padding:8px; border:1px solid #ef4444; border-radius:6px; background:transparent; color:#ef4444; font-weight:bold; cursor:pointer;">離開群組</button>'
                 + '<div style="font-weight:bold; margin:12px 0 4px;">最近事件</div><div data-rg="log" style="font-size:11px; opacity:.85; line-height:1.5;"></div>';
             this._rgRefreshFps().then(() => { const el = p.querySelector('[data-rg="fp"]'); if (el) el.textContent = (rg.fps || {})[rg.room.self.nodeId] || '—'; });
-            this._rgRenderMembers(); this._rgRenderLog();
+            this._rgRenderMembers(); this._rgRenderLog(); this._rgRenderActs();
         },
         _rgRenderMembers() {
             const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="members"]'); if (!box) return;
@@ -18584,7 +18592,7 @@ const FaRemoteHost = (function () {
             finally { this._rgNodeIdWanted = null; this._rgRejoining = false; this._rgRender(); }
         },
         // ---------------------------------------------------------------- 左邊對話清單裡的「遠端機器」
-        _rgChatListSig() { const rg = this._rg; if (!rg) return ''; return JSON.stringify([this._rgTarget || '', rg.room.members().map((m) => [m.nodeId, m.name, m.busy ? 1 : 0, m.allow === false ? 0 : 1, m.agents || 0])]); },
+        _rgChatListSig() { const rg = this._rg; if (!rg) return ''; return JSON.stringify([this._rgTarget || '', rg.room.members().map((m) => [m.nodeId, m.name, m.busy ? 1 : 0, m.allow === false ? 0 : 1, m.agents || 0]), Object.entries(rg.remoteChats || {}).map(([k, v]) => [k, (v.list || []).map((c) => [c.id, c.title, c.running ? 1 : 0])]), Object.values(rg.acts || {}).filter((a) => a.state === 'running' || a.state === 'queued').map((a) => [a.id, a.execId, a.status])]); },
         _rgRenderChatListMachines(list) {
             const rg = this._rg; if (!rg) return; const others = this._rgTargets(), e = (s) => this._escapeHtml(String(s));
             const head = document.createElement('div'); head.className = 'cl-machine-head'; head.style.cssText = 'padding:6px 8px 3px; font-size:11px; opacity:.75; font-weight:bold;'; head.textContent = '🌐 遠端機器（點一下＝之後的需求在那台開新對話）'; list.appendChild(head);
@@ -18595,6 +18603,9 @@ const FaRemoteHost = (function () {
                 el.innerHTML = '<span>🖥️</span><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + e(m.name) + '</span><span style="font-size:10px; opacity:.7;">' + (m.kind === 'desktop' ? '桌面' : '網頁') + (m.busy ? '・忙碌' : '') + (m.allow === false ? '・不接受' : '') + (m.agents ? '・' + m.agents + ' 個子任務' : '') + '</span>' + (this._rgTarget === m.nodeId ? '<span>✓</span>' : '');
                 el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); this._rgOpenMenu(ev.clientX, ev.clientY, m.nodeId); });
                 list.appendChild(el);
+                Object.values(rg.acts || {}).filter((a) => a.execId === m.nodeId && (a.state === 'running' || a.state === 'queued')).slice(0, 3).forEach((a) => { const ln = document.createElement('div'); ln.dataset.rgActrow = a.id; ln.title = '點一下：看這個任務的過程與結果'; ln.style.cssText = 'padding:2px 10px 2px 30px; margin:0 4px; font-size:11px; cursor:pointer; color:#76b900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'; ln.textContent = '⏳ ' + (a.fromName ? a.fromName + '：' : '') + a.text.slice(0, 26) + (a.status ? '（' + a.status.slice(0, 18) + '）' : ''); list.appendChild(ln); });
+                const rc = (rg.remoteChats && rg.remoteChats[m.nodeId] && rg.remoteChats[m.nodeId].list) || [];
+                for (const c of rc) { const it = document.createElement('div'); it.dataset.rgRchat = m.nodeId + '|' + c.id; it.title = '點開：看對方這個對話，並可接著對話'; it.style.cssText = 'display:flex; gap:4px; padding:3px 10px 3px 30px; margin:0 4px; border-radius:6px; cursor:pointer; font-size:12px;'; it.innerHTML = '<span>' + (c.running ? '⏳' : '💬') + '</span><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + e(c.title) + '</span>'; list.appendChild(it); }
             }
             const sep = document.createElement('div'); sep.style.cssText = 'height:1px; margin:6px 8px; background:var(--cl-border);'; list.appendChild(sep);
         },
@@ -18604,6 +18615,72 @@ const FaRemoteHost = (function () {
             this._rgTarget = this._rgTarget === nodeId ? '' : nodeId; this._rgSyncTargetSelect();
             const inp = document.getElementById('ai-input-text'); if (inp) inp.focus();
         },
+        // ---------------------------------------------------------------- 看對方分享的對話、接著對話（要求者這一邊）
+        _rgOnChats(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!Array.isArray(b.list)) return;
+            rg.remoteChats = rg.remoteChats || {}; rg.remoteChats[m.from] = { at: Date.now(), list: b.list.slice(0, 50) };
+            this._chatListSig = null; try { this._renderChatList(); } catch (_) { /* */ }
+        },
+        // 向還沒問過的機器要它分享的清單（成員名單變動時呼叫）；每分鐘（慢速信箱時每 10 分鐘）重問一次
+        _rgRefreshRemoteChats(force) {
+            const rg = this._rg; if (!rg) return; rg.remoteChats = rg.remoteChats || {}; const every = 60000 * this._rgSlow(), now = Date.now();
+            for (const m of this._rgTargets()) { const c = rg.remoteChats[m.nodeId]; if (!force && c && now - c.at < every) continue; rg.remoteChats[m.nodeId] = Object.assign({ list: [] }, c, { at: now }); rg.room.send(m.nodeId, 'chats_req', { rid: 'c' + now }).catch(() => {}); }
+            Object.keys(rg.remoteChats).forEach((id) => { if (!rg.room.members().some((x) => x.nodeId === id)) delete rg.remoteChats[id]; });
+            if (!rg.chatsTimer) rg.chatsTimer = setInterval(() => { if (this._rg === rg) this._rgRefreshRemoteChats(); else clearInterval(rg.chatsTimer); }, 30000);
+        },
+        _rgCloseRemoteView() { const rv = this._rgRv; if (!rv) return; clearTimeout(rv.timer); rv.closed = true; try { rv.el.remove(); } catch (_) { /* */ } this._rgRv = null; },
+        async _rgOpenRemoteChat(nodeId, chatId) {
+            const rg = this._rg; if (!rg) return; const mem = rg.room.members().find((x) => x.nodeId === nodeId); if (!mem) return;
+            this._rgCloseRemoteView(); const main = document.getElementById('ai-chat-main') || document.getElementById('ai-floating-window'); if (!main) return;
+            const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s)); main.style.position = 'relative';
+            const el = document.createElement('div'); el.id = 'ai-rc-view'; el.style.cssText = 'position:absolute; inset:0; z-index:8; display:flex; flex-direction:column; background:' + pal.chatBg + '; color:' + pal.chatText + ';';
+            const btn = 'padding:4px 10px; border-radius:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; background:transparent; color:' + pal.chatText + ';';
+            el.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid ' + pal.windowBorder + '; background:' + pal.headerBg + ';"><button type="button" data-rv="back" style="' + btn + '">← 回到本機對話</button><div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><b data-rv="title">…</b><span style="font-size:11px; opacity:.7;">　🖥️ ' + e(mem.name) + '（對方分享的對話）</span></div><span data-rv="state" style="font-size:12px;"></span><button type="button" data-rv="stop" style="' + btn + ' display:none;">⏹ 停止</button></div>'
+                + '<div data-rv="notice" style="display:none; padding:6px 10px; font-size:12px; background:rgba(226,160,63,.2);"></div>'
+                + '<div data-rv="body" style="flex:1; overflow-y:auto; padding:12px;"></div>'
+                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
+            main.appendChild(el); const q = (n) => el.querySelector('[data-rv="' + n + '"]'), rv = this._rgRv = { el, nodeId, chatId, ver: '', timer: null, closed: false, fails: 0, running: false };
+            const notice = (txt) => { const n = q('notice'); n.style.display = txt ? '' : 'none'; n.textContent = txt || ''; };
+            const paint = (msgs) => {
+                const body = q('body'), atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+                body.innerHTML = msgs.map((m) => { const mine = m.r === 'user'; let html; try { html = (!mine && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(this._renderMarkdownWithMath(m.t)) : '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; } catch (_) { html = '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; }
+                    return '<div style="display:flex; justify-content:' + (mine ? 'flex-end' : 'flex-start') + '; margin-bottom:8px;"><div style="max-width:88%; padding:8px 10px; border-radius:10px; overflow-wrap:anywhere; background:' + (mine ? pal.userBg : pal.assistantBg) + '; color:' + (mine ? pal.userText : pal.assistantText) + ';">' + (mine ? '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>' : html) + '</div></div>'; }).join('') || '<div style="opacity:.6;">（這個對話還沒有內容）</div>';
+                if (atBottom) body.scrollTop = body.scrollHeight;
+            };
+            const tick = async () => {
+                if (rv.closed || this._rgRv !== rv) return; let wait = 2000 * this._rgSlow();
+                try {
+                    const r = await this._rgAsk(nodeId, 'chat_get', { id: chatId, ver: rv.ver }, 'chat_msgs', 8000); rv.fails = 0; notice('');
+                    if (r.error) { notice(r.error); wait = 8000; }
+                    else { rv.running = !!r.running; q('state').textContent = r.running ? '⏳ 對方的 AI 執行中…' : ''; q('stop').style.display = r.running ? '' : 'none'; if (r.title) q('title').textContent = r.title; if (!r.same) { rv.ver = r.ver; paint(r.msgs || []); } }
+                } catch (err) { rv.fails++; notice('連不上 ' + mem.name + '：' + String((err && err.message) || err) + '（會繼續重試）'); wait = Math.min(15000, 3000 * rv.fails) * this._rgSlow(); }
+                if (!rv.closed && this._rgRv === rv) rv.timer = setTimeout(tick, wait);
+            };
+            const send = async () => {
+                const inp = q('input'), text = inp.value.trim(); if (!text) return; q('send').disabled = true;
+                try { const r = await this._rgAsk(nodeId, 'chat_say', { id: chatId, text }, 'chat_ack', 10000); if (r.ok) { inp.value = ''; notice(''); clearTimeout(rv.timer); rv.ver = ''; tick(); } else notice('對方沒有接受：' + (r.error || '')); }
+                catch (err) { notice('沒有送達：' + String((err && err.message) || err)); }
+                q('send').disabled = false;
+            };
+            el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
+            q('input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+            tick();
+        },
+        // ---------------------------------------------------------------- 群組動態（面板裡的清單；點一列展開看過程與最後結果）
+        _rgActIcon(s) { return { running: '⏳', queued: '🕒', done: '✅', failed: '❌', stopped: '⏹', rejected: '🚫' }[s] || '•'; },
+        _rgRenderActs() {
+            const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="acts"]'); if (!box) return;
+            const e = (s) => this._escapeHtml(String(s)), list = Object.values(rg.acts || {}).sort((x, y) => y.startedAt - x.startedAt).slice(0, 20); rg.actOpen = rg.actOpen || {};
+            const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? s + ' 秒前' : s < 3600 ? Math.round(s / 60) + ' 分鐘前' : Math.round(s / 3600) + ' 小時前'; };
+            box.innerHTML = list.length ? list.map((a) => {
+                const open = !!rg.actOpen[a.id], live = a.state === 'running' || a.state === 'queued';
+                const head = '<div data-rg-act="act" data-id="' + e(a.id) + '" style="cursor:pointer; display:flex; gap:6px; align-items:flex-start;"><span>' + this._rgActIcon(a.state) + '</span><div style="flex:1; min-width:0;"><div><b>' + e(a.fromName || '?') + '</b> → <b>' + e(a.execName || '?') + '</b>' + (a.sub ? ' <span style="opacity:.7;">（子任務）</span>' : '') + '　<span style="opacity:.6; font-size:10px;">' + ago(a.endedAt || a.startedAt) + '</span></div><div style="opacity:.85; overflow:hidden; text-overflow:ellipsis; white-space:' + (open ? 'normal' : 'nowrap') + ';">' + e(a.text) + '</div>' + (live && a.status ? '<div style="color:#76b900; font-size:11px;">' + e(a.status) + '</div>' : '') + '</div><span style="opacity:.6;">' + (open ? '▾' : '▸') + '</span></div>';
+                const body = open ? '<div style="margin:4px 0 2px 22px; font-size:11px;">' + (a.lines.length ? '<div style="opacity:.7; margin-bottom:2px;">過程（' + a.lines.length + ' 行）</div><div style="max-height:160px; overflow:auto; padding:4px; border-radius:4px; background:rgba(128,128,128,.15); white-space:pre-wrap; line-height:1.45;">' + e(a.lines.join('\n')) + '</div>' : '<div style="opacity:.6;">（還沒有過程記錄）</div>')
+                    + (a.result ? '<div style="opacity:.7; margin:6px 0 2px;">最後結果</div><div style="max-height:240px; overflow:auto; padding:4px; border-radius:4px; background:rgba(118,185,0,.12); white-space:pre-wrap; line-height:1.5;">' + e(a.result) + '</div>' : '') + (a.error ? '<div style="color:#f87171; margin-top:4px;">' + e(a.error) + '</div>' : '') + (a.refs && a.refs.length ? '<div style="opacity:.8; margin-top:4px;">📎 ' + e(a.refs.join('、')) + '</div>' : '') + '</div>' : '';
+                return '<div style="padding:5px 6px; margin-bottom:4px; border:1px solid rgba(128,128,128,.35); border-radius:6px; font-size:12px;">' + head + body + '</div>';
+            }).join('') : '<div style="opacity:.6; font-size:12px;">（還沒有動態。有人把工作交給群組裡的機器時，所有人都會在這裡看到：誰在忙什麼、過程、結果）</div>';
+        },
+        _rgFocusAct(id) { const rg = this._rg; if (!rg) return; rg.actOpen = rg.actOpen || {}; rg.actOpen[id] = true; this._rgToggle(true); this._rgRenderActs(); const el = document.querySelector('#ai-rg-panel [data-rg-act="act"][data-id="' + id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); },
         // 子任務清單：展開在機器清單下面；對別台機器是即時向它要，對自己是直接讀
         _rgRenderAgents() {
             const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="agentbox"]'); if (!box) return;
@@ -18645,6 +18722,7 @@ const FaRemoteHost = (function () {
             if (act === 'agents') { await this._rgToggleAgents(t.dataset.id); return; }
             if (act === 'fp') { this._rgOpenFp(t.dataset.id); return; }
             if (act === 'log') { this._rgOpenLog(); return; }
+            if (act === 'act') { const rg = this._rg; if (rg) { rg.actOpen = rg.actOpen || {}; rg.actOpen[t.dataset.id] = !rg.actOpen[t.dataset.id]; this._rgRenderActs(); } return; }
             if (act === 'rebuild') { this._rgOpenRebuild(); return; }
             if (act === 'ping') {
                 const id = t.dataset.id, out = p.querySelector('[data-rg-ping="' + id + '"]'); if (out) out.textContent = '…';
@@ -18687,7 +18765,7 @@ const FaRemoteDispatch = (function () {
     'use strict';
     const DB = 'FaRemote', STORE_T = 'tasks', MAX_KEEP = 20;
     const TERMINAL = { done: 1, failed: 1, stopped: 1, rejected: 1 };
-    const SIGNED = { task: 1, settings_set: 1, rebuild: 1 };
+    const SIGNED = { task: 1, settings_set: 1, rebuild: 1, chat_say: 1, chat_stop: 1 };
     const AGENTS = new Map(); let agentSeq = 0; let agentNotify = null;
     // 包住 _runSubAgentTask：每次子任務開始／結束都登記，並通知在線名單更新數量
     function installTracking(cls) {
@@ -18993,6 +19071,7 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return;
             ev.seq = job.events.length + 1; job.events.push(ev); this._rgSaveTask(job); if (TERMINAL[ev.kind] && job.chatCtx) this._rgChatRecord(job, ev);
             rg.room.send(job.from, 'task_ev', Object.assign({ taskId: job.taskId }, ev)).catch(() => { /* 對方離線：回來時用 task_sync 補 */ });
+            this._rgAct(job, ev); // 同時廣播給整個群組：大家都看得到這台在忙什麼、過程與結果
         },
         async _rgOnTask(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.text !== 'string') return;
@@ -19007,6 +19086,7 @@ const FaRemoteDispatch = (function () {
             const queued = rg.running >= max ? rg.waiting.length + 1 : 0;
             await rg.room.send(m.from, 'task_ack', { taskId: b.taskId, queued }).catch(() => {});
             this._rgLog('收到 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + b.text.slice(0, 30) + (queued ? '（排隊中）' : ''));
+            this._rgAct(job, { kind: 'start', queued });
             const start = async () => {
                 rg.running++; this._rgSetBusy();
                 try { await this._rgRunTask(job); } catch (_) { /* 已在內部回報 */ }
@@ -19025,7 +19105,7 @@ const FaRemoteDispatch = (function () {
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
             try {
-                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => prog.log(line), shouldStop: () => job.stop, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
+                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => { prog.log(line); this._rgTrace(job, line); }, shouldStop: () => job.stop, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
                 this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
@@ -19046,13 +19126,13 @@ const FaRemoteDispatch = (function () {
             if (job.sub || !this._chatListEnabled || !this._chatIndex || !this._chatListReady) return null;
             const rg = this._rg, mem = rg && rg.room.members().find((m) => m.nodeId === job.from), st = mem ? this._rgTrustState(mem) : 'none', fp = (rg && rg.fps && rg.fps[job.from]) || '';
             const id = this._chatNewId('c'), now = Date.now(), title = '來自 ' + job.fromName + '：' + String(job.text).replace(/\s+/g, ' ').slice(0, 22);
-            this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
+            this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, shared: true, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
             const ctx = this._chatCtxNew(id); this._chatCtxs.set(id, ctx); const run = this._chatRunner(ctx);
             const trust = { trusted: '指紋已核對', changed: '⚠️ 指紋跟你核對過的不同', new: '指紋尚未核對', none: '沒有指紋' }[st];
-            run._pushAssistantMessage('📨 **遠端需求記錄**\n\n- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）\n- 時間：' + new Date(now).toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n這是群組裡另一台機器交給這台的需求，由這台機器用自己的模型與工具執行，結果會接在下面。', null);
+            run._pushAssistantMessage('📨 **遠端需求記錄**\n\n- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）\n- 時間：' + new Date(now).toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n這是群組裡另一台機器交給這台的需求，由這台機器用自己的模型與工具執行，結果會接在下面。\n\n這個對話已自動分享到群組：發出需求的機器可以在左邊清單看到它、並接著對話。', null);
             ctx.messages.push({ role: 'user', content: job.text });
             try { run._persistChatHistory(); } catch (_) { /* */ }
-            this._chatListSig = null; this._renderChatList(); this._saveChatIndex(); this._chatMarkUnread(ctx); return ctx;
+            this._chatListSig = null; this._renderChatList(); this._saveChatIndex(); this._chatMarkUnread(ctx); this._rgPushChats(); return ctx;
         },
         _rgChatRecord(job, ev) {
             const ctx = job.chatCtx; if (!ctx) return;
@@ -19063,6 +19143,83 @@ const FaRemoteDispatch = (function () {
                 const en = this._chatEntry(ctx.id); if (en) { en.updatedAt = Date.now(); this._saveChatIndex(); }
                 this._chatListSig = null; this._renderChatList(); this._chatMarkUnread(ctx);
             } catch (_) { /* 記錄失敗不影響任務本身 */ }
+        },
+        // ---------------------------------------------------------------- 分享對話：讓群組成員看這台的某個對話、並接著對話
+        // 只有「這台自己勾了分享」的對話才會被看到（對話右鍵→分享到群組）。接著對話（chat_say／chat_stop）要簽章、通過把關、
+        // 這台要開著「允許派工」且不是唯讀模式；訊息會加上「[來自 某機器 的遠端訊息]」留在對話裡，由這台機器的 AI 用自己的模型與工具執行。
+        _rgSharedList() {
+            const idx = this._chatIndex; if (!idx) return [];
+            return idx.chats.filter((c) => c.shared).map((c) => { const x = this._chatCtxs.get(c.id); return { id: c.id, title: c.title || '新對話', updatedAt: c.updatedAt || 0, running: !!(x && x.isResponding) }; });
+        },
+        _rgPushChats() {
+            const rg = this._rg; if (!rg || rg.pushChatsTimer) return;
+            rg.pushChatsTimer = setTimeout(() => { rg.pushChatsTimer = null; if (this._rg === rg) rg.room.send('*', 'chats', { list: this._rgSharedList() }).catch(() => {}); }, 800);
+        },
+        _rgToggleShare(id) {
+            const en = this._chatEntry(id); if (!en) return;
+            if (!en.shared && !window.confirm('分享這個對話到群組？\n\n群組裡的任何成員都能看到它的全部內容，並且可以在裡面接著對話——接著的內容會由這台機器的 AI 執行（可能用到這台機器的檔案與指令工具）。只有信任群組裡每個人時才建議分享。')) return;
+            en.shared = !en.shared; this._saveChatIndex(); this._chatListSig = null; this._renderChatList(); this._rgPushChats();
+        },
+        _rgSerChat(ctx) {
+            const out = [];
+            for (const m of ctx.messages) {
+                if (!m || m._suggestionChips || (m.role !== 'user' && m.role !== 'assistant')) continue;
+                let text = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((p) => p && p.type === 'text' ? p.text : p && p.type === 'image_url' ? '[圖片]' : '').filter(Boolean).join('\n') : '';
+                if (!String(text).trim()) continue; out.push({ r: m.role, t: String(text).slice(0, 12000) });
+            }
+            return out.slice(-120);
+        },
+        async _rgOnChatsReq(m) { const rg = this._rg; if (!rg) return; try { await rg.room.send(m.from, 'chats', { rid: m.body && m.body.rid, list: this._rgSharedList() }); } catch (_) { /* */ } },
+        async _rgOnChatGet(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), reply = (o) => rg.room.send(m.from, 'chat_msgs', Object.assign({ rid: b.rid }, o)).catch(() => {});
+            if (!en || !en.shared) { reply({ error: '這個對話沒有分享（或已經取消分享）' }); return; }
+            const ctx = await this._chatCtxLoad(b.id), msgs = this._rgSerChat(ctx), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + (ctx.isResponding ? 1 : 0);
+            if (b.ver === ver) reply({ same: true, ver, running: !!ctx.isResponding }); else reply({ ver, msgs, title: en.title || '新對話', running: !!ctx.isResponding });
+        },
+        async _rgOnChatSay(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}, s = this._rgSettings(), who = this._rgTargetName(m.from) || m.from, en = this._chatEntry(b.id);
+            const ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
+            let err = await this._rgGate(m); if (!err && !s.allowDispatch) err = '這台機器目前不接受遠端需求'; if (!err && s.readonlySandbox) err = '這台機器設為「只允許唯讀與沙盒」，不能在分享的對話裡接著做事';
+            if (!err && (!en || !en.shared)) err = '這個對話沒有分享（或已經取消分享）'; if (!err && (typeof b.text !== 'string' || !b.text.trim())) err = '沒有內容';
+            if (err) { this._rgLog('拒絕了 ' + who + ' 在分享對話裡的訊息：' + err); ack({ ok: false, error: err }); return; }
+            const ctx = await this._chatCtxLoad(b.id); if (ctx.isResponding) { ack({ ok: false, error: '這個對話的 AI 正在執行中，請等它做完或先按停止' }); return; }
+            this._rgLog(who + ' 在分享的對話「' + String(en.title || '').slice(0, 14) + '」裡接著對話'); ack({ ok: true });
+            Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + b.text.trim().slice(0, 8000))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
+        },
+        async _rgOnChatStop(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
+            const err = (await this._rgGate(m)) || (!en || !en.shared ? '這個對話沒有分享' : ''); if (err) { ack({ ok: false, error: err }); return; }
+            const ctx = this._chatCtxs.get(b.id); if (ctx && ctx.isResponding) { ctx.stopRequested = true; try { if (ctx.currentAbortController) ctx.currentAbortController.abort(); } catch (_) { /* */ } this._rgLog((this._rgTargetName(m.from) || m.from) + ' 要求停止分享對話裡的執行'); }
+            ack({ ok: true });
+        },
+        // ---------------------------------------------------------------- 群組動態：執行的機器把進度廣播給整個群組（像線上共編：所有人都看得到它在忙什麼、過程、最後結果）
+        // 事件：start（開始或排隊）、progress（目前狀態）、trace（過程的每一行，約每秒合併送一次，每個任務最多 300 行）、done／failed／stopped／rejected（結果）。
+        // 只是「看」：不含任何控制；內容跟群組裡本來就看得到的一樣（在群組裡的人都被視為互相信任）。
+        _rgAct(job, ev) {
+            const rg = this._rg; if (!rg) return;
+            const b = { taskId: job.taskId, fromId: job.from, fromName: job.fromName, execName: rg.room.self.name, execId: rg.room.self.nodeId, text: String(job.text || '').slice(0, 300), sub: !!job.sub, kind: ev.kind, at: Date.now() };
+            if (ev.status) b.status = String(ev.status).slice(0, 300); if (ev.lines) b.lines = ev.lines; if (ev.text) b.result = String(ev.text).slice(0, 6000); if (ev.error) b.error = String(ev.error).slice(0, 1000);
+            if (ev.refs && ev.refs.length) b.refs = ev.refs.map((r) => r.name).slice(0, 20); if (ev.queued) b.queued = ev.queued;
+            this._rgOnAct({ body: b }); // 自己也看得到自己在做的事（廣播不會送回自己）
+            rg.room.send('*', 'act', b).catch(() => {});
+        },
+        _rgTrace(job, line) {
+            job.traceN = (job.traceN || 0) + 1; if (job.traceN > 300) return; (job.traceBuf = job.traceBuf || []).push(String(line).slice(0, 300)); if (job.traceTimer) return;
+            job.traceTimer = setTimeout(() => { job.traceTimer = null; const lines = (job.traceBuf || []).splice(0, 15); job.traceBuf = []; if (lines.length) this._rgAct(job, { kind: 'trace', lines }); }, 1000);
+        },
+        _rgOnAct(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.kind !== 'string') return; rg.acts = rg.acts || {};
+            let a = rg.acts[b.taskId];
+            if (!a) {
+                a = rg.acts[b.taskId] = { id: b.taskId, fromName: String(b.fromName || ''), fromId: b.fromId, execName: String(b.execName || ''), execId: b.execId, text: String(b.text || ''), sub: !!b.sub, state: 'running', startedAt: b.at || Date.now(), lines: [], status: '', result: '', error: '', refs: [] };
+                const all = Object.values(rg.acts).sort((x, y) => y.startedAt - x.startedAt); all.slice(30).forEach((x) => delete rg.acts[x.id]);
+            }
+            const add = (s) => { if (s && a.lines[a.lines.length - 1] !== s) { a.lines.push(String(s)); if (a.lines.length > 300) a.lines.shift(); } };
+            if (b.kind === 'start') { a.state = b.queued > 0 ? 'queued' : 'running'; add(b.queued > 0 ? '排隊中（前面還有 ' + b.queued + ' 個）' : '開始'); }
+            else if (b.kind === 'progress') { a.state = 'running'; a.status = b.status || ''; add(b.status); }
+            else if (b.kind === 'trace') { a.state = a.state === 'queued' ? 'running' : a.state; (b.lines || []).forEach(add); }
+            else if (FaRemoteDispatch.TERMINAL[b.kind]) { a.state = b.kind; a.endedAt = b.at || Date.now(); a.status = ''; a.result = b.result || ''; a.error = b.error || ''; a.refs = b.refs || []; add({ done: '完成', failed: '失敗：' + (b.error || ''), stopped: '已停止', rejected: '被拒絕：' + (b.error || '') }[b.kind]); }
+            try { this._rgRenderActs(); this._chatListSig = null; this._renderChatList(); } catch (_) { /* 畫面還沒準備好 */ }
         },
         // 發出端斷線回來要求補齊：重播序號大於 since 的事件
         _rgOnSync(m) {
@@ -38623,7 +38780,7 @@ ${sourceTool.handlerScript}
                 el.appendChild(b);
             }
             if (cx && cx.unread) el.classList.add('unread');
-            const t = document.createElement('span'); t.className = 'cl-title'; t.textContent = (c.remote ? '🌐 ' : '') + (c.title || '新對話'); t.title = c.remote ? '遠端需求：來自 ' + c.remote.fromName + '，' + new Date(c.remote.at).toLocaleString() : (c.title || '');
+            const t = document.createElement('span'); t.className = 'cl-title'; t.textContent = (c.remote ? '🌐 ' : c.shared ? '📡 ' : '') + (c.title || '新對話'); t.title = c.remote ? '遠端需求：來自 ' + c.remote.fromName + '，' + new Date(c.remote.at).toLocaleString() : (c.title || '');
             const time = document.createElement('span'); time.className = 'cl-time'; time.textContent = this._chatTimeText(c.updatedAt);
             if (cx && cx.unread) { const d = document.createElement('span'); d.className = 'cl-unread'; d.title = '有新內容'; el.appendChild(d); }
             el.appendChild(t); el.appendChild(time);
@@ -38736,6 +38893,7 @@ ${sourceTool.handlerScript}
             const groupItems = [{ label: '　未分組', run: () => this._chatMove(id, null) }].concat(idx.groups.map((g) => ({ label: `　📁 ${g.name}`, run: () => this._chatMove(id, g.id) })));
             this._showChatMenu(e.clientX, e.clientY, [
                 { label: '重新命名', run: () => this._chatInlineRename(`[data-chat-id="${id}"] .cl-title`, entry ? entry.title : '', (v) => this._chatRename(id, v)) },
+                { label: entry && entry.shared && !entry.remote ? '📡 取消分享到群組' : entry && entry.remote ? '📡 取消分享（遠端需求對話）' : '📡 分享到群組…', run: () => this._rgToggleShare && this._rgToggleShare(id) },
                 { label: '匯出為 Markdown', run: () => this._chatExportById(id, 'md') },
                 { label: '匯出為 JSON', run: () => this._chatExportById(id, 'json') },
                 { label: '匯出為 Markdown（含 transcript）', run: () => this._chatExportById(id, 'md', { transcript: true }) },
@@ -38766,13 +38924,15 @@ ${sourceTool.handlerScript}
 
     _wireChatListEvents(side) {
         const list = side.querySelector('#ai-chatlist-list');
-        side.querySelector('[data-act="new"]').addEventListener('click', () => this._chatNew(null));
+        side.querySelector('[data-act="new"]').addEventListener('click', () => { if (this._rgCloseRemoteView) this._rgCloseRemoteView(); this._chatNew(null); });
         side.querySelector('[data-act="group"]').addEventListener('click', () => this._chatGroupCreate());
         list.addEventListener('click', (e) => {
             if (e.target.closest('.cl-rename')) return;
+            const arow = e.target.closest('[data-rg-actrow]'); if (arow) { this._rgFocusAct(arow.dataset.rgActrow); return; }
+            const rch = e.target.closest('[data-rg-rchat]'); if (rch) { const v = rch.dataset.rgRchat, k = v.indexOf('|'); this._rgOpenRemoteChat(v.slice(0, k), v.slice(k + 1)); return; }
             const mach = e.target.closest('[data-rg-machine]'); if (mach) { this._rgPickMachine(mach.dataset.rgMachine); return; }
             const item = e.target.closest('.cl-item'), head = e.target.closest('.cl-group');
-            if (item) this._chatSwitch(item.dataset.chatId);
+            if (item) { if (this._rgCloseRemoteView) this._rgCloseRemoteView(); this._chatSwitch(item.dataset.chatId); }
             else if (head) {
                 const g = this._chatIndex.groups.find((x) => x.id === head.dataset.groupId);
                 if (g) { g.collapsed = !g.collapsed; this._renderChatList(); this._saveChatIndex(); }
