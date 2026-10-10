@@ -69,6 +69,20 @@
         } catch (_) { return null; }
     }
     async function fingerprint(text) { const d = new Uint8Array(await getCrypto().subtle.digest('SHA-256', enc.encode(String(text)))); return hex(d.slice(0, 5)).replace(/(.{4})(?=.)/g, '$1-'); }
+    // ---- 機器身分：每台機器一把簽章金鑰（ECDSA P-256），公鑰放進在線名單；指紋 = 公鑰的雜湊。敏感訊息（派工、改設定、搬家）會簽名，
+    // 收的人用名單上的公鑰驗證——這樣群組裡別的成員無法冒用某台機器的名義送出這些訊息。
+    const canon = (v) => Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : (v && typeof v === 'object') ? '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v);
+    async function makeIdentity(saved) {
+        const c = getCrypto(); let priv, pub;
+        try { if (saved && saved.priv && saved.pub) { priv = await c.subtle.importKey('jwk', saved.priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']); pub = saved.pub; } } catch (_) { priv = null; }
+        let exported = null;
+        if (!priv) { const kp = await c.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); const pj = await c.subtle.exportKey('jwk', kp.publicKey), sj = await c.subtle.exportKey('jwk', kp.privateKey); pub = { kty: pj.kty, crv: pj.crv, x: pj.x, y: pj.y }; priv = await c.subtle.importKey('jwk', sj, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']); exported = { pub, priv: sj }; }
+        return { pub, exported, sign: async (text) => b64(new Uint8Array(await c.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, priv, enc.encode(String(text))))) };
+    }
+    async function verifySig(pub, text, sig) {
+        try { const k = await getCrypto().subtle.importKey('jwk', Object.assign({ ext: true }, pub), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); return await getCrypto().subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, unb64(sig), enc.encode(String(text))); } catch (_) { return false; }
+    }
+    const pubFingerprint = (pub) => fingerprint(pub ? pub.x + '.' + pub.y : '');
     const randomId = () => hex(getCrypto().getRandomValues(new Uint8Array(8)));
 
     // ---------------------------------------------------------------- 群組
@@ -103,6 +117,13 @@
             this.state = 'joined'; this.emit('members', this.members());
             return { ok: true, members: this.members(), name };
         }
+        // 通道掉線後重新連回（沿用同一組處理函式），並重新登記在線狀態
+        async reconnect() {
+            if (this.state === 'left') return false;
+            try { await this.t.disconnect(); } catch (_) { /* 舊通道已經壞了 */ }
+            await this.t.connect(this.keys.channel, this.self.nodeId, { onPresence: (st) => this.onPresence(st), onBroadcast: (p) => this.onBroadcast(p), onStatus: (s) => { this.status = s; this.emit('status', s); } });
+            await this.publishSelf(); return true;
+        }
         async leave() { this.state = 'left'; try { await this.t.disconnect(); } catch (_) { /* 已斷線 */ } this.membersMap.clear(); this.emit('members', []); }
         onPresence(st) { this.lastPresence = st; this.refreshPresence(); }
         async refreshPresence() {
@@ -135,5 +156,5 @@
             if (m && m.type) this.emit('message', { type: m.type, body: m.body, from: m.from, at: m.at, id: p.id });
         }
     }
-    return { ITERATIONS, CHUNK, passwordStrength, generatePassword, deriveKeys, encryptJson, decryptJson, fingerprint, randomId, Room, hex, b64, unb64 };
+    return { ITERATIONS, CHUNK, passwordStrength, generatePassword, deriveKeys, encryptJson, decryptJson, fingerprint, randomId, canon, makeIdentity, verifySig, pubFingerprint, Room, hex, b64, unb64 };
 });

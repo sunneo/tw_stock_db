@@ -76,6 +76,17 @@ class Hub {
     check('人數上限：第三台被拒絕（full）', !x3.ok && x3.reason === 'full', x3);
     await sleep(200); check('被拒絕後沒有留在名單裡', r1.members().length === 2);
 
+    // 機器身分：簽章與驗證
+    const idA = await R.makeIdentity(null), idB = await R.makeIdentity(null);
+    check('身分：產生公鑰與可保存的私鑰', !!idA.pub.x && !!idA.exported && !!idA.exported.priv);
+    const again = await R.makeIdentity(idA.exported); check('身分：保存後重新載入得到同一把公鑰（不再重新產生）', again.pub.x === idA.pub.x && !again.exported);
+    const msg = R.canon({ type: 'task', body: { b: 2, a: 1 }, to: 'x' }); const sig = await idA.sign(msg);
+    check('身分：用名單上的公鑰驗證成功', await R.verifySig(idA.pub, msg, sig));
+    check('身分：內容被改過就驗證失敗', !(await R.verifySig(idA.pub, msg.replace('task', 'tusk'), sig)));
+    check('身分：別台機器的公鑰驗證失敗（無法冒名）', !(await R.verifySig(idB.pub, msg, sig)));
+    check('身分：canon 與欄位順序無關', R.canon({ a: 1, b: { d: 1, c: 2 } }) === R.canon({ b: { c: 2, d: 1 }, a: 1 }));
+    check('身分：指紋穩定且兩台不同', (await R.pubFingerprint(idA.pub)) === (await R.pubFingerprint(again.pub)) && (await R.pubFingerprint(idA.pub)) !== (await R.pubFingerprint(idB.pub)));
+
     console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'rg_core: ' + ok + ' passed');
     process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXCEPTION', e && e.stack || e); process.exit(1); });

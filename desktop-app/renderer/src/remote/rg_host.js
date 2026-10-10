@@ -5,60 +5,107 @@
 const FaRemoteHost = (function () {
     'use strict';
     const SB = { url: 'https://schvtbxufjwkibnfgbay.supabase.co', key: 'sb_publishable_Y4hgmYhipEf2S-rS-v45rg_R1Gg-dZe', lib: 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js' };
+    // 備援：第二個 Supabase 專案（同樣要執行 supabase/remote_group.sql）。主要專案的流量用完或連不上時改用它
+    const SB2 = { url: 'https://wxxovxvasgwqnchwxbxo.supabase.co', key: 'sb_publishable_5YoJVSApOHEsEcKXi3vwxQ_MWzvhh9q', lib: SB.lib };
+    const BACKENDS = [Object.assign({ name: '主要' }, SB), Object.assign({ name: '備援' }, SB2)];
     const STORE = 'fa_remote_group_v1';
     const methods = {
         _rgSettings() {
-            const d = { machineName: '', maxMembers: 16, allowDispatch: true, readonlySandbox: false, acceptSubtasks: false, maxParallel: 3 };
+            const d = { machineName: '', maxMembers: 16, allowDispatch: true, readonlySandbox: false, acceptSubtasks: false, maxParallel: 3, onlyTrusted: false, iceServers: '' };
             let s = {}; try { s = JSON.parse(localStorage.getItem(STORE) || '{}') || {}; } catch (_) { s = {}; }
             const out = Object.assign(d, s); if (!out.machineName) out.machineName = (window.desktopAPI ? '桌面' : '網頁') + '-' + String(Math.floor(1000 + Math.random() * 9000));
             return out;
         },
         _rgSaveSettings(patch) { const s = Object.assign(this._rgSettings(), patch || {}); try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (_) { /* 無痕模式 */ } return s; },
-        _rgTransport() { return new FaRemoteTransport.SupabaseTransport({ url: SB.url, key: SB.key, loadLib: () => _faLoadScriptOnce(SB.lib) }); },
-        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0 }; },
+        _rgTransport(i) { const b = BACKENDS[i || 0] || BACKENDS[0]; return new FaRemoteTransport.SupabaseTransport({ url: b.url, key: b.key, loadLib: () => _faLoadScriptOnce(b.lib) }); },
+        _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }; },
         // 建立：代號由這邊隨機挑（8 位數起）；撞號（伺服器回 false）就換一個，連續撞號多加一位
-        async _rgCreate(name, password) {
+        // 在某個後端登記一個新房間（代號由這邊隨機挑，8 位數起；撞號就換，連續撞號多加一位）。order：後端編號的嘗試順序
+        async _rgRegister(password, order) {
+            const R = FaRemoteGroup; let firstErr = null;
+            for (const idx of (order || [0, 1])) {
+                const t = this._rgTransport(idx); let len = 8, tries = 0;
+                try {
+                    for (;;) {
+                        const bytes = new Uint8Array(8); crypto.getRandomValues(bytes);
+                        let digits = ''; for (const x of bytes) digits += String(x % 10); while (digits.length < len) digits += String(Math.floor(Math.random() * 10));
+                        const code = String(1 + (bytes[0] % 9)) + digits.slice(0, len - 1);
+                        const keys = await R.deriveKeys(password, code);
+                        let created; try { created = await t.rpc('rg_create_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { throw this._rgRpcError(e); }
+                        if (created) return { t, keys, code, idx };
+                        if (++tries >= 3) { len++; tries = 0; if (len > 14) throw new Error('無法配發房間代號'); }
+                    }
+                } catch (e) { firstErr = firstErr || e; this._rgLog && this._rg && this._rgLog(BACKENDS[idx].name + '專案登記房間失敗：' + String((e && e.message) || e).slice(0, 80)); }
+            }
+            throw firstErr || new Error('無法建立群組');
+        },
+        async _rgCreate(name, password, order) {
             const R = FaRemoteGroup, st = R.passwordStrength(password);
             if (!st.ok) throw new Error('密碼不合格：' + st.reasons.join('；'));
-            const t = this._rgTransport(); let len = 8, tries = 0;
-            for (;;) {
-                const b = new Uint8Array(8); crypto.getRandomValues(b);
-                let digits = ''; for (const x of b) digits += String(x % 10); while (digits.length < len) digits += String(Math.floor(Math.random() * 10));
-                const code = String(1 + (b[0] % 9)) + digits.slice(0, len - 1);
-                const keys = await R.deriveKeys(password, code);
-                let created;
-                try { created = await t.rpc('rg_create_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { throw this._rgRpcError(e); }
-                if (created) return this._rgEnter(t, keys, code, name, true);
-                if (++tries >= 3) { len++; tries = 0; if (len > 14) throw new Error('無法配發房間代號'); }
+            let lastErr = null;
+            for (const idx of (order || this._rgBackendOrder())) {
+                let reg; try { reg = await this._rgRegister(password, [idx]); } catch (e) { lastErr = lastErr || e; continue; }
+                try { return await this._rgEnter(reg.t, reg.keys, reg.code, name, true, idx); }
+                catch (e) { lastErr = lastErr || e; try { await reg.t.rpc('rg_close_room', { p_code: reg.code, p_verifier: reg.keys.verifier }); } catch (_) { /* */ } }
             }
+            throw lastErr || new Error('無法建立群組');
         },
+        // 輪流使用：新房間隨機挑一個專案開始（流量平均分攤，兩個專案都保持有活動），失敗再換另一個
+        // 通道掉線：等幾秒、若還沒自己恢復就重新連線，最多連續重試 8 次（間隔逐次拉長到 60 秒）；之後在記錄裡提醒用重建群組換專案
+        _rgScheduleReconnect(rg) {
+            if (!rg || rg.reconnecting || this._rg !== rg) return; rg.reconnecting = true; const wait = Math.min(60000, 3000 * Math.pow(2, rg.retry || 0));
+            setTimeout(async () => {
+                rg.reconnecting = false; if (this._rg !== rg || rg.room.status === 'SUBSCRIBED') return;
+                rg.retry = (rg.retry || 0) + 1;
+                try { await rg.room.reconnect(); this._rgLog('已重新連線'); }
+                catch (e) { this._rgLog('重新連線失敗（第 ' + rg.retry + ' 次）：' + String((e && e.message) || e).slice(0, 60)); if (rg.retry < 8) this._rgScheduleReconnect(rg); else this._rgLog('連不上即時通道：可能是專案流量用完或被暫停。可以用「重建群組→改用另一個專案」'); }
+            }, wait);
+        },
+        _rgBackendOrder() { return Math.random() < 0.5 ? [0, 1] : [1, 0]; },
+        // 免費專案 7 天沒有任何請求會被暫停：App 啟動後每天對兩個專案各送一個最輕的請求（問一個不存在的房間），Cloudflare Worker 另外每 5 天也會送
+        _rgKeepAlive() {
+            if (this._rgKeepAliveTimer) return; const KEY = 'fa_remote_keepalive_v1';
+            this._rgKeepAliveTimer = setTimeout(async () => {
+                let last = {}; try { last = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (_) { last = {}; }
+                for (let i = 0; i < BACKENDS.length; i++) {
+                    if (Date.now() - (last[i] || 0) < 20 * 3600 * 1000) continue;
+                    try { await this._rgTransport(i).rpc('rg_join_room', { p_code: '00000000', p_verifier: 'keepalive' }); last[i] = Date.now(); } catch (_) { /* 沒建好表也算有請求；真的連不上就明天再試 */ last[i] = Date.now() - 19 * 3600 * 1000; }
+                }
+                try { localStorage.setItem(KEY, JSON.stringify(last)); } catch (_) { /* */ }
+            }, 15000);
+        },
+        // 加入：先問主要專案，找不到這個代號（或連不上）再問備援
         async _rgJoin(name, codeText, password) {
             const code = String(codeText || '').replace(/\D/g, '');
             if (code.length < 8) throw new Error('房間代號是 8 位以上的數字');
             if (!password) throw new Error('請輸入密碼');
-            const R = FaRemoteGroup, t = this._rgTransport(), keys = await R.deriveKeys(password, code);
-            let res; try { res = await t.rpc('rg_join_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { throw this._rgRpcError(e); }
-            if (res === 'not_found') throw new Error('找不到這個房間（代號錯誤，或已閒置超過 24 小時被回收）');
-            if (res === 'bad_password') throw new Error('密碼不對');
-            if (res === 'locked') throw new Error('這個房間因為連續猜錯被暫時鎖住，請稍後再試');
-            if (res !== 'ok') throw new Error('加入失敗：' + res);
-            return this._rgEnter(t, keys, code, name, false);
+            const R = FaRemoteGroup, keys = await R.deriveKeys(password, code); let netErr = null, hit = null, t = null, idx = 0;
+            for (idx = 0; idx < BACKENDS.length; idx++) {
+                t = this._rgTransport(idx); let res; try { res = await t.rpc('rg_join_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { netErr = netErr || this._rgRpcError(e); continue; }
+                if (res !== 'not_found') { hit = res; break; }
+            }
+            if (hit == null) { if (netErr) throw netErr; throw new Error('找不到這個房間（代號錯誤，或已閒置超過 24 小時被回收）'); }
+            if (hit === 'bad_password') throw new Error('密碼不對');
+            if (hit === 'locked') throw new Error('這個房間因為連續猜錯被暫時鎖住，請稍後再試');
+            if (hit !== 'ok') throw new Error('加入失敗：' + hit);
+            return this._rgEnter(t, keys, code, name, false, idx);
         },
         _rgRpcError(e) { return e && e.notInstalled ? new Error('房間服務還沒建立：請先到 Supabase 的 SQL Editor 執行 supabase/remote_group.sql（只需要做一次）') : e; },
-        async _rgEnter(t, keys, code, name, creator) {
-            const R = FaRemoteGroup, s = this._rgSettings();
+        async _rgEnter(t, keys, code, name, creator, idx) {
+            const R = FaRemoteGroup, s = this._rgSettings(); await this._rgLoadIdentity();
             const room = new R.Room({ transport: t, keys, self: this._rgSelfInfo(name), maxMembers: s.maxMembers });
-            const rg = { room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
-            room.on('members', () => { this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
+            const rg = { idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
+            room.on('members', () => { this._rgRefreshFps(); this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
             room.on('message', (m) => this._rgOnMessage(m));
-            room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') this._rgLog('連線狀態：' + st); else if (st === 'SUBSCRIBED') this._rgLog('已連線'); });
+            room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') { this._rgLog('連線狀態：' + st); this._rgScheduleReconnect(rg); } else if (st === 'SUBSCRIBED') { rg.retry = 0; this._rgLog('已連線'); } });
             const r = await room.join();
             if (!r.ok) { try { await room.leave(); } catch (_) { /* */ } throw new Error(r.reason === 'full' ? '群組已滿（上限 ' + s.maxMembers + ' 台）' : '加入失敗'); }
             rg.shared = {}; rg.captures = new Set();
-            rg.files = new FaRemoteFiles.FileShare({ room, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
+            const ice = this._rgIceServers();
+            rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
             rg.timer = setInterval(() => { t.rpc('rg_touch_room', { p_code: code, p_verifier: keys.verifier }).then((ok) => { if (ok === false) this._rgLog('房間已被回收（閒置太久）'); }).catch(() => {}); }, 5 * 60 * 1000);
-            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code); this._rgView = 'joined'; this._rgRender();
+            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是備援專案）' : '')); this._rgView = 'joined'; this._rgRender();
             return { code, name: room.self.name };
         },
         async _rgLeave() {
@@ -73,8 +120,9 @@ const FaRemoteHost = (function () {
         async _rgOnMessage(m) {
             const rg = this._rg; if (!rg) return;
             const who = (rg.room.members().find((x) => x.nodeId === m.from) || {}).name || m.from;
-            if (m.type === 'ping') { try { await rg.room.send(m.from, 'pong', { t: m.body && m.body.t }); } catch (_) { /* */ } this._rgLog('收到 ' + who + ' 的連線測試'); }
-            else if (m.type === 'pong') { const p = rg.pings[m.from]; if (p && p.t === (m.body && m.body.t)) { p.resolve(Date.now() - p.t); delete rg.pings[m.from]; } }
+            if (m.type === 'ping') { let sig = ''; try { const nonce = m.body && m.body.nonce; if (nonce && this._rgIdent) sig = await this._rgIdent.sign(FaRemoteGroup.canon({ pong: nonce, from: rg.room.self.nodeId, to: m.from })); } catch (_) { /* */ } try { await rg.room.send(m.from, 'pong', { t: m.body && m.body.t, sig }); } catch (_) { /* */ } this._rgLog('收到 ' + who + ' 的連線測試'); }
+            else if (m.type === 'pong') { const p = rg.pings[m.from]; if (p && p.t === (m.body && m.body.t)) { const mem = rg.room.members().find((x) => x.nodeId === m.from), sg = m.body && m.body.sig; if (mem && mem.pk && sg && await FaRemoteGroup.verifySig(mem.pk, FaRemoteGroup.canon({ pong: p.nonce, from: m.from, to: rg.room.self.nodeId }), sg)) { rg.proven = rg.proven || {}; rg.proven[m.from] = (rg.fps || {})[m.from]; } p.resolve(Date.now() - p.t); delete rg.pings[m.from]; } }
+            else if (m.type === 'rebuild') this._rgOnRebuild(m);
             else if (m.type === 'task') this._rgOnTask(m);
             else if (m.type === 'task_ack' || m.type === 'task_ev') this._rgOnEvent(m);
             else if (m.type === 'task_stop') this._rgOnStop(m);
@@ -91,8 +139,8 @@ const FaRemoteHost = (function () {
             const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
             return new Promise((resolve, reject) => {
                 const t = Date.now(); const timer = setTimeout(() => { delete rg.pings[nodeId]; reject(new Error('逾時（8 秒沒回應）')); }, 8000);
-                rg.pings[nodeId] = { t, resolve: (ms) => { clearTimeout(timer); resolve(ms); } };
-                rg.room.send(nodeId, 'ping', { t }).catch((e) => { clearTimeout(timer); delete rg.pings[nodeId]; reject(e); });
+                const nonce = FaRemoteGroup.randomId(); rg.pings[nodeId] = { t, nonce, resolve: (ms) => { clearTimeout(timer); resolve(ms); } };
+                rg.room.send(nodeId, 'ping', { t, nonce }).catch((e) => { clearTimeout(timer); delete rg.pings[nodeId]; reject(e); });
             });
         },
         // ---------------------------------------------------------------- 畫面：右上角按鈕與滑出面板
@@ -114,7 +162,7 @@ const FaRemoteHost = (function () {
             panel.addEventListener('contextmenu', (e) => { const n = e.target.closest('[data-rg-name]'); if (!n || !this._rg) return; e.preventDefault(); this._rgOpenMenu(e.clientX, e.clientY, n.dataset.id); });
             // 點在面板外面才收起。注意：點按鈕後面板內容可能立刻被換掉（原本被點的元素已不在畫面上），所以用事件發生當下的路徑判斷，不用 contains
             document.addEventListener('click', (e) => { const path = e.composedPath ? e.composedPath() : []; if (this._rgOpen && !path.includes(panel) && !path.includes(btn)) this._rgToggle(false); });
-            this._rgRender();
+            this._rgRender(); this._rgKeepAlive();
         },
         // 「交給」選單：已加入群組才出現；選項是其他在線機器
         _rgSyncTargetSelect() {
@@ -126,13 +174,127 @@ const FaRemoteHost = (function () {
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
         },
+        // ---------------------------------------------------------------- 第 4 階段：機器身分、指紋核對、記錄頁、重建群組
+        // 每台機器（每個瀏覽器設定檔）一把簽章金鑰，存在 localStorage；公鑰放在在線名單裡
+        async _rgLoadIdentity() {
+            if (this._rgIdent) return this._rgIdent; let saved = null; try { saved = JSON.parse(localStorage.getItem('fa_remote_identity_v1') || 'null'); } catch (_) { saved = null; }
+            const id = await FaRemoteGroup.makeIdentity(saved); if (id.exported) { try { localStorage.setItem('fa_remote_identity_v1', JSON.stringify(id.exported)); } catch (_) { /* 無痕模式：這次連線有效，下次會是新身分 */ } }
+            this._rgIdent = id; return id;
+        },
+        _rgTrust() { try { return JSON.parse(localStorage.getItem('fa_remote_trust_v1') || '{}') || {}; } catch (_) { return {}; } },
+        _rgSetTrust(name, fp) { const all = this._rgTrust(); if (fp) all[name] = fp; else delete all[name]; try { localStorage.setItem('fa_remote_trust_v1', JSON.stringify(all)); } catch (_) { /* */ } },
+        // 'trusted'：名字與指紋都跟我核對過的一致；'changed'：這個名字我核對過，但現在指紋不同（可能有人冒名）；'new'：沒核對過；'none'：對方沒有公鑰（舊版）
+        _rgTrustState(m) {
+            const rg = this._rg; const fp = rg && rg.fps && rg.fps[m.nodeId]; if (!fp) return 'none'; const t = this._rgTrust()[m.name];
+            return !t ? 'new' : (t === fp ? 'trusted' : 'changed');
+        },
+        async _rgRefreshFps() {
+            const rg = this._rg; if (!rg) return; rg.fps = rg.fps || {}; let changed = false;
+            for (const m of rg.room.members()) { if (!m.pk) continue; const key = m.pk.x + m.pk.y; if (rg.fpKey && rg.fpKey[m.nodeId] === key) continue; rg.fpKey = rg.fpKey || {}; rg.fpKey[m.nodeId] = key; rg.fps[m.nodeId] = await FaRemoteGroup.pubFingerprint(m.pk); changed = true; if (this._rgTrustState(m) === 'changed') this._rgLog('⚠️ ' + m.name + ' 的指紋跟你核對過的不一樣：可能是對方換了電腦，也可能有人冒用這個名字'); }
+            if (changed && this._rg === rg) this._rgRenderMembers();
+        },
+        _rgIceServers() {
+            const out = []; String(this._rgSettings().iceServers || '').split(/\n+/).map((l) => l.trim()).filter(Boolean).forEach((l) => { const [url, username, credential] = l.split('|').map((x) => x.trim()); if (/^(stun|turn|turns):/i.test(url)) out.push(username ? { urls: url, username, credential: credential || '' } : { urls: url }); });
+            return out.length ? out : undefined;
+        },
+        _rgOverlay(name) {
+            const p = document.getElementById('ai-rg-panel'); if (!p) return null; this._rgToggle(true); const pal = this._getThemePalette(); let ov = p.querySelector('[data-rg="' + name + '"]'); if (ov) ov.remove();
+            ov = document.createElement('div'); ov.setAttribute('data-rg', name); ov.style.cssText = 'position:absolute; inset:0; z-index:6; overflow-y:auto; padding:12px; box-sizing:border-box; background:' + pal.windowBg + '; color:' + pal.chatText + ';'; p.appendChild(ov); return ov;
+        },
+        _rgBtnStyle(pal, primary) { return 'padding:6px 10px; margin:2px 4px 2px 0; border-radius:6px; cursor:pointer; ' + (primary ? 'border:none; background:#76b900; color:#fff; font-weight:bold;' : 'border:1px solid ' + pal.inputBorder + '; background:transparent; color:' + pal.chatText + ';'); },
+        // 向對方證明「你真的持有名單上那把公鑰對應的私鑰」：回傳 true／false
+        async _rgProve(nodeId) { const rg = this._rg; if (!rg) return false; try { await this._rgPing(nodeId); } catch (_) { return false; } return !!(rg.proven && rg.proven[nodeId] && rg.proven[nodeId] === (rg.fps || {})[nodeId]); },
+        async _rgOpenFp(nodeId) {
+            const rg = this._rg; if (!rg) return; const m = rg.room.members().find((k) => k.nodeId === nodeId); if (!m) return; const ov = this._rgOverlay('fp'); if (!ov) return;
+            const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s)), self = nodeId === rg.room.self.nodeId, fp = (rg.fps || {})[nodeId] || '（對方是舊版，沒有身分金鑰）', mine = (rg.fps || {})[rg.room.self.nodeId] || '';
+            const draw = () => {
+                const st = this._rgTrustState(m), label = { trusted: '✅ 已核對，指紋一致', changed: '⚠️ 這個名字你核對過，但指紋不同了：先別信任，跟本人確認', new: '尚未核對', none: '無法核對' }[st];
+                ov.innerHTML = '<div style="font-weight:bold; margin-bottom:8px;">🔑 指紋核對：' + e(m.name) + (self ? '（這台）' : '') + '</div>'
+                    + '<div style="font-size:12px; opacity:.85; margin-bottom:6px;">機器名稱誰都可以取，無法證明身分。請用電話、當面或其他管道，請對方念出<b>他那台顯示的指紋</b>，跟下面的比對；一致才按「信任」。</div>'
+                    + '<div style="font-size:11px; opacity:.7;">' + (self ? '這台的指紋' : '對方的指紋') + '</div><div style="font-family:monospace; font-size:20px; letter-spacing:1px; margin:2px 0 8px; word-break:break-all;">' + e(fp) + '</div>'
+                    + (self ? '' : '<div style="font-size:11px; opacity:.7;">你自己的指紋（對方核對你時用）</div><div style="font-family:monospace; font-size:14px; margin:2px 0 8px;">' + e(mine) + '</div>')
+                    + '<div data-fp="state" style="margin:6px 0; font-size:12px; color:' + (st === 'trusted' ? '#76b900' : st === 'changed' ? '#f87171' : 'inherit') + ';">' + label + '</div>'
+                    + '<div data-fp="proof" style="margin:6px 0; font-size:12px; min-height:16px;"></div>'
+                    + (self ? '' : '<div><button type="button" data-fp-act="prove" style="' + this._rgBtnStyle(pal) + '">驗證對方真的持有這把金鑰</button>' + (st === 'trusted' ? '<button type="button" data-fp-act="untrust" style="' + this._rgBtnStyle(pal) + '">取消信任</button>' : (fp.indexOf('-') > 0 ? '<button type="button" data-fp-act="trust" style="' + this._rgBtnStyle(pal, true) + '">指紋一致，信任</button>' : '')) + '</div>')
+                    + '<div style="margin-top:8px;"><button type="button" data-fp-act="close" style="' + this._rgBtnStyle(pal) + '">關閉</button></div>';
+            };
+            draw();
+            ov.addEventListener('click', async (ev) => {
+                const a = ev.target.closest('[data-fp-act]'); if (!a) return; const act = a.dataset.fpAct;
+                if (act === 'close') { ov.remove(); return; }
+                if (act === 'trust') { this._rgSetTrust(m.name, (rg.fps || {})[nodeId]); this._rgLog('已信任 ' + m.name + ' 的指紋'); draw(); this._rgRenderMembers(); }
+                else if (act === 'untrust') { this._rgSetTrust(m.name, null); draw(); this._rgRenderMembers(); }
+                else if (act === 'prove') { const el = ov.querySelector('[data-fp="proof"]'); el.textContent = '驗證中…'; const ok = await this._rgProve(nodeId); el.textContent = ok ? '✅ 對方通過了金鑰持有證明（上面的指紋確實是這台機器自己的）' : '❌ 沒有通過：對方沒回應、是舊版，或名單上的公鑰不是它自己的'; el.style.color = ok ? '#76b900' : '#f87171'; }
+            });
+        },
+        // 記錄頁：這台機器替別人執行過的需求（誰、什麼、結果）。存在這個瀏覽器的 IndexedDB，保留最近 20 筆
+        _rgOpenLog() {
+            const rg = this._rg; if (!rg) return; const ov = this._rgOverlay('log'); if (!ov) return; const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s));
+            const jobs = Object.values(rg.exec || {}).sort((a, b) => (b.at || 0) - (a.at || 0));
+            const state = (j) => { const last = [...j.events].reverse().find((x) => FaRemoteDispatch.TERMINAL[x.kind]); return last ? ({ done: '✅ 完成', failed: '❌ 失敗', stopped: '⏹ 已停止', rejected: '🚫 被拒絕' }[last.kind]) : '⏳ 進行中'; };
+            const detail = (j) => { const last = [...j.events].reverse().find((x) => FaRemoteDispatch.TERMINAL[x.kind]) || {}; const refs = (last.refs || []).map((r) => r.name).join('、'); return '<div style="margin:4px 0; white-space:pre-wrap; opacity:.9;">' + e(j.text) + '</div>' + (last.text ? '<div style="margin:4px 0; padding:4px; border-radius:4px; background:rgba(128,128,128,.15); white-space:pre-wrap;">' + e(String(last.text).slice(0, 1500)) + '</div>' : '') + (last.error ? '<div style="color:#f87171;">' + e(last.error) + '</div>' : '') + (refs ? '<div style="opacity:.8;">📎 ' + e(refs) + '</div>' : '') + '<div style="opacity:.6;">事件 ' + j.events.length + ' 筆' + (j.at && last.seq ? '' : '') + '</div>'; };
+            ov.innerHTML = '<div style="font-weight:bold; margin-bottom:6px;">📜 執行記錄（這台替別人做過的事）</div><div style="font-size:11px; opacity:.75; margin-bottom:8px;">只存在這個瀏覽器，最近 20 筆。點一筆看內容與結果。</div>'
+                + (jobs.length ? jobs.map((j, i) => '<div data-lg="' + i + '" style="border:1px solid rgba(128,128,128,.35); border-radius:6px; padding:6px; margin-bottom:6px; font-size:12px; cursor:pointer;"><div><b>' + e(j.fromName) + '</b>　' + (j.sub ? '子任務' : '需求') + '　' + state(j) + '</div><div style="opacity:.7; font-size:11px;">' + (j.at ? new Date(j.at).toLocaleString() : '') + '</div><div style="opacity:.9;">' + e(String(j.text).replace(/\s+/g, ' ').slice(0, 60)) + '</div><div data-lg-body="' + i + '" style="display:none; margin-top:6px; font-size:11px;">' + detail(j) + '</div></div>').join('') : '<div style="opacity:.7;">（還沒有記錄）</div>')
+                + '<div style="margin-top:8px;"><button type="button" data-lg-act="clear" style="' + this._rgBtnStyle(pal) + '">清除記錄</button><button type="button" data-lg-act="close" style="' + this._rgBtnStyle(pal) + '">關閉</button></div>';
+            ov.addEventListener('click', async (ev) => {
+                const a = ev.target.closest('[data-lg-act]'); if (a) { if (a.dataset.lgAct === 'close') ov.remove(); else if (window.confirm('清除這台機器的執行記錄？（不會影響正在執行的任務）')) { await this._rgClearTasks(); this._rgLog('已清除執行記錄'); this._rgOpenLog(); } return; }
+                const row = ev.target.closest('[data-lg]'); if (row) { const b = row.querySelector('[data-lg-body]'); b.style.display = b.style.display === 'none' ? '' : 'none'; }
+            });
+        },
+        // 重建群組：產生新代號與新密碼的新房間。notify=true：把新代號密碼傳給現在在線的每個人，大家確認後一起搬；
+        // notify=false（要踢人用）：只建立新房間並關掉舊房間的登記，新代號密碼由你用別的管道告訴要留下的人——因為舊頻道裡所有人（包含要踢的）都讀得到訊息
+        async _rgRebuild(notify, other) {
+            const rg = this._rg; if (!rg) throw new Error('尚未加入群組'); const name = rg.room.self.name, pw = FaRemoteGroup.generatePassword();
+            const idx = other ? 1 - (rg.idx || 0) : (rg.idx || 0), reg = await this._rgRegister(pw, [idx]); let sent = 0; rg.rebuilding = true;
+            if (notify) { for (const m of this._rgTargets()) { try { await this._rgSend(m.nodeId, 'rebuild', { code: reg.code, password: pw, fromName: name }); sent++; } catch (_) { /* 這個人沒收到：之後用代號密碼手動加入 */ } } await new Promise((r) => setTimeout(r, 1500)); }
+            else { try { await rg.t.rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等 24 小時自動回收 */ } }
+            await this._rgLeave(true);
+            await this._rgEnter(reg.t, reg.keys, reg.code, name, true, idx);
+            return { code: reg.code, password: pw, sent };
+        },
+        _rgOpenRebuild() {
+            const rg = this._rg; if (!rg) return; const ov = this._rgOverlay('rebuild'); if (!ov) return; const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s));
+            ov.innerHTML = '<div style="font-weight:bold; margin-bottom:8px;">🔄 重建群組</div>'
+                + '<div style="font-size:12px; line-height:1.6;">會建立一個<b>新代號與新密碼</b>的房間，這台先搬過去。沒有伺服器能強制踢人，所以要踢人只能換密碼。</div>'
+                + '<div style="margin:10px 0 4px; font-weight:bold; font-size:12px;">選一種方式</div>'
+                + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:6px;"><input type="radio" name="rbm" value="notify" checked><span><b>通知現在在線的所有人，大家確認後一起搬</b>（換密碼、換代號，但沒有要踢人）</span></label>'
+                + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:8px;"><input type="radio" name="rbm" value="silent"><span><b>只換不通知</b>（要踢人用）：舊房間會被關掉登記，新代號與密碼我顯示給你，由你用電話等管道告訴要留下的人。<b>不要</b>在舊群組裡傳，被踢的人也看得到。</span></label>'
+                + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:8px;"><input type="checkbox" data-rb="other"><span>改用<b>另一個 Supabase 專案</b>（目前專案的流量用完、或連不上時；目前在「' + e(rg.backend || '主要') + '」）</span></label>'
+                + '<div data-rb="msg" style="min-height:16px; font-size:12px; margin:6px 0;"></div>'
+                + '<button type="button" data-rb-act="go" style="' + this._rgBtnStyle(pal, true) + '">建立新群組並搬過去</button><button type="button" data-rb-act="close" style="' + this._rgBtnStyle(pal) + '">取消</button>';
+            ov.addEventListener('click', async (ev) => {
+                const a = ev.target.closest('[data-rb-act]'); if (!a) return; if (a.dataset.rbAct === 'close') { ov.remove(); return; }
+                const notify = ov.querySelector('input[name="rbm"]:checked').value === 'notify', msg = ov.querySelector('[data-rb="msg"]');
+                if (!window.confirm(notify ? '要重建群組並通知在線的 ' + this._rgTargets().length + ' 台機器嗎？' : '要重建群組嗎？舊房間會被關掉，其他人需要你另外通知新的代號與密碼才能進去。')) return;
+                a.disabled = true; msg.textContent = '建立中（推導金鑰需要幾秒）…';
+                try {
+                    const r = await this._rgRebuild(notify, ov.querySelector('[data-rb="other"]').checked); const p = document.getElementById('ai-rg-panel'); if (p) { p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
+                    const ov2 = this._rgOverlay('rebuilt'); if (!ov2) return;
+                    ov2.innerHTML = '<div style="font-weight:bold; margin-bottom:8px;">✅ 新群組已建立</div><div style="font-size:12px;">代號</div><div style="font-size:20px; font-weight:bold;">' + e(r.code) + '</div><div style="font-size:12px; margin-top:6px;">密碼（只顯示這一次，請先複製存好）</div><div style="font-family:monospace; font-size:14px; word-break:break-all; user-select:all;">' + e(r.password) + '</div>'
+                        + '<div style="font-size:12px; margin:8px 0;">' + (notify ? '已通知 ' + r.sent + ' 台機器，對方確認後會自動搬過來。沒有跟過來的人，用上面的代號與密碼手動加入。' : '舊房間已關閉登記。把上面的代號與密碼用其他管道告訴要留下的人。') + '</div>'
+                        + '<button type="button" data-rb2="copy" style="' + this._rgBtnStyle(pal) + '">複製密碼</button><button type="button" data-rb2="close" style="' + this._rgBtnStyle(pal, true) + '">我已存好</button>';
+                    ov2.addEventListener('click', async (e2) => { const b = e2.target.closest('[data-rb2]'); if (!b) return; if (b.dataset.rb2 === 'copy') { try { await navigator.clipboard.writeText(r.password); b.textContent = '已複製'; } catch (_) { /* */ } } else ov2.remove(); });
+                } catch (err) { msg.textContent = '失敗：' + String((err && err.message) || err); msg.style.color = '#f87171'; a.disabled = false; }
+            });
+        },
+        // 收到別人要搬家的通知：驗證簽章、顯示是誰與核對狀態，使用者確認才搬
+        async _rgOnRebuild(m) {
+            const rg = this._rg; if (!rg || rg.rebuilding) return; const b = m.body || {}; const bad = await this._rgVerify(m); const who = this._rgTargetName(m.from) || m.from;
+            if (bad || typeof b.code !== 'string' || typeof b.password !== 'string') { this._rgLog('忽略了一則搬家通知（' + (bad || '格式不對') + '）'); return; }
+            const mem = rg.room.members().find((x) => x.nodeId === m.from), st = mem ? this._rgTrustState(mem) : 'new';
+            this._rgToggle(true); const ok = window.confirm(who + (st === 'trusted' ? '（已核對的機器）' : st === 'changed' ? '（⚠️ 指紋跟你核對過的不同）' : '（尚未核對指紋）') + ' 要把群組搬到新房間 ' + b.code + '（新密碼）。\n\n要跟著搬嗎？按「取消」就留在目前的群組。');
+            if (!ok) { this._rgLog('沒有跟著 ' + who + ' 搬到新房間'); return; }
+            const name = rg.room.self.name; rg.rebuilding = true;
+            try { await this._rgLeave(); await this._rgJoin(name, b.code, b.password); this._rgLog('已跟著 ' + who + ' 搬到新房間 ' + b.code); }
+            catch (e) { this._rgLog('搬到新房間失敗：' + String((e && e.message) || e) + '（請用新代號與密碼手動加入）'); }
+        },
         // ---------------------------------------------------------------- 右鍵選單與「設置分派規則」
         _rgOpenMenu(x, y, nodeId) {
             const rg = this._rg; if (!rg) return; const m = rg.room.members().find((k) => k.nodeId === nodeId); if (!m) return;
             document.getElementById('ai-rg-menu') && document.getElementById('ai-rg-menu').remove();
             const pal = this._getThemePalette(), self = nodeId === rg.room.self.nodeId, menu = document.createElement('div'); menu.id = 'ai-rg-menu';
             menu.style.cssText = 'position:fixed; z-index:1000001; min-width:150px; padding:4px 0; border-radius:8px; font-size:12px; box-shadow:0 4px 16px rgba(0,0,0,.4); background:' + pal.windowBg + '; color:' + pal.chatText + '; border:1px solid ' + pal.windowBorder + ';';
-            const items = [['rules', '⚙️ 設置分派規則…'], ['agents', '🧩 查看子任務']].concat(self ? [] : [['ping', '📡 測試連線']]).concat([['copy', '📋 複製機器名稱']]);
+            const items = [['rules', '⚙️ 設置分派規則…'], ['agents', '🧩 查看子任務']].concat(self ? [] : [['ping', '📡 測試連線']]).concat([['fp', '🔑 核對指紋…'], ['copy', '📋 複製機器名稱']]);
             menu.innerHTML = '<div style="padding:4px 12px; font-size:11px; opacity:.7;">' + this._escapeHtml(m.name) + '</div>' + items.map(([a, l]) => '<div data-menu="' + a + '" style="padding:6px 12px; cursor:pointer;">' + l + '</div>').join('');
             menu.style.left = Math.min(x, window.innerWidth - 180) + 'px'; menu.style.top = Math.min(y, window.innerHeight - 160) + 'px'; document.body.appendChild(menu);
             menu.querySelectorAll('[data-menu]').forEach((el) => { el.onmouseenter = () => { el.style.background = 'rgba(118,185,0,.25)'; }; el.onmouseleave = () => { el.style.background = ''; }; });
@@ -144,6 +306,7 @@ const FaRemoteHost = (function () {
                 if (act === 'rules') this._rgOpenRules(nodeId);
                 else if (act === 'agents') { if (rg.agentView !== nodeId) await this._rgToggleAgents(nodeId); }
                 else if (act === 'ping') { const out = document.querySelector('#ai-rg-panel [data-rg-ping="' + nodeId + '"]'); if (out) out.textContent = '…'; try { const ms = await this._rgPing(nodeId); if (out) { out.textContent = ms + ' ms'; out.style.color = '#76b900'; } } catch (e) { if (out) { out.textContent = '失敗'; out.style.color = '#f87171'; } } }
+                else if (act === 'fp') this._rgOpenFp(nodeId);
                 else if (act === 'copy') { try { await navigator.clipboard.writeText(m.name); } catch (_) { /* */ } }
             });
         },
@@ -231,10 +394,10 @@ const FaRemoteHost = (function () {
                 + '<div data-rg="msg" style="margin-top:8px; font-size:12px; color:#f87171; white-space:pre-wrap;"></div>';
         },
         _rgBuildJoined(p, pal) {
-            const e = (s) => this._escapeHtml(String(s)), rg = this._rg, st = this._rgSettings(), btn = 'padding:3px 8px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + ';';
+            const e = (s) => this._escapeHtml(String(s)), rg = this._rg, st = this._rgSettings(), pal0 = pal, btn = 'padding:3px 8px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + ';';
             p.dataset.view = 'joined';
             p.innerHTML = '<div style="font-weight:bold; margin-bottom:6px;">🌐 遠端群組</div>'
-                + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:11px; opacity:.8;">房間代號</span><b style="font-size:18px; letter-spacing:1px;">' + e(rg.code) + '</b><button type="button" data-rg-act="copy" style="' + btn + '">複製</button></div>'
+                + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:11px; opacity:.8;">房間代號</span><b style="font-size:18px; letter-spacing:1px;">' + e(rg.code) + '</b>' + (rg.idx ? '<span style="font-size:10px; color:#e2a03f;">（備援專案）</span>' : '') + '<button type="button" data-rg-act="copy" style="' + btn + '">複製</button></div>'
                 + '<div style="font-size:11px; opacity:.85; margin-bottom:8px;">這台：<b>' + e(rg.room.self.name) + '</b>（' + (rg.room.self.kind === 'desktop' ? '桌面' : '網頁') + '）　指紋 <span data-rg="fp">…</span></div>'
                 + '<div style="font-weight:bold; margin:8px 0 4px;">機器清單</div><div data-rg="members"></div><div data-rg="agentbox"></div>'
                 + '<div style="font-weight:bold; margin:12px 0 4px;">設定</div>'
@@ -243,20 +406,24 @@ const FaRemoteHost = (function () {
                 + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;"><input type="checkbox" data-rg="ro" ' + (st.readonlySandbox ? 'checked' : '') + '> 只允許唯讀與沙盒工具</label>'
                 + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;">同時處理遠端任務上限 <input type="number" min="1" max="16" data-rg="par" value="' + st.maxParallel + '" style="width:50px; padding:2px;"> 個</label>'
                 + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;">人數上限 <input type="number" min="2" max="64" data-rg="max" value="' + st.maxMembers + '" style="width:60px; padding:2px;"> 台（下次加入時生效）</label>'
-                + '<div style="font-size:11px; opacity:.7; margin:4px 0 8px;">在對話輸入框旁的「交給」選一台機器，之後這個對話的需求就由那台機器完成（目前只能傳文字；附件與影片的傳輸下一階段開放）。</div>'
+                + '<label style="display:flex; gap:6px; align-items:flex-start; font-size:12px; margin-bottom:4px;"><input type="checkbox" data-rg="trusted" ' + (st.onlyTrusted ? 'checked' : '') + ' style="margin-top:2px;"> <span>🔒 限制模式：只接受<b>已核對指紋</b>的機器的需求與設定</span></label>'
+                + '<details style="font-size:12px; margin:4px 0;"><summary style="cursor:pointer;">進階：直連的備用伺服器（TURN／STUN）</summary><div style="opacity:.75; margin:4px 0;">兩台機器直連失敗（公司網路、對稱式 NAT）時，檔案會改走轉送（單檔上限約 16MB）。有自己的 TURN 伺服器可以填在這裡，一行一個，格式：<code>turn:主機:3478|帳號|密碼</code> 或 <code>stun:主機:3478</code>。下次加入群組時生效。</div><textarea data-rg="ice" rows="3" style="width:100%; box-sizing:border-box;">' + e(st.iceServers || '') + '</textarea></details>'
+                + '<div style="font-size:11px; opacity:.7; margin:4px 0 8px;">在對話輸入框旁的「交給」選一台機器，之後這個對話的需求就由那台機器完成。對方產生的檔案、影片、簡報會在對話裡顯示成卡片，可以直接開啟或存到這邊。</div>'
+                + '<div style="display:flex; gap:6px; margin-bottom:8px;"><button type="button" data-rg-act="log" style="flex:1; padding:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + ';">📜 執行記錄</button><button type="button" data-rg-act="rebuild" style="flex:1; padding:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + ';">🔄 重建群組</button></div>'
                 + '<button type="button" data-rg-act="leave" style="width:100%; padding:8px; border:1px solid #ef4444; border-radius:6px; background:transparent; color:#ef4444; font-weight:bold; cursor:pointer;">離開群組</button>'
                 + '<div style="font-weight:bold; margin:12px 0 4px;">最近事件</div><div data-rg="log" style="font-size:11px; opacity:.85; line-height:1.5;"></div>';
-            FaRemoteGroup.fingerprint(rg.keys.channel + rg.room.self.nodeId).then((fp) => { const el = p.querySelector('[data-rg="fp"]'); if (el) el.textContent = fp; });
+            this._rgRefreshFps().then(() => { const el = p.querySelector('[data-rg="fp"]'); if (el) el.textContent = (rg.fps || {})[rg.room.self.nodeId] || '—'; });
             this._rgRenderMembers(); this._rgRenderLog();
         },
         _rgRenderMembers() {
             const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="members"]'); if (!box) return;
             const e = (s) => this._escapeHtml(String(s)), me = rg.room.self.nodeId;
-            box.innerHTML = rg.room.members().map((m) => '<div style="display:flex; align-items:center; gap:6px; padding:3px 0;">🟢 <span data-rg-name="1" data-id="' + e(m.nodeId) + '" title="按右鍵：設置分派規則、測試連線、查看子任務" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:context-menu;"><b>' + e(m.name) + '</b>' + (m.nodeId === me ? '（這台）' : '') + '</span><span style="font-size:10px; opacity:.7;">' + (m.kind === 'desktop' ? '桌面' : '網頁') + (m.busy ? '・忙碌' : '') + (m.allow === false ? '・不接受派工' : '') + (m.sub ? '・可分工' : '') + (m.agents ? '・跑 ' + m.agents + ' 個子任務' : '') + '</span>'
+            box.innerHTML = rg.room.members().map((m) => '<div style="display:flex; align-items:center; gap:6px; padding:3px 0;">🟢 <span data-rg-name="1" data-id="' + e(m.nodeId) + '" title="按右鍵：設置分派規則、測試連線、查看子任務" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:context-menu;"><b>' + e(m.name) + '</b>' + (m.nodeId === me ? '（這台）' : '') + '</span>' + this._rgBadge(m) + '<span style="font-size:10px; opacity:.7;">' + (m.kind === 'desktop' ? '桌面' : '網頁') + (m.busy ? '・忙碌' : '') + (m.allow === false ? '・不接受派工' : '') + (m.sub ? '・可分工' : '') + (m.agents ? '・跑 ' + m.agents + ' 個子任務' : '') + '</span>'
                 + '<button type="button" data-rg-act="agents" data-id="' + e(m.nodeId) + '" title="看這台機器現在跑的子任務" style="padding:1px 6px; font-size:11px; cursor:pointer;">子任務</button>'
                 + (m.nodeId === me ? '' : '<button type="button" data-rg-act="ping" data-id="' + e(m.nodeId) + '" style="padding:1px 6px; font-size:11px; cursor:pointer;">測試</button>') + '<span data-rg-ping="' + e(m.nodeId) + '" style="font-size:10px; min-width:44px;"></span></div>').join('') || '<div style="opacity:.7;">（沒有其他機器在線）</div>';
             const btn = document.getElementById('ai-rg-btn'); if (btn) btn.textContent = this._rgBtnLabel();
         },
+        _rgBadge(m) { const st = this._rgTrustState(m); const x = { trusted: ['✔', '#76b900', '指紋已核對'], changed: ['⚠', '#f87171', '指紋跟你核對過的不一樣！'], new: ['？', '#999', '指紋還沒核對（右鍵→核對指紋）'], none: ['', '#999', ''] }[st]; return x[0] ? '<span data-rg-act="fp" data-id="' + this._escapeHtml(m.nodeId) + '" title="' + x[2] + '" style="cursor:pointer; color:' + x[1] + '; font-weight:bold;">' + x[0] + '</span>' : ''; },
         // 子任務清單：展開在機器清單下面；對別台機器是即時向它要，對自己是直接讀
         _rgRenderAgents() {
             const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="agentbox"]'); if (!box) return;
@@ -280,6 +447,8 @@ const FaRemoteHost = (function () {
                 if (meter) { meter.textContent = !t.value ? '' : (s.ok ? '✅ ' + s.label + '（約 ' + s.bits + ' 位元）' : '❌ ' + s.reasons[0]); meter.style.color = s.ok ? '#76b900' : '#f87171'; }
             }
             if (t.dataset.rg === 'allow') { this._rgSaveSettings({ allowDispatch: t.checked }); if (this._rg) { this._rg.room.self.allow = t.checked; this._rg.room.publishSelf().catch(() => {}); } }
+            if (t.dataset.rg === 'trusted') this._rgSaveSettings({ onlyTrusted: t.checked });
+            if (t.dataset.rg === 'ice') this._rgSaveSettings({ iceServers: t.value });
             if (t.dataset.rg === 'ro') this._rgSaveSettings({ readonlySandbox: t.checked });
             if (t.dataset.rg === 'sub') { this._rgSaveSettings({ acceptSubtasks: t.checked }); if (this._rg) { this._rg.room.self.sub = t.checked; this._rg.room.publishSelf().catch(() => {}); } }
             if (t.dataset.rg === 'par') this._rgSaveSettings({ maxParallel: Math.max(1, Math.min(16, Number(t.value) || 3)) });
@@ -294,6 +463,9 @@ const FaRemoteHost = (function () {
             if (act === 'copy') { try { await navigator.clipboard.writeText(this._rg.code); t.textContent = '已複製'; setTimeout(() => { t.textContent = '複製'; }, 1500); } catch (_) { /* */ } return; }
             if (act === 'leave') { if (window.confirm('離開群組？離開後這台機器不再接受群組裡的需求。')) await this._rgLeave(); return; }
             if (act === 'agents') { await this._rgToggleAgents(t.dataset.id); return; }
+            if (act === 'fp') { this._rgOpenFp(t.dataset.id); return; }
+            if (act === 'log') { this._rgOpenLog(); return; }
+            if (act === 'rebuild') { this._rgOpenRebuild(); return; }
             if (act === 'ping') {
                 const id = t.dataset.id, out = p.querySelector('[data-rg-ping="' + id + '"]'); if (out) out.textContent = '…';
                 try { const ms = await this._rgPing(id); if (out) { out.textContent = ms + ' ms'; out.style.color = '#76b900'; } this._rgLog('測試連線 ' + ((this._rg.room.members().find((m) => m.nodeId === id) || {}).name || id) + '：' + ms + ' ms'); }

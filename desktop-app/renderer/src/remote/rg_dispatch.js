@@ -13,6 +13,7 @@ const FaRemoteDispatch = (function () {
     'use strict';
     const DB = 'FaRemote', STORE_T = 'tasks', MAX_KEEP = 20;
     const TERMINAL = { done: 1, failed: 1, stopped: 1, rejected: 1 };
+    const SIGNED = { task: 1, settings_set: 1, rebuild: 1 };
     const AGENTS = new Map(); let agentSeq = 0; let agentNotify = null;
     // 包住 _runSubAgentTask：每次子任務開始／結束都登記，並通知在線名單更新數量
     function installTracking(cls) {
@@ -35,13 +36,13 @@ const FaRemoteDispatch = (function () {
 
     const methods = {
         // ---------------------------------------------------------------- 事件記錄（被派工的一端；重新整理後還在）
-        async _rgSaveTask(job) { try { await tx('readwrite', (s) => s.put({ taskId: job.taskId, from: job.from, fromName: job.fromName, text: job.text, events: job.events, updatedAt: Date.now() })); } catch (_) { /* 無痕模式沒有 IndexedDB：只在記憶體 */ } },
+        async _rgSaveTask(job) { try { await tx('readwrite', (s) => s.put({ taskId: job.taskId, from: job.from, fromName: job.fromName, text: job.text, events: job.events, at: job.at, sub: job.sub, updatedAt: Date.now() })); } catch (_) { /* 無痕模式沒有 IndexedDB：只在記憶體 */ } },
         async _rgLoadTasks() {
             let all = []; try { all = await tx('readonly', (s) => s.getAll()); } catch (_) { return; }
             const rg = this._rg; if (!rg) return; rg.exec = rg.exec || {};
             all.sort((a, b) => a.updatedAt - b.updatedAt);
             for (const r of all.slice(-MAX_KEEP)) {
-                const job = { taskId: r.taskId, from: r.from, fromName: r.fromName, text: r.text, events: r.events || [], done: false };
+                const job = { taskId: r.taskId, from: r.from, fromName: r.fromName, text: r.text, events: r.events || [], at: r.at || r.updatedAt, sub: !!r.sub, done: false };
                 if (!job.events.some((e) => TERMINAL[e.kind])) { job.events.push({ seq: job.events.length + 1, kind: 'failed', error: '這台機器重新整理或重新啟動，任務中斷了（需要的話請重新送出）' }); await this._rgSaveTask(job); }
                 job.done = true; rg.exec[job.taskId] = job; rg.shared = rg.shared || {};
                 for (const ev of job.events) for (const it of (ev.refs || [])) { (rg.shared[it.id] = rg.shared[it.id] || new Set()).add(job.from); for (const a of (it.assets || [])) (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(job.from); }
@@ -66,15 +67,16 @@ const FaRemoteDispatch = (function () {
             rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task;
             try { this._setRespondingState(true, '⏳ 等 ' + t.name + ' 完成：' + text.slice(0, 20)); } catch (_) { /* */ }
             const finished = new Promise((resolve) => { task.resolve = resolve; });
-            try { await rg.room.send(targetId, 'task', { taskId, text, fromName: rg.room.self.name }); }
+            try { await this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }); }
             catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', t.name + ' 沒有回應（15 秒）。對方可能已離線，或分頁被瀏覽器凍結了。'); }, 15000);
             // 使用者按「停止」：通知對方也停下來
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
             await finished;
         },
         _rgTaskEnd(task, kind, textOrError, visual, refs) {
-            if (task.done) return; task.done = true; clearTimeout(task.ackTimer); clearInterval(task.stopTimer);
+            if (task.done) return; task.done = true; clearTimeout(task.ackTimer); clearTimeout(task.resendTimer); clearInterval(task.stopTimer);
             const run = task.run, name = task.targetName;
             if (task.quiet) { task.prog.fail ? (kind === 'done' ? task.prog.finish('完成（' + name + '）') : task.prog.fail(name + '：' + (textOrError || kind))) : 0; task.resolve && task.resolve({ kind, text: kind === 'done' ? textOrError : '', error: kind === 'done' ? '' : textOrError, visual, refs }); return; }
             if (kind === 'done') {
@@ -110,7 +112,8 @@ const FaRemoteDispatch = (function () {
             const task = { taskId, targetId: target.nodeId, targetName: target.name, prog, lastSeq: 0, done: false, text, run: this, ack: false, stopSent: false, absent: false, quiet: true };
             rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task;
             const finished = new Promise((resolve) => { task.resolve = resolve; });
-            try { await rg.room.send(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }); } catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
+            try { await this._rgSend(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }); } catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }).catch(() => {}); }, 6000);
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（15 秒）'); }, 15000);
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
             const r = await finished;
@@ -146,11 +149,39 @@ const FaRemoteDispatch = (function () {
         async _rgOnSettingsSet(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; const clean = this._rgSanitizeSettings(b.patch);
             const who = this._rgTargetName(m.from) || m.from;
+            const gate = await this._rgGate(m); if (gate) { this._rgLog('拒絕了 ' + who + ' 修改設定：' + gate); await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: false, error: gate, values: this._rgRemoteValues() }).catch(() => {}); return; }
             if (!Object.keys(clean).length) { await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: false, error: '沒有可以修改的項目', values: this._rgRemoteValues() }).catch(() => {}); return; }
             const label = { allowDispatch: '允許派工', acceptSubtasks: '接受子任務分工', readonlySandbox: '只允許唯讀與沙盒', maxParallel: '同時處理上限' };
             this._rgApplySettings(clean);
             this._rgLog(who + ' 修改了這台機器的設定：' + Object.keys(clean).map((k) => label[k] + '＝' + (typeof clean[k] === 'boolean' ? (clean[k] ? '開' : '關') : clean[k])).join('、'));
             await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: true, values: this._rgRemoteValues() }).catch(() => {});
+        },
+        // ---------------------------------------------------------------- 第 4 階段：簽章訊息與把關
+        // 派工、改設定、搬家這三種會簽名：收的人用在線名單裡的公鑰驗證，所以別的成員不能冒用某台機器的名義送出
+        async _rgSend(to, type, body) {
+            const rg = this._rg; if (!rg) throw new Error('尚未加入群組');
+            if (!SIGNED[type]) return rg.room.send(to, type, body);
+            const id = await this._rgLoadIdentity(), plain = Object.assign({}, body, { ts: Date.now() }); delete plain.sig;
+            const sig = await id.sign(FaRemoteGroup.canon({ type, from: rg.room.self.nodeId, to, body: plain }));
+            return rg.room.send(to, type, Object.assign({}, plain, { sig }));
+        },
+        // 回傳空字串＝驗證通過；否則是失敗原因
+        async _rgVerify(m) {
+            const rg = this._rg; if (!rg) return '尚未加入群組'; const b = m.body || {}, mem = rg.room.members().find((x) => x.nodeId === m.from);
+            if (!mem) return '對方不在名單裡'; if (!mem.pk) return '對方是舊版，沒有身分金鑰（請對方更新）'; if (!b.sig || !b.ts) return '缺少簽章（對方可能是舊版）';
+            if (Math.abs(Date.now() - b.ts) > 10 * 60 * 1000) return '簽章過期（兩台機器的時鐘差太多，或是被重送的舊訊息）';
+            const plain = Object.assign({}, b); delete plain.sig;
+            return (await FaRemoteGroup.verifySig(mem.pk, FaRemoteGroup.canon({ type: m.type, from: m.from, to: rg.room.self.nodeId, body: plain }), b.sig)) ? '' : '簽章驗證失敗（可能有人冒用這台機器的名義）';
+        },
+        // 收到需求或改設定前的把關：先驗簽章；限制模式再要求對方是核對過指紋的機器
+        async _rgGate(m) {
+            const bad = await this._rgVerify(m); if (bad) return bad;
+            if (this._rgSettings().onlyTrusted) { const mem = this._rg.room.members().find((x) => x.nodeId === m.from); await this._rgRefreshFps(); if (!mem || this._rgTrustState(mem) !== 'trusted') return '這台機器開了限制模式：只接受已核對指紋的機器'; }
+            return '';
+        },
+        async _rgClearTasks() {
+            try { await tx('readwrite', (s) => s.clear()); } catch (_) { /* */ }
+            const rg = this._rg; if (rg && rg.exec) for (const [k, j] of Object.entries(rg.exec)) if (j.done) delete rg.exec[k];
         },
         // ---------------------------------------------------------------- 內容傳輸（提供者）
         // 在檔案快取的 put 上加一層：任務執行期間新增的檔案都記下來（這就是這個任務「產生的內容」）
@@ -195,7 +226,7 @@ const FaRemoteDispatch = (function () {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => { delete rg.asks[rid]; reject(new Error('對方沒有回應（' + Math.round((ms || 6000) / 1000) + ' 秒）')); }, ms || 6000);
                 rg.asks[rid] = { replyType, resolve: (v) => { clearTimeout(timer); delete rg.asks[rid]; resolve(v); } };
-                rg.room.send(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(timer); delete rg.asks[rid]; reject(e); });
+                this._rgSend(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(timer); delete rg.asks[rid]; reject(e); });
             });
         },
         _rgResolveAsk(m) { const rg = this._rg, b = m.body || {}, a = rg && rg.asks && rg.asks[b.rid]; if (a && a.replyType === m.type) a.resolve(b); },
@@ -293,8 +324,9 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.text !== 'string') return;
             rg.exec = rg.exec || {}; if (rg.exec[b.taskId]) return; // 重複送來的同一個任務
             const s = this._rgSettings(), fromName = b.fromName || this._rgTargetName(m.from) || m.from, sub = !!b.sub;
-            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false, sub };
+            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false, sub, at: Date.now() };
             rg.exec[b.taskId] = job;
+            const gate = await this._rgGate(m); if (gate) { this._rgEvent(job, { kind: 'rejected', error: gate }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + gate); return; }
             // 整個需求要「允許派工」；AI 拆出來的子任務要另外勾「接受子任務分工」（預設關）
             if (sub ? !s.acceptSubtasks : !s.allowDispatch) { this._rgEvent(job, { kind: 'rejected', error: sub ? '這台機器沒有勾選「接受子任務分工」' : '這台機器目前不接受遠端需求' }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '（設定不允許）'); return; }
             const max = Math.max(1, Math.min(16, Number(s.maxParallel) || 3)); rg.running = rg.running || 0; rg.waiting = rg.waiting || [];
