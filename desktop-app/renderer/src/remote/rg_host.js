@@ -77,6 +77,9 @@ const FaRemoteHost = (function () {
             else if (m.type === 'task_ack' || m.type === 'task_ev') this._rgOnEvent(m);
             else if (m.type === 'task_stop') this._rgOnStop(m);
             else if (m.type === 'task_sync') this._rgOnSync(m);
+            else if (m.type === 'settings_get') this._rgOnSettingsGet(m);
+            else if (m.type === 'settings_set') this._rgOnSettingsSet(m);
+            else if (m.type === 'settings' || m.type === 'settings_ack') this._rgResolveAsk(m);
             else if (m.type === 'agents_req') { try { await rg.room.send(m.from, 'agents', { rid: m.body && m.body.rid, list: this._rgAgentsList() }); } catch (_) { /* */ } }
             else if (m.type === 'agents') { rg.agentLists = rg.agentLists || {}; rg.agentLists[m.from] = { at: Date.now(), list: (m.body && m.body.list) || [] }; this._rgRenderAgents(); }
             else this._rgLog('收到來自 ' + who + ' 的「' + m.type + '」（不認得的訊息）');
@@ -105,6 +108,7 @@ const FaRemoteHost = (function () {
             btn.addEventListener('click', (e) => { e.stopPropagation(); this._rgToggle(); });
             panel.addEventListener('click', (e) => this._rgOnClick(e));
             panel.addEventListener('input', (e) => this._rgOnInput(e));
+            panel.addEventListener('contextmenu', (e) => { const n = e.target.closest('[data-rg-name]'); if (!n || !this._rg) return; e.preventDefault(); this._rgOpenMenu(e.clientX, e.clientY, n.dataset.id); });
             // 點在面板外面才收起。注意：點按鈕後面板內容可能立刻被換掉（原本被點的元素已不在畫面上），所以用事件發生當下的路徑判斷，不用 contains
             document.addEventListener('click', (e) => { const path = e.composedPath ? e.composedPath() : []; if (this._rgOpen && !path.includes(panel) && !path.includes(btn)) this._rgToggle(false); });
             this._rgRender();
@@ -118,6 +122,70 @@ const FaRemoteHost = (function () {
             const opts = ['<option value="">交給：本機</option>'].concat(this._rgTargets().map((m) => '<option value="' + this._escapeHtml(m.nodeId) + '"' + (m.allow === false ? ' disabled' : '') + '>交給：' + this._escapeHtml(m.name) + (m.kind === 'desktop' ? '（桌面）' : '（網頁）') + (m.busy ? ' 忙碌' : '') + (m.allow === false ? ' 不接受' : '') + '</option>'));
             sel.innerHTML = opts.join(''); sel.value = this._rgTargets().some((m) => m.nodeId === cur) ? cur : ''; if (sel.value !== cur) this._rgTarget = sel.value;
             sel.style.display = '';
+        },
+        // ---------------------------------------------------------------- 右鍵選單與「設置分派規則」
+        _rgOpenMenu(x, y, nodeId) {
+            const rg = this._rg; if (!rg) return; const m = rg.room.members().find((k) => k.nodeId === nodeId); if (!m) return;
+            document.getElementById('ai-rg-menu') && document.getElementById('ai-rg-menu').remove();
+            const pal = this._getThemePalette(), self = nodeId === rg.room.self.nodeId, menu = document.createElement('div'); menu.id = 'ai-rg-menu';
+            menu.style.cssText = 'position:fixed; z-index:1000001; min-width:150px; padding:4px 0; border-radius:8px; font-size:12px; box-shadow:0 4px 16px rgba(0,0,0,.4); background:' + pal.windowBg + '; color:' + pal.chatText + '; border:1px solid ' + pal.windowBorder + ';';
+            const items = [['rules', '⚙️ 設置分派規則…'], ['agents', '🧩 查看子任務']].concat(self ? [] : [['ping', '📡 測試連線']]).concat([['copy', '📋 複製機器名稱']]);
+            menu.innerHTML = '<div style="padding:4px 12px; font-size:11px; opacity:.7;">' + this._escapeHtml(m.name) + '</div>' + items.map(([a, l]) => '<div data-menu="' + a + '" style="padding:6px 12px; cursor:pointer;">' + l + '</div>').join('');
+            menu.style.left = Math.min(x, window.innerWidth - 180) + 'px'; menu.style.top = Math.min(y, window.innerHeight - 160) + 'px'; document.body.appendChild(menu);
+            menu.querySelectorAll('[data-menu]').forEach((el) => { el.onmouseenter = () => { el.style.background = 'rgba(118,185,0,.25)'; }; el.onmouseleave = () => { el.style.background = ''; }; });
+            const close = () => { menu.remove(); document.removeEventListener('pointerdown', off, true); document.removeEventListener('keydown', esc, true); };
+            const off = (ev) => { if (!menu.contains(ev.target)) close(); }, esc = (ev) => { if (ev.key === 'Escape') close(); };
+            setTimeout(() => { document.addEventListener('pointerdown', off, true); document.addEventListener('keydown', esc, true); }, 0);
+            menu.addEventListener('click', async (ev) => {
+                const a = ev.target.closest('[data-menu]'); if (!a) return; const act = a.dataset.menu; close();
+                if (act === 'rules') this._rgOpenRules(nodeId);
+                else if (act === 'agents') { if (rg.agentView !== nodeId) await this._rgToggleAgents(nodeId); }
+                else if (act === 'ping') { const out = document.querySelector('#ai-rg-panel [data-rg-ping="' + nodeId + '"]'); if (out) out.textContent = '…'; try { const ms = await this._rgPing(nodeId); if (out) { out.textContent = ms + ' ms'; out.style.color = '#76b900'; } } catch (e) { if (out) { out.textContent = '失敗'; out.style.color = '#f87171'; } } }
+                else if (act === 'copy') { try { await navigator.clipboard.writeText(m.name); } catch (_) { /* */ } }
+            });
+        },
+        async _rgOpenRules(nodeId) {
+            const rg = this._rg, p = document.getElementById('ai-rg-panel'); if (!rg || !p) return; const m = rg.room.members().find((k) => k.nodeId === nodeId); if (!m) return;
+            this._rgToggle(true); const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s)), self = nodeId === rg.room.self.nodeId, inp = this._rgInputStyle(pal);
+            let ov = p.querySelector('[data-rg="rules"]'); if (ov) ov.remove();
+            ov = document.createElement('div'); ov.setAttribute('data-rg', 'rules'); ov.style.cssText = 'position:absolute; inset:0; z-index:6; overflow-y:auto; padding:12px; box-sizing:border-box; background:' + pal.windowBg + '; color:' + pal.chatText + ';';
+            const pref = this._rgPrefOf(m.name);
+            ov.innerHTML = '<div style="font-weight:bold; margin-bottom:8px;">⚙️ 設置分派規則：' + e(m.name) + (self ? '（這台）' : '') + '</div>'
+                + '<div style="font-weight:bold; margin:6px 0 4px;">這台機器的設定' + (self ? '' : '（遠端修改，送到對方套用）') + '</div><div data-rl="remote" style="font-size:12px;">讀取中…</div>'
+                + '<div style="font-weight:bold; margin:12px 0 4px;">我這邊的分派偏好（只存在我的瀏覽器）</div>'
+                + '<label style="display:flex; gap:6px; align-items:center; font-size:12px; margin-bottom:4px;"><input type="checkbox" data-rl="auto" ' + (pref.auto !== false ? 'checked' : '') + '> 參與「auto」自動挑選</label>'
+                + '<label style="font-size:12px;">優先順序（數字大的優先）</label><input type="number" min="1" max="10" data-rl="priority" value="' + pref.priority + '" style="' + inp + '">'
+                + '<label style="font-size:12px;">範圍</label><select data-rl="scope" style="' + inp + '"><option value="all">全部子任務</option><option value="only">只限含有這些關鍵字的</option><option value="except">排除含有這些關鍵字的</option></select>'
+                + '<label style="font-size:12px;">關鍵字（用逗號分開，例如：程式, 簡報）</label><input data-rl="words" value="' + e(pref.words) + '" style="' + inp + '">'
+                + '<label style="font-size:12px;">從我這邊最多同時分幾個給它</label><input type="number" min="1" max="16" data-rl="maxFromMe" value="' + pref.maxFromMe + '" style="' + inp + '">'
+                + '<label style="font-size:12px;">備註</label><input data-rl="note" value="' + e(pref.note) + '" style="' + inp + '">'
+                + '<div data-rl="msg" style="min-height:16px; font-size:12px; margin:6px 0;"></div>'
+                + '<div style="display:flex; gap:8px;"><button type="button" data-rl-act="save" style="flex:1; padding:8px; border:none; border-radius:6px; background:#76b900; color:#fff; font-weight:bold; cursor:pointer;">儲存</button><button type="button" data-rl-act="cancel" style="flex:1; padding:8px; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + '; cursor:pointer;">取消</button></div>';
+            p.appendChild(ov); ov.querySelector('[data-rl="scope"]').value = pref.scope;
+            const q = (n) => ov.querySelector('[data-rl="' + n + '"]'), say = (txt, ok) => { const el = q('msg'); el.textContent = txt; el.style.color = ok ? '#76b900' : '#f87171'; };
+            let loaded = null;
+            const paintRemote = (v) => { loaded = v; q('remote').innerHTML = '<label style="display:flex; gap:6px; align-items:center; margin-bottom:4px;"><input type="checkbox" data-rr="allowDispatch" ' + (v.allowDispatch ? 'checked' : '') + '> 允許其他機器派工給它</label>'
+                + '<label style="display:flex; gap:6px; align-items:center; margin-bottom:4px;"><input type="checkbox" data-rr="acceptSubtasks" ' + (v.acceptSubtasks ? 'checked' : '') + '> 接受子任務分工</label>'
+                + '<label style="display:flex; gap:6px; align-items:center; margin-bottom:4px;"><input type="checkbox" data-rr="readonlySandbox" ' + (v.readonlySandbox ? 'checked' : '') + '> 只允許唯讀與沙盒工具</label>'
+                + '<label style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">同時處理遠端任務上限 <input type="number" min="1" max="16" data-rr="maxParallel" value="' + v.maxParallel + '" style="width:50px; padding:2px;"> 個</label>'; };
+            if (self) paintRemote(this._rgRemoteValues());
+            else this._rgAsk(nodeId, 'settings_get', {}, 'settings', 6000).then((r) => paintRemote(r.values || {})).catch((err) => { q('remote').textContent = '讀取失敗：' + err.message + '（仍可儲存我這邊的偏好）'; });
+            ov.addEventListener('click', async (ev) => {
+                const a = ev.target.closest('[data-rl-act]'); if (!a) return;
+                if (a.dataset.rlAct === 'cancel') { ov.remove(); return; }
+                this._rgSavePref(m.name, { auto: q('auto').checked, priority: Math.max(1, Math.min(10, Number(q('priority').value) || 5)), scope: q('scope').value, words: q('words').value, maxFromMe: Math.max(1, Math.min(16, Number(q('maxFromMe').value) || 3)), note: q('note').value });
+                if (loaded) {
+                    const next = {}; ov.querySelectorAll('[data-rr]').forEach((el) => { next[el.dataset.rr] = el.type === 'checkbox' ? el.checked : Number(el.value); });
+                    const patch = {}; Object.keys(next).forEach((k) => { if (next[k] !== loaded[k]) patch[k] = next[k]; });
+                    if (Object.keys(patch).length) {
+                        try {
+                            if (self) this._rgApplySettings(this._rgSanitizeSettings(patch));
+                            else { const r = await this._rgAsk(nodeId, 'settings_set', { patch }, 'settings_ack', 6000); if (!r.ok) { say('對方沒有接受：' + (r.error || ''), false); return; } this._rgLog('已修改 ' + m.name + ' 的設定：' + Object.keys(patch).join('、')); }
+                        } catch (err) { say('遠端設定沒有送達：' + err.message + '（我這邊的偏好已儲存）', false); return; }
+                    }
+                }
+                say('已儲存', true); setTimeout(() => { if (ov.parentNode) ov.remove(); }, 700);
+            });
         },
         _rgToggle(open) {
             const p = document.getElementById('ai-rg-panel'); if (!p) return;
@@ -181,7 +249,7 @@ const FaRemoteHost = (function () {
         _rgRenderMembers() {
             const p = document.getElementById('ai-rg-panel'), rg = this._rg; if (!p || !rg) return; const box = p.querySelector('[data-rg="members"]'); if (!box) return;
             const e = (s) => this._escapeHtml(String(s)), me = rg.room.self.nodeId;
-            box.innerHTML = rg.room.members().map((m) => '<div style="display:flex; align-items:center; gap:6px; padding:3px 0;">🟢 <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><b>' + e(m.name) + '</b>' + (m.nodeId === me ? '（這台）' : '') + '</span><span style="font-size:10px; opacity:.7;">' + (m.kind === 'desktop' ? '桌面' : '網頁') + (m.busy ? '・忙碌' : '') + (m.allow === false ? '・不接受派工' : '') + (m.sub ? '・可分工' : '') + (m.agents ? '・跑 ' + m.agents + ' 個子任務' : '') + '</span>'
+            box.innerHTML = rg.room.members().map((m) => '<div style="display:flex; align-items:center; gap:6px; padding:3px 0;">🟢 <span data-rg-name="1" data-id="' + e(m.nodeId) + '" title="按右鍵：設置分派規則、測試連線、查看子任務" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:context-menu;"><b>' + e(m.name) + '</b>' + (m.nodeId === me ? '（這台）' : '') + '</span><span style="font-size:10px; opacity:.7;">' + (m.kind === 'desktop' ? '桌面' : '網頁') + (m.busy ? '・忙碌' : '') + (m.allow === false ? '・不接受派工' : '') + (m.sub ? '・可分工' : '') + (m.agents ? '・跑 ' + m.agents + ' 個子任務' : '') + '</span>'
                 + '<button type="button" data-rg-act="agents" data-id="' + e(m.nodeId) + '" title="看這台機器現在跑的子任務" style="padding:1px 6px; font-size:11px; cursor:pointer;">子任務</button>'
                 + (m.nodeId === me ? '' : '<button type="button" data-rg-act="ping" data-id="' + e(m.nodeId) + '" style="padding:1px 6px; font-size:11px; cursor:pointer;">測試</button>') + '<span data-rg-ping="' + e(m.nodeId) + '" style="font-size:10px; min-width:44px;"></span></div>').join('') || '<div style="opacity:.7;">（沒有其他機器在線）</div>';
             const btn = document.getElementById('ai-rg-btn'); if (btn) btn.textContent = this._rgBtnLabel();

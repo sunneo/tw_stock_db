@@ -94,8 +94,14 @@ const FaRemoteDispatch = (function () {
             const cands = this._rgTargets().filter((x) => x.sub === true);
             if (!cands.length) return { ok: false, error: '群組裡沒有任何機器勾選「接受子任務分工」（要在那台機器自己的面板勾選）' };
             let target = null; const want = String(machine || 'auto').trim();
+            const mine = (x) => Object.values(rg.tasks || {}).filter((k) => !k.done && k.targetId === x.nodeId).length; // 我這邊已經分給它、還沒完成的
             if (want && want !== 'auto') { target = cands.find((x) => x.name === want); if (!target) return { ok: false, error: '找不到可分工的機器「' + want + '」。可用：' + cands.map((x) => x.name).join('、') }; }
-            else target = cands.slice().sort((a, b) => (a.agents || 0) - (b.agents || 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0))[0];
+            else {
+                const ok = cands.filter((x) => { const pf = this._rgPrefOf(x.name); return pf.auto !== false && this._rgPrefAllows(pf, text) && mine(x) < pf.maxFromMe; });
+                if (!ok.length) return { ok: false, error: '沒有符合「分派規則」的機器可以自動分工（都被排除、範圍不符，或我這邊分給它的已達上限）。可以指定機器名稱，或到機器名稱右鍵「設置分派規則」調整。' };
+                target = ok.sort((a, b) => this._rgPrefOf(b.name).priority - this._rgPrefOf(a.name).priority || (a.agents || 0) - (b.agents || 0) || (a.busy ? 1 : 0) - (b.busy ? 1 : 0))[0];
+            }
+            if (mine(target) >= this._rgPrefOf(target.name).maxFromMe) return { ok: false, machine: target.name, error: '我這邊分給 ' + target.name + ' 的已達上限（' + this._rgPrefOf(target.name).maxFromMe + '），請稍後再試或換一台' };
             const taskId = rg.room.self.nodeId.slice(0, 6) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
             const prog = this._createProgressWidget('🧩 子任務分給 ' + target.name); prog.update({ status: '送出中…' });
             const task = { taskId, targetId: target.nodeId, targetName: target.name, prog, lastSeq: 0, done: false, text, run: this, ack: false, stopSent: false, absent: false, quiet: true };
@@ -117,6 +123,50 @@ const FaRemoteDispatch = (function () {
                 '把一個可以獨立完成的子任務分給遠端群組裡「接受子任務分工」的機器，等它做完回傳文字結果（那台機器用自己的模型與工具）。task：完整的任務描述（對方看不到這邊的對話，要寫清楚）；machine：機器名稱，或 "auto"（挑最空閒的）。可以同時對不同機器多次呼叫來平行分工。先用 list_remote_machines 看有哪些機器可用。',
                 async function (raw) { let a = {}; try { a = await this.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } const text = String(a.task || '').trim(); if (!text) return JSON.stringify({ ok: false, error: '缺少 task' }); return JSON.stringify(await this._rgDelegate(text, a.machine)); },
                 { type: 'object', properties: { task: { type: 'string', description: '完整的任務描述' }, machine: { type: 'string', description: '機器名稱，或 auto' } }, required: ['task'], additionalProperties: false });
+        },
+        // ---------------------------------------------------------------- 分派規則
+        // 遠端可以修改的設定（白名單；進得了群組就是用密碼同意了）
+        _rgRemoteValues() { const s = this._rgSettings(); return { allowDispatch: !!s.allowDispatch, acceptSubtasks: !!s.acceptSubtasks, readonlySandbox: !!s.readonlySandbox, maxParallel: Math.max(1, Math.min(16, Number(s.maxParallel) || 3)) }; },
+        _rgSanitizeSettings(p) {
+            const out = {}; p = p || {};
+            ['allowDispatch', 'acceptSubtasks', 'readonlySandbox'].forEach((k) => { if (typeof p[k] === 'boolean') out[k] = p[k]; });
+            if (p.maxParallel != null && Number.isFinite(Number(p.maxParallel))) out.maxParallel = Math.max(1, Math.min(16, Math.round(Number(p.maxParallel))));
+            return out;
+        },
+        // 套用設定（本機自己改、或群組成員遠端改）：存起來、更新在線名單與面板
+        _rgApplySettings(clean) {
+            this._rgSaveSettings(clean); const rg = this._rg;
+            if (rg) { if ('allowDispatch' in clean) rg.room.self.allow = clean.allowDispatch; if ('acceptSubtasks' in clean) rg.room.self.sub = clean.acceptSubtasks; rg.room.publishSelf().catch(() => {}); }
+            const p = document.getElementById('ai-rg-panel'); if (p && this._rg) { p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
+        },
+        async _rgOnSettingsGet(m) { const rg = this._rg; if (!rg) return; try { await rg.room.send(m.from, 'settings', { rid: m.body && m.body.rid, values: this._rgRemoteValues() }); } catch (_) { /* */ } },
+        async _rgOnSettingsSet(m) {
+            const rg = this._rg; if (!rg) return; const b = m.body || {}; const clean = this._rgSanitizeSettings(b.patch);
+            const who = this._rgTargetName(m.from) || m.from;
+            if (!Object.keys(clean).length) { await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: false, error: '沒有可以修改的項目', values: this._rgRemoteValues() }).catch(() => {}); return; }
+            const label = { allowDispatch: '允許派工', acceptSubtasks: '接受子任務分工', readonlySandbox: '只允許唯讀與沙盒', maxParallel: '同時處理上限' };
+            this._rgApplySettings(clean);
+            this._rgLog(who + ' 修改了這台機器的設定：' + Object.keys(clean).map((k) => label[k] + '＝' + (typeof clean[k] === 'boolean' ? (clean[k] ? '開' : '關') : clean[k])).join('、'));
+            await rg.room.send(m.from, 'settings_ack', { rid: b.rid, ok: true, values: this._rgRemoteValues() }).catch(() => {});
+        },
+        // 向某台機器要東西並等回覆（rid 對應）
+        _rgAsk(nodeId, type, body, replyType, ms) {
+            const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
+            const rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6); rg.asks = rg.asks || {};
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => { delete rg.asks[rid]; reject(new Error('對方沒有回應（' + Math.round((ms || 6000) / 1000) + ' 秒）')); }, ms || 6000);
+                rg.asks[rid] = { replyType, resolve: (v) => { clearTimeout(timer); delete rg.asks[rid]; resolve(v); } };
+                rg.room.send(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(timer); delete rg.asks[rid]; reject(e); });
+            });
+        },
+        _rgResolveAsk(m) { const rg = this._rg, b = m.body || {}, a = rg && rg.asks && rg.asks[b.rid]; if (a && a.replyType === m.type) a.resolve(b); },
+        // 我這邊對某台機器的分派偏好（只存在這個瀏覽器；以機器名稱為鍵）
+        _rgPrefs() { try { return JSON.parse(localStorage.getItem('fa_remote_prefs_v1') || '{}') || {}; } catch (_) { return {}; } },
+        _rgPrefOf(name) { return Object.assign({ auto: true, priority: 5, scope: 'all', words: '', maxFromMe: 3, note: '' }, this._rgPrefs()[name] || {}); },
+        _rgSavePref(name, patch) { const all = this._rgPrefs(); all[name] = Object.assign(this._rgPrefOf(name), patch || {}); try { localStorage.setItem('fa_remote_prefs_v1', JSON.stringify(all)); } catch (_) { /* */ } },
+        _rgPrefAllows(pref, text) {
+            const words = String(pref.words || '').split(/[,，、\s]+/).map((w) => w.trim().toLowerCase()).filter(Boolean); if (pref.scope === 'all' || !words.length) return true;
+            const hit = words.some((w) => String(text || '').toLowerCase().includes(w)); return pref.scope === 'only' ? hit : !hit;
         },
         // 這台機器現在跑著的子任務清單（給在線名單的數字與「點開看」用）
         _rgAgentsList() { return Array.from(AGENTS.values()).map((a) => ({ id: a.id, label: a.label, source: a.source, kind: a.kind, task: a.task, ago: Math.round((Date.now() - a.startedAt) / 1000) })); },
