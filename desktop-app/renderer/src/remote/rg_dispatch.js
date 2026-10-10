@@ -317,7 +317,7 @@ const FaRemoteDispatch = (function () {
         // ---------------------------------------------------------------- 被派工的一端
         _rgEvent(job, ev) {
             const rg = this._rg; if (!rg) return;
-            ev.seq = job.events.length + 1; job.events.push(ev); this._rgSaveTask(job);
+            ev.seq = job.events.length + 1; job.events.push(ev); this._rgSaveTask(job); if (TERMINAL[ev.kind] && job.chatCtx) this._rgChatRecord(job, ev);
             rg.room.send(job.from, 'task_ev', Object.assign({ taskId: job.taskId }, ev)).catch(() => { /* 對方離線：回來時用 task_sync 補 */ });
         },
         async _rgOnTask(m) {
@@ -346,6 +346,7 @@ const FaRemoteDispatch = (function () {
         _rgPublishSoon() { const rg = this._rg; if (!rg || rg.pubTimer) return; rg.pubTimer = setTimeout(() => { rg.pubTimer = null; if (this._rg === rg) { rg.room.self.agents = AGENTS.size; rg.room.publishSelf().catch(() => {}); this._rgRenderMembers && this._rgRenderMembers(); } }, 400); },
         async _rgRunTask(job) {
             const s = this._rgSettings(); const prog = this._createProgressWidget((job.sub ? '🧩 子任務（來自 ' : '🛰️ 遠端需求（來自 ') + job.fromName + '）：' + job.text.slice(0, 24));
+            try { job.chatCtx = await this._rgCreateRemoteChat(job); } catch (_) { /* 記錄成對話失敗不影響執行 */ }
             let lastSent = 0;
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
@@ -363,6 +364,31 @@ const FaRemoteDispatch = (function () {
             } catch (e) { const msg = String((e && e.message) || e); this._rgEvent(job, { kind: 'failed', error: msg }); prog.fail(msg); }
             try { const rg1 = this._rg; if (rg1 && rg1.captures && job.cap) rg1.captures.delete(job.cap); } catch (_) { /* */ }
             job.done = true;
+        },
+        // ---------------------------------------------------------------- 遠端需求記成這台機器上的一個新對話
+        // 別的機器交給這台的需求（不含 AI 拆出來的子任務），會在左邊清單長出一個新對話，第一則訊息記錄「從哪台機器、什麼時候、指紋是否核對過」，
+        // 執行結果接在下面。這樣使用者回到這台機器時，看得到有誰要它做了什麼。
+        async _rgCreateRemoteChat(job) {
+            if (job.sub || !this._chatListEnabled || !this._chatIndex || !this._chatListReady) return null;
+            const rg = this._rg, mem = rg && rg.room.members().find((m) => m.nodeId === job.from), st = mem ? this._rgTrustState(mem) : 'none', fp = (rg && rg.fps && rg.fps[job.from]) || '';
+            const id = this._chatNewId('c'), now = Date.now(), title = '來自 ' + job.fromName + '：' + String(job.text).replace(/\s+/g, ' ').slice(0, 22);
+            this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
+            const ctx = this._chatCtxNew(id); this._chatCtxs.set(id, ctx); const run = this._chatRunner(ctx);
+            const trust = { trusted: '指紋已核對', changed: '⚠️ 指紋跟你核對過的不同', new: '指紋尚未核對', none: '沒有指紋' }[st];
+            run._pushAssistantMessage('📨 **遠端需求記錄**\n\n- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）\n- 時間：' + new Date(now).toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n這是群組裡另一台機器交給這台的需求，由這台機器用自己的模型與工具執行，結果會接在下面。', null);
+            ctx.messages.push({ role: 'user', content: job.text });
+            try { run._persistChatHistory(); } catch (_) { /* */ }
+            this._chatListSig = null; this._renderChatList(); this._saveChatIndex(); this._chatMarkUnread(ctx); return ctx;
+        },
+        _rgChatRecord(job, ev) {
+            const ctx = job.chatCtx; if (!ctx) return;
+            try {
+                const run = this._chatRunner(ctx), refs = (ev.refs || []).map((r) => r.name).join('、');
+                const txt = ev.kind === 'done' ? (ev.text || '（沒有文字結果）') + (refs ? '\n\n> 📎 產生了：' + refs + '（發出需求的那台機器可以開啟）' : '') : ev.kind === 'stopped' ? '⏹ 已依對方要求停止。' + (ev.text ? '\n\n' + ev.text : '') : '⚠️ ' + (ev.kind === 'rejected' ? '被拒絕：' : '失敗：') + (ev.error || '');
+                run._pushAssistantMessage(txt, null); run._persistChatHistory();
+                const en = this._chatEntry(ctx.id); if (en) { en.updatedAt = Date.now(); this._saveChatIndex(); }
+                this._chatListSig = null; this._renderChatList(); this._chatMarkUnread(ctx);
+            } catch (_) { /* 記錄失敗不影響任務本身 */ }
         },
         // 發出端斷線回來要求補齊：重播序號大於 since 的事件
         _rgOnSync(m) {
