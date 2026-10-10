@@ -18103,7 +18103,10 @@ const FaRemoteHost = (function () {
     const SB2 = { url: 'https://wxxovxvasgwqnchwxbxo.supabase.co', key: 'sb_publishable_5YoJVSApOHEsEcKXi3vwxQ_MWzvhh9q', lib: SB.lib };
     // 第三層：Cloudflare Worker 上的 KV 慢速信箱（兩個 Supabase 都不能用時的最後備援；很慢，只適合文字）
     const KV3 = { kind: 'kv', url: 'https://lively-dream-c1f0.sunneo529.workers.dev' };
-    const BACKENDS = [Object.assign({ name: '主要' }, SB), Object.assign({ name: '備援' }, SB2), Object.assign({ name: '慢速備援（Cloudflare）' }, KV3)];
+    const SB3 = { url: 'https://kvnnjlbtitvkxfanutup.supabase.co', key: 'sb_publishable_XA9f-Y5ZcIbk-mVzTdcb-A_AMhPwbA_', lib: SB.lib };
+    const SB4 = { url: 'https://wwpiriwfmmpmtckenqjo.supabase.co', key: 'sb_publishable_MeHx1Qjhu6IV-rp6LvMS7g_Hwp-jUTp', lib: SB.lib };
+    // 後端順序：四個 Supabase 專案（新房間輪流挑起點），最後才是 Cloudflare KV 慢速信箱。四個專案都要執行過 supabase/remote_group.sql
+    const BACKENDS = [Object.assign({ name: '主要' }, SB), Object.assign({ name: '備援' }, SB2), Object.assign({ name: '備援2' }, SB3), Object.assign({ name: '備援3' }, SB4), Object.assign({ name: '慢速備援（Cloudflare）' }, KV3)];
     const STORE = 'fa_remote_group_v1';
     const methods = {
         _rgSettings() {
@@ -18157,7 +18160,7 @@ const FaRemoteHost = (function () {
                 catch (e) { this._rgLog('重新連線失敗（第 ' + rg.retry + ' 次）：' + String((e && e.message) || e).slice(0, 60)); if (rg.retry < 4) this._rgScheduleReconnect(rg); else this._rgFailover(rg); }
             }, wait);
         },
-        _rgBackendOrder() { return Math.random() < 0.5 ? [0, 1, 2] : [1, 0, 2]; },
+        _rgBackendOrder() { const sb = []; BACKENDS.forEach((b, i) => { if (b.kind !== 'kv') sb.push(i); }); const k = Math.floor(Math.random() * sb.length); return sb.slice(k).concat(sb.slice(0, k)).concat(BACKENDS.map((b, i) => b.kind === 'kv' ? i : -1).filter((i) => i >= 0)); },
         // 目前這個群組是不是走慢速信箱：是的話所有等待回覆的逾時都放寬
         _rgSlow() { const rg = this._rg; return rg && BACKENDS[rg.idx || 0] && BACKENDS[rg.idx || 0].kind === 'kv' ? 10 : 1; },
         // 同一個代號與驗證值也登記到其他專案（背景、失敗就算了）：之後某個專案用光額度時，所有成員可以各自依序改連下一個，在同一個房間重逢
@@ -18399,7 +18402,7 @@ const FaRemoteHost = (function () {
                 + '<div style="margin:10px 0 4px; font-weight:bold; font-size:12px;">選一種方式</div>'
                 + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:6px;"><input type="radio" name="rbm" value="notify" checked><span><b>通知現在在線的所有人，大家確認後一起搬</b>（換密碼、換代號，但沒有要踢人）</span></label>'
                 + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:8px;"><input type="radio" name="rbm" value="silent"><span><b>只換不通知</b>（要踢人用）：舊房間會被關掉登記，新代號與密碼我顯示給你，由你用電話等管道告訴要留下的人。<b>不要</b>在舊群組裡傳，被踢的人也看得到。</span></label>'
-                + '<div style="font-size:12px; margin-bottom:8px;">新群組放在：<select data-rb="target" style="max-width:100%;"><option value="0">主要 Supabase 專案</option><option value="1">備援 Supabase 專案</option><option value="2">慢速備援（Cloudflare，很慢）</option></select><div style="opacity:.7; margin-top:2px;">目前在「' + e(rg.backend || '主要') + '」；現在的專案流量用完或連不上時才需要換。</div></div>'
+                + '<div style="font-size:12px; margin-bottom:8px;">新群組放在：<select data-rb="target" style="max-width:100%;">' + BACKENDS.map((b, i) => '<option value="' + i + '">' + e(b.name) + (b.kind === 'kv' ? '（很慢）' : ' Supabase 專案') + '</option>').join('') + '</select><div style="opacity:.7; margin-top:2px;">目前在「' + e(rg.backend || '主要') + '」；現在的專案流量用完或連不上時才需要換。</div></div>'
                 + '<div data-rb="msg" style="min-height:16px; font-size:12px; margin:6px 0;"></div>'
                 + '<button type="button" data-rb-act="go" style="' + this._rgBtnStyle(pal, true) + '">建立新群組並搬過去</button><button type="button" data-rb-act="close" style="' + this._rgBtnStyle(pal) + '">取消</button>';
             ov.querySelector('[data-rb="target"]').value = String(rg.idx || 0);

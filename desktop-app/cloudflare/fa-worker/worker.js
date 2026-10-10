@@ -1,12 +1,14 @@
 // Floating Assistant 的 Cloudflare Worker（一個 Worker 做兩件事）：
-//  1. 保活：每 5 天對兩個 Supabase 專案各送一個最輕的請求，避免免費專案 7 天沒有活動被暫停。
-//  2. 慢速信箱（Cloudflare KV）：兩個 Supabase 都不能用時，遠端群組退到這裡傳訊息。很慢（輪詢），只適合文字與少量訊息。
+//  1. 保活：每 5 天對四個 Supabase 專案各送一個最輕的請求，避免免費專案 7 天沒有活動被暫停。
+//  2. 慢速信箱（Cloudflare KV）：所有 Supabase 專案都不能用時，遠端群組退到這裡傳訊息。很慢（輪詢），只適合文字與少量訊息。
 // 這裡只存「加密過的」內容與一個房間登記（代號＋由密碼推導的驗證值），看不到密碼與明文。
 // 設定與部署見 README.md。KV 綁定名稱必須是 KV。
 
 const PROJECTS = [
   { name: '主要', url: 'https://schvtbxufjwkibnfgbay.supabase.co', key: 'sb_publishable_Y4hgmYhipEf2S-rS-v45rg_R1Gg-dZe' },
   { name: '備援', url: 'https://wxxovxvasgwqnchwxbxo.supabase.co', key: 'sb_publishable_5YoJVSApOHEsEcKXi3vwxQ_MWzvhh9q' },
+  { name: '備援2', url: 'https://kvnnjlbtitvkxfanutup.supabase.co', key: 'sb_publishable_XA9f-Y5ZcIbk-mVzTdcb-A_AMhPwbA_' },
+  { name: '備援3', url: 'https://wwpiriwfmmpmtckenqjo.supabase.co', key: 'sb_publishable_MeHx1Qjhu6IV-rp6LvMS7g_Hwp-jUTp' },
 ];
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST, GET, OPTIONS', 'access-control-allow-headers': 'content-type' };
 const json = (o, status) => new Response(JSON.stringify(o), { status: status || 200, headers: Object.assign({ 'content-type': 'application/json; charset=utf-8' }, CORS) });

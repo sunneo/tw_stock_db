@@ -2,8 +2,8 @@
 
 一個 Worker 做兩件事：
 
-1. **保活**：每 5 天對兩個 Supabase 專案各送一個最輕的請求（不改資料），避免免費專案 7 天沒有活動被暫停。
-2. **慢速信箱（Cloudflare KV）**：兩個 Supabase 專案都不能用時，遠端群組自動退到這裡。用輪詢收訊息，很慢（幾秒到幾十秒），
+1. **保活**：每 5 天對四個 Supabase 專案各送一個最輕的請求（不改資料），避免免費專案 7 天沒有活動被暫停。
+2. **慢速信箱（Cloudflare KV）**：四個 Supabase 專案都不能用時，遠端群組自動退到這裡。用輪詢收訊息，很慢（幾秒到幾十秒），
    只適合文字與少量訊息，不適合傳大檔。內容是端對端加密的，這裡只存加密後的資料與房間登記（代號＋由密碼推導的驗證值）。
 
 網址：`https://lively-dream-c1f0.sunneo529.workers.dev`（App 裡寫死這個網址；要換網址得改 `renderer/src/remote/rg_host.js` 的 `KV3`）。
@@ -16,7 +16,7 @@
 2. **改程式**：Workers & Pages → 選 `lively-dream-c1f0` → 右上角 Edit code → 把整個編輯器內容換成這個資料夾裡 `worker.js` 的全部內容 → Deploy。
 3. **綁定 KV**：同一個 Worker → Settings → Bindings → Add → KV namespace → **Variable name 填 `KV`（大寫，必須是這個）** → 選剛建立的 KV → Deploy。
 4. **排程**：同一個 Worker → Settings → Trigger Events（Triggers）→ Cron Triggers → Add → `0 3 */5 * *`（每 5 天，凌晨 3 點 UTC）。
-5. **驗證**：用瀏覽器打開 Worker 網址，應該看到 JSON：`"kv": true`，以及兩個專案的狀態
+5. **驗證**：用瀏覽器打開 Worker 網址，應該看到 JSON：`"kv": true`，以及四個專案的狀態
    - `status: 200`：專案正常；`404`：專案活著但還沒執行 `supabase/remote_group.sql`；5xx 或逾時：專案可能被暫停，到 Supabase 後台按 Restore。
 
 原本的 Worker 內容會被取代；如果這個 Worker 之前有放別的東西，先備份。
