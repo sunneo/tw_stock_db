@@ -17,6 +17,7 @@ const MSG_TTL = 1800, MSG_KEEP = 30, MSG_AGE = 20 * 60 * 1000;
 const okCh = (c) => typeof c === 'string' && /^rg:[0-9a-f]{8,64}$/.test(c);
 const okNode = (n) => typeof n === 'string' && /^[0-9a-zA-Z_-]{3,40}$/.test(n);
 
+const isErr = (r) => !!(r && typeof r === 'object' && 'error' in r); // 編輯器的型別檢查會挑 r.error，用 in 判斷最乾淨
 async function getJson(kv, key) { const t = await kv.get(key); if (!t) return null; try { return JSON.parse(t); } catch (_) { return null; } }
 
 // ---- 房間登記（對應 Supabase 那邊的 rg_* 函式；回傳值一樣）
@@ -93,10 +94,10 @@ export default {
     if (!env.KV) return json({ error: '這個 Worker 還沒綁定 KV（綁定名稱要是 KV）' }, 500);
     let a; try { a = await request.json(); } catch (_) { return json({ error: '不是 JSON' }, 400); }
     try {
-      if (path.startsWith('/rpc/')) { const r = await rpc(env, path.slice(5), a); return json(r && r.error ? r : { result: r }, r && r.error ? 400 : 200); }
+      if (path.startsWith('/rpc/')) { const r = await rpc(env, path.slice(5), a); return json(isErr(r) ? r : { result: r }, isErr(r) ? 400 : 200); }
       const fn = { '/send': send, '/poll': poll, '/pres': pres, '/roster': roster, '/leave': leave }[path];
       if (!fn) return json({ error: '沒有這個路徑' }, 404);
-      const r = await fn(env, a); return json(r, r.error ? 400 : 200);
+      const r = await fn(env, a); return json(r, isErr(r) ? 400 : 200);
     } catch (e) { return json({ error: String((e && e.message) || e) }, 500); }
   },
 };

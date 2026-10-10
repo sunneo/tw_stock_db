@@ -18240,7 +18240,7 @@ const FaRemoteHost = (function () {
             if (creator) this._rgMirrorRegister(rg).catch(() => {});
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
             rg.timer = setInterval(() => { t.rpc('rg_touch_room', { p_code: code, p_verifier: keys.verifier }).then((ok) => { if (ok === false) this._rgLog('房間已被回收（閒置太久）'); }).catch(() => {}); }, 5 * 60 * 1000);
-            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是備援專案）' : '')); this._rgView = 'joined'; this._rgRender();
+            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是「' + rg.backend + '」）' : '')); this._rgView = 'joined'; this._rgRender();
             return { code, name: room.self.name };
         },
         async _rgLeave() {
@@ -18534,7 +18534,7 @@ const FaRemoteHost = (function () {
             const e = (s) => this._escapeHtml(String(s)), rg = this._rg, st = this._rgSettings(), pal0 = pal, btn = 'padding:3px 8px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; border-radius:6px; background:transparent; color:' + pal.chatText + ';';
             p.dataset.view = 'joined';
             p.innerHTML = '<div style="font-weight:bold; margin-bottom:6px;">🌐 遠端群組</div>'
-                + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:11px; opacity:.8;">房間代號</span><b style="font-size:18px; letter-spacing:1px;">' + e(rg.code) + '</b>' + (rg.idx ? '<span style="font-size:10px; color:#e2a03f;">（備援專案）</span>' : '') + '<button type="button" data-rg-act="copy" style="' + btn + '">複製</button></div>'
+                + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:11px; opacity:.8;">房間代號</span><b style="font-size:18px; letter-spacing:1px;">' + e(rg.code) + '</b>' + (rg.idx ? '<span style="font-size:10px; color:#e2a03f;">（' + e(rg.backend) + '）</span>' : '') + '<button type="button" data-rg-act="copy" style="' + btn + '">複製</button></div>'
                 + '<div style="font-size:11px; opacity:.85; margin-bottom:8px;">這台：<b>' + e(rg.room.self.name) + '</b>（' + (rg.room.self.kind === 'desktop' ? '桌面' : '網頁') + '）　指紋 <span data-rg="fp">…</span></div>'
                 + '<div style="font-weight:bold; margin:8px 0 4px;">機器清單</div><div data-rg="members"></div><div data-rg="agentbox"></div>'
                 + '<div style="font-weight:bold; margin:12px 0 4px;">設定</div>'
