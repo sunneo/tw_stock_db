@@ -27,14 +27,14 @@
             this.room = opts.room; this.getFile = opts.getFile; this.allowed = opts.allowed || (() => false); this.log = opts.log || (() => {});
             this.RTC = opts.rtc === undefined ? (typeof RTCPeerConnection !== 'undefined' ? RTCPeerConnection : null) : (opts.rtc && opts.rtc.RTCPeerConnection) || null;
             this.iceServers = (opts.rtc && opts.rtc.iceServers) || [{ urls: 'stun:stun.cloudflare.com:3478' }];
-            this.shaCache = new Map(); this.pending = new Map(); this.sessions = new Map(); this.disableP2p = false;
+            this.slow = 1; this.relayMax = RELAY_MAX; this.shaCache = new Map(); this.pending = new Map(); this.sessions = new Map(); this.disableP2p = false;
             this.room.on('message', (m) => { this.handle(m).catch((e) => this.log('傳輸訊息處理失敗：' + (e && e.message || e))); });
         }
         // 向某台機器要東西並等回覆
         ask(nodeId, type, body, replyType, ms) {
             const rid = rnd() + rnd();
             return new Promise((resolve, reject) => {
-                const t = setTimeout(() => { this.pending.delete(rid); reject(new Error('對方沒有回應')); }, ms || 8000);
+                const t = setTimeout(() => { this.pending.delete(rid); reject(new Error('對方沒有回應')); }, (ms || 8000) * this.slow);
                 this.pending.set(rid, { replyType, resolve: (v) => { clearTimeout(t); this.pending.delete(rid); resolve(v); }, reject: (e) => { clearTimeout(t); this.pending.delete(rid); reject(e); } });
                 this.room.send(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(t); this.pending.delete(rid); reject(e); });
             });
@@ -96,7 +96,7 @@
             let blob = null, via = '', p2pErr = null;
             if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
             if (!blob) {
-                if (meta.size > RELAY_MAX) throw new Error('直連失敗（' + (p2pErr ? p2pErr.message : '不支援') + '），而且檔案超過 ' + (RELAY_MAX >> 20) + ' MB，轉送備援不處理這麼大的檔案');
+                if (meta.size > this.relayMax) throw new Error('直連失敗（' + (p2pErr ? p2pErr.message : '不支援') + '），而且檔案超過 ' + (this.relayMax >= 1048576 ? (this.relayMax >> 20) + ' MB' : (this.relayMax >> 10) + ' KB') + '，轉送備援不處理這麼大的檔案');
                 blob = await this.fetchRelay(nodeId, id, meta, progress, cancel); via = '轉送';
             }
             if (blob.size !== meta.size) throw new Error('收到的大小不符（' + blob.size + ' ≠ ' + meta.size + '）');

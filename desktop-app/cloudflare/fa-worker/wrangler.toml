@@ -1,0 +1,12 @@
+# 只有裝得了 wrangler（Node 22、64 位元系統）時才用得到；否則照 README 用後台網頁部署。
+name = "lively-dream-c1f0"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["0 3 */5 * *"]
+
+# 先 `wrangler kv namespace create fa-kv`，把回傳的 id 貼在這裡
+# [[kv_namespaces]]
+# binding = "KV"
+# id = "<貼 id>"

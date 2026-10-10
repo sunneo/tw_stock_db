@@ -7,7 +7,9 @@ const FaRemoteHost = (function () {
     const SB = { url: 'https://schvtbxufjwkibnfgbay.supabase.co', key: 'sb_publishable_Y4hgmYhipEf2S-rS-v45rg_R1Gg-dZe', lib: 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js' };
     // 備援：第二個 Supabase 專案（同樣要執行 supabase/remote_group.sql）。主要專案的流量用完或連不上時改用它
     const SB2 = { url: 'https://wxxovxvasgwqnchwxbxo.supabase.co', key: 'sb_publishable_5YoJVSApOHEsEcKXi3vwxQ_MWzvhh9q', lib: SB.lib };
-    const BACKENDS = [Object.assign({ name: '主要' }, SB), Object.assign({ name: '備援' }, SB2)];
+    // 第三層：Cloudflare Worker 上的 KV 慢速信箱（兩個 Supabase 都不能用時的最後備援；很慢，只適合文字）
+    const KV3 = { kind: 'kv', url: 'https://lively-dream-c1f0.sunneo529.workers.dev' };
+    const BACKENDS = [Object.assign({ name: '主要' }, SB), Object.assign({ name: '備援' }, SB2), Object.assign({ name: '慢速備援（Cloudflare）' }, KV3)];
     const STORE = 'fa_remote_group_v1';
     const methods = {
         _rgSettings() {
@@ -17,7 +19,7 @@ const FaRemoteHost = (function () {
             return out;
         },
         _rgSaveSettings(patch) { const s = Object.assign(this._rgSettings(), patch || {}); try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (_) { /* 無痕模式 */ } return s; },
-        _rgTransport(i) { const b = BACKENDS[i || 0] || BACKENDS[0]; return new FaRemoteTransport.SupabaseTransport({ url: b.url, key: b.key, loadLib: () => _faLoadScriptOnce(b.lib) }); },
+        _rgTransport(i) { const b = BACKENDS[i || 0] || BACKENDS[0]; if (b.kind === 'kv') return new FaRemoteTransportKv.KvTransport({ url: b.url }); return new FaRemoteTransport.SupabaseTransport({ url: b.url, key: b.key, loadLib: () => _faLoadScriptOnce(b.lib) }); },
         _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }; },
         // 建立：代號由這邊隨機挑（8 位數起）；撞號（伺服器回 false）就換一個，連續撞號多加一位
         // 在某個後端登記一個新房間（代號由這邊隨機挑，8 位數起；撞號就換，連續撞號多加一位）。order：後端編號的嘗試順序
@@ -51,23 +53,60 @@ const FaRemoteHost = (function () {
             throw lastErr || new Error('無法建立群組');
         },
         // 輪流使用：新房間隨機挑一個專案開始（流量平均分攤，兩個專案都保持有活動），失敗再換另一個
-        // 通道掉線：等幾秒、若還沒自己恢復就重新連線，最多連續重試 8 次（間隔逐次拉長到 60 秒）；之後在記錄裡提醒用重建群組換專案
+        // 通道掉線：等幾秒、若還沒自己恢復就重新連線，連續重試 4 次（約 45 秒）還是不行，就自動改連下一個後端（主要→備援→慢速備援），原本的恢復後再搬回去
         _rgScheduleReconnect(rg) {
             if (!rg || rg.reconnecting || this._rg !== rg) return; rg.reconnecting = true; const wait = Math.min(60000, 3000 * Math.pow(2, rg.retry || 0));
             setTimeout(async () => {
                 rg.reconnecting = false; if (this._rg !== rg || rg.room.status === 'SUBSCRIBED') return;
                 rg.retry = (rg.retry || 0) + 1;
                 try { await rg.room.reconnect(); this._rgLog('已重新連線'); }
-                catch (e) { this._rgLog('重新連線失敗（第 ' + rg.retry + ' 次）：' + String((e && e.message) || e).slice(0, 60)); if (rg.retry < 8) this._rgScheduleReconnect(rg); else this._rgLog('連不上即時通道：可能是專案流量用完或被暫停。可以用「重建群組→改用另一個專案」'); }
+                catch (e) { this._rgLog('重新連線失敗（第 ' + rg.retry + ' 次）：' + String((e && e.message) || e).slice(0, 60)); if (rg.retry < 4) this._rgScheduleReconnect(rg); else this._rgFailover(rg); }
             }, wait);
         },
-        _rgBackendOrder() { return Math.random() < 0.5 ? [0, 1] : [1, 0]; },
+        _rgBackendOrder() { return Math.random() < 0.5 ? [0, 1, 2] : [1, 0, 2]; },
+        // 目前這個群組是不是走慢速信箱：是的話所有等待回覆的逾時都放寬
+        _rgSlow() { const rg = this._rg; return rg && BACKENDS[rg.idx || 0] && BACKENDS[rg.idx || 0].kind === 'kv' ? 10 : 1; },
+        // 同一個代號與驗證值也登記到其他專案（背景、失敗就算了）：之後某個專案用光額度時，所有成員可以各自依序改連下一個，在同一個房間重逢
+        async _rgMirrorRegister(rg) {
+            for (let i = 0; i < BACKENDS.length; i++) { if (i === rg.idx) continue; try { await this._rgTransport(i).rpc('rg_create_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 這個後端現在不能用或還沒設定 */ } }
+        },
+        // 把這個群組換到另一個後端（同代號、同密碼）。房間在那邊沒登記過就補登記
+        async _rgSwitchTo(rg, idx) {
+            const t = this._rgTransport(idx); let res = await t.rpc('rg_join_room', { p_code: rg.code, p_verifier: rg.keys.verifier });
+            if (res === 'not_found') { await t.rpc('rg_create_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); res = 'ok'; }
+            if (res !== 'ok') throw new Error('房間在那邊拒絕了（' + res + '）');
+            await rg.room.reconnect(t); rg.t = t; rg.idx = idx; rg.backend = BACKENDS[idx].name; rg.retry = 0;
+            if (rg.files) { const kv = BACKENDS[idx].kind === 'kv'; rg.files.slow = kv ? 10 : 1; rg.files.relayMax = kv ? 256 * 1024 : FaRemoteFiles.RELAY_MAX; }
+            this._rgRender(); this._rgScheduleFailback(rg);
+        },
+        // 目前的通道連不上：依序試其他後端（所有成員用同樣的順序，所以會在同一個地方重逢）
+        async _rgFailover(rg) {
+            if (this._rg !== rg) return; const n = BACKENDS.length;
+            for (let k = 1; k < n; k++) {
+                const idx = ((rg.idx || 0) + k) % n;
+                try { await this._rgSwitchTo(rg, idx); this._rgLog('原本的通道連不上，已自動改用「' + rg.backend + '」' + (BACKENDS[idx].kind === 'kv' ? '（很慢：訊息可能要幾十秒才到，不要傳大檔）' : '')); return true; }
+                catch (e) { this._rgLog('「' + BACKENDS[idx].name + '」也連不上：' + String((e && e.message) || e).slice(0, 60)); }
+            }
+            this._rgLog('所有通道都暫時連不上，一分鐘後再試');
+            setTimeout(() => { if (this._rg === rg) { rg.retry = 0; this._rgScheduleReconnect(rg); } }, 60000);
+            return false;
+        },
+        // 不在原本的後端時，每 5 分鐘看一次原本的恢復了沒有，恢復就搬回去
+        _rgScheduleFailback(rg) {
+            clearInterval(rg.failbackTimer); if (rg.idx === rg.home) return;
+            rg.failbackTimer = setInterval(async () => {
+                if (this._rg !== rg) { clearInterval(rg.failbackTimer); return; }
+                try { await this._rgTransport(rg.home).rpc('rg_touch_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { return; }
+                try { await this._rgSwitchTo(rg, rg.home); this._rgLog('原本的通道恢復了，已搬回「' + rg.backend + '」'); } catch (_) { /* 下次再試 */ }
+            }, 5 * 60 * 1000);
+        },
         // 免費專案 7 天沒有任何請求會被暫停：App 啟動後每天對兩個專案各送一個最輕的請求（問一個不存在的房間），Cloudflare Worker 另外每 5 天也會送
         _rgKeepAlive() {
             if (this._rgKeepAliveTimer) return; const KEY = 'fa_remote_keepalive_v1';
             this._rgKeepAliveTimer = setTimeout(async () => {
                 let last = {}; try { last = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (_) { last = {}; }
                 for (let i = 0; i < BACKENDS.length; i++) {
+                    if (BACKENDS[i].kind === 'kv') continue; // 慢速信箱有額度限制，保活由 Worker 每 5 天處理
                     if (Date.now() - (last[i] || 0) < 20 * 3600 * 1000) continue;
                     try { await this._rgTransport(i).rpc('rg_join_room', { p_code: '00000000', p_verifier: 'keepalive' }); last[i] = Date.now(); } catch (_) { /* 沒建好表也算有請求；真的連不上就明天再試 */ last[i] = Date.now() - 19 * 3600 * 1000; }
                 }
@@ -94,7 +133,7 @@ const FaRemoteHost = (function () {
         async _rgEnter(t, keys, code, name, creator, idx) {
             const R = FaRemoteGroup, s = this._rgSettings(); await this._rgLoadIdentity();
             const room = new R.Room({ transport: t, keys, self: this._rgSelfInfo(name), maxMembers: s.maxMembers });
-            const rg = { idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
+            const rg = { home: idx || 0, idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
             room.on('members', () => { this._rgRefreshFps(); this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
             room.on('message', (m) => this._rgOnMessage(m));
             room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') { this._rgLog('連線狀態：' + st); this._rgScheduleReconnect(rg); } else if (st === 'SUBSCRIBED') { rg.retry = 0; this._rgLog('已連線'); } });
@@ -103,6 +142,8 @@ const FaRemoteHost = (function () {
             rg.shared = {}; rg.captures = new Set();
             const ice = this._rgIceServers();
             rg.files = new FaRemoteFiles.FileShare({ room, rtc: ice ? { RTCPeerConnection: window.RTCPeerConnection, iceServers: ice } : undefined, log: (x) => this._rgLog(x), getFile: async (id) => { const rec = await this.fileCache.get(id); return rec && rec.blob ? { blob: rec.blob, name: rec.filename, mime: rec.mimeType } : null; }, allowed: (id, from) => !!(rg.shared[id] && rg.shared[id].has(from)) });
+            if (BACKENDS[rg.idx].kind === 'kv') { rg.files.slow = 10; rg.files.relayMax = 256 * 1024; }
+            if (creator) this._rgMirrorRegister(rg).catch(() => {});
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
             rg.timer = setInterval(() => { t.rpc('rg_touch_room', { p_code: code, p_verifier: keys.verifier }).then((ok) => { if (ok === false) this._rgLog('房間已被回收（閒置太久）'); }).catch(() => {}); }, 5 * 60 * 1000);
             this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是備援專案）' : '')); this._rgView = 'joined'; this._rgRender();
@@ -112,7 +153,8 @@ const FaRemoteHost = (function () {
             const rg = this._rg; if (!rg) return;
             clearInterval(rg.timer); clearInterval(rg.agentTimer); FaRemoteDispatch.installTracking.setNotify(null);
             const alone = rg.room.members().filter((m) => m.nodeId !== rg.room.self.nodeId).length === 0;
-            if (alone) { try { await rg.t.rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等 24 小時自動回收 */ } }
+            clearInterval(rg.failbackTimer);
+            if (alone) { for (let i = 0; i < BACKENDS.length; i++) { try { await (i === rg.idx ? rg.t : this._rgTransport(i)).rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等自動回收 */ } } }
             try { await rg.room.leave(); } catch (_) { /* 已斷線 */ }
             this._rg = null; this._rgTarget = ''; this._rgView = 'form'; this._rgRender(); this._rgSyncTargetSelect();
         },
@@ -138,7 +180,7 @@ const FaRemoteHost = (function () {
         _rgPing(nodeId) {
             const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
             return new Promise((resolve, reject) => {
-                const t = Date.now(); const timer = setTimeout(() => { delete rg.pings[nodeId]; reject(new Error('逾時（8 秒沒回應）')); }, 8000);
+                const wait = 8000 * this._rgSlow(), t = Date.now(); const timer = setTimeout(() => { delete rg.pings[nodeId]; reject(new Error('逾時（' + wait / 1000 + ' 秒沒回應）')); }, wait);
                 const nonce = FaRemoteGroup.randomId(); rg.pings[nodeId] = { t, nonce, resolve: (ms) => { clearTimeout(timer); resolve(ms); } };
                 rg.room.send(nodeId, 'ping', { t, nonce }).catch((e) => { clearTimeout(timer); delete rg.pings[nodeId]; reject(e); });
             });
@@ -243,9 +285,9 @@ const FaRemoteHost = (function () {
         },
         // 重建群組：產生新代號與新密碼的新房間。notify=true：把新代號密碼傳給現在在線的每個人，大家確認後一起搬；
         // notify=false（要踢人用）：只建立新房間並關掉舊房間的登記，新代號密碼由你用別的管道告訴要留下的人——因為舊頻道裡所有人（包含要踢的）都讀得到訊息
-        async _rgRebuild(notify, other) {
+        async _rgRebuild(notify, target) {
             const rg = this._rg; if (!rg) throw new Error('尚未加入群組'); const name = rg.room.self.name, pw = FaRemoteGroup.generatePassword();
-            const idx = other ? 1 - (rg.idx || 0) : (rg.idx || 0), reg = await this._rgRegister(pw, [idx]); let sent = 0; rg.rebuilding = true;
+            const idx = target == null || target === '' ? (rg.idx || 0) : Number(target), reg = await this._rgRegister(pw, [idx]); let sent = 0; rg.rebuilding = true;
             if (notify) { for (const m of this._rgTargets()) { try { await this._rgSend(m.nodeId, 'rebuild', { code: reg.code, password: pw, fromName: name }); sent++; } catch (_) { /* 這個人沒收到：之後用代號密碼手動加入 */ } } await new Promise((r) => setTimeout(r, 1500)); }
             else { try { await rg.t.rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等 24 小時自動回收 */ } }
             await this._rgLeave(true);
@@ -259,16 +301,17 @@ const FaRemoteHost = (function () {
                 + '<div style="margin:10px 0 4px; font-weight:bold; font-size:12px;">選一種方式</div>'
                 + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:6px;"><input type="radio" name="rbm" value="notify" checked><span><b>通知現在在線的所有人，大家確認後一起搬</b>（換密碼、換代號，但沒有要踢人）</span></label>'
                 + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:8px;"><input type="radio" name="rbm" value="silent"><span><b>只換不通知</b>（要踢人用）：舊房間會被關掉登記，新代號與密碼我顯示給你，由你用電話等管道告訴要留下的人。<b>不要</b>在舊群組裡傳，被踢的人也看得到。</span></label>'
-                + '<label style="display:flex; gap:6px; font-size:12px; margin-bottom:8px;"><input type="checkbox" data-rb="other"><span>改用<b>另一個 Supabase 專案</b>（目前專案的流量用完、或連不上時；目前在「' + e(rg.backend || '主要') + '」）</span></label>'
+                + '<div style="font-size:12px; margin-bottom:8px;">新群組放在：<select data-rb="target" style="max-width:100%;"><option value="0">主要 Supabase 專案</option><option value="1">備援 Supabase 專案</option><option value="2">慢速備援（Cloudflare，很慢）</option></select><div style="opacity:.7; margin-top:2px;">目前在「' + e(rg.backend || '主要') + '」；現在的專案流量用完或連不上時才需要換。</div></div>'
                 + '<div data-rb="msg" style="min-height:16px; font-size:12px; margin:6px 0;"></div>'
                 + '<button type="button" data-rb-act="go" style="' + this._rgBtnStyle(pal, true) + '">建立新群組並搬過去</button><button type="button" data-rb-act="close" style="' + this._rgBtnStyle(pal) + '">取消</button>';
+            ov.querySelector('[data-rb="target"]').value = String(rg.idx || 0);
             ov.addEventListener('click', async (ev) => {
                 const a = ev.target.closest('[data-rb-act]'); if (!a) return; if (a.dataset.rbAct === 'close') { ov.remove(); return; }
                 const notify = ov.querySelector('input[name="rbm"]:checked').value === 'notify', msg = ov.querySelector('[data-rb="msg"]');
                 if (!window.confirm(notify ? '要重建群組並通知在線的 ' + this._rgTargets().length + ' 台機器嗎？' : '要重建群組嗎？舊房間會被關掉，其他人需要你另外通知新的代號與密碼才能進去。')) return;
                 a.disabled = true; msg.textContent = '建立中（推導金鑰需要幾秒）…';
                 try {
-                    const r = await this._rgRebuild(notify, ov.querySelector('[data-rb="other"]').checked); const p = document.getElementById('ai-rg-panel'); if (p) { p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
+                    const r = await this._rgRebuild(notify, ov.querySelector('[data-rb="target"]').value); const p = document.getElementById('ai-rg-panel'); if (p) { p.dataset.view = ''; this._rgView = 'joined'; this._rgRender(); }
                     const ov2 = this._rgOverlay('rebuilt'); if (!ov2) return;
                     ov2.innerHTML = '<div style="font-weight:bold; margin-bottom:8px;">✅ 新群組已建立</div><div style="font-size:12px;">代號</div><div style="font-size:20px; font-weight:bold;">' + e(r.code) + '</div><div style="font-size:12px; margin-top:6px;">密碼（只顯示這一次，請先複製存好）</div><div style="font-family:monospace; font-size:14px; word-break:break-all; user-select:all;">' + e(r.password) + '</div>'
                         + '<div style="font-size:12px; margin:8px 0;">' + (notify ? '已通知 ' + r.sent + ' 台機器，對方確認後會自動搬過來。沒有跟過來的人，用上面的代號與密碼手動加入。' : '舊房間已關閉登記。把上面的代號與密碼用其他管道告訴要留下的人。') + '</div>'

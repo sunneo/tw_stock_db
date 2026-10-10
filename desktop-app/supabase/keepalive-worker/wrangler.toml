@@ -1,7 +1,0 @@
-name = "fa-supabase-keepalive"
-main = "worker.js"
-compatibility_date = "2025-01-01"
-
-[triggers]
-# 每 5 天凌晨 3 點（UTC）。月底到下個月 1 號之間最多隔 5 天，不會超過 7 天
-crons = ["0 3 */5 * *"]

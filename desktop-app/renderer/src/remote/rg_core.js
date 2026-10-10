@@ -118,9 +118,10 @@
             return { ok: true, members: this.members(), name };
         }
         // 通道掉線後重新連回（沿用同一組處理函式），並重新登記在線狀態
-        async reconnect() {
+        async reconnect(newT) {
             if (this.state === 'left') return false;
-            try { await this.t.disconnect(); } catch (_) { /* 舊通道已經壞了 */ }
+            if (newT) { const old = this.t; this.t = newT; try { await old.disconnect(); } catch (_) { /* 舊通道已經壞了 */ } }
+            else { try { await this.t.disconnect(); } catch (_) { /* 舊通道已經壞了 */ } }
             await this.t.connect(this.keys.channel, this.self.nodeId, { onPresence: (st) => this.onPresence(st), onBroadcast: (p) => this.onBroadcast(p), onStatus: (s) => { this.status = s; this.emit('status', s); } });
             await this.publishSelf(); return true;
         }

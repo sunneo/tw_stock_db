@@ -69,8 +69,8 @@ const FaRemoteDispatch = (function () {
             const finished = new Promise((resolve) => { task.resolve = resolve; });
             try { await this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }); }
             catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
-            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
-            task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', t.name + ' 沒有回應（15 秒）。對方可能已離線，或分頁被瀏覽器凍結了。'); }, 15000);
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000 * this._rgSlow()); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
+            task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', t.name + ' 沒有回應（' + 15 * this._rgSlow() + ' 秒）。對方可能已離線，或分頁被瀏覽器凍結了。'); }, 15000 * this._rgSlow());
             // 使用者按「停止」：通知對方也停下來
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
             await finished;
@@ -113,8 +113,8 @@ const FaRemoteDispatch = (function () {
             rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task;
             const finished = new Promise((resolve) => { task.resolve = resolve; });
             try { await this._rgSend(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }); } catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
-            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }).catch(() => {}); }, 6000);
-            task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（15 秒）'); }, 15000);
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(target.nodeId, 'task', { taskId, text, fromName: rg.room.self.name, sub: true }).catch(() => {}); }, 6000 * this._rgSlow());
+            task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（' + 15 * this._rgSlow() + ' 秒）'); }, 15000 * this._rgSlow());
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
             const r = await finished;
             return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', files: (r.refs || []).map((x) => x.name + '（' + x.kind + '，' + x.size + ' 位元組）'), note: (r.refs || []).length ? '對方產生了這些檔案；使用者可以在進度卡片所在的對話裡開啟（這個階段 AI 還不能直接讀取它們）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
@@ -224,7 +224,7 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return Promise.reject(new Error('尚未加入群組'));
             const rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6); rg.asks = rg.asks || {};
             return new Promise((resolve, reject) => {
-                const timer = setTimeout(() => { delete rg.asks[rid]; reject(new Error('對方沒有回應（' + Math.round((ms || 6000) / 1000) + ' 秒）')); }, ms || 6000);
+                const wait = (ms || 6000) * this._rgSlow(); const timer = setTimeout(() => { delete rg.asks[rid]; reject(new Error('對方沒有回應（' + Math.round(wait / 1000) + ' 秒）')); }, wait);
                 rg.asks[rid] = { replyType, resolve: (v) => { clearTimeout(timer); delete rg.asks[rid]; resolve(v); } };
                 this._rgSend(nodeId, type, Object.assign({ rid }, body || {})).catch((e) => { clearTimeout(timer); delete rg.asks[rid]; reject(e); });
             });
