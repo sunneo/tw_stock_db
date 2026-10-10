@@ -13835,6 +13835,8 @@ const BUILTIN_SKILLS = [
     {
         id: 'builtin-skill-media-presentation',
         name: 'media-presentation',
+        // 簡報的素材常常就是宿主頁面自己的資料／圖表（例如股市網站的持股診斷與K線圖），借用宿主頁面登記的全部功能
+        includeDomains: ['category:host_app'],
         get builtinToolNames() { return (typeof FaDeckTools !== 'undefined' ? FaDeckTools.DOMAIN_TOOLS : []).slice(); },
         get personaPrompt() { return typeof FaDeckTools !== 'undefined' ? FaDeckTools.SYSTEM_PROMPT : ''; },
     },
@@ -18063,6 +18065,7 @@ const FaDeckTools = (function () {
         'WORKFLOW',
         '1. Call get_presentation_topic for "format" and "visuals" (once per conversation; also "cues" / "sources" / "style" when needed, and "3d" whenever the subject is a physical thing or the user asks for 3D / a 3D presentation).',
         '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
+        '   TOOLS OF THE APP COME FIRST: when this task\'s prompt also lists tools of the app / website the user is in, the data and pictures that app itself holds (records, charts, analyses, lists) MUST come from those tools -- never open a browser, search the web or guess numbers for something such a tool returns. A tool that returns a picture (a chart) puts its "client-file/<id>" in meta.client_file_url: use that (it is also listed by list_source_images as an "@imgN" handle).',
         '   THE SOURCES THE USER NAMES ARE WHERE TO START, NOT THE LIMIT. If the request names none, or they hold too little, never answer "I found no document / please give me ..." -- that is a failed job. Call get_presentation_topic("ai_features") when the subject is this AI itself, and fill what remains from your own knowledge (see the "sources" topic). A deck from general knowledge is a normal, complete result.',
         '3. DIGEST, do not copy: decide the storyline (chapters -> slides), what each slide\'s one point is, which picture/table/diagram shows it, and what the narration says. Tables in the source become table visuals; screenshots and diagrams become image visuals with callouts at the parts you talk about; processes and relationships you draw yourself as shapes/mermaid with the steps revealed in step with the narration. Use the source\'s real pictures wherever they carry information. Never invent figures or pictures that no tool returned; where the sources lack something, explain it from general knowledge (saying it is general) or omit it.',
         '4. Write the yaml and call render_presentation. If it reports problems, fix them all and call it again.',
@@ -19105,6 +19108,10 @@ class FloatingAssistant {
         this._startFestivalTimer();
         if (this._chatListEnabled) this._chatListInit().catch((err) => console.warn('對話清單初始化失敗:', err));
         this._registerBuiltinAiTools();
+        // 2026-10-10：記下「引擎自己內建」的工具名稱；之後才登記進來、又不屬於任何領域的工具就是沒有歸類的宿主工具
+        // （宿主頁面只用register_openai_tool掛、沒有register_domain的），見_getOrphanHostToolNames()。
+        this._builtinToolNameSnapshot = new Set(Object.keys(this.tools));
+        this._registerHostToolsDomain();
         this._updateDelegateToSubagentDescription();
         this._syncCustomToolSlashCommands();
         // tw_stock_db客製: 只在「完全沒有對話紀錄」時（全新安裝、或上次
@@ -20026,6 +20033,9 @@ class FloatingAssistant {
             builtin: bundle.builtin === true,
             builtinId: bundle.builtinId ? String(bundle.builtinId).trim() : undefined,
             builtinToolNames: Array.isArray(bundle.builtinToolNames) ? bundle.builtinToolNames.map((n) => String(n)) : undefined,
+            // 2026-10-10：這個技能執行時可以一併使用哪些領域的工具（領域key，或'category:<分類>'）。
+            // undefined＝用預設：使用者自己匯入／建立的技能預設可以用宿主頁面的功能，內建技能要自己宣告。
+            includeDomains: Array.isArray(bundle.includeDomains) ? bundle.includeDomains.map((n) => String(n)) : undefined,
             // tw_stock_db客製: 2026-09-16使用者要求——匯入的.skill像Claude
             // 一樣可以帶references/scripts等任意巢狀資料夾，這裡只存中繼資料
             // （路徑/大小/mime），實際內容存在獨立的this.skillFileCache
@@ -20047,6 +20057,11 @@ class FloatingAssistant {
     // 執行的子agent看不到使用者蒸餾進去的知識，「扮演」這件事在委派架構下
     // 從來沒有真正生效過。沒有填personaPrompt時退回一句通用描述（不強迫
     // 使用者一定要寫人設才能建立技能包，純工具型的技能包也合理）。
+    _bundleIncludeDomains(bundle) {
+        if (Array.isArray(bundle.includeDomains)) return bundle.includeDomains;
+        return bundle.builtin ? [] : ['category:host_app'];
+    }
+
     _buildSkillPersonaSystemPrompt(bundle) {
         const persona = String(bundle.personaPrompt || '').trim();
         const header = persona
@@ -20084,10 +20099,11 @@ class FloatingAssistant {
         for (const def of BUILTIN_SKILLS) {
             const existing = this.advancedSettings.skillBundles.find((b) => b.builtinId === def.id);
             if (existing) {
-                if (existing.name !== def.name || existing.personaPrompt !== def.personaPrompt || JSON.stringify(existing.builtinToolNames) !== JSON.stringify(def.builtinToolNames)) {
+                if (existing.name !== def.name || existing.personaPrompt !== def.personaPrompt || JSON.stringify(existing.builtinToolNames) !== JSON.stringify(def.builtinToolNames) || JSON.stringify(existing.includeDomains) !== JSON.stringify(def.includeDomains)) {
                     existing.name = def.name;
                     existing.personaPrompt = def.personaPrompt;
                     existing.builtinToolNames = def.builtinToolNames.slice();
+                    existing.includeDomains = def.includeDomains ? def.includeDomains.slice() : undefined;
                     existing.builtin = true;
                     changed = true;
                 }
@@ -20100,6 +20116,7 @@ class FloatingAssistant {
                 name: def.name,
                 personaPrompt: def.personaPrompt,
                 builtinToolNames: def.builtinToolNames.slice(),
+                includeDomains: def.includeDomains ? def.includeDomains.slice() : undefined,
                 enabled: true,
                 createdAt: Date.now(),
                 files: [],
@@ -20190,6 +20207,7 @@ class FloatingAssistant {
                     if (bundle.builtin && Array.isArray(bundle.builtinToolNames)) names.push(...bundle.builtinToolNames);
                     return names;
                 },
+                inheritDomains: this._bundleIncludeDomains(bundle),
                 systemPrompt: this._buildSkillPersonaSystemPrompt(bundle),
             };
         }
@@ -57661,9 +57679,110 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // advancedSettings.customTools，見建構子），這裡統一解析成陣列，讓其餘
     // 既有domain（toolNames本來就是固定陣列）跟這個新的動態domain都能正確處理，
     // 不用在每個讀取點各自判斷型別。
-    _resolveDomainToolNames(domain) {
+    // 工具回傳 { type:'image', dataUrl, meta }（例如圖表）時，畫面上會直接顯示，但委派出去的子任務拿不到
+    // 任何「可以引用這張圖」的東西。這裡（所有子任務通用）把圖存進fileCache，並在meta.client_file_url
+    // 補上 "client-file/<id>"——簡報、文件匯出等工具都認得這種網址，不需要各自特別處理。圖存不進去就
+    // 原樣回傳，不影響工具本身。
+    async _persistToolImageResult(toolName, result) {
+        let parsed = result;
+        if (typeof result === 'string') {
+            if (result.charCodeAt(0) !== 123 || result.indexOf('"dataUrl"') < 0) return result; // 快速排除：不是JSON物件或沒有dataUrl
+            try { parsed = JSON.parse(result); } catch (_) { return result; }
+        }
+        if (!parsed || parsed.type !== 'image' || typeof parsed.dataUrl !== 'string' || !this.fileCache) return result;
+        try {
+            const blob = await this._dataUrlToBlob(parsed.dataUrl);
+            if (!blob || !/^image\//.test(blob.type || '') || blob.size > 8 * 1024 * 1024) return result;
+            const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg' })[blob.type] || 'img';
+            const id = await this.fileCache.put(`${toolName}-${Date.now().toString(36)}.${ext}`, blob.type, blob, 'generated');
+            const meta = (parsed.meta && typeof parsed.meta === 'object') ? parsed.meta : {};
+            const next = Object.assign({}, parsed, { meta: Object.assign({}, meta, { client_file_url: 'client-file/' + id }) });
+            return typeof result === 'string' ? JSON.stringify(next) : next;
+        } catch (_) { return result; }
+    }
+
+    // 領域「自己的」工具（不含繼承來的）
+    _resolveOwnDomainToolNames(domain) {
         const raw = typeof domain.toolNames === 'function' ? domain.toolNames() : domain.toolNames;
         return Array.isArray(raw) ? raw : [];
+    }
+
+    // 2026-10-10使用者要求更general：領域可以宣告 inheritDomains，執行時子任務除了自己領域的工具，還拿得到
+    // 被繼承領域的工具與使用說明。項目是領域key，或 'category:<分類key>'（該分類底下所有已啟用的領域）。
+    // 技能（內建／使用者匯入）用 includeDomains 宣告（見_syncSkillBundleDomains）：像「簡報」「使用者自己的
+    // 技能」這種只管自己專業的領域，本來只拿得到自己領域的工具，宿主網站（股市網站）的資料／圖表工具全被擋在外面，
+    // 子任務才會改用瀏覽器上網找。只往下繼承一層、不遞迴，避免互相繼承造成循環。
+    _expandInheritDomains(domain) {
+        const out = [];
+        for (const ref of (Array.isArray(domain.inheritDomains) ? domain.inheritDomains : [])) {
+            const keys = String(ref).startsWith('category:')
+                ? Object.keys(this.domains).filter((k) => this.domains[k].category === String(ref).slice(9))
+                : [String(ref)];
+            for (const k of keys) {
+                const d = this.domains[k];
+                if (d && d !== domain && d.enabled !== false && out.indexOf(d) < 0) out.push(d);
+            }
+        }
+        return out;
+    }
+
+    _resolveDomainToolNames(domain) {
+        const own = this._resolveOwnDomainToolNames(domain);
+        if (!Array.isArray(domain.inheritDomains) || !domain.inheritDomains.length) return own;
+        const names = own.slice();
+        for (const d of this._expandInheritDomains(domain)) {
+            for (const n of this._resolveOwnDomainToolNames(d)) if (names.indexOf(n) < 0) names.push(n);
+        }
+        return names;
+    }
+
+    // 沒有歸進任何領域的宿主工具（宿主頁面只用register_openai_tool掛、沒有register_domain）：引擎建構完成後才登記、
+    // 不屬於任何領域、也不是使用者自訂工具／技能包讀檔工具的工具。
+    _getOrphanHostToolNames() {
+        const builtin = this._builtinToolNameSnapshot;
+        if (!builtin) return [];
+        const inDomain = new Set();
+        for (const [k, d] of Object.entries(this.domains)) {
+            if (k === 'host_tools' || k.startsWith('skill_')) continue; // 自動領域本身與技能領域（繼承用）不能算進去
+            try { for (const n of this._resolveOwnDomainToolNames(d)) inDomain.add(n); } catch (_) { /* 壞掉的domain不影響其他 */ }
+        }
+        const custom = new Set(((this.advancedSettings && this.advancedSettings.customTools) || []).map((t) => t.name));
+        return Object.keys(this.tools).filter((n) => !builtin.has(n) && !inDomain.has(n) && !custom.has(n) && !n.startsWith('read_skill_file__'));
+    }
+
+    // 宿主頁面（股市網站、piano-web…）的功能分類：宿主用 register_domain_category('host_app', …) 與
+    // register_domain(key, { category: 'host_app', … }) 登記自己的領域；技能領域用 'category:host_app' 一次借用全部。
+    // 這個自動領域只收「宿主沒有歸類的工具」，沒有這種工具時自己是停用的、不會出現在路由目錄。
+    _registerHostToolsDomain() {
+        const self = this;
+        this.register_domain_category('host_app', { label: '宿主網站／應用程式的功能', description: '這個頁面自己提供的資料、分析、圖表、介面操作等工具（由宿主頁面登記）' });
+        this.domains.host_tools = {
+            get enabled() { return self.advancedSettings.hostToolsDomainEnabled !== false && self._getOrphanHostToolNames().length > 0; },
+            set enabled(_v) { /* 由有沒有未歸類的宿主工具決定，不接受外部指定 */ },
+            label: (this.options && this.options.hostToolsLabel) || '宿主網站／應用程式自己提供、未歸類的現成工具',
+            category: 'host_app',
+            toolNames: () => this._getOrphanHostToolNames(),
+            systemPrompt: '你是專門使用「宿主網站／應用程式自己提供的工具」的子任務助理。任務涉及這個網站本身有的資料時，一律用工具取得真實資料，不要憑印象猜數字、也不要改用瀏覽器上網找。',
+        };
+    }
+
+    // 其他領域繼承 'category:host_app' 時，附加在它們系統提示後面的說明：每個宿主領域的名稱／指引／工具，加上一條共通原則
+    _buildInheritedDomainsNote(domain) {
+        const inherited = this._expandInheritDomains(domain);
+        if (!inherited.length) return '';
+        const parts = [];
+        let hasHost = false;
+        for (const d of inherited) {
+            const names = this._resolveOwnDomainToolNames(d);
+            if (!names.length) continue;
+            if (d.category === 'host_app') hasHost = true;
+            const lines = names.map((n) => `- ${n}: ${this._summarizeToolDescription((this.tools[n] && this.tools[n].description) || '', 60)}`);
+            parts.push(`【${d.label}】\n${String(d.systemPrompt || '').trim()}\n${lines.join('\n')}`);
+        }
+        if (!parts.length) return '';
+        let note = '你還可以直接呼叫下面這些領域的工具（不是委派，直接用）：\n\n' + parts.join('\n\n');
+        if (hasHost) note += '\n\n使用原則：任務涉及這個網站／應用程式本身有的資料（記錄、K線與指標、分析診斷、名單、備忘錄、圖表…）時，一律先用上面的工具取得真實資料與圖片，**不要自己開瀏覽器、上網搜尋或憑印象猜數字**；只有這些工具查不到的外部資訊，才考慮fetch_web_page或browser_search。工具回傳的圖片（例如圖表）會附上meta.client_file_url（"client-file/<id>"），做簡報／文件時直接用它當圖片。不確定某個工具的參數時，先用get_tool_details查。';
+        return note;
     }
 
     // tw_stock_db客製: 2026-09-13使用者回報——開啟「顯示工具呼叫追蹤與思考
@@ -58078,13 +58197,19 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
     _resolveDomainSystemPrompt(domain) {
         const note = this._resolveDomainDynamicNote(domain);
-        return note ? `${domain.systemPrompt}\n\n${note}` : domain.systemPrompt;
+        let prompt = note ? `${domain.systemPrompt}\n\n${note}` : domain.systemPrompt;
+        const inherited = this._buildInheritedDomainsNote(domain);
+        if (inherited) prompt += `\n\n${inherited}`;
+        return prompt;
     }
 
     _buildDomainCatalogSection(key, domain, toolByName) {
-        const names = this._resolveDomainToolNames(domain);
-        const note = this._resolveDomainDynamicNote(domain);
-        if (!names.length) {
+        const names = this._resolveOwnDomainToolNames(domain);
+        let note = this._resolveDomainDynamicNote(domain);
+        // 繼承來的領域只留一句話（它們的工具由各自的目錄項目列出，不重複塞進每個技能底下）
+        const inheritedDomains = this._expandInheritDomains(domain).filter((d) => this._resolveOwnDomainToolNames(d).length);
+        if (inheritedDomains.length) note = (note ? note + '\n' : '') + `（執行時這個領域還可以直接使用這些領域的工具：${inheritedDomains.map((d) => d.label).join('、')}）`;
+        if (!names.length && !inheritedDomains.length) {
             return `[${key}] ${domain.label}（純知識/角色扮演型領域，沒有掛載工具——符合這個領域主題時仍然應該選它，子agent會直接依知識/人設回答）` + (note ? `\n${note}` : '');
         }
         const lines = names
@@ -58830,7 +58955,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try {
                         const toolDef = resolveTool(fnName);
                         if (!toolDef) throw new Error(`找不到工具: ${fnName}`);
-                        const result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback.call(this, rawArgs)));
+                        let result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback.call(this, rawArgs)));
+                        result = await this._persistToolImageResult(fnName, result);
                         this._noteWriteEvidence(writeEvidence, fnName, result);
                         if (this._deckInDomainRun) this._deckCatalogNote(fnName, result);
                         const visual = this._detectVisualToolPayload(result);
@@ -58970,7 +59096,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const toolDef = resolveTool(task.fnName);
                     if (!toolDef) throw new Error(`找不到工具: ${task.fnName}`);
                     const parsedArgs = await this.repairJsonPayload(task.fnArgsRaw);
-                    const result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback.call(this, JSON.stringify(parsedArgs))));
+                    let result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback.call(this, JSON.stringify(parsedArgs))));
+                    result = await this._persistToolImageResult(task.fnName, result);
                     this._noteWriteEvidence(writeEvidence, task.fnName, result);
                     if (this._deckInDomainRun) this._deckCatalogNote(task.fnName, result);
                     const visual = this._detectVisualToolPayload(result);
