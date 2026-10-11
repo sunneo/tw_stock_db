@@ -40,6 +40,7 @@ const suites = [
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
     ['動畫簡報：每份簡報自己的外框配色（deck.colors）', 'scripts/deck-tests/deck_colors.test.js'],
+    ['動畫簡報：內建可愛插圖（注音與第一個符號核對）', 'scripts/deck-tests/deck_cute.test.js'],
     ['動畫簡報：問答頁把關（標題不洩漏答案、問「這個東西」要有畫面）', 'scripts/deck-tests/deck_quiz_slide.test.js'],
     ['動畫簡報：一頁一種語言的語音（混語檢查、念之前翻成英文或退回中文語音）', 'scripts/deck-tests/deck_language.test.js'],
     ['動畫簡報：小工具範例（打磚塊）真的玩到通關', 'scripts/deck-tests/widget_example.test.js'],

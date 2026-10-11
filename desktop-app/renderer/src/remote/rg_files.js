@@ -94,7 +94,10 @@
             const meta = await this.ask(nodeId, 'file_req', { id }, 'file_meta', 10000);
             const progress = (done, via) => { if (opts.onProgress) opts.onProgress(done, meta.size, via); };
             let blob = null, via = '', p2pErr = null;
-            if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
+            // 這個對象不久前直連失敗過（兩邊的網路擋住點對點）：小檔案直接走轉送，不要每次都先白等 12 秒；過一段時間再試一次直連
+            this.p2pBad = this.p2pBad || {}; const bad = this.p2pBad[nodeId], skipP2p = !!(bad && Date.now() < bad && meta.size <= this.relayMax);
+            if (skipP2p) this.log('這個對象最近直連失敗過，這次直接用轉送');
+            else if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; delete this.p2pBad[nodeId]; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.p2pBad[nodeId] = Date.now() + 10 * 60 * 1000; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
             if (!blob) {
                 if (meta.size > this.relayMax) throw new Error('直連失敗（' + (p2pErr ? p2pErr.message : '不支援') + '），而且檔案超過 ' + (this.relayMax >= 1048576 ? (this.relayMax >> 20) + ' MB' : (this.relayMax >> 10) + ' KB') + '，轉送備援不處理這麼大的檔案');
                 blob = await this.fetchRelay(nodeId, id, meta, progress, cancel); via = '轉送';

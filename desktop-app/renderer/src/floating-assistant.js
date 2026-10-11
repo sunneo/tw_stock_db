@@ -18049,7 +18049,10 @@ const holder = {};
             const meta = await this.ask(nodeId, 'file_req', { id }, 'file_meta', 10000);
             const progress = (done, via) => { if (opts.onProgress) opts.onProgress(done, meta.size, via); };
             let blob = null, via = '', p2pErr = null;
-            if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
+            // 這個對象不久前直連失敗過（兩邊的網路擋住點對點）：小檔案直接走轉送，不要每次都先白等 12 秒；過一段時間再試一次直連
+            this.p2pBad = this.p2pBad || {}; const bad = this.p2pBad[nodeId], skipP2p = !!(bad && Date.now() < bad && meta.size <= this.relayMax);
+            if (skipP2p) this.log('這個對象最近直連失敗過，這次直接用轉送');
+            else if (this.RTC && !this.disableP2p && meta.p2p !== false) { try { blob = await this.fetchP2p(nodeId, id, meta, progress, cancel); via = '直連'; delete this.p2pBad[nodeId]; } catch (e) { p2pErr = e; if (cancel.cancelled) throw e; this.p2pBad[nodeId] = Date.now() + 10 * 60 * 1000; this.log('直連失敗，改用轉送：' + (e && e.message || e)); } }
             if (!blob) {
                 if (meta.size > this.relayMax) throw new Error('直連失敗（' + (p2pErr ? p2pErr.message : '不支援') + '），而且檔案超過 ' + (this.relayMax >= 1048576 ? (this.relayMax >> 20) + ' MB' : (this.relayMax >> 10) + ' KB') + '，轉送備援不處理這麼大的檔案');
                 blob = await this.fetchRelay(nodeId, id, meta, progress, cancel); via = '轉送';
@@ -19990,8 +19993,8 @@ const FaDeckTools = (function () {
         '- Narration is natural speech in the deck language, short sentences, 2-5 per slide, no markdown/URLs/emoji. Bullets are short fragments that echo the narration, not the narration itself. Make the narration\'s sentences line up with what appears (see cues).',
         '- Every slide with a picture/table/diagram uses layout split or visual; text-only slides are the exception (use them for chapter intros and the summary).',
         '- THE REQUEST IS A CHECKLIST. Before writing the yaml, list for yourself every concrete thing the user asked for (the content, each kind of element, the look: colours / cute / formal, who it is for, how the viewer interacts) and before render_presentation re-read the yaml against that list. Nothing on it may be quietly dropped or replaced by something easier; if a requirement cannot be met, say exactly which one and why in your final answer. The final answer says in one short line how each main requirement was met.',
-        '- WHEN THE REQUEST NEEDS PICTURES OR A LOOK ("objects", "cute", "warm colours", "for children", icons, cartoon) and no tool returned real pictures, YOU DRAW THEM: a visual kind svg (or shapes) with real shapes for each object -- circles, ellipses, rounded rects, paths, a face with two eyes for a cute style, outlines in a darker tone of the fill. A WORD STANDING IN FOR A PICTURE ("Apple" written in grey text, "(picture here)", an empty box) is a failed slide. A big emoji drawn as text inside the svg (font-size 200+) is an acceptable picture when the object is hard to draw (emoji are forbidden only in the narration). Every object looks different and is recognisable on its own. The look the user asked for goes into the visuals: for a warm style give every svg / scene a full background rectangle in a warm colour (#FFF1DC, #FFE0B2) and fill objects from a warm palette (#FFB74D, #FF8A65, #FFD54F, #F48FB1, #A5D6A7); AND set deck.colors (get_presentation_topic "format") to the same warm family so the page frame -- background, titles, bars, subtitle bar -- follows the look too; do this for any look the user names.',
-        '- A QUESTION ABOUT A THING ON THE SLIDE: the picture and the question are on the SAME slide (group: picture left, quiz card right), one question per slide, each slide with ITS OWN picture. Ask exactly what the user wanted ("這是什麼?" with the picture shown); the options are real candidates and the right one matches the picture. Never ask the viewer to choose a symbol / word for a picture that is not on the screen, never an answer that is not among the options, never the same picture for different questions. For language-learning decks (注音, ABC, vocabulary) the symbol / letter is shown BIG next to its object, and every fact is checked before you write it: the first sound of the object\'s name must really be that symbol (蘋果 starts with ㄆ, not ㄅ); when you are not sure of a word, choose one you are sure of.',
+        '- WHEN THE REQUEST NEEDS PICTURES OR A LOOK ("objects", "cute", "warm colours", "for children", icons, cartoon) and no tool returned real pictures: for everyday things (fruits, animals, sun, house ...) FIRST call cute_picture (no arguments lists them, with correct zhuyin) and use its "@imgN" handles; for anything it does not have, YOU DRAW IT: a visual kind svg (or shapes) with real shapes for each object -- circles, ellipses, rounded rects, paths, a face with two eyes for a cute style, outlines in a darker tone of the fill. A WORD STANDING IN FOR A PICTURE ("Apple" written in grey text, "(picture here)", an empty box) is a failed slide. A big emoji drawn as text inside the svg (font-size 200+) is an acceptable picture when the object is hard to draw (emoji are forbidden only in the narration). Every object looks different and is recognisable on its own. The look the user asked for goes into the visuals: for a warm style give every svg / scene a full background rectangle in a warm colour (#FFF1DC, #FFE0B2) and fill objects from a warm palette (#FFB74D, #FF8A65, #FFD54F, #F48FB1, #A5D6A7); AND set deck.colors (get_presentation_topic "format") to the same warm family so the page frame -- background, titles, bars, subtitle bar -- follows the look too; do this for any look the user names.',
+        '- A QUESTION ABOUT A THING ON THE SLIDE: the picture and the question are on the SAME slide (group: picture left, quiz card right), one question per slide, each slide with ITS OWN picture. Ask exactly what the user wanted ("這是什麼?" with the picture shown); the options are real candidates and the right one matches the picture. Never ask the viewer to choose a symbol / word for a picture that is not on the screen, never an answer that is not among the options, never the same picture for different questions. For language-learning decks (注音, ABC, vocabulary) the symbol / letter is shown BIG next to its object, and every fact is checked before you write it: the first sound of the object\'s name must really be that symbol; take the zhuyin of every word from cute_picture, never from memory (蘋果 starts with ㄆ, not ㄅ); when you are not sure of a word, choose one you are sure of.',
         '- Pictures only by handle ("@img3") or "client-file/<id>" from a tool result. A table has <= 8 columns and <= 12 rows per slide: split long tables over several slides or keep the rows that matter and say so.',
         '- If the request is to change a deck made earlier (it mentions a file id / url), call get_presentation_yaml first and edit THAT yaml.',
         '- 2D and 3D mix in one format: a slide can hold a live 3D model (visual kind scene3d with an inline scene; the viewer can orbit and zoom it), with 2D labels/arrows over it (overlay) or a table/image beside it (group); deck.style: 3d (or stage: 3d on single slides) shows it through a viewport on the normal template page, and each 3D slide gets a CAMERA (slide.camera: a preset name, a shot mapping, or a list of shots with focus on a named node of the model and "at" a sentence) -- 3D here means the relation of the camera to the scene and model, not scenery. "A 3D presentation" = deck.style: 3d with a 3D model and camera shots on most slides (read get_presentation_topic("3d")). Do not use 3D for slides that are only text.',
@@ -20003,12 +20006,53 @@ const FaDeckTools = (function () {
 
     // 領域登記用的工具名稱（子任務只看得到這些）
     const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
-        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
+        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
         'list_remote_machines', 'delegate_to_machine', 'render_chart', 'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
         'browser_status', 'browser_list_tabs', 'browser_create_tab', 'browser_navigate', 'browser_get_page_text', 'browser_get_page_structure', 'browser_screenshot', 'browser_close'];
+
+    // ---------------------------------------------------------------- 內建的可愛插圖（暖色、有臉）：給「兒童教學、可愛風、物件」這類需求用，不必上網找圖（網路圖常是壞連結或灰框）
+    // 每項附正確的注音（逐字、聲調），教注音的簡報一定要用這裡的注音，不要憑記憶寫。
+    const CUTE = (function () {
+        const INK = '#5B3A29';
+        const face = (x, y, k) => { k = k || 1; return '<circle cx="' + (x - 15 * k) + '" cy="' + y + '" r="' + 4.5 * k + '" fill="' + INK + '"/><circle cx="' + (x + 15 * k) + '" cy="' + y + '" r="' + 4.5 * k + '" fill="' + INK + '"/><ellipse cx="' + (x - 26 * k) + '" cy="' + (y + 10 * k) + '" rx="' + 7 * k + '" ry="' + 4.5 * k + '" fill="#FF9AA2" opacity=".65"/><ellipse cx="' + (x + 26 * k) + '" cy="' + (y + 10 * k) + '" rx="' + 7 * k + '" ry="' + 4.5 * k + '" fill="#FF9AA2" opacity=".65"/><path d="M' + (x - 8 * k) + ' ' + (y + 7 * k) + ' Q' + x + ' ' + (y + 17 * k) + ' ' + (x + 8 * k) + ' ' + (y + 7 * k) + '" fill="none" stroke="' + INK + '" stroke-width="3" stroke-linecap="round"/>'; };
+        const circ = (cx, cy, r, f, s) => '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + f + '"' + (s ? ' stroke="' + s + '" stroke-width="4"' : '') + '/>';
+        const ell = (cx, cy, rx, ry, f, s) => '<ellipse cx="' + cx + '" cy="' + cy + '" rx="' + rx + '" ry="' + ry + '" fill="' + f + '"' + (s ? ' stroke="' + s + '" stroke-width="4"' : '') + '/>';
+        const path = (d, f, s) => '<path d="' + d + '" fill="' + f + '"' + (s ? ' stroke="' + s + '" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"' : '') + '/>';
+        const rect = (x, y, w, h, f, rx, s) => '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (rx || 0) + '" fill="' + f + '"' + (s ? ' stroke="' + s + '" stroke-width="4"' : '') + '/>';
+        const star = (cx, cy, R, r, f, s) => { const p = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r : R; p.push((cx + q * Math.cos(a)).toFixed(1) + ',' + (cy + q * Math.sin(a)).toFixed(1)); } return '<polygon points="' + p.join(' ') + '" fill="' + f + '"' + (s ? ' stroke="' + s + '" stroke-width="4" stroke-linejoin="round"' : '') + '/>'; };
+        const wrap = (body) => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="400" height="400"><rect width="200" height="200" rx="28" fill="#FFF4E6"/>' + body + '</svg>';
+        const LIST = [
+            ['蘋果', 'ㄆㄧㄥˊ ㄍㄨㄛˇ', (() => wrap(path('M100 60 C60 40 28 70 36 118 C44 160 76 176 100 166 C124 176 156 160 164 118 C172 70 140 40 100 60 Z', '#FF6B6B', '#C0392B') + path('M100 60 Q98 40 108 28', 'none', '#7B4B2A') + path('M104 44 Q130 22 146 40 Q124 56 104 44 Z', '#7CC576', '#4E9A4A') + face(100, 112)))],
+            ['香蕉', 'ㄒㄧㄤ ㄐㄧㄠ', (() => wrap(path('M44 70 Q50 150 130 168 Q168 172 176 140 Q130 150 96 112 Q70 84 66 52 Q50 50 44 70 Z', '#FFD93D', '#D9A400') + path('M60 50 L68 34 L78 40 L72 56 Z', '#8B6B3A', '#6B4A1A') + face(112, 140, 0.8)))],
+            ['草莓', 'ㄘㄠˇ ㄇㄟˊ', (() => wrap(path('M100 52 C50 46 30 90 52 130 C70 164 90 176 100 176 C110 176 130 164 148 130 C170 90 150 46 100 52 Z', '#FF5D73', '#C73650') + path('M70 56 L100 40 L130 56 L112 66 L100 58 L88 66 Z', '#7CC576', '#4E9A4A') + circ(78, 100, 3, '#FFE9A8') + circ(122, 100, 3, '#FFE9A8') + circ(100, 138, 3, '#FFE9A8') + face(100, 112, 0.9)))],
+            ['西瓜', 'ㄒㄧ ㄍㄨㄚ', (() => wrap(path('M24 92 A76 76 0 0 0 176 92 Z', '#FF6F7D', '#2E8B57') + path('M24 92 A76 76 0 0 0 176 92 L170 92 A70 70 0 0 1 30 92 Z', '#CFF2B8') + circ(70, 112, 4, INK) + circ(130, 112, 4, INK) + circ(100, 128, 4, INK) + '<path d="M90 100 Q100 110 110 100" fill="none" stroke="' + INK + '" stroke-width="3" stroke-linecap="round"/>'))],
+            ['橘子', 'ㄐㄩˊ ㄗˇ', (() => wrap(circ(100, 112, 62, '#FFA53F', '#E0771A') + path('M100 52 Q112 36 128 44 Q116 60 100 52 Z', '#7CC576', '#4E9A4A') + face(100, 112)))],
+            ['貓咪', 'ㄇㄠ ㄇㄧ', (() => wrap(path('M52 84 L50 38 L88 64 Z', '#FFB36B', '#C97A2B') + path('M148 84 L150 38 L112 64 Z', '#FFB36B', '#C97A2B') + circ(100, 112, 62, '#FFC98B', '#C97A2B') + face(100, 108) + path('M92 128 L108 128 L100 136 Z', '#FF8FA3') + '<path d="M40 112 L68 116 M40 128 L68 124 M160 112 L132 116 M160 128 L132 124" stroke="' + INK + '" stroke-width="2.5" stroke-linecap="round"/>'))],
+            ['小狗', 'ㄒㄧㄠˇ ㄍㄡˇ', (() => wrap(ell(48, 96, 20, 40, '#C98B5A', '#8A5A33') + ell(152, 96, 20, 40, '#C98B5A', '#8A5A33') + circ(100, 108, 58, '#F2C79A', '#B9824F') + ell(100, 132, 24, 18, '#FFF4E6', '#B9824F') + circ(100, 124, 6, INK) + face(100, 100)))],
+            ['小魚', 'ㄒㄧㄠˇ ㄩˊ', (() => wrap(ell(92, 104, 58, 40, '#FF9F5A', '#D9701F') + path('M146 104 L182 76 L182 132 Z', '#FFB878', '#D9701F') + circ(70, 94, 6, '#fff', INK) + circ(70, 94, 2.5, INK) + '<path d="M60 116 Q72 126 84 116" fill="none" stroke="' + INK + '" stroke-width="3" stroke-linecap="round"/>' + circ(110, 96, 8, '#FFC48A') + circ(112, 116, 7, '#FFC48A')))],
+            ['兔子', 'ㄊㄨˋ ㄗˇ', (() => wrap(ell(76, 44, 14, 38, '#FFF', '#C9B8A8') + ell(124, 44, 14, 38, '#FFF', '#C9B8A8') + ell(76, 48, 6, 24, '#FFB6C1') + ell(124, 48, 6, 24, '#FFB6C1') + circ(100, 116, 54, '#FFFFFF', '#C9B8A8') + face(100, 112) + circ(100, 128, 4, '#FF8FA3')))],
+            ['小鴨', 'ㄒㄧㄠˇ ㄧㄚ', (() => wrap(ell(100, 134, 52, 36, '#FFE066', '#D9A400') + circ(100, 84, 38, '#FFE066', '#D9A400') + path('M120 88 Q148 88 148 98 Q134 108 118 100 Z', '#FF9F43', '#D9701F') + circ(88, 78, 5, INK) + ell(76, 94, 7, 4.5, '#FF9AA2')))],
+            ['太陽', 'ㄊㄞˋ ㄧㄤˊ', (() => wrap((() => { let r = ''; for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6; r += '<line x1="' + (100 + 58 * Math.cos(a)).toFixed(1) + '" y1="' + (100 + 58 * Math.sin(a)).toFixed(1) + '" x2="' + (100 + 80 * Math.cos(a)).toFixed(1) + '" y2="' + (100 + 80 * Math.sin(a)).toFixed(1) + '" stroke="#FFB300" stroke-width="8" stroke-linecap="round"/>'; } return r; })() + circ(100, 100, 46, '#FFD54F', '#F5A700') + face(100, 98)))],
+            ['月亮', 'ㄩㄝˋ ㄌㄧㄤˋ', (() => wrap(path('M128 34 A66 66 0 1 0 166 128 A54 54 0 0 1 128 34 Z', '#FFE08A', '#E0B030') + circ(88, 112, 4.5, INK) + '<path d="M80 128 Q92 138 104 130" fill="none" stroke="' + INK + '" stroke-width="3" stroke-linecap="round"/>' + ell(74, 124, 7, 4.5, '#FF9AA2') + star(160, 54, 10, 4.5, '#FFE08A')))],
+            ['星星', 'ㄒㄧㄥ ㄒㄧㄥ', (() => wrap(star(100, 104, 72, 34, '#FFD54F', '#E0A800') + face(100, 106, 0.8)))],
+            ['花', 'ㄏㄨㄚ', (() => wrap(rect(95, 112, 10, 66, '#7CC576', 4) + path('M100 150 Q70 150 66 126 Q92 126 100 150 Z', '#7CC576') + (() => { let r = ''; for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; r += circ((100 + 30 * Math.cos(a)).toFixed(1), (92 + 30 * Math.sin(a)).toFixed(1), 20, '#FF9AA2', '#E06A78'); } return r; })() + circ(100, 92, 20, '#FFD54F', '#E0A800') + '<circle cx="94" cy="90" r="2.5" fill="' + INK + '"/><circle cx="106" cy="90" r="2.5" fill="' + INK + '"/><path d="M95 98 Q100 103 105 98" fill="none" stroke="' + INK + '" stroke-width="2.5" stroke-linecap="round"/>'))],
+            ['房子', 'ㄈㄤˊ ㄗˇ', (() => wrap(rect(46, 92, 108, 80, '#FFD9A0', 6, '#C98B3A') + path('M32 98 L100 40 L168 98 Z', '#FF8A65', '#C0583A') + rect(86, 122, 28, 50, '#A8714A', 4, '#7B4B2A') + rect(56, 108, 24, 22, '#BDE7FF', 3, '#6BA5C9') + rect(124, 108, 24, 22, '#BDE7FF', 3, '#6BA5C9') + circ(108, 148, 2.5, '#FFE08A')))],
+            ['汽車', 'ㄑㄧˋ ㄔㄜ', (() => wrap(path('M26 120 L40 92 Q44 84 54 84 L134 84 Q146 84 152 96 L174 120 Q182 124 182 134 L182 144 L26 144 Z', '#FF7A6B', '#C0483A') + path('M52 92 L132 92 L148 116 L46 116 Z', '#BDE7FF', '#6BA5C9') + circ(62, 148, 18, '#5B3A29') + circ(62, 148, 8, '#E8D5C4') + circ(146, 148, 18, '#5B3A29') + circ(146, 148, 8, '#E8D5C4') + circ(174, 128, 5, '#FFE08A')))],
+            ['球', 'ㄑㄧㄡˊ', (() => wrap(circ(100, 104, 64, '#FF8A65', '#C0583A') + '<path d="M40 84 Q100 120 160 84 M44 140 Q100 98 156 140 M100 40 L100 168" fill="none" stroke="#FFF4E6" stroke-width="5"/>' + star(150, 46, 9, 4, '#FFD54F')))],
+            ['杯子', 'ㄅㄟ ㄗˇ', (() => wrap(path('M52 64 L148 64 L138 160 Q137 172 126 172 L74 172 Q63 172 62 160 Z', '#FFD9A0', '#C98B3A') + path('M146 84 Q184 84 180 116 Q176 142 140 140', 'none', '#C98B3A') + rect(58, 64, 84, 14, '#FF8A65', 6) + face(100, 120, 0.85)))],
+            ['書', 'ㄕㄨ', (() => wrap(path('M30 52 Q70 40 100 58 Q130 40 170 52 L170 156 Q130 144 100 162 Q70 144 30 156 Z', '#FFE0B2', '#C98B3A') + '<path d="M100 58 L100 162" stroke="#C98B3A" stroke-width="4"/><path d="M44 76 Q70 70 88 80 M44 96 Q70 90 88 100 M112 80 Q130 70 156 76 M112 100 Q130 90 156 96" fill="none" stroke="#E8C48A" stroke-width="4" stroke-linecap="round"/>' + circ(70, 130, 3, '#FF8A65')))],
+            ['雞蛋', 'ㄐㄧ ㄉㄢˋ', (() => wrap(path('M100 34 C140 34 162 88 162 120 C162 156 134 176 100 176 C66 176 38 156 38 120 C38 88 60 34 100 34 Z', '#FFFBF2', '#D8C9B0') + face(100, 118)))],
+        ];
+        const byName = {}; LIST.forEach((x) => { byName[x[0]] = x; });
+        return {
+            names: LIST.map((x) => x[0]),
+            catalog: () => LIST.map((x) => ({ name: x[0], zhuyin: x[1], first_sound: x[1].charAt(0) })),
+            find: (n) => { n = String(n || '').trim(); const x = byName[n] || LIST.find((y) => y[0].indexOf(n) >= 0 || n.indexOf(y[0]) >= 0); return x ? { name: x[0], zhuyin: x[1], svg: x[2]() } : null; },
+        };
+    })();
 
     // ---------------------------------------------------------------- 掛到 FloatingAssistant 的方法
     const methods = {
@@ -20124,6 +20168,7 @@ const FaDeckTools = (function () {
         async _deckImportImageBlob(blob, label, tool) {
             if (!blob || !/^image\//.test(blob.type || '')) return { error: 'that is not a picture (' + ((blob && blob.type) || 'unknown type') + ')' };
             if (blob.size > 8 * 1024 * 1024) return { error: 'the picture is larger than 8 MB' };
+            if (blob.size < 1000 && blob.type !== 'image/svg+xml') return { error: 'that picture is only ' + blob.size + ' bytes: it is a broken / removed-image placeholder (a site that says the image no longer exists, a 1-pixel image), not a real picture. Do not use it. Use cute_picture for everyday things, or draw the thing yourself as a visual kind svg.' };
             const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' })[blob.type] || 'img';
             const id = await this.fileCache.put('deck-image-' + Date.now().toString(36) + '.' + ext, blob.type, blob, 'uploaded');
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
@@ -20393,6 +20438,15 @@ const FaDeckTools = (function () {
                 'List every picture seen so far in this task (uploaded pictures, screenshots, imported website/folder pictures, charts) as short handles "@img1", "@img2" ... with where each came from and the text around it. Use a handle as a deck image "src". Handles only exist for pictures that really came from a source.',
                 obj({}),
                 function () { const c = this._deckRun().catalog; return { ok: true, images: c.listing(), note: c.entries.length ? 'use the "ref" as the image src' : 'no pictures seen yet -- read the source first (list_uploaded_files, fap_read_file, import_image_url, import_fap_image)' }; });
+            tool('cute_picture',
+                'Built-in cute, warm-coloured illustrations of everyday things, each with its CORRECT zhuyin (注音) and Chinese name. USE THESE for children / cute / learning decks instead of searching the web (web pictures are often broken links or grey boxes). Call with no arguments to list what exists ({name, zhuyin, first_sound}); call with name to get the picture: it returns an "@imgN" handle (use it as the image src, e.g. visual {kind: image, src: "@img3"}) plus the zhuyin to teach. Copy the zhuyin exactly as returned -- never write zhuyin from memory. If the thing you need is not in the list, draw it yourself as a visual kind svg.',
+                obj({ name: { type: 'string', description: 'The thing, e.g. 蘋果 (omit to list all).' } }),
+                async function (a) {
+                    if (!a.name) return { ok: true, pictures: CUTE.catalog(), note: 'call cute_picture with a name to get its picture handle' };
+                    const f = CUTE.find(a.name); if (!f) return { ok: false, error: 'no built-in picture called ' + JSON.stringify(a.name) + '; available: ' + CUTE.names.join(', ') + '. Draw anything else yourself as an svg visual.' };
+                    const r = await this._deckImportImageBlob(new Blob([f.svg], { type: 'image/svg+xml' }), 'cute: ' + f.name, 'cute_picture');
+                    return r.error ? r : { ok: true, name: f.name, zhuyin: f.zhuyin, ref: r.ref, url: r.url };
+                });
             tool('import_image_url',
                 'Bring a picture from a web page into the task: downloads the image at this http(s) url (png/jpeg/gif/webp/bmp/svg, up to 8 MB; cross-site addresses may need the asset proxy set in Advance Settings) and stores it. Returns its "@imgN" handle.',
                 obj({ url: { type: 'string', description: 'Direct address of the image file.' } }, ['url']),
@@ -38116,7 +38170,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             Object.defineProperty(msg, '_displayAnim2DYaml', { value: anim2DYaml, enumerable: false, configurable: true });
             this._latestAnim2DYaml = anim2DYaml;
         } else if (deckVisual) {
-            msg.content = `[Tool ${fnName} 已產生一份動畫簡報「${deckVisual.title || ''}」（${deckVisual.slides || '?'}頁、約${deckVisual.minutes || '?'}分鐘），已經在對話裡顯示成播放器給使用者看了（可播放、換頁、匯出MP4/PPTX）。簡報檔案是${deckVisual.url}。如果之後要修改這份簡報，請先呼叫get_presentation_yaml取得目前實際內容再修改，不要憑記憶重新編寫]`;
+            msg.content = `[Tool ${fnName} 已產生一份動畫簡報「${deckVisual.title || ''}」（${deckVisual.slides || '?'}頁、約${deckVisual.minutes || '?'}分鐘），已經在對話裡顯示成播放器給使用者看了（可播放、換頁、匯出MP4/PPTX）。簡報檔案是${deckVisual.url}。如果使用者之後要修改這份簡報（改文字、換圖片、改題目、換配色…），不要自己重寫、不要回頭問使用者要圖片網址或新內容，也不要叫使用者重做：呼叫delegate_to_subagent，domain填「${this._deckDomainKey() || '簡報領域代號'}」，task寫清楚要改什麼，並附上這份簡報的檔案 ${deckVisual.url}；簡報領域會用get_presentation_yaml取得目前內容、只改要改的地方再重新產生]`;
             Object.defineProperty(msg, '_displayDeckUrl', { value: deckVisual.url, enumerable: false, configurable: true });
             this._latestDeckUrl = deckVisual.url;
         } else {
@@ -60011,6 +60065,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             }
             const isDeck = this._deckIsDomain(domainKey);
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
+            if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
                 allowedToolNames: this._resolveDomainToolNames(domain),
                 meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
@@ -60037,6 +60092,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } finally {
             if (isSkillDomain) this._pyBridgeDepth = Math.max(0, (this._pyBridgeDepth || 1) - 1);
             this._deckInDomainRun = false;
+            // 子agent用瀏覽器開的分頁，做完就關（模型常常忘了關；斜線指令與遠端委派不會經過 executeChat 結尾的 turn_end，所以這裡也要送一次）
+            if (this._bcUsedThisTurn) { this._bcUsedThisTurn = false; Promise.resolve(this._bcCall('turn_end', {}, 15000)).catch(() => {}); }
         }
     }
 

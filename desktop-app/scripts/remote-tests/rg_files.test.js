@@ -54,6 +54,12 @@ class Hub {
     files.f5 = { blob: { size: F.RELAY_MAX + 1, type: '', arrayBuffer: async () => new ArrayBuffer(8), slice() { return this; } }, name: 'huge.bin', mime: '' }; announced.add('f5');
     prov.shaCache.set('f5', 'x'.repeat(64)); let e6 = null; try { await req.fetch(A.self.nodeId, 'f5'); } catch (e) { e6 = e.message; } check('超過轉送上限：明確說明原因', /超過 16 MB/.test(e6 || ''), e6);
 
+    // 直連失敗後記住：不久內再抓同一個對象的小檔案，不再先等直連逾時，直接走轉送
+    const req2 = new F.FileShare({ room: B, getFile: async () => null, allowed: () => false, rtc: { RTCPeerConnection: function () {} } }); prov.RTC = function () {}; let p2pTries = 0; req2.fetchP2p = async () => { p2pTries++; throw new Error('直連建立逾時（12 秒）'); };
+    const x1 = await req2.fetch(A.self.nodeId, 'f1'); const x2 = await req2.fetch(A.self.nodeId, 'f1');
+    check('直連失敗一次後，下一次直接用轉送（只試了一次直連）', p2pTries === 1 && x1.via === '轉送' && x2.via === '轉送', [p2pTries, x1.via, x2.via]);
+    req2.p2pBad[A.self.nodeId] = Date.now() - 1; await req2.fetch(A.self.nodeId, 'f1'); check('過了一段時間會再試一次直連', p2pTries === 2, p2pTries);
+
     console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'rg_files: ' + ok + ' passed');
     process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXCEPTION', e && e.stack || e); process.exit(1); });
