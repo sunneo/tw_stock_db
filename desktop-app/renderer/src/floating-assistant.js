@@ -18689,6 +18689,7 @@ const FaRemoteHost = (function () {
                 q('send').disabled = false;
             };
             el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'attach') q('file').click(); else if (act === 'rm') { const it = (this._pendingAttachments || [])[Number(a.dataset.i)]; if (it) { it.cancelled = true; this._pendingAttachments = this._pendingAttachments.filter((x) => x !== it); chips(); } } else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
+            this._wirePasteAttachment(q('input')); // 剪貼簿的圖片（截圖）也能直接貼成附件；拖曳檔案是整頁都收的
             q('file').addEventListener('change', () => { const f = Array.from(q('file').files || []); q('file').value = ''; if (f.length) { this._ingestFilesAsAttachments(f); chips(); } });
             q('input').addEventListener('keydown', (ev) => {
                 if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
@@ -57157,8 +57158,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // _ingestFilesAsAttachments。只有「剪貼簿裡沒有文字」才接手（Excel、網頁複製表格常常同時帶文字和一張預覽圖，那種情況
     // 照常貼文字，不要憑空多出一張附件）。剪貼簿裡的圖片檔名通常是 image.png，改成有時間的名稱，之後用 list_uploaded_files 才分得出來。
     // 貼上是明確的動作，不跳確認對話框。
-    _wirePasteAttachment() {
-        const inp = document.getElementById('ai-input-text');
+    _wirePasteAttachment(el) { // el：別的輸入框（例如看別台分享對話的輸入框）也要能貼圖，不給就是主輸入框
+        const inp = el || document.getElementById('ai-input-text');
         if (!inp || inp._faPasteWired) return;
         inp._faPasteWired = true;
         inp.addEventListener('paste', (e) => {
