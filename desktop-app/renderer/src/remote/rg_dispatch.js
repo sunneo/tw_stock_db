@@ -604,6 +604,16 @@ const FaRemoteDispatch = (function () {
             if (err) { this._rgLog('拒絕了 ' + who + ' 在分享對話裡的訊息：' + err); ack({ ok: false, error: err }); return; }
             const ctx = await this._chatCtxLoad(b.id); if (ctx.isResponding) { ack({ ok: false, error: '這個對話的 AI 正在執行中，請等它做完或先按停止' }); return; }
             this._rgLog(who + ' 在分享的對話「' + String(en.title || '').slice(0, 14) + '」裡接著對話'); ack({ ok: true });
+            // 斜線指令與技能指令（所有已登錄的 /xxx）要照指令的方式執行，不能當成一般文字丟給 AI（否則 AI 只會口頭規劃、不會真的做）
+            const full = b.text.trim().slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
+            if (slash) {
+                const run = this._chatRunner(ctx); let argsText = full.slice(tok.length).trim();
+                try { run._setRespondingState(true, '⏳ 指令執行中：' + tok); } catch (_) { /* */ }
+                Promise.resolve().then(() => slash.handler(argsText, run))
+                    .catch((e) => { try { run._pushAssistantMessage('⚠️ 指令執行失敗：' + String((e && e.message) || e), null); } catch (_) { /* */ } })
+                    .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) { /* */ } });
+                return;
+            }
             Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + b.text.trim().slice(0, 8000))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
         },
         async _rgOnChatStop(m) {
