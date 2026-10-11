@@ -11,7 +11,7 @@ const FaDeckTools = (function () {
     const MAX_DATA_URI_BYTES = 150000;
     const CJK = /[㐀-鿿豈-﫿぀-ヿ가-힯]/g;
     // 伺服器端才是錯誤、瀏覽器端只是警告的規則（見 DESIGN.media-presentation.md §1 原則 6）：生成當下就退回，模型可以馬上修
-    const STRICT_WARNING = /mentions the speaking speed|removes and adds the identical line|snippet handle that was never defined|refers to code \/ a patch on an earlier slide/;
+    const STRICT_WARNING = /an English slide \(lang: en\) has Chinese characters|the narration is mostly English but|mentions the speaking speed|removes and adds the identical line|snippet handle that was never defined|refers to code \/ a patch on an earlier slide/;
 
     // ---------------------------------------------------------------- 長文字的 handle（小遊戲 HTML、長程式碼、patch）
     class Snippets {
@@ -192,6 +192,8 @@ const FaDeckTools = (function () {
         '4. finish_presentation(draft) assembles ONE deck and saves it. (A short deck, up to ~12 minutes, is a single render_presentation call.)',
         'Keep the whole talk coherent: one title slide at the start, a recap every few chapters, a summary at the end; do not restart or repeat yourself between batches, and never split the talk into several presentations.',
         '',
+        'LANGUAGE OF THE VOICE: each slide is spoken by ONE voice in ONE language. The deck language (deck.lang, default zh-TW) is the default; a slide that must be spoken in English gets  lang: en  and its narration is written ENTIRELY in English -- translate any Chinese into English (our English voice cannot pronounce Chinese: it spells every character out, "chinese letter chinese letter"). A Chinese slide may contain English terms (product names, units, code); they are read by the Chinese voice. Never put a long English passage into a Chinese slide, never put Chinese words into an English slide; if you cannot write a good English version, keep the slide Chinese. The validator refuses mixed narration. When the user says the whole deck is in Traditional Chinese, every narration is Chinese (English product names stay as names).',
+        'SLIDES THAT ARE ONLY A PICTURE OR A CHART (no text, no notes): pptx_to_deck reads them with the vision model and puts the result in outline[].vision = {status: ok | unconfirmed | failed | empty, text}. ok = a vision model really looked at it: write the narration as what the presenter most likely says about it, from that text (numbers and names exactly as read, the point of the chart in 1-3 sentences) and nothing the description does not support. unconfirmed = the description may not come from a vision model: treat it as weak and say so. failed / empty: do NOT invent a talk from the file name -- keep the picture, write a neutral narration only if the title says what it is, and list the slide as "not read". For pictures you imported yourself (a browser screenshot, an attachment) call interpret_image with a specific question (what text, numbers, axes, legend; what it shows; what is unclear) before writing about them. In the final answer always list which slides were written from vision, which from the author\'s own notes, and which could not be read.',
         'LEARNING FROM A MODEL (a .pptx, an earlier deck, or an existing skill such as a weekly-report skill): when the user gives one as the example to follow, READ IT FIRST and imitate its procedure and its shape, never only its look.',
         '1. A .pptx: call pptx_to_deck(file_id) -- it returns the draft yaml, an outline of every slide, the theme colours / fonts and warnings. (extract_pptx_images + interpret_image let you actually look at a slide picture when the outline is not enough.)',
         '2. A skill: skill_list, then skill_read(name) and read the whole SKILL.md and every script / reference it points to. Write down for yourself in 2-3 lines WHAT IT PRODUCES (sections, slide order, which slide has a table / a screenshot / a chart, the tone, the length) and HOW IT GETS ITS DATA (which files or which people\'s reports it reads, which web pages it opens and screenshots, what it counts or compares).',
@@ -340,6 +342,23 @@ const FaDeckTools = (function () {
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
             return { ok: true, ref: entry ? entry.ref : null, url: 'client-file/' + id, source: label };
         },
+        // 只有圖片／圖表的投影片：真的用視覺模型去讀（走 _visionDescribe：線上視覺模型、離線模型的優先順序與備援，跟 interpret_image 同一條路），
+        // 並如實回報有沒有讀成功（status: ok｜unconfirmed｜failed｜empty）——讀不到就是讀不到，不能讓模型用檔名編一段話
+        async _pptxShrinkToDataUrl(blob, maxSide) {
+            const bmp = await createImageBitmap(blob), k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height)), c = document.createElement('canvas');
+            c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k)); const g = c.getContext('2d'); g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+            try { bmp.close(); } catch (_) { /* */ } return c.toDataURL('image/jpeg', 0.88);
+        },
+        async _pptxVision(blob, title) {
+            try {
+                const dataUrl = await this._pptxShrinkToDataUrl(blob, 1600);
+                const prompt = '這是一頁簡報' + (title ? '（標題：「' + title + '」）' : '') + '，整頁只有這張圖，可能是圖表、截圖或表格。請：1) 逐項照抄圖上讀得到的所有文字、數字、座標軸、圖例與單位；2) 說明它在呈現什麼（資料、趨勢、比較、結論）；3) 明確列出看不清楚或不確定的地方，不要用猜的補。用繁體中文回答。';
+                const r = await this._visionDescribe({ images: [dataUrl], prompt, runLlm: () => this._interpretImageWithVisionModel(dataUrl, prompt) });
+                if (!r || !r.ok) return { status: 'failed', error: String((r && r.error) || '視覺模型沒有回應').slice(0, 200) };
+                const text = String(r.backend === 'llm' ? (r.llm && r.llm.description) : r.text || '').trim(), confirmed = r.backend === 'llm' ? !!(r.llm && r.llm.visionConfirmed) : false;
+                return { status: !text ? 'empty' : confirmed ? 'ok' : 'unconfirmed', backend: r.backend, vision_confirmed: confirmed, text: text.slice(0, 3000) };
+            } catch (e) { return { status: 'failed', error: String((e && e.message) || e).slice(0, 200) }; }
+        },
         // pptx 的原生圖表：從圖表檔（ppt/charts/chartN.xml）讀出類型、標題、類別與各系列的數值
         _pptxChartData(doc) {
             const tag = (el, n) => Array.from(el.getElementsByTagName(n));
@@ -427,6 +446,7 @@ const FaDeckTools = (function () {
             const pres = parse(presXml), presRels = await relsOf('ppt/presentation.xml');
             const sldIds = tag(pres, 'p:sldId').map((e) => ({ id: e.getAttribute('id'), rid: e.getAttribute('r:id') }));
             const sectionOf = {}; for (const sec of tag(pres, 'p14:section')) for (const s of tag(sec, 'p14:sldId')) sectionOf[s.getAttribute('id')] = sec.getAttribute('name');
+            const describe = opts.describe_images !== false; let visionLeft = Math.max(0, Math.min(30, Number(opts.vision_limit) || 12)); const visionJobs = [];
             const max = Math.max(1, Math.min(150, Number(opts.max_slides) || 150)), mode = ['notes', 'bullets', 'none'].includes(opts.narration) ? opts.narration : 'notes';
             const IMG = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }, VID = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', ogv: 'video/ogg' };
             const paraText = (p) => tag(p, 'a:t').map((t) => t.textContent).join('').replace(/\s+/g, ' ').trim();
@@ -460,7 +480,7 @@ const FaDeckTools = (function () {
                 const sl = { title: (title.join(' ') || body.shift() || other.shift() || '（無標題 ' + n + '）').slice(0, 120) };
                 const bullets = body.concat(other).map((t) => t.slice(0, 220));
                 let moreBullets = [], tableMore = [], tableHead = null;
-                let kind = 'text', visual = null;
+                let kind = 'text', visual = null, picBlob = null;
                 if (vids.length) {
                     const p = vids[0], ext = (p.split('.').pop() || '').toLowerCase(), entry = zip.file(p);
                     if (entry && VID[ext]) { const blob = new Blob([await entry.async('uint8array')], { type: VID[ext] }), id = await this.fileCache.put(base + '_slide' + n + '.' + ext, VID[ext], blob, 'uploaded'); visual = { kind: 'video', src: 'client-file/' + id, title: sl.title.slice(0, 60), fallback: '第 ' + n + ' 頁的內嵌影片' }; kind = 'video'; vidCount++; }
@@ -488,7 +508,8 @@ const FaDeckTools = (function () {
                     for (const p of pics.slice(0, 8)) {
                         const ext = (p.split('.').pop() || '').toLowerCase(), entry = zip.file(p);
                         if (!entry || !IMG[ext]) { warnings.push('第 ' + n + ' 頁的圖片 ' + p.split('/').pop() + ' 沒有匯入（' + (entry ? '格式 .' + ext + ' 不支援，例如 emf／wmf' : '檔案不存在') + '）'); continue; }
-                        const r = await this._deckImportImageBlob(new Blob([await entry.async('uint8array')], { type: IMG[ext] }), 'pptx: ' + record.filename + ' 第 ' + n + ' 頁', 'pptx_to_deck');
+                        const pb = new Blob([await entry.async('uint8array')], { type: IMG[ext] }); if (!picBlob && ext !== 'svg') picBlob = pb;
+                        const r = await this._deckImportImageBlob(pb, 'pptx: ' + record.filename + ' 第 ' + n + ' 頁', 'pptx_to_deck');
                         if (r && r.ok) { refs.push(r.ref || r.url); imgCount++; } else warnings.push('第 ' + n + ' 頁的圖片沒有匯入：' + ((r && r.error) || ''));
                     }
                     if (refs.length) { visual = refs.length === 1 ? { kind: 'image', src: refs[0] } : { kind: 'image', images: refs.map((src) => ({ src })) }; kind = 'picture'; }
@@ -503,12 +524,25 @@ const FaDeckTools = (function () {
                 if (visual) sl.visual = visual;
                 if (mode === 'notes' && notes) sl.narration = notes.slice(0, 1200); else if (mode === 'bullets' && sl.bullets) sl.narration = sl.bullets.join('。').slice(0, 1200) + '。';
                 if (notes && mode !== 'notes') sl.notes = notes.slice(0, 1200);
+                let vision = null;
+                if (describe && picBlob && kind === 'picture' && !sl.bullets && !notes && sl.layout !== 'title') {
+                    if (visionLeft > 0) {
+                        visionLeft--; vision = { status: 'pending' }; visionJobs.push({ vision, blob: picBlob, title: sl.title, n });
+                    } else vision = { status: 'skipped', note: '超過 vision_limit，沒有讀；需要的話對這頁的圖片用 interpret_image' };
+                }
                 const sec = sectionOf[sldIds[si].id] || '', baseTitle = sl.title;
                 if (tableMore.length) { const parts = Math.ceil(tableMore.length / 12); sl.title = baseTitle.slice(0, 100) + ' (1/' + (parts + 1) + ')'; warnings.push('第 ' + n + ' 頁的表格有 ' + (tableMore.length + 12) + ' 列，分成 ' + (parts + 1) + ' 頁'); }
                 slides.push({ section: sec, sl });
                 for (let k = 0; k * 12 < tableMore.length; k++) slides.push({ section: sec, sl: { title: baseTitle.slice(0, 100) + ' (' + (k + 2) + '/' + (Math.ceil(tableMore.length / 12) + 1) + ')', visual: { kind: 'table', header: tableHead, rows: tableMore.slice(k * 12, k * 12 + 12) } } });
                 if (moreBullets.length) { warnings.push('第 ' + n + ' 頁有 ' + (moreBullets.length + 6) + ' 條內文，超過 6 條的分成續頁'); for (let k = 0; k < moreBullets.length; k += 6) slides.push({ section: sec, sl: { title: baseTitle.slice(0, 100) + '（續）', bullets: moreBullets.slice(k, k + 6) } }); }
-                outline.push({ n, title: sl.title, layout_in_pptx: layoutName, imported_as: sl.layout || (visual ? visual.kind : 'content'), bullets: (sl.bullets || []).length, notes: !!notes, pictures: pics.length, tables: tables.length, video: vids.length, charts: charts.length });
+                outline.push({ n, title: sl.title, layout_in_pptx: layoutName, imported_as: sl.layout || (visual ? visual.kind : 'content'), bullets: (sl.bullets || []).length, notes: !!notes, pictures: pics.length, tables: tables.length, video: vids.length, charts: charts.length, image_only: !!vision, vision: vision || undefined });
+            }
+            // 看圖很慢（每張十幾到幾十秒）：同時最多 3 張一起讀
+            for (let i = 0; i < visionJobs.length; i += 3) {
+                await Promise.all(visionJobs.slice(i, i + 3).map(async (j) => {
+                    Object.assign(j.vision, await this._pptxVision(j.blob, j.title));
+                    if (j.vision.status !== 'ok') warnings.push('第 ' + j.n + ' 頁只有圖片：' + (j.vision.status === 'failed' ? '看圖失敗（' + j.vision.error + '）' : j.vision.status === 'unconfirmed' ? '讀圖結果無法確認是視覺模型看的（可能不準）' : '讀圖沒有內容') + '，請當作「沒讀到」處理，不要編內容');
+                }));
             }
             if (!slides.length) return { ok: false, error: '這個 pptx 裡沒有讀到任何投影片' };
             const chapters = []; let cur = null;
@@ -607,7 +641,7 @@ const FaDeckTools = (function () {
                 });
             tool('pptx_to_deck',
                 'Read a .pptx the user uploaded (file_id from list_uploaded_files) and understand it: returns a draft deck YAML (slide order, sections as chapters, titles, bullets, tables, pictures, embedded videos, speaker notes as narration), an outline of every slide (what it held and how it was imported), the theme colours and fonts, and warnings for what could not be imported (charts, unsupported picture formats, over-long tables). Pictures are imported and referenced by handle. Use it to (a) turn a pptx into a playable deck, or (b) learn the STRUCTURE and STYLE of a model pptx (for example last week\'s report) so the new deck follows it: same sections, same slide order, a table where it had a table, a screenshot where it had a screenshot. Edit the returned yaml as needed and call render_presentation. narration: "notes" (default: speaker notes are spoken), "bullets" (the bullets are read out) or "none" (silent slides).',
-                obj({ file_id: { type: 'string', description: 'The uploaded .pptx (file id from list_uploaded_files).' }, narration: { type: 'string', enum: ['notes', 'bullets', 'none'] }, max_slides: { type: 'integer', description: 'Read only the first N slides (default all, at most 150).' }, title: { type: 'string', description: 'Deck title (default: the file name).' }, lang: { type: 'string', description: 'zh-TW (default), en, ...' } }, ['file_id']),
+                obj({ file_id: { type: 'string', description: 'The uploaded .pptx (file id from list_uploaded_files).' }, narration: { type: 'string', enum: ['notes', 'bullets', 'none'] }, max_slides: { type: 'integer', description: 'Read only the first N slides (default all, at most 150).' }, describe_images: { type: 'boolean', description: 'Read slides that are only a picture / chart with the vision model (default true).' }, vision_limit: { type: 'integer', description: 'At most this many slides are read with vision (default 12, max 30).' }, title: { type: 'string', description: 'Deck title (default: the file name).' }, lang: { type: 'string', description: 'zh-TW (default), en, ...' } }, ['file_id']),
                 async function (a) {
                     const rec = await this.fileCache.get(String(a.file_id || '').replace(/^client-file\//, ''));
                     if (!rec || !rec.blob) return { error: 'no uploaded file with that id (call list_uploaded_files)' };

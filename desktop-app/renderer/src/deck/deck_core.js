@@ -297,6 +297,7 @@
     });
     if (count > LIMITS.slides) { err('chapters', 'more than ' + LIMITS.slides + ' slides in total'); }
     checkQuizReferences(doc, warn);
+    checkLanguages(doc, warn);
     return { errors: errors, warnings: warnings };
   }
 
@@ -322,6 +323,7 @@
         });
       }
     }
+    if (s.lang != null && !/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})?$/.test(str(s.lang))) { err(p + '.lang', 'a language code such as zh-TW or en (the language this slide is SPOKEN in; default: deck.lang)'); }
     var narration = s.narration;
     if (narration != null && typeof narration !== 'string') { err(p + '.narration', 'must be a string'); narration = ''; }
     if (str(narration).length > LIMITS.narration) { err(p + '.narration', 'longer than ' + LIMITS.narration + ' characters (split the slide)'); }
@@ -615,6 +617,21 @@
 
   // A question about code / a patch must have that code on the SAME slide (see MediaDeckValidator.check_quiz_references); only a warning here -- a saved deck still plays.
   var QUIZ_BACK_REFERENCE = /剛才|剛剛|上面|前面|上一頁|上一張|先前|稍早|前一頁|above|previous slide|earlier|last slide|the (?:patch|code|listing|diff)\b|這個 ?patch|該 ?patch|這份 ?patch|此 ?patch|patch ?中|patch ?裡|程式碼中|程式碼裡|程式中|這段程式/i;
+  // One slide is spoken by ONE voice in ONE language. The English voice cannot say Chinese (it spells every character: "chinese letter chinese letter"),
+  // and a long English passage in a Chinese slide is read badly too. Only warnings here (a saved deck still plays: the player translates / falls back
+  // when it speaks); the tools refuse them when a model writes them (STRICT_WARNING).
+  var CJK_G = /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;
+  function checkLanguages(doc, warn) {
+    var deckLang = isObj(doc.deck) && doc.deck.lang ? str(doc.deck.lang) : 'zh-TW';
+    (doc.chapters || []).forEach(function (ch, ci) {
+      ((ch && ch.slides) || []).forEach(function (s, si) {
+        if (!isObj(s) || typeof s.narration !== 'string') { return; }
+        var p = 'chapters[' + ci + '].slides[' + si + '].narration', lang = str(s.lang) || deckLang, cjk = (s.narration.match(CJK_G) || []).length, latin = (s.narration.match(/[A-Za-z]/g) || []).length;
+        if (/^en/i.test(lang) && cjk > 0) { warn(p, 'an English slide (lang: en) has Chinese characters in its narration -- the English voice cannot read them (it spells every character out). Write the WHOLE narration of this slide in English (translate the Chinese), or make the slide Chinese'); }
+        else if (!/^en/i.test(lang) && latin >= 40 && cjk * 4 < latin) { warn(p, 'the narration is mostly English but this slide is read by the Chinese voice -- set lang: en on this slide and write all of it in English, or translate it into Chinese'); }
+      });
+    });
+  }
   function checkQuizReferences(doc, warn) {
     var flat = [];
     (doc.chapters || []).forEach(function (ch, ci) { ((ch && ch.slides) || []).forEach(function (s, si) { if (isObj(s)) { flat.push({ path: 'chapters[' + ci + '].slides[' + si + ']', s: s }); } }); });
@@ -657,7 +674,7 @@
         if (visual) { visual = normalizeVisual(visual, 0); }
         var tr = s.transition ? Object.assign({ ms: 500 }, s.transition) : { type: n === 0 ? 'none' : (deck.style === '3d' ? 'fly' : 'fade'), ms: deck.style === '3d' ? 1400 : 500 };
         slides.push({ id: s.id || ('s' + (n + 1)), index: n, chapter: ci, chapterTitle: str(ch.title), layout: layout, title: str(s.title),
-          subtitle: str(s.subtitle), bullets: bullets, narration: speakable(s.narration), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
+          subtitle: str(s.subtitle), voice: str(s.voice), lang: str(s.lang), bullets: bullets, narration: speakable(s.narration), notes: str(s.notes), visual: visual, cues: Array.isArray(s.cues) ? s.cues : [],
           transition: tr, duration: typeof s.duration === 'number' ? s.duration : 0, stage: s.stage || deck.style,
           camera: s.camera == null ? null : (Array.isArray(s.camera) ? s.camera : [s.camera]).map(function (c) { return typeof c === 'string' ? { preset: c } : Object.assign({}, c); }) });
       });

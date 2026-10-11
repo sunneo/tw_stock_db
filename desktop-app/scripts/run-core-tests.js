@@ -38,6 +38,7 @@ const suites = [
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
     ['動畫簡報：程式碼視窗、patch、問答卡、小工具沙盒、互動視覺的格式規則', 'scripts/deck-tests/deck_interactive.test.js'],
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
+    ['動畫簡報：一頁一種語言的語音（混語檢查、念之前翻成英文或退回中文語音）', 'scripts/deck-tests/deck_language.test.js'],
     ['動畫簡報：小工具範例（打磚塊）真的玩到通關', 'scripts/deck-tests/widget_example.test.js'],
     ['動畫簡報：工具（長文字 handle、圖片目錄、長度估算）', 'scripts/deck-tests/deck_tools.test.js'],
     ['動畫簡報：樣板（預設值、複寫會改變繪製）', 'scripts/deck-tests/deck_template.test.js'],

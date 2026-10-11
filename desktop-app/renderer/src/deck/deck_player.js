@@ -11,7 +11,7 @@
   var DECK_URL_RE = /\.deck\.yaml(\?.*)?$/i;
   var PREHEAT = 3;      // slides that must be ready before the play button appears
   var LOOKAHEAD = 3;    // slides prepared ahead of the one being shown
-  var ttsProvider = null, ttsConcurrent = false;
+  var ttsProvider = null, ttsConcurrent = false, speechPreparer = null;
   var audioCtx = null;
 
   // ------------------------------------------------------------------ small utilities
@@ -673,7 +673,13 @@
     pr.state = 'loading'; this.emit('state');
     var voice = slide.voice || this.deck.deck.voice, speed = this.deck.deck.speed || 1;
     var packed = this.packAudio && this.packAudio[slide.id];
-    var audioP = slide.narration ? withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, this.deck.deck.lang), 240000, 'narration').then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
+    var lang = slide.lang || this.deck.deck.lang;
+    var prepared = slide.narration && !packed && speechPreparer ? speechPreparer(slide.narration, voice, lang).catch(function () { return null; }) : Promise.resolve(null);
+    var audioP = slide.narration ? prepared.then(function (r) {
+      if (r && typeof r.text === 'string' && r.text.trim() && r.text !== slide.narration) { slide.narrationOriginal = slide.narration; slide.narration = r.text; }
+      if (r && r.voice != null) { voice = r.voice; }
+      return withTimeout(packed ? decodeMp3(packed) : synthesize(slide.narration, voice, speed, lang), 240000, 'narration');
+    }).then(function (a) { pr.audio = a; }, function (e) { pr.error = String(e && e.message || e); }) : Promise.resolve();
     var visualP = withTimeout(prepVisual(slide), 90000, 'visual').then(function (v) { pr.visual = v; self.restoreResults(i); }, function (e) { pr.visual = null; pr.error = pr.error || String(e && e.message || e); });
     pr.promise = Promise.all([audioP, visualP]).then(function () {
       pr.timing = Core.timingFor(slide, pr.audio ? pr.audio.duration : 0, pr.visual && pr.visual.duration || 0);
@@ -1530,6 +1536,9 @@
     isDeckUrl: isDeckUrl, mountAll: mountAll, mount: mount,
     // fn(text, voiceId|null, speed, lang) -> Promise<ArrayBuffer (mp3)>; installed by ai_chat.js
     setTtsProvider: function (fn, opts) { ttsProvider = fn; ttsConcurrent = !!(opts && opts.concurrent); },
+    // fn(text, voiceId|null, lang) -> Promise<{text, voice}>: last look at a slide's narration before it is spoken (translate it for an English voice, pick the
+    // Chinese voice for Chinese text). The returned text replaces the narration (so the subtitles match what is heard).
+    setSpeechPreparer: function (fn) { speechPreparer = fn; },
     hasTts: function () { return !!ttsProvider; },
     // fn(system, user) -> Promise<{score: 0..1, feedback}>; replaces the default AI grader of answer cards
     setGradeProvider: function (fn) { gradeProvider = fn; },

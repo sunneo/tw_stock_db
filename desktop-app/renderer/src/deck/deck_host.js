@@ -10,6 +10,7 @@ const FaDeckHost = (function () {
     // 預設樣板：結構與外掛的 config/deck_template.default.json 相同（版面座標以 1920x1080 設計空間計），沒有品牌圖片
     const DECK_CSS_ID = 'fa-deck-css';
 
+    const CJKTEST = (s) => /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(s);
     const methods = {
         // 簡報用到的函式庫網址（沿用助理本身的設定，可被 FA_ASSET_URLS 覆寫）
         _deckAssetUrls() {
@@ -41,6 +42,7 @@ const FaDeckHost = (function () {
                 for (const name of ORDER) { if (SRC[name]) await this._deckInjectScript(SRC[name], name); }
                 if (!w.AiChatDeck || !w.AiChatDeckCore) throw new Error('簡報元件載入後找不到 AiChatDeck');
                 w.AiChatDeck.setTtsProvider((text, voice, speed, lang) => this._deckSynthesize(text, voice, speed, lang), { concurrent: true });
+                w.AiChatDeck.setSpeechPreparer((text, voice, lang) => this._deckPrepareSpeech(text, voice, lang));
                 w.AiChatDeck.setGradeProvider((system, user) => this._deckGrade(system, user));
                 return true;
             })();
@@ -202,6 +204,35 @@ const FaDeckHost = (function () {
                 const go = () => { g.n++; resolve(() => { g.n--; const nx = g.wait.shift(); if (nx) nx(); }); };
                 if (g.n < g.max) go(); else g.wait.push(go);
             });
+        },
+        // 一頁旁白念之前的最後把關：一頁只用一種語言的語音。
+        //  - 要用英文語音（投影片 lang 是 en，或選了英文語音）而旁白含中文：英文語音唸不出中文（會一個字一個字拼成 "chinese letter"），
+        //    所以把「整頁」旁白翻成英文（字幕也跟著換）；翻不出來就整頁退回中文語音，唸原本的全中文。
+        //  - 旁白含中文（其餘情況）：一律用中文語音——預設的挑選規則是「中文字超過兩成」，中英混雜的段落會被丟給英文語音而唸成亂碼。
+        async _deckPrepareSpeech(text, voice, lang) {
+            const s = String(text || ''), CJK = /[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+            if (!CJK.test(s)) return { text: s, voice };
+            const local = typeof TTS_VOICES !== 'undefined' ? TTS_VOICES : [], api = typeof TTS_API_VOICES !== 'undefined' ? TTS_API_VOICES : [];
+            const isLocal = !!voice && local.some((v) => v.id === voice), isApi = !!voice && api.some((v) => v.id === voice);
+            const zh = () => { const d = (this.advancedSettings && this.advancedSettings.ttsDefaultApiVoice) || ''; const v = api.find((x) => x.id === d) || api[0]; return v ? v.id : null; };
+            if (isLocal || (!voice && /^en/i.test(String(lang || '')))) {
+                const en = await this._deckTranslateToEnglish(s);
+                if (en) { try { this._log('🌐 這頁要用英文語音，已把旁白翻成英文'); } catch (_) { /* */ } return { text: en, voice }; }
+                try { this._log('⚠️ 這頁要用英文語音，但旁白含中文又翻不出英文：整頁改用中文語音唸原本的旁白'); } catch (_) { /* */ }
+                return { text: s, voice: zh() };
+            }
+            return { text: s, voice: isApi ? voice : zh() };
+        },
+        async _deckTranslateToEnglish(text) {
+            this._deckTransCache = this._deckTransCache || new Map(); const key = String(text);
+            if (this._deckTransCache.has(key)) return this._deckTransCache.get(key);
+            let out = null;
+            try {
+                const r = await this._callSimpleCompletion('Translate this spoken script into natural spoken English for text-to-speech.\n\n' + key, { systemPrompt: 'You translate the narration of a presentation slide into English that will be read aloud by a text-to-speech voice. Output ONLY the English narration: no quotes, no notes, no explanations, no markdown. Keep the number of sentences about the same. Write numbers, units and dates the way they are spoken. Chinese person / product / place names: use a common English form or pinyin without tone marks. Keep English terms as they are. The output must contain no Chinese characters at all.', maxTokens: 1200, temperature: 0 });
+                const t = String(r || '').trim().replace(/^["“'‘]+|["”'’]+$/g, '').trim();
+                if (t && !CJKTEST(t) && t.length >= Math.min(20, key.length * 0.2)) out = t;
+            } catch (_) { out = null; }
+            this._deckTransCache.set(key, out); return out;
         },
         async _deckSynthesize(text, voice, speed, lang) {
             const isApi = voice ? (typeof TTS_API_VOICES !== 'undefined' && TTS_API_VOICES.some((v) => v.id === voice)) : this._looksLikeCjkText(String(text));
