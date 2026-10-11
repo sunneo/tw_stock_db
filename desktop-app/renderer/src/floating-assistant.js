@@ -18171,7 +18171,8 @@ const FaRemoteHost = (function () {
         _rgAfterEnter(rg) {
             const refresh = () => { if (this._rg !== rg) return; try { this._rgSyncTargetSelect(); this._rgRender(); this._rgRefreshFps(); this._rgRefreshRemoteChats(); this._chatListSig = null; this._renderChatList(); this._rgOnMembersChange(); } catch (_) { /* 畫面還沒準備好 */ } };
             refresh(); this._rgLoadPending().catch(() => {}); setTimeout(refresh, 1500); setTimeout(refresh, 5000);
-            clearInterval(rg.syncTimer); rg.syncTimer = setInterval(() => this._rgSyncPending(false), 15000);
+            this._rgPushChats(); setTimeout(() => this._rgPushChats(), 3000); let tick = 0;
+            clearInterval(rg.syncTimer); rg.syncTimer = setInterval(() => { this._rgSyncPending(false); if (++tick % 4 === 0) this._rgPushChats(); }, 15000); // 每分鐘再廣播一次我分享的對話，別台晚到或漏收也會補上
         },
         _rgBackendOrder() { const sb = []; BACKENDS.forEach((b, i) => { if (b.kind !== 'kv') sb.push(i); }); const k = Math.floor(Math.random() * sb.length); return sb.slice(k).concat(sb.slice(0, k)).concat(BACKENDS.map((b, i) => b.kind === 'kv' ? i : -1).filter((i) => i >= 0)); },
         // 目前這個群組是不是走慢速信箱：是的話所有等待回覆的逾時都放寬
@@ -18638,7 +18639,7 @@ const FaRemoteHost = (function () {
         // 向還沒問過的機器要它分享的清單（成員名單變動時呼叫）；每分鐘（慢速信箱時每 10 分鐘）重問一次
         _rgRefreshRemoteChats(force) {
             const rg = this._rg; if (!rg) return; rg.remoteChats = rg.remoteChats || {}; const every = 60000 * this._rgSlow(), now = Date.now();
-            for (const m of this._rgTargets()) { const c = rg.remoteChats[m.nodeId]; if (!force && c && now - c.at < every) continue; rg.remoteChats[m.nodeId] = Object.assign({ list: [] }, c, { at: now }); rg.room.send(m.nodeId, 'chats_req', { rid: 'c' + now }).catch(() => {}); }
+            for (const m of this._rgTargets()) { const c = rg.remoteChats[m.nodeId]; if (!force && c && now - c.at < ((c.list && c.list.length) ? every : Math.min(every, 10000))) continue; rg.remoteChats[m.nodeId] = Object.assign({ list: [] }, c, { at: now }); rg.room.send(m.nodeId, 'chats_req', { rid: 'c' + now }).catch(() => {}); }
             Object.keys(rg.remoteChats).forEach((id) => { if (!rg.room.members().some((x) => x.nodeId === id)) delete rg.remoteChats[id]; });
             if (!rg.chatsTimer) rg.chatsTimer = setInterval(() => { if (this._rg === rg) this._rgRefreshRemoteChats(); else clearInterval(rg.chatsTimer); }, 30000);
         },
@@ -19208,7 +19209,7 @@ const FaRemoteDispatch = (function () {
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
             try {
-                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => { prog.log(line); this._rgTrace(job, line); const tl = (job.trace = job.trace || []); if (tl.length < 300) tl.push(String(line).slice(0, 300)); }, shouldStop: () => { if (job.chatCtx && job.chatCtx.stopRequested) job.stop = true; return job.stop; }, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
+                const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => { prog.log(line); this._rgTrace(job, line); const tl = (job.trace = job.trace || []); if (tl.length < 300) tl.push(String(line).slice(0, 300)); }, shouldStop: () => { if (job.chatCtx && job.chatCtx.stopRequested) job.stop = true; return job.stop; }, onToolResult: (name, args, res) => { const l = (job.tools = job.tools || []); if (l.length < 300) l.push({ name, args: String(args).slice(0, 4000), res: typeof res === 'string' ? res : JSON.stringify(res), at: Date.now() }); }, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
                 this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
@@ -19224,7 +19225,7 @@ const FaRemoteDispatch = (function () {
                 const v = res && res.visual ? { type: res.visual.type, title: res.visual.title || res.visual.name || '' } : null;
                 if (rg0 && rg0.captures) rg0.captures.delete(cap);
                 if (job.stop) { this._rgEvent(job, { kind: 'stopped', text }); prog.fail('已停止'); }
-                else { let refs = []; try { refs = await this._rgBuildRefs(cap, res && res.visual, job.from); } catch (e) { this._rgLog('整理產生的內容失敗：' + String((e && e.message) || e)); } this._rgEvent(job, { kind: 'done', text, visual: v, refs }); prog.finish('完成' + (refs.length ? '（產生了 ' + refs.length + ' 項內容）' : '')); }
+                else { let refs = []; try { await this._rgAddRawData(job, cap); } catch (e) { this._rgLog('附上原始工具資料失敗：' + String((e && e.message) || e)); } try { refs = await this._rgBuildRefs(cap, res && res.visual, job.from); } catch (e) { this._rgLog('整理產生的內容失敗：' + String((e && e.message) || e)); } this._rgEvent(job, { kind: 'done', text, visual: v, refs }); prog.finish('完成' + (refs.length ? '（產生了 ' + refs.length + ' 項內容）' : '')); }
             } catch (e) { const msg = String((e && e.message) || e); this._rgEvent(job, { kind: 'failed', error: msg }); prog.fail(msg); }
             try { const rg1 = this._rg; if (rg1 && rg1.captures && job.cap) rg1.captures.delete(job.cap); } catch (_) { /* */ }
             job.done = true;
@@ -19260,6 +19261,23 @@ const FaRemoteDispatch = (function () {
                 const en = this._chatEntry(ctx.id); if (en) { en.updatedAt = Date.now(); this._saveChatIndex(); }
                 this._chatListSig = null; this._renderChatList(); this._chatMarkUnread(ctx);
             } catch (_) { /* 記錄失敗不影響任務本身 */ }
+        },
+        // 把這次任務裡每個工具呼叫的「原始回傳資料」整理成一個檔案一起傳回去：AI 的結果文字常常只是摘要（例如只列前幾筆），
+        // 完整資料要有，委託端才能拿去做簡報、算數或核對。單筆超過 300KB 截斷、總量 3MB 之後的略過，並在檔案裡寫明；圖片資料（dataUrl）省略，圖片另外有檔案。
+        async _rgAddRawData(job, cap) {
+            const tools = job.tools || []; if (!tools.length) return;
+            const MAX_ONE = 300 * 1024, MAX_ALL = 3 * 1024 * 1024; let total = 0, omitted = 0; const calls = [];
+            const clean = (s) => String(s).replace(/"dataUrl"\s*:\s*"data:[^"]{200,}"/g, '"dataUrl":"[圖片資料已省略，圖片另存為檔案]"');
+            for (const t of tools) {
+                let r = clean(t.res), cut = false; if (r.length > MAX_ONE) { r = r.slice(0, MAX_ONE); cut = true; }
+                if (total + r.length > MAX_ALL) { omitted++; continue; } total += r.length;
+                let result = r; if (!cut) { try { result = JSON.parse(r); } catch (_) { /* 不是 JSON：留原文 */ } }
+                let args = t.args; try { args = JSON.parse(t.args); } catch (_) { /* 留原文 */ }
+                calls.push({ tool: t.name, arguments: args, result, truncated: cut || undefined, at: new Date(t.at).toISOString() });
+            }
+            const doc = { note: '這台機器在執行需求時，每個工具呼叫的原始回傳資料（完整，沒有經過 AI 摘要）。單筆超過 300KB 會截斷，總量超過 3MB 之後的呼叫會略過（omitted_after_limit）。', request: String(job.text).slice(0, 500), executed_by: this._rg ? this._rg.room.self.name : '', for: job.fromName, calls, omitted_after_limit: omitted || undefined };
+            const blob = new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' }), id = await this.fileCache.put('原始工具資料-' + String(job.taskId).slice(-6) + '.json', 'application/json', blob, 'generated');
+            cap.push({ id, name: '原始工具資料.json', mime: 'application/json', size: blob.size });
         },
         // 沒有對話清單時的記錄：一個預設收起來的框（不影響使用者正在看的畫面），點開才看到來源、需求、完整報告、處理過程；檔案卡片接在後面
         _rgRecordInline(job, ev, run, refs, refNames) {
@@ -38967,6 +38985,7 @@ ${sourceTool.handlerScript}
         try { raw = await be.read(idx.currentId); } catch (err) { console.warn('對話讀取失敗:', err); }
         this._applyChatBlob(raw);
         this._chatListReady = true;
+        if (this._rgPushChats) this._rgPushChats();
         if (typeof idx.sidebarCollapsed !== 'boolean') idx.sidebarCollapsed = false;
         this._syncChatListVisibility();
         this._renderChatList();
@@ -61047,6 +61066,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         if (this._deckInDomainRun) this._deckCatalogNote(fnName, result);
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
+                        if (typeof options.onToolResult === 'function') { try { options.onToolResult(fnName, rawArgs, result); } catch (_) { /* 收集失敗不影響任務 */ } }
                         messages.push(this._buildToolResultMessage(fnName, result, { tool_call_id: tc.id }));
                         if (onTrace) onTrace('   ↩ ' + traceSnip(result, 500));
                     } catch (err) {

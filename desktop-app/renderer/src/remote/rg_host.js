@@ -77,7 +77,8 @@ const FaRemoteHost = (function () {
         _rgAfterEnter(rg) {
             const refresh = () => { if (this._rg !== rg) return; try { this._rgSyncTargetSelect(); this._rgRender(); this._rgRefreshFps(); this._rgRefreshRemoteChats(); this._chatListSig = null; this._renderChatList(); this._rgOnMembersChange(); } catch (_) { /* 畫面還沒準備好 */ } };
             refresh(); this._rgLoadPending().catch(() => {}); setTimeout(refresh, 1500); setTimeout(refresh, 5000);
-            clearInterval(rg.syncTimer); rg.syncTimer = setInterval(() => this._rgSyncPending(false), 15000);
+            this._rgPushChats(); setTimeout(() => this._rgPushChats(), 3000); let tick = 0;
+            clearInterval(rg.syncTimer); rg.syncTimer = setInterval(() => { this._rgSyncPending(false); if (++tick % 4 === 0) this._rgPushChats(); }, 15000); // 每分鐘再廣播一次我分享的對話，別台晚到或漏收也會補上
         },
         _rgBackendOrder() { const sb = []; BACKENDS.forEach((b, i) => { if (b.kind !== 'kv') sb.push(i); }); const k = Math.floor(Math.random() * sb.length); return sb.slice(k).concat(sb.slice(0, k)).concat(BACKENDS.map((b, i) => b.kind === 'kv' ? i : -1).filter((i) => i >= 0)); },
         // 目前這個群組是不是走慢速信箱：是的話所有等待回覆的逾時都放寬
@@ -544,7 +545,7 @@ const FaRemoteHost = (function () {
         // 向還沒問過的機器要它分享的清單（成員名單變動時呼叫）；每分鐘（慢速信箱時每 10 分鐘）重問一次
         _rgRefreshRemoteChats(force) {
             const rg = this._rg; if (!rg) return; rg.remoteChats = rg.remoteChats || {}; const every = 60000 * this._rgSlow(), now = Date.now();
-            for (const m of this._rgTargets()) { const c = rg.remoteChats[m.nodeId]; if (!force && c && now - c.at < every) continue; rg.remoteChats[m.nodeId] = Object.assign({ list: [] }, c, { at: now }); rg.room.send(m.nodeId, 'chats_req', { rid: 'c' + now }).catch(() => {}); }
+            for (const m of this._rgTargets()) { const c = rg.remoteChats[m.nodeId]; if (!force && c && now - c.at < ((c.list && c.list.length) ? every : Math.min(every, 10000))) continue; rg.remoteChats[m.nodeId] = Object.assign({ list: [] }, c, { at: now }); rg.room.send(m.nodeId, 'chats_req', { rid: 'c' + now }).catch(() => {}); }
             Object.keys(rg.remoteChats).forEach((id) => { if (!rg.room.members().some((x) => x.nodeId === id)) delete rg.remoteChats[id]; });
             if (!rg.chatsTimer) rg.chatsTimer = setInterval(() => { if (this._rg === rg) this._rgRefreshRemoteChats(); else clearInterval(rg.chatsTimer); }, 30000);
         },
