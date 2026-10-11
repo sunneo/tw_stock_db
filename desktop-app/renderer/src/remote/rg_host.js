@@ -26,6 +26,11 @@ const FaRemoteHost = (function () {
         _rgSelfInfo(name) { const desktop = !!window.desktopAPI; return Object.assign(this._rgNodeIdWanted ? { nodeId: this._rgNodeIdWanted } : {}, { name, kind: desktop ? 'desktop' : 'web', caps: desktop ? ['desktop', 'files', 'shell', 'sandbox'] : ['web', 'sandbox'], allow: this._rgSettings().allowDispatch, sub: this._rgSettings().acceptSubtasks, busy: false, agents: 0, pk: this._rgIdent ? this._rgIdent.pub : undefined }); },
         // 建立：代號由這邊隨機挑（8 位數起）；撞號（伺服器回 false）就換一個，連續撞號多加一位
         // 在某個後端登記一個新房間（代號由這邊隨機挑，8 位數起；撞號就換，連續撞號多加一位）。order：後端編號的嘗試順序
+        // 每個房間代號對應一個固定的「家」（四個 Supabase 專案之一）：創建者把房間放在家，加入的人用同樣的算法先去家，
+        // 家連不上時大家依同樣的順序（家之後的專案，最後是慢速信箱）往下換——所以不會有人進到別的後端而互相看不到
+        _rgSbList() { const a = []; BACKENDS.forEach((b, i) => { if (b.kind !== 'kv') a.push(i); }); return a; },
+        _rgHomeOf(code) { const sb = this._rgSbList(); return sb[Number(String(code).slice(-3)) % sb.length]; },
+        _rgOrderFor(code) { const sb = this._rgSbList(), h = sb.indexOf(this._rgHomeOf(code)); return sb.slice(h).concat(sb.slice(0, h)).concat(BACKENDS.map((b, i) => (b.kind === 'kv' ? i : -1)).filter((i) => i >= 0)); },
         async _rgRegister(password, order) {
             const R = FaRemoteGroup; let firstErr = null;
             for (const idx of (order || [0, 1])) {
@@ -35,6 +40,7 @@ const FaRemoteHost = (function () {
                         const bytes = new Uint8Array(8); crypto.getRandomValues(bytes);
                         let digits = ''; for (const x of bytes) digits += String(x % 10); while (digits.length < len) digits += String(Math.floor(Math.random() * 10));
                         const code = String(1 + (bytes[0] % 9)) + digits.slice(0, len - 1);
+                        if (BACKENDS[idx].kind !== 'kv' && this._rgHomeOf(code) !== idx) continue; // 放在這個後端的房間，代號的「家」就是這個後端
                         const keys = await R.deriveKeys(password, code);
                         let created; try { created = await t.rpc('rg_create_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { throw this._rgRpcError(e); }
                         if (created) return { t, keys, code, idx };
@@ -62,15 +68,23 @@ const FaRemoteHost = (function () {
             setTimeout(async () => {
                 rg.reconnecting = false; if (this._rg !== rg || rg.room.status === 'SUBSCRIBED') return;
                 rg.retry = (rg.retry || 0) + 1;
-                try { await rg.room.reconnect(); this._rgLog('已重新連線'); }
+                try { await rg.room.reconnect(); this._rgLog('已重新連線'); this._rgSyncPending(true); this._rgSyncTargetSelect(); this._rgRender(); }
                 catch (e) { this._rgLog('重新連線失敗（第 ' + rg.retry + ' 次）：' + String((e && e.message) || e).slice(0, 60)); if (rg.retry < 4) this._rgScheduleReconnect(rg); else this._rgFailover(rg); }
             }, wait);
+        },
+        // 剛加入（含重新整理後自動回來）：立刻把「交給」下拉、機器清單、指紋、對方分享的對話、接續未完成的任務都更新一遍，
+        // 過一小段時間（在線名單穩定之後）再來一次——不用等一分鐘或切換主題才長出來
+        _rgAfterEnter(rg) {
+            const refresh = () => { if (this._rg !== rg) return; try { this._rgSyncTargetSelect(); this._rgRender(); this._rgRefreshFps(); this._rgRefreshRemoteChats(); this._chatListSig = null; this._renderChatList(); this._rgOnMembersChange(); } catch (_) { /* 畫面還沒準備好 */ } };
+            refresh(); this._rgLoadPending().catch(() => {}); setTimeout(refresh, 1500); setTimeout(refresh, 5000);
+            clearInterval(rg.syncTimer); rg.syncTimer = setInterval(() => this._rgSyncPending(false), 15000);
         },
         _rgBackendOrder() { const sb = []; BACKENDS.forEach((b, i) => { if (b.kind !== 'kv') sb.push(i); }); const k = Math.floor(Math.random() * sb.length); return sb.slice(k).concat(sb.slice(0, k)).concat(BACKENDS.map((b, i) => b.kind === 'kv' ? i : -1).filter((i) => i >= 0)); },
         // 目前這個群組是不是走慢速信箱：是的話所有等待回覆的逾時都放寬
         _rgSlow() { const rg = this._rg; return rg && BACKENDS[rg.idx || 0] && BACKENDS[rg.idx || 0].kind === 'kv' ? 10 : 1; },
         // 同一個代號與驗證值也登記到其他專案（背景、失敗就算了）：之後某個專案用光額度時，所有成員可以各自依序改連下一個，在同一個房間重逢
         async _rgMirrorRegister(rg) {
+            if (BACKENDS[rg.idx].kind === 'kv') return;
             for (let i = 0; i < BACKENDS.length; i++) { if (i === rg.idx) continue; try { await this._rgTransport(i).rpc('rg_create_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 這個後端現在不能用或還沒設定 */ } }
         },
         // 把這個群組換到另一個後端（同代號、同密碼）。房間在那邊沒登記過就補登記
@@ -80,13 +94,12 @@ const FaRemoteHost = (function () {
             if (res !== 'ok') throw new Error('房間在那邊拒絕了（' + res + '）');
             await rg.room.reconnect(t); rg.t = t; rg.idx = idx; rg.backend = BACKENDS[idx].name; rg.retry = 0;
             if (rg.files) { const kv = BACKENDS[idx].kind === 'kv'; rg.files.slow = kv ? 10 : 1; rg.files.relayMax = kv ? 256 * 1024 : FaRemoteFiles.RELAY_MAX; }
-            this._rgRender(); this._rgScheduleFailback(rg);
+            this._rgRender(); this._rgSyncPending(true); this._rgScheduleFailback(rg);
         },
         // 目前的通道連不上：依序試其他後端（所有成員用同樣的順序，所以會在同一個地方重逢）
         async _rgFailover(rg) {
-            if (this._rg !== rg) return; const n = BACKENDS.length;
-            for (let k = 1; k < n; k++) {
-                const idx = ((rg.idx || 0) + k) % n;
+            if (this._rg !== rg) return; const order = this._rgOrderFor(rg.code), at = Math.max(0, order.indexOf(rg.idx || 0)), cands = order.slice(at + 1).concat(order.slice(0, at));
+            for (const idx of cands) {
                 try { await this._rgSwitchTo(rg, idx); this._rgLog('原本的通道連不上，已自動改用「' + rg.backend + '」' + (BACKENDS[idx].kind === 'kv' ? '（很慢：訊息可能要幾十秒才到，不要傳大檔）' : '')); return true; }
                 catch (e) { this._rgLog('「' + BACKENDS[idx].name + '」也連不上：' + String((e && e.message) || e).slice(0, 60)); }
             }
@@ -118,26 +131,26 @@ const FaRemoteHost = (function () {
         },
         // 加入：先問主要專案，找不到這個代號（或連不上）再問備援
         async _rgJoin(name, codeText, password) {
-            const code = String(codeText || '').replace(/\D/g, '');
+            const code = String(codeText || '').replace(/D/g, '');
             if (code.length < 8) throw new Error('房間代號是 8 位以上的數字');
             if (!password) throw new Error('請輸入密碼');
             this._rgLastPw = password;
-            const R = FaRemoteGroup, keys = await R.deriveKeys(password, code); let netErr = null, hit = null, t = null, idx = 0;
-            for (idx = 0; idx < BACKENDS.length; idx++) {
-                t = this._rgTransport(idx); let res; try { res = await t.rpc('rg_join_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { netErr = netErr || this._rgRpcError(e); continue; }
-                if (res !== 'not_found') { hit = res; break; }
+            const R = FaRemoteGroup, keys = await R.deriveKeys(password, code); let netErr = null, bad = null;
+            for (const idx of this._rgOrderFor(code)) {
+                const t = this._rgTransport(idx); let res; try { res = await t.rpc('rg_join_room', { p_code: code, p_verifier: keys.verifier }); } catch (e) { netErr = netErr || this._rgRpcError(e); continue; }
+                if (res === 'not_found') continue;
+                if (res === 'bad_password') { bad = bad || new Error('密碼不對'); continue; }
+                if (res === 'locked') { bad = bad || new Error('這個房間因為連續猜錯被暫時鎖住，請稍後再試'); continue; }
+                if (res !== 'ok') { bad = bad || new Error('加入失敗：' + res); continue; }
+                try { return await this._rgEnter(t, keys, code, name, false, idx); } catch (e) { netErr = netErr || e; } // 登記有、頻道連不上（額度用光等）：試下一個
             }
-            if (hit == null) { if (netErr) throw netErr; throw new Error('找不到這個房間（代號錯誤，或已閒置超過 24 小時被回收）'); }
-            if (hit === 'bad_password') throw new Error('密碼不對');
-            if (hit === 'locked') throw new Error('這個房間因為連續猜錯被暫時鎖住，請稍後再試');
-            if (hit !== 'ok') throw new Error('加入失敗：' + hit);
-            return this._rgEnter(t, keys, code, name, false, idx);
+            if (bad) throw bad; if (netErr) throw netErr; throw new Error('找不到這個房間（代號錯誤，或已閒置超過 24 小時被回收）');
         },
         _rgRpcError(e) { return e && e.notInstalled ? new Error('房間服務還沒建立：請先到 Supabase 的 SQL Editor 執行 supabase/remote_group.sql（只需要做一次）') : e; },
         async _rgEnter(t, keys, code, name, creator, idx) {
             const R = FaRemoteGroup, s = this._rgSettings(); await this._rgLoadIdentity();
             const room = new R.Room({ transport: t, keys, self: this._rgSelfInfo(name), maxMembers: s.maxMembers });
-            const rg = { home: idx || 0, idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
+            const rg = { home: BACKENDS[idx || 0].kind === 'kv' ? (idx || 0) : this._rgHomeOf(code), idx: idx || 0, backend: (BACKENDS[idx || 0] || BACKENDS[0]).name, room, t, keys, code, creator, pings: {}, log: [], joinedAt: Date.now(), timer: null };
             room.on('members', () => { this._rgRefreshFps(); this._rgRefreshRemoteChats(); this._rgRender(); this._rgSyncTargetSelect(); this._rgOnMembersChange(); });
             room.on('message', (m) => this._rgOnMessage(m));
             room.on('status', (st) => { if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') { this._rgLog('連線狀態：' + st); this._rgScheduleReconnect(rg); } else if (st === 'SUBSCRIBED') { rg.retry = 0; this._rgLog('已連線'); } });
@@ -151,12 +164,12 @@ const FaRemoteHost = (function () {
             this._rgSaveSession(code, this._rgLastPw, name, room.self.nodeId); // 存「想用的名稱」，不存自動加了編號的 this._rgLastPw = null;
             this._rg = rg; FaRemoteDispatch.installTracking.setNotify(() => this._rgPublishSoon()); this._rgSaveSettings({ machineName: room.self.name }); try { await this._rgLoadTasks(); } catch (_) { /* */ }
             rg.timer = setInterval(() => { t.rpc('rg_touch_room', { p_code: code, p_verifier: keys.verifier }).then((ok) => { if (ok === false) this._rgLog('房間已被回收（閒置太久）'); }).catch(() => {}); }, 5 * 60 * 1000);
-            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是「' + rg.backend + '」）' : '')); this._rgView = 'joined'; this._rgRender();
+            this._rgLog((creator ? '已建立群組 ' : '已加入群組 ') + code + (rg.idx ? '（用的是「' + rg.backend + '」）' : '')); this._rgView = 'joined'; this._rgRender(); this._rgAfterEnter(rg);
             return { code, name: room.self.name };
         },
         async _rgLeave() {
             const rg = this._rg; if (!rg) return;
-            this._rgClearSession(); this._rgCloseRemoteView(); clearInterval(rg.chatsTimer); clearInterval(rg.timer); clearInterval(rg.agentTimer); FaRemoteDispatch.installTracking.setNotify(null);
+            this._rgClearSession(); clearInterval(rg.syncTimer); this._rgCloseRemoteView(); clearInterval(rg.chatsTimer); clearInterval(rg.timer); clearInterval(rg.agentTimer); FaRemoteDispatch.installTracking.setNotify(null);
             const alone = rg.room.members().filter((m) => m.nodeId !== rg.room.self.nodeId).length === 0;
             clearInterval(rg.failbackTimer);
             if (alone) { for (let i = 0; i < BACKENDS.length; i++) { try { await (i === rg.idx ? rg.t : this._rgTransport(i)).rpc('rg_close_room', { p_code: rg.code, p_verifier: rg.keys.verifier }); } catch (_) { /* 沒關成就等自動回收 */ } } }
@@ -216,6 +229,7 @@ const FaRemoteHost = (function () {
             panel.addEventListener('contextmenu', (e) => { const n = e.target.closest('[data-rg-name]'); if (!n || !this._rg) return; e.preventDefault(); this._rgOpenMenu(e.clientX, e.clientY, n.dataset.id); });
             // 點在面板外面才收起。注意：點按鈕後面板內容可能立刻被換掉（原本被點的元素已不在畫面上），所以用事件發生當下的路徑判斷，不用 contains
             document.addEventListener('click', (e) => { const path = e.composedPath ? e.composedPath() : []; if (this._rgOpen && Date.now() - (this._rgOpenedAt || 0) > 300 && !path.includes(panel) && !path.includes(btn) && !path.some((el) => el && el.id === 'ai-rg-menu')) this._rgToggle(false); });
+            if (!this._rgVisBound) { this._rgVisBound = true; const wake = () => { const rg = this._rg; if (!rg) return; if (rg.room.status !== 'SUBSCRIBED') this._rgScheduleReconnect(rg); this._rgSyncPending(true); }; document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); }); window.addEventListener('online', wake); }
             this._rgRender(); this._rgKeepAlive(); this._rgAutoRejoin();
         },
         // 「交給」選單：已加入群組才出現；選項是其他在線機器
