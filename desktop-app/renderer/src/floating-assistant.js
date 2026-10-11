@@ -18898,6 +18898,45 @@ const FaRemoteDispatch = (function () {
                 '把一個可以獨立完成的子任務分給遠端群組裡「接受子任務分工」的機器，等它做完回傳文字結果（那台機器用自己的模型與工具）。task：完整的任務描述（對方看不到這邊的對話，要寫清楚）；machine：機器名稱，或 "auto"（挑最空閒的）。可以同時對不同機器多次呼叫來平行分工。先用 list_remote_machines 看有哪些機器可用。',
                 async function (raw) { let a = {}; try { a = await this.repairJsonPayload(String(raw || '{}')); } catch (_) { /* */ } const text = String(a.task || '').trim(); if (!text) return JSON.stringify({ ok: false, error: '缺少 task' }); return JSON.stringify(await this._rgDelegate(text, a.machine)); },
                 { type: 'object', properties: { task: { type: 'string', description: '完整的任務描述' }, machine: { type: 'string', description: '機器名稱，或 auto' } }, required: ['task'], additionalProperties: false });
+            // ---- 斜線指令：嵌入網頁的助理沒有左邊的對話清單（點不到機器），所以用指令分配給遠端
+            const cmd = (name, hint, desc, fn) => this.register_slash_command(name, hint, desc, (argsText, run) => { const me = run || this; return Promise.resolve(fn.call(me, String(argsText || '').trim())).catch((e) => { me._pushAssistantMessage('⚠️ ' + String((e && e.message) || e), null); me._renderMessageHistory(); me._persistChatHistory(); }); });
+            const say = function (user, text) { if (user) this.messages.push({ role: 'user', content: user }); this._pushAssistantMessage(text, null); this._renderMessageHistory(); this._persistChatHistory(); };
+            cmd('/machines', '', '列出遠端群組裡的其他機器：桌面或網頁、忙碌或閒置、是否接受需求與子任務分工、正在跑幾個子任務、對方分享了幾個對話；也顯示這個對話目前「交給」哪一台。', function () {
+                const rg = this._rg; if (!rg) { say.call(this, '/machines', '還沒加入遠端群組（右上角「🌐 遠端」建立或加入）。'); return; }
+                const ms = this._rgTargets(), cur = ms.find((m) => m.nodeId === this._rgTarget);
+                say.call(this, '/machines', '**遠端群組 ' + rg.code + '**（你是 ' + rg.room.self.name + '）\n\n' + (ms.length ? ms.map((m, i) => (i + 1) + '. **' + m.name + '**（' + (m.kind === 'desktop' ? '桌面' : '網頁') + '）' + (m.busy ? ' 🔶忙碌' : ' 🟢閒置') + (m.allow === false ? '，不接受需求' : '') + (m.sub ? '，可分工' : '') + (m.agents ? '，跑 ' + m.agents + ' 個子任務' : '') + (((rg.remoteChats || {})[m.nodeId] || { list: [] }).list.length ? '，分享了 ' + rg.remoteChats[m.nodeId].list.length + ' 個對話' : '')).join('\n') : '（沒有其他機器在線）') + '\n\n目前這個對話交給：' + (cur ? '**' + cur.name + '**' : '本機') + '\n\n用法：`/remote <機器名稱> <需求>` 交一件事給它；`/remote-to <機器名稱>` 之後的訊息都交給它（`/remote-to 本機` 取消）；`/remote-open <機器名稱>` 看它分享的對話。');
+            });
+            cmd('/remote', '<機器名稱|auto> <需求或指令>', '把「這一則」需求交給遠端群組裡的某台機器做（用它的模型、工具與資料）；結果與產生的檔案傳回來。機器名稱寫 auto 會挑最閒的。需求可以是 /media-presentation 開頭的簡報指令：在那台機器上做，做好的簡報傳回來播放。名稱有空白時用引號。', async function (args) {
+                const m = /^(?:"([^"]+)"|'([^']+)'|(\S+))\s+([\s\S]+)$/.exec(args); if (!m) { say.call(this, '/remote ' + args, '用法：`/remote <機器名稱|auto> <需求>`，例如 `/remote 股市網頁 /media-presentation 下周的鎖股名單報告`。先用 `/machines` 看有哪些機器。'); return; }
+                const m1 = this._rgResolveMachine(m[1] || m[2] || m[3], 'dispatch'); if (m1.error) { say.call(this, '/remote ' + args, '⚠️ ' + m1.error); return; }
+                const prev = this._rgTarget; this._rgTarget = m1.machine.nodeId; let p; try { p = this._rgDispatch(m[4].trim()); } finally { this._rgTarget = prev; } // _rgDispatch 一開始就讀走目標，之後恢復原本的「交給」
+                await p;
+            });
+            cmd('/remote-to', '<機器名稱|本機>', '設定這個對話之後的訊息都「交給」哪台遠端機器做（等於輸入框旁的「交給」選單）；寫「本機」或 local 取消。', function (args) {
+                if (!this._rg) { say.call(this, '/remote-to ' + args, '還沒加入遠端群組。'); return; }
+                if (!args) { const cur = this._rgTargets().find((x) => x.nodeId === this._rgTarget); say.call(this, '/remote-to', '目前交給：' + (cur ? '**' + cur.name + '**' : '本機') + '。用法：`/remote-to <機器名稱>` 或 `/remote-to 本機`。'); return; }
+                if (/^(本機|local|here)$/i.test(args)) { this._rgTarget = ''; this._rgSyncTargetSelect(); say.call(this, '/remote-to ' + args, '已取消：之後的訊息在本機做。'); return; }
+                const m1 = this._rgResolveMachine(args.replace(/^["']|["']$/g, ''), 'dispatch'); if (m1.error) { say.call(this, '/remote-to ' + args, '⚠️ ' + m1.error); return; }
+                this._rgTarget = m1.machine.nodeId; this._rgSyncTargetSelect(); say.call(this, '/remote-to ' + args, '之後這個對話的訊息都交給 **' + m1.machine.name + '**（' + (m1.machine.kind === 'desktop' ? '桌面' : '網頁') + '）做；`/media-presentation …` 也會在那台做。`/remote-to 本機` 取消。');
+            });
+            cmd('/remote-open', '<機器名稱> [編號]', '看遠端機器分享出來的對話（並可接著對話）：不給編號就列出它分享的對話，給編號就打開。', async function (args) {
+                const m = /^(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+(\d+))?$/.exec(args); if (!m) { say.call(this, '/remote-open ' + args, '用法：`/remote-open <機器名稱> [編號]`。'); return; }
+                const m1 = this._rgResolveMachine(m[1] || m[2] || m[3], 'any'); if (m1.error) { say.call(this, '/remote-open ' + args, '⚠️ ' + m1.error); return; }
+                const rg = this._rg; rg.remoteChats = rg.remoteChats || {}; this._rgRefreshRemoteChats(true); for (let i = 0; i < 12 && !((rg.remoteChats[m1.machine.nodeId] || {}).list || []).length; i++) await new Promise((r) => setTimeout(r, 400));
+                const list = (rg.remoteChats[m1.machine.nodeId] || {}).list || [];
+                if (!list.length) { say.call(this, '/remote-open ' + args, m1.machine.name + ' 沒有分享任何對話（要在那台機器的對話上按右鍵→「分享到群組」）。'); return; }
+                if (m[4]) { const c = list[Number(m[4]) - 1]; if (!c) { say.call(this, '/remote-open ' + args, '沒有第 ' + m[4] + ' 個。可選：1 到 ' + list.length); return; } await this._rgOpenRemoteChat(m1.machine.nodeId, c.id); return; }
+                say.call(this, '/remote-open ' + args, '**' + m1.machine.name + ' 分享的對話**\n\n' + list.map((c, i) => (i + 1) + '. ' + c.title + (c.running ? '（⏳ 進行中）' : '')).join('\n') + '\n\n用 `/remote-open ' + m1.machine.name + ' <編號>` 打開。');
+            });
+        },
+        // 用名稱找群組裡的機器：完全相同（不分大小寫）優先，其次是唯一的開頭符合；auto 挑最閒的（dispatch：要接受需求的；其他：任何在線的）
+        _rgResolveMachine(name, mode) {
+            const rg = this._rg; if (!rg) return { error: '還沒加入遠端群組' }; const ms = this._rgTargets(); if (!ms.length) return { error: '群組裡沒有其他機器在線' };
+            const want = String(name || '').trim(); if (!want) return { error: '要給機器名稱（用 /machines 看有哪些）' };
+            if (/^auto$/i.test(want)) { const ok = ms.filter((m) => mode !== 'dispatch' || m.allow !== false); if (!ok.length) return { error: '沒有機器接受遠端需求' }; return { machine: ok.slice().sort((x, y) => (x.busy ? 1 : 0) - (y.busy ? 1 : 0) || (x.agents || 0) - (y.agents || 0))[0] }; }
+            const low = want.toLowerCase(), exact = ms.filter((m) => m.name.toLowerCase() === low), pre = ms.filter((m) => m.name.toLowerCase().startsWith(low)), hit = exact.length ? exact : pre;
+            if (hit.length === 1) { if (mode === 'dispatch' && hit[0].allow === false) return { error: hit[0].name + ' 目前不接受遠端需求（對方關掉了「允許其他機器派工給我」）' }; return { machine: hit[0] }; }
+            return { error: hit.length ? '「' + want + '」符合好幾台：' + hit.map((m) => m.name).join('、') + '，請寫完整名稱' : '找不到機器「' + want + '」。目前有：' + ms.map((m) => m.name).join('、') };
         },
         // ---------------------------------------------------------------- 分派規則
         // 遠端可以修改的設定（白名單；進得了群組就是用密碼同意了）
