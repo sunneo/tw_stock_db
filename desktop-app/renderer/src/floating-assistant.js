@@ -19203,7 +19203,7 @@ const FaRemoteDispatch = (function () {
         async _rgRunTask(job) {
             const s = this._rgSettings(); const prog = this._createProgressWidget((job.sub ? '🧩 子任務（來自 ' : '🛰️ 遠端需求（來自 ') + job.fromName + '）：' + job.text.slice(0, 24));
             try { job.chatCtx = await this._rgCreateRemoteChat(job); } catch (_) { /* 記錄成對話失敗不影響執行 */ }
-            if (job.chatCtx) { try { this._chatRunner(job.chatCtx)._setRespondingState(true, '⏳ 遠端需求（來自 ' + job.fromName + '）：' + job.text.slice(0, 20)); } catch (_) { /* */ } }
+            if (job.chatCtx && !job.chatInline) { try { this._chatRunner(job.chatCtx)._setRespondingState(true, '⏳ 遠端需求（來自 ' + job.fromName + '）：' + job.text.slice(0, 20)); } catch (_) { /* */ } }
             let lastSent = 0;
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
@@ -19233,7 +19233,9 @@ const FaRemoteDispatch = (function () {
         // 別的機器交給這台的需求（不含 AI 拆出來的子任務），會在左邊清單長出一個新對話，第一則訊息記錄「從哪台機器、什麼時候、指紋是否核對過」，
         // 執行結果接在下面。這樣使用者回到這台機器時，看得到有誰要它做了什麼。
         async _rgCreateRemoteChat(job) {
-            if (job.sub || !this._chatListEnabled || !this._chatIndex || !this._chatListReady) return null;
+            if (job.sub) return null;
+            // 嵌入網頁的助理沒有對話清單：不長新對話，結果回來時把完整內容（來源、需求、報告、處理過程）包成「一個可展開的框」記在目前這個對話裡
+            if (!this._chatListEnabled || !this._chatIndex || !this._chatListReady) { if (!this._activeCtx) return null; job.chatInline = true; return this._activeCtx; }
             const rg = this._rg, mem = rg && rg.room.members().find((m) => m.nodeId === job.from), st = mem ? this._rgTrustState(mem) : 'none', fp = (rg && rg.fps && rg.fps[job.from]) || '';
             const id = this._chatNewId('c'), now = Date.now(), title = '來自 ' + job.fromName + '：' + String(job.text).replace(/\s+/g, ' ').slice(0, 22);
             this._chatIndex.chats.push({ id, title, groupId: null, createdAt: now, updatedAt: now, touched: true, shared: true, remote: { fromName: job.fromName, fromId: job.from, taskId: job.taskId, at: now, fp } });
@@ -19248,6 +19250,7 @@ const FaRemoteDispatch = (function () {
             const ctx = job.chatCtx; if (!ctx) return;
             try {
                 const run = this._chatRunner(ctx), refs = ev.refs || [], refNames = refs.map((r) => r.name).join('、');
+                if (job.chatInline) { this._rgRecordInline(job, ev, run, refs, refNames); return; }
                 const txt = ev.kind === 'done' ? (ev.text || '（沒有文字結果）') + (refNames ? '\n\n> 📎 產生了 ' + refs.length + ' 項內容：' + refNames + '（在下面可以直接開啟）' : '') : ev.kind === 'stopped' ? '⏹ 已停止。' + (ev.text ? '\n\n' + ev.text : '') : '⚠️ ' + (ev.kind === 'rejected' ? '被拒絕：' : '失敗：') + (ev.error || '');
                 run._pushAssistantMessage(txt, null);
                 if (job.trace && job.trace.length) run._pushAssistantMessage('<details><summary>🔎 處理過程（' + job.trace.length + ' 行，點開看）</summary><div style="white-space:pre-wrap; font-size:12px; opacity:.85;">' + this._escapeHtml(job.trace.join('\n')) + '</div></details>', null);
@@ -19257,6 +19260,19 @@ const FaRemoteDispatch = (function () {
                 const en = this._chatEntry(ctx.id); if (en) { en.updatedAt = Date.now(); this._saveChatIndex(); }
                 this._chatListSig = null; this._renderChatList(); this._chatMarkUnread(ctx);
             } catch (_) { /* 記錄失敗不影響任務本身 */ }
+        },
+        // 沒有對話清單時的記錄：一個預設收起來的框（不影響使用者正在看的畫面），點開才看到來源、需求、完整報告、處理過程；檔案卡片接在後面
+        _rgRecordInline(job, ev, run, refs, refNames) {
+            const e = (s) => this._escapeHtml(String(s)), rg = this._rg, mem = rg && rg.room.members().find((m) => m.nodeId === job.from), st = mem ? this._rgTrustState(mem) : 'none', fp = (rg && rg.fps && rg.fps[job.from]) || '';
+            const trust = { trusted: '指紋已核對', changed: '⚠️ 指紋跟你核對過的不同', new: '指紋尚未核對', none: '沒有指紋' }[st], icon = ev.kind === 'done' ? '✅' : ev.kind === 'stopped' ? '⏹' : '⚠️';
+            const body = ev.kind === 'done' ? (ev.text || '（沒有文字結果）') : ev.kind === 'stopped' ? '已依對方要求停止。' + (ev.text ? '\n\n' + ev.text : '') : (ev.kind === 'rejected' ? '被拒絕：' : '失敗：') + (ev.error || '');
+            const proc = job.trace && job.trace.length ? '\n\n<details><summary>🔎 處理過程（' + job.trace.length + ' 行）</summary><div style="white-space:pre-wrap; font-size:12px; opacity:.85;">' + e(job.trace.join('\n')) + '</div></details>' : '';
+            const md = '<details>\n<summary>📨 遠端需求（來自 ' + e(job.fromName) + '）：' + icon + ' ' + e(String(job.text).replace(/\s+/g, ' ').slice(0, 40)) + '　<span style="opacity:.7">點開看完整內容</span></summary>\n\n'
+                + '- 來自：**' + job.fromName + '**（' + (mem ? (mem.kind === 'desktop' ? '桌面版' : '網頁版') : '未知') + '）　時間：' + new Date().toLocaleString() + '\n- 指紋：' + (fp || '—') + '（' + trust + '）\n- 任務編號：' + job.taskId + '\n\n**需求**\n\n' + job.text.split('\n').map((l) => '> ' + l).join('\n') + '\n\n**結果**\n\n' + body
+                + (refNames ? '\n\n> 📎 產生了 ' + refs.length + ' 項內容：' + refNames + '（卡片在下面）' : '') + proc + '\n\n</details>';
+            run._pushAssistantMessage(md, null);
+            if (ev.kind === 'done' && refs.length) run._pushDisplayToolMessage('[這台產生了 ' + refs.length + ' 項內容：' + refNames.slice(0, 120) + '，已在對話裡顯示成可開啟的卡片]', '_displayRemoteFiles', { nodeId: rg ? rg.room.self.nodeId : '', machine: '這台', items: refs.map((r) => Object.assign({}, r, { localId: r.id, localDeckUrl: r.kind === 'deck' ? 'client-file/' + r.id + '.deck.yaml' : undefined })) });
+            run._persistChatHistory(); try { run._renderMessageHistory(); } catch (_) { /* 不在畫面上 */ }
         },
         // ---------------------------------------------------------------- 委託端：任務要撐過斷線與重新整理
         // 還沒做完的任務存在 localStorage（任務編號、對方名稱、對話、最後看到的序號）；重新連上、頁面回到前景、或太久沒消息時，
