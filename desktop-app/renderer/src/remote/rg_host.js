@@ -564,8 +564,11 @@ const FaRemoteHost = (function () {
             const notice = (txt) => { const n = q('notice'); n.style.display = txt ? '' : 'none'; n.textContent = txt || ''; };
             const paint = (msgs) => {
                 const body = q('body'), atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-                body.innerHTML = msgs.map((m) => { const mine = m.r === 'user'; let html; try { html = (!mine && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(this._renderMarkdownWithMath(m.t)) : '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; } catch (_) { html = '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; }
+                rv.cards = []; body.innerHTML = msgs.map((m, i) => { if (m.r === 'files') { rv.cards.push(i); return '<div data-card="' + i + '" style="margin-bottom:8px;"></div>'; } const mine = m.r === 'user'; let html; try { html = (!mine && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(this._renderMarkdownWithMath(m.t)) : '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; } catch (_) { html = '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>'; }
                     return '<div style="display:flex; justify-content:' + (mine ? 'flex-end' : 'flex-start') + '; margin-bottom:8px;"><div style="max-width:88%; padding:8px 10px; border-radius:10px; overflow-wrap:anywhere; background:' + (mine ? pal.userBg : pal.assistantBg) + '; color:' + (mine ? pal.userText : pal.assistantText) + ';">' + (mine ? '<div style="white-space:pre-wrap;">' + e(m.t) + '</div>' : html) + '</div></div>'; }).join('') || '<div style="opacity:.6;">（這個對話還沒有內容）</div>';
+                // 簡報／檔案卡片：同一個檔案沿用同一個項目物件，輪詢重畫時「已存到這邊」的狀態才不會不見
+                rv.items = rv.items || {};
+                for (const i of rv.cards) { const m = msgs[i], slot = body.querySelector('[data-card="' + i + '"]'); if (!slot) continue; const items = (m.refs || []).map((r) => rv.items[r.id] || (rv.items[r.id] = Object.assign({}, r))); slot.appendChild(this._rgFilesCard({ nodeId, machine: mem.name, items, viewer: true })); }
                 if (atBottom) body.scrollTop = body.scrollHeight;
             };
             const tick = async () => {

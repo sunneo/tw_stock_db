@@ -297,6 +297,7 @@
     });
     if (count > LIMITS.slides) { err('chapters', 'more than ' + LIMITS.slides + ' slides in total'); }
     checkQuizReferences(doc, warn);
+    checkQuizSlides(doc, warn);
     checkLanguages(doc, warn);
     return { errors: errors, warnings: warnings };
   }
@@ -629,6 +630,28 @@
         var p = 'chapters[' + ci + '].slides[' + si + '].narration', lang = str(s.lang) || deckLang, cjk = (s.narration.match(CJK_G) || []).length, latin = (s.narration.match(/[A-Za-z]/g) || []).length;
         if (/^en/i.test(lang) && cjk > 0) { warn(p, 'an English slide (lang: en) has Chinese characters in its narration -- the English voice cannot read them (it spells every character out). Write the WHOLE narration of this slide in English (translate the Chinese), or make the slide Chinese'); }
         else if (!/^en/i.test(lang) && latin >= 40 && cjk * 4 < latin) { warn(p, 'the narration is mostly English but this slide is read by the Chinese voice -- set lang: en on this slide and write all of it in English, or translate it into Chinese'); }
+      });
+    });
+  }
+  // A quiz slide must not give its own answer away, and a question about "this thing" needs the thing on the same slide.
+  var PICTURE_KINDS = ['image', 'svg', 'shapes', 'anim2d', 'scene3d', 'chart', 'table', 'code', 'mermaid', 'video'];
+  function checkQuizSlides(doc, warn) {
+    (doc.chapters || []).forEach(function (ch, ci) {
+      ((ch && ch.slides) || []).forEach(function (s, si) {
+        if (!isObj(s) || !isObj(s.visual)) { return; }
+        var p = 'chapters[' + ci + '].slides[' + si + ']', v = s.visual, items = v.kind === 'group' && Array.isArray(v.items) ? v.items.filter(isObj) : [v];
+        var quiz = items.filter(function (it) { return it.kind === 'quiz'; })[0];
+        if (!quiz) { return; }
+        var others = items.filter(function (it) { return it.kind !== 'quiz'; });
+        if (quiz.type === 'choice' && Array.isArray(quiz.options)) {
+          var a = quiz.answer, ans = typeof a === 'number' ? quiz.options[a] : a;
+          if (ans != null) {
+            ans = str(ans).trim();
+            var shown = [s.title].concat(Array.isArray(s.bullets) ? s.bullets : []).join(' ');
+            if (ans && !/^[0-9A-Za-z]{1,2}$/.test(ans) && shown.indexOf(ans) >= 0) { warn(p + '.title', 'the title / bullets of this quiz slide already say the answer ("' + ans + '") -- the viewer reads it before answering. Give the slide a neutral title (e.g. "第 2 題") and keep the answer only in the card'); }
+          }
+        }
+        if (!others.some(function (it) { return PICTURE_KINDS.indexOf(it.kind) >= 0; }) && /圖|這個|這是|這些|picture|image|shown|pictured/i.test(str(quiz.question))) { warn(p + '.visual', 'the question is about something shown on the slide, but the slide shows nothing (the card is alone) -- put the picture / drawing and the card in one group'); }
       });
     });
   }

@@ -355,10 +355,47 @@ const FaRemoteDispatch = (function () {
         async _rgOpenItem(group, item, onProgress, cancel) {
             if (item.kind === 'deck') {
                 await this._rgSaveItem(group, item, onProgress, cancel);
+                if (group.viewer) { this._rgShowDeck(item); return; }
                 this._pushAssistantMessage('🎞️ 已從 ' + group.machine + ' 取得簡報「' + item.name + '」，下面直接播放。', null);
                 this._pushDisplayToolMessage('[已從 ' + group.machine + ' 取得簡報「' + item.name + '」，已在對話裡顯示成播放器]', '_displayDeckUrl', item.localDeckUrl); this._renderMessageHistory(); this._persistChatHistory(); return;
             }
             const r = await this._rgGetItemBlob(group, item, onProgress, cancel); this._rgShowBlob(r.blob, r.name, r.mime || item.mime, item.kind);
+        },
+        // 檔案卡片（開啟／存到這邊，有進度視窗）：對話裡的遠端結果和「看別台分享的對話」共用
+        _rgFilesCard(grp) {
+            const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-bottom: 12px; max-width: 95%; border: 1px solid rgba(128,128,128,.4); border-radius: 8px; padding: 8px 10px; font-size: 12px;';
+        const icon = { deck: '🎞️', image: '🖼️', video: '🎬', audio: '🎵', pdf: '📕', text: '📄', file: '📎' };
+        const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+        wrap.innerHTML = '<div style="font-weight:bold; margin-bottom:6px;">📎 ' + this._escapeHtml(grp.machine) + ' 產生的內容（' + grp.items.length + '）</div>';
+        grp.items.forEach((item) => {
+            const row = document.createElement('div'); row.style.cssText = 'display:flex; align-items:center; gap:6px; padding:3px 0; flex-wrap:wrap;';
+            const sizeTotal = (item.size || 0) + (item.assets || []).reduce((n, a) => n + (a.size || 0), 0);
+            row.innerHTML = '<span>' + (icon[item.kind] || '📎') + '</span><span style="flex:1; min-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + this._escapeHtml(item.name) + '">' + this._escapeHtml(item.name) + '</span><span style="opacity:.7;">' + fmt(sizeTotal) + (item.assets && item.assets.length ? '（含 ' + item.assets.length + ' 個素材）' : '') + '</span>';
+            const st = document.createElement('span'); st.style.cssText = 'font-size:11px; min-width:90px; opacity:.85;'; if (item.localId) st.textContent = '✅ 已存到這邊';
+            const mkBtn = (label) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'padding:2px 8px; cursor:pointer; border:1px solid rgba(128,128,128,.5); border-radius:6px; background:transparent; color:inherit;'; return b; };
+            const openBtn = mkBtn('開啟'), saveBtn = mkBtn('存到這邊'), stopBtn = mkBtn('取消'); stopBtn.style.display = 'none';
+            let cancel = null;
+            // 開啟／存檔是非同步的：跳出全螢幕進度視窗（擋住畫面、有進度條與取消鈕），不會讓人以為沒反應而連點好幾次
+            const run = async (fn, label) => {
+                if (cancel) return; cancel = { cancelled: false }; openBtn.disabled = saveBtn.disabled = true; st.style.color = ''; st.textContent = '';
+                const cur = cancel, modal = this._rgProgressModal(label + '：' + item.name + '（來自 ' + grp.machine + '）', () => { cur.cancelled = true; });
+                try { await fn((d, total, via) => modal.update(d, total, via), cur); modal.close(); st.textContent = item.localId ? '✅ 已存到這邊' : ''; this._persistChatHistory(); }
+                catch (e) { const msg = String((e && e.message) || e); if (cur.cancelled) { modal.close(); st.textContent = '已取消'; } else { modal.fail(msg); st.textContent = '❌ ' + msg.slice(0, 80); st.style.color = '#f87171'; } }
+                openBtn.disabled = saveBtn.disabled = false; cancel = null;
+            };
+            openBtn.onclick = () => run((p, c) => this._rgOpenItem(grp, item, p, c), '開啟'); saveBtn.onclick = () => run(async (p, c) => { await this._rgSaveItem(grp, item, p, c); }, '存到這邊'); stopBtn.onclick = () => { if (cancel) cancel.cancelled = true; };
+            row.append(st, openBtn, saveBtn, stopBtn); wrap.appendChild(row);
+        });
+            return wrap;
+        },
+        // 看別台分享的對話時開簡報：跳出視窗直接播放（不寫進本機的對話）
+        _rgShowDeck(item) {
+            const pal = this._getThemePalette(), ov = document.createElement('div'); ov.style.cssText = 'position:fixed; inset:0; z-index:1000002; background:rgba(0,0,0,.8); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:16px; box-sizing:border-box;';
+            const box = document.createElement('div'); box.style.cssText = 'width:min(1100px,96vw); max-height:94vh; overflow:auto; border-radius:10px; padding:10px; background:' + pal.chatBg + '; color:' + pal.chatText + ';';
+            const bar = document.createElement('div'); bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;'; bar.innerHTML = '<b>🎞️ ' + this._escapeHtml(item.name) + '</b>'; const x = document.createElement('button'); x.type = 'button'; x.textContent = '關閉'; x.style.cssText = 'padding:3px 12px; cursor:pointer;'; bar.appendChild(x);
+            const mount = document.createElement('div'); box.append(bar, mount); ov.appendChild(box); document.body.appendChild(ov); x.onclick = () => ov.remove(); ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+            this._deckMount(mount, item.localDeckUrl).catch((err) => { mount.innerHTML = '<div style="padding:8px; color:#e53e3e;">⚠️ 簡報載入失敗：' + this._escapeHtml(err.message || String(err)) + '</div>'; });
         },
         _rgShowBlob(blob, name, mime, kind) {
             const url = URL.createObjectURL(blob), pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s));
@@ -580,9 +617,20 @@ const FaRemoteDispatch = (function () {
             if (!en.shared && !window.confirm('分享這個對話到群組？\n\n群組裡的任何成員都能看到它的全部內容，並且可以在裡面接著對話——接著的內容會由這台機器的 AI 執行（可能用到這台機器的檔案與指令工具）。只有信任群組裡每個人時才建議分享。')) return;
             en.shared = !en.shared; this._saveChatIndex(); this._chatListSig = null; this._renderChatList(); this._rgPushChats();
         },
-        _rgSerChat(ctx) {
+        // 對話裡「顯示用」的訊息（簡報播放器、檔案卡片）原本不會傳給看的人，只看得到文字；現在轉成檔案清單（r:'files'），
+        // 看的人那邊畫成可開啟的卡片（簡報會在他那邊播放），檔案走一般的內容傳輸（直連或轉送）。
+        async _rgChatFileGroups(m, to) {
+            const rg = this._rg; if (!rg) return null; const fc = this.fileCache; let cap = [], machine = rg.room.self.name;
+            if (m._displayDeckUrl) { const mm = /client-file\/([\w-]+)/.exec(String(m._displayDeckUrl)); if (mm) cap.push({ id: mm[1], name: '簡報.deck.yaml' }); }
+            if (m._displayRemoteFiles && Array.isArray(m._displayRemoteFiles.items)) for (const it of m._displayRemoteFiles.items) { const id = it.localId || (m._displayRemoteFiles.nodeId === rg.room.self.nodeId ? it.id : ''); if (id) cap.push({ id, name: it.name, mime: it.mime }); }
+            if (!cap.length) return null;
+            let refs = []; try { refs = await this._rgBuildRefs(cap, null, to); } catch (_) { return null; }
+            return refs.length ? { machine, refs } : null;
+        },
+        async _rgSerChat(ctx, to) {
             const out = [];
             for (const m of ctx.messages) {
+                if (m && (m._displayDeckUrl || m._displayRemoteFiles)) { const g = await this._rgChatFileGroups(m, to); if (g) out.push({ r: 'files', t: '', machine: g.machine, refs: g.refs }); continue; }
                 if (!m || m._suggestionChips || (m.role !== 'user' && m.role !== 'assistant')) continue;
                 let text = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((p) => p && p.type === 'text' ? p.text : p && p.type === 'image_url' ? '[圖片]' : '').filter(Boolean).join('\n') : '';
                 if (!String(text).trim()) continue; out.push({ r: m.role, t: String(text).slice(0, 12000) });
@@ -593,7 +641,7 @@ const FaRemoteDispatch = (function () {
         async _rgOnChatGet(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), reply = (o) => rg.room.send(m.from, 'chat_msgs', Object.assign({ rid: b.rid }, o)).catch(() => {});
             if (!en || !en.shared) { reply({ error: '這個對話沒有分享（或已經取消分享）' }); return; }
-            const ctx = await this._chatCtxLoad(b.id), msgs = this._rgSerChat(ctx), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + (ctx.isResponding ? 1 : 0);
+            const ctx = await this._chatCtxLoad(b.id), msgs = await this._rgSerChat(ctx, m.from), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + msgs.filter((x) => x.refs).length + ':' + (ctx.isResponding ? 1 : 0);
             if (b.ver === ver) reply({ same: true, ver, running: !!ctx.isResponding }); else reply({ ver, msgs, title: en.title || '新對話', running: !!ctx.isResponding });
         },
         async _rgOnChatSay(m) {
