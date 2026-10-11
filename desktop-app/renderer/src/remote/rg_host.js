@@ -549,7 +549,7 @@ const FaRemoteHost = (function () {
             Object.keys(rg.remoteChats).forEach((id) => { if (!rg.room.members().some((x) => x.nodeId === id)) delete rg.remoteChats[id]; });
             if (!rg.chatsTimer) rg.chatsTimer = setInterval(() => { if (this._rg === rg) this._rgRefreshRemoteChats(); else clearInterval(rg.chatsTimer); }, 30000);
         },
-        _rgCloseRemoteView() { const rv = this._rgRv; if (!rv) return; clearTimeout(rv.timer); rv.closed = true; try { rv.el.remove(); } catch (_) { /* */ } this._rgRv = null; },
+        _rgCloseRemoteView() { const rv = this._rgRv; if (!rv) return; clearTimeout(rv.timer); clearInterval(rv.chipTimer); rv.closed = true; try { rv.el.remove(); } catch (_) { /* */ } this._rgRv = null; },
         async _rgOpenRemoteChat(nodeId, chatId) {
             const rg = this._rg; if (!rg) return; const mem = rg.room.members().find((x) => x.nodeId === nodeId); if (!mem) return;
             this._rgCloseRemoteView(); const main = document.getElementById('ai-chat-main') || document.getElementById('ai-floating-window'); if (!main) return;
@@ -557,9 +557,10 @@ const FaRemoteHost = (function () {
             const el = document.createElement('div'); el.id = 'ai-rc-view'; el.style.cssText = 'position:absolute; inset:0; z-index:8; display:flex; flex-direction:column; background:' + pal.chatBg + '; color:' + pal.chatText + ';';
             const btn = 'padding:4px 10px; border-radius:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; background:transparent; color:' + pal.chatText + ';';
             el.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid ' + pal.windowBorder + '; background:' + pal.headerBg + ';"><button type="button" data-rv="back" style="' + btn + '">← 回到本機對話</button><div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><b data-rv="title">…</b><span style="font-size:11px; opacity:.7;">　🖥️ ' + e(mem.name) + '（對方分享的對話）</span></div><span data-rv="state" style="font-size:12px;"></span><button type="button" data-rv="stop" style="' + btn + ' display:none;">⏹ 停止</button></div>'
+                + '<div data-rv="chips" style="display:none; padding:4px 10px; font-size:12px; gap:6px; flex-wrap:wrap; border-top:1px solid ' + pal.windowBorder + ';"></div>'
                 + '<div data-rv="notice" style="display:none; padding:6px 10px; font-size:12px; background:rgba(226,160,63,.2);"></div>'
                 + '<div data-rv="body" style="flex:1; overflow-y:auto; padding:12px;"></div>'
-                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
+                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><input type="file" data-rv="file" multiple style="display:none;"><button type="button" data-rv="attach" title="附加檔案（圖片、影片、文件…會一起傳給對方）" style="' + btn + '">📎</button><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行，↑↓ 叫出之前送過的）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
             main.appendChild(el); const q = (n) => el.querySelector('[data-rv="' + n + '"]'), rv = this._rgRv = { el, nodeId, chatId, ver: '', timer: null, closed: false, fails: 0, running: false };
             const notice = (txt) => { const n = q('notice'); n.style.display = txt ? '' : 'none'; n.textContent = txt || ''; };
             const paint = (msgs) => {
@@ -580,14 +581,25 @@ const FaRemoteHost = (function () {
                 } catch (err) { rv.fails++; notice('連不上 ' + mem.name + '：' + String((err && err.message) || err) + '（會繼續重試）'); wait = Math.min(15000, 3000 * rv.fails) * this._rgSlow(); }
                 if (!rv.closed && this._rgRv === rv) rv.timer = setTimeout(tick, wait);
             };
+            const chips = () => { const box = q('chips'), list = this._pendingAttachments || []; box.style.display = list.length ? 'flex' : 'none'; box.innerHTML = list.map((a, i) => '<span style="padding:2px 8px; border:1px solid ' + pal.inputBorder + '; border-radius:10px;">' + e(a.filename) + (a.status === 'uploading' ? '（讀取中…）' : '') + ' <a data-rv="rm" data-i="' + i + '" style="cursor:pointer;">×</a></span>').join(''); };
+            rv.chipTimer = setInterval(() => { if (rv.closed) clearInterval(rv.chipTimer); else chips(); }, 500); chips();
             const send = async () => {
-                const inp = q('input'), text = inp.value.trim(); if (!text) return; q('send').disabled = true;
-                try { const r = await this._rgAsk(nodeId, 'chat_say', { id: chatId, text }, 'chat_ack', 10000); if (r.ok) { inp.value = ''; notice(''); clearTimeout(rv.timer); rv.ver = ''; tick(); } else notice('對方沒有接受：' + (r.error || '')); }
+                const inp = q('input'); let text = inp.value.trim(); const hasFiles = (this._pendingAttachments || []).length > 0; if (!text && !hasFiles) return; q('send').disabled = true;
+                const files = hasFiles ? await this._rgTakeAttachments(nodeId) : []; if (!text) text = '請處理我附上的檔案。'; chips();
+                if (!this.commandHistory.includes(text)) { this.commandHistory.unshift(text); if (this.commandHistory.length > 50) this.commandHistory.pop(); try { localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); } catch (_) { /* */ } } this.historyIndex = -1;
+                try { const r = await this._rgAsk(nodeId, 'chat_say', files.length ? { id: chatId, text, files } : { id: chatId, text }, 'chat_ack', 10000); if (r.ok) { inp.value = ''; notice(''); clearTimeout(rv.timer); rv.ver = ''; tick(); } else notice('對方沒有接受：' + (r.error || '')); }
                 catch (err) { notice('沒有送達：' + String((err && err.message) || err)); }
                 q('send').disabled = false;
             };
-            el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
-            q('input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+            el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'attach') q('file').click(); else if (act === 'rm') { const it = (this._pendingAttachments || [])[Number(a.dataset.i)]; if (it) { it.cancelled = true; this._pendingAttachments = this._pendingAttachments.filter((x) => x !== it); chips(); } } else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
+            q('file').addEventListener('change', () => { const f = Array.from(q('file').files || []); q('file').value = ''; if (f.length) { this._ingestFilesAsAttachments(f); chips(); } });
+            q('input').addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+                // ↑↓ 叫出之前送過的內容（跟主輸入框同一份歷史）
+                const inp = q('input'), h = this.commandHistory || [];
+                if (ev.key === 'ArrowUp' && (!inp.value || (this.historyIndex >= 0 && inp.selectionStart === 0)) && h.length) { ev.preventDefault(); this.historyIndex = Math.min(h.length - 1, this.historyIndex + 1); inp.value = h[this.historyIndex]; }
+                else if (ev.key === 'ArrowDown' && this.historyIndex >= 0) { ev.preventDefault(); this.historyIndex--; inp.value = this.historyIndex >= 0 ? h[this.historyIndex] : ''; }
+            });
             tick();
         },
         // ---------------------------------------------------------------- 群組動態（面板裡的清單；點一列展開看過程與最後結果）

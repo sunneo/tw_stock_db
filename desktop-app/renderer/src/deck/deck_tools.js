@@ -174,6 +174,8 @@ const FaDeckTools = (function () {
     const SYSTEM_PROMPT = [
         'You are a focused presentation-design assistant working for another AI assistant. Your only job is to produce a real animated slide deck with render_presentation (or begin_presentation / add_chapters / finish_presentation for a long one) and answer briefly -- never describe slides in prose, and never paste deck yaml into your reply. The finished deck is shown to the user automatically as a player in the chat (you do not embed it).',
         '',
+        'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
+        'TRANSLATION / BILINGUAL REQUESTS ("English voice from the words on the screen, plus a translation text and a translation voice"): one slide is spoken by ONE voice in ONE language, so give every source page TWO slides in a row -- slide A: the page picture, lang: en, narration = the English text read from the picture (translated to natural English only when the picture has none); slide B: the SAME picture again, lang: zh-TW, bullets = the translation as short lines, narration = the Chinese translation read aloud. Say so in the final answer. Keep the order of the pages.',
         'WHAT A DECK IS: chapters of slides in the deck template; every slide has a title, short bullets, a visual (a drawn diagram, a table, a real picture from the source, a flowchart ...) that is always in motion or revealed over time, narration that is read aloud by text-to-speech and shown as a subtitle bar, and a transition into it. The viewer plays it in a window and can export MP4 / PPTX. You write the DESCRIPTION (yaml); the renderer does the layout and animation.',
         '',
         'WORKFLOW',
@@ -220,7 +222,7 @@ const FaDeckTools = (function () {
 
     // 領域登記用的工具名稱（子任務只看得到這些）
     const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
-        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
+        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'import_uploaded_image', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
@@ -660,6 +662,15 @@ const FaDeckTools = (function () {
                     const f = CUTE.find(a.name); if (!f) return { ok: false, error: 'no built-in picture called ' + JSON.stringify(a.name) + '; available: ' + CUTE.names.join(', ') + '. Draw anything else yourself as an svg visual.' };
                     const r = await this._deckImportImageBlob(new Blob([f.svg], { type: 'image/svg+xml' }), 'cute: ' + f.name, 'cute_picture');
                     return r.error ? r : { ok: true, name: f.name, zhuyin: f.zhuyin, ref: r.ref, url: r.url };
+                });
+            tool('import_uploaded_image',
+                'Bring a picture the user attached (or uploaded earlier) into the task: "file_id" = the id in the task text ("[附件：name（file_id=…）]") or from list_uploaded_files. Returns its "@imgN" handle for an image visual. Call it once per attached picture, in the order the user attached them.',
+                obj({ file_id: { type: 'string' } }, ['file_id']),
+                async function (a) {
+                    const id = String(a.file_id || '').replace(/^client-file\//, '').trim(); const rec = id ? await this.fileCache.get(id) : null;
+                    if (!rec || !rec.blob) return { ok: false, error: 'no uploaded file with that id (use the file_id written in the task text, or call list_uploaded_files)' };
+                    if (!/^image\//.test(rec.mimeType || rec.blob.type || '')) return { ok: false, error: 'that file is not a picture (' + (rec.mimeType || 'unknown type') + '): for a PDF use parse_uploaded_file, for a video use a visual of kind video with src client-file/' + id };
+                    return this._deckImportImageBlob(rec.blob.type ? rec.blob : new Blob([rec.blob], { type: rec.mimeType }), 'upload: ' + (rec.filename || id), 'import_uploaded_image');
                 });
             tool('import_image_url',
                 'Bring a picture from a web page into the task: downloads the image at this http(s) url (png/jpeg/gif/webp/bmp/svg, up to 8 MB; cross-site addresses may need the asset proxy set in Advance Settings) and stores it. Returns its "@imgN" handle.',

@@ -54,22 +54,23 @@ const FaRemoteDispatch = (function () {
         _rgTargets() { const rg = this._rg; if (!rg) return []; const me = rg.room.self.nodeId; return rg.room.members().filter((m) => m.nodeId !== me); },
         _rgTargetName(id) { const m = this._rgTargets().find((x) => x.nodeId === id); return m ? m.name : id; },
         // text：使用者輸入的需求。以「目前這個對話」的名義送出（this 是綁定對話的代理物件）
-        async _rgDispatch(text) {
+        async _rgDispatch(text, files) {
+            files = Array.isArray(files) && files.length ? files : undefined;
             const rg = this._rg, targetId = this._rgTarget;
             const t = this._rgTargets().find((x) => x.nodeId === targetId);
             if (!rg || !t) { this._pushAssistantMessage('⚠️ 選定的機器已經不在群組裡（或離線了）。請在輸入框旁的「交給」重新選擇。', null); this._renderMessageHistory(); return; }
             if (t.allow === false) { this._pushAssistantMessage('⚠️ ' + t.name + ' 目前不接受遠端需求（對方關掉了「允許其他機器派工給我」）。', null); this._renderMessageHistory(); return; }
             const taskId = rg.room.self.nodeId.slice(0, 6) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-            this.messages.push({ role: 'user', content: text }); this._renderMessageHistory();
+            this.messages.push({ role: 'user', content: text + (files ? '\n\n[附件：' + files.map((f) => f.name).join('、') + '（一起傳給 ' + t.name + '）]' : '') }); this._renderMessageHistory();
             const prog = this._createProgressWidget('🛰️ 交給 ' + t.name + '（' + (t.kind === 'desktop' ? '桌面' : '網頁') + '）');
             prog.update({ status: '送出需求中…' });
             const task = { taskId, targetId, targetName: t.name, prog, lastSeq: 0, done: false, text, run: this, ack: false, stopSent: false, absent: false, at: Date.now(), lastEventAt: Date.now(), chatId: (this._ctx && this._chatListEnabled && this._chatIndex && this._chatEntry(this._ctx.id)) ? this._ctx.id : '' };
             rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task; this._rgPendingSave();
             try { this._setRespondingState(true, '⏳ 等 ' + t.name + ' 完成：' + text.slice(0, 20)); } catch (_) { /* */ }
             const finished = new Promise((resolve) => { task.resolve = resolve; });
-            try { await this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }); }
+            try { await this._rgSend(targetId, 'task', files ? { taskId, text, fromName: rg.room.self.name, files } : { taskId, text, fromName: rg.room.self.name }); }
             catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
-            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000 * this._rgSlow()); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', files ? { taskId, text, fromName: rg.room.self.name, files } : { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000 * this._rgSlow()); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', t.name + ' 沒有回應（' + 15 * this._rgSlow() + ' 秒）。對方可能已離線，或分頁被瀏覽器凍結了。'); }, 15000 * this._rgSlow());
             // 使用者按「停止」：通知對方也停下來
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
@@ -449,7 +450,7 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.text !== 'string') return;
             rg.exec = rg.exec || {}; if (rg.exec[b.taskId]) return; // 重複送來的同一個任務
             const s = this._rgSettings(), fromName = b.fromName || this._rgTargetName(m.from) || m.from, sub = !!b.sub;
-            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false, sub, at: Date.now() };
+            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, files: Array.isArray(b.files) ? b.files.slice(0, 8) : [], events: [], done: false, stop: false, sub, at: Date.now() };
             { const memR = rg.room.members().find((x) => x.nodeId === m.from); job.fromPk = memR && memR.pk ? memR.pk.x + memR.pk.y : ''; }
             rg.exec[b.taskId] = job;
             const gate = await this._rgGate(m); if (gate) { this._rgEvent(job, { kind: 'rejected', error: gate }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + gate); return; }
@@ -478,6 +479,8 @@ const FaRemoteDispatch = (function () {
             let lastSent = 0;
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
+            // 對方一起傳來的附件：先抓到這台（存進這台的檔案區），再把「[附件：檔名（file_id=…）]」接在需求後面，AI 與簡報技能才用得到
+            if (job.files && job.files.length) { try { const got = await this._rgFetchAttachments(job.from, job.files, (st) => progress(st, true)); job.text += this._rgAttachNote(got); } catch (e) { this._rgLog('取得附件失敗：' + String((e && e.message) || e)); } }
             try {
                 const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => { prog.log(line); this._rgTrace(job, line); const tl = (job.trace = job.trace || []); if (tl.length < 300) tl.push(String(line).slice(0, 300)); }, shouldStop: () => { if (job.chatCtx && job.chatCtx.stopRequested) job.stop = true; return job.stop; }, onToolResult: (name, args, res) => { const l = (job.tools = job.tools || []); if (l.length < 300) l.push({ name, args: String(args).slice(0, 4000), res: typeof res === 'string' ? res : JSON.stringify(res), at: Date.now() }); }, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
@@ -617,6 +620,32 @@ const FaRemoteDispatch = (function () {
             if (!en.shared && !window.confirm('分享這個對話到群組？\n\n群組裡的任何成員都能看到它的全部內容，並且可以在裡面接著對話——接著的內容會由這台機器的 AI 執行（可能用到這台機器的檔案與指令工具）。只有信任群組裡每個人時才建議分享。')) return;
             en.shared = !en.shared; this._saveChatIndex(); this._chatListSig = null; this._renderChatList(); this._rgPushChats();
         },
+        // 附件（要傳給別台機器的）：等上傳完、登記成「這個對象可以抓」，回傳清單並清掉待送附件
+        async _rgTakeAttachments(to) {
+            const rg = this._rg; if (!rg) return [];
+            const ups = (this._pendingAttachments || []).filter((a) => a.status === 'uploading'); if (ups.length) await Promise.all(ups.map((a) => a.promise || Promise.resolve()));
+            rg.shared = rg.shared || {}; const out = [];
+            for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done').slice(0, 8)) {
+                let rec = null; try { rec = await this.fileCache.get(a.id); } catch (_) { /* */ }
+                out.push({ id: a.id, name: a.filename, mime: (rec && rec.mimeType) || '', size: a.sizeBytes || (rec && rec.blob && rec.blob.size) || 0 }); (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(to);
+            }
+            this._pendingAttachments = []; try { this._renderPendingAttachments(); } catch (_) { /* */ }
+            return out;
+        },
+        async _rgFetchAttachments(from, list, progress) {
+            const items = (Array.isArray(list) ? list : []).filter((f) => f && typeof f.id === 'string').slice(0, 8), out = []; let i = 0;
+            for (const f of items) {
+                i++; const name = String(f.name || '附件').slice(0, 120);
+                if ((Number(f.size) || 0) > 80 * 1024 * 1024) { out.push({ name, error: '超過 80 MB' }); continue; }
+                try { if (progress) progress('取得附件 ' + i + '/' + items.length + '：' + name); const r = await this._rgFetchRemote(from, f.id); const id = await this.fileCache.put((r.meta && r.meta.name) || name, (r.meta && r.meta.mime) || f.mime || 'application/octet-stream', r.blob, 'uploaded'); out.push({ name, id }); }
+                catch (e) { out.push({ name, error: String((e && e.message) || e) }); }
+            }
+            return out;
+        },
+        _rgAttachNote(got) {
+            const ok = got.filter((x) => x.id), bad = got.filter((x) => !x.id);
+            return (ok.length ? '\n\n[附件：' + ok.map((x) => x.name + '（file_id=' + x.id + '）').join('、') + ']' : '') + (bad.length ? '\n\n[有附件沒有收到：' + bad.map((x) => x.name + '（' + x.error + '）').join('、') + ']' : '');
+        },
         // 對話裡「顯示用」的訊息（簡報播放器、檔案卡片）原本不會傳給看的人，只看得到文字；現在轉成檔案清單（r:'files'），
         // 看的人那邊畫成可開啟的卡片（簡報會在他那邊播放），檔案走一般的內容傳輸（直連或轉送）。
         async _rgChatFileGroups(m, to) {
@@ -650,12 +679,13 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, s = this._rgSettings(), who = this._rgTargetName(m.from) || m.from, en = this._chatEntry(b.id);
             const ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
             let err = await this._rgGate(m); if (!err && !s.allowDispatch) err = '這台機器目前不接受遠端需求'; if (!err && s.readonlySandbox) err = '這台機器設為「只允許唯讀與沙盒」，不能在分享的對話裡接著做事';
-            if (!err && (!en || !en.shared)) err = '這個對話沒有分享（或已經取消分享）'; if (!err && (typeof b.text !== 'string' || !b.text.trim())) err = '沒有內容';
+            if (!err && (!en || !en.shared)) err = '這個對話沒有分享（或已經取消分享）'; if (!err && (typeof b.text !== 'string' || (!b.text.trim() && !(Array.isArray(b.files) && b.files.length)))) err = '沒有內容';
             if (err) { this._rgLog('拒絕了 ' + who + ' 在分享對話裡的訊息：' + err); ack({ ok: false, error: err }); return; }
             const ctx = await this._chatCtxLoad(b.id); if (ctx.isResponding) { ack({ ok: false, error: '這個對話的 AI 正在執行中，請等它做完或先按停止' }); return; }
             this._rgLog(who + ' 在分享的對話「' + String(en.title || '').slice(0, 14) + '」裡接著對話'); ack({ ok: true });
+            let attachNote = ''; if (Array.isArray(b.files) && b.files.length) { try { attachNote = this._rgAttachNote(await this._rgFetchAttachments(m.from, b.files)); } catch (_) { /* */ } }
             // 斜線指令與技能指令（所有已登錄的 /xxx）要照指令的方式執行，不能當成一般文字丟給 AI（否則 AI 只會口頭規劃、不會真的做）
-            const full = this._rgStripLabel(b.text).slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
+            const full = (this._rgStripLabel(b.text) + attachNote).slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
             if (slash) {
                 const run = this._chatRunner(ctx); let argsText = full.slice(tok.length).trim();
                 try { run._setRespondingState(true, '⏳ 指令執行中：' + tok); } catch (_) { /* */ }
@@ -664,7 +694,7 @@ const FaRemoteDispatch = (function () {
                     .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) { /* */ } });
                 return;
             }
-            Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + b.text.trim().slice(0, 8000))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
+            Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + (b.text.trim().slice(0, 8000) + attachNote))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
         },
         async _rgOnChatStop(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});

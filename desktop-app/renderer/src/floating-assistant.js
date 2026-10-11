@@ -18646,7 +18646,7 @@ const FaRemoteHost = (function () {
             Object.keys(rg.remoteChats).forEach((id) => { if (!rg.room.members().some((x) => x.nodeId === id)) delete rg.remoteChats[id]; });
             if (!rg.chatsTimer) rg.chatsTimer = setInterval(() => { if (this._rg === rg) this._rgRefreshRemoteChats(); else clearInterval(rg.chatsTimer); }, 30000);
         },
-        _rgCloseRemoteView() { const rv = this._rgRv; if (!rv) return; clearTimeout(rv.timer); rv.closed = true; try { rv.el.remove(); } catch (_) { /* */ } this._rgRv = null; },
+        _rgCloseRemoteView() { const rv = this._rgRv; if (!rv) return; clearTimeout(rv.timer); clearInterval(rv.chipTimer); rv.closed = true; try { rv.el.remove(); } catch (_) { /* */ } this._rgRv = null; },
         async _rgOpenRemoteChat(nodeId, chatId) {
             const rg = this._rg; if (!rg) return; const mem = rg.room.members().find((x) => x.nodeId === nodeId); if (!mem) return;
             this._rgCloseRemoteView(); const main = document.getElementById('ai-chat-main') || document.getElementById('ai-floating-window'); if (!main) return;
@@ -18654,9 +18654,10 @@ const FaRemoteHost = (function () {
             const el = document.createElement('div'); el.id = 'ai-rc-view'; el.style.cssText = 'position:absolute; inset:0; z-index:8; display:flex; flex-direction:column; background:' + pal.chatBg + '; color:' + pal.chatText + ';';
             const btn = 'padding:4px 10px; border-radius:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; background:transparent; color:' + pal.chatText + ';';
             el.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid ' + pal.windowBorder + '; background:' + pal.headerBg + ';"><button type="button" data-rv="back" style="' + btn + '">← 回到本機對話</button><div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><b data-rv="title">…</b><span style="font-size:11px; opacity:.7;">　🖥️ ' + e(mem.name) + '（對方分享的對話）</span></div><span data-rv="state" style="font-size:12px;"></span><button type="button" data-rv="stop" style="' + btn + ' display:none;">⏹ 停止</button></div>'
+                + '<div data-rv="chips" style="display:none; padding:4px 10px; font-size:12px; gap:6px; flex-wrap:wrap; border-top:1px solid ' + pal.windowBorder + ';"></div>'
                 + '<div data-rv="notice" style="display:none; padding:6px 10px; font-size:12px; background:rgba(226,160,63,.2);"></div>'
                 + '<div data-rv="body" style="flex:1; overflow-y:auto; padding:12px;"></div>'
-                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
+                + '<div style="padding:8px; border-top:1px solid ' + pal.windowBorder + '; display:flex; gap:6px;"><input type="file" data-rv="file" multiple style="display:none;"><button type="button" data-rv="attach" title="附加檔案（圖片、影片、文件…會一起傳給對方）" style="' + btn + '">📎</button><textarea data-rv="input" rows="2" placeholder="在對方的這個對話裡接著說（Enter 送出，Shift+Enter 換行，↑↓ 叫出之前送過的）…" style="flex:1; resize:none; padding:6px; border-radius:6px; border:1px solid ' + pal.inputBorder + '; background:' + pal.inputBg + '; color:' + pal.inputText + ';"></textarea><button type="button" data-rv="send" style="' + btn + ' background:#76b900; color:#fff; border:none; font-weight:bold;">送出</button></div>';
             main.appendChild(el); const q = (n) => el.querySelector('[data-rv="' + n + '"]'), rv = this._rgRv = { el, nodeId, chatId, ver: '', timer: null, closed: false, fails: 0, running: false };
             const notice = (txt) => { const n = q('notice'); n.style.display = txt ? '' : 'none'; n.textContent = txt || ''; };
             const paint = (msgs) => {
@@ -18677,14 +18678,25 @@ const FaRemoteHost = (function () {
                 } catch (err) { rv.fails++; notice('連不上 ' + mem.name + '：' + String((err && err.message) || err) + '（會繼續重試）'); wait = Math.min(15000, 3000 * rv.fails) * this._rgSlow(); }
                 if (!rv.closed && this._rgRv === rv) rv.timer = setTimeout(tick, wait);
             };
+            const chips = () => { const box = q('chips'), list = this._pendingAttachments || []; box.style.display = list.length ? 'flex' : 'none'; box.innerHTML = list.map((a, i) => '<span style="padding:2px 8px; border:1px solid ' + pal.inputBorder + '; border-radius:10px;">' + e(a.filename) + (a.status === 'uploading' ? '（讀取中…）' : '') + ' <a data-rv="rm" data-i="' + i + '" style="cursor:pointer;">×</a></span>').join(''); };
+            rv.chipTimer = setInterval(() => { if (rv.closed) clearInterval(rv.chipTimer); else chips(); }, 500); chips();
             const send = async () => {
-                const inp = q('input'), text = inp.value.trim(); if (!text) return; q('send').disabled = true;
-                try { const r = await this._rgAsk(nodeId, 'chat_say', { id: chatId, text }, 'chat_ack', 10000); if (r.ok) { inp.value = ''; notice(''); clearTimeout(rv.timer); rv.ver = ''; tick(); } else notice('對方沒有接受：' + (r.error || '')); }
+                const inp = q('input'); let text = inp.value.trim(); const hasFiles = (this._pendingAttachments || []).length > 0; if (!text && !hasFiles) return; q('send').disabled = true;
+                const files = hasFiles ? await this._rgTakeAttachments(nodeId) : []; if (!text) text = '請處理我附上的檔案。'; chips();
+                if (!this.commandHistory.includes(text)) { this.commandHistory.unshift(text); if (this.commandHistory.length > 50) this.commandHistory.pop(); try { localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); } catch (_) { /* */ } } this.historyIndex = -1;
+                try { const r = await this._rgAsk(nodeId, 'chat_say', files.length ? { id: chatId, text, files } : { id: chatId, text }, 'chat_ack', 10000); if (r.ok) { inp.value = ''; notice(''); clearTimeout(rv.timer); rv.ver = ''; tick(); } else notice('對方沒有接受：' + (r.error || '')); }
                 catch (err) { notice('沒有送達：' + String((err && err.message) || err)); }
                 q('send').disabled = false;
             };
-            el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
-            q('input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+            el.addEventListener('click', async (ev) => { const a = ev.target.closest('[data-rv]'); if (!a) return; const act = a.dataset.rv; if (act === 'back') this._rgCloseRemoteView(); else if (act === 'send') send(); else if (act === 'attach') q('file').click(); else if (act === 'rm') { const it = (this._pendingAttachments || [])[Number(a.dataset.i)]; if (it) { it.cancelled = true; this._pendingAttachments = this._pendingAttachments.filter((x) => x !== it); chips(); } } else if (act === 'stop') { try { await this._rgAsk(nodeId, 'chat_stop', { id: chatId }, 'chat_ack', 8000); notice('已要求對方停止'); } catch (err) { notice('停止要求沒有送達：' + String((err && err.message) || err)); } } });
+            q('file').addEventListener('change', () => { const f = Array.from(q('file').files || []); q('file').value = ''; if (f.length) { this._ingestFilesAsAttachments(f); chips(); } });
+            q('input').addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); return; }
+                // ↑↓ 叫出之前送過的內容（跟主輸入框同一份歷史）
+                const inp = q('input'), h = this.commandHistory || [];
+                if (ev.key === 'ArrowUp' && (!inp.value || (this.historyIndex >= 0 && inp.selectionStart === 0)) && h.length) { ev.preventDefault(); this.historyIndex = Math.min(h.length - 1, this.historyIndex + 1); inp.value = h[this.historyIndex]; }
+                else if (ev.key === 'ArrowDown' && this.historyIndex >= 0) { ev.preventDefault(); this.historyIndex--; inp.value = this.historyIndex >= 0 ? h[this.historyIndex] : ''; }
+            });
             tick();
         },
         // ---------------------------------------------------------------- 群組動態（面板裡的清單；點一列展開看過程與最後結果）
@@ -18827,22 +18839,23 @@ const FaRemoteDispatch = (function () {
         _rgTargets() { const rg = this._rg; if (!rg) return []; const me = rg.room.self.nodeId; return rg.room.members().filter((m) => m.nodeId !== me); },
         _rgTargetName(id) { const m = this._rgTargets().find((x) => x.nodeId === id); return m ? m.name : id; },
         // text：使用者輸入的需求。以「目前這個對話」的名義送出（this 是綁定對話的代理物件）
-        async _rgDispatch(text) {
+        async _rgDispatch(text, files) {
+            files = Array.isArray(files) && files.length ? files : undefined;
             const rg = this._rg, targetId = this._rgTarget;
             const t = this._rgTargets().find((x) => x.nodeId === targetId);
             if (!rg || !t) { this._pushAssistantMessage('⚠️ 選定的機器已經不在群組裡（或離線了）。請在輸入框旁的「交給」重新選擇。', null); this._renderMessageHistory(); return; }
             if (t.allow === false) { this._pushAssistantMessage('⚠️ ' + t.name + ' 目前不接受遠端需求（對方關掉了「允許其他機器派工給我」）。', null); this._renderMessageHistory(); return; }
             const taskId = rg.room.self.nodeId.slice(0, 6) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-            this.messages.push({ role: 'user', content: text }); this._renderMessageHistory();
+            this.messages.push({ role: 'user', content: text + (files ? '\n\n[附件：' + files.map((f) => f.name).join('、') + '（一起傳給 ' + t.name + '）]' : '') }); this._renderMessageHistory();
             const prog = this._createProgressWidget('🛰️ 交給 ' + t.name + '（' + (t.kind === 'desktop' ? '桌面' : '網頁') + '）');
             prog.update({ status: '送出需求中…' });
             const task = { taskId, targetId, targetName: t.name, prog, lastSeq: 0, done: false, text, run: this, ack: false, stopSent: false, absent: false, at: Date.now(), lastEventAt: Date.now(), chatId: (this._ctx && this._chatListEnabled && this._chatIndex && this._chatEntry(this._ctx.id)) ? this._ctx.id : '' };
             rg.tasks = rg.tasks || {}; rg.tasks[taskId] = task; this._rgPendingSave();
             try { this._setRespondingState(true, '⏳ 等 ' + t.name + ' 完成：' + text.slice(0, 20)); } catch (_) { /* */ }
             const finished = new Promise((resolve) => { task.resolve = resolve; });
-            try { await this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }); }
+            try { await this._rgSend(targetId, 'task', files ? { taskId, text, fromName: rg.room.self.name, files } : { taskId, text, fromName: rg.room.self.name }); }
             catch (e) { this._rgTaskEnd(task, 'failed', '送出失敗：' + String((e && e.message) || e)); }
-            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000 * this._rgSlow()); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
+            task.resendTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgSend(targetId, 'task', files ? { taskId, text, fromName: rg.room.self.name, files } : { taskId, text, fromName: rg.room.self.name }).catch(() => {}); }, 6000 * this._rgSlow()); // 通道剛好斷線重連時送出的第一次可能丟了：再送一次（對方用 taskId 去重，不會執行兩次）
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', t.name + ' 沒有回應（' + 15 * this._rgSlow() + ' 秒）。對方可能已離線，或分頁被瀏覽器凍結了。'); }, 15000 * this._rgSlow());
             // 使用者按「停止」：通知對方也停下來
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && task.run.stopRequested) { task.stopSent = true; rg.room.send(targetId, 'task_stop', { taskId }).catch(() => {}); prog.update({ status: '已通知 ' + t.name + ' 停止…' }); } }, 500);
@@ -19222,7 +19235,7 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return; const b = m.body || {}; if (!b.taskId || typeof b.text !== 'string') return;
             rg.exec = rg.exec || {}; if (rg.exec[b.taskId]) return; // 重複送來的同一個任務
             const s = this._rgSettings(), fromName = b.fromName || this._rgTargetName(m.from) || m.from, sub = !!b.sub;
-            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, events: [], done: false, stop: false, sub, at: Date.now() };
+            const job = { taskId: b.taskId, from: m.from, fromName, text: b.text, files: Array.isArray(b.files) ? b.files.slice(0, 8) : [], events: [], done: false, stop: false, sub, at: Date.now() };
             { const memR = rg.room.members().find((x) => x.nodeId === m.from); job.fromPk = memR && memR.pk ? memR.pk.x + memR.pk.y : ''; }
             rg.exec[b.taskId] = job;
             const gate = await this._rgGate(m); if (gate) { this._rgEvent(job, { kind: 'rejected', error: gate }); job.done = true; this._rgLog('拒絕了 ' + fromName + ' 的' + (sub ? '子任務' : '需求') + '：' + gate); return; }
@@ -19251,6 +19264,8 @@ const FaRemoteDispatch = (function () {
             let lastSent = 0;
             const progress = (status, force) => { prog.update({ status }); const now = Date.now(); if (force || now - lastSent > 800) { lastSent = now; this._rgEvent(job, { kind: 'progress', status }); } };
             if (job.stop) { this._rgEvent(job, { kind: 'stopped' }); prog.fail('已停止'); job.done = true; return; }
+            // 對方一起傳來的附件：先抓到這台（存進這台的檔案區），再把「[附件：檔名（file_id=…）]」接在需求後面，AI 與簡報技能才用得到
+            if (job.files && job.files.length) { try { const got = await this._rgFetchAttachments(job.from, job.files, (st) => progress(st, true)); job.text += this._rgAttachNote(got); } catch (e) { this._rgLog('取得附件失敗：' + String((e && e.message) || e)); } }
             try {
                 const opts = { onProgress: (st) => progress(String(st)), onTrace: (line) => { prog.log(line); this._rgTrace(job, line); const tl = (job.trace = job.trace || []); if (tl.length < 300) tl.push(String(line).slice(0, 300)); }, shouldStop: () => { if (job.chatCtx && job.chatCtx.stopRequested) job.stop = true; return job.stop; }, onToolResult: (name, args, res) => { const l = (job.tools = job.tools || []); if (l.length < 300) l.push({ name, args: String(args).slice(0, 4000), res: typeof res === 'string' ? res : JSON.stringify(res), at: Date.now() }); }, meta: { label: job.sub ? '分工子任務' : '遠端需求', source: job.fromName, kind: 'remote' } };
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
@@ -19390,6 +19405,32 @@ const FaRemoteDispatch = (function () {
             if (!en.shared && !window.confirm('分享這個對話到群組？\n\n群組裡的任何成員都能看到它的全部內容，並且可以在裡面接著對話——接著的內容會由這台機器的 AI 執行（可能用到這台機器的檔案與指令工具）。只有信任群組裡每個人時才建議分享。')) return;
             en.shared = !en.shared; this._saveChatIndex(); this._chatListSig = null; this._renderChatList(); this._rgPushChats();
         },
+        // 附件（要傳給別台機器的）：等上傳完、登記成「這個對象可以抓」，回傳清單並清掉待送附件
+        async _rgTakeAttachments(to) {
+            const rg = this._rg; if (!rg) return [];
+            const ups = (this._pendingAttachments || []).filter((a) => a.status === 'uploading'); if (ups.length) await Promise.all(ups.map((a) => a.promise || Promise.resolve()));
+            rg.shared = rg.shared || {}; const out = [];
+            for (const a of (this._pendingAttachments || []).filter((x) => x.status === 'done').slice(0, 8)) {
+                let rec = null; try { rec = await this.fileCache.get(a.id); } catch (_) { /* */ }
+                out.push({ id: a.id, name: a.filename, mime: (rec && rec.mimeType) || '', size: a.sizeBytes || (rec && rec.blob && rec.blob.size) || 0 }); (rg.shared[a.id] = rg.shared[a.id] || new Set()).add(to);
+            }
+            this._pendingAttachments = []; try { this._renderPendingAttachments(); } catch (_) { /* */ }
+            return out;
+        },
+        async _rgFetchAttachments(from, list, progress) {
+            const items = (Array.isArray(list) ? list : []).filter((f) => f && typeof f.id === 'string').slice(0, 8), out = []; let i = 0;
+            for (const f of items) {
+                i++; const name = String(f.name || '附件').slice(0, 120);
+                if ((Number(f.size) || 0) > 80 * 1024 * 1024) { out.push({ name, error: '超過 80 MB' }); continue; }
+                try { if (progress) progress('取得附件 ' + i + '/' + items.length + '：' + name); const r = await this._rgFetchRemote(from, f.id); const id = await this.fileCache.put((r.meta && r.meta.name) || name, (r.meta && r.meta.mime) || f.mime || 'application/octet-stream', r.blob, 'uploaded'); out.push({ name, id }); }
+                catch (e) { out.push({ name, error: String((e && e.message) || e) }); }
+            }
+            return out;
+        },
+        _rgAttachNote(got) {
+            const ok = got.filter((x) => x.id), bad = got.filter((x) => !x.id);
+            return (ok.length ? '\n\n[附件：' + ok.map((x) => x.name + '（file_id=' + x.id + '）').join('、') + ']' : '') + (bad.length ? '\n\n[有附件沒有收到：' + bad.map((x) => x.name + '（' + x.error + '）').join('、') + ']' : '');
+        },
         // 對話裡「顯示用」的訊息（簡報播放器、檔案卡片）原本不會傳給看的人，只看得到文字；現在轉成檔案清單（r:'files'），
         // 看的人那邊畫成可開啟的卡片（簡報會在他那邊播放），檔案走一般的內容傳輸（直連或轉送）。
         async _rgChatFileGroups(m, to) {
@@ -19423,12 +19464,13 @@ const FaRemoteDispatch = (function () {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, s = this._rgSettings(), who = this._rgTargetName(m.from) || m.from, en = this._chatEntry(b.id);
             const ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
             let err = await this._rgGate(m); if (!err && !s.allowDispatch) err = '這台機器目前不接受遠端需求'; if (!err && s.readonlySandbox) err = '這台機器設為「只允許唯讀與沙盒」，不能在分享的對話裡接著做事';
-            if (!err && (!en || !en.shared)) err = '這個對話沒有分享（或已經取消分享）'; if (!err && (typeof b.text !== 'string' || !b.text.trim())) err = '沒有內容';
+            if (!err && (!en || !en.shared)) err = '這個對話沒有分享（或已經取消分享）'; if (!err && (typeof b.text !== 'string' || (!b.text.trim() && !(Array.isArray(b.files) && b.files.length)))) err = '沒有內容';
             if (err) { this._rgLog('拒絕了 ' + who + ' 在分享對話裡的訊息：' + err); ack({ ok: false, error: err }); return; }
             const ctx = await this._chatCtxLoad(b.id); if (ctx.isResponding) { ack({ ok: false, error: '這個對話的 AI 正在執行中，請等它做完或先按停止' }); return; }
             this._rgLog(who + ' 在分享的對話「' + String(en.title || '').slice(0, 14) + '」裡接著對話'); ack({ ok: true });
+            let attachNote = ''; if (Array.isArray(b.files) && b.files.length) { try { attachNote = this._rgAttachNote(await this._rgFetchAttachments(m.from, b.files)); } catch (_) { /* */ } }
             // 斜線指令與技能指令（所有已登錄的 /xxx）要照指令的方式執行，不能當成一般文字丟給 AI（否則 AI 只會口頭規劃、不會真的做）
-            const full = this._rgStripLabel(b.text).slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
+            const full = (this._rgStripLabel(b.text) + attachNote).slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
             if (slash) {
                 const run = this._chatRunner(ctx); let argsText = full.slice(tok.length).trim();
                 try { run._setRespondingState(true, '⏳ 指令執行中：' + tok); } catch (_) { /* */ }
@@ -19437,7 +19479,7 @@ const FaRemoteDispatch = (function () {
                     .finally(() => { try { run._setRespondingState(false, '', run.stopRequested ? 'stopped' : 'completed'); } catch (_) { /* */ } });
                 return;
             }
-            Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + b.text.trim().slice(0, 8000))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
+            Promise.resolve().then(() => this._chatRunner(ctx).executeChat('[來自 ' + who + ' 的遠端訊息]\n' + (b.text.trim().slice(0, 8000) + attachNote))).catch((e) => this._rgLog('分享對話執行失敗：' + String((e && e.message) || e)));
         },
         async _rgOnChatStop(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, en = this._chatEntry(b.id), ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
@@ -19962,6 +20004,8 @@ const FaDeckTools = (function () {
     const SYSTEM_PROMPT = [
         'You are a focused presentation-design assistant working for another AI assistant. Your only job is to produce a real animated slide deck with render_presentation (or begin_presentation / add_chapters / finish_presentation for a long one) and answer briefly -- never describe slides in prose, and never paste deck yaml into your reply. The finished deck is shown to the user automatically as a player in the chat (you do not embed it).',
         '',
+        'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
+        'TRANSLATION / BILINGUAL REQUESTS ("English voice from the words on the screen, plus a translation text and a translation voice"): one slide is spoken by ONE voice in ONE language, so give every source page TWO slides in a row -- slide A: the page picture, lang: en, narration = the English text read from the picture (translated to natural English only when the picture has none); slide B: the SAME picture again, lang: zh-TW, bullets = the translation as short lines, narration = the Chinese translation read aloud. Say so in the final answer. Keep the order of the pages.',
         'WHAT A DECK IS: chapters of slides in the deck template; every slide has a title, short bullets, a visual (a drawn diagram, a table, a real picture from the source, a flowchart ...) that is always in motion or revealed over time, narration that is read aloud by text-to-speech and shown as a subtitle bar, and a transition into it. The viewer plays it in a window and can export MP4 / PPTX. You write the DESCRIPTION (yaml); the renderer does the layout and animation.',
         '',
         'WORKFLOW',
@@ -20008,7 +20052,7 @@ const FaDeckTools = (function () {
 
     // 領域登記用的工具名稱（子任務只看得到這些）
     const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
-        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
+        'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'import_uploaded_image', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
@@ -20448,6 +20492,15 @@ const FaDeckTools = (function () {
                     const f = CUTE.find(a.name); if (!f) return { ok: false, error: 'no built-in picture called ' + JSON.stringify(a.name) + '; available: ' + CUTE.names.join(', ') + '. Draw anything else yourself as an svg visual.' };
                     const r = await this._deckImportImageBlob(new Blob([f.svg], { type: 'image/svg+xml' }), 'cute: ' + f.name, 'cute_picture');
                     return r.error ? r : { ok: true, name: f.name, zhuyin: f.zhuyin, ref: r.ref, url: r.url };
+                });
+            tool('import_uploaded_image',
+                'Bring a picture the user attached (or uploaded earlier) into the task: "file_id" = the id in the task text ("[附件：name（file_id=…）]") or from list_uploaded_files. Returns its "@imgN" handle for an image visual. Call it once per attached picture, in the order the user attached them.',
+                obj({ file_id: { type: 'string' } }, ['file_id']),
+                async function (a) {
+                    const id = String(a.file_id || '').replace(/^client-file\//, '').trim(); const rec = id ? await this.fileCache.get(id) : null;
+                    if (!rec || !rec.blob) return { ok: false, error: 'no uploaded file with that id (use the file_id written in the task text, or call list_uploaded_files)' };
+                    if (!/^image\//.test(rec.mimeType || rec.blob.type || '')) return { ok: false, error: 'that file is not a picture (' + (rec.mimeType || 'unknown type') + '): for a PDF use parse_uploaded_file, for a video use a visual of kind video with src client-file/' + id };
+                    return this._deckImportImageBlob(rec.blob.type ? rec.blob : new Blob([rec.blob], { type: rec.mimeType }), 'upload: ' + (rec.filename || id), 'import_uploaded_image');
                 });
             tool('import_image_url',
                 'Bring a picture from a web page into the task: downloads the image at this http(s) url (png/jpeg/gif/webp/bmp/svg, up to 8 MB; cross-site addresses may need the asset proxy set in Advance Settings) and stores it. Returns its "@imgN" handle.',
@@ -56845,7 +56898,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 this.historyIndex = -1;
                 let argsText = textToSend.slice(firstToken.length).trim();
                 // 2026-10-05：技能包指令（例如 /image-decompose-redraw）先貼圖再打指令時，待送的附件要一起帶進去，不然附件留在輸入框上方被忽略
-                if (hasAttachments && entry._autoFromSkillBundle) {
+                if (hasAttachments) { // 有附件就一律帶進指令（不挑哪個指令）
                     const note = await this._takeAttachmentNote();
                     if (note) argsText = (argsText ? argsText + '\n\n' : '') + '[附件：' + note + ']';
                 }
@@ -56866,12 +56919,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 
         // 遠端群組：這個對話選了「交給」其他機器，就把需求送過去（斜線指令仍在本機執行）
         if (textToSend && (!textToSend.startsWith('/') || remoteSlash) && this._rg && this._rgTarget) {
-            if (hasAttachments) { inputText.value = textToSend; this._pushAssistantMessage('⚠️ 交給其他機器目前只能傳文字（附件的傳輸下一階段開放）。請先移除附件，或把輸入框旁的「交給」改回本機。', null); this._renderMessageHistory(); return; }
+            const rFiles = hasAttachments ? await this._rgTakeAttachments(this._rgTarget) : [];
             this._chatMarkTouched(textToSend);
             if (!this.commandHistory.includes(textToSend)) { this.commandHistory.unshift(textToSend); if (this.commandHistory.length > 50) this.commandHistory.pop(); localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); }
             this.historyIndex = -1;
             const rctx = this._activeCtx, rrun = this._chatRunner(rctx);
-            rrun._rgDispatch(textToSend).catch((e) => { try { rrun._pushAssistantMessage('⚠️ 遠端派工失敗：' + String((e && e.message) || e), null); rrun._renderMessageHistory(); rrun._setRespondingState(false, '', 'stopped'); } catch (_) { /* */ } });
+            rrun._rgDispatch(textToSend, rFiles).catch((e) => { try { rrun._pushAssistantMessage('⚠️ 遠端派工失敗：' + String((e && e.message) || e), null); rrun._renderMessageHistory(); rrun._setRespondingState(false, '', 'stopped'); } catch (_) { /* */ } });
             return;
         }
         if (hasAttachments) {
