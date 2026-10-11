@@ -18869,7 +18869,24 @@ const FaRemoteDispatch = (function () {
             task.ackTimer = setTimeout(() => { if (!task.ack && !task.done) this._rgTaskEnd(task, 'failed', target.name + ' 沒有回應（' + 15 * this._rgSlow() + ' 秒）'); }, 15000 * this._rgSlow());
             task.stopTimer = setInterval(() => { if (!task.done && !task.stopSent && this.stopRequested) { task.stopSent = true; rg.room.send(target.nodeId, 'task_stop', { taskId }).catch(() => {}); } }, 500);
             const r = await finished;
-            return r.kind === 'done' ? { ok: true, machine: target.name, result: r.text || '', files: (r.refs || []).map((x) => x.name + '（' + x.kind + '，' + x.size + ' 位元組）'), note: (r.refs || []).length ? '對方產生了這些檔案；使用者可以在進度卡片所在的對話裡開啟（這個階段 AI 還不能直接讀取它們）' : undefined } : { ok: false, machine: target.name, error: r.error || r.kind };
+            if (r.kind !== 'done') return { ok: false, machine: target.name, error: r.error || r.kind };
+            const pulled = await this._rgPullRefs({ targetId: target.nodeId, targetName: target.name }, r.refs || []).catch(() => ({ images: [], texts: [], skipped: [] }));
+            return { ok: true, machine: target.name, result: r.text || '', images: pulled.images, texts: pulled.texts, not_fetched: pulled.skipped.length ? pulled.skipped : undefined, note: pulled.images.length || pulled.texts.length ? '對方產生的圖片已經存到這台（url 是 client-file/<id>，簡報的 image / chart 視覺可以直接用；有 ref 的用 ref），文字檔內容在 texts 裡' : ((r.refs || []).length ? '對方產生了檔案，但沒有圖片或文字檔可以直接取回' : undefined) };
+        },
+        // 把對方這次產生的內容取回來：圖片（每張 6MB 內、最多 8 張）存進本機檔案快取，文字檔（200KB 內）直接讀成文字；其他種類只列名稱
+        async _rgPullRefs(group, refs) {
+            const out = { images: [], texts: [], skipped: [] }; group = { nodeId: group.nodeId || group.targetId, machine: group.machine || group.targetName };
+            for (const it of (refs || []).slice(0, 14)) {
+                try {
+                    if (it.kind === 'image' && it.size <= 6 * 1024 * 1024 && out.images.length < 8) {
+                        const r = await this._rgGetItemBlob(group, it, () => {}, { cancelled: false }), id = await this.fileCache.put(r.name || it.name, r.mime || it.mime || 'image/png', r.blob, 'uploaded'); let ref = null;
+                        try { const e = this._deckRun().catalog.add('client-file/' + id, { alt: it.name, from: 'delegate_to_machine' }); ref = e && e.ref; } catch (_) { /* 不在簡報任務裡：沒有圖片目錄 */ }
+                        out.images.push({ name: it.name, url: 'client-file/' + id, ref });
+                    } else if (it.kind === 'text' && it.size <= 200 * 1024) { const r = await this._rgGetItemBlob(group, it, () => {}, { cancelled: false }); out.texts.push({ name: it.name, text: (await r.blob.text()).slice(0, 60000) }); }
+                    else out.skipped.push(it.name + '（' + it.kind + '，' + it.size + ' 位元組）');
+                } catch (e) { out.skipped.push(it.name + '：' + String((e && e.message) || e).slice(0, 80)); }
+            }
+            return out;
         },
         _rgRegisterTools() {
             const self = this;
@@ -19109,7 +19126,14 @@ const FaRemoteDispatch = (function () {
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
                 this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
-                const res = await this._runSubAgentTask('這是群組裡另一台機器（' + job.fromName + '）交給你的需求，請完成它並回覆結果：\n\n' + job.text, 40, opts);
+                let res; const mp = !job.sub && /^\s*\/media-presentation\s+([\s\S]+)$/i.exec(job.text);
+                if (mp) {
+                    if (s.readonlySandbox) throw new Error('這台機器設為「只允許唯讀與沙盒」，不能執行簡報技能（它會抓資料、存檔）');
+                    const key = this._deckDomainKey(); if (!key) throw new Error('這台機器沒有「media-presentation」技能（被停用或刪除了）');
+                    const dr = await this._delegateToSubagentDomain(key, mp[1].trim(), { onProgress: opts.onProgress, onTrace: opts.onTrace, shouldStop: opts.shouldStop, meta: opts.meta });
+                    if (!dr || dr.ok === false) throw new Error('簡報技能失敗：' + String((dr && dr.error) || '沒有回應'));
+                    res = { text: String(dr.result || dr.note || '（簡報已產生）'), visual: dr.type ? { type: dr.type, title: dr.title || '' } : null };
+                } else res = await this._runSubAgentTask('這是群組裡另一台機器（' + job.fromName + '）交給你的需求，請完成它並回覆結果：\n\n' + job.text, 40, opts);
                 const text = res && res.text ? String(res.text) : '';
                 const v = res && res.visual ? { type: res.visual.type, title: res.visual.title || res.visual.name || '' } : null;
                 if (rg0 && rg0.captures) rg0.captures.delete(cap);
@@ -19718,6 +19742,7 @@ const FaDeckTools = (function () {
         '4. finish_presentation(draft) assembles ONE deck and saves it. (A short deck, up to ~12 minutes, is a single render_presentation call.)',
         'Keep the whole talk coherent: one title slide at the start, a recap every few chapters, a summary at the end; do not restart or repeat yourself between batches, and never split the talk into several presentations.',
         '',
+        'MATERIAL THAT LIVES ON ANOTHER MACHINE: when this computer is in a remote group (list_remote_machines) and the data the request is about is not here (nothing in the uploaded files, the folders or this app\'s own tools -- for example a stock website\'s watch list, charts or analyses live on the machine that runs that website), do NOT answer "I have no file". Call list_remote_machines, pick the machine that would hold it, and call delegate_to_machine(task, machine) with a COMPLETE description of what to fetch (the other machine cannot see this conversation): the data as text and the pictures / charts as files. The pictures come back as client-file urls (or @img handles) you can use in image visuals, the texts in "texts". Then build the deck HERE from that material (the voice, the player and the export stay local). The other machine must have "accept sub-task sharing" switched on; if it is refused or no machine fits, say exactly that and what you tried.',
         'LANGUAGE OF THE VOICE: each slide is spoken by ONE voice in ONE language. The deck language (deck.lang, default zh-TW) is the default; a slide that must be spoken in English gets  lang: en  and its narration is written ENTIRELY in English -- translate any Chinese into English (our English voice cannot pronounce Chinese: it spells every character out, "chinese letter chinese letter"). A Chinese slide may contain English terms (product names, units, code); they are read by the Chinese voice. Never put a long English passage into a Chinese slide, never put Chinese words into an English slide; if you cannot write a good English version, keep the slide Chinese. The validator refuses mixed narration. When the user says the whole deck is in Traditional Chinese, every narration is Chinese (English product names stay as names).',
         'SLIDES THAT ARE ONLY A PICTURE OR A CHART (no text, no notes): pptx_to_deck reads them with the vision model and puts the result in outline[].vision = {status: ok | unconfirmed | failed | empty, text}. ok = a vision model really looked at it: write the narration as what the presenter most likely says about it, from that text (numbers and names exactly as read, the point of the chart in 1-3 sentences) and nothing the description does not support. unconfirmed = the description may not come from a vision model: treat it as weak and say so. failed / empty: do NOT invent a talk from the file name -- keep the picture, write a neutral narration only if the title says what it is, and list the slide as "not read". For pictures you imported yourself (a browser screenshot, an attachment) call interpret_image with a specific question (what text, numbers, axes, legend; what it shows; what is unclear) before writing about them. In the final answer always list which slides were written from vision, which from the author\'s own notes, and which could not be read.',
         'LEARNING FROM A MODEL (a .pptx, an earlier deck, or an existing skill such as a weekly-report skill): when the user gives one as the example to follow, READ IT FIRST and imitate its procedure and its shape, never only its look.',
@@ -19746,7 +19771,7 @@ const FaDeckTools = (function () {
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
-        'render_chart', 'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
+        'list_remote_machines', 'delegate_to_machine', 'render_chart', 'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
         'browser_status', 'browser_list_tabs', 'browser_create_tab', 'browser_navigate', 'browser_get_page_text', 'browser_get_page_structure', 'browser_screenshot', 'browser_close'];
 
     // ---------------------------------------------------------------- 掛到 FloatingAssistant 的方法
@@ -56506,7 +56531,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         inputText.value = '';
         if (suggestBar) suggestBar.style.display = 'none';
 
-        if (textToSend.startsWith('/')) {
+        const remoteSlash = !!(this._rg && this._rgTarget && /^\/media-presentation\s+\S/i.test(textToSend));
+        if (textToSend.startsWith('/') && !remoteSlash) {
             const firstToken = textToSend.split(/\s+/)[0].toLowerCase();
             const entry = this.slashCommands.get(firstToken);
             if (entry) {
@@ -56545,7 +56571,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
 
         // 遠端群組：這個對話選了「交給」其他機器，就把需求送過去（斜線指令仍在本機執行）
-        if (textToSend && !textToSend.startsWith('/') && this._rg && this._rgTarget) {
+        if (textToSend && (!textToSend.startsWith('/') || remoteSlash) && this._rg && this._rgTarget) {
             if (hasAttachments) { inputText.value = textToSend; this._pushAssistantMessage('⚠️ 交給其他機器目前只能傳文字（附件的傳輸下一階段開放）。請先移除附件，或把輸入框旁的「交給」改回本機。', null); this._renderMessageHistory(); return; }
             this._chatMarkTouched(textToSend);
             if (!this.commandHistory.includes(textToSend)) { this.commandHistory.unshift(textToSend); if (this.commandHistory.length > 50) this.commandHistory.pop(); localStorage.setItem(this.HISTORY_KEY, JSON.stringify(this.commandHistory)); }
@@ -59723,7 +59749,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         }
         return n ? { dir, files: n } : null;
     }
-    async _delegateToSubagentDomain(domainKey, task) {
+    async _delegateToSubagentDomain(domainKey, task, extra) {
+        extra = extra || {};
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
         // domain參數委派，不限於內建的SUBAGENT_DOMAIN_REGISTRY。
@@ -59748,10 +59775,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             const subResult = await this._runSubAgentTask(task, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
                 allowedToolNames: this._resolveDomainToolNames(domain),
-                meta: { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
+                meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
                 systemPrompt: this._resolveDomainSystemPrompt(domain) + skillDirNote,
-                onProgress: progress ? (status) => progress.update({ status }) : null,
-                onTrace: progress ? (line) => progress.log(line) : null,
+                onProgress: (status) => { if (progress) progress.update({ status }); if (extra.onProgress) extra.onProgress(status); },
+                onTrace: (line) => { if (progress) progress.log(line); if (extra.onTrace) extra.onTrace(line); },
+                shouldStop: extra.shouldStop,
             });
             if (progress) progress.finish('完成');
             return this._mergeSubAgentResultForDisplay({ domain: domainKey }, subResult);
