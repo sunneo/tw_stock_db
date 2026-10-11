@@ -19256,7 +19256,7 @@ const FaRemoteDispatch = (function () {
                 if (s.readonlySandbox && this.domains && this.domains.research) { opts.allowedToolNames = this._resolveDomainToolNames(this.domains.research); opts.systemPrompt = this._resolveDomainSystemPrompt(this.domains.research); }
                 progress('開始處理…', true);
                 this._rgHookFileCache(); const cap = []; const rg0 = this._rg; if (rg0) { rg0.captures = rg0.captures || new Set(); rg0.captures.add(cap); } job.cap = cap;
-                let res; const mp = !job.sub && /^\s*\/media-presentation\s+([\s\S]+)$/i.exec(job.text);
+                let res; const mp = !job.sub && /^\s*\/media-presentation\s+([\s\S]+)$/i.exec(this._rgStripLabel(job.text));
                 if (mp) {
                     if (s.readonlySandbox) throw new Error('這台機器設為「只允許唯讀與沙盒」，不能執行簡報技能（它會抓資料、存檔）');
                     const key = this._deckDomainKey(); if (!key) throw new Error('這台機器沒有「media-presentation」技能（被停用或刪除了）');
@@ -19417,6 +19417,8 @@ const FaRemoteDispatch = (function () {
             const ctx = await this._chatCtxLoad(b.id), msgs = await this._rgSerChat(ctx, m.from), last = msgs[msgs.length - 1], ver = msgs.length + ':' + (last ? last.t.length : 0) + ':' + msgs.filter((x) => x.refs).length + ':' + (ctx.isResponding ? 1 : 0);
             if (b.ver === ver) reply({ same: true, ver, running: !!ctx.isResponding }); else reply({ ver, msgs, title: en.title || '新對話', running: !!ctx.isResponding });
         },
+        // 貼上對話紀錄時常帶著說話者標籤（「You: /media-presentation …」「使用者：…」）：判斷是不是斜線指令前先去掉，否則整句被當成一般文字、指令不會執行
+        _rgStripLabel(text) { return String(text == null ? '' : text).trim().replace(/^(?:you|user|me|使用者|你|我)\s*[:：]\s*/i, ''); },
         async _rgOnChatSay(m) {
             const rg = this._rg; if (!rg) return; const b = m.body || {}, s = this._rgSettings(), who = this._rgTargetName(m.from) || m.from, en = this._chatEntry(b.id);
             const ack = (o) => rg.room.send(m.from, 'chat_ack', Object.assign({ rid: b.rid }, o)).catch(() => {});
@@ -19426,7 +19428,7 @@ const FaRemoteDispatch = (function () {
             const ctx = await this._chatCtxLoad(b.id); if (ctx.isResponding) { ack({ ok: false, error: '這個對話的 AI 正在執行中，請等它做完或先按停止' }); return; }
             this._rgLog(who + ' 在分享的對話「' + String(en.title || '').slice(0, 14) + '」裡接著對話'); ack({ ok: true });
             // 斜線指令與技能指令（所有已登錄的 /xxx）要照指令的方式執行，不能當成一般文字丟給 AI（否則 AI 只會口頭規劃、不會真的做）
-            const full = b.text.trim().slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
+            const full = this._rgStripLabel(b.text).slice(0, 8000), tok = full.startsWith('/') ? full.split(/\s+/)[0].toLowerCase() : '', slash = tok && this.slashCommands.get(tok);
             if (slash) {
                 const run = this._chatRunner(ctx); let argsText = full.slice(tok.length).trim();
                 try { run._setRespondingState(true, '⏳ 指令執行中：' + tok); } catch (_) { /* */ }
