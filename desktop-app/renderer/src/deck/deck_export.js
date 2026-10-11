@@ -98,8 +98,24 @@
   }
 
   // ------------------------------------------------------------------ MP4
+  // 匯出選項視窗用的樣式：這些 class 原本由 Redmine 那邊的 CSS 提供，這個專案裡沒有，視窗會變成沒樣式的表單掉在頁面最下面。
+  // 這裡自帶一份（只注入一次），視窗置中、蓋在所有東西上面。
+  function ensureDialogStyle() {
+    if (document.getElementById('dk-dialog-style')) { return; }
+    var s = document.createElement('style'); s.id = 'dk-dialog-style';
+    s.textContent = '.ai-chat-dialog-overlay{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}'
+      + '.ai-chat-dialog{width:min(420px,100%);max-height:90vh;overflow:auto;background:#fff;color:#222;border-radius:12px;padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:14px/1.5 sans-serif;box-sizing:border-box}'
+      + '.ai-chat-dialog h3{margin:0 0 12px;font-size:17px;color:#222}'
+      + '.ai-chat-dialog select,.ai-chat-dialog input[type=number]{padding:6px 8px;border:1px solid #bbb;border-radius:6px;background:#fff;color:#222;box-sizing:border-box;font:inherit}'
+      + '.ai-chat-dialog .block{display:block}'
+      + '.ai-chat-dialog-actions{display:flex;gap:8px;margin-top:14px}.ai-chat-dialog-actions-spacer{flex:1}'
+      + '.ai-chat-dialog-actions button{padding:6px 16px;border-radius:6px;border:1px solid #bbb;background:#f3f3f3;color:#222;cursor:pointer;font:inherit}'
+      + '.ai-chat-dialog-actions button:last-child{background:#76b900;border-color:#76b900;color:#fff;font-weight:bold}';
+    document.head.appendChild(s);
+  }
   function askMp4Options() {
     return new Promise(function (resolve) {
+      ensureDialogStyle();
       var overlay = document.createElement('div'); overlay.className = 'ai-chat-dialog-overlay';
       var dlg = document.createElement('div'); dlg.className = 'ai-chat-dialog';
       dlg.innerHTML = '<h3>匯出 MP4 影片</h3>' +
