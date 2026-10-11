@@ -137,6 +137,7 @@
     }
   };
   var TPL = null;
+  var ACTIVE_DECK_COLORS = null; // set while a deck with its own deck.colors is drawing (see scopedColors)
 
   function isPlain(o) { return o !== null && typeof o === 'object' && !Array.isArray(o); }
   function cloneJson(o) { return JSON.parse(JSON.stringify(o)); }
@@ -277,6 +278,7 @@
     if (!str(deck.title).trim()) { err('deck.title', 'required'); }
     if (str(deck.title).length > LIMITS.title) { err('deck.title', 'longer than ' + LIMITS.title + ' characters'); }
     if (deck.theme != null && typeof deck.theme !== 'string') { err('deck.theme', 'must be a string'); }
+    if (deck.colors != null) { checkDeckColors(deck.colors, err); }
     if (deck.speed != null && !(typeof deck.speed === 'number' && deck.speed >= 0.5 && deck.speed <= 2)) { err('deck.speed', 'must be a number between 0.5 and 2'); }
     if (deck.aspect != null && deck.aspect !== '16:9') { err('deck.aspect', 'only "16:9" is supported'); }
     if (deck.style != null && STYLES.indexOf(deck.style) < 0) { err('deck.style', 'must be flat or 3d'); }
@@ -655,6 +657,16 @@
       });
     });
   }
+  // deck.colors: this deck's own page-frame colours over the template (heading, body, accent, soft, dark, stripe, contentBg, titleText, subtitleBar, subtitleText).
+  var COLOR_KEYS = ['heading', 'body', 'accent', 'soft', 'dark', 'stripe', 'contentBg', 'titleText', 'subtitleBar', 'subtitleText', 'white'];
+  var COLOR_RE = /^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgba?(s*d{1,3}s*,s*d{1,3}s*,s*d{1,3}s*(,s*(0|1|0?.d+)s*)?))$/;
+  function checkDeckColors(c, err) {
+    if (!isObj(c)) { err('deck.colors', 'must be a mapping like {accent: "#FF8A65", contentBg: "#FFF4E6"}'); return; }
+    Object.keys(c).forEach(function (k) {
+      if (COLOR_KEYS.indexOf(k) < 0) { err('deck.colors.' + k, 'unknown colour; use one of ' + COLOR_KEYS.join(', ')); }
+      else if (!COLOR_RE.test(str(c[k]).trim())) { err('deck.colors.' + k, 'must be a colour like "#FF8A65" or "rgba(0,0,0,0.5)"'); }
+    });
+  }
   function checkQuizReferences(doc, warn) {
     var flat = [];
     (doc.chapters || []).forEach(function (ch, ci) { ((ch && ch.slides) || []).forEach(function (s, si) { if (isObj(s)) { flat.push({ path: 'chapters[' + ci + '].slides[' + si + ']', s: s }); } }); });
@@ -881,6 +893,7 @@
   //          makeCanvas(w,h) }
   function drawBackground(ctx, kind, assets) {
     var img = kind === 'title' ? assets.titleBg : (kind === 'topic' ? assets.topicBg : assets.contentBg);
+    if (ACTIVE_DECK_COLORS && (kind === 'content' ? ACTIVE_DECK_COLORS.contentBg : ACTIVE_DECK_COLORS.dark)) { img = null; } // the deck chose its own page colour: the template's background picture would hide it
     if (img) { ctx.drawImage(img, 0, 0, W, H); return; }
     ctx.fillStyle = kind === 'content' ? COLORS.contentBg : COLORS.dark;
     ctx.fillRect(0, 0, W, H);
@@ -890,7 +903,7 @@
   function drawTitleSlide(ctx, slide, sched, t, info) {
     drawBackground(ctx, 'title', info.assets);
     var lg = TPL.logo, tt = TPL.title;
-    if (info.assets.logo) { ctx.drawImage(info.assets.logo, lg.x, lg.y, lg.w, lg.h); }
+    if (info.assets.logo && !ACTIVE_DECK_COLORS) { ctx.drawImage(info.assets.logo, lg.x, lg.y, lg.w, lg.h); }
     var st = elementState(sched, 'title', t);
     withEffect(ctx, st, { x: tt.x, y: tt.y, w: tt.w, h: tt.h }, function () {
       ctx.fillStyle = COLORS.titleText; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
@@ -1491,6 +1504,15 @@
 
   applyTemplate(typeof self !== 'undefined' && self.AiChatDeckTemplate ? self.AiChatDeckTemplate : null);
 
+  // A deck with deck.colors is drawn with those colours (restored right after: other decks and the template stay as they were).
+  function scopedColors(fn) {
+    return function (ctx, deck) {
+      var c = deck && deck.deck && isObj(deck.deck.colors) && Object.keys(deck.deck.colors).length ? deck.deck.colors : null;
+      if (!c) { return fn.apply(this, arguments); }
+      var saved = {}, prevActive = ACTIVE_DECK_COLORS; Object.keys(c).forEach(function (k) { saved[k] = COLORS[k]; COLORS[k] = str(c[k]).trim(); }); ACTIVE_DECK_COLORS = c;
+      try { return fn.apply(this, arguments); } finally { Object.keys(saved).forEach(function (k) { COLORS[k] = saved[k]; }); ACTIVE_DECK_COLORS = prevActive; }
+    };
+  }
   var api = {
     STYLES: STYLES, ENVIRONMENTS: ENVIRONMENTS, FLAT_OF: FLAT_OF, STAGE_TRANSITIONS: STAGE_TRANSITIONS,
     W: W, H: H, KIND: KIND, LIMITS: LIMITS, LAYOUTS: LAYOUTS, VISUAL_KINDS: VISUAL_KINDS, TRANSITIONS: TRANSITIONS, IN_EFFECTS: IN_EFFECTS, MOTIONS: MOTIONS,
@@ -1500,7 +1522,7 @@
     parseAt: parseAt, parseTarget: parseTarget, validate: validate, normalize: normalize, parseDeck: parseDeck,
     visualImageSources: visualImageSources, visualRect: visualRect, interactiveRegions: interactiveRegions, boxRect: boxRect, INTERACTIVE_KINDS: INTERACTIVE_KINDS,
     timingFor: timingFor, buildTimeline: buildTimeline, locate: locate, cueSchedule: cueSchedule, elementState: elementState,
-    wrapLines: wrapLines, drawSlide: drawSlide, drawTransition: drawTransition, renderFrame: renderFrame,
+    wrapLines: wrapLines, drawSlide: scopedColors(drawSlide), drawTransition: drawTransition, renderFrame: scopedColors(renderFrame),
     fixMermaidSource: fixMermaidSource, findModel: findModel, stageSlide: stageSlide, renderStageSnapshot: renderStageSnapshot, renderViewportSnapshot: renderViewportSnapshot, viewportSlide: viewportSlide, viewportOf: viewportOf, cameraShots: cameraShots, renderStageFlatLayer: renderStageFlatLayer, renderVisualSnapshot: renderVisualSnapshot, buildSubtitleFile: buildSubtitleFile, fmtTime: fmtTime
   };
   // the font follows the template (applyTemplate replaces it)
