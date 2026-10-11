@@ -218,7 +218,7 @@ const FaDeckTools = (function () {
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
         // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
-        'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
+        'render_chart', 'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
         'browser_status', 'browser_list_tabs', 'browser_create_tab', 'browser_navigate', 'browser_get_page_text', 'browser_get_page_structure', 'browser_screenshot', 'browser_close'];
 
     // ---------------------------------------------------------------- 掛到 FloatingAssistant 的方法
@@ -340,6 +340,73 @@ const FaDeckTools = (function () {
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
             return { ok: true, ref: entry ? entry.ref : null, url: 'client-file/' + id, source: label };
         },
+        // pptx 的原生圖表：從圖表檔（ppt/charts/chartN.xml）讀出類型、標題、類別與各系列的數值
+        _pptxChartData(doc) {
+            const tag = (el, n) => Array.from(el.getElementsByTagName(n));
+            const plot = tag(doc, 'c:plotArea')[0]; if (!plot) return null;
+            const KINDS = { 'c:barChart': 'bar', 'c:bar3DChart': 'bar', 'c:lineChart': 'line', 'c:line3DChart': 'line', 'c:pieChart': 'pie', 'c:pie3DChart': 'pie', 'c:doughnutChart': 'pie', 'c:areaChart': 'area', 'c:area3DChart': 'area', 'c:scatterChart': 'scatter', 'c:radarChart': 'radar', 'c:bubbleChart': 'bubble' };
+            let node = null, type = ''; for (const k of Object.keys(KINDS)) { const e = tag(plot, k)[0]; if (e) { node = e; type = KINDS[k]; break; } }
+            if (!node) return null;
+            const pts = (el) => { const out = []; if (!el) return out; for (const pt of tag(el, 'c:pt')) { const i = Number(pt.getAttribute('idx')), v = pt.getElementsByTagName('c:v')[0]; out[i] = v ? v.textContent : ''; } return out; };
+            const series = tag(node, 'c:ser').map((s, i) => {
+                const tx = tag(s, 'c:tx')[0], nm = tx && tag(tx, 'c:v')[0], cat = tag(s, 'c:cat')[0] || tag(s, 'c:xVal')[0], val = tag(s, 'c:val')[0] || tag(s, 'c:yVal')[0];
+                return { name: (nm && nm.textContent) || ('系列 ' + (i + 1)), cats: pts(cat), vals: pts(val).map((v) => (v === undefined || v === '' ? null : Number(v))) };
+            });
+            if (!series.length || !series.some((s) => s.vals.some((v) => v != null && isFinite(v)))) return null;
+            const cats = (series[0].cats.length ? series[0].cats : series[0].vals).map((c, i) => (series[0].cats.length ? (c == null ? '' : String(c)) : String(i + 1)));
+            const dir = tag(node, 'c:barDir')[0], grp = tag(node, 'c:grouping')[0], chartEl = tag(doc, 'c:chart')[0];
+            const tEl = chartEl && Array.from(chartEl.children).find((e) => e.nodeName === 'c:title');
+            return { type, horizontal: !!dir && dir.getAttribute('val') === 'bar', grouping: grp ? grp.getAttribute('val') : 'clustered', title: tEl ? tag(tEl, 'a:t').map((t) => t.textContent).join('') : '', cats, series: series.map((s) => ({ name: s.name, vals: s.vals })) };
+        },
+        // 圖表資料畫成 SVG（長條、折線、面積、圓餅；其他類型回空字串，由呼叫端改成資料表）
+        _chartSvg(ch, pal) {
+            if (!['bar', 'line', 'area', 'pie'].includes(ch.type)) return '';
+            const W = 960, H = 540, F = ' font-family="Microsoft JhengHei,Noto Sans CJK TC,sans-serif"';
+            const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), col = (i) => pal[i % pal.length];
+            const fmt = (v) => (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : String(Math.round(v * 100) / 100));
+            const nice = (max) => { if (max <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(max))), f = max / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
+            let g = '<rect width="' + W + '" height="' + H + '" fill="#FFFFFF"/>'; const top = ch.title ? 58 : 26;
+            if (ch.title) g += '<text x="' + (W / 2) + '" y="38" text-anchor="middle" font-size="26" font-weight="bold" fill="#222"' + F + '>' + esc(ch.title) + '</text>';
+            const S = ch.series, N = ch.cats.length;
+            if (ch.type === 'pie') {
+                const vals = S[0].vals.map((v) => Math.max(0, v || 0)), sum = vals.reduce((a, b) => a + b, 0) || 1, cx = 300, cy = top + (H - top - 20) / 2, r = Math.min(190, (H - top - 40) / 2); let a0 = -Math.PI / 2;
+                vals.forEach((v, i) => { const a1 = a0 + (v / sum) * Math.PI * 2, large = a1 - a0 > Math.PI ? 1 : 0, x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0), x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+                    if (v > 0) { g += vals.filter((q) => q > 0).length === 1 ? '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + col(i) + '"/>' : '<path d="M' + cx + ',' + cy + ' L' + x0.toFixed(1) + ',' + y0.toFixed(1) + ' A' + r + ',' + r + ' 0 ' + large + ' 1 ' + x1.toFixed(1) + ',' + y1.toFixed(1) + ' Z" fill="' + col(i) + '" stroke="#fff" stroke-width="2"/>';
+                        if (v / sum > 0.04) { const am = (a0 + a1) / 2; g += '<text x="' + (cx + r * 0.65 * Math.cos(am)).toFixed(1) + '" y="' + (cy + r * 0.65 * Math.sin(am) + 6).toFixed(1) + '" text-anchor="middle" font-size="18" font-weight="bold" fill="#fff"' + F + '>' + Math.round(v / sum * 100) + '%</text>'; } }
+                    a0 = a1; });
+                ch.cats.slice(0, 14).forEach((c, i) => { const y = top + 20 + i * 30; g += '<rect x="560" y="' + (y - 14) + '" width="18" height="18" fill="' + col(i) + '"/><text x="588" y="' + y + '" font-size="18" fill="#333"' + F + '>' + esc(String(c).slice(0, 18)) + '（' + fmt(vals[i] || 0) + '）</text>'; });
+                return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + g + '</svg>';
+            }
+            const stacked = ch.type === 'bar' && /stacked/i.test(ch.grouping), legend = S.length > 1, x0 = ch.type === 'bar' && ch.horizontal ? 160 : 96, x1 = W - 50, y0 = top + 8, y1 = H - (legend ? 82 : 52);
+            let lo = 0, hi = 0;
+            if (stacked) { for (let i = 0; i < N; i++) { let pos = 0, neg = 0; S.forEach((s) => { const v = s.vals[i] || 0; if (v >= 0) pos += v; else neg += v; }); hi = Math.max(hi, pos); lo = Math.min(lo, neg); } }
+            else S.forEach((s) => s.vals.forEach((v) => { if (v != null && isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); } }));
+            const step = nice((hi - lo) / 5 || 1); hi = Math.ceil(hi / step) * step; lo = Math.floor(lo / step) * step; if (hi === lo) hi = lo + step;
+            const horiz = ch.type === 'bar' && ch.horizontal, vx = (v) => x0 + (v - lo) / (hi - lo) * (x1 - x0), vy = (v) => y1 - (v - lo) / (hi - lo) * (y1 - y0);
+            const gw = horiz ? (y1 - y0) / N : (x1 - x0) / N, fs = N > 10 ? 12 : 16;
+            for (let t = lo; t <= hi + step / 2; t += step) {
+                if (horiz) g += '<line x1="' + vx(t) + '" y1="' + y0 + '" x2="' + vx(t) + '" y2="' + y1 + '" stroke="#DDD"/><text x="' + vx(t) + '" y="' + (y1 + 22) + '" text-anchor="middle" font-size="14" fill="#555"' + F + '>' + fmt(t) + '</text>';
+                else g += '<line x1="' + x0 + '" y1="' + vy(t) + '" x2="' + x1 + '" y2="' + vy(t) + '" stroke="#DDD"/><text x="' + (x0 - 8) + '" y="' + (vy(t) + 5) + '" text-anchor="end" font-size="14" fill="#555"' + F + '>' + fmt(t) + '</text>';
+            }
+            ch.cats.forEach((c, i) => { const label = esc(String(c).slice(0, horiz ? 10 : 12)); if (horiz) g += '<text x="' + (x0 - 8) + '" y="' + (y0 + gw * (i + 0.5) + 5) + '" text-anchor="end" font-size="' + fs + '" fill="#333"' + F + '>' + label + '</text>'; else { const cx = x0 + gw * (i + 0.5), cy = y1 + 24; g += N > 10 ? '<text transform="translate(' + cx + ',' + cy + ') rotate(-35)" text-anchor="end" font-size="' + fs + '" fill="#333"' + F + '>' + label + '</text>' : '<text x="' + cx + '" y="' + cy + '" text-anchor="middle" font-size="' + fs + '" fill="#333"' + F + '>' + label + '</text>'; } });
+            if (ch.type === 'bar') {
+                const base = Math.max(lo, Math.min(0, hi)), bw = stacked ? gw * 0.6 : gw * 0.72 / S.length;
+                for (let i = 0; i < N; i++) { let pos = 0, neg = 0; S.forEach((s, si) => { const v = s.vals[i]; if (v == null || !isFinite(v)) return; let a, b;
+                    if (stacked) { if (v >= 0) { a = pos; b = pos + v; pos = b; } else { a = neg; b = neg + v; neg = b; } } else { a = base; b = v; }
+                    const off = stacked ? gw * 0.2 : gw * 0.14 + si * bw;
+                    if (horiz) g += '<rect x="' + Math.min(vx(a), vx(b)).toFixed(1) + '" y="' + (y0 + gw * i + off).toFixed(1) + '" width="' + Math.abs(vx(b) - vx(a)).toFixed(1) + '" height="' + bw.toFixed(1) + '" fill="' + col(si) + '"/>';
+                    else g += '<rect x="' + (x0 + gw * i + off).toFixed(1) + '" y="' + Math.min(vy(a), vy(b)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.abs(vy(b) - vy(a)).toFixed(1) + '" fill="' + col(si) + '"/>';
+                    if (!stacked && N * S.length <= 24) g += horiz ? '<text x="' + (vx(b) + 6).toFixed(1) + '" y="' + (y0 + gw * i + off + bw / 2 + 5).toFixed(1) + '" font-size="14" fill="#333"' + F + '>' + fmt(v) + '</text>' : '<text x="' + (x0 + gw * i + off + bw / 2).toFixed(1) + '" y="' + (vy(b) - 6).toFixed(1) + '" text-anchor="middle" font-size="14" fill="#333"' + F + '>' + fmt(v) + '</text>'; }); }
+            } else {
+                S.forEach((s, si) => { const p = s.vals.map((v, i) => (v == null || !isFinite(v) ? null : [x0 + gw * (i + 0.5), vy(v)])).filter(Boolean); if (!p.length) return;
+                    if (ch.type === 'area') g += '<polygon points="' + p.map((q) => q[0].toFixed(1) + ',' + q[1].toFixed(1)).concat([p[p.length - 1][0].toFixed(1) + ',' + vy(Math.max(lo, 0)).toFixed(1), p[0][0].toFixed(1) + ',' + vy(Math.max(lo, 0)).toFixed(1)]).join(' ') + '" fill="' + col(si) + '" fill-opacity="0.45"/>';
+                    g += '<polyline points="' + p.map((q) => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ') + '" fill="none" stroke="' + col(si) + '" stroke-width="4"/>';
+                    p.forEach((q, k) => { g += '<circle cx="' + q[0].toFixed(1) + '" cy="' + q[1].toFixed(1) + '" r="5" fill="' + col(si) + '"/>'; if (N * S.length <= 24) g += '<text x="' + q[0].toFixed(1) + '" y="' + (q[1] - 12).toFixed(1) + '" text-anchor="middle" font-size="14" fill="#333"' + F + '>' + fmt(s.vals.filter((v, i) => v != null && isFinite(v))[k]) + '</text>'; }); });
+            }
+            g += '<line x1="' + x0 + '" y1="' + y1 + '" x2="' + x1 + '" y2="' + y1 + '" stroke="#888"/>';
+            if (legend) S.slice(0, 8).forEach((s, i) => { const lx = x0 + i * Math.min(170, (x1 - x0) / Math.min(S.length, 8)); g += '<rect x="' + lx + '" y="' + (H - 36) + '" width="16" height="16" fill="' + col(i) + '"/><text x="' + (lx + 22) + '" y="' + (H - 23) + '" font-size="15" fill="#333"' + F + '>' + esc(String(s.name).slice(0, 12)) + '</text>'; });
+            return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + g + '</svg>';
+        },
         // ---------------------------------------------------------------- 讀懂 pptx：把 pptx 轉成簡報草稿（deck YAML）與結構摘要
         // 讀順序、章節（pptx 的「節」）、每頁標題／內文／表格／圖片／內嵌影片、講者備忘稿，並回報主題色與字型，讓模型照著原來的結構與風格重做。
         async _pptxToDeck(record, opts) {
@@ -364,7 +431,9 @@ const FaDeckTools = (function () {
             const IMG = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }, VID = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', ogv: 'video/ogg' };
             const paraText = (p) => tag(p, 'a:t').map((t) => t.textContent).join('').replace(/\s+/g, ' ').trim();
             const paras = (sp) => tag(sp, 'a:p').map((p) => ({ t: paraText(p) })).filter((p) => p.t).map((p) => p.t);
-            const slides = [], outline = []; let imgCount = 0, vidCount = 0, chartCount = 0, noteCount = 0;
+            const slides = [], outline = []; let imgCount = 0, vidCount = 0, chartCount = 0, chartDone = 0, noteCount = 0;
+            const PALETTE = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47', '#264478', '#9E480E'];
+            { const tx0 = await rd('ppt/theme/theme1.xml'); if (tx0) { const td0 = parse(tx0), acc = []; for (const c of ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6']) { const e = tag(td0, 'a:' + c)[0], v = e && e.getElementsByTagName('a:srgbClr')[0]; if (v && v.getAttribute('val')) acc.push('#' + v.getAttribute('val')); } if (acc.length >= 3) PALETTE.splice(0, acc.length, ...acc); } }
             const base = String(record.filename || 'slides').replace(/\.pptx$/i, '');
             for (let si = 0; si < sldIds.length && slides.length < max; si++) {
                 const rel = presRels[sldIds[si].rid]; if (!rel) continue; const part = resolve('ppt/presentation.xml', rel.target), xml = await rd(part); if (!xml) continue;
@@ -381,7 +450,8 @@ const FaDeckTools = (function () {
                     if (v && rels[v.getAttribute('r:link')]) vids.push(resolve(part, rels[v.getAttribute('r:link')].target));
                     else if (b && rels[b.getAttribute('r:embed')]) pics.push(resolve(part, rels[b.getAttribute('r:embed')].target));
                 }
-                const chart = tag(sx, 'c:chart').length; chartCount += chart;
+                const chartTags = tag(sx, 'c:chart').length, charts = []; chartCount += chartTags;
+                for (const cr of Object.values(rels).filter((r) => /\/chart$/.test(r.type))) { const cx = await rd(resolve(part, cr.target)); if (cx) { const cd = this._pptxChartData(parse(cx)); if (cd) charts.push(cd); } }
                 let notes = ''; const nrel = Object.values(rels).find((r) => /\/notesSlide$/.test(r.type));
                 if (nrel) { const nx = await rd(resolve(part, nrel.target)); if (nx) { const nd = parse(nx); notes = tag(nd, 'p:sp').filter((sp) => { const ph = tag(sp, 'p:ph')[0]; return ph && ph.getAttribute('type') === 'body'; }).map((sp) => paras(sp).join(' ')).join(' ').trim(); } }
                 if (notes) noteCount++;
@@ -389,7 +459,7 @@ const FaDeckTools = (function () {
                 if (lrel) { const lx = await rd(resolve(part, lrel.target)); if (lx) { const m = /<p:cSld[^>]*\sname="([^"]*)"/.exec(lx); layoutName = m ? m[1] : ''; } }
                 const sl = { title: (title.join(' ') || body.shift() || other.shift() || '（無標題 ' + n + '）').slice(0, 120) };
                 const bullets = body.concat(other).map((t) => t.slice(0, 220));
-                if (bullets.length > 6) { warnings.push('第 ' + n + ' 頁有 ' + bullets.length + ' 條內文，只留前 6 條（其餘放進講者備忘）'); notes = (notes ? notes + ' ' : '') + bullets.slice(6).join('；'); }
+                let moreBullets = [], tableMore = [], tableHead = null;
                 let kind = 'text', visual = null;
                 if (vids.length) {
                     const p = vids[0], ext = (p.split('.').pop() || '').toLowerCase(), entry = zip.file(p);
@@ -399,9 +469,19 @@ const FaDeckTools = (function () {
                 if (!visual && tables.length) {
                     const t = tables[0].filter((r) => r.length); if (t.length) {
                         let head = t[0], rows = t.slice(1); if (head.length > 8) { warnings.push('第 ' + n + ' 頁的表格超過 8 欄，只留前 8 欄'); head = head.slice(0, 8); rows = rows.map((r) => r.slice(0, 8)); }
-                        if (rows.length > 12) { warnings.push('第 ' + n + ' 頁的表格有 ' + rows.length + ' 列，只留前 12 列'); rows = rows.slice(0, 12); }
-                        visual = { kind: 'table', header: head.map((c) => c.slice(0, 120)), rows: rows.map((r) => head.map((_, i) => String(r[i] || '').slice(0, 120))) }; kind = 'table';
+                        const clean = (rs) => rs.map((r) => head.map((_, i) => String(r[i] || '').slice(0, 120)));
+                        if (rows.length > 12) { tableMore = clean(rows.slice(12)); rows = rows.slice(0, 12); }
+                        visual = { kind: 'table', header: head.map((c) => c.slice(0, 120)), rows: clean(rows) }; kind = 'table'; tableHead = visual.header;
                     }
+                }
+                if (!visual && charts.length) {
+                    const ch = charts[0], svg = this._chartSvg(ch, PALETTE);
+                    if (svg) { visual = { kind: 'svg', svg }; kind = 'chart'; chartDone++; }
+                    else if (ch.cats.length && ch.series.length && ch.cats.length <= 12 && ch.series.length <= 7) {
+                        visual = { kind: 'table', header: [ch.title || '圖表資料'].concat(ch.series.map((s) => s.name)).map((c) => String(c).slice(0, 60)), rows: ch.cats.map((c, i) => [String(c).slice(0, 60)].concat(ch.series.map((s) => String(s.vals[i] == null ? '' : s.vals[i])))) }; kind = 'table'; chartDone++;
+                        warnings.push('第 ' + n + ' 頁的圖表類型「' + ch.type + '」畫不出來，改成資料表');
+                    }
+                    if (charts.length > 1) warnings.push('第 ' + n + ' 頁有 ' + charts.length + ' 個圖表，只匯入第一個');
                 }
                 if (!visual && pics.length) {
                     const refs = [];
@@ -413,17 +493,22 @@ const FaDeckTools = (function () {
                     }
                     if (refs.length) { visual = refs.length === 1 ? { kind: 'image', src: refs[0] } : { kind: 'image', images: refs.map((src) => ({ src })) }; kind = 'picture'; }
                 }
-                if (chart) warnings.push('第 ' + n + ' 頁有 ' + chart + ' 個圖表，資料沒有匯入（請用 render_chart 重做，或用這頁的截圖）');
+                if (chartTags > charts.length) warnings.push('第 ' + n + ' 頁有 ' + (chartTags - charts.length) + ' 個圖表讀不出資料（可能是嵌入的 Excel 物件或不支援的圖表類型）');
                 if (!visual && kind === 'text' && !bullets.length && !subtitle.length) kind = 'heading';
                 if (si === 0 && !visual && (subtitle.length || bullets.length <= 2)) { sl.layout = 'title'; const subs = subtitle.concat(bullets).slice(0, 2); if (subs.length) sl.subtitle = subs.join(' ').slice(0, 200); bullets.length = 0; }
                 else if (kind === 'heading') sl.layout = 'topic';
                 if (subtitle.length && sl.layout !== 'title') bullets.unshift(subtitle.join(' ').slice(0, 220));
-                if (bullets.length && sl.layout !== 'title') sl.bullets = bullets.slice(0, 6);
+                if (bullets.length > 6 && sl.layout !== 'title') moreBullets = bullets.splice(6);
+                if (bullets.length && sl.layout !== 'title') sl.bullets = bullets.slice();
                 if (visual) sl.visual = visual;
                 if (mode === 'notes' && notes) sl.narration = notes.slice(0, 1200); else if (mode === 'bullets' && sl.bullets) sl.narration = sl.bullets.join('。').slice(0, 1200) + '。';
                 if (notes && mode !== 'notes') sl.notes = notes.slice(0, 1200);
-                slides.push({ section: sectionOf[sldIds[si].id] || '', sl });
-                outline.push({ n, title: sl.title, layout_in_pptx: layoutName, imported_as: sl.layout || (visual ? visual.kind : 'content'), bullets: (sl.bullets || []).length, notes: !!notes, pictures: pics.length, tables: tables.length, video: vids.length, charts: chart });
+                const sec = sectionOf[sldIds[si].id] || '', baseTitle = sl.title;
+                if (tableMore.length) { const parts = Math.ceil(tableMore.length / 12); sl.title = baseTitle.slice(0, 100) + ' (1/' + (parts + 1) + ')'; warnings.push('第 ' + n + ' 頁的表格有 ' + (tableMore.length + 12) + ' 列，分成 ' + (parts + 1) + ' 頁'); }
+                slides.push({ section: sec, sl });
+                for (let k = 0; k * 12 < tableMore.length; k++) slides.push({ section: sec, sl: { title: baseTitle.slice(0, 100) + ' (' + (k + 2) + '/' + (Math.ceil(tableMore.length / 12) + 1) + ')', visual: { kind: 'table', header: tableHead, rows: tableMore.slice(k * 12, k * 12 + 12) } } });
+                if (moreBullets.length) { warnings.push('第 ' + n + ' 頁有 ' + (moreBullets.length + 6) + ' 條內文，超過 6 條的分成續頁'); for (let k = 0; k < moreBullets.length; k += 6) slides.push({ section: sec, sl: { title: baseTitle.slice(0, 100) + '（續）', bullets: moreBullets.slice(k, k + 6) } }); }
+                outline.push({ n, title: sl.title, layout_in_pptx: layoutName, imported_as: sl.layout || (visual ? visual.kind : 'content'), bullets: (sl.bullets || []).length, notes: !!notes, pictures: pics.length, tables: tables.length, video: vids.length, charts: charts.length });
             }
             if (!slides.length) return { ok: false, error: '這個 pptx 裡沒有讀到任何投影片' };
             const chapters = []; let cur = null;
@@ -432,7 +517,7 @@ const FaDeckTools = (function () {
             const theme = {}; const tx = await rd('ppt/theme/theme1.xml');
             if (tx) { const td = parse(tx); theme.colors = {}; for (const c of ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6']) { const e = tag(td, 'a:' + c)[0]; const v = e && (e.getElementsByTagName('a:srgbClr')[0] || e.getElementsByTagName('a:sysClr')[0]); if (v) theme.colors[c] = v.getAttribute('val') || v.getAttribute('lastClr'); } const mj = tag(td, 'a:majorFont')[0], mn = tag(td, 'a:minorFont')[0]; theme.fonts = { heading: mj && mj.getElementsByTagName('a:latin')[0] ? mj.getElementsByTagName('a:latin')[0].getAttribute('typeface') : '', body: mn && mn.getElementsByTagName('a:latin')[0] ? mn.getElementsByTagName('a:latin')[0].getAttribute('typeface') : '' }; }
             const doc = { deck: { title: String(opts.title || base).slice(0, 120), lang: opts.lang || 'zh-TW' }, chapters };
-            return { ok: true, source: record.filename, slide_count: slides.length, chapter_count: chapters.length, pictures_imported: imgCount, videos_imported: vidCount, charts_not_imported: chartCount, slides_with_notes: noteCount, narration_from: mode, theme, outline, warnings, yaml: window.jsyaml.dump(doc, { lineWidth: 120, noRefs: true }) };
+            return { ok: true, source: record.filename, slide_count: slides.length, chapter_count: chapters.length, pictures_imported: imgCount, videos_imported: vidCount, charts_imported: chartDone, charts_not_imported: chartCount - chartDone, slides_with_notes: noteCount, narration_from: mode, theme, outline, warnings, yaml: window.jsyaml.dump(doc, { lineWidth: 120, noRefs: true }) };
         },
         _registerDeckTools(registerOptional) {
             const parse = async (raw) => { try { return await this.repairJsonPayload(String(raw || '{}')); } catch (_) { return {}; } };
@@ -504,6 +589,21 @@ const FaDeckTools = (function () {
                     const src = await this._resolveTerminalCopySource(String(a.ref || ''));
                     const mime = /^image\//.test(src.mimeType) ? src.mimeType : (({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' })[String(src.filename).split('.').pop().toLowerCase()] || '');
                     return this._deckImportImageBlob(new Blob([src.bytes], { type: mime }), String(src.sourceLabel || src.filename), 'import_fap_image');
+                });
+            tool('render_chart',
+                'Draw a chart from data and get it as a picture: bar (vertical columns, or horizontal), line, area or pie. Returns the chart (shown to the user) and "url" -- use it in a deck as a visual {kind: chart, src: <url>} (see get_presentation_topic("visuals")). Give "categories" (the x-axis labels, <= 40) and "series" (<= 8 lines of {name, values: [numbers, same length as categories]}); a pie uses the first series only. stacked: true stacks the series of a bar chart; horizontal: true lays a bar chart on its side. Use it for real numbers from the sources (a table, a report, a pptx chart) -- never for made-up data.',
+                obj({ type: { type: 'string', enum: ['bar', 'column', 'line', 'area', 'pie'] }, title: { type: 'string' }, categories: { type: 'array', items: { type: 'string' } }, series: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, values: { type: 'array', items: { type: 'number' } } }, required: ['name', 'values'] } }, stacked: { type: 'boolean' }, horizontal: { type: 'boolean' }, colors: { type: 'array', items: { type: 'string', description: 'hex colours like #4472C4' } } }, ['type', 'categories', 'series']),
+                async function (a) {
+                    const cats = Array.isArray(a.categories) ? a.categories.map((c) => String(c)).slice(0, 40) : [], ser = Array.isArray(a.series) ? a.series.slice(0, 8) : [];
+                    if (!cats.length) return { ok: false, error: 'categories is required (the labels of the x-axis)' }; if (!ser.length) return { ok: false, error: 'series is required: [{name, values: [...]}]' };
+                    const series = ser.map((s, i) => ({ name: String((s && s.name) || ('系列 ' + (i + 1))), vals: cats.map((_, k) => { const v = s && Array.isArray(s.values) ? Number(s.values[k]) : NaN; return isFinite(v) ? v : null; }) }));
+                    if (!series.some((s) => s.vals.some((v) => v != null))) return { ok: false, error: 'series[].values must be numbers' };
+                    const type = a.type === 'column' ? 'bar' : String(a.type || 'bar'); if (!['bar', 'line', 'area', 'pie'].includes(type)) return { ok: false, error: 'type must be bar, column, line, area or pie' };
+                    const pal = (Array.isArray(a.colors) ? a.colors : []).filter((c) => /^#[0-9a-f]{3,8}$/i.test(String(c))).concat(['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47', '#264478', '#9E480E']);
+                    const svg = this._chartSvg({ type, horizontal: !!a.horizontal, grouping: a.stacked ? 'stacked' : 'clustered', title: String(a.title || ''), cats, series }, pal);
+                    if (!svg) return { ok: false, error: 'could not draw that chart' };
+                    const blob = new Blob([svg], { type: 'image/svg+xml' }), id = await this.fileCache.put('chart-' + Date.now().toString(36) + '.svg', 'image/svg+xml', blob, 'generated');
+                    return { type: 'drawing', svg, ok: true, url: 'client-file/' + id, file_id: id, note: 'in a deck: visual: {kind: chart, src: "client-file/' + id + '"}' };
                 });
             tool('pptx_to_deck',
                 'Read a .pptx the user uploaded (file_id from list_uploaded_files) and understand it: returns a draft deck YAML (slide order, sections as chapters, titles, bullets, tables, pictures, embedded videos, speaker notes as narration), an outline of every slide (what it held and how it was imported), the theme colours and fonts, and warnings for what could not be imported (charts, unsupported picture formats, over-long tables). Pictures are imported and referenced by handle. Use it to (a) turn a pptx into a playable deck, or (b) learn the STRUCTURE and STYLE of a model pptx (for example last week\'s report) so the new deck follows it: same sections, same slide order, a table where it had a table, a screenshot where it had a screenshot. Edit the returned yaml as needed and call render_presentation. narration: "notes" (default: speaker notes are spoken), "bullets" (the bullets are read out) or "none" (silent slides).',
