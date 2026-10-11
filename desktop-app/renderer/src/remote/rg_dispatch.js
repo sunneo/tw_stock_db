@@ -121,6 +121,34 @@ const FaRemoteDispatch = (function () {
             const pulled = await this._rgPullRefs({ targetId: target.nodeId, targetName: target.name }, r.refs || []).catch(() => ({ images: [], texts: [], skipped: [] }));
             return { ok: true, machine: target.name, result: r.text || '', images: pulled.images, texts: pulled.texts, not_fetched: pulled.skipped.length ? pulled.skipped : undefined, note: pulled.images.length || pulled.texts.length ? '對方產生的圖片已經存到這台（url 是 client-file/<id>，簡報的 image / chart 視覺可以直接用；有 ref 的用 ref），文字檔內容在 texts 裡' : ((r.refs || []).length ? '對方產生了檔案，但沒有圖片或文字檔可以直接取回' : undefined) };
         },
+        // 全螢幕的進度視窗（do-modal）：遠端檔案按「開啟」「存到這邊」之後，整個畫面被擋住、顯示進度條與取消鈕，
+        // 不會讓人以為沒反應而連點好幾次。回傳 {update(done, total, via), fail(msg), close()}；onCancel 在按取消（或 Esc）時呼叫。
+        _rgProgressModal(title, onCancel) {
+            const pal = this._getThemePalette(), e = (s) => this._escapeHtml(String(s)), t0 = Date.now(); let closed = false, cancelling = false, failed = false;
+            const ov = document.createElement('div'); ov.setAttribute('data-rg-modal', '1'); ov.style.cssText = 'position:fixed; inset:0; z-index:1000003; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; cursor:wait;';
+            ov.innerHTML = '<div style="width:min(460px,92vw); box-sizing:border-box; padding:18px 20px; border-radius:12px; background:' + pal.windowBg + '; color:' + pal.chatText + '; border:1px solid ' + pal.windowBorder + '; box-shadow:0 10px 40px rgba(0,0,0,.5); cursor:default; font-size:13px;">'
+                + '<div data-m="title" style="font-weight:bold; font-size:15px; margin-bottom:12px; overflow-wrap:anywhere;">' + e(title) + '</div>'
+                + '<div style="height:12px; border-radius:6px; background:rgba(128,128,128,.28); overflow:hidden;"><div data-m="bar" style="height:100%; width:30%; border-radius:6px; background:#76b900; transition:width .15s linear;"></div></div>'
+                + '<div data-m="text" style="margin:8px 0 14px; min-height:34px; opacity:.9; line-height:1.5;">連線中…（等對方回應）</div>'
+                + '<div style="display:flex; justify-content:flex-end; gap:8px;"><button type="button" data-m="btn" style="padding:6px 16px; border-radius:6px; cursor:pointer; border:1px solid ' + pal.inputBorder + '; background:transparent; color:' + pal.chatText + ';">取消</button></div></div>';
+            const q = (n) => ov.querySelector('[data-m="' + n + '"]'), bar = q('bar'); let wait = 0;
+            // 還沒有進度時讓進度條來回掃動，表示有在動
+            const sweep = setInterval(() => { if (closed || bar.dataset.det) return; wait = (wait + 4) % 140; bar.style.width = '30%'; bar.style.marginLeft = (wait - 30) + '%'; }, 60);
+            const close = () => { if (closed) return; closed = true; clearInterval(sweep); document.removeEventListener('keydown', onKey, true); ov.remove(); };
+            const doCancel = () => { if (closed || cancelling || failed) return; cancelling = true; q('btn').disabled = true; q('btn').textContent = '取消中…'; q('text').textContent = '正在取消…'; try { onCancel && onCancel(); } catch (_) { /* */ } };
+            const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); ev.preventDefault(); if (failed) close(); else doCancel(); } else if (ev.key === 'Tab') ev.preventDefault(); };
+            q('btn').addEventListener('click', doCancel); document.addEventListener('keydown', onKey, true); document.body.appendChild(ov); q('btn').focus();
+            const mb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B');
+            return {
+                update: (done, total, via) => {
+                    if (closed || cancelling) return; const sec = Math.max(0.5, (Date.now() - t0) / 1000), pct = total ? Math.min(100, Math.round(done / total * 100)) : 0, rate = done / sec;
+                    bar.dataset.det = '1'; bar.style.marginLeft = '0'; bar.style.width = Math.max(2, pct) + '%';
+                    q('text').innerHTML = pct + '%　' + mb(done) + (total ? ' / ' + mb(total) : '') + (via ? '　（' + e(via) + '）' : '') + (rate > 1024 && total ? '<br><span style="opacity:.75;">' + mb(rate) + '/秒　剩約 ' + Math.max(1, Math.round((total - done) / rate)) + ' 秒</span>' : '');
+                },
+                fail: (msg) => { if (closed) return; failed = true; clearInterval(sweep); bar.dataset.det = '1'; bar.style.marginLeft = '0'; bar.style.background = '#f87171'; bar.style.width = '100%'; q('text').innerHTML = '<span style="color:#f87171; font-weight:bold;">失敗</span>：' + e(msg); const b = q('btn'); b.disabled = false; b.textContent = '關閉'; b.onclick = close; b.focus(); ov.style.cursor = 'default'; },
+                close,
+            };
+        },
         // 把對方這次產生的內容取回來：圖片（每張 6MB 內、最多 8 張）存進本機檔案快取，文字檔（200KB 內）直接讀成文字；其他種類只列名稱
         async _rgPullRefs(group, refs) {
             const out = { images: [], texts: [], skipped: [] }; group = { nodeId: group.nodeId || group.targetId, machine: group.machine || group.targetName };
