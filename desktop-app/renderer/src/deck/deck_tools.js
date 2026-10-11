@@ -192,6 +192,13 @@ const FaDeckTools = (function () {
         '4. finish_presentation(draft) assembles ONE deck and saves it. (A short deck, up to ~12 minutes, is a single render_presentation call.)',
         'Keep the whole talk coherent: one title slide at the start, a recap every few chapters, a summary at the end; do not restart or repeat yourself between batches, and never split the talk into several presentations.',
         '',
+        'LEARNING FROM A MODEL (a .pptx, an earlier deck, or an existing skill such as a weekly-report skill): when the user gives one as the example to follow, READ IT FIRST and imitate its procedure and its shape, never only its look.',
+        '1. A .pptx: call pptx_to_deck(file_id) -- it returns the draft yaml, an outline of every slide, the theme colours / fonts and warnings. (extract_pptx_images + interpret_image let you actually look at a slide picture when the outline is not enough.)',
+        '2. A skill: skill_list, then skill_read(name) and read the whole SKILL.md and every script / reference it points to. Write down for yourself in 2-3 lines WHAT IT PRODUCES (sections, slide order, which slide has a table / a screenshot / a chart, the tone, the length) and HOW IT GETS ITS DATA (which files or which people\'s reports it reads, which web pages it opens and screenshots, what it counts or compares).',
+        '3. Redo the SAME procedure for the NEW inputs with your own tools: uploaded files with parse_uploaded_file, folders with fap_*, web pages with the browser_* tools (browser_status first; browser_screenshot with save: true gives a file id you can use as client-file/<id> in an image visual, with callouts pointing at what changed), the app\'s own tools -- then build the deck with the same structure and the same order of sections as the model.',
+        '4. Say honestly which steps you could not reproduce (no browser connected, a script that needs a program you cannot run, a page that needs a login) and what you did instead. Never make up data to fill a slide the model had. In one sentence offer to save the procedure as a reusable skill (the skill-creator does that); do not do it unasked.',
+        '- A video the user attached (an mp4 file id) can play inside a slide: visual kind video (play, replay, fast-forward, speed, an A-B loop that repeats one part N times; see get_presentation_topic("visuals")). You cannot hear it: for "watch this, then answer" use a video slide followed by a quiz slide, and take the correct answer from the transcript the user gave you or ask the user -- never invent what is said.',
+        '',
         'RULES THAT MATTER',
         '- Length: follow the request ("5 minutes", "3 chapters"); default about 8-12 slides, 25-40 seconds of narration each. Slide 1 is a title slide; the last is a summary. Chapters have 3-6 slides.',
         '- Narration is natural speech in the deck language, short sentences, 2-5 per slide, no markdown/URLs/emoji. Bullets are short fragments that echo the narration, not the narration itself. Make the narration\'s sentences line up with what appears (see cues).',
@@ -209,7 +216,10 @@ const FaDeckTools = (function () {
     const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'get_presentation_topic',
         'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'import_image_url', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
-        'repo_ask', 'repo_read_doc'];
+        'repo_ask', 'repo_read_doc',
+        // 讀懂 pptx 與其他技能、照著做：pptx 轉草稿、抽圖、看圖、讀技能；要蒐集網頁畫面時用瀏覽器工具（有連線才可用）
+        'pptx_to_deck', 'extract_pptx_images', 'interpret_image', 'skill_list', 'skill_read',
+        'browser_status', 'browser_list_tabs', 'browser_create_tab', 'browser_navigate', 'browser_get_page_text', 'browser_get_page_structure', 'browser_screenshot', 'browser_close'];
 
     // ---------------------------------------------------------------- 掛到 FloatingAssistant 的方法
     const methods = {
@@ -330,6 +340,100 @@ const FaDeckTools = (function () {
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
             return { ok: true, ref: entry ? entry.ref : null, url: 'client-file/' + id, source: label };
         },
+        // ---------------------------------------------------------------- 讀懂 pptx：把 pptx 轉成簡報草稿（deck YAML）與結構摘要
+        // 讀順序、章節（pptx 的「節」）、每頁標題／內文／表格／圖片／內嵌影片、講者備忘稿，並回報主題色與字型，讓模型照著原來的結構與風格重做。
+        async _pptxToDeck(record, opts) {
+            opts = opts || {};
+            await this._ensureJSZipLoaded(); await this._ensureJsYamlLoaded();
+            let zip; try { zip = await JSZip.loadAsync(record.blob); } catch (e) { return { ok: false, error: '這個檔案不是有效的 pptx（讀不開 zip：' + String((e && e.message) || e).slice(0, 80) + '）' }; }
+            const warnings = [];
+            const rd = async (p) => { const f = zip.file(p); return f ? f.async('string') : null; };
+            const parse = (s) => new DOMParser().parseFromString(s, 'application/xml');
+            const tag = (el, name) => Array.from(el.getElementsByTagName(name));
+            const relsOf = async (part) => {
+                const i = part.lastIndexOf('/'), x = await rd(part.slice(0, i) + '/_rels/' + part.slice(i + 1) + '.rels'), m = {}; if (!x) return m;
+                for (const r of tag(parse(x), 'Relationship')) m[r.getAttribute('Id')] = { type: r.getAttribute('Type') || '', target: r.getAttribute('Target') || '' };
+                return m;
+            };
+            const resolve = (part, target) => { if (target.startsWith('/')) return target.slice(1); const parts = part.slice(0, part.lastIndexOf('/')).split('/'); for (const seg of target.split('/')) { if (seg === '..') parts.pop(); else if (seg !== '.' && seg !== '') parts.push(seg); } return parts.join('/'); };
+            const presXml = await rd('ppt/presentation.xml'); if (!presXml) return { ok: false, error: '不是有效的 pptx（找不到 ppt/presentation.xml）' };
+            const pres = parse(presXml), presRels = await relsOf('ppt/presentation.xml');
+            const sldIds = tag(pres, 'p:sldId').map((e) => ({ id: e.getAttribute('id'), rid: e.getAttribute('r:id') }));
+            const sectionOf = {}; for (const sec of tag(pres, 'p14:section')) for (const s of tag(sec, 'p14:sldId')) sectionOf[s.getAttribute('id')] = sec.getAttribute('name');
+            const max = Math.max(1, Math.min(150, Number(opts.max_slides) || 150)), mode = ['notes', 'bullets', 'none'].includes(opts.narration) ? opts.narration : 'notes';
+            const IMG = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }, VID = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', ogv: 'video/ogg' };
+            const paraText = (p) => tag(p, 'a:t').map((t) => t.textContent).join('').replace(/\s+/g, ' ').trim();
+            const paras = (sp) => tag(sp, 'a:p').map((p) => ({ t: paraText(p) })).filter((p) => p.t).map((p) => p.t);
+            const slides = [], outline = []; let imgCount = 0, vidCount = 0, chartCount = 0, noteCount = 0;
+            const base = String(record.filename || 'slides').replace(/\.pptx$/i, '');
+            for (let si = 0; si < sldIds.length && slides.length < max; si++) {
+                const rel = presRels[sldIds[si].rid]; if (!rel) continue; const part = resolve('ppt/presentation.xml', rel.target), xml = await rd(part); if (!xml) continue;
+                const sx = parse(xml), rels = await relsOf(part), n = si + 1;
+                const title = [], subtitle = [], body = [], other = [];
+                for (const sp of tag(sx, 'p:sp')) {
+                    const ph = tag(sp, 'p:ph')[0], type = ph ? (ph.getAttribute('type') || 'body') : '', ps = paras(sp); if (!ps.length) continue;
+                    if (type === 'title' || type === 'ctrTitle') title.push(...ps); else if (type === 'subTitle') subtitle.push(...ps); else if (/^(sldNum|dt|ftr|hdr)$/.test(type)) continue; else if (type) body.push(...ps); else other.push(...ps);
+                }
+                const tables = tag(sx, 'a:tbl').map((tbl) => tag(tbl, 'a:tr').map((tr) => tag(tr, 'a:tc').map((tc) => paras(tc).join(' '))));
+                const pics = [], vids = [];
+                for (const pic of tag(sx, 'p:pic')) {
+                    const v = tag(pic, 'a:videoFile')[0], b = tag(pic, 'a:blip')[0];
+                    if (v && rels[v.getAttribute('r:link')]) vids.push(resolve(part, rels[v.getAttribute('r:link')].target));
+                    else if (b && rels[b.getAttribute('r:embed')]) pics.push(resolve(part, rels[b.getAttribute('r:embed')].target));
+                }
+                const chart = tag(sx, 'c:chart').length; chartCount += chart;
+                let notes = ''; const nrel = Object.values(rels).find((r) => /\/notesSlide$/.test(r.type));
+                if (nrel) { const nx = await rd(resolve(part, nrel.target)); if (nx) { const nd = parse(nx); notes = tag(nd, 'p:sp').filter((sp) => { const ph = tag(sp, 'p:ph')[0]; return ph && ph.getAttribute('type') === 'body'; }).map((sp) => paras(sp).join(' ')).join(' ').trim(); } }
+                if (notes) noteCount++;
+                let layoutName = ''; const lrel = Object.values(rels).find((r) => /\/slideLayout$/.test(r.type));
+                if (lrel) { const lx = await rd(resolve(part, lrel.target)); if (lx) { const m = /<p:cSld[^>]*\sname="([^"]*)"/.exec(lx); layoutName = m ? m[1] : ''; } }
+                const sl = { title: (title.join(' ') || body.shift() || other.shift() || '（無標題 ' + n + '）').slice(0, 120) };
+                const bullets = body.concat(other).map((t) => t.slice(0, 220));
+                if (bullets.length > 6) { warnings.push('第 ' + n + ' 頁有 ' + bullets.length + ' 條內文，只留前 6 條（其餘放進講者備忘）'); notes = (notes ? notes + ' ' : '') + bullets.slice(6).join('；'); }
+                let kind = 'text', visual = null;
+                if (vids.length) {
+                    const p = vids[0], ext = (p.split('.').pop() || '').toLowerCase(), entry = zip.file(p);
+                    if (entry && VID[ext]) { const blob = new Blob([await entry.async('uint8array')], { type: VID[ext] }), id = await this.fileCache.put(base + '_slide' + n + '.' + ext, VID[ext], blob, 'uploaded'); visual = { kind: 'video', src: 'client-file/' + id, title: sl.title.slice(0, 60), fallback: '第 ' + n + ' 頁的內嵌影片' }; kind = 'video'; vidCount++; }
+                    else warnings.push('第 ' + n + ' 頁的影片「' + p + '」不能用（' + (entry ? '格式 .' + ext + ' 不支援' : '檔案不在 pptx 裡，可能是連結到外部檔案') + '）');
+                }
+                if (!visual && tables.length) {
+                    const t = tables[0].filter((r) => r.length); if (t.length) {
+                        let head = t[0], rows = t.slice(1); if (head.length > 8) { warnings.push('第 ' + n + ' 頁的表格超過 8 欄，只留前 8 欄'); head = head.slice(0, 8); rows = rows.map((r) => r.slice(0, 8)); }
+                        if (rows.length > 12) { warnings.push('第 ' + n + ' 頁的表格有 ' + rows.length + ' 列，只留前 12 列'); rows = rows.slice(0, 12); }
+                        visual = { kind: 'table', header: head.map((c) => c.slice(0, 120)), rows: rows.map((r) => head.map((_, i) => String(r[i] || '').slice(0, 120))) }; kind = 'table';
+                    }
+                }
+                if (!visual && pics.length) {
+                    const refs = [];
+                    for (const p of pics.slice(0, 8)) {
+                        const ext = (p.split('.').pop() || '').toLowerCase(), entry = zip.file(p);
+                        if (!entry || !IMG[ext]) { warnings.push('第 ' + n + ' 頁的圖片 ' + p.split('/').pop() + ' 沒有匯入（' + (entry ? '格式 .' + ext + ' 不支援，例如 emf／wmf' : '檔案不存在') + '）'); continue; }
+                        const r = await this._deckImportImageBlob(new Blob([await entry.async('uint8array')], { type: IMG[ext] }), 'pptx: ' + record.filename + ' 第 ' + n + ' 頁', 'pptx_to_deck');
+                        if (r && r.ok) { refs.push(r.ref || r.url); imgCount++; } else warnings.push('第 ' + n + ' 頁的圖片沒有匯入：' + ((r && r.error) || ''));
+                    }
+                    if (refs.length) { visual = refs.length === 1 ? { kind: 'image', src: refs[0] } : { kind: 'image', images: refs.map((src) => ({ src })) }; kind = 'picture'; }
+                }
+                if (chart) warnings.push('第 ' + n + ' 頁有 ' + chart + ' 個圖表，資料沒有匯入（請用 render_chart 重做，或用這頁的截圖）');
+                if (!visual && kind === 'text' && !bullets.length && !subtitle.length) kind = 'heading';
+                if (si === 0 && !visual && (subtitle.length || bullets.length <= 2)) { sl.layout = 'title'; const subs = subtitle.concat(bullets).slice(0, 2); if (subs.length) sl.subtitle = subs.join(' ').slice(0, 200); bullets.length = 0; }
+                else if (kind === 'heading') sl.layout = 'topic';
+                if (subtitle.length && sl.layout !== 'title') bullets.unshift(subtitle.join(' ').slice(0, 220));
+                if (bullets.length && sl.layout !== 'title') sl.bullets = bullets.slice(0, 6);
+                if (visual) sl.visual = visual;
+                if (mode === 'notes' && notes) sl.narration = notes.slice(0, 1200); else if (mode === 'bullets' && sl.bullets) sl.narration = sl.bullets.join('。').slice(0, 1200) + '。';
+                if (notes && mode !== 'notes') sl.notes = notes.slice(0, 1200);
+                slides.push({ section: sectionOf[sldIds[si].id] || '', sl });
+                outline.push({ n, title: sl.title, layout_in_pptx: layoutName, imported_as: sl.layout || (visual ? visual.kind : 'content'), bullets: (sl.bullets || []).length, notes: !!notes, pictures: pics.length, tables: tables.length, video: vids.length, charts: chart });
+            }
+            if (!slides.length) return { ok: false, error: '這個 pptx 裡沒有讀到任何投影片' };
+            const chapters = []; let cur = null;
+            for (const s of slides) { const name = s.section || ''; if (!cur || (name && name !== cur.title)) { cur = { title: name || String(opts.title || base).slice(0, 80), slides: [] }; chapters.push(cur); } cur.slides.push(s.sl); }
+            // 主題色與字型（讓模型知道原本的風格；簡報樣板是全站統一的，這裡只報告不套用）
+            const theme = {}; const tx = await rd('ppt/theme/theme1.xml');
+            if (tx) { const td = parse(tx); theme.colors = {}; for (const c of ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6']) { const e = tag(td, 'a:' + c)[0]; const v = e && (e.getElementsByTagName('a:srgbClr')[0] || e.getElementsByTagName('a:sysClr')[0]); if (v) theme.colors[c] = v.getAttribute('val') || v.getAttribute('lastClr'); } const mj = tag(td, 'a:majorFont')[0], mn = tag(td, 'a:minorFont')[0]; theme.fonts = { heading: mj && mj.getElementsByTagName('a:latin')[0] ? mj.getElementsByTagName('a:latin')[0].getAttribute('typeface') : '', body: mn && mn.getElementsByTagName('a:latin')[0] ? mn.getElementsByTagName('a:latin')[0].getAttribute('typeface') : '' }; }
+            const doc = { deck: { title: String(opts.title || base).slice(0, 120), lang: opts.lang || 'zh-TW' }, chapters };
+            return { ok: true, source: record.filename, slide_count: slides.length, chapter_count: chapters.length, pictures_imported: imgCount, videos_imported: vidCount, charts_not_imported: chartCount, slides_with_notes: noteCount, narration_from: mode, theme, outline, warnings, yaml: window.jsyaml.dump(doc, { lineWidth: 120, noRefs: true }) };
+        },
         _registerDeckTools(registerOptional) {
             const parse = async (raw) => { try { return await this.repairJsonPayload(String(raw || '{}')); } catch (_) { return {}; } };
             const tool = (name, desc, schema, fn) => registerOptional(name, desc, async function (raw) {
@@ -400,6 +504,15 @@ const FaDeckTools = (function () {
                     const src = await this._resolveTerminalCopySource(String(a.ref || ''));
                     const mime = /^image\//.test(src.mimeType) ? src.mimeType : (({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' })[String(src.filename).split('.').pop().toLowerCase()] || '');
                     return this._deckImportImageBlob(new Blob([src.bytes], { type: mime }), String(src.sourceLabel || src.filename), 'import_fap_image');
+                });
+            tool('pptx_to_deck',
+                'Read a .pptx the user uploaded (file_id from list_uploaded_files) and understand it: returns a draft deck YAML (slide order, sections as chapters, titles, bullets, tables, pictures, embedded videos, speaker notes as narration), an outline of every slide (what it held and how it was imported), the theme colours and fonts, and warnings for what could not be imported (charts, unsupported picture formats, over-long tables). Pictures are imported and referenced by handle. Use it to (a) turn a pptx into a playable deck, or (b) learn the STRUCTURE and STYLE of a model pptx (for example last week\'s report) so the new deck follows it: same sections, same slide order, a table where it had a table, a screenshot where it had a screenshot. Edit the returned yaml as needed and call render_presentation. narration: "notes" (default: speaker notes are spoken), "bullets" (the bullets are read out) or "none" (silent slides).',
+                obj({ file_id: { type: 'string', description: 'The uploaded .pptx (file id from list_uploaded_files).' }, narration: { type: 'string', enum: ['notes', 'bullets', 'none'] }, max_slides: { type: 'integer', description: 'Read only the first N slides (default all, at most 150).' }, title: { type: 'string', description: 'Deck title (default: the file name).' }, lang: { type: 'string', description: 'zh-TW (default), en, ...' } }, ['file_id']),
+                async function (a) {
+                    const rec = await this.fileCache.get(String(a.file_id || '').replace(/^client-file\//, ''));
+                    if (!rec || !rec.blob) return { error: 'no uploaded file with that id (call list_uploaded_files)' };
+                    if (!/\.pptx$/i.test(rec.filename || '') && !/presentationml/.test(rec.mimeType || '')) return { error: 'that file is not a .pptx (' + (rec.filename || rec.mimeType || 'unknown') + ')' };
+                    return this._pptxToDeck(rec, a);
                 });
             // 領域：內建技能「media-presentation」（BUILTIN_SKILLS）會自動變成 skill_<id> 領域，主助理把簡報工作整個委派過來
             // （子任務有自己的回合數與提示）；這裡只負責工具與 /media-presentation 指令

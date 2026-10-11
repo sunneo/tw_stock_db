@@ -83,3 +83,15 @@
 .ai-chat-deck-export-icon { width: 1.2em; text-align: center; }
 .ai-chat-deck-export-detail { margin-top: 6px; min-height: 1.4em; font-size: 12px; color: #cfd8e3; word-break: break-all; }
 .ai-chat-deck-export-actions { margin-top: 10px; text-align: right; }
+
+/* kind "video": the <video> with its own control bar (see makeVideoHost) */
+.ai-chat-deck-host-video { background: #000; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+.ai-chat-deck-host-video .ai-vd-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #000; }
+.ai-vd-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; background: #101820; color: #E6EDF3; font-size: 13px; }
+.ai-vd-btn { padding: 3px 9px; border-radius: 6px; border: 1px solid #3a4756; background: #1b2633; color: #E6EDF3; cursor: pointer; font-size: 13px; }
+.ai-vd-btn:hover { background: #26364a; }
+.ai-vd-seek { flex: 1 1 140px; min-width: 100px; accent-color: #77BD1D; }
+.ai-vd-time { font-size: 12px; opacity: .85; white-space: nowrap; }
+.ai-vd-sel, .ai-vd-num { background: #1b2633; color: #E6EDF3; border: 1px solid #3a4756; border-radius: 6px; padding: 2px 4px; font-size: 13px; }
+.ai-vd-num { width: 46px; }
+.ai-vd-note { padding: 2px 10px 6px; font-size: 12px; color: #9FD34F; background: #101820; min-height: 16px; }

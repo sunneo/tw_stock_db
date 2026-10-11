@@ -18,8 +18,8 @@
   var PACK_EXT = '.deckpack';
   var FORMAT = 'ai-chat-deckpack';
   var VERSION = 1;
-  var URL_KEYS = { src: 1, ref: 1, url: 1, image: 1 };
-  var MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', yaml: 'text/yaml', yml: 'text/yaml', txt: 'text/plain', json: 'application/json', mp3: 'audio/mpeg' };
+  var URL_KEYS = { src: 1, ref: 1, url: 1, image: 1, poster: 1 };
+  var MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', yaml: 'text/yaml', yml: 'text/yaml', txt: 'text/plain', json: 'application/json', mp3: 'audio/mpeg', mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', ogv: 'video/ogg', mkv: 'video/x-matroska' };
 
   // a pack (.deckpack) or the older "完整封包" bundle (.deck.zip: description + narration + subtitles, no assets)
   function isPackFile(name) { var n = String(name || '').toLowerCase(); return n.slice(-PACK_EXT.length) === PACK_EXT || /\.deck\.zip$/.test(n); }

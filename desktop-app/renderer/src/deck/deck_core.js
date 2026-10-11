@@ -15,7 +15,7 @@
   var W = 1920, H = 1080;
   var KIND = 'ai_chat_deck';
   var LAYOUTS = ['title', 'topic', 'content', 'split', 'visual'];
-  var VISUAL_KINDS = ['shapes', 'anim2d', 'svg', 'mermaid', 'chart', 'image', 'table', 'scene3d', 'group', 'code', 'terminal', 'quiz', 'widget'];
+  var VISUAL_KINDS = ['shapes', 'anim2d', 'svg', 'mermaid', 'chart', 'image', 'table', 'scene3d', 'group', 'code', 'terminal', 'quiz', 'widget', 'video'];
   var TRANSITIONS = ['fade', 'slide-left', 'slide-right', 'push', 'zoom', 'wipe', 'curtain', 'spin', 'fly', 'none'];
   var STYLES = ['flat', '3d'];
   var ENVIRONMENTS = ['template', 'studio', 'opera', 'space'];
@@ -483,6 +483,22 @@
       if (v.wait != null && typeof v.wait !== 'boolean') { err(vp + '.wait', 'must be true or false'); }
       if (v.start != null && ['auto', 'click', 'countdown'].indexOf(v.start) < 0) { err(vp + '.start', 'must be countdown (click, then 3-2-1: the default), click (starts at the click) or auto (starts as soon as the slide shows)'); }
       if (v.grade != null && !(isObj(v.grade) && str(v.grade.question).trim() && (str(v.grade.reference).trim() || str(v.grade.rubric).trim()))) { err(vp + '.grade', 'for deck.grade(answer): {question, reference and/or rubric} -- what the AI grader judges the widget\'s answers against'); }
+    } else if (v.kind === 'video') {
+      // an embedded video the viewer can play, replay, fast-forward, slow down / speed up and loop between two points (A-B). MP4 / PPTX show the poster + fallback.
+      if (!str(v.src).trim()) { err(vp + '.src', 'kind "video" needs "src": the video file (a client-file/<id> from an attachment, an https url, or a wiki attachment url)'); }
+      ['start', 'end'].forEach(function (f) { if (v[f] != null && !(typeof v[f] === 'number' && v[f] >= 0 && v[f] < 86400)) { err(vp + '.' + f, 'seconds from the start of the file (a number >= 0)'); } });
+      if (typeof v.start === 'number' && typeof v.end === 'number' && v.end <= v.start) { err(vp + '.end', 'must be greater than start'); }
+      if (v.speed != null && !(typeof v.speed === 'number' && v.speed >= 0.25 && v.speed <= 4)) { err(vp + '.speed', 'playback speed 0.25..4 (default 1)'); }
+      if (v.speeds != null && !(Array.isArray(v.speeds) && v.speeds.length >= 1 && v.speeds.length <= 8 && v.speeds.every(function (s) { return typeof s === 'number' && s >= 0.25 && s <= 4; }))) { err(vp + '.speeds', 'a list of 1..8 speeds, each 0.25..4 (the choices in the speed menu; default 0.5 0.75 1 1.25 1.5 2)'); }
+      if (v.loop != null) {
+        if (!isObj(v.loop) || !(typeof v.loop.from === 'number' && typeof v.loop.to === 'number' && v.loop.from >= 0 && v.loop.to > v.loop.from)) { err(vp + '.loop', 'A-B loop: {from: <seconds>, to: <seconds, greater than from>, times: <how many rounds of that part, 0 = until the viewer clears it>}'); }
+        else if (v.loop.times != null && !(Number.isInteger(v.loop.times) && v.loop.times >= 0 && v.loop.times <= 99)) { err(vp + '.loop.times', 'a whole number 0..99 (0 = repeat until the viewer clears the loop)'); }
+      }
+      ['autoplay', 'muted', 'wait', 'controls'].forEach(function (f) { if (v[f] != null && typeof v[f] !== 'boolean') { err(vp + '.' + f, 'must be true or false'); } });
+      if (v.title != null && str(v.title).length > 80) { err(vp + '.title', 'longer than 80 characters'); }
+      if (v.transcript != null && str(v.transcript).length > 6000) { err(vp + '.transcript', 'longer than 6000 characters'); }
+      if (str(v.fallback).length > 600) { err(vp + '.fallback', 'longer than 600 characters'); }
+      if (!str(v.fallback).trim()) { warn(vp + '.fallback', 'a video visual should have "fallback": 1-2 sentences saying what the video shows (shown in PPTX / MP4, where it cannot play)'); }
     } else if (v.kind === 'quiz') {
       validateQuiz(v, vp, err, warn);
     } else if (v.kind === 'table') {
@@ -579,6 +595,14 @@
     if (visual.kind === 'terminal' && visual.wait == null) { visual.wait = visual.interactive !== false; }
     // a widget (game) does not start by itself: the viewer clicks, then a 3-2-1 countdown (start: click | auto change that)
     if (visual.kind === 'widget' && !visual.start) { visual.start = 'countdown'; }
+    // a video holds the deck at the end of its slide until it has been watched (ended once, or its A-B loop ran its rounds); wait: false lets the deck run past
+    if (visual.kind === 'video') {
+      if (visual.wait == null) { visual.wait = true; }
+      if (visual.speed == null) { visual.speed = 1; }
+      if (!Array.isArray(visual.speeds)) { visual.speeds = [0.5, 0.75, 1, 1.25, 1.5, 2]; }
+      if (visual.controls == null) { visual.controls = true; }
+      if (visual.loop && visual.loop.times == null) { visual.loop = Object.assign({}, visual.loop, { times: 3 }); }
+    }
     if (visual.kind === 'group' && depth === 0) { visual.items = visual.items.map(function (it) { return normalizeVisual(it, 1); }); }
     return visual;
   }
@@ -629,7 +653,7 @@
         }
         if (layout === 'content' && visual) { layout = 'split'; }
         // an interactive piece (answer card, code window, terminal, widget) with no bullets beside it gets the whole area, not half a slide of blank space
-        if ((layout === 'split' || layout === 'content') && visual && !bullets.length && ['quiz', 'widget', 'code', 'terminal', 'group'].indexOf(visual.kind) >= 0) { layout = 'visual'; }
+        if ((layout === 'split' || layout === 'content') && visual && !bullets.length && ['quiz', 'widget', 'code', 'terminal', 'group', 'video'].indexOf(visual.kind) >= 0) { layout = 'visual'; }
         if (visual) { visual = normalizeVisual(visual, 0); }
         var tr = s.transition ? Object.assign({ ms: 500 }, s.transition) : { type: n === 0 ? 'none' : (deck.style === '3d' ? 'fly' : 'fade'), ms: deck.style === '3d' ? 1400 : 500 };
         slides.push({ id: s.id || ('s' + (n + 1)), index: n, chapter: ci, chapterTitle: str(ch.title), layout: layout, title: str(s.title),
@@ -1070,7 +1094,7 @@
 
   // The parts of a slide's visual the viewer can operate (a code window to scroll, a live terminal, an answer card): [{kind, node, pv, rect}],
   // rect in design units. The player puts its pointer handling / DOM inputs there; the renderer does not care.
-  var INTERACTIVE_KINDS = ['code', 'terminal', 'quiz', 'widget'];
+  var INTERACTIVE_KINDS = ['code', 'terminal', 'quiz', 'widget', 'video'];
   function interactiveRegions(slide, prep) {
     var out = [];
     if (!slide.visual || slide.layout === 'title' || slide.layout === 'topic') { return out; }

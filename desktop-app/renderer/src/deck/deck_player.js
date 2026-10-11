@@ -319,6 +319,7 @@
       case 'terminal': p = Promise.resolve(terminalVisual(v)); break;
       case 'quiz': p = Promise.resolve(quizVisual(v)); break;
       case 'widget': p = Promise.resolve(widgetVisual(v)); break;
+      case 'video': p = videoVisual(v); break;
       default: p = Promise.reject(new Error('unknown visual kind ' + v.kind));
     }
     return p.catch(function (e) { console.warn('[deck] visual (' + v.kind + '): ' + (e && e.message || e)); return { failed: true, error: String(e && e.message || e) }; });
@@ -363,6 +364,55 @@
       Quiz.draw(ctx, rect, v, pv.quiz.state, { font: Core.FONT, live: !!pv.live, drawTerminal: v.type === 'terminal' && Code ? function (c, r) { Code.drawTerminal(c, r, terminalView(pv.term), { title: 'terminal', size: 20, badge: '', note: pv.term.error }); } : null });
     };
     return pv;
+  }
+
+  // ------------------------------------------------------------------ an embedded video (kind "video")
+  // The canvas only paints a poster card (that is also what MP4 / PPTX show); the real <video> with its own control bar is laid over it
+  // (makeVideoHost): play / pause, replay, +-5 s, a seek bar (fast-forward), playback speed, and an A-B loop that repeats one part N times.
+  function videoUrl(src) {
+    if (isClientFileUrl(src)) { return window.AiChatFileSink.resolve(stripSuffix(src)).then(function (r) { return URL.createObjectURL(r.blob); }); }
+    return Promise.resolve(urlCandidates(src)[0] || src);
+  }
+  // A frame of the video as a canvas (the poster when the deck gives none); null when the browser cannot read it (cross-origin without CORS, a codec it lacks).
+  function captureVideoFrame(url, t) {
+    return new Promise(function (resolve) {
+      var vd = document.createElement('video'), done = false, timer;
+      function finish(c) { if (done) { return; } done = true; clearTimeout(timer); try { vd.removeAttribute('src'); vd.load(); } catch (e) { /* gone */ } resolve(c); }
+      timer = setTimeout(function () { finish(null); }, 6000);
+      vd.muted = true; vd.preload = 'auto'; vd.playsInline = true;
+      try { if (/^https?:/i.test(url) && new URL(url, location.href).origin !== location.origin) { vd.crossOrigin = 'anonymous'; } } catch (e) { /* relative */ }
+      vd.addEventListener('error', function () { finish(null); });
+      vd.addEventListener('loadedmetadata', function () { try { vd.currentTime = Math.min(Math.max(t || 0, 0) + 0.05, Math.max(0.01, (vd.duration || 1) - 0.05)); } catch (e) { finish(null); } });
+      vd.addEventListener('seeked', function () {
+        try {
+          var w = vd.videoWidth, h = vd.videoHeight; if (!w || !h) { finish(null); return; }
+          var k = Math.min(1, 960 / w), c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+          c.getContext('2d').drawImage(vd, 0, 0, c.width, c.height); finish(c);
+        } catch (e) { finish(null); }
+      });
+      vd.src = url;
+    });
+  }
+  function videoVisual(v) {
+    var vp = { url: '', poster: null, state: { watched: false, loops: 0, error: '' } }, pv = { video: vp, ok: true };
+    pv.draw = function (ctx, rect) {
+      ctx.save();
+      ctx.fillStyle = '#0B1622'; ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      var capH = 70, ph = rect.h - capH, img = vp.poster;
+      if (img) { var k = Math.min(rect.w / img.width, ph / img.height), w = img.width * k, h = img.height * k; ctx.drawImage(img, rect.x + (rect.w - w) / 2, rect.y + (ph - h) / 2, w, h); }
+      var cx = rect.x + rect.w / 2, cy = rect.y + ph / 2, r = Math.min(rect.w, ph) * 0.09;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.moveTo(cx - r * 0.3, cy - r * 0.5); ctx.lineTo(cx + r * 0.55, cy); ctx.lineTo(cx - r * 0.3, cy + r * 0.5); ctx.closePath(); ctx.fill();
+      ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+      ctx.font = 'bold 26px ' + Core.FONT; ctx.fillStyle = '#77BD1D'; ctx.fillText('影片' + (v.title ? ' · ' + v.title : ''), rect.x + 24, rect.y + rect.h - 62);
+      ctx.font = '22px ' + Core.FONT; ctx.fillStyle = '#D6DDE5';
+      ctx.fillText(Core.wrapLines(ctx, v.fallback || (vp.state.error ? '影片無法載入:' + vp.state.error : '可播放、重播、快轉、調整速度與 A-B 循環'), rect.w - 48)[0] || '', rect.x + 24, rect.y + rect.h - 30);
+      ctx.restore();
+    };
+    return videoUrl(v.src).then(function (url) {
+      vp.url = url;
+      return (v.poster ? loadImage(v.poster).catch(function () { return null; }) : captureVideoFrame(url, +v.start || 0)).then(function (img) { vp.poster = img; return pv; });
+    });
   }
 
   // An AI-written widget. pv.widget.state = {result, done, data, summary}: what the widget reported through deck.* (result counts in the score chip).
@@ -539,6 +589,17 @@
         var st = pv && (v.kind === 'quiz' ? pv.quiz && pv.quiz.state : pv.widget && pv.widget.state);
         out.push({ slide: i, v: v, pv: pv && st ? pv : null, result: st ? st.result : null, done: !!(st && st.done) });
       }
+    }
+    this.deck.slides.forEach(function (sl, i) { walk(i, sl.visual, self.preps[i].visual); });
+    return out;
+  };
+  // Every video visual of the deck: [{slide, v, pv, st}] -- st = {watched, loops, error}
+  Session.prototype.videoItems = function () {
+    var out = [], self = this;
+    function walk(i, v, pv) {
+      if (!v || !pv) { return; }
+      if (v.kind === 'group') { (v.items || []).forEach(function (it, k) { walk(i, it, pv.children && pv.children[k]); }); }
+      else if (v.kind === 'video' && pv.video) { out.push({ slide: i, v: v, pv: pv, st: pv.video.state }); }
     }
     this.deck.slides.forEach(function (sl, i) { walk(i, sl.visual, self.preps[i].visual); });
     return out;
@@ -1017,7 +1078,7 @@
   };
 
   Player.prototype.setHold = function (i) {
-    var text = this.holdReason(i) === 'terminal' ? '⏸ 請在終端機輸入指令(或按右側 › 略過)' : '⏸ 請先回答並按「提交」(或按右側 › 略過)';
+    var why = this.holdReason(i), text = why === 'terminal' ? '⏸ 請在終端機輸入指令(或按右側 › 略過)' : why === 'video' ? '⏸ 請先看完影片（可重播、快轉、調速度、A-B 循環；或按右側 › 略過）' : '⏸ 請先回答並按「提交」(或按右側 › 略過)';
     this.status.textContent = text; this.holdEl.textContent = text;
   };
 
@@ -1035,7 +1096,9 @@
       if (tv.state === 'failed' || tv.saved) { return false; }   // no shell to type into / a pack that already holds the viewer's screen
       return !(tv.handle && tv.handle.history().length > (tv.commands || []).length);
     });
-    return term ? 'terminal' : '';
+    if (term) { return 'terminal'; }
+    var vid = this.s.videoItems().some(function (it) { return it.slide === i && it.v.wait !== false && it.pv && !it.st.watched && !it.st.error; });
+    return vid ? 'video' : '';
   };
 
   // DOM that has to be real: the shell of a terminal, the text box of a short / open answer. Created on first need, kept (a terminal keeps its
@@ -1084,6 +1147,80 @@
     })(3);
   };
 
+  // The real video of a "video" visual: <video> plus a control bar. State that matters to the deck (watched, loop rounds) lives in the prepared
+  // visual (rg.pv.video.state) so the deck can hold at the end of the slide until the viewer has watched it (wait: true, the default).
+  Player.prototype.makeVideoHost = function (rg) {
+    var self = this, v = rg.node, vp = rg.pv.video, st = vp.state;
+    var root = el('div', 'ai-chat-deck-host ai-chat-deck-host-video'), vd = el('video', 'ai-vd-video');
+    vd.playsInline = true; vd.preload = 'metadata'; vd.muted = !!v.muted; vd.src = vp.url; vd.playbackRate = +v.speed || 1;
+    var bar = el('div', 'ai-vd-bar'), note = el('div', 'ai-vd-note');
+    var lo = Math.max(0, +v.start || 0), hi = +v.end > 0 ? +v.end : 0;
+    var loop = v.loop ? { a: +v.loop.from, b: +v.loop.to, times: v.loop.times == null ? 3 : +v.loop.times, count: 0, on: true, done: false } : { a: null, b: null, times: 3, count: 0, on: false, done: false };
+    function btn(text, title, fn) { var b = el('button', 'ai-vd-btn', text); b.type = 'button'; b.title = title; b.addEventListener('click', fn); bar.appendChild(b); return b; }
+    function endT() { return hi || (vd.duration || 0); }
+    function span() { return Math.max(0.1, endT() - lo); }
+    function fmt(t) { t = Math.max(0, t || 0); var m = Math.floor(t / 60), s = Math.floor(t % 60); return m + ':' + (s < 10 ? '0' : '') + s; }
+    function r1(x) { return Math.round(x * 10) / 10; }
+    function setNote() {
+      var parts = [];
+      if (loop.a != null && loop.b != null) {
+        parts.push('A-B：' + r1(loop.a) + ' 秒 → ' + r1(loop.b) + ' 秒' + (loop.on ? '（' + (loop.times > 0 ? '第 ' + Math.min(loop.count + 1, loop.times) + ' / ' + loop.times + ' 次' : '循環中，按「清除」結束') + '）' : loop.done ? '（已循環 ' + loop.count + ' 次，繼續往下播）' : '（已關閉）'));
+      } else if (loop.a != null) { parts.push('A 點：' + r1(loop.a) + ' 秒（再按 B 設定結束點）'); }
+      parts.push('速度 ' + (vd.playbackRate || 1) + 'x');
+      if (st.watched) { parts.push('✓ 已看過'); }
+      note.textContent = parts.join('　');
+    }
+    var playBtn = btn('▶', '播放 / 暫停', function () { if (vd.paused) { var p = vd.play(); if (p && p.catch) { p.catch(function (e) { st.error = String(e && e.message || e).slice(0, 80); setNote(); }); } } else { vd.pause(); } });
+    btn('⟲ 重播', '從頭重播（A-B 循環次數歸零）', function () { loop.count = 0; loop.done = false; loop.on = loop.a != null && loop.b != null; vd.currentTime = lo; var p = vd.play(); if (p && p.catch) { p.catch(function () { /* blocked */ }); } });
+    btn('−5s', '倒退 5 秒', function () { vd.currentTime = Math.max(lo, vd.currentTime - 5); });
+    btn('+5s', '快轉 5 秒', function () { vd.currentTime = Math.min(endT() || vd.currentTime + 5, vd.currentTime + 5); });
+    var seek = el('input', 'ai-vd-seek'); seek.type = 'range'; seek.min = 0; seek.max = 1000; seek.value = 0; seek.title = '拖曳快轉 / 倒轉';
+    seek.addEventListener('input', function () { vd.currentTime = lo + (seek.value / 1000) * span(); });
+    bar.appendChild(seek);
+    var timeLbl = el('span', 'ai-vd-time', '0:00 / 0:00'); bar.appendChild(timeLbl);
+    var speedSel = el('select', 'ai-vd-sel'); speedSel.title = '播放速度';
+    var speeds = (v.speeds || [0.5, 0.75, 1, 1.25, 1.5, 2]).slice(); if (speeds.indexOf(vd.playbackRate) < 0) { speeds.push(vd.playbackRate); speeds.sort(function (a, b) { return a - b; }); }
+    speeds.forEach(function (s) { var o = el('option', '', s + 'x'); o.value = s; speedSel.appendChild(o); }); speedSel.value = vd.playbackRate;
+    speedSel.addEventListener('change', function () { vd.playbackRate = +speedSel.value; setNote(); }); bar.appendChild(speedSel);
+    btn('A', '把目前位置設成 A 點（循環起點）', function () { loop.a = r1(vd.currentTime); if (loop.b != null && loop.b <= loop.a) { loop.b = null; } loop.count = 0; loop.done = false; loop.on = loop.a != null && loop.b != null; setNote(); });
+    btn('B', '把目前位置設成 B 點（循環終點）並開始循環', function () {
+      var t = r1(vd.currentTime); if (loop.a == null) { loop.a = lo; } if (t <= loop.a) { note.textContent = 'B 點要在 A 點之後'; return; }
+      loop.b = t; loop.count = 0; loop.done = false; loop.on = true; vd.currentTime = loop.a; var p = vd.play(); if (p && p.catch) { p.catch(function () { /* blocked */ }); } setNote();
+    });
+    var times = el('input', 'ai-vd-num'); times.type = 'number'; times.min = 0; times.max = 99; times.value = loop.times; times.title = '循環幾次（0＝一直循環到按清除）';
+    times.addEventListener('change', function () { loop.times = Math.max(0, Math.min(99, parseInt(times.value, 10) || 0)); loop.count = 0; loop.done = false; if (loop.a != null && loop.b != null) { loop.on = true; } setNote(); });
+    var tl = el('span', 'ai-vd-time', '次'); bar.appendChild(times); bar.appendChild(tl);
+    btn('清除', '清除 A-B 循環', function () { loop.a = null; loop.b = null; loop.on = false; loop.count = 0; loop.done = false; setNote(); });
+    btn('🔇', '靜音 / 開聲音', function (e) { vd.muted = !vd.muted; e.currentTarget.textContent = vd.muted ? '🔇' : '🔊'; });
+    root.appendChild(vd); root.appendChild(bar); root.appendChild(note);
+    function refresh() { var t = vd.currentTime || 0; seek.value = Math.round(Math.max(0, Math.min(1, (t - lo) / span())) * 1000); timeLbl.textContent = fmt(t - lo) + ' / ' + fmt(span()); playBtn.textContent = vd.paused ? '▶' : '⏸'; }
+    function markWatched() { if (!st.watched) { st.watched = true; st.loops = loop.count; setNote(); try { self.updateUi(); } catch (e) { /* not ready */ } } }
+    // checked on timeupdate AND every animation frame while playing: timeupdate alone fires about 4x a second, which lets the loop overshoot B
+    function check() {
+      var t = vd.currentTime;
+      if (loop.on && loop.a != null && loop.b != null && t >= loop.b - 0.02 && t < loop.b + 1.5) {
+        loop.count++;
+        if (loop.times > 0 && loop.count >= loop.times) { loop.on = false; loop.done = true; markWatched(); setNote(); } else { vd.currentTime = loop.a; setNote(); }
+      }
+      if (hi && t >= hi - 0.03 && !vd.paused) { vd.pause(); vd.currentTime = hi; markWatched(); }
+    }
+    var raf = 0; function frame() { check(); refresh(); raf = vd.paused ? 0 : requestAnimationFrame(frame); }
+    vd.addEventListener('play', function () { if (!raf) { raf = requestAnimationFrame(frame); } refresh(); });
+    vd.addEventListener('pause', function () { refresh(); });
+    vd.addEventListener('timeupdate', function () { check(); refresh(); });
+    vd.addEventListener('seeked', function () { refresh(); });
+    vd.addEventListener('ended', function () { markWatched(); refresh(); setNote(); });
+    vd.addEventListener('ratechange', setNote);
+    vd.addEventListener('loadedmetadata', function () { if (lo > 0 && vd.currentTime < lo) { vd.currentTime = lo; } refresh(); });
+    vd.addEventListener('error', function () { st.error = '瀏覽器無法播放這個影片檔'; note.textContent = '⚠️ ' + st.error; self.draw(); });
+    root.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    root.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+    if (v.controls === false) { bar.style.display = 'none'; }
+    setNote();
+    if (v.autoplay) { var ap = vd.play(); if (ap && ap.catch) { ap.catch(function () { vd.muted = true; var p2 = vd.play(); if (p2 && p2.catch) { p2.catch(function () { /* needs a click */ }); } }); } }
+    return { el: root, video: vd };
+  };
+
   Player.prototype.syncHosts = function () {
     var self = this, hosts = this.hosts || {}, show = {}, regs = this.regionsNow(), loc = this.loc(), Code = window.AiChatDeckCode;
     regs.forEach(function (rg, idx) {
@@ -1110,6 +1247,9 @@
         }
         self.place(wh.el, rg.rect); wh.el.style.display = ''; show[key] = true;
         self.place(wh.ov, rg.rect); wh.ov.style.display = wh.started ? 'none' : '';
+      } else if (rg.kind === 'video' && rg.pv.video && rg.pv.video.url) {
+        var vh = self.hostFor(key, function () { return self.makeVideoHost(rg); });
+        self.place(vh.el, rg.rect); vh.el.style.display = ''; show[key] = true;
       } else if (rg.kind === 'quiz' && rg.pv.quiz) {
         var R = rg.pv.quiz.state._r;
         if (!R) { return; }
@@ -1132,7 +1272,7 @@
         }
       }
     });
-    Object.keys(hosts).forEach(function (k) { if (!show[k]) { hosts[k].el.style.display = 'none'; if (hosts[k].ov) { hosts[k].ov.style.display = 'none'; } } });
+    Object.keys(hosts).forEach(function (k) { if (!show[k]) { hosts[k].el.style.display = 'none'; if (hosts[k].ov) { hosts[k].ov.style.display = 'none'; } if (hosts[k].video && !hosts[k].video.paused) { hosts[k].video.pause(); } } });
     // the left / right paging zones leave the slide's own controls alone
     var busy = regs.length > 0;
     this.prevZone.classList.toggle('narrow', busy); this.nextZone.classList.toggle('narrow', busy);
