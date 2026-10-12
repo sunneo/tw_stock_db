@@ -6770,6 +6770,28 @@ const holder = {};
         if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
         return { model: pref, reason: '沒有已下載的模型支援「' + (TASKS[task] || task) + '」，用預設模型並降級任務' };
     }
+    // ---------- 線上與離線統一的輸出：先「逐字轉錄」圖中的文字，再「描述／回答」----------
+    // 線上（對話式視覺模型）一次回兩段（[[TRANSCRIPTION]]／[[ANSWER]]），離線跑兩個任務（OCR、描述或問答）；兩邊最後都組成同一種文字，
+    // 呼叫端不管是哪個後端做的，拿到的欄位與格式都一樣：{ transcription, answer, description（兩段合在一起的文字） }。
+    const NO_TEXT = /^[\s（(【\[]*(?:沒有文字|沒有任何文字|無文字|圖中沒有文字|no\s+text(?:\s+(?:found|visible))?|none|n\/a)[\s）)】\]。.]*$/i;
+    function combineVision(transcription, answer) {
+        const tr = String(transcription == null ? '' : transcription).trim(), an = String(answer == null ? '' : answer).trim();
+        const hasText = !!tr && !NO_TEXT.test(tr);
+        if (hasText && an) return '【圖中文字（逐字轉錄）】\n' + tr + '\n\n【描述／回答】\n' + an;
+        if (hasText) return '【圖中文字（逐字轉錄）】\n' + tr;
+        return an ? (tr && NO_TEXT.test(tr) ? '【圖中文字（逐字轉錄）】\n沒有文字\n\n【描述／回答】\n' + an : an) : '';
+    }
+    // 把「請求的提示詞」包成要模型分兩段回答的格式（multi：多張圖，轉錄時每張圖各自標示）
+    function structuredPrompt(question, multi) {
+        return String(question || '').trim() + '\n\n【回答格式——兩段都要有，照這個標記寫】\n[[TRANSCRIPTION]]\n逐字抄寫圖片裡看得到的所有文字（保留原文、語言與換行' + (multi ? '，每張圖前面標「圖N：」' : '') + '）。圖片裡完全沒有文字就只寫「沒有文字」。只抄你真的看到的字：看不清楚就寫「（看不清楚）」，絕對不要猜測、補字或編造。\n[[ANSWER]]\n上面的要求（描述圖片內容或回答問題）。只根據圖片實際內容，看不出來的就說看不出來。';
+    }
+    // 解析模型的兩段回答；沒有標記時回 null（呼叫端再補一次轉錄）
+    function parseStructured(text) {
+        const s = String(text == null ? '' : text); const a = /\[\[\s*TRANSCRIPTION\s*\]\]/i.exec(s), b = /\[\[\s*ANSWER\s*\]\]/i.exec(s);
+        if (!a || !b) return null;
+        let tr, an; if (a.index < b.index) { tr = s.slice(a.index + a[0].length, b.index); an = s.slice(b.index + b[0].length); } else { an = s.slice(b.index + b[0].length, a.index); tr = s.slice(a.index + a[0].length); }
+        return { transcription: tr.trim(), answer: an.trim() };
+    }
     // 圖片理解的後端優先順序（設定 visionBackendPolicy）
     const VISION_POLICIES = {
         'llm-first': { label: '線上視覺模型優先，失敗退離線模型', order: ['llm', 'offline'] },
@@ -7018,7 +7040,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -24626,7 +24648,7 @@ ${fnData.code}
                 try {
                     const { dataUrl, label } = await this._resolveImageInputForInterpretation({ fileId: fileId || null, imageUrl: imageUrl || null });
                     // 抽象的 vision API：依設定（visionBackendPolicy）決定線上視覺模型、離線模型的優先順序與備援
-                    const r = await this._visionDescribe({ images: [dataUrl], prompt: parsed.question, runLlm: () => this._interpretImageWithVisionModel(dataUrl, parsed.question) });
+                    const r = await this._visionDescribe({ images: [dataUrl], prompt: parsed.question, runLlm: () => this._interpretImageOnline(dataUrl, parsed.question) });
                     if (!r.ok) return JSON.stringify({ ok: false, error: r.error, attempts: r.attempts, policy: r.policy, hint: '離線模型要先在 Configure →「離線模型管理」下載；也可以直接用 image_to_text' });
                     if (r.backend === 'llm') return JSON.stringify({ ok: true, source: label, backend: 'llm', model_used: r.llm.modelUsed, vision_confirmed: r.llm.visionConfirmed, description: r.llm.description, policy: r.policy });
                     return JSON.stringify({ ok: true, source: label, backend: 'offline', model_used: r.model, vision_confirmed: false, description: r.text, note: (r.attempts.some((a) => a.backend === 'llm' && !a.ok) ? '線上視覺模型沒有可用或全部失敗（' + r.attempts.filter((a) => a.backend === 'llm').map((a) => a.error).join('；').slice(0, 160) + '），已改用離線模型。' : '') + '離線模型的描述主要是英文。' + (r.note ? ' ' + r.note : ''), policy: r.policy, attempts: r.attempts });
@@ -31261,7 +31283,7 @@ ${fnData.code}
         const hasTools = Array.isArray(a.tools) && a.tools.length;
         const hasImage = msgs.some((m) => Array.isArray(m && m.content) && m.content.some((p) => p && p.type === 'image_url'));
         const cap = hasImage ? 'vision' : (hasTools ? 'tools' : 'chat');
-        const rows = this._pyBridgeRows(cap); if (!rows.length) throw new Error('NOT_SUPPORTED: 已設定的 LLM Model 裡沒有支援' + (cap === 'vision' ? '讀圖' : '工具呼叫') + '的（Benchmark 都標記為不支援）');
+        let rows = this._pyBridgeRows(cap); if (cap === 'vision') { const okRows = []; for (const r0 of rows) { if (await this._ensureRowVisionVerified(r0)) okRows.push(r0); } rows = okRows; } if (!rows.length) throw new Error('NOT_SUPPORTED: 已設定的 LLM Model 裡沒有支援' + (cap === 'vision' ? '讀圖' : '工具呼叫') + '的（Benchmark 都標記為不支援）');
         const errors = []; let lastStatus = 0;
         for (const row of rows) {
             const cfg = this._resolveModelRowConfig(row);
@@ -37369,7 +37391,16 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (v === false) return 2;
             return 1; // 沒測過/未知
         };
-        return rows.map((row, idx) => ({ row, idx })).sort((a, b) => (rank(a.row) - rank(b.row)) || (a.idx - b.idx)).map(x => x.row);
+        return rows.map((row, idx) => ({ row, idx })).filter((x) => rank(x.row) < 2).sort((a, b) => (rank(a.row) - rank(b.row)) || (a.idx - b.idx)).map(x => x.row); // 確定不支援讀圖的 row 不放進來
+    }
+    // 沒標記過 vision 的 row：用「純色測試圖」驗證它真的看得到圖，通過才算（結果寫回 row.abilityTags.vision 並存檔）；沒通過這一次不用它，但不記成「確定不支援」（可能只是暫時連不上）
+    async _ensureRowVisionVerified(row) {
+        const v = row.abilityTags && row.abilityTags.vision; if (v === true) return true; if (v === false) return false;
+        this._visionProbeMemo = this._visionProbeMemo || {}; const cfg = this._resolveModelRowConfig(row), key = cfg.apiUrl + '|' + cfg.apiModel, m = this._visionProbeMemo[key];
+        if (m && Date.now() - m.at < 10 * 60 * 1000) return m.ok;
+        const ok = await this._probeVisionSupport(cfg.apiKey, cfg.apiUrl, cfg.apiModel); this._visionProbeMemo[key] = { ok, at: Date.now() };
+        if (ok) { row.abilityTags = Object.assign({}, row.abilityTags, { vision: true, testedAt: Date.now() }); try { this._saveAdvancedSettings(); } catch (_) { /* */ } }
+        return ok;
     }
 
     _blobToDataUrl(blob) {
@@ -37418,74 +37449,62 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // tw_stock_db客製: 2026-09-26使用者要求「比較圖片」——dataUrl也可以傳
     // 陣列（compare_images用），多張時每張圖前面加一行「圖N」文字標籤，讓
     // 模型能在回答裡明確指出是哪一張；只有一張時行為跟原本完全一樣。
-    async _interpretImageWithVisionModel(dataUrl, question, labels) {
+    // 送一次視覺請求（OpenAI 相容的多模態格式）；失敗（HTTP 錯誤、回覆是空的）就丟錯，由呼叫端換下一個模型
+    async _visionChat(cfg, messages, maxTokens) {
+        const controller = this._createAbortController(); const timeoutId = setTimeout(() => controller.abort(), 60000);
+        let response;
+        try { response = await fetch(`${cfg.apiUrl}/chat/completions`, { method: 'POST', headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: cfg.apiModel, messages, temperature: 0.2, max_tokens: maxTokens, stream: false }) }); }
+        finally { clearTimeout(timeoutId); }
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json(); const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').trim();
+        if (!content) throw new Error('回覆是空的');
+        return content;
+    }
+    // 線上視覺模型看圖：每個候選 row 先確認「真的會看圖」，再要它分兩段回答——先逐字轉錄圖中文字、再描述／回答（跟離線的輸出格式一致，見 FaVlm.combineVision）。
+    // 回覆沒照格式時補做一次專門的文字轉錄，確保一定有轉錄那一段。回傳 { description（兩段合在一起）, transcription, answer, modelUsed, backend:'online' }。
+    async _interpretImageOnline(dataUrl, question, labels, opts) {
+        opts = opts || {}; const step = opts.step || (() => {});
         const candidates = this._orderedVisionCandidateRows();
         if (!candidates.length) throw new Error('目前沒有設定任何LLM Model，請先到進階設定新增至少一筆');
-        const dataUrls = Array.isArray(dataUrl) ? dataUrl : [dataUrl];
-        const multi = dataUrls.length > 1;
-        const prompt = String(question || '').trim() || (multi
-            ? '比較這幾張圖片：逐一簡述每張的內容，再說明它們的相同點與差異。'
-            : '詳細描述這張圖片的內容（如果圖片裡有文字，請把文字內容也完整列出來）。');
-        const imageParts = [];
-        dataUrls.forEach((u, i) => {
-            if (multi) imageParts.push({ type: 'text', text: `圖${i + 1}${labels && labels[i] ? `（${labels[i]}）` : ''}：` });
-            imageParts.push({ type: 'image_url', image_url: { url: u } });
-        });
+        const dataUrls = Array.isArray(dataUrl) ? dataUrl : [dataUrl]; const multi = dataUrls.length > 1;
+        const userPrompt = String(question || '').trim() || (multi ? '比較這幾張圖片：逐一簡述每張的內容，再說明它們的相同點與差異。' : '詳細描述這張圖片的內容。');
+        const prompt = FaVlm.structuredPrompt(userPrompt, multi);
+        const imageParts = []; dataUrls.forEach((u, i) => { if (multi) imageParts.push({ type: 'text', text: `圖${i + 1}${labels && labels[i] ? `（${labels[i]}）` : ''}：` }); imageParts.push({ type: 'image_url', image_url: { url: u } }); });
         const errors = [];
         for (const row of candidates) {
             const cfg = this._resolveModelRowConfig(row);
             try {
-                const controller = this._createAbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 60000);
-                let response;
-                try {
-                    response = await fetch(`${cfg.apiUrl}/chat/completions`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
-                        signal: controller.signal,
-                        body: JSON.stringify({
-                            model: cfg.apiModel,
-                            messages: [
-                                { role: 'user', content: [
-                                    { type: 'text', text: prompt },
-                                    ...imageParts,
-                                ] },
-                            ],
-                            temperature: 0.2,
-                            max_tokens: multi ? 3072 : 2048,
-                            stream: false,
-                        }),
-                    });
-                } finally {
-                    clearTimeout(timeoutId);
+                if (!(row.abilityTags && row.abilityTags.vision === true)) {
+                    step('線上視覺模型「' + cfg.apiModel + '」：先確認它真的看得到圖…');
+                    if (!(await this._ensureRowVisionVerified(row))) { errors.push(cfg.apiModel + ': 沒通過看圖測試（可能是純文字模型或暫時連不上），不用它讀圖'); step('「' + cfg.apiModel + '」沒通過看圖測試，換下一個'); continue; }
                 }
-                if (!response.ok) { errors.push(`${cfg.apiModel}: HTTP ${response.status}`); continue; }
-                const data = await response.json();
-                const content = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '').trim();
-                if (!content) { errors.push(`${cfg.apiModel}: 回覆是空的`); continue; }
-                // tw_stock_db客製: 沒被標記過vision:true的model如果完全不懂圖片，
-                // 常見回覆是道歉/說看不到圖片這類制式文字，這裡順手抓幾個常見
-                // 特徵，判定失敗就換下一個row，不要把這種回覆當成正確的圖片
-                // 描述回傳給使用者。
-                // tw_stock_db客製: 2026-09-22真實環境實測抓到的bug——原本寫
-                // `row.abilityTags && row.abilityTags.vision !== true`，但
-                // 幾乎所有row在使用者從來沒按過Benchmark時abilityTags就是
-                // null，`null && ...`永遠是false，導致這個refusal判斷形同
-                // 虛設：實測openai/gpt-oss-20b真的回了「抱歉，我目前無法
-                // 直接查看圖片內容」這種制式拒答，卻因為這個條件短路被直接
-                // 當成「成功」回傳給使用者。改成只有「已經明確確認vision:true」
-                // 才略過這個檢查（信任已驗證過的model，即使回覆語氣剛好像
-                // 道歉開頭也不誤判），其餘情況（未測過/確認不支援）一律套用
-                // refusal檢查。
+                step('線上視覺模型「' + cfg.apiModel + '」：轉錄圖中文字並解讀…');
+                const content = await this._visionChat(cfg, [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageParts] }], multi ? 3072 : 2048);
                 const looksLikeRefusal = /^(i'?m sorry|i cannot|i can't|i am unable|as an ai|抱歉|我無法|我不能|我看不到|無法看到|沒有(?:辦法)?(?:看到|讀取)圖片)/i.test(content);
-                const visionConfirmed = !!(row.abilityTags && row.abilityTags.vision === true);
-                if (looksLikeRefusal && !visionConfirmed) { errors.push(`${cfg.apiModel}: 回覆內容像是看不懂圖片`); continue; }
-                return { description: content, modelUsed: cfg.apiModel, visionConfirmed };
-            } catch (err) {
-                errors.push(`${cfg.apiModel}: ${String((err && err.message) || err)}`);
-            }
+                if (looksLikeRefusal && !(row.abilityTags && row.abilityTags.vision === true)) { errors.push(cfg.apiModel + ': 回覆內容像是看不懂圖片'); continue; }
+                let parsed = FaVlm.parseStructured(content);
+                if (!parsed) {
+                    step('「' + cfg.apiModel + '」沒有照格式回答，補做一次文字轉錄…'); let tr = '';
+                    try { tr = await this._visionChat(cfg, [{ role: 'user', content: [{ type: 'text', text: '逐字抄寫這' + (multi ? '幾張' : '張') + '圖片裡看得到的所有文字（保留原文、語言與換行' + (multi ? '，每張圖前面標「圖N：」' : '') + '）。完全沒有文字就只回答「沒有文字」。看不清楚的寫「（看不清楚）」，絕對不要猜測、補字或編造。' }, ...imageParts] }], 2048); } catch (_) { tr = ''; }
+                    parsed = { transcription: tr, answer: content };
+                }
+                return { description: FaVlm.combineVision(parsed.transcription, parsed.answer), transcription: parsed.transcription, answer: parsed.answer, modelUsed: cfg.apiModel, visionConfirmed: true, backend: 'online' };
+            } catch (err) { errors.push(`${cfg.apiModel}: ${String((err && err.message) || err)}`); step('「' + cfg.apiModel + '」失敗：' + String((err && err.message) || err).slice(0, 80)); }
         }
-        throw new Error(`所有model都無法解讀這張圖片：${errors.join('；')}。建議到進階設定的LLM Models清單，對確定支援讀圖的model按「Benchmark」測試一次。`);
+        throw new Error(`所有線上視覺模型都無法解讀這張圖片：${errors.join('；')}。建議到進階設定的LLM Models清單，對確定支援讀圖的model按「Benchmark」測試一次。`);
+    }
+    // ★統一的看圖入口（所有「讀圖」的呼叫都走這裡）：依設定的政策（預設「線上優先、失敗退離線」）試各個後端，線上與離線的過程訊息與輸出格式完全一樣：
+    //   過程：「看圖：…」每一步都會記進對話的執行紀錄（steps，也可用 opts.onStep 接）；輸出：{ description（轉錄＋描述合在一起）, transcription, answer, modelUsed, backend:'online'|'offline', attempts, steps }。
+    //   全部失敗才丟錯，錯誤訊息要求 AI 如實說「讀不到圖」，不可以自己編造圖片內容。
+    async _interpretImageWithVisionModel(dataUrl, question, labels, opts) {
+        opts = opts || {}; const dataUrls = Array.isArray(dataUrl) ? dataUrl : [dataUrl], steps = [];
+        const step = (line) => { steps.push(line); try { this._log('🖼️ 看圖：' + line); } catch (_) { /* */ } if (opts.onStep) { try { opts.onStep(line); } catch (_) { /* */ } } };
+        const prompt = String(question || '').trim() || (dataUrls.length > 1 ? '比較這幾張圖片：逐一簡述每張的內容，再說明它們的相同點與差異。' : '詳細描述這張圖片的內容。');
+        const r = await this._visionDescribe({ images: dataUrls, prompt, step, policy: opts.policy, runLlm: () => this._interpretImageOnline(dataUrl, question, labels, { step }) });
+        if (!r.ok) throw new Error(r.error + '（看圖沒有成功。請如實告訴使用者「這次讀不到圖片」，不要自己編造或猜測圖片內容。）');
+        step('完成：' + (r.backend === 'llm' ? '線上視覺模型「' + (r.llm && r.llm.modelUsed) + '」' : '離線模型「' + r.model + '」'));
+        if (r.backend === 'llm') return Object.assign({}, r.llm, { backend: 'online', attempts: r.attempts, steps });
+        return { description: r.text, transcription: r.transcription, answer: r.answer, modelUsed: 'offline:' + r.model, visionConfirmed: true, backend: 'offline', device: r.device, note: r.note, attempts: r.attempts, steps };
     }
 
     // tw_stock_db客製: 探測結果的快取入口——同一個apiUrl+apiModel組合只會
@@ -55994,16 +56013,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // spec：{ images:[dataURL|Blob], prompt, runLlm: async () => 線上視覺模型的原始回傳, max_tokens?, policy? }
     // 回傳 { ok, backend:'llm'|'offline', llm?（runLlm 的回傳）, text?, model?, task?, device?, note?, policy, attempts:[{backend, ok, error?}] }
     async _visionDescribe(spec) {
-        spec = spec || {}; const policy = FaVlm.VISION_POLICIES[spec.policy] ? spec.policy : this._visionPolicy(); const order = FaVlm.visionOrder(policy); const attempts = [];
+        spec = spec || {}; const policy = FaVlm.VISION_POLICIES[spec.policy] ? spec.policy : this._visionPolicy(); const order = FaVlm.visionOrder(policy); const attempts = []; const step = spec.step || (() => {});
         for (let i = 0; i < order.length; i++) {
             const be = order[i];
             if (be === 'llm') {
                 if (typeof spec.runLlm !== 'function') { attempts.push({ backend: 'llm', ok: false, error: '沒有線上視覺的執行方式' }); continue; }
                 try { const r = await spec.runLlm(); attempts.push({ backend: 'llm', ok: true }); return { ok: true, backend: 'llm', llm: r, policy, attempts }; }
-                catch (e) { attempts.push({ backend: 'llm', ok: false, error: String((e && e.message) || e).slice(0, 300) }); }
+                catch (e) { attempts.push({ backend: 'llm', ok: false, error: String((e && e.message) || e).slice(0, 300) }); if (i < order.length - 1) step('線上視覺模型都不能用，改用離線模型'); }
             } else {
-                const r = await this._visionOffline(spec, i === 0); // 離線排第一（離線優先／只用離線）才可以問使用者要不要下載
-                if (r.ok) { attempts.push({ backend: 'offline', ok: true }); return { ok: true, backend: 'offline', text: r.text, model: r.model, task: r.task, device: r.device, note: r.note, policy, attempts }; }
+                // 離線排第一，或線上已經全部失敗（不然這次就讀不到圖了）：沒下載的離線模型可以問使用者要不要下載（照樣會跳確認視窗，不會偷偷下載）
+                const r = await this._visionOffline(spec, i === 0 || attempts.some((x) => x.backend === 'llm' && !x.ok));
+                if (r.ok) { attempts.push({ backend: 'offline', ok: true }); return { ok: true, backend: 'offline', text: r.text, transcription: r.transcription, answer: r.answer, model: r.model, task: r.task, device: r.device, note: r.note, policy, attempts }; }
                 attempts.push({ backend: 'offline', ok: false, error: String(r.error || '').slice(0, 300) });
             }
         }
@@ -56011,16 +56031,27 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _visionOffline(spec, allowDownload) {
         const imgs = Array.isArray(spec.images) ? spec.images : []; if (!imgs.length) return { ok: false, error: '沒有圖片可以交給離線模型' };
-        const intent = FaVlm.inferTask(spec.prompt); const gpu = await this._omGpuInfo(); const usage = await this._omUsage();
+        const step = spec.step || (() => {}); const intent = FaVlm.inferTask(spec.prompt); const gpu = await this._omGpuInfo(); const usage = await this._omUsage();
         const installed = {}; Object.entries(usage.byModel).forEach(([id, u]) => { installed[id] = u.bytes; });
-        const pk = FaVlm.pickModel(intent.task, installed, this._omSettings().model, gpu);
-        const parts = []; let last = null;
+        const preferred = this._omSettings().model, multi = imgs.length > 1;
+        const run = async (blob, i, task, prompt) => { const pk = FaVlm.pickModel(task, installed, preferred, gpu); const r = await this._imageToText({ blob, filename: 'image-' + (i + 1), task, prompt: prompt || '', model: pk.model.id, max_tokens: spec.max_tokens, fallback: !allowDownload, silent: false }); r.pickReason = pk.reason; return r; };
+        const trs = [], ans = []; let last = null;
         for (let i = 0; i < imgs.length; i++) {
             let blob; try { blob = await this._dataUrlToBlob(imgs[i]); } catch (e) { return { ok: false, error: '讀不到第 ' + (i + 1) + ' 張圖片：' + String((e && e.message) || e) }; }
-            const r = await this._imageToText({ blob, filename: 'image-' + (i + 1), task: intent.task, prompt: intent.question || '', model: pk.model.id, max_tokens: spec.max_tokens, fallback: !allowDownload, silent: false });
-            if (!r.ok) return { ok: false, error: r.error, cancelled: r.cancelled }; last = r; parts.push(imgs.length > 1 ? '圖片 ' + (i + 1) + '：' + r.text : r.text);
+            const tag = multi ? '（第 ' + (i + 1) + ' / ' + imgs.length + ' 張）' : '';
+            step('離線模型：轉錄圖中文字（OCR）' + tag + '…');
+            const o = await run(blob, i, 'ocr', ''); if (o.cancelled) return { ok: false, error: o.error, cancelled: true };
+            const trText = o.ok ? String(o.text || '').trim() : ''; if (!o.ok) step('離線 OCR 沒成功：' + String(o.error || '').slice(0, 80));
+            let anText = '';
+            if (intent.task === 'ocr') { if (!o.ok) return { ok: false, error: o.error }; last = o; }
+            else {
+                step('離線模型：' + (FaVlm.TASKS[intent.task] || intent.task) + tag + '…');
+                const m = await run(blob, i, intent.task, intent.question || ''); if (!m.ok) return { ok: false, error: m.error, cancelled: m.cancelled }; last = m; anText = String(m.text || '').trim();
+            }
+            trs.push(multi ? '圖' + (i + 1) + '：' + (trText || '沒有文字') : trText); ans.push(multi && anText ? '圖片 ' + (i + 1) + '：' + anText : anText);
         }
-        return { ok: true, text: parts.join('\n\n'), model: last.model, task: last.task, device: last.device, note: [pk.reason, last.note].filter(Boolean).join('；') };
+        const transcription = trs.join('\n').trim(), answer = ans.filter(Boolean).join('\n\n').trim();
+        return { ok: true, text: FaVlm.combineVision(transcription || '沒有文字', answer), transcription, answer, model: last.model, task: last.task, device: last.device, note: last.note };
     }
     // Python 腳本的圖片訊息：取出最後一則使用者訊息裡的圖片與全部文字提示詞，交給抽象層；線上視覺的原本路徑（依設定的模型清單逐一試）當作 runLlm
     async _pyBridgeVisionComplete(a) {
@@ -56041,10 +56072,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _pyBridgeVisionDescribe(a) {
         const u = String(a.image || ''); if (!u) throw new Error('沒有給 image');
         const dataUrl = /^data:/i.test(u) ? u : (await this._resolveImageInputForInterpretation({ imageUrl: u })).dataUrl;
-        const r = await this._visionDescribe({ images: [dataUrl], prompt: a.prompt, policy: a.policy, max_tokens: a.max_tokens, runLlm: async () => (await this._interpretImageWithVisionModel(dataUrl, a.prompt)) });
+        const r = await this._visionDescribe({ images: [dataUrl], prompt: a.prompt, policy: a.policy, max_tokens: a.max_tokens, runLlm: async () => (await this._interpretImageOnline(dataUrl, a.prompt)) });
         if (!r.ok) throw new Error('NOT_SUPPORTED: ' + r.error);
-        if (r.backend === 'llm') return { text: r.llm.description, backend: 'llm', model: r.llm.modelUsed, policy: r.policy, attempts: r.attempts };
-        return { text: r.text, backend: 'offline', model: r.model, task: r.task, device: r.device, note: r.note, policy: r.policy, attempts: r.attempts };
+        if (r.backend === 'llm') return { text: r.llm.description, transcription: r.llm.transcription, answer: r.llm.answer, backend: 'llm', model: r.llm.modelUsed, policy: r.policy, attempts: r.attempts };
+        return { text: r.text, transcription: r.transcription, answer: r.answer, backend: 'offline', model: r.model, task: r.task, device: r.device, note: r.note, policy: r.policy, attempts: r.attempts };
     }
     // 離線圖像轉文字。p：{image?, blob?, task:'caption'|'detailed'|'ocr'|'objects'|'ask', prompt?, model?, device?:'gpu'|'cpu', max_tokens?, confirmed?, fallback?, silent?}
     async _imageToText(p) {

@@ -246,6 +246,20 @@ check('loop: at most 3 calls per round', execs.length === 3 && r.ok, { execs });
   hr = await V.runAgentLoop({ messages: base(), tools: [spec('t1')], budget: bud, handoff: true, generate: hmk([tcall('t1', { q: 'a' }), tcall('t1', { q: 'a' })]), execTool: hex });
   check('handoff: a duplicate call after a good result hands off immediately', hr.handoff === true && hr.calls.filter((c) => !c.skipped).length === 1, hr);
 }
+// ---- 線上與離線統一的輸出（轉錄＋描述）
+{
+  const NL = String.fromCharCode(10);
+  const p1 = V.parseStructured('[[TRANSCRIPTION]]' + NL + 'Hello' + NL + 'World' + NL + '[[ANSWER]]' + NL + '一張海報');
+  check('structured answer: both sections parsed', p1 && p1.transcription === 'Hello' + NL + 'World' && p1.answer === '一張海報', p1);
+  check('structured answer: markers in the other order still parse', (() => { const q = V.parseStructured('[[ANSWER]]' + NL + 'a' + NL + '[[TRANSCRIPTION]]' + NL + 't'); return q && q.answer === 'a' && q.transcription === 't'; })());
+  check('structured answer: free text without markers is null (caller adds a transcription pass)', V.parseStructured('這是一隻貓') === null && V.parseStructured('[[ANSWER]] only') === null);
+  const c1 = V.combineVision('Hello', '一張海報');
+  check('combine: transcription then answer, same layout every time', c1.indexOf('【圖中文字（逐字轉錄）】') === 0 && c1.indexOf('【描述／回答】') > c1.indexOf('Hello'), c1);
+  check('combine: "no text" is stated explicitly, answer still follows', /沒有文字[\s\S]*【描述／回答】[\s\S]*一隻貓/.test(V.combineVision('沒有文字', '一隻貓')));
+  check('combine: only text (an OCR request) has no empty answer section', V.combineVision('ABC', '').indexOf('【描述／回答】') < 0);
+  check('combine: nothing at all is empty', V.combineVision('', '') === '');
+  check('the prompt asks for both markers and forbids guessing', /\[\[TRANSCRIPTION\]\][\s\S]*\[\[ANSWER\]\]/.test(V.structuredPrompt('描述', false)) && /不要猜測/.test(V.structuredPrompt('描述', false)) && /圖N/.test(V.structuredPrompt('比較', true)));
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

@@ -151,6 +151,28 @@
         if (have.length) return { model: have[0], reason: '預設模型（' + pref.id + '）不支援「' + (TASKS[task] || task) + '」，改用已下載的 ' + have[0].id };
         return { model: pref, reason: '沒有已下載的模型支援「' + (TASKS[task] || task) + '」，用預設模型並降級任務' };
     }
+    // ---------- 線上與離線統一的輸出：先「逐字轉錄」圖中的文字，再「描述／回答」----------
+    // 線上（對話式視覺模型）一次回兩段（[[TRANSCRIPTION]]／[[ANSWER]]），離線跑兩個任務（OCR、描述或問答）；兩邊最後都組成同一種文字，
+    // 呼叫端不管是哪個後端做的，拿到的欄位與格式都一樣：{ transcription, answer, description（兩段合在一起的文字） }。
+    const NO_TEXT = /^[\s（(【\[]*(?:沒有文字|沒有任何文字|無文字|圖中沒有文字|no\s+text(?:\s+(?:found|visible))?|none|n\/a)[\s）)】\]。.]*$/i;
+    function combineVision(transcription, answer) {
+        const tr = String(transcription == null ? '' : transcription).trim(), an = String(answer == null ? '' : answer).trim();
+        const hasText = !!tr && !NO_TEXT.test(tr);
+        if (hasText && an) return '【圖中文字（逐字轉錄）】\n' + tr + '\n\n【描述／回答】\n' + an;
+        if (hasText) return '【圖中文字（逐字轉錄）】\n' + tr;
+        return an ? (tr && NO_TEXT.test(tr) ? '【圖中文字（逐字轉錄）】\n沒有文字\n\n【描述／回答】\n' + an : an) : '';
+    }
+    // 把「請求的提示詞」包成要模型分兩段回答的格式（multi：多張圖，轉錄時每張圖各自標示）
+    function structuredPrompt(question, multi) {
+        return String(question || '').trim() + '\n\n【回答格式——兩段都要有，照這個標記寫】\n[[TRANSCRIPTION]]\n逐字抄寫圖片裡看得到的所有文字（保留原文、語言與換行' + (multi ? '，每張圖前面標「圖N：」' : '') + '）。圖片裡完全沒有文字就只寫「沒有文字」。只抄你真的看到的字：看不清楚就寫「（看不清楚）」，絕對不要猜測、補字或編造。\n[[ANSWER]]\n上面的要求（描述圖片內容或回答問題）。只根據圖片實際內容，看不出來的就說看不出來。';
+    }
+    // 解析模型的兩段回答；沒有標記時回 null（呼叫端再補一次轉錄）
+    function parseStructured(text) {
+        const s = String(text == null ? '' : text); const a = /\[\[\s*TRANSCRIPTION\s*\]\]/i.exec(s), b = /\[\[\s*ANSWER\s*\]\]/i.exec(s);
+        if (!a || !b) return null;
+        let tr, an; if (a.index < b.index) { tr = s.slice(a.index + a[0].length, b.index); an = s.slice(b.index + b[0].length); } else { an = s.slice(b.index + b[0].length, a.index); tr = s.slice(a.index + a[0].length); }
+        return { transcription: tr.trim(), answer: an.trim() };
+    }
     // 圖片理解的後端優先順序（設定 visionBackendPolicy）
     const VISION_POLICIES = {
         'llm-first': { label: '線上視覺模型優先，失敗退離線模型', order: ['llm', 'offline'] },
@@ -399,5 +421,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
