@@ -1517,7 +1517,13 @@
         var box = el('div', 'ai-chat-deck-error', '簡報描述檔有問題:'); var pre = el('pre', null, String(e.message || e)); box.appendChild(pre); container.appendChild(box); return;
       }
       var session = new Session(deck, raw, url);
-      container._deckPlayer = new Player(session, container);
+      var player = container._deckPlayer = new Player(session, container);
+      // 畫面被關掉（視窗關閉、切到別的對話、對話重畫）時，容器已不在頁面上：停止播放並釋放，不然旁白會在背景繼續念
+      var seen = container.isConnected, born = Date.now(), watch = setInterval(function () {
+        if (!player.alive) { clearInterval(watch); return; }
+        if (container.isConnected) { seen = true; return; }
+        if (seen || Date.now() - born > 30000) { clearInterval(watch); try { player.destroy(); } catch (e) { /* already gone */ } }
+      }, 700);
     }).catch(function (e) { status.textContent = '簡報載入失敗:' + (e && e.message || e) + '  [' + url + ']'; status.className = 'ai-chat-deck-loading ai-chat-deck-error'; });
   }
 
