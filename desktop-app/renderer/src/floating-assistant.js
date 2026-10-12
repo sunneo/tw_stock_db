@@ -16778,6 +16778,8 @@ const ADVANCED_SETTINGS_GROUPS = {
     browser: { label: '瀏覽器控制', cats: ['browser-control'], visible: true },
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
+// 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
+const ADVANCED_ENGINEERING_CATS = new Set(['llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -21573,7 +21575,7 @@ class FloatingAssistant {
         // 不建議用（多一次網路往返卻沒有token/準確度優勢，見這次計畫的實測
         // 數據），只有domain數大到像成噸曲風分類這種規模才划算，所以刻意不是
         // 預設值。
-        return (v === 'full' || v === 'off' || v === 'hierarchical') ? v : 'router';
+        return (v === 'router' || v === 'off' || v === 'hierarchical') ? v : 'full'; // 沒設定或不合法：預設模式 2（full）
     }
 
     // tw_stock_db客製: 向下相容既有程式碼裡任何直接讀this.builtinToolExposure
@@ -21952,8 +21954,8 @@ class FloatingAssistant {
             mp4DefaultDurationSeconds: 5,
             // tw_stock_db客製: 2026-09-09使用者要求的三種multi-subagent模式，
             // 見get multiSubAgentMode()的說明。預設'router'＝維持原本的兩層
-            // 委派行為不變。
-            multiSubAgentMode: 'router',
+            // 委派行為不變。2026-10-13使用者要求：預設改成 'full'（模式 2：Orchestrator + 認識全部工具的子Agent + 多領域子Agent）。
+            multiSubAgentMode: 'full',
             // tw_stock_db客製: browser_search子agent預設關閉——需要有一個部署
             // 了/browser-search路由的Cloudflare Worker（見
             // tw_stock_db_code私有repo的code/cloudflare-worker/worker.js）才有作用，browserSearchProxyUrl
@@ -21961,7 +21963,7 @@ class FloatingAssistant {
             // 那個端點背後根本沒有部署這條路由，一樣會查詢失敗——跟其他
             // 一開箱就能用的內建domain不同，不適合預設開啟（開了但沒有可用
             // 端點只會讓根模型/路由子agent誤以為有這個能力可用卻每次都失敗）。
-            browserSearchEnabled: false,
+            browserSearchEnabled: true, // 2026-10-13使用者要求：預設啟用網路搜尋（browser_search）
             browserControlEnabled: false,
             browserSearchProxyUrl: '',
             // tw_stock_db客製: 2026-09-17使用者明確要求——RAG（rag_lookup
@@ -22076,6 +22078,12 @@ class FloatingAssistant {
             // 考量；這次使用者明確要求直接預設開啟，Worker端點已經部署驗證
             // 過，不會一直失敗）。
             ttsApiEnabled: true,
+            // 工程模式（Configure 左下角）：沒打勾時，LLM Debug、語音、多媒體、YouTube、離線訓練器、離線模型管理、Domain、自訂函式、終端機、效能與限制這些頁不顯示
+            engineeringMode: false,
+            advancedDialogSize: null,   // Configure 視窗被拖曳調整過的大小 { w, h }（像素）；null＝預設大小
+            advancedSidebarWidth: 0,    // Configure 左邊欄的寬度（像素）；0＝依內容自動
+            // 離線模型（圖像、文字）都是用到才載入（lazy），需要而沒下載時直接在背景下載、不跳確認視窗
+            offlineSilentDownload: true,
             // 線上中文語音失效（或被關掉）時，改用 Kokoro 本地國語聲音（預設開）；用哪個本地聲音
             ttsZhLocalFallback: true,
             ttsDefaultZhVoice: TTS_DEFAULT_ZH_VOICE,
@@ -23205,8 +23213,8 @@ class FloatingAssistant {
                 const n = Number(raw.mp4DefaultDurationSeconds);
                 return Number.isFinite(n) && n > 0 ? Math.max(1, Math.round(n)) : 5;
             })(),
-            multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'router',
-            browserSearchEnabled: raw.browserSearchEnabled === true,
+            multiSubAgentMode: ['router', 'full', 'off', 'hierarchical'].includes(raw.multiSubAgentMode) ? raw.multiSubAgentMode : 'full',
+            browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
             // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
@@ -23289,6 +23297,10 @@ class FloatingAssistant {
             // 使用者真的自己儲存過明確的false（主動關閉過）才會維持關閉，
             // 尊重使用者自己的選擇。
             ttsApiEnabled: raw.ttsApiEnabled !== false,
+            engineeringMode: raw.engineeringMode === true,
+            advancedDialogSize: (raw.advancedDialogSize && Number(raw.advancedDialogSize.w) >= 300 && Number(raw.advancedDialogSize.h) >= 200) ? { w: Math.round(Number(raw.advancedDialogSize.w)), h: Math.round(Number(raw.advancedDialogSize.h)) } : null,
+            advancedSidebarWidth: (() => { const n = Math.round(Number(raw.advancedSidebarWidth)); return Number.isFinite(n) && n >= 90 && n <= 600 ? n : 0; })(),
+            offlineSilentDownload: raw.offlineSilentDownload !== false,
             ttsZhLocalFallback: raw.ttsZhLocalFallback !== false,
             ttsDefaultZhVoice: TTS_ZH_VOICES.some(v => v.id === raw.ttsDefaultZhVoice) ? raw.ttsDefaultZhVoice : TTS_DEFAULT_ZH_VOICE,
             ttsApiProxyUrl: String(raw.ttsApiProxyUrl || '').trim(),
@@ -40106,7 +40118,17 @@ ${sourceTool.handlerScript}
                 margin: auto;
                 max-height:100%;
                 overflow:auto;
+                resize: both; /* 右下角可以拖曳調整整個視窗的大小 */
+                box-sizing: border-box;
+                min-width: 480px;
+                min-height: 360px;
+                max-width: 98vw;
             }
+            /* 使用者調整過大小：中間的設定區跟著視窗高度伸縮（沒調整時維持原本最高 58vh 的樣子） */
+            .ai-advanced-dialog.ai-adv-sized { overflow: hidden; }
+            .ai-advanced-dialog.ai-adv-sized .ai-advanced-body { max-height: none; flex: 1 1 0; min-height: 0; }
+            .ai-advanced-splitter { width: 6px; flex: 0 0 6px; cursor: col-resize; background: transparent; margin-left: -3px; margin-right: -3px; position: relative; z-index: 2; touch-action: none; }
+            .ai-advanced-splitter:hover, .ai-advanced-splitter.dragging { background: rgba(118, 185, 0, 0.55); }
             .ai-advanced-row,
             .ai-advanced-tools-header,
             .ai-advanced-tool-item,
@@ -40366,6 +40388,8 @@ ${sourceTool.handlerScript}
                     flex-direction: column;
                     max-height: none;
                 }
+                .ai-advanced-splitter { display: none; }
+                .ai-advanced-dialog { min-width: 0; }
                 .ai-advanced-sidebar {
                     width: 100%;
                     border-right: none;
@@ -40734,7 +40758,44 @@ ${sourceTool.handlerScript}
         const modal = document.getElementById('ai-advanced-modal');
         if (!modal) return;
         modal.style.display = 'flex';
+        this._applyAdvancedLayout();
         this._renderAdvancedSettings();
+    }
+    // 套用存起來的 Configure 視窗大小與左邊欄寬度（超出目前畫面就縮到畫面內）
+    _applyAdvancedLayout() {
+        const dlg = document.querySelector('#ai-advanced-modal .ai-advanced-dialog'), side = document.getElementById('ai-advanced-sidebar'); if (!dlg) return;
+        const s = this.advancedSettings || {}, sz = s.advancedDialogSize;
+        if (sz) { const w = Math.min(sz.w, window.innerWidth - 8), h = Math.min(sz.h, window.innerHeight - 8); dlg.style.width = w + 'px'; dlg.style.height = h + 'px'; dlg.classList.add('ai-adv-sized'); this._pinAdvancedDialog(dlg, { left: Math.max(0, Math.round((window.innerWidth - w) / 2)), top: Math.max(20, Math.round((window.innerHeight - h) / 2)) }); }
+        if (side && window.innerWidth > 700 && Number(s.advancedSidebarWidth) > 0) side.style.width = Math.max(90, Math.min(Number(s.advancedSidebarWidth), Math.round(dlg.clientWidth * 0.6) || 600)) + 'px';
+    }
+    // 調整過大小的視窗改成「左上角固定」：原本置中（auto 邊界）時，拖右下角調寬度會因為視窗跟著重新置中而追不上滑鼠
+    _pinAdvancedDialog(dlg, pos) {
+        const ov = dlg.parentElement; if (ov) ov.style.justifyContent = 'flex-start';
+        dlg.style.margin = '0'; dlg.style.marginLeft = Math.max(0, Math.round(pos.left)) + 'px'; dlg.style.marginTop = Math.max(0, Math.round(pos.top) - 20) + 'px'; // 遮罩上緣有 20px 的內距
+    }
+    // 拖曳：整個視窗（右下角，瀏覽器內建的 resize）與左邊欄（中間的分隔線）；調整後的大小記在設定裡，下次開啟照舊
+    _wireAdvancedResize() {
+        const dlg = document.querySelector('#ai-advanced-modal .ai-advanced-dialog'), side = document.getElementById('ai-advanced-sidebar'), bar = document.getElementById('ai-advanced-splitter');
+        if (!dlg || dlg._faResizeWired) return; dlg._faResizeWired = true;
+        // 在右下角（調整大小的把手）按下：先把目前的實際大小固定下來並標成「調整過」，不然預設寬度的 !important 會擋住拖曳
+        dlg.addEventListener('mousedown', (e) => { const r = dlg.getBoundingClientRect(); if (e.clientX >= r.right - 24 && e.clientY >= r.bottom - 24 && !dlg.classList.contains('ai-adv-sized')) { dlg.style.width = Math.round(r.width) + 'px'; dlg.style.height = Math.round(r.height) + 'px'; this._pinAdvancedDialog(dlg, r); dlg.classList.add('ai-adv-sized'); } });
+        let first = true, timer = null;
+        if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
+            if (first) { first = false; return; }
+            if (!dlg.style.width && !dlg.style.height) return; // 不是使用者拖曳（只是內容變高變矮）
+            if (dlg.offsetWidth < 50) return; // 視窗是關著的
+            dlg.classList.add('ai-adv-sized'); clearTimeout(timer);
+            timer = setTimeout(() => { this.advancedSettings.advancedDialogSize = { w: dlg.offsetWidth, h: dlg.offsetHeight }; this._saveAdvancedSettings(); }, 400);
+        }).observe(dlg);
+        if (!bar || !side) return;
+        bar.addEventListener('pointerdown', (e) => {
+            e.preventDefault(); bar.setPointerCapture(e.pointerId); bar.classList.add('dragging');
+            const startX = e.clientX, startW = side.getBoundingClientRect().width, body = side.parentElement;
+            const move = (ev) => { const max = Math.max(120, Math.round(body.clientWidth * 0.6)); side.style.width = Math.max(90, Math.min(max, Math.round(startW + ev.clientX - startX))) + 'px'; };
+            const up = () => { bar.classList.remove('dragging'); bar.removeEventListener('pointermove', move); bar.removeEventListener('pointerup', up); bar.removeEventListener('pointercancel', up); this.advancedSettings.advancedSidebarWidth = Math.round(side.getBoundingClientRect().width); this._saveAdvancedSettings(); };
+            bar.addEventListener('pointermove', move); bar.addEventListener('pointerup', up); bar.addEventListener('pointercancel', up);
+        });
+        bar.addEventListener('dblclick', () => { side.style.width = ''; this.advancedSettings.advancedSidebarWidth = 0; this._saveAdvancedSettings(); }); // 回到依內容自動的寬度
     }
 
     _closeAdvancedModal() {
@@ -41320,12 +41381,16 @@ ${sourceTool.handlerScript}
 
     _buildAdvancedSettingsSidebarHtml() {
         const catLabels = this._buildAdvancedSettingsCatLabels();
+        if (!(this.advancedSettings && this.advancedSettings.engineeringMode) && ADVANCED_ENGINEERING_CATS.has(this._advancedSettingsActiveCat)) this._advancedSettingsActiveCat = 'llm-basic'; // 正在看的頁被藏起來了：回到第一頁
         const activeCat = this._advancedSettingsActiveCat || 'llm-basic';
+        const engineering = !!(this.advancedSettings && this.advancedSettings.engineeringMode);
         return Object.entries(this._advancedSettingsGroups).map(([groupKey, group]) => {
             if (!group.visible) return '';
+            const shown = engineering ? group.cats : group.cats.filter((c) => !ADVANCED_ENGINEERING_CATS.has(c));
+            if (group.cats.length && !shown.length) return ''; // 這一組的頁全被藏起來：整組不顯示
             const collapsed = !!this._advancedSettingsGroupCollapsed[groupKey];
-            const catsHtml = group.cats.length
-                ? group.cats.map(cat => `<div class="ai-advanced-cat${cat === activeCat ? ' active' : ''}" data-cat="${this._escapeAttr(cat)}">${this._escapeHtml(catLabels[cat] || cat)}</div>`).join('')
+            const catsHtml = shown.length
+                ? shown.map(cat => `<div class="ai-advanced-cat${cat === activeCat ? ' active' : ''}" data-cat="${this._escapeAttr(cat)}">${this._escapeHtml(catLabels[cat] || cat)}</div>`).join('')
                 : `<div class="ai-advanced-group-empty">（尚無設定項目）</div>`;
             return `
                 <div class="ai-advanced-group">
@@ -41344,7 +41409,11 @@ ${sourceTool.handlerScript}
         // setAdvancedSettingsGroupVisible()隨時呼叫都能反映到畫面（見該方法
         // 說明），不用等下一次整個視窗重新初始化。
         const sidebarEl = document.getElementById('ai-advanced-sidebar');
-        if (sidebarEl) sidebarEl.innerHTML = this._buildAdvancedSettingsSidebarHtml();
+        if (sidebarEl) {
+            sidebarEl.innerHTML = this._buildAdvancedSettingsSidebarHtml();
+            document.querySelectorAll('#ai-advanced-modal .ai-advanced-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== (this._advancedSettingsActiveCat || 'llm-basic')));
+            const engChk = document.getElementById('ai-engineering-mode-chk'); if (engChk) engChk.checked = !!this.advancedSettings.engineeringMode;
+        }
         // tw_stock_db客製: 2026-09-14——API KEY/URL/MODEL NAME單一組欄位已經
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
@@ -56106,7 +56175,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return (this._omThreadCache = r);
     }
     // 詢問使用者要不要下載：Configure 視窗開著時，聊天裡的 requestUserForm 對話框會被視窗擋住（使用者看不到、流程卡在「準備中」），所以這時改用原生確認框
+    _omSilent() { return !(this.advancedSettings && this.advancedSettings.offlineSilentDownload === false); }
     async _omAskDownload(title, description, yesLabel) {
+        if (this._omSilent()) { try { this._log('⬇️ 離線模型靜默下載：' + String(title).replace(/^要下載/, '').replace(/嗎？$/, '')); } catch (_) { /* */ } return true; }
         const modal = document.getElementById('ai-advanced-modal');
         if (modal && this._isModalOpen(modal)) return window.confirm(title + '\n\n' + description);
         const ans = await this.requestUserForm({ title, description, choices: [yesLabel, '取消'] });
@@ -56289,7 +56360,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         const usage = await this._omUsage(); const cached = (usage.byModel[model.id] || { bytes: 0 }).bytes; const need = FaVlm.estimateDownload(model, dev.order[0], cached);
         if (need > 20 * 1048576 && !p.confirmed) {
-            if (p.fallback) return { ok: false, error: '離線圖像轉文字的模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；自動備援不會自己下載。要用請直接呼叫 image_to_text，或到 Configure →「離線模型」下載。' };
+            if (p.fallback && !this._omSilent()) return { ok: false, error: '離線圖像轉文字的模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；自動備援不會自己下載。要用請直接呼叫 image_to_text，或到 Configure →「離線模型」下載。' };
             const okDl = await this._omAskDownload('要下載離線圖像模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載這一次，存在瀏覽器快取，可以在 Configure →「離線模型管理」清除）。\n推論在背景執行緒，不會卡住畫面；執行在你的電腦上，圖片不會上傳。' + (model.experimental ? '\n\n⚠️ 這是實驗性的社群轉檔，不保證能跑。' : ''), '下載並執行');
             if (!okDl) return { ok: false, cancelled: true, error: '使用者取消了下載' };
         }
@@ -56741,7 +56812,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const ensureModel = async () => { // 第一次真的要用模型才檢查／下載；自動備援不偷偷下載
             if (modelErr !== undefined) return modelErr; const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16); if (!dev.order.length) return (modelErr = dev.reason);
             const need = FaVlm.estimateDownload(model, dev.order[0], (inst.usage.byModel[model.id] || { bytes: 0 }).bytes);
-            if (need > 20 * 1048576) { if (opts.fallback || this._omDeclined.has(model.id)) return (modelErr = '離線文字模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（食譜需要用它挑工具、填欄位）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (modelErr = '使用者取消了下載'); } }
+            if (need > 20 * 1048576) { if (!this._omSilent() && (opts.fallback || this._omDeclined.has(model.id))) return (modelErr = '離線文字模型「' + model.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」\n來源：huggingface.co/' + model.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（食譜需要用它挑工具、填欄位）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (modelErr = '使用者取消了下載'); } }
             return (modelErr = null);
         };
         const gen = async (a) => { const err = await ensureModel(); if (err) throw new Error(err); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
@@ -56877,7 +56948,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const dev = FaVlm.resolveDevice(m, this._omDevicePrefOf(m), gpu.available, gpu.f16); if (!dev.order.length) return { ok: false, error: dev.reason };
             const need = FaVlm.estimateDownload(m, dev.order[0], (inst.usage.byModel[m.id] || { bytes: 0 }).bytes);
             if (need > 20 * 1048576) {
-                if (opts.fallback || this._omDeclined.has(m.id)) return { ok: false, error: '離線文字模型「' + m.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；到 Configure →「離線模型管理」下載後就會自動使用' };
+                if (!this._omSilent() && (opts.fallback || this._omDeclined.has(m.id))) return { ok: false, error: '離線文字模型「' + m.label + '」還沒下載（約 ' + FaVlm.fmtBytes(need) + '）；到 Configure →「離線模型管理」下載後就會自動使用' };
                 const okDl = await this._omAskDownload('要下載離線文字模型嗎？', '「' + m.label + '」\n來源：huggingface.co/' + m.repo + '\n大小：約 ' + FaVlm.fmtBytes(need) + '（只下載一次，存在瀏覽器快取，可在「離線模型管理」清除）。\n在你的電腦上執行，對話內容不會上傳；推論在背景執行緒，不會卡住畫面。', '下載並使用');
                 if (!okDl) { this._omDeclined.add(m.id); return { ok: false, cancelled: true, error: '使用者取消了下載' }; }
             }
@@ -56990,6 +57061,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
               <div style="font-weight:600; margin-bottom:4px;">儲存空間</div>
               <div>模型快取共 <b>${FaVlm.fmtBytes(usage.total.bytes)}</b>（${usage.total.files} 個檔案）　<button style="${btn}" data-om="refresh">重新整理</button> <button style="${btn} color:#fca5a5;" data-om="clearall">全部清除</button></div>${other}
+              <div style="margin-top:6px;"><label><input type="checkbox" data-om-set="silentDl" ${this._omSilent() ? 'checked' : ''}> 靜默下載：離線模型用到才載入，需要而還沒下載時直接在背景下載、不跳確認視窗（取消勾選＝每次下載前先問）</label></div>
               <div style="margin-top:6px;">看圖（vision）的優先順序：<select data-om-set="policy" style="${inp}">${Object.entries(FaVlm.VISION_POLICIES).map(([k, v]) => `<option value="${k}" ${this._visionPolicy() === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select><div style="color:#94a3b8;">Python 腳本的圖片訊息、interpret_image、離線路由都依這個順序；沒有可用的線上視覺模型或全部失敗時，離線模型已下載才會當備援（不會偷偷下載）。提示詞格式（OCR／描述／問答、各模型自己的格式）由這一層處理。</div></div>
             </div>
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
@@ -57030,6 +57102,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (k === 'device') this.advancedSettings.offlineDevicePreference = e.target.value === 'cpu' ? 'cpu' : 'gpu';
             else if (k === 'cores') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineMaxCpuCores = Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; }
             else if (k === 'policy') { this.advancedSettings.visionBackendPolicy = FaVlm.VISION_POLICIES[e.target.value] ? e.target.value : 'llm-first'; this.advancedSettings.offlineVisionFallback = this.advancedSettings.visionBackendPolicy !== 'llm'; }
+            else if (k === 'silentDl') this.advancedSettings.offlineSilentDownload = !!e.target.checked;
             else if (k === 'fallback') this.advancedSettings.offlineVisionFallback = !!e.target.checked;
             else if (k === 'llmFallback') this.advancedSettings.offlineLlmFallback = !!e.target.checked;
             else if (k === 'recipes') this.advancedSettings.offlineRecipes = !!e.target.checked;
@@ -61861,6 +61934,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     </div>
                     <div class="ai-advanced-body">
                         <div class="ai-advanced-sidebar" id="ai-advanced-sidebar">${this._buildAdvancedSettingsSidebarHtml()}</div>
+                        <div class="ai-advanced-splitter" id="ai-advanced-splitter" title="拖曳調整左邊欄的寬度（連點兩下回到預設）"></div>
                         <div class="ai-advanced-content">
                             <div class="ai-advanced-pane" data-pane="llm-basic">
                                 <div class="ai-advanced-stack">
@@ -62136,8 +62210,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 <div class="ai-advanced-stack">
                                     <label class="ai-advanced-label" for="ai-multi-subagent-mode">多重子Agent模式</label>
                                     <select id="ai-multi-subagent-mode" class="ai-advanced-input">
-                                        <option value="router">1. Orchestrator + 多領域子Agent（預設，兩層委派）</option>
-                                        <option value="full">2. Orchestrator + 認識全部工具的子Agent + 多領域子Agent</option>
+                                        <option value="router">1. Orchestrator + 多領域子Agent（兩層委派）</option>
+                                        <option value="full">2. Orchestrator + 認識全部工具的子Agent + 多領域子Agent（預設）</option>
                                         <option value="off">3. 不使用子Agent（全部內建工具直接掛在根層級）</option>
                                         <option value="hierarchical">4. Orchestrator + 兩層領域路由（先選類別、再選細分domain）</option>
                                     </select>
@@ -62376,6 +62450,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     </div>
                     <div class="ai-advanced-footer">
                         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                            <label title="打勾才顯示全部設定頁：LLM Model 管理、LLM Debug、子Agent、語音、多媒體、YouTube、離線訓練器、離線模型管理、Domain、自訂函式、終端機、效能與限制" style="display:inline-flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:bold; margin-right:6px;"><input type="checkbox" id="ai-engineering-mode-chk" style="cursor:pointer;">工程模式</label>
                             <span class="ai-advanced-hint" style="font-size:12px;">全部內容以 JSON 格式儲存在 persistent localStorage。</span>
                             <button type="button" id="ai-settings-export-btn" class="ai-advanced-btn">匯出設定</button>
                             <label class="ai-advanced-btn" style="cursor:pointer; display:inline-flex; align-items:center;">匯入設定<input type="file" id="ai-settings-import-input" accept=".json" style="display:none;"></label>
@@ -64701,6 +64776,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         document.getElementById('ai-stop-response-btn').onclick = () => this._requestStopResponse();
         document.getElementById('ai-advanced-close').onclick = () => this._closeAdvancedModal();
         document.getElementById('ai-advanced-done').onclick = () => this._closeAdvancedModal();
+        this._wireAdvancedResize();
+        const engineeringChk = document.getElementById('ai-engineering-mode-chk');
+        if (engineeringChk) engineeringChk.addEventListener('change', () => { this.advancedSettings.engineeringMode = engineeringChk.checked; this._saveAdvancedSettings(); this._renderAdvancedSettings(); });
         // tw_stock_db客製: Advance設定改版面太長、找不到設定為分頁式（比照
         // web/index.html的#settings-modal .modal-cat/.modal-pane同一套互動模式，
         // 這裡是floating-assistant自己的獨立CSS命名空間ai-advanced-*）。
@@ -65721,8 +65799,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._log("已儲存AI函式: " + name);
         };
         if (advancedModal) {
+            // 只有「按下」與「放開」都在視窗外的黑色遮罩上才關閉：從視窗裡拖曳（調整視窗大小、拖分隔線、選取文字）放開在視窗外，不能把視窗關掉
+            let downOnOverlay = false; advancedModal.addEventListener('mousedown', (event) => { downOnOverlay = event.target === advancedModal; });
             advancedModal.addEventListener('click', (event) => {
-                if (event.target === advancedModal) this._closeAdvancedModal();
+                if (event.target === advancedModal && downOnOverlay) this._closeAdvancedModal();
             });
         }
         if (toolEditorModal) {

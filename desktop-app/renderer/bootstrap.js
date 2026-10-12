@@ -1927,7 +1927,8 @@ function patchCloudflareWording(root) {
   // 獨立視窗，需要另外討論再做。
   const style = document.createElement("style");
   style.textContent = `
-    .ai-advanced-dialog { width: min(1200px, 96vw) !important; }
+    /* 預設寬度；使用者拖曳調整過大小（.ai-adv-sized）之後就改用他調的寬度 */
+    .ai-advanced-dialog:not(.ai-adv-sized) { width: min(1200px, 96vw) !important; }
   `;
   document.head.appendChild(style);
 
