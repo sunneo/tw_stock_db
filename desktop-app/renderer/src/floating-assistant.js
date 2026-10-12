@@ -7047,6 +7047,153 @@ const holder = {};
 return holder.FaVlm;
 })();
 /* VLM-END */
+/* ZHTTS-BEGIN */
+const FaZhTts = (function () {
+const holder = {};
+(function (module, self) {
+// 中文語音（Kokoro 的國語聲音）用的「文字 → 音素」轉換：瀏覽器端沒有 misaki 的中文 G2P（那是 Python 套件），這裡自己做一份。
+// 流程跟 misaki 的 ZHG2P（Kokoro v1.0 用的舊式路徑）一樣：數字轉中文數字 → 標點轉換 → 分詞 → 每個字轉拼音（帶聲調）→ 拼音轉 IPA 音素（聲母＋韻母＋聲調箭頭）。
+// 拼音表（聲母、韻母、聲調）改寫自 misaki 的 transcription.py（原作 pinyin-to-ipa，MIT 授權）。
+// 這個檔案是純函式、不碰 DOM、不載入外部函式庫：「文字轉拼音」「繁體轉簡體」「分詞」由呼叫端注入（瀏覽器載入 pinyin-pro、opencc-js、Intl.Segmenter；測試時用 node 裝的套件）。
+// node 與瀏覽器都能跑；嵌入成 FaZhTts（見 scripts/embed-code-ui.js）。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaZhTts = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const ZH = String.fromCharCode(0xAB67); // ꭧ（tʂ）
+    // ---- 聲母（拼音 → 音素）
+    const INITIAL = { b: 'p', c: 'ʦʰ', ch: ZH + 'ʰ', d: 't', f: 'f', g: 'k', h: 'x', j: 'ʨ', k: 'kʰ', l: 'l', m: 'm', n: 'n', p: 'pʰ', q: 'ʨʰ', r: 'ɻ', s: 's', sh: 'ʂ', t: 'tʰ', x: 'ɕ', z: 'ʦ', zh: ZH };
+    const INITIAL_KEYS = ['zh', 'ch', 'sh', 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'x', 'z']; // 先比對雙字母
+    // ---- 韻母（"0" 是聲調要放的位置；U+032F 那個「非音節」小記號已拿掉，跟 misaki 最後 replace(chr(815)) 一樣）
+    const FINAL = {
+        a: ['a0'], ai: ['ai0'], an: ['a0', 'n'], ang: ['a0', 'ŋ'], ao: ['au0'], e: ['ɤ0'], ei: ['ei0'], en: ['ə0', 'n'], eng: ['ə0', 'ŋ'], i: ['i0'],
+        ia: ['j', 'a0'], ian: ['j', 'ɛ0', 'n'], iang: ['j', 'a0', 'ŋ'], iao: ['j', 'au0'], ie: ['j', 'e0'], in: ['i0', 'n'], iou: ['j', 'ou0'], ing: ['i0', 'ŋ'],
+        iong: ['j', 'ʊ0', 'ŋ'], ong: ['ʊ0', 'ŋ'], ou: ['ou0'], u: ['u0'], uei: ['w', 'ei0'], ua: ['w', 'a0'], uai: ['w', 'ai0'], uan: ['w', 'a0', 'n'],
+        uen: ['w', 'ə0', 'n'], uang: ['w', 'a0', 'ŋ'], ueng: ['w', 'ə0', 'ŋ'], uo: ['w', 'o0'], o: ['w', 'o0'],
+        'ü': ['y0'], 'üe': ['ɥ', 'e0'], 'üan': ['ɥ', 'ɛ0', 'n'], 'ün': ['y0', 'n'],
+    };
+    const AFTER_ZH_CH_SH_R = 'ɨ0'; // zhi chi shi ri 的 i（舌尖後元音，Kokoro 用 ɨ）
+    const AFTER_Z_C_S = 'ɨ0';      // zi ci si 的 i
+    const SYLLABIC = { hm: ['h', 'm0'], hng: ['h', 'ŋ0'], m: ['m0'], n: ['n0'], ng: ['ŋ0'] };
+    const INTERJECTION = { io: ['j', 'ɔ0'], 'ê': ['ɛ0'], er: ['ɚ0'], o: ['ɔ0'] };
+    const TONE = { 1: '→', 2: '↗', 3: '↓', 4: '↘', 5: '' };
+
+    // 帶聲調數字的拼音（"ni3"、"lü4"、"shang0"）→ { initial, final, tone, special }
+    function splitPinyin(py) {
+        let s = String(py == null ? '' : py).trim().toLowerCase().replace(/v/g, 'ü');
+        const m = /^([a-zü ê]+?)([0-5])?$/.exec(s); if (!m) return null;
+        let base = m[1].trim(), tone = m[2] == null ? 5 : Number(m[2]); if (tone === 0) tone = 5;
+        if (INTERJECTION[base] && !(base === 'o' && false)) { return { special: INTERJECTION[base], tone, base }; }
+        if (SYLLABIC[base]) return { special: SYLLABIC[base], tone, base };
+        let initial = '', fin = base;
+        if (base[0] === 'y') {
+            const rest = base.slice(1);
+            if (/^(i|in|ing)$/.test(rest)) fin = rest;
+            else if (rest[0] === 'u') fin = 'ü' + rest.slice(1); // yu yue yuan yun
+            else if (rest === 'o') fin = 'o';                     // yo（跟 misaki 一樣當 o）
+            else fin = 'i' + rest;                                // ya ye yao you yan yang yong
+        } else if (base[0] === 'w') {
+            const rest = base.slice(1);
+            fin = rest === 'u' ? 'u' : 'u' + rest;                // wa wo wai wei wan wen wang weng
+        } else {
+            for (const k of INITIAL_KEYS) { if (base.startsWith(k) && base.length > k.length) { initial = k; break; } }
+            fin = base.slice(initial.length);
+            if (initial && 'jqx'.includes(initial)) fin = fin.replace(/^u(e|an|n)?$/, (x, y) => 'ü' + (y || '')); // ju qu xu → ü
+            else if (initial) { if (fin === 'ui') fin = 'uei'; else if (fin === 'un') fin = 'uen'; }
+            if (initial && fin === 'iu') fin = 'iou'; // liu jiu qiu xiu
+        }
+        // y 開頭時 iou/uen 之類也要走標準寫法（you→iou 已是；yin 之類已處理）
+        return { initial, final: fin, tone, base };
+    }
+    // 一個音節 → IPA 音素字串（含聲調箭頭）；認不得的音節回 ''
+    function syllableToIpa(py) {
+        const sp = splitPinyin(py); if (!sp) return '';
+        const t = TONE[sp.tone] != null ? TONE[sp.tone] : '';
+        if (sp.special) return sp.special.map((p) => p.replace('0', t)).join('');
+        const parts = [];
+        if (sp.initial) parts.push(INITIAL[sp.initial]);
+        let fp;
+        if (sp.final === 'i' && ['zh', 'ch', 'sh', 'r'].includes(sp.initial)) fp = [AFTER_ZH_CH_SH_R];
+        else if (sp.final === 'i' && ['z', 'c', 's'].includes(sp.initial)) fp = [AFTER_Z_C_S];
+        else fp = FINAL[sp.final];
+        if (!fp) return '';
+        return parts.concat(fp.map((p) => p.replace('0', t))).join('');
+    }
+
+    // ---- 數字：阿拉伯數字 → 中文念法（cn2an 的 an2cn 那一類，做常用的子集）
+    const DIG = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+    const UNIT = ['', '十', '百', '千'];
+    function intToZh(str) {
+        str = str.replace(/^0+(?=\d)/, ''); if (str === '0') return '零';
+        if (str.length > 12) return str.split('').map((d) => DIG[+d]).join('');
+        const groups = []; for (let i = str.length; i > 0; i -= 4) groups.unshift(str.slice(Math.max(0, i - 4), i));
+        const BIG = ['', '万', '亿'];
+        let out = '', zeroPending = false;
+        groups.forEach((g, gi) => {
+            const bigIdx = groups.length - 1 - gi; const n = +g;
+            if (n === 0) { if (out) zeroPending = true; return; }
+            let seg = '', z = false;
+            const gs = g.padStart(4, '0');
+            for (let i = 0; i < 4; i++) { const d = +gs[i]; if (d === 0) { if (seg) z = true; continue; } if (z) { seg += '零'; z = false; } seg += DIG[d] + UNIT[3 - i]; }
+            if (/^一十/.test(seg) && !out) seg = seg.slice(1); // 十、十二（開頭的「一十」念「十」）
+            if (zeroPending || (out && +gs[0] === 0)) { out += '零'; zeroPending = false; }
+            out += seg + BIG[bigIdx];
+        });
+        return out;
+    }
+    function normalizeNumbers(text) {
+        let s = String(text);
+        s = s.replace(/(\d{4})\s*年/g, (m, y) => y.split('').map((d) => DIG[+d]).join('') + '年');                     // 2024年 → 二零二四年
+        s = s.replace(/(\d+(?:\.\d+)?)\s*%/g, (m, n) => '百分之' + n);                                                  // 50% → 百分之50
+        s = s.replace(/\d+(?:\.\d+)?/g, (m) => { const [i, f] = m.split('.'); const intPart = i.length > 9 && !f ? i.split('').map((d) => DIG[+d]).join('') : intToZh(i); return f ? intPart + '点' + f.split('').map((d) => DIG[+d]).join('') : intPart; });
+        return s;
+    }
+    // ---- 標點（跟 misaki 的 map_punctuation 一樣）；Kokoro 的字彙裡只有半形與少數符號
+    function mapPunctuation(text) {
+        return String(text).replace(/[、，]/g, ', ').replace(/[。．]/g, '. ').replace(/！/g, '! ').replace(/：/g, ': ').replace(/；/g, '; ').replace(/？/g, '? ')
+            .replace(/[«《「【]/g, ' “').replace(/[»》」】]/g, '” ').replace(/（/g, ' (').replace(/）/g, ') ').replace(/[…⋯]+/g, '… ').replace(/[—─]+/g, '— ').replace(/\s+/g, ' ').trim();
+    }
+    // ---- 英文字母：Kokoro 的中文聲音念不出英文單字，這裡把字母一個一個唸出來（照中文裡念字母的習慣）
+    const LETTER = { a: 'ei1', b: 'bi4', c: 'xi1', d: 'di4', e: 'yi4', f: 'ai4 fu2', g: 'ji4', h: 'ai4 chi4', i: 'ai4', j: 'jie4', k: 'kai4', l: 'ai4 lu4', m: 'ai4 mu3', n: 'en1', o: 'ou1', p: 'pi4', q: 'qiu1', r: 'a4', s: 'ai4 si1', t: 'ti4', u: 'you1', v: 'wei1', w: 'da2 bu4 liu2', x: 'ai4 ke4 si1', y: 'wai4', z: 'zei4' };
+    function latinToIpa(run) { return run.toLowerCase().split('').map((c) => (LETTER[c] || '').split(' ').filter(Boolean).map(syllableToIpa).join('')).filter(Boolean).join(' '); }
+    const ALLOWED_OTHER = /[,.!?:;“”()—…'\-\s]/;
+    const CJK_RE = /[㐀-䶿一-鿿]+/;
+
+    // 一段文字（沒有句號等分句）→ 音素字串。deps：{ toSimplified?(s), pinyin(s) → 每個字一個「帶聲調數字」的拼音陣列, segment?(s) → 詞陣列 }
+    function textToPhonemes(text, deps) {
+        deps = deps || {}; const s = mapPunctuation(normalizeNumbers(text)); const out = [];
+        const re = /([㐀-䶿一-鿿]+)|([A-Za-z]+)|([^㐀-䶿一-鿿A-Za-z]+)/g; let m;
+        while ((m = re.exec(s))) {
+            if (m[1]) {
+                let run = m[1]; let simp = run; try { if (deps.toSimplified) { const c = deps.toSimplified(run); if (c && c.length === run.length) simp = c; } } catch (_) { /* 用原文 */ }
+                let toks = []; try { toks = deps.pinyin(simp) || []; } catch (_) { toks = []; }
+                if (toks.length !== simp.length) toks = Array.from(simp).map((ch) => { try { return (deps.pinyin(ch) || [])[0] || ''; } catch (_) { return ''; } });
+                let words = [simp]; try { if (deps.segment) { const w = deps.segment(simp); if (Array.isArray(w) && w.join('') === simp) words = w; } } catch (_) { /* 整段當一個詞 */ }
+                let pos = 0; const ws = [];
+                for (const w of words) { const n = Array.from(w).length; ws.push(toks.slice(pos, pos + n).map(syllableToIpa).join('')); pos += n; }
+                out.push(ws.filter(Boolean).join(' '));
+            } else if (m[2]) out.push(' ' + latinToIpa(m[2]) + ' ');
+            else out.push(Array.from(m[3]).map((c) => (ALLOWED_OTHER.test(c) ? c : ' ')).join(''));
+        }
+        return out.join('').replace(/\s+/g, ' ').replace(/\s+([,.!?:;])/g, '$1').trim();
+    }
+    // 整篇文字 → 一段一段的音素（每段不超過 maxLen 個字元，模型一次最多吃 510 個符號）：先照句末標點切，再把相鄰的句子併起來
+    function textToChunks(text, deps, maxLen) {
+        maxLen = maxLen || 460; const sentences = String(text == null ? '' : text).split(/(?<=[。！？!?；;…\n])/).map((x) => x.trim()).filter(Boolean);
+        const ph = []; for (const sn of sentences) { const p = textToPhonemes(sn, deps); if (!p) continue; if (p.length <= maxLen) ph.push(p); else { let cur = ''; for (const piece of p.split(/(?<=[,;:])\s*/)) { if ((cur + ' ' + piece).trim().length > maxLen && cur) { ph.push(cur.trim()); cur = piece; } else cur = (cur + ' ' + piece).trim(); } if (cur) ph.push(cur.slice(0, maxLen)); } }
+        const chunks = []; let cur = ''; for (const p of ph) { if (cur && (cur + ' ' + p).length > maxLen) { chunks.push(cur); cur = p; } else cur = cur ? cur + ' ' + p : p; } if (cur) chunks.push(cur);
+        return chunks;
+    }
+    // Kokoro 的中文聲音（v1.0 模型內建）
+    const VOICES = [
+        { id: 'zf_xiaoxiao', name: '曉曉', gender: '女' }, { id: 'zf_xiaoni', name: '曉妮', gender: '女' }, { id: 'zf_xiaoyi', name: '曉伊', gender: '女' }, { id: 'zf_xiaobei', name: '曉貝', gender: '女' },
+        { id: 'zm_yunxi', name: '雲希', gender: '男' }, { id: 'zm_yunyang', name: '雲揚', gender: '男' }, { id: 'zm_yunjian', name: '雲健', gender: '男' }, { id: 'zm_yunxia', name: '雲夏', gender: '男' },
+    ];
+    return { splitPinyin, syllableToIpa, normalizeNumbers, mapPunctuation, latinToIpa, textToPhonemes, textToChunks, intToZh, VOICES, INITIAL, FINAL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaZhTts;
+})();
+/* ZHTTS-END */
 /* RECIPE-BEGIN */
 const FaRecipe = (function () {
 const holder = {};
@@ -14114,6 +14261,9 @@ const TTS_VOICES = [
     { id: 'bm_george', name: 'George', lang: '英式英文', gender: '男', engine: 'local' },
     { id: 'bm_lewis', name: 'Lewis', lang: '英式英文', gender: '男', engine: 'local' },
 ];
+// Kokoro v1.0 模型內建的國語聲音（跟英文聲音同一個模型與同一個語音包 Cache；文字轉音素用自己的 G2P，見 FaZhTts）
+const TTS_ZH_VOICES = FaZhTts.VOICES.map((v) => ({ id: v.id, name: v.name, lang: '中文（國語，本地）', gender: v.gender, engine: 'local-zh' }));
+const TTS_DEFAULT_ZH_VOICE = 'zf_xiaoxiao';
 const TTS_VOICE_CACHE_NAME = 'kokoro-voices'; // kokoro-js自己固定用這個名稱
 const TTS_VOICE_DATA_URL_BASE = `https://huggingface.co/${TTS_MODEL_ID}/resolve/main/voices/`;
 
@@ -14703,7 +14853,9 @@ self.onmessage = async (e) => {
                 },
             });
         }
-        const audio = await _ttsEngine.generate(d.text, { voice: d.voiceId, speed: d.speed || 1.0 });
+        let audio;
+        if (d.phonemes) { const ids = _ttsEngine.tokenizer(d.phonemes, { truncation: true }).input_ids; audio = await _ttsEngine.generate_from_ids(ids, { voice: d.voiceId, speed: d.speed || 1.0 }); } // 中文：呼叫端已轉成音素
+        else audio = await _ttsEngine.generate(d.text, { voice: d.voiceId, speed: d.speed || 1.0 });
         const samples = audio.audio; // Float32Array，單聲道
         self.postMessage({ jobId, type: 'result', ok: true, audio: samples.buffer }, [samples.buffer]);
     } catch (err) {
@@ -15625,6 +15777,9 @@ const FA_ASSET_URLS = {
     // 只驗證過英文（kokoro-js套件本身的G2P只支援'a'/'b'=美式/英式英文，見
     // _synthesizeSpeech的說明），中文語音朗讀目前做不到。
     kokoroJs: 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm',
+    // 本地中文語音的文字轉拼音：pinyin-pro（字典＋多音字判斷）與 opencc-js（繁體轉簡體，讓多音字判斷更準），第一次用到才載入
+    pinyinPro: 'https://cdn.jsdelivr.net/npm/pinyin-pro@3.26.0/+esm',
+    openccT2cn: 'https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/esm/t2cn.js',
     // tw_stock_db客製: 2026-09-22使用者要求——影片轉動態GIF用的純JS GIF
     // 編碼器（瀏覽器沒有原生API可以編碼動態GIF）。gifenc輕量、零相依、
     // API簡單（quantize量化調色盤＋applyPalette轉索引色＋writeFrame逐幀
@@ -21921,6 +22076,9 @@ class FloatingAssistant {
             // 考量；這次使用者明確要求直接預設開啟，Worker端點已經部署驗證
             // 過，不會一直失敗）。
             ttsApiEnabled: true,
+            // 線上中文語音失效（或被關掉）時，改用 Kokoro 本地國語聲音（預設開）；用哪個本地聲音
+            ttsZhLocalFallback: true,
+            ttsDefaultZhVoice: TTS_DEFAULT_ZH_VOICE,
             ttsApiProxyUrl: '',
             ttsDefaultApiVoice: TTS_DEFAULT_API_VOICE,
             // tw_stock_db客製: 2026-09-14使用者要求——語速控制（1.0＝正常
@@ -23131,6 +23289,8 @@ class FloatingAssistant {
             // 使用者真的自己儲存過明確的false（主動關閉過）才會維持關閉，
             // 尊重使用者自己的選擇。
             ttsApiEnabled: raw.ttsApiEnabled !== false,
+            ttsZhLocalFallback: raw.ttsZhLocalFallback !== false,
+            ttsDefaultZhVoice: TTS_ZH_VOICES.some(v => v.id === raw.ttsDefaultZhVoice) ? raw.ttsDefaultZhVoice : TTS_DEFAULT_ZH_VOICE,
             ttsApiProxyUrl: String(raw.ttsApiProxyUrl || '').trim(),
             ttsDefaultApiVoice: TTS_API_VOICES.some(v => v.id === raw.ttsDefaultApiVoice) ? raw.ttsDefaultApiVoice : TTS_DEFAULT_API_VOICE,
             ttsDefaultSpeed: (() => {
@@ -26321,12 +26481,12 @@ ${fnData.code}
                 const text = String(parsed.text || '').trim();
                 if (!text) return JSON.stringify({ ok: false, error: '缺少text參數' });
                 const voiceArg = String(parsed.voice || '').trim();
-                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
+                if (voiceArg && !TTS_VOICES.some(v => v.id === voiceArg) && !TTS_ZH_VOICES.some(v => v.id === voiceArg) && !TTS_API_VOICES.some(v => v.id === voiceArg)) {
                     return JSON.stringify({ ok: false, error: `不認得的語音代號「${voiceArg}」，用 /media-list-voices 查完整清單` });
                 }
                 try {
                     const result = await this._synthesizeSpeech(text, voiceArg, (m) => this._log('🗣️ ' + m), parsed.speed);
-                    const allVoices = TTS_VOICES.concat(TTS_API_VOICES);
+                    const allVoices = TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES);
                     await this._deliverToolResultFile(result, 'audio_file_id', (r) => {
                         const v = allVoices.find(vv => vv.id === r.voice);
                         return `📎 已合成語音：${r.filename}（${r.durationSeconds}s，${(r.sizeBytes / 1024).toFixed(0)}KB，${v ? v.name : r.voice}）`;
@@ -26336,7 +26496,7 @@ ${fnData.code}
             },
             { type: 'object', properties: {
                 text: { type: 'string', description: '要念的文字' },
-                voice: { type: 'string', enum: TTS_VOICES.concat(TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
+                voice: { type: 'string', enum: TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES).map(v => v.id), description: '（選填）語音代號，留空依文字語言自動判斷' },
                 speed: { type: 'number', minimum: 0.5, maximum: 2.0, description: '（選填）語速倍數，0.5~2.0，留空用使用者設定的預設語速（通常是1.0）' },
             }, additionalProperties: false }
         );
@@ -26794,7 +26954,7 @@ ${fnData.code}
     // 要不要退回main thread的_getTtsEngine路徑；worker內部try/catch包住的
     // 業務邏輯錯誤（例如voice id不存在）不會有這個旗標，直接照實拋出、不
     // retry、不fallback。
-    async _generateTtsInWorker(text, voiceId, onProgress, speed) {
+    async _generateTtsInWorker(text, voiceId, onProgress, speed, phonemes) {
         const worker = await this._ensureTtsWorker();
         const jobId = (crypto.randomUUID ? crypto.randomUUID() : `tts_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
         return new Promise((resolve, reject) => {
@@ -26804,6 +26964,7 @@ ${fnData.code}
                     jobId,
                     type: 'generate',
                     text,
+                    phonemes: phonemes || undefined,
                     voiceId,
                     speed: speed || 1.0,
                     kokoroJsUrl: FA_ASSET_URLS.kokoroJs,
@@ -26920,8 +27081,10 @@ ${fnData.code}
         const isCjk = this._looksLikeCjkText(t);
         let voice = null;
         if (voiceId) {
-            voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_API_VOICES.find(v => v.id === voiceId);
+            voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_ZH_VOICES.find(v => v.id === voiceId) || TTS_API_VOICES.find(v => v.id === voiceId);
             if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
+        } else if (isCjk && !this.advancedSettings.ttsApiEnabled && this.advancedSettings.ttsZhLocalFallback !== false) {
+            voice = this._pickZhLocalVoice(null); // 線上中文語音關著，又開了「失效時改用本地」：直接用本地國語聲音
         } else if (isCjk) {
             if (!this.advancedSettings.ttsApiEnabled) {
                 return { ok: false, error: '這段文字看起來主要是中文（或其他CJK語言）——本地端（純瀏覽器、不上傳）的Kokoro語音只支援英文，讀不出正確的中文音。可以在 Advance Settings「子Agent」分頁的「語音合成子Agent」區塊啟用「中文語音API」（會把文字透過你的Cloudflare Worker送到Microsoft的免費語音服務，不是純本機），啟用後再試一次；或明確指定一個 zh-TW-* / zh-CN-* 開頭的voice代號。' };
@@ -26931,10 +27094,19 @@ ${fnData.code}
             voice = TTS_VOICES.find(v => v.id === this.advancedSettings.ttsDefaultVoice) || TTS_VOICES[0];
         }
         if (voice.engine === 'api') {
-            if (!this.advancedSettings.ttsApiEnabled) {
-                return { ok: false, error: `語音「${voice.id}」需要啟用中文語音API（Advance Settings「子Agent」分頁的「語音合成子Agent」區塊），目前是關閉的。` };
+            let r;
+            if (!this.advancedSettings.ttsApiEnabled) r = { ok: false, error: `語音「${voice.id}」需要啟用中文語音API（Advance Settings「子Agent」分頁的「語音合成子Agent」區塊），目前是關閉的。` };
+            else r = await this._synthesizeSpeechViaApi(t, voice, onProgress, effectiveSpeed);
+            // 線上中文語音失效（連不上、被擋、回傳錯誤）：照設定改用 Kokoro 本地國語聲音，不要讓這一句／這一頁沒聲音
+            if (!r.ok && this.advancedSettings.ttsZhLocalFallback !== false && /^zh-(CN|TW)/i.test(voice.id)) {
+                const zv = this._pickZhLocalVoice(voice);
+                try { this._log('⚠️ 線上中文語音失效（' + String(r.error || '').slice(0, 80) + '），改用 Kokoro 本地國語聲音「' + zv.name + '」'); } catch (_) { /* */ }
+                if (onProgress) onProgress('線上語音失效，改用本地 Kokoro 中文語音…');
+                const r2 = await this._synthesizeSpeechLocal(t, zv, onProgress, effectiveSpeed);
+                if (r2.ok) return Object.assign({}, r2, { fallback_from: voice.id, fallback_reason: String(r.error || '').slice(0, 200), note: '線上語音失效，改用 Kokoro 本地國語聲音「' + zv.name + '」' });
+                return { ok: false, error: String(r.error || '') + '；改用 Kokoro 本地中文語音也失敗：' + String(r2.error || '') };
             }
-            return this._synthesizeSpeechViaApi(t, voice, onProgress, effectiveSpeed);
+            return r;
         }
         return this._synthesizeSpeechLocal(t, voice, onProgress, effectiveSpeed);
     }
@@ -26945,25 +27117,51 @@ ${fnData.code}
     // isWorkerInfraFailure:true）才退回原本的main-thread _getTtsEngine路徑
     // （完整保留，當fallback，不是刪除）——業務邏輯錯誤（例如voice id不
     // 存在）不會有這個旗標，直接照實拋出、不retry、不fallback。
-    async _synthesizeTtsChunk(text, voice, onProgress, speed) {
+    async _synthesizeTtsChunk(text, voice, onProgress, speed, phonemes) {
         try {
-            return await this._generateTtsInWorker(text, voice.id, onProgress, speed);
+            return await this._generateTtsInWorker(text, voice.id, onProgress, speed, phonemes);
         } catch (err) {
             if (!err.isWorkerInfraFailure) throw err;
             this._log('⚠️ TTS worker無法使用，改回主執行緒合成（可能會讓畫面短暫卡頓）：' + String(err.message || err));
         }
         const engine = await this._getTtsEngine(onProgress);
-        const audio = await engine.generate(text, { voice: voice.id, speed: speed || 1.0 });
+        const audio = phonemes
+            ? await engine.generate_from_ids(engine.tokenizer(phonemes, { truncation: true }).input_ids, { voice: voice.id, speed: speed || 1.0 })
+            : await engine.generate(text, { voice: voice.id, speed: speed || 1.0 });
         return audio.audio; // Float32Array, 單聲道, TTS_SAMPLE_RATE
     }
 
+    // 本地中文（Kokoro 的國語聲音）：文字先轉成拼音音素（FaZhTts），再交給同一個模型；拼音字典與繁簡轉換第一次用到才載入
+    async _zhLoadLibs(onProgress) {
+        if (this._zhLibs) return this._zhLibs;
+        const imp = async (url) => { try { return await import(/* webpackIgnore: true */ url); } catch (e1) { try { return await import(/* webpackIgnore: true */ this._viaAssetProxy(url)); } catch (_) { throw e1; } } };
+        if (onProgress) onProgress('載入中文拼音字典（第一次較慢）…');
+        const [py, cc] = await Promise.all([imp(FA_ASSET_URLS.pinyinPro), imp(FA_ASSET_URLS.openccT2cn)]);
+        const pinyinFn = py.pinyin || (py.default && py.default.pinyin), Conv = cc.Converter || (cc.default && cc.default.Converter);
+        if (typeof pinyinFn !== 'function' || typeof Conv !== 'function') throw new Error('中文拼音函式庫載入後格式不對');
+        const conv = Conv({ from: 'tw', to: 'cn' }); let seg = null; try { seg = new Intl.Segmenter('zh-CN', { granularity: 'word' }); } catch (_) { seg = null; }
+        this._zhLibs = { toSimplified: (s) => conv(s), pinyin: (s) => pinyinFn(s, { toneType: 'num', type: 'array' }), segment: seg ? (s) => Array.from(seg.segment(s)).map((x) => x.segment) : null };
+        return this._zhLibs;
+    }
+    async _zhPhonemeChunks(text, onProgress) { const deps = await this._zhLoadLibs(onProgress); return FaZhTts.textToChunks(text, deps, 440); }
+    // 要退到本地中文時挑聲音：原本要的線上聲音是男聲就用男聲，不然用設定裡的本地國語聲音
+    _pickZhLocalVoice(apiVoice) {
+        const pref = TTS_ZH_VOICES.find((v) => v.id === this.advancedSettings.ttsDefaultZhVoice) || TTS_ZH_VOICES[0];
+        if (apiVoice && apiVoice.gender && apiVoice.gender !== pref.gender) { const alt = TTS_ZH_VOICES.find((v) => v.gender === apiVoice.gender); if (alt) return alt; }
+        return pref;
+    }
     async _synthesizeSpeechLocal(t, voice, onProgress, speed) {
-        const chunks = this._ttsChunkText(t);
+        let chunks;
+        if (voice.engine === 'local-zh') {
+            let ph; try { ph = await this._zhPhonemeChunks(t, onProgress); } catch (err) { return { ok: false, error: '中文語音的文字轉拼音失敗：' + String((err && err.message) || err) }; }
+            if (!ph.length) return { ok: false, error: '這段文字裡沒有可以念的中文內容' };
+            chunks = ph.map((p) => ({ phonemes: p }));
+        } else chunks = this._ttsChunkText(t).map((c) => ({ text: c }));
         const parts = [];
         try {
             for (let i = 0; i < chunks.length; i++) {
                 if (onProgress && chunks.length > 1) onProgress(`合成中… 第 ${i + 1}/${chunks.length} 段`);
-                const samples = await this._synthesizeTtsChunk(chunks[i], voice, onProgress, speed);
+                const samples = await this._synthesizeTtsChunk(chunks[i].text, voice, onProgress, speed, chunks[i].phonemes);
                 parts.push(samples);
             }
         } catch (err) {
@@ -27121,7 +27319,7 @@ ${fnData.code}
     }
 
     async _installTtsVoice(voiceId, onProgress) {
-        const voice = TTS_VOICES.find(v => v.id === voiceId);
+        const voice = TTS_VOICES.find(v => v.id === voiceId) || TTS_ZH_VOICES.find(v => v.id === voiceId);
         if (!voice) return { ok: false, error: `不認得的語音代號「${voiceId}」` };
         if (typeof caches === 'undefined') return { ok: false, error: '這個環境沒有 Cache API，無法安裝語音包' };
         const url = TTS_VOICE_DATA_URL_BASE + voiceId + '.bin';
@@ -35499,6 +35697,10 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         if (defaultApiSelect) defaultApiSelect.value = this.advancedSettings.ttsDefaultApiVoice;
         const apiEnabledChk = document.getElementById('ai-tts-api-enabled-chk');
         if (apiEnabledChk) apiEnabledChk.checked = this.advancedSettings.ttsApiEnabled !== false;
+        const zhFallbackChk = document.getElementById('ai-tts-zh-fallback-chk');
+        if (zhFallbackChk) zhFallbackChk.checked = this.advancedSettings.ttsZhLocalFallback !== false;
+        const zhLocalSelect = document.getElementById('ai-tts-zh-local-voice');
+        if (zhLocalSelect) { if (!zhLocalSelect.options.length) zhLocalSelect.innerHTML = TTS_ZH_VOICES.map(v => `<option value="${v.id}">${v.name}（${v.gender}）— ${v.id}</option>`).join(''); zhLocalSelect.value = this.advancedSettings.ttsDefaultZhVoice; }
         const apiProxyUrlInput = document.getElementById('ai-tts-api-proxy-url');
         if (apiProxyUrlInput) apiProxyUrlInput.value = this.advancedSettings.ttsApiProxyUrl || '';
         const speedSlider = document.getElementById('ai-tts-default-speed');
@@ -35513,7 +35715,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return;
         }
         listEl.innerHTML = [...installed].sort().map(id => {
-            const v = TTS_VOICES.find(x => x.id === id);
+            const v = TTS_VOICES.find(x => x.id === id) || TTS_ZH_VOICES.find(x => x.id === id);
             const label = v ? `${v.name}（${v.lang}／${v.gender}）— ${id}` : id;
             return `<span style="display:flex; align-items:center; gap:8px;">✅ ${label}<button type="button" class="ai-advanced-btn danger" data-tts-delete-voice="${id}" style="padding:1px 8px; margin-left:auto;">刪除</button></span>`;
         }).join('');
@@ -57920,7 +58122,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const tokens = raw.split(/\s+/);
         let voiceId = '';
         let text = raw;
-        const allVoices = TTS_VOICES.concat(TTS_API_VOICES);
+        const allVoices = TTS_VOICES.concat(TTS_ZH_VOICES, TTS_API_VOICES);
         if (tokens.length > 1 && allVoices.some(v => v.id === tokens[tokens.length - 1])) {
             voiceId = tokens.pop();
             text = tokens.join(' ');
@@ -62049,6 +62251,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <label class="ai-advanced-label">語音合成子Agent —— 中文語音（API 轉接）</label>
                                     <p class="ai-advanced-hint">中文/粵語/日文/韓文語音走 Microsoft Edge 免費神經網路語音，透過你部署的 Cloudflare Worker 的 /edge-tts 路由轉接（見你自己部署的Cloudflare Worker原始碼的README說明）。⚠️跟上面的本地英文語音不同——啟用後，text_to_speech 念中文時文字會離開瀏覽器、送到你設定的 Worker（再送到 Microsoft），不是純本機處理。</p>
                                     <div style="display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ai-tts-zh-fallback-chk" style="cursor:pointer;">
+                                        <label for="ai-tts-zh-fallback-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">當線上語音失效改用Kokoro Chinese本地模型</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">下面的中文／其他語言語音（線上轉接）失敗或被關掉時，改用 Kokoro 自己的國語聲音（曉曉、雲希…）在這台電腦的瀏覽器裡念——繁體、簡體文字都可以，文字不會離開這台電腦。第一次用要下載語音模型（約 90MB）與一個約 0.5MB 的語音包。</p>
+                                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                                        <label class="ai-advanced-label" for="ai-tts-zh-local-voice" style="margin:0; font-weight:normal; white-space:nowrap;">本地國語聲音</label>
+                                        <select id="ai-tts-zh-local-voice" class="ai-advanced-input" style="flex:1; min-width:0;"></select>
+                                    </div>
+                                    <div style="display:flex; align-items:center; gap:6px;">
                                         <input type="checkbox" id="ai-tts-api-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-tts-api-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用中文語音API</label>
                                     </div>
@@ -65363,6 +65574,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 this._saveAdvancedSettings();
             });
         }
+        const ttsZhFallbackChk = document.getElementById('ai-tts-zh-fallback-chk');
+        if (ttsZhFallbackChk) ttsZhFallbackChk.addEventListener('change', () => { this.advancedSettings.ttsZhLocalFallback = ttsZhFallbackChk.checked; this._saveAdvancedSettings(); });
+        const ttsZhLocalVoiceSelect = document.getElementById('ai-tts-zh-local-voice');
+        if (ttsZhLocalVoiceSelect) ttsZhLocalVoiceSelect.addEventListener('change', () => { if (TTS_ZH_VOICES.some(v => v.id === ttsZhLocalVoiceSelect.value)) this.advancedSettings.ttsDefaultZhVoice = ttsZhLocalVoiceSelect.value; this._saveAdvancedSettings(); });
         const ttsApiEnabledChk = document.getElementById('ai-tts-api-enabled-chk');
         if (ttsApiEnabledChk) {
             ttsApiEnabledChk.addEventListener('change', () => {
