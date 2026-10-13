@@ -25,5 +25,20 @@ const call = (ch, arg) => handlers.get(ch)({}, arg);
   await call('fa:rawfs:remove', { path: dir, recursive: true }); let gone = false; try { await fsp.stat(dir); } catch (_) { gone = true; } check('remove (recursive)', gone);
   check('rawFsPath strips the quotes the AI adds' + (process.platform === 'win32' ? ' and collapses doubled backslashes' : ''), ext.rawFsPath("\"C:\\\\Users\\\\x\"") === (process.platform === 'win32' ? "C:\\Users\\x" : "C:\\\\Users\\\\x"), ext.rawFsPath("\"C:\\\\Users\\\\x\""));
   const dr = await call('fa:rawfs:listDrives'); check('listDrives returns at least one', Array.isArray(dr) && dr.length >= 1, dr);
+  // coding_edit／coding_patch_tool／CI HTTP 的註冊（2026-10-14 搬進 main-ext.js）：完整 ctx 與「舊版 main.js 的 ctx（只有 fs、path）」兩種
+  {
+    const h2 = new Map(); const ipc2 = { handle: (ch, fn) => h2.set(ch, fn) }; let gated = 0;
+    require('../../main-ext.js').register(ipc2, { fs: fsp, path, execConfirmGate: async () => { gated++; }, net: null, dialog: { showMessageBox: async () => ({ response: 0 }) }, BrowserWindow: null });
+    check('完整 ctx：三個 IPC 都註冊了', ['fa:codingtools:edit', 'fa:codingtools:script', 'fa:ci:fetch'].every((n) => h2.has(n)), [...h2.keys()]);
+    const d2 = await fsp.mkdtemp(path.join(os.tmpdir(), 'mainext2-')); await fsp.writeFile(path.join(d2, 'a.txt'), 'one\ntwo\n');
+    const er = await h2.get('fa:codingtools:edit')({}, { cwdAbs: d2, edits: [{ path: 'a.txt', search: 'two', replace: '2' }] }); check('coding_edit 經由 main-ext 註冊的 IPC 可用', er.ok && er.applied && (await fsp.readFile(path.join(d2, 'a.txt'), 'utf8')) === 'one\n2\n', er);
+    const sr = await h2.get('fa:codingtools:script')({ sender: { id: 1 } }, { cwdAbs: d2, name: 'x', language: 'node', code: '1' }); check('script 會先經過確認閘（非工作區會被擋，但閘門沒被繞過）', !sr.ok && /工作區/.test(sr.error || ''), sr);
+    const h3 = new Map(); const ipc3 = { handle: (ch, fn) => h3.set(ch, fn) };
+    require('../../main-ext.js').register(ipc3, { fs: fsp, path });
+    const old = await h3.get('fa:codingtools:script')({ sender: { id: 1 } }, { cwdAbs: d2, name: 'x', language: 'node', code: "require('fs').writeFileSync('pwned','1')" });
+    check('舊版 main.js（沒有確認閘）：script 一律拒絕、沒有執行', !old.ok && /新版主程式/.test(old.error || '') && !require('fs').existsSync(path.join(d2, 'pwned')), old);
+    const oc = await h3.get('fa:ci:fetch')({}, { url: 'http://127.0.0.1:1/', method: 'POST' }); check('舊版 main.js（沒有對話框）：CI 的 HTTP 拒絕', !oc.ok && /新版主程式/.test(oc.error || ''), oc);
+    await fsp.rm(d2, { recursive: true, force: true });
+  }
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'main_ext: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('EXC', e && e.stack || e); process.exit(1); });

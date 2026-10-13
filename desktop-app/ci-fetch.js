@@ -61,6 +61,7 @@ function register(ipcMain, deps) {
   const { net, dialog, BrowserWindow } = deps;
   const fetchImpl = (u, init) => (net && net.fetch ? net.fetch(u, init) : fetch(u, init));
   const confirm = async (info) => {
+    if (!dialog) return false;
     if (process.env.FA_DEBUG_CI_CONFIRM === "allow") return true; // 測試用（無頭環境沒辦法按對話框）；正式使用不會設這個環境變數
     if (process.env.FA_DEBUG_CI_CONFIRM === "deny") return false;
     const win = BrowserWindow ? (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]) : null;

@@ -608,7 +608,7 @@ let fsxRootsCache = { at: 0, list: [] };
 require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now() - fsxRootsCache.at > 1500) fsxRootsCache = { at: Date.now(), list: JSON.parse(require("fs").readFileSync(ROOTS_FILE(), "utf8")) }; return fsxRootsCache.list.find((r) => r.id === id) || null; } catch (_) { return null; } } });
 // 「桌面版無限制」的 raw filesystem IPC（fa:rawfs:*）與 rawFsPath 在 main-ext.js：它在 live-update 白名單裡，
 // 之後要新增或修改這類 IPC 只要發 patch（下次啟動生效），不用重新安裝。main.js 本身（入口）仍然只能靠重新安裝更新，所以新的 IPC 一律寫進 main-ext.js。
-const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path });
+const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path, execConfirmGate, net, dialog, BrowserWindow });
 const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
 app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
 
@@ -1170,10 +1170,6 @@ ipcMain.handle("fa:git:applyPatch", async (_evt, { cwdAbs, patch, checkOnly, str
   }
 });
 
-// tw_stock_db客製: 2026-10-14——coding_edit（搜尋取代／正規表示式取代，回真正的diff）與coding_patch_tool（隨時準備的小腳本上patch），見coding-tools.js。
-require("./coding-tools.js").register(ipcMain, { execConfirmGate });
-// tw_stock_db客製: 2026-10-14——CI/CD 連線（gerrit／github_ci／jenkins 工具）的 HTTP 請求，見ci-fetch.js。寫入動作一律跳原生確認框。
-require("./ci-fetch.js").register(ipcMain, { net, dialog, BrowserWindow });
 // tw_stock_db客製: 2026-09-21——coding domain暫存工作區，見coding-workspace.js。
 ipcMain.handle("fa:codingws:open", async (_e, a = {}) => codingWs.openWorkspace({ sourceAbs: a.sourceAbs, subpath: a.subpath }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
 ipcMain.handle("fa:codingws:status", async (_e, a = {}) => codingWs.workspaceStatus({ workspaceAbs: a.workspaceAbs }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));

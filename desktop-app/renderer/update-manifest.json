@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.0.0",
-  "generatedAt": "2026-10-13T19:08:04.085Z",
+  "generatedAt": "2026-10-13T19:10:25.868Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "c09ecd09119441fff6dfc14dd52c64f0",
@@ -15,7 +15,7 @@
     "browser-control-server.js": "96bf1133f3eedacd1f0e770c038bb4bd",
     "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
-    "main-ext.js": "e87d2ad28dff3863ee3210d2e98d97e5",
+    "main-ext.js": "555cadd81b60c0f136a5227692358575",
     "preload.js": "de39831ac5c50c8d7b7ca61ea11b02c6"
   },
   "sizes": {
@@ -31,7 +31,7 @@
     "browser-control-server.js": 9379,
     "sqlite-engine.js": 22797,
     "fsx-sync.js": 5425,
-    "main-ext.js": 8509,
+    "main-ext.js": 9607,
     "preload.js": 10329
   }
 }

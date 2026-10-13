@@ -180,7 +180,8 @@ function register(ipcMain, deps) {
   deps = deps || {};
   const wrap = (fn) => async (_evt, a) => { try { return await fn(_evt, a || {}); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } };
   ipcMain.handle("fa:codingtools:edit", wrap((_e, a) => editFiles({ cwdAbs: a.cwdAbs, edits: a.edits, regex: a.regex, dryRun: !!a.dryRun })));
-  ipcMain.handle("fa:codingtools:script", wrap((e, a) => scriptTool(Object.assign({}, a, { gate: deps.execConfirmGate ? (cmd, cwd) => deps.execConfirmGate(cmd, cwd, e.sender.id) : null }))));
+  // 腳本等於執行任意程式：沒有確認閘（舊版 main.js 沒傳 execConfirmGate）就拒絕，不能放行
+  ipcMain.handle("fa:codingtools:script", wrap((e, a) => (deps.execConfirmGate ? scriptTool(Object.assign({}, a, { gate: (cmd, cwd) => deps.execConfirmGate(cmd, cwd, e.sender.id) })) : { ok: false, error: "這個動作需要新版主程式（缺少執行確認閘）：請重新安裝最新版。" })));
 }
 
 module.exports = { register, editFiles, scriptTool, listFiles };

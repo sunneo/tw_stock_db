@@ -12,6 +12,7 @@
 | `apply_git_patch` | 別人給的 patch、前兩者都不適合 | 既有：`git apply --check` 乾跑後套用。 |
 
 邏輯在主行程：`coding-edit.js`（純函式）、`coding-tools.js`（IPC `fa:codingtools:edit／script`）。
+兩個模組（含 `ci-fetch.js`）的 IPC 都由 `main-ext.js` 註冊（live-update 白名單，之後改 IPC 只要發 patch）。若 `main.js` 比 `main-ext.js` 舊（沒傳確認閘或對話框），會執行任意程式與寫入外部服務的 IPC 一律拒絕並要求重新安裝，不會在沒有確認時放行（`main_ext.test.js` 有測）。
 `unifiedDiff` 以「300 組隨機（含空檔、結尾沒換行、新增、刪除）產生的 diff 用真的 `git apply` 套回去內容必須一模一樣」驗證，過程中抓到並修好兩個 `\ No newline at end of file` 的邊界。
 
 ## 2. CI/CD 連線

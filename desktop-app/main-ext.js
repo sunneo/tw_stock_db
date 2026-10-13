@@ -161,6 +161,15 @@ function register(ipcMain, ctx) {
     return [{ path: "/", label: "/" }];
   });
 
+  // ---------- coding_edit／coding_patch_tool（coding-tools.js）與 CI/CD 連線的 HTTP（ci-fetch.js）----------
+  // 2026-10-14：模組本身也在 live-update 白名單；註冊放在這裡，之後改 IPC 名稱或參數只要發 patch。
+  // main.js 的 ctx 可能比這份 main-ext.js 舊（只有 fs、path）：缺少確認閘或對話框時，會執行任意程式／寫入外部服務的 IPC 一律拒絕，不會在沒有確認的情況下放行。
+  const needNew = (what) => ({ ok: false, error: "這個動作需要新版主程式（" + what + "）：請重新安裝最新版。" });
+  try { require("./coding-tools.js").register(ipcMain, { execConfirmGate: ctx.execConfirmGate }); }
+  catch (e) { console.warn("[main-ext] coding-tools 載入失敗：", e && e.message); }
+  try { if (ctx.dialog) require("./ci-fetch.js").register(ipcMain, { net: ctx.net, dialog: ctx.dialog, BrowserWindow: ctx.BrowserWindow }); else ipcMain.handle("fa:ci:fetch", async () => needNew("缺少對話框")); }
+  catch (e) { console.warn("[main-ext] ci-fetch 載入失敗：", e && e.message); }
+
   return { rawFsPath, detectLikelyBinary };
 }
 
