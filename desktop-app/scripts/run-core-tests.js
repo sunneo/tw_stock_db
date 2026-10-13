@@ -29,6 +29,7 @@ const suites = [
     ['英文句子理解（詞類、片語、LALR 子句文法、框架、意圖、混合內容引用）', 'renderer/src/logmine/nlu_core.test.js'],
     ['意圖推導（受詞／目標型別、簽名比對、離線計畫可行性）', 'renderer/src/logmine/intent_core.test.js'],
     ['SQL 語句切分與完整性判斷', 'renderer/src/sql/sql_split.test.js'],
+    ['檔案用途／函式做什麼的說明產生器（FaExplain）', 'renderer/src/explain/code_explain.test.js'],
     ['sqlitebrowser 純函式（過濾語法、DDL 預覽、儲存格、匯出）', 'renderer/src/sql/browser_core.test.js'],
     ['終端機 /mnt 即時 FAP 檔案系統（wasi-sh 契約、快取、寫回、衝突）', 'renderer/src/terminal/fapfs_core.test.js'],
     ['桌面版終端機 /mnt 的同步檔案後端（fsx-sync：真的碰磁碟）', 'scripts/fsx-sync.test.js'],

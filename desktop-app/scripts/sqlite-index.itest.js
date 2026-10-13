@@ -39,6 +39,28 @@ t('樹狀：目錄與檔案', async () => {
     const R = X.reader(exec); assert.deepStrictEqual((await R.tree('')).map((x) => x.type + ':' + x.name), ['f:top.c', 'd:a']); assert.deepStrictEqual((await R.tree('a')).map((x) => x.type + ':' + x.name), ['f:x.c', 'd:b']);
     await E.call('close', { db });
 });
+t('說明庫 notes.sqlite3：寫入、讀回、較新者勝、同時間 user 優先、重複初始化、重開仍在', async () => {
+    const f = path.join(tmp, 'notes.sqlite3');
+    const openNotes = async () => { const r = await E.call('open', { path: f, mode: 'new' }); return { db: r.db, exec: (sql, bind) => E.call('exec', { db: r.db, sql, bind, limit: 100000 }).then((x) => x.results) }; };
+    let h = await openNotes(); await X.notesInit(h.exec); await X.notesInit(h.exec); // 冪等
+    const t0 = 1000;
+    await X.notesWrite(h.exec, { files: { 'src/a.c': { note: '第一版說明：讀設定檔', by: 'ai', at: t0, h: 'h1' }, 'src': { note: '資料夾：原始碼', by: 'ai', at: t0 } }, symbols: { 'src/a.c#parse_config': { note: '解析設定檔並回傳錯誤碼', by: 'ai', at: t0, h: 'h1' } }, glossary: { MCU: { definition: '微控制器', by: 'user', at: t0 } } });
+    let got = await X.notesRead(h.exec); assert.deepStrictEqual(Object.keys(got.files).sort(), ['src', 'src/a.c']); assert.strictEqual(got.symbols['src/a.c#parse_config'].note, '解析設定檔並回傳錯誤碼'); assert.strictEqual(got.glossary.MCU.definition, '微控制器');
+    // 較舊的不能蓋掉較新的；較新的可以蓋掉較舊的
+    await X.notesWrite(h.exec, { files: { 'src/a.c': { note: '舊的、不該生效', by: 'ai', at: t0 - 1 } } }); got = await X.notesRead(h.exec); assert.strictEqual(got.files['src/a.c'].note, '第一版說明：讀設定檔');
+    await X.notesWrite(h.exec, { files: { 'src/a.c': { note: '第二版說明：讀並驗證設定檔', by: 'ai', at: t0 + 5, h: 'h2' } } }); got = await X.notesRead(h.exec); assert.strictEqual(got.files['src/a.c'].note, '第二版說明：讀並驗證設定檔'); assert.strictEqual(got.files['src/a.c'].h, 'h2');
+    // 同一個時間點：user 蓋過 ai，ai 蓋不過 user
+    await X.notesWrite(h.exec, { files: { 'src/a.c': { note: '使用者改的', by: 'user', at: t0 + 5 } } }); got = await X.notesRead(h.exec); assert.strictEqual(got.files['src/a.c'].note, '使用者改的'); assert.strictEqual(got.files['src/a.c'].by, 'user');
+    await X.notesWrite(h.exec, { files: { 'src/a.c': { note: 'ai 想蓋掉', by: 'ai', at: t0 + 5 } } }); got = await X.notesRead(h.exec); assert.strictEqual(got.files['src/a.c'].note, '使用者改的');
+    // 多行（表格、清單）要原樣保存；超過一批（150 筆）也要全部寫進去
+    const many = {}; for (let i = 0; i < 400; i++) many['m/f' + i + '.c'] = { note: '第 ' + i + ' 個檔案\n| a | b |\n|---|---|\n| 1 | 2 |', by: 'ai', at: t0 };
+    await X.notesWrite(h.exec, { files: many }); const cn = await X.notesCounts(h.exec); assert.strictEqual(cn.files, 402); assert.strictEqual(cn.symbols, 1); assert.strictEqual(cn.glossary, 1);
+    got = await X.notesRead(h.exec); assert.ok(got.files['m/f399.c'].note.indexOf('\n| a | b |') > 0);
+    // 路徑裡有 # 時（既有鍵格式 path#name 以第一個 # 切）：至少不丟資料、不拋錯（這是既有鍵格式的限制，不是這層新增的）
+    await X.notesWrite(h.exec, { symbols: { 'a#b/x.c#fn': { note: '路徑含井字號的定義說明', by: 'ai', at: t0 } } }); got = await X.notesRead(h.exec); assert.ok(Object.keys(got.symbols).some((k) => k.endsWith('#fn')));
+    await E.call('close', { db: h.db });
+    h = await openNotes(); got = await X.notesRead(h.exec); assert.strictEqual(got.files['src/a.c'].note, '使用者改的'); assert.strictEqual((await X.notesCounts(h.exec)).files, 402); await E.call('close', { db: h.db });
+});
 t('規模：6 萬檔、300 萬符號寫入，引擎端記憶體不隨規模成長', async () => {
     const { db, exec } = await open('d.db'); const B = X.builder(exec, { batch: 200 }); await B.init(); const rss0 = process.memoryUsage().rss; const t0 = Date.now();
     for (let i = 0; i < 20000; i++) { B.addFile('drv/d' + (i % 300) + '/f' + i + '.h', rec('c', Array.from({ length: 150 }, (_, k) => ({ n: 'R' + i + '_' + k, k: 'macro', l: k, sig: '0x' + k })), [], [])); if (B.pending() > 4000) await B.flush(); }

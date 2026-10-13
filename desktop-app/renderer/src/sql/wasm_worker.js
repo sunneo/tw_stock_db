@@ -8,7 +8,7 @@
 let __ready = null, __api = null, __sqlite3 = null, __vfs = null, __cur = null, __idle = null, __wbError = null, __busy = false;
 async function __init() {
     const mod = await import(self.__SQLITE_WASM_URL);
-    __sqlite3 = await mod.default({ print() {}, printErr() {} });
+    __sqlite3 = await mod.default(Object.assign({ print() {}, printErr() {} }, self.__SQLITE_WASM_OPTS || {}));   // __SQLITE_WASM_OPTS：頁面指定 wasm 位置（匯出頁把 wasm 內嵌成 blob 網址）
     try { __sqlite3.config.error = () => {}; __sqlite3.config.warn = () => {}; __sqlite3.config.log = () => {}; } catch (_) { /* 版本沒有這些設定就算了 */ }
     __api = FaWasmOps.create(__sqlite3, FaSqlSplit);
 }

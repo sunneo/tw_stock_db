@@ -129,5 +129,59 @@
         };
         return R;
     }
-    return { builder, reader, insertMany, run, rows, one, DDL, INDEXES, SCHEMA_VERSION, splitNameDefault, dirOf, baseOf };
+    // ---- 說明庫 notes.sqlite3（DESIGN.project-index.md §17.2）----
+    // 跟索引庫（index.sqlite3，重建時整檔取代）分開：這個檔案重建索引時絕不碰，才不會把使用者與 AI 寫的說明洗掉。
+    // 寫入是「較新者勝」的 upsert（ts 較大者贏；同一個 ts 時 author='user' 優先），所以兩台機器各自寫、再合併都不會讓舊說明蓋掉新說明。
+    // 欄位名刻意避開 SQL 關鍵字（不用 by／at）。
+    const NOTES_SCHEMA_VERSION = 1;
+    const NOTES_DDL = [
+        'CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)',
+        'CREATE TABLE IF NOT EXISTS file_notes(path TEXT PRIMARY KEY, note TEXT NOT NULL, author TEXT, ts INTEGER NOT NULL DEFAULT 0, hash TEXT)',
+        'CREATE TABLE IF NOT EXISTS sym_notes(path TEXT NOT NULL, name TEXT NOT NULL, note TEXT NOT NULL, author TEXT, ts INTEGER NOT NULL DEFAULT 0, hash TEXT, PRIMARY KEY(path, name))',
+        'CREATE TABLE IF NOT EXISTS glossary(term TEXT PRIMARY KEY, definition TEXT NOT NULL, author TEXT, ts INTEGER NOT NULL DEFAULT 0)',
+    ];
+    const NOTES_BATCH = 150;
+    async function notesInit(exec) {
+        for (const d of NOTES_DDL) await run(exec, d);
+        await run(exec, "INSERT INTO meta(k, v) VALUES('schema_version', ?) ON CONFLICT(k) DO NOTHING", [String(NOTES_SCHEMA_VERSION)]);
+    }
+    const newerSql = (t) => 'excluded.ts > ' + t + '.ts OR (excluded.ts = ' + t + ".ts AND excluded.author = 'user' AND IFNULL(" + t + ".author, '') <> 'user')";
+    const tsOf = (v) => { const n = Number(v && (v.at != null ? v.at : v.ts)); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+    const authorOf = (v) => (v && v.by === 'user' ? 'user' : (v && v.author === 'user' ? 'user' : 'ai'));
+    // notes 的形狀同 _repoIndexSnapshot().notes：{files:{path:{note,by,at,h}}, symbols:{'path#name':{...}}, glossary:{term:{definition,by,at}}}
+    async function notesWrite(exec, notes) {
+        notes = notes || {};
+        const fileRows = [], symRows = [], termRows = [];
+        for (const [p, v] of Object.entries(notes.files || {})) if (v && typeof v.note === 'string' && v.note) fileRows.push([p, v.note, authorOf(v), tsOf(v), v.h == null ? null : String(v.h)]);
+        for (const [k, v] of Object.entries(notes.symbols || {})) { const i = k.indexOf('#'); if (i < 1 || !v || typeof v.note !== 'string' || !v.note) continue; symRows.push([k.slice(0, i), k.slice(i + 1), v.note, authorOf(v), tsOf(v), v.h == null ? null : String(v.h)]); }
+        for (const [t, v] of Object.entries(notes.glossary || {})) if (v && v.definition) termRows.push([t, String(v.definition), authorOf(v), tsOf(v)]);
+        let written = 0;
+        const flush = async (table, cols, conflict, batch) => {
+            const ph = '(' + cols.map(() => '?').join(',') + ')';
+            const sets = cols.filter((c) => conflict.indexOf(c) < 0).map((c) => c + '=excluded.' + c).join(', ');
+            const sql = 'INSERT INTO ' + table + '(' + cols.join(',') + ') VALUES ' + batch.map(() => ph).join(',') + ' ON CONFLICT(' + conflict.join(',') + ') DO UPDATE SET ' + sets + ' WHERE ' + newerSql(table);
+            await run(exec, sql, batch.reduce((a, r) => a.concat(r), []));
+            written += batch.length;
+        };
+        await run(exec, 'BEGIN');
+        try {
+            for (let i = 0; i < fileRows.length; i += NOTES_BATCH) await flush('file_notes', ['path', 'note', 'author', 'ts', 'hash'], ['path'], fileRows.slice(i, i + NOTES_BATCH));
+            for (let i = 0; i < symRows.length; i += NOTES_BATCH) await flush('sym_notes', ['path', 'name', 'note', 'author', 'ts', 'hash'], ['path', 'name'], symRows.slice(i, i + NOTES_BATCH));
+            for (let i = 0; i < termRows.length; i += NOTES_BATCH) await flush('glossary', ['term', 'definition', 'author', 'ts'], ['term'], termRows.slice(i, i + NOTES_BATCH));
+            await run(exec, 'COMMIT');
+        } catch (e) { try { await exec('ROLLBACK'); } catch (_) { /* 已回滾 */ } throw e; }
+        return { rows: written };
+    }
+    async function notesRead(exec) {
+        const out = { files: {}, symbols: {}, glossary: {} };
+        for (const r of await rows(exec, 'SELECT path, note, author, ts, hash FROM file_notes')) out.files[r[0]] = { note: r[1], by: r[2], at: r[3], h: r[4] == null ? undefined : r[4] };
+        for (const r of await rows(exec, 'SELECT path, name, note, author, ts, hash FROM sym_notes')) out.symbols[r[0] + '#' + r[1]] = { note: r[2], by: r[3], at: r[4], h: r[5] == null ? undefined : r[5] };
+        for (const r of await rows(exec, 'SELECT term, definition, author, ts FROM glossary')) out.glossary[r[0]] = { definition: r[1], by: r[2], at: r[3] };
+        return out;
+    }
+    async function notesCounts(exec) {
+        const n = async (t) => Number((await rows(exec, 'SELECT count(*) FROM ' + t))[0][0]);
+        return { files: await n('file_notes'), symbols: await n('sym_notes'), glossary: await n('glossary') };
+    }
+    return { builder, reader, insertMany, run, rows, one, DDL, INDEXES, SCHEMA_VERSION, splitNameDefault, dirOf, baseOf, notesInit, notesWrite, notesRead, notesCounts, NOTES_DDL, NOTES_SCHEMA_VERSION };
 });

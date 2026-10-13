@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     readFile: (path, encoding) => ipcRenderer.invoke("fa:rawfs:readFile", { path, encoding }),
     writeFile: (path, payload) => ipcRenderer.invoke("fa:rawfs:writeFile", { path, ...payload }),
     remove: (path, recursive) => ipcRenderer.invoke("fa:rawfs:remove", { path, recursive }),
+    copyChunked: (src, dst, partBytes) => ipcRenderer.invoke("fa:rawfs:copyChunked", { src, dst, partBytes }),
     find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
     listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
   },

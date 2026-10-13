@@ -24,7 +24,7 @@ h1.t{font-size:20px;margin:0 0 8px;word-break:break-all}h1,h2,h3{line-height:1.3
 a.l,.md a{color:var(--ac);cursor:pointer;text-decoration:none}a.l:hover,.md a:hover{text-decoration:underline}
 table{border-collapse:collapse;width:100%;margin:6px 0}td,th{border-bottom:1px solid var(--bd);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}th{background:var(--sf);position:sticky;top:0}
 .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--sf);border:1px solid var(--bd);font-size:12px;color:var(--mut);margin-right:4px}
-.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0}.err{color:var(--er);white-space:pre-wrap}
+.note{background:var(--hl);border-radius:6px;padding:6px 10px;margin:8px 0;white-space:pre-wrap}.err{color:var(--er);white-space:pre-wrap}
 .md ul,.md ol{padding-left:22px}.md blockquote{border-left:3px solid var(--bd);margin:6px 0;padding:0 10px;color:var(--mut)}
 svg.dg{max-width:100%;height:auto;background:var(--sf);border:1px solid var(--bd);border-radius:6px;margin:6px 0}svg.dg text{fill:var(--fg);font:12px sans-serif}svg.dg rect{fill:var(--bg);stroke:var(--ac)}svg.dg path{stroke:var(--mut);fill:none}
 .ask{display:flex;gap:8px}.ask input{flex:1;padding:9px 11px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}
@@ -33,19 +33,31 @@ button.b{padding:7px 14px;border:1px solid var(--ac);background:var(--ac);color:
 .qa{border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:12px 0}.qa .q{font-weight:600;margin-bottom:4px}
 textarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);resize:vertical}
 .res{overflow:auto;max-height:60vh;border:1px solid var(--bd);border-radius:6px;margin-top:8px}
+#panes{flex:1;display:flex;min-width:0;min-height:0}
+#dock{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);overflow:auto;padding:10px 16px 40px;flex:none}
+#dock .dh{display:flex;align-items:center;gap:8px;margin-bottom:4px}#dock .dh h1{margin:0;font-size:16px;flex:1}
+#dock .dh select,#dock .dh button{padding:2px 6px;border:1px solid var(--bd);border-radius:5px;background:var(--bg);color:var(--fg);font-size:12px;cursor:pointer}
+#split{flex:none;background:var(--bd);opacity:.6}#split:hover,#split.on{background:var(--ac);opacity:1}
+#app[data-dock=right]{flex-direction:row}#app[data-dock=right] #dock{width:var(--dw,380px)}#app[data-dock=right] #split{width:5px;cursor:col-resize}
+#app[data-dock=bottom]{flex-direction:column}#app[data-dock=top]{flex-direction:column-reverse}
+#app[data-dock=bottom] #dock,#app[data-dock=top] #dock{height:var(--dh,300px)}#app[data-dock=bottom] #split,#app[data-dock=top] #split{height:5px;cursor:row-resize}
+#app.nodock #dock,#app.nodock #split{display:none}
+#fapst{cursor:pointer;color:var(--mut);font-size:12px;border:1px dashed var(--bd);border-radius:10px;padding:0 8px}#fapst.ok{color:var(--ok);border-color:var(--ok)}#fapst:hover{border-color:var(--ac)}
+a.src{cursor:pointer;text-decoration:none;margin-left:3px;font-size:12px}a.src:hover{filter:brightness(1.3)}
+.ned{margin:8px 0}.ned textarea{min-height:64px}.ned .ns{font-size:12px;color:var(--mut);margin-left:8px}
+#srcv{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50}#srcv[hidden]{display:none}
+.sv-box{width:min(1150px,95vw);height:90vh;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}
+.sv-bar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sf)}.sv-bar b{word-break:break-all}
+#sv-c{flex:1;min-height:0;width:100%;display:block;background:#0d1117}
 @media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}
 </style></head><body>
-<header><h1 id="ttl"></h1><span class="st" id="stat"></span><nav id="nav"></nav></header>
+<header><h1 id="ttl"></h1><span class="st" id="stat"></span><span id="fapst" title="讀原始碼與讀寫說明需要先授權專案資料夾"></span><nav id="nav"></nav></header>
 <div id="load"><div id="lmsg">載入中…</div><div id="bar"><i id="barfill"></i></div></div>
-<div id="app" style="display:none">
+<div id="app" style="display:none" data-dock="right"><div id="panes">
 <section class="pane" id="p-wiki"><div class="side"><input id="wq" placeholder="搜尋頁面…"><div class="list" id="wl"></div></div><div class="main" id="wm"></div></section>
 <section class="pane" id="p-files"><div class="side"><input id="fq" placeholder="搜尋檔案路徑…"><div class="list" id="fl"></div></div><div class="main" id="fm"></div></section>
 <section class="pane" id="p-syms"><div class="side"><input id="sq" placeholder="搜尋函式／類別名稱或說明…"><select id="sk"><option value="">所有種類</option></select><div class="list" id="sl"></div></div><div class="main" id="sm"></div></section>
-<section class="pane" id="p-ask"><div class="main" id="am" style="max-width:980px">
-<h1 class="t">問答（離線，不需要網路或AI）</h1>
-<div class="mut">像 doxygen＋語意搜尋：依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>
-<div class="ask" style="margin-top:10px"><input id="aq" placeholder="例如：parse_config 是做什麼的？／main 在哪裡定義？／誰用到 Logger？／登入流程相關的檔案" autofocus><button class="b" id="ago">問</button></div>
-<div class="chips" id="achips"></div><div id="aout"></div></div></section>
+
 <section class="pane" id="p-sql"><div class="main" id="qm" style="max-width:1100px">
 <h1 class="t">SQL 查詢（內嵌 SQLite）</h1>
 <div class="mut">資料表：files、symbols、imports（src→dst，檔案之間的引用）、uses（file_id 呼叫了 symbol_id）、pages、glossary、meta；檢視：v_symbols、v_imports、v_uses。id 是序號（從0開始）。Ctrl+Enter 執行。</div>
@@ -54,16 +66,31 @@ textarea{width:100%;min-height:110px;padding:8px;border:1px solid var(--bd);bord
 <div style="margin:8px 0;display:flex;gap:8px;align-items:center"><button class="b" id="qrun">執行</button><button class="b s" id="qcsv">下載CSV</button><span class="mut" id="qinfo"></span></div>
 <div class="res" id="qres"></div>
 <details style="margin-top:12px"><summary class="mut">資料表結構</summary><pre id="qschema"></pre></details></div></section>
-</div>
+</div><div id="split" title="拖曳調整大小，雙擊還原"></div>
+<aside id="dock">
+<div class="dh"><h1>問答（離線，不需要網路或AI）</h1><select id="dockpos" title="停靠位置"><option value="right">靠右</option><option value="bottom">靠下</option><option value="top">靠上</option></select><button id="dockx" title="收起">✕</button></div>
+<label class="mut" style="font-size:12px" id="aimlab" title="「🧠 解釋」查到事實後，是否再用離線文字模型把它寫成一句話（第一次要下載模型；關掉就只用程式組出的說明）"><input type="checkbox" id="aimodel"> 解釋時用離線模型潤飾</label>
+<div class="mut">依索引裡的定義、註解、依賴與呼叫關係回答。中英文都可以，函式名稱請照原樣寫。</div>
+<div class="ask" style="margin-top:10px"><input id="aq" placeholder="例如：parse_config 是做什麼的？／誰用到 Logger？"><button class="b" id="ago">問</button></div>
+<div class="chips" id="achips"></div><div id="aout"></div>
+</aside></div>
+<div id="srcv" hidden><div class="sv-box"><div class="sv-bar"><b id="sv-t"></b><span class="mut" id="sv-s"></span><span style="flex:1"></span><button class="b s" id="sv-pick" hidden>選擇專案資料夾</button><button class="b s" id="sv-x">✕ 關閉（Esc）</button></div><div id="sv-msg" class="note" style="margin:8px 12px" hidden></div><canvas id="sv-c"></canvas></div></div>
 <script id="cfg" type="application/json">__CFG__</script>
 <script id="payload" type="application/json">__PAYLOAD__</script>
+<script id="aipack" type="application/json">__AIPACK__</script>
+<script>
+__DECKCODE__
+</script>
+<script>
+__WASMENGINE__
+</script>
 <script>
 __RUNTIME__
 </script>
 <script>
 (function(){
 var CFG=JSON.parse(document.getElementById('cfg').textContent);
-var DB=null,IX=null,SQLDB=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[];
+var DB=null,IX=null,SQLDB=null,SQLJS=null,PAGES=[],GLOSS={},fileMap={},LASTCOLS=[],LASTROWS=[],CURF=null,CURS=null;
 function $(s){return document.querySelector(s)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function b64u8(b){var bin=atob(b),n=bin.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u}
@@ -74,12 +101,13 @@ function loadScript(text){return new Promise(function(res,rej){var u=URL.createO
 function rows(sql){var r=SQLDB.exec(sql);return r.length?r[0].values:[]}
 function F(i){return DB.files[i]||['?','',0,'']}
 function S(i){return DB.syms[i]}
+function srcLink(ref){var m=/^(.*?):(\d+)(?:-(\d+))?$/.exec(ref)||[ref,ref];return '<a class="src" data-src="'+esc(m[1])+(m[2]?':'+m[2]+(m[3]?'-'+m[3]:''):'')+'" title="看原始碼">🧾</a>'}
 function link(path,label){return '<a class="l" data-go="file:'+esc(path)+'">'+esc(label||path)+'</a>'}
 function slink(name){return '<a class="l" data-go="sym:'+esc(name)+'">'+esc(name)+'</a>'}
 /* ---- 迷你Markdown ---- */
 function inline(t){
   t=esc(t);
-  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\d+(-\d+)?$/,'');return fileMap[p]!=null?'<a class="l" data-go="file:'+esc(p)+'"><code>'+c+'</code></a>':(IX&&IX.nameMap[c.toLowerCase()]?'<a class="l" data-go="sym:'+esc(c)+'"><code>'+c+'</code></a>':'<code>'+c+'</code>')});
+  t=t.replace(/`([^`]+)`/g,function(m,c){var p=c.replace(/:\d+(-\d+)?$/,'');return (fileMap[p]!=null||(PARTS&&/^[\w.+\-@\/]+\.[A-Za-z0-9]{1,6}$/.test(p)))?'<a class="l" data-go="file:'+esc(p)+'"><code>'+c+'</code></a>'+(p!==c?srcLink(c):''):(IX&&IX.nameMap[c.toLowerCase()]?'<a class="l" data-go="sym:'+esc(c)+'"><code>'+c+'</code></a>':'<code>'+c+'</code>')});
   t=t.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\(page:([^)]+)\)/g,'<a class="l" data-go="page:$2">$1</a>').replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
   return t;
 }
@@ -136,7 +164,7 @@ async function boot(){
     setLoad('載入資料庫…',10);
     var dbBytes=await gunzip(b64u8(P.db),CFG.sql.gz.db);
     var SQL=await initSqlJs({wasmBinary:wasm.buffer.slice(wasm.byteOffset,wasm.byteOffset+wasm.byteLength)});
-    SQLDB=new SQL.Database(dbBytes);
+    SQLJS=SQL;SQLDB=new SQL.Database(dbBytes);
     setLoad('讀取資料表…',18);await tick();
     DB={root:CFG.root,files:rows('SELECT path,lang,lines,doc,note FROM files ORDER BY id'),syms:rows('SELECT name,kind,file_id,line,doc,sig,note FROM symbols ORDER BY id'),imps:rows('SELECT src,dst FROM imports'),uses:rows('SELECT file_id,symbol_id FROM uses')};
     PAGES=rows('SELECT id,title,kind,auto,md FROM pages').map(function(r){return {id:r[0],title:r[1],kind:r[2],auto:!!r[3],md:r[4]}});
@@ -146,6 +174,7 @@ async function boot(){
     var j=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(P.data),CFG.dataGz)));
     DB=j;PAGES=j.pages||[];GLOSS=j.glossary||{};
   }
+  Object.assign(FOLD,CFG.folderNotes||{});
   DB.files.forEach(function(f,i){fileMap[f[0]]=i});
   setLoad('建立檢索索引…',22);await tick();
   IX=_faCodeIndexNew(DB);
@@ -153,16 +182,21 @@ async function boot(){
   while(!_faCodeIndexTokens(IX,120)){setLoad('建立檢索索引… '+Math.round((IX.ti+IX.tf)/total*100)+'%',22+78*(IX.ti+IX.tf)/total);await tick()}
   $('#load').style.display='none';$('#app').style.display='flex';
   $('#stat').textContent=CFG.stats.files+' 個檔案 · '+CFG.stats.symbols+' 個定義 · '+CFG.stats.imports+' 條引用 · '+CFG.stats.uses+' 條呼叫'+(CFG.complete?'':' · （部分索引）')+' · 產生於 '+new Date(CFG.generated).toLocaleString();
-  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答']];if(SQLDB)tabs.push(['sql','SQL']);
+  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答 ▸']];if(SQLDB)tabs.push(['sql','SQL']);
   $('#nav').innerHTML=tabs.map(function(t){return '<button data-t="'+t[0]+'">'+t[1]+'</button>'}).join('');
   $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};
-  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();
-  show(PAGES.length?'wiki':'ask');
+  initWiki();initFiles();initSyms();initAsk();if(SQLDB)initSql();initDock();initSrcView();
+  show('wiki');fapInit();
 }
-function show(t){document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});if(t==='ask')$('#aq').focus()}
+function show(t){if(t==='ask'){dockOpen(!DOCK.open);return}
+  document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){if(b.dataset.t!=='ask')b.classList.toggle('on',b.dataset.t===t)})}
 function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);
-  if(k==='file'){show('files');showFile(v)}else if(k==='sym'){show('syms');showSym(v)}else if(k==='page'){show('wiki');showPage(v)}}
-document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go)}});
+  if(k==='file'){show('files');CURF=v;showFileX(v)}else if(k==='sym'){show('syms');CURS=v;showSymX(v)}else if(k==='page'){show('wiki');showPage(v)}else if(k==='folder'){show('files');showFolder(v)}}
+document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go);return}
+  a=e.target.closest('[data-src]');if(a){e.preventDefault();var m=/^(.*?)(?::(\d+)(?:-(\d+))?)?$/.exec(a.dataset.src);openSrc(m[1],+m[2]||0,+m[3]||0);return}
+  a=e.target.closest('[data-ai]');if(a){e.preventDefault();aiExplain(a);return}
+  a=e.target.closest('[data-aifolder]');if(a){e.preventDefault();aiFolder(a);return}
+  a=e.target.closest('[data-nsave]');if(a){e.preventDefault();saveNoteBtn(a)}});
 /* ---- 百科 ---- */
 function initWiki(){
   function render(){var q=$('#wq').value.trim().toLowerCase();var h='';
@@ -177,11 +211,11 @@ function showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p
 /* ---- 檔案 ---- */
 function initFiles(){
   var tree={};DB.files.forEach(function(f,i){var segs=f[0].split('/'),n=tree;for(var k=0;k<segs.length-1;k++){n=(n.d=n.d||{})[segs[k]]=(n.d&&n.d[segs[k]])||{}}(n.f=n.f||[]).push(i)});
-  function node(n,depth){var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/</summary><div>'+node(n.d[k],depth+1)+'</div></details>'});
+  function node(n,depth,pre){pre=pre||'';var h='';Object.keys(n.d||{}).sort().forEach(function(k){h+='<details'+(depth<1?' open':'')+'><summary>'+esc(k)+'/ <a class="src" data-go="folder:'+esc(pre+k)+'" title="這個資料夾的說明">ⓘ</a></summary><div>'+node(n.d[k],depth+1,pre+k+'/')+'</div></details>'});
     (n.f||[]).slice(0,300).forEach(function(i){h+='<a data-go="file:'+esc(F(i)[0])+'">'+esc(F(i)[0].split('/').pop())+'<span class="k">'+(IX.fileSyms[i]||[]).length+'</span></a>'});return h}
   var lazy=null;
   function render(){var q=$('#fq').value.trim().toLowerCase();
-    if(!q){if(!lazy)lazy=node(tree,0);$('#fl').innerHTML=lazy;return}
+    if(!q){if(!lazy)lazy=node(tree,0,'');$('#fl').innerHTML=lazy;return}
     var h='',c=0;for(var i=0;i<DB.files.length&&c<200;i++){if(DB.files[i][0].toLowerCase().indexOf(q)>=0){c++;h+='<a data-go="file:'+esc(DB.files[i][0])+'">'+esc(DB.files[i][0])+'</a>'}}
     $('#fl').innerHTML=h||'<div class="mut" style="padding:8px">沒有符合的檔案</div>'}
   $('#fq').oninput=render;render();
@@ -190,10 +224,11 @@ function initFiles(){
 function showFile(path){var i=fileMap[path];if(i==null){$('#fm').innerHTML='<div class="note">索引裡沒有這個檔案</div>';return}
   var f=F(i),syms=IX.fileSyms[i]||[],out=IX.impOut[i]||[],inn=IX.impIn[i]||[],uses=IX.fileUses[i]||[];
   var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f[1])+'</span><span class="tag">'+f[2]+' 行</span></div>';
-  if(f[4])h+='<div class="note"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(f[4])+'</div>';
+  h+=noteView('檔案說明',f[4])+noteEditor('file',path,'',f[4]);
+  h+='<div style="margin:4px 0"><a class="l" data-src="'+esc(path)+'">🧾 看原始碼</a>'+explainBtn('file',path,'')+'</div>';
   if(f[3])h+='<p>'+esc(f[3])+'</p>';
   h+='<h2>定義（'+syms.length+'）</h2>';
-  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class="tag">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
+  if(syms.length){h+='<table>';syms.slice(0,400).forEach(function(k){var s=S(k);h+='<tr><td>'+slink(s[0])+'</td><td><span class="tag">'+esc(s[1])+'</span></td><td>第 '+s[3]+' 行 '+srcLink(path+':'+s[3])+explainBtn('fn',path,s[0])+'</td><td>'+(s[4]?esc(s[4])+'<br>':'')+(s[5]?'<code>'+esc(s[5])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
   h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class="mut">（沒有內部引用）</div>');
   h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.slice(0,200).map(function(k){return '<div>'+link(F(k)[0])+'</div>'}).join(''):'<div class="mut">（沒有已分析的檔案引用它）</div>');
   if(uses.length){var seen={};h+='<h2>呼叫了別處的定義（'+uses.length+'）</h2>'+uses.slice(0,200).filter(function(k){return !seen[k]&&(seen[k]=1)}).map(function(k){var s=S(k);return '<div>'+slink(s[0])+' <span class="mut">'+esc(F(s[2])[0])+':'+s[3]+'</span></div>'}).join('')}
@@ -214,8 +249,8 @@ function showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];
   if(!ids.length){$('#sm').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
   var h='<h1 class="t">'+esc(S(ids[0])[0])+'</h1><div class="mut">'+ids.length+' 個定義</div>';
   ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];
-    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+'</h2>';
-    h+=s[6]?'<div class="note"><b>說明（AI 讀過程式碼後補充）</b>：'+esc(s[6])+'</div>':'';
+    h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+srcLink(F(fi)[0]+':'+s[3])+explainBtn('fn',F(fi)[0],s[0])+'</h2>';
+    h+=noteView('說明',s[6])+noteEditor('sym',F(fi)[0],s[0],s[6]);
     h+=s[4]?'<p>'+esc(s[4])+'</p>':(s[6]?'':'<p class="mut">'+esc(_faCodeNameGuess(s[0]))+'</p>');
     if(s[5])h+='<pre>'+esc(s[5])+'</pre>';
     var users=(IX.usedBy[k]||[]);if(users.length)h+='<div><b>被這些檔案呼叫／使用（'+users.length+'）：</b> '+users.slice(0,30).map(function(u){return link(F(u)[0])}).join('、')+'</div>';
@@ -231,10 +266,380 @@ function initAsk(){
   $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};
   $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};
 }
-function ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r=_faCodeAsk(IX,q);
+async function ask(){var q=$('#aq').value.trim();if(!q)return;var t0=performance.now();var r;try{r=PARTS?await askP(q):_faCodeAsk(IX,q)}catch(e){$('#aout').insertAdjacentHTML('afterbegin','<div class="qa"><div class="q">'+esc(q)+'</div><div class="err">'+esc(e.message||e)+'</div></div>');return}
   var ms=Math.round(performance.now()-t0);
-  var h='<div class="qa"><div class="q">'+esc(q)+'</div><div class="md">'+mdToHtml(r.answer)+'</div><div class="mut" style="margin-top:6px">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div></div>';
+  var h='<div class="qa"><div class="q">'+esc(q)+'</div><div class="md">'+mdToHtml(r.answer)+'</div><div class="mut" style="margin-top:6px">意圖：'+esc({where:'找定義位置',who:'誰在用',related:'相關',deps:'檔案依賴',purpose:'做什麼用',about:'關於',search:'語意搜尋'}[r.intent]||r.intent)+' · '+ms+' ms</div>'+evHtml(r)+'</div>';
   $('#aout').insertAdjacentHTML('afterbegin',h);$('#aq').select()}
+function evHtml(r){var ev=(r.evidence||[]),seen={},o=[];ev.forEach(function(x){var k=x.path+':'+x.line;if(!seen[k]&&o.length<8){seen[k]=1;o.push('<span class="mut">'+esc(x.path)+':'+x.line+'</span>'+srcLink(x.path+':'+x.line))}});return o.length?'<div style="margin-top:6px"><b>相關位置：</b> '+o.join('　')+'</div>':''}
+/* ---- 右側問答面板（可停靠右／下／上，大小記在 localStorage）---- */
+var DOCK={open:true,pos:'right',w:380,h:300};
+function dockSave(){try{localStorage.setItem('aidoc-export-dock',JSON.stringify({open:DOCK.open,pos:DOCK.pos,w:DOCK.w,h:DOCK.h}))}catch(e){}}
+function dockApply(){var app=$('#app'),pos=DOCK.pos;if(window.innerWidth<720&&pos==='right')pos='bottom';
+  app.setAttribute('data-dock',pos);app.classList.toggle('nodock',!DOCK.open);app.style.setProperty('--dw',DOCK.w+'px');app.style.setProperty('--dh',DOCK.h+'px');
+  $('#dockpos').value=DOCK.pos;var b=document.querySelector('#nav button[data-t="ask"]');if(b)b.classList.toggle('on',DOCK.open)}
+function dockOpen(v){DOCK.open=!!v;dockApply();dockSave();if(v)$('#aq').focus()}
+function initDock(){
+  try{var o=JSON.parse(localStorage.getItem('aidoc-export-dock')||'null');if(o){if(o.pos==='right'||o.pos==='bottom'||o.pos==='top')DOCK.pos=o.pos;if(o.w>=240)DOCK.w=o.w;if(o.h>=120)DOCK.h=o.h;DOCK.open=o.open!==false}}catch(e){}
+  if(window.innerWidth<720)DOCK.open=false;
+  dockApply();
+  $('#dockx').onclick=function(){dockOpen(false)};
+  $('#dockpos').onchange=function(){DOCK.pos=this.value;dockApply();dockSave()};
+  window.addEventListener('resize',dockApply);
+  var am=$('#aimodel');if(!CFG.ai){$('#aimlab').style.display='none'}else{am.checked=aiUseModel();am.onchange=function(){try{localStorage.setItem('aidoc-export-ai-model',am.checked?'1':'0')}catch(e){}}}
+  var sp=$('#split'),drag=false;
+  sp.onmousedown=function(e){drag=true;sp.classList.add('on');e.preventDefault()};
+  window.addEventListener('mousemove',function(e){if(!drag)return;var r=$('#app').getBoundingClientRect(),pos=$('#app').getAttribute('data-dock');
+    if(pos==='right')DOCK.w=Math.max(240,Math.min(r.width-260,Math.round(r.right-e.clientX)));
+    else if(pos==='bottom')DOCK.h=Math.max(120,Math.min(r.height-160,Math.round(r.bottom-e.clientY)));
+    else DOCK.h=Math.max(120,Math.min(r.height-160,Math.round(e.clientY-r.top)));dockApply()});
+  window.addEventListener('mouseup',function(){if(drag){drag=false;sp.classList.remove('on');dockSave()}});
+  sp.ondblclick=function(){DOCK.w=380;DOCK.h=300;dockApply();dockSave()};
+}
+/* ---- 專案資料夾（File Access Point）：讀原始碼、讀寫 notes.sqlite3 ---- */
+var FAP={h:null,perm:'none'},NOTES_PATH='.floating-assistant/index/notes.sqlite3',NOTEMEM={};
+function idbp(mode,fn){return new Promise(function(res,rej){var q;try{q=indexedDB.open('aidoc-export-fap',1)}catch(e){return rej(e)}
+  q.onupgradeneeded=function(){q.result.createObjectStore('h')};q.onerror=function(){rej(q.error)};
+  q.onsuccess=function(){var db=q.result,tx=db.transaction('h',mode),r=fn(tx.objectStore('h'));tx.oncomplete=function(){db.close();res(r&&r.result)};tx.onerror=function(){rej(tx.error)}}})}
+function hperm(h,req){var o={mode:'readwrite'};if(req&&h.requestPermission)return h.requestPermission(o);return h.queryPermission?h.queryPermission(o):Promise.resolve('granted')}
+function fapStatus(){var e=$('#fapst'),t,ok=FAP.perm==='granted';
+  if(!window.showDirectoryPicker)t='⚠️ 這個瀏覽器不能讀專案資料夾（請用 Chrome／Edge）';
+  else if(ok)t='📁 已授權：'+FAP.h.name;else if(FAP.h)t='📁 需要重新授權（點這裡）';else t='📁 尚未授權專案資料夾（點這裡選）';
+  e.textContent=t;e.className=ok?'ok':'';e.onclick=function(){if(!window.showDirectoryPicker||ok)return;ensureRoot().catch(function(){})}}
+async function fapInit(){
+  if(window.showDirectoryPicker){try{var h=await idbp('readonly',function(s){return s.get(CFG.root)});if(h){FAP.h=h;FAP.perm=await hperm(h,false)}}catch(e){}}
+  fapStatus();if(FAP.perm==='granted')await fapNotesPull()}
+async function ensureRoot(){ // 需要使用者手勢
+  if(!window.showDirectoryPicker)throw new Error('這個瀏覽器不支援 File System Access（請用 Chrome／Edge 開啟這個檔案）');
+  if(FAP.h){if(FAP.perm!=='granted'){try{FAP.perm=await hperm(FAP.h,true)}catch(e){FAP.perm='prompt'}}if(FAP.perm==='granted'){fapStatus();return FAP.h}}
+  var h=await showDirectoryPicker({mode:'readwrite'});FAP.h=h;FAP.perm='granted';
+  try{await idbp('readwrite',function(s){return s.put(h,CFG.root)})}catch(e){}
+  fapStatus();await fapNotesPull();return h}
+async function fapFile(path,create){var segs=path.split('/').filter(Boolean),d=FAP.h;for(var i=0;i<segs.length-1;i++)d=await d.getDirectoryHandle(segs[i],{create:!!create});return d.getFileHandle(segs[segs.length-1],{create:!!create})}
+async function readSrc(path){var f=await (await fapFile(path)).getFile();if(f.size>3e6)throw new Error('檔案太大（'+f.size+' 位元組），不在這裡開');return f.text()}
+function symIdx(path,name){var fi=fileMap[path];if(fi==null)return -1;var a=IX.fileSyms[fi]||[];for(var i=0;i<a.length;i++)if(DB.syms[a[i]][0]===name)return a[i];return -1}
+function applyNote(kind,path,name,text){
+  if(path.slice(-1)==='/'){FOLD[path]=text;if(PARTS)NOTES.files[path]=text;return}
+  if(PARTS){if(kind==='file')NOTES.files[path]=text;else NOTES.syms[path+'\u0000'+name]=text;return}
+  if(kind==='file'){var fi=fileMap[path];if(fi==null)return;DB.files[fi][4]=text;if(SQLDB)try{SQLDB.run('UPDATE files SET note=? WHERE path=?',[text,path])}catch(e){}}
+  else{var si=symIdx(path,name);if(si<0)return;DB.syms[si][6]=text;if(SQLDB)try{SQLDB.run('UPDATE symbols SET note=? WHERE name=? AND file_id=?',[text,name,DB.syms[si][2]])}catch(e){}}}
+async function fapNotesPull(){ // notes.sqlite3 是權威：打開就蓋過匯出時內嵌的說明
+  if(PARTS){if(DBH&&FAP.perm==='granted')await partsNotesPull();return}
+  if(!SQLJS||FAP.perm!=='granted')return;var db=null;
+  try{var f=await (await fapFile(NOTES_PATH)).getFile();db=new SQLJS.Database(new Uint8Array(await f.arrayBuffer()))}catch(e){return}
+  try{var n=0;
+    [['file','SELECT path,note FROM file_notes'],['sym','SELECT path,note,name FROM sym_notes']].forEach(function(q){var r=db.exec(q[1]);if(!r.length)return;r[0].values.forEach(function(v){applyNote(q[0],v[0],v[2],v[1]);n++})});
+    var g=db.exec('SELECT term,definition FROM glossary');if(g.length)g[0].values.forEach(function(v){GLOSS[v[0]]={definition:v[1]}});
+    NOTEMEM.pulled=n;
+  }catch(e){}finally{db.close()}
+  if(CURF)showFile(CURF);if(CURS)showSym(CURS)}
+async function writeNote(kind,path,name,text){
+  await ensureRoot();var bytes=null;
+  try{var f=await (await fapFile(NOTES_PATH)).getFile();bytes=new Uint8Array(await f.arrayBuffer())}catch(e){bytes=null}
+  var db=bytes&&bytes.length?new SQLJS.Database(bytes):new SQLJS.Database(),out;
+  try{(CFG.notesDdl||[]).forEach(function(d){db.run(d)});var now=Date.now();
+    if(kind==='file')db.run('INSERT INTO file_notes(path,note,author,ts,hash) VALUES(?,?,?,?,NULL) ON CONFLICT(path) DO UPDATE SET note=excluded.note,author=excluded.author,ts=excluded.ts,hash=NULL',[path,text,'user',now]);
+    else db.run('INSERT INTO sym_notes(path,name,note,author,ts,hash) VALUES(?,?,?,?,?,NULL) ON CONFLICT(path,name) DO UPDATE SET note=excluded.note,author=excluded.author,ts=excluded.ts,hash=NULL',[path,name,text,'user',now]);
+    db.run("INSERT INTO meta(k,v) VALUES('notes_ver',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",[String(now)]);
+    out=db.export();
+  }finally{db.close()}
+  var created=false;try{await FAP.h.getDirectoryHandle('.floating-assistant/index'.split('/')[0])}catch(e){created=true}
+  var wf=await fapFile(NOTES_PATH,true),w=await wf.createWritable();await w.write(out);await w.close();
+  try{await (await fapFile('.floating-assistant/index/.gitignore')).getFile()}catch(e){try{var gw=await (await fapFile('.floating-assistant/index/.gitignore',true)).createWritable();await gw.write('*\n');await gw.close()}catch(e2){}}
+  return out.length}
+function noteView(label,text){return text?'<div class="note"><b>'+label+'</b>：'+esc(text)+'</div>':''}
+function noteEditor(kind,path,name,cur){
+  var tip=(SQLJS||PARTS)?'存到專案資料夾的 <code>notes.sqlite3</code>（重建索引不會洗掉）':'這份匯出沒有內嵌 SQLite，說明只在這次瀏覽有效，重新整理就消失';
+  return '<details class="ned"><summary class="mut">✏️ '+(cur?'修改':'補寫')+'說明</summary><textarea data-nt maxlength="2000" placeholder="用自己的話寫這是做什麼的（保留換行，最多2000字）">'+esc(cur||'')+'</textarea><div><button class="b s" data-nsave="'+kind+'" data-p="'+esc(path)+'" data-n="'+esc(name)+'">儲存說明</button><span class="ns">'+tip+'</span></div></details>'}
+async function saveNoteBtn(btn){
+  var box=btn.closest('.ned'),ta=box.querySelector('[data-nt]'),st=box.querySelector('.ns'),text=ta.value.trim().slice(0,2000);
+  if(!text){st.textContent='說明不能是空的';return}
+  applyNote(btn.dataset.nsave,btn.dataset.p,btn.dataset.n,text);
+  if(!SQLJS&&!PARTS){st.textContent='✓ 已更新畫面（只在這次瀏覽有效，沒有寫進任何檔案）';return}
+  st.textContent='寫入中…';
+  try{var n=await (PARTS?partsWriteNote:writeNote)(btn.dataset.nsave,btn.dataset.p,btn.dataset.n,text);st.textContent='✓ 已存進 '+NOTES_PATH+'（'+n+' 位元組）'}
+  catch(e){st.textContent='⚠️ 畫面已更新，但沒寫進資料夾：'+(e&&e.message||e)}}
+/* ---- 原始碼檢視器（沿用簡報的 code 元件 AiChatDeckCode；不需要載入任何模型）---- */
+var SV={v:null,drag:null,path:'',line:0};
+function svMsg(t,pick){var m=$('#sv-msg');m.hidden=!t;m.textContent=t||'';$('#sv-pick').hidden=!pick}
+function svSize(){var c=$('#sv-c'),d=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d)}}
+function svDraw(){var c=$('#sv-c');if(!SV.v||$('#srcv').hidden)return;svSize();var d=window.devicePixelRatio||1,x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);x.clearRect(0,0,c.clientWidth,c.clientHeight);SV.v.draw(x,{x:0,y:0,w:c.clientWidth,h:c.clientHeight},0)}
+function svClose(){$('#srcv').hidden=true;SV.v=null}
+async function openSrc(path,line,end){
+  SV.path=path;SV.line=line;SV.v=null;$('#srcv').hidden=false;$('#sv-t').textContent=path+(line?':'+line:'');$('#sv-s').textContent='';svMsg('',false);
+  var c=$('#sv-c');c.getContext('2d').clearRect(0,0,c.width,c.height);
+  try{await ensureRoot()}catch(e){svMsg((e&&e.name==='AbortError')?'沒有選資料夾，所以看不到原始碼。':'無法讀取專案資料夾：'+(e&&e.message||e),true);return}
+  var text;try{text=await readSrc(path)}catch(e){svMsg('讀不到 '+path+'（'+(e&&e.name||'錯誤')+'）。請確認選的是專案根目錄——索引裡的路徑是相對於它的。',true);return}
+  var hi=line?[[line,end||line]]:[];
+  SV.v=AiChatDeckCode.create({code:text,filename:path,size:15,highlight:hi,start_line:Math.max(1,line-4)});
+  $('#sv-s').textContent=SV.v.rows.length+' 行'+(SV.v.cut?'（太長，只顯示前面一段）':'');
+  svDraw();svDraw()}
+function initSrcView(){
+  var c=$('#sv-c');
+  function pos(e){var r=c.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}}
+  $('#sv-x').onclick=svClose;$('#srcv').onmousedown=function(e){if(e.target===this)svClose()};
+  $('#sv-pick').onclick=function(){openSrc(SV.path,SV.line)};
+  c.addEventListener('wheel',function(e){if(!SV.v)return;e.preventDefault();var k=e.deltaMode===1?20:1;SV.v.scrollBy(e.shiftKey?e.deltaY*k:e.deltaX*k,e.shiftKey?0:e.deltaY*k);svDraw()},{passive:false});
+  c.addEventListener('mousedown',function(e){if(!SV.v)return;var p=pos(e),a=SV.v.hitThumb(p.x,p.y);if(a){SV.drag={a:a,p:a==='y'?p.y:p.x};e.preventDefault()}});
+  window.addEventListener('mousemove',function(e){if(!SV.drag||!SV.v)return;var p=pos(e),cur=SV.drag.a==='y'?p.y:p.x;SV.v.dragThumb(SV.drag.a,cur-SV.drag.p);SV.drag.p=cur;svDraw()});
+  window.addEventListener('mouseup',function(){if(SV.drag&&SV.v)SV.v.endDrag();SV.drag=null});
+  window.addEventListener('resize',svDraw);
+  document.addEventListener('keydown',function(e){if($('#srcv').hidden)return;
+    if(e.key==='Escape'){svClose();return}if(!SV.v)return;var h=c.clientHeight;
+    var m={PageDown:[0,h*0.85],PageUp:[0,-h*0.85],ArrowDown:[0,40],ArrowUp:[0,-40],ArrowRight:[40,0],ArrowLeft:[-40,0]}[e.key];
+    if(m){e.preventDefault();SV.v.scrollBy(m[0],m[1]);svDraw()}else if(e.key==='Home'){e.preventDefault();SV.v.scrollBy(-1e9,-1e9);svDraw()}else if(e.key==='End'){e.preventDefault();SV.v.scrollBy(0,1e9);svDraw()}});
+}
+/* ---- 分段匯出模式（資料庫不在頁面裡：授權專案資料夾後，用 sqlite-wasm 唯讀開 .export.parts/ 的分段檔，只讀查詢碰到的頁面）---- */
+var PARTS=CFG.mode==='parts',ENG=null,DBH=null,MAN=null,PARTS_DIR='.floating-assistant/index/.export.parts/',NOTES={files:{},syms:{}};
+async function qrows(sql,bind,limit){var r=await ENG.call('exec',{db:DBH,sql:sql,bind:bind||[],limit:limit||500});var x=r.results&&r.results[0];if(x&&x.error)throw new Error(x.error);return x?x.rows:[]}
+function showFileX(v){return PARTS?showFileP(v):showFile(v)}function showSymX(v){return PARTS?showSymP(v):showSym(v)}
+function ftsTokens(q){var t=(typeof _faSemTokens==='function'?_faSemTokens(q):String(q).toLowerCase().split(/\W+/)).map(function(x){return String(x).replace(/[^A-Za-z0-9_一-鿿]/g,'_')}).filter(Boolean);return t.slice(0,12).map(function(x){return '"'+x.replace(/"/g,'""')+'"'}).join(' OR ')}
+async function bootParts(){
+  $('#ttl').textContent=CFG.title;var P=JSON.parse(document.getElementById('payload').textContent);
+  setLoad('解壓縮 sqlite-wasm…',5);
+  var js=new TextDecoder().decode(await gunzip(b64u8(P.js),CFG.sql.gz.js)),wasm=await gunzip(b64u8(P.wasm),CFG.sql.gz.wasm);
+  ENG=new FaWasmEngine.WasmSqlEngine({url:URL.createObjectURL(new Blob([js],{type:'application/javascript'})),wasmUrl:URL.createObjectURL(new Blob([wasm],{type:'application/wasm'}))});
+  await fapInit();
+  while(FAP.perm!=='granted'){
+    $('#lmsg').innerHTML='這是<b>分段匯出</b>：資料庫不在這個頁面裡，而是在專案資料夾的 <code>'+PARTS_DIR+'</code>。<br>請授權專案資料夾（選專案根目錄）。<br><button class="b" id="ldpick" style="margin-top:10px">📁 授權專案資料夾</button><div class="err" id="lderr" style="margin-top:8px"></div>';
+    await new Promise(function(res){$('#ldpick').onclick=async function(){try{await ensureRoot()}catch(e){$('#lderr').textContent=(e&&e.name==='AbortError')?'沒有選資料夾':String(e&&e.message||e)}res()}});
+  }
+  setLoad('讀取分段清單…',15);
+  var mf;try{mf=await (await fapFile(PARTS_DIR+'manifest.json')).getFile()}catch(e){throw new Error('找不到 '+PARTS_DIR+'manifest.json：這個資料夾沒有匯出完（匯出到一半失敗），或選錯了資料夾（要選專案根目錄）。')}
+  MAN=JSON.parse(await mf.text());
+  if(MAN.exportId!==CFG.exportId)throw new Error('這個頁面與資料夾裡的分段檔不是同一次匯出（頁面 '+CFG.exportId+'／資料夾 '+MAN.exportId+'）。請用資料夾裡的 viewer.html，或重新匯出。');
+  var files=[];
+  for(var i=0;i<MAN.parts.length;i++){setLoad('檢查分段 '+(i+1)+'／'+MAN.parts.length+'…',15+40*(i+1)/MAN.parts.length);
+    var f;try{f=await (await fapFile(PARTS_DIR+MAN.parts[i].name)).getFile()}catch(e){throw new Error('分段檔遺失：'+MAN.parts[i].name+'（任何一段遺失就開不起來，請重新匯出）')}
+    if(f.size!==MAN.parts[i].size)throw new Error('分段檔大小不符：'+MAN.parts[i].name+'（預期 '+MAN.parts[i].size+'、實際 '+f.size+'）。檔案遺失或被改過，請重新匯出。');files.push(f)}
+  setLoad('開啟資料庫（唯讀，只讀查詢碰到的頁面）…',70);
+  var o=await ENG.call('open',{file:new Blob(files),label:'index.sqlite3',readonly:true});DBH=o.db;
+  PAGES=MAN.pages||[];GLOSS=MAN.glossary||{};Object.assign(FOLD,MAN.folderNotes||{});
+  var n=await qrows('select (select count(*) from files),(select count(*) from symbols)');
+  $('#load').style.display='none';$('#app').style.display='flex';
+  $('#stat').textContent=n[0][0]+' 個檔案 · '+n[0][1]+' 個定義 · 分段 '+MAN.parts.length+' 份（'+Math.round(MAN.size/1048576)+' MB）'+(MAN.complete?'':' · （部分索引）')+' · 產生於 '+new Date(MAN.created).toLocaleString();
+  var tabs=[['wiki','百科'],['files','檔案'],['syms','符號'],['ask','問答 ▸'],['sql','SQL']];
+  $('#nav').innerHTML=tabs.map(function(t){return '<button data-t="'+t[0]+'">'+t[1]+'</button>'}).join('');
+  $('#nav').onclick=function(e){var b=e.target.closest('button');if(b)show(b.dataset.t)};
+  initWiki();initFilesP();initSymsP();initAskP();initSqlP();initDock();initSrcView();
+  show('wiki');fapStatus();await fapNotesPull();
+}
+/* 檔案：依資料夾一層一層展開（每次只查那一層） */
+async function dirChildren(d){
+  var L=d?d.length+1:0,pre=d?d+'/':'',sub,fl;
+  if(d)sub=await qrows("select distinct case when instr(substr(dir,?),'/')>0 then substr(dir,?,instr(substr(dir,?),'/')-1) else substr(dir,?) end from files where dir like ? escape '\\' and length(dir)>?",[L+1,L+1,L+1,L+1,pre.replace(/[\\%_]/g,'\\$&')+'%',L]);
+  else sub=await qrows("select distinct case when instr(dir,'/')>0 then substr(dir,1,instr(dir,'/')-1) else dir end from files where dir<>''");
+  fl=await qrows('select path,name,nsyms from files where dir=? order by name limit 500',[d||'']);
+  return {dirs:sub.map(function(r){return r[0]}).filter(Boolean).sort(),files:fl}}
+function dirHtml(d,c){var h='';c.dirs.forEach(function(n){var p=d?d+'/'+n:n;h+='<details data-d="'+esc(p)+'"><summary>'+esc(n)+'/ <a class="src" data-go="folder:'+esc(p)+'" title="這個資料夾的說明">ⓘ</a></summary><div class="lz"><span class="mut">…</span></div></details>'});
+  c.files.forEach(function(r){h+='<a data-go="file:'+esc(r[0])+'">'+esc(r[1])+'<span class="k">'+r[2]+'</span></a>'});return h}
+async function initFilesP(){
+  var c0=await dirChildren('');$('#fl').innerHTML=dirHtml('',c0);
+  $('#fl').addEventListener('toggle',async function(e){var d=e.target;if(!d.open||!d.dataset||d.dataset.d==null||d.dataset.loaded)return;d.dataset.loaded='1';
+    try{var c=await dirChildren(d.dataset.d);d.querySelector('.lz').innerHTML=dirHtml(d.dataset.d,c)||'<span class="mut">（空）</span>'}catch(x){d.querySelector('.lz').innerHTML='<span class="err">'+esc(x.message)+'</span>'}},true);
+  var tm=null;$('#fq').oninput=function(){clearTimeout(tm);tm=setTimeout(async function(){var q=$('#fq').value.trim();
+    if(!q){$('#fl').innerHTML=dirHtml('',c0);return}
+    var r=await qrows("select path from files where path like ? escape '\\' order by length(path) limit 200",['%'+q.replace(/[\\%_]/g,'\\$&')+'%']);
+    $('#fl').innerHTML=r.map(function(x){return '<a data-go="file:'+esc(x[0])+'">'+esc(x[0])+'</a>'}).join('')||'<div class="mut" style="padding:8px">沒有符合的檔案</div>'},250)};
+  $('#fm').innerHTML='<h1 class="t">檔案</h1><div class="mut">左邊一層一層展開資料夾（只查那一層），或搜尋路徑。</div>';
+}
+async function showFileP(path){
+  var r=await qrows('select id,lang,lines,doc,note,nsyms,refs,used from files where path=?',[path]);
+  if(!r.length){$('#fm').innerHTML='<div class="note">索引裡沒有這個檔案</div>';return}
+  var f=r[0],id=f[0],note=NOTES.files[path]||f[4]||'';
+  var syms=await qrows('select name,kind,line,doc,sig,note from symbols where file_id=? order by id limit 400',[id]);
+  var out=await qrows('select f.path from imports i join files f on f.id=i.dst where i.src=? limit 200',[id]);
+  var inn=await qrows('select f.path from imports i join files f on f.id=i.src where i.dst=? limit 200',[id]);
+  var called=await qrows('select distinct s.name,f2.path,s.line from uses u join symbols s on s.id=u.symbol_id join files f2 on f2.id=s.file_id where u.file_id=? limit 200',[id]);
+  var h='<h1 class="t">'+esc(path)+'</h1><div><span class="tag">'+esc(f[1])+'</span><span class="tag">'+f[2]+' 行</span></div>';
+  h+=noteView('檔案說明',note)+noteEditor('file',path,'',note)+'<div style="margin:4px 0"><a class="l" data-src="'+esc(path)+'">🧾 看原始碼</a>'+explainBtn('file',path,'')+'</div>';
+  if(f[3])h+='<p>'+esc(f[3])+'</p>';
+  h+='<h2>定義（'+f[5]+'）</h2>';
+  if(syms.length){h+='<table>';syms.forEach(function(s){var sn=NOTES.syms[path+'\u0000'+s[0]]||s[5];h+='<tr><td>'+slink(s[0])+'</td><td><span class="tag">'+esc(s[1])+'</span></td><td>第 '+s[2]+' 行 '+srcLink(path+':'+s[2])+explainBtn('fn',path,s[0])+'</td><td>'+(sn?'<b>'+esc(sn)+'</b><br>':'')+(s[3]?esc(s[3])+'<br>':'')+(s[4]?'<code>'+esc(s[4])+'</code>':'')+'</td></tr>'});h+='</table>'}else h+='<div class="mut">（沒有抽到定義）</div>';
+  h+='<h2>引用了誰（'+out.length+'）</h2>'+(out.length?out.map(function(k){return '<div>'+link(k[0])+'</div>'}).join(''):'<div class="mut">（沒有內部引用）</div>');
+  h+='<h2>被誰引用（'+inn.length+'）</h2>'+(inn.length?inn.map(function(k){return '<div>'+link(k[0])+'</div>'}).join(''):'<div class="mut">（沒有已分析的檔案引用它）</div>');
+  if(called.length)h+='<h2>呼叫了別處的定義（'+called.length+'）</h2>'+called.map(function(s){return '<div>'+slink(s[0])+' <span class="mut">'+esc(s[1])+':'+s[2]+'</span></div>'}).join('');
+  $('#fm').innerHTML=h;$('#fm').scrollTop=0}
+async function symRows(where,bind,limit){return qrows('select s.id,s.name,s.kind,f.path,s.line,s.doc,s.sig,s.note,s.used_by from symbols s join files f on f.id=s.file_id where '+where,bind,limit||300)}
+async function initSymsP(){
+  $('#sk').style.display='none';
+  async function render(){var q=$('#sq').value.trim(),rows=[];
+    if(!q)rows=await symRows('1=1 order by s.used_by desc limit 200',[]);
+    else{rows=await symRows("s.name like ? escape '\\' collate nocase order by s.used_by desc limit 150",[q.replace(/[\\%_]/g,'\\$&')+'%']);
+      var ft=ftsTokens(q);if(ft){try{var ids=(await qrows('select rowid from sym_fts where sym_fts match ? order by rank limit 100',[ft])).map(function(r){return r[0]});
+        if(ids.length){var more=await symRows('s.id in ('+ids.join(',')+')',[]);var seen={};rows.forEach(function(r){seen[r[0]]=1});more.forEach(function(r){if(!seen[r[0]])rows.push(r)})}}catch(e){}}}
+    var seenN={};$('#sl').innerHTML=rows.filter(function(r){return !seenN[r[1]+r[3]]&&(seenN[r[1]+r[3]]=1)}).slice(0,300).map(function(r){return '<a data-go="sym:'+esc(r[1])+'">'+esc(r[1])+'<span class="k">'+esc(r[2])+' · '+esc(r[3].split('/').pop())+'</span></a>'}).join('')||'<div class="mut" style="padding:8px">沒有符合的結果</div>'}
+  var tm=null;$('#sq').oninput=function(){clearTimeout(tm);tm=setTimeout(render,250)};await render();
+  $('#sm').innerHTML='<h1 class="t">符號</h1><div class="mut">依名稱開頭與全文索引搜尋（不載入整個符號表）。沒搜尋時列「被用到最多」的前 200 個。</div>';
+}
+async function showSymP(name){
+  var rows=await symRows('s.name=? collate nocase order by s.used_by desc limit 12',[name]);
+  if(!rows.length){$('#sm').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  var h='<h1 class="t">'+esc(rows[0][1])+'</h1><div class="mut">'+rows.length+' 個定義</div>';
+  for(var i=0;i<rows.length;i++){var s=rows[i],note=NOTES.syms[s[3]+'\u0000'+s[1]]||s[7]||'';
+    h+='<h2>'+esc(s[2])+'　'+link(s[3],s[3]+':'+s[4])+srcLink(s[3]+':'+s[4])+explainBtn('fn',s[3],s[1])+'</h2>'+noteView('說明',note)+noteEditor('sym',s[3],s[1],note);
+    h+=s[5]?'<p>'+esc(s[5])+'</p>':(note?'':'<p class="mut">'+esc(_faCodeNameGuess(s[1]))+'</p>');if(s[6])h+='<pre>'+esc(s[6])+'</pre>';
+    var us=await qrows('select distinct f.path from uses u join files f on f.id=u.file_id where u.symbol_id=? limit 30',[s[0]]);
+    if(us.length)h+='<div><b>被這些檔案呼叫／使用（'+us.length+(us.length>=30?'+':'')+'）：</b> '+us.map(function(u){return link(u[0])}).join('、')+'</div>';
+    var same=await qrows('select name from symbols where file_id=(select file_id from symbols where id=?) and id<>? limit 15',[s[0],s[0]]);
+    if(same.length)h+='<div style="margin-top:4px"><b>同檔案的其他定義：</b> '+same.map(function(x){return slink(x[0])}).join('、')+'</div>'}
+  $('#sm').innerHTML=h;$('#sm').scrollTop=0}
+/* 問答（結構由 SQL 查：名稱、全文召回、呼叫關係；沒有載入模型時就是這個答案） */
+function initAskP(){
+  var ex=['誰用到 main','where is main defined','解析設定檔相關的函式','錯誤處理相關的程式'];
+  $('#achips').innerHTML=ex.map(function(x){return '<span>'+esc(x)+'</span>'}).join('');
+  $('#achips').onclick=function(e){if(e.target.tagName==='SPAN'){$('#aq').value=e.target.textContent;ask()}};
+  $('#ago').onclick=ask;$('#aq').onkeydown=function(e){if(e.key==='Enter')ask()};
+}
+async function askP(q){
+  var t0=performance.now(),ids=(q.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g)||[]).filter(function(x,i,a){return a.indexOf(x)===i}).slice(0,6);
+  var who=/誰.*(用|呼叫)|被誰|who\s+(uses|calls)|used\s+by|callers?/i.test(q),where=/在哪|哪裡|where|定義|defined/i.test(q),what=/做什麼|是什麼|用途|what\s+(does|is)|purpose/i.test(q);
+  var md=[],ev=[],intent='search',hit=0;
+  for(var i=0;i<ids.length&&hit<3;i++){var rows=await symRows('s.name=? collate nocase order by s.used_by desc limit 6',[ids[i]]);if(!rows.length)continue;hit++;
+    intent=who?'who':where?'where':what?'purpose':'about';
+    rows.forEach(function(s){ev.push({path:s[3],line:s[4]});var note=NOTES.syms[s[3]+'\u0000'+s[1]]||s[7];md.push('**'+s[1]+'**（'+s[2]+'）定義在 `'+s[3]+':'+s[4]+'`'+(note?'\n說明：'+note:(s[5]?'\n說明：'+s[5]:''))+(s[6]&&!where?'\n簽名：`'+s[6]+'`':''))});
+    if(who||what){var us=await qrows('select distinct f.path from uses u join symbols s on s.id=u.symbol_id join files f on f.id=u.file_id where s.name=? collate nocase limit 12',[ids[i]]);md.push(us.length?'被這些檔案使用（'+us.length+(us.length>=12?'+':'')+'）：'+us.map(function(u){return '`'+u[0]+'`'}).join('、'):'沒有已分析的檔案呼叫它。')}}
+  if(!hit){var ft=ftsTokens(q);if(ft){try{var sid=(await qrows('select rowid from sym_fts where sym_fts match ? order by rank limit 8',[ft])).map(function(r){return r[0]});
+      if(sid.length){(await symRows('s.id in ('+sid.join(',')+')',[])).forEach(function(s){ev.push({path:s[3],line:s[4]});md.push('- **'+s[1]+'**（'+s[2]+'）`'+s[3]+':'+s[4]+'`'+((NOTES.syms[s[3]+'\u0000'+s[1]]||s[7]||s[5])?'：'+(NOTES.syms[s[3]+'\u0000'+s[1]]||s[7]||s[5]):''))})}
+      var fid=(await qrows('select rowid from file_fts where file_fts match ? order by rank limit 5',[ft])).map(function(r){return r[0]});
+      if(fid.length){var fr=await qrows('select path,doc,note from files where id in ('+fid.join(',')+')',[]);md.push('相關檔案：');fr.forEach(function(f){md.push('- `'+f[0]+'`'+((NOTES.files[f[0]]||f[2]||f[1])?'：'+(NOTES.files[f[0]]||f[2]||f[1]):''))})}}catch(e){md.push('全文查詢失敗：'+e.message)}}}
+  if(!md.length)md.push('索引裡找不到相關的定義或檔案。試試換個說法，或直接寫函式名稱。');
+  return {answer:md.join('\n\n'),intent:intent,evidence:ev,ms:Math.round(performance.now()-t0)}}
+function initSqlP(){
+  var EX=[['被引用最多的檔案',"SELECT path, used AS 被引用數, refs AS 引用數 FROM files ORDER BY used DESC LIMIT 30"],
+    ['某檔案引用了誰（改檔名）',"SELECT f2.path FROM imports i JOIN files f1 ON f1.id=i.src JOIN files f2 ON f2.id=i.dst WHERE f1.path LIKE '%main%' LIMIT 100"],
+    ['某符號的使用者（改名稱）',"SELECT DISTINCT f.path FROM uses u JOIN symbols s ON s.id=u.symbol_id JOIN files f ON f.id=u.file_id WHERE s.name='main' LIMIT 100"],
+    ['最常被呼叫的函式',"SELECT s.name, f.path, s.used_by FROM symbols s JOIN files f ON f.id=s.file_id ORDER BY s.used_by DESC LIMIT 30"],
+    ['各語言統計',"SELECT lang, COUNT(*) AS 檔案數, SUM(lines) AS 行數 FROM files GROUP BY lang ORDER BY 行數 DESC"],
+    ['全文搜尋符號（改關鍵字）',"SELECT s.name, f.path, s.line FROM symbols s JOIN files f ON f.id=s.file_id WHERE s.id IN (SELECT rowid FROM sym_fts WHERE sym_fts MATCH '\"config\"') LIMIT 50"]];
+  $('#qex').innerHTML='<option value="">範例查詢…</option>'+EX.map(function(x,i){return '<option value="'+i+'">'+esc(x[0])+'</option>'}).join('');
+  $('#qex').onchange=function(){if(this.value!=='')$('#qsql').value=EX[this.value][1]};$('#qsql').value=EX[0][1];
+  $('#qrun').onclick=runSqlP;$('#qsql').onkeydown=function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runSqlP()}};
+  $('#qcsv').onclick=function(){if(!LASTCOLS.length)return;var csv=[LASTCOLS].concat(LASTROWS).map(function(r){return r.map(function(c){c=c==null?'':String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c}).join(',')}).join('\n');var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='query.csv';a.click()};
+  qrows("select sql from sqlite_master where sql is not null and name not like 'sqlite_%' and type='table' order by name").then(function(r){$('#qschema').textContent=r.map(function(x){return x[0]+';'}).join('\n\n')}).catch(function(){});
+}
+async function runSqlP(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performance.now();
+  if(!/^\s*(select|with|pragma\s+table_info|explain)\b/i.test(sql)){$('#qres').innerHTML='<div style="padding:10px" class="err">分段匯出的資料庫是唯讀的，只能執行 SELECT／WITH。</div>';return}
+  try{var res=await ENG.call('exec',{db:DBH,sql:sql,limit:5000});var x=res.results[0];if(x&&x.error)throw new Error(x.error);var ms=Math.round(performance.now()-t0);
+    if(!x||!x.columns.length){$('#qres').innerHTML='<div style="padding:10px" class="mut">執行完成，沒有回傳資料列。</div>';$('#qinfo').textContent=ms+' ms';LASTCOLS=[];LASTROWS=[];return}
+    LASTCOLS=x.columns;LASTROWS=x.rows;var max=500;
+    $('#qres').innerHTML='<table><tr>'+x.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+x.rows.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var lk=/path|file/i.test(x.columns[ci])&&t&&t.indexOf('/')>=0;return '<td>'+(lk?'<a class="l" data-go="file:'+esc(t)+'">'+esc(t)+'</a>':esc(t))+'</td>'}).join('')+'</tr>'}).join('')+'</table>';
+    $('#qinfo').textContent=x.rows.length+' 列'+(x.rows.length>=5000?'（最多取 5000 列）':'')+(x.rows.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}
+  catch(e){$('#qres').innerHTML='<div style="padding:10px" class="err">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}
+/* 分段模式的說明庫：notes.sqlite3 用同一個引擎讀寫（開成記憶體資料庫、改完整個匯出再寫回） */
+async function partsNotesPull(){
+  var u8;try{u8=new Uint8Array(await (await (await fapFile(NOTES_PATH)).getFile()).arrayBuffer())}catch(e){return}
+  var c=await ENG.call('open',{bytes:u8,readonly:true,label:'notes.sqlite3'});
+  try{var g=async function(sql){var r=await ENG.call('exec',{db:c.db,sql:sql,limit:100000});return (r.results[0]&&r.results[0].rows)||[]};
+    (await g('SELECT path,note FROM file_notes')).forEach(function(r){NOTES.files[r[0]]=r[1]});
+    (await g('SELECT path,name,note FROM sym_notes')).forEach(function(r){NOTES.syms[r[0]+'\u0000'+r[1]]=r[2]});
+    (await g('SELECT term,definition FROM glossary')).forEach(function(r){GLOSS[r[0]]={definition:r[1]}});
+  }finally{await ENG.call('close',{db:c.db})}
+  if(CURF)showFileP(CURF);if(CURS)showSymP(CURS)}
+async function partsWriteNote(kind,path,name,text){
+  await ensureRoot();var u8=null;
+  try{u8=new Uint8Array(await (await (await fapFile(NOTES_PATH)).getFile()).arrayBuffer())}catch(e){u8=null}
+  var c=await ENG.call('open',(u8&&u8.length)?{bytes:u8,label:'notes.sqlite3'}:{label:'notes.sqlite3'}),out;
+  try{var ex=function(sql,bind){return ENG.call('exec',{db:c.db,sql:sql,bind:bind||[]}).then(function(r){var x=r.results[0];if(x&&x.error)throw new Error(x.error)})};
+    for(var i=0;i<(CFG.notesDdl||[]).length;i++)await ex(CFG.notesDdl[i]);var now=Date.now();
+    if(kind==='file')await ex('INSERT INTO file_notes(path,note,author,ts,hash) VALUES(?,?,?,?,NULL) ON CONFLICT(path) DO UPDATE SET note=excluded.note,author=excluded.author,ts=excluded.ts,hash=NULL',[path,text,'user',now]);
+    else await ex('INSERT INTO sym_notes(path,name,note,author,ts,hash) VALUES(?,?,?,?,?,NULL) ON CONFLICT(path,name) DO UPDATE SET note=excluded.note,author=excluded.author,ts=excluded.ts,hash=NULL',[path,name,text,'user',now]);
+    await ex("INSERT INTO meta(k,v) VALUES('notes_ver',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",[String(now)]);
+    out=(await ENG.call('export',{db:c.db})).bytes;
+  }finally{await ENG.call('close',{db:c.db})}
+  var wf=await fapFile(NOTES_PATH,true),w=await wf.createWritable();await w.write(out);await w.close();
+  try{await (await fapFile('.floating-assistant/index/.gitignore')).getFile()}catch(e){try{var gw=await (await fapFile('.floating-assistant/index/.gitignore',true)).createWritable();await gw.write('*\n');await gw.close()}catch(e2){}}
+  return out.length}
+/* ---- 解釋：檔案用途／函式做什麼（語法樹＋基礎函式語意在頁面裡跑；離線模型只負責措辭）---- */
+var AI={pack:null,beh:null,ex:null,eng:null,wk:null,loaded:null,tid:0,pending:{},busy:false},FOLD={};
+function aiOn(){return !!CFG.ai}
+function aiUseModel(){try{return localStorage.getItem('aidoc-export-ai-model')!=='0'}catch(e){return true}}
+async function cfetch(url,bin){ // 先看瀏覽器快取（file:// 沒有 Cache API 時直接抓）
+  var c=null;try{c=await caches.open('aidoc-export-ai');var m=await c.match(url);if(m)return bin?new Uint8Array(await m.arrayBuffer()):await m.text()}catch(e){c=null}
+  var r=await fetch(url);if(!r.ok)throw new Error('下載失敗（HTTP '+r.status+'）：'+url);var cl=r.clone();
+  var out=bin?new Uint8Array(await r.arrayBuffer()):await r.text();try{if(c)await c.put(url,cl)}catch(e){}return out}
+async function aiPack(){
+  if(AI.ex)return;if(!CFG.ai)throw new Error('這份匯出沒有內嵌解釋功能（匯出時關掉了，或沒有設定離線文字模型）');
+  var pk=JSON.parse(new TextDecoder().decode(await gunzip(b64u8(document.getElementById('aipack').textContent.trim()),CFG.aiGz)));
+  AI.pack=pk;AI.beh=new Function(pk.beh2)();AI.ex=new Function('var module=undefined,self={};'+pk.explain+';return self.FaExplain')()}
+async function aiTs(){
+  await aiPack();if(AI.eng)return;
+  var host={async loadTreeSitter(){if(!window.TreeSitter){var js=await cfetch(CFG.ai.tsBase+'tree-sitter.js');
+      await new Promise(function(res,rej){var u=URL.createObjectURL(new Blob([js],{type:'application/javascript'}));var s=document.createElement('script');s.src=u;s.onload=function(){URL.revokeObjectURL(u);res()};s.onerror=function(){rej(new Error('載入 tree-sitter 失敗'))};document.head.appendChild(s)})}
+      var w=await cfetch(CFG.ai.tsBase+'tree-sitter.wasm',true);var wu=URL.createObjectURL(new Blob([w],{type:'application/wasm'}));await window.TreeSitter.init({locateFile:function(){return wu}});return window.TreeSitter},
+    async loadLanguageWasm(n){return await cfetch(CFG.ai.tsLang+'tree-sitter-'+n+'.wasm',true)}};
+  AI.eng=AI.beh.create({patterns:AI.pack.behData.patterns,api:AI.pack.behData.api},host,{categories:{},api:{},idioms:{},notes:{},mnemonics:{}})}
+function aiWorker(){
+  if(AI.wk)return AI.wk;var u=URL.createObjectURL(new Blob([AI.pack.vlmWorker],{type:'text/javascript'}));var w=new Worker(u,{type:'module'});
+  w.onmessage=function(ev){var m=ev.data||{},p=AI.pending[m.tid];if(!p)return;if(m.type==='progress'){if(p.onp)p.onp(m.p);return}if(m.type==='stream')return;delete AI.pending[m.tid];if(m.type==='error')p.rej(new Error(m.error||'worker 錯誤'));else p.res(m)};
+  w.onerror=function(e){Object.keys(AI.pending).forEach(function(k){AI.pending[k].rej(new Error((e&&e.message)||'worker 錯誤'))});AI.pending={};AI.wk=null;AI.loaded=null};
+  return (AI.wk=w)}
+function aiRpc(type,payload,onp){var w=aiWorker(),tid=++AI.tid;return new Promise(function(res,rej){AI.pending[tid]={res:res,rej:rej,onp:onp};w.postMessage(Object.assign({type:type,tid:tid},payload))})}
+function fmtB(n){return n>=1048576?(n/1048576).toFixed(0)+' MB':Math.round(n/1024)+' KB'}
+async function aiModel(onstat){
+  if(AI.loaded)return;var m=CFG.ai.model,order=(window.navigator.gpu?['webgpu','wasm']:['wasm']),err=[];
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
+  for(var i=0;i<order.length;i++){var dev=order[i],dt=m.dtype[dev==='webgpu'?'gpu':'cpu'];if(!dt)continue;
+    var files={},last=0;
+    try{await aiRpc('load',{libUrl:dev==='webgpu'?CFG.ai.libGpu:CFG.ai.libCpu,modelId:m.id,arch:m.arch,repo:m.repo,processorRepo:m.repo,dtype:dt,device:dev,threads:(dev==='wasm'&&typeof SharedArrayBuffer!=='undefined'&&window.crossOriginIsolated)?Math.max(1,Math.min(4,navigator.hardwareConcurrency||1)):1},function(p){
+        if(!p||!p.file)return;if(p.status==='progress'||p.status==='download')files[p.file]={l:+p.loaded||0,t:+p.total||0};else if(p.status==='done'){var f=files[p.file]||{l:0,t:0};files[p.file]={l:f.t||f.l,t:f.t||f.l}}
+        var now=Date.now();if(now-last<400)return;last=now;var l=0,t=0;Object.keys(files).forEach(function(k){l+=files[k].l;t+=files[k].t});if(t>0)onstat('下載離線模型（'+m.label+'）：'+fmtB(l)+' / '+fmtB(t)+'（只下載一次，存在瀏覽器快取）')});
+      AI.loaded=dev;return}
+    catch(e){err.push((dev==='webgpu'?'GPU':'CPU')+'：'+(e&&e.message||e));if(AI.wk){try{AI.wk.terminate()}catch(x){}AI.wk=null}}}
+  throw new Error('模型載入失敗：'+err.join('；'))}
+async function aiGen(msgs,onstat){await aiModel(onstat);onstat('離線模型寫說明中…');var r=await aiRpc('chat',{messages:msgs,maxTokens:120,gen:CFG.ai.gen});return r.raw}
+async function aiPolish(kind,d,span,onstat){var msgs=AI.ex.buildMessages(kind,d,{span:span,beh:AI.beh});var raw=await aiGen(msgs,onstat);return AI.ex.cleanModelNote(raw,d.name,msgs[msgs.length-1].content)}
+function explainBtn(kind,path,name){return aiOn()?' <button class="b s" style="padding:1px 8px;font-size:12px" data-ai="'+kind+'|'+esc(path)+'|'+esc(name||'')+'" title="用語法樹與基礎函式語意查出它做什麼（離線；可再用離線模型潤飾）">🧠 解釋</button>':''}
+function aiBox(btn){var host=btn.closest('h2')||btn.closest('td')||btn.parentNode;var box=host._aibox;if(!box){box=document.createElement('div');box.className='note aires';host._aibox=box;if(host.tagName==='H2')host.insertAdjacentElement('afterend',box);else host.appendChild(box)}return box}
+function aiShow(box,kind,path,name,note,source,facts,warn){
+  var lab={comment:'原始碼註解',auto:'自動分析（語法樹＋函式語意）',model:'離線模型（依語法樹事實潤飾）'}[source]||source;
+  box.innerHTML='<b>🧠 '+(kind==='file'?'檔案用途':kind==='folder'?'資料夾用途':'函式做什麼')+'</b>：'+esc(note)+' <span class="mut">（來源：'+lab+'）</span>'+(warn?'<div class="mut">⚠️ '+esc(warn)+'</div>':'')+'<details><summary class="mut">依據（程式查到的事實）</summary><pre>'+esc((facts||[]).join('\n'))+'</pre></details>'+noteEditor(kind==='fn'?'sym':'file',path,name,note);
+  var ed=box.querySelector('.ned');if(ed){ed.open=true;ed.querySelector('summary').textContent='✏️ 確認或修改後存成說明'}}
+async function aiExplain(btn){
+  if(AI.busy)return;var p=btn.dataset.ai.split('|'),kind=p[0],path=p[1],name=p[2],box=aiBox(btn);AI.busy=true;btn.disabled=true;
+  var say=function(t){box.innerHTML='<span class="mut">'+esc(t)+'</span>'};
+  try{
+    say('授權專案資料夾…');await ensureRoot();   // 需要使用者手勢，必須在載入模型之前
+    say('讀原始碼…');var text=await readSrc(path);
+    say('語法樹分析…（第一次要下載 tree-sitter，之後存在瀏覽器快取）');await aiTs();
+    var r;try{r=await AI.eng.explain(path,text,{notes:{}})}catch(e){throw new Error('語法樹分析失敗：'+(e&&e.message||e))}
+    var imp=0;try{imp=PARTS?0:((IX.impIn[fileMap[path]]||[]).length)}catch(e){}
+    var d=AI.ex.fromBehResult(r,{path:path,labels:AI.pack.labels,beh:AI.beh,importedBy:imp});
+    var item,span='';
+    if(kind==='file')item=Object.assign({},d.file,{name:path.split('/').pop()});
+    else{item=d.fns.filter(function(f){return f.name===name})[0];if(!item)throw new Error('語法樹裡找不到函式「'+name+'」（可能是巨集、宣告或這個語言的剖析器不認得）');var sp=extractSourceSpan(text,item.line,40);span=sp?sp.text:''}
+    aiShow(box,kind,path,name,item.note,item.source,item.facts);
+    if(item.source!=='comment'&&aiUseModel()){
+      try{var n2=await aiPolish(kind==='file'?'file':'fn',item,span,function(t){var s=box.querySelector('.aistat');if(!s){box.insertAdjacentHTML('afterbegin','<div class="aistat mut"></div>');s=box.querySelector('.aistat')}s.textContent=t});
+        if(n2)aiShow(box,kind,path,name,n2,'model',item.facts);else{var s2=box.querySelector('.aistat');if(s2)s2.remove();aiShow(box,kind,path,name,item.note,item.source,item.facts,'離線模型的輸出不可用（空的、簡體、編造名稱或複述名稱），採用程式組出的說明')}}
+      catch(e){aiShow(box,kind,path,name,item.note,item.source,item.facts,'離線模型沒跑起來：'+(e&&e.message||e)+'。採用程式組出的說明')}}
+  }catch(e){box.innerHTML='<span class="err">'+esc(e&&e.name==='AbortError'?'沒有選資料夾，所以讀不到原始碼。':(e&&e.message||e))+'</span>'}
+  finally{AI.busy=false;btn.disabled=false}}
+/* ---- 資料夾：名稱是連結，點進去看子檔案與子資料夾；說明只用子檔案已有的說明，不重新讀檔 ---- */
+async function folderInfo(path){
+  var pre=path?path+'/':'',files=[],dirs={};
+  if(PARTS){var c=await dirChildren(path);dirs=c.dirs;
+    var rows=await qrows('select path,name,note,doc from files where dir=? order by name limit 300',[path]);files=rows.map(function(r){return {path:r[0],name:r[1],note:NOTES.files[r[0]]||r[2]||'',doc:r[3]||''}});
+    var tot=await qrows("select count(*) from files where dir=? or dir like ? escape '\\'",[path,pre.replace(/[\\%_]/g,'\\$&')+'%']);return {files:files,dirs:dirs,total:tot[0][0]}}
+  var sub={},total=0;DB.files.forEach(function(f){if(f[0].indexOf(pre)!==0)return;total++;var rest=f[0].slice(pre.length),i=rest.indexOf('/');if(i<0)files.push({path:f[0],name:rest,note:f[4]||'',doc:f[3]||''});else sub[rest.slice(0,i)]=1});
+  return {files:files.slice(0,300),dirs:Object.keys(sub).sort(),total:total}}
+async function showFolder(path){
+  var info=await folderInfo(path),key=path+'/',note=FOLD[key]||(PARTS&&NOTES.files[key])||'',box=PARTS?$('#fm'):$('#fm');
+  var h='<h1 class="t">'+esc(path)+'/</h1><div class="mut">'+info.files.length+' 個檔案、'+info.dirs.length+' 個子資料夾（含子孫共 '+info.total+' 個檔案）</div>';
+  h+=noteView('資料夾說明',note)+noteEditor('file',key,'',note);
+  if(aiOn())h+='<div style="margin:6px 0"><button class="b s" style="padding:1px 8px;font-size:12px" data-aifolder="'+esc(path)+'" title="只用子檔案已有的說明（文字重排挑代表句），不重新讀檔">🧠 產生資料夾說明</button></div><div data-aifbox></div>';
+  if(info.dirs.length)h+='<h2>子資料夾</h2>'+info.dirs.map(function(d){return '<div><a class="l" data-go="folder:'+esc(path?path+'/'+d:d)+'">'+esc(d)+'/</a></div>'}).join('');
+  h+='<h2>檔案</h2>'+(info.files.length?'<table>'+info.files.map(function(f){var t=f.note||f.doc;return '<tr><td>'+link(f.path,f.name)+'</td><td>'+(f.note?'<b>'+esc(f.note)+'</b>':esc(t||'').slice(0,160)||'<span class="mut">（沒有說明）</span>')+'</td></tr>'}).join('')+'</table>':'<div class="mut">（沒有直接放在這層的檔案）</div>');
+  $('#fm').innerHTML=h;$('#fm').scrollTop=0;window.__folderInfo=info}
+async function aiFolder(btn){
+  if(AI.busy)return;AI.busy=true;btn.disabled=true;var path=btn.dataset.aifolder,box=document.querySelector('[data-aifbox]'),info=window.__folderInfo;
+  var say=function(t){box.innerHTML='<span class="mut">'+esc(t)+'</span>'};
+  try{say('載入解釋引擎…');await aiPack();
+    var files=info.files.filter(function(f){return f.note||f.doc}).map(function(f){var n=f.note||f.doc;return {name:f.name,note:String(n).split(/\n/)[0],source:f.note?(/^（自動分析）/.test(f.note)?'auto':'comment'):'comment'}});
+    var d=AI.ex.describeFolder({path:path+'/',files:files,dirs:info.dirs,totalFiles:info.files.length,beh:AI.beh});var note=d.note,src='auto',warn='';
+    aiShow(box,'folder',path+'/','',note,src,d.facts);
+    if(files.length>=2&&aiUseModel()){try{var n2=await aiPolish('folder',d,'',function(t){var s=box.querySelector('.aistat');if(!s){box.insertAdjacentHTML('afterbegin','<div class="aistat mut"></div>');s=box.querySelector('.aistat')}s.textContent=t});if(n2)aiShow(box,'folder',path+'/','',n2,'model',d.facts);else aiShow(box,'folder',path+'/','',note,src,d.facts,'離線模型的輸出不可用，採用程式組出的說明')}catch(e){aiShow(box,'folder',path+'/','',note,src,d.facts,'離線模型沒跑起來：'+(e&&e.message||e))}}
+  }catch(e){box.innerHTML='<span class="err">'+esc(e&&e.message||e)+'</span>'}
+  finally{AI.busy=false;btn.disabled=false}}
 /* ---- SQL ---- */
 var EXAMPLES=[
 ['被最多檔案引用的檔案（Top 30）',"SELECT path, imported_by_n AS 被引用數, imports_n AS 引用數 FROM files ORDER BY imported_by_n DESC LIMIT 30"],
@@ -268,7 +673,7 @@ function runSql(){var sql=$('#qsql').value.trim();if(!sql)return;var t0=performa
     var h='<table><tr>'+r.columns.map(function(c){return '<th>'+esc(c)+'</th>'}).join('')+'</tr>'+r.values.slice(0,max).map(function(row){return '<tr>'+row.map(function(c,ci){var t=c==null?'':String(c);var col=r.columns[ci];var lk=(/path|file|defined_in|檔案|定義在|src_path|dst_path|caller/i.test(col)&&fileMap[t]!=null)?link(t):esc(t);return '<td>'+lk+'</td>'}).join('')+'</tr>'}).join('')+'</table>';
     $('#qres').innerHTML=h;$('#qinfo').textContent=r.values.length+' 列'+(r.values.length>max?'（畫面只顯示前'+max+'列，CSV是完整的）':'')+' · '+ms+' ms'}
   catch(e){$('#qres').innerHTML='<div style="padding:10px" class="err">'+esc(e.message||e)+'</div>';$('#qinfo').textContent=''}}
-boot().catch(function(e){$('#lmsg').innerHTML='<span class="err">載入失敗：'+esc(e&&e.message||e)+'</span>'});
+(CFG.mode==='parts'?bootParts():boot()).catch(function(e){$('#lmsg').innerHTML='<span class="err">載入失敗：'+esc(e&&e.message||e)+'</span>'});
 })();
 </script>
 </body></html>

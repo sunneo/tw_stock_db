@@ -643,6 +643,30 @@ ipcMain.handle("fa:rawfs:mkdir", async (_evt, { path: p } = {}) => {
   return { ok: true, path: target };
 });
 
+// 大檔案「一段一段」複製（匯出大索引用，DESIGN.project-index.md §17.5）：串流、記憶體固定（每次讀 8 MB），不會把整個檔案讀進來。
+//   partBytes 有給：切成 <dstPrefix>0000.part、0001.part…（每份最多 partBytes）；沒給：整份複製成 dst。回傳 { size, parts:[{name,size}] }。
+ipcMain.handle("fa:rawfs:copyChunked", async (_evt, { src, dst, partBytes } = {}) => {
+  const fsSync = require("fs"); const from = path.resolve(rawFsPath(src)); const to = path.resolve(rawFsPath(dst));
+  const st = await fs.stat(from); await fs.mkdir(path.dirname(to), { recursive: true });
+  const CH = 8 * 1024 * 1024; const buf = Buffer.allocUnsafe(CH); const parts = [];
+  const rfd = await fs.open(from, "r");
+  try {
+    const per = partBytes > 0 ? Math.floor(partBytes) : Infinity; let pos = 0, idx = 0;
+    do {
+      const name = per === Infinity ? path.basename(to) : String(idx).padStart(4, "0") + ".part"; const out = per === Infinity ? to : to + name;
+      const wfd = await fs.open(out, "w"); let wrote = 0;
+      try {
+        while (wrote < per && pos < st.size) {
+          const want = Math.min(CH, per - wrote, st.size - pos); const { bytesRead } = await rfd.read(buf, 0, want, pos); if (!bytesRead) break;
+          await wfd.write(buf, 0, bytesRead); pos += bytesRead; wrote += bytesRead;
+        }
+      } finally { await wfd.close(); }
+      parts.push({ name: path.basename(out), size: wrote }); idx++;
+    } while (pos < st.size);
+    return { ok: true, size: st.size, parts };
+  } finally { await rfd.close(); }
+});
+
 ipcMain.handle("fa:rawfs:remove", async (_evt, { path: p, recursive } = {}) => {
   const target = path.resolve(rawFsPath(p));
   await fs.rm(target, { recursive: !!recursive, force: true });
@@ -1956,6 +1980,22 @@ async function createWindow() {
           console.log("[dialog-test] error: " + err);
         }
       }, 1500);
+    });
+  }
+  // 一次性除錯hook（跟下面FA_DEBUG_*同一種模式，但是通用的）：FA_DEBUG_EVAL_FILE=<檔案路徑>——bootstrap完成後，把那個檔案
+  // 的內容當成async函式本體在renderer裡執行（可以用window.fa、await），把回傳值印成"[eval-file] result: ..."後結束行程。
+  // 用途：不靠點畫面，直接對真的桌面版（真的 node:sqlite 引擎、真的專案資料夾）驗證 window.fa 上的行為。
+  if (process.env.FA_DEBUG_EVAL_FILE) {
+    mainWindow.webContents.once("did-finish-load", async () => {
+      try {
+        const code = require("fs").readFileSync(process.env.FA_DEBUG_EVAL_FILE, "utf8");
+        await mainWindow.webContents.executeJavaScript("new Promise((resolve) => { const iv = setInterval(() => { if (window.__faBootstrapReady) { clearInterval(iv); resolve(); } }, 50); })");
+        const out = await mainWindow.webContents.executeJavaScript("(async () => {" + code + "\n})().then((v) => JSON.stringify(v === undefined ? null : v), (e) => JSON.stringify({ error: String((e && e.stack) || e) }))");
+        console.log("[eval-file] result: " + out);
+      } catch (err) {
+        console.log("[eval-file] error: " + err);
+      }
+      setTimeout(() => app.quit(), 300);
     });
   }
   // 一次性除錯hook：直接從main行程觸發「打開Advance設定→切到桌面版設定

@@ -173,7 +173,7 @@ function embedGram() {
 }
 embedGram();
 function embedLrCfgl() {
-    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn'], ['renderer/src/logmine/boundary_core.js', 'BOUND-BEGIN', 'BOUND-END', 'FaBound'], ['renderer/src/logmine/mix_core.js', 'MIX-BEGIN', 'MIX-END', 'FaMix'], ['renderer/src/logmine/nlu_core.js', 'NLU-BEGIN', 'NLU-END', 'FaNlu'], ['renderer/src/logmine/intent_core.js', 'INTENT-BEGIN', 'INTENT-END', 'FaIntent'], ['renderer/src/sql/sql_split.js', 'SQLSPLIT-BEGIN', 'SQLSPLIT-END', 'FaSqlSplit'], ['renderer/src/sql/shell_core.js', 'SQLSH-BEGIN', 'SQLSH-END', 'FaSqliteShell'], ['renderer/src/sql/browser_core.js', 'SQLBC-BEGIN', 'SQLBC-END', 'FaSqliteBrowserCore'], ['renderer/src/sql/browser_ui.js', 'SQLBU-BEGIN', 'SQLBU-END', 'FaSqliteBrowser'], ['renderer/src/sql/index_core.js', 'SQLIX-BEGIN', 'SQLIX-END', 'FaIdxSql'], ['renderer/src/sql/wasm_engine.js', 'SQLWE-BEGIN', 'SQLWE-END', 'FaWasmEngine'], ['renderer/src/terminal/fapfs_core.js', 'FAPFS-BEGIN', 'FAPFS-END', 'FaFapFs'], ['renderer/src/terminal/fapfs_transport.js', 'FAPT-BEGIN', 'FAPT-END', 'FaFapFsTransport']]) {
+    for (const [file, begin, end, name] of [['renderer/src/logmine/lr_core.js', 'LR-BEGIN', 'LR-END', 'FaLR'], ['renderer/src/logmine/cfglearn_core.js', 'CFGL-BEGIN', 'CFGL-END', 'FaCfgLearn'], ['renderer/src/logmine/boundary_core.js', 'BOUND-BEGIN', 'BOUND-END', 'FaBound'], ['renderer/src/logmine/mix_core.js', 'MIX-BEGIN', 'MIX-END', 'FaMix'], ['renderer/src/logmine/nlu_core.js', 'NLU-BEGIN', 'NLU-END', 'FaNlu'], ['renderer/src/logmine/intent_core.js', 'INTENT-BEGIN', 'INTENT-END', 'FaIntent'], ['renderer/src/sql/sql_split.js', 'SQLSPLIT-BEGIN', 'SQLSPLIT-END', 'FaSqlSplit'], ['renderer/src/sql/shell_core.js', 'SQLSH-BEGIN', 'SQLSH-END', 'FaSqliteShell'], ['renderer/src/sql/browser_core.js', 'SQLBC-BEGIN', 'SQLBC-END', 'FaSqliteBrowserCore'], ['renderer/src/sql/browser_ui.js', 'SQLBU-BEGIN', 'SQLBU-END', 'FaSqliteBrowser'], ['renderer/src/explain/code_explain.js', 'EXPLAIN-BEGIN', 'EXPLAIN-END', 'FaExplain'], ['renderer/src/sql/index_core.js', 'SQLIX-BEGIN', 'SQLIX-END', 'FaIdxSql'], ['renderer/src/sql/wasm_engine.js', 'SQLWE-BEGIN', 'SQLWE-END', 'FaWasmEngine'], ['renderer/src/terminal/fapfs_core.js', 'FAPFS-BEGIN', 'FAPFS-END', 'FaFapFs'], ['renderer/src/terminal/fapfs_transport.js', 'FAPT-BEGIN', 'FAPT-END', 'FaFapFsTransport']]) {
         const core = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
         const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
         if (a < 0 || b < 0) throw new Error('找不到 ' + begin + ' 標記');
@@ -181,8 +181,18 @@ function embedLrCfgl() {
         console.log('已更新 ' + name + '（' + core.length + ' 字元）');
     }
 }
+// 匯出頁要自帶的原始碼文字（頁面是獨立檔案，拿不到 const FaBeh2 = (function(){…})() 的原文）：FaBeh2 引擎（語法樹行為分析）與 FaExplain
+function embedExportSrc() {
+    const rd = (f) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
+    const beh = ['engine_1_core.js', 'engine_2_scan.js', 'engine_3_narrative.js', 'engine_4_analyze.js', 'engine_5_api.js'].map((f) => rd('renderer/src/behavior/' + f)).join('\n');
+    const out = { explain: rd('renderer/src/explain/code_explain.js'), beh2: "'use strict';\n" + beh, wasm_engine: rd('renderer/src/sql/wasm_engine.js') };
+    const a = src.indexOf('/* EXPSRC-BEGIN */'), b = src.indexOf('/* EXPSRC-END */'); if (a < 0 || b < 0) throw new Error('找不到 EXPSRC 標記');
+    src = src.slice(0, a) + '/* EXPSRC-BEGIN */\nconst FA_EXPORT_SRC = ' + lit(out) + ';\n' + src.slice(b);
+    console.log('已更新 FA_EXPORT_SRC（explain ' + out.explain.length + '、beh2 ' + out.beh2.length + ' 字元）');
+}
 embedFapWorker(); // 先把 worker 程式內嵌進傳輸檔，才會連同傳輸檔內嵌進 floating-assistant.js
 embedWasmWorker(); // 網頁版 SQLite 引擎的 worker 程式內嵌進 wasm_engine.js
+embedExportSrc();
 embedLrCfgl();
 // 主行程的 SQLite 引擎（sqlite-engine.js）要自帶 SQL 語句切分器（renderer/src 不進安裝包）
 function embedSqlSplit() {
