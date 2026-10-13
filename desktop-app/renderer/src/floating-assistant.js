@@ -22012,7 +22012,7 @@ class FloatingAssistant {
             offlineThreshold: 0.45,
             repoIndexMaxFiles: 0, // 專案索引：最多分析幾個原始碼檔（0＝不限，預設）
             repoIndexMaxMb: 0, // 專案索引：索引大小上限（MB）（0＝不限，預設）
-            repoIndexAutoSave: 'off', // 專案索引：完成後自動存回專案資料夾的 .floating-assistant/index/（'notes'＝只存說明、'all'＝說明＋索引資料、'off'＝不存）
+            repoIndexAutoSave: 'all', // 專案索引：完成後自動存回專案資料夾的 .floating-assistant/index/（'notes'＝只存說明、'all'＝說明＋索引資料、'off'＝不存）；2026-10-13 預設改 'all'：索引直接建立在資料夾裡，不用手動存／載／匯出入
             // tw_stock_db客製: 2026-09-25使用者要求——coding domain的Skill分頁
             // 開關（可在Skill分頁看到「內建：程式設計」並enable/disable，見
             // _syncCodingDomainSettings）與發佈偏好（'ask'預設：commit後先
@@ -23246,7 +23246,7 @@ class FloatingAssistant {
             pythonApiBridge: raw.pythonApiBridge === 'off' ? 'off' : 'skill',
             offlineAutoTrain: ['auto', 'manual', 'off'].indexOf(raw.offlineAutoTrain) >= 0 ? raw.offlineAutoTrain : (raw.offlineAutoTrain === true ? 'auto' : 'off'),
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 && n !== 50000 ? n : 0; })(),
-            repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'off',
+            repoIndexAutoSave: ['off', 'notes', 'all'].indexOf(raw.repoIndexAutoSave) >= 0 ? raw.repoIndexAutoSave : 'all',
             repoIndexMaxMb: (() => { const n = Math.floor(Number(raw.repoIndexMaxMb)); return Number.isFinite(n) && n >= 1 && n !== 100 ? n : 0; })(),
             offlineThreshold: FaVlm.clampThreshold(raw.offlineThreshold, 0.45), // 0.1～1.0；1.0＝幾乎全部交給離線文字模型
             customLanguages: (() => {
@@ -32241,7 +32241,7 @@ ${fnData.code}
             }
             rows.push(`<div style="border:1px solid #334155; border-radius:8px; padding:8px 10px; margin:8px 0;"><div style="font-weight:600; word-break:break-all;">${esc(p.root)}</div><div style="color:#94a3b8; margin:3px 0 6px;">${info}</div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">${running ? `<button style="${btn}" data-ri="stop" data-root="${esc(p.root)}">停止</button>` : `<button style="${btn}" data-ri="start" data-root="${esc(p.root)}">開始／接續索引</button>`}
-                ${built && !running ? `<button style="${btn}" data-ri="view" data-root="${esc(p.root)}" title="開啟互動檢視器（可拖曳、縮放、左右隱藏、右邊可停靠）">📖 開啟檢視器</button>` : ''}<button style="${btn}" data-ri="sqlite" data-root="${esc(p.root)}">匯出 SQLite HTML</button><button style="${btn}" data-ri="qa" data-root="${esc(p.root)}">匯出問答 HTML</button><button style="${btn}" data-ri="dive" data-root="${esc(p.root)}" title="AI 依重要程度逐檔讀程式碼，把確認過的說明補進資料庫">🔎 深入探討</button><button style="${btn}" data-ri="save-idx" data-root="${esc(p.root)}" title="存進專案資料夾的 .floating-assistant/index/">💾 存進專案資料夾</button><button style="${btn}" data-ri="load-idx" data-root="${esc(p.root)}" title="載入別人存在專案資料夾裡的索引">📥 從專案資料夾載入</button><button style="${btn}" data-ri="bundle" data-root="${esc(p.root)}">⬇ 匯出索引檔</button><button style="${btn}" data-ri="import-idx" data-root="${esc(p.root)}">⬆ 匯入索引檔…</button><button style="${btn}" data-ri="reset" data-root="${esc(p.root)}">清除</button></div></div>`);
+                ${built && !running ? `<button style="${btn}" data-ri="view" data-root="${esc(p.root)}" title="開啟互動檢視器（可拖曳、縮放、左右隱藏、右邊可停靠）">📖 開啟檢視器</button>` : ''}<button style="${btn}" data-ri="sqlite" data-root="${esc(p.root)}">匯出 SQLite HTML</button><button style="${btn}" data-ri="dive" data-root="${esc(p.root)}" title="AI 依重要程度逐檔讀程式碼，把確認過的說明補進資料庫">🔎 深入探討</button><button style="${btn}" data-ri="reset" data-root="${esc(p.root)}">清除</button></div></div>`);
         }
         root.innerHTML = `<div style="color:#94a3b8; margin-bottom:8px;">為專案建立完整索引（定義、註解、依賴、呼叫關係），之後可以用 <code>repo_ask</code> 問「某函式做什麼／在哪定義／誰用到它」，或匯出成單檔 HTML（內嵌 SQLite 可下 SQL，或純 JS 問答）。索引在背景漸進建立，可停止、可接續；進度也顯示在對話裡。</div>
             <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
