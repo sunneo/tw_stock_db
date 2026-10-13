@@ -1528,12 +1528,311 @@ function patchCloudflareWording(root) {
       "fs_read_file", "fs_list_files", "fs_find_file", "fs_grep", "fs_stat",
       "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
       "run_command", "browser_search", "fetch_web_page",
-      "repo_map", "repo_wiki", "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
+      "repo_map", "repo_ask", "repo_sql", "repo_read_doc", "repo_wiki", "explain_code", "language_explore", "programming_knowledge",
+      "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
+      "coding_edit", "coding_patch_tool", "ci_connections", "gerrit", "github_ci", "jenkins", "ci_triage", "pipeline_inspect", "ci_guide",
       "uml_to_code", "design_choices", "uml_design", "uml_guide", "ask_user_card", "log_learn", "log_ask", "mix_understand", "mix_highlight", "glue_list", "glue_define", "glue_report",
     ],
     systemPrompt: fa._buildCodingSystemPrompt(Object.assign({}, codingEnv, { publishMode: fa.advancedSettings.codingPublishMode === "auto" ? "auto" : "ask" })),
   });
   fa.domains.coding._codingEnv = codingEnv;
+
+  // ─── CI/CD 與 patch 小工具（coding domain 用）────────────────────────────
+  // tw_stock_db客製: 2026-10-14使用者要求——程式設計domain要能「隨時準備一個小程式/工具來上patch」，也要懂 Gerrit／GitHub／Jenkins 這些 CI/CD，並有 pipeline 的工具。
+  //   coding_edit／coding_patch_tool：搜尋取代、跑一次性腳本產生 patch（主行程 coding-tools.js；程式碼邏輯 coding-edit.js）
+  //   ci_connections／gerrit／github_ci／jenkins：用主行程的 HTTP（ci-fetch.js，沒有 CORS，寫入動作跳原生確認框）；回傳整理好的結構，不是原始 JSON
+  //   ci_triage／pipeline_inspect／ci_guide：純解析（FaCi／FaPipeline）
+  const jsonParse = async (raw) => { let p = {}; try { p = await fa.repairJsonPayload(String(raw || "{}")); } catch (_) {} return p; };
+  const ciCap = (obj, frac) => {
+    let s = JSON.stringify(obj); const max = fa._getAdaptiveContentBudgetChars(frac || 0.25, 14000);
+    if (s.length <= max) return s;
+    const o = Object.assign({}, obj); for (const k of ["diff", "patch", "tail", "messages", "findings", "files", "runs", "log"]) { if (typeof o[k] === "string" && o[k].length > max / 2) o[k] = o[k].slice(0, Math.floor(max / 2)) + "\n…（已截斷）"; else if (Array.isArray(o[k]) && o[k].length > 12) { o[k] = o[k].slice(0, 12); o._truncated = true; } }
+    s = JSON.stringify(o); return s.length > max ? s.slice(0, max) + '…（已截斷）"}' : s;
+  };
+
+  fa.register_openai_tool(
+    "coding_edit",
+    "**改程式最簡單的方式：「找這段、換成那段」**。由程式幫你定位（內容必須唯一才改）、保留縮排與換行風格、all-or-nothing（任何一個編輯失敗就全部不改），並回傳真正的unified diff。弱模型手寫unified diff常因行號或context出錯，優先用這個；跟apply_git_patch一樣只能在暫存工作區的cwd_abs用。edits陣列每項擇一：{path, search, replace}（改一段；出現多次要加all:true與expect:次數，或把search寫長一點讓它唯一）、{path, insert_after或insert_before, text}（在某一行前後插入）、{path, create:\"整個檔案內容\"}（新增檔案；已存在要加overwrite:true）、{path, delete:true}。批次改名／替換用regex:{paths:[\"src/**/*.c\"], pattern, flags, replacement, expect_count, expect_files}（replacement可用$1）。找不到search時，回傳errors[].closest.actual＝檔案裡最接近的實際內容（含行號），照它重寫search，不要憑記憶。先用dry_run:true看diff再送也可以。成功後要跑語法檢查與測試。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs);
+      if (!p.cwd_abs) return JSON.stringify({ ok: false, error: "缺少cwd_abs（暫存工作區的絕對路徑）" });
+      try { const r = await window.desktopAPI.codingTools.edit(String(p.cwd_abs), { edits: p.edits, regex: p.regex, dryRun: !!p.dry_run }); return ciCap(r, 0.3); }
+      catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        cwd_abs: { type: "string", description: "暫存工作區（coding_workspace open回傳的workspace_path）或git repo的絕對路徑" },
+        edits: { type: "array", description: "編輯清單，每項擇一形式（見工具說明）", items: { type: "object", properties: { path: { type: "string", description: "相對於cwd_abs的路徑" }, search: { type: "string" }, replace: { type: "string" }, all: { type: "boolean" }, expect: { type: "number" }, insert_after: { type: "string" }, insert_before: { type: "string" }, text: { type: "string" }, create: { type: "string" }, overwrite: { type: "boolean" }, delete: { type: "boolean" } }, required: ["path"] } },
+        regex: { type: "object", description: "跨檔案正規表示式取代（與edits擇一）", properties: { paths: { type: "array", items: { type: "string" }, description: "glob，例如[\"src/**/*.js\"]" }, pattern: { type: "string" }, flags: { type: "string" }, replacement: { type: "string" }, expect_count: { type: "number" }, expect_files: { type: "number" } }, required: ["paths", "pattern"] },
+        dry_run: { type: "boolean", description: "true=只回diff不寫檔" },
+      },
+      required: ["cwd_abs"],
+      additionalProperties: false,
+    }
+  );
+
+  fa.register_openai_tool(
+    "coding_patch_tool",
+    "**隨時準備一支小程式來上patch／做機械式修改**（改名、批次替換、搬移、產生檔案、改設定格式…這類不適合一個一個search/replace的事）。你寫一支小腳本（node最保險，不用安裝；也可以python／sh），在暫存工作區（git）裡執行，工具回傳這支腳本實際造成的git diff。流程：action:run（預設dry_run:true，跑完會還原、把patch存起來）→ 看diff確認 → action:apply（套用**剛剛審查過的那份patch**，不是重跑腳本）→ 跑測試 → commit。腳本與patch存在<workspace>/.floating-assistant/patch-tools/，之後action:list看得到，action:run只帶name就能重跑（例如下一個專案要做同樣的事）。腳本在工作區的根目錄執行，用相對路徑；環境變數PATCH_WORKSPACE是工作區路徑。工作區要先commit乾淨（不然diff會混進別的修改）。腳本等於執行任意程式，所以會跟run_command一樣跳確認。腳本失敗或逾時會自動還原全部變更。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs);
+      if (!p.cwd_abs) return JSON.stringify({ ok: false, error: "缺少cwd_abs（暫存工作區的絕對路徑）" });
+      try { const r = await window.desktopAPI.codingTools.script(String(p.cwd_abs), { action: p.action, name: p.name, language: p.language, code: p.code, dryRun: p.dry_run, timeoutSec: p.timeout_sec, args: p.args }); return ciCap(r, 0.3); }
+      catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    {
+      type: "object",
+      properties: {
+        cwd_abs: { type: "string", description: "暫存工作區的絕對路徑（coding_workspace open的workspace_path）" },
+        action: { type: "string", enum: ["run", "apply", "list"], description: "run（預設，有name或code時）｜apply（套用上一次run的dry-run patch）｜list（列出存起來的腳本）" },
+        name: { type: "string", description: "腳本名稱（英文／數字／底線，例如rename_api）" },
+        language: { type: "string", enum: ["node", "python", "sh"], description: "有code時必填；node不用安裝" },
+        code: { type: "string", description: "腳本內容；不給就重跑已存的同名腳本" },
+        dry_run: { type: "boolean", description: "run的預設是true（跑完還原）；false=直接保留修改" },
+        timeout_sec: { type: "number", description: "逾時秒數，預設60，最多300" },
+        args: { type: "array", items: { type: "string" }, description: "傳給腳本的命令列參數" },
+      },
+      required: ["cwd_abs"],
+      additionalProperties: false,
+    }
+  );
+
+  // ---- 連線設定與 HTTP ----
+  const ciConns = () => (Array.isArray(fa.advancedSettings.ciConnections) ? fa.advancedSettings.ciConnections : []).filter((c) => c && c.baseUrl && /^(gerrit|github|jenkins)$/.test(c.kind));
+  const hostOf = (u) => { try { return new URL(u).host.toLowerCase(); } catch (_) { return ""; } };
+  const ciPickConn = (kind, a) => {
+    const list = ciConns().filter((c) => c.kind === kind);
+    if (a.connection) { const c = list.find((x) => String(x.name || x.id).toLowerCase() === String(a.connection).toLowerCase()); return c || null; }
+    const u = a.url || a.base_url; if (u) { const h = hostOf(u); const c = list.find((x) => hostOf(x.baseUrl) === h); if (c) return c; }
+    return list.length === 1 ? list[0] : null;
+  };
+  const basic = (c) => (c && c.user && c.token ? "Basic " + btoa(unescape(encodeURIComponent(c.user + ":" + c.token))) : null);
+  const ciHeaders = (kind, c, extra) => {
+    const h = Object.assign({}, extra || {});
+    if (kind === "github") { h.Accept = h.Accept || "application/vnd.github+json"; h["X-GitHub-Api-Version"] = "2022-11-28"; if (c && c.token) h.Authorization = "Bearer " + c.token; }
+    else if (kind === "gerrit") { const b = basic(c); if (b) h.Authorization = b; h.Accept = h.Accept || "application/json"; }
+    else if (kind === "jenkins") { const b = basic(c); if (b) h.Authorization = b; h.Accept = h.Accept || "application/json"; }
+    return h;
+  };
+  const needConn = (kind, host) => ({ ok: false, error: "沒有可用的 " + kind + " 連線" + (host ? "（" + host + "）" : "") + "。到 Advance Settings →「CI/CD 連線」新增（網址、使用者、token／HTTP 密碼），或呼叫時帶 connection 名稱。" + (kind === "github" ? " 公開的 GitHub repo 不用連線也能查（有流量限制）。" : "") });
+  // 回傳 { ok, status, text, headers, json? }；失敗時 error 已整理成給模型看得懂的文字
+  const ciHttp = async (kind, conn, url, o) => {
+    o = o || {};
+    const r = await window.desktopAPI.ci.fetch({ url, method: o.method || "GET", headers: ciHeaders(kind, conn, o.headers), body: o.body, timeoutSec: o.timeoutSec || 30, maxBytes: o.maxBytes, keep: o.keep, confirm: o.confirm });
+    if (r.denied) return { ok: false, denied: true, error: r.error };
+    if (!r.ok && r.status == null) return { ok: false, error: r.error || "連線失敗", hint: r.hint };
+    if (r.status === 401 || r.status === 403) {
+      const rl = r.headers && r.headers["x-ratelimit-remaining"] === "0";
+      return Object.assign({ ok: false }, r, { error: rl ? "GitHub API 流量用完了（未登入每小時 60 次）。到 CI/CD 連線新增 github token 就有 5000 次／小時。" : r.status + " " + (r.statusText || "") + "：" + (conn && conn.token ? "帳號或 token 錯誤／過期，或這個帳號沒有權限（" + kind + "）" : "這個 " + kind + " 需要登入：到 CI/CD 連線新增使用者與 token／HTTP 密碼") });
+    }
+    if (r.status === 404) return Object.assign({ ok: false }, r, { error: "404 找不到（網址、project／repo 名稱、change／build 編號，或你沒有權限看——私有資源有時會回 404）" });
+    if (!r.ok) return Object.assign({ ok: false }, r, { error: "HTTP " + r.status + " " + (r.statusText || "") + "：" + String(r.text || "").slice(0, 300) });
+    return r;
+  };
+  const jsonOf = (r, kind) => { try { return kind === "gerrit" ? FaCi.gerrit.parseJson(r.text) : JSON.parse(r.text); } catch (e) { throw new Error("回應不是 JSON：" + String(r.text || "").slice(0, 160)); } };
+  const maskConn = (c) => ({ name: c.name || c.id, kind: c.kind, baseUrl: c.baseUrl, user: c.user || undefined, has_token: !!c.token });
+
+  fa.register_openai_tool(
+    "ci_connections",
+    "列出已設定的CI/CD連線（gerrit／github／jenkins；token一律不會顯示），或action:test測試連線通不通、認證對不對。沒有連線時其他工具會要求先設定（Advance Settings →「CI/CD 連線」）。公開的GitHub repo、公開的Gerrit（例如gerrit-review.googlesource.com）、公開的Jenkins不用連線也能唯讀查詢。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs); const list = ciConns();
+      if (p.action !== "test") return JSON.stringify({ ok: true, connections: list.map(maskConn), note: list.length ? "用 gerrit／github_ci／jenkins 工具時帶 connection:名稱（只有一個同類連線或網址的主機吻合時可以省略）。" : "還沒有設定任何連線。公開服務仍可唯讀查詢；私有的要到 Advance Settings →「CI/CD 連線」新增。" });
+      const out = [];
+      for (const c of list.filter((x) => !p.connection || String(x.name || x.id).toLowerCase() === String(p.connection).toLowerCase())) {
+        const base = c.baseUrl.replace(/\/+$/, ""); const url = c.kind === "github" ? FaCi.github.api(c.baseUrl) + "/user" : c.kind === "gerrit" ? base + (basic(c) ? "/a" : "") + "/config/server/version" : base + "/api/json?tree=mode,nodeName";
+        const r = await ciHttp(c.kind, c, url, { timeoutSec: 15 }); out.push(Object.assign(maskConn(c), { reachable: !!r.ok, status: r.status, detail: r.ok ? String(r.text || "").slice(0, 120).replace(/\s+/g, " ") : r.error, hint: r.hint }));
+      }
+      return JSON.stringify({ ok: true, results: out });
+    },
+    { type: "object", properties: { action: { type: "string", enum: ["list", "test"] }, connection: { type: "string" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "gerrit",
+    "查Gerrit（code review）。action: change（一個change的完整狀況：狀態、標籤分數、為什麼還不能submit(blockers)、檔案清單、當前patchset的fetch／cherry-pick指令、機器人留言裡的CI連結）｜query（Gerrit搜尋語法，例如\"status:open project:foo owner:self\"、\"change:12345\"）｜comments（未解決的review留言，含檔案與行號）｜patch（當前或指定patchset的patch內容，可直接給apply_git_patch；save_to可存成檔案）｜push_help（怎麼push新的patchset／WIP／加reviewer／rebase，含Change-Id規則）｜review（**寫入**：留言／投票；會跳原生確認框，使用者沒明確要你做就不要用）。change可以直接貼Gerrit網址（https://host/c/project/+/12345/3）或數字，網址會自動決定連線。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs); const act = p.action || (p.query ? "query" : "change");
+      try {
+        if (act === "push_help") return JSON.stringify({ ok: true, commands: FaCi.gerrit.pushCommands({ branch: p.branch, topic: p.topic, reviewers: p.reviewers, wip: p.wip, ready: p.ready, remote: p.remote }) });
+        const parsed = p.url ? FaCi.gerrit.parseChangeUrl(p.url) : null; const baseHint = (parsed && parsed.base) || p.base_url;
+        const conn = ciPickConn("gerrit", { connection: p.connection, url: baseHint || p.url });
+        const base0 = conn ? conn.baseUrl : baseHint; if (!base0) return JSON.stringify(needConn("gerrit"));
+        const B = FaCi.gerrit.base(base0, !!(conn && basic(conn)));
+        const id = p.change != null && p.change !== "" ? String(p.change) : parsed && parsed.number ? String(parsed.project && !/^\d+$/.test(String(parsed.number)) ? parsed.number : parsed.number) : "";
+        const rev = p.revision != null ? String(p.revision) : parsed && parsed.patchset ? String(parsed.patchset) : "current";
+        if (act === "query") { const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.query(B, p.query || "status:open", { n: p.limit }), {}); if (!r.ok) return JSON.stringify(r); const arr = jsonOf(r, "gerrit"); return ciCap({ ok: true, count: arr.length, changes: arr.map((c) => ({ number: c._number, project: c.project, branch: c.branch, subject: c.subject, status: c.status, owner: c.owner && (c.owner.name || c.owner.username), updated: c.updated, labels: Object.fromEntries(Object.entries(c.labels || {}).map(([k, l]) => [k, l.approved ? "approved" : l.rejected ? "rejected" : l.recommended ? "+1" : l.disliked ? "-1" : "—"])) })), more: !!(arr.length && arr[arr.length - 1]._more_changes) }); }
+        if (!id) return JSON.stringify({ ok: false, error: "缺少 change（數字、Change-Id 或 Gerrit 網址）" });
+        if (act === "change") {
+          const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.change(B, id), {}); if (!r.ok) return JSON.stringify(r);
+          const c = FaCi.gerrit.parseChange(jsonOf(r, "gerrit")); const next = [];
+          if (c.ci_links.some((l) => l.kind === "jenkins")) next.push("jenkins 工具讀 ci_links 裡的 build 網址，看失敗原因");
+          if (c.blockers.length) next.push("blockers 是還不能 submit 的原因；有人 -1 先看 comments");
+          next.push("patch 取得這個 patchset 的 patch；fetch.http.checkout 是在本機拿到它的指令");
+          return ciCap(Object.assign({ ok: true }, c, { commit_message: String(c.commit_message || "").slice(0, 800), next }), 0.3);
+        }
+        if (act === "comments") { const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.comments(B, id), {}); if (!r.ok) return JSON.stringify(r); const cm = FaCi.gerrit.parseComments(jsonOf(r, "gerrit")); return ciCap({ ok: true, total_comments: cm.all, unresolved_count: cm.unresolved.length, unresolved: cm.unresolved, next: cm.unresolved.length ? "逐一處理未解決的留言：用 path:line 讀對應檔案，修好後 push 新 patchset（push_help），再回覆那則留言" : undefined }); }
+        if (act === "patch" || act === "files") {
+          if (act === "files") { const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.files(B, id, rev), {}); if (!r.ok) return JSON.stringify(r); const f = jsonOf(r, "gerrit"); return ciCap({ ok: true, files: Object.entries(f).filter(([k]) => k !== "/COMMIT_MSG").map(([k, v]) => ({ path: k, status: v.status || "M", inserted: v.lines_inserted, deleted: v.lines_deleted })) }); }
+          const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.patch(B, id, rev), { maxBytes: 4 * 1024 * 1024, headers: { Accept: "text/plain" } }); if (!r.ok) return JSON.stringify(r);
+          let text = String(r.text || "").trim(); try { text = new TextDecoder().decode(Uint8Array.from(atob(text.replace(/\s+/g, "")), (ch) => ch.charCodeAt(0))); } catch (_) { /* 已經是純文字 */ }
+          let saved; if (p.save_to) { await window.desktopAPI.rawfs.writeFile(String(p.save_to), { text }); saved = String(p.save_to); }
+          return ciCap({ ok: true, change: id, revision: rev, bytes: text.length, saved_to: saved, patch: text, note: "這是 git format-patch 格式（含作者與 commit message），apply_git_patch 可以直接套用；要保留作者與訊息用 git am。" }, 0.35);
+        }
+        if (act === "review") {
+          const body = FaCi.gerrit.reviewInput({ message: p.message, labels: p.labels, comments: p.comments, ready: p.ready }); if (!body.message && !body.labels && !body.comments) return JSON.stringify({ ok: false, error: "review 需要 message、labels 或 comments 至少一個" });
+          const r = await ciHttp("gerrit", conn, FaCi.gerrit.urls.review(B, id, rev), { method: "POST", body, headers: { "Content-Type": "application/json" }, confirm: { title: "AI 要在 Gerrit 留下 review", message: "Gerrit change " + id, detail: "使用者沒有叫它做的話請拒絕。" } });
+          if (!r.ok) return JSON.stringify(r); return JSON.stringify({ ok: true, posted: true, response: String(r.text || "").slice(0, 300) });
+        }
+        return JSON.stringify({ ok: false, error: "action 必須是 change／query／comments／patch／files／push_help／review" });
+      } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    { type: "object", properties: { action: { type: "string", enum: ["change", "query", "comments", "patch", "files", "push_help", "review"] }, connection: { type: "string", description: "連線名稱（ci_connections 列得到）；貼網址時通常可省略" }, url: { type: "string", description: "Gerrit change 網址" }, change: { type: "string", description: "change 編號、Change-Id 或 project~branch~Change-Id" }, revision: { type: "string", description: "patchset 編號或 current（預設）" }, query: { type: "string", description: "Gerrit 搜尋語法" }, limit: { type: "number" }, save_to: { type: "string", description: "patch：存成這個絕對路徑的檔案" }, message: { type: "string" }, labels: { type: "object", description: "review：例如 {\"Code-Review\":1}" }, comments: { type: "object", description: "review：行內留言 {path:[{line,message}]}" }, branch: { type: "string" }, topic: { type: "string" }, reviewers: { type: "array", items: { type: "string" } }, wip: { type: "boolean" }, ready: { type: "boolean" }, remote: { type: "string" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "github_ci",
+    "查GitHub的PR與CI（GitHub Actions／check runs）。action: pr（PR概況＋檔案＋所有checks的結果＋失敗的job與失敗的step名稱＋review狀態，一次看完；先用這個）｜checks（某個commit sha的check runs）｜runs（最近的workflow runs，可用branch／status過濾）｜jobs（某個run的jobs與失敗步驟）｜log（某個job的記錄，**直接做失敗分診**：哪個階段、第一個真正的錯誤在哪個檔案第幾行、是程式還是環境問題；raw:true才給最後幾百行原文）｜diff（PR的unified diff，可給apply_git_patch）｜comments（PR行內review留言）｜rerun（**寫入**：重跑失敗的jobs，會跳確認框）｜comment（**寫入**：在PR留言，會跳確認框）。url可以直接貼PR／run／job網址，或寫owner、repo、number。公開repo不用連線（有流量限制）。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs);
+      try {
+        const u = p.url ? FaCi.github.parseUrl(p.url) : null; const owner = p.owner || (u && u.owner), repo = p.repo || (u && u.repo); const number = p.number || (u && u.number); const host = (u && u.host) || p.host || "github.com";
+        const conn = ciPickConn("github", { connection: p.connection, url: "https://" + host + "/" }) || (host === "github.com" ? ciConns().find((c) => c.kind === "github" && /github\.com|api\.github\.com/.test(c.baseUrl)) || null : null);
+        const A = FaCi.github.api(conn ? conn.baseUrl : (host === "github.com" ? "github.com" : "https://" + host));
+        if (!owner || !repo) return JSON.stringify({ ok: false, error: "缺少 owner／repo（或貼 GitHub 網址）" });
+        const act = p.action || (u && u.kind === "run" ? (u.job_id ? "log" : "jobs") : "pr");
+        const get = async (url, o) => ciHttp("github", conn, url, o || {});
+        const U = FaCi.github.urls;
+        if (act === "pr" || act === "diff" || act === "comments") {
+          if (!number) return JSON.stringify({ ok: false, error: "缺少 PR 編號（number 或貼 PR 網址）" });
+          if (act === "diff") { const r = await get(U.pull(A, owner, repo, number), { headers: U.diffHeader, maxBytes: 4 * 1024 * 1024 }); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, bytes: r.text.length, truncated: !!r.truncated, diff: r.text, note: "這是 unified diff，可以給 apply_git_patch（在 checkout 了 base 的暫存工作區）。" }, 0.35); }
+          if (act === "comments") { const r = await get(U.reviewComments(A, owner, repo, number)); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, comments: FaCi.github.parseReviewComments(jsonOf(r)) }); }
+          const r = await get(U.pull(A, owner, repo, number)); if (!r.ok) return JSON.stringify(r); const pr = FaCi.github.parsePull(jsonOf(r));
+          const [files, checks, reviews] = await Promise.all([get(U.pullFiles(A, owner, repo, number)), pr.head ? get(U.checkRuns(A, owner, repo, pr.head.sha)) : Promise.resolve(null), get(U.reviews(A, owner, repo, number))]);
+          const out = { ok: true, pr, files: files.ok ? FaCi.github.parseFiles(jsonOf(files)).map((f) => ({ path: f.path, status: f.status, additions: f.additions, deletions: f.deletions })) : undefined, reviews: reviews.ok ? FaCi.github.parseReviews(jsonOf(reviews)).filter((x) => x.state !== "COMMENTED" || x.message) : undefined };
+          if (checks && checks.ok) { const cr = FaCi.github.parseCheckRuns(jsonOf(checks)); out.checks = { overall: cr.overall, total: cr.total, passed: cr.passed, failed: cr.failed.map((f) => ({ name: f.name, conclusion: f.conclusion, run_id: f.run_id, job_id: f.job_id, summary: f.summary })), pending: cr.pending.map((x) => x.name) }; if (cr.failed.length) out.next = "用 action:log 帶 job_id 做失敗分診（例如 job_id:" + cr.failed[0].job_id + "）"; } else if (checks) out.checks_error = checks.error;
+          return ciCap(out, 0.35);
+        }
+        if (act === "checks") { const sha = p.sha || (u && u.sha); if (!sha) return JSON.stringify({ ok: false, error: "缺少 sha" }); const r = await get(U.checkRuns(A, owner, repo, sha)); if (!r.ok) return JSON.stringify(r); const cr = FaCi.github.parseCheckRuns(jsonOf(r)); return ciCap({ ok: true, overall: cr.overall, total: cr.total, passed: cr.passed, failed: cr.failed, pending: cr.pending.map((x) => x.name) }); }
+        if (act === "runs") { const r = await get(U.runs(A, owner, repo, { branch: p.branch, status: p.status, n: p.limit })); if (!r.ok) return JSON.stringify(r); const j = jsonOf(r); return ciCap({ ok: true, runs: (j.workflow_runs || []).map(FaCi.github.parseRun) }); }
+        const runId = p.run_id || (u && u.run_id), jobId = p.job_id || (u && u.job_id);
+        if (act === "jobs") { if (!runId) return JSON.stringify({ ok: false, error: "缺少 run_id" }); const r = await get(U.jobs(A, owner, repo, runId)); if (!r.ok) return JSON.stringify(r); const jobs = FaCi.github.parseJobs(jsonOf(r)); return ciCap({ ok: true, run_id: runId, jobs, failed_jobs: jobs.filter((x) => x.conclusion === "failure").map((x) => ({ id: x.id, name: x.name, failed_steps: x.failed_steps })), next: "action:log 帶 job_id 看失敗分診" }); }
+        if (act === "log") {
+          if (!jobId) return JSON.stringify({ ok: false, error: "缺少 job_id（action:jobs 或 pr 的 checks.failed 看得到）" });
+          const r = await get(U.jobLogs(A, owner, repo, jobId), { maxBytes: 3 * 1024 * 1024, keep: "tail", timeoutSec: 60 }); if (!r.ok) return JSON.stringify(r);
+          const tri = FaCi.triage(r.text); const o = { ok: true, job_id: jobId, log_bytes: r.bytes, triage: tri }; if (p.raw) o.tail = r.text.split("\n").slice(-Math.min(400, Number(p.lines) || 200)).join("\n"); return ciCap(o, 0.35);
+        }
+        if (act === "rerun") { if (!runId) return JSON.stringify({ ok: false, error: "缺少 run_id" }); const r = await get(U.rerunFailed(A, owner, repo, runId), { method: "POST", body: "", confirm: { title: "AI 要重跑 GitHub Actions 的失敗 jobs", message: owner + "/" + repo + " run " + runId } }); if (!r.ok) return JSON.stringify(r); return JSON.stringify({ ok: true, rerun_requested: true }); }
+        if (act === "comment") { if (!number || !p.message) return JSON.stringify({ ok: false, error: "comment 需要 number 與 message" }); const r = await get(U.comment(A, owner, repo, number), { method: "POST", body: { body: String(p.message) }, confirm: { title: "AI 要在 GitHub PR 留言", message: owner + "/" + repo + "#" + number, detail: String(p.message).slice(0, 600) } }); if (!r.ok) return JSON.stringify(r); return JSON.stringify({ ok: true, posted: true }); }
+        return JSON.stringify({ ok: false, error: "action 必須是 pr／checks／runs／jobs／log／diff／comments／rerun／comment" });
+      } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    { type: "object", properties: { action: { type: "string", enum: ["pr", "checks", "runs", "jobs", "log", "diff", "comments", "rerun", "comment"] }, url: { type: "string", description: "PR／Actions run／job／commit 網址" }, owner: { type: "string" }, repo: { type: "string" }, number: { type: "number", description: "PR 編號" }, sha: { type: "string" }, run_id: { type: "number" }, job_id: { type: "number" }, branch: { type: "string" }, status: { type: "string" }, limit: { type: "number" }, raw: { type: "boolean", description: "log：另外回最後幾百行原文" }, lines: { type: "number" }, message: { type: "string" }, connection: { type: "string" }, host: { type: "string", description: "GitHub Enterprise 主機（預設 github.com）" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "jenkins",
+    "查Jenkins的job與build。action: build（**先用這個**：一個build的結果、耗時、觸發原因、參數、對應的commit、測試統計、Pipeline各stage的狀態；失敗時自動讀console記錄尾巴做失敗分診：哪個stage、第一個真正的錯誤在哪個檔案第幾行、程式問題還是環境問題）｜job（job概況、最近的build、參數定義）｜console（console記錄最後N行原文）｜triage（只做失敗分診）｜tests（失敗的測試與是否新增的失敗）｜stages（Pipeline各stage）｜trigger（**寫入**：觸發build，會跳確認框）。url可直接貼build網址（https://ci/job/team/job/app/57/）；沒有build編號就看最新一次（lastBuild，也可以是lastFailedBuild）。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs);
+      try {
+        const u = p.url ? FaCi.jenkins.parseUrl(p.url) : null; const baseUrl = (u && u.base) || p.base_url; const job = p.job || (u && u.job); const build = p.build != null && p.build !== "" ? p.build : (u && u.build) || "lastBuild";
+        const conn = ciPickConn("jenkins", { connection: p.connection, url: baseUrl }); const base = conn ? conn.baseUrl : baseUrl; if (!base) return JSON.stringify(needConn("jenkins"));
+        const act = p.action || "build"; const U = FaCi.jenkins.urls; const get = (url, o) => ciHttp("jenkins", conn, url, o || {});
+        if (!job && act !== "ping") return JSON.stringify({ ok: false, error: "缺少 job（貼 build 網址，或 job:\"team/app/main\"）" });
+        if (act === "job") { const r = await get(U.job(base, job)); if (!r.ok) return JSON.stringify(r); const jj = jsonOf(r); if (!jj || !(jj.name || jj.fullName || jj.url)) return JSON.stringify({ ok: false, error: "Jenkins 回了空的物件：job 路徑可能不存在（巢狀資料夾／multibranch 要寫完整，例如 team/app/main），或匿名者沒有權限看這個 job（需要連線）" }); return ciCap({ ok: true, job: FaCi.jenkins.parseJob(jj) }); }
+        if (act === "console") { const r = await get(U.console(base, job, build), { maxBytes: 2 * 1024 * 1024, keep: "tail", timeoutSec: 60 }); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, job, build, log_bytes: r.bytes, tail: r.text.split("\n").slice(-Math.min(600, Number(p.lines) || 150)).join("\n") }, 0.35); }
+        if (act === "triage") { const r = await get(U.console(base, job, build), { maxBytes: 3 * 1024 * 1024, keep: "tail", timeoutSec: 60 }); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, job, build, log_bytes: r.bytes, triage: FaCi.triage(r.text) }, 0.35); }
+        if (act === "tests") { const r = await get(U.tests(base, job, build)); if (r.status === 404) return JSON.stringify({ ok: true, has_test_report: false, note: "這個 build 沒有發佈測試報告（沒有 junit 步驟），看 console 的失敗分診。" }); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, tests: FaCi.jenkins.parseTests(jsonOf(r)) }); }
+        if (act === "stages") { const r = await get(U.stages(base, job, build)); if (!r.ok) return JSON.stringify(r); return ciCap({ ok: true, pipeline: FaCi.jenkins.parseStages(jsonOf(r)) }); }
+        if (act === "trigger") {
+          const params = p.parameters && typeof p.parameters === "object" ? p.parameters : null; const extra = {};
+          const cr = await get(U.crumb(base)); if (cr.ok) { try { const j = JSON.parse(cr.text); extra[j.crumbRequestField] = j.crumb; } catch (_) { /* 沒有 crumb 保護 */ } }
+          const url = U.trigger(base, job, !!params) + (params ? "&" + Object.entries(params).map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&") : "");
+          const r = await get(url, { method: "POST", body: "", headers: extra, confirm: { title: "AI 要觸發 Jenkins build", message: job, detail: params ? "參數：" + JSON.stringify(params) : "（沒有參數）" } }); if (!r.ok) return JSON.stringify(r);
+          return JSON.stringify({ ok: true, triggered: true, queue_url: r.headers && r.headers.location, note: "build 排進佇列了；用 action:build 帶 build:lastBuild 看進度（building:true 表示還在跑）。" });
+        }
+        if (act !== "build") return JSON.stringify({ ok: false, error: "action 必須是 build／job／console／triage／tests／stages／trigger" });
+        const r = await get(U.build(base, job, build)); if (!r.ok) return JSON.stringify(r);
+        const bj = jsonOf(r); if (!bj || bj.number == null) return JSON.stringify({ ok: false, error: "Jenkins 沒有回傳這個 build 的資料（build 編號或 job 路徑不對，或需要登入）" });
+        const b = FaCi.jenkins.parseBuild(bj); const out = { ok: true, job, build: b, status: FaCi.normalizeResult(b.result) };
+        if (b.building) { out.note = "還在跑，等它結束再看分診。"; return ciCap(out); }
+        const [st, ts] = await Promise.all([get(U.stages(base, job, b.number)), b.tests && b.tests.failed ? get(U.tests(base, job, b.number)) : Promise.resolve(null)]);
+        if (st && st.ok) { try { out.stages = FaCi.jenkins.parseStages(JSON.parse(st.text)); } catch (_) { /* 不是 Pipeline job */ } }
+        if (ts && ts.ok) { try { out.test_report = FaCi.jenkins.parseTests(JSON.parse(ts.text)); } catch (_) { /* */ } }
+        if (out.status === "failure" || out.status === "unknown") { const lg = await get(U.console(base, job, b.number), { maxBytes: 3 * 1024 * 1024, keep: "tail", timeoutSec: 60 }); if (lg.ok) { out.triage = FaCi.triage(lg.text); out.next = out.triage.category === "code" ? "根因看 triage.root_cause；pipeline_inspect 可以把這個 job 的步驟變成本機指令重現" : "看 triage.advice"; } else out.triage_error = lg.error; }
+        return ciCap(out, 0.35);
+      } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    { type: "object", properties: { action: { type: "string", enum: ["build", "job", "console", "triage", "tests", "stages", "trigger"] }, url: { type: "string", description: "job 或 build 網址" }, job: { type: "string", description: "job 路徑，例如 team/app/main" }, build: { type: "string", description: "build 編號或 lastBuild／lastFailedBuild／lastSuccessfulBuild" }, lines: { type: "number" }, parameters: { type: "object", description: "trigger：build 參數" }, connection: { type: "string" }, base_url: { type: "string" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "ci_triage",
+    "把一份CI／建置／測試的失敗記錄（貼上來的文字或檔案）做**失敗分診**：哪個階段失敗、第一個真正的錯誤（檔案:行號:訊息）、是程式問題還是環境問題（網路逾時／磁碟滿／OOM／節點離線／憑證失效）、失敗的測試清單、後面連鎖的make／Maven／腳本結束碼錯誤（可以忽略）、建議怎麼處理。支援GCC／Clang／Rust／Go／Python／pytest／jest／tsc／eslint／Maven／Gradle／gtest／ctest／Jenkins／GitHub Actions。記錄再長也可以（只讀一次、不吃對話長度）。給text或path其中一個；repo_root可選，有給會檢查root_cause的檔案是否存在、自動接上路徑。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs); let text = typeof p.text === "string" ? p.text : "";
+      try {
+        if (!text && p.path) { const r = await window.desktopAPI.rawfs.readFile(String(p.path)); text = typeof r.text === "string" ? r.text : ""; if (text.length > 24 * 1024 * 1024) text = text.slice(-24 * 1024 * 1024); }
+        if (!text) return JSON.stringify({ ok: false, error: "缺少 text 或 path" });
+        const tri = FaCi.triage(text);
+        if (p.repo_root && tri.root_cause && tri.root_cause.file) {
+          const f = String(tri.root_cause.file).replace(/\\/g, "/"); const root = String(p.repo_root).replace(/[\\/]+$/, "");
+          const cands = [root + "/" + f.replace(/^\.\//, "")]; const parts = f.split("/"); for (let i = 1; i < Math.min(parts.length, 6); i++) cands.push(root + "/" + parts.slice(i).join("/"));
+          for (const c of cands) { try { const st = await window.desktopAPI.rawfs.stat(c); if (st && !st.isDirectory) { tri.root_cause.local_path = c; break; } } catch (_) { /* 下一個 */ } }
+          if (!tri.root_cause.local_path) tri.root_cause.local_path_note = "在 repo_root 底下找不到這個檔案（CI 上的路徑不同？用 fs_find_file 找檔名）";
+        }
+        return ciCap({ ok: true, triage: tri }, 0.35);
+      } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    { type: "object", properties: { text: { type: "string", description: "記錄文字" }, path: { type: "string", description: "記錄檔的絕對路徑" }, repo_root: { type: "string", description: "選填：本機專案根目錄，用來對應檔案路徑" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "pipeline_inspect",
+    "讀懂、檢查、重現、產生CI pipeline定義（Jenkinsfile、.github/workflows/*.yml、.gitlab-ci.yml）。action: find（在repo_root底下找pipeline檔案）｜inspect（階段、步驟、觸發條件、環境變數、有沒有build／test／lint／deploy／報告；預設）｜lint（風險與壞習慣：寫死的機密、curl|sh、pull_request_target、未釘版本的action、script injection、沒有timeout、|| true吞掉失敗…，附修法）｜local_commands（把每個階段的shell步驟變成「本機可以一條一條跑」的指令，action類步驟轉成環境需求說明——**CI失敗時用它在本機重現**）｜scaffold（專案還沒有pipeline時，偵測工具鏈［npm／pytest／go／cargo／maven／gradle／cmake／make］並產生一份樣板，回傳內容與建議路徑，**不會寫檔**，用coding_edit的create放進專案）。path是pipeline檔案（絕對路徑），或給text。",
+    async (rawArgs) => {
+      const p = await jsonParse(rawArgs); const act = p.action || "inspect"; const raw = window.desktopAPI.rawfs;
+      try {
+        if (act === "find" || act === "scaffold") {
+          const root = String(p.repo_root || "").replace(/[\\/]+$/, ""); if (!root) return JSON.stringify({ ok: false, error: "缺少 repo_root" });
+          if (act === "find") {
+            const found = [];
+            const tryRead = async (rel) => { try { const st = await raw.stat(root + "/" + rel); if (st && !st.isDirectory) found.push(rel); } catch (_) { /* 沒有 */ } };
+            for (const rel of ["Jenkinsfile", ".gitlab-ci.yml", ".gitlab-ci.yaml", "jenkins/Jenkinsfile", "ci/Jenkinsfile", ".jenkins/Jenkinsfile"]) await tryRead(rel);
+            for (const dir of [".github/workflows", "ci", "jenkins", ".jenkins"]) { try { const ents = await raw.readdir(root + "/" + dir); for (const e of ents) if (!e.isDirectory && /(\.ya?ml$|^Jenkinsfile|\.jenkinsfile$|\.groovy$)/i.test(e.name)) found.push(dir + "/" + e.name); } catch (_) { /* 沒有 */ } }
+            return JSON.stringify({ ok: true, pipelines: Array.from(new Set(found)).map((f) => ({ path: f, kind: FaPipeline.detect(f, "") })), note: found.length ? "inspect／lint／local_commands 帶 path:repo_root/這些路徑" : "沒有找到 pipeline 定義；action:scaffold 可以依專案工具鏈產生一份。" });
+          }
+          const files = {};
+          for (const rel of ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "gradlew", "CMakeLists.txt", "Makefile", ".flake8", "ruff.toml"]) { try { const r = await raw.readFile(root + "/" + rel); files[rel] = typeof r.text === "string" ? r.text.slice(0, 60000) : ""; } catch (_) { /* 沒有 */ } }
+          try { const ents = await raw.readdir(root); if (ents.some((e) => e.isDirectory && /^tests?$/.test(e.name))) files["tests/test_x.py"] = ""; } catch (_) { /* */ }
+          const tc = FaPipeline.detectToolchain(files); const kind = p.kind || "github"; if (!tc.lang) return JSON.stringify({ ok: false, error: "偵測不到專案的工具鏈（沒有 package.json／pyproject／go.mod／Cargo.toml／pom.xml／build.gradle／CMakeLists.txt／Makefile）", detected: tc });
+          let content; try { content = FaPipeline.scaffold(kind, tc, { branch: p.branch }); } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e), detected: tc }); }
+          return JSON.stringify({ ok: true, kind, detected: tc, suggested_path: FaPipeline.PATHS[kind], content, next: "用 coding_edit 的 {path:\"" + FaPipeline.PATHS[kind] + "\", create:content} 放進專案，再用 lint 檢查一次；內容是依偵測到的指令產生的，先在本機跑過那些指令確認真的能過。" });
+        }
+        let text = typeof p.text === "string" ? p.text : ""; if (!text && p.path) { const r = await raw.readFile(String(p.path)); text = typeof r.text === "string" ? r.text : ""; }
+        if (!text) return JSON.stringify({ ok: false, error: "缺少 path 或 text" });
+        const kind = p.kind || FaPipeline.detect(p.path, text); if (!kind) return JSON.stringify({ ok: false, error: "認不出這是哪一種 pipeline（Jenkinsfile／GitHub Actions／GitLab CI）；可以用 kind 指定" });
+        let yamlLoad; if (kind !== "jenkins") { if (!window.jsyaml) await _faLoadScriptOnce(FA_ASSET_URLS.jsyaml); yamlLoad = (t) => window.jsyaml.load(t); }
+        let parsed; try { parsed = FaPipeline.parse(kind, text, { yamlLoad, path: p.path }); } catch (e) { return JSON.stringify({ ok: false, error: "解析失敗：" + String(e.message || e) + (kind !== "jenkins" ? "（YAML 語法錯誤？）" : "") }); }
+        if (act === "lint") { const issues = FaPipeline.lint(parsed, text); return ciCap({ ok: true, kind, issue_count: issues.length, high: issues.filter((i) => i.severity === "high").length, issues, summary: FaPipeline.summarize(parsed) }); }
+        if (act === "local_commands") return ciCap(Object.assign({ ok: true, kind }, FaPipeline.localCommands(parsed)));
+        const sum = FaPipeline.summarize(parsed);
+        const slim = (s) => ({ name: s.name || s.id, stage: s.stage, agent: s.agent || s.runsOn || s.image, needs: s.needs && s.needs.length ? s.needs : undefined, when: s.when || s.if, timeout: s.timeout, parallel: s.parallel || undefined, steps: (s.steps || []).map((x) => x.type === "uses" ? "uses " + x.uses : x.type === "sh" || x.type === "bat" || x.type === "powershell" ? x.type + ": " + String(x.cmd || "").split("\n")[0].slice(0, 120) : x.type + (x.name ? " " + x.name : "")).slice(0, 25), children: (s.children || []).map(slim), post: s.post ? Object.keys(s.post) : undefined });
+        return ciCap({ ok: true, kind, summary: sum, triggers: parsed.triggers, agent: parsed.agent, options: parsed.options, env: parsed.env, parameters: parsed.parameters, permissions: parsed.permissions, post: parsed.post && !Array.isArray(parsed.post) ? Object.keys(parsed.post) : undefined, stages: parsed.stages.map(slim), next: "lint 看風險；local_commands 取得可在本機重現的指令" });
+      } catch (e) { return JSON.stringify({ ok: false, error: String(e.message || e) }); }
+    },
+    { type: "object", properties: { action: { type: "string", enum: ["find", "inspect", "lint", "local_commands", "scaffold"] }, path: { type: "string", description: "pipeline 檔案的絕對路徑" }, text: { type: "string", description: "pipeline 內容（不給 path 時）" }, kind: { type: "string", enum: ["jenkins", "github", "gitlab"] }, repo_root: { type: "string", description: "find／scaffold：專案根目錄" }, branch: { type: "string", description: "scaffold：主要分支名稱，預設 main" } }, additionalProperties: false }
+  );
+
+  fa.register_openai_tool(
+    "ci_guide",
+    "查CI/CD與code review的觀念與常用指令速查（弱模型不確定時先查，不要憑印象）。topic: workflow（修CI失敗的標準流程）｜gerrit（change／patchset／Change-Id／refs/for／label／submit）｜github（PR／checks／Actions／gh指令）｜jenkins（Pipeline／console／crumb／參數）｜patch（怎麼準備與上patch：unified diff、git am／apply、coding_edit、coding_patch_tool）｜pipeline（設計pipeline的原則）。不給topic回傳目錄。",
+    async (rawArgs) => { const p = await jsonParse(rawArgs); const G = FaCi.guide; const t = String(p.topic || "").toLowerCase(); if (!t || !G[t]) return JSON.stringify({ ok: true, topics: Object.keys(G), note: "帶 topic 取得內容" }); return JSON.stringify({ ok: true, topic: t, guide: G[t] }); },
+    { type: "object", properties: { topic: { type: "string", enum: ["workflow", "gerrit", "github", "jenkins", "patch", "pipeline"] } }, additionalProperties: false }
+  );
+
 
   // ─── 辦公室報告 domain（office_report）──────────────────────────────────
   // tw_stock_db客製: 2026-09-26使用者實測回報「建立投影片週報的有點離譜，用別的AI 30幾分鐘做不完」，
@@ -1751,6 +2050,7 @@ function patchCloudflareWording(root) {
     "fs_read_file", "fs_write_file", "fs_list_files", "fs_find_file", "fs_stat", "fs_mkdir", "fs_remove",
     "batch_process_items", "analyze_large_file", "get_large_file_analysis_chunk",
     "repo_map", "repo_wiki", "apply_git_patch", "git_inspect", "coding_task_state", "coding_workspace",
+    "coding_edit", "coding_patch_tool", "ci_connections", "gerrit", "github_ci", "jenkins", "ci_triage", "pipeline_inspect", "ci_guide",
   ].forEach((name) => fa._domainGatedToolNames.add(name));
 
   // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第一項）——

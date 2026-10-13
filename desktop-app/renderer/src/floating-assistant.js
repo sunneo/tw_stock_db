@@ -943,7 +943,28 @@ function _faBuildCodingSystemPrompt(env = {}) {
         ? '用run_command執行git add -A、git commit -m "簡述"（步驟5如果已經逐項commit過、這裡沒有新變更就跳過）'
         : '用git_commit({"ref":"<使用者原資料夾的fap參照>","message":"簡述"})（步驟5如果已經逐項commit過workspace、這裡沒有新變更就跳過）';
     const publishPush = desktop ? 'git push' : 'git_push';
+    const stepC = desktop
+        ? ' c) 改檔：**優先用coding_edit**（{path, search, replace}：找這段、換成那段，程式幫你定位並產生diff，內容必須唯一；找不到時會回最接近的實際內容，照它重寫）；機械式的大量修改（改名、批次替換、搬移、產生檔案）寫一支小腳本用coding_patch_tool（dry_run看diff→apply，腳本會存起來可重用）；這兩個都不適合才手寫標準unified diff（--- a/路徑、+++ b/路徑、@@ hunk header、每個hunk前後至少3行context，context行與被刪除行逐字複製原檔案，含縮排）呼叫apply_git_patch。**這三個是唯一允許修改程式碼的方式**，也不可以用request_additional_tools去申請fs_write_file之類的寫入工具來繞過。新增檔案用coding_edit的create；刪除檔案用delete。不確定怎麼準備patch時ci_guide({"topic":"patch"})。'
+        : ' c) 基於最新內容手寫標準unified diff（--- a/路徑、+++ b/路徑、@@ hunk header、每個hunk前後至少3行context；context行與被刪除行要逐字複製原檔案內容，含縮排），呼叫apply_git_patch。**這是唯一允許修改程式碼的方式**，也不可以用request_additional_tools去申請fs_write_file之類的寫入工具來繞過。新增檔案用--- /dev/null；刪除檔案用+++ /dev/null。';
+    const stepD = desktop ? ' d) 失敗（ok:false）：讀錯誤內容——coding_edit的errors[].closest.actual是檔案裡最接近的實際內容，git apply的stderr說明context對不上、路徑錯誤或格式不對；回到b)重新讀檔、照實際內容重寫，不要原封不動重送。**同一項目最多重試3輪**；第3輪仍失敗就update_todo標成blocked並在notes寫清楚卡在哪，跳到下一個不相依的項目，不要卡死整個任務。' : ' d) 套用失敗（ok:false）：仔細讀stderr判斷是context對不上、路徑錯誤或格式不對，回到b)重新讀檔、重寫patch，不要原封不動重送。**同一項目最多重試3輪**；第3輪仍失敗就update_todo標成blocked並在notes寫清楚卡在哪，跳到下一個不相依的項目，不要卡死整個任務。';
+    const typeBlock = '**先判斷任務類型（決定怎麼走）**：A「新功能／重構」→ 照下面步驟1（需求分析＋設計）→2→…→7。B「修bug／測試失敗／CI失敗」→ 步驟1改走下面「修bug流程」（先重現、再定位、最小修改、補回歸測試），其餘步驟0-A、0、2〜7照走。' + (desktop ? 'C「Review／CI／pipeline事務」（回Gerrit review留言、看PR檢查或Jenkins build、讀或改Jenkinsfile／workflow）→ 先ci_guide查對應主題，再照下面「CI／Review／Pipeline」。' : '');
+    const bugBlock = `**修bug流程（任務類型B，取代步驟1）**：
+ B1) 取得失敗現場：使用者貼的錯誤訊息、記錄、連結要照實使用——${desktop ? 'ci_triage（貼上來的記錄或檔案）；有CI網址就用github_ci／jenkins／gerrit' : '讀使用者貼的記錄'}，取得「第一個真正的錯誤（檔案:行號:訊息）」與類別（code程式問題／environment環境缺東西／infra網路逾時磁碟OOM節點離線）。**infra類不要改程式**，建議重試；後面連鎖的make／Maven／腳本結束碼錯誤可以忽略。
+ B2) 重現：在暫存工作區用同一條指令（${desktop ? 'pipeline_inspect action:local_commands可以把CI那一步變成本機指令；或使用者給的指令' : '使用者給的指令'}）跑出同樣的錯誤，**看到同樣的錯誤才算重現**；重現不了先找環境差異（版本、環境變數、平台、並行），不要直接開始改。最好把重現寫成一個「現在會失敗」的測試。
+ B3) 定位：讀錯誤位置附近的程式；用repo_ask（誰呼叫它、它做什麼）、explain_code（語法樹＋函式語意）${desktop ? '、fs_grep' : ''}縮小範圍。**說得出「為什麼會這樣」（根因）才往下**，不要只是讓錯誤訊息消失。
+ B4) 計畫：coding_task_state action:init存todos（design只寫「根因＋修法」，不用整套Plan Template），通常三項：①加回歸測試（修之前要失敗）②最小的修改 ③跑完整測試。
+ B5) 做到：回歸測試由失敗變通過，而且原本通過的測試仍然通過；修好之後說明根因與修法（一兩句），不要只說「已修好」。`;
+    const ciBlock = desktop ? `**CI／Review／Pipeline（任務類型C）**：
+- 看狀態：github_ci（pr看檢查與失敗的job、log做失敗分診）、jenkins（build一次給stage、測試統計與失敗分診）、gerrit（change的blockers＝為什麼還不能submit、comments＝未解決留言、patch）。直接給網址；公開服務不用設定，需要登入時工具會提示去設定「CI/CD 連線」。
+- 處理review留言：gerrit comments逐條用path:line讀檔→改→跑測試→commit→用gerrit push_help的指令（amend後push到refs/for產生新patchset）。**push，以及在Gerrit／GitHub留言、重跑job、觸發build，都是對外動作：使用者沒明講就不要做，做之前先列出要做什麼（工具也會跳確認框）。**
+- 讀／改pipeline：pipeline_inspect（find→inspect→lint）；改pipeline檔用coding_edit；專案沒有pipeline時用scaffold產生樣板，並先在本機跑過那些指令。
+- 不確定觀念（Change-Id、refs/for、crumb、checks…）先ci_guide查，不要憑印象。
+- 想改的patch是別人給的（Gerrit patch、PR diff、mbox）：先apply_git_patch check_only:true看能不能直接套；對不上就看它基於哪個版本，不要硬改。
+
+` : '';
     return `你是FloatingAssistant專門處理「程式設計」任務的子任務助理——分析需求、讀懂既有原始碼、產出設計計畫與TODO清單、依序實作、跑測試、修bug。${ctxHead}**因為目前接的AI模型能力有限，你必須嚴格照下面的固定流程逐步執行，每個步驟都要真的做完（呼叫對應工具拿到真實結果）才能進下一步，不能跳步驟、不能憑記憶或猜測代替實際讀取/執行。** 所有工具的cwd_abs參數都填${rootDesc}（task裡沒講清楚就先問使用者，不要瞎猜）。
+
+${typeBlock}
 
 **步驟0-A：建立暫存工作區（每次開始都要做，第一個動作）**：先呼叫coding_workspace({"action":"open","source":"<使用者專案資料夾>"})——不管專案本身有沒有git，系統都會把它複製一份到暫存區並在那裡git init，**所有修改、測試、還原都只在暫存區進行，確認沒問題才轉移回使用者的資料夾**。回傳的workspace_path就是之後**所有工具**（coding_task_state、apply_git_patch、git_inspect、git_commit、coding_read_file、coding_run_check、coding_run_tests、run_command的cwd）使用的cwd_abs——從這一步起絕對不要再對使用者的原資料夾直接操作。**開啟後立刻用一句話告訴使用者暫存檔放在哪裡**（回傳的tell_user照實轉述，含workspace_path）。回傳resumed:true代表接續先前還沒轉移的工作區。
 
@@ -956,7 +977,7 @@ function _faBuildCodingSystemPrompt(env = {}) {
 
 **步驟1-B：實驗（先在沙盒確認行為，再設計；視需要才做）**：任務涉及「不確定的行為」（瀏覽器API、函式庫用法、演算法效能、前端互動、web service路由…）時，設計前先實驗：呼叫sandbox_capabilities看可用沙盒；前端/頁面用sandbox_html（有瀏覽器控制權限會開全新about:blank分頁，沒有就用隔離iframe，不給html會複製目前畫面來實驗）；伺服器邏輯用sandbox_worker（寫handler(request)再送測試請求）或sandbox_py_app（Flask/FastAPI）；前端加後端一起測用sandbox_mock（頁面照常寫fetch/WebSocket，沙盒接到持久儲存的模擬伺服器，頁面不用為了測試改、之後可export成Node/Cloudflare部署檔）；純運算用python_execute。**實驗結果觀察到什麼，要寫進設計計畫的「現況」。**明確又單純的小修改可以跳過。任務若明顯屬於特定領域（平行/HPC/web service/生態系/繪圖工具/嵌入式·Raspberry Pi/BMC·OpenBMC/Android/Windows/iOS），改委派對應的prog_*領域——那些領域有完整的計畫範本與狀態機（playbook_state）。
 
-**步驟0：先追出專案結構（有專案／repository時）**：用repo_map——使用者只給模糊名稱（例如「登入那段」「那個設定檔」）、你不知道原始碼在哪時，直接repo_map({"action":"find","root":"專案參照","query":"關鍵字"})，它會自動分階段建立地圖並找出候選；找到後用explore沿依賴逐步往外看（它引用誰、定義了什麼），不要整個專案逐檔讀。**讀檔案回報「找不到檔案」或路徑不存在，就是專案結構改變了：用repo_map resolve從最近還存在的那一層重新追，不要猜路徑。**遇到不認識的程式語言或框架：用language_explore({\"action\":\"start\",\"language\":\"名稱\"})（先查內建知識，沒有才上網探索並詢問使用者要不要保存）；Rust、UEFI、OpenBMC的語法與知識用programming_knowledge查。想要整份專案的百科（類似DeepWiki）：用repo_wiki分階段做（plan→每頁evidence→write_page→finalize，頁面多時每頁委派wiki_writer），不要自己把檔案清單抄成一份markdown（專案大時清單會被系統截斷）。想要整份專案的索引與查詢頁面，用repo_wiki generate（需要整份索引時repo_map build_index會先問使用者）。
+**步驟0：先追出專案結構（有專案／repository時）**：用repo_map——使用者只給模糊名稱（例如「登入那段」「那個設定檔」）、你不知道原始碼在哪時，直接repo_map({"action":"find","root":"專案參照","query":"關鍵字"})，它會自動分階段建立地圖並找出候選；找到後用explore沿依賴逐步往外看（它引用誰、定義了什麼），不要整個專案逐檔讀。專案已經建好索引時，**分析既有程式優先用repo_ask**（「某函式做什麼／在哪定義／誰用到它」，結構由程式查、有檔案:行號可以接著讀）與explain_code（語法樹＋基礎函式語意查出函式的行為分類、呼叫了哪些標準函式、被誰呼叫），不要自己把整個檔案讀進來猜；repo_sql可以精確查呼叫關係。**讀檔案回報「找不到檔案」或路徑不存在，就是專案結構改變了：用repo_map resolve從最近還存在的那一層重新追，不要猜路徑。**遇到不認識的程式語言或框架：用language_explore({\"action\":\"start\",\"language\":\"名稱\"})（先查內建知識，沒有才上網探索並詢問使用者要不要保存）；Rust、UEFI、OpenBMC的語法與知識用programming_knowledge查。想要整份專案的百科（類似DeepWiki）：用repo_wiki分階段做（plan→每頁evidence→write_page→finalize，頁面多時每頁委派wiki_writer），不要自己把檔案清單抄成一份markdown（專案大時清單會被系統截斷）。想要整份專案的索引與查詢頁面，用repo_wiki generate（需要整份索引時repo_map build_index會先問使用者）。
 
 **步驟1：需求分析＋設計**：讀懂使用者真正要什麼，用${listTools}/${desktop ? 'fs_read_file' : 'coding_read_file'}摸清楚相關既有原始碼${parallelHint}。**設計計畫一定要照這個固定結構寫**：
 ## 背景調查（只有做過步驟1-A的調查才寫這節，列出查到的重點與來源連結；沒做調查就整節省略）
@@ -967,7 +988,9 @@ function _faBuildCodingSystemPrompt(env = {}) {
 ## 測試計畫（怎麼驗證、用什麼指令）
 寫完後呼叫coding_task_state action:init（title/requirements/design/todos）存檔——沒存檔就沒有東西可以中斷後恢復。
 
-${step2}
+${bugBlock}
+
+${ciBlock}${step2}
 
 ${step3}
 
@@ -976,8 +999,8 @@ ${step4}
 **步驟5：逐一實作TODO項目（每項重複下面子迴圈）**：
  a) coding_task_state action:update_todo把這項設成in_progress。
  b) **要改的檔案一定要先重新${readStep}「現在」的真實內容**——絕對不要用記憶中或前幾輪的舊版本當基礎，尤其這個檔案前面已經被patch過。
- c) 基於最新內容手寫標準unified diff（--- a/路徑、+++ b/路徑、@@ hunk header、每個hunk前後至少3行context；context行與被刪除行要逐字複製原檔案內容，含縮排），呼叫apply_git_patch。**這是唯一允許修改程式碼的方式**，也不可以用request_additional_tools去申請fs_write_file之類的寫入工具來繞過。新增檔案用--- /dev/null；刪除檔案用+++ /dev/null。
- d) 套用失敗（ok:false）：仔細讀stderr判斷是context對不上、路徑錯誤或格式不對，回到b)重新讀檔、重寫patch，不要原封不動重送。**同一項目最多重試3輪**；第3輪仍失敗就update_todo標成blocked並在notes寫清楚卡在哪，跳到下一個不相依的項目，不要卡死整個任務。
+${stepC}
+${stepD}
  e) 套用成功：先${checkCmd}，再用git_inspect({"mode":"diff"})確認實際變更符合預期——不要只因為ok:true就跳過。**語法檢查失敗時，先git_inspect({"mode":"restore","path":"..."})把該檔案還原到上次commit（或自動備份）的乾淨狀態，再回b)重來，不要在壞掉的版本上疊加下一個patch。**
  f) ${runTests}，**完整讀stdout/stderr文字判斷是否真的通過，不能只看exit_code**。然後呼叫coding_task_state action:record_test_result存檔（todo_id/command/stdout/stderr/passed）。
  g) 通過：coding_task_state action:complete_todo（必附design_summary、source_locations、entry_points，會自動append到DESIGN-INDEX.md），接著${commit}。進下一項。
@@ -12512,6 +12535,752 @@ const holder = {};
 return holder.FaSqliteBrowser;
 })();
 /* SQLBU-END */
+/* CI-BEGIN */
+const FaCi = (function () {
+const holder = {};
+(function (module, self) {
+/* CI/CD 核心（UMD，純函式，不碰網路／檔案）：Gerrit／GitHub／Jenkins 的網址與回應整理、CI 失敗記錄分診（triage）。
+ * 設計原則（弱模型友善）：
+ *   - 工具回傳的是「整理好的結構」：哪個階段失敗、第一個真正的錯誤在哪個檔案第幾行、是程式問題還是環境問題、怎麼在本機重現——
+ *     而不是把幾十 MB 的 console 記錄丟給模型。
+ *   - 連線與寫入動作（留 review、觸發 build）不在這裡，這裡只有解析與組網址；網路由主行程做（沒有 CORS，Authorization 不經過頁面以外的地方）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaCi = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+    const enc = encodeURIComponent;
+    const trimSlash = (u) => String(u || '').replace(/\/+$/, '');
+    const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+    const stripAnsi = (s) => String(s).replace(ANSI_RE, '');
+
+    // ================= 分診（triage） =================
+    // 每條規則：{ tool, re, make(m, line) -> finding 欄位 }；一行只算第一個命中的規則
+    const SEV_ORDER = { error: 0, warning: 1, info: 2 };
+    const RULES = [
+        // 編譯器 GCC／Clang：file:line:col: error: msg
+        { tool: 'cc', re: /^(?<file>[^\s:][^:]*?):(?<line>\d+):(?:(?<col>\d+):)?\s*(?<sev>fatal error|error|warning):\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: g.sev === 'warning' ? 'warning' : 'error', file: g.file, line: +g.line, col: g.col ? +g.col : undefined, message: g.msg }) },
+        { tool: 'ld', re: /^(?:.*?:\s*)?(?:undefined reference to|cannot find -l|multiple definition of)\s*(?<msg>.+)$/, make: (g, l) => ({ kind: 'link', severity: 'error', message: l.trim() }) },
+        { tool: 'make', re: /^(?:g?make(?:\[\d+\])?:\s+\*\*\*\s+(?<msg>.+?)\s+Error\s+(?<code>\d+))$/, make: (g) => ({ kind: 'build', severity: 'error', message: 'make 失敗：' + g.msg + '（結束碼 ' + g.code + '）', cascade: true }) },
+        // Rust
+        { tool: 'rustc', re: /^error(?:\[(?<code>E\d+)\])?:\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: 'error', message: (g.code ? g.code + '：' : '') + g.msg, needsLoc: 'rust' }) },
+        { tool: 'rustc-loc', re: /^\s*-->\s*(?<file>[^:\s][^:]*):(?<line>\d+):(?<col>\d+)\s*$/, make: (g) => ({ attach: { file: g.file, line: +g.line, col: +g.col } }) },
+        // TypeScript／tsc
+        { tool: 'tsc', re: /^(?<file>[^\s(][^(]*)\((?<line>\d+),(?<col>\d+)\):\s*(?<sev>error|warning)\s+(?<code>TS\d+):\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: g.sev, file: g.file, line: +g.line, col: +g.col, message: g.code + '：' + g.msg }) },
+        // Java／Maven：[ERROR] /path/File.java:[12,5] msg
+        { tool: 'javac', re: /^\[(?:ERROR|WARNING)\]\s+(?<file>\S+\.(?:java|kt|scala|groovy)):\[(?<line>\d+)(?:,(?<col>\d+))?\]\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: 'error', file: g.file, line: +g.line, col: g.col ? +g.col : undefined, message: g.msg }) },
+        { tool: 'javac2', re: /^(?<file>\S+\.java):(?<line>\d+):\s*error:\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: 'error', file: g.file, line: +g.line, message: g.msg }) },
+        { tool: 'maven-tests', re: /^\[(?:ERROR|WARNING)\]\s+Tests run:\s*(?<run>\d+),\s*Failures:\s*(?<f>\d+),\s*Errors:\s*(?<e>\d+)/, make: (g) => (+g.f + +g.e ? { kind: 'test', severity: 'error', message: '測試失敗：' + g.run + ' 個測試，Failures ' + g.f + '、Errors ' + g.e, summary: true } : null) },
+        { tool: 'maven', re: /^\[ERROR\]\s+(?:Failed to execute goal\s+)?(?<msg>.+)$/, make: (g) => ({ kind: 'build', severity: 'error', message: g.msg, cascade: /^(?:Failed to execute|-> \[Help|For more information|Re-run Maven|To see the full)/.test(g.msg) || /^\s*$/.test(g.msg), weak: true }) },
+        { tool: 'gradle', re: /^>\s*Task\s+(?<task>\S+)\s+FAILED$/, make: (g) => ({ kind: 'build', severity: 'error', message: 'Gradle 工作失敗：' + g.task, cascade: true }) },
+        { tool: 'gradle-why', re: /^\*\s*What went wrong:\s*$/, make: () => ({ kind: 'build', severity: 'error', message: 'Gradle：What went wrong', expectNext: true }) },
+        // Go
+        { tool: 'go', re: /^(?<file>[^\s:][^:]*\.go):(?<line>\d+):(?:(?<col>\d+):)?\s*(?<msg>.+)$/, make: (g) => ({ kind: 'compile', severity: 'error', file: g.file, line: +g.line, col: g.col ? +g.col : undefined, message: g.msg, weak: true }) },
+        { tool: 'go-test', re: /^--- FAIL:\s*(?<name>\S+)/, make: (g) => ({ kind: 'test', severity: 'error', message: '測試失敗：' + g.name, test: g.name }) },
+        { tool: 'go-panic', re: /^panic:\s*(?<msg>.+)$/, make: (g) => ({ kind: 'runtime', severity: 'error', message: 'panic：' + g.msg }) },
+        // Python
+        { tool: 'py-frame', re: /^\s*File "(?<file>[^"]+)", line (?<line>\d+)(?:, in (?<fn>.+))?$/, make: (g) => ({ frame: { file: g.file, line: +g.line, fn: g.fn } }) },
+        { tool: 'js-exc', re: /^(?<exc>(?:[A-Z][A-Za-z0-9]*)?(?:Error|Exception)(?: \[[A-Z0-9_]+\])?):\s*(?<msg>.*)$/, make: (g) => ({ kind: 'runtime', severity: 'error', message: g.exc + ': ' + g.msg, exception: g.exc, needsFrame: true, jsFrame: true }) },
+        { tool: 'py-exc', re: /^(?<exc>(?:[A-Za-z_][\w.]*\.)?(?:[A-Z][A-Za-z0-9]*(?:Error|Exception|Exit|Interrupt|Warning)|AssertionError)):\s*(?<msg>.*)$/, make: (g) => ({ kind: 'runtime', severity: 'error', message: g.exc + ': ' + g.msg, exception: g.exc, needsFrame: true }) },
+        { tool: 'pytest', re: /^(?:FAILED|ERROR)\s+(?<id>[^\s:]+(?:::\S+)+)(?:\s+-\s+(?<msg>.+))?$/, make: (g) => ({ kind: 'test', severity: 'error', file: g.id.split('::')[0], message: '測試失敗：' + g.id.split('::').slice(1).join('::') + (g.msg ? ' — ' + g.msg : ''), test: g.id }) },
+        { tool: 'pytest-loc', re: /^(?<file>[^\s:][^:]*\.py):(?<line>\d+):\s+(?<exc>\w+(?:Error|Exception)\b.*|AssertionError.*)$/, make: (g) => ({ kind: 'test', severity: 'error', file: g.file, line: +g.line, message: g.exc }) },
+        // JS：jest／mocha／eslint
+        { tool: 'jest', re: /^\s*●\s+(?<name>.+?)\s*$/, make: (g) => (/Console|Test suite failed to run/i.test(g.name) ? (/failed to run/i.test(g.name) ? { kind: 'test', severity: 'error', message: g.name } : null) : { kind: 'test', severity: 'error', message: '測試失敗：' + g.name, test: g.name }) },
+        { tool: 'jest-fail', re: /^\s*FAIL\s+(?<file>\S+\.(?:js|jsx|ts|tsx|mjs|cjs))\b/, make: (g) => ({ kind: 'test', severity: 'error', file: g.file, message: '測試檔失敗：' + g.file, cascade: true }) },
+        { tool: 'mocha', re: /^\s*\d+\)\s+(?<name>.+)$/, make: (g) => ({ kind: 'test', severity: 'error', message: '測試失敗：' + g.name, weak: true }) },
+        { tool: 'eslint', re: /^\s+(?<line>\d+):(?<col>\d+)\s+(?<sev>error|warning)\s+(?<msg>.+?)\s{2,}(?<rule>[\w@/-]+)$/, make: (g) => ({ kind: 'lint', severity: g.sev, line: +g.line, col: +g.col, message: g.msg + '（' + g.rule + '）', needsFile: 'eslint' }) },
+        { tool: 'eslint-file', re: /^(?<file>(?:\/|\.\/|[A-Za-z]:\\)?[^\s:]+\.(?:js|jsx|ts|tsx|vue|mjs|cjs))\s*$/, make: (g) => ({ eslintFile: g.file }) },
+        { tool: 'npm', re: /^npm (?:ERR!|error)\s+(?<msg>(?:code|path|command|errno|missing|enoent|Cannot find)\b.+|.*ERESOLVE.*|.*ENOENT.*)$/i, make: (g) => ({ kind: 'dependency', severity: 'error', message: 'npm：' + g.msg, weak: true }) },
+        // gtest／ctest／junit
+        { tool: 'gtest', re: /^\[\s+FAILED\s+\]\s+(?<name>[\w./]+(?:, where.+)?)/, make: (g) => ({ kind: 'test', severity: 'error', message: '測試失敗：' + g.name, test: g.name.split(',')[0] }) },
+        { tool: 'ctest', re: /^\s*\d+\s*-\s*(?<name>\S+)\s*\((?:Failed|Timeout|SEGFAULT|Subprocess aborted)[^)]*\)/i, make: (g) => ({ kind: 'test', severity: 'error', message: 'ctest 失敗：' + g.name, test: g.name }) },
+        { tool: 'junit', re: /^(?:FAILED|FAILURE):?\s+(?<name>[\w.$]+(?:\.[\w$]+)+)\s*(?:\((?<where>[^)]+)\))?/, make: (g) => ({ kind: 'test', severity: 'error', message: '測試失敗：' + g.name, test: g.name, weak: true }) },
+        // 環境／基礎設施（重試通常有用，不是程式問題）
+        { tool: 'infra-net', re: /(?:Could not resolve host|Temporary failure in name resolution|Connection (?:timed out|reset by peer|refused)|Read timed out|TLS handshake timeout|Failed to connect to|unable to access '|HTTP(?:\/\d(?:\.\d)?)? (?:502|503|504)\b|rate limit exceeded|ETIMEDOUT|ECONNRESET|EAI_AGAIN)/i, make: (g, l) => ({ kind: 'infra', category: 'infra', severity: 'error', message: '網路／服務問題：' + clip(l.trim(), 200) }) },
+        { tool: 'infra-disk', re: /(?:No space left on device|ENOSPC|disk quota exceeded)/i, make: (g, l) => ({ kind: 'infra', category: 'infra', severity: 'error', message: '磁碟空間不足：' + clip(l.trim(), 200) }) },
+        { tool: 'infra-oom', re: /(?:Out of memory|OutOfMemoryError|java\.lang\.OutOfMemory|Killed\s*$|exit code 137|oom-kill|Cannot allocate memory|heap out of memory)/i, make: (g, l) => ({ kind: 'infra', category: 'infra', severity: 'error', message: '記憶體不足（OOM）：' + clip(l.trim(), 200) }) },
+        { tool: 'infra-agent', re: /(?:Agent (?:went offline|was removed)|Waiting for next available executor|Cannot contact\s|channel is already closed|hudson\.remoting\.RequestAbortedException|Runner (?:has received a shutdown signal|lost))/i, make: (g, l) => ({ kind: 'infra', category: 'infra', severity: 'error', message: 'CI 執行節點問題：' + clip(l.trim(), 200) }) },
+        { tool: 'timeout', re: /(?:Timeout has been exceeded|Cancelling nested steps due to timeout|The job running on runner .* has exceeded the maximum execution time|Build timed out|timed out after \d+)/i, make: (g, l) => ({ kind: 'timeout', category: 'infra', severity: 'error', message: '逾時：' + clip(l.trim(), 200) }) },
+        { tool: 'cmd-nf', re: /^(?:.*?:\s*)?(?<cmd>[\w./+-]+):\s*(?:command not found|not found|No such file or directory)\s*$/, make: (g, l) => ({ kind: 'environment', severity: 'error', message: '找不到指令／檔案：' + clip(l.trim(), 200) }) },
+        { tool: 'perm', re: /(?:Permission denied|EACCES|Access is denied)/i, make: (g, l) => ({ kind: 'environment', severity: 'error', message: '權限問題：' + clip(l.trim(), 200) }) },
+        { tool: 'git-conflict', re: /^(?:CONFLICT \(|error: could not apply|Automatic merge failed|fatal: refusing to merge unrelated histories)/, make: (g, l) => ({ kind: 'merge', severity: 'error', message: 'git 合併衝突：' + clip(l.trim(), 200) }) },
+        { tool: 'auth', re: /(?:Authentication failed|401 Unauthorized|403 Forbidden|Permission to .* denied|could not read Username|Invalid username or password|Bad credentials)/i, make: (g, l) => ({ kind: 'auth', category: 'config', severity: 'error', message: '認證／授權失敗：' + clip(l.trim(), 200) }) },
+        // CI 系統自己的錯誤標記
+        { tool: 'gha-error', re: /^##\[error\](?<msg>.*)$/, make: (g) => ({ kind: 'ci', severity: 'error', message: clip(g.msg.trim(), 300), weak: /^Process completed with exit code/.test(g.msg.trim()) }) },
+        { tool: 'jenkins-script', re: /^(?:ERROR:\s*)?script returned exit code (?<code>\d+)/, make: (g) => ({ kind: 'ci', severity: 'error', message: '腳本結束碼 ' + g.code, exit_code: +g.code, weak: true, cascade: true }) },
+        { tool: 'jenkins-error', re: /^ERROR:\s*(?<msg>.+)$/, make: (g) => ({ kind: 'ci', severity: 'error', message: clip(g.msg, 300), weak: true }) },
+        { tool: 'generic-fatal', re: /^(?:fatal|FATAL|Fatal error|FAILURE|Error)[:!]\s*(?<msg>.+)$/, make: (g) => ({ kind: 'generic', severity: 'error', message: clip(g.msg, 300), weak: true }) },
+    ];
+
+    // 環境問題的規則要排在語言例外（py-exc 等）之前：java.lang.OutOfMemoryError 長得像一個 Python 例外
+    ['infra-oom', 'infra-disk', 'infra-agent'].reverse().forEach((name) => { const i = RULES.findIndex((r) => r.tool === name); if (i > 0) RULES.unshift(RULES.splice(i, 1)[0]); });
+
+    const STAGE_RES = [
+        /^\[Pipeline\]\s*\{\s*\((?<s>.+)\)\s*$/,                // Jenkins: [Pipeline] { (Build)
+        /^##\[group\](?:Run\s+)?(?<s>.+)$/,                      // GitHub Actions
+        /^Running with gitlab-runner|^\$ (?<s>.+)$/,             // GitLab（命令行當階段線索）
+        /^\[INFO\] --- (?<s>[\w.:-]+)/,                          // Maven 外掛目標
+        /^> Task (?<s>\S+)(?!\s+FAILED)/,                        // Gradle
+        /^=+\s*(?<s>[\w .:/-]+?)\s*=+$/,                         // pytest 區段
+    ];
+
+    const JS_FRAME_RE = /^\s+at\s+(?:(?<fn>[^\s(]+)\s+\()?(?<file>(?:file:\/\/)?(?:\/|[A-Za-z]:[\\/]|\.{1,2}\/)?[^\s():]+?\.(?:[cm]?js|jsx|ts|tsx)):(?<line>\d+):(?<col>\d+)\)?\s*$/;
+    function findJsFrame(lines, i) { // Node／瀏覽器的例外：訊息在前、stack frame 在後；跳過 node 內部與 node_modules
+        for (let k = i + 1; k < Math.min(lines.length, i + 30); k++) { const m = JS_FRAME_RE.exec(lines[k]); if (!m) continue; const f = m.groups.file.replace(/^file:\/\//, ''); if (/node_modules|^node:|^internal\//.test(f)) continue; return { file: f, line: +m.groups.line, col: +m.groups.col, fn: m.groups.fn }; }
+        return null;
+    }
+    function triage(log, opts) {
+        opts = opts || {}; const max = opts.maxFindings || 12;
+        const text = stripAnsi(String(log == null ? '' : log)).replace(/\r\n?/g, '\n');
+        const lines = text.split('\n'); const findings = []; let stage = null; let stageFailed = null; let last = null; let pyFrames = []; let eslintFile = null;
+        const seen = new Set();
+        const push = (f, i) => {
+            const key = [f.kind, f.file || '', f.line || '', clip(f.message, 80)].join('|'); if (seen.has(key)) return null; seen.add(key);
+            const o = Object.assign({ stage, at_line: i + 1 }, f); findings.push(o); return o;
+        };
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            for (const sr of STAGE_RES) { const m = sr.exec(line); if (m && m.groups && m.groups.s) { if (!/^\$ /.test(line) && !/^Running with/.test(line)) stage = m.groups.s.trim(); break; } }
+            let hit = null;
+            for (const r of RULES) { const m = r.re.exec(line); if (!m) continue; const f = r.make(m.groups || {}, line); if (f === null) { hit = false; break; } hit = { f, r }; break; }
+            if (!hit || hit === false) continue;
+            const f = hit.f;
+            if (f.frame) { pyFrames.push(f.frame); if (pyFrames.length > 30) pyFrames.shift(); continue; }
+            if (f.eslintFile) { eslintFile = f.eslintFile; continue; }
+            if (f.attach) { if (last && !last.file) Object.assign(last, f.attach); continue; }
+            if (f.expectNext) { const nx = lines.slice(i + 1, i + 6).map((s) => s.trim()).filter(Boolean)[0]; if (nx) f.message = 'Gradle：' + clip(nx, 300); delete f.expectNext; }
+            if (f.needsFrame && (f.jsFrame || !pyFrames.length)) { const jf = findJsFrame(lines, i); if (jf) { f.file = jf.file; f.line = jf.line; f.col = jf.col; f.function = jf.fn; delete f.needsFrame; } }
+            if (f.needsFrame) { const fr = pyFrames[pyFrames.length - 1]; if (fr) { f.file = fr.file; f.line = fr.line; f.function = fr.fn; f.trace = pyFrames.slice(-4).map((x) => x.file + ':' + x.line + (x.fn ? ' (' + x.fn + ')' : '')); } delete f.needsFrame; pyFrames = []; }
+            delete f.jsFrame;
+            if (f.needsFile && eslintFile) { f.file = eslintFile; delete f.needsFile; }
+            delete f.needsLoc;
+            if (f.summary && findings.some((x) => x.kind === 'test' && !x.summary)) continue;
+            const o = push(f, i); if (!o) continue;
+            o.tool = hit.r.tool; o.context = lines.slice(Math.max(0, i - 1), Math.min(lines.length, i + 4)).map((s) => clip(s, 200)).filter((s) => s.trim());
+            last = o;
+            if (/Finished: (?:FAILURE|ABORTED)|##\[error\]|BUILD FAILURE|script returned exit code/.test(line)) stageFailed = stageFailed || stage;
+        }
+        // 結論
+        const verdict = (() => {
+            const t = text.slice(-4000);
+            if (/Finished:\s*SUCCESS|BUILD SUCCESS(?:FUL)?\b|Job succeeded/i.test(t) && !findings.some((f) => f.severity === 'error' && !f.weak)) return 'success';
+            if (/Finished:\s*ABORTED|Cancelling nested steps|The operation was canceled|Job canceled/i.test(t)) return 'aborted';
+            if (/Finished:\s*FAILURE|BUILD FAILURE|Job failed|Process completed with exit code [1-9]|FAILED/i.test(t) || findings.some((f) => f.severity === 'error')) return 'failure';
+            return 'unknown';
+        })();
+        const errors = findings.filter((f) => f.severity === 'error');
+        const strong = errors.filter((f) => !f.weak && !f.cascade);
+        const infra = errors.filter((f) => f.category === 'infra');
+        const codeish = strong.filter((f) => f.category !== 'infra' && f.category !== 'config');
+        // 根因：第一個非連鎖的「程式／測試／編譯」錯誤；沒有的話看環境問題；最後才是 weak 的訊息
+        let root = codeish.find((f) => ['compile', 'link', 'runtime', 'test', 'lint', 'merge', 'dependency'].includes(f.kind)) || codeish[0] || infra[0] || strong[0] || errors.find((f) => !f.cascade) || errors[0] || null;
+        const category = !root ? 'unknown' : root.category === 'infra' ? 'infra' : root.category === 'config' ? 'config' : (root.kind === 'environment' || root.kind === 'auth') ? 'environment' : 'code';
+        const failedTests = Array.from(new Set(errors.filter((f) => f.kind === 'test' && f.test).map((f) => f.test))).slice(0, 30);
+        const sorted = findings.slice().sort((a, b) => (SEV_ORDER[a.severity] - SEV_ORDER[b.severity]) || (a.at_line - b.at_line));
+        const advice = [];
+        if (category === 'infra') advice.push('這看起來是環境／基礎設施問題（網路、磁碟、OOM、節點離線、逾時），不是程式碼錯誤：先重試一次（rebuild／re-run failed jobs），反覆發生再處理，不要為了它改程式。');
+        if (category === 'environment') advice.push('缺少指令、檔案或權限：檢查 CI 的 agent／image 是否安裝了需要的工具（版本也要對），不是改程式能解決的。');
+        if (category === 'config') advice.push('認證／授權失敗：檢查 CI 上的憑證（credentials／secrets）是否存在、是否過期、權限夠不夠；不要把 token 寫進程式碼或 patch。');
+        if (category === 'code' && root) advice.push('根因看起來是程式碼：先在本機重現（用 pipeline_inspect 的 local_commands 或下面的 reproduce），修好後用同一條指令驗證，再上 patch。' + (root.file ? ' 從 ' + root.file + (root.line ? ':' + root.line : '') + ' 開始。' : ''));
+        if (errors.some((f) => f.cascade) && root) advice.push('後面連鎖的 make／Maven／Gradle／腳本結束碼錯誤只是結果，請從最前面的真正錯誤處理。');
+        return {
+            verdict, category, failed_stage: stageFailed || (root && root.stage) || null,
+            root_cause: root ? { kind: root.kind, file: root.file, line: root.line, col: root.col, message: root.message, stage: root.stage, at_log_line: root.at_line, context: root.context, trace: root.trace } : null,
+            failed_tests: failedTests,
+            findings: sorted.slice(0, max).map((f) => ({ kind: f.kind, severity: f.severity, file: f.file, line: f.line, message: f.message, stage: f.stage, at_log_line: f.at_line, tool: f.tool })),
+            total_findings: findings.length, log_lines: lines.length, advice,
+            tail: lines.filter((l) => l.trim()).slice(-20).map((s) => clip(s, 200)),
+        };
+    }
+
+    // ================= Gerrit =================
+    const gerrit = {
+        stripXssi: (t) => String(t == null ? '' : t).replace(/^\)\]\}'\s*\n?/, ''),
+        parseJson: (t) => { const s = gerrit.stripXssi(t); try { return JSON.parse(s); } catch (e) { throw new Error('Gerrit 回應不是 JSON：' + clip(s, 120)); } },
+        // base：Gerrit 網址（有登入時要 /a/ 前綴，由 auth 決定）
+        base: (baseUrl, authed) => trimSlash(baseUrl) + (authed ? '/a' : ''),
+        urls: {
+            query: (b, q, o) => b + '/changes/?q=' + enc(q) + '&n=' + ((o && o.n) || 15) + '&o=LABELS&o=CURRENT_REVISION&o=DETAILED_ACCOUNTS',
+            change: (b, id) => b + '/changes/' + enc(id) + '/detail?o=CURRENT_REVISION&o=CURRENT_COMMIT&o=CURRENT_FILES&o=LABELS&o=DETAILED_LABELS&o=MESSAGES&o=DETAILED_ACCOUNTS&o=DOWNLOAD_COMMANDS',
+            comments: (b, id) => b + '/changes/' + enc(id) + '/comments',
+            drafts: (b, id) => b + '/changes/' + enc(id) + '/drafts',
+            patch: (b, id, rev) => b + '/changes/' + enc(id) + '/revisions/' + enc(rev || 'current') + '/patch',
+            files: (b, id, rev) => b + '/changes/' + enc(id) + '/revisions/' + enc(rev || 'current') + '/files/',
+            fileDiff: (b, id, rev, file) => b + '/changes/' + enc(id) + '/revisions/' + enc(rev || 'current') + '/files/' + enc(file) + '/diff',
+            review: (b, id, rev) => b + '/changes/' + enc(id) + '/revisions/' + enc(rev || 'current') + '/review',
+        },
+        parseChangeUrl: (u) => { // https://host/c/project/+/12345[/3]  或  https://host/#/c/12345/3  或 /12345
+            const s = String(u || '').trim(); let m = /^(https?:\/\/[^/]+(?:\/[^/]+)*?)\/(?:c\/(?<proj>.+?)\/\+\/|#\/c\/)(?<n>\d+)(?:\/(?<ps>\d+|edit))?(?:[/?#].*)?$/.exec(s);
+            if (m) { const g = m.groups; return { base: m[1], project: g.proj ? decodeURIComponent(g.proj) : undefined, number: +g.n, patchset: g.ps && g.ps !== 'edit' ? +g.ps : undefined }; }
+            m = /^(\d{1,9})$/.exec(s); return m ? { number: +m[1] } : null;
+        },
+        // Change-Id（I + 40 hex）也算一種 id
+        isChangeId: (s) => /^I[0-9a-f]{40}$/.test(String(s || '')),
+        parseChange: (j) => {
+            const revs = j.revisions || {}; const cur = revs[j.current_revision] || {}; const labels = {};
+            for (const [name, l] of Object.entries(j.labels || {})) {
+                const all = (l.all || []).filter((v) => v.value).map((v) => ({ by: v.name || v.username || (v._account_id && ('#' + v._account_id)), value: v.value }));
+                labels[name] = { approved: l.approved ? (l.approved.name || true) : undefined, rejected: l.rejected ? (l.rejected.name || true) : undefined, recommended: l.recommended ? l.recommended.name : undefined, disliked: l.disliked ? l.disliked.name : undefined, votes: all, blocking: !!l.blocking, optional: !!l.optional };
+            }
+            const files = Object.entries(cur.files || {}).filter(([p]) => p !== '/COMMIT_MSG').map(([p, f]) => ({ path: p, status: f.status || 'M', inserted: f.lines_inserted || 0, deleted: f.lines_deleted || 0 })).slice(0, 200);
+            const dl = cur.fetch || {}; const fetch = {}; for (const [proto, v] of Object.entries(dl)) fetch[proto] = { url: v.url, ref: v.ref, checkout: 'git fetch ' + v.url + ' ' + v.ref + ' && git checkout FETCH_HEAD', cherry_pick: 'git fetch ' + v.url + ' ' + v.ref + ' && git cherry-pick FETCH_HEAD' };
+            const messages = (j.messages || []).slice(-25).map((m) => ({ id: m.id, author: (m.author && (m.author.name || m.author.username)) || 'unknown', date: m.date, patchset: m._revision_number, message: clip(String(m.message || ''), 600), ci_links: gerrit.ciLinks(m.message) }));
+            const ciLinks = []; messages.forEach((m) => m.ci_links.forEach((l) => { if (!ciLinks.some((x) => x.url === l.url)) ciLinks.push(Object.assign({ patchset: m.patchset, author: m.author }, l)); }));
+            return {
+                number: j._number, id: j.change_id, project: j.project, branch: j.branch, subject: j.subject, status: j.status, topic: j.topic, work_in_progress: !!j.work_in_progress, mergeable: j.mergeable, submittable: j.submittable,
+                owner: j.owner && (j.owner.name || j.owner.username), created: j.created, updated: j.updated, insertions: j.insertions, deletions: j.deletions,
+                current_patchset: cur._number, current_revision: j.current_revision, ref: cur.ref, commit_message: cur.commit && cur.commit.message, parents: cur.commit && (cur.commit.parents || []).map((p) => p.commit),
+                labels, files, fetch, messages, ci_links: ciLinks,
+                blockers: gerrit.blockers({ labels, work_in_progress: j.work_in_progress, mergeable: j.mergeable, submittable: j.submittable, status: j.status }),
+            };
+        },
+        // 為什麼還不能 submit
+        blockers: (c) => {
+            const out = []; if (c.status && c.status !== 'NEW') out.push('狀態是 ' + c.status + '，不是 NEW');
+            if (c.work_in_progress) out.push('標成 WIP（work in progress），要先「Ready for review」');
+            if (c.mergeable === false) out.push('跟目標分支有衝突（mergeable:false），要 rebase 並解衝突');
+            for (const [n, l] of Object.entries(c.labels || {})) { if (l.rejected) out.push(n + ' 被 ' + (l.rejected === true ? '人' : l.rejected) + ' 擋住（負分）'); else if (!l.approved && !l.optional && /^(Code-Review|Verified)$/i.test(n)) out.push(n + ' 還沒通過' + (l.votes && l.votes.length ? '（目前：' + l.votes.map((v) => (v.by || '?') + ' ' + (v.value > 0 ? '+' : '') + v.value).join('、') + '）' : '（還沒有人投票）')); }
+            if (c.submittable === false && !out.length) out.push('Gerrit 回報 submittable:false（可能有 submit requirement 沒滿足）');
+            return out;
+        },
+        // 從留言（多半是 CI 機器人）抓 build 連結與結果
+        ciLinks: (msg) => {
+            const out = []; const s = String(msg || '');
+            const re = /(https?:\/\/[^\s)>\]"']+)/g; let m;
+            while ((m = re.exec(s))) {
+                const url = m[1].replace(/[.,;]+$/, ''); let kind = null;
+                if (/\/job\/[^/]+\/(?:job\/[^/]+\/)*\d+\/?/.test(url)) kind = 'jenkins'; else if (/github\.com\/[^/]+\/[^/]+\/actions\/runs\/\d+/.test(url)) kind = 'github_actions'; else if (/zuul|\/builds?\/[0-9a-f]{8,}/i.test(url)) kind = 'zuul';
+                if (kind) out.push({ kind, url, result: /FAIL(?:URE|ED)?|UNSTABLE|ERROR/i.test(s) ? 'failure' : /SUCCESS|PASSED/i.test(s) ? 'success' : undefined });
+            }
+            return out;
+        },
+        // 未解決的 review 留言（comments API：{path:[{line,message,author,patch_set,unresolved,...}]}）
+        parseComments: (j) => {
+            const out = [];
+            for (const [path, arr] of Object.entries(j || {})) for (const c of arr || []) out.push({ path, line: c.line || (c.range && c.range.start_line), patch_set: c.patch_set, author: c.author && (c.author.name || c.author.username), message: clip(c.message, 800), unresolved: !!c.unresolved, id: c.id, in_reply_to: c.in_reply_to, updated: c.updated });
+            // 只有「串的最後一則」是 unresolved 才算未解決
+            const byId = new Map(out.map((c) => [c.id, c])); const replied = new Set(out.map((c) => c.in_reply_to).filter(Boolean));
+            const open = out.filter((c) => c.unresolved && !replied.has(c.id));
+            return { all: out.length, unresolved: open.sort((a, b) => (a.path + (a.line || 0)).localeCompare(b.path + (b.line || 0))), byId: undefined };
+        },
+        // 留 review 的 body（寫入動作，呼叫端要先確認）
+        reviewInput: (o) => { const b = { message: o.message || undefined, labels: o.labels || undefined, drafts: 'KEEP' }; if (o.comments) b.comments = o.comments; if (o.notify) b.notify = o.notify; if (o.ready) b.ready = true; return b; },
+        pushCommands: (o) => {
+            o = o || {}; const opts = []; if (o.topic) opts.push('topic=' + o.topic); (o.reviewers || []).forEach((r) => opts.push('r=' + r)); (o.cc || []).forEach((r) => opts.push('cc=' + r)); if (o.wip) opts.push('wip'); if (o.ready) opts.push('ready'); if (o.hashtag) opts.push('t=' + o.hashtag); if (o.message) opts.push('m=' + String(o.message).replace(/ /g, '_'));
+            const remote = o.remote || 'origin'; const branch = o.branch || 'master';
+            return { push: 'git push ' + remote + ' HEAD:refs/for/' + branch + (opts.length ? '%' + opts.join(',') : ''), amend_new_patchset: 'git commit --amend --no-edit && git push ' + remote + ' HEAD:refs/for/' + branch, rebase: 'git fetch ' + remote + ' ' + branch + ' && git rebase ' + remote + '/' + branch, change_id_hook: 'Gerrit 用 commit message 最後的 "Change-Id: I<40 hex>" 判斷是同一個 change 的新 patchset；沒有的話安裝 hook：gitdir=$(git rev-parse --git-dir); curl -Lo ${gitdir}/hooks/commit-msg <gerrit>/tools/hooks/commit-msg && chmod +x ${gitdir}/hooks/commit-msg，然後 git commit --amend --no-edit。', note: '不要 force push 到 refs/for；每次 push 到同一個 Change-Id 就是新的 patchset。' };
+        },
+    };
+
+    // ================= GitHub =================
+    const github = {
+        api: (host) => (!host || /(^|\/\/)(www\.)?github\.com/.test(host) ? 'https://api.github.com' : trimSlash(host) + '/api/v3'),
+        parseUrl: (u) => {
+            const s = String(u || '').trim(); let m;
+            if ((m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:\/(?:files|commits|checks))?/.exec(s))) return { host: m[1], owner: m[2], repo: m[3], kind: 'pull', number: +m[4] };
+            if ((m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)(?:\/job\/(\d+))?/.exec(s))) return { host: m[1], owner: m[2], repo: m[3], kind: 'run', run_id: +m[4], job_id: m[5] ? +m[5] : undefined };
+            if ((m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/commit\/([0-9a-f]{7,40})/.exec(s))) return { host: m[1], owner: m[2], repo: m[3], kind: 'commit', sha: m[4] };
+            if ((m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/issues\/(\d+)/.exec(s))) return { host: m[1], owner: m[2], repo: m[3], kind: 'issue', number: +m[4] };
+            if ((m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(s))) return { host: m[1], owner: m[2], repo: m[3], kind: 'repo' };
+            if ((m = /^([\w.-]+)\/([\w.-]+)#(\d+)$/.exec(s))) return { owner: m[1], repo: m[2], kind: 'pull', number: +m[3] };
+            return null;
+        },
+        urls: {
+            pull: (a, o, r, n) => a + '/repos/' + o + '/' + r + '/pulls/' + n,
+            pullFiles: (a, o, r, n) => a + '/repos/' + o + '/' + r + '/pulls/' + n + '/files?per_page=100',
+            reviewComments: (a, o, r, n) => a + '/repos/' + o + '/' + r + '/pulls/' + n + '/comments?per_page=100',
+            reviews: (a, o, r, n) => a + '/repos/' + o + '/' + r + '/pulls/' + n + '/reviews?per_page=100',
+            checkRuns: (a, o, r, sha) => a + '/repos/' + o + '/' + r + '/commits/' + sha + '/check-runs?per_page=100',
+            status: (a, o, r, sha) => a + '/repos/' + o + '/' + r + '/commits/' + sha + '/status',
+            runsForSha: (a, o, r, sha) => a + '/repos/' + o + '/' + r + '/actions/runs?head_sha=' + sha + '&per_page=30',
+            runs: (a, o, r, q) => a + '/repos/' + o + '/' + r + '/actions/runs?per_page=' + ((q && q.n) || 15) + (q && q.branch ? '&branch=' + enc(q.branch) : '') + (q && q.status ? '&status=' + enc(q.status) : ''),
+            run: (a, o, r, id) => a + '/repos/' + o + '/' + r + '/actions/runs/' + id,
+            jobs: (a, o, r, id) => a + '/repos/' + o + '/' + r + '/actions/runs/' + id + '/jobs?per_page=100',
+            jobLogs: (a, o, r, id) => a + '/repos/' + o + '/' + r + '/actions/jobs/' + id + '/logs',
+            rerunFailed: (a, o, r, id) => a + '/repos/' + o + '/' + r + '/actions/runs/' + id + '/rerun-failed-jobs',
+            workflows: (a, o, r) => a + '/repos/' + o + '/' + r + '/actions/workflows',
+            dispatch: (a, o, r, wf) => a + '/repos/' + o + '/' + r + '/actions/workflows/' + enc(wf) + '/dispatches',
+            comment: (a, o, r, n) => a + '/repos/' + o + '/' + r + '/issues/' + n + '/comments',
+            diffHeader: { Accept: 'application/vnd.github.v3.diff' },
+        },
+        parsePull: (j) => ({
+            number: j.number, title: j.title, state: j.state, draft: !!j.draft, merged: !!j.merged, mergeable: j.mergeable, mergeable_state: j.mergeable_state, author: j.user && j.user.login, url: j.html_url,
+            base: j.base && { ref: j.base.ref, sha: j.base.sha }, head: j.head && { ref: j.head.ref, sha: j.head.sha, repo: j.head.repo && j.head.repo.full_name }, from_fork: !!(j.head && j.base && j.head.repo && j.base.repo && j.head.repo.full_name !== j.base.repo.full_name),
+            changed_files: j.changed_files, additions: j.additions, deletions: j.deletions, commits: j.commits, labels: (j.labels || []).map((l) => l.name), body: clip(j.body, 1500), requested_reviewers: (j.requested_reviewers || []).map((r) => r.login),
+            checkout: j.head ? 'gh pr checkout ' + j.number + '   或   git fetch origin pull/' + j.number + '/head:pr-' + j.number + ' && git checkout pr-' + j.number : undefined,
+        }),
+        parseCheckRuns: (j) => {
+            const runs = (j.check_runs || []).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, url: c.html_url, details_url: c.details_url, app: c.app && c.app.slug, summary: clip(c.output && (c.output.summary || c.output.title), 600), annotations: c.output && c.output.annotations_count, started: c.started_at, completed: c.completed_at, run_id: (/actions\/runs\/(\d+)/.exec(c.details_url || c.html_url || '') || [])[1], job_id: (/\/job\/(\d+)/.exec(c.html_url || '') || [])[1] }));
+            const failed = runs.filter((r) => ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure'].includes(r.conclusion));
+            const pending = runs.filter((r) => r.status !== 'completed');
+            return { total: runs.length, failed, pending, passed: runs.filter((r) => r.conclusion === 'success').length, skipped: runs.filter((r) => ['skipped', 'neutral'].includes(r.conclusion)).length, overall: failed.length ? 'failure' : pending.length ? 'pending' : runs.length ? 'success' : 'none', runs };
+        },
+        parseRun: (j) => ({ id: j.id, name: j.name || j.display_title, status: j.status, conclusion: j.conclusion, event: j.event, branch: j.head_branch, sha: j.head_sha, attempt: j.run_attempt, url: j.html_url, created: j.created_at, updated: j.updated_at, actor: j.actor && j.actor.login, workflow_id: j.workflow_id }),
+        parseJobs: (j) => (j.jobs || []).map((jb) => ({ id: jb.id, name: jb.name, status: jb.status, conclusion: jb.conclusion, runner: jb.runner_name, url: jb.html_url, started: jb.started_at, completed: jb.completed_at, failed_steps: (jb.steps || []).filter((s) => s.conclusion === 'failure').map((s) => ({ number: s.number, name: s.name })), steps: (jb.steps || []).map((s) => s.number + '. ' + s.name + ' → ' + (s.conclusion || s.status)) })),
+        parseReviewComments: (arr) => (arr || []).map((c) => ({ id: c.id, path: c.path, line: c.line || c.original_line, side: c.side, author: c.user && c.user.login, message: clip(c.body, 800), in_reply_to: c.in_reply_to_id, url: c.html_url, outdated: c.position == null && c.line == null })),
+        parseReviews: (arr) => (arr || []).map((r) => ({ id: r.id, author: r.user && r.user.login, state: r.state, message: clip(r.body, 600), submitted: r.submitted_at })),
+        parseFiles: (arr) => (arr || []).map((f) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch ? clip(f.patch, 3000) : undefined })),
+    };
+
+    // ================= Jenkins =================
+    const jenkins = {
+        // https://ci/job/a/job/b/123/  → { base, job:'a/b', build:123 }
+        parseUrl: (u) => {
+            const s = String(u || '').trim(); const m = /^(https?:\/\/[^/]+(?:\/[^/]+)*?)((?:\/job\/[^/]+)+)(?:\/(\d+|lastBuild|lastSuccessfulBuild|lastFailedBuild|lastCompletedBuild))?(?:\/.*)?$/.exec(s);
+            if (!m) return null; const job = m[2].split('/job/').filter(Boolean).map(decodeURIComponent).join('/');
+            return { base: m[1], job, build: m[3] ? (/^\d+$/.test(m[3]) ? +m[3] : m[3]) : undefined };
+        },
+        jobPath: (job) => String(job).split('/').filter(Boolean).map((p) => '/job/' + enc(p)).join(''),
+        urls: {
+            job: (b, job) => trimSlash(b) + jenkins.jobPath(job) + '/api/json?tree=name,fullName,url,color,description,buildable,inQueue,lastBuild[number,url,result],lastSuccessfulBuild[number],lastFailedBuild[number],healthReport[description,score],property[parameterDefinitions[name,type,defaultParameterValue[value],description,choices]],jobs[name,url,color]',
+            build: (b, job, n) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/api/json?tree=number,url,result,building,duration,estimatedDuration,timestamp,displayName,description,builtOn,actions[causes[shortDescription,userName],parameters[name,value],failCount,skipCount,totalCount],changeSets[items[commitId,author[fullName],msg,paths[file]]],artifacts[relativePath,fileName]',
+            console: (b, job, n) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/consoleText',
+            consoleRange: (b, job, n, start) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/logText/progressiveText?start=' + (start || 0),
+            tests: (b, job, n) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/testReport/api/json?tree=failCount,passCount,skipCount,duration,suites[name,cases[className,name,status,duration,errorDetails,errorStackTrace,age]]',
+            stages: (b, job, n) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/wfapi/describe',
+            stageLog: (b, job, n, nodeId) => trimSlash(b) + jenkins.jobPath(job) + '/' + (n || 'lastBuild') + '/execution/node/' + enc(nodeId) + '/wfapi/log',
+            crumb: (b) => trimSlash(b) + '/crumbIssuer/api/json',
+            trigger: (b, job, hasParams) => trimSlash(b) + jenkins.jobPath(job) + (hasParams ? '/buildWithParameters' : '/build') + '?delay=0sec',
+            replay: (b, job, n) => trimSlash(b) + jenkins.jobPath(job) + '/' + n + '/replay',
+        },
+        parseJob: (j) => ({
+            name: j.fullName || j.name, url: j.url, color: j.color, buildable: j.buildable, in_queue: j.inQueue, description: clip(j.description, 400),
+            last_build: j.lastBuild && { number: j.lastBuild.number, result: j.lastBuild.result, url: j.lastBuild.url }, last_success: j.lastSuccessfulBuild && j.lastSuccessfulBuild.number, last_failed: j.lastFailedBuild && j.lastFailedBuild.number,
+            health: (j.healthReport || []).map((h) => h.description).slice(0, 3),
+            parameters: [].concat(...(j.property || []).map((p) => p.parameterDefinitions || [])).map((p) => ({ name: p.name, type: (p.type || '').replace(/ParameterDefinition$/, ''), default: p.defaultParameterValue && p.defaultParameterValue.value, description: clip(p.description, 120), choices: p.choices })),
+            sub_jobs: (j.jobs || []).map((x) => ({ name: x.name, status: x.color })),
+        }),
+        parseBuild: (j) => {
+            const actions = j.actions || []; const causes = [].concat(...actions.map((a) => a && a.causes ? a.causes : [])).map((c) => c.shortDescription).filter(Boolean);
+            const params = [].concat(...actions.map((a) => a && a.parameters ? a.parameters : [])).map((p) => ({ name: p.name, value: /pass|token|secret|key/i.test(p.name) ? '(隱藏)' : p.value }));
+            const tc = actions.find((a) => a && a.totalCount != null);
+            const commits = [].concat(...(j.changeSets || []).map((cs) => cs.items || [])).map((i) => ({ id: (i.commitId || '').slice(0, 12), author: i.author && i.author.fullName, message: clip(i.msg, 200), files: (i.paths || []).map((p) => p.file).slice(0, 15) }));
+            return { number: j.number, url: j.url, result: j.result || (j.building ? 'BUILDING' : undefined), building: !!j.building, duration_s: j.duration != null ? Math.round(j.duration / 1000) : undefined, estimated_s: j.estimatedDuration != null ? Math.round(j.estimatedDuration / 1000) : undefined, started: j.timestamp ? new Date(j.timestamp).toISOString() : undefined, node: j.builtOn, causes, parameters: params, tests: tc ? { total: tc.totalCount, failed: tc.failCount, skipped: tc.skipCount } : undefined, commits, artifacts: (j.artifacts || []).map((a) => a.relativePath).slice(0, 30) };
+        },
+        parseTests: (j) => {
+            const failed = []; for (const s of j.suites || []) for (const c of s.cases || []) if (/FAILED|REGRESSION/.test(c.status || '')) failed.push({ suite: s.name, class: c.className, name: c.name, status: c.status, age: c.age, details: clip(c.errorDetails, 500), stack: clip(c.errorStackTrace, 1200) });
+            return { passed: j.passCount, failed_count: j.failCount, skipped: j.skipCount, duration_s: j.duration != null ? Math.round(j.duration) : undefined, failed: failed.slice(0, 40), new_failures: failed.filter((f) => f.status === 'REGRESSION' || f.age === 1).map((f) => f.class + '.' + f.name).slice(0, 30) };
+        },
+        parseStages: (j) => ({ status: j.status, duration_s: j.durationMillis != null ? Math.round(j.durationMillis / 1000) : undefined, stages: (j.stages || []).map((s) => ({ id: s.id, name: s.name, status: s.status, duration_s: Math.round((s.durationMillis || 0) / 1000), error: s.error && s.error.message ? clip(s.error.message, 300) : undefined })), failed_stage: ((j.stages || []).find((s) => /FAILED|ABORTED|UNSTABLE/.test(s.status)) || {}).name }),
+        // 這個結果算不算「成功」
+        resultOk: (r) => r === 'SUCCESS',
+    };
+
+    // 把 build／job 的狀態字串統一成 success／failure／pending／aborted／unknown
+    function normalizeResult(s) {
+        s = String(s || '').toLowerCase();
+        if (/^(success|passed|succeeded|completed:success|neutral)$/.test(s)) return 'success';
+        if (/^(failure|failed|error|timed_out|startup_failure|unstable)$/.test(s)) return 'failure';
+        if (/^(aborted|cancelled|canceled|skipped)$/.test(s)) return 'aborted';
+        if (/^(building|in_progress|queued|pending|running|waiting|requested)$/.test(s)) return 'pending';
+        return 'unknown';
+    }
+
+
+    // ================= 觀念與指令速查（給 ci_guide 工具）=================
+    const guide = {
+        workflow: [
+            '【修 CI 失敗的標準流程】（修 bug 也一樣：先重現、再最小修改、再補回歸測試）',
+            '1. 拿到失敗現場：GitHub 用 github_ci action:pr（看 checks.failed）→ action:log 帶 job_id；Jenkins 用 jenkins action:build（失敗時自動帶 triage）；Gerrit 先 gerrit action:change，從 ci_links 找 build 網址再交給 jenkins。',
+            '2. 看 triage.category 決定怎麼做：infra（網路／磁碟／OOM／節點離線／逾時）→ 先重試，不要改程式；config（認證失敗）→ 檢查 CI 的憑證，不要把 token 寫進程式；environment（找不到指令／權限）→ 修 CI 環境或 image；code → 繼續往下。',
+            '3. 先確認「根因」不是連鎖錯誤：make／Maven／Gradle 的 Error 1、script returned exit code 都只是結果，從 triage.root_cause（最前面的真正錯誤）開始。',
+            '4. 開暫存工作區（coding_workspace open），用 pipeline_inspect action:local_commands 取得 CI 那一步的指令，**在本機先重現同樣的失敗**（看到同樣的錯誤才算重現；重現不了先找環境差異：版本、環境變數、平台、時區、並行）。',
+            '5. 讀失敗位置附近的程式（root_cause.file:line），用 repo_ask／explain_code 查誰呼叫它、它做什麼，再決定修法。小的改動用 coding_edit；機械式的大量修改寫 coding_patch_tool。',
+            '6. 補一個「修之前會失敗、修之後會通過」的測試（回歸測試），然後跑同一條 CI 指令確認通過，再跑完整測試。',
+            '7. commit（訊息寫「為什麼」）。Gerrit：amend 後 push 到 refs/for 產生新 patchset（gerrit action:push_help）；GitHub：push 到 PR 的分支。**不要自己 push，除非使用者說可以**；絕不 force push 共用分支。',
+            '8. push 之後再查一次 CI 結果（github_ci action:checks／jenkins action:build），確認真的綠了才回報完成。連續失敗兩次且 triage 是 infra，如實告訴使用者是環境問題。',
+        ].join('\n'),
+        gerrit: [
+            '【Gerrit 觀念】',
+            '- change＝一個「正在被 review 的 commit」，用 commit message 最後的 `Change-Id: I<40 hex>` 識別；同一個 Change-Id 每次 push 就是新的 patchset（PS1、PS2…）。',
+            '- 一個 change 的 patchset 在 ref `refs/changes/<最後兩位數>/<change 編號>/<patchset>`，例如 change 12345 的 PS3＝refs/changes/45/12345/3。拿到它：`git fetch <remote> refs/changes/45/12345/3 && git checkout FETCH_HEAD`（要在上面改就 `git checkout -b fix-12345`）。',
+            '- 上傳：`git push origin HEAD:refs/for/<目標分支>`；加選項用 %：`%topic=名稱,r=審查者email,cc=email,wip`（WIP 不通知），`%ready` 把 WIP 變成可審查。amend 後再 push 同一個指令就是新 patchset。**不是 push 到分支本身**，那會被拒絕。',
+            '- 沒有 Change-Id 的 commit 會被拒絕：安裝 commit-msg hook（見 push_help）後 `git commit --amend --no-edit`。',
+            '- 標籤（labels）：Code-Review（-2 擋住、-1 不建議、+1 看起來可以、+2 核准）、Verified（-1 CI 失敗、+1 CI 通過；通常只有 CI 帳號能投）。要 submit 需要 Code-Review +2 與 Verified +1（依 project 設定）、沒有 -2、沒有衝突（mergeable）、不是 WIP。blockers 欄位會直接列出缺什麼。',
+            '- 未解決的留言（unresolved）也會擋住 submit：逐一處理後在網頁或用 review API 回覆並標成 resolved。',
+            '- 衝突：`git fetch origin <分支> && git rebase origin/<分支>`，解完 `git rebase --continue`，再 push 成新 patchset。',
+            '- 搜尋語法：`status:open`、`owner:self`、`project:foo`、`branch:main`、`topic:x`、`change:12345`、`label:Code-Review=-1`、`is:wip`、`age:2d`、`message:"關鍵字"`、`file:path`，用空白連接（且）。',
+            '- REST：有登入的網址要加 `/a/` 前綴（HTTP Basic，密碼是 Gerrit 設定頁產生的 HTTP password，不是登入密碼）；回應開頭有 `)]}\'` 防 XSSI，要先去掉。',
+            '- CI 通常是 Jenkins／Zuul 帳號在 change 的留言裡貼 build 網址並投 Verified；gerrit action:change 的 ci_links 會抓出來。',
+            '- cherry-pick／backport：`git cherry-pick -x <sha>` 會在訊息裡記錄來源；跨分支 backport 在 Gerrit 網頁有 Cherry Pick 按鈕，也可 `git push origin HEAD:refs/for/<舊分支>`。',
+        ].join('\n'),
+        github: [
+            '【GitHub 觀念】',
+            '- PR：head（你的分支，可能在 fork）→ base（目標分支）。在本機拿到 PR：`gh pr checkout <N>`，或 `git fetch origin pull/<N>/head:pr-<N> && git checkout pr-<N>`；`pull/<N>/merge` 是「合併後」的結果（CI 預設測這個）。',
+            '- checks：每個 workflow 的每個 job 是一個 check run（conclusion：success／failure／cancelled／timed_out／skipped／neutral／action_required）；另有舊的 commit status。github_ci action:pr 會一次列出失敗的 job 與失敗的 step。',
+            '- Actions：workflow（.github/workflows/*.yml）→ run（一次觸發）→ jobs → steps。看失敗：`gh run view <run id> --log-failed`；重跑失敗的：`gh run rerun <run id> --failed`；列表 `gh run list --branch <b>`。',
+            '- 常見失敗原因：從 fork 來的 PR 拿不到 secrets（所以用 secrets 的步驟會失敗，不是程式錯）；pull_request_target 在目標 repo 權限下跑（危險，不要 checkout PR 程式碼）；action 沒釘版本被上游改壞；runner 的 ubuntu-latest 升級改了預設工具版本；快取過期；流量／並行限制。',
+            '- 本機重現：pipeline_inspect action:local_commands 把 workflow 的 run: 步驟變成本機指令；setup-node／setup-python 這類 action 會轉成「需要什麼版本」。',
+            '- 流量：未登入 REST API 每小時 60 次，登入後 5000 次；403 且 x-ratelimit-remaining 是 0 就是用完了。',
+            '- 常用 gh：`gh pr view <N> --comments`、`gh pr diff <N>`、`gh pr checks <N>`、`gh pr create --fill`、`gh api repos/<o>/<r>/pulls/<N>/comments`。沒有 gh 時用 github_ci 工具。',
+            '- 留言、重跑、觸發都是「寫入」，會跳確認框；使用者沒要求就不要做。',
+        ].join('\n'),
+        jenkins: [
+            '【Jenkins 觀念】',
+            '- job 路徑：資料夾與 multibranch 會巢狀，網址是 /job/team/job/app/job/main/，工具的 job 參數寫 team/app/main。build 編號之外還有 lastBuild／lastSuccessfulBuild／lastFailedBuild。',
+            '- Pipeline 記錄裡的標記：`[Pipeline] { (Build)` 是進入 stage Build；`+ make -j4` 是 sh 步驟執行的指令（sh 預設 -xe，任何指令失敗就停）；`script returned exit code 2` 是那個 sh 的結束碼；`Finished: FAILURE|UNSTABLE|ABORTED|SUCCESS` 是最後結果。UNSTABLE 通常是測試有失敗但 build 沒壞。',
+            '- 看失敗：jenkins action:build 一次給結果、各 stage 狀態、測試統計與失敗分診；只想看記錄原文用 action:console。測試報告要有 junit 步驟才有（tests 回 has_test_report:false 就是沒有）。',
+            '- 有參數的 job 觸發要用 buildWithParameters；POST 需要 crumb（CSRF token），工具會自動先取；使用者認證用「使用者名稱＋API token」（個人設定頁產生），不是登入密碼。',
+            '- 節點問題：`Waiting for next available executor`、`Agent went offline`、`Cannot contact <節點>` 是基礎設施問題，重試或找管理員，不是程式錯。',
+            '- Replay：Pipeline build 頁面可以修改 Jenkinsfile 後重跑一次（不用 commit），適合試 pipeline 本身的修改；正式修改仍要 commit 進 Jenkinsfile。',
+            '- 好的 Jenkinsfile：固定 agent（label／docker）、options 裡設 timeout 與 buildDiscarder、測試後 junit 發佈報告、post 區塊通知與清理、機密只用 credentials()／withCredentials。pipeline_inspect action:lint 會檢查這些。',
+        ].join('\n'),
+        patch: [
+            '【準備與上 patch】',
+            '- 優先順序：①小修改用 coding_edit（找這段、換成那段，程式幫你定位並產生 diff）；②機械式的大量修改（改名、批次替換、搬移、產生檔案）用 coding_patch_tool 寫一支小腳本（node 不用安裝），dry_run 看 diff → apply；③手寫 unified diff 用 apply_git_patch（最容易寫錯，行號與 context 要逐字對）。',
+            '- unified diff 格式：`--- a/路徑`、`+++ b/路徑`、`@@ -舊起始行,舊行數 +新起始行,新行數 @@`，之後每行以空白（不變）、`-`（刪除）、`+`（新增）開頭；hunk 前後至少 3 行 context；新增檔案用 `--- /dev/null`。結尾沒換行要有 `\\ No newline at end of file`。',
+            '- 驗證順序：`git apply --check` 乾跑 → 套用 → `git diff` 看實際變更 → 語法檢查 → 測試 → commit。失敗就 `git_inspect mode:restore` 還原，不要在壞掉的檔案上繼續疊修改。',
+            '- 收到別人的 patch：`git apply --check x.patch` 看能不能直接套；`git am x.patch` 保留作者與訊息（mbox 格式，Gerrit patch API 與 git format-patch 的輸出都是）；對不上用 `git apply --3way` 或 `git am -3`；有衝突時先看是不是目標分支已經改過同一處。',
+            '- 好 patch 的樣子：一個 patch 只做一件事；改動小到能一眼看完；commit message 第一行說「做了什麼」、內文說「為什麼」；包含測試；不夾帶無關的格式化。',
+            '- 上游審查：Gerrit 用 amend 同一個 commit（保留 Change-Id）push 成新 patchset，不要開新的 change；GitHub 在 PR 的分支上追加 commit（或 amend 後 force-with-lease 自己的分支）。',
+            '- backport：`git cherry-pick -x <sha>`；衝突時理解兩邊差異再解，不要只是挑一邊。',
+            '- 回復：`git revert <sha>` 產生一個還原的新 commit（共用分支用這個）；本機還沒 push 的才用 reset。',
+        ].join('\n'),
+        pipeline: [
+            '【設計 pipeline 的原則】',
+            '- 失敗要快：順序是 lint／靜態檢查 → 建置 → 單元測試 → 整合測試 → 打包 → 部署；便宜的檢查放前面，獨立的工作用 parallel／matrix 並行。',
+            '- 可重現：固定 agent 環境（容器 image 或 label）、釘住工具與 action 的版本（最好是 commit SHA）、依賴用 lockfile（npm ci、pip 的 hash、go.sum）。',
+            '- 同一條指令本機與 CI 都能跑：把真正的步驟放在 Makefile／scripts／package.json scripts，pipeline 只呼叫它們；這樣 CI 失敗時本機就能重現，pipeline 檔案也最薄。',
+            '- 一定要有：timeout（避免卡死占節點）、測試報告（junit／artifacts）、失敗通知、舊記錄與產物的清理。',
+            '- 機密：只用 CI 的憑證機制（Jenkins credentials、GitHub secrets、GitLab masked variables），不印出、不寫進 repo、不給 fork 的 PR；權限給最小（GitHub 的 permissions）。',
+            '- 避免：`|| true` 吞失敗、`curl | sh`、`sudo`、寫死的路徑、依賴「上一次 build 留下來的東西」、用 sleep 等服務（改成輪詢健康檢查）。',
+            '- 重試只用在「已知會偶發的基礎設施問題」（下載、拉 image），不要用來掩蓋不穩定的測試；不穩定的測試要修或隔離並開 issue。',
+            '- 部署：prod 要人工核准（Jenkins input 加 timeout、GitHub environments 的 required reviewers）、部署要能回復、同一版本的 artifact 從 staging 原封不動升到 prod。',
+            '- 沒有 pipeline 時：pipeline_inspect action:scaffold 依專案工具鏈產生樣板，先在本機把那些指令跑過，再放進專案。',
+        ].join('\n'),
+    };
+
+    return { triage, gerrit, github, jenkins, normalizeResult, stripAnsi, guide };
+});
+
+}).call(null, undefined, holder);
+return holder.FaCi;
+})();
+/* CI-END */
+/* PIPELINE-BEGIN */
+const FaPipeline = (function () {
+const holder = {};
+(function (module, self) {
+/* Pipeline 定義的核心（UMD，純函式）：偵測 → 解析 → 檢查（lint）→ 本機重現用指令 → 產生樣板。
+ * 支援：Jenkinsfile（宣告式與腳本式）、GitHub Actions（.github/workflows/*.yml）、GitLab CI（.gitlab-ci.yml）。
+ * YAML 解析由呼叫端提供（yamlLoad：js-yaml 的 load），這裡不內建 YAML 解析器。
+ * 目的不是取代 CI，而是讓 AI「讀得懂 pipeline 在做什麼、哪裡有風險、失敗的那一步怎麼在本機重現、沒有 pipeline 時產生一份合理的」。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaPipeline = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+    const arr = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
+
+    function detect(path, text) {
+        const p = String(path || '').replace(/\\/g, '/'); const base = p.split('/').pop();
+        if (/^Jenkinsfile(\..+)?$/i.test(base) || /\.jenkinsfile$/i.test(base) || /\.groovy$/i.test(base) && /\bpipeline\s*\{|\bnode\s*(?:\(|\{)/.test(text || '')) return 'jenkins';
+        if (/(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/i.test(p)) return 'github';
+        if (/(^|\/)\.gitlab-ci\.ya?ml$/i.test(p)) return 'gitlab';
+        const t = String(text || '');
+        if (/^\s*pipeline\s*\{/m.test(t) || /^\s*node\s*(?:\([^)]*\))?\s*\{/m.test(t)) return 'jenkins';
+        if (/^on\s*:|^\s*jobs\s*:/m.test(t) && /runs-on\s*:|uses\s*:/.test(t)) return 'github';
+        if (/^stages\s*:/m.test(t) && /script\s*:/.test(t)) return 'gitlab';
+        return null;
+    }
+
+    // ---------- Groovy 區塊掃描（略過字串與註解）----------
+    function scanCode(text) { // 回傳遮蔽掉字串與註解內容的同長度文字（括號比對用），以及字串區間
+        const out = text.split(''); const strs = []; let i = 0; const n = text.length;
+        while (i < n) {
+            const c = text[i], d = text[i + 1];
+            if (c === '/' && d === '/') { while (i < n && text[i] !== '\n') { out[i] = ' '; i++; } continue; }
+            if (c === '/' && d === '*') { const e = text.indexOf('*/', i + 2); const end = e < 0 ? n : e + 2; for (let k = i; k < end; k++) if (text[k] !== '\n') out[k] = ' '; i = end; continue; }
+            if ((c === "'" || c === '"')) {
+                const tri = text.substr(i, 3) === c + c + c; const q = tri ? c + c + c : c; let j = i + q.length;
+                while (j < n) { if (text[j] === '\\') { j += 2; continue; } if (text.substr(j, q.length) === q) break; if (!tri && text[j] === '\n') break; j++; }
+                const end = Math.min(n, j + q.length); strs.push({ start: i, end, quote: q, body: text.slice(i + q.length, Math.max(i + q.length, j)) });
+                for (let k = i; k < end; k++) if (text[k] !== '\n') out[k] = ' '; i = end; continue;
+            }
+            i++;
+        }
+        return { masked: out.join(''), strs };
+    }
+    function matchBrace(masked, open) { let d = 0; for (let i = open; i < masked.length; i++) { if (masked[i] === '{') d++; else if (masked[i] === '}') { d--; if (!d) return i; } } return -1; }
+    // 在 [from,to) 內、depth 0 找 name { … } 區塊
+    function blocksNamed(masked, text, from, to, nameRe) {
+        const out = []; let depth = 0; let seg = from; // seg：目前這個「敘述」從哪裡開始（換行、分號、剛關掉的區塊之後）
+        for (let i = from; i < to; i++) {
+            const c = masked[i];
+            if (c === '{') {
+                if (depth === 0) { const head = text.slice(seg, i); const m = nameRe.exec(head); if (m) { const end = matchBrace(masked, i); if (end > 0) out.push({ name: m[1], head, start: i + 1, end, args: m }); } }
+                depth++;
+            } else if (c === '}') { depth--; if (depth === 0) seg = i + 1; }
+            else if (depth === 0 && (c === '\n' || c === ';')) seg = i + 1;
+        }
+        return out;
+    }
+    const blockNamedFirst = (masked, text, from, to, name) => blocksNamed(masked, text, from, to, new RegExp('^\\s*(' + name + ')\\b[^\\n{]*$'))[0] || null;
+
+    function parseSteps(text, masked, strs, from, to) {
+        const found = [];
+        // sh／bat／powershell：看每個字串「前面」是不是這些指令（不管在第幾層、同一行的 timeout { sh 'x' } 也抓得到）
+        for (const sg of strs) {
+            if (sg.start < from || sg.end > to) continue;
+            const before = masked.slice(Math.max(from, sg.start - 48), sg.start);
+            const m = /(?:^|[\s;{(])(sh|bat|powershell|pwsh)\s*\(?\s*(?:script\s*:\s*)?$/.exec(before);
+            if (m) found.push({ pos: sg.start, step: { type: m[1] === 'pwsh' ? 'powershell' : m[1], cmd: sg.body.replace(/^\n/, '').replace(/\n\s*$/, ''), dynamic: /\$\{|\$[A-Za-z_]/.test(sg.body) && sg.quote[0] === '"' } });
+        }
+        // 其他步驟：只看「最上層」的行（wrapper 裡面的 echo／junit 之類不重要）
+        let depth = 0, ls = from;
+        for (let i = from; i <= to; i++) {
+            if (i < to && masked[i] !== '\n') continue;
+            const mline = masked.slice(ls, i); const line = text.slice(ls, i); const at = ls; ls = i + 1;
+            const opens = (mline.match(/\{/g) || []).length, closes = (mline.match(/\}/g) || []).length;
+            if (depth === 0) {
+                let m; const add = (step) => found.push({ pos: at, step });
+                if ((m = /^\s*(echo|println)\b/.exec(mline))) add({ type: 'echo' });
+                else if ((m = /^\s*(checkout|git)\b/.exec(mline))) add({ type: 'checkout', text: clip(line.trim(), 160) });
+                else if ((m = /^\s*(junit|archiveArtifacts|publishHTML|recordIssues|cobertura|jacoco|publishTestResults)\b/.exec(mline))) add({ type: 'report', name: m[1], text: clip(line.trim(), 160) });
+                else if (/^\s*build\b/.test(mline)) add({ type: 'trigger_job', text: clip(line.trim(), 200) });
+                else if (/^\s*input\b/.test(mline)) add({ type: 'input', text: clip(line.trim(), 160) });
+                else if ((m = /^\s*(withCredentials|withEnv|dir|timeout|retry|lock|ws|docker\.image|withDockerContainer|script|parallel|catchError|waitUntil|sleep)\b/.exec(mline))) add({ type: 'wrapper', name: m[1], text: clip(line.trim(), 160) });
+                else if ((m = /^\s*(deleteDir|cleanWs|stash|unstash|slackSend|mail|emailext|error|unstable|currentBuild\.\w+)\b/.exec(mline))) add({ type: 'misc', name: m[1], text: clip(line.trim(), 160) });
+            }
+            depth = Math.max(0, depth + opens - closes);
+        }
+        return found.sort((a, b) => a.pos - b.pos).map((x) => x.step);
+    }
+
+    function parseJenkins(raw) {
+        const text = String(raw || ''); const { masked, strs } = scanCode(text);
+        const res = { kind: 'jenkins', style: 'scripted', agent: null, options: {}, env: {}, parameters: [], triggers: [], stages: [], post: {}, tools: [] };
+        const pl = /\bpipeline\s*\{/.exec(masked);
+        let from = 0, to = text.length;
+        if (pl) { res.style = 'declarative'; const open = pl.index + pl[0].length - 1; from = open + 1; to = matchBrace(masked, open); if (to < 0) to = text.length; }
+        // agent
+        if (pl) {
+            const am = /(^|\n)\s*agent\s+(any|none)\b/.exec(masked.slice(from, to));
+            if (am) res.agent = am[2]; else { const ab = blockNamedFirst(masked, text, from, to, 'agent'); if (ab) res.agent = clip(text.slice(ab.start, ab.end).replace(/\s+/g, ' ').trim(), 160); }
+            const ob = blockNamedFirst(masked, text, from, to, 'options'); if (ob) { const o = text.slice(ob.start, ob.end); const tm = /timeout\s*\(\s*time\s*:\s*(\d+)(?:\s*,\s*unit\s*:\s*['"](\w+)['"])?/.exec(o); if (tm) res.options.timeout = tm[1] + ' ' + (tm[2] || 'MINUTES').toLowerCase(); res.options.timestamps = /timestamps\s*\(\)/.test(o); res.options.disableConcurrentBuilds = /disableConcurrentBuilds/.test(o); res.options.buildDiscarder = /buildDiscarder/.test(o); res.options.retry = (/retry\s*\(\s*(\d+)/.exec(o) || [])[1]; }
+            const eb = blockNamedFirst(masked, text, from, to, 'environment'); if (eb) for (const l of text.slice(eb.start, eb.end).split('\n')) { const m = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)\s*$/.exec(l); if (m) res.env[m[1]] = /credentials\(/.test(m[2]) ? '(credentials)' : clip(m[2].replace(/^['"]|['"]$/g, ''), 80); }
+            const pb = blockNamedFirst(masked, text, from, to, 'parameters'); if (pb) for (const m of text.slice(pb.start, pb.end).matchAll(/(string|booleanParam|choice|text|password|file)\s*\(\s*(?:name\s*:\s*)?['"]([^'"]+)['"]/g)) res.parameters.push({ type: m[1], name: m[2] });
+            const tb = blockNamedFirst(masked, text, from, to, 'triggers'); if (tb) for (const m of text.slice(tb.start, tb.end).matchAll(/(cron|pollSCM|upstream|githubPush|gerrit)\s*\(?\s*['"]?([^'")\n]*)/g)) res.triggers.push((m[1] + ' ' + m[2]).trim());
+            const tl = blockNamedFirst(masked, text, from, to, 'tools'); if (tl) res.tools = text.slice(tl.start, tl.end).split('\n').map((l) => l.trim()).filter(Boolean);
+            const post = blockNamedFirst(masked, text, from, to, 'post'); if (post) for (const c of blocksNamed(masked, text, post.start, post.end, /^\s*(always|success|failure|unstable|changed|fixed|regression|aborted|cleanup)\b[^\n{]*$/)) res.post[c.name] = parseSteps(text, masked, strs, c.start, c.end);
+        }
+        const stageRe = /^\s*(?:stage)\s*\(\s*['"]([^'"]+)['"]\s*\)\s*$/;
+        const walkStage = (b, depthName) => {
+            const st = { name: b.args[1], steps: [], parallel: false };
+            const inner = (n) => blockNamedFirst(masked, text, b.start, b.end, n);
+            const ag = /(^|\n)\s*agent\s+(any|none)\b/.exec(masked.slice(b.start, b.end)); const agb = inner('agent'); st.agent = ag ? ag[2] : (agb ? clip(text.slice(agb.start, agb.end).replace(/\s+/g, ' ').trim(), 120) : undefined);
+            const wh = inner('when'); if (wh) st.when = clip(text.slice(wh.start, wh.end).replace(/\s+/g, ' ').trim(), 160);
+            const stepsB = inner('steps'); st.steps = stepsB ? parseSteps(text, masked, strs, stepsB.start, stepsB.end) : (pl ? [] : parseSteps(text, masked, strs, b.start, b.end));
+            const par = inner('parallel'); if (par) { st.parallel = true; st.children = blocksNamed(masked, text, par.start, par.end, stageRe).map(walkStage); st.failFast = /failFast\s+true/.test(text.slice(par.start, par.end)) || undefined; }
+            const seq = inner('stages'); if (seq) st.children = blocksNamed(masked, text, seq.start, seq.end, stageRe).map(walkStage);
+            const po = inner('post'); if (po) { st.post = {}; for (const c of blocksNamed(masked, text, po.start, po.end, /^\s*(always|success|failure|unstable|changed|fixed|cleanup)\b[^\n{]*$/)) st.post[c.name] = parseSteps(text, masked, strs, c.start, c.end); }
+            const tmo = /timeout\s*\(\s*time\s*:\s*(\d+)/.exec(text.slice(b.start, b.end)); if (tmo) st.timeout = tmo[1];
+            return st;
+        };
+        if (pl) { const sb = blockNamedFirst(masked, text, from, to, 'stages'); if (sb) res.stages = blocksNamed(masked, text, sb.start, sb.end, stageRe).map(walkStage); }
+        else res.stages = blocksNamed(masked, text, 0, text.length, stageRe).length ? blocksNamed(masked, text, 0, text.length, stageRe).map(walkStage) : (function () { const nb = blocksNamed(masked, text, 0, text.length, /^\s*(node)\b.*$/)[0]; return nb ? blocksNamed(masked, text, nb.start, nb.end, stageRe).map(walkStage) : []; })();
+        return res;
+    }
+
+    function stepFromGha(s, i) {
+        const o = { name: s.name || undefined };
+        if (s.uses) { o.type = 'uses'; o.uses = String(s.uses); o.with = s.with || undefined; }
+        else if (s.run != null) { o.type = 'sh'; o.cmd = String(s.run).replace(/\n$/, ''); o.shell = s.shell; o.dynamic = /\$\{\{/.test(String(s.run)); o['working-directory'] = s['working-directory']; }
+        else o.type = 'other';
+        if (s.if) o.if = String(s.if); if (s.env) o.env = s.env; if (s['continue-on-error']) o.continueOnError = true; if (s['timeout-minutes']) o.timeout = s['timeout-minutes'];
+        o.index = i + 1; return o;
+    }
+    function parseGithub(yamlLoad, raw) {
+        const y = yamlLoad(String(raw || '')) || {}; const on = y.on != null ? y.on : y[true];
+        const triggers = typeof on === 'string' ? [on] : Array.isArray(on) ? on : on && typeof on === 'object' ? Object.keys(on) : [];
+        const jobs = y.jobs && typeof y.jobs === 'object' ? y.jobs : {};
+        return {
+            kind: 'github', name: y.name, triggers, trigger_detail: on && typeof on === 'object' && !Array.isArray(on) ? on : undefined, env: y.env || {}, permissions: y.permissions, concurrency: y.concurrency, defaults: y.defaults,
+            stages: Object.entries(jobs).map(([id, j]) => ({ id, name: j.name || id, runsOn: j['runs-on'], needs: arr(j.needs), if: j.if, timeout: j['timeout-minutes'], permissions: j.permissions, matrix: j.strategy && j.strategy.matrix, failFast: j.strategy ? j.strategy['fail-fast'] : undefined, container: typeof j.container === 'string' ? j.container : (j.container && j.container.image), services: j.services && Object.keys(j.services), environment: j.environment, env: j.env, continueOnError: !!j['continue-on-error'], steps: arr(j.steps).map(stepFromGha), uses: j.uses })),
+        };
+    }
+    function parseGitlab(yamlLoad, raw) {
+        const y = yamlLoad(String(raw || '')) || {}; const RESERVED = new Set(['stages', 'variables', 'default', 'include', 'workflow', 'image', 'services', 'before_script', 'after_script', 'cache', 'pages']);
+        const stages = arr(y.stages).length ? arr(y.stages) : ['build', 'test', 'deploy']; const jobs = [];
+        for (const [id, j] of Object.entries(y)) {
+            if (RESERVED.has(id) || id.startsWith('.') || !j || typeof j !== 'object') continue;
+            const cmds = [].concat(arr(j.before_script || (y.default && y.default.before_script) || y.before_script), arr(j.script), arr(j.after_script));
+            jobs.push({ id, name: id, stage: j.stage || 'test', image: typeof j.image === 'string' ? j.image : (j.image && j.image.name) || (typeof y.image === 'string' ? y.image : undefined), needs: arr(j.needs).map((n) => (typeof n === 'string' ? n : n.job)), rules: j.rules, only: j.only, except: j.except, when: j.when, allowFailure: j.allow_failure, timeout: j.timeout, retry: j.retry, extends: j.extends, trigger: j.trigger, artifacts: j.artifacts && (j.artifacts.paths || true), steps: cmds.filter((c) => typeof c === 'string').map((c, i) => ({ type: 'sh', cmd: c, index: i + 1, dynamic: /\$[A-Za-z_{]/.test(c) })), variables: j.variables });
+        }
+        const order = (s) => { const i = stages.indexOf(s); return i < 0 ? 99 : i; };
+        return { kind: 'gitlab', stage_order: stages, variables: y.variables || {}, workflow: y.workflow, include: y.include, stages: jobs.sort((a, b) => order(a.stage) - order(b.stage)) };
+    }
+    function parse(kind, text, opts) {
+        opts = opts || {}; kind = kind || detect(opts.path, text);
+        if (kind === 'jenkins') return parseJenkins(text);
+        if (!opts.yamlLoad) throw new Error('解析 ' + kind + ' 需要 YAML 解析器（yamlLoad）');
+        if (kind === 'github') return parseGithub(opts.yamlLoad, text);
+        if (kind === 'gitlab') return parseGitlab(opts.yamlLoad, text);
+        throw new Error('不認得的 pipeline 類型：' + kind + '（支援 jenkins／github／gitlab）');
+    }
+
+    // ---------- 統計 ----------
+    function flatten(p) { const out = []; const rec = (s, path) => { out.push({ s, path: path.concat(s.name) }); (s.children || []).forEach((c) => rec(c, path.concat(s.name))); }; p.stages.forEach((s) => rec(s, [])); return out; }
+    function summarize(p) {
+        const st = flatten(p); const stepsOf = (s) => s.steps || [];
+        const allSteps = [].concat(...st.map((x) => stepsOf(x.s)));
+        const shells = allSteps.filter((x) => x.type === 'sh' || x.type === 'bat' || x.type === 'powershell');
+        const text = shells.map((x) => x.cmd || '').join('\n');
+        return {
+            kind: p.kind, stage_count: st.length, stages: st.map((x) => x.path.join(' › ')), has: { build: /\b(make|cmake|gradle|mvn|npm run build|cargo build|go build|tsc|msbuild|ninja|bazel|setup\.py|pip install|npm ci|npm install|yarn)\b/i.test(text) || p.stages.some((s) => /build|compile/i.test(s.name || s.id || '')), test: /\b(pytest|unittest|jest|mocha|vitest|go test|cargo test|ctest|mvn test|gradle test|npm test|npm run test|make check|make test|rspec|phpunit|dotnet test)\b/i.test(text) || p.stages.some((s) => /test/i.test(s.name || s.id || '')), lint: /\b(eslint|flake8|ruff|pylint|golangci-lint|clippy|checkstyle|prettier|black|mypy|shellcheck|cppcheck|clang-tidy)\b/i.test(text) || p.stages.some((s) => /lint|static/i.test(s.name || s.id || '')), deploy: /\b(deploy|kubectl|helm|terraform|ansible|docker push|scp|rsync|aws s3|gcloud)\b/i.test(text) || p.stages.some((s) => /deploy|release|publish/i.test(s.name || s.id || '')), report: allSteps.some((x) => x.type === 'report') || /junit|upload-artifact|artifacts/i.test(JSON.stringify(p).slice(0, 20000)) },
+            shell_steps: shells.length,
+        };
+    }
+
+    // ---------- lint ----------
+    const SECRET_RES = [/(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)\s*[=:]\s*['"]?[A-Za-z0-9/+_=.-]{12,}/i, /AKIA[0-9A-Z]{16}/, /gh[pousr]_[A-Za-z0-9]{30,}/, /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, /xox[baprs]-[A-Za-z0-9-]{10,}/];
+    function lint(p, raw) {
+        const out = []; const add = (id, severity, where, message, fix) => out.push({ id, severity, where, message, fix });
+        const raws = String(raw || ''); const st = flatten(p);
+        const shells = [].concat(...st.map((x) => (x.s.steps || []).filter((s) => ['sh', 'bat', 'powershell'].includes(s.type)).map((s) => ({ where: x.path.join(' › '), cmd: s.cmd || '', dynamic: s.dynamic, s }))));
+        for (const s of shells) {
+            if (/\bcurl\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba)?sh\b|\bwget\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/.test(s.cmd)) add('curl-pipe-sh', 'high', s.where, '把網路上的腳本直接 pipe 給 shell 執行（curl … | sh）：來源被竄改就直接在 CI 上執行任意程式。', '先下載、驗證 checksum／簽章，再執行；或用固定版本的 package。');
+            if (/\bchmod\s+(?:-R\s+)?777\b/.test(s.cmd)) add('chmod-777', 'warn', s.where, 'chmod 777 讓所有人可讀寫執行。', '只給需要的權限（例如 755／644）。');
+            if (/\|\|\s*true\b/.test(s.cmd)) add('swallow-failure', 'warn', s.where, '「|| true」會吞掉失敗，之後的步驟會在壞掉的狀態下繼續。', '真的可以失敗的步驟才用，並寫清楚理由；測試、建置不要用。');
+            if (/\bsudo\b/.test(s.cmd)) add('sudo', 'info', s.where, '用到 sudo：CI agent 通常不一定有、或會改到共用機器。', '用容器（docker／container）隔離環境，或確認 agent 的權限政策。');
+            if (/\brm\s+-rf\s+(?:\/|\$HOME|~|\$\{?WORKSPACE\}?\/?\s*$)/.test(s.cmd)) add('rm-rf-dangerous', 'high', s.where, 'rm -rf 的目標看起來是根目錄、家目錄或整個 workspace。', '只刪明確的子資料夾，變數要加防呆（${VAR:?}）。');
+            if (/\b(?:echo|printf|cat)\b[^\n]*\$\{?[A-Z_]*(?:TOKEN|SECRET|PASSWORD|KEY)[A-Z_]*\}?/.test(s.cmd)) add('echo-secret', 'high', s.where, '把可能是機密的變數印到記錄裡。', '不要印；Jenkins 用 withCredentials 並確認遮蔽、GitHub 用 secrets（會自動遮蔽但輸出變形後仍會洩漏）。');
+            if (/\bset\s+\+e\b/.test(s.cmd)) add('set-plus-e', 'info', s.where, 'set +e 關掉了「出錯就停」。', '確認之後有檢查結束碼。');
+            for (const re of SECRET_RES) if (re.test(s.cmd)) { add('hardcoded-secret', 'high', s.where, '指令裡看起來有寫死的密碼／token／金鑰。', '改用 CI 的憑證機制（Jenkins credentials、GitHub secrets、GitLab CI variables masked），並立刻換掉已經外洩的值。'); break; }
+        }
+        for (const re of SECRET_RES) if (re.test(raws)) { if (!out.some((o) => o.id === 'hardcoded-secret')) add('hardcoded-secret', 'high', '(檔案)', 'pipeline 檔案裡看起來有寫死的密碼／token／金鑰。', '改用 CI 的憑證機制並換掉外洩的值。'); break; }
+        const sum = summarize(p);
+        if (!sum.has.test && p.stages.length) add('no-tests', 'warn', '(整體)', '這個 pipeline 沒有看到跑測試的階段或指令。', '加一個 test 階段（先看專案用什麼：pytest／npm test／go test／ctest…）。');
+        if (!p.stages.length) add('no-stages', 'high', '(整體)', '解析不到任何階段（stage／job）。', '檢查語法，或這是 scripted pipeline 但沒有 stage()。');
+        if (p.kind === 'jenkins') {
+            if (!p.agent && p.style === 'declarative') add('no-agent', 'high', '(整體)', '宣告式 pipeline 沒有 agent（沒有它不能執行）。', "加上 agent any 或指定 label／docker。");
+            if (p.agent === 'any') add('agent-any', 'info', '(整體)', "agent any：任何節點都可能執行，環境不固定。", '用 label 或 docker 固定環境，結果才可重現。');
+            if (p.style === 'declarative' && !p.options.timeout && !st.filter((x) => (x.s.steps || []).length).every((x) => x.s.timeout)) add('no-timeout', 'warn', '(整體)', '沒有設定 timeout：卡住的 build 會一直占著節點。', "options { timeout(time: 30, unit: 'MINUTES') }");
+            if (p.style === 'declarative' && !p.options.buildDiscarder) add('no-build-discarder', 'info', '(整體)', '沒有 buildDiscarder：舊的 build 記錄與產物會一直累積。', "options { buildDiscarder(logRotator(numToKeepStr: '30')) }");
+            if (p.style === 'declarative' && !Object.keys(p.post || {}).length && !st.some((x) => x.s.post)) add('no-post', 'info', '(整體)', '沒有 post 區塊：失敗時沒有通知、也不會保存測試報告。', 'post { always { junit "**/test-results/*.xml" } failure { … 通知 … } }');
+            if (sum.has.test && !sum.has.report) add('no-test-report', 'info', '(整體)', '有跑測試但沒有發佈測試報告（junit／archiveArtifacts），Jenkins 看不到失敗的測試是哪幾個。', "post { always { junit '**/build/test-results/**/*.xml' } }");
+            for (const x of st) if (x.s.parallel && x.s.failFast === undefined) add('parallel-no-failfast', 'info', x.path.join(' › '), 'parallel 沒有設 failFast：某個分支失敗後其他分支還會繼續跑完。', 'parallel { failFast true … }');
+            for (const x of st) if ((x.s.steps || []).some((s) => s.type === 'input') && !(x.s.steps || []).some((s) => s.type === 'wrapper' && s.name === 'timeout')) add('input-no-timeout', 'warn', x.path.join(' › '), 'input 沒有包在 timeout 裡：沒人按會永遠等下去。', "timeout(time: 1, unit: 'HOURS') { input … }");
+            if (!st.some((x) => (x.s.steps || []).some((s) => s.type === 'checkout')) && p.style === 'declarative' && !/checkout scm|git url/.test(raws)) add('no-checkout', 'info', '(整體)', '沒有明確的 checkout（宣告式 pipeline 預設會 checkout scm，若有 skipDefaultCheckout 就要自己做）。', null);
+        }
+        if (p.kind === 'github') {
+            if (!p.permissions) add('no-permissions', 'warn', '(整體)', '沒有設定 permissions：GITHUB_TOKEN 會用預設權限（可能是讀寫）。', '在最上層設 permissions: { contents: read }，需要寫入的 job 再單獨開。');
+            if (!p.concurrency) add('no-concurrency', 'info', '(整體)', '沒有 concurrency：同一個分支連續 push 會同時跑多份。', 'concurrency: { group: ${{ github.workflow }}-${{ github.ref }}, cancel-in-progress: true }');
+            if (p.triggers.includes('pull_request_target')) { const checksHead = st.some((x) => (x.s.steps || []).some((s) => s.type === 'uses' && /^actions\/checkout/.test(s.uses) && s.with && /head|pull_request/.test(JSON.stringify(s.with)))); add('pull-request-target', checksHead ? 'high' : 'warn', '(觸發條件)', 'pull_request_target 在「目標 repo 的權限」下執行' + (checksHead ? '，而且 checkout 了 PR 的程式碼——外部人員的 PR 就能執行任意程式並拿到 secrets。' : '；不要 checkout 或執行 PR 的程式碼。'), '改用 pull_request；真的需要時只做不執行 PR 程式碼的事（貼標籤、留言）。'); }
+            for (const x of st) {
+                if (!x.s.timeout) add('no-timeout', 'warn', x.s.id, 'job 沒有 timeout-minutes（預設 360 分鐘）。', 'timeout-minutes: 30');
+                if (x.s.continueOnError) add('continue-on-error', 'warn', x.s.id, 'continue-on-error: true：這個 job 失敗不會讓整體失敗。', '確認真的可以失敗。');
+                for (const s of x.s.steps || []) {
+                    if (s.continueOnError) add('continue-on-error', 'warn', x.s.id + ' › ' + (s.name || s.uses || 'run'), 'step 設了 continue-on-error: true：這一步失敗不會讓 job 失敗。', '確認真的可以失敗。');
+                    if (s.type === 'uses' && /^[^./][^@]*@(?:main|master|latest|develop)$/.test(s.uses)) add('unpinned-action', 'warn', x.s.id + ' › ' + s.uses, '第三方 action 指到會變動的分支（' + s.uses + '），上游被入侵或改版會直接影響你的 CI。', '釘到版本標籤，最好是完整 commit SHA。');
+                    else if (s.type === 'uses' && /^[^./][^@]*$/.test(s.uses) && !/^docker:/.test(s.uses)) add('unpinned-action', 'warn', x.s.id + ' › ' + s.uses, 'uses 沒有版本（@…）。', '加上 @v4 之類的版本。');
+                    if (s.type === 'sh' && /\$\{\{\s*(?:github\.event\.(?:issue|pull_request|comment|review|head_commit|commits|pages|workflow_run)[\w.\[\]*]*|github\.head_ref|inputs\.[\w-]+)\s*\}\}/.test(s.cmd || '')) add('script-injection', 'high', x.s.id + ' › ' + (s.name || 'run'), '在 run: 裡直接插入 ${{ github.event… }}／github.head_ref／inputs：標題、分支名稱等可以被外人控制，會變成 shell 注入。', '先放進 env:（env: TITLE: ${{ github.event.pull_request.title }}），run 裡用 "$TITLE"。');
+                }
+            }
+            const ids = new Set(p.stages.map((s) => s.id)); for (const s of p.stages) for (const n of s.needs) if (!ids.has(n)) add('needs-missing', 'high', s.id, 'needs 指到不存在的 job：' + n, '修正名稱。');
+        }
+        if (p.kind === 'gitlab') {
+            const known = new Set(p.stage_order); for (const j of p.stages) if (!known.has(j.stage)) add('unknown-stage', 'high', j.id, 'job 的 stage「' + j.stage + '」沒有出現在 stages 清單裡。', '把它加進 stages，或改 job 的 stage。');
+            for (const j of p.stages) {
+                if (!j.steps.length && !j.trigger && !j.extends) add('no-script', 'high', j.id, 'job 沒有 script。', '加上 script:。');
+                if (j.only || j.except) add('only-except', 'info', j.id, 'only／except 已不建議使用。', '改用 rules:。');
+                if (j.allowFailure === true) add('allow-failure', 'warn', j.id, 'allow_failure: true：失敗不會擋住 pipeline。', '確認真的可以失敗。');
+                if (!j.timeout) add('no-timeout', 'info', j.id, '沒有 timeout（用 runner／專案預設）。', 'timeout: 30 minutes');
+            }
+            const vars = Object.entries(p.variables || {}).filter(([k, v]) => /pass|secret|token|key/i.test(k) && typeof v === 'string' && v.length > 6 && !/^\$/.test(v)); vars.forEach(([k]) => add('hardcoded-secret', 'high', 'variables.' + k, '變數 ' + k + ' 看起來是寫死的機密。', '改在 CI/CD Settings 設成 masked／protected variable。'));
+        }
+        const rank = { high: 0, warn: 1, info: 2 }; return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
+    }
+
+    // ---------- 本機重現 ----------
+    const ACTION_HINT = [
+        [/^actions\/checkout@/, '（略過：本機已經有程式碼）'], [/^actions\/setup-node@/, (w) => '需要 Node.js ' + ((w && (w['node-version'] || w['node-version-file'])) || '（版本見 package.json engines／.nvmrc）')],
+        [/^actions\/setup-python@/, (w) => '需要 Python ' + ((w && w['python-version']) || '3.x')], [/^actions\/setup-go@/, (w) => '需要 Go ' + ((w && (w['go-version'] || w['go-version-file'])) || '見 go.mod')],
+        [/^actions\/setup-java@/, (w) => '需要 JDK ' + ((w && w['java-version']) || '17') + (w && w.distribution ? '（' + w.distribution + '）' : '')], [/^actions\/cache@/, '（略過：快取）'], [/^actions\/(upload|download)-artifact@/, '（略過：產物上傳／下載）'],
+        [/^(docker\/|codecov\/|coverallsapp\/)/, '（略過：需要特定服務）'], [/^dtolnay\/rust-toolchain|^actions-rs\/toolchain/, '需要 Rust toolchain（rustup）'],
+    ];
+    function localCommands(p) {
+        const out = [];
+        const emit = (name, steps, extra) => {
+            const cmds = []; const notes = []; if (extra && extra.note) notes.push(extra.note);
+            for (const s of steps || []) {
+                if (s.type === 'sh' && s.cmd) { if (s.dynamic) notes.push('「' + clip(s.cmd.split('\n')[0], 60) + '」含有變數／${{ }} 運算式，本機要換成實際值'); cmds.push({ cmd: s.cmd, cwd: s['working-directory'] || undefined, env: s.env || undefined, from: s.name || undefined, if: s.if || undefined }); }
+                else if (s.type === 'uses') { for (const [re, h] of ACTION_HINT) if (re.test(s.uses)) { const t = typeof h === 'function' ? h(s.with) : h; if (t && !t.startsWith('（略過')) notes.push(t); break; } if (!ACTION_HINT.some(([re]) => re.test(s.uses))) notes.push('用了 action ' + s.uses + '，沒有直接的本機對應，看它做什麼再手動處理'); }
+                else if (s.type === 'bat' || s.type === 'powershell') notes.push('Windows 專用步驟（' + s.type + '）：' + clip((s.cmd || '').split('\n')[0], 80));
+                else if (s.type === 'wrapper' && s.name === 'withCredentials') notes.push('用到 Jenkins 憑證：本機要自己提供對應的環境變數');
+            }
+            if (cmds.length || notes.length) out.push({ stage: name, commands: cmds, notes, env: extra && extra.env || undefined, image: extra && extra.image || undefined });
+        };
+        const rec = (s, path) => { const nm = path.concat(s.name || s.id).join(' › '); emit(nm, s.steps, { env: s.env, image: s.image || s.container, note: s.if ? '條件：' + s.if : undefined }); (s.children || []).forEach((c) => rec(c, path.concat(s.name || s.id))); };
+        p.stages.forEach((s) => rec(s, []));
+        return { global_env: p.env && Object.keys(p.env).length ? p.env : undefined, stages: out, tip: '照順序在「暫存工作區」用 run_command 一條一條跑；某一條失敗就是 CI 失敗的那一步，先在本機修好再上 patch。' };
+    }
+
+    // ---------- 樣板 ----------
+    function detectToolchain(files) {
+        const has = (re) => Object.keys(files || {}).some((p) => re.test(p)); const get = (re) => { const k = Object.keys(files || {}).find((p) => re.test(p)); return k ? String(files[k]) : ''; };
+        const tc = { lang: null, setup: null, install: [], build: [], test: [], lint: [], artifacts: [], notes: [] };
+        if (has(/(^|\/)package\.json$/)) {
+            let pj = {}; try { pj = JSON.parse(get(/(^|\/)package\.json$/)); } catch (_) { tc.notes.push('package.json 不是合法 JSON'); }
+            const sc = pj.scripts || {}; const lock = has(/yarn\.lock$/) ? 'yarn' : has(/pnpm-lock\.yaml$/) ? 'pnpm' : 'npm';
+            tc.lang = 'node'; tc.setup = { node: (pj.engines && pj.engines.node && (/(\d+)/.exec(pj.engines.node) || [])[1]) || '20' };
+            tc.install = [lock === 'npm' ? (has(/package-lock\.json$/) ? 'npm ci' : 'npm install') : lock === 'yarn' ? 'yarn install --frozen-lockfile' : 'pnpm install --frozen-lockfile'];
+            const run = (n) => (lock === 'npm' ? 'npm run ' + n : lock + ' ' + n);
+            if (sc.lint) tc.lint.push(run('lint')); if (sc.build) tc.build.push(run('build')); if (sc.test) tc.test.push(lock === 'npm' ? 'npm test' : lock + ' test'); else tc.notes.push('package.json 沒有 scripts.test');
+        } else if (has(/(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|requirements[^/]*\.txt|pytest\.ini|tox\.ini)$/)) {
+            tc.lang = 'python'; tc.setup = { python: '3.11' };
+            const pyproj = get(/pyproject\.toml$/); tc.install = has(/requirements\.txt$/) ? ['pip install -r requirements.txt'] : (pyproj || has(/setup\.py$/)) ? ['pip install -e .'] : [];
+            if (/\[tool\.ruff|ruff/.test(pyproj) || has(/ruff\.toml$/)) tc.lint.push('ruff check .'); else if (has(/\.flake8$|setup\.cfg$|tox\.ini$/) && /flake8/.test(get(/(\.flake8|setup\.cfg|tox\.ini)$/))) tc.lint.push('flake8');
+            if (/pytest/.test(pyproj + get(/requirements[^/]*\.txt$/) + get(/(pytest\.ini|tox\.ini)$/)) || has(/(^|\/)tests?\/.*test_.*\.py$|(^|\/)test_.*\.py$/)) { tc.test.push('python -m pytest -q'); if (!/pytest/.test(pyproj + get(/requirements[^/]*\.txt$/))) tc.install.push('pip install pytest'); } else tc.test.push('python -m unittest discover');
+        } else if (has(/(^|\/)go\.mod$/)) { tc.lang = 'go'; tc.setup = { go: (/^go\s+(\d+\.\d+)/m.exec(get(/go\.mod$/)) || [])[1] || '1.22' }; tc.build = ['go build ./...']; tc.test = ['go test ./...']; tc.lint = ['go vet ./...']; }
+        else if (has(/(^|\/)Cargo\.toml$/)) { tc.lang = 'rust'; tc.setup = { rust: 'stable' }; tc.build = ['cargo build --locked']; tc.test = ['cargo test --locked']; tc.lint = ['cargo clippy -- -D warnings']; }
+        else if (has(/(^|\/)pom\.xml$/)) { tc.lang = 'java-maven'; tc.setup = { java: '17' }; tc.build = ['mvn -B -DskipTests package']; tc.test = ['mvn -B test']; tc.artifacts = ['target/*.jar']; }
+        else if (has(/(^|\/)(build\.gradle|build\.gradle\.kts)$/)) { tc.lang = 'java-gradle'; tc.setup = { java: '17' }; const g = has(/(^|\/)gradlew$/) ? './gradlew' : 'gradle'; tc.build = [g + ' build -x test']; tc.test = [g + ' test']; tc.artifacts = ['build/libs/*.jar']; }
+        else if (has(/(^|\/)CMakeLists\.txt$/)) { tc.lang = 'cpp-cmake'; tc.build = ['cmake -S . -B build -DCMAKE_BUILD_TYPE=Release', 'cmake --build build -j']; tc.test = /enable_testing|add_test/.test(get(/CMakeLists\.txt$/)) ? ['ctest --test-dir build --output-on-failure'] : []; if (!tc.test.length) tc.notes.push('CMakeLists.txt 沒有 enable_testing／add_test'); }
+        else if (has(/(^|\/)Makefile$/)) { const mk = get(/Makefile$/); tc.lang = 'make'; tc.build = ['make']; if (/^test\s*:/m.test(mk)) tc.test = ['make test']; else if (/^check\s*:/m.test(mk)) tc.test = ['make check']; else tc.notes.push('Makefile 沒有 test／check 目標'); }
+        return tc;
+    }
+
+    const SETUP_GHA = { node: (v) => '      - uses: actions/setup-node@v4\n        with:\n          node-version: ' + v + '\n          cache: npm\n', python: (v) => '      - uses: actions/setup-python@v5\n        with:\n          python-version: "' + v + '"\n          cache: pip\n', go: (v) => '      - uses: actions/setup-go@v5\n        with:\n          go-version: "' + v + '"\n', java: (v) => '      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: ' + v + '\n', rust: () => '      - uses: dtolnay/rust-toolchain@stable\n' };
+    function scaffold(kind, tc, o) {
+        o = o || {}; const branch = o.branch || 'main'; const cmds = (name, list) => (list || []).map((c) => ({ name, c }));
+        const steps = [].concat(cmds('Install', tc.install), cmds('Lint', tc.lint), cmds('Build', tc.build), cmds('Test', tc.test));
+        if (!steps.length) throw new Error('偵測不到建置或測試指令，沒辦法產生有意義的 pipeline（先確認專案的工具鏈）');
+        if (kind === 'github') {
+            let y = 'name: CI\n\non:\n  push:\n    branches: [' + branch + ']\n  pull_request:\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:\n  build-test:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - uses: actions/checkout@v4\n';
+            for (const [k, v] of Object.entries(tc.setup || {})) if (SETUP_GHA[k]) y += SETUP_GHA[k](v);
+            for (const s of steps) y += '      - name: ' + s.name + '\n        run: ' + (s.c.includes('\n') ? '|\n          ' + s.c.split('\n').join('\n          ') : s.c) + '\n';
+            if (tc.artifacts && tc.artifacts.length) y += '      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: artifacts\n          path: ' + tc.artifacts.join('\n            ') + '\n';
+            return y;
+        }
+        if (kind === 'gitlab') {
+            const img = { node: 'node:' + ((tc.setup || {}).node || '20'), python: 'python:' + ((tc.setup || {}).python || '3.11'), go: 'golang:' + ((tc.setup || {}).go || '1.22'), rust: 'rust:latest', 'java-maven': 'maven:3-eclipse-temurin-17', 'java-gradle': 'gradle:8-jdk17', 'cpp-cmake': 'gcc:13', make: 'gcc:13' }[tc.lang] || 'alpine:3.20';
+            let y = 'stages: [build, test]\n\ndefault:\n  image: ' + img + '\n  timeout: 30 minutes\n\n';
+            if (tc.install.length || tc.build.length || tc.lint.length) y += 'build:\n  stage: build\n  script:\n' + [].concat(tc.install, tc.lint, tc.build).map((c) => '    - ' + c).join('\n') + '\n' + (tc.artifacts.length ? '  artifacts:\n    paths: [' + tc.artifacts.join(', ') + ']\n' : '') + '\n';
+            if (tc.test.length) y += 'test:\n  stage: test\n  script:\n' + [].concat(tc.install, tc.test).map((c) => '    - ' + c).join('\n') + '\n  rules:\n    - if: $CI_PIPELINE_SOURCE == "merge_request_event"\n    - if: $CI_COMMIT_BRANCH == "' + branch + '"\n';
+            return y;
+        }
+        if (kind === 'jenkins') {
+            const q = (s) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            const stage = (name, list) => (list && list.length ? "        stage('" + name + "') {\n            steps {\n" + list.map((c) => "                sh '" + q(c) + "'\n").join('') + '            }\n        }\n' : '');
+            let j = "pipeline {\n    agent { label '" + (o.label || 'linux') + "' }\n    options {\n        timeout(time: 30, unit: 'MINUTES')\n        timestamps()\n        disableConcurrentBuilds()\n        buildDiscarder(logRotator(numToKeepStr: '30'))\n    }\n    stages {\n        stage('Checkout') {\n            steps { checkout scm }\n        }\n";
+            j += stage('Install', tc.install) + stage('Lint', tc.lint) + stage('Build', tc.build) + stage('Test', tc.test);
+            j += '    }\n    post {\n        always {\n' + (tc.test.length ? "            junit allowEmptyResults: true, testResults: '**/test-results/**/*.xml,**/surefire-reports/*.xml,**/build/test-results/**/*.xml'\n" : '') + (tc.artifacts.length ? "            archiveArtifacts artifacts: '" + tc.artifacts.join(',') + "', allowEmptyArchive: true\n" : '') + "        }\n        failure {\n            echo 'Build failed: ${env.BUILD_URL}'\n        }\n    }\n}\n";
+            return j;
+        }
+        throw new Error('kind 必須是 jenkins／github／gitlab');
+    }
+    const PATHS = { jenkins: 'Jenkinsfile', github: '.github/workflows/ci.yml', gitlab: '.gitlab-ci.yml' };
+
+    return { detect, parse, summarize, lint, localCommands, detectToolchain, scaffold, PATHS, scanCode };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPipeline;
+})();
+/* PIPELINE-END */
 /* EXPLAIN-BEGIN */
 const FaExplain = (function () {
 const holder = {};
@@ -17051,7 +17820,7 @@ const ADVANCED_SETTINGS_GROUPS = {
     desktop: { label: '桌面程式/單機', cats: [], visible: false },
 };
 // 工程模式（Configure 視窗左下角的勾選）沒打勾時藏起來的設定頁：一般使用者不需要動、預設值就夠用的那些
-const ADVANCED_ENGINEERING_CATS = new Set(['llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits']);
+const ADVANCED_ENGINEERING_CATS = new Set(['llm-sampling', 'llm-debug', 'subagent', 'voice', 'multimedia', 'youtube', 'offline-trainer', 'offline-models', 'domains', 'functions', 'terminal', 'limits', 'ci-connections']);
 
 // tw_stock_db客製: 2026-09-20——Chrome擴充功能檔案的後備來源（網頁部署目錄抓不到、或桌面版file://時使用）。
 // tw_stock_db客製: 2026-09-20——啟用瀏覽器控制時，這些工具會被注入「所有」子agent（程式設計/研究/網路搜尋…），
@@ -22354,6 +23123,7 @@ class FloatingAssistant {
             ttsApiEnabled: true,
             // 工程模式（Configure 左下角）：沒打勾時，LLM Debug、語音、多媒體、YouTube、離線訓練器、離線模型管理、Domain、自訂函式、終端機、效能與限制這些頁不顯示
             engineeringMode: false,
+            ciConnections: [], // CI/CD 連線（gerrit／github／jenkins）：[{ name, kind, baseUrl, user, token }]；token 只給主行程的 HTTP 用，不會給模型看
             advancedDialogSize: null,   // Configure 視窗被拖曳調整過的大小 { w, h }（像素）；null＝預設大小
             advancedSidebarWidth: 0,    // Configure 左邊欄的寬度（像素）；0＝依內容自動
             // 離線模型（圖像、文字）都是用到才載入（lazy），需要而沒下載時直接在背景下載、不跳確認視窗
@@ -23574,6 +24344,7 @@ class FloatingAssistant {
             // 尊重使用者自己的選擇。
             ttsApiEnabled: raw.ttsApiEnabled !== false,
             engineeringMode: raw.engineeringMode === true,
+            ciConnections: Array.isArray(raw.ciConnections) ? raw.ciConnections.filter((c) => c && typeof c === 'object' && /^(gerrit|github|jenkins)$/.test(c.kind) && typeof c.baseUrl === 'string').slice(0, 20).map((c) => ({ name: String(c.name || '').slice(0, 40), kind: c.kind, baseUrl: String(c.baseUrl).trim().slice(0, 300), user: String(c.user || '').slice(0, 120), token: String(c.token || '').slice(0, 400) })) : [],
             advancedDialogSize: (raw.advancedDialogSize && Number(raw.advancedDialogSize.w) >= 300 && Number(raw.advancedDialogSize.h) >= 200) ? { w: Math.round(Number(raw.advancedDialogSize.w)), h: Math.round(Number(raw.advancedDialogSize.h)) } : null,
             advancedSidebarWidth: (() => { const n = Math.round(Number(raw.advancedSidebarWidth)); return Number.isFinite(n) && n >= 90 && n <= 600 ? n : 0; })(),
             offlineSilentDownload: raw.offlineSilentDownload !== false,
@@ -32627,6 +33398,50 @@ ${fnData.code}
         return { ok: false, error: 'action 要是 list／export／import／add_api／add_note／add_signature／add_idiom／remove' };
     }
     // ===== 設定 → AI → 專案索引：上限、已建立索引的專案、開始／停止／匯出 =====
+    // ===== CI/CD 連線設定頁（gerrit／github／jenkins 工具用；只有桌面版有 window.desktopAPI.ci）=====
+    // token 存在本機設定裡、只由主行程的 HTTP 帶出去；工具的回傳與模型看到的內容都不含 token。
+    _ciRegisterPane() {
+        if (this._ciPaneRegistered || !(typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.ci)) return;
+        const root = document.createElement('div'); root.id = 'ai-ci-pane'; root.style.cssText = 'font-size:13px; line-height:1.5;';
+        this._ciPaneRoot = root; this._ciPaneRegistered = true;
+        this.registerAdvancedSettingsTab('ai', 'ci-connections', 'CI/CD 連線（Gerrit／GitHub／Jenkins）', root);
+        const save = () => this._saveAdvancedSettings();
+        root.addEventListener('change', (ev) => {
+            const t = ev.target; const i = Number(t.dataset.ciIdx); const c = (this.advancedSettings.ciConnections || [])[i]; if (!c || !t.dataset.ciField) return;
+            c[t.dataset.ciField] = t.dataset.ciField === 'baseUrl' ? t.value.trim().replace(/\/+$/, '') : t.value; save();
+        });
+        root.addEventListener('click', async (ev) => {
+            const b = ev.target.closest('button'); if (!b) return; const list = this.advancedSettings.ciConnections = this.advancedSettings.ciConnections || [];
+            if (b.dataset.ci === 'add') { list.push({ name: '', kind: b.dataset.kind || 'gerrit', baseUrl: '', user: '', token: '' }); save(); this._ciRenderPane(); return; }
+            const i = Number(b.dataset.ciIdx);
+            if (b.dataset.ci === 'del') { list.splice(i, 1); save(); this._ciRenderPane(); return; }
+            if (b.dataset.ci === 'test') {
+                const c = list[i]; const out = root.querySelector('#ai-ci-out-' + i); if (out) out.textContent = '測試中…';
+                try { const r = await this.tools.ci_connections.callback.call(this, JSON.stringify({ action: 'test', connection: c.name || c.baseUrl })); const j = JSON.parse(r); const x = (j.results || [])[0]; if (out) { out.textContent = x ? (x.reachable ? '✅ 連得上（' + x.status + '）' + (x.detail ? '：' + x.detail : '') : '⚠️ ' + (x.detail || '連不上') + (x.hint ? '　' + x.hint : '')) : '⚠️ 先填「名稱」或「網址」並離開欄位（儲存）再測試'; } }
+                catch (e) { if (out) out.textContent = '⚠️ ' + String((e && e.message) || e); }
+            }
+        });
+        this._ciRenderPane();
+        const side = document.getElementById('ai-advanced-sidebar');
+        if (side) side.addEventListener('click', (ev) => { const c = ev.target.closest('.ai-advanced-cat'); if (c && c.dataset.cat === 'ci-connections') this._ciRenderPane(); });
+    }
+    _ciRenderPane() {
+        const root = this._ciPaneRoot; if (!root) return;
+        const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const inp = 'padding:5px 8px; border-radius:6px; border:1px solid #475569; background:#0f172a; color:#f8fafc; font-size:12px;'; const btn = 'padding:3px 9px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:12px;';
+        const list = this.advancedSettings.ciConnections || [];
+        const hint = { gerrit: '網址：Gerrit 首頁（例如 https://gerrit.example.com）。使用者＋HTTP 密碼：Gerrit 設定頁 → HTTP Credentials 產生（不是登入密碼）。公開唯讀的 Gerrit 不用填。', github: '網址：github.com 或 GitHub Enterprise 首頁。使用者可留空；token：Personal access token（至少 repo 唯讀＋Actions 唯讀）。公開 repo 不填也能查（每小時 60 次）。', jenkins: '網址：Jenkins 首頁（例如 https://ci.example.com/jenkins）。使用者＋API token：Jenkins 個人設定 → Security → API Token（不是登入密碼）。' };
+        root.innerHTML = '<div style="color:#94a3b8; margin-bottom:8px;">給 <code>gerrit</code>、<code>github_ci</code>、<code>jenkins</code> 工具用的連線。token 只存在這台電腦、只由主程式的網路層帶出去，<b>AI 看不到</b>；留 review、觸發 build、重跑 job 這類寫入動作每次都會跳確認框。公開的服務（GitHub 公開 repo、gerrit-review.googlesource.com、ci.jenkins.io）不用設定也能唯讀查詢。</div>'
+            + list.map((c, i) => '<div style="border:1px solid #334155; border-radius:8px; padding:8px 10px; margin:8px 0;"><div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">'
+                + '<select data-ci-idx="' + i + '" data-ci-field="kind" style="' + inp + '">' + ['gerrit', 'github', 'jenkins'].map((k) => '<option value="' + k + '"' + (c.kind === k ? ' selected' : '') + '>' + k + '</option>').join('') + '</select>'
+                + '<input data-ci-idx="' + i + '" data-ci-field="name" value="' + esc(c.name) + '" placeholder="名稱（例如 work-gerrit）" style="' + inp + ' width:150px;">'
+                + '<input data-ci-idx="' + i + '" data-ci-field="baseUrl" value="' + esc(c.baseUrl) + '" placeholder="https://…" style="' + inp + ' flex:1; min-width:220px;">'
+                + '<input data-ci-idx="' + i + '" data-ci-field="user" value="' + esc(c.user) + '" placeholder="使用者" style="' + inp + ' width:120px;">'
+                + '<input type="password" autocomplete="off" data-ci-idx="' + i + '" data-ci-field="token" value="' + esc(c.token) + '" placeholder="token／密碼" style="' + inp + ' width:150px;">'
+                + '<button style="' + btn + '" data-ci="test" data-ci-idx="' + i + '">測試</button><button style="' + btn + '" data-ci="del" data-ci-idx="' + i + '">刪除</button></div>'
+                + '<div style="color:#94a3b8; font-size:12px; margin-top:4px;">' + esc(hint[c.kind] || '') + '</div><div id="ai-ci-out-' + i + '" style="font-size:12px; margin-top:3px;"></div></div>').join('')
+            + '<div style="display:flex; gap:6px; margin-top:8px;"><button style="' + btn + '" data-ci="add" data-kind="gerrit">＋ Gerrit</button><button style="' + btn + '" data-ci="add" data-kind="github">＋ GitHub</button><button style="' + btn + '" data-ci="add" data-kind="jenkins">＋ Jenkins</button></div>';
+    }
     _riRegisterPane() {
         if (this._riPaneRegistered) return;
         const root = document.createElement('div');
@@ -65294,6 +66109,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { this._otRegisterPane(); } catch (e) { console.warn('離線訓練器分頁註冊失敗', e); }
         try { this._omRegisterPane(); } catch (e) { console.warn('離線模型管理分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
+        try { this._ciRegisterPane(); } catch (e) { console.warn('CI/CD 連線分頁註冊失敗', e); }
         const inputText = document.getElementById('ai-input-text');
         const suggestBar = document.getElementById('ai-autocomplete-bar');
         const suggestText = document.getElementById('ai-suggest-text');

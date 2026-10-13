@@ -210,3 +210,33 @@ xterm.js跟Emscripten/WASI終端機程式」的現成bridge），概念上是真
   問答時由程式先查結構、小模型只負責措辭與選擇題，不要讓 0.6B 自己硬讀整份原始碼（跟離線食譜模式同一個思路）。
 - 完成狀態與限制見 [DESIGN.project-index.md](DESIGN.project-index.md) §19、§20：已做大索引分段匯出、頁內「🧠 解釋」（語法樹＋函式語意＋離線模型）、批次更新與資料夾說明。**還沒做**：模型檔存進專案 `.floating-assistant/models/`（目前只存瀏覽器快取）、真的 `showDirectoryPicker` 手動走一次、100 MB 以上與 7 萬檔專案的實測。
 - 要先確認的事：HTML 單檔大小（內嵌 sqlite wasm 與小模型載入器）、網頁版與桌面版的 fap 授權流程差異、模型下載來源（HuggingFace）在 file:// 下能不能用。
+
+---
+
+# TODO：本機 `/edge-tts` 的 Sec-MS-GEC v2 簽章（先放著，目前夠用）
+
+2026-10-14 評估：本機 proxy 的 `/edge-tts`（`edge-tts.js`）路由、驗證、CORS 都在，但實際合成會被 Microsoft 擋（握手 **403**）。
+同一台機器上最新的參考函式庫 `edge-tts 7.3.1` 能合成，差別是協定改了：
+
+- [ ] `Sec-MS-GEC-Version` 現在是 `2-143.0.3650.75`（我們送 `1-…`）。
+- [ ] `Sec-MS-GEC` 改成 v2：`<16 hex>-<64 hex>`，由自訂的 SHA-256＋CS64 雜湊算出（參考 `edge_tts/drm.py` 的 `generate_sec_ms_gec_v2`，約 250 行）。移植後用 Python 在固定時間戳下的輸出當測試向量驗證。
+- [ ] 403 時用回應的 `Date` 標頭校正時鐘差再重試一次（`DRM.handle_client_response_error`）。
+- [ ] `edge-tts.js` 單元測試（簽章測試向量、驗證、錯誤路徑）。
+- [ ] 授權：參考實作是 LGPL-3.0，直接移植要補 `THIRD-PARTY-NOTICES.md`，需先決定能不能接受。
+- [ ] 使用者那份 Cloudflare `worker.js` 用的也是舊的 v1 公式，之後可能一樣失效（不在這個 repo）。
+
+目前的替代：離線 Kokoro 中文語音已加上（使用者自己加的），線上中文語音失敗時會退到它，所以不急。
+安裝版若根路徑回 404，多半是 9/21（`b903975d`）之前沒有 `/edge-tts` 路由的舊版；本機 proxy 的埠是隨機的，repo 裡沒有 `41877`。
+
+---
+
+# TODO：程式設計 domain 的 patch 小工具與 CI/CD（2026-10-14）
+
+已完成並驗證的內容見 [DESIGN.coding-ci.md](DESIGN.coding-ci.md)。還沒做：
+
+- [ ] 用**真的需要登入**的 Gerrit／GitHub／Jenkins 實測一次（認證標頭、Gerrit `/a/` 前綴、Jenkins crumb、反向代理／SSO 環境）；目前只驗過公開服務與本機假伺服器。
+- [ ] 真實弱模型走完整修 bug 流程（提示詞遵從度）；路由器是否把「修 bug／CI 失敗」導向 `coding`。
+- [ ] Gerrit：回覆個別留言（reply／resolve）、`rebase`／`submit` 這類 review 動作；GitLab／Zuul／Azure DevOps 的連線。
+- [ ] 網頁版的 `coding_edit`／`coding_patch_tool`（目前只有桌面版）。
+- [ ] Jenkinsfile 解析：動態 stage、`@Library` 共享函式庫。
+- [ ] 設定頁「CI/CD 連線」目前只在工程模式顯示；若要常駐可以從 `ADVANCED_ENGINEERING_CATS` 拿掉。

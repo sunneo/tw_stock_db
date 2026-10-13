@@ -25,7 +25,7 @@
 //     `execFile`（陣列參數、不經過shell）多了shell注入的風險面，是使用者
 //     明確要求、拿confirm對話框當唯一防線換來的能力，不是預設偷偷放寬。
 "use strict";
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol, net } = require("electron");
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 const path = require("path");
 const os = require("os");
@@ -62,6 +62,9 @@ const LIVE_PATCH_MAIN_FILES = [
   "edge-tts.js",
   "cli-format.js",
   "coding-workspace.js",
+  "coding-edit.js",
+  "coding-tools.js",
+  "ci-fetch.js",
   "browser-control-server.js",
   "sqlite-engine.js",
   "fsx-sync.js",
@@ -1167,6 +1170,10 @@ ipcMain.handle("fa:git:applyPatch", async (_evt, { cwdAbs, patch, checkOnly, str
   }
 });
 
+// tw_stock_db客製: 2026-10-14——coding_edit（搜尋取代／正規表示式取代，回真正的diff）與coding_patch_tool（隨時準備的小腳本上patch），見coding-tools.js。
+require("./coding-tools.js").register(ipcMain, { execConfirmGate });
+// tw_stock_db客製: 2026-10-14——CI/CD 連線（gerrit／github_ci／jenkins 工具）的 HTTP 請求，見ci-fetch.js。寫入動作一律跳原生確認框。
+require("./ci-fetch.js").register(ipcMain, { net, dialog, BrowserWindow });
 // tw_stock_db客製: 2026-09-21——coding domain暫存工作區，見coding-workspace.js。
 ipcMain.handle("fa:codingws:open", async (_e, a = {}) => codingWs.openWorkspace({ sourceAbs: a.sourceAbs, subpath: a.subpath }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));
 ipcMain.handle("fa:codingws:status", async (_e, a = {}) => codingWs.workspaceStatus({ workspaceAbs: a.workspaceAbs }).catch((err) => ({ ok: false, error: String((err && err.message) || err) })));

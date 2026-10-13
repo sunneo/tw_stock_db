@@ -97,6 +97,13 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     regenerateToken: () => ipcRenderer.invoke("fa:bc:regenerateToken"),
     setEnabled: (on) => ipcRenderer.invoke("fa:bc:setEnabled", !!on),
   },
+  ci: {
+    fetch: (opts) => ipcRenderer.invoke("fa:ci:fetch", opts),
+  },
+  codingTools: {
+    edit: (cwdAbs, opts) => ipcRenderer.invoke("fa:codingtools:edit", { cwdAbs, ...(opts || {}) }),
+    script: (cwdAbs, opts) => ipcRenderer.invoke("fa:codingtools:script", { cwdAbs, ...(opts || {}) }),
+  },
   git: {
     applyPatch: (cwdAbs, patch, opts) => ipcRenderer.invoke("fa:git:applyPatch", { cwdAbs, patch, ...(opts || {}) }),
     inspect: (cwdAbs, mode, opts) => ipcRenderer.invoke("fa:git:inspect", { cwdAbs, mode, ...(opts || {}) }),
