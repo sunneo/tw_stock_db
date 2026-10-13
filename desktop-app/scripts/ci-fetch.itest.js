@@ -1,5 +1,6 @@
 'use strict';
 // ci-fetch.js：本機 HTTP 伺服器測試（讀取上限、tail、重新導向不帶 Authorization、寫入確認、逾時）
+if (typeof fetch === 'undefined') { console.log('0 passed, 0 failed [] (略過：這個 Node 沒有 fetch，需要 Node 18 以上)'); process.exit(0); }
 const assert = require('assert'), http = require('http');
 const { doFetch } = require('../ci-fetch.js');
 let ok = 0; const bad = []; const q = []; const t = (n, f) => q.push([n, f]);
