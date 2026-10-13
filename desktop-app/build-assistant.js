@@ -63,6 +63,8 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "browser-control-server.js",
   "sqlite-engine.js",
   "fsx-sync.js",
+  "main-ext.js",
+  "preload.js", // 預載腳本（跟 main.js 的 LIVE_PATCH_ALLOWED_FILES 同步）
 ];
 
 async function main() {

@@ -40,6 +40,7 @@
       "browser-control-server.js",
       "sqlite-engine.js",
       "fsx-sync.js",
+      "main-ext.js",
       "coding-workspace.js",
       "build-config.json",
       "renderer/**/*",

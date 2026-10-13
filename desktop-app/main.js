@@ -40,8 +40,9 @@ const { execFile, spawn } = require("child_process");
 // 一個Module載入攔截：userData/live-patch/裡有通過完整性驗證的覆蓋版本
 // 就優先載入覆蓋版本，否則照舊載入安裝包內建的。因為模組是啟動時載入、
 // 已經在記憶體執行的程式碼無法熱抽換，這類檔案的更新要等**下次啟動**才
-// 生效（renderer前端仍是套用後立即生效）。main.js/preload.js本身是這套
-// 機制的入口，不在白名單內，還是只能靠重新安裝更新。
+// 生效（renderer前端仍是套用後立即生效）。main.js本身是這套機制的入口，
+// 不在白名單內，還是只能靠重新安裝更新——所以新的主行程 IPC 一律寫在
+// main-ext.js（白名單內）；預載腳本 preload.js 也在白名單內（見resolvePreloadPath）。
 //
 // 攔截點是Module._extensions[".js"]：filename維持原本的安裝路徑，只把
 // 「編譯用的原始碼」換成覆蓋版本——所以模組裡的相對require()（例如
@@ -64,6 +65,7 @@ const LIVE_PATCH_MAIN_FILES = [
   "browser-control-server.js",
   "sqlite-engine.js",
   "fsx-sync.js",
+  "main-ext.js",
 ];
 const mainOverlaySources = (() => {
   const overlays = new Map();
@@ -103,6 +105,42 @@ if (mainOverlaySources.size > 0) {
     return originalJsLoader(mod, filename);
   };
   console.log(`[live-patch] 主行程模組使用覆蓋版本：${[...mainOverlaySources.keys()].map((f) => path.basename(f)).join("、")}`);
+}
+
+// 預載腳本（preload.js，window.desktopAPI 的橋接）也可以 live-update：視窗建立時（＝下次啟動）改用 userData/live-patch/preload.js——
+// 條件跟主行程模組一樣（state.json 記的 md5 對得上、建立在同一個基準版本上），另外多一道保險：覆蓋版若讓 window.desktopAPI 沒有出現
+// （壞掉的 preload 會讓整個 app 沒有桌面功能），視窗載入完會偵測到、在 live-patch/preload.bad 記下那個版本的 md5、自動重啟退回內建版；
+// 之後同一個壞版本不會再被採用，等下一個新版本（md5 不同）才會再試。
+function resolvePreloadPath() {
+  const builtin = path.join(__dirname, "preload.js");
+  if (process.env.FA_DISABLE_MAIN_OVERLAY === "1") return { path: builtin, overlayMd5: null };
+  try {
+    const fsSync = require("fs");
+    const dir = path.join(app.getPath("userData"), "live-patch");
+    const state = JSON.parse(fsSync.readFileSync(path.join(dir, "state.json"), "utf8"));
+    const baseline = JSON.parse(fsSync.readFileSync(path.join(__dirname, "renderer", "update-manifest.json"), "utf8"));
+    if (!state || state.baselineVersion !== (baseline.baseVersion || app.getVersion()) || !state.files) return { path: builtin, overlayMd5: null };
+    const expected = state.files["preload.js"];
+    if (!expected || expected === (baseline.files || {})["preload.js"]) return { path: builtin, overlayMd5: null };
+    const file = path.join(dir, "preload.js");
+    const md5 = crypto.createHash("md5").update(fsSync.readFileSync(file)).digest("hex");
+    if (md5 !== expected) return { path: builtin, overlayMd5: null };
+    let bad = ""; try { bad = fsSync.readFileSync(path.join(dir, "preload.bad"), "utf8").trim(); } catch (_) { /* 沒有就是沒壞過 */ }
+    if (bad === md5) return { path: builtin, overlayMd5: null };
+    return { path: file, overlayMd5: md5 };
+  } catch (_) { return { path: builtin, overlayMd5: null }; }
+}
+// 視窗載入完成後檢查預載腳本有沒有把 window.desktopAPI 掛起來；用了覆蓋版卻沒有 → 記下壞版本並重啟（下次會退回內建版）
+function guardOverlayPreload(win, overlayMd5) {
+  if (!overlayMd5) return;
+  win.webContents.once("did-finish-load", async () => {
+    let ok = false;
+    try { ok = (await win.webContents.executeJavaScript("typeof window.desktopAPI === 'object' && window.desktopAPI !== null")) === true; } catch (_) { ok = false; }
+    if (ok) return;
+    try { require("fs").writeFileSync(path.join(app.getPath("userData"), "live-patch", "preload.bad"), overlayMd5); } catch (_) { /* 寫不了也還是要重啟 */ }
+    console.error("[live-patch] 覆蓋版 preload.js 沒有掛出 window.desktopAPI，已標記為壞版本並重新啟動（改用安裝包內建版）");
+    app.relaunch(); app.exit(0);
+  });
 }
 
 const { startLocalProxy, createInProcessFetchHandler } = require("./local-proxy.js");
@@ -561,117 +599,15 @@ ipcMain.handle("fa:fs:remove", async (_evt, { rootId, relPath, recursive }) => {
   return true;
 });
 
-// ---------- IPC: raw filesystem（完全不做root範圍檢查，2026-09-15使用者 ----------
-// 明確要求「桌面版不應該有任何限制」——這組handler直接吃使用者/AI給的
-// 絕對路徑，不透過fap_*那套「先授權root、再用相對路徑」的模型，唯一的
-// 邊界就是OS本身的檔案權限（這個Electron process的執行帳號有沒有權限碰
-// 那個路徑）。跟fa:fs:*（root-scoped）並存，不是取代——Advance Settings
-// 「檔案存取管理」清單/既有fap_*工具仍然是原本的授權模型，這組是額外提供
-// 給desktop_ops domain的無限制工具，讀寫都不需要先在roots.json登記。
-function detectLikelyBinary(buf) {
-  // 簡單啟發式：前8KB內出現NUL byte就視為二進位——文字檔案(含UTF-8多語言
-  // 內容)幾乎不會有NUL byte，這是業界常見(例如git/diff)判斷二進位的方式。
-  const sample = buf.subarray(0, 8192);
-  for (let i = 0; i < sample.length; i++) {
-    if (sample[i] === 0) return true;
-  }
-  return false;
-}
-
-// tw_stock_db客製: 2026-09-26使用者實測回報——弱模型把路徑講成 C:\\Users\\...
-// （JSON跳脫被重複套用，實際字串變成連續兩個反斜線），子agent照樣拿去讀就
-// 「目錄不存在」，AI還誤以為檔案真的不在，整個任務卡死。Windows下路徑分隔字元
-// 連續多個反斜線本來就沒有意義（開頭的UNC路徑除外），一律收斂成單一個，
-// 也順手拿掉AI常多加的一對引號。
-function rawFsPath(p) {
-  let s = String(p || "").trim().replace(/^(["'])(.*)\1$/, "$2");
-  if (process.platform === "win32") {
-    const unc = /^\\\\(?=[^\\])/.test(s) ? "\\\\" : "";
-    s = unc + s.slice(unc.length).replace(/\\{2,}/g, "\\");
-  }
-  return s;
-}
-
-ipcMain.handle("fa:rawfs:stat", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  const st = await fs.stat(target);
-  return { path: target, isDirectory: st.isDirectory(), isFile: st.isFile(), size: st.size, mtimeMs: st.mtimeMs };
-});
-
 // SQLite引擎（見sqlite-engine.js）：node:sqlite直接開磁碟上的真實檔案，記憶體與資料庫大小無關；路徑規則同rawfs（絕對路徑，不做root檢查）。
 // 終端機 /mnt/<label> 的同步檔案後端（fsx-sync.js）：shell 的檔案系統是同步的，桌面版直接在主行程用 fs.*Sync，渲染行程用 sendSync 呼叫
 let fsxRootsCache = { at: 0, list: [] };
 require("./fsx-sync.js").register(ipcMain, { find: (id) => { try { if (Date.now() - fsxRootsCache.at > 1500) fsxRootsCache = { at: Date.now(), list: JSON.parse(require("fs").readFileSync(ROOTS_FILE(), "utf8")) }; return fsxRootsCache.list.find((r) => r.id === id) || null; } catch (_) { return null; } } });
+// 「桌面版無限制」的 raw filesystem IPC（fa:rawfs:*）與 rawFsPath 在 main-ext.js：它在 live-update 白名單裡，
+// 之後要新增或修改這類 IPC 只要發 patch（下次啟動生效），不用重新安裝。main.js 本身（入口）仍然只能靠重新安裝更新，所以新的 IPC 一律寫進 main-ext.js。
+const { rawFsPath } = require("./main-ext.js").register(ipcMain, { fs, path });
 const sqliteEngine = require("./sqlite-engine.js").register(ipcMain, { resolvePath: (p) => path.resolve(rawFsPath(p)) });
 app.on("before-quit", () => { try { sqliteEngine.closeAll(); } catch (_) { /* 退出時盡力關閉 */ } });
-
-ipcMain.handle("fa:rawfs:readdir", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  const entries = await fs.readdir(target, { withFileTypes: true });
-  return Promise.all(entries.map(async (e) => {
-    const base = { name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() };
-    try {
-      const st = await fs.stat(path.join(target, e.name));
-      return { ...base, size: st.size, mtimeMs: st.mtimeMs };
-    } catch (_) {
-      return base;
-    }
-  }));
-});
-
-ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  const buf = await fs.readFile(target);
-  if (encoding === "base64") return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length };
-  if (detectLikelyBinary(buf)) {
-    return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length, likelyBinary: true };
-  }
-  return { path: target, text: buf.toString("utf8"), sizeBytes: buf.length };
-});
-
-ipcMain.handle("fa:rawfs:writeFile", async (_evt, { path: p, text, base64 } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const buf = base64 != null ? Buffer.from(base64, "base64") : Buffer.from(String(text ?? ""), "utf8");
-  await fs.writeFile(target, buf);
-  return { ok: true, path: target, sizeBytes: buf.length };
-});
-
-ipcMain.handle("fa:rawfs:mkdir", async (_evt, { path: p } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  await fs.mkdir(target, { recursive: true });
-  return { ok: true, path: target };
-});
-
-// 大檔案「一段一段」複製（匯出大索引用，DESIGN.project-index.md §17.5）：串流、記憶體固定（每次讀 8 MB），不會把整個檔案讀進來。
-//   partBytes 有給：切成 <dstPrefix>0000.part、0001.part…（每份最多 partBytes）；沒給：整份複製成 dst。回傳 { size, parts:[{name,size}] }。
-ipcMain.handle("fa:rawfs:copyChunked", async (_evt, { src, dst, partBytes } = {}) => {
-  const fsSync = require("fs"); const from = path.resolve(rawFsPath(src)); const to = path.resolve(rawFsPath(dst));
-  const st = await fs.stat(from); await fs.mkdir(path.dirname(to), { recursive: true });
-  const CH = 8 * 1024 * 1024; const buf = Buffer.allocUnsafe(CH); const parts = [];
-  const rfd = await fs.open(from, "r");
-  try {
-    const per = partBytes > 0 ? Math.floor(partBytes) : Infinity; let pos = 0, idx = 0;
-    do {
-      const name = per === Infinity ? path.basename(to) : String(idx).padStart(4, "0") + ".part"; const out = per === Infinity ? to : to + name;
-      const wfd = await fs.open(out, "w"); let wrote = 0;
-      try {
-        while (wrote < per && pos < st.size) {
-          const want = Math.min(CH, per - wrote, st.size - pos); const { bytesRead } = await rfd.read(buf, 0, want, pos); if (!bytesRead) break;
-          await wfd.write(buf, 0, bytesRead); pos += bytesRead; wrote += bytesRead;
-        }
-      } finally { await wfd.close(); }
-      parts.push({ name: path.basename(out), size: wrote }); idx++;
-    } while (pos < st.size);
-    return { ok: true, size: st.size, parts };
-  } finally { await rfd.close(); }
-});
-
-ipcMain.handle("fa:rawfs:remove", async (_evt, { path: p, recursive } = {}) => {
-  const target = path.resolve(rawFsPath(p));
-  await fs.rm(target, { recursive: !!recursive, force: true });
-  return { ok: true, path: target };
-});
 
 // tw_stock_db客製: 2026-09-26使用者要求——對話清單（左邊的chat list）在單機版存成檔案，位置是
 // app.getPath("userData")/chats/（Windows：C:\Users\<使用者>\AppData\Roaming\floating-assistant-desktop\chats\）：
@@ -712,56 +648,6 @@ ipcMain.handle("fa:chats:write", async (_evt, { id, text } = {}) => {
 ipcMain.handle("fa:chats:delete", async (_evt, { id } = {}) => {
   await fs.rm(chatFilePath(id), { force: true });
   return { ok: true };
-});
-
-// 遞迴搜尋檔名（不比對內容），深度/結果數都有上限避免掃到整個磁碟卡死。
-async function findFilesRecursive(startDir, pattern, maxDepth, maxResults, out, depth) {
-  if (out.length >= maxResults || depth > maxDepth) return;
-  let entries;
-  try {
-    entries = await fs.readdir(startDir, { withFileTypes: true });
-  } catch (_) {
-    return; // 沒有權限/已被刪除的目錄，安靜略過，不中斷整個搜尋
-  }
-  for (const e of entries) {
-    if (out.length >= maxResults) return;
-    const full = path.join(startDir, e.name);
-    if (pattern.test(e.name)) out.push({ path: full, isDirectory: e.isDirectory(), isFile: e.isFile() });
-    if (e.isDirectory()) await findFilesRecursive(full, pattern, maxDepth, maxResults, out, depth + 1);
-  }
-}
-
-ipcMain.handle("fa:rawfs:find", async (_evt, { path: p, pattern, maxDepth, maxResults } = {}) => {
-  const startDir = path.resolve(rawFsPath(p));
-  let regex;
-  try {
-    regex = new RegExp(String(pattern || ""), "i");
-  } catch (err) {
-    throw new Error(`不合法的pattern（正規表示式）：${String(err.message || err)}`);
-  }
-  const out = [];
-  await findFilesRecursive(startDir, regex, Number(maxDepth) > 0 ? Number(maxDepth) : 8, Number(maxResults) > 0 ? Number(maxResults) : 200, out, 0);
-  return out;
-});
-
-// 給「終端機檔案傳輸」GUI的Computer分頁用——列出可以當瀏覽起點的磁碟機/根目錄。
-// win32下逐一嘗試A-Z槽（fs.stat失敗代表槽不存在，安靜跳過），非win32直接回傳"/"。
-ipcMain.handle("fa:rawfs:listDrives", async () => {
-  if (process.platform === "win32") {
-    const drives = [];
-    for (let code = 65; code <= 90; code++) {
-      const letter = String.fromCharCode(code);
-      const root = `${letter}:\\`;
-      try {
-        await fs.stat(root);
-        drives.push({ path: root, label: `${letter}:` });
-      } catch (_) {
-        // 槽不存在，略過
-      }
-    }
-    return drives;
-  }
-  return [{ path: "/", label: "/" }];
 });
 
 // ---------- IPC: 執行本機程式 ----------
@@ -1485,6 +1371,7 @@ const LIVE_PATCH_ALLOWED_FILES = [
   "renderer/floating-assistant.js",
   "renderer/floating-assistant.min.js",
   ...LIVE_PATCH_MAIN_FILES,
+  "preload.js", // 預載腳本：下次啟動生效（見 resolvePreloadPath）
 ];
 // floating-assistant.js壓縮後實測約1~2MB，這裡抓寬鬆一點的上限，manifest.json
 // 本身另外用更小的上限（見fetchUpdateResource呼叫端）。
@@ -1666,7 +1553,7 @@ ipcMain.handle("fa:update:apply", async () => {
       const md5 = md5Hex(buf);
       if (md5 !== remote.files[relPath].md5) throw new Error(`${relPath} 下載內容跟manifest.json宣告的md5不符，已中止這次更新（沒有寫入任何檔案）`);
       // 主行程模組：套用前先確認語法正確，避免一個壞掉的patch讓app下次啟動載入失敗
-      if (LIVE_PATCH_MAIN_FILES.includes(relPath)) {
+      if (LIVE_PATCH_MAIN_FILES.includes(relPath) || relPath === "preload.js") {
         try { new (require("vm").Script)(require("module").wrap(buf.toString("utf8")), { filename: relPath }); }
         catch (err) { throw new Error(`${relPath} 語法檢查失敗，已中止這次更新（沒有寫入任何檔案）：${String((err && err.message) || err)}`); }
       }
@@ -1852,7 +1739,7 @@ async function createWindow() {
     // `npm start`開發模式下的視窗圖示。
     icon: path.join(__dirname, "build", "icon.png"),
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: resolvePreloadPath().path,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -1860,6 +1747,7 @@ async function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  guardOverlayPreload(mainWindow, resolvePreloadPath().overlayMd5);
   // tw_stock_db客製: 2026-09-18使用者要求的xterm終端機功能——wasi-sh的
   // spawn()（互動式shell session，見floating-assistant.js規劃中的terminal
   // widget）需要SharedArrayBuffer，瀏覽器只有在頁面「cross-origin isolated」
@@ -2799,7 +2687,7 @@ async function runCliPrompt({ prompt, outputFormat }) {
   const win = new BrowserWindow({
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: resolvePreloadPath().path,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,

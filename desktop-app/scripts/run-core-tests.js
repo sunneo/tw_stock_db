@@ -42,6 +42,7 @@ const suites = [
     ['動畫簡報：影片視覺（播放、重播、快轉、速度、A-B 循環的格式規則）', 'scripts/deck-tests/deck_video.test.js'],
     ['動畫簡報：每份簡報自己的外框配色（deck.colors）', 'scripts/deck-tests/deck_colors.test.js'],
     ['動畫簡報：內建可愛插圖（注音與第一個符號核對）', 'scripts/deck-tests/deck_cute.test.js'],
+    ['主行程可 live-update 的 IPC 模組（main-ext.js：fa:rawfs:* 九個 handler）', 'scripts/main-tests/main_ext.test.js'],
     ['本地中文語音：文字轉音素（1379 個音節與 misaki 逐字相同）', 'scripts/tts-tests/zh_g2p.test.js'],
     ['動畫簡報：問答頁把關（標題不洩漏答案、問「這個東西」要有畫面）', 'scripts/deck-tests/deck_quiz_slide.test.js'],
     ['動畫簡報：一頁一種語言的語音（混語檢查、念之前翻成英文或退回中文語音）', 'scripts/deck-tests/deck_language.test.js'],
