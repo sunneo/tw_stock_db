@@ -2,7 +2,7 @@
     // ================= 呼叫圖（callgraph_tools）：直接呼叫、函式指標回呼、vtable／struct 欄位綁定 =================
     function buildCallGraph(files) {
         // files：[{path, language, functions:[{name, line, all_calls, _node, _src}]}]
-        const defs = {}; const edges = {}; const reverse = {}; const indirect = [];
+        const defs = Object.create(null), edges = Object.create(null), reverse = Object.create(null); const indirect = []; // 沒有原型：函式／呼叫名稱可能叫 toString、constructor
         for (const f of files) for (const fn of f.functions) { (defs[fn.name] = defs[fn.name] || []).push({ path: f.path, line: fn.line }); }
         for (const f of files) {
             for (const fn of f.functions) {
@@ -186,14 +186,21 @@
         out.push('', '</details>', ''); return out.join('\n');
     }
     // ================= 總協調：把一份原始碼解釋成可折疊的 markdown =================
-    const EXT_LANG = { c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', ipp: 'cpp', cu: 'cpp', cuh: 'cpp', rs: 'rust', rust: 'rust', go: 'go', golang: 'go', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell' };
+    const EXT_LANG = { c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp', ipp: 'cpp', cu: 'cpp', cuh: 'cpp', rs: 'rust', rust: 'rust', go: 'go', golang: 'go', glsl: 'c', frag: 'c', vert: 'c', hlsl: 'c', java: 'java', py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript', sh: 'shell', bash: 'shell', cs: 'csharp', csx: 'csharp', csharp: 'csharp', rb: 'ruby', rake: 'ruby', gemspec: 'ruby', ru: 'ruby', ruby: 'ruby', lua: 'lua' };
     function languageOfPath(path) { const m = /\.([A-Za-z0-9]+)$/.exec(path || ''); return m ? (EXT_LANG[m[1].toLowerCase()] || null) : null; }
     const FileCommentRe = /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+|(?:#[^\n]*\n?)+)/;
-    function fileHeaderComment(src, language) { const hashOk = language === 'python' || language === 'shell'; const m = (hashOk ? FileCommentRe : /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+)/).exec(src.replace(/^#!.*\n/, '')); if (!m) return null; return m[0].split('\n').map((l) => l.replace(/^\s*(\/\*+|\*+\/|\*+|\/\/+|#+)\s?/, '').replace(/\*\/\s*$/, '').trim()).filter(Boolean).join(' ') || null; }
+    function fileHeaderComment(src, language) {
+        const hashOk = language === 'python' || language === 'shell' || language === 'ruby';
+        if (language === 'lua') { const lm = /^\s*(?:--\[(=*)\[([\s\S]*?)\]\1\]|(?:--[^\n]*\n?)+)/.exec(src); if (!lm) return null; const raw = lm[2] != null ? lm[2] : lm[0]; return raw.split('\n').map((l) => l.replace(/^\s*-{2,}\s?/, '').trim()).filter(Boolean).join(' ') || null; }
+        const m = (hashOk ? FileCommentRe : /^\s*(?:\/\*[\s\S]*?\*\/|(?:\/\/[^\n]*\n?)+)/).exec(src.replace(/^#!.*\n/, '').replace(/^# (?:frozen_string_literal|encoding|coding)[^\n]*\n/gm, '')); if (!m) return null;
+        let t = m[0].split('\n').map((l) => l.replace(/^\s*(\/\*+|\*+\/|\*+|\/\/[\/!]*|#+)\s?/, '').replace(/\*\/\s*$/, '').trim()).filter(Boolean).join(' ');
+        if (/<summary>/i.test(t)) { const sm = /<summary>([\s\S]*?)<\/summary>/i.exec(t); if (sm) t = sm[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
+        return t || null;
+    }
     const NOTE_LABEL = { user: 'aidoc 補充', comment: '原始碼註解', auto: '自動分析' };
     // deps.parse(language, src) → tree.rootNode（呼叫端提供 web-tree-sitter）；deps.notes[path|path::fn] 是 aidoc 的說明
     async function explainSource(path, src, opts) {
-        opts = opts || {}; const tx = opts.taxonomy; const deps = opts.deps || {}; const target = opts.fn || null; const notes = Object.assign({}, tx.__notes || {}, opts.notes || {});
+        opts = opts || {}; const tx = opts.taxonomy; const deps = opts.deps || {}; const target = opts.fn || null; const notes = Object.assign(Object.create(null), tx.__notes || {}, opts.notes || {});
         const out = []; const meta = { path, language: null, functions: 0, unclassified: [], sources: {} };
         const lowKind = detectLowLevelKind(path, src); const language = languageOfPath(path);
         const fileNote = notes[path] || notes['file::' + path]; const header = fileHeaderComment(src, language);
@@ -223,7 +230,7 @@
         const ref = opts.ref || null; const allPragmas = ref && (fam === 'c') ? pragmaNodes(root, src).map((p) => Object.assign(p, { expl: ref.explainPragma(p.text) })) : [];
         const jp = language === 'java' ? detectJavaDesignPatterns(root, src) : []; const fileObj = { path, language: fam, functions: fns, root, _src: src };
         const cg = buildCallGraph([fileObj]);
-        const resolveCache = {};
+        const resolveCache = Object.create(null);
         const resolveCallee = (cn) => { // 本檔內的呼叫端：取該函式自己的一句話說明（註解優先，其次行為分類）
             const nm = String(cn).replace(/^.*[.:>]/, ''); if (resolveCache[nm] !== undefined) return resolveCache[nm]; const f = fns.find((x) => x.name === nm); let r = null;
             if (f && f.name !== (cur || {}).name) { const n = notes[path + '::' + f.name] || notes[f.name]; if (n) r = n; else if (f.leading_comment_text) r = rerank(f.leading_comment_text, f.all_calls, 1); } resolveCache[nm] = r; return r;

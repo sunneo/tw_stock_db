@@ -46,14 +46,14 @@
     }
     function lookupFor(tx, language) {
         if (tx.__lookupCache[language]) return tx.__lookupCache[language];
-        const m = {};
+        const m = Object.create(null); // 沒有原型：呼叫名稱 toString／constructor／valueOf 不能撞到 Object.prototype 的東西
         for (const lg of (language === 'cpp' ? ['c', 'cpp'] : [language])) for (const [cid, cat] of Object.entries(tx.categories || {})) for (const name of ((cat.languages || {})[lg] || [])) m[name] = cid;
         tx.__lookupCache[language] = language === 'go' ? withMethodFallback(m) : m; return tx.__lookupCache[language];
     }
     function apiFor(tx, language) {
         const a = tx.__api || {};
-        if (language === 'cpp') return Object.assign({}, a.c || {}, a.cpp || {});
-        const m = a[language] || {}; return language === 'go' ? withMethodFallback(Object.assign({}, m)) : m;
+        if (language === 'cpp') return Object.assign(Object.create(null), a.c || {}, a.cpp || {});
+        const m = Object.assign(Object.create(null), a[language] || {}); return language === 'go' ? withMethodFallback(m) : m;
     }
     function asmLookup(tx) {
         if (tx.__asm) return tx.__asm;
@@ -262,6 +262,11 @@
         control_statement_types: S(['if_statement', 'for_statement', 'for_range_loop', 'while_statement', 'do_statement', 'switch_statement']), loop_node_types: S(['for_statement', 'for_range_loop', 'while_statement', 'do_statement']),
         foreach_for_types: S(['for_range_loop']), transparent_types: S(['compound_statement', 'labeled_statement', 'case_statement', 'else_clause', 'try_statement', 'catch_clause']),
     });
+    // 語言裡到處都是、不代表行為的小呼叫：不列進「未分類」（只有沒命中名稱表時才會被忽略）
+    PROFILES.python.ignore_names = S(['len', 'range', 'str', 'int', 'float', 'bool', 'bytes', 'list', 'dict', 'set', 'tuple', 'frozenset', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'reversed', 'isinstance', 'issubclass', 'super', 'repr', 'abs', 'min', 'max', 'sum', 'any', 'all', 'round', 'iter', 'next', 'id', 'hash', 'callable', 'append', 'extend', 'items', 'keys', 'values', 'get', 'pop', 'update', 'add', 'remove', 'count', 'index', 'copy', 'strip', 'lower', 'upper', 'startswith', 'endswith', 'encode', 'decode', 'start', 'join']);
+    PROFILES.java.ignore_names = S(['toString', 'equals', 'hashCode', 'getClass', 'length', 'size', 'isEmpty', 'get', 'put', 'add', 'remove', 'contains', 'containsKey', 'getMessage', 'getCause', 'append', 'valueOf', 'intValue', 'longValue', 'doubleValue', 'iterator', 'hasNext', 'next', 'stream', 'map', 'filter', 'collect', 'forEach', 'orElse', 'isPresent', 'close', 'build', 'Exception', 'RuntimeException', 'IllegalArgumentException', 'IllegalStateException', 'FileNotFoundException', 'IOException', 'Object', 'String']);
+    PROFILES.javascript.ignore_names = S(['push', 'pop', 'shift', 'unshift', 'map', 'filter', 'forEach', 'slice', 'splice', 'includes', 'indexOf', 'join', 'keys', 'values', 'entries', 'trim', 'split', 'toString', 'toFixed', 'toUpperCase', 'toLowerCase', 'replace', 'startsWith', 'endsWith', 'Error', 'TypeError', 'RangeError', 'Array', 'Object', 'String', 'Number', 'Boolean', 'require', 'bind', 'call', 'apply', 'on', 'text', 'json', 'update', 'digest', 'dirname', 'basename']);
+    PROFILES.cpp.ignore_names = S(['runtime_error', 'logic_error', 'invalid_argument', 'out_of_range', 'exception', 'begin', 'end', 'cbegin', 'cend', 'size', 'empty', 'c_str', 'data', 'get', 'at', 'front', 'back', 'move', 'forward', 'swap', 'what', 'milliseconds', 'seconds', 'microseconds', 'string', 'vector', 'map', 'ref', 'cref', 'pair', 'tie', 'tuple', 'min', 'max']);
     // Rust：以運算式為主（if／match／loop 都是 *_expression）；expression_statement 不當葉子（裡面可能是 if／for），改成往下走到真正的語句
     PROFILES.rust = P({
         language: 'rust', multi_key: true, function_node_types: S(['function_item']), call_node_types: S(['call_expression', 'macro_invocation']), body_node_types: S(['block', 'match_block']),
@@ -275,7 +280,7 @@
         get_function_name: rustFunctionName, get_parameter_names: rustParamNames, get_if_branches: fieldIfBranches, get_condition_node: rustCondition,
         noreturn_calls: S(['panic!', 'unreachable!', 'unimplemented!', 'todo!', 'process::exit', 'std::process::exit', 'process::abort', 'std::process::abort']),
         control_explain: rustControlExplain, is_infinite_loop: rustIsInfinite,
-        ignore_names: S(['Ok', 'Err', 'Some', 'None', '.clone', '.is_empty', '.len', '.iter', '.iter_mut', '.into_iter', '.map', '.filter', '.filter_map', '.collect', '.as_ref', '.as_mut', '.as_str', '.cloned', '.copied', '.enumerate', '.zip', '.rev', '.take', '.skip', '.join', '.is_some', '.is_none', '.is_ok', '.is_err', '.unwrap_or', '.get', '.insert', '.remove', '.contains', '.keys', '.values', '.new', 'String::new', 'Vec::new', 'drop']),
+        ignore_names: S(['Ok', 'Err', 'Some', 'None', '.clone', '.is_empty', '.len', '.iter', '.iter_mut', '.into_iter', '.map', '.filter', '.filter_map', '.collect', '.as_ref', '.as_mut', '.as_str', '.cloned', '.copied', '.enumerate', '.zip', '.rev', '.take', '.skip', '.join', '.is_some', '.is_none', '.is_ok', '.is_err', '.unwrap_or', '.unwrap_or_default', '.map_err', '.to_string', '.to_owned', '.success', '.ok', '.ok_or', '.get', '.insert', '.remove', '.contains', '.keys', '.values', '.new', 'String::new', 'Vec::new', 'drop']),
     });
     // Go：for 有三種寫法、switch／select 的 case 直接是子節點（get_control_body 回傳節點本身，讓走訪器逐個 case 往下）
     PROFILES.go = P({
@@ -290,4 +295,115 @@
         noreturn_calls: S(['panic', 'os.Exit', 'log.Fatal', 'log.Fatalf', 'log.Fatalln', 'runtime.Goexit', 'log.Panic', 'log.Panicf', 'log.Panicln']),
         control_explain: goControlExplain, is_infinite_loop: goIsInfinite, get_control_body: (node) => (/switch|select/.test(node.type) ? node : null),
         ignore_names: S(['len', 'cap', 'new', 'string', 'int', 'int64', 'float64', 'byte', 'error', '.Error', '.String', '.Len', '.Close', '.Get', '.Set', '.Add', '.Do', '.Run', '.Next', '.Wait']),
+    });
+
+    // ---------- C#／Ruby／Lua（2026-10-14）：呼叫名稱候選的寫法要跟 names_more_langs.json 一致 ----------
+    // C#：靜態呼叫 File.ReadAllText → ['File.ReadAllText', '.ReadAllText']；實例方法 client.GetAsync → ['client.GetAsync', '.GetAsync']；泛型去掉（JsonSerializer.Deserialize<T> → JsonSerializer.Deserialize）；new Thread(…) → ['Thread']
+    const csClean = (n, src) => { let t = T(n, src).replace(/\s+/g, ''), p; do { p = t; t = t.replace(/<[^<>]*>/g, ''); } while (t !== p); return t; };   // 泛型一層一層去掉（Dictionary<string,List<int>>）
+    function csFuncCandidates(func, src) {
+        if (func.type === 'identifier') return [T(func, src)];
+        if (func.type === 'generic_name') { const id = firstKid(func, 'identifier'); return id ? [T(id, src)] : null; }
+        if (func.type === 'member_binding_expression') { const nm = func.childForFieldName('name'); return nm ? ['.' + csClean(nm, src)] : null; }
+        if (func.type === 'member_access_expression') {
+            const nameN = func.childForFieldName('name'), expr = func.childForFieldName('expression'); if (!nameN) return null; const nm = csClean(nameN, src);
+            if (expr && ['identifier', 'member_access_expression', 'predefined_type', 'qualified_name', 'generic_name', 'this_expression', 'base_expression'].indexOf(expr.type) >= 0) { const full = csClean(expr, src) + '.' + nm, segs = full.split('.'); const out = [full]; if (segs.length > 2) out.push(segs.slice(-2).join('.')); out.push('.' + nm); return uniq(out); }
+            return ['.' + nm];
+        }
+        return null;
+    }
+    function csCallCandidates(callNode, src) {
+        if (callNode.type === 'object_creation_expression') { const t = callNode.childForFieldName('type'); if (!t) return null; const full = csClean(t, src); return uniq([full, full.split('.').pop()]); }
+        if (callNode.type === 'conditional_access_expression') return null; // 裡面的 invocation_expression 會自己被算一次
+        const f = callNode.childForFieldName('function') || kids(callNode)[0]; return f ? csFuncCandidates(f, src) : null;
+    }
+    function csFunctionName(fn, src) {
+        const nm = fn.childForFieldName('name'); if (nm) return (fn.type === 'destructor_declaration' ? '~' : '') + T(nm, src);
+        if (fn.type === 'operator_declaration') { const op = kids(fn).find((c) => !c.isNamed || /operator/.test(c.type)); return 'operator ' + (fn.childForFieldName('operator') ? T(fn.childForFieldName('operator'), src) : (op ? T(op, src) : '?')); }
+        return null;
+    }
+    function csParamNames(fn, src) { const ps = fn.childForFieldName('parameters') || firstKid(fn, 'parameter_list'); if (!ps) return []; const out = []; for (const p of kids(ps)) if (p.type === 'parameter') { const n = p.childForFieldName('name'); if (n) out.push(T(n, src)); } return out; }
+    // while／do 在這版 grammar 沒有 condition 欄位：取括號之間的那個節點
+    function csCondition(node) {
+        const c = node.childForFieldName('condition'); if (c) return c;
+        const ks = kids(node); const lp = ks.findIndex((k) => k.type === '('), rp = ks.findIndex((k, i) => i > lp && k.type === ')'); if (lp >= 0 && rp > lp + 1) return ks[lp + 1];
+        return null;
+    }
+    function csControlExplain(node, src, nk) { if (node.type === 'for_each_statement') { const l = node.childForFieldName('left'), r = node.childForFieldName('right'); return 'For each ' + (l ? '`' + T(l, src) + '` in ' : 'element in ') + '`' + (r ? T(r, src) : 'the collection') + '`:'; } return null; }
+    // Ruby：method 的敘述直接是它的子節點（沒有 body 包裝）；呼叫是 call（receiver／method／arguments）；`code` 反引號是 subshell
+    function rubyCallCandidates(callNode, src) {
+        if (callNode.type === 'subshell') return ['`'];
+        const m = callNode.childForFieldName('method'); if (!m) return null; const name = T(m, src); const recv = callNode.childForFieldName('receiver');
+        if (!recv) return [name];
+        if (['constant', 'identifier', 'scope_resolution', 'instance_variable', 'self', 'class_variable', 'global_variable'].indexOf(recv.type) >= 0) { const full = T(recv, src).replace(/\s+/g, '') + '.' + name, segs = full.split(/\.|::/); const out = [full]; if (recv.type === 'scope_resolution' || recv.type === 'constant') { const last2 = segs.slice(-2).join('.'); if (last2 !== full) out.push(last2); } out.push('.' + name); return uniq(out); }
+        return ['.' + name];
+    }
+    function rubyFunctionName(fn, src) { const nm = fn.childForFieldName('name'); if (!nm) return null; if (fn.type === 'singleton_method') { const o = fn.childForFieldName('object'); return (o ? T(o, src) : 'self') + '.' + T(nm, src); } return T(nm, src); }
+    function rubyParamNames(fn, src) { const ps = fn.childForFieldName('parameters'); if (!ps) return []; const out = []; for (const p of kids(ps)) { if (p.type === 'identifier') out.push(T(p, src)); else { const n = p.childForFieldName('name') || firstKid(p, 'identifier'); if (n) out.push(T(n, src)); } } return out; }
+    function rubyIfBranches(n) { if (/_modifier$/.test(n.type)) return [n.childForFieldName('body') || null, null]; return [n.childForFieldName('consequence') || null, n.childForFieldName('alternative') || null]; }
+    function rubyCondition(n) { return n.childForFieldName('condition') || n.childForFieldName('value') || null; }
+    function rubyControlExplain(node, src, nk) {
+        const c = rubyCondition(node); const ct = c ? '`' + T(c, src).trim() + '`' : null;
+        if (node.type === 'unless' || node.type === 'unless_modifier') return ct ? 'Runs only when ' + ct + ' is FALSE (unless).' : 'Branches on its own condition (unless).';
+        if (node.type === 'until' || node.type === 'until_modifier') return ct ? 'Loops until ' + ct + ' becomes true.' : 'Loops until its own condition becomes true.';
+        if (node.type === 'for') { const p = node.childForFieldName('pattern'), v = node.childForFieldName('value'); const it = v ? T(v, src).replace(/^in\s+/, '').trim() : null; return 'For each ' + (p ? '`' + T(p, src) + '` in ' : 'element in ') + '`' + (it || 'the collection') + '`:'; }
+        if (node.type === 'case') return ct ? 'Branches based on the value of ' + ct + '.' : 'Branches on its own subject (see header text).';
+        return null;
+    }
+    // Lua：函式名稱 M.load／M:fetch 是 variable 節點的文字；呼叫 call 的 function 欄位是 variable（io.open、f:read）
+    function luaCallCandidates(callNode, src) {
+        const f = callNode.childForFieldName('function') || kids(callNode)[0]; if (!f) return null;
+        const full = T(f, src).replace(/\s+/g, '').replace(/:/g, '.'); if (!/^[A-Za-z_][\w.]*$/.test(full)) return null;
+        const segs = full.split('.'); if (segs.length === 1) return [full];
+        const out = [full]; if (segs.length > 2) out.push(segs.slice(-2).join('.')); out.push('.' + segs[segs.length - 1]); return uniq(out);
+    }
+    function luaFunctionName(fn, src) { const nm = fn.childForFieldName('name'); if (!nm) return null; return T(nm, src).replace(/\s+/g, ''); }
+    function luaParamNames(fn, src) { const ps = fn.childForFieldName('parameters') || firstKid(fn, 'parameter_list'); if (!ps) return []; return kids(ps).filter((c) => c.type === 'identifier').map((c) => T(c, src)); }
+    function luaControlExplain(node, src, nk) {
+        if (node.type === 'repeat_statement') { const c = node.childForFieldName('condition'); return 'Repeats the body until ' + (c ? '`' + T(c, src).trim() + '`' : 'its own condition') + ' becomes true (condition checked at the END of each pass, so the body runs at least once).'; }
+        if (node.type === 'for_numeric_statement') { const ns = kids(node).filter((c) => c.type === 'number' || c.type === 'variable' || c.type === 'binary_expression' || c.type === 'call'); const v = node.childForFieldName('name'); return 'Loops `' + (v ? T(v, src) : 'i') + '` from `' + (ns[0] ? T(ns[0], src) : '?') + '` to `' + (ns[1] ? T(ns[1], src) : '?') + '`' + (ns[2] ? ' step `' + T(ns[2], src) + '`' : '') + '.'; }
+        if (node.type === 'for_generic_statement') { const l = node.childForFieldName('left'), r = node.childForFieldName('right'); return 'For each `' + (l ? T(l, src) : 'element') + '` in `' + (r ? T(r, src) : 'the iterator') + '`:'; }
+        return null;
+    }
+    PROFILES.csharp = P({
+        language: 'csharp', multi_key: true, function_node_types: S(['method_declaration', 'constructor_declaration', 'local_function_statement', 'destructor_declaration', 'operator_declaration']), call_node_types: S(['invocation_expression', 'object_creation_expression']), body_node_types: S(['block', 'switch_body']),
+        control_statement_types: S(['if_statement', 'for_statement', 'for_each_statement', 'while_statement', 'do_statement', 'switch_statement']),
+        leaf_statement_types: S(['expression_statement', 'local_declaration_statement', 'return_statement', 'break_statement', 'continue_statement', 'throw_statement', 'yield_statement', 'goto_statement', 'local_function_statement']),
+        transparent_types: S(['block', 'switch_body', 'switch_section', 'try_statement', 'catch_clause', 'finally_clause', 'using_statement', 'lock_statement', 'checked_statement', 'unsafe_statement', 'fixed_statement', 'labeled_statement']),
+        identifier_types: S(['identifier']), string_literal_types: S(['string_literal', 'verbatim_string_literal', 'interpolated_string_expression', 'raw_string_literal']),
+        assignment_types: S(['assignment_expression']), declaration_types: S(['local_declaration_statement']), declarator_types: S(['variable_declarator']), else_clause_types: S([]),
+        control_transfer_types: S(['return_statement', 'continue_statement', 'break_statement', 'throw_statement', 'goto_statement']), loop_node_types: S(['for_statement', 'for_each_statement', 'while_statement', 'do_statement']),
+        infinite_loop_texts: S(['true']), c_style_for_types: S(['for_statement']), foreach_for_types: S(['for_each_statement']), switch_like_types: S(['switch_statement']),
+        get_call_name: (n, s) => { const c = csCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: csCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'argument_list'),
+        get_function_name: csFunctionName, get_parameter_names: csParamNames, get_if_branches: fieldIfBranches, get_condition_node: csCondition, control_explain: csControlExplain,
+        noreturn_calls: S(['Environment.Exit', 'Application.Exit', 'Environment.FailFast']),
+        ignore_names: S(['.ToString', '.Equals', '.GetHashCode', '.GetType', '.Dispose', '.Add', '.Contains', '.Count', '.ToList', '.ToArray', '.Where', '.Select', 'nameof', 'typeof', 'Exception', 'ArgumentException', 'ArgumentNullException', 'InvalidOperationException', 'NotImplementedException', 'FileNotFoundException', 'IOException', 'NotSupportedException', 'KeyNotFoundException', 'DirectoryNotFoundException', 'TimeoutException', 'UnauthorizedAccessException']),
+    });
+    PROFILES.ruby = P({
+        language: 'ruby', multi_key: true, function_node_types: S(['method', 'singleton_method']), call_node_types: S(['call', 'subshell']), body_node_types: S(['body_statement', 'then', 'do', 'else']),
+        control_statement_types: S(['if', 'unless', 'elsif', 'while', 'until', 'for', 'case', 'if_modifier', 'unless_modifier', 'while_modifier', 'until_modifier']),
+        leaf_statement_types: S(['call', 'assignment', 'operator_assignment', 'return', 'break', 'next', 'redo', 'retry', 'yield', 'subshell']),
+        transparent_types: S(['body_statement', 'then', 'do', 'else', 'when', 'begin', 'rescue', 'ensure', 'do_block', 'block']),
+        identifier_types: S(['identifier']), string_literal_types: S(['string', 'bare_string', 'heredoc_body']),
+        assignment_types: S(['assignment', 'operator_assignment']), declaration_types: S([]), declarator_types: S([]), else_clause_types: S(['else']), elif_clause_types: S([]),
+        control_transfer_types: S(['return', 'break', 'next', 'redo', 'retry']), loop_node_types: S(['while', 'until', 'for', 'while_modifier', 'until_modifier']),
+        infinite_loop_texts: S(['true']), foreach_for_types: S(['for']), switch_like_types: S(['case']),
+        get_call_name: (n, s) => { const c = rubyCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: rubyCallCandidates, get_call_arguments: (n) => bracketedArgs(n, 'argument_list'),
+        get_function_name: rubyFunctionName, get_parameter_names: rubyParamNames, get_if_branches: rubyIfBranches, get_condition_node: rubyCondition, control_explain: rubyControlExplain,
+        get_body: (fn) => fn, // method 的敘述是它自己的子節點
+        noreturn_calls: S(['exit', 'exit!', 'abort', 'raise', 'fail']), control_transfer_call_names: S(['raise', 'fail', 'throw']),
+        ignore_names: S(['.each', '.map', '.select', '.reject', '.collect', '.each_with_index', '.each_with_object', '.inject', '.reduce', '.new', '.to_s', '.to_i', '.to_f', '.to_a', '.to_h', '.to_sym', '.length', '.size', '.count', '.nil?', '.empty?', '.first', '.last', '.push', '.pop', '.shift', '.include?', '.key?', '.merge', '.keys', '.values', '.fetch', '.dup', '.freeze', '.strip', '.split', '.downcase', '.upcase', '.zero?', '.message', '.backtrace', '.class', '.name', '.is_a?', '.kind_of?', '.instance_of?', '.new', 'new', 'require', 'require_relative', 'attr_reader', 'attr_accessor', 'attr_writer', 'include', 'extend', 'prepend', 'private', 'public', 'protected', 'module_function', 'lambda', 'proc', 'block_given?', 'yield', 'super']),
+    });
+    PROFILES.lua = P({
+        language: 'lua', multi_key: true, function_node_types: S(['function_definition_statement', 'local_function_definition_statement']), call_node_types: S(['call']), body_node_types: S(['block']),
+        control_statement_types: S(['if_statement', 'elseif_clause', 'for_numeric_statement', 'for_generic_statement', 'while_statement', 'repeat_statement']),
+        leaf_statement_types: S(['call', 'variable_assignment', 'local_variable_declaration', 'return_statement', 'break_statement', 'goto_statement']),
+        transparent_types: S(['block', 'else_clause', 'do_statement']),
+        identifier_types: S(['identifier']), string_literal_types: S(['string']),
+        assignment_types: S(['variable_assignment']), declaration_types: S(['local_variable_declaration']), declarator_types: S([]), else_clause_types: S(['else_clause']), elif_clause_types: S(['elseif_clause']),
+        control_transfer_types: S(['return_statement', 'break_statement', 'goto_statement']), loop_node_types: S(['for_numeric_statement', 'for_generic_statement', 'while_statement', 'repeat_statement']),
+        infinite_loop_texts: S(['true']), foreach_for_types: S(['for_generic_statement']), switch_like_types: S([]),
+        get_call_name: (n, s) => { const c = luaCallCandidates(n, s); return c && c.length ? c[0] : null; }, get_call_candidates: luaCallCandidates, get_call_arguments: (n) => { const al = firstKid(n, 'argument_list'); if (!al) return []; const el = firstKid(al, 'expression_list'); return el ? kids(el).filter((a) => a.type !== ',') : []; },
+        get_function_name: luaFunctionName, get_parameter_names: luaParamNames, get_if_branches: genericIfBranches, get_condition_node: (n) => n.childForFieldName('condition') || null, control_explain: luaControlExplain,
+        noreturn_calls: S(['error', 'os.exit']), control_transfer_call_names: S(['error']),
+        ignore_names: S(['type', 'ipairs', 'pairs', 'select', 'next', '.insert', '.remove', '.concat', '.sort', '.gsub', '.gmatch', '.find', '.match', '.sub', '.len', '.upper', '.lower', '.rep', '.floor', '.ceil', '.max', '.min', '.abs', '.sqrt', '.close']),
     });

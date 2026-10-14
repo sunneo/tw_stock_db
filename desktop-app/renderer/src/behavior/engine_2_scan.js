@@ -11,11 +11,17 @@
         for (const c of comments) {
             const text = T(c, src);
             if (text.startsWith('/*')) { let inner = text.slice(2); if (inner.endsWith('*/')) inner = inner.slice(0, -2); for (const rl of inner.split('\n')) { const cl = rl.replace(BLOCK_MARGIN, '').trim(); if (cl) lines.push(cl); } }
-            else if (text.startsWith('//')) { const cl = text.slice(2).trim(); if (cl) lines.push(cl); }
-            else if (text.startsWith('#')) { const cl = text.slice(1).trim(); if (cl) lines.push(cl); }
+            else if (text.startsWith('//')) { const cl = text.replace(/^\/\/[\/!]*/, '').trim(); if (cl) lines.push(cl); }   // ///（Rust／C# 文件註解）、//!
+            else if (text.startsWith('--[[')) { let inner = text.slice(4); if (inner.endsWith(']]')) inner = inner.slice(0, -2); for (const rl of inner.split('\n')) { const cl = rl.trim(); if (cl) lines.push(cl); } }   // Lua 區塊註解
+            else if (text.startsWith('--')) { const cl = text.replace(/^-{2,}/, '').trim(); if (cl) lines.push(cl); }   // Lua／SQL
+            else if (text.startsWith('#')) { const cl = text.replace(/^#+/, '').trim(); if (cl) lines.push(cl); }
+            else if (text.startsWith('=begin')) { for (const rl of text.split('\n').slice(1)) { if (/^=end/.test(rl)) break; const cl = rl.trim(); if (cl) lines.push(cl); } }   // Ruby 區塊註解
             else { const cl = text.trim(); if (cl) lines.push(cl); }
         }
-        return lines.length ? lines.join(' ') : null;
+        // C# XML 文件註解：只留 <summary>，沒有就把標籤拿掉
+        let joined = lines.join(' ');
+        if (/<\/?(summary|param|returns|remarks|example|see|c|code)\b/i.test(joined)) { const sm = /<summary>([\s\S]*?)<\/summary>/i.exec(joined); joined = (sm ? sm[1] : joined).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
+        return joined || null;
     }
     // Python：函式的 docstring（函式本體第一個字串）也算說明
     function pythonDocstring(fnNode, src) {
@@ -55,7 +61,7 @@
         const aLk = asmLookup(tx); const pathRules = tx.well_known_paths || [], envRules = tx.well_known_env_vars || []; const shellLookup = lookupFor(tx, 'shell');
         let fnNodes = []; collectTypes(root, profile.function_node_types, fnNodes);
         let wholeName = null; if (!fnNodes.length && opts.wholeFile) { fnNodes = [root]; wholeName = opts.path || '(file)'; }
-        const functions = []; const unclassified = {};
+        const functions = []; const unclassified = Object.create(null);
         for (const fn of fnNodes) {
             const name = wholeName || (language === 'c' ? cFunctionName(fn, src) : (language === 'javascript' ? jsFunctionNameBehavior(fn, src) : profile.get_function_name(fn, src, profile)));
             if (!name) continue;
@@ -65,7 +71,7 @@
                 const cands = profile.get_call_candidates(c, src); if (!cands || !cands.length) continue;
                 callCount++; allCalls.push(cands[0]);
                 let cat = null; for (const cd of cands) { cat = lookup[cd]; if (cat) break; }
-                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!(profile.ignore_names && profile.ignore_names.has(cands[0]))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
+                if (cat) (behaviors[cat] = behaviors[cat] || new Set()).add(cands[0]); else if (!(profile.ignore_names && cands.some((cd) => profile.ignore_names.has(cd)))) unclassified[cands[0]] = (unclassified[cands[0]] || 0) + 1; // ignore_names：語言裡到處都是的小呼叫（Ok／Some／.clone…）不列進「未分類」
             }
             const branch = countTypes(fn, branchTypes), loop = countTypes(fn, loopTypes);
             const asmBlocks = [];
@@ -142,7 +148,7 @@
     }
 
     // ================= 逐行追蹤（linetrace_tools）=================
-    const NORMALIZE_KIND = { enhanced_for_statement: 'for_statement', for_in_statement: 'for_statement', c_style_for_statement: 'for_statement', foreach_statement: 'for_statement', switch_expression: 'switch_statement', match_statement: 'switch_statement', case_statement: 'switch_statement', elif_clause: 'if_statement', elseif_clause: 'if_statement', if_expression: 'if_statement', for_expression: 'for_statement', while_expression: 'while_statement', loop_expression: 'while_statement', match_expression: 'switch_statement', expression_switch_statement: 'switch_statement', type_switch_statement: 'switch_statement', select_statement: 'switch_statement', for_range_loop: 'for_statement' };
+    const NORMALIZE_KIND = { enhanced_for_statement: 'for_statement', for_in_statement: 'for_statement', c_style_for_statement: 'for_statement', foreach_statement: 'for_statement', switch_expression: 'switch_statement', match_statement: 'switch_statement', case_statement: 'switch_statement', elif_clause: 'if_statement', elseif_clause: 'if_statement', if_expression: 'if_statement', for_expression: 'for_statement', while_expression: 'while_statement', loop_expression: 'while_statement', match_expression: 'switch_statement', expression_switch_statement: 'switch_statement', type_switch_statement: 'switch_statement', select_statement: 'switch_statement', for_range_loop: 'for_statement', for_each_statement: 'for_statement', for_numeric_statement: 'for_statement', for_generic_statement: 'for_statement', repeat_statement: 'do_statement', if: 'if_statement', unless: 'if_statement', elsif: 'if_statement', if_modifier: 'if_statement', unless_modifier: 'if_statement', while: 'while_statement', until: 'while_statement', while_modifier: 'while_statement', until_modifier: 'while_statement', for: 'for_statement', case: 'switch_statement' };
     const normKind = (t) => NORMALIZE_KIND[t] || t;
     const CONTROL_KINDS = S(['if_statement', 'for_statement', 'while_statement', 'do_statement', 'switch_statement']);
     const headerText = (n, src) => T(n, src).split('\n', 1)[0].trim();
@@ -207,7 +213,7 @@
         if (!picked.length) { const nx = node.nextSibling; if (nx && nx.type.includes('comment') && nx.startPosition.row === node.endPosition.row) picked.push(nx); }
         if (!picked.length) return null;
         const lines = [];
-        for (const c of picked) { let t = T(c, src); if (t.startsWith('/*')) { t = t.slice(2); if (t.endsWith('*/')) t = t.slice(0, -2); t = t.split('\n').map((l) => l.replace(BLOCK_MARGIN, '').trim()).filter(Boolean).join(' '); } else t = t.replace(/^(\/\/+|#+|;+)\s*/, '').trim(); if (t) lines.push(t); }
+        for (const c of picked) { let t = T(c, src); if (t.startsWith('/*')) { t = t.slice(2); if (t.endsWith('*/')) t = t.slice(0, -2); t = t.split('\n').map((l) => l.replace(BLOCK_MARGIN, '').trim()).filter(Boolean).join(' '); } else if (t.startsWith('--[[')) { t = t.slice(4); if (t.endsWith(']]')) t = t.slice(0, -2); t = t.split('\n').map((l) => l.trim()).filter(Boolean).join(' '); } else t = t.replace(/^(\/\/+!?|#+|;+|-{2,})\s*/, '').trim(); if (t) lines.push(t); }
         return lines.join(' ') || null;
     }
     function walkStatements(node, src, lookup, p, api, varCalls, depth, out, branch) {
@@ -247,7 +253,7 @@
     // 追蹤一個函式節點：回傳 {name, path, start_line, end_line, lines[]}
     function traceFunction(fnNode, src, profile, tx, name, path) {
         const lookup = lookupFor(tx, profile.table_language || profile.language); const api = apiFor(tx, profile.table_language || profile.language); const lines = [];
-        const body = kids(fnNode).find((c) => profile.body_node_types.has(c.type));
+        const body = profile.get_body ? profile.get_body(fnNode) : kids(fnNode).find((c) => profile.body_node_types.has(c.type));
         if (body) walkStatements(body, src, lookup, profile, api, {}, 0, lines, null);
         return { name, path: path || '', start_line: row(fnNode) + 1, end_line: fnNode.endPosition.row + 1, lines };
     }

@@ -131,3 +131,26 @@ C／C++（含 GNU 內嵌組合語言，辨識裡面的 idiom；C++ 用 C++ 的�
 - **Go**：套件函式靠呼叫端的前綴（`os.Open`），如果 import 別名（`import o "os"`）就認不得；方法只靠方法名；`go`／`defer` 語句整句當成一行（裡面的呼叫有算）；`select` 與 `switch` 的 case 有走訪，沒有 case 條件的說明。
 - 回傳值規則（例如「`n <= 0` ＝ 關閉連線」）只對 C 啟用；Rust 的 `Result`、Go 的 `(value, err)` 沒有追蹤，API 語意只提供摘要與引數說明。
 - 名稱是依官方文件知識整理，**沒有逐條對照官方文件**；有錯用 `behavior_define`（`add_api`／`remove`）修正。
+
+## 13. C#、Ruby、Lua 的語法樹支援，Python／Java／JavaScript 補強（2026-10-14）
+
+起因：aidoc 檢視器開 `Babylon3DScene.cs` 顯示「沒有找到函式」——`.cs` 沒有 FaBeh2 的語言設定，退回輕量掃描器、輕量掃描器也不認得。現在 Rust、Ruby、Lua、C++、C#、Python、Java、JavaScript 八種都走語法樹（FaBeh2）。
+
+### 13.1 做了什麼
+- **語言設定**（`engine_1_core.js`）：`PROFILES.csharp`／`ruby`／`lua`：函式節點、呼叫名稱候選、參數、`if`／`unless`／`case`／迴圈／`rescue` 的說明、`get_body` 鉤子（Ruby 的方法本體就是方法節點本身）。`engine_2_scan.js` 的 `NORMALIZE_KIND` 把這些語言的節點對映成通用種類；文件註解（`///` `<summary>`、`--[[ ]]`、`=begin/=end`、`#`）都讀得到。`engine_4_analyze.js` 的副檔名表加 `cs csx rb rake gemspec ru lua`；`engine_5_api.js` 的文法名稱加 `c_sharp`／`ruby`／`lua`。
+- **呼叫名稱候選的寫法**（名稱表要跟這個一致）：C# `Type.Method`、`.Method`（任何接收者，泛型去掉）、`new X`→`X`；Ruby `Recv.method`（也比最後兩段 `HTTP.get`）、`.method`、沒有接收者的 `puts`、反引號→`` ` ``；Lua `io.open`、`f:read`→`f.read`＋`.read`、`print`。
+- **名稱表**：`scripts/gen-name-tables-more.py` → `renderer/src/behavior/names_more_langs.json`（C# 約 1260、Ruby 約 1560、Lua 約 2380、Python 約 940、Java 約 810、JavaScript 約 890 個名稱，各語言 20～40 筆 API 語意，`control_flow_nodes`、`structural_signals`）。與既有表（`behavior_patterns.json`、`names_cpp_rust_go.json`）重複但分類不同的名稱略過、以既有的為準。**太泛用的方法名**（`.each`、`.new`、`.first`、`.send`、`.join`…）不分類——只擋 `.` 開頭、不帶類別前綴的；少數有明確意思的放行（`ALLOW_DOT`）。`scripts/behavior-data.js` 把 `behavior_patterns.json`＋`api_semantics.json`＋所有 `names_*.json` 合併，`embed-code-ui.js` 呼叫它（之後新增 `names_xxx.json` 不用改程式）。
+- **3D／遊戲**：C# 的 `GL.*`、`gl.*`、`SDL.SDL_*`、`Matrix4x4`／`Vector3`／`Quaternion`、Babylon 風格的 `MeshBuilder`／`ArcRotateCamera`…歸到 `graphics_rendering`／`multimedia_io`／`event_handling`／`linear_algebra`；Lua 的 LÖVE（`love.graphics.*`）、LuaJIT `ffi`、OpenResty `ngx.*`、Neovim `vim.*`、luv `uv.*`。
+- **Ruby 文法版本**：`tree-sitter-wasms@0.1.8` 之後的 ruby 文法在 `web-tree-sitter@0.20.8` 上 parse 時會當掉（`Cannot read properties of undefined (reading 'apply')`，外部掃描器的匯入缺失）；`0.1.6` 可用。`_behTsHost().loadLanguageWasm` 對 ruby 用 0.1.6（快取鍵 `-v06`），其他語言維持 0.1.11。之後升級 web-tree-sitter 要重測。
+- **抓到並修好的 bug**：呼叫名稱如 `toString`／`constructor` 撞到 `Object.prototype`，造成 JS 分析在常見程式碼上丟例外並退回輕量掃描器——所有「以呼叫名稱當 key」的對照表（`lookupFor`／`apiFor`／callgraph 的 defs／edges／reverse／unclassified／resolveCache／notes）改 `Object.create(null)`。
+
+### 13.2 驗證
+- `names_more_langs.test.js`（94）：數量、每個分類有標籤、沒有名稱同時在兩個分類、名稱形狀、泛用名稱不被分類、代表名稱在對的分類、API 語意格式。
+- `langs.itest.js`（160）：**真的 tree-sitter 文法＋完整 FaBeh2**，對 `tests/samples/` 八種語言的樣本（外加一份 SDL／OpenGL 的 C#）逐函式驗證行為分類、分支／迴圈數、文件註解、未分類呼叫上限；文法從 CDN 下載並快取在 `$FA_TS_DIR` 或 `os.tmpdir()/fa-ts-cache`，離線時略過（exit 0）。`--show` 印出每個函式的分類，`--md` 印出完整說明。已加進 `run-core-tests.js`。
+- 真實 Electron：`_behExplainV2` 對 C#（`Babylon3DScene.cs`）、Ruby、Lua 回傳函式、行為分類與敘事。
+
+### 13.3 限制（老實說）
+- 名稱表是依對官方文件的知識整理的，**沒有逐條對照官方文件**；沒涵蓋的函式庫會出現在「還不認得的呼叫」，用 `behavior_define` 補。第三方框架（Rails、Unity、MonoGame、Neovim 外掛…）只有一小部分。
+- C#：`using` 別名、`var` 推斷型別、擴充方法的接收者型別看不出來——只用「靜態型別名稱」或「任何接收者的方法名」比對。Ruby：`method_missing`、`define_method` 動態產生的方法、DSL（`rspec`、`rake`）的區塊只當一般呼叫。Lua：沒有型別，`obj:method()` 只能靠方法名比對。
+- Rust／C++ 只補了一小批名稱與忽略清單（既有表已經涵蓋 STL／標準庫），`std::thread t(...)` 這種「宣告時呼叫建構子」在 C++ 語法樹裡不是呼叫節點，抓不到。
+- Ruby 的 `.each`／`.map`／`.select` 等泛用方法不分類，所以純資料處理的函式可能「沒有行為分類」——那是刻意的，不猜。
