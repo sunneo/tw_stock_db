@@ -11,6 +11,7 @@ const suites = [
     ['蒙皮核心（骨架、權重、動作）', 'renderer/src/skin/skin_core.test.js'],
     ['名稱表（C++ STL、Rust、Go）', 'renderer/src/behavior/tests/names_tables.test.js'],
     ['名稱表（C#、Ruby、Lua；Python、Java、JavaScript 補強）', 'renderer/src/behavior/tests/names_more_langs.test.js'],
+    ['專案索引的定義抽取（C# 方法／屬性／namespace、Kotlin object、Java）', 'scripts/repo-extract.test.js'],
     ['離線圖像轉文字（模型登記、裝置、快取用量）', 'renderer/src/vlm/vlm_core.test.js'],
     ['離線小模型食譜（路由、填欄位、驗證、決策紀錄、多步驟引擎）', 'renderer/src/recipe/recipe_core.test.js'],
     ['離線多步驟計畫（目標、規劃、狀態機、決策樹）', 'renderer/src/recipe/plan_core.test.js'],

@@ -43,8 +43,13 @@ body.hide-nav #nav,body.hide-nav #spL,body.hide-chat #chat,body.hide-chat #spR{d
 .loc{border-bottom:1px dashed var(--ac)}.loccard{margin:6px 0 10px;border:1px solid var(--ac);border-radius:8px;background:var(--sf);overflow:hidden}.loccard .lh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--bd);font-weight:600}.loccard .lh .x{margin-left:auto;cursor:pointer;color:var(--mut)}.loccard .lb{padding:6px 10px}.loccard pre{margin:6px 0;padding:0;border:none;background:none;overflow:auto;max-height:340px}.loccard .cl{display:block;white-space:pre;padding:0 8px}.loccard .cl i{display:inline-block;width:3.2em;color:var(--mut);font-style:normal;text-align:right;margin-right:8px;user-select:none}.loccard .cl.hit{background:var(--hl)}.loccard .acts{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
 .loccard .vp{margin:6px 0;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--bg)}.loccard .vp .vbar{padding:2px 8px;background:var(--sf);font-size:12px;color:var(--mut)}.loccard .vp .vbar.top{border-bottom:1px solid var(--bd)}.loccard .vp .vbar.bot{border-top:1px solid var(--bd)}.loccard .vp .more{padding:1px 8px;font-size:12px}.loccard .vp pre.vpre{margin:0;max-height:300px;border:none;border-radius:0}
 .mde{border:1px solid var(--ac);border-radius:8px;margin:8px 0;background:var(--bg);overflow:hidden}.mde .tb{display:flex;gap:4px;flex-wrap:wrap;padding:5px 8px;background:var(--sf);border-bottom:1px solid var(--bd);align-items:center}.mde .tb button{padding:1px 8px;font-size:12px}.mde .tb .sp{flex:1}.mde .pn{display:grid;grid-template-columns:1fr 1fr;min-height:200px}.mde textarea{width:100%;min-height:200px;max-height:60vh;resize:vertical;border:none;border-right:1px solid var(--bd);padding:8px;font:12.5px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);color:var(--fg);outline:none}.mde .pv{padding:6px 10px;overflow:auto;max-height:60vh}.mde .ft{display:flex;gap:8px;align-items:center;padding:6px 8px;border-top:1px solid var(--bd);background:var(--sf)}@media(max-width:760px){.mde .pn{grid-template-columns:1fr}.mde textarea{border-right:none;border-bottom:1px solid var(--bd)}}
+.nvb{padding:2px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);cursor:pointer}.nvb:disabled{opacity:.35;cursor:default}
+#navp{position:fixed;top:42px;left:8px;z-index:60;width:min(460px,92vw);max-height:62vh;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,.25);padding:4px;display:none}
+#navp .nh{display:flex;align-items:center;gap:8px;padding:4px 8px;color:var(--mut);font-size:12px}#navp .nh b{flex:1}
+#navp a{display:flex;gap:8px;align-items:baseline;padding:4px 8px;border-radius:5px;cursor:pointer;color:var(--fg);word-break:break-all;text-decoration:none}#navp a:hover{background:var(--sf)}
+#navp a.cur{background:var(--hl);font-weight:600}#navp a.fail{color:var(--er)}#navp a .ix{color:var(--mut);font-size:11px;min-width:22px;text-align:right}
 </style></head><body>
-<header><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNav" title="顯示／隱藏左邊（瀏覽）">◧</button><button id="btnChat" title="顯示／隱藏右邊（問答）">◨</button><select id="dockSel" title="右邊問答區停靠的位置"><option value="right">右邊在右</option><option value="left">右邊改到左</option><option value="bottom">右邊改到下</option></select><button id="btnReset" title="把版面（寬度、停靠位置、顯示隱藏）和視窗位置大小都還原成預設">還原版面</button><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
+<header><button class="nvb" id="navB" title="上一個位置（Alt+←、滑鼠上一頁鍵）" disabled>◀</button><button class="nvb" id="navF" title="下一個位置（Alt+→、滑鼠下一頁鍵）" disabled>▶</button><button class="nvb" id="navH" title="瀏覽歷史（像 call stack：最新在最上面，點一下跳回去）">🕘</button><b id="ttl">AIDoc</b><span class="badge" id="stat">載入中…</span><span class="badge" id="jobs" style="display:none"></span><span class="sp"></span><span class="badge ai" id="aiq" style="display:none"></span><button id="btnNav" title="顯示／隱藏左邊（瀏覽）">◧</button><button id="btnChat" title="顯示／隱藏右邊（問答）">◨</button><select id="dockSel" title="右邊問答區停靠的位置"><option value="right">右邊在右</option><option value="left">右邊改到左</option><option value="bottom">右邊改到下</option></select><button id="btnReset" title="把版面（寬度、停靠位置、顯示隱藏）和視窗位置大小都還原成預設">還原版面</button><button id="btnNet" title="這個畫面用假的 fetch／WebSocket 跟主程式溝通">🔌 連線 <span id="wsdot">●</span></button></header>
 <div id="app" class="dock-right"><div id="top">
 <aside id="nav"><div id="tabs"><button data-t="pages" class="on">頁面</button><button data-t="tree">檔案</button><button data-t="syms">定義</button><button data-t="notes">說明</button></div><input id="sq" placeholder="搜尋…（語意搜尋）"><div id="list"></div></aside><div class="sp" id="spL" title="拖曳調整左邊寬度（雙擊還原）"></div>
 <main id="main"><div class="mut">載入中…</div></main></div>
@@ -287,7 +292,7 @@ async function showFile(path){
   h+='<h2>被誰引用（'+f.imported_by.length+'）</h2>'+(f.imported_by.map(function(p){return '<div>'+link(p)+'</div>'}).join('')||'<div class="mut">（沒有）</div>');
   $('#main').innerHTML=h;$('#main').scrollTop=0;
   $('#main').querySelectorAll('.chips span').forEach(function(sp){if(cs[+sp.dataset.ci][0]==='__explain__')sp.textContent='這個檔案在做什麼（行為說明）';sp.onclick=async function(){var c=cs[+sp.dataset.ci];if(c[1]==='__explain__'){document.getElementById('expl').click();return}if(c[1]==='__dive__'){try{var r=await api('POST','/api/dive',{path:path});addMsg('a ai','AI','<span class="mut">⏳ 已排進佇列：讀過 '+esc(path)+' 後補說明（'+(r.queue_pos>1?'前面還有 '+(r.queue_pos-1)+' 個':'馬上開始')+'）</span>')}catch(e){addMsg('a','錯誤','<span class="err">'+esc(e.message)+'</span>')}}else ask(c[1],cur,c[2]==='ai')}});
-  $('#expl').onclick=async function(){var b=$('#expl');b.disabled=true;$('#explbox').innerHTML='<span class="mut">分析中…</span>';try{var r=await api('GET','/api/explain?path='+encodeURIComponent(path));$('#explbox').innerHTML=mdToHtml(r.markdown)+(r.unclassified&&r.unclassified.length?'<div class="mut">還不認得的呼叫：'+r.unclassified.slice(0,20).map(function(u){return esc(u)}).join('、')+'（可請 AI 讀過後用 behavior_define 補定義）</div>':'')}catch(e){$('#explbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}b.disabled=false};
+  $('#expl').onclick=async function(){var b=$('#expl');b.disabled=true;$('#explbox').innerHTML='<span class="mut">分析中…</span>';try{var r=await api('GET','/api/explain?path='+encodeURIComponent(path));$('#explbox').innerHTML=mdToHtml(r.markdown)+(r.unclassified&&r.unclassified.length?'<div class="mut">還不認得的呼叫：'+r.unclassified.slice(0,20).map(function(u){return esc(u&&typeof u==='object'?u.name:u)}).join('、')+'（可請 AI 讀過後用 behavior_define 補定義）</div>':'')}catch(e){$('#explbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}b.disabled=false};
   $('#editnote').onclick=function(){if($('#main .mde'))return;var nb=$('#main').querySelector('.note')||$('#editnote').parentNode;var ed=mdEditor({title:'編輯檔案說明：'+path,value:f.note||'',onSave:function(v,bx){saveNote(cur,v);bx.remove()}});nb.parentNode.insertBefore(ed,nb.nextSibling)};
   $('#src').onclick=async function(){var b=$('#src');b.disabled=true;try{var s=await api('GET','/api/source?path='+encodeURIComponent(path)+'&from=1&to=200');$('#srcbox').innerHTML='<pre>'+esc(s.text)+'</pre>'+(s.total>s.to?'<div class="mut">只顯示前 '+s.to+' 行（共 '+s.total+' 行）</div>':'')}catch(e){$('#srcbox').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
 }
@@ -307,7 +312,14 @@ async function showSym(name){
   if(!r.defs.length){
     var tr=null;try{tr=await api('GET','/api/tree?path='+encodeURIComponent(name))}catch(e){}
     if(tr&&tr.exists){showDir(name.replace(/\/+$/,''),tr);return}
-$('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+navFail('索引裡沒有');
+    var tail=String(name).split(/[.:]+/).filter(Boolean).pop()||name,hits=[];
+    try{hits=((await api('GET','/api/search?q='+encodeURIComponent(tail))).hits||[]).filter(function(x){return x.type==='symbol'&&String(x.name).split(/[.:]+/).pop().toLowerCase()===String(tail).toLowerCase()})}catch(e){}
+    var mh='<div class="note"><b>索引裡沒有「'+esc(name)+'」的定義。</b><br>常見原因：它是<b>繼承或覆寫</b>來的（例如 C# 的 <code>InitializeComponent</code> 在 .Designer.cs 的 partial class 裡，<code>OnPaint</code> 這類來自框架的父類別），或來自沒有建索引的函式庫，或這個檔案還沒被分析到。這不是你的專案壞了。</div>'+
+      '<div style="margin:8px 0"><button class="nvb" data-nav="back"'+(NAV.i>0?'':' disabled')+'>◀ 回到上一個位置</button> <button class="nvb" onclick="document.getElementById(\'navH\').click()">🕘 看瀏覽歷史</button></div>';
+    if(hits.length)mh+='<h2>名字相同的其他定義（'+hits.length+'，不一定是同一個）</h2>'+hits.slice(0,30).map(function(x){return '<div><a class="l" data-go="sym:'+esc(x.name)+'">'+esc(x.name)+'</a> <span class="k">'+esc(x.kind)+' · '+esc(x.path)+':'+x.line+'</span></div>'}).join('');
+    else mh+='<div class="mut">專案裡沒有任何名叫「'+esc(tail)+'」的定義。</div>';
+    $('#main').innerHTML=mh;return}
   cur.path=r.defs[0].path;
   var h='<h1 class="t">'+esc(name)+'</h1><div class="mut">'+r.defs.length+' 個定義</div>';
   var cs=[[name+' 是做什麼的',name+' 是做什麼的'],['誰用到 '+name,'誰用到 '+name],[name+' 相關的東西',name+' 相關的東西'],['請 AI 深入解釋','請讀 '+r.defs[0].path+' 裡的 '+name+'，解釋它做什麼、參數與回傳、何時會被呼叫、要注意什麼','ai']];
@@ -322,7 +334,30 @@ $('#main').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>
   });
   h+=chips(cs);$('#main').innerHTML=h;wireChips($('#main'),cs);$('#main').scrollTop=0;
 }
-function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>'})}
+function goRaw(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);var p=k==='file'?showFile(v):(k==='dir'?api('GET','/api/tree?path='+encodeURIComponent(v)).then(function(tr){return showDir(v,tr)}):k==='sym'?showSym(v):(k==='page'?showPage(v):null));if(p&&p.catch)p.catch(function(e){$('#main').innerHTML='<div class="note">'+esc(e.message)+'</div>';navFail(e.message)})}
+
+/* ===== 瀏覽歷史：上一個／下一個位置＋歷史清單（像 call stack）。連到壞掉的連結也會留在歷史裡（標紅），隨時可以退回去 ===== */
+var NAV={st:[],i:-1,max:300};
+function navText(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);return (k==='file'?'📄 ':k==='sym'?'ƒ ':(k==='dir'||k==='folder')?'📁 ':k==='page'?'📖 ':'• ')+(k==='file'?v.split('/').slice(-2).join('/'):v)}
+function navPush(g){var top=NAV.st[NAV.i];if(top&&top.g===g){navRender();return}NAV.st.length=NAV.i+1;NAV.st.push({g:g,t:navText(g),fail:''});if(NAV.st.length>NAV.max)NAV.st.shift();NAV.i=NAV.st.length-1;navRender()}
+function navFail(why){var e=NAV.st[NAV.i];if(e){e.fail=why||'失敗';navRender()}}
+function navTo(i){if(i<0||i>=NAV.st.length)return;NAV.i=i;var e=NAV.st[i];e.fail='';navRender();goRaw(e.g)}
+function navBack(){navTo(NAV.i-1)}function navFwd(){navTo(NAV.i+1)}
+function navRender(){
+  var b=document.getElementById('navB'),f=document.getElementById('navF');if(b)b.disabled=NAV.i<=0;if(f)f.disabled=NAV.i>=NAV.st.length-1;
+  var p=document.getElementById('navp');if(!p||p.style.display==='none')return;
+  var h='<div class="nh"><b>瀏覽歷史（'+NAV.st.length+'）　最新在上</b><a data-navclear="1" style="padding:0 6px;display:inline">清除</a></div>';
+  for(var k=NAV.st.length-1;k>=0;k--){var e=NAV.st[k];h+='<a data-navi="'+k+'" class="'+(k===NAV.i?'cur ':'')+(e.fail?'fail':'')+'" title="'+esc(e.fail||e.g)+'"><span class="ix">'+(k+1)+'</span><span>'+esc(e.t)+(e.fail?' ⚠ '+esc(e.fail):'')+'</span></a>'}
+  p.innerHTML=h}
+(function(){var p=document.createElement('div');p.id='navp';document.body.appendChild(p);
+  document.getElementById('navB').onclick=navBack;document.getElementById('navF').onclick=navFwd;
+  document.getElementById('navH').onclick=function(e){e.stopPropagation();p.style.display=p.style.display==='block'?'none':'block';navRender()};
+  p.addEventListener('click',function(e){e.stopPropagation();var c=e.target.closest('[data-navclear]');if(c){var cur=NAV.st[NAV.i];NAV.st=cur?[cur]:[];NAV.i=cur?0:-1;navRender();return}var a=e.target.closest('[data-navi]');if(a){p.style.display='none';navTo(+a.getAttribute('data-navi'))}});
+  document.addEventListener('click',function(e){if(!e.target.closest('#navp'))p.style.display='none'});
+  document.addEventListener('keydown',function(e){if(e.altKey&&e.key==='ArrowLeft'){e.preventDefault();navBack()}else if(e.altKey&&e.key==='ArrowRight'){e.preventDefault();navFwd()}else if(e.key==='Escape')p.style.display='none'});
+  document.addEventListener('mouseup',function(e){if(e.button===3){e.preventDefault();navBack()}else if(e.button===4){e.preventDefault();navFwd()}});
+  document.addEventListener('click',function(e){var a=e.target.closest('[data-nav]');if(a){e.preventDefault();if(a.getAttribute('data-nav')==='back')navBack();else navFwd()}})})();
+function go(g){navPush(g);goRaw(g)}
 function refreshCur(){if(cur.kind==='file')showFile(cur.key);else if(cur.kind==='symbol')showSym(cur.key);else if(cur.kind==='page')showPage(cur.key);if(tab==='notes')renderList()}
 document.addEventListener('click',function(e){var es=e.target.closest('[data-editsym]');if(es){e.preventDefault();var pp=es.getAttribute('data-editsym').split('|');var host=es.parentNode;if(host.nextElementSibling&&host.nextElementSibling.classList.contains('mde'))return;api('GET','/api/symbol?name='+encodeURIComponent(pp[1])).then(function(r){var d=r.defs.filter(function(x){return x.path===pp[0]})[0]||{};var ed=mdEditor({title:'編輯說明：'+pp[1],value:d.note||'',onSave:function(v,bx){saveNote({path:pp[0],kind:'symbol',name:pp[1]},v);bx.remove()}});host.parentNode.insertBefore(ed,host.nextSibling)});return}var lc=e.target.closest('[data-loc]');if(lc){e.preventDefault();toggleLoc(lc);return}var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.getAttribute('data-go'))}});
 document.querySelectorAll('#tabs button').forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b)});$('#sq').value='';renderList()}});
@@ -360,7 +395,7 @@ $('#btnChat').onclick=function(){setPref('chatHidden',!PREF.chatHidden)};
 $('#dockSel').onchange=function(){PREF.dock=$('#dockSel').value;applyPref();savePref()};
 $('#btnReset').onclick=async function(){try{var r=await api('POST','/api/prefs',{reset:true});PREF=Object.assign({},DEF,r&&r.layout||{})}catch(e){PREF=Object.assign({},DEF)}applyPref()};
 (async function(){
-  try{await loadPrefs();setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length)showPage(p.pages[0].id);else $('#main').innerHTML='<h1 class="t">'+esc(CFG.title)+'</h1><div class="mut">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}
+  try{await loadPrefs();setInfo(await api('GET','/api/info'));setJobs((await api('GET','/api/jobs')).jobs);await renderList();var p=await api('GET','/api/pages');if(p.pages.length){navPush('page:'+p.pages[0].id);showPage(p.pages[0].id)}else $('#main').innerHTML='<h1 class="t">'+esc(CFG.title)+'</h1><div class="mut">左邊可以瀏覽檔案與定義；右邊直接問問題。點任何檔案或函式，下面的小按鈕可以請離線問答或 AI 說明它。</div>'}
   catch(e){$('#main').innerHTML='<div class="note err">載入失敗：'+esc(e.message)+'</div>'}
   connect();
 })();

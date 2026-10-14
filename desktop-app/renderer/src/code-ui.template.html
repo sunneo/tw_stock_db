@@ -9,6 +9,11 @@ header{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1
 header h1{font-size:16px;margin:0;word-break:break-all}header .st{color:var(--mut);font-size:12px}
 nav{display:flex;gap:4px;margin-left:auto}nav button{padding:5px 12px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;font-size:13px}
 nav button.on{border-color:var(--ac);color:var(--ac);font-weight:600}
+.nvb{padding:3px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);cursor:pointer;font-size:13px}.nvb:disabled{opacity:.35;cursor:default}
+#navp{position:fixed;top:46px;left:8px;z-index:60;width:min(460px,92vw);max-height:62vh;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,.25);padding:4px;display:none}
+#navp .nh{display:flex;align-items:center;gap:8px;padding:4px 8px;color:var(--mut);font-size:12px}#navp .nh b{flex:1}
+#navp a{display:flex;gap:8px;align-items:baseline;padding:4px 8px;border-radius:5px;cursor:pointer;color:var(--fg);word-break:break-all;text-decoration:none}#navp a:hover{background:var(--sf)}
+#navp a.cur{background:var(--hl);font-weight:600}#navp a.fail{color:var(--er)}#navp a .ix{color:var(--mut);font-size:11px;min-width:22px;text-align:right}
 #load{padding:30px;text-align:center;color:var(--mut)}#bar{height:6px;background:var(--bd);border-radius:3px;margin:10px auto;max-width:420px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac)}
 #app{flex:1;display:flex;min-height:0}
 .pane{display:none;flex:1;min-height:0}.pane.on{display:flex}
@@ -51,7 +56,7 @@ a.src{cursor:pointer;text-decoration:none;margin-left:3px;font-size:12px}a.src:h
 #sv-c{flex:1;min-height:0;width:100%;display:block;background:#0d1117}
 @media (max-width:720px){.pane.on{flex-direction:column}.side{width:100%;max-width:none;height:40vh}.main{padding:12px}}
 </style></head><body>
-<header><h1 id="ttl"></h1><span class="st" id="stat"></span><span id="fapst" title="讀原始碼與讀寫說明需要先授權專案資料夾"></span><nav id="nav"></nav></header>
+<header><button class="nvb" id="navB" title="上一個位置（Alt+←、滑鼠上一頁鍵）" disabled>◀</button><button class="nvb" id="navF" title="下一個位置（Alt+→、滑鼠下一頁鍵）" disabled>▶</button><button class="nvb" id="navH" title="瀏覽歷史（像 call stack：最新在最上面，點一下跳回去）">🕘</button><h1 id="ttl"></h1><span class="st" id="stat"></span><span id="fapst" title="讀原始碼與讀寫說明需要先授權專案資料夾"></span><nav id="nav"></nav></header>
 <div id="load"><div id="lmsg">載入中…</div><div id="bar"><i id="barfill"></i></div></div>
 <div id="app" style="display:none" data-dock="right"><div id="panes">
 <section class="pane" id="p-wiki"><div class="side"><input id="wq" placeholder="搜尋頁面…"><div class="list" id="wl"></div></div><div class="main" id="wm"></div></section>
@@ -190,8 +195,39 @@ async function boot(){
 }
 function show(t){if(t==='ask'){dockOpen(!DOCK.open);return}
   document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.id==='p-'+t)});document.querySelectorAll('#nav button').forEach(function(b){if(b.dataset.t!=='ask')b.classList.toggle('on',b.dataset.t===t)})}
-function go(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);
+function goRaw(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);
   if(k==='file'){show('files');CURF=v;showFileX(v)}else if(k==='sym'){show('syms');CURS=v;showSymX(v)}else if(k==='page'){show('wiki');showPage(v)}else if(k==='folder'){show('files');showFolder(v)}}
+
+/* ===== 瀏覽歷史：上一個／下一個位置＋歷史清單（像 call stack）。連到壞掉的連結也會留在歷史裡（標紅），隨時可以退回去 ===== */
+var NAV={st:[],i:-1,max:300};
+function navText(g){var i=g.indexOf(':'),k=g.slice(0,i),v=g.slice(i+1);return (k==='file'?'📄 ':k==='sym'?'ƒ ':(k==='dir'||k==='folder')?'📁 ':k==='page'?'📖 ':'• ')+(k==='file'?v.split('/').slice(-2).join('/'):v)}
+function navPush(g){var top=NAV.st[NAV.i];if(top&&top.g===g){navRender();return}NAV.st.length=NAV.i+1;NAV.st.push({g:g,t:navText(g),fail:''});if(NAV.st.length>NAV.max)NAV.st.shift();NAV.i=NAV.st.length-1;navRender()}
+function navFail(why){var e=NAV.st[NAV.i];if(e){e.fail=why||'失敗';navRender()}}
+function navTo(i){if(i<0||i>=NAV.st.length)return;NAV.i=i;var e=NAV.st[i];e.fail='';navRender();goRaw(e.g)}
+function navBack(){navTo(NAV.i-1)}function navFwd(){navTo(NAV.i+1)}
+function navRender(){
+  var b=document.getElementById('navB'),f=document.getElementById('navF');if(b)b.disabled=NAV.i<=0;if(f)f.disabled=NAV.i>=NAV.st.length-1;
+  var p=document.getElementById('navp');if(!p||p.style.display==='none')return;
+  var h='<div class="nh"><b>瀏覽歷史（'+NAV.st.length+'）　最新在上</b><a data-navclear="1" style="padding:0 6px;display:inline">清除</a></div>';
+  for(var k=NAV.st.length-1;k>=0;k--){var e=NAV.st[k];h+='<a data-navi="'+k+'" class="'+(k===NAV.i?'cur ':'')+(e.fail?'fail':'')+'" title="'+esc(e.fail||e.g)+'"><span class="ix">'+(k+1)+'</span><span>'+esc(e.t)+(e.fail?' ⚠ '+esc(e.fail):'')+'</span></a>'}
+  p.innerHTML=h}
+(function(){var p=document.createElement('div');p.id='navp';document.body.appendChild(p);
+  document.getElementById('navB').onclick=navBack;document.getElementById('navF').onclick=navFwd;
+  document.getElementById('navH').onclick=function(e){e.stopPropagation();p.style.display=p.style.display==='block'?'none':'block';navRender()};
+  p.addEventListener('click',function(e){e.stopPropagation();var c=e.target.closest('[data-navclear]');if(c){var cur=NAV.st[NAV.i];NAV.st=cur?[cur]:[];NAV.i=cur?0:-1;navRender();return}var a=e.target.closest('[data-navi]');if(a){p.style.display='none';navTo(+a.getAttribute('data-navi'))}});
+  document.addEventListener('click',function(e){if(!e.target.closest('#navp'))p.style.display='none'});
+  document.addEventListener('keydown',function(e){if(e.altKey&&e.key==='ArrowLeft'){e.preventDefault();navBack()}else if(e.altKey&&e.key==='ArrowRight'){e.preventDefault();navFwd()}else if(e.key==='Escape')p.style.display='none'});
+  document.addEventListener('mouseup',function(e){if(e.button===3){e.preventDefault();navBack()}else if(e.button===4){e.preventDefault();navFwd()}});
+  document.addEventListener('click',function(e){var a=e.target.closest('[data-nav]');if(a){e.preventDefault();if(a.getAttribute('data-nav')==='back')navBack();else navFwd()}})})();
+function go(g){navPush(g);goRaw(g)}
+/* 符號找不到：說明原因（繼承／覆寫／框架／沒建索引的函式庫）、同名候選、回上一個位置 */
+function symMissHtml(name,hits){
+  var tail=String(name).split(/[.:]+/).filter(Boolean).pop()||name;
+  var h='<div class="note"><b>索引裡沒有「'+esc(name)+'」的定義。</b><br>常見原因：它是<b>繼承或覆寫</b>來的（例如 C# 的 <code>InitializeComponent</code> 在 .Designer.cs 的 partial class 裡，<code>OnPaint</code> 這類來自框架的父類別），或來自沒有建索引的函式庫，或這個檔案還沒被分析到。這不是匯出壞了。</div>'+
+    '<div style="margin:8px 0"><button class="nvb" data-nav="back"'+(NAV.i>0?'':' disabled')+'>◀ 回到上一個位置</button> <button class="nvb" onclick="document.getElementById(\'navH\').click()">🕘 看瀏覽歷史</button></div>';
+  if(hits&&hits.length)h+='<h2>名字相同的其他定義（'+hits.length+'，不一定是同一個）</h2>'+hits.slice(0,30).map(function(x){return '<div><a class="l" data-go="sym:'+esc(x[0])+'">'+esc(x[0])+'</a> <span class="k">'+esc(x[1])+' · '+esc(x[2])+':'+x[3]+'</span></div>'}).join('');
+  else h+='<div class="mut">這份匯出裡沒有任何名叫「'+esc(tail)+'」的定義。</div>';
+  return h}
 document.addEventListener('click',function(e){var a=e.target.closest('[data-go]');if(a){e.preventDefault();go(a.dataset.go);return}
   a=e.target.closest('[data-src]');if(a){e.preventDefault();var m=/^(.*?)(?::(\d+)(?:-(\d+))?)?$/.exec(a.dataset.src);openSrc(m[1],+m[2]||0,+m[3]||0);return}
   a=e.target.closest('[data-ai]');if(a){e.preventDefault();aiExplain(a);return}
@@ -204,7 +240,7 @@ function initWiki(){
     var gl=Object.keys(GLOSS);if(gl.length&&!q)h+='<div class="mut" style="padding:8px 8px 2px">名詞</div>'+gl.sort().map(function(t){return '<a data-go="term:'+esc(t)+'">'+esc(t)+'</a>'}).join('');
     $('#wl').innerHTML=h||'<div class="mut" style="padding:8px">沒有符合的頁面</div>'}
   $('#wq').oninput=render;render();
-  if(PAGES.length)showPage(PAGES[0].id);else{var h2='<h1 class="t">專案概況</h1><div class="mut">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}
+  if(PAGES.length){navPush('page:'+PAGES[0].id);showPage(PAGES[0].id)}else{var h2='<h1 class="t">專案概況</h1><div class="mut">'+esc(CFG.root)+'</div><p>這份匯出沒有百科頁面，請用「檔案」「符號」「問答」。</p>';$('#wm').innerHTML=h2}
 }
 function showPage(id){var p=PAGES.filter(function(x){return x.id===id})[0];if(!p){$('#wm').innerHTML='<div class="note">沒有這個頁面</div>';return}
   $('#wm').innerHTML='<div class="md">'+(p.auto?'<div class="note">這一頁是依程式碼結構自動產生的草稿。</div>':'')+mdToHtml(p.md)+'</div>';$('#wm').scrollTop=0}
@@ -246,7 +282,9 @@ function initSyms(){
   $('#sm').innerHTML='<h1 class="t">符號</h1><div class="mut">函式、類別、結構、巨集…（最多列300筆，用上面的搜尋縮小範圍）。</div>';
 }
 function showSym(name){var ids=IX.nameMap[String(name).toLowerCase()]||[];
-  if(!ids.length){$('#sm').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  if(!ids.length){navFail('索引裡沒有');var tl=String(name).split(/[.:]+/).filter(Boolean).pop().toLowerCase(),hs=[];
+    Object.keys(IX.nameMap).forEach(function(k){if(hs.length<30&&k.split(/[.:]+/).pop()===tl)(IX.nameMap[k]||[]).slice(0,3).forEach(function(id){var s=S(id);hs.push([s[0],s[1],F(s[2])[0],s[3]])})});
+    $('#sm').innerHTML=symMissHtml(name,hs);return}
   var h='<h1 class="t">'+esc(S(ids[0])[0])+'</h1><div class="mut">'+ids.length+' 個定義</div>';
   ids.slice(0,12).forEach(function(k){var s=S(k),fi=s[2];
     h+='<h2>'+esc(s[1])+'　'+link(F(fi)[0],F(fi)[0]+':'+s[3])+srcLink(F(fi)[0]+':'+s[3])+explainBtn('fn',F(fi)[0],s[0])+'</h2>';
@@ -473,7 +511,9 @@ async function initSymsP(){
 }
 async function showSymP(name){
   var rows=await symRows('s.name=? collate nocase order by s.used_by desc limit 12',[name]);
-  if(!rows.length){$('#sm').innerHTML='<div class="note">索引裡沒有「'+esc(name)+'」</div>';return}
+  if(!rows.length){navFail('索引裡沒有');var tl=String(name).split(/[.:]+/).filter(Boolean).pop(),hr=[];
+    try{hr=(await symRows('s.name like ? collate nocase order by s.used_by desc limit 60',['%'+tl])).filter(function(r){return String(r[1]).split(/[.:]+/).pop().toLowerCase()===tl.toLowerCase()}).map(function(r){return [r[1],r[2],r[3],r[4]]})}catch(e){}
+    $('#sm').innerHTML=symMissHtml(name,hr);return}
   var h='<h1 class="t">'+esc(rows[0][1])+'</h1><div class="mut">'+rows.length+' 個定義</div>';
   for(var i=0;i<rows.length;i++){var s=rows[i],note=NOTES.syms[s[3]+'\u0000'+s[1]]||s[7]||'';
     h+='<h2>'+esc(s[2])+'　'+link(s[3],s[3]+':'+s[4])+srcLink(s[3]+':'+s[4])+explainBtn('fn',s[3],s[1])+'</h2>'+noteView('說明',note)+noteEditor('sym',s[3],s[1],note);
