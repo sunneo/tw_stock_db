@@ -13512,6 +13512,181 @@ const holder = {};
 return holder.FaPipeline;
 })();
 /* PIPELINE-END */
+/* TOOLBUDGET-BEGIN */
+const FaToolBudget = (function () {
+const holder = {};
+(function (module, self) {
+/* 工具預算核心（UMD，純函式，不碰 DOM／網路）：讓「很多工具」在小 context window 的模型上也能用。
+ * 原則（不可打破）：所有工具對模型只給「一行短說明＋精簡參數」，完整說明與參數一律靠 get_tool_details 按需查詢。
+ *  - shortOf        ：一個工具的一行短說明（明確的 short 優先，沒有就從完整說明取第一句、去掉括號補充、限長）
+ *  - compactSchema  ：把參數 schema 精簡（保留名稱、型別、列舉、必填；欄位說明只留第一小句）
+ *  - 詞彙檢索       ：tokens／buildIndex／rank——用任務文字找最相關的工具／領域（中文 bigram＋英文詞，依稀有度加權）
+ *  - 領域切割       ：PHASE_GROUPS（程式設計的階段群組）＋ planSplit（工具太多的領域 → 「協調者＋階段子領域」的樹）＋ autoClusters（沒有現成分群時的建議）
+ *  - 預算報告       ：budgetReport——哪個工具說明太長、哪個領域工具太多，各給具體建議（測試與執行時警告共用） */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaToolBudget = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const LIMITS = { shortChars: 90, domainTools: 20, domainTokens: 6000, toolSchemaTokens: 700, focusTools: 16, mixerChildren: 10 };
+
+    function estimateTokens(s) {
+        s = String(s == null ? '' : s); let cjk = 0; for (const ch of s) if (/[　-鿿＀-￯]/.test(ch)) cjk++;
+        return Math.round(cjk * 1.1 + (s.length - cjk) / 3.6);
+    }
+
+    // ───────────────────────── 短說明 ─────────────────────────
+    function shortOf(name, desc, explicit) {
+        if (explicit) return String(explicit).replace(/\s+/g, ' ').trim().slice(0, LIMITS.shortChars + 20);
+        let d = String(desc || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim(); if (!d) return String(name || '');
+        const bare = d.replace(/（[^）]*）|\([^)]*\)/g, '').replace(/【[^】]*】/g, '').replace(/\s+/g, ' ').trim(); if (bare.length >= 10) d = bare;
+        const m = /^(.{10,}?)(?:[。！？]|\. |；|; |\n|$)/.exec(d); let s = m ? m[1] : d;
+        if (s.length > LIMITS.shortChars) { const c = s.search(/[，,：:—]/); s = (c >= 20 && c <= LIMITS.shortChars) ? s.slice(0, c) : s.slice(0, LIMITS.shortChars - 1) + '…'; }
+        return s.replace(/[，,：:；;]\s*$/, '');
+    }
+    // 精簡參數 schema：不改變結構（型別、必填、列舉都在），只把每個欄位的說明縮成第一小句
+    function compactSchema(schema, opt, depth) {
+        opt = opt || {}; depth = depth || 0; const maxDesc = opt.maxParamDesc || 36; const maxDepth = opt.maxDepth || 3;
+        if (!schema || typeof schema !== 'object') return schema; if (Array.isArray(schema)) return schema.map((x) => compactSchema(x, opt, depth + 1));
+        // 太深的巢狀（陣列裡的物件的欄位…）只留型別：結構細節靠 get_tool_details／第一次失敗時附的完整說明
+        if (depth >= maxDepth && schema.type) return { type: schema.type };
+        const out = {};
+        for (const [k, v] of Object.entries(schema)) {
+            if (k === 'description' && typeof v === 'string') { const d = v.replace(/\s+/g, ' ').trim(); const c = d.search(/[。；;（(，,]/); const cut = (c >= 4 && c <= maxDesc) ? d.slice(0, c) : d.slice(0, maxDesc); out[k] = cut + (cut.length < d.length ? '…' : ''); }
+            else if (k === 'properties' && v && typeof v === 'object') { out[k] = {}; for (const [pk, pv] of Object.entries(v)) out[k][pk] = compactSchema(pv, opt, depth + 1); }
+            else if (k === 'items' || k === 'additionalProperties' || k === 'oneOf' || k === 'anyOf') out[k] = (v && typeof v === 'object') ? compactSchema(v, opt, depth + 1) : v;
+            else if (k === 'default' || k === 'examples' || k === 'example') continue;
+            else out[k] = v;
+        }
+        return out;
+    }
+
+    // 照預算收斂：先用一般精簡；還是超過就逐級更狠（欄位說明縮短→有列舉的欄位不留說明、巢狀只留型別→巢狀物件只列欄位名）。
+    // 結構（欄位名、型別、必填、列舉）永遠留著，被砍掉的細節靠 get_tool_details／第一次失敗時附的完整說明
+    function tighten(schema, level, depth) {
+        if (!schema || typeof schema !== 'object') return schema; if (Array.isArray(schema)) return schema.map((x) => tighten(x, level, (depth || 0) + 1));
+        depth = depth || 0; const out = {}; let collapsed = false;
+        for (const [k, v] of Object.entries(schema)) {
+            if (k === 'description' && typeof v === 'string') {
+                // 級數：1＝說明縮到24字；2＝頂層欄位縮到12字、巢狀欄位不留說明；3＝所有欄位都不留說明、巢狀物件只列欄位名
+                if (schema.enum || (level >= 3 && depth >= 1) || (level >= 2 && depth >= 2)) continue;
+                const lim = level >= 2 ? 12 : 24; out[k] = v.length > lim ? v.slice(0, lim - 1) + '…' : v;
+            } else if (k === 'properties' && v && typeof v === 'object') {
+                if (level >= 3 && depth >= 1) { out.description = 'keys: ' + Object.keys(v).join(','); collapsed = true; continue; }
+                out[k] = {}; for (const [pk, pv] of Object.entries(v)) out[k][pk] = tighten(pv, level, depth + 1);
+            } else if (k === 'items' && v && typeof v === 'object') out[k] = tighten(v, level, depth + 1);
+            else out[k] = v;
+        }
+        if (collapsed) delete out.required;
+        return out;
+    }
+    function compactToBudget(schema, maxTokens, opt) {
+        maxTokens = maxTokens || LIMITS.toolSchemaTokens; let cur = compactSchema(schema, opt);
+        for (let level = 1; level <= 3 && estimateTokens(JSON.stringify(cur)) > maxTokens; level++) cur = tighten(compactSchema(schema, opt), level, 0);
+        return cur;
+    }
+
+    // ───────────────────────── 詞彙檢索 ─────────────────────────
+    function tokens(text) {
+        const t = String(text || '').toLowerCase(); const out = new Set();
+        for (const w of t.match(/[a-z][a-z0-9_]{2,}/g) || []) { out.add(w); for (const part of w.split('_')) if (part.length >= 3) out.add(part); }
+        for (const run of t.match(/[㐀-鿿]+/g) || []) { if (run.length === 1) continue; for (let i = 0; i < run.length - 1; i++) out.add(run.slice(i, i + 2)); }
+        for (const w of ['pdf', 'png', 'jpg', 'zip', 'csv', 'sql', 'git', 'api', 'url', 'mp3', 'mp4', 'gif', 'svg', 'tts', 'ci', 'uml']) if (t.includes(w)) out.add(w);
+        return out;
+    }
+    // docs: [{id, text, nameText?, weight?}]；nameText 命中加倍（名稱比說明更能代表用途）
+    function buildIndex(docs) {
+        const df = new Map(); const list = docs.map((d) => { const toks = tokens(d.text); const nameToks = tokens(d.nameText || ''); for (const w of new Set([...toks, ...nameToks])) df.set(w, (df.get(w) || 0) + 1); return { id: d.id, toks, nameToks, extra: d.extra }; });
+        return { docs: list, df, n: list.length };
+    }
+    function rank(index, query, opt) {
+        opt = opt || {}; const q = typeof query === 'string' ? tokens(query) : query; const minHit = opt.minHit == null ? 3 : opt.minHit, minScore = opt.minScore == null ? 9 : opt.minScore, ratio = opt.ratio == null ? 0.7 : opt.ratio, max = opt.max || 6, minKeep = opt.minKeep || 0;
+        if (q.size < 2) return []; const scored = [];
+        for (const d of index.docs) {
+            if (opt.exclude && opt.exclude.has(d.id)) continue; let sc = 0, hit = 0, nameHit = 0;
+            for (const w of q) { const inDoc = d.toks.has(w), inName = d.nameToks.has(w); if (!inDoc && !inName) continue; const idf = Math.log(1 + index.n / (index.df.get(w) || 1)); sc += idf; hit++; if (inName) { nameHit++; sc += idf; } }
+            if (sc > 0) scored.push({ id: d.id, score: Math.round(sc * 10) / 10, hit, nameHit, extra: d.extra });
+        }
+        scored.sort((a, b) => b.score - a.score); const top = scored.length ? scored[0].score : 0;
+        let keep = scored.filter((x) => x.hit >= minHit && x.score >= minScore && x.score >= top * ratio);
+        if (keep.length < minKeep) keep = scored.slice(0, minKeep);
+        return keep.slice(0, max);
+    }
+
+    // ───────────────────────── 領域切割：階段群組 ─────────────────────────
+    // 程式設計相關領域（coding 與 11 個 prog_*）幾乎共用同一組約 28 個工具。依「階段」分成幾個共用的子領域（每個 ≤ 12 個工具）：
+    // 探索 → 讀懂 → 研究 → 試驗 → 修改 → 驗證 → CI → 設計 → 日誌。協調者（原本的領域）只留自己的狀態工具與專屬工具，用 delegate_subtask 把階段交給子領域。
+    const PHASE_GROUPS = {
+        ph_files: { phase: 'explore', label: '階段・探索檔案：列目錄、找檔案、讀檔、搜尋、大檔分析', tools: ['list_file_access_points', 'fap_list_files', 'fap_find_file', 'fs_read_file', 'fs_list_files', 'fs_find_file', 'fs_grep', 'fs_stat', 'coding_read_file', 'analyze_large_file', 'get_large_file_analysis_chunk', 'batch_process_items'] },
+        ph_repo: { phase: 'understand', label: '階段・讀懂專案：專案索引、程式碼問答、解釋程式', tools: ['repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define'] },
+        ph_research: { phase: 'research', label: '階段・查資料與學新語言：知識卡、網路搜尋、抓網頁', tools: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page'] },
+        ph_sandbox: { phase: 'experiment', label: '階段・試驗：沙盒（HTML／Worker／Python／模擬後端）與腳本執行', tools: ['sandbox_capabilities', 'sandbox_html', 'sandbox_worker', 'sandbox_mock', 'sandbox_py_app', 'python_execute', 'bash_execute'] },
+        ph_design: { phase: 'design', label: '階段・設計：UML、設計抉擇、骨架產生、互動確認', tools: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'ask_user_card', 'render_uml_diagram', 'glue_list', 'glue_define', 'glue_report'] },
+        ph_edit: { phase: 'implement', label: '階段・實作：暫存工作區、改檔、套 patch、commit', tools: ['coding_workspace', 'coding_edit', 'coding_patch_tool', 'apply_git_patch', 'git_inspect', 'git_commit'] },
+        ph_verify: { phase: 'verify', label: '階段・驗證：語法檢查、跑測試、終端機', tools: ['coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'run_command'] },
+        ph_ci: { phase: 'ci', label: '階段・CI／Review：Gerrit、GitHub、Jenkins、失敗分診、pipeline', tools: ['ci_connections', 'gerrit', 'github_ci', 'jenkins', 'ci_triage', 'pipeline_inspect', 'ci_guide'] },
+        ph_logs: { phase: 'logs', label: '階段・日誌與混合內容：學日誌、問答、讀混合輸入', tools: ['log_learn', 'log_ask', 'mix_understand', 'mix_highlight'] },
+    };
+    const PHASE_ORDER = ['explore', 'understand', 'research', 'experiment', 'design', 'implement', 'verify', 'ci', 'logs'];
+
+    // domains: { key: { own:[工具], category?, noSplit? } }。回傳：
+    //   { groups: { gk: { label, phase, tools } }（只含有被用到的群組）,
+    //     domains: { dk: { own:[留在協調者自己手上的工具], children:[{ group, tools:[這個領域真的有的工具（群組∩原工具）] }] } },
+    //     skipped: [{ key, reason }] }
+    // 每個子領域的視圖是「群組 ∩ 原領域工具」：切完之後協調者能叫到的工具聯集＝原本的工具集，不會多出原本沒有的能力。
+    function planSplit(input, opt) {
+        opt = opt || {}; const cap = opt.cap || LIMITS.domainTools; const groups = opt.groups || PHASE_GROUPS; const usedGroups = {}; const outDomains = {}; const skipped = [];
+        for (const [dk, d] of Object.entries(input)) {
+            const own = Array.from(new Set(d.own || [])); if (own.length <= cap) continue;
+            if (d.noSplit) { skipped.push({ key: dk, reason: '標記為不切割' }); continue; }
+            const children = []; const taken = new Set();
+            for (const [gk, g] of Object.entries(groups)) {
+                const inter = g.tools.filter((t) => own.includes(t) && !taken.has(t)); if (inter.length < 2) continue;
+                inter.forEach((t) => taken.add(t)); children.push({ group: gk, tools: inter }); usedGroups[gk] = g;
+            }
+            const rest = own.filter((t) => !taken.has(t));
+            if (!children.length) { skipped.push({ key: dk, reason: '沒有符合的階段群組（改用自動分群建議）' }); continue; }
+            if (rest.length > cap) { skipped.push({ key: dk, reason: '切完協調者自己還有 ' + rest.length + ' 個工具' }); for (const c of children) delete usedGroups[c.group]; continue; }
+            children.sort((a, b) => PHASE_ORDER.indexOf(groups[a.group].phase) - PHASE_ORDER.indexOf(groups[b.group].phase));
+            outDomains[dk] = { own: rest, children };
+        }
+        const outGroups = {}; for (const [gk, g] of Object.entries(usedGroups)) outGroups[gk] = { label: g.label, phase: g.phase, tools: g.tools.slice() };
+        return { groups: outGroups, domains: outDomains, skipped };
+    }
+    // 沒有現成階段群組時的建議：依工具名稱前綴分群（repo_*、git_*、browser_*…），太小的併成「其他」，太大的再平分。只給建議，不自動套用。
+    function autoClusters(tools, maxSize) {
+        maxSize = maxSize || 12; const by = {}; for (const t of tools) { const p = String(t).split('_')[0] || 'misc'; (by[p] = by[p] || []).push(t); }
+        const groups = []; const misc = [];
+        for (const [p, ts] of Object.entries(by)) { if (ts.length >= 3) { for (let i = 0; i < ts.length; i += maxSize) groups.push({ name: p + (ts.length > maxSize ? '_' + (i / maxSize + 1) : ''), tools: ts.slice(i, i + maxSize) }); } else misc.push(...ts); }
+        for (let i = 0; i < misc.length; i += maxSize) groups.push({ name: 'misc' + (misc.length > maxSize ? '_' + (i / maxSize + 1) : ''), tools: misc.slice(i, i + maxSize) });
+        return groups;
+    }
+
+    // ───────────────────────── 預算報告 ─────────────────────────
+    // tools: [{ name, short, schemaTokens }]；domains: [{ key, tools:[名稱], mixer? }]。回傳 { ok, violations:[{ kind, key, detail, suggest }], totals }
+    function budgetReport(input, opt) {
+        const L = Object.assign({}, LIMITS, (opt && opt.limits) || {}); const v = []; const byName = new Map(input.tools.map((t) => [t.name, t]));
+        for (const t of input.tools) {
+            if (String(t.short || '').length > L.shortChars + 20) v.push({ kind: 'short_too_long', key: t.name, detail: '短說明 ' + String(t.short).length + ' 字', suggest: '補一個明確的 short（≤ ' + L.shortChars + ' 字）' });
+            if ((t.schemaTokens || 0) > L.toolSchemaTokens) v.push({ kind: 'schema_too_big', key: t.name, detail: '精簡後 schema 約 ' + t.schemaTokens + ' token', suggest: '參數太多或欄位太複雜：拆成兩個工具，或把選項收進 get_tool_details' });
+        }
+        for (const d of input.domains) {
+            const n = d.tools.length; const tok = d.tools.reduce((a, name) => a + ((byName.get(name) || {}).schemaTokens || 0), 0);
+            if (!d.mixer && n > L.domainTools) v.push({ kind: 'domain_too_many_tools', key: d.key, detail: n + ' 個工具（上限 ' + L.domainTools + '）', suggest: '切成階段子領域＋協調者（planSplit／autoClusters）' });
+            else if (!d.mixer && tok > L.domainTokens) v.push({ kind: 'domain_too_big', key: d.key, detail: '工具 schema 約 ' + tok + ' token（上限 ' + L.domainTokens + '）', suggest: '切割，或把冷門工具移到 request_additional_tools' });
+            if (d.mixer && (d.children || 0) > L.mixerChildren) v.push({ kind: 'mixer_too_wide', key: d.key, detail: d.children + ' 個子領域（上限 ' + L.mixerChildren + '）', suggest: '再加一層協調者（樹狀）' });
+        }
+        return { ok: !v.length, violations: v, totals: { tools: input.tools.length, domains: input.domains.length } };
+    }
+
+    return { LIMITS, estimateTokens, shortOf, compactSchema, compactToBudget, tokens, buildIndex, rank, PHASE_GROUPS, PHASE_ORDER, planSplit, autoClusters, budgetReport };
+});
+
+}).call(null, undefined, holder);
+return holder.FaToolBudget;
+})();
+/* TOOLBUDGET-END */
 /* DOCMERGE-BEGIN */
 const FaDocMerge = (function () {
 const holder = {};
@@ -16282,6 +16457,21 @@ const SUBAGENT_MAX_TOOL_ESCALATIONS = 3;
 const SUBAGENT_NEST_MAX_DEPTH = 2;
 const SUBAGENT_NEST_MAX_CALLS = 4;
 const SUBAGENT_NEST_TOOL_NAME = 'delegate_subtask';
+// tw_stock_db客製: 2026-10-14使用者定下、不可打破的原則——所有工具對模型一律只給「一行短說明＋精簡參數」，完整說明與參數靠 get_tool_details 按需查詢
+// （原生 tool-call 模式以前會把每個工具的完整說明整段送出去：197 個工具光 schema 就約 85k token，小 context window 的模型直接放不下）。
+// 短說明預設從完整說明取第一句（FaToolBudget.shortOf）；取出來不好的在這裡寫明確的。新增工具時：說明的第一句就要能獨立回答「這個工具做什麼」，
+// 太長的細節放後面——預算檢查（_toolBudgetReport／scripts/eval/tool-budget.eval.js）會抓超標的。
+const FA_TOOL_SHORTS = {
+    get_tool_details: '查工具的完整說明與參數（清單只給一行；第一次用或不確定參數時先查）',
+    explain_command_line: '逐項解釋一行命令（gcc、gdb、qemu 等的選項）',
+    log_learn: '學習一份日誌的格式與常見事件（學完用 log_ask 問答）',
+    log_ask: '對學過的日誌做摘要與問答（哪個錯誤最多、何時第一次出現…）',
+    extract_video_frames: '擷取已上傳影片在指定時間點的畫面，存成圖片',
+    begin_presentation: 'Start a long presentation written in several batches (stays ONE deck)',
+    cute_picture: 'Built-in cute illustrations of everyday things (with correct zhuyin)',
+    extract_audio: '把影片的聲音抽出來，存成獨立音檔',
+    fs_grep: '在檔案或資料夾的文字檔裡用正規表示式搜尋，只回傳符合的行',
+};
 /* TASK-HINTS-BEGIN */
 // tw_stock_db客製: 2026-10-14使用者實測——根模型把「資料夾裡的圖片轉PDF」直接委派給 desktop_ops（或更早的 code_execution），那兩個領域沒有 images_to_pdf，
 // 子agent改去找 img2pdf／Pillow／ImageMagick（不一定有、也不一定裝得起來），還把「等比例縮放置中」做成裁切。依「任務文字」補工具：
@@ -23714,6 +23904,7 @@ class FloatingAssistant {
     // 交給實際路由時才會知道查無此分類，直接被當成獨立領域處理）。
     register_domain(key, { label, toolNames, systemPrompt, enabled = true, category = null } = {}) {
         this.domains[key] = { label, toolNames: Array.isArray(toolNames) ? toolNames : [], systemPrompt, enabled, category: category || null };
+        this._splitDirty = true; // 領域有變：下次用到時重新依預算切割（見 _ensureDomainSplits）
         // tw_stock_db客製: 2026-09-09——'full'模式下delegate_to_subagent的
         // description會列出目前全部enabled domain，host頁面新增domain後要
         // 讓這份清單立刻反映最新狀態（不用等使用者手動觸發一次
@@ -25629,7 +25820,7 @@ ${fnData.code}
         // 傳給模型，不會被這裡的「文字協定清單縮減」影響，模型也不需要呼叫
         // 這個工具（結構化schema裡本來就看得到完整參數）。
         this.register_openai_tool('get_tool_details',
-            '查詢一個或多個工具的完整說明（用途、每個參數的確切名稱與格式）——只能查詢「目前真的出現在你自己的工具清單裡」的名稱，上面清單裡的項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前先用這個查出完整參數規格，不要自己憑印象/猜測參數名稱或格式。**不要用這個工具去猜測/尋找沒有出現在你工具清單裡的名稱**——你需要的能力如果根本沒出現在清單裡，代表它是委派給專家子agent處理的範圍，應該直接呼叫delegate_to_subagent描述你要做的事，不是想辦法用這個工具找出隱藏的工具名稱（那樣只會浪費好幾輪都查無結果）。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
+            '查詢一個或多個工具的完整說明與參數（用途、每個參數的確切名稱與格式）——只能查詢「目前真的出現在你自己的工具清單裡」的名稱，上面清單裡的項目為了節省篇幅只列出名稱跟極短摘要，呼叫任何不熟悉的工具之前先用這個查出完整參數規格，不要自己憑印象/猜測參數名稱或格式。**不要用這個工具去猜測/尋找沒有出現在你工具清單裡的名稱**——你需要的能力如果根本沒出現在清單裡，代表它是委派給專家子agent處理的範圍，應該直接呼叫delegate_to_subagent描述你要做的事，不是想辦法用這個工具找出隱藏的工具名稱（那樣只會浪費好幾輪都查無結果）。參數: {"names":["工具名稱1","工具名稱2",...]}（可以一次查多個）',
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -25640,7 +25831,7 @@ ${fnData.code}
                 const found = {}, notFound = [];
                 for (const name of names) {
                     const entry = entries.find(([n]) => n === name);
-                    if (entry) found[name] = entry[1].description;
+                    if (entry) found[name] = { description: entry[1].description, parameters: entry[1].parametersSchema || undefined };
                     else notFound.push(name);
                 }
                 return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
@@ -39273,6 +39464,94 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         }
         return healed;
     }
+
+    // ===== 領域切割：工具太多的領域 → 「協調者＋階段子領域」的樹 =====
+    // 原則（使用者定下）：每個子 agent 只專心用自己那一小組工具，就不會溢出小 context window 的模型。程式設計相關的領域（coding 與 11 個 prog_*）共用同一組約 28 個工具，
+    // 依階段分成共用的子領域（探索／讀懂／研究／試驗／設計／實作／驗證／CI／日誌，見 FaToolBudget.PHASE_GROUPS）：一群子 agent 專職一個階段，做到一個地步用「交接單」換手到下一群；
+    // 原本的領域變成協調者（mixer）——自己手上只有狀態工具與專屬工具，用 delegate_subtask 把階段交給子領域；協調者也可以放在協調者底下（樹狀，最深 3 層）。
+    // 每個子領域的視圖是「群組 ∩ 原領域工具」：協調者能叫到的工具聯集＝原本的工具集，不會多出原本沒有的能力。advancedSettings.domainSplit=false 可關。
+    _isPublicDomain(d) { return !!(d && d.enabled && !d.internal); }
+    _splitEnabled() { return !this.advancedSettings || this.advancedSettings.domainSplit !== false; }
+    _undoDomainSplits() {
+        const st = this._splitState; if (!st) return;
+        for (const [k, orig] of Object.entries(st.orig)) if (this.domains[k] && this.domains[k]._splitMixer) this.domains[k] = orig;
+        for (const gk of st.groups) if (this.domains[gk] && this.domains[gk]._splitGroup) delete this.domains[gk];
+        this._splitState = null;
+    }
+    _ensureDomainSplits() {
+        if (!this._splitDirty && this._splitState !== undefined) return; this._splitDirty = false;
+        this._undoDomainSplits(); this._splitState = null; if (!this._splitEnabled()) return;
+        const input = {};
+        for (const [k, d] of Object.entries(this.domains)) {
+            if (!d || !d.enabled || d.internal) continue; let own = []; try { own = this._resolveOwnDomainToolNames(d); } catch (_) { own = []; }
+            const inherits = Array.isArray(d.inheritDomains) && d.inheritDomains.length;
+            input[k] = { own: inherits ? [] : own, noSplit: !!d.noSplit || k.indexOf('skill_') === 0 || (typeof this._deckIsDomain === 'function' && this._deckIsDomain(k)) };
+        }
+        const plan = FaToolBudget.planSplit(input); const groups = [], orig = {};
+        for (const [gk, g] of Object.entries(plan.groups)) {
+            this.domains[gk] = { label: g.label, toolNames: g.tools.slice(), enabled: true, category: null, internal: true, phase: g.phase, _splitGroup: true,
+                systemPrompt: '你是程式設計流程裡專責「' + g.label.replace(/^階段・/, '') + '」的子 agent：只用你手上的工具把這個階段的事做完，不要做別的階段的事。' };
+            groups.push(gk);
+        }
+        for (const [dk, pd] of Object.entries(plan.domains)) {
+            const d = this.domains[dk]; orig[dk] = d;
+            this.domains[dk] = Object.assign({}, d, { toolNames: pd.own.slice(), mixer: { children: pd.children.map((c) => ({ domain: c.group, tools: c.tools.slice() })) }, _origToolNames: this._resolveOwnDomainToolNames(d).slice(), _splitMixer: true });
+        }
+        this._splitState = { orig, groups, plan };
+        if (Object.keys(plan.domains).length) this._log('🌳 領域切割：' + Object.keys(plan.domains).join('、') + ' 變成協調者＋階段子領域（' + groups.length + ' 個共用階段）');
+    }
+    // 目錄用的工具名稱：協調者要算上子領域的工具（路由器要看得出「這個領域能做什麼」）
+    _resolveCatalogOwnNames(domain) {
+        const own = this._resolveOwnDomainToolNames(domain).slice();
+        if (domain && domain.mixer) for (const c of domain.mixer.children) for (const n of c.tools) if (own.indexOf(n) < 0) own.push(n);
+        return own;
+    }
+    _mixerPreamble(key, domain) {
+        const kids = domain.mixer.children.map((c) => { const g = this.domains[c.domain] || {}; return '- ' + c.domain + '（' + (g.phase || '') + '）：' + String(g.label || '').replace(/^階段・/, '') + '〔' + c.tools.slice(0, 6).join('、') + (c.tools.length > 6 ? '…' : '') + '〕'; }).join('\n');
+        const own = this._resolveOwnDomainToolNames(domain);
+        return '【你是「' + (domain.label || key) + '」的協調者】你自己手上只有：' + (own.join('、') || '（沒有）') + '。這個領域的其他工作分給「階段子 agent」，用 delegate_subtask({"domain":"<階段代號>","task":"…"}) 交辦（一次交一個階段）：\n' + kids +
+            '\n做法：先判斷現在在哪個階段（有 coding_task_state／playbook_state 就先看進度）→ 把這個階段的完整需求交給對應的子 agent，**task 要寫成獨立完整**（子 agent 看不到你的對話），而且把上一階段的「交接單」原文放進 task 開頭 → 讀它回報的交接單 → 決定下一個階段、或回頭補做 → 全部完成後用一段話向使用者回報。' +
+            '下面這份領域說明裡提到的工具，都在對應的階段子 agent 手上，不是你自己手上；要用就交辦給它。';
+    }
+    _phaseNote(groupKey) {
+        const g = this.domains[groupKey] || {};
+        return '【你是「' + String(g.label || groupKey).replace(/^階段・/, '') + '」階段的子 agent】只做這個階段的事，工具用完就收。做完用「交接單」回報（協調者會原樣交給下一個階段）：\n【階段】' + (g.phase || groupKey) + '\n【已完成】做了什麼\n【產出】檔案路徑／file_id／重要數字——原樣寫出來，下一階段要用\n【未解決】還沒做到的、遇到的問題\n【建議下一步】該交給哪個階段、帶什麼資料\n缺工具就在交接單裡說明缺什麼，不要硬做別的階段的事。';
+    }
+    // 預算報告：哪個工具的短說明太長／schema 太肥、哪個領域工具太多——給具體建議。執行時警告與 scripts/eval/tool-budget.eval.js 共用。
+    _toolBudgetReport() {
+        this._ensureDomainSplits(); const B = FaToolBudget; const entries = this._getCombinedToolEntries(null);
+        const tools = entries.map(([name, t]) => ({ name, short: this._toolShort(name, t), schemaTokens: B.estimateTokens(JSON.stringify(this._buildNativeToolsSchema([name]))) }));
+        const domains = Object.entries(this.domains).filter(([, d]) => d && d.enabled).map(([key, d]) => ({ key, tools: this._resolveRunToolNames(d).filter((n) => entries.some(([e]) => e === n)), mixer: !!d.mixer, children: d.mixer ? d.mixer.children.length : 0 }));
+        const rep = B.budgetReport({ tools, domains }); rep.split = this._splitState ? { mixers: Object.keys(this._splitState.plan.domains), groups: this._splitState.groups, skipped: this._splitState.plan.skipped } : null;
+        for (const v of rep.violations) if (v.kind === 'domain_too_many_tools') { const own = this._resolveRunToolNames(this.domains[v.key]); v.suggested_clusters = B.autoClusters(own, 12).map((g) => g.name + ':' + g.tools.join(',')); }
+        rep.tokens = { flat_all_tools: B.estimateTokens(JSON.stringify(this._buildNativeToolsSchema(null))), per_tool_avg: Math.round(tools.reduce((a, t) => a + t.schemaTokens, 0) / Math.max(1, tools.length)) };
+        return rep;
+    }
+
+    // ===== 先檢索再讓 LLM 選：路由器的目錄不再塞全部領域 =====
+    // 以前路由器每次都看「全部領域＋每個領域的工具摘要」（43 個領域約 22k token，隨領域數線性增長；使用者自己加的技能也算領域）。
+    // 現在先用程式（FaToolBudget 的詞彙檢索，10,000 個項目建索引 < 0.2 秒）依任務文字挑出最相關的 5～8 個領域，LLM 只在這幾個裡選，提示大小固定、與總領域數無關。
+    // 完全沒有詞彙重疊時才退回完整目錄（行為跟以前一樣）。advancedSettings.routeShortlist=false 可關。
+    _shortlistDomains(task, entries, opt) {
+        opt = opt || {}; const max = opt.max || 8;
+        if (!entries || entries.length <= max + 2 || (this.advancedSettings && this.advancedSettings.routeShortlist === false)) return entries;
+        const key = entries.map(([k, d]) => k + ':' + (d.label || '').length + ':' + this._resolveOwnDomainToolNames(d).length).join('|');
+        if (!this._domIndexCache || this._domIndexCache.key !== key) {
+            const toolByName = new Map(this._getCombinedToolEntries(null));
+            const docs = entries.map(([k, d]) => {
+                const names = this._resolveCatalogOwnNames(d).slice(0, 40); const cat = d.category && this.domainCategories[d.category] ? this.domainCategories[d.category].label : '';
+                const shorts = names.map((n) => { const t = toolByName.get(n); return n.replace(/_/g, ' ') + ' ' + (t ? this._toolShort(n, t) : ''); }).join(' ');
+                const prompt = names.length ? '' : String(typeof d.systemPrompt === 'string' ? d.systemPrompt : '').slice(0, 400); // 純知識型領域（技能）沒有工具：用人設／說明當比對文字
+                return { id: k, text: [k, d.label, cat, shorts, prompt].join(' '), nameText: [k.replace(/_/g, ' '), d.label].join(' ') };
+            });
+            this._domIndexCache = { key, index: FaToolBudget.buildIndex(docs) };
+        }
+        const ranked = FaToolBudget.rank(this._domIndexCache.index, task, { minHit: 2, minScore: 5, ratio: 0.45, max, minKeep: 4 });
+        if (!ranked.length) return entries; // 沒有任何詞彙重疊：退回完整目錄
+        const keep = new Set(ranked.map((r) => r.id)); const t = String(task || '').toLowerCase();
+        for (const [k, d] of entries) if (t.indexOf(k.toLowerCase()) >= 0 || (d.label && d.label.length >= 3 && t.indexOf(String(d.label).toLowerCase()) >= 0)) keep.add(k); // 任務明講的領域一定留
+        const out = entries.filter(([k]) => keep.has(k)); this._log('🔎 路由先檢索：' + entries.length + ' 個領域 → ' + out.length + ' 個候選（' + out.map(([k]) => k).join('、') + '）'); return out;
+    }
     _rootTaskHints() {
         try {
             const ms = this.messages || [];
@@ -39330,8 +39609,9 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             // tw_stock_db客製: 2026-09-13——custom_skills這種toolNames即時解析的
             // domain，使用者還沒建立任何Skill時要從這份清單隱藏（否則會列出一個
             // 「這個領域目前沒有任何工具」的代號，根模型指定了也只會委派到空氣）。
+            this._ensureDomainSplits();
             const enabledDomains = Object.entries(this.domains)
-                .filter(([, d]) => d.enabled && this._resolveDomainToolNames(d).length > 0);
+                .filter(([, d]) => d.enabled && !d.internal && this._resolveDomainToolNames(d).length > 0);
             const domainList = enabledDomains.map(([k, d]) => `${k}(${d.label})`).join('、');
             return base + ` 目前登記的專家領域代號：${domainList}。你已經知道這些領域代號，**建議直接在domain參數指定最相關的一個**（可以省下系統內部自動判斷那一輪額外往返）；如果任務同時橫跨好幾個領域、或你不確定該選哪一個，把domain留空，系統會自動判斷需要開放哪些領域的工具（可以一次判斷出多個）。參數: {"task":"要委派的任務描述（可以包含多件事）","domain":"（建議指定上面列出的領域代號之一，不確定或橫跨多領域時可留空讓系統自動判斷）"}`;
         }
@@ -39464,7 +39744,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
 
     _getGroundingContext() {
-        return [this._getCurrentDateTimeContext(), this.environmentNote, this._getDomainPreferenceNote()].filter(Boolean).join('\n\n');
+        const toolRule = '【工具】工具清單每個只給一行說明與參數名稱。第一次用某個工具、或不確定參數的意思與格式時，先呼叫 get_tool_details({"names":["工具名"]}) 看完整說明再呼叫；不要猜參數。';
+        return [this._getCurrentDateTimeContext(), this.environmentNote, this._getDomainPreferenceNote(), toolRule].filter(Boolean).join('\n\n');
     }
 
     _getFinalSystemPrompt() {
@@ -40157,18 +40438,47 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // _getCombinedToolEntries(allowedNames)撈到，這裡讓呼叫端能額外塞一批
     // 原始[name,tool]項目一起併入schema。既有兩個呼叫點（根層級對話用）不傳
     // 第二參數，預設空陣列，行為完全不變。
+    // 一行短說明（原則見 FA_TOOL_SHORTS 上面的說明）：工具自己帶的 short > 明確表 > 從完整說明取第一句
+    _toolShort(name, tool) {
+        return FaToolBudget.shortOf(name, tool && tool.description, (tool && tool.short) || FA_TOOL_SHORTS[name]);
+    }
+    // 聚焦：不能依階段切開的大領域（技能、host／使用者自己註冊的）——只給子agent「跟這次任務最相關的最多 focusTools 個」，
+    // 其餘留在 reserve，它需要時用 request_additional_tools 在本地（不再問任何模型）依需求文字從 reserve 補。
+    // 任務文字跟任何工具都沒有共同詞時（檢索沒有依據）不聚焦——寧可給全部，也不要亂挑。
+    _focusTools(names, task) {
+        const cap = FaToolBudget.LIMITS.focusTools;
+        if (!Array.isArray(names) || names.length <= FaToolBudget.LIMITS.domainTools || !String(task || '').trim()) return null;
+        if (this.advancedSettings && this.advancedSettings.toolFocus === false) return null;
+        const entries = new Map(this._getCombinedToolEntries(names).map(([n, t]) => [n, t]));
+        const META = new Set(['get_tool_details', 'request_additional_tools', 'delegate_subtask']);
+        const docs = names.filter((n) => entries.has(n) && !META.has(n)).map((n) => ({ id: n, text: n.replace(/_/g, ' ') + ' ' + this._toolShort(n, entries.get(n)), nameText: n }));
+        const ranked = FaToolBudget.rank(FaToolBudget.buildIndex(docs), String(task), { minHit: 1, minScore: 0, ratio: 0, max: cap, minKeep: 0 }); // 要的是「前 cap 名」，不是門檻篩選
+        if (!ranked.length) return null;
+        const keep = ranked.map((r) => r.id); const set = new Set(keep);
+        return { keep: keep.concat(names.filter((n) => META.has(n))), reserve: names.filter((n) => !META.has(n) && !set.has(n)) };
+    }
+    // reserve 裡跟「需要」最相關的（本地檢索，沒有模型呼叫）
+    _focusPick(reserve, need, top) {
+        const entries = new Map(this._getCombinedToolEntries(reserve).map(([n, t]) => [n, t]));
+        const docs = reserve.filter((n) => entries.has(n)).map((n) => ({ id: n, text: n.replace(/_/g, ' ') + ' ' + this._toolShort(n, entries.get(n)), nameText: n }));
+        return FaToolBudget.rank(FaToolBudget.buildIndex(docs), String(need || ''), { minHit: 2, minScore: 0, ratio: 0.5, max: top || 6, minKeep: 0 }).map((r) => r.id); // 至少兩個詞對得上才算；不夠準就回空，由呼叫端改走 LLM 路由
+    }
+    _toolCompactParams(tool) {
+        // 預算要扣掉名稱＋一行說明的外框（約100 token），整個工具才不超過 toolSchemaTokens
+        return FaToolBudget.compactToBudget((tool && tool.parametersSchema) || { type: 'object', properties: {}, additionalProperties: true }, FaToolBudget.LIMITS.toolSchemaTokens - 100);
+    }
     _buildNativeToolsSchema(allowedNames = null, extraEntries = []) {
         return this._getCombinedToolEntries(allowedNames).concat(extraEntries).map(([name, tool]) => ({
             type: 'function',
             function: {
                 name: this._sanitizeToolNameForNativeApi(name),
-                description: String(tool.description || ''),
+                description: this._toolShort(name, tool),
                 // tw_stock_db客製: 見register_openai_tool()的說明——有提供
                 // parametersSchema（逐欄位型別）就用它，讓模型知道哪些參數
                 // 該是原生陣列/物件而不是自己包一層JSON字串；沒提供的工具
                 // （自訂工具、部分沒有結構化params的builtin工具）維持原本
                 // 的opaque schema，行為不變。
-                parameters: tool.parametersSchema || { type: 'object', properties: {}, additionalProperties: true }
+                parameters: this._toolCompactParams(tool)
             }
         }));
     }
@@ -43306,7 +43616,7 @@ ${sourceTool.handlerScript}
     // 「Skill」分頁管理技能包本身。
     _renderDomainList() {
         const customKeys = new Set(this.advancedSettings.customDomains.map(d => d.key));
-        const entries = Object.entries(this.domains).filter(([key]) => !key.startsWith('skill_'));
+        const entries = Object.entries(this.domains).filter(([key, d]) => !key.startsWith('skill_') && !(d && d.internal));
         // tw_stock_db客製: 2026-09-18使用者要求（TODO.md Phase 3第7項）——
         // 「主Domain偏好」選單的候選值就是目前存在的domain，跟下面的domain
         // 清單共用同一份entries、同一個重繪時機（domain新增/刪除/改名後，
@@ -56621,7 +56931,7 @@ _result
                 previous_result: String(dup.resultText).slice(0, 1500),
             });
         }
-        const result = await run();
+        let result = await run();
         let ok = true;
         try { const parsed = typeof result === 'string' ? JSON.parse(result) : result; if (parsed && (parsed.ok === false || parsed.error)) ok = false; } catch (_) { /* 非JSON視為成功 */ }
         // tw_stock_db客製: 2026-09-26使用者實測回報「結果被截斷後AI不停停下來」——
@@ -56630,6 +56940,19 @@ _result
         // 連續攔兩次還會_forceNoTools關掉所有工具，AI只能講一句「讓我取得完整內容」
         // 就結束。被截斷的結果是不完整的，不算成功，允許AI換做法重試。
         if (ok && typeof result === 'string' && result.length > this._toolResultBudgetChars()) ok = false;
+        // 原則：清單只給一行說明。模型沒查 get_tool_details 就直接呼叫、而且失敗時，把這個工具的完整說明與參數附在錯誤結果上（每個工具每次執行只附一次），讓它照著修正
+        try {
+            const seen = log.detailedTools = log.detailedTools || new Set();
+            if (name === 'get_tool_details') { try { for (const n of (JSON.parse(String(rawArgs || '{}')).names || [])) seen.add(String(n)); } catch (_) { /* 參數壞掉就算了 */ } }
+            else if (!ok && !seen.has(name) && !FA_OT_META_TOOLS.has(name)) {
+                const ent = this._getCombinedToolEntries(null).find(([n]) => n === name);
+                if (ent && String(ent[1].description || '').length > 120) {
+                    seen.add(name); let obj = null; try { obj = typeof result === 'string' ? JSON.parse(result) : result; } catch (_) { obj = null; }
+                    const usage = { description: String(ent[1].description).slice(0, 3000), parameters: ent[1].parametersSchema || undefined };
+                    result = JSON.stringify(Object.assign(obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : { ok: false, error: String(result).slice(0, 1500) }, { usage_hint: '這個工具的完整說明與參數在下面 usage——對照後修正再呼叫（之後不會再附）', usage }));
+                }
+            }
+        } catch (_) { /* 附說明失敗不影響原本的結果 */ }
         let soft = false;
         if (ok && name === 'delegate_to_subagent' && typeof result === 'string') {
             let inner = result;
@@ -63072,13 +63395,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return out;
     }
 
-    _resolveDomainToolNames(domain) {
+    // 執行這個領域的子 agent 實際拿到的工具（協調者只有自己手上的，階段工具在子領域）
+    _resolveRunToolNames(domain) {
         const own = this._resolveOwnDomainToolNames(domain);
         if (!Array.isArray(domain.inheritDomains) || !domain.inheritDomains.length) return own;
         const names = own.slice();
         for (const d of this._expandInheritDomains(domain)) {
             for (const n of this._resolveOwnDomainToolNames(d)) if (names.indexOf(n) < 0) names.push(n);
         }
+        return names;
+    }
+    // 這個領域「整體能做什麼」的工具集合（目錄、能力比對、報告用）：協調者算上子領域
+    _resolveDomainToolNames(domain) {
+        const names = this._resolveRunToolNames(domain).slice();
+        if (domain && domain.mixer) for (const c of domain.mixer.children) for (const n of c.tools) if (names.indexOf(n) < 0) names.push(n);
         return names;
     }
 
@@ -63168,12 +63498,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _delegateToSubagentDomain(domainKey, task, extra) {
         extra = extra || {};
+        this._ensureDomainSplits(); // 工具太多的領域先依預算切成協調者＋階段子領域
         // tw_stock_db客製: 2026-09-06改讀instance-level this.domains（見
         // register_domain），讓host頁面自己新增的domain也能透過明確指定
         // domain參數委派，不限於內建的SUBAGENT_DOMAIN_REGISTRY。
         const domain = this.domains[domainKey];
         if (!domain || !domain.enabled) {
-            const available = Object.entries(this.domains).filter(([, d]) => d.enabled).map(([k]) => k);
+            const available = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal).map(([k]) => k);
             return { ok: false, error: `domain "${domainKey}" 尚未實作或不存在`, available_domains: available };
         }
         const progress = this._createSubagentProgressWidget(`🤖 委派給「${domain.label}」子agent`);
@@ -63195,13 +63526,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
             // 依任務文字補專用工具（見 FA_TASK_TOOL_HINTS）：根模型挑的領域沒有那個工具時，這次執行也拿得到
-            const taskHints = isDeck ? [] : _faTaskToolHints(task);
-            const hintedTools = (() => { const base = this._resolveDomainToolNames(domain); if (!Array.isArray(base) || !taskHints.length) return base; const set = new Set(base); for (const h of taskHints) for (const n of h.tools) set.add(n); return Array.from(set); })();
+            const taskHints = (isDeck || domain.mixer || Array.isArray(extra.restrictTools)) ? [] : _faTaskToolHints(task);
+            const hintedTools = (() => { let base = this._resolveRunToolNames(domain); if (Array.isArray(extra.restrictTools)) base = base.filter((n) => extra.restrictTools.indexOf(n) >= 0); /* 階段子領域：只拿「群組∩協調者原本的工具」 */ if (!Array.isArray(base) || !taskHints.length || domain.mixer) return base; const set = new Set(base); for (const h of taskHints) for (const n of h.tools) set.add(n); return Array.from(set); })();
             if (taskHints.length) { skillDirNote += '\n\n' + taskHints.map((h) => h.note).join('\n\n'); const m = taskHints.map((h) => h.id).join('、'); if (progress) progress.log('🧭 任務符合專用工具：' + m + '——已補給這個子agent'); }
+            // 聚焦（見 _focusTools）：只對沒切成階段、也不是簡報的大領域；專用工具提示補進來的工具一定留著
+            const focus = (isDeck || domain.mixer || Array.isArray(extra.restrictTools)) ? null : this._focusTools(hintedTools, task);
+            const runTools = focus ? [...new Set(focus.keep.concat(taskHints.flatMap((h) => h.tools || []).filter((n) => hintedTools.indexOf(n) >= 0)))] : hintedTools;
+            if (focus && progress) progress.log('🎯 領域工具太多（' + hintedTools.length + '個）——先只給最相關的 ' + runTools.length + ' 個，其餘需要時再補');
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
-                allowedToolNames: hintedTools,
+                allowedToolNames: runTools,
+                focusReserve: focus ? focus.reserve : null,
                 meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
-                systemPrompt: this._resolveDomainSystemPrompt(domain) + skillDirNote,
+                systemPrompt: (domain.mixer ? this._mixerPreamble(domainKey, domain) + '\n\n' : (extra.phaseNote ? extra.phaseNote + '\n\n' : '')) + this._resolveDomainSystemPrompt(domain) + skillDirNote,
+                mixer: domain.mixer || null,
+                noMoreTools: Array.isArray(extra.restrictTools), // 階段子領域只用自己那一組；缺工具就在交接單說明
                 onProgress: (status) => { if (progress) progress.update({ status }); if (extra.onProgress) extra.onProgress(status); },
                 onTrace: (line) => { if (progress) progress.log(line); if (extra.onTrace) extra.onTrace(line); },
                 onToolResult: extra.onToolResult,
@@ -63575,7 +63913,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     _buildDomainCatalogSection(key, domain, toolByName) {
-        const names = this._resolveOwnDomainToolNames(domain);
+        const names = this._resolveCatalogOwnNames(domain);
         let note = this._resolveDomainDynamicNote(domain);
         // 繼承來的領域只留一句話（它們的工具由各自的目錄項目列出，不重複塞進每個技能底下）
         const inheritedDomains = this._expandInheritDomains(domain).filter((d) => this._resolveOwnDomainToolNames(d).length);
@@ -63593,8 +63931,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
 
     async _routeTaskToDomains(task) {
-        const enabledDomains = Object.entries(this.domains).filter(([, d]) => d.enabled);
-        if (!enabledDomains.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
+        this._ensureDomainSplits();
+        const allPublic = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal);
+        if (!allPublic.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
+        const enabledDomains = this._shortlistDomains(task, allPublic);
 
         const toolByName = new Map(this._getCombinedToolEntries(null));
         const catalogSections = enabledDomains
@@ -63623,7 +63963,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const validDomains = requestedDomains.filter(k => this.domains[k] && this.domains[k].enabled);
         if (!validDomains.length) return { ok: true, domains: [], toolNames: [], systemPrompt: '' };
 
-        const toolNames = [...new Set(validDomains.flatMap(k => this._resolveDomainToolNames(this.domains[k])))];
+        const toolNames = [...new Set(validDomains.flatMap(k => this._resolveRunToolNames(this.domains[k])))];
         const systemPrompt = validDomains.map(k => `## ${this.domains[k].label}\n${this._resolveDomainSystemPrompt(this.domains[k])}`).join('\n\n');
         return { ok: true, domains: validDomains, toolNames, systemPrompt };
     }
@@ -63668,12 +64008,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     //     版_routeTaskToDomains()完全沒有這個工具數量限制互相矛盾。這裡
     //     拿掉這個條件，跟扁平模式的既有行為一致。
     async _routeTaskHierarchical(task) {
+        this._ensureDomainSplits();
         const categorizedEntries = Object.entries(this.domains)
-            .filter(([, d]) => d.enabled && d.category && this.domainCategories[d.category]);
+            .filter(([, d]) => d.enabled && !d.internal && d.category && this.domainCategories[d.category]);
         if (!categorizedEntries.length) return this._routeTaskToDomains(task);
 
-        const standaloneEntries = Object.entries(this.domains)
-            .filter(([, d]) => d.enabled && !(d.category && this.domainCategories[d.category]));
+        const standaloneEntries = this._shortlistDomains(task, Object.entries(this.domains)
+            .filter(([, d]) => d.enabled && !d.internal && !(d.category && this.domainCategories[d.category])));
         const categoryKeys = [...new Set(categorizedEntries.map(([, d]) => d.category))];
 
         const toolByName = new Map(this._getCombinedToolEntries(null));
@@ -63775,7 +64116,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 失敗情況都附上`available_domains`（key+label），讓根模型真的能夠
         // 照著錯誤訊息的建議重試，不是給一個無法執行的指示。
         const availableDomains = Object.entries(this.domains)
-            .filter(([, d]) => d.enabled)
+            .filter(([, d]) => d.enabled && !d.internal)
             .map(([k, d]) => `${k}(${d.label})`);
         if (!routed.ok) {
             if (progress) progress.fail(routed.error || '路由失敗');
@@ -63789,6 +64130,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 available_domains: availableDomains,
             };
         }
+        if (routed.domains.length === 1) { // 單一領域：走完整的領域委派（協調者、階段、提示都一致）
+            if (progress) progress.finish('已選定領域：' + routed.domains[0]);
+            return await this._delegateToSubagentDomain(routed.domains[0], task, ctx.delegationChain ? { delegationChain: ctx.delegationChain, delegationExclude: ctx.delegationExclude, shouldStop: ctx.shouldStop } : undefined);
+        }
         if (ctx.delegationExclude && routed.domains.some((d) => ctx.delegationExclude.includes(d))) {
             if (progress) progress.fail('自動判斷選到了上層領域');
             return { ok: false, error: `自動判斷選到「${routed.domains.filter((d) => ctx.delegationExclude.includes(d)).join('、')}」，那是你自己或上層領域，不能再委派回去。請改成明確指定 domain，或自己完成。` };
@@ -63800,6 +64145,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 systemPrompt: routed.systemPrompt,
                 delegationChain: (ctx.delegationChain || []).concat(['auto']),
                 delegationExclude: (ctx.delegationExclude || []).concat(routed.domains),
+                // 選到的領域裡有協調者：合成一個臨時協調者（自己手上是各領域的工具，階段交給子領域）
+                mixer: (() => { const kids = []; for (const k of routed.domains) { const m = this.domains[k] && this.domains[k].mixer; if (m) for (const c of m.children) if (!kids.some((x) => x.domain === c.domain)) kids.push(c); } return kids.length ? { children: kids } : null; })(),
                 shouldStop: ctx.shouldStop,
                 onProgress: progress ? (status) => progress.update({ status }) : null,
                 onTrace: progress ? (line) => progress.log(line) : null,
@@ -63962,6 +64309,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 預設情境，本來就看得到全部工具）時沒有「追加」的意義，canRequestMore
         // 這時是false，偽工具整個不啟用。
         const allowedToolNames = Array.isArray(options.allowedToolNames) ? options.allowedToolNames.slice() : null;
+        if (allowedToolNames && !allowedToolNames.includes('get_tool_details') && this.tools['get_tool_details']) allowedToolNames.push('get_tool_details'); // 原則：清單只給一行說明，完整說明靠它查——每個子 agent 都要拿得到
         let browserControlInjected = false;
         if (allowedToolNames && this.advancedSettings.browserControlEnabled && !allowedToolNames.includes('browser_status')) {
             for (const n of BROWSER_CONTROL_TOOL_NAMES) if (!allowedToolNames.includes(n)) allowedToolNames.push(n);
@@ -63976,22 +64324,25 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 也不會列出它（見下面nativeExtraEntries），從根本上讓這個工具在
         // 這種情境下不存在，比單純提示更可靠。
         const pipelineStepPrefixMatch = /^\s*\[分階段\s*(\d+)\s*\/\s*(\d+)\s*\]/.exec(userPrompt);
-        const canRequestMore = Array.isArray(allowedToolNames) && !pipelineStepPrefixMatch;
+        const canRequestMore = Array.isArray(allowedToolNames) && !pipelineStepPrefixMatch && !options.mixer && !options.noMoreTools; // 協調者不從別處追加工具（它只負責交辦）
         // 巢狀委派：領域／技能的子agent可以把一個完整的子問題交給「另一個領域或技能」（見 SUBAGENT_NEST_MAX_DEPTH 的說明）
         const nestChain = Array.isArray(options.delegationChain) ? options.delegationChain : [];
         const nestExclude = new Set([].concat(nestChain.filter((k) => k !== 'auto'), options.delegationExclude || []));
-        const canDelegate = canRequestMore && nestChain.length >= 1 && nestChain.length < SUBAGENT_NEST_MAX_DEPTH && !options.noNestedDelegation && (this.advancedSettings || {}).subagentNestedDelegation !== false;
+        const canDelegate = Array.isArray(allowedToolNames) && !pipelineStepPrefixMatch && nestChain.length >= 1 && nestChain.length < (options.mixer ? SUBAGENT_NEST_MAX_DEPTH + 1 : SUBAGENT_NEST_MAX_DEPTH) && !options.noNestedDelegation && (options.mixer || (this.advancedSettings || {}).subagentNestedDelegation !== false);
+        const mixerKids = options.mixer ? options.mixer.children : null; const maxNested = options.mixer ? 12 : SUBAGENT_NEST_MAX_CALLS;
         let nestedCalls = 0;
         // 清單要短（會放進 system prompt）：技能附名稱（使用者自己取的、模型不認得就用不到），內建領域只放代號
         // domain 參數接受：領域代號、技能名稱（使用者自己取的名字，不用記 skill_ 開頭的內部代號）、或領域的顯示名稱
         const nestedResolve = (name) => {
+            if (mixerKids) { const q = String(name || '').trim(); const hit = mixerKids.find((c) => c.domain === q || String((this.domains[c.domain] || {}).phase || '') === q || String((this.domains[c.domain] || {}).label || '').replace(/^階段・/, '').indexOf(q) === 0); return hit ? hit.domain : null; }
             const norm = (x) => String(x || '').toLowerCase().replace(/[「」\u2010-\u2015\u2212_\s]+/g, '-').replace(/^技能-?/, '');
             const q = norm(name); if (!q) return null;
-            if (this.domains[name]) return name;
-            const hit = Object.entries(this.domains).find(([k, d]) => norm(k) === q || norm(d.label) === q) || Object.entries(this.domains).find(([k, d]) => k.indexOf('skill_') === 0 && q.length >= 3 && norm(d.label).indexOf(q) >= 0);
+            if (this.domains[name]) return this.domains[name].internal ? null : name; // 內部的階段領域只有協調者才叫得到
+            const hit = Object.entries(this.domains).filter(([, d]) => !d.internal).find(([k, d]) => norm(k) === q || norm(d.label) === q) || Object.entries(this.domains).filter(([, d]) => !d.internal).find(([k, d]) => k.indexOf('skill_') === 0 && q.length >= 3 && norm(d.label).indexOf(q) >= 0);
             return hit ? hit[0] : null;
         };
-        const nestedCatalog = () => { const es = Object.entries(this.domains).filter(([k, d]) => d.enabled && !nestExclude.has(k)); const sk = es.filter(([k]) => k.indexOf('skill_') === 0).slice(0, 25).map(([k, d]) => `技能「${String(d.label).slice(0, 32)}」`); const bi = es.filter(([k]) => k.indexOf('skill_') !== 0).slice(0, 40).map(([k]) => k); return sk.concat(bi).join('、'); };
+        const nestedCatalog = () => {
+            if (mixerKids) return mixerKids.map((c) => c.domain + '（' + ((this.domains[c.domain] || {}).phase || '') + '）').join('、'); const es = Object.entries(this.domains).filter(([k, d]) => d.enabled && !d.internal && !nestExclude.has(k)); const sk = es.filter(([k]) => k.indexOf('skill_') === 0).slice(0, 25).map(([k, d]) => `技能「${String(d.label).slice(0, 32)}」`); const bi = es.filter(([k]) => k.indexOf('skill_') !== 0).slice(0, 40).map(([k]) => k); return sk.concat(bi).join('、'); };
         // tw_stock_db客製: 2026-09-15使用者實測回報——即使把某個model row的
         // 「批次每分鐘請求數上限」設定成40，實際還是撞到429。追查後發現：
         // runBatchSubAgents原本只在「每個item開始跑之前」呼叫一次
@@ -64039,6 +64390,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         const need = String(parsed.need || '').trim();
                         if (!need) return JSON.stringify({ ok: false, error: 'need不能是空的，請描述你現在還缺什麼能力/需要查什麼類型的資料' });
                         if (onProgress) onProgress(`🔧 子agent申請追加工具：${need}`);
+                        // 先在本地從「聚焦時留下的工具」依需求文字挑（沒有模型呼叫）；挑到就直接補，挑不到才走原本的領域路由
+                        // 本地挑過一次、模型又來申請 = 剛才挑的不是它要的：這次改走下面更準確的領域路由（LLM），不再用本地檢索
+                        if (Array.isArray(options.focusReserve) && options.focusReserve.length && !options._focusPickedOnce) {
+                            const local = this._focusPick(options.focusReserve.filter((n) => !allowedToolNames.includes(n)), need, 6);
+                            if (local.length) {
+                                toolEscalationCount++; options._focusPickedOnce = true;
+                                allowedToolNames.push(...local);
+                                options.focusReserve = options.focusReserve.filter((n) => !local.includes(n));
+                                if (onProgress) onProgress(`🔧 已追加工具（本地挑選）：${local.join('、')}`);
+                                const byName = new Map(this._getCombinedToolEntries(null));
+                                const lines = local.map((n) => `- ${n}: ${this._toolShort(n, byName.get(n))}`).join('\n');
+                                return JSON.stringify({ ok: true, added_tools: local, already_had: [], hint: `這些工具現在可以直接呼叫：\n${lines}\n（用字比對挑的；如果不是你要的，再申請一次，會改用更準確的方式找。）` });
+                            }
+                        }
                         const routed = this.multiSubAgentMode === 'hierarchical'
                             ? await this._routeTaskHierarchical(need)
                             : await this._routeTaskToDomains(need);
@@ -64065,14 +64430,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                         const subTask = String(parsed.task || '').trim(); const domRaw = String(parsed.domain || '').trim(); const dom = domRaw ? (nestedResolve(domRaw) || domRaw) : '';
                         if (!subTask) return JSON.stringify({ ok: false, error: 'task不能是空的：把要交給對方的完整需求寫清楚（對方看不到你的對話）' });
-                        if (nestedCalls >= SUBAGENT_NEST_MAX_CALLS) return JSON.stringify({ ok: false, error: `這次執行已經委派過${SUBAGENT_NEST_MAX_CALLS}次，請用已經拿到的結果完成，不要再委派。` });
+                        if (nestedCalls >= maxNested) return JSON.stringify({ ok: false, error: `這次執行已經委派過${maxNested}次，請用已經拿到的結果完成，不要再委派。` });
                         if (options.shouldStop && options.shouldStop()) return JSON.stringify({ ok: false, error: '使用者已要求停止' });
                         if (dom && nestExclude.has(dom)) return JSON.stringify({ ok: false, error: `不能委派給你自己或上層領域「${dom}」（會變成無限遞迴）。請改選別的領域，或自己完成。`, available_domains: nestedCatalog() });
                         if (dom && !(this.domains[dom] && this.domains[dom].enabled)) return JSON.stringify({ ok: false, error: `沒有這個領域／技能「${dom}」`, available_domains: nestedCatalog() });
+                        if (mixerKids && !dom) return JSON.stringify({ ok: false, error: '協調者要指定 domain（階段代號），可選：' + nestedCatalog() });
                         nestedCalls++;
                         if (onProgress) onProgress(`🧩 委派子任務給 ${dom || '（自動挑選）'}`);
                         if (onTrace) onTrace('🧩 委派給 ' + (dom || '自動挑選') + '：' + traceSnip(subTask, 200));
                         const nctx = { delegationChain: nestChain, delegationExclude: Array.from(nestExclude), shouldStop: options.shouldStop };
+                        const kid = mixerKids ? mixerKids.find((c) => c.domain === dom) : null;
+                        if (kid) Object.assign(nctx, { restrictTools: kid.tools, phaseNote: this._phaseNote(kid.domain) });
                         const r = dom ? await this._delegateToSubagentDomain(dom, subTask, nctx) : await this._delegateToSubagentAuto(subTask, Object.assign({}, nctx, { delegationChain: nestChain }));
                         return JSON.stringify(r);
                     },
@@ -64118,7 +64486,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } else if (canRequestMore) {
             systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。`;
         }
-        if (canDelegate) {
+        if (canDelegate && !mixerKids) {
             systemPrompt += `\n\n【你可以請「另一個領域或技能」幫忙】缺的不是單一工具、而是另一種專長時（例如需要別的領域的作法、或某個技能整理出來的結果），呼叫${SUBAGENT_NEST_TOOL_NAME}({"task":"完整、獨立的需求（對方看不到你的對話，要把需要的資料與期望的輸出格式寫進去）","domain":"選填：下面清單裡的領域代號或技能名稱；留空會自動挑選"})——它是另一個有自己工具與知識的子agent，做完把結果交回給你，你再接著完成原本的任務。可選（domain 填領域代號或技能名稱）：${nestedCatalog() || '（目前沒有其他可用的領域）'}。限制：不能委派給你自己或上層、最多${SUBAGENT_NEST_MAX_CALLS}次、對方不能再往下委派；單純缺一個工具用${REQUEST_MORE_TOOLS_NAME}，不要為了小事委派。`;
         }
         let messages = [
@@ -64190,7 +64558,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 }]] : [];
                 if (canDelegate) nativeExtraEntries.push([SUBAGENT_NEST_TOOL_NAME, {
                     description: `把一個完整的子問題交給「另一個領域或技能」的子agent，等它做完拿結果回來再繼續（它有自己的工具與知識）。用在你缺的是另一種專長、而不是單一工具時。不能委派給自己或上層、最多${SUBAGENT_NEST_MAX_CALLS}次。`,
-                    parametersSchema: { type: 'object', properties: { task: { type: 'string', description: '完整、獨立的需求：對方看不到你的對話，要把需要的資料與期望的輸出格式寫進去' }, domain: { type: 'string', description: '選填：領域代號或技能名稱（見系統提示的清單）；留空會自動挑選' } }, required: ['task'], additionalProperties: false },
+                    parametersSchema: { type: 'object', properties: { task: { type: 'string', description: '完整、獨立的需求：對方看不到你的對話，要把需要的資料與期望的輸出格式寫進去' }, domain: mixerKids ? { type: 'string', enum: mixerKids.map((c) => c.domain), description: '階段代號' } : { type: 'string', description: '選填：領域代號或技能名稱（見系統提示的清單）；留空會自動挑選' } }, required: mixerKids ? ['task', 'domain'] : ['task'], additionalProperties: false },
                 }]);
                 body.tools = this._buildNativeToolsSchema(allowedToolNames, nativeExtraEntries);
                 body.tool_choice = 'auto';
