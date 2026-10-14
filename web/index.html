@@ -3162,13 +3162,35 @@ const DBMgr = (() => {
      the browser paint/handle input between batches instead of locking up for
      the whole merge — each chunk itself only takes a few ms either way. ── */
   const MERGE_CHUNK = 2000;
+  function isWeekendDate(s) {
+    const d = new Date(String(s).slice(0, 10) + 'T00:00:00Z').getUTCDay();
+    return d === 0 || d === 6;
+  }
+  // 已經存在本機（IndexedDB）的舊資料庫可能早就帶著週末假資料：用有索引的DISTINCT日期清單找出週末日期再刪，
+  // 不用整表逐列算星期。有刪才回傳true，由呼叫端決定要不要存檔。
+  function purgeWeekendRows() {
+    if (!db) return false;
+    try {
+      const res = db.exec('SELECT DISTINCT trade_date FROM daily_prices');
+      const bad = res.length ? res[0].values.map(r => r[0]).filter(isWeekendDate) : [];
+      if (!bad.length) return false;
+      for (const d of bad) {
+        for (const tb of ['daily_prices', 'technical_indicators', 'market_index']) db.run(`DELETE FROM ${tb} WHERE trade_date=?`, [d]);
+      }
+      console.info('已清除週末假資料日期：', bad.join(', '));
+      return true;
+    } catch (e) { console.warn('purgeWeekendRows failed:', e.message); return false; }
+  }
   async function mergeTables(buf, tableNames) {
     const tmp = new SQL.Database(new Uint8Array(buf));
     try {
       for (const table of tableNames) {
         const res = tmp.exec(`SELECT * FROM ${table}`);
         if (!res.length) continue;
-        const { columns, values } = res[0];
+        const { columns, values: allValues } = res[0];
+        // 週六／週日不開市：來源曾灌進一整批週日（2026-09-20）假K棒，一律不合併進本機資料庫
+        const dateCol = columns.indexOf('trade_date');
+        const values = dateCol < 0 ? allValues : allValues.filter(v => !isWeekendDate(v[dateCol]));
         const placeholders = columns.map(() => '?').join(',');
         const stmt = db.prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`);
         for (let i = 0; i < values.length; i++) {
@@ -3298,6 +3320,7 @@ const DBMgr = (() => {
         applySchemaMigrations();
         schedulePersist();
       }
+      if (purgeWeekendRows()) schedulePersist();
       onProgress('就緒', 100);
       return { needBootstrap: false };
     }
@@ -4366,7 +4389,7 @@ const DBMgr = (() => {
   /* ── 漲跌停判斷用：某股在 dateStr 之前最近一個交易日的收盤價 ── */
   function getPrevClose(code, dateStr) {
     const rows = query(
-      'SELECT close FROM daily_prices WHERE stock_code=? AND trade_date<? ORDER BY trade_date DESC LIMIT 1',
+      'SELECT close FROM daily_prices WHERE stock_code=? AND trade_date<? AND strftime(\'%w\', trade_date) NOT IN (\'0\',\'6\') ORDER BY trade_date DESC LIMIT 1',
       [code, dateStr]
     );
     return rows.length ? rows[0].close : null;
@@ -4386,9 +4409,11 @@ const DBMgr = (() => {
     schedulePersist();
   }
 
+  // 2026-10-14：排除週六／週日的列——資料庫曾被來源灌進一整批週日（2026-09-20）假K棒，最高價是錯的，
+  // 會污染前高、型態與均線；台股週末不開市，這裡一律不採用（主資料庫清掉之前也能正確）。
   function getPriceHistory(code, limit = 250) {
     return query(
-      'SELECT trade_date, open, high, low, close, volume FROM daily_prices WHERE stock_code=? ORDER BY trade_date DESC LIMIT ?',
+      'SELECT trade_date, open, high, low, close, volume FROM daily_prices WHERE stock_code=? AND strftime(\'%w\', trade_date) NOT IN (\'0\',\'6\') ORDER BY trade_date DESC LIMIT ?',
       [code, limit]
     ).reverse();
   }
@@ -4397,14 +4422,14 @@ const DBMgr = (() => {
      不需要另外抓資料，只是換一張表查詢。 */
   function getMarketIndexHistory(indexCode, limit = 250) {
     return query(
-      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? ORDER BY trade_date DESC LIMIT ?',
+      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? AND strftime(\'%w\', trade_date) NOT IN (\'0\',\'6\') ORDER BY trade_date DESC LIMIT ?',
       [indexCode, limit]
     ).reverse();
   }
 
   function getMarketIndexLatest(indexCode) {
     return query(
-      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? ORDER BY trade_date DESC LIMIT 1',
+      'SELECT trade_date, open, high, low, close, volume FROM market_index WHERE index_code=? AND strftime(\'%w\', trade_date) NOT IN (\'0\',\'6\') ORDER BY trade_date DESC LIMIT 1',
       [indexCode]
     )[0] || null;
   }
@@ -5929,7 +5954,7 @@ function buildPlainVerdict(diag) {
   const ma20Text = p.ma[20] != null ? p.ma[20].toFixed(2) : '-';
   parts.push(
     (p.above_ma20 ? `目前站在月線（MA20=${ma20Text}）之上` : `目前跌破月線（MA20=${ma20Text}）`) +
-    `，大趨勢屬於${trendWord}格局。`
+    (t.swing ? `，最近一段波段結構屬於${trendWord}（${t.swing.basis}）。` : `，大趨勢屬於${trendWord}格局。`)
   );
 
   if (kb.body_pct == null) {
@@ -5957,7 +5982,258 @@ function buildPlainVerdict(diag) {
       : `成交量只有${vp.vol_ratio.toFixed(2)}倍基本量，還沒有明顯資金進場跡象，須留意是否只是量縮整理。`);
   }
 
+  // 2026-10-14：前高距離、型態突破狀態、情境（見buildScenario）
+  if (diag.scenario) parts.push(diag.scenario.headline);
+  {
+    const seen = new Set();
+    for (const pp of (diag.pattern?.detected || [])) {
+      if (!(pp.breakout?.applicable && ['broken_valid', 'broken_unconfirmed', 'failed', 'near'].includes(pp.breakout.status))) continue;
+      const line = `${pp.label}：${pp.breakout.status_text}。`;
+      if (!seen.has(line)) { seen.add(line); parts.push(line); }
+    }
+  }
+  if (diag.scenario?.bull_trigger) parts.push(`要看多：${diag.scenario.bull_trigger}`);
+  if (diag.scenario?.bear_trigger) parts.push(`要防守：${diag.scenario.bear_trigger}`);
+
   return parts.join('');
+}
+
+/* ════════════════════════════════════════
+   壓力／支撐位清單、型態突破狀態、轉折點趨勢、情境推演（2026-10-14）
+   起因：使用者拿一句盤後短評（「型態做線成功，挑戰前高有望」）問網頁有沒有能力評估——原本診斷只有
+   「型態有沒有成形」跟「今天K棒／量夠不夠」，沒有(1)前高在哪、離多遠(2)型態的頸線今天到底站上沒、站了
+   幾天、有沒有量(3)趨勢只拿近10日跟前20日比極值，太粗(4)沒有「站上怎樣、跌破怎樣」的劇本。
+   這裡全部用同一批K棒現算，不讀未來資料，輸出的每個數字都附日期，AI與報表可以原樣引用。
+   ════════════════════════════════════════ */
+const KEY_LEVEL_PERIODS = [20, 60, 120, 240];   // 前高回看天數（不含今天）
+const NEAR_NECKLINE_PCT = 3;                    // 距頸線／前高在這個百分比以內算「逼近」
+const RETEST_BAND_PCT = 1.5;                    // 突破後最低點回到頸線上方這個百分比以內，算回測
+
+function _periodExtreme(bars, days, kind) {
+  const n = bars.length;
+  const prior = bars.slice(Math.max(0, n - 1 - days), n - 1); // 不含今天，今天創新高才看得出「突破」
+  if (prior.length < 15) return null;
+  let best = prior[0];
+  for (const b of prior) {
+    if (kind === 'high' ? b.high > best.high : b.low < best.low) best = b;
+  }
+  return { days, actual_days: prior.length, partial: prior.length < days, price: round2(kind === 'high' ? best.high : best.low), date: best.trade_date };
+}
+
+function computeKeyLevels(bars, maVals) {
+  const n = bars.length, last = bars[n - 1], close = last.close;
+  const distPct = (p) => round2((p - close) / close * 100);
+  const periodHighs = [], periodLows = [];
+  for (const days of KEY_LEVEL_PERIODS) {
+    const h = _periodExtreme(bars, days, 'high');
+    if (h) periodHighs.push({ ...h, dist_pct: distPct(h.price), close_above: close > h.price, high_above_today: last.high > h.price });
+    const l = _periodExtreme(bars, days, 'low');
+    if (l) periodLows.push({ ...l, dist_pct: distPct(l.price), close_below: close < l.price });
+  }
+  const tail = bars.slice(-260);
+  const swings = mergeAlternatingSwings(findSwingPoints(tail.map(b => b.high), tail.map(b => b.low), 3));
+  const swingHighs = swings.filter(s => s.type === 'H').map(s => ({ price: round2(s.price), date: dateOf(tail, s.idx), source: '前波高點' }));
+  const swingLows = swings.filter(s => s.type === 'L').map(s => ({ price: round2(s.price), date: dateOf(tail, s.idx), source: '前波低點' }));
+
+  const dedupe = (arr, asc) => {
+    const out = [];
+    for (const it of arr.sort((a, b) => asc ? a.price - b.price : b.price - a.price)) {
+      if (out.some(o => Math.abs(o.price - it.price) / it.price < 0.005)) continue; // 0.5%以內視為同一個價位，保留先出現（較近）的來源
+      out.push(it);
+    }
+    return out;
+  };
+  const resistanceRaw = [
+    ...swingHighs.filter(x => x.price > close),
+    ...periodHighs.filter(x => x.price > close).map(x => ({ price: x.price, date: x.date, source: `${x.days}日高${x.partial ? '（資料僅' + x.actual_days + '天）' : ''}` })),
+  ];
+  const supportRaw = [
+    ...swingLows.filter(x => x.price < close),
+    ...[[20, maVals[20]], [60, maVals[60]]].filter(([, v]) => v != null && v < close).map(([d, v]) => ({ price: round2(v), date: last.trade_date, source: `MA${d}（均線）` })),
+  ];
+  const withDist = (x) => ({ ...x, dist_pct: distPct(x.price) });
+  const resistance = dedupe(resistanceRaw, true).slice(0, 5).map(withDist);
+  const support = dedupe(supportRaw, false).slice(0, 5).map(withDist);
+  return {
+    close: round2(close), as_of_date: last.trade_date,
+    period_highs: periodHighs, period_lows: periodLows,
+    resistance, support,
+    nearest_resistance: resistance[0] || null,
+    nearest_support: support[0] || null,
+    at_new_high: resistance.length === 0,
+    broken_period_highs: periodHighs.filter(x => x.close_above).map(x => `${x.days}日高 ${x.price}（${x.date}）`),
+    note: '壓力＝高於現價的前波高點與各期間高點（不含今天，距離＝(價位-現價)/現價）；支撐＝低於現價的前波低點與月線／季線；0.5%以內的價位合併成同一個。',
+  };
+}
+
+/* ── 趨勢：用真正的轉折點比較，不是「近10日極值 vs 前20日極值」。
+   最後一個已確認的轉折點之後，如果價格已經走出新的更高（更低）點，那個還沒被確認成轉折點的新高低也納入比較
+   （轉折點要等右邊3根K棒才確認，不納入的話剛突破的那幾天會被誤判成盤整）。 ── */
+function computeSwingTrend(bars) {
+  const tail = bars.slice(-260);
+  const swings = mergeAlternatingSwings(findSwingPoints(tail.map(b => b.high), tail.map(b => b.low), 3));
+  const H = swings.filter(s => s.type === 'H'), L = swings.filter(s => s.type === 'L');
+  if (H.length < 2 || L.length < 2) return null;
+  const toPt = (s) => ({ price: round2(s.price), date: dateOf(tail, s.idx) });
+  let hi = H.slice(-2).map(toPt), lo = L.slice(-2).map(toPt);
+  const lastH = H[H.length - 1], lastL = L[L.length - 1];
+  // 最後一個轉折點之後出現的未確認新高／新低
+  const afterH = tail.slice(lastH.idx + 1), afterL = tail.slice(lastL.idx + 1);
+  let provisional = null;
+  if (afterH.length) {
+    const top = afterH.reduce((a, b) => (b.high > a.high ? b : a));
+    if (top.high > lastH.price && lastL.idx > lastH.idx) { hi = [toPt(lastH), { price: round2(top.high), date: top.trade_date }]; provisional = `最近的高點 ${round2(top.high)}（${top.trade_date}）尚未被後續K棒確認為轉折點`; }
+  }
+  if (afterL.length) {
+    const bot = afterL.reduce((a, b) => (b.low < a.low ? b : a));
+    if (bot.low < lastL.price && lastH.idx > lastL.idx) { lo = [toPt(lastL), { price: round2(bot.low), date: bot.trade_date }]; provisional = `最近的低點 ${round2(bot.low)}（${bot.trade_date}）尚未被後續K棒確認為轉折點`; }
+  }
+  const higherHigh = hi[1].price > hi[0].price, higherLow = lo[1].price > lo[0].price;
+  const lowerHigh = hi[1].price < hi[0].price, lowerLow = lo[1].price < lo[0].price;
+  let label = '盤整/不明確';
+  if (higherHigh && higherLow) label = '頭頭高底底高（多頭）';
+  else if (lowerHigh && lowerLow) label = '頭頭低底底低（空頭）';
+  else if (higherLow && !higherHigh) label = '底底高但頭未過前高（盤整偏多，等突破）';
+  else if (lowerHigh && !lowerLow) label = '頭頭低但底未破（盤整偏空，等跌破）';
+  return {
+    label, scope: '最近兩個高點與兩個低點',
+    highs: hi, lows: lo,
+    basis: `高點 ${hi[0].price}（${hi[0].date}）→ ${hi[1].price}（${hi[1].date}）${higherHigh ? '墊高' : lowerHigh ? '降低' : '持平'}；低點 ${lo[0].price}（${lo[0].date}）→ ${lo[1].price}（${lo[1].date}）${higherLow ? '墊高' : lowerLow ? '降低' : '持平'}`,
+    provisional,
+  };
+}
+
+/* ── 型態突破狀態：型態偵測只負責找出結構與頸線，這裡才回答「今天到底站上頸線沒、站了幾天、有沒有量、有沒有回測」。
+   頸線價位用日期對回完整K棒陣列（型態點的idx是各尺度視窗內的相對位置，不能直接用）。 ── */
+function _necklineSpec(pp, byDate, n) {
+  const nl = pp.necklines || [];
+  const type = pp.type;
+  const mkSloped = (pts) => {
+    const idxs = pts.map(x => byDate.get(x.date)).map((v, i) => (v == null ? null : { idx: v, price: pts[i].price }));
+    if (idxs.some(x => !x)) return null;
+    if (idxs.length >= 2 && idxs[0].idx !== idxs[1].idx) return (i) => necklineYAt(idxs[0], idxs[1], i);
+    return () => idxs[0].price;
+  };
+  if (['head_shoulders_bottom', 'double_bottom', 'n_bottom'].includes(type) && nl[0]?.points?.length) {
+    const f = mkSloped(nl[0].points); return f ? { dir: 1, lineAt: f, name: '頸線' } : null;
+  }
+  if (['head_shoulders_top', 'double_top'].includes(type) && nl[0]?.points?.length) {
+    const f = mkSloped(nl[0].points); return f ? { dir: -1, lineAt: f, name: '頸線' } : null;
+  }
+  if (type === 'box' && nl[0]?.resistance != null) {
+    return { box: true, resistance: nl[0].resistance, support: nl[0].support };
+  }
+  if (type === 'flag' && nl[0]?.resistance != null) {
+    const up = pp.label.includes('上升');
+    return { dir: up ? 1 : -1, lineAt: () => (up ? nl[0].resistance : nl[0].support), name: up ? '旗面上緣' : '旗面下緣' };
+  }
+  if (type === 'wedge' && nl.length >= 2) {
+    const falling = pp.label.includes('下降');
+    const line = falling ? nl[0] : nl[1]; // nl[0]=上緣、nl[1]=下緣
+    const f = line.points?.length ? mkSloped(line.points) : null;
+    if (!f) return null;
+    return { dir: falling ? 1 : -1, lineAt: f, name: falling ? '楔形上緣' : '楔形下緣' };
+  }
+  return null;
+}
+
+function evaluatePatternBreakout(pp, bars, volMa5Arr) {
+  const n = bars.length, last = bars[n - 1], close = last.close;
+  const byDate = new Map(bars.map((b, i) => [b.trade_date, i]));
+  const spec = _necklineSpec(pp, byDate, n);
+  if (!spec) return { applicable: false, status: 'na', status_text: '這個型態沒有可判斷突破的頸線' };
+  const fmt = (v) => (v == null ? '-' : v.toFixed(2));
+
+  if (spec.box) {
+    const { resistance: R, support: S } = spec;
+    if (close > R) return _evalBreak(bars, volMa5Arr, () => R, 1, '箱型上緣');
+    if (close < S) return _evalBreak(bars, volMa5Arr, () => S, -1, '箱型下緣');
+    const toR = round2((R - close) / close * 100), toS = round2((close - S) / close * 100);
+    return { applicable: true, status: 'inside', neckline: R, neckline_name: '箱型上緣', direction: 1, status_text: `仍在箱型內（上緣 ${fmt(R)} 還差 ${toR}%，下緣 ${fmt(S)} 還差 ${toS}%），尚未突破` };
+  }
+  return _evalBreak(bars, volMa5Arr, spec.lineAt, spec.dir, spec.name);
+}
+
+function _evalBreak(bars, volMa5Arr, lineAt, dir, name) {
+  const n = bars.length, close = bars[n - 1].close;
+  const L = lineAt(n - 1);
+  const word = dir > 0 ? '站上' : '跌破';
+  const pctBeyond = round2(dir * (close - L) / L * 100);
+  let streak = 0;
+  for (let i = n - 1; i >= 0 && streak < 60; i--) {
+    if (dir * (bars[i].close - lineAt(i)) > 0) streak++; else break;
+  }
+  const base = { applicable: true, neckline: round2(L), neckline_name: name, direction: dir, pct_beyond: pctBeyond };
+  if (streak === 0) {
+    // 最近10根（不含今天）曾經收在頸線外、今天又收回來，視為假突破
+    const failed = bars.slice(-11, -1).some((b, k) => dir * (b.close - lineAt(n - 11 + k)) > 0);
+    const gap = round2(-pctBeyond);
+    if (failed) return { ...base, status: 'failed', status_text: `曾${word}${name}（${round2(L)}）但今天收回另一側（差 ${gap}%），疑似假突破` };
+    return gap <= NEAR_NECKLINE_PCT
+      ? { ...base, status: 'near', status_text: `逼近${name} ${round2(L)}，還差 ${gap}% 才${word}` }
+      : { ...base, status: 'far', status_text: `離${name} ${round2(L)} 還有 ${gap}%，尚未接近` };
+  }
+  const breakIdx = n - streak, bb = bars[breakIdx];
+  const kb = kbarQuality(bb.open, bb.high, bb.low, bb.close);
+  const colorOk = dir > 0 ? kb.is_red === true : kb.is_red === false;
+  const vMa5 = volMa5Arr[breakIdx];
+  const vr = vMa5 ? round2(bb.volume / vMa5) : null;
+  const volOk = vr != null && vr >= 1.2;
+  const problems = [];
+  if (!kb.passes) problems.push(`突破當天K棒${kb.body_pct != null && kb.body_pct < KBAR_BODY_MIN_PCT ? `實體僅 ${kb.body_pct}%（未達${KBAR_BODY_MIN_PCT}%）` : '上影線過長'}`);
+  else if (!colorOk) problems.push(`突破當天K棒方向與突破方向相反`);
+  if (!volOk) problems.push(vr == null ? '量比資料不足' : `突破當天量比只有 ${vr} 倍（未達攻擊量 1.2 倍）`);
+  const valid = problems.length === 0;
+  let retest = null;
+  if (streak >= 2) {
+    const after = bars.slice(breakIdx + 1);
+    const extreme = dir > 0 ? Math.min(...after.map(b => b.low)) : Math.max(...after.map(b => b.high));
+    const lineRef = lineAt(n - 1);
+    const touched = dir > 0 ? extreme <= lineRef * (1 + RETEST_BAND_PCT / 100) : extreme >= lineRef * (1 - RETEST_BAND_PCT / 100);
+    retest = touched ? `突破後已回測${name}（最${dir > 0 ? '低' : '高'} ${round2(extreme)}）且收盤沒有收回另一側` : `突破後尚未回測${name}（最${dir > 0 ? '低' : '高'}只到 ${round2(extreme)}）`;
+  }
+  const dayText = streak === 1 ? '今天剛' : `已連續 ${streak} 天收盤`;
+  return {
+    ...base, status: valid ? 'broken_valid' : 'broken_unconfirmed',
+    days_since_break: streak - 1, break_date: bb.trade_date, break_kbar: { body_pct: kb.body_pct, upper_wick_pct_of_range: kb.upper_wick_pct_of_range, passes: kb.passes, vol_ratio: vr },
+    retest, problems,
+    status_text: `${dayText}${word}${name} ${round2(L)}（${word}幅度 ${pctBeyond}%，突破日 ${bb.trade_date}）：` +
+      (valid ? '突破當天K棒與量能都達標，屬有效突破' : `但${problems.join('、')}，尚不算有效確認`) + (retest ? `；${retest}` : ''),
+  };
+}
+
+/* ── 情境推演：把上面的結果收斂成「站上怎樣、跌破怎樣」兩條可以驗證的條件，不預測、不給機率。 ── */
+function buildScenario(close, ma, keyLevels, swingTrend, detected, volMa5, measured) {
+  const R = keyLevels.nearest_resistance, S = keyLevels.nearest_support;
+  const needVol = volMa5 ? Math.ceil(volMa5 * 1.2) : null;
+  const notes = [];
+  let headline;
+  if (keyLevels.at_new_high) headline = `已站在近期高點之上（沒有更高的前波高點壓力），重點變成守住支撐、量能能否延續。`;
+  else headline = `距離最近的壓力 ${R.price}（${R.source}，${R.date}）還有 ${R.dist_pct}%。`;
+  if (keyLevels.broken_period_highs.length) notes.push(`收盤已站上：${keyLevels.broken_period_highs.join('、')}。`);
+  const bull = keyLevels.at_new_high ? null
+    : `收盤站上 ${R.price}，且當天K棒實體≥${KBAR_BODY_MIN_PCT}%、上影線不過長` + (needVol ? `、成交量≥${needVol.toLocaleString()}股（5日均量的1.2倍）` : '') + '，才算有效突破前高；只是盤中摸到或量縮收過，先當作還沒確認。';
+  const bearParts = [];
+  if (ma[20] != null) bearParts.push(`收盤跌破月線 ${round2(ma[20])}（趨勢停損）`);
+  const lastLow = swingTrend?.lows?.[1];
+  if (lastLow && lastLow.price < close) bearParts.push(`收盤跌破最近一個波段低點 ${lastLow.price}（${lastLow.date}）代表這一波的墊高結構被破壞`);
+  else if (S && !String(S.source).startsWith('MA')) bearParts.push(`收盤跌破最近的${S.source} ${S.price}（${S.date}）`);
+  const bear = bearParts.length ? bearParts.join('；') + '，就要重新評估、不宜續追。' : null;
+  {
+    const seen = new Set();
+    for (const pp of detected) {
+      const b = pp.breakout;
+      if (!(b && b.applicable)) continue;
+      const line = `${pp.label}：${b.status_text}`;
+      if (!seen.has(line)) { seen.add(line); notes.push(line); }
+    }
+  }
+  if (measured?.available) {
+    const t = [measured.n_measure && `N字測量 ${measured.n_measure.target}`, measured.equal_measure && `等幅測量 ${measured.equal_measure.target}`].filter(Boolean);
+    if (t.length) notes.push(`站穩後的測量目標：${t.join('、')}（只是幅度估算，不是保證）。`);
+  }
+  if (swingTrend) notes.push(`趨勢結構：${swingTrend.label}（${swingTrend.basis}）。`);
+  return { headline, bull_trigger: bull, bear_trigger: bear, notes };
 }
 
 function diagnoseStock(code) {
@@ -5991,7 +6267,10 @@ function diagnoseStock(code) {
 
   // 2. 趨勢判斷（簡化版頭頭高/底底高，滾動高低點比較，非型態辨識）——
   // 抽出成computeTrendLabelAt()共用，見該函式上方的說明。
-  const trend = computeTrendLabelAt(bars, n - 1);
+  const trendSimple = computeTrendLabelAt(bars, n - 1);
+  // 2026-10-14：改用轉折點比較（見computeSwingTrend）；舊的近10日 vs 前20日極值保留在 label_simple 與 recent/prior 欄位
+  const swingTrend = computeSwingTrend(bars);
+  const trend = swingTrend ? { ...trendSimple, label: swingTrend.label, label_simple: trendSimple.label, swing: swingTrend } : trendSimple;
 
   // 3. 型態辨識（機械式偵測、多層次巢狀分析，見上方 detectPatterns 註解）
   const detected = detectPatterns(bars, mainDays);
@@ -6017,6 +6296,10 @@ function diagnoseStock(code) {
     note: '半導體/電子供應鏈個股可優先參考SOX走勢，傳產/金融/塑化/原物料類股可優先參考DJI',
   };
 
+  // 6.5 型態突破狀態（頸線今天站上沒／站幾天／有沒有量與回測）、壓力支撐與前高、情境
+  for (const pp of detected) pp.breakout = evaluatePatternBreakout(pp, bars, volMa5Arr);
+  const keyLevels = computeKeyLevels(bars, maVals);
+
   // 7. 進出場建議
   const targets = measuredMoveTargets(bars);
   const entryExit = {
@@ -6034,7 +6317,9 @@ function diagnoseStock(code) {
       detected,
       note: detected.length ? null : '近期無法辨識出已定義的型態（頭肩底/W底/箱型），不代表沒有型態，只是不在偵測規則範圍內',
     },
+    key_levels: keyLevels,
     kbar_quality: kbar, volume_price: volumePrice, market_linkage: marketLinkage, entry_exit: entryExit,
+    scenario: buildScenario(last.close, maVals, keyLevels, swingTrend, detected, vMa5, targets),
     risk_note: '以上為技術面框架推演，非投資建議；型態偵測為機械式規則比對，非人工圖形驗證，最終進出場決策仍須自行覆核K線圖。',
   };
   result.plain_summary = buildPlainVerdict(result);
@@ -6082,9 +6367,12 @@ function buildDiagnosisSummaryText(diag) {
       const scaleTag = pp.scaleLabel ? `[${pp.scaleLabel}${pp.scaleLookbackDays ? `・近${pp.scaleLookbackDays}天` : ''}] ` : '';
       lines.push(`${scaleTag}${pp.label}　目標價 ${pp.target}`);
       lines.push(ptLine);
+      if (pp.breakout?.applicable) lines.push(`突破狀態：${pp.breakout.status_text}`);
       if (pp.basis) lines.push(`依據：${pp.basis}`);
     }
   }
+
+  lines.push(...fmtKeyLevelsLines(diag).length ? ['', '【壓力與支撐】', ...fmtKeyLevelsLines(diag)] : []);
 
   lines.push('', '【K棒品質判讀鐵律】');
   lines.push(`最近一根K棒：實體 ${kb.body_pct != null ? kb.body_pct.toFixed(2) : '-'}%　上影線占比 ${kb.upper_wick_pct_of_range != null ? kb.upper_wick_pct_of_range.toFixed(1) : '-'}%`);
@@ -6112,6 +6400,8 @@ function buildDiagnosisSummaryText(diag) {
     if (mm.n_measure) lines.push(`N字測量：振幅 ${mm.n_measure.amplitude} → 目標價 ${mm.n_measure.target}`);
     if (mm.equal_measure) lines.push(`等幅測量：振幅 ${mm.equal_measure.amplitude} → 目標價 ${mm.equal_measure.target}`);
   }
+
+  lines.push(...fmtScenarioLines(diag).length ? ['', '【情境推演】', ...fmtScenarioLines(diag)] : []);
 
   lines.push('', diag.risk_note);
   return lines.join('\n');
@@ -7203,6 +7493,11 @@ K棒品質(kbar_quality)：body_pct=|close-open|/open*100，≥2%才算實心K�
 - 旗形(flag)：噴出段3-10根漲跌≥15%，接盤整4-15根，盤整區間/回檔各≤噴出段一半，目標價=噴出段等幅測量。
 - 楔形(wedge)：60根內上下切線同向收斂，收斂幅度≥30%，目標價=等寬測量。
 
+壓力與前高(key_levels)：resistance/support是由近到遠的價位清單（每個都附日期、來源、距現價%），period_highs是20/60/120/240日高（不含今天，close_above=已經收盤站上）；問「離前高多遠」「壓力在哪」一律引用這裡，不要自己從K棒找。nearest_resistance=最近的上方壓力，at_new_high=true代表上方已沒有前波高點。
+型態突破狀態(pattern.detected[].breakout)：型態偵測只找結構，頸線今天站上沒要看這個欄位——status=broken_valid(有效突破：突破當天K棒實體達標且量比≥1.2)/broken_unconfirmed(站上了但K棒或量不達標，problems列原因)/near(逼近，差NEAR%以內)/far/inside(箱型內)/failed(曾站上又收回，疑似假突破)/na(無頸線的型態如V型反轉、圓弧底)；days_since_break=突破後第幾天，retest=有沒有回測頸線。使用者說「做線成功／突破」時，用這個欄位核對，不是用有沒有偵測到型態來回答。
+趨勢(trend)：label改由真正的轉折點比較（trend.swing附最近兩個高點、兩個低點與日期；provisional=最後一個高低點還沒被後續K棒確認）；label_simple是舊的近10日對前20日極值比較，只在對照時參考。
+情境(scenario)：headline=離前高多遠，bull_trigger=站上要滿足的條件（價位＋K棒＋量），bear_trigger=跌破哪裡要防守，notes=已站上的期間高點、型態突破狀態、測量目標。回答「有沒有機會挑戰前高」要引用這三項，並講清楚是條件式推演、不是預測。
+
 量價：成交量達5日均量1.2倍以上才算有效放量，價漲量縮/價跌量增要提高警覺（換手失敗風險）。
 
 進出場(entry_exit)：跌破關鍵均線視為趨勢停損，或用5%-7%百分比停損；目標價一律用等幅測量法(關鍵價差往上/下加計)。
@@ -7679,7 +7974,7 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'diagnose_stock', category: '持股診斷',
-    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。' +
+    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識與頸線突破狀態、壓力支撐與前高距離、情境推演、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。' +
       '⚠️回傳的plain_summary欄位是已經把position/trend/kbar_quality/volume_price等欄位合成好的2-3句白話結論（先講「站在哪個關鍵均線之上/之下、屬於什麼趨勢」，再講「今天這根K棒代表什麼、還要等什麼條件才算確認」）——回答使用者時務必先講這段當開場結論（可以直接引用或改寫成自己的語氣，但方向不能跟plain_summary矛盾），再視需要展開其他欄位當佐證細節，不要一開始就把position/kbar_quality等每個欄位的原始數字條列丟給使用者、也不要只講「✗ 未通過K棒品質判讀鐵律」這種聽起來像檢查失敗的判定卻不解釋代表什麼意思——使用者實測反映過「看不懂AI在分析什麼」，原因就是只丟結構化數字沒有先給結論。完整報告的段落安排另見get_report_style_guide。',
     params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
     handler: async (a) => {
@@ -11094,6 +11389,35 @@ function fmtMeasuredMoveLeg(leg, kind) {
   return `${methodLabel}：目標價 ${leg.target ?? '-'}（${dirLabel}，幅度 ${leg.amplitude ?? '-'}）`;
 }
 
+// 壓力與支撐、情境的共用文字格式（持股診斷分頁、報告HTML／Markdown／PPTX／PDF都用這兩個）
+function fmtKeyLevelsLines(d) {
+  const kl = d.key_levels;
+  if (!kl) return [];
+  const sgn = (v) => (v >= 0 ? '+' : '') + v + '%';
+  const lv = (x) => `${x.price}（${x.source}${x.date ? '，' + x.date : ''}，${sgn(x.dist_pct)}）`;
+  const lines = [];
+  lines.push(kl.resistance.length ? `壓力（由近到遠）：${kl.resistance.map(lv).join('　')}` : '壓力：現價已高於所有前波高點與各期間高點（沒有上方前高壓力）');
+  lines.push(kl.support.length ? `支撐（由近到遠）：${kl.support.map(lv).join('　')}` : '支撐：下方沒有可辨識的前波低點');
+  if (kl.period_highs.length) lines.push('各期間高點（不含今天）：' + kl.period_highs.map(x => `${x.days}日 ${x.price}（${x.date}，${sgn(x.dist_pct)}${x.close_above ? '，已收盤站上' : ''}）`).join('　'));
+  return lines;
+}
+function fmtScenarioLines(d) {
+  const sc = d.scenario;
+  if (!sc) return [];
+  return [sc.headline, sc.bull_trigger && `站上的條件：${sc.bull_trigger}`, sc.bear_trigger && `防守的條件：${sc.bear_trigger}`, ...(sc.notes || [])].filter(Boolean);
+}
+function fmtPatternBreakoutLines(d) {
+  // 同一種型態在短／中／大尺度常常抓到同一組點（結論一模一樣），合併成一行，尺度用「短／中／大」串起來
+  const groups = new Map();
+  for (const pp of (d.pattern?.detected || [])) {
+    if (!pp.breakout?.applicable) continue;
+    const key = `${pp.label}｜${pp.breakout.status_text}`;
+    if (!groups.has(key)) groups.set(key, { label: pp.label, text: pp.breakout.status_text, scales: [] });
+    if (pp.scaleLabel) groups.get(key).scales.push(pp.scaleLabel.replace('型態', ''));
+  }
+  return [...groups.values()].map(g => `${g.scales.length ? '[' + g.scales.join('／') + '] ' : ''}${g.label}：${g.text}`);
+}
+
 /* 等幅測量法/N字測量法(AB=CD) 目標價估算，見 report_builder.py::
    measured_move_targets。not-available 時顯示原因，不留空白。 */
 function renderMeasuredMoveHtml(mm) {
@@ -11142,8 +11466,16 @@ function renderStockDiagnosisHtml(d) {
     </div>
     <div class="rs-diag-section">
       <div class="rs-diag-section-title">型態辨識</div>
-      <div class="rs-diag-section-body">${esc(d.pattern?.note)}</div>
+      <div class="rs-diag-section-body">${esc(d.pattern?.note)}${fmtPatternBreakoutLines(d).map(l => '<br>' + esc(l)).join('')}</div>
     </div>
+    ${fmtKeyLevelsLines(d).length ? `<div class="rs-diag-section">
+      <div class="rs-diag-section-title">壓力與支撐</div>
+      <div class="rs-diag-section-body">${fmtKeyLevelsLines(d).map(esc).join('<br>')}</div>
+    </div>` : ''}
+    ${fmtScenarioLines(d).length ? `<div class="rs-diag-section">
+      <div class="rs-diag-section-title">情境推演</div>
+      <div class="rs-diag-section-body">${fmtScenarioLines(d).map(esc).join('<br>')}</div>
+    </div>` : ''}
     <div class="rs-diag-section">
       <div class="rs-diag-section-title">K棒品質判讀鐵律</div>
       <div class="rs-diag-section-body">實體 ${esc(kbar.body_pct)}%，${kbar.is_red ? '收紅' : '收黑'}，
@@ -11363,8 +11695,10 @@ const ReportExport = (() => {
       '',
       `**趨勢判斷**：${d.trend?.label ?? ''}（近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}）`,
       '',
-      `**型態辨識**：${d.pattern?.note ?? ''}`,
+      `**型態辨識**：${[d.pattern?.note, ...fmtPatternBreakoutLines(d)].filter(Boolean).join('\n\n')}`,
       '',
+      ...(fmtKeyLevelsLines(d).length ? [`**壓力與支撐**：\n\n${fmtKeyLevelsLines(d).map(l => '- ' + l).join('\n')}`, ''] : []),
+      ...(fmtScenarioLines(d).length ? [`**情境推演**：\n\n${fmtScenarioLines(d).map(l => '- ' + l).join('\n')}`, ''] : []),
       `**K棒品質判讀鐵律**：實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}，上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}`,
       '',
       `**量價關係**：${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`,
@@ -11602,7 +11936,7 @@ const ReportExport = (() => {
     const sectionsA = [
       { label: '目前位置', body: `收盤 ${d.position?.close ?? '-'}，${maText}\n${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${d.position?.ma_alignment || '資料不足'}` },
       { label: '趨勢判斷', body: `${d.trend?.label ?? ''}\n近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}` },
-      { label: '型態辨識', body: d.pattern?.note ?? '' },
+      { label: '型態辨識', body: [d.pattern?.note, ...fmtPatternBreakoutLines(d)].filter(Boolean).join('\n') },
       { label: 'K棒品質判讀鐵律', body: `實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}\n上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}` },
     ];
     const sectionsB = [
@@ -11612,8 +11946,11 @@ const ReportExport = (() => {
       { label: '進出場建議', body: `${d.entry_exit?.trend_stop ?? ''}\n百分比停損：${d.entry_exit?.pct_stop_range ?? ''}\n${mmText}` },
     ];
 
+    const sectionsC = [];
+    if (fmtKeyLevelsLines(d).length) sectionsC.push({ label: '壓力與支撐', body: fmtKeyLevelsLines(d).join('\n') });
+    if (fmtScenarioLines(d).length) sectionsC.push({ label: '情境推演', body: fmtScenarioLines(d).join('\n') });
     const badgeCol = d.lock_direction === '做空' ? PALETTE_PPTX.down : PALETTE_PPTX.up;
-    [sectionsA, sectionsB].forEach((sections, pageIdx) => {
+    [sectionsA, sectionsB, ...(sectionsC.length ? [sectionsC] : [])].forEach((sections, pageIdx) => {
       const s = newSlide(pres);
       s.background = { color: PALETTE_PPTX.white };
       s.addText(`${d.stock_code || ''} ${d.stock_name || ''}`, {
@@ -11740,7 +12077,9 @@ const ReportExport = (() => {
       { text: `資料日期：${d.as_of_date || '-'}`, style: 'caption', margin: [0, 2, 0, 10] },
       section('目前位置', [`收盤 ${d.position?.close ?? '-'}，${maText}`, `${d.position?.above_ma20 ? '站上' : '跌破'}月線，均線排列：${d.position?.ma_alignment || '資料不足'}`]),
       section('趨勢判斷', [`${d.trend?.label ?? ''}（近期高低 ${d.trend?.recent_high ?? '-'}/${d.trend?.recent_low ?? '-'}，前段高低 ${d.trend?.prior_high ?? '-'}/${d.trend?.prior_low ?? '-'}）`]),
-      section('型態辨識', [d.pattern?.note]),
+      section('型態辨識', [d.pattern?.note, ...fmtPatternBreakoutLines(d)]),
+      ...(fmtKeyLevelsLines(d).length ? [section('壓力與支撐', fmtKeyLevelsLines(d))] : []),
+      ...(fmtScenarioLines(d).length ? [section('情境推演', fmtScenarioLines(d))] : []),
       section('K棒品質判讀鐵律', [`實體 ${kbar.body_pct ?? '-'}%，${kbar.is_red ? '收紅' : '收黑'}，上影線占全長 ${kbar.upper_wick_pct_of_range ?? '-'}%　${kbarVerdict}`]),
       section('量價關係', [`${d.volume_price?.label ?? ''}（量比 ${d.volume_price?.vol_ratio ?? '-'}）`]),
       section('大盤連動', [fmtMarketLinkageIndex(d.market_linkage?.sox), fmtMarketLinkageIndex(d.market_linkage?.dji), d.market_linkage?.note]),
@@ -12934,7 +13273,8 @@ function renderDiagnosisPanelBody(diag) {
     `<div class="diag-row">${maLine}</div>`;
 
   const trendHtml =
-    `<div class="diag-row">趨勢判斷：<b>${esc(t.label)}</b></div>` +
+    `<div class="diag-row">趨勢判斷：<b>${esc(t.label)}</b>${t.swing ? `（${esc(t.swing.scope)}）` : ''}</div>` +
+    (t.swing ? `<div class="diag-row">${esc(t.swing.basis)}${t.swing.provisional ? '　<span style="color:var(--txt2)">※' + esc(t.swing.provisional) + '</span>' : ''}</div>` : '') +
     (t.prior_high != null
       ? `<div class="diag-row">近10日高低 ${t.recent_high} / ${t.recent_low}　前10-30日高低 ${t.prior_high} / ${t.prior_low}</div>`
       : `<div class="diag-row">近10日高低 ${t.recent_high} / ${t.recent_low}（資料不足30日，未比對前波高低點）</div>`);
@@ -12973,6 +13313,7 @@ function renderDiagnosisPanelBody(diag) {
           `<div class="diag-pattern-svg">${svg}</div>` +
           `<div class="diag-pattern-body">` +
             `${scaleBadge}<b>${esc(pp.label)}</b>　目標價 ${pp.target}<br>${ptLine}` +
+            (pp.breakout?.applicable ? `<div class="diag-row ${pp.breakout.status === 'broken_valid' ? 'diag-pass' : (pp.breakout.status === 'broken_unconfirmed' || pp.breakout.status === 'failed') ? 'diag-fail' : ''}">突破狀態：${esc(pp.breakout.status_text)}</div>` : '') +
             (pp.basis ? `<div class="diag-pattern-basis">依據：${esc(pp.basis)}</div>` : '') +
           `</div>` +
         `</div>`;
@@ -13001,6 +13342,8 @@ function renderDiagnosisPanelBody(diag) {
     `<div class="diag-section"><h3>目前位置</h3>${positionHtml}</div>` +
     `<div class="diag-section"><h3>趨勢判斷</h3>${trendHtml}</div>` +
     `<div class="diag-section"><h3>型態辨識</h3>${patternHtml}</div>` +
+    (fmtKeyLevelsLines(diag).length ? `<div class="diag-section"><h3>壓力與支撐</h3>${fmtKeyLevelsLines(diag).map(l => `<div class="diag-row">${esc(l)}</div>`).join('')}</div>` : '') +
+    (fmtScenarioLines(diag).length ? `<div class="diag-section"><h3>情境推演</h3>${fmtScenarioLines(diag).map(l => `<div class="diag-row">${esc(l)}</div>`).join('')}</div>` : '') +
     `<div class="diag-section"><h3>K棒品質判讀鐵律</h3>${kbHtml}</div>` +
     `<div class="diag-section"><h3>量價關係</h3>${vpHtml}</div>` +
     `<div class="diag-section"><h3>大盤連動</h3>${mlHtml}</div>` +
